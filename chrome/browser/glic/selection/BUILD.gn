@@ -20,6 +20,8 @@ source_set("selection") {
     "quick_answers_tool.h",
     "selection_overlay_controller.cc",
     "selection_overlay_controller.h",
+    "selection_overlay_prewarmer.cc",
+    "selection_overlay_prewarmer.h",
     "selection_overlay_untrusted_ui.cc",
     "selection_overlay_untrusted_ui.h",
     "selection_suggestion.cc",
@@ -39,6 +41,8 @@ source_set("selection") {
   ]
 
   deps = [
+    ":wiggle_detector",
+    ":wiggle_detector_factory",
     "//base",
     "//chrome/browser:browser_process",
     "//chrome/browser/actor",
@@ -54,10 +58,15 @@ source_set("selection") {
     "//chrome/browser/resources/glic/selection_overlay:resources",
     "//chrome/browser/resources/lens/overlay:resources_grit",
     "//chrome/browser/search_engines",
+    "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui:chrome_pages",
+    "//chrome/browser/ui/actions",
     "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:page_context_eligibility_helper",
     "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/views/toolbar",
     "//chrome/browser/ui/webui:webui_util",
     "//chrome/browser/ui/webui/top_chrome",
     "//components/actor/public/mojom:mojo_bindings",
@@ -65,12 +74,14 @@ source_set("selection") {
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
     "//components/input",
+    "//components/optimization_guide/content/browser:page_context_eligibility",
     "//components/optimization_guide/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/prefs",
     "//components/search_engines",
     "//mojo/public/mojom/base",
     "//third_party/blink/public/common:headers",
+    "//ui/actions",
     "//ui/base",
     "//ui/base/mojom:ui_base_types",
     "//ui/gfx/geometry",
@@ -81,9 +92,29 @@ source_set("selection") {
 source_set("shake_trigger") {
   sources = [ "shake_trigger.h" ]
   public_deps = [
+    ":wiggle_detector",
+    "//base",
+  ]
+}
+
+source_set("wiggle_detector") {
+  sources = [
+    "legacy_shake_detector.cc",
+    "legacy_shake_detector.h",
+    "wiggle_detector.h",
+    "wiggle_detector_factory.h",
+  ]
+  public_deps = [
     "//base",
     "//ui/gfx/geometry",
   ]
+}
+
+# Kept apart from `wiggle_detector` so that other builds can provide their own
+# detectors.
+source_set("wiggle_detector_factory") {
+  sources = [ "wiggle_detector_factory_default.cc" ]
+  deps = [ ":wiggle_detector" ]
 }
 
 mojom("mojo_bindings") {
@@ -105,12 +136,14 @@ source_set("interactive_ui_tests") {
   sources = [ "selection_overlay_interactive_uitests.cc" ]
   deps = [
     ":selection",
+    "//chrome/app:generated_resources",
     "//chrome/browser/actor:test_support",
     "//chrome/browser/background/glic",
     "//chrome/browser/glic",
     "//chrome/browser/glic/browser_ui",
     "//chrome/browser/glic/test_support",
     "//chrome/browser/optimization_guide",
+    "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:browser_element_identifiers",
     "//chrome/browser/ui:browser_tabstrip",
     "//chrome/browser/ui/toasts",
@@ -119,11 +152,13 @@ source_set("interactive_ui_tests") {
     "//chrome/browser/ui/views/frame:multi_contents_view",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//components/optimization_guide/content/browser:test_support",
     "//components/optimization_guide/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/prefs",
     "//content/test:test_support",
     "//testing/gtest",
+    "//ui/actions",
     "//ui/base",
     "//ui/base:ozone_buildflags",
     "//ui/base/interaction",
@@ -147,15 +182,30 @@ source_set("browser_tests") {
     "//chrome/browser/optimization_guide",
     "//chrome/browser/optimization_guide:test_support",
     "//chrome/browser/search_engines",
+    "//chrome/browser/ui:browser_actions",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:browser_window_header",
+    "//chrome/browser/ui/actions",
+    "//chrome/browser/ui/tabs",
+    "//chrome/browser/ui/tabs:page_context_eligibility_helper",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/views/toolbar",
     "//chrome/common:constants",
     "//chrome/test:test_interfaces",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_test_waiters",
+    "//components/input",
+    "//components/optimization_guide/content/browser:page_context_eligibility",
+    "//components/optimization_guide/content/browser:test_support",
     "//components/optimization_guide/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/search_engines",
+    "//components/split_tabs",
     "//content/test:test_support",
+    "//net:test_support",
     "//testing/gtest",
+    "//third_party/blink/public/common:headers",
+    "//ui/actions",
     "//ui/base",
     "//ui/base/mojom:ui_base_types",
     "//ui/gfx/geometry",
@@ -167,12 +217,15 @@ source_set("unit_tests") {
   testonly = true
   sources = [
     "inline_cue_blocklist_utils_unittest.cc",
+    "legacy_shake_detector_unittest.cc",
     "quick_answers_tool_unittest.cc",
+    "selection_overlay_prewarmer_unittest.cc",
     "selection_suggestion_tool_unittest.cc",
     "shake_trigger_unittest.cc",
   ]
   deps = [
     ":selection",
+    ":wiggle_detector",
     "//base",
     "//base/test:test_support",
     "//chrome/browser/content_settings:content_settings_factory",
@@ -188,10 +241,12 @@ source_set("unit_tests") {
     "//components/prefs",
     "//components/tabs:test_support",
     "//content/test:test_support",
+    "//net",
     "//services/network:test_support",
     "//services/network/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/blink/public/common:headers",
+    "//url",
   ]
 }

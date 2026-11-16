@@ -18,8 +18,10 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/tab.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
-#include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/embedder_support/switches.h"
@@ -32,6 +34,7 @@
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
@@ -40,6 +43,7 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "third_party/blink/public/common/features.h"
+#include "ui/views/view_utils.h"
 
 using DismissalCause =
     javascript_dialogs::TabModalDialogManager::DismissalCause;
@@ -515,6 +519,9 @@ IN_PROC_BROWSER_TEST_P(JavaScriptDialogOriginTest,
       document.body.appendChild(a);)",
                                           test_url);
   ASSERT_TRUE(content::ExecJs(tab, script));
+  // The renderer drops input that arrives before its first compositor frame
+  // has been submitted, so wait for hit test data before clicking.
+  content::WaitForHitTestData(tab->GetPrimaryMainFrame());
   content::SimulateMouseClickOrTapElementWithId(tab, "link");
   opened_tab_observer.Wait();
   ASSERT_EQ(2, browser()->tab_strip_model()->count());
@@ -571,17 +578,27 @@ IN_PROC_BROWSER_TEST_F(JavaScriptDialogTest,
   // Switch to the split view which should hide the dialog and show tab
   // attention indicator.
   tab_strip_model()->ActivateTabAt(0);
-  ASSERT_TRUE(BrowserView::GetBrowserViewForBrowser(browser())
-                  ->horizontal_tab_strip_for_testing()
-                  ->tab_at(2)
-                  ->GetTabIconForTesting()
-                  ->GetShowingAttentionIndicator());
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  views::View* tab_anchor = browser_view->tab_strip_view()->GetTabAnchorView(
+      tab_strip_model()->GetTabAtIndex(2)->GetHandle());
+  TabIcon* tab_icon = nullptr;
+  if (TabView* unified_tab = views::AsViewClass<TabView>(tab_anchor)) {
+    tab_icon = unified_tab->GetTabIconForTesting();
+  } else {
+    Tab* tab = views::AsViewClass<Tab>(tab_anchor);
+    ASSERT_TRUE(tab);
+    tab_icon = tab->GetTabIconForTesting();
+  }
+  ASSERT_TRUE(tab_icon);
+  ASSERT_TRUE(tab_icon->GetShowingAttentionIndicator());
 
   // Swapping the third tab with the inactive tab in the split should cause that
   // tab to join the split view as an inactive tab. The dialog will still be
   // showing.
-  tab_strip_model()->UpdateTabInSplit(tab_strip_model()->GetTabAtIndex(1), 2,
-                                      TabStripModel::SplitUpdateType::kSwap);
+  tab_strip_model()->UpdateTabInSplit(
+      tab_strip_model()->GetTabAtIndex(1)->GetHandle(),
+      tab_strip_model()->GetTabAtIndex(2)->GetHandle(),
+      TabStripModel::SplitUpdateType::kSwap);
   ASSERT_TRUE(js_helper->IsShowingDialogForTesting());
   ASSERT_EQ(0, tab_strip_model()->active_index());
 

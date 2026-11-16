@@ -5,12 +5,14 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_AUTOFILL_AUTOFILL_AI_AUTOFILL_AI_IMPORT_DATA_BUBBLE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_AUTOFILL_AUTOFILL_AI_AUTOFILL_AI_IMPORT_DATA_BUBBLE_VIEW_H_
 
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/views/autofill/autofill_location_bar_bubble.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 
 namespace views {
@@ -20,6 +22,8 @@ class View;
 }  // namespace views
 
 namespace autofill {
+
+struct WalletImportPromptNotice;
 
 // This class displays a bubble to prompt the user whether they want to save or
 // update or migrate an AutofillAi entity.
@@ -56,7 +60,11 @@ class AutofillAiImportDataBubbleView : public AutofillLocationBarBubble {
   bool OnDialogAccepted();
 
   std::unique_ptr<views::Label> GetLocalEntitySubtitle() const;
-  std::unique_ptr<views::StyledLabel> GetWalletableEntitySubtitle() const;
+  std::unique_ptr<views::StyledLabel> GetWalletableEntitySubtitle(
+      const WalletImportPromptNotice& notice) const;
+  // Returns the Privacy Policy link shown below the private pass notice.
+  std::unique_ptr<views::StyledLabel> GetPrivacyPolicyLink(
+      std::u16string privacy_policy_text) const;
   std::unique_ptr<views::View> GetWalletableEntityDisclosure();
 
   raw_ptr<views::View> loading_progress_row_ = nullptr;

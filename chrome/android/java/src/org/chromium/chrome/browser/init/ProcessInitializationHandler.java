@@ -20,8 +20,6 @@ import com.google.android.material.color.DynamicColors;
 
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
-import org.chromium.base.BaseSwitches;
-import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.FileProviderUtils;
@@ -109,6 +107,8 @@ import org.chromium.chrome.browser.tab.state.PersistedTabData;
 import org.chromium.chrome.browser.tab.state.ShoppingPersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStoreImpl;
 import org.chromium.chrome.browser.tips.TipsPromoHandlerRegistrar;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarEducationUtils;
 import org.chromium.chrome.browser.ui.cars.DrivingRestrictionsManager;
 import org.chromium.chrome.browser.ui.color.ColorProviderBridgeImpl;
 import org.chromium.chrome.browser.ui.hats.SurveyClientFactory;
@@ -334,15 +334,7 @@ public class ProcessInitializationHandler {
      * that the command line flags are setup before ContentMainRunner is initialized.
      */
     public final void onPostNativeStartup() {
-        if (ChromeFeatureList.sBackgroundThreadPoolFieldTrial.isEnabled()) {
-            int configValue = ChromeFeatureList.sBackgroundThreadPoolFieldTrialConfig.getValue();
-            if (configValue > 0) {
-                CommandLine.getInstance()
-                        .appendSwitchWithValue(
-                                BaseSwitches.BACKGROUND_THREAD_POOL_FIELD_TRIAL,
-                                String.valueOf(configValue));
-            }
-        }
+        InitializeFeatureList.setupBackgroundThreadPoolFieldTrial();
     }
 
     /**
@@ -402,6 +394,9 @@ public class ProcessInitializationHandler {
     /** Performs the post native initialization. */
     @CallSuper
     protected void handlePostNativeInitialization() {
+        // Must run before cacheNativeFlags() overwrites this start's cached bottom bar params.
+        // TODO(crbug.com/582747594): Remove once AndroidBottomBar is enabled by default.
+        BottomBarConfigUtils.maybePinDefaultUserEnabled();
         // Triggered early in post native startup to allow any flags that have not be accessed to
         // use the most up to date flag state from the server
         // (see ChromeCachedFlags#cacheNativeFlags for more details).
@@ -551,6 +546,8 @@ public class ProcessInitializationHandler {
         RecordHistogram.recordBooleanHistogram(
                 AccessibilitySettingsBridge.ACCESSIBILITY_CARET_BROWSING_ENABLED_HISTOGRAM,
                 AccessibilitySettingsBridge.isCaretBrowsingEnabled(profile));
+        // TODO(crbug.com/582747594): Remove once AndroidBottomBar is enabled by default.
+        BottomBarEducationUtils.maybeBackfillEducationSeen(profile);
     }
 
     /**
@@ -695,8 +692,7 @@ public class ProcessInitializationHandler {
                 () -> {
                     mDevToolsServer =
                             new DevToolsServer(
-                                    DEV_TOOLS_SERVER_SOCKET_PREFIX,
-                                    assumeNonNull(LocalStatePrefs.get()));
+                                    DEV_TOOLS_SERVER_SOCKET_PREFIX, LocalStatePrefs.get());
                     mDevToolsServer.setRemoteDebuggingEnabled(
                             true, DevToolsServer.Security.ALLOW_DEBUG_PERMISSION);
                 });

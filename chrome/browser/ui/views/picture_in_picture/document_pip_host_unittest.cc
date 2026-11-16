@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/frame/scrim_view.h"
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_contents_view.h"
@@ -65,6 +66,10 @@
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_linux.h"
+#endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/chromeos/policy/dlp/dlp_content_tab_helper.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -316,6 +321,32 @@ TEST_F(DocumentPipHostTest, Accessors) {
   EXPECT_EQ(400u, host->GetPipOptions().width);
   EXPECT_EQ(300u, host->GetPipOptions().height);
 }
+
+TEST_F(DocumentPipHostTest, AttachesRecentlyAudibleHelperToChildWebContents) {
+  DocumentPipHost* host = CreateHostAndOpenPipWindow();
+  ASSERT_TRUE(host);
+
+  RecentlyAudibleHelper* audible_helper =
+      RecentlyAudibleHelper::FromWebContents(host->GetChildWebContents());
+  ASSERT_TRUE(audible_helper);
+  EXPECT_FALSE(audible_helper->WasRecentlyAudible());
+
+  audible_helper->SetRecentlyAudibleForTesting();
+  EXPECT_TRUE(audible_helper->WasRecentlyAudible());
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+TEST_F(DocumentPipHostTest, AttachesDlpContentTabHelperToChildWebContents) {
+  auto ignore_dlp_rules_manager =
+      policy::DlpContentTabHelper::IgnoreDlpRulesManagerForTesting();
+
+  DocumentPipHost* host = CreateHostAndOpenPipWindow();
+  ASSERT_TRUE(host);
+
+  EXPECT_NE(nullptr, policy::DlpContentTabHelper::FromWebContents(
+                         host->GetChildWebContents()));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 namespace {
@@ -1364,9 +1395,13 @@ TEST_F(DocumentPipExclusiveAccessTest, OnlyUserMouseInputReshowsBubble) {
   auto* host = CreateHostAndOpenPipWindow();
   auto* context = host->GetExclusiveAccessManagerForTesting()->context();
   ShowBubble(host);
-  task_environment()->FastForwardBy(ExclusiveAccessBubble::kSnoozeTime +
-                                    base::Seconds(1));
+  task_environment()->FastForwardBy(ExclusiveAccessBubble::kShowTime * 2);
   ASSERT_FALSE(context->IsExclusiveAccessBubbleDisplayed());
+  // Advance past the snooze period after the bubble has finished hiding so any
+  // native WM_MOUSEMOVE events dispatched while showing/hiding the desktop
+  // widgets cannot push `snooze_until_` past `Now()`.
+  task_environment()->AdvanceClock(ExclusiveAccessBubble::kSnoozeTime +
+                                   base::Seconds(1));
 
   for (auto type : {ui::EventType::kMouseEntered, ui::EventType::kMouseExited,
                     ui::EventType::kMouseMoved}) {

@@ -19,6 +19,7 @@
 #include "ui/aura/client/drag_drop_client.h"
 #include "ui/aura/client/drag_drop_delegate.h"
 #include "ui/aura/client/focus_client.h"
+#include "ui/aura/client/visibility_client.h"
 #include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/env.h"
 #include "ui/aura/test/test_window_delegate.h"
@@ -29,6 +30,7 @@
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/display/screen.h"
 #include "ui/events/event_processor.h"
 #include "ui/events/event_utils.h"
@@ -44,6 +46,7 @@
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/window_util.h"
 #include "ui/wm/public/activation_client.h"
 
@@ -52,6 +55,9 @@
 
 #include "ui/base/view_prop.h"
 #include "ui/base/win/window_event_target.h"
+#include "ui/views/test/desktop_window_tree_host_win_test_api.h"
+#include "ui/views/widget/desktop_aura/desktop_window_tree_host_win.h"
+#include "ui/views/win/hwnd_message_handler.h"
 #include "ui/views/win/hwnd_util.h"
 #include "ui/wm/core/window_properties.h"
 #endif
@@ -416,6 +422,55 @@ TEST_F(DesktopNativeWidgetAuraTest, WidgetCanBeDestroyedFromNestedLoop) {
 // DesktopNativeWidgetAura::CloseNow is protected.
 // Create a new object to override CloseNow so we can test deleting
 // the native widget.
+// Verifies that an unhandled scroll event dispatched to a desktop widget is
+// converted into exactly one mouse wheel event. Converting it more than once
+// multiplies the scroll distance, which, e.g., makes tiny touchpad scrolls over
+// the tab strip switch tabs on Linux. See crbug.com/40650182.
+TEST_F(DesktopNativeWidgetAuraTest, UnhandledScrollConvertedToOneWheelEvent) {
+  // Counts wheel events and, optionally, consumes them. Scroll events are
+  // never consumed, so they get converted into wheel events.
+  class WheelCountView : public View {
+   public:
+    void OnMouseEvent(ui::MouseEvent* event) override {
+      if (event->type() == ui::EventType::kMousewheel) {
+        ++wheel_count;
+        if (consume_wheel) {
+          event->SetHandled();
+        }
+      }
+    }
+
+    int wheel_count = 0;
+    bool consume_wheel = false;
+  };
+
+  std::unique_ptr<Widget> widget =
+      CreateTestWidget(Widget::InitParams::CLIENT_OWNS_WIDGET,
+                       Widget::InitParams::TYPE_WINDOW_FRAMELESS);
+  widget->SetBounds(gfx::Rect(0, 0, 100, 100));
+  auto* view = widget->SetContentsView(std::make_unique<WheelCountView>());
+  widget->Show();
+
+  auto dispatch_scroll = [&widget]() {
+    ui::ScrollEvent scroll(ui::EventType::kScroll, gfx::Point(50, 50),
+                           ui::EventTimeForNow(), 0, 0, 20, 0, 20, 2);
+    ui::EventDispatchDetails details =
+        widget->GetNativeWindow()->GetHost()->GetEventSink()->OnEventFromSource(
+            &scroll);
+    EXPECT_FALSE(details.dispatcher_destroyed);
+    return scroll.handled();
+  };
+
+  EXPECT_FALSE(dispatch_scroll());
+  EXPECT_EQ(1, view->wheel_count);
+
+  // A handled wheel event marks the original scroll event as handled.
+  view->wheel_count = 0;
+  view->consume_wheel = true;
+  EXPECT_TRUE(dispatch_scroll());
+  EXPECT_EQ(1, view->wheel_count);
+}
+
 class TestDesktopNativeWidgetAura : public DesktopNativeWidgetAura {
  public:
   explicit TestDesktopNativeWidgetAura(internal::NativeWidgetDelegate* delegate)
@@ -606,7 +661,10 @@ class DesktopAuraTopLevelWindowTest : public aura::WindowObserver {
     owned_window_ = nullptr;
   }
 
-  void CreateTopLevelWindow(const gfx::Rect& bounds, bool fullscreen) {
+  void CreateTopLevelWindow(const gfx::Rect& bounds,
+                            bool fullscreen,
+                            bool transparent = false,
+                            bool shadowless = false) {
     Widget::InitParams init_params(Widget::InitParams::CLIENT_OWNS_WIDGET,
                                    Widget::InitParams::TYPE_WINDOW);
     init_params.bounds = bounds;
@@ -625,6 +683,12 @@ class DesktopAuraTopLevelWindowTest : public aura::WindowObserver {
       owned_window_->SetType(aura::client::WINDOW_TYPE_MENU);
     }
     owned_window_->Init(ui::LAYER_TEXTURED);
+    if (transparent) {
+      owned_window_->SetTransparent(true);
+    }
+    if (shadowless) {
+      wm::SetShadowElevation(owned_window_, wm::kShadowElevationNone);
+    }
     aura::client::ParentWindowWithContext(
         owned_window_, widget_.GetNativeView()->GetRootWindow(),
         gfx::Rect(0, 0, 1900, 1600), display::kInvalidDisplayId);
@@ -718,6 +782,110 @@ TEST_F(DesktopNativeWidgetAuraTest, TopLevelOwnedPopupTest) {
   DesktopAuraTopLevelWindowTest popup_window;
   ASSERT_NO_FATAL_FAILURE(
       popup_window.CreateTopLevelWindow(gfx::Rect(0, 0, 200, 200), false));
+
+  EXPECT_EQ(
+      nullptr,
+      aura::client::GetVisibilityClient(
+          popup_window.top_level_widget()->GetNativeView()->GetRootWindow()));
+#if BUILDFLAG(IS_WIN)
+  HWNDMessageHandler* handler =
+      DesktopWindowTreeHostWinTestApi(
+          static_cast<DesktopWindowTreeHostWin*>(
+              popup_window.top_level_widget()->GetNativeWindow()->GetHost()))
+          .GetHwndMessageHandler();
+  EXPECT_FALSE(handler->is_translucent());
+  EXPECT_NE(DWORD{0}, handler->window_style() & WS_THICKFRAME);
+#endif
+
+  RunPendingMessages();
+  ASSERT_NO_FATAL_FAILURE(popup_window.DestroyOwnedWindow());
+  RunPendingMessages();
+}
+
+// Verifies that a transparent menu popup that does not opt out of shadows
+// (such as RenderWidgetHostViewAura::InitAsPopup for HTML <select>) initializes
+// a translucent top-level widget while keeping its native shadow frame.
+TEST_F(DesktopNativeWidgetAuraTest,
+       TopLevelOwnedTransparentPopupKeepsNativeShadow) {
+  DesktopAuraTopLevelWindowTest popup_window;
+  ASSERT_NO_FATAL_FAILURE(popup_window.CreateTopLevelWindow(
+      gfx::Rect(0, 0, 200, 200), /*fullscreen=*/false, /*transparent=*/true,
+      /*shadowless=*/false));
+
+  EXPECT_NE(
+      nullptr,
+      aura::client::GetVisibilityClient(
+          popup_window.top_level_widget()->GetNativeView()->GetRootWindow()));
+#if BUILDFLAG(IS_WIN)
+  HWNDMessageHandler* handler =
+      DesktopWindowTreeHostWinTestApi(
+          static_cast<DesktopWindowTreeHostWin*>(
+              popup_window.top_level_widget()->GetNativeWindow()->GetHost()))
+          .GetHwndMessageHandler();
+  EXPECT_TRUE(handler->is_translucent());
+  EXPECT_NE(DWORD{0}, handler->window_style() & WS_THICKFRAME);
+#endif
+
+  RunPendingMessages();
+  ASSERT_NO_FATAL_FAILURE(popup_window.DestroyOwnedWindow());
+  RunPendingMessages();
+}
+
+// Verifies that a transparent menu popup that explicitly opts out of native
+// shadows (such as UnboundedSurfaceWindowAura) initializes a translucent
+// top-level widget without WS_THICKFRAME on Windows.
+TEST_F(DesktopNativeWidgetAuraTest,
+       TopLevelOwnedShadowlessTransparentPopupOmitsNativeFrame) {
+  base::test::ScopedFeatureList feature_list(
+      ::features::kOmitNativeFrameOnShadowlessMenus);
+  DesktopAuraTopLevelWindowTest popup_window;
+  ASSERT_NO_FATAL_FAILURE(popup_window.CreateTopLevelWindow(
+      gfx::Rect(0, 0, 200, 200), /*fullscreen=*/false, /*transparent=*/true,
+      /*shadowless=*/true));
+
+  EXPECT_NE(
+      nullptr,
+      aura::client::GetVisibilityClient(
+          popup_window.top_level_widget()->GetNativeView()->GetRootWindow()));
+#if BUILDFLAG(IS_WIN)
+  HWNDMessageHandler* handler =
+      DesktopWindowTreeHostWinTestApi(
+          static_cast<DesktopWindowTreeHostWin*>(
+              popup_window.top_level_widget()->GetNativeWindow()->GetHost()))
+          .GetHwndMessageHandler();
+  EXPECT_TRUE(handler->is_translucent());
+  EXPECT_EQ(DWORD{0}, handler->window_style() & WS_THICKFRAME);
+  EXPECT_EQ(0, ::GetWindowLong(handler->hwnd(), GWL_STYLE) & WS_THICKFRAME);
+#endif
+
+  RunPendingMessages();
+  ASSERT_NO_FATAL_FAILURE(popup_window.DestroyOwnedWindow());
+  RunPendingMessages();
+}
+
+TEST_F(DesktopNativeWidgetAuraTest,
+       TopLevelOwnedShadowlessTransparentPopupKeepsNativeFrameWhenDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      ::features::kOmitNativeFrameOnShadowlessMenus);
+  DesktopAuraTopLevelWindowTest popup_window;
+  ASSERT_NO_FATAL_FAILURE(popup_window.CreateTopLevelWindow(
+      gfx::Rect(0, 0, 200, 200), /*fullscreen=*/false, /*transparent=*/true,
+      /*shadowless=*/true));
+
+  EXPECT_NE(
+      nullptr,
+      aura::client::GetVisibilityClient(
+          popup_window.top_level_widget()->GetNativeView()->GetRootWindow()));
+#if BUILDFLAG(IS_WIN)
+  HWNDMessageHandler* handler =
+      DesktopWindowTreeHostWinTestApi(
+          static_cast<DesktopWindowTreeHostWin*>(
+              popup_window.top_level_widget()->GetNativeWindow()->GetHost()))
+          .GetHwndMessageHandler();
+  EXPECT_TRUE(handler->is_translucent());
+  EXPECT_NE(DWORD{0}, handler->window_style() & WS_THICKFRAME);
+#endif
 
   RunPendingMessages();
   ASSERT_NO_FATAL_FAILURE(popup_window.DestroyOwnedWindow());

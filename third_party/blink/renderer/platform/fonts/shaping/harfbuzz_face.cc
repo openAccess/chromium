@@ -41,6 +41,7 @@
 #include "base/containers/span.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_global_context.h"
@@ -152,12 +153,14 @@ static hb_bool_t HarfBuzzGetGlyph(hb_font_t* hb_font,
   // `kUnmatchedVsGlyphId`.
   if (consider_variation_selector) {
     if (!is_variation_sequence) {
-      if (variation_selector_mode == kForceVariationSelector15 ||
-          (variation_selector_mode == kUseUnicodeDefaultPresentation &&
+      if (variation_selector_mode == VariationSelectorMode::kForce15 ||
+          (variation_selector_mode ==
+               VariationSelectorMode::kUseUnicodeDefaultPresentation &&
            unicode::IsEmojiTextDefault(unicode))) {
         variation_selector = uchar::kVariationSelector15;
-      } else if (variation_selector_mode == kForceVariationSelector16 ||
-                 (variation_selector_mode == kUseUnicodeDefaultPresentation &&
+      } else if (variation_selector_mode == VariationSelectorMode::kForce16 ||
+                 (variation_selector_mode ==
+                      VariationSelectorMode::kUseUnicodeDefaultPresentation &&
                   unicode::IsEmojiEmojiDefault(unicode))) {
         variation_selector = uchar::kVariationSelector16;
       }
@@ -412,7 +415,7 @@ bool HarfBuzzFace::HasSpaceInLigaturesOrKerning(TypesettingFeatures features) {
   hb_font_t* unscaled_font = harfbuzz_font_data_->unscaled_font_.get();
 
   // Check whether computing is needed and compute for gpos/gsub.
-  if (features & kKerning &&
+  if (features.Has(TypesettingFeature::kKerning) &&
       harfbuzz_font_data_->space_in_gpos_ ==
           HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kUnknown) {
     if (space == kInvalidCodepoint && !GetSpaceGlyph(unscaled_font, space)) {
@@ -430,7 +433,7 @@ bool HarfBuzzFace::HasSpaceInLigaturesOrKerning(TypesettingFeatures features) {
 
   hb_set_clear(glyphs.get());
 
-  if (features & kLigatures &&
+  if (features.Has(TypesettingFeature::kLigatures) &&
       harfbuzz_font_data_->space_in_gsub_ ==
           HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kUnknown) {
     if (space == kInvalidCodepoint && !GetSpaceGlyph(unscaled_font, space)) {
@@ -446,10 +449,10 @@ bool HarfBuzzFace::HasSpaceInLigaturesOrKerning(TypesettingFeatures features) {
             : HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kNotPresent;
   }
 
-  return (features & kKerning &&
+  return (features.Has(TypesettingFeature::kKerning) &&
           harfbuzz_font_data_->space_in_gpos_ ==
               HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kPresent) ||
-         (features & kLigatures &&
+         (features.Has(TypesettingFeature::kLigatures) &&
           harfbuzz_font_data_->space_in_gsub_ ==
               HarfBuzzFontData::SpaceGlyphInOpenTypeTables::kPresent);
 }
@@ -485,8 +488,8 @@ bool HarfBuzzFace::ShouldSubpixelPosition() {
 class HarfBuzzSkiaFontFuncs final {
  public:
   static HarfBuzzSkiaFontFuncs& Get() {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(HarfBuzzSkiaFontFuncs, shared_hb_funcs, ());
-    return shared_hb_funcs;
+    static base::NoDestructor<HarfBuzzSkiaFontFuncs> shared_hb_funcs;
+    return *shared_hb_funcs;
   }
 
   HarfBuzzSkiaFontFuncs() = default;

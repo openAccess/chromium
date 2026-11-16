@@ -8,7 +8,7 @@ source_set("browser_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
-  sources = [ "safe_audio_video_checker_browsertest.cc" ]
+  sources = []
 
   deps = [
     "//base",
@@ -22,7 +22,6 @@ source_set("browser_tests") {
     sources += [ "media_gallery_util_browsertest.cc" ]
 
     deps += [
-      "//chrome/test:test_support_ui",
       "//components/media_gallery_util/public/mojom",
       "//third_party/libyuv",
     ]

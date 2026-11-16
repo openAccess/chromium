@@ -13,8 +13,27 @@
 #include "third_party/skia/include/core/SkRect.h"
 #include "third_party/skia/include/core/SkSurface.h"
 #include "third_party/skia/include/core/SkYUVAInfo.h"
+#include "third_party/skia/include/core/SkYUVAPixmaps.h"
 
 namespace skia {
+
+// Describes how an N-bit unsigned integer sample x in [0, 2^N - 1] is stored
+// and sampled as a normalized float in [0, 1].
+enum class YUVBitAlignment {
+  // All bits of the storage channel are significant (e.g. 8-bit in unorm8,
+  // 10-bit in 1010102, 16-bit in unorm16), so sampling yields x / (2^N - 1)
+  // directly (e.g. x / 1023).
+  kExact,
+
+  // Stored in the high N bits of a 16-bit unorm word with zeros in the low
+  // 16 - N bits (e.g. P010), so sampling yields (x << (16 - N)) / 65535
+  // (e.g. (x << 6) / 65535).
+  kMSB,
+
+  // Stored in the low N bits of a 16-bit unorm word with zeros in the high
+  // 16 - N bits (e.g. YUV420P10), so sampling yields x / 65535.
+  kLSB,
+};
 
 // Copy `src_image` from RGBA to the YUVA planes specified in `dst_surfaces`,
 // using the color space and plane configuration information specified in
@@ -40,15 +59,12 @@ SK_API void ConvertRGBAToYUVA(SkPixmap src_pm,
                               const SkYUVAInfo& dst_yuva_info,
                               const std::vector<SkPixmap>& dst_pixmaps);
 
-// Convert the planes in `src_pixmaps` to the RGBA `dst`. If `src_yuva_info`
-// is valid, then YUV to RGB conversion will be performed, and `src_bit_depth`
-// will be used as the bit depth. Otherwise, an RGBA to RGBA conversion using
-// `src_pixmaps[0]` will be performed. The SkColorSpace of all of `src_pixmaps`
-// must be equal, and will be used as the source color space.
+// Convert `src` to the RGBA `dst`, using `src_bit_depth` as the bit depth. The
+// `src` must be valid. The SkColorSpace of all of the planes of `src` must be
+// equal, and will be used as the source color space.
 // WARNING: This is not optimized and is not suitable for use outside of tests.
-SK_API void ConvertYUVAToRGBA(const SkYUVAInfo& src_yuva_info,
+SK_API void ConvertYUVAToRGBA(const SkYUVAPixmaps& src,
                               size_t src_bit_depth,
-                              const std::vector<SkPixmap>& src_pixmaps,
                               const SkPixmap& dst);
 
 }  // namespace skia

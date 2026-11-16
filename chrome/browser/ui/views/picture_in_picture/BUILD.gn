@@ -49,6 +49,7 @@ source_set("picture_in_picture") {
     "//chrome/browser/picture_in_picture",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui:accelerator_table",
+    "//chrome/browser/ui:recently_audible_helper",
     "//chrome/browser/ui/color:color_headers",
     "//chrome/browser/ui/content_settings",
     "//chrome/browser/ui/exclusive_access",
@@ -102,6 +103,12 @@ source_set("picture_in_picture") {
     ]
   }
 
+  if (is_win) {
+    public += [ "document_pip_native_widget_win.h" ]
+    sources += [ "document_pip_native_widget_win.cc" ]
+    deps += [ "//chrome/browser/ui:ui_features" ]
+  }
+
   if (is_mac) {
     public += [ "document_pip_native_widget_mac.h" ]
     sources += [ "document_pip_native_widget_mac.mm" ]
@@ -129,6 +136,18 @@ source_set("picture_in_picture") {
       "//ui/platform_window",
     ]
   }
+
+  if (is_chromeos) {
+    public += [ "picture_in_picture_pin_button.h" ]
+    sources += [ "picture_in_picture_pin_button.cc" ]
+    public_deps += [ "//ui/aura" ]
+    deps += [
+      "//ash/constants",
+      "//ash/public/cpp",
+      "//chrome/app/vector_icons",
+      "//chrome/browser/chromeos/policy/dlp",
+    ]
+  }
 }
 
 source_set("unit_tests") {
@@ -150,6 +169,7 @@ source_set("unit_tests") {
     "//chrome/browser/picture_in_picture",
     "//chrome/browser/ssl",
     "//chrome/browser/ui:browser_element_identifiers",
+    "//chrome/browser/ui:recently_audible_helper",
     "//chrome/browser/ui/exclusive_access",
     "//chrome/browser/ui/views/exclusive_access",
     "//chrome/browser/ui/views/frame:scrim_view",
@@ -198,6 +218,17 @@ source_set("unit_tests") {
       "//components/zoom",
       "//extensions/browser",
       "//extensions/common",
+    ]
+  }
+
+  if (is_chromeos) {
+    deps += [
+      "//ash/constants",
+      "//ash/public/cpp",
+      "//chrome/browser/chromeos/policy/dlp",
+      "//chromeos/ui/base",
+      "//ui/aura",
+      "//ui/events:test_support",
     ]
   }
 }

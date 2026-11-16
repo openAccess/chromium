@@ -169,8 +169,6 @@ source_set("filters") {
       "ffmpeg_glue.h",
       "in_memory_url_protocol.cc",
       "in_memory_url_protocol.h",
-      "media_file_checker.cc",
-      "media_file_checker.h",
     ]
   }
 
@@ -194,8 +192,12 @@ source_set("filters") {
     sources += [
       "symphonia_data_source_bridge.cc",
       "symphonia_data_source_bridge.h",
+      "symphonia_demuxer.cc",
+      "symphonia_demuxer.h",
       "symphonia_demuxer_stream.cc",
       "symphonia_demuxer_stream.h",
+      "symphonia_demuxer_util.cc",
+      "symphonia_demuxer_util.h",
     ]
     deps += [ ":symphonia_demuxer_bridge" ]
   }
@@ -348,11 +350,16 @@ static_library("test_support") {
   sources = [
     "fake_video_decoder.cc",
     "fake_video_decoder.h",
+    "mock_demuxer_manager_client.cc",
+    "mock_demuxer_manager_client.h",
   ]
 
   deps = [
     "//base/test:test_support",
+    "//media",
     "//media/base:test_support",
+    "//testing/gmock",
+    "//url",
   ]
 }
 
@@ -420,10 +427,7 @@ source_set("unit_tests") {
     # Even if FFmpeg is enabled on Android we don't want these.
     # TODO(watk): Refactor tests that could be made to run on Android.
     if (!is_android) {
-      sources += [
-        "audio_video_metadata_extractor_unittest.cc",
-        "media_file_checker_unittest.cc",
-      ]
+      sources += [ "audio_video_metadata_extractor_unittest.cc" ]
     }
 
     if (enable_ffmpeg_video_decoders && proprietary_codecs) {
@@ -487,8 +491,13 @@ source_set("unit_tests") {
     sources += [
       "symphonia_data_source_bridge_unittest.cc",
       "symphonia_demuxer_stream_unittest.cc",
+      "symphonia_demuxer_unittest.cc",
+      "symphonia_demuxer_util_unittest.cc",
     ]
-    deps += [ ":symphonia_demuxer_bridge_unittests" ]
+    deps += [
+      ":symphonia_demuxer_bridge",
+      ":symphonia_demuxer_bridge_unittests",
+    ]
   }
 
   if (media_use_ffmpeg) {

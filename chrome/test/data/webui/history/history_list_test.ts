@@ -3,8 +3,7 @@
 // found in the LICENSE file.
 
 import type {CrA11yAnnouncerMessagesSentEvent, HistoryAppElement, HistoryEntry, HistoryItemElement, HistoryListElement, HistoryToolbarElement} from 'chrome://history/history.js';
-import {BrowserProxyImpl, CrRouter} from 'chrome://history/history.js';
-import {CriticalActionType, OpenConversationResult} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {BrowserProxyImpl, CriticalActionType, CrRouter, OpenConversationResult} from 'chrome://history/history.js';
 import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {isMac} from 'chrome://resources/js/platform.js';
@@ -449,7 +448,14 @@ suite('HistoryListTest', function() {
   });
 
   test('MoreFromThisSiteSendsAndSetsCorrectData', async function() {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryFilterByDomainEnabled: false,
+    });
     await finishSetup(TEST_HISTORY_RESULTS);
+    let domainFilterSelectedFired = false;
+    element.addEventListener('domain-filter-selected', () => {
+      domainFilterSelectedFired = true;
+    });
     testProxy.handler.resetResolver('queryHistory');
     testProxy.handler.setResultFor('queryHistory', Promise.resolve({
       results: {
@@ -463,6 +469,7 @@ suite('HistoryListTest', function() {
     element.$.sharedMenu.get();
     element.shadowRoot.querySelector<HTMLElement>('#menuMoreButton')!.click();
     await microtasksFinished();
+    assertFalse(domainFilterSelectedFired);
     const query = await testProxy.handler.whenCalled('queryHistory');
     assertEquals('host:www.google.com', query[0]);
     assertEquals(
@@ -481,6 +488,24 @@ suite('HistoryListTest', function() {
     assertFalse(
         element.shadowRoot.querySelector<HTMLElement>(
                               '#menuMoreButton')!.hidden);
+  });
+
+  test('MoreFromThisSiteFiresDomainFilterSelected', async function() {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryFilterByDomainEnabled: true,
+    });
+    await finishSetup(TEST_HISTORY_RESULTS);
+
+    const domainSelectedPromise =
+        eventToPromise('domain-filter-selected', element);
+    const items = element.shadowRoot.querySelectorAll('history-item');
+    items[0]!.$.menuButton.click();
+    await microtasksFinished();
+    element.$.sharedMenu.get();
+    element.shadowRoot.querySelector<HTMLElement>('#menuMoreButton')!.click();
+
+    const event = await domainSelectedPromise;
+    assertEquals('www.google.com', event.detail.domain);
   });
 
   test('ChangingSearchDeselectsItems', async function() {
@@ -1327,6 +1352,10 @@ suite('HistoryListTest', function() {
 
   // <if expr="is_android">
   test('EmptyStateIllustrationAndroid', async () => {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryFilterByActorEnabled: false,
+      isBrowsingHistoryFilterByDeviceEnabled: false,
+    });
     await finishSetup([]);
     assertFalse(element.$.noResults.hidden);
     const svg = element.$.noResults.querySelector('svg');

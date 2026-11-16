@@ -28,7 +28,7 @@ class WaylandPopup final : public WaylandWindow {
 
   // Configure related:
   void HandleSurfaceConfigure(uint32_t serial) override;
-  void HandlePopupConfigure(const gfx::Rect& bounds) override;
+  void HandlePopupConfigure(const gfx::Rect& geometry_dip) override;
   void OnSequencePoint(int64_t seq) override;
   bool IsSurfaceConfigured() override;
   void AckConfigure(uint32_t serial) override;
@@ -56,6 +56,10 @@ class WaylandPopup final : public WaylandWindow {
 
   // Returns bounds with origin relative to parent window's origin.
   gfx::Rect AdjustPopupWindowPosition();
+
+  // Translates and scales `anchor_rect_dip` from top-level UI DIP coordinates
+  // into parent-relative Wayland surface coordinates.
+  gfx::Rect TranslateAnchorRect(const gfx::Rect& anchor_rect_dip);
 
   std::unique_ptr<XdgPopup> xdg_popup_;
 

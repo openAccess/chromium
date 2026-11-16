@@ -21,7 +21,6 @@
 #import "components/component_updater/component_updater_service.h"
 #import "components/content_settings/core/browser/host_content_settings_map.h"
 #import "components/contextual_search/contextual_search_service.h"
-#import "components/dom_distiller/core/distilled_page_prefs.h"
 #import "components/enterprise/browser/groups/groups_prefs.h"
 #import "components/enterprise/browser/identifiers/identifiers_prefs.h"
 #import "components/enterprise/browser/reporting/prefs.h"
@@ -103,6 +102,7 @@
 #import "components/universal_optout/prefs.h"
 #import "components/update_client/update_client.h"
 #import "components/variations/service/variations_service.h"
+#import "components/web_distiller/core/distilled_page_prefs.h"
 #import "components/web_resource/web_resource_pref_names.h"
 #import "components/webui/chrome_urls/pref_names.h"
 #import "components/webui/flags/pref_service_flags_storage.h"
@@ -253,6 +253,13 @@ inline constexpr char kWelcomeBackEligibleItems[] =
 // Deprecated 10/2026.
 inline constexpr char kHistorySearchSettingState[] =
     "optimization_guide.history_search_setting_state";
+
+// Deprecated 11/2026.
+inline constexpr char kBundledSettingsCheckedMigrateUserToEnhancedBundle[] =
+    "safebrowsing.bundled_settings.checked_migrate_user_to_enhanced_bundle";
+
+// Deprecated 11/2026.
+inline constexpr char kPumaRcClientId[] = "private_metrics.puma.client_id.rc";
 
 }  // namespace
 
@@ -498,6 +505,9 @@ void RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
 
   // Deprecated 10/2026.
   registry->RegisterListPref(kWelcomeBackEligibleItems);
+
+  // Deprecated 11/2026.
+  registry->RegisterUint64Pref(kPumaRcClientId, 0u);
 }
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
@@ -512,7 +522,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   cross_device::RegisterProfilePrefs(registry);
   CrossPlatformPromosService::RegisterProfilePrefs(registry);
   data_controls::RegisterProfilePrefs(registry);
-  dom_distiller::DistilledPagePrefs::RegisterProfilePrefs(registry);
+  web_distiller::DistilledPagePrefs::RegisterProfilePrefs(registry);
   enterprise::RegisterIdentifiersProfilePrefs(registry);
   enterprise_connectors::RegisterProfilePrefs(registry);
   enterprise_data_protection::RegisterProfilePrefs(registry);
@@ -933,6 +943,10 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   // Deprecated 10/2026.
   registry->RegisterIntegerPref(kCustomLinksAiModeTileIndex, 0);
   registry->RegisterIntegerPref(kHistorySearchSettingState, 0);
+
+  // Deprecated 11/2026.
+  registry->RegisterBooleanPref(
+      kBundledSettingsCheckedMigrateUserToEnhancedBundle, false);
 }
 
 // This method should be periodically pruned of year+ old migrations.
@@ -967,6 +981,9 @@ void MigrateObsoleteLocalStatePrefs(PrefService* prefs) {
 
   // Added 10/2026.
   prefs->ClearPref(kWelcomeBackEligibleItems);
+
+  // Added 11/2026.
+  prefs->ClearPref(kPumaRcClientId);
 }
 
 // This method should be periodically pruned of year+ old migrations.
@@ -1030,6 +1047,9 @@ void MigrateObsoleteProfilePrefs(PrefService* prefs) {
   }
   prefs->ClearPref(kCustomLinksAiModeTileIndex);
   prefs->ClearPref(kHistorySearchSettingState);
+
+  // Added 11/2026.
+  prefs->ClearPref(kBundledSettingsCheckedMigrateUserToEnhancedBundle);
 }
 
 void MigrateObsoleteUserDefault() {

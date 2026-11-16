@@ -15,6 +15,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_content_config.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_content_delegate.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_host.h"
 #include "chrome/browser/ui/webui/cr_components/searchbox/searchbox_handler.h"
 #include "components/permissions/permission_request_manager.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -52,14 +55,6 @@ namespace omnibox {
 extern const void* kOmniboxWebUIPopupWidgetId;
 }  // namespace omnibox
 
-// An interface representing a deactivation blocker. Keeping an instance of this
-// interface alive prevents the omnibox popup widget from closing when it loses
-// focus.
-class OmniboxPopupDeactivationBlocker {
- public:
-  virtual ~OmniboxPopupDeactivationBlocker() = default;
-};
-
 // A base assistant class for OmniboxPopupViewWebUI, this manages "n" WebViews
 // and a Widget to present the WebUI. This class is an implementation detail and
 // is not expected to grow or change much with omnibox changes.  The concern of
@@ -67,8 +62,10 @@ class OmniboxPopupDeactivationBlocker {
 // concerns and communication between native omnibox code and the WebUI code,
 // work with OmniboxPopupViewWebUI directly.
 class OmniboxPopupPresenterBase
-    : public content::WebContentsObserver,
-      public SearchboxHandler::Delegate,
+    : public OmniboxPopupHost,
+      public OmniboxPopupContentDelegate,
+      public OmniboxPopupContentSizer,
+      public content::WebContentsObserver,
       public permissions::PermissionRequestManager::Observer {
  public:
   // Why `GetOrCreateWebUIContent()` was called. Recorded in traces.
@@ -100,7 +97,8 @@ class OmniboxPopupPresenterBase
   explicit OmniboxPopupPresenterBase(
       LocationBar* location_bar,
       OmniboxPopupPresenterDelegate& presenter_delegate,
-      OmniboxController* controller);
+      OmniboxController* controller,
+      OmniboxPopupContentConfig config);
   OmniboxPopupPresenterBase(const OmniboxPopupPresenterBase&) = delete;
   OmniboxPopupPresenterBase& operator=(const OmniboxPopupPresenterBase&) =
       delete;
@@ -109,32 +107,34 @@ class OmniboxPopupPresenterBase
   // Creates and returns a new deactivation blocker. The caller is responsible
   // for managing the lifecycle of the returned blocker (typically via
   // std::unique_ptr). Returns nullptr if
-  // `omnibox::kOmniboxKeepOpenOnFileSelection` is disabled.
-  std::unique_ptr<OmniboxPopupDeactivationBlocker> CreateDeactivationBlocker();
-  virtual void OnFileSelectionClosed();
-  virtual void NotifyEscapeKeyPressed() {}
+  // `omnibox::kOmniboxKeepOpenOnFileSelection` is disabled. Overrides both
+  // OmniboxPopupContentDelegate and OmniboxPopupHost.
+  std::unique_ptr<OmniboxPopupDeactivationBlocker> CreateDeactivationBlocker()
+      override;
+  void OnFileSelectionClosed() override;
+  void NotifyEscapeKeyPressed() override {}
   bool has_active_blockers() const { return deactivation_blockers_count_ > 0; }
 
   // Show or hide the popup widget with web view.
-  virtual void Show();
-  virtual void Hide();
+  void Show() override;
+  void Hide() override;
 
   // Tells whether the popup widget exists.
-  bool IsShown() const;
+  bool IsShown() const override;
 
   // Request focus on the popup widget and its web contents.
-  virtual void RequestFocus();
+  void RequestFocus() override;
 
   // Caches the height of the WebUI content, which is then used to compute the
   // popup widget bounds.
-  void OnContentHeightChanged(int content_height);
+  void OnContentHeightChanged(int content_height) override;
 
   // Synchronize the popup widget's bounds to its anchor (location bar view).
-  virtual void SynchronizePopupBounds();
+  void SynchronizePopupBounds() override;
 
   // Returns the currently "active" Popup content, whichever one is visible or
   // going to be visible within the popup.
-  OmniboxPopupWebUIBaseContent* GetWebUIContent();
+  OmniboxPopupWebUIBaseContent* GetWebUIContent() override;
   const OmniboxPopupWebUIBaseContent* GetWebUIContent() const;
 
   // Returns the WebUI content, first creating it with `CreateWebUIContent()`
@@ -186,39 +186,16 @@ class OmniboxPopupPresenterBase
   // When the presenter's creation strategy is `kOnOmniboxFocus`, creates the
   // WebUI content once the browser window has presented its first frame, so
   // the page loads while the user types without delaying window presentation.
-  void OnOmniboxFocused();
+  void OnOmniboxFocused() override;
 
-  // Returns the timeout if showing should be deferred until the WebUI has
-  // painted a new frame, or std::nullopt if it should not be deferred.
-  virtual std::optional<base::TimeDelta> ShouldDeferUntilVisualStateReady()
-      const = 0;
-
-  // Returns whether resize events should be debounced.
-  virtual bool ShouldDebounceResize() const = 0;
-
-  // Returns whether height workarounds should be applied.
-  virtual bool ShouldApplyHeightWorkarounds() const = 0;
-  // Returns if the WebContents should be detached when the popup is hidden.
-  virtual bool ShouldDetachWebContentsOnHide() const = 0;
-
-  // Returns whether the popup should evict its saved compositor frame when
-  // hidden.
-  virtual bool ShouldEvictOnHide() const = 0;
-
-  // Returns if the child WebView bounds should be sized to its preferred
-  // height in RoundedOmniboxResultsFrame.
-  virtual bool ShouldSizeWebViewToPreferredHeight() const = 0;
-
-  // Returns whether the popup's drop shadow is painted by the page rather than
-  // by the results frame. When true the frame paints nothing and the WebView
-  // is expanded to cover the shadow margin.
-  virtual bool ShouldDrawShadowInWebUI() const;
+  // Returns the per-popup content behavior this presenter was created with.
+  const OmniboxPopupContentConfig& config() const { return config_; }
 
   // Returns whether the popup's page has completed its first visually
   // non-empty paint. `LocationBarView` drops its native focus ring under the
   // full popup once this is true. The full popup's content reports the paint
   // through the delegate's `OnPopupFirstVisuallyNonEmptyPaint()`.
-  bool CompletedFirstVisuallyNonEmptyPaint();
+  bool CompletedFirstVisuallyNonEmptyPaint() override;
   void SetCompletedFirstVisuallyNonEmptyPaintForTesting(bool completed);
 
   virtual std::string_view GetPopupMetricPrefix() const = 0;
@@ -229,7 +206,7 @@ class OmniboxPopupPresenterBase
   // content::WebContentsObserver
   void PrimaryPageChanged(content::Page& page) override;
 
-  // SearchboxHandler::Delegate:
+  // OmniboxPopupContentDelegate (SearchboxHandler::Delegate):
   void OnEmbeddedPermissionDialogChanged(bool is_showing,
                                          const gfx::Size& prompt_size) override;
   OmniboxController* GetOmniboxController() override;
@@ -240,6 +217,7 @@ class OmniboxPopupPresenterBase
     widget_ = std::move(widget);
   }
 
+  const gfx::Size& GetPopupMinimumSize() const override;
   const gfx::Size& get_minimum_size() const { return minimum_size_; }
 
   // Outermost view in the hierarchy; used for hit testing.
@@ -248,7 +226,7 @@ class OmniboxPopupPresenterBase
   // Sets explicit permission prompt showing state. Called by permission request
   // observer callbacks, PermissionPromptFactory, and WebUI media request
   // handlers.
-  void SetPermissionPromptShowing(bool showing);
+  void SetPermissionPromptShowing(bool showing) override;
 
   // Resets prompt showing and dismissal state flags.
   void ResetPermissionPromptShowingState();
@@ -260,8 +238,21 @@ class OmniboxPopupPresenterBase
   // which should prevent out-of-focus activation events from hiding the popup.
   bool IsPermissionPromptPreventingClose() const;
 
+  // Returns whether a deactivation blocker or a permission prompt keeps the
+  // popup open.
+  bool IsClosePrevented() const override;
+
+  // Resets the cached content height to 1 if `config().height_workarounds` is
+  // set. See `OmniboxPopupHost::ResetContentHeightForTabSwitch()`.
+  void ResetContentHeightForTabSwitch() override;
+
+  void DeactivateAndKillFocus() override = 0;
+
+  std::optional<FocusStateToRestore> TakeFocusStateToRestoreAfterModalDialog()
+      override;
+
   // Returns whether the WebUI content view receives focus.
-  virtual bool ShouldReceiveFocus() const;
+  bool ShouldReceiveFocus() const override;
 
  protected:
   // When the WebUI content is created ahead of time. With every strategy,
@@ -299,6 +290,11 @@ class OmniboxPopupPresenterBase
   // null by default.
   virtual std::unique_ptr<OmniboxPopupWebUIBaseContent> CreateWebUIContent(
       std::unique_ptr<WebUIContentsWrapperT<OmniboxPopupUI>> contents);
+
+  // Called at the end of `AdoptWebUIContents()` and `ReleaseWebUIContents()`,
+  // for presenters whose window state depends on having a loaded page.
+  virtual void OnWebUIContentsAdopted() {}
+  virtual void OnWebUIContentsReleased() {}
 
   // Returns the strategy for a presenter whose deferred creation is controlled
   // by `defer_creation_feature`, taking
@@ -505,6 +501,7 @@ class OmniboxPopupPresenterBase
   std::vector<std::unique_ptr<views::Widget>> widgets_pending_deletion_;
 
   const raw_ptr<OmniboxController> controller_;
+  const OmniboxPopupContentConfig config_;
 
   // True if `ShowWidget()` execution is currently being deferred until the
   // WebUI has produced a new frame.
@@ -526,6 +523,10 @@ class OmniboxPopupPresenterBase
 
   // Whether the first paint metric of the popup has been logged.
   bool has_logged_first_widget_paint_ = false;
+
+  // Whether the current content was taken from another browser window, as
+  // opposed to created by this presenter.
+  bool content_taken_from_other_window_ = false;
 
   // Overrides `CompletedFirstVisuallyNonEmptyPaint()` when set.
   std::optional<bool> completed_first_visually_non_empty_paint_for_testing_;

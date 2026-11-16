@@ -27,8 +27,9 @@ class ActorTabData;
 // ActorSurfaceHandle::Get().
 class ActorSurfaceImpl final : public ActorSurface {
  public:
-  ActorSurfaceImpl(ActorSurfaceHandle handle, tabs::TabHandle tab);
-  ActorSurfaceImpl(ActorSurfaceHandle handle,
+  ActorSurfaceImpl(ActorSurfaceHandle actor_surface_handle,
+                   tabs::TabHandle tab);
+  ActorSurfaceImpl(ActorSurfaceHandle actor_surface_handle,
                    content::WebContents* headless_contents);
 
   // Disallow copy/assign.
@@ -47,12 +48,13 @@ class ActorSurfaceImpl final : public ActorSurface {
  private:
   friend class ActorSurfaceRegistry;
 
-  // Transitions keep the same WebContents; only the backing changes.
+  // Transitions keep the same WebContents and `actor_tab_data_`; only the
+  // backing changes.
   void SetTab(tabs::TabHandle tab);
   void SetHeadless();
 
   // Unique ID for this surface.
-  const ActorSurfaceHandle handle_;
+  const ActorSurfaceHandle actor_surface_handle_;
 
   // Set when this surface is backed by a tab; mutually exclusive with
   // `headless_contents_`.
@@ -62,8 +64,9 @@ class ActorSurfaceImpl final : public ActorSurface {
   // exclusive with `tab_`.
   raw_ptr<content::WebContents> headless_contents_ = nullptr;
 
-  // Set only when the surface has no tab; a tab keeps its own `ActorTabData`.
-  std::unique_ptr<ActorTabData> actor_tab_data_;
+  // Never null. Kept for the surface's lifetime, whether it is backed by a tab
+  // or headless.
+  const std::unique_ptr<ActorTabData> actor_tab_data_;
 };
 
 }  // namespace actor

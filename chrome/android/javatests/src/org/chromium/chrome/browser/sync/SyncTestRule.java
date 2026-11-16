@@ -18,6 +18,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.util.Pair;
 
 import androidx.annotation.Nullable;
 import androidx.preference.TwoStatePreference;
@@ -35,11 +36,13 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillTestHelper;
 import org.chromium.chrome.browser.autofill.PersonalDataManager.CreditCard;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
 import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
+import org.chromium.components.feature_engagement.TestTracker;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
@@ -171,6 +174,16 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
             return Promise.rejected();
         }
 
+        @Override
+        public Promise<Boolean> canEnroll(CoreAccountInfo accountInfo) {
+            return Promise.fulfilled(false);
+        }
+
+        @Override
+        public Promise<Pair<byte[], Integer>> enroll(CoreAccountInfo accountInfo) {
+            return Promise.rejected();
+        }
+
         public void setKeys(List<byte[]> keys) {
             mKeys = Collections.unmodifiableList(keys);
         }
@@ -210,7 +223,7 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
     }
 
     /** Adds an account of given account name to AccountManagerFacade and waits for the seeding. */
-    public CoreAccountInfo addAccount(AccountInfo account) {
+    public AccountInfo addAccount(AccountInfo account) {
         mSigninTestRule.addAccount(account);
         return account;
     }
@@ -218,16 +231,16 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
     /**
      * @return The primary account.
      */
-    public CoreAccountInfo getPrimaryAccount() {
+    public AccountInfo getPrimaryAccount() {
         return mSigninTestRule.getPrimaryAccount();
     }
 
     /**
      * Sets up an account and signs in and enables history sync.
      *
-     * @return the test {@link CoreAccountInfo} that is signed in.
+     * @return the test {@link AccountInfo} that is signed in.
      */
-    public CoreAccountInfo setUpAccountAndEnableHistorySync() {
+    public AccountInfo setUpAccountAndEnableHistorySync() {
         mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
         SyncTestUtil.waitForSyncTransportActive();
         return TestAccounts.ACCOUNT1;
@@ -236,9 +249,9 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
     /**
      * Set up a test account, sign in, and waits for sync machinery to become active.
      *
-     * @return the test {@link CoreAccountInfo} that is signed in.
+     * @return the test {@link AccountInfo} that is signed in.
      */
-    public CoreAccountInfo setUpAccountAndSignInForTesting() {
+    public AccountInfo setUpAccountAndSignInForTesting() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         SyncTestUtil.waitForSyncTransportActive();
         return TestAccounts.ACCOUNT1;
@@ -248,9 +261,9 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
      * Set up a test account and sign in. Use this instead of setUpAccountAndSignInForTesting if
      * sync can't become active, e.g. because there is a policy preventing it.
      *
-     * @return the test {@link CoreAccountInfo} that is signed in.
+     * @return the test {@link AccountInfo} that is signed in.
      */
-    public CoreAccountInfo setUpAccountAndSignInWithoutWaitingForTesting() {
+    public AccountInfo setUpAccountAndSignInWithoutWaitingForTesting() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         return TestAccounts.ACCOUNT1;
     }
@@ -300,7 +313,16 @@ public class SyncTestRule extends ChromeTabbedActivityTestRule {
         // Start the activity by opening about:blank. This URL is ideal because it is not synced as
         // a typed URL. If another URL is used, it could interfere with test data.
         final Statement blankCTATabStatement = mBlankCTATabRule.apply(superStatement, desc);
-        return mSigninTestRule.apply(blankCTATabStatement, desc);
+        return mSigninTestRule.apply(
+                new Statement() {
+                    @Override
+                    public void evaluate() throws Throwable {
+                        // ChromeActivityTestRule disables IPH only after the activity starts.
+                        TrackerFactory.setTrackerForTests(new TestTracker());
+                        blankCTATabStatement.evaluate();
+                    }
+                },
+                desc);
     }
 
     @Override

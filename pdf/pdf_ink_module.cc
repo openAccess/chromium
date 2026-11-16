@@ -40,6 +40,7 @@
 #include "pdf/pdf_ink_ids.h"
 #include "pdf/pdf_ink_metrics_handler.h"
 #include "pdf/pdf_ink_module_client.h"
+#include "pdf/pdf_ink_signature_creation_handler.h"
 #include "pdf/pdf_ink_text.h"
 #include "pdf/pdf_ink_transform.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
@@ -242,12 +243,22 @@ bool IsPrintOrSaveKeyboardEvent(const blink::WebKeyboardEvent& event) {
                      event.windows_key_code == ui::KeyboardCode::VKEY_S);
 }
 
+std::unique_ptr<PdfInkSignatureCreationHandler>
+MaybeCreatePdfInkSignatureCreationHandler(PdfInkModuleClient& client) {
+  if (!features::kPdfInk2Signatures.Get()) {
+    return nullptr;
+  }
+  return std::make_unique<PdfInkSignatureCreationHandler>(client);
+}
+
 }  // namespace
 
 PdfInkModule::PdfInkModule(PdfInkModuleClient& client)
     : client_(client),
       highlighter_brush_(CreateDefaultHighlighterBrush()),
-      pen_brush_(CreateDefaultPenBrush()) {
+      pen_brush_(CreateDefaultPenBrush()),
+      signature_creation_handler_(
+          MaybeCreatePdfInkSignatureCreationHandler(client)) {
   CHECK(base::FeatureList::IsEnabled(features::kPdfInk2));
   CHECK(is_drawing_stroke());
 
@@ -404,13 +415,14 @@ bool PdfInkModule::OnMessage(const base::DictValue& message) {
       });
 
   auto it = kMessageHandlers.find(*message.FindString("type"));
-  if (it == kMessageHandlers.end()) {
-    return false;
+  if (it != kMessageHandlers.end()) {
+    MessageHandler handler = it->second;
+    (this->*handler)(message);
+    return true;
   }
 
-  MessageHandler handler = it->second;
-  (this->*handler)(message);
-  return true;
+  return signature_creation_handler_ &&
+         signature_creation_handler_->OnMessage(message);
 }
 
 void PdfInkModule::OnGeometryChanged() {
@@ -1222,10 +1234,12 @@ bool PdfInkModule::FinishTextHighlight(const gfx::PointF& position,
   if (!state.finished_multi_click) {
     auto& highlight_strokes = state.highlight_strokes;
     highlight_strokes = GetTextSelectionAsStrokes();
-    for (const auto& [page_index, strokes] : highlight_strokes) {
-      for (const auto& stroke : strokes) {
+    for (auto& [page_index, strokes] : highlight_strokes) {
+      for (auto& stroke : strokes) {
         InkStrokeId id = id_generator_.GetStrokeIdAndAdvance();
         client_->StrokeAdded(page_index, id, stroke);
+        // Safe to move `stroke` since `highlight_strokes` elements are not read
+        // again before `state.highlight_strokes` is cleared or destroyed below.
         strokes_[page_index].push_back(
             FinishedStrokeState(std::move(stroke), id));
         bool undo_redo_success = undo_redo_model_.Add(id);
@@ -1368,7 +1382,7 @@ PdfInkModule::GetTextSelectionAsStrokes() {
       std::optional<ink::Stroke> stroke = GetHighlightStrokeFromSelectionRect(
           transform.MapRect(selection_rect.AsGfxRectF()));
       if (stroke.has_value()) {
-        page_result.push_back(stroke.value());
+        page_result.push_back(std::move(stroke.value()));
       }
     }
     if (!page_result.empty()) {
@@ -1423,7 +1437,8 @@ void PdfInkModule::HandleGetAllTextAnnotationsMessage(
   }
   auto annotations = base::ListValue::with_capacity(total_text_boxes);
 
-  // The backend sets the frontend ID for loaded text annotations.
+  // The backend and frontend both assign sequential IDs starting from 0 for
+  // loaded text annotations.
   int frontend_id = 0;
 
   for (const auto& [page_index, text_boxes] : document_text_boxes) {
@@ -1453,7 +1468,6 @@ void PdfInkModule::HandleGetAllTextAnnotationsMessage(
 
       annotations.Append(
           base::DictValue()
-              .Set("id", frontend_id)
               .Set("pageIndex", page_index)
               // The backend always operates at 100% zoom. The frontend ignores
               // this value.
@@ -1617,7 +1631,7 @@ void PdfInkModule::HandleSetAnnotationModeMessage(
       PageV2InkPathShapes& page_shapes = loaded_v2_shapes_[page_index];
       page_shapes.reserve(page_shape_map.size());
       for (auto& [shape_id, shape] : page_shape_map) {
-        page_shapes.emplace_back(shape, shape_id);
+        page_shapes.emplace_back(std::move(shape), shape_id);
       }
     }
   }

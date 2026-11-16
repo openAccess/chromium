@@ -1207,6 +1207,12 @@ class CONTENT_EXPORT ContentBrowserClient {
   virtual device::GeolocationSystemPermissionManager*
   GetGeolocationSystemPermissionManager();
 
+#if BUILDFLAG(IS_WIN)
+  // Returns true if activating the camera might show a system
+  // permission prompt.
+  virtual bool SystemMayPromptForVideoCapture();
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
   // Allows an embedder to decide whether to use the GmsCoreLocationProvider.
   virtual bool ShouldUseGmsCoreGeolocationProvider();
@@ -1674,8 +1680,13 @@ class CONTENT_EXPORT ContentBrowserClient {
   CreateProcessSelectionDeferringConditionsForNavigation(
       NavigationHandle& navigation_handle);
 
-  // Called at the start of the navigation to get opaque data the embedder
-  // wants to see passed to the corresponding URLRequest on the IO thread.
+  // Called in `NavigationRequest::WillStartRequest()` when no upfront
+  // `NavigationUIData` was supplied for the navigation, to get opaque data the
+  // embedder wants to see passed to the corresponding `NavigationURLLoader`.
+  // Not called if upfront `NavigationUIData` was already provided (in which
+  // case `NavigationUIData::PopulateFromNavigationHandle()` is called in
+  // `NavigationRequest::StartNavigation()` instead) or if the navigation does
+  // not require a `NavigationURLLoader`.
   virtual std::unique_ptr<NavigationUIData> GetNavigationUIData(
       NavigationHandle* navigation_handle);
 
@@ -1693,9 +1704,6 @@ class CONTENT_EXPORT ContentBrowserClient {
   // Returns true if (and only if) CreateAudioManager() is implemented and
   // returns a non-null value.
   virtual bool OverridesAudioManager();
-
-  // Returns true if the system audio echo cancellation shall be enforced.
-  virtual bool EnforceSystemAudioEchoCancellation();
 
   // Populates |mappings| with all files that need to be mapped before launching
   // a child process.
@@ -2043,7 +2051,11 @@ class CONTENT_EXPORT ContentBrowserClient {
   //
   // |navigation_response_task_runner| is a task runner that may be used for
   // navigation request blocking tasks. Null when the URLLoaderFactory is not
-  // being created for a navigation request.
+  // being created for a navigation request, except that it may be non-null for
+  // a main frame's kDocumentSubResource factory, in which case proxies may bind
+  // their receivers to it to run ahead of the UI thread's default task queue.
+  // TODO(crbug.com/578355574): Rename |navigation_response_task_runner| now
+  // that it is also used for kDocumentSubResource proxies.
   //
   // |is_for_network_service| is true when the URLLoaderFactory is being
   // created for the network service.
@@ -2746,15 +2758,14 @@ class CONTENT_EXPORT ContentBrowserClient {
       RenderFrameHost* render_frame_host,
       const GURL& original_url);
 
-  // Returns the BrowserContext of the user that `render_frame_host` is shown
-  // for. Its policies and off-the-record state apply to user data in the frame,
-  // e.g. clipboard and drag-and-drop data. By default, this is the
-  // BrowserContext of `render_frame_host`. Chrome returns the user profile for
+  // Returns the BrowserContext of the user that `web_contents` is shown for.
+  // Its policies and off-the-record state apply to user data in the frames of
+  // `web_contents`, e.g. clipboard and drag-and-drop data. By default, this is
+  // the BrowserContext of `web_contents`. Chrome returns the user profile for
   // a Top Chrome WebUI in TopChromeWebUIProfile, which is shared by the windows
   // of all profiles. Storage and processes still use the BrowserContext of the
-  // frame.
-  virtual BrowserContext* GetUserBrowserContext(
-      RenderFrameHost& render_frame_host);
+  // WebContents.
+  virtual BrowserContext* GetUserBrowserContext(WebContents& web_contents);
 
   // Check whether paste is allowed. To paste, an implementation may require
   // a `render_frame_host` to have user activation or various permissions.
@@ -3275,7 +3286,6 @@ class CONTENT_EXPORT ContentBrowserClient {
       BrowsingDataRemover::DATA_TYPE_PRIVACY_SANDBOX |
       BrowsingDataRemover::DATA_TYPE_CACHE |
       BrowsingDataRemover::DATA_TYPE_DOWNLOADS |
-      BrowsingDataRemover::DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS |
       BrowsingDataRemover::DATA_TYPE_DEVICE_BOUND_SESSIONS |
       BrowsingDataRemover::DATA_TYPE_PREFETCH_CACHE |
       BrowsingDataRemover::DATA_TYPE_PRERENDER_CACHE |
@@ -3410,10 +3420,6 @@ class CONTENT_EXPORT ContentBrowserClient {
   virtual std::optional<std::vector<std::u16string>>
   GetClipboardTypesIfPolicyApplied(
       const ui::ClipboardSequenceNumberToken& seqno);
-
-  // Returns true if PrefetchPrerenderIntegration should be allowed, this
-  // allows a prerender fall back to prefetch if available.
-  virtual bool UsePrefetchPrerenderIntegration();
 
 #if !BUILDFLAG(IS_ANDROID)
   // Gives the content embedder a chance to disallow a credential request,

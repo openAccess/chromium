@@ -4,15 +4,18 @@
 
 #include "chrome/browser/ttc/core/page_context_util.h"
 
-#include <string_view>
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/actor/enterprise_policy_checker.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/search/search.h"
 #include "components/actor/core/safety_list_manager.h"
-#include "content/public/common/url_constants.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/page_content_annotations/content/page_context_fetcher.h"
+#include "content/public/browser/page.h"
+#include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 
 namespace ttc {
@@ -31,13 +34,8 @@ namespace {
 // TODO(crbug.com/555804152): Decide what page context, if any, the mobile
 // Android native New Tab Page should produce.
 bool IsSchemeAndHostSupported(const GURL& url) {
-  if (url.SchemeIs(content::kChromeUIScheme)) {
-    const std::string_view host = url.host();
-    if (host == chrome::kChromeUINewTabHost ||
-        host == chrome::kChromeUINewTabPageHost ||
-        host == chrome::kChromeUINewTabPageThirdPartyHost) {
-      return true;
-    }
+  if (search::IsWebUINewTabPageOrigin(url)) {
+    return true;
   }
   // Excludes all other chrome:// URLs, as well as file:, javascript:, about:,
   // data:, blob:, chrome-extension:, etc.
@@ -75,10 +73,43 @@ void IsUrlSupportedForPageContext(
                 }).Then(std::move(callback)));
 }
 
-void IsUrlSupportedForPageContext(const GURL& url,
-                                  base::OnceCallback<void(bool)> callback) {
-  IsUrlSupportedForPageContext(url, /*enterprise_policy_checker=*/nullptr,
-                               std::move(callback));
+std::optional<ToolResponse> CheckPageForCapture(
+    content::WebContents* focused_contents,
+    const base::WeakPtr<content::Page>& page,
+    bool is_url_supported) {
+  if (!is_url_supported) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kUrlBlocked,
+                               "URL is not supported for page capture");
+  }
+  if (!focused_contents) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kTabWentAway,
+                               "No active tab");
+  }
+  if (!page || &*page != &focused_contents->GetPrimaryPage()) {
+    return ToolResponse::Error(
+        actor::mojom::ActionResultCode::kScreenshotCapturePageChanged,
+        "Focused page changed during page capture");
+  }
+  if (focused_contents->IsCrashed()) {
+    return ToolResponse::Error(actor::mojom::ActionResultCode::kRendererCrashed,
+                               "Renderer crashed");
+  }
+  return std::nullopt;
+}
+
+actor::mojom::ActionResultCode ToScreenshotErrorCode(
+    page_content_annotations::FetchPageContextError error) {
+  using page_content_annotations::FetchPageContextError;
+  switch (error) {
+    case FetchPageContextError::kWebContentsWentAway:
+      return actor::mojom::ActionResultCode::kTabWentAway;
+    case FetchPageContextError::kWebContentsChanged:
+      return actor::mojom::ActionResultCode::kScreenshotCapturePageChanged;
+    case FetchPageContextError::kPageContextNotEligible:
+      return actor::mojom::ActionResultCode::kScreenshotCapturePageNotEligible;
+    case FetchPageContextError::kUnknown:
+      return actor::mojom::ActionResultCode::kScreenshotCaptureFailed;
+  }
 }
 
 }  // namespace ttc

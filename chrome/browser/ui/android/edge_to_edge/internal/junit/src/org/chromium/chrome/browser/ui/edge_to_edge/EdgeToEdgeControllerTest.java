@@ -59,6 +59,7 @@ import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowBuild;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
@@ -83,7 +84,9 @@ import org.chromium.chrome.browser.ntp_customization.theme_sync.data.NtpBackgrou
 import org.chromium.chrome.browser.ntp_customization.theme_sync.data.PlatformType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils.IneligibilityReason;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils.SupportedConfigurationSwitch;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils.TopScalpPageLoadState;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.mock.MockWebContents;
@@ -129,6 +132,8 @@ public class EdgeToEdgeControllerTest {
     private static final int EDGE_TO_EDGE_STATUS_TOKEN = 12345;
     private static final String EDGE_TO_EDGE_TOP_INSET_REFACTOR_ONLY =
             ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/false";
+    private static final String EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E =
+            ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true";
 
     private static final WindowInsetsCompat SYSTEM_BARS_WINDOW_INSETS =
             new WindowInsetsCompat.Builder()
@@ -1665,7 +1670,7 @@ public class EdgeToEdgeControllerTest {
     @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
     public void testIsTopEdgeToEdgeEnabled_Default() {
         assertTrue(EdgeToEdgeUtils.isEdgeToEdgeRefactorEnabled());
-        assertTrue(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
+        assertFalse(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
     }
 
     @Test
@@ -1676,7 +1681,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true"})
+    @EnableFeatures({EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E})
     public void testIsTopEdgeToEdgeEnabled_RefactorAndTopEdgeToEdge() {
         assertTrue(EdgeToEdgeUtils.isEdgeToEdgeRefactorEnabled());
         assertTrue(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
@@ -1684,7 +1689,7 @@ public class EdgeToEdgeControllerTest {
 
     @Test
     @Config(sdk = VERSION_CODES.Q)
-    @EnableFeatures({ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true"})
+    @EnableFeatures({EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E})
     public void testIsTopEdgeToEdgeEnabled_BelowAndroidR() {
         assertFalse(EdgeToEdgeUtils.isEdgeToEdgeRefactorEnabled());
         assertFalse(EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
@@ -2190,7 +2195,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E)
     public void testTopEdgeToEdge_AlwaysConsumesTopInsets() {
         Tab webTab =
                 createMockTab(
@@ -2209,7 +2214,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E)
     public void testTopEdgeToEdge_WebPage_ViewportFitChanged() {
         when(mLayoutManager.getActiveLayoutType()).thenReturn(LayoutType.BROWSING);
         when(mTab.isNativePage()).thenReturn(false);
@@ -2265,7 +2270,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E)
     public void testTopEdgeToEdge_WebPage_AlwaysDrawWebEdgeToEdgeForTesting() {
         EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
         when(mTab.isNativePage()).thenReturn(false);
@@ -2287,7 +2292,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E)
     public void testTopEdgeToEdge_WebPage_ThreeButtonNav_DrawsTopEdge() {
         EdgeToEdgeUtils.setHas3ButtonNavBarForTesting(true);
         when(mTab.isNativePage()).thenReturn(false);
@@ -2653,7 +2658,7 @@ public class EdgeToEdgeControllerTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_WITH_TOP_E2E)
     public void testTabShouldDrawFullTopEdgeToEdge_SwitchBetweenCustomNtpAndOptedInWebTab() {
         EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
         Tab customNtpTab =
@@ -3112,6 +3117,294 @@ public class EdgeToEdgeControllerTest {
         mEdgeToEdgeControllerImpl.onTabSwitched(webTab);
         mEdgeToEdgeControllerImpl.handleWindowInsets(mView, SYSTEM_BARS_WINDOW_INSETS);
         mockPadAdjuster.checkInsets(/* expectedTop= */ TOP_INSET, /* expectedBottom= */ 0);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE)
+    public void testIsTopEdgeToEdgeEnabled_RequiresEdgeToEdgeEverywhere() {
+        ChromeFeatureList.sEdgeToEdgeTopInsetEnableTopEdgeToEdge.setForTesting(true);
+        assertFalse(
+                "isTopEdgeToEdgeEnabled() should be false when EDGE_TO_EDGE_EVERYWHERE is"
+                        + " disabled.",
+                EdgeToEdgeUtils.isTopEdgeToEdgeEnabled());
+    }
+
+    @Test
+    public void testRecordTopEligibility_PhoneGestureAndThreeButton_Eligible() {
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectBooleanRecord("Android.EdgeToEdge.Top.Eligible", true)
+                        .expectNoRecords("Android.EdgeToEdge.Top.IneligibilityReason")
+                        .build()) {
+            EdgeToEdgeUtils.setHas3ButtonNavBarForTesting(true);
+            assertTrue(EdgeToEdgeUtils.recordTopEligibilityForEveryStart(mActivity));
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    public void testRecordTopEligibility_Tablet_IneligibleFormFactor() {
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectBooleanRecord("Android.EdgeToEdge.Top.Eligible", false)
+                        .expectIntRecord(
+                                "Android.EdgeToEdge.Top.IneligibilityReason",
+                                IneligibilityReason.FORM_FACTOR)
+                        .build()) {
+            assertFalse(EdgeToEdgeUtils.recordTopEligibilityForEveryStart(mActivity));
+        }
+    }
+
+    @Test
+    public void testRecordTopEligibility_Automotive_IneligibleDeviceType() {
+        DeviceInfo.setIsAutomotiveForTesting(true);
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectBooleanRecord("Android.EdgeToEdge.Top.Eligible", false)
+                        .expectIntRecord(
+                                "Android.EdgeToEdge.Top.IneligibilityReason",
+                                IneligibilityReason.DEVICE_TYPE)
+                        .build()) {
+            assertFalse(EdgeToEdgeUtils.recordTopEligibilityForEveryStart(mActivity));
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_DefaultFixedScalp() {
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.DEFAULT_FIXED_SCALP)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_OptedInScrollableScalp() {
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        assertTrue(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.OPTED_IN_SCROLLABLE_SCALP)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_FullTopEdgeToEdgeNoScalp() {
+        Tab customNtpTab =
+                createMockTab(
+                        JUnitTestGURLs.NTP_URL,
+                        /* isNativePage= */ true,
+                        /* supportsTopEdgeToEdge= */ true);
+        mTabProvider.set(customNtpTab);
+        assertTrue(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+        assertTrue(mEdgeToEdgeControllerImpl.tabShouldDrawFullTopEdgeToEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.FULL_TOP_EDGE_TO_EDGE_NO_SCALP)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(customNtpTab, JUnitTestGURLs.NTP_URL);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_CustomNtp_OptedInSuppressedByStatusIndicator() {
+        Tab customNtpTab =
+                createMockTab(
+                        JUnitTestGURLs.NTP_URL,
+                        /* isNativePage= */ true,
+                        /* supportsTopEdgeToEdge= */ true);
+        mTabProvider.set(customNtpTab);
+        mEdgeToEdgeControllerImpl.setStatusIndicatorVisible(true);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_STATUS_INDICATOR)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(customNtpTab, JUnitTestGURLs.NTP_URL);
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_CustomNtp_OptedInSuppressedByUnsupportedConfig() {
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        Tab customNtpTab =
+                createMockTab(
+                        JUnitTestGURLs.NTP_URL,
+                        /* isNativePage= */ true,
+                        /* supportsTopEdgeToEdge= */ true);
+        mTabProvider.set(customNtpTab);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_UNSUPPORTED_CONFIG)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(customNtpTab, JUnitTestGURLs.NTP_URL);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_DisabledInFullscreen() {
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        doReturn(true).when(mFullscreenManager).getPersistentFullscreenMode();
+        assertTrue(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.DISABLED_IN_FULLSCREEN)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_OptedInSuppressedByStatusIndicator() {
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        mEdgeToEdgeControllerImpl.setStatusIndicatorVisible(true);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_STATUS_INDICATOR)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_NonOptedInWithStatusIndicator_DefaultFixedScalp() {
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(false);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        mEdgeToEdgeControllerImpl.setStatusIndicatorVisible(true);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.DEFAULT_FIXED_SCALP)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_OptedInSuppressedByUnsupportedConfig() {
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+        assertFalse(mEdgeToEdgeControllerImpl.isDrawingToTopEdge());
+
+        try (var watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.EdgeToEdge.TopScalp.PageLoadState",
+                        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_UNSUPPORTED_CONFIG)) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @Config(qualifiers = "sw600dp")
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_NonOptedInUnsupportedConfig_NotRecorded() {
+        assertTrue(DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity));
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(false);
+        when(mTab.isNativePage()).thenReturn(false);
+        mTabProvider.set(mTab);
+
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.EdgeToEdge.TopScalp.PageLoadState")
+                        .build()) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalpPageLoadState_CustomTab_NotRecorded() {
+        EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
+        when(mTab.isNativePage()).thenReturn(false);
+        when(mTab.isCustomTab()).thenReturn(true);
+        mTabProvider.set(mTab);
+
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.EdgeToEdge.TopScalp.PageLoadState")
+                        .build()) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(mTab, JUnitTestGURLs.URL_1);
+        }
+    }
+
+    @Test
+    @EnableFeatures(EDGE_TO_EDGE_TOP_INSET_REFACTOR_ONLY)
+    public void testTopScalpPageLoadState_RefactorOnly_NotRecorded() {
+        Tab customNtpTab =
+                createMockTab(
+                        JUnitTestGURLs.NTP_URL,
+                        /* isNativePage= */ true,
+                        /* supportsTopEdgeToEdge= */ true);
+        mTabProvider.set(customNtpTab);
+
+        try (var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.EdgeToEdge.TopScalp.PageLoadState")
+                        .build()) {
+            mEdgeToEdgeControllerImpl
+                    .getTabObserverForTesting()
+                    .onPageLoadFinished(customNtpTab, JUnitTestGURLs.NTP_URL);
+        }
     }
 
     // TODO: Verify that the value of the updated insets returned from the

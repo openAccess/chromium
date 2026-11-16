@@ -12,10 +12,12 @@
 #include <string>
 #include <vector>
 
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/raw_span.h"
+#include "components/pdf/renderer/pdf_accessibility_table_detector.h"
 #include "pdf/accessibility_structs.h"
 #include "services/screen_ai/buildflags/buildflags.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
@@ -36,6 +38,34 @@ namespace pdf {
 
 class PdfAccessibilityTreeBuilder;
 struct ListMarkerKind;
+
+// The type of an ordered list marker. Markers of different types (e.g. "1." and
+// "(1)") don't join the same list.
+struct OrderedMarkerType {
+  enum class CounterStyle {
+    // "1", "2", "3", ...
+    kDecimal,
+    // ASCII "a", "b", "c", ...
+    kLowerAlpha,
+  };
+
+  friend bool operator==(const OrderedMarkerType&,
+                         const OrderedMarkerType&) = default;
+
+  CounterStyle counter_style = CounterStyle::kDecimal;
+  // Whether the marker is wrapped in parentheses, e.g. "(1)".
+  //
+  // If not, the marker ends with a delimiter instead, e.g. "1." or "1)". All
+  // delimiters count as the same type.
+  bool parenthesized = false;
+};
+
+// An ordered list marker.
+struct OrderedMarker {
+  // The marker's position in its list, not its text, e.g. 2 for "2." or "b)".
+  int value = 0;
+  OrderedMarkerType type;
+};
 
 // One nesting level of the list being built: the top-level list, or a sublist
 // inside an item of the level above. A level stays active, accepting new items,
@@ -59,9 +89,9 @@ struct ListLevel {
   // Character counts of this level's ended items, excluding markers and
   // nested lists.
   std::vector<size_t> item_char_counts;
-  // The value of the most recent item if this is an ordered list; unset for an
-  // unordered list.
-  std::optional<int> last_ordered_value;
+  // The most recent item's marker if this is an ordered list; unset for an
+  // unordered list. A marker of another type can't join this level.
+  std::optional<OrderedMarker> last_ordered_marker;
   // Deepest level count reached under this list, including itself. Only
   // tracked on the top-level list.
   size_t max_nesting_depth = 1;
@@ -80,6 +110,16 @@ struct ListLevel {
 //    spacing, and spatial relationships.
 //
 
+// Tables to add to a page, and which text runs they contain.
+struct PageTables {
+  // Tables that share no text runs, in increasing `anchor_text_run_index`
+  // order.
+  std::vector<HeuristicTable> tables;
+
+  // Indices of the text runs in `tables`.
+  base::flat_set<size_t> table_text_run_indices;
+};
+
 // Bundles raw page layout data (text runs, characters, start indices) used by
 // the heuristic tree builder.
 struct PageLayoutData {
@@ -91,16 +131,24 @@ struct PageLayoutData {
 
   // The starting character index for each text run on the page.
   base::raw_span<const uint32_t> text_run_start_indices;
+
+  // Indices of the text runs in detected tables. See
+  // `PageTables::table_text_run_indices`.
+  raw_ref<const base::flat_set<size_t>> table_text_run_indices;
 };
 
-// Bundles a single text run with its character span and the following run on
-// the page.
+// Bundles a text run with its characters and the runs just before and after
+// it on the page.
 struct TextRunContext {
   // The text run being evaluated.
   const raw_ref<const chrome_pdf::AccessibilityTextRunInfo> run;
 
+  // The immediately preceding text run on the page, or nullptr if `run` is the
+  // first run or only one of the two runs belongs to a table.
+  raw_ptr<const chrome_pdf::AccessibilityTextRunInfo> previous_run = nullptr;
+
   // The immediately following text run on the page, or nullptr if `run` is the
-  // last run.
+  // last run or only one of the two runs belongs to a table.
   raw_ptr<const chrome_pdf::AccessibilityTextRunInfo> next_run = nullptr;
 
   // The characters belonging to `run`.
@@ -212,7 +260,6 @@ class PdfAccessibilityTreeBuilderHeuristic {
   class LineHelper;
 
   BlockLevelNodeResult CreateBlockLevelNode(
-      const PageLayoutData& layout,
       size_t text_run_index,
       const HeuristicPageProperties& page_properties,
       const chrome_pdf::AccessibilityFormGraphicInfo* graphic);
@@ -285,7 +332,23 @@ class PdfAccessibilityTreeBuilderHeuristic {
 #endif
   );
 
+  // Builds a `kTable` node for `table`, with a `kRow` for each row and a
+  // `kCell` for each cell, including empty ones. Each cell holds the text
+  // nodes for its text runs. Returns the table node; the caller adds it to the
+  // page.
+  ui::AXNodeData* BuildTableNode(const HeuristicTable& table);
+
   raw_ref<PdfAccessibilityTreeBuilder> builder_;
+
+  // Filtered graphics from `builder_`.
+  const std::vector<chrome_pdf::AccessibilityFormGraphicInfo>
+      filtered_graphics_;
+
+  // The page's tables. Backs `page_layout_.table_text_run_indices`.
+  const PageTables page_tables_;
+
+  // The page's text runs and characters from `builder_`.
+  const PageLayoutData page_layout_;
 
   // Sequential index tracking for page objects.
   uint32_t current_link_index_ = 0;

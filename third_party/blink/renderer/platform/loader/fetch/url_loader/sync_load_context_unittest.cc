@@ -3,19 +3,27 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/sync_load_context.h"
+
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/threading/thread.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/system/data_pipe_utils.h"
+#include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "services/network/public/cpp/url_loader_completion_status.h"
+#include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
 #include "third_party/blink/public/platform/resource_load_info_notifier_wrapper.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/resource_request_sender.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/sync_load_response.h"
@@ -79,7 +87,9 @@ class MockResourceRequestSender : public ResourceRequestSender {
 
   void DeletePendingRequest(
       scoped_refptr<base::SequencedTaskRunner> task_runner) override {
-    client_.reset();
+    if (client_) {
+      task_runner->ReleaseSoon(FROM_HERE, std::move(client_));
+    }
   }
 
  private:
@@ -96,47 +106,55 @@ class SyncLoadContextTest : public testing::Test {
     ASSERT_TRUE(loading_thread_.StartAndWaitForTesting());
   }
 
-  void StartAsyncWithWaitableEventOnLoadingThread(
+  void TearDown() override {
+    // Flush `loading_thread_` so any pending `ReleaseSoon` tasks run cleanly
+    // before test teardown.
+    loading_thread_.FlushForTesting();
+  }
+
+  scoped_refptr<SyncLoadContext> StartAsyncWithWaitableEventOnLoadingThread(
       std::unique_ptr<network::ResourceRequest> request,
       std::unique_ptr<network::PendingSharedURLLoaderFactory> pending_factory,
       SyncLoadResponse* out_response,
-      SyncLoadContext** context_for_redirect,
       base::WaitableEvent* redirect_or_response_event) {
+    scoped_refptr<SyncLoadContext> context =
+        SyncLoadContext::Create(loading_thread_.task_runner());
     loading_thread_.task_runner()->PostTask(
         FROM_HERE,
-        base::BindOnce(
-            &SyncLoadContext::StartAsyncWithWaitableEvent, std::move(request),
-            loading_thread_.task_runner(), TRAFFIC_ANNOTATION_FOR_TESTS,
-            0 /* loader_options */, std::move(pending_factory),
-            std::vector<std::unique_ptr<URLLoaderThrottle>>(), out_response,
-            context_for_redirect, redirect_or_response_event,
-            nullptr /* terminate_sync_load_event */,
-            base::Seconds(60) /* timeout */,
-            mojo::NullRemote() /* download_to_blob_registry */,
-            Vector<String>() /* cors_exempt_header_list */,
-            std::make_unique<ResourceLoadInfoNotifierWrapper>(
-                /*resource_load_info_notifier=*/nullptr,
-                task_environment_.GetMainThreadTaskRunner())));
+        base::BindOnce(&SyncLoadContext::StartAsyncWithWaitableEvent,
+                       base::Unretained(context.get()), std::move(request),
+                       TRAFFIC_ANNOTATION_FOR_TESTS, 0 /* loader_options */,
+                       std::move(pending_factory),
+                       std::vector<std::unique_ptr<URLLoaderThrottle>>(),
+                       out_response, redirect_or_response_event,
+                       nullptr /* terminate_sync_load_event */,
+                       base::Seconds(60) /* timeout */,
+                       mojo::NullRemote() /* download_to_blob_registry */,
+                       Vector<String>() /* cors_exempt_header_list */,
+                       std::make_unique<ResourceLoadInfoNotifierWrapper>(
+                           /*resource_load_info_notifier=*/nullptr,
+                           task_environment_.GetMainThreadTaskRunner())));
+    return context;
   }
 
   static void RunSyncLoadContextViaDataPipe(
+      SyncLoadContext* context,
       network::ResourceRequest* request,
       SyncLoadResponse* response,
-      SyncLoadContext** context_for_redirect,
       std::string expected_data,
-      base::WaitableEvent* redirect_or_response_event,
-      scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
-    DCHECK(task_runner->BelongsToCurrentThread());
-    auto context = base::AdoptRef(new SyncLoadContext(
+      base::WaitableEvent* redirect_or_response_event) {
+    DCHECK(context->task_runner_->BelongsToCurrentThread());
+    context->InitializeRequest(
         request, std::make_unique<MockPendingSharedURLLoaderFactory>(),
-        response, context_for_redirect, redirect_or_response_event,
+        response, redirect_or_response_event,
         nullptr /* terminate_sync_load_event */,
         base::Seconds(60) /* timeout */,
-        mojo::NullRemote() /* download_to_blob_registry */, task_runner));
+        mojo::NullRemote() /* download_to_blob_registry */);
 
     auto mock_resource_request_sender =
         std::make_unique<MockResourceRequestSender>();
-    mock_resource_request_sender->CreatePendingRequest(context);
+    mock_resource_request_sender->CreatePendingRequest(
+        base::WrapRefCounted(context));
     context->resource_request_sender_ = std::move(mock_resource_request_sender);
 
     mojo::ScopedDataPipeProducerHandle producer_handle;
@@ -154,6 +172,49 @@ class SyncLoadContextTest : public testing::Test {
     mojo::BlockingCopyFromString(expected_data, producer_handle);
   }
 
+  static void SimulateRedirectAndPrematureCompletion(
+      SyncLoadContext* context,
+      network::ResourceRequest* request,
+      const GURL& redirect_url,
+      const network::URLLoaderCompletionStatus& completion_status,
+      SyncLoadResponse* response,
+      base::WaitableEvent* redirect_or_response_event,
+      base::WaitableEvent* completion_flushed_event) {
+    DCHECK(context->task_runner_->BelongsToCurrentThread());
+    context->InitializeRequest(
+        request, std::make_unique<MockPendingSharedURLLoaderFactory>(),
+        response, redirect_or_response_event,
+        nullptr /* terminate_sync_load_event */,
+        base::Seconds(60) /* timeout */,
+        mojo::NullRemote() /* download_to_blob_registry */);
+
+    auto mock_resource_request_sender =
+        std::make_unique<MockResourceRequestSender>();
+    mock_resource_request_sender->CreatePendingRequest(
+        base::WrapRefCounted(context));
+    context->resource_request_sender_ = std::move(mock_resource_request_sender);
+
+    net::RedirectInfo redirect_info;
+    redirect_info.new_url = redirect_url;
+    context->OnReceivedRedirect(
+        redirect_info, network::mojom::URLResponseHead::New(),
+        base::BindOnce([](std::vector<std::string>, net::HttpRequestHeaders) {
+          NOTREACHED();
+        }));
+    context->OnCompletedRequest(completion_status);
+
+    // Post an extra task on `task_runner_` so any premature ReleaseSoon task
+    // executes before the test thread posts FollowRedirect/CancelRedirect.
+    context->task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(&base::WaitableEvent::Signal,
+                                  base::Unretained(completion_flushed_event)));
+  }
+
+  static bool IsContextCompletedOnLoadingThread(
+      const SyncLoadContext* context) {
+    return context->Completed();
+  }
+
  protected:
   base::test::TaskEnvironment task_environment_;
   base::Thread loading_thread_;
@@ -163,19 +224,65 @@ TEST_F(SyncLoadContextTest, StartAsyncWithWaitableEvent) {
   GURL expected_url = GURL("https://example.com");
   std::string expected_data = "foobarbaz";
 
-  // Create and exercise SyncLoadContext on the |loading_thread_|.
+  // Create SyncLoadContext owned on this thread, running on `loading_thread_`.
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = expected_url;
   auto pending_factory = std::make_unique<MockPendingSharedURLLoaderFactory>();
   pending_factory->factory()->AddResponse(expected_url.spec(), expected_data);
   SyncLoadResponse response;
-  SyncLoadContext* context_for_redirect = nullptr;
   base::WaitableEvent redirect_or_response_event(
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
-  StartAsyncWithWaitableEventOnLoadingThread(
-      std::move(request), std::move(pending_factory), &response,
-      &context_for_redirect, &redirect_or_response_event);
+  scoped_refptr<SyncLoadContext> context =
+      StartAsyncWithWaitableEventOnLoadingThread(
+          std::move(request), std::move(pending_factory), &response,
+          &redirect_or_response_event);
+  absl::Cleanup release_context = [&]() {
+    loading_thread_.task_runner()->ReleaseSoon(FROM_HERE, std::move(context));
+  };
+
+  // Wait until the response is received.
+  redirect_or_response_event.Wait();
+
+  // Check if |response| is set properly after the WaitableEvent fires.
+  EXPECT_EQ(net::OK, response.error_code);
+  ASSERT_TRUE(response.data);
+  EXPECT_EQ(expected_data,
+            std::string(response.data->begin()->data(), response.data->size()));
+
+  // Verify the caller-owned `context` remains alive even after
+  // `CompleteRequest` and `PendingRequestInfo` deletion have flushed on
+  // `loading_thread_`.
+  loading_thread_.FlushForTesting();
+  bool is_completed = false;
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindLambdaForTesting([&]() {
+        is_completed = IsContextCompletedOnLoadingThread(context.get());
+      }));
+  loading_thread_.FlushForTesting();
+  EXPECT_TRUE(is_completed);
+}
+
+TEST_F(SyncLoadContextTest, ResponseBodyViaDataPipe) {
+  GURL expected_url = GURL("https://example.com");
+  std::string expected_data = "foobarbaz";
+
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = expected_url;
+  SyncLoadResponse response;
+  base::WaitableEvent redirect_or_response_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+  scoped_refptr<SyncLoadContext> context =
+      SyncLoadContext::Create(loading_thread_.task_runner());
+  absl::Cleanup release_context = [&]() {
+    loading_thread_.task_runner()->ReleaseSoon(FROM_HERE, std::move(context));
+  };
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SyncLoadContextTest::RunSyncLoadContextViaDataPipe,
+                     base::Unretained(context.get()), request.get(), &response,
+                     expected_data, &redirect_or_response_event));
 
   // Wait until the response is received.
   redirect_or_response_event.Wait();
@@ -187,33 +294,133 @@ TEST_F(SyncLoadContextTest, StartAsyncWithWaitableEvent) {
             std::string(response.data->begin()->data(), response.data->size()));
 }
 
-TEST_F(SyncLoadContextTest, ResponseBodyViaDataPipe) {
-  GURL expected_url = GURL("https://example.com");
-  std::string expected_data = "foobarbaz";
-
-  // Create and exercise SyncLoadContext on the |loading_thread_|.
+TEST_F(SyncLoadContextTest, RedirectCompletedBeforeFollowRedirect) {
   auto request = std::make_unique<network::ResourceRequest>();
-  request->url = expected_url;
+  request->url = GURL("https://example.com/start");
+  const GURL redirect_url("https://example.com/redirected");
+
+  network::URLLoaderCompletionStatus status(net::ERR_CONNECTION_RESET);
+  status.extended_error_code = 42;
+
   SyncLoadResponse response;
   base::WaitableEvent redirect_or_response_event(
       base::WaitableEvent::ResetPolicy::MANUAL,
       base::WaitableEvent::InitialState::NOT_SIGNALED);
-  SyncLoadContext* context_for_redirect = nullptr;
+  base::WaitableEvent completion_flushed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<SyncLoadContext> context =
+      SyncLoadContext::Create(loading_thread_.task_runner());
+  absl::Cleanup release_context = [&]() {
+    loading_thread_.task_runner()->ReleaseSoon(FROM_HERE, std::move(context));
+  };
   loading_thread_.task_runner()->PostTask(
       FROM_HERE,
-      base::BindOnce(&SyncLoadContextTest::RunSyncLoadContextViaDataPipe,
-                     request.get(), &response, &context_for_redirect,
-                     expected_data, &redirect_or_response_event,
-                     loading_thread_.task_runner()));
+      base::BindOnce(
+          &SyncLoadContextTest::SimulateRedirectAndPrematureCompletion,
+          base::Unretained(context.get()), request.get(), redirect_url, status,
+          &response, &redirect_or_response_event, &completion_flushed_event));
 
-  // Wait until the response is received.
+  redirect_or_response_event.Wait();
+  completion_flushed_event.Wait();
+
+  ASSERT_TRUE(response.redirect_info.has_value());
+  EXPECT_EQ(redirect_url, response.redirect_info->new_url);
+
+  redirect_or_response_event.Reset();
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SyncLoadContext::FollowRedirect,
+                     base::Unretained(context.get()),
+                     std::vector<std::string>(), net::HttpRequestHeaders()));
   redirect_or_response_event.Wait();
 
-  // Check if |response| is set properly after the WaitableEvent fires.
-  EXPECT_EQ(net::OK, response.error_code);
-  ASSERT_TRUE(response.data);
-  EXPECT_EQ(expected_data,
-            std::string(response.data->begin()->data(), response.data->size()));
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_EQ(net::ERR_CONNECTION_RESET, response.error_code);
+  EXPECT_EQ(42, response.extended_error_code);
+}
+
+TEST_F(SyncLoadContextTest, RedirectCompletedBeforeCancelRedirect) {
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = GURL("https://example.com/start");
+  const GURL redirect_url("https://example.com/redirected");
+
+  SyncLoadResponse response;
+  base::WaitableEvent redirect_or_response_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+  base::WaitableEvent completion_flushed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<SyncLoadContext> context =
+      SyncLoadContext::Create(loading_thread_.task_runner());
+  absl::Cleanup release_context = [&]() {
+    loading_thread_.task_runner()->ReleaseSoon(FROM_HERE, std::move(context));
+  };
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &SyncLoadContextTest::SimulateRedirectAndPrematureCompletion,
+          base::Unretained(context.get()), request.get(), redirect_url,
+          network::URLLoaderCompletionStatus(net::ERR_FAILED), &response,
+          &redirect_or_response_event, &completion_flushed_event));
+
+  redirect_or_response_event.Wait();
+  completion_flushed_event.Wait();
+
+  ASSERT_TRUE(response.redirect_info.has_value());
+  redirect_or_response_event.Reset();
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE, base::BindOnce(&SyncLoadContext::CancelRedirect,
+                                base::Unretained(context.get())));
+  redirect_or_response_event.Wait();
+
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_EQ(net::ERR_ABORTED, response.error_code);
+}
+
+TEST_F(SyncLoadContextTest, RedirectCompletedWithUnexpectedOkBeforeFollow) {
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = GURL("https://example.com/start");
+  const GURL redirect_url("https://example.com/redirected");
+
+  SyncLoadResponse response;
+  base::WaitableEvent redirect_or_response_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+  base::WaitableEvent completion_flushed_event(
+      base::WaitableEvent::ResetPolicy::MANUAL,
+      base::WaitableEvent::InitialState::NOT_SIGNALED);
+
+  scoped_refptr<SyncLoadContext> context =
+      SyncLoadContext::Create(loading_thread_.task_runner());
+  absl::Cleanup release_context = [&]() {
+    loading_thread_.task_runner()->ReleaseSoon(FROM_HERE, std::move(context));
+  };
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &SyncLoadContextTest::SimulateRedirectAndPrematureCompletion,
+          base::Unretained(context.get()), request.get(), redirect_url,
+          network::URLLoaderCompletionStatus(net::OK), &response,
+          &redirect_or_response_event, &completion_flushed_event));
+
+  redirect_or_response_event.Wait();
+  completion_flushed_event.Wait();
+
+  ASSERT_TRUE(response.redirect_info.has_value());
+  redirect_or_response_event.Reset();
+  loading_thread_.task_runner()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&SyncLoadContext::FollowRedirect,
+                     base::Unretained(context.get()),
+                     std::vector<std::string>(), net::HttpRequestHeaders()));
+  redirect_or_response_event.Wait();
+
+  EXPECT_FALSE(response.redirect_info.has_value());
+  EXPECT_EQ(net::ERR_FAILED, response.error_code);
 }
 
 }  // namespace blink

@@ -7,7 +7,9 @@
 #include <optional>
 #include <string>
 
+#include "base/check_deref.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
@@ -53,7 +55,6 @@
 #include "chrome/browser/ui/views/tabs/tab/tab_close_button.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_icon.h"
 #include "chrome/browser/ui/views/tabs/tab/tab_title.h"
-#include "chrome/browser/ui/views/tabs/tab_slot_controller.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/common/buildflags.h"
@@ -147,13 +148,12 @@ std::unique_ptr<TabView::LayoutManager> CreateTabViewLayout(
 
 class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
  public:
-  explicit TabStyleViewDelegateImpl(const TabView* tab_view)
-      : tab_view_(tab_view) {
-    CHECK(tab_view_);
-  }
+  TabStyleViewDelegateImpl(const TabView& tab_view,
+                           const TabStripCollectionController& controller)
+      : tab_view_(tab_view), controller_(controller) {}
   ~TabStyleViewDelegateImpl() override = default;
 
-  const views::View* GetView() const override { return tab_view_; }
+  const views::View* GetView() const override { return &tab_view_.get(); }
 
   bool IsActive() const override { return tab_view_->IsActive(); }
 
@@ -173,11 +173,10 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   }
 
   std::optional<SkColor> GetGroupColor() const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller ? controller->GetGroupColor(tab_view_->GetTabInterface())
-                      : std::nullopt;
+    const tabs::TabInterface* const tab_interface =
+        tab_view_->GetTabInterface();
+    return tab_interface ? controller_->GetGroupColor(tab_interface)
+                         : std::nullopt;
   }
 
   bool IsInFocusedGroup() const override {
@@ -185,10 +184,7 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
     if (!group.has_value()) {
       return false;
     }
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller && controller->GetFocusedGroup() == group;
+    return controller_->GetFocusedGroup() == group;
   }
 
   bool IsGroupCollapsed() const override {
@@ -196,10 +192,7 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
     if (!group.has_value()) {
       return false;
     }
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller && controller->IsGroupCollapsed(group.value());
+    return controller_->IsGroupCollapsed(group.value());
   }
 
   bool IsSplit() const override { return tab_view_->split(); }
@@ -221,7 +214,8 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
     if (children.size() < 2) {
       return true;
     }
-    return tab_view_ == children[base::i18n::IsRTL() ? children.size() - 1 : 0];
+    return &tab_view_.get() ==
+           children[base::i18n::IsRTL() ? children.size() - 1 : 0];
   }
 
   bool IsRightSplitTab() const override {
@@ -237,17 +231,16 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
     if (children.size() < 2) {
       return true;
     }
-    return tab_view_ == children[base::i18n::IsRTL() ? 0 : children.size() - 1];
+    return &tab_view_.get() ==
+           children[base::i18n::IsRTL() ? 0 : children.size() - 1];
   }
 
   const TabStyleViewDelegate* GetAdjacentTab(bool leading) const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
+    const tabs::TabInterface* const tab_interface =
+        tab_view_->GetTabInterface();
     const TabCollectionNode* adjacent_node =
-        controller
-            ? controller->GetAdjacentTab(tab_view_->GetTabInterface(), leading)
-            : nullptr;
+        tab_interface ? controller_->GetAdjacentTab(tab_interface, leading)
+                      : nullptr;
     const TabView* adjacent_view =
         adjacent_node ? views::AsViewClass<TabView>(adjacent_node->view())
                       : nullptr;
@@ -267,36 +260,21 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   }
 
   GlowHoverController* GetHoverControllerForTesting() override {
-    return const_cast<TabView*>(tab_view_.get())
+    return const_cast<TabView*>(&tab_view_.get())
         ->GetHoverControllerForTesting();  // IN-TEST
   }
 
   BrowserFrameView* GetBrowserFrameView() const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller ? controller->GetBrowserFrameView() : nullptr;
+    return controller_->GetBrowserFrameView();
   }
 
   BrowserWindowInterface* GetBrowserWindowInterface() const override {
-    tabs::TabInterface* tab_interface =
-        const_cast<tabs::TabInterface*>(tab_view_->GetTabInterface());
-    return tab_interface ? tab_interface->GetBrowserWindowInterface() : nullptr;
+    return controller_->GetBrowserWindowInterface();
   }
 
-  int GetTabCount() const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller ? controller->GetTabCount() : 0;
-  }
+  int GetTabCount() const override { return controller_->GetTabCount(); }
 
-  bool IsGlassFrame() const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller ? controller->IsGlassFrame() : false;
-  }
+  bool IsGlassFrame() const override { return controller_->IsGlassFrame(); }
 
   bool IsPinned() const override { return tab_view_->pinned_; }
 
@@ -305,14 +283,12 @@ class TabStyleViewDelegateImpl : public TabStyleViewDelegate {
   }
 
   int GetStrokeThickness() const override {
-    const auto* controller = tab_view_->collection_node()
-                                 ? tab_view_->collection_node()->GetController()
-                                 : nullptr;
-    return controller ? controller->GetStrokeThickness() : 0;
+    return controller_->GetStrokeThickness();
   }
 
  private:
-  const raw_ptr<const TabView> tab_view_;
+  const raw_ref<const TabView> tab_view_;
+  const raw_ref<const TabStripCollectionController> controller_;
 };
 
 TabView::TabView(TabCollectionNode* collection_node)
@@ -320,7 +296,9 @@ TabView::TabView(TabCollectionNode* collection_node)
       collection_node_(collection_node),
       orientation_(collection_node->orientation()),
       tab_styling_(TabStyleViews::Create(
-          std::make_unique<TabStyleViewDelegateImpl>(this),
+          std::make_unique<TabStyleViewDelegateImpl>(
+              *this,
+              CHECK_DEREF(collection_node->GetController())),
           orientation_)),
       // Title must be below the favicon in the z-order as the title should be
       // drawn under the favicon during the title animation for horizontal tabs.
@@ -436,9 +414,10 @@ const TabView& TabView::LayoutManager::TabView() const {
 }
 
 void TabView::StepLoadingAnimation(const base::TimeDelta& elapsed_time) {
-  // TODO(crbug.com/467710547): Paint favicon to a layer when tab strip isn't
-  // animating or when dragging isn't in progress or in full screen mode.
   icon_->StepLoadingAnimation(elapsed_time);
+  icon_->SetCanPaintToLayer(
+      collection_node_ &&
+      collection_node_->GetController()->CanPaintThrobberToLayer());
 }
 
 void TabView::CreateFreezingVote(FreezingVoteReason reason) {
@@ -497,16 +476,53 @@ void TabView::UpdateHovered(bool hovered) {
     return;
   }
 
-  hovered_ = hovered;
-  if (hover_controller_ && !split_) {
-    if (hovered_) {
-      hover_controller_->SetSubtleOpacityScale(radial_highlight_opacity_);
-      hover_controller_->Show(TabStyle::ShowHoverStyle::kSubtle);
-    } else {
-      hover_controller_->Hide(TabStyle::HideHoverStyle::kGradual);
-    }
+  if (split_) {
+    hovered_ = hovered;
+    UpdateColors();
+    UpdateZOrder();
+    InvalidateLayout();
+    return;
   }
 
+  if (hovered) {
+    ShowHover(TabStyle::ShowHoverStyle::kSubtle);
+  } else {
+    HideHover(TabStyle::HideHoverStyle::kGradual);
+  }
+}
+
+void TabView::ShowHover(TabStyle::ShowHoverStyle style) {
+  if (split_) {
+    if (auto* split_view = views::AsViewClass<SplitTabView>(parent())) {
+      split_view->ShowHover(style);
+    }
+    return;
+  }
+
+  hovered_ = true;
+  if (hover_controller_) {
+    if (style == TabStyle::ShowHoverStyle::kSubtle) {
+      hover_controller_->SetSubtleOpacityScale(radial_highlight_opacity_);
+    }
+    hover_controller_->Show(style);
+  }
+  UpdateColors();
+  UpdateZOrder();
+  InvalidateLayout();
+}
+
+void TabView::HideHover(TabStyle::HideHoverStyle style) {
+  if (split_) {
+    if (auto* split_view = views::AsViewClass<SplitTabView>(parent())) {
+      split_view->HideHover(style);
+    }
+    return;
+  }
+
+  hovered_ = false;
+  if (hover_controller_) {
+    hover_controller_->Hide(style);
+  }
   UpdateColors();
   UpdateZOrder();
   InvalidateLayout();
@@ -629,7 +645,7 @@ bool TabView::OnMousePressed(const ui::MouseEvent& event) {
   auto* controller = collection_node_->GetController();
   shift_pressed_on_mouse_down_ = event.IsShiftDown();
   RecordMousePressedInTab();
-  UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+  UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
 
   // Capture the selection model before selection changes.
   const ui::ListSelectionModel original_selection_model =
@@ -715,7 +731,7 @@ void TabView::OnMouseMoved(const ui::MouseEvent& event) {
 
 void TabView::OnMouseEntered(const ui::MouseEvent& event) {
   CHECK(collection_node_);
-  UpdateHoverCard(this, TabSlotController::HoverCardUpdateType::kHover);
+  UpdateHoverCard(this, HoverCardUpdateType::kHover);
 
   // Hover state is handled by the parent if it is split.
   if (split_) {
@@ -755,7 +771,7 @@ bool TabView::OnMouseDragged(const ui::MouseEvent& event) {
 
 void TabView::OnGestureEvent(ui::GestureEvent* event) {
   CHECK(collection_node_);
-  UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+  UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
 
   auto* controller = collection_node_->GetController();
   CHECK(controller);
@@ -857,11 +873,15 @@ void TabView::AddedToWidget() {
       GetWidget()->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
           &TabView::OnFrameActiveStateChanged, base::Unretained(this)));
 
-  OnTabStateChanged();
+  if (collection_node_) {
+    OnTabStateChanged();
+  }
   UpdateClipPathAndRoundedCorners();
 
   // Recompute accessible name when the structure changes.
-  UpdateAccessibleName();
+  if (collection_node_) {
+    UpdateAccessibleName();
+  }
 
   // Recompute the hovered state as mouse events are not processed if a view
   // removed from the widget and added.
@@ -888,8 +908,10 @@ void TabView::OnFocus() {
   // Update the accessible label before showing the hover card to ensure that
   // the displayed memory usage is in sync with what will be read to screen
   // readers.
-  UpdateAccessibleName();
-  UpdateHoverCard(this, TabSlotController::HoverCardUpdateType::kFocus);
+  if (collection_node_) {
+    UpdateAccessibleName();
+  }
+  UpdateHoverCard(this, HoverCardUpdateType::kFocus);
   InvalidateLayout();
 }
 
@@ -904,7 +926,7 @@ void TabView::OnBlur() {
 
   if (auto* tab_strip_view = GetTabStripView(this)) {
     if (!tab_strip_view->IsFocusInTabStrip()) {
-      UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kFocus);
+      UpdateHoverCard(nullptr, HoverCardUpdateType::kFocus);
     }
   }
   InvalidateLayout();
@@ -1051,7 +1073,7 @@ views::BubbleBorder::Arrow TabView::GetAnchorPosition() const {
 }
 
 views::BubbleAnchor TabView::GetAnchor() {
-  if (split_ && !collapsed_) {
+  if (orientation_ == TabStripOrientation::kVertical && split_ && !collapsed_) {
     return views::BubbleAnchor(parent());
   }
   return views::BubbleAnchor(this);
@@ -1076,11 +1098,11 @@ void TabView::ResetCollectionNode() {
   collection_node_ = nullptr;
 
   if (hover_card_controller && hover_card_controller->target_tab() == this) {
-    hover_card_controller->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kTabRemoved);
+    hover_card_controller->UpdateHoverCard(nullptr,
+                                           HoverCardUpdateType::kTabRemoved);
   }
 
-  // Reset the active/selected/hovered states so the tab animates out without a
+  // Reset the active/selected states so the tab animates out without an active
   // background.
   active_ = false;
   selected_ = false;
@@ -1213,7 +1235,10 @@ void TabView::UpdateTabData(const tabs::TabData& data) {
     UpdateAccessibleName();
   }
 
-  icon_->SetData(tab_data_);
+  icon_->SetData(
+      tab_data_,
+      collection_node_ &&
+          collection_node_->GetController()->CanPaintThrobberToLayer());
   icon_->SetActiveState(tab->IsActivated());
   icon_->SetAttention(TabIcon::AttentionType::kBlockedWebContents,
                       !tab->IsActivated() && tab->IsBlocked());
@@ -1414,16 +1439,14 @@ const tabs::TabInterface* TabView::GetTabInterface() const {
 }
 
 void TabView::UpdateHoverCard(HoverCardAnchorTarget* target,
-                              int hover_card_update_type) {
+                              HoverCardUpdateType hover_card_update_type) {
   if (!collection_node_ || !collection_node_->GetController()) {
     return;
   }
 
   if (TabHoverCardController* hover_card_controller =
           collection_node_->GetController()->GetHoverCardController()) {
-    hover_card_controller->UpdateHoverCard(
-        target, static_cast<TabSlotController::HoverCardUpdateType>(
-                    hover_card_update_type));
+    hover_card_controller->UpdateHoverCard(target, hover_card_update_type);
   }
 }
 

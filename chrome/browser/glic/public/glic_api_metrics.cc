@@ -214,6 +214,12 @@ std::string_view ToString(GlicHostApiRequestId request_id) {
       return "GetSendTabToSelfDevices";
     case GlicHostApiRequestId::kOnInputFocused:
       return "OnInputFocused";
+    case GlicHostApiRequestId::kOnTooltipImpression:
+      return "OnTooltipImpression";
+    case GlicHostApiRequestId::kOnTooltipHidden:
+      return "OnTooltipHidden";
+    case GlicHostApiRequestId::kOnOptinRejected:
+      return "OnOptinRejected";
   }
   return "";
 }

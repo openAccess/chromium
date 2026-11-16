@@ -6,11 +6,13 @@
 
 #include <algorithm>
 
+#include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "components/policy/core/common/cloud/cloud_policy_client.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "net/base/net_errors.h"
@@ -121,6 +123,8 @@ const char* JobTypeToRequestType(
     case DeviceManagementService::JobConfiguration::
         TYPE_USER_MANAGEMENT_STATUS_AND_POLICIES:
       return dm_protocol::kValueRequestUserManagementStatusAndPolicies;
+    case DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN:
+      return dm_protocol::kValueRequestRenewDmToken;
   }
   NOTREACHED() << "Invalid job type " << type;
 }
@@ -284,11 +288,21 @@ DMServerJobConfiguration::MapNetErrorAndResponseToDMStatus(
       // The `kDeviceNotFound` response code can correspond to different DM
       // statuses depending on the contents of the response body.
       em::DeviceManagementResponse response;
-      if (response.ParseFromString(response_body) &&
-          std::ranges::contains(
-              response.error_detail(),
-              em::CBCM_DELETION_POLICY_PREFERENCE_DELETE_TOKEN)) {
-        return DM_STATUS_SERVICE_DEVICE_NEEDS_RESET;
+      if (response.ParseFromString(response_body)) {
+        if (std::ranges::contains(
+                response.error_detail(),
+                em::CBCM_DELETION_POLICY_PREFERENCE_DELETE_TOKEN)) {
+          return DM_STATUS_SERVICE_DEVICE_NEEDS_RESET;
+        }
+        if (std::ranges::contains(
+                response.error_detail(),
+                em::CBCM_DELETION_POLICY_PREFERENCE_INVALIDATE_TOKEN)) {
+          return DM_STATUS_SERVICE_DEVICE_NOT_FOUND;
+        }
+      }
+      if (base::FeatureList::IsEnabled(
+              features::kCbcmRequireErrorDetailForUnenrollment)) {
+        return DM_STATUS_HTTP_STATUS_ERROR;
       }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
       return DM_STATUS_SERVICE_DEVICE_NOT_FOUND;

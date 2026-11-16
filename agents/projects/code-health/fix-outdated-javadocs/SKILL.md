@@ -17,33 +17,36 @@ pipe syntax (`|param|`) with `{@code param}`.
 
 **Goal:** Clean up outdated Javadoc comments in first-party Java code.
 
-## Relevant Resources & Style Guides
-
-- **[Google Java Style Guide — § 7: Javadoc](https://google.github.io/styleguide/javaguide.html#s7-javadoc)**
-- **[Chromium Java Style Guide](https://chromium.googlesource.com/chromium/src/+/main/styleguide/java/java.md)**
-- **Implementation Patterns:** [patterns.md](references/patterns.md)
-- **Discovery Script:** [find_candidates.py](scripts/find_candidates.py)
-
 ## Workflow
 
-> [!IMPORTANT] **Execution Protocol:** Execute all steps sequentially. Do not
-> skip any step. Use `rg` (ripgrep) for searches.
+> [!IMPORTANT] **Execution Protocol:** Execute all steps continuously in one
+> autonomous run, without skipping steps or pausing between files or steps. Stop
+> only at explicit `ask_question` gates or documented interactive stops. Use
+> `rg` (ripgrep) for searches.
 
 ### Step 1: Workspace Preparation
 
-Follow the workspace preparation steps in
-[workspace_preparation.md](../hub/references/workspace_preparation.md).
+Run the workspace preparation script:
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_workspace.py --stash
+```
+
+- If the script outputs `(stashed local changes)`, inform the user.
+- If the script exits non-zero, stop and report the error instead of continuing
+  on a dirty or diverged tree.
 
 ### Step 2: Discovery & Batch Selection
 
 Follow the
 [Discovery & Batch Selection](../hub/references/discovery_and_batch_selection.md)
-workflow. Present the candidates and ask for explicit approval before
-proceeding.
+workflow.
 
 ### Step 3: Refactoring & Implementation
 
-Process candidates one file at a time, editing comments directly. Refer to
+Process candidates one file at a time, editing comments directly. Process all
+files sequentially within the same run, without pausing for user confirmation
+between edits, then proceed directly to Step 4. Refer to
 [patterns.md](references/patterns.md) for syntax rules and examples:
 
 1. **Parameter Alignment:**
@@ -67,9 +70,13 @@ Process candidates one file at a time, editing comments directly. Refer to
    brand-new Javadoc comments for undocumented methods, private methods, or
    trivial getters/setters.
 
-### Step 4: Validation
+### Step 4: Formatting & Automated Review
 
-1. **Code Formatting:** Run `git cl format` to format changes.
+1. **Format & Lint:** Run
+   `python3 agents/projects/code-health/hub/scripts/format_and_lint.py` (must
+   exit 0).
+2. **Automated Review:** Skipped (documentation-only changes); proceed directly
+   to Step 5.
 
 ### Step 5: Verification
 
@@ -77,17 +84,37 @@ Follow the [Verification](../hub/references/verification.md) workflow.
 
 ### Step 6: Submission
 
-Invoke the [Submission](../hub/references/submission.md) workflow with:
+#### 1. Prepare Commit Message
 
-- **Skill Name:** `fix-outdated-javadocs`
-- **Branch Name:** `cleanup-fix-outdated-javadocs-[component-name]`
-- **Commit Hashtag:** `Code Health`
-- **Cleanup Title:**
-  `Fix outdated and mismatched Javadocs in [Component/Directory]`
-- **Cleanup Description:**
-  `Audit and fix outdated or mismatched Javadoc comments in [Component/Directory] per the Java style guide.`
-- **Parent Bug:** `564124183`
-- **Bug ID:** `"none"`
-- **Omit Skill Attribution:** `"true"`
-- **Cleaned Component:** The parent directory of the batch.
-- **File Count:** Number of files cleaned up.
+Ensure the full `[Code Health][LSC] <Title>` subject is at most 72 characters
+(use a short component name or shorten the title if needed), and generate
+`../commit`:
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill fix-outdated-javadocs \
+  --title "Fix outdated Javadocs in <Component>" \
+  --description - \
+  --out-commit ../commit <<'EOF'
+Audit and fix outdated or mismatched Javadoc comments in
+<Component/Directory> per the Java style guide.
+EOF
+```
+
+#### 2. Validate Commit File
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill fix-outdated-javadocs \
+  --validate ../commit
+```
+
+If validation fails, fix the commit title or description and re-run Steps 1–2
+until validation exits 0.
+
+#### 3. Submit CL
+
+Invoke the [Submission](../hub/references/submission.md) workflow, passing:
+
+- **Branch Name:** `cleanup-fix-outdated-javadocs-<component-name>`
+- **Commit File:** `../commit`

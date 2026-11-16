@@ -16,7 +16,9 @@
 #include "chrome/browser/ui/webui/ash/login/mojom/screens_common.mojom.h"
 #include "chromeos/ash/components/drivefs/drivefs_pinning_manager.h"
 
-class Profile;
+class PrefService;
+
+class PrefService;
 
 namespace ash {
 class DrivePinningScreenView;
@@ -36,7 +38,7 @@ class DrivePinningScreen
   static std::string GetResultString(Result result);
 
   // Apply the deferred perf `kOobeDrivePinningEnabledDeferred`.
-  static void ApplyDrivePinningPref(Profile* profile);
+  static void ApplyDrivePinningPref(PrefService& pref_service);
 
   using ScreenExitCallback = base::RepeatingCallback<void(Result result)>;
 
@@ -66,7 +68,7 @@ class DrivePinningScreen
   // calculation.
   void StartCalculatingRequiredSpace();
 
-  std::string RetrieveChoobeSubtitle();
+  std::string RetrieveChoobeSubtitle(const PrefService& pref_service);
 
   void OnProgressForTest(const drivefs::pinning::Progress& progress);
 
@@ -78,7 +80,7 @@ class DrivePinningScreen
   bool MaybeSkip(WizardContext& context) override;
   void ShowImpl() override;
   void HideImpl() override;
-  ScreenSummary GetScreenSummary() override;
+  ScreenSummary GetScreenSummary(const WizardContext& context) override;
 
   // DriveIntegrationService::Observer implementation.
   void OnBulkPinProgress(const drivefs::pinning::Progress& progress) override;

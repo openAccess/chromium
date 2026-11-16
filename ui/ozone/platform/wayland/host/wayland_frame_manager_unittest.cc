@@ -5,23 +5,75 @@
 #include "ui/ozone/platform/wayland/host/wayland_frame_manager.h"
 
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "base/files/file_util.h"
+#include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
+#include "base/test/bind.h"
+#include "base/test/run_until.h"
+#include "base/threading/platform_thread.h"
+#include "base/time/time.h"
+#include "mojo/public/cpp/system/platform_handle.h"
+#include "skia/ext/skcolorspace_primaries.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/color_space.h"
+#include "ui/gfx/gpu_fence_handle.h"
+#include "ui/gfx/hdr_metadata.h"
+#include "ui/gfx/presentation_feedback.h"
+#include "ui/gfx/swap_result.h"
 #include "ui/ozone/platform/wayland/gpu/wayland_buffer_manager_gpu.h"
+#include "ui/ozone/platform/wayland/gpu/wayland_surface_gpu.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
+#include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
+#include "ui/ozone/platform/wayland/host/wayland_wp_color_manager.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
+#include "ui/ozone/platform/wayland/test/mock_wp_presentation.h"
 #include "ui/ozone/platform/wayland/test/scoped_wl_array.h"
 #include "ui/ozone/platform/wayland/test/test_wayland_server_thread.h"
+#include "ui/ozone/platform/wayland/test/test_wp_color_manager.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
 
 using ::testing::_;
+using ::testing::ElementsAre;
+using ::testing::InSequence;
+using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
+using ::testing::Property;
 
 namespace ui {
 
 namespace {
+
+class MockSurfaceGpu : public WaylandSurfaceGpu {
+ public:
+  MockSurfaceGpu(WaylandBufferManagerGpu* buffer_manager,
+                 gfx::AcceleratedWidget widget)
+      : buffer_manager_(buffer_manager), widget_(widget) {
+    buffer_manager_->RegisterSurface(widget_, this);
+  }
+  MockSurfaceGpu(const MockSurfaceGpu&) = delete;
+  MockSurfaceGpu& operator=(const MockSurfaceGpu&) = delete;
+  ~MockSurfaceGpu() override { buffer_manager_->UnregisterSurface(widget_); }
+
+  MOCK_METHOD(void,
+              OnSubmission,
+              (uint32_t frame_id,
+               const gfx::SwapResult& swap_result,
+               gfx::GpuFenceHandle release_fence),
+              (override));
+  MOCK_METHOD(void,
+              OnPresentation,
+              (uint32_t frame_id, const gfx::PresentationFeedback& feedback),
+              (override));
+
+ private:
+  const raw_ptr<WaylandBufferManagerGpu> buffer_manager_;
+  const gfx::AcceleratedWidget widget_;
+};
 
 base::ScopedFD MakeFD() {
   base::FilePath temp_path;
@@ -41,6 +93,10 @@ constexpr gfx::Size kBufferSize = {1024, 768};
 
 class WaylandFrameManagerTest : public WaylandTestSimple {
  public:
+  WaylandFrameManagerTest() = default;
+  explicit WaylandFrameManagerTest(wl::ServerConfig config)
+      : WaylandTestSimple(config) {}
+
   void SetUp() override {
     WaylandTestSimple::SetUp();
     frame_manager_ =
@@ -58,15 +114,21 @@ class WaylandFrameManagerTest : public WaylandTestSimple {
   void InitBufferManager() {
     EXPECT_TRUE(connection_->buffer_manager_host());
     auto interface_ptr = connection_->buffer_manager_host()->BindInterface();
-    buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                    /*supports_dma_buf=*/false,
-                                    /*supports_viewporter=*/true,
-                                    /*supports_acquire_fence=*/false,
-                                    /*supports_overlays=*/true,
-                                    /*supports_single_pixel_buffer=*/true);
+    buffer_manager_gpu_->Initialize(
+        std::move(interface_ptr), {},
+        ozone::mojom::WaylandBufferManagerCapabilities::New(
+            /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+            /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+            /*supports_single_pixel_buffer=*/true,
+            /*compositor_tone_maps_using_clli=*/false,
+            /*compositor_tone_maps_using_mdcv=*/false));
   }
 
-  void RecordFrame() {
+  // Records a frame. If `requires_acks` is true, the frame waits for
+  // submission and presentation acks like the frames from the GPU process.
+  void RecordFrame(bool requires_acks = false,
+                   std::optional<gfx::ColorSpace> color_space = std::nullopt,
+                   const gfx::HDRMetadata& hdr_metadata = gfx::HDRMetadata()) {
     buffer_manager_gpu_->CreateShmBasedBuffer(MakeFD(), kLength, kBufferSize,
                                               buffer_id_);
     base::RunLoop().RunUntilIdle();
@@ -74,11 +136,40 @@ class WaylandFrameManagerTest : public WaylandTestSimple {
     wl::WaylandOverlayConfig config;
     config.buffer_id = buffer_id_;
     config.bounds_rect = {0, 0, kWidth, kHeight};
+    config.color_space = std::move(color_space);
+    config.hdr_metadata = hdr_metadata;
     auto* surface = window_->root_surface();
     std::unique_ptr<WaylandFrame> frame =
-        std::make_unique<WaylandFrame>(surface, std::move(config));
+        requires_acks
+            ? std::make_unique<WaylandFrame>(buffer_id_, gfx::FrameData(),
+                                             surface, std::move(config))
+            : std::make_unique<WaylandFrame>(surface, std::move(config));
     frame_manager_->RecordFrame(std::move(frame));
     ++buffer_id_;
+  }
+
+  void CreateHostShmBuffer(uint32_t buffer_id) {
+    connection_->buffer_manager_host()->CreateShmBasedBuffer(
+        mojo::PlatformHandle(MakeFD()), kLength, kBufferSize, buffer_id);
+  }
+
+  // Synchronously registers an SHM buffer on the host and records a frame
+  // without spinning the main-thread RunLoop, avoiding races with Mojo buffer
+  // creation or the real-time 50ms `frame_callback_timer_`.
+  void RecordHostShmFrame(bool requires_acks = false) {
+    const uint32_t id = buffer_id_++;
+    CreateHostShmBuffer(id);
+
+    wl::WaylandOverlayConfig config;
+    config.buffer_id = id;
+    config.bounds_rect = {0, 0, kWidth, kHeight};
+    auto* surface = window_->root_surface();
+    std::unique_ptr<WaylandFrame> frame =
+        requires_acks
+            ? std::make_unique<WaylandFrame>(id, gfx::FrameData(), surface,
+                                             std::move(config))
+            : std::make_unique<WaylandFrame>(surface, std::move(config));
+    frame_manager_->RecordFrame(std::move(frame));
   }
 
   void TestSurfaceCommits(bool expect_surface_commits) {
@@ -109,10 +200,10 @@ class WaylandFrameManagerTest : public WaylandTestSimple {
     EXPECT_EQ(0u, NumPendingFrames());
     EXPECT_EQ(1u, NumSubmittedFrames());
     if (expect_surface_commits) {
-      EXPECT_TRUE(LastSubmittedFrameHasFrameCallback());
+      EXPECT_TRUE(HasPendingFrameCallback());
       EXPECT_TRUE(LastSubmittedFrameHasSubmittedBuffers());
     } else {
-      EXPECT_FALSE(LastSubmittedFrameHasFrameCallback());
+      EXPECT_FALSE(HasPendingFrameCallback());
       EXPECT_FALSE(LastSubmittedFrameHasSubmittedBuffers());
     }
   }
@@ -123,8 +214,8 @@ class WaylandFrameManagerTest : public WaylandTestSimple {
     return frame_manager_->submitted_frames_.size();
   }
 
-  bool LastSubmittedFrameHasFrameCallback() {
-    return !!frame_manager_->submitted_frames_.back()->wl_frame_callback;
+  bool HasPendingFrameCallback() {
+    return !!frame_manager_->wl_frame_callback_;
   }
 
   bool LastSubmittedFrameAcked() {
@@ -135,10 +226,27 @@ class WaylandFrameManagerTest : public WaylandTestSimple {
     return !frame_manager_->submitted_frames_.back()->submitted_buffers.empty();
   }
 
+  const std::optional<gfx::PresentationFeedback>& LastSubmittedFrameFeedback() {
+    return frame_manager_->submitted_frames_.back()->feedback;
+  }
+
   void SendFrameCallback() {
     PostToServerAndWait([id = window_->root_surface()->get_surface_id()](
                             wl::TestWaylandServerThread* server) {
       auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+      mock_surface->SendFrameCallback();
+    });
+  }
+
+  // Sends the frame callback for the last frame and releases the buffer that
+  // was attached before the last one.
+  void SendFrameCallbackAndReleasePrevBuffer() {
+    PostToServerAndWait([id = window_->root_surface()->get_surface_id()](
+                            wl::TestWaylandServerThread* server) {
+      auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+      if (auto* buffer = mock_surface->prev_attached_buffer()) {
+        mock_surface->ReleaseBuffer(buffer);
+      }
       mock_surface->SendFrameCallback();
     });
   }
@@ -236,10 +344,9 @@ TEST_F(WaylandFrameManagerTest,
   InitBufferManager();
   RecordFrame();
   EXPECT_EQ(1u, NumSubmittedFrames());
-  EXPECT_TRUE(LastSubmittedFrameHasFrameCallback());
+  EXPECT_TRUE(HasPendingFrameCallback());
   EXPECT_TRUE(LastSubmittedFrameHasSubmittedBuffers());
   EXPECT_EQ(0u, NumPendingFrames());
-  EXPECT_TRUE(LastSubmittedFrameHasFrameCallback());
 
   // Ensure pending frame
   RecordFrame();
@@ -331,9 +438,12 @@ TEST_F(WaylandFrameManagerTest,
   // be cleared.
   EXPECT_EQ(0u, NumPendingFrames());
   EXPECT_EQ(1u, NumSubmittedFrames());
-  EXPECT_FALSE(LastSubmittedFrameHasFrameCallback());
+  EXPECT_FALSE(HasPendingFrameCallback());
   EXPECT_FALSE(LastSubmittedFrameHasSubmittedBuffers());
   EXPECT_TRUE(LastSubmittedFrameAcked());
+  ASSERT_TRUE(LastSubmittedFrameFeedback().has_value());
+  EXPECT_FALSE(LastSubmittedFrameFeedback()->flags &
+               gfx::PresentationFeedback::Flags::kVSync);
 }
 
 TEST_F(WaylandFrameManagerTest, UnblockFrames_OnTransitionToSwapWithoutCommit) {
@@ -342,7 +452,7 @@ TEST_F(WaylandFrameManagerTest, UnblockFrames_OnTransitionToSwapWithoutCommit) {
   RecordFrame();
   EXPECT_EQ(1u, NumSubmittedFrames());
   EXPECT_EQ(0u, NumPendingFrames());
-  EXPECT_TRUE(LastSubmittedFrameHasFrameCallback());
+  EXPECT_TRUE(HasPendingFrameCallback());
 
   // Ensure pending frame
   RecordFrame();
@@ -370,9 +480,558 @@ TEST_F(WaylandFrameManagerTest, UnblockFrames_OnTransitionToSwapWithoutCommit) {
   // 2 submitted frames should be cleared and one pending frame should be
   // submitted.
   EXPECT_EQ(1u, NumSubmittedFrames());
-  EXPECT_FALSE(LastSubmittedFrameHasFrameCallback());
+  EXPECT_FALSE(HasPendingFrameCallback());
   EXPECT_FALSE(LastSubmittedFrameHasSubmittedBuffers());
   EXPECT_TRUE(LastSubmittedFrameAcked());
+}
+
+// Tests that the submitted frames queue is trimmed when the compositor stops
+// sending presentation feedback, even if a frame in the queue was already
+// marked as failed (here by Hide()) while its presentation feedback request
+// was still outstanding.
+TEST_F(WaylandFrameManagerTest, TooManySubmittedFramesAfterHide) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    ASSERT_TRUE(server->EnsureAndGetWpPresentation());
+  });
+  InitBufferManager();
+  ASSERT_TRUE(connection_->presentation());
+
+  // The compositor never sends presentation feedback, so the first frame
+  // blocks the queue.
+  RecordFrame(/*requires_acks=*/true);
+  SendFrameCallbackAndReleasePrevBuffer();
+  RecordFrame(/*requires_acks=*/true);
+  EXPECT_EQ(2u, NumSubmittedFrames());
+  EXPECT_EQ(0u, NumPendingFrames());
+
+  // Hiding marks the last frame as failed while its presentation feedback
+  // request is still outstanding.
+  frame_manager_->Hide();
+
+  // Submit enough frames to hit the limit of submitted frames.
+  for (int i = 0; i < 20; ++i) {
+    SendFrameCallbackAndReleasePrevBuffer();
+    RecordFrame(/*requires_acks=*/true);
+    EXPECT_EQ(0u, NumPendingFrames());
+  }
+
+  // The frames without feedback are marked as failed and processed, so the
+  // queue no longer grows.
+  EXPECT_LT(NumSubmittedFrames(), 20u);
+
+  // Destroy the feedback resources that the server never answered.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    auto* presentation = server->EnsureAndGetWpPresentation();
+    while (presentation->num_of_presentation_callbacks() > 0) {
+      presentation->DropPresentationCallback();
+    }
+  });
+}
+
+class WaylandFrameManagerColorManagementTest : public WaylandFrameManagerTest {
+ public:
+  WaylandFrameManagerColorManagementTest()
+      : WaylandFrameManagerTest({.supports_color_management = true}) {}
+
+  void SetUp() override {
+    WaylandFrameManagerTest::SetUp();
+    ASSERT_TRUE(connection_->wp_color_manager());
+    ASSERT_TRUE(connection_->wp_color_manager()->ready());
+    // Record the reference luminance of the image description in effect after
+    // each commit of the root surface.
+    PostToServerAndWait([this, id = window_->root_surface()->get_surface_id()](
+                            wl::TestWaylandServerThread* server) {
+      auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+      ASSERT_TRUE(mock_surface);
+      ON_CALL(*mock_surface, Commit())
+          .WillByDefault([this, server, mock_surface]() {
+            auto params =
+                server->wp_color_manager()->GetSurfaceImageDescription(
+                    mock_surface->resource());
+            committed_reference_luminances_.push_back(
+                params && params->luminances ? params->luminances->reference
+                                             : 0u);
+          });
+    });
+  }
+
+ protected:
+  // Records a frame whose root surface buffer holds SDR content composited
+  // into PQ with SDR white at `sdr_white` nits, as viz does on HDR displays.
+  void RecordPQFrame(float sdr_white) {
+    RecordFrame(/*requires_acks=*/false,
+                gfx::ColorSpace::CreateHDR10().GetWithSdrWhiteLevel(sdr_white),
+                gfx::HDRMetadata(
+                    skhdr::MasteringDisplayColorVolume{
+                        .fDisplayPrimaries = SkNamedPrimaries::kRec2020,
+                        .fMaximumDisplayMasteringLuminance = sdr_white,
+                        .fMinimumDisplayMasteringLuminance = 0.f,
+                    },
+                    skhdr::ContentLightLevelInformation{
+                        .fMaxCLL = sdr_white, .fMaxFALL = sdr_white}));
+  }
+
+  std::vector<uint32_t> CommittedReferenceLuminances() {
+    std::vector<uint32_t> result;
+    PostToServerAndWait([&](wl::TestWaylandServerThread* server) {
+      result = committed_reference_luminances_;
+    });
+    return result;
+  }
+
+ private:
+  // Only accessed on the server thread.
+  std::vector<uint32_t> committed_reference_luminances_;
+};
+
+// A frame whose image description isn't created yet must be held until it is,
+// so the description is latched by the same commit as the frame's buffer.
+// Otherwise, when the SDR white level changes (e.g. the user changes the
+// brightness of an HDR display), the first buffer rendered for the new white
+// level is described with the old one, and stays that way for static content
+// (https://crbug.com/471769943).
+TEST_F(WaylandFrameManagerColorManagementTest, FrameWaitsForImageDescription) {
+  InitBufferManager();
+
+  RecordPQFrame(203.f);
+  // The image description must become ready before the frame is played back.
+  EXPECT_EQ(1u, NumPendingFrames());
+  EXPECT_EQ(0u, NumSubmittedFrames());
+  SyncDisplay();
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_EQ(1u, NumSubmittedFrames());
+  EXPECT_THAT(CommittedReferenceLuminances(), ElementsAre(203u));
+
+  // A new SDR white level needs a new image description.
+  SendFrameCallback();
+  RecordPQFrame(150.f);
+  EXPECT_EQ(1u, NumPendingFrames());
+  SyncDisplay();
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_THAT(CommittedReferenceLuminances(), ElementsAre(203u, 150u));
+
+  // Going back to a cached image description doesn't wait.
+  SendFrameCallback();
+  RecordPQFrame(203.f);
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_THAT(CommittedReferenceLuminances(), ElementsAre(203u, 150u, 203u));
+
+  // Neither does a frame with an unchanged image description.
+  SendFrameCallback();
+  RecordPQFrame(203.f);
+  EXPECT_EQ(0u, NumPendingFrames());
+}
+
+// A frame whose image description fails to be created is played back once the
+// compositor sends `failed`, and later frames don't wait for that description
+// again.
+TEST_F(WaylandFrameManagerColorManagementTest,
+       FrameDoesNotWaitForFailedImageDescription) {
+  InitBufferManager();
+
+  RecordPQFrame(203.f);
+  SyncDisplay();
+  EXPECT_EQ(1u, NumSubmittedFrames());
+  EXPECT_THAT(CommittedReferenceLuminances(), ElementsAre(203u));
+
+  size_t num_created_descriptions = 0;
+  PostToServerAndWait([&](wl::TestWaylandServerThread* server) {
+    server->wp_color_manager()->set_fail_parametric_descriptions(true);
+    num_created_descriptions =
+        server->wp_color_manager()->created_descriptions().size();
+  });
+
+  SendFrameCallback();
+  RecordPQFrame(150.f);
+  EXPECT_EQ(1u, NumPendingFrames());
+  // On `failed`, the frame is played back. Committing it requests the same
+  // description again from within the callbacks of the failed request.
+  SyncDisplay();
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_EQ(2u, NumSubmittedFrames());
+  // Let the second request fail too.
+  SyncDisplay();
+  PostToServerAndWait([&](wl::TestWaylandServerThread* server) {
+    EXPECT_EQ(num_created_descriptions + 2,
+              server->wp_color_manager()->created_descriptions().size());
+  });
+  // The previous description stays in effect.
+  EXPECT_THAT(CommittedReferenceLuminances(), ElementsAre(203u, 203u));
+
+  // Switching to the cached description and back to the failed one doesn't
+  // wait.
+  SendFrameCallback();
+  RecordPQFrame(203.f);
+  EXPECT_EQ(0u, NumPendingFrames());
+  SendFrameCallback();
+  RecordPQFrame(150.f);
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_EQ(4u, NumSubmittedFrames());
+}
+
+// Holding a frame also holds back the commit that would flush the image
+// description requests. Poll the server without running the client's message
+// loop, whose glib event watcher flushes on every iteration.
+TEST_F(WaylandFrameManagerColorManagementTest, HeldFrameFlushesRequests) {
+  InitBufferManager();
+  RecordPQFrame(203.f);
+  EXPECT_EQ(1u, NumPendingFrames());
+
+  // TimeTicks::Now() is mocked here, so bound the wait by iterations.
+  size_t created = 0;
+  for (int i = 0; i < 2000 && created == 0; ++i) {
+    server_.Post(base::BindLambdaForTesting([&] {
+      created = server_.wp_color_manager()->created_descriptions().size();
+    }));
+    server_.FlushForTesting();
+    if (created == 0) {
+      base::PlatformThread::Sleep(base::Milliseconds(1));
+    }
+  }
+  EXPECT_EQ(1u, created);
+
+  // Once the loop runs, the requests get flushed and the frame drains.
+  EXPECT_TRUE(base::test::RunUntil([&] { return NumSubmittedFrames() == 1u; }));
+}
+
+// Tests that skipping frame callbacks during video capture on an occluded
+// window keeps at most one pending wl_surface.frame callback in flight and
+// still recovers once the compositor delivers that callback, even after the
+// frame that originally requested it has been popped from submitted_frames_.
+TEST_F(WaylandFrameManagerTest,
+       FrameCallbacksBounded_WhileSkippingFrameCallbacks) {
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    ASSERT_TRUE(server->EnsureAndGetWpPresentation());
+  });
+  InitBufferManager();
+  ASSERT_TRUE(connection_->presentation());
+
+  const uint32_t root_id = window_->root_surface()->get_surface_id();
+  frame_manager_->SetVideoCapture();
+
+  // First frame while becoming occluded requests a single frame callback.
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(root_id);
+    EXPECT_CALL(*mock_surface, Frame(_)).Times(1);
+  });
+  RecordHostShmFrame(/*requires_acks=*/true);
+  EXPECT_EQ(0u, NumPendingFrames());
+  EXPECT_EQ(1u, NumSubmittedFrames());
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(root_id));
+  });
+
+  // Freeze detected: subsequent frames are submitted without waiting, and must
+  // not request additional wl_surface.frame callbacks while the first callback
+  // is still pending on the compositor.
+  frame_manager_->FrameCallbackTimeout();
+
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(root_id);
+    EXPECT_CALL(*mock_surface, Frame(_)).Times(0);
+  });
+
+  for (int i = 0; i < 10; ++i) {
+    RecordHostShmFrame(/*requires_acks=*/true);
+    PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+      auto* mock_surface = server->GetObject<wl::MockSurface>(root_id);
+      if (auto* buffer = mock_surface->prev_attached_buffer()) {
+        mock_surface->ReleaseBuffer(buffer);
+      }
+      server->EnsureAndGetWpPresentation()->SendPresentationCallbackDiscarded();
+    });
+    EXPECT_EQ(0u, NumPendingFrames());
+    // Older frames (including the first one) are cleared once their buffers are
+    // released and their presentation feedbacks are discarded.
+    EXPECT_LE(NumSubmittedFrames(), 2u);
+  }
+
+  // If video capture ends while still occluded, subsequent frames wait on the
+  // existing pending callback without requesting another one.
+  frame_manager_->ReleaseVideoCapture();
+  RecordHostShmFrame(/*requires_acks=*/true);
+  EXPECT_EQ(1u, NumPendingFrames());
+  frame_manager_->SetVideoCapture();
+  EXPECT_EQ(0u, NumPendingFrames());
+
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(root_id));
+  });
+
+  // Un-occluding delivers the single pending frame callback and recovers from
+  // the freeze.
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(root_id);
+    mock_surface->SendFrameCallback();
+    server->EnsureAndGetWpPresentation()->SendPresentationCallback();
+  });
+
+  // Normal frame-callback-driven playback resumes: the next frame requests one
+  // new callback, and the following frame waits for it. Submit both frames
+  // synchronously and clear states before spinning RunLoops so the real-time
+  // 50ms `frame_callback_timer_` cannot fire mid-check under load.
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(root_id);
+    EXPECT_CALL(*mock_surface, Frame(_)).Times(1);
+  });
+  RecordHostShmFrame(/*requires_acks=*/true);
+  EXPECT_EQ(0u, NumPendingFrames());
+  RecordHostShmFrame(/*requires_acks=*/true);
+  EXPECT_EQ(1u, NumPendingFrames());
+
+  frame_manager_->ClearStates();
+
+  // Verify the single Frame() call and clean up server-side presentation
+  // callbacks now that no pending frames can be played back during TearDown.
+  PostToServerAndWait([root_id](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(root_id));
+    auto* presentation = server->EnsureAndGetWpPresentation();
+    while (presentation->num_of_presentation_callbacks() > 0) {
+      presentation->DropPresentationCallback();
+    }
+  });
+}
+
+// Tests that if the single pending wl_surface.frame callback was requested on a
+// subsurface that is subsequently hidden while skipping frame callbacks, a
+// replacement callback is requested on a visible surface so recovery still
+// works upon un-occlusion.
+TEST_F(WaylandFrameManagerTest,
+       FrameCallbackReplaced_WhenCallbackSubsurfaceHiddenDuringSkip) {
+  InitBufferManager();
+  WaylandSubsurface subsurface(connection_.get(), window_.get());
+  SyncDisplay();
+
+  const uint32_t root_id = window_->root_surface()->get_surface_id();
+  const uint32_t sub_id = subsurface.wayland_surface()->get_surface_id();
+  PostToServerAndWait([sub_id](wl::TestWaylandServerThread* server) {
+    server->GetObject<wl::MockSurface>(sub_id)->AllowResettingFrameCallback();
+  });
+
+  // Frame 1 attaches root buffer 1 and completes its frame callback.
+  const uint32_t kRootBuf1 = 100;
+  CreateHostShmBuffer(kRootBuf1);
+  {
+    wl::WaylandOverlayConfig root_cfg;
+    root_cfg.buffer_id = kRootBuf1;
+    root_cfg.bounds_rect = {0, 0, kWidth, kHeight};
+    frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
+        window_->root_surface(), std::move(root_cfg)));
+  }
+  SendFrameCallback();
+
+  // Frame 2 keeps the same root buffer (will_attach == false on root) and
+  // attaches a new buffer on the subsurface, so the pending callback is created
+  // on the subsurface.
+  frame_manager_->SetVideoCapture();
+  const uint32_t kSubBuf1 = 101;
+  CreateHostShmBuffer(kSubBuf1);
+  PostToServerAndWait([root_id, sub_id](wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->GetObject<wl::MockSurface>(root_id), Frame(_))
+        .Times(0);
+    EXPECT_CALL(*server->GetObject<wl::MockSurface>(sub_id), Frame(_)).Times(1);
+  });
+  {
+    wl::WaylandOverlayConfig root_cfg;
+    root_cfg.buffer_id = kRootBuf1;
+    root_cfg.bounds_rect = {0, 0, kWidth, kHeight};
+    wl::WaylandOverlayConfig sub_cfg;
+    sub_cfg.buffer_id = kSubBuf1;
+    sub_cfg.bounds_rect = {0, 0, kWidth, kHeight};
+    base::circular_deque<
+        std::pair<WaylandSubsurface*, wl::WaylandOverlayConfig>>
+        subs;
+    subs.emplace_back(&subsurface, std::move(sub_cfg));
+    frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
+        window_->root_surface(), std::move(root_cfg), std::move(subs)));
+  }
+  PostToServerAndWait([root_id, sub_id](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(root_id));
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(sub_id));
+  });
+
+  // Enter skip-frame-callbacks mode, then hide the subsurface while attaching a
+  // new buffer on root_surface: root_surface must request a replacement frame
+  // callback once, and subsequent skipped frames must request none.
+  frame_manager_->FrameCallbackTimeout();
+  const uint32_t kRootBuf2 = 102;
+  const uint32_t kRootBuf3 = 103;
+  CreateHostShmBuffer(kRootBuf2);
+  CreateHostShmBuffer(kRootBuf3);
+
+  PostToServerAndWait([root_id, sub_id](wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->GetObject<wl::MockSurface>(root_id), Frame(_))
+        .Times(1);
+    EXPECT_CALL(*server->GetObject<wl::MockSurface>(sub_id), Frame(_)).Times(0);
+  });
+  {
+    wl::WaylandOverlayConfig root_cfg;
+    root_cfg.buffer_id = kRootBuf2;
+    root_cfg.bounds_rect = {0, 0, kWidth, kHeight};
+    base::circular_deque<
+        std::pair<WaylandSubsurface*, wl::WaylandOverlayConfig>>
+        subs;
+    subs.emplace_back(&subsurface, wl::WaylandOverlayConfig());
+    frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
+        window_->root_surface(), std::move(root_cfg), std::move(subs)));
+  }
+  {
+    wl::WaylandOverlayConfig root_cfg;
+    root_cfg.buffer_id = kRootBuf3;
+    root_cfg.bounds_rect = {0, 0, kWidth, kHeight};
+    frame_manager_->RecordFrame(std::make_unique<WaylandFrame>(
+        window_->root_surface(), std::move(root_cfg)));
+  }
+  PostToServerAndWait([root_id, sub_id](wl::TestWaylandServerThread* server) {
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(root_id));
+    Mock::VerifyAndClearExpectations(
+        server->GetObject<wl::MockSurface>(sub_id));
+  });
+
+  // Delivering the replacement callback on root_surface ends the freeze.
+  SendFrameCallback();
+  RecordHostShmFrame();
+  EXPECT_EQ(0u, NumPendingFrames());
+  RecordHostShmFrame();
+  EXPECT_EQ(1u, NumPendingFrames());
+
+  frame_manager_->ClearStates();
+}
+
+// Regression test for crbug.com/582622866: hiding when multiple GPU frames are
+// queued in `pending_frames_` with an empty `submitted_frames_` queue must ack
+// all moved frames in submission order without hitting
+// `CHECK((*iter)->submission_acked)`.
+TEST_F(WaylandFrameManagerTest, HideWithMultipleUnconfiguredPendingFrames) {
+  InitBufferManager();
+  {
+    MockSurfaceGpu mock_surface_gpu(buffer_manager_gpu_.get(),
+                                    window_->GetWidget());
+    PostToServerAndWait([] {});
+
+    // Put `window_` into the unconfigured state so `RecordFrame()` keeps frames
+    // in `pending_frames_` without populating `submitted_frames_`.
+    window_->Hide();
+    ASSERT_FALSE(window_->received_configure_event());
+    ASSERT_EQ(0u, NumPendingFrames());
+    ASSERT_EQ(0u, NumSubmittedFrames());
+
+    for (uint32_t frame_id = 1; frame_id <= 3; ++frame_id) {
+      buffer_manager_gpu_->CreateShmBasedBuffer(MakeFD(), kLength, kBufferSize,
+                                                frame_id);
+      PostToServerAndWait([] {});
+
+      wl::WaylandOverlayConfig config;
+      config.buffer_id = frame_id;
+      config.bounds_rect = {0, 0, kWidth, kHeight};
+      auto frame = std::make_unique<WaylandFrame>(frame_id, gfx::FrameData(),
+                                                  window_->root_surface(),
+                                                  std::move(config));
+      frame_manager_->RecordFrame(std::move(frame));
+    }
+
+    EXPECT_EQ(3u, NumPendingFrames());
+    EXPECT_EQ(0u, NumSubmittedFrames());
+
+    base::RunLoop presentation_loop;
+    {
+      InSequence submission_seq;
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(1u, gfx::SwapResult::SWAP_ACK, _));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(2u, gfx::SwapResult::SWAP_ACK, _));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(3u, gfx::SwapResult::SWAP_ACK, _));
+    }
+    {
+      InSequence presentation_seq;
+      EXPECT_CALL(mock_surface_gpu,
+                  OnPresentation(
+                      1u, Property(&gfx::PresentationFeedback::failed, true)));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnPresentation(
+                      2u, Property(&gfx::PresentationFeedback::failed, true)));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnPresentation(
+                      3u, Property(&gfx::PresentationFeedback::failed, true)))
+          .WillOnce(
+              InvokeWithoutArgs(&presentation_loop, &base::RunLoop::Quit));
+    }
+
+    frame_manager_->Hide();
+    presentation_loop.Run();
+
+    EXPECT_EQ(0u, NumPendingFrames());
+    EXPECT_EQ(1u, NumSubmittedFrames());
+    EXPECT_TRUE(LastSubmittedFrameAcked());
+    Mock::VerifyAndClearExpectations(&mock_surface_gpu);
+  }
+  PostToServerAndWait([] {});
+}
+
+// End-to-end regression test for crbug.com/582622866: hiding an unconfigured
+// `WaylandPopup` after multiple GPU swaps have been committed queues >=2
+// unacked frames in `pending_frames_` and acks them in order on `Hide()`.
+TEST_F(WaylandFrameManagerTest,
+       HideUnconfiguredPopupWithMultiplePendingFrames) {
+  InitBufferManager();
+
+  ::testing::NiceMock<MockWaylandPlatformWindowDelegate> popup_delegate(
+      connection_.get());
+  auto popup = CreateWaylandWindowWithParams(
+      PlatformWindowType::kTooltip, gfx::Rect(10, 10, 100, 40), &popup_delegate,
+      window_->GetWidget());
+  ASSERT_TRUE(popup);
+  ASSERT_FALSE(popup->received_configure_event());
+
+  {
+    MockSurfaceGpu mock_surface_gpu(buffer_manager_gpu_.get(),
+                                    popup->GetWidget());
+    PostToServerAndWait([] {});
+
+    constexpr gfx::Rect kPopupBounds(0, 0, 100, 40);
+    for (uint32_t id = 1; id <= 2; ++id) {
+      buffer_manager_gpu_->CreateShmBasedBuffer(MakeFD(), kLength, kBufferSize,
+                                                id);
+      buffer_manager_gpu_->CommitBuffer(
+          popup->GetWidget(), /*frame_id=*/id, /*buffer_id=*/id,
+          gfx::FrameData(), kPopupBounds, /*enable_blend=*/true,
+          gfx::RoundedCornersF(), /*surface_scale_factor=*/1.0f, kPopupBounds);
+    }
+    PostToServerAndWait([] {});
+    ASSERT_FALSE(popup->received_configure_event());
+
+    base::RunLoop presentation_loop;
+    {
+      InSequence submission_seq;
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(1u, gfx::SwapResult::SWAP_ACK, _));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnSubmission(2u, gfx::SwapResult::SWAP_ACK, _));
+    }
+    {
+      InSequence presentation_seq;
+      EXPECT_CALL(mock_surface_gpu,
+                  OnPresentation(
+                      1u, Property(&gfx::PresentationFeedback::failed, true)));
+      EXPECT_CALL(mock_surface_gpu,
+                  OnPresentation(
+                      2u, Property(&gfx::PresentationFeedback::failed, true)))
+          .WillOnce(
+              InvokeWithoutArgs(&presentation_loop, &base::RunLoop::Quit));
+    }
+
+    popup->Hide();
+    presentation_loop.Run();
+    Mock::VerifyAndClearExpectations(&mock_surface_gpu);
+  }
+  PostToServerAndWait([] {});
 }
 
 }  // namespace ui

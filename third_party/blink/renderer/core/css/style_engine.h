@@ -34,6 +34,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/containers/enum_set.h"
 #include "base/gtest_prod_util.h"
 #include "third_party/blink/public/common/css/forced_colors.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-blink-forward.h"
@@ -124,7 +125,26 @@ class OrderedScopeTree;
 using StyleContainmentScopeTree = OrderedScopeTree<LayoutQuote>;
 using ScrollTargetGroupScopeTree = OrderedScopeTree<HTMLAnchorElement>;
 
-enum InvalidationScope { kInvalidateCurrentScope, kInvalidateAllScopes };
+// Flags used when processing changes to active RuleSets.
+enum class RuleSetFlag {
+  kFontFaceRules,
+  kKeyframesRules,
+  kPropertyRules,
+  kCounterStyleRules,
+  kLayerRules,
+  kFontPaletteValuesRules,
+  kPositionTryRules,
+  kFontFeatureValuesRules,
+  kViewTransitionRules,
+  kFunctionRules,
+  kFullRecalcRules,
+};
+
+using RuleSetFlags = base::EnumSet<RuleSetFlag,
+                                   RuleSetFlag::kFontFaceRules,
+                                   RuleSetFlag::kFullRecalcRules>;
+
+enum class InvalidationScope { kCurrentScope, kAllScopes };
 
 using StyleSheetKey = AtomicString;
 using UnorderedTreeScopeSet = HeapHashSet<Member<TreeScope>>;
@@ -412,8 +432,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                                const ComputedStyle* new_root_style);
   void SetUsesTreeCountingFunctions() { uses_tree_counting_functions_ = true; }
 
-  void ResetCSSFeatureFlags(const RuleFeatureSet&);
-
   bool CountersChanged() const { return counters_changed_; }
   void MarkCountersDirty() { counters_changed_ = true; }
   void MarkCountersClean() { counters_changed_ = false; }
@@ -452,6 +470,19 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void InvalidateStyle();
   bool MayHaveViewportDependentMediaQueries();
   bool HasViewportDependentPropertyRegistrations();
+
+  class InApplyAnimatedStyleScope {
+    STACK_ALLOCATED();
+
+   public:
+    explicit InApplyAnimatedStyleScope(StyleEngine& engine)
+        : auto_reset_(&engine.in_apply_animated_style_, true) {}
+
+   private:
+    base::AutoReset<bool> auto_reset_;
+  };
+
+  bool InApplyAnimatedStyle() const { return in_apply_animated_style_; }
 
   class InApplyAnimationUpdateScope {
     STACK_ALLOCATED();
@@ -558,21 +589,20 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                                               Element& removed_element,
                                               Element& after_element);
   void ScheduleNthPseudoInvalidations(ContainerNode&);
-  void ApplyRuleSetInvalidationForTreeScope(
-      TreeScope&,
-      ContainerNode&,
-      SelectorFilter&,
-      StyleScopeFrame&,
-      const HeapHashSet<Member<RuleSet>>&,
-      unsigned changed_rule_flags,
-      InvalidationScope = kInvalidateCurrentScope);
+  void ApplyRuleSetInvalidationForTreeScope(TreeScope&,
+                                            ContainerNode&,
+                                            SelectorFilter&,
+                                            StyleScopeFrame&,
+                                            const HeapHashSet<Member<RuleSet>>&,
+                                            RuleSetFlags changed_rule_flags,
+                                            InvalidationScope);
   void ApplyRuleSetInvalidationForSubtree(
       TreeScope&,
       Element&,
       SelectorFilter&,
       StyleRecalcContext& parent_style_recalc_context,
       const HeapHashSet<Member<RuleSet>>&,
-      unsigned changed_rule_flags,
+      RuleSetFlags changed_rule_flags,
       InvalidationScope,
       bool invalidate_slotted,
       bool invalidate_part);
@@ -588,6 +618,11 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void FlatTreePositionChanged(Node& node) {
     style_recalc_root_.FlatTreePositionChanged(node);
   }
+  void AddFlatTreeMovedNode(Node& node) {
+    flat_tree_moved_nodes_.insert(&node);
+  }
+  bool HasFlatTreeMovedNodes() const { return !flat_tree_moved_nodes_.empty(); }
+  void DetachDisplayLockedFlatTreeMovedNodesIfNeeded();
   void PseudoElementRemoved(Element& originating_element) {
     layout_tree_rebuild_root_.SubtreeModified(originating_element);
   }
@@ -610,7 +645,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
                            const ActiveStyleSheetVector& old_style_sheets,
                            const ActiveStyleSheetVector& new_style_sheets,
                            const HeapVector<Member<RuleSetDiff>>& diffs);
-  void ApplyUserRuleSetChanges(const ActiveStyleSheetVector& old_style_sheets,
+  void ApplyUserRuleSetChanges(ActiveStyleSheetVector& old_style_sheets,
                                const ActiveStyleSheetVector& new_style_sheets);
 
   void VisionDeficiencyChanged();
@@ -733,10 +768,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   }
   bool InInterleavedStyleRecalc() const {
     return InContainerQueryStyleRecalc() || InPositionTryStyleRecalc();
-  }
-  void SetInScrollMarkersAttachment(bool in_scroll_markers_attachment) {
-    DCHECK(!in_scroll_markers_attachment_ || !in_scroll_markers_attachment);
-    in_scroll_markers_attachment_ = in_scroll_markers_attachment;
   }
   bool InScrollMarkersAttachment() const {
     return in_scroll_markers_attachment_;
@@ -909,14 +940,14 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
       SelectorFilter& selector_filter,
       StyleRecalcContext& style_recalc_context,
       const HeapHashSet<Member<RuleSet>>& rule_sets,
-      unsigned changed_rule_flags,
+      RuleSetFlags changed_rule_flags,
       bool is_shadow_host);
   void InvalidateSlottedElements(HTMLSlotElement&,
                                  const StyleChangeReasonForTracing&);
   void InvalidateForRuleSetChanges(
       TreeScope& tree_scope,
       const HeapHashSet<Member<RuleSet>>& changed_rule_sets,
-      unsigned changed_rule_flags,
+      RuleSetFlags changed_rule_flags,
       InvalidationScope invalidation_scope);
   void InvalidateInitialData();
 
@@ -932,11 +963,17 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void UpdateStyleSheetList(TreeScope&);
 
   // Returns true if any @font-face rules are added or removed.
-  bool ClearFontFaceCacheAndAddUserFonts(
-      const ActiveStyleSheetVector& user_sheets);
+  // Passing the same vector for an origin's old and new sheets means that
+  // origin is known to be unchanged.
+  bool RebuildCSSConnectedFontFaces(
+      const ActiveStyleSheetVector& old_user_sheets,
+      const ActiveStyleSheetVector& new_user_sheets,
+      const ActiveStyleSheetVector& old_author_sheets,
+      const ActiveStyleSheetVector& new_author_sheets);
 
   void ClearKeyframeRules();
-  void ClearPropertyRules();
+  void UpdatePropertyRules(const ActiveStyleSheetVector& user_style_sheets,
+                           const ActiveStyleSheetVector& author_style_sheets);
 
   class AtRuleCascadeMap;
 
@@ -946,8 +983,6 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   void AddFontPaletteValuesRulesFromSheets(
       const ActiveStyleSheetVector& sheets);
 
-  // Returns true if any @font-face rules are added.
-  bool AddUserFontFaceRules(const RuleSet&);
   void AddUserKeyframeRules(const RuleSet&);
   void AddUserKeyframeStyle(const CascadeLayered<StyleRuleKeyframes>&);
   void AddFontPaletteValuesRules(const RuleSet& rule_set);
@@ -1096,6 +1131,7 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
   bool in_scroll_markers_attachment_{false};
   bool in_dom_removal_{false};
   bool in_detach_scope_{false};
+  bool in_apply_animated_style_{false};
   bool in_apply_animation_update_{false};
   bool in_ensure_computed_style_{false};
   bool viewport_style_dirty_{false};
@@ -1321,6 +1357,11 @@ class CORE_EXPORT StyleEngine final : public GarbageCollected<StyleEngine>,
 
   // URLPattern entries defined by @location rules.
   HeapHashMap<AtomicString, Member<URLPattern>> navigation_locations_;
+
+  // Nodes whose flat-tree parent changed while retaining style or layout state.
+  // Drained in DetachDisplayLockedFlatTreeMovedNodesIfNeeded() once slot
+  // assignments are clean.
+  HeapHashSet<WeakMember<Node>> flat_tree_moved_nodes_;
 };
 
 void PossiblyScheduleNthPseudoInvalidations(Node& node);

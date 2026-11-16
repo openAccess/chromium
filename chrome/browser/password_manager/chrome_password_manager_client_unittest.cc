@@ -37,8 +37,8 @@
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
 #include "chrome/browser/password_manager/password_change_delegate_mock.h"
 #include "chrome/browser/password_manager/password_change_service_factory.h"
+#include "chrome/browser/safe_browsing/interstitials/user_interaction_observer.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
-#include "chrome/browser/safe_browsing/user_interaction_observer.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_controller_impl.h"
@@ -63,6 +63,7 @@
 #include "components/device_reauth/device_authenticator.h"
 #include "components/device_reauth/mock_device_auth_availability_checker.h"
 #include "components/device_reauth/mock_device_authenticator.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/content/browser/password_manager_log_router_factory.h"
 #include "components/password_manager/core/browser/credential_cache.h"
@@ -80,6 +81,8 @@
 #include "components/safe_browsing/buildflags.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/sessions/content/content_record_password_state.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/base/signin_metrics.h"
 #include "components/sync/test/test_sync_service.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/browser/browser_context.h"
@@ -104,9 +107,32 @@
 #include "url/origin.h"
 #include "url/url_constants.h"
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/signin/dice_tab_helper.h"
+#endif
+
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/common/constants.h"
 #endif
+#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_keyed_service_factory.h"
+#include "chrome/browser/actor/actor_keyed_service_fake.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
+#include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/actor/actor_test_util.h"
+#include "chrome/browser/actor/enterprise_policy_checker.h"
+#include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
+#include "chrome/browser/enterprise/connectors/reporting/reporting_event_router_factory.h"
+#include "chrome/common/actor_webui.mojom.h"
+#include "components/actor/core/task_id.h"
+#include "components/actor/core/task_source_info.h"
+#include "components/enterprise/common/proto/synced/browser_events.pb.h"
+#include "components/enterprise/connectors/core/features.h"
+#include "components/enterprise/connectors/core/reporting_event_router.h"
+#include "components/tabs/public/mock_tab_interface.h"
+#include "components/tabs/public/tab_interface.h"
+#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "components/safe_browsing/content/browser/password_protection/mock_password_protection_service.h"
@@ -136,6 +162,7 @@
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/passwords/password_cross_domain_confirmation_popup_view.h"
+#include "components/trusted_vault/trusted_vault_client.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 using ::autofill::CalculateFormSignature;
@@ -1825,6 +1852,73 @@ TEST_F(ChromePasswordManagerClientTest, GetActionableError) {
             GetClient()->GetActionableError());
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ChromePasswordManagerClientTest,
+       StartTrustedVaultKeyRetrievalWithoutBrowserDoesNotCrash) {
+  base::HistogramTester histogram_tester;
+  GetClient()->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+  histogram_tester.ExpectTotalCount("Sync.TrustedVaultKeyRetrievalTrigger", 0);
+}
+
+TEST_F(ChromePasswordManagerClientTest,
+       StartTrustedVaultKeyRetrievalInIncognitoDoesNotRetrieve) {
+  std::unique_ptr<content::WebContents> incognito_web_contents(
+      content::WebContentsTester::CreateTestWebContents(
+          profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true), nullptr));
+  autofill::ChromeAutofillClient::CreateForWebContents(
+      incognito_web_contents.get());
+  ChromePasswordManagerClient::CreateForWebContents(
+      incognito_web_contents.get());
+  ChromePasswordManagerClient* client =
+      ChromePasswordManagerClient::FromWebContents(
+          incognito_web_contents.get());
+  ASSERT_NE(nullptr, client);
+
+  base::HistogramTester histogram_tester;
+  client->StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA::
+          kPasswordManagerSettings);
+  histogram_tester.ExpectTotalCount("Sync.TrustedVaultKeyRetrievalTrigger", 0);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+TEST_F(ChromePasswordManagerClientTest, IsPageEligibleForInlineQrCodeSignin) {
+  EXPECT_FALSE(GetClient()->IsPageEligibleForInlineQrCodeSignin());
+
+  DiceTabHelper::CreateForWebContents(web_contents());
+  DiceTabHelper* dice_tab_helper =
+      DiceTabHelper::FromWebContents(web_contents());
+  const GURL kSigninUrl("https://accounts.google.com/signin/chrome/sync");
+
+  dice_tab_helper->InitializeSigninFlow(
+      kSigninUrl, signin_metrics::AccessPoint::kSettings,
+      signin_metrics::Reason::kSigninPrimaryAccount,
+      signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
+      /*record_signin_started_metrics=*/false, base::DoNothing(),
+      base::DoNothing(), base::DoNothing());
+  EXPECT_TRUE(GetClient()->IsPageEligibleForInlineQrCodeSignin());
+
+  dice_tab_helper->InitializeSigninFlow(
+      kSigninUrl, signin_metrics::AccessPoint::kSettings,
+      signin_metrics::Reason::kReauthentication,
+      signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
+      /*record_signin_started_metrics=*/false, base::DoNothing(),
+      base::DoNothing(), base::DoNothing());
+  EXPECT_FALSE(GetClient()->IsPageEligibleForInlineQrCodeSignin());
+
+  dice_tab_helper->InitializeSigninFlow(
+      kSigninUrl, signin_metrics::AccessPoint::kSettings,
+      signin_metrics::Reason::kAddSecondaryAccount,
+      signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
+      /*record_signin_started_metrics=*/false, base::DoNothing(),
+      base::DoNothing(), base::DoNothing());
+  EXPECT_FALSE(GetClient()->IsPageEligibleForInlineQrCodeSignin());
+}
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
 #if BUILDFLAG(IS_ANDROID)
 class ChromePasswordManagerClientAndroidTest
     : public ChromePasswordManagerClientTest {
@@ -2915,3 +3009,145 @@ TEST_F(ChromePasswordManagerClientAndroidTest,
 }
 
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)
+namespace {
+
+using EventInitiatorInfo = ::chrome::cros::reporting::proto::EventInitiatorInfo;
+
+constexpr char kLoginUrl[] = "https://www.example.com/login";
+constexpr char kConversationId[] = "conversation-id";
+
+class MockReportingEventRouter
+    : public enterprise_connectors::ReportingEventRouter {
+ public:
+  MockReportingEventRouter()
+      : ReportingEventRouter(/*reporting_client=*/nullptr) {}
+  ~MockReportingEventRouter() override = default;
+
+  MOCK_METHOD(void,
+              OnLoginEvent,
+              (const GURL& url,
+               bool is_federated,
+               const url::SchemeHostPort& federated_origin,
+               const std::u16string& username,
+               const std::optional<EventInitiatorInfo>& initiator),
+              (override));
+};
+
+}  // namespace
+
+// Tests that enterprise login events are attributed to the entity acting on
+// the tab. Members are declared so that `policy_checker_` and `mock_tab_`
+// outlive the profile, whose `ActorKeyedService` refers to both.
+class ChromePasswordManagerClientEnterpriseLoginTest
+    : public ChromePasswordManagerClientTest {
+ public:
+  ChromePasswordManagerClientEnterpriseLoginTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{enterprise_connectors::
+                                  kEnterpriseGlicActorAttribution},
+        /*disabled_features=*/{
+            enterprise_connectors::kEnterpriseExtensionActorAttribution,
+            enterprise_connectors::kEventReportingCdpAttribution});
+  }
+
+  void SetUp() override {
+    ChromePasswordManagerClientTest::SetUp();
+
+    enterprise_connectors::ReportingEventRouterFactory::GetInstance()
+        ->SetTestingFactory(
+            profile(),
+            base::BindRepeating([](content::BrowserContext* context)
+                                    -> std::unique_ptr<KeyedService> {
+              return std::make_unique<NiceMock<MockReportingEventRouter>>();
+            }));
+    actor::ActorKeyedServiceFactory::GetInstance()->SetTestingFactory(
+        profile(), base::BindRepeating([](content::BrowserContext* context)
+                                           -> std::unique_ptr<KeyedService> {
+          return std::make_unique<actor::ActorKeyedServiceFake>(
+              Profile::FromBrowserContext(context));
+        }));
+
+    ON_CALL(mock_tab_, GetProfile).WillByDefault(Return(profile()));
+    tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                         &mock_tab_);
+    actor::ActorKeyedService::Get(profile())->GetSurfaceRegistry().OnTabCreated(
+        mock_tab_);
+  }
+
+  MockReportingEventRouter& router() {
+    return *static_cast<MockReportingEventRouter*>(
+        enterprise_connectors::ReportingEventRouterFactory::
+            GetForBrowserContext(profile()));
+  }
+
+  // Starts a Gemini in Chrome task that acts on `web_contents()`.
+  actor::TaskId StartGlicTask() {
+    actor::ActorKeyedService* actor_service =
+        actor::ActorKeyedService::Get(profile());
+    actor::TaskId task_id = actor_service->CreateTaskForTesting(
+        actor::ui::NewMockUiEventDispatcher(),
+        actor::TaskSourceInfo(actor::TaskSourceInfo::Client::kGlic,
+                              kConversationId),
+        &policy_checker_, actor::webui::mojom::TaskOptions::New(),
+        /*delegate=*/nullptr);
+    actor_service->GetTask(task_id)->AddTab(
+        mock_tab_.GetHandle(), /*stop_task_on_detach=*/true, base::DoNothing());
+    return task_id;
+  }
+
+  void ReportLogin() {
+    GetClient()->MaybeReportEnterpriseLoginEvent(
+        GURL(kLoginUrl), /*is_federated=*/false, url::SchemeHostPort(),
+        u"username");
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  actor::MockPolicyChecker policy_checker_{
+      actor::EnterprisePolicyChecker::UrlBlockReason::kNotBlocked};
+  tabs::MockTabInterface mock_tab_;
+};
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       AttributesLoginToActingGlicTask) {
+  actor::TaskId task_id = StartGlicTask();
+
+  std::optional<EventInitiatorInfo> initiator;
+  EXPECT_CALL(router(), OnLoginEvent(GURL(kLoginUrl), false, _,
+                                     std::u16string(u"username"), _))
+      .WillOnce(SaveArg<4>(&initiator));
+  ReportLogin();
+
+  ASSERT_TRUE(initiator.has_value());
+  ASSERT_TRUE(initiator->has_browser_agent_info());
+  EXPECT_EQ(::chrome::cros::reporting::proto::BrowserAgentInfo::
+                AGENT_TYPE_GEMINI_IN_CHROME,
+            initiator->browser_agent_info().agent_type());
+  EXPECT_EQ(base::NumberToString(task_id.value()),
+            initiator->browser_agent_info().task_id());
+  EXPECT_EQ(kConversationId, initiator->browser_agent_info().conversation_id());
+}
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       NoInitiatorWithoutActingTask) {
+  EXPECT_CALL(router(),
+              OnLoginEvent(GURL(kLoginUrl), false, _,
+                           std::u16string(u"username"), Eq(std::nullopt)));
+  ReportLogin();
+}
+
+TEST_F(ChromePasswordManagerClientEnterpriseLoginTest,
+       NoInitiatorWhenAttributionDisabled) {
+  base::test::ScopedFeatureList disabled;
+  disabled.InitAndDisableFeature(
+      enterprise_connectors::kEnterpriseGlicActorAttribution);
+  StartGlicTask();
+
+  EXPECT_CALL(router(),
+              OnLoginEvent(GURL(kLoginUrl), false, _,
+                           std::u16string(u"username"), Eq(std::nullopt)));
+  ReportLogin();
+}
+#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS) || BUILDFLAG(IS_ANDROID)

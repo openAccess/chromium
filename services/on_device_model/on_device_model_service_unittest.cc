@@ -722,6 +722,65 @@ TEST_F(OnDeviceModelServiceTest, SpeculativeDecodingEnabled) {
   EXPECT_THAT(response.responses(), ElementsAre("SpeculativeDecodingAllowed"));
 }
 
+TEST_F(OnDeviceModelServiceTest, SpeculativeDecodingMtpDrafterCaches) {
+  FakeFile weights("base_weights");
+  FakeFile mtp_cache("drafter_weights");
+  FakeFile mtp_program_cache("drafter_shaders");
+
+  {
+    // When speculative decoding is disabled, MTP drafter caches are ignored.
+    mojo::Remote<mojom::OnDeviceModel> model;
+    auto params = mojom::LoadModelParams::New();
+    params->backend_type = ml::ModelBackendType::kGpuBackend;
+    params->max_tokens = 8000;
+    params->assets = ModelAssets::FromFile(weights.Open());
+    params->assets.mtp_drafter_cache = mtp_cache.Open();
+    params->assets.mtp_drafter_program_cache = mtp_program_cache.Open();
+    base::test::TestFuture<mojom::LoadModelResult> future;
+    service()->LoadModel(std::move(params), model.BindNewPipeAndPassReceiver(),
+                         future.GetCallback());
+    EXPECT_EQ(future.Get(), mojom::LoadModelResult::kSuccess);
+
+    TestResponseHolder response;
+    mojo::Remote<mojom::Session> session;
+    model->StartSession(session.BindNewPipeAndPassReceiver(), nullptr);
+    session->Generate(mojom::GenerateOptions::New(), response.BindRemote());
+    response.WaitForCompletion();
+    EXPECT_THAT(response.responses(), ElementsAre());
+  }
+
+  {
+    // When speculative decoding is enabled, MTP drafter caches are forwarded.
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures({features::kOnDeviceModelSpeculativeDecoding,
+                                   features::kOnDeviceModelGpuWeightCache,
+                                   features::kOnDeviceModelGpuProgramCache},
+                                  {});
+
+    mojo::Remote<mojom::OnDeviceModel> model;
+    auto params = mojom::LoadModelParams::New();
+    params->backend_type = ml::ModelBackendType::kGpuBackend;
+    params->max_tokens = 8000;
+    params->assets = ModelAssets::FromFile(weights.Open());
+    params->assets.mtp_drafter_cache = mtp_cache.Open();
+    params->assets.mtp_drafter_program_cache = mtp_program_cache.Open();
+    base::test::TestFuture<mojom::LoadModelResult> future;
+    service()->LoadModel(std::move(params), model.BindNewPipeAndPassReceiver(),
+                         future.GetCallback());
+    EXPECT_EQ(future.Get(), mojom::LoadModelResult::kSuccess);
+
+    TestResponseHolder response;
+    mojo::Remote<mojom::Session> session;
+    model->StartSession(session.BindNewPipeAndPassReceiver(), nullptr);
+    session->Generate(mojom::GenerateOptions::New(), response.BindRemote());
+    response.WaitForCompletion();
+    EXPECT_THAT(response.responses(),
+                ElementsAre("SpeculativeDecodingAllowed",
+                            "MTP drafter cache: drafter_weights",
+                            "MTP drafter program cache: drafter_shaders"));
+  }
+}
+
 TEST_F(OnDeviceModelServiceTest, CloneContextAndContinue) {
   auto model = LoadModel();
 
@@ -857,7 +916,6 @@ TEST_F(OnDeviceModelServiceTest, AppendWithTokenLimits) {
   mojo::Remote<mojom::Session> session;
   model->StartSession(session.BindNewPipeAndPassReceiver(), nullptr);
 
-  std::string input = "big cheese";
   ContextClientWaiter client1;
   auto max_input = MakeInput("big cheese");
   max_input->max_tokens = 4;
@@ -2099,6 +2157,220 @@ TEST_F(OnDeviceModelServiceTest, GenerateWithThinking) {
   EXPECT_THAT(response.responses(), ElementsAre("solve"));
   // 1 visible text chunk + 1 EOS token; the thought chunk is excluded.
   EXPECT_EQ(response.output_token_count(), 2u);
+}
+
+TEST_F(OnDeviceModelServiceTest, AsrStreamSpeculativeDecodingDefaultDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill,
+                             features::kOnDeviceModelAsrSpeculativeDecoding});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_FALSE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, -1);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -2);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingEnabledDefaultParams) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kOnDeviceModelAsrSpeculativeDecoding},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, -1);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -2);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingExplicitPositiveBackoffs) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"enable_draft_verification", "true"},
+         {"decoder_prefill_backoff", "4"},
+         {"final_decoder_prefill_backoff", "8"}}}},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 4);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, 8);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingDraftVerificationFalseAndZeroBackoffs) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"enable_draft_verification", "false"},
+         {"decoder_prefill_backoff", "0"},
+         {"final_decoder_prefill_backoff", "0"}}}},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_FALSE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 0);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, 0);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingExplicitSentinels) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"enable_draft_verification", "true"},
+         {"decoder_prefill_backoff", "-1"},
+         {"final_decoder_prefill_backoff", "-1"}}}},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, -1);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -1);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingExplicitUnsetFinalPrefill) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"enable_draft_verification", "false"},
+         {"decoder_prefill_backoff", "3"},
+         {"final_decoder_prefill_backoff", "-2"}}}},
+      /*disabled_features=*/{features::kOnDeviceModelAsrDecoderPrefill});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_FALSE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 3);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -2);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamDecoderPrefillPreservedWhenSpeculativeDecodingOmitsBackoff) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrDecoderPrefill,
+        {{"decoder_prefill_backoff", "6"}}},
+       {features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"final_decoder_prefill_backoff", "-1"}}}},
+      /*disabled_features=*/{});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 6);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -1);
+}
+
+TEST_F(OnDeviceModelServiceTest,
+       AsrStreamSpeculativeDecodingExplicitBackoffOverridesDecoderPrefill) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrDecoderPrefill,
+        {{"decoder_prefill_backoff", "6"}}},
+       {features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"decoder_prefill_backoff", "-1"},
+         {"final_decoder_prefill_backoff", "2"}}}},
+      /*disabled_features=*/{});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, -1);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, 2);
+}
+
+TEST_F(
+    OnDeviceModelServiceTest,
+    AsrStreamSpeculativeDecodingExplicitPositiveBackoffOverridesDecoderPrefill) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrDecoderPrefill,
+        {{"decoder_prefill_backoff", "6"}}},
+       {features::kOnDeviceModelAsrSpeculativeDecoding,
+        {{"decoder_prefill_backoff", "3"},
+         {"final_decoder_prefill_backoff", "2"}}}},
+      /*disabled_features=*/{});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_TRUE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 3);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, 2);
+}
+
+TEST_F(OnDeviceModelServiceTest, AsrStreamDecoderPrefillAloneEnabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeaturesAndParameters(
+      {{features::kOnDeviceModelAsrDecoderPrefill,
+        {{"decoder_prefill_backoff", "6"}}}},
+      /*disabled_features=*/{features::kOnDeviceModelAsrSpeculativeDecoding});
+
+  fake_ml::ResetLastAsrStreamOptionsForTesting();
+  auto model = LoadModel();
+  EXPECT_EQ(GetAsrTranscript(*model), fake_ml::kFakeAsrTranscript);
+
+  std::optional<fake_ml::CapturedAsrStreamOptions> options =
+      fake_ml::GetLastAsrStreamOptionsForTesting();
+  ASSERT_TRUE(options.has_value());
+  EXPECT_FALSE(options->enable_draft_verification);
+  EXPECT_EQ(options->decoder_prefill_backoff, 6);
+  EXPECT_EQ(options->final_decoder_prefill_backoff, -2);
 }
 
 }  // namespace

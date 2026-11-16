@@ -11,6 +11,7 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
+#include "base/not_fatal_until.h"
 #include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -30,6 +31,7 @@
 #include "ui/views/accessibility/ax_virtual_view.h"
 #include "ui/views/accessibility/tree/widget_ax_manager.h"
 #include "ui/views/view.h"
+#include "ui/views/view_guard.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/widget.h"
@@ -296,6 +298,19 @@ void ViewAccessibility::NotifyEvent(ax::mojom::Event event_type,
     return;
   }
 
+  // Malicious or badly-configured programs hooking accessibility callbacks can
+  // theoretically destroy the view being updated in a number of ways by
+  // immediately injecting events into the current process in response to an
+  // accessibility event. In almost all cases, this makes the calling code
+  // unsafe in ways that are hard to fully harden against.
+  //
+  // Instead of hardening every such point, harden this method to prevent
+  // synchronous destruction of the view being updated through bad re-entrancy.
+  //
+  // TODO(https://crbug.com/578997426): Remove upstream guards when this becomes
+  // a hard error.
+  ViewGuard guard(*view_, base::NotFatalUntil::M165);
+
   AXUpdateNotifier::Get()->NotifyViewEvent(view_, event_type);
 
   if (send_native_event && widget) {
@@ -552,7 +567,8 @@ void ViewAccessibility::SetName(std::u16string name,
     // is a common pattern, and then the View sets the accessible name to the
     // same string, we need to make sure that we clear the description.
     // Otherwise we'll end up with the same accessible name and description.
-    if (GetCachedName() == view_->GetTooltipText() &&
+    if (!view_->GetTooltipText().empty() &&
+        GetCachedName() == view_->GetTooltipText() &&
         GetCachedDescription() == view_->GetTooltipText()) {
       RemoveDescription();
     }
@@ -971,6 +987,13 @@ std::u16string ViewAccessibility::GetCachedDescription() const {
 void ViewAccessibility::OnTooltipTextChanged(
     std::optional<std::u16string> old_tooltip_text) {
   if (!view_) {
+    return;
+  }
+
+  // `kAttributeExplicitlyEmpty` opts out of alternative description sources
+  // such as the tooltip text.
+  if (data_.GetDescriptionFrom() ==
+      ax::mojom::DescriptionFrom::kAttributeExplicitlyEmpty) {
     return;
   }
 
@@ -2039,16 +2062,8 @@ void ViewAccessibility::OnWidgetUpdatedRecursive(Widget* widget,
   }
 }
 
-void ViewAccessibility::OnWidgetClosing(Widget* widget) {
-  // The RootView's ViewAccessibility should be the only registered
-  // WidgetObserver.
-  CHECK_EQ(view_, widget->GetRootView());
-  SetWidgetClosedRecursive(widget, true);
-}
-
-void ViewAccessibility::OnWidgetDestroyed(Widget* widget) {
-  // The RootView's ViewAccessibility should be the only registered
-  // WidgetObserver.
+void ViewAccessibility::OnWidgetClosed(Widget* widget) {
+  // Only ever called on the RootView's ViewAccessibility.
   CHECK(widget->GetRootView());
   CHECK_EQ(view_, widget->GetRootView());
   SetWidgetClosedRecursive(widget, true);
@@ -2059,13 +2074,6 @@ void ViewAccessibility::OnWidgetUpdated(Widget* widget, Widget* old_widget) {
   CHECK_EQ(widget, GetWidget(), base::NotFatalUntil::M163);
   if (widget == old_widget) {
     return;
-  }
-
-  // There's a chance we are reparenting a view that was previously a root
-  // view in another widget, if so we need to remove it as an observer of the
-  // old widget.
-  if (old_widget && old_widget != widget) {
-    old_widget->RemoveObserver(this);
   }
 
   OnWidgetUpdatedRecursive(widget, old_widget);

@@ -430,46 +430,52 @@ chromium-metrics-reviews@google.com.
   <variant name=".GoogleSearch" summary="SRP navigations"/>
 </variants>
 
+<!-- LINT.IfChange(PageActionType) -->
+
 <variants name="PageActionType">
-  <variant name="AiMode"/>
-  <variant name="BookmarksStar"/>
-  <variant name="ClickToCall"/>
-  <variant name="CookieControls"/>
-  <variant name="Discounts"/>
-  <variant name="FileSystemAccess"/>
-  <variant name="Find"/>
-  <variant name="GmailOtpOptIn"/>
-  <variant name="Indigo"/>
-  <variant name="IntentPicker"/>
-  <variant name="JsOptimizations"/>
-  <variant name="LensOverlay"/>
-  <variant name="LensOverlayHomework"/>
-  <variant name="LocalCardMigration"/>
-  <variant name="ManagePasswords"/>
-  <variant name="MandatoryReauth"/>
-  <variant name="MemorySaver"/>
-  <variant name="OptimizationGuide"/>
-  <variant name="PaymentsOfferNotification"/>
-  <variant name="PriceInsights"/>
-  <variant name="PriceTracking"/>
-  <variant name="PWAInstall"/>
-  <variant name="QRCodeGenerator"/>
-  <variant name="ReadAnything"
-      summary="ReadAnything (Obsolete, Deprecated Jun 06, 2024)"/>
-  <variant name="ReaderMode"/>
-  <variant name="ReadingMode"/>
-  <variant name="SaveAutofillAddress"/>
-  <variant name="SaveCard"/>
-  <variant name="SaveIban"/>
-  <variant name="SendTabToSelf"/>
-  <variant name="SharingHub"/>
-  <variant name="SideSearch"/>
-  <variant name="SMSRemoteFetcher"/>
-  <variant name="Translate"/>
-  <variant name="VirtualCardEnroll"/>
-  <variant name="VirtualCardManualFeedback"/>
-  <variant name="Zoom"/>
+  <variant name="AddressAutofill" summary="Save or update address (Autofill)"/>
+  <variant name="AiMode" summary="AI Mode"/>
+  <variant name="AutofillPayment" summary="Autofill payment"/>
+  <variant name="BookmarksStar" summary="Bookmark star"/>
+  <variant name="ContextualCueing" summary="Anchored contextual cue"/>
+  <variant name="ContextualSidePanel" summary="Contextual tasks side panel"/>
+  <variant name="CookieControls" summary="Cookie controls"/>
+  <variant name="Discounts" summary="Commerce discounts"/>
+  <variant name="FakePageActionForDebug"
+      summary="Fake page action used for debugging"/>
+  <variant name="Federation" summary="Federation"/>
+  <variant name="FilledCardInformation" summary="Filled card information"/>
+  <variant name="Find" summary="Find in page"/>
+  <variant name="Glic" summary="Glic contextual cueing"/>
+  <variant name="GmailOtpOptIn" summary="Gmail OTP opt-in"/>
+  <variant name="Indigo" summary="Indigo"/>
+  <variant name="IntentPicker" summary="Intent picker"/>
+  <variant name="JsOptimizations" summary="JavaScript optimizations"/>
+  <variant name="LensOverlay" summary="Lens Overlay"/>
+  <variant name="LensOverlayHomework" summary="Lens Overlay homework"/>
+  <variant name="ManagePasswords" summary="Manage passwords"/>
+  <variant name="MandatoryReauth"
+      summary="Autofill mandatory re-authentication"/>
+  <variant name="MemorySaver" summary="Memory Saver chip"/>
+  <variant name="MultistepFilter" summary="Multistep filter"/>
+  <variant name="PaymentsChurnedUsers" summary="Payments churned users"/>
+  <variant name="PaymentsOfferNotification"
+      summary="Payments offers and rewards"/>
+  <variant name="PriceInsights" summary="Commerce price insights"/>
+  <variant name="PwaInstall" summary="PWA install"/>
+  <variant name="ReadingMode" summary="Reading mode"/>
+  <variant name="RecordReplay" summary="Record and replay"/>
+  <variant name="SavePayments" summary="Save payments (card or IBAN)"/>
+  <variant name="ShowCollaborationRecentActivity"
+      summary="Collaboration recent activity"/>
+  <variant name="ShowFileSystemAccess" summary="File System Access"/>
+  <variant name="Translate" summary="Translate"/>
+  <variant name="VirtualCardEnroll" summary="Virtual card enroll"/>
+  <variant name="WalletReminderNotice" summary="Wallet reminder notice"/>
+  <variant name="Zoom" summary="Zoom"/>
 </variants>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/page_action/page_action_properties_provider.cc:kPageActionProperties) -->
 
 <variants name="PageActionVisualState">
   <variant name="Chip"/>
@@ -779,7 +785,6 @@ chromium-metrics-reviews@google.com.
 
 <variants name="PrivacySandboxAdsApi">
   <variant name="FencedFrames"/>
-  <variant name="SharedStorage"/>
   <variant name="Topics"/>
 </variants>
 
@@ -803,8 +808,6 @@ chromium-metrics-reviews@google.com.
   <variant name="report"/>
   <variant name="script"/>
   <variant name="serviceworker"/>
-  <variant name="sharedstorageworklet"
-      summary="(obsolete) Shared storage worklet"/>
   <variant name="sharedworker"/>
   <variant name="style"/>
   <variant name="track"/>
@@ -1904,6 +1907,47 @@ chromium-metrics-reviews@google.com.
   <token key="CaptchaProvider" variants="CaptchaProvider"/>
 </histogram>
 
+<histogram name="PageLoad.Clients.CaptchaFrameLoadVisible"
+    enum="CaptchaFrameAgentContext" expires_after="2027-10-20">
+  <owner>ryankalla@google.com</owner>
+  <owner>potassium-anti-fraud-team@google.com</owner>
+  <summary>
+    Records when a sub-frame is loaded from a known CAPTCHA provider and is
+    shown to the user (rendered in the viewport, not display:none, and with a
+    frame area of at least 25 pixels). Recorded at most once per CAPTCHA
+    sub-frame navigation.
+
+    CAPTCHA frames are determined by matching the frame's src url against a list
+    of known CAPTCHA frame url patterns. The list of known CAPTCHA url patterns
+    is served via the component updater.
+
+    This histogram is split by whether an AI agent was active on the tab at the
+    time the frame became visible. AI agent activity is determined by
+    ActorKeyedService::IsActiveOnTab(), which is used by the Glic Agent.
+  </summary>
+</histogram>
+
+<histogram name="PageLoad.Clients.CaptchaFrameLoadVisible.{CaptchaProvider}"
+    enum="CaptchaFrameAgentContext" expires_after="2027-10-20">
+  <owner>ryankalla@google.com</owner>
+  <owner>potassium-anti-fraud-team@google.com</owner>
+  <summary>
+    Records when a sub-frame is loaded from {CaptchaProvider} and is shown to
+    the user (rendered in the viewport, not display:none, and with a frame area
+    of at least 25 pixels). Recorded at most once per CAPTCHA sub-frame
+    navigation.
+
+    CAPTCHA frames are determined by matching the frame's src url against a list
+    of known CAPTCHA frame url patterns. The list of known CAPTCHA url patterns
+    is served via the component updater.
+
+    This histogram is split by whether an AI agent was active on the tab at the
+    time the frame became visible. AI agent activity is determined by
+    ActorKeyedService::IsActiveOnTab(), which is used by the Glic Agent.
+  </summary>
+  <token key="CaptchaProvider" variants="CaptchaProvider"/>
+</histogram>
+
 <histogram
     name="PageLoad.Clients.DocWrite.Block.{PageLoadClientsDocWriteTimingMetric}"
     units="ms" expires_after="2027-04-25">
@@ -2336,7 +2380,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.ConnectionReuseStatus{ConnectionProtocolType}{Profile}"
-    enum="ConnectionReuseStatus" expires_after="2027-03-07">
+    enum="ConnectionReuseStatus" expires_after="2027-05-09">
   <owner>suzukikeita@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -2843,7 +2887,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationSourceType{ConnectionReuseStatus}"
-    enum="NavigationSourceTypeEnum" expires_after="2027-03-07">
+    enum="NavigationSourceTypeEnum" expires_after="2027-05-09">
   <owner>suzukikeita@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -3018,7 +3062,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.NavigationStartToFinalLoaderCallback"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>nidhijaju@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3033,7 +3077,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.NavigationStartToFinalRequestStart"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>nidhijaju@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3048,7 +3092,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.NavigationStartToFinalResponseStart"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>nidhijaju@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3092,7 +3136,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.NavigationStartToFirstRequestStart"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>kouhei@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3107,7 +3151,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.NavigationTiming.NavigationStartToFirstResponseStart"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>kouhei@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3209,7 +3253,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.PaintTiming.NavigationToFirstContentfulPaint{SyntheticResponseSuffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>spelchat@chromium.org</owner>
   <owner>chrome-brapp-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3225,7 +3269,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.PaintTiming.NavigationToLargestContentfulPaint"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>spelchat@chromium.org</owner>
   <owner>chrome-brapp-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3271,7 +3315,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.PaintTiming.{MileStone}{PageLoadType}{IncognitoSuffix}{SyntheticResponseSuffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>sisidovski@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3370,7 +3414,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.Prerender.ActivationToFirstContentfulPaint{IncognitoSuffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>suzukikeita@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3384,7 +3428,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.Prerender.ActivationToLargestContentfulPaint{IncognitoSuffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>suzukikeita@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3411,7 +3455,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.GoogleSearch.Prerender.NavigationToActivation{IncognitoSuffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>suzukikeita@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -4177,7 +4221,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.Clients.NavigationToFirstContentfulPaint.Timeout3"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>awillia@chromium.org</owner>
   <owner>sergiog@microsoft.com</owner>
   <owner>src/components/page_load_metrics/OWNERS</owner>
@@ -4471,7 +4515,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients.ServiceWorker2.PaintTiming.ParseStartToFirstContentfulPaint{PageLoadClientsServiceWorkerSpecialApps}"
-    units="ms" expires_after="2027-02-14">
+    units="ms" expires_after="2027-05-09">
   <owner>sullivan@chromium.org</owner>
   <owner>speed-metrics-dev@chromium.org</owner>
   <summary>
@@ -4834,7 +4878,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Clients{ObservedNavigation}.Leakage2.NavigationStartTo{NavigationMilestone}{BackgroundSuffix}{HiddenSuffix}{IncognitoSuffix}{ResponseFromCache}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>rakina@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -5228,7 +5272,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.Experimental.NavigationTiming.NavigationStartToFirstResponseStart"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>nhiroki@chromium.org</owner>
   <owner>chrome-loading@google.com</owner>
   <summary>
@@ -5779,7 +5823,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PageLoad.LayoutInstability.CumulativeShiftScore"
-    units="scorex10" expires_after="2027-03-07">
+    units="scorex10" expires_after="2027-05-09">
   <owner>bmcquade@chromium.org</owner>
   <owner>skobes@chromium.org</owner>
   <summary>
@@ -6096,7 +6140,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="PageLoad.PaintTiming.NavigationToFirstContentfulPaint.NonTabWebUI{WebUIName}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>anthonyvd@chromium.org</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>

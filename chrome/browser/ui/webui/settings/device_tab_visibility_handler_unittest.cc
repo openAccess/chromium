@@ -8,17 +8,18 @@
 #include <string>
 #include <string_view>
 
-#include "base/callback_list.h"
+#include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
 #include "base/values.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync_device_info/device_info.h"
 #include "components/sync_sessions/fake_open_tabs_ui_delegate.h"
-#include "components/sync_sessions/mock_session_sync_service.h"
+#include "components/sync_sessions/fake_session_sync_service.h"
 #include "components/sync_sessions/session_sync_prefs.h"
 #include "components/sync_sessions/synced_session.h"
 #include "content/public/test/browser_task_environment.h"
@@ -36,17 +37,14 @@ using ::base::test::IsJson;
 using ::l10n_util::GetPluralStringFUTF8;
 using ::l10n_util::GetStringUTF8;
 using ::sync_sessions::FakeOpenTabsUIDelegate;
-using ::sync_sessions::MockSessionSyncService;
+using ::sync_sessions::FakeSessionSyncService;
 using ::sync_sessions::SessionSyncPrefs;
 using ::sync_sessions::SessionVisibility;
 using ::sync_sessions::SyncedSession;
 using ::syncer::DeviceInfo;
-using ::testing::_;
 using ::testing::ElementsAre;
 using ::testing::ExplainMatchResult;
 using ::testing::IsEmpty;
-using ::testing::NiceMock;
-using ::testing::Return;
 using ::testing::Test;
 using FormFactor = ::syncer::DeviceInfo::FormFactor;
 
@@ -57,8 +55,8 @@ constexpr char kListChangedEvent[] = "device-tab-visibility-list-changed";
 constexpr char kWebUIResponse[] = "cr.webUIResponse";
 constexpr char kWebUIListenerCallback[] = "cr.webUIListenerCallback";
 
-constexpr char kTagKey[] = "tag";
-constexpr char kNameKey[] = "name";
+constexpr char kSessionTagKey[] = "sessionTag";
+constexpr char kDeviceNameKey[] = "deviceName";
 constexpr char kFormFactorKey[] = "formFactor";
 constexpr char kLastActiveTimeKey[] = "lastActiveTime";
 constexpr char kVisibleKey[] = "visible";
@@ -74,26 +72,22 @@ constexpr char kDesktopName[] = "MacBook Pro";
 constexpr char kUnknownTag[] = "unknown_tag";
 constexpr char kUnknownName[] = "Linux Workstation";
 
-constexpr char kPhoneFormFactor[] = "phone";
-constexpr char kTabletFormFactor[] = "tablet";
-constexpr char kDesktopFormFactor[] = "desktop";
-
 constexpr int kTabletActiveMinutes = 5;
 constexpr int kDesktopActiveHours = 3;
 constexpr int kUnknownActiveDays = 2;
 
 MATCHER_P5(IsDeviceEntry,
-           tag,
-           name,
+           session_tag,
+           device_name,
            form_factor,
            last_active_time,
            visible,
            "") {
   return ExplainMatchResult(
       IsJson(base::DictValue()
-                 .Set(kTagKey, tag)
-                 .Set(kNameKey, name)
-                 .Set(kFormFactorKey, form_factor)
+                 .Set(kSessionTagKey, session_tag)
+                 .Set(kDeviceNameKey, device_name)
+                 .Set(kFormFactorKey, static_cast<int>(form_factor))
                  .Set(kLastActiveTimeKey, last_active_time)
                  .Set(kVisibleKey, visible)),
       arg, result_listener);
@@ -137,18 +131,12 @@ class DeviceTabVisibilityHandlerTest : public Test {
     TestingProfile::Builder builder;
     builder.AddTestingFactory(
         SessionSyncServiceFactory::GetInstance(),
-        base::BindRepeating([](content::BrowserContext* /*context*/)
+        base::BindRepeating([](content::BrowserContext* context)
                                 -> std::unique_ptr<KeyedService> {
-          return std::make_unique<NiceMock<MockSessionSyncService>>();
+          return std::make_unique<FakeSessionSyncService>(
+              Profile::FromBrowserContext(context)->GetPrefs());
         }));
     profile_ = builder.Build();
-
-    ON_CALL(mock_session_sync_service(), GetOpenTabsUIDelegate())
-        .WillByDefault(Return(&fake_open_tabs_ui_delegate_));
-    ON_CALL(mock_session_sync_service(), SubscribeToForeignSessionsChanged(_))
-        .WillByDefault([this](const base::RepeatingClosure& cb) {
-          return foreign_sessions_changed_callbacks_.Add(cb);
-        });
 
     auto handler = std::make_unique<DeviceTabVisibilityHandler>(profile_.get());
     handler_ = handler.get();
@@ -169,42 +157,39 @@ class DeviceTabVisibilityHandlerTest : public Test {
   }
 
   void NotifyForeignSessionsChanged() {
-    foreign_sessions_changed_callbacks_.Notify();
+    session_sync_service().NotifyForeignSessionsChanged();
   }
 
   DeviceTabVisibilityHandler* handler() { return handler_; }
   TestingProfile* profile() { return profile_.get(); }
   content::TestWebUI* web_ui() { return &web_ui_; }
-  MockSessionSyncService& mock_session_sync_service() {
-    return *static_cast<NiceMock<MockSessionSyncService>*>(
+  FakeSessionSyncService& session_sync_service() {
+    return *static_cast<FakeSessionSyncService*>(
         SessionSyncServiceFactory::GetForProfile(profile()));
   }
   FakeOpenTabsUIDelegate& fake_open_tabs_ui_delegate() {
-    return fake_open_tabs_ui_delegate_;
+    return *session_sync_service().GetOpenTabsUIDelegate();
   }
 
  private:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  FakeOpenTabsUIDelegate fake_open_tabs_ui_delegate_;
-  base::RepeatingClosureList foreign_sessions_changed_callbacks_;
   std::unique_ptr<TestingProfile> profile_;
   content::TestWebUI web_ui_;
   raw_ptr<DeviceTabVisibilityHandler> handler_ = nullptr;
 };
 
 // Verifies that `getDeviceTabVisibilityList` resolves with an empty list when
-// `OpenTabsUIDelegate` is null or when `GetAllForeignSessions` returns false.
+// `OpenTabsUIDelegate` is null or when `GetAllForeignSessions()` returns an
+// empty list.
 TEST_F(DeviceTabVisibilityHandlerTest, GetListWhenDelegateUnavailable) {
   // Simulate tab sync being disabled (`GetOpenTabsUIDelegate()` returns null).
-  ON_CALL(mock_session_sync_service(), GetOpenTabsUIDelegate())
-      .WillByDefault(Return(nullptr));
+  session_sync_service().SetOpenTabsUIDelegateEnabled(false);
   SendGetListMessage();
 
   // Restore the delegate with no foreign sessions added, so
-  // `GetAllForeignSessions()` returns false.
-  ON_CALL(mock_session_sync_service(), GetOpenTabsUIDelegate())
-      .WillByDefault(Return(&fake_open_tabs_ui_delegate()));
+  // `GetAllForeignSessions()` returns an empty list.
+  session_sync_service().SetOpenTabsUIDelegateEnabled(true);
   SendGetListMessage();
 
   // Both requests should resolve with an empty device list.
@@ -218,9 +203,8 @@ TEST_F(DeviceTabVisibilityHandlerTest, GetListWhenDelegateUnavailable) {
 // states from `SessionSyncPrefs`.
 TEST_F(DeviceTabVisibilityHandlerTest, GetListPopulatesDevices) {
   const base::Time now = base::Time::Now();
-  // Add sessions spanning each supported form factor and active-time bucket
-  // (future/< 1 min, minutes, hours, days). `FormFactor::kUnknown` falls back
-  // to `"desktop"`.
+  // Add sessions spanning multiple form factors and active-time buckets
+  // (future/< 1 min, minutes, hours, days).
   fake_open_tabs_ui_delegate().AddForeignSession(CreateSyncedSession(
       kPhoneTag, kPhoneName, now + base::Seconds(10), FormFactor::kPhone));
   fake_open_tabs_ui_delegate().AddForeignSession(CreateSyncedSession(
@@ -240,21 +224,21 @@ TEST_F(DeviceTabVisibilityHandlerTest, GetListPopulatesDevices) {
   EXPECT_THAT(
       web_ui()->call_data(),
       ElementsAre(IsWebUIListResponse(ElementsAre(
-          IsDeviceEntry(kPhoneTag, kPhoneName, kPhoneFormFactor,
+          IsDeviceEntry(kPhoneTag, kPhoneName, FormFactor::kPhone,
                         GetStringUTF8(IDS_SEND_TAB_TO_SELF_DEVICE_ACTIVE_NOW),
                         true),
           IsDeviceEntry(
-              kTabletTag, kTabletName, kTabletFormFactor,
+              kTabletTag, kTabletName, FormFactor::kTablet,
               GetPluralStringFUTF8(IDS_SEND_TAB_TO_SELF_DEVICE_ACTIVE_MINUTES,
                                    kTabletActiveMinutes),
               false),
           IsDeviceEntry(
-              kDesktopTag, kDesktopName, kDesktopFormFactor,
+              kDesktopTag, kDesktopName, FormFactor::kDesktop,
               GetPluralStringFUTF8(IDS_SEND_TAB_TO_SELF_DEVICE_ACTIVE_HOURS,
                                    kDesktopActiveHours),
               true),
           IsDeviceEntry(
-              kUnknownTag, kUnknownName, kDesktopFormFactor,
+              kUnknownTag, kUnknownName, FormFactor::kUnknown,
               GetPluralStringFUTF8(IDS_SEND_TAB_TO_SELF_DEVICE_LAST_UPDATE_DAYS,
                                    kUnknownActiveDays),
               true)))));

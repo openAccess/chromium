@@ -5,6 +5,7 @@
 #ifndef NET_SOCKET_TCP_CONNECT_JOB_CONNECTOR_H_
 #define NET_SOCKET_TCP_CONNECT_JOB_CONNECTOR_H_
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string_view>
@@ -42,7 +43,9 @@ class StreamSocket;
 // a copy of its value, but will use it in all logged events.
 class TcpConnectJob::Connector {
  public:
-  Connector(TcpConnectJob* parent, std::string_view name);
+  Connector(TcpConnectJob* parent,
+            std::string_view name,
+            bool created_by_slow_timer);
 
   Connector(const Connector&) = delete;
   Connector& operator=(const Connector&) = delete;
@@ -96,6 +99,42 @@ class TcpConnectJob::Connector {
   }
 
   base::TimeTicks start_time() const { return start_time_; }
+
+  // True if this connector was created when the IPv6 fallback (Happy Eyeballs
+  // slow) timer fired.
+  bool created_by_slow_timer() const { return created_by_slow_timer_; }
+
+  // True if the connector's current (or just-completed) endpoint attempt was
+  // obtained from stale DNS results (either while in `stale_state_` or while
+  // `dns_request_->IsStaleWhileRefreshing()` was true).
+  bool current_attempt_started_as_stale() const {
+    return current_attempt_started_as_stale_;
+  }
+
+  // Number of TCP socket connection attempts initiated by this connector.
+  size_t attempts_started() const { return attempts_started_; }
+
+  // True if this connector currently has an in-flight TCP handshake or a
+  // connected socket waiting on DNS crypto readiness.
+  bool has_in_flight_attempt() const {
+    return next_state_ == State::kTcpConnectComplete ||
+           next_state_ == State::kWaitForCryptoReady;
+  }
+
+  void set_started_with_stale_dns(bool started_with_stale_dns) {
+    started_with_stale_dns_ = started_with_stale_dns;
+  }
+  bool started_with_stale_dns() const { return started_with_stale_dns_; }
+
+  void set_was_promoted_to_fresh_dns(bool was_promoted_to_fresh_dns) {
+    was_promoted_to_fresh_dns_ = was_promoted_to_fresh_dns;
+  }
+  bool was_promoted_to_fresh_dns() const { return was_promoted_to_fresh_dns_; }
+
+  void set_recorded_ip_match_metrics(bool recorded_ip_match_metrics) {
+    recorded_ip_match_metrics_ = recorded_ip_match_metrics;
+  }
+  bool recorded_ip_match_metrics() const { return recorded_ip_match_metrics_; }
 
  private:
   // Note that while in either of the "Wait" states, this is waiting on more
@@ -151,6 +190,14 @@ class TcpConnectJob::Connector {
 
   const std::string_view name_;
 
+  const bool created_by_slow_timer_;
+
+  // Refreshed in `DoObtainIPEndPoint()` so that if a stale-started attempt
+  // fails after fresh DNS results arrive and retries a fresh IP, this resets to
+  // false.
+  bool current_attempt_started_as_stale_ = false;
+  size_t attempts_started_ = 0;
+
   std::optional<IPEndPoint> current_address_;
 
   // The ServiceEndpoint corresponding to `current_address_`. This is only saved
@@ -166,6 +213,18 @@ class TcpConnectJob::Connector {
   std::optional<ServiceEndpoint> final_service_endpoint_;
 
   base::TimeTicks start_time_;
+
+  // True if the current connection attempt started using a stale (Optimistic)
+  // DNS endpoint.
+  bool started_with_stale_dns_ = false;
+
+  // True if this connector started with a stale DNS endpoint and was later
+  // promoted to `fresh_state_` when fresh DNS results confirmed the IP.
+  bool was_promoted_to_fresh_dns_ = false;
+
+  // True once `Net.DNS.OptimisticDns.Tcp.StaleIpMatchFreshDns.*` metrics have
+  // been recorded for the current connection attempt.
+  bool recorded_ip_match_metrics_ = false;
 };
 
 }  // namespace net

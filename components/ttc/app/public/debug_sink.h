@@ -13,6 +13,7 @@
 #include <variant>
 #include <vector>
 
+#include "base/time/time.h"
 #include "components/ttc/app/public/server_journal_event.h"
 
 namespace ttc {
@@ -47,9 +48,14 @@ class DebugSink {
   struct ToolCallResponse {
     std::string call_id;
     std::string response_json;
+    // The MIME type and size of the response's image, if it has one.
+    std::string image_mime_type;
+    size_t image_bytes = 0;
   };
   struct PlaybackStatus {
-    int64_t last_played_sequence_number = 0;
+    base::TimeDelta playback_progress;
+    bool playback_complete = false;
+    int64_t generation_id = 0;
   };
   struct CloseRequest {
     std::string reason;

@@ -32,6 +32,7 @@
 
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/notreached.h"
 #include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/features.h"
@@ -328,8 +329,6 @@ protocol::DOM::PseudoType InspectorDOMAgent::ProtocolPseudoElementType(
       return protocol::DOM::PseudoTypeEnum::ViewTransitionOld;
     case kPseudoIdOverscrollAreaParent:
       return protocol::DOM::PseudoTypeEnum::OverscrollAreaParent;
-    case kPseudoIdOverscrollBackdrop:
-      return protocol::DOM::PseudoTypeEnum::OverscrollBackdrop;
     case kPseudoIdSkeleton:
       return protocol::DOM::PseudoTypeEnum::Skeleton;
     case kAfterLastInternalPseudoId:
@@ -465,9 +464,6 @@ PseudoId InspectorDOMAgent::ProtocolPseudoTypeToPseudoId(
   if (type == protocol::DOM::PseudoTypeEnum::InterestButton) {
     return kPseudoIdInterestButton;
   }
-  if (type == protocol::DOM::PseudoTypeEnum::OverscrollBackdrop) {
-    return kPseudoIdOverscrollBackdrop;
-  }
   NOTREACHED();
 }
 
@@ -478,6 +474,7 @@ InspectorDOMAgent::InspectorDOMAgent(v8::Isolate* isolate,
       document_node_to_id_map_(MakeGarbageCollected<NodeToIdMap>()),
       last_node_id_(1),
       suppress_attribute_modified_event_(false),
+      suppress_slot_assignment_recalc_(false),
       enabled_(&agent_state_, /*default_value=*/false),
       include_whitespace_(&agent_state_,
                           /*default_value=*/static_cast<int32_t>(
@@ -2761,7 +2758,17 @@ InspectorDOMAgent::BuildDistributedNodesForSlot(HTMLSlotElement* slot_element) {
   // is removed.
   auto distributed_nodes =
       std::make_unique<protocol::Array<protocol::DOM::BackendNode>>();
-  for (auto& node : slot_element->AssignedNodes()) {
+  // Avoid triggering slot assignment recalc inside DOM/lifecycle probes or
+  // while a slot assignment recalc is already running (e.g. a paused debugger
+  // session inspecting DOM). Synchronous protocol commands still recalc on
+  // demand, including for detached trees.
+  const bool skip_recalc =
+      suppress_slot_assignment_recalc_ ||
+      slot_element->GetDocument().IsInSlotAssignmentRecalc();
+  const HeapVector<Member<Node>>& nodes =
+      skip_recalc ? slot_element->AssignedNodesNoRecalc()
+                  : slot_element->AssignedNodes();
+  for (auto& node : nodes) {
     if (ShouldSkipNode(node, IncludeWhitespace()))
       continue;
     distributed_nodes->emplace_back(BuildBackendNode(node));
@@ -2886,6 +2893,8 @@ void InspectorDOMAgent::InvalidateFrameOwnerElement(
   if (!frame_owner_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   // Re-add frame owner element together with its new children.
   int parent_id = BoundNodeId(InnerParentNode(frame_owner));
   GetFrontend()->childNodeRemoved(parent_id, frame_owner_id);
@@ -2952,6 +2961,8 @@ void InspectorDOMAgent::DidInsertDOMNode(Node* node) {
     cached_child_count_.Set(parent_id, count);
     GetFrontend()->childNodeCountUpdated(parent_id, count);
   } else {
+    base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                          true);
     // Children have been requested -> return value of a new child.
     Node* prev_sibling = InnerPreviousSibling(node, include_whitespace);
     int prev_id = prev_sibling ? BoundNodeId(prev_sibling) : 0;
@@ -3115,6 +3126,8 @@ void InspectorDOMAgent::DidPushShadowRoot(Element* host, ShadowRoot* root) {
   if (!host_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   PushChildNodesToFrontend(host_id, 1);
   GetFrontend()->shadowRootPushed(
       host_id,
@@ -3135,6 +3148,8 @@ void InspectorDOMAgent::DidPerformSlotDistribution(
     HTMLSlotElement* slot_element) {
   int insertion_point_id = BoundNodeId(slot_element);
   if (insertion_point_id) {
+    base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                          true);
     GetFrontend()->distributedNodesUpdated(
         insertion_point_id, BuildDistributedNodesForSlot(slot_element));
   }
@@ -3179,6 +3194,8 @@ void InspectorDOMAgent::PseudoElementCreated(PseudoElement* pseudo_element) {
   if (!parent_id)
     return;
 
+  base::AutoReset<bool> suppress_recalc(&suppress_slot_assignment_recalc_,
+                                        true);
   PushChildNodesToFrontend(parent_id, 1);
   GetFrontend()->pseudoElementAdded(
       parent_id, BuildObjectForNode(pseudo_element, 0, false,

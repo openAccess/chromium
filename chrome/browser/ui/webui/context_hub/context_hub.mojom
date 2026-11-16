@@ -472,6 +472,9 @@ struct TopicsFeedbackExportOptions {
   array<string> excluded_domains;
   // Minimized URLs whose visits are exported as redacted stubs.
   array<url.mojom.Url> excluded_urls;
+  // Ids of Topics the rater left out. They're dropped from the bundle, and
+  // their visits are exported as redacted stubs unless a kept Topic has them.
+  array<string> excluded_topic_ids;
   // Free-text description of Topics the rater expected but did not see.
   string missing_topics;
 };
@@ -502,6 +505,46 @@ interface Page {
   // Notifies the WebUI when entries are deleted from the memory bank. `ids` may
   // contain IDs that did not match an existing entry, which should be ignored.
   OnMemoryBankEntriesDeleted(array<int64> ids);
+
+  // Notifies all Context Hub WebUI pages in the profile (including those that
+  // didn't start the recording) when speech recognition via
+  // `SkillRecordingService` produces a transcript segment while a recording is
+  // active.
+  // `text` contains the transcribed speech content.
+  // `timestamp` is the elapsed time since the recording session started.
+  // `is_final` is true if the segment has been finalized, or false if it is
+  // an interim hypothesis that may be revised by subsequent updates.
+  [RuntimeFeature=kRecordReplay]
+  OnTranscriptUpdate(
+      string text, mojo_base.mojom.TimeDelta timestamp, bool is_final);
+};
+
+// Types of user actions that can be recorded during a skill recording session.
+enum SkillRecordingActionType {
+  // A left mouse button click on the active page.
+  kLeftClick,
+};
+
+// Represents a single user action recorded during a skill recording session.
+struct SkillRecordingAction {
+  // The category of user interaction that occurred.
+  SkillRecordingActionType type;
+  // A human-readable summary of the action (e.g., click coordinates).
+  string description;
+  // Time elapsed since the start of the recording session when the action
+  // occurred.
+  mojo_base.mojom.TimeDelta timestamp;
+  // Base64-encoded `data:` URL containing the viewport screenshot captured at
+  // the time of the action, or null if screenshot capture was unavailable or
+  // did not complete before the session ended (`url.mojom.Url` is typemapped to
+  // `string` in WebUI TypeScript via `url/mojom/BUILD.gn`).
+  url.mojom.Url? screenshot_data_url;
+};
+
+// Represents all in-memory data captured during a skill recording session.
+struct SkillRecordingSessionData {
+  // Recorded user actions in chronological order.
+  array<SkillRecordingAction> actions;
 };
 
 // Factory used by the WebUI page (caller) to create a PageHandler in the
@@ -532,15 +575,19 @@ struct MemoryBankFileAttachment {
   string content;
 };
 
-// Represents a single recorded action during a skill recording session.
-struct SkillRecordingAction {
-  string description;
-  mojo_base.mojom.TimeDelta timestamp;
-};
-
-// Data collected during a skill recording session.
-struct SkillRecordingSessionData {
-  array<SkillRecordingAction> actions;
+// Result of validating a user-configured keyboard shortcut that opens the
+// Memory Banks search palette.
+enum MemoryBanksShortcutStatus {
+  // The shortcut can be used.
+  kValid,
+  // The shortcut could not be parsed, does not use a supported key (A-Z, 0-9),
+  // or does not include Ctrl, Alt or Command.
+  kInvalid,
+  // The shortcut uses a modifier combination reserved by the operating system
+  // (for example, Ctrl+Alt on Windows and Linux).
+  kDisallowedModifiers,
+  // The shortcut is already used by Chrome.
+  kConflictsWithBrowserShortcut,
 };
 
 // Provides access to context hub features.
@@ -598,6 +645,12 @@ interface PageHandler {
 
   // Returns all entries currently stored in the memory bank.
   GetAllMemoryBankEntries() => (array<MemoryBankEntry> entries);
+
+  // Returns memory bank entries semantically related to `query`, ordered by
+  // descending relevance. Returns no entries if semantic search is
+  // unavailable (e.g. the embeddings model is not loaded yet), or if a newer
+  // search supersedes this one.
+  SearchMemoryBankEntries(string query) => (array<MemoryBankEntry> entries);
 
   // Deletes entries from the memory bank.
   DeleteMemoryBankEntries(array<int64> ids) => ();
@@ -797,6 +850,29 @@ interface PageHandler {
   [RuntimeFeature=kMemoryBanksSearchPalette]
   CopyAttachmentsToClipboard(array<MemoryBankFileAttachment> files)
       => (CopyAttachmentsToClipboardStatus status);
+
+  // Returns the user-configured keyboard shortcut that opens the Memory Banks
+  // search palette, formatted for display (for example, "Ctrl+Shift+K").
+  // Returns an empty string if no shortcut is set.
+  [RuntimeFeature=kMemoryBanksSearchPalette]
+  GetBrowseMemoryBanksShortcut() => (string display_text);
+
+  // Returns a platform shortcut to suggest when no shortcut is set yet, so the
+  // user can apply it with one click. It is never applied automatically.
+  // `shortcut` uses the `ui::Command` accelerator string format, and
+  // `display_text` is localized for display. Both are empty if no shortcut can
+  // be suggested.
+  [RuntimeFeature=kMemoryBanksSearchPalette]
+  GetSuggestedBrowseMemoryBanksShortcut()
+      => (string shortcut, string display_text);
+
+  // Sets the user-configured keyboard shortcut that opens the Memory Banks
+  // search palette. `shortcut` uses the `ui::Command` accelerator string format
+  // (for example, "Ctrl+Shift+K" or "Command+Shift+K"). An empty `shortcut`
+  // removes the shortcut.
+  [RuntimeFeature=kMemoryBanksSearchPalette]
+  SetBrowseMemoryBanksShortcut(string shortcut)
+      => (MemoryBanksShortcutStatus status);
 
   // Starts a skill recording session.
   [RuntimeFeature=kRecordReplay]

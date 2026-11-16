@@ -14,16 +14,20 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/core/model_execution/test/mock_remote_model_executor.h"
 #include "components/optimization_guide/proto/features/streaming/ttc.pb.h"
+#include "components/optimization_guide/proto/features/wire/tool_declaration.pb.h"
 #include "components/ttc/app/public/debug_sink.h"
 #include "components/ttc/app/public/error_codes.h"
 #include "components/ttc/app/public/tool_types.h"
@@ -65,6 +69,13 @@ class FakeObserver : public TtcBackend::Observer {
     last_tool_call_id_ = tool_request.call_id;
     tool_response_callback_ = std::move(response_callback);
   }
+  void OnToolCallBatch(std::vector<PendingToolCall> tool_calls) override {
+    std::vector<std::string>& batch = tool_call_batches_.emplace_back();
+    for (PendingToolCall& tool_call : tool_calls) {
+      batch.push_back(tool_call.request.call_id);
+      batched_tool_response_callbacks_.push_back(std::move(tool_call.callback));
+    }
+  }
   void OnJournalEvent(const ServerJournalEvent& journal_event) override {}
 
   int audio_output_count() const { return audio_output_count_; }
@@ -72,8 +83,17 @@ class FakeObserver : public TtcBackend::Observer {
   int64_t last_sequence_number() const { return last_sequence_number_; }
   std::optional<ErrorCode> last_error() const { return last_error_; }
   const std::string& last_tool_call_id() const { return last_tool_call_id_; }
+  // The call IDs of each batch passed to `OnToolCallBatch()`.
+  const std::vector<std::vector<std::string>>& tool_call_batches() const {
+    return tool_call_batches_;
+  }
   ToolResponseCallback TakeToolResponseCallback() {
     return std::move(tool_response_callback_);
+  }
+  // Returns the callback of the `index`th call passed to `OnToolCallBatch()`,
+  // counting across batches.
+  ToolResponseCallback TakeBatchedToolResponseCallback(size_t index) {
+    return std::move(batched_tool_response_callbacks_.at(index));
   }
   const std::vector<std::pair<ModelTurnStateUpdate, int64_t>>&
   model_turn_state_updates() const {
@@ -85,6 +105,8 @@ class FakeObserver : public TtcBackend::Observer {
 
  private:
   std::string last_tool_call_id_;
+  std::vector<std::vector<std::string>> tool_call_batches_;
+  std::vector<ToolResponseCallback> batched_tool_response_callbacks_;
   ToolResponseCallback tool_response_callback_;
   int audio_output_count_ = 0;
   std::vector<int16_t> last_samples_;
@@ -96,28 +118,27 @@ class FakeObserver : public TtcBackend::Observer {
 };
 
 // Stands in for a live MES session so that Connect() succeeds without any
-// network access.
+// network access. Each frame sent is parsed into `last_sent_frame`, which the
+// caller owns and which must outlive the session.
 class FakeRemoteModelExecutionSession
     : public optimization_guide::RemoteModelExecutionSession {
  public:
+  explicit FakeRemoteModelExecutionSession(
+      std::optional<optimization_guide::proto::TtcClientFrame>& last_sent_frame)
+      : last_sent_frame_(last_sent_frame) {}
+
   void Send(const google::protobuf::MessageLite& message) override {
-    ++sent_frame_count_;
     optimization_guide::proto::TtcClientFrame frame;
     if (frame.ParseFromString(message.SerializeAsString())) {
-      last_sent_frame_ = std::move(frame);
+      *last_sent_frame_ = std::move(frame);
     }
   }
   void AddObserver(Observer* observer) override { observer_ = observer; }
   void RemoveObserver(Observer* observer) override { observer_ = nullptr; }
 
-  const std::optional<optimization_guide::proto::TtcClientFrame>&
-  last_sent_frame() const {
-    return last_sent_frame_;
-  }
-
  private:
-  int sent_frame_count_ = 0;
-  std::optional<optimization_guide::proto::TtcClientFrame> last_sent_frame_;
+  const raw_ref<std::optional<optimization_guide::proto::TtcClientFrame>>
+      last_sent_frame_;
   raw_ptr<Observer> observer_ = nullptr;
 };
 
@@ -152,11 +173,16 @@ class FakeDebugSink : public DebugSink {
               tool_events.push_back(
                   base::StrCat({"response:", response.call_id}));
               last_response_json = response.response_json;
+              last_response_image_mime_type = response.image_mime_type;
+              last_response_image_bytes = response.image_bytes;
             },
             [&](const PlaybackStatus& status) {
-              client_frames.push_back(base::StrCat(
-                  {"playback_status:",
-                   base::NumberToString(status.last_played_sequence_number)}));
+              client_frames.push_back(
+                  base::StrCat({"playback_status:",
+                                base::NumberToString(
+                                    status.playback_progress.InMilliseconds()),
+                                "|", status.playback_complete ? "1" : "0", "|",
+                                base::NumberToString(status.generation_id)}));
             },
             [&](const CloseRequest& close) {
               client_frames.push_back(
@@ -239,6 +265,8 @@ class FakeDebugSink : public DebugSink {
   std::string journal;
   std::vector<std::string> tool_events;
   std::string last_response_json;
+  std::string last_response_image_mime_type;
+  size_t last_response_image_bytes = 0;
 };
 
 // Re-exposes the frame handler so tests can deliver server frames as if they
@@ -292,8 +320,9 @@ optimization_guide::proto::TtcServerFrame MakeUserTurnStateFrame(
 class TtcMesClientTest : public testing::Test {
  public:
   TtcMesClientTest() {
-    ON_CALL(model_executor_, StartStreamingSession).WillByDefault([] {
-      return std::make_unique<FakeRemoteModelExecutionSession>();
+    ON_CALL(model_executor_, StartStreamingSession).WillByDefault([this] {
+      return std::make_unique<FakeRemoteModelExecutionSession>(
+          last_sent_frame_);
     });
 
     client_ =
@@ -304,12 +333,21 @@ class TtcMesClientTest : public testing::Test {
  protected:
   TestTtcMesClient& client() { return *client_; }
 
+  // The last frame `client_` sent to the server.
+  const optimization_guide::proto::TtcClientFrame& last_sent_frame() {
+    CHECK(last_sent_frame_);
+    return *last_sent_frame_;
+  }
+
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   FakeDebugSink debug_sink_;
   FakeObserver observer_;
   testing::NiceMock<optimization_guide::MockRemoteModelExecutor>
       model_executor_;
+  // Written by the sessions `client_` creates; declared before `client_` so
+  // that it outlives them.
+  std::optional<optimization_guide::proto::TtcClientFrame> last_sent_frame_;
   std::unique_ptr<TestTtcMesClient> client_;
 };
 
@@ -472,14 +510,17 @@ TEST_F(TtcMesClientTest, DebugSinkGetsClientFrames) {
   tools[0].name = "open_tab";
   tools[1].name = "scroll";
   client().SendToolSetUpdate(tools);
-  client().ReportPlaybackStatus(12);
+  client().ReportPlaybackStatus(base::Milliseconds(1250),
+                                /*playback_complete=*/true,
+                                /*generation_id=*/12);
 
-  EXPECT_THAT(debug_sink_.client_frames,
-              testing::ElementsAre(
-                  "text_input:hi",
-                  base::StrCat({"context_update:https://a.test/|",
-                                base::NumberToString(apc.ByteSizeLong())}),
-                  "toolset_update:open_tab,scroll", "playback_status:12"));
+  EXPECT_THAT(
+      debug_sink_.client_frames,
+      testing::ElementsAre(
+          "text_input:hi",
+          base::StrCat({"context_update:https://a.test/|",
+                        base::NumberToString(apc.ByteSizeLong())}),
+          "toolset_update:open_tab,scroll", "playback_status:1250|1|12"));
   EXPECT_EQ(debug_sink_.dropped, 0);
 }
 
@@ -575,6 +616,34 @@ TEST_F(TtcMesClientTest, ToolCallIdIsPropagatedAndReported) {
   EXPECT_FALSE(debug_sink_.last_response_json.empty());
 }
 
+// An image from the tool is sent alongside the JSON result.
+TEST_F(TtcMesClientTest, ToolResponseImageIsSent) {
+  client().HandleServerFrame(MakeToolCallFrame("call-1", "{}"));
+  base::DictValue result;
+  result.Set("width", 2);
+  observer_.TakeToolResponseCallback().Run(ToolResponse::Success(
+      std::move(result), VisualContent{.image_data = {0xff, 0xd8, 0xff},
+                                       .mime_type = "image/jpeg"}));
+
+  const auto& sent = last_sent_frame().tool_response();
+  ASSERT_TRUE(sent.has_visual_content());
+  EXPECT_EQ(sent.visual_content().image_data(), "\xff\xd8\xff");
+  EXPECT_EQ(sent.visual_content().mime_type(), "image/jpeg");
+  EXPECT_EQ(debug_sink_.last_response_image_mime_type, "image/jpeg");
+  EXPECT_EQ(debug_sink_.last_response_image_bytes, 3u);
+  EXPECT_THAT(debug_sink_.last_response_json, testing::HasSubstr("\"width\""));
+  EXPECT_THAT(debug_sink_.last_response_json, testing::HasSubstr("\"ok\""));
+}
+
+TEST_F(TtcMesClientTest, ToolResponseWithoutImageSendsNoImage) {
+  client().HandleServerFrame(MakeToolCallFrame("call-1", "{}"));
+  observer_.TakeToolResponseCallback().Run(ToolResponse::Success());
+  EXPECT_FALSE(last_sent_frame().tool_response().has_visual_content());
+  EXPECT_FALSE(debug_sink_.last_response_json.empty());
+  EXPECT_TRUE(debug_sink_.last_response_image_mime_type.empty());
+  EXPECT_EQ(debug_sink_.last_response_image_bytes, 0u);
+}
+
 // The error response is the only report of the rejection.
 TEST_F(TtcMesClientTest, ToolCallWithInvalidJsonIsAnsweredWithError) {
   client().HandleServerFrame(MakeToolCallFrame("call-2", "{not json"));
@@ -593,6 +662,66 @@ TEST_F(TtcMesClientTest, ToolResponseAfterCloseIsOnlyReportedAsDropped) {
   EXPECT_THAT(debug_sink_.tool_events,
               testing::ElementsAre("received:call-3:navigate:{}"));
   EXPECT_EQ(debug_sink_.dropped, 1);
+}
+
+optimization_guide::proto::TtcServerFrame MakeToolCallBatchFrame(
+    const std::vector<std::pair<std::string, std::string>>&
+        call_ids_and_arguments) {
+  optimization_guide::proto::TtcServerFrame frame;
+  auto* batch = frame.mutable_tool_call_batch();
+  for (const auto& [call_id, arguments_json] : call_ids_and_arguments) {
+    auto* tool_call = batch->add_tool_calls();
+    tool_call->set_name("navigate");
+    tool_call->set_call_id(call_id);
+    tool_call->set_arguments_json(arguments_json);
+  }
+  return frame;
+}
+
+// The calls in a batch are passed on together; running them is up to the
+// observer.
+TEST_F(TtcMesClientTest, ToolCallBatchIsPassedOnTogether) {
+  client().HandleServerFrame(MakeToolCallFrame("call-x", "{}"));
+  client().HandleServerFrame(
+      MakeToolCallBatchFrame({{"call-a", "{}"}, {"call-b", "{}"}}));
+  client().HandleServerFrame(MakeToolCallBatchFrame({{"call-c", "{}"}}));
+
+  EXPECT_THAT(observer_.tool_call_batches(),
+              testing::ElementsAre(testing::ElementsAre("call-a", "call-b"),
+                                   testing::ElementsAre("call-c")));
+  EXPECT_EQ(observer_.last_tool_call_id(), "call-x");
+  EXPECT_THAT(debug_sink_.tool_events,
+              testing::ElementsAre("received:call-x:navigate:{}",
+                                   "received:call-a:navigate:{}",
+                                   "received:call-b:navigate:{}",
+                                   "received:call-c:navigate:{}"));
+
+  // Each call in a batch is answered with its own call ID.
+  observer_.TakeBatchedToolResponseCallback(1).Run(ToolResponse::Success());
+  EXPECT_EQ(debug_sink_.tool_events.back(), "response:call-b");
+  observer_.TakeBatchedToolResponseCallback(0).Run(ToolResponse::Success());
+  EXPECT_EQ(debug_sink_.tool_events.back(), "response:call-a");
+}
+
+// A call in a batch with unparsable arguments fails the batch: it and the
+// calls after it are answered with errors without being passed on.
+TEST_F(TtcMesClientTest, ToolCallBatchInvalidJsonAbortsLaterCalls) {
+  client().HandleServerFrame(MakeToolCallBatchFrame(
+      {{"call-a", "{}"}, {"call-b", "{not json"}, {"call-c", "{}"}}));
+
+  EXPECT_THAT(observer_.tool_call_batches(),
+              testing::ElementsAre(testing::ElementsAre("call-a")));
+  EXPECT_THAT(debug_sink_.tool_events,
+              testing::ElementsAre("received:call-a:navigate:{}",
+                                   "received:call-b:navigate:{not json",
+                                   "received:call-c:navigate:{}",
+                                   "response:call-b", "response:call-c"));
+  std::optional<base::DictValue> last_response = base::JSONReader::ReadDict(
+      debug_sink_.last_response_json, base::JSON_PARSE_RFC);
+  ASSERT_TRUE(last_response);
+  EXPECT_EQ(
+      last_response->FindIntByDottedPath("error.code"),
+      static_cast<int>(actor::mojom::ActionResultCode::kActionsCancelled));
 }
 
 TEST_F(TtcMesClientTest, DebugSinkGetsServerErrorDetails) {
@@ -671,7 +800,9 @@ TEST_F(TtcMesClientTest, NullDebugSinkIsSafe) {
   client.SendContextUpdate(GURL("https://a.test"), "title",
                            optimization_guide::proto::AnnotatedPageContent());
   client.SendToolSetUpdate(std::vector<ToolDefinition>(1));
-  client.ReportPlaybackStatus(1);
+  client.ReportPlaybackStatus(base::Milliseconds(200),
+                              /*playback_complete=*/false,
+                              /*generation_id=*/1);
   ToolResponseCallback callback = observer.TakeToolResponseCallback();
   ASSERT_TRUE(callback);
   std::move(callback).Run(ToolResponse::Success());
@@ -689,20 +820,17 @@ TEST_F(TtcMesClientTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kTtcLiveRecipe);
 
-  FakeRemoteModelExecutionSession* session = nullptr;
-  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&session] {
-    auto fake_session = std::make_unique<FakeRemoteModelExecutionSession>();
-    session = fake_session.get();
-    return fake_session;
+  std::optional<optimization_guide::proto::TtcClientFrame> sent;
+  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&sent] {
+    return std::make_unique<FakeRemoteModelExecutionSession>(sent);
   });
 
   TestTtcMesClient local_client(&model_executor_);
   local_client.Connect(&observer_);
 
-  ASSERT_TRUE(session);
-  ASSERT_TRUE(session->last_sent_frame().has_value());
-  ASSERT_TRUE(session->last_sent_frame()->has_setup_request());
-  EXPECT_EQ(session->last_sent_frame()->setup_request().model_preference(),
+  ASSERT_TRUE(sent.has_value());
+  ASSERT_TRUE(sent->has_setup_request());
+  EXPECT_EQ(sent->setup_request().model_preference(),
             optimization_guide::proto::MODEL_PREFERENCE_UNSPECIFIED);
 }
 
@@ -712,20 +840,17 @@ TEST_F(TtcMesClientTest,
   feature_list.InitAndEnableFeatureWithParameters(kTtcLiveRecipe,
                                                   {{"LiveRecipe", "fallback"}});
 
-  FakeRemoteModelExecutionSession* session = nullptr;
-  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&session] {
-    auto fake_session = std::make_unique<FakeRemoteModelExecutionSession>();
-    session = fake_session.get();
-    return fake_session;
+  std::optional<optimization_guide::proto::TtcClientFrame> sent;
+  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&sent] {
+    return std::make_unique<FakeRemoteModelExecutionSession>(sent);
   });
 
   TestTtcMesClient local_client(&model_executor_);
   local_client.Connect(&observer_);
 
-  ASSERT_TRUE(session);
-  ASSERT_TRUE(session->last_sent_frame().has_value());
-  ASSERT_TRUE(session->last_sent_frame()->has_setup_request());
-  EXPECT_EQ(session->last_sent_frame()->setup_request().model_preference(),
+  ASSERT_TRUE(sent.has_value());
+  ASSERT_TRUE(sent->has_setup_request());
+  EXPECT_EQ(sent->setup_request().model_preference(),
             optimization_guide::proto::MODEL_PREFERENCE_FALLBACK);
 }
 
@@ -734,21 +859,65 @@ TEST_F(TtcMesClientTest, SetupRequestUsesDefaultModelPreferenceWhenConfigured) {
   feature_list.InitAndEnableFeatureWithParameters(kTtcLiveRecipe,
                                                   {{"LiveRecipe", "default"}});
 
-  FakeRemoteModelExecutionSession* session = nullptr;
-  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&session] {
-    auto fake_session = std::make_unique<FakeRemoteModelExecutionSession>();
-    session = fake_session.get();
-    return fake_session;
+  std::optional<optimization_guide::proto::TtcClientFrame> sent;
+  EXPECT_CALL(model_executor_, StartStreamingSession).WillOnce([&sent] {
+    return std::make_unique<FakeRemoteModelExecutionSession>(sent);
   });
 
   TestTtcMesClient local_client(&model_executor_);
   local_client.Connect(&observer_);
 
-  ASSERT_TRUE(session);
-  ASSERT_TRUE(session->last_sent_frame().has_value());
-  ASSERT_TRUE(session->last_sent_frame()->has_setup_request());
-  EXPECT_EQ(session->last_sent_frame()->setup_request().model_preference(),
+  ASSERT_TRUE(sent.has_value());
+  ASSERT_TRUE(sent->has_setup_request());
+  EXPECT_EQ(sent->setup_request().model_preference(),
             optimization_guide::proto::MODEL_PREFERENCE_DEFAULT);
+}
+
+TEST_F(TtcMesClientTest, GetSessionIdTracksSessionStatusAndClose) {
+  EXPECT_EQ(client().GetSessionId(), std::nullopt);
+
+  optimization_guide::proto::TtcServerFrame empty_status_frame;
+  empty_status_frame.mutable_session_status();
+  client().HandleServerFrame(empty_status_frame);
+  EXPECT_EQ(client().GetSessionId(), std::nullopt);
+
+  optimization_guide::proto::TtcServerFrame status_frame;
+  status_frame.mutable_session_status()->set_server_session_id(
+      "test-session-123");
+  client().HandleServerFrame(status_frame);
+  EXPECT_EQ(client().GetSessionId(), "test-session-123");
+
+  client().Close();
+  EXPECT_EQ(client().GetSessionId(), std::nullopt);
+}
+
+TEST_F(TtcMesClientTest, SendToolSetUpdatePopulatesToolDeclaration) {
+  std::vector<ToolDefinition> tools(2);
+  tools[0].name = "open_url";
+  tools[0].description = "Opens a URL.";
+  tools[0].parameters_json_schema =
+      base::DictValue()
+          .Set("type", "object")
+          .Set("properties",
+               base::DictValue().Set("url",
+                                     base::DictValue().Set("type", "string")));
+  tools[1].name = "go_back";
+  tools[1].description = "Navigates back.";
+
+  client().SendToolSetUpdate(tools);
+
+  const auto& active_tools = last_sent_frame().toolset_update().active_tools();
+  ASSERT_EQ(active_tools.size(), 2);
+
+  EXPECT_EQ(active_tools[0].tool_declaration().name(), "open_url");
+  EXPECT_EQ(active_tools[0].tool_declaration().description(), "Opens a URL.");
+  EXPECT_EQ(active_tools[0].tool_declaration().parameters_json_schema(),
+            R"({"properties":{"url":{"type":"string"}},"type":"object"})");
+
+  EXPECT_EQ(active_tools[1].tool_declaration().name(), "go_back");
+  EXPECT_EQ(active_tools[1].tool_declaration().description(),
+            "Navigates back.");
+  EXPECT_FALSE(active_tools[1].tool_declaration().has_parameters_json_schema());
 }
 
 }  // namespace ttc

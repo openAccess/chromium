@@ -31,6 +31,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/tab_footprint_aggregator.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
@@ -46,7 +47,6 @@
 #include "content/public/browser/render_process_host.h"
 #include "content/public/common/child_process_id.h"
 #include "content/public/common/content_switches.h"
-#include "content/public/common/url_constants.h"
 #include "extensions/buildflags/buildflags.h"
 #include "media/mojo/mojom/cdm_service.mojom.h"
 #include "partition_alloc/buildflags.h"
@@ -98,9 +98,7 @@ bool Is1pNtpUrl(const GURL& url) {
   if (!url.is_valid()) {
     return false;
   }
-  if (url.SchemeIs(content::kChromeUIScheme) &&
-      (url.host() == chrome::kChromeUINewTabPageHost ||
-       url.host() == chrome::kChromeUINewTabHost)) {
+  if (search::IsNewTabPageOrigin(url) || search::IsNewTabOrigin(url)) {
     return true;
   }
   if (url.SchemeIs(chrome::kChromeNativeScheme) &&
@@ -704,6 +702,11 @@ const Metric kAllocatorDumpNamesForMetrics[] = {
     {"v8/main/heap", "V8.Main.Heap.AllocatedObjects", MetricSize::kLarge,
      kAllocatedObjectsSize, EmitTo::kSizeInUkmAndUma,
      &Memory_Experimental::SetV8_Main_Heap_AllocatedObjects},
+    {"v8/main/heap", "V8.Main.Heap.Fragmentation", MetricSize::kPercentage,
+     "fragmentation", EmitTo::kSizeInUmaOnly, nullptr},
+    {"v8/main/heap", "V8.Main.Heap.OldGeneration.Fragmentation",
+     MetricSize::kPercentage, "old_generation_fragmentation",
+     EmitTo::kSizeInUmaOnly, nullptr},
     {"v8/main/heap/code_large_object_space",
      "V8.Main.Heap.CodeLargeObjectSpace", MetricSize::kLarge, kEffectiveSize,
      EmitTo::kSizeInUkmAndUma,
@@ -1913,12 +1916,14 @@ ProcessMemoryMetricsEmitter::GetProcessToPageInfoMap(
       PageInfo& page_info = process_info.page_infos.emplace_back();
       page_info.ukm_source_id = page_node->GetUkmSourceID();
 
+      auto [is_visible, last_visibility_change_time] =
+          page_node->GetVisibilityState();
       page_info.tab_id = tab_id;
       page_info.hosts_main_frame = HostsMainFrame(process_node, page_node);
-      page_info.is_visible = page_node->IsVisible();
+      page_info.is_visible = is_visible;
       page_info.is_1p_ntp = Is1pNtpUrl(page_node->GetMainFrameUrl());
       page_info.time_since_last_visibility_change =
-          now - page_node->GetLastVisibilityChangeTime();
+          now - last_visibility_change_time;
       page_info.time_since_last_navigation =
           page_node->GetTimeSinceLastNavigation();
     }

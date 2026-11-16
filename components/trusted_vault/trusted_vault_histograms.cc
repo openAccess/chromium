@@ -41,6 +41,8 @@ std::string GetTrustedVaultURLFetchReasonSuffix(
       return "DownloadAuthenticationFactorsRegistrationState";
     case TrustedVaultURLFetchReasonForUMA::kRegisterICloudKeychain:
       return "RegisterICloudKeychain";
+    case TrustedVaultURLFetchReasonForUMA::kRegisterGaiaPassword:
+      return "RegisterGaiaPassword";
     case TrustedVaultURLFetchReasonForUMA::kDownloadGaiaPasswordPublicKey:
       return "DownloadGaiaPasswordPublicKey";
     case TrustedVaultURLFetchReasonForUMA::
@@ -208,6 +210,23 @@ void RecordTrustedVaultKeyRotationStatus(SecurityDomainId security_domain_id,
       base::StrCat({"TrustedVault.KeyRotationStatus.",
                     GetSecurityDomainNameForUma(security_domain_id)}),
       status);
+}
+
+void RecordTrustedVaultCanEnrollOutcome(
+    SecurityDomainId security_domain_id,
+    TrustedVaultCanEnrollOutcomeForUMA outcome) {
+  base::UmaHistogramEnumeration(
+      base::StrCat({"TrustedVault.CanEnrollOutcome.",
+                    GetSecurityDomainNameForUma(security_domain_id)}),
+      outcome);
+}
+
+void RecordTrustedVaultEnrollOutcome(SecurityDomainId security_domain_id,
+                                     TrustedVaultEnrollOutcomeForUMA outcome) {
+  base::UmaHistogramEnumeration(
+      base::StrCat({"TrustedVault.EnrollOutcome.",
+                    GetSecurityDomainNameForUma(security_domain_id)}),
+      outcome);
 }
 
 void RecordTrustedVaultRecoverKeysOutcome(

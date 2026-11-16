@@ -9,8 +9,8 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/component_export.h"
@@ -28,13 +28,12 @@
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/metrics/metrics_service_accessor.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/private_insights/event_queue.h"
 #include "components/private_insights/events/contextual_cue_log_event.pb.h"
+#include "components/private_insights/events/storage_access_log_event.pb.h"
+#include "components/private_insights/populations/population.h"
 
 class PrefService;
-
-namespace fcp::client {
-class ExampleQueryResult;
-}
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -47,6 +46,9 @@ class FcpFiles;
 class FcpFlags;
 class FcpLogManager;
 class FcpSimpleTaskEnvironment;
+class PendingEventsBatch;
+template <typename EventProto>
+class TypedPopulation;
 
 class PrivateInsightsService;
 
@@ -71,18 +73,6 @@ inline constexpr char kContributedTaskCountHistogram[] =
     "PrivateMetrics.PrivateInsights.ContributedTaskCount";
 inline constexpr char kFederatedComputationOutcomeHistogram[] =
     "PrivateMetrics.PrivateInsights.FederatedComputationOutcome";
-inline constexpr char kContextualCueEventsLoggingOnShutdownCountHistogram[] =
-    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging."
-    "OnShutdownCount";
-inline constexpr char kContextualCueEventsLoggingQueuedCountHistogram[] =
-    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging.QueuedCount";
-inline constexpr char kContextualCueEventsLoggingRemovedCountHistogram[] =
-    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging.RemovedCount";
-inline constexpr char kContextualCueEventsRequeuingRequeuedCountHistogram[] =
-    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Requeuing."
-    "RequeuedCount";
-inline constexpr char kContextualCueEventsRequeuingDroppedCountHistogram[] =
-    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Requeuing.DroppedCount";
 
 class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
     : public KeyedService {
@@ -156,70 +146,11 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
 
   virtual void LogContextualCueEvent(events::ContextualCueLogEvent event);
 
+  // Queues `event` for upload. No-op unless `kPrivateInsightsStorageAccess`.
+  virtual void LogStorageAccessEvent(events::StorageAccessLogEvent event);
+
  private:
-  template <typename EventProto>
-  struct EventEntry {
-    base::Time timestamp;
-    EventProto event;
-  };
-
-  using ContextualCueEventEntry = EventEntry<events::ContextualCueLogEvent>;
-
-  // A snapshot of unsent events for a single population, detached from the
-  // queue they were logged to. The batch is created on the main sequence,
-  // moved to the thread pool where it serializes itself, and moved back to
-  // the main sequence where it can be requeued if the upload failed. It is
-  // owned by exactly one sequence at a time, so no synchronization is needed.
-  //
-  // The interface is type-erased so that the upload machinery
-  // (`UploadTask`, `UploadBlocking()`, `OnUploadComplete()`) can be shared
-  // across event proto types / populations.
-  class PendingEventsBatch {
-   public:
-    virtual ~PendingEventsBatch() = default;
-
-    // Number of events in the batch.
-    virtual size_t size() const = 0;
-
-    // Serializes the events into `query_result`. Runs on the thread pool.
-    virtual void SerializeToQueryResult(
-        fcp::client::ExampleQueryResult* query_result) const = 0;
-
-    // Puts the events back into the queue they came from. Consumes the
-    // events; must be called at most once. Runs on the main sequence.
-    virtual void Requeue() = 0;
-  };
-
-  // Like `RequeueEvents()` / `SerializeEventsToQueryResult()`, this is only
-  // instantiated from the .cc (via `MakeUploadTask()`).
-  template <typename EventProto>
-  class TypedPendingEventsBatch : public PendingEventsBatch {
-   public:
-    using Events = base::circular_deque<EventEntry<EventProto>>;
-    using RequeueCallback = base::OnceCallback<void(Events)>;
-
-    TypedPendingEventsBatch(Events events, RequeueCallback requeue)
-        : events_(std::move(events)), requeue_(std::move(requeue)) {}
-    ~TypedPendingEventsBatch() override = default;
-
-    TypedPendingEventsBatch(const TypedPendingEventsBatch&) = delete;
-    TypedPendingEventsBatch& operator=(const TypedPendingEventsBatch&) = delete;
-
-    // PendingEventsBatch:
-    size_t size() const override { return events_.size(); }
-    void SerializeToQueryResult(
-        fcp::client::ExampleQueryResult* query_result) const override {
-      SerializeEventsToQueryResult<EventProto>(events_, query_result);
-    }
-    void Requeue() override {
-      CHECK(requeue_);
-      std::move(requeue_).Run(std::move(events_));
-    }
-
-   private:
-    Events events_;
-    RequeueCallback requeue_;
-  };
+  using ContextualCueEventQueue = EventQueue<events::ContextualCueLogEvent>;
 
   // Everything the thread pool needs to run one federated computation round
   // for a single population. Move-only; it travels main sequence -> thread
@@ -243,8 +174,8 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
     std::string server_uri;
     std::string population_name;
     std::unique_ptr<PendingEventsBatch> batch;
-    // When `TriggerUpload()` created this task; used to measure how long the
-    // task waited before the thread pool picked it up.
+    // When this task was created; used to measure how long it waited before
+    // the thread pool picked it up.
     base::TimeTicks trigger_time;
   };
 
@@ -257,35 +188,35 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
 
   void OnMetricsChoiceChanged();
 
-  void TriggerUpload();
+  // Adds `population` to the set uploaded every round.
+  void RegisterPopulation(std::unique_ptr<Population> population);
 
-  // Detaches all events currently in `queue` into a new `UploadTask` targeting
-  // `population_name`. If the upload fails, the events are requeued onto
-  // `queue` subject to `max_events` and the given requeue histograms (see
-  // `RequeueEvents()`). `queue` must be a member of this service, as it is
-  // referenced by the requeue callback (guarded by a WeakPtr to `this`).
-  //
-  // This is a private implementation detail of the service: like the other
-  // templates in this class it is defined in the .cc and may only be
-  // instantiated from there (see `TriggerUploadTask()`).
-  template <typename EventProto>
-  UploadTask MakeUploadTask(base::circular_deque<EventEntry<EventProto>>& queue,
-                            std::string population_name,
-                            int max_events,
-                            std::string_view requeued_count_histogram,
-                            std::string_view dropped_count_histogram);
+  // Starts an upload round: every registered population with pending events,
+  // then (while Contextual Cues is not registered) its legacy queue. FCP
+  // uploads one population per call, so the round is a chain of calls; ticks
+  // that arrive mid-round are skipped.
+  void TriggerUpload();
+  // Posts the next upload of the current round, if any. One upload is in
+  // flight at a time because they share `fcp_task_env_`;
+  // `OnUploadTaskComplete()` calls this again to continue the round.
+  void UploadNextInRound();
+
+  // Original Contextual Cues upload path, used iff Contextual Cues is not
+  // registered. Unchanged apart from being moved out of `TriggerUpload()`.
+  // TODO(b/576348553): Remove once Contextual Cues is on the `UploadTask` path.
+  void UploadLegacyContextualCues();
+
+  // Detaches `population`'s pending events into a new `UploadTask`.
+  UploadTask MakeUploadTask(Population& population);
 
   // Runs on a background thread pool sequence (allows blocking).
   static FederatedComputationResult UploadBlocking(
       scoped_refptr<FcpSimpleTaskEnvironment> task_env,
       base::TimeTicks trigger_time);
 
-  // `UploadTask` pipeline, used when `kPrivateInsightsUploadTaskPipeline` is
-  // enabled. Population agnostic; serializes events on the thread pool.
-  // `TriggerUpload()` dispatches here; the original path above is left
-  // unchanged until the rollout completes.
-  // TODO(b/576348553): Make this the only path and remove the original.
-  void TriggerUploadTask();
+  // `UploadTask` pipeline: serializes `population`'s batch on the thread pool
+  // and uploads it.
+  void UploadPopulation(Population& population);
   // Runs on a background thread pool sequence (allows blocking). Serializes
   // the task's batch into the task environment and runs the federated
   // computation for the task's population.
@@ -297,31 +228,11 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
 
   static RunFederatedComputationFunc& GetRunFederatedComputationFunc();
 
-  void OnUploadComplete(
-      base::circular_deque<ContextualCueEventEntry> pending_events,
-      FederatedComputationResult result);
+  void OnUploadComplete(ContextualCueEventQueue::Entries pending_events,
+                        FederatedComputationResult result);
 
-  // Prepends `events` back onto `target_queue` (preserving their original
-  // order) without letting `target_queue` grow beyond `max_events`. Events
-  // that don't fit are dropped. The number of requeued and dropped events are
-  // reported to `requeued_count_histogram` and `dropped_count_histogram`
-  // respectively.
-  //
-  // These templates are only instantiated from the .cc, so their definitions
-  // live there. Tests exercise them via OnUploadComplete() / TriggerUpload().
-  template <typename EventProto>
-  void RequeueEvents(base::circular_deque<EventEntry<EventProto>> events,
-                     base::circular_deque<EventEntry<EventProto>>& target_queue,
-                     int max_events,
-                     std::string_view requeued_count_histogram,
-                     std::string_view dropped_count_histogram);
-
-  // Serializes `events` into `query_result` in the format expected by the
-  // private logger example query.
-  template <typename EventProto>
-  static void SerializeEventsToQueryResult(
-      const base::circular_deque<EventEntry<EventProto>>& events,
-      fcp::client::ExampleQueryResult* query_result);
+  // Whichever Contextual Cues queue is live.
+  const ContextualCueEventQueue& ContextualCueEventsForTesting() const;
 
   raw_ptr<PrefService> local_state_ GUARDED_BY_CONTEXT(sequence_checker_) =
       nullptr;
@@ -334,7 +245,33 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
   scoped_refptr<FcpSimpleTaskEnvironment> fcp_task_env_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
-  base::circular_deque<ContextualCueEventEntry> contextual_cue_events_
+  // In registration order.
+  std::vector<std::unique_ptr<Population>> populations_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+  // Indices into `populations_` still to upload in the current round, then
+  // whether the legacy Contextual Cues queue is still to upload. The legacy
+  // upload goes last so its (unchanged) completion handler need not continue
+  // the round.
+  base::circular_deque<size_t> upload_round_
+      GUARDED_BY_CONTEXT(sequence_checker_);
+  bool legacy_upload_in_round_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  // Whether `kTaskPosted` was recorded for the current round; one sample per
+  // `TriggerUpload()` that posts anything.
+  bool round_task_posted_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  // Owned by `populations_`. Set iff `kPrivateInsightsUploadTaskPipeline` was
+  // enabled at construction; null means the legacy queue is in use.
+  raw_ptr<TypedPopulation<events::ContextualCueLogEvent>>
+      contextual_cue_population_ GUARDED_BY_CONTEXT(sequence_checker_) =
+          nullptr;
+  // Owned by `populations_`. Set iff `kPrivateInsightsStorageAccess`.
+  raw_ptr<TypedPopulation<events::StorageAccessLogEvent>>
+      storage_access_population_ GUARDED_BY_CONTEXT(sequence_checker_) =
+          nullptr;
+
+  // Legacy Contextual Cues queue, used iff `contextual_cue_population_` is
+  // null.
+  // TODO(b/576348553): Remove with the legacy upload path.
+  ContextualCueEventQueue contextual_cue_events_
       GUARDED_BY_CONTEXT(sequence_checker_);
 
   SEQUENCE_CHECKER(sequence_checker_);
@@ -363,6 +300,25 @@ class COMPONENT_EXPORT(PRIVATE_INSIGHTS) PrivateInsightsService
                            UploadPathSelectedByFlag);
   FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServiceTriggerUploadTest,
                            HandleEvents);
+  // The fixture is a friend for its `RunUploadRound()` helper; the test bodies
+  // are separate classes and need their own entries.
+  friend class PrivateInsightsServicePopulationsTest;
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           UploadsEverySourceEachRound);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           SkipsSourcesWithoutEvents);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           RequeuesToOwningSource);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           StopEndsRoundInProgress);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           ShutdownNotifiesEverySource);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           StorageAccessNotRegisteredWhenFlagDisabled);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           StorageAccessLogsAndUploads);
+  FRIEND_TEST_ALL_PREFIXES(PrivateInsightsServicePopulationsTest,
+                           StorageAccessAndContextualCuesUploadSeparately);
 };
 
 }  // namespace private_insights

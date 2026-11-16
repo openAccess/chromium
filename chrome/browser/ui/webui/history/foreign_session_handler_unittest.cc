@@ -30,7 +30,7 @@
 #include "components/sync_device_info/fake_device_info_sync_service.h"
 #include "components/sync_device_info/test_device_info_builder.h"
 #include "components/sync_sessions/fake_open_tabs_ui_delegate.h"
-#include "components/sync_sessions/session_sync_service.h"
+#include "components/sync_sessions/fake_session_sync_service.h"
 #include "components/sync_sessions/synced_session.h"
 #include "content/public/test/test_web_ui.h"
 #include "content/public/test/web_contents_tester.h"
@@ -40,13 +40,13 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/models/menu_model.h"
-#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace browser_sync {
 
 namespace {
 
+using ::sync_sessions::FakeSessionSyncService;
 using ::testing::ElementsAre;
 using ::testing::UnorderedElementsAre;
 
@@ -58,38 +58,6 @@ MATCHER_P(TabHasUrl, url, "") {
   return !arg.navigations.empty() &&
          arg.navigations.back().virtual_url() == url;
 }
-
-// Partial SessionSyncService that can fake behavior for
-// SubscribeToForeignSessionsChanged() including the notification to
-// subscribers.
-class FakeSessionSyncService : public sync_sessions::SessionSyncService {
- public:
-  FakeSessionSyncService() = default;
-  ~FakeSessionSyncService() override = default;
-
-  void NotifyForeignSessionsChanged() { subscriber_list_.Notify(); }
-
-  // SessionSyncService overrides.
-  syncer::GlobalIdMapper* GetGlobalIdMapper() const override { return nullptr; }
-
-  sync_sessions::FakeOpenTabsUIDelegate* GetOpenTabsUIDelegate() override {
-    return &open_tabs_ui_delegate_;
-  }
-
-  base::CallbackListSubscription SubscribeToForeignSessionsChanged(
-      const base::RepeatingClosure& cb) override {
-    return subscriber_list_.Add(cb);
-  }
-
-  base::WeakPtr<syncer::DataTypeControllerDelegate> GetControllerDelegate()
-      override {
-    return nullptr;
-  }
-
- private:
-  base::RepeatingClosureList subscriber_list_;
-  sync_sessions::FakeOpenTabsUIDelegate open_tabs_ui_delegate_;
-};
 
 class MockForeignSessionPage : public history::mojom::ForeignSessionPage {
  public:
@@ -252,14 +220,18 @@ TEST_F(ForeignSessionHandlerTest, DeleteForeignSession) {
 
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  ASSERT_TRUE(delegate->GetAllForeignSessions(&sessions));
+  ASSERT_TRUE(delegate->GetAllForeignSessions(
+      &sessions,
+      sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
   ASSERT_THAT(sessions, UnorderedElementsAre(HasSessionTag("session_to_delete"),
                                              HasSessionTag("session_to_keep")));
 
   handler()->DeleteForeignSession("session_to_delete");
 
   sessions.clear();
-  delegate->GetAllForeignSessions(&sessions);
+  delegate->GetAllForeignSessions(
+      &sessions,
+      sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::kPresentable);
   EXPECT_THAT(sessions, ElementsAre(HasSessionTag("session_to_keep")));
 }
 

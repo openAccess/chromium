@@ -22,7 +22,6 @@
 #include "content/browser/webid/delegation/evt_verifier.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
-#include "content/browser/webid/flags.h"
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -34,6 +33,7 @@
 #include "net/http/http_request_headers.h"
 #include "net/http/structured_headers.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
+#include "ui/gfx/image/image.h"
 #include "url/origin.h"
 
 namespace content::webid {
@@ -371,15 +371,10 @@ void EmailVerificationRequest::OnDnsRequestComplete(
   // Reject anything that is not exactly a canonical host, e.g. one with a
   // port, path, query, userinfo or uppercase letters, rather than letting GURL
   // normalize it into a different identifier.
-  // Tests serve the issuer on an ephemeral port, so a port is allowed there.
   const std::string issuer_spec = base::StrCat({"https://", iss});
   GURL issuer(issuer_spec);
   url::Origin issuer_origin = url::Origin::Create(issuer);
-  const bool is_valid_issuer = IsPreservePortsForTestingEnabled()
-                                   ? (!issuer_origin.opaque() &&
-                                      issuer_origin.Serialize() == issuer_spec)
-                                   : (issuer_origin.host() == iss);
-  if (!is_valid_issuer) {
+  if (issuer_origin.host() != iss) {
     CompleteIsVerifiableRequest(
         std::move(callback), std::nullopt,
         EmailVerificationRequestResult::kDnsInvalidRecord);
@@ -392,24 +387,16 @@ void EmailVerificationRequest::OnDnsRequestComplete(
 
   auto well_known = base::MakeRefCounted<WellKnownOrError>();
   auto accounts = base::MakeRefCounted<AccountsOrError>();
+  auto brand_icon = base::MakeRefCounted<BrandIcon>();
 
   // Create a barrier closure that will run OnAccountStatusFetched when called
-  // twice.
+  // three times: once for the .well-known/email-verification file, once for
+  // the accounts, and once for the issuer logo.
   base::RepeatingClosure barrier = base::BarrierClosure(
-      2, base::BindOnce(&EmailVerificationRequest::OnAccountStatusFetched,
+      3, base::BindOnce(&EmailVerificationRequest::OnAccountStatusFetched,
                         weak_ptr_factory_.GetWeakPtr(), well_known, accounts,
-                        issuer_origin, email, std::move(callback)));
+                        brand_icon, issuer_origin, email, std::move(callback)));
 
-  // --- Task 1: Fetch .well-known/email-verification ---
-  network_manager_->FetchWellKnown(
-      issuer,
-      base::BindOnce(
-          &EmailVerificationRequest::OnEmailVerificationWellKnownFetched,
-          weak_ptr_factory_.GetWeakPtr(), barrier, well_known));
-
-  // --- Task 2: Verify User is Logged In with the provided Email ---
-  // If the issuer is found, the browser fetches the issuer's
-  // .well-known/web-identity file:
   auto* permission_delegate = render_frame_host_->GetBrowserContext()
                                   ->GetFederatedIdentityPermissionContext();
   std::optional<bool> login_status =
@@ -420,6 +407,18 @@ void EmailVerificationRequest::OnDnsRequestComplete(
   // Treat "unknown" login state as "logged-in" to avoid stopping early
   // unnecessarily. We only stop if we explicitly know the user is logged out.
   bool is_logged_in = login_status.value_or(true);
+
+  // --- Task 1: Fetch .well-known/email-verification and the issuer logo ---
+  network_manager_->FetchWellKnown(
+      issuer,
+      base::BindOnce(
+          &EmailVerificationRequest::OnEmailVerificationWellKnownFetched,
+          weak_ptr_factory_.GetWeakPtr(), barrier, well_known, brand_icon,
+          is_logged_in));
+
+  // --- Task 2: Verify User is Logged In with the provided Email ---
+  // If the issuer is found, the browser fetches the issuer's
+  // .well-known/web-identity file:
   if (!is_logged_in) {
     accounts->data =
         base::unexpected(EmailVerificationRequestResult::kUserLoggedOut);
@@ -437,15 +436,47 @@ void EmailVerificationRequest::OnDnsRequestComplete(
 void EmailVerificationRequest::OnEmailVerificationWellKnownFetched(
     base::RepeatingClosure barrier,
     scoped_refptr<WellKnownOrError> well_known,
+    scoped_refptr<BrandIcon> brand_icon,
+    bool is_logged_in,
     FetchStatus status,
     EmailVerifierNetworkRequestManager::WellKnown fetched_well_known) {
+  GURL brand_icon_url;
   if (status.parse_status != ParseStatus::kSuccess) {
     well_known->data = base::unexpected(
         EmailVerificationWellKnownParseStatusToEvpRequestStatus(
             status.parse_status));
   } else {
+    brand_icon_url = fetched_well_known.brand_icon_url;
     well_known->data = std::move(fetched_well_known);
   }
+  barrier.Run();
+
+  // If the issuer provides a logo, download it so that the embedder can show it
+  // in the permission prompt.
+  //
+  // Note: this must not depend on whether the email matches one of the user's
+  // accounts. The relying party knows the email (it was entered in its form)
+  // and can observe which requests are made on its behalf (e.g. through
+  // Connection-Allowlist reports), so a logo that is fetched only on a match
+  // would tell it that the user is signed in to the issuer with this email
+  // before the user consents. The request being uncredentialed does not help,
+  // as the signal is that the request happens at all.
+  if (!is_logged_in || !brand_icon_url.is_valid()) {
+    barrier.Run();
+    return;
+  }
+  idp_network_manager_->DownloadAndDecodeImage(
+      brand_icon_url,
+      base::BindOnce(&EmailVerificationRequest::OnBrandIconFetched,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(barrier),
+                     std::move(brand_icon)));
+}
+
+void EmailVerificationRequest::OnBrandIconFetched(
+    base::RepeatingClosure barrier,
+    scoped_refptr<BrandIcon> brand_icon,
+    const gfx::Image& image) {
+  brand_icon->data = image;
   barrier.Run();
 }
 
@@ -499,6 +530,7 @@ void EmailVerificationRequest::OnAccountsResponseReceived(
 void EmailVerificationRequest::OnAccountStatusFetched(
     scoped_refptr<WellKnownOrError> well_known,
     scoped_refptr<AccountsOrError> accounts,
+    scoped_refptr<BrandIcon> brand_icon,
     const url::Origin& issuer_origin,
     const std::string& email,
     EmailVerifier::IsVerifiableCallback callback) {
@@ -551,6 +583,12 @@ void EmailVerificationRequest::OnAccountStatusFetched(
   result.jwks_uri = well_known->data->jwks_uri;
   result.signing_alg_values_supported =
       well_known->data->signing_alg_values_supported;
+
+  // A logo that fails to download or decode does not fail the request.
+  if (!brand_icon->data.IsEmpty()) {
+    result.brand_icon = brand_icon->data;
+    result.brand_icon_url = well_known->data->brand_icon_url;
+  }
 
   CompleteIsVerifiableRequest(std::move(callback), std::move(result),
                               EmailVerificationRequestResult::kSuccess);

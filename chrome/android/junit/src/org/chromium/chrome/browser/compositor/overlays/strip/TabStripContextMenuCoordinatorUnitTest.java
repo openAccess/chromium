@@ -88,7 +88,8 @@ import java.util.Collections;
 @DisableFeatures({
     ChromeFeatureList.GLIC,
     ChromeFeatureList.TASK_MANAGER_CLANK,
-    ChromeFeatureList.DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING
+    ChromeFeatureList.DARKEN_WEBSITES_CHECKBOX_IN_THEMES_SETTING,
+    ChromeFeatureList.ANDROID_VERTICAL_TABS
 })
 public class TabStripContextMenuCoordinatorUnitTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -702,11 +703,13 @@ public class TabStripContextMenuCoordinatorUnitTest {
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
     @EnableFeatures({
         ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_HINTS,
         ChromeFeatureList.TASK_MANAGER_CLANK
     })
     public void showMenu_verifyShortcutTextPopulatedWhenEnabled() {
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
         MultiWindowUtils.setMultiInstanceApi31EnabledForTesting(true);
         KeyboardShortcutsJni.setInstanceForTesting(mKeyboardShortcutsJniMock);
         when(mKeyboardShortcutsJniMock.getShortcutTextForCommandId(anyInt())).thenReturn("");

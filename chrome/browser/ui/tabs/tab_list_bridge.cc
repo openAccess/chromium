@@ -149,9 +149,7 @@ tabs::TabInterface* TabListBridge::GetActiveTab() {
 }
 
 void TabListBridge::ActivateTab(tabs::TabHandle tab) {
-  const int index = GetIndexOfTab(tab);
-  CHECK_NE(index, tab_list::kNoTabIndex);
-  tab_strip_->ActivateTabAt(index);
+  tab_strip_->ActivateTab(tab);
 }
 
 tabs::TabInterface* TabListBridge::OpenTab(const GURL& url,
@@ -175,16 +173,11 @@ tabs::TabInterface* TabListBridge::OpenTab(const GURL& url,
 
 void TabListBridge::SetOpenerForTab(tabs::TabHandle target,
                                     tabs::TabHandle opener) {
-  const int target_index = GetIndexOfTab(target);
-  CHECK_NE(target_index, tab_list::kNoTabIndex);
-
-  tab_strip_->SetOpenerOfTabAt(target_index, opener.Get());
+  tab_strip_->SetOpenerOfTab(target, opener.Get());
 }
 
 tabs::TabInterface* TabListBridge::GetOpenerForTab(tabs::TabHandle target) {
-  const int target_index = GetIndexOfTab(target);
-  CHECK_NE(target_index, tab_list::kNoTabIndex);
-  return tab_strip_->GetOpenerOfTabAt(target_index);
+  return tab_strip_->GetOpenerOfTab(target);
 }
 
 tabs::TabInterface* TabListBridge::InsertWebContentsAt(
@@ -240,7 +233,7 @@ tabs::TabInterface* TabListBridge::GetTab(int index) {
 }
 
 int TabListBridge::GetIndexOfTab(tabs::TabHandle tab) {
-  return tab_strip_->GetIndexOfTab(tab.Get());
+  return tab_strip_->GetIndexOfTab(tab);
 }
 
 void TabListBridge::HighlightTabs(tabs::TabHandle tab_to_activate,
@@ -267,6 +260,18 @@ void TabListBridge::HighlightTabs(tabs::TabHandle tab_to_activate,
   tab_strip_->SetSelectionFromModel(selection_state);
 }
 
+std::vector<tabs::TabInterface*> TabListBridge::GetHighlightedTabs() {
+  const auto& selection_model = tab_strip_->selection_model();
+  std::vector<tabs::TabInterface*> highlighted_tabs;
+  highlighted_tabs.reserve(selection_model.size());
+  for (tabs::TabInterface* tab : *tab_strip_) {
+    if (selection_model.IsSelected(tab)) {
+      highlighted_tabs.push_back(tab);
+    }
+  }
+  return highlighted_tabs;
+}
+
 void TabListBridge::MoveTab(tabs::TabHandle tab, int index) {
   int current_index = GetIndexOfTab(tab);
   CHECK_NE(index, tab_list::kNoTabIndex)
@@ -276,17 +281,15 @@ void TabListBridge::MoveTab(tabs::TabHandle tab, int index) {
 }
 
 void TabListBridge::CloseTab(tabs::TabHandle tab) {
-  tab_strip_->CloseWebContents(tab.Get()->GetContents(),
-                               TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+  tab_strip_->CloseTab(tab, TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
 }
 
 std::unique_ptr<content::WebContents> TabListBridge::DetachWebContents(
     tabs::TabHandle tab) {
-  const int index = GetIndexOfTab(tab);
-  CHECK_NE(index, tab_list::kNoTabIndex)
+  CHECK(tab_strip_->ContainsTab(tab))
       << "Trying to detach a tab that doesn't exist in this tab list.";
-  return tab_strip_->DetachWebContentsAtForInsertion(
-      index, TabRemovedReason::kInsertedIntoSidePanel);
+  return tab_strip_->DetachWebContentsForInsertion(
+      tab, TabRemovedReason::kInsertedIntoSidePanel);
 }
 
 std::vector<tabs::TabInterface*> TabListBridge::GetAllTabs() {
@@ -300,17 +303,11 @@ std::vector<tabs::TabInterface*> TabListBridge::GetAllTabs() {
 }
 
 void TabListBridge::PinTab(tabs::TabHandle tab) {
-  int index = GetIndexOfTab(tab);
-  CHECK_NE(index, tab_list::kNoTabIndex)
-      << "Trying to pin a tab that doesn't exist in this tab list.";
-  tab_strip_->SetTabPinned(index, true);
+  tab_strip_->SetTabPinned(tab, true);
 }
 
 void TabListBridge::UnpinTab(tabs::TabHandle tab) {
-  int index = GetIndexOfTab(tab);
-  CHECK_NE(index, tab_list::kNoTabIndex)
-      << "Trying to unpin a tab that doesn't exist in this tab list.";
-  tab_strip_->SetTabPinned(index, false);
+  tab_strip_->SetTabPinned(tab, false);
 }
 
 bool TabListBridge::ContainsTabGroup(tab_groups::TabGroupId group_id) {
@@ -378,33 +375,14 @@ std::optional<tab_groups::TabGroupId> TabListBridge::CreateTabGroup(
     return std::nullopt;
   }
 
-  // TabStripModel::AddToNewGroup() operates on indices.
-  std::vector<int> tab_indices;
-  tab_indices.reserve(tabs.size());
-  for (const auto& tab_handle : tabs) {
-    int index = GetIndexOfTab(tab_handle);
-    if (index != tab_list::kNoTabIndex) {
-      tab_indices.push_back(index);
-    }
-  }
-
-  return tab_strip_->AddToNewGroup(std::move(tab_indices));
+  return tab_strip_->AddToNewGroup(tabs);
 }
 
 std::optional<split_tabs::SplitTabId> TabListBridge::CreateSplit(
     const std::vector<tabs::TabHandle>& tabs,
     const split_tabs::SplitTabVisualData& visual_data) {
-  std::vector<int> tab_indices;
-  tab_indices.reserve(tabs.size());
-  for (const auto& tab_handle : tabs) {
-    int index = GetIndexOfTab(tab_handle);
-    CHECK_NE(index, tab_list::kNoTabIndex)
-        << "Trying to add a non-existent tab to a split.";
-    tab_indices.push_back(index);
-  }
   return tab_strip_->AddToNewSplit(
-      std::move(tab_indices), visual_data,
-      split_tabs::SplitTabCreatedSource::kExtensionsApi);
+      tabs, visual_data, split_tabs::SplitTabCreatedSource::kExtensionsApi);
 }
 
 void TabListBridge::SetTabGroupVisualData(
@@ -421,45 +399,37 @@ void TabListBridge::SetTabGroupVisualData(
 std::optional<tab_groups::TabGroupId> TabListBridge::AddTabsToGroup(
     std::optional<tab_groups::TabGroupId> group_id,
     const std::set<tabs::TabHandle>& tabs) {
-  std::vector<int> tab_indices;
-  tab_indices.reserve(tabs.size());
-
+  std::vector<tabs::TabHandle> tab_handles;
+  tab_handles.reserve(tabs.size());
   for (const auto& tab_handle : tabs) {
-    auto index = tab_strip_->GetIndexOfTab(tab_handle.Get());
-    CHECK_NE(index, tab_list::kNoTabIndex)
+    CHECK(tab_strip_->ContainsTab(tab_handle))
         << "Trying to add a non-existent tab to a group.";
-
-    tab_indices.push_back(index);
+    tab_handles.push_back(tab_handle);
   }
 
-  std::sort(tab_indices.begin(), tab_indices.end());
   if (group_id.has_value()) {
     // No-op if the specified tab group does not exist.
     if (!tab_strip_->group_model()->ContainsTabGroup(*group_id)) {
       return std::nullopt;
     }
 
-    tab_strip_->AddToExistingGroup(std::move(tab_indices), *group_id);
+    tab_strip_->AddToExistingGroup(tab_handles, *group_id);
     return group_id;
   }
 
-  return tab_strip_->AddToNewGroup(std::move(tab_indices));
+  return tab_strip_->AddToNewGroup(tab_handles);
 }
 
 void TabListBridge::Ungroup(const std::set<tabs::TabHandle>& tabs) {
-  std::vector<int> tab_indices;
-  tab_indices.reserve(tabs.size());
-
+  std::vector<tabs::TabHandle> tab_handles;
+  tab_handles.reserve(tabs.size());
   for (const auto& tab_handle : tabs) {
-    auto index = tab_strip_->GetIndexOfTab(tab_handle.Get());
-    CHECK_NE(index, tab_list::kNoTabIndex)
+    CHECK(tab_strip_->ContainsTab(tab_handle))
         << "Trying to remove a non-existent tab from a group.";
-
-    tab_indices.push_back(index);
+    tab_handles.push_back(tab_handle);
   }
 
-  std::sort(tab_indices.begin(), tab_indices.end());
-  tab_strip_->RemoveFromGroup(tab_indices);
+  tab_strip_->RemoveFromGroup(tab_handles);
 }
 
 void TabListBridge::Unsplit(split_tabs::SplitTabId split_id) {
@@ -518,8 +488,7 @@ void TabListBridge::MoveGroupTo(tab_groups::TabGroupId group_id, int index) {
 void TabListBridge::MoveTabToWindow(tabs::TabHandle tab,
                                     SessionID destination_window_id,
                                     int destination_index) {
-  int source_index = GetIndexOfTab(tab);
-  CHECK_NE(source_index, tab_list::kNoTabIndex);
+  CHECK(tab_strip_->ContainsTab(tab));
 
   BrowserWindowInterface* target_window =
       GetBrowserWithSessionId(destination_window_id, tab_strip_->profile());
@@ -532,7 +501,7 @@ void TabListBridge::MoveTabToWindow(tabs::TabHandle tab,
       static_cast<TabListBridge*>(target_list_interface);
 
   std::unique_ptr<tabs::TabModel> detached_tab =
-      tab_strip_->DetachTabAtForInsertion(source_index);
+      tab_strip_->DetachTabForInsertion(tab);
   if (!detached_tab) {
     return;
   }

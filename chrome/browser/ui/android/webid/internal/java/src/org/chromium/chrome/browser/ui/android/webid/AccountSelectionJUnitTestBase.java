@@ -148,6 +148,9 @@ public class AccountSelectionJUnitTestBase {
     GURL mTestRpBrandIconUrl;
     GURL mTestConfigUrl;
     GURL mTestLoginUrl;
+    GURL mTestIdpAccountManagementUrl;
+    GURL mTestIdpPrivacyPolicyUrl;
+    GURL mTestIdpTermsOfServiceUrl;
     GURL mTestErrorUrl;
     GURL mTestEmptyErrorUrl;
     Account mAnaAccount;
@@ -198,6 +201,9 @@ public class AccountSelectionJUnitTestBase {
         mTestRpBrandIconUrl = JUnitTestGURLs.RED_3;
         mTestConfigUrl = new GURL("https://idp.com/fedcm.json");
         mTestLoginUrl = new GURL("https://idp.com/login");
+        mTestIdpAccountManagementUrl = new GURL("https://idp.com/account");
+        mTestIdpPrivacyPolicyUrl = new GURL("https://idp.com/privacy");
+        mTestIdpTermsOfServiceUrl = new GURL("https://idp.com/terms");
         mTestErrorUrl = new GURL("https://idp.com/error");
         mTestEmptyErrorUrl = new GURL("");
 
@@ -211,6 +217,9 @@ public class AccountSelectionJUnitTestBase {
                         Bitmap.createBitmap(100, 100, Bitmap.Config.ARGB_4444),
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        mTestIdpAccountManagementUrl,
+                        mTestIdpPrivacyPolicyUrl,
+                        mTestIdpTermsOfServiceUrl,
                         /* showUseDifferentAccountButton= */ false);
 
         mIdpMetadataWithoutIcon =
@@ -220,6 +229,9 @@ public class AccountSelectionJUnitTestBase {
                         null,
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        /* accountManagementUrl= */ GURL.emptyGURL(),
+                        /* privacyPolicyUrl= */ GURL.emptyGURL(),
+                        /* termsOfServiceUrl= */ GURL.emptyGURL(),
                         /* showUseDifferentAccountButton= */ false);
 
         mIdpData =
@@ -250,6 +262,9 @@ public class AccountSelectionJUnitTestBase {
                         null,
                         mTestConfigUrl,
                         mTestLoginUrl,
+                        /* accountManagementUrl= */ GURL.emptyGURL(),
+                        /* privacyPolicyUrl= */ GURL.emptyGURL(),
+                        /* termsOfServiceUrl= */ GURL.emptyGURL(),
                         /* showUseDifferentAccountButton= */ true);
         mIdpDataWithUseDifferentAccount =
                 new IdentityProviderData(

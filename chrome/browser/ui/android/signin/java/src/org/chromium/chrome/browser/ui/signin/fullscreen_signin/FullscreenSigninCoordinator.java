@@ -21,6 +21,7 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.signin.services.BadgeConfig;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.ui.signin.ConfirmManagedSyncDataDialogCoordinator;
+import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
@@ -203,13 +204,21 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
         mDelegate = delegate;
         mDelegate.getProfileSupplier().onAvailable(this::onProfileAvailable);
         mMediator =
-                new FullscreenSigninMediator(
-                        context,
-                        modalDialogManager,
-                        mDelegate,
-                        privacyPreferencesManager,
-                        config,
-                        accessPoint);
+                SigninFeatureMap.sFullscreenSigninMediatorStateMachine.isEnabled()
+                        ? new FullscreenSigninMediator(
+                                context,
+                                modalDialogManager,
+                                mDelegate,
+                                privacyPreferencesManager,
+                                config,
+                                accessPoint)
+                        : new FullscreenSigninMediatorLegacy(
+                                context,
+                                modalDialogManager,
+                                mDelegate,
+                                privacyPreferencesManager,
+                                config,
+                                accessPoint);
     }
 
     private void onProfileAvailable(ProfileProvider result) {
@@ -246,10 +255,9 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
     }
 
     /**
-     * Resets model properties in {@link FullscreenSigninMediator}. Must only be called when the
-     * user advances to the next page and then presses back to return to the sign-in screen, as it
-     * also logs that the promo is shown again (see {@link
-     * Delegate#logPromoShownFunnelEventOnBackPress}).
+     * Resets model properties in {@link Mediator}. Must only be called when the user advances to
+     * the next page and then presses back to return to the sign-in screen, as it also logs that the
+     * promo is shown again (see {@link Delegate#logPromoShownFunnelEventOnBackPress}).
      */
     public void reset() {
         mMediator.reset();
@@ -307,7 +315,7 @@ public class FullscreenSigninCoordinator implements IdentityManager.Observer {
 
     /** Disables the sign-in animation for the duration of the test. */
     public static void disableAnimationsForTesting() {
-        FullscreenSigninMediator.disableAnimationsForTesting(); // IN-TEST
+        FullscreenSigninMediatorLegacy.disableAnimationsForTesting(); // IN-TEST
     }
 
     public Drawable getProfilePictureForTesting() {

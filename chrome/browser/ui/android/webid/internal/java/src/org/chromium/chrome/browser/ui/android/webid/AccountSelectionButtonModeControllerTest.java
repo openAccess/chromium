@@ -14,26 +14,38 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HEADER_ICON;
 import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.RP_BRAND_ICON;
 import static org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.TYPE;
 
+import android.content.Intent;
+
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.robolectric.RuntimeEnvironment;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.blink.mojom.RpContext;
 import org.chromium.blink.mojom.RpMode;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.AccountProperties;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ButtonData;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ContinueButtonProperties;
+import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.DataSharingConsentProperties;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.HeaderProperties.HeaderType;
 import org.chromium.chrome.browser.ui.android.webid.AccountSelectionProperties.ItemProperties;
+import org.chromium.chrome.browser.ui.android.webid.data.Account;
 import org.chromium.chrome.browser.ui.android.webid.data.RelyingPartyData;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
+import org.chromium.url.GURL;
 
 import java.util.Arrays;
 import java.util.Collections;
@@ -138,7 +150,8 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
                 Arrays.asList(mNewUserAccount),
                 Arrays.asList(mIdpData),
                 /* newAccounts= */ Collections.emptyList());
-        mMediator.showRequestPermissionModalSheet(mNewUserAccount);
+        // The request permission dialog is opened from the single-account chooser.
+        clickContinueButton();
 
         // For request permission dialog, we expect drag handlebar + header + account chip +
         // disclosure text + continue button.
@@ -151,6 +164,48 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
         assertTrue(containsItemOfType(mModel, ItemProperties.ACCOUNT_CHIP));
         assertTrue(containsItemOfType(mModel, ItemProperties.DATA_SHARING_CONSENT));
         assertTrue(containsItemOfType(mModel, ItemProperties.CONTINUE_BUTTON));
+    }
+
+    /**
+     * Tests that the single-account chooser shows the continue button without disclosure text, even
+     * when the use-a-different-account button is not shown. Regression test for
+     * crbug.com/579901494.
+     */
+    @Test
+    public void testSingleNewAccountShowsAccountChooserWithoutDisclosureText() {
+        when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
+        mMediator.showAccounts(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                Arrays.asList(mNewUserAccount),
+                Arrays.asList(mIdpData),
+                /* newAccounts= */ Collections.emptyList());
+
+        assertSingleAccountChooserWithoutDisclosureText(mNewUserAccount);
+    }
+
+    /**
+     * Tests that clicking continue on the single-account chooser opens the request permission
+     * dialog, and that pressing back on it returns to the chooser, which still shows the continue
+     * button. Regression test for crbug.com/579901494.
+     */
+    @Test
+    public void testBackPressOnRequestPermissionDialogShowsAccountChooser() {
+        when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
+        mMediator.showAccounts(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                Arrays.asList(mNewUserAccount),
+                Arrays.asList(mIdpData),
+                /* newAccounts= */ Collections.emptyList());
+        clickContinueButton();
+        assertEquals(
+                HeaderType.REQUEST_PERMISSION_MODAL, mModel.get(ItemProperties.HEADER).get(TYPE));
+        assertTrue(containsItemOfType(mModel, ItemProperties.DATA_SHARING_CONSENT));
+
+        assertTrue(mBottomSheetContent.handleBackPress());
+
+        assertSingleAccountChooserWithoutDisclosureText(mNewUserAccount);
     }
 
     @Test
@@ -333,5 +388,107 @@ public class AccountSelectionButtonModeControllerTest extends AccountSelectionJU
         assertEquals(-1, mMockModalDialogManager.getDialogType());
         verify(mMockDelegate).onDismissed(IdentityRequestDialogDismissReason.MORE_DETAILS_BUTTON);
         assertTrue(mMediator.wasDismissed());
+    }
+
+    /**
+     * Asserts that the sheet shows the single-account chooser for {@code account}, with a clickable
+     * account row and a continue button that selects it, without disclosure text.
+     */
+    private void assertSingleAccountChooserWithoutDisclosureText(Account account) {
+        // Drag handlebar + header + account + continue button.
+        assertEquals(4, countAllItems());
+        assertEquals(1, mSheetAccountItems.size());
+        assertNotNull(mSheetAccountItems.get(0).model.get(AccountProperties.ON_CLICK_LISTENER));
+        assertEquals(HeaderType.SIGN_IN, mModel.get(ItemProperties.HEADER).get(TYPE));
+        assertFalse(containsItemOfType(mModel, ItemProperties.DATA_SHARING_CONSENT));
+        assertTrue(containsItemOfType(mModel, ItemProperties.CONTINUE_BUTTON));
+        assertEquals(
+                account,
+                mModel.get(ItemProperties.CONTINUE_BUTTON)
+                        .get(ContinueButtonProperties.PROPERTIES)
+                        .mAccount);
+    }
+
+    /**
+     * Tests that with `FedCmIdpLinks` enabled, the request permission dialog has the identity
+     * provider's links.
+     */
+    @Test
+    @EnableFeatures(ChromeFeatureList.FED_CM_IDP_LINKS)
+    public void testRequestPermissionDialogHasIdpLinks() {
+        DataSharingConsentProperties.Properties properties = showRequestPermissionDialog();
+        assertEquals(mTestIdpAccountManagementUrl, properties.mIdpAccountManagementUrl);
+        assertEquals(mTestIdpPrivacyPolicyUrl, properties.mIdpPrivacyPolicyUrl);
+        assertEquals(mTestIdpTermsOfServiceUrl, properties.mIdpTermsOfServiceUrl);
+    }
+
+    /**
+     * Tests that without `FedCmIdpLinks`, the request permission dialog doesn't have the identity
+     * provider's links, even though the identity provider has them.
+     */
+    @Test
+    public void testRequestPermissionDialogHasNoIdpLinksWithoutFlag() {
+        DataSharingConsentProperties.Properties properties = showRequestPermissionDialog();
+        assertTrue(properties.mIdpAccountManagementUrl.isEmpty());
+        assertTrue(properties.mIdpPrivacyPolicyUrl.isEmpty());
+        assertTrue(properties.mIdpTermsOfServiceUrl.isEmpty());
+    }
+
+    /**
+     * Tests that each of the identity provider's links opens its URL in a Custom Tab, without
+     * recording the RP's link metrics.
+     */
+    @Test
+    // Opening a Custom Tab checks `CCTDontOverrideIntentMimeType`, so it needs a test value.
+    @EnableFeatures({
+        ChromeFeatureList.FED_CM_IDP_LINKS,
+        ChromeFeatureList.CCT_DONT_OVERRIDE_INTENT_MIME_TYPE
+    })
+    public void testClickIdpLinks() {
+        DataSharingConsentProperties.Properties properties = showRequestPermissionDialog();
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Blink.FedCm.SignUp.PrivacyPolicyClicked")
+                        .expectNoRecords("Blink.FedCm.SignUp.TermsOfServiceClicked")
+                        .build();
+        for (GURL url :
+                Arrays.asList(
+                        properties.mIdpAccountManagementUrl,
+                        properties.mIdpPrivacyPolicyUrl,
+                        properties.mIdpTermsOfServiceUrl)) {
+            properties.mIdpLinkClickCallback.accept(mContext, url);
+            Intent intent = shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
+            assertEquals(url.getSpec(), intent.getDataString());
+        }
+        histogramWatcher.assertExpected();
+    }
+
+    /**
+     * Shows the request permission dialog for a new account, through the single-account chooser,
+     * and returns the properties of its disclosure text.
+     */
+    private DataSharingConsentProperties.Properties showRequestPermissionDialog() {
+        when(mMockBottomSheetController.requestShowContent(any(), anyBoolean())).thenReturn(true);
+        mMediator.showAccounts(
+                new RelyingPartyData(
+                        mTestEtldPlusOne, /* iframeForDisplay= */ "", /* rpIcon= */ null),
+                Arrays.asList(mNewUserAccount),
+                Arrays.asList(mIdpData),
+                /* newAccounts= */ Collections.emptyList());
+        clickContinueButton();
+        assertEquals(
+                HeaderType.REQUEST_PERMISSION_MODAL, mModel.get(ItemProperties.HEADER).get(TYPE));
+        return mModel.get(ItemProperties.DATA_SHARING_CONSENT)
+                .get(DataSharingConsentProperties.PROPERTIES);
+    }
+
+    /** Clicks the continue button the same way the view does. */
+    private void clickContinueButton() {
+        // Do not let test inputs be ignored.
+        mMediator.setComponentShowTime(-1000);
+        ContinueButtonProperties.Properties continueButton =
+                mModel.get(ItemProperties.CONTINUE_BUTTON).get(ContinueButtonProperties.PROPERTIES);
+        continueButton.mOnClickListener.onResult(
+                new ButtonData(continueButton.mAccount, continueButton.mIdpMetadata));
     }
 }

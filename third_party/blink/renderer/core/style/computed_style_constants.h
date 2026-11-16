@@ -29,7 +29,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_COMPUTED_STYLE_CONSTANTS_H_
 
 #include <cstddef>
-#include <cstdint>
 
 #include "base/check_op.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_animation_trigger_behavior.h"
@@ -74,7 +73,6 @@ enum PseudoId : uint8_t {
   kPseudoIdInterestButton,
   kPseudoIdMarker,
   kPseudoIdBackdrop,
-  kPseudoIdOverscrollBackdrop,
   kPseudoIdSelection,
   kPseudoIdScrollbar,
   kPseudoIdScrollMarker,
@@ -341,6 +339,8 @@ enum class BackgroundEdgeOrigin : unsigned { kTop, kRight, kBottom, kLeft };
 enum class QuoteType : unsigned { kOpen, kClose, kNoOpen, kNoClose };
 
 enum class EAnimPlayState : unsigned { kPlaying, kPaused };
+
+enum class EAnimationNavigationBehavior : unsigned { kAbrupt, kContinuous };
 
 enum class OffsetRotationType : unsigned { kAuto, kFixed };
 

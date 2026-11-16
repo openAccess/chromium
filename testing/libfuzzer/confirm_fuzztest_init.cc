@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "testing/gtest/include/gtest/gtest.h"
-#include "testing/libfuzzer/buildflags.h"
 #include "testing/libfuzzer/disable_flaky_fuzztests_listener.h"
 #include "testing/libfuzzer/fuzztest_init_helper.h"
 #include "third_party/fuzztest/src/fuzztest/init_fuzztest.h"
@@ -34,7 +33,10 @@ static void RealInitFunction(int argc, char const* const* argv) {
   // Fuzztest might refer to the command line later, by which time Chromium
   // may have altered it. Keep our own copy so that the data
   // we pass into fuzztest remains valid, no matter what Chromium code
-  // does to the original.
+  // does to the original. Clear any prior contents first in case
+  // RealInitFunction was already called before forking a test subprocess.
+  fuzztest_argv_strings.clear();
+  fuzztest_argv_data.clear();
   fuzztest_argv_strings.reserve(argc);
   fuzztest_argv_data.reserve(argc);
   for (int i = 0; i < argc; i++) {
@@ -50,9 +52,15 @@ static void RealInitFunction(int argc, char const* const* argv) {
   fuzztest_argc = argc;
   fuzztest_argv = fuzztest_argv_data.data();
   fuzztest::ParseAbslFlags(fuzztest_argc, fuzztest_argv);
-#if BUILDFLAG(REGISTER_FUZZTESTS_IN_TEST_SUITES)
-  fuzztest::InitFuzzTest(&fuzztest_argc, &fuzztest_argv);
-#endif
+  // InitFuzzTest registers GTest adaptors holding `&fuzztest_argc` and
+  // `&fuzztest_argv` by pointer; guard it so forked test children update
+  // `fuzztest_argc`/`fuzztest_argv` and re-parse Abseil flags above without
+  // registering duplicate GTest cases.
+  static bool initialized = false;
+  if (!initialized) {
+    initialized = true;
+    fuzztest::InitFuzzTest(&fuzztest_argc, &fuzztest_argv);
+  }
   [[maybe_unused]] static bool listener_registered = []() {
     testing::UnitTest::GetInstance()->listeners().Append(
         new fuzztest_init_helper::DisableFlakyFuzzTestsListener());

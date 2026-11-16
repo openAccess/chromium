@@ -24,7 +24,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -43,13 +42,11 @@ namespace {
 const char kProtectedURL[] = "https://protected.com";
 const char kChromeNewTabURL[] = "chrome://newtab";
 
-// Returns the id<BrowserProvider> from `scene_state` corresponding to
+// Returns the Browser* from `scene_state` corresponding to
 // `is_off_the_record`.
-id<BrowserProvider> BrowserProviderForMode(SceneState* scene_state,
-                                           bool is_off_the_record) {
+Browser* BrowserForMode(SceneState* scene_state, bool is_off_the_record) {
   id<BrowserProviderInterface> interface = scene_state.browserProviderInterface;
-  return is_off_the_record ? interface.incognitoBrowserProvider
-                           : interface.mainBrowserProvider;
+  return is_off_the_record ? interface.incognitoBrowser : interface.mainBrowser;
 }
 
 }  // anonymous namespace
@@ -78,6 +75,7 @@ class DataProtectionSceneAgentTestBase : public PlatformTest {
     scene_state_.scene = scoped_key_window_.GetScene();
     scene_state_.window = scoped_key_window_.Get();
     scene_state_.UIEnabled = YES;
+    scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
 
     agent_ = [[DataProtectionSceneAgent alloc] init];
 
@@ -168,7 +166,7 @@ class DataProtectionSceneAgentTestBase : public PlatformTest {
       web_state->SetVisibleURL(url);
     }
     DataProtectionTabHelper::CreateForWebState(web_state_ptr);
-    Browser* browser = BrowserProviderForMode(scene_state_, incognito).browser;
+    Browser* browser = BrowserForMode(scene_state_, incognito);
     CHECK_NE(browser, nullptr);
     CHECK_EQ(browser->GetProfile(), profile);
     browser->GetWebStateList()->InsertWebState(
@@ -522,6 +520,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest, TabGrid_SwitchToIncognito) {
 
   // Start in regular profile
   scene_state_.tabGridState.tabGridVisible = YES;
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 
   ExpectApplyScreenshotProtection(YES);
@@ -530,6 +529,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest, TabGrid_SwitchToIncognito) {
   // Switch to Incognito Tab Grid should disable the protection as lookups don't
   // work on incognito.
   ExpectApplyScreenshotProtection(NO);
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
   scene_state_.incognitoState.incognitoContentVisible = YES;
 }
 
@@ -544,12 +544,14 @@ TEST_F(DataProtectionSceneAgentTransitionTest, TabGrid_SwitchToRegular) {
 
   // Start in incognito profile.
   scene_state_.tabGridState.tabGridVisible = YES;
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
   scene_state_.incognitoState.incognitoContentVisible = YES;
 
   SetRealTimeUrlCheckModePolicy(1);
 
   // Switch to Regular Tab Grid should enable the protection.
   ExpectApplyScreenshotProtection(YES);
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 }
 
@@ -638,12 +640,14 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   // Start in Main Tab Grid with protection.
   ExpectApplyScreenshotProtection(YES);
   scene_state_.tabGridState.tabGridVisible = YES;
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   scene_state_.incognitoState.incognitoContentVisible = NO;
   EXPECT_OCMOCK_VERIFY(mock_agent_);
 
   // Switch to Incognito Tab Grid should disable the protection.
   ExpectApplyScreenshotProtection(NO);
 
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
   scene_state_.incognitoState.incognitoContentVisible = YES;
 }
 
@@ -723,9 +727,8 @@ TEST_F(DataProtectionSceneAgentTransitionTest, SingleTab_SwitchBrowser) {
   ExpectApplyScreenshotProtection(NO);
 
   scene_state_.incognitoState.incognitoContentVisible = YES;
-  [scene_state_
-      setCurrentBrowserProvider:BrowserProviderForMode(
-                                    scene_state_, /*is_off_the_record=*/true)];
+  [scene_state_ setCurrentBrowser:BrowserForMode(scene_state_,
+                                                 /*is_off_the_record=*/true)];
 
   EXPECT_OCMOCK_VERIFY(mock_agent_);
 }
@@ -742,10 +745,10 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   scene_state_.tabGridState.tabGridVisible = YES;
 
   // Switch to Incognito Tab Grid.
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
   scene_state_.incognitoState.incognitoContentVisible = YES;
-  [scene_state_
-      setCurrentBrowserProvider:BrowserProviderForMode(
-                                    scene_state_, /*is_off_the_record=*/true)];
+  [scene_state_ setCurrentBrowser:BrowserForMode(scene_state_,
+                                                 /*is_off_the_record=*/true)];
 
   // Destroy the incognito browser.
   [scene_state_ destroyAndRecreateOffTheRecordProfile];
@@ -753,10 +756,10 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   // Switch back to Regular Tab Grid. This will cause the scene state
   // to update its observers, which could lead to a UAF if the destroyed
   // browser wasn't properly unobserved.
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   scene_state_.incognitoState.incognitoContentVisible = NO;
-  [scene_state_
-      setCurrentBrowserProvider:BrowserProviderForMode(
-                                    scene_state_, /*is_off_the_record=*/false)];
+  [scene_state_ setCurrentBrowser:BrowserForMode(scene_state_,
+                                                 /*is_off_the_record=*/false)];
 
   // Expect no protection. No crash means success.
   ExpectNoCallsToApplyScreenshotProtection();
@@ -837,6 +840,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest, WatermarkNotAppliedInIncognito) {
   scoped_feature_list.InitAndEnableFeature(kEnableEnterpriseWatermarkingIOS);
   SetRealTimeUrlCheckModePolicy(1);
   scene_state_.tabGridState.tabGridVisible = NO;
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 
   web::FakeWebState* web_state = AddActiveWebState();
@@ -847,12 +851,29 @@ TEST_F(DataProtectionSceneAgentTransitionTest, WatermarkNotAppliedInIncognito) {
   ASSERT_NE(watermark_view, nil);
   EXPECT_NSEQ(watermark_view.text, @"Test Watermark");
 
-  // Switch to incognito. Watermark must be removed immediately.
+  // Switch to an empty Incognito Tab Grid (where `incognitoContentVisible`
+  // remains `NO`). Watermark must be removed immediately.
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
+  EXPECT_EQ(GetWatermarkView(), nil);
+
+  // Switch back to regular Tab Grid. Watermark should be restored.
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
+  watermark_view = GetWatermarkView();
+  ASSERT_NE(watermark_view, nil);
+  EXPECT_NSEQ(watermark_view.text, @"Test Watermark");
+
+  // Switch to a non-empty Incognito Tab Grid. Watermark must be removed.
+  scene_state_.tabGridState.currentPage = TabGridPageIncognitoTabs;
   scene_state_.incognitoState.incognitoContentVisible = YES;
   EXPECT_EQ(GetWatermarkView(), nil);
 
-  // Switch back to regular tab grid. Watermark should be restored.
+  // Simulate closing last tab in incognito tab grid and verifies the the
+  // watermark reamins nil.
   scene_state_.incognitoState.incognitoContentVisible = NO;
+  EXPECT_EQ(GetWatermarkView(), nil);
+
+  // Switch back to regular tab grid. Watermark should be restored.
+  scene_state_.tabGridState.currentPage = TabGridPageRegularTabs;
   watermark_view = GetWatermarkView();
   ASSERT_NE(watermark_view, nil);
   EXPECT_NSEQ(watermark_view.text, @"Test Watermark");
@@ -874,7 +895,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest, WatermarkRemovedWhenTabClosed) {
   ASSERT_NE(GetWatermarkView(), nil);
 
   // Close the tab from the browser while in the tab grid.
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   browser->GetWebStateList()->CloseWebStateAt(
       0, WebStateList::ClosingReason::kUserAction);
 
@@ -917,7 +938,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   auto web_state = std::make_unique<web::FakeWebState>();
   SetWatermarkPref(web_state->GetUniqueIdentifier(), "Inserted Watermark");
 
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   browser->GetWebStateList()->InsertWebState(
       std::move(web_state), WebStateList::InsertionParams::AtIndex(0));
 
@@ -942,7 +963,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   scene_state_.tabGridState.tabGridVisible = YES;
   ASSERT_NE(GetWatermarkView(), nil);
 
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   CloseAllWebStates(*browser->GetWebStateList(),
                     WebStateList::ClosingReason::kUserAction);
 
@@ -1031,7 +1052,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   scene_state_.tabGridState.tabGridVisible = NO;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   WebStateList* web_state_list = browser->GetWebStateList();
   {
     auto batch = web_state_list->StartBatchOperation();
@@ -1063,7 +1084,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   scene_state_.tabGridState.tabGridVisible = NO;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   WebStateList* web_state_list = browser->GetWebStateList();
   {
     auto batch = web_state_list->StartBatchOperation();
@@ -1090,7 +1111,7 @@ TEST_F(DataProtectionSceneAgentTransitionTest,
   scene_state_.tabGridState.tabGridVisible = NO;
   scene_state_.incognitoState.incognitoContentVisible = NO;
 
-  Browser* browser = BrowserProviderForMode(scene_state_, false).browser;
+  Browser* browser = BrowserForMode(scene_state_, false);
   WebStateList* web_state_list = browser->GetWebStateList();
   {
     auto batch = web_state_list->StartBatchOperation();

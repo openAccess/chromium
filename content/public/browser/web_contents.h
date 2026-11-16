@@ -130,6 +130,7 @@ class FrameEvictionOptOutClient;
 class GuestPageHolder;
 class NavigationController;
 class NavigationEntry;
+class NavigationUIData;
 class Page;
 class PrefetchHandle;
 class PreloadPipelineInfo;
@@ -978,6 +979,11 @@ class WebContents : public PageNavigator, public base::SupportsUserData {
 
   // Whether the tab is in the process of being destroyed.
   virtual bool IsBeingDestroyed() = 0;
+
+  // Returns true if an unresponsive renderer should be ignored for this
+  // WebContents (e.g. while a debugger is attached or while awaiting a
+  // blocking browser-side policy check such as clipboard paste confirmation).
+  virtual bool ShouldIgnoreUnresponsiveRenderer() = 0;
 
   // Returns true if this WebContents was created with PrivilegedParams, i.e. it
   // is a privileged-contents host (see PrivilegedParams). Immutable for the
@@ -1871,6 +1877,13 @@ class WebContents : public PageNavigator, public base::SupportsUserData {
   // `prerender_navigation_handle_callback` allows embedders to attach their own
   // NavigationHandleUserData when prerender starts, and the user data can be
   // used for identifying the types of embedder for metrics logging.
+  // `navigation_ui_data` allows embedders to pass upfront `NavigationUIData` to
+  // the initial prerender navigation; `PopulateFromNavigationHandle()` will be
+  // invoked on it when the prerender navigation starts.
+  //
+  // TODO(https://crbug.com/500965884): Check if
+  // `prerender_navigation_handle_callback` can be consolidated or cleaned up
+  // now that `navigation_ui_data` can be passed upfront.
   virtual std::unique_ptr<PrerenderHandle> StartPrerendering(
       const GURL& prerendering_url,
       PreloadingTriggerType trigger_type,
@@ -1888,7 +1901,8 @@ class WebContents : public PageNavigator, public base::SupportsUserData {
           url_match_predicate,
       base::RepeatingCallback<void(NavigationHandle&)>
           prerender_navigation_handle_callback,
-      bool allow_reuse) = 0;
+      bool allow_reuse,
+      std::unique_ptr<NavigationUIData> navigation_ui_data) = 0;
 
   // Cancels all prerendering hosted on this WebContents.
   virtual void CancelAllPrerendering() = 0;

@@ -76,6 +76,25 @@ const optimization_guide::proto::ContentNode* FindIframeNode(
   return nullptr;
 }
 
+const optimization_guide::proto::ContentNode* FindNodeWithDomNodeId(
+    const optimization_guide::proto::ContentNode& node,
+    int dom_node_id) {
+  if (node.content_attributes().has_common_ancestor_dom_node_id() &&
+      node.content_attributes().common_ancestor_dom_node_id() == dom_node_id) {
+    return &node;
+  }
+
+  for (const optimization_guide::proto::ContentNode& child :
+       node.children_nodes()) {
+    if (const optimization_guide::proto::ContentNode* found =
+            FindNodeWithDomNodeId(child, dom_node_id)) {
+      return found;
+    }
+  }
+
+  return nullptr;
+}
+
 // Returns the text of all text nodes in the tree rooted at `node`.
 std::vector<std::string> CollectText(
     const optimization_guide::proto::ContentNode& node) {
@@ -375,17 +394,28 @@ IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
           GetForProfile(profile());
   ASSERT_TRUE(extraction_service);
 
-  // Starts a session, which fetches context for the current page, and waits
-  // for the initial notification. The conversation is left expecting no
-  // context updates.
-  auto start_session_expecting_no_context = [&]() {
+  // Starts a session on `url` and waits for the initial invalidation (and, if
+  // `wait_for_context_update` is true, for the origin-only context update).
+  auto start_session_expecting_no_context = [&](const GURL& url,
+                                                bool wait_for_context_update) {
     ttc_service().StartSession();
     ASSERT_TRUE(conversation());
+    base::test::TestFuture<void> context_updated;
     // Only the page's origin may be sent, without its title or content.
-    EXPECT_CALL(*conversation(), SendContextUpdate(testing::_, std::string(),
-                                                   IsEmptyPageContent()))
-        .Times(testing::AnyNumber());
+    auto& expectation =
+        EXPECT_CALL(*conversation(),
+                    SendContextUpdate(url::Origin::Create(url).GetURL(),
+                                      std::string(), IsEmptyPageContent()));
+    if (wait_for_context_update) {
+      expectation.WillOnce(
+          base::test::RunOnceClosure(context_updated.GetCallback()));
+    } else {
+      expectation.Times(testing::AnyNumber());
+    }
     EXPECT_TRUE(ExpectPageChange().Wait());
+    if (wait_for_context_update) {
+      EXPECT_TRUE(context_updated.Wait());
+    }
   };
 
   for (const GURL& url :
@@ -396,7 +426,8 @@ IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
     ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
 
     // Starting a session must not send anything for the page.
-    ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context());
+    ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context(
+        url, /*wait_for_context_update=*/false));
 
     // Having an active session makes PCES extract every page in the profile.
     // Wait for that extraction (triggering it if it has not started), to make
@@ -416,7 +447,8 @@ IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
 
     // Neither must a new session, which finds the extracted content cached.
     ttc_service().EndSession();
-    ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context());
+    ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context(
+        url, /*wait_for_context_update=*/false));
     base::RunLoop().RunUntilIdle();
     EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(conversation()));
 
@@ -425,9 +457,10 @@ IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
 
   // Navigating from an unsupported page to a supported one during a session
   // must invalidate the context and send context for the new page.
-  ASSERT_TRUE(
-      content::NavigateToURL(web_contents(), GURL("chrome://version/")));
-  ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context());
+  const GURL unsupported_url("chrome://version/");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), unsupported_url));
+  ASSERT_NO_FATAL_FAILURE(start_session_expecting_no_context(
+      unsupported_url, /*wait_for_context_update=*/true));
   EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(conversation()));
 
   const GURL supported_url = embedded_test_server()->GetURL("/simple.html");
@@ -739,6 +772,55 @@ IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
   // The main frame has no text of its own; this is the iframes' (title1.html).
   EXPECT_THAT(CollectText(page_content.root_node()),
               testing::Contains(testing::HasSubstr("This page has no title")));
+}
+
+IN_PROC_BROWSER_TEST_F(PageContextMonitorBrowserTest,
+                       ExtractedPageContentIncludesIconButtonAriaLabel) {
+  const GURL url =
+      embedded_test_server()->GetURL("/ttc/icon_button_aria_label.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+
+  StartSession();
+
+  {
+    base::test::TestFuture<void> initial_sent;
+    EXPECT_CALL(*conversation(),
+                SendContextUpdate(url, "Icon Button Test", testing::_))
+        .WillOnce(base::test::RunOnceClosure(initial_sent.GetCallback()));
+    EXPECT_TRUE(initial_sent.Wait());
+    EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(conversation()));
+  }
+
+  optimization_guide::proto::AnnotatedPageContent page_content;
+  base::test::TestFuture<void> refreshed_sent;
+  EXPECT_CALL(*conversation(),
+              SendContextUpdate(url, "Icon Button Test", testing::_))
+      .WillOnce(
+          [&](const GURL&, const std::string&,
+              const optimization_guide::proto::AnnotatedPageContent& apc) {
+            page_content = apc;
+            refreshed_sent.SetValue();
+          });
+
+  ttc_service().session_controller()->OnSpeakerChanged(Speaker::kUser);
+
+  EXPECT_TRUE(refreshed_sent.Wait());
+  ASSERT_TRUE(page_content.has_root_node());
+
+  std::optional<int> button_id = content::GetDOMNodeId(
+      *web_contents()->GetPrimaryMainFrame(), "#search-button");
+  ASSERT_TRUE(button_id.has_value());
+
+  const optimization_guide::proto::ContentNode* button =
+      FindNodeWithDomNodeId(page_content.root_node(), *button_id);
+  ASSERT_TRUE(button);
+  EXPECT_EQ(button->content_attributes().attribute_type(),
+            optimization_guide::proto::CONTENT_ATTRIBUTE_FORM_CONTROL);
+  EXPECT_EQ(
+      button->content_attributes().form_control_data().form_control_type(),
+      optimization_guide::proto::FORM_CONTROL_TYPE_BUTTON_BUTTON);
+  EXPECT_THAT(CollectText(*button), testing::IsEmpty());
+  EXPECT_EQ(button->content_attributes().label(), "Search");
 }
 
 }  // namespace

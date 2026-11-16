@@ -71,6 +71,11 @@ src:*atlcoll.h
 # https://github.com/llvm/llvm-project/pull/200401#pullrequestreview-5155315035
 src:*third_party/libc*/*shared_ptr.h
 
+# Temporarily disable CFI unrelated/derived cast in std::allocator
+# until upstream restores _LIBCPP_NO_CFI on __operator_new_wrapper (#222814).
+# TODO(crbug.com/584386513): re-enable this.
+src:*third_party/libc*/*allocator.h
+
 # https://github.com/grpc/grpc/issues/19375
 src:*third_party/grpc/src/src/core/lib/gprpp/inlined_vector.h
 src:*third_party/grpc/source/src/core/lib/gprpp/inlined_vector.h
@@ -179,8 +184,6 @@ src:*third_party/dawn/src/dawn/wire/client/Buffer.cpp
 src:*third_party/angle/src/common/vulkan/vulkan_icd.cpp
 src:*third_party/angle/src/libANGLE/*
 src:*third_party/angle/src/libEGL/*
-# TODO(crbug.com/502790555): Remove after rename
-src:*third_party/angle/src/third_party/libXNVCtrl/NVCtrl.c
 src:*third_party/angle/src/third_party/libxnvctrl/src/NVCtrl.c
 # third_party/angle/src/gpu_info_util/SystemInfo_libpci.cpp
 fun:*GetPCIDevicesWithLibPCI*
@@ -236,6 +239,7 @@ src:*third_party/angle/src/common/vulkan/vulkan_icd.cpp
 # its trampoline dispatch through the same kind of pointers, and the mock's
 # Vulkan calls go through vkGetInstanceProcAddr.
 src:*third_party/openxr/src/src/*
+src:*device/vr/openxr/fb/openxr_frame_rate_handler_fb.cc
 src:*device/vr/openxr/linux/openxr_vulkan_context.cc
 src:*device/vr/openxr/msft/openxr_anchor_manager_msft.cc
 src:*device/vr/openxr/msft/openxr_scene_msft.cc

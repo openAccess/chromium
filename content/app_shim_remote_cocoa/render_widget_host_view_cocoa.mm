@@ -430,6 +430,10 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 static NSWindow* __weak _deferredResignKeyWindow;
 
 + (void)initialize {
+  if (self != [RenderWidgetHostViewCocoa class]) {
+    return;
+  }
+
   RenderWidgetHostViewMacEditCommandHelper::AddEditingSelectorsToClass(self);
 }
 
@@ -2985,7 +2989,14 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     // at the end of insertion point.
     // This is required for macOS 10.12+, otherwise the predictive completions
     // of IMEs won't work. See crbug.com/710101.
-    int insertEndpoint = _markedRange.location + [imText length];
+    // The text replaces the marked range if there is one, otherwise the
+    // current selection. We cannot use _markedRange unconditionally, since it
+    // is set to {NSNotFound, 0} after cancelling a composition.
+    NSUInteger insertStart = _markedRange.location != NSNotFound
+                                 ? _markedRange.location
+                                 : _textSelectionRange.start();
+    uint32_t insertEndpoint =
+        base::saturated_cast<uint32_t>(insertStart + [imText length]);
     _textSelectionRange = gfx::Range(insertEndpoint, insertEndpoint);
     // IMEs read |_availableText| preceding the insertion point as the context
     // for predictive completion. Unfortunately by the moment IME reads the
@@ -2999,10 +3010,11 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
     // the sync |interpretKeyEvents:| with the async
     // |handleEventByInputMethod:|, which is an undocumented API used in
     // Webkit2.
-    if (_markedRange.location >= _availableTextOffset &&
-        _markedRange.location <= _availableTextOffset + _availableText.length())
-      _availableText.insert(_markedRange.location - _availableTextOffset,
+    if (insertStart >= _availableTextOffset &&
+        insertStart <= _availableTextOffset + _availableText.length()) {
+      _availableText.insert(insertStart - _availableTextOffset,
                             base::SysNSStringToUTF16(imText));
+    }
   }
 
   // Inserting text will delete all marked text automatically.
@@ -3139,21 +3151,24 @@ extern NSString* NSTextInputReplacementRangeAttributeName;
   return [super validRequestorForSendType:sendType returnType:returnType];
 }
 
+- (BOOL)canChangeCurrentCursor {
+  if (![self isKeyTrackingWindowKey] || _cursorHidden || _showingContextMenu) {
+    return NO;
+  }
+  return YES;
+}
+
 - (BOOL)shouldChangeCurrentCursor {
   // |updateCursor:| might be called outside the view bounds. Check the mouse
   // location before setting the cursor. Also, do not set cursor if it's not a
   // key window.
   NSPoint location = [self.window convertPointFromScreen:NSEvent.mouseLocation];
   location = [self convertPoint:location fromView:nil];
-  if (![self mouse:location inRect:[self bounds]] ||
-      ![self isKeyTrackingWindowKey]) {
+  if (![self mouse:location inRect:[self bounds]]) {
     return NO;
   }
 
-  if (_cursorHidden || _showingContextMenu)
-    return NO;
-
-  return YES;
+  return [self canChangeCurrentCursor];
 }
 
 - (void)updateCursor:(NSCursor*)cursor {

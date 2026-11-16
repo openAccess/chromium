@@ -41,6 +41,8 @@ chromium-metrics-reviews@google.com.
   <variant name="Classifier" summary="Classifier base model"/>
   <variant name="Gemma4" summary="Gemma4 base model"/>
   <variant name="LanguageDetection" summary="Language Detection base model"/>
+  <variant name="LayaEnWint8" summary="Laya EN Wint8 base model"/>
+  <variant name="LayaMlWint8" summary="Laya ML Wint8 base model"/>
   <variant name="ProofreaderSmallExpert"
       summary="Proofreader Small Expert base model"/>
   <variant name="SpeechRecognitionSmallExpert"
@@ -469,6 +471,9 @@ chromium-metrics-reviews@google.com.
                Applies to only credit cards that are supported by Curinos
                sourced benefits on Chrome."/>
   <variant name="DeferAllScript" summary="Defers execution of script"/>
+  <variant name="DictationEligible"
+      summary="Provides information about whether a page is eligible for
+               Dictation page context extraction."/>
   <variant name="DigitalCredentialsLowFriction"
       summary="This optimization provides information about whether a URL is
                a known low risk origin for which the digital credential
@@ -839,7 +844,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="OptimizationGuide.AIPageContent.RendererLatency.{FrameType}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>khushalsagar@chromium.org</owner>
   <owner>abigailbklein@google.com</owner>
   <summary>
@@ -893,7 +898,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="OptimizationGuide.AIPageContent.TotalLatency" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>khushalsagar@chromium.org</owner>
   <owner>abigailbklein@google.com</owner>
   <summary>
@@ -906,7 +911,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="OptimizationGuide.AIPageContent.TotalLatency.{AIPageContentMode}.{CriticalPath}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>khushalsagar@chromium.org</owner>
   <owner>abigailbklein@google.com</owner>
   <owner>gklassen@chromium.org</owner>
@@ -919,7 +924,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="OptimizationGuide.AnnotatedPageContent.ComputeMetricsLatency"
-    units="microseconds" expires_after="2027-03-07">
+    units="microseconds" expires_after="2027-05-09">
   <owner>khushalsagar@chromium.org</owner>
   <owner>abigailbklein@google.com</owner>
   <summary>
@@ -965,7 +970,7 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(APCTotalWordCount) -->
 
 <histogram name="OptimizationGuide.AnnotatedPageContent.TotalWordCount"
-    units="words" expires_after="2027-03-07">
+    units="words" expires_after="2027-05-09">
   <owner>khushalsagar@chromium.org</owner>
   <owner>abigailbklein@google.com</owner>
   <summary>

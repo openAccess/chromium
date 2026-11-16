@@ -25,6 +25,7 @@
 #include "base/test/test_suite.h"
 #include "base/threading/platform_thread.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "base/version.h"
 #include "build/build_config.h"
@@ -517,6 +518,8 @@ void AppTestHelper::FirstTaskRun() {
       {"delete_legacy_updater", WithSystemScope(Wrap(&DeleteLegacyUpdater))},
       {"expect_prepare_to_run_bundle_success",
        WithSwitch("bundle_path", Wrap(&ExpectPrepareToRunBundleSuccess))},
+      {"quarantine_wake_plist", WithSystemScope(Wrap(&QuarantineWakePlist))},
+      {"expect_wake_job_loaded", WithSystemScope(Wrap(&ExpectWakeJobLoaded))},
       {"expect_cru_registration_checks_for_update",
        WithSwitch(
            "expected_version",

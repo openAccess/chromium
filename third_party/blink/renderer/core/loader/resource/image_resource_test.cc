@@ -128,12 +128,23 @@ constexpr size_t kJpegImageSubrangeWithDimensionsLength =
     sizeof(kJpegImage) - 1;
 constexpr size_t kJpegImageSubrangeWithoutDimensionsLength = 3;
 
+ResourceFetcher* CreateFetcher(ContextLifecycleNotifier* notifier) {
+  auto* properties = MakeGarbageCollected<TestResourceFetcherProperties>();
+  return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
+      properties->MakeDetachable(), MakeGarbageCollected<MockFetchContext>(),
+      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
+      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
+      MakeGarbageCollected<TestLoaderFactory>(), notifier,
+      nullptr /* back_forward_cache_loader_helper */));
+}
+
 class ImageResourceTest : public testing::Test,
                           private ScopedMockOverlayScrollbars {
  public:
   ImageResourceTest()
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   void TearDown() override {
+    context_lifecycle_notifier_.Reset();
     // Trigger a GC so MockFinishObserver gets destroyed and EXPECT_CALL gets
     // checked before the test ends.
     ThreadState::Current()->CollectAllGarbageForTesting(
@@ -141,14 +152,19 @@ class ImageResourceTest : public testing::Test,
   }
 
  protected:
+  ResourceFetcher* CreateFetcher() {
+    return blink::CreateFetcher(context_lifecycle_notifier_.Notifier());
+  }
+
   test::TaskEnvironment task_environment_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 // Ensure that the image decoder can determine the dimensions of kJpegImage from
 // just the first kJpegImageSubrangeWithDimensionsLength bytes. If this test
 // fails, then the test data here probably needs to be updated.
 TEST_F(ImageResourceTest, DimensionsDecodableFromPartialTestImage) {
-  scoped_refptr<Image> image = BitmapImage::Create();
+  scoped_refptr<Image> image = BitmapImage::CreateForTesting();
   EXPECT_EQ(
       Image::kSizeAvailable,
       image->SetData(SharedBuffer::Create(
@@ -231,17 +247,6 @@ void ReceiveResponse(ImageResource* image_resource,
 
 AtomicString BuildContentRange(size_t range_length, size_t total_length) {
   return AtomicString(Format("bytes 0-{}/{}", range_length - 1, total_length));
-}
-
-ResourceFetcher* CreateFetcher() {
-  auto* properties = MakeGarbageCollected<TestResourceFetcherProperties>();
-  return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
-      properties->MakeDetachable(), MakeGarbageCollected<MockFetchContext>(),
-      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
-      base::MakeRefCounted<scheduler::FakeTaskRunner>(),
-      MakeGarbageCollected<TestLoaderFactory>(),
-      MakeGarbageCollected<MockContextLifecycleNotifier>(),
-      nullptr /* back_forward_cache_loader_helper */));
 }
 
 TEST_F(ImageResourceTest, MultipartImage) {
@@ -655,6 +660,46 @@ TEST_F(ImageResourceTest, DecodedDataRemainsWhileHasClients) {
   EXPECT_TRUE(image_resource->GetContent()->HasImage());
   // TODO(hajimehoshi): Should check imageResource doesn't have decoded image
   // data.
+}
+
+// ImageResource keeps its encoded data in ImageResourceContent after
+// ClearData(), so it still counts towards its memory usage.
+TEST_F(ImageResourceTest, EncodedMemoryUsageKeptAfterFinish) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kResourceEncodedMemoryAccounting);
+  ImageResource* image_resource = ImageResource::CreateForTest(NullUrl());
+  ReceiveResponse(image_resource, NullUrl(), "image/jpeg",
+                  base::as_chars(base::span(kJpegImage)));
+  ASSERT_TRUE(image_resource->HasResourceBuffer());
+
+  EXPECT_EQ(image_resource->EncodedSize(), sizeof(kJpegImage));
+  EXPECT_EQ(image_resource->size(), image_resource->EncodedSize() +
+                                        image_resource->DecodedSize() +
+                                        image_resource->OverheadSize());
+}
+
+// A failed revalidation drops the old image, so its encoded data stops counting
+// even though ImageResourceContent held it until then.
+TEST_F(ImageResourceTest, FailedRevalidationStopsCountingEncodedData) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kResourceEncodedMemoryAccounting);
+  KURL url("http://127.0.0.1:8000/foo");
+  ImageResource* image_resource = ImageResource::CreateForTest(url);
+  ReceiveResponse(image_resource, url, "image/jpeg",
+                  base::as_chars(base::span(kJpegImage)));
+  ASSERT_TRUE(image_resource->HasResourceBuffer());
+
+  image_resource->SetRevalidatingRequest(ResourceRequest(url));
+  ResourceResponse resource_response(url);
+  resource_response.SetMimeType(AtomicString("image/jpeg"));
+  resource_response.SetHttpStatusCode(200);
+  image_resource->NotifyStartLoad();
+  image_resource->ResponseReceived(resource_response);
+  ASSERT_FALSE(image_resource->HasResourceBuffer());
+
+  EXPECT_EQ(image_resource->EncodedSize(), sizeof(kJpegImage));
+  EXPECT_EQ(image_resource->size(),
+            image_resource->DecodedSize() + image_resource->OverheadSize());
 }
 
 TEST_F(ImageResourceTest, UpdateBitmapImages) {
@@ -1396,7 +1441,12 @@ class ImageResourceCounterTest : public testing::Test {
         InstanceCounters::kUACSSResourceCounter);
   }
 
+  ResourceFetcher* CreateFetcher() {
+    return blink::CreateFetcher(context_lifecycle_notifier_.Notifier());
+  }
+
   test::TaskEnvironment task_environment_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 TEST_F(ImageResourceCounterTest, InstanceCounters) {

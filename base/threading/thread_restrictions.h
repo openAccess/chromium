@@ -186,7 +186,6 @@ class MojoUtils;
 }
 namespace system {
 class StatisticsProviderImpl;
-class ProcStatFile;
 }  // namespace system
 }  // namespace ash
 namespace audio {
@@ -413,7 +412,6 @@ class SelectFileDialogBridge;
 }  // namespace remote_cocoa
 namespace remoting {
 class AutoThread;
-class ScopedAllowBlockingForCrashReporting;
 class ScopedBypassIOThreadRestrictions;
 namespace protocol {
 class ScopedAllowSyncPrimitivesForWebRtcDataStreamAdapter;
@@ -489,7 +487,9 @@ namespace internal {
 class GetAppOutputScopedAllowBaseSyncPrimitives;
 class JobTaskSource;
 class TaskTracker;
-bool ReadProcFile(const FilePath& file, std::string* buffer);
+bool ReadProcFile(const FilePath& file,
+                  const FilePath& proc_dir,
+                  std::string* buffer);
 }  // namespace internal
 
 namespace sequence_manager::internal {
@@ -610,7 +610,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class ash::StartupCustomizationDocument;  // http://crosbug.com/11103
   friend class ash::StartupUtils;
   friend class ash::converters::diagnostics::MojoUtils;  // http://b/322741627
-  friend class ash::system::ProcStatFile;
   friend class base::AdjustOOMScoreHelper;
   friend class base::ChromeOSVersionInfo;
   friend class base::Process;
@@ -663,7 +662,6 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend class remote_cocoa::SelectFileDialogBridge;
   friend class remoting::
       ScopedBypassIOThreadRestrictions;  // http://crbug.com/1144161
-  friend class remoting::ScopedAllowBlockingForCrashReporting;
   friend class ui::DrmDisplayHostManager;
   friend class ui::ScopedAllowBlockingForGbmSurface;
   friend class ui::SelectFileDialogLinux;
@@ -693,6 +691,7 @@ class BASE_EXPORT ScopedAllowBlocking {
   friend bool ash::CameraAppUIShouldEnableLocalOverride(const std::string&);
   friend base::FilePath base::apple::internal::GetExecutablePath();
   friend bool base::internal::ReadProcFile(const FilePath& file,
+                                           const FilePath& proc_dir,
                                            std::string* buffer);
   friend bool chrome::PathProvider(int,
                                    base::FilePath*);  // http://crbug.com/259796

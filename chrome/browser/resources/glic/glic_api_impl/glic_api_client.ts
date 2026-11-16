@@ -8,22 +8,24 @@ import type {BitmapN32} from '//resources/mojo/skia/public/mojom/bitmap.mojom-we
 import type {PageMetadata as PageMetadataMojo} from '../ai_page_content_metadata.mojom-webui.js';
 import {ContentSettingsType} from '../content_settings_types.mojom-webui.js';
 import {enumFromClient, enumToClient} from '../enum_conversions.js';
-import {                                       //
-  CaptureRegionObserverReceiver,               //
-  PinCandidatesObserverReceiver,               //
-  PromptType as PromptTypeMojo,                //
-  ResponseStopCause as ResponseStopCauseMojo,  //
-  SettingsPageField as SettingsPageFieldMojo,  //
-  TabDataHandlerReceiver,                      //
-  TabFaviconHandlerReceiver,                   //
-  WebClientHandlerRemote,                      //
-  WebClientReceiver,                           //
+import {                                               //
+  CaptureRegionObserverReceiver,                       //
+  PinCandidatesObserverReceiver,                       //
+  PromptType as PromptTypeMojo,                        //
+  ResponseStopCause as ResponseStopCauseMojo,          //
+  SettingsPageField as SettingsPageFieldMojo,          //
+  TabDataHandlerReceiver,                              //
+  TabFaviconHandlerReceiver,                           //
+  TooltipImpressionType as TooltipImpressionTypeMojo,  //
+  WebClientHandlerRemote,                              //
+  WebClientReceiver,                                   //
 } from '../glic.mojom-webui.js';
 import type {                                                          //
              AdditionalContext as AdditionalContextMojo,               //
              CaptureRegionErrorReason as CaptureRegionErrorReasonMojo, //
              CaptureRegionObserverInterface,                           //
              CaptureRegionResult as CaptureRegionResultMojo,           //
+             DataTransferActionsBlockedNotice as DataTransferActionsBlockedNoticeMojo, //
              FileUploadPolicyState as FileUploadPolicyStateMojo,       //
              FocusedTabData as FocusedTabDataMojo,                     //
              GeminiEnterpriseSettings as GeminiEnterpriseSettingsMojo, //
@@ -39,89 +41,92 @@ import type {                                                          //
              WebClientInterface,                                       //
 } from '../glic.mojom-webui.js';
 import {CaptureRegionErrorReason, ClientCapabilities, HostCapability, ResponseStopCause} from '../glic_api/glic_api.js';
-import type {                            //
-             ActivateTabOptions,         //
-             AdditionalContext,          //
-             CaptureRegionParams,        //
-             CaptureRegionResult,        //
-             ChromeVersion,              //
-             ClientErrorDialogType,      //
-             ConversationInfo,           //
-             CounterAbuseVerdict,        //
-             CreateTabOptions,           //
-             FileUploadPolicyState,      //
-             FocusedTabData,             //
-             FormFactor,                 //
-             GeicBrowserHost,            //
-             GeminiEnterpriseSettings,   //
-             GetPinCandidatesOptions,    //
-             GlicBrowserHost,            //
-             GlicBrowserHostMetrics,     //
-             GlicClientStorage,          //
-             GlicHostRegistry,           //
-             GlicWebClient,              //
-             ImageBytesResult,           //
-             MicrophoneStatus,           //
-             Observable,                 //
-             ObservableValue,            //
-             OnResponseStoppedDetails,   //
-             OpenPanelInfo,              //
-             OpenPinnedTabPickerOptions, //
-             OpenSettingsOptions,        //
-             PageMetadata,               //
-             PanelOpeningData,           //
-             PanelState,                 //
-             PinCandidate,               //
-             PinTabsOptions,             //
-             Platform,                   //
-             PromptType,                 //
-             ResizeWindowOptions,        //
-             SendTabToSelfDevice,        //
-             TabContextOptions,          //
-             TabContextResult,           //
-             TabData,                    //
-             UnpinTabsOptions,           //
-             UserProfileInfo,            //
-             WebClientMode,              //
-             ZeroStateSuggestions,       //
+import type {                                  //
+             ActivateTabOptions,               //
+             AdditionalContext,                //
+             CaptureRegionParams,              //
+             CaptureRegionResult,              //
+             ChromeVersion,                    //
+             ClientErrorDialogType,            //
+             ConversationInfo,                 //
+             CounterAbuseVerdict,              //
+             CreateTabOptions,                 //
+             DataTransferActionsBlockedNotice, //
+             FileUploadPolicyState,            //
+             FocusedTabData,                   //
+             FormFactor,                       //
+             GeicBrowserHost,                  //
+             GeminiEnterpriseSettings,         //
+             GetPinCandidatesOptions,          //
+             GlicBrowserHost,                  //
+             GlicBrowserHostMetrics,           //
+             GlicClientStorage,                //
+             GlicHostRegistry,                 //
+             GlicWebClient,                    //
+             ImageBytesResult,                 //
+             MicrophoneStatus,                 //
+             Observable,                       //
+             ObservableValue,                  //
+             OnResponseStoppedDetails,         //
+             OpenPanelInfo,                    //
+             OpenPinnedTabPickerOptions,       //
+             OpenSettingsOptions,              //
+             PageMetadata,                     //
+             PanelOpeningData,                 //
+             PanelState,                       //
+             PinCandidate,                     //
+             PinTabsOptions,                   //
+             Platform,                         //
+             PromptType,                       //
+             ResizeWindowOptions,              //
+             SendTabToSelfDevice,              //
+             TabContextOptions,                //
+             TabContextResult,                 //
+             TabData,                          //
+             TooltipImpressionType,            //
+             UnpinTabsOptions,                 //
+             UserProfileInfo,                  //
+             WebClientMode,                    //
+             ZeroStateSuggestions,             //
 } from '../glic_api/glic_api.js';
 import {ObservableValue as ObservableValueImpl, Subject} from '../observable.js';
 
 import {GlicBrowserHostActor} from './actor/actor_client.js';
 import {GlicBrowserHostAnnotation} from './annotation/annotation_client.js';
-import {                              //
-  additionalContextToClient,          //
-  bitmapN32ToRGBAImage,               //
-  captureRegionResultToClient,        //
-  conversationInfoFromClient,         //
-  conversionSettings,                 //
-  counterAbuseVerdictFromClient,      //
-  createTabOptionsFromClient,         //
-  fileUploadPolicyStateToClient,      //
-  focusedTabDataToClient,             //
-  getPinCandidatesOptionsFromClient,  //
-  idFromClient,                       //
-  idToClient,                         //
-  imageBytesResultToClient,           //
-  invokeOptionsToClient,              //
-  microphoneStatusToMojo,             //
-  openPinnedTabPickerOptionsToMojo,   //
-  optionalFromClient,                 //
-  pageMetadataToClient,               //
-  panelOpeningDataToClient,           //
-  panelStateToClient,                 //
-  pinCandidateToClient,               //
-  pinTabsOptionsToMojo,               //
-  replaceProperties,                  //
-  sendTabToSelfDeviceToClient,        //
-  tabContextOptionsFromClient,        //
-  tabContextToClient,                 //
-  tabDataToClient,                    //
-  timeDeltaFromClient,                //
-  unpinTabsOptionsToMojo,             //
-  urlFromClient,                      //
-  urlToClient,                        //
-  webClientModeToMojo,                //
+import {                                     //
+  additionalContextToClient,                 //
+  bitmapN32ToRGBAImage,                      //
+  captureRegionResultToClient,               //
+  conversationInfoFromClient,                //
+  conversionSettings,                        //
+  counterAbuseVerdictFromClient,             //
+  createTabOptionsFromClient,                //
+  dataTransferActionsBlockedNoticeToClient,  //
+  fileUploadPolicyStateToClient,             //
+  focusedTabDataToClient,                    //
+  getPinCandidatesOptionsFromClient,         //
+  idFromClient,                              //
+  idToClient,                                //
+  imageBytesResultToClient,                  //
+  invokeOptionsToClient,                     //
+  microphoneStatusToMojo,                    //
+  openPinnedTabPickerOptionsToMojo,          //
+  optionalFromClient,                        //
+  pageMetadataToClient,                      //
+  panelOpeningDataToClient,                  //
+  panelStateToClient,                        //
+  pinCandidateToClient,                      //
+  pinTabsOptionsToMojo,                      //
+  replaceProperties,                         //
+  sendTabToSelfDeviceToClient,               //
+  tabContextOptionsFromClient,               //
+  tabContextToClient,                        //
+  tabDataToClient,                           //
+  timeDeltaFromClient,                       //
+  unpinTabsOptionsToMojo,                    //
+  urlFromClient,                             //
+  urlToClient,                               //
+  webClientModeToMojo,                       //
 } from './conversions.js';
 import {GlicBrowserHostExperimentalTriggering} from './experimental_triggering/experimental_triggering_client.js';
 import {GlicBrowserHostGeic} from './geic/geic_client.js';
@@ -224,6 +229,8 @@ export class GlicBrowserHostImpl implements GlicBrowserHost,
 
   private hostCapabilities: Set<HostCapability> = new Set();
   readonly additionalContextSubject = new Subject<AdditionalContext>();
+  readonly dataTransferActionsBlockedNoticesSubject =
+      new Subject<DataTransferActionsBlockedNotice>();
   pageMetadataObservers: Map<string, ObservableValueImpl<PageMetadata>> =
       new Map();
 
@@ -295,6 +302,7 @@ export class GlicBrowserHostImpl implements GlicBrowserHost,
 
   destroy() {
     this.isDestroyed = true;
+    this.dataTransferActionsBlockedNoticesSubject.complete();
     this.pinCandidates?.setObsolete();
     this.actorClient.destroyActor();
     this.skillsClient.destroySkills();
@@ -636,6 +644,12 @@ export class GlicBrowserHostImpl implements GlicBrowserHost,
 
   notifyAdditionalContext(context: AdditionalContextMojo): void {
     this.additionalContextSubject.next(additionalContextToClient(context));
+  }
+
+  notifyDataTransferActionsBlocked(
+      notice: DataTransferActionsBlockedNoticeMojo): void {
+    this.dataTransferActionsBlockedNoticesSubject.next(
+        dataTransferActionsBlockedNoticeToClient(notice));
   }
 
   notifyActOnWebCapabilityChanged(canActOnWeb: boolean): void {
@@ -1154,6 +1168,11 @@ export class GlicBrowserHostImpl implements GlicBrowserHost,
     return this.additionalContextSubject;
   }
 
+  getDataTransferActionsBlockedNotices?
+      (): Observable<DataTransferActionsBlockedNotice> {
+    return this.dataTransferActionsBlockedNoticesSubject;
+  }
+
   getHostCapabilities(): Set<HostCapability> {
     return this.hostCapabilities;
   }
@@ -1191,6 +1210,8 @@ export class GlicBrowserHostImpl implements GlicBrowserHost,
     this.handler.setOnboardingCompleted();
   }
 
+  setGuestUrlQueryParam?: (key: string, value: string|null) => Promise<void>;
+
   isOnboardingCompleted?(): ObservableValue<boolean> {
     return this.onboardingCompleted;
   }
@@ -1201,6 +1222,10 @@ class GlicBrowserHostMetricsImpl implements GlicBrowserHostMetrics {
 
   onOptinImpression(): void {
     this.handler.onOptinImpression();
+  }
+
+  onOptinRejected(): void {
+    this.handler.onOptinRejected();
   }
 
   onInputFocused(): void {
@@ -1271,6 +1296,15 @@ class GlicBrowserHostMetricsImpl implements GlicBrowserHostMetrics {
     // Since the frontend can contain a newer version than what Chrome is
     // built against, we use a sparse histogram.
     this.handler.recordSparseValue('Glic.Api.UseCounter', counter);
+  }
+
+  onTooltipImpression(impression: TooltipImpressionType): void {
+    this.handler.onTooltipImpression(
+        enumFromClient(impression) ?? TooltipImpressionTypeMojo.kUnknown);
+  }
+
+  onTooltipHidden(): void {
+    this.handler.onTooltipHidden();
   }
 }
 

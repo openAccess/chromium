@@ -30,6 +30,7 @@ import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.ProfileDataCache;
 import org.chromium.chrome.browser.signin.services.SigninManager;
+import org.chromium.chrome.browser.signin.services.SigninManager.SignInStateObserver;
 import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityService;
 import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityServiceFactory;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
@@ -44,6 +45,7 @@ import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConf
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.browser.ui.signin.SigninSurveyController;
+import org.chromium.chrome.browser.ui.signin.SigninSurveyController.SigninSurveyType;
 import org.chromium.chrome.browser.ui.signin.SigninUtils;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
@@ -57,11 +59,11 @@ import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
-import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.sync.SyncService;
+import org.chromium.components.sync.SyncService.SyncStateChangedListener;
 import org.chromium.components.sync.UserActionableError;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.ActivityResultTracker;
@@ -80,8 +82,8 @@ import java.util.Objects;
 final class SigninButtonMediator
         implements ProfileDataCache.Observer,
                 IdentityManager.Observer,
-                SyncService.SyncStateChangedListener,
-                SigninManager.SignInStateObserver,
+                SyncStateChangedListener,
+                SignInStateObserver,
                 BottomSheetSigninAndHistorySyncCoordinator.Delegate,
                 TintObserver {
     // TODO(crbug.com/475816843): Make this non-static and non-final when re-introducing the sign-in
@@ -168,15 +170,14 @@ final class SigninButtonMediator
         mThemeColorProvider = themeColorProvider;
         mOnSigninTapped = onSigninTapped;
         mActivityFocusTint = mThemeColorProvider.getActivityFocusTint();
-        mThemeColorProvider.addTintObserver(this);
         mModel.set(
                 SigninButtonProperties.IS_ENABLED,
-                Objects.equals(mThemeColorProvider.getTint(), mActivityFocusTint));
+                hasActivityFocusTint(mThemeColorProvider.getTint(), mActivityFocusTint));
     }
 
     /**
-     * {@link SyncService.SyncStateChangedListener} implementation which updates the signin button
-     * in case a profile badge is needed due to an identity error.
+     * {@link SyncStateChangedListener} implementation which updates the signin button in case a
+     * profile badge is needed due to an identity error.
      */
     @Override
     public void syncStateChanged() {
@@ -184,8 +185,8 @@ final class SigninButtonMediator
     }
 
     /**
-     * {@link SigninManager.SignInStateObserver} implementation which updates the signin button when
-     * signin allowed state changes.
+     * {@link SignInStateObserver} implementation which updates the signin button when signin
+     * allowed state changes.
      */
     @Override
     public void onSignInAllowedChanged() {
@@ -218,8 +219,7 @@ final class SigninButtonMediator
     @Override
     public void onProfileDataUpdated(DisplayableProfileData profileData) {
         String primaryEmail =
-                CoreAccountInfo.getEmailFrom(
-                        assumeNonNull(mIdentityManager).getPrimaryAccountInfo());
+                AccountInfo.getEmailFrom(assumeNonNull(mIdentityManager).getPrimaryAccountInfo());
         if (profileData.getAccountEmail().equals(primaryEmail)) {
             updateButtonState();
         }
@@ -230,8 +230,7 @@ final class SigninButtonMediator
             @Nullable ColorStateList tint,
             @Nullable ColorStateList activityFocusTint,
             @BrandedColorScheme int brandedColorScheme) {
-        // If activityFocusTint is different from tint, the toolbar thinks we are inactive.
-        boolean isWindowActive = Objects.equals(tint, activityFocusTint);
+        boolean isWindowActive = hasActivityFocusTint(tint, activityFocusTint);
         mModel.set(SigninButtonProperties.IS_ENABLED, isWindowActive);
 
         // The avatar icon tint needs to be manually set.
@@ -239,6 +238,11 @@ final class SigninButtonMediator
         if (mProfile != null && !mProfile.isOffTheRecord()) {
             updateButtonState();
         }
+    }
+
+    private static boolean hasActivityFocusTint(
+            @Nullable ColorStateList tint, @Nullable ColorStateList activityFocusTint) {
+        return activityFocusTint == null || Objects.equals(tint, activityFocusTint);
     }
 
     boolean hasSpaceToShow() {
@@ -459,8 +463,7 @@ final class SigninButtonMediator
                                     HistorySyncConfig.OptInMode.OPTIONAL,
                                     mContext.getString(R.string.history_sync_title),
                                     mContext.getString(R.string.history_sync_subtitle))
-                            .signinSurveyType(
-                                    SigninSurveyController.SigninSurveyType.NTP_SIGNIN_BUTTON)
+                            .signinSurveyType(SigninSurveyType.NTP_SIGNIN_BUTTON)
                             .build();
             if (SigninFeatureMap.getInstance().isActivitylessSigninAllEntryPointEnabled()) {
                 assumeNonNull(mSigninCoordinator).startSigninFlow(config);
@@ -481,8 +484,7 @@ final class SigninButtonMediator
                     SettingsNavigationFactory.createSettingsNavigation();
             settingsNavigation.startSettings(mContext);
             SigninSurveyController.registerTrigger(
-                    originalProfile,
-                    SigninSurveyController.SigninSurveyType.NTP_ACCOUNT_AVATAR_TAP);
+                    originalProfile, SigninSurveyType.NTP_ACCOUNT_AVATAR_TAP);
         }
     }
 
@@ -530,7 +532,6 @@ final class SigninButtonMediator
     public void destroy() {
         setProfile(null);
         mProfileSupplier.removeObserver(mProfileSupplierObserver);
-        mThemeColorProvider.removeTintObserver(this);
     }
 
     // TODO(crbug.com/522145863): Remove when AI tier is launched.

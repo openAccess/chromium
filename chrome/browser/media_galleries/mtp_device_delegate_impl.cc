@@ -504,13 +504,17 @@ MTPDeviceDelegateImpl::MTPFileNode::MTPFileNode(uint32_t file_id,
       nodes_by_id_(nodes_by_id) {
   CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
   const bool ok = nodes_by_id_->try_emplace(file_id_, this).second;
-  CHECK(ok, base::NotFatalUntil::M161);
+  // TODO(crbug.com/578402457): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(ok);
 }
 
 MTPDeviceDelegateImpl::MTPFileNode::~MTPFileNode() {
   CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
   const size_t erased = nodes_by_id_->erase(file_id_);
-  CHECK_EQ(1U, erased, base::NotFatalUntil::M161);
+  // TODO(crbug.com/578382035): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(1U, erased);
 }
 
 const MTPDeviceDelegateImpl::MTPFileNode*
@@ -1578,7 +1582,9 @@ void MTPDeviceDelegateImpl::OnDidGetFileInfoToCreateSnapshotFile(
     std::unique_ptr<SnapshotRequestInfo> snapshot_request_info,
     const base::File::Info& file_info) {
   CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
-  CHECK(!current_snapshot_request_info_.get(), base::NotFatalUntil::M161);
+  // TODO(crbug.com/584382770): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!current_snapshot_request_info_.get());
   CHECK(snapshot_request_info.get(), base::NotFatalUntil::M161);
   CHECK(task_in_progress_, base::NotFatalUntil::M161);
   base::File::Error error = base::File::FILE_OK;

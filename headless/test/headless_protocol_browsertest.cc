@@ -303,6 +303,9 @@ HEADLESS_PROTOCOL_TEST(Geolocation, "emulation/geolocation-crash.js")
 
 HEADLESS_PROTOCOL_TEST(DragStarted, "input/dragIntercepted.js")
 
+HEADLESS_PROTOCOL_TEST(DragInterceptedFileURL,
+                       "shared/drag-intercepted-file-url.js")
+
 HEADLESS_PROTOCOL_TEST(InputClipboardOps, "shared/input-clipboard-ops.js")
 
 HEADLESS_PROTOCOL_TEST(ClipboardPasteAllowed,
@@ -387,8 +390,8 @@ class HeadlessProtocolBrowserTestWithAllowedCrashes
 // Some platforms take very long time to handle crashes, and the test depends
 // on a large number of simulated crashes. See https://crbug.com/517040374 for
 // additional context.
-#define PLATFORM_SUPPORTS_CRASH_TEST()                                       \
-  !(BUILDFLAG(IS_WIN) && !defined(NDEBUG)) && !defined(ADDRESS_SANITIZER) && \
+#define PLATFORM_SUPPORTS_CRASH_TEST()                 \
+  !BUILDFLAG(IS_WIN) && !defined(ADDRESS_SANITIZER) && \
       !defined(THREAD_SANITIZER)
 
 #if PLATFORM_SUPPORTS_CRASH_TEST()
@@ -696,6 +699,9 @@ HEADLESS_PROTOCOL_TEST(ScreenDetailsWorkAreaScaled,
 
 HEADLESS_PROTOCOL_TEST(RequestFullscreen, "shared/request-fullscreen.js")
 
+HEADLESS_PROTOCOL_TEST(ActivateTargetFullscreen,
+                       "shared/activate-target-fullscreen.js")
+
 HEADLESS_PROTOCOL_TEST(RequestFullscreenOnSecondaryScreen,
                        "shared/request-fullscreen-on-secondary-screen.js")
 
@@ -862,6 +868,9 @@ HEADLESS_PROTOCOL_TEST(
 #endif  // !BUILDFLAG(IS_FUCHSIA)
 
 HEADLESS_PROTOCOL_TEST(GetBrowserContexts, "shared/get-browser-contexts.js")
+
+HEADLESS_PROTOCOL_TEST(InteractionMediaFeatures,
+                       "shared/interaction-media-features.js")
 
 class HeadlessProtocolBrowserTestWithDownload
     : public HeadlessProtocolBrowserTest {

@@ -1,0 +1,37 @@
+Name: libbase
+URL: https://android.googlesource.com/platform/system/libbase
+Version: android-17.0.0_r1
+Revision: fef4173e19d97cd4b4fc09a06bccbf800d0d3937
+Update Mechanism: Manual
+License: Apache-2.0
+License File: src/NOTICE
+Shipped: yes
+Security Critical: yes
+
+Description:
+Common helpers from AOSP (android-base): files, strings, logging macros,
+unique_fd. libunwindstack, libdexfile and libartbase include them as
+"android-base/...", and //third_party/libunwindstack builds them into its
+libunwindstack and posix_strerror_r targets.
+
+src/ holds NOTICE and the files BUILD.gn lists, from the upstream
+repository root, with patches/ applied.
+
+Local Modifications:
+The patches are in patches/; copy.bara.sky applies them in this order.
+- 0001-disable-fdsan.patch: use fdsan only from Android API 29.
+- 0003-remove-file-logging.patch: no-op LOG(), PLOG(), CHECK() and
+  CHECK_OP() streams, so no logging.cpp is needed.
+- 0007-disable-thread-annotations.patch: no-op thread-safety annotation
+  macros.
+- 0015-replace-deprecated-enodata.patch: EIO instead of ENODATA.
+- 0020-add-missing-includes.patch: add the <type_traits> include to
+  logging.h.
+
+Update instructions:
+Update commit hashes in crowbar.txtpb, then run from this directory:
+crowbar build --no-dry-run ./
+
+copy.bara.sky lists every file it imports. If the new upstream version
+adds a file Chromium needs, add it there and to
+//third_party/libunwindstack/BUILD.gn.

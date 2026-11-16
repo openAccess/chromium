@@ -31,6 +31,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui:browser_commands",
     "//chrome/common:constants",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//components/content_settings/core/browser",
     "//components/content_settings/core/common",
     "//components/javascript_dialogs",
@@ -52,10 +53,6 @@ source_set("browser_tests") {
 
   if (enable_pdf) {
     sources += [ "mime_handler_fallback_browsertest.cc" ]
-    deps += [
-      "//chrome/browser/pdf:pdf_extension_test_utils",
-      "//extensions/browser/mime_handler",
-      "//pdf:features",
-    ]
+    deps += [ "//chrome/browser/pdf:pdf_extension_test_utils" ]
   }
 }

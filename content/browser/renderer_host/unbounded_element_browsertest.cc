@@ -10,6 +10,7 @@
 #include "base/test/with_feature_override.h"
 #include "build/build_config.h"
 #include "cc/base/features.h"
+#include "components/input/cursor_manager.h"
 #include "components/input/render_widget_host_input_event_router.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -28,6 +29,7 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/cursor_utils.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/popup_test_utils.h"
@@ -43,12 +45,17 @@
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/cursor/cursor.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "url/gurl.h"
 
 #if defined(USE_AURA)
+#include "content/test/recording_cursor_client.h"
+#include "ui/aura/client/cursor_client.h"
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/window.h"
+#include "ui/aura/window_delegate.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
@@ -3561,6 +3568,496 @@ IN_PROC_BROWSER_TEST_P(UnboundedElementBrowserTest,
 
 INSTANTIATE_TEST_SUITE_P(All, UnboundedElementBrowserTest, testing::Bool());
 
+#if defined(USE_AURA) || BUILDFLAG(IS_MAC)
+
+namespace {
+
+// Dispatches a mouse event of `type` at `screen_point` through `window`, the
+// way the platform window does for pointer events over the surface.
+void RouteMouseEventOverSurfaceWindow(UnboundedSurfaceWindow* window,
+                                      blink::WebInputEvent::Type type,
+                                      const gfx::Point& screen_point) {
+  blink::WebMouseEvent event = blink::SyntheticWebMouseEventBuilder::Build(
+      type, screen_point.x(), screen_point.y(), 0);
+  event.button = blink::WebMouseEvent::Button::kNoButton;
+  event.SetPositionInScreen(screen_point.x(), screen_point.y());
+  window->RouteMouseEvent(event);
+}
+
+}  // namespace
+
+// Cursor bookkeeping for a surface requested by a cross-site iframe. Mouse
+// events over the surface bypass RenderWidgetHostInputEventRouter, so the
+// CursorManager has to be told which view is under the cursor by other means.
+// `unbounded_subframe.html` places the iframe at (50, 50) with size 100x100 in
+// the main frame; the unbounded element covers (170, 170)-(220, 220) in root
+// coordinates, outside the iframe.
+class UnboundedElementCursorBrowserTest : public UnboundedElementBrowserTest {
+ protected:
+  // A point in the main frame, away from the iframe.
+  static constexpr gfx::Point kMainFramePoint{10, 10};
+  // A point inside the iframe, away from its button and unbounded element.
+  static constexpr gfx::Point kIframePoint{100, 120};
+
+  // Loads the page and caches its frames and views.
+  void LoadCrossSiteIframePage() {
+    GURL url(
+        embedded_test_server()->GetURL("a.com", "/unbounded_subframe.html"));
+    ASSERT_TRUE(NavigateToURL(shell(), url));
+    iframe_ = ChildFrameAt(primary_main_frame_host(), 0);
+    ASSERT_TRUE(iframe_);
+    ASSERT_TRUE(WaitForLoadStop(web_contents()));
+    WaitForHitTestData(iframe_);
+
+    root_view_ = static_cast<RenderWidgetHostViewBase*>(
+        primary_main_frame_host()->GetRenderWidgetHost()->GetView());
+    child_view_ = static_cast<RenderFrameHostImpl*>(iframe_)
+                      ->GetRenderWidgetHost()
+                      ->GetView();
+    ASSERT_TRUE(child_view_);
+    ASSERT_TRUE(child_view_->IsRenderWidgetHostViewChildFrame());
+    ASSERT_TRUE(cursor_manager());
+  }
+
+  void OpenSurfaceFromCrossSiteIframe() {
+    ASSERT_NO_FATAL_FAILURE(LoadCrossSiteIframePage());
+    ASSERT_TRUE(ExecJs(iframe_, "window.openUnbounded()"));
+    UnboundedSurfaceWindow* window = GetActiveWindow();
+    ASSERT_TRUE(window);
+    window_ = window->GetWeakPtr();
+    MainThreadFrameObserver frame_observer(iframe_->GetRenderWidgetHost());
+    frame_observer.Wait();
+    ASSERT_EQ(child_view_, window_->GetTargetView());
+  }
+
+  // Opens a surface from the main frame of the same page, covering
+  // (300, 300)-(350, 350) in root coordinates.
+  void OpenSurfaceFromMainFrame() {
+    ASSERT_NO_FATAL_FAILURE(LoadCrossSiteIframePage());
+    ASSERT_TRUE(ExecJs(primary_main_frame_host(), R"(
+      const target = document.createElement('div');
+      target.id = 'main_target';
+      target.setAttribute('unbounded', '');
+      target.style.cssText =
+          'position:absolute; top:300px; left:300px; width:50px; height:50px;';
+      document.body.appendChild(target);
+      target.showUnboundedElement();
+    )"));
+    UnboundedSurfaceWindow* window = GetActiveWindow();
+    ASSERT_TRUE(window);
+    window_ = window->GetWeakPtr();
+    MainThreadFrameObserver frame_observer(
+        primary_main_frame_host()->GetRenderWidgetHost());
+    frame_observer.Wait();
+    ASSERT_EQ(root_view_, window_->GetTargetView());
+  }
+
+  // Screen position of the center of the main frame's unbounded element.
+  gfx::Point MainFrameSurfaceScreenPoint() {
+    return root_view_->GetViewBounds().origin() + gfx::Vector2d(325, 325);
+  }
+
+  input::CursorManager* cursor_manager() {
+    return root_view_->GetCursorManager();
+  }
+
+  ui::mojom::CursorType last_displayed_cursor() {
+    return CursorUtils::GetLastCursorForWebContents(web_contents());
+  }
+
+  // Screen position of the center of the button inside the unbounded element.
+  gfx::Point FlyoutButtonScreenPoint() {
+    constexpr char kCenter[] = R"(
+      (() => {
+        const r = document.getElementById('flyout_btn').getBoundingClientRect();
+        return [r.left + r.width / 2, r.top + r.height / 2];
+      })()
+    )";
+    base::ListValue center = EvalJs(iframe_, kCenter).ExtractList().Clone();
+    gfx::PointF center_in_child(center[0].GetDouble(), center[1].GetDouble());
+    gfx::PointF center_in_root =
+        child_view_->TransformPointToRootCoordSpaceF(center_in_child);
+    return gfx::ToRoundedPoint(
+        gfx::PointF(root_view_->GetViewBounds().origin()) +
+        center_in_root.OffsetFromOrigin());
+  }
+
+  // Routes a mouse event of `type` over the button inside the unbounded
+  // element, the way the platform window does for pointer events over the
+  // surface, and waits for the iframe to process it.
+  void RouteMouseEventOverSurface(blink::WebInputEvent::Type type) {
+    ASSERT_TRUE(window_);
+    RouteMouseEventOverSurfaceWindow(window_.get(), type,
+                                     FlyoutButtonScreenPoint());
+    RunUntilInputProcessed(iframe_->GetRenderWidgetHost());
+  }
+
+  void MoveOverSurface() {
+    RouteMouseEventOverSurface(blink::WebInputEvent::Type::kMouseMove);
+  }
+
+  // Routes a mouse move at `point_in_root` through the input event router,
+  // which is expected to target `target`.
+  void MoveOverRootView(const gfx::Point& point_in_root,
+                        RenderFrameHost* target) {
+    SimulateMouseEvent(web_contents(), blink::WebInputEvent::Type::kMouseMove,
+                       point_in_root);
+    RunUntilInputProcessed(target->GetRenderWidgetHost());
+  }
+
+  // Reset in TearDownOnMainThread(): the views and frame go away with the
+  // renderer before the fixture is destroyed.
+  void TearDownOnMainThread() override {
+    UnboundedElementBrowserTest::TearDownOnMainThread();
+    iframe_ = nullptr;
+    root_view_ = nullptr;
+    child_view_ = nullptr;
+  }
+
+  raw_ptr<RenderFrameHost> iframe_ = nullptr;
+  raw_ptr<RenderWidgetHostViewBase> root_view_ = nullptr;
+  raw_ptr<RenderWidgetHostViewBase> child_view_ = nullptr;
+  base::WeakPtr<UnboundedSurfaceWindow> window_;
+};
+
+// Moving the pointer over the surface makes the iframe the view under the
+// cursor, so a cursor update from the iframe is displayed.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       SurfaceMouseMoveUpdatesViewUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  ASSERT_TRUE(ExecJs(
+      iframe_, "document.getElementById('flyout_btn').style.cursor = 'text'"));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+  ui::Cursor cursor;
+  EXPECT_TRUE(cursor_manager()->GetCursorForTesting(child_view_, cursor));
+  EXPECT_EQ(ui::mojom::CursorType::kIBeam, cursor.type());
+}
+
+// Pointer path iframe -> surface -> iframe: the iframe stays the view under
+// the cursor, its `:hover` state is updated as the pointer moves onto the
+// surface and back into the iframe, and its cursor updates keep being
+// displayed.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       IframeToSurfaceToIframeKeepsIframeUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return cursor_manager()->IsViewUnderCursor(child_view_); }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kPointer;
+  }));
+  EXPECT_EQ(true,
+            EvalJs(iframe_, "document.documentElement.matches(':hover')"));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_EQ(true, EvalJs(iframe_,
+                         "document.getElementById('flyout_btn')"
+                         ".matches(':hover')"));
+
+  // Leaving the surface clears the override, falling back to the router's last
+  // view under the cursor (`child_view_`), and clears `:hover` inside the
+  // iframe until the next move over the iframe.
+  ASSERT_NO_FATAL_FAILURE(
+      RouteMouseEventOverSurface(blink::WebInputEvent::Type::kMouseLeave));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_EQ(false, EvalJs(iframe_,
+                          "document.getElementById('flyout_btn')"
+                          ".matches(':hover')"));
+
+  ASSERT_TRUE(
+      ExecJs(iframe_, "document.documentElement.style.cursor = 'text'"));
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_EQ(true,
+            EvalJs(iframe_, "document.documentElement.matches(':hover')"));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+}
+
+// Pointer path main frame (or iframe) -> surface -> main frame: the root view
+// becomes the view under the cursor again regardless of whether the surface's
+// kMouseLeave arrives before or after the root window's kMouseMove.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       MainFrameToSurfaceToMainFrameRestoresRootUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+
+  // Leave-before-move ordering: kMouseLeave on the surface arrives before
+  // kMouseMove on the root window.
+  MoveOverRootView(kMainFramePoint, primary_main_frame_host());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  ASSERT_NO_FATAL_FAILURE(
+      RouteMouseEventOverSurface(blink::WebInputEvent::Type::kMouseLeave));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  MoveOverRootView(kMainFramePoint, primary_main_frame_host());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+
+  // Move-before-leave ordering starting from the iframe: kMouseMove on the
+  // root window arrives before kMouseLeave on the surface.
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return cursor_manager()->IsViewUnderCursor(child_view_); }));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  MoveOverRootView(kMainFramePoint, primary_main_frame_host());
+  ASSERT_NO_FATAL_FAILURE(
+      RouteMouseEventOverSurface(blink::WebInputEvent::Type::kMouseLeave));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(),
+                     "document.documentElement.style.cursor = 'text'"));
+  MoveOverRootView(kMainFramePoint, primary_main_frame_host());
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+}
+
+// Dismissing the surface while the pointer is over it hands the cursor back to
+// the root view and restores the root view's displayed cursor.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       DismissWhileOverSurfaceRestoresRootUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+  ASSERT_TRUE(ExecJs(
+      iframe_, "document.getElementById('flyout_btn').style.cursor = 'text'"));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+
+  window_->Dismiss();
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window_; }));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kPointer;
+  }));
+}
+
+// Dismissing the surface after the pointer went back to the iframe must leave
+// the iframe as the view under the cursor; the destructor only hands the
+// cursor back while the pointer is still over the surface.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       DismissAfterLeavingSurfaceKeepsIframeUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  // The platform sends a leave to the surface window when the pointer exits
+  // it, before the move over the iframe reaches the router.
+  ASSERT_NO_FATAL_FAILURE(
+      RouteMouseEventOverSurface(blink::WebInputEvent::Type::kMouseLeave));
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return cursor_manager()->IsViewUnderCursor(child_view_); }));
+
+  window_->Dismiss();
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window_; }));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  ASSERT_TRUE(
+      ExecJs(iframe_, "document.documentElement.style.cursor = 'text'"));
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+}
+
+// Removing the iframe that owns the surface while the pointer is over it
+// destroys the iframe's view and the surface; the root view ends up as the
+// view under the cursor and restores the root view's displayed cursor.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       IframeRemovalWhileOverSurfaceRestoresRootUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+  ASSERT_TRUE(ExecJs(
+      iframe_, "document.getElementById('flyout_btn').style.cursor = 'text'"));
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+
+  // The iframe and its view go away below.
+  iframe_ = nullptr;
+  child_view_ = nullptr;
+  ASSERT_TRUE(ExecJs(primary_main_frame_host(),
+                     "document.getElementById('test_iframe').remove()"));
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window_; }));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kPointer;
+  }));
+}
+
+// Tearing down the root view (here through a main frame renderer crash)
+// while the pointer is over an iframe-owned surface must not touch the root
+// view's platform widget, which may already be gone.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       CrashTabWhileOverIframeSurfaceDoesNotCrash) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  // All views go away below.
+  iframe_ = nullptr;
+  child_view_ = nullptr;
+  root_view_ = nullptr;
+  CrashTab(web_contents());
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window_; }));
+}
+
+// A surface owned by the main frame: moving from the iframe onto the surface
+// makes the root view the view under the cursor and restores the root view's
+// displayed cursor.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       MainFrameSurfaceMoveFromIframeMakesRootUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromMainFrame());
+  ASSERT_TRUE(
+      ExecJs(iframe_, "document.documentElement.style.cursor = 'text'"));
+
+  MoveOverRootView(kIframePoint, iframe_);
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return cursor_manager()->IsViewUnderCursor(child_view_); }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+
+  RouteMouseEventOverSurfaceWindow(window_.get(),
+                                   blink::WebInputEvent::Type::kMouseMove,
+                                   MainFrameSurfaceScreenPoint());
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kPointer;
+  }));
+}
+
+// If a surface never saw kMouseLeave before another view (e.g. a cross-site
+// iframe) became the router's view under the cursor, dismissing the surface
+// clears the override and reveals that other view rather than resetting to
+// `parent_view_`.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       DismissWithoutMouseLeavePreservesOtherViewUnderCursor) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromMainFrame());
+  ASSERT_TRUE(
+      ExecJs(iframe_, "document.documentElement.style.cursor = 'text'"));
+
+  RouteMouseEventOverSurfaceWindow(window_.get(),
+                                   blink::WebInputEvent::Type::kMouseMove,
+                                   MainFrameSurfaceScreenPoint());
+  RunUntilInputProcessed(primary_main_frame_host()->GetRenderWidgetHost());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+
+  // Move onto the cross-site iframe without routing kMouseLeave to `window_`,
+  // then dismiss `window_`: clearing the override reveals `child_view_`.
+  MoveOverRootView(kIframePoint, iframe_);
+  window_->Dismiss();
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window_; }));
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+}
+
+// While pointer lock is active on the root view, mouse moves over an
+// unbounded surface do not override the view under the cursor.
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       PointerLockPreventsViewUnderCursorOverride) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+
+  ASSERT_EQ(blink::mojom::PointerLockResult::kSuccess,
+            root_view_->LockPointer(/*request_unadjusted_movement=*/false));
+  ASSERT_TRUE(root_view_->IsPointerLocked());
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(root_view_));
+  EXPECT_FALSE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  root_view_->UnlockPointer();
+  ASSERT_FALSE(root_view_->IsPointerLocked());
+
+  ASSERT_NO_FATAL_FAILURE(MoveOverSurface());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+}
+
+#if defined(USE_AURA) && !BUILDFLAG(IS_CASTOS)
+// Moving the pointer over the surface through the Aura event pipeline shows
+// the cursor the renderer requested for that spot, as the surface window hands
+// out the owner view's cursor to the root window's event filter. This does not
+// depend on where the OS pointer really is, unlike the push path through
+// RenderWidgetHostViewAura::DisplayCursor().
+IN_PROC_BROWSER_TEST_P(UnboundedElementCursorBrowserTest,
+                       AuraCursorClientShowsRendererCursorOverSurface) {
+  ASSERT_NO_FATAL_FAILURE(OpenSurfaceFromCrossSiteIframe());
+  ASSERT_TRUE(ExecJs(
+      iframe_, "document.getElementById('flyout_btn').style.cursor = 'text'"));
+
+  aura::Window* surface_window = window_->GetNativeWindow();
+  ASSERT_TRUE(surface_window);
+  // On desktop Aura the surface is a top-level window with its own root.
+  aura::Window* surface_root = surface_window->GetRootWindow();
+  ASSERT_TRUE(surface_root);
+  // content_shell installs a cursor client on desktop Aura (through
+  // DesktopNativeWidgetAura) but not on ChromeOS; provide one there so the
+  // event filter has something to drive.
+  std::unique_ptr<RecordingCursorClient> owned_cursor_client;
+  aura::client::CursorClient* cursor_client =
+      aura::client::GetCursorClient(surface_root);
+#if BUILDFLAG(IS_CHROMEOS)
+  ASSERT_FALSE(cursor_client);
+  owned_cursor_client = std::make_unique<RecordingCursorClient>(surface_root);
+  cursor_client = owned_cursor_client.get();
+#else
+  ASSERT_TRUE(cursor_client);
+#endif
+
+  const gfx::Point point_over_surface = FlyoutButtonScreenPoint();
+  ui::test::EventGenerator generator(surface_root);
+  generator.MoveMouseTo(point_over_surface);
+  RunUntilInputProcessed(iframe_->GetRenderWidgetHost());
+  EXPECT_TRUE(cursor_manager()->IsViewUnderCursor(child_view_));
+
+  // The renderer answers the move with the I-beam, which the owner view caches
+  // and the surface window reports from then on.
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return last_displayed_cursor() == ui::mojom::CursorType::kIBeam;
+  }));
+  EXPECT_EQ(ui::mojom::CursorType::kIBeam,
+            surface_window->delegate()->GetCursor(gfx::Point()).type());
+
+  // The next move over the surface makes the event filter show it. Plant a
+  // different cursor first so the check cannot pass on a stale value.
+  cursor_client->SetCursor(ui::Cursor(ui::mojom::CursorType::kPointer));
+  ASSERT_EQ(ui::mojom::CursorType::kPointer, cursor_client->GetCursor().type());
+  generator.MoveMouseTo(point_over_surface + gfx::Vector2d(1, 1));
+  RunUntilInputProcessed(iframe_->GetRenderWidgetHost());
+  EXPECT_EQ(ui::mojom::CursorType::kIBeam, cursor_client->GetCursor().type());
+}
+#endif  // defined(USE_AURA) && !BUILDFLAG(IS_CASTOS)
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         UnboundedElementCursorBrowserTest,
+                         testing::Bool());
+
+#endif  // defined(USE_AURA) || BUILDFLAG(IS_MAC)
+
 IN_PROC_BROWSER_TEST_P(UnboundedElementEscapingOpenWebBrowserTest,
                        OpenWebCanEscapeWithUnsafeEscapingFlag) {
   GURL url(embedded_test_server()->GetURL("/title1.html"));
@@ -3715,6 +4212,7 @@ IN_PROC_BROWSER_TEST_F(UnboundedElementWebUITest,
 
   RenderFrameHost* iframe = ChildFrameAt(primary_main_frame_host(), 0);
   ASSERT_TRUE(iframe);
+  WaitForHitTestData(iframe);
   EXPECT_FALSE(iframe->HasTransientUserActivation());
 
   // The privileged main frame opted the untrusted iframe in via permissions

@@ -4,13 +4,11 @@
 
 #include "google_apis/gcm/engine/gcm_store_impl.h"
 
-#include <optional>
 #include <string_view>
 #include <utility>
 
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -113,8 +111,6 @@ const char kInstanceIDKeyEnd[] = "iid2-";
 
 // ---- Deprecated LevelDB keys. ----
 // Deprecated in October 2026.
-// TODO(crbug.com/384891711): Remove these deprecated keys and their cleanup
-// logic after October 2027.
 // Key used to indicate how many accounts were last checked in with this device.
 const char kDeprecatedLastCheckinAccountsKey[] = "last_checkin_accounts_count";
 // Lowest lexicographically ordered account key.
@@ -255,7 +251,6 @@ GCMStoreImpl::Backend::~Backend() {}
 
 LoadStatus GCMStoreImpl::Backend::OpenStoreAndLoadData(StoreOpenMode open_mode,
                                                        LoadResult* result) {
-  LoadStatus load_status;
   if (db_.get()) {
     LOG(ERROR) << "Attempting to reload open database.";
     return RELOADING_OPEN_STORE;
@@ -305,7 +300,7 @@ LoadStatus GCMStoreImpl::Backend::OpenStoreAndLoadData(StoreOpenMode open_mode,
   }
   if (!LoadGServicesSettings(&result->gservices_settings,
                              &result->gservices_digest)) {
-    return load_status = LOADING_GSERVICE_SETTINGS_FAILED;
+    return LOADING_GSERVICE_SETTINGS_FAILED;
   }
   if (!LoadInstanceIDData(&result->instance_id_data))
     return LOADING_INSTANCE_ID_DATA_FAILED;
@@ -338,15 +333,6 @@ void GCMStoreImpl::Backend::Load(StoreOpenMode open_mode,
       instance_id_token_count++;
     else
       gcm_registration_count++;
-  }
-
-  // Only record histograms if GCM had already been set up for this device.
-  if (result->device_android_id != 0 && result->device_security_token != 0) {
-    std::optional<int64_t> file_size = base::GetFileSize(path_);
-    if (file_size.has_value()) {
-      UMA_HISTOGRAM_COUNTS_1M("GCM.StoreSizeKB",
-                              static_cast<int>(file_size.value() / 1024));
-    }
   }
 
   DVLOG(1) << "Succeeded in loading "
@@ -1067,14 +1053,6 @@ void GCMStoreImpl::AddIncomingMessage(const std::string& persistent_id,
   blocking_task_runner_->PostTask(
       FROM_HERE, base::BindOnce(&GCMStoreImpl::Backend::AddIncomingMessage,
                                 backend_, persistent_id, std::move(callback)));
-}
-
-void GCMStoreImpl::RemoveIncomingMessage(const std::string& persistent_id,
-                                         UpdateCallback callback) {
-  blocking_task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&GCMStoreImpl::Backend::RemoveIncomingMessages, backend_,
-                     PersistentIdList(1, persistent_id), std::move(callback)));
 }
 
 void GCMStoreImpl::RemoveIncomingMessages(

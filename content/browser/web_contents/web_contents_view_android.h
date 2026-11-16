@@ -63,6 +63,10 @@ class CONTENT_EXPORT WebContentsViewAndroid : public WebContentsView,
 
   void SetContentUiEventHandler(std::unique_ptr<ContentUiEventHandler> handler);
 
+  ContentUiEventHandler* content_ui_event_handler() const {
+    return content_ui_event_handler_.get();
+  }
+
   void set_synchronous_compositor_client(SynchronousCompositorClient* client) {
     synchronous_compositor_client_ = client;
   }
@@ -105,6 +109,7 @@ class CONTENT_EXPORT WebContentsViewAndroid : public WebContentsView,
   BackForwardTransitionAnimationManager*
   GetBackForwardTransitionAnimationManager() override;
   void DestroyBackForwardTransitionAnimationManager() override;
+  void CancelDrag() override;
 
   // WebContentsObserver implementation.
   void ReadyToCommitNavigation(NavigationHandle* navigation_handle) override;

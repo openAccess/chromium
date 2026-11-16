@@ -59,9 +59,6 @@ chromium-metrics-reviews@google.com.
                menu."/>
   <variant name="PasswordManualFallbackAvailable"
       summary="For passwords manual fallback; shown in the context menu."/>
-  <variant name="ReadAnythingLineFocus"
-      summary="Shown on the Line Focus menu item in Reading Mode settings
-               menu."/>
   <variant name="SendTabToSelfEnhancedDesktopUIv2"
       summary="Promotion for Send to your device in the tab and webpage
                context menus."/>
@@ -98,6 +95,7 @@ chromium-metrics-reviews@google.com.
 <variants name="NtpPromoIdentifier">
   <variant name="Customization" summary="Customize Chrome promo"/>
   <variant name="Extensions" summary="Extensions promo"/>
+  <variant name="OmniboxEverywhere" summary="Omnibox Everywhere promo"/>
 </variants>
 
 <!-- LINT.ThenChange(//chrome/browser/user_education/ntp_promo_identifiers.h:NtpPromoIdentifiers) -->
@@ -137,6 +135,10 @@ chromium-metrics-reviews@google.com.
   <variant name="GenerativeThemes" summary="the module for Generative Themes"/>
   <variant name="GenerativeTheming"
       summary="the module for Generative Theming"/>
+  <variant name="GlicWhatsNewLuminous"
+      summary="the module for Gemini in Chrome: Luminous"/>
+  <variant name="GlicWhatsNewQuizzes"
+      summary="the module for Gemini in Chrome: Quizzes"/>
   <variant name="GlitterAIFeaturesVideo"
       summary="the module for Glitter AI Features Video"/>
   <variant name="GlitterAIMode" summary="the module for Glitter AI Mode"/>
@@ -439,7 +441,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="UserEducation.NtpPromos.ShowResult" enum="ShowNtpPromosResult"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>dfried@chromium.org</owner>
   <owner>cjgrant@chromium.org</owner>
   <owner>frizzle-team@google.com</owner>

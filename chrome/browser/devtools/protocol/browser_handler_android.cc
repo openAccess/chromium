@@ -198,13 +198,9 @@ std::optional<int> BrowserHandlerAndroid::ResolveWindowIdForWebContents(
   }
 
   // Fallback: use the owning TabModel's session id.
-  for (TabModel* model : TabModelList::models()) {
-    for (int i = 0; i < model->GetTabCount(); ++i) {
-      TabAndroid* model_tab = model->GetTabAt(i);
-      if (model_tab && model_tab->web_contents() == web_contents) {
-        return model->GetSessionId().id();
-      }
-    }
+  if (TabModel* tab_model =
+          TabModelList::GetTabModelForWebContents(web_contents)) {
+    return tab_model->GetSessionId().id();
   }
 
   return std::nullopt;
@@ -371,10 +367,5 @@ protocol::Response BrowserHandlerAndroid::SetDockTile(
 
 protocol::Response BrowserHandlerAndroid::ExecuteBrowserCommand(
     const protocol::Browser::BrowserCommandId& command_id) {
-  return Response::MethodNotFound(kNotImplemented);
-}
-
-protocol::Response BrowserHandlerAndroid::AddPrivacySandboxEnrollmentOverride(
-    const std::string& in_url) {
   return Response::MethodNotFound(kNotImplemented);
 }

@@ -37,6 +37,7 @@
 #include "chrome/browser/glic/service/glic_instance_limit_calculator.h"
 #include "chrome/browser/glic/service/glic_invoke_handler.h"
 #include "chrome/browser/glic/service/glic_onboarding_tracker.h"
+#include "chrome/browser/glic/service/glic_wayfinding_controller.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_coordinator_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_invoke_metrics.h"
 #include "chrome/browser/profiles/profile.h"
@@ -52,10 +53,6 @@ class BrowserWindowInterface;
 namespace tabs {
 class TabInterface;
 }
-
-namespace gfx {
-class Point;
-}  // namespace gfx
 
 namespace glic {
 
@@ -90,7 +87,6 @@ class GlicInstanceCoordinatorImpl
   GlicKeyedService* service() { return service_; }
 
   // GlicInstanceImpl::InstanceCoordinatorDelegate implementation
-  void OnInstanceWillAwaken() override;
   void OnInstanceVisibilityChanged(GlicInstanceImpl* instance,
                                    bool is_showing) override;
   void OnInstanceActivationChanged(GlicInstanceImpl* instance,
@@ -133,9 +129,13 @@ class GlicInstanceCoordinatorImpl
 
   // GlicInstanceCoordinatorMetrics::DataProvider implementation
   int GetVisibleInstanceCount() const override;
+  std::vector<GlicInstanceImpl*> GetInstances() override;
 
   bool IsAnyPanelShowing() const override;
   bool IsConversationPresent(const std::string& conversation_id) const override;
+  bool IsConversationPanelShowingForTab(
+      const std::string& conversation_id,
+      const tabs::TabInterface* tab) const override;
   GlicInstanceCoordinator::ActivateTabResult ActivateTabWithConversation(
       const std::string& conversation_id) override;
   // GlicInstanceCoordinator implementation
@@ -143,8 +143,6 @@ class GlicInstanceCoordinatorImpl
       const std::string& conversation_id) const override;
   GlicInstance* GetInstanceForTaskId(int task_id) const override;
   GlicInstance* GetInstanceForTab(const tabs::TabInterface* tab) const override;
-  GlicInstance* GetInstanceForTabGroup(
-      tab_groups::TabGroupId group_id) const override;
   GlicInstance* ShowInstanceForTabGroup(
       tab_groups::TabGroupId group_id) override;
   GlicInstance* GetInstanceWithGlicWebContents(
@@ -178,7 +176,7 @@ class GlicInstanceCoordinatorImpl
   // Shuts down all hosts. Only call it before destruction of the instance
   // coordinator.
   void Shutdown() override;
-  void Close(const CloseOptions& options) override;
+  void CloseFloatingPanel() override;
   base::WeakPtr<GlicInstance> Invoke(GlicInvokeOptions options) override;
   base::WeakPtr<GlicInstance> InvokeWithAutoSubmit(
       InvokeWithAutoSubmitPasskey auto_submit_passkey,
@@ -188,20 +186,21 @@ class GlicInstanceCoordinatorImpl
       GlicInvokeOptions options,
       GlicInvokeWithAutoSubmitOptions auto_submit_options);
 
-  void CloseInstanceWithFrame(
-      content::RenderFrameHost* render_frame_host) override;
   void CloseAndShutdownInstanceWithFrame(
       content::RenderFrameHost* render_frame_host) override;
   void ArchiveInstanceWithFrame(
       content::RenderFrameHost* render_frame_host) override;
 
-  bool IsDetached() const override;
   bool IsPanelShowingForBrowser(
       const BrowserWindowInterface& bwi) const override;
   bool WouldToggleClose(BrowserWindowInterface* browser) const override;
 
   base::CallbackListSubscription AddGlobalShowHideCallback(
       base::RepeatingClosure callback) override;
+  using InstanceCreatedCallback =
+      base::RepeatingCallback<void(GlicInstanceImpl*)>;
+  base::CallbackListSubscription AddInstanceCreatedCallback(
+      InstanceCreatedCallback callback);
   void Reload(content::RenderFrameHost* render_frame_host) override;
   base::WeakPtr<GlicInstanceCoordinatorImpl> GetWeakPtr();
 
@@ -217,9 +216,6 @@ class GlicInstanceCoordinatorImpl
   // Testing support.
   void SetWarmingEnabledForTesting(bool warming_enabled);
   GlicWebContentsWarmingPool& GetWebContentsWarmingPoolForTesting();
-  std::string DescribeForTesting();
-  std::vector<GlicInstanceImpl*> GetInstances() override;
-  GlicInstanceCoordinatorMetrics& GetMetricsForTesting() { return metrics_; }
   InstanceIndependentHotkeyManager* GetHotkeyManagerForTesting() {
     return hotkey_manager_.get();
   }
@@ -281,8 +277,6 @@ class GlicInstanceCoordinatorImpl
       Target::Surface surface,
       const EmbedderKey& key,
       std::unique_ptr<GlicWindowInvocationTracker> invocation_tracker);
-
-  void CloseFloaty(const CloseOptions& options = {});
 
   // base::MemoryConsumer:
   void OnUpdateMemoryLimit() override;
@@ -393,8 +387,10 @@ class GlicInstanceCoordinatorImpl
   base::RepeatingCallbackList<void(GlicInstance*)>
       active_instance_changed_callback_list_;
   base::RepeatingClosureList global_show_hide_callback_list_;
+  base::RepeatingCallbackList<void(GlicInstanceImpl*)>
+      instance_created_callback_list_;
 
-  base::MemoryConsumerRegistration memory_consumer_registration_;
+  std::optional<base::MemoryConsumerRegistration> memory_consumer_registration_;
 
   // The effective awake limit applied during OnUpdateMemoryLimit() and
   // OnReleaseMemory().
@@ -403,6 +399,7 @@ class GlicInstanceCoordinatorImpl
   bool warming_enabled_ = true;
 
   std::unique_ptr<GlicOnboardingTracker> onboarding_tracker_;
+  std::unique_ptr<GlicWayfindingController> wayfinding_controller_;
 
   GlicInstanceCoordinatorMetrics metrics_;
 

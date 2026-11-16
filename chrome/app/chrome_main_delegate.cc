@@ -173,7 +173,6 @@
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID) || \
     BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-#include "components/metrics/system_profile_user_stream.h"
 #include "components/crash/core/app/crashpad.h"
 #endif
 
@@ -779,7 +778,8 @@ void RecordMainStartupMetrics(const StartupTimestamps& timestamps) {
 
 #if BUILDFLAG(IS_WIN)
   startup_metric_utils::GetCommon().RecordPreReadTime(
-      timestamps.preread_begin_ticks, timestamps.preread_end_ticks);
+      timestamps.preread_begin_ticks, timestamps.preread_end_ticks,
+      timestamps.preread_group);
 #endif
 
   // On Android the main entry point time is the time when the Java code starts.
@@ -971,7 +971,13 @@ std::optional<int> ChromeMainDelegate::PostEarlyInitialization(
       chrome_content_browser_client_->startup_data()
           ->chrome_feature_list_creator();
 
-  if (!IsInitFeatureListEarly()) {
+  if (DidPerformEarlyInitialization()) {
+#if BUILDFLAG(IS_ANDROID)
+    // Java might have created Local State early, but deferred creating the
+    // FeatureList (e.g. while fetching the first-run variations seed).
+    variations::android::EnsureFeatureListInitialized();
+#endif
+  } else {
     // The DBus initialization above is needed for FeatureList creation here;
     // and features are needed for Mojo initialization.
     chrome_feature_list_creator->CreateFeatureList();
@@ -1089,7 +1095,7 @@ ChromeMainDelegate::CreateVariationsIdsProvider() {
 }
 
 void ChromeMainDelegate::CreateThreadPool(std::string_view name) {
-  if (!IsInitFeatureListEarly()) {
+  if (!DidPerformEarlyInitialization()) {
     // The ThreadGroupProfiler client must be set before thread pool is created.
     base::ThreadGroupProfiler::SetClient(
         std::make_unique<ChromeThreadGroupProfilerClient>());
@@ -1412,7 +1418,7 @@ std::optional<int> ChromeMainDelegate::BasicStartupComplete() {
 #endif  // BUILDFLAG(IS_WIN)
 #endif  // !defined(BUILDING_CHROME_RENDERER)
 
-  if (!IsInitFeatureListEarly()) {
+  if (!DidPerformEarlyInitialization()) {
     chrome::RegisterPathProvider();
   }
 
@@ -1586,16 +1592,6 @@ void ChromeMainDelegate::PreSandboxStartup() {
       *base::CommandLine::ForCurrentProcess();
   std::string process_type =
       command_line.GetSwitchValueASCII(switches::kProcessType);
-
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID) || \
-    BUILDFLAG(IS_MAC)
-  if (process_type.empty()) {
-    // Initialize the shared memory that contains the `SystemProfile` only in
-    // the browser process. This must happen before Crashpad initialization
-    // since Crashpad inherits a handle to the shared memory.
-    metrics::SystemProfileUserStream::Get().Initialize();
-  }
-#endif
 
 #if BUILDFLAG(IS_POSIX)
   ChromeCrashReporterClient::Create();
@@ -2066,9 +2062,12 @@ void ChromeMainDelegate::InitializeMemorySystem() {
       .Initialize(memory_system_);
 }
 
-bool ChromeMainDelegate::IsInitFeatureListEarly() {
+bool ChromeMainDelegate::DidPerformEarlyInitialization() {
 #if BUILDFLAG(IS_ANDROID)
-  return variations::android::DidInitFeatureListEarly();
+  // Local State, the ThreadPool, and BrowserTaskExecutor already exist, even if
+  // the FeatureList itself might not yet. PostEarlyInitialization() creates
+  // the FeatureList if needed.
+  return variations::android::DidInitLocalStateEarly();
 #else
   return false;
 #endif

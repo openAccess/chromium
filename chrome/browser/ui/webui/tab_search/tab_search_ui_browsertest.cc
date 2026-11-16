@@ -11,7 +11,9 @@
 #include "base/feature_list.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -35,8 +37,6 @@
 #include "ui/webui/buildflags.h"
 
 #if BUILDFLAG(ENABLE_WEBUI_GENERATE_CODE_CACHE)
-#include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/webui/util/webui_util_desktop.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/variations/variations_test_utils.h"
@@ -443,4 +443,54 @@ IN_PROC_BROWSER_TEST_F(TabSearchUIBrowserTest,
     }
   }
   EXPECT_EQ(found_split_tabs, 2);
+}
+
+class TabSearchUIWebiumMetricsMappingBrowserTest
+    : public TabSearchUIBrowserTest {
+ public:
+  TabSearchUIWebiumMetricsMappingBrowserTest() {
+    metrics::MetricsNameMappingConfiguration config;
+    config.add_rules()->set_metric_name(
+        "EventLatency.GestureScrollUpdate.Touchscreen.TotalLatency");
+    config.add_rules()->set_metric_name(
+        "PageLoad.InteractiveTiming.InputDelay3");
+    config.add_rules()->set_metric_name(
+        "Graphics.Smoothness.PercentDroppedFrames3.AllSequences");
+    scoped_feature_list_.InitAndEnableFeatureWithParameters(
+        metrics::features::kWebiumMetricsMapping,
+        {{metrics::features::kWebiumMetricsMappingConfig.name,
+          base::Base64Encode(config.SerializeAsString())}});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+// Regression test for crbug.com/584357363: Tab Search WebUI histograms must
+// still be recorded when WebiumMetricsMapping is enabled without explicit
+// Tabs.TabSearch.* rules in the mapping config.
+IN_PROC_BROWSER_TEST_F(TabSearchUIWebiumMetricsMappingBrowserTest,
+                       RecordsWebUIHistogramsWhenMappingEnabled) {
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return GetWebUIController()->page_handler_for_testing() != nullptr;
+  }));
+  ASSERT_TRUE(content::ExecJs(webui_contents_.get(),
+                              "new Promise(resolve => setTimeout(resolve, 0))",
+                              content::EXECUTE_SCRIPT_DEFAULT_OPTIONS,
+                              ISOLATED_WORLD_ID_CHROME_INTERNAL));
+
+  base::HistogramTester histogram_tester;
+  const int initial_overlap_count = histogram_tester.GetBucketCount(
+      "Tabs.TabSearch.WebUI.TabListDataReceived2.IsOverlap", false);
+
+  content::WebContents* tab_contents = chrome::AddAndReturnTabAt(
+      browser(), GURL(chrome::kChromeUITabSearchURL), -1,
+      /*foreground=*/true);
+  ASSERT_TRUE(content::WaitForLoadStop(tab_contents));
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "Tabs.TabSearch.WebUI.TabListDataReceived2.IsOverlap", false) >
+           initial_overlap_count;
+  }));
 }

@@ -5,12 +5,13 @@
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
+import './organizer_favicon.js';
 import './organizer_list_section_item_description.js';
 import './organizer_list_section_item_title.js';
-import './stacked_favicons.js';
 
 import type {CrUrlListItemElement, CrUrlListItemSize} from '//resources/cr_elements/cr_url_list_item/cr_url_list_item.js';
 import {MouseHoverableMixinLit} from '//resources/cr_elements/mouse_hoverable_mixin_lit.js';
+import {isRTL} from '//resources/js/util.js';
 import type {PropertyValues, TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {Range} from '/tab_group_shared/search.js';
@@ -59,8 +60,15 @@ export interface OrganizerListSectionItem<T> {
   // Title (main line) of the item.
   title: string[];
 
+  // Optional: Override accessible label parts (defaults to |title|).
+  ariaLabel?: string[];
+
   // Description (secondary line) of the item.
   description?: OrganizerListSectionItemDescriptionPart[];
+
+  // Optional: Override accessible description parts (defaults to |description|
+  // text).
+  ariaDescription?: string[];
 
   // Optional: Terms that should match on search, but shouldn't be shown in the
   // UI.
@@ -132,6 +140,7 @@ export class OrganizerListSectionItemElement extends
         reflect: true,
       },
       item: {type: Object},
+      tabbable: {type: Boolean},
     };
   }
 
@@ -139,14 +148,18 @@ export class OrganizerListSectionItemElement extends
   accessor item: HighlightableOrganizerListSectionItem<unknown> = {
     title: [],
   };
+  accessor tabbable: boolean = false;
 
   private listFormatter_ = new Intl.ListFormat(
       document.documentElement.lang || undefined,
       {style: 'narrow', type: 'conjunction'});
 
-  override firstUpdated(changedProperties: PropertyValues<this>) {
-    super.firstUpdated(changedProperties);
-    this.$.crUrlListItem.getFocusableElement().tabIndex = -1;
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    if (changedProperties.has('tabbable')) {
+      this.$.crUrlListItem.getFocusableElement().tabIndex =
+          this.tabbable ? 0 : -1;
+    }
   }
 
   override focus() {
@@ -161,48 +174,87 @@ export class OrganizerListSectionItemElement extends
     }
   }
 
+  focusLast() {
+    if (this.hasActionButton_()) {
+      this.focusActionButton();
+    } else {
+      this.focus();
+    }
+  }
+
   protected onItemKeydown_(e: KeyboardEvent) {
+    const actionButton =
+        this.shadowRoot.querySelector<HTMLElement>('#actionButton');
+    if (actionButton && e.composedPath().includes(actionButton)) {
+      return;
+    }
+
     if (e.key === 'Tab') {
       if (!e.shiftKey) {
-        const actionButton =
-            this.shadowRoot.querySelector<HTMLElement>('#actionButton');
-        if (actionButton && this.hasActionButton_()) {
+        if (actionButton) {
           actionButton.focus();
           e.preventDefault();
           e.stopPropagation();
         } else {
           this.fire('focus-next-section', {sourceEvent: e});
         }
-      } else {
+      } else if (!this.tabbable) {
         this.fire('focus-current-section', {sourceEvent: e});
       }
+      return;
+    }
+
+    const forwardKey = isRTL() ? 'ArrowLeft' : 'ArrowRight';
+    if (e.key === forwardKey && actionButton) {
+      actionButton.focus();
+      e.preventDefault();
+      e.stopPropagation();
     }
   }
 
   protected onActionButtonKeydown_(e: KeyboardEvent) {
-    if (e.key === 'Tab') {
-      if (!e.shiftKey) {
-        this.fire('focus-next-section', {sourceEvent: e});
-      } else {
-        this.focus();
-        e.preventDefault();
-        e.stopPropagation();
-      }
+    const backwardKey = isRTL() ? 'ArrowRight' : 'ArrowLeft';
+    if ((e.key === 'Tab' && e.shiftKey) || e.key === backwardKey) {
+      this.focus();
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+
+    if (e.key === 'Tab' && !e.shiftKey) {
+      this.fire('focus-next-section', {sourceEvent: e});
     }
   }
 
   protected getAriaLabel_(): string {
-    return this.listFormatter_.format(this.item.title);
+    return this.listFormatter_.format(this.item.ariaLabel ?? this.item.title);
   }
 
   protected getAriaDescription_(): string {
-    return this.item.description ?
-        this.listFormatter_.format(this.item.description.map(d => d.text)) :
-        '';
+    const parts =
+        this.item.ariaDescription ?? this.item.description?.map(d => d.text);
+    return parts && parts.length > 0 ? this.listFormatter_.format(parts) : '';
   }
 
   protected hasDescription_(): boolean {
     return !!this.item.description && this.item.description.length > 0;
+  }
+
+  protected hasFavicon_(): boolean {
+    return !!this.getPrimaryFaviconUrl_();
+  }
+
+  protected getPrimaryFaviconUrl_(): string {
+    return this.item.prefixIcon?.url ??
+        this.item.prefixIcon?.stackedFavicons?.urls[0] ?? '';
+  }
+
+  protected getSecondaryFaviconUrl_(): string {
+    return this.item.prefixIcon?.stackedFavicons?.urls[1] ?? '';
+  }
+
+  protected shouldStackFaviconsVertically_(): boolean {
+    return !!this.item.prefixIcon?.stackedFavicons?.stackVertically;
   }
 
   protected hasSuffix_(): boolean {

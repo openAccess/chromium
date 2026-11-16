@@ -104,8 +104,7 @@ public class AuxiliarySearchProvider {
                 System.currentTimeMillis() - TimeUnit.HOURS.toMillis(DEFAULT_TAB_AGE_HOURS);
         List<Tab> listTab = getTabsByMinimalAccessTime(minAccessTime);
 
-        // We will get up to 100 tabs as default. This is controlled by feature
-        // AuxiliarySearchDonation.
+        // Native caps the result at AuxiliarySearchProvider::kMaxDonatedTabsCount tabs.
         mAuxiliarySearchBridge.getNonSensitiveTabs(listTab, callback);
     }
 
@@ -116,8 +115,6 @@ public class AuxiliarySearchProvider {
             callback.onResult(null);
             return;
         }
-        // We will get up to 100 tabs as default. This is controlled by feature
-        // AuxiliarySearchDonation.
         mAuxiliarySearchBridge.getNonSensitiveHistoryData(callback);
     }
 
@@ -147,6 +144,8 @@ public class AuxiliarySearchProvider {
      * Saves metadata to a file.
      *
      * @param metadataFile The file to write.
+     * @param version The {@link MetaDataVersion} written to the file header, which determines the
+     *     serialization format of the entries.
      * @param entries A list of data to save.
      * @param startIndex The index of the first entry to save.
      * @param entryCountToSave The count of entries to save to the file. This is the count of the

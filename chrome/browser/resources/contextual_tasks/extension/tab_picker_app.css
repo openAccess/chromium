@@ -27,7 +27,7 @@
           #fff));
   --tab-picker-favicon-more-items-color: #474747;
   --tab-picker-favicon-skeleton-color: #e1e3e1;
-  --tab-picker-focus-outline-color: #0b57d0;
+  --tab-picker-focus-outline-color: #336ef3;
   /* Matches the font of the Search page's other (+) menu rows: Arial, as
    * Search doesn't enable its Google Sans webfont on this surface. CSS doesn't
    * inherit into an iframe, and the page is cross-origin, so the frame can't
@@ -55,7 +55,6 @@
   --tab-picker-favicon-border-color: rgba(44, 46, 54, 1);
   --tab-picker-favicon-more-items-color: rgb(199, 199, 199);
   --tab-picker-favicon-skeleton-color: rgb(68, 71, 70);
-  --tab-picker-focus-outline-color: #a8c7fa;
   --tab-picker-hover-background-color:
       var(--color-context-menu-hover-background, rgba(230, 232, 240, 0.08));
   --tab-picker-menu-background-color: var(--color-composebox-background,
@@ -63,6 +62,7 @@
           var(--color-menu-background, rgba(44, 46, 54, 1))));
 }
 
+#singleTabItem,
 #shareTabsTrigger {
   --iron-icon-height: 20px;
   --iron-icon-width: 20px;
@@ -86,6 +86,7 @@
   width: 100%;
 }
 
+#singleTabItem > cr-composebox-tab-favicon,
 #shareTabsTrigger > cr-icon:first-child {
   --iron-icon-height: 20px;
   --iron-icon-width: 20px;
@@ -94,28 +95,37 @@
   width: 20px;
 }
 
+#singleTabItem:hover,
 #shareTabsTrigger:hover,
 #shareTabsTrigger[aria-expanded='true'] {
   background-color: var(--tab-picker-hover-background-color);
 }
 
+#singleTabItem:focus,
 #shareTabsTrigger:focus {
   outline: none;
 }
 
+:host-context(.focus-outline-visible) #singleTabItem:focus,
 :host-context(.focus-outline-visible) #shareTabsTrigger:focus {
-  background-color: var(--tab-picker-hover-background-color);
   outline: 2px solid var(--cr-focus-outline-color);
   outline-offset: -2px;
 }
 
+#singleTabItem[disabled],
 #shareTabsTrigger[disabled] {
   color: var(--tab-picker-disabled-text-color);
   cursor: default;
 }
 
+#singleTabItem[disabled]:hover,
 #shareTabsTrigger[disabled]:hover {
   background-color: transparent;
+}
+
+#singleTabItem .share-tabs-check {
+  --iron-icon-height: 20px;
+  --iron-icon-width: 20px;
 }
 
 composebox-favicon-group {
@@ -182,12 +192,13 @@ composebox-favicon-group {
   width: 100%;
 }
 
-#tabMenu .dropdown-item:hover,
-#tabMenu .dropdown-item:focus {
+#tabMenu .dropdown-item:hover {
   background-color: var(--tab-picker-hover-background-color);
-  outline: none;
 }
 
+#tabMenu .dropdown-item:focus {
+  outline: none;
+}
 
 #tabMenu .dropdown-item[disabled] {
   color: var(--tab-picker-disabled-text-color);
@@ -197,6 +208,30 @@ composebox-favicon-group {
 #tabMenu .dropdown-item[disabled]:hover,
 #tabMenu .dropdown-item[disabled]:focus {
   background-color: transparent;
+}
+
+#automaticallyAddTabsHeader,
+#manuallyAddTabsHeader {
+  color: var(--tab-picker-item-color);
+  font-family: var(--cr-composebox-context-menu-font-family,
+      'Google Sans', Roboto, sans-serif);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  margin: 0;
+  padding: 8px 14px 4px 14px;
+}
+
+#tabMenu hr {
+  background: var(--color-sys-divider,
+      var(--color-composebox-file-carousel-divider, rgba(0, 0, 0, 0.12)));
+  border: none;
+  height: 1px;
+  margin: 8px 0;
+}
+
+:host([dark-mode]) #tabMenu hr {
+  background: var(--color-sys-divider, rgba(255, 255, 255, 0.16));
 }
 
 :host-context(.focus-outline-visible) #tabMenu .dropdown-item:focus {
@@ -230,11 +265,11 @@ composebox-favicon-group {
   width: 72px;
 }
 
-.recent-tabs-suffix:not([disabled]) {
+.dropdown-item:not([disabled]) .recent-tabs-suffix {
   color: var(--tab-picker-item-color);
 }
 
-.recent-tabs-suffix[disabled] {
+.dropdown-item[disabled] .recent-tabs-suffix {
   color: var(--tab-picker-disabled-text-color);
 }
 

@@ -8,6 +8,7 @@ assert(is_android)
 
 android_library("java") {
   sources = [
+    "java/src/org/chromium/chrome/browser/safety_promo/SafetyPromoAnimatedIllustrationDrawable.java",
     "java/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselAdapter.java",
     "java/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselCoordinator.java",
     "java/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselMediator.java",
@@ -26,11 +27,13 @@ android_library("java") {
   deps = [
     ":java_resources",
     "//base:callback_java",
+    "//base:resetters_java",
     "//base:supplier_java",
     "//build/android:build_java",
     "//components/browser_ui/bottomsheet/android:java",
     "//components/browser_ui/styles/android:java",
     "//third_party/androidx:androidx_annotation_annotation_java",
+    "//third_party/androidx:androidx_interpolator_interpolator_java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
     "//ui/android:ui_no_recycler_view_java",
   ]
@@ -39,6 +42,7 @@ android_library("java") {
 
 android_resources("java_resources") {
   sources = [
+    "java/res/drawable/safety_promo_bottom_sheet_instructions_step_number_bg.xml",
     "java/res/drawable/safety_promo_carousel_illustration_bg.xml",
     "java/res/drawable/safety_promo_enhanced_safe_browsing_carousel_illustration.xml",
     "java/res/drawable/safety_promo_enhanced_safe_browsing_illustration.xml",
@@ -49,6 +53,7 @@ android_resources("java_resources") {
     "java/res/drawable/safety_promo_incognito_illustration.xml",
     "java/res/drawable/safety_promo_password_manager_carousel_illustration.xml",
     "java/res/drawable/safety_promo_password_manager_illustration.xml",
+    "java/res/layout/safety_promo_bottom_sheet_instructions_step.xml",
     "java/res/layout/safety_promo_card_item.xml",
     "java/res/layout/safety_promo_carousel_landscape_illustration.xml",
     "java/res/layout/safety_promo_carousel_portrait_illustration.xml",
@@ -59,6 +64,7 @@ android_resources("java_resources") {
     "java/res/layout/safety_promo_fre_illustration_landscape_view.xml",
     "java/res/layout/safety_promo_fre_illustration_portrait_view.xml",
     "java/res/layout/safety_promo_show_me_how_bottom_sheet.xml",
+    "java/res/values-w600dp/dimens.xml",
     "java/res/values/dimens.xml",
   ]
   deps = [
@@ -76,15 +82,18 @@ robolectric_library("junit") {
   resources_package = "org.chromium.chrome.browser.safety_promo"
 
   sources = [
+    "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoAnimatedIllustrationDrawableUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselAdapterUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselCoordinatorUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselMediatorUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselViewBinderUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoCarouselViewUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoFirstRunViewUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/SafetyPromoPageIndicatorViewUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/bottom_sheet/SafetyPromoBottomSheetContentUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/bottom_sheet/SafetyPromoBottomSheetCoordinatorUnitTest.java",
     "junit/src/org/chromium/chrome/browser/safety_promo/bottom_sheet/SafetyPromoBottomSheetViewBinderUnitTest.java",
+    "junit/src/org/chromium/chrome/browser/safety_promo/bottom_sheet/SafetyPromoBottomSheetViewUnitTest.java",
   ]
 
   deps = [

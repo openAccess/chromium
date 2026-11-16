@@ -4,9 +4,9 @@
 
 #import "ios/chrome/browser/save_to_drive/ui_bundled/save_to_drive_mediator.h"
 
+#import "base/memory/weak_ptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
-#import "base/test/scoped_feature_list.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/identity_test_utils.h"
 #import "components/sync/test/test_sync_service.h"
@@ -24,7 +24,6 @@
 #import "ios/chrome/browser/shared/public/commands/manage_storage_alert_commands.h"
 #import "ios/chrome/browser/shared/public/commands/save_to_drive_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
@@ -67,11 +66,10 @@ class FakeDownloadManagerTabHelper final : public DownloadManagerTabHelper {
   }
 
   void StartDownload(web::DownloadTask* task) override {
-    download_task_started_ = task;
+    download_task_started_ = task ? task->GetWeakPtr() : nullptr;
   }
 
-  raw_ptr<web::DownloadTask, DanglingUntriaged> download_task_started_ =
-      nullptr;
+  base::WeakPtr<web::DownloadTask> download_task_started_ = nullptr;
 };
 
 #pragma mark - SaveToDriveMediatorTest
@@ -164,7 +162,6 @@ class SaveToDriveMediatorTest : public PlatformTest {
 
   web::WebTaskEnvironment task_environment_{
       web::WebTaskEnvironment::MainThreadType::IO};
-  base::test::ScopedFeatureList scoped_feature_list_;
   // ScopedTestingLocalState needed for the authentication service.
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   TestProfileManagerIOS profile_manager_;
@@ -212,7 +209,7 @@ TEST_F(SaveToDriveMediatorTest, DoesNotSaveToDriveIfDestinationIsFiles) {
   id<SystemIdentity> identity = [FakeSystemIdentity fakeIdentity1];
   FakeDownloadManagerTabHelper* download_helper = GetDownloadManagerTabHelper();
   DriveTabHelper* drive_helper = GetDriveTabHelper();
-  EXPECT_EQ(nullptr, download_helper->download_task_started_);
+  EXPECT_EQ(nullptr, download_helper->download_task_started_.get());
   EXPECT_EQ(nullptr,
             drive_helper->GetUploadTaskForDownload(download_task_.get()));
   [mediator_ fileDestinationPicker:nil
@@ -220,7 +217,8 @@ TEST_F(SaveToDriveMediatorTest, DoesNotSaveToDriveIfDestinationIsFiles) {
   OCMExpect([save_to_drive_commands_handler_ hideSaveToDriveAnimated:YES]);
   [mediator_ saveWithSelectedIdentity:identity];
   EXPECT_OCMOCK_VERIFY(save_to_drive_commands_handler_);
-  EXPECT_EQ(download_task_.get(), download_helper->download_task_started_);
+  EXPECT_EQ(download_task_.get(),
+            download_helper->download_task_started_.get());
   UploadTask* upload_task =
       drive_helper->GetUploadTaskForDownload(download_task_.get());
   ASSERT_EQ(nullptr, upload_task);
@@ -241,7 +239,7 @@ TEST_F(SaveToDriveMediatorTest, SavesToDriveIfDestinationIsDrive) {
       task_environment_.QuitClosure());
   GetTestDriveService()->SetFileUploader(std::move(test_file_uploader));
   // No download/uploader task should have been started/created yet.
-  EXPECT_EQ(nullptr, download_helper->download_task_started_);
+  EXPECT_EQ(nullptr, download_helper->download_task_started_.get());
   EXPECT_EQ(nullptr,
             drive_helper->GetUploadTaskForDownload(download_task_.get()));
   // Select Drive as a destination and try saving with `identity`.
@@ -255,7 +253,8 @@ TEST_F(SaveToDriveMediatorTest, SavesToDriveIfDestinationIsDrive) {
   task_environment_.RunUntilQuit();
   EXPECT_OCMOCK_VERIFY(save_to_drive_commands_handler_);
   // Download task should have been started, an upload task should be created.
-  EXPECT_EQ(download_task_.get(), download_helper->download_task_started_);
+  EXPECT_EQ(download_task_.get(),
+            download_helper->download_task_started_.get());
   UploadTask* upload_task =
       drive_helper->GetUploadTaskForDownload(download_task_.get());
   ASSERT_NE(nullptr, upload_task);

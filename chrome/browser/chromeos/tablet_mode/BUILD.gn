@@ -23,12 +23,12 @@ static_library("tablet_mode") {
   ]
 
   deps = [
+    "//ash/constants",
     "//base",
     "//chrome/browser/chromeos/arc",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search",
     "//chrome/browser/ui/webui/ash/system_web_dialog",
-    "//chrome/common",
     "//chromeos/ash/components/browser_delegate",
     "//content/public/browser",
     "//content/public/common",
@@ -73,7 +73,6 @@ source_set("browser_tests") {
     "//chrome/common",
     "//chrome/common:constants",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//components/prefs",
     "//content/public/browser",
     "//content/test:test_support",

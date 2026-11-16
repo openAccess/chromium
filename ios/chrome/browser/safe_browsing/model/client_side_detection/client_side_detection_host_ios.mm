@@ -16,10 +16,11 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/rand_util.h"
 #import "base/strings/strcat.h"
+#import "base/strings/utf_string_conversions.h"
 #import "components/prefs/pref_service.h"
+#import "components/safe_browsing/core/browser/client_side_detection/intelligent_scan_delegate/intelligent_scan_delegate.h"
 #import "components/safe_browsing/core/browser/db/allowlist_checker_client.h"
 #import "components/safe_browsing/core/browser/db/database_manager.h"
-#import "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #import "components/safe_browsing/core/browser/sync/safe_browsing_primary_account_token_fetcher.h"
 #import "components/safe_browsing/core/browser/verdict_cache_manager.h"
 #import "components/safe_browsing/core/common/client_side_detection_enums.h"
@@ -176,6 +177,7 @@ bool ClientSideDetectionHostIOS::IsErrorDocument() {
 
 void ClientSideDetectionHostIOS::GetInnerText(HostInnerTextCallback callback) {
   intelligent_scan_tab_screenshot_.reset();
+  intelligent_scan_screenshot_capture_status_.reset();
   if (!web_state_) {
     std::move(callback).Run("");
     return;
@@ -187,39 +189,72 @@ void ClientSideDetectionHostIOS::GetInnerText(HostInnerTextCallback callback) {
   }
   pending_inner_text_callback_ = std::move(callback);
 
+  const bool should_capture_screenshot =
+      ShouldCaptureScreenshotForIntelligentScan();
+  const base::TimeTicks start_time = tick_clock()->NowTicks();
   auto completion_callback = base::BindOnce(
       [](base::WeakPtr<ClientSideDetectionHostIOS> weak_host,
+         bool should_capture_screenshot, base::TimeTicks start_time,
          PageContextWrapperCallbackResponse response) {
         if (!weak_host) {
           return;
         }
         std::string inner_text;
         std::optional<std::string> tab_screenshot;
+        std::optional<MultimodalScreenshotCaptureStatus> screenshot_status;
         if (response.has_value() && response.value()) {
           if (response.value()->has_inner_text()) {
             inner_text = std::move(*response.value()->mutable_inner_text());
           }
-          if (response.value()->has_tab_screenshot()) {
-            std::string decoded_screenshot;
-            if (base::Base64Decode(response.value()->tab_screenshot(),
-                                   &decoded_screenshot) &&
-                !decoded_screenshot.empty()) {
-              tab_screenshot = std::move(decoded_screenshot);
+          if (should_capture_screenshot) {
+            if (!response.value()->has_tab_screenshot()) {
+              screenshot_status =
+                  MultimodalScreenshotCaptureStatus::kSnapshotMissing;
+            } else {
+              std::string decoded_screenshot;
+              if (base::Base64Decode(response.value()->tab_screenshot(),
+                                     &decoded_screenshot) &&
+                  !decoded_screenshot.empty()) {
+                tab_screenshot = std::move(decoded_screenshot);
+                screenshot_status = MultimodalScreenshotCaptureStatus::kSuccess;
+              } else {
+                screenshot_status =
+                    MultimodalScreenshotCaptureStatus::kBase64DecodeFailed;
+              }
             }
           }
+        } else if (should_capture_screenshot) {
+          screenshot_status =
+              MultimodalScreenshotCaptureStatus::kPageContextFailed;
         }
-        weak_host->OnInnerTextExtracted(std::move(inner_text),
-                                        std::move(tab_screenshot));
+        weak_host->OnInnerTextExtracted(
+            should_capture_screenshot, start_time, std::move(inner_text),
+            std::move(tab_screenshot), screenshot_status);
       },
-      inner_text_weak_factory_.GetWeakPtr());
+      inner_text_weak_factory_.GetWeakPtr(), should_capture_screenshot,
+      start_time);
   page_context_wrapper_ = page_context_wrapper_factory_->Create(
       web_state_, PageContextWrapperConfigBuilder().Build(),
       std::move(completion_callback));
   [page_context_wrapper_ setShouldGetInnerText:YES];
-  if (ShouldCaptureScreenshotForIntelligentScan()) {
+  if (should_capture_screenshot) {
     [page_context_wrapper_ setShouldGetSnapshot:YES];
   }
   [page_context_wrapper_ populatePageContextFieldsAsync];
+}
+
+std::string ClientSideDetectionHostIOS::GetPageTitle() const {
+  if (!web_state_ || !web_state_->GetNavigationManager()) {
+    return std::string();
+  }
+  // Use `NavigationItem::GetTitle()` rather than `WebState::GetTitle()` to
+  // avoid falling back to a URL-synthesized display title.
+  web::NavigationItem* item =
+      web_state_->GetNavigationManager()->GetLastCommittedItem();
+  if (!item) {
+    return std::string();
+  }
+  return base::UTF16ToUTF8(item->GetTitle());
 }
 
 void ClientSideDetectionHostIOS::MaybeCaptureScreenshotAndStartIntelligentScan(
@@ -233,7 +268,24 @@ void ClientSideDetectionHostIOS::MaybeCaptureScreenshotAndStartIntelligentScan(
   std::optional<std::string> tab_screenshot =
       std::move(intelligent_scan_tab_screenshot_);
   intelligent_scan_tab_screenshot_.reset();
-  if (!ShouldCaptureScreenshotForIntelligentScan() || !web_state_) {
+  std::optional<MultimodalScreenshotCaptureStatus> screenshot_status =
+      intelligent_scan_screenshot_capture_status_;
+  intelligent_scan_screenshot_capture_status_.reset();
+
+  if (ShouldCaptureScreenshotForIntelligentScan()) {
+    MultimodalScreenshotCaptureStatus status;
+    if (!web_state_) {
+      tab_screenshot.reset();
+      status = MultimodalScreenshotCaptureStatus::kWebStateUnavailable;
+    } else if (screenshot_status.has_value()) {
+      status = *screenshot_status;
+    } else {
+      tab_screenshot.reset();
+      status = MultimodalScreenshotCaptureStatus::kSnapshotMissing;
+    }
+    base::UmaHistogramEnumeration(
+        "SBClientPhishing.Multimodal.ScreenshotCaptureStatus", status);
+  } else {
     tab_screenshot.reset();
   }
   StartIntelligentScan(std::move(verdict), did_match_high_confidence_allowlist,
@@ -324,6 +376,7 @@ void ClientSideDetectionHostIOS::CancelPendingRequests() {
   inner_text_weak_factory_.InvalidateWeakPtrs();
   pending_inner_text_callback_.Reset();
   intelligent_scan_tab_screenshot_.reset();
+  intelligent_scan_screenshot_capture_status_.reset();
   page_context_wrapper_ = nil;
   ClientSideDetectionHostBase::CancelPendingRequests();
 }
@@ -943,14 +996,9 @@ void ClientSideDetectionHostIOS::ContinueClassificationAfterAllowlistChecks(
       base::FeatureList::IsEnabled(
           safe_browsing::
               kSkipImageClassificationScoringForNonPageLoadTriggers)) {
-    ClientPhishingRequest verdict;
-    verdict.set_url(url.spec());
-    verdict.set_client_score(0.0);
-    PhishingDetectionDone(
-        last_request_type(), send_sample_ping_,
-        did_match_high_confidence_allowlist_,
-        /*is_invalid_ip=*/false, tick_clock()->NowTicks(),
-        safe_browsing::PhishingDetectorResult::CLASSIFICATION_SKIPPED, verdict);
+    ReportSkippedClassification(last_request_type(), send_sample_ping_,
+                                did_match_high_confidence_allowlist_,
+                                /*is_invalid_ip=*/false);
     return;
   }
 
@@ -1007,7 +1055,7 @@ void ClientSideDetectionHostIOS::OnSnapshotReceived(const GURL& url,
   // before starting classification.
   StartVisualClassification(url, last_request_type(), send_sample_ping_,
                             did_match_high_confidence_allowlist_,
-                            gfx::Image(ui_image));
+                            /*is_invalid_ip=*/false, gfx::Image(ui_image));
 }
 
 void ClientSideDetectionHostIOS::OnClassificationDone(
@@ -1019,7 +1067,8 @@ void ClientSideDetectionHostIOS::OnClassificationDone(
     PhishingClassifier::Result result) {
   OnVisualClassificationDone(url, image, request_type, send_sample_ping_,
                              did_match_high_confidence_allowlist_,
-                             classification_start_time, verdict, result);
+                             /*is_invalid_ip=*/false, classification_start_time,
+                             verdict, result);
 }
 
 visual_utils::CanExtractVisualFeaturesResult
@@ -1066,15 +1115,24 @@ ClientSideDetectionHostIOS::DetermineVisualFeaturesExtraction() {
 }
 
 void ClientSideDetectionHostIOS::OnInnerTextExtracted(
+    bool should_capture_screenshot,
+    base::TimeTicks start_time,
     std::string inner_text,
-    std::optional<std::string> tab_screenshot) {
+    std::optional<std::string> tab_screenshot,
+    std::optional<MultimodalScreenshotCaptureStatus> screenshot_status) {
   page_context_wrapper_ = nil;
   intelligent_scan_tab_screenshot_ = std::move(tab_screenshot);
+  intelligent_scan_screenshot_capture_status_ = screenshot_status;
 
   if (!pending_inner_text_callback_) {
     return;
   }
 
+  base::UmaHistogramTimes(
+      base::StrCat(
+          {"SBClientPhishing.iOS.PageContextCaptureLatency.",
+           should_capture_screenshot ? "WithScreenshot" : "WithoutScreenshot"}),
+      tick_clock()->NowTicks() - start_time);
   std::move(pending_inner_text_callback_).Run(std::move(inner_text));
 }
 }  // namespace safe_browsing

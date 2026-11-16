@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.ui.autofill.data.AuthenticatorOption;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
@@ -137,7 +138,7 @@ public class AuthenticatorSelectionDialog implements AuthenticatorOptionsAdapter
         TextView titleView = mAuthenticatorSelectionDialogView.findViewById(R.id.title);
         titleView.setText(title);
         ImageView iconView = mAuthenticatorSelectionDialogView.findViewById(R.id.title_icon);
-        iconView.setImageResource(R.drawable.google_pay);
+        iconView.setImageResource(AutofillUiUtils.getGPayLogoDrawableId());
 
         mAuthenticatorSelectionDialogContentsView =
                 mAuthenticatorSelectionDialogView.findViewById(
@@ -156,6 +157,7 @@ public class AuthenticatorSelectionDialog implements AuthenticatorOptionsAdapter
                 new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)
                         .with(ModalDialogProperties.CONTROLLER, mModalDialogController)
                         .with(ModalDialogProperties.CUSTOM_VIEW, mAuthenticatorSelectionDialogView)
+                        .with(ModalDialogProperties.CONTENT_DESCRIPTION, title)
                         .with(
                                 ModalDialogProperties.NEGATIVE_BUTTON_TEXT,
                                 mContext.getString(

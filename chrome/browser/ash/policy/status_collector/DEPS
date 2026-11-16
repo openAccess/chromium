@@ -28,8 +28,6 @@ include_rules = [
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash/login",
   "+chrome/browser/ui/webui/ash/settings/pages/storage",
-  "+chrome/common/chrome_content_client.h",
-  "+chrome/common/chrome_paths.h",
   "+chrome/test/base",
 ]
 
@@ -45,6 +43,13 @@ specific_include_rules = {
   ],
   ".*unittest\\.cc": [
     "+chrome/browser/global_features.h",
+    "+chrome/common/chrome_paths.h",
     "+ui/message_center/message_center.h",
+  ],
+  "child_status_collector_unittest\\.cc": [
+    "+chrome/common/chrome_content_client.h",
+  ],
+  "device_status_collector_unittest\\.cc": [
+    "+chrome/common/chrome_content_client.h",
   ],
 }

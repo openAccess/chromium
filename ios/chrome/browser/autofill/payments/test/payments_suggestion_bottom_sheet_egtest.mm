@@ -13,6 +13,7 @@
 #import "components/autofill/core/common/autofill_payments_features.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/strings/grit/components_strings.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/autofill/authentication/test/authentication_egtest_util.h"
 #import "ios/chrome/browser/autofill/manual_fill/test/manual_fill_matchers.h"
 #import "ios/chrome/browser/autofill/model/features.h"
@@ -23,6 +24,7 @@
 #import "ios/chrome/browser/metrics/model/metrics_app_interface.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_root_table_constants.h"
 #import "ios/chrome/browser/shared/ui/bottom_sheet/bottom_sheet_util.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -93,6 +95,9 @@ id<GREYMatcher> KeyboardAccessoryCreditCardSuggestionChip() {
 - (void)setUp {
   [super setUp];
 
+  [SigninEarlGrey
+      signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
+
   // Set up server.
   net::test_server::RegisterDefaultHandlers(self.testServer);
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -121,14 +126,9 @@ id<GREYMatcher> KeyboardAccessoryCreditCardSuggestionChip() {
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
-  if ([self isRunningTest:@selector
-            (testOpenPaymentsBottomSheetUseCreditCardOnV3)] ||
-      [self isRunningTest:@selector
-            (testAttemptToOpenPaymentsBottomSheetWithoutCreditCardOnV3)]) {
-    config.features_enabled.push_back(kAutofillPaymentsSheetV3Ios);
-  }
-  if ([self isRunningTest:@selector
-            (FLAKY_testPaymentsBottomSheetNotShownAfterFieldTypeChanges)]) {
+  if ([self isRunningTest:
+                @selector(
+                    testPaymentsBottomSheetNotShownAfterFieldTypeChanges)]) {
     config.features_enabled.push_back(
         kAutofillPaymentsSheetDetachInvalidatedListenersIos);
   }
@@ -229,6 +229,9 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
   // overridden for the tests to work. This will allow us to fill the textfields
   // on the web page.
   [AutofillAppInterface considerCreditCardFormSecureForTesting];
+
+  GREYAssertTrue([AutofillAppInterface waitForFormToBeCachedInMainFrame],
+                 @"Forms were not parsed and cached.");
 }
 
 // Loads a page on local host to test payment and autofocus.
@@ -293,8 +296,7 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
 
 // Tests that the Payments Bottom Sheet appears when tapping on a credit card
 // related field.
-// TODO(crbug.com/444085918): Test is flaky.
-- (void)FLAKY_testOpenPaymentsBottomSheetUseCreditCard {
+- (void)testOpenPaymentsBottomSheetUseCreditCard {
   [self loadPaymentsPage];
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
@@ -329,8 +331,7 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
 
 // Tests that the Payments Bottom Sheet appears when tapping on a credit card
 // related field with the new blur logic.
-// TODO(crbug.com/444033658): Fix test and re-enable.
-- (void)DISABLED_testOpenPaymentsBottomSheetUseCreditCardWithNewBlur {
+- (void)testOpenPaymentsBottomSheetUseCreditCardWithNewBlur {
   [self loadPaymentsPage];
 
   [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
@@ -347,48 +348,14 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
                   @"Wrong number of stored credit cards.");
 
   [[EarlGrey selectElementWithMatcher:continueButton] performAction:grey_tap()];
-
-  // Verify that the page is filled properly.
-  [self verifyCreditCardInfosHaveBeenFilled:autofill::test::GetCreditCard()];
-}
-
-// Tests that the Payments Bottom Sheet V3 can fill the credit card information.
-- (void)testOpenPaymentsBottomSheetUseCreditCardOnV3 {
-  [self loadPaymentsPage];
-
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
-      performAction:chrome_test_util::TapWebElementWithId(kFormCardName)];
-
-  id<GREYMatcher> continueButton = WaitOnResponsiveContinueButton();
-
-  // Verify that the credit card is visible to the user.
-  [[EarlGrey selectElementWithMatcher:grey_text(_lastDigits)]
-      assertWithMatcher:grey_notNil()];
-
-  // Make sure the user is seeing 1 card on the bottom sheet.
-  GREYAssertEqual(1, [AutofillAppInterface localCreditCount],
-                  @"Wrong number of stored credit cards.");
-
-  [[EarlGrey selectElementWithMatcher:continueButton] performAction:grey_tap()];
-
-  // No histogram logged because there is only 1 credential shown to the user.
-  GREYAssertNil(
-      [MetricsAppInterface
-          expectTotalCount:0
-              forHistogram:@"Autofill.TouchToFill.CreditCard.SelectedIndex"],
-      @"Unexpected histogram error for touch to fill credit card selected");
-
-  // Verify that the acceptance of the card suggestion at index 0 was correctly
-  // recorded.
-  CheckAutofillSuggestionAcceptedIndexMetricsCount(/*suggestion_index=*/0);
 
   // Verify that the page is filled properly.
   [self verifyCreditCardInfosHaveBeenFilled:autofill::test::GetCreditCard()];
 }
 
 // Tests that the sheet isn't displayed when there are no credit card
-// suggestions for the credit card form, on V3.
-- (void)testAttemptToOpenPaymentsBottomSheetWithoutCreditCardOnV3 {
+// suggestions for the credit card form.
+- (void)testAttemptToOpenPaymentsBottomSheetWithoutCreditCard {
   [self loadPaymentsPage];
 
   // Clear the credit cards after the listeners are attached to be able to test
@@ -411,8 +378,7 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
 
 // Tests that the expected metric is logged when accepting a suggestion from
 // the bottom sheet that is not the first one in the list.
-// TODO(crbug.com/415030578): Fix test and re-enable.
-- (void)DISABLED_testAcceptedSuggestionIndexLogged {
+- (void)testAcceptedSuggestionIndexLogged {
   // Add a credit card to the Personal Data Manager.
   [AutofillAppInterface saveMaskedCreditCard];
 
@@ -760,7 +726,7 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
 // as a credit card field dynamically changes to a non-credit card field type
 // (e.g. password) before it is tapped, verifying that listeners are correctly
 // detached during re-evaluations.
-- (void)FLAKY_testPaymentsBottomSheetNotShownAfterFieldTypeChanges {
+- (void)testPaymentsBottomSheetNotShownAfterFieldTypeChanges {
   [self loadPaymentsPage];
 
   // At this point, the page is loaded and listeners are attached.
@@ -820,7 +786,7 @@ void CheckAutofillSuggestionAcceptedIndexMetricsCount(
 }
 
 // Test that payments bottom sheet is dismissed upon cross-document navigation.
-- (void)DISABLED_testPaymentsBottomSheetDismissesOnCrossDocumentNavigation {
+- (void)testPaymentsBottomSheetDismissesOnCrossDocumentNavigation {
   [self loadPaymentsPage];
 
   // Tap on the credit card field to trigger the Payments Bottom Sheet. Use the

@@ -142,9 +142,6 @@ class WebStateID;
 @property(nonatomic, assign) BOOL dropAnimationInProgress;
 // Data source for acquiring data to power PriceCardView
 @property(nonatomic, weak) id<PriceCardDataSource> priceCardDataSource;
-// YES if the selected cell is visible in the grid.
-@property(nonatomic, readonly, getter=isSelectedCellVisible)
-    BOOL selectedCellVisible;
 // Provider of context menu configurations for the tabs in the grid.
 @property(nonatomic, weak) id<TabContextMenuProvider> menuProvider;
 // Opacity of grid cells that are not the selected tab.
@@ -177,7 +174,8 @@ class WebStateID;
 // Returns the layout of the grid for use in an animated transition.
 - (TabGridTransitionLayout*)transitionLayout;
 
-// Returns TabGridTransitionItem for the active cell.
+// Returns TabGridTransitionItem for the active tab cell, or nil if the active
+// cell is not a materialized visible tab cell with a non-empty frame.
 - (TabGridTransitionItem*)transitionItemForActiveCell;
 
 // Notifies the ViewController that its content is being displayed.

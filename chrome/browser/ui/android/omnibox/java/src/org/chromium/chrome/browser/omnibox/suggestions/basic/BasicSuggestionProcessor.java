@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.basic;
 
+import android.graphics.drawable.Drawable;
 import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
 
@@ -19,6 +20,8 @@ import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarData;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState.IconSize;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
 import org.chromium.chrome.browser.omnibox.styles.SuggestionSpannable;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties;
@@ -26,11 +29,14 @@ import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewPr
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
+import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
 import org.chromium.components.omnibox.DocumentType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxSuggestionKind;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.IconType;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.components.search_engines.StarterPackId;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -81,65 +87,68 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
 
     @VisibleForTesting
     @DrawableRes
-    int getFallbackIconFromIconType(/* SuggestTemplateInfo.IconType */ int iconType) {
+    int getFallbackIconFromIconType(@IconType int iconType) {
         switch (iconType) {
-            case SuggestTemplateInfo.IconType.ICON_TYPE_UNSPECIFIED_VALUE:
+            case IconType.ICON_TYPE_UNSPECIFIED:
                 return 0;
 
-            case SuggestTemplateInfo.IconType.HISTORY_VALUE:
+            case IconType.HISTORY:
                 return R.drawable.ic_history_24dp;
 
-            case SuggestTemplateInfo.IconType.SEARCH_LOOP_VALUE:
+            case IconType.SEARCH_LOOP:
                 return R.drawable.ic_suggestion_magnifier;
 
-            case SuggestTemplateInfo.IconType.SEARCH_LOOP_WITH_SPARKLE_VALUE:
+            case IconType.SEARCH_LOOP_WITH_SPARKLE:
                 return R.drawable.search_spark_black_24dp;
 
-            case SuggestTemplateInfo.IconType.TRENDING_VALUE:
+            case IconType.TRENDING:
                 return R.drawable.trending_up_black_24dp;
 
-            case SuggestTemplateInfo.IconType.SUB_ARROW_RIGHT_VALUE:
+            case IconType.SUB_ARROW_RIGHT:
                 // TODO(crbug.com/437177158): Replace with the correct symbol when it's available.
                 return R.drawable.ic_suggestion_magnifier;
 
-            case SuggestTemplateInfo.IconType.GLOBE_WITH_SEARCH_LOOP_VALUE:
+            case IconType.GLOBE_WITH_SEARCH_LOOP:
                 return R.drawable.travel_explore_24dp;
 
-            case SuggestTemplateInfo.IconType.BANANA_VALUE:
+            case IconType.BANANA:
                 return R.drawable.create_image_24dp;
 
-            case SuggestTemplateInfo.IconType.FAVICON_VALUE:
+            case IconType.FAVICON:
                 return R.drawable.ic_globe_24dp;
 
-            case SuggestTemplateInfo.IconType.NOTES_SPARK_VALUE:
+            case IconType.NOTES_SPARK:
                 return R.drawable.notes_spark;
 
-            case SuggestTemplateInfo.IconType.DRAFT_SPARK_VALUE:
+            case IconType.DRAFT_SPARK:
                 return R.drawable.draft_spark_24dp;
 
-            case SuggestTemplateInfo.IconType.LIGHTBULB_VALUE:
+            case IconType.LIGHTBULB:
                 return R.drawable.ic_lightbulb_24dp;
 
-            case SuggestTemplateInfo.IconType.ATTACH_FILE_VALUE:
+            case IconType.ATTACH_FILE:
                 return R.drawable.ic_attach_file_24dp;
 
-            case SuggestTemplateInfo.IconType.SCHOOL_VALUE:
+            case IconType.SCHOOL:
                 return R.drawable.ic_school_24dp;
 
-            case SuggestTemplateInfo.IconType.INK_PEN_VALUE:
+            case IconType.INK_PEN:
                 return R.drawable.ic_ink_pen_24dp;
 
-            case SuggestTemplateInfo.IconType.TAB_VALUE:
+            case IconType.TAB:
                 return R.drawable.tab;
 
-            case SuggestTemplateInfo.IconType.PHOTO_SPARK_VALUE:
+            case IconType.PHOTO_SPARK:
                 return R.drawable.ic_photo_spark_24dp;
 
-            case SuggestTemplateInfo.IconType.BOLT_VALUE:
+            case IconType.BOLT:
                 return R.drawable.bolt_24dp;
 
-            case SuggestTemplateInfo.IconType.IMAGE_CREATE_VALUE:
+            case IconType.IMAGE_CREATE:
                 return R.drawable.image_create_24dp;
+
+            case IconType.PROMPT_SUGGESTION:
+                return R.drawable.ic_prompt_suggestion_24dp;
 
             default: // Icon type is specified, but not recognized
                 assert false : "Unrecognized IconType: " + iconType;
@@ -167,6 +176,9 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
 
     @Override
     protected OmniboxDrawableState getFallbackIcon(AutocompleteMatch suggestion) {
+        OmniboxDrawableState vectorIcon = getVectorIcon(suggestion);
+        if (vectorIcon != null) return vectorIcon;
+
         @DrawableRes int icon = 0;
         boolean allowTint = true;
         if (suggestion.getType() == OmniboxSuggestionType.DOCUMENT_SUGGESTION) {
@@ -185,8 +197,10 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
             }
         } else if (suggestion.getTakeoverAction() != null) {
             var action = suggestion.getTakeoverAction();
-            icon = action.icon.chipIconRes;
-            allowTint = action.icon.tintWithTextColor;
+            if (action.icon.chipIconRes != 0) {
+                icon = action.icon.chipIconRes;
+                allowTint = action.icon.tintWithTextColor;
+            }
         }
 
         if (icon == 0 && suggestion.isSearchSuggestion()) {
@@ -205,6 +219,27 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
         return icon == 0
                 ? super.getFallbackIcon(suggestion)
                 : OmniboxDrawableState.forSmallIcon(mUiContext.resourceProvider, icon, allowTint);
+    }
+
+    /**
+     * When {@link OmniboxFeatures#isNativeVectorIconsEnabled()}, returns the suggestion's native
+     * vector icon presented as a medium icon, or {@code null} if the icon should be sourced from
+     * XML drawables instead. Document suggestions keep their multi-color Android drawables.
+     *
+     * @param suggestion The suggestion to retrieve the vector icon for.
+     */
+    private @Nullable OmniboxDrawableState getVectorIcon(AutocompleteMatch suggestion) {
+        if (!OmniboxFeatures.isNativeVectorIconsEnabled()) return null;
+        OmniboxImageSupplier imageSupplier = mUiContext.imageSupplier;
+        if (imageSupplier == null) return null;
+        if (suggestion.getType() == OmniboxSuggestionType.DOCUMENT_SUGGESTION) return null;
+
+        Drawable drawable =
+                imageSupplier.getVectorIcon(
+                        suggestion,
+                        mBookmarkState.isBookmarked(suggestion.getUrl()),
+                        mUiContext.resourceProvider.getEdgeSizeDp(IconSize.MEDIUM));
+        return drawable == null ? null : OmniboxDrawableState.forVectorIcon(drawable);
     }
 
     @Override
@@ -235,6 +270,11 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
             }
         } else {
             textLine2 = getSuggestionDescription(suggestion);
+            if (textLine2 != null) {
+                // The parser puts the server's bolding of the secondary text in the description
+                // classifications.
+                applyHighlightToMatchRegions(textLine2, suggestion.getDescriptionClassifications());
+            }
             textLine2Color = mUiContext.resourceProvider.getSuggestionSecondaryTextColor();
         }
 
@@ -242,8 +282,17 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
                 getSuggestedQuery(
                         suggestion, !isSearchSuggestion && !isDocumentSuggestion, !urlHighlighted);
 
-        applyTextColor(textLine1, mUiContext.resourceProvider.getSuggestionPrimaryTextColor());
         applyTextColor(textLine2, textLine2Color);
+        // The classifications don't carry the server's colors, so take them from the template.
+        SuggestTemplateInfo suggestTemplate = suggestion.getSuggestTemplate();
+        if (suggestTemplate != null) {
+            textLine1.applyFormattedStringColors(
+                    suggestTemplate.getPrimaryText(), mUiContext.resourceProvider);
+            if (textLine2 != null) {
+                textLine2.applyFormattedStringColors(
+                        suggestTemplate.getSecondaryText(), mUiContext.resourceProvider);
+            }
+        }
 
         // Tab search on desktop is exempt from the standard single-line desktop layout.
         if (!isTabSearch
@@ -294,9 +343,11 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
                                     header));
         }
 
+        // A favicon would replace the icon and drop its badge.
         if (!isSearchSuggestion
                 && !mBookmarkState.isBookmarked(suggestion.getUrl())
-                && !isDocumentSuggestion) {
+                && !isDocumentSuggestion
+                && !hasTypeIconBadge(suggestion)) {
             fetchSuggestionFavicon(model, suggestion.getUrl());
         }
 
@@ -391,12 +442,16 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
             AutocompleteMatch suggestion,
             boolean showDescriptionIfPresent,
             boolean shouldHighlight) {
-        if (suggestion.getTakeoverAction() != null) {
-            return getTakeoverActionSuggestedQuery(suggestion);
+        // Non-search takeover matches (e.g., Lens pedal) inline "contents - description" on line
+        // 1; search/document suggestions already populate `textLine2` with the description.
+        if (showDescriptionIfPresent && suggestion.getTakeoverAction() != null) {
+            SuggestionSpannable str = getTakeoverActionSuggestedQuery(suggestion);
+            applyTextColor(str, mUiContext.resourceProvider.getSuggestionPrimaryTextColor());
+            return str;
         }
 
         String suggestedQuery = null;
-        List<AutocompleteMatch.MatchClassification> classifications;
+        List<MatchClassification> classifications;
         if (showDescriptionIfPresent
                 && !suggestion.getUrl().isEmpty()
                 && !TextUtils.isEmpty(suggestion.getDescription())) {
@@ -409,13 +464,16 @@ public class BasicSuggestionProcessor extends BaseSuggestionViewProcessor {
         if (suggestedQuery == null) {
             assert false : "Invalid suggestion sent with no displayable text";
             suggestedQuery = "";
-            classifications = new ArrayList<AutocompleteMatch.MatchClassification>();
-            classifications.add(
-                    new AutocompleteMatch.MatchClassification(0, MatchClassificationStyle.NONE));
+            classifications = new ArrayList<MatchClassification>();
+            classifications.add(new MatchClassification(0, MatchClassificationStyle.NONE));
         }
 
         SuggestionSpannable str = new SuggestionSpannable(suggestedQuery);
         if (shouldHighlight) applyHighlightToMatchRegions(str, classifications);
+        str.applyTextColor(
+                classifications,
+                mUiContext.resourceProvider.getSuggestionPrimaryTextColor(),
+                mUiContext.resourceProvider.getSuggestionSecondaryTextColor());
         return str;
     }
 

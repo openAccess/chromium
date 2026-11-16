@@ -15,6 +15,7 @@
 #include "base/memory/weak_ptr.h"
 #include "components/image_fetcher/core/cache/image_store_types.h"
 #include "components/image_fetcher/core/cache/proto/cached_image_metadata.pb.h"
+#include "components/image_fetcher/core/image_fetcher_types.h"
 
 class PrefRegistrySimple;
 class PrefService;
@@ -48,9 +49,10 @@ class ImageCache : public base::RefCounted<ImageCache> {
   ImageCache& operator=(const ImageCache&) = delete;
 
   // Adds or updates the image data for the `url`. If the class hasn't been
-  // initialized yet, the call is queued.
+  // initialized yet, the call is queued. `image_data` must be non-null and
+  // remains alive until the queued save completes.
   void SaveImage(std::string url,
-                 std::string image_data,
+                 ImageData image_data,
                  bool needs_transcoding,
                  ExpirationInterval expiration_interval);
 
@@ -76,7 +78,7 @@ class ImageCache : public base::RefCounted<ImageCache> {
 
   // Saves the `image_data` for `url`.
   void SaveImageImpl(const std::string& url,
-                     std::string image_data,
+                     ImageData image_data,
                      bool needs_transcoding,
                      ExpirationInterval expiration_interval);
   // Loads the data for `url`, calls the user back before updating metadata.
@@ -108,9 +110,9 @@ class ImageCache : public base::RefCounted<ImageCache> {
   // Reconcile what's on disk against what's in metadata. Any mismatches will
   // result in eviction.
   void RunReconciliation();
-  void ReconcileMetadataKeys(std::vector<std::string> md_keys);
+  void ReconcileMetadataKeys(std::optional<std::vector<std::string>> md_keys);
   void ReconcileDataKeys(std::vector<std::string> md_keys,
-                         std::vector<std::string> data_keys);
+                         std::optional<std::vector<std::string>> data_keys);
 
   bool initialization_attempted_ = false;
   // Set after both initialization callbacks run, even if a store failed.

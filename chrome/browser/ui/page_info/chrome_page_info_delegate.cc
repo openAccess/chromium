@@ -20,8 +20,6 @@
 #include "chrome/browser/permissions/permission_decision_auto_blocker_factory.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_service.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/password_protection/chrome_password_protection_service.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
@@ -32,6 +30,7 @@
 #include "chrome/browser/ssl/stateful_ssl_host_state_delegate_factory.h"
 #include "chrome/browser/subresource_filter/subresource_filter_profile_context_factory.h"
 #include "chrome/browser/ui/url_identity.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/browser/usb/usb_chooser_context.h"
 #include "chrome/browser/usb/usb_chooser_context_factory.h"
 #include "chrome/browser/vr/vr_tab_helper.h"
@@ -47,11 +46,10 @@
 #include "components/permissions/permission_manager.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
 #include "components/subresource_filter/content/browser/subresource_filter_content_settings_manager.h"
 #include "components/subresource_filter/content/browser/subresource_filter_profile_context.h"
-#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/permission_controller.h"
@@ -93,7 +91,7 @@
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/page_info/page_info_infobar_delegate.h"
-#include "chrome/browser/ui/tab_dialogs.h"
+#include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_ui_utils.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -136,7 +134,16 @@ constexpr UrlIdentity::FormatOptions kUrlIdentityOptions{
 ChromePageInfoDelegate::GetBrowserCallback
 ChromePageInfoDelegate::DefaultGetBrowserCallback() {
   return base::BindRepeating([](content::WebContents* contents) {
-    return GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(contents);
+    if (BrowserWindowInterface* browser =
+            GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+                contents)) {
+      return browser;
+    }
+    // Page Info can be opened for non-tab WebContents (e.g. side panels), where
+    // `FindBrowserWithTab()` returns nullptr. Fall back to the embedding
+    // browser context so browser-scoped actions (like opening Site Settings)
+    // still resolve the owning browser window.
+    return contents ? webui::GetBrowserWindowInterface(contents) : nullptr;
   });
 }
 
@@ -254,17 +261,6 @@ void ChromePageInfoDelegate::FocusWebContents() {
   BrowserWebContentsDelegate::From(browser)->ActivateContents(web_contents_);
 }
 
-std::optional<std::u16string> ChromePageInfoDelegate::GetRwsOwner(
-    const GURL& site_url) {
-  return PrivacySandboxServiceFactory::GetForProfile(GetProfile())
-      ->GetRelatedWebsiteSetOwnerForDisplay(site_url);
-}
-
-bool ChromePageInfoDelegate::IsRwsManaged(const GURL& site_url) {
-  return PrivacySandboxServiceFactory::GetForProfile(GetProfile())
-      ->IsPartOfManagedRelatedWebsiteSet(net::SchemefulSite(site_url));
-}
-
 // static
 void ChromePageInfoDelegate::RegisterPageInfoInfoBar(
     infobars::BrowserInfoBarManager* infobar_manager) {
@@ -293,15 +289,13 @@ bool ChromePageInfoDelegate::CreateInfoBarDelegate() {
           infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE)) {
     auto* browser_infobar_manager =
         infobars::BrowserInfoBarManager::From(g_browser_process);
-    if (browser_infobar_manager) {
-      auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents_);
-      if (tab) {
-        browser_infobar_manager->Show(
-            tab, infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE);
-        return true;
-      }
+    if (!browser_infobar_manager) {
+      return false;
     }
-    return false;
+    return browser_infobar_manager->Show(
+               web_contents_,
+               infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE) !=
+           nullptr;
   }
 
   infobars::ContentInfoBarManager* infobar_manager =
@@ -382,13 +376,6 @@ void ChromePageInfoDelegate::ShowCookiesSettings() {
   chrome::ShowSettingsSubPage(browser, chrome::kCookieSettingsSubPage);
 }
 
-void ChromePageInfoDelegate::ShowAllSitesSettingsFilteredByRwsOwner(
-    const std::u16string& rws_owner) {
-  BrowserWindowInterface* browser = get_browser_callback_.Run(web_contents_);
-  chrome::ShowAllSitesSettingsFilteredByRwsOwner(browser,
-                                                 base::UTF16ToUTF8(rws_owner));
-}
-
 void ChromePageInfoDelegate::ShowSyncSettings() {
   BrowserWindowInterface* browser = get_browser_callback_.Run(web_contents_);
   chrome::ShowSettingsSubPage(browser, chrome::kSyncSetupSubPage);
@@ -396,7 +383,8 @@ void ChromePageInfoDelegate::ShowSyncSettings() {
 
 void ChromePageInfoDelegate::OpenCookiesDialog() {
   FocusWebContents();
-  TabDialogs::FromWebContents(web_contents_)->ShowCollectedCookies();
+  PageSpecificSiteDataDialogController::CreateAndShowForWebContents(
+      web_contents_);
 }
 
 void ChromePageInfoDelegate::OpenCertificateDialog(

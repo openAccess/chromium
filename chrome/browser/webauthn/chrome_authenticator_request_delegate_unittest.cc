@@ -41,6 +41,7 @@
 #include "chrome/browser/webauthn/webauthn_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
+#include "chrome/test/base/testing_profile.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "chrome/browser/signin/dice_tab_helper.h"
@@ -77,10 +78,6 @@
 #include "third_party/blink/public/mojom/credentialmanagement/credential_type_flags.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
-
-#if BUILDFLAG(IS_MAC)
-#include "chrome/test/base/testing_profile.h"
-#endif  // BUILDFLAG(IS_MAC)
 
 namespace {
 
@@ -174,19 +171,7 @@ class ChromeAuthenticatorRequestDelegateTest
     bluetooth_values_ =
         device::BluetoothAdapterFactory::Get()->InitGlobalOverrideValues();
     bluetooth_values_->SetLESupported(false);
-    PasskeyModelFactory::GetInstance()->SetTestingFactoryAndUse(
-        profile(),
-        base::BindRepeating(
-            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
-              return std::make_unique<webauthn::TestPasskeyModel>();
-            }));
     ChromeAuthenticatorRequestDelegate::SetGlobalObserverForTesting(&observer_);
-
-    ImmediateRequestRateLimiterFactory::GetInstance()->SetTestingFactoryAndUse(
-        profile(), base::BindRepeating([](content::BrowserContext* context)
-                                           -> std::unique_ptr<KeyedService> {
-          return std::make_unique<webauthn::ImmediateRequestRateLimiter>();
-        }));
   }
 
   void TearDown() override {
@@ -195,6 +180,17 @@ class ChromeAuthenticatorRequestDelegateTest
   }
 
  protected:
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    return {
+        TestingProfile::TestingFactory{
+            PasskeyModelFactory::GetInstance(),
+            base::BindRepeating(
+                [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+                  return std::make_unique<webauthn::TestPasskeyModel>();
+                })},
+    };
+  }
+
   Observer observer_;
   std::unique_ptr<device::BluetoothAdapterFactory::GlobalOverrideValues>
       bluetooth_values_;
@@ -545,14 +541,17 @@ class EnclaveAuthenticatorRequestDelegateTest
         device::kWebAuthnSoftwareKeysWhenTpmAbsent, GetParam());
   }
 
-  void SetUp() override {
-    ChromeAuthenticatorRequestDelegateTest::SetUp();
-    SyncServiceFactory::GetInstance()->SetTestingFactory(
-        browser_context(),
-        base::BindRepeating([](content::BrowserContext* context)
-                                -> std::unique_ptr<KeyedService> {
-          return std::make_unique<syncer::TestSyncService>();
-        }));
+ protected:
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    TestingProfile::TestingFactories factories =
+        ChromeAuthenticatorRequestDelegateTest::GetTestingFactories();
+    factories.emplace_back(
+        SyncServiceFactory::GetInstance(),
+        base::BindRepeating(
+            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<syncer::TestSyncService>();
+            }));
+    return factories;
   }
 
  private:
@@ -899,20 +898,34 @@ TEST_F(ChromeAuthenticatorRequestDelegateTest,
   PasswordCredentialFetcher::SetInstanceForTesting(nullptr);
 }
 
-TEST_F(ChromeAuthenticatorRequestDelegateTest, ImmediateMediationRateLimit) {
-  constexpr base::TimeDelta kWindowSize = base::Minutes(1);
-  constexpr int kMaxRequestsPerWindow = 2;
+class ImmediateMediationRateLimitAuthenticatorRequestDelegateTest
+    : public ChromeAuthenticatorRequestDelegateTest {
+ protected:
+  static constexpr base::TimeDelta kWindowSize = base::Minutes(1);
+  static constexpr int kMaxRequestsPerWindow = 2;
 
-  ImmediateRequestRateLimiterFactory::GetInstance()->SetTestingFactoryAndUse(
-      profile(), base::BindRepeating([](content::BrowserContext* context)
-                                         -> std::unique_ptr<KeyedService> {
-        webauthn::ImmediateRequestRateLimiter::Limits limits;
-        limits.max_requests_long = 2;  // kMaxRequestsPerWindow
-        limits.window_seconds_long = 60;
-        limits.max_requests_short = 2;
-        limits.window_seconds_short = 5;
-        return std::make_unique<webauthn::ImmediateRequestRateLimiter>(limits);
-      }));
+  TestingProfile::TestingFactories GetTestingFactories() const override {
+    TestingProfile::TestingFactories factories =
+        ChromeAuthenticatorRequestDelegateTest::GetTestingFactories();
+    factories.emplace_back(
+        webauthn::ImmediateRequestRateLimiterFactory::GetInstance(),
+        base::BindRepeating(
+            [](content::BrowserContext*) -> std::unique_ptr<KeyedService> {
+              webauthn::ImmediateRequestRateLimiter::Limits limits;
+              limits.max_requests_long = kMaxRequestsPerWindow;
+              limits.window_seconds_long =
+                  static_cast<int>(kWindowSize.InSeconds());
+              limits.max_requests_short = kMaxRequestsPerWindow;
+              limits.window_seconds_short = 5;
+              return std::make_unique<webauthn::ImmediateRequestRateLimiter>(
+                  limits);
+            }));
+    return factories;
+  }
+};
+
+TEST_F(ImmediateMediationRateLimitAuthenticatorRequestDelegateTest,
+       ImmediateMediationRateLimit) {
   // Navigate to commit the origin.
   content::WebContentsTester::For(web_contents())
       ->NavigateAndCommit(GURL(kOrigin));
@@ -1015,15 +1028,13 @@ class ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase
     : public ChromeAuthenticatorRequestDelegateTest {
  protected:
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  void SetUpChromeSigninPage() {
-    feature_list_.InitAndEnableFeatureWithParameters(
-        switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
-
+  void SetUpChromeSigninPage(
+      signin_metrics::Reason reason =
+          signin_metrics::Reason::kSigninPrimaryAccount) {
     DiceTabHelper::CreateForWebContents(web_contents());
     DiceTabHelper::FromWebContents(web_contents())
         ->InitializeSigninFlow(
-            GURL(kOrigin), signin_metrics::AccessPoint::kSettings,
-            signin_metrics::Reason::kSigninPrimaryAccount,
+            GURL(kOrigin), signin_metrics::AccessPoint::kSettings, reason,
             signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO, GURL(),
             /*record_signin_started_metrics=*/false, base::DoNothing(),
             base::DoNothing(), base::DoNothing());
@@ -1056,7 +1067,7 @@ class ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase
 enum class HybridOutcomeContext {
   // A regular website.
   kWebsite,
-  // The Chrome sign-in page, with the MagiChrome passkey feature enabled.
+  // The Chrome sign-in page.
   kChromeSignin,
 };
 
@@ -1542,6 +1553,35 @@ TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyOutcomeTest,
   histogram_tester_.ExpectTotalCount(kSigninOutcome, 0);
 }
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+TEST_F(ChromeAuthenticatorRequestDelegateHybridPasskeyTestBase,
+       SigninOutcomeRecordedWhenMagiChromeFeatureDisabled) {
+  feature_list_.InitAndDisableFeature(switches::kMagiChromePasskeySignIn);
+  SetUpChromeSigninPage();
+
+  MockCableDiscoveryFactory discovery_factory;
+  auto delegate = CreateDelegate(&discovery_factory);
+
+  delegate->OnCableEventForTesting(device::cablev2::Event::kBLEAdvertReceived);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kPhoneConnected);
+  delegate->OnCableEventForTesting(device::cablev2::Event::kReady);
+  delegate->OnTransactionSuccessful(
+      content::AuthenticatorRequestClientDelegate::RequestSource::
+          kWebAuthentication,
+      device::FidoRequestType::kGetAssertion,
+      device::AuthenticatorType::kPhone);
+
+#if BUILDFLAG(IS_WIN)
+  EXPECT_FALSE(discovery_factory.force_hybrid_discovery());
+#endif  // BUILDFLAG(IS_WIN)
+  using Outcome = ChromeAuthenticatorRequestDelegate::HybridPasskeyOutcome;
+  histogram_tester_.ExpectUniqueSample("WebAuthentication.Hybrid.Outcome",
+                                       Outcome::kSuccess, 1);
+  histogram_tester_.ExpectUniqueSample("Signin.HybridPasskey.Outcome",
+                                       Outcome::kSuccess, 1);
+}
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
 // The surface on which the hybrid QR code is shown.
 enum class HybridQrSurface {
   // Inline in the Autofill dropdown on the Chrome sign-in page. Recorded as
@@ -1744,6 +1784,27 @@ TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
     histogram_tester_.ExpectTotalCount(engagement_histogram(), 0);
   }
 }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+TEST_P(ChromeAuthenticatorRequestDelegateHybridPasskeyEngagementTest,
+       NonPrimarySigninRequestRecordsOnlyModalEngagement) {
+  SetUpChromeSigninPage(signin_metrics::Reason::kReauthentication);
+
+  MockCableDiscoveryFactory discovery_factory;
+  std::unique_ptr<ChromeAuthenticatorRequestDelegate> delegate =
+      CreateDelegate(&discovery_factory);
+
+  ShowQrCode(delegate.get());
+  delegate.reset();
+
+  if (GetParam() == HybridQrSurface::kModal) {
+    histogram_tester_.ExpectUniqueSample(engagement_histogram(),
+                                         Engagement::kNoScanDetected, 1);
+  } else {
+    histogram_tester_.ExpectTotalCount(engagement_histogram(), 0);
+  }
+}
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Tests that a HaT survey is triggered when WebAuthn credentials are used for
 // sign-in.

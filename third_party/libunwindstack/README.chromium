@@ -1,0 +1,118 @@
+Name: libunwindstack
+URL: https://android.googlesource.com/platform/system/unwinding
+Date: 2023-01-29
+Version: N/A
+Revision: 9ebb4981c2b9ba73018702531ded8de9c169958a
+License: Apache-2.0, BSD-2-Clause
+License File: LICENSE
+Shipped: yes
+Security Critical: yes
+Update Mechanism: Manual
+
+Description: Canonical library to unwind Android call stacks.
+
+`libunwindstack` (and its relevant dependencies) are copied from Android's
+`system/unwinding`. `libunwindstack` handles many of the details of unwinding
+on Android, which is inherently more difficult than on other platforms due to
+the wider variety of frame types that occur on Android. These include Java
+frames, JITted Java frames, Chromium C++ frames, and system library C++ frames.
+Different frame types can have different call frame information (CFI) formats
+that the unwinder must parse to know how to move up the stack. These formats
+include `DWARF`, `MiniDebugInfo`, and `EHABI`. `libunwindstack` handles much of
+this complexity.
+
+`libunwindstack` is copied from the Android tree and utilizes common Android
+libraries from that tree. This is analagous to how a static library that is
+built within the Chromium tree might utilize `//base` and `//threading`. For
+`libunwindstack`, we copy its Android tree dependencies into this directory.
+
+`libunwindstack` uses `libdexfile` for symbolizing interpreted java frames
+client-side, as doing this server-side is not currently practical. `libdexfile`
+is backwards-compatible and can parse dex files for Chromium built with
+`min-sdk` version 23 and dex version 35. It should be able to handle future
+`min-sdk` version bumps, given it can currently parse versions from 35-40.
+`libdexfile` and its dependency `libartbase` come from `platform/art/` in AOSP.
+
+Steps to update `libunwindstack`:
+
+1. Update the contents to the upstream revision.
+
+    ```
+    rm -rf src
+    mkdir temp src
+    git clone https://android.googlesource.com/platform/system/unwinding -b main temp/unwinding
+    cp -pr temp/unwinding/libunwindstack src/libunwindstack
+    # Get revisions of repositories.
+    head temp/*/.git/refs/heads/main
+    rm -rf temp
+    find src/* -name .clang-format -exec rm \{\} \;
+    # Manually update the revision info in README.chromium ...
+    git add --all .
+    git commit -m 'step 1'
+    ```
+
+2. Build and apply/update/add patches until the code compiles with component
+   debug builds. Some linker errors will not be surfaced on release builds as
+   it does aggresive code elimination. Update existing patches so that they
+   apply cleanly. Remove any patches that are no longer required.
+
+    ```
+    # Apply patches
+    patch -p1 < patches/...  # etc.
+    # Build `stack_unwinder` module in component debug build.
+    gn gen ../../out/libunwindstack_test_build --args=" \
+      target_os=\"android\" \
+      use_remoteexec=true \
+      is_component_build=true \
+      is_debug=true" && \
+    autoninja -C ../../out/libunwindstack_test_build stack_unwinder
+    # Remove remnants of failed patch attempts.
+    find src -name \*.orig -o -name \*.rej | xargs rm
+    git add --all .
+    git commit -m 'step 2'
+    ```
+
+3. Prune to the subset of `libunwindstack` sources that should be compiled and
+   checked in.
+
+    ```
+    tools/get_required_sources.sh out/libunwindstack_test_build > required_sources
+
+    # Replace BUILD.gn 'public' files with these:
+    grep src/libunwindstack/include required_sources | sed 's/.*/    "&",/'
+
+    # Replace BUILD.gn 'sources' files with these:
+    grep -v 'src/libunwindstack/include\|\.S$' required_sources | \
+      sed 's/.*/    "&",/'
+
+    # Remove unused files.
+    find src -type f | sort | comm -2 -3 - required_sources | xargs rm
+    find src -depth -type d -empty -exec rmdir \{\} \;
+    rm required_sources
+    git add -u src
+    git commit -m 'step 3'
+    ```
+
+4. Squash the three commits into one CL. Every chromium/src CL must
+   build, so step 1 cannot land on its own.
+
+
+Local Modifications:
+The libbase and ART patches are in libbase/patches/ and art/patches/.
+- 0002-create-local-process-memory.patch: add
+  Memory::CreateLocalProcessMemory().
+- 0004-dont-include-bionic-headers.patch: no <bionic/mte.h> or
+  <bionic/pac.h> in NDK builds.
+- 0005-stub-out-logging-libunwindstack.patch: no-op log functions, so
+  no liblog.
+- 0006-remove-extra-semicolon.patch: no extra semicolon in Unwinder.h.
+- 0013-use-third-party-rustc-demangle.patch: use Chromium's
+  rustc_demangle() C API.
+- 0016-remove-static-initializers.patch: no static initializers in
+  DexFile.
+- 0017-add-type-cast.patch: fix the DwarfSection postfix ++/-- step and
+  cast MapInfo flags.
+- 0018-handle-process-vm-readv-availability.patch: no
+  process_vm_readv() below Android API 23.
+- 0019-add-missing-include-in-regsinfo-header.patch: include
+  <stdlib.h> in RegsInfo.h.

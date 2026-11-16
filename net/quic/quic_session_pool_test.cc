@@ -17,7 +17,7 @@
 #include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_helpers.h"
+#include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory_coordinator/memory_limit.h"
@@ -27,6 +27,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
@@ -50,10 +51,12 @@
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_server.h"
 #include "net/base/reconnect_notifier.h"
+#include "net/base/request_priority.h"
 #include "net/base/schemeful_site.h"
 #include "net/base/session_usage.h"
 #include "net/base/test_proxy_delegate.h"
 #include "net/cert/mock_cert_verifier.h"
+#include "net/cert/require_ct_delegate.h"
 #include "net/cert/x509_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/dns/public/dns_query_type.h"
@@ -158,6 +161,9 @@ namespace {
 
 using ::testing::ElementsAre;
 
+constexpr char kStartupLocalAddressCheckHistogram[] =
+    "Net.QuicSession.StartupLocalAddressCheck";
+
 // Run QuicSessionPoolTest instances with all values of version.
 struct TestParams {
   quic::ParsedQuicVersion version;
@@ -240,6 +246,9 @@ class SessionAttemptHelper : public QuicSessionAttempt::Delegate {
     return quic_session_alias_key_;
   }
   const NetLogWithSource& GetNetLog() override { return net_log_; }
+  std::vector<IPEndPoint> GetResolvedIpEndpoints() const override {
+    return {quic_endpoint.ip_endpoint};
+  }
 
   int Start() {
     return attempt_->Start(base::BindOnce(&SessionAttemptHelper::OnComplete,
@@ -437,6 +446,11 @@ class QuicSessionPoolTest : public QuicSessionPoolTestBase,
   void TestRequireDnsHttpsAlpn(
       std::vector<HostResolverEndpointResult> endpoints,
       bool expect_success);
+
+  QuicChromiumClientSession* CreateSessionWithKeepAliveConfig(
+      const ConnectionKeepAliveConfig& keep_alive_config,
+      MockQuicData& socket_data,
+      bool add_ping_write = false);
 
   // Creates a callback that filters for control-stream frames.
   base::RepeatingCallback<bool(const quic::QuicFrame&)>
@@ -1316,6 +1330,105 @@ TEST_P(QuicSessionPoolTest, DontRequireConfirmationFromSameIP) {
   EXPECT_TRUE(http_server_properties_->HasLastLocalAddressWhenQuicWorked());
 }
 
+TEST_P(QuicSessionPoolTest,
+       StartupLocalAddressCheckHistogramNoPersistedAddress) {
+  host_resolver_->rules()->AddRule(kServer2HostName, "127.0.0.2");
+  base::HistogramTester histogram_tester;
+  Initialize();
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  histogram_tester.ExpectUniqueSample(
+      kStartupLocalAddressCheckHistogram,
+      QuicSessionPool::StartupLocalAddressCheck::kNoPersistedAddress, 1);
+
+  // Creating a second session on the same pool must not emit again.
+  QuicTestPacketMaker client_maker2(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kServer2HostName, quic::Perspective::IS_CLIENT,
+      /*client_priority_uses_incremental=*/true,
+      /*use_priority_header=*/true);
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddWrite(SYNCHRONOUS,
+                        ConstructInitialSettingsPacket(client_maker2, 1));
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = url::SchemeHostPort(
+      url::kHttpsScheme, kServer2HostName, kDefaultServerPort);
+  builder2.url = GURL(kServer2Url);
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+  histogram_tester.ExpectTotalCount(kStartupLocalAddressCheckHistogram, 1);
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, StartupLocalAddressCheckHistogramMatch) {
+  base::HistogramTester histogram_tester;
+  Initialize();
+  // 192.0.2.33 is MockUDPClientSocket's default local IP, so it matches.
+  http_server_properties_->SetLastLocalAddressWhenQuicWorked(
+      IPAddress(192, 0, 2, 33));
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  histogram_tester.ExpectUniqueSample(
+      kStartupLocalAddressCheckHistogram,
+      QuicSessionPool::StartupLocalAddressCheck::kMatch, 1);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, StartupLocalAddressCheckHistogramMismatch) {
+  base::HistogramTester histogram_tester;
+  Initialize();
+  http_server_properties_->SetLastLocalAddressWhenQuicWorked(
+      IPAddress(192, 0, 2, 99));
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  histogram_tester.ExpectUniqueSample(
+      kStartupLocalAddressCheckHistogram,
+      QuicSessionPool::StartupLocalAddressCheck::kMismatch, 1);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
 TEST_P(QuicSessionPoolTest, CachedInitialRtt) {
   ServerNetworkStats stats;
   stats.srtt = base::Milliseconds(10);
@@ -1780,9 +1893,8 @@ TEST_P(QuicSessionPoolTest, MemoryPressureGlobalExclusion) {
 
   // 3. Trigger memory pressure.
   base::test::TestFuture<void> memory_pressure_future;
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      base::MemoryLimit::CriticalPressureThreshold(), base::DoNothing());
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+      base::MemoryLimit::CriticalPressureThreshold(),
       memory_pressure_future.GetCallback());
   ASSERT_TRUE(memory_pressure_future.Wait());
 
@@ -1797,9 +1909,8 @@ TEST_P(QuicSessionPoolTest, MemoryPressureGlobalExclusion) {
 
   // 6. Trigger memory pressure again.
   base::test::TestFuture<void> memory_pressure_future2;
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      base::MemoryLimit::CriticalPressureThreshold(), base::DoNothing());
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+      base::MemoryLimit::CriticalPressureThreshold(),
       memory_pressure_future2.GetCallback());
   ASSERT_TRUE(memory_pressure_future2.Wait());
 
@@ -1861,9 +1972,8 @@ TEST_P(QuicSessionPoolTest, MemoryPressureDohExclusion) {
 
   // 3. Trigger memory pressure.
   base::test::TestFuture<void> memory_pressure_future;
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      base::MemoryLimit::CriticalPressureThreshold(), base::DoNothing());
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+      base::MemoryLimit::CriticalPressureThreshold(),
       memory_pressure_future.GetCallback());
   ASSERT_TRUE(memory_pressure_future.Wait());
 
@@ -1903,9 +2013,8 @@ TEST_P(QuicSessionPoolTest, MemoryPressureWithFeatureDisabled) {
                                                                     doh_key));
 
   base::test::TestFuture<void> memory_pressure_future;
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
-      base::MemoryLimit::CriticalPressureThreshold(), base::DoNothing());
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
+      base::MemoryLimit::CriticalPressureThreshold(),
       memory_pressure_future.GetCallback());
   ASSERT_TRUE(memory_pressure_future.Wait());
 
@@ -2057,9 +2166,6 @@ TEST_P(QuicSessionPoolTest, PoolingSkipDns) {
   socket_data.AddReadPauseForever();
   socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
   socket_data.AddSocketDataToFactory(socket_factory_.get());
-
-  const std::string kRightALPN = quic::AlpnForVersion(version_);
-  const std::string kWrongALPN = "h2";
 
   url::SchemeHostPort server2(url::kHttpsScheme, kServer2HostName,
                               kDefaultServerPort);
@@ -3964,14 +4070,12 @@ TEST_P(QuicSessionPoolTest,
   quic_data2.ExpectAllWriteDataConsumed();
 }
 
-// When active_connection_id_limit > 2 is negotiated (via k3CID and
-// quic_active_connection_id_limit), a session with 2 spare connection IDs can
-// cancel an in-flight probe as superseded and successfully complete a second
-// probing migration using the remaining spare connection ID.
+// When active_connection_id_limit > 2 is negotiated (via k3CID), a session
+// with 2 spare connection IDs can cancel an in-flight probe as superseded and
+// successfully complete a second probing migration using the remaining spare
+// connection ID.
 TEST_P(QuicSessionPoolTest,
        ProbingSucceedsWithMultipleUnusedConnectionIdsWhenProbingInFlight) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   const handles::NetworkHandle kNewNetworkForTests2 = 3;
@@ -8110,8 +8214,6 @@ TEST_P(QuicSessionPoolTest,
 
 TEST_P(QuicSessionPoolTest,
        PortMigrationInFlightSupersededByOnNetworkMadeDefault) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -8296,8 +8398,6 @@ TEST_P(QuicSessionPoolTest,
 }
 
 TEST_P(QuicSessionPoolTest, PortMigrationInFlightSupersededByOnWriteError) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -8451,8 +8551,6 @@ TEST_P(QuicSessionPoolTest, PortMigrationInFlightSupersededByOnWriteError) {
 TEST_P(
     QuicSessionPoolTest,
     PortMigrationInFlightNotCancelledByOnWriteErrorWhenFeatureDisabled_FlapsBack) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -8614,8 +8712,6 @@ TEST_P(
 
 TEST_P(QuicSessionPoolTest,
        PortMigrationInFlightCancelledByOnNetworkDisconnected) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -8773,8 +8869,6 @@ TEST_P(QuicSessionPoolTest,
 
 TEST_P(QuicSessionPoolTest,
        OnNetworkMadeDefaultProbeInFlightSupersededByOnWriteError) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
   quic_params_->max_migrations_to_non_default_network_on_write_error = 1;
 
@@ -8932,8 +9026,6 @@ TEST_P(QuicSessionPoolTest,
 TEST_P(
     QuicSessionPoolTest,
     OnNetworkMadeDefaultProbeInFlightNotCancelledByOnWriteErrorWhenFeatureDisabled) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -9091,8 +9183,6 @@ TEST_P(
 
 TEST_P(QuicSessionPoolTest,
        OnNetworkMadeDefaultProbeInFlightSupersededByOnNetworkDisconnected) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -9248,8 +9338,6 @@ TEST_P(QuicSessionPoolTest,
 
 TEST_P(QuicSessionPoolTest,
        OnNetworkMadeDefaultProbeInFlightBlocksPortMigrationOnPathDegrading) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   base::test::ScopedFeatureList scoped_feature_list;
@@ -9405,8 +9493,6 @@ TEST_P(QuicSessionPoolTest,
 TEST_P(
     QuicSessionPoolTest,
     PortMigrationOnNonDefaultNetworkProbesDefaultNetworkInsteadOfCurrentNetwork) {
-  quic::test::QuicFlagSaver flags;
-  SetQuicReloadableFlag(quic_active_connection_id_limit, true);
   quic_params_->client_connection_options.push_back(quic::k3CID);
 
   scoped_mock_network_change_notifier_ =
@@ -17450,6 +17536,158 @@ TEST_P(QuicSessionPoolTest, HostResolverRequestReprioritizedOnSetPriority) {
   EXPECT_EQ(DEFAULT_PRIORITY, host_resolver_->request_priority(2));
 }
 
+TEST_P(QuicSessionPoolTest, PromoteActiveJobPriorityOnHigherPriorityAttach) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kPreconnectPriorityBoost);
+
+  Initialize();
+  host_resolver_->rules()->AddSimulatedFailure("*");
+  host_resolver_->set_ondemand_mode(true);
+
+  // Start an initial preconnect-like request at IDLE priority.
+  RequestBuilder preconnect_builder(this);
+  preconnect_builder.priority = IDLE;
+  EXPECT_EQ(ERR_IO_PENDING, preconnect_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  // Attaching a MEDIUM request promotes the active job's priority to MEDIUM.
+  TestCompletionCallback medium_callback;
+  RequestBuilder medium_builder(this);
+  medium_builder.priority = MEDIUM;
+  medium_builder.callback = medium_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, medium_builder.CallRequest());
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  // Attaching a lower-priority (LOWEST) request never downgrades the active
+  // job's priority.
+  TestCompletionCallback lowest_callback;
+  RequestBuilder lowest_builder(this);
+  lowest_builder.priority = LOWEST;
+  lowest_builder.callback = lowest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, lowest_builder.CallRequest());
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  // Reprioritizing an attached request to a lower priority also does not
+  // downgrade a shared active job.
+  lowest_builder.request.SetPriority(IDLE);
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  // Attaching a HIGHEST request promotes the active job's priority to HIGHEST.
+  TestCompletionCallback highest_callback;
+  RequestBuilder highest_builder(this);
+  highest_builder.priority = HIGHEST;
+  highest_builder.callback = highest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, highest_builder.CallRequest());
+  EXPECT_EQ(HIGHEST, host_resolver_->request_priority(1));
+
+  // Resolve pending DNS so the active job finishes before `feature_list` goes
+  // out of scope.
+  host_resolver_->ResolveAllPending();
+  EXPECT_THAT(callback_.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(medium_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(lowest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(highest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+}
+
+TEST_P(QuicSessionPoolTest,
+       PromoteActiveAsyncDnsJobPriorityOnHigherPriorityAttach) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kPreconnectPriorityBoost, features::kAsyncDnsQuicJob}, {});
+
+  Initialize();
+  host_resolver_->rules()->AddSimulatedFailure("*");
+  host_resolver_->set_ondemand_mode(true);
+
+  RequestBuilder preconnect_builder(this);
+  preconnect_builder.priority = IDLE;
+  EXPECT_EQ(ERR_IO_PENDING, preconnect_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  TestCompletionCallback medium_callback;
+  RequestBuilder medium_builder(this);
+  medium_builder.priority = MEDIUM;
+  medium_builder.callback = medium_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, medium_builder.CallRequest());
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  TestCompletionCallback lowest_callback;
+  RequestBuilder lowest_builder(this);
+  lowest_builder.priority = LOWEST;
+  lowest_builder.callback = lowest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, lowest_builder.CallRequest());
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  lowest_builder.request.SetPriority(IDLE);
+  EXPECT_EQ(MEDIUM, host_resolver_->request_priority(1));
+
+  TestCompletionCallback highest_callback;
+  RequestBuilder highest_builder(this);
+  highest_builder.priority = HIGHEST;
+  highest_builder.callback = highest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, highest_builder.CallRequest());
+  EXPECT_EQ(HIGHEST, host_resolver_->request_priority(1));
+
+  host_resolver_->ResolveAllPending();
+  EXPECT_THAT(callback_.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(medium_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(lowest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(highest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+}
+
+TEST_P(QuicSessionPoolTest, ActiveJobPriorityNotPromotedWhenFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kPreconnectPriorityBoost);
+
+  Initialize();
+  host_resolver_->rules()->AddSimulatedFailure("*");
+  host_resolver_->set_ondemand_mode(true);
+
+  RequestBuilder preconnect_builder(this);
+  preconnect_builder.priority = IDLE;
+  EXPECT_EQ(ERR_IO_PENDING, preconnect_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  TestCompletionCallback highest_callback;
+  RequestBuilder highest_builder(this);
+  highest_builder.priority = HIGHEST;
+  highest_builder.callback = highest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, highest_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  host_resolver_->ResolveAllPending();
+  EXPECT_THAT(callback_.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(highest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+}
+
+TEST_P(QuicSessionPoolTest,
+       ActiveJobPriorityNotPromotedWhenPromoteOnAttachDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kPreconnectPriorityBoost,
+      {{"PromoteActiveQuicJobPriorityOnAttach", "false"}});
+
+  Initialize();
+  host_resolver_->rules()->AddSimulatedFailure("*");
+  host_resolver_->set_ondemand_mode(true);
+
+  RequestBuilder preconnect_builder(this);
+  preconnect_builder.priority = IDLE;
+  EXPECT_EQ(ERR_IO_PENDING, preconnect_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  TestCompletionCallback highest_callback;
+  RequestBuilder highest_builder(this);
+  highest_builder.priority = HIGHEST;
+  highest_builder.callback = highest_callback.callback();
+  EXPECT_EQ(ERR_IO_PENDING, highest_builder.CallRequest());
+  EXPECT_EQ(IDLE, host_resolver_->request_priority(1));
+
+  host_resolver_->ResolveAllPending();
+  EXPECT_THAT(callback_.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+  EXPECT_THAT(highest_callback.WaitForResult(), IsError(ERR_NAME_NOT_RESOLVED));
+}
+
 // Verifies that the host resolver uses the disable secure DNS setting and
 // NetworkAnonymizationKey passed to QuicSessionRequest::Request().
 TEST_P(QuicSessionPoolTest, HostResolverUsesParams) {
@@ -18718,8 +18956,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDsNotConfigured) {
 
   HostResolverEndpointResult endpoint;
   endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
-  endpoint.metadata.trust_anchor_ids = {
-      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
 
   host_resolver_ = std::make_unique<MockHostResolver>();
   host_resolver_->rules()->AddRule(
@@ -18748,8 +18984,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDsNotConfigured) {
   auto entries =
       net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
   ASSERT_EQ(1u, entries.size());
-  EXPECT_EQ("1.2.3, 2.2, 4.5",
-            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
   EXPECT_FALSE(entries[0].params.contains("selected_trust_anchor_ids"));
 }
 
@@ -18765,8 +18999,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDs) {
 
   HostResolverEndpointResult endpoint;
   endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
-  endpoint.metadata.trust_anchor_ids = {
-      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
 
   host_resolver_ = std::make_unique<MockHostResolver>();
   host_resolver_->rules()->AddRule(
@@ -18799,8 +19031,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDs) {
   auto entries =
       net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
   ASSERT_EQ(1u, entries.size());
-  EXPECT_EQ("1.2.3, 2.2, 4.5",
-            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
   EXPECT_THAT(
       base::SplitString(
           GetStringValueFromParams(entries[0], "selected_trust_anchor_ids"),
@@ -18907,60 +19137,6 @@ TEST_P(QuicSessionPoolTest, ServerHandshakePaddingZeroPadding) {
             GetIntegerValueFromParams(entries[0], "requested_server_padding"));
 }
 
-// Test that when Trust Anchor IDs are not advertised by the server, but are
-// enabled on the client, we still unconditionally send them (bypassing DNS).
-TEST_P(QuicSessionPoolTest, TrustAnchorIDsNotAdvertisedInDns) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(features::kTLSTrustAnchorIDs);
-
-  SSLContextConfig ssl_config;
-  ssl_config.trust_anchor_ids = x509_util::EncodeTlsRequestedTrustAnchorIDList(
-      {{0x01, 0x02, 0x03}, {0x01, 0x01}});
-  ssl_config_service_.UpdateSSLConfigAndNotify(ssl_config);
-
-  HostResolverEndpointResult endpoint;
-  endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
-  endpoint.metadata.trust_anchor_ids = {};
-
-  host_resolver_ = std::make_unique<MockHostResolver>();
-  host_resolver_->rules()->AddRule(
-      kDefaultServerHostName,
-      MockHostResolverBase::RuleResolver::RuleResult({endpoint}));
-
-  Initialize();
-  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
-  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
-
-  MockQuicData socket_data(version_);
-  socket_data.AddReadPauseForever();
-  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
-  socket_data.AddSocketDataToFactory(socket_factory_.get());
-
-  RecordingNetLogObserver net_log_observer(net_log_.net_log(),
-                                           NetLogCaptureMode::kDefault);
-  RequestBuilder builder(this);
-  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
-  ASSERT_THAT(callback_.WaitForResult(), IsOk());
-
-  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
-  ASSERT_TRUE(session);
-  quic::QuicSSLConfig config = session->GetSSLConfig();
-  EXPECT_THAT(
-      x509_util::ParseTlsTrustAnchorIDs(
-          base::as_byte_span(config.trust_anchor_ids.value())),
-      testing::UnorderedElementsAre(std::vector<uint8_t>{0x01, 0x02, 0x03},
-                                    std::vector<uint8_t>{0x01, 0x01}));
-  auto entries =
-      net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
-  ASSERT_EQ(1u, entries.size());
-  EXPECT_FALSE(entries[0].params.contains("trust_anchor_ids_from_dns"));
-  EXPECT_THAT(
-      base::SplitString(
-          GetStringValueFromParams(entries[0], "selected_trust_anchor_ids"),
-          ", ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY),
-      testing::UnorderedElementsAre("1.2.3", "1.1"));
-}
-
 // Test that Trust Anchor IDs are not configured via GetSSLConfig() when the
 // feature is disabled.
 TEST_P(QuicSessionPoolTest, TrustAnchorIDsDisabled) {
@@ -18974,8 +19150,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDsDisabled) {
 
   HostResolverEndpointResult endpoint;
   endpoint.ip_endpoints = {IPEndPoint(IPAddress::IPv4Localhost(), 0)};
-  endpoint.metadata.trust_anchor_ids = {
-      {0x01, 0x02, 0x03}, {0x02, 0x02}, {0x04, 05}};
 
   host_resolver_ = std::make_unique<MockHostResolver>();
   host_resolver_->rules()->AddRule(
@@ -19004,8 +19178,6 @@ TEST_P(QuicSessionPoolTest, TrustAnchorIDsDisabled) {
   auto entries =
       net_log_observer.GetEntriesWithType(NetLogEventType::QUIC_SESSION);
   ASSERT_EQ(1u, entries.size());
-  EXPECT_EQ("1.2.3, 2.2, 4.5",
-            GetStringValueFromParams(entries[0], "trust_anchor_ids_from_dns"));
   EXPECT_FALSE(entries[0].params.contains("selected_trust_anchor_ids"));
 }
 
@@ -19198,8 +19370,8 @@ TEST_P(QuicSessionPoolTest, SendPingOnExistingSession) {
   auto connection_management_config = ConnectionManagementConfig();
   auto keep_alive_config = ConnectionKeepAliveConfig();
   keep_alive_config.enable_connection_keep_alive = true;
-  keep_alive_config.ping_interval_in_seconds = 10;
-  keep_alive_config.idle_timeout_in_seconds = 30;
+  keep_alive_config.ping_interval = base::Seconds(10);
+  keep_alive_config.idle_timeout = base::Seconds(30);
   connection_management_config.keep_alive_config = std::move(keep_alive_config);
 
   builder2.connection_management_config =
@@ -19211,6 +19383,320 @@ TEST_P(QuicSessionPoolTest, SendPingOnExistingSession) {
   // We should expect the write data including a ping to the peer is consumed
   // since `enable_connection_keep_alive` is enabled, and we already have an
   // existing session.
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+QuicChromiumClientSession*
+QuicSessionPoolTest::CreateSessionWithKeepAliveConfig(
+    const ConnectionKeepAliveConfig& keep_alive_config,
+    MockQuicData& socket_data,
+    bool add_ping_write) {
+  Initialize();
+
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  if (add_ping_write) {
+    socket_data.AddWrite(SYNCHRONOUS,
+                         client_maker_.Packet(2).AddPingFrame().Build());
+  }
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  ConnectionManagementConfig connection_management_config;
+  connection_management_config.keep_alive_config = keep_alive_config;
+  builder.connection_management_config =
+      std::move(connection_management_config);
+
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  return GetActiveSession(kDefaultDestination);
+}
+
+TEST_P(QuicSessionPoolTest, ConnectionKeepAliveConfigInitialRttWhenUncached) {
+  quic_params_->idle_connection_timeout = base::Seconds(500);
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  QuicChromiumClientSession* session = CreateSessionWithKeepAliveConfig(
+      keep_alive_config, socket_data, /*add_ping_write=*/true);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(25000u, session->connection()->GetStats().srtt_us);
+  // Client-only override must not advertise a synthetic `IRTT` transport
+  // parameter to the server.
+  const quic::QuicConfig* negotiated_config =
+      crypto_client_stream_factory_.last_stream()->negotiated_config();
+  ASSERT_TRUE(negotiated_config);
+  EXPECT_FALSE(negotiated_config->HasInitialRoundTripTimeUsToSend());
+
+  // Leaving `enable_connection_keep_alive` false and `idle_timeout` /
+  // `ping_interval` unset preserves default QUIC idle and keep-alive ping
+  // behavior.
+  EXPECT_EQ(QuicSessionPoolPeer::GetConfig(pool_.get())->IdleNetworkTimeout(),
+            negotiated_config->IdleNetworkTimeout());
+  EXPECT_FALSE(session->ShouldKeepConnectionAlive());
+  auto ping_alarm =
+      quic::test::QuicConnectionPeer::GetPingAlarm(session->connection());
+  EXPECT_FALSE(ping_alarm.IsSet());
+
+  session->SetPeriodicConnectionKeepAlive(true);
+  quic::test::QuicConnectionPeer::SendPing(session->connection());
+  ASSERT_TRUE(ping_alarm.IsSet());
+  EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(quic::kPingTimeoutSecs),
+            ping_alarm.deadline() - context_.clock()->ApproximateNow());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttPreservesHigherCachedRtt) {
+  ServerNetworkStats stats;
+  stats.srtt = base::Milliseconds(200);
+  http_server_properties_->SetServerNetworkStats(
+      url::SchemeHostPort(GURL(kDefaultUrl)), NetworkAnonymizationKey(), stats);
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(200000u, session->connection()->GetStats().srtt_us);
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(200000u, crypto_client_stream_factory_.last_stream()
+                         ->negotiated_config()
+                         ->GetInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttPreservesLowerCachedRtt) {
+  ServerNetworkStats stats;
+  stats.srtt = base::Milliseconds(15);
+  http_server_properties_->SetServerNetworkStats(
+      url::SchemeHostPort(GURL(kDefaultUrl)), NetworkAnonymizationKey(), stats);
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(15000u, session->connection()->GetStats().srtt_us);
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(15000u, crypto_client_stream_factory_.last_stream()
+                        ->negotiated_config()
+                        ->GetInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttPreserves2gEstimate) {
+  ScopedMockNetworkChangeNotifier notifier;
+  notifier.mock_network_change_notifier()->SetConnectionType(
+      NetworkChangeNotifier::CONNECTION_2G);
+  quic_params_->estimate_initial_rtt = true;
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(1000000u, session->connection()->GetStats().srtt_us);
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(1200000u, crypto_client_stream_factory_.last_stream()
+                          ->negotiated_config()
+                          ->GetInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttPreserves3gEstimate) {
+  ScopedMockNetworkChangeNotifier notifier;
+  notifier.mock_network_change_notifier()->SetConnectionType(
+      NetworkChangeNotifier::CONNECTION_3G);
+  quic_params_->estimate_initial_rtt = true;
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(400000u, session->connection()->GetStats().srtt_us);
+  ASSERT_TRUE(crypto_client_stream_factory_.last_stream()
+                  ->negotiated_config()
+                  ->HasInitialRoundTripTimeUsToSend());
+  EXPECT_EQ(400000u, crypto_client_stream_factory_.last_stream()
+                         ->negotiated_config()
+                         ->GetInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttOptedOutWhenZero) {
+  MockQuicData socket_data(version_);
+  // Default initial_rtt is zero (opted out).
+  ConnectionKeepAliveConfig keep_alive_config;
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(quic::kInitialRttMs * 1000,
+            session->connection()->GetStats().srtt_us);
+  EXPECT_FALSE(crypto_client_stream_factory_.last_stream()
+                   ->negotiated_config()
+                   ->HasInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttClampedToLowerBound) {
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  // 5 ms is below kMinUntrustedInitialRoundTripTimeUs (10 ms).
+  keep_alive_config.initial_rtt = base::Milliseconds(5);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(quic::kMinUntrustedInitialRoundTripTimeUs,
+            session->connection()->GetStats().srtt_us);
+  EXPECT_FALSE(crypto_client_stream_factory_.last_stream()
+                   ->negotiated_config()
+                   ->HasInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttClampedToUpperBound) {
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  // 5 s exceeds kMaxInitialRoundTripTimeUs (1 s).
+  keep_alive_config.initial_rtt = base::Seconds(5);
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(quic::kMaxInitialRoundTripTimeUs,
+            session->connection()->GetStats().srtt_us);
+  EXPECT_FALSE(crypto_client_stream_factory_.last_stream()
+                   ->negotiated_config()
+                   ->HasInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(
+    QuicSessionPoolTest,
+    ConnectionKeepAliveConfigInitialRttShortensHandshakePtoWithoutSendingIrtt) {
+  FLAGS_quic_enable_chaos_protection = false;
+  Initialize();
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::COLD_START_WITH_CHLO_SENT);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddWrite(SYNCHRONOUS, client_maker_.MakeDummyCHLOPacket(1));
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  ConnectionManagementConfig connection_management_config;
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+  connection_management_config.keep_alive_config = keep_alive_config;
+  builder.connection_management_config =
+      std::move(connection_management_config);
+
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  TestCompletionCallback quic_session_callback;
+  ASSERT_TRUE(builder.request.WaitForQuicSessionCreation(
+      quic_session_callback.callback()));
+  EXPECT_EQ(ERR_IO_PENDING, quic_session_callback.WaitForResult());
+
+  QuicChromiumClientSession* session = GetPendingSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(quic::QuicTime::Delta::FromMilliseconds(75),
+            session->connection()->sent_packet_manager().GetPtoDelay());
+
+  quic::TransportParameters params;
+  ASSERT_TRUE(session->config()->FillTransportParameters(&params));
+  EXPECT_EQ(0u, params.initial_round_trip_time_us.value());
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigAppliesExplicitKeepAliveOptions) {
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.idle_timeout = base::Seconds(30);
+  keep_alive_config.ping_interval = base::Seconds(10);
+  keep_alive_config.enable_connection_keep_alive = true;
+  keep_alive_config.quic_connection_options = "ECCP";
+
+  QuicChromiumClientSession* session = CreateSessionWithKeepAliveConfig(
+      keep_alive_config, socket_data, /*add_ping_write=*/true);
+  ASSERT_TRUE(session);
+  EXPECT_TRUE(session->ShouldKeepConnectionAlive());
+
+  quic::QuicAlarmProxy ping_alarm =
+      quic::test::QuicConnectionPeer::GetPingAlarm(session->connection());
+  ASSERT_TRUE(ping_alarm.IsSet());
+  EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(10),
+            ping_alarm.deadline() - context_.clock()->ApproximateNow());
+  const quic::QuicConfig* negotiated_config =
+      crypto_client_stream_factory_.last_stream()->negotiated_config();
+  ASSERT_TRUE(negotiated_config);
+  EXPECT_EQ(quic::QuicTime::Delta::FromSeconds(30),
+            negotiated_config->IdleNetworkTimeout());
+  EXPECT_TRUE(quic::ContainsQuicTag(negotiated_config->SendConnectionOptions(),
+                                    quic::kECCP));
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ConnectionKeepAliveConfigInitialRttDoesNotOverrideExplicitHandshakeRtt) {
+  quic_params_->initial_rtt_for_handshake = base::Milliseconds(35);
+
+  MockQuicData socket_data(version_);
+  ConnectionKeepAliveConfig keep_alive_config;
+  keep_alive_config.initial_rtt = base::Milliseconds(25);
+
+  QuicChromiumClientSession* session =
+      CreateSessionWithKeepAliveConfig(keep_alive_config, socket_data);
+  ASSERT_TRUE(session);
+  EXPECT_EQ(quic::QuicTime::Delta::FromMilliseconds(35),
+            session->connection()
+                ->sent_packet_manager()
+                .GetRttStats()
+                ->initial_rtt());
+  EXPECT_EQ(35000u, crypto_client_stream_factory_.last_stream()
+                        ->negotiated_config()
+                        ->GetInitialRoundTripTimeUsToSend());
+
+  socket_data.ExpectAllReadDataConsumed();
   socket_data.ExpectAllWriteDataConsumed();
 }
 
@@ -21026,6 +21512,1526 @@ TEST_P(QuicSessionPoolTest,
 
   socket_data.ExpectAllReadDataConsumed();
   socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, PostHandshakeIpPoolingAcrossAllResolvedEndpoints) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kPostHandshakeIpPoolingAllEndpoints},
+      /*disabled_features=*/{features::kProactiveIpPoolingForInFlightJobs});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  // Simulate two domains returning the same Anycast IPs in different orders:
+  // kOrigin1 connects to 192.168.0.1, while kOrigin2 connects to 192.168.0.2
+  // (and also has 192.168.0.1 in its resolved list).
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
+  socket_data2.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(2)
+          .AddConnectionCloseFrame(quic::QUIC_CONNECTION_IP_POOLED,
+                                   "An active session exists for the given IP.")
+          .Build());
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  // Wait for both DNS resolutions to finish and both QUIC handshakes to start.
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Complete the first handshake (connected to 192.168.0.1).
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  // Complete the second handshake (connected to 192.168.0.2). Even though its
+  // peer address is 192.168.0.2, it should pool onto the first session via its
+  // other resolved Anycast IP (192.168.0.1) and preserve its DNS aliases.
+  crypto_client_stream_factory_.streams()[1]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+
+  QuicChromiumClientSession::Handle* session1 =
+      QuicHttpStreamPeer::GetSessionHandle(stream1.get());
+  QuicChromiumClientSession::Handle* session2 =
+      QuicHttpStreamPeer::GetSessionHandle(stream2.get());
+  EXPECT_TRUE(session1->SharesSameSession(*session2));
+
+  EXPECT_THAT(stream1->GetDnsAliases(),
+              testing::ElementsAre("alias1.example.org"));
+  EXPECT_THAT(stream2->GetDnsAliases(),
+              testing::ElementsAre("alias2.example.org"));
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       PostHandshakeZeroRttIpPoolingPreservesBaselineBehavior) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kPostHandshakeIpPoolingAllEndpoints,
+                            features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{});
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  // Pre-populate cached ServerNetworkStats for `kOrigin2`. Non-proactive
+  // post-handshake 0-RTT pooling in `DoConfirmConnection()` must keep baseline
+  // behavior (clearing stats and recording unconfirmed-handshake metrics) even
+  // when `kProactiveIpPoolingForInFlightJobs` is enabled.
+  ServerNetworkStats initial_stats;
+  initial_stats.srtt = base::Milliseconds(42);
+  http_server_properties_->SetServerNetworkStats(
+      kOrigin2, NetworkAnonymizationKey(), initial_stats);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // `kOrigin2` reaches `DoConfirmConnection` at 0-RTT (`!OneRttKeysAvailable`)
+  // before the posted `NotifyActiveJobsOfSessionActivation()` task runs,
+  // closing its unconfirmed session via non-proactive `DoConfirmConnection()`
+  // with `QUIC_CONNECTION_IP_POOLED`.
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_ZERO_RTT);
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
+  socket_data2.AddWrite(SYNCHRONOUS, ERR_IO_PENDING);
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  base::HistogramTester histogram_tester;
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Complete 1-RTT on `kOrigin1` so its session is active on 192.168.0.1.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  // Complete 0-RTT (still `!OneRttKeysAvailable()`) on `kOrigin2` before the
+  // posted `NotifyActiveJobsOfSessionActivation()` task executes.
+  crypto_client_stream_factory_.streams()[1]->NotifySessionZeroRttComplete();
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  // Flush the queued `NotifyActiveJobsOfSessionActivation()` task.
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+  EXPECT_TRUE(QuicHttpStreamPeer::GetSessionHandle(stream1.get())
+                  ->SharesSameSession(
+                      *QuicHttpStreamPeer::GetSessionHandle(stream2.get())));
+
+  // Non-proactive 0-RTT `DoConfirmConnection()` close must preserve baseline
+  // behavior: `ServerNetworkStats` is cleared and unconfirmed-handshake
+  // histograms are recorded.
+  EXPECT_FALSE(http_server_properties_->GetServerNetworkStats(
+      kOrigin2, NetworkAnonymizationKey()));
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionCloseErrorCodeClient.HandshakeNotConfirmed",
+      quic::QUIC_CONNECTION_IP_POOLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeNotConfirmed.Reason", 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.CryptoRetransmitCount.HandshakeNotConfirmed", 1);
+  // Both `OnSessionGoingAway()` and async `OnSessionClosed()` run
+  // `ProcessGoingAwaySession()` for an unactivated session once `run_loop`
+  // flushes `NotifyFactoryOfSessionClosedLater()`.
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicHandshakeNotConfirmedNumPacketsReceived", 2);
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       PostHandshakeIpPoolingDeduplicatesSvcbAndFallbackEndpoints) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kPostHandshakeIpPoolingAllEndpoints},
+      /*disabled_features=*/{features::kProactiveIpPoolingForInFlightJobs});
+
+  class AlwaysRequireCTDelegate : public RequireCTDelegate {
+   public:
+    CTRequirementLevel IsCTRequiredForHost(
+        std::string_view hostname,
+        const X509Certificate* chain,
+        const std::vector<SHA256HashValue>& hashes) const override {
+      return CTRequirementLevel::REQUIRED;
+    }
+
+   private:
+    ~AlwaysRequireCTDelegate() override = default;
+  };
+
+  auto require_ct_delegate = base::MakeRefCounted<AlwaysRequireCTDelegate>();
+  transport_security_state_.SetRequireCTDelegate(require_ct_delegate);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+  const IPEndPoint kIp1(*IPAddress::FromIPLiteral("192.168.0.1"), 443);
+  const IPEndPoint kIp2(*IPAddress::FromIPLiteral("192.168.0.2"), 443);
+
+  host_resolver_->rules()->AddIPLiteralRule(kOrigin1.host(), "192.168.0.1", "");
+
+  // Configure `kOrigin2` with both an HTTPS/SVCB endpoint advertising QUIC ALPN
+  // and a trailing empty-metadata fallback endpoint carrying overlapping IPs.
+  std::vector<HostResolverEndpointResult> endpoints(2);
+  endpoints[0].ip_endpoints = {kIp2, kIp1};
+  endpoints[0].metadata.supported_protocol_alpns = {
+      quic::AlpnForVersion(version_)};
+  endpoints[1].ip_endpoints = {kIp2, kIp1};
+  host_resolver_->rules()->AddRule(
+      kOrigin2.host(),
+      MockHostResolverBase::RuleResolver::RuleResult(std::move(endpoints)));
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  verify_details1.cert_verify_result.policy_compliance =
+      ct::CTPolicyCompliance::CT_POLICY_NOT_ENOUGH_SCTS;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  // Measure `CanPool` invocations during `kOrigin2`'s post-handshake
+  // `HasMatchingIpSession()` call. With `kIp1` deduplicated, `CanPool` runs
+  // once in the `ip_endpoints` loop and once in the `active_sessions_` loop (2
+  // total, rather than 3 if `kIp1` were duplicated across SVCB + fallback).
+  base::HistogramTester histogram_tester;
+  crypto_client_stream_factory_.streams()[1]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.CanPool.CTRequirementStatus",
+      ct::CTRequirementsStatus::CT_REQUIREMENTS_NOT_MET, 2);
+
+  transport_security_state_.SetRequireCTDelegate(nullptr);
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ProactiveIpPoolingCancelsInFlightJobAcrossResolvedEndpoints) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  // Simulate two domains returning the same Anycast IPs in different orders:
+  // kOrigin1 connects to 192.168.0.1, while kOrigin2 starts connecting to
+  // 192.168.0.2 (and also has 192.168.0.1 in its resolved list).
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // The second attempt is silently cancelled before its handshake completes, so
+  // no packets are written on the second socket.
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  // Wait for both DNS resolutions to finish and both QUIC handshakes to start.
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Complete ONLY the first handshake (connected to 192.168.0.1). The second
+  // DirectJob should proactively cancel its in-flight attempt on 192.168.0.2
+  // and pool onto the newly activated session.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+
+  QuicChromiumClientSession::Handle* session1 =
+      QuicHttpStreamPeer::GetSessionHandle(stream1.get());
+  QuicChromiumClientSession::Handle* session2 =
+      QuicHttpStreamPeer::GetSessionHandle(stream2.get());
+  EXPECT_TRUE(session1->SharesSameSession(*session2));
+
+  EXPECT_THAT(stream1->GetDnsAliases(),
+              testing::ElementsAre("alias1.example.org"));
+  EXPECT_THAT(stream2->GetDnsAliases(),
+              testing::ElementsAre("alias2.example.org"));
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ProactiveIpPoolingWhileAsyncSessionCreationPending) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAsyncQuicSession,
+                            features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  ServerNetworkStats initial_stats;
+  initial_stats.srtt = base::Milliseconds(42);
+  http_server_properties_->SetServerNetworkStats(
+      kOrigin2, NetworkAnonymizationKey(), initial_stats);
+
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddConnect(ASYNC, OK);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Pause async socket creation for the second DirectJob so
+  // `session_creation_finished()` is still false when the first session
+  // activates.
+  MockConnectCompleter connect_completer2;
+  MockQuicData socket_data2(version_);
+  socket_data2.AddConnect(&connect_completer2);
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  base::HistogramTester histogram_tester;
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  TestCompletionCallback host_resolution_callback2;
+  TestCompletionCallback creation_callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+  if (builder2.request.WaitForHostResolution(
+          host_resolution_callback2.callback())) {
+    EXPECT_THAT(host_resolution_callback2.WaitForResult(),
+                IsError(ERR_IO_PENDING));
+  }
+  EXPECT_TRUE(builder2.request.WaitForQuicSessionCreation(
+      creation_callback2.callback()));
+
+  // Wait for request 1's handshake to start while request 2's async socket
+  // connect remains in flight.
+  crypto_client_stream_factory_.WaitForStreams(1);
+  EXPECT_FALSE(creation_callback2.have_result());
+
+  // Activate the first session on 192.168.0.1. Request 2 should receive its
+  // pending session-creation notification and complete via proactive pooling.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  EXPECT_THAT(creation_callback2.WaitForResult(), IsOk());
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  // Now complete request 2's orphaned async socket connect after its
+  // `QuicSessionAttempt` has already been cancelled for proactive IP pooling
+  // and destroyed. `HandleCreateSessionResult()` must close the newly created
+  // session with `QUIC_CONNECTION_IP_POOLED`, preserve `ServerNetworkStats`,
+  // and skip unconfirmed-handshake failure metrics.
+  connect_completer2.Complete(OK);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return histogram_tester.GetBucketCount(
+               "Net.QuicSession.CloseSessionOnError", -ERR_ABORTED) == 1 &&
+           QuicSessionPoolPeer::GetNumLiveSessions(pool_.get()) == 1u;
+  }));
+
+  const ServerNetworkStats* preserved_stats =
+      http_server_properties_->GetServerNetworkStats(kOrigin2,
+                                                     NetworkAnonymizationKey());
+  ASSERT_TRUE(preserved_stats);
+  EXPECT_EQ(base::Milliseconds(42), preserved_stats->srtt);
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionCloseErrorCodeClient.HandshakeNotConfirmed",
+      quic::QUIC_CONNECTION_IP_POOLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeNotConfirmed.Reason", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeFailureBlackHole.QuicError", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.CryptoRetransmitCount.HandshakeNotConfirmed", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicHandshakeNotConfirmedNumPacketsReceived", 0);
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+
+  QuicChromiumClientSession::Handle* session1 =
+      QuicHttpStreamPeer::GetSessionHandle(stream1.get());
+  QuicChromiumClientSession::Handle* session2 =
+      QuicHttpStreamPeer::GetSessionHandle(stream2.get());
+  EXPECT_TRUE(session1->SharesSameSession(*session2));
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, ProactiveIpPoolingSkipsCertificateMismatch) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2("https://other.example.org/");
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  // `spdy_pooling.pem` is valid for `www.example.org` (`kOrigin1`), but NOT for
+  // `other.example.org` (`kOrigin2`).
+  scoped_refptr<X509Certificate> cert1(
+      ImportCertFromFile(GetTestCertsDirectory(), "spdy_pooling.pem"));
+  ASSERT_TRUE(cert1);
+  ASSERT_TRUE(cert1->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_FALSE(cert1->VerifyNameMatch(kOrigin2.host()));
+
+  scoped_refptr<X509Certificate> cert2(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert2);
+  ASSERT_TRUE(cert2->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert1;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert2;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Complete `kOrigin1` on `192.168.0.1` and pump the async session-activation
+  // notification. `kOrigin2` must NOT pool or cancel its handshake because
+  // `cert1` does not cover `other.example.org`.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+  EXPECT_FALSE(callback2.have_result());
+
+  // Complete `kOrigin2`'s own handshake on `192.168.0.2`.
+  crypto_client_stream_factory_.streams()[1]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+
+  QuicChromiumClientSession::Handle* session1 =
+      QuicHttpStreamPeer::GetSessionHandle(stream1.get());
+  QuicChromiumClientSession::Handle* session2 =
+      QuicHttpStreamPeer::GetSessionHandle(stream2.get());
+  EXPECT_FALSE(session1->SharesSameSession(*session2));
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(
+    QuicSessionPoolTest,
+    ProactiveIpPoolingPreservesServerNetworkStatsAndSkipsHandshakeFailureMetrics) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  // Pre-populate cached ServerNetworkStats for `kOrigin2`. Proactively
+  // cancelling its mid-handshake session to pool onto `kOrigin1` must NOT clear
+  // these stats or emit unconfirmed-handshake failure histograms.
+  ServerNetworkStats initial_stats;
+  initial_stats.srtt = base::Milliseconds(42);
+  http_server_properties_->SetServerNetworkStats(
+      kOrigin2, NetworkAnonymizationKey(), initial_stats);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1,192.168.0.2",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.2,192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  base::HistogramTester histogram_tester;
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Activate `kOrigin1` on 192.168.0.1 while `kOrigin2` is still mid-handshake
+  // on 192.168.0.2. `kOrigin2`'s DirectJob cancels its attempt with
+  // `QUIC_CONNECTION_IP_POOLED` and pools onto `kOrigin1`.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+  EXPECT_TRUE(QuicHttpStreamPeer::GetSessionHandle(stream1.get())
+                  ->SharesSameSession(
+                      *QuicHttpStreamPeer::GetSessionHandle(stream2.get())));
+
+  const ServerNetworkStats* preserved_stats =
+      http_server_properties_->GetServerNetworkStats(kOrigin2,
+                                                     NetworkAnonymizationKey());
+  ASSERT_TRUE(preserved_stats);
+  EXPECT_EQ(base::Milliseconds(42), preserved_stats->srtt);
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionCloseErrorCodeClient.HandshakeNotConfirmed",
+      quic::QUIC_CONNECTION_IP_POOLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeNotConfirmed.Reason", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.CryptoRetransmitCount.HandshakeNotConfirmed", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicHandshakeNotConfirmedNumPacketsReceived", 0);
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       NotifyActiveJobsOfSessionActivationHandlesPoolDestructionMidLoop) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kAsyncQuicSession,
+                            features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  // `a.example.org` sorts before `z.example.org` in `active_jobs_`, ensuring
+  // `NotifyActiveJobsOfSessionActivation` visits `kOrigin2` first while
+  // `kOrigin3` remains queued in `job_keys` for the next loop iteration.
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2("https://a.example.org/");
+  const GURL kUrl3("https://z.example.org/");
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+  const url::SchemeHostPort kOrigin3(kUrl3);
+
+  host_resolver_->rules()->AddIPLiteralRule(kOrigin1.host(), "192.168.0.1", "");
+  host_resolver_->rules()->AddIPLiteralRule(kOrigin2.host(),
+                                            "192.168.0.2,192.168.0.1", "");
+  host_resolver_->rules()->AddIPLiteralRule(kOrigin3.host(), "192.168.0.3", "");
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin3.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddConnect(ASYNC, OK);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
+  socket_data1.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(2)
+          .AddConnectionCloseFrame(quic::QUIC_CONNECTION_CANCELLED, "net error")
+          .Build());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  MockConnectCompleter connect_completer2;
+  MockQuicData socket_data2(version_);
+  socket_data2.AddConnect(&connect_completer2);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  MockConnectCompleter connect_completer3;
+  MockQuicData socket_data3(version_);
+  socket_data3.AddConnect(&connect_completer3);
+  socket_data3.AddReadPauseForever();
+  socket_data3.AddSocketDataToFactory(socket_factory_.get());
+
+  auto builder1 = std::make_unique<RequestBuilder>(this);
+  builder1->destination = kOrigin1;
+  builder1->url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1->CallRequest());
+
+  TestCompletionCallback callback2;
+  TestCompletionCallback host_resolution_callback2;
+  auto builder2 = std::make_unique<RequestBuilder>(this);
+  builder2->destination = kOrigin2;
+  builder2->url = kUrl2;
+  builder2->callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2->CallRequest());
+  if (builder2->request.WaitForHostResolution(
+          host_resolution_callback2.callback())) {
+    EXPECT_THAT(host_resolution_callback2.WaitForResult(),
+                IsError(ERR_IO_PENDING));
+  }
+
+  TestCompletionCallback callback3;
+  TestCompletionCallback host_resolution_callback3;
+  auto builder3 = std::make_unique<RequestBuilder>(this);
+  builder3->destination = kOrigin3;
+  builder3->url = kUrl3;
+  builder3->callback = callback3.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder3->CallRequest());
+  if (builder3->request.WaitForHostResolution(
+          host_resolution_callback3.callback())) {
+    EXPECT_THAT(host_resolution_callback3.WaitForResult(),
+                IsError(ERR_IO_PENDING));
+  }
+
+  bool destroyed_pool_in_callback = false;
+  base::RunLoop quit_loop;
+  EXPECT_TRUE(builder2->request.WaitForQuicSessionCreation(
+      base::BindLambdaForTesting([&](int rv) {
+        EXPECT_THAT(rv, IsOk());
+        destroyed_pool_in_callback = true;
+        // Destroy all outstanding requests and `pool_` synchronously inside
+        // `DirectJob::OnSessionActivatedForIp()` while `kOrigin3` is still the
+        // next entry in `NotifyActiveJobsOfSessionActivation`'s `job_keys`.
+        builder1.reset();
+        builder2.reset();
+        builder3.reset();
+        pool_.reset();
+        quit_loop.Quit();
+      })));
+
+  crypto_client_stream_factory_.WaitForStreams(1);
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  quit_loop.Run();
+  EXPECT_TRUE(destroyed_pool_in_callback);
+  EXPECT_FALSE(pool_);
+}
+
+TEST_P(
+    QuicSessionPoolTest,
+    LocalCancellationRecordsUnconfirmedHandshakeMetricsEvenWithProactivePoolingEnabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  const GURL kUrl(kDefaultUrl);
+  const url::SchemeHostPort kOrigin(kUrl);
+
+  ServerNetworkStats initial_stats;
+  initial_stats.srtt = base::Milliseconds(42);
+  http_server_properties_->SetServerNetworkStats(
+      kOrigin, NetworkAnonymizationKey(), initial_stats);
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  base::HistogramTester histogram_tester;
+
+  SessionAttemptHelper session_attempt(pool_.get(), version_,
+                                       /*is_stale=*/false, kOrigin);
+  EXPECT_THAT(session_attempt.Start(), IsError(ERR_IO_PENDING));
+
+  crypto_client_stream_factory_.WaitForStreams(1);
+  ASSERT_EQ(1u, crypto_client_stream_factory_.streams().size());
+
+  // Cancelling the unconfirmed attempt closes its session with
+  // `QUIC_CONNECTION_CANCELLED`. `ServerNetworkStats` must be preserved, while
+  // unconfirmed-handshake failure histograms must STILL be recorded (unlike
+  // `QUIC_CONNECTION_IP_POOLED`).
+  session_attempt.attempt()->Cancel();
+
+  const ServerNetworkStats* preserved_stats =
+      http_server_properties_->GetServerNetworkStats(kOrigin,
+                                                     NetworkAnonymizationKey());
+  ASSERT_TRUE(preserved_stats);
+  EXPECT_EQ(base::Milliseconds(42), preserved_stats->srtt);
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionCloseErrorCodeClient.HandshakeNotConfirmed",
+      quic::QUIC_CONNECTION_CANCELLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeNotConfirmed.Reason", 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionClose.HandshakeFailureBlackHole.QuicError",
+      quic::QUIC_CONNECTION_CANCELLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.CryptoRetransmitCount.HandshakeNotConfirmed", 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicHandshakeNotConfirmedNumPacketsReceived", 0, 2);
+
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       DirectJobSameKeySessionActivationCancelsAttemptWithCancelledErrorCode) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kProactiveIpPoolingForInFlightJobs},
+      /*disabled_features=*/{features::kAsyncDnsQuicJob});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl(kDefaultUrl);
+  const url::SchemeHostPort kOrigin(kUrl);
+  // `SessionAttemptHelper` connects to `IPAddress::IPv4Localhost()`
+  // (`127.0.0.1`), so resolve `kOrigin` to `127.0.0.1` as well.
+  host_resolver_->rules()->AddIPLiteralRule(kOrigin.host(), "127.0.0.1", "");
+
+  ProofVerifyDetailsChromium verify_details1 = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+  ProofVerifyDetailsChromium verify_details2 = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  // Socket 1 belongs to `SessionAttemptHelper` (started before `DirectJob` so
+  // `!HasActiveJob(session_key)` holds at `CreateSessionAttempt()` time).
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  // Socket 2 belongs to `DirectJob`'s in-flight `QuicSessionAttempt` (paused
+  // mid-handshake).
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  base::HistogramTester histogram_tester;
+
+  SessionAttemptHelper session_attempt(pool_.get(), version_,
+                                       /*is_stale=*/false, kOrigin);
+  EXPECT_THAT(session_attempt.Start(), IsError(ERR_IO_PENDING));
+
+  crypto_client_stream_factory_.WaitForStreams(1);
+  ASSERT_EQ(1u, crypto_client_stream_factory_.streams().size());
+
+  RequestBuilder builder(this);
+  builder.destination = kOrigin;
+  builder.url = kUrl;
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  // Activate `session_attempt`. `DirectJob::OnSessionActivatedForIp()` finds an
+  // exact `HasActiveSession(key_.session_key())` match, so it must cancel its
+  // attempt with `QUIC_CONNECTION_CANCELLED` rather than
+  // `QUIC_CONNECTION_IP_POOLED`.
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  EXPECT_THAT(session_attempt.result(), testing::Optional(OK));
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.QuicSession.ConnectionCloseErrorCodeClient.HandshakeNotConfirmed",
+      quic::QUIC_CONNECTION_CANCELLED, 1);
+  histogram_tester.ExpectTotalCount(
+      "Net.QuicSession.ConnectionClose.HandshakeNotConfirmed.Reason", 1);
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(
+    QuicSessionPoolTest,
+    PostHandshakeSamePeerIpPoolingOmitsDnsAliasesWhenAllEndpointsFlagDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{features::kPostHandshakeIpPoolingAllEndpoints,
+                             features::kProactiveIpPoolingForInFlightJobs});
+
+  crypto_client_stream_factory_.set_handshake_mode(
+      MockCryptoClientStream::ASYNC_ZERO_RTT);
+  Initialize();
+  pool_->set_has_quic_ever_worked_on_current_network(true);
+
+  const GURL kUrl1(kDefaultUrl);
+  const GURL kUrl2(kServer2Url);
+  const url::SchemeHostPort kOrigin1(kUrl1);
+  const url::SchemeHostPort kOrigin2(kUrl2);
+
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin1.host(), "192.168.0.1",
+      std::vector<std::string>{"alias1.example.org"});
+  host_resolver_->rules()->AddIPLiteralRuleWithDnsAliases(
+      kOrigin2.host(), "192.168.0.1",
+      std::vector<std::string>{"alias2.example.org"});
+
+  scoped_refptr<X509Certificate> cert(
+      ImportCertFromFile(GetTestCertsDirectory(), "wildcard.pem"));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin1.host()));
+  ASSERT_TRUE(cert->VerifyNameMatch(kOrigin2.host()));
+
+  ProofVerifyDetailsChromium verify_details1;
+  verify_details1.cert_verify_result.verified_cert = cert;
+  verify_details1.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details1);
+
+  ProofVerifyDetailsChromium verify_details2;
+  verify_details2.cert_verify_result.verified_cert = cert;
+  verify_details2.cert_verify_result.is_issued_by_known_root = true;
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details2);
+
+  MockQuicData socket_data1(version_);
+  socket_data1.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data1.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket());
+  socket_data1.AddSocketDataToFactory(socket_factory_.get());
+
+  client_maker_.Reset();
+  MockQuicData socket_data2(version_);
+  socket_data2.AddReadPauseForever();
+  client_maker_.SetEncryptionLevel(quic::ENCRYPTION_FORWARD_SECURE);
+  socket_data2.AddWrite(SYNCHRONOUS, ConstructInitialSettingsPacket(1));
+  socket_data2.AddWrite(
+      SYNCHRONOUS,
+      client_maker_.Packet(2)
+          .AddConnectionCloseFrame(quic::QUIC_CONNECTION_IP_POOLED,
+                                   "An active session exists for the given IP.")
+          .Build());
+  socket_data2.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder1(this);
+  builder1.destination = kOrigin1;
+  builder1.url = kUrl1;
+  EXPECT_EQ(ERR_IO_PENDING, builder1.CallRequest());
+
+  TestCompletionCallback callback2;
+  RequestBuilder builder2(this);
+  builder2.destination = kOrigin2;
+  builder2.url = kUrl2;
+  builder2.callback = callback2.callback();
+  EXPECT_EQ(ERR_IO_PENDING, builder2.CallRequest());
+
+  crypto_client_stream_factory_.WaitForStreams(2);
+  ASSERT_EQ(2u, crypto_client_stream_factory_.streams().size());
+
+  crypto_client_stream_factory_.streams()[0]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  // Complete `kOrigin2`'s handshake on the same peer IP (`192.168.0.1`). With
+  // `kPostHandshakeIpPoolingAllEndpoints` disabled, `DoConfirmConnection()`
+  // passes `{}` to `HasMatchingIpSession()` so the Finch control arm matches
+  // baseline behavior.
+  crypto_client_stream_factory_.streams()[1]->NotifySessionOneRttKeyAvailable();
+  EXPECT_THAT(callback2.WaitForResult(), IsOk());
+
+  std::unique_ptr<HttpStream> stream1 = CreateStream(&builder1.request);
+  ASSERT_TRUE(stream1);
+  std::unique_ptr<HttpStream> stream2 = CreateStream(&builder2.request);
+  ASSERT_TRUE(stream2);
+  EXPECT_TRUE(QuicHttpStreamPeer::GetSessionHandle(stream1.get())
+                  ->SharesSameSession(
+                      *QuicHttpStreamPeer::GetSessionHandle(stream2.get())));
+  EXPECT_THAT(stream1->GetDnsAliases(),
+              testing::ElementsAre("alias1.example.org"));
+  EXPECT_THAT(stream2->GetDnsAliases(), testing::IsEmpty());
+
+  socket_data1.ExpectAllReadDataConsumed();
+  socket_data1.ExpectAllWriteDataConsumed();
+  socket_data2.ExpectAllReadDataConsumed();
+  socket_data2.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest,
+       ClearBrokenAlternativeServicesOnDefaultNetworkChange) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      features::kClearBrokenAlternativeServicesOnDefaultNetworkChange);
+
+  scoped_mock_network_change_notifier_ =
+      std::make_unique<ScopedMockNetworkChangeNotifier>();
+  MockNetworkChangeNotifier* mock_ncn =
+      scoped_mock_network_change_notifier_->mock_network_change_notifier();
+  mock_ncn->ForceNetworkHandlesSupported();
+  mock_ncn->SetConnectedNetworksList(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  mock_ncn->SetDefaultNetwork(kDefaultNetworkForTests);
+
+  EXPECT_FALSE(quic_params_->retry_on_alternate_network_before_handshake);
+  Initialize();
+
+  const AlternativeService alternative_service1(NextProto::kProtoQUIC, "foo1",
+                                                443);
+  const AlternativeService alternative_service2(NextProto::kProtoQUIC, "foo2",
+                                                443);
+  http_server_properties_->MarkAlternativeServiceBroken(
+      alternative_service1, NetworkAnonymizationKey());
+  http_server_properties_->MarkAlternativeServiceRecentlyBroken(
+      alternative_service2, NetworkAnonymizationKey());
+
+  EXPECT_TRUE(http_server_properties_->IsAlternativeServiceBroken(
+      alternative_service1, NetworkAnonymizationKey()));
+  EXPECT_TRUE(http_server_properties_->WasAlternativeServiceRecentlyBroken(
+      alternative_service1, NetworkAnonymizationKey()));
+  EXPECT_FALSE(http_server_properties_->IsAlternativeServiceBroken(
+      alternative_service2, NetworkAnonymizationKey()));
+  EXPECT_TRUE(http_server_properties_->WasAlternativeServiceRecentlyBroken(
+      alternative_service2, NetworkAnonymizationKey()));
+
+  // Redundant notification for the same default network should not clear.
+  mock_ncn->NotifyNetworkMadeDefault(kDefaultNetworkForTests);
+  EXPECT_TRUE(http_server_properties_->IsAlternativeServiceBroken(
+      alternative_service1, NetworkAnonymizationKey()));
+  EXPECT_TRUE(http_server_properties_->WasAlternativeServiceRecentlyBroken(
+      alternative_service2, NetworkAnonymizationKey()));
+
+  // Default network changed to a new network: should clear both.
+  mock_ncn->NotifyNetworkMadeDefault(kNewNetworkForTests);
+  EXPECT_FALSE(http_server_properties_->IsAlternativeServiceBroken(
+      alternative_service1, NetworkAnonymizationKey()));
+  EXPECT_FALSE(http_server_properties_->WasAlternativeServiceRecentlyBroken(
+      alternative_service1, NetworkAnonymizationKey()));
+  EXPECT_FALSE(http_server_properties_->IsAlternativeServiceBroken(
+      alternative_service2, NetworkAnonymizationKey()));
+  EXPECT_FALSE(http_server_properties_->WasAlternativeServiceRecentlyBroken(
+      alternative_service2, NetworkAnonymizationKey()));
+}
+
+TEST_P(QuicSessionPoolTest, V6ToV4MigrationProbingSuccess) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kEnableQuicV6ToV4Migration);
+  quic_params_->migrate_idle_sessions = true;
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  // The fallback IPv4 address must be publicly routable, since the IPv6 peer
+  // address is (2001:db8::/32 falls within 2000::/3).
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "2001:db8::1,1.2.3.4", "");
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  MockQuicData socket_data(version_);
+  socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  socket_data.AddWrite(SYNCHRONOUS,
+                       ConstructInitialSettingsPacket(packet_num++));
+  socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  // First probing socket on the new network fails Connect() to IPv6 with
+  // ERR_ADDRESS_UNREACHABLE.
+  SequencedSocketData failed_v6_probe_data(
+      MockConnect(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE), base::span<MockRead>(),
+      base::span<MockWrite>());
+  socket_factory_->AddSocketDataProvider(&failed_v6_probe_data);
+
+  // Second probing socket on the new network connects to the fallback IPv4
+  // address and succeeds.
+  quic::QuicConnectionId cid_on_new_path =
+      quic::test::TestConnectionId(12345678);
+  client_maker_.set_connection_id(cid_on_new_path);
+  // The session was created on an IPv6 path, so its max packet length was
+  // reduced by 20 bytes of additional IPv6 header overhead. The PATH_CHALLENGE
+  // is padded to that length even though it is sent to the IPv4 address.
+  client_maker_.set_max_plaintext_size(quic::kDefaultMaxPacketSize - 20);
+  MockQuicData v4_probe_data(version_);
+  v4_probe_data.AddWrite(SYNCHRONOUS, client_maker_.Packet(packet_num++)
+                                          .AddPathChallengeFrame()
+                                          .AddPaddingFrame()
+                                          .Build());
+  v4_probe_data.AddReadPause();
+  v4_probe_data.AddRead(
+      ASYNC,
+      server_maker_.Packet(1).AddPathResponseFrame().AddPaddingFrame().Build());
+  v4_probe_data.AddReadPauseForever();
+  v4_probe_data.AddWrite(ASYNC,
+                         client_maker_.MakeRetransmissionPacket(
+                             /*original_packet_number=*/1, packet_num++));
+  v4_probe_data.AddWrite(SYNCHRONOUS, client_maker_.Packet(packet_num++)
+                                          .AddRetireConnectionIdFrame(0u)
+                                          .Build());
+  v4_probe_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  QuicChromiumClientSession* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  EXPECT_TRUE(session->peer_address().host().IsIPv6());
+  ASSERT_TRUE(session->fallback_ipv4_peer_address().has_value());
+  EXPECT_TRUE(session->fallback_ipv4_peer_address()->host().IsIPv4());
+  MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
+
+  base::HistogramTester histogram_tester;
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkMadeDefault(kNewNetworkForTests);
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+
+  v4_probe_data.Resume();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return v4_probe_data.AllWriteDataConsumed(); }));
+
+  EXPECT_EQ(session->peer_address(), *session->fallback_ipv4_peer_address());
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.CanFallback", true, 1);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Eligible.ByTrigger.OnNetworkMadeDefault",
+      true, 1);
+  histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
+                                      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible.ByTrigger."
+      "OnNetworkMadeDefault",
+      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible", true, 1);
+
+  v4_probe_data.ExpectAllReadDataConsumed();
+  v4_probe_data.ExpectAllWriteDataConsumed();
+  socket_data.ExpectAllReadDataConsumed();
+  socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, V6ToV4MigrationWithoutProbingSuccess) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kEnableQuicV6ToV4Migration);
+  quic_params_->migrate_idle_sessions = true;
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  // The fallback IPv4 address must be publicly routable, since the IPv6 peer
+  // address is (2001:db8::/32 falls within 2000::/3).
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "2001:db8::1,1.2.3.4", "");
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  MockQuicData default_socket_data(version_);
+  default_socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  default_socket_data.AddWrite(SYNCHRONOUS,
+                               ConstructInitialSettingsPacket(packet_num++));
+  default_socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  // First migration socket on the alternate network fails Connect() to IPv6
+  // with ERR_ADDRESS_UNREACHABLE.
+  SequencedSocketData failed_v6_socket_data(
+      MockConnect(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE), base::span<MockRead>(),
+      base::span<MockWrite>());
+  socket_factory_->AddSocketDataProvider(&failed_v6_socket_data);
+
+  // Second migration socket connects to the fallback IPv4 address and succeeds.
+  quic::QuicConnectionId cid_on_new_path =
+      quic::test::TestConnectionId(12345678);
+  client_maker_.set_connection_id(cid_on_new_path);
+  MockQuicData v4_socket_data(version_);
+  v4_socket_data.AddRead(SYNCHRONOUS, ERR_IO_PENDING);
+  v4_socket_data.AddWrite(
+      SYNCHRONOUS, client_maker_.MakeRetransmissionPacket(1, packet_num++));
+  v4_socket_data.AddWrite(
+      SYNCHRONOUS, client_maker_.Packet(packet_num++).AddPingFrame().Build());
+  v4_socket_data.AddWrite(SYNCHRONOUS, client_maker_.Packet(packet_num++)
+                                           .AddRetireConnectionIdFrame(0u)
+                                           .Build());
+  v4_socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  auto* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  EXPECT_TRUE(session->peer_address().host().IsIPv6());
+  ASSERT_TRUE(session->fallback_ipv4_peer_address().has_value());
+  MaybeMakeNewConnectionIdAvailableToSession(cid_on_new_path, session);
+
+  base::HistogramTester histogram_tester;
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
+
+  EXPECT_TRUE(HasActiveSession(kDefaultDestination));
+  EXPECT_EQ(session->peer_address(), *session->fallback_ipv4_peer_address());
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.CanFallback", true, 1);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Eligible.ByTrigger.OnNetworkDisconnected",
+      true, 1);
+  histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
+                                      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible.ByTrigger."
+      "OnNetworkDisconnected",
+      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible", true, 1);
+
+  default_socket_data.ExpectAllReadDataConsumed();
+  default_socket_data.ExpectAllWriteDataConsumed();
+  v4_socket_data.ExpectAllReadDataConsumed();
+  v4_socket_data.ExpectAllWriteDataConsumed();
+}
+
+TEST_P(QuicSessionPoolTest, V6ToV4MigrationWithoutProbingNoFallbackAddress) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kEnableQuicV6ToV4Migration);
+  quic_params_->migrate_idle_sessions = true;
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "2001:db8::1", "");
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  MockQuicData default_socket_data(version_);
+  default_socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  default_socket_data.AddWrite(SYNCHRONOUS,
+                               ConstructInitialSettingsPacket(packet_num++));
+  default_socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  SequencedSocketData failed_v6_socket_data(
+      MockConnect(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE), base::span<MockRead>(),
+      base::span<MockWrite>());
+  socket_factory_->AddSocketDataProvider(&failed_v6_socket_data);
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  auto* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  EXPECT_TRUE(session->peer_address().host().IsIPv6());
+  EXPECT_FALSE(session->fallback_ipv4_peer_address().has_value());
+
+  base::HistogramTester histogram_tester;
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !HasActiveSession(kDefaultDestination); }));
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.CanFallback", false, 1);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible", 0);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.SocketConfigError.NetError.ByTrigger."
+      "OnNetworkDisconnected",
+      -ERR_ADDRESS_UNREACHABLE, 1);
+
+  default_socket_data.ExpectAllReadDataConsumed();
+  default_socket_data.ExpectAllWriteDataConsumed();
+}
+
+// Verifies that when the IPv4 fallback itself fails, the migration fails
+// without attempting a second fallback, and the single attempt is recorded once
+// in both the base and the V6ToV4Fallback histograms.
+TEST_P(QuicSessionPoolTest, V6ToV4MigrationWithoutProbingFallbackFailure) {
+  AddScopedFeatureList().InitAndEnableFeature(
+      features::kEnableQuicV6ToV4Migration);
+  quic_params_->migrate_idle_sessions = true;
+  InitializeConnectionMigrationV2Test(
+      {kDefaultNetworkForTests, kNewNetworkForTests});
+  // The fallback IPv4 address must be publicly routable, since the IPv6 peer
+  // address is (2001:db8::/32 falls within 2000::/3).
+  host_resolver_->rules()->AddIPLiteralRule(kDefaultServerHostName,
+                                            "2001:db8::1,1.2.3.4", "");
+  ProofVerifyDetailsChromium verify_details = DefaultProofVerifyDetails();
+  crypto_client_stream_factory_.AddProofVerifyDetails(&verify_details);
+  client_maker_.set_save_packet_frames(true);
+
+  MockQuicData default_socket_data(version_);
+  default_socket_data.AddReadPauseForever();
+  int packet_num = 1;
+  default_socket_data.AddWrite(SYNCHRONOUS,
+                               ConstructInitialSettingsPacket(packet_num++));
+  default_socket_data.AddSocketDataToFactory(socket_factory_.get());
+
+  // First migration socket on the alternate network fails Connect() to IPv6
+  // with ERR_ADDRESS_UNREACHABLE.
+  SequencedSocketData failed_v6_socket_data(
+      MockConnect(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE), base::span<MockRead>(),
+      base::span<MockWrite>());
+  socket_factory_->AddSocketDataProvider(&failed_v6_socket_data);
+
+  // Second migration socket fails Connect() to the fallback IPv4 address with
+  // the same error, which must not trigger another fallback.
+  SequencedSocketData failed_v4_socket_data(
+      MockConnect(SYNCHRONOUS, ERR_ADDRESS_UNREACHABLE), base::span<MockRead>(),
+      base::span<MockWrite>());
+  socket_factory_->AddSocketDataProvider(&failed_v4_socket_data);
+
+  RequestBuilder builder(this);
+  EXPECT_EQ(ERR_IO_PENDING, builder.CallRequest());
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  std::unique_ptr<HttpStream> stream = CreateStream(&builder.request);
+  EXPECT_TRUE(stream.get());
+
+  auto* session = GetActiveSession(kDefaultDestination);
+  ASSERT_TRUE(session);
+  EXPECT_TRUE(session->peer_address().host().IsIPv6());
+  ASSERT_TRUE(session->fallback_ipv4_peer_address().has_value());
+
+  base::HistogramTester histogram_tester;
+  scoped_mock_network_change_notifier_->mock_network_change_notifier()
+      ->NotifyNetworkDisconnected(kDefaultNetworkForTests);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !HasActiveSession(kDefaultDestination); }));
+
+  // CanFallback is only recorded for the IPv6 attempt, not for the fallback.
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.CanFallback", true, 1);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
+  histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
+                                      false, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.Eligible", false, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.SocketConfigError.NetError.ByTrigger."
+      "OnNetworkDisconnected",
+      -ERR_ADDRESS_UNREACHABLE, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.V6ToV4Fallback.SocketConfigError.NetError."
+      "ByTrigger.OnNetworkDisconnected",
+      -ERR_ADDRESS_UNREACHABLE, 1);
+
+  default_socket_data.ExpectAllReadDataConsumed();
+  default_socket_data.ExpectAllWriteDataConsumed();
 }
 
 }  // namespace net::test

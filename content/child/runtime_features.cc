@@ -200,7 +200,10 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableTouchDragAndDrop, features::kTouchDragAndDrop},
           {wf::EnableTouchDragAndContextMenu,
            features::kTouchDragAndContextMenu},
-          {wf::EnableWebAuthenticationAmbient, device::kWebAuthnAmbientSignin},
+          // LINT.IfChange(WebAuthenticationAmbient)
+          {wf::EnableWebAuthenticationAmbient, device::kWebAuthnAmbientSignin,
+           kSetOnlyIfOverridden},
+          // LINT.ThenChange(//third_party/blink/renderer/platform/runtime_enabled_features.json5:WebAuthenticationAmbient)
           {wf::EnableWebAuthenticationCrossDeviceFallbackUrl,
            device::kWebAuthnCrossDeviceFallbackUrl},
           {wf::EnableWebAuthenticationRemoteClientDataJson,
@@ -431,6 +434,15 @@ void SetCustomizedRuntimeFeaturesFromCombinedArgs(
     WebRuntimeFeatures::EnableUnsafeEscapingUnboundedElementOnTheOpenWeb(false);
     WebRuntimeFeatures::EnableUnsafeUnboundedElementOnTheOpenWeb(false);
     WebRuntimeFeatures::EnableUnboundedElement(false);
+  }
+  // The EyeDropper API on Android relies on Intent.ACTION_OPEN_EYE_DROPPER,
+  // which was introduced in Android CinnamonBun (API level 37). Disable the
+  // feature on older Android versions so that the eyedropper IDL is not
+  // registered for feature detection without actually trying to open the
+  // eyedropper.
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_CINNAMON_BUN) {
+    WebRuntimeFeatures::EnableEyeDropperAPI(false);
   }
 #endif
 

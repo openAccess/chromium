@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.accessibility;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.os.Handler;
@@ -11,11 +12,15 @@ import android.os.Looper;
 import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuHandler;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
+import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
+import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.feature_engagement.FeatureConstants;
 
 /** Controller for In-Product Help for the Page Zoom feature. */
@@ -43,6 +48,32 @@ public class PageZoomIphController {
         mAppMenuHandler = appMenuHandler;
         mToolbarMenuButton = toolbarMenuButton;
         mUserEducationHelper = userEducationHelper;
+    }
+
+    /**
+     * Returns whether the Page Zoom IPH may be shown while {@code tab} is the current tab. It is
+     * only shown on non-NTP, non-native pages when the user has not already interacted with the
+     * Page Zoom feature (no saved site zoom levels, no custom default zoom level, and no custom
+     * AppMenu visibility preference in Accessibility Settings). The WebUI NTP is not a native page,
+     * so it is excluded by URL.
+     */
+    public static boolean shouldShowForTab(@Nullable Tab tab) {
+        // Page Zoom IPH should only show on non-NTP, non-Native pages.
+        boolean isQualifyingPage =
+                tab != null
+                        && tab.getWebContents() != null
+                        && !tab.isNativePage()
+                        && !UrlUtilities.isNtpUrl(tab.getUrl());
+        if (!isQualifyingPage) return false;
+
+        // Page Zoom IPH should not show if the user has interacted with the feature in any way.
+        Profile profile = assumeNonNull(tab).getProfile();
+        boolean hasUsedPageZoomFeature =
+                PageZoomUtils.hasAnySavedZoomLevels(profile)
+                        || !PageZoomUtils.usesDefaultPageZoomLevel(profile)
+                        || PageZoomUtils.hasUserSetShouldAlwaysShowZoomMenuItemOption();
+
+        return !hasUsedPageZoomFeature;
     }
 
     /**

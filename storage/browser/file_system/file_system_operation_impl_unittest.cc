@@ -10,6 +10,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "base/compiler_specific.h"
@@ -25,15 +26,18 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
+#include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/services/filesystem/public/mojom/types.mojom.h"
-#include "storage/browser/blob/shareable_file_reference.h"
+#include "storage/browser/blob/scoped_file.h"
+#include "storage/browser/file_system/async_file_util_adapter.h"
 #include "storage/browser/file_system/copy_or_move_hook_delegate.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_file_util.h"
 #include "storage/browser/file_system/file_system_operation_context.h"
 #include "storage/browser/file_system/file_system_operation_runner.h"
+#include "storage/browser/file_system/local_file_util.h"
 #include "storage/browser/file_system/sandbox_file_system_backend.h"
 #include "storage/browser/quota/quota_manager.h"
 #include "storage/browser/quota/quota_manager_proxy.h"
@@ -44,6 +48,7 @@
 #include "storage/browser/test/mock_quota_manager_proxy.h"
 #include "storage/browser/test/mock_special_storage_policy.h"
 #include "storage/browser/test/sandbox_file_system_test_helper.h"
+#include "storage/browser/test/test_file_system_context.h"
 #include "storage/common/file_system/file_system_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
@@ -97,9 +102,7 @@ class FileSystemOperationImplTest : public testing::Test {
     return entries_;
   }
 
-  const ShareableFileReference* shareable_file_ref() const {
-    return shareable_file_ref_.get();
-  }
+  const ScopedFile& temp_file() const { return temp_file_; }
 
   MockQuotaManager* quota_manager() {
     return static_cast<MockQuotaManager*>(quota_manager_.get());
@@ -222,17 +225,16 @@ class FileSystemOperationImplTest : public testing::Test {
     std::move(closure).Run();
   }
 
-  void DidCreateSnapshotFile(
-      base::OnceClosure closure,
-      base::File::Error* status,
-      base::File::Error actual,
-      const base::File::Info& info,
-      const base::FilePath& platform_path,
-      scoped_refptr<ShareableFileReference> shareable_file_ref) {
+  void DidCreateSnapshotFile(base::OnceClosure closure,
+                             base::File::Error* status,
+                             base::File::Error actual,
+                             const base::File::Info& info,
+                             const base::FilePath& platform_path,
+                             ScopedFile temp_file) {
     info_ = info;
     path_ = platform_path;
     *status = actual;
-    shareable_file_ref_ = std::move(shareable_file_ref);
+    temp_file_ = std::move(temp_file);
     std::move(closure).Run();
   }
 
@@ -462,7 +464,7 @@ class FileSystemOperationImplTest : public testing::Test {
   base::File::Info info_;
   base::FilePath path_;
   std::vector<filesystem::mojom::DirectoryEntry> entries_;
-  scoped_refptr<ShareableFileReference> shareable_file_ref_;
+  ScopedFile temp_file_;
 
   MockFileChangeObserver change_observer_;
   ChangeObserverList change_observers_;
@@ -1198,9 +1200,56 @@ TEST_F(FileSystemOperationImplTest, TestCreateSnapshotFile) {
   EXPECT_EQ(PlatformPath("dir/file"), path());
   EXPECT_TRUE(change_observer()->HasNoChange());
 
-  // The FileSystemOpration implementation does not create a
-  // shareable file reference.
-  EXPECT_EQ(nullptr, shareable_file_ref());
+  EXPECT_TRUE(temp_file().path().empty());
+}
+
+TEST_F(FileSystemOperationImplTest, SnapshotTransfersOwnership) {
+  class SnapshotFileUtil : public LocalFileUtil {
+   public:
+    ScopedFile CreateSnapshotFile(FileSystemOperationContext* context,
+                                  const FileSystemURL& url,
+                                  base::File::Error* error,
+                                  base::File::Info* file_info,
+                                  base::FilePath* platform_path) override {
+      LocalFileUtil::CreateSnapshotFile(context, url, error, file_info,
+                                        platform_path);
+      if (*error != base::File::FILE_OK) {
+        return ScopedFile();
+      }
+      return ScopedFile(*platform_path, ScopedFile::DELETE_ON_SCOPE_OUT,
+                        context->task_runner());
+    }
+  };
+
+  base::ScopedTempDir snapshot_dir;
+  ASSERT_TRUE(snapshot_dir.CreateUniqueTempDir());
+  base::FilePath snapshot_path;
+  ASSERT_TRUE(
+      base::CreateTemporaryFileInDir(snapshot_dir.GetPath(), &snapshot_path));
+  const FileSystemURL url = FileSystemURL::CreateForTest(
+      blink::StorageKey::CreateFromStringForTesting("http://example.com"),
+      kFileSystemTypeLocal, snapshot_path);
+  AsyncFileUtilAdapter adapter(std::make_unique<SnapshotFileUtil>());
+  std::unique_ptr<FileSystemOperationContext> context = NewContext();
+  scoped_refptr<base::SequencedTaskRunner> task_runner = context->task_runner();
+  base::test::TestFuture<base::File::Error, const base::File::Info&,
+                         const base::FilePath&, ScopedFile>
+      snapshot_future;
+  adapter.CreateSnapshotFile(std::move(context), url,
+                             snapshot_future.GetCallback());
+
+  ASSERT_EQ(base::File::FILE_OK, snapshot_future.Get<0>());
+  EXPECT_EQ(snapshot_path, snapshot_future.Get<2>());
+  ScopedFile temp_file = std::get<3>(snapshot_future.Take());
+  EXPECT_EQ(snapshot_path, temp_file.path());
+  EXPECT_TRUE(base::PathExists(snapshot_path));
+
+  temp_file.Reset();
+  base::test::TestFuture<bool> exists_future;
+  task_runner->PostTaskAndReplyWithResult(
+      FROM_HERE, base::BindOnce(&base::PathExists, snapshot_path),
+      exists_future.GetCallback());
+  EXPECT_FALSE(exists_future.Get());
 }
 
 TEST_F(FileSystemOperationImplTest, TestMoveSuccessSrcDirRecursiveWithQuota) {
@@ -1303,6 +1352,59 @@ TEST_F(FileSystemOperationImplTest,
       base::File::FILE_OK,
       Copy(src_file, dest_file, FileSystemOperation::CopyOrMoveOptionSet()));
   EXPECT_EQ(0, GetFileSize("dest"));
+}
+
+TEST_F(FileSystemOperationImplTest, TestSyncGetPlatformPath) {
+  FileSystemURL dir(CreateDirectory("dir"));
+  FileSystemURL file(CreateFile("dir/file"));
+  FileSystemURL nonexistent = URLForPath("dir/nonexistent");
+
+  base::FilePath platform_path;
+  EXPECT_EQ(base::File::FILE_OK,
+            operation_runner()->SyncGetPlatformPath(file, &platform_path));
+  EXPECT_EQ(PlatformPath("dir/file"), platform_path);
+
+  base::FilePath dir_platform_path(FILE_PATH_LITERAL("stale"));
+  EXPECT_EQ(base::File::FILE_ERROR_NOT_FOUND,
+            operation_runner()->SyncGetPlatformPath(dir, &dir_platform_path));
+  EXPECT_TRUE(dir_platform_path.empty());
+
+  base::FilePath nonexistent_platform_path(FILE_PATH_LITERAL("stale"));
+  EXPECT_EQ(base::File::FILE_ERROR_NOT_FOUND,
+            operation_runner()->SyncGetPlatformPath(
+                nonexistent, &nonexistent_platform_path));
+  EXPECT_TRUE(nonexistent_platform_path.empty());
+}
+
+TEST_F(FileSystemOperationImplTest, TestSyncGetPlatformPathIncognito) {
+  // Share the same base directory as the regular test fixture so an on-disk
+  // file exists at the matching numbered slot.
+  FileSystemURL regular_file(CreateFile("file"));
+  ASSERT_TRUE(base::PathExists(PlatformPath("file")));
+
+  scoped_refptr<FileSystemContext> incognito_context =
+      CreateIncognitoFileSystemContextForTesting(
+          base::SingleThreadTaskRunner::GetCurrentDefault(),
+          base::SingleThreadTaskRunner::GetCurrentDefault(),
+          quota_manager_proxy(), base_.GetPath().AppendASCII("filesystem"));
+  SandboxFileSystemTestHelper incognito_file_system;
+  incognito_file_system.SetUp(incognito_context);
+
+  FileSystemURL incognito_file =
+      incognito_file_system.CreateURLFromUTF8("file");
+  EXPECT_EQ(base::File::FILE_OK, AsyncFileTestHelper::CreateFile(
+                                     incognito_context.get(), incognito_file));
+  EXPECT_TRUE(
+      AsyncFileTestHelper::FileExists(incognito_context.get(), incognito_file,
+                                      AsyncFileTestHelper::kDontCheckSize));
+
+  base::FilePath platform_path(FILE_PATH_LITERAL("stale"));
+  EXPECT_EQ(base::File::FILE_ERROR_INVALID_OPERATION,
+            incognito_file_system.operation_runner()->SyncGetPlatformPath(
+                incognito_file, &platform_path));
+  EXPECT_TRUE(platform_path.empty());
+
+  incognito_file_system.TearDown();
 }
 
 }  // namespace storage

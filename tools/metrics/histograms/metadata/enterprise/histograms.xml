@@ -211,6 +211,8 @@ chromium-metrics-reviews@google.com.
   <variant name=".InitialEnrollment" summary="Initial Enrollment Exchange"/>
 </variants>
 
+<!-- LINT.IfChange(EnterpriseDMServerRequest) -->
+
 <variants name="EnterpriseDMServerRequest">
   <variant name=""/>
   <variant name=".AndroidManagementCheck" summary="Android Management Check.">
@@ -309,6 +311,10 @@ chromium-metrics-reviews@google.com.
     <owner>rbock@google.com</owner>
     <owner>zmin@chromium.org</owner>
   </variant>
+  <variant name=".RenewDmToken" summary="Renew DM Token.">
+    <owner>lizquierdo@google.com</owner>
+    <owner>cbe-eng@google.com</owner>
+  </variant>
   <variant name=".TokenEnrollment" summary="Token Enrollment.">
     <owner>rbock@google.com</owner>
     <owner>zmin@chromium.org</owner>
@@ -358,6 +364,8 @@ chromium-metrics-reviews@google.com.
   </variant>
 </variants>
 
+<!-- LINT.ThenChange(//components/policy/core/common/cloud/device_management_service.cc:EnterpriseDMServerRequest) -->
+
 <variants name="EnterpriseReportingEventType">
   <variant name="All" summary="All events"/>
   <variant name="BrowserCrash" summary="Browser crash events"/>
@@ -376,6 +384,15 @@ chromium-metrics-reviews@google.com.
   <variant name="UnscannedFile" summary="Unscanned file events"/>
   <variant name="UrlFilteringInterstitial"
       summary="URL filtering interstitial events"/>
+</variants>
+
+<variants name="EnterpriseSecureGatewayErrorCategory">
+  <variant name="" summary="any error category"/>
+  <variant name=".Authentication"
+      summary="the Authentication Required error category"/>
+  <variant name=".Authorization"
+      summary="the Access Denied (authorization) error category"/>
+  <variant name=".Other" summary="the Gateway / Other error category"/>
 </variants>
 
 <!-- LINT.IfChange(EnterpriseSignals) -->
@@ -403,6 +420,11 @@ chromium-metrics-reviews@google.com.
 <variants name="IdentityType">
   <variant name="Dasher-based" summary="google-backed 3P identity"/>
   <variant name="Dasherless" summary="non-google-backed 3P identity"/>
+</variants>
+
+<variants name="MergedPolicyValueType">
+  <variant name="Dictionary" summary="dictionary policy"/>
+  <variant name="List" summary="list policy"/>
 </variants>
 
 <variants name="PolicyLevel">
@@ -809,6 +831,104 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.CdpAttribution.ActorCollisionCount2" units="actors"
+    expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records the total number of distinct active Chrome DevTools Protocol (CDP)
+    actors (external CDP processes within the 30-second command attribution
+    window and active built-in DevTools UI) present on a tab when building
+    EventInitiatorInfo for an enterprise security event or real-time URL lookup.
+    Emitted once per attributed CDP lookup (counts &gt;= 1; 0 is not emitted),
+    so tabs with frequent navigations or events emit multiple samples. Uses
+    exact linear buckets for 1 through 9 actors, with counts of 10 or more
+    placed in the overflow bucket.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.CdpAttribution.LastCommandEventDelay" units="ms"
+    expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records the time elapsed between when an external Chrome DevTools Protocol
+    (CDP) actor last handled a CDP command on a tab and when a subsequent
+    enterprise security event or real-time URL lookup was attributed to that
+    actor during the command attribution window. Emitted once per lookup for
+    each external actor within the attribution window (not once per tab or
+    session), so tabs with frequent navigations or events emit multiple samples.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.CdpAttribution.ProcessTreeWalk.IsEmpty"
+    enum="BooleanEmpty" expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records whether an asynchronous background OS process tree walk for a Pipe
+    or WebSocket Chrome DevTools Protocol (CDP) actor returned an empty
+    ProcessTree (no process nodes resolved). Emitted once per completed
+    background process tree walk.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.CdpAttribution.ProcessTreeWalk.Latency" units="ms"
+    expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records the execution duration of an asynchronous background OS process tree
+    walk task (excluding task queue time) triggered to resolve the external
+    process ancestry of a Pipe or WebSocket Chrome DevTools Protocol (CDP)
+    actor.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.CdpAttribution.UploadSecurityEvent.BuildLatency2"
+    units="microseconds" expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records the synchronous latency of building EventInitiatorInfo for a tab
+    with Chrome DevTools Protocol (CDP) actor attribution when preparing an
+    enterprise security event or real-time URL lookup request. Emitted once per
+    attributed lookup.
+
+    This metric is reported only for clients with high-resolution clocks.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.CdpAttribution.UploadSecurityEvent.Category"
+    enum="CdpSessionCategory" expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records the primary Chrome DevTools Protocol (CDP) session category
+    (built-in DevTools UI, external Pipe, or external WebSocket) reported in
+    EventInitiatorInfo when preparing an enterprise security event or real-time
+    URL lookup request. When multiple external CDP actors are active on the tab,
+    records the category of the actor with the most recent handled command
+    (last_command_at). Emitted once per attributed lookup.
+  </summary>
+</histogram>
+
+<histogram
+    name="Enterprise.CdpAttribution.UploadSecurityEvent.HasEmptyProcessTree"
+    enum="BooleanEmpty" expires_after="2027-05-01">
+  <owner>qiand@google.com</owner>
+  <owner>cbe-cep-eng@google.com</owner>
+  <summary>
+    Records whether any external Chrome DevTools Protocol (CDP) actor reported
+    in EventInitiatorInfo had an empty process tree (no process_nodes) when
+    building attribution for an enterprise security event or real-time URL
+    lookup (for example, because the lookup occurred while the background OS
+    process tree walk was still in flight or because the walk failed to resolve
+    any process nodes). Emitted once per lookup (not per tab or session) when at
+    least one external CDP actor is present.
+  </summary>
+</histogram>
+
 <histogram name="Enterprise.CertificateStore.LevelDB.InitStatus.{Retry}"
     units="code" expires_after="2027-01-02">
   <owner>seblalancette@chromium.org</owner>
@@ -949,7 +1069,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.ClientCertificate.{Level}.CreatePrivateKey.Source"
-    enum="CertificatePrivateKeySource" expires_after="2027-03-07">
+    enum="CertificatePrivateKeySource" expires_after="2027-05-09">
   <owner>seblalancette@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -985,7 +1105,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.ClientCertificate.{Level}.Provisioning.Error"
-    enum="CertificateProvisioningError" expires_after="2027-03-07">
+    enum="CertificateProvisioningError" expires_after="2027-05-09">
   <owner>seblalancette@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -1057,6 +1177,19 @@ chromium-metrics-reviews@google.com.
   </summary>
   <token key="Level" variants="ClientCertLevel"/>
   <token key="UploadScenario" variants="ClientCertificateUploadScenario"/>
+</histogram>
+
+<histogram name="Enterprise.ClientCertificates.ClankKeyLoadResult"
+    enum="ClankClientCertificatesKeyLoadResult" expires_after="2027-05-05">
+  <owner>antoli@google.com</owner>
+  <owner>cbe-device-trust-eng@google.com</owner>
+  <summary>
+    Records whether the private key of a managed identity was found in the
+    Android keystore when the identity is loaded. Recorded once per load
+    attempt. &quot;Not found&quot; means no keystore entry exists for the stored
+    key identifier (the key was lost); &quot;Error&quot; means the keystore
+    could not be queried.
+  </summary>
 </histogram>
 
 <histogram name="Enterprise.ClientCertificates.ClankKeySecurityLevel"
@@ -1617,7 +1750,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceRemoteCommandInvalidations"
-    enum="EnterprisePolicyInvalidations" expires_after="2027-03-07">
+    enum="EnterprisePolicyInvalidations" expires_after="2027-05-09">
   <owner>asumaneev@google.com</owner>
   <owner>chromeos-commercial-remote-management@google.com</owner>
   <summary>
@@ -1875,7 +2008,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceSignals.HarmfulApps.Result"
-    enum="DeviceSignalsHarmfulAppsStatus" expires_after="2027-03-07">
+    enum="DeviceSignalsHarmfulAppsStatus" expires_after="2027-05-09">
   <owner>xzonghan@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -1885,7 +2018,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceSignals.SafetyNet.Latency" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>mwalachowski@google.com</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -1930,7 +2063,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceSignals.UserPermission"
-    enum="DeviceSignalsUserPermission" expires_after="2027-03-07">
+    enum="DeviceSignalsUserPermission" expires_after="2027-05-09">
   <owner>seblalancette@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -1963,6 +2096,20 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.DeviceTrust.Attestation.ResponseHeaderSize"
+    units="bytes" expires_after="2027-10-01">
+  <owner>mwalachowski@google.com</owner>
+  <owner>seblalancette@chromium.org</owner>
+  <owner>cbe-device-trust-eng@google.com</owner>
+  <summary>
+    Size of the X-Verified-Access-Challenge-Response header value that the
+    Device Trust connector sends to the identity provider. Recorded once per
+    handshake, only on success. Tracks how close the header gets to the ~8 KiB
+    limit of identity providers and proxies (e.g. HTTP 431). Recorded on every
+    platform that uses the navigation throttle.
+  </summary>
+</histogram>
+
 <histogram name="Enterprise.DeviceTrust.Attestation.ResponseLatency.{Variant}"
     units="ms" expires_after="2027-10-01">
   <owner>hmare@google.com</owner>
@@ -1992,6 +2139,46 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.DeviceTrust.AttestationToken.Latency.{Outcome}"
+    units="ms" expires_after="2027-10-01">
+  <owner>mwalachowski@google.com</owner>
+  <owner>cbe-device-trust-eng@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
+  <summary>
+    Time to generate the attestation token that signs a Device Trust connector
+    challenge response. Recorded once per token request that {Outcome},
+    including results that arrive after the handshake timed out. Android only.
+  </summary>
+  <token key="Outcome">
+    <variant name="Failure" summary="failed"/>
+    <variant name="Success" summary="succeeded"/>
+  </token>
+</histogram>
+
+<histogram name="Enterprise.DeviceTrust.AttestationToken.Result"
+    enum="DTAttestationTokenResult" expires_after="2027-10-01">
+  <owner>mwalachowski@google.com</owner>
+  <owner>cbe-device-trust-eng@google.com</owner>
+  <summary>
+    Outcome of each request for the attestation token that signs a Device Trust
+    connector challenge response, including results that arrive after the
+    handshake timed out. Not recorded for pre-warming, or when the
+    DeviceTrustAndroidAttestationTokens feature is disabled. Google Chrome on
+    Android only.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.DeviceTrust.AttestationToken.Size" units="bytes"
+    expires_after="2027-10-01">
+  <owner>mwalachowski@google.com</owner>
+  <owner>cbe-device-trust-eng@google.com</owner>
+  <summary>
+    Size of each successfully generated attestation token. It is base64-encoded
+    into the challenge response header, taking about 4/3 of this size there.
+    Android only.
+  </summary>
+</histogram>
+
 <histogram name="Enterprise.DeviceTrust.EnrollmentStatus"
     enum="DTEnrollmentStatus" expires_after="2027-01-02">
   <owner>lmasopust@google.com</owner>
@@ -2015,7 +2202,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceTrust.Key.LoadPersistedKeyResult"
-    enum="DTLoadPersistedKeyResult" expires_after="2027-01-02">
+    enum="DTLoadPersistedKeyResult" expires_after="2027-05-09">
   <owner>seblalancette@google.com</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -2025,7 +2212,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.DeviceTrust.Key.Signing.Latency.{Variant}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>seblalancette@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>
@@ -2325,16 +2512,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Enterprise.Dlp.ConfidentialContentsCacheEvictedOnFull"
-    enum="Boolean" expires_after="2027-08-01">
-  <owner>aidazolic@chromium.org</owner>
-  <owner>chromeos-dlp@google.com</owner>
-  <summary>
-    Recorded when an entry is evicted from DlpConfidentialContentsCache because
-    the cache has reached its maximum size limit.
-  </summary>
-</histogram>
-
 <histogram name="Enterprise.Dlp.ConfidentialContentsCount" units="entries"
     expires_after="2027-04-25">
   <owner>aidazolic@chromium.org</owner>
@@ -2357,7 +2534,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.DataTransferReportingTimeDiff" units="ms"
-    expires_after="2026-12-01">
+    expires_after="2027-12-01">
   <owner>poromov@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2387,7 +2564,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.Errors.Adaptor"
-    enum="EnterpriseDlpPolicyCrOSAdaptorError" expires_after="2026-12-01">
+    enum="EnterpriseDlpPolicyCrOSAdaptorError" expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2407,7 +2584,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.Errors.Fanotify"
-    enum="EnterpriseDlpPolicyCrOSFanotifyError" expires_after="2026-12-01">
+    enum="EnterpriseDlpPolicyCrOSFanotifyError" expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2417,7 +2594,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.Errors.FileDatabase"
-    enum="EnterpriseDlpPolicyCrOSFileDatabaseError" expires_after="2026-12-01">
+    enum="EnterpriseDlpPolicyCrOSFileDatabaseError" expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2437,7 +2614,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.Errors.ReportQueueNotReady" enum="Boolean"
-    expires_after="2026-12-01">
+    expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2463,7 +2640,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.FileActionBlocked2"
-    enum="EnterpriseDlpPolicyFileAction" expires_after="2026-12-01">
+    enum="EnterpriseDlpPolicyFileAction" expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2483,7 +2660,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.FileActionWarned2"
-    enum="EnterpriseDlpPolicyFileAction" expires_after="2026-12-01">
+    enum="EnterpriseDlpPolicyFileAction" expires_after="2027-12-01">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2493,7 +2670,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.FileActionWarnProceeded"
-    enum="EnterpriseDlpPolicyFileAction" expires_after="2026-11-30">
+    enum="EnterpriseDlpPolicyFileAction" expires_after="2027-11-30">
   <owner>accorsi@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2553,7 +2730,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.FilesDefaultFileAccess"
-    enum="EnterpriseDlpFileAccessDefaultAction" expires_after="2026-12-14">
+    enum="EnterpriseDlpFileAccessDefaultAction" expires_after="2027-12-14">
   <owner>brinky@chromium.org</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -2573,7 +2750,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Dlp.FilesWarnedCount" units="entries"
-    expires_after="2026-11-23">
+    expires_after="2027-11-23">
   <owner>ayaelattar@google.com</owner>
   <owner>chromeos-dlp@google.com</owner>
   <summary>
@@ -3246,7 +3423,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.ExtensibleEnterpriseSSO.Okta.Result"
-    enum="BooleanSuccess" expires_after="2027-02-14">
+    enum="BooleanSuccess" expires_after="2027-05-09">
   <owner>ssolarewicz@chromium.org</owner>
   <owner>cec-growth@google.com</owner>
   <summary>
@@ -3258,7 +3435,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.ExtensibleEnterpriseSSO.Okta.{Status}.Duration"
-    units="ms" expires_after="2027-02-14">
+    units="ms" expires_after="2027-05-09">
   <owner>ssolarewicz@chromium.org</owner>
   <owner>cec-growth@google.com</owner>
   <summary>
@@ -3725,7 +3902,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.LocalAuthFactorsPolicy.ForcedReauth" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>fahadmansoor@google.com</owner>
   <owner>chromeos-commercial-identity@google.com</owner>
   <summary>
@@ -3736,7 +3913,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.LocalAuthFactorsPolicy.LocalAuthFactorChanged"
-    enum="LocalAuthFactorType" expires_after="2027-03-07">
+    enum="LocalAuthFactorType" expires_after="2027-05-09">
   <owner>fahadmansoor@google.com</owner>
   <owner>chromeos-commercial-identity@google.com</owner>
   <summary>
@@ -3927,6 +4104,22 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.NetworkAuth.TokenFetchLatency.{Result}" units="ms"
+    expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the end-to-end latency of an Enterprise Network authentication
+    access token request (including account managed status verification and
+    OAuth token acquisition) that {Result}. Recorded once per request alongside
+    Enterprise.NetworkAuth.TokenFetchError.
+  </summary>
+  <token key="Result">
+    <variant name="Failure" summary="failed"/>
+    <variant name="Success" summary="succeeded"/>
+  </token>
+</histogram>
+
 <histogram name="Enterprise.OidcEnrollment.Interception.Funnel"
     enum="OidcInterceptionFunnelStep" expires_after="2027-05-01">
   <owner>xzonghan@chromium.org</owner>
@@ -4081,7 +4274,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.Policies" enum="EnterprisePolicies"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>asumaneev@google.com</owner>
   <owner>chromeos-commercial-remote-management@google.com</owner>
   <summary>
@@ -4124,33 +4317,6 @@ chromium-metrics-reviews@google.com.
   <summary>
     Record whether profile has successfully fetched policy with profile id once
     before uploading reporting. Recorded during profile creation. iOS only.
-  </summary>
-</histogram>
-
-<histogram name="Enterprise.Policy.AppRestrictionsProviderFetchTime" units="ms"
-    expires_after="2027-09-01">
-  <owner>shadmehr@google.com</owner>
-  <owner>zmin@chromium.org</owner>
-  <owner>cec-growth@google.com</owner>
-  <summary>
-    Measures the synchronous app restrictions fetch latency on Android. Recorded
-    by AppRestrictionsProvider each time restrictions are fetched.
-  </summary>
-</histogram>
-
-<histogram
-    name="Enterprise.Policy.AppRestrictionsProviderRestrictionsManagerAvailable"
-    enum="Boolean" expires_after="2027-09-01">
-  <owner>shadmehr@google.com</owner>
-  <owner>zmin@chromium.org</owner>
-  <owner>cec-growth@google.com</owner>
-  <summary>
-    Whether RestrictionsManager's system service is available when
-    AppRestrictionsProvider was created on Android. Recorded each time
-    restrictions are fetched with the
-    UseRestrictionsManagerInAppRestrictionsProvider feature enabled, so a
-    browser process can record it several times. When it is not available,
-    restrictions are fetched from UserManager instead.
   </summary>
 </histogram>
 
@@ -4218,6 +4384,22 @@ chromium-metrics-reviews@google.com.
     <variant name="Decompression"
         summary="decompressing and deserializing log entries from gzip"/>
   </token>
+</histogram>
+
+<histogram
+    name="Enterprise.PolicyMerge.NonChromeNamespace.ValueChanged.{ValueType}"
+    enum="BooleanChanged" expires_after="2027-04-01">
+  <owner>shadmehr@google.com</owner>
+  <owner>enterprise-policy-review@google.com</owner>
+  <summary>
+    Whether merging a {ValueType} outside the Chrome namespace (e.g. an
+    extension's) from multiple sources produced a value different from what
+    precedence alone would have selected. Recorded by each profile-level
+    PolicyService when such a merged policy first appears or its merge result
+    changes, so a merge of machine-level policies is reported once per profile
+    that sees it, in every session.
+  </summary>
+  <token key="ValueType" variants="MergedPolicyValueType"/>
 </histogram>
 
 <histogram name="Enterprise.PolicyRefresh2" enum="EnterprisePolicyRefresh"
@@ -4344,7 +4526,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.ProfileAffiliation.UnaffiliatedReason"
-    enum="EnterpriseProfileUnaffiliatedReason" expires_after="2027-03-07">
+    enum="EnterpriseProfileUnaffiliatedReason" expires_after="2027-05-09">
   <owner>igorruvinov@chromium.org</owner>
   <owner>cbe-magic@google.com</owner>
   <summary>
@@ -4403,12 +4585,40 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Enterprise.ProvisioningDomain.FetchLatency.{Result}"
+    units="ms" expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the end-to-end latency of a Provisioning Domain (PvD) configuration
+    fetch lifecycle (from token acquisition through HTTP download and JSON
+    parsing) that {Result}. Recorded once per fetch alongside
+    Enterprise.ProvisioningDomain.FetchResult; cancelled fetches are not
+    recorded.
+  </summary>
+  <token key="Result">
+    <variant name="Failure" summary="failed"/>
+    <variant name="Success" summary="succeeded"/>
+  </token>
+</histogram>
+
 <histogram name="Enterprise.ProvisioningDomain.FetchResult"
     enum="EnterpriseProvisioningDomainFetchResult" expires_after="2027-07-01">
   <owner>xzonghan@google.com</owner>
   <owner>chrome-enterprise-networking-core@google.com</owner>
   <summary>
     Recorded when a Provisioning Domain configuration fetch finishes or fails.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.ProvisioningDomain.RefreshTrigger"
+    enum="EnterpriseProvisioningDomainRefreshTrigger"
+    expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the event that triggered a Provisioning Domain configuration refresh
+    attempt in ProxyProvisioningDomainManager.
   </summary>
 </histogram>
 
@@ -4419,6 +4629,18 @@ chromium-metrics-reviews@google.com.
   <owner>chrome-enterprise-networking-core@google.com</owner>
   <summary>
     Recorded the result of a Provisioning Domain (PvD) JSON configuration fetch.
+  </summary>
+</histogram>
+
+<histogram name="Enterprise.ProvisioningDomainClient.HttpLatency" units="ms"
+    expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the HTTP GET latency (including any internal 5xx retries by
+    SimpleURLLoader) when fetching a Provisioning Domain JSON configuration.
+    Recorded once when the loader completes; invalid URLs and cancelled requests
+    are not recorded.
   </summary>
 </histogram>
 
@@ -4450,6 +4672,40 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram
+    name="Enterprise.ProxyOverrideRules.PlatformAffiliationImpact.{Source}"
+    enum="ProxyPlatformAffiliationImpact" expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the impact of enforcing platform-level device management (such as
+    AD/GPO or MDM without CBCM) on a currently viable ProxyOverrideRules
+    configuration controlled by {Source}. Recorded for regular profiles once
+    PolicyService initialization completes when active ProxyOverrideRules are
+    present, and whenever that source's impact classification changes within the
+    session (so a profile whose classification transitions mid-session can emit
+    to multiple buckets).
+
+    Note: The &quot;Platform-managed device, would be blocked on rollout&quot;
+    bucket is only populated while
+    EnforceProxyAffiliationOnPlatformManagedDevices is disabled (e.g. on desktop
+    prior to rollout). When enforcement is enabled (such as on Android by
+    default or in enabled Finch arms), unaffiliated user-scoped policy and
+    extension rules are rejected before populating ProxyConfig, so no sample is
+    recorded for blocked configurations and a zero count in that bucket does not
+    indicate zero blocked users. Additionally, because local_state-cached
+    PlatformManagementService providers (MDM/Entra/EMM) refresh asynchronously
+    on startup and are not directly observed here, cold-start sessions before
+    the cache is populated may initially record &quot;Unaffected&quot; and only
+    emit &quot;Platform-managed device, would be blocked on rollout&quot; on a
+    subsequent policy or preference refresh.
+  </summary>
+  <token key="Source">
+    <variant name="Extension" summary="an extension"/>
+    <variant name="Policy" summary="the ProxyOverrideRules policy"/>
+  </token>
+</histogram>
+
 <histogram name="Enterprise.PublicSession.SessionLength" units="minutes"
     expires_after="2027-04-18">
   <owner>bfranz@chromium.org</owner>
@@ -4465,7 +4721,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.RefreshTokenLoadResult" enum="Boolean"
-    expires_after="2027-03-08">
+    expires_after="2027-05-09">
   <owner>igorcov@chromium.org</owner>
   <owner>chromeos-commercial-remote-management@google.com</owner>
   <summary>
@@ -4502,7 +4758,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.RemoveLocalAuthFactorsScreen.Shown" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>fahadmansoor@google.com</owner>
   <owner>chromeos-commercial-identity@google.com</owner>
   <summary>
@@ -4511,7 +4767,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.RemoveLocalAuthFactorsScreen.Success"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>fahadmansoor@google.com</owner>
   <owner>chromeos-commercial-identity@google.com</owner>
   <summary>
@@ -4635,6 +4891,46 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram
+    name="Enterprise.SecureGateway.ErrorPage.Event{EnterpriseSecureGatewayErrorCategory}"
+    enum="EnterpriseSecureGatewayErrorPageEvent" expires_after="2027-11-01">
+  <owner>dmytriievd@google.com</owner>
+  <owner>xzonghan@google.com</owner>
+  <owner>bling-enterprise@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the events of the Secure Gateway error page, shown when a managed
+    enterprise proxy fails a navigation, for
+    {EnterpriseSecureGatewayErrorCategory}. &quot;Shown&quot; is recorded on all
+    platforms when the page is created for a failed navigation, right before it
+    is displayed. On iOS, where the page is a security interstitial, exactly one
+    outcome is then recorded, unless the app is terminated while the page is
+    displayed: &quot;Go back&quot; when the user taps &quot;Go back&quot;, which
+    the Access Denied and Gateway / Other error pages show, &quot;Continue&quot;
+    when the user taps &quot;Continue&quot; on the Authentication Required error
+    page, whether or not a sign-in flow starts, &quot;Dismissed&quot; when the
+    user leaves the page without using its button, once a navigation away from
+    it commits, e.g. a back navigation, an omnibox navigation or a reload, or
+    its tab is closed, or &quot;Not displayed&quot; when the page is destroyed
+    without having been displayed, which only happens when its navigation
+    doesn't commit.
+  </summary>
+  <token key="EnterpriseSecureGatewayErrorCategory"
+      variants="EnterpriseSecureGatewayErrorCategory"/>
+</histogram>
+
+<histogram name="Enterprise.SecureGateway.NetworkPause.Duration" units="ms"
+    expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the duration of a browser-side Secure Gateway network traffic pause
+    while one or more Provisioning Domain configurations are refreshing.
+    Recorded once when all active refreshes finish, or when an in-progress pause
+    is closed by a policy replacement or service shutdown.
+  </summary>
+</histogram>
+
 <histogram name="Enterprise.SecureGateway.ProxyAuthChallengeDecision"
     enum="EnterpriseProxyAuthChallengeDecision" expires_after="2027-07-01">
   <owner>xzonghan@google.com</owner>
@@ -4650,6 +4946,28 @@ chromium-metrics-reviews@google.com.
     Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome. A persistent gap
     between the two indicates fetches whose result was never delivered.
   </summary>
+</histogram>
+
+<histogram
+    name="Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.{Outcome}"
+    units="ms" expires_after="2027-11-01">
+  <owner>xzonghan@google.com</owner>
+  <owner>chrome-enterprise-networking-core@google.com</owner>
+  <summary>
+    Records the latency of resolving credentials in EnterpriseProxyService for a
+    407 Proxy Authentication challenge classified as &quot;Needs
+    credentials&quot; whose credential fetch {Outcome}. Recorded once per
+    challenge alongside
+    Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome, including
+    coalesced challenges waiting on an in-flight token fetch.
+  </summary>
+  <token key="Outcome">
+    <variant name="Failure"
+        summary="failed for a reason the user cannot act on"/>
+    <variant name="SignInRequired"
+        summary="failed because sign-in or re-authentication is required"/>
+    <variant name="Success" summary="succeeded"/>
+  </token>
 </histogram>
 
 <histogram name="Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome"
@@ -4673,7 +4991,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.SecurityReport.User.Trigger"
-    enum="SecurityReportTrigger" expires_after="2027-03-07">
+    enum="SecurityReportTrigger" expires_after="2027-05-09">
   <owner>xzonghan@chromium.org</owner>
   <owner>cbe-device-trust-eng@google.com</owner>
   <summary>The source trigger of security signals-only reports</summary>
@@ -5481,7 +5799,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.UserPolicyChromeOS.ChildUser.OAuthTokenError"
-    enum="GoogleServiceAuthError" expires_after="2027-03-07">
+    enum="GoogleServiceAuthError" expires_after="2027-05-09">
   <owner>longbowei@google.com</owner>
   <owner>zhangwenyu@google.com</owner>
   <owner>michaelpg@chromium.org</owner>
@@ -5709,7 +6027,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Enterprise.{Page}PromotionBannerDisplayed" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>austinzzr@chromium.org</owner>
   <owner>esalma@google.com</owner>
   <summary>
@@ -5992,7 +6310,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NetworkedProfile.Check" enum="NetworkedProfileCheck"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>pastarmovj@chromium.org</owner>
   <owner>grt@chromium.org</owner>
   <summary>

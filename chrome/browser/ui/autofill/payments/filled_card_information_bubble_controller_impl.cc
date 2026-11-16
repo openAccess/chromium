@@ -363,7 +363,11 @@ void FilledCardInformationBubbleControllerImpl::
 FilledCardInformationBubbleControllerImpl::
     FilledCardInformationBubbleControllerImpl(
         content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionFilledCardInformation,
+                           .should_manage_visibility = true,
+                           .should_sync_bubble_showing_state = true}),
       content::WebContentsUserData<FilledCardInformationBubbleControllerImpl>(
           *web_contents) {}
 
@@ -373,24 +377,6 @@ void FilledCardInformationBubbleControllerImpl::PrimaryPageChanged(
   bubble_has_been_shown_ = false;
   UpdatePageActionIcon();
   HideBubble(/*initiated_by_bubble_manager=*/false);
-}
-
-void FilledCardInformationBubbleControllerImpl::OnVisibilityChanged(
-    content::Visibility visibility) {
-  if (IsBubbleManagerEnabled()) {
-    // BubbleManager will handle the effects of tab changes.
-    return;
-  }
-
-  // If the bubble hasn't been shown yet due to changing the tab during
-  // kFilledCardInformationBubbleDelay, show the bubble after switching back
-  // to the tab.
-  if (visibility == content::Visibility::VISIBLE && !bubble_has_been_shown_ &&
-      should_icon_be_visible_) {
-    QueueOrShowBubble();
-  } else if (visibility == content::Visibility::HIDDEN) {
-    HideBubble(/*initiated_by_bubble_manager=*/false);
-  }
 }
 
 bool FilledCardInformationBubbleControllerImpl::ShouldReshowOnTabVisible()
@@ -404,11 +390,6 @@ bool FilledCardInformationBubbleControllerImpl::ShouldReshowOnTabVisible()
 #if !BUILDFLAG(IS_ANDROID)
 bool FilledCardInformationBubbleControllerImpl::ShouldShowPageAction() {
   return ShouldIconBeVisible();
-}
-
-std::optional<actions::ActionId>
-FilledCardInformationBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionFilledCardInformation;
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 

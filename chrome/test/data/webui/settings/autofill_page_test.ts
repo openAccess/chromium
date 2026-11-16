@@ -5,9 +5,10 @@
 import 'chrome://settings/settings.js';
 
 import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {AiEnterpriseFeaturePrefName, AutofillManagerImpl, EntityDataManagerProxyImpl, PaymentsManagerImpl} from 'chrome://settings/lazy_load.js';
 import type {SettingsAutofillPageElement} from 'chrome://settings/settings.js';
-import {loadTimeData, MetricsBrowserProxyImpl, ModelExecutionEnterprisePolicyValue, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
+import {loadTimeData, MetricsBrowserProxyImpl, ModelExecutionEnterprisePolicyValue, OpenWindowProxyImpl, PasswordManagerImpl, PasswordManagerPage, PrefsBrowserProxy, PrefService, resetRouterForTesting, Router, SavedInfoHandlerImpl, YourSavedInfoDataCategory, YourSavedInfoDataChip, YourSavedInfoRelatedService} from 'chrome://settings/settings.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestOpenWindowProxy} from 'chrome://webui-test/test_open_window_proxy.js';
 import {isChildVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -17,6 +18,7 @@ import {TestEntityDataManagerProxy} from './test_entity_data_manager_proxy.js';
 import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
 import {TestPrefsBrowserProxy} from './test_prefs_browser_proxy.js';
+import {TestSavedInfoHandlerProxy} from './test_saved_info_handler_proxy.js';
 
 async function setupPrefs() {
   const prefsBrowserProxy = new TestPrefsBrowserProxy([
@@ -52,6 +54,7 @@ suite('AutofillPage', function() {
   let passwordManager: TestPasswordManagerProxy;
   let paymentsManager: TestPaymentsManager;
   let metricsBrowserProxy: TestMetricsBrowserProxy;
+  let savedInfoHandler: TestSavedInfoHandlerProxy;
 
   suiteSetup(function() {
     return setupPrefs();
@@ -68,12 +71,15 @@ suite('AutofillPage', function() {
     PaymentsManagerImpl.setInstance(paymentsManager);
     metricsBrowserProxy = new TestMetricsBrowserProxy();
     MetricsBrowserProxyImpl.setInstance(metricsBrowserProxy);
+    savedInfoHandler = new TestSavedInfoHandlerProxy();
+    SavedInfoHandlerImpl.setInstance(savedInfoHandler);
 
     await setupPage({
       showIbansSettings: true,
       shouldShowPayOverTimeSettings: true,
       shoppingIntegrationEnabled: true,
       showSuggestionsFromGeminiSettings: true,
+      offersAndLoyaltyCardsSettingsEnabled: true,
     });
   });
 
@@ -123,6 +129,17 @@ suite('AutofillPage', function() {
     assertFalse(!!shoppingCard);
   });
 
+  test('OffersAndLoyaltyCardsCategoryHiddenWhenFlagDisabled', async function() {
+    await setupPage({
+      offersAndLoyaltyCardsSettingsEnabled: false,
+    });
+
+    const offersAndLoyaltyCardsCard =
+        autofillPage.shadowRoot.querySelector<HTMLElement>(
+            '#offersAndLoyaltyCardsManagerButton');
+    assertFalse(!!offersAndLoyaltyCardsCard);
+  });
+
   test('CardsRenderCorrectly', function() {
     const cards =
         autofillPage.shadowRoot.querySelectorAll('category-reference-card');
@@ -132,6 +149,7 @@ suite('AutofillPage', function() {
       loadTimeData.getString('contactInfoTitle'),
       loadTimeData.getString('identityDocsCardTitle'),
       loadTimeData.getString('travelCardTitle'),
+      loadTimeData.getString('offersAndLoyaltyCardsCardTitle'),
       loadTimeData.getString('shoppingCardTitle'),
     ];
 
@@ -185,6 +203,11 @@ suite('AutofillPage', function() {
      cardTitle: 'travelCardTitle',
      expectedRoute: '/travel',
      expectedCategory: YourSavedInfoDataCategory.TRAVEL,
+   },
+   {
+     cardTitle: 'offersAndLoyaltyCardsCardTitle',
+     expectedRoute: '/offersAndLoyaltyCards',
+     expectedCategory: YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS,
    },
    {
      cardTitle: 'shoppingCardTitle',
@@ -290,6 +313,44 @@ suite('AutofillPage', function() {
     assertEquals('Settings.YourSavedInfo.ChipClick.ORDERS', action);
   });
 
+  test('LoyaltyCardsCounterIsUpdated', async function() {
+    savedInfoHandler.setLoyaltyCardsCount(2);
+    // `setup()` already created a page, so reset the resolver to wait for the
+    // call from the recreated page below.
+    savedInfoHandler.resetResolver('getLoyaltyCardsCount');
+    await setupPage({offersAndLoyaltyCardsSettingsEnabled: true});
+    await savedInfoHandler.whenCalled('getLoyaltyCardsCount');
+    await microtasksFinished();
+    assertEquals(2, getChipCount(loadTimeData.getString('loyaltyCardsTitle')));
+
+    webUIListenerCallback('loyalty-cards-count-changed', 3);
+    await microtasksFinished();
+    assertEquals(3, getChipCount(loadTimeData.getString('loyaltyCardsTitle')));
+  });
+
+  test('ClickOnLoyaltyCardsChipNavigatesToLeafPage', async function() {
+    const card = autofillPage.shadowRoot.querySelector<HTMLElement>(
+        '#offersAndLoyaltyCardsManagerButton');
+    assertTrue(!!card);
+    const chips: HTMLElement[] =
+        Array.from(card.shadowRoot!.querySelectorAll('cr-button'));
+    const chip: HTMLElement = chips.find(chip => {
+      const labelSpan = chip.querySelector('span:not(.counter)');
+      return labelSpan &&
+          labelSpan.textContent === loadTimeData.getString('loyaltyCardsTitle');
+    })!;
+    assertTrue(!!chip);
+
+    chip.click();
+    assertEquals(
+        '/offersAndLoyaltyCards', Router.getInstance().currentRoute.path);
+    const [metricChip] = await metricsBrowserProxy.whenCalled(
+        'recordYourSavedInfoDataChipClick');
+    assertEquals(YourSavedInfoDataChip.LOYALTY_CARDS, metricChip);
+    const action = await metricsBrowserProxy.whenCalled('recordAction');
+    assertEquals('Settings.YourSavedInfo.ChipClick.LOYALTY_CARDS', action);
+  });
+
   test('SuggestionsFromGeminiHiddenWhenFlagDisabled', async function() {
     await setupPage({
       showSuggestionsFromGeminiSettings: false,
@@ -376,7 +437,8 @@ suite('DataChipsVisibility', function() {
 
   async function setupPage(overrides: {[key: string]: boolean}):
       Promise<SettingsAutofillPageElement> {
-    loadTimeData.overrideValues(overrides);
+    loadTimeData.overrideValues(
+        {offersAndLoyaltyCardsSettingsEnabled: false, ...overrides});
     resetRouterForTesting();
 
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -493,6 +555,24 @@ suite('DataChipsVisibility', function() {
           loadTimeData.getString('loyaltyCardsTitle'),
         ],
         getChipLabels(autofillPage, '#paymentManagerButton'));
+  });
+
+  test('LoyaltyCardsChipInOffersAndLoyaltyCardsWhenEnabled', async function() {
+    const autofillPage = await setupPage({
+      showIbansSettings: true,
+      shouldShowPayOverTimeSettings: true,
+      offersAndLoyaltyCardsSettingsEnabled: true,
+    });
+    assertDeepEquals(
+        [
+          loadTimeData.getString('creditAndDebitCardTitle'),
+          loadTimeData.getString('ibanTitle'),
+          loadTimeData.getString('autofillPayOverTimeSettingsLabel'),
+        ],
+        getChipLabels(autofillPage, '#paymentManagerButton'));
+    assertDeepEquals(
+        [loadTimeData.getString('loyaltyCardsTitle')],
+        getChipLabels(autofillPage, '#offersAndLoyaltyCardsManagerButton'));
   });
 
   test('DisabledAutofillAi', async function() {

@@ -35,6 +35,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_degradation_preference.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoding_complexity.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_encoding_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_insertable_streams.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_rtc_priority_type.h"
@@ -265,22 +266,29 @@ WebRtcScalabilityMode ScalabilityModeStringToUMAMode(
 
 class ReplaceTrackRequest : public RTCVoidRequest {
  public:
-  ReplaceTrackRequest(RTCRtpSender* sender,
+  ReplaceTrackRequest(RTCPeerConnection* pc,
+                      RTCRtpSender* sender,
                       MediaStreamTrack* with_track,
                       ScriptPromiseResolver<IDLUndefined>* resolver)
-      : sender_(sender), with_track_(with_track), resolver_(resolver) {}
+      : pc_(pc), sender_(sender), with_track_(with_track), resolver_(resolver) {
+    // replaceTrack() is a chained operation.
+    pc_->NoteChainedOperationStarted();
+  }
   ~ReplaceTrackRequest() override {}
 
   void RequestSucceeded() override {
+    pc_->NoteChainedOperationSettled();
     sender_->SetTrack(with_track_);
     resolver_->Resolve();
   }
 
   void RequestFailed(const webrtc::RTCError& error) override {
+    pc_->NoteChainedOperationSettled();
     RejectPromiseFromRTCError(error, resolver_);
   }
 
   void Trace(Visitor* visitor) const override {
+    visitor->Trace(pc_);
     visitor->Trace(sender_);
     visitor->Trace(with_track_);
     visitor->Trace(resolver_);
@@ -288,6 +296,7 @@ class ReplaceTrackRequest : public RTCVoidRequest {
   }
 
  private:
+  Member<RTCPeerConnection> pc_;
   Member<RTCRtpSender> sender_;
   Member<MediaStreamTrack> with_track_;
   Member<ScriptPromiseResolver<IDLUndefined>> resolver_;
@@ -489,6 +498,40 @@ webrtc::Priority PriorityToEnum(V8RTCPriorityType::Enum priority) {
   NOTREACHED();
 }
 
+V8RTCEncodingComplexity::Enum EncodingComplexityFromEnum(
+    webrtc::VideoCodecComplexity complexity) {
+  switch (complexity) {
+    case webrtc::VideoCodecComplexity::kComplexityLow:
+      return V8RTCEncodingComplexity::Enum::kLow;
+    case webrtc::VideoCodecComplexity::kComplexityNormal:
+      return V8RTCEncodingComplexity::Enum::kNormal;
+    case webrtc::VideoCodecComplexity::kComplexityHigh:
+      return V8RTCEncodingComplexity::Enum::kHigh;
+    case webrtc::VideoCodecComplexity::kComplexityHigher:
+      return V8RTCEncodingComplexity::Enum::kVeryHigh;
+    case webrtc::VideoCodecComplexity::kComplexityMax:
+      return V8RTCEncodingComplexity::Enum::kMaximum;
+  }
+  NOTREACHED();
+}
+
+webrtc::VideoCodecComplexity EncodingComplexityToEnum(
+    V8RTCEncodingComplexity::Enum complexity) {
+  switch (complexity) {
+    case V8RTCEncodingComplexity::Enum::kLow:
+      return webrtc::VideoCodecComplexity::kComplexityLow;
+    case V8RTCEncodingComplexity::Enum::kNormal:
+      return webrtc::VideoCodecComplexity::kComplexityNormal;
+    case V8RTCEncodingComplexity::Enum::kHigh:
+      return webrtc::VideoCodecComplexity::kComplexityHigh;
+    case V8RTCEncodingComplexity::Enum::kVeryHigh:
+      return webrtc::VideoCodecComplexity::kComplexityHigher;
+    case V8RTCEncodingComplexity::Enum::kMaximum:
+      return webrtc::VideoCodecComplexity::kComplexityMax;
+  }
+  NOTREACHED();
+}
+
 std::tuple<Vector<webrtc::RtpEncodingParameters>,
            std::optional<webrtc::DegradationPreference>>
 ToRtpParameters(ExecutionContext* context,
@@ -530,7 +573,6 @@ ToRtpParameters(ExecutionContext* context,
 
 webrtc::RtpCodec ToWebrtcRtpCodec(const RTCRtpCodec* codec) {
   webrtc::RtpCodec webrtc_codec;
-  std::string mime_type = codec->mimeType().Utf8();
   auto slash_index = codec->mimeType().find('/');
   if (slash_index == kNotFound) {
     webrtc_codec.kind = webrtc::MediaType::UNSUPPORTED;
@@ -621,6 +663,10 @@ webrtc::RtpEncodingParameters ToRtpEncodingParameters(
       WebRtcScalabilityMode scalability_mode =
           ScalabilityModeStringToUMAMode(*webrtc_encoding.scalability_mode);
       UMA_HISTOGRAM_ENUMERATION("WebRtcScalabilityMode", scalability_mode);
+    }
+    if (encoding->hasEncodingComplexity()) {
+      webrtc_encoding.encoding_complexity =
+          EncodingComplexityToEnum(encoding->encodingComplexity().AsEnum());
     }
   } else if (kind == "audio") {
     webrtc_encoding.adaptive_ptime = encoding->adaptivePtime();
@@ -756,8 +802,8 @@ ScriptPromise<IDLUndefined> RTCRtpSender::replaceTrack(
     pc_->RegisterTrack(with_track);
     component = with_track->Component();
   }
-  ReplaceTrackRequest* request =
-      MakeGarbageCollected<ReplaceTrackRequest>(this, with_track, resolver);
+  ReplaceTrackRequest* request = MakeGarbageCollected<ReplaceTrackRequest>(
+      pc_, this, with_track, resolver);
   sender_->ReplaceTrack(component, request);
   return promise;
 }
@@ -835,6 +881,10 @@ RTCRtpSendParameters* RTCRtpSender::getParameters() {
       if (webrtc_encoding.scalability_mode) {
         encoding->setScalabilityMode(
             String(webrtc_encoding.scalability_mode.value()));
+      }
+      if (webrtc_encoding.encoding_complexity) {
+        encoding->setEncodingComplexity(
+            EncodingComplexityFromEnum(*webrtc_encoding.encoding_complexity));
       }
     } else if (kind_ == "audio") {
       encoding->setAdaptivePtime(webrtc_encoding.adaptive_ptime);
@@ -1130,16 +1180,39 @@ RTCRtpCapabilities* RTCRtpSender::getCapabilities(ScriptState* state,
 
 void RTCRtpSender::MaybeShortCircuitEncodedStreams() {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
-  if (!encoded_streams_ && !transform_) {
-    transform_shortcircuited_ = true;
-    LogMessage("Starting short circuiting of encoded transform");
-    if (kind_ == "video") {
-      encoded_video_transformer_->StartShortCircuiting();
-    } else {
-      CHECK_EQ(kind_, "audio");
-      encoded_audio_transformer_->StartShortCircuiting();
-    }
+  short_circuit_allowed_ = true;
+  if (ShouldShortCircuit()) {
+    StartShortCircuiting();
   }
+}
+
+void RTCRtpSender::StartShortCircuiting() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  // Encoded streams created after this point would never get any frames.
+  transform_shortcircuited_ = true;
+  LogMessage("Starting short circuiting of encoded transform");
+  if (kind_ == "video") {
+    encoded_video_transformer_->StartShortCircuiting();
+  } else {
+    CHECK_EQ(kind_, "audio");
+    encoded_audio_transformer_->StartShortCircuiting();
+  }
+}
+
+void RTCRtpSender::StopShortCircuiting() {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  LogMessage("Stopping short circuiting of encoded transform");
+  if (kind_ == "video") {
+    encoded_video_transformer_->StopShortCircuiting();
+  } else {
+    CHECK_EQ(kind_, "audio");
+    encoded_audio_transformer_->StopShortCircuiting();
+  }
+}
+
+bool RTCRtpSender::ShouldShortCircuit() const {
+  DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+  return short_circuit_allowed_ && !encoded_streams_ && !transform_;
 }
 
 void RTCRtpSender::UnregisterEncodedAudioStreamCallback() {
@@ -1452,6 +1525,10 @@ void RTCRtpSender::setTransform(RTCRtpScriptTransform* transform,
   if (!transform) {
     transform_->Detach();
     transform_ = nullptr;
+    // Pass frames through untransformed instead of dropping them.
+    if (ShouldShortCircuit()) {
+      StartShortCircuiting();
+    }
     return;
   }
   if (transform->HasBeenUsed()) {
@@ -1461,6 +1538,10 @@ void RTCRtpSender::setTransform(RTCRtpScriptTransform* transform,
   }
   if (transform_) {
     transform_->Detach();
+  } else if (ShouldShortCircuit()) {
+    // Frames currently skip the transform. Without this, they would bypass the
+    // new transform too.
+    StopShortCircuiting();
   }
   transform_ = transform;
   transform_->Attach();

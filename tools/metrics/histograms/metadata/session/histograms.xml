@@ -67,7 +67,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.Background.TotalDuration" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>asvitkine@chromium.org</owner>
   <owner>src/base/metrics/OWNERS</owner>
   <summary>
@@ -98,7 +98,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.AppendCommands.{Slice}.Duration"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -114,7 +115,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.AppendCommands.{Slice}.FileSize"
-    units="bytes" expires_after="2027-03-07">
+    units="bytes" expires_after="2027-05-09">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -130,7 +132,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.AppendCommands.{Slice}.Status"
-    enum="CommandStorageWriteStatus" expires_after="2027-03-07">
+    enum="CommandStorageWriteStatus" expires_after="2027-05-09">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -167,7 +170,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.ReadLastSessionCommands.Duration"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -181,7 +185,8 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Session.CommandStorageBackend.{SessionType}.{EncryptedStatus}.ReadLastSessionCommands.Status"
-    enum="CommandStorageReadStatus" expires_after="2027-03-07">
+    enum="CommandStorageReadStatus" expires_after="2027-05-09">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -194,7 +199,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.CommandStorageManager.EncryptedBackendUninitialized"
-    enum="SessionEncryptedBackendUninitialized" expires_after="2027-03-07">
+    enum="SessionEncryptedBackendUninitialized" expires_after="2027-07-01">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -204,7 +210,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.CommandStorageManager.EncryptedReadMatch"
-    enum="SessionReadComparisonResult" expires_after="2027-03-07">
+    enum="SessionReadComparisonResult" expires_after="2027-07-01">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -215,7 +222,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.CommandStorageManager.OnEncryptorReadyDuration"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-07-01">
+  <owner>arichiv@google.com</owner>
   <owner>sammon@google.com</owner>
   <owner>dljames@chromium.org</owner>
   <summary>
@@ -226,6 +234,49 @@ chromium-metrics-reviews@google.com.
     Note that there may be multiple CommandStorageManagers (e.g. for different
     session types and different profiles), so this metric may be recorded
     multiple times per app startup.
+  </summary>
+</histogram>
+
+<histogram name="Session.Counterfactual.EmptyWindowTabWouldHaveBeenLost"
+    enum="BooleanHit" expires_after="2027-11-09">
+  <owner>dljames@chromium.org</owner>
+  <owner>musalmaan@chromium.org</owner>
+  <summary>
+    Recorded when a tab is added to a window that had no tabs the last time the
+    session file was rewritten from scratch. Before the fix for
+    https://crbug.com/582855753, such windows were left out of that rewrite, so
+    the new tab would not have been saved until the next full rewrite and would
+    have been lost if the browser exited first. Recorded at most once per window
+    per rewrite.
+  </summary>
+</histogram>
+
+<histogram name="Session.Counterfactual.FullRewriteAvoided" enum="BooleanHit"
+    expires_after="2027-11-09">
+  <owner>dljames@chromium.org</owner>
+  <owner>musalmaan@chromium.org</owner>
+  <summary>
+    Recorded when a tab navigates forward to a new page and the browser saves
+    the change as a small update, in a case where the code before the fix for
+    https://crbug.com/582857520 would have rewritten the whole session file from
+    scratch instead. Not recorded when a full rewrite is already pending, since
+    the old rewrite would have merged into it. Each record is one full session
+    file rewrite that no longer happens. This measures saved disk writes, not
+    lost data.
+  </summary>
+</histogram>
+
+<histogram name="Session.Counterfactual.RebuildWouldHaveDroppedTabs"
+    enum="Boolean" expires_after="2027-11-09">
+  <owner>dljames@chromium.org</owner>
+  <owner>musalmaan@chromium.org</owner>
+  <summary>
+    Recorded each time enough changes pile up that the browser schedules a
+    rewrite of the session file from scratch. True if, at that moment, the last
+    window was partway through closing and some of its tabs were already gone.
+    Before the fix for https://crbug.com/582857276, the rewrite ran right away
+    and those tabs would have been missing after a restart. Only this
+    last-window case is counted, so the true count is a lower bound.
   </summary>
 </histogram>
 
@@ -908,7 +959,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Session.TotalDuration.TabletMode" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>robliao@chromium.org</owner>
   <owner>gerchiko@microsoft.com</owner>
   <owner>wangsongjin@microsoft.com</owner>
@@ -1409,7 +1460,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SessionRestore.ForegroundTabFirstPaint4.FinishReason"
-    enum="SessionRestoreFinishReason" expires_after="2027-03-07">
+    enum="SessionRestoreFinishReason" expires_after="2027-05-09">
   <owner>joenotcharles@google.com</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>
@@ -1460,7 +1511,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="SessionRestore.InfoBar.TurnOnSessionRestore"
-    enum="SessionRestoreInfoBarAction" expires_after="2027-03-07">
+    enum="SessionRestoreInfoBarAction" expires_after="2027-05-09">
   <owner>musalmaan@chromium.org</owner>
   <owner>koretadaniel@chromium.org</owner>
   <summary>

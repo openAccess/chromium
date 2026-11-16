@@ -2827,7 +2827,9 @@ TEST_P(CloudPolicyClientUploadSecurityEventTest, TestWithProtoFormat) {
     EXPECT_EQ(policy::GetDeviceName(), request.device().name());
     if (policy::features::IsEnhancedSecurityEventFieldsEnabled()) {
       EXPECT_EQ(policy::GetDeviceFqdn(), request.device().device_fqdn());
-      EXPECT_EQ(policy::GetNetworkName(), request.device().network_name());
+      // No `NetworkNameCache` is set on the test `DeviceManagementService`.
+      EXPECT_EQ(policy::GetNetworkName(/*network_name_cache=*/nullptr),
+                request.device().network_name());
     } else {
       EXPECT_EQ(request.device().device_fqdn(), "");
       EXPECT_EQ(request.device().network_name(), "");
@@ -3361,6 +3363,46 @@ TEST_F(CloudPolicyClientTest, PolicyReregistrationFailsWithNonMatchingDMToken) {
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if !BUILDFLAG(IS_CHROMEOS)
+TEST_F(CloudPolicyClientTest, PolicyFetch410WithoutErrorDetailDoesNotUnenroll) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      features::kCbcmRequireErrorDetailForUnenrollment);
+
+  RegisterClient();
+
+  EXPECT_TRUE(client_->is_registered());
+  EXPECT_CALL(job_creation_handler_, OnJobCreation)
+      .WillOnce(service_.SendJobResponseAsync(
+          net::OK, DeviceManagementService::kDeviceNotFound));
+
+  RunClientTaskAndWaitError(base::BindLambdaForTesting(
+      [this]() { client_->FetchPolicy(kPolicyFetchReason); }));
+
+  EXPECT_EQ(DM_STATUS_HTTP_STATUS_ERROR, client_->last_dm_status());
+  EXPECT_TRUE(client_->is_registered());
+}
+
+TEST_F(CloudPolicyClientTest, PolicyFetch410WithoutErrorDetailDoesNotUnenroll_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kCbcmRequireErrorDetailForUnenrollment);
+
+  RegisterClient();
+
+  EXPECT_TRUE(client_->is_registered());
+  EXPECT_CALL(job_creation_handler_, OnJobCreation)
+      .WillOnce(service_.SendJobResponseAsync(
+          net::OK, DeviceManagementService::kDeviceNotFound));
+
+  RunClientTaskAndWaitError(base::BindLambdaForTesting(
+      [this]() { client_->FetchPolicy(kPolicyFetchReason); }));
+
+  EXPECT_EQ(DM_STATUS_SERVICE_DEVICE_NOT_FOUND, client_->last_dm_status());
+  EXPECT_TRUE(client_->is_registered());
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+
 TEST_F(CloudPolicyClientTest, ResultCopyAssignment) {
   CloudPolicyClient::Result result1 =
       CloudPolicyClient::Result(DM_STATUS_SUCCESS, 400, base::DictValue());
@@ -3578,6 +3620,95 @@ TEST_F(CloudPolicyClientTest,
   histogram_tester.ExpectUniqueSample(
       "Enterprise.GenerateChromeProfileChallenge.Status",
       DM_STATUS_RESPONSE_DECODING_ERROR, 1);
+}
+
+TEST_F(CloudPolicyClientTest, RenewDmTokenRequest) {
+  RegisterClient();
+
+  em::DeviceManagementRequest expected_request;
+  expected_request.mutable_renew_dm_token_request();
+
+  em::DeviceManagementResponse outer_response;
+  em::RenewDmTokenResponse* fake_response =
+      outer_response.mutable_renew_dm_token_response();
+  fake_response->set_device_management_token("new_dm_token");
+
+  ExpectAndCaptureJob(outer_response);
+
+  base::test::TestFuture<DeviceManagementStatus,
+                         const em::RenewDmTokenResponse&>
+      result_future;
+
+  em::RenewDmTokenRequest request;
+  client_->RenewDmToken(request, result_future.GetCallback());
+
+  EXPECT_TRUE(result_future.Wait());
+  EXPECT_EQ(DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN,
+            job_type_);
+  EXPECT_EQ(job_request_.SerializePartialAsString(),
+            expected_request.SerializePartialAsString());
+  EXPECT_EQ(DM_STATUS_SUCCESS, client_->last_dm_status());
+
+  const auto [status, response] = result_future.Get();
+  EXPECT_EQ(status, DM_STATUS_SUCCESS);
+  EXPECT_EQ(response.device_management_token(), "new_dm_token");
+}
+
+TEST_F(CloudPolicyClientTest, RenewDmTokenRequestDecodingError) {
+  RegisterClient();
+
+  em::DeviceManagementResponse outer_response;
+  // Do not set renew_dm_token_response.
+
+  ExpectAndCaptureJob(outer_response);
+
+  StrictMock<MockCloudPolicyClientObserverWithObservation> client_observer(
+      client_.get());
+  EXPECT_CALL(client_observer, OnClientError);
+
+  base::test::TestFuture<DeviceManagementStatus,
+                         const em::RenewDmTokenResponse&>
+      result_future;
+
+  em::RenewDmTokenRequest request;
+  client_->RenewDmToken(request, result_future.GetCallback());
+
+  EXPECT_TRUE(result_future.Wait());
+  EXPECT_EQ(DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN,
+            job_type_);
+  EXPECT_EQ(DM_STATUS_RESPONSE_DECODING_ERROR, client_->last_dm_status());
+
+  const auto [status, response] = result_future.Get();
+  EXPECT_EQ(status, DM_STATUS_RESPONSE_DECODING_ERROR);
+}
+
+TEST_F(CloudPolicyClientTest, RenewDmTokenRequestEmptyTokenDecodingError) {
+  RegisterClient();
+
+  em::DeviceManagementResponse outer_response;
+  // Provide renew_dm_token_response with an empty token.
+  outer_response.mutable_renew_dm_token_response();
+
+  ExpectAndCaptureJob(outer_response);
+
+  StrictMock<MockCloudPolicyClientObserverWithObservation> client_observer(
+      client_.get());
+  EXPECT_CALL(client_observer, OnClientError);
+
+  base::test::TestFuture<DeviceManagementStatus,
+                         const em::RenewDmTokenResponse&>
+      result_future;
+
+  em::RenewDmTokenRequest request;
+  client_->RenewDmToken(request, result_future.GetCallback());
+
+  EXPECT_TRUE(result_future.Wait());
+  EXPECT_EQ(DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN,
+            job_type_);
+  EXPECT_EQ(DM_STATUS_RESPONSE_DECODING_ERROR, client_->last_dm_status());
+
+  const auto [status, response] = result_future.Get();
+  EXPECT_EQ(status, DM_STATUS_RESPONSE_DECODING_ERROR);
 }
 
 struct MockClientCertProvisioningRequestCallbackObserver {

@@ -8,6 +8,7 @@ import static org.chromium.chrome.browser.flags.ChromeFeatureList.CROSS_DEVICE_P
 import static org.chromium.chrome.browser.ntp_customization.ntp_cards.NtpCardsMediator.MODULE_TYPE_TO_USER_PREFS_KEY;
 import static org.chromium.chrome.browser.ntp_customization.theme_sync.ServiceStatus.ACTIVE;
 import static org.chromium.chrome.browser.ntp_customization.theme_sync.ServiceStatus.INITIALIZING;
+import static org.chromium.chrome.browser.ntp_customization.theme_sync.ServiceStatus.SYNC_DISABLED;
 import static org.chromium.chrome.browser.sync.synced_set_up.SyncedSetUpUtilsBridge.getCrossDevicePrefsFromRemoteDevice;
 import static org.chromium.chrome.browser.toolbar.settings.AddressBarPreference.computeToolbarPositionAndSource;
 import static org.chromium.chrome.browser.toolbar.settings.AddressBarPreference.setToolbarPositionAndSource;
@@ -307,11 +308,11 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
             };
 
     private @Nullable Tab mObservedTab;
-    private @Nullable Runnable mLocalStateObserver;
     private @Nullable CrossDevicePrefTracker mPrefTrackerBeingObserved;
     private @Nullable CrossDevicePrefTrackerObserver mPrefTrackerObserver;
     private @Nullable CrossDeviceThemeTracker mThemeTrackerBeingObserved;
     private CrossDeviceThemeTracker.@Nullable Observer mThemeTrackerObserver;
+    private @Nullable Runnable mNtpSyncedThemeReadinessCallback;
     private @Nullable ModalDialogManager mModalDialogManagerBeingObserved;
     private @Nullable ModalDialogManagerObserver mModalDialogObserver;
     private @Nullable PendingSnackbar mActivePendingSnackbar;
@@ -383,13 +384,6 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
         onTabChangeOrGainFocus(mActivityTabSupplier.get());
     }
 
-    private void stopObservingLocalState() {
-        if (mLocalStateObserver != null) {
-            LocalStatePrefs.removeObserver(mLocalStateObserver);
-        }
-        mLocalStateObserver = null;
-    }
-
     private void stopObservingPrefTracker() {
         if (mPrefTrackerObserver != null && mPrefTrackerBeingObserved != null) {
             mPrefTrackerBeingObserved.removeObserver(mPrefTrackerObserver);
@@ -404,6 +398,14 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
         }
         mThemeTrackerObserver = null;
         mThemeTrackerBeingObserved = null;
+    }
+
+    private void stopObservingNtpSyncedThemeManager() {
+        if (mNtpSyncedThemeReadinessCallback == null) return;
+
+        NtpSyncedThemeManager.getInstance()
+                .removeReadinessCallback(mNtpSyncedThemeReadinessCallback);
+        mNtpSyncedThemeReadinessCallback = null;
     }
 
     private void stopObservingModalDialogManager() {
@@ -533,8 +535,6 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
 
         ensureNtpCustomizationConfigManagerInitialized();
 
-        boolean localStateReady = LocalStatePrefs.areNativePrefsLoaded();
-
         @Nullable CrossDevicePrefTracker crossDevicePrefTracker =
                 CrossDevicePrefTrackerFactory.getForProfile(profile);
         if (crossDevicePrefTracker == null) return;
@@ -542,41 +542,42 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
         boolean prefTrackerReady = !NOT_READY_YET_STATES.contains(status);
 
         @Nullable CrossDeviceThemeTracker crossDeviceThemeTracker = null;
+        @Nullable NtpSyncedThemeManager ntpSyncedThemeManager = null;
         boolean themeTrackerReady = true;
+        boolean ntpSyncedThemeReady = true;
         if (isThemeFeatureEnabled()) {
             crossDeviceThemeTracker = CrossDeviceThemeTracker.getForProfile(profile);
             if (crossDeviceThemeTracker == null) return;
             int themeStatus = crossDeviceThemeTracker.getServiceStatus();
             themeTrackerReady = themeStatus != INITIALIZING;
+
+            ntpSyncedThemeManager = NtpSyncedThemeManager.getInstance();
+            if (themeStatus != SYNC_DISABLED) {
+                ntpSyncedThemeReady = ntpSyncedThemeManager.isSyncedThemeReady();
+            }
         }
 
         if (ChromeFeatureList.isEnabled(CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS)) {
             Log.i(
                     TAG,
-                    "onTabChangeOrGainFocus - localStateReady = %s, prefTrackerReady = %s,"
-                            + " themeTrackerReady = %s",
-                    localStateReady,
+                    "onTabChangeOrGainFocus - prefTrackerReady = %s, themeTrackerReady = %s,"
+                            + " ntpSyncedThemeReady = %s",
                     prefTrackerReady,
-                    themeTrackerReady);
+                    themeTrackerReady,
+                    ntpSyncedThemeReady);
         }
 
         // If all dependencies are ready, stop any active observation and proceed to import.
-        if (localStateReady && prefTrackerReady && themeTrackerReady) {
-            stopObservingLocalState();
+        if (prefTrackerReady && themeTrackerReady && ntpSyncedThemeReady) {
             stopObservingPrefTracker();
             stopObservingThemeTracker();
+            stopObservingNtpSyncedThemeManager();
             onDependenciesReady(
                     crossDevicePrefTracker, status, profile, currentTab, availableImmediately);
             return;
         }
 
         // Otherwise, defer the logic by observing whichever dependency is not yet ready.
-        if (!localStateReady) {
-            ensureObservingLocalState();
-        } else {
-            stopObservingLocalState();
-        }
-
         if (!prefTrackerReady) {
             ensureObservingPrefTracker(crossDevicePrefTracker, profile);
         } else {
@@ -588,24 +589,25 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
         } else {
             stopObservingThemeTracker();
         }
-    }
 
-    private void ensureObservingLocalState() {
-        if (mLocalStateObserver != null) return;
-
-        if (ChromeFeatureList.isEnabled(CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS)) {
-            Log.i(TAG, "Started observing local state");
+        if (ntpSyncedThemeManager != null && !ntpSyncedThemeReady) {
+            // If all sync trackers (prefTracker, themeTracker, and
+            // NtpAndroidThemeSyncBridge) were already ready on the initial check
+            // (availableImmediately == true), and we are only waiting for
+            // NtpSyncedThemeManager to finish its asynchronous bitmap download, preserve
+            // availableImmediately = true so that once the bitmap is staged we auto-apply
+            // the prefs and theme together (showing the Undo snackbar) rather than showing
+            // the Apply snackbar while NewTabPage auto-applies the staged theme in the
+            // background.
+            boolean onlyWaitingForThemeImageDownload =
+                    availableImmediately
+                            && prefTrackerReady
+                            && themeTrackerReady
+                            && ntpSyncedThemeManager.isContinuousSyncedImageDownloading();
+            ensureObservingNtpSyncedThemeManager(profile, onlyWaitingForThemeImageDownload);
+        } else {
+            stopObservingNtpSyncedThemeManager();
         }
-        mLocalStateObserver =
-                () -> {
-                    if (ChromeFeatureList.isEnabled(CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS)) {
-                        Log.i(TAG, "Local state readiness observer was triggered");
-                    }
-                    stopObservingLocalState();
-                    onTabChangeOrGainFocus(
-                            mActivityTabSupplier.get(), /* availableImmediately= */ false);
-                };
-        LocalStatePrefs.addObserver(mLocalStateObserver);
     }
 
     private void ensureObservingPrefTracker(CrossDevicePrefTracker prefTracker, Profile profile) {
@@ -673,6 +675,35 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
                 };
         mThemeTrackerBeingObserved = themeTracker;
         themeTracker.addObserver(mThemeTrackerObserver);
+    }
+
+    /**
+     * Registers a one-shot readiness callback on {@link NtpSyncedThemeManager}.
+     *
+     * @param profile The active {@link Profile} when observation started.
+     * @param autoApplyWhenReady Whether settings should be auto-applied (passing {@code
+     *     availableImmediately = true}) when {@link NtpSyncedThemeManager} becomes ready. This is
+     *     {@code true} when all sync trackers were already ready on the initial check and we were
+     *     only waiting for an in-flight theme image download to finish staging.
+     */
+    private void ensureObservingNtpSyncedThemeManager(Profile profile, boolean autoApplyWhenReady) {
+        if (mNtpSyncedThemeReadinessCallback != null) return;
+
+        mNtpSyncedThemeReadinessCallback =
+                () -> {
+                    mNtpSyncedThemeReadinessCallback = null;
+
+                    @Nullable Tab currentTab = mActivityTabSupplier.get();
+                    if (currentTab == null) return;
+
+                    @Nullable Profile currentProfile = currentTab.getProfile();
+                    if (!profile.equals(currentProfile)) return;
+
+                    onTabChangeOrGainFocus(
+                            currentTab, /* availableImmediately= */ autoApplyWhenReady);
+                };
+        NtpSyncedThemeManager.getInstance()
+                .addOneShotReadinessCallback(mNtpSyncedThemeReadinessCallback);
     }
 
     /**
@@ -1389,11 +1420,8 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
             Profile profile, @Nullable NtpBackgroundDataBase incomingTheme) {
         Map<String, Object> prefs = new HashMap<>();
 
-        PrefService localStatePrefs = LocalStatePrefs.get();
-        if (localStatePrefs != null) {
-            String omniboxPositionPref = Pref.IS_OMNIBOX_IN_BOTTOM_POSITION;
-            prefs.put(omniboxPositionPref, localStatePrefs.getBoolean(omniboxPositionPref));
-        }
+        String omniboxPositionPref = Pref.IS_OMNIBOX_IN_BOTTOM_POSITION;
+        prefs.put(omniboxPositionPref, LocalStatePrefs.get().getBoolean(omniboxPositionPref));
 
         if (UserPrefs.areNativePrefsLoaded(profile)) {
             PrefService userPrefs = UserPrefs.get(profile);
@@ -1412,13 +1440,14 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
 
     /**
      * Returns whether cross-device theme import is enabled and supported on this device. Notably,
-     * this checks whether we're in any group besides the control group and that underlying theme
-     * sync is supported.
+     * this checks whether we're in any group besides the control group and that underlying NTP
+     * theme customization and theme sync are enabled by flag and policy.
      */
     @VisibleForTesting
     boolean isThemeFeatureEnabled() {
         return ChromeFeatureList.sXplatSyncedSetupThemes.isEnabled()
-                && ChromeFeatureList.sNewTabPageCustomizationThemeSync.isEnabled();
+                && ChromeFeatureList.sNewTabPageCustomizationThemeSync.isEnabled()
+                && NtpCustomizationUtils.isNtpThemeCustomizationEnabled();
     }
 
     /**
@@ -1515,13 +1544,9 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
      */
     @VisibleForTesting
     boolean importedSettingsAffectNonNtp(Map<String, Object> preferences) {
-        PrefService localPrefs = LocalStatePrefs.get();
-        if (localPrefs == null) {
-            return false;
-        }
-
         if (preferences.get(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION) instanceof Boolean bottomOmnibox) {
-            boolean localBottomOmnibox = localPrefs.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION);
+            boolean localBottomOmnibox =
+                    LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION);
             if (ChromeFeatureList.isEnabled(
                     ChromeFeatureList.CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS)) {
                 Log.i(
@@ -1696,14 +1721,11 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
      * @param preferencesToApply The preferences to apply.
      */
     private void applyLocalStateSettings(Map<String, Object> preferencesToApply) {
-        PrefService localStatePrefs = LocalStatePrefs.get();
-        if (localStatePrefs == null) return;
-
         String omniboxKey = Pref.IS_OMNIBOX_IN_BOTTOM_POSITION;
         if (!preferencesToApply.containsKey(omniboxKey)) return;
 
         if (preferencesToApply.get(omniboxKey) instanceof Boolean booleanValue) {
-            localStatePrefs.setBoolean(omniboxKey, booleanValue);
+            LocalStatePrefs.get().setBoolean(omniboxKey, booleanValue);
         }
 
         // Force an update from LocalStatePrefs to AddressBarPreference.
@@ -1843,9 +1865,9 @@ public class CrossDeviceSettingImporter implements TopResumedActivityChangedObse
             mObservedTab.removeObserver(mTabObserver);
             mObservedTab = null;
         }
-        stopObservingLocalState();
         stopObservingPrefTracker();
         stopObservingThemeTracker();
+        stopObservingNtpSyncedThemeManager();
         stopObservingModalDialogManager();
     }
 }

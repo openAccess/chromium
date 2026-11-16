@@ -5,6 +5,8 @@
 #ifndef ASH_WM_NATIVE_CURSOR_MANAGER_ASH_H_
 #define ASH_WM_NATIVE_CURSOR_MANAGER_ASH_H_
 
+#include <optional>
+
 #include "ash/ash_export.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/display/display.h"
@@ -32,6 +34,10 @@ class ASH_EXPORT NativeCursorManagerAsh : public ::wm::NativeCursorManager {
   // the cursor.
   void SetNativeCursorEnabled(bool enabled);
 
+  // Returns the scale used to rasterize normal-size cursor assets on
+  // `display`, enforcing a minimum physical size on internal displays.
+  static float GetDefaultCursorScale(const display::Display& display);
+
   // Returns the rotation of the currently loaded cursor.
   display::Display::Rotation GetRotation() const;
 
@@ -40,13 +46,11 @@ class ASH_EXPORT NativeCursorManagerAsh : public ::wm::NativeCursorManager {
                   ::wm::NativeCursorManagerDelegate* delegate) override;
   void SetCursor(gfx::NativeCursor cursor,
                  ::wm::NativeCursorManagerDelegate* delegate) override;
-  void SetLargeCursorSizeInDip(
-      int large_cursor_size_in_dip,
-      ::wm::NativeCursorManagerDelegate* delegate) override;
   void SetVisibility(bool visible,
                      ::wm::NativeCursorManagerDelegate* delegate) override;
-  void SetCursorSize(ui::CursorSize cursor_size,
-                     ::wm::NativeCursorManagerDelegate* delegate) override;
+  void SetCustomCursorSize(
+      std::optional<int> custom_cursor_size,
+      ::wm::NativeCursorManagerDelegate* delegate) override;
   void SetMouseEventsEnabled(
       bool enabled,
       ::wm::NativeCursorManagerDelegate* delegate) override;
@@ -56,12 +60,21 @@ class ASH_EXPORT NativeCursorManagerAsh : public ::wm::NativeCursorManager {
  private:
   friend class CursorManagerTestApi;
 
+  // Updates the cursor for `display` and `custom_cursor_size`. Does nothing if
+  // neither has changed.
+  void UpdateCursor(const display::Display& display,
+                    std::optional<int> custom_cursor_size,
+                    ::wm::NativeCursorManagerDelegate* delegate);
+
   // The cursor location where the cursor was disabled.
   gfx::Point disabled_cursor_location_;
 
   bool native_cursor_enabled_;
 
   wm::CursorLoader cursor_loader_{/*use_platform_cursors=*/false};
+
+  display::Display display_;
+  std::optional<int> custom_cursor_size_;
 };
 
 }  // namespace ash

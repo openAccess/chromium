@@ -59,11 +59,11 @@ export class ArchiveAppElement extends CrLitElement {
 
   protected accessor state_: PanelState = 'none';
   protected accessor directory_: string = '';
-  protected accessor exchangeCount_: number = 0;
-  protected accessor bodyBytes_: number = 0;
-  protected accessor missingCount_: number = 0;
-  protected accessor momentMs_: number = 0;
-  protected accessor exchanges_: Exchange[] = [];
+  private accessor exchangeCount_: number = 0;
+  private accessor bodyBytes_: number = 0;
+  private accessor missingCount_: number = 0;
+  private accessor momentMs_: number = 0;
+  private accessor exchanges_: Exchange[] = [];
   protected accessor filter_: string = '';
   protected accessor view_: PanelView = 'requests';
   protected accessor transcript_: TranscriptItem[] = [];

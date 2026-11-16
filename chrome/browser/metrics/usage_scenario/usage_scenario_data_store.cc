@@ -172,7 +172,9 @@ void UsageScenarioDataStoreImpl::OnIsCapturingVideoStarted() {
 
 void UsageScenarioDataStoreImpl::OnIsCapturingVideoEnded() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_GT(web_contents_capturing_video_, 0U, base::NotFatalUntil::M161);
+  // TODO(crbug.com/582001871): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_GT(web_contents_capturing_video_, 0U);
   --web_contents_capturing_video_;
 
   // If this was the last tab capturing video then the interval data should be
@@ -263,7 +265,9 @@ void UsageScenarioDataStoreImpl::OnUkmSourceBecameHidden(
   auto& origin_map_iter = origin_info_map_[origin];
   auto& source_id_iter = origin_map_iter[source];
 
-  CHECK(!source_id_iter.visible_timestamp.is_null(), base::NotFatalUntil::M161);
+  // TODO(crbug.com/584899021): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!source_id_iter.visible_timestamp.is_null());
   source_id_iter.cumulative_visible_time +=
       tick_clock_->NowTicks() - source_id_iter.visible_timestamp;
   source_id_iter.visible_timestamp = base::TimeTicks();

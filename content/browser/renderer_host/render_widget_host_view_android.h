@@ -28,6 +28,7 @@
 #include "cc/mojom/render_frame_metadata.mojom-shared.h"
 #include "cc/trees/render_frame_metadata.h"
 #include "components/input/android_input_helper.h"
+#include "components/input/input_router_client.h"
 #include "components/viz/common/quads/selection.h"
 #include "components/viz/common/resources/release_callback.h"
 #include "components/viz/common/surfaces/parent_local_surface_id_allocator.h"
@@ -211,7 +212,8 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
                           const gfx::Rect& node_bounds_in_screen) override;
   bool ShouldInitiateStylusWriting() override;
   void NotifyHoverActionStylusWritable(bool stylus_writable) override;
-  void OnStartStylusWriting() override;
+  void OnStartStylusWriting(
+      const std::optional<input::StylusWritingProperties>& properties) override;
   void OnEditElementFocusedForStylusWriting(
       blink::mojom::StylusWritingFocusResultPtr focus_result) override;
   void RenderProcessGone() override;
@@ -564,7 +566,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessBrowserTest,
                            GestureManagerListensToChildFrames);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, DisplayFeature);
-  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, UpdateControls);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidFluidResizeBrowserTest,
                            ResizeDefersSynchronizationToNextFrame);
 
@@ -627,16 +628,28 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UpdateTouchSelectionController(
       const viz::Selection<gfx::SelectionBound>& selection,
       float page_scale_factor,
-      float top_controls_height,
-      float top_controls_shown_ratio,
+      float top_content_offset,
       const gfx::SizeF& scrollable_viewport_size_dip);
-  bool UpdateControls(float dip_scale,
-                      float top_controls_height,
-                      float top_controls_shown_ratio,
-                      float top_controls_min_height_offset,
-                      float bottom_controls_height,
-                      float bottom_controls_shown_ratio,
-                      float bottom_controls_min_height_offset);
+
+  // Renderer-reported browser controls offsets, in physical pixels, clamped to
+  // the control heights the browser is currently laying out. The renderer is
+  // untrusted and must not be able to place web content under the browser
+  // controls by reporting a bogus height (see crbug.com/579587136).
+  struct ClampedBrowserControls {
+    float top_translate = 0.f;
+    float top_content_offset = 0.f;
+    float top_min_height_offset = 0.f;
+    float bottom_translate = 0.f;
+    float bottom_content_offset = 0.f;
+    float bottom_min_height_offset = 0.f;
+  };
+  ClampedBrowserControls ClampBrowserControls(
+      const cc::BrowserControlsMetadata& metadata) const;
+
+  // Returns whether `renderer_metadata` differs from the renderer's previous
+  // report, in which case `clamped` has been applied to the view.
+  bool UpdateControls(const cc::BrowserControlsMetadata& renderer_metadata,
+                      const ClampedBrowserControls& clamped);
   void OnDidUpdateVisualPropertiesComplete(
       const cc::RenderFrameMetadata& metadata);
 
@@ -788,19 +801,13 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   bool observing_root_window_;
 
-  bool controls_initialized_ = false;
+  // The renderer's last browser controls report, or nullopt if none has been
+  // forwarded to the view since it was last shown. See UpdateControls().
+  std::optional<cc::BrowserControlsMetadata> last_renderer_controls_;
 
   std::unique_ptr<input::CursorManager> cursor_manager_;
   std::u16string tooltip_text_;
 
-  float prev_top_shown_pix_;
-  float prev_top_controls_pix_;
-  float prev_top_controls_translate_;
-  float prev_top_controls_min_height_offset_pix_;
-  float prev_bottom_shown_pix_;
-  float prev_bottom_controls_pix_;
-  float prev_bottom_controls_translate_;
-  float prev_bottom_controls_min_height_offset_pix_;
   float page_scale_;
   float min_page_scale_;
   float max_page_scale_;

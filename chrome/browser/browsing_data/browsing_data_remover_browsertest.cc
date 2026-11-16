@@ -11,6 +11,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_samples.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
@@ -21,6 +22,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/test_future.h"
+#include "base/time/default_clock.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -116,8 +118,14 @@ using testing::UnorderedElementsAreArray;
 namespace {
 static const char* kExampleHost = "example.com";
 static const char* kLocalHost = "localhost";
-static const base::Time kStartTime = base::Time::Now();
-static const base::Time kLastHourTime = kStartTime - base::Hours(1);
+
+// Use a function-local static so the start time is captured when the test runs
+// in the child process rather than during pre-main() static initialization in
+// the TestLauncher fork server.
+base::Time GetStartTime() {
+  static const base::Time kStartTime = base::Time::Now();
+  return kStartTime;
+}
 
 // This enum is used in the place of base::Time because using base::Time
 // as a test param causes problems on Fuchsia. See https://crbug.com/40219262
@@ -145,9 +153,9 @@ std::string ToString(TimeEnum delete_begin_time) {
 base::Time TimeEnumToTime(TimeEnum time) {
   switch (time) {
     case TimeEnum::kStart:
-      return kStartTime;
+      return GetStartTime();
     case TimeEnum::kLastHour:
-      return kLastHourTime;
+      return GetStartTime() - base::Hours(1);
     case TimeEnum::kMax:
       return base::Time::Max();
     default:
@@ -171,6 +179,7 @@ class BrowsingDataRemoverBrowserTest
     : public BrowsingDataRemoverBrowserTestBase {
  public:
   BrowsingDataRemoverBrowserTest() {
+    GetStartTime();
     std::vector<base::test::FeatureRef> enabled_features = {};
     std::vector<base::test::FeatureRef> disabled_features = {};
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS)
@@ -991,18 +1000,17 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverStorageBucketsBrowserTest,
   auto* quota_manager_proxy = quota_manager->proxy();
 
   quota_manager_proxy->CreateBucketForTesting(
-      storage_key, "drafts", base::SequencedTaskRunner::GetCurrentDefault(),
+      storage_key, "drafts",
       base::BindOnce(
           [](storage::QuotaErrorOr<storage::BucketInfo> error_or_bucket_info) {
           }));
   quota_manager_proxy->CreateBucketForTesting(
-      storage_key, "inbox", base::SequencedTaskRunner::GetCurrentDefault(),
+      storage_key, "inbox",
       base::BindOnce(
           [](storage::QuotaErrorOr<storage::BucketInfo> error_or_bucket_info) {
           }));
   quota_manager_proxy->CreateBucketForTesting(
       storage_key, "attachments",
-      base::SequencedTaskRunner::GetCurrentDefault(),
       base::BindOnce(
           [](storage::QuotaErrorOr<storage::BucketInfo> error_or_bucket_info) {
           }));
@@ -1011,7 +1019,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverStorageBucketsBrowserTest,
 
   quota_manager_proxy->GetBucketsForStorageKey(
       storage_key,
-      /*delete_expired*/ false, base::SequencedTaskRunner::GetCurrentDefault(),
+      /*delete_expired*/ false,
       base::BindOnce([](storage::QuotaErrorOr<std::set<storage::BucketInfo>>
                             error_or_buckets) {
         EXPECT_EQ(1u, error_or_buckets.value().size());
@@ -1390,7 +1398,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   // still stored. The time of it's creation should be sometime before
   // this test starts. This license will be for a different origin, and so wont
   // affect HasDataForType, but it still exists.
-  LOG(INFO) << "MediaLicenseTimedDeletion starting @ " << kStartTime;
+  LOG(INFO) << "MediaLicenseTimedDeletion starting @ " << GetStartTime();
   EXPECT_EQ(1, GetSiteDataCount());
 
   GURL url =
@@ -1659,72 +1667,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
                    ->GetClearUserCredentialsCount());
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
-                       RelatedWebsiteSetsDeletion) {
-  const GURL kPrimaryUrl("https://subdomain.example.com:112");
-  const GURL kSecondaryUrl("https://subidubi.testsite.com:55");
-
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(GetProfile());
-
-  // Setting the HostContentSettingsMap's clock to test last_modified of
-  // RuleMetaData below.
-  base::SimpleTestClock test_clock;
-  settings_map->SetClockForTesting(&test_clock);
-  test_clock.SetNow(base::Time::Now());
-
-  // Expected setting for the default grant.
-  const ContentSettingPatternSource kExpectedSettingDefault(
-      ContentSettingsPattern::Wildcard(), ContentSettingsPattern::Wildcard(),
-      content_settings::ContentSettingToValue(CONTENT_SETTING_ASK),
-      content_settings::ProviderType::kDefaultProvider,
-      /*incognito=*/false);
-
-  // Check that there are only default grants.
-  ASSERT_THAT(
-      settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
-      UnorderedElementsAre(kExpectedSettingDefault));
-
-  // Set RWS grants.
-  content_settings::ContentSettingConstraints constraints;
-  constraints.set_session_model(content_settings::mojom::SessionModel::DURABLE);
-  constraints.set_decided_by_related_website_sets(true);
-  settings_map->SetContentSettingDefaultScope(
-      kPrimaryUrl, kSecondaryUrl, ContentSettingsType::STORAGE_ACCESS,
-      CONTENT_SETTING_ALLOW, constraints);
-
-  // Check that the grants were set.
-  content_settings::RuleMetaData expected_metadata;
-  expected_metadata.SetFromConstraints(constraints);
-  expected_metadata.set_last_modified(test_clock.Now());
-  EXPECT_THAT(
-      settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
-      UnorderedElementsAre(
-          kExpectedSettingDefault,
-          ContentSettingPatternSource(
-              ContentSettingsPattern::FromURLToSchemefulSitePattern(
-                  GURL(kPrimaryUrl)),  // https://[*.]example.com
-              ContentSettingsPattern::FromURLToSchemefulSitePattern(
-                  GURL(kSecondaryUrl)),  // https://[*.]testsite.com
-              content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
-              content_settings::ProviderType::kPrefProvider,
-              /*incognito=*/false, expected_metadata.Clone())));
-
-  // Remove Related Website Sets storage grants.
-  std::unique_ptr<BrowsingDataFilterBuilder> filter_builder =
-      BrowsingDataFilterBuilder::Create(
-          BrowsingDataFilterBuilder::Mode::kDelete);
-  filter_builder->AddOrigin(url::Origin::Create(kPrimaryUrl));
-  RemoveWithFilterAndWait(
-      content::BrowsingDataRemover::DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS,
-      std::move(filter_builder));
-
-  // Check that there's only the default grant left.
-  EXPECT_THAT(
-      settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
-      UnorderedElementsAre(kExpectedSettingDefault));
-}
 
 // Some storage backend use a different code path for full deletions and
 // partial deletions, so we need to test both.

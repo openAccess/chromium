@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -22,6 +23,7 @@
 #include "chrome/browser/ui/views/toolbar/webui_avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/webui_back_forward_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_battery_saver_control.h"
+#include "chrome/browser/ui/views/toolbar/webui_glic_actor_task_icon_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_glic_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_home_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_media_toolbar_button.h"
@@ -41,6 +43,7 @@
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "third_party/skia/include/core/SkRegion.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/views/focus/focus_manager.h"
@@ -59,6 +62,10 @@ class WebUIToolbarInternalWebView;
 // separate toolbar/impl targets in BUILD.gn.
 namespace browser_controls_api {
 class BrowserControlsAdapterImpl;
+}
+
+namespace webui_toolbar {
+class WebUIToolbarDropNavigator;
 }
 
 namespace content {
@@ -134,6 +141,8 @@ class WebUIToolbarControlDelegate {
       toolbar_ui_api::mojom::MediaControlStatePtr state) = 0;
   virtual void OnGlicButtonStateChanged(
       toolbar_ui_api::mojom::GlicButtonStatePtr state) = 0;
+  virtual void OnGlicActorTaskIconStateChanged(
+      toolbar_ui_api::mojom::GlicActorTaskIconStatePtr state) = 0;
   virtual void OnFocusRequested(
       toolbar_ui_api::mojom::FocusRequestTarget target) = 0;
 
@@ -198,6 +207,9 @@ class WebUIToolbarWebView
   void SetBackForwardEnabled(int command_id, bool enabled);
   void SetForwardVisible(bool visible);
   glic::ToolbarGlicButtonInterface* GetGlicControl() { return &glic_control_; }
+  WebUIGlicActorTaskIconControl* GetGlicActorTaskIconControl() {
+    return &glic_actor_task_icon_control_;
+  }
 
   // Cleans up UI dependencies and destroys the hosted WebContents.
   // Called early during window teardown (forwarded via
@@ -285,9 +297,11 @@ class WebUIToolbarWebView
       toolbar_ui_api::mojom::LhsChipIdentifier identifier) override;
   void OnLhsChipDrag(toolbar_ui_api::mojom::LhsChipIdentifier identifier,
                      ui::mojom::DragEventSource source) override;
-  void OnHomeButtonDropUrl(const GURL& url) override;
+  void OnHomeButtonDropUrl() override;
   void OnHomeButtonDropFile(const gfx::PointF& drop_position) override;
   void OnHomeButtonDropText(const std::string& text) override;
+  void OnToolbarDropUrl() override;
+  void OnToolbarDropText(const std::string& text) override;
   void OnToolbarDropFile(const gfx::PointF& drop_position) override;
   base::expected<std::monostate, mojo_base::mojom::ErrorPtr> OnOmniboxAction(
       toolbar_ui_api::mojom::OmniboxActionPtr action) override;
@@ -296,8 +310,9 @@ class WebUIToolbarWebView
   void SetAvatarButtonFocused(bool focused) override;
   void SetAvatarButtonIPHPromoShowing(bool showing) override;
   void OnAppMenuFocusChanged(bool focused) override;
-  void ExecuteExtensionAction(const std::string& extension_id) override;
-  void ShowExtensionContextMenu(const std::string& extension_id,
+  void ExecuteExtensionAction(
+      extensions_bar::mojom::ExtensionActionIdPtr id) override;
+  void ShowExtensionContextMenu(extensions_bar::mojom::ExtensionActionIdPtr id,
                                 ui::mojom::MenuSourceType source) override;
   base::expected<toolbar_ui_api::mojom::AdjustOmniboxTextForCopyResultPtr,
                  mojo_base::mojom::ErrorPtr>
@@ -306,6 +321,7 @@ class WebUIToolbarWebView
   void OnPerformanceInterventionButtonClicked() override;
   void OnMediaButtonClicked() override;
   void OnGlicButtonClicked() override;
+  void OnGlicActorTaskIconClicked() override;
 
   // BrowserControlsService::BrowserControlsServiceDelegate:
   void PermitLaunchUrl() override;
@@ -400,8 +416,29 @@ class WebUIToolbarWebView
   // `location_bar_`.
   void OnInternalWebViewFocused();
 
+  // Returns whether `point`, in `this`'s coordinates, lies in a part of the
+  // WebUI toolbar that is not covered by an interactive control, and should
+  // therefore be treated as part of the window caption. This mirrors how the
+  // native toolbar treats its empty space when the vertical tab strip is shown,
+  // so that window dragging, double-click and the system context menu behave
+  // the same. The draggable area is declared by the WebUI through the
+  // `app-region` CSS property.
+  bool IsPositionInWindowCaption(const gfx::Point& point) const;
+
+  // Updates the area of the WebUI, in the internal WebView's coordinates, that
+  // is declared draggable via `app-region`. Called by the internal WebView.
+  void SetDraggableRegion(SkRegion draggable_region);
+
+  // Enables collecting the WebUI's draggable regions. They are only needed
+  // while IsPositionInWindowCaption() is used, i.e. while the vertical tab
+  // strip is shown, so the owner enables them only then.
+  void SetDraggableRegionsEnabled(bool enabled);
+
   void SetDidFirstNonEmptyPaintCallbackForTesting(base::OnceClosure callback);
-  void SetTickClockForTesting(const base::TickClock* clock);
+  // Overrides the TickClock used by `this` until the returned
+  // ScopedClosureRunner is destroyed; `clock` must outlive the runner.
+  [[nodiscard]] base::ScopedClosureRunner SetTickClockForTesting(
+      const base::TickClock* clock);
   views::WebView* GetWebViewForTesting();
   WebUIPerformanceInterventionControl*
   GetPerformanceInterventionControlForTesting() {
@@ -433,6 +470,8 @@ class WebUIToolbarWebView
   void FlushPendingToolbarStateForTesting();
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewBrowserTest,
+                           StatePushNotDeferredMoreThan100ms);
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewPixelBrowserTest,
                            CheckReloadButtonColor);
   FRIEND_TEST_ALL_PREFIXES(WebUIToolbarWebViewPixelBrowserTest,
@@ -521,6 +560,8 @@ class WebUIToolbarWebView
       toolbar_ui_api::mojom::MediaControlStatePtr state) override;
   void OnGlicButtonStateChanged(
       toolbar_ui_api::mojom::GlicButtonStatePtr state) override;
+  void OnGlicActorTaskIconStateChanged(
+      toolbar_ui_api::mojom::GlicActorTaskIconStatePtr state) override;
   void OnFocusRequested(
       toolbar_ui_api::mojom::FocusRequestTarget target) override;
   std::optional<GURL> ConsumeDroppedUrl(
@@ -597,6 +638,13 @@ class WebUIToolbarWebView
   // `force_navigation_buttons` forces the home and forward buttons to be
   // displayed, if pinned, and `force_location_bar` forces the location bar to
   // be at least its preferred width, if enabled.
+  //
+  // If `is_webui_toolbar_fully_enabled_` is true and `available_width` is
+  // bounded, elements that Javascript may overflow (split tabs, avatar,
+  // forward, and home buttons, pinned toolbar actions, and extension actions)
+  // may not be included in the computed size, but the overflow button is.
+  // Note that the location bar will consume any remaining `available_width`
+  // and hence the returned size will always be >= `available_width`.
   gfx::Size ComputeLayout(views::SizeBound available_width,
                           ButtonOverflowInfo* button_overflow_info = nullptr,
                           bool force_navigation_buttons = false,
@@ -660,6 +708,11 @@ class WebUIToolbarWebView
   // not modified afterwards. Cannot be null.
   raw_ptr<WebUIToolbarInternalWebView> web_view_;
 
+  // The area of the WebUI, in `web_view_`'s coordinates, declared draggable via
+  // the `app-region` CSS property. Only collected while the vertical tab strip
+  // is shown, and reset when it's hidden or the renderer goes away.
+  std::optional<SkRegion> draggable_region_;
+
   const raw_ptr<BrowserWindowInterface> browser_;
   const raw_ptr<chrome::BrowserCommandController> controller_;
 
@@ -668,6 +721,9 @@ class WebUIToolbarWebView
   // to use WebUI themselves, this should no longer be needed.
   std::unique_ptr<browser_controls_api::BrowserControlsAdapterImpl>
       browser_controls_adapter_;
+
+  // Navigates the current tab to URLs and text dropped on the toolbar.
+  std::unique_ptr<webui_toolbar::WebUIToolbarDropNavigator> drop_navigator_;
 
   webui_toolbar::IconTable icon_table_;
 
@@ -684,6 +740,7 @@ class WebUIToolbarWebView
   WebUIAvatarToolbarButton avatar_control_;
   WebUIMediaToolbarButton media_control_;
   WebUIGlicControl glic_control_;
+  WebUIGlicActorTaskIconControl glic_actor_task_icon_control_;
   // This is null if WebUILocationBar is off, or the window is in one of the
   // modes (e.g. popup) that don't use it yet.
   std::unique_ptr<WebUILocationBar> location_bar_;
@@ -702,6 +759,11 @@ class WebUIToolbarWebView
   uint32_t crash_count_ = 0;
 
   base::TimeTicks last_crash_time_;
+
+  // When the currently pending state push (if any) was first posted by
+  // PostPushToolbarState(). Used to bound how long repeated state updates can
+  // keep deferring the push. Only meaningful while a push is pending.
+  base::TimeTicks pending_state_push_start_time_;
 
   base::CallbackListSubscription touch_ui_subscription_;
   base::CallbackListSubscription paint_as_active_subscription_;

@@ -11,8 +11,6 @@ per-file chromium_strings.grd=*
 per-file generated_resources.grd=*
 per-file google_chrome_strings.grd=*
 per-file extensions_strings.grdp=*
-per-file os_settings_strings.grdp=*
-per-file os_settings_search_tag_strings.grdp=file://chrome/browser/resources/ash/settings/OWNERS
 
 per-file access_code_cast_strings.grdp=file://chrome/browser/ui/webui/access_code_cast/OWNERS
 
@@ -57,6 +55,7 @@ per-file ....xtb=file://tools/translation/TRANSLATION_OWNERS
 per-file *.plist=file://chrome/browser/ui/cocoa/OWNERS
 
 per-file chrome_crash_reporter_client*=file://components/crash/OWNERS
+per-file chrome_crash_user_streams*=file://components/crash/OWNERS
 
 per-file chrome_exe_main_mac.cc=file://ui/base/cocoa/OWNERS
 

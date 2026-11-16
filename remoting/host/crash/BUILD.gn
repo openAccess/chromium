@@ -28,6 +28,9 @@ if (is_linux || is_win) {
     ]
 
     if (is_win) {
+      configs -= [ "//build/config/win:console" ]
+      configs += [ "//build/config/win:windowed" ]
+
       sources += [ "$root_gen_dir/remoting/version.rc" ]
       defines = host_predefines +
                 [ "REMOTING_HOST_BINARY=BINARY_REMOTING_CRASHPAD_HANDLER" ]
@@ -49,59 +52,6 @@ if (is_linux) {
       "//remoting/base/crash:crashpad_db_mgr",
       "//third_party/crashpad/crashpad/client",
       "//third_party/crashpad/crashpad/util",
-    ]
-  }
-}
-
-if (is_win) {
-  source_set("crash_uploader") {
-    sources = [
-      "crash_directory_watcher.cc",
-      "crash_directory_watcher.h",
-      "crash_file_uploader.cc",
-      "crash_file_uploader.h",
-      "minidump_handler.cc",
-      "minidump_handler.h",
-    ]
-    deps = [
-      "//base",
-      "//remoting/base",
-      "//remoting/base/crash",
-      "//remoting/base/crash:breakpad_utils",
-      "//remoting/host:common_headers",
-      "//remoting/host/base",
-      "//services/network:network_service",
-      "//services/network/public/cpp",
-    ]
-  }
-
-  source_set("crash_uploader_main_headers") {
-    sources = [ "crash_uploader_main.h" ]
-    public_deps = [ "//remoting/host:host_main_headers" ]
-  }
-
-  source_set("crash_uploader_main") {
-    configs += [ "//remoting/build/config:host_implementation" ]
-
-    sources = [ "crash_uploader_main.cc" ]
-    deps = [
-      ":crash_uploader",
-      ":crash_uploader_main_headers",
-      "//base",
-      "//mojo/core/embedder",
-      "//remoting/base",
-      "//remoting/base/crash",
-      "//remoting/host:common_headers",
-      "//remoting/host/base",
-    ]
-  }
-
-  executable("remoting_crash_uploader") {
-    sources = [ "crash_uploader_entry_point.cc" ]
-
-    deps = [
-      ":crash_uploader_main_headers",
-      "//remoting/host:remoting_core",
     ]
   }
 }

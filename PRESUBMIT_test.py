@@ -3478,22 +3478,34 @@ class BannedTypeCheckTest(unittest.TestCase):
         input_api = MockInputApi()
         input_api.files = [
             MockFile('some/cpp/problematic/file.cc', ['using namespace std;']),
-            MockFile('third_party/blink/problematic/file.cc',
-                     ['GetInterfaceProvider()']),
+            MockFile(
+                'third_party/blink/problematic/file.cc',
+                ['GetInterfaceProvider()'],
+            ),
             MockFile('some/cpp/ok/file.cc', ['using std::string;']),
-            MockFile('some/cpp/nocheck/file.cc',
-                     ['using namespace std;  // nocheck']),
-            MockFile('some/cpp/comment/file.cc',
-                     ['  // A comment about `using namespace std;`']),
-            MockFile('some/cpp/problematic/file2.cc', [
-                'params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET'
-            ]),
-            MockFile('some/cpp/problematic/file3.cc', [
-                'params.ownership = Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET'
-            ]),
-            MockFile('some/cpp/problematic/file4.cc', [
-                'Browser* browser = chrome::FindBrowserWithTab(web_contents)'
-            ]),
+            MockFile(
+                'some/cpp/nocheck/file.cc', ['using namespace std;  // nocheck']
+            ),
+            MockFile(
+                'some/cpp/comment/file.cc',
+                ['  // A comment about `using namespace std;`'],
+            ),
+            MockFile(
+                'some/cpp/problematic/file2.cc',
+                [
+                    'params.ownership = Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET'
+                ],
+            ),
+            MockFile(
+                'some/cpp/problematic/file3.cc',
+                [
+                    'params.ownership = Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET'
+                ],
+            ),
+            MockFile(
+                'some/cpp/problematic/file4.cc',
+                ['Browser* browser = chrome::FindBrowserWithTab(web_contents)'],
+            ),
             MockFile(
                 'allowed_ranges_usage.cc',
                 [
@@ -3508,14 +3520,17 @@ class BannedTypeCheckTest(unittest.TestCase):
                     'std::ranges::views::reverse(vec);',
                     'std::ranges::views::zip(vec1, vec2);',
                     'std::ranges::views::as_rvalue(vec);',
-                ]),
+                    'std::ranges::swap(a, b);',
+                ],
+            ),
             MockFile(
                 'allowed_views_usage.cc',
                 [
                     'std::views::reverse(vec);',
                     'std::views::zip(vec1, vec2);',
                     'std::views::as_rvalue(vec);',
-                ]),
+                ],
+            ),
             MockFile(
                 'banned_ranges_usage.cc',
                 [
@@ -3525,7 +3540,8 @@ class BannedTypeCheckTest(unittest.TestCase):
                     'std::ranges::views::take(first, count);',
                     'std::ranges::views::transform(vec, fn);',
                     'std::ranges::transform_view tv;',
-                ]),
+                ],
+            ),
             MockFile(
                 'views_usage.cc',
                 [
@@ -3533,27 +3549,41 @@ class BannedTypeCheckTest(unittest.TestCase):
                     'std::views::filter(vec, fn);',
                     'namespace views = std::views;',
                     'using std::views::all;',
-                ]),
-            MockFile('content/desktop_android.cc', [
-                '// some first line',
-                '#if BUILDFLAG(IS_DESKTOP_ANDROID)',
-                '// some third line',
-            ]),
-            MockFile('content/desktop_android_test.cc', [
-                '// some first line',
-                '#if BUILDFLAG(IS_DESKTOP_ANDROID)',
-                '// some third line',
-            ]),
+                ],
+            ),
+            MockFile(
+                'content/desktop_android.cc',
+                [
+                    '// some first line',
+                    '#if BUILDFLAG(IS_DESKTOP_ANDROID)',
+                    '// some third line',
+                ],
+            ),
+            MockFile(
+                'content/desktop_android_test.cc',
+                [
+                    '// some first line',
+                    '#if BUILDFLAG(IS_DESKTOP_ANDROID)',
+                    '// some third line',
+                ],
+            ),
             # New test cases for nlohmann::json::parse
-            MockFile('some/cpp/problematic/json_parse.cc',
-                     ['nlohmann::json::parse(json_string);']),
-            MockFile('some/cpp/problematic/json_parse_no_namespace.cc',
-                     ['json::parse(json_string);']),
-            MockFile('third_party/json/ok/json_parse.cc',
-                     ['nlohmann::json::parse(json_string);']),
+            MockFile(
+                'some/cpp/problematic/json_parse.cc',
+                ['nlohmann::json::parse(json_string);'],
+            ),
+            MockFile(
+                'some/cpp/problematic/json_parse_no_namespace.cc',
+                ['json::parse(json_string);'],
+            ),
+            MockFile(
+                'third_party/json/ok/json_parse.cc',
+                ['nlohmann::json::parse(json_string);'],
+            ),
             MockFile('v8/ok/v8_parse.cc', ['JSON::Parse(json_string);']),
-            MockFile('v8/ok/v8_json_parse.cc',
-                     ['v8::JSON::Parse(json_string);']),
+            MockFile(
+                'v8/ok/v8_json_parse.cc', ['v8::JSON::Parse(json_string);']
+            ),
         ]
 
         results = PRESUBMIT.CheckNoBannedPatterns(input_api, MockOutputApi())
@@ -3705,6 +3735,68 @@ class BannedTypeCheckTest(unittest.TestCase):
             self.assertTrue(
                 all('third_party/ok/file.cc' not in r.message
                     for r in results))
+
+    def testBannedIcuLocaleGetDefault(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                'some/cpp/problematic/file.cc',
+                [
+                    'const icu::Locale& locale = icu::Locale::getDefault();',
+                    'auto language = Locale::getDefault().getLanguage();',
+                ],
+            ),
+            MockFile(
+                'third_party/blink/problematic/file.cc',
+                ['icu::Locale locale = icu::Locale::getDefault();'],
+            ),
+            MockFile(
+                'third_party/problematic/file.cc',
+                ['icu::Locale locale = icu::Locale::getDefault();'],
+            ),
+            MockFile(
+                'some/cpp/ok/file.cc',
+                [
+                    'base::i18n::LanguageTag locale = '
+                    'base::i18n::GetDefaultIcuLocale();',
+                    '// icu::Locale::getDefault() in a comment is fine.',
+                ],
+            ),
+            MockFile(
+                'base/i18n/ok/file.cc',
+                ['icu::Locale locale = icu::Locale::getDefault();'],
+            ),
+            MockFile(
+                'base/i18n/icubridge/default_icu_locale_unittest.cc',
+                ['icu::Locale::getDefault().getName();'],
+            ),
+        ]
+
+        results = PRESUBMIT.CheckNoBannedPatterns(input_api, MockOutputApi())
+
+        self.assertEqual(4, len(results))
+        self.assertIn('some/cpp/problematic/file.cc:1', results[0].message)
+        self.assertIn('some/cpp/problematic/file.cc:2', results[1].message)
+        self.assertIn(
+            'third_party/blink/problematic/file.cc', results[2].message
+        )
+        self.assertIn('third_party/problematic/file.cc', results[3].message)
+        for result in results:
+            self.assertIn(
+                'base/i18n/icubridge/default_icu_locale.h', result.message
+            )
+        self.assertTrue(
+            all('some/cpp/ok/file.cc' not in r.message for r in results)
+        )
+        self.assertTrue(
+            all('base/i18n/ok/file.cc' not in r.message for r in results)
+        )
+        self.assertTrue(
+            all(
+                'default_icu_locale_unittest.cc' not in r.message
+                for r in results
+            )
+        )
 
     def testBannedIosObjcFunctions(self):
         input_api = MockInputApi()
@@ -6786,9 +6878,20 @@ class CheckBaseFeatureMacroTest(unittest.TestCase):
                 'BASE_FEATURE(kMyMultilineToggle,',
                 '    base::FEATURE_ENABLED_BY_DEFAULT);'
             ]),
-            MockAffectedFile(
-                'valid_complex_arg.cc',
-                ['BASE_FEATURE(kMyToggle, GetDefaultState(vector<int>(1)));']),
+            MockAffectedFile('valid_complex_arg.cc', [
+                '#if BUILDFLAG(IS_ANDROID)',
+                'BASE_FEATURE(kMyToggle, '
+                'base::FEATURE_ENABLED_BY_DEFAULT);',
+                '#else',
+                'BASE_FEATURE(kMyToggle, '
+                'base::FEATURE_DISABLED_BY_DEFAULT);',
+                '#endif',
+                'BASE_FEATURE(kMyConditionalToggle,',
+                '    BUILDFLAG(IS_ANDROID) ? '
+                'base::FEATURE_ENABLED_BY_DEFAULT',
+                '                          : '
+                'base::FEATURE_DISABLED_BY_DEFAULT);',
+            ]),
             MockAffectedFile('valid_comment.cc', [
                 '// BASE_FEATURE(invalidToggle, '
                 'base::FEATURE_ENABLED_BY_DEFAULT);'
@@ -6806,8 +6909,13 @@ class CheckBaseFeatureMacroTest(unittest.TestCase):
                 '    base::FEATURE_ENABLED_BY_DEFAULT);'
             ]),
             MockAffectedFile('valid_complex_arg_runtime_mutable.cc', [
+                '#if BUILDFLAG(IS_ANDROID)',
                 'BASE_RUNTIME_MUTABLE_FEATURE(kMyToggle,'
-                ' GetDefaultState(vector<int>(1)));'
+                ' base::FEATURE_ENABLED_BY_DEFAULT);',
+                '#else',
+                'BASE_RUNTIME_MUTABLE_FEATURE(kMyToggle,'
+                ' base::FEATURE_DISABLED_BY_DEFAULT);',
+                '#endif',
             ]),
             MockAffectedFile('valid_comment_runtime_mutable.cc', [
                 '// BASE_RUNTIME_MUTABLE_FEATURE(invalidToggle, '
@@ -6946,6 +7054,85 @@ class CheckBaseFeatureMacroTest(unittest.TestCase):
 
         self.assertEqual(len(expected_warnings), len(warnings))
         self.assertCountEqual(expected_warnings, warnings)
+
+    def testBaseFeatureMacroInvalidState(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile('invalid_ternary.cc', [
+                'BASE_FEATURE(kMyToggle,',
+                '    BUILDFLAG(IS_UNSUPPORTED_PLATFORM) ? '
+                'base::FEATURE_DISABLED_BY_DEFAULT',
+                '                                       : '
+                'base::FEATURE_ENABLED_BY_DEFAULT);',
+            ]),
+            MockAffectedFile(
+                'invalid_function.cc',
+                ['BASE_FEATURE(kMyToggle, GetDefaultState(vector<int>(1)));']),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureMacro(mock_input_api,
+                                                  MockOutputApi())
+
+        self.assertEqual(1, len(results))
+        self.assertEqual('error', results[0].type)
+        self.assertEqual('BASE_FEATURE() default state:', results[0].message)
+        errors = results[0].items
+
+        expected_errors = [
+            '    invalid_ternary.cc:1: Unable to parse default state for '
+            'feature "MyToggle". Default state must be a literal constant '
+            '(e.g. base::FEATURE_ENABLED_BY_DEFAULT or '
+            'base::FEATURE_DISABLED_BY_DEFAULT); use #if/#else preprocessor '
+            'blocks instead of ternary or helper expressions.',
+            '    invalid_function.cc:1: Unable to parse default state for '
+            'feature "MyToggle". Default state must be a literal constant '
+            '(e.g. base::FEATURE_ENABLED_BY_DEFAULT or '
+            'base::FEATURE_DISABLED_BY_DEFAULT); use #if/#else preprocessor '
+            'blocks instead of ternary or helper expressions.',
+        ]
+        self.assertEqual(expected_errors, errors)
+
+    def testBaseFeatureMacroInvalidStateExistingFeature(self):
+        # Editing an existing feature that the parser can't read only warns,
+        # while adding a new one in the same file is an error.
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockFile(
+                'existing.cc',
+                [
+                    'BASE_FEATURE(kOldToggle, GetDefaultState(2));',
+                    'BASE_FEATURE(kNewToggle, GetDefaultState(1));',
+                ],
+                old_contents=['BASE_FEATURE(kOldToggle, GetDefaultState(1));'],
+            ),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureMacro(mock_input_api,
+                                                  MockOutputApi())
+
+        self.assertEqual(2, len(results))
+        self.assertEqual('error', results[0].type)
+        self.assertEqual('BASE_FEATURE() default state:', results[0].message)
+        self.assertEqual(1, len(results[0].items))
+        self.assertIn('existing.cc:2:', results[0].items[0])
+        self.assertIn('"NewToggle"', results[0].items[0])
+        self.assertEqual('warning', results[1].type)
+        self.assertEqual('BASE_FEATURE() default state:', results[1].message)
+        self.assertEqual(1, len(results[1].items))
+        self.assertIn('existing.cc:1:', results[1].items[0])
+        self.assertIn('"OldToggle"', results[1].items[0])
+
+    def testBaseFeatureMacroInvalidStateInTestFileSkipped(self):
+        mock_input_api = MockInputApi()
+        mock_input_api.files = [
+            MockAffectedFile(
+                'base/feature_list_unittest.cc',
+                ['BASE_FEATURE(kMyToggle, GetDefaultState(vector<int>(1)));']),
+            MockAffectedFile(
+                'chrome/browser/foo/test/fake_features.cc',
+                ['BASE_FEATURE(kMyToggle, kTestDefaultState);']),
+        ]
+        results = PRESUBMIT.CheckBaseFeatureMacro(mock_input_api,
+                                                  MockOutputApi())
+        self.assertEqual([], results)
 
     def testNoBaseFeatureInContents(self):
         mock_input_api = MockInputApi()

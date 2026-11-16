@@ -6,6 +6,7 @@
 
 #include <color-management-v1-server-protocol.h>
 
+#include <algorithm>
 #include <utility>
 
 #include "base/check.h"
@@ -25,15 +26,18 @@ constexpr uint32_t kTestWpColorManagerVersion = 1;
 class TestImageDescription : public ServerObject {
  public:
   TestImageDescription(wl_resource* resource,
+                       TestWpColorManager* manager,
                        std::optional<TestImageDescriptionParams> params)
-      : ServerObject(resource), params_(std::move(params)) {}
+      : ServerObject(resource), manager_(manager), params_(std::move(params)) {}
   ~TestImageDescription() override = default;
 
+  TestWpColorManager* manager() { return manager_; }
   const std::optional<TestImageDescriptionParams>& params() const {
     return params_;
   }
 
  private:
+  const raw_ptr<TestWpColorManager> manager_;
   const std::optional<TestImageDescriptionParams> params_;
 };
 
@@ -47,11 +51,11 @@ void ImageDescriptionGetInformation(wl_client* client,
     wl_client_post_no_memory(client);
     return;
   }
-  // Describe an SDR sRGB display.
+  // Describe an SDR display with sRGB primaries.
+  auto* manager = GetUserDataAs<TestImageDescription>(resource)->manager();
   wp_image_description_info_v1_send_primaries_named(
       info, WP_COLOR_MANAGER_V1_PRIMARIES_SRGB);
-  wp_image_description_info_v1_send_tf_named(
-      info, WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB);
+  wp_image_description_info_v1_send_tf_named(info, manager->display_tf_named());
   wp_image_description_info_v1_send_luminances(info, 2000, 80, 80);
   wp_image_description_info_v1_send_done(info);
   // `done` is a destructor event.
@@ -63,17 +67,25 @@ constexpr struct wp_image_description_v1_interface kImageDescriptionImpl = {
     .get_information = ImageDescriptionGetInformation,
 };
 
-// Creates an image description resource and sends `ready`.
+// Creates an image description resource and sends `ready`, or `failed` if
+// `fail` is true.
 void CreateImageDescription(wl_client* client,
                             wl_resource* parent,
                             uint32_t id,
                             TestWpColorManager* manager,
-                            std::optional<TestImageDescriptionParams> params) {
+                            std::optional<TestImageDescriptionParams> params,
+                            bool fail = false) {
   wl_resource* description = CreateResourceWithImpl<TestImageDescription>(
       client, &wp_image_description_v1_interface,
       wl_resource_get_version(parent), &kImageDescriptionImpl, id,
-      base::DoNothing(), std::move(params));
+      base::DoNothing(), manager, std::move(params));
   if (!description) {
+    return;
+  }
+  if (fail) {
+    wp_image_description_v1_send_failed(
+        description, WP_IMAGE_DESCRIPTION_V1_CAUSE_UNSUPPORTED,
+        "parametric image descriptions fail in this test");
     return;
   }
   wp_image_description_v1_send_ready(description, manager->NextIdentity());
@@ -125,7 +137,8 @@ void CreatorCreate(wl_client* client, wl_resource* resource, uint32_t id) {
     return;
   }
   manager->OnDescriptionCreated(params);
-  CreateImageDescription(client, resource, id, manager, params);
+  CreateImageDescription(client, resource, id, manager, params,
+                         manager->fail_parametric_descriptions());
   // `create` is a destructor request.
   wl_resource_destroy(resource);
 }
@@ -299,12 +312,29 @@ constexpr struct wp_color_management_surface_v1_interface kSurfaceImpl = {
 };
 
 // wp_color_management_surface_feedback_v1
+class TestColorManagementSurfaceFeedback : public ServerObject {
+ public:
+  TestColorManagementSurfaceFeedback(wl_resource* resource,
+                                     TestWpColorManager* manager)
+      : ServerObject(resource), manager_(manager) {
+    manager_->OnFeedbackCreated(this);
+  }
+  ~TestColorManagementSurfaceFeedback() override {
+    manager_->OnFeedbackDestroyed(this);
+  }
+
+  TestWpColorManager* manager() { return manager_; }
+
+ private:
+  const raw_ptr<TestWpColorManager> manager_;
+};
+
 void FeedbackGetPreferred(wl_client* client,
                           wl_resource* resource,
                           uint32_t id) {
   CreateImageDescription(
       client, resource, id,
-      GetUserDataAs<TestColorManagementOutput>(resource)->manager(),
+      GetUserDataAs<TestColorManagementSurfaceFeedback>(resource)->manager(),
       std::nullopt);
 }
 
@@ -344,9 +374,7 @@ void ManagerGetSurfaceFeedback(wl_client* client,
                                wl_resource* resource,
                                uint32_t id,
                                wl_resource* surface) {
-  // The feedback object only needs access to the manager, so reuse
-  // TestColorManagementOutput as its user data.
-  CreateResourceWithImpl<TestColorManagementOutput>(
+  CreateResourceWithImpl<TestColorManagementSurfaceFeedback>(
       client, &wp_color_management_surface_feedback_v1_interface,
       wl_resource_get_version(resource), &kFeedbackImpl, id, base::DoNothing(),
       GetManager(resource));
@@ -424,7 +452,16 @@ TestWpColorManager::TestWpColorManager()
           WP_COLOR_MANAGER_V1_FEATURE_SET_PRIMARIES,
           WP_COLOR_MANAGER_V1_FEATURE_SET_LUMINANCES,
           WP_COLOR_MANAGER_V1_FEATURE_SET_MASTERING_DISPLAY_PRIMARIES,
-      }) {}
+      }),
+      supported_tfs_named_({
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB,
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22,
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_BT1886,
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ,
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG,
+          WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR,
+      }),
+      display_tf_named_(WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB) {}
 
 TestWpColorManager::~TestWpColorManager() = default;
 
@@ -434,12 +471,7 @@ void TestWpColorManager::OnBind() {
   for (uint32_t feature : supported_features_) {
     wp_color_manager_v1_send_supported_feature(resource(), feature);
   }
-  for (uint32_t tf : {WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB,
-                      WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_GAMMA22,
-                      WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_BT1886,
-                      WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_ST2084_PQ,
-                      WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_HLG,
-                      WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_EXT_LINEAR}) {
+  for (uint32_t tf : supported_tfs_named_) {
     wp_color_manager_v1_send_supported_tf_named(resource(), tf);
   }
   for (uint32_t primaries : {WP_COLOR_MANAGER_V1_PRIMARIES_SRGB,
@@ -448,6 +480,21 @@ void TestWpColorManager::OnBind() {
     wp_color_manager_v1_send_supported_primaries_named(resource(), primaries);
   }
   wp_color_manager_v1_send_done(resource());
+}
+
+void TestWpColorManager::SendPreferredChanged() {
+  for (ServerObject* feedback : feedbacks_) {
+    wp_color_management_surface_feedback_v1_send_preferred_changed(
+        feedback->resource(), NextIdentity());
+  }
+}
+
+void TestWpColorManager::OnFeedbackCreated(ServerObject* feedback) {
+  feedbacks_.push_back(feedback);
+}
+
+void TestWpColorManager::OnFeedbackDestroyed(ServerObject* feedback) {
+  std::erase(feedbacks_, feedback);
 }
 
 std::optional<TestImageDescriptionParams>

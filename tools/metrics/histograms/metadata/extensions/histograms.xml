@@ -306,7 +306,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Action.SetTitleLength" units="bytes"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>rdevlin.cronin@chromium.org</owner>
   <owner>bershanskyi@gmail.com</owner>
   <owner>extensions-core@chromium.org</owner>
@@ -750,7 +750,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.CookieAPIPartitionKeyWellFormatted"
-    enum="BooleanEnabled" expires_after="2027-04-30">
+    enum="BooleanEnabled" expires_after="2027-07-01">
   <owner>arichiv@google.com</owner>
   <owner>src/net/cookies/OWNERS</owner>
   <summary>
@@ -1164,7 +1164,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.DeclarativeNetRequest.RedirectAction"
-    enum="DeclarativeNetRequestRedirectType" expires_after="2027-03-07">
+    enum="DeclarativeNetRequestRedirectType" expires_after="2027-05-09">
   <owner>quarz@chromium.org</owner>
   <owner>src/extensions/OWNERS</owner>
   <summary>
@@ -1528,21 +1528,8 @@ This is emitted for two scenarios when a worker may be unregistered:
   </summary>
 </histogram>
 
-<histogram name="Extensions.DisableReason" enum="ExtensionDisableReason"
-    expires_after="2022-08-28">
-  <owner>rdevlin.cronin@chromium.org</owner>
-  <owner>extensions-core@chromium.org</owner>
-  <summary>
-    The count of disabled extensions on profile open grouped by disble reason
-    from disable_reason::DisableReason. When an extension is disabled, it can be
-    for one or more reasons (although typically just one), so the sum of these
-    may be greater than 'Extensions.Disabled' which is a count of the number of
-    unique extensions that are disabled.
-  </summary>
-</histogram>
-
 <histogram name="Extensions.DisableReason2" enum="ExtensionDisableReason"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>rdevlin.cronin@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -1553,16 +1540,6 @@ This is emitted for two scenarios when a worker may be unregistered:
     disabled, it can be for one or more reasons (although typically just one),
     so the sum of these may be greater than 'Extensions.Disabled' which is a
     count of the number of unique extensions that are disabled.
-  </summary>
-</histogram>
-
-<histogram name="Extensions.EsbAllowlistOmahaAttribute"
-    enum="ExtensionAllowlistOmahaAttributeValue" expires_after="2023-10-01">
-  <owner>jeffcyr@google.com</owner>
-  <owner>chrome-counter-abuse-alerts@google.com</owner>
-  <summary>
-    Reports the value of the Safe Browsing CRX allowlist custom omaha attribute
-    when an update check occurs for an extension.
   </summary>
 </histogram>
 
@@ -3111,7 +3088,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Install.PinReason" enum="ExtensionPinReason"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>evasu@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -3424,7 +3401,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.LoadTheme2" units="units"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>rdevlin.cronin@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -3738,7 +3715,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.NativeMessaging.MessageSize{NativeMessagingSource}"
-    units="bytes" expires_after="2027-03-07">
+    units="bytes" expires_after="2027-05-09">
   <owner>kelvinjiang@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -3823,7 +3800,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.NonWebStoreNewTabPageOverrides2" units="units"
-    expires_after="2026-11-15">
+    expires_after="2027-11-15">
   <owner>anunoy@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -4215,18 +4192,6 @@ This is emitted for two scenarios when a worker may be unregistered:
   </summary>
 </histogram>
 
-<histogram name="Extensions.ServiceWorkerBackground.RegistrationTime"
-    units="ms" expires_after="2025-03-25">
-  <owner>jlulejian@chromium.org</owner>
-  <owner>extensions-core@chromium.org</owner>
-  <summary>
-    The amount of time it takes to register a service worker background script
-    with the content service worker layer.
-
-    Measured in milliseconds from 1ms up to 10 seconds.
-  </summary>
-</histogram>
-
 <histogram name="Extensions.ServiceWorkerBackground.RegistrationWhenExpected"
     enum="Boolean" expires_after="2026-03-01">
   <owner>jlulejian@chromium.org</owner>
@@ -4369,23 +4334,9 @@ This is emitted for two scenarios when a worker may be unregistered:
   </summary>
 </histogram>
 
-<histogram name="Extensions.ServiceWorkerBackground.WorkerScriptFetchNetError"
-    enum="CombinedHttpResponseAndNetErrorCode" expires_after="2025-02-01">
-  <owner>jlulejian@chromium.org</owner>
-  <owner>extensions-core@chromium.org</owner>
-  <summary>
-    Records the underlying net::Error that was encountered when the content
-    service worker layer tries to fetch the worker script (from disk) but
-    encounters a network error.
-
-    It is emitted each time a worker script fetch fails for a
-    blink::ServiceWorkerBackground::kErrorNetwork reason.
-  </summary>
-</histogram>
-
 <histogram
     name="Extensions.ServiceWorkerBackground.WorkerUnregistrationFailureStatus{UnregistrationType}"
-    enum="ServiceWorkerStatusCode" expires_after="2027-03-07">
+    enum="ServiceWorkerStatusCode" expires_after="2027-05-09">
   <owner>jlulejian@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -4497,7 +4448,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Settings.DefaultPinningStartupState" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>evasu@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -4509,7 +4460,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Settings.DefaultPinningToggled" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>evasu@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -4732,7 +4683,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Startup.DefaultPinnedExtensionState"
-    enum="DefaultPinnedExtensionState" expires_after="2027-03-07">
+    enum="DefaultPinnedExtensionState" expires_after="2027-05-09">
   <owner>evasu@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>
@@ -4772,14 +4723,14 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Tabs.RemoveAction" enum="TabsRemoveActionType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>quarz@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>Tracks Tabs API remove actions.</summary>
 </histogram>
 
 <histogram name="Extensions.Tabs.UpdateAction" enum="TabsUpdateActionType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>quarz@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>Tracks Tabs API update actions.</summary>
@@ -4850,7 +4801,7 @@ This is emitted for two scenarios when a worker may be unregistered:
 </histogram>
 
 <histogram name="Extensions.Toolbar.TimeToFirstActionClick" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>evasu@chromium.org</owner>
   <owner>extensions-core@chromium.org</owner>
   <summary>

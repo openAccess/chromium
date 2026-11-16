@@ -12,10 +12,13 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/notimplemented.h"
+#include "base/types/optional_ref.h"
 #include "base/types/optional_util.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/actor/execution_engine.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/actor_webui.mojom.h"
@@ -41,6 +44,18 @@ ActorTask::StoppedReason ToStoppedReason(
     case proto::StopTaskRequest::TASK_COMPLETED:
     default:
       return ActorTask::StoppedReason::kTaskComplete;
+  }
+}
+
+bool IsPausedFromActor(proto::PauseTaskRequest::Reason reason) {
+  switch (reason) {
+    case proto::PauseTaskRequest::USER_REQUESTED:
+      return false;
+    case proto::PauseTaskRequest::REASON_UNSPECIFIED:
+    case proto::PauseTaskRequest::YIELD_TO_USER:
+    case proto::PauseTaskRequest::AWAITING_USER_CONFIRMATION:
+    default:
+      return true;
   }
 }
 
@@ -170,6 +185,62 @@ bool ShouldIncludePageContent(
   }
 }
 
+void PopulateBrowserObservations(
+    google::protobuf::RepeatedPtrField<
+        optimization_guide::proto::TabObservation>& tabs,
+    const proto::ObservationConfig* observation_config,
+    google::protobuf::RepeatedPtrField<proto::BrowserObservation>*
+        out_observations) {
+  proto::ObservationConfig::ObservationLevel level =
+      proto::ObservationConfig::OBSERVATION_LEVEL_FULL;
+  if (observation_config) {
+    level = observation_config->level();
+  }
+  if (!ShouldIncludeObservations(level)) {
+    return;
+  }
+
+  for (optimization_guide::proto::TabObservation& tab_obs : tabs) {
+    proto::BrowserObservation* browser_obs = out_observations->Add();
+    browser_obs->set_tab_id(tab_obs.id());
+    if (tab_obs.has_annotated_page_content() &&
+        tab_obs.annotated_page_content().has_main_frame_data()) {
+      browser_obs->set_current_url(
+          tab_obs.annotated_page_content().main_frame_data().url());
+    }
+    browser_obs->set_status(ToBrowserObservationStatus(tab_obs.result()));
+    if (browser_obs->status() != proto::BrowserObservation::STATUS_OBSERVED) {
+      continue;
+    }
+
+    if (ShouldIncludeScreenshot(level)) {
+      if (tab_obs.has_screenshot() && !tab_obs.screenshot().empty()) {
+        proto::BinaryData* screenshot_data =
+            browser_obs->mutable_screenshot_data();
+        screenshot_data->set_inline_data(
+            std::move(*tab_obs.mutable_screenshot()));
+        if (tab_obs.has_screenshot_mime_type()) {
+          screenshot_data->set_mime_type(
+              std::move(*tab_obs.mutable_screenshot_mime_type()));
+        }
+      } else {
+        browser_obs->mutable_screenshot_error()->set_code(
+            ToScreenshotErrorCode(tab_obs));
+      }
+    }
+
+    if (ShouldIncludePageContent(level)) {
+      if (tab_obs.has_annotated_page_content()) {
+        *browser_obs->mutable_inline_annotated_page_content() =
+            std::move(*tab_obs.mutable_annotated_page_content());
+      } else {
+        browser_obs->mutable_page_content_error()->set_code(
+            ToPageContentErrorCode(tab_obs));
+      }
+    }
+  }
+}
+
 }  // namespace
 
 ActorKeyedServiceAdapter::ActorKeyedServiceAdapter(
@@ -191,23 +262,27 @@ void ActorKeyedServiceAdapter::StartTask(const proto::StartTaskRequest& request,
   }
 
   proto::StartTaskResponse response;
+  auto execution_mode = ActorKeyedService::ExecutionMode::kHeaded;
   // TODO(crbug.com/576384635): Support binding multiple initial target surfaces
   // and failing task creation on unbindable tabs in ActorKeyedService.
   if (!request.target_surfaces().empty()) {
     const proto::TargetSurface& surface = request.target_surfaces(0);
-    if (!surface.has_tab_id() || surface.tab_id() <= 0 ||
-        !actor_service_->GetSurfaceRegistry().GetForTab(
-            tabs::TabHandle(surface.tab_id()))) {
+    // `tab_id` holds an actor surface ID, so it can name a tab-backed or a
+    // headless surface. An unset or 0 ID asks Chrome to create a surface.
+    // ActorKeyedService creates one only for HEADLESS targets. For other modes,
+    // the registry lookup below finds no surface.
+    if (surface.tab_id() == 0 &&
+        surface.execution_mode() == proto::TargetSurface::HEADLESS) {
+      execution_mode = ActorKeyedService::ExecutionMode::kHeadless;
+    } else if (actor_service_->GetSurfaceRegistry().Get(
+                   ActorSurfaceHandle::FromRawValue(surface.tab_id()))) {
+      options->actuation_tab_id = surface.tab_id();
+    } else {
       response.set_status(
           proto::StartTaskResponse::STATUS_TARGET_TAB_NOT_FOUND);
       std::move(callback).Run(TaskId(), std::move(response));
       return;
     }
-    options->actuation_tab_id = surface.tab_id();
-    proto::StartTaskResponse::BoundSurface* bound_surface =
-        response.add_bound_surfaces();
-    bound_surface->set_tab_id(surface.tab_id());
-    bound_surface->set_execution_mode(surface.execution_mode());
   }
 
   TaskId task_id = actor_service_->CreateTaskWithOptions(
@@ -215,7 +290,25 @@ void ActorKeyedServiceAdapter::StartTask(const proto::StartTaskRequest& request,
                      /*id=*/std::nullopt),
       enterprise_policy_checker_, std::move(options),
       weak_ptr_factory_.GetWeakPtr(),
-      ui::ActorUiStateManager::Get(actor_service_->GetProfile()));
+      ui::ActorUiStateManager::Get(actor_service_->GetProfile()),
+      /*initial_invocation_source=*/std::nullopt,
+      ActorKeyedService::AllowedSchemes::kRequireHttpsOrHttp,
+      request.has_agent_container_config()
+          ? base::optional_ref(request.agent_container_config())
+          : std::nullopt,
+      execution_mode);
+
+  if (!request.target_surfaces().empty()) {
+    // The task's initial surface is either the surface in `tab_id` or the
+    // headless surface that ActorKeyedService created for the task.
+    ActorTask* task = actor_service_->GetTask(task_id);
+    CHECK(task);
+    proto::StartTaskResponse::BoundSurface* bound_surface =
+        response.add_bound_surfaces();
+    bound_surface->set_tab_id(task->GetLastActuatedActorSurface().raw_value());
+    bound_surface->set_execution_mode(
+        request.target_surfaces(0).execution_mode());
+  }
 
   response.set_status(proto::StartTaskResponse::STATUS_OK);
   std::move(callback).Run(task_id, std::move(response));
@@ -231,6 +324,53 @@ void ActorKeyedServiceAdapter::StopTask(TaskId task_id,
 
   actor_service_->StopTask(task_id, ToStoppedReason(request.reason()));
   std::move(callback).Run(true);
+}
+
+void ActorKeyedServiceAdapter::PauseTask(TaskId task_id,
+                                         const proto::PauseTaskRequest& request,
+                                         PauseTaskCallback callback) {
+  ActorTask* task = actor_service_->GetTask(task_id);
+  if (!task || task->IsCompleted() || task->IsUnderUserControl()) {
+    std::move(callback).Run(false);
+    return;
+  }
+
+  task->Pause(IsPausedFromActor(request.reason()));
+  std::move(callback).Run(true);
+}
+
+void ActorKeyedServiceAdapter::ResumeTask(
+    TaskId task_id,
+    const proto::ResumeTaskRequest& request,
+    ResumeTaskCallback callback) {
+  ActorTask* task = actor_service_->GetTask(task_id);
+  if (!task || !task->IsUnderUserControl()) {
+    proto::ResumeTaskResponse response;
+    response.set_status(proto::ResumeTaskResponse::STATUS_FAILED);
+    std::move(callback).Run(std::move(response));
+    return;
+  }
+
+  task->Resume();
+  task->GetExecutionEngine().set_user_take_over_result(std::nullopt);
+
+  std::optional<proto::ObservationConfig> observation_config;
+  if (request.has_observation_config()) {
+    observation_config = request.observation_config();
+  }
+  const bool skip_async_observation_collection =
+      observation_config &&
+      ShouldSkipAsyncObservationCollection(observation_config->level());
+  actor_keyed_service_proto_wrapper_.CollectObservations(
+      task_id, skip_async_observation_collection,
+      base::BindOnce(
+          [](std::optional<proto::ObservationConfig> observation_config,
+             ResumeTaskCallback callback,
+             optimization_guide::proto::ActionsResult result) {
+            std::move(callback).Run(BuildResumeTaskResponse(
+                std::move(result), base::OptionalToPtr(observation_config)));
+          },
+          std::move(observation_config), std::move(callback)));
 }
 
 void ActorKeyedServiceAdapter::Act(TaskId task_id,
@@ -290,54 +430,24 @@ ActorKeyedServiceAdapter::BuildPerformActionsResponse(
     response.add_extra_information(std::move(info));
   }
 
-  proto::ObservationConfig::ObservationLevel level =
-      proto::ObservationConfig::OBSERVATION_LEVEL_FULL;
-  if (observation_config) {
-    level = observation_config->level();
+  PopulateBrowserObservations(*result.mutable_tabs(), observation_config,
+                              response.mutable_observations());
+  return response;
+}
+
+// static
+proto::ResumeTaskResponse ActorKeyedServiceAdapter::BuildResumeTaskResponse(
+    optimization_guide::proto::ActionsResult result,
+    const proto::ObservationConfig* observation_config) {
+  proto::ResumeTaskResponse response;
+  if (result.action_result() !=
+      static_cast<int32_t>(mojom::ActionResultCode::kOk)) {
+    response.set_status(proto::ResumeTaskResponse::STATUS_FAILED);
+    return response;
   }
-  if (ShouldIncludeObservations(level)) {
-    for (optimization_guide::proto::TabObservation& tab_obs :
-         *result.mutable_tabs()) {
-      proto::BrowserObservation* browser_obs = response.add_observations();
-      browser_obs->set_tab_id(tab_obs.id());
-      if (tab_obs.has_annotated_page_content() &&
-          tab_obs.annotated_page_content().has_main_frame_data()) {
-        browser_obs->set_current_url(
-            tab_obs.annotated_page_content().main_frame_data().url());
-      }
-      browser_obs->set_status(ToBrowserObservationStatus(tab_obs.result()));
-      if (browser_obs->status() != proto::BrowserObservation::STATUS_OBSERVED) {
-        continue;
-      }
-
-      if (ShouldIncludeScreenshot(level)) {
-        if (tab_obs.has_screenshot() && !tab_obs.screenshot().empty()) {
-          proto::BinaryData* screenshot_data =
-              browser_obs->mutable_screenshot_data();
-          screenshot_data->set_inline_data(
-              std::move(*tab_obs.mutable_screenshot()));
-          if (tab_obs.has_screenshot_mime_type()) {
-            screenshot_data->set_mime_type(
-                std::move(*tab_obs.mutable_screenshot_mime_type()));
-          }
-        } else {
-          browser_obs->mutable_screenshot_error()->set_code(
-              ToScreenshotErrorCode(tab_obs));
-        }
-      }
-
-      if (ShouldIncludePageContent(level)) {
-        if (tab_obs.has_annotated_page_content()) {
-          *browser_obs->mutable_inline_annotated_page_content() =
-              std::move(*tab_obs.mutable_annotated_page_content());
-        } else {
-          browser_obs->mutable_page_content_error()->set_code(
-              ToPageContentErrorCode(tab_obs));
-        }
-      }
-    }
-  }
-
+  response.set_status(proto::ResumeTaskResponse::STATUS_OK);
+  PopulateBrowserObservations(*result.mutable_tabs(), observation_config,
+                              response.mutable_observations());
   return response;
 }
 

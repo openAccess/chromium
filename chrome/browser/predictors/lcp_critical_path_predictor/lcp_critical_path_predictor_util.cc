@@ -533,22 +533,8 @@ bool RecordFetchedFontUrlsHistogram(int sliding_window_size,
   *stat.mutable_fetched_font_url_stat() =
       updater.ToLcppStringFrequencyStatData();
 
-  base::UmaHistogramCounts10000(
-      "Blink.LCPP.RecordedFontCount",
-      base::checked_cast<int>(fetched_font_urls.size()));
   base::UmaHistogramCounts10000("Blink.LCPP.RecordedFontUrlsMaxLength",
                                 base::checked_cast<int>(max_url_length));
-  base::UmaHistogramCounts10000("Blink.LCPP.RecordedFontUrlMatchCount",
-                                base::checked_cast<int>(updater.num_matched()));
-  if (!fetched_font_urls.empty()) {
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.RecordedFontUrlMatchCountForPagesWithFonts",
-        base::checked_cast<int>(updater.num_matched()));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlPredictionMatchPercent",
-        base::checked_cast<int>(100 * updater.num_matched() /
-                                fetched_font_urls.size()));
-  }
 
   return updater.has_updated();
 }
@@ -912,8 +898,8 @@ std::vector<GURL> PredictFetchedFontUrls(const LcppStat& stat) {
     return font_urls;
   }
 
-  // No need to record metrics for pages without web fonts to be prefetched
-  // or preloaded.
+  // Bandwidth limit check for prefetch/preload. If the bandwidth is below the
+  // limit, an empty fonts list is returned to disable the prefetch/preload.
   double max_bandwidth_mbps;
   net::NetworkChangeNotifier::ConnectionType connection_type;
   net::NetworkChangeNotifier::GetMaxBandwidthAndConnectionType(
@@ -923,17 +909,8 @@ std::vector<GURL> PredictFetchedFontUrls(const LcppStat& stat) {
            net::NetworkChangeNotifier::ConnectionType::CONNECTION_UNKNOWN ||
        max_bandwidth_mbps <
            blink::features::kLCPPFontURLPredictorThresholdInMbps.Get())) {
-    base::UmaHistogramEnumeration(
-        "Blink.LCPP.FontFetch.Disabled.ConnectionType", connection_type,
-        net::NetworkChangeNotifier::ConnectionType::CONNECTION_LAST);
     return std::vector<GURL>();
   }
-  // Workaround: we cannot use UmaHistogramEnumeration because
-  // connection_type is defined with old C enum, and setting kValue causes
-  // namespace conflict.
-  base::UmaHistogramEnumeration(
-      "Blink.LCPP.FontFetch.Enabled.ConnectionType", connection_type,
-      net::NetworkChangeNotifier::ConnectionType::CONNECTION_LAST);
   return font_urls;
 }
 
@@ -1046,41 +1023,6 @@ bool UpdateLcppStatWithLcppDataInputs(const LcppDataInputs& inputs,
       blink::features::kLCPPDeferUnusedPreloadSlidingWindowSize.Get(),
       blink::features::kLCPPDeferUnusedPreloadMaxHistogramBuckets.Get(),
       inputs.unused_preload_resources, stat);
-  base::UmaHistogramCounts10000("Blink.LCPP.ReportedFontCount",
-                                base::checked_cast<int>(inputs.font_url_count));
-  if (inputs.font_url_count > 0 && inputs.font_urls.size() > 0) {
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.RecordedFontUrlHitCountForPagesWithFonts",
-        base::checked_cast<int>(inputs.font_url_hit_count));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlPredictionHitPercent",
-        base::checked_cast<int>(100 * inputs.font_url_hit_count /
-                                inputs.font_url_count));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlPredictionHitPercentInRecordedFonts",
-        base::checked_cast<int>(100 * inputs.font_url_hit_count /
-                                inputs.font_urls.size()));
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.RecordedFontUrlReenterCountForPagesWithFonts",
-        base::checked_cast<int>(inputs.font_url_reenter_count));
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.RecordedFontUrlReenterPercentInRecordedFonts",
-        base::checked_cast<int>(100 * inputs.font_url_reenter_count /
-                                inputs.font_urls.size()));
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.CrossSiteFontUrls",
-        base::checked_cast<int>(inputs.cross_site_font_url_count));
-    base::UmaHistogramCounts10000(
-        "Blink.LCPP.SameSiteFontUrls",
-        base::checked_cast<int>(inputs.same_site_font_url_count));
-    CHECK_GT(inputs.same_site_font_url_count + inputs.cross_site_font_url_count,
-             0UL);
-    base::UmaHistogramPercentage(
-        "Blink.LCPP.SameSiteFontUrlRatio",
-        base::checked_cast<int>(100 * inputs.same_site_font_url_count /
-                                (inputs.same_site_font_url_count +
-                                 inputs.cross_site_font_url_count)));
-  }
   return data_updated;
 }
 
@@ -1524,13 +1466,10 @@ void LcppDataMap::GetPreconnectAndPrefetchRequest(
       features::kLoadingPredictorPrefetchSubresourceType.Get() ==
           features::PrefetchSubresourceType::kAll;
   if (kLCPPFontURLPredictorEnabled && kLoadingPredictorPrefetchEnabled) {
-    size_t count = 0;
     for (const GURL& font_url : PredictFetchedFontUrls(*lcpp_stat)) {
       prediction.prefetch_requests.emplace_back(
           font_url, network::mojom::RequestDestination::kFont);
-      ++count;
     }
-    base::UmaHistogramCounts1000("Blink.LCPP.PrefetchFontCount", count);
   }
 
   if (base::FeatureList::IsEnabled(blink::features::kLCPPPrefetchSubresource)) {
@@ -1593,10 +1532,6 @@ void LcppDataMap::GetPreconnectAndPrefetchRequest(
       base::UmaHistogramCounts10000(
           "Blink.LCPP.PrefetchSubresource.Count.CrossSite",
           base::checked_cast<int>(subresource_urls_cross_site));
-      base::UmaHistogramPercentage(
-          "Blink.LCPP.PrefetchSubresource.Count.SameSiteRatio",
-          base::checked_cast<int>(100 * subresource_urls_same_site /
-                                  subresource_urls.size()));
     }
   }
 }

@@ -145,6 +145,18 @@ public abstract class TabBottomSheetContent implements BottomSheetContent {
         return false;
     }
 
+    /**
+     * Called with the sheet container's bottom margin when the content is shown and when it
+     * changes.
+     */
+    public void onBottomMarginChanged(@Px int bottomMargin) {}
+
+    /**
+     * Called with the bottom inset, in px, that the WebUI keeps clear in edge-to-edge. Called when
+     * the content is created and when the inset changes.
+     */
+    public void onBottomSafeAreaInsetChanged(@Px int bottomInset) {}
+
     @Override
     public int getPeekHeight() {
         return mPeekViewHeight;

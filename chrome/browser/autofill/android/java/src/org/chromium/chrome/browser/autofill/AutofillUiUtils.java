@@ -43,6 +43,7 @@ import android.widget.PopupWindow;
 import android.widget.TextView;
 
 import androidx.annotation.DimenRes;
+import androidx.annotation.DrawableRes;
 import androidx.annotation.IntDef;
 import androidx.annotation.Px;
 import androidx.annotation.VisibleForTesting;
@@ -60,6 +61,7 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.components.autofill.FieldType;
 import org.chromium.components.autofill.ImageSize;
 import org.chromium.components.autofill.ImageType;
@@ -1020,5 +1022,18 @@ public class AutofillUiUtils {
             return MANAGE_SANDBOX_PAYMENT_METHODS_URL + "&id=" + instrumentId;
         }
         return MANAGE_PAYMENT_METHODS_URL + "&id=" + instrumentId;
+    }
+
+    /**
+     * Returns the Google Pay logo drawable resource ID. This helper tries to be the single place
+     * where all Google Pay logos are retrieved from on the Java side, but certain icons passed from
+     * the C++ side aren't handled by it.
+     *
+     * @return The drawable resource ID for the Google Pay logo.
+     */
+    public static @DrawableRes int getGPayLogoDrawableId() {
+        return ChromeFeatureList.isEnabled(AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS)
+                ? R.drawable.googlepay_with_gradient
+                : R.drawable.google_pay;
     }
 }

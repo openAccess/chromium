@@ -20,7 +20,8 @@ export function getHtml(this: HistoryFilterChipsElement) {
               @mousedown="${this.onActorSelectMousedown_}"
               @change="${this.onActorSelectChange_}">
             <option value="all"
-                .selected="${!this.isUserSelected() && !this.isActorSelected()}">
+                .selected="${
+                    !this.isUserSelected() && !this.isActorSelected()}">
               $i18n{sourceFilterAllActors}
             </option>
             <option value="user" .selected="${this.isUserSelected()}">
@@ -65,13 +66,22 @@ export function getHtml(this: HistoryFilterChipsElement) {
     ${this.showTimePeriodFilter ? html`
       <div class="filter-chips">
         <cr-icon icon="cr:check" aria-hidden="true"></cr-icon>
-        <!-- TODO(b/561604860): Handle time period selection. -->
-        <select id="timePeriodSelect" class="md-select">
+        <select id="timePeriodSelect" class="md-select"
+            @change="${this.onTimePeriodSelectChange_}">
           ${this.timePeriodOptions.map(option => html`
-            <option value="${option.id}">${option.label}</option>
+            <option value="${option.id}"
+                .selected="${this.isTimePeriodSelected_(option)}">
+              ${option.label}
+            </option>
           `)}
         </select>
       </div>
+    ` : ''}
+    ${this.showDomainFilter ? html`
+      <cr-chip id="domainFilterChip" selected>
+        <cr-icon icon="cr:check" aria-hidden="true"></cr-icon>
+        ${this.domain}
+      </cr-chip>
     ` : ''}
     ${this.hasActiveFilter_() ? html`
       <cr-button id="clearAllButton" @click="${this.onClearAllClick_}">

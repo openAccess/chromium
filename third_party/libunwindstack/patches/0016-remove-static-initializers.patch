@@ -1,0 +1,59 @@
+Remove static initializers from DexFile
+
+Make DexFile's static cache and its lock function-local statics that
+are never destroyed. Chromium's android-binary-size check fails on new
+static initializers, which blocked rolls (crbug.com/375463618).
+
+Chromium commits 6c22811 and d1e3895 in libunwindstack.git. The
+dex_file_loader and mem_map part of the same change is
+art/patches/0016.
+
+diff --git a/src/libunwindstack/DexFile.cpp b/src/libunwindstack/DexFile.cpp
+index 0bb069f..c187315 100644
+--- a/src/libunwindstack/DexFile.cpp
++++ b/src/libunwindstack/DexFile.cpp
+@@ -34,9 +34,6 @@
+
+ namespace unwindstack {
+
+-std::map<DexFile::MappedFileKey, std::weak_ptr<DexFile::DexFileApi>> DexFile::g_mapped_dex_files;
+-std::mutex DexFile::g_lock;
+-
+ static bool CheckDexSupport() {
+   if (std::string err_msg; !art_api::dex::TryLoadLibdexfile(&err_msg)) {
+     Log::Error("Failed to initialize DEX file support: %s", err_msg.c_str());
+@@ -46,6 +43,9 @@ static bool CheckDexSupport() {
+ }
+
+ std::shared_ptr<DexFile> DexFile::CreateFromDisk(uint64_t addr, uint64_t size, MapInfo* map) {
++  static auto& mapped_dex_files = *new std::map<MappedFileKey, std::weak_ptr<DexFileApi>>;
++  static auto& lock = *new std::mutex;  // Guards the static cache above.
++
+   if (map == nullptr || map->name().empty()) {
+     return nullptr;  // MapInfo not backed by file.
+   }
+@@ -58,9 +58,9 @@ std::shared_ptr<DexFile> DexFile::CreateFromDisk(uint64_t addr, uint64_t size, M
+   uint64_t offset_in_file = (addr - map->start()) + map->offset();
+
+   // Fast-path: Check if the dex file was already mapped from disk.
+-  std::lock_guard<std::mutex> guard(g_lock);
++  std::lock_guard<std::mutex> guard(lock);
+   MappedFileKey cache_key(map->name(), offset_in_file, size);
+-  std::weak_ptr<DexFileApi>& cache_entry = g_mapped_dex_files[cache_key];
++  std::weak_ptr<DexFileApi>& cache_entry = mapped_dex_files[cache_key];
+   std::shared_ptr<DexFileApi> dex_api = cache_entry.lock();
+   if (dex_api != nullptr) {
+     return std::shared_ptr<DexFile>(new DexFile(addr, size, std::move(dex_api)));
+diff --git a/src/libunwindstack/DexFile.h b/src/libunwindstack/DexFile.h
+index c4235db..25a9883 100644
+--- a/src/libunwindstack/DexFile.h
++++ b/src/libunwindstack/DexFile.h
+@@ -74,8 +74,6 @@ class DexFile {
+   // Therefore, we maintain cache to avoid loading the same file (sub-range) many times.
+   // The cache is weak: It will not keep DexFiles alive (the weak_ptr will become null).
+   using MappedFileKey = std::tuple<std::string, uint64_t, uint64_t>;  // (path, offset, size).
+-  static std::map<MappedFileKey, std::weak_ptr<DexFileApi>> g_mapped_dex_files;
+-  static std::mutex g_lock;  // Guards the static cache above.
+ };
+
+ }  // namespace unwindstack

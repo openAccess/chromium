@@ -198,6 +198,24 @@ bool IsDevToolsGdpProfilesSupported() {
 #endif
 }
 
+std::string_view GetUserColorSource(Profile* profile) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (profile) {
+    if (const auto* theme_service =
+            ThemeServiceFactory::GetForProfile(profile->GetOriginalProfile())) {
+      if (theme_service->GetIsGrayscale()) {
+        return "baseline-grayscale";
+      }
+      if (theme_service->GetIsBaseline()) {
+        return "baseline-default";
+      }
+      return "dynamic";
+    }
+  }
+#endif
+  return "baseline-default";
+}
+
 base::DictValue CreateFileSystemValue(
     DevToolsFileHelper::FileSystem file_system) {
   base::DictValue file_system_value;
@@ -1101,10 +1119,9 @@ void DevToolsUIBindings::OnAidaConversationRequest(
   // Set a maximum timeout value, individual features may send a shorter timeout
   // in the DevTools repo.
   base::TimeDelta timeout = base::Seconds(120);
-  auto response_handler_callback =
-      base::BindOnce(&DevToolsUIBindings::OnAidaConversationResponse,
-                     base::Unretained(this), std::move(callback), stream_id,
-                     request, delay, resource_request, base::TimeTicks::Now());
+  auto response_handler_callback = base::BindOnce(
+      &DevToolsUIBindings::OnAidaConversationResponse, base::Unretained(this),
+      std::move(callback), stream_id, request, delay, resource_request);
   NetworkResourceLoader::Create(
       stream_id, this, resource_request,
       AidaServiceHandler::TrafficAnnotation(), std::move(url_loader_factory),
@@ -1149,7 +1166,6 @@ void DevToolsUIBindings::OnAidaConversationResponse(
     base::TimeDelta delay,
     std::variant<network::ResourceRequest, std::string>
         resource_request_or_error,
-    base::TimeTicks start_time,
     const base::Value* response) {
   int response_code =
       response->is_dict()
@@ -1168,8 +1184,6 @@ void DevToolsUIBindings::OnAidaConversationResponse(
         std::move(callback), stream_id, request,
         NetworkResourceLoader::GetNextExponentialBackoffDelay(delay)));
   } else {
-    base::UmaHistogramTimes("DevTools.AidaResponseTime",
-                            base::TimeTicks::Now() - start_time);
     std::move(callback).Run(response);
   }
 }
@@ -1243,7 +1257,7 @@ void DevToolsUIBindings::OnHttpRequestPerformed(
       response_dict.Set("error", "Service not found");
       break;
     case Error::kAccessDenied:
-      response_dict.Set("error", "Disallowed path or method");
+      response_dict.Set("error", "Disallowed path, method, or header");
       break;
     case Error::kValidationFailed:
       response_dict.Set("error", "Request validation failed");
@@ -2152,6 +2166,7 @@ base::DictValue DevToolsUIBindings::GetHostConfigDictionary(Profile* profile) {
   response_dict.Set("devToolsVeLogging", std::move(ve_logging_dict));
 
   response_dict.Set("isOffTheRecord", profile->IsOffTheRecord());
+  response_dict.Set("userColorSource", GetUserColorSource(profile));
 
   base::DictValue origin_bound_cookies_dict;
   origin_bound_cookies_dict.Set(
@@ -3225,7 +3240,8 @@ bool DevToolsUIBindings::IsAttachedTo(content::DevToolsAgentHost* agent_host) {
 
 #if !BUILDFLAG(IS_ANDROID)
 void DevToolsUIBindings::OnThemeChanged() {
-  CallClientMethod("DevToolsAPI", "colorThemeChanged");
+  CallClientMethod("DevToolsAPI", "colorThemeChanged",
+                   base::Value(GetUserColorSource(profile_)));
 }
 #endif
 

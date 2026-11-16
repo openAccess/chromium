@@ -6,12 +6,14 @@
 #define CHROME_BROWSER_UI_PASSWORDS_PASSWORDS_MODEL_DELEGATE_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/passwords/passwords_leak_dialog_delegate.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/browser/ui/password_check_referrer.h"
 #include "components/password_manager/core/common/credential_manager_types.h"
@@ -30,7 +32,6 @@ enum class CredentialSourceType;
 enum class MoveToAccountStoreTrigger;
 }  // namespace metrics_util
 }  // namespace password_manager
-class PasswordChangeDelegate;
 
 // An interface for ManagePasswordsBubbleModel implemented by
 // ManagePasswordsUIController. Allows to retrieve the current state of the tab
@@ -203,9 +204,6 @@ class PasswordsModelDelegate {
   // Called from the Relaunch Chrome bubble to gracefully restart the Chrome.
   virtual void RelaunchChrome() = 0;
 
-  // Returns the delegate for the password change flow.
-  virtual PasswordChangeDelegate* GetPasswordChangeDelegate() const = 0;
-
   virtual PasswordsLeakDialogDelegate* GetPasswordsLeakDialogDelegate() = 0;
 
   // Opens the password change settings page as a separate tab.
@@ -217,21 +215,24 @@ class PasswordsModelDelegate {
   // Called when the mouse exits the bubble view.
   virtual void OnMouseExited() = 0;
 
-  // Model observes the changes of the password manager's error state. By
-  // calling this method we instruct the model to save the password after the
-  // trusted vault error state is fixed. The `username` and `password` seen on
-  // the UI are sent as parameters, and handled accordingly if the user had
-  // edited them.
-  virtual void SavePasswordAfterTrustedVaultErrorResolution(
+  // The model observes changes in the password store's error state. Calling
+  // this method instructs the model to save the pending password once the
+  // blocking error state is resolved (or immediately if no error is blocking).
+  // The `username` and `password` seen on the UI are sent as parameters, and
+  // handled accordingly if the user had edited them.
+  virtual void SavePasswordAfterErrorResolution(
       const std::u16string& username,
       const password_manager::PasswordString& password) = 0;
 
-  // Starts the UI flow for fixing the trusted vault error.
-  virtual void StartTrustedVaultErrorResolutionFlow() = 0;
+  // Starts the UI flow for resolving `error`.
+  virtual void StartErrorResolutionFlow(
+      password_manager::ActionableError error) = 0;
 
-  // Returns true if only a trusted vault error prevents from saving the
-  // password.
-  virtual bool IsSavingBlockedByTrustedVaultError() const = 0;
+  // Returns the recoverable password store error that currently blocks saving
+  // the password, or `std::nullopt` if saving is not blocked by a recoverable
+  // error.
+  virtual std::optional<password_manager::ActionableError>
+  GetRecoverableErrorBlockingSaving() const = 0;
 
  protected:
   virtual ~PasswordsModelDelegate() = default;

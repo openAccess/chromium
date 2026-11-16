@@ -8,7 +8,10 @@
 #include <memory>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/i18n/rtl.h"
+#include "base/location.h"
+#include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/views/frame/browser_root_view.h"
@@ -32,6 +35,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/animation/animation.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -175,6 +179,13 @@ std::vector<Tab*> TabContainer::AddTabs(
   if (GetTabCount() > 1 && GetWidget() && GetWidget()->IsVisible()) {
     for (auto& param : tabs_params) {
       StartInsertTabAnimation(param.model_index);
+    }
+    if (IsDragSessionActive()) {
+      // The drag code reads the ideal bounds as soon as this returns, so they
+      // cannot wait for a posted task.
+      AnimateToIdealBounds();
+    } else {
+      ScheduleAnimateToIdealBounds();
     }
   } else if (GetWidget() && !GetWidget()->IsVisible() && !IsAnimating()) {
     // Nothing can be seen until the widget is shown, and Layout() then does
@@ -557,16 +568,15 @@ std::optional<int> TabContainer::GetModelIndexOfFirstNonClosingTab(
   return GetModelIndexOf(tab);
 }
 
-void TabContainer::UpdateHoverCard(
-    HoverCardAnchorTarget* anchor_target,
-    TabSlotController::HoverCardUpdateType update_type) {
+void TabContainer::UpdateHoverCard(HoverCardAnchorTarget* anchor_target,
+                                   HoverCardUpdateType update_type) {
   // Some operations (including e.g. starting a drag) can cause the tab focus
   // to change at the same time as the tabstrip is starting to animate; the
   // hover card should not be visible at this time.
   // See crbug.com/40773156 for an example case.
   if (controller_->IsAnimatingInTabStrip()) {
     anchor_target = nullptr;
-    update_type = TabSlotController::HoverCardUpdateType::kAnimating;
+    update_type = HoverCardUpdateType::kAnimating;
   }
 
   if (!hover_card_controller_) {
@@ -677,8 +687,11 @@ void TabContainer::InvalidateIdealBounds() {
 }
 
 void TabContainer::AnimateToIdealBounds() {
+  // This pass does everything a pending one would have.
+  animate_to_ideal_bounds_task_.Cancel();
+
   UpdateIdealBounds();
-  UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kAnimating);
+  UpdateHoverCard(nullptr, HoverCardUpdateType::kAnimating);
 
   for (int i = 0; i < GetTabCount(); ++i) {
     Tab* tab = GetTabAtModelIndex(i);
@@ -705,10 +718,12 @@ void TabContainer::AnimateToIdealBounds() {
 }
 
 bool TabContainer::IsAnimating() const {
-  return bounds_animator_.IsAnimating();
+  return !animate_to_ideal_bounds_task_.IsCancelled() ||
+         bounds_animator_.IsAnimating();
 }
 
 void TabContainer::CancelAnimation() {
+  animate_to_ideal_bounds_task_.Cancel();
   drag_position_delegate_->CompleteEndDragAnimations();
   bounds_animator_.Cancel();
 }
@@ -881,6 +896,14 @@ gfx::Rect TabContainer::GetIdealBounds(tab_groups::TabGroupId group) const {
 }
 
 void TabContainer::Layout(PassKey) {
+  // A pending AnimateToIdealBounds() pass has not given the animator its
+  // targets yet, and the snapping decision below as well as
+  // SetTabSlotVisibility() read them. Run the pass first, so that this layout
+  // sees the same state it saw when the pass ran at insertion time.
+  if (!animate_to_ideal_bounds_task_.IsCancelled()) {
+    AnimateToIdealBounds();
+  }
+
   UpdateIdealBounds();
 
   // If the tab strip is not currently animating, directly snap all tabs and
@@ -1267,9 +1290,29 @@ void TabContainer::StartInsertTabAnimation(int model_index) {
   // is naturally positioned at the same X coordinate.
   bounds.set_width(tab_overlap);
   GetTabAtModelIndex(model_index)->SetBoundsRect(bounds);
+}
 
-  // Animate in to the full width.
-  AnimateToIdealBounds();
+void TabContainer::ScheduleAnimateToIdealBounds() {
+  if (!gfx::Animation::ShouldRenderRichAnimation()) {
+    // Without rich animations the pass finishes as soon as it starts, so there
+    // is no animation to coalesce and the strip is at rest again before
+    // AddTabs() returns, as before. Deferring it would also leave the strip
+    // measured for the state before the insert: the parent's layout manager
+    // sizes the strip before Layout() can run the pending pass, and a
+    // PreferredSizeChanged() raised from inside that layout is dropped.
+    AnimateToIdealBounds();
+    return;
+  }
+
+  if (!animate_to_ideal_bounds_task_.IsCancelled()) {
+    return;
+  }
+  // The task reaches `this` only through `animate_to_ideal_bounds_task_`, a
+  // member destroyed with this container, so it cannot run on a dead one.
+  animate_to_ideal_bounds_task_.Reset(base::BindOnce(
+      &TabContainer::AnimateToIdealBounds, base::Unretained(this)));
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, animate_to_ideal_bounds_task_.callback());
 }
 
 void TabContainer::StartRemoveTabAnimation(Tab* tab, int former_model_index) {
@@ -1416,7 +1459,7 @@ void TabContainer::CloseTabInViewModel(int index) {
   Tab* tab = GetTabAtModelIndex(index);
   bool tab_was_active = tab->IsActive();
 
-  UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kTabRemoved);
+  UpdateHoverCard(nullptr, HoverCardUpdateType::kTabRemoved);
 
   tabs_view_model_.Remove(index);
   layout_helper_->MarkTabAsClosing(index, tab);

@@ -25,8 +25,8 @@
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_delegate.h"
 #include "net/base/reconnect_notifier.h"
+#include "net/base/scheduler/task_runner.h"
 #include "net/base/session_usage.h"
-#include "net/base/task/task_runner.h"
 #include "net/base/url_util.h"
 #include "net/cert/cert_verifier.h"
 #include "net/dns/public/secure_dns_policy.h"
@@ -532,6 +532,8 @@ void HttpStreamFactory::Job::OnNeedsClientAuthCallback(
   DCHECK_NE(job_type_, PRECONNECT_DNS_ALPN_H3);
   DCHECK(!spdy_session_request_);
 
+  MaybeCopyConnectionAttemptsFromHandle();
+
   delegate_->OnNeedsClientAuth(this, cert_info);
   // |this| may be deleted after this call.
 }
@@ -680,6 +682,12 @@ int HttpStreamFactory::Job::DoStart() {
   if (!IsPortAllowedForScheme(destination_.port(),
                               request_info_.url.scheme())) {
     return ERR_UNSAFE_PORT;
+  }
+
+  // Main gate for proxy port restrictions on HTTP/HTTPS/WS/WSS requests. The
+  // ConnectJob checks are defense-in-depth for direct ConnectJob callers.
+  if (!IsProxyChainPortAllowed(proxy_info_.proxy_chain())) {
+    return ReconsiderProxyAfterError(ERR_PROXY_CONNECTION_FAILED);
   }
 
   next_state_ = STATE_WAIT;
@@ -928,6 +936,8 @@ int HttpStreamFactory::Job::DoInitConnectionImplQuic() {
         base::BindOnce(&Job::OnQuicHostResolution, base::Unretained(this)));
     expect_on_quic_session_created_ = quic_request_.WaitForQuicSessionCreation(
         base::BindOnce(&Job::OnQuicSessionCreated, ptr_factory_.GetWeakPtr()));
+    quic_request_.WaitForAttemptFailure(
+        base::BindOnce(&Job::OnQuicAttemptFailed, ptr_factory_.GetWeakPtr()));
   }
   return rv;
 }
@@ -956,6 +966,14 @@ void HttpStreamFactory::Job::OnQuicSessionCreated(int result) {
   delegate_->OnConnectionInitialized(this, result);
 }
 
+void HttpStreamFactory::Job::OnQuicAttemptFailed(int result) {
+  // The pool reports attempt failures only after the signals it promised, so
+  // OnConnectionInitialized() has already been called.
+  CHECK(!expect_on_quic_host_resolution_);
+  CHECK(!expect_on_quic_session_created_);
+  delegate_->OnQuicAttemptFailed(this, result);
+}
+
 void HttpStreamFactory::Job::OnFailedOnDefaultNetwork(int result) {
   DCHECK(job_type_ == ALTERNATIVE || job_type_ == DNS_ALPN_H3);
   DCHECK(using_quic_);
@@ -967,9 +985,13 @@ int HttpStreamFactory::Job::DoInitConnectionComplete(int result) {
 
   establishing_tunnel_ = false;
 
-  // No need to continue waiting for a session, once a connection is
-  // established.
-  spdy_session_request_.reset();
+  if (!base::FeatureList::IsEnabled(
+          features::kPostHandshakeIpPoolingAllEndpoints)) {
+    // When post-handshake IP pooling is enabled, `spdy_session_request_` is
+    // kept alive until after `FindAvailableSession()` in `DoCreateStream()`, or
+    // reset in `RunLoop()` on all other exit paths.
+    spdy_session_request_.reset();
+  }
 
   // Determine the protocol (HTTP/1.1, HTTP/2, or HTTP/3) first so that
   // negotiated_protocol_ is populated before observers are notified.
@@ -1265,6 +1287,7 @@ int HttpStreamFactory::Job::DoCreateStream() {
             spdy_session_key_, enable_ip_based_pooling_for_h2_,
             /* is_websocket = */ false, net_log_);
   }
+  spdy_session_request_.reset();
   if (existing_spdy_session_) {
     // If we have a session, and we have a connection management config, add
     // it to the session pool.

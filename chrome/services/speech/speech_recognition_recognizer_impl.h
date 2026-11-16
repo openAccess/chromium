@@ -104,6 +104,10 @@ class SpeechRecognitionRecognizerImpl
 
   void MarkDone() override;
 
+  void OnLanguageChanged(const std::string& language) final;
+
+  void OnMaskOffensiveWordsChanged(bool mask_offensive_words) final;
+
   void UpdateRecognitionContext(
       const media::SpeechRecognitionRecognitionContext& recognition_context)
       final;
@@ -119,6 +123,10 @@ class SpeechRecognitionRecognizerImpl
 
   // Retrieve the soda config output for testing.
   soda::chrome::ExtendedSodaConfigMsg* GetExtendedSodaConfigMsgForTesting();
+
+  const std::string& primary_language_name() const {
+    return primary_language_name_;
+  }
 
  protected:
   virtual void SendAudioToSpeechRecognitionServiceInternal(
@@ -138,20 +146,14 @@ class SpeechRecognitionRecognizerImpl
   base::flat_map<std::string, base::FilePath> config_paths() const {
     return config_paths_;
   }
-  std::string primary_language_name() const { return primary_language_name_; }
 
   media::mojom::SpeechRecognitionOptionsPtr options_;
 
   bool mask_offensive_words() { return mask_offensive_words_; }
 
  private:
-  void OnLanguageChanged(const std::string& language) final;
-
-  void OnMaskOffensiveWordsChanged(bool mask_offensive_words) final;
-
-  void ResetSodaWithNewLanguage(
-      std::string language_name,
-      std::pair<base::FilePath, bool> config_and_exists);
+  void ResetSodaWithNewLanguage(const std::string& language_name,
+                                bool config_exists);
 
   void RecordDuration();
 
@@ -165,6 +167,9 @@ class SpeechRecognitionRecognizerImpl
 
   // Reset and initialize the SODA client.
   void ResetSoda();
+
+  // Releases the SODA instance during extended silence.
+  void ReleaseSodaForSilence();
 
   // Updates `timestamp_estimator_` with `media_start_pts`.
   void AddMediaTimestampToEstimator(
@@ -202,6 +207,12 @@ class SpeechRecognitionRecognizerImpl
   // Time the most recent nonzero data was processed.
   // Used when options_->skip_continuously_empty_audio == true.
   base::Time last_non_empty_audio_time_ = base::Time::Now();
+
+  // True while SODA is released for silence.
+  bool soda_released_for_silence_ = false;
+
+  // Whether MarkDone() has been called.
+  bool marked_done_ = false;
 
   // Tracks which media timestamps originated speech transcriptions.
   // This is reset (and pending estimated are lost) every time SODA is reset.

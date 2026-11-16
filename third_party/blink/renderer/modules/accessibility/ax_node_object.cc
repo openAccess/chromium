@@ -925,7 +925,8 @@ bool AXNodeObject::ShouldIncludeCustomElement() const {
   //   kept in tree to pass AutomationApiTest.LocationInWebView).
   //   Custom elements in actual web content always have a hyphenated name,
   //   and therefore <webview> in real web content cannot be a custom element.
-  DEFINE_STATIC_LOCAL(const AtomicString, web_view_tag, ("webview"));
+  DEFINE_STATIC_LOCAL(const AtomicString, web_view_tag,
+                      (AtomicString::FromLiteral<"webview">()));
   if (element->HasLocalName(web_view_tag)) {
     return true;
   }
@@ -3542,6 +3543,23 @@ AccessibilityExpanded AXNodeObject::IsExpanded() const {
     return is_expanded ? kExpandedExpanded : kExpandedCollapsed;
   }
 
+  if (IsA<HTMLSummaryElement>(*element)) {
+    if (element->parentNode() &&
+        IsA<HTMLDetailsElement>(element->parentNode())) {
+      return To<Element>(element->parentNode())
+                     ->FastHasAttribute(html_names::kOpenAttr)
+                 ? kExpandedExpanded
+                 : kExpandedCollapsed;
+    }
+  }
+
+  // An author-provided aria-expanded value takes precedence over the implicit
+  // expanded state of popover, command, submenu, and interest invokers below.
+  bool expanded = false;
+  if (AriaBooleanAttribute(html_names::kAriaExpandedAttr, &expanded)) {
+    return expanded ? kExpandedExpanded : kExpandedCollapsed;
+  }
+
   // For commandFor triggers, aria-expanded may be set depending on the command
   // type. This results in the same mapping as popovertarget, but takes
   // precedence over popovertarget.
@@ -3550,9 +3568,7 @@ AccessibilityExpanded AXNodeObject::IsExpanded() const {
             DynamicTo<HTMLElement>(html_element->commandForElement())) {
       CommandEventType command = command_for_element->GetCommandEventType(
           html_element->command(), html_element->GetExecutionContext());
-      bool is_popover_command =
-          command_for_element->IsValidBuiltinPopoverCommand(command);
-      if (command_for_element && is_popover_command &&
+      if (command_for_element->IsValidBuiltinPopoverCommand(command) &&
           !element->IsDescendantOrShadowDescendantOf(command_for_element)) {
         return command_for_element->popoverOpen() ? kExpandedExpanded
                                                   : kExpandedCollapsed;
@@ -3581,28 +3597,18 @@ AccessibilityExpanded AXNodeObject::IsExpanded() const {
 
   // An interest invoker is expanded while its rich hint is open. As with
   // popovertarget, this is not exposed when the invoker is inside the popover.
-  // See
+  // It is also not exposed on popover invokers, even when inside their popover,
+  // since they only expose the state of the popover they invoke. Nor is it
+  // exposed on links, whose activation navigates rather than expanding
+  // anything. See
   // https://open-ui.org/components/interest-invokers.explainer/#rich-hints-aka-hovercards-or-other
-  if (AXObject* rich_hint = GetRichHintTargetPopover()) {
-    auto* popover = To<HTMLElement>(rich_hint->GetElement());
-    if (!element->IsDescendantOrShadowDescendantOf(popover)) {
-      return popover->popoverOpen() ? kExpandedExpanded : kExpandedCollapsed;
+  if (!IsPopoverInvoker() && !element->IsLink() && !IsLink()) {
+    if (AXObject* rich_hint = GetRichHintTargetPopover()) {
+      auto* popover = To<HTMLElement>(rich_hint->GetElement());
+      if (!element->IsDescendantOrShadowDescendantOf(popover)) {
+        return popover->popoverOpen() ? kExpandedExpanded : kExpandedCollapsed;
+      }
     }
-  }
-
-  if (IsA<HTMLSummaryElement>(*element)) {
-    if (element->parentNode() &&
-        IsA<HTMLDetailsElement>(element->parentNode())) {
-      return To<Element>(element->parentNode())
-                     ->FastHasAttribute(html_names::kOpenAttr)
-                 ? kExpandedExpanded
-                 : kExpandedCollapsed;
-    }
-  }
-
-  bool expanded = false;
-  if (AriaBooleanAttribute(html_names::kAriaExpandedAttr, &expanded)) {
-    return expanded ? kExpandedExpanded : kExpandedCollapsed;
   }
 
   return kExpandedUndefined;

@@ -20,7 +20,7 @@
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/clipboard/clipboard_util_mac.h"
 #include "ui/base/clipboard/custom_data_helper.h"
-#include "ui/base/cocoa/drag_permission.h"
+#include "ui/base/cocoa/drag_coordinator.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/platform_event.h"
@@ -132,12 +132,17 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   // Drag variables.
   WebDragSource* __strong _dragSource;
   NSDragOperation _dragOperation;
+  BOOL _allowExternalDrag;
 
   NSWindow* __weak _trackedWindow;
   BOOL _willSetWebContentsOccludedAfterDelay;
 }
 
 + (void)initialize {
+  if (self != [WebContentsViewCocoa class]) {
+    return;
+  }
+
   // Create the WindowOcclusionCheckerMac shared instance.
   // TODO(crbug.com/505314004): Remove once
   // `remote_cocoa::features::kTrackAllTopLevelWindowsForOcclusion` is enabled
@@ -315,6 +320,15 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   }
 
   _dragOperation = operationMask;
+  // An empty `dropData` is valid and used in situations where internal UI
+  // elements (e.g. WebUI tiles or cards being reordered) are dragged within the
+  // page without exporting any payload to external drop targets.
+  _allowExternalDrag = !dropData.url_infos.empty() ||
+                       !dropData.file_contents.empty() ||
+                       dropData.download_metadata.has_value() ||
+                       (dropData.html && !dropData.html->empty()) ||
+                       (dropData.text && !dropData.text->empty()) ||
+                       !dropData.custom_data.empty();
 
   // Start the drag session. This hands control to AppKit, which queries each
   // item's pasteboard writer (the primary WebDragSource and the URL-only
@@ -332,19 +346,22 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
 
 - (NSDragOperation)draggingSession:(NSDraggingSession*)session
     sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  if (context == NSDraggingContextOutsideApplication && !_allowExternalDrag) {
+    return NSDragOperationNone;
+  }
   return _dragOperation;
 }
 
 - (void)draggingSession:(NSDraggingSession*)session
        willBeginAtPoint:(NSPoint)screenPoint {
-  ui::SetDragSessionInProgress(true);
+  ui::SetDragSessionInProgress(self);
 }
 
 // Called when a drag initiated in our view ends.
 - (void)draggingSession:(NSDraggingSession*)session
            endedAtPoint:(NSPoint)screenPoint
               operation:(NSDragOperation)operation {
-  ui::SetDragSessionInProgress(false);
+  ui::SetDragSessionInProgress(nil);
   if (!_host) {
     return;
   }
@@ -365,7 +382,8 @@ gfx::PointF GetSanitizedFlippedPoint(NSPoint point, CGFloat height) {
   gfx::PointF screen_point_f =
       GetSanitizedFlippedPoint(screenPoint, screenFrame.size.height);
 
-  _host->EndDrag(operation, local_point_f, screen_point_f);
+  _host->EndDrag(ui::DragDropTypes::NSDragOperationToDragOperation(operation),
+                 local_point_f, screen_point_f);
 
   // The drag is complete. Disconnect the drag source.
   [_dragSource webContentsIsGone];

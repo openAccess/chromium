@@ -17,7 +17,6 @@
 #include "mojo/public/cpp/bindings/remote.h"
 
 class Profile;
-class BrowserWindowInterface;
 
 namespace content {
 class WebContents;
@@ -34,6 +33,7 @@ class IdentityManager;
 namespace skills {
 
 class SkillsDialogDelegate;
+class SkillsUiTabControllerInterface;
 
 class SkillsPageHandlerV2 : public ::skills::mojom::SkillsPageHandler,
                             public SkillsService::Observer {
@@ -43,7 +43,7 @@ class SkillsPageHandlerV2 : public ::skills::mojom::SkillsPageHandler,
       Profile* profile,
       signin::IdentityManager* identity_manager,
       content::WebContents* web_contents,
-      base::WeakPtr<SkillsDialogDelegate> delegate = nullptr);
+      base::WeakPtr<SkillsDialogDelegate> delegate);
   SkillsPageHandlerV2(const SkillsPageHandlerV2&) = delete;
   SkillsPageHandlerV2& operator=(const SkillsPageHandlerV2&) = delete;
   ~SkillsPageHandlerV2() override;
@@ -63,7 +63,7 @@ class SkillsPageHandlerV2 : public ::skills::mojom::SkillsPageHandler,
   void InvokeSkill(const std::string& skill_id,
                    const std::string& skill_name,
                    const std::string& skill_icon) override;
-  void SendPrompt(const std::string& prompt) override;
+  void SendPrompt(const std::string& prompt, bool new_conversation) override;
   void CloseDialog(::skills::mojom::PendingEditorDataPtr data) override;
   void GetPendingEditorData(GetPendingEditorDataCallback callback) override;
   void SignIn() override;
@@ -75,7 +75,7 @@ class SkillsPageHandlerV2 : public ::skills::mojom::SkillsPageHandler,
                       bool is_position_changed) override;
 
  private:
-  BrowserWindowInterface* GetBrowserWindow();
+  SkillsUiTabControllerInterface* GetHostTabController();
 
   mojo::Receiver<::skills::mojom::SkillsPageHandler> receiver_;
   mojo::Remote<::skills::mojom::SkillsPageV2> page_;

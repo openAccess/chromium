@@ -86,6 +86,7 @@ source_set("impl") {
     "//chrome/browser:buildflags",
     "//chrome/browser/glic",
     "//chrome/browser/lifetime",
+    "//chrome/browser/search",
     "//chrome/browser/wacz_replay:partition",
   ]
 
@@ -148,7 +149,6 @@ source_set("impl") {
       "//chrome/browser/page_content_annotations:extraction_service",
       "//chrome/browser/performance_manager",
       "//chrome/browser/profiles/keep_alive",
-      "//chrome/browser/search",
       "//chrome/browser/tab_group_sync:factories",
       "//chrome/browser/ui:browser_init_state",
       "//chrome/browser/ui:browser_manager_service",
@@ -157,10 +157,11 @@ source_set("impl") {
       "//chrome/browser/ui:session_crashed_bubble",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window:create_browser_window",
+      "//chrome/browser/ui/sessions:session_tab_group_utils",
       "//chrome/browser/ui/startup",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/tabs/saved_tab_groups",
-      "//chrome/browser/ui/waap:window_metrics_manager",
+      "//chrome/browser/ui/waap:window_creation",
       "//chrome/browser/ui/web_applications",
       "//chrome/browser/ui/webui/tab_strip_internals",
       "//chrome/browser/ui/webui/tab_strip_internals:impl",
@@ -335,15 +336,16 @@ if (!is_android) {
       "//chrome/browser/ui/browser_web_contents_delegate",
       "//chrome/browser/ui/startup",
       "//chrome/browser/ui/tabs:tab_strip",
-      "//chrome/browser/ui/tabs/organizer",
       "//chrome/browser/ui/tabs/saved_tab_groups",
       "//chrome/browser/ui/views:session_crashed_bubble_view",
       "//chrome/browser/ui/waap:manager",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/ui/webui/top_chrome",
       "//chrome/browser/ui/window_metadata",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:chrome_test_path_utils",
+      "//chrome/test/base:chrome_test_utils",
       "//chrome/test/base:test_launcher_utils",
       "//components/infobars/content",
       "//components/javascript_dialogs",
@@ -385,6 +387,8 @@ if (!is_android) {
         "//chromeos/components/kiosk:test_support",
         "//chromeos/ui/wm",
       ]
+    } else {
+      deps += [ "//chrome/browser/first_run:test_support" ]
     }
 
     if (enable_background_mode) {
@@ -411,7 +415,7 @@ if (!is_android) {
         "//chrome/browser/ui:browser_commands",
         "//chrome/browser/ui:browser_window_header",
         "//chrome/test:test_support",
-        "//chrome/test:test_support_ui",
+        "//chrome/test/base:chrome_test_path_utils",
         "//content/test:test_support",
         "//testing/gtest",
       ]

@@ -5,13 +5,13 @@
 #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 
 #include "base/process/memory.h"
+#include "cc/base/math_util.h"
 #include "cc/raster/playback_image_provider.h"
 #include "components/viz/common/gpu/context_provider.h"
 #include "skia/ext/legacy_display_globals.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
@@ -84,8 +84,12 @@ UnacceleratedStaticBitmapImage::CreateFromRaster(
       std::move(settings));
   image_provider.SetAnimatedImageFrameIndexes(animated_image_frame_index_map);
 
-  cc::SkiaPaintCanvas canvas(surface->getCanvas(), &image_provider);
-  draw_callback(canvas);
+  {
+    // Disable subnormal floats for performance and security reasons.
+    cc::ScopedSubnormalFloatDisabler disabler;
+    cc::SkiaPaintCanvas canvas(surface->getCanvas(), &image_provider);
+    draw_callback(canvas);
+  }
   sk_sp<SkImage> sk_image = surface->makeImageSnapshot();
   cc::PaintImage paint_image;
   if (sk_image) {
@@ -103,6 +107,9 @@ UnacceleratedStaticBitmapImage::UnacceleratedStaticBitmapImage(
     ImageOrientation orientation)
     : StaticBitmapImage(orientation), paint_image_(std::move(image)) {
   DCHECK(paint_image_);
+  if (paint_image_.is_read_back_disallowed()) {
+    SetOriginClean(false);
+  }
 }
 
 UnacceleratedStaticBitmapImage::~UnacceleratedStaticBitmapImage() {
@@ -136,6 +143,12 @@ void UnacceleratedStaticBitmapImage::Draw(
 }
 
 PaintImage UnacceleratedStaticBitmapImage::PaintImageForCurrentFrame() {
+  if (paint_image_ && !OriginClean() &&
+      !paint_image_.is_read_back_disallowed()) {
+    return PaintImageBuilder::WithCopy(paint_image_)
+        .set_is_read_back_disallowed(true)
+        .TakePaintImage();
+  }
   return paint_image_;
 }
 

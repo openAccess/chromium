@@ -126,7 +126,7 @@ dictionary DisableReasons {
   required boolean unsupportedManifestVersion;
   required boolean unsupportedDeveloperExtension;
   required boolean disabledByAnotherExtension;
-  DOMString? disabledByExtensionName;
+  DOMString disabledByExtensionName;
 };
 
 dictionary OptionsPage {
@@ -226,6 +226,7 @@ dictionary ExtensionInfo {
   required AccessModifier incognitoAccess;
   required AccessModifier userScriptsAccess;
   required boolean incognitoAccessPendingChange;
+  required boolean isolatedModeAccessControlledByPolicy;
   required sequence<DOMString> installWarnings;
   required boolean isCommandRegistrationHandledExternally;
   DOMString launchUrl;

@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include <type_traits>
 #include <utility>
 
 #include "base/compiler_specific.h"
@@ -19,6 +20,10 @@
 namespace mojo {
 namespace test {
 namespace {
+
+static_assert(std::is_trivially_destructible_v<Rect>);
+static_assert(std::is_trivially_destructible_v<RectPtr>);
+static_assert(!std::is_trivially_destructible_v<NamedRegion>);
 
 RectPtr MakeRect(int32_t factor = 1) {
   return Rect::New(1 * factor, 2 * factor, 10 * factor, 20 * factor);
@@ -396,7 +401,8 @@ TEST_F(StructTest, Serialization_NativeStruct) {
     mojo::Message message;
     Data* data = nullptr;
     EXPECT_EQ(32u, SerializeStruct(native, &message, &data));
-    EXPECT_EQ(0u, data->data.Get()->size());
+    // SAFETY: `data` was just serialized into `message`.
+    EXPECT_EQ(0u, UNSAFE_BUFFERS(data->data.Get())->size());
 
     native::NativeStructPtr output_native;
     mojo::internal::Deserialize<native::NativeStructDataView>(
@@ -411,7 +417,8 @@ TEST_F(StructTest, Serialization_NativeStruct) {
     mojo::Message message;
     Data* data = nullptr;
     EXPECT_EQ(40u, SerializeStruct(native, &message, &data));
-    EXPECT_EQ(2u, data->data.Get()->size());
+    // SAFETY: `data` was just serialized into `message`.
+    EXPECT_EQ(2u, UNSAFE_BUFFERS(data->data.Get())->size());
 
     native::NativeStructPtr output_native;
     mojo::internal::Deserialize<native::NativeStructDataView>(

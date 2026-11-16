@@ -16,6 +16,7 @@
 #import "base/not_fatal_until.h"
 #import "ios/chrome/browser/assistant/coordinator/assistant_container_commands.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/actor/coordinator/actuation_worklog_coordinator.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
 #import "ios/chrome/browser/intelligence/actor/model/actor_service_factory.h"
@@ -38,8 +39,11 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 
 @interface GeminiContainerCoordinator () <GeminiContainerMediatorDelegate,
@@ -144,15 +148,16 @@
 #pragma mark - GeminiContainerMediatorDelegate
 
 - (void)geminiContainerMediator:(GeminiContainerMediator*)mediator
-    didStartActuationTaskWithID:(actor::ActorTaskId)taskID
-                     dataSource:(id<ActuationWorklogDataSource>)dataSource {
-  [_actuationWorklogCoordinator startObservingTaskWithID:taskID
-                                              dataSource:dataSource];
+    didStartActuationTaskWithDataSource:(id<ActorTaskDataSource>)dataSource
+                          actionHandler:
+                              (id<ActorTaskActionHandler>)actionHandler {
+  [_actuationWorklogCoordinator startObservingDataSource:dataSource
+                                           actionHandler:actionHandler];
 }
 
-- (void)geminiContainerMediator:(GeminiContainerMediator*)mediator
-     didStopActuationTaskWithID:(actor::ActorTaskId)taskID {
-  [_actuationWorklogCoordinator stopObservingTask];
+- (void)geminiContainerMediatorDidStopActuationTask:
+    (GeminiContainerMediator*)mediator {
+  [_actuationWorklogCoordinator stopObservingDataSource];
 }
 
 #pragma mark - Private
@@ -177,7 +182,9 @@
       authenticationService:AuthenticationServiceFactory::GetForProfile(
                                 self.browser->GetProfile())
                eventHandler:geminiBrowserAgent
-         sharedTabsDelegate:geminiBrowserAgent
+          sharedTabsManager:geminiBrowserAgent
+                                ? geminiBrowserAgent->GetSharedTabsManager()
+                                : nullptr
       sessionMetricsManager:_sessionMetricsManager];
   _mediator.delegate = self;
   _mediator.startupState = _startupState;
@@ -234,6 +241,15 @@
   _containerHandler = HandlerForProtocol(self.browser->GetCommandDispatcher(),
                                          AssistantContainerCommands);
   _mediator.containerHandler = _containerHandler;
+
+  if (IsFullscreenRefactoringEnabled()) {
+    _mediator.fullscreenHandler =
+        HandlerForProtocol(dispatcher, FullscreenCommands);
+  } else {
+    _mediator.fullscreenController =
+        FullscreenController::FromBrowser(self.browser);
+  }
+  _mediator.snackbarHandler = HandlerForProtocol(dispatcher, SnackbarCommands);
 }
 
 // Dismisses Gemini from all other windows and executes `completion`.

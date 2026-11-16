@@ -635,10 +635,6 @@ class CORE_EXPORT PhysicalBoxFragment final : public PhysicalFragment {
     return MutableForOofFragmentation(*this);
   }
 
-  // Returns if this fragment can compute ink overflow.
-  bool CanUseFragmentsForInkOverflow() const {
-    return !layout_object_->IsLayoutReplaced();
-  }
   // Recalculates and updates |*InkOverflow|.
   void RecalcInkOverflow();
   // |RecalcInkOverflow| using the given contents ink overflow rect.

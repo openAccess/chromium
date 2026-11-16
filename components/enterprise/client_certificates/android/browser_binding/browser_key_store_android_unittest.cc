@@ -54,9 +54,8 @@ TEST_F(BrowserKeyStoreAndroidTest, GetsPublicKeyWhenSupportsStrongBox) {
   }
   std::vector<uint8_t> bk_id{1, 2, 3, 4};
 
-  std::unique_ptr<BrowserKey> bk =
-      bk_store->GetOrCreateBrowserKeyForCredentialId(
-          std::move(bk_id), base::ToVector(kEs256Allowed));
+  std::unique_ptr<BrowserKey> bk = bk_store->CreateBrowserKeyForCredentialId(
+      std::move(bk_id), base::ToVector(kEs256Allowed));
 
   EXPECT_FALSE(bk->GetPrivateKey().is_null());
   EXPECT_TRUE(bk->GetSSLPrivateKey());
@@ -82,9 +81,8 @@ TEST_F(BrowserKeyStoreAndroidTest, GetsPublicKeyWhenNoStrongBoxSupport) {
   }
   std::vector<uint8_t> bk_id{1, 2, 3, 4};
 
-  std::unique_ptr<BrowserKey> bk =
-      bk_store->GetOrCreateBrowserKeyForCredentialId(
-          std::move(bk_id), base::ToVector(kEs256Allowed));
+  std::unique_ptr<BrowserKey> bk = bk_store->CreateBrowserKeyForCredentialId(
+      std::move(bk_id), base::ToVector(kEs256Allowed));
 
   EXPECT_FALSE(bk->GetPrivateKey().is_null());
   EXPECT_TRUE(bk->GetSSLPrivateKey());
@@ -99,6 +97,39 @@ TEST_F(BrowserKeyStoreAndroidTest, GetsPublicKeyWhenNoStrongBoxSupport) {
   if (bk) {
     bk_store->DeleteBrowserKey(bk->GetIdentifier());
   }
+}
+
+TEST_F(BrowserKeyStoreAndroidTest, ReturnsNullWhenKeyMissing) {
+  scoped_refptr<BrowserKeyStore> bk_store = CreateBrowserKeyStoreInstance();
+  ASSERT_TRUE(bk_store);
+  std::vector<uint8_t> bk_id{5, 6, 7, 8};
+  // Make sure no key is left over from a previous run.
+  bk_store->DeleteBrowserKey(bk_id);
+
+  EXPECT_EQ(bk_store->GetBrowserKeyForCredentialId(bk_id), nullptr);
+}
+
+TEST_F(BrowserKeyStoreAndroidTest, ReturnsExistingKey) {
+  scoped_refptr<BrowserKeyStore> bk_store = CreateBrowserKeyStoreInstance();
+  ASSERT_TRUE(bk_store);
+  std::vector<uint8_t> bk_id{5, 6, 7, 8};
+  // Make sure no key is left over from a previous run.
+  bk_store->DeleteBrowserKey(bk_id);
+  std::unique_ptr<BrowserKey> created_bk =
+      bk_store->CreateBrowserKeyForCredentialId(bk_id,
+                                                base::ToVector(kEs256Allowed));
+  ASSERT_TRUE(created_bk);
+
+  std::unique_ptr<BrowserKey> loaded_bk =
+      bk_store->GetBrowserKeyForCredentialId(bk_id);
+  // Clean up before asserting so that a failure does not leak the key.
+  bk_store->DeleteBrowserKey(bk_id);
+  ASSERT_TRUE(loaded_bk);
+  EXPECT_EQ(loaded_bk->GetIdentifier(), bk_id);
+  EXPECT_EQ(loaded_bk->GetPublicKeyAsSPKI(), created_bk->GetPublicKeyAsSPKI());
+
+  // Once deleted, the key is no longer found.
+  EXPECT_EQ(bk_store->GetBrowserKeyForCredentialId(bk_id), nullptr);
 }
 
 }  // namespace

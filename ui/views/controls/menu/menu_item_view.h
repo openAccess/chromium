@@ -26,6 +26,7 @@
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/range/range.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/menu/menu_config.h"
@@ -336,10 +337,22 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   void SetTitle(const std::u16string& title);
   const std::u16string& title() const { return title_; }
 
+  // Sets/Gets the character range in `title_` to render in bold.
+  void SetHighlightRange(const gfx::Range& highlight_range);
+  const gfx::Range& highlight_range() const { return highlight_range_; }
+
   // Sets/Gets the secondary title. When not empty, they are shown in the line
   // below the title.
   void SetSecondaryTitle(const std::u16string& secondary_title);
   const std::u16string& secondary_title() const { return secondary_title_; }
+
+  void set_secondary_title_vertical_spacing(int spacing) {
+    secondary_title_vertical_spacing_ = spacing;
+    invalidate_dimensions();
+  }
+
+  // Returns the total height of the title and optional secondary title.
+  int GetLabelTextHeight() const;
 
   // Sets the minor text.
   void SetMinorText(const std::u16string& minor_text);
@@ -596,6 +609,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
 
   // Returns the font list and font color to use for menu text.
   const gfx::FontList GetFontList() const;
+  const gfx::FontList GetSecondaryFontList() const;
   const std::optional<SkColor> GetMenuLabelColor() const;
 
   // Ensures the submenu has an empty menu item iff it needs one, then updates
@@ -617,6 +631,13 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   void PaintBackground(gfx::Canvas* canvas,
                        PaintMode mode,
                        bool paint_as_selected);
+
+  // Paints the title text, bolding `highlight_range_` if valid.
+  void PaintTitle(gfx::Canvas* canvas,
+                  const gfx::FontList& font_list,
+                  SkColor color,
+                  const gfx::Rect& bounds,
+                  int flags);
 
   // Paints the right-side icon and text.
   void PaintMinorIconAndText(gfx::Canvas* canvas, SkColor color);
@@ -778,6 +799,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   ui::ElementIdentifier submenu_id_;
 
   std::u16string title_;
+  gfx::Range highlight_range_ = gfx::Range::InvalidRange();
   std::u16string secondary_title_;
   std::u16string minor_text_;
   bool minor_text_is_url_ = false;
@@ -868,6 +890,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   std::optional<ui::ColorId> submenu_arrow_color_id_;
   std::optional<int> top_margin_;
   std::optional<int> bottom_margin_;
+  int secondary_title_vertical_spacing_ = 0;
 
   base::CallbackListSubscription visible_changed_callback_;
   base::CallbackListSubscription enabled_changed_callback_;

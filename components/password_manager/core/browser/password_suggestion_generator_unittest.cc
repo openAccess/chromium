@@ -84,8 +84,6 @@ Matcher<Suggestion> EqualsDomainPasswordSuggestion(
     const std::u16string& realm_label,
     const gfx::Image& custom_icon,
     Suggestion::Icon trailing_icon = Suggestion::Icon::kNoIcon) {
-  const std::u16string voice_over_suffix =
-      realm_label.empty() ? u"" : base::StrCat({u", ", realm_label});
   return AllOf(
       EqualsSuggestion(id, main_text, Suggestion::Icon::kGlobe),
       Field("additional_label", &Suggestion::additional_label, realm_label),
@@ -259,7 +257,7 @@ class MockPasswordManagerClient : public StubPasswordManagerClient {
               (PasswordManagerDriver*),
               (override));
   MOCK_METHOD(const GURL&, GetLastCommittedURL, (), (const, override));
-  MOCK_METHOD(bool, IsChromeSigninPage, (), (const, override));
+  MOCK_METHOD(bool, IsPageEligibleForInlineQrCodeSignin, (), (const, override));
 
   const MockPasswordFeatureManager* GetPasswordFeatureManager() const override {
     return &feature_manager_;
@@ -298,7 +296,8 @@ class PasswordSuggestionGeneratorTest : public testing::Test {
         .WillByDefault(Return(&credentials_delegate()));
     ON_CALL(client_, GetLastCommittedURL)
         .WillByDefault(ReturnRef(kExternalURL));
-    ON_CALL(client_, IsChromeSigninPage).WillByDefault(Return(false));
+    ON_CALL(client_, IsPageEligibleForInlineQrCodeSignin)
+        .WillByDefault(Return(false));
   }
 
   const gfx::Image& favicon() const { return favicon_; }
@@ -2000,7 +1999,8 @@ TEST_F(PasswordSuggestionGeneratorTest, GetWebauthnInlineQrCodeSuggestion) {
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  EXPECT_CALL(client(), IsChromeSigninPage).WillOnce(Return(true));
+  EXPECT_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillOnce(Return(true));
 
   std::optional<Suggestion> suggestion =
       generator().GetWebauthnInlineQrCodeSuggestion();
@@ -2016,7 +2016,7 @@ TEST_F(PasswordSuggestionGeneratorTest, GetWebauthnInlineQrCodeSuggestion) {
 }
 
 TEST_F(PasswordSuggestionGeneratorTest,
-       GetWebauthnInlineQrCodeSuggestion_NotChromeSigninPage) {
+       GetWebauthnInlineQrCodeSuggestion_PageNotEligible) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       switches::kMagiChromePasskeySignIn, {{"flow_type", "autofill"}});
@@ -2024,7 +2024,8 @@ TEST_F(PasswordSuggestionGeneratorTest,
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  EXPECT_CALL(client(), IsChromeSigninPage).WillOnce(Return(false));
+  EXPECT_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillOnce(Return(false));
 
   std::optional<Suggestion> suggestion =
       generator().GetWebauthnInlineQrCodeSuggestion();
@@ -2126,7 +2127,8 @@ TEST_F(PasswordSuggestionGeneratorTest,
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  ON_CALL(client(), IsChromeSigninPage).WillByDefault(Return(true));
+  ON_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillByDefault(Return(true));
   ON_CALL(credentials_delegate(), IsSecurityKeyOrHybridFlowAvailable)
       .WillByDefault(Return(true));
   const std::vector<PasskeyCredential> passkeys;
@@ -2168,7 +2170,8 @@ TEST_F(PasswordSuggestionGeneratorTest, GetSuggestionsForDomain_InlineQrOnly) {
   const std::string kTestQrString = "test_qr_string";
   ON_CALL(credentials_delegate(), GetCableQrString)
       .WillByDefault(Return(kTestQrString));
-  ON_CALL(client(), IsChromeSigninPage).WillByDefault(Return(true));
+  ON_CALL(client(), IsPageEligibleForInlineQrCodeSignin)
+      .WillByDefault(Return(true));
   ON_CALL(credentials_delegate(), IsSecurityKeyOrHybridFlowAvailable)
       .WillByDefault(Return(false));
 

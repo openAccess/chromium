@@ -162,6 +162,7 @@
 #include "third_party/blink/public/common/loader/record_load_histograms.h"
 #include "third_party/blink/public/common/loader/resource_type_util.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
+#include "third_party/blink/public/common/navigation/commit_url.h"
 #include "third_party/blink/public/common/navigation/navigation_params.h"
 #include "third_party/blink/public/common/navigation/navigation_params_mojom_traits.h"
 #include "third_party/blink/public/common/navigation/navigation_policy.h"
@@ -332,18 +333,6 @@ using FrameMap = absl::flat_hash_map<blink::WebFrame*, RenderFrameImpl*>;
 base::LazyInstance<FrameMap>::DestructorAtExit g_frame_map =
     LAZY_INSTANCE_INITIALIZER;
 
-// Please keep in sync with "RendererBlockedURLReason" in
-// tools/metrics/histograms/metadata/navigation/enums.xml. These values are
-// persisted to logs. Entries should not be renumbered and numeric values should
-// never be reused.
-enum class RendererBlockedURLReason {
-  kInvalidURL = 0,
-  kTooLongURL = 1,
-  kBadAboutURL = 2,
-
-  kMaxValue = kBadAboutURL
-};
-
 int64_t ExtractPostId(const WebHistoryItem& item) {
   if (item.IsNull() || item.HttpBody().IsNull()) {
     return -1;
@@ -409,38 +398,6 @@ ui::PageTransition GetTransitionType(blink::WebDocumentLoader* document_loader,
                            document_loader->ReplacesCurrentHistoryItem(),
                            is_main_frame, is_in_fenced_frame_tree,
                            document_loader->GetNavigationType());
-}
-
-// Ensure that the renderer does not send commit URLs to the browser process
-// that are known to be unsupported. Ideally these would be caught earlier in
-// Blink and not get this far. Histograms are reported (similar to those in
-// RenderProcessHostImpl::FilterURL) to track the cases that should be handled
-// earlier. See https://crbug.com/40066983.
-bool IsValidCommitUrl(const GURL& url) {
-  // Invalid URLs are not accepted by the browser process.
-  if (!url.is_valid()) {
-    base::UmaHistogramEnumeration("Navigation.Renderer.BlockedForFilterURL",
-                                  RendererBlockedURLReason::kInvalidURL);
-    return false;
-  }
-
-  // Do not send a URL longer than Mojo will serialize.
-  if (url.possibly_invalid_spec().length() > url::kMaxURLChars) {
-    base::UmaHistogramEnumeration("Navigation.Renderer.BlockedForFilterURL",
-                                  RendererBlockedURLReason::kTooLongURL);
-    return false;
-  }
-
-  // Any about: URLs must be either about:blank or about:srcdoc (optionally with
-  // fragments).
-  if (url.SchemeIs(url::kAboutScheme) &&
-      (!url.IsAboutBlank() && !url.IsAboutSrcdoc())) {
-    base::UmaHistogramEnumeration("Navigation.Renderer.BlockedForFilterURL",
-                                  RendererBlockedURLReason::kBadAboutURL);
-    return false;
-  }
-
-  return true;
 }
 
 // Gets URL that should override the default getter for this data source
@@ -2416,12 +2373,6 @@ void RenderFrameImpl::GetSerializedHtmlWithLocalLinks(
                                 save_with_empty_url);
 }
 
-void RenderFrameImpl::SetWantErrorMessageStackTrace() {
-  want_error_message_stack_trace_ = true;
-  GetAgentGroupScheduler().Isolate()->SetCaptureStackTraceForUncaughtExceptions(
-      true);
-}
-
 void RenderFrameImpl::NotifyObserversOfFailedProvisionalLoad() {
   for (auto& observer : observers_) {
     observer.DidFailProvisionalLoad();
@@ -4013,13 +3964,8 @@ void RenderFrameImpl::DidMatchCSS(
   }
 }
 
-bool RenderFrameImpl::ShouldReportDetailedMessageForSourceAndSeverity(
-    blink::mojom::ConsoleMessageLevel log_level,
+bool RenderFrameImpl::ShouldReportDetailedMessageForSource(
     const blink::WebString& source) {
-  if (want_error_message_stack_trace_ &&
-      log_level == blink::mojom::ConsoleMessageLevel::kError) {
-    return true;
-  }
   return GetContentClient()->renderer()->ShouldReportDetailedMessageForSource(
       source.Utf16());
 }
@@ -4029,8 +3975,7 @@ void RenderFrameImpl::DidAddMessageToConsole(
     const blink::WebString& source_name,
     unsigned source_line,
     const blink::WebString& stack_trace) {
-  if (ShouldReportDetailedMessageForSourceAndSeverity(message.level,
-                                                      source_name)) {
+  if (ShouldReportDetailedMessageForSource(source_name)) {
     for (auto& observer : observers_) {
       observer.DetailedConsoleMessageAdded(
           message.text.Utf16(), source_name.Utf16(), stack_trace.Utf16(),
@@ -4455,21 +4400,6 @@ void RenderFrameImpl::WillFreezePage() {
   SendUpdateState();
 }
 
-void RenderFrameImpl::DidOpenDocumentInputStream(const blink::WebURL& url) {
-  GURL filtered_url(url);
-  if (!IsValidCommitUrl(filtered_url)) {
-    filtered_url = GURL(kBlockedURL);
-  }
-  GetFrameHost()->DidOpenDocumentInputStream(filtered_url);
-}
-
-void RenderFrameImpl::DidSetPageLifecycleState(
-    blink::BFCacheStateChange bfcache_change) {
-  for (auto& observer : observers_) {
-    observer.DidSetPageLifecycleState(bfcache_change);
-  }
-}
-
 void RenderFrameImpl::NotifyCurrentHistoryItemChanged() {
   SendUpdateState();
 }
@@ -4641,13 +4571,6 @@ void RenderFrameImpl::OnMainFrameViewportRectangleChanged(
     for (auto& observer : observers_) {
       observer.OnMainFrameViewportRectangleChanged(main_frame_viewport_rect);
     }
-  }
-}
-
-void RenderFrameImpl::OnMainFrameAdRectangleChanged(int element_id,
-                                                    const gfx::Rect& ad_rect) {
-  for (auto& observer : observers_) {
-    observer.OnMainFrameAdRectangleChanged(element_id, ad_rect);
   }
 }
 
@@ -4832,49 +4755,6 @@ void RenderFrameImpl::DidReceiveTransferSizeUpdate(
   }
 }
 
-void RenderFrameImpl::DidChangePerformanceTiming() {
-  for (auto& observer : observers_) {
-    observer.DidChangePerformanceTiming();
-  }
-}
-
-void RenderFrameImpl::DidObserveUserInteraction(
-    base::TimeTicks max_event_start,
-    base::TimeTicks max_event_queued_main_thread,
-    base::TimeTicks max_event_processing_start,
-    base::TimeTicks max_event_commit_finish,
-    base::TimeTicks max_event_end,
-    uint64_t interaction_offset,
-    uint64_t performance_timeline_navigation_id) {
-  for (auto& observer : observers_) {
-    observer.DidObserveUserInteraction(
-        max_event_start, max_event_queued_main_thread,
-        max_event_processing_start, max_event_commit_finish, max_event_end,
-        interaction_offset, performance_timeline_navigation_id);
-  }
-}
-
-void RenderFrameImpl::DidChangeCpuTiming(base::TimeDelta time,
-                                         base::TimeDelta ad_time) {
-  for (auto& observer : observers_) {
-    observer.DidChangeCpuTiming(time, ad_time);
-  }
-}
-
-void RenderFrameImpl::DidObserveLoadingBehavior(
-    blink::LoadingBehaviorFlag behavior) {
-  for (auto& observer : observers_) {
-    observer.DidObserveLoadingBehavior(behavior);
-  }
-}
-
-void RenderFrameImpl::DidObserveJavaScriptFrameworks(
-    const blink::JavaScriptFrameworkDetectionResult& result) {
-  for (auto& observer : observers_) {
-    observer.DidObserveJavaScriptFrameworks(result);
-  }
-}
-
 void RenderFrameImpl::DidObserveSubresourceLoad(
     const blink::SubresourceLoadMetrics& subresource_load_metrics) {
   if (subresource_load_callback_) {
@@ -4926,39 +4806,6 @@ void RenderFrameImpl::DidObserveNewFeatureUsage(
     for (auto& observer : observers_) {
       observer.DidObserveNewFeatureUsage(feature);
     }
-  }
-}
-
-void RenderFrameImpl::DidObserveSoftNavigation(
-    blink::SoftNavigationMetricsForReporting metrics) {
-  for (auto& observer : observers_) {
-    observer.DidObserveSoftNavigation(metrics);
-  }
-}
-
-void RenderFrameImpl::DidObserveSoftNavigationFirstContentfulPaint(
-    uint64_t performance_timeline_navigation_id,
-    base::TimeDelta first_contentful_paint) {
-  for (auto& observer : observers_) {
-    observer.DidObserveSoftNavigationFirstContentfulPaint(
-        performance_timeline_navigation_id, first_contentful_paint);
-  }
-}
-
-void RenderFrameImpl::DidObserveSoftLargestContentfulPaint(
-    const blink::LargestContentfulPaintDetailsForReporting& lcp) {
-  for (auto& observer : observers_) {
-    observer.DidObserveSoftLargestContentfulPaint(lcp);
-  }
-}
-
-void RenderFrameImpl::DidObserveLayoutShift(
-    double score,
-    bool after_input_or_scroll,
-    uint64_t performance_timeline_navigation_id) {
-  for (auto& observer : observers_) {
-    observer.DidObserveLayoutShift(score, after_input_or_scroll,
-                                   performance_timeline_navigation_id);
   }
 }
 
@@ -5163,20 +5010,6 @@ void RenderFrameImpl::OnDroppedNavigation() {
   frame_->DidDropNavigation();
 }
 
-void RenderFrameImpl::WasHidden() {
-  frame_->WasHidden();
-  for (auto& observer : observers_) {
-    observer.WasHidden();
-  }
-}
-
-void RenderFrameImpl::WasShown() {
-  frame_->WasShown();
-  for (auto& observer : observers_) {
-    observer.WasShown();
-  }
-}
-
 bool RenderFrameImpl::IsMainFrame() {
   return is_main_frame_;
 }
@@ -5280,7 +5113,7 @@ RenderFrameImpl::MakeDidCommitProvisionalLoadParams(
   // (e.g., would not pass RenderProcessHostImpl::FilterURL). This is applied
   // after the initiator_base_url check above to avoid passing a base URL when
   // the URL was not about:blank but was rewritten to about:blank#blocked.
-  if (!IsValidCommitUrl(params->url)) {
+  if (!blink::IsValidCommitUrl(params->url)) {
     params->url = GURL(kBlockedURL);
   }
 
@@ -5817,19 +5650,11 @@ void RenderFrameImpl::BeginNavigation(
     }
   }
 
-  if (is_history_navigation_in_new_child_frame) {
-    // Don't do this if |info| also says it is a client redirect, in which
-    // case JavaScript on the page is trying to interrupt the history
-    // navigation.
-    if (info->is_client_redirect) {
-      // Client redirects during an initial history load should attempt to
-      // cancel the history navigation.  They will create a provisional
-      // document loader, causing the history load to be ignored in
-      // NavigateInternal, and this IPC will try to cancel any cross-process
-      // history load.
-      is_history_navigation_in_new_child_frame = false;
-      GetFrameHost()->CancelInitialHistoryLoad();
-    }
+  // Don't treat this as a history navigation if `info` also says it is a client
+  // redirect, in which case JavaScript on the page is trying to interrupt the
+  // history navigation.
+  if (is_history_navigation_in_new_child_frame && info->is_client_redirect) {
+    is_history_navigation_in_new_child_frame = false;
   }
 
   // Use the frame's original request's URL rather than the document's URL for
@@ -6350,6 +6175,8 @@ void RenderFrameImpl::SyncSelectionIfRequired(blink::SyncCondition force_sync) {
     }
   }
 
+  const bool has_selection = frame_->HasSelection();
+
   // TODO(dglazkov): Investigate if and why this would be happening,
   // and resolve this. We shouldn't be carrying selection text here.
   // http://crbug.com/632920.
@@ -6358,10 +6185,11 @@ void RenderFrameImpl::SyncSelectionIfRequired(blink::SyncCondition force_sync) {
   // because it will cause us to continually claim the X clipboard.
   if (force_sync == blink::SyncCondition::kForced ||
       selection_text_offset_ != offset || selection_range_ != range ||
-      selection_text_ != text) {
+      selection_text_ != text || has_selection_ != has_selection) {
     selection_text_ = text;
     selection_text_offset_ = offset;
     selection_range_ = range;
+    has_selection_ = has_selection;
     SetSelectedText(text, offset, range);
   }
   GetLocalRootWebFrameWidget()->UpdateSelectionBounds();
@@ -7180,17 +7008,18 @@ WebView* RenderFrameImpl::CreateNewWindow(
     params->pip_options = std::move(pip_mojom_opts);
   }
 
+  const bool is_ad_frame = GetWebFrame()->IsAdFrame();
+  const bool is_ad_script_in_stack = GetWebFrame()->IsAdScriptInStack();
   params->download_policy.ApplyDownloadFramePolicy(
       /*is_opener_navigation=*/false, request.HasUserGesture(),
       // `openee_can_access_opener_origin` only matters for opener navigations,
       // so its value here is irrelevant.
       /*openee_can_access_opener_origin=*/true,
-      !GetWebFrame()->IsAllowedToDownload(), GetWebFrame()->IsAdFrame(),
-      GetWebFrame()->IsAdScriptInStack());
+      !GetWebFrame()->IsAllowedToDownload(), is_ad_frame,
+      is_ad_script_in_stack);
 
   params->started_with_transient_activation = request.HasUserGesture();
-  params->started_by_ad =
-      GetWebFrame()->IsAdFrame() || GetWebFrame()->IsAdScriptInStack();
+  params->started_by_ad = is_ad_frame || is_ad_script_in_stack;
 
   // We preserve this information before sending the message since |params| is
   // moved on send.

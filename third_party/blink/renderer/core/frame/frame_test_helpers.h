@@ -64,6 +64,7 @@
 #include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_settings.h"
 #include "third_party/blink/public/web/web_view_client.h"
+#include "third_party/blink/renderer/bindings/core/v8/sanitize_script_errors.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"  // IWYU pragma: export
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
@@ -80,6 +81,7 @@ class TickClock;
 
 namespace blink {
 class AgentGroupScheduler;
+class ScriptState;
 class WebFrame;
 class WebLocalFrameImpl;
 struct WebNavigationParams;
@@ -91,6 +93,13 @@ namespace frame_test_helpers {
 class TestWebFrameClient;
 class TestWidgetInputHandlerHost;
 class WebViewHelper;
+
+void RunInScriptStack(
+    ScriptState* script_state,
+    const KURL& script_url,
+    base::FunctionRef<void()> callback,
+    SanitizeScriptErrors sanitize = SanitizeScriptErrors::kDoNotSanitize,
+    const String& source_suffix = g_empty_string);
 
 cc::LayerTreeSettings GetSynchronousSingleThreadLayerTreeSettings();
 
@@ -609,18 +618,6 @@ class TestWebFrameClient : public WebLocalFrameClient {
 
   void SetFrameDetachedCallback(base::OnceClosure callback);
 
-  void DidChangeCpuTiming(base::TimeDelta time,
-                          base::TimeDelta ad_time) override {
-    total_cpu_time_ += time;
-    total_ad_cpu_time_ += ad_time;
-  }
-  base::TimeDelta total_cpu_time() const { return total_cpu_time_; }
-  base::TimeDelta total_ad_cpu_time() const { return total_ad_cpu_time_; }
-  void reset_cpu_timing() {
-    total_cpu_time_ = base::TimeDelta();
-    total_ad_cpu_time_ = base::TimeDelta();
-  }
-
  private:
   void CommitNavigation(std::unique_ptr<WebNavigationInfo>);
 
@@ -649,8 +646,6 @@ class TestWebFrameClient : public WebLocalFrameClient {
   base::OnceClosure frame_detached_callback_ = base::DoNothing();
 
   Vector<std::unique_ptr<WebViewHelper>> child_web_views_;
-  base::TimeDelta total_cpu_time_;
-  base::TimeDelta total_ad_cpu_time_;
   base::WeakPtrFactory<TestWebFrameClient> weak_factory_{this};
 };
 

@@ -4,11 +4,14 @@
 
 #include "chrome/browser/ttc/core/session_controller_impl.h"
 
+#include <algorithm>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/check_deref.h"
 #include "base/dcheck_is_on.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/no_destructor.h"
@@ -21,6 +24,9 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ttc/app/public/audio_controller.h"
 #include "chrome/browser/ttc/core/features.h"
+#include "chrome/browser/ttc/core/pointer_input_observer.h"
+#include "chrome/browser/ttc/core/pointer_tracker.h"
+#include "chrome/browser/ttc/core/session_end_condition_detector.h"
 #include "chrome/browser/ttc/core/session_inactivity_detector.h"
 #include "chrome/browser/ttc/core/session_journal_impl.h"
 #include "chrome/browser/ttc/core/session_view.h"
@@ -53,6 +59,32 @@ void DCheckSessionLifecycleTransition(SessionLifecycle from,
 #endif  // DCHECK_IS_ON()
 }
 
+PointerTracker::Config PointerTrackerConfigFromFeatureParams() {
+  PointerTracker::Config config;
+  config.dwell_radius_dip =
+      static_cast<float>(kTtcGetPointerDwellRadiusDip.Get());
+  config.min_dwell_duration = kTtcGetPointerMinDwellDuration.Get();
+  config.pre_turn_lookback = kTtcGetPointerPreTurnLookback.Get();
+  config.idle_limit = kTtcGetPointerIdleLimit.Get();
+  // Zero or fewer results would make the tool useless, or wrap on the cast.
+  config.max_results = std::max(1, kTtcGetPointerMaxResults.Get());
+  return config;
+}
+
+std::string_view SessionEndReasonToString(
+    SessionEndConditionDetector::Reason reason) {
+  switch (reason) {
+    case SessionEndConditionDetector::Reason::kSuspend:
+      return "suspend";
+    case SessionEndConditionDetector::Reason::kScreenLock:
+      return "screen_lock";
+#if BUILDFLAG(IS_CHROMEOS)
+    case SessionEndConditionDetector::Reason::kUserSwitch:
+      return "user_switch";
+#endif  // BUILDFLAG(IS_CHROMEOS)
+  }
+}
+
 }  // namespace
 
 SessionControllerImpl::SessionControllerImpl(
@@ -69,8 +101,15 @@ SessionControllerImpl::SessionControllerImpl(
                    .GetJournal(),
                actor_task_holder_.task_id()),
       tool_controller_(*this) {
+  // Not using AddObserver() because its immediate callback would reach Java on
+  // Android before the session is stored. The view starts initializing anyway.
+  observers_.AddObserver(session_view_.get());
   GetJournal().Log("TtcSessionStart", {});
 
+  if (base::FeatureList::IsEnabled(kTtcGetPointer)) {
+    pointer_tracker_ = std::make_unique<PointerTracker>(
+        PointerTrackerConfigFromFeatureParams());
+  }
   voice_focused_contents_tracker_observation_.Observe(
       voice_focused_contents_tracker_.get());
 
@@ -84,6 +123,10 @@ SessionControllerImpl::SessionControllerImpl(
   inactivity_detector_ = std::make_unique<SessionInactivityDetector>(
       *this, base::BindRepeating(&SessionControllerImpl::OnInactivityTimeout,
                                  weak_ptr_factory_.GetWeakPtr()));
+  session_end_condition_detector_ =
+      std::make_unique<SessionEndConditionDetector>(base::BindRepeating(
+          &SessionControllerImpl::OnSessionEndConditionDetected,
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 SessionControllerImpl::~SessionControllerImpl() {
@@ -137,9 +180,17 @@ void SessionControllerImpl::SetSessionLifecycle(SessionLifecycle lifecycle) {
                        .Add("new_state", lifecycle)
                        .Build());
   session_lifecycle_ = lifecycle;
+  // Only a live session can be muted.
+  if (lifecycle != SessionLifecycle::kLive) {
+    app_mic_muted_ = false;
+  }
   for (SessionController::Observer& observer : observers_) {
     observer.OnSessionLifecycleChanged(lifecycle);
   }
+}
+
+void SessionControllerImpl::SetSessionId(const std::string& session_id) {
+  actor_task_holder_.SetSessionId(session_id);
 }
 
 Profile* SessionControllerImpl::GetProfile() {
@@ -149,27 +200,26 @@ Profile* SessionControllerImpl::GetProfile() {
 void SessionControllerImpl::ProcessToolCall(
     const ToolRequest& tool_request,
     ToolResponseCallback tool_response_callback) {
-  // TODO(b/552544497): Ideally the task would stop only if the Ttc session
-  // ends but there are currently a few ways for tasks to be stopped
-  // externally.
-  actor_task_holder_.EnsureTaskCreated();
-  std::string tool_name = tool_request.name;
-  base::DictValue tool_arguments = tool_request.arguments.Clone();
   tool_controller_.ProcessToolCall(
       tool_request,
-      base::BindOnce(
-          [](base::WeakPtr<SessionControllerImpl> self, std::string name,
-             base::DictValue args, ToolResponseCallback cb,
-             ToolResponse response) {
-            if (self) {
-              for (SessionController::Observer& observer : self->observers_) {
-                observer.OnToolExecutionCompleted(name, args, response.Ok());
-              }
-            }
-            std::move(cb).Run(std::move(response));
-          },
-          weak_ptr_factory_.GetWeakPtr(), std::move(tool_name),
-          std::move(tool_arguments), std::move(tool_response_callback)));
+      // Unretained is safe: `tool_controller_` is owned by `this` and only runs
+      // the callback while it's alive.
+      base::BindOnce(&SessionControllerImpl::NotifyToolExecutionCompleted,
+                     base::Unretained(this), tool_request.Clone())
+          .Then(std::move(tool_response_callback)));
+}
+
+void SessionControllerImpl::ProcessToolCallBatch(
+    std::vector<PendingToolCall> tool_calls) {
+  for (PendingToolCall& tool_call : tool_calls) {
+    // Unretained is safe: `tool_controller_` is owned by `this` and only runs
+    // the callback while it's alive.
+    tool_call.callback =
+        base::BindOnce(&SessionControllerImpl::NotifyToolExecutionCompleted,
+                       base::Unretained(this), tool_call.request.Clone())
+            .Then(std::move(tool_call.callback));
+  }
+  tool_controller_.ProcessToolCallBatch(std::move(tool_calls));
 }
 
 std::vector<ToolDefinition> SessionControllerImpl::GetToolDefinitions() {
@@ -177,18 +227,37 @@ std::vector<ToolDefinition> SessionControllerImpl::GetToolDefinitions() {
 }
 
 void SessionControllerImpl::UserAudioLevelUpdate(float audio_level) {
-  session_view_->UpdateAudioLevel(audio_level);
   for (SessionController::Observer& observer : observers_) {
     observer.OnUserAudioLevelUpdate(audio_level);
   }
 }
 
-BrowserWindowInterface* SessionControllerImpl::GetBrowserWindowInterface() {
-  return voice_focused_contents_tracker_->GetActiveBrowserWindow();
+void SessionControllerImpl::OnMicCaptureChanged(bool capturing) {
+  if (session_lifecycle_ == SessionLifecycle::kFinished) {
+    return;
+  }
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnMicCaptureChanged(capturing);
+  }
 }
 
-void SessionControllerImpl::OnSessionInitialized() {
-  session_view_->OnSessionInitialized();
+void SessionControllerImpl::OnSystemMicMuteChanged(bool muted,
+                                                   bool at_stream_start) {
+  GetJournal().Log("TtcSystemMicMuted",
+                   actor::JournalDetailsBuilder()
+                       .Add("muted", muted)
+                       .Add("at_stream_start", at_stream_start)
+                       .Build());
+  if (session_lifecycle_ == SessionLifecycle::kFinished) {
+    return;
+  }
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnSystemMicMuteChanged(muted, at_stream_start);
+  }
+}
+
+BrowserWindowInterface* SessionControllerImpl::GetBrowserWindowInterface() {
+  return voice_focused_contents_tracker_->GetActiveBrowserWindow();
 }
 
 void SessionControllerImpl::OnError(ErrorCode error) {
@@ -202,7 +271,6 @@ void SessionControllerImpl::OnError(ErrorCode error) {
     return;
   }
 
-  session_view_->OnError(error);
   for (SessionController::Observer& observer : observers_) {
     observer.OnError(error);
   }
@@ -254,34 +322,66 @@ void SessionControllerImpl::OnModelAudioEnvelopeReady(
   }
 }
 
+ToolResponse SessionControllerImpl::NotifyToolExecutionCompleted(
+    const ToolRequest& tool_request,
+    ToolResponse response) {
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnToolExecutionCompleted(tool_request.name, tool_request.arguments,
+                                      response.Ok());
+  }
+  return response;
+}
+
 void SessionControllerImpl::NotifyTranscriptsUpdated() {
-  // A finished session no longer updates its UI.
+  // A finished session no longer reports transcripts.
   if (session_lifecycle_ == SessionLifecycle::kFinished) {
     return;
   }
-  session_view_->OnTranscriptionsUpdated(
-      transcript_tracker_.user_transcript(),
-      transcript_tracker_.model_transcript());
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnTranscriptionsUpdated(transcript_tracker_.user_transcript(),
+                                     transcript_tracker_.model_transcript());
+  }
 }
 
-void SessionControllerImpl::OnSpeakerChanged(Speaker speaker) {}
+void SessionControllerImpl::OnSpeakerChanged(Speaker speaker) {
+  // A finished session no longer reports who's speaking.
+  if (speaker_ == speaker ||
+      session_lifecycle_ == SessionLifecycle::kFinished) {
+    return;
+  }
+  speaker_ = speaker;
+  if (speaker_ == Speaker::kUser) {
+    user_turn_start_ = base::TimeTicks::Now();
+  }
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnSpeakerChanged(speaker_);
+  }
+}
+
+Speaker SessionControllerImpl::GetSpeaker() const {
+  return speaker_;
+}
 
 bool SessionControllerImpl::SetMicMuted(bool muted) {
-  // Capture only starts once the session is live.
+  // Only a live session can be muted.
   if (session_lifecycle_ != SessionLifecycle::kLive ||
-      conversation_->IsMicMuted() == muted) {
+      app_mic_muted_ == muted) {
     return false;
   }
   GetJournal().Log("TtcMicMuted",
                    actor::JournalDetailsBuilder().Add("muted", muted).Build());
+  app_mic_muted_ = muted;
   conversation_->SetMicMuted(muted);
+  for (SessionController::Observer& observer : observers_) {
+    observer.OnMicMutedChanged(muted);
+  }
   return true;
 }
 
 bool SessionControllerImpl::IsMicMuted() const {
-  return session_lifecycle_ == SessionLifecycle::kLive &&
-         conversation_->IsMicMuted();
+  return app_mic_muted_;
 }
+
 void SessionControllerImpl::EndSessionAsync() {
   SetSessionLifecycle(SessionLifecycle::kFinished);
 
@@ -292,6 +392,7 @@ void SessionControllerImpl::EndSessionAsync() {
 }
 
 void SessionControllerImpl::SendTextInput(const std::string& text) {
+  user_turn_start_ = base::TimeTicks::Now();
   conversation_->SendTextInput(text);
 }
 
@@ -303,11 +404,19 @@ void SessionControllerImpl::OnVoiceFocusedContentsChanged(
   page_context_monitor_.reset();
   if (web_contents) {
     page_context_monitor_ = std::make_unique<TtcPageContextMonitor>(
-        *web_contents, GetJournal(), service_->enterprise_policy_checker(),
+        *web_contents, *this, service_->enterprise_policy_checker(),
         base::BindRepeating(&Conversation::OnPageContextInvalidated,
                             base::Unretained(conversation_.get())),
         base::BindRepeating(&SessionControllerImpl::OnPageContextFetched,
                             base::Unretained(this)));
+  }
+  if (pointer_tracker_) {
+    // Positions were relative to the old contents.
+    pointer_tracker_->Clear();
+    pointer_input_observer_ = web_contents
+                                  ? std::make_unique<PointerInputObserver>(
+                                        pointer_tracker_.get(), web_contents)
+                                  : nullptr;
   }
   conversation_->OnPageContextInvalidated();
 }
@@ -318,6 +427,13 @@ content::WebContents* SessionControllerImpl::GetVoiceFocusedWebContents() {
 
 actor::TaskId SessionControllerImpl::GetActorTaskId() const {
   return actor_task_holder_.task_id();
+}
+
+void SessionControllerImpl::EnsureActorTaskCreated() {
+  // TODO(b/552544497): Ideally the task would stop only if the Ttc session
+  // ends but there are currently a few ways for tasks to be stopped
+  // externally.
+  actor_task_holder_.EnsureTaskCreated();
 }
 
 void SessionControllerImpl::OnPageContextFetched(
@@ -362,6 +478,20 @@ void SessionControllerImpl::OnInactivityTimeout() {
           .Build());
 
   OnError(ErrorCode::kInactivityTimeout);
+}
+
+void SessionControllerImpl::OnSessionEndConditionDetected(
+    SessionEndConditionDetector::Reason reason) {
+  if (session_lifecycle_ == SessionLifecycle::kFinished) {
+    return;
+  }
+  // The user locked the screen, suspended the device, or switched users, so
+  // there is no error to report.
+  GetJournal().Log("TtcSessionEndConditionDetected",
+                   actor::JournalDetailsBuilder()
+                       .Add("reason", SessionEndReasonToString(reason))
+                       .Build());
+  EndSessionAsync();
 }
 
 }  // namespace ttc

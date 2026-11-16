@@ -6,7 +6,6 @@
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_SCHEDULER_MAIN_THREAD_MAIN_THREAD_SCHEDULER_IMPL_H_
 
 #include <atomic>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -96,7 +95,6 @@ class AgentGroupSchedulerImpl;
 class CPUTimeBudgetPool;
 class FrameSchedulerImpl;
 class PageSchedulerImpl;
-class WebRenderWidgetSchedulingState;
 class WidgetSchedulerImpl;
 
 class PLATFORM_EXPORT MainThreadSchedulerImpl
@@ -296,8 +294,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
   scoped_refptr<MainThreadTaskQueue> NewThrottleableTaskQueueForTest(
       FrameSchedulerImpl* frame_scheduler);
 
-  scoped_refptr<base::sequence_manager::TaskQueue> NewTaskQueueForTest();
-
   void RemoveAgentGroupScheduler(AgentGroupSchedulerImpl*);
   void AddPageScheduler(PageSchedulerImpl*);
   void RemovePageScheduler(PageSchedulerImpl*);
@@ -334,7 +330,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
 
   // Test helpers.
   MainThreadSchedulerHelper* GetSchedulerHelperForTesting();
-  IdleTimeEstimator* GetIdleTimeEstimatorForTesting();
   base::TimeTicks CurrentIdleTaskDeadlineForTesting() const;
   void EndIdlePeriodForTesting(base::TimeTicks time_remaining);
   bool PolicyNeedsUpdateForTesting();
@@ -416,7 +411,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
   virtual void PerformMicrotaskCheckpoint();
 
  private:
-  friend class WebRenderWidgetSchedulingState;
   friend class MainThreadMetricsHelper;
 
   friend class MainThreadMetricsHelperTest;
@@ -438,11 +432,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
       main_thread_scheduler_impl_unittest::MainThreadSchedulerImplTest,
       CanExceedIdleDeadlineIfRequired);
 
-  enum class TimeDomainType {
-    kReal,
-    kVirtual,
-  };
-
   // WebThreadScheduler private implementation:
   WebThreadScheduler* ToWebMainThreadScheduler() override;
 
@@ -452,8 +441,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
   void OnVirtualTimeDisabled() override;
   void OnVirtualTimePaused() override;
   void OnVirtualTimeResumed() override;
-
-  static const char* TimeDomainTypeToString(TimeDomainType domain_type);
 
   void AddAgentGroupScheduler(AgentGroupSchedulerImpl*);
 
@@ -496,8 +483,6 @@ class PLATFORM_EXPORT MainThreadSchedulerImpl
     bool IsQueueEnabled(MainThreadTaskQueue*, const SchedulingSettings&) const;
     void WriteIntoTrace(perfetto::TracedValue context) const;
   };
-
-  class TaskDurationMetricTracker;
 
   class RendererPauseHandleImpl
       : public MainThreadScheduler::RendererPauseHandle {

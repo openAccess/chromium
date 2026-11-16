@@ -41,14 +41,11 @@ import org.chromium.base.ContextUtils;
 import org.chromium.base.FakeTimeTestRule;
 import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.BaseRobolectricTestRule;
-import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -238,17 +235,6 @@ public class DefaultBrowserPromoUtilsTest {
     }
 
     @Test
-    @CommandLineFlags.Add({ChromeSwitches.DISABLE_DEFAULT_BROWSER_PROMO})
-    public void testNoPromo_featureDisabled() {
-        Assert.assertFalse(
-                "Should not promo when the feature is disabled.",
-                mUtils.shouldShowRoleManagerPromo(
-                        mActivity,
-                        DefaultBrowserPromoUtils.DefaultBrowserPromoEntryPoint.CHROME_STARTUP));
-        Assert.assertTrue(mUtils.shouldShowNonRoleManagerPromo(mActivity));
-    }
-
-    @Test
     public void testNoPromo_lessThanMinSessionCount() {
         when(mCounter.getSessionCount()).thenReturn(1);
         when(mCounter.getMinSessionCount()).thenReturn(3);
@@ -303,15 +289,11 @@ public class DefaultBrowserPromoUtilsTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
-    public void testNoMessagePromo_featureDisabled() {
-        mUtils.maybeShowDefaultBrowserPromoMessages(mActivity, mWindowAndroid, mProfile);
-        verify(mMockMessageDispatcher, never()).enqueueWindowScopedMessage(any(), anyBoolean());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
     public void testNoMessagePromo_offTheRecordProfile() {
+        // Make the promo otherwise eligible, so that only the profile check can block it.
+        mShadowRoleManager.removeAvailableRole(RoleManager.ROLE_BROWSER);
+        when(mMockTracker.shouldTriggerHelpUi(any())).thenReturn(true);
+
         // No Profile.
         mUtils.maybeShowDefaultBrowserPromoMessages(mActivity, mWindowAndroid, null);
         verify(mMockMessageDispatcher, never()).enqueueWindowScopedMessage(any(), anyBoolean());
@@ -323,7 +305,6 @@ public class DefaultBrowserPromoUtilsTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
     public void testNoMessagePromo_shouldShowRoleManagerPromo() {
         Assert.assertTrue(
                 mUtils.shouldShowRoleManagerPromo(
@@ -335,7 +316,6 @@ public class DefaultBrowserPromoUtilsTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
     public void testNoMessagePromo_featureEngagementBlocker() {
         mShadowRoleManager.removeAvailableRole(RoleManager.ROLE_BROWSER);
         when(mMockTracker.shouldTriggerHelpUi(any())).thenReturn(false);
@@ -352,7 +332,6 @@ public class DefaultBrowserPromoUtilsTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)
     public void testShowMessagePromo() {
         mShadowRoleManager.removeAvailableRole(RoleManager.ROLE_BROWSER);
         when(mMockTracker.shouldTriggerHelpUi(any())).thenReturn(true);
@@ -581,45 +560,6 @@ public class DefaultBrowserPromoUtilsTest {
         verify(mCounter, never()).onPromoShown();
         verifyOSSettingsFallbackIntentLaunched();
         watcher.assertExpected();
-    }
-
-    @Test
-    public void testPrepareLaunchPromoIfNeeded_SetUpList() {
-        // First click: Promo (Role Manager Dialog) has never been shown.
-        when(mCounter.getPromoCount()).thenReturn(0);
-        Assert.assertTrue(
-                "Should show role manager on first click from Setup List.",
-                mUtils.prepareLaunchPromoIfNeeded(
-                        mActivity,
-                        mWindowAndroid,
-                        mMockTracker,
-                        DefaultBrowserPromoUtils.DefaultBrowserPromoEntryPoint.SET_UP_LIST));
-
-        // Second click: Promo Count > 0.
-        when(mCounter.getPromoCount()).thenReturn(1);
-        Assert.assertFalse(
-                "Should NOT show role manager on subsequent clicks from Setup List.",
-                mUtils.prepareLaunchPromoIfNeeded(
-                        mActivity,
-                        mWindowAndroid,
-                        mMockTracker,
-                        DefaultBrowserPromoUtils.DefaultBrowserPromoEntryPoint.SET_UP_LIST));
-    }
-
-    @Test
-    public void testPromo_SuppressedByDelegate() {
-        DefaultBrowserPromoUtils.DefaultBrowserPromoDelegate delegate =
-                Mockito.mock(DefaultBrowserPromoUtils.DefaultBrowserPromoDelegate.class);
-        when(delegate.shouldSuppressPromo()).thenReturn(true);
-        DefaultBrowserPromoUtils.setDelegate(delegate);
-
-        Assert.assertFalse(
-                "Should not promo when suppressed by delegate.",
-                mUtils.shouldShowRoleManagerPromo(
-                        mActivity,
-                        DefaultBrowserPromoUtils.DefaultBrowserPromoEntryPoint.CHROME_STARTUP));
-
-        DefaultBrowserPromoUtils.setDelegate(null);
     }
 
     private void verifyOSSettingsFallbackIntentLaunched() {

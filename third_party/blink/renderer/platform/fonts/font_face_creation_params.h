@@ -98,7 +98,7 @@ class FontFaceCreationParams {
       // encoding and endianness. However, since the hash is not transferred
       // over a network or permanently stored and only used for the runtime of
       // Chromium, this is not a concern.
-      struct HashData {
+      struct {
         int index;
         int id;
         uint64_t filename_hash;
@@ -122,14 +122,6 @@ class FontFaceCreationParams {
  private:
   FontFaceCreationType creation_type_ = FontFaceCreationType::kFamily;
   AtomicString family_;
-
-  void SetFilename(std::string& filename) {
-#if defined(ADDRESS_SANITIZER)
-    *filename_ = filename;
-#else
-    filename_ = filename;
-#endif
-  }
 
   bool FilenameEqual(const FontFaceCreationParams& other) const {
 #if defined(ADDRESS_SANITIZER)

@@ -84,7 +84,6 @@ class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
     kViewTransition,
     kFunction,
     kMixin,
-    kResult,
     kPrivate,
     kApplyMixin,
     kContents,
@@ -141,7 +140,6 @@ class CORE_EXPORT StyleRuleBase : public GarbageCollected<StyleRuleBase> {
   }
   bool IsFunctionRule() const { return GetType() == kFunction; }
   bool IsMixinRule() const { return GetType() == kMixin; }
-  bool IsResultRule() const { return GetType() == kResult; }
   bool IsPrivateRule() const { return GetType() == kPrivate; }
   bool IsApplyMixinRule() const { return GetType() == kApplyMixin; }
   bool IsContentsRule() const { return GetType() == kContents; }
@@ -704,6 +702,7 @@ class CORE_EXPORT StyleRuleMixin : public StyleRuleGroup {
  public:
   StyleRuleMixin(AtomicString name,
                  HeapVector<StyleRuleFunction::Parameter> parameters,
+                 PrivateNameMap authored_private_names,
                  HeapVector<Member<StyleRuleBase>> child_rules);
   StyleRuleMixin(const StyleRuleMixin&) = delete;
   StyleRuleMixin(const StyleRuleMixin&,
@@ -713,24 +712,18 @@ class CORE_EXPORT StyleRuleMixin : public StyleRuleGroup {
   const HeapVector<StyleRuleFunction::Parameter>& GetParameters() const {
     return parameters_;
   }
+  // Maps the hygienic name of each @private variable declared in the mixin,
+  // including in nested rules, to its authored name.
+  const PrivateNameMap& GetAuthoredPrivateNames() const {
+    return authored_private_names_;
+  }
 
   void TraceAfterDispatch(blink::Visitor*) const;
 
  private:
   AtomicString name_;
   HeapVector<StyleRuleFunction::Parameter> parameters_;
-};
-
-// A @result rule, representing the applied result of a mixin.
-// (May be within @media and similar.)
-class CORE_EXPORT StyleRuleResult : public StyleRuleGroup {
- public:
-  explicit StyleRuleResult(HeapVector<Member<StyleRuleBase>> child_rules);
-  StyleRuleResult(const StyleRuleResult&) = delete;
-  StyleRuleResult(const StyleRuleResult&,
-                  HeapVector<Member<StyleRuleBase>> child_rules);
-
-  void TraceAfterDispatch(blink::Visitor*) const;
+  PrivateNameMap authored_private_names_;
 };
 
 // An @apply rule, representing applying a mixin. Its declaration block, if
@@ -906,8 +899,7 @@ struct DowncastTraits<StyleRuleGroup> {
            rule.IsScopeRule() || rule.IsStartingStyleRule() ||
            rule.IsFunctionRule() || rule.IsPageRule() ||
            rule.IsNavigationRule() || rule.IsMixinRule() ||
-           rule.IsResultRule() || rule.IsApplyMixinRule() ||
-           rule.IsContentsRule();
+           rule.IsApplyMixinRule() || rule.IsContentsRule();
   }
 };
 
@@ -971,13 +963,6 @@ template <>
 struct DowncastTraits<StyleRuleMixin> {
   static bool AllowFrom(const StyleRuleBase& rule) {
     return rule.IsMixinRule();
-  }
-};
-
-template <>
-struct DowncastTraits<StyleRuleResult> {
-  static bool AllowFrom(const StyleRuleBase& rule) {
-    return rule.IsResultRule();
   }
 };
 

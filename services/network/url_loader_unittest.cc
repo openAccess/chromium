@@ -3978,7 +3978,6 @@ TEST_F(URLLoaderTest, UploadDataPipeClosedEarly) {
   resource_request_body->AppendDataPipe(std::move(data_pipe_getter_remote));
   set_request_body(std::move(resource_request_body));
 
-  std::string response_body;
   EXPECT_EQ(net::ERR_FAILED, Load(test_server()->GetURL("/echo")));
 }
 
@@ -4053,8 +4052,6 @@ TEST_F(URLLoaderTest, UploadChunkedDataPipeOverHTTP2) {
 }
 
 TEST_F(URLLoaderTest, UploadChunkedDataPipeNotAllowHTTP1) {
-  const std::string kRequestBody = "Request Body";
-
   TestChunkedDataPipeGetter data_pipe_getter;
 
   auto resource_request_body = base::MakeRefCounted<ResourceRequestBody>();

@@ -82,6 +82,9 @@ enum class TrustedVaultDownloadKeysStatus {
 
 enum class TrustedVaultDownloadPasswordPublicKeyStatus {
   kSuccess,
+  // Used when the server responds with an empty public key (e.g. no Gaia
+  // password encryption key is stored for the user).
+  kNoPublicKey,
   // Used when request wasn't sent due to transient auth error that prevented
   // fetching an access token.
   kTransientAccessTokenFetchError,
@@ -263,6 +266,7 @@ using LocalPhysicalDevice =
     base::StrongAlias<class LocalPhysicalDeviceTag, std::monostate>;
 using LockScreenKnowledgeFactor =
     base::StrongAlias<class VirtualDeviceTag, std::monostate>;
+using GaiaPassword = base::StrongAlias<class GaiaPasswordTag, std::monostate>;
 using ICloudKeychain =
     base::StrongAlias<class ICloudKeychainTag, std::monostate>;
 // UnspecifiedAuthenticationFactorType carries a type hint for the backend.
@@ -274,7 +278,8 @@ using AuthenticationFactorTypeAndRegistrationParams =
                  LockScreenKnowledgeFactor,
                  UnspecifiedAuthenticationFactorType,
                  GpmPinMetadata,
-                 ICloudKeychain>;
+                 ICloudKeychain,
+                 GaiaPassword>;
 
 struct TrustedVaultKeyAndVersion {
   TrustedVaultKeyAndVersion(const std::vector<uint8_t>& key, int version);

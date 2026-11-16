@@ -99,6 +99,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   if (self) {
     _viewMode = GeminiViewMode::kUnknown;
     _processingStatus = GeminiClientMode::kUnknown;
+    _lastProcessingStatusUpdateViewMode = GeminiViewMode::kUnknown;
   }
   return self;
 }
@@ -111,7 +112,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   if (hasConversation) {
     _processingStatus = GeminiClientMode::kPreviousConversationLoading;
     if (IsIOSGeminiBottomSheetMigrationEnabled()) {
-      [self updateProcessingStatusForFloatyMode];
+      [self updateProcessingStatusForFloatyModeWithError:nil];
     }
   } else {
     _processingStatus = GeminiClientMode::kDormant;
@@ -134,11 +135,8 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   } else if (_viewMode == GeminiViewMode::kLive ||
              _processingStatus == GeminiClientMode::kThinking) {
     state = GeminiContainerUIState::Minimized(/*has_grabber=*/NO);
-  } else if (_hasConversation) {
-    state = GeminiContainerUIState::ExpandedResponse();
   } else {
-    state =
-        GeminiContainerUIState::ZeroState(AssistantContainerDetent::kMedium);
+    state = [self defaultFloatyUIState];
   }
 
   [self updateUIState:state];
@@ -166,8 +164,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
       state = GeminiContainerUIState::Minimized(/*has_grabber=*/NO);
       break;
     case GeminiViewMode::kFloaty:
-      state = _hasConversation ? GeminiContainerUIState::ExpandedResponse()
-                               : GeminiContainerUIState::ZeroState();
+      state = [self defaultFloatyUIState];
       break;
     case GeminiViewMode::kUnknown:
       NOTREACHED();
@@ -176,24 +173,22 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   [self updateUIState:state];
 }
 
-- (void)transitionToProcessingStatus:(GeminiClientMode)processingStatus {
-  if (_processingStatus == processingStatus) {
+- (void)transitionToProcessingStatus:(GeminiClientMode)processingStatus
+                               error:(NSError*)error {
+  // Only deduplicate when the view mode hasn't changed since the last status
+  // update so mode-switch status updates are still processed.
+  if (_processingStatus == processingStatus &&
+      _lastProcessingStatusUpdateViewMode == _viewMode) {
     return;
   }
 
   _processingStatus = processingStatus;
+  _lastProcessingStatusUpdateViewMode = _viewMode;
 
   // Keep track of `_processingStatus` for all cases, but skip the remaining
   // state updates that are specific to the container UI.
   if (!IsIOSGeminiBottomSheetMigrationEnabled()) {
     return;
-  }
-
-  // Any status change after thinking that is not responding resets the thinking
-  // timer.
-  if (!_thinkingStartTime.is_null() &&
-      processingStatus != GeminiClientMode::kResponding) {
-    _thinkingStartTime = base::TimeTicks();
   }
 
   // Ignore processing led state updates during actuation.
@@ -206,7 +201,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
       [self updateProcessingStatusForLiveMode];
       return;
     case GeminiViewMode::kFloaty:
-      [self updateProcessingStatusForFloatyMode];
+      [self updateProcessingStatusForFloatyModeWithError:error];
       return;
     case GeminiViewMode::kUnknown:
       // Ignore in case mode is still unknown while processing status is being
@@ -226,7 +221,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   }
 
   _thinkingStartTime = base::TimeTicks();
-  [self updateUIState:GeminiContainerUIState::ExpandedResponse()];
+  [self updateUIState:[self defaultFloatyUIState]];
 }
 
 - (void)didFinishLoadingConversationWithID:(NSString*)conversationID
@@ -259,6 +254,7 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   _hasConversation = NO;
   _viewMode = GeminiViewMode::kUnknown;
   _processingStatus = GeminiClientMode::kUnknown;
+  _lastProcessingStatusUpdateViewMode = GeminiViewMode::kUnknown;
   _currentUIState = {};
 }
 
@@ -279,6 +275,13 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   [self updateUIState:GeminiContainerUIState::ZeroState(detent)];
 }
 
+// Returns the default Floaty UI state based on whether there is an active
+// conversation.
+- (GeminiContainerUIState)defaultFloatyUIState {
+  return _hasConversation ? GeminiContainerUIState::ExpandedResponse()
+                          : GeminiContainerUIState::ZeroState();
+}
+
 // Handles processing status updates while in Live mode.
 - (void)updateProcessingStatusForLiveMode {
   // While in Live mode, update conversation state without pushing to the
@@ -288,8 +291,22 @@ GeminiContainerUIState::WorklogDisplayMode() const {
   }
 }
 
-- (void)updateProcessingStatusForFloatyMode {
+// Handles processing status updates while in Floaty mode.
+- (void)updateProcessingStatusForFloatyModeWithError:(NSError*)error {
   GeminiContainerUIState state;
+
+  // Any transition from `kThinking` to a status other than
+  // `kResponding` (including `kDormant` with or without an `error`) means
+  // something went wrong, so reset the thinking timer and restore
+  // the default Floaty UI state.
+  if (!_thinkingStartTime.is_null() &&
+      _processingStatus != GeminiClientMode::kResponding) {
+    _thinkingStartTime = base::TimeTicks();
+    state = [self defaultFloatyUIState];
+    [self updateUIState:state];
+    return;
+  }
+
   switch (_processingStatus) {
     case GeminiClientMode::kThinking:
       _hasConversation = YES;
@@ -310,6 +327,13 @@ GeminiContainerUIState::WorklogDisplayMode() const {
       state = GeminiContainerUIState::ExpandedResponse();
       break;
     case GeminiClientMode::kDormant:
+      // Reset the UI to the default state if `kDormant` was entered with an
+      // `error`; otherwise ignore the update to preserve the current container
+      // state.
+      if (error != nil) {
+        [self updateUIState:[self defaultFloatyUIState]];
+      }
+      return;
     case GeminiClientMode::kListening:
     case GeminiClientMode::kTranscribing:
     case GeminiClientMode::kUnknown:

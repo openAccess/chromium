@@ -25,8 +25,22 @@ ToolDefinition ToolDefinition::Clone() const {
   return copy;
 }
 
-ToolResponse::ToolResponse(std::variant<base::DictValue, ToolError> value)
-    : value_(std::move(value)) {
+ToolRequest ToolRequest::Clone() const {
+  return ToolRequest{
+      .name = name, .arguments = arguments.Clone(), .call_id = call_id};
+}
+
+PendingToolCall::PendingToolCall(ToolRequest request,
+                                 ToolResponseCallback callback)
+    : request(std::move(request)), callback(std::move(callback)) {}
+PendingToolCall::PendingToolCall(PendingToolCall&&) noexcept = default;
+PendingToolCall& PendingToolCall::operator=(PendingToolCall&&) noexcept =
+    default;
+PendingToolCall::~PendingToolCall() = default;
+
+ToolResponse::ToolResponse(std::variant<base::DictValue, ToolError> value,
+                           std::optional<VisualContent> visual_content)
+    : value_(std::move(value)), visual_content_(std::move(visual_content)) {
   // The factories cannot produce a failure with nothing to report, but this
   // guards the invariant against future additions.
   if (const ToolError* error = std::get_if<ToolError>(&value_)) {
@@ -34,13 +48,21 @@ ToolResponse::ToolResponse(std::variant<base::DictValue, ToolError> value)
   }
 }
 
-ToolResponse::ToolResponse(ToolResponse&&) = default;
-ToolResponse& ToolResponse::operator=(ToolResponse&&) = default;
+ToolResponse::ToolResponse(ToolResponse&&) noexcept = default;
+ToolResponse& ToolResponse::operator=(ToolResponse&&) noexcept = default;
 ToolResponse::~ToolResponse() = default;
 
 // static
 ToolResponse ToolResponse::Success(base::DictValue result) {
   return ToolResponse(std::move(result));
+}
+
+// static
+ToolResponse ToolResponse::Success(base::DictValue result,
+                                   VisualContent visual_content) {
+  CHECK(!visual_content.image_data.empty());
+  CHECK(!visual_content.mime_type.empty());
+  return ToolResponse(std::move(result), std::move(visual_content));
 }
 
 // static

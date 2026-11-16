@@ -23,7 +23,6 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_style.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_unfocus_button.h"
-#include "chrome/browser/ui/views/tabs/tab_slot_controller.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -79,8 +78,8 @@ class MockDelegate : public TabGroupHeaderView::Delegate,
               GetTabGroupData,
               (),
               (const, override));
-  MOCK_METHOD(void, UpdateHoverCard, (int), (const, override));
-  MOCK_METHOD(void, HideHoverCard, (int), (const, override));
+  MOCK_METHOD(void, UpdateHoverCard, (HoverCardUpdateType), (const, override));
+  MOCK_METHOD(void, HideHoverCard, (HoverCardUpdateType), (const, override));
   MOCK_METHOD(bool, IsFocusInTabStrip, (), (override));
   MOCK_METHOD(std::unique_ptr<ExpandOnHoverLock>,
               AcquireExpandOnHoverLock,
@@ -134,7 +133,6 @@ class TabGroupHeaderViewTest : public views::ViewsTestBase {
     }
   }
 
-#if BUILDFLAG(IS_MAC)
   void SetGroupTitleAndLayout(TabGroupHeaderView* header,
                               MockDelegate& delegate,
                               const std::u16string& title) {
@@ -150,7 +148,6 @@ class TabGroupHeaderViewTest : public views::ViewsTestBase {
   int CenteredTitleX(TabGroupHeaderView* header) {
     return (header->width() - header->title_label_for_testing()->width()) / 2;
   }
-#endif
 
   ~TabGroupHeaderViewTest() override = default;
 };
@@ -979,9 +976,7 @@ TEST_F(TabGroupHeaderViewTest, HideHoverCardOnBlurWhenUnfocusButtonFocused) {
   ASSERT_NE(nullptr, focus_manager);
   focus_manager->SetKeyboardAccessible(true);
 
-  EXPECT_CALL(delegate,
-              UpdateHoverCard(TabSlotController::HoverCardUpdateType::kFocus))
-      .Times(1);
+  EXPECT_CALL(delegate, UpdateHoverCard(HoverCardUpdateType::kFocus)).Times(1);
   focus_manager->SetFocusedView(header);
 
   // Blurring to another hovercard target in the tab strip does not hide the
@@ -991,18 +986,14 @@ TEST_F(TabGroupHeaderViewTest, HideHoverCardOnBlurWhenUnfocusButtonFocused) {
   EXPECT_CALL(delegate, HideHoverCard(testing::_)).Times(0);
   focus_manager->SetFocusedView(other_view);
 
-  EXPECT_CALL(delegate,
-              UpdateHoverCard(TabSlotController::HoverCardUpdateType::kFocus))
-      .Times(1);
+  EXPECT_CALL(delegate, UpdateHoverCard(HoverCardUpdateType::kFocus)).Times(1);
   focus_manager->SetFocusedView(header);
 
   // Blurring to the unfocus button hides the hovercard even though focus is
   // still in the tab strip.
   ON_CALL(delegate, IsUnfocusButtonFocused())
       .WillByDefault(testing::Return(true));
-  EXPECT_CALL(delegate,
-              HideHoverCard(TabSlotController::HoverCardUpdateType::kFocus))
-      .Times(1);
+  EXPECT_CALL(delegate, HideHoverCard(HoverCardUpdateType::kFocus)).Times(1);
   focus_manager->SetFocusedView(other_view);
 }
 
@@ -1021,14 +1012,10 @@ TEST_F(TabGroupHeaderViewTest, HideHoverCardOnMouseExitInFocusMode) {
   widget->Show();
 
   ui::test::EventGenerator generator(GetContext(), widget->GetNativeWindow());
-  EXPECT_CALL(delegate,
-              UpdateHoverCard(TabSlotController::HoverCardUpdateType::kHover))
-      .Times(1);
+  EXPECT_CALL(delegate, UpdateHoverCard(HoverCardUpdateType::kHover)).Times(1);
   MoveMouseTo(generator, header, true);
 
-  EXPECT_CALL(delegate,
-              HideHoverCard(TabSlotController::HoverCardUpdateType::kHover))
-      .Times(1);
+  EXPECT_CALL(delegate, HideHoverCard(HoverCardUpdateType::kHover)).Times(1);
   MoveMouseTo(generator, header, false);
 }
 
@@ -1072,22 +1059,26 @@ TEST_F(TabGroupHeaderViewTest, UnfocusButtonCollapsedState) {
       tabs::kVerticalTabStripCollapsedWidth -
       2 * GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
 
-  // Expanded width: shows text and no icon.
+  // Expanded width: shows text, no icon, and no tooltip.
   button->SetBounds(0, 0, collapsed_width + 20, 24);
   EXPECT_EQ(button->GetText(), expected_text);
+  EXPECT_TRUE(button->GetTooltipText().empty());
   EXPECT_FALSE(button->GetImageModel(views::Button::STATE_NORMAL).has_value());
   EXPECT_EQ(button->GetViewAccessibility().GetCachedName(), expected_ax_name);
 
-  // Collapsed width: clears text, shows icon, and preserves accessible name.
+  // Collapsed width: clears text, shows icon, sets tooltip, and preserves
+  // accessible name.
   button->SetBounds(0, 0, collapsed_width, 24);
   EXPECT_TRUE(button->GetText().empty());
+  EXPECT_EQ(button->GetTooltipText(), expected_text);
   ASSERT_TRUE(button->GetImageModel(views::Button::STATE_NORMAL).has_value());
   EXPECT_FALSE(button->GetImageModel(views::Button::STATE_NORMAL)->IsEmpty());
   EXPECT_EQ(button->GetViewAccessibility().GetCachedName(), expected_ax_name);
 
-  // Expanding again restores text and clears icon.
+  // Expanding again restores text, clears icon, and clears tooltip.
   button->SetBounds(0, 0, collapsed_width + 20, 24);
   EXPECT_EQ(button->GetText(), expected_text);
+  EXPECT_TRUE(button->GetTooltipText().empty());
   ASSERT_TRUE(button->GetImageModel(views::Button::STATE_NORMAL).has_value());
   EXPECT_TRUE(button->GetImageModel(views::Button::STATE_NORMAL)->IsEmpty());
   EXPECT_EQ(button->GetViewAccessibility().GetCachedName(), expected_ax_name);
@@ -1147,16 +1138,16 @@ TEST_F(TabGroupHeaderViewTest, FocusAnimationInsetsMatchRestingInsets) {
       delegate, TabStripOrientation::kHorizontal, nullptr, &visual_data);
   const gfx::Insets unfocused_insets = header->GetInteriorMargin();
 
-  header->SetFocusAnimationProgress(1.0f);
+  header->SetFocusAnimationState({.progress = 1.0f});
   EXPECT_EQ(header->GetInteriorMargin(),
             TabGroupStyle::GetInsetsForFocusedHeaderChip());
 
-  header->SetFocusAnimationProgress(0.0f);
+  header->SetFocusAnimationState({.progress = 0.0f});
   EXPECT_EQ(header->GetInteriorMargin(), unfocused_insets);
 
   // Midway, each edge lies strictly between the two resting values (or equals
   // them when they coincide), so the insets really interpolate.
-  header->SetFocusAnimationProgress(0.5f);
+  header->SetFocusAnimationState({.progress = 0.5f});
   const gfx::Insets focused_insets =
       TabGroupStyle::GetInsetsForFocusedHeaderChip();
   const gfx::Insets mid_insets = header->GetInteriorMargin();
@@ -1186,7 +1177,7 @@ TEST_F(TabGroupHeaderViewTest, FocusAnimationLeavesVerticalInsetsUnchanged) {
   const gfx::Insets resting_insets = header->GetInteriorMargin();
 
   for (float progress : {0.0f, 0.5f, 1.0f}) {
-    header->SetFocusAnimationProgress(progress);
+    header->SetFocusAnimationState({.progress = progress});
     EXPECT_EQ(header->GetInteriorMargin(), resting_insets) << progress;
   }
 }
@@ -1205,11 +1196,11 @@ TEST_F(TabGroupHeaderViewTest, FocusAnimationDoesNotChangePreferredSize) {
     const gfx::Size resting_size = header->GetPreferredSize();
 
     for (float progress : {0.0f, 0.5f, 1.0f}) {
-      header->SetFocusAnimationProgress(progress);
+      header->SetFocusAnimationState({.progress = progress});
       EXPECT_EQ(header->GetPreferredSize(), resting_size)
           << static_cast<int>(orientation) << " " << progress;
     }
-    header->SetFocusAnimationProgress(std::nullopt);
+    header->SetFocusAnimationState({});
     EXPECT_EQ(header->GetPreferredSize(), resting_size)
         << static_cast<int>(orientation);
   }
@@ -1233,7 +1224,7 @@ class TabGroupHeaderViewFocusRadiiTest
   }
 
   // Returns the header's background corner radii after
-  // `SetFocusAnimationProgress(progress)` for a header whose delegate reports
+  // `SetFocusAnimationState()` for a header whose delegate reports
   // `is_focused`.
   gfx::RoundedCornersF GetRadii(bool is_focused,
                                 std::optional<float> progress) {
@@ -1247,9 +1238,9 @@ class TabGroupHeaderViewFocusRadiiTest
     auto* header = widget->SetContentsView(std::make_unique<TabGroupHeaderView>(
         delegate, orientation(), nullptr, &visual_data));
     // Force a background rebuild via a distinct intermediate value so the
-    // early-return in `SetFocusAnimationProgress()` does not skip the update.
-    header->SetFocusAnimationProgress(0.5f);
-    header->SetFocusAnimationProgress(progress);
+    // early-return in `SetFocusAnimationState()` does not skip the update.
+    header->SetFocusAnimationState({.progress = 0.5f});
+    header->SetFocusAnimationState({.progress = progress});
     return header->GetBackground()->GetRoundedCornerRadii().value();
   }
 
@@ -1297,25 +1288,25 @@ TEST_F(TabGroupHeaderViewTest, UnfocusButtonFocusAnimationState) {
       widget->SetContentsView(std::make_unique<TabGroupUnfocusButton>(
           delegate, TabStripOrientation::kHorizontal));
 
-  button->SetFocusAnimationState(std::nullopt, 1.0f);
+  button->SetFocusAnimationState({});
   const gfx::RoundedCornersF resting_radii =
       button->GetBackground()->GetRoundedCornerRadii().value();
   const SkColor resting_text_color = button->GetCurrentTextColor();
   ASSERT_EQ(SkColorGetA(resting_text_color), SK_AlphaOPAQUE);
 
-  button->SetFocusAnimationState(1.0f, 1.0f);
+  button->SetFocusAnimationState({.progress = 1.0f, .content_opacity = 1.0f});
   EXPECT_EQ(button->GetBackground()->GetRoundedCornerRadii().value(),
             resting_radii);
 
-  button->SetFocusAnimationState(0.5f, 0.0f);
+  button->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.0f});
   EXPECT_NE(button->GetBackground()->GetRoundedCornerRadii().value(),
             resting_radii);
   EXPECT_EQ(SkColorGetA(button->GetCurrentTextColor()), 0u);
 
-  button->SetFocusAnimationState(0.5f, 0.5f);
+  button->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.5f});
   EXPECT_EQ(SkColorGetA(button->GetCurrentTextColor()), 128u);
 
-  button->SetFocusAnimationState(std::nullopt, 1.0f);
+  button->SetFocusAnimationState({});
   EXPECT_EQ(button->GetBackground()->GetRoundedCornerRadii().value(),
             resting_radii);
   EXPECT_EQ(button->GetCurrentTextColor(), resting_text_color);
@@ -1336,7 +1327,7 @@ TEST_F(TabGroupHeaderViewTest, UnfocusButtonCollapsedIconHonoursLabelOpacity) {
 
   // Opacity set first, then collapse.
   button->SetBounds(0, 0, collapsed_width + 20, 24);
-  button->SetFocusAnimationState(0.5f, 0.0f);
+  button->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.0f});
   button->SetBounds(0, 0, collapsed_width, 24);
   ASSERT_TRUE(button->GetImageModel(views::Button::STATE_NORMAL).has_value());
   EXPECT_EQ(SkColorGetA(button->GetImageModel(views::Button::STATE_NORMAL)
@@ -1346,13 +1337,13 @@ TEST_F(TabGroupHeaderViewTest, UnfocusButtonCollapsedIconHonoursLabelOpacity) {
             0u);
 
   // Collapse first, then opacity.
-  button->SetFocusAnimationState(std::nullopt, 1.0f);
+  button->SetFocusAnimationState({});
   EXPECT_EQ(SkColorGetA(button->GetImageModel(views::Button::STATE_NORMAL)
                             ->GetVectorIcon()
                             .color()
                             .ResolveToSkColor(button->GetColorProvider())),
             SK_AlphaOPAQUE);
-  button->SetFocusAnimationState(0.5f, 0.0f);
+  button->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.0f});
   EXPECT_EQ(SkColorGetA(button->GetImageModel(views::Button::STATE_NORMAL)
                             ->GetVectorIcon()
                             .color()
@@ -1565,10 +1556,10 @@ TEST_F(TabGroupHeaderViewTest,
   header->OnDataChanged(delegate.default_tab_group_data_);
   const gfx::Insets focused_insets = header->GetInteriorMargin();
 
-  header->SetFocusAnimationProgress(0.0f);
+  header->SetFocusAnimationState({.progress = 0.0f});
   EXPECT_EQ(header->GetInteriorMargin(), unfocused_insets);
 
-  header->SetFocusAnimationProgress(1.0f);
+  header->SetFocusAnimationState({.progress = 1.0f});
   EXPECT_EQ(header->GetInteriorMargin(), focused_insets);
 }
 #endif
@@ -1606,17 +1597,17 @@ TEST_F(TabGroupHeaderViewTest, EphemeralHeaderFocusContentOpacity) {
                            .ResolveToSkColor(header->GetColorProvider()));
   };
 
-  header->SetFocusAnimationProgress(1.0f, 1.0f);
+  header->SetFocusAnimationState({.progress = 1.0f, .content_opacity = 1.0f});
   EXPECT_EQ(SkColorGetA(header->title_label_for_testing()->GetEnabledColor()),
             SK_AlphaOPAQUE);
   EXPECT_EQ(get_editor_icon_alpha(), SK_AlphaOPAQUE);
 
-  header->SetFocusAnimationProgress(0.5f, 0.0f);
+  header->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.0f});
   EXPECT_EQ(SkColorGetA(header->title_label_for_testing()->GetEnabledColor()),
             0u);
   EXPECT_EQ(get_editor_icon_alpha(), 0u);
 
-  header->SetFocusAnimationProgress(0.5f, 0.5f);
+  header->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.5f});
   EXPECT_EQ(SkColorGetA(header->title_label_for_testing()->GetEnabledColor()),
             128u);
   EXPECT_EQ(get_editor_icon_alpha(), 128u);
@@ -1624,8 +1615,64 @@ TEST_F(TabGroupHeaderViewTest, EphemeralHeaderFocusContentOpacity) {
   // Persistent group headers ignore `content_opacity`.
   mock_tab_group.SetIsEphemeral(false);
   header->OnDataChanged(data);
-  header->SetFocusAnimationProgress(0.5f, 0.0f);
+  header->SetFocusAnimationState({.progress = 0.5f, .content_opacity = 0.0f});
   EXPECT_EQ(SkColorGetA(header->title_label_for_testing()->GetEnabledColor()),
             SK_AlphaOPAQUE);
   EXPECT_EQ(get_editor_icon_alpha(), SK_AlphaOPAQUE);
+}
+
+TEST_F(TabGroupHeaderViewTest, StandardHeaderTitleIsCentered) {
+  MockDelegate delegate;
+  tab_groups::TabGroupVisualData visual_data(
+      u"Initial", tab_groups::TabGroupColorId::kBlue, false);
+
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  auto* header = widget->SetContentsView(std::make_unique<TabGroupHeaderView>(
+      delegate, TabStripOrientation::kHorizontal, nullptr, &visual_data));
+  widget->Show();
+
+  EXPECT_CALL(delegate, IsGroupFocused())
+      .WillRepeatedly(testing::Return(false));
+
+  SetGroupTitleAndLayout(header, delegate, u"a");
+  EXPECT_EQ(CenteredTitleX(header), header->title_label_for_testing()->x());
+}
+
+TEST_F(TabGroupHeaderViewTest, HeaderAccessibilityProperties) {
+  MockDelegate delegate;
+  tab_groups::TabGroupVisualData visual_data(u"Group Title",
+                                             tab_groups::TabGroupColorId::kBlue,
+                                             /*is_collapsed=*/false);
+
+  auto header = std::make_unique<TabGroupHeaderView>(
+      delegate, TabStripOrientation::kHorizontal, nullptr, &visual_data);
+
+  tabs::TabGroupData data;
+  data.visual_data = visual_data;
+  delegate.default_tab_group_data_ = data;
+  header->OnDataChanged(data);
+
+  ui::AXNodeData node_data;
+  header->GetViewAccessibility().GetAccessibleNodeData(&node_data);
+  EXPECT_EQ(node_data.role, ax::mojom::Role::kTabList);
+  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kEditable));
+  EXPECT_TRUE(node_data.HasState(ax::mojom::State::kExpanded));
+  EXPECT_FALSE(node_data.HasState(ax::mojom::State::kCollapsed));
+
+  // Now collapse the group and verify accessibility state updates.
+  tab_groups::TabGroupVisualData collapsed_visual_data(
+      u"Group Title", tab_groups::TabGroupColorId::kBlue,
+      /*is_collapsed=*/true);
+  tabs::TabGroupData collapsed_data;
+  collapsed_data.visual_data = collapsed_visual_data;
+  delegate.default_tab_group_data_ = collapsed_data;
+  header->OnDataChanged(collapsed_data);
+
+  ui::AXNodeData collapsed_node_data;
+  header->GetViewAccessibility().GetAccessibleNodeData(&collapsed_node_data);
+  EXPECT_EQ(collapsed_node_data.role, ax::mojom::Role::kTabList);
+  EXPECT_TRUE(collapsed_node_data.HasState(ax::mojom::State::kEditable));
+  EXPECT_TRUE(collapsed_node_data.HasState(ax::mojom::State::kCollapsed));
+  EXPECT_FALSE(collapsed_node_data.HasState(ax::mojom::State::kExpanded));
 }

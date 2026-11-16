@@ -39,12 +39,12 @@
 
 #include <algorithm>
 
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/text/character_property_data.h"
 #include "third_party/blink/renderer/platform/text/icu_error.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_ctype.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
@@ -73,8 +73,8 @@ inline CharacterProperty GetProperty(UChar32 c) {
 }
 
 base::Lock& GetFreezePatternLock() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
-  return lock;
+  static base::NoDestructor<base::Lock> lock;
+  return *lock;
 }
 
 }  // namespace
@@ -312,7 +312,12 @@ bool HasLikelyScript(UChar32 character) {
       script = GetScriptBasedOnUnicodeBlock(character);
     }
   }
-  return script != USCRIPT_COMMON && script != USCRIPT_INHERITED;
+  // USCRIPT_UNKNOWN has no font coverage; treating it as "likely script"
+  // makes ChooseHintIndex pin font fallback to a code point like U+FE1A
+  // (unassigned in the Unicode version ICU ships with), which pulls its
+  // shaping cluster neighbours into a font that has no glyphs for them.
+  return script != USCRIPT_COMMON && script != USCRIPT_INHERITED &&
+         script != USCRIPT_UNKNOWN;
 }
 
 // There are a lot of characters in USCRIPT_COMMON that can be covered

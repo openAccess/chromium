@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/check_deref.h"
@@ -45,7 +46,7 @@
 #include "components/password_manager/core/browser/leak_detection/leak_detection_request_utils.h"
 #include "components/password_manager/core/browser/origin_credential_store.h"
 #include "components/password_manager/core/browser/password_autofill_manager.h"
-#include "components/password_manager/core/browser/password_change_service_interface.h"
+#include "components/password_manager/core/browser/password_change/password_change_service_interface.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_form_manager.h"
 #include "components/password_manager/core/browser/password_generation_frame_helper.h"
@@ -55,6 +56,8 @@
 #include "components/password_manager/core/browser/password_manager_util.h"
 #include "components/password_manager/core/browser/password_reuse_manager.h"
 #include "components/password_manager/core/browser/password_save_manager_impl.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
+#include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/undo_password_change_controller.h"
 #include "components/password_manager/core/common/password_manager_constants.h"
 #include "components/password_manager/core/common/password_manager_features.h"
@@ -352,15 +355,14 @@ bool IsSingleUsernameSubmission(const PasswordForm& submitted_form) {
   return true;
 }
 
-// A helper just so the subscription field in PasswordManager can be const.
+// A helper just so the subscription fields in PasswordManager can be const.
 // `manager` must outlive the returned subscription.
 base::CallbackListSubscription AddSyncEnabledOrDisabledCallback(
     PasswordManager* manager,
-    PasswordManagerClient* client) {
-  if (PasswordStoreInterface* account_store =
-          client->GetAccountPasswordStore()) {
+    PasswordStoreInterface* store) {
+  if (store) {
     // base::Unretained() safe because of the precondition.
-    return account_store->AddSyncEnabledOrDisabledCallback(base::BindRepeating(
+    return store->AddSyncEnabledOrDisabledCallback(base::BindRepeating(
         &PasswordManager::UpdateFormManagers, base::Unretained(manager)));
   }
   return {};
@@ -669,12 +671,15 @@ void PasswordManager::RegisterLocalPrefs(PrefRegistrySimple* registry) {
 }
 
 PasswordManager::PasswordManager(PasswordManagerClient* client)
-    : client_(client),
+    : client_(&CHECK_DEREF(client)),
+      leak_delegate_(client),
       account_store_cb_list_subscription_(
-          AddSyncEnabledOrDisabledCallback(this, client)),
-      leak_delegate_(client) {
-  DCHECK(client_);
-}
+          AddSyncEnabledOrDisabledCallback(this,
+                                           client_->GetAccountPasswordStore())),
+      profile_store_cb_list_subscription_(
+          AddSyncEnabledOrDisabledCallback(
+              this,
+              client_->GetProfilePasswordStore())) {}
 
 PasswordManager::~PasswordManager() = default;
 
@@ -736,8 +741,6 @@ void PasswordManager::OnPresaveGeneratedPassword(
   }
   PasswordFormManager* form_manager =
       GetMatchedManagerForForm(driver, form_data.renderer_id());
-  UMA_HISTOGRAM_BOOLEAN("PasswordManager.GeneratedFormHasNoFormManager",
-                        !form_manager);
   if (form_manager) {
     // TODO(crbug.com/513276101): Explicit construction of std::u16string
     // R-Value to be removed once OnPresaveGeneratedPassword converted to take
@@ -1677,10 +1680,11 @@ void PasswordManager::OnLoginSuccessful() {
 
   bool able_to_save_passwords =
       password_manager_util::IsAbleToSavePasswords(client_);
-  bool able_to_save_passwords_after_fixing_trusted_vault_error =
-      password_manager_util::IsSavingBlockedByTrustedVaultError(
+  std::optional<ActionableError> recoverable_error_blocking_saving =
+      password_manager_util::GetRecoverableErrorBlockingPasswordSaving(
           client_, submitted_manager);
   bool able_to_save_passwords_after_fixing_recoverable_error =
+      recoverable_error_blocking_saving.has_value() ||
       password_manager_util::IsSavingBlockedByRecoverableError(
           client_, submitted_manager);
   base::UmaHistogramBoolean(
@@ -1688,9 +1692,9 @@ void PasswordManager::OnLoginSuccessful() {
       able_to_save_passwords);
   base::UmaHistogramBoolean(
       "PasswordManager.SavingBlockedByTrustedVaultErrorOnSuccessfulLogin",
-      able_to_save_passwords_after_fixing_trusted_vault_error);
+      recoverable_error_blocking_saving ==
+          ActionableError::kTrustedVaultKeyNeeded);
   if (!submitted_manager->IsPasswordUpdate() && !able_to_save_passwords &&
-      !able_to_save_passwords_after_fixing_trusted_vault_error &&
       !able_to_save_passwords_after_fixing_recoverable_error) {
     return;
   }

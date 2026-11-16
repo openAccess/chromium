@@ -119,6 +119,7 @@ source_set("webrtc") {
     "//components/permissions",
     "//components/prefs",
     "//components/upload_list",
+    "//components/webrtc:media_capture_dispatcher",
     "//components/webrtc:media_stream_device_enumerator",
     "//components/webrtc_logging/browser",
     "//components/webrtc_logging/common",
@@ -302,6 +303,21 @@ source_set("webrtc") {
     deps += [ "//components/remote_cocoa/browser" ]
   }
 
+  if (is_linux && use_dbus) {
+    sources += [
+      "camera_portal_focus_notifier_linux.cc",
+      "camera_portal_focus_notifier_linux.h",
+    ]
+    public_deps += [
+      "//chrome/browser/ui/browser_window",
+      "//ui/views",
+    ]
+    deps += [
+      "//media/capture:capture_switches",
+      "//ui/base",
+    ]
+  }
+
   if (is_linux && use_ozone) {
     sources += [ "window_icon_util_ozone.cc" ]
     deps += [ "//ui/ozone" ]
@@ -444,6 +460,7 @@ if (!is_android) {
       "webrtc_disable_encryption_flag_browsertest.cc",
       "webrtc_getdisplaymedia_browsertest.cc",
       "webrtc_internals_integration_browsertest.cc",
+      "webrtc_ip_handling_browsertest.cc",
       "webrtc_pan_tilt_zoom_browsertest.cc",
       "webrtc_stats_perf_browsertest.cc",
       "webrtc_video_display_perf_browsertest.cc",
@@ -469,6 +486,8 @@ if (!is_android) {
       "//chrome/browser/ui/apps",
       "//chrome/browser/ui/tab_sharing",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/web_applications:test_support",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/browser/web_applications/isolated_web_apps/test:test_support",
       "//chrome/test/base:tracing",
@@ -570,6 +589,25 @@ source_set("unit_tests") {
     ]
   }
 
+  if (is_linux && use_dbus) {
+    sources += [ "camera_portal_focus_notifier_linux_unittest.cc" ]
+    deps += [
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/browser_window/test:test_support",
+      "//chrome/test/views",
+      "//media/capture:capture_switches",
+      "//testing/gmock",
+      "//ui/base",
+      "//ui/base/mojom:ui_base_types",
+      "//ui/gfx/geometry",
+      "//ui/views",
+    ]
+    if (rtc_use_pipewire) {
+      configs +=
+          [ "//third_party/webrtc/modules/desktop_capture:pipewire_config" ]
+    }
+  }
+
   # These media/webrtc unit tests are desktop-only (!is_android);
   # test_stats_dictionary additionally lives in the desktop-only browser-test
   # base.
@@ -599,6 +637,8 @@ source_set("unit_tests") {
     deps += [
       ":test_support",
       ":webrtc_browser_tests_base",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
+      "//chrome/browser/ui/webui/top_chrome",
       "//chrome/browser/web_applications:web_app_test",
       "//chrome/browser/web_applications:web_applications_test_support",
     ]

@@ -29,6 +29,8 @@ source_set("coordinator") {
     "manual_fill_password_coordinator.mm",
   ]
   deps = [
+    "//base",
+    "//components/autofill/core/common/mojom:mojo_types_shared",
     "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:util",
     "//components/autofill/ios/form_util",
@@ -74,18 +76,26 @@ source_set("coordinator") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "manual_fill_address_mediator_unittest.mm",
     "manual_fill_all_password_coordinator_unittest.mm",
     "manual_fill_card_mediator_unittest.mm",
     "manual_fill_credentials_mediator_unittest.mm",
   ]
   deps = [
     ":coordinator",
+    "//base",
+    "//base/test:test_support",
     "//components/affiliations/core/browser:test_support",
+    "//components/autofill/core/browser:test_support",
+    "//components/autofill/core/common/mojom:mojo_types_shared",
+    "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:test_support",
     "//components/password_manager/core/browser:test_support",
+    "//components/strings",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/affiliations/model",
     "//ios/chrome/browser/autofill/manual_fill/model",
+    "//ios/chrome/browser/autofill/manual_fill/public",
     "//ios/chrome/browser/autofill/manual_fill/ui",
     "//ios/chrome/browser/autofill/model",
     "//ios/chrome/browser/autofill/ui_bundled:coordinator",
@@ -93,6 +103,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/device_reauth/model:fake_reauthentication_service",
     "//ios/chrome/browser/favicon/model",
     "//ios/chrome/browser/infobars/model",
+    "//ios/chrome/browser/net/model:crurl",
     "//ios/chrome/browser/passwords/model:store_factory",
     "//ios/chrome/browser/settings/ui_bundled/password:common",
     "//ios/chrome/browser/settings/ui_bundled/password/reauthentication:reauthentication_ui",
@@ -105,6 +116,8 @@ source_set("unit_tests") {
     "//ios/chrome/common/ui/reauthentication:fake_reauthentication_module",
     "//ios/chrome/test:test_support",
     "//ios/web/public/test",
+    "//testing/gtest",
     "//third_party/ocmock",
+    "//ui/base",
   ]
 }

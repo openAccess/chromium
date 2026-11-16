@@ -28,7 +28,8 @@
 
 DefaultBrowserModalUIConfig::DefaultBrowserModalUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
-                                  chrome::kChromeUIDefaultBrowserModalHost) {}
+                                  chrome::kChromeUIDefaultBrowserModalHost,
+                                  ProcessModel::kDedicatedProcess) {}
 
 DefaultBrowserModalUIConfig::~DefaultBrowserModalUIConfig() = default;
 
@@ -55,10 +56,13 @@ DefaultBrowserModalUI::DefaultBrowserModalUI(content::WebUI* web_ui)
     is_modal = value == "true";
   }
 
-  Profile* profile = Profile::FromWebUI(web_ui);
+  // The data sources are added to the profile of the WebUI, which is shared by
+  // the windows of all profiles in TopChromeWebUIProfile.
+  Profile* webui_profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      profile, chrome::kChromeUIDefaultBrowserModalHost);
-  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
+      webui_profile, chrome::kChromeUIDefaultBrowserModalHost);
+  content::URLDataSource::Add(webui_profile,
+                              std::make_unique<ThemeSource>(webui_profile));
 
   webui::SetupWebUIDataSource(
       source, kDefaultBrowserModalResources,
@@ -91,8 +95,13 @@ DefaultBrowserModalUI::DefaultBrowserModalUI(content::WebUI* web_ui)
 
   source->AddBoolean("useSettingsIllustration", use_settings_illustration);
   source->AddBoolean("isModal", is_modal);
-  source->AddBoolean("isStickyModal",
-                     default_browser::IsDefaultBrowserModalSticky());
+  // Only query the sticky modal experiment for the real modal dialog. Pages
+  // opened directly (e.g. by navigating to the URL) must not bind the Mojo
+  // interface, which is only registered when the modal prompt surface is
+  // enabled, nor enroll the client in the experiment.
+  source->AddBoolean(
+      "isStickyModal",
+      is_modal && default_browser::IsDefaultBrowserModalSticky());
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(DefaultBrowserModalUI)

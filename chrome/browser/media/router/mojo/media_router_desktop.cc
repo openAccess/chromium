@@ -47,11 +47,13 @@
 #include "components/openscreen_platform/socket_factory.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/media_session.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "services/media_session/public/mojom/media_session.mojom.h"
 #include "services/network/public/mojom/socket_factory.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -186,6 +188,36 @@ void MediaRouterDesktop::CreateRoute(const MediaSource::Id& source_id,
     connector->ResetRemotingPermission();
 
     MediaRouterMojoMetrics::RecordTabMirroringMetrics(web_contents);
+  } else if (source.IsRemotePlaybackSource() && web_contents) {
+    if (CastRemotingConnector* const connector =
+            CastRemotingConnector::Get(web_contents)) {
+      std::optional<url::Origin> authorized_origin;
+      if (!origin.opaque()) {
+        authorized_origin = origin;
+      } else if (auto* media_session =
+                     content::MediaSession::GetIfExists(web_contents)) {
+        auto info = media_session->GetMediaSessionInfoSync();
+        if (info && info->is_controllable && media_session->GetRoutedFrame()) {
+          authorized_origin =
+              media_session->GetRoutedFrame()->GetLastCommittedOrigin();
+        }
+      }
+      connector->GrantPermissionForRemotePlayback(std::move(authorized_origin));
+      callback = base::BindOnce(
+          [](base::WeakPtr<content::WebContents> web_contents,
+             MediaRouteResponseCallback callback,
+             mojom::RoutePresentationConnectionPtr connection,
+             const RouteRequestResult& result) {
+            if (!result.route() && web_contents) {
+              if (CastRemotingConnector* const connector =
+                      CastRemotingConnector::Get(web_contents.get())) {
+                connector->ResetRemotingPermission();
+              }
+            }
+            std::move(callback).Run(std::move(connection), result);
+          },
+          web_contents->GetWeakPtr(), std::move(callback));
+    }
   }
 
   if (IsSiteInitiatedMirroringSource(source_id)) {

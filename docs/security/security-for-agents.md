@@ -4,6 +4,10 @@ This document describes the fundamental security architecture and assumptions of
 Chromium, which is called the "security model" of Chromium. It also describes
 common types of violations of that model, which are attacks against Chromium.
 
+Before auditing or filing a bug, check for a `SECURITY.md` file in the target
+directory and its parent directories. Component `SECURITY.md` files take
+precedence over this document.
+
 Some parts of this document make reference to V8 as well. V8 can be built as a
 standalone tool called "d8", which is useful for finding or demonstrating some
 kinds of attacks.
@@ -21,7 +25,9 @@ utility processes. Each process except the browser process is inside a
 "sandbox", which uses primitives supplied by the OS to constrain what that
 process can do. The sandbox is different for each type of process. Renderer and
 utility processes have the strongest sandbox, the network and GPU processes have
-weaker sandboxes, and the browser process has no sandbox at all.
+weaker sandboxes, and the browser process has no sandbox at all. Some sandboxed
+service processes (such as On-Device Model and Tracing) are shared across sites.
+Compromising them can leak cross-site data.
 
 Communication between processes happens over an IPC system named Mojo. Mojo
 sends messages between processes, with serialization and deserialization at
@@ -39,6 +45,17 @@ restricted is documented in
 designed to hold even if an attacker can run arbitrary native code in a renderer
 process (after exploiting a separate bug).  For more information about Site
 Isolation please read `//content/SECURITY.md`.
+
+Only assume an attacker can compromise a process that loads their content (such
+as a web renderer or `chrome-untrusted://` renderer). Do not assume compromise
+of spare renderers, error pages, `chrome://` WebUI, DevTools, special origins
+(such as the Chrome Web Store), component extensions, or 3P default search
+engine processes.
+
+`content::StoragePartition` is a browser-enforced security boundary. By
+contrast, Privacy Sandbox storage partitioning, Fenced Frames, Third-Party
+Cookie Blocking, and `:visited` top-level site partitioning are privacy
+features, not process-isolated boundaries.
 
 If `compromised-renderers.md` documents that a compromised renderer cannot do
 something (e.g., spoof the `Sec-Fetch-Site` or `Origin` HTTP request headers),
@@ -159,7 +176,9 @@ To simulate a compromised renderer process, use the MojoJS feature by passing
 from JavaScript. If that does not work for some reason, the proof of concept
 **may** be in the form of a patch intended to apply to the Chromium source tree.
 If so, this patch must modify code that is only executed in the renderer, to
-simulate a compromised renderer process.
+simulate a compromised renderer process. Never patch browser process code, add
+test-only observers or delegates, or simulate native OS nested loops with
+`base::RunLoop`.
 
 Anything that does not lead to one of these consequences is almost certainly not
 a valid proof of concept for an escalated code execution bug.
@@ -176,11 +195,12 @@ generally take two forms:
   Webassembly program to be compiled into code which corrupts memory when run
 
 For V8, code compiled from attacker-supplied Javascript or Webassembly is
-executed inside a "heap sandbox", which confines memory reads and writes
-performed by that compiled code to a certain region. Bugs which allow for
-reading or writing memory outside the heap sandbox are "heap sandbox escapes"
-and are very valuable bugs. Bugs which allow for reading or writing memory
-inside the heap sandbox are less valuable but still valuable.
+executed inside a "heap sandbox", which confines memory writes performed by that
+compiled code to a certain region. Bugs that allow writing memory outside the
+heap sandbox are "heap sandbox escapes" and must reproduce with
+`--run-as-sandbox-security-poc`. Out-of-sandbox read-only access is not a
+security bug. Bugs that corrupt memory inside the heap sandbox are also valid
+security bugs.
 
 For this kind of bug, the proof of concept must either:
 
@@ -193,11 +213,14 @@ For this kind of bug, the proof of concept must either:
 
 Not all DCHECK failures in V8 or d8 are security bugs, but many are, so to be
 conservative we assume that all of them are security bugs until we are confident
-they are not.
+they are not. For V8 heap sandbox escapes, DCHECK failures are ignored unless
+release execution writes outside the sandbox.
 
-Any proof of concept that uses d8 **must** use `--run-as-security-poc`, in
+Any proof of concept that uses d8 **must** use `--run-as-security-poc` (or
+`--run-as-sandbox-security-poc` for sandbox escapes), in
 addition to any other command-line arguments it needs. Proofs of concept that do
-not work with `--run-as-security-poc` are not security bugs.
+not work with these flags are not security bugs. V8 Inspector bugs must
+reproduce in `inspector-test`, not `d8 --enable-inspector`.
 
 ### Cross-Site Bugs
 
@@ -236,7 +259,7 @@ proof of concept.
 There are some common kinds of reports which are **not** security bugs in
 Chromium:
 
-* CHECK failures
+* CHECK, SBXCHECK, UNREACHABLE, or `mojo::ReportBadMessage()` failures
 * DCHECK failures outside V8
 * Out-of-bounds accesses of STL containers or base::span via operator[]
 * Null pointer reads and writes with small offsets (<= 32 KiB)
@@ -252,15 +275,27 @@ Chromium:
 * Bugs in other apps reachable via Intents or external URL handlers from
   Chromium
 * Bugs in dependencies of Chromium which are not reachable in Chromium itself
-* Bugs in tests
+* Bugs in tests, or PoCs that patch browser code, use hypothetical observers,
+  or call internal C++ methods directly
 * Causing AI features in Chromium to emit misleading or harmful output by
   entering a crafted prompt
-* Bugs that use an unsupported flag or feature, including:
+* Bugs that use an unsupported, developer-only, or experimental flag or feature,
+  including:
     * `--single-process`
     * any flag whose name contains `unsafe`
     * SwiftShader
-* Bugs that use d8, but don't reproduce with `--run-as-security-poc` added to
-  the command line.
+* Bugs that use d8, but don't reproduce with `--run-as-security-poc` (or
+  `--run-as-sandbox-security-poc`) added to the command line.
+* V8 heap sandbox read-only bypasses, `_Hole` sentinel leaks without an exploit,
+  unsupported `%` runtime calls, or `d8 --enable-inspector` bugs.
+* Corrupting or ASAN-poisoning `ipcz` shared memory (`NodeLinkMemory`) without
+  corrupting peer private memory.
+* Missing browser-process user activation checks, or renderer-side Permissions
+  Policy trust and missing worker Permissions Policy checks.
+* A compromised renderer bypassing intra-process privacy features (Fenced
+  Frames, Storage Partitioning, 3PCB, `:visited` top-level site, Client Hints),
+  page lifecycle states (BFCache, Prerender), or Safe Browsing.
+* Accessing a Blob when its unguessable UUID is already known.
 * Bugs that require an attacker to have created or dropped files onto the system
   in advance
 * Bugs that require physical access of any kind
@@ -277,6 +312,17 @@ Chromium:
   subvert browser-process file operations. Browser-process accesses to
   `DIR_USER_DATA` are not a security boundary against processes that can write
   to `DIR_USER_DATA`.
+* Attacks that rely on a compromised WebNN model compilation process on macOS
+  (whose sandbox, `sandbox/policy/mac/webnn_model_compilation.sb`, permits broad
+  access to the user temporary directory, `DARWIN_USER_TEMP_DIR`, as required by
+  CoreML model compilation; see
+  [crbug.com/562017300](https://crbug.com/562017300) and Apple Feedback
+  FB24789855) to modify files, plant symlinks or FIFOs, or subvert file
+  operations in `DARWIN_USER_TEMP_DIR`. File operations in
+  `DARWIN_USER_TEMP_DIR` are not a security boundary against the WebNN compiler
+  process. The single-purpose WebNN compilation process was created
+  specifically to move CoreML model compilation into a minimal attack surface
+  and remove this broad temporary directory access from the GPU process.
 
 These are not security bugs, regardless of how easy they are to trigger. Under
 no circumstances is something matching an entry in this list a security bug.
@@ -285,6 +331,12 @@ no circumstances is something matching an entry in this list a security bug.
 
 When reporting a bug:
 
+* **You must attach a "repro.json" file to every report. This is critical:
+  without it, your report cannot be reproduced automatically.** It tells the
+  reproduction system how to reproduce your bug: environment, build, flags, and
+  which attached files to use. Follow the format in
+  [`repro_config.md`](../../agents/skills/vuln-report-check/references/repro_config.md)
+  exactly.
 * Do not log _anything_ as part of your proof of concept. If your bug is
   legitimate, it must have external, observable consequences as described above.
   Log messages can be misleading, and we will ignore them when assessing your
@@ -356,7 +408,7 @@ When reporting a bug:
       `poc.html`:
       `ln -s <chromium-out-dir>/gen gen`.
     * For bugs that simulate a compromised renderer with a source patch, a
-      single unified diff called "poc.patch". This patch must only change code
+      single unified diff called "patch.diff". This patch must only change code
       that runs in the renderer.
     * For bugs that have a demonstration video, a single mp4 file called
       "poc.mp4".
@@ -368,7 +420,28 @@ When reporting a bug:
     * Identify which Chromium commit introduced the bug
 
 In general, a shorter bug report is better. Bug reports should be as short as
-possible, but no shorter.
+possible, but no shorter. The report text must be at most 8,000 characters; put
+long logs and stack traces in attached files instead.
+
+### Before submitting
+
+Run the [`vuln-report-check`](../../agents/skills/vuln-report-check/SKILL.md)
+skill on your draft report and every file you plan to attach. Fix every "Must
+fix" finding before you submit.
+
+If you cannot load skills, run the checker directly (Python 3.10 or later, no
+other dependencies):
+
+```bash
+python3 agents/skills/vuln-report-check/check.py --report report.md \
+    repro.json poc.html
+```
+
+Without a Chromium checkout, download the skill folder from
+https://chromium.googlesource.com/chromium/src/+archive/refs/heads/main/agents/skills/vuln-report-check.tar.gz.
+
+Do not paste the checker output into the report. Passing the checks speeds up
+triage but does not guarantee automatic reproduction.
 
 ## Further Reading
 

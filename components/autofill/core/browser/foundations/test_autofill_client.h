@@ -18,6 +18,7 @@
 #include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
@@ -43,7 +44,9 @@
 #include "components/autofill/core/browser/integrators/at_memory/at_memory_query_service.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/mock_autofill_ai_manager.h"
 #include "components/autofill/core/browser/integrators/compose/autofill_compose_delegate.h"
+#include "components/autofill/core/browser/integrators/custom_form_controls/custom_form_control_script_index.h"
 #include "components/autofill/core/browser/integrators/identity_credential/identity_credential_delegate.h"
+#include "components/autofill/core/browser/integrators/one_time_tokens/otp_coordinator.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_field_detector.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_metrics_tracker.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_phish_guard_delegate.h"
@@ -55,7 +58,6 @@
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/ml_model/field_classification_model_handler.h"
-#include "components/autofill/core/browser/network/autofill_ai/mock_wallet_pass_access_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/permissions/autofill_ai/autofill_ai_permission_util.h"
 #include "components/autofill/core/browser/single_field_fillers/autocomplete/mock_autocomplete_history_manager.h"
@@ -132,7 +134,9 @@ class TestAutofillClientTemplate : public T {
     return weak_ptr_factory_.GetWeakPtr();
   }
 
-  const std::string& GetAppLocale() const override { return app_locale_; }
+  const base::i18n::LanguageTag& GetAppLocale() const override {
+    return app_locale_;
+  }
 
   bool IsOffTheRecord() const override { return is_off_the_record_; }
 
@@ -176,10 +180,6 @@ class TestAutofillClientTemplate : public T {
 
   EntityDataManager* GetEntityDataManager() override {
     return entity_data_manager_.get();
-  }
-
-  WalletPassAccessManager* GetWalletPassAccessManager() override {
-    return wallet_pass_access_manager_.get();
   }
 
   MockAutofillOptimizationGuideDecider* GetAutofillOptimizationGuideDecider()
@@ -649,6 +649,7 @@ class TestAutofillClientTemplate : public T {
         "foo@gmail.com", signin::ConsentLevel::kSignin);
     SetCanUseModelExecutionFeatures(true);
     SetSupportsWalletPrivatePassesInAutofill(true);
+    SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(false);
     SetVariationConfigCountryCode(GeoIpCountryCode("US"));
     return SetAutofillAiOptInStatus(*this, AutofillAiOptInStatus::kOptedIn);
   }
@@ -677,14 +678,34 @@ class TestAutofillClientTemplate : public T {
     signin::UpdateAccountInfoForAccount(GetIdentityManager(), account_info);
   }
 
+  // Updates whether the currently signed in primary account must show equally
+  // weighted buttons for private passes in Autofill.
+  void SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(
+      bool must_show) {
+    AccountInfo account_info = GetIdentityManager()->FindExtendedAccountInfo(
+        GetIdentityManager()->GetPrimaryAccountInfo(
+            signin::ConsentLevel::kSignin));
+    CHECK(!account_info.GetAccountId().empty());
+    AccountCapabilitiesTestMutator(&account_info)
+        .set_must_show_equally_weighted_buttons_for_private_passes_in_autofill(
+            must_show);
+    signin::UpdateAccountInfoForAccount(GetIdentityManager(), account_info);
+  }
+
+  // Reseeds the primary account's extended info so all account capabilities
+  // are reset to `signin::Tribool::kUnknown`.
+  void ResetAccountCapabilities() {
+    CoreAccountInfo account_info = GetIdentityManager()->GetPrimaryAccountInfo(
+        signin::ConsentLevel::kSignin);
+    CHECK(!account_info.IsEmpty());
+    identity_test_environment().EnableRemovalOfExtendedAccountInfo();
+    identity_test_environment().RemoveRefreshTokenForPrimaryAccount();
+    identity_test_environment().MakeAccountAvailable(account_info.email);
+  }
+
   void set_entity_data_manager(
       std::unique_ptr<EntityDataManager> entity_data_manager) {
     entity_data_manager_ = std::move(entity_data_manager);
-  }
-
-  void set_wallet_pass_access_manager(
-      std::unique_ptr<WalletPassAccessManager> wallet_pass_access_manager) {
-    wallet_pass_access_manager_ = std::move(wallet_pass_access_manager);
   }
 
   void set_payments_autofill_client(
@@ -729,7 +750,7 @@ class TestAutofillClientTemplate : public T {
     format_for_large_keyboard_accessory_ = format_for_large_keyboard_accessory;
   }
 
-  void set_app_locale(std::string app_locale) {
+  void set_app_locale(base::i18n::LanguageTag app_locale) {
     app_locale_ = std::move(app_locale);
   }
 
@@ -795,6 +816,7 @@ class TestAutofillClientTemplate : public T {
 
   void set_sms_otp_service(
       std::unique_ptr<one_time_tokens::SmsOtpService> sms_otp_service) {
+    otp_coordinator_.reset();
     injected_sms_otp_service_ = std::move(sms_otp_service);
   }
 
@@ -805,6 +827,7 @@ class TestAutofillClientTemplate : public T {
 
   void set_gmail_otp_service(
       std::unique_ptr<one_time_tokens::GmailOtpService> gmail_otp_service) {
+    otp_coordinator_.reset();
     injected_gmail_otp_service_ = std::move(gmail_otp_service);
   }
 
@@ -834,6 +857,27 @@ class TestAutofillClientTemplate : public T {
   void set_otp_field_detector(
       std::unique_ptr<OtpFieldDetector> otp_field_detector) {
     otp_field_detector_ = std::move(otp_field_detector);
+  }
+
+  void set_otp_coordinator(std::unique_ptr<OtpCoordinator> otp_coordinator) {
+    otp_coordinator_ = std::move(otp_coordinator);
+  }
+
+  OtpCoordinator* GetOtpCoordinator() override {
+    if (!otp_coordinator_ &&
+        base::FeatureList::IsEnabled(features::kAutofillOtpCoordinator)) {
+      otp_coordinator_ = std::make_unique<OtpCoordinator>(this);
+    }
+    return otp_coordinator_.get();
+  }
+
+  CustomFormControlScriptIndex* GetCustomFormControlScriptIndex() {
+    return &custom_form_control_script_index_;
+  }
+
+  const CustomFormControlScriptIndex* GetCustomFormControlScriptIndex()
+      const override {
+    return &custom_form_control_script_index_;
   }
 
  private:
@@ -904,7 +948,6 @@ class TestAutofillClientTemplate : public T {
           std::make_unique<payments::TestPaymentsAutofillClient>(this);
   std::unique_ptr<SingleFieldFillRouter> single_field_fill_router_;
   std::unique_ptr<FormDataImporter> form_data_importer_;
-  std::unique_ptr<WalletPassAccessManager> wallet_pass_access_manager_;
   // Must be destroyed before `prefs_` because `AtMemoryPersistedStateManager`
   // observes and references `prefs_`.
   std::unique_ptr<AtMemoryManager> at_memory_manager_;
@@ -914,7 +957,8 @@ class TestAutofillClientTemplate : public T {
 
   bool format_for_large_keyboard_accessory_ = false;
 
-  std::string app_locale_ = "en-US";
+  base::i18n::LanguageTag app_locale_ =
+      base::i18n::GetKnownLanguageTag("en-US");
 
   bool is_off_the_record_ = false;
 
@@ -983,6 +1027,8 @@ class TestAutofillClientTemplate : public T {
   std::unique_ptr<TestVotesUploader> votes_uploader_;
 
   raw_ptr<affiliations::AffiliationService> affiliation_service_ = nullptr;
+  std::unique_ptr<OtpCoordinator> otp_coordinator_;
+  CustomFormControlScriptIndex custom_form_control_script_index_;
 
   base::WeakPtrFactory<TestAutofillClientTemplate> weak_ptr_factory_{this};
 };

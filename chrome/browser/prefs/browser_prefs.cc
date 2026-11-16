@@ -12,7 +12,9 @@
 #include "ash/constants/ash_login_pref_names.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/functional/bind.h"
 #include "base/json/values_util.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "build/android_buildflags.h"
@@ -123,7 +125,6 @@
 #include "components/contextual_tasks/public/prefs.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
 #include "components/device_signals/core/browser/pref_names.h"  // nogncheck due to crbug.com/40147906
-#include "components/dom_distiller/core/distilled_page_prefs.h"
 #include "components/domain_reliability/domain_reliability_prefs.h"
 #include "components/embedder_support/origin_trials/origin_trial_prefs.h"
 #include "components/enterprise/browser/groups/groups_prefs.h"
@@ -225,6 +226,7 @@
 #include "components/variations/service/variations_service.h"
 #include "components/visited_url_ranking/internal/url_grouping/group_suggestions_service_impl.h"
 #include "components/wallet/core/common/wallet_prefs.h"
+#include "components/web_distiller/core/distilled_page_prefs.h"
 #include "components/webui/chrome_urls/pref_names.h"
 #include "components/webui/flags/pref_service_flags_storage.h"
 #include "content/public/browser/render_process_host.h"
@@ -323,7 +325,7 @@
 #include "chrome/browser/search_engine_choice/search_engine_choice_dialog_service.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/speech/speech_recognition_small_expert_model_installer.h"
-#include "chrome/browser/task_manager/task_manager_interface.h"
+#include "chrome/browser/task_manager/task_manager_prefs.h"
 #include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/hats/hats_service_desktop.h"
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_prefs.h"
@@ -338,6 +340,7 @@
 #include "chrome/browser/ui/webui/tab_search/tab_search_prefs.h"
 #include "chrome/browser/upgrade_detector/upgrade_detector.h"
 #include "chrome/browser/user_education/browser_user_education_storage_service.h"
+#include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_policy_manager.h"
 #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
 #include "components/headless/policy/headless_mode_prefs.h"  // nogncheck crbug.com/40147906
 #include "components/live_caption/live_caption_controller.h"
@@ -1209,6 +1212,20 @@ inline constexpr char kDeprecatedNtpCustomBackgroundDictDoNotUse[] =
 inline constexpr char kTabsFromOtherDevicesAutoPinnedMigration[] =
     "toolbar.tabs_from_other_devices_auto_pinned_migration";
 
+// Deprecated 11/2026.
+inline constexpr char kBundledSettingsCheckedMigrateUserToEnhancedBundle[] =
+    "safebrowsing.bundled_settings.checked_migrate_user_to_enhanced_bundle";
+
+// Deprecated 11/2026.
+inline constexpr char kGlicPromotionSourceCohort[] =
+    "glic.promotion_source_cohort";
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Deprecated 11/2026.
+inline constexpr char kSuggestedContentEnabled[] =
+    "settings.suggested_content_enabled";
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 // Register local state used only for migration (clearing or moving to a new
 // key).
 void RegisterLocalStatePrefsForMigration(PrefRegistrySimple* registry) {
@@ -1740,7 +1757,16 @@ void RegisterProfilePrefsForMigration(
   registry->RegisterBooleanPref(kFingerprintUnlockFeatureNotificationShown,
                                 false);
   registry->RegisterBooleanPref(kShowArcSettingsOnSessionStart, false);
+  // Deprecated 11/2026.
+  registry->RegisterBooleanPref(kSuggestedContentEnabled, true);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+  // Deprecated 11/2026.
+  registry->RegisterBooleanPref(
+      kBundledSettingsCheckedMigrateUserToEnhancedBundle, false);
+
+  // Deprecated 11/2026.
+  registry->RegisterStringPref(kGlicPromotionSourceCohort, std::string());
 }
 
 }  // namespace
@@ -1876,7 +1902,7 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   speech::SpeechRecognitionSmallExpertModelInstaller::RegisterLocalStatePrefs(
       registry);
   StartupBrowserCreator::RegisterLocalStatePrefs(registry);
-  task_manager::TaskManagerInterface::RegisterPrefs(registry);
+  task_manager::RegisterPrefs(registry);
   UpgradeDetector::RegisterPrefs(registry);
   registry->RegisterIntegerPref(prefs::kLastWhatsNewVersion, 0);
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -1985,10 +2011,6 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   AppShimRegistry::Get()->RegisterLocalPrefs(registry);
   GlassFrameService::RegisterLocalStatePrefs(registry);
 
-  // The default value is not signicant as this preference is only consulted if
-  // it is explicitly set by an enterprise policy.
-  registry->RegisterBooleanPref(prefs::kWebAppsUseAdHocCodeSigningForAppShims,
-                                false);
   registry->RegisterBooleanPref(prefs::kUpdateOnZeroWindowEnabled, true);
 #endif
 
@@ -2128,7 +2150,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
 #endif
   enterprise_promotion::RegisterProfilePrefs(registry);
   enterprise_reporting::RegisterProfilePrefs(registry);
-  dom_distiller::DistilledPagePrefs::RegisterProfilePrefs(registry);
+  web_distiller::DistilledPagePrefs::RegisterProfilePrefs(registry);
   DownloadPrefs::RegisterProfilePrefs(registry);
   geic::prefs::RegisterProfilePrefs(registry);
   glic::prefs::RegisterProfilePrefs(registry);
@@ -2363,6 +2385,7 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   tab_groups::saved_tab_groups::prefs::RegisterProfilePrefs(registry);
   tab_search_prefs::RegisterProfilePrefs(registry);
   toolbar::RegisterProfilePrefs(registry);
+  web_app::IsolatedWebAppPolicyManager::RegisterProfilePrefs(registry);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_LENS_OVERLAY_BACKEND)
@@ -2386,10 +2409,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   policy::NetworkAnnotationBlocklistHandler::RegisterPrefs(registry);
   quickoffice::RegisterProfilePrefs(registry);
   registry->RegisterBooleanPref(chromeos::prefs::kAutoSignOutEnabled, false);
-  registry->RegisterBooleanPref(prefs::kDeskAPIThirdPartyAccessEnabled, false);
+  registry->RegisterBooleanPref(ash::prefs::kDeskAPIThirdPartyAccessEnabled,
+                                false);
   registry->RegisterBooleanPref(prefs::kDeskAPIDeskSaveAndShareEnabled, false);
-  registry->RegisterListPref(prefs::kDeskAPIThirdPartyAllowlist);
-  registry->RegisterBooleanPref(prefs::kInsightsExtensionEnabled, false);
+  registry->RegisterListPref(ash::prefs::kDeskAPIThirdPartyAllowlist);
+  registry->RegisterBooleanPref(ash::prefs::kInsightsExtensionEnabled, false);
   registry->RegisterBooleanPref(
       ash::prefs::kAdminInstalledChromeAppsForceAllowed, false);
   registry->RegisterBooleanPref(ash::prefs::kEssentialSearchEnabled, false);
@@ -2843,13 +2867,25 @@ void MigrateObsoleteProfilePrefs(PrefService* profile_prefs,
   profile_prefs->ClearPref(kObsoletePasswordsUseUPMLocalAndSeparateStores);
   profile_prefs->ClearPref(kObsoleteEmptyProfileStoreLoginDatabase);
   profile_prefs->ClearPref(kObsoleteUpmAutoExportCsvNeedsDeletion);
-  base::DeleteFile(profile_path.Append(FILE_PATH_LITERAL("Login Data")));
-  base::DeleteFile(
-      profile_path.Append(FILE_PATH_LITERAL("Login Data For Account")));
-  base::DeleteFile(
-      profile_path.Append(FILE_PATH_LITERAL("Login Data-journal")));
-  base::DeleteFile(
-      profile_path.Append(FILE_PATH_LITERAL("Login Data For Account-journal")));
+  // Blocking is disallowed on the UI thread after browser startup, and a
+  // profile can be loaded after that (e.g. a second profile), so delete the
+  // obsolete files in the background.
+  base::ThreadPool::PostTask(
+      FROM_HERE,
+      {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
+       base::TaskShutdownBehavior::CONTINUE_ON_SHUTDOWN},
+      base::BindOnce(
+          [](const base::FilePath& profile_path) {
+            base::DeleteFile(
+                profile_path.Append(FILE_PATH_LITERAL("Login Data")));
+            base::DeleteFile(profile_path.Append(
+                FILE_PATH_LITERAL("Login Data For Account")));
+            base::DeleteFile(
+                profile_path.Append(FILE_PATH_LITERAL("Login Data-journal")));
+            base::DeleteFile(profile_path.Append(
+                FILE_PATH_LITERAL("Login Data For Account-journal")));
+          },
+          profile_path));
 #endif  // BUILDFLAG(IS_ANDROID)
 
   // Added 09/2025.
@@ -3218,7 +3254,15 @@ void MigrateObsoleteProfilePrefs(PrefService* profile_prefs,
   profile_prefs->ClearPref(kPinUnlockFeatureNotificationShown);
   profile_prefs->ClearPref(kFingerprintUnlockFeatureNotificationShown);
   profile_prefs->ClearPref(kShowArcSettingsOnSessionStart);
+  // Added 11/2026.
+  profile_prefs->ClearPref(kSuggestedContentEnabled);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+  // Added 11/2026.
+  profile_prefs->ClearPref(kBundledSettingsCheckedMigrateUserToEnhancedBundle);
+
+  // Added 11/2026.
+  profile_prefs->ClearPref(kGlicPromotionSourceCohort);
 
   // Please don't delete the following line. It is used by PRESUBMIT.py.
   // END_MIGRATE_OBSOLETE_PROFILE_PREFS

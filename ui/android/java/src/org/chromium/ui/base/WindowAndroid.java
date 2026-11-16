@@ -43,6 +43,7 @@ import androidx.annotation.VisibleForTesting;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
@@ -76,6 +77,7 @@ import org.chromium.ui.gfx.OverlayTransform;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogManagerBridge.NativeModalDialogManagerBridge;
 import org.chromium.ui.permissions.AndroidPermissionDelegate;
 import org.chromium.ui.permissions.PermissionCallback;
 import org.chromium.ui.widget.Toast;
@@ -277,9 +279,11 @@ public class WindowAndroid
          * Called before a keyboard event is dispatched to the page.
          *
          * @param event The KeyEvent to handle.
-         * @return true if the event was handled and should be consumed.
+         * @return The {@link KeyEventPreHandleResult} indicating whether the event was handled, not
+         *     handled, or is a non-reserved shortcut.
          */
-        boolean preHandleKeyboardEvent(KeyEvent event);
+        @KeyEventPreHandleResult
+        int preHandleKeyboardEvent(KeyEvent event);
 
         /**
          * Called to handle a keyboard event if it wasn't handled by the page.
@@ -1166,10 +1170,10 @@ public class WindowAndroid
     }
 
     @CalledByNative
-    private long getNativeModalDialogManagerBridge() {
+    private @Nullable JniPtr<NativeModalDialogManagerBridge> getNativeModalDialogManagerBridge() {
         ModalDialogManager manager = getModalDialogManager();
         if (manager == null) {
-            return 0;
+            return null;
         }
         return manager.getOrCreateNativeBridge();
     }

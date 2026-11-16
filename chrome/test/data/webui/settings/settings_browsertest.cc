@@ -199,6 +199,10 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, DefaultBrowser) {
 }
 #endif
 
+IN_PROC_BROWSER_TEST_F(SettingsTest, DeviceTabVisibilityPage) {
+  RunTest("settings/device_tab_visibility_page_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(SettingsTest, DoNotTrackToggle) {
   RunTest("settings/do_not_track_toggle_test.js", "mocha.run()");
 }
@@ -539,6 +543,11 @@ IN_PROC_BROWSER_TEST_F(SettingsGlicHotkeyLocalScopeEnabledTest,
 IN_PROC_BROWSER_TEST_F(SettingsTest, GlicSubpageHotkeyLocalScopeDisabled) {
   RunTest("settings/glic_subpage_test.js",
           "runMochaSuite('GlicSubpage HotkeyLocalScopeDisabled')");
+}
+
+IN_PROC_BROWSER_TEST_F(SettingsTest, GlicSubpageDevicePolicyToggle) {
+  RunTest("settings/glic_subpage_test.js",
+          "runMochaSuite('GlicSubpage DevicePolicyToggle')");
 }
 
 IN_PROC_BROWSER_TEST_F(SettingsTest, GlicLoginPermissionsPage) {
@@ -1259,6 +1268,10 @@ IN_PROC_BROWSER_TEST_F(SettingsTest, SettingsRadioGroup) {
   RunTest("settings/settings_radio_group_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(SettingsTest, SettingsSearchDropdown) {
+  RunTest("settings/settings_search_dropdown_test.js", "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(SettingsTest, SettingsSearchManager) {
   RunTest("settings/settings_search_manager_test.js", "mocha.run()");
 }
@@ -1445,14 +1458,8 @@ IN_PROC_BROWSER_TEST_F(SettingsAboutPageTest, OfficialBuild) {
 
 using SettingsAllSitesTest = SettingsBrowserTest;
 
-IN_PROC_BROWSER_TEST_F(SettingsAllSitesTest, EnableRelatedWebsiteSets) {
-  RunTest("settings/all_sites_test.js",
-          "runMochaSuite('EnableRelatedWebsiteSets')");
-}
-
-IN_PROC_BROWSER_TEST_F(SettingsAllSitesTest, WithoutRelatedWebsiteSetsData) {
-  RunTest("settings/all_sites_test.js",
-          "runMochaSuite('WithoutRelatedWebsiteSetsData')");
+IN_PROC_BROWSER_TEST_F(SettingsAllSitesTest, AllSites) {
+  RunTest("settings/all_sites_test.js", "runMochaSuite('AllSites')");
 }
 
 IN_PROC_BROWSER_TEST_F(SettingsTest, PrivacyGuidePromoVisibility) {
@@ -1498,12 +1505,6 @@ IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, ExceptionsList) {
 
 IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest, UniversalOptOut) {
   RunTest("settings/cookies_page_test.js", "runMochaSuite('UniversalOptOut')");
-}
-
-IN_PROC_BROWSER_TEST_F(SettingsCookiesPageTest,
-                       CookiesPageSettingsRefresh2026Test) {
-  RunTest("settings/cookies_page_test.js",
-          "runMochaSuite('CookiesPageSettingsRefresh2026Test')");
 }
 
 // Test with --enable-pixel-output-in-tests enabled, required by fingerprint
@@ -1736,10 +1737,27 @@ IN_PROC_BROWSER_TEST_F(SettingsGeolocationPageTest, GeolocationPage) {
           "runMochaSuite('GeolocationPage')");
 }
 
-class JavascriptOptimizerPageTest : public SettingsBrowserTest {};
+class JavascriptOptimizerPageTest : public SettingsBrowserTest {
+ public:
+  JavascriptOptimizerPageTest() {
+    scoped_feature_list_.InitAndDisableFeature(
+        content_settings::features::kBlockV8OptimizerOnUnfamiliarSites);
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
 
 IN_PROC_BROWSER_TEST_F(JavascriptOptimizerPageTest, JavascriptOptimizerPage) {
   RunTest("settings/v8_page_test.js", "runMochaSuite('V8Page')");
+}
+
+// TODO(crbug.com/570186404): Remove once kBlockV8OptimizerOnUnfamiliarSites is
+// removed.
+IN_PROC_BROWSER_TEST_F(JavascriptOptimizerPageTest,
+                       BlockOnUnfamiliarSitesFeatureEnabled) {
+  RunTest("settings/v8_page_test.js",
+          "runMochaSuite('V8Page_BlockOnUnfamiliarSitesFeatureEnabled')");
 }
 
 using SettingsRouteTest = SettingsBrowserTest;
@@ -2018,6 +2036,10 @@ IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, AutofillPage) {
   RunTest("settings/autofill_page_test.js", "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, AutofillPageV2) {
+  RunTest("settings/autofill_page_v2_test.js", "mocha.run()");
+}
+
 // TODO(crbug.com/545478765): Flaky on Windows.
 #if BUILDFLAG(IS_WIN)
 #define MAYBE_AutofillPageIndex DISABLED_AutofillPageIndex
@@ -2030,6 +2052,10 @@ IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, MAYBE_AutofillPageIndex) {
 
 IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, IdentityDocsPageTest) {
   RunTest("settings/identity_docs_page_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, OffersAndLoyaltyCardsPage) {
+  RunTest("settings/offers_and_loyalty_cards_page_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(YourSavedInfoTest, ShoppingPageTest) {

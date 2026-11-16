@@ -22,6 +22,8 @@ import android.widget.TextView;
 import androidx.core.content.res.ResourcesCompat;
 import androidx.test.core.app.ApplicationProvider;
 
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -32,7 +34,10 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
+import org.chromium.components.autofill.AutofillFeatures;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogType;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -40,13 +45,18 @@ import org.chromium.ui.test.util.modaldialog.FakeModalDialogManager;
 
 /** Unit tests for {@link AutofillErrorDialogBridge} */
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures({
+    AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS,
+})
 public class AutofillErrorDialogBridgeTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private static final String ERROR_DIALOG_TITLE = "title";
     private static final String ERROR_DIALOG_DESCRIPTION = "description";
     private static final String ERROR_DIALOG_BUTTON_LABEL = "Close";
-    private static final long NATIVE_AUTOFILL_ERROR_DIALOG_VIEW = 100L;
+
+    private JniRawPtr<AutofillErrorDialogBridge.NativeAutofillErrorDialogViewAndroid>
+            mNativeDialogView;
 
     @Mock private AutofillErrorDialogBridge.Natives mNativeMock;
 
@@ -59,12 +69,20 @@ public class AutofillErrorDialogBridgeTest {
         reset(mNativeMock);
         mModalDialogManager = new FakeModalDialogManager(ModalDialogType.TAB);
         mResources = ApplicationProvider.getApplicationContext().getResources();
+        mNativeDialogView = JniRawPtr.createForTesting(100L);
         mAutofillErrorDialogBridge =
                 new AutofillErrorDialogBridge(
-                        NATIVE_AUTOFILL_ERROR_DIALOG_VIEW,
+                        mNativeDialogView,
                         mModalDialogManager,
                         ApplicationProvider.getApplicationContext());
         AutofillErrorDialogBridgeJni.setInstanceForTesting(mNativeMock);
+    }
+
+    @After
+    public void tearDown() {
+        if (mNativeDialogView != null) {
+            mNativeDialogView.release();
+        }
     }
 
     @Test
@@ -75,7 +93,7 @@ public class AutofillErrorDialogBridgeTest {
         mAutofillErrorDialogBridge.dismiss();
         // Verify that no dialog is shown and that the callback is triggered on dismissal.
         Assert.assertNull(mModalDialogManager.getShownDialogModel());
-        verify(mNativeMock, times(1)).onDismissed(NATIVE_AUTOFILL_ERROR_DIALOG_VIEW);
+        verify(mNativeMock, times(1)).onDismissed(mNativeDialogView);
     }
 
     @Test
@@ -84,11 +102,12 @@ public class AutofillErrorDialogBridgeTest {
 
         mModalDialogManager.clickPositiveButton();
 
-        verify(mNativeMock, times(1)).onDismissed(NATIVE_AUTOFILL_ERROR_DIALOG_VIEW);
+        verify(mNativeMock, times(1)).onDismissed(mNativeDialogView);
     }
 
     @Test
-    public void testTitleView() throws Exception {
+    @DisableFeatures({AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS})
+    public void testTitleViewWithGPayLogo() throws Exception {
         showErrorDialog();
 
         PropertyModel model = mModalDialogManager.getShownDialogModel();
@@ -107,6 +126,32 @@ public class AutofillErrorDialogBridgeTest {
                 ResourcesCompat.getDrawable(
                         mResources,
                         R.drawable.google_pay,
+                        ApplicationProvider.getApplicationContext().getTheme());
+        assertThat(titleIcon.getVisibility()).isEqualTo(View.VISIBLE);
+        assertTrue(getBitmap(expectedDrawable).sameAs(getBitmap(titleIcon.getDrawable())));
+    }
+
+    @Test
+    @EnableFeatures({AutofillFeatures.AUTOFILL_ENABLE_GRADIENT_GOOGLE_LOGOS})
+    public void testTitleViewWithGradientGPayLogo() throws Exception {
+        showErrorDialog();
+
+        PropertyModel model = mModalDialogManager.getShownDialogModel();
+        Assert.assertNotNull(model);
+
+        View customView = model.get(ModalDialogProperties.CUSTOM_VIEW);
+
+        // Verify that the title set by custom view is correct.
+        TextView title = customView.findViewById(R.id.title);
+        assertThat(title.getVisibility()).isEqualTo(View.VISIBLE);
+        assertThat(title.getText()).isEqualTo(ERROR_DIALOG_TITLE);
+
+        // Verify that the title icon set by custom view is correct.
+        ImageView titleIcon = customView.findViewById(R.id.title_icon);
+        Drawable expectedDrawable =
+                ResourcesCompat.getDrawable(
+                        mResources,
+                        R.drawable.googlepay_with_gradient,
                         ApplicationProvider.getApplicationContext().getTheme());
         assertThat(titleIcon.getVisibility()).isEqualTo(View.VISIBLE);
         assertTrue(getBitmap(expectedDrawable).sameAs(getBitmap(titleIcon.getDrawable())));

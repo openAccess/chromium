@@ -7,8 +7,10 @@
 
 #include <set>
 
+#include "base/functional/callback_helpers.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/glic/common/local_hotkey_manager.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
@@ -49,6 +51,7 @@ struct NativeWebKeyboardEvent;
 
 namespace glic {
 
+class GlicCoBrowseViews;
 class GlicInstanceMetrics;
 class MicPermissionUi;
 class PanelVisibilityDependentHotkeyManager;
@@ -91,11 +94,12 @@ class GlicSidePanelUi
   bool IsShowing() const override;
   bool IsShowingOrBackgrounded() const override;
   void ClosePanel() override;
-  void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override {}
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void ContentsCreated() override;
+  void NativeLoadingStateChanged(bool is_showing) override;
 
   // web_contents_delegate_android::WebContentsDelegateAndroid and
   // pwc::PrivilegedWebContents::EmbedderDelegate:
@@ -232,6 +236,8 @@ class GlicSidePanelUi
   // catch up on deactivations suppressed during a permission prompt.
   void SyncEmbedderWindowActivation();
 
+  void OnNativeFreAccepted();
+
   base::CallbackListSubscription panel_visibility_subscription_;
   base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
       browser_observation_{this};
@@ -252,6 +258,9 @@ class GlicSidePanelUi
   bool is_requesting_media_permission_ = false;
 
   base::ScopedObservation<Host, Host::Observer> host_observation_{this};
+
+  base::WeakPtr<GlicCoBrowseViews> co_browse_views_;
+  base::ScopedClosureRunner co_browse_views_resetter_;
 
   base::WeakPtrFactory<GlicSidePanelUi> weak_ptr_factory_{this};
 };

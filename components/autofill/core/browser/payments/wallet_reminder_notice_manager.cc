@@ -8,7 +8,6 @@
 #include <utility>
 
 #include "base/check.h"
-#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/notreached.h"
@@ -22,7 +21,6 @@
 #include "components/autofill/core/browser/payments/payments_request_details.h"
 #include "components/autofill/core/browser/payments/payments_requests/payments_request.h"
 #include "components/autofill/core/browser/payments/payments_util.h"
-#include "components/autofill/core/browser/ui/payments/wallet_reminder_notice_ui_delegate.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -96,7 +94,7 @@ bool WalletReminderNoticeManager::IsWalletReminderNoticeEligible(
 
 void WalletReminderNoticeManager::ShowWalletReminderNotice(FlowType flow_type) {
   GetWalletReminderNoticeRequestDetails request_details;
-  request_details.app_locale = client_->GetAppLocale();
+  request_details.app_locale = client_->GetAppLocale().tag_string();
   request_details.billing_customer_number = GetBillingCustomerId(
       GetPaymentsAutofillClient().GetPaymentsDataManager());
   request_details.billable_service_number = GetBillableServiceNumber(flow_type);
@@ -130,15 +128,15 @@ void WalletReminderNoticeManager::OnGetWalletReminderNoticeResponse(
 
   CHECK(!response_details.legal_message_lines.empty());
   CHECK(!response_details.acknowledgement_token.empty());
-  CHECK_DEREF(GetPaymentsAutofillClient().GetWalletReminderNoticeUiDelegate())
-      .ShowWalletReminderNotice(response_details.legal_message_lines);
+  GetPaymentsAutofillClient().ShowWalletReminderNotice(
+      response_details.legal_message_lines);
   autofill_metrics::LogWalletReminderNoticeShowResult(
       autofill_metrics::WalletReminderNoticeShowResult::kShown, flow_type);
 
   // Notify the Google Payments server that the user has been shown the Wallet
   // reminder notice.
   RecordLegalReminderAcknowledgmentRequestDetails request_details;
-  request_details.app_locale = client_->GetAppLocale();
+  request_details.app_locale = client_->GetAppLocale().tag_string();
   request_details.billing_customer_number = GetBillingCustomerId(
       GetPaymentsAutofillClient().GetPaymentsDataManager());
   request_details.billable_service_number = GetBillableServiceNumber(flow_type);

@@ -73,8 +73,14 @@ TEST(InputStateModelRoutingTest, ParseSrpInputMode) {
   EXPECT_EQ(ParseSrpInputMode("none"), SrpInputMode::kNone);
   EXPECT_EQ(ParseSrpInputMode("single_image"), SrpInputMode::kSingleImage);
   EXPECT_EQ(ParseSrpInputMode("multi_image"), SrpInputMode::kMultiImage);
-  EXPECT_EQ(ParseSrpInputMode("any_combination"),
-            SrpInputMode::kAnyCombination);
+  EXPECT_EQ(ParseSrpInputMode("any_combination_images_files"),
+            SrpInputMode::kAnyCombinationImagesFiles);
+  EXPECT_EQ(ParseSrpInputMode("any_combination_images_files_tabs"),
+            SrpInputMode::kAnyCombinationImagesFilesTabs);
+  EXPECT_EQ(ParseSrpInputMode("any_combination_images_files_drive"),
+            SrpInputMode::kAnyCombinationImagesFilesDrive);
+  EXPECT_EQ(ParseSrpInputMode("any_combination_all_types"),
+            SrpInputMode::kAnyCombinationAllTypes);
   EXPECT_FALSE(ParseSrpInputMode("everything").has_value());
 }
 
@@ -89,25 +95,41 @@ TEST(InputStateModelRoutingTest, SrpInputModeFromFeatureParams) {
     base::test::ScopedFeatureList feature_list;
     feature_list.InitAndEnableFeatureWithParameters(
         omnibox::kDynamicAimFulfillment,
-        {{"srp_input_mode", "any_combination"}});
-    EXPECT_EQ(SrpInputModeFromFeatureParams(), SrpInputMode::kAnyCombination);
+        {{"srp_input_mode", "any_combination_images_files"}});
+    EXPECT_EQ(SrpInputModeFromFeatureParams(),
+              SrpInputMode::kAnyCombinationImagesFiles);
   }
 }
 
-// Which attachments can go to SRP in each mode.
+// Which attachments can go to SRP in each mode. A mix goes to SRP only if the
+// mode covers every kind in it.
 TEST(InputStateModelRoutingTest, AttachmentsCanGoToSrpPerMode) {
   struct Row {
     AttachmentCounts counts;
-    bool none, single, multi, any;
+    bool none, single, multi, images_files, images_files_tabs,
+        images_files_drive, all_types;
   };
   const Row rows[] = {
-      {Counts(0, 0), true, true, true, true},            // No attachments.
-      {Counts(1, 0), false, true, true, true},           // 1 image.
-      {Counts(3, 0), false, false, true, true},          // 2+ images.
-      {Counts(0, 2), false, false, false, true},         // Files.
-      {Counts(3, 2), false, false, false, true},         // Images + files.
-      {Counts(0, 0, 1), false, false, false, false},     // Tab.
-      {Counts(1, 0, 0, 1), false, false, false, false},  // Image + Drive.
+      // No attachments.
+      {Counts(0, 0), true, true, true, true, true, true, true},
+      // 1 image.
+      {Counts(1, 0), false, true, true, true, true, true, true},
+      // 2+ images.
+      {Counts(3, 0), false, false, true, true, true, true, true},
+      // Files.
+      {Counts(0, 2), false, false, false, true, true, true, true},
+      // Images + files.
+      {Counts(3, 2), false, false, false, true, true, true, true},
+      // Tab.
+      {Counts(0, 0, 1), false, false, false, false, true, false, true},
+      // Drive.
+      {Counts(0, 0, 0, 1), false, false, false, false, false, true, true},
+      // Tab + image.
+      {Counts(1, 0, 1), false, false, false, false, true, false, true},
+      // Drive + file.
+      {Counts(0, 1, 0, 1), false, false, false, false, false, true, true},
+      // Tab + Drive.
+      {Counts(0, 0, 1, 1), false, false, false, false, false, false, true},
   };
   for (const Row& row : rows) {
     SCOPED_TRACE(testing::Message()
@@ -121,15 +143,23 @@ TEST(InputStateModelRoutingTest, AttachmentsCanGoToSrpPerMode) {
     EXPECT_EQ(can_go(SrpInputMode::kNone), row.none);
     EXPECT_EQ(can_go(SrpInputMode::kSingleImage), row.single);
     EXPECT_EQ(can_go(SrpInputMode::kMultiImage), row.multi);
-    EXPECT_EQ(can_go(SrpInputMode::kAnyCombination), row.any);
+    EXPECT_EQ(can_go(SrpInputMode::kAnyCombinationImagesFiles),
+              row.images_files);
+    EXPECT_EQ(can_go(SrpInputMode::kAnyCombinationImagesFilesTabs),
+              row.images_files_tabs);
+    EXPECT_EQ(can_go(SrpInputMode::kAnyCombinationImagesFilesDrive),
+              row.images_files_drive);
+    EXPECT_EQ(can_go(SrpInputMode::kAnyCombinationAllTypes), row.all_types);
   }
 }
 
 omnibox::ToolConfig MakeTool(
     ToolMode tool,
-    std::vector<std::pair<std::string, std::string>> params) {
+    std::vector<std::pair<std::string, std::string>> params,
+    bool disable_active_model_selection = false) {
   omnibox::ToolConfig config;
   config.set_tool(tool);
+  config.set_disable_active_model_selection(disable_active_model_selection);
   for (const auto& [key, value] : params) {
     auto* param = config.add_aim_url_params();
     param->set_param_key(key);
@@ -227,10 +257,10 @@ TEST(InputStateModelRoutingTest, ToolWithAttachmentsRoutesToAim) {
   EXPECT_TRUE(result.will_fulfill_in_aim);
   EXPECT_EQ(result.url_params, UrlParams({{"imgn", "1"}, {"udm", "50"}}));
   // Not controlled by the mode.
-  EXPECT_TRUE(ComputeFulfillment(
-                  state, /*aim_mode_active=*/false, one_image,
-                  EligibleAttachmentsForMode(SrpInputMode::kAnyCombination),
-                  /*has_valid_config=*/true)
+  EXPECT_TRUE(ComputeFulfillment(state, /*aim_mode_active=*/false, one_image,
+                                 EligibleAttachmentsForMode(
+                                     SrpInputMode::kAnyCombinationImagesFiles),
+                                 /*has_valid_config=*/true)
                   .will_fulfill_in_aim);
 }
 
@@ -250,6 +280,59 @@ TEST(InputStateModelRoutingTest, AimModeRoutesToAim) {
 
   // Outside AI Mode, a model (e.g. shown before an update) doesn't count.
   EXPECT_FALSE(Compute(state).will_fulfill_in_aim);
+}
+
+TEST(InputStateModelRoutingTest, DisableActiveModelSelectionOmitsModelParams) {
+  omnibox::InputState state;
+  state.tool_configs = {
+      MakeTool(ToolMode::TOOL_MODE_CANVAS, {{"rc", "1"}, {"udm", "50"}},
+               /*disable_active_model_selection=*/true),
+      MakeTool(ToolMode::TOOL_MODE_DEEP_SEARCH, {{"tool_param", "1"}},
+               /*disable_active_model_selection=*/true),
+  };
+  state.model_configs = {
+      MakeModel(ModelMode::MODEL_MODE_GEMINI_REGULAR,
+                {{"udm", "50"}, {"arv", "1"}}),
+      MakeModel(ModelMode::MODEL_MODE_GEMINI_PRO, {{"nem", "143"}}),
+  };
+  state.allowed_models = {ModelMode::MODEL_MODE_GEMINI_REGULAR,
+                          ModelMode::MODEL_MODE_GEMINI_PRO};
+
+  // Active model with `nem`: tool keeps `udm=50` and omits `nem`, while
+  // preserving `decision.model`.
+  state.active_tool = ToolMode::TOOL_MODE_CANVAS;
+  state.active_model = ModelMode::MODEL_MODE_GEMINI_PRO;
+  FulfillmentDecision canvas_result = Compute(state);
+  EXPECT_TRUE(canvas_result.will_fulfill_in_aim);
+  EXPECT_EQ(canvas_result.model, ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_EQ(canvas_result.url_params, UrlParams({{"rc", "1"}, {"udm", "50"}}));
+
+  // Tool without `udm` in AI Mode emits `udm=50` + tool param and omits `nem`.
+  state.active_tool = ToolMode::TOOL_MODE_DEEP_SEARCH;
+  FulfillmentDecision deep_search_result =
+      Compute(state, {}, /*aim_mode_active=*/true);
+  EXPECT_TRUE(deep_search_result.will_fulfill_in_aim);
+  EXPECT_EQ(deep_search_result.model, ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_EQ(deep_search_result.url_params,
+            UrlParams({{"tool_param", "1"}, {"udm", "50"}}));
+
+  // Clearing the tool restores the active model's params.
+  state.active_tool = ToolMode::TOOL_MODE_UNSPECIFIED;
+  FulfillmentDecision cleared_result =
+      Compute(state, {}, /*aim_mode_active=*/true);
+  EXPECT_TRUE(cleared_result.will_fulfill_in_aim);
+  EXPECT_EQ(cleared_result.model, ModelMode::MODEL_MODE_GEMINI_PRO);
+  EXPECT_EQ(cleared_result.url_params, UrlParams({{"nem", "143"}}));
+
+  // Default model fallback (`arv=1`) is also omitted when the active tool
+  // disables active model selection.
+  state.active_tool = ToolMode::TOOL_MODE_CANVAS;
+  state.active_model = ModelMode::MODEL_MODE_UNSPECIFIED;
+  FulfillmentDecision default_model_result = Compute(state);
+  EXPECT_TRUE(default_model_result.will_fulfill_in_aim);
+  EXPECT_EQ(default_model_result.model, ModelMode::MODEL_MODE_GEMINI_REGULAR);
+  EXPECT_EQ(default_model_result.url_params,
+            UrlParams({{"rc", "1"}, {"udm", "50"}}));
 }
 
 }  // namespace

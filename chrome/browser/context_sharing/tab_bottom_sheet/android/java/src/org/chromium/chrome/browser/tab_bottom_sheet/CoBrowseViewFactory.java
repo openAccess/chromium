@@ -9,12 +9,14 @@ import android.view.LayoutInflater;
 import android.view.View;
 
 import androidx.annotation.ColorInt;
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JniType;
 
 import org.chromium.base.CallbackUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.NullableObservableSupplier;
@@ -37,6 +39,7 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
+import org.chromium.content_public.browser.AdditionalNavigationParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.selection.SelectionDropdownMenuDelegate;
 import org.chromium.ui.base.WindowAndroid;
@@ -117,6 +120,8 @@ public class CoBrowseViewFactory {
      * @param clientType The client using coBrowseViews.
      * @param containerType The type of container hosting the views.
      * @param requestFocus Whether focus should be requested for the web contents.
+     * @param bottomSheetContentProvider The provider for bottom sheet content, or null.
+     * @param onCloseClicked Run when the loading placeholder close button is clicked.
      * @return The {@link CoBrowseViews} instance.
      */
     CoBrowseViews buildCoBrowseViews(
@@ -126,7 +131,8 @@ public class CoBrowseViewFactory {
             @TabBottomSheetClientType int clientType,
             @CoBrowseContainerType int containerType,
             boolean requestFocus,
-            @Nullable CoBrowseComponentProvider bottomSheetContentProvider) {
+            @Nullable CoBrowseComponentProvider bottomSheetContentProvider,
+            Runnable onCloseClicked) {
         View containerView =
                 LayoutInflater.from(mActivity).inflate(R.layout.tab_bottom_sheet, null);
 
@@ -147,8 +153,10 @@ public class CoBrowseViewFactory {
                 containerType,
                 webUi,
                 backgroundColor,
+                placeholderElemColor,
                 bottomSheetContentProvider,
-                () -> createPeekViewManagerIfNeeded(bottomSheetContentProvider));
+                () -> createPeekViewManagerIfNeeded(bottomSheetContentProvider),
+                onCloseClicked);
     }
 
     /**
@@ -162,6 +170,7 @@ public class CoBrowseViewFactory {
      * @param containerType The type of container hosting the views.
      * @param requestFocus Whether focus should be requested for the web contents.
      * @param bottomSheetContentProvider The provider for bottom sheet content, or null.
+     * @param onCloseClicked Run when the loading placeholder close button is clicked.
      * @return The {@link CoBrowseViews} instance, or null if the factory is unavailable.
      */
     @CalledByNative
@@ -173,11 +182,15 @@ public class CoBrowseViewFactory {
             @TabBottomSheetClientType int clientType,
             @CoBrowseContainerType int containerType,
             boolean requestFocus,
-            @Nullable CoBrowseComponentProvider bottomSheetContentProvider) {
+            @Nullable CoBrowseComponentProvider bottomSheetContentProvider,
+            @JniType("base::RepeatingClosure") Runnable onCloseClicked) {
         ThreadUtils.assertOnUiThread();
         @Nullable CoBrowseViewFactory factory =
                 TabBottomSheetUtils.getFactoryFromWindow(windowAndroid);
         if (factory == null) {
+            if (onCloseClicked instanceof Destroyable destroyable) {
+                destroyable.destroy();
+            }
             return null;
         }
 
@@ -188,7 +201,8 @@ public class CoBrowseViewFactory {
                 clientType,
                 containerType,
                 requestFocus,
-                bottomSheetContentProvider);
+                bottomSheetContentProvider,
+                onCloseClicked);
     }
 
     /**
@@ -225,23 +239,42 @@ public class CoBrowseViewFactory {
                 // Passes a callback to the components layer to open ephemeral tabs,
                 // avoiding a circular dependency since the components layer cannot depend
                 // on chrome/ UI coordinators directly.
-                (GURL url, String title) -> openInEphemeralTab(url, title, webContents),
+                (url, title, additionalNavigationParams) ->
+                        openInEphemeralTab(url, title, additionalNavigationParams, webContents),
                 this::addToReadingList,
                 bottomSheetContentProvider);
     }
 
-    private void openInEphemeralTab(GURL url, String title, @Nullable WebContents webContents) {
+    @VisibleForTesting
+    void openInEphemeralTab(
+            GURL url,
+            String title,
+            @Nullable AdditionalNavigationParams additionalNavigationParams,
+            @Nullable WebContents webContents) {
         var ephemeralTabCoordinatorSupplier = EphemeralTabCoordinatorSupplier.from(mWindowAndroid);
-        if (ephemeralTabCoordinatorSupplier == null) return;
-        EphemeralTabCoordinator coordinator = ephemeralTabCoordinatorSupplier.get();
-        if (coordinator == null) return;
-
+        EphemeralTabCoordinator coordinator =
+                ephemeralTabCoordinatorSupplier != null
+                        ? ephemeralTabCoordinatorSupplier.get()
+                        : null;
         Profile profile = mProfileSupplier.get();
-        if (profile == null) return;
+        if (coordinator == null || profile == null) {
+            if (additionalNavigationParams != null) {
+                additionalNavigationParams.destroy();
+            }
+            return;
+        }
 
         Origin initiatorOrigin = null;
-        if (webContents != null && webContents.getMainFrame() != null) {
-            initiatorOrigin = webContents.getMainFrame().getLastCommittedOrigin();
+        AdditionalNavigationParams paramsToAttach = null;
+        if (webContents != null
+                && !webContents.isDestroyed()
+                && webContents.isIncognito() == profile.isOffTheRecord()) {
+            if (webContents.getMainFrame() != null) {
+                initiatorOrigin = webContents.getMainFrame().getLastCommittedOrigin();
+            }
+            paramsToAttach = additionalNavigationParams;
+        } else if (additionalNavigationParams != null) {
+            additionalNavigationParams.destroy();
         }
 
         coordinator.requestOpenSheet(
@@ -252,7 +285,7 @@ public class CoBrowseViewFactory {
                 /* canPromoteToNewTab= */ true,
                 /* shouldHaveContextMenu= */ true,
                 initiatorOrigin,
-                /* additionalNavigationParams= */ null,
+                paramsToAttach,
                 /* requestDeniedCallback= */ CallbackUtils.emptyRunnable());
     }
 

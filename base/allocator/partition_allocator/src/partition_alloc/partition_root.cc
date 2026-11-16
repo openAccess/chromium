@@ -1096,14 +1096,25 @@ void PartitionRoot::Init(PartitionOptions opts) {
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 #endif  // PA_CONFIG(EXTRAS_REQUIRED)
 
-#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+    // AsanBackupRefPtr only needs `brp_enabled` or not. It doesn't need any
+    // extras.
+#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
+    PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+    settings_.brp_enabled_ = opts.backup_ref_ptr == PartitionOptions::kEnabled;
+#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) &&
+        // PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
+
+#if !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) && \
+    !PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
     PA_CHECK(opts.backup_ref_ptr == PartitionOptions::kDisabled);
-#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#endif  // !PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) &&
+        // !PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
 
     settings_.intended_leak = opts.intended_leak == PartitionOptions::kEnabled;
     if (settings_.intended_leak) {
       PA_CHECK(opts.thread_cache == PartitionOptions::kDisabled);
-#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT) || \
+    PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR)
       PA_CHECK(!brp_enabled());
 #endif
     }
@@ -1163,8 +1174,6 @@ void PartitionRoot::Init(PartitionOptions opts) {
         internal::GetMetadataOffset(settings_.pool_handle);
 #endif  // PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE)
 
-    settings_.use_tighter_aligned_alloc_bound =
-        (opts.tighter_aligned_alloc_bound == PartitionOptions::kEnabled);
     settings_.allow_giga_allocations =
         (opts.allow_giga_allocations == PartitionOptions::kAllowed);
 
@@ -1702,8 +1711,6 @@ void PartitionRoot::DumpStats(const char* partition_name,
 
   stats.total_intended_leak_bytes =
       intended_leak_size_.load(std::memory_order_relaxed);
-  stats.total_aligned_alloc_wasted_bytes =
-      total_aligned_alloc_wasted_bytes_.load(std::memory_order_relaxed);
 
   // Collect data with the lock held, cannot allocate or call third-party code
   // below.

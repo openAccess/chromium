@@ -649,7 +649,6 @@ AccessibilityManager::~AccessibilityManager() {
 
   if (chromevox_panel_) {
     chromevox_panel_->CloseNow();
-    chromevox_panel_ = nullptr;
   }
 
   AcceleratorController::SetVolumeAdjustmentSoundCallback({});
@@ -1225,10 +1224,6 @@ void AccessibilityManager::OnMonoAudioChanged() {
 
 void AccessibilityManager::SetDarkenScreen(bool darken) {
   AccessibilityController::Get()->SetDarkenScreen(darken);
-
-  if (screen_darken_observer_for_test_) {
-    screen_darken_observer_for_test_.Run();
-  }
 }
 
 void AccessibilityManager::SetCaretHighlightEnabled(bool enabled) {
@@ -2241,7 +2236,6 @@ void AccessibilityManager::PostUnloadChromeVox() {
 
   if (chromevox_panel_) {
     chromevox_panel_->Close();
-    chromevox_panel_ = nullptr;
   }
 
   // In case the user darkened the screen, undarken it now.
@@ -2254,7 +2248,7 @@ void AccessibilityManager::PostUnloadChromeVox() {
 void AccessibilityManager::CreateChromeVoxPanel() {
   CHECK(!chromevox_panel_ && spoken_feedback_enabled(),
         base::NotFatalUntil::M160);
-  chromevox_panel_ = new ChromeVoxPanel(profile_);
+  chromevox_panel_ = std::make_unique<ChromeVoxPanel>(profile_);
   chromevox_panel_widget_observer_ =
       std::make_unique<AccessibilityPanelWidgetObserver>(
           chromevox_panel_->GetWidget(),
@@ -2265,16 +2259,22 @@ void AccessibilityManager::CreateChromeVoxPanel() {
 void AccessibilityManager::PostSwitchChromeVoxProfile() {
   if (chromevox_panel_) {
     chromevox_panel_->CloseNow();
-    chromevox_panel_ = nullptr;
   }
   if (!chromevox_panel_ && spoken_feedback_enabled()) {
     CreateChromeVoxPanel();
   }
 }
 
+content::BrowserContext* AccessibilityManager::browser_context() {
+  return profile_;
+}
+
 void AccessibilityManager::OnChromeVoxPanelDestroying() {
   chromevox_panel_widget_observer_.reset(nullptr);
-  chromevox_panel_ = nullptr;
+  // The panel can't be deleted during its widget's notifications, and its
+  // window may still be closing. The panel frees its widget once the window is
+  // gone.
+  closed_chromevox_panel_ = std::move(chromevox_panel_);
 }
 
 void AccessibilityManager::PostLoadSelectToSpeak() {
@@ -2509,9 +2509,6 @@ void AccessibilityManager::SetCaretBounds(const gfx::Rect& bounds_in_screen) {
     return;
 
   AccessibilityController::Get()->SetCaretBounds(bounds_in_screen);
-
-  if (caret_bounds_observer_for_test_)
-    caret_bounds_observer_for_test_.Run(bounds_in_screen);
 }
 
 bool AccessibilityManager::GetStartupSoundEnabled() const {
@@ -2578,11 +2575,6 @@ void AccessibilityManager::SetBrailleControllerForTest(
   g_braille_controller_for_test = controller;
 }
 
-void AccessibilityManager::SetScreenDarkenObserverForTest(
-    base::RepeatingCallback<void()> observer) {
-  screen_darken_observer_for_test_ = observer;
-}
-
 void AccessibilityManager::SetOpenSettingsSubpageObserverForTest(
     base::RepeatingCallback<void()> observer) {
   open_settings_subpage_observer_for_test_ = observer;
@@ -2602,11 +2594,6 @@ void AccessibilityManager::SetHighlightsObserverForTest(
 void AccessibilityManager::SetSelectToSpeakStateObserverForTest(
     base::RepeatingCallback<void()> observer) {
   select_to_speak_state_observer_for_test_ = observer;
-}
-
-void AccessibilityManager::SetCaretBoundsObserverForTest(
-    base::RepeatingCallback<void(const gfx::Rect&)> observer) {
-  caret_bounds_observer_for_test_ = observer;
 }
 
 void AccessibilityManager::SetMagnifierBoundsObserverForTest(

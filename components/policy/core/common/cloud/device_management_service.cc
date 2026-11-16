@@ -16,6 +16,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
+#include "components/policy/core/common/cloud/network_name_cache.h"
 #include "components/policy/core/common/policy_logger.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "net/base/load_flags.h"
@@ -191,6 +192,7 @@ const int DeviceManagementService::kIllegalAccountForPackagedEDULicense;
 const int DeviceManagementService::kInvalidPackagedDeviceForKiosk;
 const int DeviceManagementService::kOrgUnitEnrollmentLimitExceeded;
 
+// LINT.IfChange(EnterpriseDMServerRequest)
 // static
 std::string DeviceManagementService::JobConfiguration::GetJobTypeAsString(
     JobType type) {
@@ -251,6 +253,8 @@ std::string DeviceManagementService::JobConfiguration::GetJobTypeAsString(
       return "Registration";
     case DeviceManagementService::JobConfiguration::TYPE_REMOTE_COMMANDS:
       return "RemoteCommands";
+    case DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN:
+      return "RenewDmToken";
     // Type TOKEN_ENROLLMENT was renamed to BROWSER_REGISTRATION when device
     // token-based enrollment was added, but unfortunately we have to keep the
     // stringified job type as "TokenEnrollment" because this string defines
@@ -301,6 +305,7 @@ std::string DeviceManagementService::JobConfiguration::GetJobTypeAsString(
       return "GenerateChromeProfileChallenge";
   }
 }
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/histograms.xml:EnterpriseDMServerRequest)
 
 JobConfigurationBase::JobConfigurationBase(
     JobType type,
@@ -539,6 +544,7 @@ JobConfigurationBase::GetTrafficAnnotationTag() {
     case DeviceManagementService::JobConfiguration::TYPE_UPLOAD_EUICC_INFO:
     case DeviceManagementService::JobConfiguration::
         TYPE_POLICY_AGENT_REGISTRATION:
+    case DeviceManagementService::JobConfiguration::TYPE_RENEW_DM_TOKEN:
       return net::DefineNetworkTrafficAnnotation("device_management_service",
                                                  R"(
         semantics {
@@ -1004,6 +1010,12 @@ void DeviceManagementService::Initialize() {
 void DeviceManagementService::Shutdown() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   weak_ptr_factory_.InvalidateWeakPtrs();
+}
+
+void DeviceManagementService::SetNetworkNameCache(
+    std::unique_ptr<NetworkNameCache> network_name_cache) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  network_name_cache_ = std::move(network_name_cache);
 }
 
 DeviceManagementService::DeviceManagementService(

@@ -7,8 +7,11 @@
 
 #include <stdint.h>
 
+#include <set>
+
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -20,6 +23,7 @@
 #include "components/browser_apis/tab_strip/tab_strip_api_events.mojom.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/sessions/core/tab_restore_service.h"
+#include "components/sessions/core/tab_restore_service_observer.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -29,6 +33,7 @@
 #include "url/gurl.h"
 
 class MetricsReporter;
+class OrganizerPanelController;
 class Profile;
 
 namespace tabs {
@@ -69,6 +74,7 @@ enum class TabSearchRecentlyClosedToggleAction {
 class TabSearchPageHandler
     : public tab_search::mojom::PageHandler,
       public tabs_api::observation::TabStripApiBatchedObserver,
+      public sessions::TabRestoreServiceObserver,
       public content::WebContentsObserver {
  public:
   TabSearchPageHandler(
@@ -76,7 +82,8 @@ class TabSearchPageHandler
       mojo::PendingRemote<tab_search::mojom::Page> page,
       content::WebUI* web_ui,
       TopChromeWebUIController* webui_controller,
-      MetricsReporter* metrics_reporter);
+      MetricsReporter* metrics_reporter,
+      bool log_metrics);
   TabSearchPageHandler(const TabSearchPageHandler&) = delete;
   TabSearchPageHandler& operator=(const TabSearchPageHandler&) = delete;
   ~TabSearchPageHandler() override;
@@ -98,6 +105,11 @@ class TabSearchPageHandler
   // TabStripApiBatchedObserver:
   void OnTabEvents(
       const std::vector<tabs_api::mojom::TabsEventPtr>& events) override;
+
+  // sessions::TabRestoreServiceObserver:
+  void TabRestoreServiceChanged(sessions::TabRestoreService* service) override;
+  void TabRestoreServiceDestroyed(
+      sessions::TabRestoreService* service) override;
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility visibility) override;
@@ -191,6 +203,8 @@ class TabSearchPageHandler
   // Called when the browser window context for this WebUI has changed.
   void BrowserWindowInterfaceChanged();
 
+  OrganizerPanelController* GetOrganizerPanelController() const;
+
   mojo::Receiver<tab_search::mojom::PageHandler> receiver_;
   mojo::Remote<tab_search::mojom::Page> page_;
   const raw_ptr<content::WebUI> web_ui_;
@@ -212,6 +226,7 @@ class TabSearchPageHandler
 
   // Tracks whether the bubble UI is currently showing.
   bool bubble_showing_ = false;
+  const bool log_metrics_;
 
   // Tracks whether or not we have sent the initial payload to the Tab Search
   // UI for metric collection purposes.
@@ -221,6 +236,18 @@ class TabSearchPageHandler
 
   // Notifies this when the browser window context changes.
   base::CallbackListSubscription browser_window_changed_subscription_;
+
+  // Tracks the SessionIDs of all entries currently in TabRestoreService so
+  // newly created tab entries can be identified on TabRestoreServiceChanged().
+  std::set<SessionID> existing_tab_restore_ids_;
+
+  // Tracks the SessionIDs of newly created recently closed tab entries waiting
+  // to be sent to the WebUI page in OnNodesRemoved().
+  std::set<SessionID> recently_closed_tab_restore_ids_;
+
+  base::ScopedObservation<sessions::TabRestoreService,
+                          sessions::TabRestoreServiceObserver>
+      tab_restore_service_observation_{this};
 
   std::unique_ptr<tabs_api::TabStripServiceAggregator> aggregator_;
 };

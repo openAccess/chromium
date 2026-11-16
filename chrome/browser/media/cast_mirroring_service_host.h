@@ -53,7 +53,6 @@ namespace mirroring {
 // Service, and provides the resources to the Mirroring Service as requested.
 class CastMirroringServiceHost final : public MirroringServiceHost,
                                        public mojom::ResourceProvider,
-                                       public OffscreenTab::Owner,
                                        public content::WebContentsObserver {
  public:
   // |source_media_id| indicates the mirroring source.
@@ -84,8 +83,6 @@ class CastMirroringServiceHost final : public MirroringServiceHost,
   friend class CastMirroringServiceHostBrowserTest;
   FRIEND_TEST_ALL_PREFIXES(CastMirroringServiceHostTest,
                            TestGetClampedResolution);
-  friend class CastV2PerformanceTest;
-  FRIEND_TEST_ALL_PREFIXES(CastV2PerformanceTest, Performance);
   friend class CastMirroringServiceHostFactory;
 
   static content::DesktopMediaID BuildMediaIdForWebContents(
@@ -157,8 +154,9 @@ class CastMirroringServiceHost final : public MirroringServiceHost,
   void SwitchMirroringSourceTab(const content::DesktopMediaID& media_id,
                                 bool captured_surface_control_active);
 
-  // OffscreenTab::Owner implementation.
-  void DestroyTab(OffscreenTab* tab) override;
+  // Destroys `offscreen_tab_`. Passed to the OffscreenTab as its destroy
+  // callback.
+  void DestroyOffscreenTab();
 
   // Creates and starts a new OffscreenTab.
   void OpenOffscreenTab(content::BrowserContext* context,

@@ -21,7 +21,6 @@
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_tab_helper.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_util.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
@@ -244,7 +243,7 @@ void WebUIReadOnlyOmnibox::SetCaretPos(size_t caret_pos) {
 
 void WebUIReadOnlyOmnibox::SetAdditionalText(
     const std::u16string& additional_text) {
-  additional_text_ = FormatOmniboxAdditionalText(additional_text);
+  additional_text_ = omnibox::FormatAdditionalText(additional_text);
   RequestUpdateWebUI();
 }
 
@@ -319,6 +318,11 @@ bool WebUIReadOnlyOmnibox::AimButtonVisible() const {
 
 void WebUIReadOnlyOmnibox::ApplyCaretVisibility() {
   RequestUpdateWebUI();
+}
+
+void WebUIReadOnlyOmnibox::OnFocusChanged() {
+  update_propagator_->OnOmniboxFocusChanged(
+      controller()->edit_model()->has_focus());
 }
 
 void WebUIReadOnlyOmnibox::SetAccessibilityLabel(
@@ -956,7 +960,9 @@ WebUIReadOnlyOmnibox::OnKey(
 
     case ui::DomKey::ARROW_DOWN:
       CHECK(!control, base::NotFatalUntil::M162);
-      CHECK(!alt, base::NotFatalUntil::M162);
+      // TODO(crbug.com/580242268): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK(!alt);
       CHECK(!shift, base::NotFatalUntil::M162);
       CHECK(!command, base::NotFatalUntil::M162);
       controller()->edit_model()->OnUpOrDownPressed(/*down=*/true,
@@ -1047,12 +1053,15 @@ WebUIReadOnlyOmnibox::OnPointer(
     if (start_zero_suggest) {
       controller()->edit_model()->StartZeroSuggestRequest();
     }
+    const bool popup_was_open =
+        controller()->popup_state_manager()->popup_state() ==
+        OmniboxPopupState::kFull;
     update_propagator_->OpenOmniboxIfFullPopup(start_zero_suggest);
-    if (base::FeatureList::IsEnabled(
-            omnibox::kWebUIOmniboxFullPopupDoubleClick) &&
-        location_bar_) {
-      location_bar_->GetOmniboxPopupView()->SyncNativeStateToWebUI(
-          start_zero_suggest, /*show_full_url=*/false);
+    if (popup_was_open && location_bar_ &&
+        base::FeatureList::IsEnabled(
+            omnibox::kWebUIOmniboxFullPopupDoubleClick)) {
+      location_bar_->GetOmniboxPopupView()
+          ->SyncNativeStateToWebUIPreservingMatches();
     }
   }
   return base::ok(std::monostate());

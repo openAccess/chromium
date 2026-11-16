@@ -9,6 +9,7 @@
 #include "base/i18n/rtl.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -54,7 +55,8 @@ DocumentPipFrameViewLinux::~DocumentPipFrameViewLinux() = default;
 
 void DocumentPipFrameViewLinux::UpdateFrameProvider() {
   window_frame_provider_ = nullptr;
-  auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(&profile_.get());
+  auto* linux_ui_theme =
+      ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(&profile_.get());
   if (linux_ui_theme &&
       ThemeServiceFactory::GetForProfile(&profile_.get())->UsingSystemTheme()) {
     window_frame_provider_ = linux_ui_theme->GetWindowFrameProvider(
@@ -160,7 +162,7 @@ gfx::Insets DocumentPipFrameViewLinux::FrameBorderInsets() const {
                   : window_frame_provider_->GetFrameThicknessDip();
   }
   return views::GetRestoredFrameBorderInsetsLinux(
-      supports_client_frame_shadow_, gfx::Insets(kFrameBorderThickness),
+      supports_client_frame_shadow_, tiled_, gfx::Insets(kFrameBorderThickness),
       GetShadowValues(), DocumentPipFrameView::ResizeBorderInsets());
 }
 

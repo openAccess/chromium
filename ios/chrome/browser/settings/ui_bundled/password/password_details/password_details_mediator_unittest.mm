@@ -10,6 +10,7 @@
 #import "components/affiliations/core/browser/fake_affiliation_service.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_manager_test_utils.h"
 #import "components/password_manager/core/browser/password_store/password_form_converters.h"
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/core/browser/password_string.h"
@@ -59,15 +60,6 @@ std::unique_ptr<PasswordForm> CreatePasswordForm(std::string url,
   return form;
 }
 
-scoped_refptr<RefcountedKeyedService> BuildPasswordStore(
-    password_manager::IsAccountStore is_account_store,
-    ProfileIOS* profile) {
-  auto store = base::MakeRefCounted<password_manager::TestPasswordStore>(
-      is_account_store);
-  store->Init();
-  return store;
-}
-
 }  // namespace
 
 // Test class that conforms to PasswordDetailsConsumer in order to test the
@@ -109,12 +101,16 @@ class PasswordDetailsMediatorTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindOnce(&BuildPasswordStore,
+        base::BindOnce(&password_manager::BuildPasswordStoreWithArgs<
+                           password_manager::TestPasswordStore,
+                           password_manager::IsAccountStore>,
                        password_manager::IsAccountStore(false)));
 
     builder.AddTestingFactory(
         IOSChromeAccountPasswordStoreFactory::GetInstance(),
-        base::BindOnce(&BuildPasswordStore,
+        base::BindOnce(&password_manager::BuildPasswordStoreWithArgs<
+                           password_manager::TestPasswordStore,
+                           password_manager::IsAccountStore>,
                        password_manager::IsAccountStore(true)));
 
     builder.AddTestingFactory(
@@ -666,5 +662,31 @@ TEST_F(PasswordDetailsMediatorTest, RestoreWarningForCurrentPassword) {
 
   // Verify information sent to consumer.
   CheckConsumerPasswords(/*expected_passwords=*/@[]);
+  CheckConsumerTitle();
+}
+
+// Tests that a muted compromised credential is marked as muted in the
+// `kDismissedWarnings` context even when `GetInsecureCredentials()` has
+// insecurity metadata not present on `mediator().credentials`.
+TEST_F(PasswordDetailsMediatorTest,
+       NotifiesConsumerOnMutedPasswordInDismissedWarnings) {
+  mediator().context = DetailsContext::kDismissedWarnings;
+
+  AddInsecurePasswordForm(/*url=*/kExampleURL1,
+                          /*password=*/kExamplePassword1,
+                          /*insecure_type=*/InsecureType::kLeaked,
+                          /*is_muted=*/true);
+
+  ASSERT_EQ(mediator().credentials.size(), 1u);
+  EXPECT_FALSE(mediator().credentials[0].IsLeaked());
+  ASSERT_EQ(password_check_manager()->GetInsecureCredentials().size(), 1u);
+  EXPECT_TRUE(password_check_manager()->GetInsecureCredentials()[0].IsMuted());
+
+  CredentialDetails* expected_password_details = [[CredentialDetails alloc]
+      initWithCredential:GetAffiliatedGroupCredentials()[0]];
+  expected_password_details.context = DetailsContext::kDismissedWarnings;
+  expected_password_details.muted = YES;
+
+  CheckConsumerPasswords(/*expected_passwords=*/@[ expected_password_details ]);
   CheckConsumerTitle();
 }

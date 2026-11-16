@@ -14,6 +14,7 @@
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/data_protection/utils.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 namespace content {
 class WebContents;
@@ -38,6 +39,10 @@ class DataProtectionNavigationController
     : public content::WebContentsObserver,
       public DataProtectionNavigationDelegate {
  public:
+  DECLARE_USER_DATA(DataProtectionNavigationController);
+
+  static DataProtectionNavigationController* From(tabs::TabInterface* tab);
+
   // Returns the DataProtectionNavigationController associated with
   // `web_contents`, or nullptr if `web_contents` is null or does not have an
   // associated tab.
@@ -79,6 +84,10 @@ class DataProtectionNavigationController
   base::CallbackListSubscription RegisterScreenshotAllowedUpdatedCallback(
       ScreenshotAllowedUpdatedCallback callback);
 
+  // Overrides the cached screenshot allowance as if a navigation verdict with
+  // `allow_screenshots == allowed` had been applied.
+  void SetScreenshotAllowedForTesting(bool allowed);
+
 #if BUILDFLAG(IS_ANDROID)
   // Avoid storing the CallbackListSubscription in the java screenshot
   // protection controller.
@@ -117,6 +126,8 @@ class DataProtectionNavigationController
                            content::WebContents* new_contents);
 
   raw_ptr<tabs::TabInterface> tab_interface_;
+  ui::ScopedUnownedUserData<DataProtectionNavigationController>
+      scoped_unowned_user_data_;
 
   // Holds subscriptions for TabInterface callbacks.
   std::vector<base::CallbackListSubscription> tab_subscriptions_;

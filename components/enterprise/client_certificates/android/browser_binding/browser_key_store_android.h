@@ -18,9 +18,12 @@ class BrowserKeyStoreAndroid : public BrowserKeyStore {
   explicit BrowserKeyStoreAndroid(
       jni_zero::ScopedJavaLocalRef<jobject> java_object);
 
-  std::unique_ptr<BrowserKey> GetOrCreateBrowserKeyForCredentialId(
+  std::unique_ptr<BrowserKey> CreateBrowserKeyForCredentialId(
       const std::vector<uint8_t>& credential_id,
       const CredentialInfoList& allowed_credentials) override;
+
+  std::unique_ptr<BrowserKey> GetBrowserKeyForCredentialId(
+      const std::vector<uint8_t>& credential_id) override;
 
   bool GetDeviceSupportsHardwareKeys() override;
 

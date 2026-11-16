@@ -32,6 +32,8 @@
 #include "base/process/process.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/thread_pool/thread_group.h"
+#include "partition_alloc/partition_alloc_allocation_data.h"
+#include "partition_alloc/partition_alloc_hooks.h"
 
 #if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
 #include "base/debug/leak_annotations.h"
@@ -156,6 +158,7 @@ void RawPtrAsanService::ClearLogForTesting() {
 NO_SANITIZE("address")
 void RawPtrAsanService::Reset() {
   internal::ResetRawPtrHooks();
+  partition_alloc::PartitionAllocHooks::SetObserverHooks(nullptr, nullptr);
   build_sanitizers::UninstallSanitizerHooks();
 
   // We have to free all quarantined and early-allocated objects because
@@ -172,7 +175,8 @@ void RawPtrAsanService::Reset() {
     internal::PartitionAutoLock lock(map.GetLock());
     auto& map_internal = map.GetMap();
     for (auto it = map_internal.begin(); it != map_internal.end(); ++it) {
-      if (it->second.quarantine_flag != QuarantineFlag::NotQuarantined) {
+      if (it->second.quarantine_flag == QuarantineFlag::Quarantined ||
+          it->second.quarantine_flag == QuarantineFlag::EarlyAllocation) {
         free(reinterpret_cast<void*>(it->first));
       }
     }
@@ -207,14 +211,58 @@ constinit thread_local RawPtrAsanService::PendingReport pending_report;
 
 // static
 NO_SANITIZE("address")
+void RawPtrAsanService::PartitionAllocHook(
+    const partition_alloc::AllocationNotificationData& notification_data) {
+  if (notification_data.brp_enabled() || !notification_data.address() ||
+      partition_alloc::internal::ContainsFlags(
+          notification_data.flags(),
+          partition_alloc::AllocFlags::kNoMemoryToolOverride)) {
+    return;
+  }
+
+  // We should not mark the memory region as miracle-ptr protected.
+  {
+#if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
+    uintptr_t address =
+        reinterpret_cast<uintptr_t>(notification_data.address());
+    // Note: Do not clear *GetShadow(header) in V2. IgnoreFreeHook() treats
+    // *GetShadow(header) != kAsanUserPoisonedMemoryMagic as an early
+    // allocation; clearing it would cause non-BRP allocations to be quarantined
+    // and leaked on free.
+    auto& map = GetAllocationMetadataMap(address);
+    internal::PartitionAutoLock guard(map.GetLock());
+    auto it = map.GetMap().find(address);
+    CHECK(it != map.GetMap().end());
+    // Note: to distinguish brp-disabled allocation from allocation inside
+    // allocation guard, mark BrpDisabledAllocation for BRP-disabled allocation.
+    it->second.quarantine_flag = QuarantineFlag::BrpDisabledAllocation;
+#else
+    uint8_t* header = UNSAFE_BUFFERS(
+        static_cast<uint8_t*>(notification_data.address()) - kChunkHeaderSize);
+    CHECK_EQ(*RawPtrAsanService::GetInstance().GetShadow(header),
+             kAsanUserPoisonedMemoryMagic);
+    *RawPtrAsanService::GetInstance().GetShadow(header) =
+        kAsanHeapLeftRedzoneMagic;
+#endif
+  }
+}
+
+// static
+NO_SANITIZE("address")
 void RawPtrAsanService::MallocHook(const volatile void* ptr, size_t size) {
   uint8_t* header = UNSAFE_TODO(static_cast<uint8_t*>(const_cast<void*>(ptr)) -
                                 kChunkHeaderSize);
 #if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
-  ALLOC_REENTRANCY_GUARD();
-
+  // Note: we need to mark the allocation with `kAsanUserPoisonedMemoryMagic`
+  // before `ALLOC_REENTRANCY_GUARD()`. Because if we mark after
+  // `ALLOC_REENTRANCY_GUARD()`, `ALLOC_REENTRANCY_GUARD()` will immediately
+  // return from `MallocHook()` while reentrancy guard. The allocations will not
+  // have `kAsanUserPoisonedMemoryMagic` in the headers. So the allocations
+  // will be treated as EarlyAllocation and will be leaked at free().
   *RawPtrAsanService::GetInstance().GetShadow(header) =
       kAsanUserPoisonedMemoryMagic;
+
+  ALLOC_REENTRANCY_GUARD();
 
   auto alloc_thread_id = internal::GetCurrentRawPtrAsanThreadId();
   {
@@ -299,18 +347,22 @@ int RawPtrAsanService::IgnoreFreeHook(const volatile void* ptr) {
     auto& map = GetAllocationMetadataMap(reinterpret_cast<uintptr_t>(ptr));
     internal::PartitionAutoLock guard(map.GetLock());
     auto it = map.GetMap().find(reinterpret_cast<uintptr_t>(ptr));
-    PA_DCHECK(it != map.GetMap().end());
-    if (it == map.GetMap().end()) {
+    // The `map` doesn't contain allocations while reentrancy guard. So they
+    // should be immediately freed.
+    if (it == map.GetMap().end()) [[unlikely]] {
       return 0;
     }
     // Quarantine the allocation if it is kept alive by any raw_ptr ref,
     // including unprotected-in-release ones: those don't provide protection in
     // release, but quarantining here lets the dangling access still be detected
     // and reported as unprotected-in-release.
-    if (it->second.count == 0 && it->second.unprotected_in_release_count == 0) {
+    if (it->second.quarantine_flag == QuarantineFlag::BrpDisabledAllocation ||
+        (it->second.count == 0 &&
+         it->second.unprotected_in_release_count == 0)) {
       map.GetMap().erase(it);
       return 0;
     }
+
     it->second.quarantine_flag = QuarantineFlag::Quarantined;
     it->second.free_thread_id = current_thread_id;
   }
@@ -376,6 +428,20 @@ void RawPtrAsanService::Configure(
     delete dummy_alloc;
 
     debug::AsanService* asan_service = debug::AsanService::GetInstance();
+
+    // This disables observer hooks registered by other components,
+    // e.g. base::allocator::Dispatcher. Historically, observer hooks were
+    // never invoked if `MEMORY_TOOL_REPLACES_ALLOCATOR=1`, so other components
+    // did not rely on them. While PartitionAlloc now supports observer hooks
+    // under `MEMORY_TOOL_REPLACES_ALLOCATOR=1` for BRP-ASan, it is safe for
+    // ASan binaries to override them here.
+    // TODO(crbug.com/553120509): add
+    // !PA_BUILDFLAG(MEMORY_TOOL_REPLACES_ALLOCATOR) to the other components
+    // which use SetObserverHooks().
+    partition_alloc::PartitionAllocHooks::SetObserverHooks(nullptr, nullptr);
+    partition_alloc::PartitionAllocHooks::SetObserverHooks(
+        RawPtrAsanService::PartitionAllocHook, nullptr);
+
 #if PA_BUILDFLAG(USE_ASAN_BACKUP_REF_PTR_V2)
     internal::ReentrancyState::InitializeKey();
 

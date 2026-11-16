@@ -230,7 +230,6 @@
 #include "third_party/blink/renderer/core/html/html_style_element.h"
 #include "third_party/blink/renderer/core/html/html_table_rows_collection.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
-#include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/html/menu_safe_triangle.h"
 #include "third_party/blink/renderer/core/html/nesting_level_incrementer.h"
 #include "third_party/blink/renderer/core/html/parser/fragment_parser.h"
@@ -666,8 +665,11 @@ const AtomicString& V8ShadowRootModeToString(V8ShadowRootMode::Enum mode) {
   return keywords::kClosed;
 }
 
-void InvalidateForCanvasTransformChange(LayoutObject* layout_object) {
-  if (layout_object) {
+void InvalidateForCanvasTransformChange(Element& element) {
+  // Ensure style and slot assignments are clean before calling
+  // PaintLayer::UpdateTransform.
+  element.GetDocument().UpdateStyleAndLayoutTree();
+  if (LayoutObject* layout_object = element.GetLayoutObject()) {
     layout_object->SetNeedsPaintPropertyUpdate();
     const auto* box = DynamicTo<LayoutBox>(layout_object);
     if (box && box->TransformsChangeMayRequireLayout()) {
@@ -723,7 +725,10 @@ inline bool ShouldBlockInlineScriptAttributeSet(
 Element::Element(const QualifiedName& tag_name,
                  Document* document,
                  ConstructionType type)
-    : ContainerNode(document, type), tag_name_(tag_name) {}
+    : ContainerNode(document, type), tag_name_(tag_name) {
+  // Element is packed on 64-bit Windows; see the comment in element.h.
+  static_assert(offsetof(Element, tag_name_) % alignof(QualifiedName) == 0);
+}
 
 Element* Element::GetAnimationTarget() {
   return this;
@@ -2107,9 +2112,18 @@ bool Element::InterestLost(Element* target,
     return false;
   }
 
-  // If the target still thinks this invoker is its invoker, remove it.
-  if (auto* targets_invoker = target->SourceInterestInvoker();
-      targets_invoker && targets_invoker == this) {
+  if (RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()) {
+    // The 'loseinterest' event handler might have changed the interest state,
+    // e.g. by resetting this invoker's interest state, or by causing another
+    // invoker to gain interest in `target`. In that case, don't remove
+    // interest, and don't hide the popover.
+    if (target->SourceInterestInvoker() != this) {
+      return true;
+    }
+    ChangeInterestState(target, InterestState::kNoInterest);
+  } else if (auto* targets_invoker = target->SourceInterestInvoker();
+             targets_invoker && targets_invoker == this) {
+    // If the target still thinks this invoker is its invoker, remove it.
     ChangeInterestState(target, InterestState::kNoInterest);
   }
 
@@ -2133,13 +2147,18 @@ bool Element::InterestLost(Element* target,
   return true;
 }
 
-void Element::HandlePointerEventsForInterestFor(
-    const AtomicString& event_type) {
+void Element::HandlePointerEventsForInterestFor(const AtomicString& event_type,
+                                                Node* newly_hovered_node) {
   if (event_type == event_type_names::kPointerover) {
+    DCHECK(!newly_hovered_node);
     HandleInterestForHoverOrFocus(InterestSource::kHover);
   } else {
     CHECK_EQ(event_type, event_type_names::kPointerout);
-    HandleInterestForHoverOrFocus(InterestSource::kDeHover);
+    HandleInterestForHoverOrFocus(
+        InterestSource::kDeHover,
+        RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()
+            ? newly_hovered_node
+            : nullptr);
   }
 }
 
@@ -4467,10 +4486,39 @@ Node::InsertionNotificationRequest Element::InsertedInto(
   return kInsertionDone;
 }
 
+namespace {
+
+void UpdateSubframeThrottlingAfterMove(Node& root) {
+  // We are only concerned with frame-owning flat tree descendants of root, so
+  // return early if there aren't any.
+  if (!root.GetDocument().ConnectedSubframeCount()) {
+    return;
+  }
+  // ConnectedSubframeCount() is based on the DOM tree, so climb up to the
+  // upper-most shadow host before checking it.
+  Node* count_root = &root;
+  while (Node* host = count_root->OwnerShadowHost()) {
+    count_root = host;
+  }
+  if (!count_root->ConnectedSubframeCount()) {
+    return;
+  }
+  // `root` may have frame-owning descendants, so traverse them
+  for (Node& node : FlatTreeTraversal::InclusiveDescendantsOf(root)) {
+    if (auto* frame_owner = DynamicTo<HTMLFrameOwnerElement>(node)) {
+      frame_owner->UpdateThrottlingStatusAfterMove();
+    }
+  }
+}
+
+}  // namespace
+
 void Element::MovedFrom(ContainerNode& old_parent) {
   Node::MovedFrom(old_parent);
 
   DCHECK(!GetDocument().StatePreservingAtomicMoveInProgress());
+
+  UpdateSubframeThrottlingAfterMove(*this);
 
   // `old_parent` can be the document.
   if (!old_parent.IsElementNode()) {
@@ -4647,13 +4695,13 @@ void Element::SetCanvasTransform(const gfx::Transform& transform) {
     }
   }
   EnsureRareData().SetCanvasTransform(transform).RefreshNode(*this);
-  InvalidateForCanvasTransformChange(GetLayoutObject());
+  InvalidateForCanvasTransformChange(*this);
 }
 
 void Element::ClearCanvasTransform() {
   if (NodeRareData* data = RareData()) {
     data->ClearCanvasTransform();
-    InvalidateForCanvasTransformChange(GetLayoutObject());
+    InvalidateForCanvasTransformChange(*this);
   }
 }
 
@@ -4789,7 +4837,7 @@ void Element::RemovedFrom(ContainerNode& insertion_point) {
     if (!GetDocument().StatePreservingAtomicMoveInProgress()) {
       if (ElementAnimations* element_animations =
               data->GetElementAnimations()) {
-        element_animations->CssAnimations().Cancel();
+        element_animations->CssAnimations().Cancel(document);
         element_animations->CssImageAnimations().Clear();
       }
     }
@@ -4973,6 +5021,14 @@ void Element::AttachLayoutTree(AttachContext& context) {
       overscroll_area_context.next_sibling = nullptr;
       overscroll_area_context.next_sibling_valid = true;
       AttachLayoutTree(overscroll_area_context);
+
+      if (!GetLayoutBox()) {
+        // We failed to create a box. Although we try to force overscrollarea
+        // elements to be position:absolute, as an attempt to create an
+        // out-of-flow positioned box, that won't work if it's a BR element, for
+        // instance.
+        DetachLayoutTree(/*performing_reattach=*/false);
+      }
       return;
     }
   }
@@ -5125,7 +5181,7 @@ void Element::DetachLayoutTree(bool performing_reattach) {
     if (ElementAnimations* element_animations = data->GetElementAnimations()) {
       if (!performing_reattach) {
         DocumentLifecycle::DetachScope will_detach(GetDocument().Lifecycle());
-        element_animations->CssAnimations().Cancel();
+        element_animations->CssAnimations().Cancel(GetDocument());
         element_animations->CssImageAnimations().Clear();
         element_animations->SetAnimationStyleChange(false);
       }
@@ -5194,6 +5250,7 @@ void Element::DetachDescendantsNeedingReattachDuringSkip() {
     // subtree is no longer skipped.
     if (child->GetForceReattachLayoutTree()) {
       child->DetachLayoutTree();
+      child->SetStyleChangeOnInsertion();
       child->SetForceReattachLayoutTree();
     } else if (child->ChildNeedsStyleRecalc()) {
       if (auto* child_element = DynamicTo<Element>(child)) {
@@ -5389,12 +5446,13 @@ bool Element::SkipStyleRecalcForContainer(
     return false;
   }
 
-  // If we are moving the ::backdrop element to the top layer while laying out
-  // its originating element, it means we will add a layout-dirty box as a
-  // preceding sibling of the originating element's box which means we will not
-  // reach the box for ::backdrop during layout. Don't skip style recalc for
-  // children of containers in the top layer for this reason.
-  if (style.IsRenderedInTopLayer(*this)) {
+  // If we are moving the ::backdrop element to the top layer (or to an
+  // ::-internal-overscroll-area-parent) while laying out its originating
+  // element, it means we will add a layout-dirty box as a preceding sibling of
+  // the originating element's box which means we will not reach the box for
+  // ::backdrop during layout. Don't skip style recalc for children of
+  // containers in the top layer or overscroll areas for this reason.
+  if (style.IsRenderedInTopLayer(*this) || IsValidOverscrollArea()) {
     return false;
   }
 
@@ -5603,24 +5661,37 @@ void Element::RecalcStyle(const StyleRecalcChange change,
   // As an optimization, we can skip most UpdatePseudoElement() calls
   // (and similar) if the ComputedStyle doesn't have any pseudo-element styles
   // and there are no existing pseudo-elements to be updated.
+  const ComputedStyle* style = GetComputedStyle();
+  const bool has_pseudos = RareData() && RareData()->HasAnyPseudos();
   const bool need_to_check_pseudos =
       child_change.TraversePseudoElements(*this) &&
-      ((RareData() && RareData()->HasAnyPseudos()) ||
-       (GetComputedStyle() && GetComputedStyle()->HasAnyPseudoElementStyles()));
+      (has_pseudos || (style && style->HasAnyPseudoElementStyles()));
 
   if (child_change.TraversePseudoElements(*this)) {
-    // Backdrop handling depends on feature flags.
-    // TODO: When the OverlayProperty feature flag is removed,
-    // this can probably be moved inside the if.
-    UpdateBackdropPseudoElement(child_change, child_recalc_context);
-    UpdateOverscrollBackdropPseudoElement(child_change, child_recalc_context);
+    // The pseudo-elements below are generated based on conditions other than
+    // having matched pseudo-element rules, so HasAnyPseudoElementStyles()
+    // (i.e. need_to_check_pseudos) can not be used to skip updating them.
+    // Instead, check the necessary condition for generating each of them (see
+    // CanGeneratePseudoElement()), unless there are existing pseudo-elements
+    // which may need to be updated or removed.
 
-    // ::marker ignores the ComputedStyle bits and checks IsDisplayListItem().
-    UpdatePseudoElement(kPseudoIdMarker, child_change, child_recalc_context);
+    // ::backdrop is generated for elements rendered in the top layer or
+    // registered overscroll areas (see CanGeneratePseudoElement()).
+    if (has_pseudos || IsInTopLayer() || IsValidOverscrollArea()) {
+      UpdateBackdropPseudoElement(child_change, child_recalc_context);
+    }
 
-    // Scroll markers have special rules for the document element.
-    UpdatePseudoElement(kPseudoIdScrollMarkerGroupBefore, child_change,
-                        layout_sibling_recalc_context);
+    // ::marker is generated for list items.
+    if (has_pseudos || (style && style->IsDisplayListItem())) {
+      UpdatePseudoElement(kPseudoIdMarker, child_change, child_recalc_context);
+    }
+
+    // ::scroll-marker-group is generated based on the scroll-marker-group
+    // property.
+    if (has_pseudos || (style && style->HasScrollMarkerGroupBefore())) {
+      UpdatePseudoElement(kPseudoIdScrollMarkerGroupBefore, child_change,
+                          layout_sibling_recalc_context);
+    }
 
     if (need_to_check_pseudos) {
       UpdatePseudoElement(kPseudoIdScrollButtonBlockStart, child_change,
@@ -5660,24 +5731,35 @@ void Element::RecalcStyle(const StyleRecalcChange change,
   }
 
   if (child_change.TraversePseudoElements(*this)) {
-    // Scroll markers have special rules for the document element.
-    UpdatePseudoElement(kPseudoIdScrollMarkerGroupAfter, child_change,
-                        layout_sibling_recalc_context);
+    // See the comment above for why the checks below differ from
+    // need_to_check_pseudos.
 
-    // ::overscroll-area-parent ignores the ComputedStyle bits and checks
-    // IsValidOverscrollArea().
-    bool had_overscroll_area_parent =
-        GetPseudoElement(kPseudoIdOverscrollAreaParent);
-    if (UpdatePseudoElement(kPseudoIdOverscrollAreaParent, child_change,
-                            child_recalc_context) &&
-        !had_overscroll_area_parent) {
-      // The container attaches area parents before its other children.
-      GetOverscrollContainer()->SetNeedsReattachLayoutTree();
+    // ::scroll-marker-group is generated based on the scroll-marker-group
+    // property.
+    if (has_pseudos || (style && style->HasScrollMarkerGroupAfter())) {
+      UpdatePseudoElement(kPseudoIdScrollMarkerGroupAfter, child_change,
+                          layout_sibling_recalc_context);
     }
 
-    // View transitions ignore the ComputedStyle bits and check
-    // ViewTransitionUtils::GetTransition(*this).
-    UpdateTransitionPseudoElements(child_change, child_recalc_context);
+    // ::overscroll-area-parent is generated for registered overscroll areas
+    // (see OverscrollAreaTracker), which is tracked independently of the style.
+    if (has_pseudos || IsValidOverscrollArea()) {
+      bool had_overscroll_area_parent =
+          GetPseudoElement(kPseudoIdOverscrollAreaParent);
+      if (UpdatePseudoElement(kPseudoIdOverscrollAreaParent, child_change,
+                              child_recalc_context) &&
+          !had_overscroll_area_parent) {
+        // The container attaches area parents before its other children.
+        GetOverscrollContainer()->SetNeedsReattachLayoutTree();
+      }
+    }
+
+    // View transition pseudo-elements are generated for elements with an
+    // active ViewTransition, which requires the document to have a
+    // ViewTransitionSupplement.
+    if (has_pseudos || GetDocument().GetViewTransitionsIfExists()) {
+      UpdateTransitionPseudoElements(child_change, child_recalc_context);
+    }
 
     if (RuntimeEnabledFeatures::DeclarativeSkeletonsEnabled() &&
         IsDocumentElement()) {
@@ -5993,7 +6075,7 @@ StyleRecalcChange Element::RecalcOwnStyle(
         // means an animation set display:none, and an animation shouldn't
         // cancel itself in this case.
         if (base_is_display_none) {
-          element_animations->CssAnimations().Cancel();
+          element_animations->CssAnimations().Cancel(GetDocument());
           element_animations->CssImageAnimations().Clear();
         }
       }
@@ -6120,6 +6202,26 @@ StyleRecalcChange Element::RecalcOwnStyle(
             .InvalidateMatchedPropertiesCacheForViewportUnits();
         child_change =
             child_change.EnsureAtLeast(StyleRecalcChange::kRecalcDescendants);
+      }
+
+      if (old_style && new_style) {
+        if (const Element* body = GetDocument().FirstBodyElement()) {
+          if (const ComputedStyle* body_style = body->GetComputedStyle();
+              body_style &&
+              (body_style->EffectiveOverscrollContainerType() !=
+                   EOverscrollContainerType::kNone ||
+               body_style->ScrollsOverflow()) &&
+              StyleAdjuster::BodyPropagatesOverflowToViewport(
+                  *body_style, *old_style, body) !=
+                  StyleAdjuster::BodyPropagatesOverflowToViewport(
+                      *body_style, *new_style, body)) {
+            // StyleAdjuster adjusts body's overscroll containment and
+            // touch-action based on whether body propagates overflow to the
+            // viewport.
+            child_change =
+                child_change.EnsureAtLeast(StyleRecalcChange::kRecalcChildren);
+          }
+        }
       }
     }
     child_change = ApplyComputedStyleDiff(child_change, diff);
@@ -6410,8 +6512,6 @@ void Element::RebuildLayoutTree(WhitespaceAttacher& whitespace_attacher) {
         RebuildPseudoElementLayoutTree(kPseudoIdScrollMarkerGroupBefore,
                                        local_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdBackdrop, *child_attacher);
-        RebuildPseudoElementLayoutTree(kPseudoIdOverscrollBackdrop,
-                                       *child_attacher);
         RebuildPseudoElementLayoutTree(kPseudoIdScrollMarker, *child_attacher);
         RebuildColumnLayoutTrees(*child_attacher);
       }
@@ -8539,9 +8639,12 @@ void Element::RemoveAttributeInternal(wtf_size_t index,
   // where removing all attributes send us into O(n²)).
 }
 
-void Element::AppendAttributeInternal(const QualifiedName& name,
-                                      const AtomicString& value,
+void Element::AppendAttributeInternal(QualifiedName name,
+                                      AtomicString value,
                                       AttributeModificationReason reason) {
+  // `name` and `value` are passed by value because they may be references
+  // into `ElementData::Attributes()`, which can be reallocated by
+  // `WillModifyAttribute()`, `Append()`, or `DidAddAttribute()`.
   if (reason !=
       AttributeModificationReason::kBySynchronizationOfLazyAttribute) {
     WillModifyAttribute(name, g_null_atom, value);
@@ -9567,6 +9670,13 @@ void Element::SetIsOverlayPopupAd() {
   RareData()->GetDisplayAdElementMonitor()->SetIsOverlayPopupAd();
 }
 
+void Element::SetIsPrestitialAd() {
+  // A prestitial ad is a kind of overlay popup ad, so the popup tag must have
+  // been applied first.
+  CHECK(IsOverlayPopupAd());
+  RareData()->GetDisplayAdElementMonitor()->SetIsPrestitialAd();
+}
+
 bool Element::IsAdRelated() const {
   if (const NodeRareData* data = RareData()) {
     return data->GetDisplayAdElementMonitor();
@@ -9596,6 +9706,15 @@ bool Element::IsOverlayPopupAd() const {
   if (const NodeRareData* data = RareData()) {
     if (const auto* monitor = data->GetDisplayAdElementMonitor()) {
       return monitor->IsOverlayPopupAd();
+    }
+  }
+  return false;
+}
+
+bool Element::IsPrestitialAd() const {
+  if (const NodeRareData* data = RareData()) {
+    if (const auto* monitor = data->GetDisplayAdElementMonitor()) {
+      return monitor->IsPrestitialAd();
     }
   }
   return false;
@@ -10549,6 +10668,9 @@ String Element::TextFromChildren() {
 }
 
 const AtomicString& Element::ShadowPseudoId() const {
+  if (!IsInShadowTree()) {
+    return g_null_atom;
+  }
   if (ShadowRoot* root = ContainingShadowRoot()) {
     if (root->IsUserAgent()) {
       return FastGetAttribute(html_names::kPseudoAttr);
@@ -11038,43 +11160,6 @@ void Element::UpdateBackdropPseudoElement(
   }
 }
 
-bool Element::ShouldUpdateOverscrollBackdropPseudoElement(
-    const StyleRecalcChange change) {
-  // This runs for many elements during style recalc, so there is no feature
-  // check here: the pseudo element can only exist, or be generated, for
-  // registered overscroll areas, which requires the feature to be enabled.
-  PseudoElement* element =
-      GetPseudoElement(PseudoId::kPseudoIdOverscrollBackdrop,
-                       /* pseudo_argument */ g_null_atom);
-  bool generate_pseudo =
-      CanGeneratePseudoElement(PseudoId::kPseudoIdOverscrollBackdrop);
-
-  if (element) {
-    return !generate_pseudo || change.ShouldUpdatePseudoElement(*element);
-  }
-
-  return generate_pseudo;
-}
-
-void Element::UpdateOverscrollBackdropPseudoElement(
-    const StyleRecalcChange change,
-    const StyleRecalcContext& style_recalc_context) {
-  if (!ShouldUpdateOverscrollBackdropPseudoElement(change)) {
-    return;
-  }
-
-  if (GetDocument().GetStyleEngine().GetInterleavingRecalcRoot() != this) {
-    UpdatePseudoElement(PseudoId::kPseudoIdOverscrollBackdrop, change,
-                        style_recalc_context);
-    return;
-  }
-
-  if (PostStyleUpdateScope::PseudoData* pseudo_data =
-          PostStyleUpdateScope::CurrentPseudoData()) {
-    pseudo_data->AddPendingBackdrop(/* originating_element */ *this);
-  }
-}
-
 void Element::ApplyPendingBackdropPseudoElementUpdate() {
   // Mark for style recalc, in order to trigger creation of a ::backdrop pseudo-
   // element if needed. There's no way of telling if there'll be any need for it
@@ -11463,7 +11548,7 @@ PseudoElement* Element::GetPseudoElement(
 
 CSSPseudoElement* Element::pseudo(const AtomicString& type) {
   auto [pseudo_id, pseudo_argument] =
-      CSSPseudoElement::ConvertTypeToSupportedPseudoId(type, this);
+      CSSPseudoElement::ConvertTypeToSupportedPseudoId(type);
   return EnsureCSSPseudoElement(pseudo_id, pseudo_argument);
 }
 
@@ -11903,21 +11988,20 @@ bool Element::CanGeneratePseudoElement(PseudoId pseudo_id) const {
       }
     }
     if (pseudo_id == kPseudoIdBackdrop) {
-      if (!IsInTopLayer()) {
+      if (IsInTopLayer()) {
+        if (!RuntimeEnabledFeatures::OverlayPropertyEnabled()) {
+          return true;
+        }
+        if (style->Overlay() == EOverlay::kNone) {
+          return false;
+        }
+      } else if (IsValidOverscrollArea()) {
+        // Registering an overscroll area requires the feature to be enabled.
+        DCHECK(RuntimeEnabledFeatures::OverscrollAreasEnabled(
+            GetExecutionContext()));
+      } else {
         return false;
       }
-      if (!RuntimeEnabledFeatures::OverlayPropertyEnabled()) {
-        return true;
-      }
-    }
-    if (pseudo_id == kPseudoIdOverscrollBackdrop) {
-      if (!IsValidOverscrollArea()) {
-        return false;
-      }
-      // Registering an overscroll area requires the feature to be enabled.
-      DCHECK(RuntimeEnabledFeatures::OverscrollAreasEnabled(
-          GetExecutionContext()));
-      return true;
     }
     return style->CanGeneratePseudoElement(pseudo_id);
   }
@@ -13466,6 +13550,19 @@ HeapLinkedHashSet<Member<Element>> AllSourceInterestInvokers(Element& target) {
   return sources;
 }
 
+// Returns the next element in the ancestor chain used for interest invoker
+// hover/focus handling: the flat tree parent element, or the frame owner
+// element if `element` is the root of its document.
+Element* InterestAncestor(Element& element) {
+  if (Element* parent = FlatTreeTraversal::ParentElement(element)) {
+    return parent;
+  }
+  if (element.isConnected()) {
+    return element.GetDocument().LocalOwner();
+  }
+  return nullptr;
+}
+
 }  // namespace
 
 // Mechanics of `interestfor` invokers ("interest invokers"):
@@ -13483,20 +13580,28 @@ HeapLinkedHashSet<Member<Element>> AllSourceInterestInvokers(Element& target) {
 //    losing focus (not any ancestors), and then SetFocused(true) is called on
 //    the element gaining focus. Because the ancestor chain is not automatically
 //    notified, this function must walk the ancestors manually.
-void Element::HandleInterestForHoverOrFocus(InterestSource source) {
+void Element::HandleInterestForHoverOrFocus(InterestSource source,
+                                            Node* newly_hovered_node) {
   if (!IsInTreeScope() || !GetDocument().IsActive()) {
     return;
   }
-  Element* element = this;
-  while (element) {
-    element->ScheduleInterestChangesIfNeeded(source);
-    if (Element* parent = FlatTreeTraversal::ParentElement(*element)) {
-      element = parent;
-    } else if (element->isConnected()) {
-      element = element->GetDocument().LocalOwner();
-    } else {
+  DCHECK(!newly_hovered_node || source == InterestSource::kDeHover);
+  DCHECK(!newly_hovered_node ||
+         RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled());
+  // When de-hovering, the inclusive ancestors of the newly hovered node remain
+  // hovered, so they should not lose interest (or have their pending
+  // interest-gained tasks canceled).
+  HeapHashSet<Member<Element>> still_hovered;
+  for (Element* element = DynamicTo<Element>(newly_hovered_node); element;
+       element = InterestAncestor(*element)) {
+    still_hovered.insert(element);
+  }
+  for (Element* element = this; element; element = InterestAncestor(*element)) {
+    if (still_hovered.Contains(element)) {
+      // All further ancestors are also still hovered.
       break;
     }
+    element->ScheduleInterestChangesIfNeeded(source);
   }
 }
 
@@ -13526,8 +13631,13 @@ void Element::ScheduleInterestChangesIfNeeded(InterestSource source) {
         (!invoker_data || invoker_data->GetInterestState() ==
                               InterestState::kNoInterest)) [[unlikely]] {
       // This is an interest invoker that doesn't already have interest, and was
-      // just hovered or focused. Schedule an InterestGained task.
-      ScheduleInterestGainedTask();
+      // just hovered or focused. Schedule an InterestGained task, unless one is
+      // already pending (e.g. the pointer moved between descendants of this
+      // invoker), in which case the existing delay continues.
+      if (!RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled() ||
+          !invoker_data || !invoker_data->HasInterestGainedTask()) {
+        ScheduleInterestGainedTask();
+      }
     }
   } else {
     DCHECK(source == InterestSource::kDeHover ||
@@ -14165,10 +14275,10 @@ ALWAYS_INLINE void Element::SetAttributeInternal(
   QualifiedName existing_attribute_name = existing_attribute.GetName();
 
   // `new_value` may be a reference into `ElementData::Attributes()`, which can
-  // be reallocated if `WillModifyAttribute()` pauses in the debugger and script
-  // mutates attributes. Copy it here (rather than taking `new_value` by value
-  // in `SetAttributeInternal`, which would add refcount churn to the
-  // `AppendAttributeInternal` fast path).
+  // be reallocated if `WillModifyAttribute()` runs script (e.g. by pausing in
+  // the debugger) and mutates attributes. Copy it in the branches that invoke
+  // `WillModifyAttribute()` (and in `AppendAttributeInternal()`) rather than
+  // taking `new_value` by value in `SetAttributeInternal()`.
   if (new_value == existing_attribute.Value()) {
     if (reason !=
         AttributeModificationReason::kBySynchronizationOfLazyAttribute) {
@@ -14299,22 +14409,6 @@ void Element::RemoveAttributeHinted(const AtomicString& name,
 
 bool Element::IsDocumentElement() const {
   return this == GetDocument().documentElement();
-}
-
-bool Element::IsReplacedElementRespectingCSSOverflow() const {
-  // See https://github.com/w3c/csswg-drafts/issues/7144 for details on enabling
-  // ink overflow for replaced elements.
-  if (GetPseudoId() == kPseudoIdViewTransitionNew ||
-      GetPseudoId() == kPseudoIdViewTransitionOld) {
-    return true;
-  }
-
-  return IsA<HTMLVideoElement>(this) || IsA<HTMLCanvasElement>(this) ||
-         IsA<HTMLImageElement>(this) ||
-         (IsA<SVGSVGElement>(this) &&
-          To<SVGSVGElement>(this)->IsOutermostSVGSVGElement() &&
-          !IsDocumentElement()) ||
-         IsA<HTMLFrameOwnerElement>(this);
 }
 
 AnchorPositionScrollData& Element::EnsureAnchorPositionScrollData() {

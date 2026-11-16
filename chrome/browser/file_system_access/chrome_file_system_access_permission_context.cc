@@ -294,6 +294,9 @@ bool IsLocalUNCServer(base::FilePath::StringViewType server) {
       FILE_PATH_LITERAL(".host"),
       FILE_PATH_LITERAL("vboxsvr"),
       FILE_PATH_LITERAL("vboxsrv"),
+      // Remote desktop client-drive redirectors (RDP/Horizon, Citrix HDX).
+      FILE_PATH_LITERAL("tsclient"),
+      FILE_PATH_LITERAL("client"),
   };
   for (const auto& candidate : kLocalServers) {
     if (base::FilePath::CompareEqualIgnoreCase(server, candidate)) {
@@ -304,8 +307,8 @@ bool IsLocalUNCServer(base::FilePath::StringViewType server) {
 }
 
 // Returns true if the path is a Universal Naming Convention (UNC) path pointing
-// to a local system path, device namespace, WSL loopback redirector, or
-// hypervisor host-share namespace.
+// to a local system path, device namespace, WSL loopback redirector,
+// hypervisor host-share namespace, or remote-session client drive redirector.
 bool MaybeIsLocalUNCPath(const base::FilePath& path) {
   if (!path.IsNetwork()) {
     return false;
@@ -556,16 +559,14 @@ GenerateBlockPaths(bool should_normalize_file_path) {
                                 BlockType::kBlockAllChildren),
       BlockPath::CreateRelative(base::DIR_HOME, FILE_PATH_LITERAL("_exrc"),
                                 BlockType::kBlockAllChildren),
-      // Block write access to */.git/hooks, see crbug.com/465668234 and
-      // crbug.com/553115714.
-      BlockPath::CreateSuffix(FILE_PATH_LITERAL(".git/hooks"),
-                              BlockType::kBlockWrite),
-      // Block write access to the repository config and to submodule git
-      // directories, which have their own hooks and config, see
-      // crbug.com/572269631 and crbug.com/571913154.
-      BlockPath::CreateSuffix(FILE_PATH_LITERAL(".git/config"),
-                              BlockType::kBlockWrite),
-      BlockPath::CreateSuffix(FILE_PATH_LITERAL(".git/modules"),
+      // Block write access to */.git by default (covering .git directory and
+      // gitfile creation, config, hooks, modules, commondir, worktrees, info,
+      // and arbitrary subdirectories); `ShouldBlockAccessToGitPath()` carves
+      // out safe repository data, ref, and index paths under an existing .git
+      // directory so web-based Git clients (e.g. isomorphic-git) continue to
+      // work. See crbug.com/465668234, crbug.com/553115714,
+      // crbug.com/571913154, crbug.com/572269631, and crbug.com/577352729.
+      BlockPath::CreateSuffix(FILE_PATH_LITERAL(".git"),
                               BlockType::kBlockWrite),
       // Block write access to */.mvn, which holds Maven project and JVM
       // configuration (such as jvm.config, maven.config, and extensions.xml),
@@ -677,6 +678,13 @@ GenerateBlockPaths(bool should_normalize_file_path) {
       BlockPath::CreateRelative(base::DIR_HOME,
                                 FILE_PATH_LITERAL(".fonts.conf.d"),
                                 BlockType::kBlockAllChildren),
+      // Block the legacy per-user fontconfig cache and font directories. The
+      // current locations are under ~/.cache and ~/.local/share.
+      BlockPath::CreateRelative(base::DIR_HOME,
+                                FILE_PATH_LITERAL(".fontconfig"),
+                                BlockType::kBlockAllChildren),
+      BlockPath::CreateRelative(base::DIR_HOME, FILE_PATH_LITERAL(".fonts"),
+                                BlockType::kBlockAllChildren),
       // Block the per-user NSS database, see crbug.com/557367241.
       BlockPath::CreateRelative(base::DIR_HOME, FILE_PATH_LITERAL(".pki"),
                                 BlockType::kBlockAllChildren),
@@ -742,25 +750,178 @@ GenerateBlockPaths(bool should_normalize_file_path) {
   return block_path_rules;
 }
 
-// If `path` is a hidden dot-file or dot-directory (`.*`) directly under
-// `home_dir` (or a descendant of one), returns that direct child path under
-// `home_dir`. Otherwise returns an empty `base::FilePath`.
-base::FilePath GetBlockedHomeDotPath(const base::FilePath& path,
-                                     const base::FilePath& home_dir) {
+// Match case aliases conservatively when revoking grants, as for removals.
+// This may also revoke a distinct case-variant path on a case-sensitive volume.
+bool IsSamePathIgnoreCase(const base::FilePath& first,
+                          const base::FilePath& second) {
+  return std::ranges::equal(first.GetComponents(), second.GetComponents(),
+                            base::FilePath::CompareEqualIgnoreCase);
+}
+
+// Returns true if `child_components` is the same as or a descendant of
+// `parent_components`, ignoring case differences.
+bool IsPathOrDescendantIgnoreCase(
+    const std::vector<base::FilePath::StringType>& parent_components,
+    const std::vector<base::FilePath::StringType>& child_components) {
+  if (parent_components.empty() ||
+      parent_components.size() > child_components.size()) {
+    return false;
+  }
+
+  return std::equal(parent_components.begin(), parent_components.end(),
+                    child_components.begin(),
+                    base::FilePath::CompareEqualIgnoreCase);
+}
+
+// Returns true if `child_path` is the same as or a descendant of
+// `parent_path`, ignoring case differences. Unlike
+// `base::FilePath::IsParent()`, this handles case-variant paths returned by
+// native pickers on case-insensitive filesystems.
+bool IsPathOrDescendantIgnoreCase(
+    const base::FilePath& parent_path,
+    const std::vector<base::FilePath::StringType>& parent_components,
+    const base::FilePath& child_path) {
+  // Fast path: Exact match or case-sensitive parent match.
+  if (child_path == parent_path || parent_path.IsParent(child_path)) {
+    return true;
+  }
+  return IsPathOrDescendantIgnoreCase(parent_components,
+                                      child_path.GetComponents());
+}
+
+// Returns true if `parent_components` is a strict parent of
+// `child_components`, ignoring case differences.
+bool IsParentIgnoreCase(
+    const std::vector<base::FilePath::StringType>& parent_components,
+    const std::vector<base::FilePath::StringType>& child_components) {
+  return parent_components.size() < child_components.size() &&
+         IsPathOrDescendantIgnoreCase(parent_components, child_components);
+}
+
+// If `path_components` represents a hidden dot-file or dot-directory (`.*`)
+// directly under `home_dir` (or a descendant of one), returns that direct
+// child path under `home_dir`. Otherwise returns an empty `base::FilePath`.
+base::FilePath GetBlockedHomeDotPath(
+    const std::vector<base::FilePath::StringType>& path_components,
+    const base::FilePath& home_dir) {
+  if (home_dir.empty()) {
+    return base::FilePath();
+  }
+  const std::vector<base::FilePath::StringType> home_components =
+      home_dir.GetComponents();
+  if (!IsParentIgnoreCase(home_components, path_components)) {
+    return base::FilePath();
+  }
+  const auto& direct_child_name = path_components[home_components.size()];
+  if (direct_child_name.starts_with(FILE_PATH_LITERAL('.')) &&
+      direct_child_name != base::FilePath::kCurrentDirectory &&
+      direct_child_name != base::FilePath::kParentDirectory) {
+    return home_dir.Append(direct_child_name);
+  }
+  return base::FilePath();
+}
+
+// Checks if write access (`kSave` or `kProgrammaticWrite`) to `path` should be
+// blocked by a `*/.git` rule rooted at `git_dir`.
+//
+// Creating or overwriting the `.git` entry itself (directory or gitfile
+// pointer) is always blocked, as are configuration, hook, submodule, worktree,
+// `commondir`, and `objects/info` paths that control what Git executes. A
+// narrow allowlist of repository data, ref, and index paths under an existing
+// `.git` directory remains writable so web-based Git clients (e.g.
+// isomorphic-git) continue to work.
+bool ShouldBlockAccessToGitPath(const base::FilePath& git_dir,
+                                const base::FilePath& path,
+                                HandleType handle_type) {
   base::FilePath relative_path;
-  if (!home_dir.empty() && home_dir.AppendRelativePath(path, &relative_path)) {
-    std::vector<base::FilePath::StringType> relative_components =
-        relative_path.GetComponents();
-    if (!relative_components.empty()) {
-      const auto& direct_child_name = relative_components[0];
-      if (direct_child_name.starts_with(FILE_PATH_LITERAL('.')) &&
-          direct_child_name != base::FilePath::kCurrentDirectory &&
-          direct_child_name != base::FilePath::kParentDirectory) {
-        return home_dir.Append(direct_child_name);
+  if (!git_dir.AppendRelativePath(path, &relative_path) ||
+      relative_path.ReferencesParent()) {
+    return true;
+  }
+
+  const std::vector<base::FilePath::StringType> rel_components =
+      relative_path.GetComponents();
+  // `FilePath(".").GetComponents()` is empty when `path` is `<repo>/.git/.`.
+  if (rel_components.empty()) {
+    return true;
+  }
+
+  for (const auto& component : rel_components) {
+    if (component == base::FilePath::kCurrentDirectory ||
+        base::FilePath::CompareEqualIgnoreCase(component,
+                                               FILE_PATH_LITERAL(".git"))) {
+      return true;
+    }
+  }
+
+  // Subtrees under `.git` whose contents hold repository data, refs, or
+  // reflogs rather than executable hooks or configuration.
+  static constexpr base::FilePath::StringViewType kAllowedGitDirectories[] = {
+      FILE_PATH_LITERAL("objects"),
+      FILE_PATH_LITERAL("refs"),
+      FILE_PATH_LITERAL("reftable"),
+      FILE_PATH_LITERAL("logs"),
+  };
+  for (const auto& allowed_dir : kAllowedGitDirectories) {
+    if (base::FilePath::CompareEqualIgnoreCase(rel_components[0],
+                                               allowed_dir)) {
+      if (rel_components.size() == 1) {
+        return handle_type != HandleType::kDirectory;
+      }
+      // Block `.git/objects/info` (such as `alternates` and `http-alternates`),
+      // which can redirect object lookups outside the repository.
+      if (allowed_dir == FILE_PATH_LITERAL("objects") &&
+          base::FilePath::CompareEqualIgnoreCase(rel_components[1],
+                                                 FILE_PATH_LITERAL("info"))) {
+        return true;
+      }
+      return false;
+    }
+  }
+
+  // Top-level files (and atomic lock/staging files) directly under `.git` that
+  // web-based Git clients (e.g. isomorphic-git) update during normal staging,
+  // commit, checkout, branch, fetch, and merge workflows. These files are safe
+  // to allow because Git parses them strictly as binary index entries, hex
+  // object IDs, `ref:` targets, or plain-text commit messages; unlike `config`,
+  // `hooks/*`, `commondir`, `gitdir`, or `objects/info/alternates`, they cannot
+  // configure external commands or redirect Git's repository/object lookup.
+  if (rel_components.size() == 1 && handle_type == HandleType::kFile) {
+    static constexpr base::FilePath::StringViewType kAllowedGitFiles[] = {
+        // Staging area updated by `add`, `checkout`, and `reset`.
+        FILE_PATH_LITERAL("index"),
+        FILE_PATH_LITERAL("index.lock"),
+        // Compacted ref table (`<oid> <refname>`) updated by `fetch` / `gc`.
+        FILE_PATH_LITERAL("packed-refs"),
+        FILE_PATH_LITERAL("packed-refs.lock"),
+        FILE_PATH_LITERAL("packed-refs.new"),
+        // Shallow-clone commit boundary OIDs updated by shallow `fetch`.
+        FILE_PATH_LITERAL("shallow"),
+        FILE_PATH_LITERAL("shallow.lock"),
+        // Current branch symref / commit OID and pseudorefs updated by
+        // `commit`, `checkout`, `fetch`, `merge`, `cherry-pick`, and `revert`.
+        FILE_PATH_LITERAL("HEAD"),
+        FILE_PATH_LITERAL("HEAD.lock"),
+        FILE_PATH_LITERAL("ORIG_HEAD"),
+        FILE_PATH_LITERAL("ORIG_HEAD.lock"),
+        FILE_PATH_LITERAL("FETCH_HEAD"),
+        FILE_PATH_LITERAL("MERGE_HEAD"),
+        FILE_PATH_LITERAL("CHERRY_PICK_HEAD"),
+        FILE_PATH_LITERAL("REVERT_HEAD"),
+        // Plain-text commit/merge message and mode state (`no-ff`).
+        FILE_PATH_LITERAL("MERGE_MSG"),
+        FILE_PATH_LITERAL("MERGE_MODE"),
+        FILE_PATH_LITERAL("COMMIT_EDITMSG"),
+    };
+    for (const auto& allowed_file : kAllowedGitFiles) {
+      if (base::FilePath::CompareEqualIgnoreCase(rel_components[0],
+                                                 allowed_file)) {
+        return false;
       }
     }
   }
-  return base::FilePath();
+
+  return true;
 }
 
 // Checks if `path` should be blocked by the `rules`.
@@ -780,7 +941,9 @@ bool ShouldBlockAccessToPath(
     ChromeFileSystemAccessPermissionContext::BlockPathRules block_path_rules,
     base::FilePath profile_path) {
   CHECK(!path.empty(), base::NotFatalUntil::M161);
-  CHECK(path.IsAbsolute(), base::NotFatalUntil::M161);
+  // TODO(crbug.com/582185934): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(path.IsAbsolute());
 
   path = NormalizeFilePathForBlocklist(path, should_normalize_file_path);
   profile_path =
@@ -798,7 +961,10 @@ bool ShouldBlockAccessToPath(
   }
 #endif
 
+  const std::vector<base::FilePath::StringType> path_components =
+      path.GetComponents();
   base::FilePath nearest_ancestor;
+  std::vector<base::FilePath::StringType> nearest_ancestor_components;
   BlockType nearest_ancestor_block_type = BlockType::kDontBlockChildren;
   auto should_block_with_rule = [&](const base::FilePath& block_path,
                                     BlockType block_type) -> bool {
@@ -808,15 +974,25 @@ bool ShouldBlockAccessToPath(
       return false;
     }
 
-    if (path == block_path || path.IsParent(block_path)) {
+    if (block_type == BlockType::kBlockWrite &&
+        base::FilePath::CompareEqualIgnoreCase(block_path.BaseName().value(),
+                                               FILE_PATH_LITERAL(".git"))) {
+      return ShouldBlockAccessToGitPath(block_path, path, handle_type);
+    }
+
+    std::vector<base::FilePath::StringType> block_components =
+        block_path.GetComponents();
+    if (IsPathOrDescendantIgnoreCase(path_components, block_components)) {
       LOG(ERROR) << "Blocking access to " << path
                  << " because it is a parent of " << block_path;
       return true;
     }
 
-    if (block_path.IsParent(path) &&
-        (nearest_ancestor.empty() || nearest_ancestor.IsParent(block_path))) {
+    if (IsParentIgnoreCase(block_components, path_components) &&
+        (nearest_ancestor.empty() ||
+         IsParentIgnoreCase(nearest_ancestor_components, block_components))) {
       nearest_ancestor = block_path;
+      nearest_ancestor_components = std::move(block_components);
       nearest_ancestor_block_type = block_type;
     }
     return false;
@@ -846,7 +1022,8 @@ bool ShouldBlockAccessToPath(
           features::kFileSystemAccessBlockHomeDotFiles)) {
     const base::FilePath& home_dir =
         kUseProfilePathForDirHome ? profile_path : block_path_rules.home_path_;
-    base::FilePath blocked_dot_path = GetBlockedHomeDotPath(path, home_dir);
+    base::FilePath blocked_dot_path =
+        GetBlockedHomeDotPath(path_components, home_dir);
     if (!blocked_dot_path.empty() &&
         should_block_with_rule(blocked_dot_path,
                                BlockType::kBlockAllChildren)) {
@@ -860,8 +1037,6 @@ bool ShouldBlockAccessToPath(
   // using case-insensitive comparison and constructs a `current_path` from the
   // root up to the end of the matched subrange (e.g., `/foo/bar/.git/hooks`).
   // This path is then evaluated against the regular block rules.
-  std::vector<base::FilePath::StringType> path_components =
-      path.GetComponents();
   for (const auto& rule : block_path_rules.suffix_block_path_rules_) {
     base::FilePath rule_path(rule.path);
     std::vector<base::FilePath::StringType> rule_components =
@@ -915,31 +1090,6 @@ bool ShouldBlockAccessToPath(
   VLOG(1) << "Blocking access to " << path << " because it is inside "
           << nearest_ancestor << " and it's kBlockAllChildren";
   return true;
-}
-
-// Returns true if `child_path` is the same as or a descendant of
-// `parent_path`, ignoring case differences. Unlike
-// `base::FilePath::IsParent()`, this handles case-variant paths returned by
-// native pickers on case-insensitive filesystems.
-bool IsPathOrDescendantIgnoreCase(
-    const base::FilePath& parent_path,
-    const std::vector<base::FilePath::StringType>& parent_components,
-    const base::FilePath& child_path) {
-  // Fast path: Exact match or case-sensitive parent match.
-  if (child_path == parent_path || parent_path.IsParent(child_path)) {
-    return true;
-  }
-
-  const std::vector<base::FilePath::StringType> child_components =
-      child_path.GetComponents();
-  if (parent_components.empty() ||
-      parent_components.size() > child_components.size()) {
-    return false;
-  }
-
-  return std::equal(parent_components.begin(), parent_components.end(),
-                    child_components.begin(),
-                    base::FilePath::CompareEqualIgnoreCase);
 }
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -1476,8 +1626,8 @@ class ChromeFileSystemAccessPermissionContext::PermissionGrantImpl
   // Updates the in-memory permission grant for the `new_path` in the `grants`
   // map using the same grant from the `old_path`, and removes the grant entry
   // for the `old_path`.
-  // If `allow_overwrite` is true, this will replace any pre-existing grant at
-  // `new_path`.
+  // If `allow_overwrite` is true, revoke existing destination grants using
+  // case-insensitive path matching, except the source grant on case-only moves.
   static void UpdateGrantPath(
       std::map<base::FilePath, raw_ptr<PermissionGrantImpl, CtnExperimental>>&
           grants,
@@ -1485,58 +1635,38 @@ class ChromeFileSystemAccessPermissionContext::PermissionGrantImpl
       const content::PathInfo& new_path,
       bool allow_overwrite) {
     CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
-    auto old_path_it =
-        std::ranges::find_if(grants, [&old_path](const auto& entry) {
-          return entry.first == old_path.path;
-        });
+    auto old_path_it = grants.find(old_path.path);
+    scoped_refptr<PermissionGrantImpl> grant_to_move =
+        old_path_it == grants.end() ? nullptr : old_path_it->second.get();
 
-    if (old_path_it == grants.end()) {
-      // There must be an entry for an ancestor of this entry. Nothing to do
-      // here.
-      //
+    if (allow_overwrite) {
+      // Revoke every spelling of the destination, even if the source grant is
+      // inherited from an ancestor. Keep the source itself for case-only moves.
+      // Hold the removed grants alive and finish iterating before notifying
+      // observers, which can release other grants in the map.
+      std::vector<scoped_refptr<PermissionGrantImpl>> grants_to_revoke;
+      std::erase_if(grants, [&](const auto& entry) {
+        const auto& [path, grant] = entry;
+        if (grant.get() != grant_to_move.get() &&
+            IsSamePathIgnoreCase(path, new_path.path)) {
+          grants_to_revoke.emplace_back(grant.get());
+          return true;
+        }
+        return false;
+      });
+      for (const auto& grant : grants_to_revoke) {
+        grant->SetStatus(
+            PermissionStatus::DENIED,
+            // NotifyEntryMoved handles persisted destination grants separately.
+            PersistedPermissionOptions::kDoNotUpdatePersistedPermission);
+      }
+    }
+
+    if (!grant_to_move) {
+      // There must be an entry for an ancestor of this entry. Nothing to move.
       // TODO(crbug.com/40245144): Consolidate superfluous child grants
       // to support directory moves.
       return;
-    }
-
-    scoped_refptr<PermissionGrantImpl> grant_to_move =
-        old_path_it->second.get();
-
-    if (allow_overwrite) {
-      // Check for a collision at the new path. If a different grant already
-      // exists at the destination, its status must be set to DENIED before it
-      // is replaced in the `grants` map.
-      //
-      // This prevents a DCHECK failure in `PermissionGrantDestroyed()` that can
-      // occur depending on object destruction order. Consider this scenario:
-      //   1. `grant1` (for `handle1`) exists for `path1`.
-      //   2. `handle2` (with `grant2`) is moved to `path1`.
-      //   3. The `grants` map entry for `path1` is updated to point to
-      //   `grant2`,
-      //      orphaning `grant1`. `grant1` is now untracked but still `GRANTED`.
-      //   4. If `handle2` is destroyed first, the map entry for `path1` is
-      //   removed.
-      //   5. When `handle1` is later destroyed, `PermissionGrantDestroyed()` is
-      //      called for `grant1`. It fails a DCHECK because the grant is not in
-      //      the map and its status is `GRANTED` instead of the expected
-      //      `DENIED`.
-      //
-      // By setting the orphaned grant's status to DENIED here, the DCHECK will
-      // pass regardless of destruction order.
-      auto new_path_it = grants.find(new_path.path);
-      if (new_path_it != grants.end() &&
-          new_path_it->second.get() != grant_to_move.get()) {
-        // A different grant exists at the destination. Revoke it before it gets
-        // orphaned.
-        scoped_refptr<PermissionGrantImpl> grant_to_revoke =
-            new_path_it->second.get();
-        grants.erase(new_path_it);
-        grant_to_revoke->SetStatus(
-            PermissionStatus::DENIED,
-            // Only update the in-memory permission, as the persistent
-            // permission should be updated by the call site.
-            PersistedPermissionOptions::kDoNotUpdatePersistedPermission);
-      }
     }
 
     // `insert_or_assign` is used when overwriting is allowed, as it will
@@ -1760,20 +1890,6 @@ class ChromeFileSystemAccessPermissionContext::PermissionGrantImpl
     }
 
     path_info_ = new_path;
-
-    if (context_ && base::FeatureList::IsEnabled(
-                        features::kFileSystemAccessPersistentPermissions)) {
-      const std::unique_ptr<Object> object = context_->GetGrantedObject(
-          origin_, PathAsPermissionKey(path_info_.path));
-      if (object) {
-        base::DictValue new_object = object->value.Clone();
-        new_object.Set(kPermissionPathKey,
-                       base::FilePathToValue(new_path.path));
-        new_object.Set(kPermissionDisplayNameKey, new_path.display_name);
-        context_->UpdateObjectPermission(origin_, object->value,
-                                         std::move(new_object));
-      }
-    }
 
     // May destroy `this`.
     NotifyPermissionStatusChanged();
@@ -2531,10 +2647,10 @@ void ChromeFileSystemAccessPermissionContext::CheckPathsAgainstEnterprisePolicy(
   }
 
   // CreateForFilesInWebContents() only handles real OS files. Any kExternal
-  // entries that failed to resolve will be ignored by the scanner and
-  // reconciled based on the policy's default action (fail-open or fail-closed).
-  // TODO(crbug.com/535207208): Add a test to validate that unscannedFileEvent
-  // is reported for these unresolved files.
+  // entries that failed to resolve can't be opened by the scanner, so they are
+  // reported as unscanned and reconciled based on the policy's default action
+  // (fail-open or fail-closed). See
+  // ContentAnalysisDelegateUnresolvedFileBrowserTest.
   enterprise_connectors::ContentAnalysisDelegate::CreateForFilesInWebContents(
       web_contents, std::move(data),
       base::BindOnce(
@@ -3003,6 +3119,24 @@ void ChromeFileSystemAccessPermissionContext::NotifyEntryMoved(
       features::kFileSystemAccessMoveWithOverwrite);
 
   bool updated = false;
+  if (allow_overwrite &&
+      base::FeatureList::IsEnabled(
+          features::kFileSystemAccessPersistentPermissions)) {
+    // A destination grant can outlive all its handles. Revoke persisted aliases
+    // even without a persisted source grant, before notifying active grants.
+    // Preserve the source object so it can be migrated for a case-only move.
+    for (const auto& object :
+         ObjectPermissionContextBase::GetGrantedObjects(origin)) {
+      std::optional<base::FilePath> path =
+          base::ValueToFilePath(object->value.Find(kPermissionPathKey));
+      if (path && *path != old_path.path &&
+          IsSamePathIgnoreCase(*path, new_path.path)) {
+        RevokeObjectPermission(origin, object->value);
+        updated = true;
+      }
+    }
+  }
+
   bool old_path_was_downgraded = false;
   auto it = active_permissions_map_.find(origin);
   if (it != active_permissions_map_.end()) {
@@ -3012,12 +3146,20 @@ void ChromeFileSystemAccessPermissionContext::NotifyEntryMoved(
     PermissionGrantImpl::UpdateGrantPath(it->second.read_grants, old_path,
                                          new_path, allow_overwrite);
     if (base::FeatureList::IsEnabled(
-            blink::features::kFileSystemAccessRevokeReadOnRemove) &&
-        it->second.downgraded_read_paths.erase(old_path.path)) {
-      // The downgraded read grant moved along with the entry; carry the
-      // downgraded state to `new_path` so a later write there can restore it.
-      it->second.downgraded_read_paths.insert(new_path.path);
-      old_path_was_downgraded = true;
+            blink::features::kFileSystemAccessRevokeReadOnRemove)) {
+      auto& downgraded_paths = it->second.downgraded_read_paths;
+      // Save the source state before clearing destination aliases, including
+      // when this is a case-only rename.
+      old_path_was_downgraded = downgraded_paths.erase(old_path.path) != 0;
+      if (allow_overwrite) {
+        std::erase_if(downgraded_paths, [&](const base::FilePath& path) {
+          return IsSamePathIgnoreCase(path, new_path.path);
+        });
+      }
+      if (old_path_was_downgraded) {
+        // Carry only the moved entry's state, so a later write can restore it.
+        downgraded_paths.insert(new_path.path);
+      }
     }
     updated = true;
   }
@@ -3028,14 +3170,6 @@ void ChromeFileSystemAccessPermissionContext::NotifyEntryMoved(
     const std::unique_ptr<Object> object =
         GetGrantedObject(origin, PathAsPermissionKey(old_path.path));
     if (object) {
-      if (allow_overwrite) {
-        // Revoke any pre-existing permission at the destination first. This is
-        // a no-op if no permission exists. Otherwise this will notify
-        // permission observers twice: once for revocation and once for update.
-        const std::string new_key(PathAsPermissionKey(new_path.path));
-        RevokeObjectPermission(origin, new_key);
-      }
-
       base::DictValue new_object = object->value.Clone();
       new_object.Set(kPermissionPathKey, base::FilePathToValue(new_path.path));
       new_object.Set(kPermissionDisplayNameKey, new_path.display_name);
@@ -3534,24 +3668,28 @@ void ChromeFileSystemAccessPermissionContext::MaybeCleanupPermissions(
   // Iterate over all top-level frames by iterating over all tabs in all browser
   // windows. This also counts PWAs in windows without tab strips.
 #if BUILDFLAG(IS_ANDROID)
-  for (TabModel* tabs : TabModelList::models()) {
-    if (tabs->GetProfile() != profile()) {
-      continue;
-    }
-    int tab_count = tabs->GetTabCount();
-    for (int i = 0; i < tab_count; ++i) {
-      content::WebContents* web_contents = tabs->GetWebContentsAt(i);
-      if (!web_contents) {
-        continue;
-      }
-      url::Origin tab_origin = url::Origin::Create(
-          permissions::PermissionUtil::GetLastCommittedOriginAsURL(
-              web_contents->GetPrimaryMainFrame()));
-      // Found a tab for this origin, so early exit and don't revoke grants.
-      if (tab_origin == origin) {
-        return;
-      }
-    }
+  bool found_origin = false;
+  TabModelList::ForEach(
+      Profile::FromBrowserContext(profile()), [&](TabModel* tabs) {
+        int tab_count = tabs->GetTabCount();
+        for (int i = 0; i < tab_count; ++i) {
+          content::WebContents* web_contents = tabs->GetWebContentsAt(i);
+          if (!web_contents) {
+            continue;
+          }
+          url::Origin tab_origin = url::Origin::Create(
+              permissions::PermissionUtil::GetLastCommittedOriginAsURL(
+                  web_contents->GetPrimaryMainFrame()));
+          // Found a tab for this origin, so early exit and don't revoke grants.
+          if (tab_origin == origin) {
+            found_origin = true;
+            return false;
+          }
+        }
+        return true;
+      });
+  if (found_origin) {
+    return;
   }
 #else
   bool found_origin = false;

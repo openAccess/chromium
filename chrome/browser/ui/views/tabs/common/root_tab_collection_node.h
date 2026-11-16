@@ -12,7 +12,9 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
+#include "components/tabs/public/tab_collection.h"
 #include "components/tabs/public/tab_collection_observer.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "ui/views/view.h"
 
 class TabStripModel;
@@ -33,6 +35,16 @@ class RootTabCollectionNode : public TabCollectionNode,
 
   void Init();
   void Reset();
+
+  // TabCollectionNode:
+  void Deinitialize() override;
+
+  // Gets the node of this tree that has the associated handle, this root
+  // included. Returns nullptr if no such node exists.
+  TabCollectionNode* GetNodeForHandle(
+      const tabs::TabCollectionNodeHandle& handle);
+  const TabCollectionNode* GetNodeForHandle(
+      const tabs::TabCollectionNodeHandle& handle) const;
 
   using ChildrenAddedCallback =
       base::RepeatingCallback<void(const tabs::TabCollectionNodes&)>;
@@ -55,13 +67,16 @@ class RootTabCollectionNode : public TabCollectionNode,
 
  private:
   using SelectionHandles = base::flat_set<tabs::TabHandle>;
+  using HandleToNodeMap = absl::flat_hash_map<tabs::TabCollectionNodeHandle,
+                                              raw_ptr<TabCollectionNode>>;
 
   // tabs::TabCollectionObserver
   void OnChildrenAdded(const tabs::TabCollection::Position& position,
                        const tabs::TabCollectionNodes& handles,
                        bool insert_from_detached) override;
   void OnChildrenRemoved(const tabs::TabCollection::Position& position,
-                         const tabs::TabCollectionNodes& handles) override;
+                         const tabs::TabCollectionNodes& handles,
+                         bool remove_for_detach) override;
   void OnChildMoved(const tabs::TabCollection::Position& to_position,
                     const NodeData& node_data) override;
 
@@ -71,7 +86,7 @@ class RootTabCollectionNode : public TabCollectionNode,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
   void OnTabWillBeAdded() override;
-  void OnTabWillBeRemoved(tabs::TabInterface* tab, int index) override;
+  void OnTabWillBeRemoved(tabs::TabHandle tab) override;
   void OnTabGroupChanged(const TabGroupChange& change) override;
   void OnTabGroupFocusChanged(
       std::optional<tab_groups::TabGroupId> new_focused_group_id,
@@ -79,8 +94,17 @@ class RootTabCollectionNode : public TabCollectionNode,
 
   void NotifyTabSelectionChanged(
       const std::set<tabs::TabInterface*>& changed_tabs);
+  void UpdateAccessibleTabIndices();
+
+  // Adds `node` and its subtree to / removes them from `handle_to_node_map_`.
+  void RegisterSubtree(TabCollectionNode* node);
+  void UnregisterSubtree(TabCollectionNode* node);
 
   raw_ptr<TabStripModel> tab_strip_model_;
+  // Every node of this tree by handle, this root included. Nodes only come and
+  // go through Init(), Deinitialize() and the tabs::TabCollectionObserver
+  // methods above, which keep the index in step with the tree.
+  HandleToNodeMap handle_to_node_map_;
   SelectionHandles selected_tabs_;
   CustomAddChildViewCallback add_node_view_to_parent_;
   CustomRemoveChildViewCallback remove_node_view_from_parent_;

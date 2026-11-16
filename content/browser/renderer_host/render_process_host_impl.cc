@@ -123,6 +123,7 @@
 #include "content/browser/push_messaging/push_messaging_manager.h"
 #include "content/browser/quota/quota_context.h"
 #include "content/browser/renderer_host/embedded_frame_sink_provider_impl.h"
+#include "content/browser/renderer_host/frame_tree.h"
 #include "content/browser/renderer_host/media/media_stream_track_metrics_host.h"
 #include "content/browser/renderer_host/recently_destroyed_hosts.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
@@ -327,9 +328,6 @@ const char kSiteProcessMapKeyName[] = "content_site_process_map";
 const void* const kProcessPerSiteUmaLoggedKey = &kProcessPerSiteUmaLoggedKey;
 const void* const kSubframeProcessReuseOverLimitUmaLoggedKey =
     &kSubframeProcessReuseOverLimitUmaLoggedKey;
-
-RenderProcessHost::AnalyzeHungRendererFunction g_analyze_hung_renderer =
-    nullptr;
 
 // Memory threshold for subframe process reuse, in bytes. A process may be
 // reused for another subframe only if the process's memory footprint stays
@@ -949,6 +947,19 @@ class SiteProcessCountTracker : public base::SupportsUserData::Data,
       if (!host->IsOnlyHostingPrerenderedFramesOrEmpty()) {
         return false;
       }
+      if (base::FeatureList::IsEnabled(
+              features::kPreferWarmRendererProcessAvoidPrewarmContention)) {
+        // Once a navigation commits (`DidCommitNavigation`), the process moves
+        // from `kPendingSiteProcessCountTrackerKey` into
+        // `kCommittedSiteProcessCountTrackerKey`, while the page continues
+        // parsing HTML, running scripts, and loading subresources until
+        // `DidStopLoading()`. `HasLoadingFrames()` filters out processes in
+        // `kCommittedSiteProcessCountTrackerKey` during this post-commit
+        // loading phase.
+        if (!host->IsReady() || host->HasLoadingFrames()) {
+          return false;
+        }
+      }
     }
 
     return true;
@@ -1324,10 +1335,10 @@ bool IsUnusedAndTiedToBrowsingInstance(
   // reuse from unrelated windows (such as when over the process limit), this
   // will disqualify any initial processes in unrelated windows.
   //
-  // This check is important for certain chrome://*.top-chrome/ WebUI cases (see
-  // `IsWebUIAndUsesTLDForProcessLockURL()`), which need to only reuse available
-  // existing top-chrome WebUI processes, but should not attempt to reuse an
-  // unused process from an unrelated blank tab.
+  // This check is important for WebUIs that share a process lock host (see
+  // `WebUIConfig::process_lock_host()`), which should only reuse existing
+  // processes with the same lock, not an unused process from an unrelated blank
+  // tab.
   bool stays_in_existing_browsing_instance = false;
   host->ForEachRenderFrameHost([&stays_in_existing_browsing_instance,
                                 &isolation_context](RenderFrameHost* rfh) {
@@ -1684,15 +1695,10 @@ RenderProcessHost* RenderProcessHostImpl::CreateRenderProcessHost(
     flags |= RenderProcessFlags::kDisallowV8FeatureFlagOverrides;
   }
 
-#if !BUILDFLAG(IS_ANDROID)
-  if (site_instance) {
-    const GURL& site_url =
-        site_instance->GetSecurityPrincipal().GetDeprecatedSiteURL();
-    if (GetContentClient()->browser()->IsTopChromeWebUIURL(site_url)) {
-      flags |= RenderProcessFlags::kForTopChromeWebUI;
-    }
+  if (site_instance && GetContentClient()->browser()->IsTopChromeWebUIURL(
+                           site_instance->GetSiteInfo().site_url())) {
+    flags |= RenderProcessFlags::kForTopChromeWebUI;
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
   return new RenderProcessHostImpl(browser_context, storage_partition_impl,
                                    flags, is_spare_renderer,
@@ -1989,6 +1995,8 @@ bool RenderProcessHostImpl::Init() {
   is_initialized_ = true;
   is_dead_ = false;
   sent_render_process_ready_ = false;
+  process_launched_time_ = base::TimeTicks();
+  startup_timings_ = StartupTimings{};
 
   // We may reach Init() during process death notification (e.g.
   // RenderProcessExited on some observer). In this case the Channel may be
@@ -2042,9 +2050,11 @@ bool RenderProcessHostImpl::Init() {
   FieldTrialSynchronizer::UpdateRendererVariationsHeader(this);
 
 #if BUILDFLAG(IS_ANDROID)
-  // Initialize the java audio manager so that media session tests will pass.
-  // See internal b/29872494.
-  static_cast<media::AudioManagerAndroid*>(media::AudioManager::Get())
+  // Eagerly initialize AudioManagerAndroid (originally added for media session
+  // tests in https://crbug.com/620479, and now relied on in production). Obtain
+  // it from BrowserMainLoop since AudioManager::Get() may return a test
+  // instance created after the real AudioManager.
+  static_cast<media::AudioManagerAndroid*>(BrowserMainLoop::GetAudioManager())
       ->InitializeIfNeeded();
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -2103,6 +2113,7 @@ bool RenderProcessHostImpl::Init() {
     // on starting in-process-render-thread.
     // So put it here to trigger Channel initialization earlier to enable
     // in-process-render-thread using Channel there.
+    startup_timings_.init_start = base::TimeTicks::Now();
     for (auto* observer : GetAllCreationObservers()) {
       observer->OnRenderProcessHostCreated(this);
     }
@@ -2170,6 +2181,7 @@ bool RenderProcessHostImpl::Init() {
             ? metrics_memory_region_
             : nullptr,
         tracing_config_memory_region_, tracing_output_memory_region_);
+    startup_timings_.init_start = child_process_launcher_->init_start_time();
 
     // Send initialization messages to the renderer, before any other messages
     // that might need them (e.g. navigation commits).
@@ -2441,7 +2453,8 @@ void RenderProcessHostImpl::BindFileSystemAccessManager(
                             // URL for workers instead of the origin as source
                             // url. This URL will be used for SafeBrowsing
                             // checks and for the Quarantine Service.
-                            storage_key.origin().GetURL(), GetDeprecatedID()),
+                            storage_key.origin().GetURL(), GetDeprecatedID(),
+                            storage_key.IsThirdPartyContext()),
                         std::move(receiver));
 }
 
@@ -2469,7 +2482,8 @@ void RenderProcessHostImpl::GetSandboxedFileSystemForBucket(
           // URL for workers instead of the origin as source url.
           // This URL will be used for SafeBrowsing checks and for
           // the Quarantine Service.
-          bucket.storage_key.origin().GetURL(), GetDeprecatedID()),
+          bucket.storage_key.origin().GetURL(), GetDeprecatedID(),
+          bucket.storage_key.IsThirdPartyContext()),
       bucket, directory_path_components, std::move(callback));
 }
 
@@ -3072,6 +3086,11 @@ base::TimeTicks RenderProcessHostImpl::GetProcessLaunchedTime() const {
   return process_launched_time_;
 }
 
+const RenderProcessHost::StartupTimings&
+RenderProcessHostImpl::GetStartupTimings() const {
+  return startup_timings_;
+}
+
 std::string RenderProcessHostImpl::GetKeepAliveDurations() const {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   std::stringstream result;
@@ -3652,13 +3671,11 @@ bool RenderProcessHostImpl::IsSpare() const {
       SpareRenderProcessHostManagerImpl::Get().GetSpares(), this);
 }
 
-void RenderProcessHostImpl::SetProcessLock(
-    const IsolationContext& isolation_context,
-    const ProcessLock& process_lock) {
+void RenderProcessHostImpl::SetProcessLock(const ProcessLock& process_lock) {
   TRACE_EVENT_BEGIN("shutdown", "Lock process", tracing_track_,
                     ChromeTrackEvent::kRenderProcessHost, *this);
-  ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(
-      isolation_context, GetID(), process_lock);
+  ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(GetID(),
+                                                             process_lock);
 
   // Note that SetProcessLock is only called on ProcessLock state transitions.
   // (e.g. invalid -> allows_any_site and allows_any_site -> locked_to_site).
@@ -3769,13 +3786,8 @@ bool RenderProcessHostImpl::ShouldPauseChannelUntilProcessLaunched() {
   if (base::FeatureList::IsEnabled(
           features::kSkipIPCChannelPausingForNonGuests)) {
     if (features::kSkipIPCChannelPausingForNonGuestsInternalWebUiOnly.Get()) {
-#if !BUILDFLAG(IS_ANDROID)
       // Skip pausing if we're on initial WebUI, so return false in that case.
       return !IsForTopChromeWebUI();
-#else
-      // We're definitely not on initial WebUI, so return true to pause.
-      return true;
-#endif
     }
     // Skip pausing in all cases.
     return false;
@@ -3834,8 +3846,9 @@ void RenderProcessHostImpl::AppendRendererCommandLine(
   GetContentClient()->browser()->AppendExtraCommandLineSwitches(
       command_line, GetDeprecatedID());
 
-  if (IsPdf())
+  if (IsPdf()) {
     command_line->AppendSwitch(switches::kPdfRenderer);
+  }
 
 #if BUILDFLAG(IS_WIN)
   if (command_line->HasSwitch(kExtensionProcess)) {
@@ -4119,17 +4132,13 @@ void RenderProcessHostImpl::PropagateBrowserCommandLineToRenderer(
         renderer_cmd);
   }
 
-#if BUILDFLAG(IS_ANDROID)
-  if (browser_cmd.HasSwitch(switches::kDisableGpuCompositing)) {
-    renderer_cmd->AppendSwitch(switches::kDisableGpuCompositing);
-  }
-#elif !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   // If gpu compositing is not being used, tell the renderer at startup. This
   // is inherently racey, as it may change while the renderer is being
   // launched, but the renderer will hear about the correct state eventually.
   // This optimizes the common case to avoid wasted work.
   if (GpuDataManagerImpl::GetInstance()->IsGpuCompositingDisabled())
-    renderer_cmd->AppendSwitch(switches::kDisableGpuCompositing);
+    renderer_cmd->AppendSwitch(switches::kDisableGpu);
 #endif  // BUILDFLAG(IS_ANDROID)
 
   // Add kWaitForDebugger to let renderer process wait for a debugger.
@@ -5226,10 +5235,25 @@ bool RenderProcessHostImpl::HasWarmLockedProcess(
   }
 
   // Identify all process trackers to query for a reusable locked process.
+  // Note: `kPendingSiteProcessCountTrackerKey` only tracks uncommitted
+  // `NavigationRequest`s before `DidCommitNavigation` (cleared in
+  // `~NavigationRequest() -> ResetExpectedProcess()`). When
+  // `kPreferWarmRendererProcessAvoidPrewarmContention` is enabled for
+  // `kReusePrerenderingProcessForMainFrame`, we skip
+  // `kPendingSiteProcessCountTrackerKey` because uncommitted navigations have
+  // not finished loading, and additionally check `HasLoadingFrames()` in
+  // `IsEligibleForProcessReuse()` for processes in
+  // `kCommittedSiteProcessCountTrackerKey` whose main frame has committed
+  // (`DidCommitNavigation`) but has not yet reached `DidStopLoading()`.
   std::vector<const void*> tracker_keys = {
       kCommittedSiteProcessCountTrackerKey,
-      kPendingSiteProcessCountTrackerKey,
   };
+  if (process_reuse_policy !=
+          ProcessReusePolicy::kReusePrerenderingProcessForMainFrame ||
+      !base::FeatureList::IsEnabled(
+          features::kPreferWarmRendererProcessAvoidPrewarmContention)) {
+    tracker_keys.push_back(kPendingSiteProcessCountTrackerKey);
+  }
 
   if (RenderProcessHostImpl::ShouldDelayProcessShutdown()) {
     tracker_keys.push_back(kDelayedShutdownSiteProcessCountTrackerKey);
@@ -5742,12 +5766,6 @@ ChildProcessTerminationInfo RenderProcessHostImpl::GetChildTerminationInfo(
     // RenderProcessExited with status TERMINATION_STATUS_STILL_RUNNING,
     // since this will break WebContentsImpl logic.
     info.status = base::TERMINATION_STATUS_PROCESS_CRASHED;
-
-    // TODO(siggi): Remove this once https://crbug.com/806661 is resolved.
-#if BUILDFLAG(IS_WIN)
-    if (info.exit_code == WAIT_TIMEOUT && g_analyze_hung_renderer)
-      g_analyze_hung_renderer(child_process_launcher_->GetProcess());
-#endif
   }
 
 #if BUILDFLAG(IS_ANDROID)
@@ -5907,12 +5925,6 @@ void RenderProcessHost::PostTaskWhenProcessIsReady(base::OnceClosure task) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M152);
   CHECK(!task.is_null(), base::NotFatalUntil::M152);
   new RenderProcessHostIsReadyObserver(this, std::move(task));
-}
-
-// static
-void RenderProcessHost::SetHungRendererAnalysisFunction(
-    AnalyzeHungRendererFunction analyze_hung_renderer) {
-  g_analyze_hung_renderer = analyze_hung_renderer;
 }
 
 void RenderProcessHostImpl::SuddenTerminationAllowedChanged(bool allowed) {
@@ -6198,6 +6210,15 @@ void RenderProcessHostImpl::OnProcessLaunched() {
     return;
 
   process_launched_time_ = base::TimeTicks::Now();
+  if (child_process_launcher_) {
+    startup_timings_.launch_begin =
+        child_process_launcher_->launch_begin_time();
+    startup_timings_.launch_complete =
+        child_process_launcher_->launch_complete_time();
+  } else {
+    startup_timings_.launch_begin = process_launched_time_;
+    startup_timings_.launch_complete = process_launched_time_;
+  }
 
 #if BUILDFLAG(IS_ANDROID)
   next_launch_for_initial_outermost_main_frame_ = false;
@@ -6403,14 +6424,21 @@ RenderProcessHostImpl::FindReusableProcessHostForSiteInstance(
   std::vector<RenderProcessHost*> eligible_background_hosts;
 
   // First, add the RenderProcessHosts expecting a navigation to |site_url| to
-  // the list of eligible RenderProcessHosts.
-  SiteProcessCountTracker* pending_tracker =
-      static_cast<SiteProcessCountTracker*>(
-          browser_context->GetUserData(kPendingSiteProcessCountTrackerKey));
-  if (pending_tracker) {
-    pending_tracker->FindRenderProcessesForSiteInstance(
-        site_instance, process_reuse_policy, &eligible_foreground_hosts,
-        &eligible_background_hosts);
+  // the list of eligible RenderProcessHosts. Skip pending (uncommitted)
+  // navigations for `kReusePrerenderingProcessForMainFrame` when avoiding
+  // prewarm contention, matching `HasWarmLockedProcess()`.
+  if (process_reuse_policy !=
+          ProcessReusePolicy::kReusePrerenderingProcessForMainFrame ||
+      !base::FeatureList::IsEnabled(
+          features::kPreferWarmRendererProcessAvoidPrewarmContention)) {
+    SiteProcessCountTracker* pending_tracker =
+        static_cast<SiteProcessCountTracker*>(
+            browser_context->GetUserData(kPendingSiteProcessCountTrackerKey));
+    if (pending_tracker) {
+      pending_tracker->FindRenderProcessesForSiteInstance(
+          site_instance, process_reuse_policy, &eligible_foreground_hosts,
+          &eligible_background_hosts);
+    }
   }
 
   if (eligible_foreground_hosts.empty()) {
@@ -6608,6 +6636,18 @@ void RenderProcessHostImpl::GetBoundInterfacesForTesting(
 bool RenderProcessHostImpl::IsOnlyHostingPrerenderedFramesOrEmpty() {
   return prerendering_frame_host_id_set_.size() ==
          render_frame_host_id_set_.size();
+}
+
+bool RenderProcessHostImpl::HasLoadingFrames() const {
+  for (const auto& rfh_id : render_frame_host_id_set_) {
+    RenderFrameHostImpl* rfh = RenderFrameHostImpl::FromID(rfh_id);
+    if (rfh && ((rfh->IsOutermostMainFrame() &&
+                 !rfh->has_committed_any_navigation()) ||
+                rfh->is_loading())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace content

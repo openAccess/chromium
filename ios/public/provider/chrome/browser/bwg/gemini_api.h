@@ -155,6 +155,32 @@ enum class GeminiDormantReason {
   kServerPause,
 };
 
+// Error codes for Gemini client errors.
+// This needs to stay in sync with `GCRGeminiErrorCode`.
+enum class GeminiErrorCode {
+  // None of the errors below occurred, though an unmapped error may still have
+  // happened (e.g., non-gRPC WebChannel or `GTMSessionFetcher` transport
+  // failures).
+  kNone = 0,
+  kTermsOfServiceNotAccepted,
+  kVolumeIsTooLow,
+  kNoMicPermission,
+  kServerTimeout,
+  kUnspecified,
+  kGenericServerError,
+  kNoSpeechDetected,
+  kLivePausedDueToExternalAudio,
+  kNoCameraPermission,
+  kNotEligible,
+  kQuotaExceeded,
+  kNetworkError,
+  kAudioSessionError,
+  kEncoderError,
+  kAudioRechunkerError,
+  kNoGeminiModeId,
+  kGenericError,
+};
+
 // Enum representing the Gemini view mode.
 // This needs to stay in sync with GMNGeminiViewMode in the SDK.
 enum class GeminiViewMode {
@@ -180,10 +206,6 @@ void ConfigureWithStartupConfiguration(
 // Starts the overlay experience with the given configuration.
 void StartGeminiOverlay(GeminiConfiguration* gemini_configuration);
 
-// Gets the portion of the PageContext script that checks whether PageContext
-// should be detached from the request.
-const std::u16string GetPageContextShouldDetachScript();
-
 // Creates a Gemini gateway object for relaying internal protocols.
 id<BWGGatewayProtocol> CreateGeminiGateway();
 
@@ -208,9 +230,6 @@ void UpdatePromptAction(gemini::EntryPoint entry_point,
 void UpdatePromptAction(gemini::InputType input_type,
                         NSString* prepopulated_prompt,
                         bool should_auto_submit = false);
-
-// Returns true if a URL is protected.
-bool IsProtectedUrl(std::string url);
 
 // Updates the floaty's active page context and shared tabs, if any.
 void UpdateActivePageContext(GeminiPageContext* gemini_page_context,

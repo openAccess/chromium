@@ -86,7 +86,6 @@ source_set("host") {
 source_set("host_main_headers") {
   visibility = [
     ":*",
-    "//remoting/host/crash:crash_uploader_main_headers",
     "//remoting/host/it2me:main_headers",
     "//remoting/host/linux:login_session_reporter_main_headers",
     "//remoting/host/linux:remote_session_info_main_headers",
@@ -101,7 +100,6 @@ source_set("host_main_headers") {
     "//remoting/host/setup:native_messaging_host_main_headers",
     "//remoting/host/setup:start_host_main_headers",
     "//remoting/host/webauthn:remote_webauthn_main_headers",
-    "//remoting/host/win:remoting_console",
     "//remoting/host/win:remoting_core",
     "//remoting/host/win:remoting_curtain",
     "//remoting/host/win:remoting_desktop",
@@ -779,6 +777,8 @@ static_library("common") {
       "input_injector_mac.h",
       "keyboard_layout_monitor_mac.cc",
       "pairing_registry_delegate_mac.cc",
+      "privacy_overlay_mac.h",
+      "privacy_overlay_mac.mm",
       "usage_stats_consent_mac.cc",
     ]
     frameworks = [
@@ -829,7 +829,6 @@ static_library("common") {
     deps += [
       "//mojo/core/embedder",
       "//remoting/base/crash",
-      "//remoting/host/crash:crash_uploader",
       "//remoting/host/win",
       "//remoting/host/win:messages",
       "//remoting/host/win:remoting_lib_idl",
@@ -1056,13 +1055,18 @@ source_set("unit_tests") {
       "agent_integration_configurator_linux_unittest.cc",
       "disconnect_window_linux_unittest.cc",
       "pairing_registry_delegate_linux_unittest.cc",
+      "setup/daemon_controller_delegate_linux_multi_process_unittest.cc",
+      "setup/start_host_linux_unittest.cc",
       "terminal_process_monitor_linux_unittest.cc",
     ]
     data = [ "$root_out_dir/remoting_locales/en-US.pak" ]
     deps += [
       "//components/dbus",
       "//remoting/host/installer/linux:unit_tests",
+      "//remoting/host/linux:host_types",
+      "//remoting/host/linux:host_types_test_util",
       "//remoting/host/linux:unit_tests",
+      "//remoting/host/setup:start_host_linux",
       "//ui/gtk:gtk_config",
     ]
   }
@@ -1071,9 +1075,11 @@ source_set("unit_tests") {
     sources += [
       "input_injector_mac_unittest.cc",
       "input_monitor/local_keyboard_input_monitor_mac_unittest.cc",
+      "privacy_overlay_mac_unittest.mm",
     ]
     data = [ "$root_out_dir/remoting/resources/en.lproj/locale.pak" ]
     deps += [
+      "//base/test:test_support",
       "//remoting/host/mac:unit_tests",
       "//ui/events:dom_keycode_converter",
     ]
@@ -1455,10 +1461,7 @@ if (enable_me2me_host) {
       deps += [ "//remoting/host/remote_open_url:main" ]
     }
     if (is_win) {
-      deps += [
-        "//remoting/host/crash:crash_uploader_main",
-        "//remoting/host/security_key:main",
-      ]
+      deps += [ "//remoting/host/security_key:main" ]
     }
   }
 

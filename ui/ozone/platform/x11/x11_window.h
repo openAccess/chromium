@@ -7,6 +7,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,7 @@ namespace ui {
 class PlatformWindowDelegate;
 class X11ExtensionDelegate;
 class X11MoveLoop;
+class X11WmMoveLoop;
 class WorkspaceExtensionDelegate;
 
 // PlatformWindow implementation for X11.
@@ -76,6 +78,10 @@ class X11Window : public PlatformWindow,
 
   // X11WindowManager calls this.
   void OnXWindowLostCapture();
+
+  // X11WindowManager posts a task to call this on every window when capture
+  // is released.
+  void OnCaptureReleased();
 
   void OnCursorUpdate();
 
@@ -171,6 +177,7 @@ class X11Window : public PlatformWindow,
   bool CanResetOverrideRedirect() const override;
   void SetX11ExtensionDelegate(X11ExtensionDelegate* delegate) override;
   bool IsWmSyncActiveForTest() override;
+  void OnFrameTypeChanged() override;
 
   // x11::EventObserver:
   void OnEvent(const x11::Event& event) override;
@@ -391,6 +398,9 @@ class X11Window : public PlatformWindow,
 
   std::unique_ptr<X11DesktopWindowMoveClient> x11_window_move_client_;
 
+  // Set while the window manager moves the window during a move loop.
+  std::unique_ptr<X11WmMoveLoop> wm_move_loop_;
+
   // Whether the drop handler has notified that the drag has entered.
   bool notified_enter_ = false;
   // Keeps the last negotiated operations returned by the drop handler.
@@ -481,14 +491,25 @@ class X11Window : public PlatformWindow,
   // Is the pointer in |xwindow_| or one of its children?
   bool has_pointer_ = false;
 
+  // Like |has_pointer_|, but ignores crossing events caused by pointer grabs
+  // (NotifyGrab), which do not move the pointer and so do not change which
+  // window the PointerRoot sends keyboard input to.
+  bool has_pointer_for_focus_ = false;
+
   // Is |xwindow_| or one of its children focused?
   bool has_window_focus_ = false;
 
-  // (An ancestor window or the PointerRoot is focused) && |has_pointer_|.
+  // (An ancestor window or the PointerRoot is focused) &&
+  // |has_pointer_for_focus_|.
   // |has_pointer_focus_| == true is the odd case where we will receive keyboard
   // input when |has_window_focus_| == false.  |has_window_focus_| and
   // |has_pointer_focus_| are mutually exclusive.
   bool has_pointer_focus_ = false;
+
+  // True if a crossing event arrived while Chrome had capture, so
+  // |has_pointer_focus_| must be updated from |has_pointer_for_focus_| once
+  // capture is released.
+  bool pointer_focus_deferred_ = false;
 
   // X11 does not support defocusing windows; you can only focus a different
   // window.  If we would like to be defocused, we just ignore keyboard input we
@@ -530,6 +551,10 @@ class X11Window : public PlatformWindow,
 
   // The size of the window manager provided borders (if any).
   gfx::Insets native_window_frame_borders_in_pixels_;
+
+  // The client-side decoration insets last set in _GTK_FRAME_EXTENTS, or
+  // nullopt if they have not been set yet (before the window is mapped).
+  std::optional<gfx::Insets> decoration_insets_in_pixels_;
 
   // Used for synchronizing between `xwindow_` and the WM during resizing.
   x11::Sync::Counter update_counter_{};

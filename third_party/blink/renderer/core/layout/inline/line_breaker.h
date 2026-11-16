@@ -87,8 +87,15 @@ class CORE_EXPORT LineBreaker {
 
   void SetLineClampEllipsisWidth(LayoutUnit width) {
     DCHECK(RuntimeEnabledFeatures::CSSLineClampLineBreakingEllipsisEnabled());
+    bool had_ellipsis = line_clamp_ellipsis_width_;
     line_clamp_ellipsis_width_ = width;
     UpdateAvailableWidth();
+
+    // The presence of an ellipsis has an effect on how the style is applied.
+    if (current_style_ &&
+        had_ellipsis != static_cast<bool>(line_clamp_ellipsis_width_)) {
+      SetCurrentStyleForce(*current_style_);
+    }
   }
 
   // Computing |LineBreakerMode::kMinContent| with |MaxSizeCache| caches
@@ -161,6 +168,10 @@ class CORE_EXPORT LineBreaker {
   // event if "white-space" means wrap, because combined text should be laid
   // out in one line.
   bool ShouldAutoWrap(const ComputedStyle& style) const;
+
+  // True if this is a sub-LineBreaker for <ruby> that doesn't retry with
+  // `override_break_anywhere_` by itself, but inherits it from the parent.
+  bool DefersBreakAnywhereToParent() const;
 
   enum class LineBreakState {
     // The line breaking is complete.
@@ -249,6 +260,7 @@ class CORE_EXPORT LineBreaker {
   LineInfo CreateSubLineInfo(
       InlineItemTextIndex start,
       wtf_size_t end_item_index,
+      const ComputedStyle& line_style,
       LineBreakerMode mode,
       LayoutUnit limit,
       WhitespaceState initial_whitespace_state,
@@ -528,6 +540,9 @@ class CORE_EXPORT LineBreaker {
 
   // This member is available after calling SetInputRange().
   const LineBreaker* parent_breaker_ = nullptr;
+
+  // The line style of a sub-LineBreaker for <ruby>. Set by CreateSubLineInfo().
+  const ComputedStyle* sub_line_style_ = nullptr;
 };
 
 }  // namespace blink

@@ -4,12 +4,12 @@
 
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_controller.h"
 
-#import "ios/chrome/browser/intelligence/actor/ui/actuation_header_view.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_task_card_view.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_constants.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_consumer.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_mutator.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
+#import "ios/chrome/browser/intelligence/ui/intelligence_header_view.h"
 #import "ios/chrome/common/ui/util/chrome_button.h"
 #import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -36,7 +36,8 @@ namespace {
 using chrome_test_util::FindViewById;
 
 // Arbitrary identifier for the test action.
-constexpr NSInteger kActionIdentifier = 0;
+constexpr InterventionActionIdentifier kActionIdentifier =
+    InterventionActionIdentifier::kContinue;
 
 class ActuationWorklogViewControllerTest : public PlatformTest {
  protected:
@@ -111,7 +112,7 @@ TEST_F(ActuationWorklogViewControllerTest, TestResetClearsContent) {
   [consumer() updateWorklogWithItem:item chip:nil animated:NO];
   [consumer() reset];
 
-  ActuationHeaderView* header_view = FindViewById<ActuationHeaderView>(
+  IntelligenceHeaderView* header_view = FindViewById<IntelligenceHeaderView>(
       view_controller_.view, kActuationHeaderAccessibilityIdentifier);
   ASSERT_NE(header_view, nil);
   EXPECT_EQ(header_view.title, nil);
@@ -125,7 +126,7 @@ TEST_F(ActuationWorklogViewControllerTest, TestResetClearsContent) {
 // Tests that the header displays the content variant matching the display
 // mode, whether the variants or the display mode change.
 TEST_F(ActuationWorklogViewControllerTest, TestHeaderContentVariants) {
-  ActuationHeaderView* header_view = FindViewById<ActuationHeaderView>(
+  IntelligenceHeaderView* header_view = FindViewById<IntelligenceHeaderView>(
       view_controller_.view, kActuationHeaderAccessibilityIdentifier);
   ASSERT_NE(header_view, nil);
 
@@ -186,6 +187,30 @@ TEST_F(ActuationWorklogViewControllerTest, TestInterventionFlow) {
   // Reset clears intervention.
   [consumer() reset];
   EXPECT_TRUE(card_view.hidden);
+}
+
+// Tests that setting the displayed intervention again doesn't redraw it, and
+// that it can be displayed again after a reset.
+TEST_F(ActuationWorklogViewControllerTest, TestSameInterventionIsNotRedrawn) {
+  ActuationInterventionAction* action =
+      [[ActuationInterventionAction alloc] initWithIdentifier:kActionIdentifier
+                                                        title:@"Continue"];
+  ActuationInterventionData* intervention =
+      [ActuationInterventionData rowItemWithActions:@[ action ]];
+  NSString* button_id =
+      ActuationInterventionActionButtonAccessibilityIdentifier(0);
+
+  [consumer() setIntervention:intervention];
+  UIView* button = FindViewById(view_controller_.view, button_id);
+  ASSERT_NE(button, nil);
+
+  [consumer() setIntervention:intervention];
+  EXPECT_EQ(FindViewById(view_controller_.view, button_id), button);
+
+  [consumer() reset];
+  EXPECT_EQ(FindViewById(view_controller_.view, button_id), nil);
+  [consumer() setIntervention:intervention];
+  EXPECT_NE(FindViewById(view_controller_.view, button_id), nil);
 }
 
 }  // namespace

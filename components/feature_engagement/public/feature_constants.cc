@@ -151,6 +151,10 @@ BASE_FEATURE(kIPHGlicTrustFirstOnboardingShortcutSnoozePromoFeature,
 BASE_FEATURE(kIPHGlicTryItFeature,
              "IPH_GlicTryIt",
              base::FEATURE_DISABLED_BY_DEFAULT);
+// TODO(b:575858329): Enable by default once the triggering details are final.
+BASE_FEATURE(kIPHIndigoContextMenuSnoozeFeature,
+             "IPH_IndigoContextMenuSnooze",
+             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHIndigoContextMenuToastFeature,
              "IPH_IndigoContextMenuToast",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -290,9 +294,14 @@ BASE_FEATURE(kIPHSplitViewHorizontalIndirectAccessFeature,
 BASE_FEATURE(kIPHVerticalTabsExpandOnHoverFeature,
              "IPH_VerticalTabsExpandOnHoverFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kIPH_VerticalTabsTabGroupsInOrganizerFeature,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHVerticalTabstripTutorialFeature,
              "IPH_VerticalTabstripTutorialFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
+constinit const base::FeatureParam<int>
+    kIPHVerticalTabstripTutorialMinTabsParam{
+        &kIPHVerticalTabstripTutorialFeature, "x_min_tabs_for_promo", 20};
 BASE_FEATURE(kIPHTabGroupsFocusingFeature,
              "IPH_TabGroupsFocusingFeature",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -612,6 +621,12 @@ BASE_FEATURE(kIPHMostVisitedTilesCustomizationPinFeature,
 BASE_FEATURE(kIPHNewTabPageThemeCustomizationFeature,
              "IPH_NewTabPageThemeCustomization",
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kIPHNewTabPageThemeCustomizationMagicStackFeature,
+             "IPH_NewTabPageThemeCustomizationMagicStack",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kIPHNtpFuseboxAnimationFeature,
+             "IPH_NtpFuseboxAnimation",
+             base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHPageInfoFeature,
              "IPH_PageInfo",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -909,9 +924,6 @@ BASE_FEATURE(kIPHiOSSavedTabGroupClosed,
 BASE_FEATURE(kIPHiOSContextualPanelSampleModelFeature,
              "IPH_iOSContextualPanelSampleModel",
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kIPHiOSContextualPanelPriceInsightsFeature,
-             "IPH_iOSContextualPanelPriceInsights",
-             base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kIPHHomeCustomizationMenuFeature,
              "IPH_HomeCustomizationMenu",
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1147,12 +1159,6 @@ BASE_FEATURE(kIPHiOSPriceTrackingDesktopFeature,
              "IPH_iOSPriceTrackingDesktop",
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-#if !BUILDFLAG(IS_IOS)
-BASE_FEATURE(kIPHResumptionRailFeature,
-             "IPH_ResumptionRail",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // !BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kIPHSearchPromotionFeature,

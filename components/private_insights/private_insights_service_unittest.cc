@@ -5,14 +5,18 @@
 #include "components/private_insights/private_insights_service.h"
 
 #include <atomic>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
 #include "base/i18n/time_formatting.h"
+#include "base/metrics/field_trial_params.h"
 #include "base/no_destructor.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -24,13 +28,33 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/private_insights/fcp_simple_task_environment.h"
+#include "components/private_insights/populations/typed_population.h"
 #include "components/private_insights/private_insights_features.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/federated_compute/src/fcp/client/example_query_result.pb.h"
 
 namespace private_insights {
+
+namespace {
+
+// Spelled out rather than derived, so a change to the derivation is caught.
+constexpr char kContextualCueEventsLoggingOnShutdownCountHistogram[] =
+    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging."
+    "OnShutdownCount";
+constexpr char kContextualCueEventsLoggingQueuedCountHistogram[] =
+    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging.QueuedCount";
+constexpr char kContextualCueEventsLoggingRemovedCountHistogram[] =
+    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Logging.RemovedCount";
+constexpr char kContextualCueEventsRequeuingRequeuedCountHistogram[] =
+    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Requeuing."
+    "RequeuedCount";
+constexpr char kContextualCueEventsRequeuingDroppedCountHistogram[] =
+    "PrivateMetrics.PrivateInsights.ContextualCueEvents.Requeuing.DroppedCount";
+
+}  // namespace
 
 // Shared fixture state. Tests derive from one of the parameterized fixtures
 // below so that every upload scenario runs against both the original upload
@@ -68,6 +92,7 @@ class PrivateInsightsServiceTestBase : public testing::Test {
       const PrivateInsightsService::FederatedComputationParams& params) {
     mock_run_federated_computation_call_count_++;
     GetLastPopulationName() = params.population_name;
+    GetUploadedPopulationNames().push_back(params.population_name);
     GetLastServerUri() = params.federated_service_uri;
     return {
         .outcome =
@@ -80,6 +105,11 @@ class PrivateInsightsServiceTestBase : public testing::Test {
   static std::string& GetLastPopulationName() {
     static base::NoDestructor<std::string> last_population_name;
     return *last_population_name;
+  }
+  // Every population uploaded since the last clear, in order.
+  static std::vector<std::string>& GetUploadedPopulationNames() {
+    static base::NoDestructor<std::vector<std::string>> names;
+    return *names;
   }
   static std::string& GetLastServerUri() {
     static base::NoDestructor<std::string> last_server_uri;
@@ -325,7 +355,7 @@ TEST_P(PrivateInsightsServiceTest, UploadSkippedWhenServerUriEmpty) {
       1);
   histogram_tester.ExpectTotalCount(kContributedTaskCountHistogram, 0);
   // Events are dropped, not requeued, on both paths.
-  EXPECT_TRUE(service.contextual_cue_events_.empty());
+  EXPECT_TRUE(service.ContextualCueEventsForTesting().empty());
 }
 
 TEST_P(PrivateInsightsServiceTest, PopulationNameFinchParam) {
@@ -363,14 +393,15 @@ TEST_P(PrivateInsightsServiceTest, LogContextualCueEvent) {
                                  test_shared_url_loader_factory_);
   DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
 
-  EXPECT_EQ(service.contextual_cue_events_.size(), 0u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 0u);
 
   events::ContextualCueLogEvent event1;
   event1.set_cue_id("cue_1");
   service.LogContextualCueEvent(event1);
 
-  EXPECT_EQ(service.contextual_cue_events_.size(), 1u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_1");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 1u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_1");
   histogram_tester.ExpectBucketCount(
       kContextualCueEventsLoggingQueuedCountHistogram, 1, 1);
 
@@ -378,9 +409,11 @@ TEST_P(PrivateInsightsServiceTest, LogContextualCueEvent) {
   event2.set_cue_id("cue_2");
   service.LogContextualCueEvent(event2);
 
-  EXPECT_EQ(service.contextual_cue_events_.size(), 2u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_1");
-  EXPECT_EQ(service.contextual_cue_events_[1].event.cue_id(), "cue_2");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 2u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_1");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[1].event.cue_id(),
+            "cue_2");
   histogram_tester.ExpectBucketCount(
       kContextualCueEventsLoggingQueuedCountHistogram, 2, 1);
   histogram_tester.ExpectTotalCount(
@@ -392,9 +425,11 @@ TEST_P(PrivateInsightsServiceTest, LogContextualCueEvent) {
   event3.set_cue_id("cue_3");
   service.LogContextualCueEvent(event3);
 
-  EXPECT_EQ(service.contextual_cue_events_.size(), 2u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_2");
-  EXPECT_EQ(service.contextual_cue_events_[1].event.cue_id(), "cue_3");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 2u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_2");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[1].event.cue_id(),
+            "cue_3");
   histogram_tester.ExpectBucketCount(
       kContextualCueEventsLoggingQueuedCountHistogram, 2, 2);
   histogram_tester.ExpectUniqueSample(
@@ -490,8 +525,9 @@ TEST_P(PrivateInsightsServiceTest, RequeueEventsEmpty) {
   events::ContextualCueLogEvent event1;
   event1.set_cue_id("cue_1");
   service.LogContextualCueEvent(event1);
-  EXPECT_EQ(service.contextual_cue_events_.size(), 1u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_1");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 1u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_1");
   histogram_tester.ExpectTotalCount(
       kContextualCueEventsRequeuingRequeuedCountHistogram, 0);
 }
@@ -512,7 +548,7 @@ TEST_P(PrivateInsightsServiceTest, RequeueEventsPrependsRequeuedEvents) {
   service.LogContextualCueEvent(event1);
   service.LogContextualCueEvent(event2);
   service.TriggerUpload();
-  ASSERT_TRUE(service.contextual_cue_events_.empty());
+  ASSERT_TRUE(service.ContextualCueEventsForTesting().empty());
 
   // Log cue_3 and cue_4 while the upload is in flight.
   events::ContextualCueLogEvent event3;
@@ -528,11 +564,15 @@ TEST_P(PrivateInsightsServiceTest, RequeueEventsPrependsRequeuedEvents) {
   }));
 
   // A failed upload requeues pending events before existing events.
-  EXPECT_EQ(service.contextual_cue_events_.size(), 4u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_1");
-  EXPECT_EQ(service.contextual_cue_events_[1].event.cue_id(), "cue_2");
-  EXPECT_EQ(service.contextual_cue_events_[2].event.cue_id(), "cue_3");
-  EXPECT_EQ(service.contextual_cue_events_[3].event.cue_id(), "cue_4");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 4u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_1");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[1].event.cue_id(),
+            "cue_2");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[2].event.cue_id(),
+            "cue_3");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[3].event.cue_id(),
+            "cue_4");
 
   histogram_tester.ExpectUniqueSample(
       kContextualCueEventsRequeuingRequeuedCountHistogram, 2, 1);
@@ -561,7 +601,7 @@ TEST_P(PrivateInsightsServiceTest, RequeueEventsExceedsMaxEvents) {
   service.LogContextualCueEvent(event1);
   service.LogContextualCueEvent(event2);
   service.TriggerUpload();
-  ASSERT_TRUE(service.contextual_cue_events_.empty());
+  ASSERT_TRUE(service.ContextualCueEventsForTesting().empty());
 
   // Log cue_3 while the upload is in flight.
   events::ContextualCueLogEvent event3;
@@ -575,9 +615,11 @@ TEST_P(PrivateInsightsServiceTest, RequeueEventsExceedsMaxEvents) {
 
   // A failed upload requeues; events that don't fit under max_events (2) are
   // dropped, oldest first.
-  EXPECT_EQ(service.contextual_cue_events_.size(), 2u);
-  EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_2");
-  EXPECT_EQ(service.contextual_cue_events_[1].event.cue_id(), "cue_3");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 2u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_2");
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[1].event.cue_id(),
+            "cue_3");
 
   histogram_tester.ExpectUniqueSample(
       kContextualCueEventsRequeuingRequeuedCountHistogram, 1, 1);
@@ -680,10 +722,10 @@ TEST_P(PrivateInsightsServiceTriggerUploadTest, HandleEvents) {
   event1.set_cue_id("cue_1");
   service.LogContextualCueEvent(event1);
 
-  EXPECT_EQ(service.contextual_cue_events_.size(), 1u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 1u);
 
   service.TriggerUpload();
-  EXPECT_EQ(service.contextual_cue_events_.size(), 0u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 0u);
 
   // Log a new event while upload is in progress.
   events::ContextualCueLogEvent event2;
@@ -705,13 +747,19 @@ TEST_P(PrivateInsightsServiceTriggerUploadTest, HandleEvents) {
 
   if (param.should_requeue) {
     // Requeued event ("cue_1") should be placed before new event ("cue_2").
-    EXPECT_EQ(service.contextual_cue_events_.size(), 2u);
-    EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_1");
-    EXPECT_EQ(service.contextual_cue_events_[1].event.cue_id(), "cue_2");
+    EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 2u);
+    EXPECT_EQ(
+        service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+        "cue_1");
+    EXPECT_EQ(
+        service.ContextualCueEventsForTesting().entries()[1].event.cue_id(),
+        "cue_2");
   } else {
     // Event is not requeued, so only the new event ("cue_2") remains in queue.
-    EXPECT_EQ(service.contextual_cue_events_.size(), 1u);
-    EXPECT_EQ(service.contextual_cue_events_[0].event.cue_id(), "cue_2");
+    EXPECT_EQ(service.ContextualCueEventsForTesting().size(), 1u);
+    EXPECT_EQ(
+        service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+        "cue_2");
   }
 }
 
@@ -743,5 +791,329 @@ INSTANTIATE_TEST_SUITE_P(
       return UploadPathName(std::get<0>(info.param)) + "_" +
              std::get<1>(info.param).test_name;
     });
+
+namespace {
+
+// Extra populations for the registry tests, configured by test-only params.
+BASE_FEATURE(kTestPopulationsFeature, base::FEATURE_ENABLED_BY_DEFAULT);
+const base::FeatureParam<std::string> kPopulationAName{
+    &kTestPopulationsFeature, "population_a_name", "population_a"};
+const base::FeatureParam<std::string> kPopulationBName{
+    &kTestPopulationsFeature, "population_b_name", "population_b"};
+const base::FeatureParam<int> kTestMaxEvents{&kTestPopulationsFeature,
+                                             "max_events", 10};
+
+using TestPopulation = TypedPopulation<events::ContextualCueLogEvent>;
+
+std::unique_ptr<TestPopulation> MakeTestPopulation(
+    const base::FeatureParam<std::string>& population_name) {
+  return std::make_unique<TestPopulation>("TestEvents", population_name,
+                                          kTestMaxEvents);
+}
+
+void Log(TestPopulation& population, const std::string& cue_id) {
+  events::ContextualCueLogEvent event;
+  event.set_cue_id(cue_id);
+  population.LogEvent(std::move(event));
+}
+
+}  // namespace
+
+// Parameterized over whether Contextual Cues is a registered population or on
+// its legacy queue; the registry works the same either way.
+class PrivateInsightsServicePopulationsTest
+    : public PrivateInsightsServiceTestBase,
+      public testing::WithParamInterface<bool> {
+ protected:
+  void SetUp() override { SetUpWithUploadTaskPipeline(GetParam()); }
+  bool contextual_cues_registered() const { return GetParam(); }
+
+  // Runs one upload round and returns the populations uploaded by it, in
+  // order (empty if nothing was uploaded).
+  std::vector<std::string> RunUploadRound(PrivateInsightsService& service) {
+    GetUploadedPopulationNames().clear();
+    service.TriggerUpload();
+    EXPECT_TRUE(base::test::RunUntil([&]() {
+      DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+      return !service.is_upload_running_ && service.upload_round_.empty() &&
+             !service.legacy_upload_in_round_;
+    }));
+    return GetUploadedPopulationNames();
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PrivateInsightsServicePopulationsTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return UploadPathName(info.param);
+                         });
+
+TEST_P(PrivateInsightsServicePopulationsTest, UploadsEverySourceEachRound) {
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  auto population_a = MakeTestPopulation(kPopulationAName);
+  auto population_b = MakeTestPopulation(kPopulationBName);
+  TestPopulation* a = population_a.get();
+  TestPopulation* b = population_b.get();
+  service.RegisterPopulation(std::move(population_a));
+  service.RegisterPopulation(std::move(population_b));
+  ASSERT_EQ(service.populations_.size(),
+            contextual_cues_registered() ? 3u : 2u);
+
+  events::ContextualCueLogEvent cue_event;
+  service.LogContextualCueEvent(cue_event);
+  Log(*a, "a_1");
+  Log(*b, "b_1");
+
+  // One round uploads every source, one FCP call each: registered populations
+  // in registration order, then the legacy Contextual Cues queue.
+  const std::string cc = kFcpPopulationNameContextualCues.Get();
+  const std::vector<std::string> expected =
+      contextual_cues_registered()
+          ? std::vector<std::string>{cc, "population_a", "population_b"}
+          : std::vector<std::string>{"population_a", "population_b", cc};
+  base::HistogramTester histogram_tester;
+  EXPECT_EQ(RunUploadRound(service), expected);
+  EXPECT_EQ(mock_run_federated_computation_call_count_, 3);
+  EXPECT_TRUE(service.ContextualCueEventsForTesting().empty());
+  EXPECT_EQ(a->pending_event_count(), 0u);
+  EXPECT_EQ(b->pending_event_count(), 0u);
+  // One trigger outcome per round, not per upload.
+  histogram_tester.ExpectUniqueSample(
+      kTriggerUploadOutcomeHistogram,
+      PrivateInsightsService::TriggerUploadOutcome::kTaskPosted, 1);
+
+  // Nothing left: the next round is a no-op.
+  EXPECT_TRUE(RunUploadRound(service).empty());
+  histogram_tester.ExpectBucketCount(
+      kTriggerUploadOutcomeHistogram,
+      PrivateInsightsService::TriggerUploadOutcome::kSkippedNoData, 1);
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest, SkipsSourcesWithoutEvents) {
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  auto population_a = MakeTestPopulation(kPopulationAName);
+  auto population_b = MakeTestPopulation(kPopulationBName);
+  TestPopulation* b = population_b.get();
+  service.RegisterPopulation(std::move(population_a));
+  service.RegisterPopulation(std::move(population_b));
+
+  // Only population_b has data: the round uploads just that one.
+  Log(*b, "b_1");
+  EXPECT_EQ(RunUploadRound(service),
+            (std::vector<std::string>{"population_b"}));
+
+  Log(*b, "b_2");
+  events::ContextualCueLogEvent cue_event;
+  service.LogContextualCueEvent(cue_event);
+  const std::string cc = kFcpPopulationNameContextualCues.Get();
+  const std::vector<std::string> expected =
+      contextual_cues_registered()
+          ? std::vector<std::string>{cc, "population_b"}
+          : std::vector<std::string>{"population_b", cc};
+  EXPECT_EQ(RunUploadRound(service), expected);
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest, RequeuesToOwningSource) {
+  // Fail every upload, but still record which population was uploaded.
+  PrivateInsightsService::SetRunFederatedComputationForTesting(
+      base::BindLambdaForTesting(
+          [](const PrivateInsightsService::FederatedComputationParams& params)
+              -> PrivateInsightsService::FederatedComputationResult {
+            GetUploadedPopulationNames().push_back(params.population_name);
+            return {.outcome = PrivateInsightsService::
+                        FederatedComputationOutcome::kFailed,
+                    .contributed_task_count = std::nullopt};
+          }));
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  auto population_a = MakeTestPopulation(kPopulationAName);
+  TestPopulation* a = population_a.get();
+  service.RegisterPopulation(std::move(population_a));
+
+  events::ContextualCueLogEvent cue_event;
+  cue_event.set_cue_id("cue_1");
+  service.LogContextualCueEvent(cue_event);
+  Log(*a, "a_1");
+
+  // Both uploads fail; a failure does not end the round, and each event goes
+  // back to the source it came from.
+  EXPECT_THAT(RunUploadRound(service),
+              testing::UnorderedElementsAre(
+                  kFcpPopulationNameContextualCues.Get(), "population_a"));
+  ASSERT_EQ(service.ContextualCueEventsForTesting().size(), 1u);
+  EXPECT_EQ(service.ContextualCueEventsForTesting().entries()[0].event.cue_id(),
+            "cue_1");
+  ASSERT_EQ(a->pending_event_count(), 1u);
+  EXPECT_EQ(a->queue_for_testing().entries()[0].event.cue_id(), "a_1");
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest, StopEndsRoundInProgress) {
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  auto population_a = MakeTestPopulation(kPopulationAName);
+  auto population_b = MakeTestPopulation(kPopulationBName);
+  TestPopulation* b = population_b.get();
+  service.RegisterPopulation(std::move(population_a));
+  service.RegisterPopulation(std::move(population_b));
+  Log(*b, "b_1");
+  events::ContextualCueLogEvent cue_event;
+  service.LogContextualCueEvent(cue_event);
+
+  // Metrics reporting is turned off while the first upload is in flight: it
+  // completes, but nothing else in the round is uploaded.
+  GetUploadedPopulationNames().clear();
+  service.TriggerUpload();
+  service.Stop();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+    return !service.is_upload_running_;
+  }));
+  EXPECT_EQ(mock_run_federated_computation_call_count_, 1);
+  EXPECT_EQ(contextual_cues_registered()
+                ? b->pending_event_count()
+                : service.ContextualCueEventsForTesting().size(),
+            1u);
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest, ShutdownNotifiesEverySource) {
+  base::HistogramTester histogram_tester;
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  auto population_a = MakeTestPopulation(kPopulationAName);
+  TestPopulation* a = population_a.get();
+  service.RegisterPopulation(std::move(population_a));
+
+  events::ContextualCueLogEvent cue_event;
+  service.LogContextualCueEvent(cue_event);
+  Log(*a, "a_1");
+  Log(*a, "a_2");
+
+  service.Shutdown();
+
+  histogram_tester.ExpectUniqueSample(
+      kContextualCueEventsLoggingOnShutdownCountHistogram, 1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "PrivateMetrics.PrivateInsights.TestEvents.Logging.OnShutdownCount", 2,
+      1);
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest,
+       StorageAccessNotRegisteredWhenFlagDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kPrivateInsightsStorageAccess);
+
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  EXPECT_EQ(service.populations_.size(),
+            contextual_cues_registered() ? 1u : 0u);
+  EXPECT_EQ(service.storage_access_population_, nullptr);
+
+  // Logging is a silent no-op.
+  events::StorageAccessLogEvent event;
+  event.set_domain("example.com");
+  service.LogStorageAccessEvent(event);
+  EXPECT_TRUE(RunUploadRound(service).empty());
+  EXPECT_EQ(mock_run_federated_computation_call_count_, 0);
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest, StorageAccessLogsAndUploads) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kPrivateInsightsStorageAccess);
+
+  fcp::client::ExampleQueryResult captured_query_result;
+  PrivateInsightsService::SetRunFederatedComputationForTesting(
+      base::BindLambdaForTesting(
+          [&](const PrivateInsightsService::FederatedComputationParams& params)
+              -> PrivateInsightsService::FederatedComputationResult {
+            GetUploadedPopulationNames().push_back(params.population_name);
+            captured_query_result = params.task_env->result();
+            return {
+                .outcome = PrivateInsightsService::FederatedComputationOutcome::
+                    kSuccess,
+                .contributed_task_count = 1,
+            };
+          }));
+
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  ASSERT_EQ(service.populations_.size(),
+            contextual_cues_registered() ? 2u : 1u);
+  ASSERT_NE(service.storage_access_population_, nullptr);
+
+  base::HistogramTester histogram_tester;
+  events::StorageAccessLogEvent event;
+  event.set_domain("example.com");
+  event.set_outcome(events::StorageAccessLogEvent::DENIED_BY_USER);
+  service.LogStorageAccessEvent(event);
+  EXPECT_EQ(service.storage_access_population_->pending_event_count(), 1u);
+  histogram_tester.ExpectUniqueSample(
+      "PrivateMetrics.PrivateInsights.StorageAccessEvents.Logging.QueuedCount",
+      1, 1);
+
+  // Contextual Cues (registered or legacy) is empty, so it is skipped.
+  EXPECT_EQ(RunUploadRound(service),
+            (std::vector<std::string>{kFcpPopulationNameStorageAccess.Get()}));
+  EXPECT_EQ(service.storage_access_population_->pending_event_count(), 0u);
+  EXPECT_TRUE(service.ContextualCueEventsForTesting().empty());
+
+  const auto& entry_bytes =
+      captured_query_result.vector_data().vectors().at("entry").bytes_values();
+  ASSERT_EQ(entry_bytes.value_size(), 1);
+  EXPECT_EQ(entry_bytes.value(0), event.SerializeAsString());
+}
+
+TEST_P(PrivateInsightsServicePopulationsTest,
+       StorageAccessAndContextualCuesUploadSeparately) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kPrivateInsightsStorageAccess);
+
+  TestingPrefServiceSimple local_state;
+  PrivateInsightsService service(&local_state, tmp_profile_dir_.GetPath(),
+                                 test_shared_url_loader_factory_);
+  DCHECK_CALLED_ON_VALID_SEQUENCE(service.sequence_checker_);
+
+  events::ContextualCueLogEvent cue_event;
+  service.LogContextualCueEvent(cue_event);
+  events::StorageAccessLogEvent sa_event;
+  sa_event.set_domain("example.com");
+  service.LogStorageAccessEvent(sa_event);
+
+  // One round uploads both, one FCP call each, to their own Brella
+  // populations. A registered Contextual Cues goes first; the legacy queue
+  // goes last.
+  const std::string cc = kFcpPopulationNameContextualCues.Get();
+  const std::string sa = kFcpPopulationNameStorageAccess.Get();
+  const std::vector<std::string> expected =
+      contextual_cues_registered() ? std::vector<std::string>{cc, sa}
+                                   : std::vector<std::string>{sa, cc};
+  EXPECT_EQ(RunUploadRound(service), expected);
+  EXPECT_EQ(mock_run_federated_computation_call_count_, 2);
+  EXPECT_TRUE(service.ContextualCueEventsForTesting().empty());
+  EXPECT_EQ(service.storage_access_population_->pending_event_count(), 0u);
+}
 
 }  // namespace private_insights

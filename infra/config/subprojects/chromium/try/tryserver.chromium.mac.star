@@ -214,6 +214,7 @@ try_.orchestrator_builder(
         "chromium_rts.filter_file_analysis": 100,
         # crbug.com/40280175
         "chromium_checkout.expand_submodules": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 5,
         "luci.buildbucket.run_in_turboci": 100,
     },
     main_list_view = "try",
@@ -301,7 +302,7 @@ try_.orchestrator_builder(
         "chromium_rts.filter_file_analysis": 100,
         # crbug.com/40280175
         "chromium_checkout.expand_submodules": 100,
-        "luci.buildbucket.run_in_turboci": 2,
+        "luci.buildbucket.run_in_turboci": 10,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -810,7 +811,7 @@ try_.orchestrator_builder(
         "chromium_rts.filter_file_analysis": 100,
         # crbug.com/40280175
         "chromium_checkout.expand_submodules": 100,
-        "luci.buildbucket.run_in_turboci": 2,
+        "luci.buildbucket.run_in_turboci": 10,
     },
     main_list_view = "try",
     use_clang_coverage = True,
@@ -879,6 +880,8 @@ try_.orchestrator_builder(
         ],
     ),
     experiments = {
+        # go/rts-project-proposal
+        "chromium_rts.filter_file_analysis": 100,
         # crbug.com/40280175
         "chromium_checkout.expand_submodules": 100,
     },

@@ -182,7 +182,7 @@ class ThreadedWorkletThreadForTest : public WorkerThread {
   bool IsOwningBackingThread() const final { return false; }
 
   ThreadType GetThreadType() const override {
-    return ThreadType::kUnspecifiedWorkerThread;
+    return ThreadType::kTestThread;
   }
 };
 
@@ -212,6 +212,7 @@ class ThreadedWorkletMessagingProxyForTest
             mojo::Clone(GetExecutionContext()
                             ->GetContentSecurityPolicy()
                             ->GetParsedPolicies()),
+            /*outside_settings_reporter=*/mojo::NullRemote(),
             GetExecutionContext()->GetReferrerPolicy(),
             GetExecutionContext()->GetSecurityOrigin(),
             GetExecutionContext()->IsSecureContext(),

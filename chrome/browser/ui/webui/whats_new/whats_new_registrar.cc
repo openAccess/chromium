@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/whats_new/whats_new_registrar.h"
 
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_storage_service_impl.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/chrome_features.h"
@@ -42,6 +43,14 @@ void RegisterWhatsNewModules(whats_new::WhatsNewRegistry* registry) {
   // M157
   registry->RegisterModule(
       WhatsNewModule("SendTabToSelfEnhancedHandoff", "treib@google.com"));
+
+  // M158
+  registry->RegisterModule(WhatsNewModule(::features::kGlicWhatsNewLuminous,
+                                          "iwells@chromium.org",
+                                          BrowserCommand::kOpenGlic));
+  registry->RegisterModule(WhatsNewModule(::features::kGlicWhatsNewQuizzes,
+                                          "jeffreycohen@google.com",
+                                          BrowserCommand::kOpenGlic));
 }
 
 void RegisterWhatsNewEditions(whats_new::WhatsNewRegistry* registry) {

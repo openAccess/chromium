@@ -44,12 +44,53 @@
 #include "services/network/test/test_network_connection_tracker.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "services/network/test/test_utils.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-spi.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/leveldatabase/leveldb_chrome.h"
 
 namespace gcm {
 namespace {
+
+using ::testing::_;
+using ::testing::NiceMock;
+
+class MockObserver : public GCMClient::Observer {
+ public:
+  MockObserver() = default;
+  ~MockObserver() override = default;
+
+  MOCK_METHOD(void,
+              OnRegisterFinished,
+              (scoped_refptr<RegistrationInfo> registration_info,
+               const std::string& registration_id,
+               GCMClient::Result result),
+              (override));
+  MOCK_METHOD(void,
+              OnUnregisterFinished,
+              (scoped_refptr<RegistrationInfo> registration_info,
+               GCMClient::Result result),
+              (override));
+  MOCK_METHOD(void,
+              OnSendFinished,
+              (const std::string& app_id,
+               const std::string& message_id,
+               GCMClient::Result result),
+              (override));
+  MOCK_METHOD(void,
+              OnMessageReceived,
+              (const std::string& app_id, const IncomingMessage& message),
+              (override));
+  MOCK_METHOD(void, OnMessagesDeleted, (const std::string& app_id), (override));
+  MOCK_METHOD(void,
+              OnMessageSendError,
+              (const std::string& app_id,
+               const GCMClient::SendErrorDetails& send_error_details),
+              (override));
+  MOCK_METHOD(void, OnGCMReady, (), (override));
+  MOCK_METHOD(void, OnActivityRecorded, (), (override));
+  MOCK_METHOD(void, OnStoreReset, (), (override));
+};
 
 enum LastEvent {
   NONE,
@@ -84,6 +125,14 @@ constexpr base::TimeDelta kTokenInvalidationPeriod = base::Days(7);
 const char kMessageId[] = "0:12345%5678";
 
 const char kRegisterUrl[] = "https://android.clients.google.com/c2dm/register3";
+
+bool ExistsGCMRegistrationInMap(const RegistrationInfoMap& map,
+                                const std::string& app_id) {
+  scoped_refptr<RegistrationInfo> gcm_registration =
+      base::MakeRefCounted<GCMRegistrationInfo>();
+  gcm_registration->app_id = app_id;
+  return map.find(gcm_registration) != map.end();
+}
 
 // Helper for building arbitrary data messages.
 MCSMessage BuildDownstreamMessage(
@@ -264,7 +313,7 @@ FakeGCMInternalsBuilder::BuildConnectionFactory(
 
 }  // namespace
 
-class GCMClientImplTest : public testing::Test, public GCMClient::Delegate {
+class GCMClientImplTest : public testing::Test, public GCMClient::Observer {
  public:
   GCMClientImplTest();
   ~GCMClientImplTest() override;
@@ -300,7 +349,7 @@ class GCMClientImplTest : public testing::Test, public GCMClient::Delegate {
                        const std::vector<std::string>& sender_ids,
                        const std::string& registration_id);
 
-  // GCMClient::Delegate overrides (for verification).
+  // GCMClient::Observer overrides (for verification).
   void OnRegisterFinished(scoped_refptr<RegistrationInfo> registration_info,
                           const std::string& registration_id,
                           GCMClient::Result result) override;
@@ -317,8 +366,6 @@ class GCMClientImplTest : public testing::Test, public GCMClient::Delegate {
       const gcm::GCMClient::SendErrorDetails& send_error_details) override;
   void OnGCMReady() override;
   void OnActivityRecorded() override {}
-  void OnConnected(const net::IPEndPoint& ip_endpoint) override {}
-  void OnDisconnected() override {}
   void OnStoreReset() override {}
 
   GCMClientImpl* gcm_client() const { return gcm_client_.get(); }
@@ -429,6 +476,9 @@ void GCMClientImplTest::SetUp() {
 }
 
 void GCMClientImplTest::TearDown() {
+  if (gcm_client_) {
+    gcm_client_->RemoveObserver(this);
+  }
   gcm_client_.reset();
   PumpLoopUntilIdle();
   testing::Test::TearDown();
@@ -443,6 +493,9 @@ bool GCMClientImplTest::CreateUniqueTempDir() {
 }
 
 void GCMClientImplTest::BuildGCMClient(base::TimeDelta clock_step) {
+  if (gcm_client_) {
+    gcm_client_->RemoveObserver(this);
+  }
   gcm_client_ = std::make_unique<GCMClientImpl>(
       std::make_unique<FakeGCMInternalsBuilder>(clock_step));
 }
@@ -548,7 +601,8 @@ void GCMClientImplTest::InitializeGCMClient() {
       base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
           &test_url_loader_factory_),
       network::TestNetworkConnectionTracker::GetInstance(),
-      base::WrapUnique<Encryptor>(new FakeEncryptor), this);
+      base::WrapUnique<Encryptor>(new FakeEncryptor));
+  gcm_client_->AddObserver(this);
 }
 
 void GCMClientImplTest::StartGCMClient() {
@@ -1117,6 +1171,34 @@ TEST_F(GCMClientImplTest, SendMessageSentIgnored) {
   EXPECT_EQ(NONE, last_event());
 }
 
+TEST_F(GCMClientImplTest, MultipleObservers) {
+  AddRegistration(kExtensionAppId, {kSender}, "reg_id");
+
+  NiceMock<MockObserver> second_observer;
+  gcm_client()->AddObserver(&second_observer);
+
+  MCSMessage message(BuildDownstreamMessage(
+      kSender, kExtensionAppId, /*subtype=*/std::string(),
+      {{"message_type", "gcm"}, {"key", "value"}}, /*raw_data=*/std::string()));
+  ASSERT_TRUE(message.IsValid());
+
+  EXPECT_CALL(second_observer, OnMessageReceived(kExtensionAppId, _));
+  ReceiveMessageFromMCS(message);
+
+  ASSERT_EQ(MESSAGE_RECEIVED, last_event());
+  ASSERT_EQ(kExtensionAppId, last_app_id());
+  testing::Mock::VerifyAndClearExpectations(&second_observer);
+
+  reset_last_event();
+  gcm_client()->RemoveObserver(&second_observer);
+
+  EXPECT_CALL(second_observer, OnMessageReceived).Times(0);
+  ReceiveMessageFromMCS(message);
+
+  ASSERT_EQ(MESSAGE_RECEIVED, last_event());
+  ASSERT_EQ(kExtensionAppId, last_app_id());
+}
+
 class GCMClientImplCheckinTest : public GCMClientImplTest {
  public:
   GCMClientImplCheckinTest();
@@ -1454,9 +1536,6 @@ TEST_F(GCMClientImplStartAndStopTest, DelayedStart) {
 
 TEST_F(GCMClientImplStartAndStopTest,
        DelayedStartWithDeprecatedAccountMapperRegistration) {
-  base::test::ScopedFeatureList feature_list(
-      features::kGCMRemoveDeprecatedStoreData);
-
   // Start the GCM immediately and complete the checkin.
   gcm_client()->Start(GCMClient::IMMEDIATE_START);
   PumpLoopUntilIdle();

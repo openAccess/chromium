@@ -42,6 +42,8 @@ source_set("browser_tests") {
     "//chrome/browser/autocomplete:aim_eligibility_service",
     "//chrome/browser/bookmarks",
     "//chrome/browser/browser_actuator/internals",
+    "//chrome/browser/contextual_tasks:test_support",
+    "//chrome/browser/glic/public:features",
     "//chrome/browser/ui:ui_features",
     "//chrome/browser/ui/tabs/tab_group_home:constants",
     "//chrome/test:test_support",
@@ -196,12 +198,19 @@ source_set("browser_tests") {
       "history/history_ui_browsertest.cc",
     ]
     deps += [
+      "//chrome/browser/profiles:profile",
+      "//chrome/browser/ui/webui/cr_components/searchbox",
       "//chrome/test/base:chrome_test_utils",
-      "//components/contextual_tasks/public:feature_list",
+      "//chrome/test/base:web_ui_test_support",
       "//components/history/core/test",
       "//components/history_clusters/core",
-      "//components/lens:features",
+      "//services/network/public/mojom:url_loader_base",
+      "//ui/webui",
+      "//ui/webui:buildflags",
     ]
+    if (enable_webui_ntp) {
+      deps += [ "//chrome/browser/ui/webui/cr_components/most_visited" ]
+    }
   }
 
   if (enable_dice_support || is_chromeos) {
@@ -234,6 +243,7 @@ source_set("browser_tests") {
 
   if (is_chromeos) {
     deps += [
+      "//ash/webui/common:trusted_types_util",
       "//ash/webui/connectivity_diagnostics",
       "//chrome/browser/ui/webui/ash/cloud_upload:browser_tests",
     ]
@@ -391,8 +401,6 @@ source_set("browser_tests") {
       "//components/password_manager/content/common",
       "//components/performance_manager",
       "//components/privacy_sandbox:features",
-      "//components/privacy_sandbox/privacy_sandbox_attestations",
-      "//components/privacy_sandbox/privacy_sandbox_attestations:test_support",
       "//components/safe_browsing/core/common",
       "//components/search",
       "//components/site_engagement/content",
@@ -553,11 +561,18 @@ source_set("interactive_ui_tests") {
     deps += [
       "//chrome/browser/contextual_tasks:test_support",
       "//chrome/browser/contextual_tasks:ui",
+      "//chrome/browser/profiles:profile",
       "//chrome/browser/ui:ui_features",
+      "//chrome/test/base:web_ui_test_support",
       "//components/contextual_tasks/public",
       "//components/history_clusters/core",
       "//components/password_manager/content/common",
+      "//ui/webui",
+      "//ui/webui:buildflags",
     ]
+    if (enable_webui_ntp) {
+      deps += [ "//chrome/browser/ui/webui/cr_components/most_visited" ]
+    }
   }
 
   if (enable_compose) {
@@ -592,6 +607,7 @@ grit("resources") {
   ]
 
   output_dir = "$root_gen_dir/chrome"
+  public_deps = [ "//ui/base:webui_resource_path" ]
 }
 
 generate_grd("build_chai_grdp") {
@@ -637,14 +653,11 @@ webui_ts_library("build_ts") {
     "trusted_html.ts",
   ]
 
-  if (!is_android || enable_webui_ntp) {
-    in_files += [ "polymer_test_util.ts" ]
-  }
-
   if (!is_android) {
     in_files += [
       "fake_settings_private.ts",
       "mocked_metrics_reporter.ts",
+      "polymer_test_util.ts",
       "test_api.ts",
       "test_store.ts",
     ]
@@ -666,7 +679,7 @@ webui_ts_library("build_ts") {
     "//tools/typescript/definitions/metrics_private.d.ts",
   ]
 
-  if (!is_android || enable_webui_ntp) {
+  if (!is_android) {
     deps += [ "//third_party/polymer/v3_0:library" ]
   }
 
@@ -734,14 +747,8 @@ generate_grd("build_grd") {
   ]
 
   if (enable_webui_ntp) {
-    deps += [
-      "cr_components/searchbox:build_grdp",
-      "new_tab_page:build_grdp",
-    ]
-    grdp_files += [
-      "$target_gen_dir/cr_components/searchbox/resources.grdp",
-      "$target_gen_dir/new_tab_page/resources.grdp",
-    ]
+    deps += [ "new_tab_page:build_grdp" ]
+    grdp_files += [ "$target_gen_dir/new_tab_page/resources.grdp" ]
   }
 
   if (!is_android) {
@@ -887,11 +894,13 @@ generate_grd("build_grd") {
     deps += [
       "cr_components:build_grdp",
       "cr_components/composebox:build_grdp",
+      "cr_components/searchbox:build_grdp",
       "history:build_grdp",
     ]
     grdp_files += [
       "$target_gen_dir/cr_components/composebox/resources.grdp",
       "$target_gen_dir/cr_components/resources.grdp",
+      "$target_gen_dir/cr_components/searchbox/resources.grdp",
       "$target_gen_dir/history/resources.grdp",
     ]
   }

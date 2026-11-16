@@ -4,28 +4,92 @@
 
 #include "chrome/browser/download/android/download_controller.h"
 
+#include <memory>
 #include <string>
 
 #include "base/files/file_path.h"
 #include "base/json/values_util.h"
+#include "base/memory/raw_ptr.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
+#include "chrome/browser/android/profile_key_startup_accessor.h"
+#include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/download/android/dangerous_download_dialog_bridge.h"
+#include "chrome/browser/download/chrome_download_manager_delegate.h"
+#include "chrome/browser/download/download_core_service.h"
+#include "chrome/browser/download/download_core_service_factory.h"
+#include "chrome/browser/download/simple_download_manager_coordinator_factory.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/android/tab_model/tab_model_test_helper.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/download_source.h"
+#include "components/download/public/common/download_url_parameters.h"
 #include "components/download/public/common/mock_download_item.h"
+#include "components/download/public/common/simple_download_manager_coordinator.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/safe_browsing/core/common/features.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/download_item_utils.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/mock_download_manager.h"
+#include "content/public/test/test_web_contents_factory.h"
+#include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "ui/android/view_android.h"
+#include "ui/android/window_android.h"
 #include "url/gurl.h"
 
+using ::testing::_;
 using ::testing::IsEmpty;
+using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::ReturnRefOfCopy;
+
+namespace {
+
+class MockDangerousDownloadDialogBridge : public DangerousDownloadDialogBridge {
+ public:
+  MOCK_METHOD(void,
+              Show,
+              (download::DownloadItem*, ui::WindowAndroid*),
+              (override));
+};
+
+std::unique_ptr<TestTabModel> CreateRegisteredTestTabModel(
+    Profile* profile,
+    content::WebContents* web_contents,
+    bool is_active) {
+  auto tab_model = std::make_unique<TestTabModel>(profile);
+  tab_model->SetWebContentsList({web_contents});
+  tab_model->SetIsActiveModel(is_active);
+  TabModelList::AddTabModel(tab_model.get());
+  return tab_model;
+}
+
+}  // namespace
+
+class TestMockDownloadItem : public download::MockDownloadItem {
+ public:
+  TestMockDownloadItem() {
+    ON_CALL(*this, RemoveObserver(_))
+        .WillByDefault([this](download::DownloadItem::Observer* observer) {
+          download::MockDownloadItem::RemoveObserver(observer);
+        });
+  }
+
+  MOCK_METHOD(void,
+              RemoveObserver,
+              (download::DownloadItem::Observer*),
+              (override));
+};
 
 class DownloadControllerTest : public testing::Test {
  public:
@@ -37,20 +101,96 @@ class DownloadControllerTest : public testing::Test {
   DownloadControllerTest(const DownloadControllerTest&) = delete;
   DownloadControllerTest& operator=(const DownloadControllerTest&) = delete;
 
-  download::MockDownloadItem* item() { return &item_; }
+  void SetUp() override {
+    auto mock_manager =
+        std::make_unique<NiceMock<content::MockDownloadManager>>();
+    mock_download_manager_ = mock_manager.get();
+    profile_.SetDownloadManagerForTesting(std::move(mock_manager));
+    SimpleDownloadManagerCoordinatorFactory::GetForKey(profile_.GetProfileKey())
+        ->SetSimpleDownloadManager(download_manager(), true);
+    DownloadCoreServiceFactory::GetForBrowserContext(&profile_)
+        ->SetDownloadManagerDelegateForTesting(
+            std::make_unique<ChromeDownloadManagerDelegate>(&profile_));
+  }
+
+  void TearDown() override {
+    DownloadCoreServiceFactory::GetForBrowserContext(&profile_)
+        ->SetDownloadManagerDelegateForTesting(nullptr);
+    mock_download_manager_ = nullptr;
+  }
+
+  TestMockDownloadItem* item() { return &item_; }
   Profile* profile() { return &profile_; }
 
+  content::MockDownloadManager* download_manager() {
+    return static_cast<content::MockDownloadManager*>(
+        profile_.GetDownloadManager());
+  }
+
+  NiceMock<content::MockDownloadManager>* mock_download_manager() {
+    return mock_download_manager_;
+  }
+
+  content::WebContents* CreateWebContents() {
+    return test_web_contents_factory_.CreateWebContents(&profile_);
+  }
+
   DownloadController* controller() { return &controller_; }
+
+  DangerousDownloadDialogBridge* dangerous_download_bridge() {
+    return controller_.dangerous_download_bridge_.get();
+  }
+
+  void SetDangerousDownloadDialogBridge(
+      std::unique_ptr<DangerousDownloadDialogBridge> bridge) {
+    controller_.dangerous_download_bridge_ = std::move(bridge);
+  }
 
   bool ShouldShowAppVerificationPrompt(download::DownloadItem* item) {
     return controller_.ShouldShowAppVerificationPrompt(item);
   }
 
+  void OnDownloadUpdated(download::DownloadItem* item) {
+    controller_.OnDownloadUpdated(item);
+  }
+
+  void OnDownloadFailed(download::DownloadItem* item) {
+    controller_.OnDownloadFailed(item);
+  }
+
+  void StubDownloadInfoGetters() {
+    EXPECT_CALL(item_, GetDownloadSource())
+        .WillRepeatedly(Return(download::DownloadSource::NAVIGATION));
+    EXPECT_CALL(item_, IsDone()).WillRepeatedly(Return(false));
+    EXPECT_CALL(item_, GetGuid())
+        .WillRepeatedly(ReturnRefOfCopy(std::string("test-guid")));
+    EXPECT_CALL(item_, GetFileNameToReportUser())
+        .WillRepeatedly(Return(base::FilePath(FILE_PATH_LITERAL("test.pdf"))));
+    EXPECT_CALL(item_, GetTargetFilePath())
+        .WillRepeatedly(
+            ReturnRefOfCopy(base::FilePath(FILE_PATH_LITERAL("test.pdf"))));
+    EXPECT_CALL(item_, GetURL())
+        .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/test.pdf")));
+    EXPECT_CALL(item_, GetOriginalUrl())
+        .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/test.pdf")));
+    EXPECT_CALL(item_, GetReferrerUrl())
+        .WillRepeatedly(ReturnRefOfCopy(GURL()));
+    EXPECT_CALL(item_, GetTabUrl())
+        .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/path")));
+    EXPECT_CALL(item_, GetMimeType()).WillRepeatedly(Return("application/pdf"));
+    EXPECT_CALL(item_, GetTotalBytes()).WillRepeatedly(Return(1024));
+    EXPECT_CALL(item_, IsDangerous()).WillRepeatedly(Return(false));
+    EXPECT_CALL(item_, IsTransient()).WillRepeatedly(Return(true));
+  }
+
  private:
   content::BrowserTaskEnvironment task_environment_;
   TestingProfile profile_;
+  content::TestWebContentsFactory test_web_contents_factory_;
+  raw_ptr<NiceMock<content::MockDownloadManager>> mock_download_manager_ =
+      nullptr;
   DownloadController controller_;
-  download::MockDownloadItem item_;
+  TestMockDownloadItem item_;
 };
 
 TEST_F(DownloadControllerTest, ShouldShowAppVerificationPrompt) {
@@ -98,8 +238,17 @@ TEST_F(DownloadControllerTest,
 
   EXPECT_CALL(*item(), GetDownloadSource())
       .WillRepeatedly(Return(download::DownloadSource::NAVIGATION));
+  EXPECT_CALL(*item(), IsDone()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), GetGuid())
+      .WillRepeatedly(ReturnRefOfCopy(std::string("test-guid")));
+  EXPECT_CALL(*item(), GetFileNameToReportUser())
+      .WillRepeatedly(Return(base::FilePath(FILE_PATH_LITERAL("test.apk"))));
+  EXPECT_CALL(*item(), GetTotalBytes()).WillRepeatedly(Return(1024));
+  EXPECT_CALL(*item(), GetURL())
+      .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/path")));
+  EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
 
-  EXPECT_FALSE(controller()->ShowDangerousDownloadDialog(item()));
+  EXPECT_TRUE(controller()->ShowDangerousDownloadDialog(item()));
 }
 
 TEST_F(DownloadControllerTest,
@@ -120,4 +269,357 @@ TEST_F(DownloadControllerTest,
   EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
 
   EXPECT_TRUE(controller()->ShowDangerousDownloadDialog(item()));
+}
+
+TEST_F(DownloadControllerTest,
+       ShowDangerousDownloadDialog_IgnoresActiveTabModelFromOtherProfile) {
+  auto bridge = std::make_unique<MockDangerousDownloadDialogBridge>();
+  MockDangerousDownloadDialogBridge* raw_bridge = bridge.get();
+  SetDangerousDownloadDialogBridge(std::move(bridge));
+
+  StubDownloadInfoGetters();
+  EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
+
+  TestingProfile other_profile;
+  std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting>
+      scoped_window = ui::WindowAndroid::CreateForTesting();
+
+  std::unique_ptr<content::WebContents> other_web_contents =
+      content::WebContentsTester::CreateTestWebContents(&other_profile,
+                                                        nullptr);
+  scoped_window->get()->AddChild(other_web_contents->GetNativeView());
+  ASSERT_NE(nullptr, other_web_contents->GetTopLevelNativeWindow());
+
+  std::unique_ptr<TestTabModel> other_tab_model =
+      CreateRegisteredTestTabModel(&other_profile, other_web_contents.get(),
+                                   /*is_active=*/true);
+  ASSERT_EQ(other_web_contents.get(), other_tab_model->GetActiveWebContents());
+
+  std::unique_ptr<content::WebContents> own_web_contents =
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+  scoped_window->get()->AddChild(own_web_contents->GetNativeView());
+  ASSERT_NE(nullptr, own_web_contents->GetTopLevelNativeWindow());
+
+  std::unique_ptr<TestTabModel> own_tab_model =
+      CreateRegisteredTestTabModel(profile(), own_web_contents.get(),
+                                   /*is_active=*/false);
+  ASSERT_EQ(own_web_contents.get(), own_tab_model->GetActiveWebContents());
+
+  EXPECT_CALL(*raw_bridge, Show(item(), nullptr)).Times(1);
+  EXPECT_TRUE(controller()->ShowDangerousDownloadDialog(item()));
+
+  own_tab_model->SetIsActiveModel(true);
+  EXPECT_CALL(*raw_bridge, Show(item(), scoped_window->get())).Times(1);
+  EXPECT_TRUE(controller()->ShowDangerousDownloadDialog(item()));
+}
+
+TEST_F(DownloadControllerTest,
+       OnDownloadFailed_RemovesObserverWhenNotResumable) {
+  StubDownloadInfoGetters();
+  EXPECT_CALL(*item(), CanResume()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), RemoveObserver(controller()));
+
+  OnDownloadFailed(item());
+}
+
+TEST_F(DownloadControllerTest, OnDownloadFailed_KeepsObserverWhenResumable) {
+  StubDownloadInfoGetters();
+  EXPECT_CALL(*item(), CanResume()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*item(), RemoveObserver(_)).Times(0);
+
+  OnDownloadFailed(item());
+}
+
+TEST_F(DownloadControllerTest,
+       OnDownloadUpdated_DangerousContent_RecordsWarningShownOnce) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(safe_browsing::kMaliciousApkDownloadCheck);
+  base::HistogramTester histogram_tester;
+
+  EXPECT_CALL(*item(), IsTemporary()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), IsTransient()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*item(), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::IN_PROGRESS));
+  EXPECT_CALL(*item(), GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT));
+  EXPECT_CALL(*item(), GetGuid())
+      .WillRepeatedly(ReturnRefOfCopy(std::string("test-guid")));
+  EXPECT_CALL(*item(), GetTargetFilePath())
+      .WillRepeatedly(
+          ReturnRefOfCopy(base::FilePath(FILE_PATH_LITERAL("/test.apk"))));
+  EXPECT_CALL(*item(), GetURL())
+      .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/test.apk")));
+  EXPECT_CALL(*item(), HasUserGesture()).WillRepeatedly(Return(true));
+
+  OnDownloadUpdated(item());
+
+  histogram_tester.ExpectUniqueSample(
+      "Download.ShowedDownloadWarning",
+      download::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT, 1);
+  histogram_tester.ExpectTotalCount(
+      "SBClientDownload.Warning.FileType.Malicious.Shown", 1);
+  histogram_tester.ExpectUniqueSample("SBClientDownload.CancelEphemeralWarning",
+                                      /*kCancellationScheduled=*/0, 1);
+
+  // Subsequent updates for the same download must not double-count Shown.
+  OnDownloadUpdated(item());
+  histogram_tester.ExpectUniqueSample(
+      "Download.ShowedDownloadWarning",
+      download::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT, 1);
+}
+
+TEST_F(DownloadControllerTest,
+       OnDownloadUpdated_TelemetryOnly_DangerousFileShowsDialog) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      safe_browsing::kMaliciousApkDownloadCheck,
+      {{safe_browsing::kMaliciousApkDownloadCheckTelemetryOnly.name, "true"}});
+  base::HistogramTester histogram_tester;
+
+  const std::string kGuid = "test-guid";
+  EXPECT_CALL(*item(), IsTemporary()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), IsTransient()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*item(), IsDone()).WillRepeatedly(Return(false));
+  EXPECT_CALL(*item(), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::IN_PROGRESS));
+  EXPECT_CALL(*item(), GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE));
+  EXPECT_CALL(*item(), GetDownloadSource())
+      .WillRepeatedly(Return(download::DownloadSource::NAVIGATION));
+  EXPECT_CALL(*item(), GetGuid()).WillRepeatedly(ReturnRefOfCopy(kGuid));
+  EXPECT_CALL(*item(), GetFileNameToReportUser())
+      .WillRepeatedly(Return(base::FilePath(FILE_PATH_LITERAL("test.apk"))));
+  EXPECT_CALL(*item(), GetTargetFilePath())
+      .WillRepeatedly(
+          ReturnRefOfCopy(base::FilePath(FILE_PATH_LITERAL("/test.apk"))));
+  EXPECT_CALL(*item(), GetTotalBytes()).WillRepeatedly(Return(1024));
+  EXPECT_CALL(*item(), GetTabUrl())
+      .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/path")));
+  EXPECT_CALL(*item(), GetURL())
+      .WillRepeatedly(ReturnRefOfCopy(GURL("https://example.com/test.apk")));
+  EXPECT_CALL(*item(), HasUserGesture()).WillRepeatedly(Return(true));
+
+  OnDownloadUpdated(item());
+
+  // Must not be treated as an ephemeral warning in telemetry-only mode.
+  histogram_tester.ExpectTotalCount("SBClientDownload.CancelEphemeralWarning",
+                                    0);
+  histogram_tester.ExpectUniqueSample(
+      "Download.ShowedDownloadWarning",
+      download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE, 1);
+
+  // Prove ShowDangerousDownloadDialog() was actually reached and queued `item`
+  // in DangerousDownloadDialogBridge (would be null if IsEphemeralWarning()
+  // had early-returned true).
+  ASSERT_NE(nullptr, dangerous_download_bridge());
+  EXPECT_CALL(*item(), ValidateDangerousDownload()).Times(1);
+  dangerous_download_bridge()->Accepted(kGuid);
+}
+
+namespace {
+class MockClosingWebContentsDelegate : public content::WebContentsDelegate {
+ public:
+  MOCK_METHOD(void, CloseContents, (content::WebContents*), (override));
+};
+}  // namespace
+
+TEST_F(DownloadControllerTest, CloseTabIfEmpty_DangerousDownload) {
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+  std::unique_ptr<content::WebContents> other_web_contents =
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+  ASSERT_TRUE(web_contents->GetController().IsInitialNavigation());
+
+  NiceMock<MockClosingWebContentsDelegate> delegate;
+  web_contents->SetDelegate(&delegate);
+
+  TestTabModel tab_model(profile());
+  tab_model.SetWebContentsList({web_contents.get(), other_web_contents.get()});
+  TabModelList::AddTabModel(&tab_model);
+
+  EXPECT_CALL(*item(), IsDangerous()).WillRepeatedly(Return(true));
+  EXPECT_CALL(*item(), GetState())
+      .WillRepeatedly(Return(download::DownloadItem::IN_PROGRESS));
+  EXPECT_CALL(*item(), GetMimeType())
+      .WillRepeatedly(Return("application/vnd.android.package-archive"));
+  EXPECT_CALL(*item(), IsFromExternalApp()).WillRepeatedly(Return(false));
+
+  // Sensitive content warnings use a tab-modal dialog, so the empty tab must
+  // stay open.
+  EXPECT_CALL(*item(), GetDangerType())
+      .WillRepeatedly(
+          Return(download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_WARNING));
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(0);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), item());
+
+  // Generic dangerous file downloads use an app-modal dialog, so the empty tab
+  // should close.
+  EXPECT_CALL(*item(), GetDangerType())
+      .WillRepeatedly(Return(download::DOWNLOAD_DANGER_TYPE_DANGEROUS_FILE));
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(1);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), item());
+
+  TabModelList::RemoveTabModel(&tab_model);
+}
+
+TEST_F(DownloadControllerTest,
+       ScheduleRemoveDownloadItem_NullBrowserContext_RemovesViaCoordinator) {
+  TestMockDownloadItem unattached_item;
+  ASSERT_EQ(nullptr,
+            content::DownloadItemUtils::GetBrowserContext(&unattached_item));
+  EXPECT_CALL(unattached_item, GetGuid())
+      .WillRepeatedly(ReturnRefOfCopy(std::string("unattached-guid")));
+
+  ProfileKeyStartupAccessor::GetInstance()->SetProfileKey(
+      profile()->GetProfileKey());
+  absl::Cleanup reset_profile_key = [] {
+    ProfileKeyStartupAccessor::GetInstance()->Reset();
+  };
+
+  base::test::TestFuture<void> remove_future;
+  EXPECT_CALL(*download_manager(), GetDownloadByGuid("unattached-guid"))
+      .WillOnce(Return(&unattached_item));
+  EXPECT_CALL(unattached_item, Remove())
+      .WillOnce(base::test::InvokeFuture(remove_future));
+
+  DownloadController::ScheduleRemoveDownloadItem(&unattached_item);
+  EXPECT_TRUE(remove_future.Wait());
+}
+
+TEST_F(DownloadControllerTest, CloseTabIfEmpty_ClosesSingleTabInMultiWindow) {
+  std::unique_ptr<content::WebContents> web_contents =
+      content::WebContentsTester::CreateTestWebContents(profile(), nullptr);
+  ASSERT_TRUE(web_contents->GetController().IsInitialNavigation());
+
+  NiceMock<MockClosingWebContentsDelegate> delegate;
+  web_contents->SetDelegate(&delegate);
+
+  // Detached WebContents without a TabAndroid should not close.
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(0);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  // Detached tab (not in any TabModel, e.g. while being reparented to a new
+  // window) with a valid TabAndroid should close.
+  std::unique_ptr<TabAndroid> tab = TabAndroid::CreateForTesting(
+      profile(), /*tab_id=*/1, /*web_contents=*/nullptr);
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents.get(),
+                                                       tab.get());
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(1);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  TestTabModel tab_model(profile());
+  tab_model.SetWebContentsList({web_contents.get()});
+  TabModelList::AddTabModel(&tab_model);
+
+  // Should not close the last tab in the sole window.
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(0);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  // Empty, headless, and non-tabbed (e.g. Custom Tab) models should not count
+  // as a second live tabbed window.
+  TestTabModel empty_tab_model(profile());
+  TabModelList::AddTabModel(&empty_tab_model);
+
+  TestTabModel headless_tab_model(profile(),
+                                  chrome::android::ActivityType::kTabbed,
+                                  TabModel::TabModelType::kHeadless);
+  headless_tab_model.SetTabCount(1);
+  TabModelList::AddTabModel(&headless_tab_model);
+
+  TestTabModel custom_tab_model(profile(),
+                                chrome::android::ActivityType::kCustomTab,
+                                TabModel::TabModelType::kStandard);
+  custom_tab_model.SetTabCount(1);
+  TabModelList::AddTabModel(&custom_tab_model);
+
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(0);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  // If the sole tab in the sole live window was created with
+  // FROM_LINK_CREATING_NEW_WINDOW, it should still close.
+  std::unique_ptr<TabAndroid> new_window_tab = TabAndroid::CreateForTesting(
+      profile(), /*tab_id=*/2, /*web_contents=*/nullptr,
+      static_cast<int>(TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW));
+  web_contents->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents.get(),
+                                                       new_window_tab.get());
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(1);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  // Restore non-new-window tab and verify that when another window's live
+  // standard tabbed TabModel has a tab, CloseTabIfEmpty closes the sole tab.
+  web_contents->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents.get(),
+                                                       tab.get());
+  TestTabModel second_window_tab_model(profile());
+  second_window_tab_model.SetTabCount(1);
+  TabModelList::AddTabModel(&second_window_tab_model);
+
+  EXPECT_CALL(delegate, CloseContents(web_contents.get())).Times(1);
+  DownloadController::CloseTabIfEmpty(web_contents.get(), /*download=*/nullptr);
+
+  web_contents->RemoveUserData(tabs::TabLookupFromWebContents::UserDataKey());
+  TabModelList::RemoveTabModel(&second_window_tab_model);
+  TabModelList::RemoveTabModel(&custom_tab_model);
+  TabModelList::RemoveTabModel(&headless_tab_model);
+  TabModelList::RemoveTabModel(&empty_tab_model);
+  TabModelList::RemoveTabModel(&tab_model);
+}
+
+TEST_F(DownloadControllerTest, DownloadUrl_DoesNotForcePrompt) {
+  content::WebContents* web_contents = CreateWebContents();
+
+  EXPECT_CALL(*mock_download_manager(), DownloadUrlMock(_))
+      .WillOnce([](download::DownloadUrlParameters* params) {
+        EXPECT_EQ(params->url(), GURL("https://example.com/test.pdf"));
+        EXPECT_EQ(params->download_source(),
+                  download::DownloadSource::TOOLBAR_MENU);
+        EXPECT_FALSE(params->content_initiated());
+        EXPECT_FALSE(params->prompt());
+      });
+
+  DownloadController::DownloadUrl("https://example.com/test.pdf", web_contents);
+}
+
+TEST_F(DownloadControllerTest, DownloadUrl_NullWebContents_NoOp) {
+  EXPECT_CALL(*mock_download_manager(), DownloadUrlMock(_)).Times(0);
+  DownloadController::DownloadUrl("https://example.com/test.pdf", nullptr);
+}
+
+TEST_F(DownloadControllerTest, DownloadLocalFile_DoesNotForcePrompt) {
+  content::WebContents* web_contents = CreateWebContents();
+
+  const std::string content_url = "content://media/external/downloads/1";
+  const std::u16string suggested_name = u"annotated.pdf";
+
+  EXPECT_CALL(*mock_download_manager(), DownloadUrlMock(_))
+      .WillOnce([&](download::DownloadUrlParameters* params) {
+        EXPECT_EQ(params->url(), GURL(content_url));
+        EXPECT_EQ(params->suggested_name(), suggested_name);
+        EXPECT_EQ(params->initiator(), std::nullopt);
+        EXPECT_EQ(params->download_source(),
+                  download::DownloadSource::TOOLBAR_MENU);
+        EXPECT_FALSE(params->content_initiated());
+        EXPECT_FALSE(params->prompt());
+      });
+
+  DownloadController::DownloadLocalFile(content_url, suggested_name,
+                                        web_contents);
+}
+
+TEST_F(DownloadControllerTest, DownloadLocalFile_NonLocalSchemeIgnored) {
+  content::WebContents* web_contents = CreateWebContents();
+
+  EXPECT_CALL(*mock_download_manager(), DownloadUrlMock(_)).Times(0);
+
+  DownloadController::DownloadLocalFile("https://example.com/test.pdf",
+                                        u"test.pdf", web_contents);
+}
+
+TEST_F(DownloadControllerTest, DownloadLocalFile_NullWebContents_NoOp) {
+  EXPECT_CALL(*mock_download_manager(), DownloadUrlMock(_)).Times(0);
+  DownloadController::DownloadLocalFile("content://downloads/1", u"test.pdf",
+                                        nullptr);
 }

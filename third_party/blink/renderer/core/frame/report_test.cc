@@ -71,14 +71,14 @@ TEST(ReportMatchIdTest, DifferentInputsGenerateDifferentMatchId) {
     match_ids.push_back(
         Report(ReportType::kPermissionsPolicyViolation, input.url,
                MakeGarbageCollected<PermissionsPolicyViolationReportBody>(
-                   input.feature_id, input.message, input.disposition))
+                   input.feature_id, input.message, input.disposition, "", "",
+                   nullptr))
             .MatchId());
   }
   EXPECT_TRUE(AllDistinct(match_ids));
 }
 
 TEST(ReportMatchIdTest, MatchIdGeneratedShouldNotBeZero) {
-  std::vector<unsigned> match_ids;
   for (const auto& input : kReportInputs) {
     EXPECT_NE(Report(ReportType::kDocumentPolicyViolation, input.url,
                      MakeGarbageCollected<DocumentPolicyViolationReportBody>(

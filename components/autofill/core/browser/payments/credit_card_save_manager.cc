@@ -44,6 +44,7 @@
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/cardholder_name_update_flow_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
 #include "components/autofill/core/browser/payments/autofill_payments_feature_availability.h"
 #include "components/autofill/core/browser/payments/autofill_save_card_ui_info.h"
@@ -223,6 +224,9 @@ void LogPromptOfferMetricForCreditCardSave(
 #endif
       break;
     case SaveCardPromptOffer::kShown:
+    case SaveCardPromptOffer::kNotShownAnotherPromptShowing:
+    case SaveCardPromptOffer::kNotShownAnotherPromptQueued:
+    case SaveCardPromptOffer::kNotShownQueuedButNeverShown:
       break;
   }
 }
@@ -242,6 +246,7 @@ CreditCardSaveManager::~CreditCardSaveManager() = default;
 
 bool CreditCardSaveManager::AttemptToOfferCardLocalSave(
     const CreditCard& card) {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   if (!payments_autofill_client().LocalCardSaveIsSupported()) {
     return false;
   }
@@ -252,11 +257,8 @@ bool CreditCardSaveManager::AttemptToOfferCardLocalSave(
   // If the card data does not have the expiration month or the year, then do
   // not offer to save to save locally, as the local save bubble does not
   // support the expiration date fix flow.
-  if (card_save_candidate_
-          .GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale())
-          .empty() ||
-      card_save_candidate_
-          .GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, client_->GetAppLocale())
+  if (card_save_candidate_.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale).empty() ||
+      card_save_candidate_.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale)
           .empty()) {
     return false;
   }
@@ -668,7 +670,8 @@ void CreditCardSaveManager::AttemptToOfferCardUploadSave(
 
   payments_network_interface->GetCardUploadDetails(
       country_only_profiles, upload_request_.detected_values,
-      upload_request_.client_behavior_signals, client_->GetAppLocale(),
+      upload_request_.client_behavior_signals,
+      std::string(client_->GetAppLocale().tag_string()),
       base::BindOnce(&CreditCardSaveManager::OnDidGetUploadDetails,
                      weak_ptr_factory_.GetWeakPtr(), ukm_source_id),
       payments::kUploadPaymentMethodBillableServiceNumber,
@@ -726,14 +729,25 @@ bool CreditCardSaveManager::AttemptToOfferCardholderNameUpdate(
 
   auto* cardholder_name_fix_flow_strike_db =
       GetCardholderNameFixFlowStrikeDatabase();
-  if (!cardholder_name_fix_flow_strike_db ||
-      cardholder_name_fix_flow_strike_db->ShouldBlockFeature(
-          base::NumberToString(card.instrument_id()))) {
+  if (!cardholder_name_fix_flow_strike_db) {
     return false;
+  }
+  switch (cardholder_name_fix_flow_strike_db->GetStrikeDatabaseDecision(
+      base::NumberToString(card.instrument_id()))) {
+    case CardholderNameFixFlowStrikeDatabase::kDoNotBlock:
+      break;
+    case CardholderNameFixFlowStrikeDatabase::kMaxStrikeLimitReached:
+      autofill_metrics::LogCardholderNameUpdateFlowPromptOffer(
+          SaveCardPromptOffer::kNotShownMaxStrikesReached);
+      return false;
+    case CardholderNameFixFlowStrikeDatabase::kRequiredDelayNotPassed:
+      autofill_metrics::LogCardholderNameUpdateFlowPromptOffer(
+          SaveCardPromptOffer::kNotShownRequiredDelay);
+      return false;
   }
 
   payments::GetDetailsForUpdateCardRequestDetails request_details;
-  request_details.app_locale = client_->GetAppLocale();
+  request_details.app_locale = client_->GetAppLocale().tag_string();
   request_details.billing_customer_number =
       payments::GetBillingCustomerId(payments_data_manager());
   request_details.instrument_id = card.instrument_id();
@@ -743,7 +757,8 @@ bool CreditCardSaveManager::AttemptToOfferCardholderNameUpdate(
   multiple_request_payments_network_interface->GetDetailsForUpdateCard(
       request_details,
       base::BindOnce(&CreditCardSaveManager::OnDidGetDetailsForUpdateCard,
-                     weak_ptr_factory_.GetWeakPtr(), card));
+                     weak_ptr_factory_.GetWeakPtr(), card,
+                     base::TimeTicks::Now()));
   return true;
 #endif  // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 }
@@ -768,6 +783,7 @@ bool CreditCardSaveManager::IsCreditCardUploadEnabled() {
 void CreditCardSaveManager::OnDidUploadCard(
     PaymentsRpcResult result,
     const payments::UploadCardResponseDetails& upload_card_response_details) {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   if (observer_for_testing_) {
     observer_for_testing_->OnReceivedUploadCardResponse();
   }
@@ -802,11 +818,9 @@ void CreditCardSaveManager::OnDidUploadCard(
         payments_autofill_client().LocalCardSaveIsSupported();
 
     if (run_save_card_fallback &&
-        !upload_request_.card
-             .GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale())
+        !upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale)
              .empty() &&
-        !upload_request_.card
-             .GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, client_->GetAppLocale())
+        !upload_request_.card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale)
              .empty()) {
       autofill_metrics::LogCreditCardUploadRanLocalSaveFallbackMetric(
           /*new_local_card_added=*/payments_data_manager().SaveCardLocallyIfNew(
@@ -1001,8 +1015,11 @@ void CreditCardSaveManager::OnDidGetUploadDetails(
 
 void CreditCardSaveManager::OnDidGetDetailsForUpdateCard(
     const CreditCard& card,
+    base::TimeTicks request_timestamp,
     PaymentsRpcResult result,
     const std::string& context_token) {
+  autofill_metrics::LogGetDetailsForUpdateCardRequestResultAndLatency(
+      result, base::TimeTicks::Now() - request_timestamp);
   if (result != PaymentsRpcResult::kSuccess) {
     return;
   }
@@ -1280,6 +1297,7 @@ void CreditCardSaveManager::LogStrikesPresentWhenCardSaved(
 void CreditCardSaveManager::SetProfilesForCreditCardUpload(
     const CreditCard& card,
     payments::UploadCardRequestDetails* upload_request) {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   std::vector<AutofillProfile> candidate_profiles;
   const base::Time now = AutofillClock::Now();
   const base::TimeDelta fifteen_minutes = base::Minutes(15);
@@ -1318,7 +1336,7 @@ void CreditCardSaveManager::SetProfilesForCreditCardUpload(
   // server-side by Google Payments and ensures that we don't send upload
   // requests that are guaranteed to fail.
   const std::u16string card_name =
-      card.GetInfo(CREDIT_CARD_NAME_FULL, client_->GetAppLocale());
+      card.GetInfo(CREDIT_CARD_NAME_FULL, app_locale);
   std::u16string verified_name;
   if (candidate_profiles.empty()) {
     verified_name = card_name;
@@ -1326,8 +1344,8 @@ void CreditCardSaveManager::SetProfilesForCreditCardUpload(
     bool found_conflicting_names = false;
     verified_name = RemoveMiddleInitial(card_name);
     for (const AutofillProfile& profile : candidate_profiles) {
-      const std::u16string address_name = RemoveMiddleInitial(
-          profile.GetInfo(NAME_FULL, client_->GetAppLocale()));
+      const std::u16string address_name =
+          RemoveMiddleInitial(profile.GetInfo(NAME_FULL, app_locale));
       if (address_name.empty())
         continue;
       if (verified_name.empty()) {
@@ -1390,6 +1408,7 @@ void CreditCardSaveManager::SetProfilesForCreditCardUpload(
 }
 
 int CreditCardSaveManager::GetDetectedValues() const {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   int detected_values = 0;
 
   // Report detecting CVC if it was found.
@@ -1399,8 +1418,7 @@ int CreditCardSaveManager::GetDetectedValues() const {
 
   // If cardholder name exists, set it as detected as long as
   // UPLOAD_NOT_OFFERED_CONFLICTING_NAMES was not set.
-  if (!upload_request_.card
-           .GetInfo(CREDIT_CARD_NAME_FULL, client_->GetAppLocale())
+  if (!upload_request_.card.GetInfo(CREDIT_CARD_NAME_FULL, app_locale)
            .empty() &&
       !(upload_decision_metrics_ &
         autofill_metrics::UPLOAD_NOT_OFFERED_CONFLICTING_NAMES)) {
@@ -1413,23 +1431,23 @@ int CreditCardSaveManager::GetDetectedValues() const {
   //  - POSTAL_CODE, as long as UPLOAD_NOT_OFFERED_CONFLICTING_ZIPS was not set
   //  - Any other address fields found on any addresses, regardless of conflicts
   for (const AutofillProfile& profile : upload_request_.profiles) {
-    if (!profile.GetInfo(NAME_FULL, client_->GetAppLocale()).empty() &&
+    if (!profile.GetInfo(NAME_FULL, app_locale).empty() &&
         !(upload_decision_metrics_ &
           autofill_metrics::UPLOAD_NOT_OFFERED_CONFLICTING_NAMES)) {
       detected_values |= DetectedValue::ADDRESS_NAME;
     }
-    if (!profile.GetInfo(ADDRESS_HOME_ZIP, client_->GetAppLocale()).empty() &&
+    if (!profile.GetInfo(ADDRESS_HOME_ZIP, app_locale).empty() &&
         !(upload_decision_metrics_ &
           autofill_metrics::UPLOAD_NOT_OFFERED_CONFLICTING_ZIPS)) {
       detected_values |= DetectedValue::POSTAL_CODE;
     }
-    if (!profile.GetInfo(ADDRESS_HOME_LINE1, client_->GetAppLocale()).empty()) {
+    if (!profile.GetInfo(ADDRESS_HOME_LINE1, app_locale).empty()) {
       detected_values |= DetectedValue::ADDRESS_LINE;
     }
-    if (!profile.GetInfo(ADDRESS_HOME_CITY, client_->GetAppLocale()).empty()) {
+    if (!profile.GetInfo(ADDRESS_HOME_CITY, app_locale).empty()) {
       detected_values |= DetectedValue::LOCALITY;
     }
-    if (!profile.GetInfo(ADDRESS_HOME_STATE, client_->GetAppLocale()).empty()) {
+    if (!profile.GetInfo(ADDRESS_HOME_STATE, app_locale).empty()) {
       detected_values |= DetectedValue::ADMINISTRATIVE_AREA;
     }
     if (!profile.GetRawInfo(ADDRESS_HOME_COUNTRY).empty()) {
@@ -1447,13 +1465,11 @@ int CreditCardSaveManager::GetDetectedValues() const {
 
   // If expiration date month or expiration year are missing, signal that
   // expiration date will be explicitly requested in the offer-to-save bubble.
-  if (!upload_request_.card
-           .GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale())
+  if (!upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale)
            .empty()) {
     detected_values |= DetectedValue::CARD_EXPIRATION_MONTH;
   }
-  if (!(upload_request_.card
-            .GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, client_->GetAppLocale())
+  if (!(upload_request_.card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale)
             .empty())) {
     detected_values |= DetectedValue::CARD_EXPIRATION_YEAR;
   }
@@ -1464,13 +1480,12 @@ int CreditCardSaveManager::GetDetectedValues() const {
       detected_values & DetectedValue::CARD_EXPIRATION_YEAR) {
     int month_value = 0, year_value = 0;
     bool parsable =
-        base::StringToInt(upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH,
-                                                       client_->GetAppLocale()),
-                          &month_value) &&
         base::StringToInt(
-            upload_request_.card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR,
-                                         client_->GetAppLocale()),
-            &year_value);
+            upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale),
+            &month_value) &&
+        base::StringToInt(upload_request_.card.GetInfo(
+                              CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale),
+                          &year_value);
     DCHECK(parsable);
     if (!IsValidCreditCardExpirationDate(year_value, month_value,
                                          AutofillClock::Now())) {
@@ -1664,7 +1679,8 @@ void CreditCardSaveManager::SendUpdateCardRequest() {
     return;
   }
 
-  update_card_request_details_.app_locale = client_->GetAppLocale();
+  update_card_request_details_.app_locale =
+      client_->GetAppLocale().tag_string();
   update_card_request_details_.billing_customer_number =
       payments::GetBillingCustomerId(payments_data_manager());
   multiple_request_payments_network_interface->UpdateCard(
@@ -1714,6 +1730,7 @@ void CreditCardSaveManager::OnUserDidAcceptExpirationDateFixFlow(
 void CreditCardSaveManager::OnUserDidAcceptUploadHelper(
     const payments::PaymentsAutofillClient::UserProvidedCardDetails&
         user_provided_card_details) {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   // If cardholder name was explicitly requested for the user to enter/confirm,
   // replace the name on |upload_request_.card| with the entered name.  (Note
   // that it is possible a name already existed on the card if conflicting names
@@ -1726,7 +1743,7 @@ void CreditCardSaveManager::OnUserDidAcceptUploadHelper(
 #endif
     upload_request_.card.SetInfo(CREDIT_CARD_NAME_FULL,
                                  user_provided_card_details.cardholder_name,
-                                 client_->GetAppLocale());
+                                 app_locale);
   }
 
   user_did_accept_upload_prompt_ = true;
@@ -1741,11 +1758,10 @@ void CreditCardSaveManager::OnUserDidAcceptUploadHelper(
 #endif
     upload_request_.card.SetInfo(
         CREDIT_CARD_EXP_MONTH, user_provided_card_details.expiration_date_month,
-        client_->GetAppLocale());
+        app_locale);
     upload_request_.card.SetInfo(
         CREDIT_CARD_EXP_4_DIGIT_YEAR,
-        user_provided_card_details.expiration_date_year,
-        client_->GetAppLocale());
+        user_provided_card_details.expiration_date_year, app_locale);
   }
 
 // On iOS, the user can add a CVC on the save card details page. This CVC is
@@ -1784,7 +1800,7 @@ void CreditCardSaveManager::SendUploadCardRequest() {
   if (observer_for_testing_) {
     observer_for_testing_->OnSentUploadCardRequest();
   }
-  upload_request_.app_locale = client_->GetAppLocale();
+  upload_request_.app_locale = client_->GetAppLocale().tag_string();
   upload_request_.billing_customer_number =
       payments::GetBillingCustomerId(payments_data_manager());
 
@@ -1923,13 +1939,11 @@ void CreditCardSaveManager::LogCardUploadDecisionsToAutofillInternals(
 }
 
 void CreditCardSaveManager::LogSaveCardRequestExpirationDateReasonMetric() {
+  const std::string_view app_locale = client_->GetAppLocale().tag_string();
   bool is_month_empty =
-      upload_request_.card
-          .GetInfo(CREDIT_CARD_EXP_MONTH, client_->GetAppLocale())
-          .empty();
+      upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale).empty();
   bool is_year_empty =
-      upload_request_.card
-          .GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, client_->GetAppLocale())
+      upload_request_.card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale)
           .empty();
 
   if (is_month_empty && is_year_empty) {
@@ -1947,13 +1961,12 @@ void CreditCardSaveManager::LogSaveCardRequestExpirationDateReasonMetric() {
   } else {
     int month = 0, year = 0;
     bool parsable =
+        base::StringToInt(upload_request_.card.GetInfo(
+                              CREDIT_CARD_EXP_4_DIGIT_YEAR, app_locale),
+                          &year) &&
         base::StringToInt(
-            upload_request_.card.GetInfo(CREDIT_CARD_EXP_4_DIGIT_YEAR,
-                                         client_->GetAppLocale()),
-            &year) &&
-        base::StringToInt(upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH,
-                                                       client_->GetAppLocale()),
-                          &month);
+            upload_request_.card.GetInfo(CREDIT_CARD_EXP_MONTH, app_locale),
+            &month);
     DCHECK(parsable);
     // Month and year are not empty, so they must be expired.
     DCHECK(!IsValidCreditCardExpirationDate(year, month, AutofillClock::Now()));

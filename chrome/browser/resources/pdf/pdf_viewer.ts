@@ -76,6 +76,7 @@ import {convertDocumentDimensionsMessage, convertFormFocusChangeMessage, convert
 import {PostMessageDataType, record, recordEnumeration, UserAction} from './metrics.js';
 import {NavigatorDelegateImpl, PdfNavigatorImpl, WindowOpenDisposition} from './navigator.js';
 import type {PdfNavigator} from './navigator.js';
+import type {OpenPdfParams} from './open_pdf_params_parser.js';
 import {LoadState} from './pdf_scripting_api.js';
 import {getCss} from './pdf_viewer.css.js';
 import {getHtml} from './pdf_viewer.html.js';
@@ -360,8 +361,9 @@ export class PdfViewerElement extends PdfViewerBaseElement {
   protected accessor fileName_: string = '';
   private accessor hadPassword_: boolean = false;
   protected accessor hasEdits_: boolean = false;
+  private hasUrlHighlights_: boolean = false;
   // <if expr="enable_pdf_ink2">
-  protected accessor hasCommittedInk2Edits_: boolean = false;
+  private accessor hasCommittedInk2Edits_: boolean = false;
   // </if>
   // <if expr="enable_pdf_ink2 or enable_pdf_save_to_drive">
   // `hasUnsavedEdits_` is set whenever the user makes edits to the PDF that
@@ -377,8 +379,8 @@ export class PdfViewerElement extends PdfViewerBaseElement {
   private pdfGetSaveDataInBlocks_: boolean = false;
   // <if expr="enable_pdf_ink2">
   protected accessor pdfInk2Enabled_: boolean = false;
-  protected accessor pdfSignaturesEnabled_: boolean = false;
-  protected accessor pdfTextAnnotationsEnabled_: boolean = false;
+  private accessor pdfSignaturesEnabled_: boolean = false;
+  private accessor pdfTextAnnotationsEnabled_: boolean = false;
   // </if>
   // <if expr="enable_pdf_save_to_drive">
   protected accessor pdfSaveToDriveEnabled_: boolean = false;
@@ -407,7 +409,7 @@ export class PdfViewerElement extends PdfViewerBaseElement {
   protected accessor sidenavCollapsed_: boolean;
 
   // <if expr="enable_pdf_ink2">
-  protected accessor textboxState_: TextBoxState = TextBoxState.INACTIVE;
+  private accessor textboxState_: TextBoxState = TextBoxState.INACTIVE;
   // </if>
   protected accessor title_: string = '';
   protected accessor toolbarEnabled_: boolean = false;
@@ -762,7 +764,8 @@ export class PdfViewerElement extends PdfViewerBaseElement {
     }
     if (newAnnotationMode === AnnotationMode.TEXT &&
         !Ink2Manager.getInstance().isTextInitializationComplete()) {
-      await Ink2Manager.getInstance().initializeTextAnnotations();
+      await Ink2Manager.getInstance().initializeTextAnnotations(
+          this.docLength_);
     }
     this.annotationMode_ = newAnnotationMode;
     this.showSignatureDialog_ = newAnnotationMode === AnnotationMode.SIGNATURE;
@@ -868,6 +871,11 @@ export class PdfViewerElement extends PdfViewerBaseElement {
   }
 
   // <if expr="enable_pdf_ink2">
+  protected onNewSignatureClick_() {
+    assert(!this.showSignatureDialog_);
+    this.showSignatureDialog_ = true;
+  }
+
   protected onSignatureDialogClose_() {
     assert(this.showSignatureDialog_);
     this.showSignatureDialog_ = false;
@@ -937,11 +945,23 @@ export class PdfViewerElement extends PdfViewerBaseElement {
       this.loadProgress_ = progress;
     }
     super.updateProgress(progress);
+  }
 
-    // Text fragment directives should be handled after the document is set to
-    // finished loading.
-    if (progress === 100) {
-      this.maybeRenderTextDirectiveHighlights_(this.originalUrl);
+  override handleUrlParams(params: OpenPdfParams) {
+    super.handleUrlParams(params);
+
+    // Handle text directives and #search= (text directives take priority).
+    if (params.textFragments) {
+      this.hasUrlHighlights_ = true;
+      this.pluginController_.highlightTextFragments(params.textFragments);
+    } else if (params.searchTerms) {
+      this.hasUrlHighlights_ = true;
+      this.pluginController_.highlightSearchTerms(
+          params.searchTerms, params.pageIndex ?? 0);
+    } else if (this.hasUrlHighlights_) {
+      // Clear prior highlights if a viewport update drops both params.
+      this.hasUrlHighlights_ = false;
+      this.pluginController_.highlightTextFragments([]);
     }
   }
 
@@ -1345,7 +1365,6 @@ export class PdfViewerElement extends PdfViewerBaseElement {
     assert(this.paramsParser);
     this.paramsParser.getViewportFromUrlParams(newUrl).then(
         params => this.handleUrlParams(params));
-    this.maybeRenderTextDirectiveHighlights_(newUrl);
   }
 
   // <if expr="enable_pdf_ink2">
@@ -1702,18 +1721,6 @@ export class PdfViewerElement extends PdfViewerBaseElement {
   // </if>
 
   /**
-   * Sends a message to the PDF plugin to highlight the provided text
-   * directives if any.
-   */
-  private maybeRenderTextDirectiveHighlights_(url: string) {
-    assert(this.paramsParser);
-    const textDirectives = this.paramsParser.getTextFragments(url);
-    if (textDirectives.length > 0) {
-      this.pluginController_.highlightTextFragments(textDirectives);
-    }
-  }
-
-  /**
    * Shows save file picker and returns a writable.
    * @param: suggestedName The default value for the filename.
    * @returns A Writable if successful, otherwise throws an exception.
@@ -2062,11 +2069,6 @@ export class PdfViewerElement extends PdfViewerBaseElement {
    */
   protected annotationAvailable_(): boolean {
     return this.canSerializeDocument_ && !this.hadPassword_;
-  }
-
-  /** @return Whether the PDF contents are rotated. */
-  protected isRotated_(): boolean {
-    return this.clockwiseRotations_ !== 0;
   }
 
   // <if expr="enable_pdf_ink2">

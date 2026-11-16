@@ -5,22 +5,31 @@
 import 'chrome://iwa-dev/install_dialog.js';
 
 import type {CrInputElement} from '//resources/cr_elements/cr_input/cr_input.js';
+import {Code} from '//resources/mojo/mojo/public/mojom/base/error.mojom-webui.js';
 import type {IwaDevComboboxElement} from 'chrome://iwa-dev/combobox.js';
 import {PLACEHOLDER_URL as PROXY_PLACEHOLDER_URL} from 'chrome://iwa-dev/install_dev_proxy_tab.js';
 import type {IwaDevInstallDialogElement} from 'chrome://iwa-dev/install_dialog.js';
 import {TabIndex} from 'chrome://iwa-dev/install_dialog.js';
 import {MIN_FETCH_DELAY_MS} from 'chrome://iwa-dev/install_update_manifest_tab.js';
-import type {UpdateManifest} from 'chrome://iwa-dev/iwa_dev.mojom-webui.js';
+import type {PageCallbackRouter, UpdateManifest} from 'chrome://iwa-dev/iwa_dev.mojom-webui.js';
+import {browserProxyFactory, PageHandlerRemote} from 'chrome://iwa-dev/iwa_dev.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 suite('<iwa-dev-install-dialog>', () => {
   let dialog: IwaDevInstallDialogElement;
   let installButton: HTMLButtonElement;
   let cancelButton: HTMLButtonElement;
+  let handler: TestMock<PageHandlerRemote>&PageHandlerRemote;
 
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    handler = TestMock.fromClass(PageHandlerRemote);
+    browserProxyFactory.setInstance({
+      handler: handler,
+      callbackRouter: {} as unknown as PageCallbackRouter,
+    });
     dialog = document.createElement('iwa-dev-install-dialog');
     document.body.appendChild(dialog);
 
@@ -37,6 +46,12 @@ suite('<iwa-dev-install-dialog>', () => {
   });
 
   test('displays error message on installation failure', async () => {
+    const tabs = dialog.shadowRoot.querySelector('cr-tabs')!;
+    tabs.selected = TabIndex.LOCAL_BUNDLE;
+    tabs.dispatchEvent(new CustomEvent(
+        'selected-changed', {detail: {value: TabIndex.LOCAL_BUNDLE}}));
+    await microtasksFinished();
+
     dialog.startInstallation();
     await microtasksFinished();
 
@@ -169,9 +184,10 @@ suite('<iwa-dev-install-dialog>', () => {
       dialog.onInstallationFinished(errorMessage);
       await microtasksFinished();
 
-      let errorDiv =
-          dialog.shadowRoot.querySelector<HTMLElement>('.error-message');
-      assertTrue(!!errorDiv);
+      assertTrue(input.invalid);
+      assertEquals(errorMessage, input.errorMessage);
+      assertFalse(
+          !!dialog.shadowRoot.querySelector<HTMLElement>('.error-message'));
 
       const newUrl = 'http://localhost:8080';
       input.value = newUrl;
@@ -179,12 +195,78 @@ suite('<iwa-dev-install-dialog>', () => {
           new CustomEvent('value-changed', {detail: {value: newUrl}}));
       await microtasksFinished();
 
-      errorDiv = dialog.shadowRoot.querySelector<HTMLElement>('.error-message');
-      assertFalse(!!errorDiv);
+      assertFalse(input.invalid);
+      assertEquals('', input.errorMessage);
     });
+
+    test(
+        'resets url and error state when switching tabs or reopening dialog',
+        async () => {
+          const invalidUrl = 'invalid-url';
+          input.value = invalidUrl;
+          input.dispatchEvent(
+              new CustomEvent('value-changed', {detail: {value: invalidUrl}}));
+          await microtasksFinished();
+
+          installButton.click();
+          await microtasksFinished();
+
+          assertTrue(input.invalid);
+          assertEquals('Please enter a valid URL.', input.errorMessage);
+          assertFalse(installButton.disabled);
+
+          // Switch to another tab and verify the tab unmounts.
+          const tabs = dialog.shadowRoot.querySelector('cr-tabs')!;
+          tabs.selected = TabIndex.LOCAL_BUNDLE;
+          tabs.dispatchEvent(new CustomEvent(
+              'selected-changed', {detail: {value: TabIndex.LOCAL_BUNDLE}}));
+          await microtasksFinished();
+
+          assertFalse(!!dialog.shadowRoot.querySelector(
+              'iwa-dev-install-dev-proxy-tab'));
+
+          // Switch back to Dev Proxy tab and verify fresh state.
+          tabs.selected = TabIndex.DEV_PROXY;
+          tabs.dispatchEvent(new CustomEvent(
+              'selected-changed', {detail: {value: TabIndex.DEV_PROXY}}));
+          await microtasksFinished();
+
+          proxyTab =
+              dialog.shadowRoot.querySelector('iwa-dev-install-dev-proxy-tab')!;
+          input =
+              proxyTab.shadowRoot!.querySelector<CrInputElement>('cr-input')!;
+          assertEquals('', input.value);
+          assertFalse(input.invalid);
+          assertTrue(installButton.disabled);
+
+          // Populate again, then close and reopen the dialog.
+          input.value = invalidUrl;
+          input.dispatchEvent(
+              new CustomEvent('value-changed', {detail: {value: invalidUrl}}));
+          await microtasksFinished();
+          installButton.click();
+          await microtasksFinished();
+          assertTrue(input.invalid);
+
+          cancelButton.click();
+          await microtasksFinished();
+          assertFalse(!!dialog.shadowRoot.querySelector(
+              'iwa-dev-install-dev-proxy-tab'));
+
+          dialog.showDialog();
+          await microtasksFinished();
+
+          proxyTab =
+              dialog.shadowRoot.querySelector('iwa-dev-install-dev-proxy-tab')!;
+          input =
+              proxyTab.shadowRoot!.querySelector<CrInputElement>('cr-input')!;
+          assertEquals('', input.value);
+          assertFalse(input.invalid);
+          assertTrue(installButton.disabled);
+        });
   });
 
-  suite('Local Bundle Tab', () => {
+  suite('Signed Bundle Tab', () => {
     let bundleTab: HTMLElement;
 
     setup(async () => {
@@ -201,17 +283,373 @@ suite('<iwa-dev-install-dialog>', () => {
       assertTrue(!!bundleTab);
     });
 
-    test('enables install button by default', () => {
-      assertFalse(installButton.hasAttribute('disabled'));
+    test('dropzone exists and install button is disabled initially', () => {
+      const dropzone =
+          bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone');
+      assertTrue(!!dropzone);
+      assertFalse(dropzone.hasAttribute('title'));
+      assertTrue(installButton.hasAttribute('disabled'));
     });
 
-    test('emits local bundle install event on install click', async () => {
-      const eventPromise =
-          eventToPromise('request-install-from-local-bundle', dialog);
+    test(
+        'selecting file via dropzone click enables install button and shows filename inside dropzone',
+        async () => {
+          handler.setResultFor(
+              'selectLocalWebBundle', Promise.resolve('my_bundle.swbn'));
 
-      installButton.click();
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          await microtasksFinished();
 
-      await eventPromise;
+          assertEquals(1, handler.getCallCount('selectLocalWebBundle'));
+
+          assertTrue(dropzone.classList.contains('has-file'));
+          assertEquals('my_bundle.swbn', dropzone.getAttribute('title'));
+          const fileNameEl =
+              bundleTab.shadowRoot!.querySelector('.dropzone-filename');
+          assertEquals('my_bundle.swbn', fileNameEl?.textContent?.trim());
+
+          assertFalse(installButton.hasAttribute('disabled'));
+
+          // Test replacing the bundle by clicking the dropzone again.
+          handler.setResultFor(
+              'selectLocalWebBundle', Promise.resolve('updated_bundle.swbn'));
+          dropzone.click();
+          await microtasksFinished();
+
+          assertEquals(2, handler.getCallCount('selectLocalWebBundle'));
+          assertEquals('updated_bundle.swbn', fileNameEl?.textContent?.trim());
+          assertFalse(installButton.hasAttribute('disabled'));
+        });
+
+    test(
+        'canceling file selection keeps dropzone, keeps install button disabled, and shows no error',
+        async () => {
+          handler.setResultFor(
+              'selectLocalWebBundle', Promise.reject({code: Code.kCancelled}));
+
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          await microtasksFinished();
+
+          assertEquals(1, handler.getCallCount('selectLocalWebBundle'));
+
+          const dropzoneAfter =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone');
+          assertTrue(!!dropzoneAfter);
+          assertTrue(installButton.hasAttribute('disabled'));
+
+          const errorDiv = bundleTab.shadowRoot!.querySelector<HTMLElement>(
+              '.error-message');
+          assertFalse(!!errorDiv);
+        });
+
+    test(
+        'selecting invalid file shows error in tab and keeps install button disabled',
+        async () => {
+          const errorMessage =
+              'Invalid file type. Please select a Signed Web Bundle (.swbn) file.';
+          handler.setResultFor(
+              'selectLocalWebBundle',
+              Promise.reject(
+                  {code: Code.kInvalidArgument, message: errorMessage}));
+
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          await microtasksFinished();
+
+          assertEquals(1, handler.getCallCount('selectLocalWebBundle'));
+          assertTrue(installButton.hasAttribute('disabled'));
+
+          const errorDiv = bundleTab.shadowRoot!.querySelector<HTMLElement>(
+              '.error-message');
+          assertTrue(!!errorDiv);
+          assertEquals(errorMessage, errorDiv.textContent?.trim());
+        });
+
+    test(
+        'dragover sets drag-over class and notifies browser once', async () => {
+          handler.setResultFor('notifyDragBundleEnter', undefined);
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          dropzone.dispatchEvent(
+              new DragEvent('dragover', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+          assertTrue(dropzone.classList.contains('drag-over'));
+          assertEquals(1, handler.getCallCount('notifyDragBundleEnter'));
+
+          // Subsequent dragover tick does not repeatedly call
+          // notifyDragBundleEnter.
+          dropzone.dispatchEvent(
+              new DragEvent('dragover', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+          assertTrue(dropzone.classList.contains('drag-over'));
+          assertEquals(1, handler.getCallCount('notifyDragBundleEnter'));
+        });
+
+    test(
+        'dragleave with relatedTarget inside dropzone does NOT remove drag-over or notify leave',
+        async () => {
+          handler.setResultFor('notifyDragBundleEnter', undefined);
+          handler.setResultFor('notifyDragBundleLeave', undefined);
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          dropzone.dispatchEvent(
+              new DragEvent('dragover', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+          assertTrue(dropzone.classList.contains('drag-over'));
+          assertEquals(1, handler.getCallCount('notifyDragBundleEnter'));
+
+          // Moving mouse onto child element inside dropzone fires dragleave
+          // with child as relatedTarget.
+          const icon = dropzone.querySelector('cr-icon')!;
+          assertTrue(!!icon);
+          dropzone.dispatchEvent(new DragEvent('dragleave', {
+            bubbles: true,
+            cancelable: true,
+            relatedTarget: icon,
+          }));
+          await microtasksFinished();
+
+          // Must remain in drag-over state without notifying leave.
+          assertTrue(dropzone.classList.contains('drag-over'));
+          assertEquals(0, handler.getCallCount('notifyDragBundleLeave'));
+        });
+
+    test(
+        'dragleave with relatedTarget outside dropzone removes drag-over and notifies leave',
+        async () => {
+          handler.setResultFor('notifyDragBundleEnter', undefined);
+          handler.setResultFor('notifyDragBundleLeave', undefined);
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          dropzone.dispatchEvent(
+              new DragEvent('dragover', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+          assertTrue(dropzone.classList.contains('drag-over'));
+
+          dropzone.dispatchEvent(new DragEvent('dragleave', {
+            bubbles: true,
+            cancelable: true,
+            relatedTarget: document.body,
+          }));
+          await microtasksFinished();
+
+          assertFalse(dropzone.classList.contains('drag-over'));
+          assertEquals(1, handler.getCallCount('notifyDragBundleLeave'));
+        });
+
+    test(
+        'drop with valid bundle stages bundle, sets filename, and enables install button',
+        async () => {
+          handler.setResultFor(
+              'stageDroppedLocalWebBundle',
+              Promise.resolve('dropped_bundle.swbn'));
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          dropzone.dispatchEvent(
+              new DragEvent('dragover', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+          assertTrue(dropzone.classList.contains('drag-over'));
+
+          dropzone.dispatchEvent(
+              new DragEvent('drop', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+
+          assertFalse(dropzone.classList.contains('drag-over'));
+          assertEquals(1, handler.getCallCount('stageDroppedLocalWebBundle'));
+
+          assertTrue(dropzone.classList.contains('has-file'));
+          const fileNameEl =
+              bundleTab.shadowRoot!.querySelector('.dropzone-filename');
+          assertEquals('dropped_bundle.swbn', fileNameEl?.textContent?.trim());
+          assertFalse(installButton.hasAttribute('disabled'));
+        });
+
+    test(
+        'drop with invalid file shows error in tab, clears filename, and keeps install button disabled',
+        async () => {
+          const errorMessage =
+              'Invalid file type. Please select a Signed Web Bundle (.swbn) file.';
+          handler.setResultFor(
+              'stageDroppedLocalWebBundle',
+              Promise.reject({message: errorMessage}));
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          dropzone.dispatchEvent(
+              new DragEvent('drop', {bubbles: true, cancelable: true}));
+          await microtasksFinished();
+
+          assertEquals(1, handler.getCallCount('stageDroppedLocalWebBundle'));
+          assertFalse(dropzone.classList.contains('has-file'));
+          assertTrue(installButton.hasAttribute('disabled'));
+
+          const errorDiv = bundleTab.shadowRoot!.querySelector<HTMLElement>(
+              '.error-message');
+          assertTrue(!!errorDiv);
+          assertEquals(errorMessage, errorDiv.textContent?.trim());
+        });
+
+    test(
+        'clicking install button emits request-install-from-local-bundle',
+        async () => {
+          handler.setResultFor(
+              'selectLocalWebBundle', Promise.resolve('my_bundle.swbn'));
+
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          await microtasksFinished();
+
+          assertFalse(installButton.hasAttribute('disabled'));
+
+          const eventPromise =
+              eventToPromise('request-install-from-local-bundle', dialog);
+          installButton.click();
+          await eventPromise;
+        });
+
+    test(
+        'ignores overlapping clicks and repeated keydowns while selecting',
+        async () => {
+          let resolveSelect!: (name: string) => void;
+          handler.setResultFor(
+              'selectLocalWebBundle', new Promise<string>(resolve => {
+                resolveSelect = resolve;
+              }));
+
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          dropzone.click();
+          dropzone.dispatchEvent(new KeyboardEvent(
+              'keydown', {key: 'Enter', repeat: true, cancelable: true}));
+          await microtasksFinished();
+
+          assertEquals(1, handler.getCallCount('selectLocalWebBundle'));
+
+          resolveSelect('my_bundle.swbn');
+          await microtasksFinished();
+          assertEquals('my_bundle.swbn', dropzone.getAttribute('title'));
+        });
+
+    test(
+        'prevents default on dragover and drop when disabled or outside dropzone',
+        async () => {
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+
+          // Outside dropzone on dialog itself: prevents default navigation.
+          const dialogDragover =
+              new DragEvent('dragover', {bubbles: true, cancelable: true});
+          dialog.$.dialog.dispatchEvent(dialogDragover);
+          assertTrue(dialogDragover.defaultPrevented);
+
+          const dialogDrop =
+              new DragEvent('drop', {bubbles: true, cancelable: true});
+          dialog.$.dialog.dispatchEvent(dialogDrop);
+          assertTrue(dialogDrop.defaultPrevented);
+
+          // Inside dropzone while installation is in flight (disabled):
+          dialog.startInstallation();
+          await microtasksFinished();
+
+          const disabledDragover =
+              new DragEvent('dragover', {bubbles: true, cancelable: true});
+          dropzone.dispatchEvent(disabledDragover);
+          assertTrue(disabledDragover.defaultPrevented);
+          assertFalse(dropzone.classList.contains('drag-over'));
+          assertEquals(0, handler.getCallCount('notifyDragBundleEnter'));
+
+          const disabledDrop =
+              new DragEvent('drop', {bubbles: true, cancelable: true});
+          dropzone.dispatchEvent(disabledDrop);
+          await microtasksFinished();
+          assertTrue(disabledDrop.defaultPrevented);
+          assertEquals(0, handler.getCallCount('stageDroppedLocalWebBundle'));
+        });
+
+    test(
+        'ignores non-file text drags without clearing staged bundle',
+        async () => {
+          handler.setResultFor(
+              'selectLocalWebBundle', Promise.resolve('my_bundle.swbn'));
+          const dropzone =
+              bundleTab.shadowRoot!.querySelector<HTMLElement>('.dropzone')!;
+          dropzone.click();
+          await microtasksFinished();
+          assertFalse(installButton.hasAttribute('disabled'));
+
+          const textData = new DataTransfer();
+          textData.setData('text/plain', 'some selected text');
+
+          const dragoverEvent = new DragEvent('dragover', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: textData,
+          });
+          dropzone.dispatchEvent(dragoverEvent);
+          await microtasksFinished();
+          assertTrue(dragoverEvent.defaultPrevented);
+          assertFalse(dropzone.classList.contains('drag-over'));
+          assertEquals(0, handler.getCallCount('notifyDragBundleEnter'));
+
+          const dropEvent = new DragEvent('drop', {
+            bubbles: true,
+            cancelable: true,
+            dataTransfer: textData,
+          });
+          dropzone.dispatchEvent(dropEvent);
+          await microtasksFinished();
+          assertTrue(dropEvent.defaultPrevented);
+          assertEquals(0, handler.getCallCount('stageDroppedLocalWebBundle'));
+          assertEquals('my_bundle.swbn', dropzone.getAttribute('title'));
+          assertFalse(installButton.hasAttribute('disabled'));
+        });
+
+    test(
+        'native dialog cancel unmounts tab and calls clearStagedLocalWebBundle',
+        async () => {
+          handler.setResultFor('clearStagedLocalWebBundle', undefined);
+
+          dialog.$.dialog.getNative().dispatchEvent(
+              new Event('cancel', {cancelable: true}));
+          await dialog.$.dialog.updateComplete;
+          await microtasksFinished();
+
+          assertFalse(!!dialog.shadowRoot.querySelector(
+              'iwa-dev-install-local-bundle-tab'));
+          assertEquals(1, handler.getCallCount('clearStagedLocalWebBundle'));
+        });
+
+    test('switching tabs calls clearStagedLocalWebBundle', async () => {
+      handler.setResultFor('clearStagedLocalWebBundle', undefined);
+      const tabs = dialog.shadowRoot.querySelector('cr-tabs')!;
+      assertTrue(!!tabs);
+
+      tabs.selected = TabIndex.DEV_PROXY;
+      tabs.dispatchEvent(new CustomEvent(
+          'selected-changed', {detail: {value: TabIndex.DEV_PROXY}}));
+      await microtasksFinished();
+
+      assertEquals(1, handler.getCallCount('clearStagedLocalWebBundle'));
+    });
+
+    test('canceling dialog calls clearStagedLocalWebBundle', async () => {
+      handler.setResultFor('clearStagedLocalWebBundle', undefined);
+
+      cancelButton.click();
+      await microtasksFinished();
+
+      assertEquals(1, handler.getCallCount('clearStagedLocalWebBundle'));
     });
   });
 
@@ -268,8 +706,11 @@ suite('<iwa-dev-install-dialog>', () => {
       return fetchEventResult;
     }
 
-    test('disables install button initially', () => {
+    test('disables install button and hides details initially', () => {
       assertTrue(installButton.disabled);
+      assertFalse(!!manifestTab.shadowRoot!.querySelector('#details'));
+      assertFalse(
+          !!manifestTab.shadowRoot!.querySelector('.placeholder-message'));
     });
 
     test(
@@ -699,6 +1140,195 @@ suite('<iwa-dev-install-dialog>', () => {
           assertEquals(
               'http://localhost/app1.swbn', installEvent.detail.webBundleUrl);
           assertEquals('beta', installEvent.detail.updateInfo.updateChannel);
+        });
+
+    test(
+        'resets fetched state and url when switching tabs or closing dialog',
+        async () => {
+          await fetchUpdateManifest('http://localhost:8080/manifest.json', {
+            success: {
+              versions: [{
+                version: '1.0.0',
+                src: 'http://localhost/app.swbn',
+                channels: ['stable'],
+              }],
+              channels: [{channel: 'stable', displayName: 'Stable'}],
+            },
+          });
+
+          assertTrue(!!manifestTab.shadowRoot!.querySelector('#details'));
+          assertFalse(installButton.disabled);
+
+          // Closing the dialog unmounts the active tab.
+          cancelButton.click();
+          await microtasksFinished();
+
+          assertFalse(!!dialog.shadowRoot.querySelector(
+              'iwa-dev-install-update-manifest-tab'));
+
+          // Reopen dialog, navigate to Update Manifest tab, and verify fresh
+          // state.
+          dialog.showDialog();
+          await microtasksFinished();
+
+          const tabs = dialog.shadowRoot.querySelector('cr-tabs')!;
+          tabs.selected = TabIndex.UPDATE_MANIFEST;
+          tabs.dispatchEvent(new CustomEvent(
+              'selected-changed', {detail: {value: TabIndex.UPDATE_MANIFEST}}));
+          await microtasksFinished();
+
+          manifestTab = dialog.shadowRoot.querySelector(
+              'iwa-dev-install-update-manifest-tab')!;
+          input = manifestTab.shadowRoot!.querySelector<CrInputElement>(
+              'cr-input')!;
+          fetchButton = manifestTab.shadowRoot!.querySelector<HTMLElement>(
+              '#fetchButton')!;
+
+          assertEquals('', input.value);
+          assertFalse(input.invalid);
+          assertFalse(!!manifestTab.shadowRoot!.querySelector('#details'));
+          assertFalse(
+              !!manifestTab.shadowRoot!.querySelector('#fetchSuccessMessage'));
+          assertTrue(installButton.disabled);
+
+          await fetchUpdateManifest('http://localhost:8080/manifest.json', {
+            success: {
+              versions: [{
+                version: '1.0.0',
+                src: 'http://localhost/app.swbn',
+                channels: ['stable'],
+              }],
+              channels: [{channel: 'stable', displayName: 'Stable'}],
+            },
+          });
+
+          assertTrue(!!manifestTab.shadowRoot!.querySelector('#details'));
+          assertFalse(installButton.disabled);
+
+          tabs.selected = TabIndex.DEV_PROXY;
+          tabs.dispatchEvent(new CustomEvent(
+              'selected-changed', {detail: {value: TabIndex.DEV_PROXY}}));
+          await microtasksFinished();
+
+          assertFalse(!!dialog.shadowRoot.querySelector(
+              'iwa-dev-install-update-manifest-tab'));
+          assertTrue(installButton.disabled);
+
+          tabs.selected = TabIndex.UPDATE_MANIFEST;
+          tabs.dispatchEvent(new CustomEvent(
+              'selected-changed', {detail: {value: TabIndex.UPDATE_MANIFEST}}));
+          await microtasksFinished();
+
+          manifestTab = dialog.shadowRoot.querySelector(
+              'iwa-dev-install-update-manifest-tab')!;
+          input = manifestTab.shadowRoot!.querySelector<CrInputElement>(
+              'cr-input')!;
+          assertEquals('', input.value);
+          assertFalse(!!manifestTab.shadowRoot!.querySelector('#details'));
+          assertTrue(installButton.disabled);
+        });
+
+    test(
+        'ignores in-flight manifest fetch result if unmounted while fetching',
+        async () => {
+          const fetchEventPromise =
+              eventToPromise('request-parse-update-manifest-from-url', dialog);
+
+          const validUrl = 'http://localhost:8080/manifest.json';
+          input.value = validUrl;
+          input.dispatchEvent(
+              new CustomEvent('value-changed', {detail: {value: validUrl}}));
+          await microtasksFinished();
+
+          fetchButton.click();
+          const fetchEventResult =
+              await fetchEventPromise as CustomEvent<{
+                url: string,
+                callback: (
+                    result: {success?: UpdateManifest, error?: string}) => void,
+              }>;
+          await microtasksFinished();
+
+          assertTrue(input.disabled);
+
+          // Close the dialog while the fetch is still in flight.
+          cancelButton.click();
+          await microtasksFinished();
+
+          assertFalse(manifestTab.isConnected);
+
+          // Now resolve the stale fetch callback and wait for
+          // MIN_FETCH_DELAY_MS.
+          fetchEventResult.detail.callback({
+            success: {
+              versions: [{
+                version: '1.0.0',
+                src: 'http://localhost/app.swbn',
+                channels: ['stable'],
+              }],
+              channels: [{channel: 'stable', displayName: 'Stable'}],
+            },
+          });
+          await new Promise(
+              resolve => setTimeout(resolve, MIN_FETCH_DELAY_MS + 10));
+          await microtasksFinished();
+
+          // Stale result must not populate details or enable install button.
+          assertFalse(!!manifestTab.shadowRoot!.querySelector('#details'));
+          assertFalse(
+              !!manifestTab.shadowRoot!.querySelector('#fetchSuccessMessage'));
+          assertTrue(installButton.disabled);
+        });
+
+    test(
+        'displays dialog error on post-fetch bundle install failure and ' +
+            'clears on selection change',
+        async () => {
+          await fetchUpdateManifest('http://localhost:8080/manifest.json', {
+            success: {
+              versions: [
+                {
+                  version: '1.0.0',
+                  src: 'http://localhost/app1.swbn',
+                  channels: ['stable'],
+                },
+                {
+                  version: '2.0.0',
+                  src: 'http://localhost/app2.swbn',
+                  channels: ['stable'],
+                },
+              ],
+              channels: [{channel: 'stable', displayName: 'Stable'}],
+            },
+          });
+
+          dialog.startInstallation();
+          await microtasksFinished();
+
+          assertTrue(input.disabled);
+          assertTrue(fetchButton.hasAttribute('disabled'));
+
+          const errorMessage = 'Failed to download web bundle.';
+          dialog.onInstallationFinished(errorMessage);
+          await microtasksFinished();
+
+          assertFalse(input.disabled);
+          assertFalse(input.invalid);
+          const errorDiv =
+              dialog.shadowRoot.querySelector<HTMLElement>('.error-message');
+          assertTrue(!!errorDiv);
+          assertEquals(errorMessage, errorDiv.textContent?.trim());
+
+          // Changing selected version clears the installation error.
+          const versionSelect =
+              manifestTab.shadowRoot!.querySelector<IwaDevComboboxElement>(
+                  '#versionSelect')!;
+          versionSelect.dispatchEvent(
+              new CustomEvent('value-changed', {detail: {value: '1.0.0'}}));
+          await microtasksFinished();
+
+          assertFalse(
+              !!dialog.shadowRoot.querySelector<HTMLElement>('.error-message'));
         });
   });
 });

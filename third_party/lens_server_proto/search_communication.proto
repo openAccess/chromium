@@ -117,6 +117,20 @@ message ClientToSearchMessage {
 
   // Instructs Search Web to open the threads view (Thread History).
   message OpenThreadsView {}
+
+  // Notifies Search Web that an existing thread's side panel was reopened via
+  // a toolbar button.
+  message OnReopenedViaToolbarButton {
+    enum ToolbarButtonType {
+      TOOLBAR_BUTTON_TYPE_UNSPECIFIED = 0;
+      // Permanently pinned toolbar button.
+      PINNED = 1;
+      // Ephemeral toolbar button.
+      EPHEMERAL = 2;
+    }
+    ToolbarButtonType toolbar_button_type = 1;
+  }
+
   oneof event_message {
     // Initial handshake ping sent by an extension iframe upon mounting.
     HandshakePing handshake_ping = 1;
@@ -137,6 +151,10 @@ message ClientToSearchMessage {
 
     // Instructs Search Web to open the threads view.
     OpenThreadsView open_threads_view = 6;
+
+    // Fired when an existing thread's side panel is reopened via a toolbar
+    // button.
+    OnReopenedViaToolbarButton on_reopened_via_toolbar_button = 7;
   }
 }
 
@@ -217,6 +235,28 @@ message SearchToClientMessage {
     bool is_zero_state = 1;
   }
 
+  // Message sent by Search Web to Chrome when the AIM input plate
+  // composition state changes.
+  message OnInputPlateStateChanged {
+    // Input plate composition states, mirroring
+    // search.next.aim.ui.inputplate.CompositionState.
+    enum CompositionState {
+      COMPOSITION_STATE_UNSPECIFIED = 0;
+
+      // Input plate is empty.
+      EMPTY = 1;
+
+      // A query is being composed.
+      COMPOSING = 2;
+
+      // Input plate is disabled.
+      DISABLED = 4;
+
+      reserved 3;
+    }
+    CompositionState composition_state = 1;
+  }
+
   oneof event_message {
     // Handshake response sent by Search Web acknowledging readiness.
     HandshakeResponse handshake_response = 1;
@@ -234,6 +274,9 @@ message SearchToClientMessage {
 
     // Sent to notify Chrome that the page has changed.
     OnPageChanged on_page_changed = 5;
+
+    // Sent to notify Chrome when the AIM input plate state changes.
+    OnInputPlateStateChanged on_input_plate_state_changed = 6;
   }
 }
 

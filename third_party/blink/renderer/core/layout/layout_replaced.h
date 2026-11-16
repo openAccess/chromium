@@ -110,11 +110,16 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   // properties like 'zoom' or 'image-orientation'.
   virtual void NaturalSizeChanged();
 
-  bool RespectsCSSOverflow() const override;
+  bool RespectsCSSOverflow() const override {
+    NOT_DESTROYED();
+    return true;
+  }
 
   // Returns true if the content is guarenteed to be clipped to the element's
   // content box.
   bool ClipsToContentBox() const;
+
+  virtual PhysicalRect ComputeContentsVisualOverflow() const;
 
  protected:
   virtual bool ShouldApplyObjectViewBox() const {
@@ -132,12 +137,10 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
 
   bool IsInSelfHitTestingPhase(HitTestPhase phase) const override {
     NOT_DESTROYED();
-    if (LayoutBox::IsInSelfHitTestingPhase(phase))
+    if (LayoutBox::IsInSelfHitTestingPhase(phase)) {
       return true;
-
-    auto* element = DynamicTo<Element>(GetNode());
-    return element && element->IsReplacedElementRespectingCSSOverflow() &&
-           phase == HitTestPhase::kSelfBlockBackground;
+    }
+    return phase == HitTestPhase::kSelfBlockBackground && RespectsCSSOverflow();
   }
 
   // This function calculates the placement of the replaced contents. It takes
@@ -173,11 +176,7 @@ class CORE_EXPORT LayoutReplaced : public LayoutBox {
   // ImageResourceObserver
   gfx::Size ComputeSpeculativeDecodeSize() const override;
 
-  virtual PhysicalRect ComputeContentsVisualOverflow() const;
-
  private:
-  PhysicalRect ComputeSelfVisualOverflow() const;
-
   // Computes a rect, relative to the element's content's natural size, that
   // should be used as the content source when rendering this element. This
   // value is used as the input for object-fit/object-position during painting.

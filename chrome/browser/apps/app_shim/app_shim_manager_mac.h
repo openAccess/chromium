@@ -228,6 +228,11 @@ class AppShimManager
       const webapps::AppId& app_id,
       RequestNotificationPermissionCallback callback);
 
+  // Asks the app shim corresponding to `app_id` to re-query macOS for its
+  // current notification permission status and asynchronously report any change
+  // via `AppShimRegistry`, launching the app shim in the background if needed.
+  void SynchronizeNotificationPermissionStatus(const webapps::AppId& app_id);
+
   // Causes ShowNotificationPermissionRequest() to immediately invoke `handler`
   // rather than trying to request permission from the app shim.
   using NotificationPermissionRequestHandlerForTesting =
@@ -311,9 +316,6 @@ class AppShimManager
 
   // AvatarMenuObserver:
   void OnAvatarMenuChanged(AvatarMenu* menu) override;
-
-  static base::apple::ScopedCFTypeRef<CFStringRef>
-      BuildAppShimRequirementStringFromFrameworkRequirementString(CFStringRef);
 
   class AppShimObserver {
    public:
@@ -501,18 +503,22 @@ class AppShimManager
   // Updates the badge for the specified host.
   void UpdateApplicationBadge(ProfileState* profile_state);
 
+  // Records metrics when `AppShim::SetBadgeLabel` completes for a non-empty
+  // profile badge update.
+  void OnBadgeUpdated(chrome::mojom::AppShimBadgeResult result);
+
   // Retrieve the ProfileState for a given (Profile, AppId) pair. If one
   // does not exist, create one.
   ProfileState* GetOrCreateProfileState(Profile* profile,
                                         const webapps::AppId& app_id);
 
-  // Launches a shim for `app_id` in background mode (i.e. without being shown
-  // in the Dock and other UI surfaces). Can call `callback` with nullptr if the
-  // `app_id` is invalid (for example not installed locally in any profile). If
-  // the launch itself fails, this will still call `callback` with a valid
-  // AppShimHost, but a mojo connection to the app shim will never be
-  // established (and any calls that were made to the remote app shim will be
-  // dropped).
+  // Finds an existing shim for `app_id`, or launches a new one in background
+  // mode (i.e. without being shown in the Dock and other UI surfaces). Can call
+  // `callback` with nullptr if the `app_id` is invalid (for example not
+  // installed locally in any profile). If the launch itself fails, this will
+  // still call `callback` with a valid AppShimHost, but a mojo connection to
+  // the app shim will never be established (and any calls that were made to the
+  // remote app shim will be dropped).
   void LaunchShimInBackgroundMode(
       const webapps::AppId& app_id,
       base::OnceCallback<void(AppShimHost*)> callback);

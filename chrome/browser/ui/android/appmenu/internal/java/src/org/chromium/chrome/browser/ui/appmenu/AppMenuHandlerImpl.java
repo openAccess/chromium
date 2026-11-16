@@ -299,13 +299,20 @@ class AppMenuHandlerImpl
     // TODO(crbug.com/40479664): Fix this properly.
     @SuppressLint("ResourceType")
     public boolean showAppMenu(@Nullable View anchorView, boolean startDragging) {
-        return showAppMenu(anchorView, startDragging, false);
+        return showAppMenu(
+                anchorView,
+                startDragging,
+                /* isFromBottomBar= */ false,
+                /* isFromPointer= */ false);
     }
 
     @Override
     @SuppressLint("ResourceType")
     public boolean showAppMenu(
-            @Nullable View anchorView, boolean startDragging, boolean isFromBottomBar) {
+            @Nullable View anchorView,
+            boolean startDragging,
+            boolean isFromBottomBar,
+            boolean isFromPointer) {
         if (!shouldShowAppMenu() || isAppMenuShowing()) return false;
 
         TextBubble.dismissBubbles();
@@ -405,7 +412,7 @@ class AppMenuHandlerImpl
                 mWindowAndroid.getKeyboardDelegate();
 
         // If keyboard is showing, wait until keyboard disappears to set appRect
-        if (keyboardVisibilityDelegate.isKeyboardShowing(anchorView)) {
+        if (keyboardVisibilityDelegate.isKeyboardObscuring(anchorView)) {
             // A show may already be waiting on the keyboard. Replace it, or the listener
             // below would remove the new one instead of itself and never be removed.
             if (mKeyboardVisibilityListener != null) {
@@ -425,7 +432,8 @@ class AppMenuHandlerImpl
                                     rotation,
                                     mAppRect.get(),
                                     startDragging,
-                                    isFromBottomBar);
+                                    isFromBottomBar,
+                                    isFromPointer);
                             // https://github.com/uber/NullAway/issues/1190
                             assumeNonNull(mKeyboardVisibilityListener);
                             keyboardVisibilityDelegate.removeKeyboardVisibilityListener(
@@ -442,7 +450,8 @@ class AppMenuHandlerImpl
                     rotation,
                     mAppRect.get(),
                     startDragging,
-                    isFromBottomBar);
+                    isFromBottomBar,
+                    isFromPointer);
         }
         return true;
     }
@@ -794,7 +803,8 @@ class AppMenuHandlerImpl
             Integer rotation,
             Rect appRect,
             boolean startDragging,
-            boolean isFromBottomBar) {
+            boolean isFromBottomBar,
+            boolean isFromPointer) {
         // Use full size of window for abnormal appRect.
         if (appRect.left < 0 && appRect.top < 0) {
             appRect.left = 0;
@@ -827,6 +837,7 @@ class AppMenuHandlerImpl
                 addTopPaddingBeforeFirstRow(),
                 isFromBottomBar,
                 reservedTopSpace,
+                isFromPointer,
                 this);
         assumeNonNull(mAppMenuDragHelper);
         mAppMenuDragHelper.onShow(startDragging);
@@ -882,6 +893,12 @@ class AppMenuHandlerImpl
 
     @Override
     public void onSubmenuLoaded(List<ListItem> items) {
+        // Submenu items are instantiated lazily via SUBMENU_PROVIDER when a submenu is opened
+        // (not present in mAdapter during AppMenu#show). Clear their hints before they are
+        // measured or displayed if the root menu hid shortcuts.
+        if (mAppMenu != null && mAppMenu.shouldHideShortcutHints()) {
+            AppMenu.clearShortcutHints(items);
+        }
         updateModelForHighlightAndClick(
                 items, mHighlightMenuId, this, /* startIndex= */ 0, /* withAssertions= */ false);
     }

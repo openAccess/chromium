@@ -4,11 +4,10 @@
 
 #include "ui/gfx/linux/fontconfig_util.h"
 
+#include <dlfcn.h>
 #include <fontconfig/fontconfig.h>
 
-#include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/gfx/switches.h"
 
 namespace gfx {
 
@@ -140,10 +139,25 @@ TEST(FontConfigUtilTest, GetFontRenderParamsFromFcPatternWithValues) {
 }
 
 TEST(FontConfigUtilTest, InitializeGlobalFontConfigAsync) {
-  base::test::ScopedFeatureList feature_list(
-      features::kAsyncFontconfigInitialization);
   InitializeGlobalFontConfigAsync();
   EXPECT_NE(GetGlobalFontConfig(), nullptr);
 }
+
+#if defined(FC_CHROMIUM_RENAME_EXPORTS)
+// In component builds, the bundled fontconfig library must export its API only
+// as chromium_Fc*. If it exported the standard Fc* names, the system cairo and
+// pango that GTK loads would bind to a mix of the bundled and the system
+// fontconfig and crash (https://crbug.com/583829716).
+TEST(FontConfigUtilTest, BundledFontconfigDoesNotExportStandardNames) {
+  Dl_info info;
+  ASSERT_NE(dladdr(reinterpret_cast<void*>(&FcPatternCreate), &info), 0);
+  void* library = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);
+  ASSERT_NE(library, nullptr);
+  EXPECT_NE(dlsym(library, "chromium_FcPatternCreate"), nullptr);
+  EXPECT_EQ(dlsym(library, "FcPatternCreate"), nullptr);
+  EXPECT_EQ(dlsym(library, "FcFontMatch"), nullptr);
+  dlclose(library);
+}
+#endif
 
 }  // namespace gfx

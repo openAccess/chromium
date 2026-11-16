@@ -174,11 +174,15 @@ suite('FontSize', () => {
             resetButton.disabled,
             'Reset button should be enabled when font size changes');
 
+        resetButton.focus();
+        resetButton.click();
         toolbar.fontSize = visualBrowserProxy.defaultFontSize;
         await microtasksFinished();
         assertTrue(
             resetButton.disabled,
             'Reset button should become disabled after resetting font size');
+        assertEquals(
+            resetButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
       });
 
   test('decrease button disabled at min font size', async () => {
@@ -190,8 +194,11 @@ suite('FontSize', () => {
     assertFalse(decreaseButton.disabled);
 
     toolbar.fontSize = visualBrowserProxy.minFontSize + 1;
+    decreaseButton.focus();
     await clickDecrease();
     assertTrue(decreaseButton.disabled);
+    assertEquals(
+        decreaseButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
 
     await clickIncrease();
     assertFalse(decreaseButton.disabled);
@@ -206,10 +213,40 @@ suite('FontSize', () => {
     assertFalse(increaseButton.disabled);
 
     toolbar.fontSize = visualBrowserProxy.maxFontSize - 1;
+    increaseButton.focus();
     await clickIncrease();
     assertTrue(increaseButton.disabled);
+    assertEquals(
+        increaseButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
 
     await clickDecrease();
     assertFalse(increaseButton.disabled);
+  });
+
+  test('mouseover does not steal focus from focused button', async () => {
+    stubAnimationFrame();
+    menuButton!.click();
+    await microtasksFinished();
+
+    const decreaseButton = getButton<CrIconButtonElement>('font-size-decrease');
+    toolbar.fontSize = visualBrowserProxy.minFontSize + 1;
+    decreaseButton.focus();
+    assertEquals(
+        decreaseButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
+
+    toolbar.$.fontSizeMenu.get().dispatchEvent(
+        new MouseEvent('mouseover', {bubbles: true, composed: true}));
+    assertEquals(
+        decreaseButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
+
+    // Disable the focused button (which sets pointer-events: none and triggers
+    // hover recomputation on the underlying menu when under the cursor) and
+    // verify mouseover still does not steal focus.
+    await clickDecrease();
+    assertTrue(decreaseButton.disabled);
+    toolbar.$.fontSizeMenu.get().dispatchEvent(
+        new MouseEvent('mouseover', {bubbles: true, composed: true}));
+    assertEquals(
+        decreaseButton, toolbar.$.fontSizeMenu.shadowRoot.activeElement);
   });
 });

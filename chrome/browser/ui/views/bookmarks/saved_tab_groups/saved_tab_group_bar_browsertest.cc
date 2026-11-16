@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/task/single_thread_task_runner.h"
-#include "base/test/run_until.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
 #include "chrome/browser/favicon/favicon_utils.h"
@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -40,9 +41,11 @@
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "content/public/test/browser_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/animation/ink_drop_state.h"
+#include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/test/button_test_api.h"
 
 namespace tab_groups {
@@ -451,17 +454,31 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
   ASSERT_EQ(views::InkDropState::HIDDEN,
             views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
 
+  base::HistogramTester histogram_tester;
   gfx::Point point;
   views::View::ConvertPointToScreen(button, &point);
+  histogram_tester.ExpectTotalCount("TabGroups.ContextMenu.Accessed", 0);
   button->ShowContextMenu(point, ui::mojom::MenuSourceType::kMouse);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.Accessed",
+      saved_tab_groups::metrics::SavedTabGroupOpenedSubmenuDesktop::
+          kBookmarksBar,
+      1);
 
-  // Verify the ink drop transitions to ACTIVATED while the menu is open.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState() ==
-           views::InkDropState::ACTIVATED;
-  }));
+  // AddAnchorHighlight() transitions the ink drop to ACTIVATED synchronously
+  // when opening the menu; pumping a RunLoop here races with parallel
+  // browser_tests processes stealing window activation and canceling the menu.
+  views::MenuController* menu_controller =
+      views::MenuController::GetActiveInstance();
+  ASSERT_NE(nullptr, menu_controller);
   EXPECT_EQ(views::InkDropState::ACTIVATED,
             views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
+
+  menu_controller->Cancel(views::MenuController::ExitType::kAll);
+  EXPECT_THAT(
+      views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState(),
+      testing::AnyOf(views::InkDropState::DEACTIVATED,
+                     views::InkDropState::HIDDEN));
 }
 
 }  // namespace tab_groups

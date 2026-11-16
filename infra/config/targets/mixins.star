@@ -191,6 +191,18 @@ targets.mixin(
 )
 
 targets.mixin(
+    name = "chrome-redfin-fleet-pool",
+    swarming = targets.swarming(
+        dimensions = {
+            "device_type": "redfin",
+            "device_os": "T",
+            "pool": "chrome.tests",
+            "os": "Android",
+        },
+    ),
+)
+
+targets.mixin(
     name = "chrome-swarming-pool",
     swarming = targets.swarming(
         dimensions = {
@@ -284,6 +296,23 @@ targets.mixin(
             "chromeos/tast_control_flaky_tests.txt",
         ],
         cros_test_max_in_shard = 20,
+    ),
+)
+
+targets.mixin(
+    name = "chrome_ai_wpt_component_cache",
+    swarming = targets.swarming(
+        optional_dimensions = {
+            60: {
+                "caches": "chrome_ai_wpt_components",
+            },
+        },
+        named_caches = [
+            swarming.cache(
+                name = "chrome_ai_wpt_components",
+                path = "chrome_ai_wpt_components",
+            ),
+        ],
     ),
 )
 
@@ -415,11 +444,6 @@ targets.mixin(
 targets.mixin(
     name = "ci_only",
     ci_only = True,
-)
-
-targets.mixin(
-    name = "experiments",
-    experiment_percentage = 100,
 )
 
 targets.mixin(
@@ -898,7 +922,7 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "display_attached": "1",
-            "gpu": "1002:7550-32.0.31007.5012",
+            "gpu": "1002:7550",
             "os": "Windows-11",
             "pool": "chromium.tests.gpu.experimental",
         },
@@ -1171,6 +1195,18 @@ targets.mixin(
 )
 
 targets.mixin(
+    name = "ios_runtime_cache_27_3",
+    swarming = targets.swarming(
+        named_caches = [
+            swarming.cache(
+                name = "runtime_ios_27_3",
+                path = "Runtime-ios-27.3",
+            ),
+        ],
+    ),
+)
+
+targets.mixin(
     name = "ios_runtime_cache_27_2_iphone19_4",
     swarming = targets.swarming(
         named_caches = [
@@ -1305,6 +1341,19 @@ targets.mixin(
     ),
 )
 
+# Expands Windows CPU AI WPT tasks across all x86-64 Windows 10 and Windows 11
+# hosts (both GCE VMs and physical machines) so CPU WPT shards do not saturate
+# the 11 Windows GCE VMs in chrome.tests.intelligence.
+targets.mixin(
+    name = "win_cpu_ai_wpt_dimensions",
+    swarming = targets.swarming(
+        dimensions = {
+            "cpu": "x86-64",
+            "os": "Windows",
+        },
+    ),
+)
+
 # Expands Windows GPU AI WPT tasks across both Windows 10 and Windows 11 x86-64
 # discrete GPUs (NVIDIA, Intel Arc/UHD, and discrete AMD Radeon RX 5500 XT /
 # 7600 / 7900 XTX / 9070 XT) while excluding integrated AMD APUs (1002:1638 and
@@ -1330,6 +1379,34 @@ targets.mixin(
         dimensions = {
             "cpu": "x86-64",
             "gpu": "10de",
+            "os": "Windows",
+        },
+    ),
+)
+
+# Expands Windows AMD non-WPT optimization_guide suites across discrete high
+# performance cards (RX 5500 XT on Win10 and RX 9070 XT on Win11) while
+# excluding lower performance integrated AMD APUs (1002:1638 and 1002:164e).
+targets.mixin(
+    name = "win_high_perf_amd_gpu",
+    swarming = targets.swarming(
+        dimensions = {
+            "cpu": "x86-64",
+            "gpu": "1002:7340|1002:7550",
+            "os": "Windows",
+        },
+    ),
+)
+
+# Expands Windows NVIDIA non-WPT optimization_guide suites across high
+# performance cards (GTX 1660 on Win10 plus RTX 4070 and RTX 5070 on Win11)
+# while excluding lower performance cards (for example 10de:2507 RTX 3050).
+targets.mixin(
+    name = "win_high_perf_nvidia_gpu",
+    swarming = targets.swarming(
+        dimensions = {
+            "cpu": "x86-64",
+            "gpu": "10de:2184|10de:2783|10de:2f04",
             "os": "Windows",
         },
     ),
@@ -1468,8 +1545,8 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "display_server": "x11",
-            "gpu": "10de:2184-535.183.01|10de:2184-595.104.02",
-            "os": "Ubuntu-22.04|Ubuntu-24.04",
+            "gpu": "10de:2184-595.104.02",
+            "os": "Ubuntu-24.04",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -2335,8 +2412,8 @@ targets.mixin(
     swarming = targets.swarming(
         dimensions = {
             "display_attached": "1",
-            "gpu": "10de:2184-31.0.15.4601|10de:2184-32.0.16.1074",
-            "os": "Windows-10-19045|Windows-11-26200",
+            "gpu": "10de:2184-32.0.16.1074",
+            "os": "Windows-11-26200",
             "pool": "chromium.tests.gpu",
         },
     ),
@@ -2441,12 +2518,12 @@ targets.mixin(
     name = "xcode_27_beta",
     args = [
         "--xcode-build-version",
-        "27b52",
+        "27c5020n",
     ],
     swarming = targets.swarming(
         named_caches = [
             swarming.cache(
-                name = "xcode_ios_27b52",
+                name = "xcode_ios_27c5020n",
                 path = "Xcode.app",
             ),
         ],

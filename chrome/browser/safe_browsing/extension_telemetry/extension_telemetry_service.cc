@@ -9,6 +9,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
 #include "base/files/file_util.h"
@@ -54,6 +55,7 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/pref_names.h"
 #include "components/enterprise/buildflags/buildflags.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_service.h"
@@ -229,15 +231,29 @@ void RecordCollectionDuration(base::TimeDelta duration) {
       "SafeBrowsing.ExtensionTelemetry.FileData.CollectionDuration", duration);
 }
 
-void RecordSignalTypeForEnterprise(ExtensionSignalType signal_type) {
-  base::UmaHistogramEnumeration(
-      "SafeBrowsing.ExtensionTelemetry.Enterprise.Signals.SignalType",
-      signal_type);
+// Enterprise Isolated Mode is recorded separately from regular profiles.
+constexpr char kEnterpriseSignalTypeHistogram[] =
+    "SafeBrowsing.ExtensionTelemetry.Enterprise.Signals.SignalType";
+constexpr char kEnterpriseSignalTypeIsolatedHistogram[] =
+    "SafeBrowsing.ExtensionTelemetry.Enterprise.Signals.SignalType.Isolated";
+constexpr char kEnterpriseReportSizeHistogram[] =
+    "SafeBrowsing.ExtensionTelemetry.Enterprise.ReportSize";
+constexpr char kEnterpriseReportSizeIsolatedHistogram[] =
+    "SafeBrowsing.ExtensionTelemetry.Enterprise.ReportSize.Isolated";
+
+void RecordSignalTypeForEnterprise(ExtensionSignalType signal_type,
+                                   const Profile& profile) {
+  base::UmaHistogramEnumeration(profile.IsEnterpriseIsolatedModeProfile()
+                                    ? kEnterpriseSignalTypeIsolatedHistogram
+                                    : kEnterpriseSignalTypeHistogram,
+                                signal_type);
 }
 
-void RecordEnterpriseReportSize(size_t size) {
-  base::UmaHistogramCounts1M(
-      "SafeBrowsing.ExtensionTelemetry.Enterprise.ReportSize", size);
+void RecordEnterpriseReportSize(size_t size, const Profile& profile) {
+  base::UmaHistogramCounts1M(profile.IsEnterpriseIsolatedModeProfile()
+                                 ? kEnterpriseReportSizeIsolatedHistogram
+                                 : kEnterpriseReportSizeHistogram,
+                             size);
 }
 
 static_assert(std::to_underlying(extensions::Manifest::Type::kNumLoadTypes) ==
@@ -459,6 +475,25 @@ ExtensionTelemetryService* ExtensionTelemetryService::Get(Profile* profile) {
       profile);
 }
 
+// static
+ExtensionTelemetryService* ExtensionTelemetryService::GetForSignal(
+    content::BrowserContext* caller,
+    content::BrowserContext* target) {
+  CHECK(caller);
+  // Signals acting on an Isolated Mode target go only to that profile's
+  // service. Never fall back to the caller's service.
+  if (target &&
+      enterprise_isolated_mode::IsExtensionTelemetryEnabledInIsolatedMode()) {
+    Profile* target_profile = Profile::FromBrowserContext(target);
+    if (target_profile->IsEnterpriseIsolatedModeProfile()) {
+      return Get(target_profile);
+    }
+  }
+  // Everything else is attributed to the caller, as before. This includes
+  // Isolated Mode callers without a target (e.g. split mode extensions).
+  return Get(Profile::FromBrowserContext(caller));
+}
+
 ExtensionTelemetryService::ExtensionTelemetryService(
     Profile* profile,
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory)
@@ -470,15 +505,19 @@ ExtensionTelemetryService::ExtensionTelemetryService(
       current_reporting_interval_(kUploadIntervalSeconds),
       url_loader_factory_(url_loader_factory),
       num_checks_per_upload_interval_(kNumChecksPerUploadInterval) {
-  // Register for SB preference change notifications.
   pref_service_ = profile_->GetPrefs();
   pref_change_registrar_.Init(pref_service_);
-  pref_change_registrar_.Add(
-      prefs::kSafeBrowsingEnhanced,
-      base::BindRepeating(&ExtensionTelemetryService::OnESBPrefChanged,
-                          base::Unretained(this)));
-  // Set initial enable/disable state for ESB.
-  SetEnabledForESB(IsEnhancedProtectionEnabled(*pref_service_));
+  // Register for SB preference change notifications. Off-The-Record profiles
+  // never enter the ESB state (see `SetEnabledForESB()`), so they don't
+  // observe the ESB pref, which they inherit from the parent profile.
+  if (!profile_->IsOffTheRecord()) {
+    pref_change_registrar_.Add(
+        prefs::kSafeBrowsingEnhanced,
+        base::BindRepeating(&ExtensionTelemetryService::OnESBPrefChanged,
+                            base::Unretained(this)));
+    // Set initial enable/disable state for ESB.
+    SetEnabledForESB(IsEnhancedProtectionEnabled(*pref_service_));
+  }
 
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
     // Register for enterprise policy changes.
@@ -487,7 +526,7 @@ ExtensionTelemetryService::ExtensionTelemetryService(
             profile);
     connector_service->ObserveTelemetryReporting(base::BindRepeating(
         &ExtensionTelemetryService::OnEnterprisePolicyChanged,
-        base::Unretained(this)));
+        weak_factory_.GetWeakPtr()));
 
     // Set initial enable/disable state for enterprise.
     SetEnabledForEnterprise(
@@ -534,6 +573,14 @@ void ExtensionTelemetryService::OnEnterprisePolicyChanged() {
 // - Telemetry Configuration
 // - Persister
 void ExtensionTelemetryService::SetEnabledForESB(bool enable) {
+  // Off-The-Record profiles, e.g. Enterprise Isolated Mode profiles, inherit
+  // the ESB pref from the parent profile and share its path. Their service
+  // must never enter the ESB state: it would upload to Safe Browsing, and
+  // leaving the state would delete the parent profile's persisted ESB reports.
+  if (profile_->IsOffTheRecord()) {
+    enable = false;
+  }
+
   // Make call idempotent.
   if (esb_enabled_ == enable) {
     return;
@@ -711,7 +758,7 @@ void ExtensionTelemetryService::AddSignal(
 
   if (enterprise_enabled_ &&
       enterprise_signal_subscribers_.contains(signal_type)) {
-    RecordSignalTypeForEnterprise(signal_type);
+    RecordSignalTypeForEnterprise(signal_type, *profile_);
     AddSignalHelper(*signal, enterprise_extension_store_,
                     enterprise_signal_subscribers_);
   }
@@ -825,7 +872,7 @@ void ExtensionTelemetryService::CreateAndSendEnterpriseReport() {
   std::unique_ptr<ExtensionTelemetryReportRequest> enterprise_report =
       CreateReportForEnterprise();
   if (enterprise_report) {
-    RecordEnterpriseReportSize(enterprise_report->ByteSizeLong());
+    RecordEnterpriseReportSize(enterprise_report->ByteSizeLong(), *profile_);
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
     GetExtensionTelemetryEventRouter(profile_)->UploadTelemetryReport(
         std::move(enterprise_report));
@@ -1688,6 +1735,12 @@ bool ExtensionTelemetryService::OffstoreExtensionFileDataContext::operator<(
 }
 
 void ExtensionTelemetryService::SetUpOffstoreFileDataCollection() {
+  // Off-The-Record profiles reuse the off-store file data collected by the
+  // parent profile, read from its `kExtensionTelemetryFileData` pref.
+  if (profile_->IsOffTheRecord()) {
+    return;
+  }
+
   // If both is enabled, set up has already been done.
   if (esb_enabled_ && enterprise_enabled_) {
     return;

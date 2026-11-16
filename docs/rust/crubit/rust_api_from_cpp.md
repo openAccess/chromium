@@ -14,11 +14,12 @@ Crubit, including Crubit availability in projects other than Chromium.
 
 ## Availability
 
-`rust_api_from_cpp` support is currently considered experimental and unstable.
-The `rust_api_from_cpp` GN template can only be used when the
-`enable_rust_api_from_cpp` GN arg is `true`.  It defaults to `false` (see
-`//build/config/rust.gni`), but can be set to `true` in `args.gn` for local
-experimentation.
+`rust_api_from_cpp` is enabled in Chromium builds (see
+`enable_rust_api_from_cpp` in `//build/config/rust.gni`), so that it can be
+used for experimentation.  It is **not yet officially supported**: the Rust in
+Chrome team is currently testing it in `//content`.  Until official support is
+announced, expect that some C++ constructs don't get Rust bindings yet, and
+that the generated Rust APIs may change.
 
 TODO(https://crbug.com/40226863): Edit this section once we officially declare
 and announce support for using `rust_api_from_cpp`.
@@ -109,7 +110,7 @@ inspected in `<out_dir>/gen/some/dir/foo_rs_api.rs`.  For example:
 $ head -3 out/rel/gen/build/rust/tests/test_rust_api_from_cpp/self_contained_target_rs_api.rs
 // Automatically @generated Rust bindings for the following C++ target:
 // //build/rust/tests/test_rust_api_from_cpp:self_contained_target_rs_api
-// Features: supported, types
+// Features: ...
 ```
 
 ## Specifying binding dependencies
@@ -242,16 +243,37 @@ movable.  For more details please see the following sections of the Crubit book:
 * ["Rust-movable classes"](https://crubit.rs/cpp/classes_and_structs.html#rust_movable)
   (generic introduction)
 * ["Making types Rust-movable"](https://crubit.rs/cpp/cookbook#rust_movable)
-  (tips for making a C++ object Rust-movable).  Some extra notes about
-  `TRIVIAL_ABI`:
-    - Note that in Chromium `TRIVIAL_ABI` from `base/compiler_specific.h`
-      should be used instead of the equivalent Abseil macro.
-    - Note that Crubit docs and
+  (tips for making a C++ object Rust-movable).
+    - In Chromium `TRIVIAL_ABI` from `base/compiler_specific.h`
+      should be used instead of the equivalent Abseil macro that is mentioned
+      in Crubit docs.
+    - Crubit docs and
       [Clang docs](https://clang.llvm.org/docs/AttributeReference.html#trivial-abi:~:text=objects%20that%20contain%20pointers%20to%20themselves%20or%20otherwise%20depend%20on%20their%20address%20(or%20the%20address%20or%20their%20subobjects)
-      point out that misusing `TRIVIAL_ABI` can lead to
+      point out that misusing `TRIVIAL_ABI` and
+      `CRUBIT_UNSAFE_BITWISE_RELOCATABLE` can lead to
       Undefined Behavior (UB) - e.g. when the attribute is applied to
       objects that are not
       [bitwise-relocatable (as defined by Crubit)](https://github.com/google/crubit/blob/4fd627869b9e9becbf4c041f7a511102c2db4ce1/docs/design/bitwise_relocatable.md?plain=1#L35-L52).
+      [A separate technical note](https://docs.google.com/document/d/1Bw3j_2JI4MeF8xDPb8pkQX2_6hNhCmqfragmENwLy8k/edit?usp=sharing)
+      discusses safety guardrails that are being added to Chromium to prevent
+      misuse (and justification why the remaining risk is small and acceptable).
+    - It is okay to annotate `std::string` fields in Chromium with
+      `CRUBIT_BITWISE_RELOCATABLE_STD_STRING_ONLY_ON_LIBCXX`.  In particular,
+      `docs/toolchain_support.md`
+      [says](https://source.chromium.org/chromium/chromium/src/+/main:docs/toolchain_support.md;l=12-20;drc=beb265c95efca57a10dd9c107239e4394226e559):
+      that Chromium supports "a single [...] STL implementation (`libc++`)"
+      and relies on "trivially-relocatable `std::string` implementation".
+    - Quick cheat sheet / decision tree:
+        - Smart pointers: Use `TRIVIAL_ABI` (ABI of passing values via registers
+          makes sense for pointers and potentially for other small types;  this
+          also helps with performance of `std::vector<TSmartPointer>`).
+        - Value types (likely to be passed by value and/or stored as local
+          variables): consider marking them as
+          `CRUBIT_UNSAFE_BITWISE_RELOCATABLE` if feasible and safe. See
+          https://crrev.com/c/8758812 for an example of how `GURL` and
+          `url::Origin` were made Rust-movable.
+        - Other C++ types - don't make them Rust movable unless
+          Rust ergonomics or the overhead of heap-allocation are unacceptable.
 * `ctor` crate documentation (support for in-place construction and mutation of
   Rust types like ones that were originally defined in C++):
     - ["Quick guide"](https://crubit.rs/types/non_rust_movable/intro_short.html)

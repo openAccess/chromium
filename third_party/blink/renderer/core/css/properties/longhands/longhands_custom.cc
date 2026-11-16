@@ -7,6 +7,7 @@
 #include "base/memory/values_equivalent.h"
 #include "base/numerics/clamped_math.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
+#include "third_party/blink/renderer/core/animation/css/css_animation_data.h"
 #include "third_party/blink/renderer/core/css/basic_shape_functions.h"
 #include "third_party/blink/renderer/core/css/css_anchor_query_enums.h"
 #include "third_party/blink/renderer/core/css/css_axis_value.h"
@@ -611,6 +612,43 @@ const CSSValue* AnimationName::CSSValueFromComputedStyleInternal(
 
 const CSSValue* AnimationName::InitialValue() const {
   return CSSIdentifierValue::Create(CSSValueID::kNone);
+}
+
+const CSSValue* AnimationNavigationBehavior::CSSValueFromComputedStyleInternal(
+    const ComputedStyle& style,
+    const LayoutObject*,
+    bool allow_visited_style,
+    CSSValuePhase value_phase) const {
+  return CSSIdentifierValue::Create(
+      style.Animations() ? style.Animations()->NavigationBehavior()
+                         : CSSAnimationData::InitialNavigationBehavior());
+}
+
+void AnimationNavigationBehavior::ApplyInitial(
+    StyleResolverState& state) const {
+  if (!state.StyleBuilder().Animations()) {
+    return;
+  }
+  state.StyleBuilder().AccessAnimations().SetNavigationBehavior(
+      CSSAnimationData::InitialNavigationBehavior());
+}
+
+void AnimationNavigationBehavior::ApplyInherit(
+    StyleResolverState& state) const {
+  const CSSAnimationData* parent_data = state.ParentStyle()->Animations();
+  if (!parent_data) {
+    ApplyInitial(state);
+    return;
+  }
+  state.StyleBuilder().AccessAnimations().SetNavigationBehavior(
+      parent_data->NavigationBehavior());
+}
+
+void AnimationNavigationBehavior::ApplyValue(StyleResolverState& state,
+                                             const CSSValue& value,
+                                             ValueModeFlags) const {
+  state.StyleBuilder().AccessAnimations().SetNavigationBehavior(
+      To<CSSIdentifierValue>(value).ConvertTo<EAnimationNavigationBehavior>());
 }
 
 const CSSValue* AnimationPlayState::ParseSingleValue(
@@ -4357,6 +4395,10 @@ const CSSValue* FlexBasis::ParseSingleValue(
           CSSValueID::kStretch>(stream.Peek().Id())) {
     return css_parsing_utils::ConsumeIdent(stream);
   }
+  if (RuntimeEnabledFeatures::CssSizeShrinkContentEnabled() &&
+      stream.Peek().Id() == CSSValueID::kShrinkContent) {
+    return css_parsing_utils::ConsumeIdent(stream);
+  }
 
   return css_parsing_utils::ConsumeLengthOrPercent(
       stream, context, local_context,
@@ -4632,7 +4674,6 @@ const CSSValue* FontSizeAdjust::ParseSingleValue(
     CSSParserTokenStream& stream,
     const CSSParserContext& context,
     CSSParserLocalContext& local_context) const {
-  DCHECK(RuntimeEnabledFeatures::CSSFontSizeAdjustEnabled());
   return css_parsing_utils::ConsumeFontSizeAdjust(stream, context,
                                                   local_context);
 }
@@ -7684,7 +7725,7 @@ const CSSValue* Order::CSSValueFromComputedStyleInternal(
     bool allow_visited_style,
     CSSValuePhase value_phase) const {
   return CSSNumericLiteralValue::Create(style.Order(),
-                                        CSSPrimitiveValue::UnitType::kNumber);
+                                        CSSPrimitiveValue::UnitType::kInteger);
 }
 
 const CSSValue* OriginTrialTestProperty::CSSValueFromComputedStyleInternal(
@@ -8700,7 +8741,7 @@ const CSSValue* ReadingOrder::CSSValueFromComputedStyleInternal(
     bool,
     CSSValuePhase) const {
   return CSSNumericLiteralValue::Create(style.ReadingOrder(),
-                                        CSSPrimitiveValue::UnitType::kNumber);
+                                        CSSPrimitiveValue::UnitType::kInteger);
 }
 
 const CSSValue* Resize::CSSValueFromComputedStyleInternal(
@@ -11520,7 +11561,7 @@ const CSSValue* WebkitLineClamp::CSSValueFromComputedStyleInternal(
     return CSSIdentifierValue::Create(CSSValueID::kNone);
   }
   return CSSNumericLiteralValue::Create(style.WebkitLineClamp(),
-                                        CSSPrimitiveValue::UnitType::kNumber);
+                                        CSSPrimitiveValue::UnitType::kInteger);
 }
 
 const CSSValue* AlternativeWebkitLineClampLonghand::ParseSingleValue(

@@ -13,14 +13,19 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyFloat;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.MutableContextWrapper;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.RectF;
@@ -45,9 +50,11 @@ import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
+import org.chromium.autofill.mojom.SubmissionSource;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.content.browser.RenderCoordinatesImpl;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.ImmutableWeakReference;
@@ -64,20 +71,25 @@ import java.util.Collections;
 @Features.EnableFeatures({
     AndroidAutofillFeatures.ANDROID_AUTOFILL_IMPROVED_VISIBILITY_DETECTION_NAME,
     AndroidAutofillFeatures.ANDROID_AUTOFILL_SUPPRESS_OFFSCREEN_DATALIST_NAME,
+    AndroidAutofillFeatures.ANDROID_AUTOFILL_REFETCH_MANAGER_IF_DISABLED_NAME,
 })
 public class AutofillProviderTest {
     private static final float EXPECTED_DIP_SCALE = 2;
+    private static final String AUTOFILL_SERVICE_NAME = "autofill";
     private static final int SCROLL_X = 15;
     private static final int SCROLL_Y = 155;
     private static final int LOCATION_X = 25;
     private static final int LOCATION_Y = 255;
 
     private Context mContext;
+    private MutableContextWrapper mContextWrapper;
     private WindowAndroid mWindowAndroid;
     private WebContents mWebContents;
     private TestContainerView mContainerView;
     private View mAnchorView;
     private AutofillProvider mAutofillProvider;
+    // Keeps the Activity used by createWrapperForNewActivity() from being garbage collected.
+    private Activity mInitialActivity;
     private DisplayAndroid mDisplayAndroid;
     private final long mMockedNativeAndroidAutofillProvider = 1;
 
@@ -97,6 +109,7 @@ public class AutofillProviderTest {
 
     private static class TestContainerView extends FrameLayout {
         private Rect mVisibleRect = new Rect();
+        private boolean mIsVisible = true;
         private int mScreenX;
         private int mScreenY;
 
@@ -110,10 +123,14 @@ public class AutofillProviderTest {
             mScreenY = screenY;
         }
 
+        void setIsVisible(boolean isVisible) {
+            mIsVisible = isVisible;
+        }
+
         @Override
         public boolean getGlobalVisibleRect(Rect r, Point globalOffset) {
             r.set(mVisibleRect);
-            return true;
+            return mIsVisible;
         }
 
         @Override
@@ -126,6 +143,16 @@ public class AutofillProviderTest {
         public void getLocationInWindow(int[] outLocation) {
             outLocation[0] = mScreenX;
             outLocation[1] = mScreenY;
+        }
+    }
+
+    /** Activity whose destroyed state can be set directly. */
+    public static class TestActivity extends Activity {
+        boolean mIsDestroyed;
+
+        @Override
+        public boolean isDestroyed() {
+            return mIsDestroyed;
         }
     }
 
@@ -171,8 +198,11 @@ public class AutofillProviderTest {
     @Before
     public void setUp() {
         mContext = Mockito.mock(Context.class);
-        when(mContext.getSystemService(AutofillManager.class)).thenReturn(mAutofillManager);
+        when(mContext.getSystemServiceName(AutofillManager.class))
+                .thenReturn(AUTOFILL_SERVICE_NAME);
+        when(mContext.getSystemService(AUTOFILL_SERVICE_NAME)).thenReturn(mAutofillManager);
         when(mAutofillManager.isEnabled()).thenReturn(true);
+        mContextWrapper = new MutableContextWrapper(mContext);
         mWindowAndroid = Mockito.mock(WindowAndroid.class);
         mDisplayAndroid = Mockito.mock(DisplayAndroid.class);
         mWebContents = Mockito.mock(WebContents.class);
@@ -184,7 +214,7 @@ public class AutofillProviderTest {
 
         mAutofillProvider =
                 new AutofillProvider(
-                        new WeakReference<>(mContext),
+                        new WeakReference<>(mContextWrapper),
                         mContainerView,
                         mWebContents,
                         "AutofillProviderTest") {
@@ -205,7 +235,8 @@ public class AutofillProviderTest {
         setContainerScreenGeometry(new Rect(0, 0, 2000, 2000), LOCATION_X, LOCATION_Y);
 
         RenderCoordinatesImpl.setInstanceForTesting(mRenderCoordinates);
-        when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(0);
+        when(mRenderCoordinates.getContentOffsetTopPixInt()).thenReturn(0);
+        when(mRenderCoordinates.getContentOffsetBottomPixInt()).thenReturn(0);
 
         AutofillProviderJni.setInstanceForTesting(mNativeMock);
     }
@@ -265,7 +296,7 @@ public class AutofillProviderTest {
     public void testTransformToWindowBounds() {
         RectF source = new RectF(10, 20, 300, 400);
         final int offsetY = 10;
-        when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(offsetY);
+        when(mRenderCoordinates.getContentOffsetTopPixInt()).thenReturn(offsetY);
         Rect result = mAutofillProvider.transformToWindowBounds(source);
         assertEquals(10 * EXPECTED_DIP_SCALE + LOCATION_X, result.left, 0);
         assertEquals(20 * EXPECTED_DIP_SCALE + LOCATION_Y + offsetY, result.top, 0);
@@ -300,8 +331,8 @@ public class AutofillProviderTest {
                 /* focus= */ 1,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         assertTrue(formData.mFields.get(0).isAutofilled());
@@ -334,8 +365,8 @@ public class AutofillProviderTest {
                 /* focus= */ 0,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         SparseArray<AutofillValue> fillResult = new SparseArray<>(1);
@@ -381,8 +412,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         // showAutofillDialog should be called so it has to hold the correct virtualId.
@@ -413,8 +444,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         // shouldAutofillDialog returns false so we call notifyVirtualViewEntered as well and both
@@ -445,8 +476,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         // shouldAutofillDialog returns false so we call notifyVirtualViewEntered as well and both
@@ -479,8 +510,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
 
         // showAutofillDialog shouldn't be called so this has to be 0.
@@ -497,8 +528,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
         assertEquals(0, mDialogVirtualId);
     }
@@ -524,8 +555,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
         assertEquals(0, mDialogVirtualId);
         assertEquals(FormData.toFieldVirtualId(sessionId, (short) focus), mFocusVirtualId);
@@ -548,8 +579,8 @@ public class AutofillProviderTest {
                 focus,
                 /* x= */ 0,
                 /* y= */ 0,
-                /* width= */ 0,
-                /* height= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
                 /* hasServerPrediction= */ false);
         assertEquals(0, mDialogVirtualId);
         assertEquals(FormData.toFieldVirtualId(sessionId, (short) focus), mFocusVirtualId);
@@ -623,7 +654,7 @@ public class AutofillProviderTest {
         setContainerScreenGeometry(new Rect(0, 0, 100, 100), 0, 0);
 
         // Set offset Y to 40. Effective visible bounds top should be 40.
-        when(mRenderCoordinates.getContentOffsetYPixInt()).thenReturn(40);
+        when(mRenderCoordinates.getContentOffsetTopPixInt()).thenReturn(40);
 
         // Reset mFocusVirtualId and mFocusBounds.
         mFocusVirtualId = 0;
@@ -682,6 +713,197 @@ public class AutofillProviderTest {
         // Bounds should be clamped.
         assertNotNull(mFocusBounds);
         assertEquals(new Rect(0, 40, 100, 60), mFocusBounds);
+    }
+
+    @Test
+    public void testSuppressEmptyBounds() {
+        setContainerScreenGeometry(new Rect(0, 0, 100, 100), 0, 0);
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Collections.singletonList(fieldBuilder.build()));
+
+        // Off-screen fields collapsed to 0x0 points by TransformToRootCoordinates() must be
+        // suppressed even when the collapsed point lands on the top/left boundary or inside the
+        // container's visible bounds.
+        float[][] emptyPointInputs = {
+            {10f, 0f}, // Top edge: [20, 0, 20, 0]
+            {0f, 10f}, // Left edge: [0, 20, 0, 20]
+            {10f, 10f}, // Interior: [20, 20, 20, 20]
+        };
+
+        for (float[] point : emptyPointInputs) {
+            mAutofillProvider.startAutofillSession(
+                    formData,
+                    /* focus= */ 0,
+                    /* x= */ point[0],
+                    /* y= */ point[1],
+                    /* width= */ 0,
+                    /* height= */ 0,
+                    /* hasServerPrediction= */ false);
+            assertEquals(0, mFocusVirtualId);
+            assertNull(mFocusBounds);
+
+            mAutofillProvider.queryAutofillSuggestion();
+            verify(mAutofillManager, never()).requestAutofill(any(), anyInt(), any());
+        }
+    }
+
+    private FormData setUpBottomToolbarOffsetTest() {
+        setContainerScreenGeometry(new Rect(0, 0, 100, 100), 0, 0);
+        // Effective visible bounds: [0, 0, 100, 70].
+        when(mRenderCoordinates.getContentOffsetBottomPixInt()).thenReturn(30);
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        return new FormData(
+                123,
+                /* name= */ null,
+                /* host= */ null,
+                Collections.singletonList(fieldBuilder.build()));
+    }
+
+    @Test
+    public void testBottomToolbarOffset_suppressesFieldInsideBottomToolbar() {
+        FormData formData = setUpBottomToolbarOffsetTest();
+
+        // Field lies entirely inside the bottom toolbar region ([0, 70, 100, 100]).
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 35,
+                /* width= */ 50,
+                /* height= */ 15,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(0, mFocusVirtualId);
+        assertNull(mFocusBounds);
+        mAutofillProvider.queryAutofillSuggestion();
+        verify(mAutofillManager, never()).requestAutofill(any(), anyInt(), any());
+    }
+
+    @Test
+    public void testBottomToolbarOffset_clampsPartiallyOverlappingField() {
+        FormData formData = setUpBottomToolbarOffsetTest();
+        int fieldVirtualId = FormData.toFieldVirtualId(123, (short) 0);
+
+        // Field partially overlaps the bottom toolbar ([0, 50, 100, 90]) -> clamped to
+        // [0, 50, 100, 70].
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 25,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(fieldVirtualId, mFocusVirtualId);
+        assertEquals(new Rect(0, 50, 100, 70), mFocusBounds);
+        mAutofillProvider.queryAutofillSuggestion();
+        verify(mAutofillManager)
+                .requestAutofill(
+                        eq(mContainerView), eq(fieldVirtualId), eq(new Rect(0, 50, 100, 70)));
+    }
+
+    @Test
+    public void testBottomToolbarOffset_preservesFieldAboveBottomToolbar() {
+        FormData formData = setUpBottomToolbarOffsetTest();
+        int fieldVirtualId = FormData.toFieldVirtualId(123, (short) 0);
+
+        // Field lies completely above the bottom toolbar ([0, 20, 100, 60]) -> unchanged.
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 10,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(fieldVirtualId, mFocusVirtualId);
+        assertEquals(new Rect(0, 20, 100, 60), mFocusBounds);
+        mAutofillProvider.queryAutofillSuggestion();
+        verify(mAutofillManager)
+                .requestAutofill(
+                        eq(mContainerView), eq(fieldVirtualId), eq(new Rect(0, 20, 100, 60)));
+    }
+
+    @Test
+    public void testSuppressNotificationWhenToolbarsObscureEntireContainer() {
+        setContainerScreenGeometry(new Rect(0, 0, 100, 100), 0, 0);
+        // Combined top (60) and bottom (50) browser controls exceed container height (100),
+        // producing an inverted [0, 60, 100, 50] rect before normalization to [0, 0, 0, 0].
+        when(mRenderCoordinates.getContentOffsetTopPixInt()).thenReturn(60);
+        when(mRenderCoordinates.getContentOffsetBottomPixInt()).thenReturn(50);
+
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Collections.singletonList(fieldBuilder.build()));
+
+        // Transforms to [-10, -10, 90, 90], which spans both [0, 0, 0, 0] and [0, 60, 100, 50] so
+        // Android's Rect.intersect() would falsely return true without the empty-bounds guards.
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ -5,
+                /* y= */ -35,
+                /* width= */ 50,
+                /* height= */ 50,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(0, mFocusVirtualId);
+        assertNull(mFocusBounds);
+        mAutofillProvider.queryAutofillSuggestion();
+        verify(mAutofillManager, never()).requestAutofill(any(), anyInt(), any());
+    }
+
+    @Test
+    public void testSuppressNotificationWhenContainerNotVisible() {
+        // Simulate View.getGlobalVisibleRect() mutating `rect` to non-empty dimensions before an
+        // ancestor clips/hides the container and returns false.
+        setContainerScreenGeometry(new Rect(0, 0, 100, 100), 0, 0);
+        mContainerView.setIsVisible(false);
+
+        mFocusVirtualId = 0;
+        mFocusBounds = null;
+
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Collections.singletonList(fieldBuilder.build()));
+
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 10,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+
+        assertEquals(0, mFocusVirtualId);
+        assertNull(mFocusBounds);
+        mAutofillProvider.queryAutofillSuggestion();
+        verify(mAutofillManager, never()).requestAutofill(any(), anyInt(), any());
     }
 
     @Test
@@ -966,6 +1188,455 @@ public class AutofillProviderTest {
 
         when(mAutofillManager.isEnabled()).thenReturn(false);
         assertTrue(mAutofillProvider.isAutofillDisabled());
+    }
+
+    @Test
+    public void testStartAutofillSessionRefetchesDisabledAutofillManager() {
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+        when(newAutofillManager.getAutofillServiceComponentName())
+                .thenReturn(new ComponentName("com.google.android.gms", "AutofillService"));
+        HistogramWatcher providerWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        AutofillProviderUMA.UMA_AUTOFILL_PROVIDER,
+                        AutofillProviderUMA.Provider.AWG);
+
+        startSessionOnSingleField();
+
+        verify(newAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        verify(mAutofillManager, never())
+                .notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        // An AutofillManager has only one AutofillCallback, which may be the app's.
+        verify(newAutofillManager, never()).registerCallback(any());
+        verify(mAutofillManager).unregisterCallback(any());
+        assertFalse(mAutofillProvider.isAutofillDisabled());
+        assertEquals(
+                "com.google.android.gms",
+                mAutofillProvider.getAutofillManagerWrapper().getPackageName());
+        assertTrue(mAutofillProvider.getAutofillManagerWrapper().isAwGCurrentAutofillService());
+        providerWatcher.assertExpected();
+
+        // Verify AutofillProviderUMA also picked up the updated provider package.
+        HistogramWatcher sessionWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        AutofillProviderUMA.UMA_AUTOFILL_AUTOFILL_SESSION,
+                        AutofillProviderUMA.NO_SUGGESTION_FORM_AUTOFILLED_AWG);
+        simulateOnProvideAutofillStructure();
+        SparseArray<AutofillValue> values = new SparseArray<>();
+        values.put(FormData.toFieldVirtualId(123, (short) 0), AutofillValue.forText("alice"));
+        mAutofillProvider.autofill(values);
+        mAutofillProvider.onFormSubmitted(SubmissionSource.FORM_SUBMISSION);
+        sessionWatcher.assertExpected();
+    }
+
+    @Test
+    @Features.DisableFeatures(
+            AndroidAutofillFeatures.ANDROID_AUTOFILL_REFETCH_MANAGER_IF_DISABLED_NAME)
+    public void testStartAutofillSessionKeepsDisabledAutofillManagerWithoutFeature() {
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+
+        startSessionOnSingleField();
+
+        verify(newAutofillManager, never())
+                .notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+    }
+
+    @Test
+    public void testIsAutofillDisabledRefetchesDisabledAutofillManager() {
+        moveToActivityWithAutofillManager(/* isEnabled= */ true);
+
+        assertFalse(mAutofillProvider.isAutofillDisabled());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void testSendPrefillRequestRefetchesDisabledAutofillManager() {
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        fieldBuilder.mServerPredictions = new String[] {"USERNAME"};
+        FormData formData =
+                new FormData(123, null, null, Collections.singletonList(fieldBuilder.build()));
+
+        mAutofillProvider.sendPrefillRequest(formData);
+
+        verify(newAutofillManager).notifyVirtualViewsReady(any(View.class), any());
+    }
+
+    @Test
+    public void testQueryAutofillSuggestionRefetchesDisabledAutofillManager() {
+        setContainerScreenGeometry(new Rect(0, 0, 200, 500), LOCATION_X, LOCATION_Y);
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+        startSessionOnSingleField();
+
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+        mAutofillProvider.queryAutofillSuggestion();
+
+        verify(newAutofillManager).requestAutofill(any(View.class), anyInt(), any(Rect.class));
+    }
+
+    @Test
+    public void testMidSessionEventsDoNotRefetchDisabledAutofillManager() {
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+        startSessionOnSingleField();
+
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+        mAutofillProvider.onFormFieldDidChange(
+                /* index= */ 0, /* x= */ 0, /* y= */ 0, /* width= */ 50, /* height= */ 20);
+        mAutofillProvider.onFormSubmitted(SubmissionSource.FORM_SUBMISSION);
+
+        verify(newAutofillManager, never()).notifyValueChanged(any(), anyInt(), any());
+        verify(newAutofillManager, never()).commit();
+
+        // A new session started afterwards does refetch.
+        startSessionOnSingleField();
+        verify(newAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+    }
+
+    @Test
+    public void testNonActivityContextDoesNotRefetchBeforeMovingToActivity() {
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+        AutofillManager otherManager = Mockito.mock(AutofillManager.class);
+        when(mContext.getSystemService(AUTOFILL_SERVICE_NAME)).thenReturn(otherManager);
+
+        startSessionOnSingleField();
+
+        verify(otherManager, never()).isEnabled();
+        verify(mAutofillManager, never()).unregisterCallback(any());
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+    }
+
+    @Test
+    public void testActivityCreatedWebViewDoesNotRefetchWhenAutofillIsOff() {
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        AutofillManager disabledManager = Mockito.mock(AutofillManager.class);
+        when(disabledManager.isEnabled()).thenReturn(false);
+        AutofillManager replacementManager = Mockito.mock(AutofillManager.class);
+        final AutofillManager[] current = {disabledManager};
+        Context activityContext =
+                new ContextWrapper(activity) {
+                    @Override
+                    public Object getSystemService(String name) {
+                        if (AUTOFILL_SERVICE_NAME.equals(name)) {
+                            return current[0];
+                        }
+                        return super.getSystemService(name);
+                    }
+                };
+        mAutofillProvider.switchToContext(new WeakReference<>(activityContext));
+        current[0] = replacementManager;
+
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+        startSessionOnSingleField();
+
+        verify(replacementManager, never()).isEnabled();
+        verify(disabledManager, never()).unregisterCallback(any());
+    }
+
+    @Test
+    public void testRefetchRunsAtMostOnceWhenAutofillIsOffInActivity() {
+        final int[] systemServiceCalls = {0};
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+        AutofillManager disabledActivityManager = Mockito.mock(AutofillManager.class);
+        when(disabledActivityManager.isEnabled()).thenReturn(false);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        Context activityContext =
+                new ContextWrapper(activity) {
+                    @Override
+                    public Object getSystemService(String name) {
+                        if (AUTOFILL_SERVICE_NAME.equals(name)) {
+                            systemServiceCalls[0]++;
+                            return disabledActivityManager;
+                        }
+                        return super.getSystemService(name);
+                    }
+                };
+        mContextWrapper.setBaseContext(activityContext);
+
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+        startSessionOnSingleField();
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+
+        verify(mAutofillManager).unregisterCallback(any());
+        // getSystemService() is queried only once on the first entry point; subsequent calls check
+        // the stored Activity manager directly without re-fetching.
+        assertEquals(1, systemServiceCalls[0]);
+        verify(disabledActivityManager, times(4)).isEnabled();
+    }
+
+    @Test
+    public void testDestroyUnregistersCallbackOfDisabledAutofillManager() {
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+
+        mAutofillProvider.destroy();
+
+        verify(mAutofillManager).unregisterCallback(any());
+    }
+
+    @Test
+    public void testDestroyedWrapperDoesNotRefetchAutofillManager() {
+        AutofillManager newAutofillManager =
+                moveToActivityWithAutofillManager(/* isEnabled= */ true);
+
+        mAutofillProvider.destroy();
+
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+        verify(newAutofillManager, never()).isEnabled();
+    }
+
+    @Test
+    public void testStartAutofillSessionRefetchesAutofillManagerAfterActivityChange() {
+        AutofillManager oldAutofillManager = createWrapperForNewActivity();
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+        when(newAutofillManager.getAutofillServiceComponentName())
+                .thenReturn(new ComponentName("com.google.android.gms", "AutofillService"));
+        HistogramWatcher providerWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        AutofillProviderUMA.UMA_AUTOFILL_PROVIDER,
+                        AutofillProviderUMA.Provider.AWG);
+
+        startSessionOnSingleField();
+
+        verify(newAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        verify(oldAutofillManager, never())
+                .notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        // An AutofillManager has only one AutofillCallback, which may be the app's.
+        verify(newAutofillManager, never()).registerCallback(any());
+        verify(oldAutofillManager).unregisterCallback(any());
+        assertTrue(mAutofillProvider.getAutofillManagerWrapper().isAwGCurrentAutofillService());
+        providerWatcher.assertExpected();
+    }
+
+    @Test
+    public void testIsAutofillDisabledRefetchesAutofillManagerAfterActivityChange() {
+        createWrapperForNewActivity();
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+        when(newAutofillManager.isEnabled()).thenReturn(false);
+
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+    }
+
+    @Test
+    public void testMovingFromLiveActivityCancelsOldSession() {
+        setContainerScreenGeometry(new Rect(0, 0, 200, 500), LOCATION_X, LOCATION_Y);
+        AutofillManager oldAutofillManager = createWrapperForNewActivity();
+        startSessionOnSingleField();
+        verify(oldAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+        mAutofillProvider.queryAutofillSuggestion();
+
+        verify(oldAutofillManager).cancel();
+        verify(oldAutofillManager, never()).requestAutofill(any(), anyInt(), any());
+        verify(newAutofillManager).requestAutofill(any(View.class), anyInt(), any(Rect.class));
+    }
+
+    @Test
+    public void testActivityRecreationKeepsRestoredSession() {
+        TestActivity oldActivity = Robolectric.buildActivity(TestActivity.class).get();
+        AutofillManager oldAutofillManager = setActivityWithAutofillManager(oldActivity);
+        mAutofillProvider.switchToContext(new WeakReference<>(mContextWrapper));
+        startSessionOnSingleField();
+        oldActivity.mIsDestroyed = true;
+
+        // The recreated Activity's AutofillManager restores the session of the destroyed one.
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+        startSessionOnSingleField();
+
+        verify(oldAutofillManager, never()).cancel();
+        verify(newAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+    }
+
+    @Test
+    public void testSameActivityDoesNotRefetchAutofillManager() {
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        AutofillManager oldAutofillManager = setActivityWithAutofillManager(activity);
+        mAutofillProvider.switchToContext(new WeakReference<>(mContextWrapper));
+        AutofillManager otherAutofillManager = setActivityWithAutofillManager(activity);
+
+        startSessionOnSingleField();
+
+        verify(oldAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        verify(oldAutofillManager, never()).unregisterCallback(any());
+        verify(otherAutofillManager, never()).isEnabled();
+    }
+
+    @Test
+    @Features.DisableFeatures(
+            AndroidAutofillFeatures.ANDROID_AUTOFILL_REFETCH_MANAGER_IF_DISABLED_NAME)
+    public void testActivityChangeKeepsAutofillManagerWithoutFeature() {
+        AutofillManager oldAutofillManager = createWrapperForNewActivity();
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+
+        startSessionOnSingleField();
+
+        verify(oldAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+        verify(oldAutofillManager, never()).unregisterCallback(any());
+        verify(newAutofillManager, never()).isEnabled();
+    }
+
+    @Test
+    public void testDestroyedWrapperDoesNotRefetchAutofillManagerAfterActivityChange() {
+        createWrapperForNewActivity();
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+
+        mAutofillProvider.destroy();
+
+        assertTrue(mAutofillProvider.isAutofillDisabled());
+        verify(newAutofillManager, never()).isEnabled();
+    }
+
+    @Test
+    public void testRefetchRunsOncePerActivityIfNoAutofillManagerIsReturned() {
+        AutofillManager oldAutofillManager = createWrapperForNewActivity();
+        final int[] systemServiceCalls = {0};
+        mContextWrapper.setBaseContext(
+                new ContextWrapper(Robolectric.buildActivity(Activity.class).get()) {
+                    @Override
+                    public Object getSystemService(String name) {
+                        if (AUTOFILL_SERVICE_NAME.equals(name)) {
+                            systemServiceCalls[0]++;
+                            return null;
+                        }
+                        return super.getSystemService(name);
+                    }
+                });
+
+        mAutofillProvider.isAutofillDisabled();
+        startSessionOnSingleField();
+        mAutofillProvider.isAutofillDisabled();
+
+        assertEquals(1, systemServiceCalls[0]);
+        verify(oldAutofillManager, never()).unregisterCallback(any());
+        verify(oldAutofillManager).notifyViewEntered(any(View.class), anyInt(), any(Rect.class));
+    }
+
+    @Test
+    public void testFocusChangeAfterActivityRecreationUsesNewAutofillManager() {
+        TestActivity oldActivity = Robolectric.buildActivity(TestActivity.class).get();
+        AutofillManager oldAutofillManager = setActivityWithAutofillManager(oldActivity);
+        mAutofillProvider.switchToContext(new WeakReference<>(mContextWrapper));
+        int sessionId = 123;
+        FormData formData =
+                new FormData(
+                        sessionId,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Arrays.asList(
+                                new FormFieldDataBuilder().build(),
+                                new FormFieldDataBuilder().build()));
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
+        oldActivity.mIsDestroyed = true;
+
+        // The recreated Activity's AutofillManager restores the session, and the user focuses the
+        // other field of the same form, which doesn't start a new session.
+        AutofillManager newAutofillManager =
+                setActivityWithAutofillManager(Robolectric.buildActivity(Activity.class).get());
+        mAutofillProvider.onFocusChanged(
+                /* focusOnForm= */ true,
+                /* focusField= */ 1,
+                /* x= */ 0,
+                /* y= */ 30,
+                /* width= */ 50,
+                /* height= */ 20);
+
+        int field1VirtualId = FormData.toFieldVirtualId(sessionId, (short) 1);
+        verify(oldAutofillManager, never()).cancel();
+        verify(oldAutofillManager, never())
+                .notifyViewEntered(any(View.class), eq(field1VirtualId), any(Rect.class));
+        verify(newAutofillManager)
+                .notifyViewEntered(any(View.class), eq(field1VirtualId), any(Rect.class));
+    }
+
+    /**
+     * Moves {@link #mContextWrapper} to a new {@link Activity} and recreates the wrapper there.
+     *
+     * @return the new wrapper's enabled {@link AutofillManager}.
+     */
+    private AutofillManager createWrapperForNewActivity() {
+        mInitialActivity = Robolectric.buildActivity(Activity.class).get();
+        AutofillManager autofillManager = setActivityWithAutofillManager(mInitialActivity);
+        mAutofillProvider.switchToContext(new WeakReference<>(mContextWrapper));
+        return autofillManager;
+    }
+
+    /**
+     * Sets the base context of {@link #mContextWrapper} to {@code activity}, returning a new
+     * enabled {@link AutofillManager}.
+     */
+    private AutofillManager setActivityWithAutofillManager(Activity activity) {
+        AutofillManager autofillManager = Mockito.mock(AutofillManager.class);
+        when(autofillManager.isEnabled()).thenReturn(true);
+        mContextWrapper.setBaseContext(
+                new ContextWrapper(activity) {
+                    @Override
+                    public Object getSystemService(String name) {
+                        if (AUTOFILL_SERVICE_NAME.equals(name)) {
+                            return autofillManager;
+                        }
+                        return super.getSystemService(name);
+                    }
+                });
+        return autofillManager;
+    }
+
+    /**
+     * Disables the initial (non-Activity) AutofillManager and moves {@link #mContextWrapper} to an
+     * {@link Activity} returning a new {@link AutofillManager} with the given enabled state.
+     */
+    private AutofillManager moveToActivityWithAutofillManager(boolean isEnabled) {
+        when(mAutofillManager.isEnabled()).thenReturn(false);
+        AutofillManager newAutofillManager = Mockito.mock(AutofillManager.class);
+        when(newAutofillManager.isEnabled()).thenReturn(isEnabled);
+        Activity activity = Robolectric.buildActivity(Activity.class).get();
+        Context activityContext =
+                new ContextWrapper(activity) {
+                    @Override
+                    public Object getSystemService(String name) {
+                        if (AUTOFILL_SERVICE_NAME.equals(name)) {
+                            return newAutofillManager;
+                        }
+                        return super.getSystemService(name);
+                    }
+                };
+        mContextWrapper.setBaseContext(activityContext);
+        return newAutofillManager;
+    }
+
+    private void startSessionOnSingleField() {
+        FormFieldDataBuilder fieldBuilder = new FormFieldDataBuilder();
+        FormData formData =
+                new FormData(
+                        /* sessionId= */ 123,
+                        /* name= */ null,
+                        /* host= */ null,
+                        Collections.singletonList(fieldBuilder.build()));
+        mAutofillProvider.startAutofillSession(
+                formData,
+                /* focus= */ 0,
+                /* x= */ 0,
+                /* y= */ 0,
+                /* width= */ 50,
+                /* height= */ 20,
+                /* hasServerPrediction= */ false);
     }
 
     @Test

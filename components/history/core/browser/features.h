@@ -62,10 +62,10 @@ COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kRazeOldHistoryDatabase);
 
 COMPONENT_EXPORT(HISTORY_FEATURES)
-BASE_DECLARE_FEATURE(kBrowsingHistorySimilarVisitsGrouping);
+BASE_DECLARE_FEATURE(kBrowsingHistoryCollapsibleDayCards);
 
 COMPONENT_EXPORT(HISTORY_FEATURES)
-BASE_DECLARE_FEATURE(kBrowsingHistoryImprovedHostnameSuffixMatching);
+BASE_DECLARE_FEATURE(kBrowsingHistorySimilarVisitsGrouping);
 
 // Do not check this feature directly; use
 // `IsBrowsingHistoryFilterByDeviceEnabled()` instead.
@@ -86,11 +86,7 @@ COMPONENT_EXPORT(HISTORY_FEATURES)
 BASE_DECLARE_FEATURE(kBrowsingHistoryFilterByActor);
 #endif  // !BUILDFLAG(IS_IOS)
 
-COMPONENT_EXPORT(HISTORY_FEATURES)
-BASE_DECLARE_FEATURE(kWebHistoryUseNewApi);
-
-// Returns true if browsing history filtering by device is enabled (requires
-// both `kWebHistoryUseNewApi` and `kBrowsingHistoryFilterByDevice`).
+// Returns true if browsing history filtering by device is enabled.
 COMPONENT_EXPORT(HISTORY_FEATURES)
 bool IsBrowsingHistoryFilterByDeviceEnabled();
 

@@ -15,12 +15,15 @@
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/task_environment.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/core/common/policy_switches.h"
+#include "components/policy/proto/cloud_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -666,6 +669,29 @@ TEST_F(CloudPolicyValidatorTest, ValueValidation) {
   validate_values_ = true;
   Validate(Invoke(this, &CloudPolicyValidatorTest::CheckValueValidation));
 }
+
+// crbug.com/579054636
+TEST(CloudPolicyValidatorBlockedDomainsTest, BlockedDomainsList) {
+  EXPECT_TRUE(std::ranges::contains(kPolicyCacheBlockedDomains, kTestDomain1));
+  EXPECT_TRUE(std::ranges::contains(kPolicyCacheBlockedDomains, kTestDomain2));
+  EXPECT_TRUE(std::ranges::contains(kPolicyCacheBlockedDomains, kTestDomain3));
+  EXPECT_FALSE(std::ranges::contains(kPolicyCacheBlockedDomains, "google.com"));
+}
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+// crbug.com/579054636
+TEST_F(CloudPolicyValidatorTest, BlocklistCachedKeyValidationInBrandedBuild) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->RemoveSwitch(
+      switches::kPolicyVerificationKey);
+
+  for (const std::string_view domain : kPolicyCacheBlockedDomains) {
+    owning_domain_ = std::string(domain);
+    Validate(CheckStatus(
+        CloudPolicyValidatorBase::VALIDATION_BAD_KEY_VERIFICATION_SIGNATURE));
+  }
+}
+#endif
 
 }  // namespace
 

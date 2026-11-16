@@ -1097,6 +1097,7 @@ void LayerTreeImpl::PushPropertiesTo(LayerTreeImpl* target_tree) {
   target_tree->set_source_frame_number(source_frame_number());
   target_tree->set_trace_id(trace_id());
   target_tree->set_background_color(background_color());
+  target_tree->SetDeferredValues(deferred_values_);
   target_tree->set_have_scroll_event_handlers(have_scroll_event_handlers());
   target_tree->did_raster_inducing_scroll_ = did_raster_inducing_scroll_;
   target_tree->set_event_listener_properties(
@@ -3024,11 +3025,12 @@ static void FindClosestMatchingLayerForAttribution(
     const gfx::PointF& screen_space_point,
     const LayerImpl* root_layer,
     FindClosestMatchingLayerState* state) {
-  absl::flat_hash_set<ElementId, ElementIdHash> hit_visible_frame_element_ids;
+  absl::flat_hash_set<ElementId> hit_visible_frame_element_ids;
   // We want to iterate from front to back when hit testing.
   for (auto* layer : base::Reversed(*root_layer->layer_tree_impl())) {
-    if (!layer->HitTestable())
+    if (!layer->HitTestable()) {
       continue;
+    }
 
     float distance_to_intersection = 0.f;
     bool hit = false;

@@ -28,6 +28,10 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/context_hub/record_replay/skill_recording_service.h"  // nogncheck
+#endif
+
 class GURL;
 class Profile;
 
@@ -43,8 +47,12 @@ namespace favicon_base {
 struct FaviconRawBitmapResult;
 }  // namespace favicon_base
 
-class ContextHubPageHandler : public browser::context_hub::mojom::PageHandler,
-                              public context_hub::ContextHubService::Observer {
+class ContextHubPageHandler
+    : public browser::context_hub::mojom::PageHandler,
+#if !BUILDFLAG(IS_ANDROID)
+      public context_hub::SkillRecordingService::Observer,
+#endif
+      public context_hub::ContextHubService::Observer {
  public:
   class TabProvider {
    public:
@@ -122,6 +130,9 @@ class ContextHubPageHandler : public browser::context_hub::mojom::PageHandler,
       GetSaveToMemoryBankContextCallback callback) override;
   void GetAllMemoryBankEntries(
       GetAllMemoryBankEntriesCallback callback) override;
+  void SearchMemoryBankEntries(
+      const std::string& query,
+      SearchMemoryBankEntriesCallback callback) override;
   void DeleteMemoryBankEntries(
       const std::vector<int64_t>& ids,
       DeleteMemoryBankEntriesCallback callback) override;
@@ -203,10 +214,24 @@ class ContextHubPageHandler : public browser::context_hub::mojom::PageHandler,
       std::vector<browser::context_hub::mojom::MemoryBankFileAttachmentPtr>
           files,
       CopyAttachmentsToClipboardCallback callback) override;
+  void GetBrowseMemoryBanksShortcut(
+      GetBrowseMemoryBanksShortcutCallback callback) override;
+  void GetSuggestedBrowseMemoryBanksShortcut(
+      GetSuggestedBrowseMemoryBanksShortcutCallback callback) override;
+  void SetBrowseMemoryBanksShortcut(
+      const std::string& shortcut,
+      SetBrowseMemoryBanksShortcutCallback callback) override;
   void StartSkillRecording() override;
   void StopSkillRecording(StopSkillRecordingCallback callback) override;
 
  private:
+#if !BUILDFLAG(IS_ANDROID)
+  // context_hub::SkillRecordingService::Observer:
+  void OnTranscriptUpdate(const std::string& text,
+                          base::TimeDelta timestamp,
+                          bool is_final) override;
+#endif
+
   // Gathers the Topics, history visits since `window_start`, unresolvable
   // Topic count and stored feedback the fishfood feedback export is built
   // from, then runs `callback`. `callback` is dropped if this handler is
@@ -233,6 +258,11 @@ class ContextHubPageHandler : public browser::context_hub::mojom::PageHandler,
   base::ScopedObservation<context_hub::ContextHubService,
                           context_hub::ContextHubService::Observer>
       service_observation_{this};
+#if !BUILDFLAG(IS_ANDROID)
+  base::ScopedObservation<context_hub::SkillRecordingService,
+                          context_hub::SkillRecordingService::Observer>
+      skill_recording_service_observation_{this};
+#endif
   std::unique_ptr<TabProvider> tab_provider_;
   raw_ptr<Profile> profile_;
   raw_ptr<content::WebContents> web_contents_;

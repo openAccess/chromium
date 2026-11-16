@@ -322,6 +322,10 @@ void TabMenuBridge::OnTabChangedAt(tabs::TabInterface* tab,
   UpdateItemForWebContents(item, tab->GetContents(), model_);
 }
 
+void TabMenuBridge::OnTabAudioChanged(tabs::TabInterface* tab) {
+  OnTabChangedAt(tab, TabChangeType::kAll);
+}
+
 // If a tab group is changed, update group indicator for each tab.
 void TabMenuBridge::OnTabGroupChanged(const TabGroupChange& change) {
   if (!force_rebuild_menu_ && ![menu_listener_ isMenuOpen]) {
@@ -338,8 +342,7 @@ void TabMenuBridge::TabGroupedStateChanged(
     TabStripModel* tab_strip_model,
     std::optional<tab_groups::TabGroupId> old_group,
     std::optional<tab_groups::TabGroupId> new_group,
-    tabs::TabInterface* tab,
-    int index) {
+    tabs::TabHandle tab) {
   CHECK(tab_strip_model, base::NotFatalUntil::M162);
   CHECK_EQ(tab_strip_model, model_, base::NotFatalUntil::M162);
 

@@ -7,8 +7,10 @@
 #include <algorithm>
 
 #include "base/command_line.h"
+#include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -24,8 +26,8 @@
 #include "ui/events/test/events_test_utils_x11.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/native_ui_types.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
+#include "ui/gfx/x/sync.h"
 #include "ui/gfx/x/xproto.h"
 #include "ui/ozone/test/mock_platform_window_delegate.h"
 #include "ui/platform_window/extensions/x11_extension_delegate.h"
@@ -101,10 +103,17 @@ class TestPlatformWindowDelegate : public PlatformWindowDelegate {
         /*isClosed=*/true);
   }
 
+  gfx::Insets CalculateInsetsInDIP(
+      PlatformWindowState window_state) const override {
+    return insets_;
+  }
+
   void set_window(X11Window* window) { window_ = window; }
+  void set_insets(const gfx::Insets& insets) { insets_ = insets; }
 
  private:
   raw_ptr<X11Window> window_ = nullptr;
+  gfx::Insets insets_;
   gfx::AcceleratedWidget widget_ = gfx::kNullAcceleratedWidget;
   PlatformWindowState state_ = PlatformWindowState::kUnknown;
   PlatformWindowDelegate::BoundsChange changed_{false};
@@ -157,9 +166,10 @@ class WMStateWaiter : public X11PropertyChangeWaiter {
   // X11PropertyChangeWaiter:
   bool ShouldKeepOnWaiting() override {
     std::vector<x11::Atom> hints;
-    if (x11::Connection::Get()->GetArrayProperty(
-            xwindow(), x11::GetAtom("_NET_WM_STATE"), &hints)) {
-      return std::ranges::contains(hints, x11::GetAtom(hint_)) !=
+    auto* connection = x11::Connection::Get();
+    if (connection->GetArrayProperty(
+            xwindow(), connection->GetAtom("_NET_WM_STATE"), &hints)) {
+      return std::ranges::contains(hints, connection->GetAtom(hint_)) !=
              wait_till_set_;
     }
     return true;
@@ -205,6 +215,20 @@ class DestructionWindowDelegate : public TestPlatformWindowDelegate {
 
  private:
   std::unique_ptr<X11Window> window_;
+};
+
+class ActivationTrackingWindowDelegate : public TestPlatformWindowDelegate {
+ public:
+  ActivationTrackingWindowDelegate() = default;
+  ~ActivationTrackingWindowDelegate() override = default;
+
+  bool active() const { return active_; }
+
+  // PlatformWindowDelegate:
+  void OnActivationChanged(bool active) override { active_ = active; }
+
+ private:
+  bool active_ = false;
 };
 
 // Returns the list of rectangles which describe |window|'s bounding region via
@@ -294,6 +318,31 @@ class X11WindowTest : public testing::Test {
     return window;
   }
 
+  // Runs the tasks that are already posted to the current sequence.
+  void RunPendingTasks() {
+    base::RunLoop run_loop;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
+
+  void DispatchCrossingEvent(x11::Window window,
+                             bool enter,
+                             x11::NotifyMode mode,
+                             x11::NotifyDetail detail) {
+    x11::CrossingEvent crossing_event;
+    crossing_event.opcode = enter ? x11::CrossingEvent::EnterNotify
+                                  : x11::CrossingEvent::LeaveNotify;
+    crossing_event.event = window;
+    crossing_event.root = x11::Connection::Get()->default_root();
+    // Set CROSSING_FLAG_FOCUS: the focus is the PointerRoot or an ancestor.
+    crossing_event.same_screen_focus = 1;
+    crossing_event.mode = mode;
+    crossing_event.detail = detail;
+    x11::Event xev(false, std::move(crossing_event));
+    x11::Connection::Get()->DispatchEvent(xev);
+  }
+
   void DispatchSingleEventToWidget(x11::Event* x11_event, x11::Window window) {
     auto* device_event = x11_event->As<x11::Input::DeviceEvent>();
     DCHECK(device_event);
@@ -307,6 +356,79 @@ class X11WindowTest : public testing::Test {
 
   std::optional<TestScreen> test_screen_;
 };
+
+// Returns the value of _GTK_FRAME_EXTENTS on |window|, or an empty vector if
+// the property is not set.
+std::vector<uint32_t> GetGtkFrameExtents(x11::Window window) {
+  std::vector<uint32_t> extents;
+  auto* connection = x11::Connection::Get();
+  connection->GetArrayProperty(
+      window, connection->GetAtom("_GTK_FRAME_EXTENTS"), &extents);
+  return extents;
+}
+
+// Switching between the system title bar and the custom frame must update
+// _GTK_FRAME_EXTENTS and keep the area inside the client-side decorations
+// unchanged. https://crbug.com/394152435
+TEST_F(X11WindowTest, FrameTypeChangeUpdatesDecorationInsets) {
+  TestPlatformWindowDelegate delegate;
+  constexpr gfx::Insets kInsets = gfx::Insets::TLBR(19, 22, 25, 22);
+  delegate.set_insets(kInsets);
+  constexpr gfx::Rect kBounds(100, 80, 1000, 700);
+  auto window = CreateX11Window(&delegate, kBounds, nullptr);
+  delegate.set_window(window.get());
+
+  // Before the window is mapped, the initial bounds already include the
+  // insets of the current frame, so a frame type change must not adjust them.
+  window->OnFrameTypeChanged();
+  EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+
+  window->Show(false);
+  const x11::Window x11_window = static_cast<x11::Window>(delegate.widget());
+  ASSERT_NE(x11_window, x11::Window::None);
+
+  EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+
+  if (!window->CanSetDecorationInsets()) {
+    // Without a window manager that supports _GTK_FRAME_EXTENTS (e.g. on Xvfb
+    // without one), the property is never set and the bounds never change.
+    EXPECT_TRUE(GetGtkFrameExtents(x11_window).empty());
+    delegate.set_insets(gfx::Insets());
+    window->OnFrameTypeChanged();
+    EXPECT_TRUE(GetGtkFrameExtents(x11_window).empty());
+    EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+    delegate.set_insets(kInsets);
+    window->OnFrameTypeChanged();
+    EXPECT_TRUE(GetGtkFrameExtents(x11_window).empty());
+    EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+    delegate.set_window(nullptr);
+    return;
+  }
+
+  EXPECT_EQ(std::vector<uint32_t>({22, 22, 19, 25}),
+            GetGtkFrameExtents(x11_window));
+
+  // Switch to the system title bar: the new frame has no client-side shadow.
+  delegate.set_insets(gfx::Insets());
+  window->OnFrameTypeChanged();
+  EXPECT_TRUE(GetGtkFrameExtents(x11_window).empty());
+  gfx::Rect visible_bounds = kBounds;
+  visible_bounds.Inset(kInsets);
+  EXPECT_EQ(visible_bounds, window->GetBoundsInPixels());
+
+  // Switch back to the custom frame: the original bounds are restored.
+  delegate.set_insets(kInsets);
+  window->OnFrameTypeChanged();
+  EXPECT_EQ(std::vector<uint32_t>({22, 22, 19, 25}),
+            GetGtkFrameExtents(x11_window));
+  EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+
+  // No change in the insets leaves the bounds alone.
+  window->OnFrameTypeChanged();
+  EXPECT_EQ(kBounds, window->GetBoundsInPixels());
+
+  delegate.set_window(nullptr);
+}
 
 // https://crbug.com/898742: Test is flaky.
 TEST_F(X11WindowTest, DISABLED_Shape) {
@@ -363,7 +485,7 @@ TEST_F(X11WindowTest, DISABLED_Shape) {
   }
 
   if (connection->WmSupportsHint(
-          x11::GetAtom("_NET_WM_STATE_MAXIMIZED_VERT"))) {
+          connection->GetAtom("_NET_WM_STATE_MAXIMIZED_VERT"))) {
     // The shape should be changed to a rectangle which fills the entire screen
     // when |widget1| is maximized.
     {
@@ -567,7 +689,8 @@ TEST_F(X11WindowTest, SetInputRegionDegenerateRects) {
 // window manager (e.g. via a window manager accelerator key).
 TEST_F(X11WindowTest, MAYBE_WindowManagerTogglesFullscreen) {
   auto* connection = x11::Connection::Get();
-  if (!connection->WmSupportsHint(x11::GetAtom("_NET_WM_STATE_FULLSCREEN"))) {
+  if (!connection->WmSupportsHint(
+          connection->GetAtom("_NET_WM_STATE_FULLSCREEN"))) {
     return;
   }
 
@@ -596,9 +719,11 @@ TEST_F(X11WindowTest, MAYBE_WindowManagerTogglesFullscreen) {
   // accelerator key.
   {
     ui::SendClientMessage(
-        x11_window, ui::GetX11RootWindow(), x11::GetAtom("_NET_WM_STATE"),
-        {0, static_cast<uint32_t>(x11::GetAtom("_NET_WM_STATE_FULLSCREEN")), 0,
-         1, 0});
+        x11_window, ui::GetX11RootWindow(),
+        connection->GetAtom("_NET_WM_STATE"),
+        {0,
+         static_cast<uint32_t>(connection->GetAtom("_NET_WM_STATE_FULLSCREEN")),
+         0, 1, 0});
 
     WMStateWaiter waiter(x11_window, "_NET_WM_STATE_FULLSCREEN", false);
     waiter.Wait();
@@ -655,7 +780,7 @@ TEST_F(X11WindowTest,
     EXPECT_FALSE(window->IsMinimized());
 
     SendClientMessage(x11_window, GetX11RootWindow(),
-                      x11::GetAtom("WM_CHANGE_STATE"),
+                      x11::Connection::Get()->GetAtom("WM_CHANGE_STATE"),
                       {x11::WM_STATE_ICONIC, 0, 0, 0, 0});
     // Wait till set.
     WMStateWaiter waiter(x11_window, "_NET_WM_STATE_HIDDEN", true);
@@ -667,7 +792,7 @@ TEST_F(X11WindowTest,
   // Show from minimized by sending WM_STATE_NORMAL.
   {
     SendClientMessage(x11_window, GetX11RootWindow(),
-                      x11::GetAtom("WM_CHANGE_STATE"),
+                      x11::Connection::Get()->GetAtom("WM_CHANGE_STATE"),
                       {x11::WM_STATE_NORMAL, 0, 0, 0, 0});
     // Wait till unset.
     WMStateWaiter waiter(x11_window, "_NET_WM_STATE_HIDDEN", false);
@@ -706,6 +831,202 @@ TEST_F(X11WindowTest, SynchronousDestructionDuringEventDispatch) {
   // DispatchUiEvent will then continue and should return safely due to the
   // liveness check.
   window_ptr->DispatchUiEvent(&mouse_event, xev);
+}
+
+class X11WindowSyncCounterTest : public X11WindowTest {
+ protected:
+  void SetUp() override {
+    X11WindowTest::SetUp();
+    window_ = CreateX11Window(&delegate_, gfx::Rect(10, 10, 100, 100), nullptr);
+    delegate_.set_window(window_.get());
+    auto* connection = x11::Connection::Get();
+    uint32_t counter = 0;
+    if (connection->GetPropertyAs(
+            xwindow(), connection->GetAtom("_NET_WM_SYNC_REQUEST_COUNTER"),
+            &counter)) {
+      counter_ = static_cast<x11::Sync::Counter>(counter);
+    }
+  }
+
+  void TearDown() override {
+    delegate_.set_window(nullptr);
+    window_.reset();
+    X11WindowTest::TearDown();
+  }
+
+  void SendSyncRequest(uint32_t value) {
+    auto* connection = x11::Connection::Get();
+    x11::ClientMessageEvent event{
+        .format = 32,
+        .window = xwindow(),
+        .type = connection->GetAtom("WM_PROTOCOLS"),
+    };
+    event.data.data32 = {
+        static_cast<uint32_t>(connection->GetAtom("_NET_WM_SYNC_REQUEST")), 0,
+        value, 0, 0};
+    connection->DispatchEvent(x11::Event(false, std::move(event)));
+  }
+
+  void SendConfigure(const gfx::Size& size) {
+    x11::ConfigureNotifyEvent event{
+        .event = xwindow(),
+        .window = xwindow(),
+        .width = static_cast<uint16_t>(size.width()),
+        .height = static_cast<uint16_t>(size.height()),
+    };
+    x11::Connection::Get()->DispatchEvent(x11::Event(false, std::move(event)));
+  }
+
+  uint32_t GetCounterValue() {
+    auto reply = x11::Connection::Get()->sync().QueryCounter(counter_).Sync();
+    EXPECT_TRUE(reply);
+    return reply ? reply->counter_value.lo : 0;
+  }
+
+  x11::Window xwindow() const {
+    return static_cast<x11::Window>(delegate_.widget());
+  }
+
+  TestPlatformWindowDelegate delegate_;
+  std::unique_ptr<X11Window> window_;
+  x11::Sync::Counter counter_{};
+};
+
+// Tests that the sync counter is updated once a frame of the most recent
+// configured size is swapped when the WM sends several ConfigureNotify events
+// for a single _NET_WM_SYNC_REQUEST. Regression test for
+// https://crbug.com/504189540.
+TEST_F(X11WindowSyncCounterTest, MultipleConfiguresForOneSyncRequest) {
+  if (counter_ == x11::Sync::Counter{}) {
+    GTEST_SKIP() << "XSync is unavailable";
+  }
+  EXPECT_EQ(GetCounterValue(), 0u);
+
+  SendSyncRequest(1);
+  SendConfigure(gfx::Size(100, 100));
+  SendConfigure(gfx::Size(101, 101));
+
+  // A frame of the stale size must not update the counter.
+  window_->OnCompleteSwapAfterResize(gfx::Size(100, 100));
+  EXPECT_EQ(GetCounterValue(), 0u);
+
+  window_->OnCompleteSwapAfterResize(gfx::Size(101, 101));
+  EXPECT_EQ(GetCounterValue(), 1u);
+}
+
+// Tests that a new _NET_WM_SYNC_REQUEST discards the configured size from an
+// earlier request that was never acknowledged.
+TEST_F(X11WindowSyncCounterTest, NewSyncRequestResetsConfigureSize) {
+  if (counter_ == x11::Sync::Counter{}) {
+    GTEST_SKIP() << "XSync is unavailable";
+  }
+
+  SendSyncRequest(1);
+  SendConfigure(gfx::Size(120, 120));
+
+  // The counter must not be updated before the ConfigureNotify that follows
+  // the new request has been handled.
+  SendSyncRequest(2);
+  window_->OnCompleteSwapAfterResize(gfx::Size(120, 120));
+  EXPECT_EQ(GetCounterValue(), 0u);
+
+  SendConfigure(gfx::Size(130, 130));
+  window_->OnCompleteSwapAfterResize(gfx::Size(130, 130));
+  EXPECT_EQ(GetCounterValue(), 2u);
+}
+
+// Under PointerRoot focus, a window that has the pointer stays active while
+// one of its menus grabs the pointer. https://crbug.com/40134309
+TEST_F(X11WindowTest, PointerFocusSurvivesPointerGrab) {
+  ActivationTrackingWindowDelegate delegate;
+  constexpr gfx::Rect bounds(10, 10, 100, 100);
+  auto window = CreateX11Window(&delegate, bounds, nullptr);
+  delegate.set_window(window.get());
+  const auto x11_window = static_cast<x11::Window>(delegate.widget());
+  ASSERT_NE(x11_window, x11::Window::None);
+
+  // The pointer enters the window while the PointerRoot is focused.
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Ancestor);
+  EXPECT_TRUE(delegate.active());
+
+  // Another window (e.g. a menu) grabs the pointer.  The pointer does not move,
+  // so the window still receives keyboard input and stays active.
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Grab,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_TRUE(delegate.active());
+
+  // The grab ends with the pointer still in the window.
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Ungrab,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_TRUE(delegate.active());
+
+  // The pointer leaves the window, so the PointerRoot no longer focuses it.
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Ancestor);
+  EXPECT_FALSE(delegate.active());
+
+  // A grab ending with the pointer outside the window leaves it inactive.
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Ancestor);
+  EXPECT_TRUE(delegate.active());
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Grab,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_TRUE(delegate.active());
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Ungrab,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_FALSE(delegate.active());
+
+  delegate.set_window(nullptr);
+}
+
+// Under PointerRoot focus, a window stays active while the pointer moves into
+// a window that has capture, e.g. its menu, and the activation change is
+// applied when capture is released. https://crbug.com/40134309
+TEST_F(X11WindowTest, PointerFocusDeferredWhileCaptured) {
+  ActivationTrackingWindowDelegate delegate;
+  auto window =
+      CreateX11Window(&delegate, gfx::Rect(10, 10, 100, 100), nullptr);
+  delegate.set_window(window.get());
+  const auto x11_window = static_cast<x11::Window>(delegate.widget());
+  ASSERT_NE(x11_window, x11::Window::None);
+
+  TestPlatformWindowDelegate menu_delegate;
+  auto menu =
+      CreateX11Window(&menu_delegate, gfx::Rect(50, 50, 100, 100), nullptr);
+  menu_delegate.set_window(menu.get());
+
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Ancestor);
+  EXPECT_TRUE(delegate.active());
+
+  // The pointer moves into the menu, which has capture.
+  menu->SetCapture();
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_TRUE(delegate.active());
+
+  // Capture is released with the pointer outside the window.
+  menu->ReleaseCapture();
+  RunPendingTasks();
+  EXPECT_FALSE(delegate.active());
+
+  // The pointer moves into the menu and back before capture is released.
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Ancestor);
+  EXPECT_TRUE(delegate.active());
+  menu->SetCapture();
+  DispatchCrossingEvent(x11_window, false, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Nonlinear);
+  DispatchCrossingEvent(x11_window, true, x11::NotifyMode::Normal,
+                        x11::NotifyDetail::Nonlinear);
+  EXPECT_TRUE(delegate.active());
+  menu->ReleaseCapture();
+  RunPendingTasks();
+  EXPECT_TRUE(delegate.active());
+
+  menu_delegate.set_window(nullptr);
+  delegate.set_window(nullptr);
 }
 
 }  // namespace ui

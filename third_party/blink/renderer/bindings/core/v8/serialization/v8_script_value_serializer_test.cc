@@ -1256,8 +1256,10 @@ TEST(V8ScriptValueSerializerTest, RoundTripImageBitmap) {
   uint8_t pixel[4] = {};
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          SkImageInfo::Make(1, 1, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
-          &pixel, 4, 3, 3));
+          SkPixmap(SkImageInfo::Make(1, 1, kRGBA_8888_SkColorType,
+                                     kPremul_SkAlphaType),
+                   &pixel, 4),
+          3, 3));
   ASSERT_THAT(pixel, testing::ElementsAre(255, 0, 0, 255));
 }
 
@@ -1333,7 +1335,7 @@ TEST(V8ScriptValueSerializerTest, RoundTripImageBitmapWithColorSpaceInfo) {
   std::array<uint8_t, 8> pixel = {};
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          info.makeWH(1, 1), &pixel, 8, 3, 3));
+          SkPixmap(info.makeWH(1, 1), &pixel, 8), 3, 3));
   std::array<uint8_t, 8> p3_red = {0x57, 0x3B, 0x68, 0x32,
                                    0x6E, 0x30, 0x00, 0x3C};
   bool approximate_match = true;
@@ -1380,8 +1382,10 @@ TEST(V8ScriptValueSerializerTest, DecodeImageBitmap) {
   uint8_t pixels[8] = {};
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          SkImageInfo::Make(2, 1, kRGBA_8888_SkColorType, kPremul_SkAlphaType),
-          &pixels, 8, 0, 0));
+          SkPixmap(SkImageInfo::Make(2, 1, kRGBA_8888_SkColorType,
+                                     kPremul_SkAlphaType),
+                   &pixels, 8),
+          0, 0));
   ASSERT_THAT(pixels, testing::ElementsAre(255, 0, 0, 255, 0, 255, 0, 255));
   // Check that orientation is top left (default).
   ASSERT_EQ(new_image_bitmap->ImageOrientation(),
@@ -1417,7 +1421,7 @@ TEST(V8ScriptValueSerializerTest, DecodeImageBitmapV18) {
       SkImageInfo::Make(1, 1, kRGBA_F16_SkColorType, kPremul_SkAlphaType, p3);
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          info, &pixel, 8, 1, 0));
+          SkPixmap(info, &pixel, 8), 1, 0));
   // The reference values are the hex representation of red in P3 (as stored
   // in half floats by Skia).
   ASSERT_THAT(pixel, testing::ElementsAre(0x94, 0x3A, 0x3F, 0x28, 0x5F, 0x24,
@@ -1485,7 +1489,7 @@ TEST(V8ScriptValueSerializerTest, DecodeImageBitmapV20WithoutImageOrientation) {
   uint8_t pixel[4] = {};
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          info, &pixel, 4, 0, 0));
+          SkPixmap(info, &pixel, 4), 0, 0));
   // BGRA encoding, swapped to RGBA
   ASSERT_THAT(pixel, testing::ElementsAre(0x77, 0xaa, 0xee, 0xff));
 }
@@ -1548,7 +1552,7 @@ TEST(V8ScriptValueSerializerTest, DecodeImageBitmapV20WithImageOrientation) {
   uint8_t pixel[4] = {};
   ASSERT_TRUE(
       new_image_bitmap->BitmapImage()->PaintImageForCurrentFrame().readPixels(
-          info, &pixel, 4, 0, 0));
+          SkPixmap(info, &pixel, 4), 0, 0));
   // BGRA encoding, swapped to RGBA
   ASSERT_THAT(pixel, testing::ElementsAre(0x77, 0xaa, 0xee, 0xff));
 }
@@ -2410,7 +2414,10 @@ TEST(V8ScriptValueSerializerTest, CoexistWithGin) {
   EXPECT_FALSE(serialized_script_value);
 }
 
-TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferShared) {
+// TODO(crbug.com/585626939): Sets a V8 flag after V8 is initialized, which
+// crashes when run in a batch after other tests.
+TEST(V8ScriptValueSerializerTest,
+     DISABLED_RoundTripImmutableArrayBufferShared) {
   ScopedSharedArrayBufferForTest enable_sab(true);
   v8::V8::SetFlagsFromString("--js-immutable-arraybuffer");
   test::TaskEnvironment task_environment;
@@ -2443,7 +2450,10 @@ TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferShared) {
             output_ab->GetBackingStore()->Data());
 }
 
-TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferSlowMode) {
+// TODO(crbug.com/585626939): Sets a V8 flag after V8 is initialized, which
+// crashes when run in a batch after other tests.
+TEST(V8ScriptValueSerializerTest,
+     DISABLED_RoundTripImmutableArrayBufferSlowMode) {
   ScopedSharedArrayBufferForTest enable_sab(true);
   v8::V8::SetFlagsFromString("--js-immutable-arraybuffer");
   test::TaskEnvironment task_environment;
@@ -2478,8 +2488,10 @@ TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferSlowMode) {
             output_ab->GetBackingStore()->Data());
 }
 
+// TODO(crbug.com/585626939): Sets a V8 flag after V8 is initialized, which
+// crashes when run in a batch after other tests.
 TEST(V8ScriptValueSerializerTest,
-     RoundTripImmutableArrayBufferWithoutSABPermission) {
+     DISABLED_RoundTripImmutableArrayBufferWithoutSABPermission) {
   ScopedSharedArrayBufferForTest disable_sab(false);
   v8::V8::SetFlagsFromString("--js-immutable-arraybuffer");
   test::TaskEnvironment task_environment;
@@ -2519,7 +2531,10 @@ TEST(V8ScriptValueSerializerTest,
   EXPECT_EQ(input_span, output_span);
 }
 
-TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferForStorage) {
+// TODO(crbug.com/585626939): Sets a V8 flag after V8 is initialized, which
+// crashes when run in a batch after other tests.
+TEST(V8ScriptValueSerializerTest,
+     DISABLED_RoundTripImmutableArrayBufferForStorage) {
   ScopedSharedArrayBufferForTest enable_sab(true);
   v8::V8::SetFlagsFromString("--js-immutable-arraybuffer");
   test::TaskEnvironment task_environment;
@@ -2558,7 +2573,10 @@ TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferForStorage) {
   EXPECT_EQ(input_span, output_span);
 }
 
-TEST(V8ScriptValueSerializerTest, RoundTripImmutableArrayBufferUnpacked) {
+// TODO(crbug.com/585626939): Sets a V8 flag after V8 is initialized, which
+// crashes when run in a batch after other tests.
+TEST(V8ScriptValueSerializerTest,
+     DISABLED_RoundTripImmutableArrayBufferUnpacked) {
   ScopedSharedArrayBufferForTest enable_sab(true);
   v8::V8::SetFlagsFromString("--js-immutable-arraybuffer");
   test::TaskEnvironment task_environment;

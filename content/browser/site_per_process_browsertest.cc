@@ -188,6 +188,10 @@
 #include "ui/aura/window.h"
 #endif
 
+#if BUILDFLAG(IS_WIN)
+#include "ui/base/ui_base_features.h"
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
@@ -501,9 +505,16 @@ SitePerProcessBrowserTestBase::SitePerProcessBrowserTestBase() {
   // Overlay scrollbar will be turned off with both conditions satisfied:
   // 1) feature flag `kOverlayScrollbar` is off
   // 2) always show scrollbar preference setting on.
-  feature_list_.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{features::kOverlayScrollbar});
+  std::vector<base::test::FeatureRef> disabled_features = {
+      features::kOverlayScrollbar};
+#if BUILDFLAG(IS_WIN)
+  // Native window occlusion is calculated asynchronously on Windows, so an
+  // occlusion update can arrive after a test calls
+  // UpdateWebContentsVisibility(Visibility::HIDDEN) and make the WebContents
+  // visible again.
+  disabled_features.push_back(features::kCalculateNativeWinOcclusion);
+#endif
+  feature_list_.InitWithFeatures(/*enabled_features=*/{}, disabled_features);
 #endif
 }
 
@@ -5253,14 +5264,11 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_TRUE(popup_origin.opaque());
   EXPECT_EQ(url::SchemeHostPort(main_url),
             popup_origin.GetTupleOrPrecursorTupleIfOpaque());
-  if (base::FeatureList::IsEnabled(
-          blink::features::kUseSandboxTokenForOriginDerivation)) {
-    const std::optional<base::UnguessableToken> token =
-        foo_root->current_frame_host()->last_sandbox_origin_token_for_testing();
-    ASSERT_TRUE(token.has_value());
-    ASSERT_TRUE(popup_origin.GetNonceForTesting());
-    EXPECT_EQ(*token, *popup_origin.GetNonceForTesting());
-  }
+  const std::optional<base::UnguessableToken> token =
+      foo_root->current_frame_host()->last_sandbox_origin_token_for_testing();
+  ASSERT_TRUE(token.has_value());
+  ASSERT_TRUE(popup_origin.GetNonceForTesting());
+  EXPECT_EQ(*token, *popup_origin.GetNonceForTesting());
 }
 
 // Test that subresources with certificate errors get reported to the
@@ -8124,8 +8132,6 @@ IN_PROC_BROWSER_TEST_P(SitePerProcessBrowserTest,
   RenderFrameProxyHost* root_proxy =
       iframe_node->render_manager()->GetProxyToParent();
   EXPECT_TRUE(root_proxy->IsInertForTesting());
-
-  std::string focused_element;
 
   // Attempt to change focus in the inert subframe. This should work.
   // The setTimeout ensures that the inert bit can propagate before the

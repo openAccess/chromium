@@ -31,10 +31,25 @@ public class SuggestionsTileView extends TileView {
         super(context, attrs);
     }
 
+    @Override
+    protected void onFinishInflate() {
+        super.onFinishInflate();
+
+        // For NTP Aurora V2, use a 16dp rounded square background and ripple. This is done during
+        // inflation so it applies to all tiles, including the "Add new" button (which skips
+        // #initialize(Tile, int)).
+        if (NewTabPageUtils.isNtpAuroraV2Enabled()) {
+            mIconBackgroundView.setBackgroundResource(
+                    R.drawable.tile_view_icon_background_modern_rounded);
+            findViewById(R.id.tile_view_highlight)
+                    .setBackgroundResource(R.drawable.tile_view_highlight_rounded);
+        }
+    }
+
     // TileView override.
     @Override
     public boolean isDraggable() {
-        return mData.isCustomLink() || mData.isAiMode();
+        return getData().isCustomLink() || getData().isAiMode();
     }
 
     /**
@@ -55,11 +70,6 @@ public class SuggestionsTileView extends TileView {
                 titleLines);
         mData = tile.getData();
         setIconViewLayoutParams(tile);
-
-        if (mIconBackgroundView != null) {
-            mIconBackgroundView.setVisibility(
-                    NewTabPageUtils.isBesideMvtModuleEnabled() ? GONE : VISIBLE);
-        }
     }
 
     /** Retrieves data associated with this view. */

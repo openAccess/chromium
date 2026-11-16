@@ -65,7 +65,6 @@
 #include "services/network/public/mojom/trust_tokens.mojom-blink.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/css/preferred_color_scheme.mojom-blink.h"
 #include "third_party/blink/public/mojom/css/preferred_contrast.mojom-blink.h"
@@ -145,6 +144,7 @@
 #include "third_party/blink/renderer/core/dom/attr.h"
 #include "third_party/blink/renderer/core/dom/beforeunload_event_listener.h"
 #include "third_party/blink/renderer/core/dom/cdata_section.h"
+#include "third_party/blink/renderer/core/dom/child_frame_disconnector.h"
 #include "third_party/blink/renderer/core/dom/column_pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/comment.h"
 #include "third_party/blink/renderer/core/dom/document_data.h"
@@ -528,12 +528,14 @@ bool HasSelectInNameAttribute(Element& element) {
 }
 
 bool IsRoleCombobox(Element& element) {
-  DEFINE_STATIC_LOCAL(const AtomicString, combobox, ("combobox"));
+  DEFINE_STATIC_LOCAL(const AtomicString, combobox,
+                      (AtomicString::FromLiteral<"combobox">()));
   return element.getAttribute(html_names::kRoleAttr) == combobox;
 }
 
 bool IsAriaHasPopupListbox(Element& element) {
-  DEFINE_STATIC_LOCAL(const AtomicString, listbox, ("listbox"));
+  DEFINE_STATIC_LOCAL(const AtomicString, listbox,
+                      (AtomicString::FromLiteral<"listbox">()));
   return element.getAttribute(html_names::kAriaHaspopupAttr) == listbox;
 }
 
@@ -1293,21 +1295,6 @@ Location* Document::location() const {
     return nullptr;
 
   return domWindow()->location();
-}
-
-bool Document::DocumentPolicyFeatureObserved(
-    mojom::blink::DocumentPolicyFeature feature) {
-  wtf_size_t feature_index = static_cast<wtf_size_t>(feature);
-  if (parsed_document_policies_.size() == 0) {
-    parsed_document_policies_.resize(
-        static_cast<wtf_size_t>(
-            mojom::blink::DocumentPolicyFeature::kMaxValue) +
-        1);
-  } else if (parsed_document_policies_[feature_index]) {
-    return true;
-  }
-  parsed_document_policies_[feature_index] = true;
-  return false;
 }
 
 void Document::ChildrenChanged(const ChildrenChange& change) {
@@ -2509,6 +2496,9 @@ Document::CalculateStyleAndLayoutTreeUpdateForThisDocument() const {
   if (style_engine_->NeedsStyleRecalc()) {
     return StyleAndLayoutTreeUpdate::kAnalyzed;
   }
+  if (style_engine_->HasFlatTreeMovedNodes()) {
+    return StyleAndLayoutTreeUpdate::kAnalyzed;
+  }
   if (style_engine_->NeedsStyleInvalidation()) {
     return StyleAndLayoutTreeUpdate::kAnalyzed;
   }
@@ -2831,6 +2821,8 @@ void Document::UpdateStyleAndLayoutTreeForThisDocument() {
   UpdateUseShadowTreesIfNeeded();
 
   UpdateOverscrollCommandTargets();
+
+  style_engine.DetachDisplayLockedFlatTreeMovedNodesIfNeeded();
 
   style_engine.UpdateActiveStyle();
   style_engine.UpdateCounterStyles();
@@ -3357,15 +3349,22 @@ void Document::NotifyDisplayLockChangedForSVGResources(const Element& element) {
   // `element` can only be a descendant of an SVG resource target if it has a
   // <foreignObject> flat-tree ancestor.
   const SVGForeignObjectElement* enclosing_foreign_object = nullptr;
-  if (svg_extensions_ && svg_extensions_->MayContainForeignObjects() &&
-      element.isConnected() && !IsFlatTreeTraversalForbidden() &&
+  if (element.isConnected() && !IsFlatTreeTraversalForbidden() &&
       !IsSlotAssignmentDirty()) {
-    for (const Node& ancestor : FlatTreeTraversal::AncestorsOf(element)) {
-      if (const auto* foreign_object =
-              DynamicTo<SVGForeignObjectElement>(ancestor)) {
-        enclosing_foreign_object = foreign_object;
-        break;
+    if (svg_extensions_ && svg_extensions_->MayContainForeignObjects()) {
+      for (const Node& ancestor : FlatTreeTraversal::AncestorsOf(element)) {
+        if (const auto* foreign_object =
+                DynamicTo<SVGForeignObjectElement>(ancestor)) {
+          enclosing_foreign_object = foreign_object;
+          break;
+        }
       }
+    }
+    // A childless non-SVG element outside <foreignObject> cannot be or contain
+    // an SVG resource target.
+    if (!enclosing_foreign_object && !element.IsSVGElement() &&
+        !FlatTreeTraversal::HasChildren(element)) {
+      return;
     }
   }
   HeapVector<Member<SVGTreeScopeResources>, 16> scope_resources(
@@ -4752,9 +4751,8 @@ void Document::DispatchUnloadEvents(
   if (auto* input = DynamicTo<HTMLInputElement>(current_focused_element))
     input->EndEditing();
 
-  if (!will_commit_new_document_in_this_frame && GetFrame() &&
-      !GetFrame()->IsMainFrame() &&
-      RuntimeEnabledFeatures::OmitSubframeDetachmentEventsOnRemovalEnabled()) {
+  if (!will_commit_new_document_in_this_frame &&
+      !ChildFrameDisconnector::ShouldFireUnloadEvents(*this)) {
     load_event_progress_ = kUnloadEventHandled;
     return;
   }
@@ -8456,8 +8454,14 @@ void Document::RequestResizeResponsiveIframe(ExceptionState* exception_state) {
     }
     return;
   }
-  if (auto* owner = GetFrame()->Owner()) {
-    LocalFrameView* view = View();
+  LocalFrame* frame = GetFrame();
+  if (FrameOwner* owner = frame ? frame->Owner() : nullptr) {
+    LocalFrameView* view = frame->View();
+    CHECK(view);
+    if (RuntimeEnabledFeatures::ResponsiveIframesAsyncResizeEnabled()) {
+      view->ScheduleResponsiveIframeResize();
+      return;
+    }
     LocalFrameView::NaturalSizeLayoutScope natural_size_scope(view);
     UpdateStyleAndLayout(DocumentUpdateReason::kUnknown);
     if (view->RecordNaturalDimensions()) {

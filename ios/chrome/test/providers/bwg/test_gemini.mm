@@ -16,6 +16,7 @@
 @synthesize actuationHandler = _actuationHandler;
 @synthesize cameraHandler = _cameraHandler;
 @synthesize consentProviderHandler = _consentProviderHandler;
+@synthesize customUIHandler = _customUIHandler;
 @synthesize pageStateChangeHandler = _pageStateChangeHandler;
 @synthesize sessionHandler = _sessionHandler;
 @synthesize suggestionHandler = _suggestionHandler;
@@ -35,20 +36,6 @@ void StartGeminiOverlay(GeminiConfiguration* gemini_configuration) {
 
 GeminiConfiguration* GetLastStartGeminiOverlayConfiguration() {
   return g_last_start_gemini_overlay_configuration;
-}
-
-const std::u16string GetPageContextShouldDetachScript() {
-  return uR"JS(
-      if (window.__gCrWeb && window.__gCrWeb.pageContext) {
-        if (typeof window.__gCrWeb.pageContext.shouldDetach === 'boolean') {
-          return window.__gCrWeb.pageContext.shouldDetach;
-        }
-        if (window.__gCrWeb.pageContext.shouldTimeout) {
-          while(true);
-        }
-      }
-      return false;
-  )JS";
 }
 
 id<BWGGatewayProtocol> CreateGeminiGateway() {
@@ -102,20 +89,6 @@ void ResetGemini() {
 void UpdatePageAttachmentState(
     GeminiPageContextAttachmentState gemini_attachment_state) {
   g_current_attachment_state = gemini_attachment_state;
-}
-
-// Mock value used by unit tests to override the return value of IsProtectedUrl.
-static bool g_mock_protected_url = false;
-
-// Sets whether all URLs should be simulated as protected in tests.
-void SetMockProtectedUrl(bool is_protected) {
-  g_mock_protected_url = is_protected;
-}
-
-// Stub implementation for tests. Returns the mock value set by
-// SetMockProtectedUrl.
-bool IsProtectedUrl(std::string url) {
-  return g_mock_protected_url;
 }
 
 void UpdateActivePageContext(GeminiPageContext* gemini_page_context,

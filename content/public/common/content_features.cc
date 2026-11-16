@@ -807,7 +807,7 @@ BASE_FEATURE(kOverscrollHistoryNavigation, base::FEATURE_ENABLED_BY_DEFAULT);
 // and using an opaque origin makes the existing origin-based security checks
 // deny such access by default, similarly to CSP sandboxed documents. See
 // https://crbug.com/559567801.
-BASE_FEATURE(kPdfOpaqueOrigin, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPdfOpaqueOrigin, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Whether web apps can run periodic tasks upon network connectivity.
 BASE_FEATURE(kPeriodicBackgroundSync, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -820,6 +820,14 @@ BASE_FEATURE(kPopulateUnattachedAuraScreenInfo,
 // If enabled, PreconnectManager bypasses UI-thread host preresolve and connects
 // sockets directly to the network context for single preconnect requests.
 BASE_FEATURE(kPreconnectManagerDirectFastPath,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, avoids prewarm/prerender contention when
+// `kPreferWarmRendererProcess` is enabled by requiring prerender processes to
+// be ready and have completed loading before being considered warm for
+// process reuse, and (in //chrome's PrerenderManager) freezing DSE prewarm
+// pages after DidStopLoading.
+BASE_FEATURE(kPreferWarmRendererProcessAvoidPrewarmContention,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // If enabled, activation beacon is sent when a prefetched page is activated.
@@ -884,9 +892,9 @@ const base::FeatureParam<bool>
         &kPrefetchOffTheMainThread, "check_will_create_url_loader_factory",
         false};
 
-// Use code paths for prefetch/prerender integration.
-// See also `kPrerender2FallbackPrefetchSpecRules`.
-BASE_FEATURE(kPrefetchPrerenderIntegration, base::FEATURE_ENABLED_BY_DEFAULT);
+// Kill switch for attaching browser-initiated privacy request headers
+// (`Sec-GPC` and `DNT`) to prefetch requests.
+BASE_FEATURE(kPrefetchPrivacyHeaders, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If explicitly disabled, prefetch proxy is not used.
 BASE_FEATURE(kPrefetchProxy, base::FEATURE_ENABLED_BY_DEFAULT);

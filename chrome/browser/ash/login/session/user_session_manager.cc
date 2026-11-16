@@ -69,7 +69,6 @@
 #include "chrome/browser/ash/floating_workspace/floating_workspace_service_factory.h"
 #include "chrome/browser/ash/floating_workspace/floating_workspace_util.h"
 #include "chrome/browser/ash/hats/hats_config.h"
-#include "chrome/browser/ash/logging/logging.h"
 #include "chrome/browser/ash/login/auth/chrome_safe_mode_delegate.h"
 #include "chrome/browser/ash/login/chrome_restart_request.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
@@ -123,7 +122,6 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
-#include "chrome/common/logging_chrome.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_flusher.h"
@@ -134,6 +132,7 @@
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/logging/log_redirect.h"
 #include "chromeos/ash/components/login/auth/auth_session_authenticator.h"
 #include "chromeos/ash/components/login/auth/authenticator_builder.h"
 #include "chromeos/ash/components/login/auth/challenge_response/known_user_pref_utils.h"
@@ -1989,8 +1988,10 @@ bool UserSessionManager::InitializeUserSession(Profile* profile) {
     if (auto* host = LoginDisplayHost::default_host();
         host && host->GetWizardContext()) {
       WizardContext& wizard_context = *host->GetWizardContext();
-      CHECK(!wizard_context.onboarding_account_id.has_value());
-      wizard_context.onboarding_account_id = account_id;
+      CHECK(!wizard_context.onboarding_user);
+      wizard_context.onboarding_user =
+          user_manager->FindUserAndModify(account_id);
+      CHECK(wizard_context.onboarding_user);
     }
     std::string pending_screen =
         known_user.GetPendingOnboardingScreen(account_id);
@@ -2219,10 +2220,10 @@ void UserSessionManager::ShowNotificationsIfNeeded(Profile* profile) {
 void UserSessionManager::PerformPostBrowserLaunchOOBEActions(Profile* profile) {
   SyncConsentScreen::MaybeLaunchSyncConsentSettings(profile);
   if (features::IsOobeDisplaySizeEnabled()) {
-    DisplaySizeScreen::MaybeUpdateZoomFactor(profile);
+    DisplaySizeScreen::MaybeUpdateZoomFactor(CHECK_DEREF(profile->GetPrefs()));
   }
   if (drive::util::IsOobeDrivePinningAvailable(profile)) {
-    DrivePinningScreen::ApplyDrivePinningPref(profile);
+    DrivePinningScreen::ApplyDrivePinningPref(CHECK_DEREF(profile->GetPrefs()));
   }
 }
 

@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_WEBID_IDENTITY_DIALOG_CONTROLLER_H_
 #define CHROME_BROWSER_UI_WEBID_IDENTITY_DIALOG_CONTROLLER_H_
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -229,9 +230,20 @@ class IdentityDialogController
   // Whether we show any FedCM UI or not. Excludes the loading dialog since that
   // one is not something that modifies user state or is actionable by the user.
   bool did_show_ui_ = false;
-  // Whether an account has been selected by the user. This is used to avoid
-  // showing a HaT survey for auto reauthn.
-  bool was_account_explicitly_selected_ = false;
+  // Whether the loading dialog was shown to the user.
+  bool did_show_loading_ui_ = false;
+  // Whether the user experienced auto-reauthn (verifying dialog in passive
+  // mode or loading dialog in active mode), used for HaTS surveys.
+  bool is_auto_reauthn_ = false;
+
+  // Account chooser data for HaTS surveys; std::nullopt if no chooser was
+  // shown.
+  struct AccountChooserSurveyData {
+    content::IdentityRequestAccount::LoginState
+        login_state;  // Estimate until selection.
+    size_t num_accounts_shown = 0;
+  };
+  std::optional<AccountChooserSurveyData> chooser_survey_data_;
   std::optional<content::IdentityRequestDialogController::PassiveDialogVolume>
       passive_dialog_volume_;
   GetPassiveDialogVolumeCallback passive_dialog_volume_callback_;

@@ -13,11 +13,15 @@
 #include "chrome/browser/autofill/gmail_otp_backend_factory.h"
 #include "chrome/browser/gcm/gcm_profile_service_factory.h"
 #include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
+#include "chrome/browser/glic/public/glic_feature.h"
+#include "chrome/browser/glic/public/glic_provider_latch_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sharing/sharing_device_registration_impl.h"
 #include "chrome/browser/sharing/sharing_handler_registry_impl.h"
 #include "chrome/browser/sharing/sharing_message_bridge_factory.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/sync/glue/sync_start_util.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
@@ -101,6 +105,9 @@ SharingServiceFactory::SharingServiceFactory()
   DependsOn(SharingMessageBridgeFactory::GetInstance());
   DependsOn(SendTabToSelfSyncServiceFactory::GetInstance());
   DependsOn(GmailOtpBackendFactory::GetInstance());
+  DependsOn(stream_transport::TransportServiceFactory::GetInstance());
+  // The service reads the profile's Glic provider when it is built.
+  DependsOn(glic::GlicProviderLatchFactory::GetInstance());
 }
 
 SharingServiceFactory::~SharingServiceFactory() = default;
@@ -125,7 +132,9 @@ SharingServiceFactory::BuildServiceInstanceForBrowserContext(
       instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile);
   auto sharing_device_registration =
       std::make_unique<SharingDeviceRegistrationImpl>(
-          sync_prefs.get(), instance_id_service->driver(), sync_service);
+          sync_prefs.get(), instance_id_service->driver(), sync_service,
+          glic::GetGlicProviderSpec(profile).SupportsFeature(
+              glic::GlicFeature::kExperimentalTriggering));
 
   SharingMessageBridge* message_bridge =
       SharingMessageBridgeFactory::GetForBrowserContext(profile);

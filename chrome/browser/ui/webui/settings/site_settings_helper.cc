@@ -215,7 +215,6 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::AUTO_DARK_WEB_CONTENT, nullptr},
     {ContentSettingsType::REQUEST_DESKTOP_SITE, nullptr},
     {ContentSettingsType::NOTIFICATION_INTERACTIONS, nullptr},
-    {ContentSettingsType::REDUCED_ACCEPT_LANGUAGE, nullptr},
     {ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW, nullptr},
     {ContentSettingsType::FEDERATED_IDENTITY_IDENTITY_PROVIDER_SIGNIN_STATUS,
      nullptr},
@@ -254,6 +253,7 @@ constexpr auto kContentSettingsTypeGroupNames = std::to_array<
     {ContentSettingsType::LOCAL_NETWORK_ACCESS, nullptr},
     {ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS, nullptr},
     {ContentSettingsType::SUSPICIOUS_SITE_WARNING_DATA, nullptr},
+    {ContentSettingsType::WEBAUTHN_AMBIENT_SIGNIN_DATA, nullptr},
 });
 
 static_assert(
@@ -1039,11 +1039,6 @@ void GetRawExceptionsForContentSettingsType(
       continue;
     }
 
-    // Don't add auto-granted permissions for storage access exceptions.
-    if (setting.metadata.decided_by_related_website_sets()) {
-      continue;
-    }
-
     auto content_setting = setting.GetContentSetting();
     // There is no user-facing concept of SESSION_ONLY cookie exceptions that
     // use secondary patterns. These are instead presented as ALLOW.
@@ -1280,8 +1275,9 @@ ContentSetting GetContentSettingForOrigin(Profile* profile,
       content_settings::mojom::SessionModel::ONE_TIME) {
     CHECK(permissions::PermissionUtil::DoesSupportTemporaryGrants(content_type),
           base::NotFatalUntil::M162);
-    CHECK_EQ(result.status, PermissionStatus::GRANTED,
-             base::NotFatalUntil::M162);
+    // TODO(crbug.com/579245368): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_EQ(result.status, PermissionStatus::GRANTED);
     return CONTENT_SETTING_DEFAULT;
   }
   return permissions::PermissionUtil::PermissionStatusToContentSetting(

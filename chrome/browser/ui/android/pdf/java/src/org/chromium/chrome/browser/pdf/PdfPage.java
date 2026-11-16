@@ -114,10 +114,13 @@ public class PdfPage extends BasicNativePage {
         if (!PdfUtils.isReuseFragmentEnabled()) return;
 
         boolean sameUrl = TextUtils.equals(mUrl, url);
-        // Only skip if the PDF is already loaded and has no unsaved changes. If there are
-        // unsaved edits, continue so the reload confirmation dialog can prompt the user and
-        // reload the PDF if they choose to discard their edits.
-        if (sameUrl && !mPdfCoordinator.hasChanges() && mPdfCoordinator.isPdfLoaded()) {
+        // Only skip if the PDF is already loaded (or has a filepath pending initial load before
+        // the view attaches) and has no unsaved changes. If there are unsaved edits, continue so
+        // the reload confirmation dialog can prompt the user and reload the PDF if they choose to
+        // discard their edits.
+        if (sameUrl
+                && !mPdfCoordinator.hasChanges()
+                && (mPdfCoordinator.isPdfLoaded() || mPdfCoordinator.hasPendingLoad())) {
             return;
         }
 
@@ -136,9 +139,13 @@ public class PdfPage extends BasicNativePage {
                         // until DownloadController#onDownloadCompleted provides the filename. Keep
                         // the title when the URL is unchanged, e.g. a freshly built page after
                         // reparenting or unfreezing already carries the filename from PdfInfo.
-                        if (!sameUrl) mTitle = mDefaultTitle;
+                        if (!sameUrl) {
+                            mTitle = mDefaultTitle;
+                            mTransientDownloadStartTimestamp = SystemClock.elapsedRealtime();
+                        }
                         return;
                     }
+                    mTransientDownloadStartTimestamp = 0;
 
                     // Use the URL encoded in |mUrl| if available i.e.
                     // chrome-native://pdf/link?url=...
@@ -194,6 +201,7 @@ public class PdfPage extends BasicNativePage {
     @Override
     public void destroy() {
         super.destroy();
+        mTransientDownloadStartTimestamp = 0;
         if (PdfUtils.isInlinePdfV2Enabled()) {
             String filepath = mPdfCoordinator.getFilepath();
             if (!isPdfPageStillInUse()) {
@@ -252,6 +260,7 @@ public class PdfPage extends BasicNativePage {
                             }
                             PdfUtils.maybeDeleteTransientFile(filepath, mUrl);
                             mPdfCoordinator.resetLoadState();
+                            mTransientDownloadStartTimestamp = 0;
                             LoadUrlParams params = new LoadUrlParams(redownloadUrl);
                             params.setShouldReplaceCurrentEntry(true);
                             // Preserve the initiator origin so that the re-download keeps the
@@ -325,9 +334,18 @@ public class PdfPage extends BasicNativePage {
     public void onDownloadComplete(String pdfFileName, String pdfFilePath, boolean isDownloadSafe) {
         mTitle = pdfFileName;
         mIsDownloadSafe = isDownloadSafe;
-        PdfUtils.recordPdfTransientDownloadTime(
-                SystemClock.elapsedRealtime() - mTransientDownloadStartTimestamp);
+        if (mTransientDownloadStartTimestamp > 0) {
+            PdfUtils.recordPdfTransientDownloadTime(
+                    SystemClock.elapsedRealtime() - mTransientDownloadStartTimestamp);
+            mTransientDownloadStartTimestamp = 0;
+        }
         mPdfCoordinator.onDownloadComplete(pdfFilePath, pdfFileName);
+    }
+
+    /** Called when the pdf download fails. */
+    public void onDownloadFailed() {
+        mTransientDownloadStartTimestamp = 0;
+        mPdfCoordinator.onDownloadFailed();
     }
 
     /**

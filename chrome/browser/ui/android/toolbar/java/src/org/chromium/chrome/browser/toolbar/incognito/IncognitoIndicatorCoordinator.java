@@ -8,6 +8,7 @@ import static android.view.View.VISIBLE;
 
 import android.animation.Animator;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
@@ -15,8 +16,11 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
+import android.widget.ImageView;
+import android.widget.TextView;
 
 import androidx.annotation.VisibleForTesting;
+import androidx.core.widget.ImageViewCompat;
 
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.metrics.RecordUserAction;
@@ -29,6 +33,7 @@ import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.top.ToolbarChild;
 import org.chromium.chrome.browser.toolbar.top.ToolbarLayout;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.chrome.browser.user_education.IphCommandBuilder;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
@@ -47,6 +52,7 @@ import org.chromium.ui.listmenu.ListMenu.Delegate;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.widget.AnchoredPopupWindow;
+import org.chromium.ui.widget.AnchoredPopupWindow.HorizontalOrientation;
 import org.chromium.ui.widget.ViewRectProvider;
 
 import java.util.Collection;
@@ -107,6 +113,14 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
     }
 
     @Override
+    public void onTintChanged(
+            @Nullable ColorStateList tint,
+            @Nullable ColorStateList activityFocusTint,
+            @BrandedColorScheme int brandedColorScheme) {
+        updateTint(activityFocusTint);
+    }
+
+    @Override
     public void onIncognitoStateChanged(boolean isIncognito) {
         super.onIncognitoStateChanged(isIncognito);
         if (mIsIncognitoBranded != null && mIsIncognitoBranded == isIncognito) return;
@@ -146,6 +160,7 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
             mIncognitoIndicator.setOnClickListener(this);
             mIncognitoIndicator.setOnLongClickListener(this);
             mIncognitoIndicator.setOnContextClickListener(this);
+            updateTint(mTopUiThemeColorProvider.getActivityFocusTint());
         }
 
         if (mIncognitoIndicator != null) {
@@ -154,6 +169,14 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                 triggerIPH();
             }
         }
+    }
+
+    private void updateTint(@Nullable ColorStateList activityFocusTint) {
+        if (mIncognitoIndicator == null || activityFocusTint == null) return;
+        ImageView icon = mIncognitoIndicator.findViewById(R.id.incognito_indicator_icon);
+        ImageViewCompat.setImageTintList(icon, activityFocusTint);
+        TextView text = mIncognitoIndicator.findViewById(R.id.incognito_indicator_text);
+        text.setTextColor(activityFocusTint);
     }
 
     @Override
@@ -319,7 +342,7 @@ public class IncognitoIndicatorCoordinator extends ToolbarChild
                         .setDesiredContentWidth(desiredWidth)
                         .setHorizontalOverlapAnchor(true)
                         .setPreferredHorizontalOrientation(
-                                AnchoredPopupWindow.HorizontalOrientation.MAX_AVAILABLE_SPACE)
+                                HorizontalOrientation.MAX_AVAILABLE_SPACE)
                         .setVerticalOverlapAnchor(false);
         if (isIncognitoCardEnabled()) {
             builder.setOutsideTouchable(true);

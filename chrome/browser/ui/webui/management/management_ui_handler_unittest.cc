@@ -619,7 +619,7 @@ class ManagementUIHandlerTests :
     crostini_features()->set_is_allowed_now(true);
 
     profile_->GetPrefs()->SetBoolean(
-        ::prefs::kInsightsExtensionEnabled,
+        ::ash::prefs::kInsightsExtensionEnabled,
         GetTestConfig().insights_extension_enabled);
 
     profile_->GetPrefs()->SetList(
@@ -1917,10 +1917,8 @@ TEST_F(ManagementUIHandlerTests, ThreatReportingInfo) {
       base::UTF8ToUTF16(*info.FindString("description")));
 
   // When policies are set to uninteresting values, nothing to report.
-#if !BUILDFLAG(IS_ANDROID)
   SetConnectorPolicyValue(policy::key::kOnFileAttachedEnterpriseConnector, "[]",
                           chrome_policies);
-#endif
   SetConnectorPolicyValue(policy::key::kOnFileDownloadedEnterpriseConnector,
                           "[]", chrome_policies);
 #if !BUILDFLAG(IS_ANDROID)
@@ -1949,11 +1947,9 @@ TEST_F(ManagementUIHandlerTests, ThreatReportingInfo) {
   // When policies are set to values that enable the feature without a usable DM
   // token, nothing to report.
   policy::SetDMTokenForTesting(policy::DMToken::CreateInvalidToken());
-#if !BUILDFLAG(IS_ANDROID)
   enterprise_connectors::test::SetAnalysisConnector(
       profile_->GetPrefs(), enterprise_connectors::FILE_ATTACHED,
       "[{\"service_provider\":\"google\"}]");
-#endif
   enterprise_connectors::test::SetAnalysisConnector(
       profile_->GetPrefs(), enterprise_connectors::FILE_DOWNLOADED,
       "[{\"service_provider\":\"google\"}]");
@@ -1998,7 +1994,7 @@ TEST_F(ManagementUIHandlerTests, ThreatReportingInfo) {
 #if BUILDFLAG(IS_CHROMEOS)
   const size_t expected_size = 9u;
 #elif BUILDFLAG(IS_ANDROID)
-  const size_t expected_size = 4u;
+  const size_t expected_size = 5u;
 #else
   const size_t expected_size = 8u;
 #endif
@@ -2008,14 +2004,12 @@ TEST_F(ManagementUIHandlerTests, ThreatReportingInfo) {
       base::UTF8ToUTF16(*info.FindString("description")));
 
   base::ListValue expected_info;
-#if !BUILDFLAG(IS_ANDROID)
   {
     base::DictValue value;
     value.Set("title", kManagementOnFileAttachedEvent);
     value.Set("permission", kManagementOnFileAttachedVisibleData);
     expected_info.Append(std::move(value));
   }
-#endif
   {
     base::DictValue value;
     value.Set("title", kManagementOnFileDownloadedEvent);
@@ -2072,35 +2066,47 @@ TEST_F(ManagementUIHandlerTests, ThreatReportingInfo) {
   EXPECT_EQ(expected_info, *info.FindList("info"));
 }
 
-#if BUILDFLAG(IS_ANDROID)
 TEST_F(ManagementUIHandlerTests, ThreatReportingInfo_SecureGateway) {
   ResetTestConfig();
   ASSERT_TRUE(SetUpProfileAndHandler());
 
-  // Initially secure gateway disclosure is false.
-  auto info = handler_.GetThreatProtectionInfo(profile_);
-  EXPECT_FALSE(info.FindBool("showSecureGatewayDisclosure").value_or(false));
+  // Initially Threat Protection info is empty.
+  base::DictValue info = handler_.GetThreatProtectionInfo(profile_);
+  EXPECT_TRUE(info.FindList("info")->empty());
+  EXPECT_FALSE(info.contains("showSecureGatewayDisclosure"));
 
-  // When kProxyProvisioningDomains is set and the feature is enabled by
-  // default, showSecureGatewayDisclosure is true.
   base::ListValue domains;
   domains.Append("example.com");
   profile_->GetPrefs()->SetList(enterprise_net::kProxyProvisioningDomains,
                                 std::move(domains));
 
-  info = handler_.GetThreatProtectionInfo(profile_);
-  EXPECT_TRUE(info.FindBool("showSecureGatewayDisclosure").value_or(false));
+#if BUILDFLAG(IS_ANDROID)
+  // When `kProxyProvisioningDomains` is set and `kEnableDynamicRouteFetching`
+  // is enabled by default on Android, the Secure Gateway connector is appended
+  // to `info`.
+  base::ListValue expected_info;
+  expected_info.Append(
+      base::DictValue()
+          .Set("title", kManagementOnSecureGatewayEvent)
+          .Set("permission", kManagementOnSecureGatewayVisibleData));
 
-  // When the feature is disabled, showSecureGatewayDisclosure is false even
-  // if kProxyProvisioningDomains is set.
+  info = handler_.GetThreatProtectionInfo(profile_);
+  EXPECT_EQ(expected_info, *info.FindList("info"));
+
+  // When the feature is disabled, `info` is empty even if
+  // `kProxyProvisioningDomains` is set.
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndDisableFeature(
       enterprise_net::kEnableDynamicRouteFetching);
 
   info = handler_.GetThreatProtectionInfo(profile_);
-  EXPECT_FALSE(info.FindBool("showSecureGatewayDisclosure").value_or(false));
-}
+  EXPECT_TRUE(info.FindList("info")->empty());
+#else
+  // Secure Gateway disclosure is not yet enabled on Desktop/ChromeOS.
+  info = handler_.GetThreatProtectionInfo(profile_);
+  EXPECT_TRUE(info.FindList("info")->empty());
 #endif  // BUILDFLAG(IS_ANDROID)
+}
 
 #if BUILDFLAG(IS_CHROMEOS)
 TEST_F(ManagementUIHandlerTests, GetFilesUploadToCloud) {

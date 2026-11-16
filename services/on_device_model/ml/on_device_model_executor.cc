@@ -73,6 +73,10 @@ const base::FeatureParam<bool> kAllowFp16{
     &optimization_guide::features::kOptimizationGuideModelExecution,
     "on_device_model_allow_fp16", true};
 
+const base::FeatureParam<bool> kUseGpuIrModel{
+    &optimization_guide::features::kOptimizationGuideModelExecution,
+    "on_device_model_use_gpu_ir_model", false};
+
 // Helper to bind object methods as weak task-posting callback functions.
 template <typename R, typename C, typename... Args>
 std::function<R(Args...)> CreateWeakCallbackFn(R (C::*method)(Args...),
@@ -862,6 +866,8 @@ LoadModelResult OnDeviceModelExecutor::Init(
   }
   // TODO(crbug.com/461547475): Determine whether weight caches should be used
   // for GPU or just CPU only (right now GPU weight cache is behind a flag).
+  const bool enable_speculative_decoding = base::FeatureList::IsEnabled(
+      on_device_model::features::kOnDeviceModelSpeculativeDecoding);
   bool enable_cache_file =
       params->backend_type == ml::ModelBackendType::kCpuBackend ||
       base::FeatureList::IsEnabled(
@@ -869,6 +875,10 @@ LoadModelResult OnDeviceModelExecutor::Init(
   data.cache_file = enable_cache_file && assets.cache.IsValid()
                         ? assets.cache.TakePlatformFile()
                         : base::kInvalidPlatformFile;
+  if (enable_speculative_decoding && enable_cache_file &&
+      assets.mtp_drafter_cache.IsValid()) {
+    data.mtp_drafter_cache_file = assets.mtp_drafter_cache.TakePlatformFile();
+  }
   if (assets.encoder_cache.IsValid()) {
     data.encoder_cache_file = assets.encoder_cache.TakePlatformFile();
   }
@@ -877,24 +887,31 @@ LoadModelResult OnDeviceModelExecutor::Init(
   }
   // TODO(crbug.com/461547475): GPU cache is experimental for now, remove
   // once feature flag is no longer needed.
-  if (base::FeatureList::IsEnabled(
+  const bool enable_program_cache =
+      base::FeatureList::IsEnabled(
           on_device_model::features::kOnDeviceModelGpuProgramCache) &&
-      params->backend_type == ml::ModelBackendType::kGpuBackend &&
-      assets.program_cache.IsValid()) {
+      params->backend_type == ml::ModelBackendType::kGpuBackend;
+  if (enable_program_cache && assets.program_cache.IsValid()) {
     data.program_cache_file = assets.program_cache.TakePlatformFile();
+  }
+  if (enable_speculative_decoding && enable_program_cache &&
+      assets.mtp_drafter_program_cache.IsValid()) {
+    data.mtp_drafter_program_cache_file =
+        assets.mtp_drafter_program_cache.TakePlatformFile();
   }
   ChromeMLModelDescriptor descriptor = {
       .backend_type = params->backend_type,
       .model_data = &data,
       .max_tokens = max_tokens_,
       .temperature = 0.0f,
-      .top_k = optimization_guide::features::GetOnDeviceModelMaxTopK(),
+      .top_k = on_device_model::features::GetOnDeviceModelMaxTopK(),
       .adaptation_ranks = params->adaptation_ranks.data(),
       .adaptation_ranks_size = params->adaptation_ranks.size(),
       .prefer_texture_weights = kPreferTextureWeights.Get(),
       .enable_host_mapped_pointer = kEnableHostMappedPointer.Get(),
       .use_low_power = kUseLowPower.Get(),
       .allow_fp16 = kAllowFp16.Get(),
+      .use_gpu_ir_model = kUseGpuIrModel.Get(),
       .performance_hint = params->performance_hint,
       .vram_mb = params->vram_mb,
   };

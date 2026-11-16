@@ -5,44 +5,18 @@
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 
 #include <string>
+#include <string_view>
 
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "net/base/mime_util.h"
 #include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 
 namespace blink {
-
-bool IsEmptyManifest(const mojom::Manifest& manifest) {
-  static base::NoDestructor<mojom::ManifestPtr> empty_manifest_ptr_storage;
-  mojom::ManifestPtr& empty_manifest = *empty_manifest_ptr_storage;
-  if (!empty_manifest) {
-    empty_manifest = mojom::Manifest::New();
-  }
-  return manifest == *empty_manifest;
-}
-
-bool IsEmptyManifest(const mojom::ManifestPtr& manifest) {
-  return !manifest || IsEmptyManifest(*manifest);
-}
-
-bool IsDefaultManifest(const mojom::Manifest& manifest,
-                       const GURL& document_url) {
-  blink::mojom::ManifestPtr expected_manifest = blink::mojom::Manifest::New();
-  expected_manifest->start_url = document_url;
-  expected_manifest->id = document_url.GetWithoutRef();
-  expected_manifest->scope = document_url.GetWithoutFilename();
-  return manifest == *expected_manifest;
-}
-
-bool IsDefaultManifest(const mojom::ManifestPtr& manifest,
-                       const GURL& document_url) {
-  return manifest && IsDefaultManifest(*manifest, document_url);
-}
 
 bool IsDefaultManifest(const Manifest& manifest, const GURL& document_url) {
   auto default_manifest = Manifest::CreateDefault(document_url);
@@ -210,6 +184,21 @@ std::optional<mojom::ManifestLaunchHandler::ClientMode> ClientModeFromString(
     return ClientMode::kFocusExisting;
   }
   return std::nullopt;
+}
+
+bool IsValidFileHandlerMimeType(std::string_view mime_type) {
+  std::string top_level_mime_type;
+  std::string subtype;
+  // `net::ParseMimeTypeWithoutParameter()` trims leading and trailing ASCII
+  // whitespace before splitting on '/', so also verify that the parsed
+  // `top_level_mime_type` and `subtype` (plus the '/' separator) account for
+  // the entire input `mime_type` with no surrounding whitespace.
+  return net::ParseMimeTypeWithoutParameter(mime_type, &top_level_mime_type,
+                                            &subtype) &&
+         top_level_mime_type.size() + 1 + subtype.size() == mime_type.size() &&
+         net::IsValidTopLevelMimeType(top_level_mime_type) &&
+         !base::StartsWith(top_level_mime_type, "x-",
+                           base::CompareCase::INSENSITIVE_ASCII);
 }
 
 }  // namespace blink

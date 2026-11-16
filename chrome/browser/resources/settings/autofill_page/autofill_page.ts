@@ -64,6 +64,7 @@ interface DataTypeHierarchy {
   contactInfo: DataCategory;
   identityDocs: DataCategory;
   travel: DataCategory;
+  offersAndLoyaltyCards: DataCategory;
   shopping: DataCategory;
 }
 
@@ -108,6 +109,7 @@ export class SettingsAutofillPageElement extends
     return {
       hierarchy_: {type: Object},
       isShoppingEnabled_: {type: Boolean},
+      isOffersAndLoyaltyCardsEnabled_: {type: Boolean},
       showSuggestionsFromGeminiSettings_: {type: Boolean},
       spark_: {type: String},
     };
@@ -116,6 +118,8 @@ export class SettingsAutofillPageElement extends
   protected accessor hierarchy_: DataTypeHierarchy;
   protected accessor isShoppingEnabled_: boolean =
       loadTimeData.getBoolean('shoppingIntegrationEnabled');
+  protected accessor isOffersAndLoyaltyCardsEnabled_: boolean =
+      loadTimeData.getBoolean('offersAndLoyaltyCardsSettingsEnabled');
   protected accessor showSuggestionsFromGeminiSettings_: boolean =
       loadTimeData.getBoolean('showSuggestionsFromGeminiSettings');
   // <if expr="not _google_chrome">
@@ -163,6 +167,13 @@ export class SettingsAutofillPageElement extends
   }
 
   private initializeDataTypeHierarchy_(): DataTypeHierarchy {
+    const loyaltyCardsChip: DataChip = {
+      id: YourSavedInfoDataChip.LOYALTY_CARDS,
+      label: this.i18n('loyaltyCardsTitle'),
+      icon: 'settings20:loyalty-programs',
+      isVisibleWhenNoEntitiesOfTypeExists: () => true,
+    };
+
     return {
       passwordManager: {
         id: YourSavedInfoDataCategory.PASSWORD_MANAGER,
@@ -204,12 +215,9 @@ export class SettingsAutofillPageElement extends
             isVisibleWhenNoEntitiesOfTypeExists: () =>
                 loadTimeData.getBoolean('shouldShowPayOverTimeSettings'),
           },
-          {
-            id: YourSavedInfoDataChip.LOYALTY_CARDS,
-            label: this.i18n('loyaltyCardsTitle'),
-            icon: 'settings20:loyalty-programs',
-            isVisibleWhenNoEntitiesOfTypeExists: () => true,
-          },
+          // When the offers and loyalty cards page is enabled, loyalty cards
+          // are shown in that category instead of in payments.
+          ...(this.isOffersAndLoyaltyCardsEnabled_ ? [] : [loyaltyCardsChip]),
         ],
       },
       contactInfo: {
@@ -278,6 +286,11 @@ export class SettingsAutofillPageElement extends
                 this.availableAutofillAiTypes_.has(EntityTypeName.kVehicle),
           },
         ],
+      },
+      offersAndLoyaltyCards: {
+        id: YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS,
+        // TODO(crbug.com/546252995): Add the offers chip.
+        chips: this.isOffersAndLoyaltyCardsEnabled_ ? [loyaltyCardsChip] : [],
       },
       shopping: {
         id: YourSavedInfoDataCategory.SHOPPING,
@@ -451,6 +464,11 @@ export class SettingsAutofillPageElement extends
     if (routes.TRAVEL) {
       map.set(routes.TRAVEL.path, '#travelManagerButton');
     }
+    if (routes.OFFERS_AND_LOYALTY_CARDS) {
+      map.set(
+          routes.OFFERS_AND_LOYALTY_CARDS.path,
+          '#offersAndLoyaltyCardsManagerButton');
+    }
     if (routes.SHOPPING) {
       map.set(routes.SHOPPING.path, '#shoppingManagerButton');
     }
@@ -481,6 +499,9 @@ export class SettingsAutofillPageElement extends
         break;
       case 'travel':
         triggerId = 'travelManagerButton';
+        break;
+      case 'offersAndLoyaltyCards':
+        triggerId = 'offersAndLoyaltyCardsManagerButton';
         break;
       case 'shopping':
         triggerId = 'shoppingManagerButton';
@@ -552,6 +573,9 @@ export class SettingsAutofillPageElement extends
         break;
       case YourSavedInfoDataCategory.TRAVEL:
         Router.getInstance().navigateTo(routes.TRAVEL);
+        break;
+      case YourSavedInfoDataCategory.OFFERS_AND_LOYALTY_CARDS:
+        Router.getInstance().navigateTo(routes.OFFERS_AND_LOYALTY_CARDS);
         break;
       case YourSavedInfoDataCategory.SHOPPING:
         Router.getInstance().navigateTo(routes.SHOPPING);

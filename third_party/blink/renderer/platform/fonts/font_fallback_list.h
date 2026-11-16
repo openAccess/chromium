@@ -45,6 +45,26 @@ const int kCAllFamiliesScanned = -1;
 class PLATFORM_EXPORT FontFallbackList
     : public GarbageCollected<FontFallbackList> {
  public:
+  struct FontDataEntry {
+    DISALLOW_NEW();
+
+    void Trace(Visitor* visitor) const { visitor->Trace(font_data); }
+
+    Member<const FontData> font_data;
+    bool is_generic_family_or_last_resort = false;
+  };
+
+  struct PrimaryFontData {
+    DISALLOW_NEW();
+
+    explicit operator bool() const { return simple_font_data; }
+
+    void Trace(Visitor* visitor) const { visitor->Trace(simple_font_data); }
+
+    Member<const SimpleFontData> simple_font_data;
+    bool is_generic_family_or_last_resort = false;
+  };
+
   explicit FontFallbackList(FontSelector* font_selector);
 
   FontFallbackList(const FontFallbackList&) = delete;
@@ -70,24 +90,31 @@ class PLATFORM_EXPORT FontFallbackList
   const ShapeResult& GetOrCreateEmphasisMarkShape(const Font&,
                                                   const AtomicString& mark);
 
-  const SimpleFontData* PrimarySimpleFontDataWithSpace(
+  const PrimaryFontData* PrimaryFontDataWithSpace(
       const FontDescription& font_description) {
-    if (nullify_primary_font_data_for_test_) {
+    if (!PrimarySimpleFontDataWithSpace(font_description)) {
       return nullptr;
     }
+    return &cached_primary_simple_font_data_with_space_;
+  }
+  const SimpleFontData* PrimarySimpleFontDataWithSpace(
+      const FontDescription& font_description) {
     if (!cached_primary_simple_font_data_with_space_) {
       cached_primary_simple_font_data_with_space_ =
           DeterminePrimarySimpleFontData(font_description, uchar::kSpace);
-      DCHECK(cached_primary_simple_font_data_with_space_);
+      DCHECK(cached_primary_simple_font_data_with_space_ ||
+             missing_last_resort_font_for_test_);
     }
-    return cached_primary_simple_font_data_with_space_;
+    return cached_primary_simple_font_data_with_space_.simple_font_data.Get();
   }
   const SimpleFontData* PrimarySimpleFontDataWithDigitZero(
       const FontDescription& font_description) {
     if (!cached_primary_simple_font_data_with_digit_zero_) {
       cached_primary_simple_font_data_with_digit_zero_ =
-          DeterminePrimarySimpleFontData(font_description, uchar::kDigitZero);
-      DCHECK(cached_primary_simple_font_data_with_digit_zero_);
+          DeterminePrimarySimpleFontData(font_description, uchar::kDigitZero)
+              .simple_font_data;
+      DCHECK(cached_primary_simple_font_data_with_digit_zero_ ||
+             missing_last_resort_font_for_test_);
     }
     return cached_primary_simple_font_data_with_digit_zero_;
   }
@@ -96,7 +123,8 @@ class PLATFORM_EXPORT FontFallbackList
       const FontDescription& font_description) {
     if (!cached_primary_simple_font_data_with_cjk_water_) {
       cached_primary_simple_font_data_with_cjk_water_ =
-          DeterminePrimarySimpleFontData(font_description, uchar::kCjkWater);
+          DeterminePrimarySimpleFontData(font_description, uchar::kCjkWater)
+              .simple_font_data;
     }
     return cached_primary_simple_font_data_with_cjk_water_;
   }
@@ -106,13 +134,15 @@ class PLATFORM_EXPORT FontFallbackList
     if (!cached_primary_simple_font_data_for_tab_size_) {
       cached_primary_simple_font_data_for_tab_size_ =
           DeterminePrimarySimpleFontData(font_description, uchar::kSpace,
-                                         /*should_contain_glyph=*/true);
-      DCHECK(cached_primary_simple_font_data_for_tab_size_);
+                                         /*should_contain_glyph=*/true)
+              .simple_font_data;
+      DCHECK(cached_primary_simple_font_data_for_tab_size_ ||
+             missing_last_resort_font_for_test_);
     }
     return cached_primary_simple_font_data_for_tab_size_;
   }
 
-  const FontData* FontDataAt(const FontDescription&, wtf_size_t index);
+  FontDataEntry FontDataAt(const FontDescription&, wtf_size_t index);
 
   base::span<const FontFeatureRange> GetFontFeatures(const FontDescription&);
   bool HasSimpleFontFeatures(const FontDescription&);
@@ -124,22 +154,26 @@ class PLATFORM_EXPORT FontFallbackList
     can_shape_word_by_word_computed_ = true;
   }
 
-  // See Font::NullifyPrimaryFontForTesting.
-  void NullifyPrimarySimpleFontDataForTesting() {
-    nullify_primary_font_data_for_test_ = true;
+  // See Font::SimulateMissingLastResortFontForTesting.
+  void SimulateMissingLastResortFontForTesting() {
+    missing_last_resort_font_for_test_ = true;
+    cached_primary_simple_font_data_with_space_ = PrimaryFontData();
+    cached_primary_simple_font_data_with_digit_zero_ = nullptr;
+    cached_primary_simple_font_data_with_cjk_water_ = nullptr;
+    cached_primary_simple_font_data_for_tab_size_ = nullptr;
   }
 
   bool HasLoadingFallback() const { return has_loading_fallback_; }
   bool HasCustomFont() const { return has_custom_font_; }
 
  private:
-  const FontData* GetFontData(const FontDescription&);
+  FontDataEntry GetFontData(const FontDescription&);
 
-  const SimpleFontData* DeterminePrimarySimpleFontData(
+  PrimaryFontData DeterminePrimarySimpleFontData(
       const FontDescription&,
       UChar32 lookup_character = uchar::kSpace,
       bool should_contain_glyph = false);
-  const SimpleFontData* DeterminePrimarySimpleFontDataCore(
+  PrimaryFontData DeterminePrimarySimpleFontDataCore(
       const FontDescription&,
       UChar32 lookup_character = uchar::kSpace,
       bool should_contain_glyph = false);
@@ -147,8 +181,8 @@ class PLATFORM_EXPORT FontFallbackList
   void ComputeFontFeatures(const FontDescription&);
   bool ComputeCanShapeWordByWord(const FontDescription&);
 
-  HeapVector<Member<const FontData>, 1> font_list_;
-  Member<const SimpleFontData> cached_primary_simple_font_data_with_space_;
+  HeapVector<FontDataEntry, 1> font_list_;
+  PrimaryFontData cached_primary_simple_font_data_with_space_;
   Member<const SimpleFontData> cached_primary_simple_font_data_with_digit_zero_;
   Member<const SimpleFontData> cached_primary_simple_font_data_with_cjk_water_;
   Member<const SimpleFontData> cached_primary_simple_font_data_for_tab_size_;
@@ -161,7 +195,7 @@ class PLATFORM_EXPORT FontFallbackList
   bool can_shape_word_by_word_ : 1 = false;
   bool can_shape_word_by_word_computed_ : 1 = false;
   bool is_invalid_ : 1 = false;
-  bool nullify_primary_font_data_for_test_ : 1 = false;
+  bool missing_last_resort_font_for_test_ : 1 = false;
   bool is_font_features_computed_ : 1 = false;
   bool has_simple_font_features_ : 1 = false;
 
@@ -174,5 +208,8 @@ class PLATFORM_EXPORT FontFallbackList
 };
 
 }  // namespace blink
+
+WTF_ALLOW_CLEAR_UNUSED_SLOTS_WITH_MEM_FUNCTIONS(
+    blink::FontFallbackList::FontDataEntry)
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_FONTS_FONT_FALLBACK_LIST_H_

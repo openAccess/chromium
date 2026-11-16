@@ -9,6 +9,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/notreached.h"
 #include "build/build_config.h"
 #include "chrome/common/webui_url_constants.h"
 #include "url/gurl.h"
@@ -35,11 +36,21 @@ bool IsWin11OrGreater() {
 #endif
 }
 
-}  // namespace
-
-bool IsDefaultBrowserFrameworkEnabled() {
-  return base::FeatureList::IsEnabled(kDefaultBrowserFramework);
+// Whether `setter_type` can run on this platform. The guided setters work
+// with the Windows 11 Settings "Default apps" page. They are built on every
+// desktop platform, so this check is what keeps them from running elsewhere.
+bool IsSetterTypeSupported(DefaultBrowserSetterType setter_type) {
+  switch (setter_type) {
+    case DefaultBrowserSetterType::kShellIntegration:
+      return true;
+    case DefaultBrowserSetterType::kVisualGuide:
+    case DefaultBrowserSetterType::kAnnotatedShellIntegration:
+      return IsWin11OrGreater();
+  }
+  NOTREACHED();
 }
+
+}  // namespace
 
 bool IsDefaultBrowserChangedOsNotificationEnabled() {
   return IsWin11OrGreater() &&
@@ -142,7 +153,12 @@ DefaultBrowserSetterType GetDefaultBrowserSetterType() {
     return DefaultBrowserSetterType::kShellIntegration;
   }
 
-  return kDefaultBrowserSetterParam.Get();
+  const DefaultBrowserSetterType setter_type = kDefaultBrowserSetterParam.Get();
+  // Fall back to the setter that runs everywhere.
+  if (!IsSetterTypeSupported(setter_type)) {
+    return DefaultBrowserSetterType::kShellIntegration;
+  }
+  return setter_type;
 }
 
 GURL GetDefaultBrowserVisualGuideURL() {
@@ -152,8 +168,6 @@ GURL GetDefaultBrowserVisualGuideURL() {
   return GURL();
 #endif
 }
-
-BASE_FEATURE(kDefaultBrowserFramework, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDefaultBrowserPromptSurfaces, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -197,7 +211,9 @@ BASE_FEATURE(kVisualGuidedSetterDocking, base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr inline auto kDefaultBrowserSetterSelectionOption =
     std::to_array<base::FeatureParam<DefaultBrowserSetterType>::Option>(
         {{DefaultBrowserSetterType::kShellIntegration, "shell_integration"},
-         {DefaultBrowserSetterType::kVisualGuide, "visual_guide"}});
+         {DefaultBrowserSetterType::kVisualGuide, "visual_guide"},
+         {DefaultBrowserSetterType::kAnnotatedShellIntegration,
+          "annotated_shell_integration"}});
 
 BASE_FEATURE_ENUM_PARAM(DefaultBrowserSetterType,
                         kDefaultBrowserSetterParam,
@@ -211,11 +227,11 @@ BASE_FEATURE_PARAM(std::string,
                    kDefaultBrowserVisualGuideUrlParam,
                    &kDefaultBrowserSetterSelection,
                    chrome::kChromeUIDefaultBrowserVisualGuidedSetterURL);
+#endif
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kFindSettingsTimeout,
                    &kDefaultBrowserSetterSelection,
                    base::Seconds(5));
-#endif
 
 }  // namespace default_browser

@@ -10,6 +10,7 @@ export function getHtml(this: HistoryAppElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
 <history-query-manager .queryResult="${this.queryResult_}"
+    .timePeriodOptions="${this.timePeriodOptions_}"
     @query-finished="${this.onQueryFinished_}"
     @query-state-changed="${this.onQueryStateChanged_}">
 </history-query-manager>
@@ -54,13 +55,16 @@ export function getHtml(this: HistoryAppElement) {
       ${this.showFilterChips_() ? html`
         <history-filter-chips id="historyFilterChips"
             .devices="${this.devices_}"
+            .domain="${this.domain_}"
             .timePeriodOptions="${this.timePeriodOptions_}"
             .showActorFilter="${this.showActorFilter_()}"
             .showDeviceFilter="${this.showDeviceFilter_()}"
+            .showDomainFilter="${this.showDomainFilter_()}"
             .showTimePeriodFilter="${this.showTimePeriodFilter_()}"
             .userVisits="${this.includeUserVisits_}"
             .actorVisits="${this.includeActorVisits_}"
             .clientIds="${this.clientIds_}"
+            .selectedTimePeriodOptionId="${this.selectedTimePeriodOptionId_}"
             @filter-changed="${this.onFilterChanged_}">
         </history-filter-chips>
       ` : ''}
@@ -87,6 +91,7 @@ export function getHtml(this: HistoryAppElement) {
               ?is-active="${this.getShowHistoryList_()}"
               searched-term="${this.queryResult_.info?.term}"
               ?pending-delete="${this.pendingDelete_}"
+              @domain-filter-selected="${this.onDomainFilterSelected_}"
               @pending-delete-changed="${this.onListPendingDeleteChanged_}"
               path="history" .scrollTarget="${this.scrollTarget_}">
           </history-list>

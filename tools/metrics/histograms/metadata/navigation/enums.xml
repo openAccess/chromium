@@ -360,11 +360,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Process is locked to origin"/>
 </enum>
 
-<enum name="NavigationIsSameBrowsingInstance">
-  <int value="0" label="Cross BrowsingInstance navigation"/>
-  <int value="1" label="Same BrowsingInstance navigation"/>
-</enum>
-
 <enum name="NavigationIsSameSiteInstance">
   <int value="0" label="Cross SiteInstance navigation"/>
   <int value="1" label="Same SiteInstance navigation"/>
@@ -1784,7 +1779,8 @@ chromium-metrics-reviews@google.com.
   </summary>
   <int value="-2066290458" label="search.mojom.EmbeddedSearchConnector"/>
   <int value="-2012727489" label="device.mojom.ScreenOrientation"/>
-  <int value="-1700130222" label="blink.mojom.SharedStorageDocumentService"/>
+  <int value="-1700130222"
+      label="(Obsolete) blink.mojom.SharedStorageDocumentService"/>
   <int value="-1398143678" label="blink.mojom.ClipboardHost (Unexpected)"/>
   <int value="-1354302262" label="blink.mojom.BackForwardCacheControllerHost"/>
   <int value="-1150785480"
@@ -1944,12 +1940,7 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//content/browser/preloading/prerender/prerender_host.h:WaitingForHeadersFinishedReason) -->
 
-<enum name="RelatedActiveContentsSyncAccessInfo">
-  <int value="0" label="kNoSyncAccess"/>
-  <int value="1"
-      label="kPotentiallySyncAccessibleDefaultSiteInstance (deprecated)"/>
-  <int value="2" label="kPotentiallySyncAccessible"/>
-</enum>
+<!-- LINT.IfChange(RendererBlockedURLReason) -->
 
 <enum name="RendererBlockedURLReason">
   <int value="0" label="Invalid URL"/>
@@ -1958,6 +1949,8 @@ chromium-metrics-reviews@google.com.
     URL had about: scheme without being about:blank or about:srcdoc.
   </int>
 </enum>
+
+<!-- LINT.ThenChange(//third_party/blink/public/common/navigation/commit_url.h:RendererBlockedURLReason) -->
 
 <!-- LINT.IfChange(RendererProcessReadiness) -->
 
@@ -1975,6 +1968,20 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//content/renderer/renderer_navigation_metrics_manager.cc:RendererProcessReadiness) -->
+
+<!-- LINT.IfChange(SearchEnginePrewarmDictionaryEvent) -->
+
+<enum name="SearchEnginePrewarmDictionaryEvent">
+  <int value="0" label="Prewarmed"/>
+  <int value="1" label="Refreshed"/>
+  <int value="2" label="Expired"/>
+  <int value="3" label="Closed on Session Closed"/>
+  <int value="4" label="Closed on Connection Failed"/>
+  <int value="5" label="Disconnected"/>
+  <int value="6" label="Destroyed"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/navigation_predictor/search_engine_dictionary_prewarmer.h:SearchEnginePrewarmDictionaryEvent) -->
 
 <enum name="ThirdPartyCookieBlockState">
   <int value="0" label="Cookies allowed"/>

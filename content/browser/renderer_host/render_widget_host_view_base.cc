@@ -544,11 +544,6 @@ bool RenderWidgetHostViewBase::ShouldInitiateStylusWriting() {
   return false;
 }
 
-std::optional<gfx::Vector2dF>
-RenderWidgetHostViewBase::GetStylusHandwritingPixelsPerInch() {
-  return std::nullopt;
-}
-
 bool RenderWidgetHostViewBase::RequestRepaintOnNewSurface() {
   return false;
 }
@@ -883,6 +878,13 @@ gfx::PointF RenderWidgetHostViewBase::TransformPointToRootCoordSpaceF(
 gfx::PointF RenderWidgetHostViewBase::TransformRootPointToViewCoordSpace(
     const gfx::PointF& point) {
   return RenderWidgetHostViewInput::TransformRootPointToViewCoordSpace(point);
+}
+
+std::optional<gfx::PointF>
+RenderWidgetHostViewBase::TryTransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return RenderWidgetHostViewInput::TryTransformRootPointToViewCoordSpace(
+      point);
 }
 
 bool RenderWidgetHostViewBase::IsRenderWidgetHostViewChildFrame() const {

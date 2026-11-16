@@ -39,12 +39,15 @@
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d.h"
+#include "ui/gfx/geometry/vector2d_conversions.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/ozone/common/features.h"
 #include "ui/ozone/platform/wayland/common/wayland_object.h"
 #include "ui/ozone/platform/wayland/host/dump_util.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_cursor_position.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_device_manager.h"
+#include "ui/ozone/platform/wayland/host/wayland_data_drag_controller.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_offer.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_source.h"
 #include "ui/ozone/platform/wayland/host/wayland_event_source.h"
@@ -128,8 +131,15 @@ class WaylandWindowDragController::XdgToplevelDrag {
     auto* toplevel = window->xdg_toplevel()->wl_object();
 
     // xdg-toplevel-drag protocol expects the passed in offset to be relative to
-    // the surface's geometry, i.e: no client-side decoration insets included.
-    auto toplevel_offset = offset - window->GetWindowGeometryOffsetInDIP();
+    // the surface's geometry, i.e: no client-side decoration insets included,
+    // in Wayland DIP. `offset` is in UI DIP, i.e. scaled by `ui_scale`, so it
+    // must be converted before subtracting the window geometry origin. Use the
+    // latched state, since that is what the window geometry was last sent from.
+    const auto& state = window->latched_state();
+    const gfx::Vector2d toplevel_offset =
+        gfx::ToRoundedVector2d(
+            gfx::ScaleVector2d(gfx::Vector2dF(offset), state.ui_scale)) -
+        window->GetWindowGeometryOriginInWaylandDIP(state).OffsetFromOrigin();
     xdg_toplevel_drag_v1_attach(drag_.get(), toplevel, toplevel_offset.x(),
                                 toplevel_offset.y());
     connection_->Flush();
@@ -176,6 +186,21 @@ bool WaylandWindowDragController::StartDragSession(
     }
   }
 
+  auto serial = GetSerial(drag_source, origin);
+  if (!serial) {
+    LOG(ERROR) << "Failed to retrieve dnd serial. origin=" << origin
+               << " drag_source=" << drag_source;
+    return false;
+  }
+
+  if (auto* data_drag_controller = connection_->data_drag_controller()) {
+    auto weak_this = weak_factory_.GetWeakPtr();
+    if (data_drag_controller->AbortPendingDrop() &&
+        (!weak_this || state_ != State::kIdle)) {
+      return weak_this && state_ != State::kIdle;
+    }
+  }
+
   // TODO(crbug.com/340398746): This should be a CHECK instead. However
   // currently buggy compositors, eg: KWin 6, which do not send
   // data_source.dnd_finish|cancelled in some cases. In such a case for a data
@@ -190,13 +215,6 @@ bool WaylandWindowDragController::StartDragSession(
                   "resetting shared data device state.";
     data_device_->ResetDragDelegate();
     CHECK(!connection_->IsDragInProgress());
-  }
-
-  auto serial = GetSerial(drag_source, origin);
-  if (!serial) {
-    LOG(ERROR) << "Failed to retrieve dnd serial. origin=" << origin
-               << " drag_source=" << drag_source;
-    return false;
   }
 
   VLOG(1) << "Starting Window Drag session. tracker_id=" << serial->value
@@ -660,8 +678,14 @@ void WaylandWindowDragController::HandleMotionEvent(LocatedEvent* event) {
   // offset. Note that setting a new location (i.e: bounds.origin()) for a
   // surface has no visual effect in ozone/wayland backend. Actual window
   // re-positioning during dragging session is done through the drag icon.
+  //
+  // `event` is intercepted before WaylandWindow::DispatchEvent(), so its
+  // location is still in Wayland DIP, whereas `drag_offset_` and the window
+  // origin are in UI DIP, i.e. scaled by `ui_scale`.
   if (dragged_window_) {
-    dragged_window_->SetOrigin(event->location() - drag_offset_);
+    const gfx::Point location = gfx::ToFlooredPoint(gfx::ScalePoint(
+        event->location_f(), 1.f / dragged_window_->applied_state().ui_scale));
+    dragged_window_->SetOrigin(location - drag_offset_);
   }
 
   should_process_drag_motion_events_ = false;

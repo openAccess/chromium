@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -59,6 +60,7 @@ namespace gcm {
 class CheckinRequest;
 class ConnectionFactory;
 class GCMClientImplTest;
+class GCMRegistrationManagerImpl;
 
 // Implements the GCM Client. It is used to coordinate MCS Client (communication
 // with MCS) and other pieces of GCM infrastructure like Registration and
@@ -105,8 +107,9 @@ class GCMClientImpl : public GCMClient,
           get_socket_factory_callback,
       const scoped_refptr<network::SharedURLLoaderFactory>& url_loader_factory,
       network::NetworkConnectionTracker* network_connection_tracker,
-      std::unique_ptr<Encryptor> encryptor,
-      GCMClient::Delegate* delegate) override;
+      std::unique_ptr<Encryptor> encryptor) override;
+  void AddObserver(Observer* observer) override;
+  void RemoveObserver(Observer* observer) override;
   void Start(StartMode start_mode) override;
   void Stop() override;
   void Register(scoped_refptr<RegistrationInfo> registration_info) override;
@@ -138,16 +141,6 @@ class GCMClientImpl : public GCMClient,
   void OnDisconnected() override;
 
  private:
-  // Reasons for resetting the GCM Store.
-  // Note: this enum is recorded into a histogram. Do not change enum value
-  // or order.
-  enum ResetReason {
-    LOAD_FAILURE,      // GCM store failed to load, but the store exists.
-    CHECKIN_REJECTED,  // Checkin was rejected by server.
-
-    RESET_REASON_COUNT,
-  };
-
   // Collection of pending registration requests. Keys are RegistrationInfo
   // instance, while values are pending registration requests to obtain a
   // registration ID for requesting application.
@@ -224,10 +217,6 @@ class GCMClientImpl : public GCMClient,
   // Callback for persisting registration info in the |gcm_store_|.
   void UpdateRegistrationCallback(bool success);
 
-  // Callback for store operation where result does not matter.
-  void IgnoreWriteResultCallback(const std::string& operation_suffix_for_uma,
-                                 bool success);
-
   // Callback for destroying the GCM store.
   void DestroyStoreCallback(bool success);
 
@@ -243,28 +232,23 @@ class GCMClientImpl : public GCMClient,
   void OnUnregisterCompleted(scoped_refptr<RegistrationInfo> registration_info,
                              UnregistrationRequest::Status status);
 
-  // Completes the GCM store destroy request.
-  void OnGCMStoreDestroyed(bool success);
-
-  // Handles incoming data message and dispatches it the delegate of this class.
+  // Handles incoming data message and dispatches it to observers of this class.
   void HandleIncomingMessage(const gcm::MCSMessage& message);
 
-  // Fires OnMessageReceived event on the delegate of this class, based on the
+  // Fires OnMessageReceived event on observers of this class, based on the
   // details in |data_message_stanza| and |message_data|.
   void HandleIncomingDataMessage(
       const std::string& app_id,
-      bool was_subtype,
       const mcs_proto::DataMessageStanza& data_message_stanza,
       MessageData& message_data);
 
-  // Fires OnMessagesDeleted event on the delegate of this class, based on the
-  // details in |data_message_stanza| and |message_data|.
+  // Fires OnMessagesDeleted event on observers of this class, based on the
+  // details in `data_message_stanza`.
   void HandleIncomingDeletedMessages(
       const std::string& app_id,
-      const mcs_proto::DataMessageStanza& data_message_stanza,
-      MessageData& message_data);
+      const mcs_proto::DataMessageStanza& data_message_stanza);
 
-  // Fires OnMessageSendError event on the delegate of this class, based on the
+  // Fires OnMessageSendError event on observers of this class, based on the
   // details in |data_message_stanza| and |message_data|.
   void HandleIncomingSendError(
       const std::string& app_id,
@@ -289,7 +273,7 @@ class GCMClientImpl : public GCMClient,
   // State of the GCM Client Implementation.
   State state_;
 
-  raw_ptr<GCMClient::Delegate> delegate_;
+  base::ObserverList<Observer, /*check_empty=*/true> observers_;
 
   // Flag to indicate if the GCM should be delay started until it is actually
   // used in either of the following cases:
@@ -310,6 +294,11 @@ class GCMClientImpl : public GCMClient,
   // Persistent data store for keeping device credentials, messages and user to
   // serial number mappings.
   std::unique_ptr<GCMStore> gcm_store_;
+
+  // Manages registrations and Instance ID data. Must be declared after
+  // `gcm_store_` so `gcm_store_` outlives it.
+  // TODO(b/545115204): Move ownership to `GCMDriverDesktop::IOWorker`.
+  std::unique_ptr<GCMRegistrationManagerImpl> registration_manager_;
 
   // Data loaded from the GCM store.
   std::unique_ptr<GCMStore::LoadResult> load_result_;
@@ -351,10 +340,6 @@ class GCMClientImpl : public GCMClient,
 
   // Time of the last successful checkin.
   base::Time last_checkin_time_;
-
-  // Cached instance ID data, key is app ID and value is pair of instance ID
-  // and extra data.
-  std::map<std::string, std::pair<std::string, std::string>> instance_id_data_;
 
   // Factory for creating references when scheduling periodic checkin.
   base::WeakPtrFactory<GCMClientImpl> periodic_checkin_ptr_factory_{this};

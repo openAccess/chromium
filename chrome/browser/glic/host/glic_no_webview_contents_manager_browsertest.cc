@@ -33,17 +33,20 @@
 #include "chrome/browser/glic/test_support/glic_test_tab_added_waiter.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_switches.h"
 #include "components/metrics/structured/buildflags/buildflags.h"
 #include "components/metrics/structured/structured_events.h"
 #include "components/metrics/structured/test/test_structured_metrics_recorder.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_navigation_throttle.h"
+#include "content/public/test/test_navigation_throttle_inserter.h"
+#include "net/base/net_errors.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -173,6 +176,15 @@ class GlicNoWebviewContentsManagerBrowserTest : public GlicBrowserTest {
     embedded_https_test_server().RegisterRequestHandler(base::BindRepeating(
         [](const net::test_server::HttpRequest& request)
             -> std::unique_ptr<net::test_server::HttpResponse> {
+          if (request.relative_url == "/_up/500") {
+            auto http_response =
+                std::make_unique<net::test_server::BasicHttpResponse>();
+            http_response->set_code(net::HTTP_INTERNAL_SERVER_ERROR);
+            http_response->set_content_type("text/html");
+            http_response->set_content(
+                "<html><body>500 Login Error</body></html>");
+            return http_response;
+          }
           if (request.relative_url == "/_up" ||
               request.relative_url.starts_with("/_up/")) {
             auto http_response =
@@ -198,6 +210,12 @@ class GlicNoWebviewContentsManagerBrowserTest : public GlicBrowserTest {
             http_response->set_content_type("text/html");
             http_response->set_content(
                 "<html><body>500 Internal Error</body></html>");
+            return http_response;
+          }
+          if (request.relative_url == "/status/500-empty") {
+            auto http_response =
+                std::make_unique<net::test_server::BasicHttpResponse>();
+            http_response->set_code(net::HTTP_INTERNAL_SERVER_ERROR);
             return http_response;
           }
           return nullptr;
@@ -351,9 +369,10 @@ IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayBrowserTest,
                                    StructuredErrorReason::DISABLED_BY_ADMIN));
 }
 
-// The three ways a guest can fail to come up all show the generic error panel
-// but are reported apart: an error page, a navigation blocked for its origin,
-// and a page on an origin the Glic API is not allowed on.
+// The ways a guest can fail to come up all show the generic error panel but
+// are reported apart: offline, another network error page, HTTP 4xx/5xx status
+// responses, a navigation blocked for its origin, and a page on an origin the
+// Glic API is not allowed on.
 IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayBrowserTest,
                        GuestFailuresReportDistinctCauses) {
   metrics::structured::TestStructuredMetricsRecorder recorder;
@@ -362,14 +381,109 @@ IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayBrowserTest,
   ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
   auto* manager = GetNoWebviewContentsManager(instance);
   ASSERT_TRUE(manager);
+  ASSERT_TRUE(content::WaitForLoadStop(manager->guest_contents()));
 
-  manager->OnGuestNavigated(GURL("https://example.com/"),
-                            /*is_api_allowed=*/true,
-                            mojom::GuestPageType::kLoadError,
-                            /*is_initial_commit=*/true);
+  auto navigate_with_net_error = [&](net::Error net_error) {
+    content::TestNavigationThrottleInserter throttle_inserter(
+        manager->guest_contents(),
+        base::BindLambdaForTesting(
+            [net_error](content::NavigationThrottleRegistry& registry) {
+              auto throttle =
+                  std::make_unique<content::TestNavigationThrottle>(registry);
+              throttle->SetResponse(
+                  content::TestNavigationThrottle::WILL_START_REQUEST,
+                  content::TestNavigationThrottle::SYNCHRONOUS,
+                  content::NavigationThrottle::ThrottleCheckResult(
+                      content::NavigationThrottle::CANCEL, net_error));
+              registry.AddThrottle(std::move(throttle));
+            }));
+    EXPECT_FALSE(content::NavigateToURL(
+        manager->guest_contents(),
+        embedded_https_test_server().GetURL("/title1.html")));
+  };
+
+  navigate_with_net_error(net::ERR_INTERNET_DISCONNECTED);
   EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
   EXPECT_THAT(GetRecordedClientLoadErrors(recorder),
-              testing::ElementsAre(StructuredErrorReason::GUEST_LOAD_FAILED));
+              testing::ElementsAre(StructuredErrorReason::OFFLINE));
+
+  manager->ClearErrorState();
+  navigate_with_net_error(net::ERR_CONNECTION_RESET);
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(GetRecordedClientLoadErrors(recorder),
+              testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                                   StructuredErrorReason::GUEST_LOAD_FAILED));
+
+  manager->ClearErrorState();
+  ASSERT_TRUE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("/status/404")));
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(
+      GetRecordedClientLoadErrors(recorder),
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR));
+
+  // An empty-body 404 is converted into an error page by
+  // HttpErrorNavigationThrottle (ERR_HTTP_RESPONSE_CODE_FAILURE) and must also
+  // be reported as GUEST_HTTP_CLIENT_ERROR rather than GUEST_LOAD_FAILED.
+  manager->ClearErrorState();
+  EXPECT_FALSE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("/nonexistent-404")));
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(
+      GetRecordedClientLoadErrors(recorder),
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR));
+
+  manager->ClearErrorState();
+  ASSERT_TRUE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("/status/500")));
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(
+      GetRecordedClientLoadErrors(recorder),
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR));
+
+  // An empty-body 500 is also reported as GUEST_HTTP_SERVER_ERROR.
+  manager->ClearErrorState();
+  EXPECT_FALSE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("/status/500-empty")));
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(
+      GetRecordedClientLoadErrors(recorder),
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR));
+
+  // An HTTP 500 with a body on a kLogin URL (/_up/...) must also report
+  // GUEST_HTTP_SERVER_ERROR rather than staying in kLogin.
+  manager->ClearErrorState();
+  ASSERT_TRUE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("127.0.0.1", "/_up/500")));
+  EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
+  EXPECT_THAT(
+      GetRecordedClientLoadErrors(recorder),
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR));
 
   manager->OnGuestNavigated(GURL(), /*is_api_allowed=*/false,
                             mojom::GuestPageType::kOriginBlocked,
@@ -377,7 +491,13 @@ IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayBrowserTest,
   EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
   EXPECT_THAT(
       GetRecordedClientLoadErrors(recorder),
-      testing::ElementsAre(StructuredErrorReason::GUEST_LOAD_FAILED,
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
                            StructuredErrorReason::GUEST_ORIGIN_BLOCKED));
 
   manager->OnGuestNavigated(GURL("https://example.com/"),
@@ -387,7 +507,13 @@ IN_PROC_BROWSER_TEST_F(GlicNoWebviewOverlayBrowserTest,
   EXPECT_EQ(manager->error_type(), mojom::ErrorPanelType::kError);
   EXPECT_THAT(
       GetRecordedClientLoadErrors(recorder),
-      testing::ElementsAre(StructuredErrorReason::GUEST_LOAD_FAILED,
+      testing::ElementsAre(StructuredErrorReason::OFFLINE,
+                           StructuredErrorReason::GUEST_LOAD_FAILED,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_CLIENT_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
+                           StructuredErrorReason::GUEST_HTTP_SERVER_ERROR,
                            StructuredErrorReason::GUEST_ORIGIN_BLOCKED,
                            StructuredErrorReason::GUEST_API_NOT_ALLOWED));
 }
@@ -1424,6 +1550,25 @@ IN_PROC_BROWSER_TEST_F(GlicNoWebviewContentsManagerBrowserTest,
     return std::ranges::contains(observer.reasons(),
                                  ClientLoadErrorReason::kGuestProcessGone);
   }));
+  EXPECT_EQ(instance->host().client_load_state(), ClientLoadState::kError);
+  EXPECT_EQ(instance->host().client_load_error_reason(),
+            ClientLoadErrorReason::kGuestProcessGone);
+
+  // Navigating to an in-page guest error (/sorry/) enters `kGuestError`, keeps
+  // the host in `ClientLoadState::kError` with `kUnknown` as the active cause,
+  // and does not emit an additional `ClientLoadErrorOccurred` event.
+  const int error_count_before_guest_error = observer.error_count();
+  auto* manager = GetNoWebviewContentsManager(instance);
+  ASSERT_TRUE(manager);
+  ASSERT_TRUE(content::NavigateToURL(
+      manager->guest_contents(),
+      embedded_https_test_server().GetURL("/sorry/index")));
+  EXPECT_EQ(manager->guest_state().get(),
+            GlicNoWebviewContentsManager::GuestState::kGuestError);
+  EXPECT_EQ(instance->host().client_load_state(), ClientLoadState::kError);
+  EXPECT_EQ(instance->host().client_load_error_reason(),
+            ClientLoadErrorReason::kUnknown);
+  EXPECT_EQ(observer.error_count(), error_count_before_guest_error);
 }
 IN_PROC_BROWSER_TEST_F(GlicNoWebviewContentsManagerBrowserTest,
                        RecordsNavigationCommitAndLoadCompleteMetricsOnce) {
@@ -1497,9 +1642,8 @@ class GlicNoWebviewGeicSsrOverlayBrowserTest
     GlicNoWebviewSsrOverlayBrowserTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII(geic::kGeicGuestURLSwitch,
                                     GetGuestURL().spec());
-    // Lets the GEiC guest URL point at the test server rather than an
-    // allowlisted Gemini Enterprise host.
-    command_line->AppendSwitch(::switches::kGlicDev);
+    // Allows the non-allowlisted test server guest URL.
+    command_line->AppendSwitch(geic::kGeicAllowAnyGuestURLSwitch);
   }
 
  private:
@@ -1862,9 +2006,17 @@ class GlicLegacyWebviewNativeLoadingTimeoutBrowserTest
   base::test::ScopedFeatureList feature_list_;
 };
 
+// TODO(crbug.com/585125049): Flaky/failing on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder \
+  DISABLED_ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder
+#else
+#define MAYBE_ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder \
+  ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder
+#endif
 IN_PROC_BROWSER_TEST_F(
     GlicLegacyWebviewNativeLoadingTimeoutBrowserTest,
-    ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder) {
+    MAYBE_ClientLoadTimeoutTransitionsToErrorAndHidesNativePlaceholder) {
   ASSERT_OK_AND_ASSIGN(GlicInstanceImpl * instance, OpenGlicForActiveTab());
 
   // Because /glic/test_data/page.html never initializes a Glic web client,

@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <bit>
 #include <cstring>
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "ipcz/ipcz.h"
 #include "reference_drivers/single_process_reference_driver_base.h"
 #include "reference_drivers/sync_reference_driver.h"
@@ -12,7 +14,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
-#include "util/unsafe_buffers.h"
 
 namespace ipcz {
 namespace {
@@ -162,6 +163,31 @@ TEST_F(APITest, CreateNode) {
             ipcz().CreateNode(&GetDefaultDriver(), IPCZ_CREATE_NODE_AS_BROKER,
                               &options, &node));
   EXPECT_EQ(IPCZ_RESULT_OK, ipcz().Close(node, IPCZ_NO_FLAGS, nullptr));
+}
+
+TEST_F(APITest, CreateNodeParcelCapacityPolicies) {
+  // Try every combination of the four parcel capacity policy flags (bits 0-3)
+  // along with an unrelated flag, which is ignored. Only combinations with at
+  // most one policy flag are valid.
+  static_assert((IPCZ_MEMORY_FIXED_PARCEL_CAPACITY |
+                 IPCZ_MEMORY_NO_PARCEL_CAPACITY |
+                 IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE |
+                 IPCZ_MEMORY_RESTRICTED_DYNAMIC_PARCEL_CAPACITY) == 0xf);
+  for (IpczMemoryFlags bits = 0; bits < 16; ++bits) {
+    const IpczCreateNodeOptions options = {
+        .size = sizeof(options),
+        .memory_flags = bits | (IpczMemoryFlags{1} << 31),
+    };
+    IpczHandle node;
+    const IpczResult result =
+        ipcz().CreateNode(&GetDefaultDriver(), IPCZ_NO_FLAGS, &options, &node);
+    if (std::popcount(bits) <= 1) {
+      ASSERT_EQ(IPCZ_RESULT_OK, result);
+      EXPECT_EQ(IPCZ_RESULT_OK, ipcz().Close(node, IPCZ_NO_FLAGS, nullptr));
+    } else {
+      EXPECT_EQ(IPCZ_RESULT_INVALID_ARGUMENT, result);
+    }
+  }
 }
 
 TEST_F(APITest, ConnectNodeInvalid) {
@@ -561,7 +587,7 @@ TEST_F(APITest, TwoPhasePutGet) {
   EXPECT_EQ(IPCZ_RESULT_OK, ipcz().BeginPut(a, IPCZ_NO_FLAGS, nullptr,
                                             &out_data, &num_bytes, &put));
   EXPECT_EQ(kMessage.size(), num_bytes);
-  IPCZ_UNSAFE_TODO(
+  UNSAFE_TODO(
       memcpy(const_cast<void*>(out_data), kMessage.data(), kMessage.size()));
   EXPECT_EQ(IPCZ_RESULT_OK, ipcz().EndPut(a, put, num_bytes, nullptr, 0,
                                           IPCZ_NO_FLAGS, nullptr));
@@ -612,7 +638,7 @@ TEST_F(APITest, OverlappedTwoPhasePuts) {
             ipcz().BeginPut(a, IPCZ_NO_FLAGS, nullptr, &out_data1, &num_bytes1,
                             &transaction1));
   EXPECT_EQ(kMessage1.size(), num_bytes1);
-  IPCZ_UNSAFE_TODO(
+  UNSAFE_TODO(
       memcpy(const_cast<void*>(out_data1), kMessage1.data(), kMessage1.size()));
 
   size_t num_bytes2 = kMessage2.size();
@@ -622,7 +648,7 @@ TEST_F(APITest, OverlappedTwoPhasePuts) {
             ipcz().BeginPut(a, IPCZ_NO_FLAGS, nullptr, &out_data2, &num_bytes2,
                             &transaction2));
   EXPECT_EQ(kMessage2.size(), num_bytes2);
-  IPCZ_UNSAFE_TODO(
+  UNSAFE_TODO(
       memcpy(const_cast<void*>(out_data2), kMessage2.data(), kMessage2.size()));
 
   size_t num_bytes3 = kMessage3.size();
@@ -632,7 +658,7 @@ TEST_F(APITest, OverlappedTwoPhasePuts) {
             ipcz().BeginPut(a, IPCZ_NO_FLAGS, nullptr, &out_data3, &num_bytes3,
                             &transaction3));
   EXPECT_EQ(kMessage3.size(), num_bytes3);
-  IPCZ_UNSAFE_TODO(
+  UNSAFE_TODO(
       memcpy(const_cast<void*>(out_data3), kMessage3.data(), kMessage3.size()));
 
   // Complete them out-of-order. They should arrive in the order in which they

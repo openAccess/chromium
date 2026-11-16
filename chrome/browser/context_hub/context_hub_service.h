@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_CONTEXT_HUB_CONTEXT_HUB_SERVICE_H_
 #define CHROME_BROWSER_CONTEXT_HUB_CONTEXT_HUB_SERVICE_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -123,7 +124,16 @@ class ContextHubService : public KeyedService,
         const std::optional<std::string>& note,
         const std::optional<std::string>& collection) {}
     virtual void OnMemoryBankEntriesDeleted(const std::vector<int64_t>& ids) {}
+    // Called with the effective Auto Tab Groups preferences (the stored
+    // document, or the defaults when nothing is stored) whenever they change.
+    virtual void OnAutoTabGroupsPreferencesChanged(
+        const std::string& effective_text) {}
   };
+
+  // Hard cap, in UTF-8 bytes, on the Auto Tab Groups preferences document kept
+  // in the browser process. Deliberately a constant rather than a feature
+  // param: the server enforces the same bound.
+  static constexpr size_t kMaxAutoTabGroupsPreferencesLength = 4000;
 
   ContextHubService(
       Profile* profile,
@@ -279,6 +289,29 @@ class ContextHubService : public KeyedService,
   // Clears all tab group chat history turns from the LRU cache.
   void ClearTabGroupChatHistory();
 
+  // Must be called when the user clicks "Create groups", by whichever path
+  // performs the confirmation. When `groups_created` is true (at least one
+  // group was actually created) and the conversation contains a user turn,
+  // hands the chat history to preference refinement (one model call, best
+  // effort), then clears the session's chat history and deletes all unconfirmed
+  // tab group suggestions, running `done` upon completion.
+  void FinishTabGroupSession(bool groups_created, base::OnceClosure done);
+
+  // Auto Tab Groups preferences: a short markdown document, written by the
+  // user or distilled by the model, that shapes grouping decisions. The
+  // built-in defaults are never persisted: a stored document always wins over
+  // them, so changing the defaults in a later release cannot overwrite what a
+  // user (or refinement) saved.
+  //
+  // Returns the stored document, or the default preferences when nothing is
+  // stored.
+  std::string GetEffectiveAutoTabGroupsPreferences() const;
+  // Stores the trimmed `text` in the profile pref; empty text resets to the
+  // defaults. Returns false, without storing or notifying, when the text is
+  // longer than `kMaxAutoTabGroupsPreferencesLength` bytes. Observers receive
+  // the effective text.
+  bool SetAutoTabGroupsPreferences(std::string_view text);
+
   // Adds a memory bank chat history turn to the cache, along with any
   // citations associated with the turn.
   void AddMemoryBankChatHistoryTurn(
@@ -336,6 +369,10 @@ class ContextHubService : public KeyedService,
   // Returns all unique collections from the memory bank.
   void GetAllMemoryBankCollections(
       MemoryBank::GetStringsCallback callback) const;
+  // Returns memory bank entries semantically related to `query`, ordered by
+  // descending relevance and capped at `features::kMaxMemoryBankSearchResults`.
+  void SearchMemoryBankEntries(std::string query,
+                               MemoryBank::GetEntriesCallback callback);
 
   using GetTabGroupsCallback =
       base::OnceCallback<void(std::vector<TabGroupEntry>)>;
@@ -397,6 +434,9 @@ class ContextHubService : public KeyedService,
   }
 
  private:
+  // Implements `SetAutoTabGroupsPreferences()` and the refinement write path.
+  bool StoreAutoTabGroupsPreferences(std::string_view text);
+
   // Attempts to generate 1P AutoTodos if eligible and not already in flight.
   void MaybeTriggerFirstPartyAutoTodosGeneration();
 
@@ -422,6 +462,10 @@ class ContextHubService : public KeyedService,
       std::optional<page_content_annotations::ExtractedPageContentResult>
           result);
 
+  // Returns true if the passage embedder, database backend, and model metadata
+  // are ready to compute and store memory bank embeddings.
+  bool CanComputeMemoryBankEmbeddings();
+
   // Computes and stores passage embeddings for `entry` if the embedder and the
   // database backend are available. Replaces any in-flight job for the entry.
   void ComputeMemoryBankEmbeddings(const MemoryBankEntry& entry);
@@ -433,11 +477,24 @@ class ContextHubService : public KeyedService,
   void OnMemoryBankEntriesFetchedForEmbeddings(
       std::vector<MemoryBankEntry> entries);
 
+  // Recomputes embeddings for image entries when their user annotations change.
+  void OnMemoryBankEntriesFetchedForAnnotationUpdate(
+      int64_t id,
+      std::vector<MemoryBankEntry> entries);
+
   // Handles the async response from the embedder for `entry_id`.
   void OnMemoryBankEmbeddingsComputed(
       int64_t entry_id,
       std::vector<std::string> passages,
       std::vector<passage_embeddings::Embedding> embeddings,
+      uint64_t job_id,
+      passage_embeddings::ComputeEmbeddingsStatus status);
+
+  // Handles the embedder's response for a `SearchMemoryBankEntries()` query.
+  void OnMemoryBankQueryEmbeddingComputed(
+      MemoryBank::GetEntriesCallback callback,
+      std::vector<std::string> query_passages,
+      std::vector<passage_embeddings::Embedding> query_embeddings,
       uint64_t job_id,
       passage_embeddings::ComputeEmbeddingsStatus status);
 
@@ -475,6 +532,22 @@ class ContextHubService : public KeyedService,
   void GenerateTabGroups(std::vector<TabData> tabs,
                          const std::string& user_command,
                          GroupTabsCallback callback);
+
+  // Asks the model to distill durable preferences from `history`, the chat
+  // history of one completed session (the user has just created the groups).
+  // At most one refinement is in flight at a time; a second request while one
+  // is pending is dropped.
+  void RefineAutoTabGroupsPreferences(
+      std::vector<optimization_guide::proto::ChatHistoryTurn> history);
+
+  // Handles the refinement result. `generation` is the value of
+  // `auto_tab_groups_preferences_generation_` when the request was sent; a
+  // result computed against an older document than the one the user has since
+  // saved or reset is discarded. Errors are dropped silently (no retries).
+  void HandleAutoTabGroupsPreferenceRefinementResult(
+      uint64_t generation,
+      optimization_guide::OptimizationGuideModelExecutionResult result,
+      std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry);
 
   // Handles the async response when all auto todos are fetched to populate
   // existing first party todos in the CMS request.
@@ -563,8 +636,9 @@ class ContextHubService : public KeyedService,
   // passage embedder is unavailable.
   const raw_ptr<passage_embeddings::Embedder> embedder_;
 
-  // Metadata of the embeddings model. Invalid until the model is available.
-  passage_embeddings::EmbedderMetadata embedder_metadata_{0, 0};
+  // Metadata of the embeddings model. `std::nullopt` until the model is
+  // available.
+  std::optional<passage_embeddings::EmbedderMetadata> embedder_metadata_;
 
   // Indicates if a First Party Auto Todos generation request is in flight.
   // Remains true while waiting for exponential backoff retries via
@@ -607,6 +681,13 @@ class ContextHubService : public KeyedService,
                  optimization_guide::proto::ChatHistoryTurn>
       tab_group_chat_history_cache_;
 
+  // Incremented on every committed user save or reset so that a refinement
+  // result computed against an older document can be discarded.
+  uint64_t auto_tab_groups_preferences_generation_ = 0;
+
+  // True while a `PREFERENCE_REFINEMENT` request is pending.
+  bool auto_tab_groups_preference_refinement_in_flight_ = false;
+
   using MemoryBankChatHistoryTurnId =
       base::IdType64<class MemoryBankChatHistoryTurnIdTag>;
   MemoryBankChatHistoryTurnId::Generator
@@ -642,8 +723,21 @@ class ContextHubService : public KeyedService,
   base::flat_map<int64_t, passage_embeddings::Embedder::Job>
       memory_bank_embedding_jobs_;
 
-  // Declared after `context_hub_backend_` and `memory_bank_embedding_jobs_`
-  // because the provider may notify synchronously when observed.
+  // In-flight embedding job for the most recent `SearchMemoryBankEntries()`
+  // query. Replacing it cancels the previous query's job if it has not started
+  // yet.
+  std::optional<passage_embeddings::Embedder::Job>
+      memory_bank_query_embedding_job_;
+
+  // Reference counts of in-flight `GetMemoryBankEntriesByIds()` lookups
+  // triggered by `OnMemoryBankEntryUpdated()`, keyed by entry ID. Erased when
+  // the lookup completes, when the entry is deleted, or when embedder metadata
+  // changes.
+  base::flat_map<int64_t, int> memory_bank_pending_annotation_update_ids_;
+
+  // Declared after `context_hub_backend_`, `memory_bank_embedding_jobs_`, and
+  // `memory_bank_pending_annotation_update_ids_` because the provider may
+  // notify synchronously when observed.
   base::ScopedObservation<passage_embeddings::EmbedderMetadataProvider,
                           passage_embeddings::EmbedderMetadataObserver>
       embedder_metadata_observation_{this};

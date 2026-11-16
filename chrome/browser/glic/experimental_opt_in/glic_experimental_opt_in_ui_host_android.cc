@@ -23,7 +23,6 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/url_constants.h"
 #include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
@@ -39,12 +38,15 @@ namespace {
 // Returns the tab model backing the window the user is currently looking at,
 // for `profile`.
 TabModel* GetActiveTabModel(Profile* profile) {
-  for (TabModel* model : TabModelList::models()) {
-    if (model->GetProfile() == profile && model->IsActiveModel()) {
-      return model;
+  TabModel* active_model = nullptr;
+  TabModelList::ForEach(profile, [&](TabModel* model) {
+    if (model->IsActiveModel()) {
+      active_model = model;
+      return false;
     }
-  }
-  return nullptr;
+    return true;
+  });
+  return active_model;
 }
 
 // Like GetActiveTabModel(), but restricted to models it is meaningful to open
@@ -66,9 +68,7 @@ tabs::TabInterface* GetActiveTab(Profile* profile) {
 }
 
 bool IsNewTabPageUrl(const GURL& url) {
-  return (url.SchemeIs(content::kChromeUIScheme) &&
-          url.host() == chrome::kChromeUINewTabHost) ||
-         search::IsNTPURL(url);
+  return search::IsNewTabOrigin(url) || search::IsNTPURL(url);
 }
 
 }  // namespace
@@ -145,6 +145,9 @@ void GlicExperimentalOptInUIHostAndroid::Close(bool accepted) {
   }
 
   JNIEnv* env = base::android::AttachCurrentThread();
+  if (accepted) {
+    Java_GlicExperimentalOptInUiCoordinator_onOptInAccepted(env, java_dialog_);
+  }
   Java_GlicExperimentalOptInUiCoordinator_dismiss(env, java_dialog_);
 }
 

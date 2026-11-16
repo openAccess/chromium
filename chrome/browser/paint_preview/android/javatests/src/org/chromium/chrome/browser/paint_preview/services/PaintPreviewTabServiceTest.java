@@ -23,10 +23,8 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.lifetime.Destroyable;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -42,7 +40,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Tests for the Paint Preview Tab Manager. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class PaintPreviewTabServiceTest {
     private static final long TIMEOUT_MS = 5000;
     private static final long POLLING_INTERVAL_MS = 500;
@@ -77,7 +74,8 @@ public class PaintPreviewTabServiceTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     mTab.loadUrl(new LoadUrlParams(url));
                 });
         // Give the tab time to complete layout before hiding.
@@ -99,7 +97,8 @@ public class PaintPreviewTabServiceTest {
         // Allow time to capture.
         CriteriaHelper.pollUiThread(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     return mPaintPreviewTabService.hasCaptureForTab(tabId);
                 },
                 "Paint Preview didn't get captured.",
@@ -150,7 +149,8 @@ public class PaintPreviewTabServiceTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     mTab.loadUrl(new LoadUrlParams(url));
                 });
         // Give the tab time to complete layout before hiding.
@@ -172,7 +172,8 @@ public class PaintPreviewTabServiceTest {
         // Allow time to capture.
         CriteriaHelper.pollUiThread(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     return mPaintPreviewTabService.hasCaptureForTab(tabId);
                 },
                 "Paint Preview didn't get captured.",
@@ -214,7 +215,8 @@ public class PaintPreviewTabServiceTest {
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     assertTrue(
                             mPaintPreviewTabService.previewExistsPreNative(
                                     mTemporaryFolder.getRoot().getPath(), 2));
@@ -236,7 +238,8 @@ public class PaintPreviewTabServiceTest {
     public void testOnRestoreCompleted_destroyable() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    mPaintPreviewTabService = PaintPreviewTabServiceFactory.getServiceInstance();
+                    mPaintPreviewTabService =
+                            PaintPreviewTabServiceFactory.getServiceInstance(mTab.getProfile());
                     Destroyable destroyable =
                             mPaintPreviewTabService.onRestoreCompleted(
                                     mTabModelSelector, /* runAudit= */ false);

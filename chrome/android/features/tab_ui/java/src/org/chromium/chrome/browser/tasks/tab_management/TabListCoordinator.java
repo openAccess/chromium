@@ -52,6 +52,7 @@ import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.PriceMessageService.PriceWelcomeMessageProvider;
@@ -64,9 +65,9 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListL
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.tasks.tab_management.labels.TabListHighlighter;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.ui.base.ViewUtils;
@@ -179,12 +180,17 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
      * @param onModelTokenChange Callback to invoke whenever a model changes. Only currently
      *     respected in TabListMode.BOTTOM_STRIP mode.
      * @param emptyViewParent {@link ViewGroup} The root view of the empty state view.
-     * @param emptyImageResId Drawable resource for empty state. @StringRes int
-     *     emptyHeadingStringResId, @StringRes int emptySubheadingStringResId, @Nullable Runnable
-     *     onTabGroupCreation,
+     * @param emptyImageResId Drawable resource for empty state.
+     * @param emptyHeadingStringResId String resource for the empty state heading.
+     * @param emptySubheadingStringResId String resource for the empty state subheading.
+     * @param onTabGroupCreation Should be run when the UI is used to create a tab group.
      * @param allowDragAndDrop Whether to allow drag and drop for this tab list coordinator.
      * @param tabSwitcherDragHandler An instance of the {@link TabSwitcherDragHandler}.
      * @param undoBarExplicitTrigger An interface to explicitly trigger the undo closure snackbar.
+     * @param snackbarManager The {@link SnackbarManager} to show snackbars, if any.
+     * @param allowedSelectionCount The maximum number of tabs that can be selected at once. If
+     *     equal to UNLIMITED_SELECTION, then unlimited.
+     * @param dataProvider Scoped tab data provider, or null to use the global TabModel.
      */
     TabListCoordinator(
             @TabListMode int mode,
@@ -215,7 +221,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             @Nullable TabSwitcherDragHandler tabSwitcherDragHandler,
             @Nullable UndoBarExplicitTrigger undoBarExplicitTrigger,
             @Nullable SnackbarManager snackbarManager,
-            int allowedSelectionCount) {
+            int allowedSelectionCount,
+            @Nullable TabListDataProvider dataProvider) {
         mMode = mode;
         mTabActionState = initialTabActionState;
         mActivity = activity;
@@ -344,6 +351,7 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
                         .setRequiresThumbnailUpdateOnDeselect(
                                 layoutType == TabListLayoutType.GROUPED)
                         .setTabClosingSource(tabClosingSource)
+                        .setDataProvider(dataProvider)
                         .build();
 
         mMediator =
@@ -715,8 +723,8 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
     }
 
     /**
-     * @return The container {@link androidx.recyclerview.widget.RecyclerView} that is showing the
-     *         tab list UI.
+     * Returns the container {@link androidx.recyclerview.widget.RecyclerView} that is showing the
+     * tab list UI.
      */
     public TabListRecyclerView getContainerView() {
         return mRecyclerView;
@@ -1077,6 +1085,11 @@ public class TabListCoordinator implements PriceWelcomeMessageProvider, DestroyO
             return mMediator.getIndexFromTabId(tabId);
         }
         return mMediator.getIndexForTabIdWithRelatedTabs(tabId);
+    }
+
+    /** Maps a tab group ID to an index in the model list. */
+    int getIndexFromTabGroupId(Token tabGroupId) {
+        return mMediator.getIndexFromTabGroupId(tabGroupId);
     }
 
     /**

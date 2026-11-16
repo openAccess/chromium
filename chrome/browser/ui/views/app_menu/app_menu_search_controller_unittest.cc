@@ -12,29 +12,51 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gtest_util.h"
+#include "base/test/scoped_command_line.h"
+#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
+#include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
+#include "chrome/browser/ui/tabs/recent_tabs_builder.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/app_menu/action_app_menu_test_base.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_action_item.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_search_bar_view.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_search_item.h"
+#include "chrome/browser/ui/views/app_menu/bookmarks_dynamic_menu.h"
+#include "chrome/browser/ui/views/app_menu/recent_tabs_dynamic_menu.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/testing_browser_process_death_test_mixin.h"
+#include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
+#include "components/bookmarks/browser/bookmark_model.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
+#include "ui/gfx/range/range.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/test/button_test_api.h"
+#include "url/gurl.h"
 
 namespace {
 
 class MockDelegate : public AppMenuSearchController::Delegate {
  public:
-  MOCK_METHOD(void, ShowSearchResults, (actions::ActionItem*), (override));
-  MOCK_METHOD(void, RestoreMenu, (), (override));
+  MOCK_METHOD(void,
+              ShowSearchResults,
+              (actions::ActionItem*, std::unique_ptr<actions::ActionItem>),
+              (override));
+  MOCK_METHOD(void,
+              RestoreMenu,
+              (std::unique_ptr<actions::ActionItem>),
+              (override));
 };
 
 class AppMenuSearchControllerTest
@@ -57,21 +79,25 @@ class AppMenuSearchControllerTest
   }
 
  protected:
-  bool IsBackButtonVisible() {
-    return search_bar_
-        ->GetViewByElementId(AppMenuSearchBarView::kBackButtonElementId)
-        ->GetVisible();
-  }
-
-  // `scope_` must be declared before `menu_root_` so that underlying delegate
-  // ActionItems outlive any IndirectActionItems stored in `menu_root_`.
+  // `scope_` and `recent_tabs_menu_` must be declared before `menu_root_` so
+  // that underlying delegate ActionItems and the recent tab actions bound to
+  // `recent_tabs_menu_` outlive the actions stored in `menu_root_`.
   std::unique_ptr<actions::ActionItem> scope_;
+  testing::NiceMock<MockBrowserWindowInterface> mock_window_;
+  testing::NiceMock<MockAppMenuDragAndDropHost> mock_host_;
+  RecentTabsDynamicMenu recent_tabs_menu_{&mock_window_, &mock_host_};
   std::unique_ptr<actions::ActionItem> menu_root_;
   std::unique_ptr<AppMenuSearchBarView> search_bar_;
   // A StrictMock, so tests fail on any delegate call they don't expect.
   testing::StrictMock<MockDelegate> delegate_;
   std::unique_ptr<AppMenuSearchController> controller_;
 };
+
+RecentTabItem MakeRecentTab(std::u16string title, std::string_view url) {
+  RecentTabItem tab(RecentTabItem::Type::kTab, std::move(title));
+  tab.set_url(GURL(url));
+  return tab;
+}
 
 TEST_F(AppMenuSearchControllerTest, InitializeSearchIndexOnlyOnce) {
   menu_root_->AddChild(actions::ActionItem::Builder()
@@ -258,6 +284,53 @@ TEST_F(AppMenuSearchControllerTest, SubmenusAndBreadcrumbs) {
   EXPECT_EQ(items[1]->GetSecondaryText(), u"Work");
 }
 
+TEST_F(AppMenuSearchControllerTest,
+       ExtractsDomainFromBookmarkUrlAsSecondaryText) {
+  TestingProfile profile;
+  BookmarkModelFactory::GetInstance()->SetTestingFactory(
+      &profile, BookmarkModelFactory::GetDefaultFactory());
+  BookmarkMergedSurfaceServiceFactory::GetInstance()->SetTestingFactory(
+      &profile, BookmarkMergedSurfaceServiceFactory::GetDefaultFactory());
+
+  bookmarks::BookmarkModel* model =
+      BookmarkModelFactory::GetForBrowserContext(&profile);
+  ASSERT_TRUE(model);
+  model->LoadEmptyForTest();
+
+  BookmarkMergedSurfaceService* service =
+      BookmarkMergedSurfaceServiceFactory::GetForProfile(&profile);
+  ASSERT_TRUE(service);
+  service->LoadForTesting({});
+
+  const bookmarks::BookmarkNode* work_folder =
+      model->AddFolder(model->bookmark_bar_node(), 0, u"Work");
+  model->AddURL(work_folder, 0, u"Google Doc",
+                GURL("https://www.google.com/docs/document/d/123"));
+  model->AddFolder(model->bookmark_bar_node(), 1, u"Empty Folder");
+
+  testing::NiceMock<MockBrowserWindowInterface> mock_window;
+  ON_CALL(mock_window, GetProfile()).WillByDefault(testing::Return(&profile));
+  testing::NiceMock<MockAppMenuDragAndDropHost> mock_host;
+
+  BookmarksDynamicMenu bookmarks_menu(&mock_window, &mock_host);
+  auto bookmarks_submenu = actions::ActionItem::Builder()
+                               .SetActionId(kActionBookmarksSubmenu)
+                               .SetText(u"Bookmarks and lists")
+                               .Build();
+  bookmarks_menu.BuildBookmarksActions(bookmarks_submenu.get());
+  menu_root_->AddChild(std::move(bookmarks_submenu));
+
+  controller_->InitializeSearchIndex();
+
+  const auto& items = controller_->search_items_for_testing();
+  ASSERT_EQ(items.size(), 1u);
+  EXPECT_EQ(items[0]->GetTitle(), u"Google Doc");
+  EXPECT_EQ(items[0]->GetType(), AppMenuSearchItem::Type::kBookmark);
+  EXPECT_EQ(items[0]->GetSecondaryText(), u"google.com");
+
+  menu_root_->ResetActionList();
+}
+
 TEST_F(AppMenuSearchControllerTest, ZoomSubmenuAndTooltips) {
   auto zoom_submenu = actions::ActionItem::Builder()
                           .SetActionId(kActionZoomSubmenu)
@@ -308,8 +381,7 @@ TEST_F(AppMenuSearchControllerTest, ZoomSubmenuAndTooltips) {
   EXPECT_EQ(items[2]->GetActionItem()->GetActionId(), kActionFullscreen);
 }
 
-TEST_F(AppMenuSearchControllerTest,
-       GetSearchItemTypeForBookmarksAndRecentTabs) {
+TEST_F(AppMenuSearchControllerTest, GetSearchItemTypeForBookmarksAndTabGroups) {
   auto bookmarks_menu = actions::ActionItem::Builder()
                             .SetActionId(kActionBookmarksSubmenu)
                             .SetText(u"Bookmarks")
@@ -325,22 +397,6 @@ TEST_F(AppMenuSearchControllerTest,
 
   menu_root_->AddChild(std::move(bookmarks_menu));
 
-  auto recent_tabs_menu = actions::ActionItem::Builder()
-                              .SetActionId(kActionRecentTabsSubmenu)
-                              .SetText(u"History")
-                              .Build();
-
-  recent_tabs_menu->AddChild(
-      actions::ActionItem::Builder().SetText(u"Recently Closed Tab").Build());
-
-  auto remote_device =
-      actions::ActionItem::Builder().SetText(u"Edward's Android").Build();
-  remote_device->AddChild(
-      actions::ActionItem::Builder().SetText(u"Remote Article").Build());
-  recent_tabs_menu->AddChild(std::move(remote_device));
-
-  menu_root_->AddChild(std::move(recent_tabs_menu));
-
   auto tab_groups_menu = actions::ActionItem::Builder()
                              .SetActionId(kActionSavedTabGroupsSubmenu)
                              .SetText(u"Tab Groups")
@@ -354,7 +410,7 @@ TEST_F(AppMenuSearchControllerTest,
   controller_->InitializeSearchIndex();
 
   const auto& items = controller_->search_items_for_testing();
-  ASSERT_EQ(items.size(), 5u);
+  ASSERT_EQ(items.size(), 3u);
 
   EXPECT_EQ(items[0]->GetTitle(), u"Bookmark Manager");
   EXPECT_EQ(items[0]->GetType(), AppMenuSearchItem::Type::kBookmark);
@@ -364,17 +420,9 @@ TEST_F(AppMenuSearchControllerTest,
   EXPECT_EQ(items[1]->GetType(), AppMenuSearchItem::Type::kBookmark);
   EXPECT_EQ(items[1]->GetSecondaryText(), u"Work");
 
-  EXPECT_EQ(items[2]->GetTitle(), u"Recently Closed Tab");
-  EXPECT_EQ(items[2]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[2]->GetSecondaryText(), u"History");
-
-  EXPECT_EQ(items[3]->GetTitle(), u"Remote Article");
-  EXPECT_EQ(items[3]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[3]->GetSecondaryText(), u"Edward's Android");
-
-  EXPECT_EQ(items[4]->GetTitle(), u"Research Group");
-  EXPECT_EQ(items[4]->GetType(), AppMenuSearchItem::Type::kTabGroup);
-  EXPECT_TRUE(items[4]->GetSecondaryText().empty());
+  EXPECT_EQ(items[2]->GetTitle(), u"Research Group");
+  EXPECT_EQ(items[2]->GetType(), AppMenuSearchItem::Type::kTabGroup);
+  EXPECT_TRUE(items[2]->GetSecondaryText().empty());
 }
 
 TEST_F(AppMenuSearchControllerTest, StaticActionsAndTabGroups) {
@@ -475,12 +523,14 @@ TEST_F(AppMenuSearchControllerTest, SearchResultsCategorizationAndCapping) {
                               .SetActionId(kActionRecentTabsSubmenu)
                               .SetText(u"History")
                               .Build();
+  std::vector<RecentTabItem> recent_tabs;
   for (int i = 0; i < 4; ++i) {
-    recent_tabs_menu->AddChild(
-        actions::ActionItem::Builder()
-            .SetText(u"Recent Tab Item " + base::NumberToString16(i))
-            .Build());
+    recent_tabs.push_back(
+        MakeRecentTab(u"Recent Tab Item " + base::NumberToString16(i),
+                      "https://example.com/" + base::NumberToString(i)));
   }
+  recent_tabs_menu_.CreateRecentTabsActionForTesting(recent_tabs_menu.get(),
+                                                     recent_tabs);
   menu_root_->AddChild(std::move(recent_tabs_menu));
 
   controller_->InitializeSearchIndex();
@@ -524,8 +574,9 @@ TEST_F(AppMenuSearchControllerTest, SearchResultsTreeCategoryHeaders) {
                               .SetActionId(kActionRecentTabsSubmenu)
                               .SetText(u"History")
                               .Build();
-  recent_tabs_menu->AddChild(
-      actions::ActionItem::Builder().SetText(u"New Recent Tab").Build());
+  recent_tabs_menu_.CreateRecentTabsActionForTesting(
+      recent_tabs_menu.get(),
+      {MakeRecentTab(u"New Recent Tab", "https://example.com/")});
   menu_root_->AddChild(std::move(recent_tabs_menu));
 
   controller_->InitializeSearchIndex();
@@ -688,82 +739,65 @@ TEST_F(AppMenuSearchControllerTest, FlattenHierarchyRecentTabsSubmenu) {
                               .SetText(u"History")
                               .Build();
 
-  // 1. System action:
+  // Built-in command:
   recent_tabs_menu->AddChild(actions::ActionItem::Builder()
                                  .SetActionId(kActionShowHistory)
                                  .SetText(u"Open history page")
                                  .Build());
 
-  // 2. Section header (should be pruned):
-  recent_tabs_menu->AddChild(
-      AppMenuActionItem::CreateHeader(u"Recently closed"));
+  // Dynamic entries, as built by RecentTabsDynamicMenu: a section header, a
+  // single closed tab, a closed window (restore command, divider and its tabs)
+  // and a remote device with its tabs.
+  RecentTabItem window(RecentTabItem::Type::kWindow, u"3 tabs");
+  window.add_child(
+      RecentTabItem(RecentTabItem::Type::kCommand, u"Restore window"));
+  window.add_child(RecentTabItem(RecentTabItem::Type::kDivider, u""));
+  window.add_child(MakeRecentTab(u"Window Tab 1", "https://www.example.com/a"));
+  window.add_child(MakeRecentTab(u"Window Tab 2", "https://docs.google.com/b"));
 
-  // 3. Local single closed tab:
-  recent_tabs_menu->AddChild(
-      actions::ActionItem::Builder().SetText(u"GitHub").Build());
+  RecentTabItem device(RecentTabItem::Type::kDevice, u"Edward's Android");
+  device.add_child(MakeRecentTab(u"Phone Tab 1", "https://en.wikipedia.org/x"));
+  device.add_child(MakeRecentTab(u"Phone Tab 2", "https://youtube.com/y"));
 
-  // 4. Local multi-tab window container ("3 tabs"):
-  auto window_container =
-      actions::ActionItem::Builder().SetText(u"3 tabs").Build();
-  window_container->AddChild(
-      actions::ActionItem::Builder().SetText(u"Restore window").Build());
-  auto window_divider = actions::ActionItem::Builder().Build();
-  window_divider->SetProperty(AppMenuActionItem::kDisplayTypeKey,
-                              AppMenuActionItem::DisplayType::kDivider);
-  window_container->AddChild(std::move(window_divider));
-  window_container->AddChild(
-      actions::ActionItem::Builder().SetText(u"Window Tab 1").Build());
-  window_container->AddChild(
-      actions::ActionItem::Builder().SetText(u"Window Tab 2").Build());
-  recent_tabs_menu->AddChild(std::move(window_container));
-
-  // 5. Remote synced device container ("Edward's Android"):
-  auto device_container =
-      actions::ActionItem::Builder().SetText(u"Edward's Android").Build();
-  device_container->AddChild(
-      actions::ActionItem::Builder().SetText(u"Phone Tab 1").Build());
-  device_container->AddChild(
-      actions::ActionItem::Builder().SetText(u"Phone Tab 2").Build());
-  recent_tabs_menu->AddChild(std::move(device_container));
+  recent_tabs_menu_.CreateRecentTabsActionForTesting(
+      recent_tabs_menu.get(),
+      {RecentTabItem(RecentTabItem::Type::kHeader, u"Recently closed"),
+       MakeRecentTab(u"GitHub", "https://github.com/foo"), std::move(window),
+       std::move(device)});
 
   menu_root_->AddChild(std::move(recent_tabs_menu));
 
   controller_->InitializeSearchIndex();
 
   const auto& items = controller_->search_items_for_testing();
-  ASSERT_EQ(items.size(), 7u);
+  ASSERT_EQ(items.size(), 6u);
 
-  // System action:
+  // Built-in command:
   EXPECT_EQ(items[0]->GetTitle(), u"Open history page");
   EXPECT_EQ(items[0]->GetType(), AppMenuSearchItem::Type::kAction);
   EXPECT_EQ(items[0]->GetSecondaryText(), u"History");
 
-  // Local single tab:
+  // Tabs show their domain. "Restore window", the header and the divider are
+  // not indexed.
   EXPECT_EQ(items[1]->GetTitle(), u"GitHub");
   EXPECT_EQ(items[1]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[1]->GetSecondaryText(), u"History");
+  EXPECT_EQ(items[1]->GetSecondaryText(), u"github.com");
 
-  // Local window tabs (divider skipped):
-  EXPECT_EQ(items[2]->GetTitle(), u"Restore window");
+  EXPECT_EQ(items[2]->GetTitle(), u"Window Tab 1");
   EXPECT_EQ(items[2]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[2]->GetSecondaryText(), u"3 tabs");
+  EXPECT_EQ(items[2]->GetSecondaryText(), u"example.com");
 
-  EXPECT_EQ(items[3]->GetTitle(), u"Window Tab 1");
+  EXPECT_EQ(items[3]->GetTitle(), u"Window Tab 2");
   EXPECT_EQ(items[3]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[3]->GetSecondaryText(), u"3 tabs");
+  EXPECT_EQ(items[3]->GetSecondaryText(), u"docs.google.com");
 
-  EXPECT_EQ(items[4]->GetTitle(), u"Window Tab 2");
+  EXPECT_EQ(items[4]->GetTitle(), u"Phone Tab 1");
   EXPECT_EQ(items[4]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[4]->GetSecondaryText(), u"3 tabs");
+  EXPECT_EQ(items[4]->GetSecondaryText(), u"en.wikipedia.org");
 
-  // Remote device tabs (device name as secondary text):
-  EXPECT_EQ(items[5]->GetTitle(), u"Phone Tab 1");
+  EXPECT_EQ(items[5]->GetTitle(), u"Phone Tab 2");
   EXPECT_EQ(items[5]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[5]->GetSecondaryText(), u"Edward's Android");
-
-  EXPECT_EQ(items[6]->GetTitle(), u"Phone Tab 2");
-  EXPECT_EQ(items[6]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[6]->GetSecondaryText(), u"Edward's Android");
+  EXPECT_EQ(items[5]->GetSecondaryText(), u"youtube.com");
 }
 
 TEST_F(AppMenuSearchControllerTest, EmptySubmenusAreNotIndexed) {
@@ -787,6 +821,15 @@ TEST_F(AppMenuSearchControllerTest, EmptySubmenusAreNotIndexed) {
                            .SetText(u"Dynamic Folder")
                            .SetPopulateChildrenCallback(base::BindRepeating(
                                [](actions::BaseAction* parent) {}))
+                           .Build());
+
+  // Empty folder explicitly marked with `kIsSubmenuKey` (matching empty
+  // bookmark folders created by
+  // `BookmarksDynamicMenu::AddBookmarkFolderAction`) should not be indexed as a
+  // leaf.
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetText(u"Empty Bookmark Folder")
+                           .SetProperty(AppMenuActionItem::kIsSubmenuKey, true)
                            .Build());
 
   controller_->InitializeSearchIndex();
@@ -862,21 +905,25 @@ TEST_F(AppMenuSearchControllerTest, ChangingQueryReplacesResults) {
   controller_->InitializeSearchIndex();
 
   base::WeakPtr<actions::ActionItem> first_results;
-  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull()))
-      .WillOnce([&first_results](actions::ActionItem* results) {
-        first_results = results->GetAsWeakPtr();
-      })
-      .WillOnce([&first_results](actions::ActionItem* results) {
-        // The previous results must outlive the call that replaces them, so
-        // the menu can remove the rows pointing into them first.
-        EXPECT_TRUE(first_results);
-        EXPECT_NE(results, first_results.get());
-      });
+  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull(), testing::_))
+      .WillOnce(
+          [&first_results](actions::ActionItem* results,
+                           std::unique_ptr<actions::ActionItem> old_results) {
+            first_results = results->GetAsWeakPtr();
+          })
+      .WillOnce(
+          [&first_results](actions::ActionItem* results,
+                           std::unique_ptr<actions::ActionItem> old_results) {
+            // The previous results must outlive the call that replaces them, so
+            // the menu can remove the rows pointing into them first.
+            EXPECT_TRUE(first_results);
+            EXPECT_EQ(first_results.get(), old_results.get());
+            EXPECT_NE(results, first_results.get());
+          });
   search_bar_->SetText(u"New");
   search_bar_->SetText(u"Print");
   // The previous results are freed once the menu shows the new ones.
   EXPECT_FALSE(first_results);
-  EXPECT_TRUE(IsBackButtonVisible());
 }
 
 TEST_F(AppMenuSearchControllerTest, ShortQueryKeepsResults) {
@@ -886,36 +933,51 @@ TEST_F(AppMenuSearchControllerTest, ShortQueryKeepsResults) {
                            .Build());
   controller_->InitializeSearchIndex();
 
+  // A query below the minimum length shows no results.
   search_bar_->SetText(u"N");
-  EXPECT_FALSE(IsBackButtonVisible());
 
   base::WeakPtr<actions::ActionItem> results;
-  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull()))
-      .WillOnce([&results](actions::ActionItem* shown) {
+  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull(), testing::_))
+      .WillOnce([&results](actions::ActionItem* shown,
+                           std::unique_ptr<actions::ActionItem> old_results) {
         results = shown->GetAsWeakPtr();
       });
   search_bar_->SetText(u"New");
   EXPECT_TRUE(results);
-  EXPECT_TRUE(IsBackButtonVisible());
 
+  // Shortening the query below the minimum length keeps the results.
   search_bar_->SetText(u"N");
   EXPECT_TRUE(results);
-  EXPECT_TRUE(IsBackButtonVisible());
-
-  search_bar_->SetText(std::u16string());
-  EXPECT_TRUE(results);
-  EXPECT_TRUE(IsBackButtonVisible());
-
-  EXPECT_CALL(delegate_, RestoreMenu());
-  views::test::ButtonTestApi(
-      views::Button::AsButton(search_bar_->GetViewByElementId(
-          AppMenuSearchBarView::kBackButtonElementId)))
-      .NotifyDefaultMouseClick();
-  EXPECT_FALSE(results);
-  EXPECT_FALSE(IsBackButtonVisible());
 }
 
-TEST_F(AppMenuSearchControllerTest, BackPressShowsNormalMenu) {
+TEST_F(AppMenuSearchControllerTest, EmptyQueryRestoresMenu) {
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionNewTab)
+                           .SetText(u"New Tab")
+                           .Build());
+  controller_->InitializeSearchIndex();
+
+  base::WeakPtr<actions::ActionItem> results;
+  testing::InSequence sequence;
+  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull(), testing::_))
+      .WillOnce([&results](actions::ActionItem* shown,
+                           std::unique_ptr<actions::ActionItem> old_results) {
+        results = shown->GetAsWeakPtr();
+      });
+  EXPECT_CALL(delegate_, RestoreMenu(testing::_))
+      .WillOnce([&results](std::unique_ptr<actions::ActionItem> old_results) {
+        // The results must outlive the call so the menu can remove the rows
+        // pointing into them first.
+        EXPECT_TRUE(results);
+        EXPECT_EQ(results.get(), old_results.get());
+      });
+  search_bar_->SetText(u"New");
+  search_bar_->SetText(std::u16string());
+  // The results are freed once the menu is restored.
+  EXPECT_FALSE(results);
+}
+
+TEST_F(AppMenuSearchControllerTest, WhitespaceQueryRestoresMenu) {
   menu_root_->AddChild(actions::ActionItem::Builder()
                            .SetActionId(kActionNewTab)
                            .SetText(u"New Tab")
@@ -923,15 +985,44 @@ TEST_F(AppMenuSearchControllerTest, BackPressShowsNormalMenu) {
   controller_->InitializeSearchIndex();
 
   testing::InSequence sequence;
-  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull()));
-  EXPECT_CALL(delegate_, RestoreMenu());
+  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull(), testing::_));
+  EXPECT_CALL(delegate_, RestoreMenu(testing::_));
+  search_bar_->SetText(u"New");
+  search_bar_->SetText(u"   ");
+}
+
+TEST_F(AppMenuSearchControllerTest, ClearButtonRestoresMenu) {
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionNewTab)
+                           .SetText(u"New Tab")
+                           .Build());
+  controller_->InitializeSearchIndex();
+
+  testing::InSequence sequence;
+  EXPECT_CALL(delegate_, ShowSearchResults(testing::NotNull(), testing::_));
+  EXPECT_CALL(delegate_, RestoreMenu(testing::_));
   search_bar_->SetText(u"New");
   views::test::ButtonTestApi(
       views::Button::AsButton(search_bar_->GetViewByElementId(
-          AppMenuSearchBarView::kBackButtonElementId)))
+          AppMenuSearchBarView::kClearButtonElementId)))
       .NotifyDefaultMouseClick();
   EXPECT_TRUE(search_bar_->GetText().empty());
-  EXPECT_FALSE(IsBackButtonVisible());
+  EXPECT_TRUE(
+      search_bar_
+          ->GetViewByElementId(AppMenuSearchBarView::kSearchIconElementId)
+          ->GetVisible());
+}
+
+TEST_F(AppMenuSearchControllerTest, EmptyQueryWithoutResultsDoesNothing) {
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionNewTab)
+                           .SetText(u"New Tab")
+                           .Build());
+  controller_->InitializeSearchIndex();
+
+  // `delegate_` is a StrictMock, so any delegate call fails the test.
+  search_bar_->SetText(u"N");
+  search_bar_->SetText(std::u16string());
 }
 
 TEST_F(AppMenuSearchControllerTest, OtherDeviceTabsSubmenuIndexed) {
@@ -940,9 +1031,10 @@ TEST_F(AppMenuSearchControllerTest, OtherDeviceTabsSubmenuIndexed) {
                                     .SetText(u"Other device tabs")
                                     .Build();
 
-  other_device_tabs_menu->AddChild(AppMenuActionItem::CreateHeader(u"Pixel 9"));
-  other_device_tabs_menu->AddChild(
-      actions::ActionItem::Builder().SetText(u"Synced Page").Build());
+  recent_tabs_menu_.CreateRecentTabsActionForTesting(
+      other_device_tabs_menu.get(),
+      {RecentTabItem(RecentTabItem::Type::kHeader, u"Pixel 9"),
+       MakeRecentTab(u"Synced Page", "https://example.org/page")});
 
   menu_root_->AddChild(std::move(other_device_tabs_menu));
 
@@ -952,7 +1044,259 @@ TEST_F(AppMenuSearchControllerTest, OtherDeviceTabsSubmenuIndexed) {
   ASSERT_EQ(items.size(), 1u);
   EXPECT_EQ(items[0]->GetTitle(), u"Synced Page");
   EXPECT_EQ(items[0]->GetType(), AppMenuSearchItem::Type::kRecentTabs);
-  EXPECT_EQ(items[0]->GetSecondaryText(), u"Other device tabs");
+  EXPECT_EQ(items[0]->GetSecondaryText(), u"example.org");
+}
+
+TEST_F(AppMenuSearchControllerTest, BuildSearchResultsTreeHighlightRange) {
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionNewTab)
+                           .SetText(u"New Tab")
+                           .Build());
+  menu_root_->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionNewIncognitoWindow)
+                           .SetText(u"New Incognito Window")
+                           .AddSynonyms({u"private"})
+                           .Build());
+  scope_->AddChild(actions::ActionItem::Builder()
+                       .SetActionId(kActionToggleVerticalTabs)
+                       .SetText(u"Show tabs vertically")
+                       .Build());
+  menu_root_->AddChild(AppMenuActionItem::CreateIndirect(
+      kActionToggleVerticalTabs, scope_.get(),
+      {.text_override = u"Show tabs &horizontally"}));
+  auto rd_submenu = actions::ActionItem::Builder().SetText(u"R&&D").Build();
+  rd_submenu->AddChild(actions::ActionItem::Builder()
+                           .SetActionId(kActionShowChromeLabs)
+                           .SetText(u"Q&&A Portal")
+                           .AddSynonyms({u"faq"})
+                           .Build());
+  menu_root_->AddChild(std::move(rd_submenu));
+
+  controller_->InitializeSearchIndex();
+
+  // Case-insensitive word-prefix match sets highlight range.
+  {
+    const std::unique_ptr<actions::ActionItem> results =
+        controller_->Search(u"  tab  ");
+    ASSERT_NE(results, nullptr);
+    const auto& rows = results->GetChildren().children();
+    ASSERT_FALSE(rows.empty());
+    const gfx::Range* range =
+        rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey);
+    ASSERT_NE(range, nullptr);
+    EXPECT_EQ(*range, gfx::Range(4, 7));
+  }
+
+  // Case-insensitive inner-word substring match sets highlight range.
+  {
+    const std::unique_ptr<actions::ActionItem> results =
+        controller_->Search(u"cognito");
+    ASSERT_NE(results, nullptr);
+    const auto& rows = results->GetChildren().children();
+    ASSERT_EQ(rows.size(), 1u);
+    const gfx::Range* range =
+        rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey);
+    ASSERT_NE(range, nullptr);
+    EXPECT_EQ(*range, gfx::Range(6, 13));
+  }
+
+  // Text override strips mnemonic '&' and computes accurate highlight range.
+  {
+    const std::unique_ptr<actions::ActionItem> results =
+        controller_->Search(u"horizontal");
+    ASSERT_NE(results, nullptr);
+    const auto& rows = results->GetChildren().children();
+    ASSERT_EQ(rows.size(), 1u);
+    const std::u16string* text_override =
+        rows[0]->GetProperty(AppMenuActionItem::kTextOverrideKey);
+    ASSERT_NE(text_override, nullptr);
+    EXPECT_EQ(*text_override, u"Show tabs horizontally");
+    const gfx::Range* range =
+        rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey);
+    ASSERT_NE(range, nullptr);
+    EXPECT_EQ(*range, gfx::Range(10, 20));
+  }
+
+  // Fuzzy transposition match ("atb" -> "New Tab") does not set highlight
+  // range.
+  {
+    const std::unique_ptr<actions::ActionItem> results =
+        controller_->Search(u"atb");
+    ASSERT_NE(results, nullptr);
+    const auto& rows = results->GetChildren().children();
+    ASSERT_FALSE(rows.empty());
+    EXPECT_EQ(rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey),
+              nullptr);
+  }
+
+  // Synonym-only match ("private" -> "New Incognito Window") does not set
+  // highlight range.
+  {
+    const std::unique_ptr<actions::ActionItem> results =
+        controller_->Search(u"private");
+    ASSERT_NE(results, nullptr);
+    const auto& rows = results->GetChildren().children();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey),
+              nullptr);
+  }
+
+  // Literal '&' (escaped as "&&" on the ActionItem) in both title and
+  // breadcrumb is unescaped when highlighted (where mnemonics are disabled) and
+  // re-escaped when unhighlighted so MenuItemView does not strip '&'.
+  {
+    const std::unique_ptr<actions::ActionItem> highlighted_results =
+        controller_->Search(u"portal");
+    ASSERT_NE(highlighted_results, nullptr);
+    const auto& highlighted_rows =
+        highlighted_results->GetChildren().children();
+    ASSERT_EQ(highlighted_rows.size(), 1u);
+    ASSERT_NE(
+        highlighted_rows[0]->GetProperty(AppMenuActionItem::kTextOverrideKey),
+        nullptr);
+    EXPECT_EQ(
+        *highlighted_rows[0]->GetProperty(AppMenuActionItem::kTextOverrideKey),
+        u"Q&A Portal");
+    ASSERT_NE(
+        highlighted_rows[0]->GetProperty(AppMenuActionItem::kSecondaryTextKey),
+        nullptr);
+    EXPECT_EQ(
+        *highlighted_rows[0]->GetProperty(AppMenuActionItem::kSecondaryTextKey),
+        u"R&D");
+    const gfx::Range* range =
+        highlighted_rows[0]->GetProperty(AppMenuActionItem::kHighlightRangeKey);
+    ASSERT_NE(range, nullptr);
+    EXPECT_EQ(*range, gfx::Range(4, 10));
+
+    const std::unique_ptr<actions::ActionItem> unhighlighted_results =
+        controller_->Search(u"faq");
+    ASSERT_NE(unhighlighted_results, nullptr);
+    const auto& unhighlighted_rows =
+        unhighlighted_results->GetChildren().children();
+    ASSERT_EQ(unhighlighted_rows.size(), 1u);
+    ASSERT_NE(
+        unhighlighted_rows[0]->GetProperty(AppMenuActionItem::kTextOverrideKey),
+        nullptr);
+    EXPECT_EQ(*unhighlighted_rows[0]->GetProperty(
+                  AppMenuActionItem::kTextOverrideKey),
+              u"Q&&A Portal");
+    ASSERT_NE(unhighlighted_rows[0]->GetProperty(
+                  AppMenuActionItem::kSecondaryTextKey),
+              nullptr);
+    EXPECT_EQ(*unhighlighted_rows[0]->GetProperty(
+                  AppMenuActionItem::kSecondaryTextKey),
+              u"R&&D");
+    EXPECT_EQ(unhighlighted_rows[0]->GetProperty(
+                  AppMenuActionItem::kHighlightRangeKey),
+              nullptr);
+  }
+}
+
+// Fixture for verifying that the fuzzy search scoring params, configured via
+// the kChroMenuSearch feature params or the --chro-menu-search-scoring switch
+// (chrome://flags), change the ranking of search results.
+class AppMenuSearchControllerScoringTest : public AppMenuSearchControllerTest {
+ protected:
+  // Adds two actions that both match "passkey": one via its title and one via
+  // a synonym, so their relative order is decided by the field weights.
+  void AddTitleAndSynonymActions() {
+    menu_root_->AddChild(actions::ActionItem::Builder()
+                             .SetActionId(kActionNewTab)
+                             .SetText(u"Google Password Manager")
+                             .AddSynonyms({u"passkey"})
+                             .Build());
+    menu_root_->AddChild(actions::ActionItem::Builder()
+                             .SetActionId(kActionPrint)
+                             .SetText(u"Passkey Settings")
+                             .Build());
+  }
+
+  // Builds the search index, searches for "passkey" and returns the titles of
+  // the action results in ranked order.
+  std::vector<std::u16string> SearchPasskeyTitles() {
+    controller_->InitializeSearchIndex();
+    const std::unique_ptr<actions::ActionItem> results_root =
+        controller_->Search(u"passkey");
+    std::vector<std::u16string> titles;
+    if (!results_root) {
+      return titles;
+    }
+    for (const auto& child : results_root->GetChildren().children()) {
+      titles.emplace_back(child->GetActionItem()->GetText());
+    }
+    return titles;
+  }
+
+  base::test::ScopedCommandLine scoped_command_line_;
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(AppMenuSearchControllerScoringTest, DefaultWeightsRankTitleFirst) {
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(
+      SearchPasskeyTitles(),
+      testing::ElementsAre(u"Passkey Settings", u"Google Password Manager"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest, FeatureParamsChangeRanking) {
+  scoped_feature_list_.InitAndEnableFeatureWithParameters(
+      features::kChroMenuSearch,
+      {{"title_weight", "0.8"}, {"synonym_weight", "1.0"}});
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(
+      SearchPasskeyTitles(),
+      testing::ElementsAre(u"Google Password Manager", u"Passkey Settings"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest, FlagSwitchChangesRanking) {
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kChroMenuSearchScoring, "0.8,0.8,1.0");
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(
+      SearchPasskeyTitles(),
+      testing::ElementsAre(u"Google Password Manager", u"Passkey Settings"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest, FlagSwitchOverridesFeatureParams) {
+  // Feature params favor synonyms, but the switch restores title priority.
+  scoped_feature_list_.InitAndEnableFeatureWithParameters(
+      features::kChroMenuSearch,
+      {{"title_weight", "0.8"}, {"synonym_weight", "1.0"}});
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kChroMenuSearchScoring, "1.0,0.8,0.85");
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(
+      SearchPasskeyTitles(),
+      testing::ElementsAre(u"Passkey Settings", u"Google Password Manager"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest,
+       FlagSwitchEmptyOrInvalidEntriesKeepDefaults) {
+  // Only the synonym weight is overridden; the empty and invalid title and
+  // secondary entries keep their defaults (title 1.0). Synonym 0.5 drops the
+  // synonym match below the minimum score.
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kChroMenuSearchScoring, ",abc,0.5");
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(SearchPasskeyTitles(), testing::ElementsAre(u"Passkey Settings"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest, MinScoreFeatureParamFiltersResults) {
+  // The synonym match scores ~0.95 * 0.85 = ~0.81, below a 0.9 cutoff, while
+  // the title match (~0.95) stays above it.
+  scoped_feature_list_.InitAndEnableFeatureWithParameters(
+      features::kChroMenuSearch, {{"min_score", "0.9"}});
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(SearchPasskeyTitles(), testing::ElementsAre(u"Passkey Settings"));
+}
+
+TEST_F(AppMenuSearchControllerScoringTest, MinScoreFlagSwitchFiltersResults) {
+  // Only the fourth (min_score) entry is set; the weights keep their
+  // defaults.
+  scoped_command_line_.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kChroMenuSearchScoring, ",,,0.9");
+  AddTitleAndSynonymActions();
+  EXPECT_THAT(SearchPasskeyTitles(), testing::ElementsAre(u"Passkey Settings"));
 }
 
 }  // namespace

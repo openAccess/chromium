@@ -48,6 +48,8 @@ export import CreateActorTabOptions = generated.CreateActorTabOptions;
 export import CreateSkillRequest = generated.CreateSkillRequest;
 export import CreateTabOptions = generated.CreateTabOptions;
 export import Credential = generated.Credential;
+export import DataTransferActionsBlockedNotice =
+    generated.DataTransferActionsBlockedNotice;
 export import DocumentData = generated.DocumentData;
 export import ExperimentalTriggeringPayload =
     generated.ExperimentalTriggeringPayload;
@@ -132,6 +134,9 @@ export import CloseAuthTabResult = generated.CloseAuthTabResult;
 export import CloseSignInTabResult = generated.CloseSignInTabResult;
 export import CreateTaskErrorReason = generated.CreateTaskErrorReason;
 export import CredentialType = generated.CredentialType;
+export import DataTransferAction = generated.DataTransferAction;
+export import DataTransferActionsBlockedReason =
+    generated.DataTransferActionsBlockedReason;
 export import ExperimentalTriggeringUpdateType =
     generated.ExperimentalTriggeringUpdateType;
 export import FeatureMode = generated.FeatureMode;
@@ -165,6 +170,7 @@ export import SkillsWebClientEvent = generated.SkillsWebClientEvent;
 export import SwitchConversationErrorReason =
     generated.SwitchConversationErrorReason;
 export import TaskDuration = generated.TaskDuration;
+export import TooltipImpressionType = generated.TooltipImpressionType;
 export import UnpinTrigger = generated.UnpinTrigger;
 export import UserGrantedPermissionDuration =
     generated.UserGrantedPermissionDuration;
@@ -210,6 +216,10 @@ export declare interface AdditionalContextPart {
   annotatedPageData?: AnnotatedPageData;
   pdf?: PdfDocumentData;
   tabContext?: TabContextResult;
+  /**
+   * @deprecated Chrome no longer sends `region`. Use `pendingRegion`
+   * instead.
+   */
   region?: CapturedRegion;
   pendingRegion?: PendingCapturedRegion;
   parentConversationMetadata?: ParentConversationMetadata;
@@ -1337,6 +1347,13 @@ export declare interface GlicBrowserHost {
   getAdditionalContext?(): Observable<AdditionalContext>;
 
   /**
+   * Returns an observable that emits when a paste or drop into Glic is blocked
+   * by product or context eligibility checks.
+   */
+  getDataTransferActionsBlockedNotices?
+      (): Observable<DataTransferActionsBlockedNotice>;
+
+  /**
    * Returns the host's capability to act on web pages. This reflects enterprise
    * policy for whether actuation is allowed.
    */
@@ -1410,6 +1427,15 @@ export declare interface GlicBrowserHost {
    * the web client, backed by Chrome preferences.
    */
   getClientStorage?(): GlicClientStorage;
+
+  /**
+   * Sets or clears (when `value` is null) a query parameter to append to
+   * subsequent Glic/GEiC guest URL loads for the active provider on this
+   * profile. Reserved keys (`hl`, `authuser`, `configId`, `location`),
+   * keys/values exceeding 256 bytes, or writes exceeding 32 parameters are
+   * silently ignored as a no-op.
+   */
+  setGuestUrlQueryParam?(key: string, value: string|null): Promise<void>;
 }
 
 /**
@@ -1630,6 +1656,12 @@ export declare interface GlicBrowserHostMetrics {
   onOptinImpression?(): void;
 
   /**
+   * Called when the user explicitly declines the opt-in CTA ("No thanks"),
+   * before the web client closes the panel.
+   */
+  onOptinRejected?(): void;
+
+  /**
    * Called when the web client's main prompt input field receives focus
    * after opening or warm-reopening the panel.
    */
@@ -1691,6 +1723,15 @@ export declare interface GlicBrowserHostMetrics {
    * Called when we want to record an use counter metric.
    */
   onRecordUseCounter?(action: WebUseCounter): void;
+
+  /** Called when a multi-tab sharing tooltip is shown. */
+  onTooltipImpression?(impression: TooltipImpressionType): void;
+
+  /**
+   * Called when a currently displayed multi-tab sharing tooltip is hidden in
+   * the web client (e.g. dismissed, timed out, or engaged with).
+   */
+  onTooltipHidden?(): void;
 
   // Removed fields and methods :
   onModelChanged?(): never;  // Last seen on Canary 146.0.7639.0

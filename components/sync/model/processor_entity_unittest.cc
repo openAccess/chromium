@@ -672,7 +672,6 @@ TEST_F(ProcessorEntityTest, ShouldResetUniquePositionOnLocalDeletion) {
 
 TEST_F(ProcessorEntityTest, LocalDeletionWithSpecifiedOrigin) {
   std::unique_ptr<ProcessorEntity> entity = CreateSynced();
-  const std::string specifics_hash = entity->metadata().specifics_hash();
   const base::Location location = FROM_HERE;
 
   // Make a local delete.
@@ -1155,7 +1154,8 @@ TEST_F(ProcessorEntityTest,
 }
 
 // Verifies that `SetCommitData()` populates `EntityData::attachment_metadata`
-// from `EntityMetadata` when a completed `temporary_blob_id` is present.
+// from `EntityMetadata` when a completed `temporary_blob_id` is present, and
+// omits it once a commit response has cleared `temporary_blob_id`.
 TEST_F(ProcessorEntityTest, ShouldPopulateAttachmentInSetCommitData) {
   std::unique_ptr<ProcessorEntity> entity = CreateUnsynced();
   entity->RecordAttachmentUploadQueued(
@@ -1170,6 +1170,26 @@ TEST_F(ProcessorEntityTest, ShouldPopulateAttachmentInSetCommitData) {
 
   EXPECT_THAT(entity->GetCommitDataForTesting().attachment_metadata,
               Optional(AttachmentMetadata::ForNew(kTemporaryBlobId)));
+
+  // Commit and receive a commit response that clears `temporary_blob_id` while
+  // recording `attachment_modification_time`. A subsequent specifics-only
+  // `RecordLocalUpdate()` must not populate an empty `AttachmentMetadata`.
+  CommitRequestData request;
+  entity->InitializeCommitRequestData(&request);
+  CommitResponseData response = GenerateAckData(request, kId, /*version=*/1);
+  response.attachment_modification_time = base::Time::Now();
+  entity->ReceiveCommitResponse(response, /*commit_only=*/false);
+  ASSERT_TRUE(entity->metadata().attachment_metadata().has_attachment());
+  ASSERT_FALSE(entity->metadata()
+                   .attachment_metadata()
+                   .attachment()
+                   .has_temporary_blob_id());
+
+  entity->RecordLocalUpdate(GenerateEntityData(hash(), kName, kValue2),
+                            /*trimmed_specifics=*/{},
+                            /*unique_position=*/std::nullopt);
+  EXPECT_EQ(entity->GetCommitDataForTesting().attachment_metadata,
+            std::nullopt);
 }
 
 // Verifies that `PauseAttachmentUpload()` runs the registered abort callback,

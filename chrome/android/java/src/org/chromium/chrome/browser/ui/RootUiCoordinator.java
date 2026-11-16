@@ -82,6 +82,7 @@ import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManager;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulator;
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuPopulatorFactory;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManager.ContextualSearchTabPromotionDelegate;
 import org.chromium.chrome.browser.contextualsearch.ContextualSearchManagerSupplier;
@@ -101,7 +102,6 @@ import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
-import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
 import org.chromium.chrome.browser.handoff.HandoffController;
 import org.chromium.chrome.browser.host_zoom.HostZoomListenerFactory;
@@ -226,6 +226,7 @@ import org.chromium.components.browser_ui.accessibility.PageZoomBarCoordinatorDe
 import org.chromium.components.browser_ui.accessibility.PageZoomManager;
 import org.chromium.components.browser_ui.accessibility.PageZoomManagerDelegate;
 import org.chromium.components.browser_ui.accessibility.ZoomEventsObserver;
+import org.chromium.components.browser_ui.adaptive_ui.AdaptiveUiControllerImpl;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerFactory;
@@ -242,7 +243,6 @@ import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager.ScrimClient;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.contextmenu.ContextMenuPopulatorFactory;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
@@ -254,6 +254,7 @@ import org.chromium.components.messages.MessagesFactory;
 import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
 import org.chromium.components.ukm.UkmRecorder;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.browser.BrowserContextHandle;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -268,6 +269,7 @@ import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.display.DisplayUtil;
 import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogManagerObserver;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -382,6 +384,7 @@ public class RootUiCoordinator
     private @Nullable ModalDialogManagerObserver mModalDialogManagerObserver;
 
     private @Nullable BottomSheetManager mBottomSheetManager;
+    private @Nullable AdaptiveUiControllerImpl mAdaptiveUiController;
     private final SettableMonotonicObservableSupplier<ManagedBottomSheetController>
             mBottomSheetControllerSupplier = ObservableSuppliers.createMonotonic();
     private final ToolbarActionModeCallback mActionModeControllerCallback;
@@ -483,6 +486,7 @@ public class RootUiCoordinator
     protected @Nullable ActionRegistry mActionRegistry;
     protected @Nullable BottomBarHostManager mBottomBarHostManager;
     private @Nullable AnchoredDialogCoordinator mAnchoredDialogCoordinator;
+    private @Nullable EdgeToEdgePadAdjuster mBottomSheetEdgeToEdgePadAdjuster;
 
     /**
      * Create a new {@link RootUiCoordinator} for the given activity.
@@ -764,19 +768,15 @@ public class RootUiCoordinator
 
                             @Override
                             public void enterImmersiveMode() {
-                                DisplayAndroid display =
-                                        DisplayAndroid.getNonMultiDisplay(mActivity);
+                                assert ChromeFeatureList.sAndroidZoomImmersive.isEnabled();
                                 Tab tab = mActivityTabProvider.get();
                                 if (tab == null) {
                                     return;
                                 }
 
-                                mFullscreenManager.onEnterFullscreen(
-                                        tab,
-                                        new FullscreenOptions(
-                                                /* showNavigationBar= */ false,
-                                                /* showStatusBar= */ false,
-                                                /* displayId= */ display.getDisplayId()));
+                                assumeNonNull(mExclusiveAccessManager);
+                                mExclusiveAccessManager.toggleBrowserFullscreenMode(
+                                        /* userInitiated= */ true);
                                 assumeNonNull(mAppMenuCoordinator);
                                 mAppMenuCoordinator.getAppMenuHandler().hideAppMenu();
                             }
@@ -812,6 +812,16 @@ public class RootUiCoordinator
                                         || !mAppMenuCoordinator
                                                 .getAppMenuHandler()
                                                 .isAppMenuShowing();
+                            }
+
+                            @Override
+                            public void notifyPageZoomUsed() {
+                                Profile profile = mProfileSupplier.get();
+                                if (profile != null) {
+                                    TrackerFactory.getTrackerForProfile(
+                                                    profile.getOriginalProfile())
+                                            .notifyEvent(EventConstants.PAGE_ZOOM_OPENED);
+                                }
                             }
                         });
 
@@ -906,9 +916,7 @@ public class RootUiCoordinator
         }
     }
 
-    /**
-     * @return The {@link OneshotSupplier} for the {@link ToolbarManager}.
-     */
+    /** Returns the {@link OneshotSupplier} for the {@link ToolbarManager}. */
     public OneshotSupplier<ToolbarManager> getToolbarManagerSupplier() {
         return mToolbarManagerOneshotSupplier;
     }
@@ -918,9 +926,7 @@ public class RootUiCoordinator
     }
 
     // TODO(jinsukkim): remove this in favor of wiring it directly.
-    /**
-     * @return {@link ThemeColorProvider} for top UI.
-     */
+    /** Returns the {@link ThemeColorProvider} for top UI. */
     public TopUiThemeColorProvider getTopUiThemeColorProvider() {
         return mTopUiThemeColorProvider;
     }
@@ -930,7 +936,7 @@ public class RootUiCoordinator
     }
 
     /**
-     * @return The {@link DesktopWindowStateManager} instance associated with the current activity.
+     * Returns the {@link DesktopWindowStateManager} instance associated with the current activity.
      */
     public @Nullable DesktopWindowStateManager getDesktopWindowStateManager() {
         return mDesktopWindowStateManager;
@@ -1078,7 +1084,18 @@ public class RootUiCoordinator
             modalDialogManager.removeObserver(mModalDialogManagerObserver);
         }
 
+        EphemeralTabCoordinator ephemeralTabCoordinator = mEphemeralTabCoordinatorSupplier.get();
+        if (ephemeralTabCoordinator != null) {
+            ephemeralTabCoordinator.destroy();
+        }
+
         if (mBottomSheetManager != null) mBottomSheetManager.onDestroy();
+
+        // Closes any adaptive UI entries while the bottom sheet and dialog manager still exist.
+        if (mAdaptiveUiController != null) {
+            mAdaptiveUiController.destroy();
+            mAdaptiveUiController = null;
+        }
 
         ManagedBottomSheetController bottomSheetController = getBottomSheetController();
         if (bottomSheetController != null) {
@@ -1166,6 +1183,13 @@ public class RootUiCoordinator
             extensionsSigninAndHistorySyncCoordinator.destroy();
         }
 
+        if (mEdgeToEdgeControllerSupplier.get() != null
+                && mBottomSheetEdgeToEdgePadAdjuster != null) {
+            mEdgeToEdgeControllerSupplier
+                    .get()
+                    .unregisterAdjuster(mBottomSheetEdgeToEdgePadAdjuster);
+            mBottomSheetEdgeToEdgePadAdjuster = null;
+        }
         if (mEdgeToEdgeController != null) {
             mEdgeToEdgeController.destroy();
             mEdgeToEdgeController = null;
@@ -1370,7 +1394,12 @@ public class RootUiCoordinator
         assumeNonNull(mAdaptiveToolbarUiCoordinator);
         mAdaptiveToolbarUiCoordinator.onFinishNativeInitialization();
 
-        EdgeToEdgeUtils.recordEligibilityForEveryStart(mActivity);
+        EdgeToEdgeUtils.recordBottomEligibilityForEveryStart(mActivity);
+        if (supportsTopInset()) {
+            boolean topEligible = EdgeToEdgeUtils.recordTopEligibilityForEveryStart(mActivity);
+            UmaSessionStats.registerSyntheticFieldTrial(
+                    "EdgeToEdgeTopEligibility", topEligible ? "Eligible" : "Not Eligible");
+        }
 
         if (mWindowAndroid.getInsetObserver() != null
                 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -1492,7 +1521,7 @@ public class RootUiCoordinator
                         assertNonNull(getBottomSheetController()),
                         mActivityTabProvider,
                         mBrowserControlsManager,
-                        mToolbarThemeColorProvider);
+                        mTopUiThemeColorProvider);
         if (mReaderModeTabObserver != null) {
             mReaderModeTabObserver.destroy();
             mReaderModeTabObserver = null;
@@ -1501,7 +1530,7 @@ public class RootUiCoordinator
 
     private void initReaderModeBottomSheetLazyObserver() {
         Tab currentTab = mActivityTabProvider.get();
-        if (currentTab != null && DomDistillerUrlUtils.isDistilledPage(currentTab.getUrl())) {
+        if (currentTab != null && WebDistillerUrlUtils.isDistilledPage(currentTab.getUrl())) {
             initReaderModeBottomSheetManager();
             return;
         }
@@ -1515,13 +1544,13 @@ public class RootUiCoordinator
                                     Tab tab, NavigationHandle navigationHandle) {
                                 if (navigationHandle.hasCommitted()
                                         && navigationHandle.isInPrimaryMainFrame()
-                                        && DomDistillerUrlUtils.isDistilledPage(tab.getUrl())) {
+                                        && WebDistillerUrlUtils.isDistilledPage(tab.getUrl())) {
                                     initReaderModeBottomSheetManager();
                                 }
                             }
                         },
                         (@Nullable Tab tab) -> {
-                            if (tab != null && DomDistillerUrlUtils.isDistilledPage(tab.getUrl())) {
+                            if (tab != null && WebDistillerUrlUtils.isDistilledPage(tab.getUrl())) {
                                 initReaderModeBottomSheetManager();
                             }
                         });
@@ -1630,9 +1659,7 @@ public class RootUiCoordinator
         }
     }
 
-    /**
-     * @return The resource id that contains how large the browser controls are.
-     */
+    /** Returns the resource id that contains how large the browser controls are. */
     public int getControlContainerHeightResource() {
         return ActivityUtils.NO_RESOURCE_ID;
     }
@@ -1700,7 +1727,8 @@ public class RootUiCoordinator
         MessagesResourceMapperInitializer.init();
         MessageContainer container = mActivity.findViewById(R.id.message_container);
         mMessageContainerCoordinator =
-                new MessageContainerCoordinator(container, mBrowserControlsManager);
+                new MessageContainerCoordinator(
+                        container, mBrowserControlsManager, mEdgeToEdgeControllerSupplier);
         mMessageContainerObserver =
                 new MessageContainerObserver() {
                     @Override
@@ -1834,9 +1862,7 @@ public class RootUiCoordinator
         mIncognitoReauthControllerOneshotSupplier.set(mIncognitoReauthController);
     }
 
-    /**
-     * @return The primary display size of the device, in inches.
-     */
+    /** Returns the primary display size of the device, in inches. */
     public double getPrimaryDisplaySizeInInches() {
         DisplayAndroid display = DisplayAndroid.getNonMultiDisplay(mActivity);
         return DisplayUtil.getDisplaySizeInInches(display);
@@ -1879,8 +1905,8 @@ public class RootUiCoordinator
     }
 
     /**
-     * @return Whether the {@link MerchantTrustSignalsCoordinator} should be initialized in the
-     *     context of this coordinator's UI.
+     * Returns whether the {@link MerchantTrustSignalsCoordinator} should be initialized in the
+     * context of this coordinator's UI.
      */
     protected boolean shouldInitializeMerchantTrustSignals() {
         return false;
@@ -1966,6 +1992,14 @@ public class RootUiCoordinator
                 LensOverlayCoordinator.getOrCreateForTab(tab)
                         .start(LensOverlayInvocationSource.APP_MENU);
                 RecordUserAction.record("MobileMenuLensOverlay");
+            }
+            return true;
+        } else if (id == R.id.ask_google_about_page_menu_id) {
+            Tab tab = mActivityTabProvider.get();
+            if (tab != null && tab.getWebContents() != null) {
+                ContextualTasksUtils.openAskGoogleAboutThisPage(
+                        tab, LensOverlayInvocationSource.APP_MENU_ASK_GOOGLE);
+                RecordUserAction.record("MobileMenuAskGoogleAboutThisPage");
             }
             return true;
         } else if (id == R.id.share_menu_id || id == R.id.direct_share_menu_id) {
@@ -2544,8 +2578,8 @@ public class RootUiCoordinator
     protected void onFindToolbarHidden() {}
 
     /**
-     * @return Whether the "update available" badge can be displayed on menu button(s) in the
-     *     context of this coordinator's UI.
+     * Returns whether the "update available" badge can be displayed on menu button(s) in the
+     * context of this coordinator's UI.
      */
     protected boolean canShowMenuUpdateBadge() {
         return false;
@@ -2612,9 +2646,37 @@ public class RootUiCoordinator
                                 .sBottomSheetOnDesktopWindowing
                                 .isEnabled());
         mBottomSheetControllerSupplier.set(bottomSheetController);
+        mBottomSheetEdgeToEdgePadAdjuster =
+                new EdgeToEdgePadAdjuster() {
+                    @Override
+                    public void overrideBottomInset(int inset) {}
+
+                    @Override
+                    public void overrideTopInset(int inset) {
+                        bottomSheetController.onTopInsetChanged(inset);
+                    }
+
+                    @Override
+                    public void destroy() {}
+                };
+        mEdgeToEdgeControllerSupplier.addSyncObserverAndCallIfNonNull(
+                mCallbackController.makeCancelable(
+                        edgeToEdgeController -> {
+                            edgeToEdgeController.registerAdjuster(
+                                    assertNonNull(mBottomSheetEdgeToEdgePadAdjuster));
+                        }));
         BottomSheetControllerFactory.setExceptionReporter(
                 ChromePureJavaExceptionReporter::reportJavaException);
         BottomSheetControllerFactory.attach(mWindowAndroid, getBottomSheetController());
+
+        if (ChromeFeatureList.sAndroidAdaptiveUiTransitions.isEnabled()) {
+            // One per window; attaches itself so AdaptiveUiController.from(mWindowAndroid) works.
+            mAdaptiveUiController =
+                    new AdaptiveUiControllerImpl(
+                            mWindowAndroid,
+                            mModalDialogManagerSupplier.get(),
+                            bottomSheetController);
+        }
 
         mBottomSheetManager =
                 new BottomSheetManager(
@@ -2679,10 +2741,13 @@ public class RootUiCoordinator
             mEdgeToEdgeControllerCreator = null;
         }
 
-        boolean eligible = EdgeToEdgeUtils.recordEligibilityOnCreate(mActivity);
+        boolean eligible = false;
+        if (shouldRecordBottomChinEligibilityOnCreate()) {
+            eligible = EdgeToEdgeUtils.recordEligibilityOnCreateForBottomChin(mActivity);
 
-        UmaSessionStats.registerSyntheticFieldTrial(
-                "EdgeToEdgeChinEligibility", eligible ? "Eligible" : "Not Eligible");
+            UmaSessionStats.registerSyntheticFieldTrial(
+                    "EdgeToEdgeChinEligibility", eligible ? "Eligible" : "Not Eligible");
+        }
 
         if (supportsEdgeToEdge()) {
             assert eligible || EdgeToEdgeUtils.isEdgelessTopInsetSupported(mActivity)
@@ -2715,6 +2780,20 @@ public class RootUiCoordinator
             }
             mEdgeToEdgeTopScalp = createEdgeToEdgeTopScalp();
         }
+    }
+
+    /**
+     * Returns whether bottom-chin {@code OnCreateController} eligibility metrics should be
+     * recorded. Returns {@code false} when {@link EdgeToEdgeController} is initialized solely for
+     * top edge-to-edge (e.g. on 3-button navigation phones), where the bottom chin is unsupported
+     * and recording would skew bottom-chin metrics in the {@code sEdgeToEdgeTopInset} Enabled arm.
+     */
+    private boolean shouldRecordBottomChinEligibilityOnCreate() {
+        boolean initializedSolelyForTop =
+                supportsTopInset()
+                        && EdgeToEdgeUtils.isEdgelessTopInsetSupported(mActivity)
+                        && !EdgeToEdgeUtils.isEdgeToEdgeBottomChinSupportedByDevice(mActivity);
+        return !initializedSolelyForTop;
     }
 
     private void recordIfMissingNavigationBar() {
@@ -2788,16 +2867,12 @@ public class RootUiCoordinator
                 : null;
     }
 
-    /**
-     * @return Supplies the {@link EphemeralTabCoordinator}
-     */
+    /** Returns the supplier for the {@link EphemeralTabCoordinator}. */
     public Supplier<@Nullable EphemeralTabCoordinator> getEphemeralTabCoordinatorSupplier() {
         return mEphemeralTabCoordinatorSupplier;
     }
 
-    /**
-     * @return The {@link FindToolbarManager} controlling find toolbar.
-     */
+    /** Returns the {@link FindToolbarManager} controlling find toolbar. */
     public @Nullable FindToolbarManager getFindToolbarManager() {
         if (mActivity == null) return null;
         return mFindToolbarManagerSupplier.hasValue() ? mFindToolbarManagerSupplier.get() : null;
@@ -2815,9 +2890,7 @@ public class RootUiCoordinator
         return mFindToolbarManagerSupplier.get();
     }
 
-    /**
-     * @return {@link ComposedBrowserControlsVisibilityDelegate} object for tabbed activity.
-     */
+    /** Returns the {@link ComposedBrowserControlsVisibilityDelegate} for tabbed activity. */
     public ComposedBrowserControlsVisibilityDelegate getAppBrowserControlsVisibilityDelegate() {
         if (mAppBrowserControlsVisibilityDelegate == null) {
             mAppBrowserControlsVisibilityDelegate = new ComposedBrowserControlsVisibilityDelegate();
@@ -2841,9 +2914,7 @@ public class RootUiCoordinator
         return mScrimManagerSupplier.asNonNull().get();
     }
 
-    /**
-     * @return The {@link TopControlsStacker} that handles all layers for this instance.
-     */
+    /** Returns the {@link TopControlsStacker} that handles all layers for this instance. */
     public TopControlsStacker getTopControlsStacker() {
         return mTopControlsStacker;
     }
@@ -3070,6 +3141,10 @@ public class RootUiCoordinator
         return mAdaptiveToolbarUiCoordinator;
     }
 
+    public @Nullable ActionRegistry getActionRegistryForTesting() {
+        return mActionRegistry;
+    }
+
     public @Nullable DataSharingTabManager getDataSharingTabManager() {
         // TabbedRootUiCoordinator returns non-null.
         return null;
@@ -3124,5 +3199,10 @@ public class RootUiCoordinator
 
     public void setScrimManagerForTesting(ScrimManager scrimManager) {
         mScrimManagerSupplier.set(scrimManager);
+    }
+
+    public @Nullable ReaderModeBottomSheetManager initReaderModeBottomSheetManagerForTesting() {
+        initReaderModeBottomSheetManager();
+        return mReaderModeBottomSheetManager;
     }
 }

@@ -231,17 +231,32 @@ inline bool CalculateCanTraversePhysicalFragments(const LayoutObject& obj) {
   return true;
 }
 
-bool HasNativeBackgroundPainter(Node* node) {
+bool MaybeHasNativeBackgroundPainter(Node* node) {
   Element* element = DynamicTo<Element>(node);
-  if (!element)
+  if (!element) {
     return false;
+  }
 
   ElementAnimations* element_animations = element->GetElementAnimations();
-  if (!element_animations)
+  if (!element_animations) {
     return false;
+  }
 
-  return element_animations->CompositedBackgroundColorStatus() ==
-         ElementAnimations::CompositedPaintStatus::kComposited;
+  NativePaintWorkletData* npw_data =
+      element_animations->GetBackgroundColorNpwData();
+  if (!npw_data) {
+    return false;
+  }
+
+  switch (npw_data->GetCompositedPaintStatus()) {
+    case ElementAnimations::CompositedPaintStatus::kComposited:
+    case ElementAnimations::CompositedPaintStatus::kNeedsRepaint:
+      return true;
+
+    case ElementAnimations::CompositedPaintStatus::kNotComposited:
+    case ElementAnimations::CompositedPaintStatus::kNoAnimation:
+      return false;
+  }
 }
 
 bool NeedsForcedUpdateForBackgroundPainter(Node* node,
@@ -253,6 +268,12 @@ bool NeedsForcedUpdateForBackgroundPainter(Node* node,
       element_animations->GetBackgroundColorNpwData();
   CHECK(npw_data);
   if (npw_data->NeedsKeyframeSnapshotUpdate()) {
+    return true;
+  }
+
+  if (npw_data->GetCompositedPaintStatus() ==
+      ElementAnimations::CompositedPaintStatus::kNeedsRepaint) {
+    // Requires a fresh compositing decision.
     return true;
   }
 
@@ -293,7 +314,7 @@ StyleDifference AdjustForCompositableAnimationPaint(
   DCHECK(new_style);
 
   bool skip_background_color_paint_invalidation =
-      HasNativeBackgroundPainter(node)
+      MaybeHasNativeBackgroundPainter(node)
           ? !NeedsForcedUpdateForBackgroundPainter(
                 node, diff.background_color_changed)
           : !diff.background_color_changed;
@@ -786,7 +807,7 @@ void LayoutObject::AddChild(LayoutObject* new_child,
                    DynamicTo<LayoutTextCombine>(SlowLastChild())) {
       last_child->AddChild(new_child);
     } else {
-      children->AppendChildNode(
+      children->InsertChildNode(
           this, LayoutTextCombine::CreateAnonymous(To<LayoutText>(new_child)));
     }
   } else {
@@ -2415,7 +2436,7 @@ void LayoutObject::Paint(const PaintInfo&) const {
   NOT_DESTROYED();
 }
 
-void LayoutObject::RecalcVisualOverflow() {
+void LayoutObject::RecalcVisualOverflowForChildren() {
   NOT_DESTROYED();
   for (LayoutObject* current = SlowFirstChild(); current;
        current = current->NextSibling()) {
@@ -2424,14 +2445,6 @@ void LayoutObject::RecalcVisualOverflow() {
       continue;
     current->RecalcVisualOverflow();
   }
-}
-
-void LayoutObject::RecalcNormalFlowChildVisualOverflowIfNeeded() {
-  NOT_DESTROYED();
-  if (IsOutOfFlowPositioned() ||
-      (HasLayer() && To<LayoutBoxModelObject>(this)->HasSelfPaintingLayer()))
-    return;
-  RecalcVisualOverflow();
 }
 
 void LayoutObject::InvalidateVisualOverflow() {
@@ -3250,7 +3263,11 @@ static bool InvisibleBeforeAndAfterStyleChange(const LayoutObject& object,
              SkipPaintInvalidationWhileStayingInvisibleEnabled() &&
          old_style && object.VisualRectRespectsVisibility() &&
          old_style->Visibility() != EVisibility::kVisible &&
-         new_style.Visibility() != EVisibility::kVisible;
+         new_style.Visibility() != EVisibility::kVisible &&
+         // Even if `object` is invisible, it may paint a mask or mask-based
+         // clip-path that affects its visible descendants.
+         !old_style->HasMask() && !new_style.HasMask() &&
+         !old_style->HasClipPath() && !new_style.HasClipPath();
 }
 
 DISABLE_CFI_PERF
@@ -4316,6 +4333,28 @@ gfx::Transform LayoutObject::LocalToAncestorTransform(
   return transform_state.AccumulatedTransform();
 }
 
+// Returns the LayoutObject of |area_parent|'s overscroll container element.
+// Note that this is not necessarily the same as either ContainingBox() or
+// Parent():
+// - ContainingBox() resolves the out-of-flow containing block. For a
+//   root-scrolled <body>, ::-internal-overscroll-area-parent is position: fixed
+//   (overscroll.css) and <body> does not force layout containment, so
+//   ContainingBox() walks past <body> to LayoutView (or an <html> ancestor with
+//   a transform/containment).
+// - Parent() can be an intermediate anonymous wrapper box inside the container
+//   (e.g. an anonymous LayoutBlockFlow when inline and block children are
+//   mixed, or an anonymous multicol flow thread) rather than the container's
+//   own LayoutObject.
+static LayoutObject* OverscrollContainerForAreaParent(
+    const LayoutObject& area_parent) {
+  DCHECK(area_parent.IsOverscrollAreaParent());
+  Element* overscroll_container = To<PseudoElement>(area_parent.GetNode())
+                                      ->UltimateOriginatingElement()
+                                      .GetOverscrollContainer();
+  return overscroll_container ? overscroll_container->GetLayoutObject()
+                              : nullptr;
+}
+
 PhysicalOffset LayoutObject::OffsetFromContainerInternal(
     const LayoutObject* o,
     MapCoordinatesFlags mode) const {
@@ -4326,7 +4365,26 @@ PhysicalOffset LayoutObject::OffsetFromContainerInternal(
   if (o->IsScrollContainer()) {
     offset += OffsetFromScrollableContainer(o, mode);
   }
-  offset += OffsetFromOverscrollContainer(o, mode);
+  if (o->IsContentMovingOverscrollContainer()) {
+    offset += OffsetFromOverscrollContainer(o, mode);
+  } else if (IsOverscrollAreaParent()) {
+    // For a non-root-scrolled overscroll container, forced layout containment
+    // makes the container itself the containing block (`o`) of its
+    // ::-internal-overscroll-area-parent children, which is handled above (and
+    // is not applied again when stepping from the container to its own
+    // `Container()`). For a root-scrolled <body>, however, layout containment
+    // is not forced and ::-internal-overscroll-area-parent is position: fixed
+    // (see overscroll.css), so `o` (`Container()`) walks past <body> to an
+    // ancestor (such as LayoutView) and the `Container()` walk never visits
+    // <body>.
+    const LayoutObject* overscroll_container =
+        OverscrollContainerForAreaParent(*this);
+    if (overscroll_container &&
+        overscroll_container->IsContentMovingOverscrollContainer()) {
+      DCHECK_NE(overscroll_container, o);
+      offset += OffsetFromOverscrollContainer(overscroll_container, mode);
+    }
+  }
   return offset;
 }
 
@@ -4358,10 +4416,10 @@ PhysicalOffset LayoutObject::OffsetFromScrollableContainer(
 PhysicalOffset LayoutObject::OffsetFromOverscrollContainer(
     const LayoutObject* container,
     MapCoordinatesFlags mode) const {
-  // If either container is not a shifting overscroll area container or we need
-  // to ignore scroll offsets, then we can early out.
-  if (!container->IsContentMovingOverscrollContainer() ||
-      mode.Has(MapCoordinatesMode::kIgnoreScrollOffset)) {
+  NOT_DESTROYED();
+  CHECK(container);
+  DCHECK(container->IsContentMovingOverscrollContainer());
+  if (mode.Has(MapCoordinatesMode::kIgnoreScrollOffset)) {
     return PhysicalOffset();
   }
 
@@ -4605,7 +4663,9 @@ void LayoutObject::SetNeedsPaintPropertyUpdate() {
   // reparenting in PaintPropertyTreeBuilder. Without this, we can end up with
   // cycles if only *some* of the related objects are dirtied.
   if (IsOverscrollContainer() || IsOverscrollAreaParent()) {
-    LayoutObject* container = IsOverscrollAreaParent() ? ContainingBox() : this;
+    LayoutObject* container = IsOverscrollAreaParent()
+                                  ? OverscrollContainerForAreaParent(*this)
+                                  : this;
     if (container) {
       Element* container_element = DynamicTo<Element>(container->GetNode());
       CHECK(container_element);
@@ -4630,6 +4690,15 @@ void LayoutObject::SetNeedsPaintPropertyUpdate() {
         // direct children of the container
         // (::-internal-overscroll-area-parent).
         container->SetDescendantNeedsPaintPropertyUpdate();
+
+        // The ::-internal-overscroll-area-parent objects of the primary <body>
+        // element may reparent the LayoutView's nodes instead (or may have just
+        // transitioned out of doing so), so LayoutView needs an update too.
+        if (container_element == GetDocument().FirstBodyElement()) {
+          if (LayoutView* view = View()) {
+            view->SetNeedsPaintPropertyUpdate();
+          }
+        }
         return;
       }
     }
@@ -4638,6 +4707,15 @@ void LayoutObject::SetNeedsPaintPropertyUpdate() {
   needs_paint_property_update_ = true;
   if (Parent())
     Parent()->SetDescendantNeedsPaintPropertyUpdate();
+
+  if (IsLayoutView()) {
+    if (Element* body = GetDocument().FirstBodyElement()) {
+      if (LayoutObject* body_object = body->GetLayoutObject();
+          body_object && body_object->IsOverscrollContainer()) {
+        body_object->SetNeedsPaintPropertyUpdate();
+      }
+    }
+  }
 }
 
 void LayoutObject::SetDescendantNeedsPaintPropertyUpdate() {
@@ -5712,6 +5790,12 @@ void LayoutObject::MarkContainerTimingChanged() {
       {PrePaintSubtreeWalkReason::kContainerTimingContext});
 }
 
+void LayoutObject::MarkIsHiddenDueToLayoutChanged() {
+  NOT_DESTROYED();
+  SetNeedsPrePaintSubtreeWalk(
+      {PrePaintSubtreeWalkReason::kIsHiddenDueToLayout});
+}
+
 // Note about ::first-letter pseudo-element:
 //   When an element has ::first-letter pseudo-element, first letter characters
 //   are taken from |Text| node and first letter characters are considered
@@ -5915,7 +5999,15 @@ void LayoutObject::InvalidateSubtreePositionTry(bool mark_style_dirty) {
 bool LayoutObject::IsBackdropForOverscrollAreaParent() const {
   NOT_DESTROYED();
   const auto* pseudo = DynamicTo<PseudoElement>(GetNode());
-  return pseudo && pseudo->GetPseudoId() == kPseudoIdOverscrollBackdrop;
+  if (!pseudo || pseudo->GetPseudoId() != kPseudoIdBackdrop) {
+    return false;
+  }
+  const LayoutObject* parent = Parent();
+  const PseudoElement* overscroll_parent =
+      pseudo->UltimateOriginatingElement().GetPseudoElement(
+          kPseudoIdOverscrollAreaParent);
+  return parent && overscroll_parent &&
+         overscroll_parent->GetLayoutObject() == parent;
 }
 
 bool LayoutObject::IsCanvasOrInCanvasSubtree() const {

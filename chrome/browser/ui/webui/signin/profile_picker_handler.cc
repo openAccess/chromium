@@ -66,7 +66,6 @@
 #include "components/signin/public/identity_manager/tribool.h"
 #include "components/startup_metric_utils/browser/startup_metric_utils.h"
 #include "components/subscription_eligibility/ai_subscription_tier_names.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -167,7 +166,6 @@ std::pair<std::string, bool> GetAvatarIconUrlAndAvatarRingStatus(
     const ui::ColorProvider* color_provider,
     float scale) {
   int avatar_icon_size = avatar_icon_size_dip * scale;
-  std::string icon_url;
   bool has_gradient_ring = false;
   if (GetAvatarAiDecorationForTier(entry->GetAiSubscriptionTier())
           .show_decoration &&
@@ -379,6 +377,8 @@ void ProfilePickerHandler::OnJavascriptAllowed() {
 }
 void ProfilePickerHandler::OnJavascriptDisallowed() {
   profile_attributes_storage_observation_.Reset();
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
+  profile_statistics_keep_alive_.reset();
   weak_factory_.InvalidateWeakPtrs();
 }
 
@@ -437,8 +437,7 @@ void ProfilePickerHandler::TryLaunchLockedProfile(
   // need to match the policy filter.
 
   // Reauth attempt.
-  if ((syncer::IsReplaceSyncPromosWithSignInPromosEnabled() &&
-       entry.GetSigninState() != SigninState::kNotSignedIn) ||
+  if (entry.GetSigninState() != SigninState::kNotSignedIn ||
       entry.CanBeManaged()) {
     // Glic version cannot run the reauth steps, show a dialog instead that
     // will redirect the user to the regular version of the picker.
@@ -489,8 +488,30 @@ void ProfilePickerHandler::TryLaunchLockedProfile(
 
 void ProfilePickerHandler::OnProfileLoadedForSwitchToReauth(Profile* profile) {
   if (!profile) {
+    OnResetPickerButtons(false);
     return;
   }
+  CHECK(signin_util::IsForceSigninEnabled());
+
+  ProfileAttributesEntry& entry =
+      CHECK_DEREF(g_browser_process->profile_manager()
+                      ->GetProfileAttributesStorage()
+                      .GetProfileAttributesWithPath(profile->GetPath()));
+  CHECK(entry.IsSigninRequired());
+
+  // Loading the profile initializes `IdentityManager`, `AccountsPolicyManager`,
+  // and `SigninProfileAttributesUpdater`, which may clear the primary account
+  // (e.g. if `RestrictSigninToPattern` or `SigninAllowed` disallows it, or if
+  // `ProfileAttributesStorage` was out of sync with the profile prefs). If the
+  // GAIA ID or email is now missing, reauth cannot proceed.
+  if (entry.GetGAIAId().empty() || entry.GetUserName().empty()) {
+    DisplaySigninErrorDialog(
+        /*profile_path=*/base::FilePath(),
+        ForceSigninUIError::ReauthNotAllowed());
+    OnResetPickerButtons(false);
+    return;
+  }
+
   ProfilePicker::SwitchToReauth(
       profile,
       base::BindOnce(&ProfilePickerHandler::OnResetPickerButtons,
@@ -718,9 +739,13 @@ void ProfilePickerHandler::HandleRemoveProfile(const base::ListValue& args) {
   }
 
   RecordProfilePickerAction(ProfilePickerAction::kDeleteProfile);
-  // TODO(crbug.com/576442273): CHECK-exclusion: Convert to a CHECK once we are
-  // confident it won't be triggered.
-  DCHECK(profile_statistics_keep_alive_);
+
+  // Cancel any in-flight `LoadProfileByPath()` or `GatherStatistics()`
+  // callbacks so `GatherProfileStatistics()` cannot create a new keep-alive
+  // after profile removal has started. `profile_statistics_keep_alive_` may be
+  // null if the user confirmed deletion before an unloaded profile finished
+  // loading from disk (or if loading failed).
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
 
   // Deleting the profile may delete `this` (see See
   // https://crbug.com/40934491), if the profile picker was shown in a tab. Keep
@@ -786,7 +811,11 @@ void ProfilePickerHandler::HandleOnLearnMoreClicked(
 void ProfilePickerHandler::HandleCloseProfileStatistics(
     const base::ListValue& args) {
   CHECK_EQ(0U, args.size());
-  CHECK(profile_statistics_keep_alive_, base::NotFatalUntil::M162);
+  // Cancel any in-flight `LoadProfileByPath()` or `GatherStatistics()`
+  // callbacks so `GatherProfileStatistics()` cannot create a keep-alive after
+  // the dialog was closed. `profile_statistics_keep_alive_` may be null if the
+  // dialog was closed before an unloaded profile finished loading from disk.
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
   profile_statistics_keep_alive_.reset();
 }
 
@@ -801,6 +830,9 @@ void ProfilePickerHandler::HandleGetProfileStatistics(
     return;
   }
 
+  gather_profile_statistics_weak_factory_.InvalidateWeakPtrs();
+  profile_statistics_keep_alive_.reset();
+
   Profile* profile =
       g_browser_process->profile_manager()->GetProfileByPath(*profile_path);
 
@@ -810,7 +842,7 @@ void ProfilePickerHandler::HandleGetProfileStatistics(
     g_browser_process->profile_manager()->LoadProfileByPath(
         *profile_path, false,
         base::BindOnce(&ProfilePickerHandler::GatherProfileStatistics,
-                       weak_factory_.GetWeakPtr()));
+                       gather_profile_statistics_weak_factory_.GetWeakPtr()));
   }
 }
 
@@ -824,7 +856,8 @@ void ProfilePickerHandler::GatherProfileStatistics(Profile* profile) {
 
   ProfileStatisticsFactory::GetForProfile(profile)->GatherStatistics(
       base::BindRepeating(&ProfilePickerHandler::OnProfileStatisticsReceived,
-                          weak_factory_.GetWeakPtr(), profile->GetPath()));
+                          gather_profile_statistics_weak_factory_.GetWeakPtr(),
+                          profile->GetPath()));
 }
 
 void ProfilePickerHandler::OnProfileStatisticsReceived(

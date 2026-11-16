@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_glic_actor_task_icon.h"
 
+#include <utility>
+
+#include "base/functional/callback.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -20,6 +23,7 @@ ToolbarGlicActorTaskIcon::ToolbarGlicActorTaskIcon(
     : GlicActorTaskIcon<ToolbarButton>(browser_window_interface,
                                        pressed_callback) {
   SetImageLabelSpacing(0);
+  SetVectorIcon(kCursorSparkIcon);
   SetTaskIconToDefault();
 
   // The task icon will only ever be shown with the GlicButton, so can always
@@ -32,12 +36,52 @@ ToolbarGlicActorTaskIcon::ToolbarGlicActorTaskIcon(
 
 ToolbarGlicActorTaskIcon::~ToolbarGlicActorTaskIcon() = default;
 
+void ToolbarGlicActorTaskIcon::SetVisible(bool visible) {
+  views::View::SetVisible(visible);
+}
+
+bool ToolbarGlicActorTaskIcon::IsVisible() const {
+  return views::View::GetVisible();
+}
+
+void ToolbarGlicActorTaskIcon::SetIsShowingNudge(bool is_showing) {
+  if (!is_showing) {
+    SetTaskIconToDefault();
+  }
+  GlicActorTaskIcon<ToolbarButton>::SetIsShowingNudge(is_showing);
+  PreferredSizeChanged();
+}
+
+bool ToolbarGlicActorTaskIcon::GetIsShowingNudge() const {
+  return is_showing_nudge_;
+}
+
+void ToolbarGlicActorTaskIcon::ShowNudgeLabel(
+    const std::u16string& nudge_label) {
+  GlicActorTaskIcon<ToolbarButton>::ShowNudgeLabel(nudge_label);
+}
+
+void ToolbarGlicActorTaskIcon::SetTaskIconToDefault() {
+  GlicActorTaskIcon<ToolbarButton>::SetTaskIconToDefault();
+}
+
+void ToolbarGlicActorTaskIcon::SetPressedState(bool is_pressed) {
+  GlicActorTaskIcon<ToolbarButton>::SetPressedState(is_pressed);
+}
+
+void ToolbarGlicActorTaskIcon::GetBubbleAnchorAsync(
+    base::OnceCallback<void(views::BubbleAnchor)> callback) {
+  std::move(callback).Run(views::BubbleAnchor(this));
+}
+
 void ToolbarGlicActorTaskIcon::AddedToWidget() {
   split_rounded_edge_radius_ = GetRoundedCornerRadius();
   SetLeftRightCornerRadii(kSplitLeftEdgeRadius, GetSplitRoundedEdgeRadius());
 
   SetDefaultBackgroundColorId(kColorToolbarGlicButtonBackgroundDefault);
-  UpdateIconsWithStandardColors(kCursorSparkIcon);
+  if (GetColorProvider()) {
+    UpdateIcon();
+  }
   GlicActorTaskIcon<ToolbarButton>::AddedToWidget();
 }
 
@@ -74,17 +118,6 @@ void ToolbarGlicActorTaskIcon::UpdateColors() {
 void ToolbarGlicActorTaskIcon::UpdateColorsAndInsets() {
   ToolbarButton::UpdateColorsAndInsets();
   label()->SetBorder(nullptr);
-}
-
-void ToolbarGlicActorTaskIcon::SetIsShowingNudge(bool is_showing) {
-  GlicActorTaskIcon<ToolbarButton>::SetIsShowingNudge(is_showing);
-  if (is_showing) {
-    SetFocusBehavior(FocusBehavior::ALWAYS);
-    SetCloseButtonFocusBehavior(FocusBehavior::ALWAYS);
-  } else {
-    SetFocusBehavior(FocusBehavior::NEVER);
-    SetCloseButtonFocusBehavior(FocusBehavior::NEVER);
-  }
 }
 
 void ToolbarGlicActorTaskIcon::SetLeftRightCornerRadii(int left, int right) {

@@ -4,32 +4,32 @@
 
 import 'chrome://password-manager/password_manager.js';
 
-import {PasswordManagerActionableError, PasswordManagerImpl, SyncBrowserProxyImpl, UserUtilMixin} from 'chrome://password-manager/password_manager.js';
+import {PasswordManagerActionableError, PasswordManagerImpl, SyncBrowserProxyImpl, TrustedVaultUnlockDialogSource, UserUtilMixin} from 'chrome://password-manager/password_manager.js';
 import type {UserUtilMixinInterface} from 'chrome://password-manager/password_manager.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
 import {TestSyncBrowserProxy} from './test_sync_browser_proxy.js';
 
-const TestElementBase = UserUtilMixin(PolymerElement);
+const TestDummyElementBase = UserUtilMixin(CrLitElement);
 
-interface TestElement extends UserUtilMixinInterface {}
+interface TestDummyElement extends UserUtilMixinInterface {}
 
-class TestElement extends TestElementBase {
+class TestDummyElement extends TestDummyElementBase {
   static get is() {
-    return 'test-element';
+    return 'test-dummy';
   }
 }
 
-customElements.define(TestElement.is, TestElement);
+customElements.define(TestDummyElement.is, TestDummyElement);
 
 suite('UserUtilMixinTest', function() {
   let passwordManager: TestPasswordManagerProxy;
   let syncProxy: TestSyncBrowserProxy;
-  let element: TestElement;
+  let element: TestDummyElement;
 
   setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -38,17 +38,17 @@ suite('UserUtilMixinTest', function() {
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
 
-    element = document.createElement('test-element') as TestElement;
+    element = document.createElement('test-dummy') as TestDummyElement;
     document.body.appendChild(element);
-    await flushTasks();
+    await microtasksFinished();
   });
 
   test('initial actionableError is set', async function() {
     passwordManager.data.getActionableError =
         PasswordManagerActionableError.kTrustedVaultKeyNeeded;
-    element = document.createElement('test-element') as TestElement;
+    element = document.createElement('test-dummy') as TestDummyElement;
     document.body.appendChild(element);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         PasswordManagerActionableError.kTrustedVaultKeyNeeded,
         element.actionableError);
@@ -61,7 +61,7 @@ suite('UserUtilMixinTest', function() {
     passwordManager.listeners.passwordManagerActionableErrorChangedListener!
         (chrome.passwordsPrivate.PasswordManagerActionableError
              .TRUSTED_VAULT_KEY_NEEDED);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         PasswordManagerActionableError.kTrustedVaultKeyNeeded,
@@ -69,7 +69,7 @@ suite('UserUtilMixinTest', function() {
 
     passwordManager.listeners.passwordManagerActionableErrorChangedListener!
         (chrome.passwordsPrivate.PasswordManagerActionableError.NO_ERROR);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         PasswordManagerActionableError.kNoError, element.actionableError);
@@ -82,19 +82,19 @@ suite('UserUtilMixinTest', function() {
         passwordManager.listeners.passwordManagerActionableErrorChangedListener!
             (chrome.passwordsPrivate.PasswordManagerActionableError
                  .TRUSTED_VAULT_KEY_NEEDED);
-        await flushTasks();
+        await microtasksFinished();
 
-        let dialogFired = false;
-        element.addEventListener('show-trusted-vault-error-dialog', () => {
-          dialogFired = true;
+        let dialogSource: TrustedVaultUnlockDialogSource|null = null;
+        element.addEventListener('show-trusted-vault-error-dialog', e => {
+          dialogSource = e.detail.source;
         });
 
         let actionExecuted = false;
         element.executeIfTrustedVaultUnlocked(() => {
           actionExecuted = true;
-        });
+        }, TrustedVaultUnlockDialogSource.IMPORT);
 
-        assertTrue(dialogFired);
+        assertEquals(TrustedVaultUnlockDialogSource.IMPORT, dialogSource);
         assertFalse(actionExecuted);
       });
 
@@ -104,7 +104,7 @@ suite('UserUtilMixinTest', function() {
         loadTimeData.overrideValues({enableTrustedVaultUnlock: true});
         passwordManager.listeners.passwordManagerActionableErrorChangedListener!
             (chrome.passwordsPrivate.PasswordManagerActionableError.NO_ERROR);
-        await flushTasks();
+        await microtasksFinished();
 
         let dialogFired = false;
         element.addEventListener('show-trusted-vault-error-dialog', () => {
@@ -114,7 +114,7 @@ suite('UserUtilMixinTest', function() {
         let actionExecuted = false;
         element.executeIfTrustedVaultUnlocked(() => {
           actionExecuted = true;
-        });
+        }, TrustedVaultUnlockDialogSource.ADD_PASSWORD);
 
         assertFalse(dialogFired);
         assertTrue(actionExecuted);

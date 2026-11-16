@@ -66,6 +66,15 @@ struct FederatedCredential {
   // `kAccountPictureSize` wide, e.g. FedCM crops it into a circle like in its
   // own UI.
   ui::ImageModel icon;
+  // Optional badge on `icon`, e.g. the identity provider's icon. The prompt
+  // doesn't show it without `icon`.
+  //
+  // Like `icon`, the badge must come from the identity provider and be fetched
+  // by the browser, never from the requesting site.
+  //
+  // The caller crops the badge so that it is square and `kBadgeImageSize`
+  // wide, e.g. FedCM crops the IdP's icon into a circle like in its own UI.
+  ui::ImageModel badge;
   // Whether choosing this credential signs the user in without further UI,
   // e.g. without a dialog to review what is shared with the site. If so, the
   // chip shows that the user is signing in.
@@ -77,32 +86,41 @@ struct FederatedCredential {
 class AmbientLoginPermissionRequest : public permissions::PermissionRequest {
  public:
   using PasskeyOrPasswordSelectedCallback =
-      base::OnceCallback<void(size_t index)>;
+      base::OnceCallback<void(size_t index, bool from_expanded_list)>;
   using FederatedCredentialSelectedCallback =
       base::OnceCallback<void(size_t index)>;
 
+  // A set of optional callbacks and values configured at creation time.
+  struct Options {
+    // When present, if a user selected a credential then this is called after
+    // the credential selection callback.
+    PermissionDecidedCallback permission_decided_callback = base::DoNothing();
+    // Whether the bubble opens automatically along with the chip. Otherwise,
+    // only the chip is shown, and the bubble opens when the user clicks it.
+    bool bubble_starts_open = true;
+    // Called when the ambient sign-in bubble is shown.
+    base::OnceClosure bubble_shown_callback = base::DoNothing();
+    // Called when the user explicitly dismisses the bubble (e.g. via the close
+    // button or Escape key).
+    base::OnceClosure bubble_dismissed_callback = base::DoNothing();
+  };
+
   // Constructor supporting both WebAuthn/password credentials and FedCM
-  // federated credentials. `bubble_starts_open` is whether the bubble opens
-  // automatically along with the chip. Otherwise, only the chip is shown, and
-  // the bubble opens when the user clicks it.
+  // federated credentials.
   AmbientLoginPermissionRequest(
       const GURL& requesting_origin,
-      const GURL& embedding_origin,
       std::vector<PasskeyOrPasswordCredential> credentials,
       PasskeyOrPasswordSelectedCallback credential_selected_callback,
       std::vector<FederatedCredential> federated_credentials,
       FederatedCredentialSelectedCallback federated_selected_callback,
-      PermissionDecidedCallback permission_decided_callback = base::DoNothing(),
-      bool bubble_starts_open = true);
+      Options options);
 
   // Convenience constructor for passkey/password-only requests.
   AmbientLoginPermissionRequest(
       const GURL& requesting_origin,
-      const GURL& embedding_origin,
       std::vector<PasskeyOrPasswordCredential> credentials,
       PasskeyOrPasswordSelectedCallback credential_selected_callback,
-      PermissionDecidedCallback permission_decided_callback =
-          base::DoNothing());
+      Options options);
 
   ~AmbientLoginPermissionRequest() override;
 
@@ -115,11 +133,19 @@ class AmbientLoginPermissionRequest : public permissions::PermissionRequest {
 
   // Records the chosen credential index to be passed to
   // `credential_selected_callback_` when the permission request is accepted.
-  void SelectCredential(size_t index);
+  // `from_expanded_list` indicates whether the user unfolded the bubble before
+  // selecting the credential, which is used for metrics.
+  void SelectCredential(size_t index, bool from_expanded_list);
 
   // Records the chosen federated credential index to be passed to
   // `federated_selected_callback_` when the permission request is accepted.
   void SelectFederatedCredential(size_t index);
+
+  // Called when the ambient sign-in bubble is shown.
+  void OnBubbleShown();
+
+  // Called when the user explicitly dismisses the ambient sign-in bubble.
+  void OnBubbleDismissed();
 
   // Returns the vector icon representing a credential of the given `type`.
   // Used both for credential rows in the bubble and for the omnibox chip.
@@ -144,7 +170,10 @@ class AmbientLoginPermissionRequest : public permissions::PermissionRequest {
   std::vector<FederatedCredential> federated_credentials_;
   FederatedCredentialSelectedCallback federated_selected_callback_;
   PermissionDecidedCallback caller_permission_decided_callback_;
+  base::OnceClosure bubble_shown_callback_;
+  base::OnceClosure bubble_dismissed_callback_;
   std::optional<size_t> selected_credential_index_;
+  bool selected_from_expanded_list_ = false;
   std::optional<size_t> selected_federated_index_;
   const bool bubble_starts_open_;
 };

@@ -1405,8 +1405,7 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
       border_box_size.inline_size);
   container_builder_.SetFragmentsTotalBlockSize(border_box_size.block_size);
 
-  if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-      GetConstraintSpace().ContainsAnnotations() &&
+  if (GetConstraintSpace().ContainsAnnotations() &&
       !GetConstraintSpace().IsNewFormattingContext() &&
       previous_inflow_position->block_end_annotation_space > LayoutUnit() &&
       Borders().block_end == 0) {
@@ -1526,7 +1525,11 @@ const LayoutResult* BlockLayoutAlgorithm::FinishLayout(
                       unconstrained_intrinsic_block_size, container_builder_);
   }
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  if (oof_status != LayoutResult::kSuccess) {
+    return container_builder_.Abort(oof_status);
+  }
 
   if (constraint_space.GetBaselineAlgorithmType() ==
       BaselineAlgorithmType::kInlineBlock) {
@@ -2754,12 +2757,8 @@ LayoutResult::EStatus BlockLayoutAlgorithm::FinishInflow(
                                     logical_offset.block_offset);
   }
 
-  if (IsA<BlockNode>(child)) {
-    container_builder_.AddResult(*layout_result, logical_offset,
-                                 child_data->margins);
-  } else {
-    container_builder_.AddResult(*layout_result, logical_offset);
-  }
+  container_builder_.AddResult(*layout_result, logical_offset,
+                               child_data->margins);
 
   if (!child_break_token || !child_break_token->IsInParallelFlow()) {
     *previous_inflow_position = ComputeInflowPosition(
@@ -3103,8 +3102,7 @@ PreviousInflowPosition BlockLayoutAlgorithm::ComputeInflowPosition(
   }
 
   LayoutUnit previous_sibling_block_end_annotation_space;
-  if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-      GetConstraintSpace().ContainsAnnotations() && child.IsBlock() &&
+  if (GetConstraintSpace().ContainsAnnotations() && child.IsBlock() &&
       annotation_space > LayoutUnit()) {
     previous_sibling_block_end_annotation_space = annotation_space;
   }
@@ -3626,9 +3624,7 @@ ConstraintSpace BlockLayoutAlgorithm::CreateConstraintSpaceForChild(
         line_clamp_data_.data.IsLineClampContext() &&
         (constraint_space.ShouldTextBoxTrimInsideWhenLineClamp() ||
          container_builder_.ShouldTextBoxTrimNodeEnd()));
-    if (child.IsBlock() &&
-        RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-        GetConstraintSpace().ContainsAnnotations() &&
+    if (child.IsBlock() && GetConstraintSpace().ContainsAnnotations() &&
         (RuntimeEnabledFeatures::AnnotationSpaceForMultiColEnabled() ||
          !GetConstraintSpace().IsInsideBalancedColumns()) &&
         block_start_annotation_space > LayoutUnit()) {
@@ -4068,14 +4064,16 @@ BlockLayoutAlgorithm::HandleTextControlPlaceholder(
   }
   LogicalOffset offset = BorderScrollbarPadding().StartOffset();
   if (Node().IsTextArea()) {
-    return {FinishTextControlPlaceholder(result, offset, apply_fixed_size,
+    return {FinishTextControlPlaceholder(result, offset, child_data.margins,
+                                         apply_fixed_size,
                                          previous_inflow_position),
             result->Status()};
   }
   // Usually another child provides the baseline. However it doesn't if
   // another child is out-of-flow.
   if (!container_builder_.FirstBaseline()) {
-    return {FinishTextControlPlaceholder(result, offset, apply_fixed_size,
+    return {FinishTextControlPlaceholder(result, offset, child_data.margins,
+                                         apply_fixed_size,
                                          previous_inflow_position),
             result->Status()};
   }
@@ -4107,17 +4105,19 @@ BlockLayoutAlgorithm::HandleTextControlPlaceholder(
       offset.block_offset = border_padding_block_start;
     }
   }
-  return {FinishTextControlPlaceholder(result, offset, apply_fixed_size,
-                                       previous_inflow_position),
-          result->Status()};
+  return {
+      FinishTextControlPlaceholder(result, offset, child_data.margins,
+                                   apply_fixed_size, previous_inflow_position),
+      result->Status()};
 }
 
 LayoutUnit BlockLayoutAlgorithm::FinishTextControlPlaceholder(
     const LayoutResult* result,
     const LogicalOffset& offset,
+    const BoxStrut& margins,
     bool apply_fixed_size,
     const PreviousInflowPosition& previous_inflow_position) {
-  container_builder_.AddResult(*result, offset);
+  container_builder_.AddResult(*result, offset, margins);
   LayoutUnit block_offset = previous_inflow_position.logical_block_offset;
   if (apply_fixed_size) {
     return block_offset;
@@ -4148,8 +4148,7 @@ LayoutUnit BlockLayoutAlgorithm::ComputeInitialBlockStartAnnotationSpace()
   const ConstraintSpace& space = GetConstraintSpace();
   // Allow ruby annotations to overflow to the block-start margin if the
   // container has no block-start border.
-  if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-      space.ContainsAnnotations() && !space.IsNewFormattingContext() &&
+  if (space.ContainsAnnotations() && !space.IsNewFormattingContext() &&
       (RuntimeEnabledFeatures::AnnotationSpaceForMultiColEnabled() ||
        !space.IsInsideBalancedColumns()) &&
       Borders().block_start == 0) {
@@ -4165,12 +4164,16 @@ LayoutUnit BlockLayoutAlgorithm::ComputeInitialBlockStartAnnotationSpace()
 
 void BlockLineClampData::Setup(const BlockNode& node,
                                const BoxFragmentBuilder& container_builder) {
+  if (node.IsMulticolContainer()) {
+    return;
+  }
+
   const ConstraintSpace& constraint_space =
       container_builder.GetConstraintSpace();
   const ComputedStyle& style = node.Style();
 
   // Setting up the state in the line-clamp container
-  if (style.HasLineClamp() && !node.IsMulticolContainer()) {
+  if (style.HasLineClamp()) {
     if (data.IsLineClampContext()) {
       // We're in a relayout, we keep the existing state.
       return;
@@ -4219,7 +4222,8 @@ void BlockLineClampData::Setup(const BlockNode& node,
     return;
   }
 
-  if (style.WebkitLineClamp() != 0) {
+  if (style.WebkitLineClamp() != 0 ||
+      style.Continue() == EContinue::kWebkitLegacy) {
     UseCounter::Count(node.GetDocument(),
                       WebFeature::kWebkitLineClampWithoutWebkitBox);
   }

@@ -119,6 +119,8 @@ chromium-metrics-reviews@google.com.
 <!-- LINT.IfChange(DefaultBrowserSetterType) -->
 
 <variants name="DefaultBrowserSetterType">
+  <variant name="AnnotatedShellIntegration"
+      summary="the annotated shell integration setter"/>
   <variant name="ShellIntegration" summary="the shell integration setter"/>
   <variant name="VisualGuide" summary="the visual guide setter"/>
 </variants>
@@ -360,16 +362,6 @@ chromium-metrics-reviews@google.com.
   <token key="Type" variants="ContextMenuAndroidTypes"/>
 </histogram>
 
-<histogram name="ContextMenu.TimeToSelectShare" units="ms"
-    expires_after="2023-02-19">
-  <owner>jeffreycohen@chromium.org</owner>
-  <owner>chrome-shared-highlighting@google.com</owner>
-  <summary>
-    Records how long it takes to press on &quot;Share&quot; from the time
-    context menu is shown. Android only.
-  </summary>
-</histogram>
-
 <histogram name="ContextMenu.ViewsTextServices.Emoji" enum="Boolean"
     expires_after="2023-10-08">
   <owner>yyushkina@chromium.org</owner>
@@ -399,6 +391,22 @@ chromium-metrics-reviews@google.com.
     .pak file that could not initially be opened because it was in use. Recorded
     once for each successfully opened .pak file after an initial
     FILE_ERROR_IN_USE.
+  </summary>
+</histogram>
+
+<histogram name="DefaultBrowser.AnnotatedShellIntegration.Outcome"
+    enum="DefaultBrowserAnnotatedShellIntegrationOutcome"
+    expires_after="2027-08-06">
+  <owner>alsan@chromium.org</owner>
+  <owner>atharvmaan@chromium.org</owner>
+  <owner>koretadaniel@chromium.org</owner>
+  <summary>
+    How the bubble that the annotated shell integration setter points at the
+    Windows Settings &quot;Set default&quot; button ended: on its own (e.g. the
+    user closed the bubble, or the button could not be located), or because the
+    shell integration flow finished first (and whether Chrome became the default
+    browser). Recorded on Windows 11 only, once per guidance session. The flow's
+    own result is in DefaultBrowser.AnnotatedShellIntegration.Result.
   </summary>
 </histogram>
 
@@ -509,6 +517,34 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="DefaultBrowser.VisualGuide.RowMeasurementOutcome"
+    enum="UiaElementLocationOutcome" expires_after="2027-08-06">
+  <owner>alsan@chromium.org</owner>
+  <owner>atharvmaan@chromium.org</owner>
+  <owner>koretadaniel@chromium.org</owner>
+  <summary>
+    Outcome of one attempt by the visual guided setter to locate the &quot;Set
+    default&quot; button in the Windows Settings app, via UI Automation in a
+    utility process. Recorded on Windows once per attempt. The arrow is only
+    shown after a &quot;Located&quot; outcome; after a few failures in a row,
+    the flow stops measuring.
+  </summary>
+</histogram>
+
+<histogram name="DefaultBrowser.VisualGuide.RowMeasurementTime" units="ms"
+    expires_after="2027-08-06">
+  <owner>alsan@chromium.org</owner>
+  <owner>atharvmaan@chromium.org</owner>
+  <owner>koretadaniel@chromium.org</owner>
+  <summary>
+    Time taken by one attempt by the visual guided setter to locate the
+    &quot;Set default&quot; button in the Windows Settings app, including up to
+    10 seconds of waiting for Settings to show the page. Recorded on Windows for
+    each attempt, including ones that time out or find nothing, except attempts
+    a newer one cut short and attempts refused because the window was gone.
+  </summary>
+</histogram>
+
 <histogram
     name="DefaultBrowser.{DefaultBrowserEntrypointType}.{DefaultBrowserSetterType}.DefaultSetAfterSetterFailure"
     enum="BooleanSuccess" expires_after="2027-04-27">
@@ -582,7 +618,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="DefaultBrowser.{DefaultBrowserSetterType}.Result"
-    enum="BooleanSuccess" expires_after="2027-03-07">
+    enum="BooleanSuccess" expires_after="2027-05-09">
   <owner>alsan@chromium.org</owner>
   <owner>atharvmaan@chromium.org</owner>
   <owner>koretadaniel@chromium.org</owner>
@@ -653,7 +689,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="InitialWebUI.NewWindow{CreationSource}.{ExistingWindow}.BrowserWindow.ClosedBeforeFirstPaint{Version}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>annasato@chromium.org</owner>
   <owner>chrome-webium-product-eng@google.com</owner>
   <summary>
@@ -852,29 +888,36 @@ chromium-metrics-reviews@google.com.
   <owner>mych@chromium.org</owner>
   <owner>chrome-webium-product-eng@google.com</owner>
   <summary>
-    Recorded per browser window when InitialWebUISurfaceSync is enabled upon
-    first presentation, post-deadline paint, or pre-paint session termination.
-    Measures whether the reload button WebUI painted within the Finch-configured
-    deadline, exceeded the deadline and painted later, or terminated before
-    paint (window closed or renderer crashed).
+    Recorded once per browser window when InitialWebUISurfaceSync is enabled.
+    Records whether the reload button WebUI had painted by the browser window's
+    first presentation, painted after it, or never painted because the window
+    closed or the reload button renderer went away, before or after that
+    presentation.
+
+    A paint after the browser window's presentation does not mean the surface
+    sync deadline (deadline_in_frames) expired. Viz presents the browser frame
+    as soon as the toolbar surface has any frame, even one that does not show
+    the reload button yet.
   </summary>
 </histogram>
 
 <histogram
-    name="InitialWebUI.ReloadButton.SurfaceSync.TimeToPaintAfterDeadline"
+    name="InitialWebUI.ReloadButton.SurfaceSync.TimeToPaintAfterBrowserPresentation"
     units="ms" expires_after="2027-04-01">
   <owner>mych@chromium.org</owner>
   <owner>chrome-webium-product-eng@google.com</owner>
   <summary>
-    Records the elapsed time between the surface sync deadline expiration and
-    the first visually non-empty paint of the reload button WebUI. Only recorded
-    when the reload button paints after the deadline has passed.
+    Records the time from the browser window's first presentation to the first
+    paint of the reload button WebUI, when InitialWebUISurfaceSync is enabled
+    and the reload button paints after the browser window is presented. Recorded
+    once per window, together with the &quot;Painted After Browser
+    Presentation&quot; bucket of InitialWebUI.ReloadButton.SurfaceSync.Result.
   </summary>
 </histogram>
 
 <histogram
     name="InitialWebUI.Startup{Scenario}.BrowserWindow.ClosedBeforeFirstPaint{StartupTemperature}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>annasato@chromium.org</owner>
   <owner>chrome-webium-product-eng@google.com</owner>
   <summary>
@@ -1046,6 +1089,30 @@ chromium-metrics-reviews@google.com.
     Recorded during `RenderProcessHostImpl::Init()` for TopChromeWebUI
     processes. Records true if there is already an existing RenderProcessHost
     for TopChromeWebUI for the same profile that is initialized and not dead.
+  </summary>
+</histogram>
+
+<histogram name="InitialWebUI.Toolbar.ProfilePrewarmTakeResult"
+    enum="WebUIContentsPrerenderTakeResult" expires_after="2027-04-25">
+  <owner>mych@chromium.org</owner>
+  <owner>chrome-webium-product-eng@google.com</owner>
+  <summary>
+    Records whether a new normal browser window adopted a prewarmed WebUI
+    toolbar, and if not, why: either its regular profile's spare, or (with
+    TopChromeWebUIPrerenderingUnbound enabled) the process-wide unbound spare
+    shared by windows of any profile.
+
+    Recorded each time an eligible normal browser window is created (a regular
+    profile by default, or any profile when TopChromeWebUIPrerenderingUnbound is
+    enabled alongside TopChromeWebUISharedRenderer and
+    WebUIReloadButtonPrewarmWebUIPreNavigate) while the WebUI toolbar, the
+    TopChromeWebUIPrerendering feature, and the WebUIReloadButtonPrewarmWebUI
+    and WebUIReloadButtonProfilePrewarming params of the WebUIReloadButton
+    feature are enabled. No prewarmed toolbar is built before the first window
+    opens, so windows opened before that first build, such as every window of a
+    startup or session restore, record &quot;No spare&quot;. So do windows
+    opened before the prewarmed toolbar is rebuilt after the last window took
+    it, or while memory pressure stops the rebuild.
   </summary>
 </histogram>
 
@@ -1410,6 +1477,19 @@ features through Chrome Labs. -->
   <summary>URLs for which Chrome creates WebUIControllers.</summary>
 </histogram>
 
+<histogram name="WebUI.Dino.ImpressionSource" enum="DinoImpressionSource"
+    expires_after="2027-05-01">
+  <owner>musalmaan@chromium.org</owner>
+  <owner>amyhwang@chromium.org</owner>
+  <owner>yeroshkin@chromium.org</owner>
+  <summary>
+    Records the impression source (the reason the user saw the Chrome Dino game
+    page) when a primary main-frame navigation commits for chrome://dino or for
+    an offline network error page (ERR_INTERNET_DISCONNECTED), regardless of
+    whether the user starts playing the game.
+  </summary>
+</histogram>
+
 <histogram name="WebUI.Settings.ActiveDuration" units="ms"
     expires_after="2027-08-31">
   <owner>mickeyburks@google.com</owner>
@@ -1451,6 +1531,25 @@ features through Chrome Labs. -->
   </summary>
 </histogram>
 
+<histogram
+    name="WebUI.TopChrome.Graphics.Smoothness.PercentDroppedFrames3.AllSequences"
+    units="%" expires_after="2027-05-09">
+  <owner>mych@chromium.org</owner>
+  <owner>chrome-webium-product-eng@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
+  <summary>
+    Graphics.Smoothness.PercentDroppedFrames3.AllSequences samples recorded by
+    top-chrome WebUI renderer processes (for example
+    chrome://webui-toolbar.top-chrome). Not recorded directly: when the
+    WebiumMetricsMapping feature is enabled, SubprocessMetricsProvider renames
+    those samples to this histogram as it merges histograms from top-chrome
+    WebUI renderers, per the Finch-provided MetricsNameMappingConfiguration.
+    Those samples then no longer count toward
+    Graphics.Smoothness.PercentDroppedFrames3.AllSequences, which separates jank
+    in top-chrome WebUI from jank in web content.
+  </summary>
+</histogram>
+
 <histogram name="WebUI.TopChrome.Preload.Reason" enum="WebUIPreloadReason"
     expires_after="2027-04-11">
   <owner>kerenzhu@chromium.org</owner>
@@ -1475,7 +1574,7 @@ features through Chrome Labs. -->
 </histogram>
 
 <histogram name="WebUI.TopChrome.RequestToFCP{WebUIName}" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>kerenzhu@chromium.org</owner>
   <owner>chrome-webui-for-features@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -1489,7 +1588,7 @@ features through Chrome Labs. -->
 </histogram>
 
 <histogram name="WebUI.TopChrome.RequestToLCP{WebUIName}" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>kerenzhu@chromium.org</owner>
   <owner>chrome-webui-for-features@google.com</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -1640,6 +1739,7 @@ features through Chrome Labs. -->
     <variant name=".ShowKaleidoscope"/>
     <variant name=".ShowLensOverlay"/>
     <variant name=".ShowManagementPage"/>
+    <variant name=".ShowOffersAndLoyaltyCards"/>
     <variant name=".ShowPasswordManager"/>
     <variant name=".ShowPaymentMethods"/>
     <variant name=".ShowPerformanceSettings"/>

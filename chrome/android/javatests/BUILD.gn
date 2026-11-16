@@ -93,7 +93,6 @@ android_library("chrome_test_java_helper") {
     "//chrome/browser/android/intents:java",
     "//chrome/browser/android/lifecycle:java",
     "//chrome/browser/android/metrics:java",
-    "//chrome/browser/android/metrics:ukm_java_test_support",
     "//chrome/browser/autofill/android:java_resources",
     "//chrome/browser/autofill/test:test_support_java",
     "//chrome/browser/back_press/android:java",
@@ -285,8 +284,6 @@ android_library("chrome_test_java_helper") {
     "//components/crash/android:java",
     "//components/device_reauth:device_reauth_java_enums",
     "//components/digital_goods/mojom:mojom_java",
-    "//components/dom_distiller/core/android:dom_distiller_core_java",
-    "//components/dom_distiller/core/mojom:mojom_java",
     "//components/download/internal/background_service:internal_java",
     "//components/download/internal/common:internal_java",
     "//components/download/network:network_java",
@@ -370,6 +367,8 @@ android_library("chrome_test_java_helper") {
     "//components/ukm/android:java",
     "//components/url_formatter/android:url_formatter_java",
     "//components/user_prefs/android:java",
+    "//components/web_distiller/core/android:web_distiller_core_java",
+    "//components/web_distiller/core/mojom:mojom_java",
     "//components/webapk:proto_java",
     "//components/webapk/android/libs/client:java",
     "//components/webapk/android/libs/common:java",
@@ -522,6 +521,7 @@ android_library("chrome_test_java_org.chromium.chrome.browser") {
     "src/org/chromium/chrome/browser/VideoFullscreenOrientationLockChromeTest.java",
     "src/org/chromium/chrome/browser/ViewTransitionPixelTest.java",
     "src/org/chromium/chrome/browser/VirtualKeyboardResizeTest.java",
+    "src/org/chromium/chrome/browser/VirtualKeyboardVisualViewportTest.java",
     "src/org/chromium/chrome/browser/WarmupManagerTest.java",
     "src/org/chromium/chrome/browser/recent_tabs/FakeRecentlyClosedTabManager.java",
     "src/org/chromium/chrome/browser/recent_tabs/RecentTabsPageTest.java",
@@ -532,6 +532,7 @@ android_library("chrome_test_java_org.chromium.chrome.browser") {
     "//chrome/browser/actor/android:java",
     "//chrome/browser/settings:settings_in_tab_java",
     "//chrome/browser/ui/android/bars_common:java",
+    "//chrome/browser/ui/vertical_tabs:java",
     "//device/gamepad:java",
   ]
 }
@@ -587,7 +588,11 @@ android_library("chrome_test_java_org.chromium.chrome.browser.appearance") {
 
   deps = [
     ":chrome_test_java_helper",
+    "//chrome/browser/glic:public_java",
+    "//chrome/browser/glic/android:jni_headers_java",
+    "//chrome/browser/ui/android/actions:java",
     "//chrome/browser/ui/android/bottombar:config_java",
+    "//chrome/browser/ui/android/bottombar:java",
     "//chrome/browser/ui/android/toolbar:adaptive_features_java",
     "//chrome/browser/ui/android/toolbar:optional_button_java",
     "//chrome/browser/ui/vertical_tabs:java",
@@ -703,6 +708,7 @@ android_library("chrome_test_java_org.chromium.chrome.browser.compositor") {
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabGroupDragDropTest.java",
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripContextMenuTest.java",
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripDragDropTestBase.java",
+    "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripFacilityTest.java",
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripGroupContextMenuTest.java",
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripNavigationFailureTest.java",
     "src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripPinUnpinTabsTest.java",
@@ -835,7 +841,6 @@ android_library("chrome_test_java_org.chromium.chrome.browser.display_cutout") {
     "src/org/chromium/chrome/browser/display_cutout/DisplayCutoutTest.java",
     "src/org/chromium/chrome/browser/display_cutout/DisplayCutoutTestRule.java",
     "src/org/chromium/chrome/browser/display_cutout/WebappDisplayCutoutTest.java",
-    "src/org/chromium/chrome/browser/display_cutout/WebappDisplayCutoutTestRule.java",
   ]
 
   deps = [ ":chrome_test_java_helper" ]
@@ -1039,6 +1044,7 @@ android_library("chrome_test_java_org.chromium.chrome.browser.ntp") {
     "//chrome/browser/educational_tip:java",
     "//chrome/browser/ntp_customization:java",
     "//chrome/browser/ui/android/logo:utils_java",
+    "//chrome/browser/ui/android/preloading:java",
   ]
 }
 
@@ -1492,6 +1498,8 @@ android_library("chrome_test_java_org.chromium.chrome.browser.sync") {
     "src/org/chromium/chrome/browser/sync/SyncTest.java",
     "src/org/chromium/chrome/browser/sync/UkmTest.java",
     "src/org/chromium/chrome/browser/sync/settings/AccountManagementFragmentTest.java",
+    "src/org/chromium/chrome/browser/sync/settings/CentralAccountCardPreferenceRenderTest.java",
+    "src/org/chromium/chrome/browser/sync/settings/CentralAccountCardPreferenceTest.java",
     "src/org/chromium/chrome/browser/sync/settings/GoogleServicesSettingsTest.java",
     "src/org/chromium/chrome/browser/sync/settings/IdentityErrorCardPreferenceTest.java",
     "src/org/chromium/chrome/browser/sync/settings/ManageSyncSettingsTest.java",
@@ -1639,7 +1647,6 @@ android_library("chrome_test_java_org.chromium.chrome.browser.tasks") {
     "//chrome/android/features/tab_ui/java/src/org/chromium/chrome/browser/tasks/tab_management/vertical_tabs/VerticalTabListRenderTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/ArchivedTabsCardRenderTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/ClosableTabListEditorTest.java",
-    "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/CloseAllTabsDialogTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/IncognitoReauthPromoCardRenderTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/RecyclerViewMatcherUtils.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/SelectableTabListEditorTest.java",
@@ -1657,6 +1664,7 @@ android_library("chrome_test_java_org.chromium.chrome.browser.tasks") {
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabListEditorTestingRobot.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabOverflowMenuRenderTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabSearchOverlayTest.java",
+    "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabSearchOverlayVerticalTabsTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabSwitcherCardContextMenuTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabSwitcherLayoutPTTest.java",
     "//chrome/android/features/tab_ui/javatests/src/org/chromium/chrome/browser/tasks/tab_management/TabSwitcherLayoutTest.java",
@@ -1789,6 +1797,8 @@ android_library("chrome_test_java_various") {
     "//chrome/android/java/src/org/chromium/chrome/browser/hub/HubLayoutPublicTransitTest.java",
     "//chrome/browser/commerce/merchant_viewer/android/javatests/src/org/chromium/chrome/browser/merchant_viewer/PageInfoStoreInfoViewTest.java",
     "//chrome/browser/commerce/price_tracking/android/javatests/src/org/chromium/chrome/browser/price_tracking/PriceTrackingFeaturesTest.java",
+    "//chrome/browser/tab_ui/android/javatests/src/org/chromium/chrome/browser/tab_ui/close_all_tabs/CloseAllTabsDialogTest.java",
+    "//chrome/browser/tab_ui/android/javatests/src/org/chromium/chrome/browser/tab_ui/undo_tab_close_snackbar/UndoBarControllerTest.java",
     "src/org/chromium/chrome/browser/accessibility/PageZoomTest.java",
     "src/org/chromium/chrome/browser/automotive/BackButtonToolbarTest.java",
     "src/org/chromium/chrome/browser/background_sync/BackgroundSyncTest.java",
@@ -1867,7 +1877,6 @@ android_library("chrome_test_java_various") {
     "src/org/chromium/chrome/browser/ui/MediaCaptureOverlayControllerTest.java",
     "src/org/chromium/chrome/browser/ui/WebAppHeaderLayoutBrowserTest.java",
     "src/org/chromium/chrome/browser/ui/system/StatusBarColorControllerTest.java",
-    "src/org/chromium/chrome/browser/undo_tab_close_snackbar/UndoBarControllerTest.java",
     "src/org/chromium/chrome/browser/usage_stats/TabSuspensionTest.java",
     "src/org/chromium/chrome/browser/video/FullscreenVideoTest.java",
     "src/org/chromium/chrome/browser/video/VideoTest.java",
@@ -2008,7 +2017,6 @@ java_group("common_unit_test_deps_java") {
     "//components/browser_ui/widget/android:java",
     "//components/commerce/core/android:core_java",
     "//components/crash/android:java",
-    "//components/dom_distiller/core/android:dom_distiller_core_java",
     "//components/embedder_support/android:context_menu_java",
     "//components/embedder_support/android:util_java",
     "//components/external_intents/android:java",
@@ -2033,6 +2041,7 @@ java_group("common_unit_test_deps_java") {
     "//components/signin/public/android:signin_java_test_support",
     "//components/url_formatter/android:url_formatter_java",
     "//components/user_prefs/android:java",
+    "//components/web_distiller/core/android:web_distiller_core_java",
     "//components/webapps/browser/android:java",
     "//content/public/android:content_full_java",
     "//content/public/android:content_java",
@@ -2070,18 +2079,6 @@ java_group("common_unit_test_deps_java") {
     "//url:gurl_java",
     "//url:gurl_junit_test_support",
   ]
-}
-
-# Partition tests into one target per-package to keep incremental build times
-# down.
-android_library("chrome_unit_test_java_org.chromium.chrome.browser.actor") {
-  resources_package = "org.chromium.chrome"
-
-  sources = [
-    "src/org/chromium/chrome/browser/actor/ActorForegroundServiceTest.java",
-  ]
-
-  deps = [ ":common_unit_test_deps_java" ]
 }
 
 android_library(
@@ -2199,6 +2196,7 @@ android_library("chrome_unit_test_java_various") {
 
   deps = [
     ":common_unit_test_deps_java",
+    "//base/test:public_transit_java",
     "//chrome/browser/ui/android/actions:java",
     "//chrome/browser/ui/android/pdf:pdf_utils_java",
     "//components/omnibox/browser:scheme_classifier_java",

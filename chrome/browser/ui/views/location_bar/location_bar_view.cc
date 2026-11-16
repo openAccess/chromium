@@ -53,7 +53,6 @@
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/page_action/page_action_properties_provider.h"
 #include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -63,7 +62,6 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_layout.h"
-#include "chrome/browser/ui/views/location_bar/location_bar_util.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_state_helper.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
@@ -71,6 +69,10 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_full_presenter.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_host.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_location_bar_host.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_browser_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_full_webui.h"
@@ -104,6 +106,7 @@
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
+#include "components/omnibox/browser/omnibox_text_util.h"
 #include "components/omnibox/browser/page_classification_functions.h"
 #include "components/omnibox/browser/vector_icons.h"
 #include "components/omnibox/common/composebox_features.h"
@@ -114,6 +117,7 @@
 #include "components/search_engines/template_url_service.h"
 #include "components/security_state/core/security_state.h"
 #include "components/startup_metric_utils/common/startup_metric_utils.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -259,8 +263,8 @@ LocationBarView::LocationBarView(BrowserWindowInterface* browser,
               v->is_full_webui_omnibox_ &&
               v->GetOmniboxController()->popup_state_manager()->popup_state() ==
                   OmniboxPopupState::kFull &&
-              v->omnibox_popup_view_ && v->omnibox_popup_view_->presenter() &&
-              v->omnibox_popup_view_->presenter()
+              v->omnibox_popup_view_ && v->omnibox_popup_view_->popup_host() &&
+              v->omnibox_popup_view_->popup_host()
                   ->CompletedFirstVisuallyNonEmptyPaint();
           return v->GetOmniboxController()->edit_model()->is_caret_visible() &&
                  !v->ShouldUsePopupOpenAppearance() &&
@@ -297,6 +301,7 @@ LocationBarView::~LocationBarView() {
   // is destroyed before the omnibox controller (a member variable), since it
   // holds a raw_ptr to the omnibox controller.
   popup_state_changed_subscription_ = base::CallbackListSubscription();
+  omnibox_popup_presenter_ = nullptr;
   omnibox_popup_view_.reset();
   RemoveChildViewT(omnibox_view_.ExtractAsDangling());
 }
@@ -381,20 +386,41 @@ void LocationBarView::Init() {
 
     if (web_ui_popup_dropdown_only &&
         !base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxPopupDebug)) {
-      omnibox_popup_view_ = std::make_unique<OmniboxPopupViewWebUI>(
+      auto presenter = std::make_unique<OmniboxPopupPresenter>(
+          /*location_bar=*/this, /*presenter_delegate=*/*this,
+          omnibox_controller_.get());
+      omnibox_popup_presenter_ = presenter.get();
+      auto popup_view = std::make_unique<OmniboxPopupViewWebUI>(
           /*omnibox_view=*/omnibox_view_,
           /*controller=*/omnibox_controller_.get(), /*location_bar=*/this,
-          /*presenter_delegate=*/*this);
+          std::move(presenter));
+      popup_view->set_presenter(omnibox_popup_presenter_);
+      omnibox_popup_view_ = std::move(popup_view);
     } else if (omnibox::IsWebUIOmniboxInBrowserViewEnabled()) {
       omnibox_popup_view_ =
           std::make_unique<OmniboxPopupViewBrowserView>(this, browser_);
     } else if (is_full_webui_omnibox_) {
-      omnibox_popup_view_ = std::make_unique<OmniboxPopupViewFullWebUI>(
+      std::unique_ptr<OmniboxPopupHost> popup_host;
+      if (omnibox::ShouldHostUnboundedOmniboxInLocationBar()) {
+        popup_host = std::make_unique<OmniboxPopupLocationBarHost>(
+            *this, *omnibox_controller_);
+      } else {
+        auto presenter = std::make_unique<OmniboxPopupFullPresenter>(
+            /*location_bar=*/this, /*presenter_delegate=*/*this,
+            omnibox_controller_.get());
+        omnibox_popup_presenter_ = presenter.get();
+        popup_host = std::move(presenter);
+      }
+      auto popup_view = std::make_unique<OmniboxPopupViewFullWebUI>(
           /*omnibox_view=*/omnibox_view_,
           /*controller=*/omnibox_controller_.get(), /*location_bar=*/this,
-          /*presenter_delegate=*/*this,
-          base::BindOnce(&LocationBarView::OnFullWebUiOmniboxReady,
-                         weak_factory_.GetWeakPtr()));
+          std::move(popup_host),
+          base::BindRepeating(&LocationBarView::OnFullWebUiOmniboxReady,
+                              weak_factory_.GetWeakPtr()));
+      if (omnibox_popup_presenter_) {
+        popup_view->set_presenter(omnibox_popup_presenter_);
+      }
+      omnibox_popup_view_ = std::move(popup_view);
     }
 
     if (is_full_webui_omnibox_) {
@@ -470,14 +496,12 @@ void LocationBarView::Init() {
   selected_keyword_view_ = AddChildView(std::make_unique<SelectedKeywordView>(
       this, profile_, omnibox_controller_.get(), font_list));
 
-  SkColor icon_color = color_provider->GetColor(kColorOmniboxActionIcon);
-
   std::vector<std::unique_ptr<ContentSettingImageModel>> models =
       ContentSettingImageModel::GenerateContentSettingImageModels();
   for (auto& model : models) {
     auto image_view = std::make_unique<ContentSettingImageView>(
         std::move(model), this, this, browser_, page_action_font_list);
-    image_view->SetIconColor(icon_color);
+    image_view->SetIconColor(kColorOmniboxActionIcon);
     image_view->SetVisible(false);
     content_setting_views_.push_back(AddChildView(std::move(image_view)));
   }
@@ -585,7 +609,7 @@ std::u16string_view LocationBarView::GetImeInlineAutocompletion() const {
 
 void LocationBarView::SetOmniboxAdditionalText(std::u16string_view text) {
   DCHECK(OmniboxFieldTrial::IsRichAutocompletionEnabled() || text.empty());
-  std::u16string adjusted_text = FormatOmniboxAdditionalText(text);
+  std::u16string adjusted_text = omnibox::FormatAdditionalText(text);
   SetOmniboxAdjacentText(omnibox_additional_text_view_,
                          std::move(adjusted_text));
 }
@@ -665,6 +689,11 @@ OmniboxPopupView* LocationBarView::GetOmniboxPopupView() {
 
 OmniboxPopupPresenterDelegate* LocationBarView::GetPresenterDelegate() {
   return this;
+}
+
+OmniboxPopupPresenterBase*
+LocationBarView::GetOmniboxPopupPresenterForTesting() {
+  return omnibox_popup_presenter_;
 }
 
 OmniboxController* LocationBarView::GetOmniboxController() {
@@ -1038,12 +1067,6 @@ void LocationBarView::OnThemeChanged() {
     return;
   }
 
-  const SkColor icon_color =
-      GetColorProvider()->GetColor(kColorOmniboxActionIcon);
-  for (ContentSettingImageView* image_view : content_setting_views_) {
-    image_view->SetIconColor(icon_color);
-  }
-
   RefreshBackground();
   RefreshClearAllButtonIcon();
 }
@@ -1274,6 +1297,23 @@ void LocationBarView::OnPopupFirstVisuallyNonEmptyPaint() {
   }
 }
 
+void LocationBarView::OnPopupWebUIContentsReleased() {
+  if (!is_full_webui_omnibox_) {
+    return;
+  }
+  // The full popup's page moved to another window or was dropped. As before
+  // WebUI first became ready, `omnibox_view_` takes focus until this window
+  // has a ready page again, which runs `OnFullWebUiOmniboxReady()`.
+  if (auto* focus_manager = GetFocusManager();
+      focus_manager && focus_manager->GetStoredFocusView() == this) {
+    focus_manager->SetStoredFocusView(omnibox_view_.get());
+  }
+  UpdateFocusBehavior(is_toolbar_visible_);
+  if (auto* focus_ring = views::FocusRing::Get(this)) {
+    focus_ring->Refresh();
+  }
+}
+
 views::View* LocationBarView::GetLocationBarFocusRestoreView() {
   if (IsFullWebUiOmniboxReady()) {
     return this;
@@ -1291,19 +1331,19 @@ bool LocationBarView::is_full_webui_omnibox() const {
 // ensures the omnibox knows as soon as possible and ignores focus-loss events
 // during the whole time that the embedded permission prompt is showing.
 void LocationBarView::SetPermissionPromptShowing(bool showing) {
-  OmniboxPopupPresenterBase* presenter = nullptr;
-  // Get Omnibox popup presenter for AIM or normal omnibox, depending
-  // on which is showing.
+  OmniboxPopupHost* popup_host = nullptr;
+  // Get Omnibox popup host for AIM or normal omnibox, depending on which is
+  // showing.
   if (auto* aim_presenter = GetOmniboxPopupAimPresenter();
       aim_presenter && aim_presenter->IsShown()) {
-    presenter = aim_presenter;
+    popup_host = aim_presenter;
   } else if (auto* popup_view = GetOmniboxPopupView();
-             popup_view && popup_view->presenter() &&
-             popup_view->presenter()->IsShown()) {
-    presenter = popup_view->presenter();
+             popup_view && popup_view->popup_host() &&
+             popup_view->popup_host()->IsShown()) {
+    popup_host = popup_view->popup_host();
   }
-  if (presenter) {
-    presenter->SetPermissionPromptShowing(showing);
+  if (popup_host) {
+    popup_host->SetPermissionPromptShowing(showing);
   }
 }
 
@@ -1771,6 +1811,27 @@ void LocationBarView::OnFocus() {
     // traversal, focus restoration), forward to WebUI without triggering an
     // unexpected Zero-Prefix Suggestion (ZPS) query.
     if (!moving_focus_to_webui_) {
+      if (omnibox::ShouldHostUnboundedOmniboxInLocationBar() &&
+          GetFocusManager() &&
+          GetFocusManager()->focus_change_reason() ==
+              views::FocusManager::FocusChangeReason::kFocusRestore) {
+        // On activation by a click, `FocusManager` restores focus before the
+        // click is dispatched; let the click take focus first.
+        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE,
+            base::BindOnce(
+                [](base::WeakPtr<LocationBarView> self) {
+                  // `LocationBarView::HasFocus()` checks `edit_model()`, not
+                  // Views focus.
+                  if (self && self->views::View::HasFocus()) {
+                    self->ForwardFocusToWebUI(/*query_zps=*/false,
+                                              /*select_all=*/false,
+                                              /*show_full_url=*/false);
+                  }
+                },
+                weak_factory_.GetWeakPtr()));
+        return;
+      }
       ForwardFocusToWebUI(/*query_zps=*/false, /*select_all=*/false,
                           /*show_full_url=*/false);
     }
@@ -1985,8 +2046,8 @@ void LocationBarView::OnPopupStateChanged(OmniboxPopupState old_state,
       }
       break;
     case OmniboxPopupState::kFull:
-      if (omnibox_popup_view_->presenter()) {
-        omnibox_popup_view_->presenter()->Hide();
+      if (omnibox_popup_view_->popup_host()) {
+        omnibox_popup_view_->popup_host()->Hide();
       }
       break;
     case OmniboxPopupState::kAim:
@@ -2005,8 +2066,8 @@ void LocationBarView::OnPopupStateChanged(OmniboxPopupState old_state,
       // updating the popup state.
       break;
     case OmniboxPopupState::kFull:
-      if (omnibox_popup_view_->presenter()) {
-        omnibox_popup_view_->presenter()->Show();
+      if (omnibox_popup_view_->popup_host()) {
+        omnibox_popup_view_->popup_host()->Show();
       }
       break;
     case OmniboxPopupState::kAim:
@@ -2182,8 +2243,8 @@ void LocationBarView::OnOmniboxFocused() {
 
   // Lets a popup that creates its content on demand start loading it.
   if (OmniboxPopupView* popup_view = GetOmniboxPopupView()) {
-    if (OmniboxPopupPresenterBase* presenter = popup_view->presenter()) {
-      presenter->OnOmniboxFocused();
+    if (OmniboxPopupHost* popup_host = popup_view->popup_host()) {
+      popup_host->OnOmniboxFocused();
     }
   }
 }
@@ -2520,13 +2581,7 @@ page_actions::PageActionController* LocationBarView::GetPageActionController() {
     return nullptr;
   }
 
-  // Tab features may be null while the tab is being destroyed.
-  tabs::TabFeatures* tab_features = active_tab->GetTabFeatures();
-  if (!tab_features) {
-    return nullptr;
-  }
-
-  return tab_features->page_action_controller();
+  return page_actions::PageActionController::From(active_tab);
 }
 
 #if BUILDFLAG(IS_MAC)

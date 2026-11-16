@@ -160,7 +160,8 @@ const PrintableSubEntry kU002C[] = {
     {DomCode::US_W, false, false, kAny, kAny, VKEY_OEM_COMMA},
     {DomCode::US_V, false, false, kAny, kAny, VKEY_OEM_COMMA},
     {DomCode::US_M, false, false, kAny, kAny, VKEY_OEM_COMMA},
-    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA}};
+    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA},
+    {DomCode::BACKSLASH, false, false, kAny, kAny, VKEY_OEM_COMMA}};
 
 // U+002D hyphen-minus
 const PrintableSubEntry kU002D[] = {
@@ -184,6 +185,7 @@ const PrintableSubEntry kU002E[] = {
     {DomCode::US_O, false, false, kAny, kAny, VKEY_OEM_PERIOD},
     {DomCode::QUOTE, false, false, kAny, kAny, VKEY_OEM_7},
     {DomCode::PERIOD, false, false, kAny, kAny, VKEY_OEM_PERIOD},
+    {DomCode::SLASH, true, false, 0x003A, kAny, VKEY_OEM_PERIOD},  // colon
     {DomCode::SLASH, false, false, kAny, kAny, VKEY_OEM_2}};
 
 // U+002F /
@@ -335,6 +337,8 @@ const PrintableSubEntry kU00E7[] = {
     {DomCode::QUOTE, false, false, kAny, kAny, VKEY_OEM_7},
     {DomCode::BACKSLASH, false, false, kAny, kAny, VKEY_OEM_2},
     {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_COMMA},
+    {DomCode::PERIOD, false, true, kAny, 0x002E, VKEY_OEM_PERIOD},  // full stop
+    {DomCode::PERIOD, false, false, kAny, kAny, VKEY_OEM_5},
     {DomCode::SEMICOLON, true, true, 0x00C7, 0x00DE,
      VKEY_OEM_3},  // C ced., Thorn
     {DomCode::SEMICOLON, true, false, 0x00C7, kAny,
@@ -380,6 +384,7 @@ const PrintableSubEntry kU00F6[] = {
     {DomCode::DIGIT0, false, false, kAny, kAny, VKEY_OEM_3},
     {DomCode::MINUS, false, false, kAny, kAny, VKEY_OEM_PLUS},
     {DomCode::BRACKET_LEFT, false, false, kAny, kAny, VKEY_OEM_4},
+    {DomCode::COMMA, false, false, kAny, kAny, VKEY_OEM_2},
     {DomCode::SEMICOLON, true, false, 0x00E9, kAny, VKEY_OEM_7},  // e acute
     {DomCode::SEMICOLON, true, true, 0x00D6, 0x0162,
      VKEY_OEM_3},  // O dia., T ced.
@@ -823,7 +828,11 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+  const int kNonShiftlikeModifiers =
+      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
+
   // Classify the keysym and convert to DOM and VKEY representations.
+  bool control_transformed_to_nul = false;
   if (dom_code != DomCode::DIGIT2 || (flags & EF_CONTROL_DOWN) == 0) {
     // Non-character key. (We only support NUL as ^@ and ^2.)
     *dom_key = NonPrintableXKeySymToDomKey(xkb_keysym);
@@ -834,9 +843,15 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
       return true;
     }
     if (character == 0) {
-      *dom_key = DomKey::UNIDENTIFIED;
-      *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
-      return true;
+      if ((flags & kNonShiftlikeModifiers) == 0) {
+        *dom_key = DomKey::UNIDENTIFIED;
+        *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+        return true;
+      }
+      // XKB's Control transformation maps some printable keys to NUL (e.g.
+      // Ctrl+Space and Ctrl+`). Let the fallback below find the character
+      // without the modifier.
+      control_transformed_to_nul = true;
     }
   }
 
@@ -844,8 +859,6 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
   // non-printable and a non-shiftlike modifier is down, we preferentially
   // return a printable key as if the modifier were not down.
   // https://w3c.github.io/uievents/#keys-guidelines
-  const int kNonShiftlikeModifiers =
-      EF_CONTROL_DOWN | EF_ALT_DOWN | EF_COMMAND_DOWN;
   if ((flags & kNonShiftlikeModifiers) && IsControlCharacter(character)) {
     int normal_ui_flags = flags & ~kNonShiftlikeModifiers;
     xkb_mod_mask_t normal_xkb_flags = EventFlagsToXkbFlags(normal_ui_flags);
@@ -859,6 +872,12 @@ bool XkbKeyboardLayoutEngine::Lookup(DomCode dom_code,
       character = normal_character;
       xkb_keysym = normal_keysym;
     }
+  }
+
+  if (control_transformed_to_nul && character == 0) {
+    *dom_key = DomKey::UNIDENTIFIED;
+    *key_code = DomCodeToUsLayoutNonLocatedKeyboardCode(dom_code);
+    return true;
   }
 
   *dom_key = DomKey::FromCharacter(character);
@@ -883,11 +902,10 @@ void XkbKeyboardLayoutEngine::SetInitCallbackForTest(
 }
 
 bool XkbKeyboardLayoutEngine::SetCurrentLayoutFromBuffer(
-    const char* keymap_string,
-    size_t size) {
+    std::string_view keymap_string) {
   xkb_keymap* keymap = xkb_keymap_new_from_buffer(
-      xkb_context_.get(), keymap_string, size, XKB_KEYMAP_FORMAT_TEXT_V1,
-      XKB_KEYMAP_COMPILE_NO_FLAGS);
+      xkb_context_.get(), keymap_string.data(), keymap_string.size(),
+      XKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS);
   if (!keymap)
     return false;
 

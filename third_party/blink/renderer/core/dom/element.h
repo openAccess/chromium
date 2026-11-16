@@ -29,6 +29,7 @@
 #include "base/dcheck_is_on.h"
 #include "base/functional/function_ref.h"
 #include "base/types/pass_key.h"
+#include "build/build_config.h"
 #include "third_party/blink/public/common/input/pointer_id.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-blink.h"
@@ -317,7 +318,18 @@ struct GetAnimationsOptionsResolved {
 typedef HashMap<AtomicString, std::pair<SpecificTrustedType, AtomicString>>
     AttrNameToTrustedType;
 
+// The MSVC ABI does not place derived class members in base class tail
+// padding. On 64-bit Windows, Element is packed to 4 bytes so that subclasses
+// that only add 32-bit members (such as most SVG elements) aren't padded to 8
+// bytes at each level. This doesn't misalign tag_name_, Element's only 64-bit
+// member; see the static_assert in the constructor.
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(push, 4)
+#endif
 class CORE_EXPORT Element : public ContainerNode {
+#if BUILDFLAG(IS_WIN) && defined(ARCH_CPU_64_BITS)
+#pragma pack(pop)
+#endif
   DEFINE_WRAPPERTYPEINFO();
 
  public:
@@ -924,8 +936,7 @@ class CORE_EXPORT Element : public ContainerNode {
       const QualifiedName& attribute_name) {
     return attribute_name.BloomFilter();
   }
-  static TinyBloomFilter FilterForString(const AtomicString& str) {
-    unsigned hash = str.Hash();
+  static constexpr TinyBloomFilter FilterForHash(unsigned hash) {
     TinyBloomFilter filter = 0;
     // Build a 32-bit Bloom filter, with k=2. We extract the two
     // (5-bit) hashes that we need from non-overlapping parts of the
@@ -933,6 +944,9 @@ class CORE_EXPORT Element : public ContainerNode {
     filter |= 1u << (hash & 31);
     filter |= 1u << ((hash >> 5) & 31);
     return filter;
+  }
+  static TinyBloomFilter FilterForString(const AtomicString& str) {
+    return FilterForHash(str.Hash());
   }
   bool SubtreeMayMatchClassOrAttrFilter(TinyBloomFilter filter) const {
     bool match = CouldMatchFilter(filter);
@@ -1528,7 +1542,12 @@ class CORE_EXPORT Element : public ContainerNode {
     kFocus,
     kBlur,
   };
-  void HandleInterestForHoverOrFocus(InterestSource source);
+  // For `InterestSource::kDeHover`, `newly_hovered_node` is the node that is
+  // gaining hover (i.e. the `relatedTarget` of the `pointerout` event), if
+  // any. Flat tree inclusive ancestors of `newly_hovered_node` remain hovered,
+  // so they are skipped.
+  void HandleInterestForHoverOrFocus(InterestSource source,
+                                     Node* newly_hovered_node = nullptr);
 
   // Returns true if any of its (non-inclusive) flat tree descendants is
   // keyboard focusable. Note that this is quite slow, since it traverses the
@@ -1957,6 +1976,11 @@ class CORE_EXPORT Element : public ContainerNode {
   // Marks this element as an overlay popup ad.
   void SetIsOverlayPopupAd();
 
+  // Marks this element as a prestitial ad: an overlay popup ad that appeared
+  // while the page was still loading and before the user interacted with it.
+  // The element must already be marked as an overlay popup ad.
+  void SetIsPrestitialAd();
+
   // Returns true if the element is considered ad-related.
   bool IsAdRelated() const;
 
@@ -1969,6 +1993,9 @@ class CORE_EXPORT Element : public ContainerNode {
 
   // Returns true if the element is an overlay popup ad.
   bool IsOverlayPopupAd() const;
+
+  // Returns true if the element is a prestitial ad. Implies IsOverlayPopupAd().
+  bool IsPrestitialAd() const;
 
   // Returns the `AdProvenance` if the element is ad-related, or `std::nullopt`
   // otherwise.
@@ -2082,8 +2109,6 @@ class CORE_EXPORT Element : public ContainerNode {
 
   bool IsDocumentElement() const;
 
-  bool IsReplacedElementRespectingCSSOverflow() const;
-
   void RemovePopoverData();
   PopoverData& EnsurePopoverData();
   PopoverData* GetPopoverData() const;
@@ -2100,7 +2125,8 @@ class CORE_EXPORT Element : public ContainerNode {
   void RemoveInterestInvokerTargetData();
   InterestInvokerTargetData& EnsureInterestInvokerTargetData();
   InterestInvokerTargetData* GetInterestInvokerTargetData() const;
-  void HandlePointerEventsForInterestFor(const AtomicString& event_type);
+  void HandlePointerEventsForInterestFor(const AtomicString& event_type,
+                                         Node* newly_hovered_node);
   void HandleFocusEventsForInterestFor(FocusEvent* focus_event);
 
   void DefaultEventHandler(Event&) override;
@@ -2530,10 +2556,6 @@ class CORE_EXPORT Element : public ContainerNode {
   void UpdateBackdropPseudoElement(const StyleRecalcChange,
                                    const StyleRecalcContext&);
 
-  bool ShouldUpdateOverscrollBackdropPseudoElement(const StyleRecalcChange);
-  void UpdateOverscrollBackdropPseudoElement(const StyleRecalcChange,
-                                             const StyleRecalcContext&);
-
   void UpdateFirstLetterPseudoElement(StyleUpdatePhase,
                                       const StyleRecalcContext&);
 
@@ -2653,8 +2675,8 @@ class CORE_EXPORT Element : public ContainerNode {
                             const QualifiedName&,
                             const AtomicString& value,
                             AttributeModificationReason);
-  void AppendAttributeInternal(const QualifiedName&,
-                               const AtomicString& value,
+  void AppendAttributeInternal(QualifiedName,
+                               AtomicString value,
                                AttributeModificationReason);
   void RemoveAttributeInternal(wtf_size_t index, AttributeModificationReason);
   AtomicString TrustedTypesCheckForAttribute(const QualifiedName&,

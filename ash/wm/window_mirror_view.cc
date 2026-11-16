@@ -22,7 +22,7 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/views/widget/widget.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -76,6 +76,7 @@ void ExcludeShadowContainer(ui::Layer* root, ui::Layer* shadow_layer) {
   std::vector<ui::Layer*> to_remove;
   for (ui::Layer* child : root->children()) {
     if (child->name() == "Decoration-Shadow:Container" ||
+        child->name() == "Decoration-ShadowWithHighlightBorder:Container" ||
         (shadow_layer && child->bounds() == shadow_layer->bounds() &&
          (child->bounds().x() < 0 || child->bounds().y() < 0))) {
       to_remove.push_back(child);
@@ -238,11 +239,10 @@ void WindowMirrorView::InitLayerOwner() {
   }
 
   if (exclude_shadow_) {
-    ui::Decoration* shadow_decoration =
-        ::wm::ShadowController::GetShadowDecorationForWindow(source_);
-    ExcludeShadowContainer(
-        layer_owner_->root(),
-        shadow_decoration ? shadow_decoration->layer() : nullptr);
+    ui::Decoration* decoration =
+        ::wm::DecorationController::GetDecorationForWindow(source_);
+    ExcludeShadowContainer(layer_owner_->root(),
+                           decoration ? decoration->layer() : nullptr);
   }
 
   DeprecatedLayoutImmediately();

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/glic/public/glic_enabling.h"
 
+#include <algorithm>
 #include <optional>
 #include <ranges>
 #include <string_view>
@@ -12,6 +13,7 @@
 #include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
@@ -148,8 +150,6 @@ bool IsAnchorable(Profile* profile, bool consented) {
   return consented && GetGlicProviderSpec(profile).SupportsAnchoredEntryPoint();
 }
 
-constexpr int kExperimentalTriggeringVersion = 1;
-
 std::string_view ToString(
     syncer::DeviceInfo::GlicExperimentalTriggeringState state) {
   switch (state) {
@@ -198,6 +198,80 @@ constexpr std::string_view kCountryFilteringResultAdultHistogram =
 constexpr std::string_view kCountryFilteringResultMinorHistogram =
     "Glic.CountryFilteringResult2.Minor";
 
+variations::VariationsService* GetVariationsService() {
+  return g_browser_process ? g_browser_process->variations_service() : nullptr;
+}
+
+// Lowercase permanent country code from the variations service.
+std::string GetVariationsPermanentCountryCode() {
+  return base::ToLowerASCII(
+      variations::GetCurrentCountryCode(GetVariationsService()));
+}
+
+// Lowercase session country code, or empty if unavailable.
+std::string GetVariationsSessionCountryCode() {
+  variations::VariationsService* variations_service = GetVariationsService();
+  return variations_service
+             ? base::ToLowerASCII(variations_service->GetLatestCountry())
+             : std::string();
+}
+
+// Session country is only used when kGlicUseSessionCountryForFiltering is on.
+enum class CountryMatchStrategy {
+  // Either the permanent or session country matches (feature gating).
+  kAnyMatch,
+  // Session country if known, else permanent country (localized content).
+  kSessionPrecedence,
+};
+
+// Returns whether `country_list` contains the country chosen by `strategy`.
+bool IsCountryInList(
+    base::span<const std::string> country_list,
+    std::string_view permanent_country_code,
+    std::string_view session_country_code,
+    CountryMatchStrategy strategy = CountryMatchStrategy::kAnyMatch) {
+  const bool use_session_country = base::FeatureList::IsEnabled(
+      features::kGlicUseSessionCountryForFiltering);
+  if (strategy == CountryMatchStrategy::kSessionPrecedence) {
+    const std::string_view country =
+        use_session_country && !session_country_code.empty()
+            ? session_country_code
+            : permanent_country_code;
+    return std::ranges::any_of(country_list, [&](const std::string& c) {
+      return base::EqualsCaseInsensitiveASCII(c, country);
+    });
+  }
+  return std::ranges::any_of(country_list, [&](const std::string& c) {
+    return base::EqualsCaseInsensitiveASCII(c, permanent_country_code) ||
+           (use_session_country &&
+            base::EqualsCaseInsensitiveASCII(c, session_country_code));
+  });
+}
+
+#if BUILDFLAG(IS_ANDROID)
+// IsCountryInList() with the current variations countries.
+bool IsCurrentCountryInList(base::span<const std::string> country_list) {
+  return IsCountryInList(country_list, GetVariationsPermanentCountryCode(),
+                         GetVariationsSessionCountryCode());
+}
+
+// Native FRE is restricted to the `enabled_countries` param of
+// kGlicNativeFreAndroid; other regions use Web FRE.
+bool IsCountryEligibleForNativeFre() {
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(::switches::kGlicDev)) {
+    return true;
+  }
+  const std::vector<std::string> enabled_countries =
+      GetFieldTrialParamAsSplitString(features::kGlicNativeFreAndroid,
+                                      "enabled_countries",
+                                      kDefaultEnabledCountries);
+  if (enabled_countries.size() == 1 && enabled_countries[0] == "*") {
+    return true;
+  }
+  return IsCurrentCountryInList(enabled_countries);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 // Evaluates the enabled/disabled country lists configured via the params of
 // `feature`. Assumes that `feature` is enabled. The result is recorded to
 // `histogram_name`.
@@ -214,20 +288,8 @@ bool EvaluateCountryLists(const base::Feature& feature,
   const std::vector<std::string> disabled_countries =
       GetFieldTrialParamAsSplitString(feature, "disabled_countries", "");
 
-  const bool use_session_country = base::FeatureList::IsEnabled(
-      features::kGlicUseSessionCountryForFiltering);
-
-  auto permanent_country_matches = [&](const std::string& c) {
-    return base::EqualsCaseInsensitiveASCII(c, permanent_country_code);
-  };
-
-  auto session_country_matches = [&](const std::string& c) {
-    return base::EqualsCaseInsensitiveASCII(c, session_country_code);
-  };
-
-  if (std::ranges::any_of(disabled_countries, permanent_country_matches) ||
-      (use_session_country &&
-       std::ranges::any_of(disabled_countries, session_country_matches))) {
+  if (IsCountryInList(disabled_countries, permanent_country_code,
+                      session_country_code)) {
     base::UmaHistogramEnumeration(histogram_name,
                                   GlicFilteringResult::kBlockedInExclusionList);
     return false;
@@ -239,9 +301,8 @@ bool EvaluateCountryLists(const base::Feature& feature,
     return true;
   }
 
-  if (std::ranges::any_of(enabled_countries, permanent_country_matches) ||
-      (use_session_country &&
-       std::ranges::any_of(enabled_countries, session_country_matches))) {
+  if (IsCountryInList(enabled_countries, permanent_country_code,
+                      session_country_code)) {
     base::UmaHistogramEnumeration(histogram_name,
                                   GlicFilteringResult::kAllowedInInclusionList);
     return true;
@@ -697,19 +758,11 @@ bool GlicEnablingDelegate::GetCountryEnablementForMinorAccounts(
 }
 
 std::string GlicEnablingDelegate::GetPermanentCountryCode() const {
-  std::string permanent_country_code =
-      base::ToLowerASCII(variations::GetCurrentCountryCode(
-          g_browser_process->variations_service()));
-  return permanent_country_code;
+  return GetVariationsPermanentCountryCode();
 }
 
 std::string GlicEnablingDelegate::GetSessionCountryCode() const {
-  std::string latest_country;
-  if (g_browser_process->variations_service()) {
-    latest_country = base::ToLowerASCII(
-        g_browser_process->variations_service()->GetLatestCountry());
-  }
-  return latest_country;
+  return GetVariationsSessionCountryCode();
 }
 
 std::string GlicEnablingDelegate::GetLocale() const {
@@ -933,6 +986,21 @@ bool GlicGlobalEnabling::IsCountryEnabledForMinorAccounts() {
       &GlicEnablingDelegate::GetCountryEnablementForMinorAccounts,
       is_country_enabled_for_minor_accounts_,
       last_checked_countries_for_minor_accounts_);
+}
+
+bool GlicGlobalEnabling::ShouldUseWebActuationDisclosureCountryVariant() const {
+  if (!base::FeatureList::IsEnabled(
+          features::kGlicWebActuationDisclosureCountryVariant)) {
+    return false;
+  }
+  const std::vector<std::string> enabled_countries =
+      GetFieldTrialParamAsSplitString(
+          features::kGlicWebActuationDisclosureCountryVariant,
+          "enabled_countries", "gb,au,nz");
+  return IsCountryInList(enabled_countries,
+                         delegate_->GetPermanentCountryCode(),
+                         delegate_->GetSessionCountryCode(),
+                         CountryMatchStrategy::kSessionPrecedence);
 }
 
 bool GlicGlobalEnabling::IsCountryEnabledImpl(
@@ -1338,6 +1406,13 @@ bool GlicEnabling::ShouldShowWebActuationToggle() const {
   return false;
 }
 
+// static
+bool GlicEnabling::ShouldUseWebActuationDisclosureCountryVariant() {
+  return g_browser_process->GetFeatures()
+      ->glic_global_enabling()
+      .ShouldUseWebActuationDisclosureCountryVariant();
+}
+
 bool GlicEnabling::ShouldShowGlicButton(Profile* profile) {
   return EnablementForProfile(profile).ShouldShowGlicButton();
 }
@@ -1382,7 +1457,8 @@ bool GlicEnabling::IsChromeOSProfileEligible(Profile* profile) {
 
 // static
 bool GlicEnabling::IsAutoOpenForPdfEnabled(Profile* profile) {
-  if (!base::FeatureList::IsEnabled(features::kAutoOpenGlicForPdf)) {
+  const GlicProviderSpec& spec = GetGlicProviderSpec(profile);
+  if (!spec.SupportsFeature(GlicFeature::kPdfAutoOpen)) {
     return false;
   }
 
@@ -1390,7 +1466,21 @@ bool GlicEnabling::IsAutoOpenForPdfEnabled(Profile* profile) {
     return true;
   }
 
-  return features::kAutoOpenGlicForPdfWithOnboarding.Get();
+  return spec.GetPdfAutoOpenFeatureParams().with_onboarding;
+}
+
+// static
+bool GlicEnabling::IsPdfSummarizeEnabled(Profile* profile) {
+  return IsEnabledForProfile(profile) &&
+         GetGlicProviderSpec(profile).SupportsFeature(
+             GlicFeature::kPdfSummarize);
+}
+
+// static
+bool GlicEnabling::IsTextSelectionContextMenuEnabled(Profile* profile) {
+  return IsEnabledForProfile(profile) &&
+         GetGlicProviderSpec(profile).SupportsFeature(
+             GlicFeature::kTextSelectionContextMenu);
 }
 
 // static
@@ -1398,7 +1488,7 @@ bool GlicEnabling::IsContextualMenuItemEnabled(
     Profile* profile,
     const std::u16string& selection_text) {
   const bool text_selection_menu_enabled =
-      base::FeatureList::IsEnabled(features::kGlicTextSelectionContextMenu) &&
+      IsTextSelectionContextMenuEnabled(profile) &&
       !base::TrimWhitespace(std::u16string_view(selection_text), base::TRIM_ALL)
            .empty();
   const bool enabled =
@@ -1413,7 +1503,8 @@ bool GlicEnabling::IsContextualMenuItemEnabled(
 // static
 bool GlicEnabling::IsInlineCueEnabledForProfile(Profile* profile) {
   return IsEnabledForProfile(profile) &&
-         base::FeatureList::IsEnabled(features::kGlicSelectionPrompt);
+         GetGlicProviderSpec(profile).SupportsFeature(
+             GlicFeature::kSelectionInlineCue);
 }
 
 // static
@@ -1450,13 +1541,14 @@ GlicEnabling::GlicEnabling(
     Profile* profile,
     ProfileAttributesStorage* profile_attributes_storage,
     GlicActorPolicyChecker* actor_policy_checker)
-    : profile_(profile),
+    : provider_spec_(GetGlicProviderSpec(profile)),
+      profile_(profile),
       profile_attributes_storage_(profile_attributes_storage),
       actor_policy_checker_(actor_policy_checker) {
   pref_registrar_.Init(profile_->GetPrefs());
   // Only the active provider's FRE pref is observed, so that changes to the
   // other provider's FRE don't notify consent observers.
-  pref_registrar_.Add(GetFreStore(profile_).GetStatusPrefName(),
+  pref_registrar_.Add(provider_spec_->GetFreStore().GetStatusPrefName(),
                       base::BindRepeating(&GlicEnabling::UpdateConsentStatus,
                                           base::Unretained(this)));
   pref_registrar_.Add(
@@ -1474,7 +1566,7 @@ GlicEnabling::GlicEnabling(
   // GeminiSettings policy, server-side user status, and AI subscription tier)
   // don't apply to providers that skip those checks (Gemini Enterprise).
   const bool requires_gemini_account_eligibility =
-      GetGlicProviderSpec(profile_).RequiresGeminiAccountEligibility();
+      provider_spec_->RequiresGeminiAccountEligibility();
   if (requires_gemini_account_eligibility) {
     pref_registrar_.Add(
         optimization_guide::prefs::kGeminiSettings,
@@ -1521,7 +1613,7 @@ GlicEnabling::GlicEnabling(
                 "function call does not violate the 'no virtual functions in "
                 "constructors' style guide rule. Consider a 2-phase setup");
 #if BUILDFLAG(IS_ANDROID)
-  if (base::FeatureList::IsEnabled(features::kGlicExperimentalTriggering) &&
+  if (provider_spec_->SupportsFeature(GlicFeature::kExperimentalTriggering) &&
       base::FeatureList::IsEnabled(features::kGlicBackgroundActuation)) {
     background_actuation_capability_ =
         std::make_unique<BackgroundActuationCapability>(
@@ -1554,11 +1646,11 @@ prefs::FreStatus GlicEnabling::GetCompletedFre(Profile* profile) {
 }
 
 prefs::FreStatus GlicEnabling::GetCompletedFre() const {
-  return GetCompletedFre(profile_);
+  return provider_spec_->GetFreStore().GetStatus(profile_);
 }
 
 void GlicEnabling::SetCompletedFre(prefs::FreStatus status) {
-  GetFreStore(profile_).SetStatus(profile_, status);
+  provider_spec_->GetFreStore().SetStatus(profile_, status);
 }
 
 bool GlicEnabling::GetUserEnabledActuationOnWeb() const {
@@ -1589,7 +1681,7 @@ bool GlicEnabling::IsExperimentalTriggeringUserControlled() const {
 }
 
 bool GlicEnabling::ShouldShowExperimentalTriggeringToggle() const {
-  if (!base::FeatureList::IsEnabled(features::kGlicExperimentalTriggering)) {
+  if (!provider_spec_->SupportsFeature(GlicFeature::kExperimentalTriggering)) {
     return false;
   }
   if (!ShouldShowWebActuationToggle()) {
@@ -1701,9 +1793,54 @@ bool GlicEnabling::CanUseAdultFeatures(
          signin::Tribool::kTrue;
 }
 
+// static
+bool GlicEnabling::IsProfileEligibleForNativeFre(Profile* profile) {
+#if !BUILDFLAG(IS_ANDROID)
+  return false;
+#else
+  if (!base::FeatureList::IsEnabled(features::kGlicNativeFreAndroid)) {
+    return false;
+  }
+
+  if (!profile || !profile->IsRegularProfile() || !IsReadyForProfile(profile)) {
+    return false;
+  }
+
+  // Exclude Gemini Enterprise (GEiC); Workspace accounts on Glic stay eligible.
+  if (!GetGlicProviderSpec(profile).RequiresGeminiAccountEligibility()) {
+    return false;
+  }
+
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          ::switches::kGlicDev)) {
+    signin::IdentityManager* identity_manager =
+        IdentityManagerFactory::GetForProfile(profile);
+    if (!identity_manager) {
+      return false;
+    }
+    AccountInfo primary_account =
+        identity_manager->FindExtendedAccountInfoByAccountId(
+            identity_manager->GetPrimaryAccountId(
+                signin::ConsentLevel::kSignin));
+    // 18+ only. kReady is not enough: in minor-enabled countries, minors are
+    // Glic-capable via can_use_gemini_in_chrome.
+    if (!CanUseAdultFeatures(primary_account.GetAccountCapabilities())) {
+      return false;
+    }
+  }
+
+  return IsCountryEligibleForNativeFre();
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
+
 syncer::DeviceInfo::GlicExperimentalTriggeringState
 GlicEnabling::GetExperimentalTriggeringState() const {
   return ComputeExperimentalTriggeringState().first;
+}
+
+ExperimentalTriggeringNotReadyReason
+GlicEnabling::GetExperimentalTriggeringNotReadyReason() const {
+  return ComputeExperimentalTriggeringState().second;
 }
 
 std::pair<syncer::DeviceInfo::GlicExperimentalTriggeringState,
@@ -1716,7 +1853,7 @@ GlicEnabling::ComputeExperimentalTriggeringState() const {
     return {State::kUnavailable, Reason::kGlicNotEnabled};
   }
 
-  if (!base::FeatureList::IsEnabled(features::kGlicExperimentalTriggering)) {
+  if (!provider_spec_->SupportsFeature(GlicFeature::kExperimentalTriggering)) {
     return {State::kUnavailable, Reason::kFeatureDisabled};
   }
 
@@ -1760,7 +1897,7 @@ std::optional<int> GlicEnabling::GetExperimentalTriggeringVersion() const {
       syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable) {
     return std::nullopt;
   }
-  return kExperimentalTriggeringVersion;
+  return kExperimentalTriggeringProtocolVersion;
 }
 
 base::flat_set<std::string>
@@ -1886,7 +2023,7 @@ void GlicEnabling::OnPrimaryAccountChanged(
 #if BUILDFLAG(IS_ANDROID)
   if (event_details.GetEventTypeFor(signin::ConsentLevel::kSignin) ==
       signin::PrimaryAccountChangeEvent::Type::kCleared) {
-    GetFreStore(profile_).OnPrimaryAccountCleared(profile_);
+    provider_spec_->GetFreStore().OnPrimaryAccountCleared(profile_);
     profile_->GetPrefs()->ClearPref(prefs::kGlicUserEnabledActuationOnWeb);
     profile_->GetPrefs()->ClearPref(prefs::kGlicGeolocationEnabled);
   }
@@ -1946,7 +2083,7 @@ void GlicEnabling::OnErrorStateOfRefreshTokenUpdatedForAccount(
 }
 
 void GlicEnabling::UpdateEnabledStatus() {
-  if (GetGlicProviderSpec(profile_).RequiresGeminiAccountEligibility()) {
+  if (provider_spec_->RequiresGeminiAccountEligibility()) {
     if (IsAllowed()) {
       profile_->GetPrefs()->SetBoolean(prefs::kGlicPreviouslyNotAllowed, false);
     } else {

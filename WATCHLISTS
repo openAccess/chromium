@@ -189,6 +189,77 @@
                   '|.*SidePanel.*\.java'\
                   '|.*SideUi.*\.java'
     },
+    'android_split_view': {
+      'filepath': 'chrome/browser/ui/android/split_view/' \
+                  '|chrome/browser/ui/web_content_hairline/' \
+                  '|chrome/android/features/tab_ui/' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/app/tabmodel/ModelTrackingOrchestrator\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/app/tabmodel/TabRestorer\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/CompositorViewHolder\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/LayoutManagerImpl\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/StaticLayout\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/layouts/components/LayoutTab\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutHelper\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTab\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutTabDelegate\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/StripLayoutUtils\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/TabContextMenuCoordinator\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/TabStripContextMenuCoordinator\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/ExternalViewDragDropReorderStrategy\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/GroupReorderStrategy\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/MultiTabReorderStrategy\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/ReorderDelegate\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/ReorderStrategyBase\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/SourceViewDragDropReorderStrategy\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/overlays/strip/reorder/TabReorderStrategy\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/compositor/scene_layer/StaticTabSceneLayer\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tab/TabContextMenuItemDelegate\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tab/TabImpl\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/NextTabSelectionUtil\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabCollectionTabModelImpl\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelJniBridge\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorBase\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelectorImpl\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabPersistentStoreImpl\\.java$' \
+                  '|chrome/android/java/src/org/chromium/chrome/browser/tabmodel/TabUngrouperImpl\\.java$' \
+                  '|chrome/browser/android/compositor/scene_layer/static_tab_scene_layer\\.cc$' \
+                  '|chrome/browser/android/compositor/scene_layer/static_tab_scene_layer\\.h$' \
+                  '|chrome/browser/android/compositor/tab_content_manager\\.cc$' \
+                  '|chrome/browser/android/storage_loaded_data_android\\.cc$' \
+                  '|chrome/browser/android/storage_loaded_data_android\\.h$' \
+                  '|chrome/browser/android/tab_android\\.cc$' \
+                  '|chrome/browser/android/tab_android\\.h$' \
+                  '|chrome/browser/android/tab_storage_packager_android\\.cc$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/StorageLoadedData\\.java$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/Tab\\.java$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/TabObserver\\.java$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/TabState\\.java$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/TabStateAttributes\\.java$' \
+                  '|chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/TabStateExtractor\\.java$' \
+                  '|chrome/browser/tab/protocol/split_collection_state\\.proto$' \
+                  '|chrome/browser/tab/protocol/tab_state\\.proto$' \
+                  '|chrome/browser/tab/storage_loaded_data\\.cc$' \
+                  '|chrome/browser/tab/storage_loaded_data\\.h$' \
+                  '|chrome/browser/tab/tab_storage_packager\\.cc$' \
+                  '|chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/IncognitoTabModelImpl\\.java$' \
+                  '|chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModel\\.java$' \
+                  '|chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelObserver\\.java$' \
+                  '|chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabModelSelector\\.java$' \
+                  '|chrome/browser/tabmodel/android/java/src/org/chromium/chrome/browser/tabmodel/TabPersistenceUtils\\.java$' \
+                  '|chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/FlatBufferTabStateSerializer\\.java$' \
+                  '|chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/TabStateFileManager\\.java$' \
+                  '|chrome/browser/tabpersistence/android/java/src/org/chromium/chrome/browser/tabpersistence/flatbuffer/tab_state_v1\\.fbs$' \
+                  '|chrome/browser/tabwindow/internal/android/java/src/org/chromium/chrome/browser/tabwindow/TabWindowManagerImpl\\.java$' \
+                  '|chrome/browser/ui/android/layouts/scene_layer\\.cc$' \
+                  '|chrome/browser/ui/android/tab_model/tab_collection_tab_model_impl\\.cc$' \
+                  '|chrome/browser/ui/android/tab_model/tab_collection_tab_model_impl\\.h$' \
+                  '|chrome/browser/ui/android/tab_model/tab_model_jni_bridge\\.cc$' \
+                  '|chrome/browser/ui/tabs/tab_model\\.cc$' \
+                  '|chrome/browser/ui/tabs/tab_model\\.h$' \
+                  '|components/split_tabs/split_tab_visual_data\\.cc$' \
+                  '|components/split_tabs/split_tab_visual_data\\.h$' \
+                  '|components/tabs/public/tab_interface\\.h$',
+    },
     'android_startup_metrics': {
       'filepath': 'chrome/android/java/src/org/chromium/chrome/browser/metrics/.*StartupMetricsTracker.java' \
                   '|chrome/android/java/src/org/chromium/chrome/browser/metrics/SimpleStartupForegroundSessionDetector.java'
@@ -732,7 +803,9 @@
     },
     'browser_actuator': {
       'filepath': 'components/browser_actuator/' \
+                  '|components/stream_transport/' \
                   '|chrome/browser/browser_actuator/' \
+                  '|chrome/browser/stream_transport/' \
                   '|chrome/browser/sharing/browser_actuator/'
     },
     'browser_components': {
@@ -1143,12 +1216,22 @@
     'dbus': {
       'filepath': 'dbus/',
     },
+    'default_browser': {
+      'filepath': 'chrome/browser/default_browser/'\
+                  '|chrome/browser/resources/default_browser/'\
+                  '|chrome/browser/ui/startup/default_browser_prompt/'\
+                  '|chrome/browser/ui/webui/default_browser/'\
+                  '|chrome/test/data/webui/default_browser/'
+    },
     'desktop_composebox': {
       'filepath': '^chrome/browser/resources/new_tab_page/composebox/|'\
+                  '^chrome/browser/ui/webui/cr_components/composebox/|'\
                   '^chrome/browser/ui/webui/searchbox/composebox_handler.cc|'\
                   '^chrome/browser/ui/webui/searchbox/composebox_handler.h|'\
+                  '^chrome/test/data/webui/cr_components/composebox/|'\
                   '^chrome/test/data/webui/new_tab_page/composebox/|'\
-                  '^components/omnibox/composebox/',
+                  '^components/omnibox/composebox/|'\
+                  '^ui/webui/resources/cr_components/composebox/',
     },
     'desktop_in_product_help': {
       'filepath': 'components/feature_engagement/|'\
@@ -1160,6 +1243,14 @@
                   'chrome/browser/ui/views/user_education/|'\
                   'chrome/browser/ui/webui/user_education_internals/|'\
                   'chrome/browser/ui/webui/whats_new/',
+    },
+    'desktop_infobars': {
+      'filepath': 'chrome/browser/infobars/'\
+                  '|chrome/browser/resources/infobar_internals/'\
+                  '|chrome/browser/ui/infobars/'\
+                  '|chrome/browser/ui/views/infobars/'\
+                  '|chrome/browser/ui/webui/infobar_internals/'\
+                  '|components/infobars/'
     },
     'desktop_omnibox': {
       'filepath': '^chrome/browser/ash/app_list/search/omnibox/|'\
@@ -1174,7 +1265,8 @@
                   '^components/search_engines/'
     },
     'desktop_searchbox': {
-      'filepath': '^chrome/browser/ui/webui/searchbox/|'\
+      'filepath': '^chrome/browser/ui/webui/cr_components/searchbox/|'\
+                  '^chrome/browser/ui/webui/searchbox/|'\
                   '^chrome/test/data/webui/cr_components/searchbox/|'\
                   '^ui/webui/resources/cr_components/searchbox/',
     },
@@ -1280,7 +1372,7 @@
     },
     'fet_policy': {
       'filepath': 'components/feature_engagement/.*/' \
-                  'EnterprisePolicyBypassAllowlist\\.java',
+                  '(EnterprisePolicy|Cooldown)BypassAllowlist\\.java',
     },
     'fileapi': {
       'filepath': 'file_system/|' \
@@ -1420,7 +1512,7 @@
                   'components/memory_system',
     },
     'hashprefix_realtime': {
-      'filepath': 'components/safe_browsing/core/browser/hashprefix_realtime/'
+      'filepath': 'safe_browsing/(.*/)?hashprefix_realtime/',
     },
     'headless': {
       'filepath': 'headless/'
@@ -1483,6 +1575,9 @@
       '|chrome/browser/webapps/installable/'
                   '|components/webapps/browser/installable/',
     },
+    'installer_downloader': {
+      'filepath': 'chrome/browser/win/installer_downloader/',
+    },
     'installer_linux': {
       'filepath': 'chrome/installer/linux/',
     },
@@ -1524,6 +1619,9 @@
     },
     'ios_intelligence_actor_tools': {
       'filepath': 'ios/chrome/browser/intelligence/actor/tools'
+    },
+    'ios_location_bar_badge': {
+      'filepath': '^ios/chrome/browser/location_bar/badge/',
     },
     'ios_ntp': {
       'filepath': 'ios/chrome/browser/ntp/',
@@ -1869,6 +1967,9 @@
                   '|chrome/browser/android/offline_pages/'\
                   '|chrome/android/java/src/org/chromium/chrome/browser/offlinepages/'
     },
+    'omnibox_everywhere': {
+      'filepath': 'omnibox_everywhere',
+    },
     'omnibox_ios': {
       'filepath': '^components/omnibox/|'\
                   '^components/search_engines/|'\
@@ -1897,6 +1998,10 @@
     },
     'ozone_fuchsia': {
       'filepath': 'ui/ozone/platform/flatland/',
+    },
+    'page_actions': {
+      'filepath': 'chrome/browser/ui/page_action/'\
+                  '|chrome/browser/ui/views/page_action/'
     },
     'page_content_extraction': {
       'filepath': 'components/optimization_guide/content/browser/page_content_|' \
@@ -2087,6 +2192,27 @@
     'safe_browsing': {
       'filepath': 'chrome/(browser|common|renderer)/safe_browsing/|'\
                   'components/safe_browsing/',
+    },
+    'safe_browsing_android': {
+      'filepath': 'components/safe_browsing/android/',
+    },
+    'safe_browsing_db': {
+      'filepath': 'safe_browsing/(.*/)?db/',
+    },
+    'safe_browsing_ping_manager': {
+      'filepath': 'safe_browsing/(.*/)?ping_manager/',
+    },
+    'safe_browsing_realtime': {
+      'filepath': 'safe_browsing/(.*/)?realtime/',
+    },
+    'safe_browsing_realtime_allowlist': {
+      'filepath': 'safe_browsing/(.*/)?real_time_url_checks_allowlist',
+    },
+    'safe_browsing_url_checker': {
+      'filepath': 'safe_browsing/(.*/)?url_checker/',
+    },
+    'safe_browsing_utils': {
+      'filepath': 'safe_browsing/(.*/)?utils/',
     },
     'sampling_profiler': {
       'filepath': 'base/profiler/'\
@@ -2483,6 +2609,9 @@
                   '|chrome/browser/web_applications'\
                   '|chrome/browser/ui/web_applications',
     },
+    'web_dialogs': {
+      'filepath': 'chrome/browser/ui/views/web_dialogs/',
+    },
     'web_package': {
       'filepath': 'components/web_package/'\
                   '|content/browser/loader/prefetch_url_loader'\
@@ -2643,7 +2772,10 @@
     'android_side_panel': ['clhager@google.com',
                            'linyuh+watch@google.com',
                            'nemco+watch@google.com',
-                           'shuyng@google.com'],
+                           'shuyng+watch-android-side-panel@google.com'],
+    'android_split_view': ['aishwaryarj+watch-android-split-view@google.com',
+                           'linyuh+watch-android-split-view@google.com',
+                           'shuyng+watch-android-split-view@google.com'],
     'android_startup_metrics': ['pasko+watch@chromium.org'],
     'android_studio': ['wnwen+watch@chromium.org',
                        'nyquist+watch@chromium.org'],
@@ -2897,7 +3029,7 @@
     'cast_streaming': ['jasonroberts+watch@google.com',
                        'jophba+watch@chromium.org',
                        'mfoltz+watch-media@chromium.org'],
-    'cbb_ref_info': ['johnchen+watch@chromium.org'],
+    'cbb_ref_info': [],
     'cbe_productivity_ai': ['cbe-productivity-cls@google.com'],
     'cc': ['cc-bugs@chromium.org'],
     'cc-animation': ['gerchiko@microsoft.com'],
@@ -3033,18 +3165,23 @@
                    'pnevase@microsoft.com'],
     'data_decoder': ['mbarowsky+watch-data-decoder@chromium.org'],
     'dbus': ['hashimoto+watch@chromium.org'],
+    'default_browser': ['alsan+watch@chromium.org',
+                        'koretadaniel+watch@chromium.org'],
     'desktop_composebox': ['ananyaseelam+watch@google.com',
+                           'mfacey+watch@google.com',
                            'niharm+watch@google.com',
                            'omnibox-dev+watch@chromium.org',
                            'orinj+watch@chromium.org',
                            'pauladedeji+watch@google.com'],
     'desktop_in_product_help': ['dfried+watch@chromium.org',
                                 'estalin+watch@chromium.org'],
+    'desktop_infobars': ['koretadaniel+watch@chromium.org'],
     'desktop_omnibox': ['jdonnelly+watch@chromium.org',
                         'omnibox-dev+watch@chromium.org',
                         'orinj+watch@chromium.org',
                         'pauladedeji+watch@google.com'],
-    'desktop_searchbox': ['niharm+watch@google.com',
+    'desktop_searchbox': ['mfacey+watch@google.com',
+                          'niharm+watch@google.com',
                           'omnibox-dev+watch@chromium.org',
                           'orinj+watch@chromium.org',
                           'pauladedeji+watch@google.com'],
@@ -3143,6 +3280,8 @@
     'input_devices': ['spang+watch@chromium.org'],
     'installable': ['dmurph+watching-installable@chromium.org',
                     'webappwatch@microsoft.com'],
+    'installer_downloader': ['alsan+watch@chromium.org',
+                             'koretadaniel+watch@chromium.org'],
     'installer_linux': ['kubo@igalia.com'],
     'installer_win': ['grt+watch@chromium.org',
                       'wfh+watch@chromium.org'],
@@ -3157,6 +3296,7 @@
     'ios_intelligence': ['adamta+watch@google.com'],
     'ios_intelligence_actor': ['ios-actor-watchlist@google.com'],
     'ios_intelligence_actor_tools': ['bling-ai-foundations-reviews-external@google.com'],
+    'ios_location_bar_badge': ['joemerramos+watch@google.com'],
     'ios_ntp': ['thegreenfrog+watch@chromium.org'],
     'ios_payments_autofill': ['slobodan+watch@chromium.org'],
     'ios_transactions': ['tmartino+transactions-watch@chromium.org'],
@@ -3267,6 +3407,7 @@
     'ntp_tiles': ['ntp-dev+reviews@chromium.org'],
     'offline_pages': ['chili+watch@chromium.org',
                       'fgorski+watch@chromium.org'],
+    'omnibox_everywhere': ['alsan+watch@chromium.org'],
     'omnibox_ios': ['christianxu+watch@chromium.org'],
     'origin_trials': ['chasej+watch@chromium.org',
                       'iclelland+watch@chromium.org'],
@@ -3282,6 +3423,8 @@
                       'fuchsia-reviews@chromium.org',
                       'rjkroege@chromium.org',
                       'spang+watch@chromium.org'],
+    'page_actions': ['alsan+watch@chromium.org',
+                     'koretadaniel+watch@chromium.org'],
     'page_content_extraction': ['liu+watch-apc@chromium.org'],
     'page_info' : ['permissions-reviews@chromium.org'],
     'page_load_metrics' : ['bmcquade+watch@chromium.org',
@@ -3340,6 +3483,13 @@
       'safe_browsing': ['nwokedi+watch@chromium.org',
                       'xinghuilu+watch@chromium.org',
                       'zackhan+watch@chromium.org'],
+    'safe_browsing_android': ['thefrog+watch@chromium.org'],
+    'safe_browsing_db': ['thefrog+watch@chromium.org'],
+    'safe_browsing_ping_manager': ['thefrog+watch@chromium.org'],
+    'safe_browsing_realtime': ['thefrog+watch@chromium.org'],
+    'safe_browsing_realtime_allowlist': ['thefrog+watch@chromium.org'],
+    'safe_browsing_url_checker': ['thefrog+watch@chromium.org'],
+    'safe_browsing_utils': ['thefrog+watch@chromium.org'],
     'sampling_profiler': ['thiabaud@google.com', 'spvm@chromium.org'],
     'screen_ai': ['rhalavati+watch@chromium.org'],
     'search_engine_choice_screen': ['chrome-regionalcapabilities+watch@google.com'],
@@ -3462,7 +3612,8 @@
     'ui_display_win': ['robliao+watch@chromium.org'],
     'ui_resources': ['oshima+watch@chromium.org'],
     'ui_strings': ['srahim+watch@chromium.org'],
-    'ui_views': ['robliao+watch@chromium.org',
+    'ui_views': ['chromium-views-reviews-monitor@chromium.org',
+                 'robliao+watch@chromium.org',
                  'sky+watch@chromium.org'],
     'unified_consent': ['wfh+watch@chromuium.org'],
     'url_constant_resolver': ['mfiaz+watch@google.com'],
@@ -3498,6 +3649,7 @@
                          'phillis+watch@chromium.org',
                          'webappwatch@microsoft.com',
                          'zelin+watch-web_applications@chromium.org'],
+    'web_dialogs': ['koretadaniel+watch@chromium.org'],
     'web_package': ['hayato+watch@chromium.org',
                     'twifkak+watch@chromium.org'],
     'web_share': ['mgiuca+watch@chromium.org'],

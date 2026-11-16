@@ -532,15 +532,15 @@ class TabStripModelObserver {
   // cancelling/completing a the drag before a tab is added during header drag.
   virtual void OnTabWillBeAdded();
 
-  // Notification that the tab at `index` will be removed from the
-  // TabStripModel, which allows an observer to react to an impending change to
-  // the TabStripModel. The only use case of this signal that is currently
-  // supported is the drag controller completing a drag before a tab is removed.
-  virtual void OnTabWillBeRemoved(tabs::TabInterface* tab, int index);
+  // Notification that `tab` will be removed from the TabStripModel, which
+  // allows an observer to react to an impending change to the TabStripModel.
+  // The only use case of this signal that is currently supported is the drag
+  // controller completing a drag before a tab is removed.
+  virtual void OnTabWillBeRemoved(tabs::TabHandle tab);
 
   // Called when a tab is attempted to be closed but the closure is not
   // permitted by the `TabStripModel::IsTabClosable` oracle.
-  virtual void OnTabCloseCancelled(const tabs::TabInterface* tab);
+  virtual void OnTabCloseCancelled(tabs::TabHandle tab);
 
   // The specified Tab changed in some way. `tab`
   // may be an entirely different object and the old value is no longer
@@ -551,19 +551,21 @@ class TabStripModelObserver {
                               TabChangeType change_type);
 
   // Invoked when the pinned state of a tab changes.
-  virtual void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index);
+  virtual void OnTabPinnedStateChanged(tabs::TabHandle tab);
 
   // Invoked when the blocked state of a tab changes.
   virtual void OnTabBlockedStateChanged(tabs::TabInterface* tab);
 
-  // Called when the tab at `index` is added to the group with id `new_group` or
-  // removed from a group with id `old_group`.
+  // Invoked when the audio state of a tab changes.
+  virtual void OnTabAudioChanged(tabs::TabInterface* tab);
+
+  // Called when `tab` is added to the group with id `new_group` or removed
+  // from a group with id `old_group`.
   virtual void TabGroupedStateChanged(
       TabStripModel* tab_strip_model,
       std::optional<tab_groups::TabGroupId> old_group,
       std::optional<tab_groups::TabGroupId> new_group,
-      tabs::TabInterface* tab,
-      int index);
+      tabs::TabHandle tab);
 
   // `change` is a change in the Tab Group model or metadata. These
   // changes may cause repainting of some Tab Group UI. They are

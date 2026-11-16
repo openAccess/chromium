@@ -79,7 +79,7 @@
 #include "components/prefs/pref_member.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_search_api/safe_search_util.h"
@@ -130,6 +130,7 @@
 #include "net/http/http_content_disposition.h"
 #include "third_party/blink/public/common/mime_util/mime_util.h"
 #include "ui/android/window_android.h"
+#include "url/url_constants.h"
 #else
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_task.h"
@@ -1333,10 +1334,13 @@ bool ChromeDownloadManagerDelegate::InterceptDownloadIfApplicable(
     }
   }
 
-  if (ShouldOpenPdfInlineInternal(/*incognito=*/false) &&
+  // Drop transient downloads triggered by navigating to a local PDF, since the
+  // PDF viewer reads the local file:// or content:// URI directly. Allow
+  // explicit (non-transient) downloads of local PDFs (e.g. saving an edited
+  // PDF) to proceed.
+  if (is_transient && ShouldOpenPdfInline() &&
       mime_type == pdf::kPDFMimeType) {
-    // If this is already a file, there is no need to download.
-    if (url.SchemeIsFile() || url.SchemeIs("content")) {
+    if (url.SchemeIsFile() || url.SchemeIs(url::kContentScheme)) {
       return true;
     }
   }
@@ -2372,7 +2376,8 @@ void ChromeDownloadManagerDelegate::OnDownloadTargetDetermined(
     auto* web_contents = content::DownloadItemUtils::GetWebContents(item);
     gfx::NativeWindow native_window =
         web_contents ? web_contents->GetTopLevelNativeWindow() : nullptr;
-    if (native_window && item) {
+    if (item && (native_window ||
+                 (web_contents && TabAndroid::FromWebContents(web_contents)))) {
       InsecureDownloadDialogBridge::GetInstance()->CreateDialog(
           item, item->GetFileNameToReportUser(), native_window,
           base::BindOnce(HandleInsecureDownloadInfoBarResult, item,
@@ -2594,30 +2599,37 @@ std::unique_ptr<download::DownloadItemRenameHandler>
 ChromeDownloadManagerDelegate::GetRenameHandlerForDownload(
     download::DownloadItem* download_item) {
 #if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
+  // Check if this download requires obfuscation and is destined for a non-local
+  // virtual path (e.g. OneDrive or Google Drive). Checking this before
+  // `SkyvaultRenameHandler` ensures staged virtual filesystem downloads are
+  // relocated out of the temporary directory to their intended target path.
+  const auto* obfuscation_data =
+      static_cast<const enterprise_obfuscation::DownloadObfuscationData*>(
+          download_item->GetUserData(
+              enterprise_obfuscation::DownloadObfuscationData::kUserDataKey));
+  const bool has_original_target_path =
+      obfuscation_data && !obfuscation_data->original_target_path.empty();
+  if (has_original_target_path || ShouldObfuscateDownload(download_item)) {
+    const base::FilePath& target_path =
+        has_original_target_path ? obfuscation_data->original_target_path
+                                 : download_item->GetTargetFilePath();
+    if (enterprise_obfuscation::IsVirtualFilesystem(target_path)) {
+      std::unique_ptr<download::DownloadItemRenameHandler> obfuscation_handler =
+          enterprise_obfuscation::ObfuscationRenameHandler::CreateIfNeeded(
+              download_item);
+      if (obfuscation_handler) {
+        return obfuscation_handler;
+      }
+    }
+  }
+#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
+
   auto skyvault_handler = policy::SkyvaultRenameHandler::CreateIfNeeded(
       CHECK_DEREF(g_browser_process->local_state()), download_item);
   if (skyvault_handler) {
     return skyvault_handler;
   }
-
-#if BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
-  // Check if this download requires obfuscation and is destined for a non-local
-  // virtual path (e.g. OneDrive).
-  if (ShouldObfuscateDownload(download_item)) {
-    auto* obfuscation_data =
-        static_cast<enterprise_obfuscation::DownloadObfuscationData*>(
-            download_item->GetUserData(
-                enterprise_obfuscation::DownloadObfuscationData::kUserDataKey));
-    const base::FilePath& target_path =
-        (obfuscation_data && !obfuscation_data->original_target_path.empty())
-            ? obfuscation_data->original_target_path
-            : download_item->GetTargetFilePath();
-    if (enterprise_obfuscation::IsVirtualFilesystem(target_path)) {
-      return enterprise_obfuscation::ObfuscationRenameHandler::CreateIfNeeded(
-          download_item);
-    }
-  }
-#endif  // BUILDFLAG(ENTERPRISE_CONTENT_ANALYSIS)
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
   return nullptr;

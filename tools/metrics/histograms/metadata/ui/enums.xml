@@ -86,6 +86,35 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/browser/renderer_context_menu/render_view_context_menu.cc:ContextMenuOptionDesktop) -->
 
+<!-- LINT.IfChange(DefaultBrowserAnnotatedShellIntegrationOutcome) -->
+
+<enum name="DefaultBrowserAnnotatedShellIntegrationOutcome">
+  <int value="0" label="Flow finished, default set">
+    The shell integration flow finished while the guidance was running, and
+    Chrome became the default browser.
+  </int>
+  <int value="1" label="Flow finished, default not set">
+    The shell integration flow finished while the guidance was running, without
+    Chrome becoming the default browser.
+  </int>
+  <int value="2" label="Settings window closed">
+    The Settings window was closed, or hidden without being minimized.
+  </int>
+  <int value="3" label="Settings window not found">
+    The Settings window was not found before the timeout.
+  </int>
+  <int value="4" label="Button not found">
+    The &quot;Set default&quot; button could not be located after several
+    attempts in a row.
+  </int>
+  <int value="5" label="Dismissed">The user closed the bubble.</int>
+  <int value="6" label="Abandoned">
+    The setter was destroyed while the guidance was running.
+  </int>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/default_browser/setters/default_browser_annotated_shell_integration_setter.h:DefaultBrowserAnnotatedShellIntegrationOutcome) -->
+
 <!-- LINT.IfChange(DefaultBrowserInfoBarUserInteraction) -->
 
 <enum name="DefaultBrowserInfoBarUserInteraction">
@@ -195,13 +224,25 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/browser/ui/webui/default_browser/visual_guided_setter_controller_win.h:DefaultBrowserVisualGuideOutcome) -->
 
+<!-- LINT.IfChange(DinoImpressionSource) -->
+
+<enum name="DinoImpressionSource">
+  <int value="0" label="Typed in Omnibox"/>
+  <int value="1" label="Omnibox Generated"/>
+  <int value="2" label="Link"/>
+  <int value="3" label="Other"/>
+  <int value="4" label="Network Error Page"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/dino/dino_metrics.h:DinoImpressionSource) -->
+
 <!-- LINT.IfChange(InitialWebUISurfaceSyncResult) -->
 
 <enum name="InitialWebUISurfaceSyncResult">
-  <int value="0" label="Ready Within Deadline"/>
-  <int value="1" label="Deadline Exceeded - Painted Later"/>
-  <int value="2" label="Deadline Exceeded - Closed Before Paint"/>
-  <int value="3" label="Deadline Exceeded - Render Process Gone"/>
+  <int value="0" label="Painted By Browser Presentation"/>
+  <int value="1" label="Painted After Browser Presentation"/>
+  <int value="2" label="Closed After Browser Presentation"/>
+  <int value="3" label="Render Process Gone After Browser Presentation"/>
   <int value="4" label="Closed Before Browser Presentation"/>
   <int value="5" label="Render Process Gone Before Browser Presentation"/>
 </enum>
@@ -593,6 +634,38 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/ui/messages/android/java/src/org/chromium/chrome/browser/ui/messages/snackbar/Snackbar.java:SnackbarIdentifier) -->
+
+<!-- LINT.IfChange(UiaElementLocationOutcome) -->
+
+<enum name="UiaElementLocationOutcome">
+  <summary>
+    Outcome of one request to locate an element in another app's window via UI
+    Automation in a utility process (SettingsRowLocatorWin::Outcome).
+  </summary>
+  <int value="0" label="Located; measurement usable"/>
+  <int value="1" label="No element found"/>
+  <int value="2"
+      label="Measurement unusable (element outside the window, or a derived
+             value out of range)"/>
+  <int value="3" label="Timed out (target process not answering)"/>
+  <int value="4" label="Service process disconnected mid-request"/>
+  <int value="5" label="Superseded by a newer request before it answered"/>
+  <int value="6" label="Target window was already gone; nothing was asked"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/default_browser/win/settings_row_locator_win.h:UiaElementLocationOutcome) -->
+
+<!-- LINT.IfChange(WebUIContentsPrerenderTakeResult) -->
+
+<enum name="WebUIContentsPrerenderTakeResult">
+  <int value="0" label="Adopted"/>
+  <int value="1" label="No spare"/>
+  <int value="2" label="Dropped: stale"/>
+  <int value="3" label="Dropped: renderer gone"/>
+  <int value="4" label="Dropped: already painted"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/ui/webui/top_chrome/webui_contents_prerenderer.h:WebUIContentsPrerenderTakeResult) -->
 
 <enum name="WebUIPreloadReason">
   <int value="0" label="BrowserWarmup"/>
@@ -1274,7 +1347,7 @@ chromium-metrics-reviews@google.com.
   <int value="71" label="Open Guest profile"/>
   <int value="72" label="Add new profile"/>
   <int value="73" label="Manage Chrome profiles"/>
-  <int value="74" label="Open recent tabs login for device tabs"/>
+  <int value="74" label="Open recent tabs login for device tabs (Deprecated)"/>
   <int value="75" label="Add tab to reading list"/>
   <int value="76" label="Show reading list"/>
   <int value="77" label="Password Manager (submenu)"/>
@@ -1328,6 +1401,7 @@ chromium-metrics-reviews@google.com.
   <int value="125" label="Show skills and extensions"/>
   <int value="126" label="Scheduled restart dialog"/>
   <int value="127" label="Other device tab"/>
+  <int value="128" label="Offers and loyalty cards"/>
 </enum>
 
 <!-- LINT.ThenChange(/chrome/browser/ui/toolbar/app_menu_model.h:AppMenuAction) -->

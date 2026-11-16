@@ -247,6 +247,16 @@ void GlicSelectionObserver::UpdateSelectionStateFromContextMenu(
                        SelectionSource::kContextMenu);
 }
 
+void GlicSelectionObserver::UpdateSelectionStateFromSmartSuggestionContextMenu(
+    const std::u16string& selected_text) {
+  ResetPendingSelection();
+  if (last_selected_text_ == selected_text && has_sent_selection_context_) {
+    return;
+  }
+  UpdateSelectionState(selected_text, /*is_pending_selection=*/false,
+                       SelectionSource::kAutomatic);
+}
+
 void GlicSelectionObserver::DismissUI(DismissReason reason) {
   bounds_retry_count_ = 0;
   ResetPendingSelection();
@@ -359,10 +369,10 @@ void GlicSelectionObserver::OnInputEvent(
   if (!IsListenedToInputEvent(event.GetType())) {
     return;
   }
-  // Only the shake detector uses mouse moves. Skip them when it's off, so
-  // that each mouse move doesn't post a task.
+  // Only the shake trigger uses mouse moves. Skip them when it doesn't need
+  // them, so that each mouse move doesn't post a task.
   if (event.GetType() == blink::WebInputEvent::Type::kMouseMove &&
-      !shake_trigger_->IsEnabled()) {
+      !shake_trigger_->ShouldObserveMouseMoves()) {
     return;
   }
   // If text selection context was previously sent to the panel (e.g. via the

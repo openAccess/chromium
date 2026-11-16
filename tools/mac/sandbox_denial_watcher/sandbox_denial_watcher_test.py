@@ -203,17 +203,16 @@ class FilteringTest(WatcherTestCase):
     @patch.object(SandboxDenialWatcher, "_report_denial")
     def test_known_denials_target_and_subpath_matching(self, mock_report):
         self.mock_get_cmdline.side_effect = lambda pid: (
-            "Chrome --type=utility --utility-sub-type=unzip.mojom.Unzipper "
-            "--service-sandbox-type=service"
+            "Chrome --type=utility "
+            "--utility-sub-type=audio.mojom.AudioService "
+            "--service-sandbox-type=audio"
             if pid == 24235
             else "Chrome --type=renderer"
             if pid == 24236
             else None
         )
-        unpacker_path = (
-            "/private/var/folders/x7/24fct7055y710wkdytb4f8k000ml0d/T/"
-            "org.chromium.Chromium.chromecrx_chrome_Unpacker_BeginUnzipping"
-            ".12345/file.js"
+        audio_path = (
+            "/System/Library/Audio/Plug-Ins/HAL/BTAudioHALPlugin.driver/file"
         )
         self.feed(
             _denial_line(
@@ -226,7 +225,7 @@ class FilteringTest(WatcherTestCase):
                 "file-read-data "
                 "/Library/Managed Preferences/com.apple.foo.plist"
             ),
-            _denial_line(f"file-write-times {unpacker_path}", pid=24235),
+            _denial_line(f"file-read-data {audio_path}", pid=24235),
         )
         mock_report.assert_not_called()
 
@@ -240,7 +239,7 @@ class FilteringTest(WatcherTestCase):
             )
         )
         # Denials with a non-matching profile command line are also reported.
-        self.feed(_denial_line(f"file-write-times {unpacker_path}", pid=24236))
+        self.feed(_denial_line(f"file-read-data {audio_path}", pid=24236))
         self.assertEqual(mock_report.call_count, 3)
 
     @patch.object(SandboxDenialWatcher, "_report_denial")
@@ -279,7 +278,9 @@ class FilteringTest(WatcherTestCase):
         denial = _denial("mach-lookup com.apple.foo")
         with self.assertLogs("sandbox_denial_watcher", level="INFO") as cm:
             self.watcher._report_denial(denial)
-            self.watcher._flush_batch((denial.process_name, denial.action))
+            self.watcher._flush_batch(
+                (denial.process_name, denial.action, "unknown")
+            )
         self.assertEqual(
             cm.output,
             [
@@ -306,7 +307,7 @@ class FilteringTest(WatcherTestCase):
         with self.assertLogs("sandbox_denial_watcher", level="INFO") as cm:
             self.watcher._report_denial(d1)
             self.watcher._report_denial(d2)
-            self.watcher._flush_batch((d1.process_name, d1.action))
+            self.watcher._flush_batch((d1.process_name, d1.action, "unknown"))
         self.assertEqual(
             cm.output,
             [
@@ -327,12 +328,51 @@ class FilteringTest(WatcherTestCase):
         denial2 = _denial("file-write-times /path/to/manifest.json", pid=42)
         self.watcher._report_denial(denial1)
         self.watcher._report_denial(denial2)
-        self.watcher._flush_batch((denial1.process_name, denial1.action))
+        self.watcher._flush_batch(
+            (denial1.process_name, denial1.action, "unknown")
+        )
 
         self.mock_get_cmdline.assert_called_once_with(42)
         mock_prompt.assert_called_once_with(
-            [replace(denial1, command_line=cmd), denial2]
+            [
+                replace(denial1, command_line=cmd),
+                replace(denial2, command_line=cmd),
+            ]
         )
+
+    @patch("sandbox_denial_watcher.prompt_to_file_bug")
+    def test_report_denial_separates_batches_for_different_chrome_versions(
+        self, mock_prompt
+    ):
+        canary_cmd = (
+            "/Applications/Google Chrome Canary.app/Contents/Frameworks/"
+            "Google Chrome Framework.framework/Versions/159.0.8146.0/Helpers/"
+            "Google Chrome Helper (Renderer).app/Contents/MacOS/"
+            "Google Chrome Helper (Renderer) --type=renderer"
+        )
+        stable_cmd = (
+            "/Applications/Google Chrome.app/Contents/Frameworks/"
+            "Google Chrome Framework.framework/Versions/131.0.6778.86/Helpers/"
+            "Google Chrome Helper (Renderer).app/Contents/MacOS/"
+            "Google Chrome Helper (Renderer) --type=renderer"
+        )
+        d_canary = _denial(
+            "mach-lookup com.apple.foo",
+            process="Google Chrome Helper (Renderer)",
+            pid=1001,
+            command_line=canary_cmd,
+        )
+        d_stable = _denial(
+            "mach-lookup com.apple.foo",
+            process="Google Chrome Helper (Renderer)",
+            pid=1002,
+            command_line=stable_cmd,
+        )
+        self.watcher._report_denial(d_canary)
+        self.watcher._report_denial(d_stable)
+        self.assertEqual(len(self.watcher._active_batches), 2)
+        self.watcher._flush_all_batches()
+        self.assertEqual(mock_prompt.call_count, 2)
 
 
 class ProcessCommandLineTest(unittest.TestCase):
@@ -721,15 +761,6 @@ class DenialFilterTest(WatcherTestCase):
                 _denial(
                     f"file-write-times {user_root}/T/other_dir/file.js",
                     command_line=utility_cmd,
-                )
-            )
-        )
-        # Denials from non-utility processes are not ignored.
-        self.assertFalse(
-            self.denial_filter.should_ignore(
-                _denial(
-                    f"file-write-mode {crx_dir}",
-                    command_line="Chrome --type=renderer",
                 )
             )
         )
@@ -1125,6 +1156,25 @@ class PromptToFileBugTest(unittest.TestCase):
             args[0][3],
             "Chromium: file-write-times /path/to/unpack/crl-set, "
             "/path/to/unpack/manifest.json",
+        )
+
+    @patch("sandbox_denial_watcher.subprocess.run")
+    def test_prompt_includes_chrome_version_in_dialog_text(self, mock_run):
+        cmd = (
+            "/Applications/Google Chrome Canary.app/Contents/Frameworks/"
+            "Google Chrome Framework.framework/Versions/159.0.8146.0/Helpers/"
+            "Google Chrome Helper (Renderer).app/Contents/MacOS/"
+            "Google Chrome Helper (Renderer) --type=renderer"
+        )
+        denial = _denial("mach-lookup com.apple.foo", command_line=cmd)
+        mock_run.return_value = MagicMock(returncode=0, stdout="")
+
+        prompt_to_file_bug(denial)
+
+        args, _ = mock_run.call_args
+        self.assertEqual(
+            args[0][3],
+            "Chromium [159.0.8146.0 (Canary)]: mach-lookup com.apple.foo",
         )
 
 

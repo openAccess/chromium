@@ -34,6 +34,7 @@
 #include "printing/print_settings.h"
 #include "printing/printing_features.h"
 #include "ui/aura/window.h"
+#include "ui/base/glib/glib_callback.h"
 #include "ui/gtk/gtk_compat.h"
 #include "ui/gtk/gtk_ui.h"
 #include "ui/gtk/gtk_ui_platform.h"
@@ -113,21 +114,6 @@ GtkPaperSize* FindPaperSizeMatch(GList* gtk_paper_sizes,
   return first_fuzzy_match;
 }
 
-// Helper class to handle the GTK print job callback.
-// TODO(thomasanderson): This should be replaced with a template in
-// //ui/base/glib that accepts a base::OnceCallback for safer and less manual
-// memory management.
-struct PrintJobCallbackHelper {
-  base::WeakPtr<PrintDialogGtk> dialog;
-
-  void OnJobCompleted(GtkPrintJob* print_job, const GError* error) {
-    if (dialog) {
-      dialog->OnJobCompleted(print_job, error);
-    }
-    delete this;
-  }
-};
-
 class StickyPrintSettingGtk {
  public:
   StickyPrintSettingGtk() : last_used_settings_(gtk_print_settings_new()) {}
@@ -141,7 +127,7 @@ class StickyPrintSettingGtk {
   GtkPrintSettings* settings() { return last_used_settings_; }
 
   void SetLastUsedSettings(GtkPrintSettings* settings) {
-    DCHECK(last_used_settings_);
+    CHECK(last_used_settings_, base::NotFatalUntil::M163);
     g_object_unref(last_used_settings_.ExtractAsDangling());
     last_used_settings_ = gtk_print_settings_copy(settings);
   }
@@ -251,8 +237,8 @@ PrintDialogGtk::~PrintDialogGtk() {
 
 void PrintDialogGtk::UseDefaultSettings() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!page_setup_);
-  DCHECK(!printer_);
+  CHECK(!page_setup_, base::NotFatalUntil::M163);
+  CHECK(!printer_, base::NotFatalUntil::M163);
 
   // |gtk_settings_| is a new copy.
   gtk_settings_ = gtk_print_settings_copy(GetLastUsedSettings().settings());
@@ -461,7 +447,7 @@ void PrintDialogGtk::ShowDialog(
     PrintingContextLinux::PrintSettingsCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   callback_ = std::move(callback);
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M163);
 
   dialog_ = gtk_print_unix_dialog_new(nullptr, nullptr);
   gtk::SetGtkTransientForAura(dialog_, parent_view, platform_);
@@ -516,7 +502,6 @@ void PrintDialogGtk::ShowDialog(
 
 void PrintDialogGtk::PrintDocument(const printing::MetafilePlayer& metafile,
                                    const std::u16string& document_name) {
-#if DCHECK_IS_ON()
   bool oop_printing =
       context_->out_of_process_behavior() !=
       printing::PrintingContext::OutOfProcessBehavior::kDisabled;
@@ -524,8 +509,8 @@ void PrintDialogGtk::PrintDocument(const printing::MetafilePlayer& metafile,
   // For in-browser printing, this runs on the print worker thread, so it does
   // not block the UI thread.  For OOP it runs on the service document task
   // runner.
-  DCHECK_EQ(task_runner_->RunsTasksInCurrentSequence(), oop_printing);
-#endif  // DCHECK_IS_ON()
+  CHECK_EQ(task_runner_->RunsTasksInCurrentSequence(), oop_printing,
+           base::NotFatalUntil::M163);
 
   bool success = base::CreateTemporaryFile(&path_to_pdf_);
 
@@ -634,12 +619,6 @@ void PrintDialogGtk::OnResponse(GtkWidget* dialog, int response_id) {
   }
 }
 
-static void OnJobCompletedThunk(GtkPrintJob* print_job,
-                                gpointer user_data,
-                                const GError* error) {
-  static_cast<PrintJobCallbackHelper*>(user_data)->OnJobCompleted(print_job,
-                                                                  error);
-}
 void PrintDialogGtk::SendDocumentToPrinter(
     const std::u16string& document_name) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -658,8 +637,10 @@ void PrintDialogGtk::SendDocumentToPrinter(
                         gtk_settings_, page_setup_);
   gtk_print_job_set_source_file(print_job, path_to_pdf_.value().c_str(),
                                 nullptr);
-  auto* helper = new PrintJobCallbackHelper{weak_factory_.GetWeakPtr()};
-  gtk_print_job_send(print_job, OnJobCompletedThunk, helper, nullptr);
+  ui::CallGlibWithCallback(&gtk_print_job_send,
+                           base::BindOnce(&PrintDialogGtk::OnJobCompleted,
+                                          weak_factory_.GetWeakPtr()),
+                           print_job);
 }
 
 void PrintDialogGtk::OnJobCompleted(GtkPrintJob* print_job,
@@ -692,7 +673,8 @@ void PrintDialogGtk::InitPrintSettings(
 
 void PrintDialogGtk::OnWindowDestroying(aura::Window* window) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK_EQ(gtk::GetAuraTransientParent(dialog_), window);
+  CHECK_EQ(gtk::GetAuraTransientParent(dialog_), window,
+           base::NotFatalUntil::M163);
 
   gtk::ClearAuraTransientParent(dialog_, window, platform_);
   window->RemoveObserver(this);

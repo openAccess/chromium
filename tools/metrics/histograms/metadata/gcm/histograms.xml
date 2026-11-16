@@ -22,16 +22,6 @@ chromium-metrics-reviews@google.com.
 
 <histograms>
 
-<histogram name="GCM.CheckinRequestStatus" enum="GCMCheckinRequestStatus"
-    expires_after="2024-11-12">
-  <owner>peter@chromium.org</owner>
-  <owner>knollr@chromium.org</owner>
-  <summary>
-    Status code of the outcome of a GCM checkin request. Warning: this histogram
-    was expired from 2023-11-12 to 2024-01-17; data may be missing.
-  </summary>
-</histogram>
-
 <histogram name="GCM.ClientStartDelay" units="ms" expires_after="2027-04-19">
   <owner>rushans@google.com</owner>
   <owner>peter@chromium.org</owner>
@@ -111,30 +101,10 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="GCM.MessageValid" enum="BooleanSuccess"
     expires_after="2026-03-08">
-  <owner>smaier@chromium.org</owner>
+  <owner>smaier@google.com</owner>
   <summary>
     Records whether or not a received GCM message is valid and will proceed to
     running a background task.
-  </summary>
-</histogram>
-
-<histogram name="GCM.RegistrationCacheStatus" enum="GCMRegistrationCacheStatus"
-    expires_after="2023-04-16">
-  <owner>nator@chromium.org</owner>
-  <owner>peter@chromium.org</owner>
-  <owner>rayankans@chromium.org</owner>
-  <summary>
-    Reports the status of cached GCM registration. This is recorded when a new
-    registration request is considered on the GCM client.
-  </summary>
-</histogram>
-
-<histogram name="GCM.RegistrationRequest" units="requests"
-    expires_after="2023-04-16">
-  <owner>peter@chromium.org</owner>
-  <summary>
-    Number of registration requests sent to Google Cloud Messaging. Recorded
-    immediately after the request has started.
   </summary>
 </histogram>
 
@@ -156,26 +126,6 @@ chromium-metrics-reviews@google.com.
     case was split up in M56 (merged mid-beta to M55) to separate out the
     Response parsing failed, Internal server error, Quota exceeded, and Device
     has too many registrations cases.
-  </summary>
-</histogram>
-
-<histogram name="GCM.StoreSizeKB" units="KB" expires_after="2022-01-16">
-  <owner>peter@chromium.org</owner>
-  <owner>rayankans@chromium.org</owner>
-  <summary>
-    Size of the GCM persistent store in kilobytes at startup. Warning: this
-    histogram was expired from 2018-08-30 to 2021-09-20; data may be missing.
-  </summary>
-</histogram>
-
-<histogram name="GCM.WebPushReceived.DeviceState" enum="WebPushDeviceState"
-    expires_after="2022-01-02">
-  <owner>knollr@chromium.org</owner>
-  <owner>peter@chromium.org</owner>
-  <summary>
-    Device state when receiving a web push message. Indicates if the message was
-    sent with a high priority and if the device was in idle mode. Recorded when
-    a web push message got received.
   </summary>
 </histogram>
 

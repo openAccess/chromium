@@ -26,6 +26,8 @@
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/chrome_signin_pref_names.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/manage_passwords_test.h"
@@ -64,6 +66,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/focus_changed_observer.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "ui/actions/actions.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/base/page_transition_types.h"
@@ -273,6 +276,55 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, BasicOpenAndClose) {
       bubble->GetFocusManager()->GetFocusedView()));
   PasswordBubbleViewBase::CloseCurrentBubble();
   EXPECT_FALSE(IsBubbleShowing());
+}
+
+// Regression test for crbug.com/581964653.
+IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
+                       SynchronousBubbleReplacementBeforeAsyncWidgetClose) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+
+  SetupPendingPassword();
+  PasswordBubbleViewBase* first_bubble =
+      PasswordBubbleViewBase::manage_password_bubble();
+  ASSERT_NE(first_bubble, nullptr);
+  views::test::WidgetDestroyedWaiter first_bubble_destroyed(
+      first_bubble->GetWidget());
+
+  // Closing the current bubble must clear the global pointer synchronously
+  // before async widget teardown runs.
+  PasswordBubbleViewBase::CloseCurrentBubble();
+  EXPECT_EQ(PasswordBubbleViewBase::manage_password_bubble(), nullptr);
+
+  // Opening a second (dismissable) bubble before `first_bubble` finishes
+  // closing must succeed, and `first_bubble`'s async destruction must not clear
+  // the action item's bubble-showing state for the replacement bubble.
+  ExecuteManagePasswordsCommand();
+  PasswordBubbleViewBase* second_bubble =
+      PasswordBubbleViewBase::manage_password_bubble();
+  ASSERT_NE(second_bubble, nullptr);
+  EXPECT_NE(second_bubble, first_bubble);
+
+  actions::ActionItem* passwords_action_item =
+      actions::ActionManager::Get().FindAction(
+          kActionShowPasswordsBubbleOrPage,
+          BrowserActions::From(browser())->root_action_item());
+  ASSERT_NE(passwords_action_item, nullptr);
+  EXPECT_TRUE(passwords_action_item->GetIsShowingBubble());
+
+  first_bubble_destroyed.Wait();
+  EXPECT_EQ(PasswordBubbleViewBase::manage_password_bubble(), second_bubble);
+  EXPECT_TRUE(passwords_action_item->GetIsShowingBubble());
+
+  // Directly replacing an open bubble via `ShowManagePasswordsBubble()` must
+  // also close and clear `second_bubble` synchronously without hitting CHECKs.
+  views::test::WidgetDestroyedWaiter second_bubble_destroyed(
+      second_bubble->GetWidget());
+  TabDialogs::FromWebContents(
+      browser()->GetTabStripModel()->GetActiveWebContents())
+      ->ShowManagePasswordsBubble(/*user_action=*/false);
+  EXPECT_NE(PasswordBubbleViewBase::manage_password_bubble(), nullptr);
+  EXPECT_NE(PasswordBubbleViewBase::manage_password_bubble(), second_bubble);
+  second_bubble_destroyed.Wait();
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest,
@@ -714,7 +766,6 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, LeakPromptHidesBubble) {
 }
 
 // This is a regression test for crbug.com/40228526
-// TODO(crbug.com/330095872): Flaky on Mac
 IN_PROC_BROWSER_TEST_F(PasswordBubbleInteractiveUiTest, SaveUiDismissalReason) {
   base::HistogramTester histogram_tester;
 
@@ -1717,75 +1768,6 @@ IN_PROC_BROWSER_TEST_F(PasswordBubbleWithUnifiedUiDisabledInteractiveUiTest,
   // Wait until the auto-signin bubble has disappeared, which should happen
   // after its timeout.
   EXPECT_TRUE(base::test::RunUntil([&] { return !IsBubbleShowing(); }));
-}
-
-class PasswordBubbleWithInContextErrorResolutionInteractiveUiTest
-    : public PasswordBubbleInteractiveUiTestBase {
- public:
-  PasswordBubbleWithInContextErrorResolutionInteractiveUiTest() {
-    InitializeFeatures(
-        /*enabled_features=*/{
-            {password_manager::features::kPasswordSaveInContextErrorResolution,
-             {}}});
-  }
-
-  ~PasswordBubbleWithInContextErrorResolutionInteractiveUiTest() override =
-      default;
-};
-
-IN_PROC_BROWSER_TEST_F(
-    PasswordBubbleWithInContextErrorResolutionInteractiveUiTest,
-    BubbleWithPendingPasswordHiddenAfterTrustedVaultError) {
-  GetController()->OnPasswordSubmitted(
-      CreateFormManager(/*profile_store=*/nullptr, GetAccountPasswordStore()));
-
-  RunTestSequence(
-      EnsurePresent(PasswordSaveUpdateView::kPasswordBubbleElementId),
-      CheckResult([this]() { return GetController()->GetState(); },
-                  password_manager::ui::PENDING_PASSWORD_STATE),
-      Do([&]() {
-        GetAccountPasswordStore()->SetError(
-            password_manager::ActionableError::kTrustedVaultKeyNeeded);
-        GetAccountPasswordStore()->NotifyAboutError();
-      }),
-      EnsureNotPresent(PasswordSaveUpdateView::kPasswordBubbleElementId));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    PasswordBubbleWithInContextErrorResolutionInteractiveUiTest,
-    BubbleWithPendingPasswordUpdateHiddenAfterTrustedVaultError) {
-  GetController()->OnUpdatePasswordSubmitted(
-      CreateFormManager(/*profile_store=*/nullptr, GetAccountPasswordStore()));
-
-  RunTestSequence(
-      EnsurePresent(PasswordSaveUpdateView::kPasswordBubbleElementId),
-      CheckResult([this]() { return GetController()->GetState(); },
-                  password_manager::ui::PENDING_PASSWORD_UPDATE_STATE),
-      Do([&]() {
-        GetAccountPasswordStore()->SetError(
-            password_manager::ActionableError::kTrustedVaultKeyNeeded);
-        GetAccountPasswordStore()->NotifyAboutError();
-      }),
-      EnsureNotPresent(PasswordSaveUpdateView::kPasswordBubbleElementId));
-}
-
-IN_PROC_BROWSER_TEST_F(
-    PasswordBubbleWithInContextErrorResolutionInteractiveUiTest,
-    BubbleWithPasskeyConfirmationNotHiddenAfterTrustedVaultError) {
-  GetController()->OnPasskeyUpdated("example.com");
-
-  RunTestSequence(
-      CheckResult([this]() { return GetController()->IsShowingBubble(); },
-                  true),
-      CheckResult([this]() { return GetController()->GetState(); },
-                  password_manager::ui::PASSKEY_UPDATED_CONFIRMATION_STATE),
-      Do([&]() {
-        GetAccountPasswordStore()->SetError(
-            password_manager::ActionableError::kTrustedVaultKeyNeeded);
-        GetAccountPasswordStore()->NotifyAboutError();
-      }),
-      CheckResult([this]() { return GetController()->IsShowingBubble(); },
-                  true));
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

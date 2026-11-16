@@ -22,9 +22,6 @@ enum class DefaultBrowserPromptSurface {
   kModalDialogWithoutSettingsIllustration = 3,
 };
 
-// Returns whether the default browser framework feature flag is enabled.
-bool IsDefaultBrowserFrameworkEnabled();
-
 // Returns whether the default browser changed os notification feature flag is
 // enabled.
 bool IsDefaultBrowserChangedOsNotificationEnabled();
@@ -49,13 +46,13 @@ bool IsVisualGuidedSetterDockingEnabled();
 DefaultBrowserPromptSurface GetDefaultBrowserPromptSurface();
 
 // Returns the type of setter to use for the Default Browser interaction. It
-// will default to `kShellIntegration` when the feature is disabled.
+// will default to `kShellIntegration` when the feature is disabled, or when the
+// selected setter is not supported on this platform (the guided setters are
+// Windows 11 only).
 DefaultBrowserSetterType GetDefaultBrowserSetterType();
 
 // Returns the URL for the visual guided setter.
 GURL GetDefaultBrowserVisualGuideURL();
-
-BASE_DECLARE_FEATURE(kDefaultBrowserFramework);
 
 // Enables the default browser prompt surfaces (e.g. invalidation, reprompt).
 BASE_DECLARE_FEATURE(kDefaultBrowserPromptSurfaces);
@@ -80,7 +77,6 @@ BASE_DECLARE_FEATURE(kPerformDefaultBrowserCheckValidations);
 
 // Enables the framework to show Os Notification when Chrome is no longer the
 // default browser.
-// NOTE: This flag expect that `kDefaultBrowserFramework` is enabled first.
 BASE_DECLARE_FEATURE(kDefaultBrowserChangedOsNotification);
 
 // Enables the framework to support multiple setter. When disabled, the setter
@@ -98,11 +94,11 @@ BASE_DECLARE_FEATURE_PARAM(DefaultBrowserSetterType,
 #if BUILDFLAG(IS_WIN)
 // Parameter for the URL used by the visual guided setter.
 BASE_DECLARE_FEATURE_PARAM(std::string, kDefaultBrowserVisualGuideUrlParam);
+#endif
 
 // Parameter for the maximum amount of time we should wait for the Settings
 // window.
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kFindSettingsTimeout);
-#endif
 
 }  // namespace default_browser
 

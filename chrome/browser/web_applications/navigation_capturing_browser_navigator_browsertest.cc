@@ -11,6 +11,8 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/apps/app_service/app_registry_cache_waiter.h"
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -33,6 +35,7 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/navigation_controller.h"
@@ -637,7 +640,7 @@ IN_PROC_BROWSER_TEST_F(
     MAYBE_NavigateBrowserUsedForNavigateExistingToBrowserTab) {
   // Test that the browser provided in NavigateParams is used when using a
   // browser to open a browser tab, instead of the most recently active browser.
-  const webapps::AppId& app_id = InstallTestWebApp(
+  InstallTestWebApp(
       GetAppNoManifestUrl(), mojom::UserDisplayMode::kBrowser,
       blink::mojom::ManifestLaunchHandler_ClientMode::kNavigateExisting);
 
@@ -703,7 +706,7 @@ IN_PROC_BROWSER_TEST_F(NavigationCapturingBrowserNavigatorBrowserTest,
                        NavigateBrowserUsedForFocusExistingToBrowserTab) {
   // Test that the browser provided in NavigateParams is used when using a
   // browser to open a browser tab, instead of the most recently active browser.
-  const webapps::AppId& app_id = InstallTestWebApp(
+  InstallTestWebApp(
       GetAppNoManifestUrl(), mojom::UserDisplayMode::kBrowser,
       blink::mojom::ManifestLaunchHandler_ClientMode::kFocusExisting);
 
@@ -891,8 +894,7 @@ IN_PROC_BROWSER_TEST_F(
 IN_PROC_BROWSER_TEST_F(NavigationCapturingBrowserNavigatorBrowserTest,
                        SameDocumentSubframeNavigationDoesNotAttachLaunchData) {
   const GURL app_url = GetAppNoManifestUrl();
-  const webapps::AppId app_id =
-      InstallTestWebApp(app_url, mojom::UserDisplayMode::kStandalone);
+  InstallTestWebApp(app_url, mojom::UserDisplayMode::kStandalone);
 
   content::WebContents* contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1029,10 +1031,8 @@ IN_PROC_BROWSER_TEST_F(LaunchContainerMetricMeasurementTest,
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetFocusExistingUrl()));
 
   // Install both apps.
-  const webapps::AppId& source_app =
-      InstallWebAppInNewTabAndClose(browser(), GetFocusExistingUrl());
-  const webapps::AppId& dest_app =
-      InstallWebAppInNewTabAndClose(browser(), GetNavigateExistingUrl());
+  InstallWebAppInNewTabAndClose(browser(), GetFocusExistingUrl());
+  InstallWebAppInNewTabAndClose(browser(), GetNavigateExistingUrl());
 
   // Trigger a navigation to `kNavigateExistingUrl`. This should end up in the
   // browser tab.
@@ -1396,6 +1396,101 @@ IN_PROC_BROWSER_TEST_F(NavigationCapturingBrowserNavigatorBrowserTest,
             TabStripModel::kNoTab);
   EXPECT_EQ(pip_browser->GetTabStripModel()->GetIndexOfWebContents(new_tab),
             TabStripModel::kNoTab);
+}
+
+IN_PROC_BROWSER_TEST_F(NavigationCapturingBrowserNavigatorBrowserTest,
+                       FocusExistingGrantsUserActivation) {
+  const webapps::AppId& app_id = InstallTestWebApp(
+      GetFocusExistingUrl(), mojom::UserDisplayMode::kStandalone,
+      blink::mojom::ManifestLaunchHandler_ClientMode::kFocusExisting);
+  EXPECT_EQ(apps::test::EnableLinkCapturingByUser(profile(), app_id),
+            base::ok());
+
+  // Launch the app once to have an existing window.
+  BrowserWindowInterface* app_browser = LaunchWebAppBrowser(app_id);
+  content::WebContents* app_contents =
+      app_browser->GetTabStripModel()->GetActiveWebContents();
+
+  // Register consumer in the app window, returning whether user activation is
+  // active.
+  const char* setup_script = R"(
+    window.activationPromise = new Promise(resolve => {
+      window.launchQueue.setConsumer(params => {
+        resolve(navigator.userActivation.isActive);
+      });
+    });
+    true;
+  )";
+  ASSERT_TRUE(content::ExecJs(app_contents, setup_script,
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  // In a normal browser tab, navigate to an in-scope page.
+  content::WebContents* tab =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(tab, GetLandingPage()));
+
+  // Allow popups.
+  HostContentSettingsMapFactory::GetForProfile(profile())
+      ->SetDefaultContentSetting(ContentSettingsType::POPUPS,
+                                 CONTENT_SETTING_ALLOW);
+
+  // Trigger navigation capturing via window.open WITH user gesture.
+  std::string window_open_script = "setTimeout(() => { window.open('" +
+                                   GetFocusExistingSecondUrl().spec() +
+                                   "', '_blank', 'noopener'); }, 0); true;";
+  ASSERT_TRUE(content::ExecJs(tab, window_open_script));
+
+  EXPECT_EQ(true, EvalJs(app_contents, "window.activationPromise",
+                         content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+                      .ExtractBool());
+}
+
+IN_PROC_BROWSER_TEST_F(NavigationCapturingBrowserNavigatorBrowserTest,
+                       FocusExistingWithoutGestureDoesNotGrantUserActivation) {
+  const webapps::AppId& app_id = InstallTestWebApp(
+      GetFocusExistingUrl(), mojom::UserDisplayMode::kStandalone,
+      blink::mojom::ManifestLaunchHandler_ClientMode::kFocusExisting);
+  EXPECT_EQ(apps::test::EnableLinkCapturingByUser(profile(), app_id),
+            base::ok());
+
+  // Launch the app once to have an existing window.
+  BrowserWindowInterface* app_browser = LaunchWebAppBrowser(app_id);
+  content::WebContents* app_contents =
+      app_browser->GetTabStripModel()->GetActiveWebContents();
+
+  // Register consumer in the app window, returning whether user activation is
+  // active.
+  const char* setup_script = R"(
+    window.activationPromise = new Promise(resolve => {
+      window.launchQueue.setConsumer(params => {
+        resolve(navigator.userActivation.isActive);
+      });
+    });
+    true;
+  )";
+  ASSERT_TRUE(content::ExecJs(app_contents, setup_script,
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  // In a normal browser tab, navigate to an in-scope page.
+  content::WebContents* tab =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(tab, GetLandingPage()));
+
+  // Allow popups.
+  HostContentSettingsMapFactory::GetForProfile(profile())
+      ->SetDefaultContentSetting(ContentSettingsType::POPUPS,
+                                 CONTENT_SETTING_ALLOW);
+
+  // Trigger navigation capturing via window.open WITHOUT user gesture.
+  std::string window_open_script = "setTimeout(() => { window.open('" +
+                                   GetFocusExistingSecondUrl().spec() +
+                                   "', '_blank', 'noopener'); }, 0); true;";
+  ASSERT_TRUE(content::ExecJs(tab, window_open_script,
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  EXPECT_EQ(false, EvalJs(app_contents, "window.activationPromise",
+                          content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+                       .ExtractBool());
 }
 
 }  // namespace

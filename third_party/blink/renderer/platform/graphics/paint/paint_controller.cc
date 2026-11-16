@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 
-#include <cstdint>
 #include <memory>
 
 #include "base/logging.h"
@@ -464,9 +463,8 @@ void PaintController::CheckNewItem(DisplayItem& display_item) {
 
 #if DCHECK_IS_ON()
   if (display_item.IsCacheable()) {
-    DEFINE_STATIC_LOCAL(std::optional<PaintChunk::Id>, last_duplicated_id, ());
-    DEFINE_STATIC_LOCAL(std::optional<base::debug::StackTrace>, previous_stack,
-                        ());
+    static std::optional<PaintChunk::Id> last_duplicated_id;
+    static std::optional<base::debug::StackTrace> previous_stack;
     auto id = display_item.GetId();
     if (id == last_duplicated_id) {
       previous_stack.emplace();
@@ -560,9 +558,8 @@ void PaintController::CheckNewChunkId(const PaintChunk::Id& id) {
   if (DisplayItem::IsForeignLayerType(id.type))
     return;
 
-  DEFINE_STATIC_LOCAL(std::optional<PaintChunk::Id>, last_duplicated_id, ());
-  DEFINE_STATIC_LOCAL(std::optional<base::debug::StackTrace>, previous_stack,
-                      ());
+  static std::optional<PaintChunk::Id> last_duplicated_id;
+  static std::optional<base::debug::StackTrace> previous_stack;
   if (id == last_duplicated_id) {
     previous_stack.emplace();
   }

@@ -12,6 +12,11 @@ crbug.com/420198 [ Linux ] fast/js/regress/* [ Skip ]
 crbug.com/420198 [ Linux ] fast/css/fontface-arraybuffer.html [ Skip ]
 crbug.com/386451783 [ Linux ] external/wpt/wasm/core/simd/simd_f32x4_pmin_pmax.wast.js.html [ Skip ]
 crbug.com/386451783 [ Linux ] external/wpt/wasm/core/simd/simd_f64x2_pmin_pmax.wast.js.html [ Skip ]
+crbug.com/584454161 [ Linux ] external/wpt/encoding/encodeInto-tail-unmodified.any.html [ Skip ]
+crbug.com/584454161 [ Linux ] external/wpt/encoding/encodeInto-tail-unmodified.any.serviceworker.html [ Skip ]
+crbug.com/584454161 [ Linux ] external/wpt/encoding/encodeInto-tail-unmodified.any.sharedworker.html [ Skip ]
+crbug.com/584454161 [ Linux ] external/wpt/encoding/encodeInto-tail-unmodified.any.worker.html [ Skip ]
+crbug.com/584512866 [ Linux ] inspector-protocol/worker/worker-no-js-in-interrupt.js [ Skip ]
 
 
 # Deliberate infinite recursion. A JS exception is expected, but may crash with
@@ -188,3 +193,13 @@ crbug.com/487895128 [ Linux ] external/wpt/storage/estimate-indexeddb.https.any.
 
 # Reliably timing out on MSAN
 crbug.com/508089939 [ Linux ] external/wpt/navigation-api/navigate-event/intercept-cross-origin-focus-without-user-activation.html [ Timeout ]
+
+# Gardener 2026-11-10
+crbug.com/584197764 [ Linux ] external/wpt/speculation-rules/prefetch/* [ Pass Timeout ]
+# For crbug.com/584197764, these tests would be marked as flaky timeouts, but
+# there are so many timeouts that they cause the entire bot to time out if we
+# attempt to run them.
+crbug.com/584197764 [ Linux ] virtual/prefetch-cancel-unrelated-prefetch/external/wpt/speculation-rules/prefetch/* [ Skip ]
+crbug.com/584197764 [ Linux ] virtual/prefetch-force-off-the-main-thread-wculf/external/wpt/speculation-rules/prefetch/* [ Skip ]
+crbug.com/584197764 [ Linux ] virtual/prefetch-force-off-the-main-thread/external/wpt/speculation-rules/prefetch/* [ Skip ]
+

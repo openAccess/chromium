@@ -14,6 +14,7 @@
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
@@ -23,7 +24,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/browser/ui/ash/network/network_portal_signin_controller.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/network/network_event_log.h"
 #include "chromeos/ash/components/network/network_handler.h"
 #include "chromeos/ash/components/network/network_state.h"
@@ -110,7 +110,12 @@ class NotificationDelegateImpl : public message_center::NotificationDelegate {
 void NotificationDelegateImpl::Click(
     const std::optional<int>& button_index,
     const std::optional<std::u16string>& reply) {
-  NET_LOG(USER) << "Captive Portal notification: Click";
+  const NetworkState* default_network =
+      NetworkHandler::IsInitialized()
+          ? NetworkHandler::Get()->network_state_handler()->DefaultNetwork()
+          : nullptr;
+  NET_LOG(USER) << NetworkIdWithSession(default_network) << " " << __func__
+                << ": Captive Portal notification: Click";
   NetworkPortalSigninController::Get()->ShowSignin(
       NetworkPortalSigninController::SigninSource::kNotification);
   CloseNotification();
@@ -142,8 +147,16 @@ void NetworkPortalNotificationController::PortalStateChanged(
     NetworkState::PortalState portal_state) {
   if (!network || !IsPortalState(portal_state)) {
     if (!last_network_guid_.empty() && IsPortalState(last_portal_state_)) {
-      NET_LOG(EVENT) << "Captive Portal notification: Close for "
-                     << last_network_guid_;
+      const NetworkState* closed_network =
+          NetworkHandler::IsInitialized()
+              ? NetworkHandler::Get()
+                    ->network_state_handler()
+                    ->GetNetworkStateFromGuid(last_network_guid_)
+              : nullptr;
+      NET_LOG(EVENT) << (closed_network ? NetworkIdWithSession(closed_network)
+                                        : last_network_guid_)
+                     << " " << __func__
+                     << ": Captive Portal notification: Close";
     }
     last_network_guid_.clear();
     last_portal_state_ = portal_state;
@@ -169,8 +182,9 @@ void NetworkPortalNotificationController::PortalStateChanged(
   last_network_guid_ = network->guid();
   last_portal_state_ = portal_state;
 
-  NET_LOG(EVENT) << "Captive Portal notification: Show for "
-                 << NetworkId(network) << " PortalState: " << portal_state;
+  NET_LOG(EVENT) << NetworkIdWithSession(network) << " " << __func__
+                 << ": Captive Portal notification: Show, PortalState: "
+                 << portal_state;
   base::UmaHistogramEnumeration("Network.NetworkPortalNotificationState",
                                 portal_state);
 

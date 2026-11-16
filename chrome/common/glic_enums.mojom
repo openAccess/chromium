@@ -67,6 +67,11 @@ enum FreOverride {
   kTrustFirstClick = 2,
   // Variation that starts with full client unlocked and shows inline consent.
   kTrustFirstInline = 3,
+  // The host shows a native FRE overlay above the client. The client must not
+  // show its own FRE or consent UI. The overlay blocks the client until the
+  // user accepts. On accept, the host marks the FRE as completed. On decline,
+  // the host closes the panel.
+  [MinVersion=1] kNativeFre = 4,
 };
 
 // @generate glic_api
@@ -183,6 +188,8 @@ enum InvocationSource {
   [MinVersion=32] kWebContentsContextMenuTextSelection = 48,
   // Invoked by the actor GeminiPanelTool.
   [MinVersion=33] kActorTool = 49,
+  // User clicked a conversation row in the activity list bubble.
+  [MinVersion=34] kActivityListBubble = 50,
 };
 
 // LINT.ThenChange(//chrome/browser/glic/public/android/java/src/org/chromium/chrome/browser/glic/GlicKeyedService.java:GlicInvocationSource,

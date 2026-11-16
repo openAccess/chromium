@@ -13,7 +13,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.hamcrest.CoreMatchers.containsString;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.RippleDrawable;
@@ -32,11 +32,9 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.settings.SettingsActivity;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -57,7 +55,6 @@ import java.util.concurrent.TimeoutException;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(AllSiteSettingsTest.TEST_BATCH_NAME)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 // TODO(https://crbug.com/464015936): these tests could be flaky because of AnimatedProgressBar.
 @DisableFeatures({ChromeFeatureList.ANDROID_ANIMATED_PROGRESS_BAR_IN_BROWSER})
 public class AllSiteSettingsTest {
@@ -95,7 +92,7 @@ public class AllSiteSettingsTest {
     public void testAllSitesViewEmpty() throws Exception {
         SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startAllSitesSettings(SiteSettingsCategory.Type.ALL_SITES);
-        onViewWaiting(withText(containsString("Delete browsing"))).check(matches(isDisplayed()));
+        waitForView(withText(containsString("Delete browsing")));
         View view =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -124,7 +121,7 @@ public class AllSiteSettingsTest {
 
         SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startAllSitesSettings(SiteSettingsCategory.Type.ALL_SITES);
-        onViewWaiting(withText(containsString("Delete browsing"))).check(matches(isDisplayed()));
+        waitForView(withText(containsString("Delete browsing")));
         View view =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -159,7 +156,7 @@ public class AllSiteSettingsTest {
 
         SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startAllSitesSettings(SiteSettingsCategory.Type.ALL_SITES);
-        onViewWaiting(withText(containsString("Delete browsing"))).check(matches(isDisplayed()));
+        waitForView(withText(containsString("Delete browsing")));
         onView(withText(A_GITHUB_IO)).check(matches(isDisplayed()));
         onView(withText(B_GITHUB_IO)).check(matches(isDisplayed()));
 
@@ -190,7 +187,7 @@ public class AllSiteSettingsTest {
 
         SettingsActivity settingsActivity =
                 SiteSettingsTestUtils.startAllSitesSettings(SiteSettingsCategory.Type.ALL_SITES);
-        onViewWaiting(withText(containsString("Delete browsing"))).check(matches(isDisplayed()));
+        waitForView(withText(containsString("Delete browsing")));
         onView(withText(A_GITHUB_IO)).check(matches(isDisplayed()));
         onView(withText(B_GITHUB_IO)).check(matches(isDisplayed()));
 

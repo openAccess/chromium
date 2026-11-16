@@ -49,6 +49,9 @@ const NSTimeInterval kChevronAnimationDuration = 0.25;
 - (instancetype)initWithFrame:(CGRect)frame {
   self = [super initWithFrame:frame];
   if (self) {
+    self.isAccessibilityElement = YES;
+    self.accessibilityTraits |= UIAccessibilityTraitButton;
+
     _iconView = [[LevelUpTaskIconView alloc] init];
     _iconView.translatesAutoresizingMaskIntoConstraints = NO;
 
@@ -123,6 +126,22 @@ const NSTimeInterval kChevronAnimationDuration = 0.25;
   return self;
 }
 
+#pragma mark - UIAccessibility
+
+- (NSString*)accessibilityLabel {
+  return [NSString
+      stringWithFormat:@"%@, %@", _titleLabel.text, _descriptionLabel.text];
+}
+
+- (NSString*)accessibilityValue {
+  return _task.completed
+             ? l10n_util::GetNSString(
+                   IDS_IOS_LEVEL_UP_TASK_COMPLETED_ACCESSIBILITY_VALUE)
+             : nil;
+}
+
+#pragma mark - Public
+
 - (void)configureWithTask:(LevelUpTask*)task showSeparator:(BOOL)showSeparator {
   self.backgroundColor = nil;
   _chevronView.transform = CGAffineTransformIdentity;
@@ -179,6 +198,8 @@ const NSTimeInterval kChevronAnimationDuration = 0.25;
 - (void)setSeparatorHidden:(BOOL)hidden {
   _separatorView.hidden = hidden;
 }
+
+#pragma mark - Private
 
 - (void)didTapRow {
   [self.delegate taskRowView:self didTapTask:_task];

@@ -6,6 +6,7 @@
 
 #include <unicode/uchar.h>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_features.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/font_features.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_shaper.h"
@@ -33,9 +34,8 @@ HashSet<uint32_t> ExclusiveFeatures() {
 }
 
 bool IsExclusiveFeature(uint32_t tag) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(HashSet<uint32_t>, tags,
-                                  (ExclusiveFeatures()));
-  return tags.Contains(tag);
+  static base::NoDestructor<HashSet<uint32_t>> tags(ExclusiveFeatures());
+  return tags->Contains(tag);
 }
 
 inline float GetAdvance(const HarfBuzzShaper::GlyphData& glyph,
@@ -171,7 +171,6 @@ HanKerning::CharType HanKerning::GetCharTypeWithCache(const String& text,
                                                       wtf_size_t index,
                                                       const FontData& font_data,
                                                       Priority priority) {
-  DCHECK(RuntimeEnabledFeatures::TextSpacingTrimFallbackEnabled());
   DCHECK(!char_types_.empty());
   const CharType cached_type = char_types_[index];
   if (priority == Priority::kCache && cached_type != CharType::kInvalid) {
@@ -337,7 +336,6 @@ bool HanKerning::AppendFontFeatures(const String& text,
 }
 
 void HanKerning::PrepareFallback(const String& text) {
-  DCHECK(RuntimeEnabledFeatures::TextSpacingTrimFallbackEnabled());
   if (char_types_.empty()) {
     char_types_.Grow(text.length());
     char_types_.Fill(CharType::kInvalid);

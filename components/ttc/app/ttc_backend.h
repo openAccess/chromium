@@ -7,11 +7,13 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "components/ttc/app/public/error_codes.h"
 #include "components/ttc/app/public/tool_types.h"
@@ -61,6 +63,9 @@ class TtcBackend {
     virtual void OnUserTurnStateUpdate(UserTurnStateUpdate update) = 0;
     virtual void OnToolCall(const ToolRequest& tool_request,
                             ToolResponseCallback response_callback) = 0;
+    // Called with tool calls that the backend sent together. `tool_calls` is
+    // never empty.
+    virtual void OnToolCallBatch(std::vector<PendingToolCall> tool_calls) = 0;
     virtual void OnJournalEvent(const ServerJournalEvent& journal_event) = 0;
   };
 
@@ -89,13 +94,19 @@ class TtcBackend {
       const std::string& title,
       const optimization_guide::proto::AnnotatedPageContent& apc) = 0;
 
-  // Reports the sequence number of audio played out to speakers.
-  virtual void ReportPlaybackStatus(int64_t last_played_sequence_number) = 0;
+  // Reports the current playback status of model audio for `generation_id`.
+  virtual void ReportPlaybackStatus(base::TimeDelta playback_progress,
+                                    bool playback_complete,
+                                    int64_t generation_id) = 0;
 
   // Closes the active session gracefully.
   virtual void Close() = 0;
 
   virtual bool is_transport_connected() const = 0;
+
+  // Returns the backend-assigned session ID, or std::nullopt if a session
+  // hasn't been connected yet.
+  virtual std::optional<std::string> GetSessionId() const;
 };
 
 }  // namespace ttc

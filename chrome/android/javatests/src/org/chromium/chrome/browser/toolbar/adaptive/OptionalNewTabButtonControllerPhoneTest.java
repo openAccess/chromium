@@ -4,21 +4,16 @@
 
 package org.chromium.chrome.browser.toolbar.adaptive;
 
-import static androidx.test.espresso.action.ViewActions.click;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
-import static androidx.test.espresso.matcher.ViewMatchers.isEnabled;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.CoreMatchers.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.content.res.Configuration;
 
@@ -35,14 +30,12 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.Features;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -57,8 +50,7 @@ import org.chromium.ui.test.util.DeviceRestriction;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
-@Features.DisableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
+@DisableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR})
 @Restriction({DeviceFormFactor.PHONE})
 public class OptionalNewTabButtonControllerPhoneTest {
     private static final String TEST_PAGE = "/chrome/test/data/android/navigate/simple.html";
@@ -103,13 +95,10 @@ public class OptionalNewTabButtonControllerPhoneTest {
                 mActivityTestRule.getActivity(), Configuration.ORIENTATION_PORTRAIT);
         mActivityTestRule.loadUrl(mTestPageUrl, /* secondsToWait= */ 10);
 
-        onViewWaiting(
-                        allOf(
-                                withId(R.id.optional_toolbar_button),
-                                isDisplayed(),
-                                isEnabled(),
-                                withContentDescription(mButtonDescription)))
-                .perform(click());
+        waitForView(
+                        withId(R.id.optional_toolbar_button),
+                        withContentDescription(mButtonDescription))
+                .click();
 
         // Expected tabs:
         // 1: mTestPageUrl
@@ -133,13 +122,8 @@ public class OptionalNewTabButtonControllerPhoneTest {
         mActivityTestRule.loadUrl(mTestPageUrl, /* secondsToWait= */ 10);
 
         // Check view exists and is set up correctly.
-        onViewWaiting(withId(R.id.optional_toolbar_button))
-                .check(
-                        matches(
-                                allOf(
-                                        isDisplayed(),
-                                        isEnabled(),
-                                        withContentDescription(mButtonDescription))));
+        waitForView(
+                withId(R.id.optional_toolbar_button), withContentDescription(mButtonDescription));
         // Clicking with espresso is flaky, perform click directly.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -169,13 +153,10 @@ public class OptionalNewTabButtonControllerPhoneTest {
     public void testClick_opensNewTabInIncognito() {
         mActivityTestRule.loadUrlInNewTab(mTestPageUrl, /* incognito= */ true);
 
-        onViewWaiting(
-                        allOf(
-                                withId(R.id.optional_toolbar_button),
-                                isDisplayed(),
-                                isEnabled(),
-                                withContentDescription(mButtonDescription)))
-                .perform(click());
+        waitForView(
+                        withId(R.id.optional_toolbar_button),
+                        withContentDescription(mButtonDescription))
+                .click();
 
         // Expected tabs:
         // 1: mTestPageUrl
@@ -205,13 +186,10 @@ public class OptionalNewTabButtonControllerPhoneTest {
         mActivityTestRule.loadUrl(mTestPageUrl, /* secondsToWait= */ 10);
         UserActionTester userActionTester = new UserActionTester();
 
-        onViewWaiting(
-                        allOf(
-                                withId(R.id.optional_toolbar_button),
-                                isDisplayed(),
-                                isEnabled(),
-                                withContentDescription(mButtonDescription)))
-                .perform(click());
+        waitForView(
+                        withId(R.id.optional_toolbar_button),
+                        withContentDescription(mButtonDescription))
+                .click();
 
         assertThat(
                 /* message= */ userActionTester.toString(),
@@ -226,12 +204,8 @@ public class OptionalNewTabButtonControllerPhoneTest {
         mActivityTestRule.loadUrl(mTestPageUrl, /* secondsToWait= */ 10);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mActivityTestRule.getActivity().getActivityTab().reload());
-        onViewWaiting(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        isEnabled(),
-                        withContentDescription(mButtonDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button), withContentDescription(mButtonDescription));
 
         mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
 

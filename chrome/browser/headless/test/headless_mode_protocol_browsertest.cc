@@ -19,7 +19,6 @@
 #include "chrome/browser/headless/test/headless_browser_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/headless/select_file_dialog/headless_select_file_dialog.h"
 #include "components/headless/test/shared_test_util.h"
@@ -75,13 +74,6 @@ bool HeadlessModeProtocolBrowserTest::IsSharedTestScript() {
 }
 
 void HeadlessModeProtocolBrowserTest::SetUp() {
-  webui_omnibox_feature_list_.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/
-      // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-      // is enabled and then remove these two Features.
-      {omnibox::internal::kWebUIOmniboxPopup,
-       omnibox::internal::kWebUIOmniboxAimPopup});
   LoadTestMetaInfo();
   HeadlessModeDevTooledBrowserTest::SetUp();
 }
@@ -224,6 +216,9 @@ HEADLESS_MODE_PROTOCOL_TEST(InputClipboardOps, "shared/input-clipboard-ops.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(ClipboardPasteAllowed,
                             "shared/clipboard-paste-allowed.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(DragInterceptedFileURL,
+                            "shared/drag-intercepted-file-url.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(DocumentFocusOnLoad,
                             "input/document-focus-on-load.js")
@@ -372,6 +367,9 @@ HEADLESS_MODE_PROTOCOL_TEST(CreateTargetPosition,
 
 HEADLESS_MODE_PROTOCOL_TEST(CreateTargetWindowState,
                             "shared/create-target-window-state.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(ActivateTargetFullscreen,
+                            "shared/activate-target-fullscreen.js")
 
 HEADLESS_MODE_PROTOCOL_TEST(DocumentVisibilityState,
                             "shared/document-visibility-state.js")
@@ -537,6 +535,12 @@ HEADLESS_MODE_PROTOCOL_TEST(NormalWindowHasOpener,
 HEADLESS_MODE_PROTOCOL_TEST(GetBrowserContexts,
                             "shared/get-browser-contexts.js")
 
+HEADLESS_MODE_PROTOCOL_TEST(InteractionMediaFeatures,
+                            "shared/interaction-media-features.js")
+
+HEADLESS_MODE_PROTOCOL_TEST(StorageCookiesIsolatedByContext,
+                            "storage/storage-cookies-isolated-by-context.js")
+
 class HeadlessModeProtocolBrowserTestWithDownload
     : public HeadlessModeProtocolBrowserTest {
  public:
@@ -591,6 +595,10 @@ HEADLESS_MODE_PROTOCOL_TEST_F(
     HeadlessModeDevToolsPolicyBlocklistProtocolTest,
     OopifSameDocumentNavigationBlocklist,
     "target/oopif-same-document-navigation-blocklist.js")
+
+HEADLESS_MODE_PROTOCOL_TEST_F(HeadlessModeDevToolsPolicyBlocklistProtocolTest,
+                              NotInspectableTargetNotListed,
+                              "target/not-inspectable-target-not-listed.js")
 
 class HeadlessModeDevToolsPolicyAllowlistProtocolTest
     : public HeadlessModeProtocolBrowserTest {

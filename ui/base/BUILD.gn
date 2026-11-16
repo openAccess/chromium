@@ -320,8 +320,8 @@ component("base") {
       "cocoa/default_command_dispatcher_delegate.mm",
       "cocoa/defaults_utils.h",
       "cocoa/defaults_utils.mm",
-      "cocoa/drag_permission.h",
-      "cocoa/drag_permission.mm",
+      "cocoa/drag_coordinator.h",
+      "cocoa/drag_coordinator.mm",
       "cocoa/find_pasteboard.h",
       "cocoa/find_pasteboard.mm",
       "cocoa/macos27_sdk.h",
@@ -1088,6 +1088,7 @@ test("ui_base_unittests") {
     "//ui/base/data_transfer_policy:unittests",
     "//ui/base/identifier:unit_tests",
     "//ui/base/interaction:unit_tests",
+    "//ui/base/l10n/test:test_support",
     "//ui/base/metadata:metadata_tests",
     "//ui/base/prediction",
     "//ui/color",
@@ -1363,7 +1364,10 @@ test("ui_base_unittests") {
   }
 
   if (use_glib) {
-    sources += [ "glib/scoped_gsignal_unittest.cc" ]
+    sources += [
+      "glib/glib_callback_unittest.cc",
+      "glib/scoped_gsignal_unittest.cc",
+    ]
     deps += [ "//ui/base/glib" ]
   }
 
@@ -1463,8 +1467,8 @@ action("locales_list_gen") {
 }
 
 source_set("locales_list") {
-  deps = [ ":locales_list_gen" ]
   sources = [ "$root_gen_dir/ui/base/l10n/l10n_util_locales_list.inc" ]
+  public_deps = [ ":locales_list_gen" ]
 }
 
 buildflag_header("ozone_buildflags") {

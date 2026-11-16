@@ -830,8 +830,16 @@ public class WebContentsAccessibilityTreeTest {
 
     @Test
     @SmallTest
+    @DisableFeatures(AccessibilityFeatures.ACCESSIBILITY_MAP_TO_NEW_CLASS_NAMES)
     public void test_ariaNote() {
         performAriaTest("aria-note.html");
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AccessibilityFeatures.ACCESSIBILITY_MAP_TO_NEW_CLASS_NAMES)
+    public void test_ariaNote_newClass() {
+        performAriaTest("aria-note.html", "aria-note-new-class-feature");
     }
 
     @Test
@@ -2833,6 +2841,12 @@ public class WebContentsAccessibilityTreeTest {
     @SmallTest
     public void test_interactiveControlsWithLabels() {
         performHtmlTest("interactive-controls-with-labels.html");
+    }
+
+    @Test
+    @SmallTest
+    public void test_interestForExpanded() {
+        performHtmlTest("interest-for-expanded.html");
     }
 
     @Test

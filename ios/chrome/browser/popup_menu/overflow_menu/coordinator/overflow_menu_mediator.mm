@@ -33,6 +33,7 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/signin/public/identity_manager/primary_account_change_event.h"
+#import "components/subscription_eligibility/ai_subscription_tier_names.h"
 #import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/supervised_user/core/common/features.h"
@@ -890,7 +891,7 @@ void GetPresetNTPBackgroundPreview(
 
   [self logTranslateAvailability];
 
-  if (IsIdentityAwarenessEnabled()) {
+  if (!self.incognito) {
     self.identityAction = [self newIdentityAction];
     [self updateIdentityAction];
   }
@@ -1094,7 +1095,7 @@ void GetPresetNTPBackgroundPreview(
                                                : @[]
                  footer:nil];
 
-  if (IsIdentityAwarenessEnabled()) {
+  if (!self.incognito) {
     self.identityActionsGroup =
         [[OverflowMenuActionGroup alloc] initWithGroupName:kIdentityGroupName
                                                    actions:@[]
@@ -2086,8 +2087,7 @@ void GetPresetNTPBackgroundPreview(
   NSMutableArray<OverflowMenuActionGroup*>* actionGroups =
       [[NSMutableArray alloc] init];
 
-  if (IsIdentityAwarenessEnabled() && self.authenticationService &&
-      !self.incognito) {
+  if (self.authenticationService && !self.incognito) {
     NSMutableArray<OverflowMenuAction*>* identityActions =
         [NSMutableArray array];
     if (self.authenticationService->SigninEnabled() &&
@@ -2214,11 +2214,27 @@ void GetPresetNTPBackgroundPreview(
     self.identityAction.image = self.identityAvatarProvider->GetIdentityAvatar(
         primaryIdentity, IdentityAvatarSize::Regular);
   }
-  self.identityAction.showsAITierRing =
+  BOOL showsAITierRing =
       ![self shouldIndicateIdentityError] &&
       self.subscriptionEligibilityService &&
-      self.subscriptionEligibilityService->GetAiSubscriptionTier() > 0 &&
-      IsAiSubscriptionAvatarRingFollowupIOSEnabled();
+      IsAiSubscriptionAvatarRingFollowupIOSEnabled() &&
+      subscription_eligibility::GetAiSubscriptionTierDisplayInfo(
+          self.subscriptionEligibilityService->GetAiSubscriptionTier())
+          .show_decoration;
+  self.identityAction.showsAITierRing = showsAITierRing;
+  if (showsAITierRing) {
+    self.identityAction.customAccessibilityLabel =
+        primaryIdentity.userFullName.length
+            ? l10n_util::GetNSStringF(
+                  IDS_IOS_ACCOUNT_TABLE_VIEW_ITEM_WITH_NAME_AND_EMAIL_GOOGLE_MEMBERSHIP,
+                  base::SysNSStringToUTF16(primaryIdentity.userFullName),
+                  base::SysNSStringToUTF16(primaryIdentity.userEmail))
+            : l10n_util::GetNSStringF(
+                  IDS_IOS_ACCOUNT_TABLE_VIEW_ITEM_WITH_EMAIL_GOOGLE_MEMBERSHIP,
+                  base::SysNSStringToUTF16(primaryIdentity.userEmail));
+  } else {
+    self.identityAction.customAccessibilityLabel = nil;
+  }
 }
 
 // Returns whether the page can be manually translated. If `forceMenuLogging` is
@@ -3237,11 +3253,6 @@ void GetPresetNTPBackgroundPreview(
 // Dismisses the menu and opens downloads.
 - (void)openDownloads {
   [self dismissMenu];
-  profile_metrics::BrowserProfileType type =
-      self.incognito ? profile_metrics::BrowserProfileType::kIncognito
-                     : profile_metrics::BrowserProfileType::kRegular;
-  UmaHistogramEnumeration("Download.OpenDownloadsFromMenu.PerProfileType",
-                          type);
   [self.browserCoordinatorHandler showDownloadsFolder];
 }
 

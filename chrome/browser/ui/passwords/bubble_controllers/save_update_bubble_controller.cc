@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/passwords/bubble_controllers/save_update_bubble_controller.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "base/check.h"
 #include "base/check_op.h"
@@ -25,6 +26,7 @@
 #include "components/password_manager/core/browser/password_counter.h"
 #include "components/password_manager/core/browser/password_form_metrics_recorder.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_store/password_store_interface.h"
 #include "components/password_manager/core/browser/password_store/smart_bubble_stats_store.h"
 #include "components/password_manager/core/browser/password_sync_util.h"
@@ -327,14 +329,9 @@ void SaveUpdateBubbleController::ReportInteractions() {
         profile && PasswordCounterFactory::GetForProfile(profile) &&
         PasswordCounterFactory::GetForProfile(profile)
                 ->autofillable_passwords() == 0;
-    std::optional<password_manager::ActionableError> saving_blocked_error;
-    if (IsSavingBlockedByTrustedVaultError()) {
-      saving_blocked_error =
-          password_manager::ActionableError::kTrustedVaultKeyNeeded;
-    }
     metrics_util::LogSaveUIDismissalReason(GetDismissalReason(), user_state,
                                            log_adoption_metric,
-                                           saving_blocked_error);
+                                           GetRecoverableErrorBlockingSaving());
   }
 
   // Update the delegate so that it can send votes to the server.
@@ -351,15 +348,26 @@ void SaveUpdateBubbleController::ReportInteractions() {
   }
 }
 
-bool SaveUpdateBubbleController::IsSavingBlockedByTrustedVaultError() const {
-  return delegate_ && delegate_->IsSavingBlockedByTrustedVaultError();
+std::optional<password_manager::ActionableError>
+SaveUpdateBubbleController::GetRecoverableErrorBlockingSaving() const {
+  return delegate_ ? delegate_->GetRecoverableErrorBlockingSaving()
+                   : std::nullopt;
 }
 
-void SaveUpdateBubbleController::OnTrustedVaultUnlockClicked() {
+void SaveUpdateBubbleController::OnErrorResolutionClicked() {
   CHECK(GetState() == password_manager::ui::PENDING_PASSWORD_STATE ||
         GetState() == password_manager::ui::PENDING_PASSWORD_UPDATE_STATE);
   SetDismissalReason(metrics_util::CLICKED_RESOLVE_ERROR);
-  delegate_->SavePasswordAfterTrustedVaultErrorResolution(
-      GetPendingPassword().username_value, GetPendingPassword().password_value);
-  delegate_->StartTrustedVaultErrorResolutionFlow();
+  if (delegate_) {
+    delegate_->SavePasswordAfterErrorResolution(
+        GetPendingPassword().username_value,
+        GetPendingPassword().password_value);
+    // Saving can synchronously close the bubble and reset `delegate_`.
+    if (delegate_) {
+      if (const std::optional<password_manager::ActionableError> error =
+              GetRecoverableErrorBlockingSaving()) {
+        delegate_->StartErrorResolutionFlow(*error);
+      }
+    }
+  }
 }

@@ -161,8 +161,6 @@ class DeskBarScrollViewLayout : public views::LayoutManager {
       new_bounds.Offset(current_bounds.width() - preferred_bounds.width(), 0);
     }
     bar_view_->background_view_->SetBoundsRect(new_bounds);
-    bar_view_->decoration_->SetContentBounds(
-        bar_view_->background_view_->GetLocalBounds());
   }
 
   // Layout the label which is shown below the desk icon button when the button
@@ -799,11 +797,11 @@ void DeskBarViewBase::MaybeSetupBackgroundView() {
 
   // Parent the decoration directly under `background_layer` so it inherits
   // scale transform animations applied during desk creation and removal.
-  decoration_ = SystemDecoration::Create(
-      SystemDecoration::ShadowType::kNone,
-      SystemDecoration::HighlightBorderMode::kHighlightBorder);
+  decoration_ = SystemDecoration::CreateForView(
+      background_view_, SystemDecoration::ShadowType::kNone,
+      SystemDecoration::HighlightBorderMode::kHighlightBorder,
+      SystemDecoration::LayerParent::kViewLayer);
   decoration_->SetRoundedCorners(rounded_corners);
-  background_layer->Add(decoration_->GetLayer());
 }
 
 // static
@@ -868,7 +866,7 @@ std::unique_ptr<views::Widget> DeskBarViewBase::CreateDeskWidget(
 
   std::unique_ptr<views::Widget> widget = std::make_unique<views::Widget>();
   views::Widget::InitParams params(
-      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
+      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.activatable = views::Widget::InitParams::Activatable::kYes;
   params.accept_events = true;
@@ -880,6 +878,10 @@ std::unique_ptr<views::Widget> DeskBarViewBase::CreateDeskWidget(
   params.layer_type = ui::LAYER_NOT_DRAWN;
 
   if (type == Type::kOverview) {
+    // On overview exit, the overview desk bar is handed to a
+    // `CleanupAnimationObserver`, which requires the widget to own its native
+    // widget.
+    params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
     // Overview desk bar should live under the currently-active desk container
     // on `root`.
     params.context = root;
@@ -901,18 +903,6 @@ std::unique_ptr<views::Widget> DeskBarViewBase::CreateDeskWidget(
   wm::SetWindowVisibilityAnimationTransition(widget->GetNativeWindow(),
                                              wm::ANIMATE_NONE);
   return widget;
-}
-
-void DeskBarViewBase::AddedToWidget() {
-  if (decoration_) {
-    decoration_->ObserveColorProviderSource(GetWidget());
-  }
-}
-
-void DeskBarViewBase::RemovedFromWidget() {
-  if (decoration_) {
-    decoration_->ObserveColorProviderSource(nullptr);
-  }
 }
 
 void DeskBarViewBase::Layout(PassKey) {

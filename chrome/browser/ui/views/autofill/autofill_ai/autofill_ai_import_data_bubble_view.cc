@@ -9,20 +9,24 @@
 #include <string_view>
 
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_data_controller.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
+#include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_string_utils.h"
 #include "chrome/browser/ui/views/autofill/autofill_ai/autofill_ai_bubble_utils.h"
 #include "chrome/browser/ui/views/autofill/autofill_bubble_utils.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_types.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/range/range.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -67,6 +71,14 @@ bool IsWalletPassBrandingSavePrompt(
   return controller.IsSavePrompt() && controller.IsBranding2026FeatureEnabled();
 }
 
+views::StyledLabel::RangeStyleInfo CreateLinkStyle(
+    base::RepeatingClosure callback) {
+  auto style =
+      views::StyledLabel::RangeStyleInfo::CreateForLink(std::move(callback));
+  style.text_style = views::style::STYLE_LINK_4;
+  return style;
+}
+
 }  // namespace
 
 AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
@@ -92,7 +104,17 @@ AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
   std::unique_ptr<views::BoxLayoutView> subtitle_container =
       CreateAutofillAiBubbleSubtitleContainer();
   if (controller_->IsWalletableEntity()) {
-    subtitle_container->AddChildView(GetWalletableEntitySubtitle());
+    WalletImportPromptNotice notice =
+        GetWalletImportPromptNotice(controller_->GetNoticeStringId(),
+                                    controller_->GetPrimaryAccountEmail());
+    subtitle_container->AddChildView(GetWalletableEntitySubtitle(notice));
+    if (notice.privacy_policy_link_text) {
+      subtitle_container->SetBetweenChildSpacing(
+          ChromeLayoutProvider::Get()->GetDistanceMetric(
+              views::DISTANCE_RELATED_CONTROL_VERTICAL));
+      subtitle_container->AddChildView(
+          GetPrivacyPolicyLink(std::move(*notice.privacy_policy_link_text)));
+    }
   } else {
     subtitle_container->AddChildView(GetLocalEntitySubtitle());
   }
@@ -127,6 +149,12 @@ AutofillAiImportDataBubbleView::AutofillAiImportDataBubbleView(
   DialogDelegate::SetButtonLabel(
       ui::mojom::DialogButton::kOk,
       controller_->GetSaveUpdateDialogPrimaryButtonText());
+  if (controller_->MustShowEquallyWeightedButtons()) {
+    DialogDelegate::SetButtonStyle(ui::mojom::DialogButton::kCancel,
+                                   ui::ButtonStyle::kTonal);
+    DialogDelegate::SetButtonStyle(ui::mojom::DialogButton::kOk,
+                                   ui::ButtonStyle::kTonal);
+  }
   SetAcceptCallbackWithClose(
       base::BindRepeating(&AutofillAiImportDataBubbleView::OnDialogAccepted,
                           base::Unretained(this)));
@@ -219,49 +247,35 @@ AutofillAiImportDataBubbleView::GetLocalEntitySubtitle() const {
 }
 
 std::unique_ptr<views::StyledLabel>
-AutofillAiImportDataBubbleView::GetWalletableEntitySubtitle() const {
-  std::vector<size_t> offsets;
-  std::u16string formatted_text;
-  gfx::Range link_range;
-
-  const std::u16string google_wallet_text =
-      l10n_util::GetStringUTF16(IDS_AUTOFILL_GOOGLE_WALLET_TITLE);
-  const std::u16string account_email = controller_->GetPrimaryAccountEmail();
-
-  if (controller_->IsSavePrompt() &&
-      base::FeatureList::IsEnabled(features::kAutofillAiWalletPrivatePasses)) {
-    const std::u16string manage_info_text =
-        l10n_util::GetStringUTF16(IDS_AUTOFILL_MANAGE_YOUR_INFO_LINK);
-
-    formatted_text =
-        l10n_util::GetStringFUTF16(controller_->GetNoticeStringId(),
-                                   {google_wallet_text, manage_info_text,
-                                    google_wallet_text, account_email},
-                                   &offsets);
-
-    link_range = gfx::Range(offsets[1], offsets[1] + manage_info_text.size());
-
-  } else {
-    formatted_text = l10n_util::GetStringFUTF16(
-        controller_->GetNoticeStringId(), {google_wallet_text, account_email},
-        &offsets);
-
-    link_range = gfx::Range(offsets[0], offsets[0] + google_wallet_text.size());
-  }
-
-  auto go_to_wallet =
-      views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
-          &AutofillAiImportDataController::OnGoToWalletLinkClicked,
-          controller_));
-  go_to_wallet.text_style = views::style::STYLE_LINK_4;
-
+AutofillAiImportDataBubbleView::GetWalletableEntitySubtitle(
+    const WalletImportPromptNotice& notice) const {
   return views::Builder<views::StyledLabel>()
-      .SetText(std::move(formatted_text))
+      .SetText(notice.text)
       .SetDefaultTextStyle(views::style::STYLE_BODY_4)
       .SetDefaultEnabledColorId(ui::kColorSysOnSurfaceSubtle)
       .SetAccessibleRole(ax::mojom::Role::kDetails)
       .SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT)
-      .AddStyleRange(link_range, go_to_wallet)
+      .AddStyleRange(
+          notice.wallet_link_range,
+          CreateLinkStyle(base::BindRepeating(
+              &AutofillAiImportDataController::OnGoToWalletLinkClicked,
+              controller_)))
+      .Build();
+}
+
+std::unique_ptr<views::StyledLabel>
+AutofillAiImportDataBubbleView::GetPrivacyPolicyLink(
+    std::u16string privacy_policy_text) const {
+  const gfx::Range link_range(0, privacy_policy_text.size());
+  return views::Builder<views::StyledLabel>()
+      .SetText(std::move(privacy_policy_text))
+      .SetDefaultTextStyle(views::style::STYLE_BODY_4)
+      .SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT)
+      .AddStyleRange(
+          link_range,
+          CreateLinkStyle(base::BindRepeating(
+              &AutofillAiImportDataController::OnPrivacyPolicyLinkClicked,
+              controller_)))
       .Build();
 }
 

@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 
+#include "base/containers/enum_set.h"
 #include "base/containers/span.h"
 #include "device/vr/public/mojom/layer_id.h"
 #include "device/vr/public/mojom/vr_service.mojom-blink.h"
@@ -80,7 +81,7 @@ class XRFrameTransportDelegate;
 template <typename IDLType>
 class FrozenArray;
 
-using XRSessionFeatureSet = HashSet<device::mojom::XRSessionFeature>;
+using XRSessionFeatureSet = base::EnumSet<device::mojom::XRSessionFeature>;
 
 class XRSession final : public EventTarget,
                         public device::mojom::blink::XRSessionClient,
@@ -132,7 +133,7 @@ class XRSession final : public EventTarget,
 
     // Keeps track of which features have already been reported, to reduce
     // redundant mojom calls.
-    HashSet<device::mojom::blink::XRSessionFeature> reported_features_;
+    XRSessionFeatureSet reported_features_;
   };
 
   XRSession(XRSystem* xr,
@@ -158,10 +159,8 @@ class XRSession final : public EventTarget,
     return dom_overlay_state_.Get();
   }
   V8XRVisibilityState visibilityState() const;
-  std::optional<float> frameRate() const { return std::nullopt; }
-  NotShared<DOMFloat32Array> supportedFrameRates() const {
-    return NotShared<DOMFloat32Array>();
-  }
+  std::optional<float> frameRate() const { return frame_rate_; }
+  NotShared<DOMFloat32Array> supportedFrameRates();
   XRRenderState* renderState() const { return render_state_.Get(); }
 
   // ARCore by default returns textures in RGBA half-float HDR format and no
@@ -214,7 +213,8 @@ class XRSession final : public EventTarget,
   // Returns true iff depth is enabled on the system and depth_active_ is true.
   bool IsDepthActive();
 
-  ScriptPromise<IDLUndefined> updateTargetFrameRate(float rate,
+  ScriptPromise<IDLUndefined> updateTargetFrameRate(ScriptState* script_state,
+                                                    float rate,
                                                     ExceptionState&);
 
   ScriptPromise<XRReferenceSpace> requestReferenceSpace(
@@ -509,6 +509,12 @@ class XRSession final : public EventTarget,
   void OnCreateAnchorResult(ScriptPromiseResolver<XRAnchor>* resolver,
                             const std::optional<device::AnchorId>& id);
 
+  // Null unless this session can change the device's frame rate.
+  device::mojom::blink::XRFrameRateController* FrameRateController();
+  void OnUpdateTargetFrameRate(ScriptPromiseResolver<IDLUndefined>* resolver);
+  // Sets frameRate, and queues frameratechange if it changed.
+  void SetFrameRate(float frame_rate);
+
   void EnsureEnvironmentErrorHandler();
   void OnEnvironmentProviderError();
 
@@ -657,6 +663,12 @@ class XRSession final : public EventTarget,
 
   uint32_t stage_parameters_id_ = 0;
   device::mojom::blink::VRStageParametersPtr stage_parameters_;
+
+  // The nominal frame rate, if the device reports one.
+  std::optional<float> frame_rate_;
+  // Promises from updateTargetFrameRate that wait for the device.
+  HeapHashSet<Member<ScriptPromiseResolver<IDLUndefined>>>
+      update_target_frame_rate_promises_;
 
   HeapMojoReceiver<device::mojom::blink::XRSessionClient, XRSession>
       client_receiver_;

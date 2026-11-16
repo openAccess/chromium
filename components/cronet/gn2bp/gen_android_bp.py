@@ -70,35 +70,57 @@ def turn_off_allocator_shim_for_musl(module):
         module.target['glibc'].srcs.add(allocation_shim)
 
 
+DEFAULT_CPP_STD_TARGET = "//components/cronet/android:cronet"
+
+
+def _derive_default_cpp_std(gn: gn_utils.GnParser) -> str:
+    """Derives Chromium's default C++ standard from GN.
+
+    GN's `//build/config/compiler` config sets the repository-wide `-std=c++*`
+    flag on standard C++ targets, but `gn desc //*` only emits targets, not
+    configs. We also cannot pick an arbitrary target from `gn.all_targets`
+    because some targets override `-std=` to a different version (e.g. `libc++`
+    and `libc++abi` build with a newer standard). Extract the default from
+    Cronet's primary C++ shared library (`//components/cronet/android:cronet`),
+    which is always in the graph and inherits `default_compiler_configs` without
+    overriding `-std=`.
+    """
+    if DEFAULT_CPP_STD_TARGET not in gn.all_targets:
+        raise ValueError(
+            f"Cannot derive default cpp_std: {DEFAULT_CPP_STD_TARGET} not "
+            "found in parsed GN targets."
+        )
+    cpp_std = translators.get_target_cpp_std(
+        gn.get_target(DEFAULT_CPP_STD_TARGET)
+    )
+    if not cpp_std:
+        raise ValueError(
+            "Cannot derive default cpp_std: no C++ -std= flag found on "
+            f"{DEFAULT_CPP_STD_TARGET}."
+        )
+    return cpp_std
+
+
 def create_cc_defaults_module(context: translation_context.TranslationContext):
     defaults = soong_ast.create_module(
         'cc_defaults', context.cc_defaults_module, '//gn:default_deps', context
     )
     defaults.cflags = [
-        # TODO: this list is brittle and painful to maintain. We are too easily
-        # broken by changes to Chromium cflags, e.g. https://crbug.com/406704769.
-        # Ideally this list should be deduced from GN cflags.
+        # Flags below are required to neutralize warnings enabled by Soong's
+        # global C/C++ defaults (build/soong/cc/config/global.go) or differences
+        # between Chromium's and Android's Clang versions. Target-specific and
+        # Chromium-wide warning flags (-Wno-*, -fPIC, etc.) are propagated
+        # directly from GN cflags/cflags_cc in translators.py.
         '-DGOOGLE_PROTOBUF_NO_RTTI',
         '-Wno-error=return-type',
         '-Wno-non-virtual-dtor',
         '-Wno-macro-redefined',
-        '-Wno-missing-field-initializers',
         '-Wno-sign-compare',
         '-Wno-sign-promo',
-        '-Wno-unused-parameter',
-        '-Wno-null-pointer-subtraction',  # Needed to libevent
         '-Wno-ambiguous-reversed-operator',  # needed for icui18n
         '-Wno-unreachable-code-loop-increment',  # needed for icui18n
-        '-fPIC',
-        '-Wno-c++11-narrowing',
-        # Needed for address_space_randomization.h on riscv
-        # Can be removed after 125.0.6375.0 is imported
-        '-Wno-invalid-constexpr',
         # b/330508686 disable coverage profiling for files or function in this list.
         '-fprofile-list=external/cronet/exclude_coverage.list',
-        # https://crrev.com/c/6396655/7/build/config/compiler/BUILD.gn
-        # https://crbug.com/406704769
-        '-Wno-nullability-completeness',
         # Stops warning about unknown options. This usually happens when
         # Chromium uses a newer version of Clang that supports a flag which
         # Android's clang does not know about.
@@ -130,7 +152,16 @@ def create_cc_defaults_module(context: translation_context.TranslationContext):
     # partition_alloc failing on a static assertion that pointers are 64-bit.
     defaults.target['host'].compile_multilib = '64'
     defaults.stl = 'none'
-    defaults.cpp_std = common.CPP_VERSION
+    # Set Chromium's derived default C++ standard on cc_defaults so modules
+    # inheriting these defaults without their own cpp_std (e.g. synthetic or
+    # manually maintained modules, including in AOSP's top-level
+    # external/cronet/Android.bp) use Chromium's standard instead of silently
+    # falling back to Soong's default.
+    assert context.default_cpp_std, (
+        "context.default_cpp_std must be derived from GN before creating "
+        "cc_defaults."
+    )
+    defaults.cpp_std = context.default_cpp_std
     defaults.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
     defaults.apex_available.add(common.tethering_apex)
     defaults.extra_include_dir_deps.add(
@@ -226,6 +257,12 @@ def make_cc_defaults_from_boringssl(
             )
         ]
 
+    # Propagate cpp_std explicitly because `_is_cflag_allowed()` strips `-std=`
+    # from `cflags` into `boringssl_module.cpp_std`. Without this, manually
+    # maintained BoringSSL modules would fall back to `cc_defaults.cpp_std`
+    # instead of honoring BoringSSL's own GN C++ standard.
+    cc_default_flags_module.cpp_std = boringssl_module.cpp_std
+    libcrypto_cc_defaults_flags_module.cpp_std = boringssl_module.cpp_std
     cc_default_flags_module.cflags = boringssl_module.cflags
     cc_default_flags_module.ldflags = boringssl_module.ldflags
     libcrypto_cc_defaults_flags_module.cflags = _get_libcrypto_cflags(
@@ -269,10 +306,316 @@ def setup_libcrypto_stripping(blueprint, context):
     )
     blueprint.add_module(cronet_shared_library_copy)
 
+    # Generates a linker version script ("intersection.ld") containing the list of
+    # symbols that are shared between libhttpengine.so and libcrypto.so.
+    #
+    # Mechanism:
+    #   It calculates the intersection of:
+    #   1. Undefined symbols in the Cronet object (what Cronet needs).
+    #   2. Defined symbols in the Libcrypto (what Libcrypto provides).
+    #
+    # Why:
+    # To satisfy FIPS compliance, libcrypto must be a shared library, which defaults
+    # to exporting all symbols and prevents dead-code elimination. Because
+    # libhttpengine.so is the exclusive consumer, we generate a map of only the
+    # symbols it actually uses. This restricts the export list, enabling the
+    # linker to delete unused code and discard unused libcrypto functions.
+    #
+    # How:
+    # libhttpengine.so is initially linked against the full libcrypto.so to
+    # determine necessary symbols. These symbols are used to generate a pruned
+    # libcrypto_stripped.so. Finally, libhttpengine.so is recompiled against this
+    # stripped version to ensure link-time integrity.
+    linker_script_genrule = soong_ast.create_module(
+        "cc_genrule",
+        f"{context.module_prefix}generate_libcronet_libcrypto_symbol_linker_script",
+        "Extra-Artificial",
+        context,
+    )
+    linker_script_genrule.build_file_path = ""
+    linker_script_genrule.srcs = {
+        f":{cronet_shared_library_copy.name}",
+        f":{context.module_prefix}{translation_config.LIBCRYPTO_UNSTRIPPED}",
+    }
+    linker_script_genrule.out = {"intersection.ld"}
+    linker_script_genrule.tools = {"llvm-objdump"}
+    linker_script_genrule.tool_files = {
+        "build/android/java_home.py",
+        "components/cronet/tools/symbols_map_generator/generate_version_script_from_symbols_intersection.py",
+        "components/cronet/tools/utils.py",
+    }
+    linker_script_genrule.cmd = [
+        "python3 $(location components/cronet/tools/symbols_map_generator/generate_version_script_from_symbols_intersection.py)",
+        "--objdump $(location llvm-objdump)",
+        f"--lib-undefined $(location :{cronet_shared_library_copy.name})",
+        f"--lib-defined $(location :{context.module_prefix}{translation_config.LIBCRYPTO_UNSTRIPPED})",
+        "--out $(out)",
+    ]
+    linker_script_genrule.apex_available = {common.tethering_apex}
+    blueprint.add_module(linker_script_genrule)
+
+
+def _data_to_soong_globs(data_paths: Iterable[str]) -> Set[str]:
+    globs = set()
+    for path in data_paths:
+        clean = gn_utils.label_to_path(path)
+        if clean.endswith("/"):
+            globs.add(f"{clean}**/*")
+        else:
+            globs.add(clean)
+    return globs
+
+
+def create_extras_modules(
+    gn: gn_utils.GnParser,
+    context: translation_context.TranslationContext,
+) -> List[soong_ast.Module]:
+    """Creates top-level extra Soong modules for Cronet in AOSP."""
+    modules = []
+
+    def _new_extra_module(mod_type: str, short_name: str) -> soong_ast.Module:
+        mod = soong_ast.create_module(
+            mod_type,
+            f"{context.module_prefix}{short_name}",
+            "Extra-Artificial",
+            context,
+        )
+        mod.build_file_path = ""
+        modules.append(mod)
+        return mod
+
+    license_mod = _new_extra_module("license", "license")
+    license_mod.license_kinds = {
+        "SPDX-license-identifier-Apache-2.0",
+        "SPDX-license-identifier-BSD",
+        "SPDX-license-identifier-BSD-3-Clause",
+        "SPDX-license-identifier-BSD-Source-Code",
+        "SPDX-license-identifier-BSD-2-Clause",
+        "SPDX-license-identifier-BSD-4-Clause",
+        "SPDX-license-identifier-BSL-1.0",
+        "SPDX-license-identifier-ICU",
+        "SPDX-license-identifier-ISC",
+        "SPDX-license-identifier-MIT",
+        "SPDX-license-identifier-MPL",
+        "SPDX-license-identifier-MPL-1.1",
+        "SPDX-license-identifier-MPL-2.0",
+        "SPDX-license-identifier-NCSA",
+        "SPDX-license-identifier-Zlib",
+        # "SPDX-license-identifier-GPL-2.0-with-autoconf-exception", # ICU TODO(aymanm): Reapply those once aosp/2470343 is merged
+        # "SPDX-license-identifier-GPL-3.0-with-autoconf-exception", # ICU TODO(aymanm): Reapply those once aosp/2470343 is merged
+        "SPDX-license-identifier-OpenSSL",
+        "SPDX-license-identifier-Unicode-DFS-2016",
+        "legacy_unencumbered",
+    }
+    license_mod.license_text = {"LICENSE"}
+
+    repackage_test_target_name = f"//components/cronet/android:repackage_test_jars{gn_utils.TESTING_SUFFIX}"
+    tests_final_jni_modules = set()
+    if repackage_test_target_name in gn.all_targets:
+        repackage_test_target = gn.get_target(repackage_test_target_name)
+        tests_final_jni_modules = {
+            soong_ast.label_to_module_name(dep, context)
+            for dep in repackage_test_target.common.deps
+            if gn.get_target(dep).type == "java_library"
+            and dep.endswith(f"_final_jni_java{gn_utils.TESTING_SUFFIX}")
+        }
+
+    # Redirect "jni_registration" to "final_jni". This module name is being referenced
+    # in the top-level external/cronet/Android.bp file so we temporarily alias it to
+    # avoid having to coordinate an Android-side change.
+    jni_reg_testing = _new_extra_module(
+        "java_library",
+        "components_cronet_android_cronet_tests_jni_registration_java__testing",
+    )
+    jni_reg_testing.apex_available = {common.tethering_apex}
+    jni_reg_testing.defaults = {
+        f"{context.module_prefix}java_framework_defaults"
+    }
+    jni_reg_testing.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    jni_reg_testing.static_libs = set(tests_final_jni_modules)
+    jni_reg_testing.visibility = {"//external/cronet:__pkg__"}
+
+    api_java = _new_extra_module("java_library", "api_java")
+    api_java.static_libs = {
+        soong_ast.label_to_module_name(
+            translation_config.java_api_target_name, context
+        )
+    }
+    api_java.sdk_version = "module_current"
+    api_java.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    api_java.visibility = {
+        "//packages/modules/Connectivity:__subpackages__",
+        "//external/cronet/android:__subpackages__",
+    }
+    api_java.apex_available = {common.tethering_apex}
+
+    java_mod = _new_extra_module("java_library", "java")
+    prod_target_name = "//components/cronet/android:gn2bp_production_targets"
+    if prod_target_name in gn.all_targets:
+        prod_target = gn.get_target(prod_target_name)
+        java_mod.static_libs = {
+            soong_ast.label_to_module_name(dep, context)
+            for dep in prod_target.common.deps
+            if gn.get_target(dep).type == "java_library"
+            and dep != translation_config.java_api_target_name
+        }
+    java_mod.sdk_version = "module_current"
+    java_mod.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    java_mod.visibility = {"//external/cronet:__subpackages__"}
+    java_mod.apex_available = {common.tethering_apex}
+
+    java_testing = _new_extra_module("java_library", "java__testing")
+    java_testing.static_libs = {
+        f"{lib}{gn_utils.TESTING_SUFFIX}" for lib in java_mod.static_libs
+    } | tests_final_jni_modules
+    java_testing.sdk_version = "module_current"
+    java_testing.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    java_testing.visibility = {"//external/cronet:__subpackages__"}
+    java_testing.apex_available = {common.tethering_apex}
+
+    for_testing_net_java = _new_extra_module(
+        "java_library", "for_testing_net_java"
+    )
+    net_unittests_target_name = f"//net:net_unittests{gn_utils.TESTING_SUFFIX}"
+    if net_unittests_target_name in gn.all_targets:
+        net_unittests_target = gn.get_target(net_unittests_target_name)
+        for_testing_net_java.static_libs = {
+            soong_ast.label_to_module_name(dep, context)
+            for dep in net_unittests_target.common.deps
+            if dep.startswith("//net/android:")
+            and gn.get_target(dep).type == "java_library"
+            and gn.get_target(dep).testonly
+        }
+
+    net_unittests_data = _new_extra_module("filegroup", "net_unittests_data")
+    net_unittests_lib_name = (
+        f"//net:net_unittests__library{gn_utils.TESTING_SUFFIX}"
+    )
+    if net_unittests_lib_name in gn.all_targets:
+        net_unittests_lib = gn.get_target(net_unittests_lib_name)
+        net_unittests_data.srcs = _data_to_soong_globs(
+            net_unittests_lib.common.data
+        )
+
+    javatests_resources = _new_extra_module("filegroup", "javatests_resources")
+    cronet_javatests_target_name = (
+        f"//components/cronet/android:cronet_javatests{gn_utils.TESTING_SUFFIX}"
+    )
+    if cronet_javatests_target_name in gn.all_targets:
+        cronet_javatests_target = gn.get_target(cronet_javatests_target_name)
+        javatests_resources.srcs = _data_to_soong_globs(
+            cronet_javatests_target.common.data
+        )
+    javatests_resources.visibility = {"//external/cronet:__subpackages__"}
+
+    java_tests = _new_extra_module("java_library", "java_tests")
+    java_tests.sdk_version = "module_current"
+    java_tests.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    java_tests.static_libs = {
+        "androidx.test.ext.junit",
+        "androidx.test.rules",
+        "guava",
+        "hamcrest-library",
+        "junit",
+        "net-tests-utils",
+        "truth",
+        *java_testing.static_libs,
+    }
+    if cronet_javatests_target_name in gn.all_targets:
+        java_tests.static_libs.add(
+            soong_ast.label_to_module_name(
+                cronet_javatests_target_name, context
+            )
+        )
+    java_tests.libs = {
+        "android.test.base.stubs.system",
+        f"{context.module_prefix}api_java",
+        "framework-connectivity.stubs.module_lib",
+        "framework-connectivity-pre-jarjar",
+        # android.net.TrafficStats apis
+        "framework-connectivity-t.stubs.module_lib",
+        "guava",
+    }
+    java_tests.lint = {"test": True}
+    java_tests.visibility = {"//external/cronet:__subpackages__"}
+
+    java_framework_defaults = _new_extra_module(
+        "java_defaults", "java_framework_defaults"
+    )
+    java_framework_defaults.sdk_version = "module_current"
+    # LINT.IfChange
+    java_framework_defaults.java_version = "25"
+    # LINT.ThenChange(
+    #     //build/android/gradle/generate_gradle.py,
+    #     //build/android/gyp/compile_java.py
+    # )
+    java_framework_defaults.libs = {
+        "framework-annotations-lib",
+        "framework-connectivity-pre-jarjar-without-cronet",
+        "framework-connectivity.stubs.module_lib",
+        "framework-connectivity-t.stubs.module_lib",
+        "framework-location.stubs.module_lib",
+        "framework-mediaprovider.stubs.module_lib",
+        "framework-statsd.stubs.module_lib",
+        "framework-wifi.stubs.module_lib",
+        "framework-sdkextensions.stubs.module_lib",
+        "framework-conscrypt-nsc.stubs",
+    }
+    java_framework_defaults.visibility = {"//external/cronet:__subpackages__"}
+
+    # rust_bindgen modules do not have an `include_dirs` attribute. Due to that,
+    # C++ headers generated from rust_bindgen can't reference other headers
+    # through paths relative to the repository root. This is what Chromium does
+    # so, to circumvent this issue, create this module that adds the root of the
+    # repository to `include_dirs`. This will be added to all modules depending
+    # on a rust_bindgen module.
+    repo_root_anchor = _new_extra_module(
+        "cc_library_headers", "repository_root_include_dirs_anchor"
+    )
+    repo_root_anchor.host_supported = True
+    repo_root_anchor.apex_available = {common.tethering_apex}
+    repo_root_anchor.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
+    repo_root_anchor.export_include_dirs = {"."}
+    repo_root_anchor.visibility = {"//external/cronet:__subpackages__"}
+
+    # Bundled libc++ headers do not have file extensions (e.g. <algorithm>,
+    # <vector>, __assertion_handler, __config_site), and libc++ sources include
+    # runtime/*.ipp outside include_dirs, so Soong's default include_dirs header
+    # globs do not capture them for CC action sandboxing. Expose them via a
+    # filegroup referenced by ${GN2BP_MODULE_PREFIX}cc_defaults.
+    # C++ standard library headers are extensionless; restrict the include/
+    # glob to top-level files and exclude files with extensions to optimize
+    # build.ninja's size (https://crrev.com/c/8663081).
+    libcxx_headers = _new_extra_module("filegroup", "libcxx_headers")
+    libcxx_target_name = "//buildtools/third_party/libc++:libc++"
+    if libcxx_target_name in gn.all_targets:
+        libcxx_target = gn.get_target(libcxx_target_name)
+        for inp in libcxx_target.common.inputs:
+            libcxx_headers.srcs.add(gn_utils.label_to_path(inp))
+        for cflag in itertools.chain(
+            libcxx_target.common.cflags,
+            *(arch.cflags for arch in libcxx_target.get_archs().values()),
+        ):
+            if cflag.startswith("-isystem../../third_party/libc++/"):
+                inc_path = cflag.removeprefix("-isystem../../").rstrip("/")
+                libcxx_headers.srcs.add(f"{inc_path}/*")
+                libcxx_headers.exclude_srcs.add(f"{inc_path}/*.*")
+        for inc_dir in libcxx_target.common.include_dirs:
+            if inc_dir.startswith("//third_party/libc++/"):
+                clean_dir = gn_utils.label_to_path(inc_dir).rstrip("/")
+                libcxx_headers.srcs.add(f"{clean_dir}/**/*.ipp")
+    libcxx_headers.visibility = {"//external/cronet:__subpackages__"}
+
+    return modules
+
 
 def create_blueprint_for_targets(gn, targets, test_targets, context):
     """Generate a blueprint for a list of GN targets."""
     blueprint = soong_ast.Blueprint()
+
+    # Derive Chromium's default C++ standard from GN before creating defaults
+    # or translating targets (e.g. rust_bindgen fallback).
+    context.default_cpp_std = _derive_default_cpp_std(gn)
 
     # Default settings used by all modules.
     blueprint.add_module(create_cc_defaults_module(context))
@@ -316,6 +659,8 @@ def create_blueprint_for_targets(gn, targets, test_targets, context):
         blueprint.add_module(module)
 
     setup_libcrypto_stripping(blueprint, context)
+    for module in create_extras_modules(gn, context):
+        blueprint.add_module(module)
     return blueprint
 
 
@@ -510,8 +855,7 @@ def finalize_package_modules(
 
     for current_path, blueprint in blueprints.items():
         if current_path == "":
-            # Don't add a package module for the top-level Android.bp, this is handled
-            # manually in Android.extras.bp.
+            # Don't add a package module for the top-level Android.bp.
             continue
 
         package_module = soong_ast.create_module(
@@ -532,7 +876,7 @@ def finalize_package_modules(
                 )
             else:
                 # No ancestor with a license found, this is most likely a non-third
-                # license, just point at Chromium's license in Android.extras.bp.
+                # license, just point at Chromium's license.
                 package_module.default_applicable_licenses.add(
                     "external_cronet_license"
                 )
@@ -559,7 +903,7 @@ def create_license_modules(
     for blueprint_path, blueprint in blueprints.items():
         if not blueprint.get_readme_location():
             # Don't generate a license for the top-level Android.bp as this is handled
-            # manually in Android.extras.bp
+            # by create_extras_modules().
             continue
 
         license_module = _maybe_create_license_module(
@@ -580,96 +924,305 @@ def _get_rust_crate_root_directory_from_crate_root(crate_root: str) -> str:
     return None
 
 
-# Third-party directories referenced in the GN graph that should not be
-# imported by Copybara (e.g. host toolchains, SDKs, or dependencies replaced
-# by Android system libraries).
-COPYBARA_EXCLUDED_THIRD_PARTY_DIRS = {
-    "third_party/android_build_tools/**",
-    "third_party/android_deps/**",
-    "third_party/android_sdk/**",
-    "third_party/jdk/**",
-    "third_party/rust-toolchain/**",
-    # Cronet uses Android's libz via builtin_deps.
-    "third_party/zlib/**",
-}
-
-# Header-only third-party directories that are #included directly without a
-# corresponding GN target in the build graph.
-COPYBARA_ADDITIONAL_THIRD_PARTY_DIRS = {
-    # Included by base/rand_util_posix.cc and base/process/process_util_unittest.cc
-    # when building for Linux host.
-    "third_party/lss/**",
-}
+_CPP_SOURCE_EXTENSIONS = (
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".inc",
+    ".inl",
+    ".ipp",
+    ".def",
+    ".S",
+    ".s",
+    ".m",
+    ".mm",
+)
+# This is a naive regex that does not understand conditional includes
+# (i.e. #ifdef XXX #include), and therefore may report false positives.
+# Ideally we should ask the compiler to dump the list of included files after
+# preprocessing, but that may be significantly more complicated and slower.
+_CPP_INCLUDE_REGEX = re.compile(
+    r'^\s*#\s*(?:include|import)\s+[<"]([^>"]+)[>"]', re.MULTILINE
+)
 
 
 def extract_copybara_paths(
     gn: gn_utils.GnParser,
-) -> Tuple[List[str], List[str]]:
-    """Extracts components/ and third_party/ glob patterns for Copybara from the GN graph."""
-    components_paths = set()
-    third_party_paths = set(COPYBARA_ADDITIONAL_THIRD_PARTY_DIRS)
+    top_level_blueprint: Union[soong_ast.Blueprint, None] = None,
+    final_blueprints: Union[Dict[str, soong_ast.Blueprint], None] = None,
+    context: Union[translation_context.TranslationContext, None] = None,
+) -> List[str]:
+    """Extracts exact file paths and required globs for Copybara from the GN graph and blueprints."""
+    paths = {
+        f"{src_dir}/**"
+        for src_dir, dst_dir in translation_config.BLUEPRINTS_MAPPING.items()
+        if not dst_dir
+    }
+    excluded_prefixes = (
+        tuple(
+            d.removeprefix(f"{context.tree_path}/")
+            for d in context.include_dirs_denylist
+        )
+        if context is not None
+        else ()
+    )
 
     def _add_path(raw_path: Union[str, None]):
-        if not raw_path or raw_path.startswith("//out/"):
-            return
-        clean_path = raw_path.removeprefix("//")
-        if clean_path.startswith(("/", "../")):
-            return
-        parts = clean_path.split("/")
-        if parts[0] == "components" and len(parts) >= 2 and parts[1]:
-            components_paths.add(f"components/{parts[1]}/**")
-        if clean_path == "third_party/rust" or clean_path.startswith(
-            "third_party/rust/"
+        if (
+            not raw_path
+            or raw_path == "//cp"
+            or raw_path.startswith((":", "//out/", "out/"))
         ):
-            vendor_dir = _get_rust_crate_root_directory_from_crate_root(
-                clean_path
-            )
-            if vendor_dir:
-                third_party_paths.add(f"{vendor_dir}/**")
-            elif (
-                len(parts) >= 3
-                and parts[2]
-                and parts[2] != "chromium_crates_io"
-            ):
-                third_party_paths.add("/".join(parts[:3]) + "/**")
             return
-        if "third_party" in parts:
-            idx = parts.index("third_party")
-            if idx + 1 < len(parts) and parts[idx + 1]:
-                tp_glob = "/".join(parts[: idx + 2]) + "/**"
-                if tp_glob not in COPYBARA_EXCLUDED_THIRD_PARTY_DIRS:
-                    third_party_paths.add(tp_glob)
+        is_dir = raw_path.endswith("/")
+        clean_path = os.path.normpath(raw_path.removeprefix("//"))
+        if is_dir:
+            clean_path = f"{clean_path}/**"
+        elif clean_path.endswith("/**/*"):
+            clean_path = clean_path.removesuffix("/*")
+        elif clean_path.endswith("/*"):
+            clean_path = f"{clean_path}*"
+        if clean_path in ("", ".") or clean_path.startswith(("/", "../")):
+            return
+        if clean_path.startswith(excluded_prefixes):
+            return
+        if clean_path == "BUILD.gn" or clean_path.endswith(
+            ("/BUILD.gn", ".gni", ".map.txt")
+        ):
+            return
+        paths.add(clean_path)
 
+    include_dirs = [""]
+    seen_include_dirs = {""}
+
+    def _add_include_dir(raw_dir: Union[str, None]):
+        if not raw_dir or raw_dir.startswith((":", "//out/", "out/")):
+            return
+        clean_dir = os.path.normpath(
+            raw_dir.removeprefix("external/cronet/tot/")
+            .removeprefix("external/cronet/stable/")
+            .removeprefix("//")
+        )
+        if clean_dir == ".":
+            clean_dir = ""
+        if clean_dir.startswith(("/", "../", "external/cronet/")):
+            return
+        if clean_dir.startswith(excluded_prefixes):
+            return
+        if clean_dir not in seen_include_dirs and os.path.isdir(
+            os.path.join(REPOSITORY_ROOT, clean_dir)
+        ):
+            seen_include_dirs.add(clean_dir)
+            include_dirs.append(clean_dir)
+
+    build_dirs = set()
     for target in gn.all_targets.values():
-        _add_path(target.build_file_path)
+        if target.build_file_path:
+            build_dirs.add(
+                gn2bp_targets.README_MAPPING.get(
+                    target.build_file_path, target.build_file_path
+                )
+            )
         _add_path(target.crate_root)
-        _add_path(target.rust_source_dir)
-        _add_path(target.script)
         for src in itertools.chain(
-            target.public_headers,
-            target.common.sources,
-            target.common.inputs,
-            target.common.include_dirs,
-            target.proto_paths,
-            target.aidl_includes,
-            target.transitive_jni_java_sources,
+            target.public_headers, target.transitive_jni_java_sources
         ):
             _add_path(src)
-        for arch in target.arch.values():
-            for src in itertools.chain(
-                arch.sources, arch.inputs, arch.include_dirs
-            ):
+        for arch in (target.common, *target.arch.values()):
+            for src in itertools.chain(arch.sources, arch.data):
                 _add_path(src)
 
-    return sorted(components_paths), sorted(third_party_paths)
+    for src in getattr(gn, "jni_java_sources", ()):
+        _add_path(src)
+
+    if top_level_blueprint is not None:
+        for module in top_level_blueprint.modules.values():
+            for attr in (
+                "crate_root",
+                "wrapper_src",
+                "version_script",
+                "test_config",
+                "jarjar_rules",
+                "manifest",
+            ):
+                _add_path(getattr(module, attr, None))
+            for prop in (module, *module.target.values()):
+                for attr in (
+                    "include_dirs",
+                    "local_include_dirs",
+                    "export_include_dirs",
+                ):
+                    for val in getattr(prop, attr, None) or ():
+                        _add_include_dir(val)
+                for attr in (
+                    "srcs",
+                    "tool_files",
+                    "jars",
+                    "extra_include_dir_deps",
+                    "init_rc",
+                    "linker_scripts",
+                ):
+                    for val in getattr(prop, attr, None) or ():
+                        _add_path(val)
+
+    glob_prefixes = tuple(
+        p.removesuffix("**") for p in paths if p.endswith("/**")
+    )
+    paths = {
+        p
+        for p in paths
+        if not (
+            p.endswith("/**")
+            and any(
+                p != f"{prefix}**" and p.startswith(prefix)
+                for prefix in glob_prefixes
+            )
+        )
+    }
+
+    cpp_queue = [p for p in paths if p.endswith(_CPP_SOURCE_EXTENSIONS)]
+    visited_cpp = set(cpp_queue)
+    inc_cache: Dict[str, List[str]] = {}
+    file_cache: Dict[str, bool] = {}
+
+    def _is_repo_file(rel_path: str) -> bool:
+        res = file_cache.get(rel_path)
+        if res is None:
+            res = os.path.isfile(os.path.join(REPOSITORY_ROOT, rel_path))
+            file_cache[rel_path] = res
+        return res
+
+    def _is_valid_include_candidate(cand: str) -> bool:
+        return (
+            cand not in ("", ".")
+            and not cand.startswith(("/", "../"))
+            and not cand.startswith(excluded_prefixes)
+            and not cand.startswith(glob_prefixes)
+            and _is_repo_file(cand)
+        )
+
+    def _resolve_include_from_dirs(inc: str) -> List[str]:
+        if inc in inc_cache:
+            return inc_cache[inc]
+        matches = []
+        for inc_dir in include_dirs:
+            cand = (
+                os.path.normpath(os.path.join(inc_dir, inc))
+                if inc_dir
+                else os.path.normpath(inc)
+            )
+            if _is_valid_include_candidate(cand):
+                matches.append(cand)
+        inc_cache[inc] = matches
+        return matches
+
+    while cpp_queue:
+        curr = cpp_queue.pop()
+        if not _is_repo_file(curr):
+            continue
+        try:
+            with open(
+                os.path.join(REPOSITORY_ROOT, curr), "r", errors="ignore"
+            ) as f:
+                content = f.read()
+        except OSError:
+            continue
+        curr_dir = os.path.dirname(curr)
+        for match in _CPP_INCLUDE_REGEX.finditer(content):
+            inc = match.group(1)
+            rel_cand = (
+                os.path.normpath(os.path.join(curr_dir, inc))
+                if curr_dir
+                else os.path.normpath(inc)
+            )
+            if _is_valid_include_candidate(rel_cand):
+                found_list = [rel_cand]
+            else:
+                found_list = _resolve_include_from_dirs(inc)
+            for found in found_list:
+                if found not in visited_cpp:
+                    visited_cpp.add(found)
+                    _add_path(found)
+                    cpp_queue.append(found)
+
+    for inc_dir in include_dirs:
+        if (
+            inc_dir
+            and not inc_dir.startswith(glob_prefixes)
+            and not any(p.startswith(f"{inc_dir}/") for p in paths)
+        ):
+            paths.add(f"{inc_dir}/**")
+
+    if final_blueprints is not None:
+        for bp_path, blueprint in final_blueprints.items():
+            if bp_path:
+                _add_path(f"{bp_path}/Android.bp")
+            if blueprint.get_readme_location():
+                build_dirs.add(blueprint.get_readme_location())
+
+    readme_candidates = {
+        os.path.join(d, "README.chromium") for d in build_dirs if d
+    }
+    for inc_readme in license_constants.INCLUDED_README:
+        if any(inc_readme.startswith(f"{d}/") for d in build_dirs):
+            readme_candidates.add(inc_readme)
+
+    for readme_rel in readme_candidates:
+        if (
+            readme_rel in license_constants.IGNORED_README
+            or readme_rel.startswith(excluded_prefixes)
+        ):
+            continue
+        readme_abs = os.path.join(REPOSITORY_ROOT, readme_rel)
+        if not os.path.exists(readme_abs):
+            continue
+        _add_path(readme_rel)
+        readme_dir_rel = os.path.dirname(readme_rel)
+        metadata = license_utils.parse_chromium_readme_file(
+            readme_abs,
+            license_constants.POST_PROCESS_OPERATION.get(
+                readme_rel, lambda _metadata: _metadata
+            ),
+        )
+        license_file_path = metadata.get_license_file_path()
+        if (
+            readme_dir_rel.startswith("third_party/rust/")
+            and license_file_path
+            and license_file_path.startswith("//")
+        ):
+            rel_license_dir = license_utils.get_rust_crate_license_directory(
+                license_file_path
+            )
+        else:
+            rel_license_dir = readme_dir_rel
+        _add_path(f"{rel_license_dir}/LICENSE")
+        _add_path(f"{rel_license_dir}/METADATA")
+        for license_name in metadata.get_licenses():
+            _add_path(
+                f"{rel_license_dir}/MODULE_LICENSE_{license_utils.get_license_file_format(license_name)}"
+            )
+        if license_file_path:
+            resolved_abs = os.path.join(
+                REPOSITORY_ROOT,
+                license_utils.resolve_license_path(
+                    os.path.dirname(readme_abs), license_file_path
+                ),
+            )
+            _add_path(os.path.relpath(resolved_abs, REPOSITORY_ROOT))
+
+    return sorted(paths)
 
 
 def write_copybara_paths_file(
     output_dir: str,
-    components_paths: Iterable[str],
-    third_party_paths: Iterable[str],
+    generated_paths: Iterable[str],
 ):
-    """Writes a Starlark file listing components/ and third_party/ glob patterns for Copybara."""
+    """Writes a Starlark file listing generated origin paths for Copybara."""
     header = f"""# Copyright (C) 2026 The Chromium Authors
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -686,16 +1239,22 @@ def write_copybara_paths_file(
 #
 # This file is automatically generated by {Path(__file__).name}. Do not edit.
 """
-    formatted_components = "\n".join(
-        f'    "{path}",' for path in components_paths
-    )
-    formatted_third_party = "\n".join(
-        f'    "{path}",' for path in third_party_paths
-    )
+    files = [
+        path
+        for path in generated_paths
+        if not any(c in path for c in ("*", "?", "[", "{"))
+    ]
+    globs = [
+        path
+        for path in generated_paths
+        if any(c in path for c in ("*", "?", "[", "{"))
+    ]
+    formatted_files = "\n".join(f'    "{path}",' for path in files)
+    formatted_globs = "\n".join(f'    "{path}",' for path in globs)
     content = (
         f"{header}\n"
-        f"COMPONENTS_PATHS = [\n{formatted_components}\n]\n\n"
-        f"THIRD_PARTY_PATHS = [\n{formatted_third_party}\n]\n"
+        f"GENERATED_ORIGIN_FILES = [\n{formatted_files}\n]\n\n"
+        f"GENERATED_ORIGIN_GLOBS = [\n{formatted_globs}\n]\n"
     )
     output_file = Path(
         os.path.join(output_dir, "copybara_generated_paths.bara.sky")
@@ -807,11 +1366,6 @@ def main():
         required=True,
     )
     parser.add_argument(
-        '--extras',
-        help='Extra targets to include at the end of the Blueprint file',
-        default=os.path.join(gn_utils.repo_root(), 'Android.bp.extras'),
-    )
-    parser.add_argument(
         '--output',
         help='Blueprint file to create',
         default=os.path.join(gn_utils.repo_root(), 'Android.bp'),
@@ -909,17 +1463,16 @@ def main():
         android_bp_file.write_text(
             "\n".join(
                 [header]
-                + translation_config.BLUEPRINTS_EXTRAS.get(path, [])
                 + blueprint.to_string(
                     exclude_gn_targets=translation_config.replace_deps.keys()
                 )
             )
         )
 
-    components_paths, third_party_paths = extract_copybara_paths(gn)
-    write_copybara_paths_file(
-        args.output_dir, components_paths, third_party_paths
+    generated_paths = extract_copybara_paths(
+        gn, top_level_blueprint, final_blueprints, context
     )
+    write_copybara_paths_file(args.output_dir, generated_paths)
 
     return 0
 

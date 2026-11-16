@@ -16,6 +16,7 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/map_util.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
@@ -25,7 +26,6 @@
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "ui/display/display.h"
-#include "ui/display/display_features.h"
 #include "ui/display/display_switches.h"
 #include "ui/display/manager/util/display_manager_test_util.h"
 #include "ui/display/manager/util/display_manager_util.h"
@@ -423,9 +423,8 @@ Display::Rotation ManagedDisplayInfo::GetLogicalActiveRotation() const {
 
 Display::Rotation ManagedDisplayInfo::GetRotation(
     Display::RotationSource source) const {
-  if (rotations_.find(source) == rotations_.end())
-    return Display::ROTATE_0;
-  return rotations_.at(source);
+  const Display::Rotation* rotation = base::FindOrNull(rotations_, source);
+  return rotation ? *rotation : Display::ROTATE_0;
 }
 
 void ManagedDisplayInfo::AddZoomFactorForSize(const std::string& size,
@@ -721,18 +720,11 @@ ManagedDisplayInfo CreateDisplayInfo(int64_t id, const gfx::Rect& bounds) {
       id, base::StringPrintf("Display-%d", static_cast<int>(id)), false);
 
   const int64_t alternate_id = ProduceAlternativeSchemeIdForId(id);
-  if (features::IsEdidBasedDisplayIdsEnabled()) {
-    info.set_edid_display_id(id);
-    info.set_connector_index(GetNextSynthesizedEdidDisplayConnectorIndex());
+  info.set_port_display_id(id);
+  // Output index is stored in the first 8 bits.
+  info.set_connector_index(id & 0xFF);
 
-    info.set_port_display_id(alternate_id);
-  } else {
-    info.set_port_display_id(id);
-    // Output index is stored in the first 8 bits.
-    info.set_connector_index(id & 0xFF);
-
-    info.set_edid_display_id(alternate_id);
-  }
+  info.set_edid_display_id(alternate_id);
   if (!bounds.IsEmpty()) {
     info.SetBounds(bounds);
   }

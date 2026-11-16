@@ -298,7 +298,8 @@ bool FormFieldData::IsPasswordInputElement() const {
 }
 
 bool FormFieldData::IsSelectElement() const {
-  return form_control_type() == FormControlType::kSelectOne;
+  return form_control_type() == FormControlType::kSelectOne ||
+         form_control_type() == FormControlType::kSyntheticSelectOne;
 }
 
 // static
@@ -416,6 +417,8 @@ std::string_view FormControlTypeToString(FormControlType type) {
       return "url";
     case FormControlType::kSelectOne:
       return "select-one";
+    case FormControlType::kSyntheticSelectOne:
+      return "synthetic-select-one";
     case FormControlType::kTextArea:
       return "textarea";
   }

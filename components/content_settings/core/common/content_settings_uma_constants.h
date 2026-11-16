@@ -101,7 +101,7 @@ inline constexpr auto kContentSettingsTypeToHistogramValue =
         {ContentSettingsType::REQUEST_DESKTOP_SITE, 84},
         {ContentSettingsType::FEDERATED_IDENTITY_API, 85},
         {ContentSettingsType::NOTIFICATION_INTERACTIONS, 86},
-        {ContentSettingsType::REDUCED_ACCEPT_LANGUAGE, 87},
+        // Removed REDUCED_ACCEPT_LANGUAGE in M159.
         {ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW, 88},
         // Removed PRIVATE_NETWORK_GUARD in M140
         // Removed PRIVATE_NETWORK_CHOOSER_DATA in M140
@@ -167,6 +167,7 @@ inline constexpr auto kContentSettingsTypeToHistogramValue =
         {ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS, 145},
         {ContentSettingsType::INLINE_CUE_MENU, 146},
         {ContentSettingsType::SUSPICIOUS_SITE_WARNING_DATA, 147},
+        {ContentSettingsType::WEBAUTHN_AMBIENT_SIGNIN_DATA, 148},
 
         // As mentioned at the top, please don't forget to update ContentType in
         // enums.xml when you add entries here!

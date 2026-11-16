@@ -33,7 +33,6 @@ enum class FcmDecryptionResult;
 namespace gcm {
 
 class GCMAppHandler;
-class GCMConnectionObserver;
 enum class GCMEncryptionResult;
 
 // Provides the InstanceID support via GCMDriver.
@@ -210,6 +209,12 @@ class GCMDriver {
   virtual void Shutdown();
 
   // Adds a handler for a given app.
+  //
+  // May synchronously invoke `handler->OnMessage()` before returning to replay
+  // buffered messages received prior to registration. Callers must finish
+  // initializing `handler` before calling `AddAppHandler()`, and `handler` must
+  // not unregister or destroy itself while buffered messages are being
+  // replayed.
   virtual void AddAppHandler(const std::string& app_id, GCMAppHandler* handler);
 
   // Remove the handler for a given app.
@@ -218,12 +223,6 @@ class GCMDriver {
   // Returns the handler for the given app. May return a nullptr when no handler
   // could be found for the |app_id|.
   GCMAppHandler* GetAppHandler(const std::string& app_id);
-
-  // Adds a connection state observer.
-  virtual void AddConnectionObserver(GCMConnectionObserver* observer) = 0;
-
-  // Removes a connection state observer.
-  virtual void RemoveConnectionObserver(GCMConnectionObserver* observer) = 0;
 
   // For testing purpose. Always NULL on Android.
   virtual GCMClient* GetGCMClientForTesting() const = 0;
@@ -235,12 +234,6 @@ class GCMDriver {
 
   // Returns the number of unhandled messages currently buffered for `app_id`.
   size_t GetBufferedMessagesCountForTesting(const std::string& app_id) const;
-
-  // Returns true if the service was started.
-  virtual bool IsStarted() const = 0;
-
-  // Returns true if the gcm client has an open and active connection.
-  virtual bool IsConnected() const = 0;
 
   // Get GCM client internal states and statistics. The activity logs will be
   // cleared before returning the stats when |clear_logs| is set to CLEAR_LOGS.
@@ -256,7 +249,7 @@ class GCMDriver {
   // The InstanceIDHandler provides an implementation for the InstanceID system.
   virtual InstanceIDHandler* GetInstanceIDHandlerInternal() = 0;
   // Allows the InstanceID system to integrate with GCM encryption storage.
-  virtual GCMEncryptionProvider* GetEncryptionProviderInternal();
+  GCMEncryptionProvider* GetEncryptionProviderInternal();
 
  protected:
   // Ensures that the GCM service starts (if necessary conditions are met).

@@ -1,0 +1,47 @@
+Name: ART libdexfile and libartbase
+URL: https://android.googlesource.com/platform/art
+Version: N/A
+Revision: ddd4776acaa0a4fb0e6027cd063ec450f518c7d7
+Update Mechanism: Manual
+License: Apache-2.0
+License File: //third_party/libunwindstack/LICENSE
+Shipped: yes
+Security Critical: yes
+
+Description:
+Two libraries of the Android Runtime: libdexfile parses dex files, and
+libartbase holds the helpers it needs. libunwindstack uses libdexfile to
+symbolize interpreted Java frames, and //third_party/libunwindstack
+builds both into its libunwindstack target.
+
+src/ holds the files BUILD.gn lists from the libdexfile/ and libartbase/
+directories of the upstream repository, plus two headers they include
+that BUILD.gn does not list: libartbase/base/unix_file/random_access_file.h
+and libdexfile/dex/proto_reference.h. The patches in patches/ change
+some of these files.
+
+Local Modifications:
+- 0001-disable-fdsan.patch: use fdsan in fd_file.cc only from Android
+  API 29.
+- 0008-replace-allocator-destroy-construct-calls.patch: use
+  std::allocator_traits in hash_set.h.
+- 0009-do-not-redefine-ADDRESS_SANITIZER.patch: do not define
+  ADDRESS_SANITIZER in memory_tool.h.
+- 0010-remove-art-format.patch: no ART_FORMAT, so no fmtlib.
+- 0011-remove-dexfile-trace-and-zip-support.patch: no tracing or zip
+  support in dex_file_loader.cc.
+- 0012-remove-mmap-file-logging.patch: no PrintFileToLog() in
+  mem_map.cc.
+- 0014-dont-use-bionic-functions.patch: no ART_BASE_ADDRESS code in
+  mem_map.cc in NDK builds.
+- 0016-remove-static-initializers.patch: no static initializers in
+  dex_file_loader and mem_map.
+- 0021-add-missing-includes.patch: add <algorithm> and <alloca.h>
+  includes.
+
+To update, copy those files at the new revision into src/, then run
+from this directory:
+
+$ for patch in patches/*.patch; do patch -s -p1 < $patch; done
+
+and update Revision.

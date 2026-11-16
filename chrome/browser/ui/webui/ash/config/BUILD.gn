@@ -35,7 +35,7 @@ static_library("config") {
     "//ash/webui/shortcut_customization_ui",
     "//ash/webui/status_area_internals",
     "//ash/webui/vc_background_ui",
-    "//chrome/browser:browser_process",
+    "//base",
     "//chrome/browser/app_mode",
     "//chrome/browser/ash/annotator",
     "//chrome/browser/ash/app_mode",
@@ -108,13 +108,12 @@ static_library("config") {
     "//chrome/browser/ui/webui/nearby_share",
     "//chromeos/ash/components/boca/receiver",
     "//chromeos/ash/components/browser_context_helper",
-    "//chromeos/ash/components/consent_auditor:consent_auditor_provider",
     "//chromeos/ash/components/manta:manta_service_provider",
     "//chromeos/ash/components/media_device_salt:media_device_salt_service_provider",
-    "//chromeos/ash/components/signin:identity_manager_provider",
     "//components/application_locale_storage",
     "//components/cross_device/logging",
     "//components/user_manager",
+    "//components/variations/service",
     "//ui/webui",
   ]
 

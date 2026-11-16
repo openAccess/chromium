@@ -4,7 +4,9 @@
 
 #include "third_party/blink/renderer/core/css/parser/css_parser_fast_paths.h"
 
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "third_party/blink/renderer/core/css/css_color.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
@@ -187,6 +189,110 @@ TEST(CSSParserFastPathsTest, ParseReadingFlow) {
                                               keyword, context));
     }
   }
+}
+
+TEST(CSSParserFastPathsTest, ParseRuntimeEnabledKeywords) {
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+  const struct {
+    CSSPropertyID property;
+    const char* keyword;
+    const char* ordinary_keyword;
+  } cases[] = {
+      {CSSPropertyID::kTextAlign, "match-parent", "start"},
+      {CSSPropertyID::kTextAlignLast, "match-parent", "auto"},
+      {CSSPropertyID::kTextDecorationSkipInk, "all", "auto"},
+      {CSSPropertyID::kUserSelect, "contain", "text"},
+      {CSSPropertyID::kScrollSnapStop, "before", "normal"},
+      {CSSPropertyID::kResize, "auto", "both"},
+      {CSSPropertyID::kAppearance, "base", "none"},
+      {CSSPropertyID::kAppearance, "slider-vertical", "none"},
+  };
+  for (bool enabled : {false, true}) {
+    ScopedCSSTextAlignMatchParentForTest text_align(enabled);
+    ScopedCSSTextDecorationSkipInkAllForTest skip_ink(enabled);
+    ScopedCSSUserSelectContainForTest user_select(enabled);
+    ScopedCSSScrollSnapStopBeforeForTest scroll_snap_stop(enabled);
+    ScopedCSSResizeAutoForTest resize(enabled);
+    ScopedAppearanceBaseForTest appearance(enabled);
+    ScopedNonStandardAppearanceValueSliderVerticalForTest slider(enabled);
+    SCOPED_TRACE(enabled);
+    for (const auto& test : cases) {
+      SCOPED_TRACE(test.keyword);
+      EXPECT_EQ(enabled, !!CSSParserFastPaths::MaybeParseValue(
+                             test.property, test.keyword, context));
+      EXPECT_EQ(enabled, !!CSSParser::ParseSingleValue(test.property,
+                                                       test.keyword, context));
+      EXPECT_TRUE(CSSParserFastPaths::MaybeParseValue(
+          test.property, test.ordinary_keyword, context));
+    }
+  }
+}
+
+TEST(CSSParserFastPathsTest, KeywordMetadataParserExceptions) {
+  const struct {
+    CSSPropertyID property;
+    CSSValueID keyword;
+    CSSParserMode mode;
+    bool accepted;
+  } cases[] = {
+      {CSSPropertyID::kOutlineStyle, CSSValueID::kAuto, kHTMLStandardMode,
+       true},
+      {CSSPropertyID::kOutlineStyle, CSSValueID::kHidden, kHTMLStandardMode,
+       false},
+      {CSSPropertyID::kResize, CSSValueID::kInternalTextareaAuto,
+       kHTMLStandardMode, false},
+      {CSSPropertyID::kResize, CSSValueID::kInternalTextareaAuto, kUASheetMode,
+       true},
+      {CSSPropertyID::kTextAlign, CSSValueID::kInternalCenter,
+       kHTMLStandardMode, false},
+      {CSSPropertyID::kTextAlign, CSSValueID::kInternalCenter, kUASheetMode,
+       true},
+      {CSSPropertyID::kTextAlign, CSSValueID::kWebkitAuto, kHTMLStandardMode,
+       true},
+      {CSSPropertyID::kUnicodeBidi, CSSValueID::kWebkitIsolate,
+       kHTMLStandardMode, true},
+      {CSSPropertyID::kWebkitBoxOrient, CSSValueID::kInlineAxis,
+       kHTMLStandardMode, true},
+      {CSSPropertyID::kWebkitBoxOrient, CSSValueID::kBlockAxis,
+       kHTMLStandardMode, true},
+      {CSSPropertyID::kWritingMode, CSSValueID::kLrTb, kHTMLStandardMode, true},
+      {CSSPropertyID::kWebkitWritingMode, CSSValueID::kSidewaysRl,
+       kHTMLStandardMode, false},
+      {CSSPropertyID::kWindowDrag, CSSValueID::kNone, kHTMLStandardMode, true},
+      {CSSPropertyID::kWindowDrag, CSSValueID::kMove, kHTMLStandardMode, true},
+      {CSSPropertyID::kWindowDrag, CSSValueID::kNoDrag, kHTMLStandardMode,
+       false},
+      {CSSPropertyID::kAppRegion, CSSValueID::kNoDrag, kHTMLStandardMode, true},
+      {CSSPropertyID::kLineBreak, CSSValueID::kAfterWhiteSpace,
+       kHTMLStandardMode, false},
+      {CSSPropertyID::kWebkitLineBreak, CSSValueID::kAfterWhiteSpace,
+       kHTMLStandardMode, true},
+      {CSSPropertyID::kOverflowInline, CSSValueID::kClip, kHTMLStandardMode,
+       true},
+      {CSSPropertyID::kOverscrollBehaviorBlock, CSSValueID::kContain,
+       kHTMLStandardMode, true},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(static_cast<int>(test.property));
+    SCOPED_TRACE(static_cast<int>(test.keyword));
+    SCOPED_TRACE(test.mode);
+    EXPECT_EQ(test.accepted, CSSParserFastPaths::IsValidKeywordPropertyAndValue(
+                                 test.property, test.keyword, test.mode));
+  }
+}
+
+TEST(CSSParserFastPathsTest, HyphensAutoPlatformRestriction) {
+#if BUILDFLAG(USE_MINIKIN_HYPHENATION) || BUILDFLAG(IS_APPLE)
+  constexpr bool kSupportsAuto = true;
+#else
+  constexpr bool kSupportsAuto = false;
+#endif
+  EXPECT_EQ(kSupportsAuto,
+            CSSParserFastPaths::IsValidKeywordPropertyAndValue(
+                CSSPropertyID::kHyphens, CSSValueID::kAuto, kHTMLStandardMode));
+  EXPECT_TRUE(CSSParserFastPaths::IsValidKeywordPropertyAndValue(
+      CSSPropertyID::kHyphens, CSSValueID::kManual, kHTMLStandardMode));
 }
 
 TEST(CSSParserFastPathsTest, ParseSimpleLength) {
@@ -611,6 +717,46 @@ TEST(CSSParserFastPathsTest, TextDecorationSkipInk_All) {
   value = CSSParserFastPaths::MaybeParseValue(
       CSSPropertyID::kTextDecorationSkipInk, "invalid", context);
   EXPECT_EQ(nullptr, value);
+}
+
+TEST(CSSParserFastPathsTest, ParseAnimationNavigationBehavior) {
+  ScopedCSSAnimationNavigationBehaviorForTest scoped_feature(true);
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+
+  EXPECT_TRUE(CSSParserFastPaths::IsHandledByKeywordFastPath(
+      CSSPropertyID::kAnimationNavigationBehavior));
+
+  const CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kAnimationNavigationBehavior, "abrupt", context);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(CSSValueID::kAbrupt, To<CSSIdentifierValue>(value)->GetValueID());
+  EXPECT_TRUE(CSSParser::ParseSingleValue(
+      CSSPropertyID::kAnimationNavigationBehavior, "abrupt", context));
+
+  value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kAnimationNavigationBehavior, "continuous", context);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(CSSValueID::kContinuous,
+            To<CSSIdentifierValue>(value)->GetValueID());
+  EXPECT_TRUE(CSSParser::ParseSingleValue(
+      CSSPropertyID::kAnimationNavigationBehavior, "continuous", context));
+
+  value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kAnimationNavigationBehavior, "CoNtInUoUs", context);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(CSSValueID::kContinuous,
+            To<CSSIdentifierValue>(value)->GetValueID());
+
+  for (const char* invalid : {"auto", "none", "abrupt, continuous"}) {
+    SCOPED_TRACE(invalid);
+    EXPECT_EQ(nullptr, CSSParserFastPaths::MaybeParseValue(
+                           CSSPropertyID::kAnimationNavigationBehavior, invalid,
+                           context));
+    EXPECT_EQ(nullptr, CSSParser::ParseSingleValue(
+                           CSSPropertyID::kAnimationNavigationBehavior, invalid,
+                           context));
+  }
 }
 
 }  // namespace blink

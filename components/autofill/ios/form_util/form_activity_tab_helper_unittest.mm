@@ -5,6 +5,7 @@
 #import "components/autofill/ios/form_util/form_activity_tab_helper.h"
 
 #import <optional>
+#import <vector>
 
 #import "base/feature_list.h"
 #import "base/strings/sys_string_conversions.h"
@@ -24,6 +25,7 @@
 #import "components/autofill/ios/browser/autofill_util.h"
 #import "components/autofill/ios/common/autofill_optimization_features.h"
 #import "components/autofill/ios/common/features.h"
+#import "components/autofill/ios/common/field_data_manager_factory_ios.h"
 #import "components/autofill/ios/common/javascript_feature_util.h"
 #import "components/autofill/ios/form_util/autofill_form_features_java_script_feature.h"
 #import "components/autofill/ios/form_util/autofill_test_with_web_state.h"
@@ -55,6 +57,7 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 using test::FormDataEq;
 using test::kTrackFormMutationsDelayInMs;
 using test::WithoutUnserializedData;
+using ::testing::_;
 using ::testing::Each;
 using ::testing::ElementsAre;
 using ::testing::Field;
@@ -932,13 +935,12 @@ TEST_P(FormMutationTest, RemovedAndAddedFormsRegistered) {
   // batched together.
   ExecuteJavaScript(replace_form_JS);
 
-  // Wait until the first message is received.
-  ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool() {
-    return observer_->number_of_events_received() == 1;
+  // Wait on all the messages in the batch.
+  ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+    return observer_->form_removal_info() != nullptr &&
+           observer_->form_activity_info() != nullptr;
   }));
 
-  // The removed form message is always the first posted.
-  ASSERT_TRUE(observer_->form_removal_info());
   FormRemovalParams form_removal_params =
       observer_->form_removal_info()->form_removal_params;
   EXPECT_THAT(form_removal_params.frame_id, Not(IsEmpty()));
@@ -946,12 +948,6 @@ TEST_P(FormMutationTest, RemovedAndAddedFormsRegistered) {
   EXPECT_THAT(form_removal_params.removed_forms,
               ElementsAre(FormRendererId(1)));
 
-  // Wait until the next message is received.
-  EXPECT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool() {
-    return observer_->number_of_events_received() == 2;
-  }));
-
-  ASSERT_TRUE(observer_->form_activity_info());
   ValidateParamsAfterFormChangedEvent(
       observer_->form_activity_info()->form_activity);
 
@@ -1331,6 +1327,38 @@ INSTANTIATE_TEST_SUITE_P(
     FormMutationFormControlElements,
     ::testing::Values("form", "input", "select", "option", "textarea"));
 
+// Tests that, when `kAutofillOptimizationFormSearchIos` is enabled, a formless
+// field without an `id` is identified by its renderer ID rather than its DOM
+// index, so its identifier remains accurate when the DOM mutates between two
+// focus events in the same task.
+TEST_F(FormActivityTabHelperTest, FormlessFieldIdentifierIsRendererIdBased) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAutofillOptimizationFormSearchIos);
+  LoadHtml(@"<input><input>");
+  ASSERT_TRUE(WaitForMainFrame());
+
+  // Focus `a`, prepend a new `<input>` to shift DOM indices, and move focus to
+  // `b` within the same task. Because `sendMessageOnNextLoop` only keeps the
+  // last event in the same task, only the focus event for `b` is sent to the
+  // browser.
+  ExecuteJavaScript(@"const [a, b] = document.querySelectorAll('input');"
+                    @"a.focus();"
+                    @"a.dispatchEvent(new Event('focus', {bubbles: true}));"
+                    @"document.body.prepend(document.createElement('input'));"
+                    @"b.focus();"
+                    @"b.dispatchEvent(new Event('focus', {bubbles: true}));");
+
+  TestFormActivityObserver* block_observer = observer_.get();
+  ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^{
+    return block_observer->form_activity_info() != nullptr;
+  }));
+  const FormActivityParams& params =
+      observer_->form_activity_info()->form_activity;
+  EXPECT_EQ(FormActivityParams::ActivityType::kFocus, params.type);
+  EXPECT_EQ(FieldRendererId(2), params.field_renderer_id);
+  EXPECT_EQ("gChrome~field~rid~2", params.field_identifier);
+}
+
 // Test fixture for testing programmatic form submissions with/without Autofill
 // in the isolated world enabled.
 // TODO(crbug.com/359538514): Remove this fixture and move test back to
@@ -1352,22 +1380,32 @@ class FormSubmittedHookTest : public FormActivityTabHelperTest {
   }
 
  protected:
-  // Runs the form extraction script and returns true if the script ran
-  // successfully.
-  bool FetchForms() {
+  // Runs the form extraction script in the isolated world and returns the
+  // extracted forms.
+  std::optional<std::vector<FormData>> FetchForms() {
     WebFrame* main_frame = WaitForMainFrame();
     if (!main_frame) {
-      return false;
+      return std::nullopt;
     }
     __block bool finished = false;
+    __block NSString* forms_json = nil;
     AutofillJavaScriptFeature::GetInstance()->FetchForms(
         main_frame, base::BindOnce(^(NSString* result) {
+          forms_json = [result copy];
           finished = true;
         }));
 
-    return WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
-      return finished;
-    });
+    if (!WaitUntilConditionOrTimeout(kWaitForJSCompletionTimeout, ^bool {
+          return finished;
+        })) {
+      return std::nullopt;
+    }
+    return ExtractFormsData(
+        forms_json, /*form_name_filter=*/std::nullopt,
+        web_state()->GetLastCommittedURL(), main_frame->GetSecurityOrigin(),
+        main_frame->GetUrl(),
+        *FieldDataManagerFactoryIOS::GetRetainable(main_frame),
+        main_frame->GetFrameId());
   }
 
  private:
@@ -1431,7 +1469,9 @@ TEST_F(FormSubmittedHookTest, TestFormSubmittedHookAcrossIframes) {
   // Trigger form extraction so child frame tokens are set in the isolated
   // world. Page scripts will be able to access the tokens through the fallback
   // stored in the DOM.
-  FetchForms();
+  std::optional<std::vector<FormData>> extracted_forms = FetchForms();
+  ASSERT_TRUE(extracted_forms.has_value());
+  ASSERT_THAT(*extracted_forms, ElementsAre(_));
 
   ASSERT_FALSE(observer_->submit_document_info());
 
@@ -1444,10 +1484,15 @@ TEST_F(FormSubmittedHookTest, TestFormSubmittedHookAcrossIframes) {
   ASSERT_TRUE(observer_->submit_document_info());
   const FormData& submitted_form = observer_->submit_document_info()->form_data;
   // Make sure child frames are populated.
-
+  EXPECT_THAT(submitted_form.child_frames(), SizeIs(2));
   EXPECT_THAT(submitted_form.child_frames(),
               Each(Field(&FrameTokenWithPredecessor::token,
                          VariantWith<RemoteFrameToken>(IsTrue()))));
+  // Verify that the submitted form's child frame tokens match the tokens
+  // originally generated in the isolated world (and were not overwritten by
+  // the page content world).
+  EXPECT_EQ(submitted_form.child_frames(),
+            extracted_forms->at(0).child_frames());
 }
 
 }  // namespace autofill

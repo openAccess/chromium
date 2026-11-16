@@ -506,6 +506,8 @@ static VideoCodecProfile MinProfile(VideoCodec codec) {
       return DOLBYVISION_PROFILE0;
     case VideoCodec::kAV1:
       return AV1PROFILE_MIN;
+    case VideoCodec::kAV2:
+      return AV2PROFILE_MIN;
   }
 }
 
@@ -651,24 +653,8 @@ AudioDecoderConfig TestAudioConfig::NormalEncrypted() {
                             EmptyExtraData(), EncryptionScheme::kCenc);
 }
 
-AudioDecoderConfig TestAudioConfig::HighSampleRate() {
-  return AudioDecoderConfig(AudioCodec::kVorbis, kSampleFormatPlanarF32,
-                            kStereoConfig, HighSampleRateValue(),
-                            EmptyExtraData(), EncryptionScheme::kUnencrypted);
-}
-
-AudioDecoderConfig TestAudioConfig::HighSampleRateEncrypted() {
-  return AudioDecoderConfig(AudioCodec::kVorbis, kSampleFormatPlanarF32,
-                            kStereoConfig, HighSampleRateValue(),
-                            EmptyExtraData(), EncryptionScheme::kCenc);
-}
-
 int TestAudioConfig::NormalSampleRateValue() {
   return 44100;
-}
-
-int TestAudioConfig::HighSampleRateValue() {
-  return 192000;
 }
 
 // static

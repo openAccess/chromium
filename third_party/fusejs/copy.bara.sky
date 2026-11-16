@@ -1,0 +1,9 @@
+load("//crowbar", "crowbar_workflow")
+
+crowbar_workflow(
+    origin_files = [
+        "LICENSE",
+        "dist/fuse.basic.min.mjs",
+        "dist/fuse.d.ts",
+    ],
+)

@@ -4,11 +4,13 @@
 
 #include "chrome/browser/ui/passwords/remote_actor_selection_dialog_controller.h"
 
+#include <optional>
+
 #include "base/check.h"
-#include "base/strings/utf_string_conversions.h"
+#include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/ui/passwords/password_dialog_prompts.h"
-#include "components/password_manager/core/common/remote_actor/remote_actor_features.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/url_formatter/elide_url.h"
 #include "content/public/browser/page_navigator.h"
@@ -25,10 +27,14 @@ namespace {
 constexpr char kRemoteActorDataHandlingHelpUrl[] =
     "https://support.google.com/gemini?p=lm_gpm_data";
 
-std::u16string GetActorName() {
-  std::string actor_name =
-      features::kRemoteActorCredentialSharingActorNameForTesting.Get();
-  return base::UTF8ToUTF16(actor_name.empty() ? "Gemini" : actor_name);
+std::u16string GetDefaultActorName(RemoteActorType actor_type) {
+  switch (actor_type) {
+    case RemoteActorType::kGemini:
+      return l10n_util::GetStringUTF16(IDS_REMOTE_ACTOR_GEMINI_NAME);
+    case RemoteActorType::kSearch:
+      return l10n_util::GetStringUTF16(IDS_REMOTE_ACTOR_SEARCH_AGENT_NAME);
+  }
+  NOTREACHED();
 }
 
 }  // namespace
@@ -58,10 +64,38 @@ void RemoteActorSelectionDialogController::Show() {
   view_->ShowAccountChooser();
 }
 
+void RemoteActorSelectionDialogController::SetActorType(
+    RemoteActorType actor_type) {
+  CHECK(!view_);
+  actor_type_ = actor_type;
+  subtitle_link_range_ = gfx::Range();
+}
+
+void RemoteActorSelectionDialogController::SetActorName(
+    std::u16string actor_name) {
+  CHECK(!view_);
+  actor_name_ = std::move(actor_name);
+  subtitle_link_range_ = gfx::Range();
+}
+
+void RemoteActorSelectionDialogController::SetLearnMoreUrl(
+    GURL learn_more_url) {
+  CHECK(!view_);
+  learn_more_url_ = std::move(learn_more_url);
+}
+
 void RemoteActorSelectionDialogController::SetActorIconUrl(
     GURL actor_icon_url) {
   CHECK(!view_);
   actor_icon_url_ = std::move(actor_icon_url);
+}
+
+GURL RemoteActorSelectionDialogController::GetLearnMoreUrl() const {
+  if (learn_more_url_.is_valid() &&
+      learn_more_url_.SchemeIs(url::kHttpsScheme)) {
+    return learn_more_url_;
+  }
+  return GURL(kRemoteActorDataHandlingHelpUrl);
 }
 
 PasswordCombinedSelectorController::DisplayType
@@ -71,6 +105,11 @@ RemoteActorSelectionDialogController::GetDisplayType() const {
 
 bool RemoteActorSelectionDialogController::ShouldShowTopIllustration() const {
   return true;
+}
+
+std::optional<RemoteActorType>
+RemoteActorSelectionDialogController::GetActorType() const {
+  return actor_type_;
 }
 
 GURL RemoteActorSelectionDialogController::GetActorIconUrl() const {
@@ -85,15 +124,19 @@ std::u16string RemoteActorSelectionDialogController::GetTitle() const {
   std::u16string formatted_domain = url_formatter::FormatUrlForSecurityDisplay(
       GURL(credential_domain_),
       url_formatter::SchemeDisplay::OMIT_CRYPTOGRAPHIC);
+  const std::u16string actor_name =
+      actor_name_.empty() ? GetDefaultActorName(actor_type_) : actor_name_;
   return l10n_util::GetStringFUTF16(IDS_REMOTE_ACTOR_SHARING_DIALOG_TITLE,
-                                    GetActorName(), formatted_domain);
+                                    actor_name, formatted_domain);
 }
 
 std::u16string RemoteActorSelectionDialogController::GetSubtitle() const {
+  const std::u16string actor_name =
+      actor_name_.empty() ? GetDefaultActorName(actor_type_) : actor_name_;
   std::vector<size_t> offsets;
   std::u16string subtitle = l10n_util::GetStringFUTF16(
       IDS_REMOTE_ACTOR_SHARING_DIALOG_SUBTITLE,
-      {std::u16string(), std::u16string(), GetActorName()}, &offsets);
+      {std::u16string(), std::u16string(), actor_name}, &offsets);
   if (offsets.size() >= 2) {
     subtitle_link_range_ = gfx::Range(offsets[0], offsets[1]);
   }
@@ -112,7 +155,7 @@ void RemoteActorSelectionDialogController::OnSubtitleLinkClicked() {
     return;
   }
   content::OpenURLParams params(
-      GURL(kRemoteActorDataHandlingHelpUrl), content::Referrer(),
+      GetLearnMoreUrl(), content::Referrer(),
       ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui::PAGE_TRANSITION_LINK,
       /*is_renderer_initiated=*/false);
@@ -136,9 +179,6 @@ bool RemoteActorSelectionDialogController::IsShowingAccountChooser() const {
 void RemoteActorSelectionDialogController::OnChooseCredentials(
     const password_manager::PasswordForm& password_form,
     password_manager::CredentialType credential_type) {
-  // TODO(crbug.com/532483845): Upload selected credential to Passbox and grant
-  // permission in APS.
-  // TODO(crbug.com/532482931): Notify Private JS API of success.
   DestroyDialog();
   if (callback_) {
     std::move(callback_).Run(password_form);
@@ -146,7 +186,6 @@ void RemoteActorSelectionDialogController::OnChooseCredentials(
 }
 
 void RemoteActorSelectionDialogController::OnCloseDialog() {
-  // TODO(crbug.com/532482931): Notify Private JS API of cancellation.
   DestroyDialog();
   if (callback_) {
     std::move(callback_).Run(std::nullopt);

@@ -567,6 +567,10 @@ void ConvertImageInfo(
         proto_image_info->mutable_security_origin());
   }
   proto_image_info->set_url(mojom_image_info.url.spec());
+  if (mojom_image_info.has_c2pa_manifest.has_value()) {
+    proto_image_info->set_has_c2pa_manifest(
+        *mojom_image_info.has_c2pa_manifest);
+  }
 }
 
 void ConvertSvgRootData(
@@ -648,6 +652,10 @@ optimization_guide::proto::FormControlType ConvertFormControlType(
       return optimization_guide::proto::FORM_CONTROL_TYPE_BUTTON_POPOVER;
     case blink::mojom::FormControlType::kFieldset:
       return optimization_guide::proto::FORM_CONTROL_TYPE_FIELDSET;
+    case blink::mojom::FormControlType::kRangeGroup:
+      // The dedicated proto value will be added with rangegroup APC
+      // integration.
+      return optimization_guide::proto::FORM_CONTROL_TYPE_UNSPECIFIED;
     case blink::mojom::FormControlType::kInputButton:
       return optimization_guide::proto::FORM_CONTROL_TYPE_INPUT_BUTTON;
     case blink::mojom::FormControlType::kInputCheckbox:
@@ -1030,6 +1038,10 @@ void ConvertScriptTool(
 
   if (tool.input_schema) {
     proto_script_tool->set_input_schema(*tool.input_schema);
+  }
+
+  if (tool.output_schema) {
+    proto_script_tool->set_output_schema(*tool.output_schema);
   }
 
   if (tool.annotations) {

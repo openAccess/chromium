@@ -75,6 +75,7 @@
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace payments {
 
@@ -402,83 +403,13 @@ IN_PROC_BROWSER_TEST_F(PaymentHandlerWebFlowViewTest,
   EXPECT_EQ((host_size.width() - tall_size.width()) / 2, tall_pos.x());
 }
 
-class PaymentHandlerModalDialogHostDisabledTest
-    : public PaymentRequestBrowserTestBase {
- public:
-  PaymentHandlerModalDialogHostDisabledTest() {
-    feature_list_.InitWithFeatures(
-        {features::kPaymentRequestMandatoryPaymentAppUi},
-        {features::kPaymentHandlerModalDialogHost});
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(PaymentHandlerModalDialogHostDisabledTest,
-                       WebModalDialogParentedToBrowserTabWhenFlagDisabled) {
-  NavigateTo("/payment_handler.html");
-  std::string method_name;
-  InstallPaymentApp("a.com", "/payment_handler_sw.js", &method_name);
-
-  // Trigger PaymentRequest, and wait until the PaymentHandler has loaded a
-  // web-contents that has set a title.
-  ResetEventWaiterForSequence({DialogEvent::PROCESSING_SPINNER_SHOWN,
-                               DialogEvent::PROCESSING_SPINNER_HIDDEN,
-                               DialogEvent::DIALOG_OPENED,
-                               DialogEvent::LOADING_VIEW_SHOWN,
-                               DialogEvent::PAYMENT_HANDLER_WINDOW_OPENED,
-                               DialogEvent::LOADING_VIEW_HIDDEN,
-                               DialogEvent::PAYMENT_HANDLER_TITLE_SET});
-  ASSERT_EQ(
-      "success",
-      content::EvalJs(
-          GetActiveWebContents(),
-          content::JsReplace("launchWithoutWaitForResponse($1)", method_name)));
-  ASSERT_TRUE(WaitForObservedEvent());
-
-  views::View* top_view = test_api(dialog_view()).view_stack()->top();
-  auto* sheet_controller =
-      test_api(dialog_view()).controller_map()->at(top_view).get();
-  auto* web_flow_controller =
-      static_cast<PaymentHandlerWebFlowViewController*>(sheet_controller);
-  content::WebContents* payment_handler_contents =
-      web_flow_controller->web_contents();
-  ASSERT_NE(nullptr, payment_handler_contents);
-
-  views::Widget* payment_dialog_widget = dialog_view()->GetWidget();
-  ASSERT_NE(nullptr, payment_dialog_widget);
-
-  // Show a web-modal dialog on the payment handler's WebContents.
-  auto dialog_model = ui::DialogModel::Builder()
-                          .SetTitle(u"Test Modal")
-                          .AddOkButton(base::DoNothing())
-                          .Build();
-  views::Widget* modal_widget = constrained_window::ShowWebModal(
-      std::move(dialog_model), payment_handler_contents);
-  ASSERT_NE(nullptr, modal_widget);
-
-  // When the flag is disabled, the modal dialog host's host view should match
-  // the browser window's native view rather than the payment dialog widget.
-  auto* manager = web_modal::WebContentsModalDialogManager::FromWebContents(
-      payment_handler_contents);
-  ASSERT_NE(nullptr, manager);
-  ASSERT_NE(nullptr, manager->delegate());
-  web_modal::WebContentsModalDialogHost* host =
-      manager->delegate()->GetWebContentsModalDialogHost(
-          payment_handler_contents);
-  ASSERT_NE(nullptr, host);
-  EXPECT_NE(payment_dialog_widget->GetNativeView(), host->GetHostView());
-
-  dialog_view()->CloseDialog();
-}
-
 class PaymentHandlerWebFlowViewUseInitiatorInUrlLoadEnabledTest
     : public PaymentRequestBrowserTestBase {
  public:
   PaymentHandlerWebFlowViewUseInitiatorInUrlLoadEnabledTest() {
     feature_list_.InitWithFeatures(
         {payments::features::kPaymentHandlerDialogUseInitiatorInUrlLoad,
+         payments::features::kPaymentHandlerDialogUseFrameOriginAsInitiator,
          payments::features::kPaymentRequestMandatoryPaymentAppUi},
         {});
   }
@@ -519,6 +450,54 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(test_client.initiator_origin_.has_value());
   EXPECT_EQ(url::Origin::Create(GetActiveWebContents()->GetLastCommittedURL()),
             test_client.initiator_origin_.value());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PaymentHandlerWebFlowViewUseInitiatorInUrlLoadEnabledTest,
+    CrossOriginIframeInitiatorOriginSet) {
+  const std::string kPaymentAppHost = "a.com";
+  const std::string kTopLevelHost = "b.com";
+
+  NavigateTo(kTopLevelHost, "/payment_request_main.html");
+  ASSERT_TRUE(
+      content::ExecJs(GetActiveWebContents(),
+                      "document.getElementById('test').allow = 'payment';"));
+  GURL iframe_url =
+      https_server()->GetURL(kPaymentAppHost, "/payment_handler.html");
+  ASSERT_TRUE(
+      content::NavigateIframeToURL(GetActiveWebContents(), "test", iframe_url));
+  content::RenderFrameHost* iframe =
+      content::ChildFrameAt(GetActiveWebContents()->GetPrimaryMainFrame(), 0);
+  ASSERT_TRUE(iframe);
+
+  std::string method_name;
+  InstallPaymentApp(kPaymentAppHost, "/payment_handler_sw.js", &method_name);
+
+  TestClient test_client;
+  test_client.url_to_intercept = kPaymentAppHost;
+  content::ScopedContentBrowserClientSetting scoped_setting(&test_client);
+
+  ResetEventWaiterForSequence({DialogEvent::PROCESSING_SPINNER_SHOWN,
+                               DialogEvent::PROCESSING_SPINNER_HIDDEN,
+                               DialogEvent::DIALOG_OPENED,
+                               DialogEvent::LOADING_VIEW_SHOWN,
+                               DialogEvent::PAYMENT_HANDLER_WINDOW_OPENED,
+                               DialogEvent::LOADING_VIEW_HIDDEN,
+                               DialogEvent::PAYMENT_HANDLER_TITLE_SET});
+
+  ASSERT_EQ("success",
+            content::EvalJs(
+                iframe, content::JsReplace("launchWithoutWaitForResponse($1)",
+                                           method_name)));
+  ASSERT_TRUE(WaitForObservedEvent());
+
+  EXPECT_TRUE(test_client.saw_navigation_);
+  ASSERT_TRUE(test_client.initiator_origin_.has_value());
+  EXPECT_EQ(iframe->GetLastCommittedOrigin(),
+            test_client.initiator_origin_.value());
+  EXPECT_NE(
+      GetActiveWebContents()->GetPrimaryMainFrame()->GetLastCommittedOrigin(),
+      test_client.initiator_origin_.value());
 }
 
 IN_PROC_BROWSER_TEST_F(PaymentHandlerWebFlowViewTest, UserInteractionRecorded) {

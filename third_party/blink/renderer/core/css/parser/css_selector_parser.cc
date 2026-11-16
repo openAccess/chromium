@@ -793,7 +793,6 @@ static std::optional<CSSSelector> MaybeCreateImplicitDescendantAnchor(
       }
       break;
     case CSSNestingType::kFunction:
-    case CSSNestingType::kMixin:
       NOTREACHED();
   }
   return std::nullopt;
@@ -2213,7 +2212,7 @@ bool CSSSelectorParser::ConsumeANPlusB(CSSParserTokenStream& stream,
     result.first = ClampTo<int>(token.NumericValue());
     n_string = token.Value().ToString();
   } else if (token.GetType() == kIdentToken) {
-    if (UNSAFE_TODO(token.Value()[0]) == '-') {
+    if (token.Value().starts_with('-')) {
       result.first = -1;
       n_string = token.Value().ToString().substr(1);
     } else {

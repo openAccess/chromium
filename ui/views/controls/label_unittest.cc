@@ -20,6 +20,7 @@
 #include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
@@ -1625,7 +1626,7 @@ TEST_F(LabelTest, MAYBE_ChecksSubpixelRenderingOntoOpaqueSurface) {
   // TODO(crbug.com/40725997): The EXPECT_CHECK_DEATH needs
   // !BUILDFLAG(IS_CHROMEOS).
 #if !BUILDFLAG(IS_CHROMEOS)
-  EXPECT_CHECK_DEATH(label->OnPaint(&canvas), base::NotFatalUntil::M163);
+  EXPECT_DCHECK_DEATH(label->OnPaint(&canvas));
 #endif
 
   // We should not DCHECK if the check is skipped.

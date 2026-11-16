@@ -31,6 +31,7 @@ import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.subscription_eligibility.AiSubscriptionTierNames;
 import org.chromium.chrome.browser.subscription_eligibility.SubscriptionEligibilityService;
 import org.chromium.components.browser_ui.util.AvatarGenerator;
 import org.chromium.components.signin.AccountManagerFacade;
@@ -121,8 +122,11 @@ public class ProfileDataCache
             boolean aiTierRingEnabled,
             @Nullable SubscriptionTierBrandingDelegate brandingDelegate) {
         assert identityManager != null;
+        // TODO(crbug.com/578866423): Remove once the NTP gets its identity error from the cache.
         assert syncService == null || aiTierRingEnabled
                 : "Only caches with the AI tier ring track identity errors";
+        assert subscriptionEligibilityService == null || aiTierRingEnabled
+                : "Only caches with the AI tier ring know the AI subscription tier";
         mContext = context;
         mAccountManagerFacade = accountManagerFacade;
         mIdentityManager = identityManager;
@@ -264,6 +268,17 @@ public class ProfileDataCache
      */
     public boolean isAiTierRingEnabled() {
         return mAiTierRingEnabled;
+    }
+
+    /**
+     * Creates the background of the AI tier pill shown next to the AI tier ring. Like the ring, the
+     * pill is plain in builds without branding.
+     *
+     * <p>Must only be called on caches created with {@link #createWithAiTierRing}.
+     */
+    public Drawable createAiTierPillDrawable() {
+        assert mAiTierRingEnabled : "Only caches with the AI tier ring draw the AI tier pill";
+        return new AiTierPillDrawable(mContext, mBrandingDelegate);
     }
 
     /**
@@ -590,6 +605,9 @@ public class ProfileDataCache
                                 mContext.getResources(), accountInfo.getAccountImage(), mAvatarSize)
                         : mPlaceholderImage;
         BadgeConfig badgeConfig = mPerAccountBadgeConfig.get(accountInfo.getId());
+        // Only the primary account can have a tier; the others' isn't known.
+        int aiSubscriptionTier =
+                isPrimaryAccount(accountInfo) ? getPrimaryAccountAiSubscriptionTier() : 0;
         boolean hasAiTierRing = false;
 
         if (mAiTierRingEnabled) {
@@ -600,7 +618,7 @@ public class ProfileDataCache
             croppedAvatar =
                     overlayBadgeOnUserPicture(badgeConfig, croppedAvatar, mAiTierRingEnabled);
         } else {
-            hasAiTierRing = isEligibleForAiTierRing(accountInfo);
+            hasAiTierRing = isEligibleForAiTierRing(aiSubscriptionTier);
             if (hasAiTierRing) {
                 croppedAvatar = overlayAiRingOnAvatar(croppedAvatar);
             }
@@ -614,7 +632,8 @@ public class ProfileDataCache
                     accountInfo.getFullName(),
                     accountInfo.getGivenName(),
                     accountInfo.canHaveEmailAddressDisplayed(),
-                    hasAiTierRing);
+                    hasAiTierRing,
+                    aiSubscriptionTier);
         } else {
             final var shouldPopulateNames = accountInfo.hasDisplayableInfo() || badgeConfig != null;
             return new DisplayableProfileData(
@@ -624,19 +643,33 @@ public class ProfileDataCache
                     shouldPopulateNames ? accountInfo.getFullName() : null,
                     shouldPopulateNames ? accountInfo.getGivenName() : null,
                     accountInfo.canHaveEmailAddressDisplayed(),
-                    hasAiTierRing);
+                    hasAiTierRing,
+                    aiSubscriptionTier);
         }
     }
 
-    private boolean isEligibleForAiTierRing(AccountInfo accountInfo) {
-        if (!mAiTierRingEnabled || mSubscriptionEligibilityService == null) return false;
+    private boolean isPrimaryAccount(AccountInfo accountInfo) {
         AccountInfo primaryAccount = mIdentityManager.getPrimaryAccountInfo();
-        boolean isPrimary =
-                primaryAccount != null && primaryAccount.getId().equals(accountInfo.getId());
-        // Identity errors take precedence over the ring.
-        return isPrimary
-                && mSubscriptionEligibilityService.getAiSubscriptionTier() > 0
-                && !mHasIdentityError;
+        return primaryAccount != null && primaryAccount.getId().equals(accountInfo.getId());
+    }
+
+    /**
+     * Returns the AI subscription tier of the primary account, or 0 if it has none or if this cache
+     * doesn't know it. Only the SubscriptionEligibilityService passed to {@link
+     * #createWithAiTierRing} knows the tier.
+     */
+    private int getPrimaryAccountAiSubscriptionTier() {
+        if (mSubscriptionEligibilityService == null) return 0;
+        return mSubscriptionEligibilityService.getAiSubscriptionTier();
+    }
+
+    private boolean isEligibleForAiTierRing(int aiSubscriptionTier) {
+        // Identity errors take precedence over the ring. The server can also exclude tiers. The
+        // tier is checked first so that accounts without one, the vast majority, don't call into
+        // native code.
+        return aiSubscriptionTier > 0
+                && !mHasIdentityError
+                && AiSubscriptionTierNames.shouldShowDecoration(aiSubscriptionTier);
     }
 
     /**

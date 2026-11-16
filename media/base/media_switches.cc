@@ -336,8 +336,6 @@ const char kWaveOutBuffers[] = "waveout-buffers";
 #endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(USE_CRAS)
-// Enforce system audio echo cancellation.
-const char kSystemAecEnabled[] = "system-aec-enabled";
 // Use CRAS, the ChromeOS audio server.
 const char kUseCras[] = "use-cras";
 #endif  // BUILDFLAG(USE_CRAS)
@@ -437,31 +435,6 @@ BASE_FEATURE(kBrowserInitiatedAutomaticPictureInPictureDryRun,
 // TODO(crbug.com/40246079): hardware AV1 encoding should be added.
 BASE_FEATURE(kCastStreamingAv1, base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls whether the new exponential bitrate calculate logic is used, or
-// the legacy linear algorithm.
-// TODO(crbug.com/302584587): This is the V2 implementation of this experiment,
-// following the failure of the initial experiment.
-BASE_FEATURE(kCastStreamingExponentialVideoBitrateAlgorithm,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<int>
-    kCastStreamingExponentialVideoBitrateAlgorithmWindowSize{
-        &kCastStreamingExponentialVideoBitrateAlgorithm, "window_size", 30};
-const base::FeatureParam<int>
-    kCastStreamingExponentialVideoBitrateAlgorithmDropThreshold{
-        &kCastStreamingExponentialVideoBitrateAlgorithm, "drop_threshold", 1};
-const base::FeatureParam<double>
-    kCastStreamingExponentialVideoBitrateAlgorithmIncreaseFactor{
-        &kCastStreamingExponentialVideoBitrateAlgorithm, "increase_factor",
-        1.05};
-const base::FeatureParam<double>
-    kCastStreamingExponentialVideoBitrateAlgorithmDecreaseFactor{
-        &kCastStreamingExponentialVideoBitrateAlgorithm, "decrease_factor",
-        0.9};
-const base::FeatureParam<double>
-    kCastStreamingExponentialVideoBitrateAlgorithmDynamicWindowMultiplier{
-        &kCastStreamingExponentialVideoBitrateAlgorithm,
-        "dynamic_window_multiplier", 0.0};
-
 BASE_FEATURE(kCastStreamingHardwareHevc, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Controls the maximum video bitrate for Cast Streaming mirroring sessions.
@@ -542,10 +515,6 @@ BASE_FEATURE(kDeferAudioFocusUntilAudible,
              base::FEATURE_DISABLED_BY_DEFAULT
 #endif
 );
-
-// Controls whether the OpusAudioDecoder is used for Opus audio decoding
-// (instead of the FFmpegAudioDecoder).
-BASE_FEATURE(kDirectOpusAudioDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Killswitch for disallowing mixing opaque and non-opaque responses and
 // skipping Service Workers after network redirects in
@@ -1163,6 +1132,11 @@ BASE_FEATURE(kMediaRemotingWithoutFullscreen,
 BASE_FEATURE(kPictureInPictureOcclusionTracking,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enables rendering WebVTT captions into a dedicated video
+// Picture-in-Picture surface.
+BASE_FEATURE(kPictureInPictureWebVttCaptionSurface,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables video Picture-in-Picture display smoothness optimization.
 //
 // Ensures that the video PiP window title view is properly sized to only fit
@@ -1261,17 +1235,6 @@ BASE_FEATURE(kPlatformHEVCHbdEncoderSupport, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(ENABLE_PLATFORM_HEVC)
 
-// SymphoniaAudioDecoder support flags. When enabled, the SymphoniaAudioDecoder
-// will indicate support for the specified codec, causing it to be used for
-// audio decoding. If disabled, the media pipeline shall fall back to a
-// reasonable default, typically the FFmpeg audio decoder.
-#if BUILDFLAG(ENABLE_SYMPHONIA)
-BASE_FEATURE(kSymphoniaAudioDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kSymphoniaMp3Decoding, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kSymphoniaPcmDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kSymphoniaVorbisDecoding, base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(ENABLE_SYMPHONIA)
-
 #if BUILDFLAG(ENABLE_SYMPHONIA_DEMUXER)
 // Enables the use of Symphonia for container demuxing.
 // Owner: jophba@chromium.org
@@ -1289,11 +1252,6 @@ BASE_FEATURE(kSymphoniaRiffDemuxing, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_ANDROID)
 // Allows audio playback capture on Android.
 BASE_FEATURE(kAllowAudioPlaybackCapture, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Allows media playback to start when the audio focus request is delayed
-// (e.g. during a phone call).
-BASE_FEATURE(kAllowDelayedAudioFocusGainAndroid,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Allows the enhanced picture-in-picture transition animation that depend on
 // the sourceRectHint PictureInPictureParam.
@@ -1328,14 +1286,24 @@ BASE_FEATURE(kAutoPictureInPictureAndroid, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kContextMenuPictureInPictureAndroid,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// When enabled, an Android audio focus gain only resumes media that an audio
+// focus loss paused.
+BASE_FEATURE(kFocusGainResumesOnlyFocusLossPauses,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Enables fullscreen video Picture-in-Picture on Android.
 BASE_FEATURE(kFullscreenVideoPictureInPicture,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables block model on supported devices.
 // Block model is only supported on Android 17 26Q4+ where the feature is
-// properly supported by the framework.
+// properly supported by the framework. Decoders that use a MediaCrypto also
+// need kMediaCodecBlockModelEncrypted.
 BASE_FEATURE(kMediaCodecBlockModel, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables block model for decoders that use a MediaCrypto (encrypted
+// playback). Has no effect unless kMediaCodecBlockModel is enabled.
+BASE_FEATURE(kMediaCodecBlockModelEncrypted, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables output-side block model (OutputFrame) on supported devices.
 BASE_FEATURE(kMediaCodecBlockModelOutput, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1380,8 +1348,9 @@ BASE_FEATURE(kNdkVideoEncodeAcceleratorBitrateLayering,
 BASE_FEATURE(kNdkVideoEncodeAcceleratorNativeSvc,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, do not pause media when a headphone unplug event is received.
-BASE_FEATURE(kNoPauseMediaOnHeadphoneUnplug, base::FEATURE_DISABLED_BY_DEFAULT);
+// Pause media when headphones are unplugged or an external audio device
+// disconnects.
+BASE_FEATURE(kPauseMediaOnHeadphoneUnplug, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Pause media when a system sleep/suspension is detected.
 BASE_FEATURE(kPauseMediaOnSystemSleepAndroid,
@@ -1428,10 +1397,6 @@ BASE_FEATURE(kUseMediaFormatCodedSize, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_APPLE)
-// Enables VideoToolbox Quality Metrics (MSE / PSNR) generation.
-BASE_FEATURE(kVTVideoEncodeAcceleratorCalculatePSNR,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enables VideoToolbox zero-copy encode of opaque SharedImage-backed
 // VideoFrames.
 BASE_FEATURE(kVTVideoEncodeAcceleratorOpaqueSharedImageEncode,
@@ -1462,19 +1427,6 @@ BASE_FEATURE(kCrOSDspBasedAgcDeactivatedGroups,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCrOSDspBasedNsDeactivatedGroups,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCrOSEnforceSystemAec, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCrOSEnforceSystemAecAgc, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCrOSEnforceSystemAecNs, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kCrOSEnforceSystemAecNsAgc, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// To control running audio communication effect on Chrome OS Audio Server.
-BASE_FEATURE(kCrOSSystemAEC,
-             "CrOSSystemAECWithBoardTuningsAllowed",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kCrOSSystemAECDeactivatedGroups, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1566,10 +1518,6 @@ BASE_FEATURE(kCastStreamingMacHardwareH264, base::FEATURE_ENABLED_BY_DEFAULT);
 // and multichannel layouts both qualify. macOS can then spatialize playback for
 // compatible AirPods (Off, Fixed, Head Tracking).
 BASE_FEATURE(kMacAVFoundationPlayback, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables system audio loopback capture using the macOS CoreAudio tap API for
-// Cast.
-BASE_FEATURE(kMacCatapLoopbackAudioForCast, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Use the built-in MacOS screen-sharing picker (SCContentSharingPicker). This
 // flag will only use the built-in picker on MacOS 15 Sequoia and later where it
@@ -1715,7 +1663,7 @@ BASE_FEATURE(kMediaFoundationVideoEncodeAccelerator,
 BASE_FEATURE(kProtectedMediaIdentifierIndicator,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kWasapiImproveGlitchDetection, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWasapiImproveGlitchDetection, base::FEATURE_ENABLED_BY_DEFAULT);
 
 #endif  // BUILDFLAG(IS_WIN)
 

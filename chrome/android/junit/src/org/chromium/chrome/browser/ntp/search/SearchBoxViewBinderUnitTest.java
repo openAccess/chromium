@@ -226,12 +226,32 @@ public class SearchBoxViewBinderUnitTest {
     }
 
     @Test
+    public void testSetPlusButtonAlpha() {
+        mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_ALPHA, 0.5f);
+        assertEquals(0.5f, mSearchBoxLayout.mPlusButton.getAlpha(), 0.001f);
+
+        mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_ALPHA, 1.0f);
+        assertEquals(1.0f, mSearchBoxLayout.mPlusButton.getAlpha(), 0.001f);
+    }
+
+    @Test
     public void testSetPlusButtonRotation() {
         mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_ROTATION, 180f);
         assertEquals(180f, mSearchBoxLayout.mPlusButton.getRotation(), 0.001f);
 
         mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_ROTATION, 360f);
         assertEquals(360f, mSearchBoxLayout.mPlusButton.getRotation(), 0.001f);
+    }
+
+    @Test
+    public void testSetPlusButtonScale() {
+        mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_SCALE, 1.2f);
+        assertEquals(1.2f, mSearchBoxLayout.mPlusButton.getScaleX(), 0.001f);
+        assertEquals(1.2f, mSearchBoxLayout.mPlusButton.getScaleY(), 0.001f);
+
+        mPropertyModel.set(SearchBoxProperties.PLUS_BUTTON_SCALE, 1.0f);
+        assertEquals(1.0f, mSearchBoxLayout.mPlusButton.getScaleX(), 0.001f);
+        assertEquals(1.0f, mSearchBoxLayout.mPlusButton.getScaleY(), 0.001f);
     }
 
     @Test

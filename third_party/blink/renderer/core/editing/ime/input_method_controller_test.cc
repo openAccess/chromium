@@ -1886,9 +1886,9 @@ TEST_F(InputMethodControllerTest, SelectionWhenFocusChangeFinishesComposition) {
       Color::kTransparent, Color::kTransparent));
   Controller().SetComposition("foo", ime_text_spans, 3, 3);
 
-  EXPECT_TRUE(Controller().HasComposition());
-  EXPECT_EQ(0u, GetCompositionRange()->startOffset());
-  EXPECT_EQ(3u, GetCompositionRange()->endOffset());
+  ASSERT_TRUE(Controller().HasComposition());
+  EXPECT_EQ("<div contenteditable id=\"sample\">^foo|</div>",
+            GetRangeTextFromBody(GetCompositionRange()));
   EXPECT_EQ(3, SelectionAnchor().ComputeOffsetInContainerNode());
 
   // Insert 'test'.
@@ -3748,13 +3748,11 @@ TEST_F(InputMethodControllerTest, SetCompositionAfterNonEditableElement) {
   // Add some more text to the composition.
   Controller().SetComposition("cd", Vector<ImeTextSpan>(), 2, 2);
 
+  ASSERT_TRUE(Controller().HasComposition());
   EXPECT_EQ(
       "<div contenteditable=\"true\" id=\"sample\">"
       "<span contenteditable=\"false\">a</span>^cd|b</div>",
-      GetSelectionTextFromBody(
-          SelectionInDomTree::Builder()
-              .SetBaseAndExtent(Controller().CompositionEphemeralRange())
-              .Build()));
+      GetRangeTextFromBody(Controller().CompositionEphemeralRange()));
 }
 
 TEST_F(InputMethodControllerTest, SetCompositionInTableCell) {
@@ -3997,6 +3995,9 @@ TEST_F(InputMethodControllerTest, TextareaMaxlengthFullWidthSpaceRepro) {
 // kWebTextInputTypeNone unless the selection happened to be left inside
 // another editable element. See https://crbug.com/40622827.
 TEST_F(InputMethodControllerTest, TextInputTypeForDateTimeField) {
+  // This test relies on focus moving into the date input's shadow subfields,
+  // which are not focusable by default on non-desktop Android.
+  GetDocument().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   SetBodyContent("<input id='text' value='abc'><input id='date' type='date'>");
   GetFocusController().SetActive(true);
   GetFocusController().SetFocused(true);
@@ -4012,6 +4013,9 @@ TEST_F(InputMethodControllerTest, TextInputTypeForDateTimeField) {
 
 TEST_F(InputMethodControllerTest, TextInputTypeForDateTimeFieldKillswitch) {
   ScopedDateTimeFieldTypeWithoutSelectionForTest disabled(false);
+  // This test relies on focus moving into the date input's shadow subfields,
+  // which are not focusable by default on non-desktop Android.
+  GetDocument().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   SetBodyContent("<input id='date' type='date'>");
   GetFocusController().SetActive(true);
   GetFocusController().SetFocused(true);

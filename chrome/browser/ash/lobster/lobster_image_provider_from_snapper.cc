@@ -6,7 +6,6 @@
 
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/lobster/lobster_result.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "base/barrier_callback.h"
@@ -92,13 +91,11 @@ manta::proto::Request CreateMantaRequest(std::string_view query,
   manta::proto::InputData& query_rewritter_input_data =
       *request.add_input_data();
   query_rewritter_input_data.set_tag(kLobsterUseQueryRewriterFlag);
-  query_rewritter_input_data.set_text(
-      ash::features::IsLobsterUseRewrittenQuery() ? "true" : "false");
+  query_rewritter_input_data.set_text("true");
 
   manta::proto::InputData& i18n_flag_input_data = *request.add_input_data();
   i18n_flag_input_data.set_tag(kLobsterI18nFlag);
-  i18n_flag_input_data.set_text(
-      ash::features::IsLobsterI18nEnabled() ? "true" : "false");
+  i18n_flag_input_data.set_text("true");
 
   return request;
 }

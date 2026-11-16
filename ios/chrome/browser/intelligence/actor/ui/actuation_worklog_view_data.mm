@@ -165,7 +165,7 @@ constexpr NSUInteger kMaxColumnActionCount = 3;
 
 @implementation ActuationInterventionAction
 
-- (instancetype)initWithIdentifier:(NSInteger)identifier
+- (instancetype)initWithIdentifier:(InterventionActionIdentifier)identifier
                              title:(NSString*)title {
   CHECK(title);
 
@@ -298,77 +298,42 @@ constexpr NSUInteger kMaxColumnActionCount = 3;
 
 @end
 
-@interface ActuationHeaderItem ()
+@implementation ActuationWorklogEntry
 
-- (instancetype)initWithStyle:(ActuationHeaderItemStyle)style
-                         icon:(UIImage*)icon
-                        title:(NSString*)title
-      accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                       action:(UIAction*)action
-                         menu:(UIMenu*)menu NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithItem:(ActuationWorklogItem*)item
+                        chip:(ActuationWorklogChip*)chip {
+  CHECK(item);
+  self = [super init];
+  if (self) {
+    _item = item;
+    _chip = chip;
+  }
+  return self;
+}
 
 @end
 
-@implementation ActuationHeaderItem
+@implementation ActuationWorklogState
 
-+ (instancetype)itemWithIcon:(UIImage*)icon
-                       title:(NSString*)title
-     accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                      action:(UIAction*)action {
-  CHECK(icon);
-  CHECK(action);
-  return [[self alloc] initWithStyle:ActuationHeaderItemStyleIcon
-                                icon:icon
-                               title:title
-             accessibilityIdentifier:accessibilityIdentifier
-                              action:action
-                                menu:nil];
-}
-
-+ (instancetype)itemWithIcon:(UIImage*)icon
-                       title:(NSString*)title
-     accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                        menu:(UIMenu*)menu {
-  CHECK(icon);
-  CHECK(menu);
-  return [[self alloc] initWithStyle:ActuationHeaderItemStyleIcon
-                                icon:icon
-                               title:title
-             accessibilityIdentifier:accessibilityIdentifier
-                              action:nil
-                                menu:menu];
-}
-
-+ (instancetype)callToActionWithTitle:(NSString*)title
-              accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                               action:(UIAction*)action {
-  CHECK(action);
-  return [[self alloc] initWithStyle:ActuationHeaderItemStyleCallToAction
-                                icon:nil
-                               title:title
-             accessibilityIdentifier:accessibilityIdentifier
-                              action:action
-                                menu:nil];
-}
-
-#pragma mark - Private
-
-- (instancetype)initWithStyle:(ActuationHeaderItemStyle)style
-                         icon:(UIImage*)icon
-                        title:(NSString*)title
-      accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                       action:(UIAction*)action
-                         menu:(UIMenu*)menu {
-  CHECK(title);
-
+- (instancetype)
+    initWithActuationActive:(BOOL)actuationActive
+              headerContent:(ActuationHeaderContentVariants*)headerContent
+                    entries:(NSArray<ActuationWorklogEntry*>*)entries
+               intervention:(ActuationInterventionData*)intervention
+                suggestions:(NSArray<ActorFormSuggestion*>*)suggestions
+           suggestionsEntry:(ActuationWorklogEntry*)suggestionsEntry {
+  CHECK(headerContent);
+  CHECK(entries);
+  CHECK_EQ(!suggestions, !suggestionsEntry);
+  CHECK(!suggestions || suggestions.count > 0);
   self = [super init];
   if (self) {
-    _style = style;
-    _icon = icon;
-    _title = [title copy];
-    _accessibilityIdentifier = [accessibilityIdentifier copy];
-    _action = action;
-    _menu = menu;
+    _actuationActive = actuationActive;
+    _headerContent = headerContent;
+    _entries = [entries copy];
+    _intervention = intervention;
+    _suggestions = [suggestions copy];
+    _suggestionsEntry = suggestionsEntry;
   }
   return self;
 }

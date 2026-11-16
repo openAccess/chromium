@@ -227,7 +227,6 @@ webapps::AppId InstallWebAppWithoutOsIntegration(
     web_app_info->title = u"WebAppInstallInfo App Name";
   }
 
-  webapps::AppId app_id;
   base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
       future;
   auto* provider = WebAppProvider::GetForTest(profile);
@@ -355,17 +354,6 @@ std::unique_ptr<WebAppInstallInfo> GetInstallInfoForCurrentManifest(
       construct_options);
   EXPECT_TRUE(test_future.Wait(base::RunLoop::Type::kNestableTasksAllowed));
   return test_future.Take();
-}
-
-std::unique_ptr<WebAppInstallInfo> GetInstallInfoForCurrentManifest(
-    base::WeakPtr<content::WebContents> web_contents,
-    const blink::mojom::Manifest& manifest,
-    WebAppInstallInfoConstructOptions construct_options) {
-  auto converted = blink::ManifestFromMojom(manifest);
-  CHECK(converted.has_value())
-      << blink::ManifestInvariantErrorToString(converted.error());
-  return GetInstallInfoForCurrentManifest(web_contents, *converted,
-                                          construct_options);
 }
 
 }  // namespace test

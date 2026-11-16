@@ -36,6 +36,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/check_op.h"
 #include "base/containers/to_vector.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -51,6 +52,7 @@
 #include "cc/animation/animation_host.h"
 #include "cc/base/features.h"
 #include "cc/input/browser_controls_offset_tag_modifications.h"
+#include "cc/metrics/scroll_timing_buffer.h"
 #include "cc/trees/compositor_commit_data.h"
 #include "cc/trees/layer_tree_frame_sink.h"
 #include "cc/trees/layer_tree_host.h"
@@ -84,10 +86,12 @@
 #include "third_party/blink/renderer/core/core_initializer.h"
 #include "third_party/blink/renderer/core/css/media_value_change.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_dispatch_result.h"
+#include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/focus_params.h"
 #include "third_party/blink/renderer/core/dom/layout_tree_builder_traversal.h"
 #include "third_party/blink/renderer/core/dom/scroll_marker_group_pseudo_element.h"
@@ -101,8 +105,10 @@
 #include "third_party/blink/renderer/core/editing/reveal_selection_scope.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
 #include "third_party/blink/renderer/core/editing/visible_selection.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/clipboard_event.h"
 #include "third_party/blink/renderer/core/events/current_input_event.h"
+#include "third_party/blink/renderer/core/events/input_event.h"
 #include "third_party/blink/renderer/core/events/pointer_event_factory.h"
 #include "third_party/blink/renderer/core/events/web_input_event_conversion.h"
 #include "third_party/blink/renderer/core/events/wheel_event.h"
@@ -111,9 +117,11 @@
 #include "third_party/blink/renderer/core/exported/web_settings_impl.h"
 #include "third_party/blink/renderer/core/exported/web_view_impl.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_metrics_aggregator.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/remote_frame_client.h"
+#include "third_party/blink/renderer/core/frame/remote_frame_owner.h"
 #include "third_party/blink/renderer/core/frame/screen.h"
 #include "third_party/blink/renderer/core/frame/screen_metrics_emulator.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
@@ -255,11 +263,37 @@ class TargetImeNodeFocusChangeScope {
   bool focus_changed_ = false;
 };
 
+// Used during `WebFrameWidgetImpl::SetComposition` to detect whether the
+// composition text was actually inserted into the initially focused element.
+// `WebInputMethodController::SetComposition` returns whether a composition is
+// still active at the end of the call, which is false both when no text was
+// inserted (e.g., the element is not editable or a `compositionstart` /
+// `beforeinput` handler moved focus away before insertion) and when text was
+// inserted and the composition was then lost during an `input` event handler.
+// Observing a trusted composing `input` event on the element distinguishes
+// between these cases.
+class CompositionInputEventListener final : public NativeEventListener {
+ public:
+  void Invoke(ExecutionContext*, Event* event) override {
+    if (event->IsInputEvent() && event->isTrusted() &&
+        static_cast<InputEvent*>(event)->isComposing()) {
+      did_insert_composition_ = true;
+    }
+  }
+
+  bool did_insert_composition() const { return did_insert_composition_; }
+
+ private:
+  bool did_insert_composition_ = false;
+};
+
 using ::ui::mojom::blink::DragOperation;
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 constexpr base::TimeDelta kWindowingControlsChangeTimeout = base::Seconds(5);
 #endif
+
+constexpr base::TimeDelta kScrollTimingRetryDelay = base::Milliseconds(100);
 
 void ForEachLocalFrameControlledByWidget(
     LocalFrame* frame,
@@ -546,6 +580,7 @@ void WebFrameWidgetImpl::Close(DetachReason detach_reason) {
     animation_frame_timing_monitor_.Clear();
   }
 
+  scroll_timing_retry_.Cancel();
   mutator_dispatcher_ = nullptr;
   local_root_ = nullptr;
   // Shut down the widget, but potentially delay the release of the resources
@@ -743,10 +778,14 @@ void WebFrameWidgetImpl::DragTargetDrop(const WebDragData& web_drag_data,
   }
 }
 
-void WebFrameWidgetImpl::DragSourceEndedAt(const gfx::PointF& point_in_viewport,
-                                           const gfx::PointF& screen_point,
-                                           DragOperation operation,
-                                           base::OnceClosure callback) {
+void WebFrameWidgetImpl::DragSourceEndedAt(
+    const std::optional<gfx::PointF>& point_in_viewport,
+    const std::optional<gfx::PointF>& screen_point,
+    DragOperation operation,
+    base::OnceClosure callback) {
+  // If the drag ended at a point in the viewport, then the screen point
+  // should also be set.
+  CHECK_EQ(point_in_viewport.has_value(), screen_point.has_value());
   base::ScopedClosureRunner callback_runner(std::move(callback));
   base::ScopedClosureRunner runner(
       BindOnce(&WebFrameWidgetImpl::DragSourceSystemDragEnded,
@@ -756,19 +795,21 @@ void WebFrameWidgetImpl::DragSourceEndedAt(const gfx::PointF& point_in_viewport,
     return;
   }
 
-  WebMouseEvent fake_mouse_move(
-      WebInputEvent::Type::kMouseMove,
-      GetPage()->GetVisualViewport().ViewportToRootFrame(point_in_viewport),
-      screen_point, WebPointerProperties::Button::kLeft, 0,
-      WebInputEvent::kNoModifiers, base::TimeTicks::Now(),
-      ui::mojom::blink::MenuSourceType::kNone,
-      local_root_->GetFrame()
-          ->GetPage()
-          ->GetDragController()
-          .drag_pointer_id()
-          .value_or(WebMouseEvent::kMousePointerId));
-
-  fake_mouse_move.SetFrameScale(1);
+  std::optional<WebMouseEvent> fake_mouse_move;
+  if (point_in_viewport) {
+    fake_mouse_move.emplace(
+        WebInputEvent::Type::kMouseMove,
+        GetPage()->GetVisualViewport().ViewportToRootFrame(*point_in_viewport),
+        *screen_point, WebPointerProperties::Button::kLeft, 0,
+        WebInputEvent::kNoModifiers, base::TimeTicks::Now(),
+        ui::mojom::blink::MenuSourceType::kNone,
+        local_root_->GetFrame()
+            ->GetPage()
+            ->GetDragController()
+            .drag_pointer_id()
+            .value_or(WebMouseEvent::kMousePointerId));
+    fake_mouse_move->SetFrameScale(1);
+  }
   local_root_->GetFrame()->GetEventHandler().DragSourceEndedAt(fake_mouse_move,
                                                                operation);
 }
@@ -932,6 +973,10 @@ void WebFrameWidgetImpl::UpdateRenderThrottlingStatusForSubFrame(
   // display_locked into the value of subtree throttled here; display_locked
   // should be maintained as a separate bit and transmitted between render
   // processes.
+  if (auto* frame_owner =
+          DynamicTo<RemoteFrameOwner>(LocalRootImpl()->GetFrame()->Owner())) {
+    frame_owner->SetIsDisplayLocked(display_locked);
+  }
   LocalRootImpl()->GetFrameView()->UpdateRenderThrottlingStatus(
       is_throttled, subtree_throttled, display_locked, /*recurse=*/true);
 }
@@ -1624,8 +1669,90 @@ void WebFrameWidgetImpl::UpdateCompositorScrollState(
   }
 
   if (commit_data.scroll_end_data.done_containers.size()) {
+    ReadScrollTimingRecordsOnScrollEnd();
     SendEndOfScrollEvents(commit_data);
   }
+}
+
+void WebFrameWidgetImpl::ReadScrollTimingRecordsOnScrollEnd() {
+  if (!ReadScrollTimingRecords(/*force=*/false) ||
+      scroll_timing_retry_.IsActive()) {
+    return;
+  }
+  CHECK(local_root_);
+  CHECK(local_root_->GetFrame());
+  // Records for the ended scroll are published after its presentation.
+  scroll_timing_retry_ = PostDelayedCancellableTask(
+      *local_root_->GetFrame()->GetTaskRunner(TaskType::kPerformanceTimeline),
+      FROM_HERE,
+      BindOnce(base::IgnoreResult(&WebFrameWidgetImpl::ReadScrollTimingRecords),
+               WrapWeakPersistent(this), /*force=*/false),
+      kScrollTimingRetryDelay);
+}
+
+cc::ScrollTimingBufferConsumer* WebFrameWidgetImpl::ScrollTimingConsumer()
+    const {
+  cc::LayerTreeHost* host =
+      widget_base_ ? widget_base_->LayerTreeHost() : nullptr;
+  return host ? host->scroll_timing_buffer_consumer() : nullptr;
+}
+
+bool WebFrameWidgetImpl::ReadScrollTimingRecords(bool force) {
+  cc::ScrollTimingBufferConsumer* consumer = ScrollTimingConsumer();
+  if (!consumer) {
+    return false;
+  }
+  CHECK(local_root_);
+  CHECK(local_root_->GetFrame());
+  Document* document = local_root_->GetFrame()->GetDocument();
+  if (!document || document != scroll_timing_document_) {
+    // The unread records may belong to a previous document.
+    ResetScrollTimingForNewDocument();
+    return false;
+  }
+  if (!document->IsActive() ||
+      document->domWindow()->IsContextFrozenOrPaused()) {
+    return false;
+  }
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*document->domWindow());
+  if (!force && performance->IsScrollTimingBufferFull() &&
+      !performance->HasObserverFor(PerformanceEntry::kScroll)) {
+    return false;
+  }
+
+  cc::ScrollTimingBufferConsumer::Snapshot snapshot = consumer->ReadRecords();
+  for (const cc::ScrollTimingInfo& record : snapshot.records) {
+    if (record.start_time < scroll_timing_cutoff_) {
+      continue;
+    }
+    // Unresolved targets may belong to another document. Never attribute
+    // another document's scrolls to the current timeline.
+    Node* target =
+        View()->FindNodeFromScrollableCompositorElementId(record.element_id);
+    if (!target || &target->GetDocument() != document) {
+      continue;
+    }
+    performance->AddScrollTiming(record.start_time, record.end_time,
+                                 record.input_type, target);
+  }
+  return true;
+}
+
+void WebFrameWidgetImpl::ResetScrollTimingForNewDocument() {
+  CHECK(local_root_);
+  CHECK(local_root_->GetFrame());
+  scroll_timing_retry_.Cancel();
+  scroll_timing_document_ = local_root_->GetFrame()->GetDocument();
+  // Gestures that started earlier may have scrolled a previous document.
+  scroll_timing_cutoff_ = base::TimeTicks::Now();
+  if (cc::ScrollTimingBufferConsumer* consumer = ScrollTimingConsumer()) {
+    consumer->ReadRecords();
+  }
+}
+
+void WebFrameWidgetImpl::ImportScrollTimingRecords() {
+  ReadScrollTimingRecords(/*force=*/true);
 }
 
 void WebFrameWidgetImpl::UpdateAnimatedImageState(
@@ -1674,7 +1801,7 @@ void WebFrameWidgetImpl::OnDevToolsSessionConnectionChanged(bool attached) {
   widget_base_->OnDevToolsSessionConnectionChanged(attached);
 }
 
-WebInputMethodController*
+WebInputMethodControllerImpl*
 WebFrameWidgetImpl::GetActiveWebInputMethodController() const {
   WebLocalFrameImpl* local_frame =
       WebLocalFrameImpl::FromFrame(FocusedLocalFrameInWidget());
@@ -1724,6 +1851,7 @@ void WebFrameWidgetImpl::Trace(Visitor* visitor) const {
   visitor->Trace(device_emulator_);
   visitor->Trace(animation_frame_timing_monitor_);
   visitor->Trace(unbounded_surface_state_);
+  visitor->Trace(scroll_timing_document_);
   AnimationFrameTimingMonitor::Client::Trace(visitor);
 }
 
@@ -2813,6 +2941,7 @@ void WebFrameWidgetImpl::InitializeCompositingInternal(
       previous_widget ? static_cast<WebFrameWidgetImpl*>(previous_widget)
                             ->widget_base_.get()
                       : nullptr);
+  ResetScrollTimingForNewDocument();
 
   probe::DidInitializeFrameWidget(local_root_->GetFrame());
   local_root_->GetFrame()->NotifyFrameWidgetCreated();
@@ -4510,7 +4639,10 @@ bool WebFrameWidgetImpl::SetComposition(
     int selection_start,
     int selection_end,
     mojom::blink::ImeState ime_state,
-    DOMNodeIdType target_dom_node_id) {
+    DOMNodeIdType target_dom_node_id,
+    gfx::Range& composition_range) {
+  CHECK_NE(&replacement_range, &composition_range);
+  composition_range = gfx::Range::InvalidRange();
   TargetImeNodeFocusChangeScope focus_scope(target_dom_node_id);
 
   WebInputMethodController* controller = GetActiveWebInputMethodController();
@@ -4518,13 +4650,109 @@ bool WebFrameWidgetImpl::SetComposition(
     return false;
   }
 
-  return controller->SetComposition(
+  Element* initial_focused_element = FocusedElement();
+  WebRange initial_composition = controller->CompositionRange();
+  // When targeting a specific node, an active IME composition takes priority
+  // over `replacement_range` (which is only used as a fallback if the
+  // composition was lost).
+  gfx::Range effective_replacement_range =
+      !target_dom_node_id.is_null() && !initial_composition.IsEmpty()
+          ? gfx::Range::InvalidRange()
+          : replacement_range;
+
+  // Record the start offset and length of the text range that `SetComposition`
+  // will replace (either the existing IME composition, the explicit replacement
+  // range, or the current selection) so we can still determine the resulting
+  // range if the composition is immediately committed or modified by the page.
+  std::optional<uint32_t> insertion_start;
+  uint32_t replaced_length = 0;
+  if (!initial_composition.IsEmpty()) {
+    insertion_start =
+        base::checked_cast<uint32_t>(initial_composition.StartOffset());
+    replaced_length =
+        base::checked_cast<uint32_t>(initial_composition.length());
+  } else if (effective_replacement_range.IsValid()) {
+    insertion_start =
+        base::checked_cast<uint32_t>(effective_replacement_range.start());
+    replaced_length =
+        base::checked_cast<uint32_t>(effective_replacement_range.length());
+  } else if (WebRange selection = controller->GetSelectionOffsets();
+             !selection.IsNull()) {
+    insertion_start = base::checked_cast<uint32_t>(selection.StartOffset());
+    replaced_length = base::checked_cast<uint32_t>(selection.length());
+  }
+
+  // Record the total plain-text length outside the replaced range so that if a
+  // page event handler modifies the text and ends the composition during
+  // `SetComposition`, we can infer how many characters remain in the inserted
+  // region from the change in total text length.
+  uint32_t surrounding_text_length = 0;
+  if (insertion_start.has_value()) {
+    uint32_t initial_text_length = base::checked_cast<uint32_t>(
+        controller->TextInputInfo().value.length());
+    surrounding_text_length = initial_text_length > replaced_length
+                                  ? initial_text_length - replaced_length
+                                  : 0;
+  }
+
+  CompositionInputEventListener* input_listener = nullptr;
+  if (!text.empty() && initial_focused_element) {
+    input_listener = MakeGarbageCollected<CompositionInputEventListener>();
+    initial_focused_element->addEventListener(
+        event_type_names::kInput, input_listener, /*use_capture=*/true);
+  }
+
+  bool result = controller->SetComposition(
       text, base::ToVector(ime_text_spans),
-      replacement_range.IsValid()
-          ? WebRange(base::checked_cast<int>(replacement_range.start()),
-                     base::checked_cast<int>(replacement_range.length()))
+      effective_replacement_range.IsValid()
+          ? WebRange(
+                base::checked_cast<int>(effective_replacement_range.start()),
+                base::checked_cast<int>(effective_replacement_range.length()))
           : WebRange(),
       selection_start, selection_end, ime_state);
+
+  bool did_insert_composition = false;
+  if (input_listener) {
+    initial_focused_element->removeEventListener(
+        event_type_names::kInput, input_listener, /*use_capture=*/true);
+    did_insert_composition = input_listener->did_insert_composition();
+  }
+
+  if (!text.empty()) {
+    controller = GetActiveWebInputMethodController();
+    if (controller && FocusedElement() == initial_focused_element) {
+      WebRange current_composition = controller->CompositionRange();
+      if (!current_composition.IsEmpty()) {
+        // The composition is still active; report its exact range.
+        composition_range = gfx::Range(
+            base::checked_cast<uint32_t>(current_composition.StartOffset()),
+            base::checked_cast<uint32_t>(current_composition.EndOffset()));
+      } else if (did_insert_composition && insertion_start.has_value()) {
+        // The composition was inserted into `initial_focused_element` and then
+        // lost while focus remained on the same element (e.g., an `input` event
+        // handler rewrote `.value` or `.textContent`). Because such DOM updates
+        // can move the selection to the end of an `<input>` or collapse it to
+        // the start of a `contenteditable`, compute the inserted text length
+        // from the change in total plain-text length.
+        uint32_t current_text_length = base::checked_cast<uint32_t>(
+            controller->TextInputInfo().value.length());
+        if (current_text_length >= surrounding_text_length) {
+          composition_range = gfx::Range(
+              *insertion_start, *insertion_start + (current_text_length -
+                                                    surrounding_text_length));
+        }
+      }
+    } else if (did_insert_composition && insertion_start.has_value()) {
+      // The composition was inserted into `initial_focused_element`, and then
+      // focus moved away during `SetComposition` (committing `text`), so
+      // `controller` no longer queries the original element. Fall back to the
+      // range of `text` at `insertion_start`.
+      composition_range =
+          gfx::Range(*insertion_start, *insertion_start + text.length());
+    }
+  }
+
+  return result;
 }
 
 void WebFrameWidgetImpl::CommitText(
@@ -4536,25 +4764,39 @@ void WebFrameWidgetImpl::CommitText(
   TargetImeNodeFocusChangeScope focus_scope(target_dom_node_id);
 
   std::optional<RevealSelectionScope> reveal_selection_scope;
+  auto replacement_selection_behavior = WebInputMethodControllerImpl::
+      CommitReplacementSelectionBehavior::kKeepSelection;
   if (LocalFrame* target_frame = !target_dom_node_id.is_null()
                                      ? FocusedLocalFrameInWidget()
                                      : nullptr) {
     // If given a target node, keep the selection in view.
     reveal_selection_scope.emplace(*target_frame);
+    replacement_selection_behavior = WebInputMethodControllerImpl::
+        CommitReplacementSelectionBehavior::kMoveCaret;
   }
 
-  WebInputMethodController* controller = GetActiveWebInputMethodController();
+  WebInputMethodControllerImpl* controller =
+      GetActiveWebInputMethodController();
   if (!controller) {
     return;
   }
 
+  // When targeting a specific node, an active IME composition takes priority
+  // over `replacement_range` (which is only used as a fallback if the
+  // composition was lost).
+  gfx::Range effective_replacement_range =
+      !target_dom_node_id.is_null() && !controller->CompositionRange().IsEmpty()
+          ? gfx::Range::InvalidRange()
+          : replacement_range;
+
   controller->CommitText(
       text, base::ToVector(ime_text_spans),
-      replacement_range.IsValid()
-          ? WebRange(base::checked_cast<int>(replacement_range.start()),
-                     base::checked_cast<int>(replacement_range.length()))
+      effective_replacement_range.IsValid()
+          ? WebRange(
+                base::checked_cast<int>(effective_replacement_range.start()),
+                base::checked_cast<int>(effective_replacement_range.length()))
           : WebRange(),
-      relative_cursor_pos);
+      relative_cursor_pos, replacement_selection_behavior);
 }
 
 void WebFrameWidgetImpl::PasteIntoNode(const String& text,
@@ -4690,6 +4932,7 @@ void WebFrameWidgetImpl::DidNavigate() {
   if (RuntimeEnabledFeatures::UnboundedElementEnabled()) {
     OnDismissed();
   }
+  ResetScrollTimingForNewDocument();
 }
 
 void WebFrameWidgetImpl::FlushInputForTesting(base::OnceClosure done_callback) {
@@ -5772,15 +6015,15 @@ WebFrameWidgetImpl::ScreenOrientationOverride() {
 }
 
 void WebFrameWidgetImpl::WasHidden() {
-  ForEachLocalFrameControlledByWidget(local_root_->GetFrame(),
-                                      [](WebLocalFrameImpl* local_frame) {
-                                        local_frame->Client()->WasHidden();
-                                      });
+  ForEachLocalFrameControlledByWidget(
+      local_root_->GetFrame(),
+      [](WebLocalFrameImpl* local_frame) { local_frame->WasHidden(); });
 
   if (animation_frame_timing_monitor_) {
     animation_frame_timing_monitor_->Shutdown();
     animation_frame_timing_monitor_.Clear();
   }
+  scroll_timing_retry_.Cancel();
 
   if (RuntimeEnabledFeatures::UnboundedElementEnabled() &&
       unbounded_surface_state_) {
@@ -5789,10 +6032,9 @@ void WebFrameWidgetImpl::WasHidden() {
 }
 
 void WebFrameWidgetImpl::WasShown(bool was_evicted) {
-  ForEachLocalFrameControlledByWidget(local_root_->GetFrame(),
-                                      [](WebLocalFrameImpl* local_frame) {
-                                        local_frame->Client()->WasShown();
-                                      });
+  ForEachLocalFrameControlledByWidget(
+      local_root_->GetFrame(),
+      [](WebLocalFrameImpl* local_frame) { local_frame->WasShown(); });
   if (was_evicted) {
     ForEachRemoteFrameControlledByWidget(
         // On eviction, the last SurfaceId is invalidated. We need to

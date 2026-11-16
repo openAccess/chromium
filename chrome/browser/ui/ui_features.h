@@ -19,9 +19,6 @@ namespace features {
 // All features in alphabetical order. The features should be documented
 // alongside the definition of their values in the .cc file.
 
-BASE_DECLARE_FEATURE(kUseActionsForBrowserCommands);
-bool ShouldUseActionsForBrowserCommands();
-
 BASE_DECLARE_FEATURE(kAllowEyeDropperWGCScreenCapture);
 
 BASE_DECLARE_FEATURE(kBrowserWindowListenerObservation);
@@ -40,6 +37,10 @@ BASE_DECLARE_FEATURE(kDseIntegrity);
 BASE_DECLARE_FEATURE(kFeedbackDisabledDialog);
 BASE_DECLARE_FEATURE(kLegacySearchIntegrityCheck);
 #endif
+
+BASE_DECLARE_FEATURE(kFedCmIdpLinks);
+
+BASE_DECLARE_FEATURE(kFedCmOpaqueInitiatorOrigin);
 
 BASE_DECLARE_FEATURE(kFedCmPermissionUiWithContainer);
 
@@ -70,6 +71,8 @@ BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpReloadEnabled);
 BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpBackForwardEnabled);
 BASE_DECLARE_FEATURE_PARAM(bool, kToolbarGlowUpBookmarkEnabled);
 BASE_DECLARE_FEATURE(kMenuSimplification);
+BASE_DECLARE_FEATURE_PARAM(bool,
+                           kMenuSimplificationGlicSearchAboveSaveAndPrint);
 BASE_DECLARE_FEATURE(kTabGroupColorRefresh);
 BASE_DECLARE_FEATURE(kWebuiRefresh2026);
 BASE_DECLARE_FEATURE(kAppMenuGlowUp);
@@ -81,7 +84,12 @@ BASE_DECLARE_FEATURE(kSettingsRefresh2026);
 BASE_DECLARE_FEATURE(kSettingsSearch2026);
 // Enables search in the app Chrome menu.
 BASE_DECLARE_FEATURE(kChroMenuSearch);
-BASE_DECLARE_FEATURE_PARAM(std::string, kChroMenuSearchQuery);
+// Enables the redesigned History page refresh features.
+BASE_DECLARE_FEATURE(kHistoryPageRefresh);
+BASE_DECLARE_FEATURE_PARAM(double, kChroMenuSearchTitleWeight);
+BASE_DECLARE_FEATURE_PARAM(double, kChroMenuSearchSecondaryWeight);
+BASE_DECLARE_FEATURE_PARAM(double, kChroMenuSearchSynonymWeight);
+BASE_DECLARE_FEATURE_PARAM(double, kChroMenuSearchMinScore);
 
 bool IsTabStripDeclutterEnabled();
 bool IsToolbarGlowUpEnabled();
@@ -93,6 +101,7 @@ bool IsTabGroupColorRefreshEnabled();
 bool IsWebuiRefresh2026Enabled();
 bool IsSettingsRefresh2026Enabled();
 bool IsSettingsSearch2026Enabled();
+bool IsHistoryPageRefreshEnabled();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
@@ -217,6 +226,7 @@ BASE_DECLARE_FEATURE(kProcessIsolationSettings);
 
 BASE_DECLARE_FEATURE(kLensOverlayVirtualFocusNavigation);
 BASE_DECLARE_FEATURE(kOmniboxEverywhereVirtualFocusNavigation);
+BASE_DECLARE_FEATURE(kOmniboxPopupDesktopWidget);
 BASE_DECLARE_FEATURE(kWebuiBrowserVirtualFocusNavigation);
 
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kShowDropTargetForTabDelay);
@@ -327,6 +337,10 @@ BASE_DECLARE_FEATURE(kPageActionAnchoredMessageActiveTabOnly);
 // latency.
 BASE_DECLARE_FEATURE(kAiModePageActionOptimization);
 
+// Gates skipping unchanged-visibility omnibox suppression notifications on
+// location bar focus changes, to reduce mouse pressed latency.
+BASE_DECLARE_FEATURE(kPageActionsFocusChangeOptimizations);
+
 // The following feature params indicate whether individual features should
 // have their page actions controlled using the new framework.
 
@@ -408,9 +422,6 @@ BASE_DECLARE_FEATURE_PARAM(bool, kTabGroupsFocusFreezing);
 BASE_DECLARE_FEATURE_PARAM(int, kTabGroupsFocusingIphMinTabs);
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kTabGroupsFocusingIphPromoDelay);
 bool IsTabGroupsFocusFreezingEnabled();
-
-BASE_DECLARE_FEATURE(kTabGroupRibbon);
-bool IsTabGroupRibbonEnabled();
 
 BASE_DECLARE_FEATURE(kNonGroupFocus);
 BASE_DECLARE_FEATURE_PARAM(int, kNonGroupFocusIphMinTabs);

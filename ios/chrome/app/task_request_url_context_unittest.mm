@@ -13,7 +13,15 @@
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
+#import "base/values.h"
+#import "components/policy/core/common/policy_pref_names.h"
 #import "components/prefs/pref_service.h"
+#import "components/search_engines/default_search_manager.h"
+#import "components/search_engines/template_url.h"
+#import "components/search_engines/template_url_data.h"
+#import "components/search_engines/template_url_service.h"
+#import "components/sync_preferences/testing_pref_service_syncable.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/startup_information.h"
 #import "ios/chrome/app/application_delegate/tab_opening.h"
@@ -21,16 +29,19 @@
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/app/startup/app_launch_metrics.h"
 #import "ios/chrome/app/startup/app_startup_utils.h"
+#import "ios/chrome/browser/app_switcher/test/test_app_switcher_helper.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/default_browser/model/utils_test_support.h"
 #import "ios/chrome/browser/first_run/model/first_run_metrics.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/policy/model/policy_util.h"
+#import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -39,14 +50,60 @@
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/google_one_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity.h"
+#import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
+#import "ios/chrome/test/providers/app_switcher/test_app_switcher.h"
+#import "ios/chrome/test/providers/application_mode_fetcher/test_application_mode_fetcher.h"
 #import "ios/web/public/test/web_task_environment.h"
+#import "net/base/apple/url_conversions.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+
+// Test double for SceneController to verify tab opening from TaskRequests.
+@interface TaskRequestURLContextTestTabOpener : SceneController <TabOpening>
+
+// The mode in which the tab was requested to be opened.
+@property(nonatomic, assign) ApplicationModeForTabOpening targetMode;
+// The parameters used to load the opened tab.
+@property(nonatomic, assign) UrlLoadParams urlLoadParams;
+// Whether the omnibox was requested to be dismissed.
+@property(nonatomic, assign) BOOL dismissOmnibox;
+// The post-opening action requested for the opened tab.
+@property(nonatomic, assign) TabOpeningPostOpeningAction completionAction;
+// Whether the post-opening completion was executed.
+@property(nonatomic, assign) BOOL completionActionExecuted;
+
+@end
+
+@implementation TaskRequestURLContextTestTabOpener
+
+- (ProceduralBlock)completionBlockForTriggeringAction:
+    (TabOpeningPostOpeningAction)action {
+  self.completionAction = action;
+  return ^{
+    self.completionActionExecuted = YES;
+  };
+}
+
+- (void)dismissModalsAndMaybeOpenSelectedTabInMode:
+            (ApplicationModeForTabOpening)targetMode
+                                 withUrlLoadParams:(UrlLoadParams)urlLoadParams
+                                    dismissOmnibox:(BOOL)dismissOmnibox
+                                        completion:(ProceduralBlock)completion {
+  self.targetMode = targetMode;
+  self.urlLoadParams = urlLoadParams;
+  self.dismissOmnibox = dismissOmnibox;
+  if (completion) {
+    completion();
+  }
+}
+
+@end
 
 class TaskRequestForURLContextTest : public PlatformTest {
  protected:
@@ -65,7 +122,11 @@ class TaskRequestForURLContextTest : public PlatformTest {
     mock_startup_information_ = OCMProtocolMock(@protocol(StartupInformation));
     app_state_ =
         [[AppState alloc] initWithStartupInformation:mock_startup_information_];
-    profile_ = TestProfileIOS::Builder().Build();
+    TestProfileIOS::Builder builder;
+    builder.AddTestingFactory(
+        ios::TemplateURLServiceFactory::GetInstance(),
+        ios::TemplateURLServiceFactory::GetDefaultFactory());
+    profile_ = std::move(builder).Build();
     profile_state_ = [[ProfileState alloc] initWithAppState:app_state_];
     profile_state_.profile = profile_.get();
     scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
@@ -134,6 +195,42 @@ class TaskRequestForURLContextTest : public PlatformTest {
                                           forKey:AppGroupCommandPreference()];
   }
 
+  // Writes a recent App Group `command` sent by `caller_app`, with an optional
+  // `external_text`, to the shared defaults.
+  void WriteRecentAppGroupCommand(NSString* command,
+                                  NSString* caller_app,
+                                  NSString* external_text) {
+    NSMutableDictionary* dictionary = [@{
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupCommandAppPreference) :
+          caller_app,
+      base::SysUTF8ToNSString(
+          app_group::kChromeAppGroupCommandCommandPreference) : command,
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupCommandTimePreference) :
+          [NSDate date],
+    } mutableCopy];
+    if (external_text) {
+      dictionary[base::SysUTF8ToNSString(
+          app_group::kChromeAppGroupCommandTextPreference)] = external_text;
+    }
+    WriteAppGroupCommand(dictionary);
+  }
+
+  // Creates and executes an X-Callback App Group command request, returning
+  // the tab opener that recorded the resulting tab opening, if any.
+  TaskRequestURLContextTestTabOpener* ExecuteAppGroupCommandRequest() {
+    TaskRequestForURLContext* request = [TaskRequestForURLContext
+        taskRequestWithURLContext:CreateMockURLContext(
+                                      [NSURL URLWithString:kAppGroupCommandURL])
+                       sceneState:scene_state_
+                      isColdStart:YES];
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        [[TaskRequestURLContextTestTabOpener alloc]
+            initWithSceneState:scene_state_];
+    scene_state_.controller = tab_opener;
+    [request execute];
+    return tab_opener;
+  }
+
   // Returns whether an App Group command is in the shared defaults.
   bool HasAppGroupCommand() {
     return [app_group::GetGroupUserDefaults()
@@ -158,7 +255,28 @@ class TaskRequestForURLContextTest : public PlatformTest {
                       isColdStart:YES];
   }
 
+  // Sets a default search engine so that search URLs can be generated.
+  void SetUpDefaultSearchEngine() {
+    TemplateURLService* template_url_service =
+        ios::TemplateURLServiceFactory::GetForProfile(profile_.get());
+    template_url_service->Load();
+    TemplateURLData data;
+    data.SetShortName(u"Test");
+    data.SetKeyword(u"test");
+    data.SetURL(kTestSearchURL);
+    TemplateURL* template_url =
+        template_url_service->Add(std::make_unique<TemplateURL>(data));
+    template_url_service->SetUserSelectedDefaultSearchProvider(template_url);
+  }
+
   NSString* const kTestGaiaID = @"test_gaia_id";
+  // URL template of the default search engine used in tests.
+  const std::string kTestSearchURL =
+      "https://www.example.com/search?q={searchTerms}";
+  // Text searched in tests, and its results URL with `kTestSearchURL`.
+  NSString* const kTestSearchQuery = @"chromium";
+  const GURL kTestSearchQueryResultsURL =
+      GURL("https://www.example.com/search?q=chromium");
   NSString* const kAppGroupCommandURL =
       @"googlechrome://x-callback-url/app-group-command";
 
@@ -659,42 +777,6 @@ TEST_F(TaskRequestForURLContextTest, TestExternalActionMetrics) {
   }
 }
 
-// Test double for SceneController to verify tab opening from TaskRequests.
-@interface TaskRequestURLContextTestTabOpener : SceneController <TabOpening>
-
-@property(nonatomic, assign) ApplicationModeForTabOpening targetMode;
-@property(nonatomic, assign) UrlLoadParams urlLoadParams;
-@property(nonatomic, assign) BOOL dismissOmnibox;
-@property(nonatomic, assign) TabOpeningPostOpeningAction completionAction;
-@property(nonatomic, assign) BOOL completionActionExecuted;
-
-@end
-
-@implementation TaskRequestURLContextTestTabOpener
-
-- (ProceduralBlock)completionBlockForTriggeringAction:
-    (TabOpeningPostOpeningAction)action {
-  self.completionAction = action;
-  return ^{
-    self.completionActionExecuted = YES;
-  };
-}
-
-- (void)dismissModalsAndMaybeOpenSelectedTabInMode:
-            (ApplicationModeForTabOpening)targetMode
-                                 withUrlLoadParams:(UrlLoadParams)urlLoadParams
-                                    dismissOmnibox:(BOOL)dismissOmnibox
-                                        completion:(ProceduralBlock)completion {
-  self.targetMode = targetMode;
-  self.urlLoadParams = urlLoadParams;
-  self.dismissOmnibox = dismissOmnibox;
-  if (completion) {
-    completion();
-  }
-}
-
-@end
-
 // Tests that WidgetKit URL execution correctly triggers the scene controller.
 TEST_F(TaskRequestForURLContextTest, TestWidgetURLContextExecution) {
   NSURL* url =
@@ -936,9 +1018,8 @@ TEST_F(TaskRequestForURLContextTest, TestGoogleOneDeepLinkEnabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(kSupportGoogleOneDeepLink);
 
-  CommandDispatcher* dispatcher =
-      scene_state_.browserProviderInterface.currentBrowserProvider.browser
-          ->GetCommandDispatcher();
+  CommandDispatcher* dispatcher = scene_state_.browserProviderInterface
+                                      .currentBrowser->GetCommandDispatcher();
   id mock_google_one_handler = OCMProtocolMock(@protocol(GoogleOneCommands));
   [dispatcher startDispatchingToTarget:mock_google_one_handler
                            forProtocol:@protocol(GoogleOneCommands)];
@@ -1094,4 +1175,495 @@ TEST_F(TaskRequestForURLContextTest, TestXCallbackInvalidCommandIgnored) {
     EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
     EXPECT_FALSE(tab_opener.completionActionExecuted);
   }
+}
+
+// Tests that valid App Group commands open the expected tab and trigger the
+// expected post-opening action.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupCommandExecution) {
+  NSString* const kExternalURL = @"https://www.example.com/";
+  const GURL kNTPURL(kChromeUINewTabURL);
+  struct TestCase {
+    NSString* command;
+    NSString* external_text;
+    GURL expected_url;
+    ApplicationModeForTabOpening expected_mode;
+    TabOpeningPostOpeningAction expected_action;
+    bool expected_dismiss_omnibox;
+  } test_cases[] = {
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupOpenURLCommand),
+       kExternalURL, GURL(base::SysNSStringToUTF8(kExternalURL)),
+       ApplicationModeForTabOpening::UNDETERMINED,
+       TabOpeningPostOpeningAction::NO_ACTION, true},
+      {app_group::kChromeAppGroupOpenURLInIcognitoCommand, kExternalURL,
+       GURL(base::SysNSStringToUTF8(kExternalURL)),
+       ApplicationModeForTabOpening::INCOGNITO,
+       TabOpeningPostOpeningAction::NO_ACTION, true},
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupVoiceSearchCommand),
+       nil, kNTPURL, ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::START_VOICE_SEARCH, true},
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupNewTabCommand), nil,
+       kNTPURL, ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::NO_ACTION, true},
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupFocusOmniboxCommand),
+       nil, kNTPURL, ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::FOCUS_OMNIBOX, false},
+      {base::SysUTF8ToNSString(
+           app_group::kChromeAppGroupIncognitoSearchCommand),
+       nil, kNTPURL, ApplicationModeForTabOpening::INCOGNITO,
+       TabOpeningPostOpeningAction::FOCUS_OMNIBOX, false},
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupQRScannerCommand), nil,
+       kNTPURL, ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::START_QR_CODE_SCANNER, true},
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupLensCommand), nil,
+       GURL(), ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::START_LENS_FROM_HOME_SCREEN_WIDGET, true},
+      {base::SysUTF8ToNSString(
+           app_group::kChromeAppGroupSearchPasswordsCommand),
+       nil, GURL(), ApplicationModeForTabOpening::NORMAL,
+       TabOpeningPostOpeningAction::SEARCH_PASSWORDS, true},
+  };
+
+  for (const auto& test_case : test_cases) {
+    SCOPED_TRACE(base::SysNSStringToUTF8(test_case.command));
+    WriteRecentAppGroupCommand(test_case.command,
+                               app_group::kOpenCommandSourceShareExtension,
+                               test_case.external_text);
+
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        ExecuteAppGroupCommandRequest();
+
+    EXPECT_EQ(tab_opener.targetMode, test_case.expected_mode);
+    EXPECT_EQ(tab_opener.urlLoadParams.web_params.url, test_case.expected_url);
+    EXPECT_TRUE(tab_opener.urlLoadParams.web_params.virtual_url.is_empty());
+    EXPECT_FALSE(tab_opener.urlLoadParams.from_widget_or_siri);
+    EXPECT_EQ(tab_opener.dismissOmnibox, test_case.expected_dismiss_omnibox);
+    EXPECT_EQ(tab_opener.completionAction, test_case.expected_action);
+    EXPECT_TRUE(tab_opener.completionActionExecuted);
+  }
+}
+
+// Tests that App Group open URL commands without an http(s) URL are discarded.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupOpenURLCommandWithoutHTTPURL) {
+  NSString* const kOpenURLCommand =
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupOpenURLCommand);
+  NSString* external_texts[] = {
+      nil,
+      @"invalid",
+      @"chrome://settings",
+      @"javascript:alert(1)",
+      @"file:///path/to/file.pdf",
+  };
+
+  for (NSString* external_text : external_texts) {
+    SCOPED_TRACE(external_text ? base::SysNSStringToUTF8(external_text)
+                               : "no text");
+    WriteRecentAppGroupCommand(kOpenURLCommand,
+                               app_group::kOpenCommandSourceShareExtension,
+                               external_text);
+
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        ExecuteAppGroupCommandRequest();
+
+    EXPECT_FALSE(tab_opener.completionActionExecuted);
+    EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
+  }
+}
+
+// Tests that App Group text search commands open the results of the default
+// search engine in the requested mode.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupTextSearchCommandExecution) {
+  SetUpDefaultSearchEngine();
+  struct TestCase {
+    NSString* command;
+    ApplicationModeForTabOpening expected_mode;
+  } test_cases[] = {
+      {base::SysUTF8ToNSString(app_group::kChromeAppGroupSearchTextCommand),
+       ApplicationModeForTabOpening::UNDETERMINED},
+      {app_group::kChromeAppGroupIncognitoSearchTextCommand,
+       ApplicationModeForTabOpening::INCOGNITO},
+  };
+
+  for (const auto& test_case : test_cases) {
+    SCOPED_TRACE(base::SysNSStringToUTF8(test_case.command));
+    WriteRecentAppGroupCommand(test_case.command,
+                               app_group::kOpenCommandSourceShareExtension,
+                               kTestSearchQuery);
+
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        ExecuteAppGroupCommandRequest();
+
+    EXPECT_EQ(tab_opener.targetMode, test_case.expected_mode);
+    EXPECT_EQ(tab_opener.urlLoadParams.web_params.url,
+              kTestSearchQueryResultsURL);
+    EXPECT_TRUE(tab_opener.urlLoadParams.web_params.virtual_url.is_empty());
+    EXPECT_FALSE(tab_opener.urlLoadParams.from_widget_or_siri);
+    EXPECT_TRUE(tab_opener.dismissOmnibox);
+    EXPECT_EQ(tab_opener.completionAction,
+              TabOpeningPostOpeningAction::NO_ACTION);
+    EXPECT_TRUE(tab_opener.completionActionExecuted);
+  }
+}
+
+// Tests that an App Group text search command with an empty text still opens
+// the search results.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupTextSearchCommandEmptyText) {
+  SetUpDefaultSearchEngine();
+  WriteRecentAppGroupCommand(
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupSearchTextCommand),
+      app_group::kOpenCommandSourceShareExtension, @"");
+
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteAppGroupCommandRequest();
+
+  EXPECT_EQ(tab_opener.urlLoadParams.web_params.url,
+            GURL("https://www.example.com/search?q="));
+  EXPECT_TRUE(tab_opener.completionActionExecuted);
+}
+
+// Tests that App Group text search commands without a text are discarded.
+TEST_F(TaskRequestForURLContextTest,
+       TestAppGroupTextSearchCommandWithoutTextIgnored) {
+  SetUpDefaultSearchEngine();
+  NSString* commands[] = {
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupSearchTextCommand),
+      app_group::kChromeAppGroupIncognitoSearchTextCommand,
+  };
+
+  for (NSString* command : commands) {
+    SCOPED_TRACE(base::SysNSStringToUTF8(command));
+    WriteRecentAppGroupCommand(
+        command, app_group::kOpenCommandSourceShareExtension, nil);
+
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        ExecuteAppGroupCommandRequest();
+
+    EXPECT_FALSE(tab_opener.completionActionExecuted);
+    EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
+  }
+}
+
+// Tests that an App Group text search command opens the NTP when the default
+// search engine is disabled by policy.
+TEST_F(TaskRequestForURLContextTest,
+       TestAppGroupTextSearchCommandWithoutDefaultSearchEngine) {
+  base::DictValue policy;
+  policy.Set(DefaultSearchManager::kDisabledByPolicy, true);
+  profile_->GetTestingPrefService()->SetManagedPref(
+      DefaultSearchManager::kDefaultSearchProviderDataPrefName,
+      std::move(policy));
+  ASSERT_FALSE(ios::TemplateURLServiceFactory::GetForProfile(profile_.get())
+                   ->GetDefaultSearchProvider());
+  WriteRecentAppGroupCommand(
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupSearchTextCommand),
+      app_group::kOpenCommandSourceShareExtension, kTestSearchQuery);
+
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteAppGroupCommandRequest();
+
+  EXPECT_EQ(tab_opener.urlLoadParams.web_params.url, GURL(kChromeUINewTabURL));
+  EXPECT_EQ(tab_opener.targetMode, ApplicationModeForTabOpening::UNDETERMINED);
+  EXPECT_TRUE(tab_opener.completionActionExecuted);
+}
+
+// Tests that unknown App Group commands, and the image search commands not yet
+// supported by the new startup flow, don't open a tab.
+TEST_F(TaskRequestForURLContextTest, TestUnhandledAppGroupCommandIgnored) {
+  NSString* commands[] = {
+      @"unknowncommand",
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupSearchImageCommand),
+      app_group::kChromeAppGroupIncognitoSearchImageCommand,
+  };
+
+  for (NSString* command : commands) {
+    SCOPED_TRACE(base::SysNSStringToUTF8(command));
+    WriteRecentAppGroupCommand(
+        command, app_group::kOpenCommandSourceShareExtension, @"text");
+
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        ExecuteAppGroupCommandRequest();
+
+    EXPECT_FALSE(tab_opener.completionActionExecuted);
+    EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
+  }
+}
+
+// Tests that an expired App Group command is discarded.
+TEST_F(TaskRequestForURLContextTest, TestExpiredAppGroupCommandIgnored) {
+  WriteShareExtensionCommand([NSDate
+      dateWithTimeIntervalSinceNow:-app_group::kAppGroupCommandTimeout - 1]);
+
+  EXPECT_FALSE(ExecuteAppGroupCommandRequest().completionActionExecuted);
+}
+
+// Tests that an App Group command without a command name is discarded.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupCommandWithoutNameIgnored) {
+  WriteAppGroupCommandWithOnlyTime([NSDate date]);
+
+  EXPECT_FALSE(ExecuteAppGroupCommandRequest().completionActionExecuted);
+}
+
+// Tests that an App Group command can't be executed twice.
+TEST_F(TaskRequestForURLContextTest, TestAppGroupCommandExecutedOnce) {
+  WriteRecentAppGroupCommand(
+      base::SysUTF8ToNSString(app_group::kChromeAppGroupNewTabCommand),
+      app_group::kOpenCommandSourceShareExtension, nil);
+  EXPECT_TRUE(ExecuteAppGroupCommandRequest().completionActionExecuted);
+
+  EXPECT_FALSE(ExecuteAppGroupCommandRequest().completionActionExecuted);
+}
+
+// Tests that Google One deep links with an email parameter resolve the matching
+// device identity's gaiaID when kSupportGoogleOneDeepLink is enabled.
+TEST_F(TaskRequestForURLContextTest, TestGoogleOneDeepLinkGaiaID) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kSupportGoogleOneDeepLink);
+
+  FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
+  FakeSystemIdentityManager::FromSystemIdentityManager(
+      GetApplicationContext()->GetSystemIdentityManager())
+      ->AddIdentity(identity);
+
+  NSString* matching_url_string = [NSString
+      stringWithFormat:@"%s://one.google.com/deeplink?email=%@",
+                       BUILDFLAG(SECURE_CUSTOM_SCHEME), identity.userEmail];
+  UIOpenURLContext* matching_context =
+      CreateMockURLContext([NSURL URLWithString:matching_url_string]);
+  TaskRequestForURLContext* matching_request =
+      [TaskRequestForURLContext taskRequestWithURLContext:matching_context
+                                               sceneState:scene_state_
+                                              isColdStart:YES];
+  ASSERT_NE(matching_request, nil);
+  EXPECT_NSEQ(identity.gaiaId.ToNSString(), matching_request.gaiaID);
+
+  // Unknown email returns nil gaiaID.
+  NSURL* unknown_email_url = [NSURL
+      URLWithString:@"https://one.google.com/deeplink?email=unknown@test.com"];
+  UIOpenURLContext* unknown_context = CreateMockURLContext(unknown_email_url);
+  TaskRequestForURLContext* unknown_request =
+      [TaskRequestForURLContext taskRequestWithURLContext:unknown_context
+                                               sceneState:scene_state_
+                                              isColdStart:YES];
+  ASSERT_NE(unknown_request, nil);
+  EXPECT_NSEQ(nil, unknown_request.gaiaID);
+
+  // Disabled feature returns nil gaiaID even for a matching device identity.
+  base::test::ScopedFeatureList disabled_feature_list;
+  disabled_feature_list.InitAndDisableFeature(kSupportGoogleOneDeepLink);
+  TaskRequestForURLContext* disabled_request =
+      [TaskRequestForURLContext taskRequestWithURLContext:matching_context
+                                               sceneState:scene_state_
+                                              isColdStart:YES];
+  ASSERT_NE(disabled_request, nil);
+  EXPECT_NSEQ(nil, disabled_request.gaiaID);
+}
+
+namespace {
+
+NSString* const kYouTubeSourceAppID = @"com.google.ios.youtube";
+NSString* const kGmailSourceAppID = @"com.google.Gmail";
+
+// `IOS.AppModeFetching.Outcome` bucket for an incognito response.
+constexpr int kAppModeFetchingOutcomeIncognito = 0;
+
+}  // namespace
+
+// Application mode fetcher helper that defers the response until
+// `-completeWithIncognito:` is called.
+@interface TaskRequestDeferredModeFetcherTestHelper
+    : NSObject <ApplicationModeFetcherProviderTestHelper>
+
+// Invokes the pending completion with the given incognito response.
+- (void)completeWithIncognito:(BOOL)incognito;
+
+@end
+
+@implementation TaskRequestDeferredModeFetcherTestHelper {
+  FetchingResponseCompletion _completion;
+}
+
+- (void)sendFetchingResponseForUrl:(const GURL&)url
+                        completion:(FetchingResponseCompletion)completion {
+  _completion = [completion copy];
+}
+
+- (void)completeWithIncognito:(BOOL)incognito {
+  FetchingResponseCompletion completion = _completion;
+  _completion = nil;
+  completion(incognito, nil);
+}
+
+@end
+
+// Tests App Switcher parameter fetching in `TaskRequestForStandardURLContext`.
+class TaskRequestAppSwitcherParamsTest : public TaskRequestForURLContextTest {
+ protected:
+  void SetUp() override {
+    TaskRequestForURLContextTest::SetUp();
+    app_switcher_feature_list_.InitWithFeatures(
+        {kAppSwitcherAISummarization, kPageActionMenu}, {});
+    app_switcher_helper_ = [[TestAppSwitcherProviderTestHelper alloc] init];
+    ios::provider::test::SetAppSwitcherProviderTestHelper(app_switcher_helper_);
+  }
+
+  void TearDown() override {
+    ios::provider::test::SetAppSwitcherProviderTestHelper(nil);
+    ios::provider::test::SetApplicationModeFetcherProviderTestHelper(nil);
+    TaskRequestForURLContextTest::TearDown();
+  }
+
+  // Disables AI summarization and installs a deferred application mode
+  // fetcher, which is then used instead of the App Switcher.
+  TaskRequestDeferredModeFetcherTestHelper* UseDeferredModeFetcher() {
+    disable_ai_feature_list_.InitAndDisableFeature(kAppSwitcherAISummarization);
+    TaskRequestDeferredModeFetcherTestHelper* helper =
+        [[TaskRequestDeferredModeFetcherTestHelper alloc] init];
+    ios::provider::test::SetApplicationModeFetcherProviderTestHelper(helper);
+    return helper;
+  }
+
+  // Sets the incognito availability policy to `availability`.
+  void SetIncognitoPolicy(IncognitoModePrefs availability) {
+    profile_->GetTestingPrefService()->SetManagedPref(
+        policy::policy_prefs::kIncognitoModeAvailability,
+        std::make_unique<base::Value>(static_cast<int>(availability)));
+  }
+
+  // Executes a standard URL request for `url` from `source_app_id` and returns
+  // the tab opener capturing the resulting tab opening.
+  TaskRequestURLContextTestTabOpener* ExecuteStandardURLRequest(
+      const GURL& url,
+      NSString* source_app_id) {
+    TaskRequestURLContextTestTabOpener* tab_opener =
+        [[TaskRequestURLContextTestTabOpener alloc]
+            initWithSceneState:scene_state_];
+    scene_state_.controller = tab_opener;
+    // The autorelease pool ensures that the request is not retained by the
+    // test, as `TaskOrchestrator` releases it once `-execute` returns.
+    @autoreleasepool {
+      UIOpenURLContext* context =
+          CreateMockURLContext(net::NSURLWithGURL(url), source_app_id);
+      [[TaskRequestForURLContext taskRequestWithURLContext:context
+                                                sceneState:scene_state_
+                                               isColdStart:YES] execute];
+    }
+    return tab_opener;
+  }
+
+  base::test::ScopedFeatureList app_switcher_feature_list_;
+  base::test::ScopedFeatureList disable_ai_feature_list_;
+  TestAppSwitcherProviderTestHelper* app_switcher_helper_;
+};
+
+// Tests that an incognito response for an allowlisted caller app opens the tab
+// in `APP_SWITCHER_INCOGNITO` and records the fetch metrics.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestIncognitoResponse) {
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kIncognitoModeUrl), kYouTubeSourceAppID);
+
+  EXPECT_EQ(tab_opener.targetMode,
+            ApplicationModeForTabOpening::APP_SWITCHER_INCOGNITO);
+  EXPECT_EQ(tab_opener.urlLoadParams.web_params.url, GURL(kIncognitoModeUrl));
+  histogram_tester.ExpectBucketCount("IOS.AppSwitcher.FetchOutcome", true, 1);
+  histogram_tester.ExpectTotalCount("IOS.AppSwitcher.FetchDuration", 1);
+}
+
+// Tests that a failed fetch opens the tab in `APP_SWITCHER_UNDETERMINED`.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestErrorResponse) {
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kTimeOutErrorUrl), kYouTubeSourceAppID);
+
+  EXPECT_EQ(tab_opener.targetMode,
+            ApplicationModeForTabOpening::APP_SWITCHER_UNDETERMINED);
+  histogram_tester.ExpectBucketCount("IOS.AppSwitcher.FetchOutcome", false, 1);
+}
+
+// Tests that no fetch occurs for a caller app that is not allowlisted.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestNotAllowlistedSourceApp) {
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kIncognitoModeUrl), nil);
+
+  EXPECT_EQ(tab_opener.targetMode, ApplicationModeForTabOpening::UNDETERMINED);
+  histogram_tester.ExpectTotalCount("IOS.AppSwitcher.FetchOutcome", 0);
+}
+
+// Tests that no fetch occurs when incognito is forced by policy.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestForcedIncognitoPolicy) {
+  base::HistogramTester histogram_tester;
+  SetIncognitoPolicy(IncognitoModePrefs::kForced);
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kErrorUrl), kYouTubeSourceAppID);
+
+  EXPECT_EQ(tab_opener.targetMode, ApplicationModeForTabOpening::INCOGNITO);
+  histogram_tester.ExpectTotalCount("IOS.AppSwitcher.FetchOutcome", 0);
+}
+
+// Tests that the fetched incognito mode is neither applied nor recorded when
+// incognito is disabled by policy.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestDisabledIncognitoPolicy) {
+  TaskRequestDeferredModeFetcherTestHelper* mode_fetcher_helper =
+      UseDeferredModeFetcher();
+  SetIncognitoPolicy(IncognitoModePrefs::kDisabled);
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kIncognitoModeUrl), kYouTubeSourceAppID);
+
+  [mode_fetcher_helper completeWithIncognito:YES];
+
+  EXPECT_EQ(tab_opener.targetMode, ApplicationModeForTabOpening::NORMAL);
+  histogram_tester.ExpectTotalCount("IOS.AppModeFetching.Outcome", 0);
+}
+
+// Tests that no fetch occurs for a caller app only allowlisted for AI
+// summarization, as it is not supported yet in the new startup flow.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestAISummarizationOnlySourceApp) {
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kAISummarizationUrl), kGmailSourceAppID);
+
+  EXPECT_EQ(tab_opener.urlLoadParams.web_params.url, GURL(kAISummarizationUrl));
+  EXPECT_EQ(tab_opener.targetMode, ApplicationModeForTabOpening::UNDETERMINED);
+  histogram_tester.ExpectTotalCount("IOS.AppSwitcher.FetchOutcome", 0);
+}
+
+// Tests that, with AI summarization disabled, the application mode fetcher is
+// used and the tab opens once its asynchronous response arrives, even though
+// the request was released in the meantime.
+TEST_F(TaskRequestAppSwitcherParamsTest,
+       TestDeferredApplicationModeResponseAfterRequestReleased) {
+  TaskRequestDeferredModeFetcherTestHelper* mode_fetcher_helper =
+      UseDeferredModeFetcher();
+  base::HistogramTester histogram_tester;
+
+  const GURL url(kIncognitoModeUrl);
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(url, kYouTubeSourceAppID);
+  EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
+
+  [mode_fetcher_helper completeWithIncognito:YES];
+
+  EXPECT_EQ(tab_opener.targetMode,
+            ApplicationModeForTabOpening::APP_SWITCHER_INCOGNITO);
+  EXPECT_EQ(tab_opener.urlLoadParams.web_params.url, url);
+  histogram_tester.ExpectUniqueSample("IOS.AppModeFetching.Outcome",
+                                      kAppModeFetchingOutcomeIncognito, 1);
+}
+
+// Tests that no tab is opened, and the fetched application mode isn't
+// recorded, if the profile is unloaded while the App Switcher parameters are
+// fetched.
+TEST_F(TaskRequestAppSwitcherParamsTest, TestProfileUnloadedDuringFetch) {
+  TaskRequestDeferredModeFetcherTestHelper* mode_fetcher_helper =
+      UseDeferredModeFetcher();
+  base::HistogramTester histogram_tester;
+  TaskRequestURLContextTestTabOpener* tab_opener =
+      ExecuteStandardURLRequest(GURL(kIncognitoModeUrl), kYouTubeSourceAppID);
+
+  profile_state_.profile = nullptr;
+  [mode_fetcher_helper completeWithIncognito:YES];
+
+  EXPECT_TRUE(tab_opener.urlLoadParams.web_params.url.is_empty());
+  histogram_tester.ExpectTotalCount("IOS.AppModeFetching.Outcome", 0);
 }

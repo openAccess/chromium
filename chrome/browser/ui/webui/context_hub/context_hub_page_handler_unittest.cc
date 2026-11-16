@@ -17,7 +17,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/cancelable_task_tracker.h"
+#include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/scoped_path_override.h"
@@ -26,17 +28,23 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/context_hub/auto_todos/auto_todo_entry.h"
+#include "chrome/browser/context_hub/auto_todos/in_memory_auto_todos_store.h"
 #include "chrome/browser/context_hub/context_hub_service.h"
 #include "chrome/browser/context_hub/context_hub_service_factory.h"
 #include "chrome/browser/context_hub/features.h"
+#include "chrome/browser/context_hub/memory_bank/database_memory_bank.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank_chat_types.h"
 #include "chrome/browser/context_hub/prefs.h"
+#include "chrome/browser/context_hub/storage/context_hub_backend_impl.h"
+#include "chrome/browser/context_hub/tab_group_store/in_memory_tab_group_store.h"
 #include "chrome/browser/context_hub/topics/topics_feedback_exporter.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
+#include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
 #include "chrome/browser/personal_context/personal_context_service_factory.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom-features.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub.mojom.h"
@@ -56,6 +64,7 @@
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
+#include "components/passage_embeddings/core/passage_embeddings_test_util.h"
 #include "components/personal_context/core/mock_personal_context_service.h"
 #include "components/personal_context/core/personal_context_service.h"
 #include "components/personal_context/proto/features/auto_todos.pb.h"
@@ -83,6 +92,7 @@
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/context_hub/memory_banks_shortcut.h"
 #include "chrome/browser/context_hub/record_replay/skill_recording_service.h"  // nogncheck
 #include "chrome/browser/context_hub/record_replay/skill_recording_service_factory.h"  // nogncheck
 #include "chrome/browser/glic/glic_pref_names.h"                    // nogncheck
@@ -94,14 +104,25 @@
 #include "chrome/browser/glic/test_support/glic_test_util.h"        // nogncheck
 #include "chrome/browser/glic/test_support/mock_glic_instance.h"    // nogncheck
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"  // nogncheck
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"  // nogncheck
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/page_content_annotations/content/page_context_fetcher.h"  // nogncheck
 #include "components/tabs/public/mock_tab_interface.h"  // nogncheck
 #include "components/tabs/public/tab_interface.h"       // nogncheck
-#include "ui/base/clipboard/test/test_clipboard.h"      // nogncheck
+#include "ui/base/accelerators/accelerator.h"
+#include "ui/base/accelerators/command.h"
+#include "ui/base/clipboard/test/test_clipboard.h"  // nogncheck
+#include "ui/events/event_constants.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "url/url_constants.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/speech/cros_speech_recognition_service_factory.h"  // nogncheck
+#else
+#include "chrome/browser/speech/speech_recognition_service_factory.h"  // nogncheck
+#endif
 #endif
 
 namespace context_hub {
@@ -226,6 +247,10 @@ class MockPage : public browser::context_hub::mojom::Page {
               OnMemoryBankEntriesDeleted,
               (const std::vector<int64_t>&),
               (override));
+  MOCK_METHOD(void,
+              OnTranscriptUpdate,
+              (const std::string&, base::TimeDelta, bool),
+              (override));
 
  private:
   mojo::Receiver<browser::context_hub::mojom::Page> receiver_{this};
@@ -249,8 +274,9 @@ class ContextHubPageHandlerTest : public testing::Test {
                                  base::Time::Now());
 
     tab_groups::TabGroupSyncServiceFactory::GetInstance()->SetTestingFactory(
-        &profile_, base::BindRepeating([](content::BrowserContext* context)
-                                           -> std::unique_ptr<KeyedService> {
+        browser_context,
+        base::BindRepeating([](content::BrowserContext* context)
+                                -> std::unique_ptr<KeyedService> {
           return std::make_unique<tab_groups::FakeTabGroupSyncService>();
         }));
     PersonalContextServiceFactory::GetInstance()->SetTestingFactoryAndUse(
@@ -269,6 +295,36 @@ class ContextHubPageHandlerTest : public testing::Test {
             }));
     HistoryServiceFactory::GetInstance()->SetTestingFactory(
         browser_context, base::BindRepeating(&BuildMockHistoryService));
+    ContextHubServiceFactory::GetInstance()->SetTestingFactory(
+        browser_context,
+        base::BindLambdaForTesting([this](content::BrowserContext* context)
+                                       -> std::unique_ptr<KeyedService> {
+          Profile* profile = Profile::FromBrowserContext(context);
+          auto backend = std::make_unique<ContextHubBackendImpl>(
+              profile->GetPath().Append(FILE_PATH_LITERAL("ContextHub.db")));
+          auto memory_bank = std::make_unique<DatabaseMemoryBank>(*backend);
+          return std::make_unique<ContextHubService>(
+              profile, IdentityManagerFactory::GetForProfile(profile),
+              PersonalContextServiceFactory::GetForProfile(profile),
+              OptimizationGuideKeyedServiceFactory::GetForProfile(profile),
+              tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile),
+              page_content_annotations::PageContentExtractionServiceFactory::
+                  GetForProfile(profile),
+              &embedder_, &embedder_metadata_provider_, std::move(memory_bank),
+              std::make_unique<InMemoryTabGroupStore>(), std::move(backend),
+              std::make_unique<InMemoryAutoTodosStore>());
+        }));
+#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_CHROMEOS)
+    CrosSpeechRecognitionServiceFactory::GetInstanceForTest()
+        ->SetTestingFactory(
+            browser_context,
+            BrowserContextKeyedServiceFactory::TestingFactory());
+#else
+    SpeechRecognitionServiceFactory::GetInstanceForTest()->SetTestingFactory(
+        browser_context, BrowserContextKeyedServiceFactory::TestingFactory());
+#endif
+#endif
   }
 
   void SetUp() override {
@@ -354,6 +410,10 @@ class ContextHubPageHandlerTest : public testing::Test {
   struct EnsureFactories {
     EnsureFactories() { ContextHubServiceFactory::GetInstance(); }
   } ensure_factories_;
+  // Declared before `profile_` so they outlive any `ContextHubService` bound
+  // to `profile_`.
+  passage_embeddings::TestEmbedder embedder_;
+  passage_embeddings::TestEmbedderMetadataProvider embedder_metadata_provider_;
   TestingProfile profile_;
 #if !BUILDFLAG(IS_ANDROID)
   raw_ptr<MockTabProvider> mock_tab_provider_ = nullptr;
@@ -1751,6 +1811,38 @@ TEST_F(ContextHubPageHandlerTest, GetAllMemoryBankEntries_Success) {
   EXPECT_FALSE(image_entry->timestamp.is_null());
 }
 
+TEST_F(ContextHubPageHandlerTest, SearchMemoryBankEntries_Empty) {
+  base::test::TestFuture<const std::vector<MemoryBankEntry>&> future;
+  handler_->SearchMemoryBankEntries("query", future.GetCallback());
+
+  std::vector<MemoryBankEntry> result = future.Take();
+  EXPECT_TRUE(result.empty());
+}
+
+TEST_F(ContextHubPageHandlerTest, SearchMemoryBankEntries_Success) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+
+  base::test::TestFuture<bool> save_selection_future;
+  service->SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kTextSelection,
+                      GURL("https://example.com/select"), "Selection Title",
+                      "Selected Text Detail"),
+      save_selection_future.GetCallback());
+  ASSERT_TRUE(save_selection_future.Wait());
+
+  base::test::TestFuture<const std::vector<MemoryBankEntry>&> future;
+  handler_->SearchMemoryBankEntries("Selected", future.GetCallback());
+
+  std::vector<MemoryBankEntry> result = future.Take();
+  ASSERT_EQ(result.size(), 1u);
+  EXPECT_EQ(result[0].type, MemoryBankType::kTextSelection);
+  EXPECT_EQ(result[0].url, GURL("https://example.com/select"));
+  EXPECT_EQ(result[0].tab_title, "Selection Title");
+  EXPECT_EQ(result[0].selected_text, "Selected Text Detail");
+}
+
 TEST_F(ContextHubPageHandlerTest, DeleteMemoryBankEntries_Success) {
   ContextHubService* service =
       ContextHubServiceFactory::GetForProfile(&profile_);
@@ -2827,6 +2919,81 @@ TEST_F(ContextHubPageHandlerTest, ConfirmAllTabGroups) {
   base::test::TestFuture<bool> future;
   handler_->ConfirmAllTabGroups(future.GetCallback());
   EXPECT_TRUE(future.Get());
+}
+
+TEST_F(ContextHubPageHandlerTest, ConfirmAllTabGroups_NoGroupsEndsSession) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  service->AddTabGroupChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER,
+      "keep work and personal separate");
+
+  // Nothing to confirm: the tab provider creates no group.
+  EXPECT_CALL(*mock_tab_provider_, ConfirmTabGroups(_))
+      .WillOnce(testing::Return(false));
+  EXPECT_CALL(*GetMockOptimizationGuideService(), ExecuteModel(_, _, _, _))
+      .Times(0);
+
+  base::test::TestFuture<bool> future;
+  handler_->ConfirmAllTabGroups(future.GetCallback());
+  EXPECT_FALSE(future.Get());
+
+  // "Create groups" still ends the session: no refinement, history cleared.
+  EXPECT_TRUE(service->GetTabGroupChatHistory().empty());
+}
+
+TEST_F(ContextHubPageHandlerTest,
+       ConfirmAllTabGroups_EndsSessionAndRefinesPreferences) {
+  ContextHubService* service =
+      ContextHubServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  // A session: one suggested group and a follow-up prompt from the user.
+  TabGroupEntry group{
+      .label = "Work",
+      .tab_ids = {1, 2},
+  };
+  base::test::TestFuture<void> replace_future;
+  service->ReplaceTabGroups({group}, replace_future.GetCallback());
+  ASSERT_TRUE(replace_future.Wait());
+  service->AddTabGroupChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER,
+      "keep work and personal separate");
+
+  EXPECT_CALL(*mock_tab_provider_, ConfirmTabGroups(_))
+      .WillOnce(testing::Return(true));
+  optimization_guide::proto::ContextHubRequest request;
+  EXPECT_CALL(
+      *GetMockOptimizationGuideService(),
+      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
+                   _, _))
+      .WillOnce(
+          [&request](
+              optimization_guide::ModelBasedCapabilityKey feature,
+              const google::protobuf::MessageLite& request_metadata,
+              const optimization_guide::ModelExecutionOptions& options,
+              optimization_guide::OptimizationGuideModelExecutionResultCallback
+                  callback) {
+            ASSERT_EQ(request_metadata.GetTypeName(), request.GetTypeName());
+            request = static_cast<
+                const optimization_guide::proto::ContextHubRequest&>(
+                request_metadata);
+            std::move(callback).Run(
+                optimization_guide::OptimizationGuideModelExecutionResult(),
+                nullptr);
+          });
+
+  base::test::TestFuture<bool> future;
+  handler_->ConfirmAllTabGroups(future.GetCallback());
+  EXPECT_TRUE(future.Get());
+
+  EXPECT_EQ(request.request_type(),
+            optimization_guide::proto::
+                CONTEXT_HUB_REQUEST_TYPE_AUTO_TAB_GROUPS_PREFERENCE_REFINEMENT);
+  ASSERT_EQ(request.chat_history_size(), 1);
+  EXPECT_EQ(request.chat_history(0).message_content(),
+            "keep work and personal separate");
+  EXPECT_TRUE(service->GetTabGroupChatHistory().empty());
 }
 
 TEST_F(ContextHubPageHandlerTest, RemoveConfirmedTabGroup) {
@@ -4098,8 +4265,9 @@ TEST_F(ContextHubPageHandlerGlicTest, RunTodoTaskInvokesGlicWithAutoSubmit) {
                            "Details: Confirm Q3 roadmap"));
   EXPECT_EQ(captured_options_->feature_mode,
             glic::mojom::FeatureMode::kActuation);
-  EXPECT_EQ(captured_options_->target.actuation_target,
-            glic::mojom::ActuationTarget::kAgentDecides);
+  EXPECT_THAT(captured_options_->target.actuation_target,
+              ::testing::VariantWith<glic::mojom::ActuationTarget>(
+                  glic::mojom::ActuationTarget::kAgentDecides));
   EXPECT_TRUE(std::holds_alternative<glic::NewConversation>(
       captured_options_->target.conversation));
   EXPECT_TRUE(std::holds_alternative<glic::DefaultSurface>(
@@ -4160,6 +4328,119 @@ TEST_F(ContextHubPageHandlerTest, OpenWebUrl_Success) {
   base::test::TestFuture<void> future;
   handler_->OpenWebUrl(GURL("https://example.com"), future.GetCallback());
   EXPECT_TRUE(future.Wait());
+}
+
+TEST_F(ContextHubPageHandlerTest, GetBrowseMemoryBanksShortcut_EmptyByDefault) {
+  base::test::TestFuture<const std::string&> future;
+  handler_->GetBrowseMemoryBanksShortcut(future.GetCallback());
+  EXPECT_EQ("", future.Get());
+}
+
+TEST_F(ContextHubPageHandlerTest,
+       GetSuggestedBrowseMemoryBanksShortcut_ReturnsValidUnsetSuggestion) {
+  base::test::TestFuture<const std::string&, const std::string&> future;
+  handler_->GetSuggestedBrowseMemoryBanksShortcut(future.GetCallback());
+
+  const ui::Accelerator suggested =
+      context_hub::GetSuggestedBrowseMemoryBanksShortcut();
+  EXPECT_EQ(ui::Command::AcceleratorToString(suggested), future.Get<0>());
+  EXPECT_EQ(base::UTF16ToUTF8(suggested.GetShortcutText()), future.Get<1>());
+  EXPECT_FALSE(future.Get<0>().empty());
+
+  // Suggesting a shortcut never sets it.
+  EXPECT_EQ("", profile_.GetPrefs()->GetString(
+                    context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
+
+  // The suggestion can be applied as is.
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      set_future;
+  handler_->SetBrowseMemoryBanksShortcut(future.Get<0>(),
+                                         set_future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::kValid,
+            set_future.Get());
+}
+
+TEST_F(ContextHubPageHandlerTest, SetBrowseMemoryBanksShortcut_Success) {
+  // Ctrl+Shift+K (Command+Shift+K on macOS), which no built-in shortcut uses.
+  const ui::Accelerator accelerator(
+      ui::VKEY_K, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN);
+  const std::string expected_display_text =
+      base::UTF16ToUTF8(accelerator.GetShortcutText());
+
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      set_future;
+  handler_->SetBrowseMemoryBanksShortcut(
+      ui::Command::AcceleratorToString(accelerator), set_future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::kValid,
+            set_future.Get());
+  EXPECT_EQ(ui::Command::AcceleratorToString(accelerator),
+            profile_.GetPrefs()->GetString(
+                context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
+
+  base::test::TestFuture<const std::string&> get_future;
+  handler_->GetBrowseMemoryBanksShortcut(get_future.GetCallback());
+  EXPECT_EQ(expected_display_text, get_future.Get());
+}
+
+TEST_F(ContextHubPageHandlerTest,
+       SetBrowseMemoryBanksShortcut_EmptyClearsShortcut) {
+  profile_.GetPrefs()->SetString(
+      context_hub::prefs::kContextHubBrowseMemoryBanksShortcut,
+      ui::Command::AcceleratorToString(ui::Accelerator(
+          ui::VKEY_K, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN)));
+
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      future;
+  handler_->SetBrowseMemoryBanksShortcut("", future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::kValid,
+            future.Get());
+  EXPECT_EQ("", profile_.GetPrefs()->GetString(
+                    context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
+}
+
+TEST_F(ContextHubPageHandlerTest, SetBrowseMemoryBanksShortcut_RejectsInvalid) {
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      future;
+  handler_->SetBrowseMemoryBanksShortcut("K", future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::kInvalid,
+            future.Get());
+  EXPECT_EQ("", profile_.GetPrefs()->GetString(
+                    context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
+}
+
+TEST_F(ContextHubPageHandlerTest,
+       SetBrowseMemoryBanksShortcut_RejectsConflict) {
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      future;
+  // Ctrl+Shift+M (Command+Shift+M on macOS) opens the profile menu.
+  handler_->SetBrowseMemoryBanksShortcut(
+      ui::Command::AcceleratorToString(ui::Accelerator(
+          ui::VKEY_M, ui::EF_PLATFORM_ACCELERATOR | ui::EF_SHIFT_DOWN)),
+      future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::
+                kConflictsWithBrowserShortcut,
+            future.Get());
+  EXPECT_EQ("", profile_.GetPrefs()->GetString(
+                    context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
+}
+
+TEST_F(ContextHubPageHandlerTest,
+       SetBrowseMemoryBanksShortcut_RejectsDisallowedModifiers) {
+#if BUILDFLAG(IS_MAC)
+  // Option without Command or Control is used to type special characters.
+  constexpr char kShortcut[] = "Alt+K";
+#else
+  // Ctrl+Alt is the same as AltGr on international keyboard layouts.
+  constexpr char kShortcut[] = "Ctrl+Alt+K";
+#endif
+  base::test::TestFuture<browser::context_hub::mojom::MemoryBanksShortcutStatus>
+      future;
+  handler_->SetBrowseMemoryBanksShortcut(kShortcut, future.GetCallback());
+  EXPECT_EQ(browser::context_hub::mojom::MemoryBanksShortcutStatus::
+                kDisallowedModifiers,
+            future.Get());
+  EXPECT_EQ("", profile_.GetPrefs()->GetString(
+                    context_hub::prefs::kContextHubBrowseMemoryBanksShortcut));
 }
 
 TEST_F(ContextHubPageHandlerTest, OpenWebUrl_InvalidUrlReportsBadMessage) {
@@ -4768,13 +5049,64 @@ TEST_F(ContextHubPageHandlerTest, StartAndStopSkillRecording) {
   handler_->StartSkillRecording();
   EXPECT_TRUE(service->is_recording());
 
+  service->CaptureAction(
+      browser::context_hub::mojom::SkillRecordingActionType::kLeftClick,
+      "Mouse Clicked at X:10, Y:20");
+  auto valid_screenshot =
+      std::make_unique<page_content_annotations::FetchPageContextResult>();
+  valid_screenshot->screenshot_result =
+      page_content_annotations::ScreenshotResult(/*dimensions=*/{});
+  valid_screenshot->screenshot_result->screenshot_data = {1, 2, 3, 4};
+  valid_screenshot->screenshot_result->mime_type = "image/jpeg";
+  service->BindScreenshotCapturedCallbackForTesting(0).Run(
+      base::ok(std::move(valid_screenshot)));
+
+  service->CaptureAction(
+      browser::context_hub::mojom::SkillRecordingActionType::kLeftClick,
+      "Mouse Clicked at X:30, Y:40");
+
+  service->CaptureAction(
+      browser::context_hub::mojom::SkillRecordingActionType::kLeftClick,
+      "Mouse Clicked at X:50, Y:60");
+  auto oversized_screenshot =
+      std::make_unique<page_content_annotations::FetchPageContextResult>();
+  oversized_screenshot->screenshot_result =
+      page_content_annotations::ScreenshotResult(/*dimensions=*/{});
+  oversized_screenshot->screenshot_result->screenshot_data.assign(
+      url::kMaxURLChars, 1);
+  oversized_screenshot->screenshot_result->mime_type = "image/jpeg";
+  service->BindScreenshotCapturedCallbackForTesting(2).Run(
+      base::ok(std::move(oversized_screenshot)));
+
+  EXPECT_CALL(mock_page_,
+              OnTranscriptUpdate("click", base::Milliseconds(100), false));
+  EXPECT_CALL(mock_page_, OnTranscriptUpdate("click submit",
+                                             base::Milliseconds(250), true));
+  service->OnTranscriptUpdateForTesting("click", base::Milliseconds(100),
+                                        /*is_final=*/false);
+  service->OnTranscriptUpdateForTesting("click submit", base::Milliseconds(250),
+                                        /*is_final=*/true);
+  mock_page_.Flush();
+
   base::test::TestFuture<
       browser::context_hub::mojom::SkillRecordingSessionDataPtr>
       future;
   handler_->StopSkillRecording(future.GetCallback());
   auto session_data = future.Take();
   ASSERT_TRUE(session_data);
-  EXPECT_TRUE(session_data->actions.empty());
+  ASSERT_EQ(session_data->actions.size(), 3u);
+  EXPECT_EQ(session_data->actions[0]->type,
+            browser::context_hub::mojom::SkillRecordingActionType::kLeftClick);
+  EXPECT_EQ(session_data->actions[0]->description,
+            "Mouse Clicked at X:10, Y:20");
+  EXPECT_EQ(session_data->actions[0]->screenshot_data_url,
+            GURL("data:image/jpeg;base64,AQIDBA=="));
+  EXPECT_EQ(session_data->actions[1]->description,
+            "Mouse Clicked at X:30, Y:40");
+  EXPECT_EQ(session_data->actions[1]->screenshot_data_url, std::nullopt);
+  EXPECT_EQ(session_data->actions[2]->description,
+            "Mouse Clicked at X:50, Y:60");
+  EXPECT_EQ(session_data->actions[2]->screenshot_data_url, std::nullopt);
   EXPECT_FALSE(service->is_recording());
 }
 
@@ -4783,14 +5115,22 @@ TEST_F(ContextHubPageHandlerTest, StartAndStopSkillRecording_ServiceDisabled) {
   disabled_feature_list.InitAndDisableFeature(
       browser::context_hub::mojom::kRecordReplay);
 
-  ASSERT_EQ(SkillRecordingServiceFactory::GetForProfile(&profile_), nullptr);
+  TestingProfile disabled_profile;
+  ASSERT_EQ(SkillRecordingServiceFactory::GetForProfile(&disabled_profile),
+            nullptr);
 
-  handler_->StartSkillRecording();
+  MockPage disabled_page;
+  ContextHubPageHandler disabled_handler(
+      disabled_page.BindAndGetRemote(),
+      mojo::PendingReceiver<browser::context_hub::mojom::PageHandler>(),
+      &disabled_profile, nullptr, std::make_unique<MockTabProvider>());
+
+  disabled_handler.StartSkillRecording();
 
   base::test::TestFuture<
       browser::context_hub::mojom::SkillRecordingSessionDataPtr>
       future;
-  handler_->StopSkillRecording(future.GetCallback());
+  disabled_handler.StopSkillRecording(future.GetCallback());
   auto session_data = future.Take();
   ASSERT_TRUE(session_data);
   EXPECT_TRUE(session_data->actions.empty());

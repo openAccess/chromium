@@ -1055,6 +1055,7 @@ _BANNED_CPP_FUNCTIONS: Sequence[BanRule] = (
             r'base/debug/buffered_dwarf_reader\.h',
             # Needed to use QUICHE API.
             r'components/private_ai/phosphor/.*',
+            r'net/quic/dedicated_web_transport_http3_client\.cc',
             r'net/third_party/quiche/overrides/quiche_platform_impl/quiche_stack_trace_impl\.*',
             r'services/network/web_transport\.cc',
             # Needed to implement WebRTC interfaces.
@@ -1709,6 +1710,8 @@ _BANNED_CPP_FUNCTIONS: Sequence[BanRule] = (
                 'distance',
                 'next',
                 'prev',
+                # From https://en.cppreference.com/w/cpp/utility/ranges/swap
+                'swap',
                 # Require a word boundary at the end of negative lookahead
                 # assertion, e.g. to ensure that even though `view` is allowed (and
                 # should not match this regex), `views` is still treated as
@@ -2138,6 +2141,21 @@ _BANNED_CPP_FUNCTIONS: Sequence[BanRule] = (
             r'^base/i18n/',
             _THIRD_PARTY_EXCEPT_BLINK,
         ],
+    ),
+    BanRule(
+        r'/\bLocale::getDefault\b',
+        (
+            'icu::Locale::getDefault() should not be used outside of',
+            'base/i18n. Use base::i18n::GetDefaultIcuLocale() from',
+            'base/i18n/icubridge/default_icu_locale.h instead, which',
+            'returns the default ICU locale as a base::i18n::LanguageTag.',
+            'If an icu::Locale is required, convert the LanguageTag with',
+            'base::i18n::IcuLocaleConverter::GetInstance().FromLanguageTag()',
+            '(see base/i18n/icu4c_tag_converter.h).',
+        ),
+        True,
+        # base/i18n owns the default ICU locale and keeps ICU in sync with it.
+        [r'^base/i18n/'],
     ),
     BanRule(
         r'CrossThreadPersistent<',
@@ -2835,7 +2853,6 @@ _KNOWN_TEST_DATA_AND_INVALID_JSON_FILE_PATTERNS = [
     r'^third_party/blink/renderer/devtools/protocol\.json$',
     r'^third_party/blink/web_tests/external/wpt/',
     r'^tools/perf/',
-    r'^tools/traceline/svgui/startup-release.json',
     # vscode configuration files allow comments
     r'^tools/vscode/',
 ]
@@ -2909,6 +2926,7 @@ _GENERIC_PYDEPS_FILES = [
     'build/android/resource_sizes.pydeps',
     'build/android/test_runner.pydeps',
     'build/android/test_wrapper/logdog_wrapper.pydeps',
+    'build/create_pyz.pydeps',
     'build/fuchsia/starview/run_cuttlefish.pydeps',
     'build/fuchsia/starview/run_cuttlefish_test.pydeps',
     'build/fuchsia/test/component_storage_test.pydeps',
@@ -6668,7 +6686,6 @@ def CheckNoDeprecatedCss(input_api, output_api):
             r'ui/webui/resources/cr_components/most_visited/.*\.css$',
             r'ui/webui/resources/cr_components/composebox/composebox_match.css$',
             r'ui/webui/resources/cr_components/searchbox/searchbox_match.css$',
-            r'^chrome/browser/resources/glic/selection_overlay/glic_selection_overlay\.css$',
             r'^chrome/browser/resources/new_tab_page/action_chips/action_chips\.css$',
         )
     )
@@ -9703,6 +9720,9 @@ def CheckBaseFeatureMacro(input_api, output_api):
     )
     errors = []
     warnings = []
+    state_errors = []
+    state_warnings = []
+    cpp_feature_parser = None
 
     for f in input_api.AffectedFiles():
         if not f.LocalPath().endswith(('.cc', '.mm')):
@@ -9720,6 +9740,51 @@ def CheckBaseFeatureMacro(input_api, output_api):
             and 'BASE_RUNTIME_MUTABLE_FEATURE' not in contents
         ):
             continue
+
+        # Test code may intentionally use non-literal default states (e.g. to
+        # test BASE_FEATURE itself) and doesn't ship, so only the naming
+        # checks below apply to it.
+        is_test_file = any(
+            input_api.re.match(p, f.LocalPath())
+            for p in _TEST_CODE_EXCLUDED_PATHS
+        )
+        if not is_test_file and cpp_feature_parser is None:
+            metrics_common_path = input_api.os_path.join(
+                input_api.PresubmitLocalPath(), 'tools', 'metrics', 'common'
+            )
+            old_sys_path = input_api.sys.path[:]
+            try:
+                input_api.sys.path.append(metrics_common_path)
+                import cpp_feature_parser
+            finally:
+                input_api.sys.path = old_sys_path
+
+        state_problems = (
+            []
+            if is_test_file
+            else cpp_feature_parser.ValidateCppFeatureMacros(
+                contents, changed_line_numbers
+            )
+        )
+        if state_problems:
+            # Some existing definitions can't be parsed yet, so editing one of
+            # them only warns. Newly added (or renamed) features must use a
+            # default state the parser can read.
+            old_contents = '\n'.join(f.OldContents())
+            existing_features = {
+                cpp_feature_parser.ExtractMacroFeatureName(m.group(1))
+                for m in cpp_feature_parser.CPP_FEATURE_STATE_REGEX.finditer(
+                    old_contents
+                )
+            }
+            for line_num, msg in state_problems:
+                item = '    %s:%d: %s' % (f.LocalPath(), line_num, msg)
+                name_match = input_api.re.search(r'"([^"]+)"', msg)
+                if name_match and name_match.group(1) not in existing_features:
+                    state_errors.append(item)
+                else:
+                    state_warnings.append(item)
+
         for match in pattern.finditer(contents):
             # Determine the line numbers that the match spans.
             start_line = contents.count('\n', 0, match.start()) + 1
@@ -9769,6 +9834,18 @@ def CheckBaseFeatureMacro(input_api, output_api):
     if errors:
         results.append(
             output_api.PresubmitError('BASE_FEATURE() macro naming:', errors)
+        )
+    if state_errors:
+        results.append(
+            output_api.PresubmitError(
+                'BASE_FEATURE() default state:', state_errors
+            )
+        )
+    if state_warnings:
+        results.append(
+            output_api.PresubmitPromptWarning(
+                'BASE_FEATURE() default state:', state_warnings
+            )
         )
     if warnings:
         results.append(

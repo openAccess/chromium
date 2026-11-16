@@ -104,7 +104,9 @@ void VideoDecodePerfHistory::InitDatabase() {
 void VideoDecodePerfHistory::OnDatabaseInit(bool success) {
   DVLOG(2) << __func__ << " " << success;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK_EQ(db_init_status_, PENDING, base::NotFatalUntil::M163);
+  // TODO(crbug.com/582944090): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(db_init_status_, PENDING);
 
   db_init_status_ = success ? COMPLETE : FAILED;
 
@@ -124,8 +126,9 @@ void VideoDecodePerfHistory::GetPerfInfo(mojom::PredictionFeaturesPtr features,
   CHECK_NE(features->profile, VIDEO_CODEC_PROFILE_UNKNOWN,
            base::NotFatalUntil::M163);
   CHECK_GT(features->frames_per_sec, 0, base::NotFatalUntil::M163);
-  CHECK(features->video_size.width() > 0 && features->video_size.height() > 0,
-        base::NotFatalUntil::M163);
+  // TODO(crbug.com/582485473): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(features->video_size.width() > 0 && features->video_size.height() > 0);
 
   if (db_init_status_ == FAILED) {
     // Optimistically claim perf is both smooth and power efficient.

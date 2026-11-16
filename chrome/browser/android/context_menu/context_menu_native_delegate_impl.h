@@ -21,7 +21,7 @@ class ContextMenuNativeDelegateImpl {
  public:
   explicit ContextMenuNativeDelegateImpl(
       content::WebContents* const web_contents,
-      content::ContextMenuParams* const context_menu_params);
+      const content::ContextMenuParams& context_menu_params);
 
   ContextMenuNativeDelegateImpl(const ContextMenuNativeDelegateImpl&) = delete;
   ContextMenuNativeDelegateImpl& operator=(
@@ -41,7 +41,10 @@ class ContextMenuNativeDelegateImpl {
                              int32_t max_width_px,
                              int32_t max_height_px,
                              int32_t j_image_type);
-  void StartDownload(JNIEnv* env, const GURL& gurl, bool jis_media);
+  void StartDownload(JNIEnv* env,
+                     content::RenderFrameHost* render_frame_host,
+                     const GURL& gurl,
+                     bool jis_media);
   void SearchForImage(JNIEnv* env, content::RenderFrameHost* render_frame_host);
   void InspectElement(JNIEnv* env,
                       content::RenderFrameHost* render_frame_host,
@@ -76,7 +79,7 @@ class ContextMenuNativeDelegateImpl {
                              chrome::mojom::ImageFormat image_format);
 
   const raw_ptr<content::WebContents> web_contents_;
-  const raw_ptr<content::ContextMenuParams> context_menu_params_;
+  const content::ContextMenuParams context_menu_params_;
 };
 
 #endif  // CHROME_BROWSER_ANDROID_CONTEXT_MENU_CONTEXT_MENU_NATIVE_DELEGATE_IMPL_H_

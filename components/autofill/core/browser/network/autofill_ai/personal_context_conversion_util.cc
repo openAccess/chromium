@@ -112,7 +112,8 @@ bool IsSourceValid(
   // Source metadata other than the URL is only required on mobile.
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   return std::visit(absl::Overload{[](const GmailSourceMetadata& gmail) {
-                                     return !gmail.title.empty();
+                                     return !gmail.title.empty() ||
+                                            !gmail.timestamp.is_null();
                                    },
                                    [](const PhotosSourceMetadata& photos) {
                                      return !photos.timestamp.is_null();
@@ -151,6 +152,7 @@ PersonalContextSourceReferenceToSource(
       break;
     case personal_context::proto::SourceReference::kDrive:
     case personal_context::proto::SourceReference::kChromeHistoryEntry:
+    case personal_context::proto::SourceReference::kSearchQuery:
     case personal_context::proto::SourceReference::SOURCE_REFERENCE_NOT_SET:
       return std::nullopt;
   }

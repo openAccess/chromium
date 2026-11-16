@@ -164,33 +164,24 @@ class RASTER_EXPORT RasterImplementation : public RasterInterface,
       GrSurfaceOrigin source_origin,
       const gfx::Size& source_size,
       const gfx::Point& source_starting_point,
-      const SkImageInfo& dst_info,
-      GLuint dst_row_bytes,
-      base::span<uint8_t> out,
+      const SkPixmap& dst_pixmap,
       base::OnceCallback<void(bool)> readback_done) override;
 
   void ReadbackYUVPixelsAsync(
       const gpu::Mailbox& source_mailbox,
       GLenum source_target,
       const gfx::Rect& source_rect,
-      const gfx::Rect& output_rect,
       bool vertically_flip_texture,
-      int y_plane_row_stride_bytes,
-      base::span<uint8_t> y_plane_data,
-      int u_plane_row_stride_bytes,
-      base::span<uint8_t> u_plane_data,
-      int v_plane_row_stride_bytes,
-      base::span<uint8_t> v_plane_data,
+      const SkYUVAPixmaps& dst_pixmaps,
+      sk_sp<SkColorSpace> dst_color_space,
       base::OnceCallback<void()> release_mailbox,
       base::OnceCallback<void(bool)> readback_done) override;
   bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
                            const gfx::Size& source_size,
-                           const SkImageInfo& dst_info,
-                           GLuint dst_row_bytes,
                            int src_x,
                            int src_y,
                            int plane_index,
-                           void* dst_pixels) override;
+                           const SkPixmap& dst_pixmap) override;
 
   // ContextSupport implementation.
   void SetAggressivelyFreeResources(bool aggressively_free_resources) override;

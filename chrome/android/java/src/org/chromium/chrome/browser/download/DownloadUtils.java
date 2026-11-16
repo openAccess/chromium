@@ -43,6 +43,7 @@ import org.chromium.base.FileUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
+import org.chromium.base.StrictModeContext;
 import org.chromium.base.TriState;
 import org.chromium.build.annotations.Contract;
 import org.chromium.build.annotations.NullMarked;
@@ -78,6 +79,7 @@ import org.chromium.components.download.ResumeMode;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.offline_items_collection.ContentId;
 import org.chromium.components.offline_items_collection.FailState;
 import org.chromium.components.offline_items_collection.LaunchLocation;
 import org.chromium.components.offline_items_collection.LegacyHelpers;
@@ -297,7 +299,7 @@ public class DownloadUtils {
                     origin);
         } else {
             // Otherwise, the download can be started immediately.
-            OfflinePageDownloadBridge.startDownload(tab, origin);
+            OfflinePageDownloadBridge.startDownload(tab, origin, fromAppMenu);
         }
         tracker.notifyEvent(EventConstants.DOWNLOAD_PAGE_STARTED);
     }
@@ -349,13 +351,25 @@ public class DownloadUtils {
 
         // It's ok to use blocking calls on main thread here, since the user is waiting to open or
         // share the file to other apps.
-        boolean isOnSDCard = DownloadDirectoryProvider.isDownloadOnSDCard(filePath);
-        if (isOnSDCard) {
-            // Use custom file provider to generate content URI for download on SD card.
-            return DownloadFileProvider.createContentUri(filePath);
+        try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
+            boolean isOnSDCard = DownloadDirectoryProvider.isDownloadOnSDCard(filePath);
+            if (isOnSDCard) {
+                // Use custom file provider to generate content URI for download on SD card.
+                return DownloadFileProvider.createContentUri(filePath);
+            }
+            // Use FileProvider to generate content URI or file URI.
+            Uri uri = FileUtils.getUriForFile(new File(filePath));
+            if (UrlConstants.CONTENT_SCHEME.equals(uri.getScheme())) {
+                return uri;
+            }
+            // Fall back to DownloadFileProvider for files in the app-private primary download
+            // directory that are not covered by FileProvider.
+            Uri downloadProviderUri = DownloadFileProvider.createContentUri(filePath);
+            if (UrlConstants.CONTENT_SCHEME.equals(downloadProviderUri.getScheme())) {
+                return downloadProviderUri;
+            }
+            return uri;
         }
-        // Use FileProvider to generate content URI or file URI.
-        return FileUtils.getUriForFile(new File(filePath));
     }
 
     /**
@@ -417,6 +431,45 @@ public class DownloadUtils {
             OfflineContentAggregatorFactory.get()
                     .openItem(openParams, assertNonNull(offlineItem.id));
         }
+    }
+
+    /**
+     * Opens a completed download in a new Chrome tab if Chrome can display its format (e.g. PDFs,
+     * images or web pages), even when another app is the default for it. Unlike {@link #openItem},
+     * which prefers the default app on desktop, opens nothing otherwise. Incognito downloads open
+     * in an incognito tab.
+     *
+     * @param offlineItem The completed download to open.
+     * @param context The context used to open the download.
+     * @param otrProfileId The {@link OtrProfileId} of the download. Null if in regular mode.
+     * @param source The location from which the download was opened.
+     * @return Whether the download was opened in Chrome.
+     */
+    public static boolean openItemInChrome(
+            OfflineItem offlineItem,
+            Context context,
+            @Nullable OtrProfileId otrProfileId,
+            @DownloadOpenSource int source) {
+        // Only regular downloads have a file Chrome can load; e.g. offline pages open differently.
+        ContentId id = offlineItem.id;
+        String filePath = offlineItem.filePath;
+        if (id == null || filePath == null || !LegacyHelpers.isLegacyDownload(id)) return false;
+        DownloadManagerService service = DownloadManagerService.getDownloadManagerService();
+        if (!service.isDownloadOpenableInBrowser(
+                offlineItem.mimeType, OtrProfileId.isOffTheRecord(otrProfileId))) {
+            return false;
+        }
+        DownloadOpenRequest req =
+                DownloadOpenRequest.builder(context, filePath)
+                        .mimeType(offlineItem.mimeType)
+                        .downloadGuid(id.id)
+                        .otrProfileId(otrProfileId)
+                        .source(source)
+                        .build();
+        if (!openInChromeInternal(req)) return false;
+        DownloadMetrics.recordDownloadOpen(source, offlineItem.mimeType);
+        service.updateLastAccessTime(id.id, otrProfileId);
+        return true;
     }
 
     /**
@@ -645,7 +698,8 @@ public class DownloadUtils {
                         /* contentUri= */ contentUri,
                         normalizedMimeType,
                         /* allowExternalAppHandlers= */ !isAutomotive && !isAutomotiveProjected,
-                        !isAutomotive,
+                        /* allowShareAction= */ !isAutomotive,
+                        OtrProfileId.isOffTheRecord(req.mOtrProfileId),
                         req.mContext);
         if (intent != null) {
             try {

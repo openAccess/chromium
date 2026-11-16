@@ -58,6 +58,11 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/browser/platform_experience/delegated_tasks/delegated_task.h:DelegatedTaskType) -->
 
+<variants name="PlatformExperienceHelperInstallScope">
+  <variant name="System" summary="system-level"/>
+  <variant name="User" summary="user-level"/>
+</variants>
+
 <histogram name="Windows.AcLayersLoaded" enum="BooleanLoaded"
     expires_after="2026-05-04">
   <owner>ajgo@chromium.org</owner>
@@ -185,7 +190,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Windows.Experimental.Pdh.ProcessV2.{Counter}.{ProcessType}{StartupState}"
-    units="counter value" expires_after="2027-03-07">
+    units="counter value" expires_after="2027-05-09">
   <owner>spvm@chromium.org</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>
@@ -596,6 +601,37 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Windows.PlatformExperienceHelper.InstallState.{InstallScope}"
+    enum="PlatformExperienceHelperInstallState" expires_after="2027-05-02">
+  <owner>alsan@chromium.org</owner>
+  <owner>atharvmaan@chromium.org</owner>
+  <owner>chrome-desktop-ui-waterloo@google.com</owner>
+  <summary>
+    Records the reconciled disk and Google Update (Omaha) registration state of
+    the Platform Experience Helper for {InstallScope} Chrome installs, before
+    any installation attempt is launched. Recorded once per browser session
+    shortly after startup on eligible non-managed Windows 10+ devices.
+  </summary>
+  <token key="InstallScope" variants="PlatformExperienceHelperInstallScope"/>
+</histogram>
+
+<histogram
+    name="Windows.PlatformExperienceHelper.OtherScopeRegistration.{InstallScope}"
+    enum="PlatformExperienceHelperOtherScopeRegistration"
+    expires_after="2027-05-02">
+  <owner>alsan@chromium.org</owner>
+  <owner>atharvmaan@chromium.org</owner>
+  <owner>chrome-desktop-ui-waterloo@google.com</owner>
+  <summary>
+    Records whether the Platform Experience Helper has a Google Update (Omaha)
+    Clients registration in the opposite install scope (HKLM for User installs,
+    HKCU for System installs) for {InstallScope} Chrome installs. Recorded once
+    per browser session shortly after startup on eligible non-managed Windows
+    10+ devices.
+  </summary>
+  <token key="InstallScope" variants="PlatformExperienceHelperInstallScope"/>
+</histogram>
+
 <histogram name="Windows.ProcessorFamily" enum="ProcessorFamily"
     expires_after="2027-04-11">
   <owner>rkc@chromium.org</owner>
@@ -673,6 +709,59 @@ chromium-metrics-reviews@google.com.
     called{PinAppToTaskbarChannel}. It is called when deciding whether or not to
     offer to pin Chrome (or an installed web app) to the taskbar.
   </summary>
+</histogram>
+
+<histogram name="Windows.StorageDurability.Queried" enum="BooleanSuccess"
+    expires_after="2027-11-01">
+  <owner>simonhong@chromium.org</owner>
+  <owner>grt@chromium.org</owner>
+  <owner>clifton@brave.com</owner>
+  <summary>
+    Whether the drive holding the user data directory answered
+    IOCTL_STORAGE_QUERY_PROPERTY with StorageDeviceWriteCacheProperty. False
+    covers drivers that do not implement the query and profiles that are not
+    reached through a drive letter, such as those on a network share. Recorded
+    once per browser session, on startup, when the StorageDurabilityCheck
+    feature is enabled. The other Windows.StorageDurability histograms are only
+    recorded when this one is true.
+  </summary>
+</histogram>
+
+<histogram name="Windows.StorageDurability.{Signal}" enum="Boolean"
+    expires_after="2027-11-01">
+  <owner>simonhong@chromium.org</owner>
+  <owner>grt@chromium.org</owner>
+  <owner>clifton@brave.com</owner>
+  <summary>
+    What the drive holding the user data directory reports about how it handles
+    writes. Measures how common a configuration is in which Windows has been
+    told to stop flushing the drive's write cache, which lets an already renamed
+    file lose its contents on power failure. Recorded once per browser session,
+    on startup, when the StorageDurabilityCheck feature is enabled and
+    Windows.StorageDurability.Queried is true.
+  </summary>
+  <token key="Signal">
+    <variant name="FlushCacheSupported"
+        summary="The drive reports that it honors a flush request."/>
+    <variant name="FlushingUnsafe"
+        summary="The drive caches writes, Windows has been told not to flush
+                 them, and nothing is backing the cache up. This is the
+                 combination that risks data loss."/>
+    <variant name="NVCacheEnabled"
+        summary="The write cache is battery backed, which makes disabling
+                 flushing a legitimate choice rather than a dangerous one."/>
+    <variant name="UserDefinedPowerProtection"
+        summary="The Device Manager setting &quot;Turn off Windows
+                 write-cache buffer flushing on the device&quot; is on."/>
+    <variant name="WriteCacheEnabled"
+        summary="The drive is caching writes in volatile memory."/>
+    <variant name="WriteCacheStateUnknown"
+        summary="The driver answered the query but reported
+                 WriteCacheEnableUnknown rather than stating whether the
+                 cache is on. When this is true, WriteCacheEnabled being
+                 false means only that caching was not confirmed, not that it
+                 is off."/>
+  </token>
 </histogram>
 
 <histogram name="Windows.TaskbarPinFromFRESucceeded" enum="Boolean"
@@ -772,7 +861,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Windows.Win11HardwareRequirements2.{Type}Check"
-    enum="BooleanEnabled" expires_after="2027-03-07">
+    enum="BooleanEnabled" expires_after="2027-05-09">
   <owner>estalin@chromium.org</owner>
   <owner>davidbienvenu@chromium.org</owner>
   <summary>

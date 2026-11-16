@@ -22,11 +22,16 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
+#include "components/permissions/embedded_permission_prompt_flow_model.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_decision.h"
 #include "components/permissions/permission_request.h"
@@ -41,6 +46,7 @@
 #include "components/permissions/resolvers/permission_prompt_options.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/permissions/test/mock_permission_request.h"
+#include "components/permissions/test/permission_request_observer.h"
 #include "components/permissions/test/test_permissions_client.h"
 #include "components/prefs/testing_pref_service.h"
 #include "components/ukm/content/source_url_recorder.h"
@@ -140,7 +146,6 @@ class PermissionRequestManagerTest : public content::RenderViewHostTestHarness {
           .selected_accuracy = GeolocationAccuracy::kPrecise});
     }
     manager_->Accept(prompt_options);
-    task_environment()->RunUntilIdle();
   }
 
   void AcceptThisTime(PromptOptions prompt_options = std::monostate()) {
@@ -151,23 +156,13 @@ class PermissionRequestManagerTest : public content::RenderViewHostTestHarness {
           .selected_accuracy = GeolocationAccuracy::kPrecise});
     }
     manager_->AcceptThisTime(prompt_options);
-    task_environment()->RunUntilIdle();
   }
 
-  void Deny() {
-    manager_->Deny(/*prompt_options=*/std::monostate());
-    task_environment()->RunUntilIdle();
-  }
+  void Deny() { manager_->Deny(/*prompt_options=*/std::monostate()); }
 
-  void Dismiss() {
-    manager_->Dismiss(/*prompt_options=*/std::monostate());
-    task_environment()->RunUntilIdle();
-  }
+  void Dismiss() { manager_->Dismiss(/*prompt_options=*/std::monostate()); }
 
-  void Ignore() {
-    manager_->Ignore(/*prompt_options=*/std::monostate());
-    task_environment()->RunUntilIdle();
-  }
+  void Ignore() { manager_->Ignore(/*prompt_options=*/std::monostate()); }
 
   void OpenHelpCenterLink() {
 #if !BUILDFLAG(IS_ANDROID)
@@ -180,18 +175,19 @@ class PermissionRequestManagerTest : public content::RenderViewHostTestHarness {
         ui::PointerDetails(ui::EventPointerType::kTouch, 1));
 #endif
     manager_->OpenHelpCenterLink(event);
-    task_environment()->RunUntilIdle();
   }
 
   void WaitForFrameLoad() {
     // PermissionRequestManager ignores all parameters. Yay?
     manager_->DOMContentLoaded(nullptr);
-    task_environment()->RunUntilIdle();
   }
 
   void WaitForBubbleToBeShown() {
     manager_->DocumentOnLoadCompletedInPrimaryMainFrame();
-    task_environment()->RunUntilIdle();
+    if (!manager_->IsRequestInProgress() && manager_->has_pending_requests()) {
+      PermissionRequestObserver observer(web_contents());
+      observer.Wait();
+    }
   }
 
   void MockTabSwitchAway() {
@@ -394,8 +390,8 @@ TEST_F(PermissionRequestManagerTest, RequestsDontNeedUserGesture) {
                        CreateRequest(iframe_request_other_domain_));
   manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
                        CreateRequest(request2_));
-  task_environment()->RunUntilIdle();
 
+  WaitForBubbleToBeShown();
   EXPECT_TRUE(prompt_factory_->is_visible());
 }
 
@@ -686,6 +682,7 @@ TEST_F(PermissionRequestManagerTest, MicCameraPtzDifferentOrigins) {
   EXPECT_TRUE(prompt_factory_->is_visible());
   ASSERT_LT(prompt_factory_->request_count(), 3);
   Accept();
+  WaitForBubbleToBeShown();
 
   EXPECT_TRUE(prompt_factory_->is_visible());
   ASSERT_LT(prompt_factory_->request_count(), 3);
@@ -794,7 +791,6 @@ TEST_F(PermissionRequestManagerTest, SameRequestRejected) {
   EXPECT_TRUE(prompt_factory_->is_visible());
   ASSERT_EQ(prompt_factory_->request_count(), 1);
   Accept();
-  task_environment()->RunUntilIdle();
   EXPECT_TRUE(request1_state->granted);
   EXPECT_FALSE(prompt_factory_->is_visible());
 }
@@ -1048,6 +1044,7 @@ TEST_F(PermissionRequestManagerTest, MainFrameAndIFrameRequestOtherDomain) {
     EXPECT_FALSE(iframe_request_other_domain_state.finished);
   }
 
+  WaitForBubbleToBeShown();
   EXPECT_TRUE(prompt_factory_->is_visible());
   Dismiss();
   EXPECT_TRUE(iframe_request_other_domain_state.finished);
@@ -1073,6 +1070,7 @@ TEST_F(PermissionRequestManagerTest, IFrameRequestWhenMainRequestVisible) {
       CreateRequest(iframe_request_same_domain_,
                     iframe_request_other_domain_state.GetWeakPtr()));
   WaitForFrameLoad();
+  WaitForBubbleToBeShown();
   ASSERT_EQ(prompt_factory_->request_count(), 1);
   Dismiss();
   if (PermissionUtil::DoesPlatformSupportChip()) {
@@ -1083,6 +1081,7 @@ TEST_F(PermissionRequestManagerTest, IFrameRequestWhenMainRequestVisible) {
     EXPECT_FALSE(iframe_request_other_domain_state.finished);
   }
 
+  WaitForBubbleToBeShown();
   EXPECT_TRUE(prompt_factory_->is_visible());
   ASSERT_EQ(prompt_factory_->request_count(), 1);
   Dismiss();
@@ -1110,6 +1109,7 @@ TEST_F(PermissionRequestManagerTest,
       CreateRequest(iframe_request_other_domain_,
                     iframe_request_other_domain_state.GetWeakPtr()));
   WaitForFrameLoad();
+  WaitForBubbleToBeShown();
   Dismiss();
   if (PermissionUtil::DoesPlatformSupportChip()) {
     EXPECT_TRUE(iframe_request_other_domain_state.finished);
@@ -1119,6 +1119,7 @@ TEST_F(PermissionRequestManagerTest,
     EXPECT_FALSE(iframe_request_other_domain_state.finished);
   }
 
+  WaitForBubbleToBeShown();
   EXPECT_TRUE(prompt_factory_->is_visible());
   Dismiss();
   if (PermissionUtil::DoesPlatformSupportChip()) {
@@ -1202,12 +1203,17 @@ class MockNotificationGeolocationPermissionUiSelector
     selected_ui_to_use_ = true;
     if (async_delay_) {
       base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-          FROM_HERE, base::BindOnce(std::move(callback), decision_),
+          FROM_HERE,
+          base::BindOnce(
+              &MockNotificationGeolocationPermissionUiSelector::RunCallback,
+              weak_factory_.GetWeakPtr(), std::move(callback)),
           async_delay_.value());
     } else {
       std::move(callback).Run(decision_);
     }
   }
+
+  void Cancel() override { weak_factory_.InvalidateWeakPtrs(); }
 
   bool IsPermissionRequestSupported(RequestType request_type) override {
     return request_type == RequestType::kNotifications ||
@@ -1233,11 +1239,17 @@ class MockNotificationGeolocationPermissionUiSelector
   bool selected_ui_to_use() const { return selected_ui_to_use_; }
 
  private:
+  void RunCallback(DecisionMadeCallback callback) {
+    std::move(callback).Run(decision_);
+  }
+
   Decision decision_;
   std::optional<PermissionUiSelector::PredictionGrantLikelihood>
       prediction_likelihood_;
   std::optional<base::TimeDelta> async_delay_;
   bool selected_ui_to_use_ = false;
+  base::WeakPtrFactory<MockNotificationGeolocationPermissionUiSelector>
+      weak_factory_{this};
 };
 
 // Same as the MockNotificationGeolocationPermissionUiSelector but handling only
@@ -1447,7 +1459,8 @@ TEST_F(PermissionRequestManagerTest,
 
   manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
                        std::move(request));
-  WaitForBubbleToBeShown();
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return manager_->IsRequestInProgress(); }));
 
   EXPECT_FALSE(prompt_factory_->is_visible());
   EXPECT_TRUE(manager_->IsRequestInProgress());
@@ -3018,7 +3031,6 @@ TEST_P(PermissionRequestManagerApproximateGeolocationTest,
                                                  /*should_be_seen=*/true, 1);
 
   GeolocationAccuracy accuracy = GetParam();
-  WaitForBubbleToBeShown();
   AcceptThisTime(GeolocationPromptOptions{accuracy});
 
   histograms.ExpectUniqueSample(
@@ -3048,9 +3060,7 @@ TEST_P(PermissionRequestManagerApproximateGeolocationTest,
                                                  /*should_be_seen=*/true, 1);
 
   GeolocationAccuracy accuracy = GetParam();
-  WaitForBubbleToBeShown();
   manager_->Deny(GeolocationPromptOptions{accuracy});
-  task_environment()->RunUntilIdle();
 
   histograms.ExpectUniqueSample(
       "Permissions.Prompt.Geolocation.Denied.Accuracy",
@@ -3078,9 +3088,7 @@ TEST_P(PermissionRequestManagerApproximateGeolocationTest,
                                                  /*should_be_seen=*/true, 1);
 
   GeolocationAccuracy accuracy = GetParam();
-  WaitForBubbleToBeShown();
   manager_->Dismiss(GeolocationPromptOptions{accuracy});
-  task_environment()->RunUntilIdle();
 
   histograms.ExpectUniqueSample(
       "Permissions.Prompt.Geolocation.Dismissed.Accuracy",
@@ -3108,9 +3116,7 @@ TEST_P(PermissionRequestManagerApproximateGeolocationTest,
                                                  /*should_be_seen=*/true, 1);
 
   GeolocationAccuracy accuracy = GetParam();
-  WaitForBubbleToBeShown();
   manager_->Ignore(GeolocationPromptOptions{accuracy});
-  task_environment()->RunUntilIdle();
 
   histograms.ExpectUniqueSample(
       "Permissions.Prompt.Geolocation.Ignored.Accuracy",
@@ -3433,6 +3439,65 @@ TEST_F(PermissionRequestManagerTest,
   }
 }
 
+#if defined(ADDRESS_SANITIZER)
+namespace {
+
+class SyncDestroyUiSelector : public PermissionUiSelector {
+ public:
+  explicit SyncDestroyUiSelector(content::RenderViewHostTestHarness* harness)
+      : harness_(harness) {}
+
+  void SelectUiToUse(content::WebContents* web_contents,
+                     PermissionRequest* request,
+                     DecisionMadeCallback callback) override {
+    harness_->DeleteContents();
+    std::move(callback).Run(
+        PermissionUiSelector::Decision::UseNormalUiAndShowNoWarning());
+  }
+
+  bool IsPermissionRequestSupported(RequestType request_type) override {
+    return true;
+  }
+  void Cancel() override {}
+
+ private:
+  raw_ptr<content::RenderViewHostTestHarness> harness_;
+};
+
+}  // namespace
+
+// This test reproduces a Use-After-Free (UAF) scenario where a permission UI
+// selector synchronously destroys the WebContents during SelectUiToUse().
+// Destroying the WebContents triggers the destruction of
+// PermissionRequestManager. We register two selectors: the first triggers
+// destruction, and the second forces the permission_ui_selectors_ loop to
+// evaluate the next index. Without the weak_this guard, evaluating
+// permission_ui_selectors_.size() on the destroyed manager constitutes a UAF,
+// which is caught deterministically by AddressSanitizer (ASan).
+TEST_F(PermissionRequestManagerTest, UAFOnWebContentsDestroyedInFullscreen) {
+  manager_->add_permission_ui_selector_for_testing(
+      std::make_unique<SyncDestroyUiSelector>(this));
+  MockNotificationGeolocationPermissionUiSelector::CreateForManager(
+      manager_, PermissionUiSelector::Decision::UseNormalUiAndShowNoWarning(),
+      /*async_delay=*/std::nullopt);
+
+  MockPermissionRequest::MockPermissionRequestState request_state;
+  auto request = std::make_unique<MockPermissionRequest>(
+      RequestType::kNotifications, PermissionRequestGestureType::NO_GESTURE,
+      request_state.GetWeakPtr());
+  auto* manager = manager_.get();
+  // Reset the test's raw_ptr<PermissionRequestManager> to avoid a dangling
+  // pointer warning when the WebContents and its attached manager are
+  // synchronously destroyed during the test.
+  manager_ = nullptr;
+  manager->AddRequest(web_contents()->GetPrimaryMainFrame(),
+                      std::move(request));
+
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return web_contents() == nullptr; }));
+}
+#endif  // defined(ADDRESS_SANITIZER)
+
 class PermissionRequestManagerEnforceGestureTest
     : public PermissionRequestManagerTest,
       public testing::WithParamInterface<GestureGatedTestcase> {
@@ -3550,4 +3615,145 @@ INSTANTIATE_TEST_SUITE_P(
         PermissionRequestManagerEnforceGestureTest::ParamType>& info) {
       return info.param.test_name;
     });
+
+// Regression tests for https://crbug.com/585118316: when an embedded permission
+// request is accepted while the underlying content setting in
+// HostContentSettingsMap remains CONTENT_SETTING_ASK (e.g. shadowed by a
+// managed policy or extension), the embedded prompt flow must finalize instead
+// of recreating Variant::kAsk for the already-decided PermissionRequest.
+TEST_F(PermissionRequestManagerTest,
+       EmbeddedPromptAcceptFinalizesWhenContentSettingRemainsAsk) {
+#if BUILDFLAG(IS_ANDROID)
+  base::AutoReset<bool> enable_android_permissions =
+      EnableAllAndroidPermissionsForTesting();
+#endif
+  MockPermissionRequest::MockPermissionRequestState request_state;
+  const GURL origin(MockPermissionRequest::kDefaultOrigin);
+  auto request = std::make_unique<MockPermissionRequest>(
+      origin, RequestType::kGeolocation,
+      /*embedded_permission_element_initiated=*/true,
+      request_state.GetWeakPtr());
+  manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
+                       std::move(request));
+  WaitForBubbleToBeShown();
+
+  ASSERT_TRUE(prompt_factory_->is_visible());
+  EXPECT_EQ(prompt_factory_->show_count(), 1);
+  ASSERT_NE(manager_->GetEmbeddedPromptFlowModel(), nullptr);
+  EXPECT_EQ(manager_->GetEmbeddedPromptFlowModel()->prompt_variant(),
+            EmbeddedPermissionPromptFlowModel::Variant::kAsk);
+
+  Accept();
+
+  // Since we used a MockPermissionRequest, the geolocation setting should still
+  // be undecided.
+  const ContentSettingsType geolocation_type =
+      content_settings::GeolocationContentSettingsType();
+  const content_settings::PermissionSettingsInfo* permission_info =
+      content_settings::PermissionSettingsRegistry::GetInstance()->Get(
+          geolocation_type);
+  ASSERT_TRUE(permission_info->delegate().IsUndecided(
+      client_.GetSettingsMap(browser_context())
+          ->GetPermissionSetting(origin, origin, geolocation_type)));
+
+  EXPECT_TRUE(request_state.granted);
+  EXPECT_TRUE(request_state.finished);
+  EXPECT_FALSE(prompt_factory_->is_visible());
+  EXPECT_FALSE(manager_->IsRequestInProgress());
+  EXPECT_EQ(prompt_factory_->show_count(), 1);
+}
+
+// Regression test for https://crbug.com/585118316: when an embedded permission
+// request is accepted one-time from the PreviouslyDenied screen while the
+// underlying content setting in HostContentSettingsMap remains
+// CONTENT_SETTING_BLOCK, the embedded prompt flow must finalize instead of
+// recreating Variant::kPreviouslyDenied for the already-decided
+// PermissionRequest.
+TEST_F(PermissionRequestManagerTest,
+       EmbeddedPromptAcceptThisTimeFinalizesWhenContentSettingRemainsBlocked) {
+#if BUILDFLAG(IS_ANDROID)
+  base::AutoReset<bool> enable_android_permissions =
+      EnableAllAndroidPermissionsForTesting();
+#endif
+  const GURL origin(MockPermissionRequest::kDefaultOrigin);
+  client_.GetSettingsMap(browser_context())
+      ->SetContentSettingDefaultScope(origin, origin,
+                                      ContentSettingsType::MEDIASTREAM_CAMERA,
+                                      CONTENT_SETTING_BLOCK);
+
+  MockPermissionRequest::MockPermissionRequestState request_state;
+  auto request = std::make_unique<MockPermissionRequest>(
+      origin, RequestType::kCameraStream,
+      /*embedded_permission_element_initiated=*/true,
+      request_state.GetWeakPtr());
+  manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
+                       std::move(request));
+  WaitForBubbleToBeShown();
+
+  ASSERT_TRUE(prompt_factory_->is_visible());
+  EXPECT_EQ(prompt_factory_->show_count(), 1);
+  ASSERT_NE(manager_->GetEmbeddedPromptFlowModel(), nullptr);
+  EXPECT_EQ(manager_->GetEmbeddedPromptFlowModel()->prompt_variant(),
+            EmbeddedPermissionPromptFlowModel::Variant::kPreviouslyDenied);
+
+  AcceptThisTime();
+
+  EXPECT_TRUE(request_state.granted);
+  EXPECT_TRUE(request_state.finished);
+  EXPECT_FALSE(prompt_factory_->is_visible());
+  EXPECT_FALSE(manager_->IsRequestInProgress());
+  EXPECT_EQ(prompt_factory_->show_count(), 1);
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+// Regression test for https://crbug.com/585118316: when an embedded permission
+// request is accepted while the underlying content setting in
+// HostContentSettingsMap remains CONTENT_SETTING_ASK and an OS-level permission
+// prompt is still required, the embedded prompt flow must advance to
+// Variant::kOsPrompt and then finalize cleanly once the OS prompt resolves
+// rather than looping back to Variant::kAsk.
+TEST_F(PermissionRequestManagerTest,
+       EmbeddedPromptAdvancesToOsPromptWhenContentSettingRemainsAsk) {
+  client_.SetCanPromptSystemPermission(true);
+
+  MockPermissionRequest::MockPermissionRequestState request_state;
+  auto request = std::make_unique<MockPermissionRequest>(
+      GURL(MockPermissionRequest::kDefaultOrigin), RequestType::kCameraStream,
+      /*embedded_permission_element_initiated=*/true,
+      request_state.GetWeakPtr());
+  manager_->AddRequest(web_contents()->GetPrimaryMainFrame(),
+                       std::move(request));
+  WaitForBubbleToBeShown();
+
+  ASSERT_TRUE(prompt_factory_->is_visible());
+  EXPECT_EQ(prompt_factory_->show_count(), 1);
+  ASSERT_NE(manager_->GetEmbeddedPromptFlowModel(), nullptr);
+  EXPECT_EQ(manager_->GetEmbeddedPromptFlowModel()->prompt_variant(),
+            EmbeddedPermissionPromptFlowModel::Variant::kAsk);
+
+  // Accepting the site-level prompt should advance to Variant::kOsPrompt even
+  // though HostContentSettingsMap still reports CONTENT_SETTING_ASK.
+  Accept();
+
+  EXPECT_TRUE(request_state.granted);
+  EXPECT_FALSE(request_state.finished);
+  EXPECT_TRUE(prompt_factory_->is_visible());
+  EXPECT_EQ(prompt_factory_->show_count(), 2);
+  ASSERT_NE(manager_->GetEmbeddedPromptFlowModel(), nullptr);
+  EXPECT_EQ(manager_->GetEmbeddedPromptFlowModel()->prompt_variant(),
+            EmbeddedPermissionPromptFlowModel::Variant::kOsPrompt);
+
+  // Once the OS permission prompt resolves, the flow should finalize cleanly
+  // rather than looping back to Variant::kAsk.
+  client_.SetCanPromptSystemPermission(false);
+  manager_->AdvanceOrFinalizeEmbeddedPromptFlow();
+  task_environment()->RunUntilIdle();
+
+  EXPECT_TRUE(request_state.finished);
+  EXPECT_FALSE(prompt_factory_->is_visible());
+  EXPECT_FALSE(manager_->IsRequestInProgress());
+  EXPECT_EQ(prompt_factory_->show_count(), 2);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 }  // namespace permissions

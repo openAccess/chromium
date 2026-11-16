@@ -14,6 +14,7 @@
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/pwc/pwc_api_binder.h"
+#include "chrome/browser/pwc/pwc_content_settings_policy.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "components/back_forward_cache/disabled_reason_id.h"
 #include "content/public/browser/back_forward_cache.h"
@@ -22,6 +23,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/common/drop_data.h"
@@ -166,21 +168,27 @@ PrivilegedWebContents::GetPermissionStatus(
         blink::mojom::PermissionStatus::DENIED,
         content::PermissionStatusSource::FEATURE_POLICY);
   }
-  if (!pwc->permission_delegate_) {
-    return content::PermissionResult(
-        blink::mojom::PermissionStatus::DENIED,
-        content::PermissionStatusSource::FEATURE_POLICY);
+  PwcContentSettingPolicy policy = GetPwcContentSettingPolicy(type);
+  switch (policy) {
+    case PwcContentSettingPolicy::kDelegated:
+      if (pwc->permission_delegate_) {
+        auto result = pwc->permission_delegate_->GetPermissionStatus(
+            render_frame_host, type);
+        if (result.has_value()) {
+          return result;
+        }
+      }
+      // Unhandled permission types default to DENIED to prevent ambient
+      // HostContentSettingsMap tab permissions from leaking into the PWC.
+      return content::PermissionResult(
+          blink::mojom::PermissionStatus::DENIED,
+          content::PermissionStatusSource::FEATURE_POLICY);
+
+    case PwcContentSettingPolicy::kBlocked:
+      return content::PermissionResult(
+          blink::mojom::PermissionStatus::DENIED,
+          content::PermissionStatusSource::FEATURE_POLICY);
   }
-  auto result =
-      pwc->permission_delegate_->GetPermissionStatus(render_frame_host, type);
-  if (result.has_value()) {
-    return result;
-  }
-  // Unhandled permission types default to DENIED to prevent ambient
-  // HostContentSettingsMap tab permissions from leaking into the PWC.
-  return content::PermissionResult(
-      blink::mojom::PermissionStatus::DENIED,
-      content::PermissionStatusSource::FEATURE_POLICY);
 }
 
 PrivilegedWebContents::PrivilegedWebContents(
@@ -339,6 +347,28 @@ void PrivilegedWebContents::ContentsZoomChange(bool zoom_in) {
   if (embedder_delegate_) {
     embedder_delegate_->ContentsZoomChange(zoom_in);
   }
+}
+
+void PrivilegedWebContents::SetOverrideZoomLevel(
+    std::optional<double> zoom_level) {
+  if (override_zoom_level_ == zoom_level) {
+    return;
+  }
+  override_zoom_level_ = zoom_level;
+  if (content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame()) {
+    if (content::RenderWidgetHost* rwh = rfh->GetRenderWidgetHost();
+        rwh && rwh->GetView()) {
+      rwh->SynchronizeVisualProperties();
+    }
+  }
+}
+
+std::optional<double> PrivilegedWebContents::GetOverrideZoomLevel(
+    content::WebContents* source) {
+  if (source != web_contents_.get()) {
+    return std::nullopt;
+  }
+  return override_zoom_level_;
 }
 
 void PrivilegedWebContents::RequestMediaAccessPermission(

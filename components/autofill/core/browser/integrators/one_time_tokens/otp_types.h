@@ -56,6 +56,9 @@ struct OtpTarget {
   LocalFrameToken form_owner;
 };
 
+// Duration for which an arrived Gmail OTP remains valid in the Autofill layer.
+inline constexpr base::TimeDelta kGmailOtpCacheDuration = base::Minutes(3);
+
 // Uniquely identifies an OTP candidate and establishes chronological ordering
 // across resends.
 struct OtpTokenIdentity {
@@ -77,6 +80,9 @@ struct OtpTokenIdentity {
   // (timestamp-only comparison where ties return false, regardless of token
   // value or sender).
   bool IsStrictlyNewerThan(const OtpTokenIdentity& other) const;
+
+  // Returns the cache TTL for this token identity.
+  base::TimeDelta CacheDuration() const;
 
   friend bool operator==(const OtpTokenIdentity&,
                          const OtpTokenIdentity&) = default;
@@ -130,12 +136,15 @@ struct OtpSuggestionData {
 };
 
 // Used for histograms. Do not reorder.
+// LINT.IfChange(OneTimeTokensPhishGuardVerdict)
 enum class OneTimeTokensPhishGuardVerdict {
   kUnknown = 0,
   kPhishing = 1,
   kNotPhishing = 2,
-  kMaxValue = kNotPhishing,
+  kTimedOut = 3,
+  kMaxValue = kTimedOut,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:OneTimeTokensPhishGuardVerdict)
 
 std::string_view OneTimeTokensPhishGuardVerdictToStringView(
     OneTimeTokensPhishGuardVerdict verdict);
@@ -147,6 +156,45 @@ enum class DeliveryState {
   kAvailable,
   kFieldGone,
 };
+
+// Outcome of evaluating a proactive OTP suggestion popup trigger on a field.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(OtpProactiveTriggerOutcome)
+enum class OtpProactiveTriggerOutcome {
+  kSuppressed = 0,
+  kTriggeredAndSuggestionsShown = 1,
+  kMaxValue = kTriggeredAndSuggestionsShown,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/one_time_tokens/enums.xml:OtpProactiveTriggerOutcome)
+
+// Reason a proactive OTP suggestion popup trigger was suppressed after passing
+// verification-stage delivery gates.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// LINT.IfChange(OtpProactiveTriggerSuppressionReason)
+enum class OtpProactiveTriggerSuppressionReason {
+  kAlreadyOfferedOrOlderToken = 0,
+  kNonOtpFieldFocused = 1,
+  kTypedInputPresent = 2,
+  kDifferentOtpFieldFocused = 3,
+  kProactiveUnfocusedOnAndroid = 4,
+  // Not recorded until Android soft-keyboard visibility is plumbed into
+  // `OtpSecurityGateway::ProactiveTriggerContext` (crbug.com/451991285).
+  kKeyboardNotVisibleOnAndroid = 5,
+  kTargetFieldMissing = 6,
+  // Currently never recorded: `OtpCoordinator` passes `frame_active = true`
+  // because `IsTargetActiveAndEligible()` already excludes inactive frames.
+  kFrameInactive = 7,
+  // Edge case: the document started using WebOTP after the SMS candidate was
+  // verified, e.g. while its proactive trigger was deferred.
+  kWebOtpBlocked = 8,
+  // Edge case: the user turned off Gmail OTP filling after the candidate was
+  // verified, e.g. while its proactive trigger was deferred.
+  kUserNotOptedIn = 9,
+  kMaxValue = kUserNotOptedIn,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/one_time_tokens/enums.xml:OtpProactiveTriggerSuppressionReason)
 
 }  // namespace autofill
 

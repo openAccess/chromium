@@ -28,6 +28,8 @@
 #include "third_party/blink/renderer/core/xml/parser/xml_document_parser_rs.h"
 
 #include "base/auto_reset.h"
+#include "base/containers/span_rust.h"
+#include "base/memory/safety_checks.h"
 #include "base/notimplemented.h"
 #include "base/strings/string_view_rust.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -114,26 +116,19 @@ bool HandleNamespaceAttributes(
     xml_ffi::NamespacesIterator& namespaces,
     bool& encountered_namespace_reset,
     ExceptionState& exception_state) {
-  rust::String prefix;
-  rust::String uri;
-
-  while (namespaces_next(namespaces, prefix, uri)) {
-    AtomicString namespace_q_name = g_xmlns_atom;
-    if (prefix.length()) {
-      namespace_q_name = AtomicString(
-          StrCat({g_xmlns_with_colon, RustStrToWtfString(prefix)}));
-    }
+  xml_ffi::NamespaceView namespace_view;
+  while (namespaces_next(namespaces, namespace_view)) {
     std::optional<QualifiedName> parsed_name = Element::ParseAttributeName(
-        xmlns_names::kNamespaceURI, namespace_q_name, exception_state);
+        xmlns_names::kNamespaceURI, namespace_view.q_name, exception_state);
     if (!parsed_name) {
       DCHECK(exception_state.HadException());
       return false;
     }
     if (parsed_name->LocalName() == g_xmlns_atom) {
-      encountered_namespace_reset = uri.empty();
+      encountered_namespace_reset = namespace_view.uri.empty();
     }
     prefixed_attributes.push_back(
-        Attribute(std::move(*parsed_name), RustStrToAtomicString(uri)));
+        Attribute(std::move(*parsed_name), namespace_view.uri));
   }
   return true;
 }
@@ -281,6 +276,13 @@ void XMLDocumentParserRs::Append(const String& xml_string) {
 }
 
 void XMLDocumentParserRs::AppendToSource(const String& xml_string) {
+  if (xml_string.Is8Bit() && xml_string.ContainsOnlyAsciiOrEmpty()) {
+    // ASCII is valid UTF-8, so the characters can be appended without
+    // converting them.
+    xml_ffi::append_to_source(*read_state_,
+                              base::SpanToRustSlice(xml_string.Span8()));
+    return;
+  }
   if (RuntimeEnabledFeatures::XMLParserReplaceLoneSurrogatesEnabled()) {
     // Replace lone surrogates with U+FFFD so the parser does a best-effort
     // parse instead of rejecting the whole input (crbug.com/40814739).
@@ -305,7 +307,18 @@ void XMLDocumentParserRs::ProcessEvents() {
       if (!pending_src_.empty()) {
         AppendToSource(pending_src_.ReleaseString());
       }
-      xml_ffi::process_next_event(*read_state_);
+      {
+        // Reading an event makes and frees many short-lived allocations in
+        // the Rust parser. Freeing them through the Scheduler-Loop Quarantine,
+        // which holds on to each freed allocation until the end of the task,
+        // is expensive, so this excludes reading events (which also frees the
+        // previous event) from it. This only runs Rust code, and doesn't call
+        // into Blink or script, which only happens in dispatch_event(). In
+        // builds with DCHECKs, read_next_event() verifies this.
+        base::ScopedSafetyChecksExclusion exclusion;
+        xml_ffi::read_next_event(*read_state_);
+      }
+      xml_ffi::dispatch_event(*read_state_);
     }
     if (xml_ffi::saw_error(*read_state_)) {
       rust::String error_message = "";
@@ -614,6 +627,16 @@ void XMLDocumentParserRs::StartElementNs(
                         : CreateElementFlags::ByParser(document_);
   if (ShouldMarkScriptAlreadyStarted()) {
     flags.SetAlreadyStarted(true);
+  }
+  if (reactions.has_value()) {
+    // A synchronous custom element constructor is about to run, so the element
+    // must be fully constructed: some elements (e.g. HTMLInputElement) only
+    // partially construct themselves when created by the parser, deferring the
+    // rest to ParserSetAttributes()/ParserDidSetAttributes(), which is not
+    // used for synchronous custom elements (see below). Mirror
+    // HTMLConstructionSite::CreateElement and clear the CreatedByParser flag.
+    // See crbug.com/1080673 and crbug.com/583431476.
+    flags.SetCreatedByParser(false, nullptr);
   }
 
   Element* new_element =

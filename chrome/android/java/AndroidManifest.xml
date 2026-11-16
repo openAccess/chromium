@@ -239,10 +239,6 @@ by a child template that "extends" this file.
         android:appComponentFactory="org.chromium.chrome.browser.base.SplitCompatAppComponentFactory"
         android:enableOnBackInvokedCallback="true"
         android:zygotePreloadNativeLib="lib{{ library_name }}.so"
-        {% if is_32_bit_multiarch_browser is defined and is_32_bit_multiarch_browser == 'true' %}
-        android:multiArch="true"
-        android:use32bitAbi="true"
-        {% endif %}
         {% block extra_application_attributes %}{% endblock %}>
 
         {% if channel in ['canary', 'dev', 'default'] %}
@@ -1397,9 +1393,18 @@ by a child template that "extends" this file.
       <service android:name="org.chromium.content.app.PrivilegedProcessService{{ i }}"
           android:process="{{ privileged_process_name }}"
           android:permission="{{ manifest_package }}.permission.CHILD_SERVICE"
-          android:isolatedProcess="false"
           android:exported="false" />
 
+      {% endfor %}
+
+      {% for i in range(2) %}
+      <service android:name="org.chromium.content.app.SandboxedGpuProcessService{{ i }}"
+          android:process=":sandboxed_gpu_process{{ i }}"
+          android:permission="{{ manifest_package }}.permission.CHILD_SERVICE"
+          {% if sandboxed_gpu_service_extra_attr != '' %}
+          {{ sandboxed_gpu_service_extra_attr|safe }}
+          {% endif %}
+          android:exported="false" />
       {% endfor %}
 
       <meta-data android:name="android.allow_multiple_resumed_activities" android:value="true" />

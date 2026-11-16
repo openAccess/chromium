@@ -59,6 +59,13 @@ BASE_FEATURE(kAndroidDesktopStyleScrollbars, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAndroidDownloadableFontsMatching,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+#if BUILDFLAG(IS_ANDROID)
+// Restarts input before showing the keyboard when a previous restartInput()
+// was skipped while the keyboard was hidden. Kill switch for b/500230096.
+BASE_FEATURE(kAndroidRestartInputAfterHiddenStateUpdate,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if BUILDFLAG(IS_WIN)
 // Flag guard for Windows Arabic Indic digit input solution.
 // crbug.com/440381284
@@ -74,6 +81,15 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    &kAsyncBeforeUnload,
                    "AsyncBeforeUnloadTimeout",
                    base::Milliseconds(500));
+
+// Uses drag session IDs to prevent stale Aura drag callbacks and cleanup from
+// modifying a newer drag.
+BASE_FEATURE(kAuraDragDropSessionId,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
 
 // Synchronously continuing with navigation can lead to trying to start another
 // navigation synchronously while the first navigation is still being processed
@@ -318,7 +334,7 @@ BASE_FEATURE_ENUM_PARAM(FontDataServiceTypefaceType,
                         FontDataServiceTypefaceType::kFontations,
                         &font_data_service_typeface);
 #else
-BASE_FEATURE(kFontDataServiceChromeOS, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kFontDataServiceChromeOS, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE_ENUM_PARAM(FontDataServiceTypefaceType,
                         kFontDataServiceTypefaceType,
                         &kFontDataServiceChromeOS,
@@ -503,6 +519,10 @@ BASE_FEATURE(kLocalNetworkAccessForFencedFrameNavigations,
 BASE_FEATURE(kLocalNetworkAccessForFencedFrameNavigationsWarningOnly,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Schedules worker GPU streams (kGpuStreamIdWorker) at
+// gpu::SchedulingPriority::kLow instead of kGpuStreamPriorityWorker (kNormal).
+BASE_FEATURE(kLowPriorityGpuWorkerStream, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // When enabled, allows the ReusePrerenderingProcessForMainFrames feature
 // and the ProcessPerSiteUpToMainFrameThreshold feature to reuse processes
 // even when DevTools was ever attached.
@@ -608,7 +628,16 @@ BASE_FEATURE(kPreloadActivationReportWithExtensionInterception,
 // feature.
 BASE_FEATURE(kPreloadingConfig, base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kPrioritizeCompositorTaskRunnerOnStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kPrioritizeResizeTaskRunnerOnStartup,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Binds the navigation `WebUIURLLoaderFactory` receiver onto the navigation
+// network response task runner so WebUI navigation requests are dispatched
+// ahead of default UI thread tasks.
+BASE_FEATURE(kPrioritizeWebUINavigationURLLoader,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // A misunderstanding when fixing crbug.com/40076091 meant that non-speculative
@@ -875,6 +904,28 @@ BASE_FEATURE(kSkipUrlInvalidationForUnchangedSameDocumentReplacement,
 BASE_FEATURE(kStrictHighRankProcessLRU, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif
 
+// When enabled, UI thread proxies of a main frame document's network
+// subresource URLLoaderFactory (e.g. the extensions WebRequest proxy) bind
+// their receivers to a kHigh priority task queue instead of the UI thread's
+// default task queue, so that starting a subresource request isn't delayed by
+// unrelated default-queue work.
+BASE_FEATURE(kSubresourceLoaderProxyTaskQueue,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+// When true, only documents that commit while their WebContents is visible use
+// the kHigh priority task queue.
+BASE_FEATURE_PARAM(bool,
+                   kSubresourceLoaderProxyTaskQueueVisibleOnly,
+                   &kSubresourceLoaderProxyTaskQueue,
+                   true);
+// When true, prerendered main frames also use the kHigh priority task queue
+// (subject to `kSubresourceLoaderProxyTaskQueueVisibleOnly`). False by default
+// so background prerenders do not preempt default-queue UI work for the primary
+// page.
+BASE_FEATURE_PARAM(bool,
+                   kSubresourceLoaderProxyTaskQueueIncludePrerendering,
+                   &kSubresourceLoaderProxyTaskQueue,
+                   false);
+
 // Allows swipe left/right from touchpad change browser navigation.
 // On platforms that don't have this enabled by default, the overscroll gesture
 // is handled at a different level and not through the interpretation of scroll
@@ -897,6 +948,11 @@ BASE_FEATURE(kTrustedTypesFromLiteral, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kUpdateDirectManipulationHelperOnParentChange,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Exercises event-based I/O in ordinary Win32 renderers independently of Basic
+// Process activation. Other process types retain the IOCP backend.
+BASE_FEATURE(kUseEventBasedMessagePumpForIOInRenderer,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
 // Validate the code signing identity of the network process before establishing
@@ -915,13 +971,12 @@ BASE_FEATURE(kWarmUpNetworkProcess, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kWebAssemblyDynamicTiering, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables in-process resource loading for WebUI renderer processes.
-BASE_FEATURE(kWebUIInProcessResourceLoading,
-#if BUILDFLAG(IS_ANDROID)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+BASE_FEATURE(kWebUIInProcessResourceLoading, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Optimizes WebUI `LocalResourceLoaderConfig` generation and avoids redundant
+// deep-clones during navigation commit.
+BASE_FEATURE(kWebUIOptimizeLocalResourceLoaderConfig,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables WebOTP calls in cross-origin iframes if allowed by Permissions
 // Policy.

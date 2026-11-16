@@ -14,6 +14,8 @@ import static org.junit.Assert.assertTrue;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.os.Build;
+import android.view.View;
+import android.view.ViewGroup.MarginLayoutParams;
 
 import androidx.core.graphics.Insets;
 import androidx.test.filters.MediumTest;
@@ -39,25 +41,35 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.compositor.layouts.Layout.Orientation;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
+import org.chromium.chrome.browser.ui.RootUiCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeControllerImpl;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
+import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils.TopScalpPageLoadState;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
+import org.chromium.chrome.browser.ui.system.StatusBarColorController;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.ActivityTestUtils;
+import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.util.NewTabPageTestUtils;
+import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
+import org.chromium.components.browser_ui.widget.scrim.ScrimProperties;
 import org.chromium.content_public.browser.test.util.UiUtils;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.ui.UiSwitches;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.ui.test.util.RenderTestRule;
 import org.chromium.ui.test.util.RenderTestRule.Component;
@@ -67,9 +79,6 @@ import java.io.IOException;
 
 @RunWith(ChromeJUnit4ClassRunner.class)
 @DoNotBatch(reason = "Testing startup behavior")
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-})
 @Restriction({DeviceFormFactor.PHONE, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
 @MinAndroidSdkLevel(Build.VERSION_CODES.R)
 @EnableFeatures(ChromeFeatureList.DRAW_CUTOUT_EDGE_TO_EDGE)
@@ -103,6 +112,12 @@ public class EdgeToEdgeInstrumentationTest {
             HistogramWatcher.newBuilder()
                     .expectBooleanRecord("Android.EdgeToEdge.Eligible2.OnCreateController", true)
                     .expectNoRecords("Android.EdgeToEdge.IneligibilityReason2.OnCreateController")
+                    .build();
+
+    HistogramWatcher mTopEligibleHistograms =
+            HistogramWatcher.newBuilder()
+                    .expectBooleanRecord("Android.EdgeToEdge.Top.Eligible", true)
+                    .expectNoRecords("Android.EdgeToEdge.Top.IneligibilityReason")
                     .build();
 
     @Before
@@ -310,6 +325,28 @@ public class EdgeToEdgeInstrumentationTest {
 
     @Test
     @MediumTest
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopEdgeToEdge_PageLoadMetrics() {
+        mTopEligibleHistograms.assertExpected("Incorrect top eligibility histogram recordings");
+        UserActionTester userActionTester = new UserActionTester();
+        try {
+            var watcher =
+                    HistogramWatcher.newSingleRecordWatcher(
+                            "Android.EdgeToEdge.TopScalp.PageLoadState",
+                            TopScalpPageLoadState.OPTED_IN_SCROLLABLE_SCALP);
+            goToEdge();
+            watcher.assertExpected();
+            Assert.assertTrue(
+                    "MobilePageLoadedWithTopToEdge should be recorded on viewport-fit=cover"
+                            + " page load",
+                    userActionTester.getActions().contains("MobilePageLoadedWithTopToEdge"));
+        } finally {
+            userActionTester.tearDown();
+        }
+    }
+
+    @Test
+    @MediumTest
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
     public void testNavigationBarColor() {
         optOutOfToEdge();
@@ -434,6 +471,83 @@ public class EdgeToEdgeInstrumentationTest {
     }
 
     /**
+     * Verifies that when the edge-to-edge top scalp draws the status bar area, a scrim that affects
+     * the status bar is not also blended into the status bar color. The scrim view already draws
+     * over the scalp, so blending would darken it twice.
+     */
+    @Test
+    @MediumTest
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testTopScalp_statusBarScrimNotBlendedIntoStatusBarColor() {
+        assertTrue(
+                "Top edge-to-edge (top scalp) should be enabled for this test.",
+                EdgeToEdgeUtils.isTopEdgeToEdgeEnabled()
+                        && EdgeToEdgeUtils.isEdgelessTopInsetSupported(mActivity));
+        optOutOfToEdge();
+
+        RootUiCoordinator rootUiCoordinator = mActivity.getRootUiCoordinatorForTesting();
+        StatusBarColorController statusBarColorController =
+                rootUiCoordinator.getStatusBarColorController();
+        ScrimManager scrimManager = rootUiCoordinator.getScrimManager();
+        View anchorView = mActivity.findViewById(R.id.compositor_view_holder);
+
+        int unscrimmedStatusBarColor =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () ->
+                                mActivity
+                                        .getEdgeToEdgeManager()
+                                        .getEdgeToEdgeSystemBarColorHelper()
+                                        .getStatusBarColor());
+
+        PropertyModel scrimModel =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            PropertyModel model =
+                                    new PropertyModel.Builder(ScrimProperties.ALL_KEYS)
+                                            .with(ScrimProperties.ANCHOR_VIEW, anchorView)
+                                            .with(
+                                                    ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW,
+                                                    true)
+                                            .with(ScrimProperties.AFFECTS_STATUS_BAR, true)
+                                            .build();
+                            scrimManager.showScrim(model);
+                            scrimManager.forceAnimationToFinish(model);
+                            return model;
+                        });
+
+        try {
+            CriteriaHelper.pollUiThread(
+                    () -> {
+                        Integer scrimStatusBarColor =
+                                scrimManager.getStatusBarColorSupplier().get();
+                        boolean isScrimStatusBarColorApplied =
+                                scrimStatusBarColor != null
+                                        && scrimStatusBarColor != Color.TRANSPARENT;
+                        Criteria.checkThat(isScrimStatusBarColorApplied, is(true));
+                        Criteria.checkThat(
+                                statusBarColorController.getScrimColorForTesting(),
+                                is(scrimStatusBarColor));
+                    });
+
+            ThreadUtils.runOnUiThreadBlocking(
+                    () ->
+                            assertEquals(
+                                    "Scrim should not be blended into the status bar color when"
+                                            + " the top scalp draws the status bar area.",
+                                    unscrimmedStatusBarColor,
+                                    mActivity
+                                            .getEdgeToEdgeManager()
+                                            .getEdgeToEdgeSystemBarColorHelper()
+                                            .getStatusBarColor()));
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () ->
+                            scrimManager.hideScrim(
+                                    scrimModel, /* animate= */ false, /* duration= */ 0));
+        }
+    }
+
+    /**
      * Verifies that when NEW_TAB_PAGE_CUSTOMIZATION_V2 and EDGE_TO_EDGE_TOP_INSET are enabled,
      * navigating from an NTP with a customized background theme (where top edge-to-edge is active)
      * to a standard web page properly transitions isDrawingToTopEdge to false without displacing
@@ -466,5 +580,84 @@ public class EdgeToEdgeInstrumentationTest {
                         NtpCustomizationConfigManager.getInstance().resetForTesting();
                     });
         }
+    }
+
+    /**
+     * Verifies that when top edge-to-edge is enabled, switching directly from a
+     * customized-background NTP tab (where TOP_SCALP is hidden and control container topMargin is
+     * 0) back to an already-loaded viewport-fit=cover tab (where TOP_SCALP is scrollable and
+     * onControlsOffsetChanged does not fire) restores the control container's topMargin so the
+     * toolbar does not overlap the status bar.
+     */
+    @Test
+    @MediumTest
+    @EnableFeatures({
+        ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true",
+        ChromeFeatureList.EDGE_TO_EDGE_EVERYWHERE
+    })
+    public void testTopEdgeToEdge_controlContainerTopMarginRestoredOnDirectTabSwitch() {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    NtpCustomizationConfigManager.getInstance()
+                            .setBackgroundTypeForTesting(NtpBackgroundType.CHROME_COLOR);
+                });
+
+        // 1. Load an opted-in viewport-fit=cover web page in the initial tab.
+        mActivityTestRule.loadUrl(mTestServer.getURL(TEST_COVER_PAGE));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(mEdgeToEdgeController.isDrawingToTopEdge(), is(true));
+                    Criteria.checkThat(
+                            mEdgeToEdgeController.tabShouldDrawFullTopEdgeToEdge(), is(false));
+                });
+        int systemTopInset =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mEdgeToEdgeController.getSystemTopInsetPx());
+        assertTrue("Expected positive systemTopInset on phone", systemTopInset > 0);
+
+        View controlContainer =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> mActivity.findViewById(R.id.control_container));
+        View toolbar =
+                ThreadUtils.runOnUiThreadBlocking(() -> mActivity.findViewById(R.id.toolbar));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            ((MarginLayoutParams) controlContainer.getLayoutParams()).topMargin,
+                            is(systemTopInset));
+                    Criteria.checkThat(toolbar.getPaddingTop(), is(0));
+                });
+
+        // 2. Open a new customized-background NTP tab on top; TOP_SCALP hides and topMargin
+        // becomes 0 while internal toolbar padding handles the status bar inset.
+        Tab ntpTab =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            mActivity.getTabCreator(false).launchNtp(TabLaunchType.FROM_STARTUP);
+                            return mActivity.getActivityTab();
+                        });
+        NewTabPageTestUtils.waitForNtpLoaded(ntpTab);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            mEdgeToEdgeController.tabShouldDrawFullTopEdgeToEdge(), is(true));
+                    Criteria.checkThat(
+                            ((MarginLayoutParams) controlContainer.getLayoutParams()).topMargin,
+                            is(0));
+                    Criteria.checkThat(toolbar.getPaddingTop(), is(systemTopInset));
+                });
+
+        // 3. Close the customized NTP tab directly (without entering the Tab Switcher Hub) so the
+        // already-loaded viewport-fit=cover tab becomes active without an offset delta.
+        ChromeTabUtils.closeCurrentTab(InstrumentationRegistry.getInstrumentation(), mActivity);
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            mEdgeToEdgeController.tabShouldDrawFullTopEdgeToEdge(), is(false));
+                    Criteria.checkThat(
+                            ((MarginLayoutParams) controlContainer.getLayoutParams()).topMargin,
+                            is(systemTopInset));
+                    Criteria.checkThat(toolbar.getPaddingTop(), is(0));
+                });
     }
 }

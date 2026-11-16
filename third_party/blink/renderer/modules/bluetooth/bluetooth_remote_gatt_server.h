@@ -5,14 +5,15 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_BLUETOOTH_BLUETOOTH_REMOTE_GATT_SERVER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_BLUETOOTH_BLUETOOTH_REMOTE_GATT_SERVER_H_
 
+#include <stdint.h>
+
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/mojom/bluetooth/web_bluetooth.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_typedefs.h"
-#include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/modules/bluetooth/bluetooth_device.h"
-#include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/modules/event_target_modules.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_receiver_set.h"
@@ -25,12 +26,13 @@ namespace blink {
 class BluetoothDevice;
 class BluetoothRemoteGATTService;
 class ExceptionState;
+class ExecutionContext;
 class ScriptState;
 
 // BluetoothRemoteGATTServer provides a way to interact with a connected
 // bluetooth peripheral.
 class BluetoothRemoteGATTServer
-    : public ScriptWrappable,
+    : public EventTarget,
       public mojom::blink::WebBluetoothServerClient {
   DEFINE_WRAPPERTYPEINFO();
 
@@ -39,6 +41,8 @@ class BluetoothRemoteGATTServer
 
   // mojom::blink::WebBluetoothServerClient:
   void GATTServerDisconnected() override;
+  void MaxWriteWithoutResponseSizeChanged(
+      uint16_t max_write_without_response_size) override;
 
   // The Active Algorithms set is maintained so that disconnection, i.e.
   // disconnect() method or the device disconnecting by itself, can be detected
@@ -64,12 +68,21 @@ class BluetoothRemoteGATTServer
 
   void DispatchDisconnected();
 
-  // Interface required by Garbage Collectoin:
+  // EventTarget:
+  const AtomicString& InterfaceName() const override;
+  ExecutionContext* GetExecutionContext() const override;
+
+  // Interface required by Garbage Collection:
   void Trace(Visitor*) const override;
 
   // IDL exposed interface:
   BluetoothDevice* device() { return device_.Get(); }
   bool connected() { return connected_; }
+  uint16_t maxWriteWithoutResponseSize() const {
+    return max_write_without_response_size_;
+  }
+  DEFINE_ATTRIBUTE_EVENT_LISTENER(maxwritewithoutresponsesizechanged,
+                                  kMaxwritewithoutresponsesizechanged)
   ScriptPromise<BluetoothRemoteGATTServer> connect(ScriptState*,
                                                    ExceptionState&);
   void disconnect(ScriptState*, ExceptionState&);
@@ -91,7 +104,8 @@ class BluetoothRemoteGATTServer
                               String service_uuid = String());
 
   void ConnectCallback(ScriptPromiseResolver<BluetoothRemoteGATTServer>*,
-                       mojom::blink::WebBluetoothResult);
+                       mojom::blink::WebBluetoothResult,
+                       uint16_t max_write_without_response_size);
   void GetPrimaryServicesCallback(
       const String& requested_service_uuid,
       mojom::blink::WebBluetoothGATTQueryQuantity,
@@ -111,6 +125,12 @@ class BluetoothRemoteGATTServer
 
   Member<BluetoothDevice> device_;
   bool connected_;
+
+  // The largest payload, in octets, that writeValueWithoutResponse() can send
+  // in a single ATT Write Command. Initialized to the default ATT_MTU of 23
+  // octets minus the 3-octet ATT Write Command header, established on connect
+  // and updated via MaxWriteWithoutResponseSizeChanged().
+  uint16_t max_write_without_response_size_ = 20;
 
   FrameScheduler::SchedulingAffectingFeatureHandle
       feature_handle_for_scheduler_;

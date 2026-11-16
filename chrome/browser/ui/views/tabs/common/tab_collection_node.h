@@ -6,11 +6,14 @@
 #define CHROME_BROWSER_UI_VIEWS_TABS_COMMON_TAB_COLLECTION_NODE_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/types/pass_key.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
@@ -59,14 +62,12 @@ class TabCollectionNode {
   std::unique_ptr<views::View> Initialize();
 
   // Deinitializes all the child nodes in a recursive manner.
-  void Deinitialize();
+  virtual void Deinitialize();
 
-  // Gets the collection under this subtree that has the associated handle.
-  // Returns nullptr if no such node exists.
-  TabCollectionNode* GetNodeForHandle(
-      const tabs::TabCollectionNodeHandle& handle);
-  const TabCollectionNode* GetNodeForHandle(
-      const tabs::TabCollectionNodeHandle& handle) const;
+  // Returns whether this node or a node under it has the associated handle.
+  // Nodes are looked up by handle on the root, see
+  // RootTabCollectionNode::GetNodeForHandle().
+  bool Contains(const tabs::TabCollectionNodeHandle& handle) const;
   TabCollectionNode* GetParentNodeForHandle(
       const tabs::TabCollectionNodeHandle& handle);
   const TabCollectionNode* GetParentNodeForHandle(
@@ -79,15 +80,22 @@ class TabCollectionNode {
   // Creates a new child and adds it at model_index. If `perform_initialization`
   // is true, then the entire subtree of the node data will be constructed as
   // well, if not, then only the view for the child is constructed and added.
+  // `on_node_created` runs with the new node once it and its subtree exist and
+  // before its view is added to the view hierarchy.
   void AddNewChild(base::PassKey<TabCollectionNode> pass_key,
                    tabs::ConstChildPtr node_data,
                    size_t model_index,
-                   bool perform_initialization);
+                   bool perform_initialization,
+                   base::OnceCallback<void(TabCollectionNode*)>
+                       on_node_created = base::DoNothing());
 
-  // Removes the child and removes and destroys the view.
+  // Removes the child and removes and destroys the view. If `remove_for_detach`
+  // is true, the view is removed directly from `node_view_` rather than via
+  // `remove_child_from_node_`.
   void RemoveChild(base::PassKey<TabCollectionNode> pass_key,
                    const tabs::TabCollectionNodeHandle& handle,
-                   bool perform_deinitialization);
+                   bool perform_deinitialization,
+                   bool remove_for_detach = false);
 
   // Moves the node to the new index within the same parent. Also updates the
   // z-order of the moved child to the highest to ensure it shows over other
@@ -188,6 +196,10 @@ class TabCollectionNode {
 
   void NotifyTabSelectionChanged();
 
+  // Updates this tab node's accessible `PosInSet` and `SetSize` attributes on
+  // its view, skipping redundant updates when the values have not changed.
+  void UpdateAccessibleTabIndex(int pos_in_set, int set_size);
+
   void SetController(TabStripCollectionController* controller);
   TabStripCollectionController* GetController() {
     return tab_strip_controller_;
@@ -225,6 +237,7 @@ class TabCollectionNode {
   const Type type_;
   const tabs::TabCollectionNodeHandle handle_;
   tabs::ConstChildPtr node_data_;
+  const TabStripOrientation orientation_;
 
   // 1:1 mapping of the collections children.
   NodeChildren children_;
@@ -257,7 +270,10 @@ class TabCollectionNode {
   // Allows views to create the Tab Context Menu.
   raw_ptr<TabStripCollectionController> tab_strip_controller_ = nullptr;
 
-  const TabStripOrientation orientation_;
+  // Cached accessible position and set size for `Type::TAB` nodes to avoid
+  // redundant `ViewAccessibility` mutations and serialization notifications.
+  std::optional<int> ax_pos_in_set_;
+  std::optional<int> ax_set_size_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TABS_COMMON_TAB_COLLECTION_NODE_H_

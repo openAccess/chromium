@@ -55,7 +55,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Kiosk.Launch.CryptohomeFailure" enum="LoginFailureReason"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>apotapchuk@chromium.org</owner>
   <owner>hidehiko@chromium.org</owner>
   <summary>Tracks cryptohome failure during kiosk launch.</summary>
@@ -85,7 +85,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Kiosk.LaunchDuration.{KioskType}" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>yixie@chromium.org</owner>
   <owner>chromeos-kiosk-eng@google.com</owner>
   <summary>Records the total duration it takes to launch a kiosk app.</summary>

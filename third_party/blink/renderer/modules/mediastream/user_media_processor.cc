@@ -405,6 +405,77 @@ bool IsDeviceAudioCapture(const MediaStreamComponent* audio_component) {
          MediaStreamType::DEVICE_AUDIO_CAPTURE;
 }
 
+std::optional<MediaStreamAudioProcessingLayout> MakeAudioProcessingLayout(
+    const AudioCaptureSettings& settings,
+    const MediaStreamDevice& device) {
+  if (device.type == mojom::blink::MediaStreamType::DEVICE_AUDIO_CAPTURE) {
+    return MediaStreamAudioProcessingLayout(
+        settings.audio_processing_properties(), device.input.effects(),
+        settings.num_channels());
+  }
+  if (device.type == mojom::blink::MediaStreamType::DISPLAY_AUDIO_CAPTURE) {
+    // TODO(crbug.com/40247860, crbug.com/415952276): retire this
+    // logic when restrictOwnAudio is launched.
+    return MediaStreamAudioProcessingLayout::
+        MaybeMakeForProcessedDisplayCapture(
+            settings.audio_processing_properties(), settings.num_channels());
+  }
+  return std::nullopt;
+}
+
+bool NeedsProcessedSource(
+    const std::optional<MediaStreamAudioProcessingLayout>& processing_layout) {
+  return processing_layout && processing_layout->NeedWebrtcAudioProcessing();
+}
+
+bool NeedsProcessedSource(const AudioCaptureSettings& settings,
+                          const MediaStreamDevice& device) {
+  return NeedsProcessedSource(MakeAudioProcessingLayout(settings, device));
+}
+
+// Returns true if `audio_source` can be reused to satisfy `settings` on the
+// same audio device:
+// 1. Session identity: `HasSameSessionIdentityProperties()` verifies that
+//    `echo_cancellation_mode` and `voice_isolation` match the source's initial
+//    properties.
+// 2. Processing pipeline: `IsProcessedSource()` must match
+//    `NeedsProcessedSource()` so a `ProcessedLocalAudioSource` and a
+//    `LocalMediaStreamAudioSource` with the same session identity are never
+//    reused for each other.
+// 3. Unprocessed source settings: Unlike processed sources, active unprocessed
+//    sources are not passed to `SelectSettings`, so a new request can pick a
+//    different `disable_local_echo`, `render_to_associated_sink`, or buffer
+//    size (`latency`). Since those settings are fixed when the source is
+//    created, only reuse an unprocessed source when all three match.
+bool CanReuseAudioSource(const MediaStreamAudioSource& audio_source,
+                         const AudioCaptureSettings& settings) {
+  if (!audio_source.HasSameSessionIdentityProperties(
+          settings.audio_processing_properties())) {
+    return false;
+  }
+  if (audio_source.IsProcessedSource() !=
+      NeedsProcessedSource(settings, audio_source.device())) {
+    return false;
+  }
+  if (!audio_source.IsProcessedSource() &&
+      audio_source.device().type ==
+          mojom::blink::MediaStreamType::DEVICE_AUDIO_CAPTURE) {
+    // Note: `LocalMediaStreamAudioSource` preserves the raw hardware parameters
+    // in `device().input` and stores the effective buffer size in
+    // `GetAudioParameters()`.
+    if (audio_source.disable_local_echo() != settings.disable_local_echo() ||
+        audio_source.RenderToAssociatedSinkEnabled() !=
+            settings.render_to_associated_sink() ||
+        audio_source.GetAudioParameters().frames_per_buffer() !=
+            LocalMediaStreamAudioSource::GetFramesPerBuffer(
+                audio_source.device().input,
+                settings.requested_buffer_size())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 // Class for storing state of the the processing of getUserMedia requests.
@@ -823,28 +894,39 @@ void UserMediaProcessor::SelectAudioDeviceSettings(
   }
 
   for (const auto& device : audio_input_capabilities) {
-    // Find the first occurrence of blink::ProcessedLocalAudioSource that
-    // matches the same device ID as |device|. If more than one exists, any
-    // such source will contain the same non-reconfigurable settings that limit
-    // the associated capabilities.
+    // Find an active ProcessedLocalAudioSource matching `device->device_id`.
+    // All processed sources on the same device share the same interlocked
+    // settings (AGC, NS, channels, sample rate, latency), while multiple
+    // processed sources with different EchoCancellationModes may be active
+    // concurrently. Collect all EchoCancellationModes that have an active
+    // source, started with voice isolation enabled, with a track reconfigured
+    // to `voiceIsolation: {exact: false}`.
     blink::MediaStreamAudioSource* audio_source = nullptr;
-    auto it = std::ranges::find_if(
-        local_sources_, [&device](MediaStreamSource* source) {
-          DCHECK(source);
-          MediaStreamAudioSource* platform_source =
-              MediaStreamAudioSource::From(source);
-          ProcessedLocalAudioSource* processed_source =
-              ProcessedLocalAudioSource::From(platform_source);
-          return processed_source && source->Id() == device->device_id;
-        });
-    if (it != local_sources_.end()) {
-      WebPlatformMediaStreamSource* const source = (*it)->GetPlatformSource();
-      if (source->device().type == MediaStreamType::DEVICE_AUDIO_CAPTURE) {
-        audio_source = static_cast<MediaStreamAudioSource*>(source);
+    Vector<EchoCancellationMode> ec_modes_disallowing_voice_isolation;
+    for (MediaStreamSource* source : local_sources_) {
+      MediaStreamAudioSource* platform_source =
+          MediaStreamAudioSource::From(source);
+      ProcessedLocalAudioSource* processed_source =
+          ProcessedLocalAudioSource::From(platform_source);
+      if (!processed_source || source->Id() != device->device_id ||
+          platform_source->device().type !=
+              MediaStreamType::DEVICE_AUDIO_CAPTURE) {
+        continue;
       }
+      if (!audio_source) {
+        audio_source = platform_source;
+      }
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+      if (std::optional<EchoCancellationMode> ec_mode =
+              GetEcModeDisallowingVoiceIsolation(platform_source);
+          ec_mode && !ec_modes_disallowing_voice_isolation.Contains(*ec_mode)) {
+        ec_modes_disallowing_voice_isolation.push_back(*ec_mode);
+      }
+#endif
     }
     if (audio_source) {
-      capabilities.emplace_back(audio_source);
+      capabilities.emplace_back(
+          audio_source, std::move(ec_modes_disallowing_voice_isolation));
     } else {
       capabilities.emplace_back(device->device_id, device->group_id,
                                 device->parameters);
@@ -950,14 +1032,13 @@ UserMediaProcessor::DetermineExistingAudioSessionId(
     }
   }
 
-  // Return the session ID associated to the source that has the same session
-  // identity properties, if one exists.
+  // Return the session ID associated to a reusable source for `settings`, if
+  // one exists.
   if (!matching_sources.empty()) {
     for (auto& matching_source : matching_sources) {
       auto* audio_source = static_cast<MediaStreamAudioSource*>(
           matching_source->GetPlatformSource());
-      if (audio_source->HasSameSessionIdentityProperties(
-              settings.audio_processing_properties())) {
+      if (CanReuseAudioSource(*audio_source, settings)) {
         return audio_source->device().session_id();
       }
     }
@@ -1229,6 +1310,11 @@ void UserMediaProcessor::GenerateStreamForCurrentRequestInfo(
   // Capture trace for only non-transferred tracks.
   current_request_info_->StartTrace("GenerateStreams");
 
+  // Ensure the MediaStreamDeviceObserver is initialized and registered in the
+  // frame's InterfaceRegistry before requesting stream generation so that the
+  // browser can bind it eagerly.
+  EnsureMediaStreamDeviceObserverInitialized();
+
   // If SessionId is set, this request is for a transferred MediaStreamTrack and
   // GetOpenDevice() should be called.
   if (current_request_info_->request() &&
@@ -1254,6 +1340,10 @@ void UserMediaProcessor::GenerateStreamForCurrentRequestInfo(
                  WrapWeakPersistent(this),
                  current_request_info_->request_id()));
   }
+}
+
+void UserMediaProcessor::EnsureMediaStreamDeviceObserverInitialized() {
+  GetMediaStreamDeviceObserver();
 }
 
 WebMediaStreamDeviceObserver*
@@ -1936,23 +2026,10 @@ UserMediaProcessor::CreateAudioSource(
   // If the constraints/effects parameters indicate no audio processing is
   // needed, create an efficient, direct-path MediaStreamAudioSource instance.
   std::optional<MediaStreamAudioProcessingLayout> processing_layout =
-      device.type == mojom::blink::MediaStreamType::DEVICE_AUDIO_CAPTURE
-          ? std::make_optional(MediaStreamAudioProcessingLayout(
-                current_request_info_->audio_capture_settings()
-                    .audio_processing_properties(),
-                device.input.effects(),
-                current_request_info_->audio_capture_settings().num_channels()))
-      : device.type == mojom::blink::MediaStreamType::DISPLAY_AUDIO_CAPTURE
-          ?
-          // TODO(crbug.com://40247860, crbug.com://415952276): retire this
-          // logic when restrictOwnAudio is launched.
-          MediaStreamAudioProcessingLayout::MaybeMakeForProcessedDisplayCapture(
-              current_request_info_->audio_capture_settings()
-                  .audio_processing_properties(),
-              current_request_info_->audio_capture_settings().num_channels())
-          : std::nullopt;
+      MakeAudioProcessingLayout(current_request_info_->audio_capture_settings(),
+                                device);
 
-  if (processing_layout && processing_layout->NeedWebrtcAudioProcessing()) {
+  if (NeedsProcessedSource(processing_layout)) {
     // The audio device is not associated with screen capture and also requires
     // processing.
     SendLogMessage(base::StringPrintf(
@@ -2126,6 +2203,39 @@ MediaStreamComponent* UserMediaProcessor::CreateAudioTrack(
       voice_isolation_exact = constraints.Basic().voice_isolation.Exact();
     }
     platform_track->SetVoiceIsolationExactConstraint(voice_isolation_exact);
+#if BUILDFLAG(CHROME_WIDE_ECHO_CANCELLATION)
+    // When reusing an existing, already-initialized source (`!is_pending`),
+    // `DetermineExistingAudioSessionId()` matches against the source's initial
+    // session-identity properties (e.g., started with voice isolation enabled).
+    // However, an existing track on that source may have dynamically toggled
+    // voice isolation off via a non-`exact` `applyConstraints()` call (e.g.,
+    // `{voiceIsolation: {ideal: false}}`). If the shared source's current
+    // dynamic voice isolation state differs from the new request's resolved
+    // setting and no sibling track on the source holds a conflicting `exact`
+    // constraint, update the source before surfacing settings.
+    if (!is_pending) {
+      if (auto* audio_source = MediaStreamAudioSource::From(source)) {
+        const auto target_voice_isolation =
+            current_request_info_->audio_capture_settings()
+                .audio_processing_properties()
+                .voice_isolation;
+        const bool target_enabled =
+            target_voice_isolation ==
+            AudioProcessingProperties::VoiceIsolationType::
+                kVoiceIsolationEnabled;
+        std::optional<AudioProcessingProperties> current_properties =
+            audio_source->GetAudioProcessingProperties();
+        if (current_properties &&
+            current_properties->voice_isolation != target_voice_isolation) {
+          std::optional<bool> sibling_exact =
+              GetSiblingVoiceIsolationExactConstraint(audio_source);
+          if (!sibling_exact.has_value() || *sibling_exact == target_enabled) {
+            audio_source->SetVoiceIsolation(target_enabled);
+          }
+        }
+      }
+    }
+#endif
   }
 
   Member<MediaStreamComponent> component =

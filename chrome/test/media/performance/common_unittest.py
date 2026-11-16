@@ -179,10 +179,28 @@ class DumpRemoteLogsTest(fakes.SenderTestCase):
             with self.subTest(sender_os=sender_os):
                 self.ssh.responses[command] = completed(stdout='log line')
                 with self.assertLogs(level='ERROR') as logs:
-                    common.dump_remote_logs(
-                        make_args(sender_os=sender_os), '120', 'vp8'
-                    )
+                    common.dump_remote_logs(make_args(sender_os=sender_os))
                 self.assertTrue(any('log line' in l for l in logs.output))  # noqa: E741
+
+    def test_ssh_errors_are_logged_not_raised(self):
+        self.run.side_effect = subprocess.TimeoutExpired('ssh', 30)
+        with self.assertLogs(level='WARNING') as logs:
+            common.dump_remote_logs(make_args())
+        self.assertTrue(
+            any(
+                'Could not dump remote console logs' in line
+                for line in logs.output
+            ),
+            logs.output,
+        )
+
+    def test_unexpected_errors_are_logged_not_raised(self):
+        self.run.side_effect = TypeError('bug')
+        with self.assertLogs(level='WARNING') as logs:
+            common.dump_remote_logs(make_args())
+        self.assertTrue(
+            any('TypeError: bug' in line for line in logs.output), logs.output
+        )
 
 
 class ConnectToRemoteDriverTest(unittest.TestCase):
@@ -304,6 +322,56 @@ class MediaMetricsTest(unittest.TestCase):
                 media_metrics.parse_glances_csv_and_record(
                     'v', '/out/g.csv', 'mac'
                 )
+
+    def test_glances_csv_parses_underscored_headers_and_ignores_battery_pct(
+        self,
+    ):
+        csv_data = (
+            'cpu_total,sensors_Battery_value,sensors_Battery_unit\n'
+            '40.0,100,%\n'
+            '60.0,100,%\n'
+        )
+        with (
+            mock.patch('os.path.exists', return_value=True),
+            mock.patch('builtins.open', mock.mock_open(read_data=csv_data)),
+            mock.patch('media_metrics.measures') as mock_measures,
+        ):
+            with self.assertLogs(level='INFO'):
+                media_metrics.parse_glances_csv_and_record(
+                    'v', '/out/g.csv', 'win'
+                )
+        mock_measures.average.assert_called_once_with(
+            'v', 'video_perf', 'cpu_utilization'
+        )
+        mock_measures.average.return_value.record.assert_called_once_with(50.0)
+
+    def test_glances_csv_parses_dotted_headers_and_wattage(self):
+        csv_data = (
+            'cpu.total,sensors.Battery.value,sensors.Battery.unit\n'
+            '20.0,12.5,W\n'
+            '30.0,17.5,W\n'
+        )
+        with (
+            mock.patch('os.path.exists', return_value=True),
+            mock.patch('builtins.open', mock.mock_open(read_data=csv_data)),
+            mock.patch('media_metrics.measures') as mock_measures,
+        ):
+            with self.assertLogs(level='INFO'):
+                media_metrics.parse_glances_csv_and_record(
+                    'v', '/out/g.csv', 'mac'
+                )
+        self.assertEqual(
+            [c.args for c in mock_measures.average.call_args_list],
+            [
+                ('v', 'video_perf', 'cpu_utilization'),
+                ('v', 'video_perf', 'power_consumption_watts'),
+            ],
+        )
+        record = mock_measures.average.return_value.record
+        self.assertEqual(
+            [c.args[0] for c in record.call_args_list],
+            [25.0, 15.0],
+        )
 
 
 if __name__ == '__main__':

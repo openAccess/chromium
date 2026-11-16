@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser.tab.tab_restore;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 
 import android.view.KeyEvent;
@@ -18,12 +19,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.KeyUtils;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -31,15 +30,14 @@ import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.url.GURL;
 
 import java.util.List;
 
 /** Tests for tab restoration using keyboard shortcuts. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "This test relies on native initialization")
 public class TabRestoreIndicesTest {
     private static final String PAGE_0 = "/chrome/test/data/android/about.html";
@@ -92,7 +90,7 @@ public class TabRestoreIndicesTest {
         final Tab tab2 = tabs.get(2);
         final Tab tabToClose = tabs.get(1);
 
-        closeTab(tabToClose);
+        closeBackgroundTab(tabToClose);
         waitForTabCount(/* count= */ 2);
 
         restoreTab(/* expectedCount= */ 3, /* restoredIndex= */ 1, mUrl1);
@@ -107,10 +105,9 @@ public class TabRestoreIndicesTest {
         List<Tab> tabs = getTabs();
         final Tab tab0 = tabs.get(0);
         final Tab tab1 = tabs.get(1);
-        final Tab tab2 = tabs.get(2);
 
-        closeTab(tab1);
-        closeTab(tab2);
+        closeBackgroundTab(tab1);
+        closeSelectedTab(mUrl0);
         waitForTabCount(/* count= */ 1);
 
         restoreTab(/* expectedCount= */ 2, /* restoredIndex= */ 1, mUrl2);
@@ -130,7 +127,7 @@ public class TabRestoreIndicesTest {
 
         pinTab(tab0);
 
-        closeTab(tab0);
+        closeBackgroundTab(tab0);
         waitForTabCount(/* count= */ 2);
 
         restoreTab(/* expectedCount= */ 3, /* restoredIndex= */ 0, mUrl0);
@@ -148,7 +145,7 @@ public class TabRestoreIndicesTest {
                     }
                 });
 
-        closeTab(tab1);
+        closeBackgroundTab(tab1);
         waitForTabCount(/* count= */ 2);
 
         restoreTab(/* expectedCount= */ 3, /* restoredIndex= */ 1, mUrl1);
@@ -170,8 +167,8 @@ public class TabRestoreIndicesTest {
         pinTab(tab0);
         pinTab(tab1);
 
-        closeTab(tab0);
-        closeTab(tab1);
+        closeBackgroundTab(tab0);
+        closeBackgroundTab(tab1);
         waitForTabCount(/* count= */ 1);
 
         restoreTab(/* expectedCount= */ 2, /* restoredIndex= */ 0, mUrl1);
@@ -208,7 +205,20 @@ public class TabRestoreIndicesTest {
                 });
     }
 
-    private void closeTab(Tab tab) {
+    // Closes the selected tab, which selects another one.
+    private void closeSelectedTab(GURL nextSelectedUrl) {
+        mPage =
+                ChromeTriggers.closeCurrentTabProgrammaticallyTo(mPage, mActivity)
+                        .arriveAt(
+                                WebPageStation.newBuilder()
+                                        .initSelectingExistingTab()
+                                        .withExpectedUrlSubstring(nextSelectedUrl.getSpec())
+                                        .build());
+    }
+
+    // Closes a tab that isn't selected, so mPage stays valid.
+    private void closeBackgroundTab(Tab tab) {
+        assertNotSame(mPage.getTab(), tab);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mTabModel
@@ -232,15 +242,24 @@ public class TabRestoreIndicesTest {
     }
 
     private void restoreTab(int expectedCount, int restoredIndex, GURL restoredUrl) {
-        KeyUtils.singleKeyEventView(
-                InstrumentationRegistry.getInstrumentation(),
-                mActivity.getWindow().getDecorView(),
-                KeyEvent.KEYCODE_T,
-                KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON);
+        Runnable ctrlShiftT =
+                () ->
+                        KeyUtils.singleKeyEventView(
+                                InstrumentationRegistry.getInstrumentation(),
+                                mActivity.getWindow().getDecorView(),
+                                KeyEvent.KEYCODE_T,
+                                KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON);
+        // Restoring a single tab selects it.
+        WebPageStation restoredPage =
+                WebPageStation.newBuilder()
+                        .initOpeningNewTab()
+                        .withExpectedUrlSubstring(restoredUrl.getSpec())
+                        .build();
+        mPage = mPage.runTo(ctrlShiftT).arriveAt(restoredPage);
         waitForTabCount(expectedCount);
-        ChromeTabUtils.waitForTabPageLoaded(
+        assertSame(
                 ThreadUtils.runOnUiThreadBlocking(() -> mTabModel.getTabAt(restoredIndex)),
-                restoredUrl.getSpec());
+                mPage.getTab());
     }
 
     private void unpinTabs() {

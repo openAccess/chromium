@@ -111,14 +111,9 @@ void PageProxy::OnSomethingHappened(
       ((kAllowInterrupt) ? 0 : mojo::Message::kFlagNoInterrupt) |
       ((is_urgent) ? mojo::Message::kFlagIsUrgent : 0);
 
-  const size_t estimated_payload_size =
-    0;
   STACK_UNINITIALIZED mojo::Message message(
-      std::to_underlying(messages::Page::kOnSomethingHappened), kFlags, estimated_payload_size);
-  mojo::internal::MessageFragment<
-      ::golden::internal::Page_OnSomethingHappened_Params_Data> params(
-          message);
-  params.Allocate();
+      std::to_underlying(messages::Page::kOnSomethingHappened), kFlags,
+      {sizeof(::golden::internal::Page_OnSomethingHappened_Params_Data), 0});
 
 #if defined(ENABLE_IPC_FUZZER)
   message.set_interface_name(Page::Name_);
@@ -136,20 +131,9 @@ bool PageStubDispatch::Accept(
   switch (static_cast<messages::Page>(message->header()->name)) {
     case messages::Page::kOnSomethingHappened: {
       DCHECK(message->is_serialized());
-      internal::Page_OnSomethingHappened_Params_Data* params =
-          reinterpret_cast<internal::Page_OnSomethingHappened_Params_Data*>(
-              message->mutable_payload());
       
 
       // Validation for Page.0
-      bool success = true;
-      Page_OnSomethingHappened_ParamsDataView input_data_view(params, message);
-      
-      if (!success) {
-        mojo::internal::ReportDeserializationErrorForMessage(
-            message, Page::Name_, 0, false);
-        return false;
-      }
       // A null |impl| means no implementation was bound.
       DCHECK(impl);
       impl->OnSomethingHappened(        );
@@ -259,14 +243,9 @@ void PageHandlerProxy::DoSomething(
       ((kAllowInterrupt) ? 0 : mojo::Message::kFlagNoInterrupt) |
       ((is_urgent) ? mojo::Message::kFlagIsUrgent : 0);
 
-  const size_t estimated_payload_size =
-    0;
   STACK_UNINITIALIZED mojo::Message message(
-      std::to_underlying(messages::PageHandler::kDoSomething), kFlags, estimated_payload_size);
-  mojo::internal::MessageFragment<
-      ::golden::internal::PageHandler_DoSomething_Params_Data> params(
-          message);
-  params.Allocate();
+      std::to_underlying(messages::PageHandler::kDoSomething), kFlags,
+      {sizeof(::golden::internal::PageHandler_DoSomething_Params_Data), 0});
 
 #if defined(ENABLE_IPC_FUZZER)
   message.set_interface_name(PageHandler::Name_);
@@ -284,20 +263,9 @@ bool PageHandlerStubDispatch::Accept(
   switch (static_cast<messages::PageHandler>(message->header()->name)) {
     case messages::PageHandler::kDoSomething: {
       DCHECK(message->is_serialized());
-      internal::PageHandler_DoSomething_Params_Data* params =
-          reinterpret_cast<internal::PageHandler_DoSomething_Params_Data*>(
-              message->mutable_payload());
       
 
       // Validation for PageHandler.0
-      bool success = true;
-      PageHandler_DoSomething_ParamsDataView input_data_view(params, message);
-      
-      if (!success) {
-        mojo::internal::ReportDeserializationErrorForMessage(
-            message, PageHandler::Name_, 0, false);
-        return false;
-      }
       // A null |impl| means no implementation was bound.
       DCHECK(impl);
       impl->DoSomething(        );
@@ -417,14 +385,12 @@ void WebUiPageHandlerFactoryProxy::CreatePageHandler(
       ((kAllowInterrupt) ? 0 : mojo::Message::kFlagNoInterrupt) |
       ((is_urgent) ? mojo::Message::kFlagIsUrgent : 0);
 
-  const size_t estimated_payload_size =
-    0;
   STACK_UNINITIALIZED mojo::Message message(
-      std::to_underlying(messages::WebUiPageHandlerFactory::kCreatePageHandler), kFlags, estimated_payload_size);
-  mojo::internal::MessageFragment<
-      ::golden::internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data> params(
-          message);
-  params.Allocate();
+      std::to_underlying(messages::WebUiPageHandlerFactory::kCreatePageHandler), kFlags,
+      {sizeof(::golden::internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data), 0});
+  mojo::internal::MessageFragment<::golden::internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data> params(
+      message);
+  params.ClaimInitialPayload();
 
   
   mojo::internal::Serialize<mojo::InterfacePtrDataView<::golden::PageInterfaceBase>>(
@@ -468,26 +434,18 @@ bool WebUiPageHandlerFactoryStubDispatch::Accept(
   switch (static_cast<messages::WebUiPageHandlerFactory>(message->header()->name)) {
     case messages::WebUiPageHandlerFactory::kCreatePageHandler: {
       DCHECK(message->is_serialized());
-      internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data* params =
-          reinterpret_cast<internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data*>(
-              message->mutable_payload());
       
 
       // Validation for WebUiPageHandlerFactory.0
-      bool success = true;
       ::mojo::PendingRemote<Page> p_page{};
       ::mojo::PendingReceiver<PageHandler> p_handler{};
-      WebUiPageHandlerFactory_CreatePageHandler_ParamsDataView input_data_view(params, message);
-      
-      if (success)
-        input_data_view.TakePage(&p_page);
-      if (success)
-        input_data_view.TakeHandler(&p_handler);
-      if (!success) {
-        mojo::internal::ReportDeserializationErrorForMessage(
-            message, WebUiPageHandlerFactory::Name_, 0, false);
-        return false;
-      }
+      WebUiPageHandlerFactory_CreatePageHandler_ParamsDataView input_data_view(
+          reinterpret_cast<internal::WebUiPageHandlerFactory_CreatePageHandler_Params_Data*>(
+              message->mutable_payload()),
+          message);
+
+      input_data_view.TakePage(&p_page);
+      input_data_view.TakeHandler(&p_handler);
       // A null |impl| means no implementation was bound.
       DCHECK(impl);
       impl->CreatePageHandler(        

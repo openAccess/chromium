@@ -5,7 +5,9 @@
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_string_utils.h"
 
 #include <string>
+#include <vector>
 
+#include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/notreached.h"
 #include "build/build_config.h"
@@ -16,6 +18,7 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/range/range.h"
 
 namespace autofill {
 
@@ -228,6 +231,60 @@ int GetPrimaryButtonTextId(bool is_save_prompt) {
   return is_save_prompt
              ? IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON
              : IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_UPDATE_DIALOG_UPDATE_BUTTON;
+}
+
+WalletImportPromptNotice GetWalletImportPromptNotice(
+    int notice_id,
+    const std::u16string& account_email) {
+  WalletImportPromptNotice notice;
+  // Returns the string with `id` and records it as shown in the notice.
+  auto get_string = [&notice](int id) {
+    notice.string_ids.push_back(id);
+    return l10n_util::GetStringUTF16(id);
+  };
+
+  notice.string_ids.push_back(notice_id);
+  const std::u16string google_wallet_text =
+      get_string(IDS_AUTOFILL_GOOGLE_WALLET_TITLE);
+  std::vector<size_t> offsets;
+  switch (notice_id) {
+    case IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_PRIVATE_PASS: {
+      const std::u16string how_info_is_used_text =
+          get_string(IDS_AUTOFILL_HOW_THIS_INFO_IS_USED_ACROSS_GOOGLE_LINK);
+      notice.text = l10n_util::GetStringFUTF16(
+          notice_id, {google_wallet_text, how_info_is_used_text, account_email},
+          &offsets);
+      CHECK_EQ(offsets.size(), 3u);
+      notice.wallet_link_range =
+          gfx::Range(offsets[1], offsets[1] + how_info_is_used_text.size());
+      notice.privacy_policy_link_text =
+          get_string(IDS_AUTOFILL_PRIVACY_POLICY_LINK);
+      return notice;
+    }
+    case IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE_NEW: {
+      const std::u16string manage_info_text =
+          get_string(IDS_AUTOFILL_MANAGE_YOUR_INFO_LINK);
+      notice.text =
+          l10n_util::GetStringFUTF16(notice_id,
+                                     {google_wallet_text, manage_info_text,
+                                      google_wallet_text, account_email},
+                                     &offsets);
+      CHECK_EQ(offsets.size(), 4u);
+      notice.wallet_link_range =
+          gfx::Range(offsets[1], offsets[1] + manage_info_text.size());
+      return notice;
+    }
+    case IDS_AUTOFILL_AI_SAVE_ENTITY_TO_WALLET_DIALOG_SUBTITLE:
+    case IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE:
+      notice.text = l10n_util::GetStringFUTF16(
+          notice_id, {google_wallet_text, account_email}, &offsets);
+      CHECK_EQ(offsets.size(), 2u);
+      notice.wallet_link_range =
+          gfx::Range(offsets[0], offsets[0] + google_wallet_text.size());
+      return notice;
+    default:
+      NOTREACHED() << "Unsupported Wallet notice: " << notice_id;
+  }
 }
 
 }  // namespace autofill

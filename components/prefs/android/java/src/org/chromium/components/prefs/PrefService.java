@@ -7,9 +7,13 @@ package org.chromium.components.prefs;
 import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniType;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /** PrefService provides read and write access to native PrefService. */
 @NullMarked
@@ -34,6 +38,18 @@ public class PrefService {
     @VisibleForTesting
     PrefService(long nativePrefServiceAndroid) {
         mNativePrefServiceAndroid = nativePrefServiceAndroid;
+    }
+
+    /**
+     * Returns an in-memory {@link PrefService} instance for tests.
+     *
+     * <p>The returned instance stores preferences in an in-memory map rather than native prefs, so
+     * it does not consult native {@code PrefRegistry} defaults or enforce registered pref types.
+     * Unset keys default to type zero-values ({@code false}, {@code 0}, {@code 0.0}, {@code 0L},
+     * {@code ""}), and policy/recommendation queries return {@code false}.
+     */
+    public static PrefService createForTesting() {
+        return new FakePrefService();
     }
 
     /**
@@ -173,40 +189,156 @@ public class PrefService {
         return PrefServiceJni.get().isDefaultValuePreference(mNativePrefServiceAndroid, preference);
     }
 
+    private static class FakePrefService extends PrefService {
+        private final Map<String, Object> mValues = new HashMap<>();
+
+        private FakePrefService() {
+            super(0);
+        }
+
+        @Override
+        public void clearPref(String preference) {
+            mValues.remove(preference);
+        }
+
+        @Override
+        public boolean hasPrefPath(String preference) {
+            return mValues.containsKey(preference);
+        }
+
+        @Override
+        public boolean getBoolean(String preference) {
+            return (Boolean) mValues.getOrDefault(preference, false);
+        }
+
+        @Override
+        public void setBoolean(String preference, boolean value) {
+            mValues.put(preference, value);
+        }
+
+        @Override
+        public int getInteger(String preference) {
+            return (Integer) mValues.getOrDefault(preference, 0);
+        }
+
+        @Override
+        public void setInteger(String preference, int value) {
+            mValues.put(preference, value);
+        }
+
+        @Override
+        public double getDouble(String preference) {
+            return (Double) mValues.getOrDefault(preference, 0.0);
+        }
+
+        @Override
+        public void setDouble(String preference, double value) {
+            mValues.put(preference, value);
+        }
+
+        @Override
+        public long getLong(String preference) {
+            return (Long) mValues.getOrDefault(preference, 0L);
+        }
+
+        @Override
+        public void setLong(String preference, long value) {
+            mValues.put(preference, value);
+        }
+
+        @Override
+        public String getString(String preference) {
+            return (String) mValues.getOrDefault(preference, "");
+        }
+
+        @Override
+        public void setString(String preference, String value) {
+            mValues.put(preference, value);
+        }
+
+        @Override
+        public boolean isManagedPreference(String preference) {
+            return false;
+        }
+
+        @Override
+        public boolean hasRecommendation(String preference) {
+            return false;
+        }
+
+        @Override
+        public boolean isFollowingRecommendation(String preference) {
+            return false;
+        }
+
+        @Override
+        public boolean isRecommendedPreference(String preference) {
+            return false;
+        }
+
+        @Override
+        public boolean isDefaultValuePreference(String preference) {
+            return !mValues.containsKey(preference);
+        }
+    }
+
     @NativeMethods
     interface Natives {
-        void clearPref(long nativePrefServiceAndroid, String preference);
+        void clearPref(long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean hasPrefPath(long nativePrefServiceAndroid, String preference);
+        boolean hasPrefPath(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean getBoolean(long nativePrefServiceAndroid, String preference);
+        boolean getBoolean(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        void setBoolean(long nativePrefServiceAndroid, String preference, boolean value);
+        void setBoolean(
+                long nativePrefServiceAndroid,
+                @JniType("std::string") String preference,
+                boolean value);
 
-        int getInteger(long nativePrefServiceAndroid, String preference);
+        int getInteger(long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        void setInteger(long nativePrefServiceAndroid, String preference, int value);
+        void setInteger(
+                long nativePrefServiceAndroid,
+                @JniType("std::string") String preference,
+                int value);
 
-        double getDouble(long nativePrefServiceAndroid, String preference);
+        double getDouble(long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        void setDouble(long nativePrefServiceAndroid, String preference, double value);
+        void setDouble(
+                long nativePrefServiceAndroid,
+                @JniType("std::string") String preference,
+                double value);
 
-        long getLong(long nativePrefServiceAndroid, String preference);
+        long getLong(long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        void setLong(long nativePrefServiceAndroid, String preference, long value);
+        void setLong(
+                long nativePrefServiceAndroid,
+                @JniType("std::string") String preference,
+                long value);
 
-        String getString(long nativePrefServiceAndroid, String preference);
+        @JniType("std::string")
+        String getString(long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        void setString(long nativePrefServiceAndroid, String preference, String value);
+        void setString(
+                long nativePrefServiceAndroid,
+                @JniType("std::string") String preference,
+                @JniType("std::string") String value);
 
-        boolean isManagedPreference(long nativePrefServiceAndroid, String preference);
+        boolean isManagedPreference(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean hasRecommendation(long nativePrefServiceAndroid, String preference);
+        boolean hasRecommendation(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean isFollowingRecommendation(long nativePrefServiceAndroid, String preference);
+        boolean isFollowingRecommendation(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean isRecommendedPreference(long nativePrefServiceAndroid, String preference);
+        boolean isRecommendedPreference(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
 
-        boolean isDefaultValuePreference(long nativePrefServiceAndroid, String preference);
+        boolean isDefaultValuePreference(
+                long nativePrefServiceAndroid, @JniType("std::string") String preference);
     }
 }

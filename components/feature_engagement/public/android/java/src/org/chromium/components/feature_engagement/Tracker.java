@@ -46,6 +46,22 @@ public interface Tracker {
      */
     default void setAggressivelyCooldownIphsSupplier(BooleanSupplier supplier) {}
 
+    /**
+     * Sets a supplier that returns whether the interruptive IPH cooldown group is enabled. Defaults
+     * to false. While false, formats in that group are neither blocked by it nor contribute to it.
+     *
+     * @param supplier Returns true when the interruptive cooldown group is enabled.
+     */
+    default void setInterruptiveCooldownGroupEnabledSupplier(BooleanSupplier supplier) {}
+
+    /**
+     * Sets a supplier that returns whether the blue bubble cooldown group is enabled. Defaults to
+     * false. While false, blue bubbles are neither blocked by the group nor contribute to it.
+     *
+     * @param supplier Returns true when the blue bubble cooldown group is enabled.
+     */
+    default void setBlueBubbleCooldownGroupEnabledSupplier(BooleanSupplier supplier) {}
+
     /** Must be called whenever an event happens. */
     void notifyEvent(String event);
 
@@ -127,8 +143,38 @@ public interface Tracker {
      *
      * @return Whether feature enlightenment would be displayed if {@link
      *     #shouldTriggerHelpUi(String)} had been invoked instead.
+     * @deprecated Use {@link #wouldTriggerHelpUi(String, FeatureProperties)} instead.
      */
+    @Deprecated
     boolean wouldTriggerHelpUi(String feature);
+
+    /**
+     * Invoking this is basically the same as being allowed to invoke {@link
+     * #shouldTriggerHelpUi(String, FeatureProperties)} without requiring to show the in-product
+     * help. This function may be called to inspect if the current state would allow the given
+     * {@code feature} to pass all its conditions and display the feature enlightenment.
+     *
+     * <p>NOTE: It is still required to invoke {@link #shouldTriggerHelpUi(String,
+     * FeatureProperties)} if feature enlightenment should be shown.
+     *
+     * <p>NOTE: It is not guaranteed that invoking {@link #shouldTriggerHelpUi(String,
+     * FeatureProperties)} after this would yield the same result. The state might change in-between
+     * the calls because time has passed, other events might have been triggered, and other state
+     * might have changed.
+     *
+     * <p>NOTE: For a tracking_only experiment, this will return the same result as for a
+     * non-tracking experiment so that the comparison of groups can be properly handled when {@link
+     * #shouldTriggerHelpUi(String, FeatureProperties)} is invoked.
+     *
+     * @param feature The name of the feature requesting in-product help.
+     * @param featureProperties The {@link FeatureProperties} for cooldown group evaluation.
+     * @return Whether feature enlightenment would be displayed if {@link
+     *     #shouldTriggerHelpUi(String, FeatureProperties)} had been invoked instead.
+     */
+    @SuppressWarnings("deprecation")
+    default boolean wouldTriggerHelpUi(String feature, FeatureProperties featureProperties) {
+        return wouldTriggerHelpUi(feature);
+    }
 
     /**
      * This function can be called to query if a particular |feature| has ever been displayed at

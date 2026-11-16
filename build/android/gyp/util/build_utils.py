@@ -56,10 +56,6 @@ def JavaCmd(xmx='1G'):
     # bots to OOM when many java commands are runnig at the same time
     # https://crbug.com/1098333
     ret += ['-Xmx' + xmx]
-    # JDK17 bug.
-    # See: https://chromium-review.googlesource.com/c/chromium/src/+/4705883/3
-    # https://github.com/iBotPeaches/Apktool/issues/3174
-    ret += ['-Djdk.util.zip.disableZip64ExtraFieldValidation=true']
     ret += ['--enable-native-access=ALL-UNNAMED']
     return ret
 
@@ -108,22 +104,6 @@ def CheckOptions(options, parser, required=None):
     for option_name in required:
         if getattr(options, option_name) is None:
             parser.error('--%s is required' % option_name.replace('_', '-'))
-
-
-def WriteJson(obj, path, only_if_changed=False):
-    old_dump = None
-    if only_if_changed:
-        try:
-            with open(path, 'r', encoding='utf-8') as oldfile:
-                old_dump = oldfile.read()
-        except FileNotFoundError:
-            pass
-
-    new_dump = json.dumps(obj, sort_keys=True, indent=2, separators=(',', ': '))
-
-    if not only_if_changed or old_dump != new_dump:
-        with open(path, 'w', encoding='utf-8') as outfile:
-            outfile.write(new_dump)
 
 
 class CalledProcessError(Exception):

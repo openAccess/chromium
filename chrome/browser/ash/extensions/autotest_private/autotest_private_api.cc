@@ -130,6 +130,7 @@
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/policy/chrome_policy_conversions_client.h"
+#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
@@ -145,7 +146,6 @@
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_dialog.h"
 #include "chrome/browser/ui/webui/ash/crostini_installer/crostini_installer_ui.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/common/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
@@ -558,7 +558,7 @@ std::string SetAllowedPref(PrefService& local_state,
     CHECK(value.is_bool(), base::NotFatalUntil::M160);
   } else if (pref_name == ash::prefs::kLanguagePreloadEngines) {
     CHECK(value.is_string(), base::NotFatalUntil::M160);
-  } else if (pref_name == prefs::kPrintingAPIExtensionsAllowlist) {
+  } else if (pref_name == ash::prefs::kPrintingAPIExtensionsAllowlist) {
     CHECK(value.is_list(), base::NotFatalUntil::M160);
   } else if (pref_name == quick_answers::prefs::kQuickAnswersEnabled) {
     CHECK(value.is_bool(), base::NotFatalUntil::M160);
@@ -2875,7 +2875,8 @@ ExtensionFunction::ResponseAction AutotestPrivateGetPrinterListFunction::Run() {
   printers_manager_ = ash::CupsPrintersManager::Create(
       CHECK_DEREF(g_browser_process->local_state()),
       g_browser_process->GetFeatures()->application_locale_storage(),
-      g_browser_process->shared_url_loader_factory(), profile);
+      g_browser_process->shared_url_loader_factory(), profile,
+      profile->GetProfilePolicyConnector()->policy_service());
   printers_manager_->AddObserver(this);
 
   // Set up a timer to finish waiting after 10 seconds

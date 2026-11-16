@@ -14,6 +14,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/flat_map.h"
@@ -64,10 +65,6 @@
 #include <windows.h>
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include "pdf/flatten_pdf_result.h"
-#endif
-
 #if BUILDFLAG(ENABLE_PDF_INK2)
 #include "pdf/pdf_ink_ids.h"
 #include "pdf/pdf_ink_metrics_handler.h"
@@ -102,9 +99,6 @@ class PDFiumPermissions;
 class Thumbnail;
 enum class AccessibilityScrollAlignment;
 struct AccessibilityActionData;
-struct AccessibilityFocusInfo;
-struct DocumentAttachmentInfo;
-struct DocumentMetadata;
 struct PageCharacterIndex;
 
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
@@ -400,9 +394,6 @@ class PDFiumEngine : public DocumentLoader::Client,
 
   bool has_focus() const { return has_focus_; }
 
-  // Returns the focus info of current focus item.
-  AccessibilityFocusInfo GetFocusInfo();
-
   // Returns whether the "/Marked" attribute in the "MarkInfo" dictionary in the
   // PDF's catalog is set to true. This should indicate whether the PDF includes
   // a tree of structural elements which describe the logical organization of
@@ -477,11 +468,8 @@ class PDFiumEngine : public DocumentLoader::Client,
   // testing.
   virtual void UpdateTextActiveAndInvalidate(TextId id, bool active);
 
-  // Virtual to support testing.
-  virtual gfx::Size GetThumbnailSize(int page_index, float device_pixel_ratio);
-
   // Writes the supplied stroke for the page at `page_index`.  The same `id`
-  // gets used with `UpdateStrokeUsage()`.  Must provide a valid `page_index`.
+  // gets used with `UpdateStrokeActive()`.  Must provide a valid `page_index`.
   // Virtual to support testing.
   virtual void ApplyStroke(int page_index,
                            InkStrokeId id,
@@ -612,7 +600,7 @@ class PDFiumEngine : public DocumentLoader::Client,
 
   // `PdfAnnotationAgent::Container`:
   bool FindAndHighlightTextFragments(
-      base::span<const std::string> text_fragments) override;
+      base::span<const std::string_view> text_fragments) override;
   void ScrollTextFragmentIntoView() override;
   void RemoveTextFragments() override;
 
@@ -684,6 +672,17 @@ class PDFiumEngine : public DocumentLoader::Client,
                          int page_to_search,
                          AddSearchResultCallback add_result_callback);
 
+  // Highlights case-insensitive matches of non-empty `search_terms`, replacing
+  // any prior highlights. `search_terms` must be non-empty. Returns true if any
+  // match was found.
+  virtual bool FindAndHighlightSearchTerms(
+      base::span<const std::string_view> search_terms);
+
+  // Scrolls to the first search highlight at or after `start_page_index`,
+  // wrapping around if needed. `text_fragment_highlights_` must be non-empty
+  // and sorted by page index.
+  virtual void ScrollToFirstSearchResult(uint32_t start_page_index);
+
   // Sets whether caret browsing is enabled or not. Initializes `caret_` if it
   // is the first time enabling caret browsing mode. If the caret was disabled
   // and is now enabled, then moves the caret to the start of the first visible
@@ -697,6 +696,10 @@ class PDFiumEngine : public DocumentLoader::Client,
 
   base::span<const PDFiumRange> find_results_for_testing() const {
     return find_results_;
+  }
+
+  base::span<const PDFiumRange> text_fragment_highlights_for_testing() const {
+    return text_fragment_highlights_;
   }
 
  private:
@@ -801,7 +804,6 @@ class PDFiumEngine : public DocumentLoader::Client,
   friend class PDFiumEngineTest;
   friend class PDFiumFormFiller;
   friend class PDFiumTestBase;
-  friend class SelectionChangeInvalidator;
 
   gfx::Size plugin_size() const;
 
@@ -1498,7 +1500,7 @@ class PDFiumEngine : public DocumentLoader::Client,
   // state, such as its position, blink interval, etc.
   std::unique_ptr<PdfCaret> caret_;
 
-  // The list of text fragments to highlight on the PDF.
+  // Text fragments or URL `#search=` matches to highlight on the PDF.
   std::vector<PDFiumRange> text_fragment_highlights_;
 
 #if BUILDFLAG(ENABLE_PDF_INK2)

@@ -48,10 +48,10 @@ public class GlobalNightModeStateProviderHolder {
     }
 
     /**
-     * @return The {@link NightModeStateProvider} that maintains the night mode state for the entire
-     *         application. Note that UI widgets should use ColorUtils#inNightMode(Context) using
-     *         the activity context they are attached to, because the night mode state can be
-     *         overridden at the activity level.
+     * Returns the {@link NightModeStateProvider} that maintains the night mode state for the entire
+     * application. Note that UI widgets should use ColorUtils#inNightMode(Context) using the
+     * activity context they are attached to, because the night mode state can be overridden at the
+     * activity level.
      */
     public static NightModeStateProvider getInstance() {
         if (sInstance == null) {
@@ -62,9 +62,16 @@ public class GlobalNightModeStateProviderHolder {
                 sInstance = new GlobalNightModeStateController();
             }
             // Do not cache the singleton between tests since the creation logic depends on flags.
-            ResettersForTesting.register(() -> sInstance = null);
+            ResettersForTesting.register(() -> reset());
         }
         return sInstance;
+    }
+
+    static void reset() {
+        if (sInstance instanceof GlobalNightModeStateController controller) {
+            controller.destroy();
+        }
+        sInstance = null;
     }
 
     static void setInstanceForTesting(NightModeStateProvider instance) {

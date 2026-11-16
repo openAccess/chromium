@@ -46,6 +46,15 @@ base::DictValue CreateSessionPrefDict(std::string_view server_id,
   return dict;
 }
 
+// Configure `service` for CobrowseBrowserAgentTest.
+std::unique_ptr<MockIOSChromeAimEligibilityService>
+ConfigureIOSChromeAimEligibilityService(
+    std::unique_ptr<MockIOSChromeAimEligibilityService> service) {
+  ON_CALL(*service, IsFuseboxEligible()).WillByDefault(testing::Return(true));
+  ON_CALL(*service, IsCobrowseEligible()).WillByDefault(testing::Return(true));
+  return service;
+}
+
 }  // namespace
 
 class CobrowseBrowserAgentTest : public PlatformTest {
@@ -56,17 +65,9 @@ class CobrowseBrowserAgentTest : public PlatformTest {
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         IOSChromeAimEligibilityServiceFactory::GetInstance(),
-        base::BindOnce([](ProfileIOS* profile)
-                           -> std::unique_ptr<KeyedService> {
-          auto service =
-              MockIOSChromeAimEligibilityService::CreateTestingProfileService(
-                  profile);
-          ON_CALL(*service, IsFuseboxEligible())
-              .WillByDefault(testing::Return(true));
-          ON_CALL(*service, IsCobrowseEligible())
-              .WillByDefault(testing::Return(true));
-          return service;
-        }));
+        base::BindOnce(
+            &MockIOSChromeAimEligibilityService::CreateTestingProfileService)
+            .Then(base::BindOnce(&ConfigureIOSChromeAimEligibilityService)));
     personal_profile_ =
         profile_manager_.AddProfileWithBuilder(std::move(builder));
 
@@ -319,4 +320,44 @@ TEST_F(CobrowseBrowserAgentTest,
   EXPECT_FALSE(personal_profile_->GetPrefs()
                    ->GetDict(prefs::kCobrowseSessionActiveMap)
                    .contains("test_session_id"));
+}
+
+// Tests that `CobrowseBrowserAgent` does not restore the session from prefs on
+// cold start when `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseBrowserAgentTest,
+       DoesNotRestoreContextFromPrefsWhenEphemeralBottomSheetEnabled) {
+  base::test::ScopedFeatureList feature_list(kEphemeralBottomSheet);
+  ScopedDictPrefUpdate update(personal_profile_->GetPrefs(),
+                              prefs::kCobrowseSessionActiveMap);
+  update->Set(
+      "test_session_id",
+      CreateSessionPrefDict("my_server_id_123", "my_turn_id_456", "my query"));
+
+  CobrowseBrowserAgent::CreateForBrowser(browser_.get());
+  CobrowseBrowserAgent* agent =
+      CobrowseBrowserAgent::FromBrowser(browser_.get());
+
+  EXPECT_FALSE(agent->IsSessionActive());
+  EXPECT_EQ(agent->GetCobrowseContext(), nil);
+}
+
+// Tests that activating a session and updating its context does not store
+// session restoration values in prefs when `kEphemeralBottomSheet` is enabled.
+TEST_F(CobrowseBrowserAgentTest,
+       DoesNotStoreSessionInPrefsWhenEphemeralBottomSheetEnabled) {
+  base::test::ScopedFeatureList feature_list(kEphemeralBottomSheet);
+  CobrowseBrowserAgent::CreateForBrowser(browser_.get());
+  CobrowseBrowserAgent* agent =
+      CobrowseBrowserAgent::FromBrowser(browser_.get());
+
+  agent->SetSessionActive(true);
+  GURL loaded_url("https://www.google.com/"
+                  "search?udm=50&q=hello&mtid=server_99&mstk=turn_88");
+  CobrowseContext* loaded_context =
+      [[CobrowseContext alloc] initWithURL:loaded_url];
+  agent->SetCobrowseContext(loaded_context);
+
+  const base::DictValue& active_map =
+      personal_profile_->GetPrefs()->GetDict(prefs::kCobrowseSessionActiveMap);
+  EXPECT_FALSE(active_map.contains("test_session_id"));
 }

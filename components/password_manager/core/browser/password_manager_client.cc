@@ -243,12 +243,15 @@ bool PasswordManagerClient::IsActorTaskActive() {
 
 void PasswordManagerClient::OnPasswordFilled(PasswordManagerDriver* driver) {}
 
-bool PasswordManagerClient::IsChromeSigninPage() const {
+bool PasswordManagerClient::IsPageEligibleForInlineQrCodeSignin() const {
   return false;
 }
 
 ActionableError PasswordManagerClient::GetActionableError() const {
   return ActionableError::kNoError;
 }
+
+void PasswordManagerClient::StartTrustedVaultKeyRetrieval(
+    trusted_vault::TrustedVaultUserActionTriggerForUMA /*trigger*/) {}
 
 }  // namespace password_manager

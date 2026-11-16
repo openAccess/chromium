@@ -7,6 +7,48 @@ import("//chrome/common/features.gni")
 
 # No absolute !is_android wrapper for the whole file.
 
+source_set("modal") {
+  sources = [
+    "glic_modal.cc",
+    "glic_modal.h",
+  ]
+  public_deps = [
+    "//base",
+    "//ui/base",
+    "//ui/base/interaction",
+    "//ui/gfx/geometry",
+    "//url",
+  ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//components/tabs:public",
+    "//content/public/browser",
+  ]
+  if (!is_android) {
+    sources += [ "glic_modal_desktop.cc" ]
+    deps += [
+      "//chrome/browser/ui/tabs:tabs_public",
+      "//chrome/browser/ui/webui:chrome_web_contents_handler",
+      "//skia",
+      "//ui/base/mojom:ui_base_types",
+      "//ui/gfx",
+      "//ui/views",
+      "//ui/views/controls/webview",
+      "//ui/web_dialogs",
+    ]
+  } else {
+    sources += [
+      "glic_modal_android.cc",
+      "glic_modal_android.h",
+    ]
+    deps += [
+      "//chrome/browser/glic/android:jni_headers",
+      "//third_party/jni_zero",
+      "//ui/android",
+    ]
+  }
+}
+
 source_set("browser_ui") {
   sources = [
     "glic_actor_nudge_controller.h",
@@ -15,6 +57,7 @@ source_set("browser_ui") {
     "glic_split_button_delegate.h",
     "glic_split_button_ui_state.h",
     "glic_tab_indicator_helper.h",
+    "glic_toast.h",
   ]
 
   public_deps = [
@@ -47,9 +90,6 @@ source_set("browser_ui") {
       "//components/actor/core:task_id",
       "//components/content_settings/core/browser",
     ]
-  } else {
-    sources += [ "glic_toast.h" ]
-    deps += [ "//components/messages/android" ]
   }
 }
 
@@ -70,24 +110,28 @@ source_set("impl") {
       "glic_iph_controller.cc",
       "glic_selection_widget.cc",
       "glic_selection_widget_controller.cc",
+      "glic_toast_impl.cc",
       "glic_vector_icon_manager.cc",
     ]
   } else {
     sources += [
       "glic_split_button_delegate_android.cc",
-      "glic_toast.cc",
+      "glic_toast_android.cc",
     ]
   }
 
   deps = [
     ":browser_ui",
+    ":modal",
     "//chrome/browser/contextual_tasks",
     "//chrome/browser/glic:selection_context",
     "//chrome/browser/glic/browser_ui/activity_list_bubble:controller",
+    "//chrome/browser/glic/common",
     "//chrome/browser/tab_list",
     "//chrome/browser/ui/call_to_action",
     "//components/contextual_tasks/public:feature_list",
     "//components/feature_engagement/public",
+    "//components/tabs:public",
   ]
 
   if (!is_android) {
@@ -120,7 +164,6 @@ source_set("impl") {
       "//components/content_settings/core/common",
       "//components/prefs",
       "//components/signin/public/identity_manager",
-      "//components/tabs:public",
       "//content/public/browser",
       "//ui/base",
       "//ui/strings",
@@ -266,6 +309,7 @@ source_set("unit_tests") {
       "//chrome/browser/actor",
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/glic/suggestions",
+      "//chrome/browser/tab_list:test_support",
       "//chrome/browser/ui/browser_window/test:test_support",
       "//chrome/browser/ui/toasts/api:toasts",
       "//chrome/test/base:chrome_render_view_host_test_harness",
@@ -296,6 +340,8 @@ if (!is_android) {
       ":glow",
       ":glow_controller",
       "//base",
+      "//chrome/app:branded_strings",
+      "//chrome/app:generated_resources",
       "//chrome/browser/actor",
       "//chrome/browser/actor:test_support",
       "//chrome/browser/actor/ui",
@@ -308,11 +354,13 @@ if (!is_android) {
       "//chrome/browser/ui/views/frame",
       "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/tabs:tab_strip",
+      "//chrome/browser/ui/views/tabs/common",
       "//chrome/browser/ui/views/tabs/glic",
       "//chrome/browser/ui/views/tabs/tab",
       "//chrome/common:chrome_features",
       "//chrome/common:non_code_constants",
       "//chrome/test/user_education:impl",
+      "//components/user_education/views",
       "//content/test:test_support",
       "//testing/gmock",
       "//testing/gtest",
@@ -333,15 +381,25 @@ if (!is_android) {
   source_set("browser_tests") {
     testonly = true
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-    sources = [ "tab_underline_view_browsertest.cc" ]
+    sources = [
+      "glic_modal_browsertest.cc",
+      "glic_toast_browsertest.cc",
+      "tab_underline_view_browsertest.cc",
+    ]
     deps = [
       ":browser_ui",
       ":glow",
+      ":impl",
+      ":modal",
       "//base",
+      "//chrome/app:generated_resources",
+      "//chrome/browser/glic/browser_ui/activity_list_bubble:browser_tests",
       "//chrome/browser/glic/test_support",
       "//chrome/browser/tab_list",
       "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui/tabs/alert:tab_alert",
+      "//chrome/browser/ui/toasts",
+      "//chrome/browser/ui/toasts/api:toasts",
       "//chrome/browser/ui/views/frame",
       "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/tabs/tab",
@@ -349,13 +407,16 @@ if (!is_android) {
       "//chrome/common:non_code_constants",
       "//chrome/test:test_support",
       "//components/tabs:public",
+      "//components/zoom",
       "//content/test:test_support",
       "//testing/gmock",
       "//testing/gtest",
+      "//ui/base",
       "//ui/compositor",
       "//ui/gfx:gfx_switches",
       "//ui/gfx/animation",
       "//ui/views",
+      "//ui/views/controls/webview",
       "//url",
     ]
   }

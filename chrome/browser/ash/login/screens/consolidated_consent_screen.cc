@@ -33,15 +33,10 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/stats_reporting_controller.h"
-#include "chrome/browser/enterprise/util/affiliation.h"
-#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/metrics/cros_pre_choice_metrics_manager.h"
-#include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/common/url_constants.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/consent_auditor/consent_auditor_provider.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/osauth/public/auth_session_storage.h"
@@ -53,6 +48,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "crypto/obsolete/sha1.h"
 
@@ -92,7 +88,7 @@ static constexpr auto kTermsTypeToUrlAndSwitch =
           {ash::external_urls::kArcTosOnlineURLPath,
            switches::kArcTosHostForTests}},
          {ToS::PRIVACY_POLICY,
-          {chrome::kPrivacyPolicyOnlineURLPath,
+          {ash::external_urls::kPrivacyPolicyOnlineURLPath,
            switches::kPrivacyPolicyHostForTests}}});
 
 std::string GetTosHost(const std::string& application_locale, ToS terms_type) {
@@ -138,6 +134,13 @@ void RecordRecoveryOptinResult(
   base::UmaHistogramEnumeration(
       "OOBE.ConsolidatedConsentScreen.RecoveryOptInResult",
       GetRecoveryOptInResult(recovery_setup));
+}
+
+// Whether the user being onboarded is affiliated with the device. The policy
+// status is known by post-login OOBE. Demo mode setup shows this screen before
+// there is a user.
+bool IsOnboardingUserAffiliated(const WizardContext& context) {
+  return context.onboarding_user && context.onboarding_user->IsAffiliated();
 }
 
 }  // namespace
@@ -205,9 +208,9 @@ bool ConsolidatedConsentScreen::MaybeSkip(WizardContext& context) {
   // Do not skip the screen, if the system location toggle can be configured by
   // the user being onboarded. Returns false when the Privacy Hub Location is
   // disabled.
-  CHECK(context.onboarding_account_id.has_value());
+  CHECK(context.onboarding_user);
   if (ash::privacy_hub_util::IsCrosLocationOobeNegotiationNeeded(
-          *context.onboarding_account_id)) {
+          context.onboarding_user->GetAccountId())) {
     return false;
   }
 
@@ -220,9 +223,7 @@ bool ConsolidatedConsentScreen::MaybeSkip(WizardContext& context) {
     return false;
 
   // Skip the screen if the user is affiliated.
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  CHECK(profile);
-  if (enterprise_util::IsProfileAffiliated(profile)) {
+  if (IsOnboardingUserAffiliated(context)) {
     exit_callback_.Run(Result::NOT_APPLICABLE);
     return true;
   }
@@ -235,9 +236,6 @@ void ConsolidatedConsentScreen::ShowImpl() {
     return;
 
   is_child_account_ = user_manager::UserManager::Get()->IsLoggedInAsChildUser();
-
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  CHECK(profile);
 
   // TODO(b/326605902): Evaluate whether ownership status callback is needed.
   DeviceSettingsService::Get()->GetOwnershipStatusAsync(
@@ -259,7 +257,7 @@ void ConsolidatedConsentScreen::ShowImpl() {
   data.Set("isChildAccount", is_child_account_);
   // If the user is affiliated with the device management domain, ToS should be
   // hidden.
-  data.Set("isTosHidden", enterprise_util::IsProfileAffiliated(profile));
+  data.Set("isTosHidden", IsOnboardingUserAffiliated(*context()));
 
   // ToS URLs.
   const std::string locale(application_locale_storage_->GetTag().tag_string());
@@ -544,20 +542,15 @@ void ConsolidatedConsentScreen::OnAccept(bool enable_stats_usage,
   ConsentsParameters consents;
   consents.tos_content = tos_content;
 
-  // If the profile is affiliated, we don't show any ToS to the user.
-  const auto& active_session =
-      CHECK_DEREF(session_manager::SessionManager::Get()->GetActiveSession());
-  // TODO(hidehiko): Remove Profile use.
-  Profile* profile = Profile::FromBrowserContext(
-      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
-          active_session.account_id()));
-  CHECK(profile);
+  // If the user is affiliated, we don't show any ToS to the user.
   consents.record_arc_tos_consent =
-      !enterprise_util::IsProfileAffiliated(profile) && !tos_content.empty();
+      !IsOnboardingUserAffiliated(*context()) && !tos_content.empty();
   consents.record_backup_consent = !backup_restore_managed_;
   consents.backup_accepted = enable_backup_restore;
   consents.record_location_consent = !location_services_managed_;
   consents.location_accepted = enable_location_services;
+  const auto& active_session =
+      CHECK_DEREF(session_manager::SessionManager::Get()->GetActiveSession());
   RecordConsents(active_session.account_id(), consents);
 
   for (auto& observer : observer_list_)

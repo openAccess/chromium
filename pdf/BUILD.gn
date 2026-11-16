@@ -280,6 +280,8 @@ if (enable_pdf) {
         "pdf_ink_module.cc",
         "pdf_ink_module.h",
         "pdf_ink_module_client.h",
+        "pdf_ink_signature_creation_handler.cc",
+        "pdf_ink_signature_creation_handler.h",
         "pdf_ink_text.cc",
         "pdf_ink_text.h",
         "pdf_ink_transform.cc",
@@ -391,9 +393,7 @@ if (enable_pdf) {
     ]
 
     deps = [
-      ":pdf_accessibility_constants_helper",
       "//services/screen_ai/buildflags",
-      "//skia",
       "//ui/gfx/geometry",
     ]
   }
@@ -602,12 +602,15 @@ if (enable_pdf) {
         "pdf_ink_conversions_unittest.cc",
         "pdf_ink_cursor_unittest.cc",
         "pdf_ink_module_unittest.cc",
+        "pdf_ink_signature_creation_handler_unittest.cc",
         "pdf_ink_text_unittest.cc",
         "pdf_ink_transform_unittest.cc",
         "pdf_ink_undo_redo_model_unittest.cc",
         "pdfium/pdfium_ink_reader_unittest.cc",
         "pdfium/pdfium_ink_transform_unittest.cc",
         "pdfium/pdfium_ink_writer_unittest.cc",
+        "test/fake_pdf_ink_module_client.cc",
+        "test/fake_pdf_ink_module_client.h",
         "test/pdf_ink_test_helpers.cc",
         "test/pdf_ink_test_helpers.h",
       ]

@@ -338,6 +338,7 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
   // handlers. Used primarily as a helper for CanCommitOriginAndUrl and thus not
   // exposed publicly.
   bool CanCommitURL(ChildProcessId child_id, const GURL& url);
+  bool CanCommitURL_Cpp(ChildProcessId child_id, const GURL& url);
   // TODO(crbug.com/379869738): Remove this method when usages are ported.
   bool CanCommitURL(int child_id, const GURL& url);
 
@@ -508,6 +509,11 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
       RenderProcessHost* process,
       const scoped_refptr<network::ResourceRequestBody>& body);
 
+  // Returns the nearest granted path (`file` or an ancestor) that lets
+  // `child_id` read `file`, or an empty path if `child_id` can't read `file`.
+  base::FilePath GetReadFileGrantPath(ChildProcessId child_id,
+                                      const base::FilePath& file);
+
   // Grants the network service the capability to upload a specific file on
   // the browser's behalf. The owner_token ties the lifetime of the grant to
   // an object (e.g. SimpleURLLoader) so it can be revoked when the object is
@@ -644,22 +650,18 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
 
   // Notifies process state of |child_id| about the IsolationContext it will
   // host.  The main side effect is proper setting of the lowest
-  // BrowsingInstanceId associated with the process state.
+  // BrowsingInstanceId associated with the process state. Must be called after
+  // LockProcess() has assigned a valid ProcessLock to the process.
   void IncludeIsolationContext(int child_id,
                                const IsolationContext& isolation_context);
 
   // Sets the process identified by |child_id| as only permitted to access data
-  // for the origin specified by |site_info|'s process_lock_url(). Most callers
+  // for the origin specified by |process_lock|. Most callers
   // should use RenderProcessHostImpl::SetProcessLock instead of calling this
-  // directly. |isolation_context| provides the context, such as
-  // BrowsingInstance, from which this process locked was created. This
-  // information is used when making isolation decisions for this process, such
-  // as determining which isolated origins pertain to it.
-  void LockProcess(const IsolationContext& isolation_context,
-                   ChildProcessId child_id,
-                   const ProcessLock& process_lock);
-  void LockProcess_Cpp(const IsolationContext& isolation_context,
-                       ChildProcessId child_id,
+  // directly. Call IncludeIsolationContext() separately to track the
+  // BrowsingInstances using this process.
+  void LockProcess(ChildProcessId child_id, const ProcessLock& process_lock);
+  void LockProcess_Cpp(ChildProcessId child_id,
                        const ProcessLock& process_lock);
 
   // Marks the process identified by |child_id| as "used", meaning that it has
@@ -813,6 +815,7 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
   // This might need to be revisited in the future if the list of committed
   // origins grows too large.
   void AddCommittedOrigin(int child_id, const url::Origin& origin);
+  void AddCommittedOrigin_Cpp(int child_id, const url::Origin& origin);
 
   // Allows tests to modify the delay in cleaning up BrowsingInstanceIds. If the
   // delay is set to zero, cleanup happens immediately.
@@ -837,10 +840,14 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
   bool MatchesCommittedOriginForTesting(ChildProcessId child_id,
                                         const GURL& url,
                                         bool url_is_for_precursor_origin);
+  bool MatchesCommittedOriginForTesting_Cpp(ChildProcessId child_id,
+                                            const GURL& url,
+                                            bool url_is_for_precursor_origin);
 
   // Returns the number of committed origins tracked for the process
   // `child_id`, or 0 if the process isn't found.
   size_t GetCommittedOriginCountForTesting(ChildProcessId child_id);
+  size_t GetCommittedOriginCountForTesting_Cpp(ChildProcessId child_id);
 
   // Exposes LookupOriginAgentClusterState() for tests.
   std::optional<OriginAgentClusterIsolationState>
@@ -1236,6 +1243,16 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
   static std::string GetCommittedOriginsForCrashKey(
       const ProcessState* process_state);
 
+  // Populates the crash keys recorded when `CanCommitMaybeOpaqueNewOrigin()` or
+  // `CanAccessMaybeOpaqueOrigin()` denies access.
+  static void LogOriginAccessFailureCrashKeys(
+      ChildProcessId child_id,
+      const ProcessState* process_state,
+      const GURL& url,
+      const std::string& expected_process_lock,
+      const std::string& failure_reason,
+      const std::string& access_type);
+
   // Helper for CanCommitMaybeOpaqueNewOrigin, to perform two security checks:
   //  - Jail check: a process locked to a particular site shouldn't access data
   //    belonging to other sites.
@@ -1269,6 +1286,10 @@ class CONTENT_EXPORT ChildProcessSecurityPolicyImpl
                                    ProcessLock& out_expected_process_lock,
                                    std::string& out_failure_reason)
       EXCLUSIVE_LOCKS_REQUIRED(lock_);
+
+  // Returns whether a ProcessState exists for `child_id`. Acquires `lock_`, so
+  // the caller must not already hold it.
+  bool HasProcessState(ChildProcessId child_id) LOCKS_EXCLUDED(lock_);
 
   // Helper for public CanAccessOrigin overloads.
   bool CanAccessMaybeOpaqueOrigin(ChildProcessId child_id,

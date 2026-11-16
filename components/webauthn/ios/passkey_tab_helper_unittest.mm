@@ -9,7 +9,9 @@
 
 #import "base/base64.h"
 #import "base/containers/span.h"
+#import "base/functional/callback_helpers.h"
 #import "base/rand_util.h"
+#import "base/run_loop.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/string_view_util.h"
 #import "base/strings/utf_string_conversions.h"
@@ -26,6 +28,7 @@
 #import "components/password_manager/core/browser/password_store/test_password_store.h"
 #import "components/password_manager/ios/ios_password_manager_driver_factory.h"
 #import "components/password_manager/ios/shared_password_controller.h"
+#import "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #import "components/webauthn/core/browser/device_authorization/device_authorization_features.h"
 #import "components/webauthn/core/browser/device_authorization/device_authorization_types.h"
 #import "components/webauthn/core/browser/passkey_change_quota_tracker.h"
@@ -69,6 +72,9 @@ namespace {
 
 constexpr char kCredentialId[] = "credential_id";
 constexpr char kCredentialId2[] = "credential_id_2";
+constexpr char kUsername[] = "user@example.com";
+constexpr char16_t kUsername16[] = u"user@example.com";
+constexpr char kUserDisplayName[] = "User";
 constexpr char kWellKnownURL[] = "https://example.com/.well-known/webauthn";
 constexpr char kOriginURL[] = "https://example.com";
 constexpr char kInsecureOriginURL[] = "http://example.com";
@@ -1160,6 +1166,51 @@ TEST_F(PasskeyTabHelperTest, ConditionalCreateUpgradePrefDisabled) {
   EXPECT_FALSE(client_->DidFetchTrustedVaultKeys());
 }
 
+// Tests that a successful conditional create automatic passkey upgrade shows
+// the passkey creation infobar without triggering `OnPasskeyCreated()`.
+TEST_F(PasskeyTabHelperTest,
+       ConditionalCreateUpgradeShowsInfobarWithoutOnPasskeyCreated) {
+  passkey_tab_helper()->RecordPasswordLogin(
+      kUsername, url::Origin::Create(GURL(kOriginURL)));
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+
+  password_manager::PasswordForm form;
+  form.username_value = kUsername16;
+  form.url = GURL(kOriginURL);
+  form.date_last_used = base::Time::Now();
+  base::test::TestFuture<void> add_login_future;
+  test_password_store_->AddLogin(password_manager::FromPasswordForm(form),
+                                 add_login_future.GetCallback());
+  ASSERT_TRUE(add_login_future.Wait());
+
+  IOSPasskeyClient::RequestInfo request_info(web::kMainFakeFrameId,
+                                             kFakeRequestId);
+  device::PublicKeyCredentialRpEntity rp_entity(kRpId);
+  std::vector<uint8_t> challenge;
+  PasskeyRequestParams request_params(
+      std::move(request_info), std::move(rp_entity), std::move(challenge),
+      device::UserVerificationRequirement::kPreferred,
+      PasskeyRequestParams::RequestType::kConditionalCreate,
+      PasskeyExtensionData());
+  device::PublicKeyCredentialUserEntity user_entity({1, 2, 3}, kUsername,
+                                                    kUserDisplayName);
+  RegistrationRequestParams params(std::move(request_params),
+                                   std::move(user_entity),
+                                   /*exclude_credentials=*/{});
+
+  passkey_tab_helper()->HandleCreateRequestedEvent(std::move(params));
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return client_->DidShowPasskeyCreationInfobar(); }));
+  EXPECT_EQ(1u, client_->show_passkey_creation_infobar_count());
+  ASSERT_TRUE(client_->last_infobar_passkey());
+  EXPECT_EQ(kRpId, client_->last_infobar_passkey()->rp_id());
+  EXPECT_EQ(kUsername, client_->last_infobar_passkey()->user_name());
+  EXPECT_FALSE(client_->DidShowCreationBottomSheet());
+  EXPECT_FALSE(client_->DidOnPasskeyCreated());
+}
+
 // Tests that a conditional create request in off-the-record mode defers to the
 // renderer without showing the incognito interstitial, fetching keys, or
 // triggering remote validation.
@@ -1287,6 +1338,10 @@ TEST_F(PasskeyTabHelperTest, StartPasskeyCreationFromCrossOriginIframe) {
   passkey_tab_helper()->StartPasskeyCreation(kFakeRequestId,
                                              /*did_complete_uv=*/false);
   EXPECT_TRUE(client_->DidFetchTrustedVaultKeys());
+  ASSERT_TRUE(client_->DidShowPasskeyCreationInfobar());
+  EXPECT_EQ(1u, client_->show_passkey_creation_infobar_count());
+  ASSERT_TRUE(client_->last_infobar_passkey());
+  EXPECT_EQ(kRpId, client_->last_infobar_passkey()->rp_id());
   EXPECT_TRUE(client_->DidOnPasskeyCreated());
 
   // Verify that ResolveAttestationRequest was called on the subframe with the
@@ -1899,6 +1954,23 @@ TEST_F(PasskeyTabHelperTest,
       1);
 }
 
+// Tests that a successful passkey assertion updates the passkey's last used
+// time.
+TEST_F(PasskeyTabHelperTest, StartPasskeyAssertionSuccessUpdatesLastUsedTime) {
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+  ASSERT_FALSE(GetPasskey(passkey.credential_id())
+                   .has_last_used_time_windows_epoch_micros());
+
+  task_environment_.FastForwardBy(base::Minutes(1));
+  HandleGetRequestAndStartAssertion(passkey.credential_id());
+
+  EXPECT_NE(GetLastJavaScriptCall().find(kResolveAssertionRequestJsCall),
+            std::u16string::npos);
+  EXPECT_EQ(
+      GetPasskey(passkey.credential_id()).last_used_time_windows_epoch_micros(),
+      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+}
+
 // Test that `PasswordManager.BrowserAssistedLogin.Type` is not logged when a
 // passkey assertion request fails.
 TEST_F(PasskeyTabHelperTest,
@@ -2031,6 +2103,226 @@ TEST_F(PasskeyTabHelperDeviceAuthorizationTest,
   EXPECT_FALSE(client_->DidFetchTrustedVaultKeys());
   EXPECT_NE(GetLastJavaScriptCall().find(kDeferToRendererJsCall),
             std::u16string::npos);
+}
+
+// Tests that deferring a pending assertion request clears the credentials from
+// the WebAuthn credentials delegate so stale passkey suggestions cannot later
+// trigger a second extraction for the already-deferred request.
+TEST_F(PasskeyTabHelperTest,
+       DeferPendingRequestToRendererClearsDelegateCredentials) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  IOSWebAuthnCredentialsDelegate* delegate =
+      IOSWebAuthnCredentialsDelegateFactory::GetFactory(&fake_web_state_)
+          ->GetDelegateForFrameId(web::kMainFakeFrameId);
+
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  ASSERT_TRUE(delegate->GetPasskeys().has_value());
+  EXPECT_TRUE(passkey_tab_helper()
+                  ->ShouldPerformUserVerification(kFakeRequestId)
+                  .has_value());
+
+  passkey_tab_helper()->DeferPendingRequestToRenderer(kFakeRequestId);
+  EXPECT_NE(GetLastJavaScriptCall().find(kDeferToRendererJsCall),
+            std::u16string::npos);
+  EXPECT_FALSE(passkey_tab_helper()
+                   ->ShouldPerformUserVerification(kFakeRequestId)
+                   .has_value());
+
+  auto passkeys_after = delegate->GetPasskeys();
+  ASSERT_FALSE(passkeys_after.has_value());
+  EXPECT_EQ(passkeys_after.error(),
+            password_manager::WebAuthnCredentialsDelegate::
+                PasskeysUnavailableReason::kNotReceived);
+
+  // Selecting a passkey via the cleared delegate should be a no-op rather than
+  // calling StartPasskeyAssertion for the deferred request.
+  delegate->SelectPasskey(base::Base64Encode(passkey.credential_id()),
+                          base::DoNothing());
+  EXPECT_FALSE(delegate->HasPendingPasskeySelection());
+  EXPECT_FALSE(client_->DidFetchTrustedVaultKeys());
+}
+
+// Tests that deferring an older assertion request does not clear credentials
+// populated by a newer request on the same WebAuthn credentials delegate.
+TEST_F(PasskeyTabHelperTest,
+       DeferPendingRequestToRendererDoesNotClearNewerRequest) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  IOSWebAuthnCredentialsDelegate* delegate =
+      IOSWebAuthnCredentialsDelegateFactory::GetFactory(&fake_web_state_)
+          ->GetDelegateForFrameId(web::kMainFakeFrameId);
+
+  constexpr char kNewerRequestId[] = "newer_request_id";
+  passkey_tab_helper()->HandleGetRequestedEvent(BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId));
+  passkey_tab_helper()->HandleGetRequestedEvent(BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kNewerRequestId, web::kMainFakeFrameId, kMainRemoteFrameId));
+
+  passkey_tab_helper()->DeferPendingRequestToRenderer(kFakeRequestId);
+  EXPECT_FALSE(passkey_tab_helper()
+                   ->ShouldPerformUserVerification(kFakeRequestId)
+                   .has_value());
+  EXPECT_TRUE(passkey_tab_helper()
+                  ->ShouldPerformUserVerification(kNewerRequestId)
+                  .has_value());
+
+  // The delegate must still hold credentials for the newer request.
+  auto passkeys_after = delegate->GetPasskeys();
+  ASSERT_TRUE(passkeys_after.has_value());
+  EXPECT_EQ(passkeys_after.value()->size(), 1u);
+
+  delegate->SelectPasskey(base::Base64Encode(passkey.credential_id()),
+                          base::DoNothing());
+  EXPECT_TRUE(client_->DidFetchTrustedVaultKeys());
+  EXPECT_NE(GetLastJavaScriptCall().find(kResolveAssertionRequestJsCall),
+            std::u16string::npos);
+}
+
+// Tests that HandleCancelRequestEvent cleans up pending assertion state and
+// clears credentials from the WebAuthn credentials delegate.
+TEST_F(PasskeyTabHelperTest, HandleCancelRequestEventClearsRequestAndDelegate) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  IOSWebAuthnCredentialsDelegate* delegate =
+      IOSWebAuthnCredentialsDelegateFactory::GetFactory(&fake_web_state_)
+          ->GetDelegateForFrameId(web::kMainFakeFrameId);
+
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  ASSERT_TRUE(delegate->GetPasskeys().has_value());
+  ASSERT_TRUE(passkey_tab_helper()
+                  ->ShouldPerformUserVerification(kFakeRequestId)
+                  .has_value());
+
+  passkey_tab_helper()->HandleCancelRequestEvent(
+      {web::kMainFakeFrameId, kFakeRequestId});
+  EXPECT_FALSE(passkey_tab_helper()
+                   ->ShouldPerformUserVerification(kFakeRequestId)
+                   .has_value());
+
+  auto passkeys_after = delegate->GetPasskeys();
+  ASSERT_FALSE(passkeys_after.has_value());
+  EXPECT_EQ(passkeys_after.error(),
+            password_manager::WebAuthnCredentialsDelegate::
+                PasskeysUnavailableReason::kNotReceived);
+
+  delegate->SelectPasskey(base::Base64Encode(passkey.credential_id()),
+                          base::DoNothing());
+  EXPECT_FALSE(delegate->HasPendingPasskeySelection());
+  EXPECT_FALSE(client_->DidFetchTrustedVaultKeys());
+}
+
+// Tests that rejecting a pending assertion request clears credentials from the
+// WebAuthn credentials delegate.
+TEST_F(PasskeyTabHelperTest, RejectPendingRequestClearsDelegateCredentials) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  IOSWebAuthnCredentialsDelegate* delegate =
+      IOSWebAuthnCredentialsDelegateFactory::GetFactory(&fake_web_state_)
+          ->GetDelegateForFrameId(web::kMainFakeFrameId);
+
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  ASSERT_TRUE(delegate->GetPasskeys().has_value());
+
+  passkey_tab_helper()->RejectPendingRequest(kFakeRequestId);
+  EXPECT_FALSE(passkey_tab_helper()
+                   ->ShouldPerformUserVerification(kFakeRequestId)
+                   .has_value());
+
+  auto passkeys_after = delegate->GetPasskeys();
+  ASSERT_FALSE(passkeys_after.has_value());
+  EXPECT_EQ(passkeys_after.error(),
+            password_manager::WebAuthnCredentialsDelegate::
+                PasskeysUnavailableReason::kNotReceived);
+
+  delegate->SelectPasskey(base::Base64Encode(passkey.credential_id()),
+                          base::DoNothing());
+  EXPECT_FALSE(delegate->HasPendingPasskeySelection());
+  EXPECT_FALSE(client_->DidFetchTrustedVaultKeys());
+}
+
+// Tests that ClearCredentialsForRequest ignores an empty request ID even after
+// SelectPasskey has cleared `passkey_request_id_`.
+TEST_F(PasskeyTabHelperTest, ClearCredentialsForRequestIgnoresEmptyRequestId) {
+  SetUpWebFramesManagerAndWebFrame(GURL(kOriginURL));
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  sync_pb::WebauthnCredentialSpecifics passkey = AddValidPasskey();
+
+  IOSWebAuthnCredentialsDelegate* delegate =
+      IOSWebAuthnCredentialsDelegateFactory::GetFactory(&fake_web_state_)
+          ->GetDelegateForFrameId(web::kMainFakeFrameId);
+
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  ASSERT_TRUE(delegate->GetPasskeys().has_value());
+
+  delegate->SelectPasskey(base::Base64Encode(passkey.credential_id()),
+                          base::DoNothing());
+  ASSERT_TRUE(delegate->HasPendingPasskeySelection());
+
+  delegate->ClearCredentialsForRequest("");
+  EXPECT_TRUE(delegate->HasPendingPasskeySelection());
+  EXPECT_TRUE(delegate->GetPasskeys().has_value());
+}
+
+// Tests that HandleCancelRequestEvent removes a request queued while waiting
+// for its WebFrame so it is not processed once the frame becomes available.
+TEST_F(PasskeyTabHelperTest,
+       HandleCancelRequestEventClearsQueuedRequestForWebFrame) {
+  web::FakeWebFramesManager* frames_manager_ptr =
+      SetUpWebFramesManagerWithoutFrame();
+  SetUpIOSPasswordManagerDriver();
+  SetUpChildFrameRegistrarAndRegisterFrame(web::kMainFakeFrameId,
+                                           kMainRemoteFrameId);
+  AddValidPasskey();
+
+  AssertionRequestParams params = BuildTestAssertionRequestParams(
+      /*allow_credentials=*/{}, device::UserVerificationRequirement::kPreferred,
+      kFakeRequestId, web::kMainFakeFrameId, kMainRemoteFrameId);
+  passkey_tab_helper()->HandleGetRequestedEvent(std::move(params));
+  passkey_tab_helper()->HandleCancelRequestEvent(
+      {web::kMainFakeFrameId, kFakeRequestId});
+
+  // Making the frame available afterward should not process the cancelled
+  // request.
+  auto frame = web::FakeWebFrame::CreateMainWebFrame(GURL(kOriginURL));
+  frame->set_browser_state(&fake_browser_state_);
+  frames_manager_ptr->AddWebFrame(std::move(frame));
+  EXPECT_FALSE(client_->DidShowSuggestionBottomSheet());
+  EXPECT_FALSE(passkey_tab_helper()
+                   ->ShouldPerformUserVerification(kFakeRequestId)
+                   .has_value());
 }
 
 // Tests that device authorization keys aren't fetched for passkeys in the

@@ -34,8 +34,11 @@ typedef struct _GtkParamSpec GtkParamSpec;
 typedef struct _GtkSettings GtkSettings;
 typedef struct _GtkStyle GtkStyle;
 
+namespace ui {
+class LinuxKeyBindingsHandler;
+}
+
 namespace gtk {
-class GtkKeyBindingsHandler;
 class NativeThemeGtk;
 class OsSettingsProviderGtk;
 class SettingsProvider;
@@ -70,7 +73,7 @@ class GtkUi : public ui::LinuxUiAndTheme {
   gfx::Size GetPdfPaperSize(printing::PrintingContextLinux* context) override;
 #endif
   ui::SelectFileDialog* CreateSelectFileDialog(
-      void* listener,
+      ui::SelectFileDialogListener* listener,
       std::unique_ptr<ui::SelectFilePolicy> policy) const override;
   std::string GetCursorThemeName() override;
   int GetCursorThemeSize() override;
@@ -165,8 +168,7 @@ class GtkUi : public ui::LinuxUiAndTheme {
 
   std::unique_ptr<SettingsProvider> settings_provider_;
 
-  // This is only used on GTK3.
-  std::unique_ptr<GtkKeyBindingsHandler> key_bindings_handler_;
+  std::unique_ptr<ui::LinuxKeyBindingsHandler> key_bindings_handler_;
 
   // The action to take when middle, double, or right clicking the titlebar.
   base::flat_map<WindowFrameActionSource, WindowFrameAction>

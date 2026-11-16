@@ -256,7 +256,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="interstitial.phishing.interaction.from_client_side_detection{SecurityInterstitialSBWithSourceSubtype}"
-    enum="SecurityInterstitialDecision" expires_after="2027-03-02">
+    enum="SecurityInterstitialDecision" expires_after="2027-05-09">
   <owner>nwokedi@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@Google.com</owner>
   <summary>
@@ -405,6 +405,28 @@ chromium-metrics-reviews@google.com.
   </summary>
   <token key="AdditionalSecurityInterstitialSBType"
       variants="AdditionalSecurityInterstitialSBType"/>
+</histogram>
+
+<histogram name="interstitial.{SafeBrowsingThreatType}.decision.{ProfileMode}"
+    enum="SecurityInterstitialDecision" expires_after="2027-11-06">
+  <owner>thefrog@chromium.org</owner>
+  <owner>chrome-counter-abuse-alerts@google.com</owner>
+  <summary>
+    User decision when presented with a Safe Browsing security interstitial of
+    type {SafeBrowsingThreatType} in {ProfileMode} mode. Recorded when the user
+    is shown or makes a decision on the interstitial.
+  </summary>
+  <token key="SafeBrowsingThreatType">
+    <variant name="billing" summary="harmful/abusive billing"/>
+    <variant name="harmful" summary="harmful/unwanted software"/>
+    <variant name="malware" summary="malware"/>
+    <variant name="phishing" summary="phishing and deceptive content"/>
+  </token>
+  <token key="ProfileMode">
+    <variant name="guest" summary="Guest"/>
+    <variant name="incognito" summary="Incognito"/>
+    <variant name="regular" summary="Regular"/>
+  </token>
 </histogram>
 
 <histogram name="interstitial.{SecurityInterstitialLookalikeOrSSLType}decision"

@@ -30,17 +30,6 @@ BASE_FEATURE(kEnableComposeProactiveNudge,
              "ComposeProactiveNudge",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableComposeSavedStateNotification,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnableComposeNudgeAtCursor, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnableComposeSelectionNudge, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnableComposeLanguageBypassForContextMenu,
-             "ComposeLanguageBypassForContextMenu",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kEnableComposeWebUIAnimations,
              "ComposeWebUIAnimations",
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -50,15 +39,11 @@ BASE_FEATURE(kEnableComposeOnDeviceDogfoodFooter,
 
 BASE_FEATURE(kComposeUiParams, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kComposeTextOutputAnimation, base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kComposeRequestLatencyTimeout, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableNudgeForUnspecifiedHint,
              "ComposeEnableNudgeForUnspecifiedHint",
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kEnableAdditionalTextMetrics, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kHappinessTrackingSurveysForComposeAcceptance,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -68,10 +53,6 @@ BASE_FEATURE(kHappinessTrackingSurveysForComposeClose,
 
 BASE_FEATURE(kHappinessTrackingSurveysForComposeNudgeClose,
              base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kComposeAllowOnDeviceExecution, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kComposeUpfrontInputModes, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kComposeHideComposeNudgesAsynchronously,
              base::FEATURE_ENABLED_BY_DEFAULT);

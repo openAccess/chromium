@@ -945,15 +945,61 @@ TEST_F(AIPageContentAgentTest,
 
   ASSERT_TRUE(saw_geometry);
 
-  // On HighDPI, the device-pixel viewport should be (layout viewport in CSS
-  // pixels) * DSF.
+  // On HighDPI, the extents should be those of the layout viewport in device
+  // pixels, which is LocalFrameView's layout size.
   //
   // Note: When browser controls are involved, the layout viewport height can be
   // reduced by an implementation-defined amount (it is *not* guaranteed to be
-  // exactly kVisualViewportOffsetDip). Use LocalFrameView's post-adjustment
-  // viewport size to compute the expected BlinkSpace/device-pixel extents.
-  EXPECT_EQ(max_right, view->ViewportWidth() * kDeviceScaleFactor);
-  EXPECT_EQ(max_bottom, view->ViewportHeight() * kDeviceScaleFactor);
+  // exactly kVisualViewportOffsetDip), so the expected extents come from
+  // LocalFrameView's post-adjustment size rather than the window's.
+  EXPECT_EQ(max_right, view->GetLayoutSize().width());
+  EXPECT_EQ(max_bottom, view->GetLayoutSize().height());
+  // So that the check does not only compare the code with itself: that size is
+  // the window's in device pixels, less the browser controls, and not in DIPs.
+  EXPECT_EQ(max_right, kDipViewportSize.width() * kDeviceScaleFactor);
+  EXPECT_GT(max_bottom, kDipViewportSize.height());
+}
+
+// The clamp of visible bounding boxes to the viewport must be in the space the
+// boxes are in: device pixels, which include the page zoom. If the viewport
+// is taken in CSS pixels instead, zooming the page in shrinks it, and nodes at
+// its right and bottom lose their geometry.
+TEST_F(AIPageContentAgentTest, VisibleBoundingBoxClampAccountsForPageZoom) {
+  ScopedAIPageContentVisualViewportClampForTest enable_viewport_clamp(true);
+
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body style='margin: 0'>"
+      "  <button id='corner' style='position: fixed; right: 0; bottom: 0;"
+      "      width: 40px; height: 20px; margin: 0; border: 0; padding: 0'>"
+      "  </button>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+  LocalFrame* frame = helper_.LocalMainFrame()->GetFrame();
+  frame->SetLayoutZoomFactor(2.0f);
+  frame->View()->UpdateAllLifecyclePhasesForTest();
+
+  GetAIPageContentWithActionableElements();
+
+  // The viewport is still the whole window, of which the page now lays out
+  // half in each dimension.
+  const auto& root = *Content()->root_node;
+  ASSERT_TRUE(root.content_attributes->geometry);
+  EXPECT_EQ(root.content_attributes->geometry->visible_bounding_box,
+            gfx::Rect(kWindowSize));
+
+  // The button is twice its CSS size, at the window's bottom right.
+  const auto* corner = FindNodeBySelector("#corner");
+  ASSERT_TRUE(corner);
+  ASSERT_TRUE(corner->content_attributes->geometry);
+  EXPECT_EQ(
+      corner->content_attributes->geometry->visible_bounding_box,
+      gfx::Rect(kWindowSize.width() - 80, kWindowSize.height() - 40, 80, 40));
+  // It is hit-testable too: whether a node is hit-testable is found by
+  // hit-testing the clamped viewport.
+  ASSERT_TRUE(corner->content_attributes->node_interaction_info);
+  EXPECT_TRUE(corner->content_attributes->node_interaction_info
+                  ->document_scoped_z_order.has_value());
 }
 
 TEST_F(AIPageContentAgentTest, Image) {
@@ -992,6 +1038,77 @@ TEST_F(AIPageContentAgentTest, Image) {
       image_node.content_attributes->image_info->source_origin->IsOpaque());
 }
 
+TEST_F(AIPageContentAgentTest, ImageWithC2PAManifest) {
+  // 1x1 JPEG containing an APP11 JUMBF C2PA manifest header.
+  constexpr char kSmallC2paImage[] =
+      "data:image/jpeg;base64,/9j/6wAeSlAAAQAAAAEAAAAUanVtYgAAAAxqdW1kYzJwYf/"
+      "gABBKRklGAAEBAAABAAEAAP/"
+      "bAEMAAwICAgICAwICAgMDAwMEBgQEBAQECAYGBQYJCAoKCQgJCQoMDwwKCw4LCQkNEQ0ODxA"
+      "QERAKDBITEhATDxAQEP/"
+      "bAEMBAwMDBAMECAQECBALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA"
+      "QEBAQEBAQEBAQEBAQEP/AABEIAAEAAQMBIgACEQEDEQH/"
+      "xAAfAAABBQEBAQEBAQAAAAAAAAAAAQIDBAUGBwgJCgv/"
+      "xAC1EAACAQMDAgQDBQUEBAAAAX0BAgMABBEFEiExQQYTUWEHInEUMoGRoQgjQrHBFVLR8CQz"
+      "YnKCCQoWFxgZGiUmJygpKjQ1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5"
+      "eoOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna"
+      "4eLj5OXm5+jp6vHy8/T19vf4+fr/"
+      "xAAfAQADAQEBAQEBAQEBAAAAAAAAAQIDBAUGBwgJCgv/"
+      "xAC1EQACAQIEBAMEBwUEBAABAncAAQIDEQQFITEGEkFRB2FxEyIygQgUQpGhscEJIzNS8BVi"
+      "ctEKFiQ04SXxFxgZGiYnKCkqNTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4"
+      "eXqCg4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY"
+      "2dri4+Tl5ufo6ery8/T19vf4+fr/2gAMAwEAAhEDEQA/AP7+KKKKAP/Z";
+
+  constexpr char kSmallPngImage[] =
+      "data:image/png;base64,"
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGA"
+      "hKmMIQAAAABJRU5ErkJggg==";
+
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body>"
+      "  <img alt='c2pa'></img>"
+      "  <img alt='no-c2pa'></img>"
+      "  <img alt='png'></img>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+  auto& document = *helper_.LocalMainFrame()->GetFrame()->GetDocument();
+  document.getElementsByTagName(AtomicString("img"))
+      ->item(0)
+      ->setAttribute(html_names::kSrcAttr, AtomicString(kSmallC2paImage));
+  document.getElementsByTagName(AtomicString("img"))
+      ->item(1)
+      ->setAttribute(html_names::kSrcAttr, AtomicString(kSmallImage));
+  document.getElementsByTagName(AtomicString("img"))
+      ->item(2)
+      ->setAttribute(html_names::kSrcAttr, AtomicString(kSmallPngImage));
+
+  test::RunPendingTasks();
+
+  GetAIPageContentWithActionableElements();
+
+  const auto& root = ContentRootNode();
+  ASSERT_EQ(root.children_nodes.size(), 3u);
+
+  const auto& c2pa_image_node = *root.children_nodes[0];
+  CheckImageNode(c2pa_image_node, "c2pa", KURL());
+  ASSERT_TRUE(c2pa_image_node.content_attributes->image_info);
+  EXPECT_EQ(c2pa_image_node.content_attributes->image_info->has_c2pa_manifest,
+            true);
+
+  const auto& non_c2pa_image_node = *root.children_nodes[1];
+  CheckImageNode(non_c2pa_image_node, "no-c2pa", KURL());
+  ASSERT_TRUE(non_c2pa_image_node.content_attributes->image_info);
+  EXPECT_EQ(
+      non_c2pa_image_node.content_attributes->image_info->has_c2pa_manifest,
+      false);
+
+  const auto& png_image_node = *root.children_nodes[2];
+  CheckImageNode(png_image_node, "png", KURL());
+  ASSERT_TRUE(png_image_node.content_attributes->image_info);
+  EXPECT_FALSE(png_image_node.content_attributes->image_info->has_c2pa_manifest
+                   .has_value());
+}
+
 TEST_F(AIPageContentAgentTest, ImageWithUrl) {
   url_test_helpers::RegisterMockedURLLoad(
       url_test_helpers::ToKURL("https://example.com/image.jpg"),
@@ -1014,6 +1131,8 @@ TEST_F(AIPageContentAgentTest, ImageWithUrl) {
   CheckImageNode(image_node, "hello alt text",
                  blink::KURL("https://example.com/image.jpg"));
   ASSERT_TRUE(image_node.content_attributes->image_info);
+  EXPECT_FALSE(
+      image_node.content_attributes->image_info->has_c2pa_manifest.has_value());
   ASSERT_TRUE(image_node.content_attributes->image_info->source_origin);
   EXPECT_EQ(
       image_node.content_attributes->image_info->source_origin->ToString(),
@@ -3544,20 +3663,124 @@ TEST_F(AIPageContentAgentTest, ContentVisibilityAuto) {
       "      content-visibility: auto"
       "    }"
       "  </style>"
-      "  <div id=foo><div>far text</div></div>"
+      "  <p id=foo>far text</p>"
       "</body>",
       url_test_helpers::ToKURL("http://foobar.com"));
 
   GetAIPageContent();
 
   const auto& root = ContentRootNode();
-  EXPECT_EQ(root.children_nodes.size(), 1u);
+  ASSERT_EQ(root.children_nodes.size(), 1u);
 
-  const auto& text_node = *root.children_nodes[0];
+  const auto& foo_node = *root.children_nodes[0];
+  CheckParagraphNode(foo_node);
+  EXPECT_TRUE(foo_node.children_nodes.empty());
+}
+
+TEST_F(AIPageContentAgentTest, ContentVisibilityAutoInsideIframe) {
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body>"
+      "  <iframe srcdoc='"
+      "    <style>"
+      "      #foo {"
+      "        position: relative;"
+      "        top: 8000px;"
+      "        content-visibility: auto;"
+      "      }"
+      "    </style>"
+      "    <p id=foo>far text</p>"
+      "  '></iframe>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+
+  GetAIPageContent();
+
+  const auto& root = ContentRootNode();
+  ASSERT_EQ(root.children_nodes.size(), 1u);
+
+  const auto& iframe_node = *root.children_nodes[0];
+  EXPECT_EQ(iframe_node.content_attributes->attribute_type,
+            mojom::blink::AIPageContentAttributeType::kIframe);
+  ASSERT_EQ(iframe_node.children_nodes.size(), 1u);
+  const auto& iframe_root = *iframe_node.children_nodes[0];
+
+  ASSERT_EQ(iframe_root.children_nodes.size(), 1u);
+  const auto& foo_node = *iframe_root.children_nodes[0];
+  CheckParagraphNode(foo_node);
+  EXPECT_TRUE(foo_node.children_nodes.empty());
+}
+
+TEST_F(AIPageContentAgentTest, ContentVisibilityAutoFlagDisabled) {
+  ScopedAIPageContentSkipContentVisibilityAutoForTest scoped_feature(false);
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body>"
+      "  <style>"
+      "    #foo {"
+      "      position: relative;"
+      "      top: 8000px;"
+      "      content-visibility: auto"
+      "    }"
+      "  </style>"
+      "  <p id=foo>far text</p>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+
+  GetAIPageContent();
+
+  const auto& root = ContentRootNode();
+  ASSERT_EQ(root.children_nodes.size(), 1u);
+
+  const auto& foo_node = *root.children_nodes[0];
+  CheckParagraphNode(foo_node);
+  ASSERT_EQ(foo_node.children_nodes.size(), 1u);
+
+  const auto& text_node = *foo_node.children_nodes[0];
   CheckTextNode(text_node, "far text");
+}
 
-  const auto& attributes = *text_node.content_attributes;
-  EXPECT_TRUE(attributes.dom_node_id.has_value());
+TEST_F(AIPageContentAgentTest, ContentVisibilityAutoWithHiddenUntilFound) {
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body>"
+      "  <style>"
+      "    #foo {"
+      "      position: relative;"
+      "      top: 8000px;"
+      "      content-visibility: auto;"
+      "    }"
+      "  </style>"
+      "  <div hidden=until-found>outside hidden text</div>"
+      "  <div id=foo>"
+      "    <div hidden=until-found>inside auto hidden text</div>"
+      "  </div>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+
+  GetAIPageContent();
+
+  const auto& root = ContentRootNode();
+  EXPECT_TRUE(TreeContainsTextSubstring(root, "outside hidden text"));
+  EXPECT_FALSE(TreeContainsTextSubstring(root, "inside auto hidden text"));
+}
+
+TEST_F(AIPageContentAgentTest, ClosedDetails) {
+  frame_test_helpers::LoadHTMLString(
+      helper_.LocalMainFrame(),
+      "<body>"
+      "  <details>"
+      "    <summary>summary text</summary>"
+      "    details hidden text"
+      "  </details>"
+      "</body>",
+      url_test_helpers::ToKURL("http://foobar.com"));
+
+  GetAIPageContent();
+
+  const auto& root = ContentRootNode();
+  EXPECT_TRUE(TreeContainsTextSubstring(root, "summary text"));
+  EXPECT_TRUE(TreeContainsTextSubstring(root, "details hidden text"));
 }
 
 TEST_F(AIPageContentAgentTest, HiddenUntilFound) {
@@ -3776,11 +3999,19 @@ TEST_F(AIPageContentAgentTest, HiddenUntilFoundAcrossMultipleFrames) {
   Document* main_doc = helper_.LocalMainFrame()->GetFrame()->GetDocument();
   ASSERT_TRUE(main_doc);
   EXPECT_FALSE(
-      main_doc->GetDisplayLockDocumentState().ActivatableDisplayLocksForced());
+      main_doc->GetDisplayLockDocumentState().ActivatableDisplayLocksForced(
+          /*is_auto=*/true));
+  EXPECT_FALSE(
+      main_doc->GetDisplayLockDocumentState().ActivatableDisplayLocksForced(
+          /*is_auto=*/false));
   main_doc->View()->ForAllChildLocalFrameViews([](LocalFrameView& frame_view) {
     if (Document* child_doc = frame_view.GetFrame().GetDocument()) {
       EXPECT_FALSE(child_doc->GetDisplayLockDocumentState()
-                       .ActivatableDisplayLocksForced());
+                       .ActivatableDisplayLocksForced(
+                           /*is_auto=*/true));
+      EXPECT_FALSE(child_doc->GetDisplayLockDocumentState()
+                       .ActivatableDisplayLocksForced(
+                           /*is_auto=*/false));
     }
   });
 }

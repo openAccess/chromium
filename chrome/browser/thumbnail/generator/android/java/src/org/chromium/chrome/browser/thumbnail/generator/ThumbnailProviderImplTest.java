@@ -23,10 +23,8 @@ import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.UrlUtils;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.thumbnail.generator.ThumbnailProvider.ThumbnailRequest;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -34,7 +32,6 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 
 /** Instrumentation test for {@link ThumbnailProviderImpl}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class ThumbnailProviderImplTest {
     private static final String TEST_DIRECTORY =
@@ -55,9 +52,7 @@ public class ThumbnailProviderImplTest {
                     sReferencePool = new DiscardableReferencePool();
                     sThumbnailProvider =
                             new ThumbnailProviderImpl(
-                                    sReferencePool,
-                                    ThumbnailProviderImpl.ClientType.NTP_SUGGESTIONS,
-                                    /* useMultiRequests= */ false);
+                                    sReferencePool, /* useMultiRequests= */ false);
                 });
     }
 
@@ -274,9 +269,7 @@ public class ThumbnailProviderImplTest {
                         () -> {
                             ThumbnailProviderImpl p =
                                     new ThumbnailProviderImpl(
-                                            sReferencePool,
-                                            ThumbnailProviderImpl.ClientType.NTP_SUGGESTIONS,
-                                            /* useMultiRequests= */ true);
+                                            sReferencePool, /* useMultiRequests= */ true);
                             for (int i = 0; i < numRequests; i++) {
                                 p.getThumbnail(requests[i]);
                             }
@@ -310,9 +303,7 @@ public class ThumbnailProviderImplTest {
                 ThreadUtils.runOnUiThreadBlocking(
                         () ->
                                 new ThumbnailProviderImpl(
-                                        sReferencePool,
-                                        ThumbnailProviderImpl.ClientType.NTP_SUGGESTIONS,
-                                        /* useMultiRequests= */ true));
+                                        sReferencePool, /* useMultiRequests= */ true));
 
         CallbackHelper destroyCallback = new CallbackHelper();
         PostTask.runOrPostTask(

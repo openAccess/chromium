@@ -5,6 +5,8 @@
 #include "chrome/updater/test/integration_tests_mac.h"
 
 #include <stdlib.h>
+#include <string.h>
+#include <sys/xattr.h>
 
 #include <map>
 #include <memory>
@@ -22,11 +24,13 @@
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
+#include "base/process/process.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
@@ -36,6 +40,7 @@
 #include "base/test/bind.h"
 #include "base/test/test_timeouts.h"
 #include "base/time/time.h"
+#include "base/values.h"
 #include "base/version.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -89,6 +94,40 @@ std::optional<base::FilePath> GetActiveFile(UpdaterScope /*scope*/,
       .Append(id);
 }
 
+// Returns the Managed Preferences file that holds the updater's platform
+// policies.
+base::FilePath GetManagedPreferencesPath() {
+  return GetLibraryFolderPath(UpdaterScope::kSystem)
+      ->Append("Managed Preferences")
+      .Append(LEGACY_GOOGLE_UPDATE_APPID ".plist");
+}
+
+// Flushes the preferences cache by killing the defaults server, so that new
+// processes read the current Managed Preferences.
+void FlushPreferencesCache() {
+  base::Process process = base::LaunchProcess({"killall", "cfprefsd"}, {});
+  if (!process.IsValid()) {
+    VLOG(2) << "Failed to launch the process to refresh preferences.";
+  }
+  // Exit code is not checked because it is not 0 when `cfprefsd` is not
+  // found.
+  EXPECT_TRUE(
+      process.WaitForExitWithTimeout(TestTimeouts::action_timeout(), nullptr));
+}
+
+// Removes the platform policies that `SetPlatformPolicies` writes.
+void DeletePlatformPolicies() {
+  const base::FilePath path = GetManagedPreferencesPath();
+  if (!base::PathExists(path)) {
+    return;
+  }
+  EXPECT_TRUE(base::DeleteFile(path)) << "Failed to delete " << path;
+  // The domain may no longer exist, so ignore the result.
+  CFPreferencesSynchronize(CFSTR(LEGACY_GOOGLE_UPDATE_APPID),
+                           kCFPreferencesAnyUser, kCFPreferencesCurrentHost);
+  FlushPreferencesCache();
+}
+
 }  // namespace
 
 base::FilePath GetSetupExecutablePath() {
@@ -102,6 +141,12 @@ base::TimeDelta GetOverinstallTimeoutForEnterTestMode() {
 
 void Clean(UpdaterScope scope) {
   CleanProcesses();
+
+  if (IsSystemInstall(scope)) {
+    // Platform policies live outside the install directory and would otherwise
+    // apply to later tests on the same machine.
+    DeletePlatformPolicies();
+  }
 
   std::optional<base::FilePath> path = GetInstallDirectory(scope);
   EXPECT_TRUE(path);
@@ -436,32 +481,27 @@ void SetPlatformPolicies(const base::DictValue& values) {
         app_policies[key] = [NSNumber numberWithInt:value.GetInt()];
       } else if (value.is_bool()) {
         app_policies[key] = [NSNumber numberWithInt:value.GetBool()];
+      } else {
+        ADD_FAILURE() << "Unsupported type "
+                      << base::Value::GetTypeName(value.type())
+                      << " for policy " << name << " of app " << app_id;
       }
     }
     all_policies[base::SysUTF8ToNSString(app_id)] = app_policies;
-
-    NSURL* const managed_preferences_url = base::apple::FilePathToNSURL(
-        GetLibraryFolderPath(UpdaterScope::kSystem)
-            ->Append("Managed Preferences")
-            .Append(LEGACY_GOOGLE_UPDATE_APPID ".plist"));
-    ASSERT_TRUE([[NSDictionary dictionaryWithObject:all_policies
-                                             forKey:@"updatePolicies"]
-        writeToURL:managed_preferences_url
-             error:nil])
-        << "Failed to write " << managed_preferences_url;
   }
+
+  NSURL* const managed_preferences_url =
+      base::apple::FilePathToNSURL(GetManagedPreferencesPath());
+  NSError* error = nil;
+  ASSERT_TRUE([[NSDictionary dictionaryWithObject:all_policies
+                                           forKey:@"updatePolicies"]
+      writeToURL:managed_preferences_url
+           error:&error])
+      << "Failed to write " << managed_preferences_url << ": "
+      << base::SysNSStringToUTF8(error.localizedDescription);
   ASSERT_TRUE(CFPreferencesSynchronize(domain, kCFPreferencesAnyUser,
                                        kCFPreferencesCurrentHost));
-
-  // Force flushing preferences cache by killing the defaults server.
-  base::Process process = base::LaunchProcess({"killall", "cfprefsd"}, {});
-  if (!process.IsValid()) {
-    VLOG(2) << "Failed to launch the process to refresh preferences.";
-  }
-  // Exit code is not checked because it is not 0 when `cfprefsd` is not
-  // found.
-  EXPECT_TRUE(
-      process.WaitForExitWithTimeout(TestTimeouts::action_timeout(), nullptr));
+  FlushPreferencesCache();
 }
 
 void PrivilegedHelperInstall(UpdaterScope scope) {
@@ -518,6 +558,58 @@ void ExpectAppVersion(UpdaterScope scope,
 
 void ExpectPrepareToRunBundleSuccess(const base::FilePath& bundle_path) {
   EXPECT_TRUE(PrepareToRunBundle(bundle_path));
+}
+
+void QuarantineWakePlist(UpdaterScope scope) {
+  const std::optional<base::FilePath> path = GetWakeTaskPlistPath(scope);
+  ASSERT_TRUE(path);
+  base::CommandLine bootout(base::FilePath("/bin/launchctl"));
+  bootout.AppendArg("bootout");
+  bootout.AppendArg(
+      base::StrCat({GetDomain(scope), "/", GetWakeLaunchdName(scope)}));
+  ASSERT_NO_FATAL_FAILURE(ExpectCliResult(bootout, /*elevate=*/false, {}, 0));
+
+  // The attribute a quarantined process gives the files it writes.
+  static constexpr char kQuarantine[] = "0081;00000000;Chromium;";
+  ASSERT_EQ(setxattr(path->value().c_str(), kQuarantineAttribute, kQuarantine,
+                     strlen(kQuarantine), /*position=*/0, /*options=*/0),
+            0);
+}
+
+void ExpectWakeJobLoaded(UpdaterScope scope) {
+  const std::optional<base::FilePath> path = GetWakeTaskPlistPath(scope);
+  ASSERT_TRUE(path);
+  EXPECT_TRUE(base::PathExists(*path));
+  EXPECT_FALSE(IsQuarantined(*path));
+  base::CommandLine print(base::FilePath("/bin/launchctl"));
+  print.AppendArg("print");
+  print.AppendArg(
+      base::StrCat({GetDomain(scope), "/", GetWakeLaunchdName(scope)}));
+  ExpectCliResult(print, /*elevate=*/false, {}, 0);
+}
+
+void InstallFromQuarantineEnabledApp() {
+  base::FilePath exe_dir;
+  ASSERT_TRUE(base::PathService::Get(base::DIR_EXE, &exe_dir));
+  const base::FilePath app_path = exe_dir.Append(
+      "quarantine_enabled_app.app/Contents/MacOS/quarantine_enabled_app");
+
+  // Without inherited quarantine, the install below would prove nothing.
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath probe = temp_dir.GetPath().Append("probe");
+  base::CommandLine touch(app_path);
+  touch.AppendArg("/usr/bin/touch");
+  touch.AppendArgPath(probe);
+  ASSERT_NO_FATAL_FAILURE(ExpectCliResult(touch, /*elevate=*/false, {}, 0));
+  ASSERT_TRUE(IsQuarantined(probe));
+
+  base::CommandLine install(app_path);
+  install.AppendArgPath(GetSetupExecutablePath());
+  install.AppendArg(base::StrCat({"--", kInstallSwitch, "=usagestats=1"}));
+  int exit_code = -1;
+  Run(UpdaterScope::kUser, install, &exit_code);
+  ASSERT_EQ(exit_code, 0);
 }
 
 void ExpectKSAdminResult(UpdaterScope scope,

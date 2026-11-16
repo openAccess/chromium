@@ -318,7 +318,9 @@ HRESULT AXPlatformNodeTextRangeProviderWin::ExpandToEnclosingUnitImpl(
         SetEnd(start()->CreateNextCharacterPosition(
             {AXBoundaryBehavior::kCrossBoundary,
              AXBoundaryDetection::kDontCheckInitialPosition}));
-        CHECK(!end()->IsNullPosition(), base::NotFatalUntil::M163);
+        // TODO(crbug.com/582998459): CHECK-exclusion: Convert to a CHECK once
+        // we are confident it won't be triggered.
+        DCHECK(!end()->IsNullPosition());
       }
 
       AXPositionInstance normalized_start = start()->Clone();
@@ -439,8 +441,10 @@ HRESULT AXPlatformNodeTextRangeProviderWin::ExpandToEnclosingUnitImpl(
     default:
       return UIA_E_NOTSUPPORTED;
   }
-  CHECK(!start()->IsNullPosition(), base::NotFatalUntil::M163);
-  CHECK(!end()->IsNullPosition(), base::NotFatalUntil::M163);
+  // TODO(crbug.com/582998459): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!start()->IsNullPosition());
+  DCHECK(!end()->IsNullPosition());
   return S_OK;
 }
 
@@ -733,7 +737,9 @@ HRESULT AXPlatformNodeTextRangeProviderWin::GetAttributeValue(
     // If the iterator creates a null position, then it has likely overrun the
     // range, return failure. This is unexpected but may happen if the range
     // became inverted.
-    CHECK(!it->IsNullPosition(), base::NotFatalUntil::M163);
+    // TODO(crbug.com/582100694): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(!it->IsNullPosition());
     if (it->IsNullPosition()) {
       return E_FAIL;
     }
@@ -2128,8 +2134,10 @@ void AXPlatformNodeTextRangeProviderWin::TextRangeEndpoints::
   // AXPosition::SlowCompareTo in the < operator below.
   NormalizeAsUnignoredPosition(new_endpoint);
   NormalizeAsUnignoredPosition(other_endpoint);
-  CHECK(!new_endpoint->IsIgnored(), base::NotFatalUntil::M163);
-  CHECK(!other_endpoint->IsIgnored(), base::NotFatalUntil::M163);
+  // TODO(crbug.com/580099108): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!new_endpoint->IsIgnored());
+  DCHECK(!other_endpoint->IsIgnored());
 
   // If after all the above operations we're still left with a new endpoint that
   // is a descendant of the subtree root being deleted, just point at a null

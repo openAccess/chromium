@@ -53,6 +53,7 @@
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/foundations/autofill_driver.h"
 #include "components/autofill/core/browser/heuristic_source.h"
+#include "components/autofill/core/browser/integrators/custom_form_controls/custom_form_control_script_index.h"
 #include "components/autofill/core/browser/logging/log_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/quality_metrics.h"
@@ -148,6 +149,11 @@ bool IsCreditCardFormForSignaturePurposes(
          DenseSet<FormType>{FormType::kCreditCardForm};
 }
 
+bool IsPrimaryMainFrame(AutofillDriver& driver) {
+  return driver.IsActive() && driver.GetParent() == nullptr &&
+         !driver.IsEmbedded();
+}
+
 }  // namespace
 
 // Form parsing happens asynchronously. This struct holds the necessary context.
@@ -198,6 +204,9 @@ void AutofillManager::OnAutofillDriverLifecycleStateChanged(
 void AutofillManager::Reset() {
   parsing_weak_ptr_factory_.InvalidateWeakPtrs();
   form_structures_.clear();
+  // TODO(crbug.com/581337039): Reset doesn't run on same document navigations.
+  // For scripts that apply a url_filter, loading might not be retried properly.
+  attempted_loading_custom_form_control_script_ = false;
 }
 
 void AutofillManager::OnLanguageDetermined(
@@ -206,21 +215,13 @@ void AutofillManager::OnLanguageDetermined(
     return;
   }
   if (details.adopted_language == language_detection::kUnknownLanguageCode ||
-      !driver_->IsActive()) {
+      !IsPrimaryMainFrame(driver())) {
+    // OnLanguageDetermined() is fired on all frames. To avoid redundant
+    // reextraction, we extract only on the primary main frame.
     return;
   }
 
-  NotifyObservers(&Observer::OnBeforeLanguageDetermined);
-
-  // TODO(crbug.com/360322019): Consider using
-  // `TriggerFormExtractionInAllFrames()` instead.
-  ParseFormsAsync(
-      base::ToVector(form_structures_,
-                     [](const auto& p) { return p.second->ToFormData(); }),
-      base::BindOnce(
-          [](AutofillManager& self, const std::vector<FormData>& parsed_forms) {
-            self.NotifyObservers(&Observer::OnAfterLanguageDetermined);
-          }));
+  TriggerFormExtractionInAllFrames(/*force=*/true, base::DoNothing());
 }
 
 void AutofillManager::OnTranslateDriverDestroyed(
@@ -304,6 +305,13 @@ void AutofillManager::OnFormsSeen(std::vector<FormData> updated_forms,
     return;
   }
 
+  // Load after `ShouldParseForms()` so scripts aren't loaded when Autofill is
+  // disabled, and before `ParseFormsAsync()`, which drops small forms that may
+  // only reach the minimum field count once custom form controls are extracted.
+  if (!updated_forms.empty()) {
+    MaybeLoadCustomFormControlScript();
+  }
+
   std::vector<FormGlobalId> updated_form_ids =
       base::ToVector(updated_forms, &FormData::global_id);
   NotifyObservers(&Observer::OnBeforeFormsSeen, updated_form_ids,
@@ -361,7 +369,6 @@ void AutofillManager::OnFormsParsed(const std::vector<FormData>& forms) {
   DCHECK(!forms.empty());
   OnBeforeProcessParsedForms();
 
-  std::vector<FormData> queryable_forms;
   for (const FormData& form : forms) {
     // The FormStructure might not exist if the form cache hit its capacity of
     // `kAutofillManagerMaxFormCacheSize` and due to race conditions the initial
@@ -1160,6 +1167,39 @@ void AutofillManager::LogCurrentFieldTypes(
   if (base::FeatureList::IsEnabled(
           features::debug::kAutofillShowTypePredictions)) {
     driver().SendTypePredictionsToRenderer(get_form_structure());
+  }
+}
+
+void AutofillManager::MaybeLoadCustomFormControlScript() {
+  if (attempted_loading_custom_form_control_script_ ||
+      !base::FeatureList::IsEnabled(
+          features::kAutofillCustomFormControlExtraction)) {
+    return;
+  }
+  // Custom form controls are currently only supported in the main frame. This
+  // is not a technical limitation, but primarily a security measure to avoid
+  // injecting scripts into (cross-origin) iframes. Plus, since the feature
+  // currently only supports address types, iframe support likely adds little
+  // value.
+  // Although `FormForest` usually routes forms to the main frame's
+  // `AutofillManager`, an iframe's `AutofillManager` can still receive
+  // `OnFormsSeen()` if the parent frame's form hasn't been extracted into
+  // `FormForest` yet.
+  if (!IsPrimaryMainFrame(driver())) {
+    return;
+  }
+  const CustomFormControlScriptIndex* index =
+      client().GetCustomFormControlScriptIndex();
+  if (!index || !index->is_initialized()) {
+    return;
+  }
+  // If a site has no script, this is not expected to change without a reload.
+  // Thus, `attempted_loading_custom_form_control_script_` is already set to
+  // true at this point to avoid needless retries during future calls.
+  attempted_loading_custom_form_control_script_ = true;
+  if (std::optional<std::string> script =
+          index->FindScript(client().GetLastCommittedPrimaryMainFrameURL())) {
+    driver().LoadCustomFormControlScript(*script);
   }
 }
 

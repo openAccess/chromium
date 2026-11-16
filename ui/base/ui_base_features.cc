@@ -90,7 +90,7 @@ BASE_FEATURE(kHideCursorWhileTyping, base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_MAC)
 BASE_FEATURE(kOnlyUseWindowResizeHelperOnResize,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Re-create the CAContext on window resize to try to better synchronize the
 // resize.
@@ -242,6 +242,14 @@ BASE_FEATURE(kFocusFollowsCursor, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kDragDropOnlySynthesizeHttpOrHttpsUrlsFromText,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Kill-switch. Disabled text fields, menulists, checkboxes, and radios
+// paint a translucent fill in dark mode (matching light mode) so a
+// colored page background shows through. Disabled buttons and
+// progress/slider tracks are unaffected. Disabling preserves the opaque
+// dark-mode fills.
+BASE_FEATURE(kDarkModeTranslucentDisabledControls,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Enables applying scroll railing in the renderer.
 BASE_FEATURE(kApplyScrollRailingInRenderer, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -315,6 +323,18 @@ BASE_FEATURE(kEyeDropper,
 );
 
 bool IsEyeDropperEnabled() {
+#if BUILDFLAG(IS_ANDROID)
+  // On Android, the system EyeDropper API (Intent.ACTION_OPEN_EYE_DROPPER) is
+  // only available starting in Android CinnamonBun (API level 37). Return
+  // false on older Android versions to match
+  // SetCustomizedRuntimeFeaturesFromCombinedArgs in runtime_features.cc, which
+  // disables the blink runtime feature in order to prevent the IDL from being
+  // registered.
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_CINNAMON_BUN) {
+    return false;
+  }
+#endif
   return base::FeatureList::IsEnabled(features::kEyeDropper);
 }
 
@@ -523,6 +543,9 @@ BASE_FEATURE(kRemoveEnsureRFHVisibilityConsistent,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kColorIdCssStyleSheetOptimization,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOmitNativeFrameOnShadowlessMenus,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsGlassFrameEnabled() {

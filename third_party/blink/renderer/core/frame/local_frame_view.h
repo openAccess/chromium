@@ -402,6 +402,10 @@ class CORE_EXPORT LocalFrameView final
   // desired state.
   bool UpdateAllLifecyclePhasesExceptPaint(DocumentUpdateReason reason);
 
+  // Same as above, for a hit test with `request`. If this is a local root and
+  // the hit test can't enter child frames, they are skipped as if throttled.
+  bool UpdateLifecyclePhasesForHitTest(const HitTestRequest& request);
+
   // Printing needs everything up-to-date except paint (which will be done
   // specially). We may also print a detached frame or a descendant of a
   // detached frame and need special handling of the frame.
@@ -924,6 +928,7 @@ class CORE_EXPORT LocalFrameView final
 
   // True if the recorded value has changed.
   bool RecordNaturalDimensions();
+  void ScheduleResponsiveIframeResize();
 
   void RequestSameDocumentNavigationPresentationTime(
       base::OnceCallback<void(const viz::FrameTimingDetails&)>);
@@ -1071,6 +1076,9 @@ class CORE_EXPORT LocalFrameView final
       DocumentLifecycle::LifecycleState target_state);
   void RunPaintLifecyclePhase(PaintBenchmarkMode);
 
+  bool ShouldSkipResponsiveIframeResize() const;
+  bool HasPendingResponsiveIframeResize();
+  void UpdateResponsiveIframeSizesIfNeeded();
   void UpdateStyleAndLayoutIfNeededRecursive();
   bool UpdateStyleAndLayoutInternal();
   void UpdateLayout();
@@ -1274,6 +1282,7 @@ class CORE_EXPORT LocalFrameView final
   gfx::Size layout_overflow_size_;
   gfx::Size layout_overflow_size_without_padding_box_;
   std::optional<gfx::Size> natural_size_;
+  bool needs_responsive_iframe_resize_ = false;
 
   bool root_layer_did_scroll_;
 
@@ -1288,6 +1297,8 @@ class CORE_EXPORT LocalFrameView final
   bool allow_throttling_ = false;
   // Used by ForceThrottlingScope
   bool force_throttling_ = false;
+  // Used by UpdateLifecyclePhasesForHitTest()
+  bool throttle_child_frames_ = false;
 
   // This is set on the local root frame view only.
   DocumentLifecycle::LifecycleState target_state_;
@@ -1452,6 +1463,11 @@ class CORE_EXPORT LocalFrameView final
 #endif
 
   FRIEND_TEST_ALL_PREFIXES(FrameThrottlingTest, ForAllThrottledLocalFrameViews);
+  FRIEND_TEST_ALL_PREFIXES(
+      HTMLIFrameElementSimTest,
+      ResponsiveIframeAsyncResizeAvoidsSyncLayoutAndLimitsLayouts);
+  FRIEND_TEST_ALL_PREFIXES(HTMLIFrameElementSimTest,
+                           ResponsiveIframeDisplayNoneSkipsUntilAttached);
 };
 
 inline void LocalFrameView::IncrementVisuallyNonEmptyCharacterCount(

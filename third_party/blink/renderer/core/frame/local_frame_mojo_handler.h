@@ -17,6 +17,8 @@
 #include "third_party/blink/public/mojom/media/fullscreen_video_element.mojom-blink.h"
 #include "third_party/blink/public/mojom/reporting/reporting.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
+#include "third_party/blink/renderer/core/core_export.h"
+#include "third_party/blink/renderer/core/frame/csp/outside_context_csp_violation_reporter_base.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_receiver.h"
@@ -50,12 +52,13 @@ class Page;
 //  - Data members of which types are defined by mojom.
 //
 // A single LocalFrame instance owns a single LocalFrameMojoHandler instance.
-class LocalFrameMojoHandler
+class CORE_EXPORT LocalFrameMojoHandler
     : public GarbageCollected<LocalFrameMojoHandler>,
       public mojom::blink::LocalFrame,
       public mojom::blink::LocalMainFrame,
       public mojom::blink::FullscreenVideoElementHandler,
-      public mojom::blink::DevicePostureClient {
+      public mojom::blink::DevicePostureClient,
+      public OutsideContextCSPViolationReporterBase {
  public:
   explicit LocalFrameMojoHandler(blink::LocalFrame& frame);
   void Trace(Visitor* visitor) const;
@@ -94,6 +97,9 @@ class LocalFrameMojoHandler
   void BindFullscreenVideoElementReceiver(
       mojo::PendingAssociatedReceiver<
           mojom::blink::FullscreenVideoElementHandler> receiver);
+  void BindOutsideContextCSPViolationReporterReceiver(
+      mojo::PendingAssociatedReceiver<
+          mojom::blink::OutsideContextCSPViolationReporter> receiver);
 
   // blink::mojom::LocalFrame overrides:
   void GetTextSurroundingSelection(
@@ -138,8 +144,6 @@ class LocalFrameMojoHandler
       mojom::blink::FocusType focus_type,
       const std::optional<RemoteFrameToken>& source_frame_token) final;
   void AdvanceFocusForIME(mojom::blink::FocusType focus_type) final;
-  void ReportContentSecurityPolicyViolation(
-      network::mojom::blink::CSPViolationPtr csp_violation) final;
   // Updates the snapshot policy attributes (sandbox flags and permissions
   // policy container policy) in the frame's FrameOwner. This is used when this
   // frame's parent is in another process and it dynamically updates this
@@ -175,7 +179,7 @@ class LocalFrameMojoHandler
       JavaScriptExecuteRequestInIsolatedWorldCallback callback) final;
   void InvokeScriptToolForInspector(
       const ToolInvocationToken& invocation_id,
-      const String& tool_name,
+      mojom::blink::ScriptToolSelectorPtr tool,
       const String& input_arguments,
       InvokeScriptToolForInspectorCallback callback) final;
   void NotifyInspectorOfCrossDocumentScriptToolResult(
@@ -251,6 +255,7 @@ class LocalFrameMojoHandler
       const String& normalized_server_timing,
       mojom::blink::SubframeResourceLengthsPtr resource_lengths) final;
   void GetScrollPosition(GetScrollPositionCallback callback) final;
+  void SetWantErrorMessageStackTrace() final;
 
   // blink::mojom::LocalMainFrame overrides:
   void AnimateDoubleTapZoom(const gfx::Point& point,
@@ -288,6 +293,15 @@ class LocalFrameMojoHandler
 
   // DevicePostureClient implementation:
   void OnPostureChanged(mojom::blink::DevicePostureType posture) final;
+
+  // OutsideContextCSPViolationReporterBase overrides, for the violations
+  // checked in the frame host (e.g. form-action, frame-ancestors, and
+  // frame-src):
+  bool IsCSPEffectiveDirectiveAllowedForViolationReporting(
+      network::mojom::blink::CSPDirectiveName effective_type) const final;
+  ContentSecurityPolicy* GetContentSecurityPolicyForViolationReporting() final;
+  blink::LocalFrame* GetContextFrameForCSPViolationReporting(
+      network::mojom::blink::CSPDirectiveName effective_type) final;
 
 #if BUILDFLAG(IS_ANDROID)
   void PerformFullContentSpellCheck() final;
@@ -331,6 +345,10 @@ class LocalFrameMojoHandler
   HeapMojoAssociatedReceiver<mojom::blink::FullscreenVideoElementHandler,
                              LocalFrameMojoHandler>
       fullscreen_video_receiver_{this, nullptr};
+  // LocalFrameMojoHandler can be reused by multiple ExecutionContext.
+  HeapMojoAssociatedReceiver<mojom::blink::OutsideContextCSPViolationReporter,
+                             LocalFrameMojoHandler>
+      outside_context_csp_violation_reporter_receiver_{this, nullptr};
 };
 
 class ActiveURLMessageFilter : public mojo::MessageFilter {

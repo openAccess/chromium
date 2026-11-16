@@ -40,7 +40,10 @@ class WebUIGlicControl : public glic::ToolbarGlicButtonInterface,
   void OnThemeChanged();
   bool IsContextMenuShowingForTesting() const;
 
+  bool GetIsSplit() const { return is_split_; }
+
   // glic::ToolbarGlicButtonInterface:
+  void SetIsSplit(bool is_split) override;
   void SetIsShowingNudge(bool is_showing) override;
   bool GetIsShowingNudge() const override;
   void SetNudgeLabel(std::string label) override;
@@ -72,6 +75,7 @@ class WebUIGlicControl : public glic::ToolbarGlicButtonInterface,
   bool is_showing_nudge_ = false;
   bool should_match_toolbar_style_ = false;
   bool use_custom_theme_fallback_ = false;
+  bool is_split_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_WEBUI_GLIC_CONTROL_H_

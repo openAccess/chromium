@@ -19,6 +19,7 @@
 #include "chrome/browser/ttc/app/public/audio_envelope.h"
 #include "chrome/browser/ttc/core/actor_task_holder.h"
 #include "chrome/browser/ttc/core/session_controller.h"
+#include "chrome/browser/ttc/core/session_end_condition_detector.h"
 #include "chrome/browser/ttc/core/session_journal_impl.h"
 #include "chrome/browser/ttc/core/session_view_delegate.h"
 #include "chrome/browser/ttc/core/states.h"
@@ -35,6 +36,8 @@ class WebContents;
 
 namespace ttc {
 
+class PointerInputObserver;
+class PointerTracker;
 class SessionInactivityDetector;
 class SessionView;
 class TtcKeyedService;
@@ -53,21 +56,24 @@ class SessionControllerImpl : public SessionController,
   // SessionController and SessionViewDelegate implementation:
   Profile* GetProfile() override;
   void EndSessionAsync() override;
+  SessionLifecycle GetSessionLifecycle() const override;
 
   // SessionController implementation:
   void AddObserver(SessionController::Observer* observer) override;
   void RemoveObserver(SessionController::Observer* observer) override;
   void SendTextInput(const std::string& text) override;
-  void OnSessionInitialized() override;
   void OnError(ErrorCode error) override;
   SessionJournalImpl& GetJournal() override;
   DebugSink* GetDebugSink() override;
-  SessionLifecycle GetSessionLifecycle() const override;
   void SetSessionLifecycle(SessionLifecycle lifecycle) override;
+  void SetSessionId(const std::string& session_id) override;
   void ProcessToolCall(const ToolRequest& tool_request,
                        ToolResponseCallback tool_response_callback) override;
+  void ProcessToolCallBatch(std::vector<PendingToolCall> tool_calls) override;
   std::vector<ToolDefinition> GetToolDefinitions() override;
   void UserAudioLevelUpdate(float audio_level) override;
+  void OnMicCaptureChanged(bool capturing) override;
+  void OnSystemMicMuteChanged(bool muted, bool at_stream_start) override;
   void OnModelTurnStarted() override;
   void OnModelTurnComplete() override;
   void OnModelInterrupted() override;
@@ -78,6 +84,9 @@ class SessionControllerImpl : public SessionController,
 
   // SessionViewDelegate implementation:
   BrowserWindowInterface* GetBrowserWindowInterface() override;
+  bool SetMicMuted(bool muted) override;
+  bool IsMicMuted() const override;
+  Speaker GetSpeaker() const override;
 
   // VoiceFocusedContentsTracker::Observer implementation:
   void OnVoiceFocusedContentsChanged(
@@ -89,23 +98,36 @@ class SessionControllerImpl : public SessionController,
 
   actor::TaskId GetActorTaskId() const;
 
-  // Mutes or unmutes the user's microphone. While muted, no audio is captured
-  // or sent to the model. Only a live session can be muted, and it goes live
-  // unmuted. Returns whether the state changed: false unless the session is
-  // live, or if the microphone already was in that state.
-  bool SetMicMuted(bool muted);
-  // Whether the microphone of the live session is muted. False if the session
-  // isn't live.
-  bool IsMicMuted() const;
+  // Replaces the session's actor task if it was stopped outside of the
+  // session. Must be called before acting.
+  void EnsureActorTaskCreated();
 
   SessionView& session_view() { return CHECK_DEREF(session_view_.get()); }
   Conversation& conversation() { return CHECK_DEREF(conversation_.get()); }
+  TtcPageContextMonitor* page_context_monitor_for_testing() {
+    return page_context_monitor_.get();
+  }
+
+  // Where the pointer has been over the voice-focused contents, for the
+  // get_pointer tool. Null unless kTtcGetPointer is enabled.
+  PointerTracker* pointer_tracker() { return pointer_tracker_.get(); }
+
+  // When the user's latest turn began: the last time they started speaking or
+  // sent text, or when the session started if they have not yet.
+  base::TimeTicks user_turn_start() const { return user_turn_start_; }
 
  private:
   void OnPageContextFetched(const PageContextResult& result);
   void OnInactivityTimeout();
+  void OnSessionEndConditionDetected(
+      SessionEndConditionDetector::Reason reason);
 
-  // Passes the transcripts of the current exchange on to the session UI.
+  // Notifies observers of the tool call completion and returns the response to
+  // forward it to the chained callback.
+  ToolResponse NotifyToolExecutionCompleted(const ToolRequest& tool_request,
+                                            ToolResponse response);
+
+  // Passes the transcripts of the current exchange on to observers.
   void NotifyTranscriptsUpdated();
 
   // Safe because TtcKeyedService owns this object and outlives it. Gets
@@ -125,16 +147,32 @@ class SessionControllerImpl : public SessionController,
   ActorTaskHolder actor_task_holder_;
   SessionJournalImpl journal_;
   ToolController tool_controller_;
-  std::unique_ptr<TtcPageContextMonitor> page_context_monitor_;
+
+  // Both null unless kTtcGetPointer is enabled; the observer also while there
+  // are no voice-focused contents. The observer refers to the tracker, so it
+  // is declared after it.
+  std::unique_ptr<PointerTracker> pointer_tracker_;
+  std::unique_ptr<PointerInputObserver> pointer_input_observer_;
+  base::TimeTicks user_turn_start_ = base::TimeTicks::Now();
 
   SessionLifecycle session_lifecycle_ = SessionLifecycle::kInitializing;
+  Speaker speaker_ = Speaker::kIdle;
+
+  // Whether the user muted the microphone in TTC, as opposed to the OS or
+  // hardware muting it (see `OnSystemMicMuteChanged()`). Sessions go live
+  // unmuted.
+  bool app_mic_muted_ = false;
 
   base::ObserverList<SessionController::Observer> observers_;
 
-  // The transcripts of the current exchange, for the session UI.
+  // The transcripts of the current exchange.
   TranscriptTracker transcript_tracker_;
 
+  // Declared after `observers_` because they hold `ScopedObservation`s on
+  // `this` whose destructors call `RemoveObserver()`, accessing `observers_`.
+  std::unique_ptr<TtcPageContextMonitor> page_context_monitor_;
   std::unique_ptr<SessionInactivityDetector> inactivity_detector_;
+  std::unique_ptr<SessionEndConditionDetector> session_end_condition_detector_;
 
   base::WeakPtrFactory<SessionControllerImpl> weak_ptr_factory_{this};
 };

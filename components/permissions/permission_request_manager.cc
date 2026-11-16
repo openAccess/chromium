@@ -58,6 +58,7 @@
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
@@ -309,7 +310,8 @@ void PermissionRequestManager::AddRequest(
 
   const std::optional<PermissionAction> should_auto_approve_request =
       PermissionsClient::Get()->GetAutoApprovalStatus(
-          web_contents()->GetBrowserContext(), request->requesting_origin());
+          content::GetUserBrowserContext(*web_contents()),
+          request->requesting_origin());
 
   if (should_auto_approve_request) {
     PromptOptions prompt_options =
@@ -744,8 +746,8 @@ void PermissionRequestManager::Accept(const PromptOptions& prompt_options) {
     if (content_settings_type.has_value()) {
       PermissionUmaUtil::RecordPermissionRegrantForUnusedSites(
           request->requesting_origin(), content_settings_type.value(),
-          PermissionSourceUI::PROMPT, web_contents()->GetBrowserContext(),
-          base::Time::Now());
+          PermissionSourceUI::PROMPT,
+          content::GetUserBrowserContext(*web_contents()), base::Time::Now());
     }
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   }
@@ -997,6 +999,14 @@ bool PermissionRequestManager::RecreateView() {
                                                               this);
     }
     CalculateCurrentVariantForEmbeddedPrompt();
+    if (!CanContinueEmbeddedPromptFlow()) {
+      for (const std::unique_ptr<PermissionRequest>& request : requests_) {
+        CancelRequestIncludingDuplicates(request.get(),
+                                         /*is_final_decision=*/false);
+      }
+      FinalizeCurrentRequests();
+      return false;
+    }
   }
   view_ = view_factory_.Run(web_contents(), this);
   if (!view_) {
@@ -1037,6 +1047,27 @@ void PermissionRequestManager::CalculateCurrentVariantForEmbeddedPrompt() {
   embedded_prompt_flow_model_->CalculateCurrentVariant(requests_);
 }
 
+bool PermissionRequestManager::CanContinueEmbeddedPromptFlow() const {
+  CHECK(embedded_prompt_flow_model_);
+  using Variant = EmbeddedPermissionPromptFlowModel::Variant;
+  const Variant variant = embedded_prompt_flow_model_->prompt_variant();
+  if (variant == Variant::kUninitialized) {
+    return false;
+  }
+  // Site-level decision prompts (`kAsk`, `kPreviouslyDenied`,
+  // `kPreviouslyGranted`) invoke `PermissionGranted()` / `PermissionDenied()`,
+  // which consume each request's `permission_decided_callback_`. Never advance
+  // to a site-level prompt if any active request has already been decided.
+  const bool is_site_decision_variant = variant == Variant::kAsk ||
+                                        variant == Variant::kPreviouslyDenied ||
+                                        variant == Variant::kPreviouslyGranted;
+  if (is_site_decision_variant &&
+      std::ranges::any_of(requests_, &PermissionRequest::IsDecisionFinalized)) {
+    return false;
+  }
+  return true;
+}
+
 void PermissionRequestManager::AdvanceOrFinalizeEmbeddedPromptFlow() {
   CHECK(embedded_prompt_flow_model_);
 
@@ -1044,7 +1075,7 @@ void PermissionRequestManager::AdvanceOrFinalizeEmbeddedPromptFlow() {
   using Variant = EmbeddedPermissionPromptFlowModel::Variant;
   const Variant variant = embedded_prompt_flow_model_->prompt_variant();
   if (variant != Variant::kPreviouslyGranted &&
-      variant != Variant::kUninitialized) {
+      CanContinueEmbeddedPromptFlow()) {
     if (view_) {
       DeletePrompt();
     }
@@ -1055,7 +1086,8 @@ void PermissionRequestManager::AdvanceOrFinalizeEmbeddedPromptFlow() {
   // Make sure all request callbacks run. If a request was already accepted,
   // this won't do anything for that request.
   for (const std::unique_ptr<PermissionRequest>& request : requests_) {
-    request->Cancelled(/*is_final_decision=*/false);
+    CancelRequestIncludingDuplicates(request.get(),
+                                     /*is_final_decision=*/false);
   }
   FinalizeCurrentRequests();
 }
@@ -1103,7 +1135,7 @@ PermissionRequestManager::PermissionRequestManager(
       auto_response_for_test_(NONE),
       permission_ui_selectors_(
           PermissionsClient::Get()->CreatePermissionUiSelectors(
-              web_contents->GetBrowserContext())) {
+              content::GetUserBrowserContext(*web_contents))) {
   // Only register TabInterface observers on desktop to support Split View.
   AdoptTabInterfaceIfNeeded(GetTabInterface(web_contents));
   if (!tab_insert_subscription_) {
@@ -1225,19 +1257,24 @@ void PermissionRequestManager::DequeueRequestIfNeeded() {
       break;
     }
 
+    base::WeakPtr<PermissionRequestManager> weak_this =
+        weak_factory_.GetWeakPtr();
+
     if (!requests_.front()->IsEmbeddedPermissionElementInitiated() &&
         permission_ui_selectors_[selector_index]->IsPermissionRequestSupported(
             requests_.front()->request_type())) {
       permission_ui_selectors_[selector_index]->SelectUiToUse(
           web_contents(), requests_.front().get(),
           base::BindOnce(&PermissionRequestManager::OnPermissionUiSelectorDone,
-                         weak_factory_.GetWeakPtr(), selector_index));
-      continue;
+                         weak_this, selector_index));
+    } else {
+      OnPermissionUiSelectorDone(
+          selector_index,
+          PermissionUiSelector::Decision::UseNormalUiAndShowNoWarning());
     }
-
-    OnPermissionUiSelectorDone(
-        selector_index,
-        PermissionUiSelector::Decision::UseNormalUiAndShowNoWarning());
+    if (!weak_this) {
+      return;
+    }
   }
 }
 
@@ -1473,7 +1510,7 @@ void PermissionRequestManager::CurrentRequestsDecided(
 #endif
 
   content::BrowserContext* browser_context =
-      web_contents()->GetBrowserContext();
+      content::GetUserBrowserContext(*web_contents());
 
   if (ShouldRecordUmaForCurrentPrompt()) {
     PermissionUmaUtil::PermissionPromptResolved(
@@ -1833,7 +1870,7 @@ void PermissionRequestManager::StorePermissionActionForUMA(
   if (content_settings_type.has_value()) {
     PermissionsClient::Get()
         ->GetOriginKeyedPermissionActionService(
-            web_contents()->GetBrowserContext())
+            content::GetUserBrowserContext(*web_contents()))
         ->RecordAction(PermissionUtil::GetLastCommittedOriginAsURL(
                            web_contents()->GetPrimaryMainFrame()),
                        content_settings_type.value(), permission_action);
@@ -2043,7 +2080,7 @@ void PermissionRequestManager::SetCurrentRequestsInitialStatuses() {
   }
 
   auto* map = PermissionsClient::Get()->GetSettingsMap(
-      web_contents()->GetBrowserContext());
+      content::GetUserBrowserContext(*web_contents()));
   for (const auto& request : requests_) {
     // It's possible in tests for |map| to not be initialized yet. Also there
     // are some permission requests (like SMART_CARD_DATA) which are not for

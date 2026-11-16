@@ -15,7 +15,7 @@
 #import "components/feature_engagement/public/feature_list.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/prefs/pref_service.h"
-#import "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
+#import "components/safe_browsing/core/browser/metrics_collector/safe_browsing_metrics_collector.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/safe_browsing/core/common/utils.h"
@@ -55,8 +55,11 @@ std::unique_ptr<IOSBlockingPageMetricsHelper> CreateMetricsHelper(
     reporting_info.extra_extra_suffix =
         safe_browsing::GetExtraExtraMetricsSuffix(resource);
   }
-  return std::make_unique<IOSBlockingPageMetricsHelper>(
-      resource.weak_web_state.get(), resource.url, reporting_info);
+  web::WebState* web_state = resource.weak_web_state.get();
+  reporting_info.profile_mode_suffix =
+      web_state->GetBrowserState()->IsOffTheRecord() ? "incognito" : "regular";
+  return std::make_unique<IOSBlockingPageMetricsHelper>(web_state, resource.url,
+                                                        reporting_info);
 }
 
 // Returns the default safe browsing error display options.
@@ -106,7 +109,7 @@ void ReportOnSecurityInterstitialProceeded(
   router->OnSecurityInterstitialProceeded(
       url, safe_browsing::GetThreatTypeStringForInterstitial(threat_type),
       /*net_error_code=*/0, referrer_chain, /*tab_title=*/"",
-      /*extension_initiator=*/std::nullopt);
+      /*initiator=*/std::nullopt);
 }
 
 }  // namespace

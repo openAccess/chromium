@@ -50,11 +50,19 @@ std::string ToString(const AXPositionKind kind) {
 AXNodePosition::AXPositionInstance AXNodePosition::CreatePosition(
     const AXNode& node,
     int child_index_or_text_offset,
-    ax::mojom::TextAffinity affinity) {
-  if (!node.tree())
+    ax::mojom::TextAffinity affinity,
+    std::optional<ax::mojom::OffsetType> offset_type) {
+  if (!node.tree()) {
     return CreateNullPosition();
+  }
 
-  if (IsTextPositionAnchor(node)) {
+  // TODO(crbug.com/527726308): Consider adding an Android-only CHECK that
+  // `offset_type` is not `std::nullopt` once all Android callers provide it.
+  const ax::mojom::OffsetType resolved_offset_type = offset_type.value_or(
+      IsTextPositionAnchor(node) ? ax::mojom::OffsetType::kText
+                                 : ax::mojom::OffsetType::kChild);
+
+  if (resolved_offset_type == ax::mojom::OffsetType::kText) {
     // TODO(accessibility) It is a mistake for the caller to try to create a
     // text position with BEFORE_TEXT as the text offset. Correct the callers
     // that are doing this.
@@ -67,14 +75,31 @@ AXNodePosition::AXPositionInstance AXNodePosition::CreatePosition(
     return CreateTextPosition(node, text_offset, affinity);
   }
 
-  DCHECK_LE(child_index_or_text_offset,
-            static_cast<int>(node.GetChildCountCrossingTreeBoundary()))
+  const int child_count =
+      static_cast<int>(node.GetChildCountCrossingTreeBoundary());
+  DCHECK_LE(child_index_or_text_offset, child_count)
       << "\n* Trying to create a tree position with a child index that is too "
          "large. Maybe a text position should have been created instead?\n"
       << "\n* Anchor node: " << node << "\n* IsLeaf(): " << node.IsLeaf()
       << "\n* Child offset: " << child_index_or_text_offset
       << "\n* IsLeafNodeForTreePosition(): " << IsLeafNodeForTreePosition(node)
       << "\n* Tree: " << node.tree()->ToString();
+
+  // `IsTextPositionAnchor(node)` returns `true` whenever
+  // `IsLeafNodeForTreePosition(node)` is `true`, so callers omitting
+  // `offset_type` (`std::nullopt`) always resolve to `OffsetType::kText` above
+  // and are unaffected. This branch is only reached when the caller explicitly
+  // passes `OffsetType::kChild`. On leaf nodes, `AXPosition::IsValid()`
+  // requires a tree position's `child_index()` to be either `BEFORE_TEXT`
+  // (start of anchor) or `AnchorChildCount()` (end of anchor, when
+  // `child_count > 0`).
+  if (IsLeafNodeForTreePosition(node)) {
+    CHECK(offset_type == ax::mojom::OffsetType::kChild);
+    if (child_count > 0 && child_index_or_text_offset >= child_count) {
+      return CreateTreePositionAtEndOfAnchor(node);
+    }
+    return CreateTreePositionAtStartOfAnchor(node);
+  }
 
   return CreateTreePosition(node, child_index_or_text_offset);
 }
@@ -95,7 +120,7 @@ bool AXNodePosition::IsTextPositionAnchor(const AXNode& node) {
     return true;
 
   if (node.GetRole() == ax::mojom::Role::kSpinButton) {
-    // TODO(benjamin.beaudry) Please look into whether this code needs to
+    // TODO(crbug.com/581458342) Please look into whether this code needs to
     // remain, or can be simplified.
     return true;
   }

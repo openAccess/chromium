@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.actor.notifications;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -45,6 +46,7 @@ import org.chromium.chrome.browser.actor.ActorUtils;
 import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
 import org.chromium.chrome.browser.actor.ui.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.notifications.NotificationIntentInterceptor;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileResolver;
@@ -220,6 +222,32 @@ public class ActorNotificationFactoryTest {
     }
 
     @Test
+    public void testBuildNotification_GoToChromeActionRoutesLikeContentIntent() {
+        Intent routingIntent = new Intent("MOCK_ACTION");
+        routingIntent.putExtra("mock_extra", 7);
+        when(mServiceController.createTrustedBringTabToFrontIntent(mTask))
+                .thenReturn(routingIntent);
+
+        Notification notification =
+                ActorNotificationFactory.buildNotification(
+                                mTask,
+                                ActorTaskState.ACTING,
+                                /* isSilent= */ false,
+                                /* isWarning= */ false)
+                        .getNotification();
+
+        assertAction(notification);
+        Intent contentIntent = unwrapNotificationIntent(notification.contentIntent);
+        Intent actionIntent = unwrapNotificationIntent(notification.actions[0].actionIntent);
+        assertEquals("MOCK_ACTION", actionIntent.getAction());
+        assertEquals(7, actionIntent.getIntExtra("mock_extra", 0));
+        assertTrue(contentIntent.filterEquals(actionIntent));
+        assertEquals(
+                contentIntent.getIntExtra("mock_extra", 0),
+                actionIntent.getIntExtra("mock_extra", 0));
+    }
+
+    @Test
     public void testBuildNotification_Complete() {
         NotificationWrapper wrapper =
                 ActorNotificationFactory.buildNotification(
@@ -344,33 +372,47 @@ public class ActorNotificationFactoryTest {
     @Test
     public void testBuildNotification_Stopped() {
         // Use an unhandled state to trigger the fallback
+        assertStoppedNotification(ActorTaskState.FAILED);
+    }
+
+    @Test
+    public void testBuildNotification_Cancelled() {
+        assertStoppedNotification(ActorTaskState.CANCELLED);
+    }
+
+    private void assertStoppedNotification(@ActorTaskState int state) {
         NotificationWrapper wrapper =
                 ActorNotificationFactory.buildNotification(
-                        mTask,
-                        ActorTaskState.FAILED,
-                        /* isSilent= */ false,
-                        /* isWarning= */ false);
+                        mTask, state, /* isSilent= */ false, /* isWarning= */ false);
 
         assertNotNull("Notification wrapper should not be null", wrapper);
         Notification notification = wrapper.getNotification();
         assertNotNull("Notification should not be null", notification);
         ShadowNotification shadowNotification = shadowOf(notification);
 
+        String expectedBody =
+                mContext.getString(R.string.actor_notification_body_stopped, TASK_TITLE);
         assertEquals(
-                "Content title should match stopped status for fallback",
+                "Content title should match stopped status",
                 mContext.getString(R.string.actor_notification_title_task_stopped),
                 shadowNotification.getContentTitle());
         assertEquals(
                 "Content text should match stopped template",
-                mContext.getString(R.string.actor_notification_body_stopped, TASK_TITLE),
+                expectedBody,
                 shadowNotification.getContentText());
         assertEquals(
                 "Big text should match content text",
-                mContext.getString(R.string.actor_notification_body_stopped, TASK_TITLE),
+                expectedBody,
                 notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
         assertTrue(
                 "Stopped notification should be ongoing when live",
                 (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        assertTrue(
+                "Stopped notification should have auto-cancel enabled",
+                (notification.flags & Notification.FLAG_AUTO_CANCEL) != 0);
+        assertFalse(
+                "Live stopped notification should be allowed to alert",
+                (notification.flags & Notification.FLAG_ONLY_ALERT_ONCE) != 0);
         assertTrue(
                 "Stopped notification should request promoted ongoing",
                 notification.extras.getBoolean(
@@ -388,15 +430,22 @@ public class ActorNotificationFactoryTest {
         NotificationWrapper nonLiveWrapper =
                 ActorNotificationFactory.buildNotification(
                         mTask,
-                        ActorTaskState.FAILED,
+                        state,
                         /* isSilent= */ true,
                         /* isWarning= */ false,
                         /* isLive= */ false);
         assertNotNull(nonLiveWrapper);
         Notification nonLiveNotification = nonLiveWrapper.getNotification();
+        assertEquals(
+                "Non-live stopped notification title should match stopped status",
+                mContext.getString(R.string.actor_notification_title_task_stopped),
+                shadowOf(nonLiveNotification).getContentTitle());
         assertFalse(
                 "Non-live stopped notification should not be ongoing",
                 (nonLiveNotification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        assertTrue(
+                "Non-live stopped notification should only alert once",
+                (nonLiveNotification.flags & Notification.FLAG_ONLY_ALERT_ONCE) != 0);
         assertFalse(
                 "Non-live stopped notification should not request promoted ongoing",
                 nonLiveNotification.extras.getBoolean(
@@ -425,22 +474,39 @@ public class ActorNotificationFactoryTest {
     @Test
     public void testBuildNotification_Warning_LongRunning() {
         // PAUSED_BY_ACTOR indicates the task hit the running budget.
+        assertLongRunningWarningNotification(ActorTaskState.PAUSED_BY_ACTOR);
+    }
+
+    @Test
+    public void testBuildNotification_Warning_Acting() {
+        assertLongRunningWarningNotification(ActorTaskState.ACTING);
+    }
+
+    private void assertLongRunningWarningNotification(@ActorTaskState int state) {
         NotificationWrapper wrapper =
                 ActorNotificationFactory.buildNotification(
-                        mTask,
-                        ActorTaskState.PAUSED_BY_ACTOR,
-                        /* isSilent= */ false,
-                        /* isWarning= */ true);
+                        mTask, state, /* isSilent= */ false, /* isWarning= */ true);
 
         assertNotNull("Notification wrapper should not be null", wrapper);
         Notification notification = wrapper.getNotification();
+        assertNotNull("Notification should not be null", notification);
         ShadowNotification shadowNotification = shadowOf(notification);
 
+        String expectedBody =
+                mContext.getString(
+                        R.string.actor_notification_body_will_stop_task_long_running, TASK_TITLE);
+        assertEquals(
+                "Content title should match warning title",
+                mContext.getString(R.string.actor_notification_title_will_stop_task),
+                shadowNotification.getContentTitle());
         assertEquals(
                 "Content text should match long running warning template",
-                mContext.getString(
-                        R.string.actor_notification_body_will_stop_task_long_running, TASK_TITLE),
+                expectedBody,
                 shadowNotification.getContentText());
+        assertEquals(
+                "Big text should match content text",
+                expectedBody,
+                notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
         assertTrue(
                 "Warning notification should be ongoing",
                 (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
@@ -453,6 +519,9 @@ public class ActorNotificationFactoryTest {
                 mContext.getString(R.string.actor_notification_live_status_review),
                 notification.extras.getCharSequence(
                         ActorNotificationFactory.EXTRA_SHORT_CRITICAL_TEXT));
+        assertNotNull("Content intent should be set", notification.contentIntent);
+        assertSmallIcon(notification);
+        assertAction(notification);
     }
 
     @Test
@@ -469,6 +538,10 @@ public class ActorNotificationFactoryTest {
         Notification notification = wrapper.getNotification();
         ShadowNotification shadowNotification = shadowOf(notification);
 
+        assertEquals(
+                "Content title should match warning title",
+                mContext.getString(R.string.actor_notification_title_will_stop_task),
+                shadowNotification.getContentTitle());
         assertEquals(
                 "Content text should match no response warning template",
                 mContext.getString(
@@ -566,9 +639,11 @@ public class ActorNotificationFactoryTest {
 
     @Test
     public void testBuildTaskStartsSoonNotification() {
-        NotificationWrapper wrapper = ActorNotificationFactory.buildTaskStartsSoonNotification();
+        NotificationWrapper wrapper =
+                ActorNotificationFactory.buildTaskStartsSoonNotification(/* isSilent= */ false);
 
         assertNotNull("Notification wrapper should not be null", wrapper);
+        assertFalse("Task starts soon notification should be loud", wrapper.isSilent());
         Notification notification = wrapper.getNotification();
         assertNotNull("Notification should not be null", notification);
         ShadowNotification shadowNotification = shadowOf(notification);
@@ -587,6 +662,11 @@ public class ActorNotificationFactoryTest {
                 "Notification ID should match",
                 ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID,
                 wrapper.getMetadata().id);
+
+        NotificationWrapper silentWrapper =
+                ActorNotificationFactory.buildTaskStartsSoonNotification(/* isSilent= */ true);
+        assertNotNull("Silent notification wrapper should not be null", silentWrapper);
+        assertTrue("Task starts soon notification should be silent", silentWrapper.isSilent());
     }
 
     @Test
@@ -795,12 +875,147 @@ public class ActorNotificationFactoryTest {
                                 ActorNotificationFactory.EXTRA_SHORT_CRITICAL_TEXT));
     }
 
+    @Test
+    public void testBuildOptInNotification() {
+        Intent newTabIntent = new Intent("NEW_TAB_ACTION");
+        when(mServiceController.createTrustedPendingActorTaskNewTabIntent())
+                .thenReturn(newTabIntent);
+
+        NotificationWrapper wrapper =
+                ActorNotificationFactory.buildOptInNotification(
+                        /* isPinned= */ true, /* isSilent= */ false);
+
+        assertNotNull(wrapper);
+        assertEquals(ActorNotificationFactory.OPT_IN_NOTIFICATION_ID, wrapper.getMetadata().id);
+        assertNull(wrapper.getMetadata().tag);
+        assertFalse(wrapper.isSilent());
+
+        Notification notification = wrapper.getNotification();
+        assertNotNull(notification);
+        ShadowNotification shadowNotification = shadowOf(notification);
+        assertEquals(
+                mContext.getString(R.string.glic_experimental_opt_in_notification_title),
+                shadowNotification.getContentTitle());
+        assertEquals(
+                mContext.getString(R.string.glic_experimental_opt_in_notification_body),
+                shadowNotification.getContentText());
+        assertEquals(
+                mContext.getString(R.string.glic_experimental_opt_in_notification_body),
+                notification.extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
+        assertFalse(
+                notification.extras.getBoolean(
+                        ActorNotificationFactory.EXTRA_REQUEST_PROMOTED_ONGOING));
+        assertTrue((notification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        assertEquals(0, notification.flags & Notification.FLAG_AUTO_CANCEL);
+        assertEquals(0, notification.flags & Notification.FLAG_ONLY_ALERT_ONCE);
+        assertNotEquals(Notification.GROUP_ALERT_SUMMARY, notification.getGroupAlertBehavior());
+        assertNotNull(notification.contentIntent);
+        assertNotNull(notification.deleteIntent);
+        PendingIntent forwardedDeleteIntent =
+                NotificationIntentInterceptor.getPendingIntentForTesting(
+                        shadowOf(notification.deleteIntent).getSavedIntent());
+        assertNotNull(forwardedDeleteIntent);
+        assertEquals(
+                NotificationConstants.ACTION_ACTOR_CANCEL,
+                shadowOf(forwardedDeleteIntent).getSavedIntent().getAction());
+        assertSmallIcon(notification);
+        assertNotNull(notification.actions);
+        assertEquals(2, notification.actions.length);
+        assertEquals(
+                mContext.getString(R.string.glic_experimental_opt_in_notification_action),
+                notification.actions[0].title);
+        assertNotNull(notification.actions[0].actionIntent);
+        assertEquals(mContext.getString(R.string.no_thanks), notification.actions[1].title);
+        assertNotNull(notification.actions[1].actionIntent);
+
+        NotificationWrapper unpinnedNonSilentWrapper =
+                ActorNotificationFactory.buildOptInNotification(
+                        /* isPinned= */ false, /* isSilent= */ false);
+        assertNotNull(unpinnedNonSilentWrapper);
+        assertEquals(
+                ActorNotificationFactory.OPT_IN_NOTIFICATION_ID,
+                unpinnedNonSilentWrapper.getMetadata().id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                unpinnedNonSilentWrapper.getMetadata().tag);
+        assertFalse(unpinnedNonSilentWrapper.isSilent());
+        Notification unpinnedNonSilentNotification = unpinnedNonSilentWrapper.getNotification();
+        assertEquals(0, unpinnedNonSilentNotification.flags & Notification.FLAG_ONGOING_EVENT);
+        assertTrue((unpinnedNonSilentNotification.flags & Notification.FLAG_AUTO_CANCEL) != 0);
+        assertEquals(0, unpinnedNonSilentNotification.flags & Notification.FLAG_ONLY_ALERT_ONCE);
+        assertNotEquals(
+                Notification.GROUP_ALERT_SUMMARY,
+                unpinnedNonSilentNotification.getGroupAlertBehavior());
+        assertNotNull(unpinnedNonSilentNotification.deleteIntent);
+        PendingIntent unpinnedNonSilentForwardedDelete =
+                NotificationIntentInterceptor.getPendingIntentForTesting(
+                        shadowOf(unpinnedNonSilentNotification.deleteIntent).getSavedIntent());
+        assertNotNull(unpinnedNonSilentForwardedDelete);
+        assertEquals(
+                NotificationConstants.ACTION_ACTOR_CANCEL,
+                shadowOf(unpinnedNonSilentForwardedDelete).getSavedIntent().getAction());
+
+        NotificationWrapper unpinnedSilentWrapper =
+                ActorNotificationFactory.buildOptInNotification(
+                        /* isPinned= */ false, /* isSilent= */ true);
+        assertNotNull(unpinnedSilentWrapper);
+        assertEquals(
+                ActorNotificationFactory.OPT_IN_NOTIFICATION_ID,
+                unpinnedSilentWrapper.getMetadata().id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                unpinnedSilentWrapper.getMetadata().tag);
+        assertTrue(unpinnedSilentWrapper.isSilent());
+        Notification unpinnedSilentNotification = unpinnedSilentWrapper.getNotification();
+        assertEquals(0, unpinnedSilentNotification.flags & Notification.FLAG_ONGOING_EVENT);
+        assertTrue((unpinnedSilentNotification.flags & Notification.FLAG_AUTO_CANCEL) != 0);
+        assertTrue((unpinnedSilentNotification.flags & Notification.FLAG_ONLY_ALERT_ONCE) != 0);
+        assertEquals(
+                Notification.GROUP_ALERT_SUMMARY,
+                unpinnedSilentNotification.getGroupAlertBehavior());
+        assertNotNull(unpinnedSilentNotification.deleteIntent);
+        PendingIntent unpinnedSilentForwardedDelete =
+                NotificationIntentInterceptor.getPendingIntentForTesting(
+                        shadowOf(unpinnedSilentNotification.deleteIntent).getSavedIntent());
+        assertNotNull(unpinnedSilentForwardedDelete);
+        assertEquals(
+                NotificationConstants.ACTION_ACTOR_CANCEL,
+                shadowOf(unpinnedSilentForwardedDelete).getSavedIntent().getAction());
+
+        NotificationWrapper pinnedSilentWrapper =
+                ActorNotificationFactory.buildOptInNotification(
+                        /* isPinned= */ true, /* isSilent= */ true);
+        assertNotNull(pinnedSilentWrapper);
+        assertEquals(
+                ActorNotificationFactory.OPT_IN_NOTIFICATION_ID,
+                pinnedSilentWrapper.getMetadata().id);
+        assertNull(pinnedSilentWrapper.getMetadata().tag);
+        assertTrue(pinnedSilentWrapper.isSilent());
+        Notification pinnedSilentNotification = pinnedSilentWrapper.getNotification();
+        assertTrue((pinnedSilentNotification.flags & Notification.FLAG_ONGOING_EVENT) != 0);
+        assertEquals(0, pinnedSilentNotification.flags & Notification.FLAG_AUTO_CANCEL);
+        assertTrue((pinnedSilentNotification.flags & Notification.FLAG_ONLY_ALERT_ONCE) != 0);
+        assertEquals(
+                Notification.GROUP_ALERT_SUMMARY,
+                pinnedSilentNotification.getGroupAlertBehavior());
+    }
+
     private void assertSmallIcon(Notification notification) {
         assertNotNull("Small icon should not be null", notification.getSmallIcon());
         assertEquals(
                 "Small icon should be ic_chrome",
                 R.drawable.ic_chrome,
                 notification.getSmallIcon().getResId());
+    }
+
+    private static Intent unwrapNotificationIntent(PendingIntent pendingIntent) {
+        Intent intent = shadowOf(pendingIntent).getSavedIntent();
+        if (NotificationIntentInterceptor.INTENT_ACTION.equals(intent.getAction())) {
+            intent =
+                    shadowOf(NotificationIntentInterceptor.getPendingIntentForTesting(intent))
+                            .getSavedIntent();
+        }
+        return intent;
     }
 
     private void assertAction(Notification notification) {

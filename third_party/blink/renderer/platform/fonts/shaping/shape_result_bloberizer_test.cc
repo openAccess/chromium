@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_bloberizer.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,7 +38,7 @@ static SimpleFontData* CreateTestSimpleFontData(bool force_rotation = false) {
   return MakeGarbageCollected<SimpleFontData>(
       MakeGarbageCollected<FontPlatformData>(
           skia::DefaultTypeface(), std::string(), 10, false, false,
-          TextRenderingMode::kAutoTextRendering, ResolvedFontFeatures{},
+          TextRenderingMode::kAuto, ResolvedFontFeatures{},
           force_rotation ? FontOrientation::kVerticalUpright
                          : FontOrientation::kHorizontal),
       nullptr);

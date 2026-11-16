@@ -108,12 +108,12 @@ class CONTENT_EXPORT FileSystemAccessHandleBase {
   base::expected<void, blink::mojom::FileSystemAccessErrorPtr>
   CheckReadAccess();
 
-  // Checks whether a file system URL and storage key represent a non-sandboxed
-  // file system path bound to a third-party execution context. Sandboxed file
-  // systems (OPFS) are partitioned by storage key and exempt from third-party
-  // restrictions.
+  // Checks whether a file system URL and binding context represent a
+  // non-sandboxed file system path bound to a third-party execution context.
+  // Sandboxed file systems (OPFS) are partitioned by storage key and exempt
+  // from third-party restrictions.
   static bool IsThirdPartyContext(const storage::FileSystemURL& url,
-                                  const blink::StorageKey& storage_key);
+                                  const BindingContext& context);
   storage::FileSystemURL GetParentURLForTesting() { return GetParentURL(); }
 
   // Implementation for the GetPermissionStatus method in the
@@ -178,6 +178,9 @@ class CONTENT_EXPORT FileSystemAccessHandleBase {
 
  protected:
   virtual base::WeakPtr<FileSystemAccessHandleBase> AsWeakPtr() = 0;
+
+  // Returns the handle type (`kFile` or `kDirectory`) represented by `this`.
+  virtual HandleType GetHandleType() const = 0;
 
   // Checks whether the handle represents a non-sandboxed file system path
   // bound to a third-party execution context. Sandboxed file systems (OPFS)
@@ -260,6 +263,15 @@ class CONTENT_EXPORT FileSystemAccessHandleBase {
       std::vector<scoped_refptr<FileSystemAccessLockManager::LockHandle>> locks,
       base::OnceCallback<void(blink::mojom::FileSystemAccessErrorPtr)>
           callback);
+  // Invoked after confirming that the source entry at `url()` still exists and
+  // matches `GetHandleType()` while holding exclusive move `locks`.
+  void DidConfirmSourceExistsForMove(
+      storage::FileSystemURL destination_url,
+      bool has_overwrite_permission,
+      bool has_transient_user_activation,
+      std::vector<scoped_refptr<FileSystemAccessLockManager::LockHandle>> locks,
+      base::OnceCallback<void(blink::mojom::FileSystemAccessErrorPtr)> callback,
+      base::File::Error result);
   // Only called if the move operation is not allowed to overwrite the target.
   void ConfirmMoveWillNotOverwriteDestination(
       const storage::FileSystemURL& destination_url,

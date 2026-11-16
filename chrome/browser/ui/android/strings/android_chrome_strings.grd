@@ -211,6 +211,18 @@ CHAR_LIMIT guidelines:
       <message name="IDS_PREFS_SECTION_ADVANCED" desc='Title of "Advanced" section of preferences. [CHAR_LIMIT=32]'>
         Advanced
       </message>
+      <message name="IDS_PREFS_GROUP_USER_AND_ACCOUNT" desc='Name of the group of top-level settings about the user and their Google account, such as account and Google services. Shown as a header in settings search results. [CHAR_LIMIT=32]'>
+        User &amp; account
+      </message>
+      <message name="IDS_PREFS_GROUP_SAFETY_AND_PROTECTION" desc='Name of the group of top-level settings about safety and protection, such as privacy and security and passwords. Shown as a header in settings search results. [CHAR_LIMIT=32]'>
+        Safety &amp; protection
+      </message>
+      <message name="IDS_PREFS_GROUP_PERSONALIZATION" desc='Name of the group of top-level settings that personalize Chrome, such as search engine, appearance and notifications. Shown as a header in settings search results. [CHAR_LIMIT=32]'>
+        Personalization
+      </message>
+      <message name="IDS_PREFS_GROUP_SUPPORT" desc='Name of the group of top-level settings for general browser use and information, such as languages, downloads, accessibility and About Chrome. This is not customer help or a help center. Shown as a header in settings search results. [CHAR_LIMIT=32]'>
+        Support
+      </message>
       <message name="IDS_CCT_ALWAYS_OPEN_IN_BROWSER_TITLE" desc="Title for preference toggle in Settings to always open Custom Tabs in Chrome browser. [CHAR_LIMIT=40]">
         Always open custom tabs in Chrome
       </message>
@@ -653,6 +665,18 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       <message name="IDS_BLOCKING_CHOICE_DIALOG_SECOND_MESSAGE" desc="This is the body text of a dialog that confirms to the user that Android has saved their choices for the search engine and web browser that they want to use by default. It’s possible that the user has chosen a default app that wasn’t previously on their device: if so, that app is now being downloaded in the background. This dialog appears after the user finishes the flow to choose their default apps; now, the user can continue to use Chrome (regardless of whether it was chosen as the default browser). The headline for this dialog is “Choices saved”. The user can tap “Done” to close the dialog and continue to use Chrome (regardless of whether it was chosen as the default browser).">
         The apps you chose will be used by default. If an app isn’t already on this device, it’ll be downloaded shortly.
       </message>
+      <message name="IDS_BLOCKING_CHOICE_DIALOG_FIRST_TITLE_CHROME_SEARCH_ONLY" desc="This string is the heading of a dialog that prompts the user to select the search engine that they want to use by default in Chrome. (A search engine provides answers to search queries; this is different from a browser, which displays web pages. A search engine powers many experiences within a browser.) This dialog appears when the user opens Chrome and needs to choose their default search engine. This string is before the “Based on a law in your region, you need to choose your search engine for Chrome” string. We want users to read this dialog and understand that they can use the search engine of their choice in Chrome. The user can tap “Next” to start the selection flow.">
+        Choose your default search engine
+      </message>
+      <message name="IDS_BLOCKING_CHOICE_DIALOG_FIRST_MESSAGE_CHROME_SEARCH_ONLY" desc="This is the body text of a dialog that explains why users are being prompted to choose a search engine for Chrome. This dialog appears when the user opens Chrome and needs to choose their default search engine. The headline for this dialog is “Choose your default search engine”. We want users to read this dialog and understand that they can use the search engine of their choice in Chrome. The user can tap “Next” to start the selection flow.">
+        Based on a law in your region, you need to choose your search engine for Chrome
+      </message>
+      <message name="IDS_BLOCKING_CHOICE_DIALOG_SECOND_TITLE_CHROME_SEARCH_ONLY" desc="This string is the heading of a dialog that confirms to the user that their choice for the search engine that they want to use by default in Chrome has been saved. This dialog appears after the user finishes the flow to choose their default search engine. This string is before the “The search engine you chose will be used by default in Chrome” string. The user can tap “Done” to close the dialog and continue to use Chrome.">
+        Choice saved
+      </message>
+      <message name="IDS_BLOCKING_CHOICE_DIALOG_SECOND_MESSAGE_CHROME_SEARCH_ONLY" desc="This is the body text of a dialog that confirms to the user that their choice for the search engine that they want to use by default in Chrome has been saved. This dialog appears after the user finishes the flow to choose their default search engine; now, the user can continue to use Chrome. The headline for this dialog is “Choice saved”. The user can tap “Done” to close the dialog and continue to use Chrome.">
+        The search engine you chose will be used by default in Chrome
+      </message>
       <message name="IDS_SEARCH_ENGINE_CHOICE_NOTIFICATION_SNACKBAR" desc="This confirmation message is intended to help users understand that their default search engine choice is now saved. (A search engine provides answers to search queries; this is different from a browser, which displays web pages. A search engine powers many experiences within a browser.) The confirmation message appears after: the user receives an Android notification to choose their default search engine and browser; they ignore the notification; they open Chrome; they are forced to complete the mandatory default app selection flow. The user can now continue to use Chrome (regardless of whether it was chosen as the default browser). This message appears to confirm that they will now use their chosen default search engine in Chrome.">
         <ph name="SEARCH_ENGINE">%1$s<ex>Engine</ex></ph> is your default search engine
       </message>
@@ -997,22 +1021,22 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
         A new look for easy access to your essentials
       </message>
       <message name="IDS_BOTTOM_BAR_EDUCATION_TITLE_GEMINI" desc="Title of the bottom bar education bubble for the Gemini-focused variant.">
-        Gemini and your essentials on the new toolbar
+        Gemini and your essentials on the new bottom toolbar
       </message>
       <message name="IDS_BOTTOM_BAR_EDUCATION_TITLE_OPT_IN" desc="Title for the opt-in preview dialog">
         Preview Chrome&apos;s new look, built for convenience
       </message>
-      <message name="IDS_BOTTOM_BAR_EDUCATION_BODY" desc="Body of the bottom bar education bubble. The link opens Appearance settings.">
-        Chrome has a new toolbar, built for convenience. You can switch back anytime in <ph name="BEGIN_LINK">&lt;link&gt;</ph>settings<ph name="END_LINK">&lt;/link&gt;</ph>.
+      <message name="IDS_BOTTOM_BAR_EDUCATION_BODY" desc="Body of the bottom bar education bubble for the ergonomics variant. The link opens Appearance settings.">
+        Chrome has a new bottom toolbar, built for convenience. You can switch back anytime in <ph name="BEGIN_LINK">&lt;link&gt;</ph>settings<ph name="END_LINK">&lt;/link&gt;</ph>.
+      </message>
+      <message name="IDS_BOTTOM_BAR_EDUCATION_BODY_GEMINI" desc="Body of the bottom bar education bubble for the Gemini-focused variant. The link opens Appearance settings.">
+        Chrome has a new look, built for convenience. You can switch back anytime in <ph name="BEGIN_LINK">&lt;link&gt;</ph>settings<ph name="END_LINK">&lt;/link&gt;</ph>.
       </message>
       <message name="IDS_BOTTOM_BAR_EDUCATION_BODY_OPT_IN" desc="Body of the bottom bar opt-in preview dialog. The link opens Appearance settings.">
-        Your essentials, right on the toolbar. You can switch back anytime in <ph name="BEGIN_LINK">&lt;link&gt;</ph>settings<ph name="END_LINK">&lt;/link&gt;</ph>
+        Your essentials, right on the bottom toolbar. You can switch back anytime in <ph name="BEGIN_LINK">&lt;link&gt;</ph>settings<ph name="END_LINK">&lt;/link&gt;</ph>.
       </message>
       <message name="IDS_BOTTOM_BAR_EDUCATION_SWITCH_BACK" desc="Button text to switch back to the old layout">
         Switch back
-      </message>
-      <message name="IDS_BOTTOM_BAR_EDUCATION_SHOW_ME" desc="Button text to continue and show tooltips">
-        Show me
       </message>
       <message name="IDS_BOTTOM_BAR_EDUCATION_NOT_NOW" desc="Button text to dismiss the bottom bar opt-in preview dialog">
         Not now
@@ -1038,6 +1062,10 @@ For more settings that use data to improve your Chrome experience, go to <ph nam
       </message>
       <message name="IDS_BOTTOM_BAR_SETTING_SUMMARY" desc="Summary shown under the 'Toolbar' switch in the Appearance settings page. The bottom toolbar is a row of navigation and tool buttons (for example new tab, tab switcher and menu) anchored to the bottom of the screen so they are easier to reach with one hand. It is separate from the 'Address bar' setting, which only moves the address bar between the top and bottom of the screen.">
         Display navigation and tools in a bottom toolbar for easy access
+      </message>
+      <!-- Bottom bar long-press menu. -->
+      <message name="IDS_BOTTOM_BAR_LONG_PRESS_CUSTOMIZE_APPEARANCE" desc="Menu item shown when the user presses and holds empty space on the bottom toolbar, opening the Appearance settings page.">
+        Customize appearance
       </message>
 
       <!-- On startup settings -->
@@ -1877,8 +1905,14 @@ Your Google account may have other forms of browsing history like searches and a
       <message name="IDS_HISTORY_ACTOR_FILTER_ACTOR" desc="Label of the item in the actor filter sheet, when selected restricts the history results to entries in Chrome history that are the result of Gemini in Chrome browsing while performing an auto browse task for the user.">
         Gemini
       </message>
+      <message name="IDS_HISTORY_TIME_PERIOD_FILTER_CHIP_TEXT" desc="Text used in the time period filter chip when no option is selected. Selecting an option restricts the history results to entries visited within that time period, e.g. 'Yesterday' or 'Last week'.">
+        Date
+      </message>
+      <message name="IDS_HISTORY_FILTER_BY_TIME_PERIOD" desc="Text used in the header of the time period filter sheet, which lists time periods such as 'Yesterday' or 'Last week' to restrict the history results to.">
+        Filter by date
+      </message>
       <message name="IDS_HISTORY_RESET_FILTERS" desc="Text used in the button to reset all applied history filters.">
-        Clear all
+        Clear filters
       </message>
       <message name="IDS_HISTORY_IPH_BUBBLE_TEXT" desc="The message on the text bubble shown to educate users about the app history filter.">
         Search by app, date, and more.
@@ -2385,6 +2419,12 @@ Your Google account may have other forms of browsing history like searches and a
       <message name="IDS_ACCOUNT_SETTINGS_TITLE" desc="Title for the account settings page. [CHAR_LIMIT=32]">
         Account
       </message>
+      <message name="IDS_ACCOUNT_SETTINGS_CARD_DESCRIPTION_WITH_TIER" is_accessibility_with_no_ui="true" desc="Read by screen readers for the card at the top of the Account settings page, which shows the user's name, email and the name of their AI subscription.">
+        <ph name="USER_NAME">%1$s<ex>Jessica Doe</ex></ph>, <ph name="EMAIL">%2$s<ex>jessica@gmail.com</ex></ph>. <ph name="SUBSCRIPTION_NAME">%3$s<ex>Tier name</ex></ph> membership.
+      </message>
+      <message name="IDS_ACCOUNT_SETTINGS_CARD_DESCRIPTION_SINGLE_LINE_WITH_TIER" is_accessibility_with_no_ui="true" desc="Read by screen readers for the card at the top of the Account settings page, when the card shows only the user's name or only their email, and the name of their AI subscription.">
+        <ph name="USER_NAME_OR_EMAIL">%1$s<ex>jessica@gmail.com</ex></ph>. <ph name="SUBSCRIPTION_NAME">%2$s<ex>Tier name</ex></ph> membership.
+      </message>
       <message name="IDS_ACCOUNT_SECTION_HEADER" desc="Header of a section with toggles to control which types of data users can use and save in their Google Account (as opposed to saving them only on the device). Try to avoid long strings because this is a header in large font size.">
         In your Google Account
       </message>
@@ -2624,6 +2664,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_IDENTITY_ERROR_CARD_AUTH_ERROR" desc="Error message to resolve auth error.">
         To use and save Chrome data in your Google Account, verify it’s you
       </message>
+      <message name="IDS_IDENTITY_ERROR_CARD_DEVICE_MANAGEMENT_ERROR" desc="Error message when device management policies restrict access to some services. Also used for error message body.">
+        Some services aren’t available for <ph name="ACCOUNT_EMAIL">%1$s<ex>elisa.g.beckett@gmail.com</ex></ph>
+      </message>
       <message name="IDS_IDENTITY_ERROR_CARD_SYNC_RETRIEVE_KEYS_FOR_EVERYTHING" desc="Error message to resolve sync encryption error, required to resume sync.">
         To use and save Chrome data in your Google Account, verify it’s you
       </message>
@@ -2646,6 +2689,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_IDENTITY_ERROR_CARD_BUTTON_VERIFY" desc="Button label for all errors requiring re-auth (auth error, degreaded recoverability, encryption error). Also used for error message and notification title.">
         Verify it’s you
+      </message>
+      <message name="IDS_IDENTITY_ERROR_CARD_BUTTON_DEVICE_MANAGEMENT_ERROR" desc="Button label prompting the user to take action to fix a device management account issue.">
+        Fix now
       </message>
       <message name="IDS_IDENTITY_ERROR_CARD_BUTTON_GET" desc="Button label for the message shown in the Sync Error Card (due to missing trusted vault keys) for fixing the issue and getting all passwords of a user on their device.">
         Get
@@ -2763,6 +2809,20 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
         {FILE_COUNT, plural,
           =1 {Dangerous download blocked}
           other {# dangerous downloads blocked}}
+      </message>
+
+      <!-- Download toolbar button tray; text matches the desktop download bubble. -->
+      <message name="IDS_DOWNLOAD_TRAY_ITEM_STATUS_MESSAGE_WITH_SEPARATOR" desc="The download status and message are separated by a symbol, in this case bullet •, with a white space before it and a white space after it. If the bullet • resembles another symbol in the language, please translate the bullet • as a symbol (A) that is not easily mistaken for a number or letter in the language and (B) that is typically used to separate elements.">
+        <ph name="STATUS">%1$s<ex>100/120 MB</ex></ph> • <ph name="MESSAGE">%2$s<ex>Opening in 10 seconds...</ex></ph>
+      </message>
+      <message name="IDS_DOWNLOAD_TRAY_ITEM_STATUS_DONE" desc="When a download is finished, let the user know.">
+        Done
+      </message>
+      <message name="IDS_DOWNLOAD_TRAY_HEADER" desc="Header text of the download tray, the popup listing recent downloads that opens from the download toolbar button.">
+        Recent download history
+      </message>
+      <message name="IDS_DOWNLOAD_TRAY_FULL_HISTORY" desc="Label in the download tray for the button that opens a full list of download history.">
+        Full download history
       </message>
 
       <message name="IDS_INCOGNITO_DOWNLOAD_MESSAGE_TITLE" desc="Download title displayed in a prompt message when the user downloads a file in Incognito mode.">
@@ -3625,6 +3685,39 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_SAFETY_FRE_PROMO_INCOGNITO_BOTTOM_SHEET_TITLE" desc="Title of the bottom sheet that shows the user how to lock their Incognito tabs. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
         Secure your Incognito tabs
       </message>
+      <message name="IDS_SAFETY_FRE_PROMO_BOTTOM_SHEET_INSTRUCTIONS_STEP_GO_TO_CHROME_SETTINGS" desc="First step in the bottom sheets that show the user how to turn on Enhanced Safe Browsing or lock their Incognito tabs. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Go to Chrome Settings
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_PASSWORD_MANAGER_BOTTOM_SHEET_INSTRUCTIONS_STEP_1" desc="First step in the bottom sheet that shows the user how to save passwords with Google Password Manager. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Sign in to any website
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_PASSWORD_MANAGER_BOTTOM_SHEET_INSTRUCTIONS_STEP_2" desc="Second step in the bottom sheet that shows the user how to save passwords with Google Password Manager. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Chrome will offer to save your password
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_PASSWORD_MANAGER_BOTTOM_SHEET_INSTRUCTIONS_STEP_3" desc="Third step in the bottom sheet that shows the user how to save passwords with Google Password Manager. 'Save' is the button on Chrome's save password prompt. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Tap Save to easily use this password the next time you sign in
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_HISTORY_QUICK_DELETE_BOTTOM_SHEET_INSTRUCTIONS_STEP_1" desc="First step in the bottom sheet that shows the user how to quickly delete their browsing history. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Open the Chrome menu
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_HISTORY_QUICK_DELETE_BOTTOM_SHEET_INSTRUCTIONS_STEP_2" desc="Second step in the bottom sheet that shows the user how to quickly delete their browsing history. 'Delete browsing data' is an item in the Chrome menu. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Tap Delete browsing data
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_HISTORY_QUICK_DELETE_BOTTOM_SHEET_INSTRUCTIONS_STEP_3" desc="Third step in the bottom sheet that shows the user how to quickly delete their browsing history. 'Delete data' is the button in the Delete browsing data dialog. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Choose a timeframe and then tap Delete data
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_ENHANCED_SAFE_BROWSING_BOTTOM_SHEET_INSTRUCTIONS_STEP_2" desc="Second step in the bottom sheet that shows the user how to turn on Enhanced Safe Browsing. 'Privacy and security' and 'Safe browsing' are Chrome settings pages. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Tap Privacy and security > Safe browsing
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_ENHANCED_SAFE_BROWSING_BOTTOM_SHEET_INSTRUCTIONS_STEP_3" desc="Third step in the bottom sheet that shows the user how to turn on Enhanced Safe Browsing. 'Enhanced protection' is an option in Chrome's Safe Browsing settings. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Choose Enhanced protection
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_INCOGNITO_BOTTOM_SHEET_INSTRUCTIONS_STEP_2" desc="Second step in the bottom sheet that shows the user how to lock their Incognito tabs. 'Privacy and security' is a Chrome settings page. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Tap Privacy and security
+      </message>
+      <message name="IDS_SAFETY_FRE_PROMO_INCOGNITO_BOTTOM_SHEET_INSTRUCTIONS_STEP_3" desc="Third step in the bottom sheet that shows the user how to lock their Incognito tabs. 'Lock Incognito tabs when you leave Chrome' is a setting in Chrome's Privacy and security settings. Opened from the Show me how button on the Safety Promo Carousel screen of the First Run Experience.">
+        Toggle on Lock Incognito tabs when you leave Chrome
+      </message>
       <message name="IDS_LIGHTWEIGHT_FRE_ASSOCIATED_APP_TOS" desc="Message explaining that use of Chrome is governed by Chrome's terms of service.">
         <ph name="APP_NAME">%1$s<ex>Google Maps</ex></ph> will open in Chrome. By continuing, you agree to the <ph name="BEGIN_LINK1">&lt;LINK1&gt;</ph>Google Terms of Service<ph name="END_LINK1">&lt;/LINK1&gt;</ph>, and the <ph name="BEGIN_LINK2">&lt;LINK2&gt;</ph>Google Chrome and ChromeOS Additional Terms of Service<ph name="END_LINK2">&lt;/LINK2&gt;</ph>.
       </message>
@@ -4257,8 +4350,7 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_TOOLBAR_SHORTCUT" desc="Title for toolbar shortcut toggle button in adaptive toolbar button preference page.">
         Toolbar shortcut
       </message>
-      <!-- TODO(crbug.com/556961273): Make translateable once the copy is final. -->
-      <message name="IDS_ADDRESS_BAR_SHORTCUT" desc="Title for the address bar shortcut setting and toggle button in the adaptive toolbar button preference page." translateable="false">
+      <message name="IDS_ADDRESS_BAR_SHORTCUT" desc="Title for the address bar shortcut setting and toggle button in the adaptive toolbar button preference page.">
         Address bar shortcut
       </message>
       <message name="IDS_TOOLBAR_LONG_PRESS_OPTIONS_IPH" desc="The in-product-help message shown to inform the user they can change placement of the address bar from a long-press menu.">
@@ -5150,11 +5242,17 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_PDF_DOWNLOAD" desc="Menu option to download the PDF document.">
         Download
       </message>
+      <message name="IDS_PDF_DOWNLOAD_ORIGINAL" desc="The label for the menu option to download the original, unedited PDF document (without user's changes).">
+        Without your changes
+      </message>
+      <message name="IDS_PDF_DOWNLOAD_EDITED" desc="The label for the menu option to download the edited PDF document (with user's changes).">
+        With your changes
+      </message>
       <message name="IDS_PDF_FIT_PAGE" desc="Menu option to fit the PDF page to the screen.">
         Fit to page
       </message>
-      <message name="IDS_PDF_DOWNLOADING" desc="Toast message shown when the PDF document is downloading.">
-        Downloading PDF
+      <message name="IDS_PDF_DOWNLOAD_FAILED" desc="Toast message shown when a PDF document fails to download.">
+        Couldn't download PDF
       </message>
       <message name="IDS_PDF_FIT_WIDTH" desc="Menu option to fit the PDF page width to the screen.">
         Fit to width
@@ -5241,6 +5339,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_TABPICKER_NO_TABS_EMPTY_STATE_DESCRIPTION" desc="Text appearing on an empty tab picker that indicates that users can open tabs to add to search query.">
         Open a new tab to add it to your question
+      </message>
+      <message name="IDS_TABPICKER_SELECT_TABS_IPH" desc="In-product help callout text displayed inside the Chrome Item Picker prompting the user to select tabs to attach to their multimodal search." formatter_data="android_java">
+        Select one or more tabs to add to your search
       </message>
       <message name="IDS_ACCESSIBILITY_TOOLBAR_BTN_TABSWITCHER_TOGGLE_DEFAULT" desc="Placeholder content description for the button that enters or leaves the tab switcher. NUMBER_OF_TABS is the number of tabs within the tab switcher.">
         {NUMBER_OF_TABS, plural,
@@ -6091,6 +6192,9 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_KEYBOARD_SHORTCUT_LAST_TAB" desc="A text label that appears next to the keyboard shortcut that will move the user to the last tab in the Chrome app. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55]">
         Jump to the last tab
+      </message>
+      <message name="IDS_KEYBOARD_SHORTCUT_TOGGLE_VERTICAL_TABS_COLLAPSE" desc="A text label that appears next to the keyboard shortcut to expand or collapse the vertical tab strip. The shortcut description is shown in a system dialog along with all other supported shortcuts. [CHAR_LIMIT=55]">
+        Expand or collapse vertical tabs
       </message>
       <message name="IDS_KEYBOARD_SHORTCUT_TAB_NAVIGATION_GROUP_HEADER" desc="A text label that appears above a list of shortcuts that are related to navigating the tab window. This group is part of several groups of keyboard shortcuts all shown in a dialog.">
         Tab navigation shortcuts
@@ -7026,6 +7130,28 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_ACCOUNT_SELECTION_DATA_SHARING_CONSENT" desc="The consent text shown to the user before sign up.">
         To continue, <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> will share your <ph name="FIELDS_STRING">%2$s<ex>name and email address</ex></ph> with this site. See this site's <ph name="BEGIN_LINK1">&lt;link_privacy_policy&gt;</ph>privacy policy<ph name="END_LINK1">&lt;/link_privacy_policy&gt;</ph> and <ph name="BEGIN_LINK2">&lt;link_terms_of_service&gt;</ph>terms of service<ph name="END_LINK2">&lt;/link_terms_of_service&gt;</ph>.
       </message>
+      <!-- TODO(crbug.com/571147733): Make the IDS_ACCOUNT_SELECTION_IDP_LINKS* strings translateable before launch. -->
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_PP" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no privacy policy. The first link opens the user's account page on the identity provider's website. The second link opens the identity provider's terms of service.">
+        You can make changes in your <ph name="BEGIN_LINK1">&lt;link_idp_account&gt;</ph><ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> account<ph name="END_LINK1">&lt;/link_idp_account&gt;</ph>. See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK2">&lt;link_idp_terms_of_service&gt;</ph>terms of service<ph name="END_LINK2">&lt;/link_idp_terms_of_service&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_TOS" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no terms of service. The first link opens the user's account page on the identity provider's website. The second link opens the identity provider's privacy policy.">
+        You can make changes in your <ph name="BEGIN_LINK1">&lt;link_idp_account&gt;</ph><ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> account<ph name="END_LINK1">&lt;/link_idp_account&gt;</ph>. See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK2">&lt;link_idp_privacy_policy&gt;</ph>privacy policy<ph name="END_LINK2">&lt;/link_idp_privacy_policy&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS" translateable="false" desc="Text shown to the user before sign up, below the consent text. The first link opens the user's account page on the identity provider's website. The other links open the identity provider's privacy policy and terms of service.">
+        You can make changes in your <ph name="BEGIN_LINK1">&lt;link_idp_account&gt;</ph><ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> account<ph name="END_LINK1">&lt;/link_idp_account&gt;</ph>. See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK2">&lt;link_idp_privacy_policy&gt;</ph>privacy policy<ph name="END_LINK2">&lt;/link_idp_privacy_policy&gt;</ph> and <ph name="BEGIN_LINK3">&lt;link_idp_terms_of_service&gt;</ph>terms of service<ph name="END_LINK3">&lt;/link_idp_terms_of_service&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_PP_OR_TOS" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no privacy policy or terms of service. The link opens the user's account page on the identity provider's website.">
+        You can make changes in your <ph name="BEGIN_LINK">&lt;link_idp_account&gt;</ph><ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> account<ph name="END_LINK">&lt;/link_idp_account&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_ACCOUNT_MANAGEMENT_OR_PP" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no account page or privacy policy. The link opens the identity provider's terms of service.">
+        See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK">&lt;link_idp_terms_of_service&gt;</ph>terms of service<ph name="END_LINK">&lt;/link_idp_terms_of_service&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_ACCOUNT_MANAGEMENT_OR_TOS" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no account page or terms of service. The link opens the identity provider's privacy policy.">
+        See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK">&lt;link_idp_privacy_policy&gt;</ph>privacy policy<ph name="END_LINK">&lt;/link_idp_privacy_policy&gt;</ph>.
+      </message>
+      <message name="IDS_ACCOUNT_SELECTION_IDP_LINKS_NO_ACCOUNT_MANAGEMENT" translateable="false" desc="Text shown to the user before sign up, below the consent text, when the identity provider has no account page. The links open the identity provider's privacy policy and terms of service.">
+        See <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> <ph name="BEGIN_LINK1">&lt;link_idp_privacy_policy&gt;</ph>privacy policy<ph name="END_LINK1">&lt;/link_idp_privacy_policy&gt;</ph> and <ph name="BEGIN_LINK2">&lt;link_idp_terms_of_service&gt;</ph>terms of service<ph name="END_LINK2">&lt;/link_idp_terms_of_service&gt;</ph>.
+      </message>
       <message name="IDS_ACCOUNT_SELECTION_RETURNING_ACCOUNT_MESSAGE" desc="Message shown to the user when the FedCM multi IDP UI is being shown and the account has been used in this site before">
         <ph name="IDENTITY_PROVIDER_ETLD_PLUS_ONE">%1$s<ex>idp.com</ex></ph> • You used on this site
       </message>
@@ -7150,8 +7276,20 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       <message name="IDS_SETTINGS_SHOW_GEMINI_IN_BOTTOM_BAR_TITLE" desc="Title for the settings toggle to show or hide Gemini in the bottom bar. [CHAR_LIMIT=32]">
         Show Gemini in the bottom toolbar
       </message>
+      <message name="IDS_SETTINGS_SHOW_GEMINI_IN_TOOLBAR_TITLE" desc="Title for the switch in the Appearance settings page that shows or hides the Gemini button in the toolbar at the bottom of the screen. [CHAR_LIMIT=32]">
+        Show Gemini in the toolbar
+      </message>
       <message name="IDS_SETTINGS_SHOW_GEMINI_IN_BOTTOM_BAR_SUMMARY" desc="Summary description for the settings toggle to show Gemini in the bottom bar.">
         Quickly open Gemini when you need it
+      </message>
+      <message name="IDS_SETTINGS_SHOW_GEMINI_SHORTCUT_TITLE" desc="Title for the row in Gemini in Chrome settings that shows where the Gemini shortcut button appears. Tapping it opens the settings page that controls the shortcut. [CHAR_LIMIT=32]">
+        Show Gemini shortcut
+      </message>
+      <message name="IDS_SETTINGS_SHOW_GEMINI_SHORTCUT_IN_TOOLBAR" desc="Summary under the 'Show Gemini shortcut' setting when the Gemini button is shown in the toolbar at the bottom of the screen. [CHAR_LIMIT=32]">
+        In toolbar
+      </message>
+      <message name="IDS_SETTINGS_SHOW_GEMINI_SHORTCUT_IN_ADDRESS_BAR" desc="Summary under the 'Show Gemini shortcut' setting when the Gemini button is shown as the shortcut next to the address bar. [CHAR_LIMIT=32]">
+        In address bar
       </message>
 
       <!-- HTTPS-First Mode settings strings -->
@@ -8104,6 +8242,15 @@ To change this setting, <ph name="BEGIN_LINK">BEGIN_LINK</ph>delete the Chrome d
       </message>
       <message name="IDS_TTC_SESSION_END_DESCRIPTION" desc="Accessibility description of the TTC session pill. Tapping it ends the session." translateable="false">
         End TTC session
+      </message>
+      <message name="IDS_TTC_VOICE_PLATE_PAUSE" desc="Accessibility label and tooltip of the button that pauses (mutes) the microphone, on the floating bar shown below the toolbar on large screens while the user talks to Chrome by voice." translateable="false">
+        Pause microphone
+      </message>
+      <message name="IDS_TTC_VOICE_PLATE_RESUME" desc="Accessibility label and tooltip of the button that resumes (unmutes) the microphone, on the floating bar shown below the toolbar on large screens while the user talks to Chrome by voice." translateable="false">
+        Resume microphone
+      </message>
+      <message name="IDS_TTC_VOICE_PLATE_TITLE" desc="Placeholder accessibility pane title and label of the floating bar shown below the toolbar on large screens while the user talks to Chrome by voice." translateable="false">
+        TTC
       </message>
       <message name="IDS_TTC_FRE_DIALOG_TITLE" desc="Placeholder title of the TTC first run dialog that asks for the user's consent." translateable="false">
         Placeholder

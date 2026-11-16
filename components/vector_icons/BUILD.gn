@@ -124,6 +124,7 @@ if (current_toolchain == default_toolchain) {
       "cookie.icon",
       "cookie_chrome_refresh_old.icon",
       "credit_card_spark.icon",
+      "crop_auto.icon",
       "crop_free.icon",
       "crop_free_old.icon",
       "dangerous_chrome_refresh_old.icon",
@@ -591,8 +592,8 @@ static_library("vector_icons") {
 
   defines = [ "COMPONENTS_VECTOR_ICONS_IMPL" ]
 
+  public_deps = [ ":components_vector_icons" ]
   deps = [
-    ":components_vector_icons",
     "//base",
     "//skia",
     "//ui/gfx",
@@ -606,8 +607,8 @@ source_set("unit_tests") {
     "vector_icons_unittest.cc",
   ]
 
+  public_deps = [ ":components_vector_icons" ]
   deps = [
-    ":components_vector_icons",
     "//base",
     "//testing/gtest",
     "//ui/gfx",

@@ -284,6 +284,13 @@ bool RTCDataChannel::Observer::IsOkToCallOnTheNetworkThread() {
   return true;
 }
 
+void RTCDataChannel::Observer::OnSendFailed(webrtc::RTCErrorType type) {
+  PostCrossThreadTask(
+      *main_thread_, FROM_HERE,
+      CrossThreadBindOnce(&RTCDataChannel::Observer::OnSendFailedImpl,
+                          scoped_refptr<Observer>(this), type));
+}
+
 void RTCDataChannel::Observer::OnStateChangeImpl(
     webrtc::DataChannelInterface::DataState state) {
   DCHECK(main_thread_->BelongsToCurrentThread());
@@ -309,6 +316,13 @@ void RTCDataChannel::Observer::OnMessageImpl(webrtc::DataBuffer buffer) {
   DCHECK(main_thread_->BelongsToCurrentThread());
   if (blink_channel_)
     blink_channel_->OnMessage(std::move(buffer));
+}
+
+void RTCDataChannel::Observer::OnSendFailedImpl(webrtc::RTCErrorType type) {
+  DCHECK(main_thread_->BelongsToCurrentThread());
+  if (blink_channel_) {
+    blink_channel_->OnSendFailed(type);
+  }
 }
 
 // static
@@ -644,12 +658,14 @@ void RTCDataChannel::ContextDestroyed() {
   stopped_ = true;
   state_ = webrtc::DataChannelInterface::kClosed;
   feature_handle_for_scheduler_.reset();
+  CancelPendingMessages();
 }
 
 // ActiveScriptWrappable
 bool RTCDataChannel::HasPendingActivity() const {
-  if (stopped_)
+  if (state_ == webrtc::DataChannelInterface::kClosed) {
     return false;
+  }
 
   // A RTCDataChannel object must not be garbage collected if its
   // * readyState is connecting and at least one event listener is registered
@@ -674,15 +690,15 @@ bool RTCDataChannel::HasPendingActivity() const {
       has_valid_listeners |= HasEventListeners(event_type_names::kError) ||
                              HasEventListeners(event_type_names::kClose);
       break;
-    default:
-      break;
+    case webrtc::DataChannelInterface::kClosed:
+      NOTREACHED();
   }
 
-  if (has_valid_listeners)
+  if (has_valid_listeners) {
     return true;
+  }
 
-  return state_ != webrtc::DataChannelInterface::kClosed &&
-         bufferedAmount() > 0;
+  return bufferedAmount() > 0 || !pending_messages_.empty();
 }
 
 void RTCDataChannel::Trace(Visitor* visitor) const {
@@ -734,6 +750,7 @@ void RTCDataChannel::OnStateChange(
       break;
     case webrtc::DataChannelInterface::kClosed: {
       feature_handle_for_scheduler_.reset();
+      CancelPendingMessages();
       auto error = channel()->error();
       if (!error.ok()) {
         LOG(ERROR) << "DataChannel error: \"" << error.message() << "\""
@@ -820,6 +837,15 @@ void RTCDataChannel::Dispose() {
   }
 }
 
+void RTCDataChannel::CancelPendingMessages() {
+  for (auto& message : pending_messages_) {
+    if (message->type_ == PendingMessage::Type::kBufferPending) {
+      message->blob_reader_->Cancel();
+    }
+  }
+  pending_messages_.clear();
+}
+
 const webrtc::scoped_refptr<webrtc::DataChannelInterface>&
 RTCDataChannel::channel() const {
   return observer_->channel();
@@ -848,25 +874,35 @@ void RTCDataChannel::SendDataBuffer(webrtc::DataBuffer data_buffer) {
 
   // SCTP data channels queue the packet on failure and always return true, so
   // Send can be called asynchronously for them.
-  channel()->SendAsync(std::move(data_buffer), [](webrtc::RTCError error) {
-    // TODO(orphis): Use this callback in combination with SendAsync to report
-    // completion of the send API to the JS layer.
-    // The possible failures per the spec are:
-    // - Channel not in open state. Although we check the state in each Send()
-    // implementation, it's possible to have a short race between the WebRTC
-    // state and the Chrome state, i.e. sending while a remote close event is
-    // pending. In this case, it's safe to ignore send failures.
-    // - Data longer than the transport maxMessageSize (not yet implemented in
-    // WebRTC or Blink).
-    // - Send Buffers full (buffered amount accounting in Blink layer to check
-    // for it).
-    if (!error.ok()) {
-      // TODO(orphis): Add collect UMA stats about failure.
-      // Note that when we get this callback, we're on WebRTC's network thread
-      // So the callback needs to be propagated to the main (JS) thread.
-      LOG(ERROR) << "Send failed" << webrtc::ToString(error.type());
-    }
-  });
+  // The possible failures per the spec are:
+  // - Channel not in open state. Although we check the state in each Send()
+  // implementation, it's possible to have a short race between the WebRTC
+  // state and the Chrome state, i.e. sending while a remote close event is
+  // pending.
+  // - Data longer than the transport maxMessageSize (not yet implemented in
+  // WebRTC or Blink).
+  // - Send Buffers full (buffered amount accounting in Blink layer to check
+  // for it).
+  channel()->SendAsync(std::move(data_buffer),
+                       [observer = observer_](webrtc::RTCError error) {
+                         if (!error.ok()) {
+                           observer->OnSendFailed(error.type());
+                         }
+                       });
+}
+
+void RTCDataChannel::OnSendFailed(webrtc::RTCErrorType type) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // TODO(orphis): Add collect UMA stats about failure.
+  LOG(ERROR) << "Send failed: " << webrtc::ToString(type);
+  // A failure racing with a close is reported by the close itself.
+  if (state_ != webrtc::DataChannelInterface::kOpen) {
+    return;
+  }
+  webrtc::RTCError error(type, "Failed to send data");
+  error.set_error_detail(webrtc::RTCErrorDetailType::DATA_CHANNEL_FAILURE);
+  DispatchEvent(
+      *MakeGarbageCollected<RTCErrorEvent>(event_type_names::kError, error));
 }
 
 void RTCDataChannel::CreateFeatureHandleForScheduler() {
@@ -926,7 +962,6 @@ void RTCDataChannel::BlobReader::DidFinishLoading(FileReaderData data) {
   message_->buffer_ = webrtc::DataBuffer(buffer, true);
   message_->type_ = RTCDataChannel::PendingMessage::Type::kBufferReady;
   data_channel_->ProcessSendQueue();
-  Dispose();
 }
 
 void RTCDataChannel::BlobReader::DidFail(FileErrorCode error) {
@@ -937,7 +972,6 @@ void RTCDataChannel::BlobReader::DidFail(FileErrorCode error) {
       "Couldn't read Blob content, skipping message."));
   message_->type_ = RTCDataChannel::PendingMessage::Type::kBlobFailure;
   data_channel_->ProcessSendQueue();
-  Dispose();
 }
 
 RTCDataChannel::BlobReader::BlobReader(ExecutionContext* context,
@@ -948,8 +982,7 @@ RTCDataChannel::BlobReader::BlobReader(ExecutionContext* context,
           this,
           GetExecutionContext()->GetTaskRunner(TaskType::kFileReading))),
       data_channel_(data_channel),
-      message_(message),
-      keep_alive_({}, this) {}
+      message_(message) {}
 
 RTCDataChannel::BlobReader::~BlobReader() = default;
 
@@ -972,14 +1005,12 @@ bool RTCDataChannel::BlobReader::HasFinishedLoading() const {
 }
 
 void RTCDataChannel::BlobReader::ContextDestroyed() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  loader_->Cancel();
-  Dispose();
+  Cancel();
 }
 
-void RTCDataChannel::BlobReader::Dispose() {
+void RTCDataChannel::BlobReader::Cancel() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  keep_alive_.Clear();
+  loader_->Cancel();
 }
 
 }  // namespace blink

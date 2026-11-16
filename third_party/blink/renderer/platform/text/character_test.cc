@@ -40,7 +40,6 @@ testing::AssertionResult IsCjkIdeographOrSymbolWithMessage(UChar32 codepoint) {
 // Test Unicode-derived functions work as intended.
 // These functions may need to be adjusted if Unicode changes.
 TEST(CharacterTest, Derived) {
-  StringBuilder builder;
   // Extended_Pictographic codepoints in RGI emoji sequences must be
   // IsCjkIdeographOrSymbol so that the word segmenter enters the emoji code
   // path and keeps multi-codepoint sequences together.
@@ -89,10 +88,9 @@ TEST(CharacterTest, Derived) {
     if (bidi == UCharDirection::U_RIGHT_TO_LEFT ||
         bidi == UCharDirection::U_RIGHT_TO_LEFT_ARABIC ||
         unicode::IsBidiControl(ch)) {
-      builder.Clear();
+      StringBuilder builder;
       builder.Append(ch);
-      const String utf16 = builder.ToString();
-      DCHECK(unicode::MaybeBidiRtl(utf16));
+      DCHECK(unicode::MaybeBidiRtl(builder));
     }
   }
 }
@@ -893,6 +891,18 @@ static struct CanReceiveTextEmphasisTestData {
     {uchar::kFullwidthAmpersand, true},
     {uchar::kFullwidthCommercialAt, true},
 };
+
+// `HasLikelyScript` picks a fallback-hint character inside a shaping
+// cluster. A code point whose ICU script is `USCRIPT_UNKNOWN` (here
+// U+FE1A in the Vertical Forms block, unassigned in the Unicode version
+// ICU ships with) has no font coverage, so letting it win the hint
+// pulls its cluster neighbours into a font that has no glyphs for them.
+// crbug.com/583357775.
+TEST(CharacterTest, HasLikelyScriptIgnoresUnknownScript) {
+  EXPECT_FALSE(HasLikelyScript(0xFE1A));
+  EXPECT_TRUE(HasLikelyScript('A'));
+  EXPECT_FALSE(HasLikelyScript(' '));
+}
 
 class CanReceiveTextEmphasisTest
     : public testing::Test,

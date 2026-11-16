@@ -123,6 +123,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "base/containers/span.h"
+
 #define IPCZ_NO_FLAGS ((uint32_t)0)
 
 // Helper to clarify flag definitions.
@@ -297,17 +299,20 @@ class IpczDriver {
   // driver handles that was originally produced by Serialize() and received by
   // activity on `transport`.
   //
+  // Unlike the output buffer given to Serialize(), `data` never points into
+  // shared memory: ipcz copies all received data into private memory before
+  // deserializing any driver objects from it.
+  //
   // Any return value other than IPCZ_RESULT_OK indicates an error and implies
   // that `handle` is unmodified. Otherwise `*handle` must be set to a valid
   // driver handle which identifies the deserialized object upon return.
-  virtual IpczResult Deserialize(const volatile void* data,               // in
-                                 size_t num_bytes,                        // in
-                                 const IpczDriverHandle* driver_handles,  // in
-                                 size_t num_driver_handles,               // in
-                                 IpczDriverHandle transport,              // in
-                                 uint32_t flags,                          // in
-                                 const void* options,                     // in
-                                 IpczDriverHandle* handle) const = 0;     // out
+  virtual IpczResult Deserialize(
+      base::span<const uint8_t> data,                     // in
+      base::span<const IpczDriverHandle> driver_handles,  // in
+      IpczDriverHandle transport,                         // in
+      uint32_t flags,                                     // in
+      const void* options,                                // in
+      IpczDriverHandle* handle) const = 0;                // out
 
   // Creates a new pair of entangled bidirectional transports, returning them in
   // `new_transport0` and `new_transport1`.
@@ -390,18 +395,17 @@ class IpczDriver {
   //
   // The driver is responsible for ensuring that every Transmit() on a transport
   // results in a corresponding activity handler invocation on the remote peer's
-  // transport, even if `num_bytes` and `num_driver_handles` are both zero.
+  // transport, even if `data` and `driver_handles` are both empty.
   //
   // IMPORTANT: For any sequence of Transmit() calls from the same thread, the
   // corresponding activity handler invocations on the peer transport must
   // occur in the same order.
-  virtual IpczResult Transmit(IpczDriverHandle transport,              // in
-                              const void* data,                        // in
-                              size_t num_bytes,                        // in
-                              const IpczDriverHandle* driver_handles,  // in
-                              size_t num_driver_handles,               // in
-                              uint32_t flags,                          // in
-                              const void* options) const = 0;          // in
+  virtual IpczResult Transmit(
+      IpczDriverHandle transport,                         // in
+      base::span<const uint8_t> data,                     // in
+      base::span<const IpczDriverHandle> driver_handles,  // in
+      uint32_t flags,                                     // in
+      const void* options) const = 0;                     // in
 
   // The ipcz Reject() API can be used by an application to reject a specific
   // parcel received from a portal. If the parcel in question came from a
@@ -416,9 +420,9 @@ class IpczDriver {
       uint32_t flags,                  // in
       const void* options) const = 0;  // in
 
-  // Allocates a shared memory region and returns a driver handle in
-  // `driver_memory` which can be used to reference it in other calls to the
-  // driver.
+  // Allocates a zero-initialized shared memory region and returns a driver
+  // handle in `driver_memory` which can be used to reference it in other calls
+  // to the driver.
   virtual IpczResult AllocateSharedMemory(
       size_t num_bytes,                            // in
       uint32_t flags,                              // in
@@ -457,16 +461,28 @@ class IpczDriver {
       volatile void** address,                      // out
       IpczDriverHandle* driver_mapping) const = 0;  // out
 
-  // Generates `num_bytes` bytes of random data to fill `buffer`.
-  virtual IpczResult GenerateRandomBytes(size_t num_bytes,         // in
-                                         uint32_t flags,           // in
-                                         const void* options,      // in
-                                         void* buffer) const = 0;  // out
+  // Fills `buffer` with random data.
+  virtual IpczResult GenerateRandomBytes(base::span<uint8_t> buffer,      // out
+                                         uint32_t flags,                  // in
+                                         const void* options) const = 0;  // in
 };
 
 // Flags which may be passed via the `memory_flags` field of
 // IpczCreateNodeOptions to configure features of ipcz internal memory
 // allocation and usage.
+//
+// IPCZ_MEMORY_FIXED_PARCEL_CAPACITY, IPCZ_MEMORY_NO_PARCEL_CAPACITY,
+// IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE, and
+// IPCZ_MEMORY_RESTRICTED_DYNAMIC_PARCEL_CAPACITY select mutually exclusive
+// parcel capacity policies, and CreateNode() rejects options which set more
+// than one of them. If none of them is set, a node expands the shared memory
+// pools it uses to allocate parcel data on demand.
+//
+// The capacity limits described below apply to each node link's shared memory
+// pool as a whole: capacity added by either node, including capacity for
+// internal link state, counts toward them. Each node applies its own policy
+// against its current view of the pool, so concurrent expansion by both nodes,
+// or expansion by a node using a different policy, may exceed these limits.
 typedef uint32_t IpczMemoryFlags;
 
 // If this flag is set, the node will not attempt to expand the shared memory
@@ -477,6 +493,29 @@ typedef uint32_t IpczMemoryFlags;
 // constant. Note that memory may still be expanded to facilitate new portal
 // links as needed.
 #define IPCZ_MEMORY_FIXED_PARCEL_CAPACITY ((IpczMemoryFlags)(1 << 0))
+
+// If this flag is set, the node will not use shared memory for any parcel data
+// it allocates, so its application messages to other nodes always fall back
+// onto driver I/O for transmission. Parcels from nodes without this flag may
+// still use shared memory. Note that capacity for 64-byte blocks may still be
+// expanded to facilitate new portal links as needed.
+#define IPCZ_MEMORY_NO_PARCEL_CAPACITY ((IpczMemoryFlags)(1 << 1))
+
+// If this flag is set, the node will expand the shared memory pools it uses to
+// allocate parcel data at most once per block size per node link, and only for
+// block sizes from 128 bytes to 32 KB, inclusive. Parcel data of other block
+// sizes never expands the pools. Note that capacity for 64-byte blocks may
+// still be expanded to facilitate new portal links as needed.
+#define IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE ((IpczMemoryFlags)(1 << 2))
+
+// If this flag is set, the node will expand the shared memory pools it uses to
+// allocate parcel data only for block sizes up to 64 KB, and only up to a limit
+// of 512 KB of usable capacity per block size per node link, including the
+// link's initial capacity for that block size. Note that capacity for 64-byte
+// blocks may still be expanded beyond this limit to facilitate new portal links
+// as needed.
+#define IPCZ_MEMORY_RESTRICTED_DYNAMIC_PARCEL_CAPACITY \
+  ((IpczMemoryFlags)(1 << 3))
 
 // Feature identifiers which may be passed through IpczCreateNodeOptions to
 // control dynamic runtime features.
@@ -893,8 +932,9 @@ class IpczAPI {
   //    IPCZ_RESULT_OK if a new node was created. In this case, `*node` is
   //        populated with a valid node handle upon return.
   //
-  //    IPCZ_RESULT_INVALID_ARGUMENT if `node` is null, or `driver` is null or
-  //        invalid.
+  //    IPCZ_RESULT_INVALID_ARGUMENT if `node` is null, `driver` is null or
+  //        invalid, or `options` sets more than one of the mutually exclusive
+  //        parcel capacity policy flags described with IpczMemoryFlags.
   //
   //    IPCZ_RESULT_UNIMPLEMENTED if some condition of the runtime environment
   //        or architecture-specific details of the ipcz build would prevent it

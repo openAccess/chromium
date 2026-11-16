@@ -27,11 +27,11 @@
 #include "chrome/browser/readaloud/voice_preview_controller.h"
 #include "chrome/browser/reader_mode/reader_mode_service_factory.h"
 #include "chrome/common/readaloud/read_aloud_constants.h"
-#include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
-#include "components/dom_distiller/core/distiller_page.h"
-#include "components/dom_distiller/core/dom_distiller_service.h"
-#include "components/dom_distiller/core/url_utils.h"
 #include "components/url_formatter/elide_url.h"
+#include "components/web_distiller/content/browser/distiller_page_web_contents.h"
+#include "components/web_distiller/core/distiller_page.h"
+#include "components/web_distiller/core/url_utils.h"
+#include "components/web_distiller/core/web_distiller_service.h"
 #include "content/public/browser/service_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "media/base/audio_parameters.h"
@@ -42,7 +42,7 @@ namespace readaloud {
 namespace {
 
 std::vector<std::string_view> ExtractDistilledPageTexts(
-    const dom_distiller::DistilledArticleProto* article_proto) {
+    const web_distiller::DistilledArticleProto* article_proto) {
   std::vector<std::string_view> page_texts;
   if (!article_proto) {
     return page_texts;
@@ -84,9 +84,11 @@ constexpr char kStandardPlaybackTimeToFirstAudioHistogram[] =
 ReadAloudService::ReadAloudService(
     Profile* profile,
     PlaybackControllerBinder controller_binder,
-    ReadAloudAudioBroker::AudioStreamFactoryBinder factory_binder)
+    ReadAloudAudioBroker::AudioStreamFactoryBinder factory_binder,
+    ReadAloudPlaybackSession::MediaSessionGetter media_session_getter)
     : profile_(profile),
       controller_binder_(controller_binder),
+      media_session_getter_(std::move(media_session_getter)),
       audio_broker_(std::make_unique<ReadAloudAudioBroker>(factory_binder)),
       speech_synthesis_broker_(std::make_unique<SpeechSynthesisBroker>()),
       overview_generation_broker_(std::make_unique<OverviewGenerationBroker>()),
@@ -131,6 +133,10 @@ void ReadAloudService::Play(content::WebContents* new_web_contents) {
   }
 
   user_requested_play_ = true;
+
+  if (media_session_ && !IsWaitingForOverviewContent()) {
+    media_session_->StopPageMedia();
+  }
 
   if (playback_mode_ == PlaybackMode::kClassic && !waiting_for_first_audio_ &&
       !first_audio_emitted_) {
@@ -220,6 +226,9 @@ void ReadAloudService::SeekRelative(base::TimeDelta offset) {
 }
 
 void ReadAloudService::SetPlaybackRate(float rate) {
+  if (media_session_) {
+    media_session_->OnPlaybackRateChanged(rate);
+  }
   if (utility_player_.is_bound()) {
     utility_player_->SetPlaybackRate(rate);
   }
@@ -277,7 +286,7 @@ void ReadAloudService::SetHighlightingEnabled(bool enabled) {}
 void ReadAloudService::SendFeedback(FeedbackType feedback_type) {}
 void ReadAloudService::CheckReadability(const GURL& url) {
   if (delegate_) {
-    bool is_readable = dom_distiller::url_utils::IsUrlDistillable(url);
+    bool is_readable = web_distiller::url_utils::IsUrlDistillable(url);
     delegate_->OnReadabilityResult(url, is_readable);
   }
 }
@@ -297,6 +306,20 @@ void ReadAloudService::PrimaryPageChanged(content::Page& page) {
   // Stop playback, reset distillation, and detach observer when the primary
   // page navigates to a new URL.
   Stop();
+}
+
+void ReadAloudService::OnFrameAudioStateChanged(
+    content::RenderFrameHost* /*rfh*/,
+    bool audible) {
+  if (!user_requested_play_) {
+    return;
+  }
+  // Pause whenever the page produces sound (including when a muted video is
+  // unmuted). For accessibility, speech narration must not overlap with page
+  // audio.
+  if (audible) {
+    Pause();
+  }
 }
 
 // `OnSessionSuspended()` and `OnSessionResumed()` run synchronously while
@@ -330,7 +353,7 @@ void ReadAloudService::DistillPage(content::WebContents* web_contents) {
     return;
   }
 
-  dom_distiller::DomDistillerService* service =
+  web_distiller::WebDistillerService* service =
       reader_mode::ReaderModeServiceFactory::GetForBrowserContext(
           web_contents->GetBrowserContext());
   if (!service) {
@@ -339,9 +362,9 @@ void ReadAloudService::DistillPage(content::WebContents* web_contents) {
 
   distillation_start_time_ = base::TimeTicks::Now();
 
-  std::unique_ptr<dom_distiller::DistillerPage> distiller_page =
+  std::unique_ptr<web_distiller::DistillerPage> distiller_page =
       service->CreateDefaultDistillerPageWithHandle(
-          std::make_unique<dom_distiller::SourcePageHandleWebContents>(
+          std::make_unique<web_distiller::SourcePageHandleWebContents>(
               web_contents, /*owned=*/false));
   if (distiller_page) {
     distiller_page->SetMinimumAllowableDistilledContentLength(0);
@@ -352,7 +375,7 @@ void ReadAloudService::DistillPage(content::WebContents* web_contents) {
 }
 
 void ReadAloudService::OnArticleReady(
-    const dom_distiller::DistilledArticleProto* article_proto) {
+    const web_distiller::DistilledArticleProto* article_proto) {
   bool distillation_succeeded =
       article_proto && !article_proto->pages().empty();
   if (!distillation_start_time_.is_null()) {
@@ -464,6 +487,9 @@ void ReadAloudService::OnOverviewGenerated(mojo_base::BigBuffer response_bytes,
   // If user did not cancel play, signal Play() so that content
   // starts playing as soon as the overview text content is set.
   if (user_requested_play_) {
+    if (media_session_) {
+      media_session_->StopPageMedia();
+    }
     utility_player_->Play();
   }
   utility_player_->SetOverviewContent(
@@ -488,11 +514,15 @@ void ReadAloudService::OnOverviewContentSet(bool success,
   }
 
   // Set the generated overview title.
-  const std::string sanitized_title = SanitizeMetadata(title);
+  std::string effective_title = SanitizeMetadata(title);
+  if (effective_title.empty()) {
+    effective_title = SanitizeMetadata(article_title_);
+  }
   if (delegate_) {
-    delegate_->OnMetadataAvailable(
-        sanitized_title.empty() ? article_title_ : sanitized_title,
-        current_publisher_);
+    delegate_->OnMetadataAvailable(effective_title, current_publisher_);
+  }
+  if (media_session_) {
+    media_session_->SetCustomMetadata(effective_title, current_publisher_);
   }
 
   // overview_generation_start_time_ is set in RequestOverviewGeneration(). It
@@ -523,8 +553,8 @@ void ReadAloudService::Initialize(content::WebContents* new_web_contents) {
   ResetVoicePreview();
   ResetPlayback();
   Observe(new_web_contents);
-  media_session_ =
-      std::make_unique<ReadAloudPlaybackSession>(new_web_contents, this);
+  media_session_ = std::make_unique<ReadAloudPlaybackSession>(
+      new_web_contents, this, media_session_getter_);
 
   ProvideInitialMetadata();
   NotifyPlaybackStateChanged(
@@ -694,7 +724,7 @@ void ReadAloudService::ResetUtilityConnection() {
 }
 
 void ReadAloudService::OnDistillationFailed(
-    dom_distiller::DistillationParseResult reason) {
+    web_distiller::DistillationParseResult reason) {
   base::UmaHistogramEnumeration("ReadAloud.Distillation.FailureReason", reason);
 }
 
@@ -704,7 +734,7 @@ void ReadAloudService::OnPlaybackStateChanged(
     case read_aloud::mojom::PlaybackState::kEndOfStream:
       user_requested_play_ = false;
       if (media_session_) {
-        media_session_->NotifyPlaybackPaused();
+        media_session_->NotifyPlaybackPaused(/*end_of_media=*/true);
       }
       NotifyPlaybackStateChanged(state);
       return;
@@ -720,8 +750,9 @@ void ReadAloudService::OnPlaybackStateChanged(
       return;
     case read_aloud::mojom::PlaybackState::kPlaying:
       MaybeRecordStartupSuccess();
-      if (media_session_) {
-        media_session_->NotifyPlaybackStarted();
+      if (media_session_ && !media_session_->NotifyPlaybackStarted()) {
+        Pause();
+        return;
       }
       NotifyPlaybackStateChanged(state);
       return;
@@ -745,6 +776,9 @@ void ReadAloudService::OnPlaybackProgressChanged(base::TimeDelta elapsed,
     utility_observer_receiver_.ReportBadMessage(
         "ReadAloudService: invalid playback progress received from utility");
     return;
+  }
+  if (media_session_) {
+    media_session_->OnPlaybackProgressChanged(elapsed, duration);
   }
   if (delegate_) {
     delegate_->OnPlaybackProgressUpdated(elapsed, duration);

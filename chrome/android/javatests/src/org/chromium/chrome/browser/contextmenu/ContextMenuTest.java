@@ -55,6 +55,7 @@ import org.chromium.base.ServiceLoaderUtil;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TriState;
 import org.chromium.base.supplier.SupplierUtils;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CloseableOnMainThread;
@@ -99,6 +100,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.contextmenu.ContextMenuUtils;
 import org.chromium.components.browser_ui.modaldialog.ModalDialogView;
@@ -133,10 +135,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** Instrumentation tests for the context menu. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.GOOGLE_BASE_URL + "=http://example.com/"
-})
+@CommandLineFlags.Add({ChromeSwitches.GOOGLE_BASE_URL + "=http://example.com/"})
 @DisableFeatures({
     ContentFeatures.ANDROID_DESKTOP_ZOOM_SCALING,
     // Keep the exhaustive menu-structure assertions deterministic. The "Ask Gemini"
@@ -1083,10 +1082,10 @@ public class ContextMenuTest {
         when(mItemDelegate.getPageTitle()).thenReturn("");
         when(mItemDelegate.getWebContents()).thenReturn(tab.getWebContents());
         ContextMenuHelper contextMenuHelper =
-                ContextMenuHelper.createForTesting(0, tab.getWebContents());
+                ContextMenuHelper.createForTesting(tab.getWebContents());
         ContextMenuParams params =
                 new ContextMenuParams(
-                        0,
+                        null,
                         mMenuModelBridge,
                         ContextMenuDataMediaType.NONE,
                         ContextMenuDataMediaFlags.MEDIA_NONE,
@@ -1363,16 +1362,15 @@ public class ContextMenuTest {
                         () -> !TabUtils.isUsingDesktopUserAgent(tab.getWebContents()));
 
         if (needsSwitch) {
-            ChromeTabUtils.waitForTabPageLoaded(
+            // Switching the user agent reloads the same URL.
+            WebPageStation.waitForWebPageLoad(
+                    Triggers.runOnUiThreadTo(
+                            () -> TabUtils.switchUserAgent(tab, /* switchToDesktop= */ true)),
                     tab,
-                    mTestUrl,
-                    () ->
-                            ThreadUtils.runOnUiThreadBlocking(
-                                    () ->
-                                            TabUtils.switchUserAgent(
-                                                    tab, /* switchToDesktop= */ true)));
+                    mTestUrl);
+        } else {
+            ChromeTabUtils.waitForInteractable(tab);
         }
-        ChromeTabUtils.waitForInteractable(tab);
         mActivityTestRule.assertWaitForPageScaleFactorMatch(PAGE_SCALE_FACTOR);
     }
 
@@ -1446,7 +1444,8 @@ public class ContextMenuTest {
         // TODO(crbug.com/568761242): Remove the SDK check once the minimum SDK is Android R+.
         return addItemsIf(
                 VERSION.SDK_INT >= VERSION_CODES.R
-                        && PictureInPicture.isEnabled(mActivityTestRule.getActivity()),
+                        && ThreadUtils.runOnUiThreadBlocking(
+                                () -> PictureInPicture.isEnabled(mActivityTestRule.getActivity())),
                 baseItems,
                 new Integer[] {R.id.contextmenu_picture_in_picture});
     }

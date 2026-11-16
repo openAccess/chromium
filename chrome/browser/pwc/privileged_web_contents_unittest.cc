@@ -12,12 +12,15 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/pwc/pwc_component_policy.h"
+#include "chrome/browser/pwc/pwc_content_settings_policy.h"
 #include "chrome/browser/pwc/pwc_permission_delegate.h"
 #include "chrome/browser/pwc/test_support/test_pwc_permission_delegate.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/permissions/permission_util.h"
 #include "content/public/browser/file_select_listener.h"
+#include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/media_stream_request.h"
 #include "content/public/browser/page_navigator.h"
@@ -35,6 +38,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/page/drag_operation.h"
+#include "third_party/blink/public/common/page/page_zoom.h"
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
@@ -1237,5 +1241,84 @@ TEST_F(PrivilegedWebContentsPermissionTest,
   EXPECT_EQ(delegate()->last_type(), ContentSettingsType::GEOLOCATION);
 }
 
+TEST_F(PrivilegedWebContentsTest, OverrideZoomLevel) {
+  std::unique_ptr<PrivilegedWebContents> pwc = PrivilegedWebContents::Create(
+      PrivilegedComponent::kTestComponent, profile(), MakeTestDelegate());
+  content::WebContentsDelegate* delegate = pwc->web_contents()->GetDelegate();
+  ASSERT_EQ(delegate, pwc.get());
+
+  // Defaults to std::nullopt.
+  EXPECT_EQ(pwc->GetOverrideZoomLevel(pwc->web_contents()), std::nullopt);
+
+  const double kZoom150 = blink::ZoomFactorToZoomLevel(1.5);
+  pwc->SetOverrideZoomLevel(kZoom150);
+  EXPECT_EQ(pwc->GetOverrideZoomLevel(pwc->web_contents()), kZoom150);
+  EXPECT_DOUBLE_EQ(content::HostZoomMap::GetZoomLevel(pwc->web_contents()),
+                   kZoom150);
+
+  // Unrelated or null WebContents never receive this PWC's override zoom level.
+  EXPECT_EQ(pwc->GetOverrideZoomLevel(web_contents()), std::nullopt);
+  EXPECT_EQ(pwc->GetOverrideZoomLevel(nullptr), std::nullopt);
+
+  // Clearing back to std::nullopt restores the default zoom level (0.0).
+  pwc->SetOverrideZoomLevel(std::nullopt);
+  EXPECT_EQ(pwc->GetOverrideZoomLevel(pwc->web_contents()), std::nullopt);
+  EXPECT_DOUBLE_EQ(content::HostZoomMap::GetZoomLevel(pwc->web_contents()),
+                   0.0);
+}
+
+TEST_F(PrivilegedWebContentsPermissionTest,
+       BlockedTypeReturnsDeniedRegardlessOfDelegate) {
+  // TestPwcPermissionDelegate defaults to GRANTED. However, for kBlocked
+  // non-permission site settings and metadata, PWC must enforce DENIED without
+  // consulting the delegate.
+  constexpr ContentSettingsType kType = ContentSettingsType::COOKIES;
+  EXPECT_EQ(GetPwcContentSettingPolicy(kType),
+            PwcContentSettingPolicy::kBlocked);
+  std::optional<content::PermissionResult> result =
+      PrivilegedWebContents::GetPermissionStatus(pwc_main_rfh(), kType);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->status, blink::mojom::PermissionStatus::DENIED);
+  EXPECT_EQ(result->source, content::PermissionStatusSource::FEATURE_POLICY);
+  EXPECT_EQ(delegate()->call_count(), 0);
+}
+
+TEST_F(PrivilegedWebContentsPermissionTest,
+       DelegatedTypeForwardsToDelegateAndDefaultsDenied) {
+  constexpr ContentSettingsType kType = ContentSettingsType::GEOLOCATION;
+  EXPECT_EQ(GetPwcContentSettingPolicy(kType),
+            PwcContentSettingPolicy::kDelegated);
+
+  // When delegate grants:
+  delegate()->set_result(
+      content::PermissionResult(blink::mojom::PermissionStatus::GRANTED,
+                                content::PermissionStatusSource::UNSPECIFIED));
+  std::optional<content::PermissionResult> granted_result =
+      PrivilegedWebContents::GetPermissionStatus(pwc_main_rfh(), kType);
+  ASSERT_TRUE(granted_result.has_value());
+  EXPECT_EQ(granted_result->status, blink::mojom::PermissionStatus::GRANTED);
+
+  // When delegate returns nullopt, it defaults to DENIED:
+  delegate()->set_result(std::nullopt);
+  std::optional<content::PermissionResult> denied_result =
+      PrivilegedWebContents::GetPermissionStatus(pwc_main_rfh(), kType);
+  ASSERT_TRUE(denied_result.has_value());
+  EXPECT_EQ(denied_result->status, blink::mojom::PermissionStatus::DENIED);
+  EXPECT_EQ(denied_result->source,
+            content::PermissionStatusSource::FEATURE_POLICY);
+}
+
+TEST_F(PrivilegedWebContentsPermissionTest,
+       AllWebPlatformPermissionsAreDelegated) {
+  for (int i = 0; i <= static_cast<int>(ContentSettingsType::kMaxValue); ++i) {
+    auto type = static_cast<ContentSettingsType>(i);
+    if (permissions::PermissionUtil::IsPermission(type)) {
+      EXPECT_EQ(GetPwcContentSettingPolicy(type),
+                PwcContentSettingPolicy::kDelegated)
+          << "Permission type " << static_cast<int>(type)
+          << " must be delegated.";
+    }
+  }
+}
 }  // namespace
 }  // namespace pwc

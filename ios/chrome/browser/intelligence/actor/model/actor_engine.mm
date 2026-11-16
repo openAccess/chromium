@@ -4,10 +4,12 @@
 
 #import "ios/chrome/browser/intelligence/actor/model/actor_engine.h"
 
+#import <algorithm>
 #import <optional>
 #import <string>
 #import <utility>
 
+#import "base/check_deref.h"
 #import "base/check_op.h"
 #import "base/functional/bind.h"
 #import "base/strings/stringprintf.h"
@@ -26,8 +28,10 @@
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/tool_controller.h"
 #import "ios/chrome/browser/intelligence/actor/tools/public/actor_tool_types.h"
+#import "ios/chrome/browser/intelligence/actor/tools/public/metrics.h"
 #import "ios/chrome/browser/intelligence/actor/tools/utils/actor_tool_utils.h"
 #import "ios/chrome/browser/intelligence/actor/tools/utils/logging_util.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/profile_context_resolver.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/web/public/web_state.h"
 #import "third_party/abseil-cpp/absl/container/flat_hash_set.h"
@@ -154,6 +158,33 @@ void GrantAssociatedOrigins(
   }
 }
 
+// Merges `followup`'s result into `target`. Preserves
+// `requires_page_stabilization` via OR and keeps `target`'s message if
+// `followup` succeeded without a non-empty message.
+void MergeActionResult(ActionResult& target, ActionResult followup) {
+  const ToolExecutionResult& followup_result = followup.tool_result;
+  bool requires_page_stabilization =
+      target.tool_result.requires_page_stabilization() ||
+      followup_result.requires_page_stabilization();
+  std::optional<std::string> message = target.tool_result.message();
+  std::optional<std::string> followup_message = followup_result.message();
+  if (!followup_result.IsOk() ||
+      (followup_message.has_value() && !followup_message->empty())) {
+    message = std::move(followup_message);
+  }
+  std::optional<InternalToolErrorCode> internal_code =
+      followup_result.internal_code();
+  if (internal_code.has_value()) {
+    target.tool_result =
+        ToolExecutionResult(followup_result.code(), *internal_code,
+                            requires_page_stabilization, std::move(message));
+  } else {
+    target.tool_result =
+        ToolExecutionResult(followup_result.code(), requires_page_stabilization,
+                            std::move(message));
+  }
+}
+
 }  // namespace
 
 PageActionGatingContext::PageActionGatingContext(
@@ -165,17 +196,24 @@ ActorEngine::ActorEngine(ExecutionUpdatesDelegate* execution_updates_delegate,
                          ActorTask* owner_task)
     : state_(State::kInit),
       execution_updates_delegate_(execution_updates_delegate),
-      owner_task_(owner_task),
-      origin_gating_delegate_(owner_task ? owner_task->policy_checker()
-                                         : nullptr),
+      owner_task_(&CHECK_DEREF(owner_task)),
+      // `base::Unretained(owner_task_)` is safe because `owner_task_` owns
+      // `this` (`ActorEngine`) and `origin_gating_delegate_`, so `owner_task_`
+      // strictly outlives `origin_gating_delegate_`.
+      origin_gating_delegate_(
+          owner_task_->policy_checker(),
+          base::BindRepeating(&ActorTask::ConfirmNavigationToOrigin,
+                              base::Unretained(owner_task_))),
+      form_filling_handler_(ActorTaskFormFillingHandler::Create(
+          base::PassKey<ActorEngine>(),
+          owner_task_->GetJournal(),
+          owner_task_->task_id(),
+          owner_task_->profile_context_resolver().GetFaviconLoader())),
       tool_controller_(
           std::make_unique<ToolController>(/*tool_delegate=*/this)) {
   CHECK(execution_updates_delegate_);
-  CHECK(owner_task_);
   origin_gating::OriginGatingService* origin_gating_service =
-      owner_task_->GetToolFactory()
-          .profile_context_resolver()
-          .GetOriginGatingService();
+      owner_task_->profile_context_resolver().GetOriginGatingService();
   CHECK(origin_gating_service);
   origin_gating_registration_ = origin_gating_service->CreateAndRegisterChecker(
       origin_gating_delegate_.GetWeakPtr(), CreateOriginGatingConfig());
@@ -253,10 +291,6 @@ ActorToolFactory& ActorEngine::GetToolFactory() const {
 }
 
 ActorTaskFormFillingHandler* ActorEngine::GetActorTaskFormFillingHandler() {
-  if (!form_filling_handler_) {
-    form_filling_handler_ = ActorTaskFormFillingHandler::Create(
-        base::PassKey<ActorEngine>(), GetJournal(), GetTaskId());
-  }
   return form_filling_handler_.get();
 }
 
@@ -281,6 +315,18 @@ web::WebState* ActorEngine::InsertWebState(
     bool in_background) {
   CHECK(owner_task_);
   return owner_task_->InsertWebState(window_id, load_params, in_background);
+}
+
+void ActorEngine::EnqueueFollowupAction(
+    std::unique_ptr<ActorToolRequest> action) {
+  CHECK(action);
+  CHECK(state_ == State::kToolVerify || state_ == State::kUiPreInvoke ||
+        state_ == State::kToolInvoke || state_ == State::kUiPostInvoke);
+  CHECK_GT(next_action_index_, 0ul);
+  CHECK_LE(next_action_index_, action_sequence_.size());
+  action->SetAsFollowup(base::PassKey<ActorEngine>());
+  action_sequence_.insert(action_sequence_.begin() + next_action_index_,
+                          std::move(action));
 }
 
 origin_gating::CheckerId ActorEngine::GetOriginGatingCheckerId() const {
@@ -383,7 +429,7 @@ void ActorEngine::ExecuteNextAction() {
       IsActorOriginGatingEnabled()) {
     base::expected<ProfileContextResolver::TabResolutionResult,
                    ToolExecutionResult>
-        tab_resolution = GetToolFactory().profile_context_resolver().ResolveTab(
+        tab_resolution = owner_task_->profile_context_resolver().ResolveTab(
             action->GetTargetWebStateId().identifier());
     if (!tab_resolution.has_value() || !tab_resolution->web_state) {
       CompleteActions(ActionResult(
@@ -479,7 +525,14 @@ void ActorEngine::FinishedToolInvoke(ActionResult result) {
     return;
   }
 
-  action_results_.push_back(std::move(result));
+  const ActorToolRequest* current_action =
+      action_sequence_[InProgressActionIndex()].get();
+  if (current_action && current_action->IsFollowup()) {
+    CHECK(!action_results_.empty());
+    MergeActionResult(action_results_.back(), std::move(result));
+  } else {
+    action_results_.push_back(std::move(result));
+  }
 
   // TODO(crbug.com/496195979): Add UI post-invoke.
   SetState(State::kUiPostInvoke);
@@ -496,19 +549,23 @@ void ActorEngine::FinishedUiPostInvoke(ActionResult result) {
 
 void ActorEngine::CompleteActions(ActionResult result) {
   bool success = result.tool_result.IsOk();
+  if (!success &&
+      (state_ == State::kPreExecutionChecks || state_ == State::kUiPreInvoke)) {
+    RecordActionResultCode(result.tool_result.code());
+  }
 
   // Successful tool results are already appended in `FinishedToolInvoke`,
   // therefore only record/overwrite the result if it is a failure.
   if (!success) {
-    size_t index = InProgressActionIndex();
-    if (action_results_.size() == index) {
+    size_t result_index = GetResultIndexForAction(InProgressActionIndex());
+    if (action_results_.size() == result_index) {
       // This is the first result for the current action, append to results
       // vector.
       action_results_.push_back(std::move(result));
-    } else if (action_results_.size() > index) {
-      // A result was already recorded for this action. Overwrite the success
-      // result with the failure.
-      action_results_[index] = std::move(result);
+    } else if (action_results_.size() > result_index) {
+      // A result was already recorded for this action (e.g. a post-invoke
+      // failure or a follow-up action failure). Merge the failure into it.
+      MergeActionResult(action_results_[result_index], std::move(result));
     }
   }
 
@@ -524,6 +581,18 @@ void ActorEngine::CompleteActions(ActionResult result) {
 size_t ActorEngine::InProgressActionIndex() const {
   CHECK_GT(next_action_index_, 0ul);
   return next_action_index_ - 1;
+}
+
+size_t ActorEngine::GetResultIndexForAction(size_t action_index) const {
+  CHECK_LT(action_index, action_sequence_.size());
+  size_t original_count = std::count_if(
+      action_sequence_.begin(), action_sequence_.begin() + action_index + 1,
+      [](const std::unique_ptr<ActorToolRequest>& action) {
+        return !action || !action->IsFollowup();
+      });
+  // At least the first action could not be a follow up.
+  CHECK_GT(original_count, 0ul);
+  return original_count - 1;
 }
 
 void ActorEngine::OnPreExecutionGatingDecision(

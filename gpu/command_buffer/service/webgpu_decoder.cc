@@ -4,13 +4,9 @@
 
 #include "gpu/command_buffer/service/webgpu_decoder.h"
 
-#include "gpu/command_buffer/service/shared_context_state.h"
-#include "ui/gl/buildflags.h"
-
-#if BUILDFLAG(USE_DAWN)
 #include "gpu/command_buffer/service/dawn_instance.h"
+#include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/webgpu_decoder_impl.h"
-#endif
 
 namespace gpu {
 namespace webgpu {
@@ -24,18 +20,14 @@ std::unique_ptr<WebGPUDecoder> WebGPUDecoder::Create(
     gles2::Outputter* outputter,
     const GpuPreferences& gpu_preferences,
     scoped_refptr<SharedContextState> shared_context_state,
+    scoped_refptr<DawnInstance> dawn_instance,
     const DawnCacheOptions& dawn_cache_options,
     IsolationKeyProvider* isolation_key_provider) {
-#if BUILDFLAG(USE_DAWN)
   return CreateWebGPUDecoderImpl(
       client, command_buffer_service, shared_image_manager,
       std::move(memory_tracker), outputter, gpu_preferences,
-      std::move(shared_context_state),
-      DawnInstance::CreateForWebGPU(gpu_preferences), dawn_cache_options,
-      isolation_key_provider);
-#else
-  NOTREACHED();
-#endif
+      std::move(shared_context_state), std::move(dawn_instance),
+      dawn_cache_options, isolation_key_provider);
 }
 
 WebGPUDecoder::WebGPUDecoder(DecoderClient* client,

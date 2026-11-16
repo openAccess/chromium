@@ -4,8 +4,6 @@
 
 #include "third_party/blink/renderer/core/loader/cookie_jar.h"
 
-#include <cstdint>
-
 #include "base/debug/dump_without_crashing.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
@@ -116,6 +114,7 @@ bool CookieJar::SetCookie(const String& value) {
 
 void CookieJar::OnBackendDisconnect() {
   shared_memory_version_client_.reset();
+  required_committed_writes_ = 0;
   InvalidateCache();
 }
 
@@ -244,6 +243,7 @@ void CookieJar::SetCookieManager(
     mojo::PendingRemote<network::mojom::blink::RestrictedCookieManager>
         cookie_manager) {
   backend_.reset();
+  OnBackendDisconnect();
   backend_.Bind(std::move(cookie_manager),
                 document_->GetTaskRunner(TaskType::kInternalDefault));
 }

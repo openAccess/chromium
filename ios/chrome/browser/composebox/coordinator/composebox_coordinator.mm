@@ -78,7 +78,6 @@
     _entrypoint = focusParams.entrypoint;
     _animationBase = animationBase;
     _modeHolder = [[ComposeboxModeHolder alloc] init];
-    _modeHolder.mode = focusParams.toolMode;
     _focusParams = focusParams;
   }
   return self;
@@ -405,8 +404,8 @@
   return _viewController.incognitoView;
 }
 
-- (void)setComposeboxMode:(ComposeboxMode)mode {
-  _modeHolder.mode = mode;
+- (void)setComposeboxToolMode:(omnibox::ToolMode)toolMode {
+  [_aimComposeboxCoordinator setToolMode:toolMode];
 }
 
 - (void)expandInputPlateForDismissalToFrame:(CGRect)targetFrame {

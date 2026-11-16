@@ -2576,10 +2576,11 @@ class TextSelectionChangedLocalFrameHost : public LocalFrameHostInterceptor {
   explicit TextSelectionChangedLocalFrameHost(
       blink::AssociatedInterfaceProvider* provider)
       : LocalFrameHostInterceptor(provider) {}
-  MOCK_METHOD3(TextSelectionChanged,
+  MOCK_METHOD4(TextSelectionChanged,
                void(const std::u16string& text,
                     uint32_t offset,
-                    const gfx::Range& range));
+                    const gfx::Range& range,
+                    bool has_selection));
 };
 }  // namespace
 
@@ -2624,8 +2625,9 @@ TEST_F(RenderViewImplTextInputMessageOrder,
   EXPECT_CALL(*GetMessageOrderFakeRenderWidgetHost(),
               TextInputStateChanged(testing::_))
       .Times(1);
-  EXPECT_CALL(*GetMockLocalFrameHost(),
-              TextSelectionChanged(testing::_, testing::_, testing::_))
+  EXPECT_CALL(
+      *GetMockLocalFrameHost(),
+      TextSelectionChanged(testing::_, testing::_, testing::_, testing::_))
       .Times(1);
 
   main_frame_widget()->SetHandlingInputEvent(true);
@@ -3221,7 +3223,6 @@ TEST_F(RenderViewImplScaleFactorTest,
   ExecuteJavaScriptForTests("document.getElementById('test').focus();");
 
   auto* widget_input_handler = GetWidgetInputHandler();
-  const std::u16string empty_string;
   const std::vector<ui::ImeTextSpan> empty_ime_text_span;
   std::vector<gfx::Rect> bounds_at_1x;
   widget_input_handler->SetFocus(blink::mojom::FocusState::kFocused);

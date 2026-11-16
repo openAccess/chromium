@@ -4,9 +4,11 @@
 
 #include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
+#include <algorithm>
 #include <sstream>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -150,6 +152,41 @@ views::WebView* TrackedElementWebUI::GetWebView() const {
 }
 #endif
 
+base::WeakPtr<TrackedElementWebUI> TrackedElementWebUI::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
+
+void TrackedElementWebUI::AddAnchoredDialog(
+    AnchoredDialogRegistry::FocusTarget& dialog) {
+  CHECK(!std::ranges::contains(anchored_dialogs_, &dialog));
+  anchored_dialogs_.push_back(&dialog);
+  if (anchored_dialogs_.size() == 1u) {
+    handler_->SetHasAnchoredDialog(*this, true,
+                                   base::PassKey<TrackedElementWebUI>());
+  }
+}
+
+void TrackedElementWebUI::RemoveAnchoredDialog(
+    AnchoredDialogRegistry::FocusTarget& dialog) {
+  if (!std::erase(anchored_dialogs_, &dialog)) {
+    return;
+  }
+  if (anchored_dialogs_.empty()) {
+    handler_->SetHasAnchoredDialog(*this, false,
+                                   base::PassKey<TrackedElementWebUI>());
+  }
+}
+
+bool TrackedElementWebUI::FocusAnchoredDialog(bool reverse) {
+  if (anchored_dialogs_.empty()) {
+    return false;
+  }
+  // Moving focus may change which dialogs are anchored here, so don't touch
+  // `anchored_dialogs_` after the call.
+  AnchoredDialogRegistry::FocusTarget* const dialog = anchored_dialogs_.back();
+  return dialog->FocusFromAnchor(reverse);
+}
+
 gfx::NativeView TrackedElementWebUI::GetNativeView() const {
   auto* const contents = handler_->web_contents();
 #if !BUILDFLAG(IS_ANDROID)
@@ -223,8 +260,9 @@ void TrackedElementWebUI::SetRawVisible(bool visible, gfx::RectF bounds) {
 }
 
 void TrackedElementWebUI::UpdateEffectiveVisibility(bool bounds_changed) {
-  const bool visible = raw_visible_ && (handler_->is_web_contents_visible() ||
-                                        visibility_lock_count_ > 0);
+  const bool visible =
+      raw_visible_ && handler_->is_subframe_unoccluded() &&
+      (handler_->is_web_contents_visible() || visibility_lock_count_ > 0);
 
   if (visible == visible_) {
     if (visible && bounds_changed) {

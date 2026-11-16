@@ -54,7 +54,8 @@ BrowserInstantController::~BrowserInstantController() = default;
 // static
 BrowserInstantController* BrowserInstantController::From(
     BrowserWindowInterface* browser_window) {
-  return Get(browser_window->GetUnownedUserDataHost());
+  return browser_window ? Get(browser_window->GetUnownedUserDataHost())
+                        : nullptr;
 }
 
 void BrowserInstantController::OnSearchEngineBaseURLChanged(
@@ -74,10 +75,8 @@ void BrowserInstantController::OnSearchEngineBaseURLChanged(
     const auto& principal = contents->GetPrimaryMainFrame()
                                 ->GetSiteInstance()
                                 ->GetSecurityPrincipal();
-    bool is_ntp =
-        principal.SchemeIs(content::kChromeUIScheme) &&
-        (principal.GetHost() == chrome::kChromeUINewTabPageHost ||
-         principal.GetHost() == chrome::kChromeUINewTabPageThirdPartyHost);
+    bool is_ntp = search::IsNewTabPageSecurityPrincipal(principal) ||
+                  search::IsThirdPartyNewTabPageSecurityPrincipal(principal);
 
     if (!is_ntp) {
       InstantService* instant_service =

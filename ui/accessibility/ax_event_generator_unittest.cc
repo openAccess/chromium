@@ -518,6 +518,44 @@ TEST(AXEventGeneratorTest, SelectionInTextFieldChanged) {
             HasEventAtNode(AXEventGenerator::Event::TEXT_SELECTION_CHANGED,
                            text_field.id)));
   }
+
+  event_generator.ClearEvents();
+  {
+    // Changing only `sel_anchor_offset_type` should fire selection changed
+    // events.
+    tree_data.sel_anchor_offset_type = ax::mojom::OffsetType::kChild;
+    AXTreeUpdate update;
+    update.tree_data = tree_data;
+    update.has_tree_data = true;
+
+    ASSERT_TRUE(tree.Unserialize(update));
+    EXPECT_THAT(
+        event_generator,
+        UnorderedElementsAre(
+            HasEventAtNode(AXEventGenerator::Event::DOCUMENT_SELECTION_CHANGED,
+                           root.id),
+            HasEventAtNode(AXEventGenerator::Event::TEXT_SELECTION_CHANGED,
+                           text_field.id)));
+  }
+
+  event_generator.ClearEvents();
+  {
+    // Changing only `sel_focus_offset_type` should also fire selection changed
+    // events.
+    tree_data.sel_focus_offset_type = ax::mojom::OffsetType::kText;
+    AXTreeUpdate update;
+    update.tree_data = tree_data;
+    update.has_tree_data = true;
+
+    ASSERT_TRUE(tree.Unserialize(update));
+    EXPECT_THAT(
+        event_generator,
+        UnorderedElementsAre(
+            HasEventAtNode(AXEventGenerator::Event::DOCUMENT_SELECTION_CHANGED,
+                           root.id),
+            HasEventAtNode(AXEventGenerator::Event::TEXT_SELECTION_CHANGED,
+                           text_field.id)));
+  }
 }
 
 TEST(AXEventGeneratorTest, ValueInTextFieldChanged) {
@@ -1377,7 +1415,7 @@ TEST(AXEventGeneratorTest, RoleChanged) {
                                    AXEventGenerator::Event::ROLE_CHANGED, 1)));
 }
 
-TEST(AXEventGeneratorTest, MenuPopupStartOnDynamicCreation) {
+TEST(AXEventGeneratorTest, MenuPopupStartNotFiredOnDynamicCreation) {
   AXTreeUpdate initial_state;
   initial_state.root_id = 1;
   initial_state.nodes.resize(1);
@@ -1396,8 +1434,8 @@ TEST(AXEventGeneratorTest, MenuPopupStartOnDynamicCreation) {
   ASSERT_TRUE(tree.Unserialize(update));
 
   EXPECT_THAT(event_generator,
-              IsSupersetOf({HasEventAtNode(
-                  AXEventGenerator::Event::MENU_POPUP_START, 2)}));
+              testing::Not(testing::Contains(HasEventAtNode(
+                  AXEventGenerator::Event::MENU_POPUP_START, 2))));
 }
 
 TEST(AXEventGeneratorTest, MenuPopupStartNotFiredOnInitialTreeCreation) {

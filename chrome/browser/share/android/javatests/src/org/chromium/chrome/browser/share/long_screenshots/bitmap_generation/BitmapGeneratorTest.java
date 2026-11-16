@@ -20,11 +20,9 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.paint_preview.PaintPreviewCompositorUtils;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -36,7 +34,6 @@ import org.chromium.net.test.EmbeddedTestServer;
 
 /** Tests for the LongScreenshotsEntryTest. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class BitmapGeneratorTest {
     @Rule
     public final FreshCtaTransitTestRule mActivityTestRule =
@@ -113,6 +110,75 @@ public class BitmapGeneratorTest {
                                     mTab,
                                     new ScreenshotBoundsManager(
                                             mActivityTestRule.getActivity(), mTab),
+                                    new Listener());
+                    PaintPreviewCompositorUtils.warmupCompositor();
+                    mGenerator.captureTab(/* inMemory= */ false);
+                });
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(mGenerator.getContentSize(), Matchers.notNullValue());
+                });
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(mGenerator.getScrollOffset(), Matchers.notNullValue());
+                });
+        CriteriaHelper.pollInstrumentationThread(
+                () -> {
+                    Criteria.checkThat(mBitmapCreated, Matchers.equalTo(true));
+                });
+    }
+
+    /** Verifies that an Incognito Tab's contents are captured in-memory and rastered cleanly. */
+    @Test
+    @LargeTest
+    @Feature({"LongScreenshots"})
+    public void testCapturedNewOne_Incognito() throws Exception {
+        String url =
+                mActivityTestRule.getTestServer().getURL("/chrome/test/data/android/about.html");
+        Tab incognitoTab =
+                mInitialPage
+                        .openNewIncognitoTabOrWindowFast()
+                        .loadWebPageProgrammatically(url)
+                        .loadedTabElement
+                        .value();
+        Assert.assertTrue(incognitoTab.isOffTheRecord());
+
+        Runnable onErrorCallback =
+                () -> {
+                    Assert.fail("Error should not be thrown");
+                };
+
+        Callback<Bitmap> onBitmapGenerated =
+                (result) -> {
+                    Assert.assertNotNull(result);
+                    mBitmapCreated = true;
+                };
+
+        class Listener implements BitmapGenerator.GeneratorCallBack {
+            @Override
+            public void onCompositorResult(@CompositorStatus int status) {
+                Assert.assertEquals(CompositorStatus.OK, status);
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            mGenerator.compositeBitmap(
+                                    new Rect(0, 0, 100, 100), onErrorCallback, onBitmapGenerated);
+                        });
+            }
+
+            @Override
+            public void onCaptureResult(@Status int status) {
+                Assert.assertEquals(Status.OK, status);
+            }
+        }
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mGenerator =
+                            new BitmapGenerator(
+                                    incognitoTab,
+                                    new ScreenshotBoundsManager(
+                                            mActivityTestRule.getActivity(), incognitoTab),
                                     new Listener());
                     PaintPreviewCompositorUtils.warmupCompositor();
                     mGenerator.captureTab(/* inMemory= */ false);

@@ -9,6 +9,10 @@
 
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service.h"
 
+namespace base {
+class TimeDelta;
+}  // namespace base
+
 namespace autofill {
 
 // LINT.IfChange(ActorOneTimeTokenFillingServiceRetrieveOtp)
@@ -74,6 +78,15 @@ enum class ActorOneTimeTokenFillingServiceFillOtp {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/one_time_tokens/enums.xml:ActorOneTimeTokenFillingServiceFillOtpEvent)
 
+// Outcomes of the `FillOtp()` operation, used to slice the
+// `OneTimeTokens.Actor.OneTimeTokenFillingService.FillOtp.Duration` histogram.
+// Note: This enum is only used for the patterned histogram slice and is not
+// logged directly.
+enum class ActorOtpFillOtpDurationOutcome {
+  kError,
+  kSuccess,
+};
+
 // LINT.IfChange(ActorOtpRetrieveOtpCallbackSuperseded)
 
 // Events recorded during the ActorOneTimeTokenFillingService RetrieveOtp
@@ -86,6 +99,21 @@ enum class ActorOtpRetrieveOtpCallbackSuperseded {
   kMaxValue = kCallbackSuperseded
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/one_time_tokens/enums.xml:ActorOtpRetrieveOtpCallbackSupersededEvent)
+
+// LINT.IfChange(ActorOtpRetrieveOtpDurationOutcome)
+
+// Outcomes for the RetrieveOtp operation used to slice the duration metric.
+// Note: This enum is only used for the patterned histogram slice and is not
+// logged directly.
+enum class ActorOtpRetrieveOtpDurationOutcome {
+  kCacheMatch,
+  kReceivedMatch,
+  kTimeout,
+  kSenderDomainMismatch,
+  kError,
+  kCancelled,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/one_time_tokens/histograms.xml:ActorOtpRetrieveOtpDurationOutcome)
 
 // Histogram names for ActorOneTimeTokenFillingService operations.
 inline constexpr std::string_view
@@ -110,9 +138,21 @@ void RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(
     ActorOneTimeTokenFillingServiceRetrieveOtp event,
     ActorOneTimeTokenFillingService::PredictedOtpType predicted_otp_type);
 
+// Records the duration of a `RetrieveOtp()` request to
+// `kActorOneTimeTokenFillingServiceRetrieveOtpHistogram.Duration.{Outcome}`.
+void RecordActorOneTimeTokenFillingServiceRetrieveOtpDuration(
+    base::TimeDelta duration,
+    ActorOtpRetrieveOtpDurationOutcome outcome);
+
 // Records events during FillOtp operation.
 void RecordActorOneTimeTokenFillingServiceFillOtp(
     ActorOneTimeTokenFillingServiceFillOtp event);
+
+// Records the time from triggering an OTP fill until `ActorFillingObserver`
+// reported its result.
+void RecordActorOneTimeTokenFillingServiceFillOtpDuration(
+    ActorOtpFillOtpDurationOutcome outcome,
+    base::TimeDelta duration);
 
 // Records events measuring superseded callbacks during RetrieveOtp operation.
 void RecordActorOtpRetrieveOtpCallbackSuperseded(

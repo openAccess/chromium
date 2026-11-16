@@ -4,10 +4,12 @@
 
 #include "chrome/browser/password_manager/remote_actor/remote_actor_credential_sharing_impl.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
+#include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
 #include "chrome/browser/glic/glic_pref_names.h"
@@ -21,7 +23,9 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/passwords/remote_actor_selection_dialog_controller.h"
 #include "components/keyed_service/core/service_access_type.h"
+#include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/remote_actor/remote_actor_config.h"
 #include "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_result.h"
 #include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "components/prefs/pref_service.h"
@@ -31,7 +35,7 @@
 #include "content/public/browser/web_contents.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "net/base/schemeful_site.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/origin.h"
 
 namespace password_manager {
@@ -49,6 +53,40 @@ std::unique_ptr<RemoteActorSelectionDialogController> CreateDefaultDialog(
 }
 
 constexpr size_t kMaxArgumentLength = 256;
+
+// Checks if enterprise policy (`GeminiSparkSettings` for `kGemini`,
+// `AIModeSettings` for `kSearch`) permits remote actor credential sharing.
+bool IsAllowedByPolicy(Profile* profile, RemoteActorType actor_type) {
+  CHECK(profile);
+  PrefService* prefs = profile->GetPrefs();
+  CHECK(prefs);
+
+  switch (actor_type) {
+    case RemoteActorType::kGemini: {
+      // Check whether the browser, device, or account is enterprise-managed, or
+      // if the preference is explicitly set by enterprise policy.
+      bool is_managed =
+          glic::GlicEnabling::IsBrowserManaged(profile) ||
+          glic::GlicEnabling::IsDeviceManaged() ||
+          glic::GlicEnabling::IsEnterpriseAccount(profile) ||
+          prefs->IsManagedPreference(glic::prefs::kGlicSparkPolicySettings);
+
+      // Apply policy if managed, unless it's a dogfood client (matching Glic
+      // policy behavior).
+      if (is_managed && !glic::GlicEnabling::IsLikelyDogfoodClient()) {
+        auto policy_state = static_cast<glic::prefs::GlicSparkPolicyState>(
+            prefs->GetInteger(glic::prefs::kGlicSparkPolicySettings));
+        if (policy_state != glic::prefs::GlicSparkPolicyState::kEnabled) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case RemoteActorType::kSearch:
+      return AimEligibilityService::IsAimAllowedByPolicy(prefs);
+  }
+  NOTREACHED();
+}
 
 }  // namespace
 DOCUMENT_USER_DATA_KEY_IMPL(RemoteActorCredentialSharingImpl);
@@ -112,9 +150,19 @@ void RemoteActorCredentialSharingImpl::RequestAgentAuthentication(
     return;
   }
 
+  const std::optional<RemoteActorType> actor_type =
+      GetRemoteActorTypeForOrigin(render_frame_host().GetLastCommittedOrigin());
+  if (!actor_type.has_value()) {
+    LogRemoteActorCredentialSharingResult(
+        RemoteActorCredentialSharingResult::kOtherError, std::nullopt);
+    RespondWithError(std::move(callback));
+    return;
+  }
+
   if (controller_ && controller_->IsActive()) {
     LogRemoteActorCredentialSharingResult(
-        RemoteActorCredentialSharingResult::kRequestAlreadyInProgress);
+        RemoteActorCredentialSharingResult::kRequestAlreadyInProgress,
+        *actor_type);
     RespondWithError(std::move(callback));
     return;
   }
@@ -122,19 +170,22 @@ void RemoteActorCredentialSharingImpl::RequestAgentAuthentication(
   Profile* profile =
       Profile::FromBrowserContext(render_frame_host().GetBrowserContext());
 
-  if (!IsAllowedByPolicy(profile)) {
+  if (!IsAllowedByPolicy(profile, *actor_type)) {
     LogRemoteActorCredentialSharingResult(
-        RemoteActorCredentialSharingResult::kBlockedByPolicy);
+        RemoteActorCredentialSharingResult::kBlockedByPolicy, *actor_type);
     RespondWithError(std::move(callback));
     return;
   }
 
   if (profile->IsOffTheRecord()) {
     LogRemoteActorCredentialSharingResult(
-        RemoteActorCredentialSharingResult::kUserIdentityOrSyncStateInvalid);
+        RemoteActorCredentialSharingResult::kUserIdentityOrSyncStateInvalid,
+        *actor_type);
     RespondWithError(std::move(callback));
     return;
   }
+
+  actor_config_ = GetRemoteActorConfig(*actor_type);
 
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&render_frame_host());
@@ -154,6 +205,9 @@ void RemoteActorCredentialSharingImpl::RequestAgentAuthentication(
           .get(),
       RemoteActorCredentialSharingServiceFactory::GetForProfile(profile),
       client, this);
+  controller_->SetActorParameters(actor_config_->actor_type,
+                                  actor_config_->oauth_client_id,
+                                  actor_config_->task_namespace_id);
   controller_->Start(
       gaia_id, domain, task_id,
       base::BindOnce(&RemoteActorCredentialSharingImpl::OnShareCompleted,
@@ -176,6 +230,12 @@ void RemoteActorCredentialSharingImpl::ShowCredentialSelection(
       web_contents, std::move(credentials), origin.Serialize(),
       base::BindOnce(&RemoteActorCredentialSharingImpl::OnDialogResult,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+  if (actor_config_.has_value()) {
+    dialog_controller_->SetActorType(actor_config_->actor_type);
+    dialog_controller_->SetActorName(actor_config_->display_name);
+    dialog_controller_->SetLearnMoreUrl(actor_config_->learn_more_url);
+    dialog_controller_->SetActorIconUrl(actor_config_->icon_url);
+  }
   dialog_controller_->Show();
 }
 
@@ -228,7 +288,7 @@ bool RemoteActorCredentialSharingImpl::HasValidUserActivation() {
       content::WebContents::FromRenderFrameHost(&render_frame_host());
   bool is_new_popup =
       web_contents && web_contents->GetOriginalWindowOpenDisposition() ==
-                          WindowOpenDisposition::kNewPopup;
+                          ::ui::mojom::WindowOpenDisposition::kNewPopup;
   content::RenderFrameHost* opener =
       web_contents ? web_contents->GetOpener() : nullptr;
   if (!opener || !is_new_popup ||
@@ -250,32 +310,6 @@ bool RemoteActorCredentialSharingImpl::HasValidUserActivation() {
   return false;
 }
 
-bool RemoteActorCredentialSharingImpl::IsAllowedByPolicy(Profile* profile) {
-  CHECK(profile);
-  PrefService* prefs = profile->GetPrefs();
-  CHECK(prefs);
-
-  // Check whether the browser, device, or account is enterprise-managed, or if
-  // the preference is explicitly set by enterprise policy.
-  bool is_managed =
-      glic::GlicEnabling::IsBrowserManaged(profile) ||
-      glic::GlicEnabling::IsDeviceManaged() ||
-      glic::GlicEnabling::IsEnterpriseAccount(profile) ||
-      prefs->IsManagedPreference(glic::prefs::kGlicSparkPolicySettings);
-
-  // Apply policy if managed, unless it's a dogfood client (matching Glic
-  // policy behavior).
-  if (is_managed && !glic::GlicEnabling::IsLikelyDogfoodClient()) {
-    auto policy_state = static_cast<glic::prefs::GlicSparkPolicyState>(
-        prefs->GetInteger(glic::prefs::kGlicSparkPolicySettings));
-    if (policy_state != glic::prefs::GlicSparkPolicyState::kEnabled) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 void RemoteActorCredentialSharingImpl::OnDialogResult(
     base::OnceCallback<void(CredentialOrError)> callback,
     std::optional<PasswordForm> selected_form) {
@@ -291,6 +325,7 @@ void RemoteActorCredentialSharingImpl::OnDialogResult(
 void RemoteActorCredentialSharingImpl::OnShareCompleted(
     RequestAgentAuthenticationCallback callback,
     RemoteActorCredentialSharingResult result) {
+  actor_config_.reset();
   controller_.reset();
   std::move(callback).Run(result ==
                           RemoteActorCredentialSharingResult::kSuccess);

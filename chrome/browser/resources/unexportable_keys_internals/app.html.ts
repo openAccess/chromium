@@ -9,15 +9,22 @@ import type {UnexportableKeysInternalsAppElement} from './app.js';
 export function getHtml(this: UnexportableKeysInternalsAppElement) {
   return html`
 <h1>Unexportable Keys Internals</h1>
+<div id="deleteMatchingKeys">
+  <input id="tagPrefixInput" type="text" aria-label="Key tag prefix"
+      placeholder="Key tag prefix (empty matches keys without a tag)"
+      .value="${this.tagPrefix_}" @input="${this.onTagPrefixInput_}">
+  <cr-button id="deleteMatchingKeysButton"
+      ?disabled="${!this.getMatchingKeys_().length}"
+      @click="${this.onDeleteMatchingKeysClick_}">
+    Delete matching keys (${this.getMatchingKeys_().length})
+  </cr-button>
+</div>
 <table>
   <tr>
     ${this.columns_.map(col => html`
-      <th class="sort-header"
-          data-sort-key="${col.key}"
-          @click="${this.onSortClick_}"
-          @keydown="${this.onSortKeydown_}"
-          tabindex="0"
-          aria-sort="${this.getSortAttribute_(col.key)}">
+      <th class="sort-header" data-sort-key="${col.key}"
+          @click="${this.onSortClick_}" @keydown="${this.onSortKeydown_}"
+          tabindex="0" aria-sort="${this.getSortAttribute_(col.key)}">
         ${col.label}
       </th>
     `)}

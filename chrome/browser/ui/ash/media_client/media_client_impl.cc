@@ -35,10 +35,9 @@
 #include "chrome/browser/ash/extensions/media_player_event_router.h"
 #include "chrome/browser/media/webrtc/media_stream_capture_indicator.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
-#include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
@@ -51,6 +50,7 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/video_capture_service.h"
@@ -464,8 +464,9 @@ void MediaClientImpl::EnableCustomMediaKeyHandler(
     ui::MediaKeysListener::Delegate* delegate) {
   auto it = media_key_delegates_.find(context);
 
-  CHECK(it == media_key_delegates_.end() || it->second == delegate,
-        base::NotFatalUntil::M162);
+  // TODO(crbug.com/580075349): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(it == media_key_delegates_.end() || it->second == delegate);
 
   media_key_delegates_.emplace(context, delegate);
 
@@ -480,7 +481,9 @@ void MediaClientImpl::DisableCustomMediaKeyHandler(
   }
 
   auto it = media_key_delegates_.find(context);
-  CHECK_EQ(it->second, delegate, base::NotFatalUntil::M162);
+  // TODO(crbug.com/583058611): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(it->second, delegate);
 
   media_key_delegates_.erase(it);
 
@@ -516,8 +519,22 @@ void MediaClientImpl::HandleMediaAction(ui::KeyboardCode keycode) {
   }
 
   // This API is used by Chrome apps so we should use the logged in user here.
+  // TODO(crbug.com/278643115): Pass the `AccountId` from `MediaControllerImpl`.
+  // Media keys work on the login screen, where there may be no active session,
+  // or the active user's profile may not be created yet.
+  const session_manager::Session* active_session =
+      session_manager::SessionManager::Get()->GetActiveSession();
+  if (!active_session) {
+    return;
+  }
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByAccountId(
+          active_session->account_id());
+  if (!browser_context) {
+    return;
+  }
   extensions::MediaPlayerAPI* player_api =
-      extensions::MediaPlayerAPI::Get(ProfileManager::GetActiveUserProfile());
+      extensions::MediaPlayerAPI::Get(browser_context);
   if (!player_api) {
     return;
   }

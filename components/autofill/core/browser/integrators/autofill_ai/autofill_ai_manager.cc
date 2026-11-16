@@ -257,8 +257,17 @@ void AutofillAiManager::OnAutofillAiSuggestionsShown(
     const FormStructure& form,
     const AutofillField& field,
     base::span<const Suggestion> shown_suggestions,
+    const AutofillSuggestionDelegate::SuggestionUiMetadata& metadata,
     ukm::SourceId ukm_source_id,
     UpdateSuggestionsCallback update_suggestions_callback) {
+  // For sub-popups, only process fillable `kFillAutofillAi` suggestions (such
+  // as domain-fallback order or shipment submenus), ignoring action or
+  // attribution submenus.
+  if (metadata.is_subpopup() &&
+      !std::ranges::contains(shown_suggestions, SuggestionType::kFillAutofillAi,
+                             &Suggestion::type)) {
+    return;
+  }
   if (update_suggestions_callback) {
     generate_suggestions_and_update_popup_callback_ =
         base::BindRepeating(&AutofillAiManager::GenerateAndUpdateSuggestions,
@@ -280,6 +289,9 @@ void AutofillAiManager::OnAutofillAiSuggestionsShown(
 
   std::vector<const EntityInstance*> entities_suggested;
   for (const Suggestion& suggestion : shown_suggestions) {
+    if (suggestion.type != SuggestionType::kFillAutofillAi) {
+      continue;
+    }
     if (const auto* payload =
             std::get_if<Suggestion::AutofillAiPayload>(&suggestion.payload)) {
       if (base::optional_ref<const EntityInstance> entity =
@@ -671,10 +683,10 @@ void AutofillAiManager::HandlePromptResult(
         // doesn't require a valid `session_id`.
         if (base::FeatureList::IsEnabled(
                 wallet::features::kWalletApiPrivatePassesConsent)) {
-          CHECK(ui_context.accepted_consent_string_id.has_value());
+          CHECK(!ui_context.accepted_consent_string_ids.empty());
           CHECK(ui_context.accept_button_string_id.has_value());
           session_id = RecordWalletPrivatePassConsent(
-              ui_context.accepted_consent_string_id.value(),
+              ui_context.accepted_consent_string_ids,
               ui_context.accept_button_string_id.value(),
               *client_->GetConsentAuditor(), *client_->GetIdentityManager());
         }
@@ -789,8 +801,8 @@ void AutofillAiManager::AddStrikeForSaveAttempt(const GURL& url,
             entity.type().name_as_string(), url.GetHost()));
   }
   if (save_strike_db_by_attribute_) {
-    for (const std::string& key :
-         GetAttributeStrikeKeys(entity, client_->GetAppLocale())) {
+    for (const std::string& key : GetAttributeStrikeKeys(
+             entity, std::string(client_->GetAppLocale().tag_string()))) {
       save_strike_db_by_attribute_->AddStrike(key);
     }
   }
@@ -811,8 +823,8 @@ void AutofillAiManager::ClearStrikesForSave(const GURL& url,
             entity.type().name_as_string(), url.GetHost()));
   }
   if (save_strike_db_by_attribute_) {
-    for (const std::string& key :
-         GetAttributeStrikeKeys(entity, client_->GetAppLocale())) {
+    for (const std::string& key : GetAttributeStrikeKeys(
+             entity, std::string(client_->GetAppLocale().tag_string()))) {
       save_strike_db_by_attribute_->ClearStrikes(key);
     }
   }
@@ -837,7 +849,8 @@ bool AutofillAiManager::IsSaveBlockedByStrikeDatabase(
 
   if (!save_strike_db_by_attribute_ ||
       std::ranges::any_of(
-          GetAttributeStrikeKeys(entity, client_->GetAppLocale()),
+          GetAttributeStrikeKeys(
+              entity, std::string(client_->GetAppLocale().tag_string())),
           [&](const std::string& key) {
             return save_strike_db_by_attribute_->ShouldBlockFeature(key);
           })) {

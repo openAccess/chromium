@@ -46,6 +46,7 @@ import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.ime.TextInputType;
 
 import java.util.ArrayList;
@@ -169,6 +170,7 @@ public class ImeTest {
     @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // https://crbug.com/580803463
     public void testKeyboardAppFinishesCompositionOnUnexpectedSelectionChange() throws Throwable {
         mRule.focusElementAndWaitForStateUpdate("textarea2");
         mRule.commitText("12345", 1);
@@ -280,6 +282,7 @@ public class ImeTest {
     @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // https://crbug.com/580803463
     public void testCommitTextForNewCursorPositions() throws Throwable {
         // Cursor is on the left of committing text.
         mRule.commitText("ab", 0);
@@ -618,6 +621,7 @@ public class ImeTest {
     @Test
     @SmallTest
     @Feature({"TextInput"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // https://crbug.com/580803463
     public void testKeyboardNotDismissedAfterCopySelection() throws Exception {
         mRule.commitText("Sample_Text", 1);
         mRule.waitAndVerifyUpdateSelection(0, 11, 11, -1, -1);
@@ -674,6 +678,7 @@ public class ImeTest {
     @Test
     @SmallTest
     @Feature({"TextInput"})
+    @DisabledTest(message = "https://crbug.com/576781074")
     public void testLongPressInputWhileComposingText() throws Exception {
         mRule.assertWaitForSelectActionBarStatus(false);
         mRule.setComposingText("SampleTextThatIsVeryLong Test", 1);
@@ -928,6 +933,7 @@ public class ImeTest {
     @Test
     @SmallTest
     @Feature({"TextInput", "Main"})
+    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // https://crbug.com/580803463
     public void testDeleteText() throws Throwable {
         mRule.focusElement("textarea");
 
@@ -1550,6 +1556,9 @@ public class ImeTest {
     @Test
     @MediumTest
     @Feature({"TextInput"})
+    @DisableIf.Build(
+            sdk_is_greater_than = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            message = "https://crbug.com/584777619")
     public void testRestartInputWhileComposingText() throws Throwable {
         mRule.setComposingText("abc", 1);
         mRule.waitAndVerifyUpdateSelection(0, 3, 3, 0, 3);
@@ -1805,6 +1814,7 @@ public class ImeTest {
     @Test
     @MediumTest
     @Feature({"TextInput"})
+    @DisableIf.Build(supported_abis_includes = "x86_64", message = "https://crbug.com/585134688")
     public void testUiThreadAccess() throws Exception {
         final ChromiumBaseInputConnection connection = mRule.getConnection();
         ThreadUtils.runOnUiThreadBlocking(

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_flat_edge_button.h"
 
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
@@ -57,7 +58,11 @@ class TabStripFlatEdgeButtonActionViewInterface
 
   void InvokeActionImpl(actions::ActionItem* action_item) override {
     action_view_->NotifyWillInvokeAction();
-    LabelButtonActionViewInterface::InvokeActionImpl(action_item);
+    action_item->InvokeAction(
+        actions::ActionInvocationContext::Builder()
+            .SetProperty(chrome::kActionInvocationSourceKey,
+                         chrome::ActionInvocationSource::kViewButton)
+            .Build());
   }
 
  private:
@@ -65,7 +70,11 @@ class TabStripFlatEdgeButtonActionViewInterface
 };
 }  // namespace
 
-TabStripFlatEdgeButton::TabStripFlatEdgeButton() {
+TabStripFlatEdgeButton::TabStripFlatEdgeButton()
+    : foreground_frame_active_color_id_(
+          kColorTabSearchButtonCRForegroundFrameActive),
+      foreground_frame_inactive_color_id_(
+          kColorTabSearchButtonCRForegroundFrameInactive) {
   ConfigureInkDrop(
       this, std::make_unique<views::RoundRectHighlightPathGenerator>(
                 gfx::Insets(), GetButtonCornerRadii()));
@@ -284,10 +293,28 @@ void TabStripFlatEdgeButton::RemovedFromWidget() {
   paint_as_active_subscription_ = {};
 }
 
+void TabStripFlatEdgeButton::SetForegroundFrameActiveColorId(
+    ui::ColorId color_id) {
+  if (foreground_frame_active_color_id_ == color_id) {
+    return;
+  }
+  foreground_frame_active_color_id_ = color_id;
+  OnThemeChanged();
+}
+
+void TabStripFlatEdgeButton::SetForegroundFrameInactiveColorId(
+    ui::ColorId color_id) {
+  if (foreground_frame_inactive_color_id_ == color_id) {
+    return;
+  }
+  foreground_frame_inactive_color_id_ = color_id;
+  OnThemeChanged();
+}
+
 ui::ColorId TabStripFlatEdgeButton::GetForegroundColor() const {
   return GetWidget() && GetWidget()->ShouldPaintAsActive()
-             ? kColorTabSearchButtonCRForegroundFrameActive
-             : kColorTabSearchButtonCRForegroundFrameInactive;
+             ? foreground_frame_active_color_id_
+             : foreground_frame_inactive_color_id_;
 }
 
 ui::ColorId TabStripFlatEdgeButton::GetBackgroundColor() const {

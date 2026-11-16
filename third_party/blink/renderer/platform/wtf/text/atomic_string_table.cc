@@ -8,7 +8,6 @@
 #include <array>
 #include <atomic>
 #include <bit>
-#include <cstdint>
 #include <cstring>
 #include <type_traits>
 #include <utility>
@@ -17,9 +16,9 @@
 #include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/synchronization/lock.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/ascii_lower_hash_reader.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/convert_to_8bit_hash_reader.h"
@@ -33,6 +32,7 @@ namespace blink {
 namespace {
 
 constexpr auto kGoldenRatio64 = 0x9e3779b97f4a7c15ull;
+constexpr StringImpl::size_type kSmallStringLengthLimit = 16;
 
 // A thread-local, direct-mapped cache for small 8-bit AtomicStrings (<= 16
 // bytes) that avoids the overhead of table locking, hash computation, and
@@ -60,17 +60,14 @@ struct alignas(64) SmallStringCache {
 };
 
 NOINLINE SmallStringCache* SmallStringCacheInstance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<SmallStringCache>, cache, ());
-  return cache;
+  static base::NoDestructor<ThreadSpecific<SmallStringCache>> cache;
+  return *cache;
 }
 
 constinit thread_local SmallStringCache* g_small_string_cache = nullptr;
 
-template <typename Generator>
-ALWAYS_INLINE String SmallStringCacheGetOrInsert(uint64_t sig_low,
-                                                 uint64_t sig_high,
-                                                 uint32_t length,
-                                                 Generator generator) {
+ALWAYS_INLINE SmallStringCache::Entry&
+GetSmallStringCacheEntry(uint64_t sig_low, uint64_t sig_high, uint32_t length) {
   // Fibonacci hash using the golden ratio constant to distribute strings
   // evenly across the cache.
   // Rotate `sig_high` so `sig_low ^ sig_high` does not cancel to 0 when
@@ -85,7 +82,15 @@ ALWAYS_INLINE String SmallStringCacheGetOrInsert(uint64_t sig_low,
     cache = g_small_string_cache;
   }
 
-  auto& entry = cache->entries[index];
+  return cache->entries[index];
+}
+
+template <typename Generator>
+ALWAYS_INLINE String SmallStringCacheGetOrInsert(uint64_t sig_low,
+                                                 uint64_t sig_high,
+                                                 uint32_t length,
+                                                 Generator generator) {
+  auto& entry = GetSmallStringCacheEntry(sig_low, sig_high, length);
   if (entry.sig_low == sig_low && entry.sig_high == sig_high &&
       entry.length == length) [[likely]] {
     return entry.string;
@@ -128,7 +133,7 @@ ALWAYS_INLINE static uint64_t Compress8UCharsToUint64(
 ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
     base::span<const LChar> chars) {
   const size_t length = chars.size();
-  DCHECK(length >= 1 && length <= 16);
+  DCHECK(length >= 1 && length <= kSmallStringLengthLimit);
   if (length >= 8) {
     return {BitCastRead<uint64_t>(chars.first<8>()),
             BitCastRead<uint64_t>(chars.last<8>())};
@@ -149,7 +154,7 @@ ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
 ALWAYS_INLINE static std::pair<uint64_t, uint64_t> ComputeSmallStringSignature(
     base::span<const UChar> chars) {
   const size_t length = chars.size();
-  DCHECK(length >= 1 && length <= 16);
+  DCHECK(length >= 1 && length <= kSmallStringLengthLimit);
   if (length >= 8) {
     return {Compress8UCharsToUint64(chars.first<8>()),
             Compress8UCharsToUint64(chars.last<8>())};
@@ -335,17 +340,11 @@ struct LowercaseLookupTranslator {
 }  // namespace
 
 AtomicStringTable& AtomicStringTable::Instance() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(AtomicStringTable, table, ());
-  return table;
+  static base::NoDestructor<AtomicStringTable> table;
+  return *table;
 }
 
-AtomicStringTable::AtomicStringTable() {
-  base::AutoLock auto_lock(lock_);
-  for (StringImpl* string : StringImpl::AllStaticStrings().Values()) {
-    DCHECK(string->length());
-    AddNoLock(string);
-  }
-}
+AtomicStringTable::AtomicStringTable() = default;
 
 void AtomicStringTable::ReserveCapacity(wtf_size_t size) {
   base::AutoLock auto_lock(lock_);
@@ -383,7 +382,8 @@ String AtomicStringTable::Add(base::span<const UChar> chars,
   }
 
   const auto length = chars.size();
-  if (encoding == AtomicStringUCharEncoding::kIs8Bit && length <= 16) {
+  if (encoding == AtomicStringUCharEncoding::kIs8Bit &&
+      length <= kSmallStringLengthLimit) {
     const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
     return SmallStringCacheGetOrInsert(
         sig_low, sig_high, static_cast<uint32_t>(length), [this, &chars]() {
@@ -433,6 +433,22 @@ struct LCharBufferTranslator {
   }
 };
 
+struct StaticLiteralTranslator {
+  static uint32_t GetHash(StringImpl* const& str) {
+    return str->ExistingHash();
+  }
+
+  static bool Equal(StringImpl* const& a, StringImpl* const& b) {
+    return (a == b) || blink::Equal(a, b->Span8());
+  }
+
+  static void Store(StringImpl*& location,
+                    StringImpl* const& str,
+                    uint32_t /*hash*/) {
+    location = str;
+  }
+};
+
 }  // namespace
 
 String AtomicStringTable::Add(const StringView& string_view) {
@@ -449,7 +465,7 @@ String AtomicStringTable::Add(const StringView& string_view) {
   }
 
   const auto length = string_view.length();
-  if (length <= 16 && string_view.Is8Bit()) {
+  if (length <= kSmallStringLengthLimit && string_view.Is8Bit()) {
     base::span<const LChar> chars = string_view.Span8();
     const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
     return SmallStringCacheGetOrInsert(
@@ -478,7 +494,7 @@ String AtomicStringTable::Add(base::span<const LChar> chars) {
   }
 
   const auto length = chars.size();
-  if (length <= 16) {
+  if (length <= kSmallStringLengthLimit) {
     const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
     return SmallStringCacheGetOrInsert(
         sig_low, sig_high, static_cast<uint32_t>(length), [this, &chars]() {
@@ -504,6 +520,10 @@ StringImpl* AtomicStringTable::AddNoLock(StringImpl* string) {
 String AtomicStringTable::Add(StringImpl* string) {
   if (!string->length())
     return StringImpl::empty_;
+  if (!string->IsAtomic() && string->IsStatic()) {
+    DCHECK(string->Is8Bit());
+    return Add(string->Span8());
+  }
 
   // Lock not only protects access to the table, it also guarantees
   // mutual exclusion with the refcount decrement on removal.
@@ -515,6 +535,9 @@ String AtomicStringTable::Add(String&& string) {
   if (!string.length()) {
     return StringImpl::empty_;
   }
+  if (!string.Impl()->IsAtomic() && string.Impl()->IsStatic()) {
+    return Add(string.Impl());
+  }
 
   // Lock not only protects access to the table, it also guarantees
   // mutual exclusion with the refcount decrement on removal.
@@ -525,6 +548,51 @@ String AtomicStringTable::Add(String&& string) {
   }
 
   return base::WrapRefCounted(entry);
+}
+
+String AtomicStringTable::AddStaticLiteral(StringImpl* string) {
+  DCHECK(string->length());
+  DCHECK(string->IsStatic());
+  DCHECK(string->IsAtomic());
+  DCHECK(string->Is8Bit());
+  DCHECK(string->HasHash());
+  const auto length = string->length();
+  if (length <= kSmallStringLengthLimit) {
+    base::span<const LChar> chars = string->Span8();
+    const auto [sig_low, sig_high] = ComputeSmallStringSignature(chars);
+    auto& entry = GetSmallStringCacheEntry(sig_low, sig_high, length);
+    if (entry.sig_low == sig_low && entry.sig_high == sig_high &&
+        entry.length == length) {
+      if (entry.string.Impl()->IsStatic()) [[likely]] {
+        return entry.string;
+      }
+      if (entry.string.Impl()->HasOneRef()) {
+        // The cached non-static entry is only retained by this thread's
+        // SmallStringCache; release it so the static .rodata StringImpl can
+        // take its place in AtomicStringTable.
+        entry.length = 0;
+        entry.string = String();
+      } else {
+        return entry.string;
+      }
+    }
+
+    String result = [this, string]() {
+      base::AutoLock auto_lock(lock_);
+      auto add_result =
+          table_.AddWithTranslator<StaticLiteralTranslator>(string);
+      return base::WrapRefCounted(*add_result.stored_value);
+    }();
+    entry.string = result;
+    entry.sig_low = sig_low;
+    entry.sig_high = sig_high;
+    entry.length = length;
+    return result;
+  }
+
+  base::AutoLock auto_lock(lock_);
+  auto add_result = table_.AddWithTranslator<StaticLiteralTranslator>(string);
+  return base::WrapRefCounted(*add_result.stored_value);
 }
 
 String AtomicStringTable::AddUtf8(base::span<const uint8_t> characters_span) {
@@ -588,8 +656,9 @@ bool AtomicStringTable::ReleaseAndRemoveIfNeeded(StringImpl* string) {
   base::AutoLock auto_lock(lock_);
   // Double check that the refcount is still 1. Because Add() could
   // have added a new reference after the load in StringImpl::Release.
-  if (string->ref_count_.fetch_sub(1, std::memory_order_acq_rel) != 1)
+  if (string->RefCountAtomic().fetch_sub(1, std::memory_order_acq_rel) != 1) {
     return false;
+  }
 
   auto iterator = table_.find(string);
   CHECK_NE(iterator, table_.end());

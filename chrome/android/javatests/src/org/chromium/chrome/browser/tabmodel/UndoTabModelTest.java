@@ -64,7 +64,6 @@ import java.util.concurrent.TimeoutException;
  * or multiple activities. For additional tests see {@link UndoTabModelUnitTest}.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class UndoTabModelTest {
     @Rule
@@ -381,8 +380,8 @@ public class UndoTabModelTest {
     }
 
     /**
-     * Test opening recently closed tab when we have multiple windows. | Action | Result 1. Create
-     * second window. | 2. Open tab in window 1. | 3. Open tab in window 2. | 4. Close tab in window
+     * Test opening recently closed tab when we have multiple windows. | Action | Result 1. Open tab
+     * in window 1. | 2. Create second window. | 3. Open tab in window 2. | 4. Close tab in window
      * 1. | 5. Close tab in window 2. | 6. Restore tab. | Tab restored in window 2. 7. Restore tab.
      * | Tab restored in window 1.
      */
@@ -392,13 +391,18 @@ public class UndoTabModelTest {
     @DisableIf.Build(sdk_is_greater_than = VERSION_CODES.R) // https://crbug.com/40215137
     @CommandLineFlags.Add(ChromeSwitches.DISABLE_TAB_MERGING_FOR_TESTING)
     public void testOpenRecentlyClosedTabMultiWindow() throws TimeoutException {
+        // Open the first window's tab while it is in front. Once the second window covers it, the
+        // first window stops drawing and its page would never get hit test data.
+        ChromeTabUtils.fullyLoadUrlInNewTab(
+                InstrumentationRegistry.getInstrumentation(),
+                mActivityTestRule.getActivity(),
+                TEST_URL_0,
+                false);
+
         final ChromeTabbedActivity2 secondActivity =
                 MultiWindowTestHelper.createSecondChromeTabbedActivity(
                         mActivityTestRule.getActivity());
 
-        // Wait for the second window to be fully initialized.
-        CriteriaHelper.pollUiThread(
-                () -> secondActivity.getTabModelSelector().isTabStateInitialized());
         // First window context.
         final TabModelSelector firstSelector =
                 mActivityTestRule.getActivity().getTabModelSelector();
@@ -408,12 +412,6 @@ public class UndoTabModelTest {
         final TabModelSelector secondSelector = secondActivity.getTabModelSelector();
         final TabModel secondModel = secondSelector.getModel(false);
 
-        // Create tabs.
-        ChromeTabUtils.fullyLoadUrlInNewTab(
-                InstrumentationRegistry.getInstrumentation(),
-                mActivityTestRule.getActivity(),
-                TEST_URL_0,
-                false);
         ChromeTabUtils.fullyLoadUrlInNewTab(
                 InstrumentationRegistry.getInstrumentation(), secondActivity, TEST_URL_1, false);
 
@@ -499,9 +497,6 @@ public class UndoTabModelTest {
         final ChromeTabbedActivity2 secondActivity =
                 MultiWindowTestHelper.createSecondChromeTabbedActivity(
                         mActivityTestRule.getActivity());
-        // Wait for the second window to be fully initialized.
-        CriteriaHelper.pollUiThread(
-                () -> secondActivity.getTabModelSelector().isTabStateInitialized());
 
         // First window context.
         final TabModelSelector firstSelector =

@@ -17,6 +17,7 @@
 namespace omnibox {
 namespace {
 constexpr bool IS_ANDROID = !!BUILDFLAG(IS_ANDROID);
+constexpr bool IS_CHROMEOS = !!BUILDFLAG(IS_CHROMEOS);
 constexpr bool IS_IOS = !!BUILDFLAG(IS_IOS);
 
 constexpr base::FeatureState DISABLED = base::FEATURE_DISABLED_BY_DEFAULT;
@@ -240,13 +241,16 @@ BASE_FEATURE(kOmniboxAimDeferShowUntilVisualStateReadyWithFullWebUI, DISABLED);
 // it after the browser window's first presentation, or earlier if the popup is
 // shown or another caller needs the AIM WebContents. See
 // `OmniboxPopupAimPresenter` and `kOmniboxAimPopupCreateOnFirstPresentation`.
-BASE_FEATURE(kOmniboxAimPopupDeferCreation, DISABLED);
+// Enabled on ChromeOS, where session restore at login creates every restored
+// window at once.
+BASE_FEATURE(kOmniboxAimPopupDeferCreation, enable_if(IS_CHROMEOS));
 // When enabled, the WebUI omnibox popup that shows suggestions does not create
 // its WebUI content (and so its WebContents and renderer) while the browser
 // window is built. It creates it after the browser window's first
 // presentation, or earlier if the popup is shown. See `OmniboxPopupPresenter`
 // and `kOmniboxWebUIPopupCreateOnFocus`.
-BASE_FEATURE(kOmniboxWebUIPopupDeferCreation, DISABLED);
+// Enabled on ChromeOS, like `kOmniboxAimPopupDeferCreation`.
+BASE_FEATURE(kOmniboxWebUIPopupDeferCreation, enable_if(IS_CHROMEOS));
 // When enabled, the Omnibox WebUI popup will defer showing until the WebUI has
 // painted a clean frame, avoiding the issue of the popup being shown with a
 // stale frame.
@@ -663,6 +667,13 @@ const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxHelperText{
     &kVoiceSearchCoherenceSearchbox, "VoiceSearchCoherenceRealboxHelperText",
     false};
 
+// Keeps the legacy NTP Realbox voice search UI, the one users get with
+// kVoiceSearchCoherenceSearchbox disabled. Voice search requests still carry
+// the NTP routing params, so only the speech service's recognizer changes.
+const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxKeepLegacyUi{
+    &kVoiceSearchCoherenceSearchbox, "VoiceSearchCoherenceRealboxKeepLegacyUi",
+    false};
+
 #if BUILDFLAG(IS_ANDROID)
 // Prevents intermediate AutocompleteResult updates from being sent to Java on
 // low-end devices. This aims at eliminating time spent on constructing,
@@ -722,6 +733,16 @@ BASE_FEATURE(kOmniboxAndroidIntranetRedirect, DISABLED);
 // transcription.
 BASE_FEATURE(kOmniboxVoicePlateIntent, DISABLED);
 
+// If enabled, Omnibox suggestion icons are rasterized from the native
+// gfx::VectorIcon definitions (shared with desktop) instead of being sourced
+// from Android XML drawables.
+BASE_FEATURE(kOmniboxNativeVectorIcons, DISABLED);
+
+// If enabled, the AI Mode button in the desktop omnibox is stateful: it stays
+// visible in AI Mode, and turns into a send button once there is something to
+// submit.
+BASE_FEATURE(kOmniboxStatefulAiModeButton, DISABLED);
+
 namespace android {
 static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
   static const base::Feature* const kFeaturesExposedToJava[] = {
@@ -763,7 +784,9 @@ static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
       &kSuppressStatusIconDuringHttpNavigation,
       &kZeroSuggestPrefetchOnPageLoadAndTabSwitch,
       &kAndroidTabSearchCloseTabButton,
-      &kOmniboxVoicePlateIntent};
+      &kOmniboxVoicePlateIntent,
+      &kOmniboxNativeVectorIcons,
+      &kOmniboxStatefulAiModeButton};
   static base::NoDestructor<base::android::FeatureMap> kFeatureMap(
       kFeaturesExposedToJava);
   return reinterpret_cast<int64_t>(kFeatureMap.get());

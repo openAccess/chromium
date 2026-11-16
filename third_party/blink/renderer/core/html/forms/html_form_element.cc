@@ -324,7 +324,21 @@ void HTMLFormElement::HandleWebMcpToolResponse(HTMLFormMcpTool* tool,
     }
 
     if (result.IsNull()) {
-      value.ToString(result);
+      // Objects were handled above, so `value` is a primitive here. Symbol is
+      // the only primitive whose string conversion throws.
+      v8::TryCatch try_catch(script_state->GetIsolate());
+      v8::Local<v8::String> string;
+      if (!value.V8Value()
+               ->ToString(script_state->GetContext())
+               .ToLocal(&string)) {
+        tool->CallDoneCallback(base::unexpected(
+            ScriptToolError(ScriptToolErrorCode::kToolInvocationFailed,
+                            "respondWith promise resolved with a value that "
+                            "could not be converted to a string")));
+        return;
+      }
+      result = ToBlinkString<String>(script_state->GetIsolate(), string,
+                                     kDoNotExternalize);
     }
     tool->CallDoneCallback(result);
   } else {
@@ -995,21 +1009,11 @@ void HTMLFormElement::ScheduleFormSubmission(const Event* event,
   FormSubmission* form_submission =
       FormSubmission::Create(this, attributes_, event, submitter);
   if (!form_submission) {
-    // Form submission is not allowed for some NavigationPolicies, e.g. Link
-    // Preview. If an user triggered such user event for form submission, just
-    // ignores it.
+    // Form submission was canceled (e.g. a 'formdata' event handler
+    // disconnected the form or detached the frame).
     return;
   }
   Frame* target_frame = form_submission->TargetFrame();
-
-  // 'formdata' event handlers might disconnect the form.
-  if (!isConnected()) {
-    GetDocument().AddConsoleMessage(MakeGarbageCollected<ConsoleMessage>(
-        mojom::ConsoleMessageSource::kJavaScript,
-        mojom::ConsoleMessageLevel::kWarning,
-        "Form submission canceled because the form is not connected"));
-    return;
-  }
 
   if (form_submission->Method() == FormSubmission::kDialogMethod) {
     SubmitDialog(form_submission);

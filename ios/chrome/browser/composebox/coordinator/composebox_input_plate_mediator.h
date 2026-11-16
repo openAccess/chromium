@@ -23,6 +23,7 @@
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_controller.h"
 #import "ios/web/public/web_state_id.h"
 #import "third_party/omnibox_proto/model_mode.pb.h"
+#import "third_party/omnibox_proto/tool_mode.pb.h"
 
 @class AssistantAIMMetricsRecorder;
 @protocol BrowserCoordinatorCommands;
@@ -133,6 +134,11 @@ class ContextualSearchSessionHandle;
 // Removes the image item associated with the given `assetID`.
 - (void)removeImageWithAssetID:(NSString*)assetID;
 
+// Sends `query`, recognized by Voice Search, like text entered in the
+// composebox. The resulting navigation, if any, is marked as a Voice Search
+// result.
+- (void)sendVoiceSearchQuery:(NSString*)query;
+
 // Records that the plus menu opened with the given visible attachment buttons,
 // and maps dynamically injected Tools and Models to metrics.
 - (void)recordPlusMenuOpenedWithVisibleInternalButtons:
@@ -150,6 +156,9 @@ class ContextualSearchSessionHandle;
 
 // Applies the focus parameters to initialize the session state.
 - (void)applyFocusParams:(ComposeboxFocusParams*)params;
+
+// Sets the active tool mode to `toolMode`.
+- (void)setToolMode:(omnibox::ToolMode)toolMode;
 
 // Sets the `model` to use in queries, specifying whether the choice was caused
 // by an `explicitUserAction` (e.g. picked from the menu).

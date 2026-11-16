@@ -20,7 +20,6 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewStub;
-import android.view.Window;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
@@ -39,7 +38,6 @@ import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.compositor.overlays.strip.TabContextMenuCoordinator;
@@ -72,6 +70,7 @@ import org.chromium.chrome.browser.tab_ui.MultiThumbnailCardProvider;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListFaviconProvider;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.NextTabSelectionUtil;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
@@ -104,14 +103,15 @@ import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherBackPressHandlerManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherDragHandler;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherDragHandler.DragHandlerDelegate;
+import org.chromium.chrome.browser.tasks.tab_management.TabUiFeatureUtilities;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiUtils;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.GroupedTabListDataProvider;
 import org.chromium.chrome.browser.tasks.tab_management.pinned_tabs.PinnedTabGridMediator;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalExternalViewDragDropReorderStrategy.DropTargetResult;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabItemHoverController.TabHoverListener;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -229,8 +229,10 @@ public class VerticalTabListCoordinator {
     private final @Nullable BooleanSupplier mCanActivateTabLayoutToggleMenuSupplier;
     private final @Nullable UndoBarThrottle mUndoBarThrottle;
     private final @Nullable TabUnderlineManager mTabUnderlineManager;
+    private final @Nullable GroupedTabListDataProvider mDataProvider;
     private final BrowserControlsStateProvider mBrowserControlsStateProvider;
     private final Supplier<@Nullable TabContentManager> mTabContentManagerSupplier;
+    private final Supplier<TabWindowManager> mTabWindowManagerSupplier;
     private final List<DragSurface> mDragSurfaces = new ArrayList<>();
     private final TabSwitcherDragHandler mTabSwitcherDragHandler;
     private final DragHandlerDelegate mNonOriginatingDragHandlerDelegate;
@@ -241,9 +243,6 @@ public class VerticalTabListCoordinator {
     private @Nullable TabGroupContextMenuCoordinator mTabGroupContextMenuCoordinator;
     private @Nullable StripDragShadowView mDragShadowView;
     private @Nullable MultiThumbnailCardProvider mMultiThumbnailCardProvider;
-
-    /** Decor view the drag-end relay is installed on while a rail-initiated drag is in flight. */
-    private @Nullable View mDragEndRelayView;
 
     private @Nullable ExternalDragObserver mExternalDragObserver;
 
@@ -391,6 +390,7 @@ public class VerticalTabListCoordinator {
      * @param undoBarThrottle Throttler for undo bar messages.
      * @param browserControlsStateProvider Provider for browser controls sizing and state.
      * @param backPressManager Manager for intercepting system back press and physical ESC keys.
+     * @param tabWindowManagerSupplier Supplier for the {@link TabWindowManager}.
      */
     @SuppressLint("ClickableViewAccessibility")
     public VerticalTabListCoordinator(
@@ -413,7 +413,8 @@ public class VerticalTabListCoordinator {
             Supplier<@Nullable TabContentManager> tabContentManagerSupplier,
             @Nullable UndoBarThrottle undoBarThrottle,
             BrowserControlsStateProvider browserControlsStateProvider,
-            BackPressManager backPressManager) {
+            BackPressManager backPressManager,
+            Supplier<TabWindowManager> tabWindowManagerSupplier) {
         mCanActivateTabLayoutToggleMenuSupplier = canActivateTabLayoutToggleMenuSupplier;
         mVerticalTabsActiveSupplier = verticalTabsActiveSupplier;
         mVerticalTabsWidthSupplier = verticalTabsWidthSupplier;
@@ -432,6 +433,7 @@ public class VerticalTabListCoordinator {
         mBackPressManager.addHandler(
                 mBackPressHandlerManager, BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG);
         mTabContentManagerSupplier = tabContentManagerSupplier;
+        mTabWindowManagerSupplier = tabWindowManagerSupplier;
         if (GlicEnabling.isEnabledByFlags() || ContextualTasksUtils.isContextualTasksUiEnabled()) {
             mTabUnderlineManager = new TabUnderlineManager(windowAndroid);
         } else {
@@ -602,6 +604,12 @@ public class VerticalTabListCoordinator {
         mDropIndicatorDecoration = new VerticalTabDropIndicatorDecoration(activity);
         recyclerView.addItemDecoration(mDropIndicatorDecoration);
 
+        mDataProvider =
+                TabUiFeatureUtilities.isTabUiDataVirtualizationEnabled(TabListLayoutType.NESTED)
+                        ? new GroupedTabListDataProvider(
+                                tabModelSelector.getCurrentTabModelSupplier(),
+                                /* supportsGroupExpansion= */ true)
+                        : null;
         TabListConfig tabListConfig =
                 new TabListConfig.Builder(TabListLayoutType.NESTED)
                         .setSupportsTabGroups(/* supportsTabGroups= */ true)
@@ -612,6 +620,7 @@ public class VerticalTabListCoordinator {
                                 mCollapseController.getRailCollapseStateSupplier())
                         .setTabHoverListener(mTabItemHoverController.getTabHoverListener())
                         .setTabUnderlineManager(mTabUnderlineManager)
+                        .setDataProvider(mDataProvider)
                         .build();
 
         // The tab search button is only shown when tab search is enabled, matching the
@@ -853,11 +862,6 @@ public class VerticalTabListCoordinator {
                     }
 
                     @Override
-                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        mTabItemHoverController.resetHoverState();
-                    }
-
-                    @Override
                     public void willCloseTabs(
                             List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                         mTabItemHoverController.resetHoverState();
@@ -949,6 +953,7 @@ public class VerticalTabListCoordinator {
         mMediator.destroy();
         mRecyclerView.setAdapter(null);
         mModelList.clear();
+        if (mDataProvider != null) mDataProvider.destroy();
         mTabModelSelector.removeObserver(mTabModelSelectorObserver);
         mTabModelSelector.getCurrentTabModelSupplier().removeObserver(mCurrentTabModelObserver);
         mTabListFaviconProvider.destroy();
@@ -983,7 +988,6 @@ public class VerticalTabListCoordinator {
         if (mBackPressManager.has(BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG)) {
             mBackPressManager.removeHandler(BackPressHandler.Type.CANCEL_TAB_SWITCHER_DRAG);
         }
-        removeDragEndRelay();
         // The drag handler is destroyed without ending an in-progress drag through its listener,
         // so the drag's end would never be reported otherwise.
         notifyExternalDragEnded();
@@ -1392,10 +1396,6 @@ public class VerticalTabListCoordinator {
 
                     initDragShadowView(viewHolder.itemView.getContext());
 
-                    // Installed before the drag starts: ACTION_DRAG_STARTED is dispatched
-                    // asynchronously, but only a view that already has a listener can claim it.
-                    installDragEndRelay(mTabSwitcherDragHandler);
-
                     boolean dragStarted;
                     if (isGroupHeader) {
                         if (mDragShadowView != null) {
@@ -1423,7 +1423,6 @@ public class VerticalTabListCoordinator {
                     }
 
                     if (!dragStarted) {
-                        removeDragEndRelay();
                         if (mDragShadowView != null) {
                             mDragShadowView.clear();
                         }
@@ -1503,87 +1502,10 @@ public class VerticalTabListCoordinator {
                         mMultiInstanceManager,
                         dragDropDelegate,
                         mBackPressHandlerManager,
-                        /* fadeDragShadow= */ false);
+                        /* fadeDragShadow= */ false,
+                        mTabWindowManagerSupplier);
         dragHandler.setTabModelSelector(tabModelSelector);
         return dragHandler;
-    }
-
-    /**
-     * Installs a relay on the window's decor view that forwards {@code ACTION_DRAG_ENDED} to {@code
-     * dragHandler} when the rail is unable to receive it.
-     *
-     * <p>The rail's only drag listener lives on the rail container, which sits in the subtree that
-     * {@code SideUiCoordinatorImpl} removes from the anchor container ({@code
-     * anchorContainer.removeView(sideUiContainerView)}) when the window is resized below the width
-     * that shows vertical tabs. {@code ViewGroup#removeViewInternal()} drops the removed child from
-     * {@code mChildrenInterestedInDrag} and {@code ViewGroup#dispatchDetachedFromWindow()} clears
-     * the detached subtree's own drag bookkeeping, so from then on the container is not sent {@code
-     * ACTION_DRAG_ENDED}: {@link TabSwitcherDragHandler} never reaches {@code finishDrag()}, the
-     * process-wide {@link DragDropGlobalState} is never released, and the tabbed activity's drag
-     * touch observer ({@code e -> DragDropGlobalState.hasValue()}) then swallows every touch in
-     * every Chrome window of the process.
-     *
-     * <p>The decor view outlives the rail, so it is used purely as a delivery point. The relay
-     * claims {@code ACTION_DRAG_STARTED}, because only views that claim it are sent {@code
-     * ACTION_DRAG_ENDED}, and forwards nothing but that end event. Forwarding the event rather than
-     * open-coding a teardown is deliberate: the handler's normal end path both releases the drag
-     * state and restores the rail through {@code handleExternalDragEnd()} - dragged item, single
-     * item min height, drag shadow, drop indicators, delegate reset - so the rail is intact when
-     * the window is widened again.
-     *
-     * <p>A view has a single {@code OnDragListener} slot. Nothing else in Chrome sets one on a
-     * decor view; do not add a second one without merging it with this.
-     *
-     * <p>Not installed with {@link ChromeFeatureList#SIDE_UI_ALLOW_PAUSE}: the rail's Side UI
-     * container is then frozen for the duration of a drag started from the rail (see {@link
-     * VerticalTabsSideUiCoordinator}), so the rail's listener is never detached mid-drag and {@code
-     * ACTION_DRAG_ENDED} reaches it on its normal path. TODO(crbug.com/556140903): Remove the relay
-     * once the flag ships.
-     *
-     * @param dragHandler The drag handler to forward {@code ACTION_DRAG_ENDED} to.
-     */
-    private void installDragEndRelay(TabSwitcherDragHandler dragHandler) {
-        removeDragEndRelay();
-        if (ChromeFeatureList.sSideUiAllowPause.isEnabled()) return;
-
-        Activity activity = mWindowAndroid.getActivity().get();
-        if (activity == null) return;
-        Window window = activity.getWindow();
-        if (window == null) return;
-        // peekDecorView() rather than getDecorView(), so that starting a drag never inflates one.
-        View decorView = window.peekDecorView();
-        if (decorView == null) return;
-
-        mDragEndRelayView = decorView;
-        decorView.setOnDragListener(
-                (view, dragEvent) -> {
-                    switch (dragEvent.getAction()) {
-                        case DragEvent.ACTION_DRAG_STARTED:
-                            // Claiming is what makes ACTION_DRAG_ENDED get delivered here. Never
-                            // claim a drop: the real drop targets are descendants of the decor
-                            // view and beat it in ViewGroup#findFrontmostDroppableChildAt.
-                            return true;
-                        case DragEvent.ACTION_DRAG_ENDED:
-                            removeDragEndRelay();
-                            // False once an attached rail listener has already handled this same
-                            // event: a ViewGroup runs its own drag listener after its children's,
-                            // and finishDrag() has cleared the handler's drag source by then.
-                            if (dragHandler.isDragSource()) {
-                                dragHandler.onDrag(view, dragEvent);
-                            }
-                            return false;
-                        default:
-                            return false;
-                    }
-                });
-    }
-
-    /** Uninstalls the drag-end relay. No-op when it is not installed. */
-    private void removeDragEndRelay() {
-        if (mDragEndRelayView == null) return;
-
-        mDragEndRelayView.setOnDragListener(null);
-        mDragEndRelayView = null;
     }
 
     /**
@@ -1835,17 +1757,17 @@ public class VerticalTabListCoordinator {
                 if (tab.getTabGroupId() == null && !dropData.isTabInGroup) {
                     return;
                 }
+                TabWindowManager tabWindowManager = mTabWindowManagerSupplier.get();
                 TabModel sourceTabModel = null;
                 if (dropData.windowId != TabWindowManager.INVALID_WINDOW_ID) {
                     TabModelSelector sourceSelector =
-                            TabWindowManagerSingleton.getInstance()
-                                    .getTabModelSelectorById(dropData.windowId);
+                            tabWindowManager.getTabModelSelectorById(dropData.windowId);
                     if (sourceSelector != null) {
                         sourceTabModel = sourceSelector.getModel(tab.isIncognitoBranded());
                     }
                 }
                 if (sourceTabModel == null) {
-                    sourceTabModel = TabWindowManagerSingleton.getInstance().getTabModelForTab(tab);
+                    sourceTabModel = tabWindowManager.getTabModelForTab(tab);
                 }
                 if (sourceTabModel != null && sourceTabModel.isTabInTabGroup(tab)) {
                     sourceTabModel

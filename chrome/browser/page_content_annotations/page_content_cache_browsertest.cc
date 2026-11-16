@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <memory>
 #include <optional>
 #include <set>
 #include <utility>
@@ -19,10 +20,13 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/page_content_annotations/content/page_content_extraction_service.h"
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
@@ -30,9 +34,11 @@
 #include "components/page_content_annotations/core/page_content_cache_handler.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/session_id.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/page.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -43,6 +49,63 @@
 namespace page_content_annotations {
 
 namespace {
+
+class TestPageContentCacheObserver : public PageContentCache::Observer {
+ public:
+  explicit TestPageContentCacheObserver(PageContentCache* cache) {
+    observation_.Observe(cache);
+  }
+
+  void OnCachePopulated(int64_t tab_id) override {
+    populated_tabs_.insert(tab_id);
+    if (waiting_populated_tab_id_ == tab_id && populated_quit_closure_) {
+      std::move(populated_quit_closure_).Run();
+    }
+  }
+
+  void OnCacheRemoved(int64_t tab_id) override {
+    removed_tabs_.insert(tab_id);
+    if (waiting_removed_tab_id_ == tab_id && removed_quit_closure_) {
+      std::move(removed_quit_closure_).Run();
+    }
+  }
+
+  void WaitForPopulated(int64_t tab_id) {
+    if (populated_tabs_.contains(tab_id)) {
+      return;
+    }
+    waiting_populated_tab_id_ = tab_id;
+    base::RunLoop run_loop;
+    populated_quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+    waiting_populated_tab_id_.reset();
+  }
+
+  void WaitForRemoved(int64_t tab_id) {
+    if (removed_tabs_.contains(tab_id)) {
+      return;
+    }
+    waiting_removed_tab_id_ = tab_id;
+    base::RunLoop run_loop;
+    removed_quit_closure_ = run_loop.QuitClosure();
+    run_loop.Run();
+    waiting_removed_tab_id_.reset();
+  }
+
+ private:
+  base::ScopedObservation<PageContentCache, PageContentCache::Observer>
+      observation_{this};
+
+  std::set<int64_t> populated_tabs_;
+  // Tab ID currently being waited on in `WaitForPopulated()`, if any.
+  std::optional<int64_t> waiting_populated_tab_id_;
+  base::OnceClosure populated_quit_closure_;
+
+  std::set<int64_t> removed_tabs_;
+  // Tab ID currently being waited on in `WaitForRemoved()`, if any.
+  std::optional<int64_t> waiting_removed_tab_id_;
+  base::OnceClosure removed_quit_closure_;
+};
 
 class TestExtractionObserver : public PageContentExtractionService::Observer {
  public:
@@ -135,14 +198,70 @@ class PageContentCacheBrowserTest : public InProcessBrowserTest {
     return future.Take();
   }
 
+  // Opens a new foreground tab at `index`. In headless/Xvfb Aura browser tests,
+  // detaching the previous tab's view does not always trigger an
+  // occlusion-driven `Visibility::HIDDEN` notification, so explicitly hide
+  // `backgrounded_contents` if needed.
+  void OpenForegroundTabAndHidePrevious(
+      int index,
+      const GURL& url,
+      content::WebContents* backgrounded_contents) {
+    EXPECT_TRUE(AddTabAtIndex(index, url, ui::PAGE_TRANSITION_TYPED));
+    if (backgrounded_contents->GetVisibility() != content::Visibility::HIDDEN) {
+      backgrounded_contents->WasHidden();
+    }
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(PageContentCacheBrowserTest,
+                       CacheBehaviorOnTabSwitchAndClose) {
+  ASSERT_TRUE(GetExtractionService());
+  PageContentCache* cache = GetPageContentCache();
+  ASSERT_TRUE(cache);
+  TestPageContentCacheObserver cache_observer(cache);
+  TestExtractionObserver extraction_observer(GetExtractionService());
+
+  const GURL url1 = embedded_test_server()->GetURL(
+      "a.test", "/optimization_guide/hello.html");
+  content::WebContents* wc0 =
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
+  const int64_t tab0_id = sessions::SessionTabHelper::IdForTab(wc0).id();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+  extraction_observer.WaitForExtraction(wc0);
+
+  // Open a second tab in the foreground, pushing tab 0 to the background.
+  const GURL url2 = embedded_test_server()->GetURL(
+      "b.test", "/optimization_guide/hello.html");
+  OpenForegroundTabAndHidePrevious(1, url2, wc0);
+
+  cache_observer.WaitForPopulated(tab0_id);
+  std::optional<optimization_guide::proto::PageContext> cached =
+      GetCachedPageContentForTab(tab0_id);
+  ASSERT_TRUE(cached.has_value());
+  EXPECT_EQ(cached->url(), url1.spec());
+
+  // Close tab 0 and verify its cached entry is removed.
+  base::HistogramTester histogram_tester;
+  browser()->GetTabStripModel()->CloseWebContentsAt(0,
+                                                    TabCloseTypes::CLOSE_NONE);
+
+  cache_observer.WaitForRemoved(tab0_id);
+  EXPECT_FALSE(GetCachedPageContentForTab(tab0_id).has_value());
+  histogram_tester.ExpectBucketCount(
+      "OptimizationGuide.PageContentCache.ExtractionAndCachingStatus",
+      5 /* kContentsDeletedOnTabClose */, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(PageContentCacheBrowserTest,
                        CloseActiveTabDoesNotSpuriouslyCache) {
   ASSERT_TRUE(GetExtractionService());
-  ASSERT_TRUE(GetPageContentCache());
+  PageContentCache* cache = GetPageContentCache();
+  ASSERT_TRUE(cache);
+  TestPageContentCacheObserver cache_observer(cache);
   TestExtractionObserver extraction_observer(GetExtractionService());
 
   // Open tab 1 in the foreground and wait for extraction while it remains the
@@ -164,10 +283,131 @@ IN_PROC_BROWSER_TEST_F(PageContentCacheBrowserTest,
   browser()->GetTabStripModel()->CloseWebContentsAt(1,
                                                     TabCloseTypes::CLOSE_NONE);
 
+  cache_observer.WaitForRemoved(tab1_id);
+  histogram_tester.ExpectBucketCount(
+      "OptimizationGuide.PageContentCache.ExtractionAndCachingStatus",
+      5 /* kContentsDeletedOnTabClose */, 1);
   histogram_tester.ExpectBucketCount(
       "OptimizationGuide.PageContentCache.ExtractionAndCachingStatus",
       3 /* kContentsAvailableWhenBackgrounded */, 0);
   EXPECT_FALSE(GetCachedPageContentForTab(tab1_id).has_value());
 }
+
+IN_PROC_BROWSER_TEST_F(PageContentCacheBrowserTest,
+                       MoveTabBetweenWindowsAndCloseSecondaryWindow) {
+  ASSERT_TRUE(GetExtractionService());
+  PageContentCache* cache = GetPageContentCache();
+  ASSERT_TRUE(cache);
+  TestPageContentCacheObserver cache_observer(cache);
+  TestExtractionObserver extraction_observer(GetExtractionService());
+
+  const GURL url1 = embedded_test_server()->GetURL(
+      "a.test", "/optimization_guide/hello.html");
+  content::WebContents* wc0 =
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
+  const int64_t tab0_id = sessions::SessionTabHelper::IdForTab(wc0).id();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+  extraction_observer.WaitForExtraction(wc0);
+
+  // Open tab 1 in foreground so tab 0 is backgrounded and cached.
+  const GURL url2 = embedded_test_server()->GetURL(
+      "b.test", "/optimization_guide/hello.html");
+  OpenForegroundTabAndHidePrevious(1, url2, wc0);
+  cache_observer.WaitForPopulated(tab0_id);
+  ASSERT_TRUE(GetCachedPageContentForTab(tab0_id).has_value());
+
+  // Create a second browser window for the same profile and move tab 0 into it
+  // in the background.
+  BrowserWindowInterface* browser2 = CreateBrowser(browser()->GetProfile());
+  std::unique_ptr<tabs::TabModel> detached_tab =
+      browser()->GetTabStripModel()->DetachTabAtForInsertion(0);
+  browser2->GetTabStripModel()->InsertDetachedTabAt(1, std::move(detached_tab),
+                                                    AddTabTypes::ADD_NONE);
+
+  // Moving a tab between windows must not evict its cached content.
+  EXPECT_TRUE(GetCachedPageContentForTab(tab0_id).has_value());
+
+  // Closing the secondary window while the primary window stays open should
+  // evict the tabs in the closed secondary window.
+  CloseBrowserSynchronously(browser2);
+  cache_observer.WaitForRemoved(tab0_id);
+  EXPECT_FALSE(GetCachedPageContentForTab(tab0_id).has_value());
+}
+
+class PageContentCacheDiscardBrowserTest
+    : public PageContentCacheBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  PageContentCacheDiscardBrowserTest() {
+    web_contents_discard_feature_list_.InitWithFeatureState(
+        ::features::kWebContentsDiscard, IsWebContentsDiscardEnabled());
+  }
+
+  bool IsWebContentsDiscardEnabled() const { return GetParam(); }
+
+ private:
+  base::test::ScopedFeatureList web_contents_discard_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(PageContentCacheDiscardBrowserTest,
+                       PreserveCacheOnTabDiscard) {
+  ASSERT_TRUE(GetExtractionService());
+  PageContentCache* cache = GetPageContentCache();
+  ASSERT_TRUE(cache);
+  TestPageContentCacheObserver cache_observer(cache);
+  TestExtractionObserver extraction_observer(GetExtractionService());
+
+  const GURL url1 = embedded_test_server()->GetURL(
+      "a.test", "/optimization_guide/hello.html");
+  content::WebContents* wc0 =
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
+  const int64_t tab0_id = sessions::SessionTabHelper::IdForTab(wc0).id();
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+  extraction_observer.WaitForExtraction(wc0);
+
+  // Open tab 1 in foreground so tab 0 is backgrounded and cached.
+  const GURL url2 = embedded_test_server()->GetURL(
+      "b.test", "/optimization_guide/hello.html");
+  OpenForegroundTabAndHidePrevious(1, url2, wc0);
+  cache_observer.WaitForPopulated(tab0_id);
+  ASSERT_TRUE(GetCachedPageContentForTab(tab0_id).has_value());
+
+  TabListInterface* tab_list = TabListInterface::From(browser());
+  ASSERT_TRUE(tab_list);
+  content::WebContents* new_wc0 =
+      tab_list->DiscardTab(tab_list->GetTab(0)->GetHandle());
+  ASSERT_TRUE(new_wc0);
+  EXPECT_TRUE(new_wc0->WasDiscarded());
+  const int64_t new_tab0_id =
+      sessions::SessionTabHelper::IdForTab(new_wc0).id();
+  if (IsWebContentsDiscardEnabled()) {
+    // In-place discard preserves the existing `WebContents` and `SessionID`.
+    EXPECT_EQ(new_wc0, wc0);
+    EXPECT_EQ(new_tab0_id, tab0_id);
+  } else {
+    // Replacing the `WebContents` assigns a new `SessionID` and migrates the
+    // cached entry.
+    EXPECT_NE(new_wc0, wc0);
+    ASSERT_NE(new_tab0_id, tab0_id);
+    EXPECT_FALSE(GetCachedPageContentForTab(tab0_id).has_value());
+  }
+
+  std::optional<optimization_guide::proto::PageContext> cached =
+      GetCachedPageContentForTab(new_tab0_id);
+  ASSERT_TRUE(cached.has_value());
+  EXPECT_EQ(cached->url(), url1.spec());
+
+  // Close the discarded tab 0 and verify the entry is evicted.
+  browser()->GetTabStripModel()->CloseWebContentsAt(0,
+                                                    TabCloseTypes::CLOSE_NONE);
+  cache_observer.WaitForRemoved(new_tab0_id);
+  EXPECT_FALSE(GetCachedPageContentForTab(new_tab0_id).has_value());
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         PageContentCacheDiscardBrowserTest,
+                         testing::Bool());
 
 }  // namespace page_content_annotations

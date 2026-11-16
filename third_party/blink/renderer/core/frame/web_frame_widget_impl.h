@@ -71,6 +71,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
+#include "third_party/blink/renderer/core/exported/web_input_method_controller_impl.h"
 #include "third_party/blink/renderer/core/exported/web_page_popup_impl.h"
 #include "third_party/blink/renderer/core/frame/animation_frame_timing_monitor.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
@@ -87,6 +88,7 @@
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_receiver_set.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_wrapper_mode.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cancellable_task.h"
 #include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/widget/frame_widget.h"
 #include "third_party/blink/renderer/platform/widget/input/widget_base_input_handler.h"
@@ -98,6 +100,10 @@
 #include "ui/base/mojom/window_show_state.mojom-blink-forward.h"
 #include "ui/gfx/ca_layer_result.h"
 
+namespace cc {
+class ScrollTimingBufferConsumer;
+}  // namespace cc
+
 namespace gfx {
 class Point;
 class PointF;
@@ -105,6 +111,7 @@ class PointF;
 
 namespace blink {
 class AnimationWorkletMutatorDispatcherImpl;
+class Document;
 class ExecutionContext;
 class HitTestResult;
 class HTMLElement;
@@ -316,7 +323,8 @@ class CORE_EXPORT WebFrameWidgetImpl
                       int selection_start,
                       int selection_end,
                       mojom::blink::ImeState ime_state,
-                      DOMNodeIdType target_dom_node_id) override;
+                      DOMNodeIdType target_dom_node_id,
+                      gfx::Range& composition_range) override;
   void CommitText(const String& text,
                   const Vector<ui::ImeTextSpan>& ime_text_spans,
                   const gfx::Range& replacement_range,
@@ -383,6 +391,7 @@ class CORE_EXPORT WebFrameWidgetImpl
                           const AtomicString& end_mark,
                           base::TimeTicks end_time,
                           LocalDOMWindow* window) override;
+  void ImportScrollTimingRecords() override;
   // TODO(https://crbug.com/515098190): Below are not FrameWidget overrides.
 
   void SetVirtualKeyboardResizeHeightForTesting(int);
@@ -400,7 +409,8 @@ class CORE_EXPORT WebFrameWidgetImpl
   // WebFrameWidget overrides.
   void InitializeNonCompositing(WebNonCompositedWidgetClient* client) override;
   WebLocalFrame* LocalRoot() const override;
-  WebInputMethodController* GetActiveWebInputMethodController() const override;
+  WebInputMethodControllerImpl* GetActiveWebInputMethodController()
+      const override;
   void DisableDragAndDrop() override;
   WebLocalFrameImpl* FocusedWebLocalFrameInWidget() const override;
   bool ScrollFocusedEditableElementIntoView() override;
@@ -530,8 +540,8 @@ class CORE_EXPORT WebFrameWidgetImpl
   void SetViewportIntersection(
       mojom::blink::ViewportIntersectionStatePtr intersection_state,
       const std::optional<VisualProperties>& visual_properties) override;
-  void DragSourceEndedAt(const gfx::PointF& point_in_viewport,
-                         const gfx::PointF& screen_point,
+  void DragSourceEndedAt(const std::optional<gfx::PointF>& point_in_viewport,
+                         const std::optional<gfx::PointF>& screen_point,
                          ui::mojom::blink::DragOperation,
                          base::OnceClosure callback) override;
   void OnStartStylusWriting(
@@ -1087,6 +1097,17 @@ class CORE_EXPORT WebFrameWidgetImpl
   void SendScrollSnapChangingEventIfNeeded(
       const cc::CompositorCommitData& commit_data);
 
+  void ReadScrollTimingRecordsOnScrollEnd();
+  cc::ScrollTimingBufferConsumer* ScrollTimingConsumer() const;
+  // Reads published Scroll Timing records into the local root's Performance
+  // Timeline and returns whether it read. Unless `force`, skips the read when
+  // the history is full and nothing observes scroll entries.
+  bool ReadScrollTimingRecords(bool force);
+  // Called when the local root's document changes (e.g. the local root
+  // navigates; navigations of its subframes don't call this). Discards unread
+  // records and rejects later ones whose gesture started before now.
+  void ResetScrollTimingForNewDocument();
+
   void RecordManipulationTypeCounts(cc::ManipulationInfo info);
 
   enum DragAction { kDragEnter, kDragOver };
@@ -1323,6 +1344,12 @@ class CORE_EXPORT WebFrameWidgetImpl
   Member<ScreenMetricsEmulator> device_emulator_;
 
   Member<AnimationFrameTimingMonitor> animation_frame_timing_monitor_;
+
+  // Receiving document; see ResetScrollTimingForNewDocument().
+  WeakMember<Document> scroll_timing_document_;
+  base::TimeTicks scroll_timing_cutoff_;
+  // Delayed read for records published after a scroll-end notification.
+  TaskHandle scroll_timing_retry_;
 
   // keyPress events to be suppressed if the associated keyDown event was
   // handled.

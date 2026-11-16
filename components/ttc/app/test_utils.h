@@ -7,11 +7,13 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/ttc/app/public/tool_types.h"
 #include "components/ttc/app/ttc_backend.h"
@@ -36,6 +38,7 @@ class MockTtcBackend : public TtcBackend {
   MOCK_METHOD(void, Connect, (TtcBackend::Observer*), (override));
   MOCK_METHOD(void, Close, (), (override));
   MOCK_METHOD(bool, is_transport_connected, (), (const, override));
+  MOCK_METHOD(std::optional<std::string>, GetSessionId, (), (const, override));
   MOCK_METHOD(void, SendAudioChunk, (base::span<const int16_t>), (override));
   MOCK_METHOD(void, SendTextInput, (const std::string&), (override));
   MOCK_METHOD(void,
@@ -44,7 +47,10 @@ class MockTtcBackend : public TtcBackend {
                const std::string&,
                const optimization_guide::proto::AnnotatedPageContent&),
               (override));
-  MOCK_METHOD(void, ReportPlaybackStatus, (int64_t), (override));
+  MOCK_METHOD(void,
+              ReportPlaybackStatus,
+              (base::TimeDelta, bool, int64_t),
+              (override));
   MOCK_METHOD(void,
               SendToolSetUpdate,
               (const std::vector<ToolDefinition>&),

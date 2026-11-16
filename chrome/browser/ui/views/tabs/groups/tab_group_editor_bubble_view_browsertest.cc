@@ -5,6 +5,8 @@
 #include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_view.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/strings/string_util.h"
@@ -29,6 +31,11 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_editor_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/groups/ephemeral_tab_group_promotion_bubble_view.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/grit/generated_resources.h"
@@ -43,10 +50,14 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/display/screen.h"
 #include "ui/events/event.h"
 #include "ui/gfx/geometry/point_f.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/label_button_image_container.h"
@@ -65,12 +76,7 @@
 #include "ash/public/cpp/tablet_mode.h"
 #include "base/test/run_until.h"
 #include "ui/base/interaction/element_test_util.h"
-#include "ui/display/screen.h"
 #include "ui/strings/grit/ui_strings.h"
-#endif
-
-#if BUILDFLAG(IS_OZONE)
-#include "ui/ozone/public/ozone_platform.h"
 #endif
 
 class TabGroupEditorBubbleViewDialogBrowserTest : public DialogBrowserTest {
@@ -88,16 +94,31 @@ class TabGroupEditorBubbleViewDialogBrowserTest : public DialogBrowserTest {
     browser()->GetTabStripModel()->OpenTabGroupEditor(group_.value());
   }
 
+  // Returns the widget for the bubble opened by OpenTabGroupEditor(): the
+  // editor bubble for regular groups, or the promotion bubble for ephemeral
+  // groups.
   static views::Widget* WaitForAndGetEditorBubbleWidget() {
-    auto bubble_view =
-        views::ElementTrackerViews::GetInstance()
-            ->GetAllMatchingViewsInAnyContext(
-                TabGroupEditorBubbleView::kTabGroupEditorBubbleViewId);
-    if (bubble_view.empty()) {
+    auto find_open_widget = [](ui::ElementIdentifier id) -> views::Widget* {
+      for (views::View* view : views::ElementTrackerViews::GetInstance()
+                                   ->GetAllMatchingViewsInAnyContext(id)) {
+        if (views::Widget* widget = view->GetWidget();
+            widget && !widget->IsClosed()) {
+          return widget;
+        }
+      }
+      return nullptr;
+    };
+
+    views::Widget* widget =
+        find_open_widget(TabGroupEditorBubbleView::kTabGroupEditorBubbleViewId);
+    if (!widget) {
+      widget = find_open_widget(EphemeralTabGroupPromotionBubbleView::
+                                    kEphemeralTabGroupPromotionBubbleViewId);
+    }
+    if (!widget) {
       return nullptr;
     }
 
-    views::Widget* const widget = bubble_view[0]->GetWidget();
     views::test::WidgetVisibleWaiter(widget).Wait();
     return widget;
   }
@@ -114,7 +135,15 @@ class TabGroupEditorBubbleViewPixelBrowserTest
     : public TabGroupEditorBubbleViewDialogBrowserTest {
  protected:
   void ShowUi(const std::string& name) override {
-    TabGroupEditorBubbleViewDialogBrowserTest::ShowUi(name);
+    if (name == "ephemeral_group") {
+      // An ephemeral (non-group focus) group gets the promotion prompt rather
+      // than the full editor. Open it through the same public entry point as
+      // the default case so this test keeps exercising whatever UI backs it.
+      group_ = browser()->GetTabStripModel()->EnterFocusMode({0});
+      browser()->GetTabStripModel()->OpenTabGroupEditor(group_.value());
+    } else {
+      TabGroupEditorBubbleViewDialogBrowserTest::ShowUi(name);
+    }
     views::Widget* widget = WaitForAndGetEditorBubbleWidget();
     if (widget) {
       auto* test_info = testing::UnitTest::GetInstance()->current_test_info();
@@ -129,6 +158,13 @@ class TabGroupEditorBubbleViewPixelBrowserTest
 
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewPixelBrowserTest,
                        InvokeUi_default) {
+  ShowAndVerifyUi();
+}
+
+// Pixel baseline for the ephemeral group promotion prompt (title, color picker
+// and Create / Cancel buttons).
+IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewPixelBrowserTest,
+                       InvokeUi_ephemeral_group) {
   ShowAndVerifyUi();
 }
 
@@ -435,26 +471,37 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
   ASSERT_EQ(3, tsm->count());
   std::optional<tab_groups::TabGroupId> group = tsm->AddToNewGroup({0, 1});
 
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(0)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(1)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  ASSERT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(2)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  browser_view->horizontal_tab_strip_for_testing()
-      ->ToggleTabGroupCollapsedState(group.value());
-  EXPECT_TRUE(browser_view->horizontal_tab_strip_for_testing()
-                  ->tab_at(0)
-                  ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  EXPECT_TRUE(browser_view->horizontal_tab_strip_for_testing()
-                  ->tab_at(1)
-                  ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
-  EXPECT_FALSE(browser_view->horizontal_tab_strip_for_testing()
-                   ->tab_at(2)
-                   ->HasFreezingVote(FreezingVoteReason::kCollapsedGroup));
+  auto tab_has_freezing_vote = [&](int tab_index, FreezingVoteReason reason) {
+    views::View* tab_anchor = browser_view->tab_strip_view()->GetTabAnchorView(
+        tsm->GetTabAtIndex(tab_index)->GetHandle());
+    if (auto* tab = views::AsViewClass<Tab>(tab_anchor)) {
+      return tab->HasFreezingVote(reason);
+    }
+    if (auto* tab_view = views::AsViewClass<TabView>(tab_anchor)) {
+      return tab_view->HasFreezingVote(reason);
+    }
+    return false;
+  };
+
+  ASSERT_FALSE(tab_has_freezing_vote(0, FreezingVoteReason::kCollapsedGroup));
+  ASSERT_FALSE(tab_has_freezing_vote(1, FreezingVoteReason::kCollapsedGroup));
+  ASSERT_FALSE(tab_has_freezing_vote(2, FreezingVoteReason::kCollapsedGroup));
+  if (auto* tab_strip = browser_view->horizontal_tab_strip_for_testing()) {
+    tab_strip->ToggleTabGroupCollapsedState(group.value());
+  } else {
+    views::View* anchor =
+        browser_view->tab_strip_view()->GetTabGroupAnchorView(group.value());
+    auto* tab_group_view = views::AsViewClass<TabGroupView>(anchor);
+    if (!tab_group_view && anchor && anchor->parent()) {
+      tab_group_view = views::AsViewClass<TabGroupView>(anchor->parent());
+    }
+    ASSERT_TRUE(tab_group_view);
+    tab_group_view->ToggleCollapsedState(
+        ToggleTabGroupCollapsedStateOrigin::kMenuAction);
+  }
+  EXPECT_TRUE(tab_has_freezing_vote(0, FreezingVoteReason::kCollapsedGroup));
+  EXPECT_TRUE(tab_has_freezing_vote(1, FreezingVoteReason::kCollapsedGroup));
+  EXPECT_FALSE(tab_has_freezing_vote(2, FreezingVoteReason::kCollapsedGroup));
 }
 
 class TabGroupEditorBubbleViewDialogBrowserTestWithSavedGroup
@@ -551,7 +598,6 @@ IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTestWithSavedGroup,
   EXPECT_EQ(2, tsm->count());
 }
 
-
 class TabGroupEditorBubbleViewDialogBrowserTestWithFocusingEnabled
     : public TabGroupEditorBubbleViewDialogBrowserTest {
  public:
@@ -569,6 +615,7 @@ IN_PROC_BROWSER_TEST_F(
   ShowUi("SetUp");
 
   base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
   TabStripModel* const tsm = browser()->GetTabStripModel();
   ASSERT_TRUE(group_.has_value());
   const tab_groups::TabGroupId group_id = group_.value();
@@ -612,6 +659,10 @@ IN_PROC_BROWSER_TEST_F(
       tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
           kFocusOrUnfocusGroup,
       1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_FocusGroup"));
+  EXPECT_EQ(0, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_UnfocusGroup"));
 
   // 3. Open the editor again to unfocus.
   browser()->GetTabStripModel()->OpenTabGroupEditor(group_id);
@@ -646,6 +697,10 @@ IN_PROC_BROWSER_TEST_F(
       tab_groups::saved_tab_groups::metrics::TabGroupEditorBubbleAction::
           kFocusOrUnfocusGroup,
       2);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_FocusGroup"));
+  EXPECT_EQ(1, user_action_tester.GetActionCount(
+                   "TabGroups_TabGroupBubble_UnfocusGroup"));
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -725,232 +780,66 @@ IN_PROC_BROWSER_TEST_F(
       1);
 }
 
-#if BUILDFLAG(IS_OZONE)
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
-                       ArrowPositionNearBottom) {
-  if (ui::OzonePlatform::GetInstance()
-          ->GetPlatformProperties()
-          .supports_global_screen_coordinates) {
-    GTEST_SKIP() << "Only test when global screen coordinates aren't supported";
-  }
-  browser()->GetWindow()->SetBounds(gfx::Rect(0, 0, 1000, 1000));
+                       AdjustIfOffscreen) {
+  browser()->GetWindow()->SetBounds(
+      display::Screen::Get()
+          ->GetDisplayNearestWindow(browser()->GetWindow()->GetNativeWindow())
+          .work_area());
 
   group_ = browser()->GetTabStripModel()->AddToNewGroup({0});
   ASSERT_TRUE(group_.has_value());
 
-  // Try showing the bubble near the top left of the window. The arrow should be
-  // on the top left.
-  gfx::Rect top_left_anchor_rect(100, 100, 50, 50);
-  std::unique_ptr<views::Widget> top_left_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          top_left_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(top_left_widget.get()).Wait();
+  const gfx::Rect window_bounds =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetWidget()
+          ->GetWindowBoundsInScreen();
 
-  TabGroupEditorBubbleView* top_left_bubble_view =
+  // Show the bubble near the top-left of the window. The frame arrow should
+  // stay on the top-left without horizontal offset.
+  std::unique_ptr<views::Widget> widget = TabGroupEditorBubbleView::Show(
+      browser(), group_.value(),
+      BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
+      gfx::Rect(window_bounds.x() + 50, window_bounds.y() + 50, 50, 30), false);
+  views::test::WidgetVisibleWaiter(widget.get()).Wait();
+
+  TabGroupEditorBubbleView* bubble_view =
       static_cast<TabGroupEditorBubbleView*>(
-          top_left_widget->widget_delegate()->AsBubbleDialogDelegate());
+          widget->widget_delegate()->AsBubbleDialogDelegate());
+  views::BubbleFrameView* frame_view = bubble_view->GetBubbleFrameView();
 
-  EXPECT_EQ(top_left_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::TOP_LEFT);
-  top_left_widget->CloseNow();
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::TOP_LEFT);
+  EXPECT_EQ(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  // Try showing the bubble near the bottom left of the window. The arrow should
-  // be on the bottom left.
-  gfx::Rect bottom_left_anchor_rect(100, 900, 50, 50);
-  std::unique_ptr<views::Widget> bottom_left_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          bottom_left_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(bottom_left_widget.get()).Wait();
+  // Move the anchor near the bottom-left of the window. The frame arrow should
+  // flip vertically to the bottom-left.
+  bubble_view->SetAnchorRect(
+      gfx::Rect(window_bounds.x() + 50, window_bounds.bottom() - 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::BOTTOM_LEFT);
+  EXPECT_EQ(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  TabGroupEditorBubbleView* bottom_left_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          bottom_left_widget->widget_delegate()->AsBubbleDialogDelegate());
+  // Move the anchor near the top-right of the window. Because
+  // `TabGroupEditorBubbleView` uses `PreferredArrowAdjustment::kOffset`, the
+  // frame arrow remains `TOP_LEFT` and offsets horizontally to stay inside the
+  // browser window.
+  bubble_view->SetAnchorRect(
+      gfx::Rect(window_bounds.right() - 80, window_bounds.y() + 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::TOP_LEFT);
+  EXPECT_NE(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  EXPECT_EQ(bottom_left_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::BOTTOM_LEFT);
-  bottom_left_widget->CloseNow();
+  // Move the anchor near the bottom-right of the window. The frame arrow flips
+  // vertically to `BOTTOM_LEFT` and offsets horizontally to stay inside the
+  // browser window.
+  bubble_view->SetAnchorRect(gfx::Rect(window_bounds.right() - 80,
+                                       window_bounds.bottom() - 50, 50, 30));
+  EXPECT_EQ(frame_view->GetArrow(), views::BubbleBorder::Arrow::BOTTOM_LEFT);
+  EXPECT_NE(frame_view->bubble_border()->arrow_offset(), 0);
+  EXPECT_TRUE(window_bounds.Contains(bubble_view->GetBubbleBounds()));
 
-  // Try showing the bubble near the top right of the window. The arrow should
-  // be on the top right.
-  gfx::Rect top_right_anchor_rect(900, 100, 50, 50);
-  std::unique_ptr<views::Widget> top_right_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          top_right_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(top_right_widget.get()).Wait();
-
-  TabGroupEditorBubbleView* top_right_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          top_right_widget->widget_delegate()->AsBubbleDialogDelegate());
-
-  EXPECT_EQ(top_right_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::TOP_RIGHT);
-  top_right_widget->CloseNow();
-
-  // Try showing the bubble near the bottom right of the window. The arrow
-  // should be on the bottom right.
-  gfx::Rect bottom_right_anchor_rect(900, 900, 50, 50);
-  std::unique_ptr<views::Widget> bottom_right_widget =
-      TabGroupEditorBubbleView::Show(
-          browser(), group_.value(),
-          BrowserView::GetBrowserViewForBrowser(browser())->tab_strip_view(),
-          bottom_right_anchor_rect, false);
-  views::test::WidgetVisibleWaiter(bottom_right_widget.get()).Wait();
-
-  TabGroupEditorBubbleView* bottom_right_bubble_view =
-      static_cast<TabGroupEditorBubbleView*>(
-          bottom_right_widget->widget_delegate()->AsBubbleDialogDelegate());
-
-  EXPECT_EQ(bottom_right_bubble_view->arrow(),
-            views::BubbleBorder::Arrow::BOTTOM_RIGHT);
-  bottom_right_widget->CloseNow();
-}
-#endif
-
-IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
-                       EphemeralGroup_ShowsOnlyNameColorAndButtons) {
-  tab_groups::TabGroupId ephemeral_group =
-      browser()->GetTabStripModel()->EnterFocusMode({0});
-  browser()->GetTabStripModel()->OpenTabGroupEditor(ephemeral_group);
-
-  views::Widget* editor_bubble = WaitForAndGetEditorBubbleWidget();
-  ASSERT_NE(nullptr, editor_bubble);
-
-  auto* bubble_delegate =
-      editor_bubble->widget_delegate()->AsBubbleDialogDelegate();
-  EXPECT_EQ(bubble_delegate->buttons(),
-            static_cast<int>(ui::mojom::DialogButton::kNone));
-
-  views::View* contents_view = bubble_delegate->GetContentsView();
-  ASSERT_EQ(contents_view->children().size(), 4u);
-
-  auto* title_label =
-      views::AsViewClass<views::Label>(contents_view->children()[0]);
-  ASSERT_NE(nullptr, title_label);
-  EXPECT_EQ(
-      title_label->GetText(),
-      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CONVERT_TO_GROUP));
-
-  views::View* button_row = contents_view->children()[3];
-  ASSERT_EQ(button_row->children().size(), 2u);
-  auto* cancel_button =
-      views::AsViewClass<views::LabelButton>(button_row->children()[0]);
-  auto* create_button =
-      views::AsViewClass<views::LabelButton>(button_row->children()[1]);
-  ASSERT_NE(nullptr, cancel_button);
-  ASSERT_NE(nullptr, create_button);
-  EXPECT_EQ(cancel_button->GetText(), l10n_util::GetStringUTF16(IDS_CANCEL));
-  EXPECT_EQ(
-      create_button->GetText(),
-      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CREATE_GROUP));
-
-  EXPECT_EQ(
-      contents_view->GetViewByID(
-          TabGroupEditorBubbleView::TAB_GROUP_HEADER_CXMENU_NEW_TAB_IN_GROUP),
-      nullptr);
-  EXPECT_EQ(contents_view->GetViewByID(
-                TabGroupEditorBubbleView::TAB_GROUP_HEADER_CXMENU_UNGROUP),
-            nullptr);
-  EXPECT_EQ(contents_view->GetViewByID(
-                TabGroupEditorBubbleView::TAB_GROUP_HEADER_CXMENU_CLOSE_GROUP),
-            nullptr);
-}
-
-IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
-                       EphemeralGroup_CancelDiscardsChanges) {
-  tab_groups::TabGroupId ephemeral_group =
-      browser()->GetTabStripModel()->EnterFocusMode({0});
-  browser()->GetTabStripModel()->OpenTabGroupEditor(ephemeral_group);
-
-  views::Widget* editor_bubble = WaitForAndGetEditorBubbleWidget();
-  ASSERT_NE(nullptr, editor_bubble);
-
-  auto* title_field = views::AsViewClass<views::Textfield>(
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          kTabGroupEditorBubbleId,
-          views::ElementTrackerViews::GetContextForWidget(editor_bubble)));
-  ASSERT_NE(nullptr, title_field);
-
-  title_field->InsertOrReplaceText(u"Ephemeral Title");
-  // Changes should be deferred until Create is clicked.
-  EXPECT_EQ(group_model()->GetTabGroup(ephemeral_group)->visual_data()->title(),
-            u"");
-
-  views::View* contents_view = editor_bubble->widget_delegate()
-                                   ->AsBubbleDialogDelegate()
-                                   ->GetContentsView();
-  ASSERT_EQ(contents_view->children().size(), 4u);
-  views::View* button_row = contents_view->children()[3];
-  ASSERT_EQ(button_row->children().size(), 2u);
-  views::Button* cancel_button =
-      views::Button::AsButton(button_row->children()[0]);
-  ASSERT_NE(nullptr, cancel_button);
-
-  ui::MouseEvent released_event(ui::EventType::kMouseReleased, gfx::PointF(),
-                                gfx::PointF(), base::TimeTicks(), 0, 0);
-  views::test::ButtonTestApi(cancel_button).NotifyClick(released_event);
-
-  EXPECT_TRUE(
-      browser()->GetTabStripModel()->IsEphemeralTabGroup(ephemeral_group));
-  EXPECT_EQ(group_model()->GetTabGroup(ephemeral_group)->visual_data()->title(),
-            u"");
-}
-
-IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,
-                       EphemeralGroup_CreatePromotesGroupAndAppliesChanges) {
-  tab_groups::TabGroupId ephemeral_group =
-      browser()->GetTabStripModel()->EnterFocusMode({0});
-  browser()->GetTabStripModel()->OpenTabGroupEditor(ephemeral_group);
-
-  views::Widget* editor_bubble = WaitForAndGetEditorBubbleWidget();
-  ASSERT_NE(nullptr, editor_bubble);
-
-  auto* title_field = views::AsViewClass<views::Textfield>(
-      views::ElementTrackerViews::GetInstance()->GetFirstMatchingView(
-          kTabGroupEditorBubbleId,
-          views::ElementTrackerViews::GetContextForWidget(editor_bubble)));
-  ASSERT_NE(nullptr, title_field);
-
-  title_field->InsertOrReplaceText(u"Promoted Title");
-
-  class PromotionTitleObserver : public TabStripModelObserver {
-   public:
-    explicit PromotionTitleObserver(TabGroupModel* model) : model_(model) {}
-    void OnTabGroupPromoted(const tab_groups::TabGroupId& group_id) override {
-      title_at_promotion =
-          model_->GetTabGroup(group_id)->visual_data()->title();
-    }
-    raw_ptr<TabGroupModel> model_;
-    std::optional<std::u16string> title_at_promotion;
-  } observer(group_model());
-  browser()->GetTabStripModel()->AddObserver(&observer);
-
-  views::View* contents_view = editor_bubble->widget_delegate()
-                                   ->AsBubbleDialogDelegate()
-                                   ->GetContentsView();
-  ASSERT_EQ(contents_view->children().size(), 4u);
-  views::View* button_row = contents_view->children()[3];
-  ASSERT_EQ(button_row->children().size(), 2u);
-  views::Button* create_button =
-      views::Button::AsButton(button_row->children()[1]);
-  ASSERT_NE(nullptr, create_button);
-
-  ui::MouseEvent released_event(ui::EventType::kMouseReleased, gfx::PointF(),
-                                gfx::PointF(), base::TimeTicks(), 0, 0);
-  views::test::ButtonTestApi(create_button).NotifyClick(released_event);
-
-  browser()->GetTabStripModel()->RemoveObserver(&observer);
-
-  EXPECT_FALSE(
-      browser()->GetTabStripModel()->IsEphemeralTabGroup(ephemeral_group));
-  EXPECT_EQ(observer.title_at_promotion, u"Promoted Title");
-  EXPECT_EQ(group_model()->GetTabGroup(ephemeral_group)->visual_data()->title(),
-            u"Promoted Title");
+  widget->CloseNow();
 }
 
 IN_PROC_BROWSER_TEST_F(TabGroupEditorBubbleViewDialogBrowserTest,

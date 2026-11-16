@@ -6,8 +6,8 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "chrome/browser/password_manager/password_change/glic_password_change_actuator.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "content/public/browser/web_contents.h"
 
@@ -30,10 +30,8 @@ void PasswordChangeFromCheckupDelegate::StartPasswordChangeFlow(
   state_change_callback_ = std::move(callback);
 
   if (!actuator_) {
-    Profile* profile =
-        Profile::FromBrowserContext(web_contents->GetBrowserContext());
     actuator_ = std::make_unique<GlicPasswordChangeActuator>(
-        std::move(credential), web_contents.get(), profile);
+        std::move(credential), web_contents.get());
     actuator_->AddObserver(this);
   }
   actuator_->Start();
@@ -88,6 +86,9 @@ void PasswordChangeFromCheckupDelegate::OpenActuationTab() {
 
 password_manager::PasswordString
 PasswordChangeFromCheckupDelegate::generated_password() const {
-  return actuator_ ? actuator_->GetGeneratedPassword()
-                   : password_manager::PasswordString();
+  CHECK(actuator_);
+  PasswordChangeActuator::NewPasswordResult generated_password =
+      actuator_->GetOrGenerateNewPassword(/*form_manager=*/nullptr);
+  CHECK(generated_password.has_value());
+  return std::move(generated_password).value();
 }

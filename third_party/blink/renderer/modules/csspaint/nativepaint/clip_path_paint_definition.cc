@@ -241,6 +241,9 @@ bool IsClipPathNone(const CSSValue* computed_value) {
 
 BasicShape* GetAnimatedShapeFromCSSValue(const CSSValue* computed_value,
                                          const StyleResolverState& state) {
+  if (!computed_value) {
+    return nullptr;
+  }
   // TODO(pdr): Support <geometry-box> (alone, or with a shape).
   if (CanExtractShapeOrPath(computed_value)) {
     return BasicShapeForValue(state, To<CSSValueList>(*computed_value).First());
@@ -338,13 +341,19 @@ bool ValidateClipPathValue(const Element* element,
                            const CSSValue* value,
                            const TypedInterpolationValue* interpolation_value) {
   if (value) {
+    if (!element || !element->GetComputedStyle()) {
+      return false;
+    }
     const CSSPropertyName property_name =
         CSSPropertyName(CSSPropertyID::kClipPath);
     const CSSValue* computed_value = StyleResolver::ComputeValue(
         const_cast<Element*>(element), property_name, *value);
+    if (!computed_value || !element->GetComputedStyle()) {
+      return false;
+    }
 
     // Don't try to composite animations where we can't extract a shape or path
-    if (computed_value && CanExtractShapeOrPath(computed_value)) {
+    if (CanExtractShapeOrPath(computed_value)) {
       const auto* list = DynamicTo<CSSValueList>(computed_value);
 
       // TODO(crbug.com/379052285): We do not currently support anything other
@@ -445,11 +454,17 @@ Animation* ClipPathPaintDefinition::GetAnimationIfCompositable(
     return compositable_animation;
   }
 
-  return AnimationIsValidForPaintWorklets(compositable_animation, element,
-                                          GetCSSPropertyClipPath(),
-                                          ValidateClipPathValue)
-             ? compositable_animation
-             : nullptr;
+  if (!AnimationIsValidForPaintWorklets(compositable_animation, element,
+                                        GetCSSPropertyClipPath(),
+                                        ValidateClipPathValue)) {
+    return nullptr;
+  }
+  if (!element->GetComputedStyle() || !element->GetElementAnimations() ||
+      element->GetElementAnimations()->PaintWorkletClipPathAnimation() !=
+          compositable_animation) {
+    return nullptr;
+  }
+  return compositable_animation;
 }
 
 // static
@@ -599,14 +614,7 @@ scoped_refptr<Image> ClipPathPaintDefinition::Paint(
     }
 
     offsets.push_back(frame->Offset());
-
-    const TimingFunction& timing_function = frame->Easing();
-    // LinearTimingFunction::CloneToCC() returns nullptr as it is shared.
-    if (timing_function.GetType() == TimingFunction::Type::LINEAR) {
-      timing_functions.push_back(gfx::LinearTimingFunction::Create());
-    } else {
-      timing_functions.push_back(timing_function.CloneToCC());
-    }
+    timing_functions.push_back(frame->Easing().CloneToCC());
   }
   progress = effect->Progress();
   SkPath static_path =
@@ -712,12 +720,28 @@ std::optional<gfx::RectF> ComputeKeyframeUnionIncludingExtrapolation(
     if (range <= 0.0) {
       continue;
     }
+
     double min_progress =
-        i == 0 ? ((min_total_progress - frames->at(0)->Offset()) / range) : 0.0;
+        (min_total_progress - frames->at(i)->Offset()) / range;
     double max_progress =
-        (i + 2) == frames->size()
-            ? ((max_total_progress - frames->at(i)->Offset()) / range)
-            : 1.0;
+        (max_total_progress - frames->at(i)->Offset()) / range;
+
+    // This can happen when an effect timing function prevents global progress
+    // from reaching certain keyframe pairs. In this case, we do nothing, as no
+    // interpolation will occur.
+    if (min_progress >= max_progress) {
+      continue;
+    }
+
+    // Extrapolation only occurs for the 1st and last keyframes.
+    // Function should return early if neither of these are true once
+    // crbug.com/474206417 is fixed.
+    if (i > 0) {
+      min_progress = 0.0;
+    }
+    if (i + 2 < frames->size()) {
+      max_progress = 1.0;
+    }
 
     TimingFunction& timing = frames->at(i)->Easing();
     timing.Range(&min_progress, &max_progress);

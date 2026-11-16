@@ -27,7 +27,6 @@
 #include "chrome/browser/extensions/extension_api_unittest.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/ui/ash/login/mock_login_display_host.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -42,6 +41,7 @@
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/browser/api_test_utils.h"
 #include "extensions/browser/api_unittest.h"
@@ -249,6 +249,15 @@ class LoginApiUnittest : public ExtensionApiUnittest {
         profile, testing_profile_manager(), user->GetAccountId());
   }
 
+  // Logs in to a new user session for `account_id`. If this is the first
+  // session, it becomes the active session.
+  void LogIn(const AccountId& account_id) {
+    session_manager_->CreateSession(
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id),
+        /*new_user=*/false,
+        /*has_active_session=*/false);
+  }
+
   raw_ptr<ash::FakeChromeUserManager, DanglingUntriaged>
       fake_chrome_user_manager_;
   std::unique_ptr<user_manager::ScopedUserManager> scoped_user_manager_;
@@ -348,22 +357,22 @@ TEST_F(LoginApiUnittest, ExitCurrentSessionWithData) {
       base::StringPrintf(R"(["%s"])", data_for_next_login_attempt.c_str()));
 
   PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
-  ASSERT_EQ(
-      data_for_next_login_attempt,
-      local_state->GetString(prefs::kLoginExtensionApiDataForNextLoginAttempt));
+  ASSERT_EQ(data_for_next_login_attempt,
+            local_state->GetString(
+                ash::prefs::kLoginExtensionApiDataForNextLoginAttempt));
 }
 
 // Test that calling `login.exitCurrentSession()` with no data clears the
 // `kLoginExtensionApiDataForNextLoginAttempt` pref.
 TEST_F(LoginApiUnittest, ExitCurrentSessionWithNoData) {
   PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
-  local_state->SetString(prefs::kLoginExtensionApiDataForNextLoginAttempt,
+  local_state->SetString(ash::prefs::kLoginExtensionApiDataForNextLoginAttempt,
                          "hello world");
 
   RunFunction(base::MakeRefCounted<LoginExitCurrentSessionFunction>(), "[]");
 
   ASSERT_EQ("", local_state->GetString(
-                    prefs::kLoginExtensionApiDataForNextLoginAttempt));
+                    ash::prefs::kLoginExtensionApiDataForNextLoginAttempt));
 }
 
 // Test that calling `login.fetchDataForNextLoginAttempt()` returns the value
@@ -373,7 +382,7 @@ TEST_F(LoginApiUnittest, FetchDataForNextLoginAttemptClearsPref) {
   const std::string data_for_next_login_attempt = "hello world";
 
   PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
-  local_state->SetString(prefs::kLoginExtensionApiDataForNextLoginAttempt,
+  local_state->SetString(ash::prefs::kLoginExtensionApiDataForNextLoginAttempt,
                          data_for_next_login_attempt);
 
   std::optional<base::Value> value = RunFunctionAndReturnValue(
@@ -381,7 +390,7 @@ TEST_F(LoginApiUnittest, FetchDataForNextLoginAttemptClearsPref) {
   ASSERT_EQ(data_for_next_login_attempt, value->GetString());
 
   ASSERT_EQ("", local_state->GetString(
-                    prefs::kLoginExtensionApiDataForNextLoginAttempt));
+                    ash::prefs::kLoginExtensionApiDataForNextLoginAttempt));
 }
 
 // Test that calling `login.setDataForNextLoginAttempt()` sets the
@@ -394,9 +403,9 @@ TEST_F(LoginApiUnittest, SetDataForNextLoginAttempt) {
       "[\"" + data_for_next_login_attempt + "\"]");
 
   PrefService* local_state = TestingBrowserProcess::GetGlobal()->local_state();
-  ASSERT_EQ(
-      data_for_next_login_attempt,
-      local_state->GetString(prefs::kLoginExtensionApiDataForNextLoginAttempt));
+  ASSERT_EQ(data_for_next_login_attempt,
+            local_state->GetString(
+                ash::prefs::kLoginExtensionApiDataForNextLoginAttempt));
 }
 
 TEST_F(LoginApiUnittest, LockManagedGuestSession) {
@@ -409,7 +418,7 @@ TEST_F(LoginApiUnittest, LockManagedGuestSession) {
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::ACTIVE);
 
@@ -434,7 +443,7 @@ TEST_F(LoginApiUnittest,
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::ACTIVE);
 
@@ -458,7 +467,7 @@ TEST_F(LoginApiUnittest, LockManagedGuestSessionNoActiveUser) {
 TEST_F(LoginApiUnittest, LockManagedGuestSessionNotManagedGuestSession) {
   AccountId account_id = AccountId::FromUserEmailGaiaId(kEmail, kGaiaId);
   fake_chrome_user_manager_->AddUser(account_id);
-  fake_chrome_user_manager_->SwitchActiveUser(account_id);
+  LogIn(account_id);
 
   ASSERT_EQ(
       login_api_errors::kNoLockableSession,
@@ -473,7 +482,7 @@ TEST_F(LoginApiUnittest, LockManagedGuestSessionUserCannotLock) {
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              false);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
 
   ASSERT_EQ(
       login_api_errors::kNoLockableSession,
@@ -488,7 +497,7 @@ TEST_F(LoginApiUnittest, LockManagedGuestSessionSessionNotActive) {
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -509,7 +518,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSession) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -541,7 +550,7 @@ TEST_F(LoginApiUnittest,
       ash::prefs::kLoginExtensionApiCanLockManagedGuestSession, true);
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -572,7 +581,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSessionNoActiveUser) {
 TEST_F(LoginApiUnittest, UnlockManagedGuestSessionNotManagedGuestSession) {
   AccountId account_id = AccountId::FromUserEmailGaiaId(kEmail, kGaiaId);
   fake_chrome_user_manager_->AddUser(account_id);
-  fake_chrome_user_manager_->SwitchActiveUser(account_id);
+  LogIn(account_id);
 
   ASSERT_EQ(login_api_errors::kNoUnlockableSession,
             RunFunctionAndReturnError(
@@ -583,7 +592,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSessionNotManagedGuestSession) {
 TEST_F(LoginApiUnittest, UnlockManagedGuestSessionCannotUnlock) {
   std::unique_ptr<ScopedTestingProfile> scoped_profile =
       AddPublicAccountUser(kEmail);
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
 
   ASSERT_EQ(login_api_errors::kNoUnlockableSession,
             RunFunctionAndReturnError(
@@ -599,7 +608,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSessionSessionNotLocked) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
 
   ASSERT_EQ(login_api_errors::kSessionIsNotLocked,
             RunFunctionAndReturnError(
@@ -615,7 +624,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSessionUnlockInProgress) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -635,7 +644,7 @@ TEST_F(LoginApiUnittest, UnlockManagedGuestSessionAuthenticationFailed) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -751,7 +760,7 @@ TEST_F(LoginApiUserSessionUnittest, LockUserSession) {
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::ACTIVE);
 
@@ -774,7 +783,7 @@ TEST_F(LoginApiUserSessionUnittest, LockUserSessionSessionNotActive) {
   profile->profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                              true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -795,7 +804,7 @@ TEST_F(LoginApiUserSessionUnittest, UnlockUserSession) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -825,7 +834,7 @@ TEST_F(LoginApiUserSessionUnittest, UnlockUserSessionSessionNotLocked) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
 
   auto function = base::MakeRefCounted<LoginUnlockCurrentSessionFunction>();
   ASSERT_EQ(login_api_errors::kSessionIsNotLocked,
@@ -841,7 +850,7 @@ TEST_F(LoginApiUserSessionUnittest, UnlockUserSessionUnlockInProgress) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 
@@ -861,7 +870,7 @@ TEST_F(LoginApiUserSessionUnittest, UnlockUserSessionAuthenticationFailed) {
   scoped_profile->profile()->GetPrefs()->SetBoolean(
       ash::prefs::kAllowScreenLock, true);
 
-  fake_chrome_user_manager_->SwitchActiveUser(AccountId::FromUserEmail(kEmail));
+  LogIn(AccountId::FromUserEmail(kEmail));
   session_manager::SessionManager::Get()->SetSessionState(
       session_manager::SessionState::LOCKED);
 

@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.ntp;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -22,27 +20,24 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
-import org.chromium.chrome.test.util.browser.TabLoadObserver;
 import org.chromium.ui.base.DeviceFormFactor;
 
 /** Tests for creating a tab with NewTabPage. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
 @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
@@ -95,16 +90,11 @@ public class NewTabPageCreationTest {
     @Test
     @MediumTest
     @EnableFeatures(ChromeFeatureList.ANDROID_OMNIBOX_FOCUSED_NEW_TAB_PAGE)
-    public void testCreateNTPInExistingTab() throws Exception {
-        String testUrl = mActivityTestRule.getTestServer().getURL(TEST_URL);
-        mActivityTestRule.loadUrlInNewTab(testUrl);
+    public void testCreateNTPInExistingTab() {
+        WebPageStation page = mActivityTestRule.startOnTestServerUrl(TEST_URL);
 
-        Tab tab = mActivityTestRule.getActivityTab();
-        assertNull(tab.getNativePage());
-        assertEquals(tab.getUrl().getSpec(), testUrl);
-
-        new TabLoadObserver(tab).fullyLoadUrl(getOriginalNativeNtpUrl());
-        NewTabPageTestUtils.waitForNtpLoaded(tab);
+        page.loadPageProgrammatically(
+                getOriginalNativeNtpUrl(), RegularNewTabPageStation.newNativeNtpBuilder());
 
         verify(mTestState, never()).didAddTab();
         verify(mTestState).onNtpLoaded(any(NewTabPageManager.class));

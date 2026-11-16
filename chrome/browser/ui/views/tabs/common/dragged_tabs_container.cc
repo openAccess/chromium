@@ -8,6 +8,7 @@
 
 #include "base/auto_reset.h"
 #include "base/callback_list.h"
+#include "base/check_op.h"
 #include "base/i18n/rtl.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
@@ -19,6 +20,7 @@
 #include "chrome/browser/ui/views/tabs/common/tab_drag_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
 #include "content/public/browser/navigation_controller.h"
@@ -29,6 +31,7 @@
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 
@@ -76,6 +79,15 @@ gfx::Vector2d GetSourceViewOffsetFromMouse(
                         source_slot_bounds.height())};
 
   return dragged_view_bounds_offset_from_bounds;
+}
+
+gfx::Rect GetScrollViewUnmaskedBounds(const views::ScrollView* scroll_view) {
+  CHECK(scroll_view);
+  if (const auto* tab_strip_view =
+          views::AsViewClass<TabStripView>(scroll_view->parent())) {
+    return tab_strip_view->GetScrollViewUnmaskedBounds(scroll_view);
+  }
+  return scroll_view->GetLocalBounds();
 }
 }  // namespace
 
@@ -143,9 +155,11 @@ void DraggedTabsContainer::ApplyUpdatesForDragPositionChange() {
   auto* scroll_view = GetScrollViewForContainer();
   CHECK(scroll_view);
   scroll_handler_.OnDraggedTabPositionUpdated(
-      *scroll_view, views::View::ConvertRectToTarget(
-                        base::to_address(host_view_), scroll_view,
-                        dragged_bounds_in_container));
+      *scroll_view,
+      views::View::ConvertRectToTarget(base::to_address(host_view_),
+                                       scroll_view,
+                                       dragged_bounds_in_container),
+      GetScrollViewUnmaskedBounds(scroll_view));
 
   UpdateDraggingViewTransforms(point_in_container);
 
@@ -182,9 +196,9 @@ void DraggedTabsContainer::HandleTabDragEnteredContainer() {
 
   // We don't need to snap any views here, since the layout manager already
   // skips animating dragged views.
-  // The target layout just needs to be recalculated so that nodes added to this
-  // container will haver their views tracked in the layout manager.
-  UpdateTargetLayoutForDrag({});
+  // Invalidate layout so that nodes added to this container will have their
+  // views tracked in the layout manager's target layout.
+  host_view_->InvalidateLayout();
 }
 
 base::CallbackListSubscription
@@ -252,8 +266,9 @@ void DraggedTabsContainer::InitializeDragState(
   BuildDragLayout(session_data);
 
   InitializeDragStartAnimation(controller);
-  // Recalculate the target layout now that `dragging_views_` is populated.
-  UpdateTargetLayoutForDrag({});
+  // Invalidate layout so the target layout recalculates now that
+  // `dragging_views_` is populated.
+  host_view_->InvalidateLayout();
 }
 
 void DraggedTabsContainer::InitializeDragStartAnimation(
@@ -492,10 +507,15 @@ void DraggedTabsContainer::ResetDragState() {
     // The next layout update should allow the view to be shown by the host.
     visual_data.should_hide = false;
   }
-  // The dragged view's bounds need to be snapped. While dragging, the bounds
-  // are set to (0,0), but afterward the drag, the bounds must be updated to
-  // the actual position, without animating.
-  UpdateTargetLayoutForDrag(GetDraggingViews());
+  if (!dragging_views_.empty()) {
+    // The dragged view's bounds need to be snapped. While dragging, the bounds
+    // are set to (0,0), but afterward the drag, the bounds must be updated to
+    // the actual position, without animating.
+    SnapViewsToTargetLayout(GetDraggingViews());
+    if (views::Widget* widget = host_view_->GetWidget()) {
+      widget->LayoutRootViewIfNecessary();
+    }
+  }
   dragging_views_.clear();
   dragged_view_observations_.RemoveAllObservations();
   animating_views_start_offsets_.clear();
@@ -596,7 +616,8 @@ gfx::Rect DraggedTabsContainer::GetDraggingViewsClampingBounds() const {
   const auto* scroll_view = GetScrollViewForContainer();
   CHECK(scroll_view);
   gfx::Rect clamping_bounds = views::View::ConvertRectToTarget(
-      scroll_view, base::to_address(host_view_), scroll_view->GetLocalBounds());
+      scroll_view, base::to_address(host_view_),
+      GetScrollViewUnmaskedBounds(scroll_view));
   if (drag_layout_ != DragLayout::kHorizontal) {
     clamping_bounds.set_width(
         clamping_bounds.width() -
@@ -707,9 +728,12 @@ const TabDragHandler& DraggedTabsContainer::GetDragHandler() const {
 
 tabs::VerticalTabStripCollapseState
 DraggedTabsContainer::GetTabStripCollapseState() const {
-  const auto* controller =
-      collection_node_ ? collection_node_->GetController() : nullptr;
-  if (!controller) {
+  if (!collection_node_) {
+    return tabs::VerticalTabStripCollapseState::kExpanded;
+  }
+  CHECK_EQ(collection_node_->orientation(), TabStripOrientation::kVertical);
+  const auto* controller = collection_node_->GetController();
+  if (!controller || !controller->GetStateController()) {
     return tabs::VerticalTabStripCollapseState::kExpanded;
   }
   return controller->GetStateController()->GetCollapseState();

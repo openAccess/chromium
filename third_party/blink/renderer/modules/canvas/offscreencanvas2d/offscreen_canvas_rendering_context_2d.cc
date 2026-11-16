@@ -29,7 +29,6 @@
 #include "third_party/blink/renderer/core/workers/worker_settings.h"
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/canvas_context_creation_attributes_helpers.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
@@ -199,13 +198,13 @@ bool OffscreenCanvasRenderingContext2D::InitializeBacking() {
         CanvasContextCreationAttributesCore::WillReadFrequently::kTrue);
 
   // TODO(crbug.com/479561824): The computation of whether it's possible to use
-  // a SharedImage provider with software raster here is not correct.
-  // Using a SharedImage provider with software raster and GPU compositing
+  // a SharedImage pool with software raster here is not correct.
+  // Using a SharedImage pool with software raster and GPU compositing
   // requires that the SharedImage can be mapped into software for raster and
   // read out into GPU memory for display. This is true if native mappable
   // buffers are supported (e.g., IOSurface), but is not generically true on all
   // platforms. CanvasRenderingContext2D handles this by using a SharedImage
-  // provider with SW raster/GPU compositing *only if* native mappable buffers
+  // pool with SW raster/GPU compositing *only if* native mappable buffers
   // are provided. However, in that case the fallback usage of a software
   // surface is still able to display to the screen, which is not the case here.
   // We need to determine a proper fix for this use case.
@@ -224,7 +223,7 @@ bool OffscreenCanvasRenderingContext2D::InitializeBacking() {
     // IOSurface via ProduceVideo(). A standalone OffscreenCanvas has no
     // SCANOUT, so MACOS_VIDEO_TOOLBOX marks it as eligible. The usage must be
     // decided at allocation time, and it is not allocation-neutral:
-    // BaseRenderingContext2D::CreateSharedImageProvider() allocates BGRA_8888
+    // BaseRenderingContext2D::CreateSharedImagePool() allocates BGRA_8888
     // instead of RGBA_8888 when it is present, which ANGLE and
     // VTVideoEncodeAccelerator require for an IOSurface, and on
     // Graphite-Dawn-Vulkan it forces an IOSurface backing instead of
@@ -238,21 +237,20 @@ bool OffscreenCanvasRenderingContext2D::InitializeBacking() {
     }
 #endif
 
-    CreateSharedImageProvider(
-        use_gpu_raster ? RasterMode::kGPU : RasterMode::kCPU,
-        shared_image_usage_flags);
+    CreateSharedImagePool(use_gpu_raster ? RasterMode::kGPU : RasterMode::kCPU,
+                          shared_image_usage_flags);
   } else if (host->HasPlaceholderCanvas()) {
     // using the software compositor
     host->GetOrCreateResourceDispatcher();
-    CreateSharedImageProviderForSoftwareCompositor();
+    CreateSharedImagePoolForSoftwareCompositor();
   }
 
-  if (!GetSharedImageProvider()) {
+  if (!HasBacking()) {
     // Last resort fallback is to use a software surface. Using this
     // path is normal for software-rendered OffscreenCanvases that have no
     // placeholder canvas. If there is a placeholder, its content will not be
     // visible on screen, but at least readbacks will work. Failure to create
-    // a SharedImage provider above is a sign that the graphics
+    // a SharedImage pool above is a sign that the graphics
     // pipeline is in a bad state (e.g. gpu process crashed, out of memory)
     CreateSoftwareSurface();
   }

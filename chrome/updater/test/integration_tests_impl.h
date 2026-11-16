@@ -12,33 +12,34 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/functional/function_ref.h"
 #include "base/process/launch.h"
-#include "base/process/process_iterator.h"
-#include "base/values.h"
+#include "base/process/process.h"
 #include "base/version.h"
 #include "build/build_config.h"
 #include "chrome/updater/external_constants.h"
 #include "chrome/updater/registration_data.h"
-#include "chrome/updater/test/server.h"
 #include "chrome/updater/update_service.h"
 #include "chrome/updater/updater_version.h"
+#include "components/update_client/update_client_errors.h"
+#include "net/http/http_status_code.h"
+#include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
 
 #include <wrl/client.h>
 
+#include "base/process/process_iterator.h"
 #include "chrome/updater/app/server/win/updater_legacy_idl.h"
 #endif
 
-class GURL;
-
 namespace base {
 class CommandLine;
+class DictValue;
+class ListValue;
+class Time;
 class TimeDelta;
 }  // namespace base
 
@@ -51,6 +52,14 @@ class OmahaSettingsClientProto;
 }  // namespace wireless_android_enterprise_devicemanagement
 
 namespace updater::test {
+
+class ScopedServer;
+
+#if !BUILDFLAG(IS_WIN)
+// File name of the test app installer script, in the `test_installer` build
+// directory and in each test app CRX.
+inline constexpr char kTestAppSetupScript[] = "test_app_setup.sh";
+#endif  // !BUILDFLAG(IS_WIN)
 
 enum class AppBundleWebCreateMode {
   kCreateApp = 0,
@@ -72,10 +81,11 @@ struct AppUpdateExpectation {
                        const UpdateService::ErrorCategory error_category =
                            UpdateService::ErrorCategory::kService,
                        const int error_code = std::to_underlying(
-                           UpdateService::Result::kUpdateCanceled),
+                           update_client::ServiceError::UPDATE_DISABLED),
                        const int event_type = /*EVENT_UPDATE_COMPLETE=*/3,
                        const std::string& custom_app_response = {},
-                       const std::string& response_status = {});
+                       const std::string& response_status = {},
+                       bool update_disabled = false);
   AppUpdateExpectation(const AppUpdateExpectation&);
   ~AppUpdateExpectation();
 
@@ -95,6 +105,10 @@ struct AppUpdateExpectation {
   const int event_type;
   const std::string custom_app_response;
   const std::string response_status;
+
+  // Whether the update check must set `updatecheck.updatedisabled` for the
+  // app. Requires `!should_update`.
+  const bool update_disabled;
 };
 
 struct TestUpdaterVersion {
@@ -288,7 +302,11 @@ void DeleteUpdaterDirectory(UpdaterScope scope);
 // configuration, app registration, etc.
 void DeleteActiveUpdaterExecutable(UpdaterScope scope);
 
-// Runs the command and waits for it to exit or time out.
+// Runs `command_line`, adding `--system` (and `sudo` on macOS and Linux) for
+// system scope, and fails the test if it cannot be launched. Returns without
+// waiting if `exit_code` is null. Otherwise waits up to
+// 2 * `TestTimeouts::action_max_timeout()` and stores the exit code in
+// `*exit_code`; on timeout, fails the test and leaves `*exit_code` unchanged.
 void Run(
     UpdaterScope scope,
     base::CommandLine command_line,
@@ -494,6 +512,17 @@ void ExpectInstallSequence(UpdaterScope scope,
 
 void ExpectEnterpriseCompanionAppOTAInstallSequence(ScopedServer& test_server);
 
+// Expects one update check for `apps`, then each app's CRX download (once per
+// CRX file name) and event ping in any order. The check's `request` must cover
+// `request_attributes` and list every app, in any order, with `version` set to
+// `from_version`, and `release_channel`, `rollback_allowed`,
+// `targetversionprefix`, and `updatedisabled` set from `target_channel`,
+// `allow_rollback`, `target_version_prefix`, and `update_disabled`. An empty or
+// false field forbids its key.
+//
+// Expects a success ping if `should_update`; otherwise, if
+// `custom_app_response` is empty and `response_status` is "ok", an error ping
+// that omits `errorcat` for `kNone` and `errorcode` for 0.
 void ExpectAppsUpdateSequence(
     UpdaterScope scope,
     ScopedServer& test_server,
@@ -525,6 +554,14 @@ void CloseInstallCompleteDialog(const std::u16string& bundle_name,
 void PrivilegedHelperInstall(UpdaterScope scope);
 void DeleteLegacyUpdater(UpdaterScope scope);
 void ExpectPrepareToRunBundleSuccess(const base::FilePath& bundle_path);
+
+// Unloads the wake job and quarantines its plist. This is the state launchd on
+// macOS 27+ leaves at login if a quarantined process wrote the plist.
+void QuarantineWakePlist(UpdaterScope scope);
+
+// Expects that launchd has loaded the wake job, and that its plist is not
+// quarantined.
+void ExpectWakeJobLoaded(UpdaterScope scope);
 #endif  // BUILDFLAG(IS_MAC)
 
 void ExpectLegacyUpdaterMigrated(UpdaterScope scope);

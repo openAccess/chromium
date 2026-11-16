@@ -59,7 +59,6 @@
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
 #include "chrome/browser/web_applications/web_app_utils.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/blocked_content/popup_blocker.h"
 #include "components/blocked_content/popup_tracker.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
@@ -970,14 +969,11 @@ bool BrowserWebContentsDelegate::ShouldFocusLocationBarByDefault(
       return false;
     }
 
-    if ((url.SchemeIs(content::kChromeUIScheme) &&
-         url.host() == chrome::kChromeUINewTabHost) ||
-        (virtual_url.SchemeIs(content::kChromeUIScheme) &&
-         virtual_url.host() == chrome::kChromeUINewTabHost)) {
+    if (search::IsNewTabOrigin(url) || search::IsNewTabOrigin(virtual_url)) {
       return true;
     }
 
-    if (url.spec() == chrome::kChromeUISplitViewNewTabPageURL) {
+    if (search::IsSplitViewNewTabPage(url)) {
       return true;
     }
   }
@@ -1409,7 +1405,23 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
 
   custom_handlers::ProtocolHandlerRegistry* registry =
       ProtocolHandlerRegistryFactory::GetForBrowserContext(context);
-  if (registry->SilentlyHandleRegisterHandlerRequest(handler)) {
+  if (registry->IsNoOpRegisterHandlerRequest(handler)) {
+    return;
+  }
+
+  const bool auto_accept = registry->registration_mode() ==
+                           custom_handlers::RphRegistrationMode::kAutoAccept;
+  // A request without a user gesture must not change the registry, unless
+  // automation accepts it for the user.
+  const bool handler_replaced =
+      (user_gesture || auto_accept) && registry->AttemptReplace(handler);
+
+  // Automation in auto-accept mode decides for the user without any UI, so the
+  // gesture doesn't matter there.
+  if (auto_accept) {
+    if (!handler_replaced) {
+      registry->OnAcceptRegisterProtocolHandler(handler);
+    }
     return;
   }
 
@@ -1418,6 +1430,8 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
   auto* page_content_settings_delegate =
       PageSpecificContentSettingsDelegate::FromWebContents(web_contents);
   if (!user_gesture) {
+    // A request without a user gesture must not change the registry, not even
+    // to replace a handler of the same origin: the user decides in the bubble.
     page_content_settings_delegate->set_pending_protocol_handler(handler);
     page_content_settings_delegate->set_previous_protocol_handler(
         registry->GetHandlerFor(handler.protocol()));
@@ -1430,9 +1444,7 @@ void BrowserWebContentsDelegate::RegisterProtocolHandler(
   page_content_settings_delegate->ClearPendingProtocolHandler();
   window_->GetLocationBar()->UpdateContentSettingsIcons();
 
-  if (registry->registration_mode() ==
-      custom_handlers::RphRegistrationMode::kAutoAccept) {
-    registry->OnAcceptRegisterProtocolHandler(handler);
+  if (handler_replaced) {
     return;
   }
 

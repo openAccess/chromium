@@ -6,6 +6,8 @@
 
 #import <utility>
 
+#import "base/check.h"
+#import "base/memory/weak_ptr.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/strings/sys_string_conversions.h"
@@ -36,7 +38,6 @@
 #import "ios/chrome/browser/shared/public/commands/save_to_drive_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
@@ -53,7 +54,7 @@
 @end
 
 @implementation SaveToDriveCoordinator {
-  raw_ptr<web::DownloadTask, DanglingUntriaged> _downloadTask;
+  base::WeakPtr<web::DownloadTask> _downloadTask;
   SaveToDriveMediator* _mediator;
   AccountPickerCoordinator* _accountPickerCoordinator;
   FileDestinationPickerViewController* _destinationPicker;
@@ -67,7 +68,8 @@
                               downloadTask:(web::DownloadTask*)downloadTask {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
-    _downloadTask = downloadTask;
+    CHECK(downloadTask);
+    _downloadTask = downloadTask->GetWeakPtr();
   }
   return self;
 }
@@ -75,6 +77,7 @@
 #pragma mark - ChromeCoordinator
 
 - (void)start {
+  CHECK(_downloadTask);
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   [dispatcher startDispatchingToTarget:self
                            forProtocol:@protocol(ManageStorageAlertCommands)];
@@ -89,7 +92,7 @@
   id<SaveToDriveCommands> saveToDriveHandler =
       HandlerForProtocol(dispatcher, SaveToDriveCommands);
   _mediator = [[SaveToDriveMediator alloc]
-           initWithDownloadTask:_downloadTask
+           initWithDownloadTask:_downloadTask.get()
              saveToDriveHandler:saveToDriveHandler
       manageStorageAlertHandler:self
                     prefService:prefService
@@ -100,7 +103,7 @@
                    driveService:driveService];
 
   AccountPickerConfiguration* accountPickerConfiguration =
-      drive::GetAccountPickerConfiguration(_downloadTask);
+      drive::GetAccountPickerConfiguration(_downloadTask.get());
 
   accountPickerConfiguration.dismissOnBackgroundTap =
       self.baseViewController.traitCollection.horizontalSizeClass ==
@@ -128,6 +131,7 @@
 
 - (void)stopAnimated:(BOOL)animated {
   [super stopAnimated:animated];
+  _downloadTask = nullptr;
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   [dispatcher stopDispatchingToTarget:self];
   [_mediator disconnect];
@@ -152,17 +156,15 @@
             (AccountPickerCoordinator*)accountPickerCoordinator
                didSelectIdentity:(id<SystemIdentity>)identity
                     askEveryTime:(BOOL)askEveryTime {
-  if (base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut)) {
-    if ([_mediator selectedFileDestinationRequiresSignin]) {
-      _shouldShowSignIn = YES;
-      [_accountPickerCoordinator stopAnimated:YES];
-      base::UmaHistogramEnumeration(
-          kSaveToDriveSignInStatus,
-          [_mediator hasIdentitiesOnDevice]
-              ? SaveToDriveSignInStatus::kSignedOutWithAccountOnDevice
-              : SaveToDriveSignInStatus::kSignedOutWithoutAccountOnDevice);
-      return;
-    }
+  if ([_mediator selectedFileDestinationRequiresSignin]) {
+    _shouldShowSignIn = YES;
+    [_accountPickerCoordinator stopAnimated:YES];
+    base::UmaHistogramEnumeration(
+        kSaveToDriveSignInStatus,
+        [_mediator hasIdentitiesOnDevice]
+            ? SaveToDriveSignInStatus::kSignedOutWithAccountOnDevice
+            : SaveToDriveSignInStatus::kSignedOutWithoutAccountOnDevice);
+    return;
   }
   if ([_mediator isSignedIn]) {
     base::UmaHistogramEnumeration(kSaveToDriveSignInStatus,
@@ -184,12 +186,10 @@
 - (void)accountPickerCoordinatorDidStop:
     (AccountPickerCoordinator*)accountPickerCoordinator {
   _accountPickerCoordinator = nil;
-  if (base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut)) {
-    if (_shouldShowSignIn) {
-      _shouldShowSignIn = NO;
-      [self openSignIn];
-      return;
-    }
+  if (_shouldShowSignIn) {
+    _shouldShowSignIn = NO;
+    [self openSignIn];
+    return;
   }
   id<SaveToDriveCommands> saveToDriveCommandsHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), SaveToDriveCommands);
@@ -257,13 +257,9 @@
   [_alertController addAction:manageStorageAction];
   [_alertController addAction:cancelAction];
   [_alertController setPreferredAction:manageStorageAction];
-  UIViewController* presenter;
-  if (base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut) &&
-      _accountPickerCoordinator == nil) {
-    presenter = self.baseViewController;
-  } else {
-    presenter = _accountPickerCoordinator.viewController;
-  }
+  UIViewController* presenter = _accountPickerCoordinator
+                                    ? _accountPickerCoordinator.viewController
+                                    : self.baseViewController;
   CHECK(presenter);
   [presenter presentViewController:_alertController
                           animated:YES
@@ -278,13 +274,9 @@
   CommandDispatcher* dispatcher = self.browser->GetCommandDispatcher();
   id<GoogleOneCommands> googleOneHandler =
       HandlerForProtocol(dispatcher, GoogleOneCommands);
-  UIViewController* presenter;
-  if (base::FeatureList::IsEnabled(kIOSSaveToDriveSignedOut) &&
-      _accountPickerCoordinator == nil) {
-    presenter = self.baseViewController;
-  } else {
-    presenter = _accountPickerCoordinator.viewController;
-  }
+  UIViewController* presenter = _accountPickerCoordinator
+                                    ? _accountPickerCoordinator.viewController
+                                    : self.baseViewController;
   [googleOneHandler
       showGoogleOneForIdentity:identity
                     entryPoint:GoogleOneEntryPoint::kSaveToDriveAlert

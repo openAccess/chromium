@@ -8,15 +8,21 @@
 #import <optional>
 
 @class LocationBarBadgeConfiguration;
+@class LocationBarBadgeItem;
 enum class ContextualPanelItemType;
 
-// TODO(crbug.com/454351425): Refactor function names to not use "entrypoint".
+// TODO(crbug.com/574559217): Refactor function names to not use "entrypoint".
 // Usage is for parity with ContextualPanelEntryPointConsumer.
 // Consumer for the location bar badge mediator.
 @protocol LocationBarBadgeConsumer
 
 // Update the consumer with a new badge configuration.
 - (void)setBadgeConfig:(LocationBarBadgeConfiguration*)config;
+
+// Updates the consumer with the active list of badge items to display. Only the
+// first item is rendered, and an empty array hides the badge. Mutually
+// exclusive with `-setBadgeConfig:`.
+- (void)setBadgeItems:(NSArray<LocationBarBadgeItem*>*)badgeItems;
 
 // Notify the consumer to show the badge.
 - (void)showBadge;

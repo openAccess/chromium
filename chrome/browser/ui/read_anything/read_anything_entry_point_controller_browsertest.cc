@@ -27,7 +27,6 @@
 #include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -38,6 +37,7 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/prefs/pref_service.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -88,10 +88,8 @@ class ReadAnythingEntryPointControllerTestBase
   }
 
   void RegisterPageActionObserver() {
-    auto* page_action_controller = browser()
-                                       ->GetActiveTabInterface()
-                                       ->GetTabFeatures()
-                                       ->page_action_controller();
+    auto* page_action_controller = page_actions::PageActionController::From(
+        browser()->GetActiveTabInterface());
     CHECK(page_action_controller);
     RegisterAsPageActionObserver(*page_action_controller);
   }
@@ -839,7 +837,7 @@ IN_PROC_BROWSER_TEST_F(
     CheckIfShouldSuggestReadingMode_AutomationEnabledIsNotCandidate) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(),
-      embedded_test_server()->GetURL("/dom_distiller/simple_article.html")));
+      embedded_test_server()->GetURL("/web_distiller/simple_article.html")));
 
   bool is_good_candidate = true;
   base::RunLoop run_loop;

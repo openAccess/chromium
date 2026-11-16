@@ -80,7 +80,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "components/sync/base/command_line_switches.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -401,15 +400,7 @@ class FakeGetAuthTokenFunction : public IdentityGetAuthTokenFunction {
  public:
   explicit FakeGetAuthTokenFunction(
       base::WeakPtr<signin::IdentityTestEnvironment> identity_test_env)
-      : login_access_token_result_(true),
-        auto_login_access_token_(true),
-        login_ui_result_(true),
-        scope_ui_result_(true),
-        scope_ui_async_(false),
-        scope_ui_failure_(GaiaRemoteConsentFlow::WINDOW_CLOSED),
-        login_ui_shown_(false),
-        scope_ui_shown_(false),
-        identity_test_env_(std::move(identity_test_env)) {}
+      : identity_test_env_(std::move(identity_test_env)) {}
 
   void set_login_access_token_result(bool result) {
     login_access_token_result_ = result;
@@ -420,6 +411,11 @@ class FakeGetAuthTokenFunction : public IdentityGetAuthTokenFunction {
   }
 
   void set_login_ui_result(bool result) { login_ui_result_ = result; }
+
+  void set_login_ui_async(base::OnceClosure on_login_ui_shown) {
+    login_ui_async_ = true;
+    on_login_ui_shown_ = std::move(on_login_ui_shown);
+  }
 
   void push_mint_token_flow(std::unique_ptr<OAuth2MintTokenFlow> flow) {
     flow_queue_.push(std::move(flow));
@@ -538,6 +534,14 @@ class FakeGetAuthTokenFunction : public IdentityGetAuthTokenFunction {
   void ShowExtensionLoginPrompt() override {
     EXPECT_FALSE(login_ui_shown_);
     login_ui_shown_ = true;
+    if (!login_ui_async_) {
+      CompleteLoginPrompt();
+    } else {
+      std::move(on_login_ui_shown_).Run();
+    }
+  }
+
+  void CompleteLoginPrompt() {
     if (login_ui_result_) {
       signin::IdentityManager* identity_manager =
           IdentityManagerFactory::GetForProfile(GetProfile());
@@ -614,15 +618,18 @@ class FakeGetAuthTokenFunction : public IdentityGetAuthTokenFunction {
   }
 #endif
 
-  bool login_access_token_result_;
-  bool auto_login_access_token_;
-  bool login_ui_result_;
-  bool scope_ui_result_;
-  bool scope_ui_async_;
+  bool login_access_token_result_ = true;
+  bool auto_login_access_token_ = true;
+  bool login_ui_result_ = true;
+  bool login_ui_async_ = false;
+  base::OnceClosure on_login_ui_shown_;
+  bool scope_ui_result_ = true;
+  bool scope_ui_async_ = false;
   base::OnceClosure on_scope_ui_shown_;
-  GaiaRemoteConsentFlow::Failure scope_ui_failure_;
-  bool login_ui_shown_;
-  bool scope_ui_shown_;
+  GaiaRemoteConsentFlow::Failure scope_ui_failure_ =
+      GaiaRemoteConsentFlow::WINDOW_CLOSED;
+  bool login_ui_shown_ = false;
+  bool scope_ui_shown_ = false;
 
   std::queue<std::unique_ptr<OAuth2MintTokenFlow>> flow_queue_;
 
@@ -675,13 +682,12 @@ class IdentityTestWithSignin : public AsyncExtensionBrowserTest {
  protected:
   // Signs in and returns the account ID of the primary account. The account is
   // also added to the Gaia cookie jar, as it would be in production.
-  CoreAccountId SignIn(
-      const std::string& email,
-      signin::ConsentLevel consent_level = signin::ConsentLevel::kSignin) {
+  CoreAccountId SignIn(const std::string& email) {
     auto account_info = identity_test_env()->MakeAccountAvailable(
-        email,
-        {.primary_account_consent_level = consent_level, .set_cookie = true});
-    EXPECT_TRUE(identity_manager()->HasPrimaryAccount(consent_level));
+        email, {.primary_account_consent_level = signin::ConsentLevel::kSignin,
+                .set_cookie = true});
+    EXPECT_TRUE(
+        identity_manager()->HasPrimaryAccount(signin::ConsentLevel::kSignin));
     return account_info.GetAccountId();
   }
 
@@ -946,38 +952,27 @@ IN_PROC_BROWSER_TEST_F(IdentityGetProfileUserInfoFunctionTest, NotSignedIn) {
 }
 
 IN_PROC_BROWSER_TEST_F(IdentityGetProfileUserInfoFunctionTest, ExtensionSync) {
-  constexpr char kEmail[] = "president@example.com";
-#if BUILDFLAG(IS_CHROMEOS)
-  SignIn(kEmail, signin::ConsentLevel::kSync);
-#else
-  SignIn(kEmail);
-  SyncServiceFactory::GetForProfile(profile())
-      ->GetUserSettings()
-      ->SetSelectedTypes(
-          /*sync_everything=*/false,
-          /*types=*/{syncer::UserSelectableType::kExtensions});
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  SignIn("president@example.com");
+  ASSERT_TRUE(SyncServiceFactory::GetForProfile(profile())
+                  ->GetUserSettings()
+                  ->GetSelectedTypes()
+                  .Has(syncer::UserSelectableType::kExtensions));
   std::optional<api::identity::ProfileUserInfo> info =
       RunGetProfileUserInfoWithEmail();
-  EXPECT_EQ(kEmail, info->email);
+  EXPECT_EQ("president@example.com", info->email);
   EXPECT_EQ("gaia_id_for_president_example.com", info->id);
 }
 
 IN_PROC_BROWSER_TEST_F(IdentityGetProfileUserInfoFunctionTest,
-                       SignedInUnconsented) {
+                       ExtensionSyncDisabled) {
   SignIn("test@example.com");
+  SyncServiceFactory::GetForProfile(profile())
+      ->GetUserSettings()
+      ->SetSelectedType(syncer::UserSelectableType::kExtensions, false);
   std::optional<api::identity::ProfileUserInfo> info =
       RunGetProfileUserInfoWithEmail();
-  // The account is only returned if extensions are syncing. Whether or not
-  // extensions sync upon sign-in depends on
-  // `syncer::IsReplaceSyncPromosWithSignInPromosEnabled()`.
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    EXPECT_EQ("test@example.com", info->email);
-    EXPECT_EQ("gaia_id_for_test_example.com", info->id);
-  } else {
-    EXPECT_TRUE(info->email.empty());
-    EXPECT_TRUE(info->id.empty());
-  }
+  EXPECT_TRUE(info->email.empty());
+  EXPECT_TRUE(info->id.empty());
 }
 
 IN_PROC_BROWSER_TEST_F(IdentityGetProfileUserInfoFunctionTest,
@@ -1061,47 +1056,33 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     IdentityGetProfileUserInfoFunctionTestWithAccountStatusParam,
     ExtensionSync) {
-  constexpr char kEmail[] = "test@example.com";
-#if BUILDFLAG(IS_CHROMEOS)
-  SignIn(kEmail, signin::ConsentLevel::kSync);
-#else
-  SignIn(kEmail);
-  SyncServiceFactory::GetForProfile(profile())
-      ->GetUserSettings()
-      ->SetSelectedTypes(
-          /*sync_everything=*/false,
-          /*types=*/{syncer::UserSelectableType::kExtensions});
-#endif  // BUILDFLAG(IS_CHROMEOS)
+  SignIn("test@example.com");
+  ASSERT_TRUE(SyncServiceFactory::GetForProfile(profile())
+                  ->GetUserSettings()
+                  ->GetSelectedTypes()
+                  .Has(syncer::UserSelectableType::kExtensions));
   std::optional<api::identity::ProfileUserInfo> info =
       RunGetProfileUserInfoWithAccountStatus();
-  EXPECT_EQ(kEmail, info->email);
+  EXPECT_EQ("test@example.com", info->email);
   EXPECT_EQ("gaia_id_for_test_example.com", info->id);
 }
 
 IN_PROC_BROWSER_TEST_P(
     IdentityGetProfileUserInfoFunctionTestWithAccountStatusParam,
-    SignedInUnconsented) {
+    ExtensionSyncDisabled) {
   SignIn("test@example.com");
+  SyncServiceFactory::GetForProfile(profile())
+      ->GetUserSettings()
+      ->SetSelectedType(syncer::UserSelectableType::kExtensions, false);
   std::optional<api::identity::ProfileUserInfo> info =
       RunGetProfileUserInfoWithAccountStatus();
 
-  // The unconsented (Sync off) primary account is returned conditionally,
-  // depending on the accountStatus parameter.
   if (account_status() == "ANY") {
     EXPECT_EQ("test@example.com", info->email);
     EXPECT_EQ("gaia_id_for_test_example.com", info->id);
   } else {
-    // accountStatus is SYNC or unspecified. In this case, the account is only
-    // returned if extensions are syncing. Whether or not extensions sync upon
-    // sign-in depends on
-    // `syncer::IsReplaceSyncPromosWithSignInPromosEnabled()`.
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      EXPECT_EQ("test@example.com", info->email);
-      EXPECT_EQ("gaia_id_for_test_example.com", info->id);
-    } else {
-      EXPECT_TRUE(info->email.empty());
-      EXPECT_TRUE(info->id.empty());
-    }
+    EXPECT_TRUE(info->email.empty());
+    EXPECT_TRUE(info->id.empty());
   }
 }
 
@@ -2084,6 +2065,104 @@ IN_PROC_BROWSER_TEST_F(GetAuthTokenFunctionTest,
       kGetAuthTokenResultHistogramName,
       IdentityGetAuthTokenError::State::kRemoteConsentFlowRejected, 1);
 }
+
+// Regression test for crbug.com/583748420: if the user signs out while the
+// initial access token request is in flight, `StartSigninFlow()` should clear
+// `token_key_.account_info` so that signing back in does not hit a CHECK in
+// `OnPrimaryAccountChanged()`.
+IN_PROC_BROWSER_TEST_F(GetAuthTokenFunctionTest,
+                       InteractiveSignoutDuringAccessTokenFetch) {
+  SignIn("initial@example.com");
+
+  scoped_refptr<const Extension> extension(CreateExtension(CLIENT_ID | SCOPES));
+  scoped_refptr<FakeGetAuthTokenFunction> func =
+      CreateFakeGetAuthTokenFunction();
+  func->set_extension(extension.get());
+  func->set_auto_login_access_token(false);
+  func->push_mint_token_result(TestOAuth2MintTokenFlow::MINT_TOKEN_SUCCESS);
+
+  base::RunLoop login_ui_run_loop;
+  func->set_login_ui_async(login_ui_run_loop.QuitClosure());
+
+  base::RunLoop access_token_run_loop;
+  on_access_token_requested_ = access_token_run_loop.QuitClosure();
+  RunFunctionAsync(func.get(), "[{\"interactive\": true}]");
+  access_token_run_loop.Run();
+
+  // Signing out revokes the refresh token, cancelling the in-flight access
+  // token fetch with an auth error and triggering `StartSigninFlow()`.
+  ClearPrimaryAccount();
+  login_ui_run_loop.Run();
+  ASSERT_TRUE(func->login_ui_shown());
+  EXPECT_TRUE(func->GetExtensionTokenKeyForTest()->account_info.IsEmpty());
+
+  // Complete the sign-in prompt and let the subsequent access token request
+  // succeed automatically.
+  func->set_auto_login_access_token(true);
+  func->CompleteLoginPrompt();
+
+  std::string access_token;
+  std::set<std::string> granted_scopes;
+  WaitForGetAuthTokenResults(func.get(), &access_token, &granted_scopes);
+  EXPECT_EQ(std::string(kAccessToken), access_token);
+  EXPECT_EQ(
+      identity_manager()->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
+      func->GetExtensionTokenKeyForTest()->account_info.account_id);
+  EXPECT_EQ(func->GetExtensionTokenKeyForTest()->scopes, granted_scopes);
+  EXPECT_FALSE(func->scope_ui_shown());
+  histogram_tester()->ExpectUniqueSample(
+      kGetAuthTokenResultHistogramName, IdentityGetAuthTokenError::State::kNone,
+      1);
+}
+
+// TODO(crbug.com/525397809): Enable on Android once
+// `SetInvalidRefreshTokenForAccount` is supported there.
+#if !BUILDFLAG(IS_ANDROID)
+// Regression test for crbug.com/583748420: if the user signs out and then signs
+// back in while `IdentityGetAuthTokenFunction` is waiting for reauth in the
+// interactive sign-in flow, `OnPrimaryAccountChanged()` should clear
+// `token_key_.account_info` on signout and succeed on subsequent sign-in.
+IN_PROC_BROWSER_TEST_F(GetAuthTokenFunctionTest,
+                       InteractiveSignoutAndSigninWhileWaitingForAccount) {
+  CoreAccountId initial_primary_id = SignIn("initial@example.com");
+  SetInvalidRefreshTokenForPrimaryAccount();
+
+  scoped_refptr<const Extension> extension(CreateExtension(CLIENT_ID | SCOPES));
+  scoped_refptr<FakeGetAuthTokenFunction> func =
+      CreateFakeGetAuthTokenFunction();
+  func->set_extension(extension.get());
+  func->set_login_access_token_result(false);
+  func->push_mint_token_result(TestOAuth2MintTokenFlow::MINT_TOKEN_SUCCESS);
+
+  base::RunLoop login_ui_run_loop;
+  func->set_login_ui_async(login_ui_run_loop.QuitClosure());
+
+  RunFunctionAsync(func.get(), "[{\"interactive\": true}]");
+  login_ui_run_loop.Run();
+  ASSERT_TRUE(func->login_ui_shown());
+  EXPECT_EQ(initial_primary_id,
+            func->GetExtensionTokenKeyForTest()->account_info.account_id);
+
+  // User signs out while the login prompt is open, then signs back in.
+  ClearPrimaryAccount();
+  EXPECT_TRUE(func->GetExtensionTokenKeyForTest()->account_info.IsEmpty());
+  func->set_login_access_token_result(true);
+  func->CompleteLoginPrompt();
+
+  std::string access_token;
+  std::set<std::string> granted_scopes;
+  WaitForGetAuthTokenResults(func.get(), &access_token, &granted_scopes);
+  EXPECT_EQ(std::string(kAccessToken), access_token);
+  EXPECT_EQ(
+      identity_manager()->GetPrimaryAccountId(signin::ConsentLevel::kSignin),
+      func->GetExtensionTokenKeyForTest()->account_info.account_id);
+  EXPECT_EQ(func->GetExtensionTokenKeyForTest()->scopes, granted_scopes);
+  EXPECT_FALSE(func->scope_ui_shown());
+  histogram_tester()->ExpectUniqueSample(
+      kGetAuthTokenResultHistogramName, IdentityGetAuthTokenError::State::kNone,
+      1);
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 class GetAuthTokenFunctionInteractivityTest
@@ -2382,6 +2461,7 @@ IN_PROC_BROWSER_TEST_F(GetAuthTokenFunctionTest,
 
   std::string error = utils::RunFunctionAndReturnError(
       func.get(), "[{\"interactive\": true}]", profile());
+  EXPECT_EQ(std::string(errors::kPageLoadFailure), error);
   // Check that the remote consent dialog is shown to ensure that the remote
   // consent flow fails.
   EXPECT_TRUE(func->scope_ui_shown());
@@ -3072,7 +3152,6 @@ IN_PROC_BROWSER_TEST_F(GetAuthTokenFunctionTest,
   std::string error = utils::RunFunctionAndReturnError(
       func.get(), "[{\"account\": { \"id\": \"unknown@example.com\" } }]",
       profile());
-  std::string expected_error;
   if (id_api()->AreExtensionsRestrictedToPrimaryAccount()) {
     EXPECT_EQ(errors::kUserNonPrimary, error);
     histogram_tester()->ExpectUniqueSample(

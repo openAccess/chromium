@@ -27,6 +27,10 @@ std::string ConvertBaseModelToUmaModelName(OnDeviceBaseModel base_model) {
       return "SpeechRecognitionSmallExpert";
     case OnDeviceBaseModel::kSummarizerSmallExpert:
       return "SummarizerSmallExpert";
+    case OnDeviceBaseModel::kLayaEnWint8:
+      return "LayaEnWint8";
+    case OnDeviceBaseModel::kLayaMlWint8:
+      return "LayaMlWint8";
     case OnDeviceBaseModel::kUnknown:
     case OnDeviceBaseModel::kXxs:
     case OnDeviceBaseModel::kXs:
@@ -53,6 +57,10 @@ OnDeviceBaseModel ConvertComponentKeyToEnum(const std::string& key) {
     return OnDeviceBaseModel::kSpeechRecognitionSmallExpert;
   } else if (key == "summarizer_small_expert_model_component") {
     return OnDeviceBaseModel::kSummarizerSmallExpert;
+  } else if (key == "laya_en_wint8_component") {
+    return OnDeviceBaseModel::kLayaEnWint8;
+  } else if (key == "laya_ml_wint8_component") {
+    return OnDeviceBaseModel::kLayaMlWint8;
   } else {
     return OnDeviceBaseModel::kUnknown;
   }
@@ -60,6 +68,30 @@ OnDeviceBaseModel ConvertComponentKeyToEnum(const std::string& key) {
 
 std::string ConvertComponentKeyToUmaModelName(const std::string& key) {
   return ConvertBaseModelToUmaModelName(ConvertComponentKeyToEnum(key));
+}
+
+std::optional<OnDeviceModelCategory> GetOnDeviceModelCategory(
+    OnDeviceBaseModel base_model) {
+  switch (base_model) {
+    case OnDeviceBaseModel::kGemma4:
+    case OnDeviceBaseModel::kV3NanoGpu:
+    case OnDeviceBaseModel::kV3NanoCpu:
+      return OnDeviceModelCategory::kGeneralPurpose;
+    case OnDeviceBaseModel::kSpeechRecognitionSmallExpert:
+      return OnDeviceModelCategory::kLiveTranscription;
+    case OnDeviceBaseModel::kUnknown:
+    case OnDeviceBaseModel::kXxs:
+    case OnDeviceBaseModel::kXs:
+    case OnDeviceBaseModel::kV2Nano:
+    case OnDeviceBaseModel::kV3Nano:
+    case OnDeviceBaseModel::kClassifier:
+    case OnDeviceBaseModel::kLanguageDetection:
+    case OnDeviceBaseModel::kProofreaderSmallExpert:
+    case OnDeviceBaseModel::kSummarizerSmallExpert:
+    case OnDeviceBaseModel::kLayaEnWint8:
+    case OnDeviceBaseModel::kLayaMlWint8:
+      return std::nullopt;
+  }
 }
 
 }  // namespace optimization_guide

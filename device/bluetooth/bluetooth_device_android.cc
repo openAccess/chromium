@@ -6,6 +6,7 @@
 
 #include <jni.h>
 
+#include <limits>
 #include <vector>
 
 #include "base/android/jni_android.h"
@@ -23,6 +24,7 @@
 #include "device/bluetooth/bluetooth_common.h"
 #include "device/bluetooth/bluetooth_remote_gatt_service_android.h"
 #include "device/bluetooth/bluetooth_socket_android.h"
+#include "third_party/jni_zero/jni_zero.h"
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "device/bluetooth/jni_headers/ChromeBluetoothDevice_jni.h"
 
@@ -44,7 +46,7 @@ std::unique_ptr<BluetoothDeviceAndroid> BluetoothDeviceAndroid::Create(
       new BluetoothDeviceAndroid(adapter, task_runner, socket_thread));
 
   device->j_device_.Reset(Java_ChromeBluetoothDevice_create(
-      AttachCurrentThread(), reinterpret_cast<intptr_t>(device.get()),
+      AttachCurrentThread(), jni_zero::MakeRaw(device.get()),
       bluetooth_device_wrapper));
 
   device->LoadInitialCachedMetadata();
@@ -309,6 +311,20 @@ void BluetoothDeviceAndroid::OnConnectionStateChange(JNIEnv* env,
     SetGattServicesDiscoveryComplete(false);
     DidDisconnectGatt();
   }
+}
+
+std::optional<uint16_t> BluetoothDeviceAndroid::GetMtu() const {
+  return mtu_;
+}
+
+void BluetoothDeviceAndroid::OnMtuChanged(JNIEnv* env,
+                                          int32_t mtu,
+                                          bool success) {
+  if (!success || mtu < 0 || mtu > std::numeric_limits<uint16_t>::max()) {
+    return;
+  }
+  mtu_ = static_cast<uint16_t>(mtu);
+  GetAndroidAdapter()->NotifyDeviceMTUChanged(this, *mtu_);
 }
 
 void BluetoothDeviceAndroid::OnGattServicesDiscovered(JNIEnv* env) {

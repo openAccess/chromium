@@ -5,6 +5,8 @@
 #include "chrome/browser/actor/actor_test_util.h"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -16,6 +18,7 @@
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/types/expected_macros.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_proto_conversion.h"
 #include "chrome/browser/actor/actor_surface_handle.h"
@@ -55,8 +58,10 @@
 #include "components/optimization_guide/proto/hints.pb.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/test/browser_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/geometry/point.h"
@@ -695,12 +700,14 @@ std::unique_ptr<ToolRequest> MakeTypeRequest(TabInterface& tab,
       ActorSurfaceHandle::From(tab.GetHandle()), MakeTarget(type_point), text,
       follow_by_enter, TypeToolRequest::Mode::kReplace);
 }
-std::unique_ptr<ToolRequest> MakeSelectRequest(content::RenderFrameHost& rfh,
-                                               int content_node_id,
-                                               std::string_view value) {
+std::unique_ptr<ToolRequest> MakeSelectRequest(
+    content::RenderFrameHost& rfh,
+    int content_node_id,
+    std::string_view value,
+    mojom::SelectAction::OptionMatchMode match_mode) {
   return std::make_unique<SelectToolRequest>(GetActorSurfaceHandleForFrame(rfh),
                                              MakeTarget(rfh, content_node_id),
-                                             value);
+                                             value, match_mode);
 }
 
 std::unique_ptr<ToolRequest> MakeScrollRequest(
@@ -914,6 +921,18 @@ void ExpectElementDisabledResultWithReason(ActResultFuture& future,
   EXPECT_EQ(expected_message, result->message);
 }
 
+std::optional<DomNode> GetDomNodeOnPage(content::RenderFrameHost& rfh,
+                                        std::string_view query_selector) {
+  const content::GlobalRenderFrameHostToken frame_token =
+      rfh.GetGlobalFrameToken();
+  ASSIGN_OR_RETURN(int node_id, content::GetDOMNodeId(rfh, query_selector));
+  ASSIGN_OR_RETURN(
+      std::string document_identifier,
+      DocumentIdentifierUserData::GetDocumentIdentifier(frame_token));
+  return DomNode{.node_id = node_id,
+                 .document_identifier = std::move(document_identifier)};
+}
+
 bool SetUpOptimizationGuideComponentBlocklist(const base::FilePath& path,
                                               const std::string& blocked_host) {
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -1064,7 +1083,6 @@ TestTabState::TestTabState(content::WebContents* web_contents) {
   ON_CALL(tab, GetUnownedUserDataHost())
       .WillByDefault(::testing::ReturnRef(user_data_host));
 
-  tab_data = std::make_unique<ActorTabData>(&tab);
   if (web_contents) {
     actor_surface_tab_helper = std::make_unique<ActorSurfaceTabHelper>(tab);
   }

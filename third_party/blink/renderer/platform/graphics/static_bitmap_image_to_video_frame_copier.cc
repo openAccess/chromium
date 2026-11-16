@@ -5,7 +5,6 @@
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image_to_video_frame_copier.h"
 
 #include "base/functional/callback_helpers.h"
-#include "base/numerics/safe_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
@@ -22,6 +21,7 @@
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/libyuv/include/libyuv.h"
 #include "third_party/skia/include/core/SkImage.h"
+#include "third_party/skia/include/core/SkPixmap.h"
 #include "ui/gfx/color_space.h"
 
 namespace blink {
@@ -157,12 +157,11 @@ void StaticBitmapImageToVideoFrameCopier::ReadARGBPixelsSync(
   SkImageInfo image_info = SkImageInfo::MakeN32(
       image_size.width(), image_size.height(),
       is_opaque ? kPremul_SkAlphaType : kUnpremul_SkAlphaType);
-  if (!paint_image.readPixels(
-          image_info,
-          temp_argb_frame->GetWritableVisibleData(
-              media::VideoFrame::Plane::kARGB),
-          temp_argb_frame->stride(media::VideoFrame::Plane::kARGB), 0 /*srcX*/,
-          0 /*srcY*/)) {
+  const SkPixmap pixmap(
+      image_info,
+      temp_argb_frame->GetWritableVisibleData(media::VideoFrame::Plane::kARGB),
+      temp_argb_frame->stride(media::VideoFrame::Plane::kARGB));
+  if (!paint_image.readPixels(pixmap, 0 /*srcX*/, 0 /*srcY*/)) {
     DLOG(ERROR) << "Couldn't read pixels from PaintImage";
     return;
   }
@@ -193,8 +192,8 @@ void StaticBitmapImageToVideoFrameCopier::ReadARGBPixelsAsync(
                     kN32_SkColorType == kBGRA_8888_SkColorType,
                 "CanvasCaptureHandler::ReadARGBPixelsAsync supports only "
                 "kRGBA_8888_SkColorType and kBGRA_8888_SkColorType.");
-  SkImageInfo info = SkImageInfo::MakeN32(
-      image_size.width(), image_size.height(), kUnpremul_SkAlphaType);
+  const SkPixmap dst_pixmap =
+      temp_argb_frame->GetWritableVisibleRGBPlanePixmap().value_or(SkPixmap());
   auto shared_image = image->GetSharedImage();
   GrSurfaceOrigin image_origin = shared_image->surface_origin();
   gfx::Point src_point;
@@ -204,11 +203,7 @@ void StaticBitmapImageToVideoFrameCopier::ReadARGBPixelsAsync(
                                       image->GetSyncToken(), /*readonly=*/true);
   context_provider->RasterInterface()->ReadbackARGBPixelsAsync(
       shared_image->mailbox(), shared_image->GetTextureTarget(), image_origin,
-      image_size, src_point, info,
-      base::checked_cast<GLuint>(
-          temp_argb_frame->stride(media::VideoFrame::Plane::kARGB)),
-      temp_argb_frame->GetWritableVisiblePlaneData(
-          media::VideoFrame::Plane::kARGB),
+      image_size, src_point, dst_pixmap,
       blink::BindOnce(
           &StaticBitmapImageToVideoFrameCopier::OnARGBPixelsReadAsync,
           weak_ptr_factory_.GetWeakPtr(), image, temp_argb_frame,
@@ -234,6 +229,11 @@ void StaticBitmapImageToVideoFrameCopier::ReadYUVPixelsAsync(
     DLOG(ERROR) << "Couldn't allocate video frame";
     return;
   }
+  // TODO(crbug.com/40261346): This is not accurate. The GPU process uses the
+  // Rec. 601 matrix and limited range, but does not change the primaries or
+  // transfer function of the source, so the actual color space is
+  // `shared_image->color_space().GetWithMatrixAndRange(SMPTE170M, LIMITED)`.
+  output_frame->set_color_space(gfx::ColorSpace::CreateREC601());
 
   auto shared_image = image->GetSharedImage();
   std::unique_ptr<gpu::RasterScopedAccess> ri_access =
@@ -241,17 +241,10 @@ void StaticBitmapImageToVideoFrameCopier::ReadYUVPixelsAsync(
                                       image->GetSyncToken(), /*readonly=*/true);
   context_provider->RasterInterface()->ReadbackYUVPixelsAsync(
       shared_image->mailbox(), shared_image->GetTextureTarget(),
-      gfx::Rect(image_size), gfx::Rect(image_size),
+      gfx::Rect(image_size),
       shared_image->surface_origin() != kTopLeft_GrSurfaceOrigin,
-      base::checked_cast<int>(
-          output_frame->stride(media::VideoFrame::Plane::kY)),
-      output_frame->GetWritableVisiblePlaneData(media::VideoFrame::Plane::kY),
-      base::checked_cast<int>(
-          output_frame->stride(media::VideoFrame::Plane::kU)),
-      output_frame->GetWritableVisiblePlaneData(media::VideoFrame::Plane::kU),
-      base::checked_cast<int>(
-          output_frame->stride(media::VideoFrame::Plane::kV)),
-      output_frame->GetWritableVisiblePlaneData(media::VideoFrame::Plane::kV),
+      output_frame->GetWritableVisibleSkYUVAPixmaps(),
+      output_frame->ColorSpace().GetAsFullRangeRGB().ToSkColorSpace(),
       blink::BindOnce(&StaticBitmapImageToVideoFrameCopier::OnReleaseMailbox,
                       weak_ptr_factory_.GetWeakPtr(), image),
       blink::BindOnce(
@@ -287,7 +280,6 @@ void StaticBitmapImageToVideoFrameCopier::OnYUVPixelsReadAsync(
     DLOG(ERROR) << "Couldn't read SkImage using async callback";
     return;
   }
-  yuv_frame->set_color_space(gfx::ColorSpace::CreateREC601());
   std::move(callback).Run(yuv_frame);
 }
 

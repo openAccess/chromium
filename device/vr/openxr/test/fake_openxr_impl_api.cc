@@ -552,6 +552,34 @@ XrResult XRAPI_PTR xrEndSession(XrSession session) {
   return XR_SUCCESS;
 }
 
+XrResult XRAPI_PTR
+xrEnumerateDisplayRefreshRatesFB(XrSession session,
+                                 uint32_t display_refresh_rate_capacity_input,
+                                 uint32_t* display_refresh_rate_count_output,
+                                 float* display_refresh_rates) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  RETURN_IF(display_refresh_rate_count_output == nullptr,
+            XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rate_count_output is nullptr");
+
+  const auto& rates = OpenXrTestHelper::kDisplayRefreshRates;
+  *display_refresh_rate_count_output = rates.size();
+  if (display_refresh_rate_capacity_input == 0) {
+    return XR_SUCCESS;
+  }
+
+  RETURN_IF(display_refresh_rates == nullptr, XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rates is nullptr");
+  RETURN_IF(display_refresh_rate_capacity_input < rates.size(),
+            XR_ERROR_SIZE_INSUFFICIENT,
+            "display_refresh_rate_capacity_input size is insufficient");
+
+  std::ranges::copy(rates, display_refresh_rates);
+
+  return XR_SUCCESS;
+}
+
 XrResult XRAPI_PTR xrEnumerateEnvironmentBlendModes(
     XrInstance instance,
     XrSystemId system_id,
@@ -996,6 +1024,16 @@ xrGetCurrentInteractionProfile(XrSession session,
   return XR_SUCCESS;
 }
 
+XrResult XRAPI_PTR xrGetDisplayRefreshRateFB(XrSession session,
+                                             float* display_refresh_rate) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  RETURN_IF(display_refresh_rate == nullptr, XR_ERROR_VALIDATION_FAILURE,
+            "display_refresh_rate is nullptr");
+  *display_refresh_rate = GetTestHelper().display_refresh_rate();
+  return XR_SUCCESS;
+}
+
 #if BUILDFLAG(IS_ANDROID)
 XrResult XRAPI_PTR xrGetOpenGLESGraphicsRequirementsKHR(
     XrInstance instance,
@@ -1203,6 +1241,13 @@ XrResult XRAPI_PTR xrPollEvent(XrInstance instance,
   return GetTestHelper().PollEvent(event_data);
 }
 
+XrResult XRAPI_PTR xrRequestDisplayRefreshRateFB(XrSession session,
+                                                 float display_refresh_rate) {
+  DVLOG(2) << __FUNCTION__;
+  RETURN_IF_XR_FAILED(GetTestHelper().ValidateSession(session));
+  return GetTestHelper().RequestDisplayRefreshRate(display_refresh_rate);
+}
+
 XrResult XRAPI_PTR
 xrReleaseSwapchainImage(XrSwapchain swapchain,
                         const XrSwapchainImageReleaseInfo* release_info) {
@@ -1234,8 +1279,6 @@ XrResult XRAPI_PTR xrSuggestInteractionProfileBindings(
             "xrSetInteractionProfileSuggestedBindings next is not nullptr");
   RETURN_IF_XR_FAILED(
       GetTestHelper().ValidatePath(suggested_bindings->interactionProfile));
-  std::string interaction_profile =
-      GetTestHelper().PathToString(suggested_bindings->interactionProfile);
 
   RETURN_IF(suggested_bindings->suggestedBindings == nullptr,
             XR_ERROR_VALIDATION_FAILURE,
@@ -1552,6 +1595,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrDestroySwapchain);
   TRY_LOAD_METHOD(xrEndFrame);
   TRY_LOAD_METHOD(xrEndSession);
+  TRY_LOAD_METHOD(xrEnumerateDisplayRefreshRatesFB);
   TRY_LOAD_METHOD(xrEnumerateEnvironmentBlendModes);
   TRY_LOAD_METHOD(xrEnumerateInstanceExtensionProperties);
   TRY_LOAD_METHOD(xrEnumerateSwapchainFormats);
@@ -1566,6 +1610,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrGetActionStateVector2f);
   TRY_LOAD_METHOD(xrGetActionStatePose);
   TRY_LOAD_METHOD(xrGetCurrentInteractionProfile);
+  TRY_LOAD_METHOD(xrGetDisplayRefreshRateFB);
 #if BUILDFLAG(IS_ANDROID)
   TRY_LOAD_METHOD(xrGetOpenGLESGraphicsRequirementsKHR);
 #endif
@@ -1583,6 +1628,7 @@ XrResult XRAPI_PTR xrGetInstanceProcAddr(XrInstance instance,
   TRY_LOAD_METHOD(xrLocateViews);
   TRY_LOAD_METHOD(xrPollEvent);
   TRY_LOAD_METHOD(xrReleaseSwapchainImage);
+  TRY_LOAD_METHOD(xrRequestDisplayRefreshRateFB);
   TRY_LOAD_METHOD(xrSuggestInteractionProfileBindings);
   TRY_LOAD_METHOD(xrStringToPath);
   TRY_LOAD_METHOD(xrPathToString);

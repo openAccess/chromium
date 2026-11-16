@@ -14,12 +14,12 @@ import {ContextUploadErrorType, ContextUploadStatus, InputType, ModelMode, ToolM
 import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_components/composebox/file_carousel.js';
 import {WindowProxy} from 'chrome://resources/cr_components/composebox/window_proxy.js';
 import {GlowAnimationState} from 'chrome://resources/cr_components/search/constants.js';
-import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import type {AutocompleteResult, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, SearchContext, SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {RenderType, SideType, TabAttachmentSource} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertEquals, assertFalse, assertNear, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {createAutocompleteResult, createSearchMatch} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
@@ -61,6 +61,8 @@ suite('OmniboxComposeboxTest', () => {
       contextButtonShapeIsOblong: true,
       webuiOmniboxSimplificationEnabled: true,
       voiceSearchCoherenceComposeboxesEnabled: false,
+      composeboxPersistentAimButton: false,
+      composeboxPersistentAimButtonWithX: false,
     });
 
     testProxy = new TestSearchboxBrowserProxy();
@@ -202,15 +204,14 @@ suite('OmniboxComposeboxTest', () => {
 
     // Set results with matches.
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         allowedToBeDefaultMatch: false,
       }),
     ];
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          matches: matches,
-        }));
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      matches: matches,
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
 
@@ -218,11 +219,10 @@ suite('OmniboxComposeboxTest', () => {
     assertFalse(omniboxComposebox.$.matches.hidden);
 
     // Set empty results.
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          matches: [],
-        }));
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      matches: [],
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
 
@@ -590,13 +590,12 @@ suite('OmniboxComposeboxTest', () => {
         assertFalse(omniboxComposebox.showDropdown);
         assertEquals(0, loadInAnimationCount());
 
-        testProxy.page.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
-              queryId: omniboxComposebox.activeQueryId,
-              matches: [createSearchMatchForTesting({
-                allowedToBeDefaultMatch: false,
-              })],
-            }));
+        testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+          queryId: omniboxComposebox.activeQueryId,
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: false,
+          })],
+        }));
         await testProxy.page.$.flushForTesting();
         await microtasksFinished();
 
@@ -623,13 +622,12 @@ suite('OmniboxComposeboxTest', () => {
             initialCallCount + 1,
             testProxy.handler.getCallCount('queryAutocomplete'));
 
-        testProxy.page.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
-              queryId: omniboxComposebox.activeQueryId,
-              matches: [createSearchMatchForTesting({
-                allowedToBeDefaultMatch: false,
-              })],
-            }));
+        testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+          queryId: omniboxComposebox.activeQueryId,
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: false,
+          })],
+        }));
         await testProxy.page.$.flushForTesting();
         await microtasksFinished();
 
@@ -658,13 +656,12 @@ suite('OmniboxComposeboxTest', () => {
         omniboxComposebox.addSearchContext(context as unknown as SearchContext);
         await microtasksFinished();
 
-        testProxy.page.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
-              queryId: omniboxComposebox.activeQueryId,
-              matches: [createSearchMatchForTesting({
-                allowedToBeDefaultMatch: false,
-              })],
-            }));
+        testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+          queryId: omniboxComposebox.activeQueryId,
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: false,
+          })],
+        }));
         await testProxy.page.$.flushForTesting();
         await microtasksFinished();
 
@@ -718,13 +715,12 @@ suite('OmniboxComposeboxTest', () => {
             initialCallCount + 1,
             testProxy.handler.getCallCount('queryAutocomplete'));
 
-        testProxy.page.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
-              queryId: omniboxComposebox.activeQueryId,
-              matches: [createSearchMatchForTesting({
-                allowedToBeDefaultMatch: false,
-              })],
-            }));
+        testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+          queryId: omniboxComposebox.activeQueryId,
+          matches: [createSearchMatch({
+            allowedToBeDefaultMatch: false,
+          })],
+        }));
         await testProxy.page.$.flushForTesting();
         await microtasksFinished();
 
@@ -1006,6 +1002,168 @@ suite('OmniboxComposeboxTest', () => {
         assertFalse(omniboxComposebox.addedTabsIds.has(103));
       });
 
+  test(
+      'statuses in flight for a tab the page deleted do not create a ghost',
+      async () => {
+        const testToken = '12345678901234567890123456789105';
+        testProxy.handler.setPromiseResolveFor('addTabContext', testToken);
+
+        await omniboxComposebox.addTabContextHandleCallback({
+          tabId: 105,
+          title: 'Tab 105',
+          url: 'https://tab105.com',
+          delayUpload: false,
+          origin: TabAttachmentSource.kOther,
+        });
+        await omniboxComposebox.updateComplete;
+        assertEquals(1, omniboxComposebox.attachedContext.size);
+
+        // The page deletes the tab locally while the upload is still in flight
+        // in the browser.
+        omniboxComposebox.deleteFile(testToken, /*fromUserAction=*/ false);
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+
+        // Statuses posted before `deleteContext` reaches the handler arrive on
+        // the page pipe.
+        for (const status
+                 of [ContextUploadStatus.kProcessing,
+                     ContextUploadStatus.kUploadStarted,
+                     ContextUploadStatus.kUploadSuccessful]) {
+          testProxy.page.onContextualInputStatusChanged(
+              testToken, status, null);
+        }
+        await testProxy.page.$.flushForTesting();
+        await omniboxComposebox.updateComplete;
+        await microtasksFinished();
+
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+        assertFalse(omniboxComposebox.showFileCarousel);
+      });
+
+  test(
+      'statuses in flight after clearAllInputs do not create a ghost when ' +
+          'switching to tool mode',
+      async () => {
+        const testToken = '12345678901234567890123456789106';
+        testProxy.handler.setPromiseResolveFor('addTabContext', testToken);
+
+        await omniboxComposebox.addTabContextHandleCallback({
+          tabId: 106,
+          title: 'Tab 106',
+          url: 'https://tab106.com',
+          delayUpload: false,
+          origin: TabAttachmentSource.kAutoAdded,
+        });
+        await omniboxComposebox.updateComplete;
+        assertEquals(1, omniboxComposebox.attachedContext.size);
+
+        // Simulates AimAppElement.clearPopup_() -> resetSession() when the
+        // popup closes/reopens to select Canvas or Create Images while the tab
+        // upload is still in flight in ComposeboxQueryController.
+        omniboxComposebox.clearAllInputs(
+            /*querySubmitted=*/ false,
+            /*shouldBlockAutoSuggestedTabs=*/ false);
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+
+        // Switch to Canvas tool mode, which only allows images.
+        testProxy.page.onInputStateChanged({
+          ...createDefaultInputState(),
+          activeTool: ToolMode.kCanvas,
+          allowedInputTypes: [InputType.kLensImage],
+        });
+        await testProxy.page.$.flushForTesting();
+
+        // Late statuses from the orphaned tab upload arrive on the page pipe.
+        for (const status
+                 of [ContextUploadStatus.kProcessingSuggestSignalsReady,
+                     ContextUploadStatus.kUploadStarted,
+                     ContextUploadStatus.kUploadSuccessful]) {
+          testProxy.page.onContextualInputStatusChanged(
+              testToken, status, null);
+        }
+        await testProxy.page.$.flushForTesting();
+        await omniboxComposebox.updateComplete;
+        await microtasksFinished();
+
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+        assertFalse(omniboxComposebox.showFileCarousel);
+      });
+
+  test(
+      'early upload status before addSearchContext hydrates file status',
+      async () => {
+        const testToken = '12345678901234567890123456789107';
+        testProxy.page.onContextualInputStatusChanged(
+            testToken, ContextUploadStatus.kProcessing, null);
+        await testProxy.page.$.flushForTesting();
+        await omniboxComposebox.updateComplete;
+
+        // No placeholder chip is added before addSearchContext arrives.
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+
+        omniboxComposebox.addSearchContext({
+          input: '',
+          attachments: [{
+            fileAttachment: {
+              uuid: testToken,
+              name: 'photo.png',
+              mimeType: 'image/png',
+              imageDataUrl: 'data:image/png;base64,abc',
+              thumbnailUrl: null,
+              errorType: null,
+              iconUrl: null,
+            },
+          }],
+          toolMode: 0,
+          modelMode: 0,
+        });
+        await microtasksFinished();
+
+        assertEquals(1, omniboxComposebox.attachedContext.size);
+        assertEquals(
+            ContextUploadStatus.kUploadStarted,
+            omniboxComposebox.attachedContext.get(testToken)?.status);
+      });
+
+  test(
+      'early upload failure before addSearchContext does not attach the file',
+      async () => {
+        omniboxComposebox.i18n = (key: string) => key;
+        const testToken = '12345678901234567890123456789108';
+        for (const status
+                 of [ContextUploadStatus.kProcessing,
+                     ContextUploadStatus.kUploadFailed]) {
+          testProxy.page.onContextualInputStatusChanged(
+              testToken, status, null);
+        }
+        await testProxy.page.$.flushForTesting();
+        await omniboxComposebox.updateComplete;
+
+        omniboxComposebox.addSearchContext({
+          input: '',
+          attachments: [{
+            fileAttachment: {
+              uuid: testToken,
+              name: 'doc.pdf',
+              mimeType: 'application/pdf',
+              imageDataUrl: null,
+              thumbnailUrl: null,
+              errorType: null,
+              iconUrl: null,
+            },
+          }],
+          toolMode: 0,
+          modelMode: 0,
+        });
+        await microtasksFinished();
+
+        assertEquals(0, omniboxComposebox.attachedContext.size);
+        assertTrue(omniboxComposebox.fileUploadsComplete);
+        assertEquals(
+            'composeboxFileUploadFailed', omniboxComposebox.errorMessage);
+        assertEquals(1, testProxy.handler.getCallCount('deleteContext'));
+      });
+
   test('addTabContextHandleCallback failure sets errorMessage', async () => {
     testProxy.handler.setPromiseRejectFor(
         'addTabContext',
@@ -1101,14 +1259,12 @@ suite('OmniboxComposeboxTest', () => {
     omniboxComposebox.lastQueriedInput = 'test';
     await omniboxComposebox.updateComplete;
     await microtasksFinished();
-    const matches =
-        [createSearchMatchForTesting({allowedToBeDefaultMatch: true})];
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          input: 'test',
-          matches,
-        }));
+    const matches = [createSearchMatch({allowedToBeDefaultMatch: true})];
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      input: 'test',
+      matches,
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
 
@@ -1673,13 +1829,12 @@ suite('OmniboxComposeboxTest', () => {
 
   test('suggestion activity link triggers navigation', async () => {
     // Mock results to show the link.
-    const matches = [createSearchMatchForTesting()];
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          matches: matches,
-          showAimActivityLink: true,
-        }));
+    const matches = [createSearchMatch()];
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      matches: matches,
+      showAimActivityLink: true,
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
     await omniboxComposebox.updateComplete;
@@ -1717,13 +1872,12 @@ suite('OmniboxComposeboxTest', () => {
   test(
       'suggestion activity link hidden when suggestions are non canned',
       async () => {
-        const matches = [createSearchMatchForTesting()];
-        testProxy.page.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
-              queryId: omniboxComposebox.activeQueryId,
-              matches: matches,
-              showAimActivityLink: false,
-            }));
+        const matches = [createSearchMatch()];
+        testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+          queryId: omniboxComposebox.activeQueryId,
+          matches: matches,
+          showAimActivityLink: false,
+        }));
         await testProxy.page.$.flushForTesting();
         await microtasksFinished();
         await omniboxComposebox.updateComplete;
@@ -1734,12 +1888,11 @@ suite('OmniboxComposeboxTest', () => {
       });
 
   test('suggestion activity link hidden once the user types', async () => {
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          matches: [createSearchMatchForTesting()],
-          showAimActivityLink: true,
-        }));
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      matches: [createSearchMatch()],
+      showAimActivityLink: true,
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
     await omniboxComposebox.updateComplete;
@@ -2244,12 +2397,11 @@ suite('OmniboxComposeboxTest', () => {
       const hint = 't';
 
       omniboxComposebox.haveReceivedSynchronousAutocompleteResponse = true;
-      testProxy.page.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
-            queryId: omniboxComposebox.activeQueryId,
-            input: 'tes',
-            smartComposeInlineHint: hint,
-          }));
+      testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+        queryId: omniboxComposebox.activeQueryId,
+        input: 'tes',
+        smartComposeInlineHint: hint,
+      }));
       await testProxy.page.$.flushForTesting();
       await microtasksFinished();
 
@@ -2298,12 +2450,11 @@ suite('OmniboxComposeboxTest', () => {
 
             omniboxComposebox.haveReceivedSynchronousAutocompleteResponse =
                 true;
-            testProxy.page.autocompleteResultChanged(
-                createAutocompleteResultForTesting({
-                  queryId: omniboxComposebox.activeQueryId,
-                  input: 'tes.',
-                  smartComposeInlineHint: hint,
-                }));
+            testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+              queryId: omniboxComposebox.activeQueryId,
+              input: 'tes.',
+              smartComposeInlineHint: hint,
+            }));
             await testProxy.page.$.flushForTesting();
             await microtasksFinished();
 
@@ -2348,12 +2499,11 @@ suite('OmniboxComposeboxTest', () => {
 
             omniboxComposebox.haveReceivedSynchronousAutocompleteResponse =
                 true;
-            testProxy.page.autocompleteResultChanged(
-                createAutocompleteResultForTesting({
-                  queryId: omniboxComposebox.activeQueryId,
-                  input: 'tes.',
-                  smartComposeInlineHint: hint,
-                }));
+            testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+              queryId: omniboxComposebox.activeQueryId,
+              input: 'tes.',
+              smartComposeInlineHint: hint,
+            }));
             await testProxy.page.$.flushForTesting();
             await microtasksFinished();
 
@@ -2383,12 +2533,11 @@ suite('OmniboxComposeboxTest', () => {
           const hint = 'a';
 
           omniboxComposebox.haveReceivedSynchronousAutocompleteResponse = true;
-          testProxy.page.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
-                queryId: omniboxComposebox.activeQueryId,
-                input: 'test',
-                smartComposeInlineHint: hint,
-              }));
+          testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+            queryId: omniboxComposebox.activeQueryId,
+            input: 'test',
+            smartComposeInlineHint: hint,
+          }));
           await testProxy.page.$.flushForTesting();
           await microtasksFinished();
 
@@ -2453,6 +2602,55 @@ suite('OmniboxComposeboxTest', () => {
       assertTrue(!!faviconGroup);
       assertEquals(1, faviconGroup.tabs.length);
     });
+  });
+
+  test('Entrypoint keeps its height when tab favicons are shown', async () => {
+    loadTimeData.overrideValues({
+      contextManagementInOmniboxEnabled: true,
+      tabFaviconChipsToCoinsEnabled: true,
+    });
+    omniboxComposebox.remove();
+    omniboxComposebox = document.createElement('cr-omnibox-composebox');
+    omniboxComposebox.contextMenuEnabled = true;
+    omniboxComposebox.contextManagementInComposeboxEnabled = true;
+    document.body.appendChild(omniboxComposebox);
+    await microtasksFinished();
+
+    const entrypointButton = omniboxComposebox.shadowRoot.querySelector(
+        'cr-composebox-contextual-entrypoint-button');
+    assertTrue(!!entrypointButton);
+    const iconButton =
+        entrypointButton.shadowRoot.querySelector<HTMLElement>('#entrypoint');
+    assertTrue(!!iconButton);
+    assertFalse(iconButton.classList.contains('pill-button'));
+    assertEquals(32, iconButton.getBoundingClientRect().height);
+
+    testProxy.handler.setPromiseResolveFor(
+        'addTabContext', 'mock-tab-token-height');
+    const context = {
+      input: '',
+      attachments: [{
+        tabAttachment: {
+          tabId: 42,
+          title: 'Google Search',
+          url: 'about:blank',  // Mojo converts obj to str.
+          source: TabAttachmentSource.kContextMenu,
+        },
+      }],
+      toolMode: ToolMode.kUnspecified,
+      modelMode: ModelMode.kUnspecified,
+    };
+    omniboxComposebox.addSearchContext(context as unknown as SearchContext);
+    await testProxy.handler.whenCalled('addTabContext');
+    await microtasksFinished();
+    await omniboxComposebox.updateComplete;
+    await entrypointButton.updateComplete;
+
+    const pill =
+        entrypointButton.shadowRoot.querySelector<HTMLElement>('#entrypoint');
+    assertTrue(!!pill);
+    assertTrue(pill.classList.contains('pill-button'));
+    assertEquals(32, pill.getBoundingClientRect().height);
   });
 
   suite('voice search', () => {
@@ -3318,10 +3516,10 @@ suite('OmniboxComposeboxTest', () => {
 
   suite('RichImageSuggestions', () => {
     function createGridAutocompleteResult() {
-      return createAutocompleteResultForTesting({
+      return createAutocompleteResult({
         queryId: omniboxComposebox.activeQueryId,
         matches: [
-          createSearchMatchForTesting({
+          createSearchMatch({
             allowedToBeDefaultMatch: false,
             suggestionGroupId: 100,
           }),
@@ -3382,11 +3580,10 @@ suite('OmniboxComposeboxTest', () => {
 
       assertTrue(omniboxComposebox.hasAttribute('has-grid'));
 
-      testProxy.page.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
-            queryId: omniboxComposebox.activeQueryId,
-            matches: [],
-          }));
+      testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+        queryId: omniboxComposebox.activeQueryId,
+        matches: [],
+      }));
       await testProxy.page.$.flushForTesting();
       await microtasksFinished();
 
@@ -3412,23 +3609,22 @@ suite('OmniboxComposeboxTest', () => {
     test(
         'does not set has-grid attribute for non-grid suggestions',
         async () => {
-          testProxy.page.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
-                queryId: omniboxComposebox.activeQueryId,
-                matches: [
-                  createSearchMatchForTesting({
-                    allowedToBeDefaultMatch: false,
-                    suggestionGroupId: 100,
-                  }),
-                ],
-                suggestionGroupsMap: {
-                  100: {
-                    header: 'Default',
-                    renderType: RenderType.kDefaultVertical,
-                    sideType: SideType.kDefaultPrimary,
-                  },
-                },
-              }));
+          testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+            queryId: omniboxComposebox.activeQueryId,
+            matches: [
+              createSearchMatch({
+                allowedToBeDefaultMatch: false,
+                suggestionGroupId: 100,
+              }),
+            ],
+            suggestionGroupsMap: {
+              100: {
+                header: 'Default',
+                renderType: RenderType.kDefaultVertical,
+                sideType: SideType.kDefaultPrimary,
+              },
+            },
+          }));
           await testProxy.page.$.flushForTesting();
           await microtasksFinished();
 
@@ -3639,12 +3835,11 @@ suite('OmniboxComposeboxPersistentAimButtonTest', () => {
   test('focusin in SEND selects the first match', async () => {
     await createComposebox(true, false, 'TallBottomContext');
     await setInput('test');
-    testProxy.page.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
-          queryId: omniboxComposebox.activeQueryId,
-          input: 'test',
-          matches: [createSearchMatchForTesting({fillIntoEdit: 'test'})],
-        }));
+    testProxy.page.autocompleteResultChanged(createAutocompleteResult({
+      queryId: omniboxComposebox.activeQueryId,
+      input: 'test',
+      matches: [createSearchMatch({fillIntoEdit: 'test'})],
+    }));
     await testProxy.page.$.flushForTesting();
     await microtasksFinished();
     assertEquals(-1, omniboxComposebox.selectedMatchIndex);
@@ -3729,10 +3924,10 @@ suite('OmniboxComposeboxPersistentAimButtonTest', () => {
           mockVoiceSearch();
           await createComposebox(true, false, 'TallBottomContext');
           await setInput('test');
-          await sendResult(createAutocompleteResultForTesting({
+          await sendResult(createAutocompleteResult({
             queryId: omniboxComposebox.activeQueryId,
             input: 'test',
-            matches: [createSearchMatchForTesting({fillIntoEdit: 'test'})],
+            matches: [createSearchMatch({fillIntoEdit: 'test'})],
           }));
 
           assertTrue(omniboxComposebox.hasAttribute('submit-enabled'));
@@ -3748,9 +3943,9 @@ suite('OmniboxComposeboxPersistentAimButtonTest', () => {
       mockVoiceSearch();
       await createComposebox(true, false, 'TallBottomContext');
       await setInput('test');
-      await sendResult(createAutocompleteResultForTesting({
+      await sendResult(createAutocompleteResult({
         queryId: omniboxComposebox.activeQueryId,
-        matches: [createSearchMatchForTesting({
+        matches: [createSearchMatch({
           allowedToBeDefaultMatch: false,
           suggestionGroupId: 100,
         })],

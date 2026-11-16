@@ -464,15 +464,19 @@ chromium-metrics-reviews@google.com.
   <int value="12" label="kExpiredLogFileDuringSession"/>
 </enum>
 
-<enum name="WebRtcFallbackSelectSourceResult">
+<enum name="WebRtcFallbackStartOutcome">
   <summary>
-    Combined SelectSource() results of the main and secondary capturers in
-    webrtc::FallbackDesktopCapturerWrapper::SelectSourceResult.
+    Records how a capture with webrtc::FallbackDesktopCapturerWrapper started,
+    from webrtc::FallbackDesktopCapturerWrapper::StartOutcome. Main is the
+    primary capturer and Secondary is its fallback.
   </summary>
-  <int value="0" label="MainSucceededSecondarySucceeded"/>
-  <int value="1" label="MainSucceededSecondaryFailed"/>
-  <int value="2" label="MainFailedSecondarySucceeded"/>
-  <int value="3" label="MainFailedSecondaryFailed"/>
+  <int value="0" label="MainWorked"/>
+  <int value="1" label="MainAcceptedSecondaryRejected"/>
+  <int value="2" label="MainRejectedSecondaryRejected"/>
+  <int value="3" label="MainRejectedSecondaryWorked"/>
+  <int value="4" label="MainRejectedSecondaryFailed"/>
+  <int value="5" label="MainStartErrorSecondaryWorked"/>
+  <int value="6" label="MainStartErrorSecondaryFailed"/>
 </enum>
 
 <enum name="WebRtcH264DecoderImplEvent">
@@ -488,12 +492,15 @@ chromium-metrics-reviews@google.com.
 <enum name="WebRtcLoggingUploadFailureReason">
   <summary>
     Failure reason can be either a response code (except 200 OK) for the upload
-    HTTP request, or another reason prior to uploading (values less than 100).
-    HTTP response codes copied from enum &quot;HttpResponseCode&quot;.
+    HTTP request, or a non-HTTP reason (values less than 100), such as an
+    invalid state, a network error, or a 200 OK response whose body is not a
+    valid report ID. HTTP response codes copied from enum
+    &quot;HttpResponseCode&quot;.
   </summary>
   <int value="0" label="Invalid state"/>
   <int value="1" label="Stored log not found"/>
   <int value="2" label="Network error"/>
+  <int value="3" label="Invalid report ID"/>
   <int value="100" label="100: Continue"/>
   <int value="101" label="101: Switching Protocols"/>
   <int value="102" label="102: Processing"/>

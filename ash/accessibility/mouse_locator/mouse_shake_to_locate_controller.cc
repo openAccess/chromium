@@ -5,9 +5,11 @@
 #include "ash/accessibility/mouse_locator/mouse_shake_to_locate_controller.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "ash/accessibility/accessibility_event_handler_manager.h"
+#include "ash/constants/ash_constants.h"
 #include "ash/shell.h"
 #include "ash/utility/cursor_setter.h"
 #include "base/check.h"
@@ -20,7 +22,6 @@
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/window.h"
 #include "ui/base/cursor/cursor.h"
-#include "ui/base/cursor/cursor_size.h"
 #include "ui/events/event.h"
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/animation/linear_animation.h"
@@ -48,17 +49,10 @@ class MouseShakeToLocateController::ScopedEnlargedCursor
                           gfx::LinearAnimation::kDefaultFrameRate,
                           this),
         on_shrink_ended_(std::move(on_shrink_ended)) {
-    auto* cursor_manager = Shell::Get()->cursor_manager();
-    original_cursor_size_ = cursor_manager->GetCursorSize();
-    original_large_cursor_size_ = cursor_manager->GetLargeCursorSizeInDip();
+    original_custom_cursor_size_ =
+        Shell::Get()->cursor_manager()->GetCustomCursorSize();
 
     EnlargeCursor();
-    // The SetLargeCursorSizeInDip() call in EnlargeCursor() only takes effect
-    // when the cursor size is ui::CursorSize::kLarge, so if the cursor is
-    // normal size, we need to set it to kLarge.
-    if (!WasEnlargedCursor()) {
-      cursor_manager->SetCursorSize(ui::CursorSize::kLarge);
-    }
     Shell::Get()->UpdateCursorCompositingEnabled();
 
     cursor_setter_ = std::make_unique<CursorSetter>();
@@ -74,10 +68,8 @@ class MouseShakeToLocateController::ScopedEnlargedCursor
   ~ScopedEnlargedCursor() override {
     shrink_animation_.Stop();
 
-    // Switch the cursor size first so that, when returning to `kNormal`, the
-    // hidden large size is restored after `kNormal` is already visible.
-    Shell::Get()->cursor_manager()->SetCursorSize(original_cursor_size_);
-    Shell::Get()->SetLargeCursorSizeInDip(original_large_cursor_size_);
+    Shell::Get()->cursor_manager()->SetCustomCursorSize(
+        original_custom_cursor_size_);
 
     cursor_setter_.reset();
     Shell::Get()->UpdateCursorCompositingEnabled();
@@ -89,14 +81,22 @@ class MouseShakeToLocateController::ScopedEnlargedCursor
 
   // Animates the cursor from its enlarged size back down to the target size.
   void ShrinkCursor() {
-    shrink_start_size_ =
-        Shell::Get()->cursor_manager()->GetLargeCursorSizeInDip();
-    shrink_target_size_ = WasEnlargedCursor() ? original_large_cursor_size_
-                                              : ui::kMinLargeCursorSize;
-    CHECK_GE(shrink_start_size_, ui::kMinLargeCursorSize);
-    CHECK_LE(shrink_start_size_, ui::kMaxLargeCursorSize);
-    CHECK_GE(shrink_target_size_, ui::kMinLargeCursorSize);
-    CHECK_LE(shrink_target_size_, ui::kMaxLargeCursorSize);
+    const std::optional<int> current_custom_cursor_size =
+        Shell::Get()->cursor_manager()->GetCustomCursorSize();
+    // Another feature (e.g. docked magnifier) may have reset the cursor size
+    // while the cursor is enlarged. There is nothing to shrink in that case.
+    if (!current_custom_cursor_size) {
+      std::move(on_shrink_ended_).Run();
+      return;
+    }
+
+    shrink_start_size_ = *current_custom_cursor_size;
+    shrink_target_size_ = WasEnlargedCursor() ? *original_custom_cursor_size_
+                                              : kMinLargeCursorSize;
+    CHECK_GE(shrink_start_size_, kMinLargeCursorSize);
+    CHECK_LE(shrink_start_size_, kMaxLargeCursorSize);
+    CHECK_GE(shrink_target_size_, kMinLargeCursorSize);
+    CHECK_LE(shrink_target_size_, kMaxLargeCursorSize);
 
     if (shrink_start_size_ <= shrink_target_size_) {
       std::move(on_shrink_ended_).Run();
@@ -111,34 +111,32 @@ class MouseShakeToLocateController::ScopedEnlargedCursor
     CHECK_EQ(animation, &shrink_animation_);
     const int size = gfx::Tween::IntValueBetween(
         animation->GetCurrentValue(), shrink_start_size_, shrink_target_size_);
-    Shell::Get()->SetLargeCursorSizeInDip(size);
+    Shell::Get()->cursor_manager()->SetCustomCursorSize(size);
   }
   void AnimationEnded(const gfx::Animation* animation) override {
     CHECK_EQ(animation, &shrink_animation_);
-    // Write the exact endpoint before switching from `kLarge` to `kNormal`.
-    Shell::Get()->SetLargeCursorSizeInDip(shrink_target_size_);
+    // This destroys `this`, which restores the original cursor size.
     std::move(on_shrink_ended_).Run();
   }
 
  private:
   // Whether the cursor was already enlarged when the current shake began.
   bool WasEnlargedCursor() const {
-    return original_cursor_size_ == ui::CursorSize::kLarge;
+    return original_custom_cursor_size_.has_value();
   }
 
   // Immediately sets the cursor to its enlarged shake size.
   void EnlargeCursor() {
-    Shell::Get()->SetLargeCursorSizeInDip(WasEnlargedCursor()
-                                              ? ui::kMaxLargeCursorSize
-                                              : ui::kDefaultLargeCursorSize);
+    Shell::Get()->cursor_manager()->SetCustomCursorSize(
+        WasEnlargedCursor() ? kMaxLargeCursorSize : kDefaultLargeCursorSize);
   }
 
   gfx::LinearAnimation shrink_animation_;
   int shrink_start_size_ = 0;
   int shrink_target_size_ = 0;
 
-  ui::CursorSize original_cursor_size_ = ui::CursorSize::kNormal;
-  int original_large_cursor_size_ = 0;
+  // The custom cursor size when the current shake began.
+  std::optional<int> original_custom_cursor_size_;
 
   // Overrides the cursor type to `kPointer` across all root windows while the
   // cursor is enlarged, and restores each window's previous cursor on reset.

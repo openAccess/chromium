@@ -394,6 +394,7 @@ String ComputeBaseComputedStyleDiff(const ComputedStyle* base_computed_style,
   exclusions.insert(DebugField::is_css_inert_is_inherited_);
   exclusions.insert(DebugField::is_html_inert_);
   exclusions.insert(DebugField::is_html_inert_is_inherited_);
+  exclusions.insert(DebugField::can_escape_overscroll_inertness_);
 
   Vector<DebugDiff> diff = base_computed_style->DebugDiffFields(computed_style);
 
@@ -945,7 +946,12 @@ void MatchElementScopeRules(const Element& element,
                             ElementRuleCollector& collector,
                             StyleRuleUsageTracker* tracker) {
   ScopedStyleResolver* element_scope_resolver = ScopedResolverFor(element);
-  UAShadowPseudoResult spr = UAShadowPseudoCascading(element);
+  // UA shadow pseudo-element cascading and ::part() rules only apply to
+  // elements inside shadow trees.
+  const bool in_shadow_tree = element.IsInShadowTree();
+  const bool cascade_style_attribute_in_parent_scope =
+      in_shadow_tree &&
+      UAShadowPseudoCascading(element).cascade_style_attribute_in_parent_scope;
 
   collector.BeginAddingAuthorRulesForTreeScope(element.GetTreeScope());
   if (element_scope_resolver) {
@@ -955,11 +961,13 @@ void MatchElementScopeRules(const Element& element,
     element_scope_resolver->CollectMatchingElementScopeRules(
         element.GetTreeScope().RootNode(), collector,
         /*part_shadow_host*/ nullptr);
-    MatchHostPartRules(element, collector, tracker);
+    if (in_shadow_tree) {
+      MatchHostPartRules(element, collector, tracker);
+    }
     collector.SortAndTransferMatchedRules(
         CascadeOrigin::kAuthor, /*is_vtt_embedded_style=*/false, tracker);
   }
-  if (!spr.cascade_style_attribute_in_parent_scope) {
+  if (!cascade_style_attribute_in_parent_scope) {
     MatchStyleAttribute(element, collector, tracker);
   }
 }
@@ -1092,11 +1100,19 @@ void StyleResolver::MatchAuthorRules(const Element& element,
                                      ElementRuleCollector& collector) {
   const Element& originating_element =
       UltimateOriginatingElementOrSelf(element);
+  // Pseudo-elements are in the same tree scope as their originating element.
+  const bool in_shadow_tree = originating_element.IsInShadowTree();
   MatchHostRules(originating_element, collector, tracker_);
-  MatchSlottedRules(originating_element, collector, tracker_);
+  // ::slotted() rules can only match slotted elements (children of shadow
+  // hosts), or UA shadow pseudo-elements (see MatchSlottedRulesForUAHost()).
+  if (in_shadow_tree || IsShadowHost(originating_element.parentElement())) {
+    MatchSlottedRules(originating_element, collector, tracker_);
+  }
   MatchElementScopeRules(element, collector, tracker_);
-  MatchOuterScopeRules(originating_element, collector, tracker_);
-  MatchVTTRules(element, collector, tracker_);
+  if (in_shadow_tree) {
+    MatchOuterScopeRules(originating_element, collector, tracker_);
+    MatchVTTRules(element, collector, tracker_);
+  }
   MatchPositionTryRules(collector);
 }
 
@@ -1341,16 +1357,17 @@ void StyleResolver::MatchAllRules(StyleResolverState& state,
     // Now check SMIL animation override style.
     auto* svg_element = DynamicTo<SVGElement>(element);
     if (include_smil_properties && svg_element) {
-      if (SVGElement* corresponding = svg_element->CorrespondingElement()) {
-        // According to the spec[1], animations that are cloned into the <use>
-        // shadow tree, should run in that tree, while animations applied to
-        // the referenced element which are not cloned should have an instance
-        // in the <use> tree as if it was cloned.
-        //
-        // We apply the animations from the referenced subtree for now.
-        //
-        // [1] https://svgwg.org/svg2-draft/struct.html#UseAnimations
-        svg_element = corresponding;
+      // Animations cloned into the <use> shadow tree run on the instance
+      // elements, so an instance uses its own SMIL properties rather than the
+      // referenced element's. See
+      // https://svgwg.org/svg2-draft/struct.html#UseAnimations.
+      if (!RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+        // Take SMIL properties from the referenced element. The animations are
+        // not cloned into the <use> shadow tree, so the instance has none of
+        // its own.
+        if (SVGElement* corresponding = svg_element->CorrespondingElement()) {
+          svg_element = corresponding;
+        }
       }
       collector.AddElementStyleProperties(
           svg_element->AnimatedSMILStyleProperties(), CascadeOrigin::kAuthor,
@@ -2663,11 +2680,6 @@ const ComputedStyle* StyleResolver::StyleForText(Text* text_node) {
   return nullptr;
 }
 
-void StyleResolver::AddMatchedRulesToTracker(
-    const ElementRuleCollector& collector) {
-  collector.AddMatchedRulesToTracker(tracker_);
-}
-
 StyleRuleList* StyleResolver::StyleRulesForElement(Element* element,
                                                    unsigned rules_to_include) {
   DCHECK(element);
@@ -2734,10 +2746,6 @@ RuleIndexList* StyleResolver::PseudoCSSRulesForElement(
   collector.SetMode(SelectorChecker::kCollectingCSSRules);
   CollectPseudoRulesForElement(*element, collector, pseudo_id, pseudo_argument,
                                rules_to_include);
-
-  if (tracker_) {
-    AddMatchedRulesToTracker(collector);
-  }
   return collector.MatchedCSSRuleList();
 }
 
@@ -2809,6 +2817,9 @@ bool StyleResolver::ApplyAnimatedStyle(
   if (!animating_element) {
     return false;
   }
+
+  StyleEngine::InApplyAnimatedStyleScope in_apply_animated_style_scope(
+      GetDocument().GetStyleEngine());
 
   if (HasTimelines(state)) {
     CSSAnimations::CalculateTimelineUpdate(
@@ -3015,6 +3026,8 @@ StyleResolver::CacheSuccess StyleResolver::ApplyMatchedCache(
           ? state.OriginatingElementStyle()->InheritedVariables().GetHash()
           : state.ParentStyle()->InheritedVariables().GetHash();
   inherited_hash ^= state.ParentStyle()->HashInheritedBitFields();
+  inherited_hash ^=
+      state.ParentStyle()->IndependentInheritedAnimatedSources().GetHash();
   inherited_hash ^= HashFloat(
       state.ParentStyle()->GetFont()->GetFontDescription().ComputedSize());
   // Used by the StyleAdjuster.
@@ -3108,14 +3121,17 @@ StyleResolver::CacheSuccess StyleResolver::ApplyMatchedCache(
     // This can be overridden by matched properties, so we don't want to do
     // it when we have a cache hit; both this fixup and any overriding of it
     // have already been applied in the cached data.
-    if (!IsForPseudoElement(element, style_request) && element.AssignedSlot()) {
+    if (!IsForPseudoElement(element, style_request)) {
       if (Element* parent = element.parentElement()) {
-        if (!RuntimeEnabledFeatures::
-                InheritUserModifyWithoutContenteditableEnabled() ||
-            !element.FastHasAttribute(html_names::kContenteditableAttr)) {
-          if (const ComputedStyle* shadow_host_style =
-                  parent->GetComputedStyle()) {
-            state.StyleBuilder().SetUserModify(shadow_host_style->UserModify());
+        if (IsShadowHost(*parent) && element.AssignedSlot()) {
+          if (!RuntimeEnabledFeatures::
+                  InheritUserModifyWithoutContenteditableEnabled() ||
+              !element.FastHasAttribute(html_names::kContenteditableAttr)) {
+            if (const ComputedStyle* shadow_host_style =
+                    parent->GetComputedStyle()) {
+              state.StyleBuilder().SetUserModify(
+                  shadow_host_style->UserModify());
+            }
           }
         }
       }
@@ -3256,10 +3272,18 @@ const CSSValue* StyleResolver::ComputeValue(
     CSSToLengthConversionData::Flags& flags,
     bool& has_random,
     bool& has_attr) {
+  if (!element || !element->GetComputedStyle()) {
+    return nullptr;
+  }
   Document& document = element->GetDocument();
   document.GetStyleEngine().UpdateViewportSize();
-  const ComputedStyle* base_style = element->GetComputedStyle();
   StyleResolverState state(document, *element);
+  // Constructing StyleResolverState resolves flat tree ancestors and may
+  // recalculate slot assignments, detaching unslotted elements.
+  const ComputedStyle* base_style = element->GetComputedStyle();
+  if (!base_style) {
+    return nullptr;
+  }
   state.EnsureParentStyle();
   STACK_UNINITIALIZED StyleCascade cascade(state);
   state.CreateNewClonedStyle(*base_style);

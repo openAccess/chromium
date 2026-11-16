@@ -8,7 +8,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
+#include "base/files/file_path.h"
+#include "sandbox/linux/syscall_broker/broker_file_permission.h"
 #include "sandbox/policy/linux/sandbox_linux.h"
 
 namespace vr {
@@ -38,6 +41,21 @@ struct XrRuntimeManifest {
 // Parses |json|, the contents of an OpenXR runtime manifest. Returns nullopt
 // if it is not a manifest naming a runtime library. Exposed for testing.
 std::optional<XrRuntimeManifest> ParseXrRuntimeManifest(std::string_view json);
+
+// Uses dlopen(RTLD_NOLOAD) to give the already-loaded runtime the relative path
+// the OpenXR loader will use. This avoids reopening paths containing "." or
+// ".." that the file broker rejects. Returns true on success; skips absolute
+// paths and bare library names. Exposed for testing.
+bool AliasRuntimeLibraryForLoader(const std::string& manifest_path,
+                                  const std::string& library_path);
+
+// Allow reads of the NixOS driver profile and its backing directories.
+std::vector<sandbox::syscall_broker::BrokerFilePermission>
+GetNixOsDriverFilePermissions(const base::FilePath& driver_dir);
+
+// Allow the NVIDIA device nodes and driver parameters used by the XR runtime.
+std::vector<sandbox::syscall_broker::BrokerFilePermission>
+GetNvidiaDriverFilePermissions();
 
 // Pre-sandbox hook for the XR Device Service (kXrCompositing) on Linux: maps
 // the OpenXR loader and active runtime in before the sandbox seals, and

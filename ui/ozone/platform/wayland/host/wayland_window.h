@@ -177,6 +177,23 @@ class WaylandWindow : public PlatformWindow,
 
   WaylandBubble* active_bubble() { return active_bubble_; }
 
+  // Takes over a child bubble's `subsurface` and/or `surface`, deferring their
+  // destruction until this window's in-flight applied state request commits:
+  // - If `surface` is null and `subsurface` is non-null, the child is hiding.
+  //   When nothing is in flight, `subsurface` is returned so the caller can
+  //   destroy it after detaching its buffer in `Hide()`.
+  // - If `subsurface` is null and `surface` is non-null, the child is being
+  //   destroyed after hiding.
+  // - If both are non-null, the child is being destroyed directly.
+  // - If both are null, the child is showing again; destroy its pending
+  //   subsurface immediately.
+  // TODO(crbug.com/409838505): Remove this workaround once Mutter unmaps and
+  // removes destroyed subsurfaces while the parent window actor is frozen.
+  wl::Object<wl_subsurface> RemoveChildSubsurface(
+      gfx::AcceleratedWidget child,
+      std::unique_ptr<WaylandSurface> surface,
+      wl::Object<wl_subsurface> subsurface);
+
   // Tentatively determines and returns the scale factor for this window based
   // on its currently entered wl_outputs, see GetPreferredEnteredOutputId()
   // description for more details. Returns null when the outputs are not ready.
@@ -281,6 +298,7 @@ class WaylandWindow : public PlatformWindow,
     bool is_activated = false;
     bool is_minimized = false;
     bool is_suspended = false;
+    bool is_resizing = false;
     WindowTiledEdges tiled_edges;
 
     // Dumps the values of the states into a string.
@@ -307,6 +325,9 @@ class WaylandWindow : public PlatformWindow,
   // and sends the appropriate acks back to the wayland server.
   virtual void OnSequencePoint(int64_t seq) = 0;
 
+  // Called after `root_surface_` commits a frame for `seq`.
+  virtual void OnFrameCommitted(int64_t seq);
+
   // Called by shell surfaces to indicate that this window can start submitting
   // frames. Updating state based on configure is handled separately to this.
   void OnSurfaceConfigureEvent();
@@ -320,6 +341,16 @@ class WaylandWindow : public PlatformWindow,
   const PlatformWindowDelegate::State& latched_state() const {
     return latched_state_;
   }
+
+  // Returns the size of the root surface in Wayland DIP (i.e. not scaled by
+  // `ui_scale`) for `state`: its window geometry plus decoration insets.
+  gfx::Size GetSurfaceSizeInWaylandDIP(
+      const PlatformWindowDelegate::State& state) const;
+
+  // Returns the origin of the window geometry in Wayland DIP for `state`, i.e.
+  // the top-left decoration insets scaled by `ui_scale`.
+  gfx::Point GetWindowGeometryOriginInWaylandDIP(
+      const PlatformWindowDelegate::State& state) const;
 
   // Tells if the surface has already been configured. This will be true after
   // the first set of configure event and ack request, meaning that wl_surface
@@ -439,6 +470,26 @@ class WaylandWindow : public PlatformWindow,
 
   const gfx::Rect& restored_bounds_dip() const { return restored_bounds_dip_; }
 
+  // Sets the restored bounds together with their window geometry size in
+  // Wayland DIP. An empty `geometry_size_dip` means it is derived from
+  // `bounds` when needed.
+  void SetRestoredGeometry(const gfx::Rect& bounds,
+                           const gfx::Size& geometry_size_dip);
+
+  // Returns the window geometry size of the restored bounds in Wayland DIP:
+  // the stored one, or one derived from `restored_bounds_dip()`.
+  gfx::Size GetRestoredGeometrySizeDIP() const;
+
+  // Convert between the window geometry size in Wayland DIP (see
+  // `PlatformWindowDelegate::State::geometry_size_dip`) and the size of
+  // `bounds_dip` in UI DIP, which includes decoration insets.
+  gfx::Size GeometrySizeToBoundsSizeDIP(const gfx::Size& geometry_size_dip,
+                                        PlatformWindowState window_state,
+                                        float ui_scale) const;
+  gfx::Size BoundsSizeToGeometrySizeDIP(const gfx::Size& bounds_size_dip,
+                                        PlatformWindowState window_state,
+                                        float ui_scale) const;
+
   WaylandFrameManager* frame_manager() { return frame_manager_.get(); }
 
   // Configure related:
@@ -511,12 +562,21 @@ class WaylandWindow : public PlatformWindow,
   // become invalid. Clear them so we do not get "wrong configure serial" error.
   void ClearInFlightRequestsSerial();
 
+  // Notifies subclasses after a state request has been applied and assigned its
+  // `viz_seq`, before any immediate sequence-point latching runs.
+  virtual void OnStateRequestApplied(
+      const PlatformWindowDelegate::State& old_state,
+      const PlatformWindowDelegate::State& new_state,
+      int64_t viz_seq,
+      bool from_client) {}
+
   // PendingConfigureState describes the content of a configure sent from the
   // wayland server.
   struct PendingConfigureState {
     std::optional<PlatformWindowState> window_state;
     std::optional<WindowTiledEdges> tiled_edges;
     std::optional<gfx::Rect> bounds_dip;
+    std::optional<gfx::Size> geometry_size_dip;
     std::optional<gfx::Size> size_px;
   };
 
@@ -526,10 +586,23 @@ class WaylandWindow : public PlatformWindow,
   // create a StateRequest for this pending State.
   PendingConfigureState pending_configure_state_;
 
+  void set_shutting_down() { shutting_down_ = true; }
+
+  // Drag controllers might need to take ownership of the dnd origin surface
+  // when its associated window gets closed in the middle of the session (e.g:
+  // in the process of being snapped into a tab strip) to prevent the drag
+  // session from getting cancelled abruptly by the Wayland compositor, and
+  // `WaylandBubble` may transfer its surface to its parent window on
+  // destruction. Surface ownership is allowed to be transferred only when the
+  // window is already under destruction (i.e: |shutting_down_| is set).
+  std::unique_ptr<WaylandSurface> TakeWaylandSurface();
+
  private:
   friend class WaylandBufferManagerViewportTest;
   friend class BlockableWaylandToplevelWindow;
   friend class WaylandWindowManager;
+  friend WaylandWindowDragController;
+  friend WaylandDataDragController;
 
   FRIEND_TEST_ALL_PREFIXES(WaylandScreenTest, SetWindowScale);
   FRIEND_TEST_ALL_PREFIXES(WaylandBufferManagerTest, CanSubmitOverlayPriority);
@@ -547,17 +620,6 @@ class WaylandWindow : public PlatformWindow,
   // Additional initialization of derived classes.
   virtual bool OnInitialize(PlatformWindowInitProperties properties,
                             PlatformWindowDelegate::State* state) = 0;
-
-  // Drag controllers might need to take ownership of the dnd origin surface
-  // when its associated window gets closed in the middle of the session (e.g:
-  // in the process of being snapped into a tab strip) to prevent the drag
-  // session from getting cancelled abruptly by the Wayland compositor. Surface
-  // ownership is allowed to be transferred only when the window is already
-  // under destruction (i.e: |shutting_down_| is set) which can be done, for
-  // example, by implementing |WaylandWindowObserver::OnWindowRemoved|.
-  friend WaylandWindowDragController;
-  friend WaylandDataDragController;
-  std::unique_ptr<WaylandSurface> TakeWaylandSurface();
 
   void UpdateCursorShape(scoped_refptr<BitmapCursor> cursor);
 
@@ -581,7 +643,34 @@ class WaylandWindow : public PlatformWindow,
 
     // Whether this request has been applied.
     bool applied = false;
+
+    // True if this request originated from the client rather than a server
+    // configure event.
+    bool from_client = false;
   };
+
+  // Holds a hidden or destroyed child bubble's subsurface (and surface if the
+  // bubble was destroyed) until `root_surface_` commits the frame for
+  // `after_seq`.
+  // TODO(crbug.com/409838505): Remove this workaround once Mutter unmaps and
+  // removes destroyed subsurfaces while the parent window actor is frozen.
+  struct PendingSubsurfaceDestroy {
+    PendingSubsurfaceDestroy(int64_t after_seq,
+                             gfx::AcceleratedWidget child_widget,
+                             std::unique_ptr<WaylandSurface> surface,
+                             wl::Object<wl_subsurface> subsurface);
+    PendingSubsurfaceDestroy(PendingSubsurfaceDestroy&&) noexcept;
+    PendingSubsurfaceDestroy& operator=(PendingSubsurfaceDestroy&&) noexcept;
+    ~PendingSubsurfaceDestroy();
+
+    int64_t after_seq;
+    gfx::AcceleratedWidget child_widget;
+    // Null while the child is alive and owns its wl_surface.
+    std::unique_ptr<WaylandSurface> surface;
+    wl::Object<wl_subsurface> subsurface;
+  };
+
+  std::optional<int64_t> GetInFlightAppliedVizSeq();
 
   // Latches the given request. This must be called after the frame
   // corresponding to the request is received. This acks the request and updates
@@ -646,6 +735,7 @@ class WaylandWindow : public PlatformWindow,
   // The bounds of the platform window before it went maximized or fullscreen in
   // dip.
   gfx::Rect restored_bounds_dip_;
+  gfx::Size restored_geometry_size_dip_;
 
   // A focus client that, once set, is expected to live at least as long as this
   // window.
@@ -715,6 +805,7 @@ class WaylandWindow : public PlatformWindow,
   // process with the appropriate viz sequence number, ack_configure request
   // with |serial| will be sent to the Wayland compositor if needed.
   base::circular_deque<StateRequest> in_flight_requests_;
+  std::vector<PendingSubsurfaceDestroy> pending_subsurface_destroys_;
 
   // Until all tests work properly with full asynchronicity, we latch
   // immediately based on the value of `UseTestConfigForPlatformWindows()`.

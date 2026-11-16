@@ -4,6 +4,7 @@
 
 #include <optional>
 
+#include "base/command_line.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -18,6 +19,7 @@
 #include "components/autofill/content/browser/test_autofill_client_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
@@ -37,6 +39,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/runtime_feature_state/runtime_feature_state_context.h"
+#include "third_party/blink/public/common/switches.h"
+#include "ui/gfx/image/image.h"
 
 namespace autofill {
 
@@ -74,6 +78,13 @@ class EmailVerificationBrowserTest : public InProcessBrowserTest {
     feature_list_.InitAndEnableFeature(::features::kEmailVerificationProtocol);
   }
 
+  // Avoids dropping simulated key presses that arrive before the first
+  // compositor commit (e.g. on slow bots).
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InProcessBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch(blink::switches::kAllowPreCommitInput);
+  }
+
   void SetUpOnMainThread() override {
     InProcessBrowserTest::SetUpOnMainThread();
     embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
@@ -92,6 +103,7 @@ class EmailVerificationBrowserTest : public InProcessBrowserTest {
                 ShowEmailVerificationPopup,
                 (const gfx::RectF&,
                  const url::Origin&,
+                 const gfx::Image&,
                  const std::u16string&,
                  base::OnceCallback<void(
                      AutofillClient::EmailVerificationPermissionUiStatus)>),
@@ -252,7 +264,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowRendererStorage) {
 
   base::RunLoop popup_run_loop;
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&, const gfx::Image&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -267,8 +279,8 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowRendererStorage) {
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // 3. Wait for the deferred browser task to execute and trigger the popup
@@ -347,7 +359,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
   base::RunLoop popup_run_loop1;
 
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&, const gfx::Image&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -371,8 +383,8 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   popup_run_loop1.Run();
@@ -386,7 +398,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
           base::Milliseconds(100)));
 
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&, const gfx::Image&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -488,7 +500,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest, FullFlowAutocomplete) {
 
   base::RunLoop popup_run_loop;
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&, const gfx::Image&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -595,8 +607,8 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   toast_run_loop.Run();
@@ -684,8 +696,8 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   toast_run_loop.Run();
@@ -740,7 +752,7 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
   TestEmailVerificationAutofillClient* mock_client = client();
   base::RunLoop popup_run_loop;
   EXPECT_CALL(*mock_client, ShowEmailVerificationPopup)
-      .WillOnce([&](const gfx::RectF&, const url::Origin&,
+      .WillOnce([&](const gfx::RectF&, const url::Origin&, const gfx::Image&,
                     const std::u16string&,
                     base::OnceCallback<void(
                         AutofillClient::EmailVerificationPermissionUiStatus)>
@@ -758,8 +770,8 @@ IN_PROC_BROWSER_TEST_F(EmailVerificationBrowserTest,
 
   manager->FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(), field_id,
-      &autofill_profile_.value(), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
+      FillingProduct::kAddress, &autofill_profile_.value(),
+      AutofillTriggerSource::kPopup, /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   popup_run_loop.Run();

@@ -94,6 +94,8 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
                     AdaptiveToolbarFeatures.isTranslateEnabled(profile));
             mRadioButtonGroup.setCanUseGlic(
                     AdaptiveToolbarFeatures.isGlicEnabledForAdaptiveToolbar(context, profile));
+            mRadioButtonGroup.setCanUseTtc(
+                    AdaptiveToolbarFeatures.isTtcEnabledForAdaptiveToolbar());
             maybeSetUiStateFromBundleArgs();
             mRadioButtonGroup.setStatePredictor(
                     new AdaptiveToolbarStatePredictor(
@@ -151,7 +153,7 @@ public class AdaptiveToolbarSettingsFragment extends ChromeBaseSettingsFragment 
         if (activity == null) return false;
         AndroidPermissionDelegate permissionDelegate =
                 new ActivityAndroidPermissionDelegate(new WeakReference<>(activity));
-        return VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate);
+        return VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate, getProfile());
     }
 
     /*package*/ void setCanUseVoiceSearchForTesting(boolean canUseVoiceSearch) {

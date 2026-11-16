@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 
+#include "chrome/browser/ui/animation/browser_animation_controller.h"
+#include "chrome/browser/ui/animation/browser_animation_types.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -11,7 +13,9 @@
 #include "chrome/browser/ui/tabs/tab_group_data.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/views/animations/focus_mode_animations.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/tabs/common/child_view_targeter_delegate.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
@@ -38,6 +42,7 @@
 #include "content/public/browser/navigation_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/list_selection_model.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/scroll_view.h"
@@ -45,6 +50,7 @@
 #include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_targeter.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
@@ -65,8 +71,16 @@ std::unique_ptr<TabGroupView::LayoutManager> CreateTabGroupViewLayout(
   }
   return std::make_unique<TabGroupViewHorizontalLayout>();
 }
-
 }  // namespace
+
+// static
+float TabGroupView::GetFocusSwitchPhaseProgress(float progress,
+                                                bool is_incoming) {
+  constexpr float kHandoff = kFocusSwitchHandoffProgress;
+  return is_incoming
+             ? std::clamp((progress - kHandoff) / (1.0f - kHandoff), 0.0f, 1.0f)
+             : std::clamp(progress / kHandoff, 0.0f, 1.0f);
+}
 
 TabGroupView::TabGroupView(TabCollectionNode* collection_node)
     : DraggedTabsContainer(
@@ -102,6 +116,11 @@ TabGroupView::TabGroupView(TabCollectionNode* collection_node)
               ? TabCollectionAnimatingLayoutManager::AnimationAxis::kHorizontal
               : TabCollectionAnimatingLayoutManager::AnimationAxis::kVertical,
           /*animate_host_size=*/false))) {
+  if (orientation_ == TabStripOrientation::kHorizontal) {
+    SetEventTargeter(std::make_unique<views::ViewTargeter>(
+        std::make_unique<ChildViewTargeterDelegate>()));
+  }
+
   collection_node->set_remove_child_from_node(base::BindRepeating(
       &TabCollectionAnimatingLayoutManager::AnimateAndDestroyChildView,
       base::Unretained(&layout_manager_.get())));
@@ -122,6 +141,14 @@ TabGroupView::TabGroupView(TabCollectionNode* collection_node)
         state_controller->RegisterOnCollapseChanged(base::BindRepeating(
             &TabGroupView::OnCollapseStateChanged, base::Unretained(this)));
   }
+
+  focus_animation_subscription_ =
+      collection_node_->GetController()
+          ->GetBrowserAnimationController()
+          ->Subscribe(
+              FocusModeAnimations::kFocusMode,
+              base::BindRepeating(&TabGroupView::OnFocusAnimationUpdated,
+                                  base::Unretained(this)));
 
   TabGroup* const tab_group =
       const_cast<TabGroup*>(GetTabGroupFromNode(collection_node_));
@@ -179,6 +206,7 @@ void TabGroupView::ToggleCollapsedState(
   if (!collection_node_) {
     return;
   }
+  CHECK(!IsGroupFocused());
 
   const bool is_currently_collapsed = IsCollapsed();
   std::optional<int> new_override;
@@ -200,8 +228,7 @@ void TabGroupView::ToggleCollapsedState(
       // Collapsing a trailing group adds trailing header padding; otherwise it
       // reduces trailing overlap from `GetTabOverlap()` to header overlap.
       const int collapsed_trailing_space =
-          IsGroupFocused() ||
-                  closing_helper->IsLastVisibleUnpinnedChild(collection_node_)
+          closing_helper->IsLastVisibleUnpinnedChild(collection_node_)
               ? TabGroupStyle::GetTrailingGroupHeaderPadding()
               : TabStyle::Get()->GetTabOverlap() -
                     TabGroupStyle::GetTabGroupOverlapAdjustment();
@@ -236,9 +263,9 @@ std::unique_ptr<views::Widget> TabGroupView::ShowGroupEditorBubble(
   // When the tab strip is collapsed, anchor to the group header, otherwise
   // anchor to the editor bubble button.
   views::View* anchor_view =
-      (GetTabStripCollapseState() !=
-           tabs::VerticalTabStripCollapseState::kExpanded ||
-       !group_header_->editor_bubble_button())
+      (!group_header_->editor_bubble_button() ||
+       GetTabStripCollapseState() !=
+           tabs::VerticalTabStripCollapseState::kExpanded)
           ? views::AsViewClass<views::View>(group_header_)
           : views::AsViewClass<views::View>(
                 group_header_->editor_bubble_button());
@@ -334,7 +361,8 @@ void TabGroupView::OnTabCountChanged() {
 }
 
 void TabGroupView::ResetCollectionNode() {
-  HideHoverCard(TabSlotController::HoverCardUpdateType::kTabRemoved);
+  HideHoverCard(HoverCardUpdateType::kTabRemoved);
+  focus_animation_subscription_ = {};
   node_destroyed_subscription_ = {};
   collapsed_state_changed_subscription_ = {};
   tab_group_data_changed_subscription_ = {};
@@ -351,12 +379,13 @@ void TabGroupView::OnDataChanged() {
   const tabs::TabGroupData& tab_group_data =
       tab_group_data_observer_->tab_group_data();
   is_ephemeral_ = GetTabGroupFromNode(collection_node_)->is_ephemeral();
+  was_focused_ = IsGroupFocused();
   const bool has_collapse_state_changed =
       tab_group_visual_data_.is_collapsed() !=
       tab_group_data.visual_data.is_collapsed();
   tab_group_visual_data_ = tab_group_data.visual_data;
   if (unfocus_header_) {
-    unfocus_header_->SetVisible(IsGroupFocused());
+    unfocus_header_->SetVisible(ShouldShowUnfocusButton());
     unfocus_header_->SetGroupColorData(tab_group_visual_data_.color(),
                                        is_ephemeral_);
     unfocus_header_->UpdateAccessibleName();
@@ -364,7 +393,7 @@ void TabGroupView::OnDataChanged() {
   group_header_->OnDataChanged(tab_group_data);
 
   std::optional<base::AutoReset<bool>> allow_animation;
-  if (has_collapse_state_changed) {
+  if (has_collapse_state_changed && !was_focused_) {
     allow_animation.emplace(
         collection_node_->GetController()->ScopedAnimateLayout());
   }
@@ -379,6 +408,84 @@ void TabGroupView::OnDataChanged() {
   group_line_->SchedulePaint();
 
   InvalidateLayout();
+}
+
+void TabGroupView::OnFocusAnimationUpdated(
+    const BrowserAnimationController* controller,
+    BrowserAnimationUpdate status) {
+  const FocusTransitionRole role = GetFocusTransitionRole();
+  if (role == FocusTransitionRole::kNone) {
+    if (is_focus_animating_ || was_focused_ != IsGroupFocused()) {
+      FinishFocusAnimation();
+    }
+    return;
+  }
+
+  is_focus_animating_ = true;
+
+  const auto value = [&](BrowserAnimationSequence sequence) {
+    return static_cast<float>(
+        controller->GetCurrentValue(FocusModeAnimations::kFocusMode, sequence)
+            .value());
+  };
+  const float progress = value(FocusModeAnimations::kProgress);
+
+  if (role == FocusTransitionRole::kSwitchingFocus) {
+    const auto transition =
+        collection_node_->GetController()->GetFocusTransition();
+    const bool is_incoming = GetTabGroup().id() == transition->target_group;
+    const float phase_progress =
+        GetFocusSwitchPhaseProgress(progress, is_incoming);
+    const TabGroupFocusAnimationState state{
+        .progress = 1.0f,
+        .content_opacity = is_incoming ? phase_progress : 1.0f - phase_progress,
+        .content_horizontal_offset = GetFocusSwitchSlideOffset(),
+        .blend_color_id = is_incoming ? transition->previous_group_color
+                                      : transition->target_group_color,
+        .color_blend = is_incoming ? 1.0f - progress : progress};
+    group_header_->SetFocusAnimationState(state);
+    unfocus_header_->SetFocusAnimationState(state);
+  } else {
+    const float label_opacity =
+        value(FocusModeAnimations::kUnfocusLabelOpacity);
+    group_header_->SetFocusAnimationState(
+        {.progress = progress,
+         .content_opacity = is_ephemeral_ ? label_opacity : 1.0f});
+    unfocus_header_->SetFocusAnimationState(
+        {.progress = progress, .content_opacity = label_opacity});
+    group_line_->SetOpacity(value(FocusModeAnimations::kUnrelatedTabsOpacity));
+  }
+
+  InvalidateLayout();
+}
+
+TabGroupView::FocusTransitionRole TabGroupView::GetFocusTransitionRole() const {
+  if (!IsValid()) {
+    return FocusTransitionRole::kNone;
+  }
+  const auto transition =
+      collection_node_->GetController()->GetFocusTransition();
+  if (!transition.has_value()) {
+    return FocusTransitionRole::kNone;
+  }
+  const tab_groups::TabGroupId group_id = GetTabGroup().id();
+  if (transition->previous_group.has_value()) {
+    return (transition->target_group == group_id ||
+            transition->previous_group == group_id)
+               ? FocusTransitionRole::kSwitchingFocus
+               : FocusTransitionRole::kNone;
+  }
+  return transition->target_group == group_id
+             ? FocusTransitionRole::kDirectFocus
+             : FocusTransitionRole::kNone;
+}
+
+void TabGroupView::FinishFocusAnimation() {
+  is_focus_animating_ = false;
+  group_header_->SetFocusAnimationState({});
+  unfocus_header_->SetFocusAnimationState({});
+  group_line_->SetOpacity(1.0f);
+  OnDataChanged();
 }
 
 void TabGroupView::OnCollapseStateChanged(
@@ -417,9 +524,9 @@ views::ScrollView* TabGroupView::GetScrollViewForContainer() const {
       const_cast<views::View*>(parent()));
 }
 
-void TabGroupView::UpdateTargetLayoutForDrag(
+void TabGroupView::SnapViewsToTargetLayout(
     const std::vector<const views::View*>& views_to_snap) {
-  layout_manager_->ResetViewsToTargetLayout(views_to_snap);
+  layout_manager_->SnapViewsToTargetLayout(views_to_snap);
 }
 
 const views::ProposedLayout& TabGroupView::GetLayoutForDrag() const {
@@ -527,29 +634,25 @@ const tabs::TabGroupData& TabGroupView::GetTabGroupData() const {
   return tab_group_data_observer_->tab_group_data();
 }
 
-void TabGroupView::UpdateHoverCard(int update_type) const {
+void TabGroupView::UpdateHoverCard(HoverCardUpdateType update_type) const {
   if (!collection_node_ || !group_header_) {
     return;
   }
 
   if (TabHoverCardController* hover_card_controller =
           collection_node_->GetController()->GetHoverCardController()) {
-    hover_card_controller->UpdateHoverCard(
-        group_header_,
-        static_cast<TabSlotController::HoverCardUpdateType>(update_type));
+    hover_card_controller->UpdateHoverCard(group_header_, update_type);
   }
 }
 
-void TabGroupView::HideHoverCard(int update_type) const {
+void TabGroupView::HideHoverCard(HoverCardUpdateType update_type) const {
   if (!collection_node_) {
     return;
   }
 
   if (TabHoverCardController* hover_card_controller =
           collection_node_->GetController()->GetHoverCardController()) {
-    hover_card_controller->UpdateHoverCard(
-        nullptr,
-        static_cast<TabSlotController::HoverCardUpdateType>(update_type));
+    hover_card_controller->UpdateHoverCard(nullptr, update_type);
   }
 }
 
@@ -611,11 +714,67 @@ bool TabGroupView::IsGroupFocused() const {
 bool TabGroupView::ShouldUseFocusedHeaderStyle() const {
   // Ephemeral groups only exist focused, or briefly while animating out of
   // focus, so their headers keep the focused style for their whole lifetime.
-  return is_ephemeral_ || IsGroupFocused();
+  // During a direct switch between groups, the outgoing group also keeps its
+  // focused header style while the container shrinks it away.
+  return is_ephemeral_ || IsGroupFocused() ||
+         GetFocusTransitionRole() == FocusTransitionRole::kSwitchingFocus;
 }
 
 float TabGroupView::GetFocusProgress() const {
-  return IsGroupFocused() ? 1.0f : 0.0f;
+  switch (GetFocusTransitionRole()) {
+    case FocusTransitionRole::kSwitchingFocus:
+      return 1.0f;
+    case FocusTransitionRole::kDirectFocus:
+      return static_cast<float>(
+          collection_node_->GetController()
+              ->GetBrowserAnimationController()
+              ->GetCurrentValue(FocusModeAnimations::kFocusMode,
+                                FocusModeAnimations::kProgress)
+              .value());
+    case FocusTransitionRole::kNone:
+      return IsGroupFocused() ? 1.0f : 0.0f;
+  }
+}
+
+bool TabGroupView::ShouldShowGroupLine() const {
+  return !is_ephemeral_ && !is_collapsed_ && GetFocusProgress() < 1.0f;
+}
+
+bool TabGroupView::ShouldShowUnfocusButton() const {
+  return IsGroupFocused() ||
+         GetFocusTransitionRole() != FocusTransitionRole::kNone;
+}
+
+int TabGroupView::GetFocusSwitchSlideOffset() const {
+  if (GetFocusTransitionRole() != FocusTransitionRole::kSwitchingFocus ||
+      (orientation_ == TabStripOrientation::kVertical &&
+       GetTabStripCollapseState() !=
+           tabs::VerticalTabStripCollapseState::kExpanded)) {
+    return 0;
+  }
+  const TabStripCollectionController* const controller =
+      collection_node_->GetController();
+  const auto transition = controller->GetFocusTransition();
+  // `kSwitchingFocus` implies a transition between two groups.
+  CHECK(transition.has_value() && transition->previous_group.has_value());
+  const float progress =
+      static_cast<float>(controller->GetBrowserAnimationController()
+                             ->GetCurrentValue(FocusModeAnimations::kFocusMode,
+                                               FocusModeAnimations::kProgress)
+                             .value());
+
+  const bool is_incoming = GetTabGroup().id() == transition->target_group;
+  // Content slides toward the side the incoming group is on: when the outgoing
+  // group precedes the incoming one in the strip, the outgoing content slides
+  // out to the left and the incoming content slides in from the right.
+  const int direction = transition->target_follows_previous ? 1 : -1;
+  const float phase_progress =
+      GetFocusSwitchPhaseProgress(progress, is_incoming);
+  return is_incoming
+             ? gfx::Tween::LinearIntValueBetween(
+                   phase_progress, direction * kFocusSwitchSlideOffset, 0)
+             : gfx::Tween::LinearIntValueBetween(
+                   phase_progress, 0, -direction * kFocusSwitchSlideOffset);
 }
 
 bool TabGroupView::IsUnfocusButtonFocused() const {

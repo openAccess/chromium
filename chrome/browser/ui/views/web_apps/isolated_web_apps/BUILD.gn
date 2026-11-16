@@ -27,7 +27,7 @@ source_set("installer_base") {
 
   public_deps = [
     "//base",
-    "//chrome/browser/web_applications",
+    "//chrome/browser/web_applications/isolated_web_apps",
     "//components/webapps/isolated_web_apps",
     "//ui/base",
     "//ui/views",
@@ -38,6 +38,7 @@ source_set("installer_base") {
     "//chrome/browser/ui/views:layout_provider",
     "//chrome/browser/ui/views/web_apps",
     "//chrome/browser/ui/web_applications",
+    "//chrome/browser/web_applications",
     "//skia",
     "//ui/gfx",
     "//url",
@@ -71,10 +72,13 @@ source_set("user_installability_checker") {
   sources = [ "isolated_web_app_user_installability_checker.cc" ]
   public_deps = [
     "//base",
-    "//chrome/browser/web_applications",
+    "//chrome/browser/web_applications/isolated_web_apps",
     "//components/webapps/isolated_web_apps",
   ]
-  deps = [ "//chrome/browser/profiles:profile" ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/web_applications",
+  ]
 }
 
 if (is_chromeos) {
@@ -121,6 +125,7 @@ source_set("isolated_web_app_installer_view_impl") {
     "//chrome/browser/ui/views/accessibility",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/web_applications",
+    "//chrome/browser/web_applications/isolated_web_apps",
     "//components/vector_icons",
     "//skia",
     "//third_party/abseil-cpp:absl",
@@ -147,6 +152,7 @@ source_set("isolated_web_app_installer_view_controller") {
     ":installer_base",
     ":user_installability_checker",
     "//base",
+    "//chrome/browser/web_applications/isolated_web_apps",
     "//components/prefs",
     "//ui/gfx",
   ]
@@ -213,10 +219,11 @@ source_set("browser_tests") {
     ":user_installability_checker",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/ui/web_applications:test_support",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/browser/web_applications/isolated_web_apps/test:test_support",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//content/test:test_support",
     "//net:test_support",
     "//testing/gmock",
@@ -244,6 +251,7 @@ source_set("unit_tests") {
     ":user_installability_checker",
     "//base",
     "//base/test:test_support",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/browser/web_applications:web_applications_test_support",
     "//chrome/test:test_support",
     "//chrome/test/base:testing_browser_process",

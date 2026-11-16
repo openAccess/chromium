@@ -6,7 +6,6 @@
 
 #include <memory>
 #include <optional>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1566,7 +1565,8 @@ TEST_F(OmniboxEverywhereUIManagerTest, DismissBypassedDuringDrivePicker) {
   EXPECT_TRUE(base::test::RunUntil([&]() { return !widget->IsVisible(); }));
 }
 
-TEST_F(OmniboxEverywhereUIManagerTest, CloseDestroysWidgetWhenChooserOpen) {
+TEST_F(OmniboxEverywhereUIManagerTest,
+       CloseCancelsModalAndHidesWidgetWhenChooserOpen) {
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
@@ -1575,22 +1575,27 @@ TEST_F(OmniboxEverywhereUIManagerTest, CloseDestroysWidgetWhenChooserOpen) {
 
   // Open file chooser.
   ui_manager->OnFileChooserOpened();
+  EXPECT_TRUE(ui_manager->HasOpenModalDialog());
 
-  // Close() while file chooser is open should destroy widget to prevent
-  // orphaned modals.
+  // Close() while file chooser is open cancels open modal state and hides the
+  // widget while preserving the widget and its WebContents.
   ui_manager->Close();
-  EXPECT_FALSE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_FALSE(ui_manager->HasOpenModalDialog());
 }
 
 // Regression test for crbug.com/567673370: Close() can run inside a call on the
 // WebContents itself (e.g. OpenURLFromTab), so with a modal open it must
-// destroy only the widget and keep the contents.
+// cancel open modal state and hide the widget while keeping both the widget and
+// the WebContents alive.
 TEST_F(OmniboxEverywhereUIManagerTest,
-       CloseWithModalOpenDestroysWidgetButKeepsContents) {
+       CloseWithModalOpenCancelsModalAndKeepsWidgetAndContents) {
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
   WebUIContentsWrapper* contents_wrapper =
       ui_manager->contents_wrapper_for_testing();
   ASSERT_TRUE(contents_wrapper);
@@ -1600,15 +1605,17 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   ui_manager->OnDrivePickerOpened();
   ui_manager->Close();
 
-  EXPECT_FALSE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_FALSE(widget->IsVisible());
   EXPECT_FALSE(ui_manager->IsModalOpenForTesting(Modal::kDrivePicker));
   EXPECT_EQ(ui_manager->contents_wrapper_for_testing(), contents_wrapper);
   EXPECT_EQ(ui_manager->web_contents(), web_contents);
   EXPECT_FALSE(web_contents->ShouldIgnoreInputEventsForTesting());
 
-  // The next show creates a new widget around the same contents.
+  // The next show re-activates the existing widget and contents.
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_TRUE(widget->IsVisible());
   EXPECT_EQ(ui_manager->web_contents(), web_contents);
 
   ui_manager->Shutdown();
@@ -1945,8 +1952,8 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   EXPECT_EQ(contents_view->context_menu_controller(),
             ui_manager->context_menu_controller_for_testing());
 
-  // Shutdown() calls DestroyWidget(), which posts the widget for deferred
-  // deletion. Before the task queue drains, the WebView's context menu
+  // Shutdown() calls DestroyWidgetAndWebContents(), which posts the widget for
+  // deferred deletion. Before the task queue drains, the WebView's context menu
   // controller pointer must already be cleared so it cannot dangle if the
   // manager is destroyed first.
   ui_manager->Shutdown();
@@ -2028,34 +2035,94 @@ TEST_F(OmniboxEverywhereUIManagerTest, ExecuteMinimizeCommandKeepsWidgetAlive) {
   EXPECT_TRUE(ui_manager->web_contents());
 }
 
-TEST_F(OmniboxEverywhereUIManagerTest, MinimizeDoesNotRecordFreImpression) {
+TEST_F(OmniboxEverywhereUIManagerTest, MinimizeDoesNotEndFreSession) {
   auto ui_manager = CreateUIManager();
   ui_manager->ShowForProfile(&profile_, GetContext());
   ASSERT_TRUE(ui_manager->widget());
   ASSERT_TRUE(ui_manager->IsVisible());
 
-  // An impression bumps the counter for whichever FRE stage is active.
-  PrefService* prefs = profile_.GetPrefs();
-  auto fre_impression_counts = [prefs]() {
-    return std::make_tuple(
-        prefs->GetInteger(omnibox_everywhere::prefs::kFreIntroImpressionCount),
-        prefs->GetInteger(
-            omnibox_everywhere::prefs::kFreShortcutSetupImpressionCount),
-        prefs->GetInteger(
-            omnibox_everywhere::prefs::kFreShortcutReminderImpressionCount));
-  };
-  const auto counts_before = fre_impression_counts();
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(service->fre_controller());
 
+  PrefService* prefs = profile_.GetPrefs();
+  // Simulate the WebUI recording an impression when the FRE is shown.
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(1, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
+
+  // Minimizing and restoring does not end the FRE session, so a subsequent
+  // IncrementImpression() in the same session does not increment the count.
   ui_manager->context_menu_controller_for_testing()->ExecuteCommand(
       omnibox_everywhere::OmniboxEverywhereContextMenuController::kMinimize, 0);
-  EXPECT_EQ(counts_before, fre_impression_counts());
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(1, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
 
-  // Close does record one, so the expectation above isn't vacuous.
+  // Closing the widget ends the FRE session so the next open can record an
+  // impression.
   ui_manager->context_menu_controller_for_testing()->ExecuteCommand(
       omnibox_everywhere::OmniboxEverywhereContextMenuController::kClose, 0);
-  EXPECT_NE(counts_before, fre_impression_counts());
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(2, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
 }
 #endif  // BUILDFLAG(IS_WIN)
+
+TEST_F(OmniboxEverywhereUIManagerTest, DemotePreservesAndCloseEndsFreSession) {
+  auto ui_manager = CreateUIManager();
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_TRUE(ui_manager->widget());
+  ASSERT_TRUE(ui_manager->IsVisible());
+
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(service->fre_controller());
+
+  PrefService* prefs = profile_.GetPrefs();
+  // Session 1: Record an impression while visible; duplicate calls in the same
+  // session are ignored.
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(1, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
+
+  // Demoting the widget (persistent mode deactivation) does not end the FRE
+  // session or count as a new impression when re-activated.
+  ui_manager->Demote();
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(1, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
+
+  // Closing the widget ends the FRE session so the next ShowForProfile() can
+  // record the 2nd impression.
+  ui_manager->Close();
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  service->fre_controller()->IncrementImpression(
+      omnibox_everywhere::FreStage::kIntroModal);
+  EXPECT_EQ(2, prefs->GetInteger(
+                   omnibox_everywhere::prefs::kFreIntroImpressionCount));
+  // Stage stays latched at kIntroModal until the session ends.
+  EXPECT_EQ(omnibox_everywhere::FreStage::kIntroModal,
+            service->fre_controller()->GetCurrentStage());
+
+  // Closing the widget (including when a modal dialog is open) ends the FRE
+  // session and unlatches the stage to kShortcutSetupChin.
+  ui_manager->OnDrivePickerOpened();
+  ui_manager->Close();
+  ui_manager->OnDrivePickerClosed();
+  EXPECT_EQ(omnibox_everywhere::FreStage::kShortcutSetupChin,
+            service->fre_controller()->GetCurrentStage());
+}
 
 // TODO(crbug.com/546710681): Re-enable test on linux
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
@@ -2349,28 +2416,36 @@ TEST_F(OmniboxEverywhereUIManagerTest,
 }
 
 TEST_F(OmniboxEverywhereUIManagerTest,
-       CleanUpWidgetOnMostVisitedPrefChangeWhenHidden) {
+       KeepPaintingOnMostVisitedPrefChangeWhenHidden) {
   profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, true);
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
-  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
 
-  // Hide the widget.
+  // Hide the widget and advance past the initial post-hide capture window.
   ui_manager->Close();
-  EXPECT_FALSE(ui_manager->widget()->IsVisible());
-  EXPECT_TRUE(ui_manager->widget());
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kPostHideCaptureDuration);
+  EXPECT_FALSE(ui_manager->web_contents()->IsBeingCaptured());
 
-  // Changing a most-visited pref while hidden should clean up the old widget to
-  // prevent stale frame buffer and tile flicker upon reopen.
+  // Changing a most-visited pref while hidden keeps the widget alive (so its
+  // position is preserved) and briefly keeps WebContents painting offscreen so
+  // Blink applies the Mojo update before the widget is next shown.
   profile_.GetPrefs()->SetBoolean(ntp_prefs::kNtpCustomLinksVisible, false);
-  EXPECT_FALSE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_TRUE(ui_manager->web_contents()->IsBeingCaptured());
 
-  // Showing again creates a fresh widget with the updated preferences.
+  // Showing again reuses the existing widget and stops the offscreen capture.
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
-  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_TRUE(widget->IsVisible());
+  EXPECT_FALSE(ui_manager->web_contents()->IsBeingCaptured());
 
   ui_manager->Shutdown();
 }
@@ -2394,40 +2469,47 @@ TEST_F(OmniboxEverywhereUIManagerTest,
 }
 
 TEST_F(OmniboxEverywhereUIManagerTest,
-       CleanUpWidgetOnOmniboxEverywhereShowShortcutsPrefChangeWhenHidden) {
+       KeepPaintingOnOmniboxEverywhereShowShortcutsPrefChangeWhenHidden) {
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
-  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
 
-  // Hide the widget.
+  // Hide the widget and advance past the initial post-hide capture window.
   ui_manager->Close();
-  EXPECT_FALSE(ui_manager->widget()->IsVisible());
-  EXPECT_TRUE(ui_manager->widget());
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kPostHideCaptureDuration);
+  EXPECT_FALSE(ui_manager->web_contents()->IsBeingCaptured());
 
-  // Changing profile show shortcuts pref while hidden should clean up the
-  // old widget.
+  // Changing profile show shortcuts pref while hidden keeps the widget alive
+  // and briefly keeps WebContents painting offscreen.
   profile_.GetPrefs()->SetInteger(
       omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts,
       std::to_underlying(
           omnibox_everywhere::prefs::ShowShortcutsPrefValue::kDisabled));
-  EXPECT_FALSE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_TRUE(ui_manager->web_contents()->IsBeingCaptured());
 
   ui_manager->Shutdown();
 }
 
 // Regression test for crbug.com/579037685: changing a most-visited or shortcuts
 // preference while hidden can run synchronously inside a Mojo call on the
-// popup's WebContents (such as `MostVisitedHandler`), so it must destroy only
-// the widget while keeping `contents_wrapper_` alive.
+// popup's WebContents (such as `MostVisitedHandler`), so it must keep both the
+// widget and `contents_wrapper_` alive.
 TEST_F(OmniboxEverywhereUIManagerTest,
-       MostVisitedPrefChangeWhenHiddenDestroysWidgetButKeepsContents) {
+       MostVisitedPrefChangeWhenHiddenKeepsWidgetAndContents) {
   TestingProfile other_profile;
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
   ASSERT_TRUE(ui_manager->contents_wrapper_for_testing());
   ASSERT_TRUE(ui_manager->web_contents());
   base::WeakPtr<content::WebContents> first_profile_web_contents =
@@ -2439,33 +2521,33 @@ TEST_F(OmniboxEverywhereUIManagerTest,
     content::WebContents* web_contents = ui_manager->web_contents();
 
     ui_manager->Close();
-    ASSERT_TRUE(ui_manager->widget());
-    EXPECT_FALSE(ui_manager->widget()->IsVisible());
+    ASSERT_EQ(ui_manager->widget(), widget);
+    EXPECT_FALSE(widget->IsVisible());
 
     profile_.GetPrefs()->SetInteger(
         omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts,
         std::to_underlying(
             omnibox_everywhere::prefs::ShowShortcutsPrefValue::kDisabled));
 
-    EXPECT_FALSE(ui_manager->widget());
+    EXPECT_EQ(ui_manager->widget(), widget);
     EXPECT_EQ(ui_manager->contents_wrapper_for_testing(), contents_wrapper);
     EXPECT_EQ(ui_manager->web_contents(), web_contents);
 
-    // Re-showing for the same profile wraps a fresh widget around the existing
+    // Re-showing for the same profile reuses the existing widget and
     // WebContents.
     ui_manager->ShowForProfile(&profile_, GetContext());
-    ASSERT_TRUE(ui_manager->widget());
+    EXPECT_EQ(ui_manager->widget(), widget);
     EXPECT_EQ(ui_manager->web_contents(), web_contents);
   }
 
-  // Destroying only the widget and then switching to a different profile must
-  // still replace the first profile's WebContents.
+  // Switching to a different profile must still replace the first profile's
+  // widget and WebContents.
   ui_manager->Close();
   profile_.GetPrefs()->SetInteger(
       omnibox_everywhere::prefs::kOmniboxEverywhereShowShortcuts,
       std::to_underlying(
           omnibox_everywhere::prefs::ShowShortcutsPrefValue::kEnabled));
-  ASSERT_FALSE(ui_manager->widget());
+  ASSERT_EQ(ui_manager->widget(), widget);
   ASSERT_TRUE(first_profile_web_contents);
 
   ui_manager->ShowForProfile(&other_profile, GetContext());
@@ -2477,27 +2559,33 @@ TEST_F(OmniboxEverywhereUIManagerTest,
 }
 
 TEST_F(OmniboxEverywhereUIManagerTest,
-       CleanUpWidgetOnCustomLinksListPrefChangeWhenHidden) {
+       KeepPaintingOnCustomLinksListPrefChangeWhenHidden) {
   auto ui_manager = CreateUIManager();
 
   ui_manager->ShowForProfile(&profile_, GetContext());
-  ASSERT_TRUE(ui_manager->widget());
-  EXPECT_TRUE(ui_manager->widget()->IsVisible());
+  views::Widget* widget = ui_manager->widget();
+  ASSERT_TRUE(widget);
+  EXPECT_TRUE(widget->IsVisible());
 
-  // Hide the widget.
+  // Hide the widget and advance past the initial post-hide capture window.
   ui_manager->Close();
-  EXPECT_FALSE(ui_manager->widget()->IsVisible());
-  EXPECT_TRUE(ui_manager->widget());
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  task_environment()->FastForwardBy(
+      omnibox_everywhere::OmniboxEverywhereUIManager::kPostHideCaptureDuration);
+  EXPECT_FALSE(ui_manager->web_contents()->IsBeingCaptured());
 
   // Updating custom links (e.g. shortcut added, deleted, or reordered) while
-  // hidden should clean up the old widget to prevent stale frame buffer and
-  // tile flicker upon reopen.
+  // hidden keeps the widget alive and briefly keeps WebContents painting
+  // offscreen to prevent tile flicker upon reopen.
   {
     ScopedListPrefUpdate update(profile_.GetPrefs(),
                                 ntp_tiles::prefs::kCustomLinksList);
     update->Append("https://example.com");
   }
-  EXPECT_FALSE(ui_manager->widget());
+  EXPECT_EQ(ui_manager->widget(), widget);
+  EXPECT_FALSE(widget->IsVisible());
+  EXPECT_TRUE(ui_manager->web_contents()->IsBeingCaptured());
 
   ui_manager->Shutdown();
 }
@@ -2632,6 +2720,14 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   views::Widget* disclosure_widget =
       ui_manager->disclosure_dialog_widget_for_testing();
   ASSERT_TRUE(disclosure_widget);
+  EXPECT_EQ(
+      widget->GetColorProvider()->GetColor(kColorNewTabPageBackground),
+      disclosure_widget->GetColorProvider()->GetColor(
+          ui::kColorDialogBackground));
+  EXPECT_EQ(
+      widget->GetColorProvider()->GetColor(kColorNewTabPageBackground),
+      disclosure_widget->GetColorProvider()->GetColor(
+          ui::kColorBubbleBackground));
 
   // Simulating deactivation while screenshare disclosure dialog is open
   // should NOT destroy or hide the widget.
@@ -3692,6 +3788,16 @@ TEST_F(OmniboxEverywhereUIManagerTest,
     EXPECT_FALSE(key.user_color.has_value());
     EXPECT_FALSE(key.scheme_variant.has_value());
     EXPECT_EQ(nullptr, key.custom_theme.get());
+    const ui::ColorProvider* cp = w->GetColorProvider();
+    EXPECT_EQ(cp->GetColor(kColorNewTabPageBackground),
+              cp->GetColor(ui::kColorMenuBackground));
+    EXPECT_EQ(cp->GetColor(kColorNewTabPageBackground),
+              cp->GetColor(ui::kColorDialogBackground));
+    EXPECT_EQ(cp->GetColor(kColorNewTabPageBackground),
+              cp->GetColor(ui::kColorBubbleBackground));
+    EXPECT_EQ(SK_AlphaOPAQUE,
+              SkColorGetA(cp->GetColor(
+                  kColorOmniboxComposeboxContextEntrypointBackground)));
   };
 
   theme_service->SetUserColorAndBrowserColorVariant(
@@ -3724,6 +3830,11 @@ TEST_F(OmniboxEverywhereUIManagerTest,
   EXPECT_NE(
       baseline_surface,
       ui_manager->widget()->GetColorProvider()->GetColor(ui::kColorSysSurface));
+  EXPECT_EQ(
+      ui_manager->widget()->GetColorProvider()->GetColor(
+          kColorOmniboxResultsBackground),
+      ui_manager->widget()->GetColorProvider()->GetColor(
+          ui::kColorMenuBackground));
 
   ui_manager->Shutdown();
 }
@@ -3768,16 +3879,19 @@ TEST_F(OmniboxEverywhereUIManagerVirtualDesktopTest,
   ui_manager->Shutdown();
 }
 
-// Tests that re-invoking recreates the widget at the same position, showing
-// the same `WebContents`, when it is on another virtual desktop.
+// Tests that re-invoking recreates the widget and `WebContents` at the same
+// position when the widget is on another virtual desktop.
 TEST_F(OmniboxEverywhereUIManagerVirtualDesktopTest,
        ReshowRecreatesWidgetOnOtherDesktop) {
   auto ui_manager = CreateUIManager();
   ui_manager->ShowForProfile(&profile_, GetContext());
   views::Widget* old_widget = ui_manager->widget();
   ASSERT_TRUE(old_widget);
-  content::WebContents* web_contents = ui_manager->web_contents();
-  ASSERT_TRUE(web_contents);
+  ASSERT_TRUE(ui_manager->web_contents());
+  // Use a WeakPtr rather than comparing raw pointers, since the new
+  // `WebContents` can be allocated at the address of the destroyed one.
+  base::WeakPtr<content::WebContents> old_web_contents =
+      ui_manager->web_contents()->GetWeakPtr();
   gfx::Rect bounds = old_widget->GetWindowBoundsInScreen();
   bounds.Offset(10, 10);
   old_widget->SetBounds(bounds);
@@ -3791,11 +3905,12 @@ TEST_F(OmniboxEverywhereUIManagerVirtualDesktopTest,
   EXPECT_NE(old_widget, new_widget);
   EXPECT_TRUE(new_widget->IsVisible());
   EXPECT_EQ(bounds.origin(), new_widget->GetRestoredBounds().origin());
-  EXPECT_EQ(web_contents, ui_manager->web_contents());
+  EXPECT_FALSE(old_web_contents);
+  ASSERT_TRUE(ui_manager->web_contents());
   auto* web_view = views::AsViewClass<views::WebView>(
       ui_manager->widget_delegate()->GetContentsView());
   ASSERT_TRUE(web_view);
-  EXPECT_EQ(web_contents, web_view->web_contents());
+  EXPECT_EQ(ui_manager->web_contents(), web_view->web_contents());
 
   ui_manager->Shutdown();
 }
@@ -3826,6 +3941,45 @@ TEST_F(OmniboxEverywhereUIManagerVirtualDesktopTest,
   views::test::WaitForWidgetActive(new_widget, true);
   EXPECT_TRUE(ui_manager->IsActive());
   EXPECT_EQ(origin, new_widget->GetRestoredBounds().origin());
+
+  ui_manager->Shutdown();
+}
+
+// Tests that recreating a demoted persistent widget on another virtual desktop
+// recreates its WebContents and ends the active FRE session, so the next
+// impression is counted.
+TEST_F(OmniboxEverywhereUIManagerVirtualDesktopTest,
+       ReshowDemotedWidgetOnOtherDesktopStartsNewFreSession) {
+  if (g_browser_process && g_browser_process->local_state()) {
+    g_browser_process->local_state()->SetBoolean(
+        prefs::kOmniboxEverywhereEphemeralModel, false);
+  }
+  auto ui_manager = CreateUIManager();
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  views::Widget* old_widget = ui_manager->widget();
+  ASSERT_TRUE(old_widget);
+
+  auto* service = OmniboxEverywhereServiceFactory::GetForProfile(&profile_);
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(service->fre_controller());
+  PrefService* prefs = profile_.GetPrefs();
+
+  service->fre_controller()->IncrementImpression(FreStage::kIntroModal);
+  EXPECT_EQ(1, prefs->GetInteger(prefs::kFreIntroImpressionCount));
+
+  ui_manager->Demote();
+  on_current_desktop_ = false;
+  ui_manager->ShowForProfile(&profile_, GetContext());
+  ASSERT_NE(old_widget, ui_manager->widget());
+
+  // Re-invoking on another virtual desktop recreates the WebContents and starts
+  // a new FRE session.
+  service->fre_controller()->IncrementImpression(FreStage::kIntroModal);
+  EXPECT_EQ(2, prefs->GetInteger(prefs::kFreIntroImpressionCount));
+
+  // Further impressions in the new session are not counted again.
+  service->fre_controller()->IncrementImpression(FreStage::kIntroModal);
+  EXPECT_EQ(2, prefs->GetInteger(prefs::kFreIntroImpressionCount));
 
   ui_manager->Shutdown();
 }

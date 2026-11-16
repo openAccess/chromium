@@ -85,6 +85,7 @@
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_cursor.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
+#include "third_party/blink/renderer/core/layout/layout_box_utils.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_html_canvas.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
@@ -152,7 +153,6 @@ static const unsigned kBackgroundObscurationTestMaxDepth = 4;
 
 struct SameSizeAsLayoutBox : public LayoutBoxModelObject {
   PhysicalOffset frame_location_;
-  PhysicalSize frame_size_;
   PhysicalSize previous_size;
   LayoutResultList previous_layout_results;
   MinMaxSizes intrinsic_logical_widths;
@@ -2570,7 +2570,7 @@ void LayoutBox::AppendLayoutResult(const LayoutResult* result) {
   // |layout_results_| is particularly critical when side effects are disabled.
   DCHECK(!DisableLayoutSideEffectsScope::IsDisabled());
   layout_results_.push_back(std::move(result));
-  InvalidateCachedGeometry();
+  SetHavePhysicalFragmentsChanged();
   CheckDidAddFragment(*this, fragment);
 }
 
@@ -2606,7 +2606,7 @@ void LayoutBox::ReplaceLayoutResult(const LayoutResult* result,
   // |layout_results_| is particularly critical when side effects are disabled.
   DCHECK(!DisableLayoutSideEffectsScope::IsDisabled());
   layout_results_[index] = std::move(result);
-  InvalidateCachedGeometry();
+  SetHavePhysicalFragmentsChanged();
   CheckDidAddFragment(*this, fragment, index);
 
   if (got_new_fragment && !fragment.GetBreakToken()) {
@@ -2674,7 +2674,7 @@ void LayoutBox::ShrinkLayoutResults(wtf_size_t results_to_keep) {
   // |layout_results_| is particularly critical when side effects are disabled.
   DCHECK(!DisableLayoutSideEffectsScope::IsDisabled());
   layout_results_.Shrink(results_to_keep);
-  InvalidateCachedGeometry();
+  SetHavePhysicalFragmentsChanged();
 }
 
 #if EXPENSIVE_DCHECKS_ARE_ON()
@@ -2685,12 +2685,6 @@ void LayoutBox::CheckMayHaveFragmentItems() const {
   }
 }
 #endif
-
-void LayoutBox::InvalidateCachedGeometry() {
-  NOT_DESTROYED();
-  SetHasValidCachedGeometry(false);
-  SetHavePhysicalFragmentsChanged();
-}
 
 // static
 void LayoutBox::InvalidateItems(const LayoutResult& result) {
@@ -3453,6 +3447,19 @@ void LayoutBox::SetVisualOverflow(const PhysicalRect& self,
   }
 }
 
+void LayoutBox::RecalcVisualOverflow() {
+  NOT_DESTROYED();
+  if (!PhysicalFragmentCount()) {
+    ClearVisualOverflow();
+    return;
+  }
+
+  DCHECK(!DisplayLockUtilities::LockedAncestorPreventingPrePaint(*this));
+  for (const PhysicalBoxFragment& fragment : PhysicalFragments()) {
+    fragment.GetMutableForPainting().RecalcInkOverflow();
+  }
+}
+
 void LayoutBox::ClearVisualOverflow() {
   NOT_DESTROYED();
   if (overflow_)
@@ -3462,22 +3469,9 @@ void LayoutBox::ClearVisualOverflow() {
   // to store previous overflow data.
 }
 
-bool LayoutBox::CanUseFragmentsForVisualOverflow() const {
-  NOT_DESTROYED();
-  // TODO(crbug.com/1144203): Legacy, or no-fragments-objects such as
-  // table-column. What to do with them is TBD.
-  if (!PhysicalFragmentCount())
-    return false;
-  const PhysicalBoxFragment& fragment = *GetPhysicalFragment(0);
-  if (!fragment.CanUseFragmentsForInkOverflow())
-    return false;
-  return true;
-}
-
 // Copy visual overflow from |PhysicalFragments()|.
 void LayoutBox::CopyVisualOverflowFromFragments() {
   NOT_DESTROYED();
-  DCHECK(CanUseFragmentsForVisualOverflow());
   const PhysicalRect previous_visual_overflow =
       VisualOverflowRectAllowingUnset();
   CopyVisualOverflowFromFragmentsWithoutInvalidations();
@@ -3489,7 +3483,6 @@ void LayoutBox::CopyVisualOverflowFromFragments() {
 
 void LayoutBox::CopyVisualOverflowFromFragmentsWithoutInvalidations() {
   NOT_DESTROYED();
-  DCHECK(CanUseFragmentsForVisualOverflow());
   if (!PhysicalFragmentCount()) [[unlikely]] {
     DCHECK(IsLayoutTableCol());
     ClearVisualOverflow();
@@ -3498,7 +3491,6 @@ void LayoutBox::CopyVisualOverflowFromFragmentsWithoutInvalidations() {
 
   if (PhysicalFragmentCount() == 1) {
     const PhysicalBoxFragment& fragment = *GetPhysicalFragment(0);
-    DCHECK(fragment.CanUseFragmentsForInkOverflow());
     if (!fragment.HasInkOverflow()) {
       ClearVisualOverflow();
       return;
@@ -3509,13 +3501,69 @@ void LayoutBox::CopyVisualOverflowFromFragmentsWithoutInvalidations() {
   }
 
   // When block-fragmented, stitch visual overflows from all fragments.
-  const WritingMode writing_mode = ContainingBox()->Style().GetWritingMode();
   bool has_overflow = false;
   PhysicalRect self_rect;
   PhysicalRect contents_rect;
+  if (RuntimeEnabledFeatures::FragmentedBoxVisualOverflowEnabled()) {
+    const WritingMode writing_mode = Style().GetWritingMode();
+    LayoutUnit consumed_block_size;
+    LayoutUnit fragment_width_sum;
+    for (const PhysicalBoxFragment& fragment : PhysicalFragments()) {
+      PhysicalOffset offset_adjust;
+      switch (writing_mode) {
+        case WritingMode::kHorizontalTb:
+          offset_adjust = {LayoutUnit(), consumed_block_size};
+          break;
+        case WritingMode::kVerticalRl:
+        case WritingMode::kSidewaysRl:
+          // For flipped-blocks writing-modes, we build the total overflow rect
+          // from right-to-left (adding with negative offsets). At the end we
+          // need to make the origin relative to the LHS, so we add the total
+          // fragment width.
+          fragment_width_sum += fragment.Size().width;
+          offset_adjust = {-fragment.Size().width - consumed_block_size,
+                           LayoutUnit()};
+          break;
+        case WritingMode::kVerticalLr:
+        case WritingMode::kSidewaysLr:
+          offset_adjust = {consumed_block_size, LayoutUnit()};
+          break;
+      }
+
+      if (fragment.HasInkOverflow()) {
+        has_overflow = true;
+        self_rect.Unite(fragment.SelfInkOverflowRect() + offset_adjust);
+        contents_rect.Unite(fragment.ContentsInkOverflowRect() + offset_adjust);
+      }
+
+      if (const BlockBreakToken* break_token = fragment.GetBreakToken()) {
+        // Repeated content isn't stitched. Stop now. The overflow rectangle
+        // will represent the fragment(s) generated under the first repeated
+        // root.
+        if (break_token->IsRepeated()) {
+          break;
+        }
+        consumed_block_size = break_token->ConsumedBlockSize();
+      }
+    }
+
+    if (!has_overflow) {
+      ClearVisualOverflow();
+      return;
+    }
+
+    if (IsFlippedBlocksWritingMode(writing_mode)) {
+      self_rect.offset.left += fragment_width_sum;
+      contents_rect.offset.left += fragment_width_sum;
+    }
+
+    SetVisualOverflow(self_rect, contents_rect);
+    return;
+  }
+
+  const WritingMode writing_mode = ContainingBox()->Style().GetWritingMode();
   const PhysicalBoxFragment* last_fragment = nullptr;
   for (const PhysicalBoxFragment& fragment : PhysicalFragments()) {
-    DCHECK(fragment.CanUseFragmentsForInkOverflow());
     if (!fragment.HasInkOverflow()) {
       last_fragment = &fragment;
       continue;
@@ -3666,8 +3714,6 @@ void LayoutBox::CheckIsVisualOverflowComputed() const {
   /*
   if (InkOverflow::ReadUnsetAsNoneScope::IsActive())
     return;
-  if (!CanUseFragmentsForVisualOverflow())
-    return;
   // TODO(crbug.com/1203402): MathML needs some more work.
   if (IsMathML())
     return;
@@ -3726,56 +3772,18 @@ LayoutUnit LayoutBox::StitchedBlockSize() const {
 
 PhysicalSize LayoutBox::StitchedSize() const {
   NOT_DESTROYED();
-  if (!HasValidCachedGeometry()) {
-    // const_cast in order to update the cached value.
-    const_cast<LayoutBox*>(this)->SetHasValidCachedGeometry(true);
-    const_cast<LayoutBox*>(this)->frame_size_ = ComputeSize();
-  }
-  return frame_size_;
-}
-
-PhysicalSize LayoutBox::ComputeSize() const {
-  NOT_DESTROYED();
-  const auto& results = GetLayoutResults();
-  if (results.size() == 0) {
+  if (!PhysicalFragmentCount()) {
     return PhysicalSize();
   }
-  const auto& first_fragment = results[0]->GetPhysicalFragment();
-  if (results.size() == 1u) {
+  const auto& first_fragment = *GetPhysicalFragment(0);
+  if (PhysicalFragmentCount() == 1u ||
+      (first_fragment.GetBreakToken() &&
+       first_fragment.GetBreakToken()->IsRepeated())) {
     return first_fragment.Size();
   }
   WritingModeConverter converter(first_fragment.Style().GetWritingDirection());
-  const BlockBreakToken* previous_break_token = nullptr;
-  LogicalSize size;
-  for (const auto& result : results) {
-    const auto& physical_fragment =
-        To<PhysicalBoxFragment>(result->GetPhysicalFragment());
-    LogicalSize fragment_logical_size =
-        converter.ToLogical(physical_fragment.Size());
-    if (physical_fragment.IsFirstForNode()) {
-      // Inline-size will only be set at the first fragment. Subsequent
-      // fragments may have different inline-size (either because fragmentainer
-      // inline-size is variable, or e.g. because available inline-size is
-      // affected by floats). The legacy engine doesn't handle variable
-      // inline-size (since it doesn't really understand fragmentation).  This
-      // means that things like offsetWidth won't work correctly (since that's
-      // still being handled by the legacy engine), but at least layout,
-      // painting and hit-testing will be correct.
-      size = fragment_logical_size;
-    } else {
-      DCHECK(previous_break_token);
-      size.block_size = fragment_logical_size.block_size +
-                        previous_break_token->ConsumedBlockSize();
-    }
-    previous_break_token = physical_fragment.GetBreakToken();
-    // Continue in order to update logical height, unless this fragment is
-    // past the block-end of the generating node (happens with overflow) or
-    // is a repeated one.
-    if (!previous_break_token || previous_break_token->IsRepeated() ||
-        previous_break_token->IsAtBlockEnd()) {
-      break;
-    }
-  }
+  LogicalSize size = converter.ToLogical(first_fragment.Size());
+  size.block_size = BoxTotalBlockSize(*this);
   return converter.ToPhysical(size);
 }
 

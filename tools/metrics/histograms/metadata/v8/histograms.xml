@@ -1614,36 +1614,6 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
-<histogram name="V8.UnhandledExceptionCountInMainThread" enum="BooleanOccurred"
-    expires_after="2027-04-18">
-  <owner>chikamune@chromium.org</owner>
-  <owner>sisidovski@chromium.org</owner>
-  <owner>hiroshige@chromium.org</owner>
-  <owner>kouhei@chromium.org</owner>
-  <summary>
-    Report true when an unhandled exception is reported in the main thread,
-    which may happen when the code has no appropriate exception handling in the
-    main thread. The false value is never reported. This histogram is supposed
-    to be used in A/B testing to check if unhandled exception count is different
-    across experiment groups by counting the true values.
-  </summary>
-</histogram>
-
-<histogram name="V8.UnhandledExceptionCountInWorker" enum="BooleanOccurred"
-    expires_after="2026-12-01">
-  <owner>chikamune@chromium.org</owner>
-  <owner>sisidovski@chromium.org</owner>
-  <owner>hiroshige@chromium.org</owner>
-  <owner>kouhei@chromium.org</owner>
-  <summary>
-    Report true when an unhandled exception is reported in the worker, which may
-    happen when the code has no appropriate exception handling in the worker.
-    The false value is never reported. This histogram is supposed to be used in
-    A/B testing to check if unhandled exception count is different across
-    experiment groups by counting the true values.
-  </summary>
-</histogram>
-
 <histogram name="V8.WasmAvx2Support" enum="BooleanSupported"
     expires_after="2027-09-17">
   <owner>ecmziegler@chromium.org</owner>
@@ -1714,7 +1684,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="V8.WasmCompileHugeFunctionMilliSeconds" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>clemensb@chromium.org</owner>
   <owner>ecmziegler@chromium.org</owner>
   <owner>wasm-runtime@google.com</owner>
@@ -1726,7 +1696,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="V8.WasmCompileHugeFunctionPeakMemoryBytes" units="bytes"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>clemensb@chromium.org</owner>
   <owner>ecmziegler@chromium.org</owner>
   <owner>wasm-runtime@google.com</owner>
@@ -1855,7 +1825,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="V8.WasmHugeFunctionSizeBytes{V8WasmSeparateAsmAndWasm}"
-    units="bytes" expires_after="2027-03-07">
+    units="bytes" expires_after="2027-05-09">
   <owner>ecmziegler@chromium.org</owner>
   <owner>clemensb@chromium.org</owner>
   <owner>wasm-runtime@google.com</owner>

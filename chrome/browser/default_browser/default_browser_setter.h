@@ -22,11 +22,16 @@ enum class DefaultBrowserSetterType {
   // to the application page (Windows).
   kShellIntegration = 0,
 
-  // On Mac and Linux, this setter will set the Default Browser directly.
-  // On Windows, this setter open the Settings Panel UI with a visual guided
-  // page to assist the user to set the default browser.
+  // On Windows 11, opens the Settings Panel UI with a visual guided page to
+  // assist the user to set the default browser. Elsewhere, falls back to
+  // kShellIntegration.
   kVisualGuide = 1,
-  kMaxValue = kVisualGuide,
+
+  // On Windows 11, the shell integration flow plus a bubble pointing at the
+  // Settings "Set default" button. Elsewhere, falls back to
+  // kShellIntegration.
+  kAnnotatedShellIntegration = 2,
+  kMaxValue = kAnnotatedShellIntegration,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/histograms.xml:DefaultBrowserSetterType)
 

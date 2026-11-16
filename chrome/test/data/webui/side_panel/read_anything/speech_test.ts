@@ -3,25 +3,23 @@
 // found in the LICENSE file.
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import type {AppElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {AudioBrowserProxyImpl, ContentBrowserProxyImpl, ContentController, ContentType, NodeStore, playFromSelectionTimeout, SelectionController, setInstance, SpeechBrowserProxyImpl, SpeechController, ToolbarEvent, VisualBrowserProxyImpl, VoiceLanguageController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
-import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
+import type {AppElement, ContentController, NodeStore, SpeechController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {ContentType, SelectionController, setInstance, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {createAndSetVoices, emitEvent, mockMetrics, setupBasicSpeech} from './common.js';
-import {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
-import {TestContentBrowserProxy} from './test_content_browser_proxy.js';
-import {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
-import {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
+import {emitEvent, getSpokenText, playFromSelectionWithMockTimer, setupAppTestEnvironment, setupBasicSpeech} from './common.js';
+import type {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
 
+// Integration tests for Read Aloud playback over real DOM content. Uses the
+// real ReadAloud model so text is segmented from the DOM. Unit tests for the
+// model and SpeechController are in read_aloud_model_test.ts and
+// speech_controller_test.ts.
 suite('Speech', () => {
   let app: AppElement;
   let speech: TestSpeechBrowserProxy;
-  let voiceLanguageController: VoiceLanguageController;
   let speechController: SpeechController;
   let contentController: ContentController;
-  let audioProxy: TestAudioBrowserProxy;
   let nodeStore: NodeStore;
 
   const paragraph1: string[] = [
@@ -58,92 +56,30 @@ suite('Speech', () => {
     contentController.setState(ContentType.HAS_CONTENT);
   }
 
-  function getSpokenText(): string {
-    assertEquals(1, speech.getCallCount('speak'));
-    return speech.getArgs('speak')[0].text.trim();
-  }
-
   setup(async () => {
-    // Clearing the DOM should always be done first.
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    // Due to timing issues in tests, we need to explicitly set checkVisibility
-    // of the elements to true to ensure they're considered visible and
-    // included in the speech tree.
-    HTMLElement.prototype.checkVisibility = () => true;
-
-    ContentBrowserProxyImpl.setInstance(new TestContentBrowserProxy());
-    audioProxy = new TestAudioBrowserProxy();
-    AudioBrowserProxyImpl.setInstance(audioProxy);
-    VisualBrowserProxyImpl.setInstance(new TestVisualBrowserProxy());
-
-    // Ensure the ReadAloudModel is not shared between tests.
-    setInstance(null);
-    nodeStore = new NodeStore();
-    NodeStore.setInstance(nodeStore);
-    speech = new TestSpeechBrowserProxy();
-    SpeechBrowserProxyImpl.setInstance(speech);
-
-    mockMetrics();
-    voiceLanguageController = new VoiceLanguageController();
-    VoiceLanguageController.setInstance(voiceLanguageController);
-    speechController = new SpeechController();
-    SpeechController.setInstance(speechController);
-    contentController = new ContentController();
-    ContentController.setInstance(contentController);
-
-    app = document.createElement('read-anything-app');
-    document.body.appendChild(app);
-    await microtasksFinished();
+    const result = await setupAppTestEnvironment({useRealReadAloudModel: true});
+    app = result.app;
+    nodeStore = result.nodeStore;
+    speech = result.speech;
+    speechController = result.speechController;
+    contentController = result.contentController;
     setupBasicSpeech(speech);
     buildDOMTree();
     await microtasksFinished();
+    // Text in hidden containers is skipped by Read Aloud.
+    assertTrue(app.$.container.checkVisibility());
     speech.reset();
   });
 
   test('speaks all text by sentences', async () => {
     emitEvent(app, ToolbarEvent.PLAY_PAUSE);
     await microtasksFinished();
-    assertEquals(1, speech.getCallCount('speak'));
-    const spoken1 = speech.getArgs('speak')[0];
-    assertEquals(paragraph1[0], spoken1.text.trim());
-
-    spoken1.onend();
-    assertEquals(2, speech.getCallCount('speak'));
-    const spoken2 = speech.getArgs('speak')[1];
-    assertEquals(paragraph1[1], spoken2.text.trim());
-
-    spoken2.onend();
-    assertEquals(3, speech.getCallCount('speak'));
-    const spoken3 = speech.getArgs('speak')[2];
-    assertEquals(paragraph1[2], spoken3.text.trim());
-
-    spoken3.onend();
-    assertEquals(4, speech.getCallCount('speak'));
-    const spoken4 = speech.getArgs('speak')[3];
-    assertEquals(paragraph1[3], spoken4.text.trim());
-
-    spoken4.onend();
-    assertEquals(5, speech.getCallCount('speak'));
-    const spoken5 = speech.getArgs('speak')[4];
-    assertEquals(paragraph2[0], spoken5.text.trim());
-
-    spoken5.onend();
-    assertEquals(6, speech.getCallCount('speak'));
-    const spoken6 = speech.getArgs('speak')[5];
-    assertEquals(paragraph2[1], spoken6.text.trim());
-
-    spoken6.onend();
-    assertEquals(7, speech.getCallCount('speak'));
-    const spoken7 = speech.getArgs('speak')[6];
-    assertEquals(paragraph2[2], spoken7.text.trim());
-
-    spoken7.onend();
-    assertEquals(8, speech.getCallCount('speak'));
-    const spoken8 = speech.getArgs('speak')[7];
-    assertEquals(paragraph2[3], spoken8.text.trim());
-
-    spoken8.onend();
-    assertEquals(8, speech.getCallCount('speak'));
+    const sentences = [...paragraph1, ...paragraph2];
+    sentences.forEach((sentence, i) => {
+      assertEquals(sentence, getSpokenText(speech, i));
+      speech.getArgs('speak')[i].onend();
+    });
+    assertEquals(sentences.length, speech.getCallCount('speak'));
   });
 
   test('play after speech finishes plays again from the top', () => {
@@ -172,19 +108,7 @@ suite('Speech', () => {
     assertEquals(paragraph1[0], spoken9.text.trim());
   });
 
-  test('uses set language', () => {
-    const expectedLang = 'fr';
-    audioProxy.baseLanguageForSpeech = expectedLang;
-
-    emitEvent(app, ToolbarEvent.PLAY_PAUSE);
-
-    assertEquals(1, speech.getCallCount('speak'));
-    assertEquals(expectedLang, speech.getArgs('speak')[0].lang);
-  });
-
   suite('with text selected', () => {
-    let mockTimer: MockTimer;
-
     const fragment1 = ' This is a sentence';
     const fragment2 = ' that ends in the next node. ';
     const fragment3 =
@@ -220,14 +144,13 @@ suite('Speech', () => {
       select(
           anchorId, anchorOffset, focusId, focusOffset, isBackward,
           isSplitNode);
-      playFromSelection();
+      playFromSelectionWithMockTimer(app);
     }
 
     function select(
         anchorId: number, anchorOffset: number, focusId: number,
         focusOffset: number, isBackward: boolean = false,
         isSplitNode: boolean = false): void {
-      mockTimer.install();
       if (isSplitNode) {
         buildSplitNodeDOM();
       } else {
@@ -260,20 +183,11 @@ suite('Speech', () => {
           selectionController.getCurrentSelectionStart());
     }
 
-    function playFromSelection() {
-      emitEvent(app, ToolbarEvent.PLAY_PAUSE);
-      mockTimer.tick(playFromSelectionTimeout);
-      mockTimer.uninstall();
-    }
-
-    setup(() => {
-      mockTimer = new MockTimer();
-      return microtasksFinished();
-    });
+    setup(() => microtasksFinished());
 
     test('first play starts from selected node', () => {
       selectAndPlay(5, 0, 5, 7);
-      assertEquals(paragraph2[0], getSpokenText());
+      assertEquals(paragraph2[0], getSpokenText(speech));
     });
 
     test('selection is cleared after play', () => {
@@ -286,17 +200,17 @@ suite('Speech', () => {
     test('in middle of node, play from beginning of node', async () => {
       selectAndPlay(5, 10, 5, 20);
       await microtasksFinished();
-      assertEquals(paragraph2[0], getSpokenText());
+      assertEquals(paragraph2[0], getSpokenText(speech));
     });
 
     test('when selection crosses nodes, play from earlier node', () => {
       selectAndPlay(3, 10, 5, 10);
-      assertEquals(paragraph1[0], getSpokenText());
+      assertEquals(paragraph1[0], getSpokenText(speech));
     });
 
     test('when selection is backward, play from earlier node', () => {
       selectAndPlay(5, 10, 3, 10, /*isBackward=*/ true);
-      assertEquals(paragraph1[0], getSpokenText());
+      assertEquals(paragraph1[0], getSpokenText(speech));
     });
 
     test('after speech started, cancels and plays from selection', () => {
@@ -306,10 +220,10 @@ suite('Speech', () => {
       speechController.setHasSpeechBeenTriggered(true);
       speech.reset();
 
-      playFromSelection();
+      playFromSelectionWithMockTimer(app);
 
       assertEquals(1, speech.getCallCount('cancel'));
-      assertEquals(paragraph2[0], getSpokenText());
+      assertEquals(paragraph2[0], getSpokenText(speech));
     });
 
     test('after two selections, plays from most recent selection', () => {
@@ -319,10 +233,10 @@ suite('Speech', () => {
       speechController.setHasSpeechBeenTriggered(true);
       speech.reset();
 
-      playFromSelection();
+      playFromSelectionWithMockTimer(app);
 
       assertEquals(1, speech.getCallCount('cancel'));
-      assertEquals(paragraph2[0], getSpokenText());
+      assertEquals(paragraph2[0], getSpokenText(speech));
 
       select(3, 10, 5, 10);
       domNode = nodeStore.getDomNode(1);
@@ -331,10 +245,10 @@ suite('Speech', () => {
       speechController.setHasSpeechBeenTriggered(true);
       speech.reset();
 
-      playFromSelection();
+      playFromSelectionWithMockTimer(app);
 
       assertEquals(1, speech.getCallCount('cancel'));
-      assertEquals(paragraph1[0], getSpokenText());
+      assertEquals(paragraph1[0], getSpokenText(speech));
     });
 
     test('play from selection when node split across sentences', () => {
@@ -344,7 +258,7 @@ suite('Speech', () => {
 
       // We shouldn't speak fragment2 even though it's in the same node
       // because the selection only covers fragment 3.
-      assertEquals(fragment3, getSpokenText());
+      assertEquals(fragment3, getSpokenText(speech));
     });
   });
 
@@ -352,7 +266,7 @@ suite('Speech', () => {
     emitEvent(app, ToolbarEvent.PLAY_PAUSE);
     speech.reset();
     emitEvent(app, ToolbarEvent.NEXT_GRANULARITY);
-    assertEquals(paragraph1[1], getSpokenText());
+    assertEquals(paragraph1[1], getSpokenText(speech));
   });
 
   test('previous granularity plays from there', () => {
@@ -362,54 +276,6 @@ suite('Speech', () => {
 
     emitEvent(app, ToolbarEvent.PREVIOUS_GRANULARITY);
 
-    assertEquals(paragraph1[0], getSpokenText());
-  });
-
-  suite('while playing', () => {
-    setup(() => {
-      const domNode = NodeStore.getInstance().getDomNode(1);
-      speechController.initializeSpeechTree(domNode);
-      emitEvent(app, ToolbarEvent.PLAY_PAUSE);
-    });
-
-    test('voice change cancels and restarts speech', () => {
-      createAndSetVoices(speech, [
-        {lang: 'en', name: 'Google Sheldon'},
-        {lang: 'en', name: 'Google Mary'},
-      ]);
-      speech.reset();
-
-      emitEvent(
-          app, ToolbarEvent.VOICE,
-          {detail: {selectedVoice: speech.getVoices()[1]}});
-
-      assertEquals(2, speech.getCallCount('cancel'));
-      assertEquals(1, speech.getCallCount('speak'));
-      assertEquals(0, speech.getCallCount('pause'));
-    });
-
-    test('rate change cancels and restarts speech', () => {
-      speech.reset();
-
-      emitEvent(app, ToolbarEvent.RATE, {detail: {data: 2}});
-
-      assertEquals(2, speech.getCallCount('cancel'));
-      assertEquals(1, speech.getCallCount('speak'));
-      assertEquals(0, speech.getCallCount('pause'));
-    });
-
-    test('before speech engine is loaded is not playable', async () => {
-      await microtasksFinished();
-      assertFalse(app.$.toolbar.isReadAloudPlayable);
-    });
-
-    test('after speech engine is loaded is playable', async () => {
-      assertEquals(1, speech.getCallCount('speak'));
-
-      speech.getArgs('speak')[0].onstart();
-      await microtasksFinished();
-
-      assertTrue(app.$.toolbar.isReadAloudPlayable);
-    });
+    assertEquals(paragraph1[0], getSpokenText(speech));
   });
 });

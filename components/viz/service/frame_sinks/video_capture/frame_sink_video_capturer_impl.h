@@ -197,10 +197,15 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
   // Given a `visible_rect` representing visible rectangle of some video frame,
   // calculates a centered rectangle that fits entirely within `visible_rect`
   // and has the same aspect ratio as `source_size`, taking into account
-  // `pixel_format`.
-  static gfx::Rect GetContentRectangle(const gfx::Rect& visible_rect,
-                                       const gfx::Size& source_size,
-                                       media::VideoPixelFormat pixel_format);
+  // `pixel_format`. `requested_capture_size` is the size the oracle asked for
+  // before it was rounded for `pixel_format`. If the source fits that size,
+  // the whole `visible_rect` is returned. If not set, `visible_rect.size()` is
+  // used instead.
+  static gfx::Rect GetContentRectangle(
+      const gfx::Rect& visible_rect,
+      const gfx::Size& source_size,
+      media::VideoPixelFormat pixel_format,
+      std::optional<gfx::Size> requested_capture_size = std::nullopt);
 
   // Returns the BufferFormatPreference currently used by the frame pool.
   // Assumes that the frame pool is of type MappableSharedImageVideoFramePool,
@@ -275,7 +280,9 @@ class VIZ_SERVICE_EXPORT FrameSinkVideoCapturerImpl final
     // Subcapture target changed during the capture process.
     kSubCaptureTargetChanged,
     // Oracle rejected the capture.  See VideoCaptureOracle::CompleteCapture.
-    kOracleRejectedFrame
+    kOracleRejectedFrame,
+    // Empty content rect could not be letterboxed on the CPU.
+    kCannotLetterboxEmptyContent
   };
 
   // One instance is created for each capture. It wraps the `media::VideoFrame`

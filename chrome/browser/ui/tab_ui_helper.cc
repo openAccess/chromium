@@ -13,6 +13,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/process/kill.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "build/build_config.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/favicon/favicon_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -69,10 +71,9 @@ ui::ColorId GetDefaultFaviconBackgroundColorId(
 }
 
 bool IsNTP(const GURL& url) {
-  return url.SchemeIs(content::kChromeUIScheme) &&
-         (url.host() == chrome::kChromeUINewTabHost ||
-          url.host() == chrome::kChromeUITabSearchHost ||
-          url.host() == chrome::kChromeUINewTabPageHost);
+  return search::IsNewTabPageOrigin(url) || search::IsNewTabOrigin(url) ||
+         (url.SchemeIs(content::kChromeUIScheme) &&
+          url.host() == chrome::kChromeUITabSearchHost);
 }
 
 web_app::WebAppBrowserController* GetWebAppBrowserController(
@@ -116,6 +117,16 @@ TabUIHelper::TabUIHelper(tabs::TabInterface& tab_interface)
   // favicon should show or not.
   pin_tab_subscription_ = tab().RegisterPinnedStateChanged(base::BindRepeating(
       &TabUIHelper::OnTabPinnedStatusChange, base::Unretained(this)));
+
+  if (!base::FeatureList::IsEnabled(
+          tabs::kSessionRestoreShowThrobberOnVisible)) {
+    tab_did_activate_subscription_ = tab().RegisterDidActivate(
+        base::IgnoreArgs<tabs::TabInterface*>(base::BindRepeating(
+            &TabUIHelper::SetWasActiveAtLeastOnce, base::Unretained(this))));
+    if (tab().IsActivated()) {
+      SetWasActiveAtLeastOnce();
+    }
+  }
 }
 
 TabUIHelper::~TabUIHelper() = default;

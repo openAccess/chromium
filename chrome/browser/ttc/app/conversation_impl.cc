@@ -4,7 +4,10 @@
 
 #include "chrome/browser/ttc/app/conversation_impl.h"
 
+#include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -43,9 +46,11 @@ void ConversationImpl::Start() {
 
 void ConversationImpl::Stop() {
   audio_controller_observation_.Reset();
+  hotl_audio_sink_.Reset();
 
   audio_controller_->StopCapture();
   audio_controller_->StopPlayback();
+  playback_status_reporter_.reset();
 
   if (backend_->is_transport_connected()) {
     backend_->Close();
@@ -75,8 +80,8 @@ void ConversationImpl::SetMicMuted(bool muted) {
   }
 }
 
-bool ConversationImpl::IsMicMuted() const {
-  return !audio_controller_->is_capturing();
+void ConversationImpl::SetHotlAudioSink(HotlAudioSinkCallback sink) {
+  hotl_audio_sink_ = std::move(sink);
 }
 
 SessionJournal& ConversationImpl::GetJournal() {
@@ -86,11 +91,24 @@ SessionJournal& ConversationImpl::GetJournal() {
 void ConversationImpl::OnCapturedAudio(base::span<const int16_t> pcm_data,
                                        const media::AudioParameters& params,
                                        float energy) {
+  session_controller_->UserAudioLevelUpdate(energy);
+
+  if (hotl_audio_sink_) {
+    // Avoid logging local confirmation audio to the persistent session journal.
+    // Copy the callback locally to protect against synchronous re-entrancy
+    // (e.g. if the sink unregisters itself upon matching a keyword).
+    HotlAudioSinkCallback sink = hotl_audio_sink_;
+    sink.Run(pcm_data, params);
+    return;
+  }
+
   audio_logger_.OnCapturedAudio(base::as_bytes(pcm_data), params,
                                 speaker_tracker_.speaker());
-
   backend_->SendAudioChunk(pcm_data);
-  session_controller_->UserAudioLevelUpdate(energy);
+}
+
+void ConversationImpl::OnCaptureStarted() {
+  session_controller_->OnMicCaptureChanged(/*capturing=*/true);
 }
 
 void ConversationImpl::OnCaptureStopped() {
@@ -98,6 +116,11 @@ void ConversationImpl::OnCaptureStopped() {
 
   // No more audio levels arrive, so settle the UI at silence.
   session_controller_->UserAudioLevelUpdate(0.0f);
+  session_controller_->OnMicCaptureChanged(/*capturing=*/false);
+}
+
+void ConversationImpl::OnCaptureMuted(bool muted, bool at_stream_start) {
+  session_controller_->OnSystemMicMuteChanged(muted, at_stream_start);
 }
 
 void ConversationImpl::OnModelAudioEnvelopeReady(
@@ -105,12 +128,22 @@ void ConversationImpl::OnModelAudioEnvelopeReady(
   session_controller_->OnModelAudioEnvelopeReady(envelope);
 }
 
-void ConversationImpl::OnPlaybackCompleted(int64_t sequence_number) {
-  backend_->ReportPlaybackStatus(sequence_number);
+void ConversationImpl::OnPlaybackProgress(base::TimeDelta played_duration,
+                                          bool did_fully_drain_queue) {
+  if (playback_status_reporter_) {
+    playback_status_reporter_->OnPlaybackProgress(played_duration,
+                                                  did_fully_drain_queue);
+  }
 }
 
 void ConversationImpl::OnAudioError(ErrorCode error) {
   session_controller_->OnError(error);
+}
+
+void ConversationImpl::OnPlaybackError() {
+  if (playback_status_reporter_) {
+    playback_status_reporter_->OnPlaybackError();
+  }
 }
 
 void ConversationImpl::OnBackendInitialized() {
@@ -118,10 +151,18 @@ void ConversationImpl::OnBackendInitialized() {
       SessionLifecycle::kFinished) {
     return;
   }
+  std::optional<std::string> session_id = backend_->GetSessionId();
+  if (!session_id.has_value()) {
+    session_controller_->GetJournal().Log("TtcBackendMissingSessionId", {});
+    session_controller_->OnError(ErrorCode::kInternalBackendError);
+    backend_->Close();
+    return;
+  }
+  CHECK(!session_id->empty());
+  session_controller_->SetSessionId(*session_id);
   backend_->SendToolSetUpdate(session_controller_->GetToolDefinitions());
-  session_controller_->SetSessionLifecycle(SessionLifecycle::kLive);
   audio_controller_->StartCapture(/*device_id=*/"");
-  session_controller_->OnSessionInitialized();
+  session_controller_->SetSessionLifecycle(SessionLifecycle::kLive);
 }
 
 void ConversationImpl::OnBackendClosed() {
@@ -146,7 +187,12 @@ void ConversationImpl::OnTranscriptions(
 
 void ConversationImpl::OnAudioOutput(base::span<const int16_t> audio_data,
                                      int64_t sequence_number) {
-  audio_controller_->PlayAudio(audio_data, sequence_number);
+  // See SetHotlAudioSink(). The dropped audio is handled like an interrupted
+  // turn: it is never played, so its playback is never reported.
+  if (hotl_audio_sink_) {
+    return;
+  }
+  audio_controller_->PlayAudio(audio_data);
 }
 
 void ConversationImpl::OnGenerationStateChanged(bool started,
@@ -172,7 +218,37 @@ void ConversationImpl::OnGenerationStateChanged(bool started,
 
 void ConversationImpl::OnModelTurnStateUpdate(ModelTurnStateUpdate update,
                                               int64_t generation_id) {
-  speaker_tracker_.OnModelTurnStateUpdate(update, generation_id);
+  speaker_tracker_.OnModelTurnStateUpdate(update);
+
+  if (update == ModelTurnStateUpdate::kInterrupted) {
+    audio_controller_->ClearPlaybackQueue();
+  }
+
+  switch (update) {
+    case ModelTurnStateUpdate::kTurnStarted:
+      playback_status_reporter_ = std::make_unique<PlaybackStatusReporter>(
+          generation_id,
+          base::BindRepeating(&ConversationImpl::SendPlaybackStatusReport,
+                              base::Unretained(this)));
+      break;
+    case ModelTurnStateUpdate::kGenerationCompleted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->OnGenerationCompleted(
+            audio_controller_->is_playing());
+      }
+      break;
+    case ModelTurnStateUpdate::kInterrupted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->OnInterrupted();
+      }
+      break;
+    case ModelTurnStateUpdate::kTurnCompleted:
+      if (playback_status_reporter_) {
+        playback_status_reporter_->CompleteIfNeeded();
+        playback_status_reporter_.reset();
+      }
+      break;
+  }
 }
 
 void ConversationImpl::OnUserTurnStateUpdate(UserTurnStateUpdate update) {
@@ -187,10 +263,23 @@ void ConversationImpl::OnSpeakerChanged(Speaker old_speaker,
   session_controller_->OnSpeakerChanged(new_speaker);
 }
 
+void ConversationImpl::SendPlaybackStatusReport(
+    base::TimeDelta playback_progress,
+    bool playback_complete,
+    int64_t generation_id) {
+  backend_->ReportPlaybackStatus(playback_progress, playback_complete,
+                                 generation_id);
+}
+
 void ConversationImpl::OnToolCall(const ToolRequest& tool_request,
                                   ToolResponseCallback response_callback) {
   session_controller_->ProcessToolCall(tool_request,
                                        std::move(response_callback));
+}
+
+void ConversationImpl::OnToolCallBatch(
+    std::vector<PendingToolCall> tool_calls) {
+  session_controller_->ProcessToolCallBatch(std::move(tool_calls));
 }
 
 void ConversationImpl::OnJournalEvent(const ServerJournalEvent& journal_event) {

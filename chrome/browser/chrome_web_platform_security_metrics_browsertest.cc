@@ -14,7 +14,6 @@
 #include "base/threading/platform_thread.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -159,10 +158,6 @@ class ChromeWebPlatformSecurityMetricsBrowserTest : public policy::PolicyTest {
         network::features::kLocalNetworkAccessChecks,
         // Disabling this flag just to test that the flag is working.
         blink::features::kRemoveCharsetAutoDetectionForISO2022JP,
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        omnibox::internal::kWebUIOmniboxPopup,
-        omnibox::internal::kWebUIOmniboxAimPopup,
     };
   }
 
@@ -1994,8 +1989,6 @@ IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
     document.body.appendChild(iframe);
   )"));
   CheckCounter(WebFeature::kAnonymousIframe, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 0);
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
@@ -2008,8 +2001,6 @@ IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
     document.body.appendChild(iframe);
   )"));
   CheckCounter(WebFeature::kAnonymousIframe, 1);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 1);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 0);
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
@@ -2026,8 +2017,6 @@ IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
     });
   )"));
   CheckCounter(WebFeature::kAnonymousIframe, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 0);
 }
 
 IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
@@ -2044,52 +2033,6 @@ IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
     });
   )"));
   CheckCounter(WebFeature::kAnonymousIframe, 1);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 1);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 0);
-}
-
-IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
-                       AnonymousIframeIsSandboxedControl) {
-  GURL url = https_server().GetURL("a.test", "/empty.html");
-  EXPECT_TRUE(content::NavigateToURL(web_contents(), url));
-  EXPECT_TRUE(content::ExecJs(web_contents(), R"(
-    new Promise(resolve => {
-      let iframe = document.createElement("iframe");
-      iframe.src = location.href;
-      iframe.onload = resolve;
-      document.body.appendChild(iframe);
-    });
-  )"));
-  CheckCounter(WebFeature::kAnonymousIframe, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 0);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 0);
-}
-
-IN_PROC_BROWSER_TEST_F(ChromeWebPlatformSecurityMetricsBrowserTest,
-                       AnonymousIframeIsSandboxed) {
-  GURL url = https_server().GetURL("a.test", "/empty.html");
-  EXPECT_TRUE(content::NavigateToURL(web_contents(), url));
-  EXPECT_TRUE(content::ExecJs(web_contents(), R"(
-    const createIframe = sandbox => {
-      let iframe = document.createElement("iframe");
-      iframe.src = location.href;
-      iframe.credentialless = true;
-      if (sandbox)
-        iframe.sandbox = "";
-      document.body.appendChild(iframe);
-      return new Promise(resolve => iframe.onload = resolve);
-    };
-    Promise.all([
-      createIframe(false),
-      createIframe(false),
-      createIframe(false),
-      createIframe(true),
-      createIframe(true),
-    ]);
-  )"));
-  CheckCounter(WebFeature::kAnonymousIframe, 1);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", false, 3);
-  CheckHistogramCount("Navigation.AnonymousIframeIsSandboxed", true, 2);
 }
 
 using SameDocumentCrossOriginInitiatorTest =

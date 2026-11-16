@@ -74,10 +74,15 @@ public class AwWebContent {
         void onDetached();
     }
 
+    private final StartupController mStartupController;
     private @Nullable AwContents mAwContents;
     private @Nullable ViewHost mCurrentHost;
     private @Nullable SurfaceBindingListener mSurfaceBindingListener;
     private boolean mIsDestroyed;
+
+    public AwWebContent(StartupController startupController) {
+        mStartupController = startupController;
+    }
 
     /**
      * Creates an {@link AwWebContent} that has already been destroyed.
@@ -96,10 +101,10 @@ public class AwWebContent {
      * that long term we can clean up the default profile when it isn't in use.
      */
     public static AwWebContent createDestroyedAwWebContent(
-            AwContents.AwContentsClientFactory clientFactory) {
+            StartupController startupController, AwContents.AwContentsClientFactory clientFactory) {
         ThreadUtils.assertOnUiThread();
         Context appContext = ContextUtils.getApplicationContext();
-        AwWebContent destroyedAwWebContent = new AwWebContent();
+        AwWebContent destroyedAwWebContent = new AwWebContent(startupController);
         destroyedAwWebContent.mAwContents =
                 new AwContents(
                         AwBrowserContextStore.getNamedContext(
@@ -541,7 +546,7 @@ public class AwWebContent {
     }
 
     private AwContents ensureAwContents(@StartupCallSite int callSite) {
-        StartupController.getInstance().triggerAndWaitForChromiumStarted(callSite);
+        mStartupController.triggerAndWaitForChromiumStarted(callSite);
         assert mAwContents != null;
         return mAwContents;
     }
@@ -556,12 +561,11 @@ public class AwWebContent {
      * method for performance critical code, e.g. UI rendering.
      */
     private void runOrQueueUntilStarted(Callback<AwContents> action) {
-        StartupController startupController = StartupController.getInstance();
         if (mAwContents != null) {
             action.onResult(mAwContents);
             return;
         }
-        startupController
+        mStartupController
                 .getRunQueue()
                 .addTask(
                         () -> {
@@ -570,7 +574,20 @@ public class AwWebContent {
                         });
     }
 
+    /** Like the above, for actions that don't need an {@link AwContents}, which may never exist. */
+    private void runOrQueueUntilStarted(Runnable action) {
+        if (mAwContents != null) {
+            action.run();
+        } else {
+            mStartupController.getRunQueue().addTask(action);
+        }
+    }
+
     public void destroy() {
+        runOrQueueUntilStarted(this::destroyNow);
+    }
+
+    private void destroyNow() {
         if (mIsDestroyed) return;
         mIsDestroyed = true;
         if (mSurfaceBindingListener != null) {

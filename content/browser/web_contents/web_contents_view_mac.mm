@@ -214,6 +214,14 @@ WebContentsViewMac::GetBackForwardTransitionAnimationManager() {
 
 void WebContentsViewMac::DestroyBackForwardTransitionAnimationManager() {}
 
+void WebContentsViewMac::CancelDrag() {
+  if (remote_ns_view_) {
+    remote_ns_view_->CancelDrag();
+  } else {
+    in_process_ns_view_bridge_->CancelDrag();
+  }
+}
+
 void WebContentsViewMac::StartDragging(
     RenderFrameHost& source_rfh,
     const DropData& drop_data,
@@ -729,8 +737,7 @@ void WebContentsViewMac::PerformEndDrag(uint32_t drag_operation,
   }
 
   web_contents_->DragSourceEndedAt(
-      transformed_point.x(), transformed_point.y(),
-      transformed_screen_point.x(), transformed_screen_point.y(),
+      transformed_point, transformed_screen_point,
       static_cast<ui::mojom::DragOperation>(drag_operation),
       drag_source_start_rwh_.get());
 

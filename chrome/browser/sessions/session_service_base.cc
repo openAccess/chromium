@@ -15,6 +15,7 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/to_string.h"
 #include "base/task/sequenced_task_runner.h"
@@ -31,6 +32,7 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/sessions/session_tab_group_utils.h"
 #include "chrome/browser/ui/startup/startup_browser_creator.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
@@ -84,9 +86,6 @@ using sessions::ContentSerializedNavigationBuilder;
 using sessions::SerializedNavigationEntry;
 
 namespace {
-
-// Every kWritesPerReset commands triggers recreating the file.
-const int kWritesPerReset = 250;
 
 // User data key for WebContents to derive their types.
 const void* const kSessionServiceBaseUserDataKey =
@@ -280,6 +279,10 @@ void SessionServiceBase::TabInserted(WebContents* contents) {
   if (!ShouldTrackChangesToWindow(session_tab_helper->window_id())) {
     return;
   }
+  if (windows_empty_at_last_rebuild_.erase(session_tab_helper->window_id())) {
+    base::UmaHistogramBoolean(
+        "Session.Counterfactual.EmptyWindowTabWouldHaveBeenLost", true);
+  }
   SetTabWindow(session_tab_helper->window_id(),
                session_tab_helper->session_id());
   std::string app_id = apps::GetAppIdForWebContents(contents);
@@ -446,11 +449,25 @@ void SessionServiceBase::SetSelectedNavigationIndex(SessionID window_id,
   auto it = tab_to_available_range_.find(tab_id);
   if (it != tab_to_available_range_.end()) {
     std::pair<int, int>& range = it->second;
-    if (index < range.first || index > range.second) {
+    // The range is inclusive; second+1 is the entry being committed,
+    // and its UpdateTabNavigation comes right after.
+    if (index < range.first || index > range.second + 1) {
       // The new index is outside the range of what we've archived, schedule
       // a reset.
       ResetFromCurrentBrowsers();
       return;
+    }
+    // The old code rewrote the file on a tab's second step past its
+    // rebuild-time bound, which reset every tab's bound.
+    if (index == range.second + 1 &&
+        !tabs_past_rebuild_bound_.insert(tab_id).second) {
+      tabs_past_rebuild_bound_.clear();
+      // A rewrite that is already pending would have absorbed the old one.
+      if (!command_storage_manager_->pending_reset() &&
+          !rebuild_on_next_save_) {
+        base::UmaHistogramBoolean("Session.Counterfactual.FullRewriteAvoided",
+                                  true);
+      }
     }
   }
   ScheduleCommand(
@@ -541,7 +558,7 @@ base::Value SessionServiceBase::ToDebugValue() const {
         result.EnsureDict("tab_to_available_range")
             ->EnsureDict(base::NumberToString(id.id()));
     range_dict->Set("first", range.first);
-    range_dict->Set("second", range.first);
+    range_dict->Set("second", range.second);
   }
   result.Set("rebuild_on_next_save", rebuild_on_next_save_);
   for (const auto& [id, tab_index] : last_selected_tab_in_window_) {
@@ -638,7 +655,7 @@ void SessionServiceBase::BuildCommandsForTab(
   const int pending_index = tab->GetController().GetPendingEntryIndex();
   if (tab_to_available_range) {
     (*tab_to_available_range)[session_id] =
-        std::pair<int, int>(min_index, max_index);
+        std::pair<int, int>(min_index, max_index - 1);
   }
 
   command_storage_manager()->AppendRebuildCommand(
@@ -749,6 +766,10 @@ void SessionServiceBase::BuildCommandsForBrowser(
 
     for (const tab_groups::TabGroupId& group_id :
          group_model->ListTabGroups()) {
+      if (!session_tab_group_utils::IsPersistableTabGroup(*tab_strip,
+                                                          group_id)) {
+        continue;
+      }
       const tab_groups::TabGroupVisualData* visual_data =
           group_model->GetTabGroup(group_id)->visual_data();
 
@@ -776,7 +797,7 @@ void SessionServiceBase::BuildCommandsForBrowser(
   if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing) &&
       tab_strip->SupportsTabGroups()) {
     std::optional<tab_groups::TabGroupId> focused_group =
-        tab_strip->GetFocusedGroup();
+        session_tab_group_utils::GetPersistableFocusedGroup(*tab_strip);
     if (focused_group.has_value()) {
       command_storage_manager()->AppendRebuildCommand(
           sessions::CreateAddWindowExtraDataCommand(
@@ -805,7 +826,8 @@ void SessionServiceBase::BuildCommandsForBrowser(
     WebContents* tab = tab_interface->GetContents();
     CHECK(tab, base::NotFatalUntil::M163);
     const std::optional<tab_groups::TabGroupId> group_id =
-        tab_strip->GetTabGroupForTab(index);
+        session_tab_group_utils::GetPersistableTabGroupForTab(*tab_strip,
+                                                              index);
     const std::optional<split_tabs::SplitTabId> split_id =
         tab_strip->GetSplitForTab(index);
 
@@ -821,17 +843,26 @@ void SessionServiceBase::BuildCommandsForBrowser(
 void SessionServiceBase::BuildCommandsFromBrowsers(
     IdToRange* tab_to_available_range,
     std::set<SessionID>* windows_to_track) {
+  windows_empty_at_last_rebuild_.clear();
+  tabs_past_rebuild_bound_.clear();
   CHECK(is_saving_enabled_, base::NotFatalUntil::M163);
+  // The platform session id is only written once, when the platform session is
+  // initialized, so it has to be carried over when the commands are rebuilt.
+  // Otherwise the next launch can't restore the platform session.
+  if (platform_session_id_.has_value()) {
+    command_storage_manager()->AppendRebuildCommand(
+        sessions::CreateSetPlatformSessionIdCommand(*platform_session_id_));
+  }
   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
       [this, tab_to_available_range,
        windows_to_track](BrowserWindowInterface* browser) {
-        // Make sure the browser has tabs and a window. When a browser is closed
-        // the destructor is not necessarily run immediately. This means it's
-        // possible for us to get a handle to a browser that is about to be
-        // removed. If the tab count is 0 or the window is NULL, the browser is
-        // about to be deleted, so we ignore it.
-        if (ShouldTrackBrowser(browser) &&
-            browser->GetTabStripModel()->count() && browser->GetWindow()) {
+        // Skip browsers without a window; they are about to be deleted.
+        // Include browsers with no tabs yet (e.g. a window created for a tab
+        // drag) so they stay tracked; restore drops windows that end up empty.
+        if (ShouldTrackBrowser(browser) && browser->GetWindow()) {
+          if (browser->GetTabStripModel()->empty()) {
+            windows_empty_at_last_rebuild_.insert(browser->GetSessionID());
+          }
           BuildCommandsForBrowser(browser, tab_to_available_range,
                                   windows_to_track);
         }
@@ -854,10 +885,18 @@ void SessionServiceBase::ScheduleCommand(
   command_storage_manager_->ScheduleCommand(std::move(command));
   // Don't schedule a reset on tab closed/window closed. Otherwise we may
   // lose tabs/windows we want to restore from if we exit right after this.
+  // Defer the reset to the next save rather than performing it synchronously,
+  // preventing snapshots of incomplete state during window creation or
+  // teardown.
   if (!command_storage_manager_->pending_reset() &&
       command_storage_manager_->commands_since_reset() >= kWritesPerReset &&
       !is_closing_command) {
-    ScheduleResetCommands();
+    if (!rebuild_on_next_save_) {
+      base::UmaHistogramBoolean(
+          "Session.Counterfactual.RebuildWouldHaveDroppedTabs",
+          HasPendingTabCloses());
+    }
+    rebuild_on_next_save_ = true;
   }
   DidScheduleCommand();
 }
@@ -904,6 +943,10 @@ bool SessionServiceBase::ShouldTrackBrowser(
 
   return ShouldRestoreWindowOfType(
       WindowTypeForBrowserType(browser->GetType()));
+}
+
+bool SessionServiceBase::HasPendingTabCloses() const {
+  return false;
 }
 
 bool SessionServiceBase::ShouldDeleteSessionStorageOnTabClosing(

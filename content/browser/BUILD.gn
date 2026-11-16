@@ -46,8 +46,8 @@ if (is_android) {
     deps = [
       "//components/vrp_flags:buildflags",
       "//third_party/rust/font_types/v0_12:lib",
-      "//third_party/rust/read_fonts/v0_45:lib",
-      "//third_party/rust/skrifa/v0_48:lib",
+      "//third_party/rust/read_fonts/v0_46:lib",
+      "//third_party/rust/skrifa/v0_49:lib",
     ]
   }
 }
@@ -181,7 +181,6 @@ source_set("browser") {
     "//components/offline_pages/buildflags",
     "//components/offline_pages/core/request_header",
     "//components/optimization_guide/core",
-    "//components/optimization_guide/core:features",
     "//components/optimization_guide/public/mojom",
     "//components/payments/content/icon",
     "//components/payments/mojom",
@@ -223,7 +222,6 @@ source_set("browser") {
     "//content/browser/content_index:content_index_proto",
     "//content/browser/cookie_store:cookie_store_proto",
     "//content/browser/devtools:devtools_background_services_proto",
-    "//content/browser/devtools:protocol_sources",
     "//content/browser/download:proto",
     "//content/browser/file_system_access:proto",
     "//content/browser/indexed_db:internals_mojo_bindings",
@@ -402,6 +400,7 @@ source_set("browser") {
     "//base",
     "//components/memory_pressure",
     "//components/vrp_flags:buildflags",
+    "//content/browser/devtools:protocol_sources",
     "//content/browser/indexed_db",
     "//ipc",
     "//media/mojo/mojom:remoting",
@@ -1259,8 +1258,6 @@ source_set("browser") {
     "media/desktop_media_window_registry.cc",
     "media/desktop_media_window_registry.h",
     "media/desktop_media_window_registry_aura.cc",
-    "media/flinging_renderer.cc",
-    "media/flinging_renderer.h",
     "media/forwarding_audio_stream_factory.cc",
     "media/forwarding_audio_stream_factory.h",
     "media/frameless_media_interface_proxy.cc",
@@ -1392,6 +1389,10 @@ source_set("browser") {
     "notifications/platform_notification_context_impl.h",
     "notifications/platform_notification_service_proxy.cc",
     "notifications/platform_notification_service_proxy.h",
+    "notifications/platform_notification_service_routing.cc",
+    "notifications/platform_notification_service_routing.h",
+    "notifications/virtual_platform_notification_service.cc",
+    "notifications/virtual_platform_notification_service.h",
     "origin_agent_cluster_isolation_state.cc",
     "origin_agent_cluster_isolation_state.h",
     "origin_agent_cluster_isolation_state_bridge.cc",
@@ -3272,6 +3273,8 @@ source_set("browser") {
       "font_unique_name_lookup/font_unique_name_lookup_service.h",
       "media/android/browser_gpu_video_accelerator_factories.cc",
       "media/android/browser_gpu_video_accelerator_factories.h",
+      "media/flinging_renderer.cc",
+      "media/flinging_renderer.h",
       "media/key_system_support_android.cc",
       "media/key_system_support_android.h",
       "media/session/audio_focus_delegate_android.cc",
@@ -3487,10 +3490,7 @@ source_set("browser") {
       "devtools/devtools_frontend_host_impl.h",
     ]
 
-    deps += [
-      "//content/browser/devtools:devtools_resources",
-      "//content/browser/devtools:devtools_resources_extern",
-    ]
+    deps += [ "//content/browser/devtools:devtools_resources_extern" ]
   }
 
   if (!is_android && !is_ios && !is_fuchsia) {

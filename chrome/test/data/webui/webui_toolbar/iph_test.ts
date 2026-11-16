@@ -2,9 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+
 import {assertEquals, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {AppMenuIconType, AppMenuSeverity, IconTable, IconType} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import {AppMenuIconType, AppMenuSeverity, IconTable, IconType, PinnedToolbarActionEngagedIndicatorStyle} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 suite('IPH', function() {
   // Distinct fake colors so that the normal and IPH colors can be told apart.
@@ -101,6 +104,10 @@ suite('IPH', function() {
     hostWithHighlight.classList.add('help-anchor-highlight');
     await microtasksFinished();
 
+    assertEquals(
+        'rgba(0, 0, 0, 0)',
+        window.getComputedStyle(visualTarget).backgroundColor,
+        `Button ${tagName} should suppress its background during the IPH`);
     assertEquals(
         'pulse',
         window.getComputedStyle(visualTarget, '::before').animationName,
@@ -199,6 +206,7 @@ suite('IPH', function() {
 
     await testIPH('pinned-toolbar-action', (el) => {
       el.state = {
+        ...el.state,
         action: 1,
         enabled: true,
         tooltip: 'Pinned Action',
@@ -208,16 +216,38 @@ suite('IPH', function() {
   });
 
   test('PinnedToolbarActionEngaged', async () => {
-    // Native PinnedActionToolbarButton keeps the engaged color during the IPH.
+    // Native PinnedActionToolbarButton keeps the engaged color during the IPH
+    // when using the underline indicator style.
     await testIPH('pinned-toolbar-action', (el) => {
       el.state = {
+        ...el.state,
         action: 1,
         enabled: true,
         activated: true,
+        engagedIndicatorStyle:
+            PinnedToolbarActionEngagedIndicatorStyle.kUnderline,
         tooltip: 'Pinned Action',
         icon: {handleId: 0n},
       };
     }, /*expectIconRecolor=*/ false);
+  });
+
+  test('PinnedToolbarActionEngagedCircleHighlight', async () => {
+    // Native PinnedActionToolbarButton::UpdateIcon() only overrides the icon
+    // color for kUnderline; kCircleHighlight uses the normal/IPH foreground
+    // color.
+    await testIPH('pinned-toolbar-action', (el) => {
+      el.state = {
+        ...el.state,
+        action: 1,
+        enabled: true,
+        activated: true,
+        engagedIndicatorStyle:
+            PinnedToolbarActionEngagedIndicatorStyle.kCircleHighlight,
+        tooltip: 'Pinned Action',
+        icon: {handleId: 0n},
+      };
+    });
   });
 
   test('AppMenuButton', async () => {

@@ -35,10 +35,10 @@
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/types/to_address.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_names.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
@@ -58,9 +58,9 @@ IcuConverterWrapper::~IcuConverterWrapper() {
 }
 
 static UConverter*& CachedConverterIcu() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<IcuConverterWrapper>,
-                                  cached_converter_icu, ());
-  return cached_converter_icu->converter;
+  static base::NoDestructor<ThreadSpecific<IcuConverterWrapper>>
+      cached_converter_icu;
+  return (*cached_converter_icu)->converter;
 }
 
 std::unique_ptr<TextCodec> TextCodecIcu::Create(const TextEncoding& encoding) {
@@ -478,9 +478,9 @@ String TextCodecIcu::Decode(base::span<const uint8_t> data,
 
 #if !defined(USING_SYSTEM_ICU)
   // Chrome's copy of ICU does not have the issue described below.
-  return result.ToString();
+  return result.ReleaseString();
 #else
-  String result_string = result.ToString();
+  String result_string = result.ReleaseString();
 
   // <http://bugs.webkit.org/show_bug.cgi?id=17014>
   // Simplified Chinese pages use the code A3A0 to mean "full-width space", but

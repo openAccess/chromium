@@ -191,9 +191,8 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::ApplyUsingPixmap(
       NOTREACHED();
     }
     if (!source_rect_valid.isEmpty()) {
-      if (!source_paint_image.readPixels(
-              pm_valid.info(), pm_valid.writable_addr(), pm_valid.rowBytes(),
-              source_rect_valid.x(), source_rect_valid.y())) {
+      if (!source_paint_image.readPixels(pm_valid, source_rect_valid.x(),
+                                         source_rect_valid.y())) {
         return nullptr;
       }
     }
@@ -354,11 +353,13 @@ scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::Apply(
   // requested, fall back to software. The test ImageBitmapTest.AvoidGPUReadback
   // expects this, even if the source had premultiplied alpha (in which case we
   // are falling back to the CPU for no increased precision).
-  scoped_refptr<StaticBitmapImage> result;
-  if (!options.premultiply_alpha) {
-    return ApplyUsingPixmap(source, options);
+  scoped_refptr<StaticBitmapImage> result =
+      !options.premultiply_alpha ? ApplyUsingPixmap(source, options)
+                                 : ApplyWithBlit(source, options);
+  if (result) {
+    result->SetOriginClean(source->OriginClean());
   }
-  return ApplyWithBlit(source, options);
+  return result;
 }
 
 scoped_refptr<StaticBitmapImage> StaticBitmapImageTransform::Clone(

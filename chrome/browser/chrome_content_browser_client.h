@@ -471,6 +471,10 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
   GetGeolocationSystemPermissionManager() override;
 #endif
 
+#if BUILDFLAG(IS_WIN)
+  bool SystemMayPromptForVideoCapture() override;
+#endif
+
 #if BUILDFLAG(IS_ANDROID)
   bool ShouldUseGmsCoreGeolocationProvider() override;
 #endif
@@ -680,7 +684,6 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       content::NavigationHandle* navigation_handle) override;
   std::unique_ptr<media::ScreenEnumerator> CreateScreenEnumerator()
       const override;
-  bool EnforceSystemAudioEchoCancellation() override;
 #if BUILDFLAG(ENABLE_MEDIA_REMOTING)
   void CreateMediaRemoter(
       content::RenderFrameHost* render_frame_host,
@@ -967,7 +970,7 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
       const GURL& original_url) override;
 
   content::BrowserContext* GetUserBrowserContext(
-      content::RenderFrameHost& render_frame_host) override;
+      content::WebContents& web_contents) override;
 
   void IsClipboardPasteAllowedByPolicy(
       const content::ClipboardEndpoint& source,
@@ -1258,8 +1261,6 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
 
   std::optional<std::vector<std::u16string>> GetClipboardTypesIfPolicyApplied(
       const ui::ClipboardSequenceNumberToken& seqno) override;
-
-  bool UsePrefetchPrerenderIntegration() override;
 
 #if !BUILDFLAG(IS_ANDROID)
   bool ShouldDisallowCredentialRequest(

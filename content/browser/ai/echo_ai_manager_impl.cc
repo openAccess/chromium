@@ -4,12 +4,15 @@
 
 #include "content/browser/ai/echo_ai_manager_impl.h"
 
+#include <cstdint>
+#include <optional>
+#include <vector>
+
 #include "base/no_destructor.h"
 #include "base/supports_user_data.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/language/core/common/locale_util.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "content/browser/ai/echo_ai_language_model.h"
 #include "content/browser/ai/echo_ai_proofreader.h"
 #include "content/browser/ai/echo_ai_rewriter.h"
@@ -20,9 +23,11 @@
 #include "content/public/browser/browser_thread.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
+#include "services/on_device_model/public/cpp/features.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/mojom/ai/ai_common.mojom.h"
 #include "third_party/blink/public/mojom/ai/ai_language_model.mojom.h"
+#include "third_party/blink/public/mojom/ai/ai_semantic_embedder.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "content/browser/ai/echo_ai_decision_model.h"
@@ -34,6 +39,20 @@ namespace {
 
 const int kMockDownloadPreparationTimeMillisecond = 300;
 const int kMockModelSizeBytes = 0x10000;
+
+// Semantic Embedder web tests ask for this space to exercise the unsupported
+// path; every other name is served.
+constexpr char kEchoUnsupportedEmbeddingSpace[] = "unsupported-embedding-space";
+
+// The spaces SemanticEmbedder.params() lists in content_shell. The first is
+// the space the web tests create with (kEmbeddingSpace in
+// external/wpt/ai/resources/util.js, the same name Chrome serves); the second
+// is dated so the shutdownDate path is exercised end to end.
+constexpr char kEchoEmbeddingSpace[] = "embeddinggemma-300m";
+constexpr char kEchoDeprecatedEmbeddingSpace[] =
+    "echo-deprecated-embedding-space";
+// 2100-01-01T00:00:00Z, far enough out that no test reaches it.
+constexpr int64_t kEchoDeprecatedEmbeddingSpaceShutdownMs = 4102444800000;
 
 using blink::mojom::AILanguageCodePtr;
 
@@ -96,8 +115,12 @@ bool HasUnsupportedType(
                 blink::features::kAIPromptAPIToolUse)) {
           continue;
         }
-        // Allow other types (multimodal) when multimodal feature is enabled.
-        if (base::FeatureList::IsEnabled(
+        // Allow multimodal types when multimodal feature is enabled.
+        if ((expected_input->type ==
+                 blink::mojom::AILanguageModelPromptType::kImage ||
+             expected_input->type ==
+                 blink::mojom::AILanguageModelPromptType::kAudio) &&
+            base::FeatureList::IsEnabled(
                 blink::features::kAIPromptAPIMultimodalInput)) {
           continue;
         }
@@ -124,6 +147,11 @@ bool HasUnsupportedType(
         has_unsupported_type = true;
         break;
       }
+    }
+    if (options->thinking_effort.has_value() &&
+        *options->thinking_effort !=
+            blink::mojom::AILanguageModelThinkingEffort::kNone) {
+      has_unsupported_type = true;
     }
   }
   return has_unsupported_type;
@@ -264,10 +292,10 @@ void EchoAIManagerImpl::GetLanguageModelParams(
     GetLanguageModelParamsCallback callback) {
   std::move(callback).Run(blink::mojom::AILanguageModelParams::New(
       blink::mojom::AILanguageModelSamplingParams::New(
-          optimization_guide::features::GetOnDeviceModelDefaultTopK(),
-          optimization_guide::features::GetOnDeviceModelDefaultTemperature()),
+          on_device_model::features::GetOnDeviceModelDefaultTopK(),
+          on_device_model::features::GetOnDeviceModelDefaultTemperature()),
       blink::mojom::AILanguageModelSamplingParams::New(
-          optimization_guide::features::GetOnDeviceModelMaxTopK(),
+          on_device_model::features::GetOnDeviceModelMaxTopK(),
           /*temperature=*/2.0f)));
 }
 
@@ -338,24 +366,46 @@ void EchoAIManagerImpl::CreateProofreader(
       std::move(client_remote));
 }
 
-
 void EchoAIManagerImpl::CanCreateSemanticEmbedder(
+    blink::mojom::AISemanticEmbedderCreateOptionsPtr options,
     CanCreateSemanticEmbedderCallback callback) {
+  if (options->embedding_space == kEchoUnsupportedEmbeddingSpace) {
+    std::move(callback).Run(blink::mojom::ModelAvailabilityCheckResult::
+                                kUnavailableUnsupportedEmbeddingSpace);
+    return;
+  }
   CanCreateClient<CanCreateSemanticEmbedderCallback>(std::move(callback));
 }
 
 void EchoAIManagerImpl::CreateSemanticEmbedder(
     mojo::PendingRemote<blink::mojom::AIManagerCreateSemanticEmbedderClient>
         client,
+    blink::mojom::AISemanticEmbedderCreateOptionsPtr options,
     mojo::PendingRemote<on_device_model::mojom::DownloadObserver> monitor) {
   mojo::Remote<blink::mojom::AIManagerCreateSemanticEmbedderClient>
       client_remote(std::move(client));
+  if (options->embedding_space == kEchoUnsupportedEmbeddingSpace) {
+    receivers_.ReportBadMessage("Unsupported embedding space");
+    return;
+  }
   if (monitor.is_valid()) {
     download_progress_observers_.Add(std::move(monitor));
   }
   CreateClient<blink::mojom::AIManagerCreateSemanticEmbedderClient,
                blink::mojom::AISemanticEmbedder, EchoAISemanticEmbedder>(
       std::move(client_remote));
+}
+
+void EchoAIManagerImpl::GetSupportedEmbeddingSpaces(
+    GetSupportedEmbeddingSpacesCallback callback) {
+  std::vector<blink::mojom::AISemanticEmbedderSpaceInfoPtr> supported_spaces;
+  supported_spaces.push_back(blink::mojom::AISemanticEmbedderSpaceInfo::New(
+      kEchoEmbeddingSpace, std::nullopt));
+  supported_spaces.push_back(blink::mojom::AISemanticEmbedderSpaceInfo::New(
+      kEchoDeprecatedEmbeddingSpace,
+      base::Time::FromMillisecondsSinceUnixEpoch(
+          kEchoDeprecatedEmbeddingSpaceShutdownMs)));
+  std::move(callback).Run(std::move(supported_spaces));
 }
 
 void EchoAIManagerImpl::CanCreateDecisionModel(
@@ -487,7 +537,9 @@ void EchoAIManagerImpl::ReturnAIClientCreationResult(
                               pending_remote.InitWithNewPipeAndPassReceiver());
   if constexpr (std::is_same_v<AIPendingRemote,
                                blink::mojom::AISemanticEmbedder>) {
-    client_remote->OnResult(std::move(pending_remote));
+    client_remote->OnResult(
+        std::move(pending_remote),
+        blink::mojom::AISemanticEmbedderInfo::New(kMaxContextSizeInTokens));
   } else {
     client_remote->OnResult(std::move(pending_remote), kMaxContextSizeInTokens);
   }
@@ -508,8 +560,8 @@ void EchoAIManagerImpl::ReturnAILanguageModelCreationResult(
       sampling_params
           ? std::move(sampling_params)
           : blink::mojom::AILanguageModelSamplingParams::New(
-                optimization_guide::features::GetOnDeviceModelDefaultTopK(),
-                optimization_guide::features::
+                on_device_model::features::GetOnDeviceModelDefaultTopK(),
+                on_device_model::features::
                     GetOnDeviceModelDefaultTemperature());
 
   mojo::MakeSelfOwnedReceiver(
@@ -529,7 +581,7 @@ void EchoAIManagerImpl::ReturnAILanguageModelCreationResult(
               enabled_output_types.begin(), enabled_output_types.end()),
           /*audio_sample_rate_hz=*/std::nullopt,
           /*audio_channel_count=*/std::nullopt,
-          /*sampling_mode=*/std::nullopt));
+          /*sampling_mode=*/std::nullopt, /*thinking_effort=*/std::nullopt));
 }
 
 void EchoAIManagerImpl::DoMockDownloadingAndReturn(base::OnceClosure callback) {

@@ -5,19 +5,16 @@
 package org.chromium.chrome.browser.omnibox;
 
 import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.Matchers.allOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.annotation.SuppressLint;
 import android.os.SystemClock;
@@ -40,7 +37,6 @@ import org.chromium.base.test.params.SkipCommandLineParameterization;
 import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.EnormousTest;
@@ -52,7 +48,6 @@ import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
@@ -92,11 +87,8 @@ import java.util.List;
  * framework once it supports Test Rule Parameterization.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @SuppressLint("SetTextI18n")
 @Batch(Batch.PER_CLASS)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class OmniboxTest {
     private static final String SUGGESTION_TEXT = "suggestion text";
 
@@ -480,7 +472,7 @@ public class OmniboxTest {
     public void testClickStatusIcon_OnNTPDoesNothing() {
         mActivityTestRule.startOnNtp();
 
-        onViewWaiting(withId(R.id.location_bar_status_icon)).perform(click());
+        waitForView(withId(R.id.location_bar_status_icon)).click();
         onView(withId(R.id.page_info_url_wrapper)).check(doesNotExist());
     }
 
@@ -495,8 +487,8 @@ public class OmniboxTest {
                         .getURL("/chrome/test/data/android/omnibox/one.html");
         mActivityTestRule.loadUrl(testUrl);
 
-        onViewWaiting(withId(R.id.location_bar_status_icon)).perform(click());
-        onViewWaiting(allOf(withId(R.id.page_info_url_wrapper), isDisplayed()));
+        waitForView(withId(R.id.location_bar_status_icon)).click();
+        waitForView(withId(R.id.page_info_url_wrapper));
     }
 
     @Test

@@ -70,9 +70,7 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
      */
     private SearchActivityPreferencesManager() {}
 
-    /**
-     * @return The instance of the SearchActivityPreferencesManager singleton.
-     */
+    /** Returns the instance of the SearchActivityPreferencesManager singleton. */
     public static SearchActivityPreferencesManager get() {
         ThreadUtils.assertOnUiThread();
         if (sInstance == null) {
@@ -244,11 +242,16 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
         AndroidPermissionDelegate permissionDelegate =
                 new ActivityAndroidPermissionDelegate(
                         new WeakReference<>(ApplicationStatus.getLastTrackedFocusedActivity()));
+        // TODO(crbug.com/582477142): Decouple SearchActivityPreferences and Search Widgets from
+        // getLastUsedRegularProfile() and associate them with a specific Profile.
+        Profile profile =
+                ProfileManager.isInitialized() ? ProfileManager.getLastUsedRegularProfile() : null;
         assumeNonNull(mCurrentlyLoadedPreferences);
         setCurrentlyLoadedPreferences(
                 mCurrentlyLoadedPreferences.toBuilder()
                         .setVoiceSearchAvailable(
-                                VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate))
+                                VoiceRecognitionUtil.isVoiceSearchEnabled(
+                                        permissionDelegate, profile))
                         .build(),
                 /* updateStorage= */ true);
     }
@@ -268,7 +271,8 @@ public class SearchActivityPreferencesManager implements LoadListener, TemplateU
                 getCurrent().toBuilder()
                         .setAccountEmail(getPrimaryAccountEmail(profile))
                         .setVoiceSearchAvailable(
-                                VoiceRecognitionUtil.isVoiceSearchEnabled(permissionDelegate))
+                                VoiceRecognitionUtil.isVoiceSearchEnabled(
+                                        permissionDelegate, profile))
                         .setGoogleLensAvailable(isLensEnabled(context))
                         .setIncognitoAvailable(IncognitoUtils.isIncognitoModeEnabled(profile))
                         .setAiModeAvailable(ComposeplateUtils.isComposeplateEnabled(profile))

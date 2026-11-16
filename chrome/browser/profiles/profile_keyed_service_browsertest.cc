@@ -19,8 +19,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_selections.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -225,7 +223,6 @@ class ProfileKeyedServiceBrowserTest : public InProcessBrowserTest {
 #endif  // BUILDFLAG(IS_WIN)
           network::features::kBrowsingTopics,
           extensions_features::kForceWebRequestProxyForTest,
-          network::features::kReduceAcceptLanguage,
           features::kMainNodeAnnotations,
           omnibox::kOnDeviceTailModel,
           omnibox::kOnDeviceHeadProviderNonIncognito,
@@ -415,17 +412,7 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceBrowserTest,
 class ProfileKeyedServiceGuestBrowserTest
     : public ProfileKeyedServiceBrowserTest {
  public:
-  ProfileKeyedServiceGuestBrowserTest() {
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove this.
-    // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup,
-         organizer_panel::kOrganizerPanel});
-  }
+  ProfileKeyedServiceGuestBrowserTest() = default;
   ~ProfileKeyedServiceGuestBrowserTest() override = default;
 
   // ProfileKeyedServiceBrowserTest:
@@ -437,29 +424,16 @@ class ProfileKeyedServiceGuestBrowserTest
         ash::switches::kLoginUser,
         user_manager::GuestAccountId().GetUserEmail());
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 #else
 class ProfileKeyedServiceGuestBrowserTest
     : public ProfileKeyedServiceBrowserTest {
  public:
-  ProfileKeyedServiceGuestBrowserTest() {
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove this.
-    // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{omnibox::internal::kWebUIOmniboxPopup,
-                               omnibox::internal::kWebUIOmniboxAimPopup,
-                               organizer_panel::kOrganizerPanel});
-  }
+  ProfileKeyedServiceGuestBrowserTest() = default;
   ~ProfileKeyedServiceGuestBrowserTest() override = default;
 
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 #if BUILDFLAG(IS_WIN)
+ private:
   // BoundSessionCookieRefreshService is only created with an unexportable key
   // provider, which Windows only has on machines with a TPM. Use a fake one so
   // the expected services don't depend on the bot's hardware.
@@ -544,7 +518,6 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     "ProtocolHandlerRegistry",
     "ReadAnythingServiceFactory",
     "RealtimeReportingClient",
-    "ReduceAcceptLanguage",
     "RendererUpdater",
     "ResumableTCPServerSocketManager",
     "ResumableTCPSocketManager",
@@ -647,6 +620,14 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     guest_otr_active_services.insert("AimEligibilityExtensionBridge");
     guest_otr_active_services.insert("ExtensionMojoBinderRegistry");
   }
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (base::FeatureList::IsEnabled(
+          contextual_tasks::kContextualTasksRearchitecture)) {
+    guest_otr_active_services.insert("ContextualTasksExtensionBridge");
+    guest_otr_active_services.insert("ExtensionConfigMap");
+    guest_otr_active_services.insert("ExtensionMojoBinderRegistry");
+  }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
   // On ChromeOS, Guest session startup navigates to chrome://newtab (a WebUI)
   // by default, whereas Desktop CreateGuestBrowser() navigates to about:blank.
@@ -1101,6 +1082,12 @@ IN_PROC_BROWSER_TEST_F(ProfileKeyedServiceGuestBrowserTest,
     guest_active_services.insert("ExtensionMojoBinderRegistry");
   }
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (base::FeatureList::IsEnabled(
+          contextual_tasks::kContextualTasksRearchitecture)) {
+    guest_active_services.insert("ContextualTasksExtensionBridge");
+    guest_active_services.insert("ExtensionConfigMap");
+    guest_active_services.insert("ExtensionMojoBinderRegistry");
+  }
   if (base::FeatureList::IsEnabled(
           policy::features::kEnableExtensionInstallPolicyFetching)) {
     guest_active_services.insert("ExtensionInstallPolicyService");

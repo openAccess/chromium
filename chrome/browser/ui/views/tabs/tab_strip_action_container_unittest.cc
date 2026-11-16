@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/check_deref.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_controller.h"
@@ -36,6 +37,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/widget/widget.h"
 
@@ -232,7 +234,7 @@ TEST_F(TabStripActionContainerTest,
   ASSERT_THAT(
       tab_strip_action_container_->glic_actor_button_container()->children(),
       SizeIs(2));
-  ASSERT_EQ(tab_strip_action_container_->glic_actor_task_icon(),
+  ASSERT_EQ(tab_strip_action_container_->glic_secondary_button(),
             tab_strip_action_container_->glic_actor_button_container()
                 ->children()[1]);
 
@@ -248,12 +250,12 @@ TEST_F(TabStripActionContainerTest, MAYBE(OrdersButtonsCorrectlyWhenShown)) {
 // Mac doesn't have a separator, so the children sizes are different.
 #if !BUILDFLAG(IS_MAC)
 
-  // Before `ShowGlicActorTaskIcon()` is called, `glic_button` is a direct
-  // child `tab_strip_action_container_`. When `ShowGlicActorTaskIcon()` is
+  // Before `ShowGlicSecondaryButton()` is called, `glic_button` is a direct
+  // child `tab_strip_action_container_`. When `ShowGlicSecondaryButton()` is
   // called, `glic_button` is moved from being a direct child of
   // `tab_strip_action_container_` to being a child of
   // `glic_actor_button_container()`.
-  tab_strip_action_container_->ShowGlicActorTaskIcon();
+  tab_strip_action_container_->ShowGlicSecondaryButton();
   ASSERT_THAT(tab_strip_action_container_->children(), SizeIs(2));
 
   ASSERT_EQ(tab_strip_action_container_->glic_actor_button_container(),
@@ -266,11 +268,107 @@ TEST_F(TabStripActionContainerTest, MAYBE(OrdersButtonsCorrectlyWhenShown)) {
   ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting(),
             tab_strip_action_container_->glic_actor_button_container()
                 ->children()[1]);
-  ASSERT_EQ(tab_strip_action_container_->glic_actor_task_icon(),
+  ASSERT_EQ(tab_strip_action_container_->glic_secondary_button(),
             tab_strip_action_container_->glic_actor_button_container()
                 ->children()[2]);
 
 #endif  // !BUILDFLAG(IS_MAC)
+}
+
+class TabStripActionContainerActivityHubTest
+    : public TabStripActionContainerTest {
+ public:
+  TabStripActionContainerActivityHubTest()
+      : TabStripActionContainerTest({features::kGlicActivityHub}) {}
+};
+
+TEST_F(TabStripActionContainerActivityHubTest,
+       OrdersButtonsCorrectlyWhenChevronShown) {
+  BuildGlicContainer(/*use_otr_profile=*/false);
+
+  glic::GlicSplitButtonUiState state;
+  state.secondary_action =
+      glic::GlicSplitButtonUiState::SecondaryAction::kChevron;
+  tab_strip_action_container_->UpdateGlicSplitButtonUi(state);
+
+  EXPECT_TRUE(
+      tab_strip_action_container_->glic_secondary_button()->GetVisible());
+  // Mac omits the trailing FrameSeparator in TabStripActionContainer.
+  ASSERT_THAT(tab_strip_action_container_->children(),
+              SizeIs(BUILDFLAG(IS_MAC) ? 1 : 2));
+  ASSERT_EQ(tab_strip_action_container_->glic_actor_button_container(),
+            tab_strip_action_container_->children()[0]);
+
+  ASSERT_THAT(
+      tab_strip_action_container_->glic_actor_button_container()->children(),
+      SizeIs(3));
+  ASSERT_EQ(tab_strip_action_container_->GetGlicButtonForTesting(),
+            tab_strip_action_container_->glic_actor_button_container()
+                ->children()[1]);
+  ASSERT_EQ(tab_strip_action_container_->glic_secondary_button(),
+            tab_strip_action_container_->glic_actor_button_container()
+                ->children()[2]);
+}
+
+TEST_F(TabStripActionContainerActivityHubTest,
+       UpdateGlicSplitButtonUiTransitions) {
+  gfx::ScopedAnimationDurationScaleMode disable_animations(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  BuildGlicContainer(/*use_otr_profile=*/false);
+
+  auto* primary_button = tab_strip_action_container_->GetGlicButtonForTesting();
+  ASSERT_TRUE(primary_button);
+  const std::u16string default_label(primary_button->GetText());
+  ASSERT_FALSE(default_label.empty());
+  auto* secondary_button = tab_strip_action_container_->glic_secondary_button();
+  ASSERT_TRUE(secondary_button);
+
+  // 1. Show kChevron while a primary prompt suggestion nudge is active: the
+  // primary nudge stays intact alongside the chevron.
+  glic_nudge_controller()->UpdateNudgeLabel(
+      web_contents(), "Summarize", /*prompt_suggestion=*/"Summarize",
+      /*activity=*/std::nullopt, base::NullCallback());
+  ASSERT_TRUE(tab_strip_action_container_->GetIsShowingGlicNudge());
+  ASSERT_EQ(primary_button->GetText(), u"Summarize");
+
+  glic::GlicSplitButtonUiState state;
+  state.secondary_action =
+      glic::GlicSplitButtonUiState::SecondaryAction::kChevron;
+  tab_strip_action_container_->UpdateGlicSplitButtonUi(state);
+  EXPECT_TRUE(secondary_button->GetVisible());
+  EXPECT_EQ(secondary_button->GetText(), u"");
+  EXPECT_TRUE(tab_strip_action_container_->GetIsShowingGlicNudge());
+  EXPECT_EQ(primary_button->GetText(), u"Summarize");
+
+  // 2. Transition from kChevron to kText dismisses the primary nudge and
+  // collapses the primary button.
+  state.secondary_action = glic::GlicSplitButtonUiState::SecondaryAction::kText;
+  state.secondary_label = u"Check task";
+  tab_strip_action_container_->UpdateGlicSplitButtonUi(state);
+  EXPECT_TRUE(secondary_button->GetVisible());
+  EXPECT_TRUE(tab_strip_action_container_->GetIsShowingGlicSecondaryNudge());
+  EXPECT_EQ(secondary_button->GetText(), u"Check task");
+  EXPECT_FALSE(tab_strip_action_container_->GetIsShowingGlicNudge());
+  EXPECT_EQ(primary_button->GetText(), u"");
+
+  // 3. Transition from kText back to kChevron clears the secondary label and
+  // expands the primary button back to its default label.
+  state.secondary_action =
+      glic::GlicSplitButtonUiState::SecondaryAction::kChevron;
+  state.secondary_label = u"";
+  tab_strip_action_container_->UpdateGlicSplitButtonUi(state);
+  EXPECT_TRUE(secondary_button->GetVisible());
+  EXPECT_EQ(secondary_button->GetText(), u"");
+  EXPECT_EQ(primary_button->GetText(), default_label);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return !tab_strip_action_container_->GetIsShowingGlicSecondaryNudge();
+  }));
+
+  // 4. Transition from kChevron to kNone hides the secondary button.
+  state.secondary_action = glic::GlicSplitButtonUiState::SecondaryAction::kNone;
+  tab_strip_action_container_->UpdateGlicSplitButtonUi(state);
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !secondary_button->GetVisible(); }));
 }
 
 TEST_F(TabStripActionContainerTest, MAYBE(GlicButtonUpdateLabel)) {

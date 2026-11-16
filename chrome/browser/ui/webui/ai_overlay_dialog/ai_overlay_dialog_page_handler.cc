@@ -708,11 +708,7 @@ void AiOverlayDialogPageHandler::SendTextInput(const std::string& text) {
 }
 
 void AiOverlayDialogPageHandler::ReportPlaybackStatus(
-    int64_t last_played_sequence_number) {
-  if (ttc_mes_client_ && ttc_mes_client_->is_transport_connected()) {
-    ttc_mes_client_->ReportPlaybackStatus(last_played_sequence_number);
-  }
-}
+    int64_t last_played_sequence_number) {}
 
 void AiOverlayDialogPageHandler::StopStreamingSession() {
   if (ttc_mes_client_) {
@@ -1125,6 +1121,13 @@ void AiOverlayDialogPageHandler::OnToolCall(
   }
 
   send_error(base::StrCat({"Unknown tool: ", name}));
+}
+
+void AiOverlayDialogPageHandler::OnToolCallBatch(
+    std::vector<PendingToolCall> tool_calls) {
+  for (PendingToolCall& tool_call : tool_calls) {
+    OnToolCall(tool_call.request, std::move(tool_call.callback));
+  }
 }
 
 void AiOverlayDialogPageHandler::OnJournalEvent(

@@ -9,7 +9,7 @@
 #include "components/viz/common/surfaces/tracked_element_rects.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom-blink.h"
+#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_keyboard_event_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_wheel_event_init.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
@@ -169,6 +169,7 @@ class HTMLInputElementTest : public PageTestBase {
     auto* chrome_client =
         MakeGarbageCollected<HTMLInputElementTestChromeClient>();
     SetupPageWithClients(chrome_client);
+    GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   }
 
   HTMLInputElement& TestElement() {
@@ -405,8 +406,7 @@ TEST_F(HTMLInputElementTest, TemporalInputBlurReleasesHostFocus) {
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
 
   for (const char* type : {"date", "datetime-local", "time", "month", "week"}) {
     SCOPED_TRACE(type);
@@ -436,8 +436,7 @@ TEST_F(HTMLInputElementTest, TemporalInputBlurPreservesHandlerFocus) {
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
   SetBodyContent("<input id=test type=date><input id=other>");
 
   HTMLInputElement& input = TestElement();
@@ -470,8 +469,6 @@ TEST_P(HTMLInputElementTemporalBlurTest,
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
   SetBodyContent("<input id=test type=date>");
 
   HTMLInputElement& input = TestElement();
@@ -500,8 +497,6 @@ TEST_P(HTMLInputElementTemporalBlurTest,
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
   SetBodyContent("<input id=test type=date>");
 
   HTMLInputElement& input = TestElement();
@@ -551,8 +546,7 @@ TEST_F(HTMLInputElementTest, TemporalInputBlurClosesOpenMultipleFieldsPicker) {
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
   SetBodyContent("<input id=test type=date>");
   UpdateAllLifecyclePhasesForTest();
 
@@ -586,8 +580,7 @@ TEST_P(HTMLInputElementTemporalBlurTest,
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
   SetBodyContent("<input id=test type=date><input id=other>");
   UpdateAllLifecyclePhasesForTest();
 
@@ -625,8 +618,7 @@ TEST_P(HTMLInputElementTemporalBlurTest,
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
   SetBodyContent("<input id=test type=date>");
   UpdateAllLifecyclePhasesForTest();
 
@@ -642,10 +634,9 @@ TEST_P(HTMLInputElementTemporalBlurTest,
   input.Focus();
   ASSERT_EQ(&input, GetDocument().FocusedElement());
 
-  // A fine pointer can become available while the coarse-pointer host is
-  // focused. The chooser's close callback can then focus a shadow subfield.
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerFineType));
+  // If subfields become focusable while the host is focused, the chooser's
+  // close callback can focus a shadow subfield.
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   ASSERT_TRUE(subfield->IsFocusable());
   TestChromeClient().EnableRecordingDateTimeChooser();
   LocalFrame::NotifyUserActivation(
@@ -702,8 +693,7 @@ TEST_F(HTMLInputElementTest,
   ScopedInputMultipleFieldsUIWithPointerChecksForTest pointer_checks(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
-  GetFrame().GetSettings()->SetAvailablePointerTypes(
-      static_cast<int>(mojom::blink::PointerType::kPointerCoarseType));
+  GetFrame().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(false);
 
   for (bool open_picker : {false, true}) {
     SCOPED_TRACE(open_picker);
@@ -1225,6 +1215,25 @@ TEST_F(HTMLInputElementTest, SetCheckedForBindingClearsSuggestedValue) {
   input.setCheckedForBinding(false);
   EXPECT_TRUE(input.SuggestedValue().empty());
   EXPECT_EQ(WebAutofillState::kNotFilled, input.GetAutofillState());
+}
+
+TEST_F(HTMLInputElementTest, ResetIndeterminateCheckboxUseCounter) {
+  SetBodyContent("<form id=form><input id=test type=checkbox></form>");
+  auto* form = To<HTMLFormElement>(GetElementById("form"));
+  const auto feature = WebFeature::kHTMLInputElementResetIndeterminateCheckbox;
+  EXPECT_FALSE(GetDocument().IsUseCounted(feature));
+
+  form->reset();
+  EXPECT_FALSE(GetDocument().IsUseCounted(feature));
+  EXPECT_FALSE(TestElement().indeterminate());
+
+  TestElement().setIndeterminate(true);
+  EXPECT_FALSE(GetDocument().IsUseCounted(feature));
+  EXPECT_TRUE(TestElement().indeterminate());
+
+  form->reset();
+  EXPECT_TRUE(GetDocument().IsUseCounted(feature));
+  EXPECT_TRUE(TestElement().indeterminate());
 }
 
 // Removing a disabled <fieldset> notifies its descendants in tree order.

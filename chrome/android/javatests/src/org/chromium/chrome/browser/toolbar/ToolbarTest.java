@@ -20,8 +20,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.content.ComponentCallbacks;
 import android.content.res.Configuration;
@@ -49,7 +49,6 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
@@ -71,7 +70,6 @@ import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.findinpage.FindToolbar;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManagerSupplier;
 import org.chromium.chrome.browser.homepage.HomepageManager;
@@ -112,7 +110,6 @@ import org.chromium.ui.test.util.DeviceRestriction;
 
 /** Tests for toolbar manager behavior. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class ToolbarTest {
     @Rule
@@ -351,8 +348,7 @@ public class ToolbarTest {
         boolean wantPrefocus = !KeyboardUtils.shouldShowImeWithHardwareKeyboard(mActivity);
 
         // Open a new tab from the tab switcher.
-        onViewWaiting(allOf(withId(R.id.tab_switcher_button), isDisplayed()));
-        onView(withId(R.id.tab_switcher_button)).perform(click());
+        waitForView(withId(R.id.tab_switcher_button)).click();
         onView(withId(R.id.toolbar_action_button)).check(matches(isDisplayed()));
         onView(withId(R.id.toolbar_action_button)).perform(click());
 
@@ -660,26 +656,28 @@ public class ToolbarTest {
     @ImportantFormFactors(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testHomeButton_loadsNtpOnSameTab() {
         WebPageStation webPage = mPage;
-        webPage.homeButtonElement.checkPresent();
+        webPage.toolbar.homeButtonElement.checkPresent();
 
         RegularNewTabPageStation ntp =
-                webPage.homeButtonElement
+                webPage.toolbar
+                        .homeButtonElement
                         .clickTo()
                         .arriveAt(RegularNewTabPageStation.newBuilder().initFrom(webPage).build());
-        ntp.homeButtonElement.checkPresent();
+        ntp.toolbar.homeButtonElement.checkPresent();
 
         WebPageStation incognitoWebPage = ntp.openNewIncognitoTabOrWindowFast().loadAboutBlank();
-        incognitoWebPage.homeButtonElement.checkPresent();
+        incognitoWebPage.toolbar.homeButtonElement.checkPresent();
 
         IncognitoNewTabPageStation incognitoNtp =
                 incognitoWebPage
+                        .toolbar
                         .homeButtonElement
                         .clickTo()
                         .arriveAt(
                                 IncognitoNewTabPageStation.newBuilder()
                                         .initFrom(incognitoWebPage)
                                         .build());
-        incognitoNtp.homeButtonElement.checkPresent();
+        incognitoNtp.toolbar.homeButtonElement.checkPresent();
     }
 
     @Test

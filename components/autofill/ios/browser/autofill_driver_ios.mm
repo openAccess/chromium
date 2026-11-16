@@ -241,6 +241,10 @@ bool AutofillDriverIOS::CanShowAutofillUi() const {
   return true;
 }
 
+bool AutofillDriverIOS::DocumentUsedWebOtp() const {
+  return false;
+}
+
 base::flat_set<FieldGlobalId> AutofillDriverIOS::ApplyFormAction(
     mojom::FormActionType action_type,
     mojom::ActionPersistence action_persistence,
@@ -492,6 +496,10 @@ void AutofillDriverIOS::ExtractLabeledTextNodeValue(
     const std::u16string& label_regex,
     uint32_t number_of_ancestor_levels_to_search,
     base::OnceCallback<void(const std::string& amount)> response_callback) {
+  NOTIMPLEMENTED();
+}
+
+void AutofillDriverIOS::LoadCustomFormControlScript(const std::string& script) {
   NOTIMPLEMENTED();
 }
 

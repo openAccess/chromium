@@ -33,13 +33,14 @@
 #include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_view_util.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/known_ports.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_statics.h"
@@ -179,15 +180,14 @@ bool ProtocolIsJavaScript(const StringView& url) {
 }
 
 const KURL& BlankUrl() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(KURL, blank_url,
-                                  (AtomicString(url::kAboutBlankURL)));
-  return blank_url;
+  static base::NoDestructor<KURL> blank_url{AtomicString(url::kAboutBlankURL)};
+  return *blank_url;
 }
 
 const KURL& SrcdocUrl() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(KURL, srcdoc_url,
-                                  (AtomicString(url::kAboutSrcdocURL)));
-  return srcdoc_url;
+  static base::NoDestructor<KURL> srcdoc_url{
+      AtomicString(url::kAboutSrcdocURL)};
+  return *srcdoc_url;
 }
 
 bool KURL::IsAboutUrl(const char* allowed_path) const {
@@ -216,8 +216,8 @@ bool KURL::IsAboutSrcdocUrl() const {
 }
 
 const KURL& NullUrl() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(KURL, static_null_url, ());
-  return static_null_url;
+  static base::NoDestructor<KURL> static_null_url;
+  return *static_null_url;
 }
 
 String KURL::ElidedString() const {
@@ -474,7 +474,8 @@ String RemoveUrlWhitespace(const String& input) {
 
 }  // namespace
 
-bool KURL::SetProtocol(const StringView& protocol) {
+bool KURL::SetProtocol(const StringView& protocol,
+                       SpecialSchemeTransition transition) {
   // We should remove whitespace from |protocol| according to spec, but Firefox
   // and Safari don't do it.
   // - https://url.spec.whatwg.org/#dom-url-protocol
@@ -495,21 +496,21 @@ bool KURL::SetProtocol(const StringView& protocol) {
     return false;
   }
 
+  const wtf_size_t protocol_length =
+      base::checked_cast<wtf_size_t>(protocol_component.len);
+  const String new_protocol_canon(
+      base::span(canon_protocol.view()).first(protocol_length));
+
   if (SchemeRegistry::IsSpecialScheme(Protocol())) {
     DCHECK_EQ(protocol_component.begin, 0);
-    const wtf_size_t protocol_length =
-        base::checked_cast<wtf_size_t>(protocol_component.len);
-    const String new_protocol_canon(
-        base::span(canon_protocol.view()).first(protocol_length));
 
     // https://url.spec.whatwg.org/#scheme-state
-    // 2.1.1 If url’s scheme is a special scheme and buffer is not a special
+    // 2.1.1 If url's scheme is a special scheme and buffer is not a special
     //       scheme, then return.
     if (!SchemeRegistry::IsSpecialScheme(new_protocol_canon)) {
       return true;
     }
 
-    // The protocol is lower-cased during canonicalization.
     const bool new_protocol_is_file = new_protocol_canon == url::kFileScheme;
     const bool old_protocol_is_file = ProtocolIs(url::kFileScheme);
 
@@ -525,12 +526,22 @@ bool KURL::SetProtocol(const StringView& protocol) {
       return true;
     }
 
-    // 4. If url’s scheme is "file" and its host is an empty host, then return.
+    // 4. If url's scheme is "file" and its host is an empty host, then return.
     if (!new_protocol_is_file && old_protocol_is_file &&
         parsed_.host.is_empty()) {
       // This fails silently as above.
       return true;
     }
+  } else if (transition ==
+                 SpecialSchemeTransition::kForbidNonSpecialToSpecial &&
+             RuntimeEnabledFeatures::
+                 DisallowSpecialSchemeOnNonSpecialUrlEnabled() &&
+             IsValid() && SchemeRegistry::IsSpecialScheme(new_protocol_canon)) {
+    // https://url.spec.whatwg.org/#scheme-state
+    // If url's scheme is not a special scheme and buffer is a special scheme,
+    // then return. Only JS-exposed setters opt in; internal callers keep the
+    // legacy transition so they can build URLs on default-constructed KURLs.
+    return true;
   }
 
   url::Replacements<char> replacements;

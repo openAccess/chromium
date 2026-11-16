@@ -91,6 +91,8 @@
 
 // Headers for the AmountOfPhysicalMemory() function.
 #if PA_BUILDFLAG(IS_FUCHSIA)
+#include <lib/zx/vmar.h>
+#include <lib/zx/vmo.h>
 #include <zircon/syscalls.h>
 #elif PA_BUILDFLAG(IS_WIN)
 #include <windows.h>
@@ -713,6 +715,41 @@ class PartitionAllocTest
 
 #if PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
   void RunRefCountReallocSubtest(size_t orig_size, size_t new_size);
+
+  static void SetRefCountForTesting(InSlotMetadata* in_slot_metadata,
+                                    InSlotMetadata::CountType ptr_count) {
+    InSlotMetadata::CountType old_count =
+        in_slot_metadata->count_.load(std::memory_order_relaxed);
+    in_slot_metadata->count_.store(
+        (old_count & ~InSlotMetadata::kPtrCountMask) |
+            (ptr_count & InSlotMetadata::kPtrCountMask),
+        std::memory_order_relaxed);
+  }
+
+  static InSlotMetadata::CountType GetRefCountForTesting(
+      const InSlotMetadata* in_slot_metadata) {
+    return in_slot_metadata->count_.load(std::memory_order_relaxed) &
+           InSlotMetadata::kPtrCountMask;
+  }
+
+#if PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
+  static void SetUnprotectedRefCountForTesting(
+      InSlotMetadata* in_slot_metadata,
+      InSlotMetadata::CountType unprotected_ptr_count) {
+    InSlotMetadata::CountType old_count =
+        in_slot_metadata->count_.load(std::memory_order_relaxed);
+    in_slot_metadata->count_.store(
+        (old_count & ~InSlotMetadata::kUnprotectedPtrCountMask) |
+            (unprotected_ptr_count & InSlotMetadata::kUnprotectedPtrCountMask),
+        std::memory_order_relaxed);
+  }
+
+  static InSlotMetadata::CountType GetUnprotectedRefCountForTesting(
+      const InSlotMetadata* in_slot_metadata) {
+    return in_slot_metadata->count_.load(std::memory_order_relaxed) &
+           InSlotMetadata::kUnprotectedPtrCountMask;
+  }
+#endif  // PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
 #endif
 
   PA_NOINLINE PA_MALLOC_FN void* Alloc(size_t size) {
@@ -4933,34 +4970,7 @@ TEST_P(PartitionAllocWithFreeWithSizeAndAlignmentTest, AlignedAlloc) {
 }
 
 TEST_P(PartitionAllocWithFreeWithSizeAndAlignmentTest,
-       AlignedAllocWastedBytesTracking) {
-  SimplePartitionStatsDumper dumper_before;
-  allocator.root()->DumpStats("test", true, false, &dumper_before);
-  uint64_t wasted_before =
-      dumper_before.stats().total_aligned_alloc_wasted_bytes;
-
-  // Use a non-power-of-two requested size (60,000) below the alignment boundary
-  // so that wasted_bytes > 0 is guaranteed regardless of extras_size (0, 8, 16,
-  // etc).
-  constexpr size_t kSize = 60000;
-  constexpr size_t kReqAlignment = 16384;
-  ASSERT_NE(allocator.root()->AdjustSizeForExtrasAdd(kSize) % kReqAlignment,
-            0u);
-  void* ptr = allocator.root()->AlignedAlloc(kReqAlignment, kSize);
-  ASSERT_TRUE(ptr);
-
-  SimplePartitionStatsDumper dumper_after;
-  allocator.root()->DumpStats("test", true, false, &dumper_after);
-  uint64_t wasted_after = dumper_after.stats().total_aligned_alloc_wasted_bytes;
-
-  EXPECT_GT(wasted_after, wasted_before);
-
-  GetParam().free_func(allocator.root(), ptr, kSize, kReqAlignment);
-}
-
-TEST_P(PartitionAllocWithFreeWithSizeAndAlignmentTest,
        AlignedAllocPowerOfTwoDoesNotAllocate2PageSize) {
-  allocator.root()->SetUseTighterAlignedAllocBoundForTesting(true);
   // Test power-of-two requested sizes with alignments <= PartitionPageSize().
   const struct {
     size_t requested_size;
@@ -5010,37 +5020,6 @@ TEST_P(PartitionAllocWithFreeWithSizeAndAlignmentTest,
                            test_case.alignment);
     }
   }
-}
-
-TEST_P(PartitionAllocWithFreeWithSizeAndAlignmentTest,
-       AlignedAllocTighterBound) {
-  // requested_size = 70,000, alignment = 16,384.
-  // Legacy power-of-two mode rounds 70,000 + extras to 131,072 (128 KiB).
-  // Tighter bound mode rounds 70,000 + extras to AlignUp(70,000 + extras,
-  // 16,384) = 81,920 (80 KiB). This holds true for all possible extras_size
-  // values (0, 8, 16, 32).
-  constexpr size_t kSize = 70000;
-  constexpr size_t kReqAlignment = 16384;
-
-  // 1. Legacy behavior (Power-of-two rounding)
-  allocator.root()->SetUseTighterAlignedAllocBoundForTesting(false);
-  void* ptr_legacy = allocator.root()->AlignedAlloc(kReqAlignment, kSize);
-  ASSERT_TRUE(ptr_legacy);
-  size_t slot_size_legacy = PartitionRoot::GetExternalUsableSize(ptr_legacy);
-  GetParam().free_func(allocator.root(), ptr_legacy, kSize, kReqAlignment);
-
-  // 2. Tighter bound behavior (AlignUp)
-  allocator.root()->SetUseTighterAlignedAllocBoundForTesting(true);
-  void* ptr_tighter = allocator.root()->AlignedAlloc(kReqAlignment, kSize);
-  ASSERT_TRUE(ptr_tighter);
-  size_t slot_size_tighter = PartitionRoot::GetExternalUsableSize(ptr_tighter);
-  GetParam().free_func(allocator.root(), ptr_tighter, kSize, kReqAlignment);
-
-  // Tighter bound allocation capacity must be strictly smaller than legacy
-  // power-of-two rounding.
-  EXPECT_LT(slot_size_tighter, slot_size_legacy);
-  EXPECT_EQ(slot_size_tighter,
-            allocator.root()->AdjustSizeForExtrasSubtract(81920u));
 }
 
 // Test that the optimized `GetSlotNumber` implementation produces valid
@@ -5710,7 +5689,76 @@ TEST_P(PartitionAllocDeathTest, AcquireAfterQuarantined) {
   // supported.
   EXPECT_DEATH(in_slot_metadata->Acquire(), "");
 }
+
+TEST_P(PartitionAllocDeathTest, AcquireRefCountOverflow) {
+  if (!UseBRPPool()) {
+    return;
+  }
+
+  uint64_t* ptr = static_cast<uint64_t*>(
+      allocator.root()->Alloc(64 - ExtraAllocSize(allocator), type_name));
+  ASSERT_TRUE(ptr);
+  auto* in_slot_metadata =
+      allocator.root()->InSlotMetadataPointerFromObjectForTesting(ptr);
+
+  // Acquiring when the reference count is at `kMaxPtrCount` or anywhere in the
+  // reserved upper half (where the most significant bit of `kPtrCountMask` is
+  // set) must fail with a fatal check.
+  SetRefCountForTesting(in_slot_metadata, InSlotMetadata::kMaxPtrCount);
+  EXPECT_DEATH(in_slot_metadata->Acquire(), "");
+
+  SetRefCountForTesting(in_slot_metadata,
+                        InSlotMetadata::kMaxPtrCount + InSlotMetadata::kPtrInc);
+  EXPECT_DEATH(in_slot_metadata->Acquire(), "");
+
+  SetRefCountForTesting(in_slot_metadata, InSlotMetadata::kPtrCountMask);
+  EXPECT_DEATH(in_slot_metadata->Acquire(), "");
+
+  SetRefCountForTesting(in_slot_metadata, 0);
+  allocator.root()->Free(ptr);
+}
 #endif  // PA_USE_DEATH_TESTS()
+
+TEST_P(PartitionAllocTest, RefCountMaxBoundary) {
+  if (!UseBRPPool()) {
+    return;
+  }
+
+  uint64_t* ptr = static_cast<uint64_t*>(
+      allocator.root()->Alloc(64 - ExtraAllocSize(allocator), type_name));
+  ASSERT_TRUE(ptr);
+  auto* in_slot_metadata =
+      allocator.root()->InSlotMetadataPointerFromObjectForTesting(ptr);
+
+  // Acquiring one step below `kMaxPtrCount` is valid and reaches
+  // `kMaxPtrCount`.
+  constexpr auto kPreMaxPtrCount =
+      InSlotMetadata::kMaxPtrCount - InSlotMetadata::kPtrInc;
+  SetRefCountForTesting(in_slot_metadata, kPreMaxPtrCount);
+  in_slot_metadata->Acquire();
+  EXPECT_EQ(GetRefCountForTesting(in_slot_metadata),
+            InSlotMetadata::kMaxPtrCount);
+  EXPECT_FALSE(in_slot_metadata->Release());
+  EXPECT_EQ(GetRefCountForTesting(in_slot_metadata), kPreMaxPtrCount);
+  SetRefCountForTesting(in_slot_metadata, 0);
+
+#if PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
+  constexpr auto kPreMaxUnprotectedPtrCount =
+      InSlotMetadata::kMaxUnprotectedPtrCount -
+      InSlotMetadata::kUnprotectedPtrInc;
+  SetUnprotectedRefCountForTesting(in_slot_metadata,
+                                   kPreMaxUnprotectedPtrCount);
+  in_slot_metadata->AcquireFromUnprotectedPtr();
+  EXPECT_EQ(GetUnprotectedRefCountForTesting(in_slot_metadata),
+            InSlotMetadata::kMaxUnprotectedPtrCount);
+  EXPECT_FALSE(in_slot_metadata->ReleaseFromUnprotectedPtr());
+  EXPECT_EQ(GetUnprotectedRefCountForTesting(in_slot_metadata),
+            kPreMaxUnprotectedPtrCount);
+  SetUnprotectedRefCountForTesting(in_slot_metadata, 0);
+#endif  // PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
+
+  allocator.root()->Free(ptr);
+}
 
 #endif  // PA_BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
 
@@ -6143,6 +6191,37 @@ TEST_P(PartitionAllocDeathTest, AcquireUnprotectedAfterQuarantined) {
   // if death test is supported.
   EXPECT_DEATH(in_slot_metadata->AcquireFromUnprotectedPtr(), "");
 }
+
+TEST_P(PartitionAllocDeathTest, AcquireUnprotectedRefCountOverflow) {
+  if (!UseBRPPool()) {
+    return;
+  }
+
+  uint64_t* ptr = static_cast<uint64_t*>(
+      allocator.root()->Alloc(64 - ExtraAllocSize(allocator), type_name));
+  ASSERT_TRUE(ptr);
+  auto* in_slot_metadata =
+      allocator.root()->InSlotMetadataPointerFromObjectForTesting(ptr);
+
+  // Acquiring when the unprotected reference count is at
+  // `kMaxUnprotectedPtrCount` or anywhere in the reserved upper half must fail
+  // with a fatal check.
+  SetUnprotectedRefCountForTesting(in_slot_metadata,
+                                   InSlotMetadata::kMaxUnprotectedPtrCount);
+  EXPECT_DEATH(in_slot_metadata->AcquireFromUnprotectedPtr(), "");
+
+  SetUnprotectedRefCountForTesting(in_slot_metadata,
+                                   InSlotMetadata::kMaxUnprotectedPtrCount +
+                                       InSlotMetadata::kUnprotectedPtrInc);
+  EXPECT_DEATH(in_slot_metadata->AcquireFromUnprotectedPtr(), "");
+
+  SetUnprotectedRefCountForTesting(in_slot_metadata,
+                                   InSlotMetadata::kUnprotectedPtrCountMask);
+  EXPECT_DEATH(in_slot_metadata->AcquireFromUnprotectedPtr(), "");
+
+  SetUnprotectedRefCountForTesting(in_slot_metadata, 0);
+  allocator.root()->Free(ptr);
+}
 #endif  // PA_USE_DEATH_TESTS()
 #endif  // PA_BUILDFLAG(ENABLE_DANGLING_RAW_PTR_CHECKS)
 
@@ -6495,10 +6574,8 @@ TEST_P(PartitionAllocDeathTest, CheckTriggered) {
 #endif  // !PA_BUILDFLAG(OFFICIAL) && PA_BUILDFLAG(IS_DEBUG)
 #endif  // PA_USE_DEATH_TESTS()
 
-// Not on chromecast, since gtest considers extra output from itself as a test
-// failure:
-// https://ci.chromium.org/ui/p/chromium/builders/ci/Cast%20Audio%20Linux/98492/overview
-#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && PA_USE_DEATH_TESTS()
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) && PA_USE_DEATH_TESTS() && \
+    PA_CONFIG(HAS_ATFORK_HANDLER)
 
 namespace {
 
@@ -6537,10 +6614,15 @@ class ThreadDelegateForPreforkHandler
 
 }  // namespace
 
-// Disabled because executing it causes Gtest to show a warning in the output,
-// which confuses the runner on some platforms, making the test report an
-// "UNKNOWN" status even though it succeeded.
-TEST_P(PartitionAllocTest, DISABLED_PreforkHandler) {
+// Verifies that PartitionAlloc's prefork and postfork handlers prevent
+// deadlocks when `fork()` is called while other threads are concurrently
+// calling `malloc()` and `free()`.
+TEST(PartitionAllocPreforkTest, PreforkHandler) {
+  // Force `"fast"` death test style (`fork()` without `exec()`) so
+  // `EXPECT_EXIT()` exercises the `pthread_atfork()` handlers in the forked
+  // child instead of re-executing the test binary under `"threadsafe"` mode.
+  GTEST_FLAG_SET(death_test_style, "fast");
+
   std::atomic<bool> please_stop;
   std::atomic<int> started_threads{0};
 
@@ -6560,11 +6642,16 @@ TEST_P(PartitionAllocTest, DISABLED_PreforkHandler) {
   while (started_threads != kThreads) {
   }
 
+  // Call `std::_Exit(1)` instead of `std::exit(1)` to avoid running
+  // `atexit()` handlers and C++ static destructors (such as
+  // `XmlUnitTestResultPrinter`) in the forked child process, which would
+  // prematurely close the test runner's XML output stream and cause
+  // `"UNKNOWN"` test status.
   EXPECT_EXIT(
       {
         void* ptr = malloc(kAllocSize);
         FreeForTest(ptr);
-        exit(1);
+        std::_Exit(1);
       },
       ::testing::ExitedWithCode(1), "");
 
@@ -6575,7 +6662,7 @@ TEST_P(PartitionAllocTest, DISABLED_PreforkHandler) {
 }
 
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC) &&
-        // PA_USE_DEATH_TESTS()
+        // PA_USE_DEATH_TESTS() && PA_CONFIG(HAS_ATFORK_HANDLER)
 
 // Checks the bucket index logic.
 TEST_P(PartitionAllocTest, GetIndex) {
@@ -6733,7 +6820,11 @@ TEST_P(PartitionAllocTest, ConfigurablePoolPkey) {
   ASSERT_NE(0u, pool_base);
   PA_PCHECK(PkeyMprotect(reinterpret_cast<void*>(pool_base), pool_size,
                          PROT_NONE, pkey) == 0);
-  PartitionAddressSpace::InitConfigurablePool(pool_base, pool_size, pkey);
+  PartitionAddressSpace::InitConfigurablePool({
+      .pool_base = pool_base,
+      .size = pool_size,
+      .pkey = pkey,
+  });
   EXPECT_TRUE(IsConfigurablePoolAvailable());
 
   PartitionOptions opts = GetCommonPartitionOptions();
@@ -6769,6 +6860,74 @@ TEST_P(PartitionAllocTest, ConfigurablePoolPkey) {
 }
 
 #endif  // PA_BUILDFLAG(PA_ARCH_CPU_64_BITS) && PA_BUILDFLAG(ENABLE_PKEYS)
+
+#if PA_BUILDFLAG(IS_FUCHSIA) && PA_BUILDFLAG(PA_ARCH_CPU_64_BITS)
+// Test that the ConfigurablePool works when backed by a child VMAR.
+TEST_P(PartitionAllocTest, ConfigurablePoolChildVmar) {
+  EXPECT_FALSE(IsConfigurablePoolAvailable());
+
+  const size_t pool_size = PartitionAddressSpace::ConfigurablePoolMinSize();
+  PA_DCHECK(std::has_single_bit(pool_size));
+  const zx_vm_option_t align_flag =
+      static_cast<zx_vm_option_t>(std::countr_zero(pool_size))
+      << ZX_VM_ALIGN_BASE;
+
+  zx::vmar child_vmar;
+  zx_vaddr_t pool_base = 0;
+  zx_status_t status = zx::vmar::root_self()->allocate(
+      ZX_VM_CAN_MAP_READ | ZX_VM_CAN_MAP_WRITE | ZX_VM_CAN_MAP_SPECIFIC |
+          align_flag,
+      /*vmar_offset=*/0, pool_size, &child_vmar, &pool_base);
+  ASSERT_EQ(ZX_OK, status);
+  ASSERT_NE(0u, pool_base);
+
+  zx::vmo vmo;
+  ASSERT_EQ(ZX_OK, zx::vmo::create(pool_size, /*options=*/0, &vmo));
+  zx_vaddr_t mapped_base = 0;
+  ASSERT_EQ(ZX_OK, child_vmar.map(ZX_VM_SPECIFIC, /*vmar_offset=*/0, vmo,
+                                  /*vmo_offset=*/0, pool_size, &mapped_base));
+  ASSERT_EQ(pool_base, mapped_base);
+
+  PartitionAddressSpace::InitConfigurablePool({
+      .pool_base = pool_base,
+      .size = pool_size,
+      .vmar = child_vmar.borrow(),
+  });
+  EXPECT_TRUE(IsConfigurablePoolAvailable());
+  EXPECT_EQ(child_vmar.borrow(),
+            PartitionAddressSpace::GetConfigurablePoolVmar());
+
+  PartitionOptions opts = GetCommonPartitionOptions();
+  opts.use_configurable_pool = PartitionOptions::kAllowed;
+  std::unique_ptr<PartitionRoot> root = CreateCustomTestRoot(
+      opts, PartitionTestOptions{.uncap_empty_slot_span_memory = true,
+                                 .set_bucket_distribution = true});
+
+  const size_t count = 250;
+  std::vector<void*> allocations(count, nullptr);
+  for (size_t i = 0; i < count; ++i) {
+    const size_t size =
+        PA_UNSAFE_TODO(kTestSizes[base::RandGenerator(kTestSizesCount)]);
+    allocations[i] = root->Alloc(size);
+    ASSERT_NE(nullptr, allocations[i]);
+    *static_cast<uint8_t*>(allocations[i]) = 0x5a;
+    EXPECT_EQ(0x5a, *static_cast<uint8_t*>(allocations[i]));
+    uintptr_t allocation_base = reinterpret_cast<uintptr_t>(allocations[i]);
+    EXPECT_TRUE(allocation_base >= pool_base &&
+                allocation_base < pool_base + pool_size);
+  }
+
+  for (void* ptr : allocations) {
+    root->Free(ptr);
+  }
+  root->PurgeMemory(PurgeFlags::kDecommitEmptySlotSpans |
+                    PurgeFlags::kDiscardUnusedSystemPages);
+
+  PartitionRoot::DeleteForTesting(root.release());
+  PartitionAddressSpace::UninitConfigurablePoolForTesting();
+  ASSERT_EQ(ZX_OK, child_vmar.destroy());
+}
+#endif  // PA_BUILDFLAG(IS_FUCHSIA) && PA_BUILDFLAG(PA_ARCH_CPU_64_BITS)
 
 TEST_P(PartitionAllocTest, EmptySlotSpanSizeIsCapped) {
   // Use another root, since the ones from the test harness disable the empty

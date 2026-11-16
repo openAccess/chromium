@@ -94,7 +94,6 @@
 #include "chrome/browser/push_messaging/push_messaging_service_impl.h"
 #include "chrome/browser/reader_mode/profile_utils.h"
 #include "chrome/browser/reading_list/reading_list_model_factory.h"
-#include "chrome/browser/reduce_accept_language/reduce_accept_language_factory.h"
 #include "chrome/browser/sessions/exit_type_service.h"
 #include "chrome/browser/sharing/sharing_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
@@ -164,7 +163,6 @@
 #include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/supervised_user/core/common/pref_names.h"
 #include "components/supervised_user/core/common/supervised_user_constants.h"
-#include "components/sync/base/features.h"
 #include "components/sync_preferences/pref_service_syncable.h"
 #include "components/url_formatter/url_fixer.h"
 #include "components/user_prefs/user_prefs.h"
@@ -860,7 +858,7 @@ void ProfileImpl::DoFinalInit(CreateMode create_mode) {
   auto* db_provider = GetDefaultStoragePartition()->GetProtoDatabaseProvider();
   key_->SetProtoDatabaseProvider(db_provider);
 
-  // The DomDistillerViewerSource is not a normal WebUI so it must be registered
+  // The WebDistillerViewerSource is not a normal WebUI so it must be registered
   // as a URLDataSource early.
   reader_mode::RegisterViewerSource(this);
 
@@ -1516,11 +1514,6 @@ ProfileImpl::GetFederatedIdentityPermissionContext() {
   return FederatedIdentityPermissionContextFactory::GetForProfile(this);
 }
 
-content::ReduceAcceptLanguageControllerDelegate*
-ProfileImpl::GetReduceAcceptLanguageControllerDelegate() {
-  return ReduceAcceptLanguageFactory::GetForProfile(this);
-}
-
 content::OriginTrialsControllerDelegate*
 ProfileImpl::GetOriginTrialsControllerDelegate() {
   return OriginTrialsFactory::GetForBrowserContext(this);
@@ -1605,17 +1598,24 @@ void ProfileImpl::ChangeAppLocale(const std::string& new_locale,
     }
     case APP_LOCALE_CHANGED_VIA_LOGIN:
     case APP_LOCALE_CHANGED_VIA_PUBLIC_SESSION_LOGIN: {
+      if (!locale_change_guard_) {
+        locale_change_guard_ = std::make_unique<ash::LocaleChangeGuard>(
+            local_state,
+            g_browser_process->GetFeatures()->application_locale_storage(),
+            this);
+      }
+      // If the user's UI locale (new_locale) differs from the login screen's
+      // locale (cur_locale), mark it so LocaleChangeGuard notifies Ash to
+      // reload UI strings on session start; otherwise Ash UI is already in that
+      // locale.
+      const std::string cur_locale = g_browser_process->GetApplicationLocale();
+      if (!LocaleNotChanged(cur_locale, new_locale)) {
+        locale_change_guard_->MarkLocaleChangedDuringLogin();
+      }
+
       if (!pref_locale.empty()) {
         CHECK(LocaleNotChanged(pref_locale, new_locale),
               base::NotFatalUntil::M162);
-
-        if (!locale_change_guard_) {
-          locale_change_guard_ = std::make_unique<ash::LocaleChangeGuard>(
-              local_state,
-              g_browser_process->GetFeatures()->application_locale_storage(),
-              this);
-        }
-        locale_change_guard_->set_locale_changed_during_login(true);
 
         std::string accepted_locale =
             GetPrefs()->GetString(ash::prefs::kApplicationLocaleAccepted);
@@ -1628,13 +1628,11 @@ void ProfileImpl::ChangeAppLocale(const std::string& new_locale,
                                 new_locale);
         } else {
           // Back up locale of login screen.
-          std::string cur_locale = g_browser_process->GetApplicationLocale();
           GetPrefs()->SetString(ash::prefs::kApplicationLocaleBackup,
                                 cur_locale);
           locale_change_guard_->PrepareChangingLocale(cur_locale, new_locale);
         }
       } else {
-        std::string cur_locale = g_browser_process->GetApplicationLocale();
         std::string backup_locale =
             GetPrefs()->GetString(ash::prefs::kApplicationLocaleBackup);
         // Profile synchronization takes time and is not completed at that
@@ -1726,12 +1724,8 @@ void ProfileImpl::AckCrashForTracking() {
 bool ProfileImpl::IsSignedIn() {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(this);
-  // TODO(crbug.com/348368545): Switch to ConsentLevel::kSignin on ChromeOS.
-  signin::ConsentLevel consent_level =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync;
-  return identity_manager && identity_manager->HasPrimaryAccount(consent_level);
+  return identity_manager &&
+         identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 }
 
 GURL ProfileImpl::GetHomePage() {

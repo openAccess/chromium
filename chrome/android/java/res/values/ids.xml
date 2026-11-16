@@ -75,6 +75,7 @@ found in the LICENSE file.
     <item type="id" name="task_manager" />
     <item type="id" name="toggle_bookmark_bar" />
     <item type="id" name="toggle_tab_strip_multiselect" />
+    <item type="id" name="toggle_vertical_tabs_collapse" />
     <item type="id" name="view_source" />
     <item type="id" name="zoom_in" />
     <item type="id" name="zoom_out" />
@@ -87,6 +88,7 @@ found in the LICENSE file.
     <!-- Context Menu Ids -->
     <!-- Page Group -->
     <!-- go/keep-sorted start -->
+    <item type="id" name="contextmenu_ask_google_about_page" />
     <item type="id" name="contextmenu_back" />
     <item type="id" name="contextmenu_create_qr_code" />
     <item type="id" name="contextmenu_forward" />
@@ -202,6 +204,7 @@ found in the LICENSE file.
     <item type="id" name="ai_pdf_menu_id" />
     <item type="id" name="ai_web_menu_id" />
     <item type="id" name="all_bookmarks_menu_id" />
+    <item type="id" name="ask_google_about_page_menu_id" />
     <item type="id" name="auto_dark_web_contents_check_id" />
     <item type="id" name="auto_dark_web_contents_id" />
     <item type="id" name="back_menu_id" />

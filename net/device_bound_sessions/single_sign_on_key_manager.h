@@ -5,22 +5,22 @@
 #ifndef NET_DEVICE_BOUND_SESSIONS_SINGLE_SIGN_ON_KEY_MANAGER_H_
 #define NET_DEVICE_BOUND_SESSIONS_SINGLE_SIGN_ON_KEY_MANAGER_H_
 
-#include <cstddef>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
+#include <utility>
 
+#include "base/containers/transparent_hash.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/types/expected.h"
 #include "base/types/optional_ref.h"
 #include "components/unexportable_keys/unexportable_key_id.h"
 #include "net/base/net_export.h"
-#include "net/base/schemeful_site.h"
 #include "net/device_bound_sessions/generate_key_param.h"
 #include "net/device_bound_sessions/session_error.h"
 #include "net/device_bound_sessions/session_service.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "url/origin.h"
 
@@ -35,13 +35,12 @@ namespace net::device_bound_sessions {
 // on Secure-Session-GenerateKey certified with the IdP's attestation key (AIK).
 class NET_EXPORT SingleSignOnKeyManager {
  public:
-  // Maximum number of pre-provisioned keys per Identity Provider site.
-  static constexpr size_t kMaxPreProvisionedKeysPerIdentityProvider = 10;
-
   // `key_service` must outlive `this`.
   explicit SingleSignOnKeyManager(
       unexportable_keys::UnexportableKeyService& key_service,
       SessionService::CookieAccessCallback has_cookie_access_cb);
+  // Deletes the pre-provisioned keys that are still stored, i.e. were never
+  // consumed, from the key service.
   ~SingleSignOnKeyManager();
 
   SingleSignOnKeyManager(const SingleSignOnKeyManager&) = delete;
@@ -50,9 +49,7 @@ class NET_EXPORT SingleSignOnKeyManager {
   SingleSignOnKeyManager& operator=(SingleSignOnKeyManager&&) = delete;
 
   // Returns whether a Secure-Session-GenerateKey request may start. The IdP at
-  // `provider_origin` needs access to its cookies on `rp_origin`. Its stored
-  // keys plus in-flight requests must stay below
-  // `kMaxPreProvisionedKeysPerIdentityProvider`.
+  // `provider_origin` needs access to its cookies on `rp_origin`.
   bool CanGenerateKey(const url::Origin& provider_origin,
                       const url::Origin& rp_origin) const;
 
@@ -60,7 +57,10 @@ class NET_EXPORT SingleSignOnKeyManager {
   // stores it as a pre-provisioned key. Call only after `CanGenerateKey()`
   // returned true. `callback` receives the serialized binding statement or an
   // error, and never runs before `GenerateKey()` returns. If `this` is
-  // destroyed before the request finishes, `callback` is dropped.
+  // destroyed before the request finishes, `callback` is dropped. If
+  // `callback` is cancelled, the request stops early and deletes its key.
+  // Cancellation is detected via `callback.IsCancelled()`, so bind `callback`
+  // to a `WeakPtr` and don't wrap it in another callback.
   void GenerateKey(unexportable_keys::UnexportableAttestationKeyId idp_aik,
                    GenerateKeyParam param,
                    url::Origin provider_origin,
@@ -79,9 +79,7 @@ class NET_EXPORT SingleSignOnKeyManager {
   // A key insertion can fail if:
   // - the Identity Provider site does not have access to its cookies from a
   //   third-party context;
-  // - the key already exists (same `rp_origin` and `provider_key`);
-  // - there are already `kMaxPreProvisionedKeysPerIdentityProvider` keys
-  //   stored for the Identity Provider site.
+  // - the key already exists (same `rp_origin` and `provider_key`).
   bool AddPreProvisionedKey(const url::Origin& rp_origin,
                             std::string_view provider_key,
                             const url::Origin& provider_origin,
@@ -93,12 +91,18 @@ class NET_EXPORT SingleSignOnKeyManager {
   FindPreProvisionedKey(std::string_view provider_key,
                         base::optional_ref<const url::Origin> initiator) const;
 
-  // Removes the pre-provisioned key used by `session`, if any. Called when a
-  // registration completes, before the new session is added.
-  void ConsumeKeyForSession(const Session& session);
+  // Removes the pre-provisioned key with `key_id`. Called when an SSO
+  // registration completes, before the new session is added. Returns false if
+  // the key is no longer stored, e.g. because the RP's site data was cleared
+  // or another registration consumed it while this one was in flight. Unlike
+  // `ClearPreProvisionedKeys()` and the destructor, this does not delete the
+  // key from the key service, because the new session takes ownership of it.
+  [[nodiscard]] bool ConsumePreProvisionedKey(
+      unexportable_keys::UnexportableSigningKeyId key_id);
 
-  // Clears pre-provisioned keys matching `matcher`. If `matcher` is null,
-  // clears all keys.
+  // Clears pre-provisioned keys whose RP origin matches `matcher`, whichever
+  // IdP generated them: keys are the RP's data. If `matcher` is null, clears
+  // all keys. Cleared keys are also deleted from the key service.
   void ClearPreProvisionedKeys(
       const SessionService::OriginAndSiteMatcher& matcher);
 
@@ -106,40 +110,38 @@ class NET_EXPORT SingleSignOnKeyManager {
   class GenerateKeyRequest;
   struct GeneratedKey;
 
-  // Whether `CountKeys()` includes in-flight `GenerateKey()` requests.
-  enum class InFlightRequests { kCount, kIgnore };
-
-  struct PreProvisionedKeyEntry {
+  struct KeyMetadata {
     url::Origin provider_origin;
-    net::SchemefulSite provider_site;
-    url::Origin rp_origin;
-    std::string provider_key;
     unexportable_keys::UnexportableSigningKeyId key_id;
   };
+  // An RP origin and the JWK thumbprint of a provider key.
+  using RpAndProviderKey = std::pair<url::Origin, std::string>;
+  // Non-owning `RpAndProviderKey` for lookups and `try_emplace()`, so the
+  // origin and thumbprint are only copied when a key is added. Holds a
+  // reference, so only build it from an origin that outlives the expression.
+  using RpAndProviderKeyView = std::pair<const url::Origin&, std::string_view>;
 
-  // Helper function to check if a pre-provisioned key created by
-  // `provider_origin` can be added to the in-memory store.
-  bool CanAddPreProvisionedKey(const url::Origin& provider_origin,
-                               const url::Origin& rp_origin) const;
+  // Destroys `request` and passes `result` to its callback. The callback may
+  // destroy `this`, so callers must return right after.
+  void CompleteRequest(GenerateKeyRequest* request,
+                       SessionErrorOr<std::string> result);
 
-  // Returns the number of keys stored for `provider_site`, plus its in-flight
-  // `GenerateKey()` requests if `in_flight_requests` is `kCount`.
-  size_t CountKeys(const net::SchemefulSite& provider_site,
-                   InFlightRequests in_flight_requests) const;
-
-  // Called once `request` has finished. Stores the generated key unless
-  // `request`'s site data was cleared or `AddPreProvisionedKey()` rejects it.
-  // Destroys `request` and passes the binding statement or an error to
-  // `callback`.
+  // Called once `request` has finished. Stores the generated key unless the
+  // request's callback was cancelled, `request`'s site data was cleared or
+  // `AddPreProvisionedKey()` rejects it. Destroys `request` and passes the
+  // binding statement or an error to the request's callback.
   void OnGenerateKeyDone(GenerateKeyRequest* request,
-                         SessionService::KeyBindingCallback callback,
                          SessionErrorOr<GeneratedKey> result);
 
   const raw_ref<unexportable_keys::UnexportableKeyService> key_service_;
   SessionService::CookieAccessCallback has_cookie_access_cb_;
-  std::vector<PreProvisionedKeyEntry> pre_provisioned_keys_;
-  // In-flight `GenerateKey()` requests. They count towards the per-IdP limit
-  // in `CanGenerateKey()`, and destroying `this` cancels them.
+  // Pre-provisioned keys by RP origin and the provider key's JWK thumbprint.
+  absl::flat_hash_map<RpAndProviderKey,
+                      KeyMetadata,
+                      base::TransparentHashAs<RpAndProviderKeyView>,
+                      base::TransparentEqualAs<RpAndProviderKeyView>>
+      pre_provisioned_keys_;
+  // In-flight `GenerateKey()` requests. Destroying `this` cancels them.
   absl::flat_hash_set<std::unique_ptr<GenerateKeyRequest>>
       generate_key_requests_;
 };

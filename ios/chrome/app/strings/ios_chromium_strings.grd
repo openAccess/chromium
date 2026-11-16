@@ -316,6 +316,21 @@ Try waiting a few minutes before switching accounts. If you switch accounts now,
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION" desc="Description for the non-modal default browser promotion banner when Chromium is opened from a first-party app.">
         Open links from Gmail, Maps, Youtube and other apps in Chromium
       </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP1" desc="Description for the non-modal default browser promotion banner when Chromium is opened from a first-party app (Google Ecosystem Integration experiment) [iOS only].">
+        Open links directly in Chromium.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP3" desc="Description for the non-modal default browser promotion banner when Chromium is opened from a first-party app (Primary Destination experiment) [iOS only].">
+        Ensure all links always open in Chromium.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP4" desc="Description for the non-modal default browser promotion banner when Chromium is opened from a first-party app (Convenience experiment) [iOS only].">
+        Set Chromium as default to make app transitions faster and easier.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP5" desc="Description for the non-modal default browser promotion banner when Chromium is opened from a first-party app (Productivity experiment) [iOS only].">
+        Open external links in Chromium by default.
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP2" desc="Title for the non-modal default browser promotion banner when Chromium is opened from a first-party app (Zero Friction Transition experiment) [iOS only].">
+        Jump straight to Chromium
+      </message>
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_OMNIBOX_NAVIGATION_DESCRIPTION" desc="Description for the non-modal default browser promotion banner after Omnibox URL copy/paste and navigation.">
         Open Chromium anytime you tap on links in other apps
       </message>
@@ -447,6 +462,12 @@ Try waiting a few minutes before switching accounts. If you switch accounts now,
       </message>
       <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SUBTITLE_IPAD" desc="Subtitle of the Default Browser screen on First run page explaining the default browser feature's utility - iPad expermental version. [iOS only]">
         You can now use Chromium anytime you tap links in emails, documents, and other apps.
+      </message>
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_HYBRID_TITLE" desc="Title of the Android switcher Default Browser screen in First Run, telling the user that their favorite Google apps and services (YouTube, Maps, Drive, Photos, Lens) work better with Chromium as the default browser [iOS only]">
+        Your Google favorites are better with Chromium
+      </message>
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_SUBTITLE" desc="Subtitle of the Android switcher Default Browser screen in First Run prompting the user to make Chromium their default browser [iOS only]">
+        Make Chromium your default browser
       </message>
       <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_THIRD_STEP" desc="Text of the row indicating the third step of setting the default browser [iOS only]">
         Select <ph name="BEGIN_BOLD">BEGIN_BOLD</ph>Chromium<ph name="END_BOLD">END_BOLD</ph>

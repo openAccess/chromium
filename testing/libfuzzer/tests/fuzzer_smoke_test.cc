@@ -68,6 +68,18 @@ constexpr FuzzerTestCase kFuzzerTestCases[] = {
         .expectation = FuzzExpectation::kCrash,
     },
     {
+        .fuzzer = "llvm_check_fuzzer",
+        .expectation = FuzzExpectation::kCrash,
+    },
+    {
+        .fuzzer = "llvm_asan_service_stub_fuzzer",
+        .expectation = FuzzExpectation::kSuccess,
+    },
+    {
+        .fuzzer = "llvm_asan_service_crashing_fuzzer",
+        .expectation = FuzzExpectation::kCrash,
+    },
+    {
         .fuzzer = "lpm_stub_fuzzer",
         .expectation = FuzzExpectation::kSuccess,
     },
@@ -83,6 +95,11 @@ constexpr FuzzerTestCase kFuzzerTestCases[] = {
     },
     {
         .fuzzer = "fuzztest_crashing_fuzzer_FuzzTestCrashing_FastCrash_fuzzer",
+        .expectation = FuzzExpectation::kCrash,
+    },
+    {
+        .fuzzer =
+            "fuzztest_crashing_fuzzer_FuzzTestCrashing_CheckFailure_fuzzer",
         .expectation = FuzzExpectation::kCrash,
     },
     {
@@ -106,6 +123,20 @@ constexpr FuzzerTestCase kFuzzerTestCases[] = {
     },
     {
         .fuzzer = "wrapped_llvm_crashing_fuzzer_LLVMFuzzer_TestOneInput_fuzzer",
+        .expectation = FuzzExpectation::kCrash,
+    },
+    {
+        .fuzzer = "wrapped_llvm_check_fuzzer_LLVMFuzzer_TestOneInput_fuzzer",
+        .expectation = FuzzExpectation::kCrash,
+    },
+    {
+        .fuzzer = "wrapped_llvm_asan_service_stub_fuzzer_LLVMFuzzer_"
+                  "TestOneInput_fuzzer",
+        .expectation = FuzzExpectation::kSuccess,
+    },
+    {
+        .fuzzer = "wrapped_llvm_asan_service_crashing_fuzzer_LLVMFuzzer_"
+                  "TestOneInput_fuzzer",
         .expectation = FuzzExpectation::kCrash,
     },
 #endif

@@ -8,21 +8,32 @@
 
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "build/build_config.h"
+#include "chrome/browser/prefs/session_startup_pref.h"
+#include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/sessions/session_service_log.h"
 #include "chrome/browser/sessions/session_service_test_helper.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "components/keep_alive_registry/keep_alive_types.h"
+#include "components/keep_alive_registry/scoped_keep_alive.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/sessions/core/command_storage_manager.h"
 #include "components/sessions/core/session_command.h"
 #include "components/sessions/core/session_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/components/kiosk/kiosk_test_utils.h"
@@ -169,4 +180,175 @@ IN_PROC_BROWSER_TEST_F(SessionServiceBrowserTest, LogExit) {
   service()->SetWindowType(window2_id,
                            BrowserWindowInterface::Type::TYPE_NORMAL);
   EXPECT_FALSE(FindMostRecentEventOfType(SessionServiceEventLogType::kExit));
+}
+
+IN_PROC_BROWSER_TEST_F(SessionServiceBrowserTest,
+                       ResetDuringLastWindowTeardownKeepsAllTabs) {
+  base::HistogramTester histogram_tester;
+  auto keep_alive = std::make_unique<ScopedKeepAlive>(
+      KeepAliveOrigin::SESSION_RESTORE, KeepAliveRestartOption::DISABLED);
+  auto profile_keep_alive = std::make_unique<ScopedProfileKeepAlive>(
+      browser()->GetProfile(), ProfileKeepAliveOrigin::kSessionRestore);
+
+  SessionServiceTestHelper helper(service());
+  service()->ResetFromCurrentBrowsers();
+
+  AddBlankTabAndShow(browser());
+  AddBlankTabAndShow(browser());
+  SessionID window_id = browser()->GetSessionID();
+
+  helper.command_storage_manager()->Save();
+
+  // Crossing the rewrite threshold with the window open loses nothing.
+  for (int i = helper.command_storage_manager()->commands_since_reset();
+       i < SessionServiceBase::kWritesPerReset; ++i) {
+    service()->SetWindowVisibleOnAllWorkspaces(window_id, true);
+  }
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.RebuildWouldHaveDroppedTabs", false, 1);
+  // Performs and writes the deferred rewrite, restarting the count.
+  helper.command_storage_manager()->Save();
+
+  int current = helper.command_storage_manager()->commands_since_reset();
+  int target = SessionServiceBase::kWritesPerReset - 1;
+  for (int i = current; i < target; ++i) {
+    service()->SetWindowVisibleOnAllWorkspaces(window_id, true);
+  }
+
+  Profile* profile = browser()->GetProfile();
+
+  // We manually call WindowClosing() because we must push past kWritesPerReset
+  // precisely in the middle of teardown, which a real close path won't let us
+  // intercept easily.
+  service()->WindowClosing(window_id);
+  browser()->GetTabStripModel()->CloseWebContentsAt(
+      2, TabCloseTypes::CLOSE_USER_GESTURE);
+
+  // Push past kWritesPerReset DURING teardown.
+  service()->SetWindowVisibleOnAllWorkspaces(window_id, true);
+  histogram_tester.ExpectBucketCount(
+      "Session.Counterfactual.RebuildWouldHaveDroppedTabs", true, 1);
+
+  // Finish closing the browser.
+  CloseBrowserSynchronously(browser());
+
+  SessionStartupPref pref(SessionStartupPref::LAST);
+  SessionStartupPref::SetStartupPref(profile, pref);
+  BrowserWindowInterface* new_browser = CreateBrowser(profile);
+
+  base::test::TestFuture<std::vector<std::unique_ptr<sessions::SessionWindow>>,
+                         SessionID, sessions::CommandStorageReadStatus,
+                         sessions::SessionReplayResult>
+      future;
+  SessionServiceFactory::GetForProfile(new_browser->GetProfile())
+      ->GetLastSession(future.GetCallback());
+
+  auto windows = std::get<0>(future.Take());
+
+  bool found = false;
+  for (const auto& window : windows) {
+    if (window->window_id == window_id) {
+      EXPECT_EQ(3u, window->tabs.size());
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+IN_PROC_BROWSER_TEST_F(SessionServiceBrowserTest, EmptyWindowSaved) {
+  base::HistogramTester histogram_tester;
+  BrowserWindowInterface* empty_browser = CreateBrowserWindow(
+      BrowserWindowCreateParams(browser()->GetProfile(), true));
+
+  ASSERT_EQ(0, empty_browser->GetTabStripModel()->count());
+  service()->ResetFromCurrentBrowsers();
+
+  // A window that already had tabs at the rebuild is not counted.
+  std::ignore = AddTabAtIndexToBrowser(browser(), -1, GURL(url::kAboutBlankURL),
+                                       ui::PAGE_TRANSITION_TYPED);
+  histogram_tester.ExpectTotalCount(
+      "Session.Counterfactual.EmptyWindowTabWouldHaveBeenLost", 0);
+
+  std::ignore = AddTabAtIndexToBrowser(
+      empty_browser, -1, GURL(url::kAboutBlankURL), ui::PAGE_TRANSITION_TYPED);
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.EmptyWindowTabWouldHaveBeenLost", true, 1);
+
+  sessions::CommandStorageManager* command_storage_manager =
+      SessionServiceTestHelper(service()).command_storage_manager();
+  const std::vector<std::unique_ptr<sessions::SessionCommand>>&
+      pending_commands = command_storage_manager->pending_commands();
+
+  sessions::SessionTabHelper* session_tab_helper =
+      sessions::SessionTabHelper::FromWebContents(
+          empty_browser->GetTabStripModel()->GetWebContentsAt(0));
+  std::unique_ptr<sessions::SessionCommand> set_tab_window_command =
+      sessions::CreateSetTabWindowCommand(empty_browser->GetSessionID(),
+                                          session_tab_helper->session_id());
+
+  bool found = false;
+  for (const auto& command : pending_commands) {
+    if (command->id() == set_tab_window_command->id() &&
+        command->contents() == set_tab_window_command->contents()) {
+      found = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
+IN_PROC_BROWSER_TEST_F(SessionServiceBrowserTest, NoRewriteOnSecondNavigation) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,first")));
+
+  service()->ResetFromCurrentBrowsers();
+  SessionServiceTestHelper helper(service());
+  EXPECT_TRUE(helper.command_storage_manager()->pending_reset());
+  helper.command_storage_manager()->Save();
+  EXPECT_FALSE(helper.command_storage_manager()->pending_reset());
+
+  content::WebContents* tab =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  std::pair<int, int> range;
+  sessions::SessionTabHelper* session_tab_helper =
+      sessions::SessionTabHelper::FromWebContents(tab);
+  ASSERT_TRUE(
+      helper.GetAvailableRange(session_tab_helper->session_id(), &range));
+  EXPECT_EQ(tab->GetController().GetLastCommittedEntryIndex(), range.second);
+
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,second")));
+  EXPECT_FALSE(helper.command_storage_manager()->pending_reset());
+  // The old code would not have rewritten here either.
+  histogram_tester.ExpectTotalCount("Session.Counterfactual.FullRewriteAvoided",
+                                    0);
+
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,third")));
+  EXPECT_FALSE(helper.command_storage_manager()->pending_reset());
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.FullRewriteAvoided", true, 1);
+
+  // The old code's rewrite reset the bound, so it skipped the 4th page and
+  // rewrote again on the 5th.
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,fourth")));
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.FullRewriteAvoided", true, 1);
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,fifth")));
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.FullRewriteAvoided", true, 2);
+
+  // No rewrite is avoided when one is already pending.
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,sixth")));
+  helper.command_storage_manager()->Save();
+  helper.command_storage_manager()->set_pending_reset(true);
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,seventh")));
+  histogram_tester.ExpectUniqueSample(
+      "Session.Counterfactual.FullRewriteAvoided", true, 2);
 }

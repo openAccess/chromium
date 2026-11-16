@@ -301,6 +301,11 @@ class DiceWebSigninInterceptor : public KeyedService,
   // initial state.
   void Reset();
 
+  // Records an abort `outcome` metric and resets the interceptor. Must not be
+  // called with success outcomes or `kAbortInterceptInProgress` (which
+  // preserves the ongoing interception).
+  void AbortInterception(SigninInterceptionHeuristicOutcome outcome);
+
   // Helper functions to determine which interception UI should be shown.
   const ProfileAttributesEntry* ShouldShowProfileSwitchBubble(
       const GaiaId& intercepted_gaia_id,
@@ -336,6 +341,8 @@ class DiceWebSigninInterceptor : public KeyedService,
   // signin::IdentityManager::Observer:
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;
   void OnExtendedAccountInfoRemoved(const AccountInfo& info) override;
+  void OnRefreshTokenRemovedForAccount(
+      const CoreAccountId& account_id) override;
 
   // Called when one or more of the async info fetches times out.
   void OnInterceptionInfoFetchTimeout();
@@ -444,7 +451,7 @@ class DiceWebSigninInterceptor : public KeyedService,
   // Called when the user management status and the value of the cloud user
   // level value of the ManagedAccountsSigninRestriction are received.
   void OnAccountLevelManagedAccountsSigninRestrictionReceived(
-      const AccountInfo& account_info,
+      const CoreAccountId& account_id,
       std::optional<policy::UserManagementStatus> management_status,
       policy::ProfileSeparationPolicies profile_separation_policies);
 

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/ash/app_install/app_install_ui.h"
 
 #include "ash/constants/webui_url_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/webui/common/trusted_types_util.h"
 #include "base/feature_list.h"
 #include "chrome/browser/profiles/profile.h"
@@ -13,7 +14,6 @@
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/app_install_resources.h"
 #include "chrome/grit/app_install_resources_map.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/url_data_source.h"

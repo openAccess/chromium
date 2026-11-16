@@ -13,6 +13,7 @@
 #include "base/command_line.h"
 #include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/mock_memory_pressure_listener.h"
+#include "base/memory_coordinator/memory_pressure_source.h"
 #include "base/run_loop.h"
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_command_line.h"
@@ -84,6 +85,24 @@ class ScopedInstallDanglingRawPtrChecks {
   test::ScopedFeatureList enabled_feature_list_;
   partition_alloc::DanglingRawPtrDetectedFn* old_detected_fn_;
   partition_alloc::DanglingRawPtrReleasedFn* old_dereferenced_fn_;
+};
+
+// Installs a release-exemption function returning `exempt`, and restores the
+// previous one when going out of scope.
+class ScopedReleaseExemption {
+ public:
+  explicit ScopedReleaseExemption(bool exempt)
+      : old_fn_(GetDanglingRawPtrReleaseExemptFn()) {
+    if (exempt) {
+      SetDanglingRawPtrReleaseExemptFn([] { return true; });
+    } else {
+      SetDanglingRawPtrReleaseExemptFn([] { return false; });
+    }
+  }
+  ~ScopedReleaseExemption() { SetDanglingRawPtrReleaseExemptFn(old_fn_); }
+
+ private:
+  DanglingRawPtrReleaseExemptFn* const old_fn_;
 };
 
 }  // namespace
@@ -217,6 +236,29 @@ TEST(PartitionAllocDanglingPtrChecks, CrossTaskNoFreeConsideredCrossTask) {
       .type = "cross_task",
   });
   partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+}
+
+TEST(PartitionAllocDanglingPtrChecks, ReleaseExempt) {
+  ScopedInstallDanglingRawPtrChecks scoped_install_dangling_checks;
+  ScopedReleaseExemption scoped_exemption(/*exempt=*/true);
+  partition_alloc::GetDanglingRawPtrDetectedFn()(42);
+  partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+}
+
+TEST(PartitionAllocDanglingPtrChecks, ReleaseNotExemptReported) {
+  EXPECT_DEATH(
+      {
+        ScopedInstallDanglingRawPtrChecks scoped_install_dangling_checks;
+        ScopedReleaseExemption outer_exemption(/*exempt=*/false);
+        {
+          ScopedReleaseExemption inner_exemption(/*exempt=*/true);
+          partition_alloc::GetDanglingRawPtrDetectedFn()(41);
+          partition_alloc::GetDanglingRawPtrReleasedFn()(41);
+        }
+        partition_alloc::GetDanglingRawPtrDetectedFn()(42);
+        partition_alloc::GetDanglingRawPtrReleasedFn()(42);
+      },
+      HasSubstr("[DanglingPtr](1/3) A raw_ptr/raw_ref is dangling."));
 }
 
 TEST(PartitionAllocDanglingPtrChecks,
@@ -451,6 +493,7 @@ class PartitionAllocMemoryPressureTest : public testing::Test {
 };
 
 TEST_F(PartitionAllocMemoryPressureTest, MonitorEndToEnd) {
+  MemoryPressureSource source;
   MemoryPressureListenerRegistry registry;
   RegisteredMockMemoryPressureListener listener;
 
@@ -491,6 +534,7 @@ TEST_F(PartitionAllocMemoryPressureTest, MonitorEndToEnd) {
 }
 
 TEST_F(PartitionAllocMemoryPressureTest, MonitorStartupAlreadyCritical) {
+  MemoryPressureSource source;
   MemoryPressureListenerRegistry registry;
   RegisteredMockMemoryPressureListener listener;
 

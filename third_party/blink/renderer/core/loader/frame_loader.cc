@@ -52,7 +52,6 @@
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-blink.h"
-#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
@@ -273,14 +272,11 @@ void FrameLoader::Init(
   navigation_params->frame_policy =
       frame_->Owner() ? frame_->Owner()->GetFramePolicy() : FramePolicy();
   navigation_params->document_ukm_source_id = document_ukm_source_id;
-  if (base::FeatureList::IsEnabled(
-          blink::features::kUseSandboxTokenForOriginDerivation)) {
-    if ((policy_container->GetPolicies().sandbox_flags &
-         network::mojom::blink::WebSandboxFlags::kOrigin) !=
-        network::mojom::blink::WebSandboxFlags::kNone) {
-      CHECK(sandbox_origin_token);
-      navigation_params->sandbox_origin_token = std::move(sandbox_origin_token);
-    }
+  if ((policy_container->GetPolicies().sandbox_flags &
+       network::mojom::blink::WebSandboxFlags::kOrigin) !=
+      network::mojom::blink::WebSandboxFlags::kNone) {
+    CHECK(sandbox_origin_token);
+    navigation_params->sandbox_origin_token = std::move(sandbox_origin_token);
   }
 
   DocumentLoader* new_document_loader = MakeGarbageCollected<DocumentLoader>(
@@ -1211,8 +1207,16 @@ void FrameLoader::CommitNavigation(
   //   with regards to the last commit.
   // In this rare case, we intentionally proceed as cross-document.
 
-  if (!CancelProvisionalLoaderForNewNavigation())
-    return;
+  {
+    // CancelProvisionalLoaderForNewNavigation() calls Document::Abort(), which
+    // can synchronously fire readystatechange. Disable navigations and
+    // re-entrant commits while aborting the previous document, matching
+    // DetachDocument() below.
+    FrameNavigationDisabler navigation_disabler(*frame_);
+    if (!CancelProvisionalLoaderForNewNavigation()) {
+      return;
+    }
+  }
 
   FillStaticResponseIfNeeded(navigation_params.get(), frame_);
   AssertCanNavigate(navigation_params.get(), frame_);

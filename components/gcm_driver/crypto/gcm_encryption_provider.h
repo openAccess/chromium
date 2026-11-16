@@ -79,10 +79,11 @@ class GCMEncryptionProvider {
                          const std::string& authorized_entity,
                          EncryptionInfoCallback callback);
 
-  // Removes all encryption information associated with the |app_id| +
-  // |authorized_entity| pair, then invokes |callback|. |authorized_entity|
-  // should be the InstanceID token's authorized entity, or "*" to remove for
-  // all InstanceID tokens, or "" for non-InstanceID GCM registrations.
+  // Removes all encryption information associated with the `app_id` +
+  // `authorized_entity` pair, then invokes `callback`. `authorized_entity`
+  // should be the InstanceID token's authorized entity, or "" for
+  // non-InstanceID GCM registrations, or "*" to remove the encryption
+  // information for all authorized entities of the `app_id`, including "".
   void RemoveEncryptionInfo(const std::string& app_id,
                             const std::string& authorized_entity,
                             base::OnceClosure callback);
@@ -138,9 +139,7 @@ class GCMEncryptionProvider {
                              std::optional<crypto::keypair::PrivateKey> key,
                              const std::string& auth_secret);
 
-  void EncryptMessageWithKey(const std::string& app_id,
-                             const std::string& authorized_entity,
-                             const std::string& p256dh,
+  void EncryptMessageWithKey(const std::string& p256dh,
                              const std::string& auth_secret,
                              const std::string& message,
                              EncryptMessageCallback callback,

@@ -14,6 +14,7 @@
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/ui/toolbar/pinned_toolbar/pinned_toolbar_actions_ids.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/toolbar/download_button.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button_menu_model.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
@@ -248,10 +250,17 @@ void WebUIPinnedToolbarActions::OnActionsChanged() {
         IsActionHighlighted(id) || (menu_runner_ && menu_runner_->IsRunning() &&
                                     active_context_menu_action_ == id);
     state->enabled = item->GetEnabled();
-    // TODO(crbug.com/578143713): Also plumb
-    // `kActionItemEngagedIndicatorStyleKey` through `PinnedToolbarActionState`
-    // to support `kCircleHighlight` in WebUI.
     state->activated = item->GetProperty(kActionItemUnderlineIndicatorKey);
+    switch (item->GetProperty(kActionItemEngagedIndicatorStyleKey)) {
+      case ActionItemEngagedIndicatorStyle::kUnderline:
+        state->engaged_indicator_style = toolbar_ui_api::mojom::
+            PinnedToolbarActionEngagedIndicatorStyle::kUnderline;
+        break;
+      case ActionItemEngagedIndicatorStyle::kCircleHighlight:
+        state->engaged_indicator_style = toolbar_ui_api::mojom::
+            PinnedToolbarActionEngagedIndicatorStyle::kCircleHighlight;
+        break;
+    }
     state->tooltip = item->GetTooltipText();
     state->accessibility_text = item->GetAccessibleName();
     if (auto element_id = webui_toolbar::ActionIdToElementIdentifier(id)) {
@@ -261,6 +270,11 @@ void WebUIPinnedToolbarActions::OnActionsChanged() {
       state->progress_ring = download_button_->GetProgressRingState();
       state->badge_number = download_button_->GetBadgeNumber();
     }
+    // Like native PinnedActionToolbarButton::GetIconSize(), shrink the icon by
+    // the action's icon size delta.
+    state->icon_size_delta =
+        item->GetProperty(chrome::kActionItemIconSizeDeltaKey);
+    CHECK_LE(state->icon_size_delta, 0);
 
     ui::ImageModel image_model;
     if (actions::IsActionClass<actions::StatefulImageActionItem>(item)) {
@@ -758,6 +772,10 @@ void WebUIPinnedToolbarActions::HandleContextMenu(
       break;
     case toolbar_ui_api::mojom::ContextMenuType::kPinnedActionTtcToolbar:
       action_id = kActionTtcToolbar;
+      break;
+    case toolbar_ui_api::mojom::ContextMenuType::
+        kPinnedActionGlicSmartSelection:
+      action_id = kActionGlicSmartSelectionToolbar;
       break;
     case toolbar_ui_api::mojom::ContextMenuType::
         kPinnedActionSidePanelShowHistory:

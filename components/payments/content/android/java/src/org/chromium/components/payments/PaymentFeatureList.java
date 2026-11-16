@@ -43,6 +43,8 @@ public abstract class PaymentFeatureList {
     public static final String WEB_PAYMENTS_SINGLE_APP_UI_SKIP = "WebPaymentsSingleAppUiSkip";
     public static final String PAYMENT_REQUEST_ENFORCE_LNA_WITH_CLIENT_SECURITY_STATE =
             "PaymentRequestEnforceLNAWithClientSecurityState";
+    public static final String PAYMENT_HANDLER_DIALOG_USE_FRAME_ORIGIN_AS_INITIATOR =
+            "PaymentHandlerDialogUseFrameOriginAsInitiator";
     public static final String PAYMENT_HANDLER_DIALOG_USE_INITIATOR_IN_URL_LOAD =
             "PaymentHandlerDialogUseInitiatorInUrlLoad";
     public static final String SECURE_PAYMENT_CONFIRMATION = "SecurePaymentConfirmationBrowser";
@@ -51,8 +53,8 @@ public abstract class PaymentFeatureList {
     /**
      * Returns whether the specified feature is enabled or not.
      *
-     * <p>Note: Features queried through this API must be added to the array
-     * |kFeaturesExposedToJava| in components/payments/content/android/payment_feature_map.cc
+     * <p>Note: Features queried through this API must be added to the kFeaturesExposedToJava array
+     * in components/payments/content/android/payment_feature_map.cc.
      *
      * @param featureName The name of the feature to query.
      * @return Whether the feature is enabled or not.
@@ -62,13 +64,14 @@ public abstract class PaymentFeatureList {
     }
 
     /**
-     * Returns whether the feature is enabled or not. Note: Features queried through this API must
-     * be added to the array |kFeaturesExposedToJava| in
-     * components/payments/content/android/payment_feature_map.cc
+     * Returns whether the specified feature or experimental features are enabled.
+     *
+     * <p>Note: Features queried through this API must be added to the kFeaturesExposedToJava array
+     * in components/payments/content/android/payment_feature_map.cc.
      *
      * @param featureName The name of the feature to query.
-     * @return true when either the specified feature or |WEB_PAYMENTS_EXPERIMENTAL_FEATURES| is
-     *     enabled.
+     * @return true when either the specified feature or {@code WEB_PAYMENTS_EXPERIMENTAL_FEATURES}
+     *     is enabled.
      */
     public static boolean isEnabledOrExperimentalFeaturesEnabled(String featureName) {
         return isEnabled(WEB_PAYMENTS_EXPERIMENTAL_FEATURES) || isEnabled(featureName);

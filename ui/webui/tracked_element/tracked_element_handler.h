@@ -22,6 +22,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
@@ -128,9 +129,22 @@ class TrackedElementHandler
                          bool highlight,
                          base::PassKey<TrackedElementWebUI>);
 
+  // Tells the WebUI side whether the given element has an anchored dialog that
+  // takes part in sequential focus navigation.
+  void SetHasAnchoredDialog(TrackedElementWebUI& element,
+                            bool has_anchored_dialog,
+                            base::PassKey<TrackedElementWebUI>);
+
+  // Overrides whether the WebUI is considered to have keyboard focus, which
+  // FocusAnchoredDialog() requires.
+  void SetHasKeyboardFocusForTesting(std::optional<bool> has_keyboard_focus) {
+    has_keyboard_focus_for_testing_ = has_keyboard_focus;
+  }
+
   std::vector<std::string> GetIdentifiers();
   ui::ElementContext context() { return context_; }
   content::RenderFrameHost* render_frame_host() const;
+  bool is_subframe_unoccluded() const { return occluded_subframes_.empty(); }
 
   // Flushes the C++ -> WebUI mojo pipe.
   void FlushManagerRemoteForTesting();
@@ -182,9 +196,14 @@ class TrackedElementHandler
   void TrackedElementCanHighlightChanged(
       tracked_element::mojom::TrackedElementIdentifierPtr id,
       bool can_highlight) override;
+  void FocusAnchoredDialog(
+      tracked_element::mojom::TrackedElementIdentifierPtr id,
+      bool reverse,
+      FocusAnchoredDialogCallback callback) override;
 
   // content::WebContentsObserver:
   void OnVisibilityChanged(content::Visibility new_visibility) override;
+  void RenderFrameDeleted(content::RenderFrameHost* rfh) override;
   void OnRemoteSubframeViewportIntersectionStateChanged(
       content::RenderFrameHost* rfh,
       const blink::mojom::ViewportIntersectionState&
@@ -211,6 +230,9 @@ class TrackedElementHandler
       const tracked_element::mojom::TrackedElementIdentifierPtr& id,
       bool create_if_not_present = false);
 
+  // Whether the WebUI currently has keyboard focus.
+  bool HasKeyboardFocus() const;
+
   void ReportBadMessage(
       std::string_view description,
       const tracked_element::mojom::TrackedElementIdentifierPtr& id);
@@ -223,6 +245,8 @@ class TrackedElementHandler
   MapType<std::string, SecondaryIdentifierMapType> elements_;
 
   bool is_web_contents_visible_ = false;
+  absl::flat_hash_set<content::GlobalRenderFrameHostId> occluded_subframes_;
+  std::optional<bool> has_keyboard_focus_for_testing_;
   base::WeakPtr<user_education::HelpBubbleHandlerBase> help_bubble_handler_;
 #if !BUILDFLAG(IS_ANDROID)
   // Caches the host WebView once located (or set in tests). Marked mutable so

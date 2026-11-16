@@ -9,6 +9,7 @@ import {ExtensionBrowserProxyImpl} from 'chrome://contextual-tasks/contextual_ta
 import type {TabPickerAppElement} from 'chrome://contextual-tasks/contextual_tasks_extension/tab_picker.js';
 import {TabPickerBrowserProxyImpl, TabPickerUnboundedPresentationResult} from 'chrome://contextual-tasks/contextual_tasks_extension/tab_picker.js';
 import type {TabPickerBrowserProxy} from 'chrome://contextual-tasks/contextual_tasks_extension/tab_picker.js';
+import {SingleTabMenuItemAction} from 'chrome://resources/cr_components/composebox/common.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
@@ -32,6 +33,7 @@ class TestTabPickerBrowserProxy extends TestBrowserProxy implements
       new SearchboxPageCallbackRouter();
   readonly callbackRouterRemote: SearchboxPageRemote =
       this.callbackRouter_.$.bindNewPipeAndPassRemote();
+  private smartTabSharingActive_: boolean = false;
 
   constructor() {
     super([
@@ -40,6 +42,8 @@ class TestTabPickerBrowserProxy extends TestBrowserProxy implements
       'addTabContext',
       'deleteTabContext',
       'getInputState',
+      'setSmartTabSharingActive',
+      'getSmartTabSharingActive',
     ]);
   }
 
@@ -81,14 +85,26 @@ class TestTabPickerBrowserProxy extends TestBrowserProxy implements
   deleteTabContext(tabId: number) {
     this.methodCalled('deleteTabContext', tabId);
   }
+
+  setSmartTabSharingActive(active: boolean) {
+    this.smartTabSharingActive_ = active;
+    this.methodCalled('setSmartTabSharingActive', active);
+  }
+
+  getSmartTabSharingActive() {
+    this.methodCalled('getSmartTabSharingActive');
+    return Promise.resolve({active: this.smartTabSharingActive_});
+  }
 }
 
-function createTabInfo(id: number, title: string, url: string): TabInfo {
+function createTabInfo(
+    id: number, title: string, url: string, recentTab = false): TabInfo {
   return {
     tabId: id,
     showInCurrentTabChip: false,
     showInPreviousTabChip: false,
     isLoading: false,
+    recentTab,
     title,
     url,
     lastActive: {internalValue: 0n},
@@ -107,7 +123,8 @@ suite('TabPickerTest', () => {
   let recordedTimes: Array<{metricName: string, value: number}> = [];
   let originalRecordMediumTime: any;
 
-  const tab0 = createTabInfo(1, 'Tab One', 'https://example.com/1');
+  const tab0 =
+      createTabInfo(1, 'Tab One', 'https://example.com/1', /*recentTab=*/ true);
   const tab1 = createTabInfo(2, 'Tab Two', 'https://example.com/2');
   const tab2 = createTabInfo(3, 'Tab Three', 'https://example.com/3');
   const mockTabs: TabInfo[] = [tab0, tab1, tab2];
@@ -192,7 +209,9 @@ suite('TabPickerTest', () => {
     loadTimeData.overrideValues({
       shareTabs: 'Add tabs',
       recentTabsSuffix: 'Recent',
+      stsMegaplusShareRelevantOpenTabs: 'Share relevant tabs',
       contextualTasksUnboundedMenuEnabled: true,
+      contextualTasksSingleTabMenuItemEnabled: false,
     });
 
     extensionBrowserProxy = new TestExtensionBrowserProxy();
@@ -751,11 +770,8 @@ suite('TabPickerTest', () => {
   test('Does not use unbounded menu when disabled', async () => {
     app.remove();
 
-    loadTimeData.overrideValues({
-      contextualTasksUnboundedMenuEnabled: false,
-    });
-
     app = document.createElement('tab-picker-app');
+    app.useUnbounded = false;
     document.body.appendChild(app);
     await testProxy.whenCalled('getRecentTabs');
     await microtasksFinished();
@@ -877,7 +893,7 @@ suite('TabPickerTest', () => {
         'rgba(10, 10, 10, 0.08)',
         window.getComputedStyle(app.$.shareTabsTrigger).backgroundColor);
     assertEquals(
-        '#0b57d0',
+        '#336ef3',
         window.getComputedStyle(app)
             .getPropertyValue('--cr-focus-outline-color')
             .trim());
@@ -896,7 +912,7 @@ suite('TabPickerTest', () => {
         'rgba(230, 232, 240, 0.08)',
         window.getComputedStyle(app.$.shareTabsTrigger).backgroundColor);
     assertEquals(
-        '#a8c7fa',
+        '#336ef3',
         window.getComputedStyle(app)
             .getPropertyValue('--cr-focus-outline-color')
             .trim());
@@ -1017,8 +1033,9 @@ suite('TabPickerTest', () => {
   test(
       'Records ContextualSearch.TabPicker.SelectedTabIsActive.ContextualTasksExtension independently of position',
       async () => {
-        const recentTab =
-            createTabInfo(1, 'Recent Tab', 'https://example.com/recent');
+        const recentTab = createTabInfo(
+            1, 'Recent Tab', 'https://example.com/recent',
+            /*recentTab=*/ true);
         const activeTab =
             createTabInfo(10, 'Active Tab', 'https://example.com/active');
         activeTab.showInCurrentTabChip = true;
@@ -1156,6 +1173,9 @@ suite('TabPickerTest', () => {
         assertEquals(app.$.shareTabsTrigger, app.shadowRoot.activeElement);
         assertTrue(document.documentElement.classList.contains(
             'focus-outline-visible'));
+        assertEquals(
+            'rgba(0, 0, 0, 0)',
+            window.getComputedStyle(app.$.shareTabsTrigger).backgroundColor);
         if (document.hasFocus()) {
           assertEquals(
               'solid',
@@ -1282,6 +1302,9 @@ suite('TabPickerTest', () => {
         assertEquals(app.$.shareTabsTrigger, app.shadowRoot.activeElement);
         assertTrue(document.documentElement.classList.contains(
             'focus-outline-visible'));
+        assertEquals(
+            'rgba(0, 0, 0, 0)',
+            window.getComputedStyle(app.$.shareTabsTrigger).backgroundColor);
         if (document.hasFocus()) {
           assertEquals(
               'solid',
@@ -1322,9 +1345,11 @@ suite('TabPickerTest', () => {
   test(
       'Refreshes tab suggestions when hovering over trigger or menu',
       async () => {
-        const newTab = createTabInfo(4, 'Tab Four', 'https://example.com/4');
+        const newTab = createTabInfo(
+            4, 'Tab Four', 'https://example.com/4', /*recentTab=*/ true);
         testProxy.resetResolver('getRecentTabs');
-        testProxy.setRecentTabs([newTab, ...mockTabs]);
+        testProxy.setRecentTabs(
+            [newTab, {...tab0, recentTab: false}, tab1, tab2]);
 
         app.$.shareTabsTrigger.dispatchEvent(new PointerEvent('pointerenter'));
         await testProxy.whenCalled('getRecentTabs');
@@ -1343,9 +1368,16 @@ suite('TabPickerTest', () => {
 
         // While the menu remains open, another tab is opened and the pointer
         // enters the menu.
-        const newerTab = createTabInfo(5, 'Tab Five', 'https://example.com/5');
+        const newerTab = createTabInfo(
+            5, 'Tab Five', 'https://example.com/5', /*recentTab=*/ true);
         testProxy.resetResolver('getRecentTabs');
-        testProxy.setRecentTabs([newerTab, newTab, ...mockTabs]);
+        testProxy.setRecentTabs([
+          newerTab,
+          {...newTab, recentTab: false},
+          {...tab0, recentTab: false},
+          tab1,
+          tab2,
+        ]);
 
         app.$.tabMenu.dispatchEvent(new PointerEvent('pointerenter'));
         await testProxy.whenCalled('getRecentTabs');
@@ -1397,7 +1429,8 @@ suite('TabPickerTest', () => {
 
         // A new tab is opened while the outer menu remains mounted, and the
         // user hovers over the trigger again.
-        const newTab = createTabInfo(10, 'New Tab', 'https://example.com/new');
+        const newTab = createTabInfo(
+            10, 'New Tab', 'https://example.com/new', /*recentTab=*/ true);
         testProxy.resetResolver('getRecentTabs');
         testProxy.setRecentTabs([newTab]);
 
@@ -1413,6 +1446,29 @@ suite('TabPickerTest', () => {
         assertEquals(
             'New Tab',
             items[0]!.querySelector('.tab-title')!.textContent.trim());
+      });
+
+  test(
+      'Uses recentTab signal on TabInfo independently of list order',
+      async () => {
+        const firstTab = createTabInfo(
+            1, 'First Tab', 'https://example.com/first', /*recentTab=*/ false);
+        const secondTab = createTabInfo(
+            2, 'Second Tab', 'https://example.com/second', /*recentTab=*/ true);
+        testProxy.resetResolver('getRecentTabs');
+        testProxy.setRecentTabs([firstTab, secondTab]);
+
+        app.$.shareTabsTrigger.dispatchEvent(new PointerEvent('pointerenter'));
+        await testProxy.whenCalled('getRecentTabs');
+        await microtasksFinished();
+
+        assertTrue(app.$.tabMenu.open);
+        assertEquals(secondTab.tabId, app.recentTabId);
+        const items =
+            app.$.tabMenu.querySelectorAll<HTMLButtonElement>('.dropdown-item');
+        assertEquals(2, items.length);
+        assertFalse(isVisible(items[0]!.querySelector('.recent-tabs-suffix')));
+        assertTrue(isVisible(items[1]!.querySelector('.recent-tabs-suffix')));
       });
 
   test(
@@ -1617,4 +1673,376 @@ suite('TabPickerTest', () => {
           delete window.requestResize;
         }
       });
+
+  test(
+      'Renders Smart Tab Sharing option in flyout and toggles ON when clicked',
+      async () => {
+        extensionBrowserProxy.callbackRouterRemote.onTabContextUpdated(
+            [tab0], [], {active: false, visible: true});
+        await extensionBrowserProxy.callbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        assertTrue(app.smartTabSharingVisible);
+        assertFalse(app.smartTabSharingActive);
+
+        app.$.shareTabsTrigger.click();
+        await microtasksFinished();
+        assertTrue(app.$.tabMenu.open);
+
+        const autoHeader =
+            app.$.tabMenu.querySelector('#automaticallyAddTabsHeader');
+        assertTrue(isVisible(autoHeader));
+        assertEquals('Automatically add tabs', autoHeader!.textContent.trim());
+
+        const manualHeader =
+            app.$.tabMenu.querySelector('#manuallyAddTabsHeader');
+        assertTrue(isVisible(manualHeader));
+        assertEquals('Manually add tabs', manualHeader!.textContent.trim());
+
+        const stsItem = app.$.tabMenu.querySelector<HTMLButtonElement>(
+            '#smartTabSharingItemFlyout');
+        assertTrue(isVisible(stsItem));
+        assertEquals('false', stsItem!.getAttribute('aria-checked'));
+
+        const optionShownMetric = recordedMetrics.find(
+            m => m.metricName ===
+                'ContextualSearch.SmartTabSharing.MenuOptionShown');
+        assertTrue(!!optionShownMetric);
+        assertEquals(1, optionShownMetric.value);
+
+        // Clicking the flyout option activates Smart Tab Sharing, clears
+        // manual tabs, and closes the flyout.
+        stsItem!.click();
+        const activeArg =
+            await testProxy.whenCalled('setSmartTabSharingActive');
+        assertTrue(activeArg);
+        await microtasksFinished();
+
+        assertTrue(app.smartTabSharingActive);
+        assertEquals(0, app.selectedTabs.length);
+        assertFalse(app.$.tabMenu.open);
+      });
+
+  test(
+      'Renders active Smart Tab Sharing row on trigger and toggles OFF when clicked',
+      async () => {
+        extensionBrowserProxy.callbackRouterRemote.onTabContextUpdated(
+            [], [], {active: true, visible: true});
+        await extensionBrowserProxy.callbackRouterRemote.$.flushForTesting();
+        await microtasksFinished();
+
+        assertTrue(app.smartTabSharingActive);
+        assertEquals(
+            'menuitemcheckbox', app.$.shareTabsTrigger.getAttribute('role'));
+        assertEquals(
+            'true', app.$.shareTabsTrigger.getAttribute('aria-checked'));
+        const label = app.$.shareTabsTrigger.querySelector('.tab-title');
+        assert(label);
+        assertEquals('Share relevant tabs', label.textContent.trim());
+        assertTrue(isVisible(app.$.shareTabsTrigger.querySelector(
+            '#smartTabSharingActiveCheck')));
+
+        // Hovering the active STS row does not open the flyout.
+        app.$.shareTabsTrigger.dispatchEvent(new PointerEvent('pointerenter'));
+        await microtasksFinished();
+        assertFalse(app.$.tabMenu.open);
+
+        // Clicking the active STS row toggles Smart Tab Sharing OFF.
+        app.$.shareTabsTrigger.click();
+        const activeArg =
+            await testProxy.whenCalled('setSmartTabSharingActive');
+        assertFalse(activeArg);
+        await microtasksFinished();
+
+        assertFalse(app.smartTabSharingActive);
+        assertEquals('menuitem', app.$.shareTabsTrigger.getAttribute('role'));
+        assertEquals('Add tabs', label.textContent.trim());
+      });
+
+  suite('SingleTabMenuItem', () => {
+    async function createSingleTabApp(enabled: boolean) {
+      app.remove();
+      loadTimeData.overrideValues({
+        contextualTasksSingleTabMenuItemEnabled: enabled,
+      });
+      testProxy.resetResolver('getRecentTabs');
+      app = document.createElement('tab-picker-app');
+      document.body.appendChild(app);
+      await testProxy.whenCalled('getRecentTabs');
+      await microtasksFinished();
+    }
+
+    test('Item hidden when param is disabled', async () => {
+      await createSingleTabApp(/*enabled=*/ false);
+      const item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertFalse(isVisible(item));
+      assertTrue(isVisible(app.$.shareTabsTrigger));
+    });
+
+    test('Item rendered above Add tabs trigger when enabled', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+
+      const item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+      assertFalse(item.disabled);
+      assertEquals('menuitemcheckbox', item.getAttribute('role'));
+      assertEquals('false', item.getAttribute('aria-checked'));
+      assertEquals(tab0.title, item.getAttribute('aria-label'));
+      assertEquals(
+          tab0.title, item.querySelector('.tab-title')!.textContent.trim());
+      assertFalse(isVisible(item.querySelector('.share-tabs-check')));
+      assertTrue(isVisible(item.querySelector('cr-composebox-tab-favicon')));
+
+      const itemStyle = window.getComputedStyle(item);
+      assertEquals('Arial, sans-serif', itemStyle.fontFamily);
+      assertEquals('14px', itemStyle.fontSize);
+      assertEquals(
+          '20px', itemStyle.getPropertyValue('--iron-icon-height').trim());
+      assertEquals(
+          '20px', itemStyle.getPropertyValue('--iron-icon-width').trim());
+
+      // DOM order: singleTabItem precedes shareTabsTrigger.
+      assertTrue(Boolean(
+          item.compareDocumentPosition(app.$.shareTabsTrigger) &
+          Node.DOCUMENT_POSITION_FOLLOWING));
+
+      // The flyout still lists all tabs including the recent tab.
+      app.$.shareTabsTrigger.click();
+      await microtasksFinished();
+      const flyoutItems =
+          app.$.tabMenu.querySelectorAll<HTMLButtonElement>('.dropdown-item');
+      assertEquals(3, flyoutItems.length);
+    });
+
+    test('Item hidden when recentTabId is not a suggestion', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+      app.recentTabId = 999;
+      await microtasksFinished();
+
+      const item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertFalse(isVisible(item));
+      assertTrue(isVisible(app.$.shareTabsTrigger));
+    });
+
+    test('Item follows recentTabId when suggestions update', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+      let item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+      assertEquals('0', item.dataset['index']);
+
+      app.tabSuggestions = [tab1, tab0, tab2];
+      await microtasksFinished();
+      item = app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+      assertEquals('1', item.dataset['index']);
+      assertEquals(
+          tab0.title, item.querySelector('.tab-title')!.textContent.trim());
+
+      app.recentTabId = tab1.tabId;
+      await microtasksFinished();
+      item = app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+      assertEquals('0', item.dataset['index']);
+      assertEquals(
+          tab1.title, item.querySelector('.tab-title')!.textContent.trim());
+    });
+
+    test('Item hidden while Smart Tab Sharing is active', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+      assertTrue(isVisible(
+          app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+
+      // Smart Tab Sharing active: the backend sends no attached tabs, so the
+      // single tab menu item is hidden rather than showing a stale state.
+      extensionBrowserProxy.callbackRouterRemote.onTabContextUpdated(
+          [], [], {active: true, visible: true});
+      await extensionBrowserProxy.callbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+      assertFalse(isVisible(
+          app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+      assertTrue(isVisible(app.$.shareTabsTrigger));
+
+      // Active but not visible (feature unavailable) keeps the item shown,
+      // matching ContextualActionMenuElement.
+      extensionBrowserProxy.callbackRouterRemote.onTabContextUpdated(
+          [], [], {active: true, visible: false});
+      await extensionBrowserProxy.callbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+      assertTrue(isVisible(
+          app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+
+      // Turning Smart Tab Sharing off brings the item back.
+      extensionBrowserProxy.callbackRouterRemote.onTabContextUpdated(
+          [], [], {active: false, visible: true});
+      await extensionBrowserProxy.callbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+      assertTrue(isVisible(
+          app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+    });
+
+    test(
+        'Click toggles tab context and records SingleTabMenuItem metrics',
+        async () => {
+          await createSingleTabApp(/*enabled=*/ true);
+          const item =
+              app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+          assertTrue(isVisible(item));
+          assert(item);
+
+          recordedMetrics = [];
+          recordedBooleans = [];
+          const selectPromise =
+              eventToPromise<CustomEvent<{tab: TabInfo, selected: boolean}>>(
+                  'tab-selected', app);
+          item.click();
+          const selectEvent = await selectPromise;
+          assertEquals(tab0.tabId, selectEvent.detail.tab.tabId);
+          assertTrue(selectEvent.detail.selected);
+          const addedTabId = await testProxy.whenCalled('addTabContext');
+          assertEquals(tab0.tabId, addedTabId);
+          testProxy.resetResolver('addTabContext');
+          await microtasksFinished();
+
+          assertEquals('true', item.getAttribute('aria-checked'));
+          assertTrue(isVisible(item.querySelector('.share-tabs-check')));
+          const triggerLabel =
+              app.$.shareTabsTrigger.querySelector('.tab-title');
+          assert(triggerLabel);
+          assertEquals('Sharing 1 tab', triggerLabel.textContent.trim());
+
+          const singleTabSelectMetric = recordedMetrics.find(
+              m => m.metricName ===
+                  'ContextualSearch.SingleTabMenuItem.Action.ContextualTasks');
+          assertTrue(Boolean(singleTabSelectMetric));
+          assertEquals(
+              SingleTabMenuItemAction.CURRENT_TAB_SELECTED,
+              singleTabSelectMetric!.value);
+
+          // Click again to deselect.
+          recordedMetrics = [];
+          recordedBooleans = [];
+          const deselectPromise =
+              eventToPromise<CustomEvent<{tab: TabInfo, selected: boolean}>>(
+                  'tab-selected', app);
+          item.click();
+          const deselectEvent = await deselectPromise;
+          assertEquals(tab0.tabId, deselectEvent.detail.tab.tabId);
+          assertFalse(deselectEvent.detail.selected);
+          const deletedTabId = await testProxy.whenCalled('deleteTabContext');
+          assertEquals(tab0.tabId, deletedTabId);
+          testProxy.resetResolver('deleteTabContext');
+          await microtasksFinished();
+
+          assertEquals('false', item.getAttribute('aria-checked'));
+          assertFalse(isVisible(item.querySelector('.share-tabs-check')));
+          assertEquals('Add tabs', triggerLabel.textContent.trim());
+
+          const singleTabDeselectMetric = recordedMetrics.find(
+              m => m.metricName ===
+                  'ContextualSearch.SingleTabMenuItem.Action.ContextualTasks');
+          assertTrue(Boolean(singleTabDeselectMetric));
+          assertEquals(
+              SingleTabMenuItemAction.CURRENT_TAB_DESELECTED,
+              singleTabDeselectMetric!.value);
+        });
+
+    test('Triggers window.requestResize when singleTabItem shows', async () => {
+      testProxy.setRecentTabs([]);
+      await createSingleTabApp(/*enabled=*/ true);
+      assertFalse(isVisible(
+          app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+
+      const resizePromise = new Promise<void>(resolve => {
+        window.requestResize = () => {
+          setTimeout(resolve, 0);
+        };
+      });
+
+      try {
+        testProxy.setRecentTabs(mockTabs);
+        app.tabSuggestions = mockTabs;
+        app.recentTabId = tab0.tabId;
+        await resizePromise;
+        assertTrue(isVisible(
+            app.shadowRoot.querySelector<HTMLElement>('#singleTabItem')));
+      } finally {
+        delete window.requestResize;
+      }
+    });
+
+    test('Navigates between singleTabItem and shareTabsTrigger', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+      const item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+
+      item.focus();
+      if (!document.hasFocus()) {
+        item.dispatchEvent(new FocusEvent('focus'));
+      }
+      assertEquals(item, app.shadowRoot.activeElement);
+      assertTrue(
+          document.documentElement.classList.contains('focus-outline-visible'));
+
+      // ArrowDown moves focus from singleTabItem to shareTabsTrigger.
+      item.dispatchEvent(
+          new KeyboardEvent('keydown', {key: 'ArrowDown', bubbles: true}));
+      assertEquals(app.$.shareTabsTrigger, app.shadowRoot.activeElement);
+
+      // ArrowUp moves focus from shareTabsTrigger back to singleTabItem.
+      app.$.shareTabsTrigger.dispatchEvent(
+          new KeyboardEvent('keydown', {key: 'ArrowUp', bubbles: true}));
+      assertEquals(item, app.shadowRoot.activeElement);
+
+      // Pointer hover clears keyboard focus outline.
+      item.dispatchEvent(new PointerEvent('pointermove', {bubbles: true}));
+      assertFalse(
+          document.documentElement.classList.contains('focus-outline-visible'));
+    });
+
+    test('Hovering item closes the flyout without close delay', async () => {
+      await createSingleTabApp(/*enabled=*/ true);
+      const item =
+          app.shadowRoot.querySelector<HTMLButtonElement>('#singleTabItem');
+      assertTrue(isVisible(item));
+      assert(item);
+
+      app.$.shareTabsTrigger.dispatchEvent(new PointerEvent('pointerenter'));
+      await microtasksFinished();
+      assertTrue(app.$.tabMenu.open);
+      assertEquals(
+          'true', app.$.shareTabsTrigger.getAttribute('aria-expanded'));
+
+      // Moving from the trigger onto the single tab row schedules the delayed
+      // close, then closes the flyout right away so the trigger does not stay
+      // highlighted next to the hovered row while the timer is pending.
+      const closePromise = eventToPromise('close', app.$.tabMenu);
+      app.$.shareTabsTrigger.dispatchEvent(new PointerEvent('pointerleave'));
+      assertTrue(app.$.tabMenu.open);
+      item.dispatchEvent(new PointerEvent('pointerenter'));
+      assertFalse(app.$.tabMenu.open);
+      await closePromise;
+      await microtasksFinished();
+      assertFalse(app.tabMenuOpen);
+      assertEquals(
+          'false', app.$.shareTabsTrigger.getAttribute('aria-expanded'));
+      assertFalse(app.shadowRoot.activeElement === app.$.shareTabsTrigger);
+
+      // The flyout stays closed after the original close delay would have
+      // elapsed, and hovering the row again with the flyout closed is a no-op.
+      await new Promise(resolve => window.setTimeout(resolve, 60));
+      item.dispatchEvent(new PointerEvent('pointerenter'));
+      await microtasksFinished();
+      assertFalse(app.$.tabMenu.open);
+    });
+  });
 });

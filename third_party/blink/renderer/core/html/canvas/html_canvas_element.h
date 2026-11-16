@@ -181,7 +181,7 @@ class CORE_EXPORT HTMLCanvasElement final
   }
 
   bool OriginClean() const override;
-  void SetOriginTainted() override { origin_clean_ = false; }
+  void SetOriginTainted() override;
 
   unsigned IncrementFramesSinceLastCommit() {
     return ++frames_since_last_commit_;
@@ -283,7 +283,7 @@ class CORE_EXPORT HTMLCanvasElement final
 
   // OffscreenCanvasPlaceholder implementation.
   void SetOffscreenCanvasResource(
-      scoped_refptr<ExportedCanvasResource>&&) override;
+      scoped_refptr<ExportedCanvasResource>) override;
 
   // Accessibility support related functions.
   void OnAxObjectIgnoredStateChanged(bool is_ignored);
@@ -396,7 +396,8 @@ class CORE_EXPORT HTMLCanvasElement final
   void updateElementGeometry(const V8UnionElementOrElementImage*,
                              const UpdateElementGeometryOptions*,
                              ExceptionState&);
-  void clearElementGeometry(const V8UnionElementOrElementImage*);
+  void clearElementGeometry(const V8UnionElementOrElementImage*,
+                            ExceptionState&);
 
   // Descendants of this canvas that have been drawn via `drawElementImage()` or
   // added explicitly via a call to `canvas.updateElementGeometry(element)`, in
@@ -412,6 +413,10 @@ class CORE_EXPORT HTMLCanvasElement final
   void RemovedFrom(ContainerNode& insertion_point) override;
 
  private:
+  // Notifies the `cc::LayerTreeHost` that a canvas frame was dispatched
+  // directly (bypassing the main-thread commit).
+  void NotifyOutOfBandFrame();
+
   void Dispose();
 
   void ColorSchemeMayHaveChanged();
@@ -476,7 +481,6 @@ class CORE_EXPORT HTMLCanvasElement final
 
   scoped_refptr<cc::TextureLayer> cc_layer_;
 
-  bool is_opaque_ = false;
   bool is_displayed_ = false;
   unsigned frames_since_last_commit_ = 0;
   std::unique_ptr<SharedContextRateLimiter> rate_limiter_;

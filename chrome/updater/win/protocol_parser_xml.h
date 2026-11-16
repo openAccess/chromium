@@ -53,20 +53,12 @@ class ProtocolParserXML final {
   };
 
   struct App {
-    App();
-    App(const App& app);
-    ~App();
-
     std::string app_id;
     Manifest manifest;
     std::vector<Data> data;
   };
 
   struct Results {
-    Results();
-    Results(const Results& results);
-    ~Results();
-
     OfflineManifestSystemRequirements system_requirements;
     std::vector<App> apps;
   };

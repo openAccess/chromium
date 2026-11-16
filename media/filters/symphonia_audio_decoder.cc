@@ -101,12 +101,26 @@ bool IsPcm(AudioCodec codec) {
 }
 
 constexpr int GetBytesPerSample(AudioCodec codec, SampleFormat sample_format) {
+  // These codecs have a fixed sample width, and Symphonia rejects any other
+  // width. Don't trust `sample_format` for them, since demuxers can't always
+  // report it (for example, FFmpeg built without decoders).
+  switch (codec) {
+    case AudioCodec::kPCM_S16BE:
+    case AudioCodec::kPCM_ALAW:
+    case AudioCodec::kPCM_MULAW:
+      return 2;
+    case AudioCodec::kPCM_S24BE:
+      return 3;
+    default:
+      break;
+  }
+
   // Other than this special case, where Chrome pads 24-bit samples into 32-bit
   // containers, the number of bytes per sample is the same as the bytes per
   // channel. The padding is corrected on the output side in the rust glue
   // code when creating the `symphonia::core::audio::AudioBuffer`.
   // TODO(crbug.com/493720049): as a cleanup, handle the S24 case better.
-  if (sample_format == kSampleFormatS24 || codec == AudioCodec::kPCM_S24BE) {
+  if (sample_format == kSampleFormatS24) {
     return 3;
   }
   return SampleFormatToBytesPerChannel(sample_format);
@@ -414,19 +428,8 @@ void SymphoniaAudioDecoder::Reset(base::OnceClosure closure) {
 
 // static
 bool SymphoniaAudioDecoder::IsCodecSupported(AudioCodec codec) {
-  if (codec == AudioCodec::kFLAC) {
-    return base::FeatureList::IsEnabled(kSymphoniaAudioDecoding);
-  }
-  if (codec == AudioCodec::kMP3) {
-    return base::FeatureList::IsEnabled(kSymphoniaMp3Decoding);
-  }
-  if (IsPcm(codec)) {
-    return base::FeatureList::IsEnabled(kSymphoniaPcmDecoding);
-  }
-  if (codec == AudioCodec::kVorbis) {
-    return base::FeatureList::IsEnabled(kSymphoniaVorbisDecoding);
-  }
-  return false;
+  return codec == AudioCodec::kFLAC || codec == AudioCodec::kMP3 ||
+         IsPcm(codec) || codec == AudioCodec::kVorbis;
 }
 
 DecoderStatus SymphoniaAudioDecoder::SymphoniaDecode(

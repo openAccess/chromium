@@ -12,9 +12,11 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
+#include "chrome/browser/glic/test_support/scoped_glic_provider_override.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
@@ -768,6 +770,118 @@ IN_PROC_BROWSER_TEST_F(GlicTextSelectionContextMenuBrowserTest,
                                        u"line1 line2 line3  line4"));
 }
 
+class GlicTextSelectionContextMenuGeicBrowserTest
+    : public GlicContextMenuBrowserTestBase {
+ public:
+  GlicTextSelectionContextMenuGeicBrowserTest()
+      : provider_override_(GlicProvider::kGeminiEnterprise) {
+    feature_list_.InitWithFeatures(
+        {features::kGlicTextSelectionContextMenu, features::kGlicContextMenu},
+        {});
+  }
+
+ protected:
+  ScopedGlicProviderOverride provider_override_;
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(GlicTextSelectionContextMenuGeicBrowserTest,
+                       GlicItemUsesPageLabelForTextSelectionInGeic) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::ContextMenuParams params;
+  params.page_url = web_contents->GetVisibleURL();
+  params.selection_text = u"   valid text   ";
+
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+  auto glic_index = menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC);
+  ASSERT_TRUE(glic_index.has_value());
+  EXPECT_EQ(
+      glic_index->first->GetLabelAt(glic_index->second),
+      l10n_util::GetStringUTF16(IDS_GLIC_BUTTON_ENTRYPOINT_ASK_GEMINI_LABEL));
+}
+
+class GlicTextSelectionContextMenuGeicWithoutContextMenuBrowserTest
+    : public GlicContextMenuBrowserTestBase {
+ public:
+  GlicTextSelectionContextMenuGeicWithoutContextMenuBrowserTest()
+      : provider_override_(GlicProvider::kGeminiEnterprise) {
+    feature_list_.InitWithFeatures({features::kGlicTextSelectionContextMenu},
+                                   {features::kGlicContextMenu});
+  }
+
+ protected:
+  ScopedGlicProviderOverride provider_override_;
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    GlicTextSelectionContextMenuGeicWithoutContextMenuBrowserTest,
+    GlicItemAbsentForTextSelectionInGeic) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::ContextMenuParams params;
+  params.page_url = web_contents->GetVisibleURL();
+  params.selection_text = u"   valid text   ";
+
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+}
+
+class GlicTextSelectionContextMenuAutoSubmitBrowserTest
+    : public GlicContextMenuBrowserTestBase {
+ public:
+  GlicTextSelectionContextMenuAutoSubmitBrowserTest() {
+    feature_list_.InitWithFeaturesAndParameters(
+        /*enabled_features=*/
+        {{features::kGlicTextSelectionContextMenu,
+          {{features::kGlicTextSelectionContextMenuAutoSubmitParam, "true"}}}},
+        // kGlicContextMenu is disabled so the item can only come from the
+        // text selection entry point, which shows it on its own (see
+        // GlicEnabling::IsContextualMenuItemEnabled()).
+        /*disabled_features=*/{features::kGlicContextMenu});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Tests that the auto-submit arm labels the item with both the page and the
+// selected text.
+IN_PROC_BROWSER_TEST_F(GlicTextSelectionContextMenuAutoSubmitBrowserTest,
+                       UsesPageAndSelectionLabel) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::ContextMenuParams params;
+  params.page_url = web_contents->GetVisibleURL();
+  params.selection_text = u"valid text";
+
+  auto menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents->GetPrimaryMainFrame(), params);
+  menu->Init();
+
+  EXPECT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+  auto glic_index = menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC);
+  ASSERT_TRUE(glic_index.has_value());
+  EXPECT_EQ(glic_index->first->GetLabelAt(glic_index->second),
+            l10n_util::GetStringFUTF16(
+                IDS_GLIC_CONTEXT_MENU_ASK_GEMINI_ABOUT_PAGE_AND_SELECTION,
+                u"valid text"));
+}
+
 class GlicContextMenuBelowSearchBrowserTest
     : public GlicContextMenuBrowserTestBase {
  public:
@@ -1160,8 +1274,8 @@ IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
         const app = document.querySelector('selection-overlay-app');
         const overlay =
             app?.shadowRoot?.querySelector('glic-selection-overlay');
-        return !!app?.screenshot_ && !!overlay &&
-               !overlay.hideHandles && !overlay.disableMultiSelect;
+        return !!app?.getScreenshotForTesting() && !!overlay &&
+               !overlay.hideHandles && !overlay.skipIntroAnimation;
       })();
     )")
         .ExtractBool();
@@ -1208,9 +1322,8 @@ IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
         const app = document.querySelector('selection-overlay-app');
         const overlay =
             app?.shadowRoot?.querySelector('glic-selection-overlay');
-        return !!app?.screenshot_ && !!overlay &&
-               overlay.hideHandles && overlay.disableMultiSelect &&
-               overlay.skipIntroAnimation;
+        return !!app?.getScreenshotForTesting() && !!overlay &&
+               overlay.hideHandles && overlay.skipIntroAnimation;
       })();
     )")
         .ExtractBool();
@@ -1261,15 +1374,14 @@ IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
         const overlay =
             app?.shadowRoot?.querySelector('glic-selection-overlay');
         const sel = overlay?.activeSelection;
-        if (!app?.screenshot_ || !overlay || !sel) {
+        if (!app?.getScreenshotForTesting() || !overlay || !sel) {
           return false;
         }
         const expectedLeft = 20 / $1;
         const expectedTop = 30 / $2;
         const expectedWidth = 100 / $1;
         const expectedHeight = 80 / $2;
-        return !overlay.hideHandles && overlay.disableMultiSelect &&
-               overlay.skipIntroAnimation &&
+        return !overlay.hideHandles && overlay.skipIntroAnimation &&
                Math.abs(sel.left - expectedLeft) < 0.01 &&
                Math.abs(sel.top - expectedTop) < 0.01 &&
                Math.abs(sel.width - expectedWidth) < 0.01 &&
@@ -1322,14 +1434,67 @@ IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
-                       ItemAbsentInEditableField) {
+                       ItemPresentInEditableFieldWithSelection) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
 
   content::ContextMenuParams params;
   params.selection_text = u"selected text";
   params.is_editable = true;
-  EXPECT_FALSE(CreateContextMenuWithParams(params)->IsItemPresent(
-      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  params.form_control_type = blink::mojom::FormControlType::kInputText;
+  auto menu = CreateContextMenuWithParams(params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+
+  auto index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(index->second, 0u);
+  EXPECT_EQ(index->first->GetLabelAt(index->second),
+            l10n_util::GetStringFUTF16(
+                IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_SELECTION, u"selected text"));
+
+  menu->ExecuteCommand(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION,
+                       /*event_flags=*/0);
+  auto* selection_observer =
+      GlicSelectionObserver::From(browser()->tab_strip_model()->GetActiveTab());
+  ASSERT_TRUE(selection_observer);
+  EXPECT_EQ(selection_observer->GetSelectedText(), u"selected text");
+
+  // Password fields with a selection should not show the item.
+  content::ContextMenuParams password_params;
+  password_params.selection_text = u"selected text";
+  password_params.is_editable = true;
+  password_params.form_control_type =
+      blink::mojom::FormControlType::kInputPassword;
+  EXPECT_FALSE(CreateContextMenuWithParams(password_params)
+                   ->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentInEditableFieldWithoutSelection) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
+  content::ContextMenuParams params;
+  params.is_editable = true;
+  params.form_control_type = blink::mojom::FormControlType::kInputText;
+  params.node_bounds = gfx::Rect(10, 10, 100, 30);
+  auto menu = CreateContextMenuWithParams(params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+
+  auto index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(index->second, 0u);
+  EXPECT_EQ(index->first->GetLabelAt(index->second),
+            l10n_util::GetStringUTF16(IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_THIS));
+
+  // Password fields should not show the item.
+  content::ContextMenuParams password_params;
+  password_params.is_editable = true;
+  password_params.form_control_type =
+      blink::mojom::FormControlType::kInputPassword;
+  password_params.node_bounds = gfx::Rect(10, 10, 100, 30);
+  EXPECT_FALSE(CreateContextMenuWithParams(password_params)
+                   ->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
 }
 
 IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
@@ -1339,15 +1504,201 @@ IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
   content::ContextMenuParams params;
   params.has_image_contents = true;
   params.media_type = blink::mojom::ContextMenuDataMediaType::kImage;
-  EXPECT_TRUE(CreateContextMenuWithParams(params)->IsItemPresent(
-      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  params.node_bounds = gfx::Rect(10, 10, 100, 100);
+  auto menu = CreateContextMenuWithParams(params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  auto index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(index.has_value());
+  EXPECT_EQ(index->second, 0u);
+  EXPECT_EQ(index->first->GetLabelAt(index->second),
+            l10n_util::GetStringUTF16(IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_THIS));
 
-  // The item is not shown for a plain link.
+  // Broken/unloaded images without image contents should not show the item.
+  content::ContextMenuParams broken_image_params;
+  broken_image_params.has_image_contents = false;
+  broken_image_params.media_type =
+      blink::mojom::ContextMenuDataMediaType::kImage;
+  broken_image_params.node_bounds = gfx::Rect(10, 10, 100, 100);
+  EXPECT_FALSE(CreateContextMenuWithParams(broken_image_params)
+                   ->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentBelowOpenLinkGroupForLink) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+
   content::ContextMenuParams link_params;
   link_params.link_url = GURL("https://example.com");
   link_params.unfiltered_link_url = GURL("https://example.com");
-  EXPECT_FALSE(CreateContextMenuWithParams(link_params)
+  link_params.node_bounds = gfx::Rect(10, 10, 100, 20);
+  auto menu = CreateContextMenuWithParams(link_params);
+  ASSERT_TRUE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+
+  auto glic_index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  auto open_tab_index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB);
+  auto save_link_index =
+      menu->GetMenuModelAndItemIndex(IDC_CONTENT_CONTEXT_SAVELINKAS);
+  ASSERT_TRUE(glic_index.has_value());
+  ASSERT_TRUE(open_tab_index.has_value());
+  ASSERT_TRUE(save_link_index.has_value());
+  EXPECT_GT(glic_index->second, open_tab_index->second);
+  EXPECT_LT(glic_index->second, save_link_index->second);
+  EXPECT_EQ(glic_index->first->GetLabelAt(glic_index->second),
+            l10n_util::GetStringUTF16(IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_THIS));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ItemPresentForPlugin) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  const GURL page_url = browser()
+                            ->tab_strip_model()
+                            ->GetActiveWebContents()
+                            ->GetLastCommittedURL();
+
+  // Full-page plugin shows "Ask about this page".
+  content::ContextMenuParams plugin_params;
+  plugin_params.media_type = blink::mojom::ContextMenuDataMediaType::kPlugin;
+  plugin_params.src_url = page_url;
+  auto plugin_menu = CreateContextMenuWithParams(plugin_params);
+  ASSERT_TRUE(
+      plugin_menu->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+  auto plugin_index = plugin_menu->GetMenuModelAndItemIndex(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  ASSERT_TRUE(plugin_index.has_value());
+  EXPECT_EQ(
+      plugin_index->first->GetLabelAt(plugin_index->second),
+      l10n_util::GetStringUTF16(IDS_GLIC_CONTEXT_MENU_ASK_ABOUT_THIS_PAGE));
+
+  // Embedded non-full-page plugin should not show the item.
+  content::ContextMenuParams embedded_plugin_params;
+  embedded_plugin_params.media_type =
+      blink::mojom::ContextMenuDataMediaType::kPlugin;
+  embedded_plugin_params.src_url = GURL("https://example.com/embedded.pdf");
+  EXPECT_FALSE(CreateContextMenuWithParams(embedded_plugin_params)
                    ->IsItemPresent(IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ExecWithLinkPreselectsRegionAndSetsOptions) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+
+  ASSERT_TRUE(content::ExecJs(web_contents, R"(
+    const a = document.createElement('a');
+    a.href = 'https://example.com';
+    a.style.cssText =
+        'position: fixed; left: 20px; top: 30px; width: 100px; height: 80px; display: block;';
+    a.innerHTML =
+        '<svg width="100" height="80"><rect width="100" height="80" fill="blue"/></svg>';
+    document.body.appendChild(a);
+  )"));
+  content::WaitForCopyableViewInWebContents(web_contents);
+
+  ContextMenuNotificationObserver menu_observer(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  content::SimulateMouseClickAt(web_contents, 0,
+                                blink::WebMouseEvent::Button::kRight,
+                                gfx::Point(50, 50));
+
+  ASSERT_OK(RunUntilEqual([&]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timed out waiting for the selection overlay."));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  content::RenderFrameHost* overlay_frame = controller->GetOverlayMainFrame();
+  ASSERT_TRUE(overlay_frame);
+  gfx::Rect view_bounds = web_contents->GetViewBounds();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(overlay_frame,
+                           content::JsReplace(
+                               R"(
+      (() => {
+        const app = document.querySelector('selection-overlay-app');
+        const overlay =
+            app?.shadowRoot?.querySelector('glic-selection-overlay');
+        const sel = overlay?.activeSelection;
+        if (!app?.getScreenshotForTesting() || !overlay || !sel) {
+          return false;
+        }
+        const expectedLeft = 20 / $1;
+        const expectedTop = 30 / $2;
+        const expectedWidth = 100 / $1;
+        const expectedHeight = 80 / $2;
+        return !overlay.hideHandles && overlay.skipIntroAnimation &&
+               Math.abs(sel.left - expectedLeft) < 0.01 &&
+               Math.abs(sel.top - expectedTop) < 0.01 &&
+               Math.abs(sel.width - expectedWidth) < 0.01 &&
+               Math.abs(sel.height - expectedHeight) < 0.01;
+      })();
+    )",
+                               view_bounds.width(), view_bounds.height()))
+        .ExtractBool();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_F(GlicSmartSuggestionContextMenuBrowserTest,
+                       ExecWithInputPreselectsRegionAndSetsOptions) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetSimpleTestUrl()));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+
+  ASSERT_TRUE(content::ExecJs(web_contents, R"(
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.style.cssText =
+        'position: fixed; left: 20px; top: 30px; width: 100px; height: 40px; box-sizing: border-box;';
+    document.body.appendChild(input);
+  )"));
+  content::WaitForCopyableViewInWebContents(web_contents);
+
+  ContextMenuNotificationObserver menu_observer(
+      IDC_CONTENT_CONTEXT_GLIC_SMART_SUGGESTION);
+  content::SimulateMouseClickAt(web_contents, 0,
+                                blink::WebMouseEvent::Button::kRight,
+                                gfx::Point(50, 50));
+
+  ASSERT_OK(RunUntilEqual([&]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timed out waiting for the selection overlay."));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  content::RenderFrameHost* overlay_frame = controller->GetOverlayMainFrame();
+  ASSERT_TRUE(overlay_frame);
+  gfx::Rect view_bounds = web_contents->GetViewBounds();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(overlay_frame,
+                           content::JsReplace(
+                               R"(
+      (() => {
+        const app = document.querySelector('selection-overlay-app');
+        const overlay =
+            app?.shadowRoot?.querySelector('glic-selection-overlay');
+        const sel = overlay?.activeSelection;
+        if (!app?.getScreenshotForTesting() || !overlay || !sel) {
+          return false;
+        }
+        const expectedLeft = 20 / $1;
+        const expectedTop = 30 / $2;
+        const expectedWidth = 100 / $1;
+        const expectedHeight = 40 / $2;
+        return !overlay.hideHandles && overlay.skipIntroAnimation &&
+               Math.abs(sel.left - expectedLeft) < 0.01 &&
+               Math.abs(sel.top - expectedTop) < 0.01 &&
+               Math.abs(sel.width - expectedWidth) < 0.01 &&
+               Math.abs(sel.height - expectedHeight) < 0.01;
+      })();
+    )",
+                               view_bounds.width(), view_bounds.height()))
+        .ExtractBool();
+  }));
 }
 
 class GlicSelectionPromptContextMenuBrowserTest

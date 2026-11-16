@@ -26,6 +26,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &switches::kEnableActivitylessSigninAllEntryPoint,
     &switches::kEnableAccountPreviewPreferredAccount,
     &switches::kEnableAccountPreviewPreferredAccountFollowup,
+    &switches::kEnableAccountPreviewPreferredAccountFRE,
     &switches::kEnableAccountPreviewSwitchingAccount,
     &switches::kEnableAddSessionRedirect,
     &switches::kEnableAiSubscriptionAvatarRing,
@@ -57,8 +58,6 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &switches::kSigninButtonProfileMenuErrorCard,
     &switches::kSigninButtonProfileMenuRefinements,
     &switches::kSigninLevelUpButton,
-    &switches::kSupportForcedSigninPolicy,
-    &switches::kProfileDiscOnAllPages,
     &switches::kSwitchToIncognitoInSettings,
 };
 

@@ -109,6 +109,10 @@ class EnclaveManager : public EnclaveManagerInterface {
       MAC_TEAM_IDENTIFIER_STRING "." MAC_BUNDLE_IDENTIFIER_STRING
                                  ".webauthn-uvk";
 #endif  // BUILDFLAG(IS_MAC)
+  // The timeout for keeping cached opportunistically retrieved keys.
+  static constexpr base::TimeDelta kOpportunisticRetrievalKeyTTL =
+      base::Minutes(5);
+
   struct StoreKeysArgs;
 
   struct UVKeyOptions {
@@ -449,7 +453,10 @@ class EnclaveManager : public EnclaveManagerInterface {
   UvKeyState uv_key_state(PlatformUvSupport platform_uv_support) const;
 
   std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
-  CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) override;
+  DownloadAccountState(DownloadAccountStateCallback callback) override;
+  GpmPinAvailability CheckGpmPinAvailability(
+      const trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult&
+          account_state) const override;
 
 #if BUILDFLAG(IS_MAC)
   void RecoverWithICloudKeychain(
@@ -591,6 +598,7 @@ class EnclaveManager : public EnclaveManagerInterface {
   // reset, and can be initiated from scratch.
   void ClearRegistration();
 
+  void DoUnenroll(Callback callback, bool is_registered);
   void UnregisterComplete(Callback callback, bool success);
 
   // Store the secret that `TakeSecret` will make available.

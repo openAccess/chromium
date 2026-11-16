@@ -17,7 +17,6 @@
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers.h"
-#import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "net/test/embedded_test_server/embedded_test_server.h"
@@ -177,17 +176,27 @@ void VerifySaveNewEntityFlow() {
   return self.testServer->GetURL("/redress_number.html");
 }
 
-// Loads redress number page on localhost.
+// Loads redress number page on localhost and waits for its field types to be
+// assigned.
 - (void)loadRedressNumberPage {
   // Loads redress number page.
   [ChromeEarlGrey loadURL:[self redressNumberPageURL]];
   [ChromeEarlGrey waitForWebStateContainingText:"Redress Number"];
+  // Local heuristics don't classify the form's fields; their types are only
+  // assigned asynchronously from `kAutofillOverridePredictions`.
+  GREYAssertTrue([AutofillAppInterface waitForServerPredictionsInMainFrame],
+                 @"Server predictions were not applied to cached forms.");
 }
 
-// Loads simple passport page on localhost.
+// Loads simple passport page on localhost and waits for its field types to be
+// assigned.
 - (void)loadPassportPage {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/passport_form.html")];
   [ChromeEarlGrey waitForWebStateContainingText:"Passport"];
+  // Local heuristics don't classify the form's fields; their types are only
+  // assigned asynchronously from `kAutofillOverridePredictions`.
+  GREYAssertTrue([AutofillAppInterface waitForServerPredictionsInMainFrame],
+                 @"Server predictions were not applied to cached forms.");
 }
 
 #pragma mark - Tests

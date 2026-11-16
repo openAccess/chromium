@@ -75,11 +75,6 @@ struct WaylandFrame {
   // frame should be skipped.
   bool buffer_lost = false;
 
-  // A Wayland callback, which is triggered once wl_buffer has been committed
-  // and it is the right time to notify the GPU that it can start a new drawing
-  // operation.
-  wl::Object<wl_callback> wl_frame_callback;
-
   // Merged release fence fd. This is taken as the union of all release fences
   // for this frame.
   base::ScopedFD merged_release_fence_fd;
@@ -210,6 +205,7 @@ class WaylandFrameManager {
   static void OnFrameDone(void* data, wl_callback* callback, uint32_t time);
 
   void HandleFrameCallback(wl_callback* callback);
+  void ResetFrameCallback();
 
   // wp_presentation_feedback_listener callbacks:
   static void OnSyncOutput(
@@ -246,6 +242,13 @@ class WaylandFrameManager {
   // frame must not be used for the further submission.
   bool EnsureWlBuffersExist(WaylandFrame& frame);
 
+  // Verifies the image descriptions (color space and HDR metadata) of the
+  // given |frame|'s surfaces exist, so they are set in the same commit as the
+  // buffers. Otherwise, starts creating them, arranges for
+  // |MaybeProcessPendingFrame| to be called once they are created and returns
+  // true.
+  bool EnsureImageDescriptionsExist(WaylandFrame& frame);
+
   // Immediately clears submitted_buffers in the 1st in-flight submitted_frame.
   // This unblocks the pipeline.
   // TODO(crbug.com/40237160): Remove related workaround once CrOS side fix
@@ -273,6 +276,14 @@ class WaylandFrameManager {
 
   base::OneShotTimer presentation_flush_timer_;
 
+  // Pending Wayland callback triggered once the compositor is ready for a new
+  // drawing operation. At most one callback is kept in flight across frames so
+  // skipping frame callbacks on an occluded captured window does not accumulate
+  // unbounded callbacks in the compositor.
+  wl::Object<wl_callback> wl_frame_callback_;
+  uint32_t frame_callback_surface_id_ = 0;
+  uint32_t frame_callback_frame_id_ = 0;
+
   base::OneShotTimer frame_callback_timer_;
 
   int video_capture_count_ = 0;
@@ -288,8 +299,8 @@ class WaylandFrameManager {
 
   // Indicates if fallback rendering should be used by not relying on frame
   // callbacks to drive playback when |frame_callback_freeze_detected_| is true
-  // and |video_capture_count_| is more than 0. The frame callbacks are still
-  // set to be able to get notified once the compositor starts sending frame
+  // and |video_capture_count_| is more than 0. A single pending frame callback
+  // is kept in flight to get notified once the compositor starts sending frame
   // callbacks again so that they can be used for playback again.
   bool should_skip_frame_callbacks_ = false;
 

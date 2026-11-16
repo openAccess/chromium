@@ -180,25 +180,26 @@ AtomicString GetFrameSrc(HTMLFrameOwnerElement* frame_owner) {
 }
 
 const AtomicString& SelfKeyword() {
-  DEFINE_STATIC_LOCAL(const AtomicString, kSelfAttribution, ("self"));
+  DEFINE_STATIC_LOCAL(const AtomicString, kSelfAttribution,
+                      (AtomicString::FromLiteral<"self">()));
   return kSelfAttribution;
 }
 
 const AtomicString& SameOriginAncestorKeyword() {
   DEFINE_STATIC_LOCAL(const AtomicString, kSameOriginAncestorAttribution,
-                      ("same-origin-ancestor"));
+                      (AtomicString::FromLiteral<"same-origin-ancestor">()));
   return kSameOriginAncestorAttribution;
 }
 
 const AtomicString& SameOriginDescendantKeyword() {
   DEFINE_STATIC_LOCAL(const AtomicString, kSameOriginDescendantAttribution,
-                      ("same-origin-descendant"));
+                      (AtomicString::FromLiteral<"same-origin-descendant">()));
   return kSameOriginDescendantAttribution;
 }
 
 const AtomicString& SameOriginKeyword() {
   DEFINE_STATIC_LOCAL(const AtomicString, kSameOriginAttribution,
-                      ("same-origin"));
+                      (AtomicString::FromLiteral<"same-origin">()));
   return kSameOriginAttribution;
 }
 
@@ -536,14 +537,15 @@ std::pair<AtomicString, DOMWindow*> WindowPerformance::SanitizedAttribution(
   if (has_multiple_contexts) {
     // Unable to attribute, multiple script execution contents were involved.
     DEFINE_STATIC_LOCAL(const AtomicString, kAmbiguousAttribution,
-                        ("multiple-contexts"));
+                        (AtomicString::FromLiteral<"multiple-contexts">()));
     return std::make_pair(kAmbiguousAttribution, nullptr);
   }
 
   LocalDOMWindow* window = DynamicTo<LocalDOMWindow>(task_context);
   if (!window || !window->GetFrame()) {
     // Unable to attribute as no script was involved.
-    DEFINE_STATIC_LOCAL(const AtomicString, kUnknownAttribution, ("unknown"));
+    DEFINE_STATIC_LOCAL(const AtomicString, kUnknownAttribution,
+                        (AtomicString::FromLiteral<"unknown">()));
     return std::make_pair(kUnknownAttribution, nullptr);
   }
 
@@ -570,18 +572,20 @@ std::pair<AtomicString, DOMWindow*> WindowPerformance::SanitizedAttribution(
         last_cross_origin_frame = frame;
       }
     }
-    DEFINE_STATIC_LOCAL(const AtomicString, kCrossOriginDescendantAttribution,
-                        ("cross-origin-descendant"));
+    DEFINE_STATIC_LOCAL(
+        const AtomicString, kCrossOriginDescendantAttribution,
+        (AtomicString::FromLiteral<"cross-origin-descendant">()));
     return std::make_pair(kCrossOriginDescendantAttribution,
                           last_cross_origin_frame->DomWindow());
   }
   if (observer_frame->Tree().IsDescendantOf(culprit_frame)) {
     DEFINE_STATIC_LOCAL(const AtomicString, kCrossOriginAncestorAttribution,
-                        ("cross-origin-ancestor"));
+                        (AtomicString::FromLiteral<"cross-origin-ancestor">()));
     return std::make_pair(kCrossOriginAncestorAttribution, nullptr);
   }
-  DEFINE_STATIC_LOCAL(const AtomicString, kCrossOriginAttribution,
-                      ("cross-origin-unreachable"));
+  DEFINE_STATIC_LOCAL(
+      const AtomicString, kCrossOriginAttribution,
+      (AtomicString::FromLiteral<"cross-origin-unreachable">()));
   return std::make_pair(kCrossOriginAttribution, nullptr);
 }
 
@@ -617,23 +621,24 @@ void WindowPerformance::ReportLongTask(base::TimeTicks start_time,
                                        base::TimeTicks end_time,
                                        ExecutionContext* task_context,
                                        bool has_multiple_contexts) {
-  if (!DomWindow()) {
+  if (!DomWindow() || !DomWindow()->GetFrame()) {
     return;
   }
+  LocalFrame* observer_frame = DomWindow()->GetFrame();
   std::pair<AtomicString, DOMWindow*> attribution =
       WindowPerformance::SanitizedAttribution(
-          task_context, has_multiple_contexts, DomWindow()->GetFrame());
+          task_context, has_multiple_contexts, observer_frame);
   DOMWindow* culprit_dom_window = attribution.second;
-  if (!culprit_dom_window || !culprit_dom_window->GetFrame() ||
-      !CanAccessOrigin(DomWindow()->GetFrame(),
-                       culprit_dom_window->GetFrame()) ||
-      !culprit_dom_window->GetFrame()->DeprecatedLocalOwner()) {
+  Frame* culprit_frame =
+      culprit_dom_window ? culprit_dom_window->GetFrame() : nullptr;
+  HTMLFrameOwnerElement* frame_owner =
+      culprit_frame ? culprit_frame->DeprecatedLocalOwner() : nullptr;
+  if (!frame_owner ||
+      !CanAccessOrigin(observer_frame, frame_owner->GetDocument().GetFrame())) {
     AddLongTaskTiming(start_time, end_time, attribution.first,
                       performance_entry_names::kWindow, g_empty_atom,
                       g_empty_atom, g_empty_atom);
   } else {
-    HTMLFrameOwnerElement* frame_owner =
-        culprit_dom_window->GetFrame()->DeprecatedLocalOwner();
     AddLongTaskTiming(start_time, end_time, attribution.first,
                       GetFrameOwnerType(frame_owner), GetFrameSrc(frame_owner),
                       GetFrameAttribute(frame_owner, html_names::kIdAttr),
@@ -1441,41 +1446,25 @@ void WindowPerformance::AddElementTiming(PerformanceElementTiming* entry) {
   if (HasObserverFor(PerformanceEntry::kElement)) {
     NotifyObserversOfEntry(*entry);
   }
-  if (!IsElementTimingBufferFull()) {
-    AddToElementTimingBuffer(*entry);
-  }
+  AddToElementTimingBuffer(*entry);
 }
 
-void WindowPerformance::AddContainerTiming(
-    const DOMPaintTimingInfo& paint_timing_info,
-    const gfx::Rect& rect,
-    uint64_t size,
-    Element* root_element,
-    const AtomicString& identifier,
-    Element* last_painted_element,
-    const DOMPaintTimingInfo& first_paint_timing_info) {
+void WindowPerformance::AddContainerTiming(PerformanceContainerTiming* entry) {
   DCHECK(IsContainerTimingEnabled());
+  CHECK(entry->IsReadyForReporting());
   if (!DomWindow()) {
     return;
   }
 
-  PerformanceContainerTiming* entry = PerformanceContainerTiming::Create(
-      g_empty_atom, paint_timing_info.presentation_time, rect, size,
-      root_element, identifier, last_painted_element,
-      first_paint_timing_info.presentation_time, DomWindow(),
-      NavigationId().web_exposed_id);
   TRACE_EVENT2("loading", "PerformanceContainerTiming", "data",
                entry->ToTracedValue(), "frame",
                GetFrameIdForTracing(DomWindow()->GetFrame()));
-  entry->SetPaintTimingInfo(paint_timing_info);
   UseCounter::Count(GetExecutionContext(),
                     WebFeature::kContainerTimingEntryEmitted);
   if (HasObserverFor(PerformanceEntry::kContainer)) {
     NotifyObserversOfContainerEntry(*entry);
   }
-  if (!IsContainerTimingBufferFull()) {
-    AddToContainerTimingBuffer(*entry);
-  }
+  AddToContainerTimingBuffer(*entry);
 }
 
 namespace {

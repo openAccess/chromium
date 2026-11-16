@@ -573,8 +573,17 @@ interface LocalFrameHost {
   // Notification that the text selection has changed.
   // Note: The second parameter is the character based offset of the
   // std::u16string text in the document.
-  TextSelectionChanged(
-      mojo_base.mojom.BigString16 text, uint32 offset, gfx.mojom.Range range);
+  // `has_selection` is true when the frame has a non-collapsed selection
+  // (`WebLocalFrame::HasSelection()`), i.e. a range selection in the DOM or
+  // active `EditContext`, or a selection in a plugin. This cannot be inferred
+  // from `text` or `range`: selecting only non-textual content (such as an
+  // `<img>` without `alt` text) can produce an empty `text` and `range` while
+  // `has_selection` is true, whereas a collapsed caret in a non-empty editable
+  // element sends non-empty surrounding `text` while `has_selection` is false.
+  TextSelectionChanged(mojo_base.mojom.BigString16 text,
+                       uint32 offset,
+                       gfx.mojom.Range range,
+                       bool has_selection);
 
   // Show a popup menu using native controls on Mac or Android.
   // The popup menu is hidden when the mojo channel is closed.
@@ -668,8 +677,8 @@ interface LocalFrameHost {
   // |untrusted_stack_trace| should only be printed or sent to other services;
   // it's untrusted and should not be parsed to get a structured stack trace.
   // The stack trace is only present if
-  // content.mojom.Frame.SetWantErrorMessageStackTrace has been called for this
-  // frame and the log_level is kError.
+  // blink.mojom.LocalFrame.SetWantErrorMessageStackTrace has been called for
+  // this frame and the log_level is kError.
   DidAddMessageToConsole(ConsoleMessageLevel log_level,
                          mojo_base.mojom.BigString16 msg,
                          uint32 line_number,
@@ -785,6 +794,12 @@ interface LocalFrameHost {
   // text controls and non-form editable elements such as contenteditable) for
   // the first time.
   DidHaveUserEdit();
+
+  // Sent by the renderer to indicate that the document input stream has
+  // been updated using document.open() and that the URL for the current
+  // document in the frame should be updated to `url` per step 12 of
+  // https://whatwg.org/C/dynamic-markup-insertion.html#document-open-steps.
+  DidOpenDocumentInputStream(url.mojom.Url url);
 };
 
 // Implemented in Browser, this interface defines frame-specific methods
@@ -821,6 +836,16 @@ interface NonAssociatedLocalFrameHost {
 // content. In the future this interface will likely host more methods as the
 // Onion Soup project advances, which can potentially lead to the removal of
 // content/common/frame.mojom if enough code is moved to Blink.
+// Identifies a WebMCP script tool registered in a frame, for
+// `LocalFrame.InvokeScriptToolForInspector()`.
+union ScriptToolSelector {
+  // The tool's internal ID. Selects exactly that tool, which may no longer be
+  // registered.
+  blink.mojom.ScriptToolToken id;
+  // The tool's name. Selects whichever tool is registered under this name.
+  string name;
+};
+
 interface LocalFrame {
   // Retrieves the text surrounding the current selection for the frame up to
   // the length specified by |max_length|, along with its start and end offsets.
@@ -993,10 +1018,6 @@ interface LocalFrame {
   // focused node.
   AdvanceFocusForIME(blink.mojom.FocusType focus_type);
 
-  // Notifies the document navigation was blocked because a content security
-  // policy was violated.
-  ReportContentSecurityPolicyViolation(network.mojom.CSPViolation violation);
-
   // Notifies the frame that its parent has changed the frame's sandbox flags or
   // container policy.
   DidUpdateFramePolicy(blink.mojom.FramePolicy frame_policy);
@@ -1084,13 +1105,13 @@ interface LocalFrame {
       bool wants_result,
       int32 world_id) => (mojo_base.mojom.Value result);
 
-  // Invokes a script tool in the frame. Returns true if the tool was found and
-  // invocation started.
+  // Invokes the script tool identified by `tool` in the frame. Returns true if
+  // the tool was found and invocation started.
   // TODO(crbug.com/515541906): This method is to be merged with the InvokeTool
   // method in chrome/common/chrome_render_frame.mojom once //chrome
   // implementation for script tools is moved to //content.
   InvokeScriptToolForInspector(blink.mojom.ToolInvocationToken invocation_id,
-                               string tool_name,
+                               ScriptToolSelector tool,
                                string input_arguments) => (bool success);
 
   // Notifies the frame that a tool invocation resulted in a navigation to this
@@ -1263,6 +1284,11 @@ interface LocalFrame {
   // Request to perform spell check for full text content.
   [EnableIf=is_android]
   PerformFullContentSpellCheck();
+
+  // Indicates that the frame host (browser) wants the `untrusted_stack_trace`
+  // parameter of LocalFrameHost.DidAddMessageToConsole() filled in for Error
+  // messages if at all possible.
+  SetWantErrorMessageStackTrace();
 };
 
 // Implemented in Blink, this interface defines main-frame-specific methods that

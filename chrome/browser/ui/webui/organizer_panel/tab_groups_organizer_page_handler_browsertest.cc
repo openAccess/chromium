@@ -9,6 +9,7 @@
 
 #include "base/callback_list.h"
 #include "base/run_loop.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
@@ -20,6 +21,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_deletion_dialog_controller.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -169,6 +172,14 @@ class TabGroupsOrganizerPageHandlerBrowserTest : public InProcessBrowserTest {
   tab_groups::TabGroupSyncService* sync_service() {
     return tab_groups::TabGroupSyncServiceFactory::GetForProfile(
         browser()->GetProfile());
+  }
+
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    if (tab_groups::TabGroupSyncService* service = sync_service()) {
+      tab_groups::TabGroupSyncServiceInitializedObserver observer(service);
+      ASSERT_TRUE(observer.Wait());
+    }
   }
 
  private:
@@ -462,10 +473,16 @@ IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerBrowserTest,
       handler_remote.BindNewPipeAndPassReceiver(), page.BindAndPassRemote(),
       browser()->GetTabStripModel()->GetActiveWebContents());
 
+  base::HistogramTester histogram_tester;
   handler_remote->ShowContextMenu(id.AsLowercaseString(),
                                   gfx::Rect(10, 20, 30, 40), base::DoNothing());
   handler_remote.FlushForTesting();
   EXPECT_TRUE(handler.IsContextMenuRunningForTesting());
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.Accessed",
+      tab_groups::saved_tab_groups::metrics::SavedTabGroupOpenedSubmenuDesktop::
+          kOrganizerPanel,
+      1);
 }
 
 IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerBrowserTest,
@@ -488,10 +505,12 @@ IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerBrowserTest,
       handler_remote.BindNewPipeAndPassReceiver(), page.BindAndPassRemote(),
       browser()->GetTabStripModel()->GetActiveWebContents());
 
+  base::HistogramTester histogram_tester;
   handler_remote->ShowContextMenu(
       id.AsLowercaseString(), gfx::Rect(-10, -20, 30, 40), base::DoNothing());
   handler_remote.FlushForTesting();
   EXPECT_FALSE(handler.IsContextMenuRunningForTesting());
+  histogram_tester.ExpectTotalCount("TabGroups.ContextMenu.Accessed", 0);
 }
 
 IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerBrowserTest,
@@ -1024,6 +1043,77 @@ IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerContextMenuBrowserTest,
 
   EXPECT_TRUE(organizer_controller->IsOrganizerPanelVisible());
   EXPECT_FALSE(service->GetGroup(group_guid).has_value());
+}
+
+IN_PROC_BROWSER_TEST_F(TabGroupsOrganizerPageHandlerContextMenuBrowserTest,
+                       CloseMetricsRecordedForTabGroupActions) {
+  base::HistogramTester histogram_tester;
+  tab_groups::TabGroupSyncService* service = sync_service();
+  ASSERT_TRUE(service);
+
+  OrganizerPanelController* organizer_controller =
+      OrganizerPanelController::From(browser());
+  ASSERT_TRUE(organizer_controller);
+
+  ASSERT_TRUE(AddTabAtIndex(0, GURL("about:blank"), ui::PAGE_TRANSITION_LINK));
+  content::WebContents* host_contents =
+      browser()->GetTabStripModel()->GetWebContentsAt(0);
+
+  base::Uuid group_guid = base::Uuid::GenerateRandomV4();
+  tab_groups::SavedTabGroupTab tab(GURL("about:blank"), u"Blank", group_guid,
+                                   /*position=*/0);
+  tab_groups::SavedTabGroup group(u"Test Group",
+                                  tab_groups::TabGroupColorId::kGrey, {tab},
+                                  /*position=*/std::nullopt, group_guid);
+  service->AddGroup(group);
+
+  FakeTabGroupsOrganizerPage page;
+  mojo::Remote<organizer_panel::mojom::TabGroupsOrganizerPageHandler>
+      handler_remote;
+  TabGroupsOrganizerPageHandler handler(
+      handler_remote.BindNewPipeAndPassReceiver(), page.BindAndPassRemote(),
+      host_contents);
+
+  // CreateNewTabGroup closes the panel and records kCreateTabGroup.
+  organizer_controller->SetOrganizerVisible(true, /*immediate=*/true);
+  handler_remote->CreateNewTabGroup();
+  handler_remote.FlushForTesting();
+  EXPECT_FALSE(organizer_controller->IsOrganizerPanelVisible());
+  histogram_tester.ExpectBucketCount("Tabs.Organizer.CloseAction",
+                                     OrganizerPanelCloseAction::kCreateTabGroup,
+                                     1);
+
+  // OpenTabGroup records kOpenTabGroup when the panel closes.
+  browser()->GetTabStripModel()->ActivateTabAt(
+      browser()->GetTabStripModel()->GetIndexOfWebContents(host_contents));
+  organizer_controller->SetOrganizerVisible(true, /*immediate=*/true);
+  handler_remote->OpenTabGroup(group_guid.AsLowercaseString());
+  handler_remote.FlushForTesting();
+  if (organizer_controller->IsOrganizerPanelVisible()) {
+    organizer_controller->SetOrganizerVisible(false, /*immediate=*/true);
+  }
+  histogram_tester.ExpectBucketCount("Tabs.Organizer.CloseAction",
+                                     OrganizerPanelCloseAction::kOpenTabGroup,
+                                     1);
+
+  // ShowContextMenu + activating a command closes the panel and records
+  // kOpenTabGroupMenu.
+  browser()->GetTabStripModel()->ActivateTabAt(
+      browser()->GetTabStripModel()->GetIndexOfWebContents(host_contents));
+  organizer_controller->SetOrganizerVisible(true, /*immediate=*/true);
+  handler_remote->ShowContextMenu(group_guid.AsLowercaseString(),
+                                  gfx::Rect(10, 20, 30, 40), base::DoNothing());
+  handler_remote.FlushForTesting();
+  tab_groups::STGTabsMenuModel* model = handler.menu_model_for_testing();
+  ASSERT_TRUE(model);
+  std::optional<size_t> tab_index =
+      GetIndexOfElementId(model, tab_groups::STGTabsMenuModel::kTab);
+  ASSERT_TRUE(tab_index.has_value());
+  model->ActivatedAt(tab_index.value());
+  EXPECT_FALSE(organizer_controller->IsOrganizerPanelVisible());
+  histogram_tester.ExpectBucketCount(
+      "Tabs.Organizer.CloseAction",
+      OrganizerPanelCloseAction::kOpenTabGroupMenu, 1);
 }
 
 }  // namespace

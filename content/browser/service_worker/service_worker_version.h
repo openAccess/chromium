@@ -588,9 +588,6 @@ class CONTENT_EXPORT ServiceWorkerVersion
   blink::ServiceWorkerStatusCode DeduceStartWorkerFailureReason(
       blink::ServiceWorkerStatusCode default_code);
 
-  // Gets the main script net::Error. If there isn't an error, returns net::OK.
-  net::Error GetMainScriptNetError();
-
   // Returns nullptr if the main script is not loaded yet and:
   //  1) The worker is a new one.
   //  OR
@@ -1072,6 +1069,20 @@ class CONTENT_EXPORT ServiceWorkerVersion
       StatusCallback callback,
       blink::ServiceWorkerStatusCode status,
       scoped_refptr<ServiceWorkerRegistration> registration);
+  // The rest of DidEnsureLiveRegistrationForStartWorker(), with `protect`
+  // being the live registration. A stopped worker first waits for its network
+  // restrictions to be registered (see MaybeRegisterNetworkRestrictions()), so
+  // this can run later and the version can have become redundant by then.
+  void StartWorkerAfterNetworkRestrictions(
+      ServiceWorkerMetrics::EventType purpose,
+      Status prestart_status,
+      bool is_browser_startup_complete,
+      StatusCallback callback,
+      scoped_refptr<ServiceWorkerRegistration> protect);
+  // Called when the network service has registered the network restrictions,
+  // or when the network context was disconnected before replying. Runs
+  // `pending_network_restrictions_callbacks_`.
+  void OnNetworkRestrictionsRegistered();
   void StartWorkerInternal();
 
   // Returns true if the service worker is known to have work to do because the
@@ -1270,6 +1281,10 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // Monotonically increases for accepted external requests in this worker run.
   // Resets when the worker stops.
   uint64_t latest_external_keepalive_sequence_number_ = 0;
+
+  // True while the renderer has an active external keepalive from
+  // StartExternalRequest() that has not yet been cleared by ClearKeepAlive().
+  bool has_external_keepalive_ = false;
 
   // External request infos that were issued before this worker reached RUNNING.
   // Info contains UUID and timeout type.
@@ -1474,6 +1489,10 @@ class CONTENT_EXPORT ServiceWorkerVersion
   // Whether the network restrictions for this worker have been registered with
   // the network service.
   bool network_restrictions_registered_ = false;
+  // Callbacks passed to MaybeRegisterNetworkRestrictions() that are waiting
+  // for the registration, which is in flight iff this is non-empty. Run when
+  // the registration is done, or by the destructor.
+  std::vector<base::OnceClosure> pending_network_restrictions_callbacks_;
 
   base::WeakPtrFactory<ServiceWorkerVersion> weak_factory_{this};
 };

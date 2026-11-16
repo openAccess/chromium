@@ -29,6 +29,7 @@
 #include "base/strings/to_string.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "chrome/common/read_anything/read_anything.mojom-shared.h"
 #include "chrome/common/read_anything/read_anything_util.h"
@@ -38,6 +39,7 @@
 #include "chrome/renderer/accessibility/read_anything/read_anything_distiller.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_distiller_factory.h"
 #include "chrome/renderer/accessibility/read_anything/read_anything_node_utils.h"
+#include "chrome/renderer/accessibility/read_anything/read_anything_text_aligner.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/translate/core/common/translate_features.h"
 #include "content/public/renderer/chrome_object_extensions_utils.h"
@@ -150,9 +152,9 @@ ReadAnythingAppController::ReadAnythingAppController(
     : content::RenderFrameObserver(render_frame) {
   post_user_entry_draw_timer_ = std::make_unique<base::RetainingOneShotTimer>(
       FROM_HERE, base::Seconds(kPostInputDistillSeconds),
-      base::BindRepeating(&ReadAnythingAppController::Draw,
-                          weak_ptr_factory_.GetWeakPtr(),
-                          /* recompute_display_nodes= */ true));
+      base::BindRepeating(
+          &ReadAnythingAppController::OnPostUserEntryDrawTimerFired,
+          weak_ptr_factory_.GetWeakPtr()));
   pdf_draw_debouncer_ = std::make_unique<base::RetainingOneShotTimer>(
       FROM_HERE, base::Milliseconds(kPdfDrawDebounceMs),
       base::BindRepeating(&ReadAnythingAppController::OnPdfDebounceFinished,
@@ -206,11 +208,22 @@ void ReadAnythingAppController::OnNodeWillBeDeleted(ui::AXTree* tree,
   // - Links: The browser ignores click events on non-existent node IDs.
   // - Read Aloud: Text remains in the side panel's DOM and continues to be
   //   read.
+  //
+  // PDFs also ignore node deletions because PDFs are static. Because of how
+  // PDF accessibility is handled for non-reading mode ATs, opening a menu
+  // will cause OnNodeWillBeDeleted to be called, which causes the entire
+  // tree to be cleared, and since the menu content isn't distillable
+  // in reading mode, reading mode can switch from being fully distilled to
+  // the empty state page just because a menu has been opened. To avoid this,
+  // maintain the original distillation on PDFs by ignoring OnNodeWillBeDeleted.
+  // When the menu is closed, the PDF will be redistilled with a
+  // SUBTREE_CREATED.
+  //
   // TODO(crbug.com/538746675): Investigate whether this and the readability
   // check in OnNodeDeleted are the right solution or if it impacts selection
   // too much.
   if (model_.is_readability_next_distillation_method() ||
-      tree->GetAXTreeID() != model_.active_tree_id()) {
+      tree->GetAXTreeID() != model_.active_tree_id() || model_.IsPdf()) {
     return;
   }
   ui::AXNodeID node_id = CHECK_DEREF(node).id();
@@ -315,7 +328,7 @@ bool ReadAnythingAppController::IsUpdateProcessingPaused(
   }
 
   // Don't trigger distillation if reading mode isn't shown.
-  if (IsHidden()) {
+  if (!model_.is_shown()) {
     return true;
   }
 
@@ -392,6 +405,13 @@ void ReadAnythingAppController::AccessibilityEventReceived(
       model_.QueueAccessibilityUpdates(
           tree_id, const_cast<std::vector<ui::AXTreeUpdate>&>(updates),
           const_cast<std::vector<ui::AXEvent>&>(events));
+      // The queued updates are applied only once update processing resumes
+      // (e.g. once Reading Mode is shown), so the time until the tree is
+      // ready would include that wait. Don't record it, unless the tree was
+      // already ready and measured before these updates.
+      if (!ax_tree_ready_for_current_active_tree_measured_) {
+        ax_tree_ready_for_current_active_tree_recorded_ = true;
+      }
     } else {
       model_.ApplyAccessibilityUpdates(
           tree_id, const_cast<std::vector<ui::AXTreeUpdate>&>(updates),
@@ -506,6 +526,8 @@ void ReadAnythingAppController::SetDistillationState(
   model_.set_distillation_state(state);
   if (state == read_anything::mojom::ReadAnythingDistillationState::
                    kDistillationWithContent) {
+    // TODO(crbug.com/580978096): This can start while Reading Mode is hidden
+    // (e.g. for Readability content), so PageDuration can include hidden time.
     model_.set_page_start_time(base::TimeTicks::Now());
   }
 }
@@ -529,7 +551,7 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
         model_.active_page_ukm_source_id();
     if (previous_page_ukm_source_id != ukm::kInvalidSourceId &&
         ukm_source_id != previous_page_ukm_source_id) {
-      SetAwaitingTranslation(false);
+      SetTranslationState(ReadAnythingAppModel::TranslationState::kNone);
     }
     model_.set_active_page_ukm_source_id(ukm_source_id);
   }
@@ -542,10 +564,10 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
   // If the previous tree was not unknown (e.g. this is not the first tree
   // seen), log session metrics for the previous tree.
   if (model_.active_tree_id() != ui::AXTreeIDUnknown()) {
-    RecordSessionMetricsIfShownOrRecentlyHidden();
+    RecordSessionMetricsIfShown();
     // If Line Focus is still active, start a new session so subsequent
     // interactions continue to be tracked.
-    if (IsLineFocusOn() && !model_.will_hide() && !IsHidden()) {
+    if (IsLineFocusOn() && model_.is_shown()) {
       StartLineFocusSession();
     }
   }
@@ -555,8 +577,17 @@ void ReadAnythingAppController::OnActiveAXTreeIDChanged(
   // Cancel any running draw timers.
   post_user_entry_draw_timer_->Stop();
   pdf_draw_debouncer_->Stop();
+  // Also cancel a pending redraw after the user typed, which waits for Reading
+  // Mode to be shown.
+  model_.set_reset_draw_timer(false);
 
   model_.SetRootTreeId(tree_id);
+  // The tree's updates can arrive before it becomes active (e.g. on a
+  // navigation), so it can already be ready. Then there's no time from this
+  // change to measure.
+  if (model_.GetValidActiveTree()) {
+    ax_tree_ready_for_current_active_tree_recorded_ = true;
+  }
   model_.SetUkmSourceIdForTree(tree_id, ukm_source_id);
   model_.SetIsPdf(is_pdf);
   // Reset the PDF draw timer (even if RM is hidden). The debouncer will check
@@ -612,23 +643,10 @@ void ReadAnythingAppController::PrepareForNewContentDistillation() {
   rendered_text_blocks_ready_recorded_ = false;
   active_tree_changed_start_time_ = base::TimeTicks::Now();
 
-  model_.set_requires_readability_distillation(false);
-  model_.set_readability_distillation_complete_for_current_tree(false);
-  model_.set_readability_content_drawn(false);
-
   // TODO: crbug.com/526701545: Show Loading screen when re-distilling.
 
-  // Clear any stale distillation content.
-  readability_title_.clear();
-  readability_content_html_.clear();
-
-  // Reset anchor and mapping state for the new distillation. Since no
-  // readability distillation is displayed yet, the mapping algorithm is not
-  // yet in progress.
-  model_.set_should_extract_anchors_from_tree_for_readability(false);
-  model_.set_should_map_rendered_text_to_tree_for_readability(false);
-  model_.ResetAXTreeAnchors();
-  model_.set_is_readability_mapping_in_progress(false);
+  model_.ResetReadabilityState();
+  model_.set_readability_distillation_complete_for_current_tree(false);
   model_.set_has_logged_early_selection(false);
 }
 
@@ -649,16 +667,15 @@ ReadAnythingAppController::GetInitialDistillationMethod() const {
 void ReadAnythingAppController::DistillNewTree() {
   // After the active tree has changed, start a timer for logging distillation
   // success or failures. Logging this via a timer reduces duplicate
-  // distillation / failures being logged.
+  // distillation / failures being logged. While Reading Mode is hidden,
+  // Distill() or OnReadingModeShown() starts the timer once it's shown.
   distillations_completed_ = 0;
   distillation_attempts_ = 0;
   has_logged_distillation_status_ = false;
   distillation_status_logging_delay_timer_.Stop();
-  distillation_status_logging_delay_timer_.Start(
-      FROM_HERE, base::Milliseconds(kDistillationLoggingDelayMs),
-      base::BindOnce(
-          &ReadAnythingAppController::RecordScreen2xDistillationStatus,
-          base::Unretained(this), /*just_hidden=*/false));
+  if (model_.is_shown()) {
+    MaybeStartDistillationStatusTimer();
+  }
 
   SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
                            kDistillationInProgress);
@@ -672,15 +689,23 @@ void ReadAnythingAppController::DistillNewTree() {
   }
 }
 
-void ReadAnythingAppController::RecordScreen2xDistillationStatus(
-    bool just_hidden) {
-  // If reading mode was just hidden and distillation metrics were not yet
-  // logged, record these immediately. Otherwise, don't record distillation
-  // success metrics while hidden.
-  if (!just_hidden && IsHidden()) {
+void ReadAnythingAppController::MaybeStartDistillationStatusTimer() {
+  if (has_logged_distillation_status_ ||
+      distillation_status_logging_delay_timer_.IsRunning()) {
     return;
   }
-  if (has_logged_distillation_status_) {
+  distillation_status_logging_delay_timer_.Start(
+      FROM_HERE, base::Milliseconds(kDistillationLoggingDelayMs),
+      base::BindOnce(
+          &ReadAnythingAppController::RecordScreen2xDistillationStatus,
+          base::Unretained(this)));
+}
+
+void ReadAnythingAppController::RecordScreen2xDistillationStatus() {
+  // OnReadingModeHidden() and OnTabWillDetach() record a pending status before
+  // they clear is_shown_ (see RecordSessionMetricsIfShown()), so this check
+  // doesn't drop it.
+  if (!model_.is_shown() || has_logged_distillation_status_) {
     return;
   }
   read_anything::mojom::DistillationStatus distillation_status;
@@ -751,10 +776,11 @@ void ReadAnythingAppController::MaybeLogAXTreeReady() {
       ax_tree_ready_for_current_active_tree_measured_ = true;
     }
 
-    if (!IsHidden() && ax_tree_ready_for_current_active_tree_measured_) {
+    // Defer recording until Reading Mode is shown.
+    if (model_.is_shown() && ax_tree_ready_for_current_active_tree_measured_) {
       base::UmaHistogramLongTimes(
           "Accessibility.ReadAnything."
-          "TimeFromActiveAXTreeIDChangedToAXTreeReady",
+          "TimeFromActiveAXTreeIDChangedToAXTreeReady2",
           elapsed_time_ax_tree_ready_);
       ax_tree_ready_for_current_active_tree_recorded_ = true;
     }
@@ -848,14 +874,7 @@ void ReadAnythingAppController::Distill() {
     distiller_->Distill(*tree, snapshot, model_.GetUkmSourceId());
   }
 
-  if (!has_logged_distillation_status_ &&
-      !distillation_status_logging_delay_timer_.IsRunning()) {
-    distillation_status_logging_delay_timer_.Start(
-        FROM_HERE, base::Milliseconds(kDistillationLoggingDelayMs),
-        base::BindOnce(
-            &ReadAnythingAppController::RecordScreen2xDistillationStatus,
-            base::Unretained(this), /*just_hidden=*/false));
-  }
+  MaybeStartDistillationStatusTimer();
 }
 
 void ReadAnythingAppController::RequestReadabilityDistillation(
@@ -985,7 +1004,7 @@ void ReadAnythingAppController::OnAXTreeDistilled(
   // AXNode's language code is BCP 47. Only the base language is needed to
   // record the metric.
   std::string language = model_.GetActiveTree()->root()->GetLanguage();
-  if (!language.empty() && !IsHidden()) {
+  if (!language.empty()) {
     base::UmaHistogramSparse(
         "Accessibility.ReadAnything.Language",
         base::HashMetricName(language::ExtractBaseLanguage(language)));
@@ -1012,7 +1031,10 @@ void ReadAnythingAppController::OnAXTreeDistilled(
                 kDistillationEmpty);
         DrawEmptyState();
       }
-    } else if (!IsPdf() || !pdf_draw_debouncer_->IsRunning()) {
+    } else if (!IsPdf() || (!pdf_draw_debouncer_->IsRunning() &&
+                            ShouldReportPdfContent())) {
+      // A PDF's content is drawn as its pages are distilled, but may only be
+      // reported once the whole PDF is loaded. See ShouldReportPdfContent().
       SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
                                kDistillationWithContent);
     }
@@ -1027,7 +1049,18 @@ void ReadAnythingAppController::OnAXTreeDistilled(
 }
 
 void ReadAnythingAppController::OnPdfDebounceFinished() {
-  if (IsHidden()) {
+  if (!model_.is_shown()) {
+    // The debouncer only runs for PDFs, which always use Screen2x. Nothing has
+    // been drawn for the settled PDF, so if it has a tree and no distillation
+    // is in flight (one in flight marks the tree when it finishes), mark the
+    // tree for distillation. Then OnReadingModeShown() distills it instead of
+    // leaving stale kDistillationInProgress state.
+    if (model_.ContainsActiveTree() && !model_.screen2x_distiller_running() &&
+        model_.distillation_state() ==
+            read_anything::mojom::ReadAnythingDistillationState::
+                kDistillationInProgress) {
+      model_.set_requires_distillation(true);
+    }
     return;
   }
 
@@ -1060,11 +1093,28 @@ void ReadAnythingAppController::OnPdfDebounceFinished() {
     }
   }
 
-  SetDistillationState(
-      model_.is_empty() ? read_anything::mojom::ReadAnythingDistillationState::
-                              kDistillationEmpty
-                        : read_anything::mojom::ReadAnythingDistillationState::
-                              kDistillationWithContent);
+  if (model_.is_empty()) {
+    SetDistillationState(
+        read_anything::mojom::ReadAnythingDistillationState::kDistillationEmpty);
+  } else if (ShouldReportPdfContent()) {
+    SetDistillationState(read_anything::mojom::ReadAnythingDistillationState::
+                             kDistillationWithContent);
+  }
+}
+
+bool ReadAnythingAppController::ShouldReportPdfContent() const {
+  // TODO(crbug.com/467180032): Wait for the whole PDF to load for all PDFs in
+  // Reading Mode, and set the page start time when the content is first drawn
+  // rather than when it's reported.
+  if (!IsTranslatePdfEnabled()) {
+    return true;
+  }
+  // Only report the content once the whole PDF is loaded into its accessibility
+  // tree, since more of it is distilled and drawn as it loads. E.g. a pending
+  // translation is triggered once the content is reported, and only the content
+  // drawn by then is translated. This also keeps immersive mode processing
+  // updates until the PDF is loaded.
+  return model_.IsPdfFullyLoaded();
 }
 
 bool ReadAnythingAppController::PostProcessSelection() {
@@ -1083,7 +1133,7 @@ bool ReadAnythingAppController::PostProcessSelection() {
   // Don't process the selection while reading mode is hidden, since the side
   // panel can't be redrawn. The selection stays pending until reading mode is
   // shown.
-  if (IsHidden()) {
+  if (!model_.is_shown()) {
     return false;
   }
 
@@ -1091,6 +1141,14 @@ bool ReadAnythingAppController::PostProcessSelection() {
   // Note post `model_.PostProcessSelection` returns true if a draw is required.
   if (model_.PostProcessSelection()) {
     did_draw = true;
+    // A selection made on the page replaces the translation failure message,
+    // so that the selected content is shown.
+    if (model_.has_selection() &&
+        model_.unprocessed_selections_from_reading_mode() == 0 &&
+        model_.translation_state() ==
+            ReadAnythingAppModel::TranslationState::kFailed) {
+      SetTranslationState(ReadAnythingAppModel::TranslationState::kNone);
+    }
     if (model_.is_empty()) {
       DrawEmptyState();
     } else if (model_.is_readability_next_distillation_method()) {
@@ -1136,7 +1194,7 @@ void ReadAnythingAppController::Draw(bool recompute_display_nodes) {
   // TODO: crbug.com/463940276- Long-term, we should ensure that Draw is
   // not being called at all when reading mode is hidden.
   // Don't attempt to draw if reading mode is hidden.
-  if (IsHidden()) {
+  if (!model_.is_shown()) {
     return;
   }
 
@@ -1155,6 +1213,17 @@ void ReadAnythingAppController::Draw(bool recompute_display_nodes) {
   // This call should check that the active tree isn't in an undistilled state
   // -- that is, it is awaiting distillation or never requested distillation.
   ExecuteJavaScript("chrome.readingMode.updateContent();");
+}
+
+void ReadAnythingAppController::OnPostUserEntryDrawTimerFired() {
+  // The user can switch away before this redraw is due. Then restart its
+  // delay once Reading Mode is shown again, as when the user types while
+  // it's hidden (see ProcessModelUpdates()).
+  if (!model_.is_shown()) {
+    model_.set_reset_draw_timer(true);
+    return;
+  }
+  Draw(/*recompute_display_nodes=*/true);
 }
 
 void ReadAnythingAppController::DrawSelection() {
@@ -1182,9 +1251,11 @@ void ReadAnythingAppController::DrawReadabilityContent() {
   model_.set_current_content_distillation_method(
       ReadAnythingAppModel::DistillationMethod::kReadability);
 
-  // Reset text blocks when content is updated and reset should map flag to
-  // not trigger a false positive when rendered text is not ready.
+  // Reset text blocks and the old mapping when content is updated, and reset
+  // should map flag to not trigger a false positive when rendered text is not
+  // ready.
   model_.set_readability_text_blocks({});
+  model_.SetTextToAXMap({});
   model_.set_should_map_rendered_text_to_tree_for_readability(false);
   model_.set_is_readability_mapping_in_progress(true);
   ExecuteJavaScript("chrome.readingMode.updateContent();");
@@ -1198,7 +1269,7 @@ void ReadAnythingAppController::DrawReadabilityContent() {
 }
 
 void ReadAnythingAppController::LogEmptyState() {
-  if (IsHidden()) {
+  if (!model_.is_shown()) {
     return;
   }
   base::UmaHistogramEnumeration(ReadAnythingAppModel::kEmptyStateHistogramName,
@@ -1348,8 +1419,8 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
       .SetProperty<&ReadAnythingAppController::IsPdf>("isPdf")
       .SetProperty<&ReadAnythingAppController::IsContentTranslated>(
           "isContentTranslated")
-      .SetProperty<&ReadAnythingAppController::IsAwaitingTranslation>(
-          "isAwaitingTranslation")
+      .SetProperty<&ReadAnythingAppController::GetTranslationState>(
+          "translationState")
       .SetProperty<&ReadAnythingAppController::IsImprovedReadAloudEnabled>(
           "isImprovedReadAloudEnabled")
       .SetProperty<&ReadAnythingAppController::IsReadAnythingImprovedUiEnabled>(
@@ -1369,8 +1440,6 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
           "isReadabilityEnabled")
       .SetProperty<&ReadAnythingAppController::GetDistillationMethod>(
           "activeDistillationMethod")
-      .SetProperty<&ReadAnythingAppController::IsLineFocusEnabled>(
-          "isLineFocusEnabled")
       .SetProperty<&ReadAnythingAppController::GetLanguageCodeForSpeech>(
           "baseLanguageForSpeech")
       .SetProperty<&ReadAnythingAppController::RequiresDistillation>(
@@ -1379,8 +1448,7 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
           "defaultLanguageForSpeech")
       .SetProperty<&ReadAnythingAppController::IsPhraseHighlightingEnabled>(
           "isPhraseHighlightingEnabled")
-      .SetProperty<&ReadAnythingAppController::GetReadabilityTitle>(
-          "htmlTitle")
+      .SetProperty<&ReadAnythingAppController::GetReadabilityTitle>("htmlTitle")
       .SetProperty<&ReadAnythingAppController::GetDocumentUrl>("documentUrl")
       .SetProperty<&ReadAnythingAppController::GetReadabilityContentHtml>(
           "htmlContent")
@@ -1498,8 +1566,6 @@ gin::ObjectTemplateBuilder ReadAnythingAppController::GetObjectTemplateBuilder(
           "requestPhraseBoundaries")
       .SetMethod<&ReadAnythingAppController::GetValidatedFontName>(
           "getValidatedFontName")
-      .SetMethod<&ReadAnythingAppController::SendGetPresentationStateRequest>(
-          "sendGetPresentationStateRequest")
       .SetMethod<&ReadAnythingAppController::TogglePresentation>(
           "togglePresentation")
       .SetMethod<&ReadAnythingAppController::CloseUI>("close")
@@ -1614,13 +1680,11 @@ int ReadAnythingAppController::HighlightGranularity() const {
 }
 
 int ReadAnythingAppController::LastNonDisabledLineFocus() const {
-  return IsLineFocusEnabled()
-             ? std::to_underlying(model_.last_non_disabled_line_focus())
-             : std::to_underlying(read_anything::mojom::LineFocus::kOff);
+  return std::to_underlying(model_.last_non_disabled_line_focus());
 }
 
 bool ReadAnythingAppController::IsLineFocusOn() const {
-  return IsLineFocusEnabled() && model_.line_focus_enabled();
+  return model_.line_focus_enabled();
 }
 
 int ReadAnythingAppController::StandardLineSpacing() const {
@@ -1938,48 +2002,9 @@ std::string ReadAnythingAppController::GetHtmlId(
   return ax_node->GetStringAttribute(ax::mojom::StringAttribute::kHtmlId);
 }
 
-void ReadAnythingAppController::SendGetPresentationStateRequest() const {
-  page_handler_->GetPresentationState();
-}
-
-void ReadAnythingAppController::OnGetPresentationState(
+void ReadAnythingAppController::ApplyPresentationState(
     read_anything::mojom::ReadAnythingPresentationState presentation_state) {
-  bool is_immersive_opening =
-      (presentation_state ==
-       read_anything::mojom::ReadAnythingPresentationState::
-           kInImmersiveOverlay) &&
-      (model_.active_presentation_state() !=
-       read_anything::mojom::ReadAnythingPresentationState::
-           kInImmersiveOverlay);
-  bool is_opening =
-      ((presentation_state ==
-        read_anything::mojom::ReadAnythingPresentationState::kInSidePanel) ||
-       (presentation_state ==
-        read_anything::mojom::ReadAnythingPresentationState::
-            kInImmersiveOverlay)) &&
-      !model_.is_active_presentation_state_opened();
-
   model_.set_active_presentation_state(presentation_state);
-
-  // Distillation is active when reading mode is hidden, but reading mode
-  // should only log the distillation status once it has been opened. Ensure
-  // success is logged for Readability if distillation completed successfully
-  // while reading mode was hidden.
-  bool has_distilled_readability_content =
-      model_.is_readability_next_distillation_method() &&
-      !readability_content_html_.empty();
-  if (is_opening && !has_logged_distillation_status_ &&
-      has_distilled_readability_content) {
-    RecordDistillationStatus(
-        read_anything::mojom::DistillationStatus::kSuccess);
-  }
-
-  // Now that the presentation state changed which is potentially one of the
-  // factors blocking processing, see if we can unblock processing of the
-  // updates.
-  ProcessPendingUpdatesIfAllowed(
-      /* allow_selection_updates=*/is_immersive_opening);
-
   ExecuteJavaScript("chrome.readingMode.onPresentationStateReceived(" +
                     base::ToString(static_cast<int>(presentation_state)) +
                     ");");
@@ -2125,10 +2150,6 @@ bool ReadAnythingAppController::IsTranslatePdfEnabled() const {
 // distillation methods such as Readability.js is enabled.
 bool ReadAnythingAppController::IsReadabilityEnabled() const {
   return features::IsReadAnythingWithReadabilityEnabled();
-}
-
-bool ReadAnythingAppController::IsLineFocusEnabled() const {
-  return features::IsReadAnythingLineFocusEnabled();
 }
 
 bool ReadAnythingAppController::IsGoogleDocs() const {
@@ -2360,8 +2381,6 @@ void ReadAnythingAppController::OnNoTextContent() {
     // Fall back to Screen2x if the drawn Readability content has no text. When
     // the current method is Screen2x, this is an empty selection instead.
     if (model_.is_readability_current_distillation_method()) {
-      model_.set_readability_content_drawn(false);
-      model_.set_is_readability_mapping_in_progress(false);
       model_.FallbackToScreen2x();
       DistillNewTree();
     }
@@ -2524,10 +2543,6 @@ void ReadAnythingAppController::OnHighlightGranularityChanged(
 void ReadAnythingAppController::OnLineFocusChanged(
     int current_line_focus,
     int last_non_disabled_line_focus) {
-  if (!IsLineFocusEnabled()) {
-    return;
-  }
-
   const auto maybe_current =
       ToEnum<read_anything::mojom::LineFocus>(current_line_focus);
   const auto maybe_last =
@@ -2624,6 +2639,20 @@ void ReadAnythingAppController::OnSelectionChange(ui::AXNodeID anchor_node_id,
     return;
   }
 
+  // Don't resend a selection that may still be in flight, e.g. when a
+  // translated PDF's side panel sends the same blocks on every selection
+  // change while the user drags within them. The main page doesn't report a
+  // selection that doesn't change, so each repeat would leave an unprocessed
+  // selection behind, which stops the next main page selection from being
+  // drawn in the side panel (see PostProcessSelection()).
+  const SelectionRequest request{anchor_node_id, anchor_offset, focus_node_id,
+                                 focus_offset};
+  if (model_.unprocessed_selections_from_reading_mode() > 0 &&
+      last_selection_request_ == request) {
+    return;
+  }
+  last_selection_request_ = request;
+
   model_.increment_selections_from_reading_mode();
   page_handler_->OnSelectionChange(
       model_.active_tree_id(), anchor_node_id, anchor_offset, focus_node_id,
@@ -2647,6 +2676,9 @@ void ReadAnythingAppController::OnCollapseSelection() {
   }
 
   model_.increment_selections_from_reading_mode();
+  // The collapse replaces the last selection request, so selecting it again
+  // sends it again.
+  last_selection_request_.reset();
   auto callback =
       base::BindOnce(&ReadAnythingAppController::OnSelectionRequestHandled,
                      weak_ptr_factory_.GetWeakPtr());
@@ -2692,7 +2724,7 @@ void ReadAnythingAppController::OnDeviceLocked() {
         ReadAloudAppModel::ReadAloudStopSource::kLockChromeosDevice);
   }
 
-  RecordSessionMetricsIfShownOrRecentlyHidden();
+  RecordSessionMetricsIfShown();
   // Signal to the WebUI that the device has been locked. We'll only receive
   // this callback on ChromeOS.
   ExecuteJavaScript("chrome.readingMode.onLockScreen();");
@@ -2704,9 +2736,16 @@ void ReadAnythingAppController::OnTtsEngineInstalled() {
 }
 #endif
 
-void ReadAnythingAppController::OnReadingModeHidden(bool tab_active) {
+void ReadAnythingAppController::OnReadingModeHidden(
+    bool tab_active,
+    read_anything::mojom::ReadAnythingPresentationState presentation_state) {
   page_handler_->AckReadingModeHidden();
-  model_.set_will_hide(true);
+  // Record the session's metrics, unless Reading Mode was never shown (e.g.
+  // closed while its host was still loading). Then mark it hidden before
+  // ReadingModeWillClose() stops speech, so that the speech-stop callback
+  // doesn't distill or process queued updates while Reading Mode closes.
+  RecordSessionMetricsIfShown();
+  model_.set_is_shown(false);
 
   // If the tab is not active but RM is hidden, then the tab was switched and
   // speech was not stopped. If the tab is still active and RM is hidden, then
@@ -2715,7 +2754,7 @@ void ReadAnythingAppController::OnReadingModeHidden(bool tab_active) {
     // Only stop awaiting translation when RM is actually closed. A pending
     // translation still starts after switching tabs and returning, so keep the
     // content behind the loading screen until then.
-    SetAwaitingTranslation(false);
+    SetTranslationState(ReadAnythingAppModel::TranslationState::kNone);
     ReadingModeWillClose();
     if (read_aloud_model_.speech_playing()) {
       read_aloud_model_.LogSpeechStop(
@@ -2723,14 +2762,24 @@ void ReadAnythingAppController::OnReadingModeHidden(bool tab_active) {
     }
   }
 
-  // Since it's known that reading mode was just hidden, ensure that metrics
-  // are still logged.
-  RecordSessionMetricsIfShownOrRecentlyHidden(/*just_hidden=*/true);
+  // Apply the new state last, so that the session metrics above still see the
+  // host that was hidden (e.g. for PageDuration's view mode).
+  ApplyPresentationState(presentation_state);
 }
 
 void ReadAnythingAppController::OnReadingModeShown(
-    read_anything::mojom::ReadAnythingOpenTrigger open_trigger) {
-  model_.set_will_hide(false);
+    read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+    read_anything::mojom::ReadAnythingPresentationState presentation_state) {
+  ApplyPresentationState(presentation_state);
+  model_.set_is_shown(true);
+
+  // Readability's content can be drawn while Reading Mode is hidden (see
+  // UpdateContent()), so record its status now.
+  if (model_.is_readability_next_distillation_method() &&
+      model_.readability_content_drawn()) {
+    RecordDistillationStatus(
+        read_anything::mojom::DistillationStatus::kSuccess);
+  }
 
   // The renderer process continues when reading mode is hidden, so the WebUI
   // still considers its Line Focus session active and will not start a new one
@@ -2740,26 +2789,79 @@ void ReadAnythingAppController::OnReadingModeShown(
     StartLineFocusSession();
   }
 
+  ApplyOpenTrigger(open_trigger);
+
+  // Process the updates that arrived while hidden, after the open trigger
+  // applied (e.g. to wait for a translation before drawing). When opening in
+  // the immersive overlay, a pending selection is processed even if there's
+  // content.
+  ProcessPendingUpdatesIfAllowed(
+      /*allow_selection_updates=*/model_.active_presentation_state() ==
+      read_anything::mojom::ReadAnythingPresentationState::kInImmersiveOverlay);
+
+  // A Screen2x page that hasn't distilled yet (e.g. it's still loading)
+  // starts its status delay now, rather than when it distills. There's no
+  // status to record for a page whose tree is gone.
+  if (!model_.is_readability_next_distillation_method() &&
+      model_.active_tree_id() != ui::AXTreeIDUnknown() &&
+      model_.distillation_state() ==
+          read_anything::mojom::ReadAnythingDistillationState::
+              kDistillationInProgress) {
+    MaybeStartDistillationStatusTimer();
+  }
+
+  // A PDF announced while hidden may not have any accessibility updates yet,
+  // and its debounce may have finished while hidden. Restart the debounce, as
+  // when a PDF is announced while shown, so that the empty state only shows
+  // if no updates arrive before it finishes.
+  if (IsPdf() && !model_.ContainsActiveTree() &&
+      model_.distillation_state() ==
+          read_anything::mojom::ReadAnythingDistillationState::
+              kDistillationInProgress &&
+      !pdf_draw_debouncer_->IsRunning()) {
+    pdf_draw_debouncer_->Reset();
+  }
+
+  if (ax_tree_ready_for_current_active_tree_measured_) {
+    MaybeLogAXTreeReady();
+  }
+}
+
+void ReadAnythingAppController::OnPresentationTransitioned(
+    read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+    read_anything::mojom::ReadAnythingPresentationState presentation_state) {
+  // The session continues in the other presentation, so record the page
+  // duration so far for the presentation it leaves, and keep timing for the
+  // new one. LogPageDuration() reads the presentation, so do this before
+  // applying the new one.
+  if (model_.page_start_time().has_value() &&
+      model_.active_presentation_state() != presentation_state) {
+    LogPageDuration();
+    model_.set_page_start_time(base::TimeTicks::Now());
+  }
+  ApplyPresentationState(presentation_state);
+  ApplyOpenTrigger(open_trigger);
+  // The overlay pauses updates while it has content and the side panel
+  // doesn't, so moving to the side panel processes the updates the overlay
+  // paused.
+  ProcessPendingUpdatesIfAllowed();
+}
+
+void ReadAnythingAppController::ApplyOpenTrigger(
+    read_anything::mojom::ReadAnythingOpenTrigger open_trigger) {
   if (open_trigger == read_anything::mojom::ReadAnythingOpenTrigger::
                           kListenToThisPageContextMenu) {
     ExecuteJavaScript("chrome.readingMode.setPlayOnOpen(true);");
   }
 
   // Reading mode is opened with this trigger right after a PDF translation is
-  // requested. The browser starts the translation once the content is
-  // distilled, or right away if it already is (see
-  // ReadAnythingUntrustedPageHandler::OnDistillationStateChanged() and
-  // ReadAnythingUntrustedPageHandler::Activate()). Keep the content behind the
-  // loading screen until it's translated so the user doesn't see the
-  // untranslated text first.
+  // requested, and the translation is dispatched once the content is
+  // distilled. Keep the content behind the loading screen until it's
+  // translated so the user doesn't see the untranslated text first.
   if (open_trigger ==
           read_anything::mojom::ReadAnythingOpenTrigger::kPdfTranslation &&
       IsTranslatePdfEnabled() && !model_.is_content_translated()) {
-    SetAwaitingTranslation(true);
-  }
-
-  if (ax_tree_ready_for_current_active_tree_measured_) {
-    MaybeLogAXTreeReady();
+    SetTranslationState(ReadAnythingAppModel::TranslationState::kAwaiting);
   }
 }
 
@@ -2773,13 +2875,21 @@ void ReadAnythingAppController::OnSpeechEngineStalled() {
 }
 
 void ReadAnythingAppController::OnTabWillDetach() {
-  model_.set_will_hide(true);
+  // A side panel closes, and reports that it's hidden, before its tab
+  // detaches, so this only records metrics for an immersive overlay that's
+  // still shown (e.g. a tab dragged to a new window).
+  RecordSessionMetricsIfShown();
+  model_.set_is_shown(false);
   if (read_aloud_model_.speech_playing()) {
     read_aloud_model_.LogSpeechStop(
         ReadAloudAppModel::ReadAloudStopSource::kCloseTabOrWindow);
     ReadingModeWillClose();
   }
-  RecordSessionMetricsIfShownOrRecentlyHidden();
+
+  // The browser doesn't send a presentation state when the tab detaches, so
+  // mark Reading Mode inactive after recording the session metrics above.
+  ApplyPresentationState(
+      read_anything::mojom::ReadAnythingPresentationState::kInactive);
 }
 
 void ReadAnythingAppController::ReadingModeWillClose() {
@@ -2804,34 +2914,43 @@ void ReadAnythingAppController::OnTranslationStateChanged(bool is_translated) {
   // enabled. See ReadAnythingTranslateObserver::ObserveTranslationState().
   CHECK(IsTranslatePdfEnabled());
   model_.set_is_content_translated(is_translated);
-  ExecuteJavaScript("chrome.readingMode.onTranslationStateChanged();");
   if (is_translated) {
-    SetAwaitingTranslation(false);
+    model_.set_translation_state(ReadAnythingAppModel::TranslationState::kNone);
   }
+  // Notify once, after both are updated, so the WebUI always reads a
+  // consistent pair.
+  ExecuteJavaScript("chrome.readingMode.onTranslationStateChanged?.();");
 }
 
 void ReadAnythingAppController::OnTranslationFailed() {
   // The browser only reports translation failures when PDF translation is
   // enabled. See ReadAnythingTranslateObserver::OnPageTranslated().
   CHECK(IsTranslatePdfEnabled());
-  // The content won't be translated, so stop hiding it behind the loading
-  // screen.
-  SetAwaitingTranslation(false);
-}
-
-void ReadAnythingAppController::SetAwaitingTranslation(bool awaiting) {
-  if (model_.is_awaiting_translation() == awaiting) {
+  // Only a translation that reading mode was opened for, and is still waiting
+  // for, replaces the content. If another translation of the tab fails, the
+  // untranslated content is still shown as usual.
+  if (model_.translation_state() !=
+      ReadAnythingAppModel::TranslationState::kAwaiting) {
     return;
   }
-  model_.set_is_awaiting_translation(awaiting);
-  // The WebUI may not have registered its handler yet if this happens very
-  // early; in that case it reads `isAwaitingTranslation` when it draws.
-  ExecuteJavaScript("chrome.readingMode.onAwaitingTranslationChanged?.(" +
-                    base::ToString(awaiting) + ")");
+  // Show the translation empty state instead of the untranslated content
+  // until it's translated or the user makes a selection.
+  SetTranslationState(ReadAnythingAppModel::TranslationState::kFailed);
 }
 
-bool ReadAnythingAppController::IsAwaitingTranslation() const {
-  return model_.is_awaiting_translation();
+void ReadAnythingAppController::SetTranslationState(
+    ReadAnythingAppModel::TranslationState state) {
+  if (model_.translation_state() == state) {
+    return;
+  }
+  model_.set_translation_state(state);
+  // The WebUI may not have registered its handler yet if this happens very
+  // early; in that case it reads `translationState` when it draws.
+  ExecuteJavaScript("chrome.readingMode.onTranslationStateChanged?.();");
+}
+
+int ReadAnythingAppController::GetTranslationState() const {
+  return static_cast<int>(model_.translation_state());
 }
 
 void ReadAnythingAppController::SetDefaultLanguageCode(
@@ -2891,9 +3010,9 @@ void ReadAnythingAppController::IncrementMetricCount(
 }
 
 void ReadAnythingAppController::LogSpeechStop(int source) {
-  // Don't log speech stopping if the reading mode panel is going to hide. That
-  // case is logged separately.
-  if (model_.will_hide()) {
+  // Don't log speech stopping while Reading Mode isn't shown, e.g. as it
+  // hides. That case is logged separately.
+  if (!model_.is_shown()) {
     return;
   }
 
@@ -2903,18 +3022,19 @@ void ReadAnythingAppController::LogSpeechStop(int source) {
   }
 }
 
-void ReadAnythingAppController::RecordSessionMetricsIfShownOrRecentlyHidden(
-    bool just_hidden) {
-  // Don't log session metrics if reading mode is hidden unless it is known
-  // that it was just hidden.
-  if (!just_hidden && IsHidden()) {
+void ReadAnythingAppController::RecordSessionMetricsIfShown() {
+  // TODO(crbug.com/580978096): Words heard while hidden (e.g. in a
+  // backgrounded side panel tab that keeps speaking) are dropped if the tab
+  // closes, or aren't recorded for that page if it navigates, before Reading
+  // Mode is shown again.
+  if (!model_.is_shown()) {
     return;
   }
 
   // Ensure distillation metrics are logged if reading mode closes prematurely.
   if (distillation_status_logging_delay_timer_.IsRunning()) {
     distillation_status_logging_delay_timer_.Stop();
-    RecordScreen2xDistillationStatus(just_hidden);
+    RecordScreen2xDistillationStatus();
   }
 
   LogPageDuration();
@@ -2926,14 +3046,11 @@ void ReadAnythingAppController::RecordSessionMetricsIfShownOrRecentlyHidden(
 }
 
 void ReadAnythingAppController::StartLineFocusSession() {
-  if (IsLineFocusEnabled()) {
-    model_.set_line_focus_session_start_time(base::TimeTicks::Now());
-  }
+  model_.set_line_focus_session_start_time(base::TimeTicks::Now());
 }
 
 void ReadAnythingAppController::LogLineFocusSession() {
-  if (IsLineFocusEnabled() &&
-      model_.line_focus_session_start_time().has_value()) {
+  if (model_.line_focus_session_start_time().has_value()) {
     base::UmaHistogramLongTimes(
         "Accessibility.ReadAnything.LineFocusSessionLength",
         base::TimeTicks::Now() -
@@ -2976,30 +3093,21 @@ void ReadAnythingAppController::LogPageDuration() {
 }
 
 void ReadAnythingAppController::AddLineFocusScrollDistance(int distance) {
-  if (IsLineFocusEnabled()) {
-    model_.set_line_focus_scroll_distance(model_.line_focus_scroll_distance() +
-                                          distance);
-  }
+  model_.set_line_focus_scroll_distance(model_.line_focus_scroll_distance() +
+                                        distance);
 }
 
 void ReadAnythingAppController::AddLineFocusMouseDistance(int distance) {
-  if (IsLineFocusEnabled()) {
-    model_.set_line_focus_mouse_distance(model_.line_focus_mouse_distance() +
-                                         distance);
-  }
+  model_.set_line_focus_mouse_distance(model_.line_focus_mouse_distance() +
+                                       distance);
 }
 
 void ReadAnythingAppController::IncrementLineFocusKeyboardLines() {
-  if (IsLineFocusEnabled()) {
-    model_.set_line_focus_keyboard_lines(model_.line_focus_keyboard_lines() +
-                                         1);
-  }
+  model_.set_line_focus_keyboard_lines(model_.line_focus_keyboard_lines() + 1);
 }
 
 void ReadAnythingAppController::IncrementLineFocusSpeechLines() {
-  if (IsLineFocusEnabled()) {
-    model_.set_line_focus_speech_lines(model_.line_focus_speech_lines() + 1);
-  }
+  model_.set_line_focus_speech_lines(model_.line_focus_speech_lines() + 1);
 }
 
 void ReadAnythingAppController::OnUrlInformationSet() {
@@ -3079,11 +3187,11 @@ void ReadAnythingAppController::OnTreeRemoved(ui::AXTree* tree) {
 }
 
 std::string ReadAnythingAppController::GetReadabilityTitle() const {
-  return readability_title_;
+  return model_.readability_title();
 }
 
 std::string ReadAnythingAppController::GetReadabilityContentHtml() const {
-  return readability_content_html_;
+  return model_.readability_content_html();
 }
 
 v8::Local<v8::Value> ReadAnythingAppController::GetReadabilityAnchors() const {
@@ -3143,14 +3251,12 @@ void ReadAnythingAppController::UpdateContent(const std::string& title,
     return;
   }
 
-  readability_title_ = title;
-  readability_content_html_ = content;
+  model_.set_readability_title(title);
+  model_.set_readability_content_html(content);
 
   // If readability distillation returns empty content, consider distillation as
   // failure and default to Screen2X distillation.
-  if (readability_content_html_.empty()) {
-    model_.set_readability_content_drawn(false);
-
+  if (model_.readability_content_html().empty()) {
     // Immediately attempt distillation. If there's not yet an active tree,
     // distillation will be attempted after the event processes. However,
     // attempting distillation immediately will allow distillation failures
@@ -3184,6 +3290,15 @@ void ReadAnythingAppController::UpdateContent(const std::string& title,
   // succeeded. `DrawReadabilityContent()` will update the active method.
   model_.set_next_distillation_method(
       ReadAnythingAppModel::DistillationMethod::kReadability);
+  // Readability replaces any Screen2x work still pending for this page (e.g.
+  // a redraw after typing that came due while hidden, or a distillation after
+  // an earlier fallback), so clear it. ProcessModelUpdates() DCHECKs that
+  // these flags are unset for Readability.
+  model_.set_requires_distillation(false);
+  model_.reset_redraw_required();
+  model_.set_reset_draw_timer(false);
+  model_.set_reset_distillation_delay_timer(false);
+  post_user_entry_draw_timer_->Stop();
   model_.set_readability_content_drawn(true);
 
   // Exit selection mode so the newly distilled article is displayed.
@@ -3208,9 +3323,10 @@ void ReadAnythingAppController::UpdateContent(const std::string& title,
     PostProcessSelection();
   }
 
-  // Log a successful readability distillation if reading mode is currently
-  // open. If it is hidden/closed, defer logging until it is reopened.
-  if (!IsHidden()) {
+  // Record a successful Readability distillation if Reading Mode is shown.
+  // Otherwise, it's recorded once Reading Mode is shown. See
+  // OnReadingModeShown().
+  if (model_.is_shown()) {
     RecordDistillationStatus(
         read_anything::mojom::DistillationStatus::kSuccess);
   }
@@ -3299,20 +3415,45 @@ void ReadAnythingAppController::MaybeMapRenderedTextToTree() {
   }
 
   // Only attempt mapping if we have text blocks from the WebUI.
-  if (model_.readability_text_blocks().empty()) {
+  if (model_.readability_text_blocks().empty() ||
+      !model_.should_map_rendered_text_to_tree_for_readability()) {
     return;
   }
 
-  if (model_.MapRenderedTextToTree(model_.readability_text_blocks())) {
-    model_.set_is_readability_mapping_in_progress(false);
-    ExecuteJavaScript("chrome.readingMode.onRenderedTextMappingReady();");
+  const ui::AXSerializableTree* tree = model_.GetValidActiveTree();
+  if (!tree) {
+    return;
+  }
 
-    // Process any selection that was deferred while text mapping was still in
-    // progress.
-    if (model_.requires_post_process_selection() &&
-        !read_aloud_model_.speech_playing()) {
-      PostProcessSelection();
-    }
+  base::expected<ReadAnythingTextAligner::TextToAXMap,
+                 ReadAnythingTextAligner::AlignmentError>
+      text_to_ax_map = ReadAnythingTextAligner::MapRenderedTextToTree(
+          model_.readability_text_blocks(), *tree,
+          model_.page_finished_loading() || tree->data().loaded);
+
+  // Not enough text matched yet. Try again on the next tree update.
+  if (!text_to_ax_map.has_value() &&
+      text_to_ax_map.error() ==
+          ReadAnythingTextAligner::AlignmentError::kLowMatchRate) {
+    return;
+  }
+
+  // Mapping is finished, either with a result or because the loaded page has
+  // no text. Stop retrying.
+  model_.set_is_readability_mapping_in_progress(false);
+  model_.set_should_map_rendered_text_to_tree_for_readability(false);
+  if (!text_to_ax_map.has_value()) {
+    return;
+  }
+
+  model_.SetTextToAXMap(std::move(text_to_ax_map.value()));
+  ExecuteJavaScript("chrome.readingMode.onRenderedTextMappingReady();");
+
+  // Process any selection that was deferred while text mapping was still in
+  // progress.
+  if (model_.requires_post_process_selection() &&
+      !read_aloud_model_.speech_playing()) {
+    PostProcessSelection();
   }
 }
 
@@ -3331,7 +3472,7 @@ v8::Local<v8::Value> ReadAnythingAppController::GetAXMapping(int index) {
   // Retrieve the mapping segments from the model for the given block index.
   // A single Readability block can map to multiple AXNodes (e.g. if it contains
   // inline links).
-  std::vector<ReadAnythingAppModel::MappingSegment> segments =
+  std::vector<ReadAnythingTextAligner::MappingSegment> segments =
       model_.GetAXMapping(static_cast<size_t>(index));
 
   v8::Local<v8::Array> v8_segments =
@@ -3366,8 +3507,4 @@ void ReadAnythingAppController::AttemptLogEarlySelection(bool from_side_panel) {
       from_side_panel
           ? ReadAnythingAppModel::EarlySelection::kSidePanelSelection
           : ReadAnythingAppModel::EarlySelection::kMainPanelSelection);
-}
-
-bool ReadAnythingAppController::IsHidden() const {
-  return !model_.is_active_presentation_state_opened();
 }

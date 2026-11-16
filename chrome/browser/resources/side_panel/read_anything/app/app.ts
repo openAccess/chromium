@@ -16,6 +16,7 @@ import {isRTL} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
+import {BlockSelectionHighlighter} from '../content/block_selection_highlighter.js';
 import type {ContentBrowserProxy} from '../content/content_browser_proxy.js';
 import {ContentBrowserProxyImpl} from '../content/content_browser_proxy.js';
 import {ContentController, ContentType} from '../content/content_controller.js';
@@ -121,7 +122,7 @@ export class AppElement extends AppElementBase implements SpeechListener,
 
   protected accessor hasValidSelection_: boolean = false;
   protected accessor isReadAnythingPinned_: boolean = false;
-  protected isReadAnythingImprovedUiEnabled_: boolean = false;
+  private isReadAnythingImprovedUiEnabled_: boolean = false;
 
   // Mirrors ContentController.isHidingContentForTranslation(): content is
   // drawn (so it can be translated) but kept behind the loading screen, and
@@ -173,6 +174,8 @@ export class AppElement extends AppElementBase implements SpeechListener,
       AudioBrowserProxyImpl.getInstance();
   private selectionController_: SelectionController =
       SelectionController.getInstance();
+  private blockSelectionHighlighter_: BlockSelectionHighlighter =
+      BlockSelectionHighlighter.getInstance();
   private lineFocusController_: LineFocusController =
       LineFocusController.getInstance();
   // Animation frame handle for scheduling text block extraction after DOM
@@ -224,9 +227,6 @@ export class AppElement extends AppElementBase implements SpeechListener,
     // onConnected is not blocked on anything else during WebUI setup.
     this.contentBrowserProxy_.onConnected();
 
-    // Request the presentation state to determine whether we should use the UI
-    // for immersive mode.
-    this.visualBrowserProxy_.sendGetPresentationStateRequest();
     // Push ShowUI() callback to the event queue to allow deferred rendering
     // to take place.
     setTimeout(() => this.visualBrowserProxy_.shouldShowUi(), 0);
@@ -295,7 +295,12 @@ export class AppElement extends AppElementBase implements SpeechListener,
     this.contentBrowserProxy_.updateLinks.addListener(
         this.updateLinks_.bind(this));
     this.contentBrowserProxy_.updateSelection.addListener(() => {
-      this.selectionController_.updateSelection(this.getSelection());
+      this.selectionController_.updateSelection(
+          this.getSelection(), this.$.container);
+    });
+    this.contentBrowserProxy_.onTranslationStateChanged.addListener(() => {
+      this.selectionController_.onTranslationStateChanged(
+          this.getSelection(), this.$.container);
     });
     this.contentBrowserProxy_.updateContent.addListener(
         this.updateContent.bind(this));
@@ -398,6 +403,8 @@ export class AppElement extends AppElementBase implements SpeechListener,
     // Remove all children from container. Use `replaceChildren` rather than
     // setting `innerHTML = ''` in order to remove all listeners, too.
     this.$.container.replaceChildren();
+    // The highlighted blocks, if any, were just removed.
+    this.blockSelectionHighlighter_.clear();
     const newRoot = this.contentController_.updateContent();
     if (newRoot) {
       this.$.container.appendChild(newRoot);
@@ -474,7 +481,8 @@ export class AppElement extends AppElementBase implements SpeechListener,
 
   private onRenderedTextMappingReady_() {
     this.contentController_.onRenderedTextMappingReady();
-    this.selectionController_.updateSelection(this.getSelection());
+    this.selectionController_.updateSelection(
+        this.getSelection(), this.$.container);
   }
 
   private cancelRenderedTextBlocksAnimationFrame_() {
@@ -528,28 +536,16 @@ export class AppElement extends AppElementBase implements SpeechListener,
   }
 
   ///////////////////////// LineFocusListener methods //////////////////////////
-  onLineFocusVisualPositionChange(newTop: number, newHeight: number): void {
+  onLineFocusVisualPositionChange(
+      newTop: number, newHeight: number, newFocalPoint: number): void {
     this.styleUpdater_.setLineFocusPos(newTop, newHeight);
+    this.speechController_.onLineFocusVisualMove(newFocalPoint);
   }
 
   onLineFocusContentPositionChange(
       newTop: number, newHeight: number, newFocalPoint: number): void {
     this.styleUpdater_.setLineFocusPos(newTop, newHeight);
-
-    // Only update content position when read aloud is not speaking
-    // or temporarily paused (e.g. during voice preview or settings change).
-    // During active speech, line focus moves on every word boundary. So
-    // calling document.caretPositionFromPoint would force synchronous layout
-    // recalculations on every word, lagging the UI. Additionally, calling
-    // onLineFocusChange updates currentContentPosition, causing subsequent
-    // Play/Pause to be slow.
-    if (this.speechController_.isSpeechActive() ||
-        this.speechController_.isTemporaryPause()) {
-      return;
-    }
-    const position: CaretPosition|null = document.caretPositionFromPoint(
-        0, newFocalPoint, {shadowRoots: [this.shadowRoot]});
-    this.speechController_.onLineFocusChange(position);
+    this.speechController_.onLineFocusContentMove(newFocalPoint);
   }
 
   onNeedScrollForLineFocus(scrollDiff: number, instant: boolean = false): void {
@@ -611,6 +607,9 @@ export class AppElement extends AppElementBase implements SpeechListener,
     // Clear the selection so we don't keep trying to play from the same
     // selection every time they press play.
     this.getSelection()?.removeAllRanges();
+    // Selection changes are ignored while Read Aloud is playing, so clear the
+    // selected blocks' highlight here too.
+    this.blockSelectionHighlighter_.clear();
   }
 
   onWordBoundary(segments: Segment[]): void {

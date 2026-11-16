@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
 #include <map>
 #include <memory>
 #include <string>
@@ -58,7 +59,6 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
-#include "storage/browser/blob/blob_side_data_access_type.h"
 #include "storage/browser/test/blob_test_utils.h"
 #include "third_party/blink/public/common/service_worker/embedded_worker_status.h"
 #include "third_party/blink/public/common/service_worker/service_worker_status_code.h"
@@ -82,20 +82,6 @@ using ::testing::Pointee;
 // timestamp).
 const int kV8CacheTimeStampDataSize =
     sizeof(uint32_t) + sizeof(uint32_t) + sizeof(double);
-
-size_t BlobSideDataLength(blink::mojom::Blob* actual_blob) {
-  size_t result = 0;
-  base::RunLoop run_loop;
-  actual_blob->ReadSideData(base::BindOnce(
-      [](size_t* result, base::OnceClosure continuation,
-         const std::optional<mojo_base::BigBuffer> data) {
-        *result = data ? data->size() : 0;
-        std::move(continuation).Run();
-      },
-      &result, run_loop.QuitClosure()));
-  run_loop.Run();
-  return result;
-}
 
 struct FetchResult {
   blink::ServiceWorkerStatusCode status;
@@ -1471,6 +1457,195 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerVersionBrowserTest,
   run_loop.Run();
 }
 
+class ServiceWorkerVersionWithScriptTypeBrowserTest
+    : public ServiceWorkerVersionBrowserTest,
+      public testing::WithParamInterface<blink::mojom::ScriptType> {};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ServiceWorkerVersionWithScriptTypeBrowserTest,
+    testing::Values(blink::mojom::ScriptType::kClassic,
+                    blink::mojom::ScriptType::kModule),
+    [](const testing::TestParamInfo<blink::mojom::ScriptType>& info) {
+      switch (info.param) {
+        case blink::mojom::ScriptType::kClassic:
+          return "Classic";
+        case blink::mojom::ScriptType::kModule:
+          return "Module";
+      }
+    });
+
+IN_PROC_BROWSER_TEST_P(
+    ServiceWorkerVersionWithScriptTypeBrowserTest,
+    UpdateMainScriptHeadersWithIdenticalBodyAndChangedImport) {
+  const blink::mojom::ScriptType script_type = GetParam();
+  static constexpr char kScope[] = "/service_worker/handle_fetch.html";
+  static constexpr char kWorkerUrl[] = "/service_worker/update_csp_worker.js";
+  static constexpr char kImportUrl[] = "/service_worker/update_csp_import.js";
+
+  embedded_test_server()->RegisterRequestHandler(base::BindLambdaForTesting(
+      [script_type, main_request_count = std::make_unique<std::atomic<int>>(0),
+       import_request_count = std::make_unique<std::atomic<int>>(0)](
+          const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url == kWorkerUrl) {
+          const int count = ++(*main_request_count);
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_code(net::HTTP_OK);
+          response->set_content_type("text/javascript");
+          response->set_content(
+              script_type == blink::mojom::ScriptType::kModule
+                  ? "import '/service_worker/update_csp_import.js';\n"
+                  : "importScripts('/service_worker/update_csp_import.js');\n");
+          // Serve 'unsafe-eval' only on the initial registration fetch.
+          // Subsequent update fetches tighten the CSP while keeping the main
+          // script body byte-for-byte identical.
+          response->AddCustomHeader("Content-Security-Policy",
+                                    count == 1
+                                        ? "script-src 'self' 'unsafe-eval'"
+                                        : "script-src 'self'");
+          return response;
+        }
+        if (request.relative_url == kImportUrl) {
+          const int count = ++(*import_request_count);
+          auto response =
+              std::make_unique<net::test_server::BasicHttpResponse>();
+          response->set_code(net::HTTP_OK);
+          response->set_content_type("text/javascript");
+          response->set_content(base::StringPrintf(
+              "self.importedMarker = 'v%d';\n", count == 1 ? 1 : 2));
+          return response;
+        }
+        return nullptr;
+      }));
+  StartServerAndNavigateToSetup();
+
+  blink::mojom::ServiceWorkerRegistrationOptions options(
+      embedded_test_server()->GetURL(kScope), script_type,
+      blink::mojom::ServiceWorkerUpdateViaCache::kNone);
+  const blink::StorageKey key =
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(options.scope));
+
+  auto initial_observer =
+      base::MakeRefCounted<WorkerActivatedObserver>(wrapper());
+  initial_observer->Init();
+  public_context()->RegisterServiceWorker(
+      embedded_test_server()->GetURL(kWorkerUrl), key, options,
+      GlobalRenderFrameHostId(),
+      base::BindOnce(&ExpectRegisterResultAndRun,
+                     blink::ServiceWorkerStatusCode::kOk, base::DoNothing()));
+  initial_observer->Wait();
+  const int64_t registration_id = initial_observer->registration_id();
+  const int64_t initial_version_id = initial_observer->version_id();
+
+  auto execute_script = [](ServiceWorkerVersion* target_version,
+                           const std::string& script, base::Value* value_out,
+                           std::string* error_out) {
+    base::RunLoop run_loop;
+    target_version->ExecuteScriptForTest(
+        script,
+        base::BindLambdaForTesting(
+            [&](base::Value value, const std::optional<std::string>& err) {
+              *value_out = std::move(value);
+              *error_out = err.value_or("<no error>");
+              run_loop.Quit();
+            }));
+    run_loop.Run();
+  };
+
+  scoped_refptr<ServiceWorkerRegistration> registration =
+      wrapper()->context()->GetLiveRegistration(registration_id);
+  ASSERT_TRUE(registration);
+  scoped_refptr<ServiceWorkerVersion> initial_version =
+      registration->active_version();
+  ASSERT_TRUE(initial_version);
+  EXPECT_EQ(initial_version_id, initial_version->version_id());
+
+  // Verify initial version loaded 'v1' and allows eval() under initial CSP.
+  {
+    base::Value value;
+    std::string error;
+    execute_script(initial_version.get(), "self.importedMarker;", &value,
+                   &error);
+    EXPECT_THAT(value, base::test::IsJson(R"("v1")"));
+    EXPECT_EQ("<no error>", error);
+
+    execute_script(initial_version.get(), "eval('40 + 2');", &value, &error);
+    EXPECT_THAT(value, base::test::IsJson("42"));
+    EXPECT_EQ("<no error>", error);
+  }
+
+  // Trigger an update where the main script body is identical, the main script
+  // CSP header removes 'unsafe-eval', and the imported script body changes.
+  auto update_observer =
+      base::MakeRefCounted<WorkerActivatedObserver>(wrapper());
+  update_observer->Init();
+  {
+    blink::ServiceWorkerStatusCode status =
+        blink::ServiceWorkerStatusCode::kErrorFailed;
+    bool update_found = false;
+    UpdateRegistration(registration_id, &status, &update_found);
+    EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status);
+    EXPECT_TRUE(update_found);
+  }
+  update_observer->Wait();
+
+  scoped_refptr<ServiceWorkerVersion> updated_version =
+      registration->active_version();
+  ASSERT_TRUE(updated_version);
+  EXPECT_NE(initial_version_id, updated_version->version_id());
+
+  // Verify the updated worker loaded 'v2' and enforces the updated CSP header.
+  {
+    base::Value value;
+    std::string error;
+    execute_script(updated_version.get(), "self.importedMarker;", &value,
+                   &error);
+    EXPECT_THAT(value, base::test::IsJson(R"("v2")"));
+    EXPECT_EQ("<no error>", error);
+
+    execute_script(updated_version.get(), "eval('40 + 2');", &value, &error);
+    EXPECT_TRUE(value.is_none());
+    EXPECT_NE(std::string::npos, error.find("EvalError")) << error;
+  }
+
+  // Stop and restart the updated worker from storage to verify the updated
+  // response headers were persisted to disk.
+  {
+    base::RunLoop stop_loop;
+    updated_version->StopWorker(stop_loop.QuitClosure());
+    stop_loop.Run();
+
+    base::RunLoop start_loop;
+    blink::ServiceWorkerStatusCode start_status =
+        blink::ServiceWorkerStatusCode::kErrorFailed;
+    updated_version->StartWorker(
+        ServiceWorkerMetrics::EventType::UNKNOWN,
+        base::BindLambdaForTesting([&](blink::ServiceWorkerStatusCode status) {
+          start_status = status;
+          start_loop.Quit();
+        }));
+    start_loop.Run();
+    ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk, start_status);
+
+    base::Value value;
+    std::string error;
+    execute_script(updated_version.get(), "eval('40 + 2');", &value, &error);
+    EXPECT_TRUE(value.is_none());
+    EXPECT_NE(std::string::npos, error.find("EvalError")) << error;
+  }
+
+  // Tidy up.
+  base::RunLoop run_loop;
+  public_context()->UnregisterServiceWorker(
+      embedded_test_server()->GetURL(kScope), key,
+      base::BindOnce(&ExpectUnregisterResultAndRun,
+                     blink::ServiceWorkerStatusCode::kOk,
+                     run_loop.QuitClosure()));
+  run_loop.Run();
+}
+
 IN_PROC_BROWSER_TEST_F(ServiceWorkerVersionBrowserTest, FetchWithSaveData) {
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&VerifySaveDataHeaderInRequest));
@@ -1693,13 +1868,12 @@ class CacheStorageEagerReadingTest : public ServiceWorkerVersionBrowserTest {
     EXPECT_EQ(storage::BlobToString(blob.get()).length(), 1075u);
 
     // Since this js response was stored in the install event it should have
-    // code cache stored in the blob side data.
-    base::HistogramTester histogram_tester;
-    EXPECT_GT(BlobSideDataLength(blob.get()),
+    // code cache stored in the cached metadata blob.
+    ASSERT_TRUE(response->cached_metadata);
+    mojo::Remote<blink::mojom::Blob> cached_metadata(
+        std::move(response->cached_metadata->blob));
+    EXPECT_GT(storage::BlobToString(cached_metadata.get()).size(),
               static_cast<size_t>(kV8CacheTimeStampDataSize));
-    histogram_tester.ExpectUniqueSample(
-        "Storage.Blob.SideDataAccessType",
-        storage::BlobSideDataAccessType::kCacheStorageSideDataRead, 1);
   }
 
   void ExpectEagerlyReadCacheResponse(
@@ -1712,14 +1886,15 @@ class CacheStorageEagerReadingTest : public ServiceWorkerVersionBrowserTest {
     // surfaced here in this test.
     EXPECT_FALSE(response->blob);
 
-    // An eagerly read response should still have a side_data_blob, though.
+    // An eagerly read response should still have cached_metadata, though.
     // This is provided so that js resources can still load code cache.
-    mojo::Remote<blink::mojom::Blob> side_data_blob(
-        std::move(response->side_data_blob->blob));
+    ASSERT_TRUE(response->cached_metadata);
+    mojo::Remote<blink::mojom::Blob> cached_metadata(
+        std::move(response->cached_metadata->blob));
 
     // Since this js response was stored in the install event it should have
-    // code cache stored in the blob side data.
-    EXPECT_GT(BlobSideDataLength(side_data_blob.get()),
+    // code cache stored in the cached metadata blob.
+    EXPECT_GT(storage::BlobToString(cached_metadata.get()).size(),
               static_cast<size_t>(kV8CacheTimeStampDataSize));
   }
 

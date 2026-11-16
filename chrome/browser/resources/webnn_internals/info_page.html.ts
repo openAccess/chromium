@@ -7,7 +7,6 @@ import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import type {WebnnInternalsInfoPageElement} from './info_page.js';
 
 export function getHtml(this: WebnnInternalsInfoPageElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <div class="cr-centered-card-container">
   <div class="card">
@@ -41,8 +40,16 @@ export function getHtml(this: WebnnInternalsInfoPageElement) {
             <div class="description">Hardware Type:</div>
             <div>${ep.hardwareType}</div>
             ${ep.version ? html`
-              <div class="description">Version:</div>
+              <div class="description">EP Version:</div>
               <div>${ep.version}</div>
+            ` : ''}
+            ${ep.driverVersion ? html`
+              <div class="description">Driver Version:</div>
+              <div>${ep.driverVersion}</div>
+            ` : ''}
+            ${ep.libraryPath ? html`
+              <div class="description">Library Path:</div>
+              <div class="library-path">${ep.libraryPath}</div>
             ` : ''}
           </div>
         `)}
@@ -56,5 +63,4 @@ export function getHtml(this: WebnnInternalsInfoPageElement) {
   </div>
 </div>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

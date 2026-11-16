@@ -27,6 +27,7 @@
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/indigo/indigo_page_action_controller.h"
 #include "chrome/browser/indigo/resources/grit/indigo_strings.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
 #include "chrome/browser/profiles/profile.h"
@@ -62,7 +63,6 @@
 #include "chrome/browser/ui/views/autofill/at_memory_promo_bubble_view.h"
 #include "chrome/browser/ui/views/autofill/popup/popup_view_views.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
-#include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_button.h"
 #include "chrome/browser/ui/views/dictation/dictation_iph.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
@@ -885,6 +885,9 @@ void MaybeRegisterChromeFeaturePromos(
                 }
               }))
           .SetBubbleArrow(user_education::HelpBubbleArrow::kTopCenter)
+          // The WebUI extensions container forces the IPH anchor to be visible
+          // even when the toolbar is in overflow mode.
+          .AddPreconditionExemption(kToolbarNotCollapsedPrecondition)
           .SetInAnyContext(true)
           .SetMetadata(
               155, "evasu@google.com",
@@ -950,7 +953,7 @@ void MaybeRegisterChromeFeaturePromos(
   registry.RegisterFeature(std::move(
       FeaturePromoSpecification::CreateForSnoozePromo(
           feature_engagement::kIPHGlicPromoFeature, kGlicButtonElementId,
-          IDS_GLIC_PROMO_BODY)
+          IDS_WILDCARD)  // Replaced by caller with the correct IDS string.
           .SetBubbleArrow(HelpBubbleArrow::kTopRight)
           .SetBubbleTitleText(IDS_GLIC_PROMO_TITLE)
           // Since this can appear randomly, we do not want to steal focus from
@@ -1076,6 +1079,24 @@ void MaybeRegisterChromeFeaturePromos(
           .SetBubbleArrow(HelpBubbleArrow::kTopRight)
           .SetMetadata(153, "vpasupathy@chromium.org",
                        "Triggered when Save Video Frame IPH timer fires.")));
+
+  // kIPHIndigoContextMenuSnoozeFeature:
+  registry.RegisterFeature(std::move(
+      FeaturePromoSpecification::CreateForSnoozePromo(
+          feature_engagement::kIPHIndigoContextMenuSnoozeFeature,
+          kBrowserDialogAnchorElementId,
+          IDS_INDIGO_CONTEXT_MENU_SNOOZE_IPH_BODY,
+          IDS_INDIGO_CONTEXT_MENU_SNOOZE_IPH_SCREENREADER,
+          FeaturePromoSpecification::AcceleratorInfo())
+          .SetBubbleTitleText(IDS_INDIGO_CONTEXT_MENU_SNOOZE_IPH_TITLE)
+          .SetBubbleIcon(
+              &indigo::IndigoPageActionController::GetEntryPointVectorIcon())
+          .SetBubbleArrow(HelpBubbleArrow::kNone)
+          .SetMetadata(
+              159, "jbroman@chromium.org",
+              "Triggered on eligible Product Detail Pages when Try on You is "
+              "not cued via contextual cues to educate users about the "
+              "right-click context menu entry point.")));
 
   // kIPHIndigoContextMenuToastFeature:
   registry.RegisterFeature(std::move(
@@ -1460,22 +1481,6 @@ void MaybeRegisterChromeFeaturePromos(
                 "Triggered after trying AI playback to inform users they can "
                 "customize settings in Reading Mode.")));
   }
-
-  // kIPHResumptionRailFeature:
-  registry.RegisterFeature(std::move(
-      FeaturePromoSpecification::CreateForToastPromo(
-          feature_engagement::kIPHResumptionRailFeature,
-          kVerticalTabStripOrganizerButtonElementId, IDS_WILDCARD,
-          IDS_RESUMPTION_RAIL_IPH_TITLE,
-          FeaturePromoSpecification::AcceleratorInfo())
-          .SetBubbleTitleText(IDS_RESUMPTION_RAIL_IPH_TITLE)
-          .SetBubbleArrow(HelpBubbleArrow::kTopLeft)
-          .SetBubbleIcon(&(features::IsRoundedIconsEnabled()
-                               ? vector_icons::kLightbulb2Icon
-                               : vector_icons::kLightbulbOutlineOldIcon))
-          .SetMetadata(147, "gqueen@chromium.org",
-                       "Triggered to educate users about the Resumption Rail "
-                       "feature entrypoint.")));
 
   // kIPHSideBySidePinnableFeature:
   registry.RegisterFeature(std::move(
@@ -2203,18 +2208,12 @@ void MaybeRegisterChromeFeaturePromos(
               "Triggered when there are 3 or more tabs in an ephemeral "
               "focused group to suggest creating a tab group.")));
 
-  const ui::ElementIdentifier contextual_tasks_ephemeral_element_id =
-      contextual_tasks::IsContextualTasksEphemeralPinButtonRefactorEnabled()
-          ? kPinnedToolbarActionShowSidePanelContextualTasksElementId
-          : kContextualTasksEphemeralToolbarButtonElementId;
-
   registry.RegisterFeature(std::move(
       FeaturePromoSpecification::CreateForCustomAction(
           feature_engagement::kIPHSidePanelContextualTasksPinnableFeature,
-          contextual_tasks_ephemeral_element_id,
-          contextual_tasks::GetContextualTasksPinningStringId(
-              IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH),
-          IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_PIN_SHORTCUT,
+          kPinnedToolbarActionShowSidePanelContextualTasksElementId,
+          IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_TEXT,
+          IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_PIN_TO_TOOLBAR,
           base::BindRepeating(
               [](ContextPtr ctx,
                  user_education::FeaturePromoHandle promo_handle) {
@@ -2239,6 +2238,8 @@ void MaybeRegisterChromeFeaturePromos(
                       kActionSidePanelShowContextualTasks, true);
                 }
               }))
+          .SetBubbleTitleText(
+              IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH_HEADER)
           .SetBubbleArrow(HelpBubbleArrow::kTopRight)
           .SetBubbleIcon(kLightbulbOutlineIcon)
           .SetCustomActionIsDefault(true)
@@ -2249,23 +2250,16 @@ void MaybeRegisterChromeFeaturePromos(
               "to smoothly onboard them into the pinning tutorial.")));
 
   // kIPHContextualTasksEphemeralToolbarButtonFeature:
-  const bool is_ephemeral_button_on_right =
-      contextual_tasks::GetEnableRightHandContextualTasksEphemeralButton() ||
-      contextual_tasks::kEnableCircularEphemeralButtonNextToBatterySaver
-          .Get() ||
-      contextual_tasks::IsContextualTasksPinningV2Enabled();
   registry.RegisterFeature(std::move(
       FeaturePromoSpecification::CreateForToastPromo(
           feature_engagement::kIPHContextualTasksEphemeralToolbarButtonFeature,
-          contextual_tasks_ephemeral_element_id,
+          kPinnedToolbarActionShowSidePanelContextualTasksElementId,
           contextual_tasks::GetContextualTasksPinningStringId(
               IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH),
           contextual_tasks::GetContextualTasksPinningStringId(
               IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER),
           FeaturePromoSpecification::AcceleratorInfo())
-          .SetBubbleArrow(is_ephemeral_button_on_right
-                              ? HelpBubbleArrow::kTopRight
-                              : HelpBubbleArrow::kTopLeft)
+          .SetBubbleArrow(HelpBubbleArrow::kTopRight)
           .SetMetadata(148, "dianaou@google.com",
                        "Triggered when the ephemeral contextual tasks toolbar "
                        "button is shown after closing the side panel.")));
@@ -2299,6 +2293,21 @@ void MaybeRegisterChromeFeaturePromos(
           .SetMetadata(148, "charlesmeng@chromium.org",
                        "Triggered when the vertical tabs is enabled and the "
                        "user has not enabled expand on hover before.")));
+
+  // kIPH_VerticalTabsTabGroupsInOrganizerFeature:
+  registry.RegisterFeature(std::move(
+      FeaturePromoSpecification::CreateForToastPromo(
+          feature_engagement::kIPH_VerticalTabsTabGroupsInOrganizerFeature,
+          kTabSearchButtonElementId,
+          IDS_VERTICAL_TABS_TAB_GROUPS_IN_ORGANIZER_IPH_BODY,
+          IDS_VERTICAL_TABS_TAB_GROUPS_IN_ORGANIZER_IPH_SCREENREADER,
+          FeaturePromoSpecification::AcceleratorInfo())
+          .SetBubbleArrow(HelpBubbleArrow::kTopLeft)
+          .SetBubbleIcon(kLightbulbOutlineIcon)
+          .SetMetadata(
+              159, "agale@chromium.org",
+              "Triggered in vertical tabs mode when tab groups have moved into "
+              "the organizer panel.")));
 
 #if BUILDFLAG(IS_WIN)
   // kIPHSearchPromotionFeature:
@@ -2778,9 +2787,7 @@ void MaybeRegisterChromeTutorials(
             // Completion of the tutorial after the shortcut is pinned.
             BubbleStep(
                 kPinnedToolbarActionShowSidePanelContextualTasksElementId)
-                .SetBubbleBodyText(
-                    contextual_tasks::GetContextualTasksPinningStringId(
-                        IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP3))
+                .SetBubbleBodyText(IDS_TUTORIAL_CONTEXTUAL_TASKS_SUCCESS)
                 .SetBubbleArrow(HelpBubbleArrow::kTopRight)
                 .InAnyContext());
 
@@ -2975,12 +2982,6 @@ void MaybeRegisterChromeNewBadges(user_education::NewBadgeRegistry& registry) {
       user_education::Metadata(
           153, "mtatarski@google.com",
           "Show the new badge on Send to your device context menu items.")));
-
-  registry.RegisterFeature(user_education::NewBadgeSpecification(
-      features::kReadAnythingLineFocus,
-      user_education::Metadata(
-          153, "kristislee@google.com",
-          "Shown on the Line Focus menu item in Reading Mode settings menu.")));
 
   registry.RegisterFeature(user_education::NewBadgeSpecification(
       dictation::kDictation,

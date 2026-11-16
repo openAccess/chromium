@@ -22,6 +22,8 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/language_tag.h"
+#include "base/i18n/tag_converters.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -198,10 +200,6 @@
 #include "chrome/browser/webauthn/android/chrome_webauthn_client_android.h"
 #include "components/supervised_user/core/browser/android/android_parental_controls.h"
 #include "components/webauthn/android/webauthn_client_android.h"
-
-namespace chrome_browser_prefs {
-void OnLocalStatePrefsLoaded();
-}  // namespace chrome_browser_prefs
 #else
 #include "chrome/browser/devtools/devtools_auto_opener.h"
 #include "chrome/browser/error_reporting/chrome_js_error_report_processor.h"
@@ -522,10 +520,6 @@ void BrowserProcessImpl::Init() {
   MigrateObsoleteLocalStatePrefs(local_state());
   pref_change_registrar_.Init(local_state());
 
-#if BUILDFLAG(IS_ANDROID)
-  chrome_browser_prefs::OnLocalStatePrefsLoaded();
-#endif
-
   // Initialize the notification for the default browser setting policy.
   pref_change_registrar_.Add(
       prefs::kDefaultBrowserSettingEnabled,
@@ -594,7 +588,10 @@ void BrowserProcessImpl::Init() {
   const std::string& locale =
       startup_data_->chrome_feature_list_creator()->actual_locale();
   CHECK(!locale.empty());
-  features_->application_locale_storage()->Set(locale);
+  if (std::optional<base::i18n::LanguageTag> locale_tag =
+          base::i18n::GetLanguageTagFromString(locale)) {
+    features_->application_locale_storage()->SetTag(*std::move(locale_tag));
+  }
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -893,21 +890,27 @@ void RequestProxyResolvingSocketFactory(
 }  // namespace
 
 void BrowserProcessImpl::EndSession() {
-  // Mark all the profiles as clean.
-  ProfileManager* pm = profile_manager();
   scoped_refptr<RundownTaskCounter> rundown_counter =
       base::MakeRefCounted<RundownTaskCounter>();
-  for (Profile* profile : pm->GetLoadedProfiles()) {
+
+  // `pm` is null if the session ends once StartTearDown() has started
+  // destroying the ProfileManager (e.g., a non-queued WM_ENDSESSION is
+  // dispatched within StartTearDown()). Destroyed profiles schedule their own
+  // pref writes, which are not waited for here.
+  if (ProfileManager* pm = profile_manager(); pm) {
+    // Mark all the profiles as clean.
+    for (Profile* profile : pm->GetLoadedProfiles()) {
 #if BUILDFLAG(ENABLE_SESSION_SERVICE)
-    ExitTypeService* exit_type_service =
-        ExitTypeService::GetInstanceForProfile(profile);
-    if (exit_type_service) {
-      exit_type_service->SetCurrentSessionExitType(ExitType::kForcedShutdown);
-    }
+      ExitTypeService* exit_type_service =
+          ExitTypeService::GetInstanceForProfile(profile);
+      if (exit_type_service) {
+        exit_type_service->SetCurrentSessionExitType(ExitType::kForcedShutdown);
+      }
 #endif
-    if (profile->GetPrefs()) {
-      profile->GetPrefs()->CommitPendingWrite(
-          base::OnceClosure(), rundown_counter->GetRundownClosure());
+      if (profile->GetPrefs()) {
+        profile->GetPrefs()->CommitPendingWrite(
+            base::OnceClosure(), rundown_counter->GetRundownClosure());
+      }
     }
   }
 
@@ -915,17 +918,20 @@ void BrowserProcessImpl::EndSession() {
   metrics::MetricsService* metrics = g_browser_process->metrics_service();
   if (metrics) {
     metrics->LogCleanShutdown();
-#if !BUILDFLAG(IS_CHROMEOS)
-    // The MetricsService may update Local State prefs in memory without
-    // writing the updated prefs to disk, so schedule a Local State write now.
-    //
-    // Do not schedule a write on ChromeOS because writing to disk multiple
-    // times during shutdown was causing shutdown problems. See
-    // crbug.com/41062061.
-    local_state_->CommitPendingWrite(base::OnceClosure(),
-                                     rundown_counter->GetRundownClosure());
-#endif
   }
+#if !BUILDFLAG(IS_CHROMEOS)
+  // The MetricsService may update Local State prefs in memory without
+  // writing the updated prefs to disk, so schedule a Local State write now.
+  // Also needed if the session ends within StartTearDown() (e.g., a non-queued
+  // WM_ENDSESSION is dispatched there): earlier Local State commits are not
+  // waited for, and the process is terminated right after this.
+  //
+  // Do not schedule a write on ChromeOS because writing to disk multiple
+  // times during shutdown was causing shutdown problems. See
+  // crbug.com/41062061.
+  local_state_->CommitPendingWrite(base::OnceClosure(),
+                                   rundown_counter->GetRundownClosure());
+#endif
 
   // This wait is legitimate and necessary on Windows, since the process will
   // be terminated soon.
@@ -1235,16 +1241,18 @@ const std::string& BrowserProcessImpl::GetApplicationLocale() {
   }
 
   CHECK(features_->application_locale_storage());
-  const std::string& locale = features_->application_locale_storage()->Get();
-  CHECK(!locale.empty(), base::NotFatalUntil::M162);
-  return locale;
+  CHECK(!application_locale_.empty(), base::NotFatalUntil::M162);
+  return application_locale_;
 }
 
 void BrowserProcessImpl::SetApplicationLocale(
     const std::string& actual_locale) {
   CHECK(features_);
   CHECK(features_->application_locale_storage());
-  features_->application_locale_storage()->Set(actual_locale);
+  if (std::optional<base::i18n::LanguageTag> locale_tag =
+          base::i18n::GetLanguageTagFromString(actual_locale)) {
+    features_->application_locale_storage()->SetTag(*std::move(locale_tag));
+  }
 }
 
 DownloadStatusUpdater* BrowserProcessImpl::download_status_updater() {
@@ -1958,16 +1966,19 @@ void BrowserProcessImpl::ApplyDefaultBrowserPolicy() {
   }
 }
 
-void BrowserProcessImpl::OnLocaleChanged(const std::string& new_locale) {
+void BrowserProcessImpl::OnLocaleChanged(
+    const base::i18n::LanguageTag& new_locale) {
+  application_locale_ = new_locale.tag_string();
+
   // TODO(crbug.com/406985310): The cache for IO thread should be integrated
   // into ApplicationLocaleStorage.
-  ChromeContentBrowserClient::SetApplicationLocale(new_locale);
+  ChromeContentBrowserClient::SetApplicationLocale(application_locale_);
 
   // TODO(crbug.com/406985310): Implement ApplicationLocaleStorage::Observer for
   // TranslateDownloadManager, or refactor //components/translate so that it can
   // directly depend on ApplicationLocaleStorage.
   translate::TranslateDownloadManager::GetInstance()->set_application_locale(
-      new_locale);
+      application_locale_);
 }
 
 void BrowserProcessImpl::Pin() {

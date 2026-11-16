@@ -3,11 +3,13 @@
 // found in the LICENSE file.
 
 #include "base/strings/stringprintf.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/enterprise/test/management_context_mixin.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "components/enterprise/net/core/features.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/policy_constants.h"
@@ -498,6 +500,10 @@ class ProxyOverrideRulesPlatformManagedDeviceBrowserTest
             .is_platform_managed = true,
             .affiliated = false,
         }) {}
+
+ private:
+  base::test::ScopedFeatureList affiliation_feature_list_{
+      enterprise_net::kEnforceProxyAffiliationOnPlatformManagedDevices};
 };
 
 // Verifies that user-scoped ProxyOverrideRules on a platform/EMM-managed
@@ -520,6 +526,66 @@ IN_PROC_BROWSER_TEST_F(ProxyOverrideRulesPlatformManagedDeviceBrowserTest,
   SetEnableForAllUsers(true);
   EXPECT_TRUE(chrome_test_utils::NavigateToURL(
       chrome_test_utils::GetActiveWebContents(this), destination_url));
+}
+
+class ProxyOverrideRulesPlatformManagedDeviceNotEnforcedBrowserTest
+    : public ProxyOverrideRulesTestBase {
+ public:
+  ProxyOverrideRulesPlatformManagedDeviceNotEnforcedBrowserTest()
+      : ProxyOverrideRulesTestBase(ManagementContext{
+            .is_cloud_user_managed = true,
+            .is_cloud_machine_managed = false,
+            .is_platform_managed = true,
+            .affiliated = false,
+        }) {
+    affiliation_feature_list_.InitAndDisableFeature(
+        enterprise_net::kEnforceProxyAffiliationOnPlatformManagedDevices);
+  }
+
+ private:
+  base::test::ScopedFeatureList affiliation_feature_list_;
+};
+
+// Verifies that user-scoped ProxyOverrideRules on a platform/EMM-managed
+// device without CBCM are applied when
+// `kEnforceProxyAffiliationOnPlatformManagedDevices` is disabled, even if
+// EnableProxyOverrideRulesForAllUsers is not set.
+IN_PROC_BROWSER_TEST_F(
+    ProxyOverrideRulesPlatformManagedDeviceNotEnforcedBrowserTest,
+    AppliedWithoutEnableForAllUsers) {
+  constexpr char kPolicyImpactHistogram[] =
+      "Enterprise.ProxyOverrideRules.PlatformAffiliationImpact.Policy";
+  base::HistogramTester histogram_tester;
+
+  base::ListValue rules;
+  rules.Append(CreateProxyRule(
+      kDestinationHost,
+      "PROXY " + embedded_test_server()->host_port_pair().ToString()));
+
+  SetUserProxyOverrideRules(std::move(rules));
+
+  GURL destination_url = GURL(base::StringPrintf(
+      "http://%s:%d/simple.html", kDestinationHost, kUnreachablePort));
+  EXPECT_TRUE(chrome_test_utils::NavigateToURL(
+      chrome_test_utils::GetActiveWebContents(this), destination_url));
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Opening an incognito window creates an OTR ProxyConfigMonitor; verify it
+  // does not emit a duplicate sample.
+  CreateIncognitoBrowser();
+#endif
+
+  // Emitted once for the regular profile (not duplicated by Safe Browsing or
+  // Incognito ProxyConfigMonitors).
+  histogram_tester.ExpectUniqueSample(
+      kPolicyImpactHistogram,
+      proxy_config::ProxyPlatformAffiliationImpact::kWouldBeBlocked, 1);
+
+  SetEnableForAllUsers(true);
+  histogram_tester.ExpectBucketCount(
+      kPolicyImpactHistogram,
+      proxy_config::ProxyPlatformAffiliationImpact::kAllowedByForAllUsers, 1);
+  histogram_tester.ExpectTotalCount(kPolicyImpactHistogram, 2);
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_ANDROID)

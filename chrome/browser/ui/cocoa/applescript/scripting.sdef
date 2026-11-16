@@ -36,7 +36,6 @@
       <property name="given name" code="GNam" description="The given name of the window." type="text">
         <cocoa key="givenName"/>
       </property>
-      <!-- "name" is an alias for "title" -->
       <property name="name" code="pnam" description="The full title of the window." type="text" access="r">
         <cocoa key="title"/>
       </property>
@@ -70,7 +69,7 @@
       <property name="zoomed" code="pzum" description="Whether the window is currently zoomed." type="boolean">
         <cocoa key="isZoomed"/>
       </property>
-      <property name="active tab" code="acTa" description="Returns the currently selected tab" type="tab" access="r">
+      <property name="active tab" code="acTa" description="The active tab." type="tab">
         <cocoa key="activeTab"/>
       </property>
       <property name="mode" code="mode" description="Represents the mode of the window which can be &apos;normal&apos; or &apos;incognito&apos;, can be set only once during creation of the window." type="text">
@@ -105,8 +104,8 @@
     </command>
 
     <command name="close" code="coreclos" description="Close a window.">
-      <access-group identifier="*"/>
       <cocoa class="NSCloseCommand"/>
+      <access-group identifier="*"/>
       <direct-parameter description="the document(s) or window(s) to close." type="specifier"/>
     </command>
 
@@ -208,7 +207,11 @@
       <property name="id" code="ID  " description="Unique ID of the tab." type="text" access="r">
         <cocoa key="uniqueID"/>
       </property>
-      <property name="title" code="pnam" description="The title of the tab." type="text" access="r"/>
+      <property name="name" code="pnam" description="The title of the tab." type="text" access="r">
+        <cocoa key="title"/>
+        <!-- Synonym for compatibility with old scripts. -->
+        <synonym name="title"/>
+      </property>
       <property name="URL" code="URL " description="The url visible to the user." type="text"/>
       <property name="loading" code="ldng" description="Is loading?" type="boolean" access="r"/>
       <responds-to command="undo">
@@ -269,7 +272,11 @@
       <property name="id" code="ID  " description="Unique ID of the bookmark folder." type="text" access="r">
         <cocoa key="uniqueID"/>
       </property>
-      <property name="title" code="pnam" description="The title of the folder." type="text"/>
+      <property name="name" code="pnam" description="The title of the folder." type="text">
+        <cocoa key="title"/>
+        <!-- Synonym for compatibility with old scripts. -->
+        <synonym name="title"/>
+      </property>
       <property name="index" code="pidx" description="Returns the index with respect to its parent bookmark folder." type="number" access="r">
         <cocoa key="index"/>
       </property>
@@ -280,7 +287,11 @@
       <property name="id" code="ID  " description="Unique ID of the bookmark item." type="text" access="r">
         <cocoa key="uniqueID"/>
       </property>
-      <property name="title" code="pnam" description="The title of the bookmark item." type="text"/>
+      <property name="name" code="pnam" description="The title of the bookmark item." type="text">
+        <cocoa key="title"/>
+        <!-- Synonym for compatibility with old scripts. -->
+        <synonym name="title"/>
+      </property>
       <property name="URL" code="URL " description="The URL of the bookmark." type="text"/>
       <property name="index" code="pidx" description="Returns the index with respect to its parent bookmark folder." type="number" access="r">
         <cocoa key="index"/>

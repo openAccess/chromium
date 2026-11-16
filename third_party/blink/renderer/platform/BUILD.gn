@@ -957,8 +957,6 @@ component("platform") {
     "graphics/box_reflection.h",
     "graphics/canvas_2d_color_params.cc",
     "graphics/canvas_2d_color_params.h",
-    "graphics/canvas_2d_resource_provider.cc",
-    "graphics/canvas_2d_resource_provider.h",
     "graphics/canvas_drawable_paint_record.h",
     "graphics/canvas_drawable_paint_state.cc",
     "graphics/canvas_drawable_paint_state.h",
@@ -1918,6 +1916,7 @@ component("platform") {
     "//ui/gfx/mojom",
     "//ui/gl:buildflags",
     "//ui/native_theme",
+    "//v8/src/inspector:inspector_headers",
   ]
 
   if (has_zstd_compression) {
@@ -2098,6 +2097,8 @@ static_library("test_support") {
     "testing/picture_matchers.h",
     "testing/renderer_fuzzing_support.cc",
     "testing/renderer_fuzzing_support.h",
+    "testing/scoped_default_locale.cc",
+    "testing/scoped_default_locale.h",
     "testing/scoped_fake_ukm_recorder.cc",
     "testing/scoped_fake_ukm_recorder.h",
     "testing/scoped_main_thread_overrider.cc",
@@ -2264,6 +2265,7 @@ source_set("blink_platform_unittests_sources") {
     "bindings/parkable_string_test.cc",
     "bindings/runtime_call_stats_test.cc",
     "bindings/transform_view_test.cc",
+    "context_lifecycle_notifier_test.cc",
     "disk_data_allocator_test.cc",
     "disk_data_allocator_test_utils.h",
     "exported/file_path_conversion_test.cc",
@@ -2275,6 +2277,7 @@ source_set("blink_platform_unittests_sources") {
     "exported/web_thread_safe_data_test.cc",
     "fonts/bitmap_glyphs_block_list_test.cc",
     "fonts/font_cache_test.cc",
+    "fonts/font_custom_platform_data_test.cc",
     "fonts/font_description_test.cc",
     "fonts/font_fallback_iterator_test.cc",
     "fonts/font_family_test.cc",
@@ -2357,6 +2360,7 @@ source_set("blink_platform_unittests_sources") {
     "graphics/gpu/webgpu_native_test_support.h",
     "graphics/gpu/webgpu_shared_image_cache_test.cc",
     "graphics/graphics_context_test.cc",
+    "graphics/image_decoder_wrapper_test.cc",
     "graphics/paint/cull_rect_test.cc",
     "graphics/paint/display_item_raster_invalidator_test.cc",
     "graphics/paint/display_item_test.cc",
@@ -2711,6 +2715,7 @@ group("blink_platform_unittests_data") {
     # Required by some image decoder tests.
     "image-decoders/testing/",
     "//third_party/blink/web_tests/external/wpt/webcodecs/four-colors-limited-range-420-8bpc.jpg",
+    "//third_party/blink/web_tests/fast/replaced/resources/compass.jpg",
     "//third_party/blink/web_tests/images/resources/",
     "//third_party/blink/web_tests/images/bmp-suite/",
     "//third_party/blink/web_tests/images/jpeg-suite/",

@@ -6,7 +6,6 @@
 
 #include <jni.h>
 
-#include <algorithm>
 #include <cstddef>
 #include <memory>
 #include <numeric>
@@ -17,7 +16,6 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/check_op.h"
-#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
@@ -25,7 +23,6 @@
 #include "base/sequence_checker.h"
 #include "build/android_buildflags.h"
 #include "chrome/browser/android/tab_android.h"
-#include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/flags/android/chrome_session_state.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
@@ -57,13 +54,9 @@ TestTabModel::~TestTabModel() {
   // TabModel's destructor does not unregister itself. gtest runs many tests in
   // a single process, so a TestTabModel that is registered but never removed
   // leaves a dangling pointer behind that causes a use-after-free in whichever
-  // unrelated test next walks TabModelList::models(). Defensively unregister
-  // here so that a missing RemoveTabModel() call can't corrupt other tests.
-  TabModel* self = this;
-  if (std::ranges::contains(TabModelList::models(), self)) {
-    TabModelList::RemoveTabModel(self);
-  }
-  TabModelList::RemoveArchivedTabModel(self);
+  // unrelated test next walks TabModelList. Defensively unregister here so that
+  // a missing RemoveTabModel() call can't corrupt other tests.
+  TabModelList::RemoveTabModel(this);
 }
 
 void TestTabModel::AddTabListInterfaceObserver(
@@ -252,6 +245,11 @@ int TestTabModel::GetIndexOfTab(tabs::TabHandle tab) {
 void TestTabModel::HighlightTabs(tabs::TabHandle tab_to_activate,
                                  const std::set<tabs::TabHandle>& tabs) {
   NOTIMPLEMENTED();
+}
+
+std::vector<tabs::TabInterface*> TestTabModel::GetHighlightedTabs() {
+  NOTIMPLEMENTED();
+  return {};
 }
 
 void TestTabModel::MoveTab(tabs::TabHandle tab, int index) {
@@ -490,18 +488,8 @@ void OwningTestTabModel::CloseTabsAt(const std::vector<int>& indices) {
 
   bool is_all_tabs = (tabs_to_close.size() == owned_tabs_.size());
 
-  if (base::FeatureList::IsEnabled(
-          chrome::android::kTabClosureMethodRefactor)) {
-    observer_list_.Notify(&TabModelObserver::WillCloseTabs, tabs_to_close,
-                          is_all_tabs, /*allow_undo=*/false);
-  } else {
-    for (auto* tab : tabs_to_close) {
-      observer_list_.Notify(&TabModelObserver::WillCloseTab, tab);
-    }
-    if (is_all_tabs) {
-      observer_list_.Notify(&TabModelObserver::AllTabsAreClosing);
-    }
-  }
+  observer_list_.Notify(&TabModelObserver::WillCloseTabs, tabs_to_close,
+                        is_all_tabs, /*allow_undo=*/false);
 
   int active_index = GetActiveIndex();
   bool active_tab_is_closing =
@@ -699,6 +687,11 @@ void OwningTestTabModel::HighlightTabs(tabs::TabHandle tab_to_activate,
   NOTIMPLEMENTED();
 }
 
+std::vector<tabs::TabInterface*> OwningTestTabModel::GetHighlightedTabs() {
+  NOTIMPLEMENTED();
+  return {};
+}
+
 void OwningTestTabModel::MoveTab(tabs::TabHandle tab, int index) {
   NOTIMPLEMENTED();
 }
@@ -708,8 +701,13 @@ void OwningTestTabModel::CloseTab(tabs::TabHandle tab) {
 }
 
 std::vector<tabs::TabInterface*> OwningTestTabModel::GetAllTabs() {
-  NOTIMPLEMENTED();
-  return {};
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  std::vector<tabs::TabInterface*> tabs;
+  tabs.reserve(owned_tabs_.size());
+  for (const auto& tab : owned_tabs_) {
+    tabs.push_back(tab.get());
+  }
+  return tabs;
 }
 
 void OwningTestTabModel::PinTab(tabs::TabHandle tab) {

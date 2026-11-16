@@ -188,7 +188,7 @@ JsToBrowserMessaging::JsToBrowserMessaging(
     mojo::PendingAssociatedReceiver<mojom::JsToBrowserMessaging> receiver,
     mojo::PendingAssociatedRemote<mojom::BrowserToJsMessagingFactory>
         browser_to_js_factory,
-    WebMessageHostFactory* factory,
+    base::WeakPtr<WebMessageHostFactory> factory,
     const origin_matcher::OriginMatcher& origin_matcher,
     const std::u16string& name,
     int32_t world_id)
@@ -212,6 +212,11 @@ void JsToBrowserMessaging::OnRenderFrameHostActivated() {
   }
 
   if (!host_) {
+    return;
+  }
+
+  // Listener removed while prerendering; the queue dies with the document.
+  if (!connection_factory_) {
     return;
   }
 
@@ -267,6 +272,13 @@ void JsToBrowserMessaging::PostMessage(
   // SetBrowserToJsMessaging must be called before this.
   DCHECK(reply_proxy_);
   reply_proxy_->EnsureBrowserToJsMessaging();
+
+  if (!connection_factory_) {
+    // The listener was removed, but this frame outlived the removal, e.g. a
+    // navigation that was in flight at the time. Dropping the message is safe:
+    // the app removed the listener and does not expect further messages.
+    return;
+  }
 
   if (!host_) {
     const std::string top_level_origin_string =

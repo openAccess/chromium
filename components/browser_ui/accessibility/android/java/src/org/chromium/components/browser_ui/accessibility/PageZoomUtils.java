@@ -30,25 +30,28 @@ import java.util.Locale;
  * the settings UI and the MVC component (e.g. shared prefs calls), and is accessed by each
  * individually rather than having the settings UI depend on the MVC component.
  *
- * The zoom of a page is calculated internally with a base an exponent. The base is set to
- * |kTextSizeMultiplierRatio| = 1.2. See: third_party/blink/common/page/page_zoom.cc.
- * E.g. To get a zoom level of 50%, internally the number -3.8 is used, because: 1.2^-3.8 = 0.50.
+ * <p>The zoom of a page is calculated internally with a base and an exponent. The base is set to
+ * {@code kTextSizeMultiplierRatio} = 1.2. See: third_party/blink/common/page/page_zoom.cc. E.g. To
+ * get a zoom level of 50%, internally the number -3.8 is used, because: 1.2^-3.8 = 0.50.
  *
- * To help with confusion, we will consistently stick to the following verbiage:
+ * <p>To help with confusion, we will consistently stick to the following verbiage:
  *
+ * <pre>
  * "zoom factor" = the internal number used by HostZoomMap, acts as the exponent. (double)
  * "zoom level" = the percentage for the zoom that is presented externally to the user. (double)
  * "zoom string" = the string that is actually presented to the user for zoom percentage. (String)
  * "zoom bar value" = an arbitrary int to map the factor to an integer value for the bar. (int)
+ * </pre>
  *
- * For example, some common zoom values are:
+ * <p>For example, some common zoom values are:
  *
+ * <pre>
  *        string        factor      level      bar value
  *          50%     |   -3.8    |   0.50    |      0      |
  *         100%     |    0.0    |   1.00    |     50      |
  *         250%     |   5.03    |   2.50    |    200      |
  *         300%     |   6.03    |   3.00    |    250      |
- *
+ * </pre>
  */
 @NullMarked
 public class PageZoomUtils {
@@ -70,13 +73,15 @@ public class PageZoomUtils {
     private static final double DEFAULT_ZOOM_LEVEL_SNAP_RANGE = 0.03;
 
     private static @TriState int sShouldShowMenuItemForTesting;
+    private static @TriState int sHasAnySavedZoomLevelsForTesting;
+    private static @TriState int sUsesDefaultPageZoomLevelForTesting;
 
     /**
      * Bars have values 0 to 100 by default. For simplicity, we will keep these values and convert
      * to the correct zoom factor under-the-hood. See comment at top of class.
      *
      * @param newValue int value of the bar.
-     * @return double
+     * @return The zoom factor corresponding to the bar value.
      */
     public static double convertBarValueToZoomFactor(int newValue) {
         // Zoom levels are from |PAGE_ZOOM_MINIMUM_ZOOM_LEVEL| to |PAGE_ZOOM_MAXIMUM_ZOOM_LEVEL|,
@@ -102,7 +107,7 @@ public class PageZoomUtils {
      * simplicity, we will keep these values and convert to the correct zoom factor under-the-hood.
      *
      * @param zoomFactor zoom factor to get bar value for.
-     * @return int
+     * @return The bar value corresponding to the zoom factor.
      */
     public static int convertZoomFactorToBarValue(double zoomFactor) {
         // To get to a bar value from an index, raise the base (1.2) to the given |zoomFactor|
@@ -121,7 +126,7 @@ public class PageZoomUtils {
      * user in a human-readable format, e.g. 1.0, 1.50.
      *
      * @param newValue bar value to convert to zoom level
-     * @return double
+     * @return The zoom level corresponding to the bar value.
      */
     public static double convertBarValueToZoomLevel(int newValue) {
         return PAGE_ZOOM_MINIMUM_ZOOM_LEVEL
@@ -130,11 +135,11 @@ public class PageZoomUtils {
     }
 
     /**
-     * This method converts the zoom factor to a zoom level in a human-readable format,
-     * e.g. 1.0, 1.50.
+     * This method converts the zoom factor to a zoom level in a human-readable format, e.g. 1.0,
+     * 1.50.
      *
-     * @param zoomFactor    zoom factor to get zoom level for.
-     * @return double
+     * @param zoomFactor zoom factor to get zoom level for.
+     * @return The zoom level corresponding to the zoom factor.
      */
     public static double convertZoomFactorToZoomLevel(double zoomFactor) {
         // To get the zoom level from the zoom factor, raise the base (1.2) to the given
@@ -148,7 +153,7 @@ public class PageZoomUtils {
      *
      * @param barValue the bar value.
      * @param defaultZoomFactor the default zoom factor to compare against.
-     * @return boolean
+     * @return Whether the bar value should snap to the default zoom.
      */
     public static boolean shouldSnapBarValueToDefaultZoom(int barValue, double defaultZoomFactor) {
         double currentZoomLevel = convertBarValueToZoomLevel(barValue);
@@ -161,6 +166,7 @@ public class PageZoomUtils {
      * Set a new user choice for default zoom level given a Bar value. This is part of the Profile
      * and is set in Desktop through Settings > Appearance.
      *
+     * @param context The profile to set the default zoom for.
      * @param newValue int The new zoom by bar value
      */
     public static void setDefaultZoomByBarValue(BrowserContextHandle context, int newValue) {
@@ -171,19 +177,53 @@ public class PageZoomUtils {
      * Returns the current user choice for default zoom level as a bar value. This is part of the
      * Profile and is set in Desktop through Settings > Appearance.
      *
-     * @return int
+     * @param context The profile to get the default zoom from.
+     * @return The default zoom level as a bar value.
      */
     public static int getDefaultZoomAsBarValue(BrowserContextHandle context) {
         return convertZoomFactorToBarValue(getDefaultZoomLevel(context));
     }
 
     /**
-     * Returns the current user choice for default zoom level as a zoom factor.
-     * This is part of the Profile and is set in Desktop through Settings > Appearance.
-     * @return double
+     * Returns the current user choice for default zoom level as a zoom factor. This is part of the
+     * Profile and is set in Desktop through Settings > Appearance.
+     *
+     * @param context The profile to get the default zoom from.
+     * @return The default zoom level as a zoom factor.
      */
     public static double getDefaultZoomLevelAsZoomFactor(BrowserContextHandle context) {
         return getDefaultZoomLevel(context);
+    }
+
+    /**
+     * Returns true if the user has any saved per-site zoom levels in {@link HostZoomMap}.
+     *
+     * @param browserContextHandle The profile to check saved zoom levels against.
+     * @return boolean
+     */
+    public static boolean hasAnySavedZoomLevels(BrowserContextHandle browserContextHandle) {
+        if (sHasAnySavedZoomLevelsForTesting != TriState.NOT_SET) {
+            return sHasAnySavedZoomLevelsForTesting == TriState.TRUE;
+        }
+        return !HostZoomMap.getAllHostZoomLevels(browserContextHandle).isEmpty();
+    }
+
+    /**
+     * Returns true if the profile uses the default global zoom level (0.0, corresponding to 100%)
+     * in {@link HostZoomMap}, or false if the user has set a custom default zoom level (e.g. via
+     * Accessibility Settings).
+     *
+     * @param browserContextHandle The profile to check the default zoom level against.
+     * @return boolean
+     */
+    public static boolean usesDefaultPageZoomLevel(BrowserContextHandle browserContextHandle) {
+        if (sUsesDefaultPageZoomLevelForTesting != TriState.NOT_SET) {
+            return sUsesDefaultPageZoomLevelForTesting == TriState.TRUE;
+        }
+        // The default (unset) zoom level is 0.0 (which maps to 100% by 1.2^0 = 1, see comment at
+        // top of file). We will fetch the current profile's default zoom level, and any non-zero
+        // value will be considered a user choice (non-default).
+        return Math.abs(getDefaultZoomLevel(browserContextHandle)) <= MathUtils.EPSILON;
     }
 
     /**
@@ -191,17 +231,11 @@ public class PageZoomUtils {
      * has any saved zoom levels or a default zoom setting, considering either as a user that has
      * interacted with the feature. Recorded during post-native initialization.
      *
-     * @param BrowserContextHandle The profile to check feature usage against
+     * @param lastUsedRegularProfile The profile to check feature usage against
      */
     public static void recordFeatureUsage(BrowserContextHandle lastUsedRegularProfile) {
-        boolean hasAnySavedZoomLevels =
-                !HostZoomMap.getAllHostZoomLevels(lastUsedRegularProfile).isEmpty();
-
-        // The default (unset) zoom level is 0.0 (which maps to 100% by 1.2^0 = 1, see comment at
-        // top of file). We will fetch the current profile's default zoom level, and any non-zero
-        // value will be considered a user choice (non-default).
-        boolean hasDefaultZoomLevel =
-                Math.abs(getDefaultZoomLevel(lastUsedRegularProfile)) > MathUtils.EPSILON;
+        boolean hasAnySavedZoomLevels = hasAnySavedZoomLevels(lastUsedRegularProfile);
+        boolean hasDefaultZoomLevel = !usesDefaultPageZoomLevel(lastUsedRegularProfile);
 
         PageZoomUma.logFeatureUsageHistogram(hasAnySavedZoomLevels, hasDefaultZoomLevel);
     }
@@ -213,7 +247,7 @@ public class PageZoomUtils {
      * Returns true if the user has set a choice for always showing the Zoom AppMenu item (set in
      * Accessibility Settings). This setting is Chrome Android specific.
      *
-     * @return boolean
+     * @return Whether the user has set a choice for always showing the Zoom AppMenu item.
      */
     public static boolean hasUserSetShouldAlwaysShowZoomMenuItemOption() {
         return ContextUtils.getAppSharedPreferences()
@@ -221,10 +255,10 @@ public class PageZoomUtils {
     }
 
     /**
-     * Returns the current user setting for always showing the Zoom AppMenu
-     * item (set in Accessibility Settings). Default is false. This setting is Chrome Android
-     * specific.
-     * @return boolean
+     * Returns the current user setting for always showing the Zoom AppMenu item (set in
+     * Accessibility Settings). Default is false. This setting is Chrome Android specific.
+     *
+     * @return Whether the Zoom AppMenu item should always be shown.
      */
     public static boolean shouldAlwaysShowZoomMenuItem() {
         return ContextUtils.getAppSharedPreferences()
@@ -237,7 +271,7 @@ public class PageZoomUtils {
      * <p>If there is a current user choice set in Accessibility Settings, respect and return the
      * user setting. Otherwise, return true if there is an OS level font size set.
      *
-     * @return boolean
+     * @return Whether the Zoom AppMenu item should be shown.
      */
     public static boolean shouldShowZoomMenuItem() {
         return shouldShowZoomMenuItem(null, null);
@@ -250,7 +284,7 @@ public class PageZoomUtils {
      * user setting. Otherwise, return true if there is an OS level font size set.
      *
      * @param context Context to check form factor.
-     * @return boolean
+     * @return Whether the Zoom AppMenu item should be shown.
      */
     public static boolean shouldShowZoomMenuItem(@Nullable Context context) {
         return shouldShowZoomMenuItem(context, null);
@@ -265,7 +299,7 @@ public class PageZoomUtils {
      *
      * @param context Context to check form factor.
      * @param browserContextHandle BrowserContextHandle to check for custom zoom levels.
-     * @return boolean
+     * @return Whether the Zoom AppMenu item should be shown.
      */
     public static boolean shouldShowZoomMenuItem(
             @Nullable Context context, @Nullable BrowserContextHandle browserContextHandle) {
@@ -322,7 +356,8 @@ public class PageZoomUtils {
     /**
      * Set a new user choice for always showing the Zoom AppMenu item. This setting is Chrome
      * Android specific.
-     * @param newValue boolean
+     *
+     * @param newValue Whether the Zoom AppMenu item should always be shown.
      */
     public static void setShouldAlwaysShowZoomMenuItem(boolean newValue) {
         ContextUtils.getAppSharedPreferences()
@@ -335,7 +370,7 @@ public class PageZoomUtils {
      * Returns true is the user has set a choice for whether OS adjustment should be made in zoom
      * calculation. This setting is Chrome Android specific.
      *
-     * @return boolean
+     * @return Whether the user has set a choice for the OS adjustment.
      */
     public static boolean hasUserSetIncludeOSAdjustmentOption() {
         assert ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_PAGE_ZOOM_V2)
@@ -349,7 +384,7 @@ public class PageZoomUtils {
      * Returns true is Page Zoom should include an OS level adjustment to zoom level. If no value
      * has been set by the user, return the current value of the feature param.
      *
-     * @return boolean
+     * @return Whether Page Zoom should include an OS level adjustment.
      */
     public static boolean shouldIncludeOSAdjustment() {
         assert ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_PAGE_ZOOM_V2)
@@ -363,7 +398,7 @@ public class PageZoomUtils {
     /**
      * Set a new user choice for including an OS level adjustment in zoom level calculation.
      *
-     * @param newValue boolean
+     * @param newValue Whether an OS level adjustment should be included.
      */
     public static void setShouldIncludeOSAdjustment(boolean newValue) {
         assert ContentFeatureMap.isEnabled(ContentFeatureList.ACCESSIBILITY_PAGE_ZOOM_V2)
@@ -432,13 +467,34 @@ public class PageZoomUtils {
     // Test-only methods.
 
     /**
-     * Used for testing only, allows a mocked value for the {@link shouldShowMenuItem} method.
+     * Used for testing only, allows a mocked value for the {@link #shouldShowZoomMenuItem} method.
      *
      * @param isEnabled Should show the menu item or not.
      */
     public static void setShouldShowMenuItemForTesting(@TriState int isEnabled) {
         sShouldShowMenuItemForTesting = isEnabled;
         ResettersForTesting.register(() -> sShouldShowMenuItemForTesting = TriState.NOT_SET);
+    }
+
+    /**
+     * Used for testing only, allows a mocked value for the {@link hasAnySavedZoomLevels} method.
+     *
+     * @param hasAnySavedZoomLevels Whether the user has any saved site zoom levels.
+     */
+    public static void setHasAnySavedZoomLevelsForTesting(@TriState int hasAnySavedZoomLevels) {
+        sHasAnySavedZoomLevelsForTesting = hasAnySavedZoomLevels;
+        ResettersForTesting.register(() -> sHasAnySavedZoomLevelsForTesting = TriState.NOT_SET);
+    }
+
+    /**
+     * Used for testing only, allows a mocked value for the {@link usesDefaultPageZoomLevel} method.
+     *
+     * @param usesDefaultPageZoomLevel Whether the profile uses the default page zoom level.
+     */
+    public static void setUsesDefaultPageZoomLevelForTesting(
+            @TriState int usesDefaultPageZoomLevel) {
+        sUsesDefaultPageZoomLevelForTesting = usesDefaultPageZoomLevel;
+        ResettersForTesting.register(() -> sUsesDefaultPageZoomLevelForTesting = TriState.NOT_SET);
     }
 
     public static long getReadableZoomLevel(double zoomFactor) {
@@ -449,7 +505,7 @@ public class PageZoomUtils {
      * Returns true if the zoom level can be decreased from the current zoom factor.
      *
      * @param zoomFactor The current zoom factor.
-     * @return boolean
+     * @return Whether the zoom level can be decreased.
      */
     public static boolean canDecreaseZoom(double zoomFactor) {
         return MathUtils.roundTwoDecimalPlaces(zoomFactor) > AVAILABLE_ZOOM_FACTORS[0];
@@ -459,7 +515,7 @@ public class PageZoomUtils {
      * Returns true if the zoom level can be increased from the current zoom factor.
      *
      * @param zoomFactor The current zoom factor.
-     * @return boolean
+     * @return Whether the zoom level can be increased.
      */
     public static boolean canIncreaseZoom(double zoomFactor) {
         return MathUtils.roundTwoDecimalPlaces(zoomFactor)

@@ -9,11 +9,12 @@ import org.jni_zero.JniType;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.ActionType;
 import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
 import org.chromium.components.omnibox.action.OmniboxPedalId;
 import org.chromium.components.search_engines.StarterPackId;
+import org.chromium.url.GURL;
 
 /** A factory creating the OmniboxAction instances. */
 @NullMarked
@@ -30,21 +31,35 @@ public class OmniboxActionFactory {
 
     @CalledByNative
     public static @Nullable OmniboxAction buildCrossDeviceTabAction(
-            long nativeInstance, String hint, String accessibilityHint) {
+            long nativeInstance,
+            @JniType("std::u16string") String hint,
+            @JniType("std::u16string") String accessibilityHint) {
         return new CrossDeviceTabAction(nativeInstance, hint, accessibilityHint);
     }
 
     @CalledByNative
     public static @Nullable OmniboxAction buildOmniboxLensOverlayAction(
-            long nativeInstance, String hint, String accessibilityHint) {
+            long nativeInstance,
+            @JniType("std::u16string") String hint,
+            @JniType("std::u16string") String accessibilityHint) {
         return new OmniboxLensOverlayAction(nativeInstance, hint, accessibilityHint);
+    }
+
+    @CalledByNative
+    public static OmniboxAction buildOmniboxContextualSearchFulfillmentAction(
+            long nativeInstance,
+            @JniType("std::u16string") String hint,
+            @JniType("std::u16string") String accessibilityHint,
+            @JniType("GURL") GURL fulfillmentUrl) {
+        return new OmniboxContextualSearchFulfillmentAction(
+                nativeInstance, hint, accessibilityHint, fulfillmentUrl);
     }
 
     @CalledByNative
     public static @Nullable OmniboxAction buildOmniboxPedal(
             long nativeInstance,
-            String hint,
-            String accessibilityHint,
+            @JniType("std::u16string") String hint,
+            @JniType("std::u16string") String accessibilityHint,
             @OmniboxPedalId int pedalId) {
         return new OmniboxPedal(nativeInstance, hint, accessibilityHint, pedalId);
     }
@@ -63,14 +78,13 @@ public class OmniboxActionFactory {
     @CalledByNative
     public static @Nullable OmniboxAction buildActionInSuggest(
             long nativeInstance,
-            String hint,
-            String accessibilityHint,
-            /* SuggestTemplateInfo.TemplateAction.ActionType */ int actionType,
-            String actionUri,
+            @JniType("std::u16string") String hint,
+            @JniType("std::u16string") String accessibilityHint,
+            @ActionType int actionType,
+            @JniType("std::string") String actionUri,
             int tabId,
             @ActionPresentationMode int presentationMode) {
-        if (actionType == SuggestTemplateInfo.TemplateAction.ActionType.CALL_VALUE
-                && !sDialerAvailable) {
+        if (actionType == ActionType.CALL && !sDialerAvailable) {
             return null;
         }
 

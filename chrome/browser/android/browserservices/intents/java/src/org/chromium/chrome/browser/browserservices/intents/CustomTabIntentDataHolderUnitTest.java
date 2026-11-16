@@ -22,11 +22,13 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.Parcel;
+import android.util.Pair;
 import android.view.WindowManager;
 import android.widget.RemoteViews;
 
 import androidx.browser.auth.AuthTabColorSchemeParams;
 import androidx.browser.auth.AuthTabIntent;
+import androidx.browser.customtabs.CustomContentAction;
 import androidx.browser.customtabs.CustomTabColorSchemeParams;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.trusted.ScreenOrientation;
@@ -39,9 +41,15 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.IncognitoCctCallerId;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TitleVisibility;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TwaDisclosureUi;
+import org.chromium.chrome.browser.browserservices.intents.CustomButtonParams.ButtonType;
+import org.chromium.chrome.browser.customtabs.CustomButtonParamsImpl;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
+import org.chromium.chrome.browser.util.WindowFeatures;
+import org.chromium.components.browser_ui.widget.TintedDrawable;
 
 import java.util.List;
 
@@ -105,8 +113,8 @@ public class CustomTabIntentDataHolderUnitTest {
         assertFalse(restored.mIsPartialCustomTabFixedHeight);
         assertFalse(restored.mContentScrollMayResizeTab);
         assertFalse(restored.mInteractWithBackground);
-        assertFalse(restored.mCctTabSwitcherEnabledForChromeExperiment);
-        assertFalse(restored.mCctTabSwitcherEnabledForEmbedderExperiment);
+        assertFalse(restored.mTabbedCctAllowedByEmbedder);
+        assertFalse(restored.mTabbedCctEnabledByEmbedder);
         assertNull(restored.mAuthRedirectScheme);
         assertNull(restored.mAuthRedirectHost);
         assertNull(restored.mAuthRedirectPath);
@@ -125,6 +133,23 @@ public class CustomTabIntentDataHolderUnitTest {
         assertNull(restored.mDarkAuthTabColorSchemeParams.getNavigationBarColor());
         assertNull(restored.mDarkAuthTabColorSchemeParams.getNavigationBarDividerColor());
         assertEquals(Color.TRANSPARENT, restored.mInitialBackgroundColor);
+        assertTrue(restored.mCustomButtonParams.isEmpty());
+        assertEquals(CustomTabsIntent.SHARE_STATE_DEFAULT, restored.mShareState);
+        assertFalse(restored.mDefaultShareMenuItem);
+        assertFalse(restored.mOpenInBrowserButtonAllowed);
+        assertTrue(restored.mMenuEntries.isEmpty());
+        assertNull(restored.mUrlToLoad);
+        assertNull(restored.mTranslucentBackgroundColor);
+        assertNull(restored.mClientPackageNameIdentitySharing);
+        assertEquals(TwaDisclosureUi.DEFAULT, restored.mTwaDisclosureUi);
+        assertEquals(CustomTabsIntent.CLOSE_BUTTON_POSITION_DEFAULT, restored.mCloseButtonPosition);
+        assertFalse(restored.mShowSideSheetMaximizeButton);
+        assertEquals(
+                CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_END, restored.mSideSheetPosition);
+        assertTrue(restored.mCustomContentActions.isEmpty());
+        assertEquals(0, restored.mAndroidBrowserHelperVersion);
+        assertNull(restored.mRequestedWindowFeatures);
+        assertNull(restored.mIncognitoCctCallerId);
         assertSame(
                 restored.mLightColorSchemeParams,
                 restored.getColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_LIGHT));
@@ -176,6 +201,26 @@ public class CustomTabIntentDataHolderUnitTest {
         PendingIntent swipeUpPi =
                 PendingIntent.getBroadcast(
                         context, 3, new Intent("swipe_up"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent menuPi =
+                PendingIntent.getActivity(
+                        context, 7, new Intent("menu_1"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent menuPi2 =
+                PendingIntent.getActivity(
+                        context, 8, new Intent("menu_2"), PendingIntent.FLAG_IMMUTABLE);
+        CustomButtonParams shareButton =
+                CustomButtonParamsImpl.createShareButton(context, Color.BLACK);
+        CustomButtonParams bottomBarButton =
+                CustomButtonParamsImpl.fromIntent(
+                                context,
+                                new CustomTabsIntent.Builder()
+                                        .addToolbarItem(
+                                                8,
+                                                Bitmap.createBitmap(8, 8, Bitmap.Config.ARGB_8888),
+                                                "eight",
+                                                swipeUpPi)
+                                        .build()
+                                        .intent)
+                        .get(0);
 
         ImmersiveMode twaDisplayMode =
                 new ImmersiveMode(
@@ -227,8 +272,8 @@ public class CustomTabIntentDataHolderUnitTest {
                         .setIsPartialCustomTabFixedHeight(true)
                         .setContentScrollMayResizeTab(true)
                         .setInteractWithBackground(true)
-                        .setCctTabSwitcherEnabledForChromeExperiment(true)
-                        .setCctTabSwitcherEnabledForEmbedderExperiment(true)
+                        .setTabbedCctAllowedByEmbedder(true)
+                        .setTabbedCctEnabledByEmbedder(true)
                         .setAuthRedirectScheme("myscheme")
                         .setAuthRedirectHost("auth.example.com")
                         .setAuthRedirectPath("/callback")
@@ -254,6 +299,32 @@ public class CustomTabIntentDataHolderUnitTest {
                                         .setToolbarColor(0xFF000002)
                                         .build())
                         .setInitialBackgroundColor(0xFF123456)
+                        .setCustomButtonParams(List.of(shareButton, bottomBarButton))
+                        .setShareState(CustomTabsIntent.SHARE_STATE_ON)
+                        .setDefaultShareMenuItem(true)
+                        .setOpenInBrowserButtonAllowed(true)
+                        .setMenuEntries(
+                                List.of(
+                                        Pair.create("Menu 1", menuPi),
+                                        Pair.create("Menu 2", menuPi2)))
+                        .setUrlToLoad("https://example.com/load")
+                        .setTranslucentBackgroundColor(0x99112233)
+                        .setClientPackageNameIdentitySharing("com.example.identity")
+                        .setTwaDisclosureUi(TwaDisclosureUi.V2_NOTIFICATION_OR_SNACKBAR)
+                        .setCloseButtonPosition(CustomTabsIntent.CLOSE_BUTTON_POSITION_END)
+                        .setShowSideSheetMaximizeButton(true)
+                        .setSideSheetPosition(CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_START)
+                        .setCustomContentActions(
+                                List.of(
+                                        new CustomContentAction.Builder(
+                                                        11,
+                                                        "Pin Image",
+                                                        menuPi,
+                                                        CustomTabsIntent.CONTENT_TARGET_TYPE_IMAGE)
+                                                .build()))
+                        .setAndroidBrowserHelperVersion(42)
+                        .setRequestedWindowFeatures(new WindowFeatures(10, 20, 300, 400))
+                        .setIncognitoCctCallerId(IncognitoCctCallerId.DOWNLOAD_HOME)
                         .build();
 
         CustomTabIntentDataHolder restored = roundTripThroughParcel(original);
@@ -316,8 +387,8 @@ public class CustomTabIntentDataHolderUnitTest {
         assertTrue(restored.mIsPartialCustomTabFixedHeight);
         assertTrue(restored.mContentScrollMayResizeTab);
         assertTrue(restored.mInteractWithBackground);
-        assertTrue(restored.mCctTabSwitcherEnabledForChromeExperiment);
-        assertTrue(restored.mCctTabSwitcherEnabledForEmbedderExperiment);
+        assertTrue(restored.mTabbedCctAllowedByEmbedder);
+        assertTrue(restored.mTabbedCctEnabledByEmbedder);
         assertEquals("myscheme", restored.mAuthRedirectScheme);
         assertEquals("auth.example.com", restored.mAuthRedirectHost);
         assertEquals("/callback", restored.mAuthRedirectPath);
@@ -356,6 +427,116 @@ public class CustomTabIntentDataHolderUnitTest {
                 restored.getAuthTabColorSchemeParams(CustomTabsIntent.COLOR_SCHEME_DARK)
                         .getToolbarColor());
         assertEquals(0xFF123456, restored.mInitialBackgroundColor);
+        assertEquals(2, restored.mCustomButtonParams.size());
+        CustomButtonParams restoredShare = restored.mCustomButtonParams.get(0);
+        assertEquals(CustomTabsIntent.TOOLBAR_ACTION_BUTTON_ID, restoredShare.getId());
+        assertEquals(shareButton.getDescription(), restoredShare.getDescription());
+        assertTrue(restoredShare.showOnToolbar());
+        assertEquals(ButtonType.CCT_SHARE_BUTTON, restoredShare.getType());
+        assertTrue(restoredShare.getIcon(context) instanceof TintedDrawable);
+        assertNotNull(restoredShare.getPendingIntent());
+
+        CustomButtonParams restoredBottom = restored.mCustomButtonParams.get(1);
+        assertEquals(8, restoredBottom.getId());
+        assertEquals("eight", restoredBottom.getDescription());
+        assertFalse(restoredBottom.showOnToolbar());
+        assertEquals(ButtonType.OTHER, restoredBottom.getType());
+        assertFalse(restoredBottom.getIcon(context) instanceof TintedDrawable);
+        assertEquals(swipeUpPi, restoredBottom.getPendingIntent());
+        assertEquals(CustomTabsIntent.SHARE_STATE_ON, restored.mShareState);
+        assertTrue(restored.mDefaultShareMenuItem);
+        assertTrue(restored.mOpenInBrowserButtonAllowed);
+        assertEquals(2, restored.mMenuEntries.size());
+        assertEquals("Menu 1", restored.mMenuEntries.get(0).first);
+        assertEquals(menuPi, restored.mMenuEntries.get(0).second);
+        assertEquals("Menu 2", restored.mMenuEntries.get(1).first);
+        assertEquals(menuPi2, restored.mMenuEntries.get(1).second);
+        assertEquals("https://example.com/load", restored.mUrlToLoad);
+        assertEquals(Integer.valueOf(0x99112233), restored.mTranslucentBackgroundColor);
+        assertEquals("com.example.identity", restored.mClientPackageNameIdentitySharing);
+        assertEquals(TwaDisclosureUi.V2_NOTIFICATION_OR_SNACKBAR, restored.mTwaDisclosureUi);
+        assertEquals(CustomTabsIntent.CLOSE_BUTTON_POSITION_END, restored.mCloseButtonPosition);
+        assertTrue(restored.mShowSideSheetMaximizeButton);
+        assertEquals(
+                CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_START, restored.mSideSheetPosition);
+        assertEquals(1, restored.mCustomContentActions.size());
+        assertEquals(11, restored.mCustomContentActions.get(0).getId());
+        assertEquals("Pin Image", restored.mCustomContentActions.get(0).getLabel());
+        assertEquals(menuPi, restored.mCustomContentActions.get(0).getPendingIntent());
+        assertEquals(
+                CustomTabsIntent.CONTENT_TARGET_TYPE_IMAGE,
+                restored.mCustomContentActions.get(0).getTargetType());
+        assertEquals(42, restored.mAndroidBrowserHelperVersion);
+        assertEquals(new WindowFeatures(10, 20, 300, 400), restored.mRequestedWindowFeatures);
+        assertEquals(
+                Integer.valueOf(IncognitoCctCallerId.DOWNLOAD_HOME),
+                restored.mIncognitoCctCallerId);
+    }
+
+    @Test
+    public void testParcelRoundTrip_customButtonUpdateSurvives() {
+        Context context = ContextUtils.getApplicationContext();
+        CustomTabIntentDataHolder original =
+                new CustomTabIntentDataHolder.Builder()
+                        .setCustomButtonParams(
+                                List.of(
+                                        CustomButtonParamsImpl.createShareButton(
+                                                context, Color.BLACK)))
+                        .build();
+        original.mCustomButtonParams
+                .get(0)
+                .update(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888), "new");
+
+        CustomTabIntentDataHolder restored = roundTripThroughParcel(original);
+
+        assertEquals(1, restored.mCustomButtonParams.size());
+        assertEquals("new", restored.mCustomButtonParams.get(0).getDescription());
+    }
+
+    @Test
+    public void testParcelRoundTrip_remoteViewsAndSwipeUpUpdatesSurvive() {
+        Context context = ContextUtils.getApplicationContext();
+        RemoteViews initialViews =
+                new RemoteViews(context.getPackageName(), android.R.layout.list_content);
+        PendingIntent initialPi =
+                PendingIntent.getBroadcast(
+                        context, 1, new Intent("initial_rv"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent initialSwipePi =
+                PendingIntent.getBroadcast(
+                        context, 2, new Intent("initial_swipe"), PendingIntent.FLAG_IMMUTABLE);
+        CustomTabIntentDataHolder holder =
+                new CustomTabIntentDataHolder.Builder()
+                        .setRemoteViews(initialViews)
+                        .setClickableViewIds(new int[] {1})
+                        .setRemoteViewsPendingIntent(initialPi)
+                        .setSecondaryToolbarSwipeUpPendingIntent(initialSwipePi)
+                        .build();
+
+        RemoteViews updatedViews =
+                new RemoteViews(context.getPackageName(), android.R.layout.simple_list_item_1);
+        PendingIntent updatedPi =
+                PendingIntent.getBroadcast(
+                        context, 3, new Intent("updated_rv"), PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent updatedSwipePi =
+                PendingIntent.getBroadcast(
+                        context, 4, new Intent("updated_swipe"), PendingIntent.FLAG_IMMUTABLE);
+        holder.updateRemoteViews(updatedViews, new int[] {10, 20}, updatedPi);
+        holder.setSecondaryToolbarSwipeUpPendingIntent(updatedSwipePi);
+
+        CustomTabIntentDataHolder restored = roundTripThroughParcel(holder);
+        assertNotNull(restored.mRemoteViews);
+        assertEquals(android.R.layout.simple_list_item_1, restored.mRemoteViews.getLayoutId());
+        assertArrayEquals(new int[] {10, 20}, restored.mClickableViewIds);
+        assertEquals(updatedPi, restored.mRemoteViewsPendingIntent);
+        assertEquals(updatedSwipePi, restored.mSecondaryToolbarSwipeUpPendingIntent);
+
+        restored.updateRemoteViews(null, null, null);
+        restored.setSecondaryToolbarSwipeUpPendingIntent(null);
+        CustomTabIntentDataHolder restoredCleared = roundTripThroughParcel(restored);
+        assertNull(restoredCleared.mRemoteViews);
+        assertNull(restoredCleared.mClickableViewIds);
+        assertNull(restoredCleared.mRemoteViewsPendingIntent);
+        assertNull(restoredCleared.mSecondaryToolbarSwipeUpPendingIntent);
     }
 
     @Test

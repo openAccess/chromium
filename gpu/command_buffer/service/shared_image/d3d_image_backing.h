@@ -220,7 +220,8 @@ class GPU_GLES2_EXPORT D3DImageBacking final
       Microsoft::WRL::ComPtr<ID3D11Texture2D> d3d11_texture,
       GLenum texture_target = GL_TEXTURE_2D,
       unsigned array_slice = 0u,
-      unsigned plane_index = 0u);
+      unsigned plane_index = 0u,
+      bool is_multi_plane_format = false);
 
   // Only for test use.
   bool HasStagingTextureForTesting() const;
@@ -344,6 +345,11 @@ class GPU_GLES2_EXPORT D3DImageBacking final
       const std::vector<wgpu::TextureFormat>& view_formats)
       EXCLUSIVE_LOCKS_REQUIRED(lock_);
   void NotifyGraphiteAboutInitializedStatus() EXCLUSIVE_LOCKS_REQUIRED(lock_);
+
+  // Marks the whole backing cleared after a successful UploadFromMemory().
+  // Graphite/Dawn is only notified if Dawn doesn't already consider the texture
+  // initialized, since notifying ends and restarts Dawn's persistent access.
+  void MarkClearedAfterUpload() EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Flush pending graphite submits. It will call Graphite's Context::submit.
   void FlushGraphiteCommandsIfNeeded() EXCLUSIVE_LOCKS_REQUIRED(lock_);

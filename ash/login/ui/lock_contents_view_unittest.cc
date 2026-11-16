@@ -281,7 +281,7 @@ TEST_F(LockContentsViewUnitTest, LayoutInSmallScreenSize) {
       LockScreen::ScreenType::kLock, DataDispatcher(),
       std::make_unique<FakeLoginDetachableBaseModel>(DataDispatcher()));
   LockContentsViewTestApi lock_contents(contents);
-  std::unique_ptr<views::Widget> widget = CreateWidgetWithContent(contents);
+  SetWidget(CreateWidgetWithContent(contents));
   display::test::DisplayManagerTestApi display_manager_test_api(
       display_manager());
 
@@ -592,7 +592,7 @@ TEST_F(LockContentsViewUnitTest, SwapAuthUsersInTwoUserLayout) {
       std::make_unique<FakeLoginDetachableBaseModel>(DataDispatcher()));
   LockContentsViewTestApi test_api(contents);
   SetUserCount(2);
-  std::unique_ptr<views::Widget> widget = CreateWidgetWithContent(contents);
+  SetWidget(CreateWidgetWithContent(contents));
 
   // Capture user info to validate it did not change during the swap.
   AccountId primary_user =
@@ -1899,7 +1899,7 @@ TEST_F(LockContentsViewUnitTest, ExpandedPublicSessionView) {
       LockScreen::ScreenType::kLock, DataDispatcher(),
       std::make_unique<FakeLoginDetachableBaseModel>(DataDispatcher()));
   LockContentsViewTestApi lock_contents(contents);
-  std::unique_ptr<views::Widget> widget = CreateWidgetWithContent(contents);
+  SetWidget(CreateWidgetWithContent(contents));
   AddPublicAccountUsers(1);
   AddUsers(2);
 
@@ -2454,16 +2454,18 @@ TEST_F(LockContentsViewUnitTest, RemoveUserFocusMovesBackToPrimaryUser) {
       .WillOnce(Invoke(this, &LoginTestBase::RemoveUser));
 
   LockContentsViewTestApi test_api(lock);
-  LoginAuthUserView::TestApi secondary_test_api(
-      test_api.opt_secondary_big_view()->auth_user());
-  LoginUserView::TestApi user_test_api(secondary_test_api.user_view());
+  {
+    LoginAuthUserView::TestApi secondary_test_api(
+        test_api.opt_secondary_big_view()->auth_user());
+    LoginUserView::TestApi user_test_api(secondary_test_api.user_view());
 
-  // Remove the user. First, focus the dropdown to raise the bubble.
-  user_test_api.dropdown()->RequestFocus();
-  PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);
-  base::RunLoop().RunUntilIdle();
-  // Focus the remove user bubble, tap twice to remove the user.
-  secondary_test_api.remove_account_dialog()->RequestFocus();
+    // Remove the user. First, focus the dropdown to raise the bubble.
+    user_test_api.dropdown()->RequestFocus();
+    PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);
+    base::RunLoop().RunUntilIdle();
+    // Focus the remove user bubble, tap twice to remove the user.
+    secondary_test_api.remove_account_dialog()->RequestFocus();
+  }
   PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);
   base::RunLoop().RunUntilIdle();
   PressAndReleaseKey(ui::KeyboardCode::VKEY_RETURN);

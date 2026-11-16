@@ -6,20 +6,25 @@
 #define CHROME_BROWSER_UI_WEBUI_ORGANIZER_PANEL_ORGANIZER_PANEL_UI_H_
 
 #include <memory>
+#include <optional>
 #include <string_view>
 
+#include "base/timer/elapsed_timer.h"
+#include "base/values.h"
 #include "chrome/browser/ui/webui/organizer_panel/foreign_tabs.mojom.h"
 #include "chrome/browser/ui/webui/organizer_panel/organizer_panel.mojom.h"
 #include "chrome/browser/ui/webui/organizer_panel/tab_groups.mojom.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search.mojom.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+#include "chrome/browser/ui/webui/webui_load_timer.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 
 class ForeignTabsPageHandler;
 class OrganizerPanelPageHandler;
+class Profile;
 class SearchHandler;
 class TabGroupsOrganizerPageHandler;
 class TabSearchPageHandler;
@@ -67,7 +72,20 @@ class OrganizerPanelUI
 
   static constexpr std::string_view GetWebUIName() { return "OrganizerPanel"; }
 
+  // Returns the loadTimeData values that depend on `profile`, the profile of
+  // the window that shows the panel. They are in the WebUIDataSource, or passed
+  // to each frame in WebUIRenderFrameCreated() if the data source is shared by
+  // the windows of all profiles, i.e. in TopChromeWebUIProfile.
+  // TODO(crbug.com/531575122): Move passing these values to each frame to
+  // TopChromeWebUIController, since the omnibox popup does the same and other
+  // Top Chrome WebUIs will.
+  static base::DictValue GetProfileLoadTimeData(Profile* profile);
+
  private:
+  // content::WebUIController:
+  void WebUIRenderFrameCreated(
+      content::RenderFrameHost* render_frame_host) override;
+
   // organizer_panel::mojom::ForeignTabsPageHandlerFactory:
   void CreatePageHandler(
       mojo::PendingReceiver<organizer_panel::mojom::ForeignTabsPageHandler>
@@ -105,6 +123,11 @@ class OrganizerPanelUI
       this};
   mojo::Receiver<organizer_panel::mojom::TabGroupsOrganizerPageHandlerFactory>
       tab_groups_page_factory_receiver_{this};
+
+  WebuiLoadTimer webui_load_timer_;
+
+  // Tracks the duration between WebUI construction and PageHandler creation.
+  std::optional<base::ElapsedTimer> page_handler_timer_;
 
   WEB_UI_CONTROLLER_TYPE_DECL();
 };

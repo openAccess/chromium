@@ -10,7 +10,7 @@
 #import "base/strings/utf_string_conversions.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/prefs/pref_service.h"
-#import "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
+#import "components/safe_browsing/core/browser/client_side_detection/intelligent_scan_delegate/intelligent_scan_delegate.h"
 #import "components/safe_browsing/core/browser/realtime/url_lookup_service.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/proto/csd.pb.h"
@@ -25,6 +25,7 @@
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_host_ios.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_intelligent_scan_delegate_factory.h"
 #import "ios/chrome/browser/safe_browsing/model/client_side_detection/client_side_detection_service_factory.h"
+#import "ios/chrome/browser/safe_browsing/model/suspicious_site_tab_helper.h"
 #import "ios/chrome/browser/safe_browsing/model/verdict_cache_manager_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -126,7 +127,7 @@ void SafeBrowsingClientImpl::OnSecurityInterstitialShown(
         pref_service_->GetBoolean(prefs::kSafeBrowsingProceedAnywayDisabled),
         referrer_chain,
         /*tab_title=*/base::UTF16ToUTF8(web_state->GetTitle()),
-        /*extension_initiator=*/std::nullopt);
+        /*initiator=*/std::nullopt);
   }
 }
 
@@ -166,4 +167,19 @@ SafeBrowsingClientImpl::CreateClientSideDetectionHost(
       intelligent_scan_delegate, profile->GetPrefs(),
       IdentityManagerFactory::GetForProfile(profile),
       ios::HistoryServiceFactory::GetForProfile(profile));
+}
+
+void SafeBrowsingClientImpl::OnSuspiciousSiteWarningTriggered(
+    const security_interstitials::UnsafeResource& resource) {
+  web::WebState* web_state = resource.weak_web_state.get();
+  if (!web_state) {
+    // The `WebState` may have been destroyed before the UI-thread task ran.
+    return;
+  }
+  // `SuspiciousSiteTabHelper` is not attached to Off-The-Record `WebState`s or
+  // minimal `WebState` instances in unit tests.
+  if (SuspiciousSiteTabHelper* tab_helper =
+          SuspiciousSiteTabHelper::FromWebState(web_state)) {
+    tab_helper->OnSuspiciousSiteWarningTriggered(resource);
+  }
 }

@@ -36,6 +36,7 @@
 #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context_types.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_canvas.h"
+#include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_filter.h"
 #include "third_party/blink/renderer/platform/graphics/predefined_color_space.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_linked_hash_set.h"
@@ -439,7 +440,6 @@ class MODULES_EXPORT Canvas2DRecorderContext : public CanvasPath {
                      Canvas2DRecorderContext::OverdrawOp overdraw_op);
 
   HeapVector<Member<CanvasRenderingContext2DState>> state_stack_;
-  unsigned max_state_stack_depth_ = 1;
   // Counts how many states have been pushed with BeginLayer.
   int layer_count_ = 0;
   AntiAliasingMode clip_antialiasing_ = kNotAntiAliased;
@@ -608,6 +608,9 @@ class MODULES_EXPORT Canvas2DRecorderContext : public CanvasPath {
                              const double y,
                              const V8CanvasFillRule& winding_rule);
   bool IsPointInStrokeInternal(const Path&, const double x, const double y);
+  // Path operations and hit tests depend only on the path and the current
+  // transform, so a live context with no backing can still run them.
+  bool CanRunPathOpsWithoutCanvas() const;
 
   bool BlendModeSupportsShadowFilter(SkBlendMode) const;
   bool BlendModeDoesntPreserveOpaqueDestinationAlpha(SkBlendMode);

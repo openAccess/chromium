@@ -19,8 +19,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_factory.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
-#include "gpu/command_buffer/service/shared_image/shared_memory_image_backing.h"
-#include "gpu/command_buffer/service/shared_memory_region_wrapper.h"
 #include "gpu/gpu_gles2_export.h"
 #include "gpu/ipc/common/surface_handle.h"
 #include "ui/gfx/color_space.h"
@@ -33,6 +31,10 @@ class SharedImageBackingFactory;
 class SharedImageCopyManager;
 class SharedImageFactory;
 class SharedImageFactoryRef;
+
+namespace gles2 {
+class GLES2DecoderPassthroughCompoundImageTest;
+}  // namespace gles2
 
 // TODO(kylechar): Merge with OzoneImageBacking::AccessStream enum.
 //
@@ -153,12 +155,6 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   using CreateBackingCallback =
       base::OnceCallback<void(std::unique_ptr<SharedImageBacking>&)>;
 
-  static bool IsValidSharedMemoryFormat(const gfx::Size& size,
-                                        viz::SharedImageFormat format);
-
-  // Remove the SCANOUT flag if |kAllowShmOverlays|.
-  static SharedImageUsageSet GetGpuSharedImageUsage(SharedImageUsageSet usage);
-
   // Creates a CompoundImageBacking that wraps or allocates the appropriate
   // underlying backing(s) provided by `shared_image_factory`.
   static std::unique_ptr<SharedImageBacking> Create(
@@ -211,7 +207,6 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   bool CopyToGpuMemoryBuffer() override;
   void CopyToGpuMemoryBufferAsync(
       base::OnceCallback<void(bool)> callback) override;
-  gfx::Rect ClearedRect() const override;
 
   // CompoundImageBacking now supports partial clear for upcoming use
   // cases as it evolves. The cleared rect is now tracked on the compound
@@ -227,8 +222,9 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   // be copied into it.
   // 3. Anytime a copy is performend between backings, the src backing's cleared
   // rect will be xfered to the dst backing.
-  // 4. If there is a shm backing, entire CompoundImageBacking as well all the
-  // created gpu backings will be marked as cleared always.
+  // 4. If there is a shm backing, CompoundImageBacking starts logically
+  // cleared, while newly created GPU backings remain uncleared until first
+  // access uploads from shared memory.
   void SetClearedRect(const gfx::Rect& cleared_rect) override;
 
   void OnAddSecondaryReference() override;
@@ -302,6 +298,7 @@ class GPU_GLES2_EXPORT CompoundImageBacking
  private:
   friend class CompoundImageBackingTest;
   friend class D3DImageBackingFactoryTest;
+  friend class gles2::GLES2DecoderPassthroughCompoundImageTest;
 
   // Holds one element, aka SharedImageBacking and related information, that
   // makes up the compound.
@@ -343,10 +340,21 @@ class GPU_GLES2_EXPORT CompoundImageBacking
       gfx::GpuMemoryBufferHandle handle,
       std::optional<gfx::BufferUsage> buffer_usage = std::nullopt);
 
-  // Wraps a backing in a CompoundImageBacking.
-  static std::unique_ptr<SharedImageBacking> WrapExternalBacking(
-      SharedImageFactory* shared_image_factory,
-      std::unique_ptr<SharedImageBacking> backing);
+  static std::unique_ptr<SharedImageBacking> CreateSharedMemoryInternal(
+      const Mailbox& mailbox,
+      const SharedImageInfo& si_info,
+      gfx::GpuMemoryBufferHandle handle,
+      std::optional<gfx::BufferUsage> buffer_usage,
+      base::WeakPtr<SharedImageBackingFactory> gpu_backing_factory,
+      scoped_refptr<SharedImageCopyManager> copy_manager,
+      scoped_refptr<SharedImageFactoryRef> shared_image_factory);
+
+  // Creates a CompoundImageBacking with `backing` as its sole initial element.
+  // Returns nullptr if `backing` is null.
+  static std::unique_ptr<CompoundImageBacking> CreateSingleElement(
+      std::unique_ptr<SharedImageBacking> backing,
+      scoped_refptr<SharedImageCopyManager> copy_manager,
+      scoped_refptr<SharedImageFactoryRef> shared_image_factory = nullptr);
 
   // Creates a backing that contains a shared memory backing and GPU backing
   // provided by `gpu_backing_factory`.
@@ -379,17 +387,15 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   CompoundImageBacking(
       const Mailbox& mailbox,
       const SharedImageInfo& si_info,
-      std::unique_ptr<SharedImageBacking> shm_backing,
+      ElementHolder initial_element,
+      scoped_refptr<SharedImageCopyManager> copy_manager,
       scoped_refptr<SharedImageFactoryRef> shared_image_factory,
-      base::WeakPtr<SharedImageBackingFactory> gpu_backing_factory,
-      scoped_refptr<SharedImageCopyManager> copy_manager,
-      std::optional<gfx::BufferUsage> buffer_usage = std::nullopt);
+      std::optional<gfx::BufferUsage> buffer_usage);
 
-  CompoundImageBacking(
-      std::optional<gfx::BufferUsage> buffer_usage,
-      std::unique_ptr<SharedImageBacking> backing,
-      scoped_refptr<SharedImageCopyManager> copy_manager,
-      scoped_refptr<SharedImageFactoryRef> shared_image_factory);
+  void AddLazyGpuElement(
+      base::WeakPtr<SharedImageBackingFactory> gpu_backing_factory,
+      SharedImageUsageSet gpu_usage,
+      std::string debug_label);
 
   base::trace_event::MemoryAllocatorDump* OnMemoryDump(
       const std::string& dump_name,
@@ -397,21 +403,23 @@ class GPU_GLES2_EXPORT CompoundImageBacking
       base::trace_event::ProcessMemoryDump* pmd,
       uint64_t client_tracing_id) override;
 
-  // Returns a SkPixmap for shared memory backing.
-  const std::vector<SkPixmap>& GetSharedMemoryPixmaps();
-
-  // Returns the shared memory element used for access stream
-  // SharedImageAccessStream::kMemory. There can be only 1 shared memory element
-  // at most.
-  ElementHolder& GetShmElement();
+  template <typename WrappedRep, typename ProduceFn, typename... ExtraArgs>
+  std::unique_ptr<typename WrappedRep::BaseRepresentation> ProduceWrapped(
+      SharedImageManager* manager,
+      MemoryTypeTracker* tracker,
+      SharedImageAccessStream stream,
+      const AccessParams& params,
+      ProduceFn&& produce_fn,
+      ExtraArgs&&... extra_args);
 
   // Gets the element corresponding to the backing.
   ElementHolder* GetElement(const SharedImageBacking* backing);
 
-  // Finds the element which has the most recent data/content irrespective of
-  // the stream. There could be multiple elements which has the most recent
-  // data. This method finds the first element which has most recent data.
-  ElementHolder* GetElementWithLatestContent();
+  // Finds the first permanent element (excluding `exclude_element` when
+  // non-null) that holds the most recent content (`content_id_ ==
+  // latest_content_id_`).
+  ElementHolder* GetElementWithLatestContent(
+      const ElementHolder* exclude_element) EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Gets or allocates a backing for a given `stream` and `params`.
   // It finds a backing that supports the given `stream` and is compatible
@@ -429,15 +437,8 @@ class GPU_GLES2_EXPORT CompoundImageBacking
       const AccessParams& params,
       std::unique_ptr<SharedImageBacking>& out_transient_backing);
 
-  // Returns the GPU backing that holds the latest content from |elements_|, or
-  // nullptr if no GPU backing holds the latest content.
-  SharedImageBacking* GetGpuBacking();
-
-  bool HasLatestContent(ElementHolder& element);
-
-  // Sets the element used for `stream` as having the latest content. If
-  // `write_access` is true then only that element has the latest content.
-  void SetLatestContent(SharedImageAccessStream stream, bool write_access);
+  bool HasLatestContent(const ElementHolder& element) const
+      EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Runs CreateSharedImage() on `factory` and stores the result in `backing`.
   // If successful this will update the estimated size of compound backing.
@@ -466,9 +467,6 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   static bool ComputeIsThreadSafe(SharedImageFactoryRef* factory_ref,
                                   SharedImageUsageSet usage);
 
-  // Helper to record GPU.SharedImage.BackingType UMA histogram.
-  static void RecordBackingTypeUMA(SharedImageBackingType backing_type);
-
   // This is required for CompoundImageBacking to be able to query an
   // appropriate SharedImageBackingFactory dynamically based on clients
   // required usage(Produce*) which typically happens after the backing
@@ -491,9 +489,9 @@ class GPU_GLES2_EXPORT CompoundImageBacking
   // where it can have any number of gpu backings and at most 1 cpu backing.
   std::vector<ElementHolder> elements_ GUARDED_BY(lock_);
 
-  base::OnceCallback<void(bool)> pending_copy_to_gmb_callback_;
+  base::OnceCallback<void(bool)> pending_copy_to_gmb_callback_
+      GUARDED_BY(lock_);
   scoped_refptr<SharedImageCopyManager> copy_manager_;
-  bool has_shm_backing_ = false;
   // Tracks the maximum number of SharedImageBacking elements that were
   // allocated within this CompoundImageBacking instance during its lifetime.
   // This value is recorded in a UMA histogram in the destructor.

@@ -15,6 +15,7 @@ import android.os.Bundle;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.CallbackController;
 import org.chromium.base.CommandLine;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.IntentUtils;
@@ -30,6 +31,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.LaunchIntentDispatcher;
 import org.chromium.chrome.browser.customtabs.AuthTabIntentDataProvider;
+import org.chromium.chrome.browser.customtabs.content.WebAppLaunchHandler;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.locale.LocaleManager;
@@ -120,6 +122,8 @@ public abstract class FirstRunFlowSequencer {
     /** If not null, creates {@code mDelegate} for this object during tests. */
     private static @Nullable DelegateFactoryForTesting sDelegateFactoryForTesting;
 
+    private final CallbackController mCallbackController = new CallbackController();
+
     private boolean mIsFlowKnown;
     private boolean mAccountsAvailable;
     private @TriState int mIsChild;
@@ -141,7 +145,8 @@ public abstract class FirstRunFlowSequencer {
                         ? sDelegateFactoryForTesting.buildFactory(profileSupplier)
                         : new FirstRunFlowSequencerDelegate(profileSupplier);
 
-        childAccountStatusSupplier.onAvailable(this::setChildAccountStatus);
+        childAccountStatusSupplier.onAvailable(
+                mCallbackController.makeCancelable(this::setChildAccountStatus));
     }
 
     /**
@@ -154,15 +159,21 @@ public abstract class FirstRunFlowSequencer {
         AccountManagerFacadeProvider.getInstance()
                 .getAccounts()
                 .then(
-                        accounts -> {
-                            RecordHistogram.recordCount1MHistogram(
-                                    "Signin.AndroidDeviceAccountsNumberWhenEnteringFRE",
-                                    Math.min(accounts.size(), 2));
+                        mCallbackController.makeCancelable(
+                                accounts -> {
+                                    RecordHistogram.recordCount1MHistogram(
+                                            "Signin.AndroidDeviceAccountsNumberWhenEnteringFRE",
+                                            Math.min(accounts.size(), 2));
 
-                            assert !mAccountsAvailable;
-                            mAccountsAvailable = true;
-                            maybeProcessFreEnvironmentPreNative();
-                        });
+                                    assert !mAccountsAvailable;
+                                    mAccountsAvailable = true;
+                                    maybeProcessFreEnvironmentPreNative();
+                                }));
+    }
+
+    /** Cleans up pending callbacks registered by this sequencer. */
+    public void destroy() {
+        mCallbackController.destroy();
     }
 
     @VisibleForTesting
@@ -313,6 +324,12 @@ public abstract class FirstRunFlowSequencer {
         if (uri != null && UrlConstants.CONTENT_SCHEME.equals(uri.getScheme())) {
             caller.grantUriPermission(
                     caller.getPackageName(), uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+
+        // Similarly, verify any files shared to a TWA while the original caller is still known,
+        // since Chrome itself is the caller when it relaunches the intent after the FRE.
+        if (caller instanceof Activity activity) {
+            WebAppLaunchHandler.verifyShareDataBeforeFirstRun(activity, fromIntent);
         }
 
         Log.d(TAG, "Redirecting user through FRE.");

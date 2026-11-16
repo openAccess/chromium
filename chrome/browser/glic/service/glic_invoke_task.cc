@@ -4,9 +4,13 @@
 
 #include "chrome/browser/glic/service/glic_invoke_task.h"
 
+#include <string_view>
+#include <utility>
+
 #include "base/barrier_closure.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/notreached.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -207,29 +211,41 @@ void SetTabPendingActuationTask::OnSequenceCompleted(bool success) {
 }
 
 ShowInstanceTask::ShowInstanceTask(GlicInstanceImpl& instance,
-                                   ShowOptions options)
-    : instance_(instance), options_(options) {}
+                                   ShowOptions options,
+                                   base::OnceCallback<void(bool)> on_shown)
+    : instance_(instance),
+      options_(std::move(options)),
+      on_shown_(std::move(on_shown)) {}
 
 ShowInstanceTask::~ShowInstanceTask() = default;
 
 void ShowInstanceTask::Start(base::OnceClosure done_callback) {
+  base::WeakPtr<GlicInstanceImpl> weak_instance = instance_->GetWeakPtr();
+  auto on_shown = std::move(on_shown_);
   if (options_) {
-    instance_->Show(*options_);
-    options_.reset();
+    // Move `options_` and `on_shown_` out before `Show()`, as `Show()` can
+    // synchronously close the embedder and cancel/destroy the owning
+    // `GlicInvokeHandler` (and `this`).
+    instance_->Show(*std::exchange(options_, std::nullopt));
+  }
+  if (on_shown) {
+    std::move(on_shown).Run(weak_instance && weak_instance->IsShowing());
   }
   std::move(done_callback).Run();
 }
 
 SetupHiddenPanelTask::SetupHiddenPanelTask(GlicInstanceImpl& instance,
-                                           tabs::TabInterface& tab)
-    : instance_(instance), tab_(tab) {}
+                                           tabs::TabHandle tab_handle)
+    : instance_(instance), tab_handle_(tab_handle) {}
 
 SetupHiddenPanelTask::~SetupHiddenPanelTask() = default;
 
 void SetupHiddenPanelTask::Start(base::OnceClosure done_callback) {
   instance_->SuppressShowOnNextTabAddedToTask(true);
-  instance_->BindTabWithoutShowing(&*tab_, GlicPinTrigger::kActuation,
-                                   /*pin_on_bind=*/true);
+  if (tabs::TabInterface* tab = tab_handle_.Get()) {
+    instance_->BindTabWithoutShowing(tab, GlicPinTrigger::kActuation,
+                                     /*pin_on_bind=*/true);
+  }
   std::move(done_callback).Run();
 }
 
@@ -340,8 +356,10 @@ void WaitForClientReadyTask::CheckState(ClientLoadState state) {
       break;
 
     case ClientLoadState::kError:
-      if (host_->client_load_error_reason() == ClientLoadErrorReason::kSignIn) {
-        // The client is waiting for the user, not broken. See SignInBehavior.
+      if (host_->client_load_error_reason() == ClientLoadErrorReason::kSignIn &&
+          host_->instance().IsShowing()) {
+        // The client is waiting for the user on a visible sign-in panel, not
+        // broken. See SignInBehavior.
         if (sign_in_behavior_ == SignInBehavior::kWaits) {
           break;
         }
@@ -362,12 +380,16 @@ void WaitForClientReadyTask::CheckState(ClientLoadState state) {
 }
 
 PostCallbackTask::PostCallbackTask(base::OnceClosure callback)
-    : callback_(std::move(callback)) {}
+    : PostCallbackTask(std::move(callback), {}) {}
+
+PostCallbackTask::PostCallbackTask(base::OnceClosure callback,
+                                   base::OnceCallback<bool()> should_post)
+    : callback_(std::move(callback)), should_post_(std::move(should_post)) {}
 
 PostCallbackTask::~PostCallbackTask() = default;
 
 void PostCallbackTask::Start(base::OnceClosure done_callback) {
-  if (callback_) {
+  if (callback_ && (!should_post_ || std::move(should_post_).Run())) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, std::move(callback_));
   }
@@ -398,16 +420,14 @@ void StabilizationTask::OnStabilized() {
   std::move(done_callback_).Run();
 }
 
-WaitForFreCompletionTask::WaitForFreCompletionTask(
-    ::Profile* profile,
-    mojom::FreOverride fre_override)
-    : profile_(profile), fre_override_(fre_override) {}
+WaitForFreCompletionTask::WaitForFreCompletionTask(::Profile* profile)
+    : profile_(profile) {}
 
 WaitForFreCompletionTask::~WaitForFreCompletionTask() = default;
 
 void WaitForFreCompletionTask::Start(base::OnceClosure done_callback) {
   done_callback_ = std::move(done_callback);
-  if (!ShouldWaitForFreCompletion()) {
+  if (GlicEnabling::HasConsentedForProfile(profile_)) {
     std::move(done_callback_).Run();
     return;
   }
@@ -424,14 +444,6 @@ void WaitForFreCompletionTask::OnProfileReadyStateChanged() {
     subscription_ = {};
     std::move(done_callback_).Run();
   }
-}
-
-bool WaitForFreCompletionTask::ShouldWaitForFreCompletion() const {
-  if (GlicEnabling::HasConsentedForProfile(profile_)) {
-    return false;
-  }
-  return fre_override_ == mojom::FreOverride::kTrustFirstClick ||
-         fre_override_ == mojom::FreOverride::kUnspecified;
 }
 
 SendToClientTask::SendToClientTask(
@@ -795,5 +807,49 @@ std::optional<GlicTaskType> PastePolicyTask::GetType() const {
 std::optional<GlicTaskType> WaitForClientReadyTask::GetType() const {
   return GlicTaskType::kWaitForClientReady;
 }
+
+// LINT.IfChange(GlicTaskTypeToDiagnosticString)
+std::string_view GlicTaskTypeToDiagnosticString(GlicTaskType task_type) {
+  switch (task_type) {
+    case GlicTaskType::kUnknown:
+      return "UNKNOWN";
+    case GlicTaskType::kSequentialTaskGroup:
+      return "SEQUENTIAL_TASK_GROUP";
+    case GlicTaskType::kParallelTaskGroup:
+      return "PARALLEL_TASK_GROUP";
+    case GlicTaskType::kWaitForNavigation:
+      return "WAIT_FOR_NAVIGATION";
+    case GlicTaskType::kSetTabPendingActuation:
+      return "SET_TAB_PENDING_ACTUATION";
+    case GlicTaskType::kShowInstance:
+      return "SHOW_INSTANCE";
+    case GlicTaskType::kSetupHiddenPanel:
+      return "SETUP_HIDDEN_PANEL";
+    case GlicTaskType::kMaybeInitializeHiddenClient:
+      return "MAYBE_INITIALIZE_HIDDEN_CLIENT";
+    case GlicTaskType::kWaitForClientConnected:
+      return "WAIT_FOR_CLIENT_CONNECTED";
+    case GlicTaskType::kPostCallback:
+      return "POST_CALLBACK";
+    case GlicTaskType::kStabilization:
+      return "STABILIZATION";
+    case GlicTaskType::kWaitForFreCompletion:
+      return "WAIT_FOR_FRE_COMPLETION";
+    case GlicTaskType::kSendToClient:
+      return "SEND_TO_CLIENT";
+    case GlicTaskType::kWaitForActuation:
+      return "WAIT_FOR_ACTUATION";
+    case GlicTaskType::kClipboardPolicy:
+      return "CLIPBOARD_POLICY";
+    case GlicTaskType::kCopyPolicy:
+      return "COPY_POLICY";
+    case GlicTaskType::kPastePolicy:
+      return "PASTE_POLICY";
+    case GlicTaskType::kWaitForClientReady:
+      return "WAIT_FOR_CLIENT_READY";
+  }
+  NOTREACHED();
+}
+// LINT.ThenChange(//chrome/browser/glic/service/glic_invoke_task.h:GlicTaskType)
 
 }  // namespace glic

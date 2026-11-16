@@ -236,7 +236,10 @@ if (is_chromeos) {
       "//ui/aura",
     ]
     deps = [
+      ":browser_view_header",
       "//ash",
+      "//ash/constants",
+      "//ash/public/cpp",
       "//chrome/browser/ui/color:color_headers",
       "//chromeos/constants",
       "//chromeos/ui/base",
@@ -305,6 +308,7 @@ if (is_chromeos) {
       "//chrome/browser/profiles:profile",
       "//chrome/browser/search",
       "//chrome/browser/ssl",
+      "//chrome/browser/ui:tab_ui_helper",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_enums",
       "//chrome/browser/ui/tabs:tab_strip",
@@ -313,6 +317,7 @@ if (is_chromeos) {
       "//chrome/browser/ui/views/omnibox",
       "//chrome/common:constants",
       "//components/permissions",
+      "//components/tabs:public",
       "//content/public/browser",
       "//extensions/common:common_constants",
       "//ui/aura",
@@ -836,6 +841,7 @@ source_set("browser_view") {
     "//chrome/browser/ui/browser_window:create_browser_window",
     "//chrome/browser/ui/browser_window_theme_observer",
     "//chrome/browser/ui/color:color_headers",
+    "//chrome/browser/ui/color:mixers",
     "//chrome/browser/ui/dialogs:browser_dialogs",
     "//chrome/browser/ui/exclusive_access",
     "//chrome/browser/ui/find_bar",
@@ -1081,6 +1087,7 @@ source_set("web_contents_close_handler") {
 
 source_set("browser_native_widget") {
   public = [ "browser_native_widget.h" ]
+  sources = [ "browser_native_widget.cc" ]
   public_deps = [
     "//build:buildflag_header_h",
     "//content/public/browser",
@@ -1162,6 +1169,7 @@ source_set("custom_floating_corner") {
 
 source_set("custom_floating_corner_impl") {
   sources = [ "custom_floating_corner.cc" ]
+  configs += [ "//build/config/compiler:wglobal_constructors" ]
   public_deps = [ ":custom_floating_corner" ]
   deps = [
     "//base",
@@ -2015,13 +2023,13 @@ if (is_mac) {
       "//chrome/browser/ui/web_applications",
       "//chrome/common:constants",
       "//components/bookmarks/common",
-      "//components/dom_distiller/content/browser",
-      "//components/dom_distiller/core",
       "//components/input",
       "//components/lens:features",
       "//components/omnibox/browser",
       "//components/remote_cocoa/app_shim",
       "//components/remote_cocoa/common:mojo",
+      "//components/web_distiller/content/browser",
+      "//components/web_distiller/core",
       "//components/web_modal",
       "//skia",
       "//ui/accessibility",
@@ -2150,7 +2158,6 @@ source_set("system_menu_model_builder_impl") {
       "//ash",
       "//chrome/browser/ash/boca/on_task",
       "//chrome/browser/ui:settings_window_manager_chromeos",
-      "//chrome/browser/ui/ash/multi_user",
       "//chrome/browser/ui/chromeos/locked_state",
       "//chromeos/strings",
       "//chromeos/ui/frame",
@@ -2232,6 +2239,7 @@ source_set("browser_tests") {
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 
   sources = [
+    "base_tab_strip_region_view_browsertest.cc",
     "browser_frame_view_browsertest.cc",
     "browser_root_view_browsertest.cc",
     "browser_view_browsertest.cc",
@@ -2246,6 +2254,7 @@ source_set("browser_tests") {
   ]
 
   deps = [
+    ":base_tab_strip_region_view",
     ":browser_frame_view",
     ":browser_view_header",
     ":browser_view_layout",
@@ -2275,16 +2284,26 @@ source_set("browser_tests") {
     "//chrome/browser/ui/views/animations",
     "//chrome/browser/ui/views/fullscreen_control",
     "//chrome/browser/ui/views/infobars",
+    "//chrome/browser/ui/views/page_action:page_action_test_support",
     "//chrome/browser/ui/views/tabs:new_tab_button",
     "//chrome/browser/ui/views/tabs:tab_style_views",
     "//chrome/browser/ui/views/tabs:test_support",
+    "//chrome/browser/ui/views/toolbar:test_support",
     "//chrome/browser/ui/views/web_apps/frame_toolbar:web_app_frame_toolbar_view",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/browser/ui/window_metadata",
+    "//chrome/browser/web_applications:web_applications_test_support",
+    "//chrome/test/base:chrome_test_path_utils",
+    "//chrome/test/base:chrome_test_scoped_utils",
+    "//chrome/test/base:chrome_test_utils",
+    "//components/autofill/content/browser:test_support",
     "//components/enterprise/data_controls/core/browser:test_support",
     "//components/safe_browsing/core/browser/realtime:test_support",
+    "//components/user_manager",
     "//ui/accessibility:test_support",
     "//ui/base:data_exchange",
     "//ui/base:ozone_buildflags",
+    "//ui/base/clipboard:clipboard_test_support",
   ]
 
   if (use_ozone) {
@@ -2299,12 +2318,27 @@ source_set("browser_tests") {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/exclusive_access",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//ui/linux:linux_ui_factory",
       "//ui/platform_window",
       "//ui/views",
     ]
+
+    if (ozone_platform_x11) {
+      sources += [ "browser_native_widget_aura_linux_browsertest.cc" ]
+      deps += [
+        "//chrome/browser:shell_integration_linux",
+        "//chrome/browser/profiles:profile",
+        "//chrome/browser/ui:browser_window_header",
+        "//chrome/browser/ui/web_applications/test:test_support_ui",
+        "//chrome/browser/web_applications",
+        "//chrome/browser/web_applications:web_applications_test_support",
+        "//chrome/common",
+        "//ui/aura",
+        "//ui/gfx/x",
+        "//url",
+      ]
+    }
   }
 
   if (is_mac) {
@@ -2365,7 +2399,6 @@ source_set("browser_tests") {
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:settings_window_manager_chromeos",
       "//chrome/browser/ui/ash:test_support",
-      "//chrome/browser/ui/ash/multi_user",
       "//chrome/browser/ui/ash/session",
       "//chrome/browser/ui/ash/system_web_apps",
       "//chrome/browser/ui/chromeos/locked_state",
@@ -2375,7 +2408,7 @@ source_set("browser_tests") {
       "//chrome/browser/ui/views/web_apps/frame_toolbar:web_app_toolbar_button_container",
       "//chrome/browser/web_applications:prevent_close_test_support",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/permissions",
       "//chromeos/ash/services/multidevice_setup/public/cpp:prefs",
       "//chromeos/ui/frame",
       "//chromeos/ui/frame:test_support",
@@ -2443,13 +2476,15 @@ source_set("interactive_ui_tests") {
     "//chrome/browser/ui/views:tab_modal_confirm_dialog_views",
     "//chrome/browser/ui/views/animations",
     "//chrome/browser/ui/views/page_info",
+    "//chrome/browser/ui/views/side_panel",
     "//chrome/browser/ui/views/tabs:new_tab_button",
     "//chrome/browser/ui/views/tabs/horizontal",
     "//chrome/browser/ui/views/test:test_support",
     "//chrome/browser/ui/views/toolbar:test_support",
     "//chrome/browser/ui/window_metadata",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:chrome_test_path_utils",
+    "//chrome/test/base:chrome_test_utils",
     "//chrome/test/user_education",
     "//content/test:test_support",
     "//media",
@@ -2613,6 +2648,7 @@ if (is_linux) {
       "//build/config/linux/dbus:buildflags",
       "//ui/base/mojom:ui_base_types",
       "//ui/linux:linux_ui",
+      "//ui/platform_window",
       "//ui/views",
     ]
     if (use_dbus) {
@@ -2631,6 +2667,7 @@ if (is_linux) {
       "//base",
       "//build:buildflag_header_h",
       "//build/config/linux/dbus:buildflags",
+      "//chrome/browser/themes",
       "//chrome/browser/ui:browser_init_state",
       "//chrome/browser/ui/exclusive_access",
       "//chrome/browser/ui/tabs:tab_strip",
@@ -2712,6 +2749,7 @@ if (is_linux) {
     ]
     deps = [
       ":browser_frame_view_layout_linux_native",
+      ":browser_view_header",
       "//ui/gfx",
       "//ui/views",
     ]
@@ -3039,6 +3077,7 @@ source_set("browser_view_tabbed_layout_impl") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/color:color_headers",
     "//chrome/browser/ui/immersive:immersive_mode_controller",
+    "//chrome/browser/ui/tabs",
     "//chrome/browser/ui/views/animations",
     "//chrome/browser/ui/views/bookmarks",
     "//chrome/browser/ui/views/infobars",

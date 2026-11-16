@@ -47,16 +47,6 @@ public class PriceWelcomeMessageController {
     private final TabModelObserver mTabModelObserver =
             new TabModelObserver() {
                 @Override
-                public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                    TabModel tabModel = mCurrentTabModelSupplier.get();
-                    assumeNonNull(tabModel);
-                    assert mPriceMessageService != null;
-                    if (mPriceMessageService.getBindingTabId() == tab.getId()) {
-                        removePriceWelcomeMessage();
-                    }
-                }
-
-                @Override
                 public void willCloseTabs(
                         List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                     TabModel tabModel = mCurrentTabModelSupplier.get();
@@ -128,6 +118,7 @@ public class PriceWelcomeMessageController {
     }
 
     /**
+     * @param context The Android {@link Context}.
      * @param tabSwitcherMessageManager Manages messages for the tab switcher.
      * @param currentTabModelSupplier Supplies the current {@link TabModel}.
      * @param messageCardProvider To build message cards.

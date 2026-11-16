@@ -38,7 +38,6 @@ extern const char kComposeMSBBSessionDialogShownCount[];
 extern const char kInnerTextNodeOffsetFound[];
 extern const char kComposeContextMenuCtr[];
 extern const char kComposeProactiveNudgeCtr[];
-extern const char kComposeSelectionNudgeCtr[];
 extern const char kComposeProactiveNudgeShowStatus[];
 extern const char kOpenComposeDialogResult[];
 extern const char kComposeStartSessionEntryPoint[];
@@ -58,10 +57,8 @@ enum class ComposeContextMenuCtrEvent {
 // Keep in sync with ComposeRequestReason in
 // src/tools/metrics/histograms/metadata/compose/enums.xml.
 enum class ComposeRequestReason {
-  // When the ComposeUpfrontInputModes featuer is enabled, the "first request"
-  // is split between one of three input modes.
-  // TODO(b/371054228): Deprecate the kFirstRequest bucket when upfront inputs
-  // launches.
+  // The "first request" is split between one of three upfront input modes,
+  // except when no input mode is set (e.g. auto-submit).
   kFirstRequest = 0,
   kRetryRequest = 1,
   kUpdateRequest = 2,
@@ -193,7 +190,8 @@ enum class ComposeNudgeCtrEvent {
 enum class ComposeEntryPoint {
   kContextMenu = 0,
   kProactiveNudge = 1,
-  kSelectionNudge = 2,
+  // DEPRECATED: Selection nudge was removed.
+  // kSelectionNudge = 2,
   kSavedStateNudge = 3,
   kSavedStateNotification = 4,
   kMaxValue = kSavedStateNotification,
@@ -433,8 +431,6 @@ void LogComposeContextMenuCtr(ComposeContextMenuCtrEvent event);
 void LogComposeContextMenuShowStatus(ComposeShowStatus status);
 
 void LogComposeProactiveNudgeCtr(ComposeNudgeCtrEvent event);
-
-void LogComposeSelectionNudgeCtr(ComposeNudgeCtrEvent event);
 
 void LogComposeProactiveNudgeShowStatus(ComposeShowStatus status);
 

@@ -66,7 +66,6 @@
 #include "components/autofill/core/browser/ui/payments/card_unmask_prompt_view.h"
 #include "components/autofill/core/browser/ui/payments/payments_churned_users_ui_delegate.h"
 #include "components/autofill/core/browser/ui/payments/save_and_fill_dialog_controller_impl.h"
-#include "components/autofill/core/browser/ui/payments/wallet_reminder_notice_ui_delegate.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
@@ -75,7 +74,6 @@
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_prefs/user_prefs.h"
-#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -99,7 +97,6 @@
 #include "chrome/browser/ui/android/autofill/autofill_snackbar_controller_impl.h"
 #include "chrome/browser/ui/android/autofill/card_expiration_date_fix_flow_view_android.h"
 #include "chrome/browser/ui/android/autofill/card_name_fix_flow_view_android.h"
-#include "chrome/browser/ui/android/autofill/wallet_reminder_notice_ui_delegate_android.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/autofill/payments/android_bnpl_ui_delegate.h"
 #include "chrome/browser/ui/autofill/payments/android_payments_window_manager.h"
@@ -118,7 +115,6 @@
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_page_action_controller.h"
 #include "chrome/browser/ui/autofill/payments/payments_churned_users_ui_delegate_desktop.h"
 #include "chrome/browser/ui/autofill/payments/save_card_bubble_controller_impl.h"
-#include "chrome/browser/ui/autofill/payments/wallet_reminder_notice_ui_delegate_desktop.h"
 #include "chrome/browser/ui/autofill/payments/webauthn_dialog_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/webauthn_dialog_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck
@@ -155,18 +151,9 @@ ChromePaymentsAutofillClient::ChromePaymentsAutofillClient(
         std::make_unique<OmniboxAutofillDelegate>(&client_.get());
   }
 #endif
-  if (AutofillOfferManager* offer_manager = GetAutofillOfferManager()) {
+  if (GetAutofillOfferManager()) {
     offer_notification_handler_ =
-        std::make_unique<OfferNotificationHandler>(offer_manager);
-  }
-  // Only needed to update the offer notification, which is otherwise not
-  // shown.
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillEnableWalletDirectOffers) &&
-      base::FeatureList::IsEnabled(
-          features::kAutofillEnableWalletDirectOffersNotificationBubble)) {
-    payments_data_manager_observation_.Observe(
-        &client_->GetPersonalDataManager().payments_data_manager());
+        std::make_unique<OfferNotificationHandler>(client_.get());
   }
 }
 
@@ -312,7 +299,9 @@ void ChromePaymentsAutofillClient::ShowSaveCreditCardLocally(
     SaveCreditCardOptions options,
     LocalSaveCardPromptCallback callback) {
 #if BUILDFLAG(IS_ANDROID)
-  CHECK(options.show_prompt, base::NotFatalUntil::M162);
+  // TODO(crbug.com/579239755): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(options.show_prompt);
   AutofillSaveCardUiInfo ui_info =
       AutofillSaveCardUiInfo::CreateForLocalSave(options, card);
   auto save_card_delegate = std::make_unique<AutofillSaveCardDelegateAndroid>(
@@ -959,12 +948,6 @@ void ChromePaymentsAutofillClient::DismissOfferNotification() {
 #endif
 }
 
-bool ChromePaymentsAutofillClient::IsTabVisibleForOfferNotification() const {
-  // An occluded tab counts as not visible: the user cannot see a notification
-  // shown on it either.
-  return web_contents()->GetVisibility() == content::Visibility::VISIBLE;
-}
-
 bool ChromePaymentsAutofillClient::ShowTouchToFillCreditCard(
     base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
     base::span<const Suggestion> suggestions) {
@@ -1273,20 +1256,6 @@ BnplUiDelegate* ChromePaymentsAutofillClient::GetBnplUiDelegate() {
   return bnpl_ui_delegate_.get();
 }
 
-WalletReminderNoticeUiDelegate*
-ChromePaymentsAutofillClient::GetWalletReminderNoticeUiDelegate() {
-  if (!wallet_reminder_notice_ui_delegate_) {
-#if BUILDFLAG(IS_ANDROID)
-    wallet_reminder_notice_ui_delegate_ =
-        std::make_unique<WalletReminderNoticeUiDelegateAndroid>(&client_.get());
-#else
-    wallet_reminder_notice_ui_delegate_ =
-        std::make_unique<WalletReminderNoticeUiDelegateDesktop>(&client_.get());
-#endif
-  }
-  return wallet_reminder_notice_ui_delegate_.get();
-}
-
 WalletReminderNoticeManager*
 ChromePaymentsAutofillClient::GetWalletReminderNoticeManager() {
   if (!wallet_reminder_notice_manager_) {
@@ -1419,52 +1388,6 @@ void ChromePaymentsAutofillClient::
       std::move(touch_to_fill_payment_method_controller);
 }
 #endif  // #if BUILDFLAG(IS_ANDROID)
-
-void ChromePaymentsAutofillClient::DidFinishNavigation(
-    content::NavigationHandle* navigation_handle) {
-  if (!navigation_handle->HasCommitted() ||
-      navigation_handle->IsSameDocument() ||
-      !navigation_handle->IsInPrimaryMainFrame()) {
-    return;
-  }
-  if (offer_notification_handler_) {
-    offer_notification_handler_->UpdateOfferNotificationVisibility(*client_);
-  }
-}
-
-void ChromePaymentsAutofillClient::OnVisibilityChanged(
-    content::Visibility visibility) {
-  // Offer notifications are not set up for hidden tabs, so that they cannot
-  // consume the once-per-offer automatic show. Re-evaluate the offer
-  // notification once the tab becomes visible.
-  if (visibility != content::Visibility::VISIBLE) {
-    return;
-  }
-  if (offer_notification_handler_) {
-    offer_notification_handler_->UpdateOfferNotificationVisibility(*client_);
-  }
-}
-
-void ChromePaymentsAutofillClient::OnPaymentsDataChanged() {
-  // The offers are per profile, but the offer notification is per tab, so each
-  // tab re-evaluates it for its current page.
-  // TODO(crbug.com/546252995): Move this observation as well as the navigation
-  // and visibility handling into `OfferNotificationHandler`.
-#if !BUILDFLAG(IS_ANDROID)
-  // This is sent for any change to the payments data, e.g. to cards or to
-  // offers for other sites. Leave a showing bubble alone, since re-evaluating
-  // would collapse it to its icon.
-  if (OfferNotificationBubbleControllerImpl* controller =
-          OfferNotificationBubbleControllerImpl::FromWebContents(
-              web_contents());
-      controller && controller->IsShowingBubble()) {
-    return;
-  }
-#endif
-  if (offer_notification_handler_) {
-    offer_notification_handler_->UpdateOfferNotificationVisibility(*client_);
-  }
-}
 
 std::u16string ChromePaymentsAutofillClient::GetAccountHolderName() const {
   signin::IdentityManager* identity_manager = client_->GetIdentityManager();

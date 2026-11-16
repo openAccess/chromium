@@ -19,20 +19,20 @@
 #include "base/types/optional_util.h"
 #include "chrome/browser/autofill/android/autofill_ai_save_update_entity_prompt_view.h"
 #include "chrome/browser/autofill/android/autofill_fallback_surface_launcher.h"
-#include "chrome/browser/autofill/android/entity_instance_android.h"
 #include "chrome/browser/autofill/android/personal_data_manager_android.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/autofill/autofill_ai/autofill_ai_import_string_utils.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_import_util.h"
 #include "components/autofill/core/browser/ui/addresses/autofill_address_util.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -58,14 +58,14 @@ AutofillAiSaveUpdateEntityPromptController::
       prompt_result_callback_(std::move(prompt_result_callback)),
       java_object_(Java_AutofillAiSaveUpdateEntityPromptController_create(
           base::android::AttachCurrentThread(),
-          reinterpret_cast<intptr_t>(this))) {
+          jni_zero::MakeRaw(this))) {
   CHECK(prompt_view_);
-  ui_context_.accepted_consent_string_id =
+  ui_context_.accepted_consent_string_ids = {
       IsWalletableEntity()
           ? (IsUpdatePrompt()
                  ? IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE
                  : IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE)
-          : IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE;
+          : IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE};
   ui_context_.accept_button_string_id =
       IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON;
 }
@@ -154,11 +154,6 @@ bool AutofillAiSaveUpdateEntityPromptController::
       /*is_save_prompt=*/!IsUpdatePrompt(), entity_instance_);
 }
 
-const EntityInstance&
-AutofillAiSaveUpdateEntityPromptController::entity_instance() const {
-  return entity_instance_;
-}
-
 base::android::ScopedJavaLocalRef<jobject>
 AutofillAiSaveUpdateEntityPromptController::GetJavaObject() const {
   return base::android::ScopedJavaLocalRef<jobject>(java_object_);
@@ -184,16 +179,6 @@ void AutofillAiSaveUpdateEntityPromptController::OnUserAccepted(JNIEnv* env) {
   RunPromptClosedCallback(AutofillClient::AutofillAiBubbleResult::kAccepted);
 }
 
-void AutofillAiSaveUpdateEntityPromptController::OnUserEdited(
-    JNIEnv* env,
-    const EntityInstanceAndroid& edited_entity_android) {
-  had_user_interaction_ = true;
-  EntityInstance edited_entity =
-      edited_entity_android.ToEntityInstance(entity_instance_);
-  RunPromptClosedCallback(AutofillClient::AutofillAiBubbleResult::kEditAccepted,
-                          std::move(edited_entity));
-}
-
 void AutofillAiSaveUpdateEntityPromptController::OnUserDeclined(JNIEnv* env) {
   had_user_interaction_ = true;
   RunPromptClosedCallback(AutofillClient::AutofillAiBubbleResult::kCancelled);
@@ -206,11 +191,10 @@ void AutofillAiSaveUpdateEntityPromptController::OnPromptDismissed(
 }
 
 void AutofillAiSaveUpdateEntityPromptController::RunPromptClosedCallback(
-    AutofillClient::AutofillAiBubbleResult result,
-    std::optional<EntityInstance> edited_entity_instance) {
+    AutofillClient::AutofillAiBubbleResult result) {
   if (prompt_result_callback_) {
     std::move(prompt_result_callback_)
-        .Run(result, std::move(edited_entity_instance),
+        .Run(result, /*edited_entity=*/std::nullopt,
              DidUserExplicitlyAcceptedImportPrompt(result)
                  ? ui_context_
                  : AutofillClient::EntityImportUIContext{});

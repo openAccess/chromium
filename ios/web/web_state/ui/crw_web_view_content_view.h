@@ -40,9 +40,14 @@
 
 - (void)updateFullscreenState:(CrFullscreenState)fullscreenState;
 
-// Called when the minimum/maximum viewport insets change.
+// Called when the minimum/maximum viewport insets change, or when the view's
+// bounds size changes while viewport insets are set.
 - (void)viewportInsetsDidChangeWithMinInset:(UIEdgeInsets)minInset
                                    maxInset:(UIEdgeInsets)maxInset;
+
+// Coalesces and posts `UIAccessibilityLayoutChangedNotification` once
+// viewport inset updates stop.
+- (void)scheduleAccessibilityLayoutChangedNotification;
 
 @end
 

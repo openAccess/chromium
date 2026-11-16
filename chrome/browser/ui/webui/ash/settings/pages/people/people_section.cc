@@ -41,13 +41,12 @@
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
 #include "chrome/browser/ui/webui/settings/people_handler.h"
 #include "chrome/browser/ui/webui/settings/profile_info_handler.h"
-#include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
-#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
@@ -482,6 +481,17 @@ void AddGraduationStrings(content::WebUIDataSource* html_source,
                           features::IsGraduationEnabled());
 }
 
+void AddPasswordPromptDialogStrings(content::WebUIDataSource* html_source) {
+  static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"passwordPromptTitle", IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_TITLE},
+      {"passwordPromptInvalidPassword",
+       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_INVALID_PASSWORD},
+      {"passwordPromptPasswordLabel",
+       IDS_SETTINGS_PEOPLE_PASSWORD_PROMPT_PASSWORD_LABEL},
+  };
+  html_source->AddLocalizedStrings(kLocalizedStrings);
+}
+
 bool IsSameAccount(const ::account_manager::AccountKey& account_key,
                    const AccountId& account_id) {
   // Currently, we only support `kGaia` account type. Should a new type be added
@@ -549,8 +559,6 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"osPeoplePageTitle", IDS_OS_SETTINGS_PEOPLE_V2},
       {"accountsMenuItemDescription",
        IDS_OS_SETTINGS_ACCOUNTS_MENU_ITEM_DESCRIPTION},
-      {"accountManagerSubMenuLabel",
-       IDS_SETTINGS_ACCOUNT_MANAGER_SUBMENU_LABEL},
       {"accountManagerPageTitle", IDS_SETTINGS_ACCOUNT_MANAGER_PAGE_TITLE},
       {"lockScreenFingerprintTitle",
        IDS_SETTINGS_PEOPLE_LOCK_SCREEN_FINGERPRINT_SUBPAGE_TITLE},
@@ -595,7 +603,7 @@ void PeopleSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
                             ShouldShowParentalControlSettings(profile()));
   AddGraduationStrings(html_source, profile());
 
-  ::settings::AddPasswordPromptDialogStrings(html_source);
+  AddPasswordPromptDialogStrings(html_source);
 }
 
 void PeopleSection::AddHandlers(content::WebUI* web_ui) {

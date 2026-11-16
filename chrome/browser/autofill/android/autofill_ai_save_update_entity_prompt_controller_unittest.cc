@@ -35,21 +35,23 @@ namespace {
 
 using ::testing::_;
 using ::testing::AllOf;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::Field;
+using ::testing::IsEmpty;
 using ::testing::Optional;
 
 // Matches an AutofillClient::EntityImportUIContext with specific string IDs
 // for its accepted consent and accept button fields.
 MATCHER_P2(EqualsEntityImportUIContext,
-           accepted_consent_string_id,
+           accepted_consent_string_ids,
            accept_button_string_id,
            "") {
   return testing::ExplainMatchResult(
       AllOf(
           Field(&AutofillClient::EntityImportUIContext::
-                    accepted_consent_string_id,
-                accepted_consent_string_id),
+                    accepted_consent_string_ids,
+                accepted_consent_string_ids),
           Field(&AutofillClient::EntityImportUIContext::accept_button_string_id,
                 accept_button_string_id)),
       arg, result_listener);
@@ -148,31 +150,6 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
 }
 
 TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
-       DisplayPrompt_UserEdited) {
-  CreateController();
-  EXPECT_CALL(prompt_view(), Show(&prompt_controller()));
-  prompt_controller().DisplayPrompt();
-
-  EntityInstance edited_entity = test::GetPassportEntityInstance(
-      {.name = u"Bob Doe", .record_type = EntityInstance::RecordType::kLocal});
-  EntityInstanceAndroid edited_entity_android(
-      edited_entity, /*is_enabled=*/true,
-      /*is_eligible_for_wallet_storage=*/true,
-      /*requires_reauth_to_see=*/false);
-
-  EXPECT_CALL(
-      prompt_closed_callback(),
-      Run(AutofillClient::AutofillAiBubbleResult::kEditAccepted,
-          Optional(edited_entity),
-          EqualsEntityImportUIContext(
-              Optional(
-                  IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE),
-              Optional(
-                  IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON))));
-  prompt_controller().OnUserEdited(env(), edited_entity_android);
-}
-
-TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
        DisplayPrompt_UserDeclined) {
   CreateController();
   EXPECT_CALL(prompt_view(), Show(&prompt_controller()));
@@ -181,7 +158,7 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
   EXPECT_CALL(
       prompt_closed_callback(),
       Run(AutofillClient::AutofillAiBubbleResult::kCancelled, Eq(std::nullopt),
-          EqualsEntityImportUIContext(Eq(std::nullopt), Eq(std::nullopt))));
+          EqualsEntityImportUIContext(IsEmpty(), Eq(std::nullopt))));
   // Both `OnUserDeclined` and `OnPromptDismissed` are called when the user
   // clicks the negative button.
   prompt_controller().OnUserDeclined(env());
@@ -194,11 +171,10 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
   EXPECT_CALL(prompt_view(), Show(&prompt_controller()));
   prompt_controller().DisplayPrompt();
 
-  EXPECT_CALL(
-      prompt_closed_callback(),
-      Run(AutofillClient::AutofillAiBubbleResult::kNotInteracted,
-          Eq(std::nullopt),
-          EqualsEntityImportUIContext(Eq(std::nullopt), Eq(std::nullopt))));
+  EXPECT_CALL(prompt_closed_callback(),
+              Run(AutofillClient::AutofillAiBubbleResult::kNotInteracted,
+                  Eq(std::nullopt),
+                  EqualsEntityImportUIContext(IsEmpty(), Eq(std::nullopt))));
   prompt_controller().OnPromptDismissed(env());
 }
 
@@ -211,7 +187,7 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
   EXPECT_CALL(
       prompt_closed_callback(),
       Run(AutofillClient::AutofillAiBubbleResult::kCancelled, Eq(std::nullopt),
-          EqualsEntityImportUIContext(Eq(std::nullopt), Eq(std::nullopt))));
+          EqualsEntityImportUIContext(IsEmpty(), Eq(std::nullopt))));
   prompt_controller().OnUserDeclined(env());
 }
 
@@ -223,7 +199,7 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
       prompt_closed_callback(),
       Run(AutofillClient::AutofillAiBubbleResult::kAccepted, Eq(std::nullopt),
           EqualsEntityImportUIContext(
-              Optional(
+              ElementsAre(
                   IDS_AUTOFILL_AI_SAVE_OR_UPDATE_LOCAL_ENTITY_SOURCE_NOTICE),
               Optional(
                   IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON))));
@@ -239,7 +215,7 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
       prompt_closed_callback(),
       Run(AutofillClient::AutofillAiBubbleResult::kAccepted, Eq(std::nullopt),
           EqualsEntityImportUIContext(
-              Optional(IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE),
+              ElementsAre(IDS_AUTOFILL_AI_SAVE_ENTITY_IN_WALLET_SOURCE_NOTICE),
               Optional(
                   IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON))));
 
@@ -257,7 +233,8 @@ TEST_F(AutofillAiSaveUpdateEntityPromptControllerTest,
       prompt_closed_callback(),
       Run(AutofillClient::AutofillAiBubbleResult::kAccepted, Eq(std::nullopt),
           EqualsEntityImportUIContext(
-              Optional(IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE),
+              ElementsAre(
+                  IDS_AUTOFILL_AI_UPDATE_ENTITY_TO_WALLET_DIALOG_SUBTITLE),
               Optional(
                   IDS_AUTOFILL_PREDICTION_IMPROVEMENTS_SAVE_DIALOG_SAVE_BUTTON))));
 

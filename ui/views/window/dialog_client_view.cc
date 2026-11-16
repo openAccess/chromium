@@ -35,6 +35,7 @@
 #include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/platform_style.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_guard.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
@@ -382,6 +383,15 @@ void DialogClientView::UpdateDialogButton(raw_ptr<MdTextButton>* member,
   const ui::ButtonStyle style = delegate->GetDialogButtonStyle(type);
 
   if (*member) {
+    // Accessibility events sent while updating buttons could theoretically
+    // result in synchronous destruction of the dialog or re-entrancy into this
+    // method via malicious or badly-configured software that hooks
+    // accessibility callbacks.
+    //
+    // Since these errors are difficult to fully protect against, guard the
+    // dialog during these updates instead.
+    ViewGuard guard(*member->get());
+
     MdTextButton* button = *member;
     button->SetEnabled(delegate->IsDialogButtonEnabled(type));
     button->SetIsDefault(is_default);
@@ -401,8 +411,8 @@ void DialogClientView::UpdateDialogButton(raw_ptr<MdTextButton>* member,
                                                base::Unretained(this), type))
               .SetText(title)
               .SetProperty(views::kElementIdentifierKey, GetButtonId(type))
-              .SetStyle(style)
               .SetIsDefault(is_default)
+              .SetStyle(style)
               .SetEnabled(delegate->IsDialogButtonEnabled(type))
               .SetMinSize(gfx::Size(minimum_width, 0))
               .SetGroup(kButtonGroup))

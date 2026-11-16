@@ -257,7 +257,6 @@ class IndexedDBBrowserTestBase : public ContentBrowserTest {
         ->GetQuotaManager()
         ->proxy()
         ->DeleteBucket(storage_key, storage::kDefaultBucketName,
-                       base::SequencedTaskRunner::GetCurrentDefault(),
                        future.GetCallback());
     return future.Take() == blink::mojom::QuotaStatusCode::kOk;
   }
@@ -327,9 +326,7 @@ class IndexedDBBrowserTestBase : public ContentBrowserTest {
         ->GetDefaultStoragePartition()
         ->GetQuotaManager()
         ->proxy()
-        ->UpdateOrCreateBucket(
-            params, base::SingleThreadTaskRunner::GetCurrentDefault(),
-            future.GetCallback());
+        ->UpdateOrCreateBucket(params, future.GetCallback());
     return future.Take();
   }
 
@@ -1425,7 +1422,6 @@ IN_PROC_BROWSER_TEST_P(IndexedDBBrowserTestWithCorruption,
       ->proxy()
       ->UpdateOrCreateBucket(
           storage::BucketInitParams::ForDefaultBucket(storage_key),
-          base::SequencedTaskRunner::GetCurrentDefault(),
           base::BindLambdaForTesting(
               [&](storage::QuotaErrorOr<storage::BucketInfo> result) {
                 ASSERT_TRUE(result.has_value());
@@ -1615,6 +1611,13 @@ IN_PROC_BROWSER_TEST_P(IndexedDBBrowserTest, DeleteOpenUse) {
   SimpleTest(GetTestUrl("indexeddb", "delete_open_use.html"));
 }
 
+// Regression test for https://crbug.com/579841820
+IN_PROC_BROWSER_TEST_P(IndexedDBBrowserTest,
+                       CursorPrefetchDeleteDuringUpgrade) {
+  SimpleTest(
+      GetTestUrl("indexeddb", "cursor_prefetch_delete_during_upgrade.html"));
+}
+
 // Regression test for https://crbug.com/475947902
 IN_PROC_BROWSER_TEST_P(IndexedDBBrowserTest, ConcurrentlyWriteBlobAndRead) {
   SimpleTest(GetTestUrl("indexeddb", "concurrently_write_blob_and_read.html"));
@@ -1730,18 +1733,13 @@ IN_PROC_BROWSER_TEST_P(IndexedDBBrowserTest, LargeValueIsWrapped) {
     }
     ASSERT_FALSE(db_file.empty());
 
-    shell()->Close();
+    base::RunLoop closed;
+    GetControl().ForceClose(bucket_info.id, closed.QuitClosure());
+    closed.Run();
 
-    // We have to try to open the database multiple times because the files
-    // (both main DB file and -wal journal) may still be held open by the
-    // backing store.
-    std::unique_ptr<sql::Database> db;
-    ASSERT_TRUE(base::test::RunUntil([&db, &db_file]() {
-      db = std::make_unique<sql::Database>(sql::test::kTestTag);
-      return db->Open(db_file);
-    }));
-
-    sql::Statement s(db->GetUniqueStatement("SELECT COUNT(*) FROM blobs"));
+    sql::Database db(sql::test::kTestTag);
+    ASSERT_TRUE(db.Open(db_file));
+    sql::Statement s(db.GetUniqueStatement("SELECT COUNT(*) FROM blobs"));
     ASSERT_TRUE(s.Step());
     EXPECT_EQ(0, s.ColumnInt(0));
   } else {

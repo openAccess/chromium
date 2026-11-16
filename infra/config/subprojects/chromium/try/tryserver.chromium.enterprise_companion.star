@@ -18,6 +18,7 @@ try_.defaults.set(
     execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
     experiments = {
         "chromium_tests.resultdb_module": 100,
+        "luci.buildbucket.run_in_turboci.grpc_client": 5,
         "luci.buildbucket.run_in_turboci": 100,
     },
     service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
@@ -53,6 +54,7 @@ def enterprise_companion_mac_builder(*, name, **kwargs):
 def enterprise_companion_windows_builder(*, name, **kwargs):
     kwargs.setdefault("cores", 8)
     kwargs.setdefault("os", os.WINDOWS_DEFAULT)
+    kwargs.setdefault("ssd", None)
     return try_.builder(
         name = name,
         contact_team_email = "omaha-client-dev@google.com",

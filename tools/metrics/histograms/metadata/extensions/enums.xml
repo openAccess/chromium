@@ -70,6 +70,7 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Corrupted Hashes"/>
   <int value="3" label="No Hashes For File"/>
   <int value="4" label="Hash Mismatch"/>
+  <int value="5" label="Missing Extension Manifest"/>
 </enum>
 
 <enum name="DeclarativeAPIFunctionType">
@@ -107,12 +108,6 @@ chromium-metrics-reviews@google.com.
   <int value="2" label="Extensions Menu Entry"/>
   <int value="3" label="Legacy Overflow Menu Entry"/>
   <int value="4" label="Programmatic API Call"/>
-</enum>
-
-<enum name="ExtensionAllowlistOmahaAttributeValue">
-  <int value="0" label="Undefined"/>
-  <int value="1" label="Allowlisted"/>
-  <int value="2" label="Not allowlisted"/>
 </enum>
 
 <enum name="ExtensionBackgroundPageType">
@@ -832,6 +827,7 @@ Called by update_extension_histograms.py.-->
   <int value="582" label="ENTERPRISE_WEBRTC_ON_PEER_CONNECTION_REMOVED"/>
   <int value="583" label="RUNTIME_ON_EXTENSION_LOADED"/>
   <int value="584" label="ENTERPRISE_WEBRTC_ON_SNAPSHOT_TRUNCATED"/>
+  <int value="585" label="AUTOFILL_PRIVATE_ON_LOYALTY_CARDS_CHANGED"/>
 </enum>
 
 <!-- LINT.ThenChange(//extensions/browser/extension_event_histogram_value.h:HistogramValue) -->
@@ -2952,6 +2948,8 @@ Called by update_extension_histograms.py.-->
   <int value="1991" label="AUTOFILLPRIVATE_PRELOADDETAILSFORUPSERTPASS"/>
   <int value="1992" label="EXPERIMENTALAIDATA_GETAPCSNAPSHOT"/>
   <int value="1993" label="EXPERIMENTALAIDATA_GETTEXTSURROUNDINGSELECTION"/>
+  <int value="1994" label="CONTEXTUALTASKSPRIVATE_REGISTERAIMTHREADFORPROMO"/>
+  <int value="1995" label="AUTOFILLPRIVATE_GETLOYALTYCARDLIST"/>
 </enum>
 
 <!-- LINT.ThenChange(//extensions/browser/extension_function_histogram_value.h:HistogramValue) -->
@@ -3396,6 +3394,7 @@ Called by update_extension_permission.py.-->
   <int value="1" label="Corrupted Chrome Web Store extension"/>
   <int value="2" label="Corrupted non-webstore extension"/>
   <int value="4" label="Non-webstore extension without hashes skipped"/>
+  <int value="5" label="Non-webstore extension manifest missing"/>
 </enum>
 
 <enum name="ExtensionRuntimeUninstallURLHost">

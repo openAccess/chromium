@@ -3271,8 +3271,7 @@ BackingStore::Cursor::CloneIterator(const BackingStore::Cursor* other) {
 
   if (other->iterator_->IsValid()) {
     s = it->Seek(std::string(other->iterator_->Key()));
-    // TODO(cmumford): Handle this error (crbug.com/363397)
-    CHECK(it->IsValid(), base::NotFatalUntil::M158);
+    CHECK(it->IsValid());
   }
 
   return it;

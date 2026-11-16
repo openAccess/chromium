@@ -1255,6 +1255,10 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
     NOT_DESTROYED();
     return false;
   }
+  virtual bool IsSVGRect() const {
+    NOT_DESTROYED();
+    return false;
+  }
   virtual bool IsSVGTextPath() const {
     NOT_DESTROYED();
     return false;
@@ -1580,6 +1584,17 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
     NOT_DESTROYED();
     return IsBox() && Style().EffectiveOverscrollContainerType() !=
                           EOverscrollContainerType::kNone;
+  }
+
+  // True if this is the document's primary <body> overscroll container and is
+  // scrolled/moved by the root scroller, so its
+  // ::-internal-overscroll-area-parent children reparent the LayoutView rather
+  // than forcing layout containment on the body (see
+  // StyleAdjuster::AdjustComputedStyle()).
+  bool OverscrollAreasReparentView() const {
+    NOT_DESTROYED();
+    return IsOverscrollContainer() &&
+           !Style().HasLayoutContainmentForOverscrollContainer();
   }
 
   bool IsContentMovingOverscrollContainer() const {
@@ -2168,8 +2183,10 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
 
   // Recalculates visual overflow for this object and non-self-painting
   // PaintLayer descendants.
-  virtual void RecalcVisualOverflow();
-  void RecalcNormalFlowChildVisualOverflowIfNeeded();
+  virtual void RecalcVisualOverflow() { NOT_DESTROYED(); }
+
+  void RecalcVisualOverflowForChildren();
+
 #if DCHECK_IS_ON()
   // Enables DCHECK to ensure that the visual overflow for |this| is computed.
   // The actual invalidation is maintained in |PaintLayer|.
@@ -3089,6 +3106,10 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
     should_inherit_container_timing_root_ = should_inherit;
   }
 
+  // The value of PhysicalFragment::IsHiddenDueToLayout() has changed for this
+  // object’s fragments.
+  void MarkIsHiddenDueToLayoutChanged();
+
   // Painters can use const methods only, except for these explicitly declared
   // methods.
   class CORE_EXPORT MutableForPainting {
@@ -3662,22 +3683,19 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   void SetTransformAffectsVectorEffect(bool b) {
     NOT_DESTROYED();
     DCHECK(IsSVGChild());
-    transform_affects_vector_effect_ = b;
+    if (transform_affects_vector_effect_ != b) {
+      transform_affects_vector_effect_ = b;
+      // `CompositorAnimations::CanStartTransformAnimationOnCompositorForSVG`
+      // depends on `TransformAffectsVectorEffect`, which is used for the
+      // transform paint property.
+      SetNeedsPaintPropertyUpdate();
+    }
   }
 
   void ClearSVGDescendantMayHaveTransformRelatedOperations() {
     NOT_DESTROYED();
     DCHECK(IsSVGChild());
     svg_descendant_may_have_transform_related_operations_ = false;
-  }
-
-  void SetHasValidCachedGeometry(bool b) {
-    NOT_DESTROYED();
-    has_valid_cached_geometry_ = b;
-  }
-  bool HasValidCachedGeometry() const {
-    NOT_DESTROYED();
-    return has_valid_cached_geometry_;
   }
 
   bool HavePhysicalFragmentsChanged() const {
@@ -4062,11 +4080,6 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   // layout results, by reading out the post-layout results from the children.
   unsigned has_broken_spine_ : 1 = false;
 
-  // True if LayoutBox::frame_size_ has the latest value computed from its
-  // physical fragments.
-  // This is set to false when LayoutBox::layout_results_ is updated.
-  unsigned has_valid_cached_geometry_ : 1 = false;
-
   // For LayoutBox, true if the physical fragments might be different from
   // previous_layout_results_. Cleared when previous fragments are saved.
   unsigned have_physical_fragments_changed_ : 1 = false;
@@ -4117,11 +4130,10 @@ class CORE_EXPORT LayoutObject : public GarbageCollected<LayoutObject>,
   }
 
  private:
-  friend class LineLayoutItem;
   friend class LocalFrameView;
 
   Member<const ComputedStyle> style_;
-  Member<Node> node_;
+  WeakMember<Node> node_;
 
   Member<LayoutObject> parent_;
   Member<LayoutObject> previous_;

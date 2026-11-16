@@ -21,14 +21,12 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.homepage.settings.HomepageMetricsEnums.HomepageLocationType;
 import org.chromium.chrome.browser.homepage.settings.HomepageSettings;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
@@ -42,9 +40,7 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.chrome.test.util.browser.TabLoadObserver;
 import org.chromium.components.policy.test.annotations.Policies;
-import org.chromium.content_public.browser.test.util.TouchCommon;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.url.GURL;
 
@@ -53,7 +49,6 @@ import org.chromium.url.GURL;
  * will reflect the expected behaviors for {@link HomepageSettings} and home button.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Policies.Add({
     @Policies.Item(key = "HomepageLocation", string = HomepagePolicyIntegrationTest.TEST_URL)
 })
@@ -161,8 +156,7 @@ public class HomepagePolicyIntegrationTest {
     @Feature({"Homepage"})
     public void testHomeButton() throws Exception {
         String anotherUrl = mTestServer.getURL(GOOGLE_HTML);
-        new TabLoadObserver(mActivityTestRule.getActivity().getActivityTab())
-                .fullyLoadUrl(anotherUrl);
+        WebPageStation anotherPage = mPage.loadWebPageProgrammatically(anotherUrl);
 
         Assert.assertNotEquals(
                 "Did not switch to a different URL",
@@ -191,14 +185,14 @@ public class HomepagePolicyIntegrationTest {
                             Matchers.nullValue());
                 });
 
-        ChromeTabUtils.waitForTabPageLoaded(
-                mActivityTestRule.getActivity().getActivityTab(),
-                TEST_URL,
-                () -> {
-                    View homeButton =
-                            mActivityTestRule.getActivity().findViewById(R.id.home_button);
-                    TouchCommon.singleClickView(homeButton);
-                });
+        anotherPage
+                .toolbar
+                .homeButtonElement
+                .clickTo()
+                .arriveAt(
+                        WebPageStation.newBuilder()
+                                .initForLoadingUrlOnSameTab(TEST_URL, anotherPage)
+                                .build());
 
         assertEquals(
                 "After clicking HomeButton, URL should be back to Homepage",

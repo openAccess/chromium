@@ -136,9 +136,6 @@ include_rules = [
   "+components/desktop_to_mobile_promos",
   "+components/digital_goods",
   "+components/domain_reliability",
-  "+components/dom_distiller/content/browser",
-  "+components/dom_distiller/content/common",
-  "+components/dom_distiller/core",
   "+components/download/content/factory",
   "+components/download/content/public",
   "+components/download/network/android",
@@ -357,6 +354,7 @@ include_rules = [
   "+components/startup_metric_utils/browser",
   "+components/startup_metric_utils/common",
   "+components/storage_monitor",
+  "+components/stream_transport/public",
   "+components/strike_database",
   "+components/strings/grit",
   "+components/subresource_filter/android",
@@ -417,6 +415,9 @@ include_rules = [
   "+components/viz/host",
   "+components/wallet/core/common",
   "+components/web_cache/browser",
+  "+components/web_distiller/content/browser",
+  "+components/web_distiller/content/common",
+  "+components/web_distiller/core",
   "+components/web_modal",
   "+components/web_resource",
   "+components/webapps/browser",
@@ -493,7 +494,6 @@ include_rules = [
   "+services/shape_detection/public/mojom",
   "+services/strings",
   "+services/webnn/public/mojom/features.mojom-features.h",
-  "+services/webnn/public/cpp/webnn_buildflags.h",
   "+services/tracing/public/cpp",
   "+services/video_capture/public",
   "+services/viz/public",
@@ -605,7 +605,7 @@ specific_include_rules = {
   r"platform_util_ash\.cc": [
     "+ash/wm/window_pin_util.h",
   ],
-  "platform_util_linux.cc": [
+  r"platform_util_linux(_unittest)?\.cc": [
     # The following is used to call the org.freedesktop.FileManager1
     # DBus interface to highlight a file within its parent folder
     "+dbus"
@@ -647,9 +647,6 @@ specific_include_rules = {
   ],
   "permission_element_browsertest.cc": [
     "+chrome/browser/ui/views/permissions/embedded_permission_prompt_content_scrim_view.h",
-  ],
-  "browsing_data_model_browsertest.cc" : [
-    "+components/services/storage/shared_storage/shared_storage_manager.h",
   ],
   "ash_session_restore_page_load_metrics_observer\\.cc": [
     "+ash/wm/window_restore/window_restore_util.h",

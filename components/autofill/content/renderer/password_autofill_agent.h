@@ -28,7 +28,6 @@
 #include "components/autofill/core/common/mojom/autofill_types.mojom.h"
 #include "components/autofill/core/common/password_form_fill_data.h"
 #include "components/autofill/core/common/unique_ids.h"
-#include "components/signin/public/base/signin_buildflags.h"
 #include "content/public/renderer/render_frame_observer.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -370,10 +369,14 @@ class PasswordAutofillAgent : public content::RenderFrameObserver,
     bool is_password = false;
   };
 
-  // This class keeps track of autofilled username and password input elements
-  // and ensures that the autofilled values are not accessible to JavaScript
-  // code until the user interacts with the page. This restriction improves
-  // privacy (crbug.com/798492) and reduces attack surface (crbug.com/777272).
+  // On page load, PWM preliminarily autofills usernames and passwords in a way
+  // that keeps them inaccessible to JavaScript using SetSuggestedValue() and
+  // WebAutofillState::kAutofilled.
+  //
+  // This class keeps track of these autofilled input elements and ensures that
+  // the autofilled values are not accessible to JavaScript code until the user
+  // interacts with the page. This restriction improves privacy
+  // (crbug.com/798492) and reduces attack surface (crbug.com/777272).
   class PasswordValueGatekeeper {
    public:
     PasswordValueGatekeeper();
@@ -624,12 +627,10 @@ class PasswordAutofillAgent : public content::RenderFrameObserver,
   // Set of fields that are reliably identified as non-credential fields.
   base::flat_set<FieldRendererId> suggestion_banned_fields_;
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   // The Password Manager normally shows passwords if there are passwords to
   // fill, there are cases, when PWM might show other suggestions (e.g. promos)
   // on password fields.
   bool should_show_popup_without_passwords_ = false;
-#endif
 
   PasswordValueGatekeeper gatekeeper_;
 

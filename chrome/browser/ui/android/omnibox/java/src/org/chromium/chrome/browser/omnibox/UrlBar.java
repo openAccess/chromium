@@ -18,6 +18,7 @@ import android.text.Layout;
 import android.text.Selection;
 import android.text.SpannableStringBuilder;
 import android.text.TextUtils;
+import android.text.method.MetaKeyKeyListener;
 import android.text.style.ReplacementSpan;
 import android.util.AttributeSet;
 import android.util.TypedValue;
@@ -57,6 +58,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.UrlBarFocusChangeInfo.FocusDirection;
 import org.chromium.chrome.browser.toolbar.ToolbarVariationUtils;
 import org.chromium.components.browser_ui.share.ShareHelper;
+import org.chromium.components.browser_ui.share.ShareHelper.ShareSourceAndroid;
 import org.chromium.components.browser_ui.util.FirstDrawDetector;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -837,9 +839,8 @@ public class UrlBar extends AutocompleteEditText {
             if (mPointerDragActive) {
                 Editable text = getText();
                 if (text != null) {
-                    text.removeSpan(BoundsEllipsisSpan.INSTANCE);
                     // Re-hide very long URLs to prevent crashes.
-                    limitDisplayableLength();
+                    clearBoundsEllipsisSpans(text);
                 }
             }
         } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -858,6 +859,14 @@ public class UrlBar extends AutocompleteEditText {
             event.setAction(MotionEvent.ACTION_CANCEL);
         }
 
+        // Works around an Android bug (b/190156873): ArrowKeyMovementMethod extends a Shift+touch
+        // selection from a tap-down anchor that it never recorded (e.g. Shift was pressed
+        // mid-gesture, or TextView skipped ACTION_DOWN because it had no layout), which throws
+        // from Selection.setSelection(buffer, -1, ...). Dropping the Shift/selecting meta state
+        // before the event reaches TextView keeps the movement method off that path. The bug is
+        // present on every API level Chrome supports, from 29 through 37 (the newest release), so
+        // this cannot be gated on SDK_INT until an Android release has the fix.
+        MetaKeyKeyListener.resetMetaState(getText());
         return super.onTouchEvent(event);
     }
 
@@ -1151,7 +1160,7 @@ public class UrlBar extends AutocompleteEditText {
 
             case android.R.id.shareText:
                 RecordUserAction.record("Omnibox.LongPress.Share");
-                ShareHelper.recordShareSource(ShareHelper.ShareSourceAndroid.ANDROID_SHARE_SHEET);
+                ShareHelper.recordShareSource(ShareSourceAndroid.ANDROID_SHARE_SHEET);
                 if (mUrlBarDelegate != null) {
                     String replacementShareText =
                             mTextContextMenuDelegate != null
@@ -1444,6 +1453,8 @@ public class UrlBar extends AutocompleteEditText {
 
     private void clearBoundsEllipsisSpans(Editable text) {
         text.removeSpan(BoundsEllipsisSpan.INSTANCE);
+        // The bounds ellipsis replaced the length limit; restore it for long URLs.
+        limitDisplayableLength();
     }
 
     /**
@@ -1475,6 +1486,9 @@ public class UrlBar extends AutocompleteEditText {
         int offset = Math.max(0, ellipsizedText.length() - 1);
         if (text.getSpanStart(BoundsEllipsisSpan.INSTANCE) != offset
                 || text.getSpanEnd(BoundsEllipsisSpan.INSTANCE) != textLength) {
+            // The bounds ellipsis hides everything the length limit hides. Keep a single
+            // EllipsisSpan so the two never overlap.
+            text.removeSpan(EllipsisSpan.INSTANCE);
             text.setSpan(
                     BoundsEllipsisSpan.INSTANCE,
                     offset,
@@ -1800,15 +1814,9 @@ public class UrlBar extends AutocompleteEditText {
         Editable text = getText();
         int textLength = text.length();
         if (textLength <= maxLength) {
-            if (mDidEllipsizeTextHint) {
-                EllipsisSpan[] spans = text.getSpans(0, textLength, EllipsisSpan.class);
-                if (spans != null && spans.length > 0) {
-                    assert spans.length == 1 : "Should never apply more than a single EllipsisSpan";
-                    for (int i = 0; i < spans.length; i++) {
-                        text.removeSpan(spans[i]);
-                    }
-                }
-            }
+            // Only drop the length-limit span; setTextWithTruncation() may have just attached a
+            // BoundsEllipsisSpan.
+            if (mDidEllipsizeTextHint) text.removeSpan(EllipsisSpan.INSTANCE);
             mDidEllipsizeTextHint = false;
             return;
         }

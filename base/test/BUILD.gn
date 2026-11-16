@@ -129,6 +129,8 @@ static_library("test_support") {
     "../memory/mock_memory_pressure_listener.h",
     "../memory_coordinator/mock_memory_consumer.cc",
     "../memory_coordinator/mock_memory_consumer.h",
+    "../memory_coordinator/scoped_memory_pressure_level_override.cc",
+    "../memory_coordinator/scoped_memory_pressure_level_override.h",
     "../memory_coordinator/test_memory_consumer_registry.cc",
     "../memory_coordinator/test_memory_consumer_registry.h",
     "../task/sequence_manager/test/fake_task.cc",
@@ -325,6 +327,8 @@ static_library("test_support") {
       "fake_iasync_operation_win.h",
       "file_path_reparse_point_win.cc",
       "file_path_reparse_point_win.h",
+      "scoped_message_pump_for_io_factory_win.cc",
+      "scoped_message_pump_for_io_factory_win.h",
       "scoped_os_info_override_win.cc",
       "scoped_os_info_override_win.h",
       "test_file_util_win.cc",
@@ -367,6 +371,8 @@ static_library("test_support") {
 
   if (is_android) {
     sources += [
+      "../android/device_info_test_support.cc",
+      "../android/device_info_test_support.h",
       "android/content_uri_test_utils.cc",
       "android/content_uri_test_utils.h",
       "android/java_handler_thread_helpers.cc",
@@ -383,6 +389,7 @@ static_library("test_support") {
     deps += [
       ":base_unittests_jni_headers",
       ":test_support_jni_headers",
+      "//base:base_java_test_support_uncommon_jni",
     ]
   }
 
@@ -443,6 +450,12 @@ static_library("test_support") {
       "launcher/unit_test_launcher.cc",
       "multiprocess_test.cc",
     ]
+    if (is_linux || is_chromeos) {
+      sources += [
+        "launcher/test_launcher_fork_server.cc",
+        "launcher/test_launcher_fork_server.h",
+      ]
+    }
   }
 
   sources += [
@@ -583,7 +596,6 @@ if (is_android) {
     sources = [
       "android/java/src/org/chromium/base/MainReturnCodeResult.java",
       "android/java/src/org/chromium/base/MultiprocessTestClientLauncher.java",
-      "android/javatests/src/org/chromium/base/test/task/ThreadPoolTestHelpers.java",
       "android/javatests/src/org/chromium/base/test/util/UrlUtils.java",
     ]
   }
@@ -811,7 +823,6 @@ if (is_android) {
       "android/javatests/src/org/chromium/base/test/transit/BatchedPublicTransitRule.java",
       "android/javatests/src/org/chromium/base/test/transit/CallbackCondition.java",
       "android/javatests/src/org/chromium/base/test/transit/Condition.java",
-      "android/javatests/src/org/chromium/base/test/transit/ConditionChecker.java",
       "android/javatests/src/org/chromium/base/test/transit/ConditionStatus.java",
       "android/javatests/src/org/chromium/base/test/transit/ConditionStatusWithResult.java",
       "android/javatests/src/org/chromium/base/test/transit/ConditionWaiter.java",
@@ -832,6 +843,7 @@ if (is_android) {
       "android/javatests/src/org/chromium/base/test/transit/MoreViewMatchers.java",
       "android/javatests/src/org/chromium/base/test/transit/NotDisplayedAnymoreCondition.java",
       "android/javatests/src/org/chromium/base/test/transit/OptionalViewElement.java",
+      "android/javatests/src/org/chromium/base/test/transit/Outcome.java",
       "android/javatests/src/org/chromium/base/test/transit/PayloadCallbackCondition.java",
       "android/javatests/src/org/chromium/base/test/transit/PublicTransitConfig.java",
       "android/javatests/src/org/chromium/base/test/transit/RootSpec.java",
@@ -874,8 +886,10 @@ if (is_android) {
 
     sources = [
       "android/javatests/src/org/chromium/base/test/transit/ConditionsSummaryUnitTest.java",
+      "android/javatests/src/org/chromium/base/test/transit/DefaultFacilitiesUnitTest.java",
       "android/javatests/src/org/chromium/base/test/transit/ElementFactoryUnitTest.java",
       "android/javatests/src/org/chromium/base/test/transit/HopOnOffUnitTest.java",
+      "android/javatests/src/org/chromium/base/test/transit/ParentStateUnitTest.java",
       "android/javatests/src/org/chromium/base/test/transit/PublicTransitUnitTestRule.java",
       "android/javatests/src/org/chromium/base/test/transit/TransitionTimeoutUnitTest.java",
     ]

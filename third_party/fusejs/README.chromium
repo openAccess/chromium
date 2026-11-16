@@ -1,9 +1,11 @@
 Name: Fuse.js
 URL: https://fusejs.io
-Version: 6.4.1
+     https://github.com/krisk/Fuse
+Version: v7.5.0
+Revision: 45bac9fe2e71fe8c680c861a35a8b226c4ae6d5a
 Update Mechanism: Manual
 License: Apache-2.0
-License File: LICENSE
+License File: src/LICENSE
 License Android Compatible: yes
 Security Critical: yes
 Shipped: yes
@@ -11,3 +13,10 @@ Description:
 Fuzzy search js library used by WebUI
 Local Modifications:
 Added the file README.chromium (this file)
+
+Update instructions:
+Update commit hashes in crowbar.txtpb, then run from this directory:
+crowbar build --no-dry-run ./
+copy.bara.sky lists every file it imports. If the new upstream version adds a
+file Chromium needs, add it there and to
+chrome/browser/resources/chromeos/emoji_picker/BUILD.gn.

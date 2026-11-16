@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/callback_list.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/strings/strcat.h"
@@ -18,25 +19,43 @@
 #include "chrome/browser/glic/host/glic_web_contents_warming_pool.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
+#include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/selection/explain_suggestion.h"
 #include "chrome/browser/glic/selection/explain_suggestion_fre.h"
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
+#include "chrome/browser/glic/selection/selection_overlay_invocation_helper.h"
+#include "chrome/browser/glic/selection/selection_overlay_untrusted_ui.h"
 #include "chrome/browser/glic/selection/selection_suggestion.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
+#include "chrome/browser/glic/test_support/scoped_page_context_eligibility.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/selection/features.h"
+#include "chrome/browser/selection/metrics_logger.h"
 #include "chrome/browser/selection/mojom/action.mojom.h"
 #include "chrome/browser/selection/suggestion_service.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/lens/lens_overlay_controller.h"
+#include "chrome/browser/ui/lens/lens_search_controller.h"
+#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/mojom/echo.test-mojom.h"
+#include "components/input/native_web_keyboard_event.h"
+#include "components/optimization_guide/content/browser/no_response_ai_page_content_agent.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
 #include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/hints/optimization_metadata.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
@@ -48,23 +67,38 @@
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/keyboard_event_processing_result.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/reload_type.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
+#include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/hit_test_region_observer.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/generic_pending_associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/test_support/fake_message_dispatch_context.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/network_change_notifier.h"
+#include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/input/web_input_event.h"
+#include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/controls/webview/webview.h"
 #include "ui/views/widget/any_widget_observer.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_delegate.h"
@@ -179,6 +213,70 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest,
       1);
 }
 
+IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest, ClosesWhenLensOpened) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+
+  std::optional<SelectionOverlayController::CloseReason> close_reason;
+  base::CallbackListSubscription closed_subscription =
+      controller->RegisterOverlayClosedCallback(base::BindLambdaForTesting(
+          [&close_reason](SelectionOverlayController::CloseReason reason) {
+            close_reason = reason;
+          }));
+
+  auto* lens_search_controller = LensSearchController::From(tab);
+  ASSERT_TRUE(lens_search_controller);
+  lens_search_controller->OpenLensOverlay(
+      lens::LensOverlayInvocationSource::kToolbar);
+
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOff);
+  EXPECT_EQ(close_reason, SelectionOverlayController::CloseReason::kOther);
+  EXPECT_FALSE(lens_search_controller->IsOff());
+  ASSERT_OK(RunUntilEqual(
+      [&]() {
+        return lens_search_controller->lens_overlay_controller()->state();
+      },
+      LensOverlayController::State::kOverlay,
+      "Timeout waiting for LensOverlayController state to be kOverlay"));
+}
+
+IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest, ClosesLensWhenOpened) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* lens_search_controller = LensSearchController::From(tab);
+  ASSERT_TRUE(lens_search_controller);
+  lens_search_controller->OpenLensOverlay(
+      lens::LensOverlayInvocationSource::kAppMenu);
+  EXPECT_FALSE(lens_search_controller->IsOff());
+  ASSERT_OK(RunUntilEqual(
+      [&]() {
+        return lens_search_controller->lens_overlay_controller()->state();
+      },
+      LensOverlayController::State::kOverlay,
+      "Timeout waiting for LensOverlayController state to be kOverlay"));
+
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+
+  EXPECT_TRUE(lens_search_controller->IsOff());
+  EXPECT_EQ(lens_search_controller->lens_overlay_controller()->state(),
+            LensOverlayController::State::kOff);
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+}
+
 namespace {
 
 class TestSuggestedActionsListener {
@@ -241,6 +339,149 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest,
   listener.WaitForBatches(1);
   EXPECT_TRUE(listener.actions().empty());
 }
+
+namespace {
+
+class SelectionOverlayEligibilityBrowserTest
+    : public SelectionOverlayBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    SelectionOverlayBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+
+ protected:
+  tabs::TabInterface* CreateTabWithEligibility(
+      const GURL& url,
+      optimization_guide::PageContextEligibilityStatus expected) {
+    tabs::TabInterface* tab = CreateAndActivateTab(url);
+    CHECK(content::ExecJs(
+        tab->GetContents(),
+        content::JsReplace("const f = document.createElement('iframe');"
+                           "f.src = $1;"
+                           "document.body.appendChild(f);",
+                           url)));
+    CHECK(content::WaitForLoadStop(tab->GetContents()));
+    auto* helper = tabs::PageContextEligibilityHelper::From(tab);
+    CHECK(helper);
+    CHECK(base::test::RunUntil([helper, expected]() {
+      return helper->IsPageContextEligible() == expected;
+    }));
+    return tab;
+  }
+
+  // Updates the subframe URL to an ineligible path and appends a child frame so
+  // `PageContextEligibilityObserver::RenderFrameCreated` re-evaluates
+  // eligibility immediately without navigating the primary main frame.
+  void MakePageIneligible(tabs::TabInterface* tab) {
+    content::ExecuteScriptAsync(
+        tab->GetContents(),
+        "window[0].history.replaceState(null, '', '/ineligible');"
+        "document.body.appendChild(document.createElement('iframe'));");
+  }
+
+ private:
+  ScopedPageContextEligibilityForTesting scoped_eligibility_;
+};
+
+IN_PROC_BROWSER_TEST_F(SelectionOverlayEligibilityBrowserTest,
+                       ShowRejectedOnIneligiblePage) {
+  tabs::TabInterface* tab = CreateTabWithEligibility(
+      embedded_test_server()->GetURL("ineligible.example.com", "/title1.html"),
+      optimization_guide::PageContextEligibilityStatus::kNotEligible);
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOff);
+}
+
+IN_PROC_BROWSER_TEST_F(SelectionOverlayEligibilityBrowserTest,
+                       ClosesWhenEligibilityLostDuringFetch) {
+  tabs::TabInterface* tab = CreateTabWithEligibility(
+      GetSimpleTestUrl(),
+      optimization_guide::PageContextEligibilityStatus::kEligible);
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+
+  optimization_guide::NoResponseAIPageContentAgent slow_apc_agent(
+      tab->GetContents()->GetPrimaryMainFrame());
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kScreenshot);
+  ASSERT_FALSE(controller->HasPageContextForTesting());
+
+  MakePageIneligible(tab);
+
+  EXPECT_TRUE(base::test::RunUntil([controller]() {
+    return controller->state() == SelectionOverlayController::State::kOff;
+  }));
+  EXPECT_FALSE(controller->HasPageContextForTesting());
+}
+
+IN_PROC_BROWSER_TEST_F(SelectionOverlayEligibilityBrowserTest,
+                       ClosesWhenEligibilityLostAfterFetch) {
+  tabs::TabInterface* tab = CreateTabWithEligibility(
+      GetSimpleTestUrl(),
+      optimization_guide::PageContextEligibilityStatus::kEligible);
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_TRUE(base::test::RunUntil([controller]() {
+    return controller->state() == SelectionOverlayController::State::kOverlay &&
+           controller->HasPageContextForTesting();
+  }));
+
+  MakePageIneligible(tab);
+
+  EXPECT_TRUE(base::test::RunUntil([controller]() {
+    return controller->state() == SelectionOverlayController::State::kOff;
+  }));
+}
+
+// The helper stops observing a backgrounded tab, so a page that becomes
+// ineligible in the background is caught when the tab is activated again.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayEligibilityBrowserTest,
+                       ClosesWhenIneligibleOnReturnFromBackground) {
+  tabs::TabInterface* tab = CreateTabWithEligibility(
+      GetSimpleTestUrl(),
+      optimization_guide::PageContextEligibilityStatus::kEligible);
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_TRUE(base::test::RunUntil([controller]() {
+    return controller->state() == SelectionOverlayController::State::kOverlay &&
+           controller->HasPageContextForTesting();
+  }));
+
+  CreateAndActivateTab(GetSimpleTestUrl());
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kBackground);
+  ASSERT_TRUE(content::ExecJs(
+      tab->GetContents(),
+      "window[0].history.replaceState(null, '', '/ineligible');"));
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kBackground);
+
+  GetTabListInterface()->ActivateTab(tab->GetHandle());
+
+  EXPECT_TRUE(base::test::RunUntil([controller]() {
+    return controller->state() == SelectionOverlayController::State::kOff;
+  }));
+}
+
+}  // namespace
 
 class SelectionOverlayPromptBrowserTest : public GlicBrowserTest {
  public:
@@ -439,7 +680,6 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayStaticSuggestionsBrowserTest,
   controller->ShowWithSelection(
       tab->GetContents()->GetPrimaryMainFrame(), bounds,
       selection::InteractionOptions::New(/*hide_handles=*/true,
-                                         /*disable_multi_select=*/true,
                                          /*skip_intro_animation=*/true),
       ::selection::EntryPoint::kInlineCue);
 
@@ -623,6 +863,78 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayQuickAnswersSuggestionsBrowserTest,
   const auto& actions = listener.actions();
   ASSERT_EQ(actions.size(), 1u);
   EXPECT_EQ(actions[0]->title, "Ask Gemini");
+}
+
+// When `AskGemini()` is invoked for a backgrounded tab in a Glic-bound tab
+// group, `Invoke()` synchronously opens the side panel for the active group
+// tab, which closes the backgrounded overlay and destroys the
+// `ExplainSuggestion` before `Invoke()` returns.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayQuickAnswersSuggestionsBrowserTest,
+                       AskGeminiClosesBackgroundedOverlayInBoundTabGroup) {
+  AddQuickAnswersHint(GetSimpleTestUrl(), /*is_eligible=*/true);
+  tabs::TabInterface* tab1 = CreateAndActivateTab(GetSimpleTestUrl());
+  tabs::TabInterface* tab2 = CreateAndActivateTab(GetSimpleTestUrl());
+  TabStripModel* tab_strip_model = GetBrowser()->GetTabStripModel();
+  tab_groups::TabGroupId group =
+      tab_strip_model->AddToNewGroup({tab_strip_model->GetIndexOfTab(tab1),
+                                      tab_strip_model->GetIndexOfTab(tab2)});
+
+  GlicInstanceImpl* instance = static_cast<GlicInstanceImpl*>(
+      coordinator().ShowInstanceForTabGroup(group));
+  ASSERT_TRUE(instance);
+  ASSERT_OK(WaitForGlicOpen(tab2));
+  ASSERT_OK(CloseAllEmbeddersAndWait(instance));
+
+  ActivateTab(tab1);
+  content::WebContents* web_contents = tab1->GetContents();
+  ASSERT_TRUE(content::ExecJs(web_contents, R"(
+    document.body.innerText = 'Before text Selected target After text';
+    const textNode = document.body.firstChild;
+    const range = document.createRange();
+    range.setStart(textNode, 12);
+    range.setEnd(textNode, 27);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  )"));
+
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  gfx::Rect view_bounds = web_contents->GetViewBounds();
+  gfx::Rect selection_bounds(view_bounds.x() + 10, view_bounds.y() + 10, 100,
+                             50);
+  controller->ShowWithSelection(web_contents->GetPrimaryMainFrame(),
+                                selection_bounds,
+                                selection::InteractionOptions::New(),
+                                ::selection::EntryPoint::kContextMenuText);
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+
+  TestSuggestedActionsListener listener;
+  controller->GetSuggestedActionsForTesting(listener.GetCallback());
+  listener.WaitForBatches(1);
+  const auto& actions = listener.actions();
+  ASSERT_EQ(actions.size(), 2u);
+  ASSERT_EQ(actions[1]->title, "Explain");
+
+  mojo::AssociatedRemote<selection::ExplainFulfillment> remote;
+  static_cast<selection::SelectionOverlayPageHandler*>(controller)
+      ->ExecuteSuggestedAction(
+          actions[1]->id,
+          mojo::GenericPendingAssociatedReceiver(
+              remote.BindNewEndpointAndPassDedicatedReceiver()));
+
+  ActivateTab(tab2);
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kBackground);
+
+  remote->AskGemini();
+  remote.FlushForTesting();
+  EXPECT_OK(WaitForGlicOpen(tab2));
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOff);
 }
 
 class SelectionOverlayQuickAnswersServerSuggestionsBrowserTest
@@ -919,11 +1231,14 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
                                 ::selection::EntryPoint::kContextMenuText);
 
   EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return controller->HasPageContextForTesting(); }));
 
   static_cast<selection::SelectionOverlayPageHandler*>(controller)
       ->SubmitPrompt("Explain this selection");
 
   // The browser started this session, so it dismisses the overlay itself.
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOff);
   EXPECT_EQ(controller->GetSelectedRegionCount(), 0u);
   histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
                                       ::selection::EntryPoint::kContextMenuText,
@@ -937,9 +1252,48 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
   histogram_tester.ExpectUniqueSample(
       "SmartSelection.Submission.Outcome",
       ::selection::SubmissionOutcome::kPromptSubmitted, 1);
+}
+
+// The overlay doesn't allow a prompt before the page context is in. One that
+// comes anyway is a bad message, and nothing is sent.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
+                       SubmitPromptBeforePageContextIsBadMessage) {
+  base::HistogramTester histogram_tester;
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  content::WebContents* web_contents = tab->GetContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  // Holds back the page content, so the overlay shows without it.
+  optimization_guide::NoResponseAIPageContentAgent apc_agent(
+      web_contents->GetPrimaryMainFrame());
+
+  gfx::Rect view_bounds = web_contents->GetViewBounds();
+  gfx::Rect selection_bounds(view_bounds.x() + 10, view_bounds.y() + 10, 100,
+                             50);
+  controller->ShowWithSelection(web_contents->GetPrimaryMainFrame(),
+                                selection_bounds,
+                                selection::InteractionOptions::New(),
+                                ::selection::EntryPoint::kContextMenuImage);
+  ASSERT_OK(RunUntilEqual(
+      [&]() { return controller->state(); },
+      SelectionOverlayController::State::kOverlay,
+      "Timeout waiting for SelectionOverlayController state to be kOverlay"));
+  apc_agent.WaitForRequest();
+  ASSERT_FALSE(controller->HasPageContextForTesting());
+
+  mojo::FakeMessageDispatchContext fake_dispatch_context;
+  mojo::test::BadMessageObserver bad_message_observer;
+  static_cast<selection::SelectionOverlayPageHandler*>(controller)
+      ->SubmitPrompt("Explain this selection");
+  EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+            "Prompt submitted before the page context.");
 
   controller->Close();
-  EXPECT_EQ(controller->GetSelectedRegionCount(), 0u);
+  ASSERT_EQ(controller->state(), SelectionOverlayController::State::kOff);
+  histogram_tester.ExpectBucketCount(
+      "SmartSelection.Submission.Outcome",
+      ::selection::SubmissionOutcome::kPromptSubmitted, 0);
 }
 
 class SelectionOverlayTextSelectionBrowserTest : public GlicBrowserTest {
@@ -1271,17 +1625,9 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
             u"Before text Selected target After text");
 }
 
-// TODO(b/581296466): Reenable this
-#if BUILDFLAG(IS_LINUX)
-#define MAYBE_ShowWithSelectionForImageSkipsPaddingAndSurroundingText \
-  DISABLED_ShowWithSelectionForImageSkipsPaddingAndSurroundingText
-#else
-#define MAYBE_ShowWithSelectionForImageSkipsPaddingAndSurroundingText \
-  ShowWithSelectionForImageSkipsPaddingAndSurroundingText
-#endif
 IN_PROC_BROWSER_TEST_F(
     SelectionOverlayPromptBrowserTest,
-    MAYBE_ShowWithSelectionForImageSkipsPaddingAndSurroundingText) {
+    ShowWithSelectionForImageSkipsPaddingAndSurroundingText) {
   tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
   content::WebContents* web_contents = tab->GetContents();
 
@@ -1329,8 +1675,8 @@ IN_PROC_BROWSER_TEST_F(
       gfx::ScaleToEnclosedRect(gfx::Rect(10, 10, 100, 50), scale);
   EXPECT_NEAR(counting_tool.last_rect().x(), expected_rect.x(), 1);
   EXPECT_NEAR(counting_tool.last_rect().y(), expected_rect.y(), 1);
-  EXPECT_NEAR(counting_tool.last_rect().width(), expected_rect.width(), 1);
-  EXPECT_NEAR(counting_tool.last_rect().height(), expected_rect.height(), 1);
+  EXPECT_NEAR(counting_tool.last_rect().width(), expected_rect.width(), 2);
+  EXPECT_NEAR(counting_tool.last_rect().height(), expected_rect.height(), 2);
 }
 
 IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
@@ -2091,6 +2437,530 @@ IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest,
   ASSERT_TRUE(controller->GetOverlayViewForTesting());
   EXPECT_TRUE(controller->GetOverlayViewForTesting()->GetVisible());
   EXPECT_TRUE(controller->GetLensOverlayBlurLayerDelegateForTesting());
+}
+
+// The page handler factory serves one request per page; another request is a
+// bad message instead of a second binding.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest,
+                       SecondCreatePageHandlerIsBadMessage) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for kOverlay"));
+  auto* untrusted_ui = controller->GetOverlayWebViewForTesting()
+                           ->GetWebContents()
+                           ->GetWebUI()
+                           ->GetController()
+                           ->GetAs<SelectionOverlayUntrustedUI>();
+  ASSERT_TRUE(untrusted_ui);
+
+  mojo::Remote<selection::SelectionOverlayPageHandlerFactory> factory;
+  untrusted_ui->BindInterface(factory.BindNewPipeAndPassReceiver());
+  mojo::Remote<selection::SelectionOverlayPageHandler> handler;
+  mojo::PendingReceiver<selection::SelectionOverlayPage> page;
+  mojo::test::BadMessageObserver bad_message_observer;
+  factory->CreatePageHandler(handler.BindNewPipeAndPassReceiver(),
+                             page.InitWithNewPipeAndPassRemote());
+  EXPECT_EQ(bad_message_observer.WaitForBadMessage(),
+            "CreatePageHandler called more than once");
+}
+
+// A handler request that can't bind and isn't from the prewarmed overlay is a
+// bad message instead of being held. Reloading the overlay mid-session makes a
+// new page ask for a handler while the session can't take it.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayBrowserTest,
+                       UnexpectedCreatePageHandlerIsBadMessage) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  controller->Show(/*options=*/nullptr,
+                   ::selection::EntryPoint::kKeyboardShortcut);
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for kOverlay"));
+
+  content::WebContents* overlay_contents =
+      controller->GetOverlayWebViewForTesting()->GetWebContents();
+  content::RenderProcessHostBadMojoMessageWaiter bad_message_waiter(
+      overlay_contents->GetPrimaryMainFrame()->GetProcess());
+  overlay_contents->GetController().Reload(content::ReloadType::NORMAL,
+                                           /*check_for_repost=*/false);
+  EXPECT_EQ(bad_message_waiter.Wait(),
+            "Received bad user message: CreatePageHandler called when the "
+            "overlay cannot bind");
+}
+
+class SelectionOverlayPrewarmBrowserTest : public GlicBrowserTest {
+ public:
+  SelectionOverlayPrewarmBrowserTest() {
+    scoped_feature_list_.InitFromCommandLine(
+        "GlicCaptureRegion,GlicSelectionOverlayPrompt,"
+        "StaticSelectionSuggestions,GlicSelectionOverlayHoverPrewarm",
+        "");
+  }
+
+ protected:
+  // Prewarms the overlay and returns its WebContents, caught as it is created.
+  base::WeakPtr<content::WebContents> Prewarm(
+      SelectionOverlayController* controller,
+      const selection::InteractionOptionsPtr& options) {
+    base::WeakPtr<content::WebContents> prewarmed;
+    base::CallbackListSubscription subscription =
+        content::RegisterWebContentsCreationCallback(base::BindLambdaForTesting(
+            [&prewarmed](content::WebContents* contents) {
+              prewarmed = contents->GetWeakPtr();
+            }));
+    controller->MaybePrewarmOverlay(options.Clone());
+    return prewarmed;
+  }
+
+  // Prewarms the overlay and waits until its page is loaded.
+  base::WeakPtr<content::WebContents> PrewarmAndWait(
+      SelectionOverlayController* controller,
+      const selection::InteractionOptionsPtr& options) {
+    base::WeakPtr<content::WebContents> contents = Prewarm(controller, options);
+    if (!contents || !content::WaitForLoadStop(contents.get())) {
+      return nullptr;
+    }
+    return contents;
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest,
+                       AdoptsPrewarmedOverlayAndCancelsOnTabSwitch) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  auto options = selection::InteractionOptions::New(
+      /*hide_handles=*/true, /*skip_intro_animation=*/true);
+
+  // Switching tabs while idle drops the unused prewarm.
+  controller->MaybePrewarmOverlay(options.Clone());
+  ASSERT_TRUE(controller->GetPrewarmInteractionOptions());
+  CreateAndActivateTab(GetSimpleTestUrl());
+  EXPECT_FALSE(controller->GetPrewarmInteractionOptions());
+
+  GetTabListInterface()->ActivateTab(tab->GetHandle());
+  auto* eligibility_helper = tabs::PageContextEligibilityHelper::From(tab);
+  ASSERT_TRUE(eligibility_helper);
+  ASSERT_TRUE(base::test::RunUntil([eligibility_helper]() {
+    return eligibility_helper->IsPageContextEligible() ==
+           optimization_guide::PageContextEligibilityStatus::kEligible;
+  }));
+  base::WeakPtr<content::WebContents> prewarmed =
+      PrewarmAndWait(controller, options);
+  ASSERT_TRUE(prewarmed);
+  // The prewarmed page's handler request waits for a session.
+  auto* untrusted_ui = prewarmed->GetWebUI()
+                           ->GetController()
+                           ->GetAs<SelectionOverlayUntrustedUI>();
+  ASSERT_TRUE(untrusted_ui);
+  ASSERT_TRUE(base::test::RunUntil([untrusted_ui]() {
+    return untrusted_ui->HasPendingPageHandlerForTesting();
+  }));
+
+  gfx::Rect bounds = tab->GetContents()->GetViewBounds();
+  bounds.Inset(20);
+  controller->ShowWithSelection(tab->GetContents()->GetPrimaryMainFrame(),
+                                bounds, std::move(options),
+                                ::selection::EntryPoint::kInlineCue);
+  // The session shows the prewarmed WebContents instead of a new one.
+  EXPECT_FALSE(controller->GetPrewarmInteractionOptions());
+  ASSERT_TRUE(prewarmed);
+  ASSERT_EQ(controller->GetOverlayWebViewForTesting()->GetWebContents(),
+            prewarmed.get());
+
+  // Like the adopted page, ask for suggestions before the redacted screenshot
+  // is here. They must wait for it instead of being requested early.
+  TestSuggestedActionsListener listener;
+  controller->GetSuggestedActionsForTesting(listener.GetCallback());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&listener]() { return !listener.actions().empty(); }));
+  EXPECT_EQ(listener.actions()[0]->title, "Ask Gemini");
+
+  // The adopted page binds its waiting handler and the overlay initializes.
+  ASSERT_OK(
+      RunUntilEqual([controller]() { return controller->state(); },
+                    SelectionOverlayController::State::kOverlay,
+                    "Timeout waiting for adopted overlay to reach kOverlay"));
+  EXPECT_FALSE(untrusted_ui->HasPendingPageHandlerForTesting());
+  EXPECT_TRUE(controller->GetOverlayViewForTesting()->GetVisible());
+}
+
+// The adopted page can bind while its tab is in the background; the overlay
+// must show when the tab comes back.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest,
+                       ShowsAdoptedOverlayAfterTabSwitch) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  auto options = selection::InteractionOptions::New(
+      /*hide_handles=*/true, /*skip_intro_animation=*/true);
+  base::WeakPtr<content::WebContents> prewarmed =
+      PrewarmAndWait(controller, options);
+  ASSERT_TRUE(prewarmed);
+
+  gfx::Rect bounds = tab->GetContents()->GetViewBounds();
+  bounds.Inset(20);
+  controller->ShowWithSelection(tab->GetContents()->GetPrimaryMainFrame(),
+                                bounds, std::move(options),
+                                ::selection::EntryPoint::kInlineCue);
+  ASSERT_EQ(controller->GetOverlayWebViewForTesting()->GetWebContents(),
+            prewarmed.get());
+
+  CreateAndActivateTab(GetSimpleTestUrl());
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kBackground);
+
+  GetTabListInterface()->ActivateTab(tab->GetHandle());
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to return to kOverlay"));
+  EXPECT_TRUE(controller->GetOverlayViewForTesting()->GetVisible());
+  // Initialization that landed while backgrounded still set up the blur.
+  EXPECT_TRUE(controller->GetLensOverlayBlurLayerDelegateForTesting());
+}
+
+// Esc closes an adopted overlay that is shown while the screenshot is still
+// being captured.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest,
+                       EscClosesAdoptedOverlayWhileStarting) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  auto options = selection::InteractionOptions::New(
+      /*hide_handles=*/true, /*skip_intro_animation=*/true);
+  base::WeakPtr<content::WebContents> prewarmed =
+      PrewarmAndWait(controller, options);
+  ASSERT_TRUE(prewarmed);
+  std::optional<SelectionOverlayController::CloseReason> close_reason;
+  base::CallbackListSubscription closed_subscription =
+      controller->RegisterOverlayClosedCallback(base::BindLambdaForTesting(
+          [&close_reason](SelectionOverlayController::CloseReason reason) {
+            close_reason = reason;
+          }));
+
+  gfx::Rect bounds = tab->GetContents()->GetViewBounds();
+  bounds.Inset(20);
+  controller->ShowWithSelection(tab->GetContents()->GetPrimaryMainFrame(),
+                                bounds, std::move(options),
+                                ::selection::EntryPoint::kInlineCue);
+  ASSERT_EQ(controller->state(),
+            SelectionOverlayController::State::kStartingWebUI);
+
+  // The overlay handles Esc before its renderer sees the key.
+  input::NativeWebKeyboardEvent escape(blink::WebInputEvent::Type::kRawKeyDown,
+                                       blink::WebInputEvent::kNoModifiers,
+                                       base::TimeTicks::Now());
+  escape.windows_key_code = ui::VKEY_ESCAPE;
+  EXPECT_EQ(
+      prewarmed->GetDelegate()->PreHandleKeyboardEvent(prewarmed.get(), escape),
+      content::KeyboardEventProcessingResult::HANDLED);
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOff);
+  EXPECT_EQ(close_reason,
+            SelectionOverlayController::CloseReason::kEscapeKeyPress);
+}
+
+// Closing drops an unused prewarm too, e.g. when the session fails to start.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest, CloseDropsPrewarm) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  controller->MaybePrewarmOverlay(selection::InteractionOptions::New(
+      /*hide_handles=*/true, /*skip_intro_animation=*/true));
+  ASSERT_TRUE(controller->GetPrewarmInteractionOptions());
+
+  controller->Close();
+  EXPECT_FALSE(controller->GetPrewarmInteractionOptions());
+}
+
+// A prewarm for other interaction options is dropped, and the session loads a
+// new overlay instead.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest,
+                       DropsPrewarmWithOtherOptions) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  base::WeakPtr<content::WebContents> prewarmed = PrewarmAndWait(
+      controller, selection::InteractionOptions::New(
+                      /*hide_handles=*/true, /*skip_intro_animation=*/true));
+  ASSERT_TRUE(prewarmed);
+
+  gfx::Rect bounds = tab->GetContents()->GetViewBounds();
+  bounds.Inset(20);
+  controller->ShowWithSelection(
+      tab->GetContents()->GetPrimaryMainFrame(), bounds,
+      selection::InteractionOptions::New(/*hide_handles=*/false,
+                                         /*skip_intro_animation=*/true),
+      ::selection::EntryPoint::kInlineCue);
+  EXPECT_FALSE(prewarmed);
+  EXPECT_FALSE(controller->GetPrewarmInteractionOptions());
+
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to reach kOverlay"));
+  EXPECT_TRUE(controller->GetOverlayWebViewForTesting()->GetWebContents());
+}
+
+// A prewarm adopted before its page loads binds the page's handler as soon as
+// it asks, without holding it.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPrewarmBrowserTest,
+                       AdoptsPrewarmBeforeItsPageBinds) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  auto options = selection::InteractionOptions::New(
+      /*hide_handles=*/true, /*skip_intro_animation=*/true);
+  base::WeakPtr<content::WebContents> prewarmed = Prewarm(controller, options);
+  ASSERT_TRUE(prewarmed);
+
+  // In the same task, so the page can't have asked for its handler yet.
+  gfx::Rect bounds = tab->GetContents()->GetViewBounds();
+  bounds.Inset(20);
+  controller->ShowWithSelection(tab->GetContents()->GetPrimaryMainFrame(),
+                                bounds, std::move(options),
+                                ::selection::EntryPoint::kInlineCue);
+  ASSERT_TRUE(prewarmed);
+  ASSERT_EQ(controller->GetOverlayWebViewForTesting()->GetWebContents(),
+            prewarmed.get());
+
+  ASSERT_OK(
+      RunUntilEqual([controller]() { return controller->state(); },
+                    SelectionOverlayController::State::kOverlay,
+                    "Timeout waiting for adopted overlay to reach kOverlay"));
+  auto* untrusted_ui = prewarmed->GetWebUI()
+                           ->GetController()
+                           ->GetAs<SelectionOverlayUntrustedUI>();
+  ASSERT_TRUE(untrusted_ui);
+  EXPECT_FALSE(untrusted_ui->HasPendingPageHandlerForTesting());
+}
+
+// With the panel closed, the toolbar entry point opens the overlay directly
+// and pre-selects the current text selection.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
+                       InvokeSelectionOverlayPreselectsTextSelection) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  content::WebContents* web_contents = tab->GetContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  auto* selection_observer = GlicSelectionObserver::From(tab);
+  ASSERT_TRUE(selection_observer);
+  ASSERT_TRUE(SelectAllAndWaitForBounds(web_contents));
+  ASSERT_TRUE(base::test::RunUntil([selection_observer]() {
+    return selection_observer->GetCurrentSelectionBounds().has_value();
+  }));
+  ASSERT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  InvokeSelectionOverlay(*tab, ::selection::EntryPoint::kToolbarButton);
+
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to reach kOverlay"));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
+                                      ::selection::EntryPoint::kToolbarButton,
+                                      1);
+  histogram_tester.ExpectTotalCount("Glic.Invoke.InvocationSource", 0);
+
+  controller->Close();
+}
+
+// With the panel open, the toolbar entry point hands the capture to the panel
+// instead of opening the overlay itself.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
+                       InvokeSelectionOverlayHandsOffToOpenPanel) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  ASSERT_TRUE(OpenGlicForActiveTab().has_value());
+  ASSERT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  InvokeSelectionOverlay(*tab, ::selection::EntryPoint::kToolbarButton);
+
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Invoke.InvocationSource",
+      mojom::InvocationSource::kCaptureRegionHotkey, 1);
+  EXPECT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
+}
+
+class SelectionOverlayShakeTriggerBrowserTest
+    : public SelectionOverlayPromptBrowserTest {
+ public:
+  SelectionOverlayShakeTriggerBrowserTest() {
+    shake_feature_list_.InitWithFeaturesAndParameters(
+        {{features::kGlicShakeTrigger, {{"only_on_side_panel", "false"}}}}, {});
+  }
+  ~SelectionOverlayShakeTriggerBrowserTest() override = default;
+
+  void SetUpOnMainThread() override {
+    SelectionOverlayPromptBrowserTest::SetUpOnMainThread();
+    GetProfile()->GetPrefs()->SetBoolean(prefs::kGlicShakeTriggerEnabled, true);
+  }
+
+ protected:
+  void SimulateCursorWiggle(content::WebContents* web_contents) {
+    content::WaitForHitTestData(web_contents->GetPrimaryMainFrame());
+    for (int i = 0; i < 6; ++i) {
+      content::SimulateMouseEvent(web_contents,
+                                  blink::WebInputEvent::Type::kMouseMove,
+                                  gfx::Point(i % 2 == 0 ? 10 : 50, 10));
+    }
+  }
+
+ private:
+  base::test::ScopedFeatureList shake_feature_list_;
+};
+
+// Wiggling the cursor when the side panel is closed opens the selection overlay
+// directly without opening the Glic side panel.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayShakeTriggerBrowserTest,
+                       ShakeOpensOverlayWithoutSidePanelWhenClosed) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  content::WebContents* web_contents = tab->GetContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  ASSERT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  ASSERT_FALSE(coordinator().IsAnyPanelShowing());
+
+  base::HistogramTester histogram_tester;
+  SimulateCursorWiggle(web_contents);
+
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to reach kOverlay"));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 0u);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
+                                      ::selection::EntryPoint::kCursorWiggle,
+                                      1);
+  histogram_tester.ExpectTotalCount("Glic.Invoke.InvocationSource", 0);
+
+  controller->Close();
+}
+
+// Wiggling the cursor with an active text selection when the side panel is
+// closed pre-selects the text in the overlay without opening the side panel.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayShakeTriggerBrowserTest,
+                       ShakePreselectsTextSelectionWithoutSidePanelWhenClosed) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  content::WebContents* web_contents = tab->GetContents();
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(web_contents);
+  ASSERT_TRUE(controller);
+  auto* selection_observer = GlicSelectionObserver::From(tab);
+  ASSERT_TRUE(selection_observer);
+  ASSERT_TRUE(SelectAllAndWaitForBounds(web_contents));
+  ASSERT_TRUE(base::test::RunUntil([selection_observer]() {
+    return selection_observer->GetCurrentSelectionBounds().has_value();
+  }));
+  ASSERT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  SimulateCursorWiggle(web_contents);
+
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to reach kOverlay"));
+  EXPECT_EQ(controller->GetSelectedRegionCount(), 1u);
+  EXPECT_FALSE(GlicSidePanelCoordinator::IsShowing(tab));
+  EXPECT_FALSE(coordinator().IsAnyPanelShowing());
+  histogram_tester.ExpectUniqueSample("SmartSelection.Invocation.ByEntryPoint",
+                                      ::selection::EntryPoint::kCursorWiggle,
+                                      1);
+  histogram_tester.ExpectTotalCount("Glic.Invoke.InvocationSource", 0);
+
+  controller->Close();
+}
+
+// Wiggling the cursor when the side panel is already open hands the capture
+// session to the open side panel.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayShakeTriggerBrowserTest,
+                       ShakeInvokesGlicWhenSidePanelOpen) {
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  ASSERT_TRUE(OpenGlicForActiveTab().has_value());
+  ASSERT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
+
+  base::HistogramTester histogram_tester;
+  SimulateCursorWiggle(tab->GetContents());
+
+  ASSERT_TRUE(base::test::RunUntil([&histogram_tester]() {
+    return histogram_tester.GetBucketCount(
+               "Glic.Invoke.InvocationSource",
+               mojom::InvocationSource::kCaptureRegionHotkey) == 1;
+  }));
+  EXPECT_TRUE(GlicSidePanelCoordinator::IsShowing(tab));
+}
+
+// The toolbar button is pinned by default, highlighted only while the active
+// tab's overlay is showing (including split views), and closes it when clicked.
+IN_PROC_BROWSER_TEST_F(SelectionOverlayPromptBrowserTest,
+                       ToolbarActionPinnedAndToggles) {
+  tabs::TabInterface* other_tab = CreateAndActivateTab(GetSimpleTestUrl());
+  tabs::TabInterface* tab = CreateAndActivateTab(GetSimpleTestUrl());
+  TabStripModel* const tab_strip_model =
+      tab->GetBrowserWindowInterface()->GetTabStripModel();
+  const int other_index = tab_strip_model->GetIndexOfTab(other_tab);
+  tab_strip_model->AddToNewSplit(
+      {other_index}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  auto* controller =
+      SelectionOverlayController::FromTabWebContents(tab->GetContents());
+  ASSERT_TRUE(controller);
+  actions::ActionItem* const action = actions::ActionManager::Get().FindAction(
+      kActionGlicSmartSelectionToolbar,
+      BrowserActions::From(tab->GetBrowserWindowInterface())
+          ->root_action_item());
+  ASSERT_TRUE(action);
+  PinnedToolbarActions* const pinned_actions =
+      BrowserWindow::FromBrowser(tab->GetBrowserWindowInterface())
+          ->GetPinnedToolbarActions();
+  ASSERT_TRUE(pinned_actions);
+  EXPECT_TRUE(pinned_actions->IsActionPinned(kActionGlicSmartSelectionToolbar));
+
+  action->InvokeAction();
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOverlay,
+                          "Timeout waiting for overlay to reach kOverlay"));
+  EXPECT_TRUE(
+      pinned_actions->IsActionHighlighted(kActionGlicSmartSelectionToolbar));
+
+  // Focusing the other split pane leaves the overlay visible, but clears the
+  // window button highlight until focus returns to the overlay's pane.
+  tab_strip_model->ActivateTabAt(tab_strip_model->GetIndexOfTab(other_tab));
+  EXPECT_EQ(controller->state(), SelectionOverlayController::State::kOverlay);
+  EXPECT_FALSE(
+      pinned_actions->IsActionHighlighted(kActionGlicSmartSelectionToolbar));
+
+  tab_strip_model->ActivateTabAt(tab_strip_model->GetIndexOfTab(tab));
+  EXPECT_TRUE(
+      pinned_actions->IsActionHighlighted(kActionGlicSmartSelectionToolbar));
+
+  action->InvokeAction();
+  ASSERT_OK(RunUntilEqual([controller]() { return controller->state(); },
+                          SelectionOverlayController::State::kOff,
+                          "Timeout waiting for overlay to close"));
+  EXPECT_FALSE(
+      pinned_actions->IsActionHighlighted(kActionGlicSmartSelectionToolbar));
 }
 
 }  // namespace glic

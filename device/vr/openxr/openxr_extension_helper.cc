@@ -16,6 +16,7 @@
 #include "device/vr/openxr/openxr_extension_handler_factory.h"
 #include "device/vr/openxr/openxr_mesh_manager.h"
 #include "device/vr/openxr/openxr_platform_helper.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/xr_session.mojom.h"
 
 namespace device {
@@ -173,6 +174,11 @@ OpenXrExtensionHelper::OpenXrExtensionHelper(
   // Visibility Mask
   OPENXR_LOAD_FN(xrGetVisibilityMaskKHR);
 
+  // Display refresh rate
+  OPENXR_LOAD_FN(xrEnumerateDisplayRefreshRatesFB);
+  OPENXR_LOAD_FN(xrGetDisplayRefreshRateFB);
+  OPENXR_LOAD_FN(xrRequestDisplayRefreshRateFB);
+
 #if BUILDFLAG(IS_WIN)
   OPENXR_LOAD_FN(xrConvertWin32PerformanceCounterToTimeKHR);
 #endif
@@ -220,7 +226,7 @@ bool OpenXrExtensionHelper::IsFeatureSupported(
       return std::ranges::any_of(
           GetExtensionHandlerFactories(),
           [feature](const auto* extension_handler_factory) {
-            return extension_handler_factory->GetSupportedFeatures().contains(
+            return extension_handler_factory->GetSupportedFeatures().Has(
                 feature);
           });
     case device::mojom::XRSessionFeature::SECONDARY_VIEWS:
@@ -313,12 +319,13 @@ OpenXrExtensionHelper::CreateSceneUnderstandingManager(
       continue;
     }
 
-    const auto supported_features = factory->GetSupportedFeatures();
+    const XRSessionFeatureSet supported_features =
+        factory->GetSupportedFeatures();
 
     auto supported_function =
-        [&supported_features](mojom::XRSessionFeature feature) {
+        [supported_features](mojom::XRSessionFeature feature) {
           return IsSceneUnderstandingFeature(feature) &&
-                 supported_features.contains(feature);
+                 supported_features.Has(feature);
         };
 
     // Get the count of how many required and optional features are scene

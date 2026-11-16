@@ -11,7 +11,6 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
-#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
@@ -279,8 +278,6 @@ class PlayerCompositorDelegateTest : public testing::Test {
         }));
     loop.Run();
   }
-
-  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
 
   base::test::TaskEnvironment env{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
@@ -636,6 +633,31 @@ TEST_F(PlayerCompositorDelegateTest, CompressOnClose) {
   }
   env.RunUntilIdle();
   EXPECT_TRUE(base::PathExists(dir.AddExtensionASCII(".zip")));
+}
+
+TEST_F(PlayerCompositorDelegateTest, CompressOnCloseWithoutFileMixin) {
+  PaintPreviewBaseService in_memory_service(
+      /*file_mixin=*/nullptr, /*policy=*/nullptr, /*is_off_the_record=*/true);
+  GURL url("https://www.chromium.org/");
+  auto proto = CreateValidProto(url);
+  auto key = GetBaseService()->GetFileMixin()->GetFileManager()->CreateKey(1U);
+  SerializeProtoAndCreateRootSkp(&proto, key, true);
+  {
+    PlayerCompositorDelegateImpl player_compositor_delegate;
+    auto capture_result =
+        std::make_unique<CaptureResult>(RecordingPersistence::kFileSystem);
+    capture_result->proto = std::move(proto);
+    player_compositor_delegate.SetCaptureResult(std::move(capture_result));
+    player_compositor_delegate.SetExpected(CompositorStatus::OK,
+                                           kDefaultScaleFactor);
+    player_compositor_delegate.InitializeWithFakeServiceForTest(
+        &in_memory_service, url, DirectoryKey(), /*main_frame_mode=*/false,
+        base::DoNothing(), base::TimeDelta::Max(), kMaxParallelRequests,
+        CreateCompositorService());
+    env.RunUntilIdle();
+    EXPECT_TRUE(player_compositor_delegate.WasStatusChecked());
+  }
+  env.RunUntilIdle();
 }
 
 TEST_F(PlayerCompositorDelegateTest, RequestBitmapWithCancel) {

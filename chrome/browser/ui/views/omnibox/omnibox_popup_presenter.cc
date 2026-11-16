@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter.h"
 
 #include <memory>
-#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -23,7 +22,10 @@ OmniboxPopupPresenter::OmniboxPopupPresenter(
     LocationBar* location_bar,
     OmniboxPopupPresenterDelegate& presenter_delegate,
     OmniboxController* controller)
-    : OmniboxPopupPresenterBase(location_bar, presenter_delegate, controller) {
+    : OmniboxPopupPresenterBase(location_bar,
+                                presenter_delegate,
+                                controller,
+                                OmniboxPopupContentConfig::ForClassic()) {
   // If the content is not created here, it is created once the omnibox is
   // focused and the window has presented (`kOnOmniboxFocus`), or from `Show()`.
   // `OmniboxPopupViewWebUI` reads the content only while the popup is shown.
@@ -50,7 +52,8 @@ std::unique_ptr<OmniboxPopupWebUIBaseContent>
 OmniboxPopupPresenter::CreateWebUIContent(
     std::unique_ptr<WebUIContentsWrapperT<OmniboxPopupUI>> contents) {
   return std::make_unique<OmniboxPopupWebUIContent>(
-      this, location_bar(), controller(),
+      /*content_delegate=*/this, /*sizer=*/this, /*config=*/config(),
+      location_bar(), controller(),
       /*include_location_bar_cutout=*/true,
       /*wants_focus=*/false, /*set_content_url=*/true, std::move(contents));
 }
@@ -71,7 +74,7 @@ bool OmniboxPopupPresenter::ShouldHideForInitialLayout() const {
 
 void OmniboxPopupPresenter::Hide() {
   OmniboxPopupPresenterBase::Hide();
-  if (ShouldApplyHeightWorkarounds() &&
+  if (config().height_workarounds &&
       !base::FeatureList::IsEnabled(
           omnibox::kOmniboxWebUIDeferShowUntilVisualStateReady)) {
     // Reset the cached height to force a layout update when the popup is
@@ -110,40 +113,8 @@ bool OmniboxPopupPresenter::ShouldReceiveFocus() const {
   return false;
 }
 
-std::optional<base::TimeDelta>
-OmniboxPopupPresenter::ShouldDeferUntilVisualStateReady() const {
-  if (!base::FeatureList::IsEnabled(
-          omnibox::kOmniboxWebUIDeferShowUntilVisualStateReady)) {
-    return std::nullopt;
-  }
-  return base::Milliseconds(
-      omnibox::kOmniboxWebUIDeferShowUntilVisualStateReadyTimeoutMs.Get());
-}
-
-bool OmniboxPopupPresenter::ShouldDebounceResize() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIDebounceResize);
-}
-
-bool OmniboxPopupPresenter::ShouldApplyHeightWorkarounds() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIHeightWorkarounds);
-}
-
-bool OmniboxPopupPresenter::ShouldDetachWebContentsOnHide() const {
-  return base::FeatureList::IsEnabled(
-      omnibox::kOmniboxWebUIDetachWebContentsOnHide);
-}
-
-bool OmniboxPopupPresenter::ShouldEvictOnHide() const {
-  return base::FeatureList::IsEnabled(omnibox::kOmniboxWebUIEvictOnHide);
-}
-
 bool OmniboxPopupPresenter::ShouldDestroyWidgetOnHide() const {
   return base::FeatureList::IsEnabled(
              omnibox::kOmniboxWebUIDestroyWidgetOnHide) ||
          OmniboxPopupPresenterBase::ShouldDestroyWidgetOnHide();
-}
-
-bool OmniboxPopupPresenter::ShouldSizeWebViewToPreferredHeight() const {
-  return base::FeatureList::IsEnabled(
-      omnibox::kOmniboxWebUISizeWebViewToPreferredHeight);
 }

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/constants/ash_constants.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
@@ -16,7 +17,6 @@
 #include "ui/aura/test/test_window_delegate.h"
 #include "ui/aura/test/test_windows.h"
 #include "ui/base/cursor/cursor.h"
-#include "ui/base/cursor/cursor_size.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/hit_test.h"
 #include "ui/display/screen.h"
@@ -810,8 +810,8 @@ TEST_F(WindowManagerTest, TestCursorClientObserver) {
   EXPECT_FALSE(observer_b.did_visibility_change());
   EXPECT_FALSE(observer_a.is_cursor_visible());
   EXPECT_FALSE(observer_b.is_cursor_visible());
-  EXPECT_FALSE(observer_a.did_cursor_size_change());
-  EXPECT_FALSE(observer_b.did_cursor_size_change());
+  EXPECT_FALSE(observer_a.did_custom_cursor_size_change());
+  EXPECT_FALSE(observer_b.did_custom_cursor_size_change());
 
   // Keypress should hide the cursor.
   generator->PressKey(ui::VKEY_A, ui::EF_NONE);
@@ -821,11 +821,11 @@ TEST_F(WindowManagerTest, TestCursorClientObserver) {
   EXPECT_FALSE(observer_b.is_cursor_visible());
 
   // Set cursor set.
-  cursor_manager->SetCursorSize(ui::CursorSize::kLarge);
-  EXPECT_TRUE(observer_a.did_cursor_size_change());
-  EXPECT_EQ(ui::CursorSize::kLarge, observer_a.cursor_size());
-  EXPECT_TRUE(observer_b.did_cursor_size_change());
-  EXPECT_EQ(ui::CursorSize::kLarge, observer_b.cursor_size());
+  cursor_manager->SetCustomCursorSize(kDefaultLargeCursorSize);
+  EXPECT_TRUE(observer_a.did_custom_cursor_size_change());
+  EXPECT_EQ(kDefaultLargeCursorSize, observer_a.custom_cursor_size());
+  EXPECT_TRUE(observer_b.did_custom_cursor_size_change());
+  EXPECT_EQ(kDefaultLargeCursorSize, observer_b.custom_cursor_size());
 
   // Mouse move should show the cursor.
   observer_a.reset();
@@ -849,10 +849,10 @@ TEST_F(WindowManagerTest, TestCursorClientObserver) {
   EXPECT_FALSE(observer_a.is_cursor_visible());
 
   // Set back cursor set to normal.
-  cursor_manager->SetCursorSize(ui::CursorSize::kNormal);
-  EXPECT_TRUE(observer_a.did_cursor_size_change());
-  EXPECT_EQ(ui::CursorSize::kNormal, observer_a.cursor_size());
-  EXPECT_FALSE(observer_b.did_cursor_size_change());
+  cursor_manager->SetCustomCursorSize(std::nullopt);
+  EXPECT_TRUE(observer_a.did_custom_cursor_size_change());
+  EXPECT_EQ(std::nullopt, observer_a.custom_cursor_size());
+  EXPECT_FALSE(observer_b.did_custom_cursor_size_change());
 
   // Mouse move should show the cursor.
   observer_a.reset();

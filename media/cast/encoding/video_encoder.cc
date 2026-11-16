@@ -27,6 +27,7 @@ constexpr char kHistogramEncoderType[] =
 //
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+// LINT.IfChange(CastStreamingVideoEncoderType)
 enum class CastStreamingVideoEncoderType {
   kUnknown = 0,
   kH264Software = 1,
@@ -37,9 +38,12 @@ enum class CastStreamingVideoEncoderType {
   kVP9Hardware = 6,
   kAV1Software = 7,
   kAV1Hardware = 8,
+  kHEVCSoftware = 9,
+  kHEVCHardware = 10,
 
-  kMaxValue = kAV1Hardware,  // Must equal the last "real" codec above.
+  kMaxValue = kHEVCHardware,  // Must equal the last "real" codec above.
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:CastStreamingVideoEncoderType)
 
 CastStreamingVideoEncoderType ToEncoderType(media::VideoCodec codec,
                                             bool is_hardware) {
@@ -58,6 +62,9 @@ CastStreamingVideoEncoderType ToEncoderType(media::VideoCodec codec,
     case media::VideoCodec::kAV1:
       return is_hardware ? CastStreamingVideoEncoderType::kAV1Hardware
                          : CastStreamingVideoEncoderType::kAV1Software;
+    case media::VideoCodec::kHEVC:
+      return is_hardware ? CastStreamingVideoEncoderType::kHEVCHardware
+                         : CastStreamingVideoEncoderType::kHEVCSoftware;
     default:
       NOTREACHED();
   }

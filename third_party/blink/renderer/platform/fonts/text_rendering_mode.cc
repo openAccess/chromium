@@ -10,7 +10,7 @@ namespace blink {
 
 String ToString(TextRenderingMode mode) {
   switch (mode) {
-    case TextRenderingMode::kAutoTextRendering:
+    case TextRenderingMode::kAuto:
       return "Auto";
     case TextRenderingMode::kOptimizeSpeed:
       return "OptimizeSpeed";
@@ -18,20 +18,6 @@ String ToString(TextRenderingMode mode) {
       return "OptimizeLegibility";
     case TextRenderingMode::kGeometricPrecision:
       return "GeometricPrecision";
-  }
-  return "Unknown";
-}
-
-String ToStringForIdl(TextRenderingMode mode) {
-  switch (mode) {
-    case TextRenderingMode::kAutoTextRendering:
-      return "auto";
-    case TextRenderingMode::kOptimizeSpeed:
-      return "optimizeSpeed";
-    case TextRenderingMode::kOptimizeLegibility:
-      return "optimizeLegibility";
-    case TextRenderingMode::kGeometricPrecision:
-      return "geometricPrecision";
   }
   return "Unknown";
 }

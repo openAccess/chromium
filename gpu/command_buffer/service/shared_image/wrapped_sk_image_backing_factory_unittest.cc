@@ -263,7 +263,7 @@ TEST_P(WrappedSkImageBackingFactoryTest, RestoresPreviouslyCurrentGLContext) {
   // Use a different context and surface from the SharedContextState's.
   scoped_refptr<gl::GLSurface> other_surface =
       gl::init::CreateOffscreenGLSurface(gl::GetDefaultDisplayEGL(),
-                                         gfx::Size(4, 4));
+                                         gfx::Size());
   ASSERT_TRUE(other_surface);
   scoped_refptr<gl::GLContext> other_context = gl::init::CreateGLContext(
       nullptr, other_surface.get(), gl::GLContextAttribs());
@@ -533,7 +533,7 @@ TEST_P(WrappedSkImageBackingFactoryTest,
   // accessing the GL representation.
   scoped_refptr<gl::GLSurface> other_surface =
       gl::init::CreateOffscreenGLSurface(gl::GetDefaultDisplayEGL(),
-                                         gfx::Size(4, 4));
+                                         gfx::Size());
   ASSERT_TRUE(other_surface);
   scoped_refptr<gl::GLContext> other_context = gl::init::CreateGLContext(
       nullptr, other_surface.get(), gl::GLContextAttribs());
@@ -785,6 +785,26 @@ INSTANTIATE_TEST_SUITE_P(
                                      GrContextType::kGraphiteDawn)),
     TestParamToString);
 #endif  // BUILDFLAG(IS_WIN)
+
+class WrappedSkImageBackingFactoryUnsupportedFormatTest
+    : public WrappedSkImageBackingFactoryTest {};
+
+TEST_P(WrappedSkImageBackingFactoryUnsupportedFormatTest,
+       CanCreateSharedImage) {
+  EXPECT_FALSE(backing_factory_->CanCreateSharedImage(
+      kUsage, GetFormat(), gfx::Size(100, 100), /*thread_safe=*/false,
+      gfx::EMPTY_BUFFER, gr_context_type(), {}));
+}
+
+// Y210 has no SkColorType at the image size: each texel of its packed 4:2:2
+// layout holds two pixels.
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    WrappedSkImageBackingFactoryUnsupportedFormatTest,
+    testing::Combine(testing::Values(viz::SinglePlaneFormat::kY210),
+                     testing::Values(GrContextType::kGL,
+                                     GrContextType::kGraphiteDawn)),
+    TestParamToString);
 
 }  // namespace
 }  // namespace gpu

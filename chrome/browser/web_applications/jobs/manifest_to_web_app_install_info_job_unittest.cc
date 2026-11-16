@@ -138,9 +138,7 @@ class ManifestToWebAppInstallInfoJobTest : public WebAppTest {
 
     // Set up manifest.
     page_state.opt_manifest =
-        blink::Manifest::Builder(
-            start_url_, GenerateManifestIdFromStartUrlOnly(start_url_).value(),
-            start_url_.GetWithoutFilename())
+        blink::Manifest::Builder(start_url_)
             .SetDisplay(DisplayMode::kStandalone)
             .SetName(u"Foo App")
             .SetIcons({icon})
@@ -1383,16 +1381,15 @@ class ManifestToWebAppInstallInfoLocalizationTest
   // Saves the current application locale and returns a ScopedClosureRunner
   // that restores it when destroyed.
   base::ScopedClosureRunner SaveAndRestoreLocale() {
-    std::string original_locale(g_browser_process->GetFeatures()
-                                    ->application_locale_storage()
-                                    ->GetTag()
-                                    .tag_string());
     return base::ScopedClosureRunner(base::BindOnce(
-        [](std::string locale) {
-          g_browser_process->GetFeatures()->application_locale_storage()->Set(
-              locale);
+        [](base::i18n::LanguageTag locale) {
+          g_browser_process->GetFeatures()
+              ->application_locale_storage()
+              ->SetTag(std::move(locale));
         },
-        original_locale));
+        g_browser_process->GetFeatures()
+            ->application_locale_storage()
+            ->GetTag()));
   }
 
   blink::Manifest::ShortcutItem CreateShortcutWithLocalizedNames(
@@ -1487,7 +1484,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, ExactLocaleMatchFound) {
                  .SetNameLocalized(std::move(name_localized))
                  .SetDescriptionLocalized(std::move(description_localized))
                  .BuildChecked();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   EXPECT_EQ(u"American English Name", web_app_info->title);
@@ -1526,7 +1524,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .SetNameLocalized(std::move(name_localized))
                  .SetDescriptionLocalized(std::move(description_localized))
                  .BuildChecked();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   EXPECT_EQ(u"Default App Name", web_app_info->title);
@@ -1563,7 +1562,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .SetNameLocalized(std::move(name_localized))
                  .SetDescriptionLocalized(std::move(description_localized))
                  .BuildChecked();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   EXPECT_EQ(u"Generic English Name", web_app_info->title);
@@ -1581,7 +1581,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, PriorityAndFallback) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   // name_localized takes priority over short_name_localized
   absl::flat_hash_map<base::i18n::LanguageTag,
@@ -1630,7 +1631,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("fr-FR");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("fr-FR"));
 
   // Only localize name, not description
   absl::flat_hash_map<base::i18n::LanguageTag,
@@ -1662,7 +1664,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("fr-FR");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("fr-FR"));
 
   // Only localize description, not name
   absl::flat_hash_map<base::i18n::LanguageTag,
@@ -1693,7 +1696,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, LangAndDirBothOmitted) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   absl::flat_hash_map<base::i18n::LanguageTag,
                       blink::Manifest::ManifestLocalizedTextObject>
@@ -1726,7 +1730,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, LangAndDirBothSpecified) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   absl::flat_hash_map<base::i18n::LanguageTag,
                       blink::Manifest::ManifestLocalizedTextObject>
@@ -1764,7 +1769,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, LangOnlySpecified) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   absl::flat_hash_map<base::i18n::LanguageTag,
                       blink::Manifest::ManifestLocalizedTextObject>
@@ -1798,7 +1804,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, DirOnlySpecified) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   absl::flat_hash_map<base::i18n::LanguageTag,
                       blink::Manifest::ManifestLocalizedTextObject>
@@ -1836,7 +1843,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest, EmptyValueIgnored) {
 
   SetupBasicPageState();
   auto& manifest = GetPageManifest();
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   absl::flat_hash_map<base::i18n::LanguageTag,
                       blink::Manifest::ManifestLocalizedTextObject>
@@ -1883,7 +1891,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .SetIconsLocalized(std::move(icons_localized))
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
 
@@ -1935,7 +1944,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .SetIconsLocalized(std::move(icons_localized))
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("fr-FR");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("fr-FR"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->manifest_icons.size());
@@ -1973,7 +1983,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Set application locale to "en-US", localized icon should fall back to "en"
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->manifest_icons.size());
@@ -2011,7 +2022,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Set application locale to "en-US", which has no match in icons_localized
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
 
@@ -2063,7 +2075,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .SetIconsLocalized(std::move(icons_localized))
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(2u, web_app_info->manifest_icons.size());
@@ -2101,7 +2114,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                        blink::mojom::Manifest_TextDirection::kLTR}})})
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2125,7 +2139,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Application locale is "en-US", should fall back to "en".
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2148,7 +2163,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Application locale is "en-US", no match found.
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2174,7 +2190,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                      {{"en-US", en_us_icon_url}, {"fr-FR", fr_fr_icon_url}})})
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("fr-FR");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("fr-FR"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2202,7 +2219,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Application locale is "en-US", should fall back to "en".
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2229,7 +2247,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                  .BuildChecked();
 
   // Application locale is "en-US", no match in icons_localized.
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2255,7 +2274,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                        blink::mojom::Manifest_TextDirection::kLTR}})})
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2281,7 +2301,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
                      default_icon_url, {})})
                  .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2310,7 +2331,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
               default_icon_url, {{"en-US", en_us_icon_url}})})
           .BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());
@@ -2351,7 +2373,8 @@ TEST_F(ManifestToWebAppInstallInfoLocalizationTest,
   manifest =
       manifest.ToBuilder().SetShortcuts({std::move(shortcut)}).BuildChecked();
 
-  g_browser_process->GetFeatures()->application_locale_storage()->Set("en-US");
+  g_browser_process->GetFeatures()->application_locale_storage()->SetTag(
+      base::i18n::GetKnownLanguageTag("en-US"));
 
   auto web_app_info = GetWebAppInstallInfoFromJob(manifest);
   ASSERT_EQ(1u, web_app_info->shortcuts_menu_item_infos.size());

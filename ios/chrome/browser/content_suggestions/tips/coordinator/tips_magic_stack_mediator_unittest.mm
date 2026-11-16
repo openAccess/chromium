@@ -8,6 +8,7 @@
 
 #import <memory>
 
+#import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/bookmarks/browser/bookmark_model.h"
 #import "components/bookmarks/test/test_bookmark_client.h"
@@ -20,6 +21,7 @@
 #import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/content_suggestions/public/content_suggestions_constants.h"
 #import "ios/chrome/browser/content_suggestions/tips/coordinator/tips_magic_stack_mediator_delegate.h"
+#import "ios/chrome/browser/content_suggestions/tips/model/tips_metrics.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/ntp_theme_actionable_tip_config.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/tips_module_audience.h"
 #import "ios/chrome/browser/content_suggestions/tips/ui/tips_module_config.h"
@@ -37,6 +39,7 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "url/gurl.h"
 
 using segmentation_platform::TipIdentifier;
 
@@ -177,7 +180,7 @@ TEST_F(TipsMagicStackMediatorTest,
 
 // Tests that selecting an NTP theme swatch updates `selectedIndex`, applies
 // the theme to `HomeBackgroundCustomizationService`, logs Magic Stack
-// engagement, and notifies `presentationAudience`.
+// engagement once per impression, and notifies `presentationAudience`.
 TEST_F(TipsMagicStackMediatorTest, AppliesSelectedNTPThemeAtIndex) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeatureWithParameters(
@@ -185,13 +188,19 @@ TEST_F(TipsMagicStackMediatorTest, AppliesSelectedNTPThemeAtIndex) {
       {{segmentation_platform::features::
             kMagicStackNTPThemeTipIosActionableParam,
         "true"}});
+  HomeBackgroundCustomizationService* service =
+      HomeBackgroundCustomizationServiceFactory::GetForProfile(profile_.get());
+  service->SetCurrentBackground(GURL("https://example.test/bg.jpg"),
+                                GURL("https://example.test/thumb.jpg"), "line1",
+                                "line2", GURL("https://example.test/action"),
+                                "collection");
+  service->StoreCurrentTheme();
+
   [mediator_ reconfigureWithTipIdentifier:TipIdentifier::kNTPTheme];
   ASSERT_EQ(ContentSuggestionsModuleType::kTipsNTPThemeActionable,
             mediator_.activeConfig.type);
   NTPThemeActionableTipConfig* actionableConfig =
       static_cast<NTPThemeActionableTipConfig*>(mediator_.activeConfig);
-  HomeBackgroundCustomizationService* service =
-      HomeBackgroundCustomizationServiceFactory::GetForProfile(profile_.get());
   id delegate =
       OCMStrictProtocolMock(@protocol(TipsMagicStackMediatorDelegate));
   mediator_.delegate = delegate;
@@ -199,6 +208,7 @@ TEST_F(TipsMagicStackMediatorTest, AppliesSelectedNTPThemeAtIndex) {
       @protocol(ContentSuggestionsViewControllerAudience));
   mediator_.presentationAudience = audience;
 
+  base::HistogramTester histogram_tester;
   OCMExpect(
       [delegate logMagicStackEngagementForType:ContentSuggestionsModuleType::
                                                    kTipsNTPThemeActionable]);
@@ -206,22 +216,53 @@ TEST_F(TipsMagicStackMediatorTest, AppliesSelectedNTPThemeAtIndex) {
   [(id<TipsModuleAudience>)mediator_ didSelectNTPThemeAtIndex:1];
   EXPECT_EQ(1, actionableConfig.selectedIndex);
   EXPECT_TRUE(service->GetCurrentColorTheme().has_value());
+  histogram_tester.ExpectBucketCount(
+      kTipsNTPThemeActionHistogram,
+      IOSTipsNTPThemeActionableAction::kColorSelected, 1);
   EXPECT_OCMOCK_VERIFY(delegate);
   EXPECT_OCMOCK_VERIFY(audience);
 
-  OCMExpect(
-      [delegate logMagicStackEngagementForType:ContentSuggestionsModuleType::
-                                                   kTipsNTPThemeActionable]);
+  // Selecting swatch index 2 applies the preset background image without
+  // re-logging Magic Stack engagement for the same impression.
+  OCMExpect([audience didSelectNTPThemeOption]);
+  [(id<TipsModuleAudience>)mediator_ didSelectNTPThemeAtIndex:2];
+  EXPECT_EQ(2, actionableConfig.selectedIndex);
+  EXPECT_TRUE(service->GetCurrentCustomBackground().has_value());
+  histogram_tester.ExpectBucketCount(
+      kTipsNTPThemeActionHistogram,
+      IOSTipsNTPThemeActionableAction::kPresetImageSelected, 1);
+  EXPECT_OCMOCK_VERIFY(delegate);
+  EXPECT_OCMOCK_VERIFY(audience);
+
+  // Selecting swatch index 0 clears the theme back to default without
+  // re-logging Magic Stack engagement for the same impression.
   OCMExpect([audience didSelectNTPThemeOption]);
   [(id<TipsModuleAudience>)mediator_ didSelectNTPThemeAtIndex:0];
   EXPECT_EQ(0, actionableConfig.selectedIndex);
   EXPECT_FALSE(service->GetCurrentColorTheme().has_value());
+  histogram_tester.ExpectBucketCount(
+      kTipsNTPThemeActionHistogram,
+      IOSTipsNTPThemeActionableAction::kDefaultSelected, 1);
+  EXPECT_OCMOCK_VERIFY(delegate);
+  EXPECT_OCMOCK_VERIFY(audience);
+
+  // Reconfiguring starts a new impression, allowing engagement to log again.
+  [mediator_ reconfigureWithTipIdentifier:TipIdentifier::kNTPTheme];
+  OCMExpect(
+      [delegate logMagicStackEngagementForType:ContentSuggestionsModuleType::
+                                                   kTipsNTPThemeActionable]);
+  OCMExpect([audience didSelectNTPThemeOption]);
+  [(id<TipsModuleAudience>)mediator_ didSelectNTPThemeAtIndex:1];
+  histogram_tester.ExpectBucketCount(
+      kTipsNTPThemeActionHistogram,
+      IOSTipsNTPThemeActionableAction::kColorSelected, 2);
   EXPECT_OCMOCK_VERIFY(delegate);
   EXPECT_OCMOCK_VERIFY(audience);
 }
 
-// Tests that the mediator logs Magic Stack engagement and forwards
-// `-didToggleTipsNotificationsSwitch:` to its `presentationAudience`.
+// Tests that the mediator logs Magic Stack engagement once per impression and
+// forwards every `-didToggleTipsNotificationsSwitch:` call to its
+// `presentationAudience`.
 TEST_F(TipsMagicStackMediatorTest, ForwardsDidToggleTipsNotificationsSwitch) {
   id delegate =
       OCMStrictProtocolMock(@protocol(TipsMagicStackMediatorDelegate));
@@ -234,6 +275,13 @@ TEST_F(TipsMagicStackMediatorTest, ForwardsDidToggleTipsNotificationsSwitch) {
       logMagicStackEngagementForType:ContentSuggestionsModuleType::kTips]);
   OCMExpect([audience didToggleTipsNotificationsSwitch:YES]);
   [(id<TipsModuleAudience>)mediator_ didToggleTipsNotificationsSwitch:YES];
+  EXPECT_OCMOCK_VERIFY(delegate);
+  EXPECT_OCMOCK_VERIFY(audience);
+
+  // Toggling again on the same impression forwards to `audience` without
+  // re-logging Magic Stack engagement.
+  OCMExpect([audience didToggleTipsNotificationsSwitch:NO]);
+  [(id<TipsModuleAudience>)mediator_ didToggleTipsNotificationsSwitch:NO];
   EXPECT_OCMOCK_VERIFY(delegate);
   EXPECT_OCMOCK_VERIFY(audience);
 }

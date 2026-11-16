@@ -7,8 +7,7 @@
 
 #include <memory>
 #include <optional>
-#include <string>
-#include <string_view>
+#include <utility>
 
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -43,12 +42,15 @@ enum class OnDeviceEncryptionStateHistogramBucket {
 // LINT.ThenChange(//tools/metrics/histograms/metadata/password/enums.xml:OnDeviceEncryptionStateHistogramBucket)
 
 // Tracks the on-device encryption state for a specific data type (passwords or
-// passkeys) and publishes the corresponding readiness metrics periodically.
+// passkeys) and publishes readiness and time-to-unlock metrics periodically.
 //
-// Metrics are recorded at least once per `kPeriodicReportingDelay`, provided
-// that the on-device encryption state is different from
+// Readiness metrics are recorded at least once per `kPeriodicReportingDelay`,
+// provided that the on-device encryption state is different from
 // `OnDeviceEncryptionState::kOnDeviceEncryptionStateNotAvailable`.
 // In addition, metrics are recorded immediately whenever the state changes.
+// Time-to-unlock metrics measure elapsed time between the most recent sign-in
+// and the first time the state reaches `kDeviceReady`, and are likewise
+// re-reported every `kPeriodicReportingDelay` while `kDeviceReady`.
 //
 // Note that recording of the initial state on startup is delayed by
 // `kInitialStateReportingDelay`; if the browser terminates sooner than
@@ -56,10 +58,13 @@ enum class OnDeviceEncryptionStateHistogramBucket {
 class OnDeviceEncryptionDataTypeSpecificMetricsReporter
     : public OnDeviceEncryptionStateTracker::Observer {
  public:
+  enum class DataType {
+    kPasskeys,
+    kPasswords,
+  };
+
   OnDeviceEncryptionDataTypeSpecificMetricsReporter(
-      std::string_view histogram_name,
-      std::string_view pref_name_last_reporting_time,
-      std::string_view pref_name_last_reported_bucket,
+      DataType data_type,
       std::unique_ptr<OnDeviceEncryptionStateTracker> tracker,
       PrefService& pref_service);
 
@@ -79,18 +84,29 @@ class OnDeviceEncryptionDataTypeSpecificMetricsReporter
   void OnDeviceEncryptionStateTrackerShuttingDown() override;
 
  private:
-  // Starts observing the tracker and records the initial readiness metric.
+  // Starts observing the tracker and records the initial metrics.
   void StartObservationAndRecordInitialMetrics();
 
-  // Evaluates whether the current on-device encryption state should be recorded
-  // to UMA. A metric is recorded if it has never been reported before, if the
-  // state has changed since the last report, or if at least
-  // `kPeriodicReportingDelay` has elapsed since the last report. If recorded,
-  // updates the last reporting time and bucket in preferences. In all cases,
-  // schedules the next evaluation via `ScheduleNextReporting()`.
-  void MaybeRecordReadiness();
+  // Evaluates all tracked metrics and schedules `timer_` for the next
+  // periodic evaluation.
+  void MaybeRecordMetrics();
 
-  // Schedules `timer_` to invoke `MaybeRecordReadiness()` at `execution_time`.
+  // Evaluates whether the current on-device encryption state should be recorded
+  // to UMA using `now` as the current timestamp. A metric is recorded if it has
+  // never been reported before, if the state has changed since the last report,
+  // or if at least `kPeriodicReportingDelay` has elapsed since the last report.
+  // If recorded, updates the last reporting time and bucket in preferences.
+  // Returns the next scheduled reporting time.
+  base::Time MaybeRecordReadinessAndSuggestNextReportingTime(base::Time now);
+
+  // Evaluates whether time-to-unlock should be recorded to UMA using `now` as
+  // the current timestamp. Caches the first unlock timestamp upon reaching
+  // `kDeviceReady` after a recorded sign-in, and records the elapsed time once
+  // per `kPeriodicReportingDelay` while `kDeviceReady`. Returns the next
+  // scheduled reporting time.
+  base::Time MaybeRecordTimeToUnlockAndSuggestNextReportingTime(base::Time now);
+
+  // Schedules `timer_` to invoke `MaybeRecordMetrics()` at `execution_time`.
   void ScheduleNextReporting(base::Time execution_time);
 
   // Reads the last reported timestamp and histogram bucket from
@@ -105,9 +121,7 @@ class OnDeviceEncryptionDataTypeSpecificMetricsReporter
       base::Time time,
       OnDeviceEncryptionStateHistogramBucket bucket);
 
-  const std::string histogram_name_;
-  const std::string pref_name_last_reporting_time_;
-  const std::string pref_name_last_reported_bucket_;
+  const DataType data_type_;
   std::unique_ptr<OnDeviceEncryptionStateTracker> tracker_;
   const raw_ref<PrefService> pref_service_;
 

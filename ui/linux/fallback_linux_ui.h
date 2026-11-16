@@ -5,12 +5,15 @@
 #ifndef UI_LINUX_FALLBACK_LINUX_UI_H_
 #define UI_LINUX_FALLBACK_LINUX_UI_H_
 
+#include <memory>
 #include <optional>
 
 #include "ui/gfx/font_render_params.h"
 #include "ui/linux/linux_ui.h"
 
 namespace ui {
+
+class LinuxKeyBindingsHandler;
 
 // This class is meant to be overridden by tests.  It's provided as a
 // convenience so that tests don't have to stub lots of methods just to override
@@ -33,7 +36,7 @@ class FallbackLinuxUi : public LinuxUiAndTheme {
   gfx::Size GetPdfPaperSize(printing::PrintingContextLinux* context) override;
 #endif
   ui::SelectFileDialog* CreateSelectFileDialog(
-      void* listener,
+      SelectFileDialogListener* listener,
       std::unique_ptr<ui::SelectFilePolicy> policy) const override;
   std::string GetCursorThemeName() override;
   int GetCursorThemeSize() override;
@@ -75,6 +78,7 @@ class FallbackLinuxUi : public LinuxUiAndTheme {
 
  private:
   std::optional<gfx::FontRenderParams> default_font_render_params_;
+  std::unique_ptr<LinuxKeyBindingsHandler> key_bindings_handler_;
   bool theme_is_dark_ = false;
 };
 

@@ -10,6 +10,7 @@ import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.ui.test.util.RenderTestRule.Component.UI_BROWSER_TOOLBAR;
 
 import android.view.View;
@@ -28,7 +29,6 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
@@ -37,7 +37,6 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -53,7 +52,6 @@ import java.io.IOException;
 
 /** Instrumentation tests for {@link ToolbarTablet}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @EnableFeatures(
@@ -110,7 +108,7 @@ public class ToolbarTabletTest {
         // Wait for the button to be visible and then request focus. We explicitly set
         // focusableInTouchMode to true because the system-wide touch mode state is often
         // unpredictable in instrumentation tests.
-        ViewUtils.waitForVisibleView(withId(R.id.bookmark_button));
+        waitForView(withId(R.id.bookmark_button));
         var bookmarkButton = mToolbar.findViewById(R.id.bookmark_button);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {

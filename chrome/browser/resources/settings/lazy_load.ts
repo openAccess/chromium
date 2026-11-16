@@ -14,6 +14,7 @@ import './ai_page/skills_page.js';
 import './appearance_page/appearance_fonts_page.js';
 import './autofill_page/contact_info/contact_info_page.js';
 import './autofill_page/identity_docs/identity_docs_page.js';
+import './autofill_page/offers_and_loyalty_cards/offers_and_loyalty_cards_page.js';
 // <if expr="is_win or is_macosx">
 import './autofill_page/passwords/passkeys_page.js';
 // </if>
@@ -103,6 +104,7 @@ import './people_page/import_data_dialog.js';
 import './people_page/manage_profile.js';
 // </if>
 import './people_page/account_page.js';
+import './people_page/device_tab_visibility_page.js';
 import './people_page/google_services_page.js';
 import './people_page/signout_dialog.js';
 import './people_page/sync_controls_page.js';
@@ -147,7 +149,6 @@ export {getToastManager} from 'chrome://resources/cr_elements/cr_toast/cr_toast_
 export {CrTooltipElement} from 'chrome://resources/cr_elements/cr_tooltip/cr_tooltip.js';
 export {browserProxyFactory as batchUploadPromoProxyFactory} from 'chrome://resources/js/batch_upload_promo.mojom-webui.js';
 export type {PageHandlerInterface, PageRemote} from 'chrome://resources/js/batch_upload_promo.mojom-webui.js';
-export type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 export {AccessibilityBrowserProxyImpl} from './a11y_page/a11y_browser_proxy.js';
 export type {AccessibilityBrowserProxy} from './a11y_page/a11y_browser_proxy.js';
 export {SettingsA11yPageElement, ToastAlertLevel} from './a11y_page/a11y_page.js';
@@ -182,13 +183,15 @@ export {AutofillManagerImpl} from './autofill_page/autofill_manager_proxy.js';
 export type {AutofillManagerProxy, PersonalDataChangedListener} from './autofill_page/autofill_manager_proxy.js';
 export {SettingsAddressEditDialogElement} from './autofill_page/contact_info/address_edit_dialog.js';
 export {SettingsAddressRemoveConfirmationDialogElement} from './autofill_page/contact_info/address_remove_confirmation_dialog.js';
-export {AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF, AUTOFILL_GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, AutofillAddressOptInChange, SettingsContactInfoPageElement} from './autofill_page/contact_info/contact_info_page.js';
+export {AUTOFILL_GMAIL_OTP_FILLING_ENABLED_PREF, AutofillAddressOptInChange, GMAIL_OTP_OPT_IN_SETTINGS_CHANGE_METRIC, GmailOtpSettingsChangeOutcome, SettingsContactInfoPageElement} from './autofill_page/contact_info/contact_info_page.js';
 export {SettingsGmailOtpDisclaimerDialogElement} from './autofill_page/contact_info/gmail_otp_disclaimer_dialog.js';
 export {CountryDetailManagerProxyImpl} from './autofill_page/country_detail_manager_proxy.js';
 export type {CountryDetailManagerProxy} from './autofill_page/country_detail_manager_proxy.js';
 export {EntityDataManagerProxyImpl} from './autofill_page/entity_data_manager_proxy.js';
 export type {EntityDataManagerProxy, EntityInstancesChangedListener} from './autofill_page/entity_data_manager_proxy.js';
 export {SettingsIdentityDocsPageElement} from './autofill_page/identity_docs/identity_docs_page.js';
+export {SettingsLoyaltyCardsListElement} from './autofill_page/offers_and_loyalty_cards/loyalty_cards_list.js';
+export {SettingsOffersAndLoyaltyCardsPageElement} from './autofill_page/offers_and_loyalty_cards/offers_and_loyalty_cards_page.js';
 // <if expr="is_win or is_macosx">
 export {PasskeysBrowserProxyImpl} from './autofill_page/passwords/passkeys_browser_proxy.js';
 export type {Passkey, PasskeysBrowserProxy} from './autofill_page/passwords/passkeys_browser_proxy.js';
@@ -201,7 +204,7 @@ export {SettingsIbanListEntryElement} from './autofill_page/payments/iban_list_e
 export {SettingsPayOverTimeIssuerListEntryElement} from './autofill_page/payments/pay_over_time_issuer_list_entry.js';
 export {SettingsPaymentsListElement} from './autofill_page/payments/payments_list.js';
 export {PaymentsManagerImpl} from './autofill_page/payments/payments_manager_proxy.js';
-export type {PaymentsManagerProxy} from './autofill_page/payments/payments_manager_proxy.js';
+export type {LoyaltyCardsChangedListener, PaymentsManagerProxy} from './autofill_page/payments/payments_manager_proxy.js';
 export {SettingsPaymentsPageElement} from './autofill_page/payments/payments_page.js';
 export {SettingsVirtualCardUnenrollDialogElement} from './autofill_page/payments/virtual_card_unenroll_dialog.js';
 export {SettingsShoppingPageElement} from './autofill_page/shopping/shopping_page.js';
@@ -247,6 +250,9 @@ export {PageColors} from './page_colors.mojom-webui.js';
 // </if>
 
 export {SettingsAccountPageElement} from './people_page/account_page.js';
+export {DeviceTabVisibilityBrowserProxyImpl, SyncedDeviceFormFactor} from './people_page/device_tab_visibility_browser_proxy.js';
+export type {DeviceTabVisibilityBrowserProxy, DeviceTabVisibilityEntry} from './people_page/device_tab_visibility_browser_proxy.js';
+export {SettingsDeviceTabVisibilityPageElement} from './people_page/device_tab_visibility_page.js';
 export {SettingsGoogleServicesPageElement} from './people_page/google_services_page.js';
 // <if expr="not is_chromeos">
 export {ImportDataBrowserProxyImpl, ImportDataStatus} from './people_page/import_data_browser_proxy.js';

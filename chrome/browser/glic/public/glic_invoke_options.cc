@@ -135,7 +135,7 @@ bool GlicInvokeOptions::RequiresPromptClipboardPolicyCheck() const {
   if (!prompt_policy.has_value()) {
     return false;
   }
-  DCHECK(!prompts.empty());
+  CHECK(!prompts.empty(), base::NotFatalUntil::M163);
   return prompt_policy->policy_check == PolicyCheck::kClipboard &&
          !prompts.empty();
 }
@@ -145,6 +145,18 @@ GlicInvokeOptions::~GlicInvokeOptions() = default;
 GlicInvokeOptions::GlicInvokeOptions(GlicInvokeOptions&&) = default;
 
 GlicInvokeOptions& GlicInvokeOptions::operator=(GlicInvokeOptions&&) = default;
+
+void GlicInvokeOptions::SetOnErrorWithDiagnostics(
+    base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>,
+    base::OnceCallback<void(GlicInvokeError, std::string)> callback) {
+  on_error_with_diagnostics_ = std::move(callback);
+}
+
+base::OnceCallback<void(GlicInvokeError, std::string)>
+GlicInvokeOptions::TakeOnErrorWithDiagnostics(
+    base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>) {
+  return std::move(on_error_with_diagnostics_);
+}
 
 GlicInvokeWithAutoSubmitOptions::GlicInvokeWithAutoSubmitOptions() = default;
 GlicInvokeWithAutoSubmitOptions::~GlicInvokeWithAutoSubmitOptions() = default;

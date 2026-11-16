@@ -18,7 +18,6 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/with_feature_override.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/profiles/profile.h"
@@ -44,6 +43,7 @@
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
@@ -59,7 +59,9 @@
 #include "ui/base/ui_base_switches.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/md_text_button.h"
@@ -761,12 +763,16 @@ void SetupRemoteActorMockController(
     CredentialManagerDialogControllerMock& mock_controller,
     const std::vector<std::unique_ptr<password_manager::PasswordForm>>& forms,
     std::u16string actor_name = u"Gemini",
-    GURL actor_icon_url = GURL()) {
+    GURL actor_icon_url = GURL(),
+    password_manager::RemoteActorType actor_type =
+        password_manager::RemoteActorType::kGemini) {
   EXPECT_CALL(mock_controller, GetDisplayType())
       .WillRepeatedly(Return(
           PasswordCombinedSelectorController::DisplayType::kRemoteActor));
   EXPECT_CALL(mock_controller, ShouldShowTopIllustration())
       .WillRepeatedly(Return(true));
+  EXPECT_CALL(mock_controller, GetActorType())
+      .WillRepeatedly(Return(actor_type));
   EXPECT_CALL(mock_controller, GetActorIconUrl())
       .WillRepeatedly(Return(actor_icon_url));
   EXPECT_CALL(mock_controller, OnCloseDialog());
@@ -798,7 +804,8 @@ void SetupRemoteActorMockController(
 
 // DialogBrowserTest methods for interactive dialog invocation.
 void PasswordDialogViewTest::ShowUi(const std::string& name) {
-  if (name == "RemoteActorSingle" || name == "RemoteActorMultiple") {
+  if (name == "RemoteActorSingle" || name == "RemoteActorMultiple" ||
+      name == "RemoteActorSearch") {
     remote_actor_mock_controller_ = std::make_unique<
         testing::NiceMock<CredentialManagerDialogControllerMock>>();
 
@@ -819,8 +826,14 @@ void PasswordDialogViewTest::ShowUi(const std::string& name) {
       remote_actor_forms_.push_back(std::move(form2));
     }
 
-    SetupRemoteActorMockController(*remote_actor_mock_controller_,
-                                   remote_actor_forms_);
+    if (name == "RemoteActorSearch") {
+      SetupRemoteActorMockController(
+          *remote_actor_mock_controller_, remote_actor_forms_, u"Google Search",
+          GURL(), password_manager::RemoteActorType::kSearch);
+    } else {
+      SetupRemoteActorMockController(*remote_actor_mock_controller_,
+                                     remote_actor_forms_);
+    }
 
     content::WebContents* web_contents =
         browser()->GetTabStripModel()->GetActiveWebContents();
@@ -1000,10 +1013,26 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest, InvokeUi_FederatedCredentials) {
 }
 
 IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest, InvokeUi_RemoteActorSingle) {
+  if (!IsParamFeatureEnabled()) {
+    GTEST_SKIP() << "PasswordCombinedSelectorView does not depend on "
+                    "kCredentialManagementUnifiedUi";
+  }
   ShowAndVerifyUi();
 }
 
 IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest, InvokeUi_RemoteActorMultiple) {
+  if (!IsParamFeatureEnabled()) {
+    GTEST_SKIP() << "PasswordCombinedSelectorView does not depend on "
+                    "kCredentialManagementUnifiedUi";
+  }
+  ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest, InvokeUi_RemoteActorSearch) {
+  if (!IsParamFeatureEnabled()) {
+    GTEST_SKIP() << "PasswordCombinedSelectorView does not depend on "
+                    "kCredentialManagementUnifiedUi";
+  }
   ShowAndVerifyUi();
 }
 
@@ -1220,14 +1249,10 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest,
 
   views::BubbleFrameView* frame_view = view->GetBubbleFrameView();
   ASSERT_TRUE(frame_view);
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
   views::View* header_view = frame_view->GetHeaderViewForTesting();
   ASSERT_NE(header_view, nullptr);
   EXPECT_EQ(header_view->GetID(),
             PasswordCombinedSelectorView::kHeaderActorIconId);
-#else
-  EXPECT_EQ(frame_view->GetHeaderViewForTesting(), nullptr);
-#endif
 
   // Verify row labels (should use raw username and 8 password dots)
   std::vector<views::View*> rows =
@@ -1270,10 +1295,9 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest,
   forms.push_back(std::move(form));
 
   SetupRemoteActorMockController(mock_controller, forms, u"Google Search",
-                                 embedded_test_server()->GetURL("/icon.png"));
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
+                                 embedded_test_server()->GetURL("/icon.png"),
+                                 password_manager::RemoteActorType::kSearch);
   EXPECT_CALL(*this, OnIconRequestDone());
-#endif
 
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
@@ -1285,29 +1309,39 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest,
 
   views::BubbleFrameView* frame_view = view->GetBubbleFrameView();
   ASSERT_TRUE(frame_view);
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
   views::View* header_view = frame_view->GetHeaderViewForTesting();
   ASSERT_NE(header_view, nullptr);
   EXPECT_EQ(header_view->GetID(),
             PasswordCombinedSelectorView::kHeaderActorIconId);
   auto* actor_icon_view = static_cast<views::ImageView*>(header_view);
 
-  // 1. Before the server accepts connections, the custom icon slot center pixel
-  // (x = 228 + 36/2 = 246, y = 90/2 = 45) is initialized with the default
-  // Gemini icon (non-transparent and not the fetched SK_ColorBLUE icon).
-  const SkColor initial_slot_color =
-      actor_icon_view->GetImage().bitmap()->getColor(246, 45);
-  EXPECT_NE(initial_slot_color, SK_ColorTRANSPARENT);
-  EXPECT_NE(initial_slot_color, SK_ColorBLUE);
+  // 1. Before the server accepts connections, the Password Manager icon slot
+  // center pixel (x = 184 + 36/2 = 202, y = 90/2 = 45) is stamped with the
+  // Password Manager vector icon, and the custom actor icon slot [228..264,
+  // 27..63] is initialized with the default Search icon (non-empty and not the
+  // fetched `SK_ColorBLUE` icon).
+  const gfx::ImageSkia initial_image = actor_icon_view->GetImage();
+  const SkColor initial_pm_color = initial_image.bitmap()->getColor(202, 45);
+  EXPECT_NE(initial_pm_color, SK_ColorTRANSPARENT);
+  EXPECT_NE(initial_pm_color, gfx::kPlaceholderColor);
+  EXPECT_NE(initial_image.bitmap()->getColor(246, 45), SK_ColorBLUE);
+  SkBitmap actor_slot;
+  ASSERT_TRUE(initial_image.bitmap()->extractSubset(
+      &actor_slot, SkIRect::MakeXYWH(228, 27, 36, 36)));
+  EXPECT_FALSE(gfx::test::AreBitmapsEqual(
+      actor_slot, gfx::test::CreateBitmap(36, SK_ColorTRANSPARENT)));
 
   // 2. Start accepting connections and verify the end-to-end network fetch,
   // PNG decode, UpdateAvatar(), and RemoteActorHeaderImageSource::Draw() stamp
-  // the 24x24 SK_ColorBLUE icon into the slot.
+  // the 24x24 SK_ColorBLUE icon into the slot while preserving the Password
+  // Manager icon slot.
   embedded_test_server()->StartAcceptingConnections();
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return actor_icon_view->GetImage().bitmap()->getColor(246, 45) ==
            SK_ColorBLUE;
   }));
+  EXPECT_EQ(actor_icon_view->GetImage().bitmap()->getColor(202, 45),
+            initial_pm_color);
 
   // 3. Verify non-square images are center-cropped to a square before scaling:
   // a 48x24 SK_ColorRED image with a centered 24x24 SK_ColorGREEN square must
@@ -1328,9 +1362,6 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest,
   view->UpdateAvatar(gfx::ImageSkia());
   EXPECT_EQ(actor_icon_view->GetImage().bitmap()->getColor(246, 45),
             SK_ColorGREEN);
-#else
-  EXPECT_EQ(frame_view->GetHeaderViewForTesting(), nullptr);
-#endif
 
   views::test::WidgetDestroyedWaiter waiter(widget);
   widget->Close();
@@ -1383,14 +1414,10 @@ IN_PROC_BROWSER_TEST_P(PasswordDialogViewTest,
 
   views::BubbleFrameView* frame_view = view->GetBubbleFrameView();
   ASSERT_TRUE(frame_view);
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING)  // nocheck
   views::View* header_view = frame_view->GetHeaderViewForTesting();
   ASSERT_NE(header_view, nullptr);
   EXPECT_EQ(header_view->GetID(),
             PasswordCombinedSelectorView::kHeaderActorIconId);
-#else
-  EXPECT_EQ(frame_view->GetHeaderViewForTesting(), nullptr);
-#endif
 
   // Verify multiple rows radio button list is initialized
   EXPECT_EQ(GetRadioButtons(widget->GetContentsView()).size(), 2u);

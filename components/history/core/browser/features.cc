@@ -110,19 +110,13 @@ constexpr base::FeatureParam<int> kMvtScoringParamDailyVisitCountCap{
 BASE_FEATURE(kRazeOldHistoryDatabase,
              base::FeatureState::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enables collapsing and expanding day cards in chrome://history.
+BASE_FEATURE(kBrowsingHistoryCollapsibleDayCards,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables improved chrome://history de-duplication logic, this includes
 // grouping entries by hostname and title per day.
 BASE_FEATURE(kBrowsingHistorySimilarVisitsGrouping,
-#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
-
-// If enabled, improves hostname suffix matching for browsing history, so that
-// example.com matches example.com as well as subdomains like www.example.com.
-BASE_FEATURE(kBrowsingHistoryImprovedHostnameSuffixMatching,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables browser history filtering by device. Do not check this feature
@@ -145,14 +139,8 @@ BASE_FEATURE(kBrowsingHistoryFilterByTime, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kBrowsingHistoryFilterByActor, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_IOS)
 
-// If enabled, the WebHistoryService will use a new API for querying browsing
-// history (https://footprints-pa.googleapis.com/...) instead of the old and
-// deprecated one (https://history.google.com/history/api/...).
-BASE_FEATURE(kWebHistoryUseNewApi, base::FEATURE_ENABLED_BY_DEFAULT);
-
 bool IsBrowsingHistoryFilterByDeviceEnabled() {
-  return base::FeatureList::IsEnabled(kWebHistoryUseNewApi) &&
-         base::FeatureList::IsEnabled(kBrowsingHistoryFilterByDevice);
+  return base::FeatureList::IsEnabled(kBrowsingHistoryFilterByDevice);
 }
 
 // Enables WAL (Write-Ahead Logging) mode on the main history database

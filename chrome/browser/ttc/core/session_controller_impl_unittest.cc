@@ -9,20 +9,27 @@
 #include <memory>
 #include <numbers>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ref.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/task/task_traits.h"
+#include "base/task/thread_pool.h"
+#include "base/test/power_monitor_test.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/critical_actions/critical_action_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ttc/app/public/audio_controller.h"
 #include "chrome/browser/ttc/core/buildflags.h"
 #include "chrome/browser/ttc/core/features.h"
-#include "chrome/browser/ttc/core/session_view.h"
-#include "chrome/browser/ttc/core/session_view_delegate.h"
+#include "chrome/browser/ttc/core/pointer_tracker.h"
 #include "chrome/browser/ttc/core/states.h"
 #if BUILDFLAG(ENABLE_TTC_WEBUI)
 #include "chrome/browser/ttc/core/eval_harness.mojom.h"
@@ -32,18 +39,29 @@
 #include "chrome/browser/ttc/core/ttc_keyed_service.h"
 #include "chrome/browser/ttc/core/ttc_keyed_service_factory.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/critical_actions/core/browser/critical_action_service.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/ttc/app/public/conversation.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/point_f.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/jni_android.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/test/native_unit_test_support_jni/BrowserWindowInterfaceIteratorAndroidNativeUnitTestSupport_jni.h"
 #endif
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "base/test/run_until.h"
+#include "chrome/test/base/testing_browser_process.h"
+#include "components/account_id/account_id_literal.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
+#include "google_apis/gaia/gaia_id.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 namespace ttc {
 
@@ -61,9 +79,17 @@ class MockSessionControllerObserver : public SessionController::Observer {
   MOCK_METHOD(void, OnInputTranscription, (const std::string&), (override));
   MOCK_METHOD(void, OnOutputTranscription, (const std::string&), (override));
   MOCK_METHOD(void,
+              OnTranscriptionsUpdated,
+              (const std::string&, const std::string&),
+              (override));
+  MOCK_METHOD(void,
               OnModelAudioEnvelopeReady,
               (const AudioEnvelope&),
               (override));
+  MOCK_METHOD(void, OnMicMutedChanged, (bool), (override));
+  MOCK_METHOD(void, OnSpeakerChanged, (Speaker), (override));
+  MOCK_METHOD(void, OnMicCaptureChanged, (bool), (override));
+  MOCK_METHOD(void, OnSystemMicMuteChanged, (bool, bool), (override));
 };
 
 class TtcSessionControllerImplTest : public testing::Test {
@@ -88,8 +114,7 @@ class TtcSessionControllerImplTest : public testing::Test {
         Profile::FromBrowserContext(context),
         base::BindRepeating(
             &TtcSessionControllerImplTest::CreateMockConversation,
-            base::Unretained(this)),
-        session_view_factory_);
+            base::Unretained(this)));
   }
 
   std::unique_ptr<Conversation> CreateMockConversation(
@@ -113,10 +138,9 @@ class TtcSessionControllerImplTest : public testing::Test {
  protected:
   content::BrowserTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  base::test::ScopedPowerMonitorTestSource power_monitor_source_;
   TestingProfile profile_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  // Used by the service, if set before SetUp(), instead of the platform's.
-  TtcKeyedService::SessionViewFactory session_view_factory_;
   raw_ptr<TtcKeyedService> service_ = nullptr;
   raw_ptr<MockConversation, DisableDanglingPtrDetection> mock_conversation_ =
       nullptr;
@@ -144,9 +168,11 @@ TEST_F(TtcSessionControllerImplTest,
   controller.OnModelInterrupted();
 
   EXPECT_CALL(observer, OnInputTranscription("hello")).Times(1);
+  EXPECT_CALL(observer, OnTranscriptionsUpdated("hello", "")).Times(1);
   controller.OnInputTranscription("hello");
 
   EXPECT_CALL(observer, OnOutputTranscription("world")).Times(1);
+  EXPECT_CALL(observer, OnTranscriptionsUpdated("hello", "world")).Times(1);
   controller.OnOutputTranscription("world");
 
   EXPECT_CALL(observer,
@@ -239,6 +265,80 @@ TEST_F(TtcSessionControllerImplTest, SessionTimesOutAfterInactivity) {
   EXPECT_FALSE(service_->is_session_active());
 }
 
+// Suspending the device ends the session, without the error toast an
+// inactivity timeout shows.
+TEST_F(TtcSessionControllerImplTest, SuspendEndsSessionWithoutError) {
+  service_->StartSession();
+  ASSERT_TRUE(service_->is_session_active());
+
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  EXPECT_CALL(observer, OnError).Times(0);
+  EXPECT_CALL(observer,
+              OnSessionLifecycleChanged(SessionLifecycle::kInitializing))
+      .Times(1);
+  EXPECT_CALL(observer, OnSessionLifecycleChanged(SessionLifecycle::kFinished))
+      .Times(1);
+  service_->session_controller()->AddObserver(&observer);
+
+  power_monitor_source_.GenerateSuspendEvent();
+  EXPECT_FALSE(service_->is_session_active());
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+class TtcSessionControllerImplUserSwitchTest
+    : public TtcSessionControllerImplTest {
+ protected:
+  static constexpr AccountId::Literal kPrimaryAccountId =
+      AccountId::Literal::FromUserEmailGaiaId("primary@example.com",
+                                              GaiaId::Literal("primary-gaia"));
+  static constexpr AccountId::Literal kSecondaryAccountId =
+      AccountId::Literal::FromUserEmailGaiaId(
+          "secondary@example.com",
+          GaiaId::Literal("secondary-gaia"));
+
+  void SetUp() override {
+    TtcSessionControllerImplTest::SetUp();
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(
+            TestingBrowserProcess::GetGlobal()->local_state());
+    ASSERT_TRUE(
+        user_session_test_environment_->AddRegularUser(kPrimaryAccountId));
+    ASSERT_TRUE(
+        user_session_test_environment_->AddRegularUser(kSecondaryAccountId));
+    user_session_test_environment_->LogIn(kPrimaryAccountId);
+    user_session_test_environment_->LogIn(kSecondaryAccountId);
+  }
+
+  void TearDown() override {
+    TtcSessionControllerImplTest::TearDown();
+    user_session_test_environment_.reset();
+  }
+
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
+};
+
+TEST_F(TtcSessionControllerImplUserSwitchTest,
+       UserSwitchEndsSessionWithoutError) {
+  service_->StartSession();
+  ASSERT_TRUE(service_->is_session_active());
+
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  EXPECT_CALL(observer, OnError).Times(0);
+  EXPECT_CALL(observer,
+              OnSessionLifecycleChanged(SessionLifecycle::kInitializing))
+      .Times(1);
+  EXPECT_CALL(observer, OnSessionLifecycleChanged(SessionLifecycle::kFinished))
+      .Times(1);
+  service_->session_controller()->AddObserver(&observer);
+
+  session_manager::SessionManager::Get()->SwitchActiveSession(
+      kSecondaryAccountId);
+  EXPECT_TRUE(
+      base::test::RunUntil([&]() { return !service_->is_session_active(); }));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 TEST_F(TtcSessionControllerImplTest, UserSpeechAudioResetsInactivityTimer) {
   service_->StartSession();
   EXPECT_TRUE(service_->is_session_active());
@@ -298,7 +398,7 @@ TEST_F(TtcSessionControllerImplTest, InputTranscriptionsResetInactivityTimer) {
   service_->StartSession();
   EXPECT_TRUE(service_->is_session_active());
 
-  MockSessionControllerObserver observer;
+  testing::NiceMock<MockSessionControllerObserver> observer;
   EXPECT_CALL(observer,
               OnSessionLifecycleChanged(SessionLifecycle::kInitializing))
       .Times(1);
@@ -434,32 +534,32 @@ TEST_F(TtcSessionControllerImplTest,
 TEST_F(TtcSessionControllerImplTest, SetMicMuted) {
   SessionControllerImpl controller(*service_);
   controller.SetSessionLifecycle(SessionLifecycle::kLive);
-  bool muted = false;
-  ON_CALL(*mock_conversation_, IsMicMuted()).WillByDefault([&muted] {
-    return muted;
-  });
-  EXPECT_CALL(*mock_conversation_, SetMicMuted(true))
-      .WillOnce([&muted](bool value) { muted = value; });
-  EXPECT_CALL(*mock_conversation_, SetMicMuted(false))
-      .WillOnce([&muted](bool value) { muted = value; });
+  EXPECT_CALL(*mock_conversation_, SetMicMuted(true));
+  EXPECT_CALL(*mock_conversation_, SetMicMuted(false));
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
 
+  {
+    testing::InSequence sequence;
+    EXPECT_CALL(observer, OnMicMutedChanged(true)).Times(1);
+    EXPECT_CALL(observer, OnMicMutedChanged(false)).Times(1);
+  }
   EXPECT_TRUE(controller.SetMicMuted(true));
   EXPECT_TRUE(controller.IsMicMuted());
-  // Already muted: nothing to do.
+  // Already muted: nothing to do, and nothing to report.
   EXPECT_FALSE(controller.SetMicMuted(true));
   EXPECT_TRUE(controller.SetMicMuted(false));
   EXPECT_FALSE(controller.IsMicMuted());
+
+  controller.RemoveObserver(&observer);
 }
 
 TEST_F(TtcSessionControllerImplTest, MicCanOnlyBeMutedOnceLive) {
   SessionControllerImpl controller(*service_);
-  ON_CALL(*mock_conversation_, IsMicMuted())
-      .WillByDefault(testing::Return(true));
 
-  // Capture hasn't started yet, but that isn't muting.
-  EXPECT_FALSE(controller.IsMicMuted());
   EXPECT_CALL(*mock_conversation_, SetMicMuted(testing::_)).Times(0);
   EXPECT_FALSE(controller.SetMicMuted(true));
+  EXPECT_FALSE(controller.IsMicMuted());
 }
 
 TEST_F(TtcSessionControllerImplTest, FinishedSessionIgnoresMicMute) {
@@ -473,76 +573,226 @@ TEST_F(TtcSessionControllerImplTest, FinishedSessionIgnoresMicMute) {
   EXPECT_FALSE(controller.SetMicMuted(true));
 }
 
-namespace {
-
-// What a FakeSessionView has been told.
-struct SessionViewRecord {
-  std::string user_transcript;
-  std::string model_transcript;
-};
-
-class FakeSessionView : public SessionView {
- public:
-  explicit FakeSessionView(SessionViewRecord& record) : record_(record) {}
-  ~FakeSessionView() override = default;
-
-  // SessionView:
-  void UpdateAudioLevel(float audio_level) override {}
-  void OnSessionInitialized() override {}
-  void OnError(ErrorCode error) override {}
-  void OnTranscriptionsUpdated(const std::string& user_transcript,
-                               const std::string& model_transcript) override {
-    record_->user_transcript = user_transcript;
-    record_->model_transcript = model_transcript;
-  }
-
- private:
-  const raw_ref<SessionViewRecord> record_;
-};
-
-}  // namespace
-
-// Checks what the session UI is told, through a FakeSessionView.
-class TtcSessionControllerImplViewTest : public TtcSessionControllerImplTest {
- protected:
-  TtcSessionControllerImplViewTest() {
-    session_view_factory_ =
-        base::BindRepeating(&TtcSessionControllerImplViewTest::CreateFakeView,
-                            base::Unretained(this));
-  }
-
-  std::unique_ptr<SessionView> CreateFakeView(SessionViewDelegate&) {
-    return std::make_unique<FakeSessionView>(record_);
-  }
-
-  SessionViewRecord record_;
-};
-
-// How exchanges are split is covered by TranscriptTracker's tests; this checks
-// that the transcripts reach the session UI.
-TEST_F(TtcSessionControllerImplViewTest, TranscriptsReachView) {
+TEST_F(TtcSessionControllerImplTest, FinishingSessionEndsMicMute) {
   SessionControllerImpl controller(*service_);
+  controller.SetSessionLifecycle(SessionLifecycle::kLive);
+  EXPECT_CALL(*mock_conversation_, SetMicMuted(true));
+  ASSERT_TRUE(controller.SetMicMuted(true));
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
 
-  controller.OnInputTranscription("What's the weather?");
-  controller.OnOutputTranscription("It's sunny.");
+  EXPECT_CALL(*mock_conversation_, SetMicMuted(false)).Times(0);
+  EXPECT_CALL(observer, OnMicMutedChanged).Times(0);
+  controller.SetSessionLifecycle(SessionLifecycle::kFinished);
+  EXPECT_FALSE(controller.IsMicMuted());
 
-  EXPECT_EQ(record_.user_transcript, "What's the weather?");
-  EXPECT_EQ(record_.model_transcript, "It's sunny.");
+  controller.RemoveObserver(&observer);
 }
 
-TEST_F(TtcSessionControllerImplViewTest, FinishedSessionStopsUpdatingView) {
+TEST_F(TtcSessionControllerImplTest, SpeakerChangesReachObservers) {
   SessionControllerImpl controller(*service_);
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
+  EXPECT_EQ(controller.GetSpeaker(), Speaker::kIdle);
+
+  {
+    testing::InSequence sequence;
+    EXPECT_CALL(observer, OnSpeakerChanged(Speaker::kUser)).Times(1);
+    EXPECT_CALL(observer, OnSpeakerChanged(Speaker::kModel)).Times(1);
+  }
+  controller.OnSpeakerChanged(Speaker::kUser);
+  EXPECT_EQ(controller.GetSpeaker(), Speaker::kUser);
+  // Unchanged: nothing to report.
+  controller.OnSpeakerChanged(Speaker::kUser);
+  controller.OnSpeakerChanged(Speaker::kModel);
+  EXPECT_EQ(controller.GetSpeaker(), Speaker::kModel);
+
+  controller.RemoveObserver(&observer);
+}
+
+TEST_F(TtcSessionControllerImplTest, FinishedSessionStopsReportingSpeaker) {
+  SessionControllerImpl controller(*service_);
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
+  controller.SetSessionLifecycle(SessionLifecycle::kFinished);
+
+  EXPECT_CALL(observer, OnSpeakerChanged).Times(0);
+  controller.OnSpeakerChanged(Speaker::kModel);
+  EXPECT_EQ(controller.GetSpeaker(), Speaker::kIdle);
+
+  controller.RemoveObserver(&observer);
+}
+
+// The user's turn starts when they start speaking or send text; the model's
+// turn leaves it alone.
+TEST_F(TtcSessionControllerImplTest, UserTurnStartFollowsTheUsersTurns) {
+  SessionControllerImpl controller(*service_);
+  // Exact comparisons with Now() hold because the test uses mock time.
+  EXPECT_EQ(controller.user_turn_start(), base::TimeTicks::Now());
+
+  task_environment_.FastForwardBy(base::Seconds(5));
+  controller.OnSpeakerChanged(Speaker::kUser);
+  const base::TimeTicks first_turn = base::TimeTicks::Now();
+  EXPECT_EQ(controller.user_turn_start(), first_turn);
+
+  task_environment_.FastForwardBy(base::Seconds(5));
+  controller.OnSpeakerChanged(Speaker::kModel);
+  EXPECT_EQ(controller.user_turn_start(), first_turn);
+
+  task_environment_.FastForwardBy(base::Seconds(5));
+  controller.SendTextInput("what is this?");
+  EXPECT_EQ(controller.user_turn_start(), base::TimeTicks::Now());
+}
+
+// The tracker exists only with the feature, and takes its thresholds from the
+// feature's params.
+TEST_F(TtcSessionControllerImplTest, PointerTrackerFollowsFeatureAndParams) {
+  {
+    SessionControllerImpl controller(*service_);
+    EXPECT_FALSE(controller.pointer_tracker());
+  }
+  // Two clicks at different spots are two locations; how many are reported
+  // depends on max_results, which is at least one however Finch sets it.
+  for (const auto& [max_results, expected_count] :
+       {std::pair("2", 2u), std::pair("-1", 1u)}) {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        kTtcGetPointer, {{"max_results", max_results}});
+    SessionControllerImpl controller(*service_);
+    ASSERT_TRUE(controller.pointer_tracker());
+    const base::TimeTicks now = base::TimeTicks::Now();
+    controller.pointer_tracker()->RecordSample(now, gfx::PointF(10, 10),
+                                               /*is_press=*/true);
+    controller.pointer_tracker()->RecordSample(now, gfx::PointF(300, 300),
+                                               /*is_press=*/true);
+    EXPECT_EQ(controller.pointer_tracker()->ResolveLocations(now, now).size(),
+              expected_count)
+        << "max_results=" << max_results;
+  }
+}
+
+TEST_F(TtcSessionControllerImplTest, FinishedSessionStopsUpdatingTranscripts) {
+  SessionControllerImpl controller(*service_);
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnTranscriptionsUpdated("Hello", ""));
   controller.OnInputTranscription("Hello");
 
   // A fatal error ends the session.
   controller.OnError(ErrorCode::kInternalBackendError);
   ASSERT_EQ(controller.GetSessionLifecycle(), SessionLifecycle::kFinished);
 
+  EXPECT_CALL(observer, OnTranscriptionsUpdated).Times(0);
   controller.OnOutputTranscription("Hi");
-  EXPECT_EQ(record_.user_transcript, "Hello");
-  EXPECT_EQ(record_.model_transcript, "");
+
+  controller.RemoveObserver(&observer);
 }
 
+TEST_F(TtcSessionControllerImplTest, MicSignalsReachObserversUntilFinished) {
+  SessionControllerImpl controller(*service_);
+  testing::NiceMock<MockSessionControllerObserver> observer;
+  controller.AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnMicCaptureChanged(true));
+  controller.OnMicCaptureChanged(true);
+  EXPECT_CALL(observer,
+              OnSystemMicMuteChanged(true, /*at_stream_start=*/false));
+  controller.OnSystemMicMuteChanged(true, /*at_stream_start=*/false);
+  testing::Mock::VerifyAndClearExpectations(&observer);
+
+  // A fatal error ends the session.
+  controller.OnError(ErrorCode::kInternalBackendError);
+  ASSERT_EQ(controller.GetSessionLifecycle(), SessionLifecycle::kFinished);
+
+  EXPECT_CALL(observer, OnMicCaptureChanged).Times(0);
+  EXPECT_CALL(observer, OnSystemMicMuteChanged).Times(0);
+  controller.OnMicCaptureChanged(false);
+  controller.OnSystemMicMuteChanged(false, /*at_stream_start=*/false);
+
+  controller.RemoveObserver(&observer);
+}
+
+class MockCriticalActionService
+    : public critical_actions::CriticalActionService {
+ public:
+  explicit MockCriticalActionService(const base::FilePath& db_path)
+      : critical_actions::CriticalActionService(
+            db_path,
+            base::ThreadPool::CreateSequencedTaskRunner(
+                {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
+                 base::TaskShutdownBehavior::BLOCK_SHUTDOWN})) {}
+  ~MockCriticalActionService() override = default;
+
+  MOCK_METHOD(void,
+              SetCriticalActionsConversationId,
+              (const std::vector<std::string>&, std::string_view),
+              (override));
+};
+
+TEST_F(TtcSessionControllerImplTest,
+       SetSessionIdUpdatesTaskAndPreservesAcrossReplacement) {
+  auto* mock_critical_action_service = static_cast<MockCriticalActionService*>(
+      critical_actions::CriticalActionFactory::GetInstance()
+          ->SetTestingFactoryAndUse(
+              &profile_,
+              base::BindRepeating([](content::BrowserContext* context)
+                                      -> std::unique_ptr<KeyedService> {
+                return std::make_unique<
+                    testing::NiceMock<MockCriticalActionService>>(
+                    context->GetPath().Append(
+                        FILE_PATH_LITERAL("TestCriticalActions.db")));
+              })));
+  ASSERT_NE(mock_critical_action_service, nullptr);
+
+  SessionControllerImpl controller(*service_);
+  actor::ActorKeyedService* actor_service =
+      actor::ActorKeyedService::Get(&profile_);
+  ASSERT_NE(actor_service, nullptr);
+
+  const actor::TaskId first_task_id = controller.GetActorTaskId();
+  ASSERT_FALSE(first_task_id.is_null());
+  const actor::ActorTask* first_task = actor_service->GetTask(first_task_id);
+  ASSERT_NE(first_task, nullptr);
+  EXPECT_EQ(first_task->source_info().type,
+            actor::TaskSourceInfo::Client::kTtc);
+  EXPECT_EQ(first_task->source_info().id, std::nullopt);
+
+  // Empty session ID is ignored.
+  EXPECT_CALL(*mock_critical_action_service,
+              SetCriticalActionsConversationId(testing::_, testing::_))
+      .Times(0);
+  controller.SetSessionId("");
+  EXPECT_EQ(first_task->source_info().id, std::nullopt);
+
+  // Setting a non-empty session ID updates the active ActorTask's source ID
+  // and associates the task ID in CriticalActionService.
+  EXPECT_CALL(
+      *mock_critical_action_service,
+      SetCriticalActionsConversationId(
+          testing::ElementsAre(base::NumberToString(first_task_id.value())),
+          std::string_view("server-session-456")))
+      .Times(1);
+  controller.SetSessionId("server-session-456");
+  EXPECT_EQ(first_task->source_info().id, "server-session-456");
+
+  // If the task is stopped externally and replaced, the replacement task
+  // inherits the session ID and registers with CriticalActionService.
+  actor_service->StopTask(first_task_id,
+                          actor::ActorTask::StoppedReason::kStoppedByUser);
+  EXPECT_CALL(*mock_critical_action_service,
+              SetCriticalActionsConversationId(
+                  testing::SizeIs(1), std::string_view("server-session-456")))
+      .Times(1);
+  controller.EnsureActorTaskCreated();
+  const actor::TaskId second_task_id = controller.GetActorTaskId();
+  EXPECT_NE(second_task_id, first_task_id);
+  const actor::ActorTask* second_task = actor_service->GetTask(second_task_id);
+  ASSERT_NE(second_task, nullptr);
+  EXPECT_EQ(second_task->source_info().type,
+            actor::TaskSourceInfo::Client::kTtc);
+  EXPECT_EQ(second_task->source_info().id, "server-session-456");
+}
 #if BUILDFLAG(IS_ANDROID)
 // Creates Android browser windows that register with GlobalBrowserCollection
 // the way ChromeAndroidTaskTracker does in production, and destroys them all on

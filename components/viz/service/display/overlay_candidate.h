@@ -23,6 +23,7 @@
 #include "ui/gfx/buffer_types.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/hdr_metadata.h"
@@ -31,6 +32,10 @@
 #include "ui/gfx/overlay_transform.h"
 #include "ui/gfx/overlay_type.h"
 #include "ui/gfx/video_types.h"
+
+#if BUILDFLAG(IS_APPLE)
+#include "ui/gl/ca_renderer_layer_params.h"
+#endif
 
 namespace gfx {
 class Rect;
@@ -253,6 +258,11 @@ class VIZ_SERVICE_EXPORT OverlayCandidate {
 
   // The edge anti-aliasing mask property for the CALayer.
   unsigned edge_aa_mask = 0;
+
+  // Parameters for macOS CoreAnimation CABackdropLayer when present.
+  std::optional<gfx::RRectF> backdrop_filter_bounds;
+  std::optional<gfx::RectF> backdrop_filter_clip;
+  std::vector<ui::CABackdropFilter> backdrop_filters;
 #endif  // BUILDFLAG(IS_APPLE)
 
   // A (ideally) unique key used to temporally identify a specific overlay

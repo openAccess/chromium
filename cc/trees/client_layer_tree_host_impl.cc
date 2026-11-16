@@ -4,6 +4,7 @@
 
 #include "cc/trees/client_layer_tree_host_impl.h"
 
+#include <tuple>
 #include <utility>
 
 #include "base/check.h"
@@ -379,6 +380,12 @@ void ClientLayerTreeHostImpl::
       pending_invalidation_raster_inducing_scrolls_);
   pending_invalidation_raster_inducing_scrolls_.clear();
 
+  // This frame's animations have already ticked, so the sync tree gets the
+  // progress they just set.
+  // TODO(crbug.com/582257806): Invalidate the returned keys on the sync tree.
+  std::ignore = mutator_host_->UpdateDeferredValues(
+      sync_tree()->deferred_values_mutable());
+
   base::flat_map<PaintWorkletInput::PropertyKey,
                  std::pair<PaintWorkletInput::PropertyValue,
                            PaintWorkletInput::PropertyValue>>
@@ -500,8 +507,9 @@ void ClientLayerTreeHostImpl::OnPaintWorkletResultsReady(
   delegate_->NotifyPaintWorkletStateChange(Scheduler::PaintWorkletState::IDLE);
 
   // The pending tree may have been force activated from the signal to the
-  // scheduler above, in which case there is no longer a tree to paint.
-  if (pending_tree_) {
+  // scheduler above, and a queued commit may have created a new pending tree
+  // that is now awaiting its own paint worklet results.
+  if (pending_tree_ && pending_tree_fully_painted_) {
     NotifyPendingTreeFullyPainted();
   }
 }

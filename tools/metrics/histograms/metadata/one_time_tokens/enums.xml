@@ -83,6 +83,47 @@ found in the LICENSE file.
 
 <!-- LINT.ThenChange(//chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_metrics.h:ActorOneTimeTokenFillingServiceRetrieveOtp) -->
 
+<!-- LINT.IfChange(ActorOtpFormFillingContextValidationResult) -->
+
+<enum name="ActorOtpFormFillingContextValidationResult">
+  <int value="0" label="Secure"/>
+  <int value="1" label="EmptyTriggerFieldIds"/>
+  <int value="2" label="TabNotAvailable"/>
+  <int value="3" label="InsecurePage"/>
+  <int value="4" label="NoAutofillManager"/>
+  <int value="5" label="FormStructureNotFound"/>
+  <int value="6" label="TriggerFieldNotFound"/>
+  <int value="7" label="MixedContentFormAction"/>
+  <int value="8" label="OtpFieldsFromDifferentOrigins"/>
+  <int value="9" label="FrameNotFound"/>
+  <int value="10" label="InvalidFrameOrOrigin"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service.h:FormFillingContextValidationResult) -->
+
+<!-- LINT.IfChange(ActorOtpGmailAndGoogleSmartFeaturesConsent) -->
+
+<enum name="ActorOtpGmailAndGoogleSmartFeaturesConsent">
+  <int value="0" label="GmailEnabledGoogleEnabled"/>
+  <int value="1" label="GmailEnabledGoogleDisabled"/>
+  <int value="2" label="GmailEnabledGoogleUnknown"/>
+  <int value="3" label="GmailEnabledGoogleUndefined"/>
+  <int value="4" label="GmailDisabledGoogleEnabled"/>
+  <int value="5" label="GmailDisabledGoogleDisabled"/>
+  <int value="6" label="GmailDisabledGoogleUnknown"/>
+  <int value="7" label="GmailDisabledGoogleUndefined"/>
+  <int value="8" label="GmailUnknownGoogleEnabled"/>
+  <int value="9" label="GmailUnknownGoogleDisabled"/>
+  <int value="10" label="GmailUnknownGoogleUnknown"/>
+  <int value="11" label="GmailUnknownGoogleUndefined"/>
+  <int value="12" label="GmailUndefinedGoogleEnabled"/>
+  <int value="13" label="GmailUndefinedGoogleDisabled"/>
+  <int value="14" label="GmailUndefinedGoogleUnknown"/>
+  <int value="15" label="GmailUndefinedGoogleUndefined"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/actor/tools/one_time_token/attempt_otp_filling_metrics.h:ActorOtpGmailAndGoogleSmartFeaturesConsent) -->
+
 <!-- LINT.IfChange(ActorOtpRetrieveOtpCallbackSupersededEvent) -->
 
 <enum name="ActorOtpRetrieveOtpCallbackSupersededEvent">
@@ -124,6 +165,8 @@ found in the LICENSE file.
   <int value="25" label="CancelledDuringOtpRetrieval"/>
   <int value="26" label="CancelledDuringConfirmationDialog"/>
   <int value="27" label="CancelledDuringFillOtp"/>
+  <int value="28" label="FormNotFoundBeforeFilling"/>
+  <int value="29" label="TabNotAvailableBeforeFilling"/>
   <int value="30" label="GmailOtpSenderDomainMismatch"/>
   <int value="31" label="OtpRetrievalTimeout"/>
 </enum>
@@ -178,6 +221,18 @@ found in the LICENSE file.
 
 <!-- LINT.ThenChange(//components/autofill/core/browser/integrators/one_time_tokens/gmail_otp_opt_in_result.h:GmailOtpOptInResult) -->
 
+<!-- LINT.IfChange(GmailOtpOptInState) -->
+
+<enum name="GmailOtpOptInState">
+  <int value="0" label="Opted in"/>
+  <int value="1" label="Not decided"/>
+  <int value="2" label="Session cool-off"/>
+  <int value="3" label="Declined cool-off"/>
+  <int value="4" label="Bubble already showing"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/one_time_tokens/gmail_otp_opt_in_coordinator.h:GmailOtpOptInState) -->
+
 <!-- LINT.IfChange(GmailOtpSenderDomainMatchType) -->
 
 <enum name="GmailOtpSenderDomainMatchType">
@@ -192,6 +247,45 @@ found in the LICENSE file.
 </enum>
 
 <!-- LINT.ThenChange(//components/one_time_tokens/core/browser/gmail_otp_sender_domain_matcher.h:GmailOtpSenderDomainMatchType) -->
+
+<!-- LINT.IfChange(GmailOtpSettingsChangeOutcome) -->
+
+<enum name="GmailOtpSettingsChangeOutcome">
+  <int value="0" label="Turned off"/>
+  <int value="1" label="Turned on"/>
+  <int value="2" label="Turn on blocked: comms apps consent not enabled"/>
+  <int value="3" label="Turn on blocked: Google apps consent not enabled"/>
+  <int value="4" label="Turn on blocked: both consents not enabled"/>
+  <int value="5" label="Turn on failed with consent fetch error"/>
+</enum>
+
+<!-- LINT.ThenChange(//chrome/browser/resources/settings/autofill_page/contact_info/contact_info_page.ts:GmailOtpSettingsChangeOutcome) -->
+
+<!-- LINT.IfChange(OtpProactiveTriggerOutcome) -->
+
+<enum name="OtpProactiveTriggerOutcome">
+  <int value="0" label="Suppressed"/>
+  <int value="1" label="Triggered and suggestions shown"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/one_time_tokens/otp_types.h:OtpProactiveTriggerOutcome) -->
+
+<!-- LINT.IfChange(OtpProactiveTriggerSuppressionReason) -->
+
+<enum name="OtpProactiveTriggerSuppressionReason">
+  <int value="0" label="Same or newer OTP already offered on the field"/>
+  <int value="1" label="Non-OTP field focused"/>
+  <int value="2" label="Typed input in an OTP field"/>
+  <int value="3" label="Different OTP field focused"/>
+  <int value="4" label="Target OTP field not focused on Android"/>
+  <int value="5" label="Keyboard not visible on Android"/>
+  <int value="6" label="Target field removed or no longer eligible"/>
+  <int value="7" label="Frame inactive"/>
+  <int value="8" label="WebOTP blocked"/>
+  <int value="9" label="User not opted in to Gmail OTP filling"/>
+</enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/one_time_tokens/otp_types.h:OtpProactiveTriggerSuppressionReason) -->
 
 </enums>
 

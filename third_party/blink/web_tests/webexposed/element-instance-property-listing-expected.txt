@@ -1215,7 +1215,6 @@ html element td
     property vAlign
     property width
 html element template
-    property buffer
     property content
     property crossOrigin
     property htmlFor
@@ -1518,8 +1517,6 @@ namespace http://www.w3.org/2000/svg
     property computedName
     property computedRole
     property computedStyleMap
-    property containerTiming
-    property containerTimingIgnore
     property contains
     property convertPointFromNode
     property convertQuadFromNode

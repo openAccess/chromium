@@ -50,9 +50,12 @@ BASE_FEATURE(kAppShimLaunchChromeSilently, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAppShimNotificationAttribution,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, app shims used by PWAs will be signed with an ad-hoc signature
-// https://crbug.com/40276068
-BASE_FEATURE(kUseAdHocSigningForWebAppShims, base::FEATURE_ENABLED_BY_DEFAULT);
+// Maximum number of times per web app to auto-open the notification recovery /
+// pre-prompt bubble when notifications are blocked at the macOS system level.
+BASE_FEATURE_PARAM(int,
+                   kAppShimNotificationAttributionMaxAutoOpenBubbleCount,
+                   &kAppShimNotificationAttribution,
+                   5);
 
 // When enabled, the KeychainKeyProvider is used to provide the OS Crypt async
 // key.
@@ -260,7 +263,6 @@ const base::FeatureParam<double> kGlicActorApcComparisonSamplingRate{
 
 BASE_FEATURE(kGlicIgnoreDogfoodClient, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicExperimentalTriggering, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicExperimentalTriggeringOptInTabFocus,
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicExperimentalTriggeringScreenshot,
@@ -281,10 +283,6 @@ BASE_FEATURE(kGlicExperimentalTriggeringOsNotification,
 BASE_FEATURE(kGlicExperimentalTriggeringScriptTools,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicBackgroundTriggering, base::FEATURE_DISABLED_BY_DEFAULT);
-
-const base::FeatureParam<std::string> kGlicExperimentalTriggeringOptInURL{
-    &kGlicExperimentalTriggering, "glic-experimental-triggering-opt-in-url",
-    "https://gemini.google.com/glic/intro?"};
 
 const base::FeatureParam<std::string> kGlicExperimentalTriggeringTabFocusHosts{
     &kGlicExperimentalTriggeringOptInTabFocus,
@@ -308,11 +306,6 @@ const base::FeatureParam<std::string>
 // Controls whether the Actor UI components are enabled.
 BASE_FEATURE(kGlicActorUi, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicConfirmTabClose, base::FEATURE_ENABLED_BY_DEFAULT);
-// Controls whether we ignore users preference of reduced motion enabled and
-// still show the tab indicator spinner. No-op if kGlicActorUiTabIndicator is
-// disabled.
-BASE_FEATURE(kGlicActorUiTabIndicatorSpinnerIgnoreReducedMotion,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Controls theming updates for Actor UI, including the tab indicator spinner
 // and other elements.
@@ -549,7 +542,13 @@ BASE_FEATURE(kGlic,
 #endif
 );
 
-BASE_FEATURE(kGlicBackgroundActuation, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicBackgroundActuation,
+#if BUILDFLAG(IS_ANDROID)
+             base::FEATURE_ENABLED_BY_DEFAULT
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE(kGlicSupportLinks, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -848,14 +847,6 @@ BASE_FEATURE(kGlicDebugWebview, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicScrollTo, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicCaptureRegion,
-#if BUILDFLAG(IS_ANDROID)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
-
 // Controls whether we enforce that documentId (an optional parameter) is set
 // when trying to scroll all documents except PDFs (and fail the request if
 // it's not set).
@@ -1052,6 +1043,11 @@ BASE_FEATURE(kGlicArchiveConversation, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicActorAutofillOneTimePassword,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Whether Glic OneTimePassword filling accepts OTPs whose sender domain only
+// matches the OTP frame via the Public Suffix List in non-login flows.
+BASE_FEATURE(kGlicActorAutofillOneTimePasswordPslMatching,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Whether to click a field before filling it in Glic actor autofill.
 // This feature is also gated by |autofill::features::kGlicActorAutofill|.
 BASE_FEATURE(kGlicActorAutofillPreClick, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1076,11 +1072,6 @@ BASE_FEATURE(kGoogleSearchAiModeWorkspace, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kPrivacyGuideForceAvailable, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(ENABLE_PDF)
-BASE_FEATURE(kPdfGlicSummarize, base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<int> kPdfGlicSummarizeArm{&kPdfGlicSummarize, "arm",
-                                                   3};
-const base::FeatureParam<bool> kPdfGlicSummarizeUseLongButtonText{
-    &kPdfGlicSummarize, "use_long_button_text", false};
 BASE_FEATURE(kPdfGlicSummarizeFre, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
@@ -1222,6 +1213,10 @@ const base::FeatureParam<bool>
 // Enables or disables HaTS for Scheduled Restarts on Desktop.
 BASE_FEATURE(kHappinessTrackingSurveysForDesktopScheduledRestart,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enables or disables HaTS for Default Browser prompts on Desktop.
+BASE_FEATURE(kHappinessTrackingSurveysForDesktopDefaultBrowser,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 // Enables HTTPS-First Mode in a balanced configuration that doesn't warn on
@@ -1329,17 +1324,6 @@ const base::FeatureParam<base::TimeDelta>
     kIndigoMetadataKeywordHeuristicMaxWaitTime{&kIndigoMetadataKeywordHeuristic,
                                                "max_wait_time",
                                                base::Milliseconds(2500)};
-
-// Experimental image replacement feature opens glic.
-BASE_FEATURE(kIndigoOpenGlic, base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<std::string> kIndigoGlicPrompt{
-    &kIndigoOpenGlic, "indigo_glic_prompt", ""};
-const base::FeatureParam<std::string> kIndigoGlicPromptKey{
-    &kIndigoOpenGlic, "indigo_glic_prompt_key", ""};
-const base::FeatureParam<std::string> kIndigoGlicSkillId{
-    &kIndigoOpenGlic, "indigo_glic_skill_id", ""};
-const base::FeatureParam<base::TimeDelta> kIndigoGlicTriggerDelay{
-    &kIndigoOpenGlic, "indigo_glic_trigger_delay", base::Milliseconds(300)};
 
 BASE_FEATURE(kIndigoGeneratedImageCache, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<base::TimeDelta> kIndigoGeneratedImageCacheLifetime{
@@ -1560,8 +1544,6 @@ BASE_FEATURE(kOverridePrefetchOnSingleton, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Allows Chrome to do preconnect when prerender fails.
 BASE_FEATURE(kPrerenderFallbackToPreconnect, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kUserValueDefaultBrowserStrings, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Shows a confirmation dialog when updates to a PWAs icon has been detected.
 BASE_FEATURE(kPwaUpdateDialogForIcon, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1969,8 +1951,9 @@ BASE_FEATURE(kWebAppInstallDialog, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kWebAppInstallDialogWinPin, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
-BASE_FEATURE(kWebAppUpgradeToDatabaseVersion6,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+// Controls whether the WebUI toolbar WebContents opts out of frame eviction.
+BASE_FEATURE(kWebUIToolbarFrameEvictionOptOut,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if !BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kWebium, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1979,6 +1962,64 @@ BASE_FEATURE(kWebium, base::FEATURE_DISABLED_BY_DEFAULT);
 // crbug.com/444358999
 BASE_FEATURE(kWebUIReloadButton, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kTopChromeWebUISharedRenderer, base::FEATURE_DISABLED_BY_DEFAULT);
+// Keeps one prewarmed WebUI toolbar ready for each profile's next window, and
+// builds a new one shortly after each window takes it, so later windows can
+// also adopt one, not only the first. It only takes effect when the WebUI
+// toolbar, `kWebUIReloadButton`, `WebUIReloadButtonPrewarmWebUI`, and
+// `WebUIReloadButtonProfilePrewarming` are enabled.
+BASE_FEATURE(kTopChromeWebUIPrerendering, base::FEATURE_DISABLED_BY_DEFAULT);
+// How long the refill waits after the new window's toolbar has painted, so
+// that building the next one does not compete with that window's first frames
+// on the shared top-chrome renderer.
+const base::FeatureParam<base::TimeDelta> kTopChromeWebUIPrerenderingDelay{
+    &kTopChromeWebUIPrerendering, "TopChromeWebUIPrerenderingDelay",
+    base::Seconds(2)};
+// How long the refill waits for the new window's toolbar to paint before it
+// starts the delay above anyway. A window that built its own toolbar, rather
+// than taking a prewarmed one, always waits this long.
+const base::FeatureParam<base::TimeDelta>
+    kTopChromeWebUIPrerenderingPaintDeadline{
+        &kTopChromeWebUIPrerendering, "TopChromeWebUIPrerenderingPaintDeadline",
+        base::Seconds(3)};
+// The lowest memory pressure level that skips the refill. It does not drop a
+// spare toolbar that already exists.
+constexpr base::FeatureParam<TopChromeWebUIPrerenderingMemoryPressureLevel>::
+    Option kTopChromeWebUIPrerenderingSkipMemoryPressureOptions[] = {
+        {TopChromeWebUIPrerenderingMemoryPressureLevel::kModerate, "moderate"},
+        {TopChromeWebUIPrerenderingMemoryPressureLevel::kCritical, "critical"},
+};
+BASE_FEATURE_ENUM_PARAM(
+    TopChromeWebUIPrerenderingMemoryPressureLevel,
+    kTopChromeWebUIPrerenderingSkipMemoryPressure,
+    &kTopChromeWebUIPrerendering,
+    TopChromeWebUIPrerenderingMemoryPressureLevel::kCritical,
+    &kTopChromeWebUIPrerenderingSkipMemoryPressureOptions);
+// The lowest memory pressure level that drops the spare toolbar and skips the
+// refill, or never, the default.
+constexpr base::FeatureParam<TopChromeWebUIPrerenderingMemoryPressureLevel>::
+    Option kTopChromeWebUIPrerenderingEvictMemoryPressureOptions[] = {
+        {TopChromeWebUIPrerenderingMemoryPressureLevel::kNever, "never"},
+        {TopChromeWebUIPrerenderingMemoryPressureLevel::kModerate, "moderate"},
+        {TopChromeWebUIPrerenderingMemoryPressureLevel::kCritical, "critical"},
+};
+BASE_FEATURE_ENUM_PARAM(TopChromeWebUIPrerenderingMemoryPressureLevel,
+                        kTopChromeWebUIPrerenderingEvictMemoryPressure,
+                        &kTopChromeWebUIPrerendering,
+                        TopChromeWebUIPrerenderingMemoryPressureLevel::kNever,
+                        &kTopChromeWebUIPrerenderingEvictMemoryPressureOptions);
+// Whether to prerender a single unbound toolbar in `TopChromeWebUIProfile`
+// that binds its user profile when a window of any profile adopts it, instead
+// of one spare per regular profile. Requires `IsPrerenderingEnabled()` (the
+// WebUI toolbar, `kWebUIReloadButton`, `WebUIReloadButtonPrewarmWebUI`,
+// `WebUIReloadButtonProfilePrewarming`, and `kTopChromeWebUIPrerendering`),
+// `ShouldUseTopChromeWebUIProfile()` (the shared renderer), and
+// `WebUIReloadButtonPrewarmWebUIPreNavigate`. Without the shared renderer or
+// `WebUIReloadButtonPrewarmWebUIPreNavigate`, this param falls back to
+// per-profile spares.
+BASE_FEATURE_PARAM(bool,
+                   kTopChromeWebUIPrerenderingUnbound,
+                   &kTopChromeWebUIPrerendering,
+                   false);
 // Switches location bar over to a WebUI implementation.
 // See crbug.com/470042732
 BASE_FEATURE(kWebUILocationBar, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1986,10 +2027,6 @@ BASE_FEATURE(kWebUILocationBar, base::FEATURE_DISABLED_BY_DEFAULT);
 // When this is enabled, all the checks for enabled individual WebUI toolbar
 // controls in chrome/browser/ui/ui_features.h will return true.
 BASE_FEATURE(kWebUIToolbar, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Controls whether the WebUI toolbar WebContents opts out of frame eviction.
-BASE_FEATURE(kWebUIToolbarFrameEvictionOptOut,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // The following feature params control the crash recovery behavior of the Web
 // UI reload button. If the renderer crashes, we will try to recover it by

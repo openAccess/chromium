@@ -8,27 +8,17 @@
 #import <Foundation/Foundation.h>
 
 @class ActorFormSuggestion;
-@class ActuationSuggestionsCoordinator;
 @class ActuationWorklogItem;
 
 // Consumer protocol for receiving suggestions to be coordinated and presented.
 @protocol ActuationSuggestionsConsumer <NSObject>
 
-// Sets the available suggestions for selection for the currently active
-// `worklogItem`.
+// Presents `suggestions` for the active `worklogItem`, or dismisses any
+// presented suggestions if `suggestions` is nil. Setting the presented
+// `suggestions` again only updates their `worklogItem`, e.g. after a
+// suggestion reselection.
 - (void)setSuggestions:(NSArray<ActorFormSuggestion*>*)suggestions
     forActiveWorklogItem:(ActuationWorklogItem*)worklogItem;
-
-// Updates the active `worklogItem` following a suggestion reselection in
-// `coordinator`.
-- (void)updateActiveWorklogItemForReselectedSuggestion:
-            (ActuationWorklogItem*)worklogItem
-                                       fromCoordinator:
-                                           (ActuationSuggestionsCoordinator*)
-                                               coordinator;
-
-// Clears and dismisses any active suggestions coordination.
-- (void)clearSuggestions;
 
 @end
 

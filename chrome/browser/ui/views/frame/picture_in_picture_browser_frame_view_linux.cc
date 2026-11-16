@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/frame/picture_in_picture_browser_frame_view_linux.h"
 
 #include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -37,17 +38,22 @@ PictureInPictureBrowserFrameViewLinux::PictureInPictureBrowserFrameViewLinux(
     BrowserView* browser_view)
     : PictureInPictureBrowserFrameView(widget, browser_view) {
   auto* profile = browser_view->browser()->GetProfile();
-  auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile);
+  auto* linux_ui_theme =
+      ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(profile);
   auto* theme_service_factory = ThemeServiceFactory::GetForProfile(profile);
   if (linux_ui_theme && theme_service_factory->UsingSystemTheme()) {
     bool solid_frame = !static_cast<BrowserNativeWidgetAuraLinux*>(
                             widget->browser_native_widget())
                             ->ShouldDrawRestoredFrameShadow();
 
-    // This may return null, but that's handled below.
+    // These may return null, but that's handled below.
     window_frame_provider_ = linux_ui_theme->GetWindowFrameProvider(
         ui::FrameType::kBrowser, solid_frame, /*tiled=*/false,
-        /*maximized=*/widget->IsMaximized());
+        /*maximized=*/false);
+    maximized_window_frame_provider_ = linux_ui_theme->GetWindowFrameProvider(
+        ui::FrameType::kBrowser, solid_frame, /*tiled=*/false,
+        /*maximized=*/true);
+    CHECK_EQ(!!window_frame_provider_, !!maximized_window_frame_provider_);
   }
 
   // On Linux the top bar background will be drawn in OnPaint().
@@ -68,7 +74,7 @@ PictureInPictureBrowserFrameViewLinux::
 gfx::Insets
 PictureInPictureBrowserFrameViewLinux::RestoredMirroredFrameBorderInsets()
     const {
-  auto border = FrameBorderInsets();
+  auto border = RestoredFrameBorderInsets();
   return base::i18n::IsRTL() ? gfx::Insets::TLBR(border.top(), border.right(),
                                                  border.bottom(), border.left())
                              : border;
@@ -116,7 +122,7 @@ gfx::Rect PictureInPictureBrowserFrameViewLinux::GetHitRegion() const {
   gfx::Rect hit_region = GetLocalBounds();
   if (ShouldDrawFrameShadow()) {
     gfx::Insets insets = RestoredMirroredFrameBorderInsets();
-    if (browser_widget()->tiled()) {
+    if (browser_widget()->tiled() || !IsShowingFrame()) {
       insets = gfx::Insets();
     }
 
@@ -131,11 +137,13 @@ gfx::Rect PictureInPictureBrowserFrameViewLinux::GetHitRegion() const {
 
 void PictureInPictureBrowserFrameViewLinux::OnPaint(gfx::Canvas* canvas) {
   // Draw the PiP window frame borders and shadows, including the top bar
-  // background.
-  if (window_frame_provider_) {
-    window_frame_provider_->PaintWindowFrame(
-        canvas, GetLocalBounds(), GetTopAreaHeight(), ShouldPaintAsActive(),
-        GetInputInsets());
+  // background. Maximized and fullscreen windows have no frame border or
+  // shadow; only the top bar background is drawn.
+  const bool showing_frame = IsShowingFrame();
+  if (auto* provider = showing_frame ? window_frame_provider_.get()
+                                     : maximized_window_frame_provider_.get()) {
+    provider->PaintWindowFrame(canvas, GetLocalBounds(), GetTopAreaHeight(),
+                               ShouldPaintAsActive(), GetInputInsets());
   } else {
     CHECK(frame_background_);
     frame_background_->set_frame_color(
@@ -149,14 +157,29 @@ void PictureInPictureBrowserFrameViewLinux::OnPaint(gfx::Canvas* canvas) {
         GetBrowserView()->GetThemeOffsetFromBrowserView());
     frame_background_->set_theme_overlay_image(GetFrameOverlayImage());
     frame_background_->set_top_area_height(GetTopAreaHeight());
-    views::PaintRestoredFrameBorderLinux(
-        *canvas, *this, frame_background_.get(), GetRestoredClipRegion(),
-        ShouldDrawFrameShadow(), ShouldPaintAsActive(),
-        RestoredMirroredFrameBorderInsets(), GetShadowValues(),
-        browser_widget()->tiled());
+    if (showing_frame) {
+      views::PaintRestoredFrameBorderLinux(
+          *canvas, *this, frame_background_.get(), GetRestoredClipRegion(),
+          ShouldDrawFrameShadow(), ShouldPaintAsActive(),
+          RestoredMirroredFrameBorderInsets(), GetShadowValues(),
+          browser_widget()->tiled());
+    } else {
+      frame_background_->PaintMaximized(canvas, GetNativeTheme(),
+                                        GetColorProvider(), 0, 0, width());
+    }
   }
 
   BrowserFrameView::OnPaint(canvas);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// views::WidgetObserver implementations:
+
+void PictureInPictureBrowserFrameViewLinux::OnWidgetShowStateChanged(
+    views::Widget* widget) {
+  // The frame insets and the frame provider depend on the window state.
+  InvalidateLayout();
+  SchedulePaint();
 }
 
 bool PictureInPictureBrowserFrameViewLinux::ShouldDrawFrameShadow() const {
@@ -173,6 +196,17 @@ gfx::Insets PictureInPictureBrowserFrameViewLinux::ResizeBorderInsets() const {
 }
 
 gfx::Insets PictureInPictureBrowserFrameViewLinux::FrameBorderInsets() const {
+  // Like the regular browser frame, maximized and fullscreen windows have no
+  // frame border. BrowserDesktopWindowTreeHostLinux::CalculateInsetsInDIP()
+  // also drops the insets from the window geometry in these states.
+  return IsShowingFrame() ? RestoredFrameBorderInsets() : gfx::Insets();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// PictureInPictureBrowserFrameViewLinux, private:
+
+gfx::Insets PictureInPictureBrowserFrameViewLinux::RestoredFrameBorderInsets()
+    const {
   if (window_frame_provider_) {
     const auto insets = window_frame_provider_->GetFrameThicknessDip();
     const bool tiled = browser_widget()->tiled();
@@ -183,7 +217,11 @@ gfx::Insets PictureInPictureBrowserFrameViewLinux::FrameBorderInsets() const {
   }
 
   return views::GetRestoredFrameBorderInsetsLinux(
-      ShouldDrawFrameShadow(), gfx::Insets(kFrameBorderThickness),
-      GetShadowValues(),
+      ShouldDrawFrameShadow(), browser_widget()->tiled(),
+      gfx::Insets(kFrameBorderThickness), GetShadowValues(),
       PictureInPictureBrowserFrameView::ResizeBorderInsets());
+}
+
+bool PictureInPictureBrowserFrameViewLinux::IsShowingFrame() const {
+  return !browser_widget()->IsMaximized() && !browser_widget()->IsFullscreen();
 }

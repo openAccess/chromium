@@ -11,6 +11,7 @@
 
 #include <list>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -31,6 +32,7 @@
 #include "ui/gl/ca_renderer_layer_params.h"
 
 @class AVSampleBufferDisplayLayer;
+@class CAShapeLayer;
 
 namespace ui {
 
@@ -235,7 +237,8 @@ class ACCELERATED_WIDGET_MAC_EXPORT CARendererLayerTree {
                  const CARendererLayerParams& params);
     ContentLayer(TransformLayer* parent_layer,
                  std::vector<CABackdropFilter> backdrop_filters,
-                 const gfx::RRectF& backdrop_filter_bounds);
+                 const gfx::RRectF& backdrop_filter_bounds,
+                 const std::optional<gfx::RectF>& backdrop_filter_clip);
 
     ContentLayer(ContentLayer&& layer) = delete;
     ContentLayer(const ContentLayer&) = delete;
@@ -291,8 +294,10 @@ class ACCELERATED_WIDGET_MAC_EXPORT CARendererLayerTree {
 
     std::vector<CABackdropFilter> backdrop_filters_;
     gfx::RRectF backdrop_filter_bounds_;
+    std::optional<gfx::RectF> backdrop_filter_clip_;
 
     CALayer* __strong ca_layer_;
+    CAShapeLayer* __strong backdrop_mask_ca_layer_;
 
     // If this layer's contents can be represented as an
     // AVSampleBufferDisplayLayer, then |ca_layer| will point to |av_layer|.

@@ -103,7 +103,6 @@ void MDnsAPI::OnListenerRemoved(const EventListenerInfo& details) {
 }
 
 void MDnsAPI::UpdateMDnsListeners() {
-  std::set<std::string> new_service_types;
   ServiceTypeCounts current_service_counts;
   GetValidOnServiceListListeners(
       "" /* service_type_filter - blank = all services */,
@@ -192,7 +191,7 @@ void MDnsAPI::OnDnsSdEvent(const std::string& service_type,
       ->BroadcastEvent(std::move(event));
 }
 
-const extensions::EventListenerMap::ListenerList& MDnsAPI::GetEventListeners() {
+extensions::EventListenerMap::ListenerSpan MDnsAPI::GetEventListeners() {
   return extensions::EventRouter::Get(browser_context_)
       ->listeners()
       .GetEventListenersByName(mdns::OnServiceList::kEventName);
@@ -255,7 +254,6 @@ void MDnsAPI::WriteToConsole(const std::string& service_type,
   // Get all the extensions with an onServiceList listener for a particular
   // service type.
   std::set<ExtensionId> extension_ids;
-  ServiceTypeCounts counts;
   GetValidOnServiceListListeners(service_type, &extension_ids,
                                  nullptr /* service_type_counts */);
 

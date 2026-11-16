@@ -52,6 +52,8 @@ class PageSpecificSiteDataDialogTestApi {
   std::vector<PageSpecificSiteDataDialogSite> GetAllSites();
   std::vector<webapps::AppId> GetInstalledRelatedApps();
   void DeleteStoredObjects(const url::Origin& origin);
+  void OnManageOnDeviceSiteDataClicked();
+  void OnRelatedApplicationLinkToAppSettings(const webapps::AppId& app_id);
 
  private:
   std::unique_ptr<PageSpecificSiteDataDialogModelDelegate> delegate_;
@@ -60,6 +62,7 @@ class PageSpecificSiteDataDialogTestApi {
 }  // namespace test
 
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageSpecificSiteDataDialogRow);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageSpecificSiteDataDialogSubtitle);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageSpecificSiteDataDialogFirstPartySection);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageSpecificSiteDataDialogThirdPartySection);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageSpecificSiteDataDialogEmptyStateLabel);

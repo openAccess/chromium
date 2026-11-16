@@ -69,6 +69,10 @@ bool ShouldLoadMinimalAppUI() {
 
 void LoadMinimalAppUI(UIWindow* window) {}
 
+bool IsWindowSceneOnDuoCoverDisplay(UIWindowScene* scene) {
+  return false;
+}
+
 std::unique_ptr<ProfileOAuth2TokenService> GetOverriddenTokenService(
     PrefService* user_prefs,
     std::unique_ptr<ProfileOAuth2TokenServiceDelegate> delegate) {
@@ -87,18 +91,18 @@ std::unique_ptr<TrustedVaultClientBackend> CreateTrustedVaultClientBackend() {
   return nullptr;
 }
 std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return nullptr;
 }
 std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return nullptr;
 }
 std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return nullptr;
 }
-std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS* profile) {
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS& profile) {
   return nullptr;
 }
 void DataSharingServiceHooks(
@@ -170,12 +174,12 @@ UIImage* GetPHPickerViewControllerImage() {
 }
 
 std::unique_ptr<AimEligibilityService> CreateAimEligibilityService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return nullptr;
 }
 
 std::unique_ptr<contextual_search::ContextualSearchService>
-CreateContextualSearchService(ProfileIOS* profile) {
+CreateContextualSearchService(ProfileIOS& profile) {
   return nullptr;
 }
 

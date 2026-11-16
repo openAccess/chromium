@@ -11,6 +11,7 @@
 #include "ui/aura/test/test_screen.h"
 #include "ui/aura/window_event_dispatcher.h"
 #include "ui/aura/window_tree_host.h"
+#include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/platform_window/platform_window_init_properties.h"
@@ -54,7 +55,8 @@ class AuraContext::NativeCursorManager : public wm::NativeCursorManager {
   // wm::NativeCursorManager:
   void SetDisplay(const display::Display& display,
                   wm::NativeCursorManagerDelegate* delegate) override {
-    if (cursor_loader_.SetDisplay(display)) {
+    if (cursor_loader_.UpdateRotationAndScale(display.panel_rotation(),
+                                              display.device_scale_factor())) {
       SetCursor(delegate->GetCursor(), delegate);
     }
   }
@@ -90,14 +92,8 @@ class AuraContext::NativeCursorManager : public wm::NativeCursorManager {
     }
   }
 
-  void SetCursorSize(ui::CursorSize cursor_size,
-                     wm::NativeCursorManagerDelegate* delegate) override {
-    NOTIMPLEMENTED();
-  }
-
-  void SetLargeCursorSizeInDip(
-      int large_cursor_size_in_dip,
-      wm::NativeCursorManagerDelegate* delegate) override {
+  void SetCustomCursorSize(std::optional<int> custom_cursor_size,
+                           wm::NativeCursorManagerDelegate* delegate) override {
     NOTIMPLEMENTED();
   }
 

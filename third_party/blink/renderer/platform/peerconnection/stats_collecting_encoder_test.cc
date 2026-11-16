@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 #include "third_party/blink/renderer/platform/peerconnection/stats_collecting_encoder.h"
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -139,6 +138,12 @@ class MockEncoder : public webrtc::VideoEncoder {
                int(const webrtc::VideoCodec* codec_settings,
                    const webrtc::VideoEncoder::Settings& settings));
   MOCK_METHOD1(SetRates, void(const RateControlParameters& parameters));
+  MOCK_METHOD(void,
+              SetComplexity,
+              (std::span<const webrtc::VideoCodecComplexity>  // nocheck
+                   complexity_by_spatial_layer,
+               ComplexityControlMode complexity_control_mode),
+              (override));
   MOCK_METHOD1(OnPacketLossRateUpdate, void(float packet_loss_rate));
   MOCK_METHOD1(OnRttUpdate, void(int64_t rtt_ms));
 
@@ -465,6 +470,18 @@ TEST_F(StatsCollectingEncoderTest, MethodCallsForwardedToInternalEncoder) {
       kVideoBitrateAllocation, /*framerate_fps=*/24.0};
   EXPECT_CALL(*internal_encoder_, SetRates(kParameters));
   stats_encoder_.SetRates(kParameters);
+
+  const webrtc::VideoCodecComplexity kComplexities[] = {
+      webrtc::VideoCodecComplexity::kComplexityLow,
+      webrtc::VideoCodecComplexity::kComplexityHigh};
+  EXPECT_CALL(
+      *internal_encoder_,
+      SetComplexity(
+          ::testing::ElementsAre(webrtc::VideoCodecComplexity::kComplexityLow,
+                                 webrtc::VideoCodecComplexity::kComplexityHigh),
+          webrtc::VideoEncoder::ComplexityControlMode::kVariable));
+  stats_encoder_.SetComplexity(
+      kComplexities, webrtc::VideoEncoder::ComplexityControlMode::kVariable);
 
   constexpr float kPacketLossRate = 0.012;
   EXPECT_CALL(*internal_encoder_, OnPacketLossRateUpdate(kPacketLossRate));

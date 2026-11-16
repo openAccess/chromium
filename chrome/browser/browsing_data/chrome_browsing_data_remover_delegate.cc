@@ -200,6 +200,7 @@
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service.h"
 #include "chrome/browser/new_tab_page/microsoft_auth/microsoft_auth_service_factory.h"
 #include "chrome/browser/user_education/browser_user_education_storage_service.h"
+#include "chrome/browser/web_applications/isolated_web_apps/controlled_frame_partitions_manager.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
@@ -936,6 +937,10 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
     host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
         ContentSettingsType::INTENT_PICKER_DISPLAY, delete_begin_, delete_end_,
         website_settings_filter);
+
+    host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
+        ContentSettingsType::WEBAUTHN_AMBIENT_SIGNIN_DATA, delete_begin_,
+        delete_end_, website_settings_filter);
 #endif
 
     host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
@@ -1093,8 +1098,7 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
                 PersonalContextEntityMetadataManager* entity_metadata_manager =
                     autofill::PersonalContextEntityMetadataManagerFactory::
                         GetForProfile(profile_)) {
-          entity_metadata_manager->ClearSuppressions(delete_begin_,
-                                                     delete_end_);
+          entity_metadata_manager->ClearEntries(delete_begin_, delete_end_);
         }
       }
       // Clear out the Autofill StrikeDatabase in its entirety.
@@ -1481,17 +1485,16 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
   // DATA_TYPE_CONTROLLED_FRAME is specified in `remove_mask`.
   if (!filter_builder->GetStoragePartitionConfig().has_value() &&
       content::AreIsolatedWebAppsEnabled(profile_)) {
-    const web_app::WebAppRegistrar& web_app_registrar =
-        web_app::WebAppProvider::GetForLocalAppsUnchecked(profile_)
-            ->registrar_unsafe();
+    const auto& provider =
+        CHECK_DEREF(web_app::WebAppProvider::GetForWebApps(profile_));
     for (const web_app::WebApp& web_app :
-         web_app_registrar.GetAppsIncludingStubs()) {
+         provider.registrar_unsafe().GetAppsIncludingStubs()) {
       if (!filter.Run(web_app.scope())) {
         continue;
       }
       std::vector<content::StoragePartitionConfig> partitions =
-          web_app_registrar.GetIsolatedWebAppStoragePartitionConfigs(
-              web_app.app_id());
+          web_app::GetIsolatedWebAppStoragePartitionConfigs(provider,
+                                                            web_app.app_id());
       for (const content::StoragePartitionConfig& partition : partitions) {
         // Only delete data types that live on a StoragePartition.
         uint64_t iwa_remove_mask =
@@ -1526,12 +1529,11 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
 #if BUILDFLAG(IS_ANDROID)
     base::RecordAction(UserMetricsAction("ClearBrowsingData_Tabs"));
 
-    for (TabModel* tab_model : TabModelList::models()) {
-      if (tab_model->GetProfile() != profile_ || tab_model->IsOffTheRecord()) {
-        continue;
-      }
-
-      tab_model->CloseTabsNavigatedInTimeWindow(delete_begin, delete_end);
+    if (!profile_->IsOffTheRecord()) {
+      TabModelList::ForEach(profile_, [&](TabModel* tab_model) {
+        tab_model->CloseTabsNavigatedInTimeWindow(delete_begin, delete_end);
+        return true;
+      });
     }
 
     TabModel* archived_tab_model = TabModelList::GetArchivedTabModel(profile_);
@@ -1542,26 +1544,6 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
 #else   // BUILDFLAG(IS_ANDROID)
     NOTIMPLEMENTED();
 #endif  // BUILDFLAG(IS_ANDROID)
-  }
-
-  //////////////////////////////////////////////////////////////////////////////
-  // DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS
-  if (remove_mask & content::BrowsingDataRemover::
-                        DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS) {
-    host_content_settings_map_->ClearSettingsForOneTypeWithPredicate(
-        ContentSettingsType::STORAGE_ACCESS,
-        [&](const ContentSettingPatternSource& setting) {
-          return setting.metadata.decided_by_related_website_sets() &&
-                 std::ranges::any_of(
-                     filter_builder->GetOrigins(),
-                     [&](const url::Origin& origin) -> bool {
-                       return net::SchemefulSite(
-                                  setting.primary_pattern.ToRepresentativeUrl())
-                                  .IsSameSiteWith(origin) ||
-                              setting.secondary_pattern.Matches(
-                                  origin.GetURL());
-                     });
-        });
   }
 
   if (remove_mask & constants::DATA_TYPE_SEARCH_ENGINE_CHOICE) {

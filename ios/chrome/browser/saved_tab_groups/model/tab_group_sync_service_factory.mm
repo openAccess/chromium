@@ -45,7 +45,7 @@ std::unique_ptr<KeyedService> BuildService(
   // Give the opportunity for the test hook to override the factory from
   // the provider (allowing EG tests to use a fake TabGroupSyncService).
   if (auto tab_group_sync_service =
-          tests_hook::CreateTabGroupSyncService(&profile)) {
+          tests_hook::CreateTabGroupSyncService(profile)) {
     return tab_group_sync_service;
   }
 
@@ -89,7 +89,7 @@ std::unique_ptr<KeyedService> BuildService(
 }  // namespace
 
 // static
-TabGroupSyncServiceFactory::TestingFactoryByRef
+TabGroupSyncServiceFactory::TestingFactory
 TabGroupSyncServiceFactory::GetDefaultFactory() {
   // GetSyntheticFieldTrialHelper() returns a pointer to a singleton that is
   // never deallocated, so it is safe to use base::Unretained(...) here.

@@ -160,6 +160,7 @@
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/navigation_details.h"
 #include "content/public/browser/navigation_throttle_registry.h"
+#include "content/public/browser/navigation_ui_data.h"
 #include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/preload_pipeline_info.h"
@@ -1136,6 +1137,10 @@ void WebContentsImpl::NotifySwappedRWHVChildFrameFromRenderManager(
     bool allow_paint_holding) {
   if (surface_embed_connector_) {
     surface_embed_connector_->SetView(new_view, allow_paint_holding);
+
+    // Swapping the view changes the `gfx::NativeView` returned by
+    // `GetCaptureTarget()`.
+    observers_.NotifyObservers(&WebContentsObserver::CaptureTargetChanged);
   }
 }
 
@@ -1576,8 +1581,11 @@ WebContentsImpl::~WebContentsImpl() {
 #endif
   find_request_manager_.reset();
 
-  // crbug.com/373898450: The `FrameTree` should outlive the animation manager.
   if (view_) {
+    view_->CancelDrag();
+
+    // https://crbug.com/373898450: The `FrameTree` should outlive the animation
+    // manager.
     view_->DestroyBackForwardTransitionAnimationManager();
   }
 
@@ -2894,7 +2902,7 @@ bool WebContentsImpl::IsBeingVisiblyCaptured() {
 void WebContentsImpl::OnCapturerCountChanged() {
   view_->OnCapturerCountChanged();
   if (surface_embed_connector_) {
-    surface_embed_connector_->SetKeepSurfaceAlive(IsBeingCaptured());
+    surface_embed_connector_->UpdateKeepSurfaceAlive();
   }
 }
 
@@ -3128,7 +3136,7 @@ int WebContentsImpl::GetVirtualKeyboardResizeHeight() {
 bool WebContentsImpl::ShouldDoLearning() {
   // Use the off-the-record state of the user that this WebContents is shown
   // for, which can differ from that of its BrowserContext.
-  return !GetUserBrowserContext(*GetPrimaryMainFrame())->IsOffTheRecord();
+  return !GetUserBrowserContext(*this)->IsOffTheRecord();
 }
 
 void WebContentsImpl::OnAudioStateChanged() {
@@ -3732,6 +3740,10 @@ void WebContentsImpl::SetSurfaceEmbedConnector(
   RecursivelyRegisterRenderWidgetHostViews();
 
   surface_embed_connector_->OnAttachedToParent();
+
+  // Swapping the view changes the `gfx::NativeView` returned by
+  // `GetCaptureTarget()`.
+  observers_.NotifyObservers(&WebContentsObserver::CaptureTargetChanged);
 }
 
 void WebContentsImpl::ClearSurfaceEmbedConnector() {
@@ -3808,6 +3820,10 @@ void WebContentsImpl::ClearSurfaceEmbedConnector() {
       CreateRenderWidgetHostViewForRenderManager(rvh);
     }
     RecursivelyRegisterRenderWidgetHostViews();
+
+    // Restoring the view changes the `gfx::NativeView` returned by
+    // `GetCaptureTarget()`.
+    observers_.NotifyObservers(&WebContentsObserver::CaptureTargetChanged);
   }
 }
 
@@ -5907,10 +5923,10 @@ FrameTree* WebContentsImpl::CreateNewWindow(
         new_contents_impl->GetPrimaryMainFrame()->browsing_context_state());
   }
 
-  // Creating and showing the new window's view, and AddNewContents(), can run
-  // a nested message loop (e.g. UpdateLegacyWin() on Windows) in which the
-  // opener's tab or frame is closed. If so, stop creating the window; the
-  // caller already handles the opener frame being gone. See
+  // Creating and showing the new window's view, and AddNewContents(), may
+  // synchronously destroy `this` or `opener` via delegate or native window/IME
+  // callbacks (see content/browser/SECURITY.md). If so, stop creating the
+  // window; the caller already handles the opener frame being gone. See
   // crbug.com/574739217.
   base::WeakPtr<WebContentsImpl> weak_this = weak_factory_.GetWeakPtr();
   base::WeakPtr<RenderFrameHostImpl> weak_opener = opener->GetWeakPtr();
@@ -5983,8 +5999,8 @@ FrameTree* WebContentsImpl::CreateNewWindow(
         *params.features, has_user_gesture, &was_blocked);
 
     if (!weak_this || !weak_opener) {
-      // `this` may be deleted after AddNewContents() due to a nested message
-      // loop (e.g. the window hosting the opener is closed). See
+      // The delegate may synchronously destroy `this` or `opener` during
+      // AddNewContents() (e.g. if the window hosting the opener is closed). See
       // crbug.com/527676561.
       return nullptr;
     }
@@ -6226,9 +6242,7 @@ gfx::Rect WebContentsImpl::ConstrainPopupBounds(const gfx::Rect& bounds) {
     if (display::Screen* screen = display::Screen::Get();
         screen && !screen->IsHeadless()) {
       const display::Display display =
-          view->GetNativeView()
-              ? screen->GetDisplayNearestView(view->GetNativeView())
-              : screen->GetDisplayMatching(bounds);
+          screen->GetDisplayNearestView(view->GetNativeView());
       const gfx::Rect work_area = display.work_area();
       if (!work_area.IsEmpty() &&
           constrained_bounds.bottom() > work_area.bottom()) {
@@ -6344,9 +6358,9 @@ void WebContentsImpl::ShowCreatedWidget(ChildProcessId process_id,
     }
   }
 
-  // InitAsPopup() can run a nested message loop (UpdateLegacyWin() on Windows)
-  // in which the popup is closed, e.g. because its parent loses focus, which
-  // deletes `render_widget_host_impl`.
+  // InitAsPopup() may synchronously close the popup via native window or focus
+  // notifications (e.g. because its parent loses focus), which deletes
+  // `render_widget_host_impl`.
   base::WeakPtr<RenderWidgetHostImpl> weak_widget =
       render_widget_host_impl->GetWeakPtr();
   widget_host_view->InitAsPopup(view, transformed_rect,
@@ -7609,17 +7623,16 @@ blink::RendererPreferences* WebContentsImpl::GetMutableRendererPrefs() {
   return &renderer_preferences_;
 }
 
-void WebContentsImpl::DragSourceEndedAt(float client_x,
-                                        float client_y,
-                                        float screen_x,
-                                        float screen_y,
-                                        ui::mojom::DragOperation operation,
-                                        RenderWidgetHost* source_rwh) {
+void WebContentsImpl::DragSourceEndedAt(
+    const std::optional<gfx::PointF>& client_point,
+    const std::optional<gfx::PointF>& screen_point,
+    ui::mojom::DragOperation operation,
+    RenderWidgetHost* source_rwh) {
   OPTIONAL_TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("content.verbose"),
                         "WebContentsImpl::DragSourceEndedAt");
+  CHECK_EQ(client_point.has_value(), screen_point.has_value());
   if (source_rwh) {
-    source_rwh->DragSourceEndedAt(gfx::PointF(client_x, client_y),
-                                  gfx::PointF(screen_x, screen_y), operation,
+    source_rwh->DragSourceEndedAt(client_point, screen_point, operation,
                                   base::DoNothing());
   }
 }
@@ -8222,6 +8235,8 @@ void WebContentsImpl::ReadyToCommitNavigation(
   CHECK(!navigation_handle->IsSameDocument());
 
   const bool is_in_main_frame = navigation_handle->IsInMainFrame();
+  const bool is_in_primary_main_frame =
+      navigation_handle->IsInPrimaryMainFrame();
   const bool is_renderer_initiated = navigation_handle->IsRendererInitiated();
   const GURL url = navigation_handle->GetURL();
   const net::Error net_error_code = navigation_handle->GetNetErrorCode();
@@ -8284,6 +8299,12 @@ void WebContentsImpl::ReadyToCommitNavigation(
         url::SchemeHostPort(url),
         ssl_info.has_value() ? net::IsCertStatusError(ssl_info->cert_status)
                              : false);
+  }
+
+  // At this point, the commit will happen, so if the navigation is happening in
+  // the primary page, cancel any ongoing drags from the previous page.
+  if (is_in_primary_main_frame) {
+    view_->CancelDrag();
   }
 }
 
@@ -9117,6 +9138,12 @@ void WebContentsImpl::DOMContentLoaded(RenderFrameHostImpl* render_frame_host) {
                         "render_frame_host", render_frame_host);
   SCOPED_UMA_HISTOGRAM_TIMER("WebContentsObserver.DOMContentLoaded");
   observers_.NotifyObservers(&WebContentsObserver::DOMContentLoaded,
+                             render_frame_host);
+}
+
+void WebContentsImpl::ScriptToolsReadyStateChanged(
+    RenderFrameHostImpl* render_frame_host) {
+  observers_.NotifyObservers(&WebContentsObserver::ScriptToolsReadyStateChanged,
                              render_frame_host);
 }
 
@@ -10067,6 +10094,13 @@ double WebContentsImpl::GetPendingZoomLevel(RenderWidgetHostImpl* rwh) {
     return HostZoomMap::GetZoomLevel(this);
   }
 
+  if (!rfh->GetParentOrOuterDocument() && delegate_) {
+    if (std::optional<double> override_zoom =
+            delegate_->GetOverrideZoomLevel(this)) {
+      return *override_zoom;
+    }
+  }
+
   GURL url;
   if (rfh->IsInBackForwardCache()) {
     // If the `rfh`s page is in the bf cache, then the use of the pending (or
@@ -10417,6 +10451,10 @@ void WebContentsImpl::RenderViewTerminated(RenderViewHost* rvh,
 
   // Cancel any visible dialogs so they are not left dangling over the sad tab.
   CancelActiveAndPendingDialogs();
+
+  if (view_) {
+    view_->CancelDrag();
+  }
 
   audio_stream_monitor_.RenderProcessGone(rvh_impl->GetProcess()->GetID());
 
@@ -11153,6 +11191,8 @@ void WebContentsImpl::SetFocusedFrameTree(FrameTree* frame_tree_to_focus) {
       ->current_frame_host()
       ->GetRenderWidgetHost()
       ->SetPageFocus(true);
+
+  UpdateFocusedViewForTextInputManager();
 }
 
 void WebContentsImpl::SetFocusedFrame(FrameTreeNode* node,
@@ -11245,6 +11285,64 @@ void WebContentsImpl::SetFocusedFrame(FrameTreeNode* node,
   }
 
   CloseListenerManager::DidChangeFocusedFrame(this);
+}
+
+void WebContentsImpl::DidChangeFocusedFrame() {
+  UpdateFocusedViewForTextInputManager();
+}
+
+void WebContentsImpl::UpdateFocusedViewForTextInputManager() {
+  if (GetOuterWebContents()) {
+    GetOuterWebContents()->UpdateFocusedViewForTextInputManager();
+    return;
+  }
+  if (surface_embed_connector_) {
+    if (WebContentsImpl* parent =
+            surface_embed_connector_->parent_web_contents()) {
+      parent->UpdateFocusedViewForTextInputManager();
+    }
+    return;
+  }
+  // Avoid lazily creating TextInputManager in GetTextInputManager() if none
+  // exists yet.
+  if (!text_input_manager_ || IsBeingDestroyed() ||
+      focused_view_update_scheduled_) {
+    return;
+  }
+  focused_view_update_scheduled_ = true;
+  GetUIThreadTaskRunner({})->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          &WebContentsImpl::HandleFocusedViewUpdateForTextInputManager,
+          weak_factory_.GetWeakPtr()));
+}
+
+void WebContentsImpl::HandleFocusedViewUpdateForTextInputManager() {
+  focused_view_update_scheduled_ = false;
+  if (GetOuterWebContents() || surface_embed_connector_) {
+    UpdateFocusedViewForTextInputManager();
+    return;
+  }
+  if (!text_input_manager_ || IsBeingDestroyed()) {
+    return;
+  }
+  TextInputManager* manager = GetTextInputManager();
+  if (!manager) {
+    return;
+  }
+  FrameTree* focused_frame_tree = GetFocusedFrameTree();
+  RenderWidgetHostViewBase* focused_view = nullptr;
+  if (focused_frame_tree) {
+    FrameTreeNode* focused_node = focused_frame_tree->GetFocusedFrame();
+    RenderFrameHostImpl* focused_rfh =
+        focused_node ? focused_node->current_frame_host()
+                     : focused_frame_tree->root()->current_frame_host();
+    if (focused_rfh) {
+      focused_view =
+          static_cast<RenderWidgetHostViewBase*>(focused_rfh->GetView());
+    }
+  }
+  manager->SyncActiveViewWithFocus(focused_view);
 }
 
 FrameTree* WebContentsImpl::GetOwnedDocumentPictureInPictureFrameTree() {
@@ -11680,8 +11778,8 @@ void WebContentsImpl::CreateRenderWidgetHostViewForRenderManager(
       "content", "WebContentsImpl::CreateRenderWidgetHostViewForRenderManager",
       "render_view_host", render_view_host);
 
-  // Creating the view can run a nested message loop, and callers keep using
-  // `this` and the new view afterwards, so `this` must not be destroyed here.
+  // Callers keep using `this` and the new view after this returns, so `this`
+  // must not be destroyed synchronously while creating the view.
   base::AutoReset<bool> scope(&prevent_destruction_, true);
 
   bool is_inner_frame_tree = [&]() {
@@ -11704,7 +11802,8 @@ void WebContentsImpl::CreateRenderWidgetHostViewForRenderManager(
     RenderWidgetHostViewBase* rwh_view =
         view_->CreateViewForWidget(render_view_host->GetWidget());
     view_->SetOverscrollControllerEnabled(CanOverscrollContent());
-    // The view is destroyed if the renderer goes away while it is created.
+    // `rwh_view` may be null if it was synchronously destroyed while being
+    // created.
     if (rwh_view) {
       rwh_view->SetSize(GetSizeForMainFrame());
     }
@@ -11882,8 +11981,9 @@ void WebContentsImpl::OnDialogClosed(int render_process_id,
                                      bool dialog_was_suppressed,
                                      bool success,
                                      const std::u16string& user_input) {
-  RenderFrameHostImpl* rfh =
-      RenderFrameHostImpl::FromID(render_process_id, render_frame_id);
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue().
+  RenderFrameHostImpl* rfh = RenderFrameHostImpl::FromID(
+      ChildProcessId::FromUnsafeValue(render_process_id), render_frame_id);
   // The user confirms and closes a dialog even after the page has navigated
   // away and got into BackForwardCache.
   DCHECK(!rfh || rfh->IsActive() || rfh->IsInBackForwardCache());
@@ -13352,7 +13452,8 @@ std::unique_ptr<PrerenderHandle> WebContentsImpl::StartPrerendering(
         url_match_predicate,
     base::RepeatingCallback<void(NavigationHandle&)>
         prerender_navigation_handle_callback,
-    bool allow_reuse) {
+    bool allow_reuse,
+    std::unique_ptr<NavigationUIData> navigation_ui_data) {
   PrerenderAttributes attributes(
       prerendering_url, trigger_type, embedder_histogram_suffix,
       /*speculation_rules_params=*/std::nullopt, content::Referrer(),
@@ -13373,6 +13474,7 @@ std::unique_ptr<PrerenderHandle> WebContentsImpl::StartPrerendering(
       << "additional_headers is supported only on Android WebView.";
 #endif  // BUILDFLAG(IS_ANDROID)
   attributes.holdback_status_override = holdback_status_override;
+  attributes.navigation_ui_data = std::move(navigation_ui_data);
 
   PrerenderHostId prerender_host_id =
       GetPrerenderHostRegistry()->CreateAndStartHost(attributes,

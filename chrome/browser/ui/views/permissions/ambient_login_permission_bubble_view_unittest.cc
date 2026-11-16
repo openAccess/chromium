@@ -116,7 +116,8 @@ class MockAmbientDelegate : public TestPermissionBubbleViewDelegate {
  public:
   explicit MockAmbientDelegate(const GURL& origin,
                                const std::u16string& username = u"",
-                               const std::u16string& provider_name = u"") {
+                               const std::u16string& provider_name = u"")
+      : embedding_origin_(origin) {
     std::vector<ambient_signin::PasskeyOrPasswordCredential> credentials;
     if (!username.empty() || !provider_name.empty()) {
       credentials.push_back(
@@ -125,10 +126,13 @@ class MockAmbientDelegate : public TestPermissionBubbleViewDelegate {
     std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
     requests.push_back(
         std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-            origin, origin, std::move(credentials),
+            origin, std::move(credentials),
             base::BindOnce(&MockAmbientDelegate::OnCredentialSelected,
                            base::Unretained(this)),
-            base::DoNothing()));
+            ambient_signin::AmbientLoginPermissionRequest::Options{
+                .bubble_dismissed_callback =
+                    base::BindOnce(&MockAmbientDelegate::OnBubbleDismissed,
+                                   base::Unretained(this))}));
     set_requests(std::move(requests));
 
     ON_CALL(*this, Accept)
@@ -138,21 +142,36 @@ class MockAmbientDelegate : public TestPermissionBubbleViewDelegate {
             request->PermissionGranted(prompt_options, /*is_one_time=*/false);
           }
         });
+    ON_CALL(*this, Dismiss).WillByDefault([this](const PromptOptions&) {
+      set_requests({});
+    });
   }
 
-  void OnCredentialSelected(size_t index) {
+  GURL GetEmbeddingOrigin() const override { return embedding_origin_; }
+
+  void set_embedding_origin(const GURL& embedding_origin) {
+    embedding_origin_ = embedding_origin;
+  }
+
+  void OnCredentialSelected(size_t index, bool from_expanded_list) {
     selected_credential_index_ = index;
   }
+
+  void OnBubbleDismissed() { bubble_dismissed_ = true; }
 
   std::optional<size_t> selected_credential_index() const {
     return selected_credential_index_;
   }
 
+  bool bubble_dismissed() const { return bubble_dismissed_; }
+
   MOCK_METHOD(void, Accept, (const PromptOptions&), (override));
   MOCK_METHOD(void, Dismiss, (const PromptOptions&), (override));
 
  private:
+  GURL embedding_origin_;
   std::optional<size_t> selected_credential_index_;
+  bool bubble_dismissed_ = false;
 };
 
 class AmbientLoginPermissionBubbleViewTest : public ChromeViewsTestBase {
@@ -192,10 +211,10 @@ class AmbientLoginPermissionBubbleViewTest : public ChromeViewsTestBase {
   content::WebContents* web_contents() { return web_contents_.get(); }
 
   AmbientLoginPermissionBubbleView* CreateBubble(
-      MockAmbientDelegate* delegate) {
+      MockAmbientDelegate* delegate,
+      PermissionPromptStyle prompt_style = PermissionPromptStyle::kBubbleOnly) {
     auto* bubble = new AmbientLoginPermissionBubbleView(
-        web_contents(), delegate->GetWeakPtr(),
-        PermissionPromptStyle::kBubbleOnly);
+        web_contents(), delegate->GetWeakPtr(), prompt_style);
     bubble->set_parent_window(anchor_widget_->GetNativeView());
     views::BubbleDialogDelegateView::CreateBubble(bubble);
     bubble->GetWidget()->Show();
@@ -314,7 +333,38 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, CloseButtonClickedDismisses) {
 
   EXPECT_CALL(delegate, Dismiss).Times(1);
   EXPECT_CALL(delegate, Accept).Times(0);
-  bubble->ClosingPermission();
+  bubble->GetWidget()->CloseWithReason(
+      views::Widget::ClosedReason::kCloseButtonClicked);
+  EXPECT_TRUE(delegate.bubble_dismissed());
+}
+
+TEST_F(AmbientLoginPermissionBubbleViewTest,
+       ChipStyleUserDismissalNotifiesRequestWithoutDismissingDelegate) {
+  {
+    MockAmbientDelegate delegate(GURL("https://example.com"),
+                                 u"bob@example.com",
+                                 u"Google Password Manager");
+    AmbientLoginPermissionBubbleView* bubble =
+        CreateBubble(&delegate, PermissionPromptStyle::kChip);
+
+    EXPECT_CALL(delegate, Dismiss).Times(0);
+    bubble->GetWidget()->CloseWithReason(
+        views::Widget::ClosedReason::kEscKeyPressed);
+    EXPECT_TRUE(delegate.bubble_dismissed());
+  }
+
+  {
+    MockAmbientDelegate delegate(GURL("https://example.com"),
+                                 u"bob@example.com",
+                                 u"Google Password Manager");
+    AmbientLoginPermissionBubbleView* bubble =
+        CreateBubble(&delegate, PermissionPromptStyle::kChip);
+
+    EXPECT_CALL(delegate, Dismiss).Times(0);
+    bubble->GetWidget()->CloseWithReason(
+        views::Widget::ClosedReason::kUnspecified);
+    EXPECT_FALSE(delegate.bubble_dismissed());
+  }
 }
 
 TEST_F(AmbientLoginPermissionBubbleViewTest, FederatedCredentialsDisplay) {
@@ -325,7 +375,7 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, FederatedCredentialsDisplay) {
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
+          GURL("https://example.com"),
           /*credentials=*/
           std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
           /*credential_selected_callback=*/base::NullCallback(),
@@ -333,7 +383,7 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, FederatedCredentialsDisplay) {
           base::BindOnce(
               [](std::optional<size_t>* out, size_t index) { *out = index; },
               &selected_fed_index),
-          base::DoNothing()));
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -380,9 +430,9 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
-          std::move(creds), base::DoNothing(), std::move(fed_creds),
-          base::DoNothing(), base::DoNothing()));
+          GURL("https://example.com"), std::move(creds), base::DoNothing(),
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -501,9 +551,9 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
-          std::move(creds), base::DoNothing(), std::move(fed_creds),
-          base::DoNothing(), base::DoNothing()));
+          GURL("https://example.com"), std::move(creds), base::DoNothing(),
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -549,16 +599,15 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
-          std::move(creds),
-          base::BindOnce(
-              [](std::optional<size_t>* out, size_t index) { *out = index; },
-              &selected_cred_index),
+          GURL("https://example.com"), std::move(creds),
+          base::BindOnce([](std::optional<size_t>* out, size_t index,
+                            bool) { *out = index; },
+                         &selected_cred_index),
           std::move(fed_creds),
           base::BindOnce(
               [](std::optional<size_t>* out, size_t index) { *out = index; },
               &selected_fed_index),
-          base::DoNothing()));
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -608,16 +657,15 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
-          std::move(creds),
-          base::BindOnce(
-              [](std::optional<size_t>* out, size_t index) { *out = index; },
-              &selected_cred_index),
+          GURL("https://example.com"), std::move(creds),
+          base::BindOnce([](std::optional<size_t>* out, size_t index,
+                            bool) { *out = index; },
+                         &selected_cred_index),
           std::move(fed_creds),
           base::BindOnce(
               [](std::optional<size_t>* out, size_t index) { *out = index; },
               &selected_fed_index),
-          base::DoNothing()));
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -665,11 +713,12 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
+          GURL("https://example.com"),
           /*credentials=*/
           std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
           /*credential_selected_callback=*/base::NullCallback(),
-          std::move(fed_creds), base::DoNothing(), base::DoNothing()));
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -712,18 +761,102 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
 }
 
 TEST_F(AmbientLoginPermissionBubbleViewTest,
-       FederatedCredentialWithoutPictureShowsDefaultIcon) {
+       FederatedCredentialShowsBadgeOnAccountPicture) {
   std::vector<ambient_signin::FederatedCredential> fed_creds = {
       {u"idp.example.com", u"Carol", u"carol@example.com",
-       GURL("https://idp.example.com")}};
+       GURL("https://idp.example.com"),
+       ui::ImageModel::FromImage(gfx::test::CreateImage(
+           ambient_signin::kAccountPictureSize, SK_ColorRED)),
+       ui::ImageModel::FromImage(gfx::test::CreateImage(
+           ambient_signin::kBadgeImageSize, SK_ColorBLUE))}};
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
+          GURL("https://example.com"),
           /*credentials=*/
           std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
           /*credential_selected_callback=*/base::NullCallback(),
-          std::move(fed_creds), base::DoNothing(), base::DoNothing()));
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
+
+  MockAmbientDelegate delegate(GURL("https://example.com"));
+  delegate.set_requests(std::move(requests));
+  AmbientLoginPermissionBubbleView* bubble = CreateBubble(&delegate);
+  views::test::RunScheduledLayout(bubble->GetWidget());
+
+  // The badge's image is in the middle of the badge's circle, which extends
+  // beyond the bottom right corner of the picture. These match `kBadgeRadius`
+  // and `kBadgeOverhang` in ambient_login_permission_bubble_view.cc.
+  constexpr int kBadgeRadius = 10;
+  constexpr int kBadgeOverhang = 2;
+  constexpr int kBadgeCenter =
+      ambient_signin::kAccountPictureSize + kBadgeOverhang - kBadgeRadius;
+
+  // Like the badge on a monogram, the badge extends beyond the picture in the
+  // collapsed view, while only the picture takes up space.
+  ASSERT_EQ(bubble->children().size(), 4u);
+  views::View* icon_view = bubble->children()[0];
+  EXPECT_EQ(icon_view->GetPreferredSize(),
+            gfx::Size(ambient_signin::kAccountPictureSize,
+                      ambient_signin::kAccountPictureSize));
+  views::ImageView* image_view = FindImageViewWithImage(icon_view);
+  ASSERT_NE(image_view, nullptr);
+  EXPECT_GT(image_view->width(), ambient_signin::kAccountPictureSize);
+  const gfx::ImageSkia image =
+      image_view->GetImageModel().Rasterize(image_view->GetColorProvider());
+  const SkBitmap* bitmap = image.bitmap();
+  ASSERT_TRUE(bitmap);
+  EXPECT_EQ(bitmap->getColor(10, 10), SK_ColorRED);
+  EXPECT_EQ(bitmap->getColor(kBadgeCenter, kBadgeCenter), SK_ColorBLUE);
+
+  views::ImageButton* expand_button =
+      views::AsViewClass<views::ImageButton>(bubble->children()[3]);
+  ASSERT_NE(expand_button, nullptr);
+  ui::MouseEvent click_event(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  views::test::ButtonTestApi(expand_button).NotifyClick(click_event);
+  views::test::RunScheduledLayout(bubble->GetWidget());
+
+  // The expanded row shows the badge on the picture too.
+  ASSERT_EQ(bubble->children().size(), 1u);
+  views::ScrollView* scroll_view =
+      views::AsViewClass<views::ScrollView>(bubble->children()[0]);
+  ASSERT_NE(scroll_view, nullptr);
+  ASSERT_EQ(scroll_view->contents()->children().size(), 1u);
+  HoverButton* row =
+      views::AsViewClass<HoverButton>(scroll_view->contents()->children()[0]);
+  ASSERT_NE(row, nullptr);
+  views::ImageView* row_image_view = FindImageViewWithImage(row);
+  ASSERT_NE(row_image_view, nullptr);
+  EXPECT_GT(row_image_view->width(), ambient_signin::kAccountPictureSize);
+  const gfx::ImageSkia row_image = row_image_view->GetImageModel().Rasterize(
+      row_image_view->GetColorProvider());
+  const SkBitmap* row_bitmap = row_image.bitmap();
+  ASSERT_TRUE(row_bitmap);
+  EXPECT_EQ(row_bitmap->getColor(10, 10), SK_ColorRED);
+  EXPECT_EQ(row_bitmap->getColor(kBadgeCenter, kBadgeCenter), SK_ColorBLUE);
+}
+
+TEST_F(AmbientLoginPermissionBubbleViewTest,
+       FederatedCredentialWithoutPictureShowsDefaultIcon) {
+  // The badge isn't shown without a picture.
+  std::vector<ambient_signin::FederatedCredential> fed_creds = {
+      {u"idp.example.com", u"Carol", u"carol@example.com",
+       GURL("https://idp.example.com"), /*icon=*/ui::ImageModel(),
+       /*badge=*/
+       ui::ImageModel::FromImage(
+           gfx::test::CreateImage(ambient_signin::kBadgeImageSize))}};
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.push_back(
+      std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
+          GURL("https://example.com"),
+          /*credentials=*/
+          std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
+          /*credential_selected_callback=*/base::NullCallback(),
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -834,10 +967,10 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
-          std::move(passkey_creds),
+          GURL("https://example.com"), std::move(passkey_creds),
           /*credential_selected_callback=*/base::NullCallback(),
-          std::move(fed_creds), base::DoNothing(), base::DoNothing()));
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -963,11 +1096,12 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, LongTextIsElidedInExpandedList) {
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
+          GURL("https://example.com"),
           /*credentials=*/
           std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
           /*credential_selected_callback=*/base::NullCallback(),
-          std::move(fed_creds), base::DoNothing(), base::DoNothing()));
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -1021,11 +1155,12 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, OnlyIdpNameIsElidedAtStart) {
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          GURL("https://example.com"), GURL("https://example.com"),
+          GURL("https://example.com"),
           /*credentials=*/
           std::vector<ambient_signin::PasskeyOrPasswordCredential>{},
           /*credential_selected_callback=*/base::NullCallback(),
-          std::move(fed_creds), base::DoNothing(), base::DoNothing()));
+          std::move(fed_creds), base::DoNothing(),
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
 
   MockAmbientDelegate delegate(GURL("https://example.com"));
   delegate.set_requests(std::move(requests));
@@ -1125,8 +1260,8 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
     std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
     requests.push_back(
         std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-            origin, origin, std::move(creds), base::DoNothing(),
-            base::DoNothing()));
+            origin, std::move(creds), base::DoNothing(),
+            ambient_signin::AmbientLoginPermissionRequest::Options{}));
     MockAmbientDelegate delegate(origin);
     delegate.set_requests(std::move(requests));
 
@@ -1145,10 +1280,9 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
     std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
     requests.push_back(
         std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-            origin, origin,
-            std::vector<ambient_signin::PasskeyOrPasswordCredential>(),
+            origin, std::vector<ambient_signin::PasskeyOrPasswordCredential>(),
             base::NullCallback(), std::move(fed_creds), base::DoNothing(),
-            base::DoNothing()));
+            ambient_signin::AmbientLoginPermissionRequest::Options{}));
     MockAmbientDelegate delegate(origin);
     delegate.set_requests(std::move(requests));
 
@@ -1168,10 +1302,9 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
   std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
   requests.push_back(
       std::make_unique<ambient_signin::AmbientLoginPermissionRequest>(
-          origin, origin,
-          std::vector<ambient_signin::PasskeyOrPasswordCredential>(),
+          origin, std::vector<ambient_signin::PasskeyOrPasswordCredential>(),
           base::NullCallback(), std::move(fed_creds), base::DoNothing(),
-          base::DoNothing()));
+          ambient_signin::AmbientLoginPermissionRequest::Options{}));
   auto* request = static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
       requests[0].get());
   MockAmbientDelegate delegate(origin);
@@ -1197,7 +1330,7 @@ TEST_F(AmbientLoginPermissionBubbleViewTest,
                                        u"Google Password Manager");
   static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
       passkey_delegate.Requests()[0].get())
-      ->SelectCredential(0);
+      ->SelectCredential(0, /*from_expanded_list=*/false);
   PermissionPromptChipModel passkey_chip_model(passkey_delegate.GetWeakPtr());
   passkey_chip_model.UpdateWithUserDecision(
       permissions::PermissionAction::GRANTED);
@@ -1294,6 +1427,46 @@ TEST_F(AmbientLoginPermissionBubbleViewTest, EmptyUsernameShowsVectorIcon) {
   EXPECT_EQ(icon_view->GetPreferredSize(),
             gfx::Size(ambient_login_credential_icon::kVectorIconSize,
                       ambient_login_credential_icon::kVectorIconSize));
+}
+
+TEST_F(AmbientLoginPermissionBubbleViewTest,
+       CrossOriginIframeShowsSignInToOriginTitle) {
+  MockAmbientDelegate delegate(GURL("https://iframe.example.com"),
+                               u"alice@example.com",
+                               u"Google Password Manager");
+  delegate.set_embedding_origin(GURL("https://embedder.example.com"));
+  AmbientLoginPermissionBubbleView* bubble = CreateBubble(&delegate);
+
+  const std::u16string expected_title = l10n_util::GetStringFUTF16(
+      IDS_WEBAUTHN_SIGN_IN_TO_WEBSITE_DIALOG_TITLE, u"iframe.example.com");
+  EXPECT_EQ(bubble->GetWindowTitle(), expected_title);
+  auto* title_label =
+      views::AsViewClass<views::Label>(bubble->GetBubbleFrameView()->title());
+  ASSERT_NE(title_label, nullptr);
+  EXPECT_EQ(title_label->GetText(), expected_title);
+  EXPECT_EQ(title_label->GetTextStyle(), views::style::STYLE_BODY_3_MEDIUM);
+  EXPECT_EQ(title_label->GetViewAccessibility().GetCachedRole(),
+            ax::mojom::Role::kHeading);
+}
+
+TEST_F(AmbientLoginPermissionBubbleViewTest,
+       CrossOriginIframeWrapsLongOriginInTitle) {
+  const std::string long_host = std::string(100, 'a') + ".example.com";
+  MockAmbientDelegate delegate(GURL("https://" + long_host),
+                               u"alice@example.com",
+                               u"Google Password Manager");
+  delegate.set_embedding_origin(GURL("https://embedder.example.com"));
+  AmbientLoginPermissionBubbleView* bubble = CreateBubble(&delegate);
+  views::test::RunScheduledLayout(bubble->GetWidget());
+
+  EXPECT_EQ(bubble->GetDialogClientView()->width(), GetBubbleWidth());
+  auto* title_label =
+      views::AsViewClass<views::Label>(bubble->GetBubbleFrameView()->title());
+  ASSERT_NE(title_label, nullptr);
+  EXPECT_EQ(title_label->GetElideBehavior(), gfx::NO_ELIDE);
+  EXPECT_TRUE(title_label->GetMultiLine());
+  EXPECT_GT(title_label->GetRequiredLines(), 1u);
+  EXPECT_FALSE(title_label->IsDisplayTextTruncated());
 }
 
 }  // namespace

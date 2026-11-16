@@ -822,6 +822,8 @@ def GitApplyLLVMDependentCherryPicks():
     # https://github.com/rust-lang/rust/pull/164591 rolls into rust.
     if IsGitAncestorToHead(
         LLVM_DIR, 'eb5c3a2dde4ea6d51a36e3df25bfc1b6503fd61c'
+    ) and not IsGitAncestorToHead(
+        RUST_SRC_DIR, '7b2a5cb692bef19a3cc7ccd03dec0105afb80f14'
     ):
         for commit in [
             '2b90db31f806d8aa5168ed6c0c9a701e6e052eb8',
@@ -834,6 +836,17 @@ def GitApplyLLVMDependentCherryPicks():
                 commit,
                 'https://github.com/rust-lang/rust.git',
             )
+
+    # TODO(crbug.com/583437762): Remove once
+    # https://github.com/rust-lang/rust/pull/165680 rolls into rust.
+    if IsGitAncestorToHead(
+        LLVM_DIR, '7b6cf9d3de9c6dda1ece568b8ede85974ddbf2eb'
+    ):
+        GitCherryPick(
+            RUST_SRC_DIR,
+            'ec4acfa0c08e3bebd1aa5c2fbac75691fb9fe411',
+            'https://github.com/rust-lang/rust.git',
+        )
 
     print('Finished applying LLVM-dependent cherry-picks.')
 
@@ -1072,10 +1085,10 @@ def main():
         # Create git-commit-info in the source directory so that builds from
         # tarballs (which lack `.git`) can set rustc's version info.  `tz=None`
         # matches rustc's bootstrap. We use `checkout_revision` rather than
-        # `HEAD`, because the cherry-picks below (if any) commit with a dummy
-        # date (see `GIT_METADATA_OVERRIDES`). The date ends up in `rustc
-        # --version`, where `#[rustversion::since(...)]` in Crubit reads it, so
-        # tarball and git builds have to agree.
+        # `HEAD`, because `HEAD` may be one of the local cherry-picks below.
+        # The date ends up in `rustc --version`, where
+        # `#[rustversion::since(...)]` in Crubit reads it, so tarball and git
+        # builds have to agree (see also `GetGitMetadataEnv`).
         WriteGitCommitInfo(RUST_SRC_DIR, checkout_revision, tz=None)
 
         # This happens after initializing submodules, so that we can include

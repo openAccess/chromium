@@ -47,6 +47,10 @@
 #include "ui/color/color_id.h"
 #include "ui/menus/simple_menu_model.h"
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "components/signin/public/base/signin_switches.h"
+#endif
+
 namespace {
 
 constexpr size_t kMaxDevices = 5;
@@ -107,7 +111,7 @@ bool SendTabToSelfDynamicMenu::ShouldShowSubmenu() const {
       return base::FeatureList::IsEnabled(
                  send_tab_to_self::kSendTabToSelfSubmenuSigninPromos) &&
              base::FeatureList::IsEnabled(
-                 send_tab_to_self::kSendTabToSelfNoTargetDeviceQrCode);
+                 switches::kCrossDeviceSigninFromDesktopFollowup);
 #else
       return false;
 #endif
@@ -189,6 +193,7 @@ void SendTabToSelfDynamicMenu::BuildSendTabToSelfActions(
     devices.erase(devices.begin() + kMaxDevices, devices.end());
   }
 
+  const auto& synonyms = parent_item->GetActionItem()->GetSynonyms();
   for (const auto& device : devices) {
     std::u16string label = GetDeviceItemLabel(device);
     ui::ImageModel icon = ui::ImageModel::FromVectorIcon(
@@ -207,6 +212,8 @@ void SendTabToSelfDynamicMenu::BuildSendTabToSelfActions(
                 &SendTabToSelfDynamicMenu::ExecuteDeviceSelection,
                 weak_ptr_factory_.GetWeakPtr(), device.cache_guid,
                 device.device_name, device.form_factor))
+            .AddSynonyms(synonyms)
+
             .Build());
   }
 

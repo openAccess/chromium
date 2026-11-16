@@ -12,6 +12,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonData;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
+import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider.ButtonDataObserver;
 import org.chromium.chrome.browser.user_education.UserEducationHelper;
 
 import java.util.HashMap;
@@ -43,7 +44,7 @@ public class OptionalBrowsingModeButtonController {
     }
 
     private final UserEducationHelper mUserEducationHelper;
-    private final Map<ButtonDataProvider, ButtonDataProvider.ButtonDataObserver> mObserverMap;
+    private final Map<ButtonDataProvider, ButtonDataObserver> mObserverMap;
     private @Nullable ButtonDataProvider mCurrentProvider;
     private final List<ButtonDataProvider> mButtonDataProviders;
     private final ToolbarLayout mToolbarLayout;
@@ -56,6 +57,7 @@ public class OptionalBrowsingModeButtonController {
      * @param buttonDataProviders List of button data providers in precedence order.
      * @param userEducationHelper Helper for displaying in-product help on a button.
      * @param toolbarLayout Toolbar layout where buttons will be displayed.
+     * @param tabSupplier Supplier of the current tab.
      */
     OptionalBrowsingModeButtonController(
             List<ButtonDataProvider> buttonDataProviders,
@@ -68,16 +70,14 @@ public class OptionalBrowsingModeButtonController {
         mTabSupplier = tabSupplier;
         mObserverMap = new HashMap<>(buttonDataProviders.size());
         for (ButtonDataProvider provider : buttonDataProviders) {
-            ButtonDataProvider.ButtonDataObserver callback =
-                    (hint) -> buttonDataProviderChanged(provider, hint);
+            ButtonDataObserver callback = (hint) -> buttonDataProviderChanged(provider, hint);
             provider.addObserver(callback);
             mObserverMap.put(provider, callback);
         }
     }
 
     public void destroy() {
-        for (Map.Entry<ButtonDataProvider, ButtonDataProvider.ButtonDataObserver> entry :
-                mObserverMap.entrySet()) {
+        for (Map.Entry<ButtonDataProvider, ButtonDataObserver> entry : mObserverMap.entrySet()) {
             entry.getKey().removeObserver(entry.getValue());
         }
 

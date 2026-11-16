@@ -22,7 +22,6 @@ static_library("parent_access_code") {
 
   deps = [
     "//ash/public/cpp",
-    "//chrome/common:constants",
     "//components/prefs",
     "//components/session_manager/core",
     "//components/user_manager",
@@ -79,9 +78,9 @@ source_set("browser_tests") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/webui/ash/settings/pages/date_time",
     "//chrome/browser/ui/webui/ash/settings/pages/date_time/mojom",
-    "//chrome/test:test_support_ui",
     "//components/account_id",
     "//components/account_id:test_support",
+    "//components/policy:cloud_policy_proto_generated_compile",
     "//components/prefs",
     "//components/user_manager",
     "//content/test:test_support",

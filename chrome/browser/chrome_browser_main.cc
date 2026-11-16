@@ -476,18 +476,10 @@ StartupProfileInfo CreateInitialProfile(
   }
 #endif
 
-  bool profile_dir_specified =
-      profiles::IsMultipleProfilesEnabled() &&
-      parsed_command_line.HasSwitch(switches::kProfileDirectory);
   base::FilePath last_used_profile;
-  if (!last_used_profile_set && profile_dir_specified) {
-    last_used_profile =
-        parsed_command_line.GetSwitchValuePath(switches::kProfileDirectory);
-  }
-  if (parsed_command_line.HasSwitch(
-          switches::kIgnoreProfileDirectoryIfNotExists) &&
-      !base::DirectoryExists(user_data_dir.Append(last_used_profile))) {
-    last_used_profile.clear();
+  if (!last_used_profile_set) {
+    last_used_profile = profiles::GetProfileDirFromCommandLine(
+        parsed_command_line, user_data_dir, *g_browser_process->local_state());
   }
   if (!last_used_profile.empty()) {
     profiles::SetLastUsedProfile(last_used_profile);
@@ -523,6 +515,9 @@ StartupProfileInfo CreateInitialProfile(
   }
 
   if (profile_info.mode == StartupProfileMode::kError) {
+    bool profile_dir_specified =
+        profiles::IsMultipleProfilesEnabled() &&
+        parsed_command_line.HasSwitch(switches::kProfileDirectory);
     ProfileErrorType error_type =
         profile_dir_specified ? ProfileErrorType::CREATE_FAILURE_SPECIFIED
                               : ProfileErrorType::CREATE_FAILURE_ALL;
@@ -974,14 +969,20 @@ void ChromeBrowserMainParts::StartMetricsRecording() {
   // schedule to get the bast possible accuracy for the assessment.
   g_browser_process->metrics_service()->StartUpdatingLastLiveTimestamp();
 
-  // This code runs in the browser process only and the only reason to skip the
-  // preread there is to be part of the ParallelPreReadFileMainDllWin synthetic
-  // trial. Enroll the client accordingly.
-  const bool synchronous_preread_was_skipped =
-      !startup_metric_utils::GetCommon().DidRecordPreRead();
-  ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
-      "ParallelPreReadFileMainDllWin",
-      synchronous_preread_was_skipped ? "Enabled" : "Control");
+  // Enroll the client in the ParallelPreReadFileMainDllWin synthetic trial
+  // if eligible.
+  switch (startup_metric_utils::GetCommon().preread_group()) {
+    case startup_metric_utils::PrereadExperimentGroup::kParallel:
+      ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+          "ParallelPreReadFileMainDllWin", "Enabled");
+      break;
+    case startup_metric_utils::PrereadExperimentGroup::kSynchronous:
+      ChromeMetricsServiceAccessor::RegisterSyntheticFieldTrial(
+          "ParallelPreReadFileMainDllWin", "Control");
+      break;
+    case startup_metric_utils::PrereadExperimentGroup::kUnknown:
+      break;
+  }
 
   if (const std::string_view pin_user32_and_gdi32_group =
           base::win::GetPinUser32AndGdi32TrialGroup();
@@ -993,7 +994,7 @@ void ChromeBrowserMainParts::StartMetricsRecording() {
         variations::SyntheticTrialAnnotationMode::kCurrentLog);
   }
 
-#endif
+#endif  // BUILDFLAG(IS_WIN)
 
   g_browser_process->GetMetricsServicesManager()->UpdateUploadPermissions();
 }
@@ -1741,7 +1742,7 @@ void ChromeBrowserMainParts::PreBrowserStart() {
   // other services to start up before we start adjusting the oom priority.
   g_browser_process->GetTabManager()->Start();
 
-  if (base::FeatureList::IsEnabled(features::kTopChromeWebUISharedRenderer)) {
+  if (webui::ShouldUseTopChromeWebUIProfile()) {
     webui::CreateTopChromeWebUIProfile();
   }
 #endif

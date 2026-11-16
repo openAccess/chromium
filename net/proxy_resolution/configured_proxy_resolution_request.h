@@ -5,6 +5,8 @@
 #ifndef NET_PROXY_RESOLUTION_CONFIGURED_PROXY_RESOLUTION_REQUEST_H_
 #define NET_PROXY_RESOLUTION_CONFIGURED_PROXY_RESOLUTION_REQUEST_H_
 
+#include <stdint.h>
+
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,11 +84,11 @@ class ConfiguredProxyResolutionRequest final : public ProxyResolutionRequest {
   // `ResumeOrCompleteSynchronously()`.
   void CancelActiveJob();
 
-  // Cancels an in-flight per-request PAC evaluation (`GetProxyForURL` /
-  // `resolve_job_`), if any, while marking `ProxyOverrideRules` (POR) as
+  // Cancels an in-flight per-request PAC or system proxy resolution, if any,
+  // while marking `ProxyOverrideRules` (POR) as
   // already evaluated (`override_rules_evaluated_ = true`) and leaving any
   // in-flight POR DNS probes untouched. Returns true if an active
-  // `resolve_job_` was cancelled.
+  // resolver request was cancelled.
   bool CancelResolveJob();
 
   // Resets cached `ProxyOverrideRules` (POR) evaluation state when the
@@ -123,6 +125,13 @@ class ConfiguredProxyResolutionRequest final : public ProxyResolutionRequest {
   // Ends the currently active NetLog wait event, if any.
   void EndWaitEvent();
 
+  uint64_t last_counted_dynamic_pause_episode_id() const {
+    return last_counted_dynamic_pause_episode_id_;
+  }
+  void set_last_counted_dynamic_pause_episode_id(uint64_t episode_id) {
+    last_counted_dynamic_pause_episode_id_ = episode_id;
+  }
+
   NetLogWithSource* net_log() { return &net_log_; }
 
   // Request implementation:
@@ -132,7 +141,7 @@ class ConfiguredProxyResolutionRequest final : public ProxyResolutionRequest {
   // Continues proxy resolution after attempting to evaluate override rules.
   // Will return ERR_IO_PENDING if there still are pending DNS resolution
   // requests for override rules, or if the request is now waiting for a PAC
-  // script's result.
+  // script's or system resolver's result.
   int ContinueProxyResolution();
 
   int EvaluateApplicableOverrideRules();
@@ -153,8 +162,8 @@ class ConfiguredProxyResolutionRequest final : public ProxyResolutionRequest {
   const std::string method_;
   const NetworkAnonymizationKey network_anonymization_key_;
   const handles::NetworkHandle target_network_;
-  // Active per-request PAC script evaluation (`ProxyResolver::GetProxyForURL`)
-  // for this URL, after the service has already initialized the PAC resolver.
+  // Active native lookup or PAC evaluation (`ProxyResolver::GetProxyForURL`)
+  // for this URL, after the service is ready.
   std::unique_ptr<ProxyResolver::Request> resolve_job_;
   MutableNetworkTrafficAnnotationTag traffic_annotation_;
   NetLogWithSource net_log_;
@@ -174,6 +183,10 @@ class ConfiguredProxyResolutionRequest final : public ProxyResolutionRequest {
   // `WAITING_FOR_DYNAMIC_PROXY_CONFIGS`), if the request is paused waiting for
   // service readiness.
   std::optional<NetLogEventType> current_wait_event_;
+  // Identifier of the most recent dynamic-routing pause episode in `service_`
+  // that already counted this request, preventing duplicate counts across
+  // intermediate config updates within the same pause episode.
+  uint64_t last_counted_dynamic_pause_episode_id_ = 0;
 
   // Map containing DNS resolution results, issued for proxy override rules'
   // conditions. The key is the host that is being resolved. The value is result

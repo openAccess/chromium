@@ -15,6 +15,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.os.SystemClock;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
@@ -35,7 +36,6 @@ import androidx.annotation.VisibleForTesting;
 import androidx.appcompat.content.res.AppCompatResources;
 
 import org.chromium.base.Callback;
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.SysUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
@@ -57,9 +57,13 @@ import org.chromium.ui.hierarchicalmenu.FlyoutController;
 import org.chromium.ui.hierarchicalmenu.FlyoutController.FlyoutHandler;
 import org.chromium.ui.hierarchicalmenu.HierarchicalMenuController;
 import org.chromium.ui.interpolators.Interpolators;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.widget.AnchoredPopupWindow;
 import org.chromium.ui.widget.FlyoutPopupSpecCalculator;
 import org.chromium.ui.widget.RectProvider;
+
+import java.util.List;
 
 /**
  * Shows a popup of menu items anchored to a host view.
@@ -294,6 +298,7 @@ class AppMenu implements OnKeyListener {
     private @Nullable MenuSpec mMenuSpec;
     private final HierarchicalMenuController<AppMenuPopup> mHierarchicalMenuController;
     private @Nullable ValueAnimator mHeightAnimator;
+    private boolean mShouldHideShortcutHints;
 
     /**
      * Creates and sets up the App Menu.
@@ -316,7 +321,6 @@ class AppMenu implements OnKeyListener {
 
         mTempLocation = new int[2];
         mHierarchicalMenuController = hierarchicalMenuController;
-        mPositionBelowAnchor = DeviceInfo.isDesktop();
     }
 
     /**
@@ -344,6 +348,8 @@ class AppMenu implements OnKeyListener {
      *     must not cover (plus {@code R.dimen.bottom_bar_app_menu_top_margin}). 0 for no
      *     constraint. Only honored when {@code isFromBottomBar} is true and the menu is not opened
      *     by a permanent hardware button.
+     * @param isFromPointer Whether the menu was opened by a pointer device (mouse or trackpad). If
+     *     true, the menu is positioned below the anchor view.
      */
     void show(
             Context context,
@@ -359,6 +365,7 @@ class AppMenu implements OnKeyListener {
             boolean addTopPaddingBeforeFirstRow,
             boolean isFromBottomBar,
             int reservedTopSpace,
+            boolean isFromPointer,
             FlyoutHandler<AppMenuPopup> flyoutHandler) {
         mContext = context;
         PopupWindow popup = new PopupWindow(context);
@@ -447,6 +454,24 @@ class AppMenu implements OnKeyListener {
         int menuWidth =
                 UiUtils.computeMenuWidth(
                         contentWidth, minWidth, menuMaxWidth, margin, visibleDisplayFrame.width());
+        // Hide keyboard shortcuts when the menu is too narrow to fit all content without
+        // truncation.
+        mShouldHideShortcutHints = contentWidth > menuWidth;
+        if (mShouldHideShortcutHints && mAdapter != null) {
+            // Narrow menus need to hide shortcuts, but only recompute width if there were any
+            // keyboard shortcuts hidden to save cycles.
+            boolean didHideShortcuts = clearShortcutHints(mAdapter);
+            if (didHideShortcuts) {
+                contentWidth = UiUtils.computeListAdapterContentDimensions(mAdapter, mListView)[0];
+                menuWidth =
+                        UiUtils.computeMenuWidth(
+                                contentWidth,
+                                minWidth,
+                                menuMaxWidth,
+                                margin,
+                                visibleDisplayFrame.width());
+            }
+        }
 
         int popupWidth = menuWidth + bgPadding.left + bgPadding.right;
 
@@ -506,7 +531,7 @@ class AppMenu implements OnKeyListener {
                         Math.abs(mTempLocation[1] - visibleDisplayFrame.top),
                         Math.abs(mTempLocation[1] - visibleDisplayFrame.bottom));
 
-        mPositionBelowAnchor = DeviceInfo.isDesktop();
+        mPositionBelowAnchor = isFromPointer;
 
         // The cap's padding math assumes the bottom-bar branch of getPopupPosition(), which the
         // permanent-button branch takes precedence over.
@@ -843,6 +868,39 @@ class AppMenu implements OnKeyListener {
      */
     @Nullable ListView getListView() {
         return mListView;
+    }
+
+    /**
+     * @return Whether shortcut hints should be hidden for the currently showing menu due to narrow
+     *     window width.
+     */
+    boolean shouldHideShortcutHints() {
+        return mShouldHideShortcutHints;
+    }
+
+    private static boolean clearShortcutHints(ListAdapter adapter) {
+        boolean cleared = false;
+        for (int i = 0; i < adapter.getCount(); i++) {
+            if (adapter.getItem(i) instanceof ListItem listItem) {
+                cleared |= clearShortcutHint(listItem.model);
+            }
+        }
+        return cleared;
+    }
+
+    static void clearShortcutHints(List<ListItem> items) {
+        for (ListItem item : items) {
+            clearShortcutHint(item.model);
+        }
+    }
+
+    private static boolean clearShortcutHint(PropertyModel model) {
+        if (model.containsKey(AppMenuItemProperties.SHORTCUT_TEXT)
+                && !TextUtils.isEmpty(model.get(AppMenuItemProperties.SHORTCUT_TEXT))) {
+            model.set(AppMenuItemProperties.SHORTCUT_TEXT, null);
+            return true;
+        }
+        return false;
     }
 
     /**

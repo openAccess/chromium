@@ -5,9 +5,11 @@
 import {BrowserControlsService} from '/shared/browser_controls_api.mojom-webui.js';
 import type {BrowserControlsServiceInterface} from '/shared/browser_controls_api.mojom-webui.js';
 import type {IconUpdate} from '/shared/icon_handle.mojom-webui.js';
+import type {PermissionChipDelegate} from '/shared/permission_chip_delegate.js';
 import {ToolbarUIObserverCallbackRouter, ToolbarUIService} from '/shared/toolbar_ui_api.mojom-webui.js';
 import type {ToolbarUIServiceInterface, ToolbarUIServiceRemote} from '/shared/toolbar_ui_api.mojom-webui.js';
-import type {FocusRequestTarget, ToolbarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {PermissionAction, PermissionChipTheme, PermissionPromptStyle, SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {FocusRequestTarget, LhsChipIdentifier, LocationBarState, PermissionChipState, ToolbarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 export type ToolbarStateListener = (icons: IconUpdate[], state: ToolbarState) =>
     void;
@@ -42,9 +44,6 @@ export type ShowSplitTabsContextMenuHandle = number;
 export const INVALID_SHOW_SPLIT_TABS_CONTEXT_MENU_HANDLE:
     ShowSplitTabsContextMenuHandle = -1;
 
-import type {PermissionChipDelegate} from '/shared/permission_chip_delegate.js';
-import type {LhsChipIdentifier} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-
 /**
  * Keys corresponding to initial toolbar state values provided by the browser.
  */
@@ -61,6 +60,8 @@ export enum ToolbarStateKey {
   IS_FALLBACK_PREWARMING = 'isFallbackPrewarming',
   IS_PROFILE_ELIGIBLE_FOR_GLIC = 'isProfileEligibleForGlic',
   CAN_SHOW_AVATAR_FOR_PROFILE = 'canShowAvatarForProfile',
+  IS_UNBOUND = 'isUnbound',
+  COLORS_CSS = 'colorsCss',
 }
 
 /**
@@ -80,6 +81,96 @@ export interface ToolbarFlatStateSchema {
   [ToolbarStateKey.IS_FALLBACK_PREWARMING]: boolean;
   [ToolbarStateKey.IS_PROFILE_ELIGIBLE_FOR_GLIC]: boolean;
   [ToolbarStateKey.CAN_SHOW_AVATAR_FOR_PROFILE]: boolean;
+  [ToolbarStateKey.IS_UNBOUND]: boolean;
+  [ToolbarStateKey.COLORS_CSS]: string;
+}
+
+/**
+ * Profile-derived state delivered on the frame channel when an unbound toolbar
+ * spare is bound to a window's user profile.
+ */
+export interface BoundProfileState {
+  isProfileEligibleForGlic?: boolean;
+  canShowAvatarForProfile?: boolean;
+  homeButtonShouldBeShown?: boolean;
+  colorsCss?: string;
+}
+
+declare global {
+  interface Window {
+    __webuiToolbarApplyBoundProfile?: (state: BoundProfileState) => void;
+    __webuiToolbarBoundProfile?: BoundProfileState;
+  }
+}
+
+function createDefaultPermissionChipState(): PermissionChipState {
+  return {
+    isVisible: false,
+    iconName: '',
+    message: '',
+    tooltip: '',
+    theme: PermissionChipTheme.kUnspecified,
+    userDecision: PermissionAction.kUnspecified,
+    shouldShowBlockedIcon: false,
+    promptStyle: PermissionPromptStyle.kUnspecified,
+    isFullyCollapsed: false,
+    accessibilityName: '',
+    stateToken: 0,
+  };
+}
+
+// Returns a new default LocationBarState, used before the first state is
+// received from the browser. Returns a fresh object on every call so callers
+// never share nested objects/arrays.
+export function createDefaultLocationBarState(): LocationBarState {
+  return {
+    omniboxViewState: {
+      browserVersion: 0,
+      uiVersion: 0,
+      formattedFullUrl: '',
+      textPieces: [],
+      placeholder: null,
+      inlineAutocompletion: '',
+      additionalText: '',
+      a11yFriendlySuggestionText: '',
+      selection: null,
+      textIsUrl: false,
+      userInputInProgress: false,
+      hasTemporaryText: false,
+    },
+    locationBarFlags: {
+      userInputInProgress: false,
+      popupOpen: false,
+      forceAimButtonFocusRing: false,
+      isVirtualKeyboardVisible: false,
+    },
+    selectedKeyword: null,
+    lhsChipsState: {
+      securityChip: {
+        icon: {handleId: 0n},
+        securityLevel: 0,
+        text: '',
+        tooltip: '',
+        accessibilityState: {
+          role: SecurityChipRole.kButton,
+          label: '',
+          description: '',
+        },
+        isClickable: false,
+        isTextDangerous: false,
+        isVisible: true,
+        isContextMenuVisible: false,
+      },
+      activityIndicators: [],
+      permissionDashboard: {
+        indicatorChip: createDefaultPermissionChipState(),
+        requestChip: createDefaultPermissionChipState(),
+        isDividerVisible: false,
+      },
+    },
+    contentSettingImageStates: [],
+    pageActionStates: [],
+  };
 }
 
 /**
@@ -130,6 +221,15 @@ export class InitialStateReader {
   getInteger<K extends keyof ToolbarFlatStateSchema>(key: K): number {
     const val = this.state_[key];
     return typeof val === 'number' ? val : 0;
+  }
+
+  /**
+   * Reads a string property for the given `key` from the initial state
+   * dictionary. Returns `''` if the property is missing or not a string.
+   */
+  getString<K extends keyof ToolbarFlatStateSchema>(key: K): string {
+    const val = this.state_[key];
+    return typeof val === 'string' ? val : '';
   }
 }
 
@@ -230,7 +330,7 @@ export class BrowserProxyImpl implements BrowserProxy {
   addToolbarStateListener(listener: ToolbarStateListener) {
     const handle =
         this.callbackRouter.onToolbarStateChanged.addListener(listener);
-    this.toolbarUIHandler.bind().then(fence => {
+    this.toolbarUIHandler.getInitialState().then(fence => {
       listener(fence.icons, fence.state);
       this.callbackRouter.$.bindHandle(fence.updateStream.handle);
     });

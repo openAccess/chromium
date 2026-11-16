@@ -137,6 +137,7 @@ constexpr AcceleratorMapping kAcceleratorMap[] = {
     {ui::VKEY_LEFT, ui::EF_ALT_DOWN, IDC_BACK},
     {ui::VKEY_LEFT, ui::EF_ALTGR_DOWN, IDC_BACK},
     {ui::VKEY_B, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_FOCUS_BOOKMARKS},
+    {ui::VKEY_D, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_DUPLICATE_TAB},
     {ui::VKEY_D, ui::EF_ALT_DOWN, IDC_FOCUS_LOCATION},
     {ui::VKEY_E, ui::EF_CONTROL_DOWN, IDC_FOCUS_SEARCH},
     {ui::VKEY_K, ui::EF_CONTROL_DOWN, IDC_FOCUS_SEARCH},

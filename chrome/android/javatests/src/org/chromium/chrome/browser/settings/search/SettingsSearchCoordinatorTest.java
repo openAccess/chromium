@@ -31,9 +31,9 @@ import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.settings.MultiColumnSettings;
 import org.chromium.chrome.browser.settings.SettingsActivityInterface;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -109,6 +109,15 @@ public class SettingsSearchCoordinatorTest {
                 });
 
         resultDisplayHelper.waitForCallback(callCount);
+
+        // In single-column mode, SlidingPaneLayout intercepts taps on the detail pane until it has
+        // fully slid open, which would swallow clicks on the search results.
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    MultiColumnSettings multiColumnSettings =
+                            (MultiColumnSettings) getSettingsActivity().getMultiColumnSettings();
+                    return multiColumnSettings.isLayoutOpen();
+                });
     }
 
     @Test
@@ -171,7 +180,6 @@ public class SettingsSearchCoordinatorTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/572623849")
     public void testHistograms_clickedResult() throws Exception {
         mSettingsTestRule.startSettingsActivity();
         SettingsActivityInterface activity = waitForSettingsActivity();
@@ -188,7 +196,7 @@ public class SettingsSearchCoordinatorTest {
         String query = activity.getString(titleId);
         performSearch(query);
         onView(withText(titleId)).perform(click());
-        ThreadUtils.runOnUiThreadBlocking(() -> histograms.assertExpected());
+        histograms.pollInstrumentationThreadUntilSatisfied();
 
         // Invoke OS back to get back to search UI, and perform a new search. But exit search
         // without cliking the results -> emit "abandoned-results"

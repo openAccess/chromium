@@ -106,6 +106,7 @@ BUG_REPORT_URL = (
 
 LIBXML2_VERSION = 'libxml2-v2.9.12'
 ZSTD_VERSION = 'zstd-1.5.5'
+MIMALLOC_VERSION = 'mimalloc-3.5.0'
 
 # This must be less than or equal to the lowest target used in Chromium. See
 # e.g. mac_deployment_target in //build/config/mac/mac_sdk.gni and min_version
@@ -235,14 +236,33 @@ def CheckoutGitRepo(name, git_url, commit, dir):
 # Git commits include timing and author metadata in their hash.
 # To ensure we get a consistent hash when applying local changes,
 # set everything to fixed values via environment variable.
+# See also `GetGitMetadataEnv` which sets the dates.
 GIT_METADATA_OVERRIDES = {
   'GIT_AUTHOR_NAME': 'Dummy Author',
   'GIT_AUTHOR_EMAIL': 'none@none.com',
-  'GIT_AUTHOR_DATE': '2099-01-01 10:10:10 -0800',
   'GIT_COMMITTER_NAME': 'Dummy Committer',
   'GIT_COMMITTER_EMAIL': 'none@none.com',
-  'GIT_COMMITTER_DATE': '2099-01-01 10:10:10 -0800',
 }
+
+
+def GetGitMetadataEnv(git_repository):
+  """Returns the env for committing local changes in `git_repository`.
+
+  The author and committer dates are set to the committer date of `HEAD`.
+  This keeps the dates fixed (see `GIT_METADATA_OVERRIDES`), and it keeps the
+  date of the checked out upstream commit after local cherry-picks.  This is
+  important, because Rust's bootstrap puts the date of `HEAD` into
+  `rustc --version`, and `#[rustversion::since(...)]` in Crubit reads it.
+  """
+  head_date = subprocess.check_output(
+    [GIT_EXE, '-C', git_repository, 'log', '-1', '--format=%cI', 'HEAD'],
+    universal_newlines=True,
+  ).strip()
+  env = os.environ.copy()
+  env.update(GIT_METADATA_OVERRIDES)
+  env['GIT_AUTHOR_DATE'] = head_date
+  env['GIT_COMMITTER_DATE'] = head_date
+  return env
 
 
 def IsGitAncestorToHead(git_repository, commit):
@@ -278,8 +298,7 @@ def GitCherryPick(
     print('Commit already an ancestor; skipping.')
     return
 
-  env = os.environ.copy()
-  env.update(GIT_METADATA_OVERRIDES)
+  env = GetGitMetadataEnv(git_repository)
   RunCommand(
     [
       'git',
@@ -299,8 +318,7 @@ def GitRevert(git_repository, commit):
   if not IsGitAncestorToHead(git_repository, commit):
     print('Commit not an ancestor; skipping.')
     return
-  env = os.environ.copy()
-  env.update(GIT_METADATA_OVERRIDES)
+  env = GetGitMetadataEnv(git_repository)
   RunCommand(
     [
       'git',
@@ -442,14 +460,14 @@ def WriteGitCommitInfo(git_repository, commit, tz):
 def AddCMakeToPath():
   """Download CMake and add it to PATH."""
   if sys.platform == 'win32':
-    zip_name = 'cmake-3.26.4-windows-x86_64.zip'
-    dir_name = ['cmake-3.26.4-windows-x86_64', 'bin']
+    zip_name = 'cmake-3.31.12-windows-x86_64.zip'
+    dir_name = ['cmake-3.31.12-windows-x86_64', 'bin']
   elif sys.platform == 'darwin':
-    zip_name = 'cmake-3.26.4-macos-universal.tar.gz'
-    dir_name = ['cmake-3.26.4-macos-universal', 'CMake.app', 'Contents', 'bin']
+    zip_name = 'cmake-3.31.12-macos-universal.tar.gz'
+    dir_name = ['cmake-3.31.12-macos-universal', 'CMake.app', 'Contents', 'bin']
   else:
-    zip_name = 'cmake-3.26.4-linux-x86_64.tar.gz'
-    dir_name = ['cmake-3.26.4-linux-x86_64', 'bin']
+    zip_name = 'cmake-3.31.12-linux-x86_64.tar.gz'
+    dir_name = ['cmake-3.31.12-linux-x86_64', 'bin']
 
   cmake_dir = os.path.join(LLVM_BUILD_TOOLS_DIR, *dir_name)
   if not os.path.exists(cmake_dir):
@@ -729,6 +747,65 @@ def BuildZStd(cc, cxx, cmake_sysroot, mac_deployment_target):
   extra_cflags = []
 
   return extra_cmake_flags, extra_cflags
+
+
+class MimallocDirs:
+  """
+  The set of directories where mimalloc is located.
+
+  Includes the directories where the source is unpacked and where it is built.
+  """
+
+  def __init__(self):
+    self.unzip_dir = LLVM_BUILD_TOOLS_DIR
+    # When unpacked in `unzip_dir`, this will be the directory where the
+    # sources are found.
+    self.src_dir = os.path.join(self.unzip_dir, MIMALLOC_VERSION)
+    # The lib is built in a directory under its sources.
+    self.build_dir = os.path.join(self.src_dir, 'cmake_build')
+
+
+def BuildMimalloc(cc, cxx, cmake_sysroot, mac_deployment_target):
+  """Download and build mimalloc.
+
+  Returns CMake args that make LLVM's build link mimalloc into clang and lld,
+  so that they use it instead of the C library's allocator."""
+  # The .tar.gz on GCS was uploaded as follows.
+  # $ VER=3.5.0
+  # $ curl -L -o mimalloc-$VER.tar.gz \
+  #   https://github.com/microsoft/mimalloc/archive/refs/tags/v$VER.tar.gz
+  # $ gsutil cp -n mimalloc-$VER.tar.gz gs://chromium-browser-clang/tools
+
+  dirs = MimallocDirs()
+  if os.path.exists(dirs.src_dir):
+    RmTree(dirs.src_dir)
+  zip_name = MIMALLOC_VERSION + '.tar.gz'
+  DownloadAndUnpack(CDS_URL + '/tools/' + zip_name, dirs.unzip_dir)
+  os.mkdir(dirs.build_dir)
+  os.chdir(dirs.build_dir)
+
+  cmake_args = GetThirdPartyCMakeArgs(
+    cc, cxx, cmake_sysroot, mac_deployment_target
+  ) + [
+    '-DMI_BUILD_SHARED=OFF',
+    '-DMI_BUILD_OBJECT=OFF',
+    '-DMI_BUILD_TESTS=OFF',
+    # Make the library define malloc(), free(), operator new, etc.
+    '-DMI_OVERRIDE=ON',
+  ]
+  RunCommand(['cmake', '-GNinja'] + cmake_args + ['..'], setenv=True)
+  RunCommand(['ninja', 'mimalloc-static'], setenv=True)
+
+  mimalloc_lib = os.path.join(dirs.build_dir, 'libmimalloc.a')
+  # LLVM's CMake build has no option for using mimalloc on non-Windows. Per
+  # https://reviews.llvm.org/D101427, linking the static library into an
+  # executable is all that's needed. mimalloc.cmake does that for clang and
+  # lld only; see there for why.
+  return [
+    '-DCMAKE_PROJECT_LLVM_INCLUDE='
+    + os.path.join(CHROMIUM_DIR, 'tools', 'clang', 'scripts', 'mimalloc.cmake'),
+    '-DCHROMIUM_MIMALLOC_LIB=' + mimalloc_lib,
+  ]
 
 
 def DownloadPinnedClang():
@@ -1065,6 +1142,12 @@ def main():
     help='Disable zstd in the build',
   )
   parser.add_argument(
+    '--without-mimalloc',
+    dest='with_mimalloc',
+    action='store_false',
+    help='Disable using mimalloc as allocator in the build (linux only)',
+  )
+  parser.add_argument(
     '--preserve-gcs-signature',
     action='store_true',
     help='By default, this script removes gcs hash files '
@@ -1151,10 +1234,9 @@ def main():
       )
       # Record the revision that we checked out, so that builds from a source
       # tarball (which has no `.git` directory) can still read it.  We use
-      # `checkout_revision` rather than `HEAD`, because the cherry-picks below
-      # (if any) commit with a dummy date (see `GIT_METADATA_OVERRIDES`).  The
-      # date has to be UTC, because that is what Crubit expects (see
-      # `crubit/cargo/build/get_llvm_commit_date.py`).
+      # `checkout_revision` rather than `HEAD`, because `HEAD` may be one of
+      # the local cherry-picks below.  The date has to be UTC, because that is
+      # what Crubit expects (see `crubit/cargo/build/get_llvm_commit_date.py`).
       WriteGitCommitInfo(LLVM_DIR, checkout_revision, tz=datetime.timezone.utc)
       # TODO(crbug.com/549080734): remove once we roll past this revision
       GitCherryPick(LLVM_DIR, '061865f32607cd064ab944407cc863186702d6f1')
@@ -1359,6 +1441,18 @@ def main():
     cflags += zstd_cflags
     cxxflags += zstd_cflags
 
+  # CMake args that are only used for the final compiler, not for the
+  # bootstrap or instrumented compilers.
+  final_cmake_args = []
+  if args.with_mimalloc and sys.platform.startswith('linux'):
+    # Use mimalloc instead of glibc's allocator in clang and lld. It makes
+    # them faster (about 10% for both when measured on 8-core x64 VMs), at the
+    # cost of somewhat higher peak memory use.
+    with timer.time('mimalloc build'):
+      final_cmake_args += BuildMimalloc(
+        cc, cxx, cmake_sysroot, deployment_target
+      )
+
   lit_excludes = []
   if sys.platform.startswith('linux'):
     lit_excludes += [
@@ -1368,6 +1462,9 @@ def main():
       '^.*Sanitizer-.*sunrpc.*cpp$',
       # sysroot/host glibc version mismatch, crbug.com/1506551
       '^.*Sanitizer.*mallinfo2.cpp$',
+      # TODO(https://crbug.com/584147743): These fail with our glibc.
+      '^LeakSanitizer-.*use_tls_dynamic.cpp$',
+      '^MemorySanitizer-.*preinit_array.cpp$',
     ]
   elif sys.platform == 'darwin':
     lit_excludes += [
@@ -1646,14 +1743,18 @@ def main():
   if libtool is not None:
     base_cmake_args.append('-DCMAKE_LIBTOOL=' + libtool)
   final_install_dir = args.install_dir if args.install_dir else LLVM_BUILD_DIR
-  cmake_args = base_cmake_args + [
-    '-DCMAKE_C_FLAGS=' + ' '.join(cflags),
-    '-DCMAKE_CXX_FLAGS=' + ' '.join(cxxflags),
-    '-DCMAKE_EXE_LINKER_FLAGS=' + ' '.join(ldflags),
-    '-DCMAKE_SHARED_LINKER_FLAGS=' + ' '.join(ldflags),
-    '-DCMAKE_MODULE_LINKER_FLAGS=' + ' '.join(ldflags),
-    '-DCMAKE_INSTALL_PREFIX=' + final_install_dir,
-  ]
+  cmake_args = (
+    base_cmake_args
+    + [
+      '-DCMAKE_C_FLAGS=' + ' '.join(cflags),
+      '-DCMAKE_CXX_FLAGS=' + ' '.join(cxxflags),
+      '-DCMAKE_EXE_LINKER_FLAGS=' + ' '.join(ldflags),
+      '-DCMAKE_SHARED_LINKER_FLAGS=' + ' '.join(ldflags),
+      '-DCMAKE_MODULE_LINKER_FLAGS=' + ' '.join(ldflags),
+      '-DCMAKE_INSTALL_PREFIX=' + final_install_dir,
+    ]
+    + final_cmake_args
+  )
   if not args.no_tools:
     cmake_args.extend(
       [

@@ -9,7 +9,6 @@
 #include <iterator>
 #include <map>
 #include <optional>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -29,6 +28,7 @@
 #include "base/strings/utf_string_conversion_utils.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
+#include "components/pdf/renderer/pdf_accessibility_metrics.h"
 #include "components/pdf/renderer/pdf_accessibility_tree_builder.h"
 #include "components/pdf/renderer/pdf_ax_action_target.h"
 #include "components/strings/grit/components_strings.h"
@@ -60,8 +60,6 @@
 #endif  // BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
 
 namespace pdf {
-
-namespace ranges = std::ranges;
 
 namespace {
 
@@ -324,6 +322,7 @@ PdfAccessibilityTree::PdfAccessibilityTree(
     chrome_pdf::PdfAccessibilityActionHandler* action_handler,
     blink::WebPluginContainer* plugin_container)
     : content::RenderFrameObserver(render_frame),
+      blink::WebLocalFrameObserver(render_frame->GetWebFrame()),
       action_handler_(action_handler),
       plugin_container_(plugin_container) {
   DCHECK(render_frame);
@@ -463,7 +462,6 @@ void PdfAccessibilityTree::DoSetAccessibilityViewportInfo(
   CHECK_GT(scale_, 0);
   scroll_ = gfx::PointF(viewport_info.scroll).OffsetFromOrigin();
   offset_ = gfx::PointF(viewport_info.offset).OffsetFromOrigin();
-  orientation_ = viewport_info.orientation;
   selection_ = viewport_info.selection;
 
   auto obj = GetPluginContainerAXObject();
@@ -1031,6 +1029,10 @@ bool PdfAccessibilityTree::GetTreeData(ui::AXTreeData* tree_data) const {
   }
 
   tree_data->tree_id = render_frame()->GetWebFrame()->GetAXTreeID();
+  // The PDF's content is loaded once all of its pages are in the tree. This is
+  // always set, since otherwise the embedding document's tree data, which is
+  // loaded before the PDF, could be used.
+  tree_data->loaded = next_page_index_ == page_count_;
   tree_data->focus_id = tree_data_.focus_id;
   tree_data->sel_is_backward = tree_data_.sel_is_backward;
   tree_data->sel_anchor_object_id = tree_data_.sel_anchor_object_id;

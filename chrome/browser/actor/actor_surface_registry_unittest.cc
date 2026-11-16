@@ -5,13 +5,23 @@
 #include "chrome/browser/actor/actor_surface_registry.h"
 
 #include <memory>
+#include <string>
 
 #include "base/run_loop.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/types/pass_key.h"
+#include "build/build_config.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
+#include "chrome/browser/actor/actor_metrics.h"
 #include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/actor_tab_data.h"
 #include "chrome/browser/actor/headless_web_contents_manager.h"
+#include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/actor/core/actor_features.h"
+#include "components/autofill/content/browser/content_autofill_client.h"
+#include "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#include "components/password_manager/content/browser/content_password_manager_driver_factory.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -26,6 +36,16 @@ namespace actor {
 namespace {
 
 using ::testing::Return;
+
+base::PassKey<ActorKeyedService> TestPassKey() {
+  return ActorKeyedService::GetPassKeyForTesting();
+}
+
+void ObserveContentWithTitle(ActorTabData& tab_data, const std::string& title) {
+  optimization_guide::proto::AnnotatedPageContent content;
+  content.mutable_main_frame_data()->set_title(title);
+  tab_data.DidObserveContent(content, ApcSource::kActor);
+}
 
 class ActorSurfaceRegistryTest : public testing::Test {
  public:
@@ -62,12 +82,12 @@ class ActorSurfaceRegistryTest : public testing::Test {
 TEST_F(ActorSurfaceRegistryTest, CreateForHeadlessIsIdempotent) {
   content::WebContents* contents = headless_manager_->Create();
 
-  ActorSurface* surface = registry_->CreateForHeadless(contents);
+  ActorSurface* surface = registry_->CreateForHeadless(contents, TestPassKey());
   ASSERT_TRUE(surface);
   EXPECT_FALSE(surface->IsTab());
   EXPECT_EQ(surface->GetWebContents(), contents);
   EXPECT_EQ(surface->GetHandle().Get(), surface);
-  EXPECT_EQ(registry_->CreateForHeadless(contents), surface);
+  EXPECT_EQ(registry_->CreateForHeadless(contents, TestPassKey()), surface);
   EXPECT_EQ(registry_->size(), 1u);
 
   EXPECT_EQ(registry_->GetForHeadless(contents), surface);
@@ -76,7 +96,7 @@ TEST_F(ActorSurfaceRegistryTest, CreateForHeadlessIsIdempotent) {
 
 TEST_F(ActorSurfaceRegistryTest,
        CreateHeadlessWebContentsUsesManagerOwnedContents) {
-  ActorSurface* surface = registry_->CreateHeadlessWebContents();
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
   ASSERT_TRUE(surface);
   EXPECT_FALSE(surface->IsTab());
   EXPECT_EQ(surface->GetWebContents()->GetDelegate(), headless_manager_.get());
@@ -84,55 +104,130 @@ TEST_F(ActorSurfaceRegistryTest,
   EXPECT_EQ(registry_->size(), 1u);
 }
 
+// Actor tools such as ChangePasswordTool, AttemptLoginTool and
+// AttemptFormFillingTool need the autofill and password manager clients. A tab
+// gets them from TabFeatures; a headless page gets them from the registry.
+TEST_F(ActorSurfaceRegistryTest, CreateHeadlessWebContentsAttachesToolHelpers) {
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
+  ASSERT_TRUE(surface);
+  content::WebContents* contents = surface->GetWebContents();
+
+  EXPECT_TRUE(autofill::ContentAutofillClient::FromWebContents(contents));
+  EXPECT_TRUE(ChromePasswordManagerClient::FromWebContents(contents));
+  EXPECT_TRUE(
+      password_manager::ContentPasswordManagerDriverFactory::FromWebContents(
+          contents));
+}
+
 TEST_F(ActorSurfaceRegistryTest, DestroyHeadlessSurfaceDestroysContents) {
-  ActorSurface* surface = registry_->CreateHeadlessWebContents();
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
   content::WebContentsDestroyedWatcher watcher(surface->GetWebContents());
 
-  registry_->DestroySurface(handle);
+  registry_->DestroyHeadlessActorSurface(actor_surface_handle, TestPassKey());
 
-  EXPECT_EQ(handle.Get(), nullptr);
-  EXPECT_EQ(registry_->Get(handle), nullptr);
+  EXPECT_EQ(actor_surface_handle.Get(), nullptr);
+  EXPECT_EQ(registry_->Get(actor_surface_handle), nullptr);
   EXPECT_EQ(registry_->size(), 0u);
+  EXPECT_TRUE(watcher.IsDestroyed());
+
+  // Destroying it again is a no-op.
+  registry_->DestroyHeadlessActorSurface(actor_surface_handle, TestPassKey());
+}
+
+// A headless page can't close itself: its surface and WebContents stay until
+// DestroyHeadlessActorSurface().
+TEST_F(ActorSurfaceRegistryTest, HeadlessPageClosingItselfKeepsSurface) {
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
+  content::WebContents* contents = surface->GetWebContents();
+  content::WebContentsDestroyedWatcher watcher(contents);
+
+  // The page closing itself, e.g. through window.close().
+  contents->Close();
+
+  EXPECT_FALSE(watcher.IsDestroyed());
+  EXPECT_EQ(registry_->Get(actor_surface_handle), surface);
+  EXPECT_EQ(surface->GetWebContents(), contents);
+
+  registry_->DestroyHeadlessActorSurface(actor_surface_handle, TestPassKey());
   EXPECT_TRUE(watcher.IsDestroyed());
 }
 
 TEST_F(ActorSurfaceRegistryTest, PromotionKeepsHandleAndRetargetsLookups) {
-  ActorSurface* surface = registry_->CreateHeadlessWebContents();
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
   content::WebContents* contents = surface->GetWebContents();
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
 
   // Promotion parents the same WebContents into a tab.
   ON_CALL(mock_tab1_, GetContents()).WillByDefault(Return(contents));
   tabs::TabLookupFromWebContents::CreateForWebContents(contents, &mock_tab1_);
-  registry_->OnSurfacePromoted(handle);
+  registry_->OnSurfacePromoted(actor_surface_handle);
 
-  EXPECT_EQ(surface->GetHandle(), handle);
-  EXPECT_EQ(handle.Get(), surface);
+  EXPECT_EQ(surface->GetHandle(), actor_surface_handle);
+  EXPECT_EQ(actor_surface_handle.Get(), surface);
   EXPECT_TRUE(surface->IsTab());
   EXPECT_EQ(surface->GetTabHandle(), tab_handle());
   EXPECT_EQ(surface->GetWebContents(), contents);
 
   EXPECT_EQ(registry_->GetForTab(tab_handle()), surface);
-  EXPECT_EQ(registry_->GetForTab(tab_handle())->GetHandle(), handle);
+  EXPECT_EQ(registry_->GetForTab(tab_handle())->GetHandle(),
+            actor_surface_handle);
   EXPECT_EQ(registry_->GetForHeadless(contents), nullptr);
+}
+
+// The last observation is kept across promotion: it is the same WebContents,
+// so it still describes the page the model last saw.
+TEST_F(ActorSurfaceRegistryTest, PromotionKeepsActorTabData) {
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
+  content::WebContents* contents = surface->GetWebContents();
+  ActorTabData* tab_data = surface->GetActorTabData();
+  ObserveContentWithTitle(*tab_data, "headless");
+
+  ON_CALL(mock_tab1_, GetContents()).WillByDefault(Return(contents));
+  tabs::TabLookupFromWebContents::CreateForWebContents(contents, &mock_tab1_);
+  registry_->OnSurfacePromoted(surface->GetHandle());
+
+  ASSERT_TRUE(surface->IsTab());
+  EXPECT_EQ(surface->GetActorTabData(), tab_data);
+  const optimization_guide::proto::AnnotatedPageContent* observed =
+      surface->GetActorTabData()->GetLastObservedPageContent();
+  ASSERT_TRUE(observed);
+  EXPECT_EQ(observed->main_frame_data().title(), "headless");
 }
 
 TEST_F(ActorSurfaceRegistryTest, DemotionKeepsHandleAndRetargetsLookups) {
   registry_->OnTabCreated(mock_tab1_);
   ActorSurface* surface = registry_->GetForTab(tab_handle());
   ASSERT_TRUE(surface);
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
 
-  registry_->OnSurfaceWillBeDemoted(handle);
+  registry_->OnSurfaceWillBeDemoted(actor_surface_handle);
 
-  EXPECT_EQ(surface->GetHandle(), handle);
-  EXPECT_EQ(handle.Get(), surface);
+  EXPECT_EQ(surface->GetHandle(), actor_surface_handle);
+  EXPECT_EQ(actor_surface_handle.Get(), surface);
   EXPECT_FALSE(surface->IsTab());
   EXPECT_EQ(surface->GetWebContents(), web_contents1_.get());
 
   EXPECT_EQ(registry_->GetForHeadless(web_contents1_.get()), surface);
   EXPECT_EQ(registry_->GetForTab(tab_handle()), nullptr);
+}
+
+TEST_F(ActorSurfaceRegistryTest, DemotionKeepsActorTabData) {
+  registry_->OnTabCreated(mock_tab1_);
+  ActorSurface* surface = registry_->GetForTab(tab_handle());
+  ASSERT_TRUE(surface);
+  ActorTabData* tab_data = surface->GetActorTabData();
+  ObserveContentWithTitle(*tab_data, "tab");
+
+  registry_->OnSurfaceWillBeDemoted(surface->GetHandle());
+
+  ASSERT_FALSE(surface->IsTab());
+  EXPECT_EQ(surface->GetActorTabData(), tab_data);
+  const optimization_guide::proto::AnnotatedPageContent* observed =
+      surface->GetActorTabData()->GetLastObservedPageContent();
+  ASSERT_TRUE(observed);
+  EXPECT_EQ(observed->main_frame_data().title(), "tab");
 }
 
 TEST_F(ActorSurfaceRegistryTest, TabSurfaceHandleIsTabHandleValue) {
@@ -153,9 +248,9 @@ TEST_F(ActorSurfaceRegistryTest, TabSurfaceHandleIsTabHandleValue) {
 TEST_F(ActorSurfaceRegistryTest, HeadlessHandlesAreNegativeAndDistinct) {
   base::test::ScopedFeatureList feature_list(kUseTabHandleAsSurfaceHandle);
   const ActorSurfaceHandle first =
-      registry_->CreateHeadlessWebContents()->GetHandle();
+      registry_->CreateHeadlessWebContents(TestPassKey())->GetHandle();
   const ActorSurfaceHandle second =
-      registry_->CreateHeadlessWebContents()->GetHandle();
+      registry_->CreateHeadlessWebContents(TestPassKey())->GetHandle();
 
   EXPECT_LT(first.raw_value(), 0);
   EXPECT_EQ(second.raw_value(), first.raw_value() - 1);
@@ -169,7 +264,7 @@ TEST_F(ActorSurfaceRegistryTest, IndependentHandlesShareOneCounter) {
   const ActorSurfaceHandle first =
       registry_->GetForTab(tab_handle())->GetHandle();
   const ActorSurfaceHandle second =
-      registry_->CreateHeadlessWebContents()->GetHandle();
+      registry_->CreateHeadlessWebContents(TestPassKey())->GetHandle();
 
   EXPECT_GT(first.raw_value(), 0);
   EXPECT_EQ(second.raw_value(), first.raw_value() + 1);
@@ -181,8 +276,9 @@ TEST_F(ActorSurfaceRegistryTest,
   HeadlessWebContentsManager other_headless_manager(&other_profile);
   ActorSurfaceRegistry other_registry(&other_headless_manager);
 
-  ActorSurface* surface1 = registry_->CreateHeadlessWebContents();
-  ActorSurface* surface2 = other_registry.CreateHeadlessWebContents();
+  ActorSurface* surface1 = registry_->CreateHeadlessWebContents(TestPassKey());
+  ActorSurface* surface2 =
+      other_registry.CreateHeadlessWebContents(TestPassKey());
   ASSERT_TRUE(surface1);
   ASSERT_TRUE(surface2);
 
@@ -229,17 +325,17 @@ TEST_F(ActorSurfaceRegistryTest, OnTabCreatedForCrossProfileTabDoesNothing) {
 }
 
 TEST_F(ActorSurfaceRegistryTest, OnTabCreatedPromotesExistingHeadlessSurface) {
-  ActorSurface* surface = registry_->CreateHeadlessWebContents();
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
   content::WebContents* contents = surface->GetWebContents();
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
 
   ON_CALL(mock_tab1_, GetContents()).WillByDefault(Return(contents));
   tabs::TabLookupFromWebContents::CreateForWebContents(contents, &mock_tab1_);
 
   registry_->OnTabCreated(mock_tab1_);
 
-  EXPECT_EQ(surface->GetHandle(), handle);
-  EXPECT_EQ(handle.Get(), surface);
+  EXPECT_EQ(surface->GetHandle(), actor_surface_handle);
+  EXPECT_EQ(actor_surface_handle.Get(), surface);
   EXPECT_TRUE(surface->IsTab());
   EXPECT_EQ(surface->GetTabHandle(), tab_handle());
   EXPECT_EQ(registry_->GetForTab(tab_handle()), surface);
@@ -247,7 +343,7 @@ TEST_F(ActorSurfaceRegistryTest, OnTabCreatedPromotesExistingHeadlessSurface) {
   EXPECT_EQ(registry_->size(), 1u);
 
   // Subsequent OnSurfacePromoted() call is a safe no-op.
-  registry_->OnSurfacePromoted(handle);
+  registry_->OnSurfacePromoted(actor_surface_handle);
   EXPECT_EQ(registry_->GetForTab(tab_handle()), surface);
   EXPECT_EQ(registry_->size(), 1u);
 }
@@ -256,12 +352,12 @@ TEST_F(ActorSurfaceRegistryTest, OnTabWillBeDestroyedDestroysSurface) {
   registry_->OnTabCreated(mock_tab1_);
   ActorSurface* surface = registry_->GetForTab(tab_handle());
   ASSERT_TRUE(surface);
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
 
   registry_->OnTabWillBeDestroyed(tab_handle());
 
-  EXPECT_EQ(handle.Get(), nullptr);
-  EXPECT_EQ(registry_->Get(handle), nullptr);
+  EXPECT_EQ(actor_surface_handle.Get(), nullptr);
+  EXPECT_EQ(registry_->Get(actor_surface_handle), nullptr);
   EXPECT_EQ(registry_->GetForTab(tab_handle()), nullptr);
   EXPECT_EQ(registry_->size(), 0u);
 
@@ -275,12 +371,12 @@ TEST_F(ActorSurfaceRegistryTest,
   registry_->OnTabCreated(mock_tab1_);
   ActorSurface* surface = registry_->GetForTab(tab_handle());
   ASSERT_TRUE(surface);
-  const ActorSurfaceHandle handle = surface->GetHandle();
+  const ActorSurfaceHandle actor_surface_handle = surface->GetHandle();
 
-  registry_->OnSurfaceWillBeDemoted(handle);
+  registry_->OnSurfaceWillBeDemoted(actor_surface_handle);
   registry_->OnTabWillBeDestroyed(tab_handle());
 
-  EXPECT_EQ(handle.Get(), surface);
+  EXPECT_EQ(actor_surface_handle.Get(), surface);
   EXPECT_FALSE(surface->IsTab());
   EXPECT_EQ(registry_->GetForHeadless(web_contents1_.get()), surface);
   EXPECT_EQ(registry_->size(), 1u);
@@ -293,18 +389,27 @@ TEST_F(ActorSurfaceRegistryTest, FromTabReturnsTabSurfaceHandle) {
   ActorSurface* surface = registry_->GetForTab(tab_handle());
   ASSERT_TRUE(surface);
 
-  const ActorSurfaceHandle handle = ActorSurfaceHandle::From(tab_handle());
-  EXPECT_EQ(handle, surface->GetHandle());
-  EXPECT_EQ(handle.Get(), surface);
-  EXPECT_EQ(handle.GetTabHandle(), tab_handle());
+  const ActorSurfaceHandle actor_surface_handle =
+      ActorSurfaceHandle::From(tab_handle());
+  EXPECT_EQ(actor_surface_handle, surface->GetHandle());
+  EXPECT_EQ(actor_surface_handle.Get(), surface);
+  EXPECT_EQ(actor_surface_handle.GetTabHandle(), tab_handle());
 }
 
-TEST_F(ActorSurfaceRegistryTest, FromTabWithIndependentHandles) {
+// TODO(crbug.com/585643254): Fails in batched runs on Android because the
+// global handle counters can make the tab and surface raw values coincide.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_FromTabWithIndependentHandles \
+  DISABLED_FromTabWithIndependentHandles
+#else
+#define MAYBE_FromTabWithIndependentHandles FromTabWithIndependentHandles
+#endif
+TEST_F(ActorSurfaceRegistryTest, MAYBE_FromTabWithIndependentHandles) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kUseTabHandleAsSurfaceHandle);
 
   // Mint a handle first so tab and surface raw values diverge.
-  registry_->CreateHeadlessWebContents();
+  registry_->CreateHeadlessWebContents(TestPassKey());
   registry_->OnTabCreated(mock_tab1_);
   ActorSurface* surface = registry_->GetForTab(tab_handle());
   ASSERT_TRUE(surface);
@@ -319,8 +424,9 @@ TEST_F(ActorSurfaceRegistryTest, FromTabReturnsNullWithoutSurface) {
   EXPECT_EQ(ActorSurfaceHandle::Null().GetTabHandle(), tabs::TabHandle::Null());
 
   registry_->OnTabCreated(mock_tab1_);
-  const ActorSurfaceHandle handle = ActorSurfaceHandle::From(tab_handle());
-  ASSERT_FALSE(handle.is_null());
+  const ActorSurfaceHandle actor_surface_handle =
+      ActorSurfaceHandle::From(tab_handle());
+  ASSERT_FALSE(actor_surface_handle.is_null());
 
   // A tab without a surface (here: never registered) maps to null.
   EXPECT_TRUE(ActorSurfaceHandle::From(mock_tab2_.GetHandle()).is_null());
@@ -330,35 +436,38 @@ TEST_F(ActorSurfaceRegistryTest, FromTabReturnsNullWithoutSurface) {
   registry_->OnTabWillBeDestroyed(tab_handle());
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(ActorSurfaceHandle::From(tab_handle()).is_null());
-  EXPECT_EQ(handle.GetTabHandle(), tabs::TabHandle::Null());
+  EXPECT_EQ(actor_surface_handle.GetTabHandle(), tabs::TabHandle::Null());
 }
 
 TEST_F(ActorSurfaceRegistryTest, FromTabResolvesSurfaceDestroyedInSameTask) {
   registry_->OnTabCreated(mock_tab1_);
-  const ActorSurfaceHandle handle = ActorSurfaceHandle::From(tab_handle());
-  ASSERT_FALSE(handle.is_null());
+  const ActorSurfaceHandle actor_surface_handle =
+      ActorSurfaceHandle::From(tab_handle());
+  ASSERT_FALSE(actor_surface_handle.is_null());
 
   // Mirrors tab closure: the surface is destroyed with the tab's TabFeatures
   // before TabStripModel observers are notified, within the same task. Those
   // observers must still be able to map between the tab and its surface
   // handle in both directions.
   registry_->OnTabWillBeDestroyed(tab_handle());
-  EXPECT_EQ(ActorSurfaceHandle::From(tab_handle()), handle);
-  EXPECT_FALSE(handle.Get());
-  EXPECT_EQ(handle.GetTabHandle(), tab_handle());
+  EXPECT_EQ(ActorSurfaceHandle::From(tab_handle()), actor_surface_handle);
+  EXPECT_FALSE(actor_surface_handle.Get());
+  EXPECT_EQ(actor_surface_handle.GetTabHandle(), tab_handle());
 
   // The mapping is dropped once the current task completes.
   base::RunLoop().RunUntilIdle();
   EXPECT_TRUE(ActorSurfaceHandle::From(tab_handle()).is_null());
-  EXPECT_EQ(handle.GetTabHandle(), tabs::TabHandle::Null());
+  EXPECT_EQ(actor_surface_handle.GetTabHandle(), tabs::TabHandle::Null());
 }
 
 TEST_F(ActorSurfaceRegistryTest, FromWebContentsReturnsTabSurfaceHandle) {
   registry_->OnTabCreated(mock_tab1_);
-  const ActorSurfaceHandle handle = ActorSurfaceHandle::From(tab_handle());
-  ASSERT_FALSE(handle.is_null());
+  const ActorSurfaceHandle actor_surface_handle =
+      ActorSurfaceHandle::From(tab_handle());
+  ASSERT_FALSE(actor_surface_handle.is_null());
 
-  EXPECT_EQ(ActorSurfaceHandle::From(web_contents1_.get()), handle);
+  EXPECT_EQ(ActorSurfaceHandle::From(web_contents1_.get()),
+            actor_surface_handle);
 
   // Once the surface is gone, the WebContents no longer maps to it.
   registry_->OnTabWillBeDestroyed(tab_handle());
@@ -366,7 +475,7 @@ TEST_F(ActorSurfaceRegistryTest, FromWebContentsReturnsTabSurfaceHandle) {
 }
 
 TEST_F(ActorSurfaceRegistryTest, FromWebContentsReturnsHeadlessSurfaceHandle) {
-  ActorSurface* surface = registry_->CreateHeadlessWebContents();
+  ActorSurface* surface = registry_->CreateHeadlessWebContents(TestPassKey());
   ASSERT_TRUE(surface);
 
   EXPECT_EQ(ActorSurfaceHandle::From(surface->GetWebContents()),

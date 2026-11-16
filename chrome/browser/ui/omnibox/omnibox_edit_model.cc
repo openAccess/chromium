@@ -50,8 +50,6 @@
 #include "components/contextual_tasks/public/contextual_tasks_service.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/contextual_tasks/public/prefs.h"
-#include "components/dom_distiller/core/url_constants.h"
-#include "components/dom_distiller/core/url_utils.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/lens/lens_overlay_invocation_source.h"
 #include "components/navigation_metrics/navigation_metrics.h"
@@ -67,7 +65,6 @@
 #include "components/omnibox/browser/autocomplete_provider_client.h"
 #include "components/omnibox/browser/contextual_search_provider.h"
 #include "components/omnibox/browser/geolocation_header_service.h"
-#include "components/omnibox/browser/history_fuzzy_provider.h"
 #include "components/omnibox/browser/history_url_provider.h"
 #include "components/omnibox/browser/keyword_provider.h"
 #include "components/omnibox/browser/omnibox.mojom-shared.h"
@@ -87,6 +84,7 @@
 #include "components/omnibox/browser/search_provider.h"
 #include "components/omnibox/browser/searchbox_utils.h"
 #include "components/omnibox/browser/vector_icons.h"  // nogncheck
+#include "components/omnibox/common/composebox_features.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/omnibox/common/omnibox_focus_state.h"
@@ -99,6 +97,8 @@
 #include "components/search_engines/util.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
+#include "components/web_distiller/core/url_constants.h"
+#include "components/web_distiller/core/url_utils.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "extensions/buildflags/buildflags.h"
@@ -261,6 +261,10 @@ OmniboxEditModel::State::State(const State& other) = default;
 OmniboxEditModel::State::~State() = default;
 
 // OmniboxEditModel -----------------------------------------------------------
+
+void OmniboxEditModel::Observer::OnMatchRichImageUpdated(size_t index) {
+  OnContentsChanged();
+}
 
 OmniboxEditModel::OmniboxEditModel(OmniboxController* controller)
     : controller_(controller) {}
@@ -693,6 +697,30 @@ void OmniboxEditModel::Revert() {
   controller_->client()->OnRevert();
 }
 
+void OmniboxEditModel::RevertUneditedText() {
+  // Keyword mode is an uncommitted draft even when the user text is empty,
+  // e.g. on the NTP after entering keyword mode via the keyword chip, so
+  // reverting unedited text should never exit keyword mode (see
+  // `OmniboxViewViews::OnBlur()`).
+  if (is_keyword_selected()) {
+    return;
+  }
+
+  // If the view is showing text that's not user-text, revert the text to the
+  // permanent display text. This usually occurs if Steady State Elisions is on
+  // and the user has unelided, but not edited the URL.
+  // Also revert if the text has been edited but currently exactly matches
+  // the permanent text. An example of this scenario is someone typing on the
+  // new tab page and then deleting everything using backspace/delete.
+  if ((!user_input_in_progress() &&
+       (user_text() != GetPermanentDisplayText() || has_temporary_text())) ||
+      (user_input_in_progress() &&
+       (user_text() == GetPermanentDisplayText() ||
+        user_text() == controller_->client()->GetFormattedFullURL()))) {
+    Revert();
+  }
+}
+
 void OmniboxEditModel::StartAutocomplete(bool prevent_inline_autocomplete) {
   const std::u16string input_text = MaybePrependKeyword(user_text_);
 
@@ -801,6 +829,7 @@ void OmniboxEditModel::EnterKeywordModeForDefaultSearchProvider(
 }
 
 void OmniboxEditModel::OpenComposeboxForAskG() {
+  enter_aim_mode_ = false;
   PopulateActiveTabContext();
   controller_->popup_state_manager()->SetPopupState(OmniboxPopupState::kAim);
 }
@@ -865,6 +894,10 @@ void OmniboxEditModel::OpenAiMode(AimActivation activation) {
   }
 
   if (ShouldOpenAimPopup(activation, current_match.type)) {
+    // The AI Mode button opens the compose box in AI Mode; the "+" menu
+    // doesn't.
+    enter_aim_mode_ = activation != AimActivation::kContextMenu &&
+                      omnibox::IsDynamicAimFulfillmentEnabledForOmnibox();
     controller_->popup_state_manager()->SetPopupState(OmniboxPopupState::kAim);
     return;
   }
@@ -976,9 +1009,24 @@ void OmniboxEditModel::OpenSelection(
     return;
   }
 
-  // The keyword mode button doesn't commit the omnibox, it's a
-  // transient UI element leading to other normal omnibox selections.
+  // Without a query, the keyword chip doesn't commit the omnibox, it's a
+  // transient UI element leading to other normal omnibox selections. With a
+  // query, the keyword chip does commit. But there's no keyword match to open
+  // yet; generate one synchronously.
   if (selection.state == OmniboxPopupSelection::LineState::kKeywordMode) {
+    if (is_keyword_selected() && !user_text_.empty()) {
+      AutocompleteMatch keyword_match;
+      GURL alternate_nav_url;
+      controller_->client()->GetAutocompleteClassifier()->Classify(
+          MaybePrependKeyword(user_text_), /*in_keyword_mode=*/true,
+          /*allow_exact_keyword_match=*/true, GetPageClassification(),
+          &keyword_match, &alternate_nav_url);
+      if (keyword_match.destination_url.is_valid()) {
+        OpenMatch(OmniboxPopupSelection(OmniboxPopupSelection::kNoMatch),
+                  keyword_match, disposition, alternate_nav_url,
+                  std::u16string(), timestamp);
+      }
+    }
     return;
   }
 
@@ -1079,7 +1127,12 @@ void OmniboxEditModel::AcceptKeyword(
   if (view_) {
     view_->OnTemporaryTextMaybeChanged(user_text_, {}, !has_temporary_text_,
                                        true);
-    if (!user_text_.empty()) {
+    // Don't rerun autocomplete on tab. Tab is a navigation key, like arrowing
+    // through the popup; replacing the matches would prevent tabbing back or
+    // through. Space & click entries will rerun autocomplete to avoid showing
+    // stale results and reflect the user's intentional input change or keyword
+    // entry.
+    if (!user_text_.empty() && entry_method != OmniboxEventProto::TAB) {
       view_->UpdatePopup();
     }
   }
@@ -1133,7 +1186,7 @@ void OmniboxEditModel::ClearKeyword() {
   //     "google.com ".
   // (4) was_toggled_into_keyword_mode == true, entry_by_tab == true
   //     The user had just typed tab to enter keyword mode, e.g.
-  //     "google.com<tab>".
+  //     "google.com<tab>" or "google.com f<tab>".
   //
   // For states 1-3, we can safely handle the exit from keyword mode by using
   // OnBefore/AfterPossibleChange() to do a complete state update of all
@@ -1164,9 +1217,17 @@ void OmniboxEditModel::ClearKeyword() {
     // State 4 above.
     SetKeywordInfo(KeywordState::kHint, keyword_, keyword_placeholder_,
                    OmniboxEventProto::INVALID);
-    const std::u16string window_text = keyword_ + view_->GetText();
-    view_->SetWindowTextAndCaretPos(window_text, keyword_.length(), false,
-                                    true);
+    // Restore `user_text_` too since, unlike states 1-3, this path doesn't go
+    // through `OnAfterPossibleChange()`.
+    const std::u16string prefix =
+        keyword_ + (view_->GetText().empty() ? u"" : u" ");
+    const std::u16string window_text = prefix + view_->GetText();
+    const size_t caret_pos =
+        std::min(window_text.length(),
+                 prefix.length() + view_->GetSelectionBounds().end());
+    user_text_ = original_user_text_with_keyword_;
+    original_user_text_with_keyword_.clear();
+    view_->SetWindowTextAndCaretPos(window_text, caret_pos, false, true);
     // TODO (manukh): Exiting keyword mode in this case will not restore
     // the omnibox additional text. E.g., if before entering keyword mode, the
     // location bar displays 'google.com | (Google)', after entering (via tab)
@@ -2329,7 +2390,7 @@ void OmniboxEditModel::SetPopupRichSuggestionBitmap(int result_index,
                                                     const SkBitmap& bitmap) {
   DCHECK(popup_view_);
   rich_suggestion_bitmaps_[result_index] = bitmap;
-  observers_.Notify(&Observer::OnContentsChanged);
+  observers_.Notify(&Observer::OnMatchRichImageUpdated, result_index);
 }
 
 void OmniboxEditModel::SetIconBitmap(const GURL& icon_url,
@@ -2434,17 +2495,7 @@ void OmniboxEditModel::StepPopupSelection(
     }
   }
 
-  // `AcceptKeyword()` above updates the popup for the case where we step into
-  // keyword mode with extra user text, e.g. user input is "youtube.com query"
-  // then press tab to enter keyword mode. This is to ensure that the user text
-  // is populated accordingly and the new default suggestion is immediately
-  // clickable. In this case, the current selection (the clickable keyword
-  // suggestion) will not match the expected "next" suggestion (the keyword
-  // button focused).
-  if (new_selection.state != OmniboxPopupSelection::LineState::kKeywordMode ||
-      user_text_.empty()) {
-    DCHECK(popup_selection_ == new_selection);
-  }
+  DCHECK(popup_selection_ == new_selection);
 
   // Inform the client that a new row is now selected.
   OnNavigationLikely(popup_selection_.line,
@@ -2660,7 +2711,6 @@ void OmniboxEditModel::OpenMatch(
   const AutocompleteResult& result =
       snapshot ? snapshot->result : autocomplete_controller()->result();
   omnibox::RecordActionShownForAllActions(result, selection);
-  HistoryFuzzyProvider::RecordOpenMatchMetrics(result, match);
 
   const AutocompleteInput& input = snapshot ? snapshot->input : input_;
 
@@ -3070,11 +3120,18 @@ void OmniboxEditModel::SetFocusState(OmniboxFocusState state,
     return;
   }
 
-  // Update state and notify view if the omnibox caret visibility changed.
+  // Update state and notify view if the omnibox focus or caret visibility
+  // changed.
+  const bool had_focus = has_focus();
   const bool was_caret_visible = is_caret_visible();
   focus_state_ = state;
-  if (is_caret_visible() != was_caret_visible && view_) {
-    view_->ApplyCaretVisibility();
+  if (view_) {
+    if (has_focus() != had_focus) {
+      view_->OnFocusChanged();
+    }
+    if (is_caret_visible() != was_caret_visible) {
+      view_->ApplyCaretVisibility();
+    }
   }
 
   controller_->client()->OnFocusChanged(focus_state_, reason);

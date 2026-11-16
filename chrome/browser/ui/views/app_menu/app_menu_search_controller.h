@@ -15,6 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_search_item.h"
 #include "ui/base/models/image_model.h"
+#include "ui/gfx/range/range.h"
 
 class AppMenuSearchBarView;
 class FuzzyFinder;
@@ -30,7 +31,7 @@ class BaseAction;
 // querying FuzzyFinder, and constructing an ephemeral ActionItem results tree
 // for the UI to render. It searches whenever the search bar's query changes,
 // owns the results tree, and has its `Delegate` show the results. When the
-// back button is pressed, it has the `Delegate` show the normal menu again.
+// query is cleared, it shows the main menu again.
 class AppMenuSearchController {
  public:
   // Implemented by the app menu that shows the search results.
@@ -38,11 +39,16 @@ class AppMenuSearchController {
    public:
     virtual ~Delegate() = default;
 
-    // Shows `results` in place of the rows below the search bar.
-    virtual void ShowSearchResults(actions::ActionItem* results) = 0;
+    // Shows `results` in place of the rows below the search bar, keeping
+    // `old_results` alive while the menu tree is updated.
+    virtual void ShowSearchResults(
+        actions::ActionItem* results,
+        std::unique_ptr<actions::ActionItem> old_results) = 0;
 
-    // Restores the normal menu rows below the search bar.
-    virtual void RestoreMenu() = 0;
+    // Restores the normal menu rows below the search bar, keeping `old_results`
+    // alive while the menu tree is updated.
+    virtual void RestoreMenu(
+        std::unique_ptr<actions::ActionItem> old_results) = 0;
   };
 
   // `search_bar` and `delegate` must outlive this controller.
@@ -97,6 +103,10 @@ class AppMenuSearchController {
       // Whether the indexed menu row is a checkbox item, so the search result
       // is rendered as one too, bound to the action's checked state.
       bool is_checkable = false;
+
+      // Consecutive character span in `title` that is a case-insensitive exact
+      // match of the query, or InvalidRange() if none.
+      gfx::Range highlight_range = gfx::Range::InvalidRange();
     };
 
     SearchResults();
@@ -119,12 +129,12 @@ class AppMenuSearchController {
   };
 
   // Searches for the search bar's query and has `delegate_` show the results.
-  // Leaves the menu as it is when the query is below the minimum query length
-  // threshold.
+  // Restores the normal menu when the query is empty, and leaves the menu as it
+  // is when the query is below the minimum query length threshold.
   void OnQueryChanged();
 
-  // Has `delegate_` restore the normal menu again.
-  void OnBackPressed();
+  // Show the main menu instead of the search results.
+  void RestoreMenu();
 
   // Recursively traverses action and its children to extract searchable leaf
   // items into search_items_, tracking contextual text and category types.
@@ -168,7 +178,6 @@ class AppMenuSearchController {
   std::unique_ptr<actions::ActionItem> search_results_;
 
   base::CallbackListSubscription query_changed_subscription_;
-  base::CallbackListSubscription back_pressed_subscription_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_APP_MENU_APP_MENU_SEARCH_CONTROLLER_H_

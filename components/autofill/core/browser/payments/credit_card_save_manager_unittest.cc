@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/strings/strcat.h"
@@ -48,7 +49,9 @@
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/cardholder_name_update_flow_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/payments_rpc_metrics.h"
 #include "components/autofill/core/browser/payments/client_behavior_constants.h"
 #include "components/autofill/core/browser/payments/iban_save_manager.h"
 #include "components/autofill/core/browser/payments/payments_autofill_client.h"
@@ -3981,7 +3984,7 @@ TEST_F(
 TEST_F(CreditCardSaveManagerTest, UploadCreditCard_UploadDetailsFails) {
   // Anything other than "en-US" will cause GetUploadDetails to return a failure
   // response.
-  autofill_client().set_app_locale("pt-BR");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("pt-BR"));
 
   // Create, fill and submit an address form in order to establish a recent
   // profile which can be selected for the upload request.
@@ -4725,7 +4728,7 @@ TEST_F(CreditCardSaveManagerTest,
        UploadCreditCard_LogAdditionalErrorsWithUploadDetailsFailure) {
   // Anything other than "en-US" will cause GetUploadDetails to return a failure
   // response.
-  autofill_client().set_app_locale("pt-BR");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("pt-BR"));
 
   // Set up a new address profile without a name or postal code.
   AutofillProfile profile(AddressCountryCode("US"));
@@ -4782,7 +4785,7 @@ TEST_F(
     UploadCreditCard_ShouldOfferLocalSaveIfEverythingDetectedAndPaymentsDeclines) {
   // Anything other than "en-US" will cause GetUploadDetails to return a failure
   // response.
-  autofill_client().set_app_locale("pt-BR");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("pt-BR"));
 
   // Set up a new address profile.
   AutofillProfile profile(AddressCountryCode("US"));
@@ -4824,7 +4827,7 @@ TEST_F(
     UploadCreditCard_ShouldNotOfferLocalSaveIfSomethingNotDetectedAndPaymentsDeclines) {
   // Anything other than "en-US" will cause GetUploadDetails to return a failure
   // response.
-  autofill_client().set_app_locale("pt-BR");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("pt-BR"));
 
   // Set up a new address profile without a name or postal code.
   AutofillProfile profile(AddressCountryCode("US"));
@@ -5307,7 +5310,7 @@ TEST_F(CreditCardSaveManagerTest,
        UploadCreditCard_DenyingUploadOfLocalCardShouldNotOfferLocalSave) {
   // Anything other than "en-US" will cause GetUploadDetails to return a failure
   // response.
-  autofill_client().set_app_locale("pt-BR");
+  autofill_client().set_app_locale(base::i18n::GetKnownLanguageTag("pt-BR"));
 
   // Add a local credit card whose |TypeAndLastFourDigits| matches what we will
   // enter below.
@@ -8000,6 +8003,98 @@ TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
       server_card));
 
   EXPECT_EQ(GetStrikes(server_card), 1);
+}
+
+// Tests that the prompt offer metric is logged when the prompt isn't offered
+// because the card has reached the max number of strikes.
+TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
+       Metrics_PromptOffer_MaxStrikesReached) {
+  CreditCard server_card = test::GetMaskedServerCard();
+  CardholderNameFixFlowStrikeDatabase strike_db(&strike_database());
+  strike_db.AddStrikes(strike_db.GetMaxStrikesLimit(),
+                       base::NumberToString(server_card.instrument_id()));
+  task_environment_.FastForwardBy(
+      strike_db.GetRequiredDelaySinceLastStrike().value());
+
+  base::HistogramTester histogram_tester;
+  credit_card_save_manager().AttemptToOfferCardholderNameUpdate(server_card);
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.CardholderNameUpdateFlow.PromptOffer",
+      autofill_metrics::SaveCardPromptOffer::kNotShownMaxStrikesReached, 1);
+}
+
+// Tests that the prompt offer metric is logged when the prompt isn't offered
+// because the required delay since the last strike hasn't passed.
+TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
+       Metrics_PromptOffer_RequiredDelayNotPassed) {
+  CreditCard server_card = test::GetMaskedServerCard();
+  CardholderNameFixFlowStrikeDatabase(&strike_database())
+      .AddStrike(base::NumberToString(server_card.instrument_id()));
+
+  base::HistogramTester histogram_tester;
+  credit_card_save_manager().AttemptToOfferCardholderNameUpdate(server_card);
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.CardholderNameUpdateFlow.PromptOffer",
+      autofill_metrics::SaveCardPromptOffer::kNotShownRequiredDelay, 1);
+}
+
+// Tests that the preflight request result and latency are logged when the
+// request succeeds.
+TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
+       Metrics_GetDetailsForUpdateCardRequest_Success) {
+  ExpectPreflightResult(PaymentsRpcResult::kSuccess);
+
+  base::HistogramTester histogram_tester;
+  credit_card_save_manager().AttemptToOfferCardholderNameUpdate(
+      test::GetMaskedServerCard());
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest.Result",
+      autofill_metrics::PaymentsRpcResultMetric::kSuccess, 1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest."
+      "Latency.Success",
+      1);
+}
+
+// Tests that the preflight request result and latency are logged when the
+// request fails.
+TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
+       Metrics_GetDetailsForUpdateCardRequest_Failure) {
+  ExpectPreflightResult(PaymentsRpcResult::kTryAgainFailure);
+
+  base::HistogramTester histogram_tester;
+  credit_card_save_manager().AttemptToOfferCardholderNameUpdate(
+      test::GetMaskedServerCard());
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest.Result",
+      autofill_metrics::PaymentsRpcResultMetric::kFailure, 1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest."
+      "Latency.Failure",
+      1);
+}
+
+// Tests that the preflight request result and latency are logged when the
+// request times out.
+TEST_F(CreditCardSaveManagerCardholderNameUpdateTest,
+       Metrics_GetDetailsForUpdateCardRequest_Timeout) {
+  ExpectPreflightResult(PaymentsRpcResult::kClientSideTimeout);
+
+  base::HistogramTester histogram_tester;
+  credit_card_save_manager().AttemptToOfferCardholderNameUpdate(
+      test::GetMaskedServerCard());
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest.Result",
+      autofill_metrics::PaymentsRpcResultMetric::kTimeout, 1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.CardholderNameUpdateFlow.GetDetailsForUpdateCardRequest."
+      "Latency.ClientSideTimeout",
+      1);
 }
 
 #else  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)

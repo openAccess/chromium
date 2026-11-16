@@ -4,11 +4,14 @@
 
 #include "services/network/public/cpp/connection_change_observer_client_mojom_traits.h"
 
+#include <optional>
+
 #include "base/notreached.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "net/base/reconnect_notifier.h"
 #include "services/network/public/cpp/network_ipc_param_traits.h"
+#include "services/network/public/cpp/url_request_param_mojom_traits.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom-shared.h"
 
 namespace mojo {
@@ -46,22 +49,57 @@ network::mojom::NetworkChangeEvent EnumTraits<
 }
 
 // static
+bool StructTraits<network::mojom::QuicKeepAliveTimeoutsDataView,
+                  network::QuicKeepAliveTimeouts>::
+    Read(network::mojom::QuicKeepAliveTimeoutsDataView data,
+         network::QuicKeepAliveTimeouts* out) {
+  if (!data.ReadIdleTimeout(&out->idle_timeout) ||
+      !data.ReadPingInterval(&out->ping_interval)) {
+    return false;
+  }
+  // Null represents an unset `ping_interval`; reject non-null zero on the wire.
+  if (out->idle_timeout.is_zero() ||
+      (out->ping_interval.has_value() && out->ping_interval->is_zero())) {
+    return false;
+  }
+  net::ConnectionKeepAliveConfig config;
+  config.idle_timeout = out->idle_timeout;
+  config.ping_interval = out->ping_interval.value_or(base::TimeDelta());
+  return config.IsValid();
+}
+
+// static
 bool StructTraits<network::mojom::ConnectionKeepAliveConfigDataView,
                   net::ConnectionKeepAliveConfig>::
     Read(network::mojom::ConnectionKeepAliveConfigDataView data,
          net::ConnectionKeepAliveConfig* out) {
-  // Check if `ping_interval_sec` is smaller than the `idle_timeout_sec`
-  // so that we will be able to send at least one ping before closing the
-  // connection due to the idle timeout.
-  if (data.ping_interval_in_seconds() > data.idle_timeout_in_seconds()) {
+  std::optional<network::QuicKeepAliveTimeouts> keep_alive_timeouts;
+  std::optional<base::TimeDelta> initial_rtt;
+  if (!data.ReadKeepAliveTimeouts(&keep_alive_timeouts) ||
+      !data.ReadInitialRtt(&initial_rtt) ||
+      !data.ReadPreconnectPriority(&out->preconnect_priority) ||
+      !data.ReadQuicConnectionOptions(&out->quic_connection_options)) {
     return false;
   }
-
-  out->ping_interval_in_seconds = data.ping_interval_in_seconds();
-  out->idle_timeout_in_seconds = data.idle_timeout_in_seconds();
+  if (keep_alive_timeouts.has_value()) {
+    out->idle_timeout = keep_alive_timeouts->idle_timeout;
+    out->ping_interval =
+        keep_alive_timeouts->ping_interval.value_or(base::TimeDelta());
+  } else {
+    out->idle_timeout = base::TimeDelta();
+    out->ping_interval = base::TimeDelta();
+  }
+  // Null represents an unset `initial_rtt`; reject non-null zero on the wire.
+  if (initial_rtt.has_value()) {
+    if (initial_rtt->is_zero()) {
+      return false;
+    }
+    out->initial_rtt = *initial_rtt;
+  } else {
+    out->initial_rtt = base::TimeDelta();
+  }
   out->enable_connection_keep_alive = data.enable_connection_keep_alive();
-
-  return data.ReadQuicConnectionOptions(&out->quic_connection_options);
+  return out->IsValid();
 }
 
 net::ConnectionEstablishmentInitiator

@@ -1,7 +1,7 @@
 <!doctype html>
 <title>SVGPathElement.setPathData() with malformed segments</title>
-<link rel="help" href="https://svgwg.org/specs/paths/#__svg__SVGPathData__setPathData">
-<link rel="help" href="https://svgwg.org/specs/paths/#PathDataErrorHandling">
+<link rel="help" href="https://w3c.github.io/svgwg/specs/paths/#__svg__SVGPathData__setPathData">
+<link rel="help" href="https://w3c.github.io/svgwg/specs/paths/#PathDataErrorHandling">
 <link rel="author" title="Virali Purbey" href="mailto:viralipurbey@microsoft.com">
 <script src="/resources/testharness.js"></script>
 <script src="/resources/testharnessreport.js"></script>
@@ -95,6 +95,26 @@ test(() => {
     { type: "M", values: [0, 0] }
   ]);
 }, "setPathData() rejects multi-character type strings");
+
+for (const command of ["A", "a"]) {
+  for (const [flagIndex, flagName] of [[3, "large-arc"], [4, "sweep"]]) {
+    for (const invalidValue of [-1, 0.5, 2]) {
+      test(() => {
+        const values = [10, 10, 0, 0, 1, 20, 20];
+        values[flagIndex] = invalidValue;
+        const path = createPath();
+        path.setPathData([
+          { type: "M", values: [0, 0] },
+          { type: command, values },
+          { type: "L", values: [30, 30] }
+        ]);
+        assert_path_data_equals(path.getPathData(), [
+          { type: "M", values: [0, 0] }
+        ]);
+      }, `setPathData() rejects ${command} ${flagName} flag ${invalidValue}`);
+    }
+  }
+}
 
 test(() => {
   const path = createPath("M 99 99");

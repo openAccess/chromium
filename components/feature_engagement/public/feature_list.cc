@@ -94,6 +94,8 @@ const base::Feature* const kAllFeatures[] = {
     &kIPHMicToolbarFeature,
     &kIPHMostVisitedTilesCustomizationPinFeature,
     &kIPHNewTabPageThemeCustomizationFeature,
+    &kIPHNewTabPageThemeCustomizationMagicStackFeature,
+    &kIPHNtpFuseboxAnimationFeature,
     &kIPHPageInfoFeature,
     &kIPHPageInfoStoreInfoFeature,
     &kIPHPageSummaryPdfMenuFeature,
@@ -171,7 +173,6 @@ const base::Feature* const kAllFeatures[] = {
     &kIPHiOSBackendPromoFeature,
     &kIPHiOSBackgroundNewBadge,
     &kIPHiOSBottomOmniboxFeature,
-    &kIPHiOSContextualPanelPriceInsightsFeature,
     &kIPHiOSContextualPanelSampleModelFeature,
     &kIPHiOSDefaultBrowserBadgeEligibilityFeature,
     &kIPHiOSDefaultBrowserBannerPromoFeature,
@@ -249,8 +250,6 @@ const base::Feature* const kAllFeatures[] = {
     &kIPHWhatsNewFeature,
     &kIPHWhatsNewUpdatedFeature,
 // keep-sorted end
-#else
-    &kIPHResumptionRailFeature,
 #endif  // BUILDFLAG(IS_IOS)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_LINUX) || \
@@ -264,6 +263,7 @@ const base::Feature* const kAllFeatures[] = {
     &kIPHExtensionsZeroStatePromoFeature,
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
     // keep-sorted start case=no
+    &kIPH_VerticalTabsTabGroupsInOrganizerFeature,
     &kIPHBackNavigationMenuFeature,
     &kIPHBatterySaverModeFeature,
     &kIPHBookmarkBarSimplifiedFeature,
@@ -294,6 +294,7 @@ const base::Feature* const kAllFeatures[] = {
     &kIPHGMCCastStartStopFeature,
     &kIPHGMCLocalMediaCastingFeature,
     &kIPHGMCSaveVideoFrameFeature,
+    &kIPHIndigoContextMenuSnoozeFeature,
     &kIPHIndigoContextMenuToastFeature,
     &kIPHLensOverlayFeature,
     &kIPHMemorySaverModeFeature,

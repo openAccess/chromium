@@ -81,6 +81,14 @@ extern const char kShareCacheMountPointName[];
 // chrome:// URL or the legacy Chrome App chrome-extension:// URL.
 const url::Origin& GetFilesAppOrigin();
 
+// Returns the default downloads directory used on linux-chromeos, i.e. when
+// not running on a ChromeOS device. There, this is used as the MyFiles and
+// Downloads folder of the primary user, unless
+// --use-myfiles-in-user-data-dir-for-testing is specified.
+// This is computed from the XDG user directory and base::DIR_HOME, and should
+// be the same as DownloadPrefs::GetDefaultDownloadDirectory().
+const base::FilePath& GetDefaultDownloadDirectoryForLinuxChromeOS();
+
 // Gets the absolute path for the 'Downloads' folder for the `user`.
 // The `user`'s home directory must be mounted, i.e., `user.username_hash()`
 // must not be empty.
@@ -126,18 +134,6 @@ bool MigratePathFromOldFormat(Profile* profile,
                               const base::FilePath& old_base,
                               const base::FilePath& old_path,
                               base::FilePath* new_path);
-
-// Converts |old_path| in <cryptohome>/Downloads[/*] to |new_path| in
-// <cryptohome/MyFiles/Downloads[*].  Returns true if path is changed else
-// returns false if |old_path| was not inside Downloads, and |new_path| is
-// undefined.
-//
-// Introduced in M73.  This code updates values stored in prefs.
-// TODO(crbug.com/41430020) Remove this when no users are running M72 or
-// earlier.
-bool MigrateFromDownloadsToMyFiles(Profile* profile,
-                                   const base::FilePath& old_path,
-                                   base::FilePath* new_path);
 
 // Convers |old_path| in /special/drive-<hash> to |new_path| in
 // /media/fuse/drivefs-<id>. Returns true if path is changed else

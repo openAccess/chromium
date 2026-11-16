@@ -481,6 +481,10 @@ void PrefHashFilter::DeferredEncryptorRevalidation(
     // seeded before the encryptor was available and therefore lack encrypted
     // hashes. Initialize their encrypted hashes directly so that they are
     // properly anchored in os_crypt without relying on legacy HMAC fallback.
+    // |migrated_paths_| is only set by TrackedPreferencesMigrator when this
+    // process seeded Preferences from initial_preferences and Secure
+    // Preferences was empty. Otherwise this would sign attacker-controlled
+    // values (https://crbug.com/574078135).
     if (std::ranges::contains(migrated_paths_, path)) {
       preference->OnNewValue(value_at_load, transaction.get(),
                              encryptor_.get());

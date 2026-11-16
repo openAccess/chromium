@@ -75,6 +75,7 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils.IconSpecs;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsComponent.Delegate;
 import org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.AccountLinkingSuccessScreenProperties;
@@ -249,11 +250,7 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     void showSheetForPaymentLink(List<Ewallet> ewallets, List<ResolveInfo> apps) {
         mInputProtector.markShowTime();
         boolean isEwalletAvailable = ewallets != null && !ewallets.isEmpty();
-        boolean isPaymentAppAvailable =
-                apps != null
-                        && !apps.isEmpty()
-                        && ChromeFeatureList.isEnabled(
-                                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+        boolean isPaymentAppAvailable = apps != null && !apps.isEmpty();
         if (!isEwalletAvailable && !isPaymentAppAvailable) {
             return;
         }
@@ -268,12 +265,9 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
             screenItems.add(new ListItem(EWALLET, model));
         }
 
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-            for (ResolveInfo app : apps) {
-                PropertyModel model = createPaymentAppModel(mContext, app);
-                screenItems.add(new ListItem(PAYMENT_APP, model));
-            }
+        for (ResolveInfo app : apps) {
+            PropertyModel model = createPaymentAppModel(mContext, app);
+            screenItems.add(new ListItem(PAYMENT_APP, model));
         }
         screenItems.add(buildPaymentLinkAdditionalInfo(ewallets, apps));
 
@@ -510,7 +504,7 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                     .getDimension(
                                             R.dimen.facilitated_payments_gpay_icon_header_height);
             headerBuilder
-                    .with(PRODUCT_ICON_DRAWABLE_ID, R.drawable.google_pay)
+                    .with(PRODUCT_ICON_DRAWABLE_ID, AutofillUiUtils.getGPayLogoDrawableId())
                     .with(PRODUCT_ICON_HEIGHT, productIconHeight)
                     .with(
                             PRODUCT_ICON_CONTENT_DESCRIPTION_ID,
@@ -541,10 +535,7 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     // payment app both are not present.
     private String getPaymentLinkHeaderTitle(
             Context context, List<Ewallet> ewallets, List<ResolveInfo> apps) {
-        if (apps != null
-                && !apps.isEmpty()
-                && ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
+        if (apps != null && !apps.isEmpty()) {
             return context.getString(
                     R.string.facilitated_payments_non_card_payment_methods_bottom_sheet_title);
         }
@@ -596,15 +587,10 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                         this.recordManagePaymentMethodsOptionSelected(
                                                 getEwalletFopSelectorUserActionHistogram(ewallets));
                                     }
-                                    if (ChromeFeatureList.isEnabled(
-                                            ChromeFeatureList
-                                                    .FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-                                        this
-                                                .recordManagePaymentMethodsOptionSelectedNonCardPaymentMethods(
-                                                        getPaymentLinkFopSelectorTypesUserActionHistogram(
-                                                                !ewallets.isEmpty(),
-                                                                !apps.isEmpty()));
-                                    }
+                                    this
+                                            .recordManagePaymentMethodsOptionSelectedNonCardPaymentMethods(
+                                                    getPaymentLinkFopSelectorTypesUserActionHistogram(
+                                                            !ewallets.isEmpty(), !apps.isEmpty()));
                                 })
                         .build());
     }
@@ -744,14 +730,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     }
 
     private static int getPaymentAdditionalInfoString(boolean hasEwallets, boolean hasApps) {
-        if (ChromeFeatureList.isEnabled(
-                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT)) {
-            if (hasApps && hasEwallets) {
-                return R.string.ewallet_and_payment_app_payment_additional_info;
-            }
-            if (hasApps) {
-                return R.string.payment_app_payment_additional_info;
-            }
+        if (hasApps && hasEwallets) {
+            return R.string.ewallet_and_payment_app_payment_additional_info;
+        }
+        if (hasApps) {
+            return R.string.payment_app_payment_additional_info;
         }
         return hasEwallets ? R.string.ewallet_payment_additional_info : 0;
     }

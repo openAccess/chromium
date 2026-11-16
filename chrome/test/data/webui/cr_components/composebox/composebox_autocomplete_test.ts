@@ -2,22 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
 import './test_composebox_mixin.js';
 
 import {VoiceSearchAction} from 'chrome://resources/cr_components/composebox/common.js';
 import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
-import {ComposeboxProxyImpl, createAutocompleteMatch} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
+import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
 import type {ComposeboxVoiceSearchElement} from 'chrome://resources/cr_components/composebox/composebox_voice_search.js';
-import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {createAutocompleteMatch} from 'chrome://resources/cr_components/search/autocomplete_match_utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
-import {InputMethod, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {InputMethod, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, RenderType, SideType} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {AutocompleteResult, PageRemote as SearchboxPageRemote} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {SuggestStyle} from 'chrome://resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
-import {InputType} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
+import {InputType, ToolMode} from 'chrome://resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
+import {createAutocompleteResult, createSearchMatch, createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
 import {$$, eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
@@ -108,11 +108,11 @@ suite('ComposeboxAutocomplete', () => {
       assertTrue(composeboxDropdown.hidden);
 
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -134,11 +134,11 @@ suite('ComposeboxAutocomplete', () => {
 
       const composeboxDropdown = element.$.matches;
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -170,11 +170,11 @@ suite('ComposeboxAutocomplete', () => {
 
       const composeboxDropdown = element.$.matches;
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -232,11 +232,11 @@ suite('ComposeboxAutocomplete', () => {
 
           const composeboxDropdown = element.$.matches;
           const matches = [
-            createSearchMatchForTesting(),
-            createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+            createSearchMatch(),
+            createSearchMatch({fillIntoEdit: 'hello world 2'}),
           ];
           searchboxCallbackRouterRemote.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
+              createAutocompleteResult({
                 queryId: element.activeQueryId,
                 matches,
               }));
@@ -274,15 +274,15 @@ suite('ComposeboxAutocomplete', () => {
 
           const composeboxDropdown = element.$.matches;
           const matches = [
-            createSearchMatchForTesting({
+            createSearchMatch({
               fillIntoEdit: 'hello world 1',
               allowedToBeDefaultMatch: true,
             }),
-            createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
-            createSearchMatchForTesting({fillIntoEdit: 'hello world 3'}),
+            createSearchMatch({fillIntoEdit: 'hello world 2'}),
+            createSearchMatch({fillIntoEdit: 'hello world 3'}),
           ];
           searchboxCallbackRouterRemote.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
+              createAutocompleteResult({
                 queryId: element.activeQueryId,
                 matches,
                 input: 'Test',
@@ -309,11 +309,11 @@ suite('ComposeboxAutocomplete', () => {
 
       const composeboxDropdown = element.$.matches;
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -339,16 +339,16 @@ suite('ComposeboxAutocomplete', () => {
 
       const composeboxDropdown = element.$.matches;
       const matches = [
-        createSearchMatchForTesting({
+        createSearchMatch({
           fillIntoEdit: 'hello world 1',
           allowedToBeDefaultMatch: true,
         }),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 3'}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 4'}),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch({fillIntoEdit: 'hello world 3'}),
+        createSearchMatch({fillIntoEdit: 'hello world 4'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
             input: 'Test',
@@ -388,9 +388,9 @@ suite('ComposeboxAutocomplete', () => {
           await microtasksFinished();
 
           const composeboxDropdown = element.$.matches;
-          const matches = [createSearchMatchForTesting()];
+          const matches = [createSearchMatch()];
           searchboxCallbackRouterRemote.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
+              createAutocompleteResult({
                 queryId: element.activeQueryId,
                 matches,
                 input: 'Test',
@@ -412,11 +412,11 @@ suite('ComposeboxAutocomplete', () => {
       await microtasksFinished();
 
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -438,11 +438,11 @@ suite('ComposeboxAutocomplete', () => {
       await microtasksFinished();
 
       const typedMatches = [
-        createSearchMatchForTesting({allowedToBeDefaultMatch: true}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch({allowedToBeDefaultMatch: true}),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: 'awesome',
             matches: typedMatches,
@@ -470,14 +470,14 @@ suite('ComposeboxAutocomplete', () => {
       element.showZps = true;
 
       const matches = [
-        createSearchMatchForTesting({
+        createSearchMatch({
           suggestTemplate:
               createSuggestTemplateInfo({primaryText: 'zps suggestion'}),
           destinationUrl: 'https://google.com/',
         }),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: '',
             matches,
@@ -500,7 +500,7 @@ suite('ComposeboxAutocomplete', () => {
       element.getInputElement().dispatchEvent(new CustomEvent('input-focusin'));
 
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: '',
             matches,
@@ -520,12 +520,11 @@ suite('ComposeboxAutocomplete', () => {
       await microtasksFinished();
 
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting(
-              {queryId: element.activeQueryId, matches}));
+          createAutocompleteResult({queryId: element.activeQueryId, matches}));
       await microtasksFinished();
       assertTrue(
           await areMatchesShowing(element, searchboxCallbackRouterRemote));
@@ -572,11 +571,11 @@ suite('ComposeboxAutocomplete', () => {
       element.getInputElement().inputElement.dispatchEvent(new Event('input'));
 
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches,
           }));
@@ -671,14 +670,14 @@ suite('ComposeboxAutocomplete', () => {
       const composeboxDropdown = element.$.matches;
 
       const matches = [
-        createSearchMatchForTesting(
+        createSearchMatch(
             {fillIntoEdit: 'hello world 1', allowedToBeDefaultMatch: true}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 3'}),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 4'}),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch({fillIntoEdit: 'hello world 3'}),
+        createSearchMatch({fillIntoEdit: 'hello world 4'}),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             matches: matches,
             input: 'Test',
@@ -781,23 +780,23 @@ suite('ComposeboxAutocomplete', () => {
           element.lastQueriedInput = 'cat';
 
           const matches = [
-            createSearchMatchForTesting({
+            createSearchMatch({
               fillIntoEdit: 'cat',
               allowedToBeDefaultMatch: true,
             }),
-            createSearchMatchForTesting({
+            createSearchMatch({
               fillIntoEdit: 'caterpillar',
               suggestTemplate:
                   createSuggestTemplateInfo({style: SuggestStyle.kDefault}),
             }),
-            createSearchMatchForTesting({
+            createSearchMatch({
               fillIntoEdit: 'cat image prompt',
               suggestTemplate:
                   createSuggestTemplateInfo({style: SuggestStyle.kRichImage}),
             }),
           ];
           searchboxCallbackRouterRemote.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
+              createAutocompleteResult({
                 input: 'cat',
                 matches,
                 queryId: element.activeQueryId,
@@ -828,6 +827,152 @@ suite('ComposeboxAutocomplete', () => {
         });
 
     test(
+        'retains trailing space when pressing space on a selected match',
+        async () => {
+          loadTimeData.overrideValues(
+              {composeboxShowZps: true, composeboxShowTypedSuggest: true});
+          element = createTestElement();
+          await microtasksFinished();
+
+          const input = element.getInputElement().inputElement;
+          const matchesElement = element.$.matches;
+
+          setInputValue(input, 'what is');
+          input.dispatchEvent(new Event('input'));
+          await microtasksFinished();
+
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'what is',
+                matches: [
+                  createSearchMatch({
+                    fillIntoEdit: 'what is',
+                    allowedToBeDefaultMatch: true,
+                    type: 'search-what-you-typed',
+                  }),
+                  createSearchMatch({
+                    fillIntoEdit: 'what is a flock camera',
+                  }),
+                ],
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          input.dispatchEvent(new KeyboardEvent(
+              'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
+          await microtasksFinished();
+          assertEquals(1, matchesElement.selectedMatchIndex);
+          assertEquals('what is a flock camera', getInputValue(input));
+
+          // Simulate pressing Space on the selected match.
+          setInputValue(input, 'what is a flock camera ');
+          input.dispatchEvent(new Event('input'));
+          await microtasksFinished();
+
+          // Synchronous verbatim response collapses trailing whitespace in
+          // `fillIntoEdit`.
+          const verbatimMatch = createSearchMatch({
+            fillIntoEdit: 'what is a flock camera',
+            allowedToBeDefaultMatch: true,
+            type: 'search-what-you-typed',
+          });
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'what is a flock camera ',
+                matches: [verbatimMatch],
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertEquals(0, matchesElement.selectedMatchIndex);
+          assertEquals('what is a flock camera ', element.input);
+          assertEquals('what is a flock camera ', getInputValue(input));
+          assertEquals('what is a flock camera ', element.lastQueriedInput);
+
+          // Async suggestions arrive for the same query.
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'what is a flock camera ',
+                matches: [
+                  verbatimMatch,
+                  createSearchMatch({
+                    fillIntoEdit: 'what is a flock camera used for',
+                  }),
+                ],
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertEquals(0, matchesElement.selectedMatchIndex);
+          assertEquals('what is a flock camera ', element.input);
+          assertEquals('what is a flock camera ', getInputValue(input));
+          assertEquals('what is a flock camera ', element.lastQueriedInput);
+
+          // Continue typing 'cost' and verify the space between 'camera' and
+          // 'cost' is retained and queried.
+          searchboxHandler.resetResolver('queryAutocomplete');
+          setInputValue(input, 'what is a flock camera cost');
+          input.dispatchEvent(new Event('input'));
+          const queryArgs =
+              await searchboxHandler.whenCalled('queryAutocomplete');
+          await microtasksFinished();
+
+          assertEquals('what is a flock camera cost', queryArgs[2]);
+          assertEquals('what is a flock camera cost', element.input);
+          assertEquals('what is a flock camera cost', getInputValue(input));
+        });
+
+    test(
+        'restores lastQueriedInput including trailing space when returning ' +
+            'to default match',
+        async () => {
+          loadTimeData.overrideValues(
+              {composeboxShowZps: true, composeboxShowTypedSuggest: true});
+          element = createTestElement();
+          await microtasksFinished();
+
+          const input = element.getInputElement().inputElement;
+          const matchesElement = element.$.matches;
+
+          setInputValue(input, 'what is ');
+          input.dispatchEvent(new Event('input'));
+          await microtasksFinished();
+
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'what is ',
+                matches: [
+                  createSearchMatch({
+                    fillIntoEdit: 'what is',
+                    allowedToBeDefaultMatch: true,
+                  }),
+                  createSearchMatch({
+                    fillIntoEdit: 'what is diwali',
+                  }),
+                ],
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          input.dispatchEvent(new KeyboardEvent(
+              'keydown', {key: 'ArrowDown', bubbles: true, composed: true}));
+          await microtasksFinished();
+          assertEquals(1, matchesElement.selectedMatchIndex);
+          assertEquals('what is diwali', element.input);
+
+          input.dispatchEvent(new KeyboardEvent(
+              'keydown', {key: 'PageUp', bubbles: true, composed: true}));
+          await microtasksFinished();
+          assertEquals(0, matchesElement.selectedMatchIndex);
+          assertEquals('what is ', element.input);
+          assertEquals('what is ', getInputValue(input));
+        });
+
+    test(
         'arrow up/down enables submit for suggestion with no query',
         async () => {
           loadTimeData.overrideValues({composeboxShowZps: true});
@@ -839,10 +984,10 @@ suite('ComposeboxAutocomplete', () => {
               new Event('input'));
 
           const matches = [
-            createSearchMatchForTesting({fillIntoEdit: ''}),
+            createSearchMatch({fillIntoEdit: ''}),
           ];
           searchboxCallbackRouterRemote.autocompleteResultChanged(
-              createAutocompleteResultForTesting({
+              createAutocompleteResult({
                 queryId: element.activeQueryId,
                 matches,
               }));
@@ -1273,12 +1418,12 @@ suite('ComposeboxAutocomplete', () => {
           new InputEvent('input'));
 
       let matches = [
-        createSearchMatchForTesting({
+        createSearchMatch({
           supportsDeletion: true,
         }),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: getInputValue(element.getInputElement().inputElement)
                        .trimStart(),
@@ -1303,14 +1448,14 @@ suite('ComposeboxAutocomplete', () => {
       searchboxHandler.reset();
 
       matches = [
-        createSearchMatchForTesting({supportsDeletion: true}),
-        createSearchMatchForTesting({
+        createSearchMatch({supportsDeletion: true}),
+        createSearchMatch({
           supportsDeletion: true,
           fillIntoEdit: 'hello world 2',
         }),
       ];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: '',
             matches,
@@ -1354,12 +1499,12 @@ suite('ComposeboxAutocomplete', () => {
       assertEquals(1, searchboxHandler.getCallCount('deleteAutocompleteMatch'));
       assertEquals(0, searchboxHandler.getCallCount('submitQuery'));
 
-      matches = [createSearchMatchForTesting({
+      matches = [createSearchMatch({
         supportsDeletion: true,
         fillIntoEdit: 'hello world 2',
       })];
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: '',
             matches,
@@ -1385,7 +1530,7 @@ suite('ComposeboxAutocomplete', () => {
 
       element.haveReceivedSynchronousAutocompleteResponse = true;
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: 'smart ',
             matches: [],
@@ -1407,7 +1552,7 @@ suite('ComposeboxAutocomplete', () => {
 
       element.haveReceivedSynchronousAutocompleteResponse = true;
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: 'smart ',
             matches: [],
@@ -1438,15 +1583,15 @@ suite('ComposeboxAutocomplete', () => {
       await microtasksFinished();
 
       const matches = [
-        createSearchMatchForTesting(),
-        createSearchMatchForTesting({fillIntoEdit: 'hello world 2'}),
+        createSearchMatch(),
+        createSearchMatch({fillIntoEdit: 'hello world 2'}),
       ];
 
       setInputValue(element.getInputElement().inputElement, 'awesome');
       element.getInputElement().inputElement.dispatchEvent(new Event('input'));
       element.haveReceivedSynchronousAutocompleteResponse = true;
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: element.activeQueryId,
             input: 'awesome',
             matches,
@@ -1851,6 +1996,204 @@ suite('ComposeboxAutocomplete', () => {
           await microtasksFinished();
 
           assertEquals(-1, element.activeQueryId);
+        });
+  });
+
+  suite('NoFlickerSuggestionsFix', () => {
+    test(
+        'carries over matches and suggestionGroupsMap on sync pass',
+        async () => {
+          loadTimeData.overrideValues({
+            composeboxShowZps: true,
+            composeboxShowTypedSuggest: true,
+          });
+          element = createTestElement({
+            composeboxNoFlickerSuggestionsFix: true,
+            richImageSuggestionsEnabled: true,
+          });
+          await microtasksFinished();
+
+          const zpsGroupMap = {
+            40000: {
+              header: 'Explore ideas',
+              renderType: RenderType.kGrid,
+              sideType: SideType.kDefaultPrimary,
+            },
+          };
+          const zpsMatches = [
+            createAutocompleteMatch({
+              fillIntoEdit: 'idea 1',
+              type: 'search-suggest',
+              suggestionGroupId: 40000,
+              suggestTemplate:
+                  createSuggestTemplateInfo({primaryText: 'idea 1'}),
+            }),
+            createAutocompleteMatch({
+              fillIntoEdit: 'idea 2',
+              type: 'search-suggest',
+              suggestionGroupId: 40000,
+              suggestTemplate:
+                  createSuggestTemplateInfo({primaryText: 'idea 2'}),
+            }),
+          ];
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: '',
+                matches: zpsMatches,
+                suggestionGroupsMap: zpsGroupMap,
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          const dropdown = element.$.matches;
+          assertFalse(dropdown.hidden);
+          assertEquals(
+              'Explore ideas',
+              dropdown.shadowRoot.querySelector('#header_40000')
+                  ?.textContent.trim());
+          assertEquals(
+              1, dropdown.shadowRoot.querySelectorAll('.matches.grid').length);
+
+          // Simulate typing a character and receiving the synchronous
+          // verbatim-only response.
+          setInputValue(element.getInputElement().inputElement, 'a');
+          element.getInputElement().inputElement.dispatchEvent(
+              new Event('input'));
+          await microtasksFinished();
+
+          const verbatimMatch = createSearchMatch({
+            fillIntoEdit: 'a',
+            type: 'search-what-you-typed',
+            allowedToBeDefaultMatch: true,
+          });
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'a',
+                matches: [verbatimMatch],
+                suggestionGroupsMap: {},
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertTrue(element.showDropdown);
+          assertFalse(dropdown.hidden);
+          assertEquals(3, element.result!.matches.length);
+          assertDeepEquals(zpsGroupMap, element.result!.suggestionGroupsMap);
+          assertEquals(
+              'Explore ideas',
+              dropdown.shadowRoot.querySelector('#header_40000')
+                  ?.textContent.trim());
+          assertEquals(
+              1, dropdown.shadowRoot.querySelectorAll('.matches.grid').length);
+
+          // Simulate receiving the asynchronous typed suggest response.
+          const typedMatch = createSearchMatch({
+            fillIntoEdit: 'apple',
+            type: 'search-suggest',
+            allowedToBeDefaultMatch: false,
+          });
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'a',
+                matches: [verbatimMatch, typedMatch],
+                suggestionGroupsMap: {},
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertEquals(2, element.result!.matches.length);
+          assertDeepEquals({}, element.result!.suggestionGroupsMap);
+        });
+
+    test(
+        'does not carry over previous matches when typing in tool mode',
+        async () => {
+          loadTimeData.overrideValues({
+            composeboxShowZps: true,
+            composeboxShowTypedSuggest: true,
+          });
+          element = createTestElement({
+            composeboxNoFlickerSuggestionsFix: true,
+            richImageSuggestionsEnabled: true,
+          });
+          await microtasksFinished();
+
+          searchboxCallbackRouterRemote.onInputStateChanged(
+              new MockInputState({activeTool: ToolMode.kImageGen}));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+          assertTrue(element.inToolMode);
+
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: '',
+                matches: [
+                  createAutocompleteMatch({
+                    fillIntoEdit: 'neon city',
+                    type: 'search-suggest',
+                    suggestionGroupId: 40000,
+                    suggestTemplate: createSuggestTemplateInfo({
+                      primaryText: 'neon city',
+                      style: SuggestStyle.kRichImage,
+                    }),
+                  }),
+                  createAutocompleteMatch({
+                    fillIntoEdit: 'watercolor cat',
+                    type: 'search-suggest',
+                    suggestionGroupId: 40000,
+                    suggestTemplate: createSuggestTemplateInfo({
+                      primaryText: 'watercolor cat',
+                      style: SuggestStyle.kRichImage,
+                    }),
+                  }),
+                ],
+                suggestionGroupsMap: {
+                  40000: {
+                    header: 'Explore ideas',
+                    renderType: RenderType.kGrid,
+                    sideType: SideType.kDefaultPrimary,
+                  },
+                },
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          const dropdown = element.$.matches;
+          assertTrue(element.showDropdown);
+          assertFalse(dropdown.hidden);
+
+          // Typing in tool mode only produces a synchronous verbatim match;
+          // previous ZPS matches should not be carried over so the dropdown
+          // closes immediately, matching Realbox.
+          setInputValue(element.getInputElement().inputElement, 'a');
+          element.getInputElement().inputElement.dispatchEvent(
+              new Event('input'));
+          await microtasksFinished();
+
+          searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: element.activeQueryId,
+                input: 'a',
+                matches: [
+                  createSearchMatch({
+                    fillIntoEdit: 'a',
+                    type: 'search-what-you-typed',
+                    allowedToBeDefaultMatch: true,
+                  }),
+                ],
+                suggestionGroupsMap: {},
+              }));
+          await searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertEquals(1, element.result!.matches.length);
+          assertDeepEquals({}, element.result!.suggestionGroupsMap);
+          assertFalse(element.showDropdown);
+          assertTrue(dropdown.hidden);
         });
   });
 

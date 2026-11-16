@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/dictation/metrics.h"
@@ -21,8 +22,16 @@
 #include "chrome/browser/dictation/stream_provider_delegate.h"
 #include "chrome/browser/dictation/target.h"
 #include "content/public/browser/global_dom_node_id.h"
+#include "content/public/browser/render_widget_host.h"
+#include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/device/public/mojom/wake_lock.mojom.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
+
+namespace input {
+struct NativeWebKeyboardEvent;
+}  // namespace input
 
 namespace dictation {
 
@@ -36,7 +45,8 @@ class StreamProvider;
 // dictation system.
 class SessionController : public SessionUiDelegate,
                           public StreamProviderDelegate,
-                          public content::WebContentsObserver {
+                          public content::WebContentsObserver,
+                          public content::RenderWidgetHostObserver {
  public:
   explicit SessionController(SessionControllerDelegate& delegate);
   ~SessionController() override;
@@ -48,9 +58,7 @@ class SessionController : public SessionUiDelegate,
 
   // SessionUiDelegate:
   void UiRequestEndSession() override;
-  void UiRequestEndActiveStream() override;
   void FinalizeAndShutdown(DictationStreamEndTrigger trigger) override;
-  void UiRequestStartStream() override;
   SessionState GetState() const override;
   base::CallbackListSubscription AddSessionStateChangedCallback(
       SessionStateChangedCallback callback) override;
@@ -70,6 +78,10 @@ class SessionController : public SessionUiDelegate,
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override;
   void WebContentsDestroyed() override;
+
+  // content::RenderWidgetHostObserver:
+  void RenderWidgetHostDestroyed(
+      content::RenderWidgetHost* widget_host) override;
 
   // Starts a new dictation stream by creating and attaching a new stream
   // provider. An existing stream must have been detached before calling this
@@ -103,11 +115,23 @@ class SessionController : public SessionUiDelegate,
     return auto_session_end_timer_.IsRunning();
   }
 
+  void FlushWakeLockForTesting();
+
  private:
   void MoveToState(SessionState new_state);
+  void UpdateWakeLock();
+  device::mojom::WakeLock* GetWakeLock();
   void EndSessionAsynchronously();
   void PurgeToDeleteStreamProviders();
   content::BrowserContext* GetBrowserContext() const;
+  void RegisterKeyPressCallback(content::RenderWidgetHost* widget_host);
+  void UnregisterKeyPressCallback();
+
+  // Intercepts Enter key presses during an active stream to end the stream and
+  // prevent the newline from being inserted into the targeted element. See also
+  // `DidGetUserInteraction`, which handles other user typing that should end
+  // the stream without preventing the typed input from reaching the element.
+  bool HandleKeyPressEvent(const input::NativeWebKeyboardEvent& event);
 
   const base::raw_ref<SessionControllerDelegate> delegate_;
 
@@ -138,9 +162,21 @@ class SessionController : public SessionUiDelegate,
   // VoiceTyping.StreamAbandonedBeforeListening.
   base::TimeTicks stream_trigger_time_;
 
-  // Timer for delayed session shutdown when `kSessionEndsOnStreamEnd` is
-  // enabled.
+  // Timer for delayed session shutdown after a stream ends.
   base::OneShotTimer auto_session_end_timer_;
+
+  // Display wake lock held whenever `state_` is not `SessionState::kInactive`
+  // so the screen does not go to sleep during long dictations.
+  // TODO(https://crbug.com/581952682): Consider still allowing the screen to
+  // dim during periods of silence on platforms where that kind of wake lock is
+  // supported.
+  mojo::Remote<device::mojom::WakeLock> wake_lock_;
+  bool is_wake_lock_active_ = false;
+
+  content::RenderWidgetHost::KeyPressEventCallback key_press_event_callback_;
+  base::ScopedObservation<content::RenderWidgetHost,
+                          content::RenderWidgetHostObserver>
+      render_widget_host_observation_{this};
 
   base::WeakPtrFactory<SessionController> weak_ptr_factory_{this};
 };

@@ -31,8 +31,10 @@ BASE_FEATURE(kGlicReloadWebContentsAfterExpiry,
 const base::FeatureParam<int> kGlicMaxReloadCount{
     &kGlicReloadWebContentsAfterExpiry, "max_reload_count", 4};
 
+// Default-enabled platforms: all (caps warming pool recovery under memory
+// pressure).
 BASE_FEATURE(kGlicLimitMemoryPressureRecovery,
-             FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<int> kGlicMaxMemoryPressureRecoveries{
     &kGlicLimitMemoryPressureRecovery, "max_recoveries", 2};
@@ -423,16 +425,8 @@ GlicWebContentsWarmingPool::GetWarmedWebContents() const {
   if (!warmed_container_) {
     return std::nullopt;
   }
-  if (GlicKeyedService::IsNoWebviewEnabled(profile_)) {
-    auto* no_webview_container =
-        static_cast<GlicNoWebviewContentsManager*>(warmed_container_.get());
-    return WarmedWebContents{
-        .webui_contents = no_webview_container->overlay_contents(),
-        .guest_contents = no_webview_container->guest_contents(),
-    };
-  }
   return WarmedWebContents{
-      .webui_contents = warmed_container_->active_web_contents(),
+      .webui_contents = warmed_container_->webui_contents(),
       .guest_contents = warmed_container_->guest_contents(),
   };
 }

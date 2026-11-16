@@ -6,6 +6,7 @@
 
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/input/native_web_keyboard_event.h"
@@ -25,6 +26,7 @@
 #include "ui/aura/client/transient_window_client.h"
 #include "ui/aura/client/window_parenting_client.h"
 #include "ui/aura/env.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/layer_surface.h"
 #include "ui/compositor/layer_textured.h"
@@ -35,6 +37,7 @@
 #include "ui/events/blink/web_input_event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/window_util.h"
 #include "ui/wm/public/activation_client.h"
 
@@ -226,7 +229,17 @@ std::optional<gfx::Size> UnboundedSurfaceWindowAura::GetMaximumSize() const {
 
 gfx::NativeCursor UnboundedSurfaceWindowAura::GetCursor(
     const gfx::Point& point) {
-  return gfx::NativeCursor();
+  // wm::CompoundEventFilter asks the window under the pointer for its cursor
+  // on every mouse enter and move. The renderer only sends a cursor when it
+  // changes, and the owner view caches the last one it received (also for its
+  // child frames, through CursorManager), so hand out that cursor rather than
+  // the default arrow. This also yields kNone while the pointer is locked.
+  if (!parent_view_) {
+    return gfx::NativeCursor();
+  }
+  // `parent_view_` is always the RenderWidgetHostViewAura given to Create().
+  return static_cast<RenderWidgetHostViewAura*>(parent_view_.get())
+      ->GetCursor(point);
 }
 
 int UnboundedSurfaceWindowAura::GetNonClientComponent(
@@ -327,6 +340,10 @@ bool UnboundedSurfaceWindowAura::InitWindow(const gfx::Rect& bounds_in_screen) {
       std::make_unique<aura::Window>(this, aura::client::WINDOW_TYPE_MENU);
   window_->Init(ui::LayerType::LAYER_SURFACE);
   window_->SetTransparent(true);
+  if (base::FeatureList::IsEnabled(
+          features::kOmitNativeFrameOnShadowlessMenus)) {
+    wm::SetShadowElevation(window_.get(), wm::kShadowElevationNone);
+  }
   // TODO(crbug.com/508672616): Note that we may need to change this to a non-
   // transparent background later, if security issues arise. For example, this
   // allows content to put up a fully transparent (invisible) overlay over site

@@ -48,6 +48,7 @@
 #include "components/policy/core/common/cloud/machine_level_user_cloud_policy_store.h"
 #include "components/policy/core/common/cloud/mock_cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/mock_device_management_service.h"
+#include "components/policy/core/common/cloud/test/policy_builder.h"
 #include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_switches.h"
 #include "components/policy/core/common/policy_types.h"
@@ -595,6 +596,10 @@ class ChromeBrowserCloudManagementEnrollmentTest
     if (is_enrollment_token_valid()) {
       EXPECT_TRUE(dm_token.is_valid());
       EXPECT_EQ(kFakeDeviceToken, dm_token.value());
+      EXPECT_FALSE(GetMachineName().empty());
+      EXPECT_EQ(
+          test_server_.client_storage()->GetClient("client_id").machine_name,
+          GetMachineName());
     } else {
       EXPECT_TRUE(dm_token.is_empty());
     }
@@ -758,6 +763,9 @@ class MachineLevelUserCloudPolicyPolicyFetchTest
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitchASCII(switches::kDeviceManagementUrl,
                                     test_server_->GetServiceURL().spec());
+    command_line->AppendSwitchASCII(
+        switches::kPolicyVerificationKey,
+        PolicyBuilder::GetEncodedPolicyVerificationKey());
     ChromeBrowserPolicyConnector::EnableCommandLineSupportForTesting();
   }
 
@@ -1281,6 +1289,9 @@ class MachineLevelUserCloudPolicyRobotAuthTest : public PlatformBrowserTest {
     base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
     command_line->AppendSwitchASCII(switches::kDeviceManagementUrl,
                                     test_server_->GetServiceURL().spec());
+    command_line->AppendSwitchASCII(
+        switches::kPolicyVerificationKey,
+        PolicyBuilder::GetEncodedPolicyVerificationKey());
     ChromeBrowserPolicyConnector::EnableCommandLineSupportForTesting();
   }
 

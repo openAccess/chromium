@@ -14,8 +14,8 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.omnibox.ChromeAutocompleteSchemeClassifier;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -34,6 +34,7 @@ import org.chromium.url.GURL;
 @NullMarked
 class ContextMenuHeaderCoordinator {
     private final PropertyModel mModel;
+    private @Nullable ContextMenuHeaderMediator mMediator;
 
     private static boolean sDisableForTesting;
 
@@ -64,9 +65,6 @@ class ContextMenuHeaderCoordinator {
             return;
         }
 
-        if (!ChromeFeatureList.sCctContextualMenuItems.isEnabled()) {
-            isCustomItemPresent = false;
-        }
         HeaderInfo headerInfo =
                 ContextMenuUtils.getHeaderInfo(params, isCustomItemPresent, webContents.getTitle());
         String pageTitle = headerInfo.getPageTitle().toString();
@@ -85,7 +83,15 @@ class ContextMenuHeaderCoordinator {
                         : "";
 
         mModel = buildModel(activity, pageTitle, altText, url, secondaryUrl, tertiaryUrl);
-        new ContextMenuHeaderMediator(activity, mModel, params, profile, nativeDelegate);
+        mMediator =
+                new ContextMenuHeaderMediator(activity, mModel, params, profile, nativeDelegate);
+    }
+
+    void destroy() {
+        if (mMediator != null) {
+            mMediator.destroy();
+            mMediator = null;
+        }
     }
 
     public static void setDisableForTesting(boolean disable) {
@@ -137,8 +143,7 @@ class ContextMenuHeaderCoordinator {
 
         // This is limited to CCTs and the secondary url is only set in CCT sessions with present
         // custom context menu items.
-        if (ChromeFeatureList.sCctContextualMenuItems.isEnabled()
-                && !TextUtils.isEmpty(secondaryUrl)) {
+        if (!TextUtils.isEmpty(secondaryUrl)) {
             // The secondary URL is guaranteed to be visible in this flow.
             int visibleProperties = 1;
             if (!TextUtils.isEmpty(altText)) visibleProperties++;

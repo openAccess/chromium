@@ -17,6 +17,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "build/build_config.h"
 #include "chrome/browser/ttc/app/audio_controller_impl.h"
 #include "chrome/browser/ttc/core/session_controller.h"
 #include "chrome/browser/ttc/core/states.h"
@@ -65,12 +66,23 @@ class FakeSessionController : public SessionController {
   }
   void SetSessionLifecycle(SessionLifecycle lifecycle) override {
     session_lifecycle_ = lifecycle;
+    if (on_lifecycle_set_) {
+      on_lifecycle_set_.Run(lifecycle);
+    }
+  }
+  void SetSessionId(const std::string& session_id) override {
+    session_id_ = session_id;
   }
   void ProcessToolCall(const ToolRequest& tool_request,
                        ToolResponseCallback tool_response) override {
     last_request_.name = tool_request.name;
     last_request_.arguments = tool_request.arguments.Clone();
     std::move(tool_response).Run(ToolResponse::Success());
+  }
+  void ProcessToolCallBatch(std::vector<PendingToolCall> tool_calls) override {
+    for (PendingToolCall& tool_call : tool_calls) {
+      ProcessToolCall(tool_call.request, std::move(tool_call.callback));
+    }
   }
   std::vector<ToolDefinition> GetToolDefinitions() override {
     std::vector<ToolDefinition> tools;
@@ -81,6 +93,12 @@ class FakeSessionController : public SessionController {
   }
   void UserAudioLevelUpdate(float audio_level) override {
     last_audio_level_ = audio_level;
+  }
+  void OnMicCaptureChanged(bool capturing) override {
+    mic_capturing_ = capturing;
+  }
+  void OnSystemMicMuteChanged(bool muted, bool at_stream_start) override {
+    system_mic_mute_ = SystemMicMute{muted, at_stream_start};
   }
   void AddObserver(Observer* observer) override {}
   void RemoveObserver(Observer* observer) override {}
@@ -96,19 +114,26 @@ class FakeSessionController : public SessionController {
   }
   void OnModelAudioEnvelopeReady(const AudioEnvelope& envelope) override {}
   void OnSpeakerChanged(Speaker speaker) override {}
-  void OnSessionInitialized() override { ++session_initialized_count_; }
   void OnError(ErrorCode error) override {
     last_error_ = error;
     ++error_count_;
   }
   void EndSessionAsync() override { ++end_session_count_; }
 
+  struct SystemMicMute {
+    bool muted;
+    bool at_stream_start;
+  };
+
   const ToolRequest& last_request() const { return last_request_; }
+  std::optional<bool> mic_capturing() const { return mic_capturing_; }
+  std::optional<SystemMicMute> system_mic_mute() const {
+    return system_mic_mute_;
+  }
   std::optional<float> last_audio_level() const { return last_audio_level_; }
   std::optional<ErrorCode> last_error() const { return last_error_; }
   int error_count() const { return error_count_; }
   int end_session_count() const { return end_session_count_; }
-  int session_initialized_count() const { return session_initialized_count_; }
   int turn_started_count() const { return turn_started_count_; }
   int turn_complete_count() const { return turn_complete_count_; }
   int interrupted_count() const { return interrupted_count_; }
@@ -117,6 +142,13 @@ class FakeSessionController : public SessionController {
   }
   const std::string& last_output_transcription() const {
     return last_output_transcription_;
+  }
+  const std::optional<std::string>& session_id() const { return session_id_; }
+
+  // Called whenever the lifecycle is set, once it's set.
+  void set_on_lifecycle_set(
+      base::RepeatingCallback<void(SessionLifecycle)> callback) {
+    on_lifecycle_set_ = std::move(callback);
   }
 
   void AddToolDefinition(const std::string& name) {
@@ -129,17 +161,20 @@ class FakeSessionController : public SessionController {
   raw_ptr<Profile> profile_;
   ToolRequest last_request_;
   std::optional<float> last_audio_level_;
+  std::optional<bool> mic_capturing_;
+  std::optional<SystemMicMute> system_mic_mute_;
   std::optional<ErrorCode> last_error_;
   int error_count_ = 0;
   int end_session_count_ = 0;
-  int session_initialized_count_ = 0;
   int turn_started_count_ = 0;
   int turn_complete_count_ = 0;
   int interrupted_count_ = 0;
   std::string last_input_transcription_;
   std::string last_output_transcription_;
+  std::optional<std::string> session_id_;
   std::vector<ToolDefinition> tools_;
   SessionLifecycle session_lifecycle_ = SessionLifecycle::kInitializing;
+  base::RepeatingCallback<void(SessionLifecycle)> on_lifecycle_set_;
   FakeSessionJournal session_journal_;
   // Null, as in production while the debug tools are off.
   raw_ptr<DebugSink> debug_sink_ = nullptr;
@@ -171,8 +206,12 @@ class ConversationImplTest : public testing::Test {
   // AudioController backed by `audio_manager_`. Both are reachable via
   // backend() and audio_controller().
   ConversationImpl& CreateConversation() {
+    auto backend = std::make_unique<MockTtcBackend>();
+    ON_CALL(*backend, GetSessionId()).WillByDefault([]() {
+      return std::optional<std::string>("test-session-id");
+    });
     conversation_ = std::make_unique<ConversationImpl>(
-        std::make_unique<MockTtcBackend>(),
+        std::move(backend),
         std::make_unique<AudioControllerImpl>(GetAudioStreamFactoryBinder(),
                                               GetAudioSystemFactory()),
         session_controller_);
@@ -306,6 +345,44 @@ TEST_F(ConversationImplTest, StartAndStopWiring) {
   EXPECT_FALSE(audio_controller().is_capturing());
 }
 
+TEST_F(ConversationImplTest, CaptureStartAndStopReportedToSession) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+  conversation.OnBackendInitialized();
+
+  // Capture is requested once the device parameters arrive.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return session_controller_.mic_capturing().value_or(false); }));
+
+  audio_controller().StopCapture();
+  EXPECT_EQ(session_controller_.mic_capturing(), false);
+}
+
+TEST_F(ConversationImplTest, SystemMicMuteReportedToSession) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  // A stream that opens muted reports it before any audio is captured.
+  audio_controller().OnCaptureMuted(true);
+  ASSERT_TRUE(session_controller_.system_mic_mute().has_value());
+  EXPECT_TRUE(session_controller_.system_mic_mute()->muted);
+  EXPECT_TRUE(session_controller_.system_mic_mute()->at_stream_start);
+
+  base::RunLoop run_loop;
+  EXPECT_CALL(backend(), SendAudioChunk(testing::_)).WillOnce([&run_loop] {
+    run_loop.Quit();
+  });
+  auto bus = media::AudioBus::Create(1, 1600);
+  bus->Zero();
+  audio_controller().Capture(bus.get(), base::TimeTicks::Now(), {}, 1.0);
+  run_loop.Run();
+
+  // Once audio has flowed, a change comes from the system while capturing.
+  audio_controller().OnCaptureMuted(false);
+  EXPECT_FALSE(session_controller_.system_mic_mute()->muted);
+  EXPECT_FALSE(session_controller_.system_mic_mute()->at_stream_start);
+}
+
 TEST_F(ConversationImplTest, CapturedAudioRoutedToBackend) {
   ConversationImpl& conversation = CreateConversation();
   conversation.Start();
@@ -354,14 +431,25 @@ TEST_F(ConversationImplTest, CapturedAudioLevelReportedToSession) {
 TEST_F(ConversationImplTest, OnPlaybackCompletedReportsStatus) {
   ConversationImpl& conversation = CreateConversation();
   conversation.Start();
+  conversation.OnModelTurnStateUpdate(ModelTurnStateUpdate::kTurnStarted,
+                                      /*generation_id=*/42);
 
   base::RunLoop run_loop;
-  EXPECT_CALL(backend(), ReportPlaybackStatus(42)).WillOnce([&run_loop] {
-    run_loop.Quit();
-  });
+  EXPECT_CALL(backend(), ReportPlaybackStatus(testing::_,
+                                              /*playback_complete=*/false,
+                                              /*generation_id=*/42))
+      .Times(testing::AnyNumber());
+  // 100 frames at 24kHz is 4166.67 us, rounded up via ceil(100e6 / 24000) to
+  // 4167 us.
+  EXPECT_CALL(backend(), ReportPlaybackStatus(base::Microseconds(4167),
+                                              /*playback_complete=*/true,
+                                              /*generation_id=*/42))
+      .WillOnce([&run_loop] { run_loop.Quit(); });
 
   std::vector<int16_t> samples(100, 1000);
-  audio_controller().PlayAudio(samples, /*sequence_number=*/42);
+  audio_controller().PlayAudio(samples);
+  conversation.OnModelTurnStateUpdate(
+      ModelTurnStateUpdate::kGenerationCompleted, /*generation_id=*/42);
 
   auto bus = media::AudioBus::Create(1, 100);
   audio_controller().Render(base::TimeDelta(), base::TimeTicks::Now(), {},
@@ -474,11 +562,27 @@ TEST_F(ConversationImplTest, SessionGoesLiveOnlyOnceBackendInitialized) {
   conversation.Start();
   EXPECT_EQ(session_controller_.GetSessionLifecycle(),
             SessionLifecycle::kInitializing);
-  EXPECT_EQ(session_controller_.session_initialized_count(), 0);
 
   conversation.OnBackendInitialized();
   EXPECT_EQ(session_controller_.GetSessionLifecycle(), SessionLifecycle::kLive);
-  EXPECT_EQ(session_controller_.session_initialized_count(), 1);
+}
+
+TEST_F(ConversationImplTest, CaptureStartsBeforeSessionGoesLive) {
+  ConversationImpl& conversation = CreateConversation();
+  std::optional<bool> capturing_when_live;
+  session_controller_.set_on_lifecycle_set(
+      base::BindLambdaForTesting([&](SessionLifecycle lifecycle) {
+        if (lifecycle == SessionLifecycle::kLive) {
+          capturing_when_live = audio_controller().is_capturing();
+        }
+      }));
+
+  conversation.OnBackendInitialized();
+  // So the session isn't seen as muted when it goes live.
+  EXPECT_EQ(capturing_when_live, true);
+
+  // The callback refers to locals of this test.
+  session_controller_.set_on_lifecycle_set({});
 }
 
 TEST_F(ConversationImplTest, MuteStopsAndResumesCapture) {
@@ -486,14 +590,11 @@ TEST_F(ConversationImplTest, MuteStopsAndResumesCapture) {
   conversation.Start();
   conversation.OnBackendInitialized();
   EXPECT_TRUE(audio_controller().is_capturing());
-  EXPECT_FALSE(conversation.IsMicMuted());
 
   conversation.SetMicMuted(true);
-  EXPECT_TRUE(conversation.IsMicMuted());
   EXPECT_FALSE(audio_controller().is_capturing());
 
   conversation.SetMicMuted(false);
-  EXPECT_FALSE(conversation.IsMicMuted());
   EXPECT_TRUE(audio_controller().is_capturing());
 }
 
@@ -518,6 +619,177 @@ TEST_F(ConversationImplTest, AudioCapturedBeforeMuteIsNotSent) {
 
   ASSERT_TRUE(session_controller_.last_audio_level().has_value());
   EXPECT_FLOAT_EQ(*session_controller_.last_audio_level(), 0.0f);
+}
+
+TEST_F(ConversationImplTest,
+       BackendInitializedForwardsSessionIdToSessionController) {
+  ConversationImpl& conversation = CreateConversation();
+
+  EXPECT_CALL(backend(), GetSessionId())
+      .WillOnce(testing::Return(std::string("server-session-789")));
+  conversation.OnBackendInitialized();
+
+  EXPECT_EQ(session_controller_.session_id(), "server-session-789");
+}
+
+TEST_F(ConversationImplTest,
+       BackendInitializedWithoutSessionIdReportsErrorAndCloses) {
+  ConversationImpl& conversation = CreateConversation();
+
+  EXPECT_CALL(backend(), GetSessionId())
+      .WillOnce(testing::Return(std::nullopt));
+  EXPECT_CALL(backend(), Close()).Times(1);
+
+  conversation.OnBackendInitialized();
+  EXPECT_EQ(session_controller_.session_id(), std::nullopt);
+  EXPECT_EQ(session_controller_.last_error(), ErrorCode::kInternalBackendError);
+  EXPECT_NE(session_controller_.GetSessionLifecycle(), SessionLifecycle::kLive);
+}
+
+
+TEST_F(ConversationImplTest, BackendInitializedIgnoredWhenSessionFinished) {
+  ConversationImpl& conversation = CreateConversation();
+
+  session_controller_.SetSessionLifecycle(SessionLifecycle::kFinished);
+  EXPECT_CALL(backend(), GetSessionId()).Times(0);
+  conversation.OnBackendInitialized();
+  EXPECT_EQ(session_controller_.session_id(), std::nullopt);
+}
+
+class ConversationImplHotlTest : public ConversationImplTest {
+ protected:
+  const media::AudioParameters params_{
+      media::AudioParameters::AUDIO_PCM_LOW_LATENCY,
+      media::ChannelLayoutConfig::Mono(), /*sample_rate=*/16000,
+      /*frames_per_buffer=*/1600};
+  const std::vector<int16_t> samples_ = std::vector<int16_t>(1600, 8192);
+};
+
+TEST_F(ConversationImplHotlTest, SinkReceivesCapturedAudioInsteadOfBackend) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  std::vector<int16_t> sink_samples;
+  std::optional<media::AudioParameters> sink_params;
+  conversation.SetHotlAudioSink(
+      base::BindLambdaForTesting([&](base::span<const int16_t> pcm_data,
+                                     const media::AudioParameters& params) {
+        sink_samples.assign(pcm_data.begin(), pcm_data.end());
+        sink_params = params;
+      }));
+  EXPECT_CALL(backend(), SendAudioChunk(testing::_)).Times(0);
+
+  constexpr float kAmplitude = 0.25f;
+  conversation.OnCapturedAudio(samples_, params_, kAmplitude);
+
+  EXPECT_EQ(sink_samples, samples_);
+  ASSERT_TRUE(sink_params.has_value());
+  EXPECT_EQ(sink_params->sample_rate(), 16000);
+  // The voice plate keeps showing the user's audio level.
+  ASSERT_TRUE(session_controller_.last_audio_level().has_value());
+  EXPECT_FLOAT_EQ(*session_controller_.last_audio_level(), kAmplitude);
+}
+
+TEST_F(ConversationImplHotlTest, ClearingSinkRestoresBackend) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+  int sink_calls = 0;
+  conversation.SetHotlAudioSink(base::BindLambdaForTesting(
+      [&](base::span<const int16_t>, const media::AudioParameters&) {
+        ++sink_calls;
+      }));
+
+  // Frame 1 routes to the sink, not the backend.
+  EXPECT_CALL(backend(), SendAudioChunk(testing::_)).Times(0);
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_calls, 1);
+
+  // Clearing the sink restores routing to the backend for subsequent frames.
+  conversation.SetHotlAudioSink(base::NullCallback());
+  EXPECT_CALL(backend(), SendAudioChunk(testing::ElementsAreArray(samples_)))
+      .Times(1);
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_calls, 1);
+}
+
+TEST_F(ConversationImplHotlTest, SequentialSinksRouteAudioToCurrentSink) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  int sink_a_calls = 0;
+  conversation.SetHotlAudioSink(base::BindLambdaForTesting(
+      [&](base::span<const int16_t>, const media::AudioParameters&) {
+        ++sink_a_calls;
+      }));
+  EXPECT_CALL(backend(), SendAudioChunk(testing::_)).Times(0);
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_a_calls, 1);
+
+  int sink_b_calls = 0;
+  conversation.SetHotlAudioSink(base::BindLambdaForTesting(
+      [&](base::span<const int16_t>, const media::AudioParameters&) {
+        ++sink_b_calls;
+      }));
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_a_calls, 1);
+  EXPECT_EQ(sink_b_calls, 1);
+}
+
+TEST_F(ConversationImplHotlTest, StopClearsHotlAudioSink) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  int sink_calls = 0;
+  conversation.SetHotlAudioSink(base::BindLambdaForTesting(
+      [&](base::span<const int16_t>, const media::AudioParameters&) {
+        ++sink_calls;
+      }));
+
+  conversation.Stop();
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_calls, 0);
+}
+
+TEST_F(ConversationImplHotlTest, ReentrantSinkClearingDoesNotCrash) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  int sink_calls = 0;
+  conversation.SetHotlAudioSink(base::BindLambdaForTesting(
+      [&](base::span<const int16_t>, const media::AudioParameters&) {
+        ++sink_calls;
+        // Re-entrantly unregister the sink from within its own callback.
+        conversation.SetHotlAudioSink(base::NullCallback());
+      }));
+
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+  EXPECT_EQ(sink_calls, 1);
+
+  // Subsequent audio routes to backend after the re-entrant unregistration.
+  EXPECT_CALL(backend(), SendAudioChunk(testing::ElementsAreArray(samples_)))
+      .Times(1);
+  conversation.OnCapturedAudio(samples_, params_, 0.1f);
+}
+
+// While a HOTL sink is active, incoming model audio is dropped so the sink
+// only hears the user.
+TEST_F(ConversationImplHotlTest, SinkSilencesModelAudio) {
+  ConversationImpl& conversation = CreateConversation();
+  conversation.Start();
+
+  conversation.SetHotlAudioSink(base::BindRepeating(
+      [](base::span<const int16_t>, const media::AudioParameters&) {}));
+
+  // Incoming audio output while the sink is active is dropped and not played.
+  conversation.OnAudioOutput(std::vector<int16_t>(100, 1000),
+                             /*sequence_number=*/1);
+  EXPECT_FALSE(audio_controller().is_playing());
+
+  // Once the sink is cleared, audio output plays normally again.
+  conversation.SetHotlAudioSink(base::NullCallback());
+  conversation.OnAudioOutput(std::vector<int16_t>(100, 1000),
+                             /*sequence_number=*/2);
+  EXPECT_TRUE(audio_controller().is_playing());
 }
 
 }  // namespace ttc

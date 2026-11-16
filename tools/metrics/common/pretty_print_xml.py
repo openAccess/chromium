@@ -165,10 +165,10 @@ class _CommentsTree:
     we have to make sure that all the nodes within this block are first in the
     children list, otherwise we might move the end comment of the IFTTT block.
     Consider example:
-     <-- Lint.IfChange -->
+     <-- LINT.IfChange(A) -->
      <enum name="enum">
      <int value="1" label="B"/>
-      <-- Lint.ThenChange(...) -->
+      <-- LINT.ThenChange(A) -->
      <int value="0" label="A"/>
      </enum>
 
@@ -231,7 +231,7 @@ def SplitParagraphs(text):
   text = textwrap.dedent(text.strip('\n'))
   lines = text.split('\n')
   # Split the text into paragraphs at blank line boundaries.
-  paragraphs = [[]]
+  paragraphs: list[list[str]] = [[]]
   for l in lines:
     if paragraphs[-1] and not l.strip():
       paragraphs.append([])

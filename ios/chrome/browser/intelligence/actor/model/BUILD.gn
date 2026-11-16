@@ -48,6 +48,7 @@ source_set("model") {
     # TODO(crbug.com/496196467): Invert dependencies on //ios/chrome/app/.
     "//ios/chrome/app/background_task",
     "//ios/chrome/app/strings",
+    "//ios/chrome/browser/favicon/model",
     "//ios/chrome/browser/intelligence/actor/public:actor_control_state",
     "//ios/chrome/browser/intelligence/actor/public:actor_task_ui_protocols",
     "//ios/chrome/browser/intelligence/actor/public:actor_types",
@@ -55,9 +56,9 @@ source_set("model") {
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_interface",
     "//ios/chrome/browser/intelligence/actor/tools/model:tool_controller",
     "//ios/chrome/browser/intelligence/actor/tools/public",
-    "//ios/chrome/browser/intelligence/actor/tools/utils:actor_browser_utils",
     "//ios/chrome/browser/intelligence/actor/tools/utils:actor_tool_utils",
     "//ios/chrome/browser/intelligence/actor/tools/utils:logging_util",
+    "//ios/chrome/browser/intelligence/actor/tools/utils:profile_context_resolver",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/proto_wrappers",
     "//ios/chrome/browser/origin_gating/model",
@@ -91,7 +92,10 @@ source_set("tab_helper") {
     "//base",
     "//ios/chrome/browser/intelligence/features",
     "//ios/web/public",
+    "//ui/base",
+    "//url",
   ]
+  frameworks = [ "UIKit.framework" ]
 }
 
 source_set("unit_tests") {
@@ -117,6 +121,7 @@ source_set("unit_tests") {
     "//components/actor/public/mojom:mojo_bindings",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/origin_gating/core",
+    "//components/password_manager/core/browser/actor_login:common",
     "//components/prefs",
     "//components/prefs:test_support",
 
@@ -133,6 +138,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/intelligence/actor/tools/model:navigate_tool",
     "//ios/chrome/browser/intelligence/actor/tools/model:tool_controller",
     "//ios/chrome/browser/intelligence/actor/tools/public",
+    "//ios/chrome/browser/intelligence/actor/tools/utils:profile_context_resolver",
     "//ios/chrome/browser/intelligence/actor/util:test_support",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/proto_wrappers",

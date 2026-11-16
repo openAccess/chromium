@@ -18,6 +18,7 @@ import {TestSearchApiProxy} from './test_search_api_proxy.js';
 import {TestSectionDelegate} from './test_section_delegate.js';
 
 suite('OrganizerListSectionTest', () => {
+  const originalMatchMedia = window.matchMedia;
   let listSection: OrganizerListSectionElement;
   let mockHandler: TestMock<OrganizerPanelPageHandlerRemote>&
       OrganizerPanelPageHandlerRemote;
@@ -40,6 +41,11 @@ suite('OrganizerListSectionTest', () => {
     listSection = document.createElement('organizer-list-section');
     document.body.appendChild(listSection);
     await microtasksFinished();
+  });
+
+  teardown(() => {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    window.matchMedia = originalMatchMedia;
   });
 
   test('renders header and items from delegate', async () => {
@@ -1042,5 +1048,190 @@ suite('OrganizerListSectionTest', () => {
         0, metrics.count('Tabs.Organizer.Section.OpenTabs.MenuAction'));
     assertEquals(0, metrics.count('OrganizerPanel.ExpandSection'));
     assertEquals(0, metrics.count('OrganizerPanel.CollapseSection'));
+  });
+
+  test(
+      'records IndexOf and TimeTo histograms on item and action button clicks',
+      async () => {
+        const items: Array<OrganizerListSectionItem<unknown>> = [
+          {
+            title: ['Google'],
+            description: [{text: 'google.com'}],
+            hoveredActionButton: {
+              icon: 'cr:close',
+              ariaLabel: 'Close tab',
+            },
+          },
+          {
+            title: ['YouTube'],
+            description: [{text: 'youtube.com'}],
+            hoveredActionButton: {
+              icon: 'cr:close',
+              ariaLabel: 'Close tab',
+            },
+          },
+          {
+            title: ['YouTube Music'],
+            description: [{text: 'music.youtube.com'}],
+            hoveredActionButton: {
+              icon: 'cr:close',
+              ariaLabel: 'Close tab',
+            },
+          },
+        ];
+        listSection.delegate = new TestSectionDelegate('Open Tabs', items);
+        await microtasksFinished();
+
+        let listItems = listSection.shadowRoot.querySelectorAll(
+            'organizer-list-section-item');
+        assertEquals(3, listItems.length);
+
+        listItems[1]!.click();
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfSwitchTabInUnfilteredList', 1));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfSwitchTabInFilteredList'));
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToSwitchTabInUnfilteredList'));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToSwitchTabInFilteredList'));
+
+        listItems[2]!.shadowRoot.querySelector<HTMLElement>(
+                                    '#actionButton')!.click();
+        await microtasksFinished();
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfCloseTabInUnfilteredList', 2));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfCloseTabInFilteredList'));
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToCloseTabInUnfilteredList'));
+        assertEquals(
+            0,
+            metrics.count('Tabs.Organizer.WebUI.TimeToCloseTabInFilteredList'));
+
+        // Filter items and verify filtered index and time are recorded.
+        listSection.searchQuery = 'YouTube';
+        await microtasksFinished();
+
+        listItems = listSection.shadowRoot.querySelectorAll(
+            'organizer-list-section-item');
+        assertEquals(2, listItems.length);
+
+        listItems[1]!.click();
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfSwitchTabInFilteredList', 1));
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToSwitchTabInFilteredList'));
+
+        listItems[0]!.shadowRoot.querySelector<HTMLElement>(
+                                    '#actionButton')!.click();
+        await microtasksFinished();
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfCloseTabInFilteredList', 0));
+        assertEquals(
+            1,
+            metrics.count('Tabs.Organizer.WebUI.TimeToCloseTabInFilteredList'));
+      });
+
+  test(
+      'does not record action button histograms when action is undefined',
+      async () => {
+        const items: Array<OrganizerListSectionItem<unknown>> = [
+          {
+            title: ['Tab Group 1'],
+            hoveredActionButton: {
+              icon: 'cr:more-vert',
+              ariaLabel: 'More options',
+            },
+          },
+        ];
+        const delegate = new TestSectionDelegate('Tab groups', items);
+        delegate.getActionButtonClickAction = undefined;
+        listSection.delegate = delegate;
+        await microtasksFinished();
+
+        const listItems = listSection.shadowRoot.querySelectorAll(
+            'organizer-list-section-item');
+        assertEquals(1, listItems.length);
+
+        listItems[0]!.shadowRoot.querySelector<HTMLElement>(
+                                    '#actionButton')!.click();
+        await microtasksFinished();
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfCloseTabInUnfilteredList'));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfSwitchTabInUnfilteredList'));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToCloseTabInUnfilteredList'));
+        assertEquals(
+            0,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToSwitchTabInUnfilteredList'));
+
+        listItems[0]!.click();
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.IndexOfSwitchTabInUnfilteredList', 0));
+        assertEquals(
+            1,
+            metrics.count(
+                'Tabs.Organizer.WebUI.TimeToSwitchTabInUnfilteredList'));
+      });
+
+  test('sets no-animation on cr-collapse for reduced motion', async () => {
+    const reducedMotionQuery =
+        Object.assign(new EventTarget(), {matches: true});
+    window.matchMedia = (query: string) => {
+      if (query === '(prefers-reduced-motion: reduce)') {
+        return reducedMotionQuery as unknown as MediaQueryList;
+      }
+      return originalMatchMedia.call(window, query);
+    };
+
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const section = document.createElement('organizer-list-section');
+    document.body.appendChild(section);
+    await microtasksFinished();
+
+    const itemsContainer =
+        section.shadowRoot.querySelector<CrCollapseElement>('#items')!;
+    assertTrue(itemsContainer.noAnimation);
+
+    reducedMotionQuery.matches = false;
+    reducedMotionQuery.dispatchEvent(new Event('change'));
+    await microtasksFinished();
+    assertFalse(itemsContainer.noAnimation);
+
+    reducedMotionQuery.matches = true;
+    reducedMotionQuery.dispatchEvent(new Event('change'));
+    await microtasksFinished();
+    assertTrue(itemsContainer.noAnimation);
   });
 });

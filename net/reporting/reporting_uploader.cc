@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_split.h"
@@ -119,7 +120,12 @@ class ReportingUploaderImpl : public ReportingUploader, URLRequest::Delegate {
   }
 
   ~ReportingUploaderImpl() override {
-    for (auto& request_and_upload : uploads_) {
+    // Move `uploads_` to a local first so any synchronous callbacks during
+    // `RunCallback()` or `~URLRequest()` cannot mutate the map while it is
+    // being iterated or destroyed.
+    in_teardown_ = true;
+    auto uploads = std::exchange(uploads_, {});
+    for (auto& request_and_upload : uploads) {
       auto& upload = request_and_upload.second;
       upload->RunCallback(Outcome::FAILURE);
     }
@@ -146,8 +152,11 @@ class ReportingUploaderImpl : public ReportingUploader, URLRequest::Delegate {
   }
 
   void OnShutdown() override {
-    // Cancels all pending uploads.
-    uploads_.clear();
+    // Cancels all pending uploads. Move `uploads_` to a local first so any
+    // synchronous callbacks during `~URLRequest()` cannot mutate the map while
+    // its elements are being destroyed.
+    base::AutoReset<bool> in_teardown(&in_teardown_, true);
+    auto uploads = std::exchange(uploads_, {});
   }
 
   void StartPreflightRequest(std::unique_ptr<PendingUpload> upload) {
@@ -209,11 +218,22 @@ class ReportingUploaderImpl : public ReportingUploader, URLRequest::Delegate {
     // delivery agent determining that this is a V0 report, or by `StartUpload`
     // determining that this is a cross-origin case, and taking the CORS
     // preflight path). An exception to this are reports associated with a
-    // non-general NetworkIsolationPartition, since credentials should never be
-    // sent with these requests.
-    if (!eligible_for_credentials ||
-        upload->isolation_info.GetNetworkIsolationPartition() !=
-            NetworkIsolationPartition::kGeneral) {
+    // non-general NetworkIsolationPartition that disallows credentials.
+    bool partition_allows_credentials = false;
+    switch (upload->isolation_info.GetNetworkIsolationPartition()) {
+      case NetworkIsolationPartition::kGeneral:
+        partition_allows_credentials = true;
+        break;
+      case NetworkIsolationPartition::kSharedWorkerSameSiteCookiesNone:
+        CHECK(upload->isolation_info.site_for_cookies().IsNull());
+        partition_allows_credentials = true;
+        break;
+      case NetworkIsolationPartition::kFedCmUncredentialedRequests:
+      case NetworkIsolationPartition::kDnsOverHttps:
+        partition_allows_credentials = false;
+        break;
+    }
+    if (!eligible_for_credentials || !partition_allows_credentials) {
       upload->request->set_disallow_credentials();
     }
 
@@ -321,7 +341,12 @@ class ReportingUploaderImpl : public ReportingUploader, URLRequest::Delegate {
     // Grab Upload from map, and hold on to it in a local unique_ptr so it's
     // removed at the end of the method.
     auto it = uploads_.find(request);
-    CHECK(it != uploads_.end());
+    if (it == uploads_.end()) {
+      // The upload is already being torn down by `OnShutdown()` or
+      // `~ReportingUploaderImpl()`.
+      CHECK(in_teardown_);
+      return;
+    }
     std::unique_ptr<PendingUpload> upload = std::move(it->second);
     uploads_.erase(it);
 
@@ -395,6 +420,7 @@ class ReportingUploaderImpl : public ReportingUploader, URLRequest::Delegate {
   raw_ptr<const URLRequestContext> context_;
   PrepareUploadRequestCallback prepare_upload_request_callback_;
   std::map<const URLRequest*, std::unique_ptr<PendingUpload>> uploads_;
+  bool in_teardown_ = false;
 };
 
 }  // namespace

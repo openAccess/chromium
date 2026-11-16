@@ -165,6 +165,9 @@ class GPU_GLES2_EXPORT SharedImageRepresentation {
   };
 
  private:
+  template <typename BaseRep>
+  friend class WrappedCompoundImageRepresentation;
+
   // Uses UnprotectedInRelease for performance reasons (based on analysis of
   // MotionMark).
   const raw_ptr<SharedImageManager, UnprotectedInRelease> manager_ = nullptr;
@@ -239,6 +242,8 @@ class GPU_GLES2_EXPORT GLTextureImageRepresentationBase
   // Calls GetTextureBase with `plane_index` = 0 for single planar formats eg.
   // RGB.
   gpu::TextureBase* GetTextureBase();
+
+  virtual bool IsBackingCleared() const;
 
  protected:
   friend class SkiaGLImageRepresentation;

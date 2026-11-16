@@ -9,6 +9,7 @@
 #include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_pointer_event_init.h"
+#include "third_party/blink/renderer/core/css/css_default_style_sheets.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/selector_checker.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
@@ -19,6 +20,7 @@
 #include "third_party/blink/renderer/core/dom/indexed_pseudo_element.h"
 #include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/events/pointer_event.h"
+#include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
@@ -28,6 +30,7 @@
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
+#include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/computed_style_constants.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
@@ -649,7 +652,7 @@ TEST_F(OverscrollAreaTrackerTest, BackdropClickDismiss) {
         left: -50%;
         top: -50%;
       }
-      #menu::overscroll-backdrop {
+      #menu::backdrop {
         background-color: rgba(0,0,0,0.5);
       }
     </style>
@@ -678,7 +681,7 @@ TEST_F(OverscrollAreaTrackerTest, BackdropClickDismiss) {
 
   EXPECT_NE(scrollable_area->GetScrollOffset(), ScrollOffset());
 
-  PseudoElement* backdrop = menu->GetPseudoElement(kPseudoIdOverscrollBackdrop);
+  PseudoElement* backdrop = menu->GetPseudoElement(kPseudoIdBackdrop);
   ASSERT_TRUE(backdrop);
 
   PointerEventInit* init = PointerEventInit::Create();
@@ -852,6 +855,366 @@ TEST_F(OverscrollAreaTrackerPageTest, OverscrollPropertyTrees) {
   }
 }
 
+TEST_F(OverscrollAreaTrackerPageTest, OverscrollRootScrollerPropertyTrees) {
+  GetDocument().body()->SetAttributeWithoutValidation(
+      html_names::kOverscrollcontainerAttr, g_empty_atom);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <div id="foo" overscrollarea></div>
+    <div id="bar" overscrollarea></div>
+    <button command="toggle-overscroll" commandfor="foo"></button>
+    <button command="toggle-overscroll" commandfor="bar"></button>
+    <div style="height: 2000px"></div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  Element* body = GetDocument().body();
+  PseudoElement* foo =
+      GetElementById("foo")->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  PseudoElement* bar =
+      GetElementById("bar")->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  ASSERT_TRUE(foo);
+  ASSERT_TRUE(bar);
+
+  const ObjectPaintProperties* view_props =
+      GetDocument().GetLayoutView()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* body_props =
+      body->GetLayoutObject()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* bar_props =
+      bar->GetLayoutObject()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* foo_props =
+      foo->GetLayoutObject()->FirstFragment().PaintProperties();
+
+  // Scroll chains from body, to the root scroller (LayoutView), to the
+  // overscroll-area-parents, to the visual viewport.
+  HeapVector<Member<const ScrollPaintPropertyNode>> scroll_chain(
+      {body_props->Scroll(), view_props->Scroll(), bar_props->Scroll(),
+       foo_props->Scroll(),
+       GetDocument().View()->GetPage()->GetVisualViewport().GetScrollNode()});
+  for (wtf_size_t i = 1; i < scroll_chain.size(); ++i) {
+    const ScrollPaintPropertyNode* child = scroll_chain[i - 1];
+    const ScrollPaintPropertyNode* parent = scroll_chain[i];
+    EXPECT_EQ(child->Parent(), parent);
+  }
+
+  // The overscroll-area-parents of body are fixed to the viewport, above the
+  // root scroller's ScrollTranslation. In non-overlay, the root scroller's
+  // ScrollTranslation, i.e. the whole document, is chained through them.
+  HeapVector<Member<const TransformPaintPropertyNodeOrAlias>> transform_chain({
+      body_props->ScrollTranslation(),
+      body_props->ContentTranslation(),
+      body_props->PaintOffsetTranslation(),
+      view_props->ScrollTranslation(),
+      bar_props->ScrollTranslation(),
+      bar_props->ContentTranslation(),
+      bar_props->PaintOffsetTranslation(),
+      foo_props->ScrollTranslation(),
+      foo_props->PaintOffsetTranslation(),
+      view_props->PaintOffsetTranslation(),
+  });
+  for (wtf_size_t i = 1; i < transform_chain.size(); ++i) {
+    const TransformPaintPropertyNodeOrAlias* child = transform_chain[i - 1];
+    const TransformPaintPropertyNodeOrAlias* parent = transform_chain[i];
+    EXPECT_EQ(child->UnaliasedParent(), parent);
+  }
+  // The root scroller is not their scroll parent, since it is below them.
+  EXPECT_FALSE(
+      foo_props->PaintOffsetTranslation()->ScrollParentScrollTranslation());
+  EXPECT_FALSE(
+      bar_props->PaintOffsetTranslation()->ScrollParentScrollTranslation());
+
+  // The root scroller's OverflowClip doesn't move with the document, so it
+  // clips body and the overscroll-area-parents without being reparented.
+  HeapVector<Member<const ClipPaintPropertyNode>> clips(
+      {body_props->OverflowClip(), bar_props->OverflowClip(),
+       foo_props->OverflowClip()});
+  HeapVector<Member<const TransformPaintPropertyNode>> clip_transforms(
+      {body_props->ContentTranslation(), bar_props->ContentTranslation(),
+       foo_props->PaintOffsetTranslation()});
+  for (wtf_size_t i = 0; i < clips.size(); ++i) {
+    EXPECT_EQ(&clips[i]->LocalTransformSpace(), clip_transforms[i]);
+    EXPECT_EQ(clips[i]->UnaliasedParent(), view_props->OverflowClip());
+  }
+  EXPECT_EQ(&view_props->OverflowClip()->LocalTransformSpace(),
+            view_props->PaintOffsetTranslation());
+}
+
+// The overscroll-area-parents of an overlay body are fixed to the viewport, as
+// siblings of the root scroller's ScrollTranslation.
+TEST_F(OverscrollAreaTrackerPageTest,
+       OverscrollRootScrollerOverlayPropertyTrees) {
+  GetDocument().body()->SetAttributeWithoutValidation(
+      html_names::kOverscrollcontainerAttr, g_empty_atom);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      body { overscroll-container-type: overlay; }
+    </style>
+    <div id="foo" overscrollarea></div>
+    <div id="bar" overscrollarea></div>
+    <button command="toggle-overscroll" commandfor="foo"></button>
+    <button command="toggle-overscroll" commandfor="bar"></button>
+    <div style="height: 2000px"></div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  Element* body = GetDocument().body();
+  PseudoElement* foo =
+      GetElementById("foo")->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  PseudoElement* bar =
+      GetElementById("bar")->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  ASSERT_TRUE(foo);
+  ASSERT_TRUE(bar);
+
+  const ObjectPaintProperties* view_props =
+      GetDocument().GetLayoutView()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* body_props =
+      body->GetLayoutObject()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* bar_props =
+      bar->GetLayoutObject()->FirstFragment().PaintProperties();
+  const ObjectPaintProperties* foo_props =
+      foo->GetLayoutObject()->FirstFragment().PaintProperties();
+
+  HeapVector<Member<const ScrollPaintPropertyNode>> scroll_chain(
+      {body_props->Scroll(), view_props->Scroll(), bar_props->Scroll(),
+       foo_props->Scroll(),
+       GetDocument().View()->GetPage()->GetVisualViewport().GetScrollNode()});
+  for (wtf_size_t i = 1; i < scroll_chain.size(); ++i) {
+    EXPECT_EQ(scroll_chain[i - 1]->Parent(), scroll_chain[i]);
+  }
+
+  EXPECT_EQ(view_props->ScrollTranslation()->UnaliasedParent(),
+            view_props->PaintOffsetTranslation());
+  EXPECT_EQ(body_props->PaintOffsetTranslation()->UnaliasedParent(),
+            view_props->ScrollTranslation());
+  for (const ObjectPaintProperties* area_parent_props :
+       {foo_props, bar_props}) {
+    EXPECT_EQ(area_parent_props->PaintOffsetTranslation()->UnaliasedParent(),
+              view_props->PaintOffsetTranslation());
+    EXPECT_EQ(area_parent_props->OverflowClip()->UnaliasedParent(),
+              view_props->OverflowClip());
+  }
+}
+
+// The overscroll-area-parents of body are sized and positioned like
+// fixed-position elements, so they open into the viewport however far the
+// document is scrolled.
+TEST_F(OverscrollAreaTrackerPageTest, BodyOverscrollAreaParentsFixedToView) {
+  GetDocument().body()->SetAttributeWithoutValidation(
+      html_names::kOverscrollcontainerAttr, g_empty_atom);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      #menu { width: 100px; height: 100%; right: 100%; }
+    </style>
+    <div id="menu" overscrollarea></div>
+    <button command="toggle-overscroll" commandfor="menu"></button>
+    <div id="content" style="height: 2000px"></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  LayoutView* view = GetDocument().GetLayoutView();
+  const LayoutBox* body_box = GetDocument().body()->GetLayoutBox();
+  ASSERT_TRUE(body_box->IsOverscrollContainer());
+  EXPECT_FALSE(body_box->ShouldApplyLayoutContainment());
+  EXPECT_FALSE(body_box->CanContainFixedPositionObjects());
+  EXPECT_EQ(GetDocument().ViewportDefiningElement(), GetDocument().body());
+
+  Element* menu = GetElementById("menu");
+  const LayoutObject* area_parent =
+      menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)->GetLayoutObject();
+  ASSERT_TRUE(area_parent);
+  EXPECT_TRUE(area_parent->IsFixedPositioned());
+  EXPECT_EQ(area_parent->Container(), view);
+
+  const double viewport_height = GetDocument().domWindow()->innerHeight();
+  DOMRect* rect = menu->GetBoundingClientRect();
+  EXPECT_EQ(rect->right(), 0);
+  EXPECT_EQ(rect->top(), 0);
+  EXPECT_EQ(rect->height(), viewport_height);
+
+  GetDocument().View()->LayoutViewport()->SetScrollOffset(
+      ScrollOffset(0, 500), mojom::blink::ScrollType::kProgrammatic,
+      cc::ScrollSourceType::kNone);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_EQ(GetDocument().domWindow()->scrollY(), 500);
+  rect = menu->GetBoundingClientRect();
+  EXPECT_EQ(rect->right(), 0);
+  EXPECT_EQ(rect->top(), 0);
+  EXPECT_EQ(rect->height(), viewport_height);
+
+  // Non-body overscroll containers force layout containment, so they contain
+  // their overscroll-area-parents.
+  GetElementById("content")->SetAttributeWithoutValidation(
+      html_names::kOverscrollcontainerAttr, g_empty_atom);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(GetElementById("content")
+                  ->GetLayoutObject()
+                  ->ShouldApplyLayoutContainment());
+  EXPECT_TRUE(GetElementById("content")
+                  ->GetLayoutObject()
+                  ->CanContainFixedPositionObjects());
+
+  // When <body> propagates its overflow to the viewport (<html> has visible
+  // overflow), the root scroller still scrolls it, so layout containment is not
+  // forced and OverscrollAreasReparentView() stays true.
+  GetDocument().body()->SetInlineStyleProperty(CSSPropertyID::kOverflow,
+                                               "auto");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(
+      GetDocument().body()->GetLayoutObject()->OverscrollAreasReparentView());
+  EXPECT_FALSE(
+      GetDocument().body()->GetLayoutObject()->ShouldApplyLayoutContainment());
+  EXPECT_FALSE(GetDocument()
+                   .body()
+                   ->GetLayoutObject()
+                   ->CanContainFixedPositionObjects());
+
+  // When <html> also has non-visible overflow, <body> becomes its own scroll
+  // container rather than delegating to the viewport, so it forces layout
+  // containment and contains its overscroll-area-parents.
+  GetDocument().documentElement()->SetInlineStyleProperty(
+      CSSPropertyID::kOverflow, "auto");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetDocument().body()->GetLayoutObject()->OverscrollAreasReparentView());
+  EXPECT_TRUE(
+      GetDocument().body()->GetLayoutObject()->ShouldApplyLayoutContainment());
+  EXPECT_TRUE(GetDocument()
+                  .body()
+                  ->GetLayoutObject()
+                  ->CanContainFixedPositionObjects());
+  EXPECT_EQ(menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+                ->GetLayoutObject()
+                ->Container(),
+            GetDocument().body()->GetLayoutObject());
+
+  // Restoring <html>'s visible overflow returns <body> to root-scrolled mode.
+  GetDocument().documentElement()->RemoveInlineStyleProperty(
+      CSSPropertyID::kOverflow);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(
+      GetDocument().body()->GetLayoutObject()->OverscrollAreasReparentView());
+  EXPECT_FALSE(
+      GetDocument().body()->GetLayoutObject()->ShouldApplyLayoutContainment());
+  EXPECT_EQ(menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+                ->GetLayoutObject()
+                ->Container(),
+            view);
+
+  // A fixed-positioned <body> is not moved by the root scroller, so it also
+  // forces layout containment and contains its overscroll-area-parents.
+  GetDocument().body()->RemoveInlineStyleProperty(CSSPropertyID::kOverflow);
+  GetDocument().body()->SetInlineStyleProperty(CSSPropertyID::kPosition,
+                                               "fixed");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetDocument().body()->GetLayoutObject()->OverscrollAreasReparentView());
+  EXPECT_TRUE(
+      GetDocument().body()->GetLayoutObject()->ShouldApplyLayoutContainment());
+  EXPECT_TRUE(GetDocument()
+                  .body()
+                  ->GetLayoutObject()
+                  ->CanContainFixedPositionObjects());
+  EXPECT_EQ(menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+                ->GetLayoutObject()
+                ->Container(),
+            GetDocument().body()->GetLayoutObject());
+
+  // Author `contain: layout` on a non-scrollable <body> prevents it from
+  // propagating overflow to the viewport and contains its
+  // overscroll-area-parents on <body>.
+  GetDocument().body()->RemoveInlineStyleProperty(CSSPropertyID::kPosition);
+  GetDocument().body()->SetInlineStyleProperty(CSSPropertyID::kContain,
+                                               "layout");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetDocument().body()->GetLayoutObject()->OverscrollAreasReparentView());
+  EXPECT_TRUE(
+      GetDocument().body()->GetLayoutObject()->ShouldApplyLayoutContainment());
+  EXPECT_TRUE(GetDocument()
+                  .body()
+                  ->GetLayoutObject()
+                  ->CanContainFixedPositionObjects());
+  EXPECT_EQ(menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+                ->GetLayoutObject()
+                ->Container(),
+            GetDocument().body()->GetLayoutObject());
+
+  // When an ancestor (<html>) establishes a fixed-position containing block,
+  // body's overscroll-area-parents are contained by <html> without creating a
+  // clip or transform cycle.
+  GetDocument().body()->RemoveInlineStyleProperty(CSSPropertyID::kContain);
+  GetDocument().documentElement()->SetInlineStyleProperty(
+      CSSPropertyID::kTransform, "translateX(0)");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(menu->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+                ->GetLayoutObject()
+                ->Container(),
+            GetDocument().documentElement()->GetLayoutObject());
+}
+
+// Mixing inline and block children in <body overscrollcontainer> wraps the
+// out-of-flow ::-internal-overscroll-area-parent in an anonymous block while
+// its ContainingBox() is LayoutView; verify coordinate mapping and paint
+// property updates still resolve <body> as its overscroll container.
+TEST_F(OverscrollAreaTrackerPageTest,
+       BodyOverscrollAreaParentWithMixedInlineAndBlockChildren) {
+  GetDocument().body()->SetAttributeWithoutValidation(
+      html_names::kOverscrollcontainerAttr, g_empty_atom);
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      .area { width: 100px; height: 100px; right: 100%; }
+    </style>
+    Inline text before block child
+    <div id="first" class="area" overscrollarea></div>
+    <div id="second" class="area" overscrollarea></div>
+    <button id="btn1" command="toggle-overscroll" commandfor="first"></button>
+    <button id="btn2" command="toggle-overscroll" commandfor="second"></button>
+    <div style="height: 2000px">Block child</div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  LayoutObject* first_parent =
+      GetElementById("first")
+          ->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+          ->GetLayoutObject();
+  LayoutObject* second_parent =
+      GetElementById("second")
+          ->GetPseudoElement(kPseudoIdOverscrollAreaParent)
+          ->GetLayoutObject();
+  ASSERT_TRUE(first_parent);
+  ASSERT_TRUE(second_parent);
+  EXPECT_TRUE(first_parent->Parent()->IsAnonymous());
+  EXPECT_EQ(first_parent->ContainingBox(), GetDocument().GetLayoutView());
+
+  To<LayoutBox>(first_parent)
+      ->GetScrollableArea()
+      ->SetScrollOffset(ScrollOffset(-100, 0),
+                        mojom::blink::ScrollType::kProgrammatic,
+                        cc::ScrollSourceType::kNone);
+  second_parent->SetNeedsPaintPropertyUpdate();
+  UpdateAllLifecyclePhasesForTest();
+
+  // Opening the first non-overlay area shifts the second area by 100px.
+  EXPECT_EQ(GetElementById("second")->GetBoundingClientRect()->left(), 0);
+
+  // When <html> has non-visible overflow, <body> forces layout containment and
+  // becomes the containing block of its overscroll-area-parents; verify the
+  // second area's offset is still shifted once (not double-counted).
+  GetDocument().documentElement()->SetInlineStyleProperty(
+      CSSPropertyID::kOverflow, "auto");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(second_parent->ContainingBox(),
+            GetDocument().body()->GetLayoutBox());
+  To<LayoutBox>(first_parent)
+      ->GetScrollableArea()
+      ->SetScrollOffset(ScrollOffset(-100, 0),
+                        mojom::blink::ScrollType::kProgrammatic,
+                        cc::ScrollSourceType::kNone);
+  second_parent->SetNeedsPaintPropertyUpdate();
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(GetElementById("second")->GetBoundingClientRect()->left(),
+            GetDocument().body()->GetBoundingClientRect()->left());
+}
+
 TEST_F(OverscrollAreaTrackerPageTest, OverscrollOverlayPropertyTrees) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <style>
@@ -942,7 +1305,8 @@ TEST_F(OverscrollAreaTrackerPageTest, OverscrollPseudoElementStyles) {
       .scroller {
         overflow: auto;
       }
-      .smooth {
+      .custom-scroll {
+        scroll-axis-lock: none;
         scroll-behavior: smooth;
       }
     </style>
@@ -950,7 +1314,7 @@ TEST_F(OverscrollAreaTrackerPageTest, OverscrollPseudoElementStyles) {
       <div id="foo" overscrollarea></div>
     </div>
     <div id="scroller2" class="scroller" overscrollcontainer>
-      <div id="bar" class="smooth" overscrollarea></div>
+      <div id="bar" class="custom-scroll" overscrollarea></div>
     </div>
     <button command="toggle-overscroll" commandfor="foo"></button>
     <button command="toggle-overscroll" commandfor="bar"></button>
@@ -970,12 +1334,17 @@ TEST_F(OverscrollAreaTrackerPageTest, OverscrollPseudoElementStyles) {
             overscroll_parent_foo->GetComputedStyle()->OverflowY());
   EXPECT_EQ(EScrollbarWidth::kNone,
             overscroll_parent_foo->GetComputedStyle()->ScrollbarWidth());
+  EXPECT_EQ(EScrollAxisLock::kAuto,
+            overscroll_parent_foo->GetComputedStyle()->ScrollAxisLock());
   EXPECT_EQ(mojom::ScrollBehavior::kAuto,
             overscroll_parent_foo->GetComputedStyle()->GetScrollBehavior());
 
-  // Computed scroll-behavior inherits scroll-behavior from the scroller.
+  // Computed scroll-axis-lock and scroll-behavior inherit from the overscroll
+  // area.
   PseudoElement* overscroll_parent_bar =
       GetElementById("bar")->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  EXPECT_EQ(EScrollAxisLock::kNone,
+            overscroll_parent_bar->GetComputedStyle()->ScrollAxisLock());
   EXPECT_EQ(mojom::ScrollBehavior::kSmooth,
             overscroll_parent_bar->GetComputedStyle()->GetScrollBehavior());
 }
@@ -1419,13 +1788,15 @@ TEST_F(OverscrollAreaTrackerPageTest, StyleRecalcContextContainerChild) {
       StyleRecalcContext::FromAncestors(*area).is_overscroll_container_child);
 }
 
-// The UA style sheet is parsed once per process, so a container can have a
-// non-none overscroll container type even though the feature is disabled for
-// its document. Such a container must not cause any area registration.
+// The UA style sheet unconditionally sets -internal-overscroll-container on
+// [overscrollcontainer]. Verify that when the feature is disabled for a
+// document, neither overscroll container style/containment nor area
+// registration or area style adjustment takes effect.
 TEST_F(OverscrollAreaTrackerPageTest,
        StyleRecalcContextContainerChildFeatureDisabled) {
   ScopedOverscrollAreasForTest disabled(false);
   SetBodyInnerHTML(R"HTML(
+    <style>#area::backdrop { display: block; }</style>
     <div id="container" overscrollcontainer>
       <div id="area" overscrollarea></div>
     </div>
@@ -1434,15 +1805,162 @@ TEST_F(OverscrollAreaTrackerPageTest,
   Element* container = GetElementById("container");
   Element* area = GetElementById("area");
 
-  // The UA sheet was parsed with the feature enabled by the fixture.
-  ASSERT_NE(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+  EXPECT_EQ(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
             EOverscrollContainerType::kNone);
+  EXPECT_FALSE(container->GetComputedStyle()->ContainsLayout());
+  EXPECT_FALSE(container->GetLayoutObject()->IsOverscrollContainer());
 
   EXPECT_FALSE(
       StyleRecalcContext::FromAncestors(*area).is_overscroll_container_child);
   EXPECT_FALSE(area->IsValidOverscrollArea());
+  EXPECT_EQ(area->GetComputedStyle()->GetPosition(), EPosition::kStatic);
+  EXPECT_FALSE(area->GetComputedStyle()->IsInert());
   EXPECT_FALSE(container->GetOverscrollAreaTracker());
-  EXPECT_FALSE(area->GetPseudoElement(kPseudoIdOverscrollBackdrop));
+  EXPECT_FALSE(area->GetPseudoElement(kPseudoIdBackdrop));
+}
+
+// Verify MatchedPropertiesCache does not reuse post-adjustment
+// [overscrollcontainer] or [overscrollarea] styles across runtime feature /
+// Origin Trial state changes within the same document.
+TEST_F(OverscrollAreaTrackerPageTest,
+       FeatureToggleDoesNotReuseCachedContainerOrAreaStyle) {
+  static constexpr char kMarkup[] = R"HTML(
+    <div id="container" overscrollcontainer>
+      <div id="area" overscrollarea></div>
+    </div>
+    <button command="toggle-overscroll" commandfor="area"></button>
+  )HTML";
+
+  {
+    ScopedOverscrollAreasForTest disabled(false);
+    SetBodyInnerHTML(kMarkup);
+    Element* container = GetElementById("container");
+    Element* area = GetElementById("area");
+    EXPECT_EQ(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+              EOverscrollContainerType::kNone);
+    EXPECT_FALSE(container->GetComputedStyle()->ContainsLayout());
+    EXPECT_FALSE(area->IsValidOverscrollArea());
+    EXPECT_EQ(area->GetComputedStyle()->GetPosition(), EPosition::kStatic);
+    EXPECT_FALSE(area->GetComputedStyle()->IsInert());
+  }
+
+  SetBodyInnerHTML(kMarkup);
+  {
+    Element* container = GetElementById("container");
+    Element* area = GetElementById("area");
+    EXPECT_EQ(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+              EOverscrollContainerType::kAuto);
+    EXPECT_TRUE(container->GetComputedStyle()->ContainsLayout());
+    EXPECT_TRUE(area->IsValidOverscrollArea());
+    EXPECT_EQ(area->GetComputedStyle()->GetPosition(), EPosition::kAbsolute);
+    EXPECT_TRUE(area->GetComputedStyle()->IsInert());
+  }
+
+  SetBodyInnerHTML("");
+  {
+    ScopedOverscrollAreasForTest disabled(false);
+    SetBodyInnerHTML(kMarkup);
+    Element* container = GetElementById("container");
+    Element* area = GetElementById("area");
+    EXPECT_EQ(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+              EOverscrollContainerType::kNone);
+    EXPECT_FALSE(container->GetComputedStyle()->ContainsLayout());
+    EXPECT_FALSE(area->IsValidOverscrollArea());
+    EXPECT_EQ(area->GetComputedStyle()->GetPosition(), EPosition::kStatic);
+    EXPECT_FALSE(area->GetComputedStyle()->IsInert());
+  }
+}
+
+// When OverscrollAreas is enabled via Origin Trial, the UA style sheet was
+// already parsed with the runtime flag disabled. Verify that the UA
+// [overscrollcontainer] and ::backdrop rules (:overscroll-closed /
+// :overscroll-open) are preserved and both container and area receive the
+// expected styles.
+TEST_F(OverscrollAreaTrackerPageTest,
+       BackdropUAStyleWhenUASheetParsedWithFeatureDisabled) {
+  CSSDefaultStyleSheets::TestingScope ua_style_sheets_scope;
+  {
+    ScopedOverscrollAreasForTest disabled(false);
+    // Destroying TestingScope calls CSSDefaultStyleSheets::Reset() while the
+    // feature flag is disabled.
+    {
+      CSSDefaultStyleSheets::TestingScope reset_with_feature_disabled;
+    }
+
+    SetBodyInnerHTML(R"HTML(
+      <div id="probe_container" overscrollcontainer>
+        <div id="probe_area" overscrollarea></div>
+      </div>
+      <button command="toggle-overscroll" commandfor="probe_area"></button>
+    )HTML");
+    Element* probe_container = GetElementById("probe_container");
+    Element* probe_area = GetElementById("probe_area");
+    EXPECT_EQ(
+        probe_container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+        EOverscrollContainerType::kNone);
+    EXPECT_FALSE(probe_container->GetComputedStyle()->ContainsLayout());
+    EXPECT_FALSE(probe_area->IsValidOverscrollArea());
+    EXPECT_EQ(probe_area->GetComputedStyle()->GetPosition(),
+              EPosition::kStatic);
+    EXPECT_FALSE(probe_area->GetComputedStyle()->IsInert());
+
+    DummyExceptionStateForTesting closed_exception;
+    GetDocument().QuerySelector(AtomicString(":overscroll-closed"),
+                                closed_exception);
+    EXPECT_TRUE(closed_exception.HadException());
+
+    DummyExceptionStateForTesting open_exception;
+    GetDocument().QuerySelector(AtomicString(":overscroll-open"),
+                                open_exception);
+    EXPECT_TRUE(open_exception.HadException());
+  }
+
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #container {
+        width: 200px;
+        height: 200px;
+        overflow: auto;
+      }
+      #area {
+        width: 100%;
+        height: 100%;
+        right: 100%;
+      }
+      #content {
+        height: 600px;
+      }
+    </style>
+    <div id="container" overscrollcontainer>
+      <div id="area" overscrollarea></div>
+      <div id="content"></div>
+    </div>
+    <button command="toggle-overscroll" commandfor="area"></button>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* container = GetElementById("container");
+  Element* area = GetElementById("area");
+  ASSERT_TRUE(container);
+  ASSERT_TRUE(area);
+  EXPECT_EQ(container->GetComputedStyle()->EffectiveOverscrollContainerType(),
+            EOverscrollContainerType::kAuto);
+  EXPECT_TRUE(container->GetComputedStyle()->ContainsLayout());
+  EXPECT_TRUE(area->IsValidOverscrollArea());
+  EXPECT_EQ(area->GetComputedStyle()->GetPosition(), EPosition::kAbsolute);
+  EXPECT_TRUE(area->GetComputedStyle()->IsInert());
+  EXPECT_FALSE(area->GetPseudoElement(kPseudoIdBackdrop));
+
+  auto* tracker = container->GetOverscrollAreaTracker();
+  ASSERT_TRUE(tracker);
+  tracker->OpenArea(area);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(area->GetComputedStyle()->IsInert());
+  PseudoElement* backdrop = area->GetPseudoElement(kPseudoIdBackdrop);
+  ASSERT_TRUE(backdrop);
+  EXPECT_EQ(backdrop->ComputedStyleRef().Display(), EDisplay::kBlock);
+  EXPECT_EQ(backdrop->ComputedStyleRef().GetPosition(), EPosition::kAbsolute);
 }
 
 TEST_F(OverscrollAreaTrackerPageTest, OverscrollContainerSubtreeTracking) {
@@ -1708,6 +2226,104 @@ TEST_F(OverscrollAreaTrackerPageTest, OpenOverscrollAreaLayoutDetach) {
     UpdateAllLifecyclePhasesForTest();
     EXPECT_EQ(state(), kClosed);
   }
+}
+
+TEST_F(OverscrollAreaTrackerPageTest, TallOverscrollAreaSnapAndScroll) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      #container {
+        width: 200px;
+        height: 200px;
+      }
+      #menu {
+        width: 100px;
+        height: 600px;
+        right: 200px;
+        top: 0;
+      }
+      #sheet {
+        width: 200px;
+        height: 600px;
+        top: 200px;
+        left: 0;
+      }
+    </style>
+    <div id="container" overscrollcontainer>
+      <div id="menu" overscrollarea></div>
+      <div id="sheet" overscrollarea></div>
+      <div id="content"></div>
+    </div>
+    <button command="toggle-overscroll" commandfor="menu"></button>
+    <button command="toggle-overscroll" commandfor="sheet"></button>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* container = GetElementById("container");
+  Element* menu = GetElementById("menu");
+  Element* sheet = GetElementById("sheet");
+  ASSERT_TRUE(container);
+  ASSERT_TRUE(menu);
+  ASSERT_TRUE(sheet);
+
+  OverscrollAreaTracker* tracker = container->GetOverscrollAreaTracker();
+  ASSERT_TRUE(tracker);
+
+  // 1. Open the tall horizontal menu (100x600 positioned to the left of the
+  // 200x200 container). It should open horizontally to (-100, 0) and not
+  // scroll vertically or snap to the vertical middle (-100, 200).
+  tracker->OpenArea(menu);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(menu->MatchesOverscrollOpen());
+
+  PseudoElement* menu_parent =
+      menu->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  ASSERT_TRUE(menu_parent);
+  PaintLayerScrollableArea* menu_scrollable =
+      menu_parent->GetLayoutBox()->GetScrollableArea();
+  ASSERT_TRUE(menu_scrollable);
+  EXPECT_EQ(menu_scrollable->GetScrollOffset(), ScrollOffset(-100, 0));
+
+  // Scrolling vertically down and up inside the open tall menu should stay at
+  // the scrolled vertical offset without snapping back to the middle (y=200)
+  // or dismissing the menu (x=0).
+  menu_parent->scrollToForTesting(-100, 50);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(menu_scrollable->GetScrollOffset(), ScrollOffset(-100, 50));
+  EXPECT_TRUE(menu->MatchesOverscrollOpen());
+
+  menu_parent->scrollToForTesting(-100, 250);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(menu_scrollable->GetScrollOffset(), ScrollOffset(-100, 250));
+  EXPECT_TRUE(menu->MatchesOverscrollOpen());
+
+  // Simulate a directional upward scroll from y=200 by -50px.
+  std::unique_ptr<cc::SnapSelectionStrategy> up_strategy =
+      cc::SnapSelectionStrategy::CreateForDisplacement(
+          gfx::PointF(0, 200), gfx::Vector2dF(0, -50), false);
+  std::optional<gfx::PointF> snap_point =
+      menu_scrollable->GetSnapPositionAndSetTarget(*up_strategy);
+  ASSERT_TRUE(snap_point.has_value());
+  EXPECT_EQ(*snap_point, gfx::PointF(0, 150));
+
+  tracker->CloseArea(menu);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(menu->MatchesOverscrollOpen());
+
+  // 2. Open the tall vertical bottom sheet (200x600 positioned below the
+  // 200x200 container). It should open to (0, 200) where the top of the sheet
+  // meets the top of the container, not to the middle (0, 400) or bottom
+  // (0, 600).
+  tracker->OpenArea(sheet);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(sheet->MatchesOverscrollOpen());
+
+  PseudoElement* sheet_parent =
+      sheet->GetPseudoElement(kPseudoIdOverscrollAreaParent);
+  ASSERT_TRUE(sheet_parent);
+  PaintLayerScrollableArea* sheet_scrollable =
+      sheet_parent->GetLayoutBox()->GetScrollableArea();
+  ASSERT_TRUE(sheet_scrollable);
+  EXPECT_EQ(sheet_scrollable->GetScrollOffset(), ScrollOffset(0, 200));
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

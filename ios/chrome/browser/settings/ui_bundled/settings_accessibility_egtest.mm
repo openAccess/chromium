@@ -1,9 +1,7 @@
 // Copyright 2019 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#import <TargetConditionals.h>
 
-#import "base/ios/ios_util.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_table_view_controller_constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -16,8 +14,10 @@
 #import "ios/testing/earl_grey/matchers.h"
 #import "ios/testing/test_tag_registry.h"
 
+using chrome_test_util::AddressesAndMoreButton;
 using chrome_test_util::ButtonWithAccessibilityLabelId;
 using chrome_test_util::ContentSettingsButton;
+using chrome_test_util::PaymentMethodsButton;
 using chrome_test_util::SettingsCollectionView;
 using chrome_test_util::SettingsDoneButton;
 using chrome_test_util::SettingsMenuBackButton;
@@ -213,14 +213,6 @@ TAG_SMOKE_TEST(SettingsAccessibilityTestCase, testSettingsSwipeDownDismiss);
 // Verifies the UI elements are accessible on the Bandwidth Preload Webpages
 // Settings page.
 - (void)testAccessibilityOnBandwidthPreloadWebpagesSettingsPage {
-#if !TARGET_OS_SIMULATOR
-  // TODO(crbug.com/455701421): Re-enable this flaky test on iPhone device on
-  // iOS below 26.
-  if (![ChromeEarlGrey isIPadIdiom] && !base::ios::IsRunningOnIOS26OrLater()) {
-    EARL_GREY_TEST_DISABLED(@"Flaky on iPhone device on iOS below 26.");
-  }
-#endif
-
   [ChromeEarlGreyUI openSettingsMenu];
   [ChromeEarlGreyUI tapSettingsMenuButton:BandwidthSettingsButton()];
   [[EarlGrey selectElementWithMatcher:BandwidthPreloadWebpagesButton()]
@@ -254,8 +246,7 @@ TAG_SMOKE_TEST(SettingsAccessibilityTestCase, testSettingsSwipeDownDismiss);
   [ChromeEarlGreyUI
       tapSettingsMenuButton:grey_accessibilityID(
                                 kSettingsAutofillAndPasswordsCellId)];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kSettingsPaymentMethodsCellId)]
+  [[EarlGrey selectElementWithMatcher:PaymentMethodsButton()]
       performAction:grey_tap()];
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
   [self closeSubSettingsMenu];
@@ -267,8 +258,7 @@ TAG_SMOKE_TEST(SettingsAccessibilityTestCase, testSettingsSwipeDownDismiss);
   [ChromeEarlGreyUI
       tapSettingsMenuButton:grey_accessibilityID(
                                 kSettingsAutofillAndPasswordsCellId)];
-  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
-                                          kSettingsAddressesAndMoreCellId)]
+  [[EarlGrey selectElementWithMatcher:AddressesAndMoreButton()]
       performAction:grey_tap()];
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
   [self closeSubSettingsMenu];

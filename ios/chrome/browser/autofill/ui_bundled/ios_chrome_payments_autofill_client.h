@@ -21,7 +21,6 @@
 #import "components/autofill/core/browser/ui/payments/card_expiration_date_fix_flow_controller_impl.h"
 #import "components/autofill/core/browser/ui/payments/card_name_fix_flow_controller_impl.h"
 #import "components/infobars/core/infobar_manager.h"
-#import "ios/chrome/browser/autofill/wallet_reminder_notice/ui/wallet_reminder_notice_ui_delegate_ios.h"
 
 namespace web {
 class WebState;
@@ -171,7 +170,6 @@ class IOSChromePaymentsAutofillClient : public PaymentsAutofillClient {
       const AutofillOfferData& offer,
       const OfferNotificationOptions& options) override;
   void DismissOfferNotification() override;
-  bool IsTabVisibleForOfferNotification() const override;
   bool ShowTouchToFillCreditCard(
       base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
       base::span<const Suggestion> suggestions) override;
@@ -218,7 +216,7 @@ class IOSChromePaymentsAutofillClient : public PaymentsAutofillClient {
   bool IsTabModalPopup() const override;
   BnplStrategy* GetBnplStrategy() override;
   BnplUiDelegate* GetBnplUiDelegate() override;
-  WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate() override;
+  void ShowWalletReminderNotice(LegalMessageLines legal_message_lines) override;
   WalletReminderNoticeManager* GetWalletReminderNoticeManager() override;
 
   // Begin IOSChromePaymentsAutofillClient-specific section.
@@ -289,13 +287,6 @@ class IOSChromePaymentsAutofillClient : public PaymentsAutofillClient {
   // platform.
   // Lazily initialized: access only through `GetBnplUiDelegate()`.
   std::unique_ptr<IosBnplUiDelegate> bnpl_ui_delegate_;
-
-  // The WalletReminderNoticeUiDelegate used to handle the UI in the Wallet
-  // Reminder Notice flow on iOS.
-  // Lazily initialized: access only through
-  // `GetWalletReminderNoticeUiDelegate()`.
-  std::optional<WalletReminderNoticeUiDelegateIOS>
-      wallet_reminder_notice_ui_delegate_;
 
   // The WalletReminderNoticeManager used to orchestrate the Wallet Reminder
   // Notice flow.

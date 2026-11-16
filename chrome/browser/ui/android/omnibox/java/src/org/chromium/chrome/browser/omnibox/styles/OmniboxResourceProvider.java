@@ -38,6 +38,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.night_mode.NightModeUtils;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState.IconSize;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.theme.ThemeUtils;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -45,6 +46,7 @@ import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.browser_ui.styles.IncognitoColors;
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.util.DrawableUtils;
+import org.chromium.components.omnibox.FormattedStringProtoIntDef.ColorType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -325,6 +327,19 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
                 : SemanticColorUtils.getDefaultTextColorLink(mContext);
     }
 
+    /**
+     * Returns the suggestion text color for {@code colorType}. HINT_TEXT and ACTION_HIGH get the
+     * secondary and URL text colors. Every other type, including QUERY_TEXT, gets the primary text
+     * color.
+     */
+    public @ColorInt int colorTypeToSuggestionTextColor(@ColorType int colorType) {
+        return switch (colorType) {
+            case ColorType.COLOR_SUGGEST_HINT_TEXT -> getSuggestionSecondaryTextColor();
+            case ColorType.COLOR_SUGGEST_ACTION_HIGH -> getSuggestionUrlTextColor();
+            default -> getSuggestionPrimaryTextColor();
+        };
+    }
+
     /** Get status separator color. */
     public @ColorInt int getStatusSeparatorColor() {
         @ColorRes
@@ -486,30 +501,52 @@ public class OmniboxResourceProvider implements ComponentCallbacks2 {
         return mCache.getDimen(R.dimen.omnibox_suggestion_side_spacing_smallest);
     }
 
-    /** Gets the edge size of a suggestion icon. */
-    public @Px int getEdgeSize() {
-        if (OmniboxCapabilities.isDesktopPlatform()) {
-            return mCache.getDimen(R.dimen.omnibox_desktop_small_decoration_icon_size);
-        }
-        return mCache.getDimen(R.dimen.omnibox_suggestion_24dp_icon_size);
+    /**
+     * Gets the edge size of a suggestion icon of the supplied size class.
+     *
+     * @param size The {@link IconSize} class of the icon.
+     */
+    public @Px int getEdgeSize(@IconSize int size) {
+        boolean isDesktop = OmniboxCapabilities.isDesktopPlatform();
+        return switch (size) {
+            case IconSize.LARGE ->
+                    mCache.getDimen(
+                            isDesktop
+                                    ? R.dimen.omnibox_desktop_large_decoration_icon_size
+                                    : R.dimen.omnibox_suggestion_36dp_icon_size);
+            case IconSize.MEDIUM ->
+                    mCache.getDimen(
+                            isDesktop
+                                    ? R.dimen.omnibox_desktop_medium_decoration_icon_size
+                                    : R.dimen.omnibox_suggestion_26dp_icon_size);
+            default ->
+                    mCache.getDimen(
+                            isDesktop
+                                    ? R.dimen.omnibox_desktop_small_decoration_icon_size
+                                    : R.dimen.omnibox_suggestion_24dp_icon_size);
+        };
     }
 
-    /** Gets the edge size of a large suggestion icon. */
-    public @Px int getEdgeSizeLargeIcon() {
-        if (OmniboxCapabilities.isDesktopPlatform()) {
-            return mCache.getDimen(R.dimen.omnibox_desktop_large_decoration_icon_size);
-        }
-        return mCache.getDimen(R.dimen.omnibox_suggestion_36dp_icon_size);
+    /**
+     * Gets the edge size of a suggestion icon of the supplied size class, in dp.
+     *
+     * @param size The {@link IconSize} class of the icon.
+     */
+    public int getEdgeSizeDp(@IconSize int size) {
+        float density = mContext.getResources().getDisplayMetrics().density;
+        return Math.round(getEdgeSize(size) / density);
     }
 
-    /** Gets the rounding radius of a large suggestion icon. */
-    public @Px int getLargeIconRoundingRadius() {
-        return mCache.getDimen(R.dimen.omnibox_large_icon_rounding_radius);
-    }
-
-    /** Gets the rounding radius of a small suggestion icon. */
-    public @Px int getSmallIconRoundingRadius() {
-        return mCache.getDimen(R.dimen.omnibox_small_icon_rounding_radius);
+    /**
+     * Gets the rounding radius of a suggestion icon of the supplied size class.
+     *
+     * @param size The {@link IconSize} class of the icon.
+     */
+    public @Px int getIconRoundingRadius(@IconSize int size) {
+        return mCache.getDimen(
+                size == IconSize.LARGE
+                        ? R.dimen.omnibox_large_icon_rounding_radius
+                        : R.dimen.omnibox_small_icon_rounding_radius);
     }
 
     /** Returns the layout size of the status icon in pixels. */

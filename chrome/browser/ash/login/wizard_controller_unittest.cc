@@ -14,8 +14,11 @@
 #include "ash/shell.h"
 #include "ash/test/ash_test_helper.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "base/check.h"
 #include "base/check_deref.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/language_tag.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
@@ -59,7 +62,6 @@
 #include "chrome/browser/ui/webui/ash/login/update_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/user_creation_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/welcome_screen_handler.h"
-#include "chrome/common/chrome_constants.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
@@ -319,14 +321,12 @@ class WizardControllerTestBase : public ::testing::Test {
 
     browser_controller_ = std::make_unique<ash::BrowserControllerImpl>();
 
-    AshTestHelper::InitParams params;
-    params.users.clear();
-    params.local_state = TestingBrowserProcess::GetGlobal()->local_state();
     test_context_factories_ = std::make_unique<ui::TestContextFactories>(
         /*enable_pixel_output=*/false);
     ash_test_helper_ = std::make_unique<AshTestHelper>(
         test_context_factories_->GetContextFactory());
-    ash_test_helper_->SetUp(std::move(params));
+    ash_test_helper_->SetUp(
+        {.local_state = TestingBrowserProcess::GetGlobal()->local_state()});
 
     // Initialize TimezoneResolverManager here because it depends on
     // SystemLocationProvider, which is initialized in AshTestHelper::SetUp.
@@ -519,6 +519,13 @@ class WizardControllerTest : public WizardControllerTestBase {
         TestingBrowserProcess::GetGlobal()
             ->GetFeatures()
             ->application_locale_storage(),
+        /*metrics_service_getter=*/
+        base::BindRepeating([]() {
+          metrics::MetricsService* metrics_service =
+              TestingBrowserProcess::GetGlobal()->metrics_service();
+          CHECK(metrics_service);
+          return metrics_service;
+        }),
         TestingBrowserProcess::GetGlobal()
             ->platform_part()
             ->browser_policy_connector_ash(),
@@ -657,7 +664,7 @@ TEST_F(WizardControllerTest,
   TestingBrowserProcess::GetGlobal()
       ->GetFeatures()
       ->application_locale_storage()
-      ->Set("en-GB");
+      ->SetTag(base::i18n::GetKnownLanguageTag("en-GB"));
   TestingBrowserProcess::GetGlobal()->local_state()->SetString(
       language::prefs::kApplicationLocale, "en-AU");
 

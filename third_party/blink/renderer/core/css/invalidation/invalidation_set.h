@@ -123,10 +123,6 @@ class CORE_EXPORT InvalidationSet
   void AddCustomPseudoName(const AtomicString& custom_pseudo_name);
   void AddAttribute(const AtomicString& attribute_local_name);
 
-  void SetInvalidationFlags(InvalidationFlags flags) {
-    invalidation_flags_ = flags;
-  }
-
   void SetWholeSubtreeInvalid();
   bool WholeSubtreeInvalid() const {
     return invalidation_flags_.WholeSubtreeInvalid();
@@ -178,8 +174,12 @@ class CORE_EXPORT InvalidationSet
     return invalidation_flags_.InvalidatesTreeCounting();
   }
 
-  void SetInvalidatesFocused() { invalidates_focused_ = true; }
-  bool InvalidatesFocused() const { return invalidates_focused_; }
+  void SetInvalidatesFocused() {
+    invalidation_flags_.SetInvalidatesFocused(true);
+  }
+  bool InvalidatesFocused() const {
+    return invalidation_flags_.InvalidatesFocused();
+  }
 
   bool IsEmpty() const {
     return HasEmptyBackings() &&
@@ -187,7 +187,7 @@ class CORE_EXPORT InvalidationSet
            !invalidation_flags_.InvalidatesSlotted() &&
            !invalidation_flags_.InvalidatesParts() &&
            !invalidation_flags_.InvalidatesTreeCounting() &&
-           !invalidates_focused_;
+           !invalidation_flags_.InvalidatesFocused();
   }
 
   void WriteIntoTrace(perfetto::TracedValue context) const;
@@ -464,9 +464,6 @@ class CORE_EXPORT InvalidationSet
   // (unless we know for sure no child can be affected by a
   // selector of the :nth-child type).
   unsigned invalidates_nth_ : 1;
-
-  // If true, the focused element needs to be invalidated.
-  unsigned invalidates_focused_ : 1;
 };
 
 class CORE_EXPORT DescendantInvalidationSet final : public InvalidationSet {

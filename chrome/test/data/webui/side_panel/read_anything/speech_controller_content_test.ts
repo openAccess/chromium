@@ -6,7 +6,7 @@ import {playFromSelectionTimeout, ReadAloudNode} from 'chrome-untrusted://read-a
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 
-import {createSpeechSynthesisVoice, setContent, setupAppTestEnvironment, stubAnimationFrame} from './common.js';
+import {createSpeechSynthesisVoice, onPlayPauseToggle, setContent, setDomNodes, setupAppTestEnvironment, stubAnimationFrame} from './common.js';
 import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
 import type {TestReadAloudModelBrowserProxy} from './test_read_aloud_browser_proxy.js';
 import type {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
@@ -26,20 +26,12 @@ suite('SpeechController', () => {
   let onPlayingFromSelection: boolean;
   let onWordBoundary: boolean;
 
-  function onPlayPauseToggle(text: string) {
-    const element = document.createElement('p');
-    element.textContent = text;
-    speechController.onPlayPauseToggle(element);
-  }
-
-  function setDomNodes(axNodeIds: number[]): Node[] {
-    const nodes: Node[] = [];
-    axNodeIds.forEach(id => {
-      const element = document.createElement('p');
-      nodeStore.setDomNode(element, id);
-      nodes.push(element);
-    });
-    return nodes;
+  // Wraps the content in a container element, like the app's content
+  // container that's passed to onPlayPauseToggle().
+  function setContentInContainer(text: string): HTMLElement {
+    const container = document.createElement('div');
+    container.appendChild(setContent(text, readAloudModel));
+    return container;
   }
 
   const speechListener = {
@@ -82,11 +74,15 @@ suite('SpeechController', () => {
     speech.reset();
     onWordBoundary = false;
     isSpeechActiveChanged = false;
+    audioCurrentlyPlayingChanged = false;
     onPlayingFromSelection = false;
   });
 
   suite('initializeSpeechTree', () => {
-    stubAnimationFrame();
+    setup(() => {
+      stubAnimationFrame();
+    });
+
     let initializedNode: Node|undefined;
     function mockInit() {
       readAloudModel.init = (node) => {
@@ -175,14 +171,14 @@ suite('SpeechController', () => {
 
   test('clearReadAloudState', () => {
     const text = 'And I am a massive deal';
-    const node: Node = setContent(text, readAloudModel);
+    const container = setContentInContainer(text);
     wordBoundaries.updateBoundary(4);
     speechController.setHasSpeechBeenTriggered(true);
     audioBrowserProxy.highlightGranularity =
         audioBrowserProxy.sentenceHighlighting;
     speechController.onHighlightGranularityChange(
         audioBrowserProxy.sentenceHighlighting);
-    speechController.onPlayPauseToggle(node as HTMLElement);
+    speechController.onPlayPauseToggle(container);
     assertTrue(speechController.isSpeechActive());
     assertTrue(wordBoundaries.hasBoundaries());
     assertTrue(highlighter.hasCurrentGranularity());
@@ -204,9 +200,9 @@ suite('SpeechController', () => {
   test('onPlayPauseToggle propagates state', async () => {
     const text = 'You bring the corsets';
     readAloudModel.setInitialized(true);
-    const node = setContent(text, readAloudModel);
+    const container = setContentInContainer(text);
 
-    speechController.onPlayPauseToggle(node as HTMLElement);
+    speechController.onPlayPauseToggle(container);
     const spoken = await speech.whenCalled('speak');
     assertTrue(!!spoken.onstart);
     spoken.onstart(new SpeechSynthesisEvent('type', {utterance: spoken}));
@@ -247,13 +243,13 @@ suite('SpeechController', () => {
       'onPlayPauseToggle resume with word boundaries cancels and re-speaks',
       () => {
         const textContent = 'And our fame and our faces';
-        const node = setContent(textContent, readAloudModel);
-        speechController.onPlayPauseToggle(node as HTMLElement);
-        speechController.onPlayPauseToggle(node as HTMLElement);
+        const container = setContentInContainer(textContent);
+        speechController.onPlayPauseToggle(container);
+        speechController.onPlayPauseToggle(container);
         wordBoundaries.updateBoundary(10);
         speech.reset();
 
-        speechController.onPlayPauseToggle(node as HTMLElement);
+        speechController.onPlayPauseToggle(container);
 
         assertEquals(1, speech.getCallCount('speak'));
         assertEquals(1, speech.getCallCount('cancel'));
@@ -263,14 +259,14 @@ suite('SpeechController', () => {
       'onPlayPauseToggle resume with word boundaries notifies of change',
       () => {
         const textContent = 'And our fame and our faces';
-        const node = setContent(textContent, readAloudModel);
-        speechController.onPlayPauseToggle(node as HTMLElement);
-        speechController.onPlayPauseToggle(node as HTMLElement);
+        const container = setContentInContainer(textContent);
+        speechController.onPlayPauseToggle(container);
+        speechController.onPlayPauseToggle(container);
         wordBoundaries.updateBoundary(10);
         speech.reset();
         onWordBoundary = false;
 
-        speechController.onPlayPauseToggle(node as HTMLElement);
+        speechController.onPlayPauseToggle(container);
 
         assertTrue(onWordBoundary);
       });

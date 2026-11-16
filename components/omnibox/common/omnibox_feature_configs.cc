@@ -55,11 +55,6 @@ BASE_FEATURE(AiMode::kAiModeEligibility,
              base::FEATURE_DISABLED_BY_DEFAULT);
 AiMode::AiMode() {
   allow_ai_mode_matches = base::FeatureList::IsEnabled(kAllowAiModeMatches);
-  do_not_dedupe_aim_suggestions =
-      base::FeatureParam<bool>(&kAllowAiModeMatches,
-                               "DoNotDedupeAimSuggestions",
-                               do_not_dedupe_aim_suggestions)
-          .Get();
 
   do_not_show_historic_aim_suggestions =
       base::FeatureParam<bool>(&kAllowAiModeMatches,
@@ -317,6 +312,19 @@ Toolbelt::Toolbelt() {
 Toolbelt::Toolbelt(const Toolbelt&) = default;
 Toolbelt& Toolbelt::operator=(const Toolbelt&) = default;
 Toolbelt::~Toolbelt() = default;
+
+BASE_FEATURE(kOmniboxDedupeBySuggestTemplateBehavior,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+DedupeBySuggestTemplateBehavior::DedupeBySuggestTemplateBehavior() {
+  enabled =
+      base::FeatureList::IsEnabled(kOmniboxDedupeBySuggestTemplateBehavior);
+}
+
+DedupeBySuggestTemplateBehavior::DedupeBySuggestTemplateBehavior(
+    const DedupeBySuggestTemplateBehavior&) = default;
+DedupeBySuggestTemplateBehavior& DedupeBySuggestTemplateBehavior::operator=(
+    const DedupeBySuggestTemplateBehavior&) = default;
+DedupeBySuggestTemplateBehavior::~DedupeBySuggestTemplateBehavior() = default;
 
 DocumentProvider::DocumentProvider() {
   enabled = base::FeatureList::IsEnabled(omnibox::kDocumentProvider);
@@ -691,14 +699,11 @@ ComposeboxSuggestionLimit::~ComposeboxSuggestionLimit() = default;
 BASE_FEATURE(SuggestPathClientConfig::kUseShortSuggestPathV1,
              "OmniboxUseShortSuggestPathV1",
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(
-    std::string,
-    kSuggestPathClient,
-    &SuggestPathClientConfig::kUseShortSuggestPathV1,
-    "OmniboxSuggestPathClient",
-    "chrome-omni,chrome,chrome-ntp-action,chrome-cobrowse-compose,"
-    "chrome-multimodal,chrome-contextual,"
-    "chrome-android-search-resumption-module,chrome-compose,chrome-mobile-aim");
+BASE_FEATURE_PARAM(std::string,
+                   kSuggestPathClient,
+                   &SuggestPathClientConfig::kUseShortSuggestPathV1,
+                   "OmniboxSuggestPathClient",
+                   "");
 
 SuggestPathClientConfig::SuggestPathClientConfig() {
   enabled = base::FeatureList::IsEnabled(kUseShortSuggestPathV1);

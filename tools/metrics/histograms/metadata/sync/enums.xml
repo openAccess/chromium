@@ -512,7 +512,7 @@ chromium-metrics-reviews@google.com.
   <int value="100090" label="ProjectorViewerOnboardingShowCount"/>
   <int value="100091" label="ShelfAlignment"/>
   <int value="100092" label="ShelfAutoHideBehavior"/>
-  <int value="100093" label="SuggestedContentEnabled"/>
+  <int value="100093" label="(obsolete) SuggestedContentEnabled"/>
   <int value="100094" label="SyncableWallpaperInfo"/>
   <int value="100095" label="TapDraggingEnabled"/>
   <int value="100096" label="TapToClickEnabled"/>
@@ -838,6 +838,9 @@ chromium-metrics-reviews@google.com.
   <int value="100385" label="ExtensionsPinnedByDefault"/>
   <int value="100386" label="AudioFocusEnforcementEnabled"/>
   <int value="100387" label="TtcAutoPinnedMigration"/>
+  <int value="100388" label="GlicSmartSelectionAutoPinnedMigration"/>
+  <int value="100389" label="ArticlesListVisibleOnPhone"/>
+  <int value="100390" label="ArticlesListVisibleOnTablet"/>
 <!-- LINT.ThenChange(/chrome/browser/sync/prefs/chrome_syncable_prefs_database.cc:ChromeSyncablePref)-->
 
 <!-- LINT.IfChange(IosSyncablePref) -->
@@ -1836,6 +1839,8 @@ chromium-metrics-reviews@google.com.
   <int value="7" label="Don't undo: already completed or not necessary"/>
   <int value="8" label="Migrate forced"/>
   <int value="9" label="Don't migrate, auth error"/>
+  <int value="10"
+      label="Don't migrate, UndoChromeOsUseConsentLevelSignin enabled"/>
 </enum>
 
 <!-- LINT.ThenChange(/components/browser_sync/sync_to_signin_migration.cc:SyncToSigninMigrationDecision) -->

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 
 #include "base/check.h"
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -13,14 +14,24 @@
 #include "chrome/browser/ui/views/tabs/common/tab_group_line_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
+#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/compositor/canvas_painter.h"
+#include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/view_utils.h"
 
 class SplitTabViewTestBase
@@ -155,6 +166,248 @@ IN_PROC_BROWSER_TEST_P(SplitTabViewTest, CreateSplitWithCollapsedTabGroup) {
   ASSERT_TRUE(split_view);
   EXPECT_LE(split_view->GetMinimumSize().width(),
             split_view->GetPreferredSize().width());
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest,
+                       AdjacentTabsTargetableInHorizontalOverlapRegion) {
+  if (!is_horizontal()) {
+    GTEST_SKIP();
+  }
+
+  const auto animation_mode_reset =
+      gfx::AnimationTestApi::SetRichAnimationRenderMode(
+          gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+
+  // Tabs layout:
+  // Tab 0: Leading unsplit tab
+  // Tab 1, 2: Split tab (active so SplitTabView has highest Z-order)
+  // Tab 3: Trailing unsplit tab
+  AppendSplitTab();
+  AppendTab();
+  tab_strip_model()->ActivateTabAt(
+      1, TabStripUserGestureDetails(
+             TabStripUserGestureDetails::GestureType::kOther));
+  RunScheduledLayouts();
+
+  auto* unpinned_node = unpinned_collection_node();
+  ASSERT_EQ(unpinned_node->children().size(), 3u);
+  auto* unpinned_container =
+      views::AsViewClass<UnpinnedTabContainerView>(unpinned_node->view());
+
+  auto* leading_tab =
+      views::AsViewClass<TabView>(unpinned_node->children()[0]->view());
+  auto* split_view =
+      views::AsViewClass<SplitTabView>(unpinned_node->children()[1]->view());
+  auto* trailing_tab =
+      views::AsViewClass<TabView>(unpinned_node->children()[2]->view());
+
+  split_view->GetWidget()->LayoutRootViewIfNecessary();
+
+  auto* leading_split_tab =
+      views::AsViewClass<TabView>(split_view->children()[0]);
+  auto* trailing_split_tab =
+      views::AsViewClass<TabView>(split_view->children()[1]);
+
+  gfx::RectF leading_hit_bounds = gfx::SkRectToRectF(
+      leading_split_tab->tab_styling()
+          ->GetPath(TabStyle::PathType::kHitTest, /*scale=*/1.0f,
+                    {.render_units = TabStyle::RenderUnits::kDips})
+          .getBounds());
+  views::View::ConvertRectToTarget(leading_split_tab, unpinned_container,
+                                   &leading_hit_bounds);
+  const int leading_threshold_x = gfx::ToEnclosingRect(leading_hit_bounds).x();
+
+  gfx::RectF trailing_hit_bounds = gfx::SkRectToRectF(
+      trailing_split_tab->tab_styling()
+          ->GetPath(TabStyle::PathType::kHitTest, /*scale=*/1.0f,
+                    {.render_units = TabStyle::RenderUnits::kDips})
+          .getBounds());
+  views::View::ConvertRectToTarget(trailing_split_tab, unpinned_container,
+                                   &trailing_hit_bounds);
+  const int trailing_threshold_x =
+      gfx::ToEnclosingRect(trailing_hit_bounds).right();
+
+  // Points 1 DIP outside the leading and trailing hit-test thresholds of the
+  // split tabs (still within `split_view->bounds()`) should target the adjacent
+  // tabs rather than `split_view`.
+  const gfx::Point point_in_leading_overlap(leading_threshold_x - 1,
+                                            split_view->height() / 2);
+  ASSERT_TRUE(split_view->bounds().Contains(point_in_leading_overlap));
+  EXPECT_EQ(
+      unpinned_container->GetEventHandlerForPoint(point_in_leading_overlap),
+      leading_tab);
+
+  const gfx::Point point_in_trailing_overlap(trailing_threshold_x + 1,
+                                             split_view->height() / 2);
+  ASSERT_TRUE(split_view->bounds().Contains(point_in_trailing_overlap));
+  EXPECT_EQ(
+      unpinned_container->GetEventHandlerForPoint(point_in_trailing_overlap),
+      trailing_tab);
+
+  // Points 1 DIP inside the left and right split tabs' hit-test thresholds
+  // should still target the respective child TabViews.
+  const gfx::Point point_in_leading_split_tab(leading_threshold_x + 1,
+                                              split_view->height() / 2);
+  EXPECT_EQ(
+      unpinned_container->GetEventHandlerForPoint(point_in_leading_split_tab),
+      leading_split_tab);
+
+  const gfx::Point point_in_trailing_split_tab(trailing_threshold_x - 1,
+                                               split_view->height() / 2);
+  EXPECT_EQ(
+      unpinned_container->GetEventHandlerForPoint(point_in_trailing_split_tab),
+      trailing_split_tab);
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest, HoverSynchronizesAcrossSplitTabs) {
+  AppendSplitTab();
+  RunScheduledLayouts();
+
+  auto* split_node = unpinned_collection_node()->GetChildNodeOfType(
+      TabCollectionNode::Type::SPLIT);
+  ASSERT_TRUE(split_node);
+  auto* split_view = views::AsViewClass<SplitTabView>(split_node->view());
+  ASSERT_TRUE(split_view);
+  ASSERT_EQ(split_view->children().size(), 2u);
+
+  auto* tab1 = views::AsViewClass<TabView>(split_view->children()[0]);
+  auto* tab2 = views::AsViewClass<TabView>(split_view->children()[1]);
+  ASSERT_TRUE(tab1);
+  ASSERT_TRUE(tab2);
+
+  EXPECT_FALSE(tab1->IsHoverAnimationActive());
+  EXPECT_FALSE(tab2->IsHoverAnimationActive());
+
+  ui::MouseEvent enter_event(ui::EventType::kMouseEntered, gfx::Point(),
+                             gfx::Point(), ui::EventTimeForNow(), 0, 0);
+  split_view->OnMouseEntered(enter_event);
+  EXPECT_TRUE(tab1->IsHoverAnimationActive());
+  EXPECT_TRUE(tab2->IsHoverAnimationActive());
+
+  ui::MouseEvent exit_event(ui::EventType::kMouseExited, gfx::Point(),
+                            gfx::Point(), ui::EventTimeForNow(), 0, 0);
+  split_view->OnMouseExited(exit_event);
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return !tab1->IsHoverAnimationActive() && !tab2->IsHoverAnimationActive();
+  }));
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest,
+                       RemoveTabFromSplitReparentsRemainingTab) {
+  AppendSplitTab();
+  RunScheduledLayouts();
+
+  auto* split_node = unpinned_collection_node()->GetChildNodeOfType(
+      TabCollectionNode::Type::SPLIT);
+  ASSERT_TRUE(split_node);
+  std::optional<split_tabs::SplitTabId> split_id =
+      tab_strip_model()->GetSplitForTab(1);
+  ASSERT_TRUE(split_id.has_value());
+
+  tab_strip_model()->RemoveSplit(split_id.value());
+  RunScheduledLayouts();
+
+  EXPECT_EQ(unpinned_collection_node()->GetChildNodeOfType(
+                TabCollectionNode::Type::SPLIT),
+            nullptr);
+  EXPECT_EQ(tab_strip_model()->count(), 3);
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest, CreateSplitUKMLogged) {
+  std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder =
+      std::make_unique<ukm::TestAutoSetUkmRecorder>();
+
+  // Create two tabs with the first two being split.
+  GURL a_url = GURL("https://a.com");
+  GURL b_url = GURL("https://b.com");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a_url));
+  AppendTab();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), b_url));
+  tab_strip_model()->ActivateTabAt(0);
+  tab_strip_model()->AddToNewSplit(
+      {1}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kTabContextMenu);
+
+  // Ensure UKM is recorded.
+  auto entries = ukm_recorder->GetEntriesByName(
+      ukm::builders::SplitView_Created::kEntryName);
+  EXPECT_EQ(2u, entries.size());
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[0], a_url);
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[1], b_url);
+  EXPECT_EQ(
+      *ukm_recorder->GetEntryMetric(
+          entries[0], ukm::builders::SplitView_Created::kSplitEventIdName),
+      *ukm_recorder->GetEntryMetric(
+          entries[1], ukm::builders::SplitView_Created::kSplitEventIdName));
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest, SwapTabIntoSplitUKMLogged) {
+  std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder =
+      std::make_unique<ukm::TestAutoSetUkmRecorder>();
+
+  // Create three tabs with the first two being split.
+  GURL a_url = GURL("https://a.com");
+  GURL b_url = GURL("https://b.com");
+  GURL c_url = GURL("https://c.com");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a_url));
+  AppendTab();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), b_url));
+  AppendTab();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), c_url));
+  tab_strip_model()->ActivateTabAt(0);
+  tab_strip_model()->AddToNewSplit(
+      {1}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kTabContextMenu);
+
+  // Swap the first tab with the last.
+  tab_strip_model()->UpdateTabInSplit(
+      tab_strip_model()->GetTabAtIndex(0)->GetHandle(),
+      tab_strip_model()->GetTabAtIndex(2)->GetHandle(),
+      TabStripModel::SplitUpdateType::kSwap);
+
+  // Ensure UKM is recorded.
+  auto entries = ukm_recorder->GetEntriesByName(
+      ukm::builders::SplitView_Updated::kEntryName);
+  EXPECT_EQ(2u, entries.size());
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[0], c_url);
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[1], b_url);
+  EXPECT_EQ(
+      *ukm_recorder->GetEntryMetric(
+          entries[0], ukm::builders::SplitView_Updated::kSplitEventIdName),
+      *ukm_recorder->GetEntryMetric(
+          entries[1], ukm::builders::SplitView_Updated::kSplitEventIdName));
+}
+
+IN_PROC_BROWSER_TEST_P(SplitTabViewTest, NavigateSplitTabUKMLogged) {
+  std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder =
+      std::make_unique<ukm::TestAutoSetUkmRecorder>();
+
+  // Create two tabs with the first two being split.
+  GURL a_url = GURL("https://a.com");
+  GURL b_url = GURL("https://b.com");
+  GURL c_url = GURL("https://c.com");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), a_url));
+  AppendTab();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), b_url));
+  tab_strip_model()->ActivateTabAt(0);
+  tab_strip_model()->AddToNewSplit(
+      {1}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kTabContextMenu);
+
+  // Navigate the first tab to a new URL.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), c_url));
+
+  // Ensure UKM is recorded.
+  auto entries = ukm_recorder->GetEntriesByName(
+      ukm::builders::SplitView_Updated::kEntryName);
+  EXPECT_EQ(2u, entries.size());
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[0], c_url);
+  ukm_recorder->ExpectEntrySourceHasUrl(entries[1], b_url);
+  EXPECT_EQ(
+      *ukm_recorder->GetEntryMetric(
+          entries[0], ukm::builders::SplitView_Updated::kSplitEventIdName),
+      *ukm_recorder->GetEntryMetric(
+          entries[1], ukm::builders::SplitView_Updated::kSplitEventIdName));
 }
 
 INSTANTIATE_TEST_SUITE_P(

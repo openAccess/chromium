@@ -40,6 +40,7 @@
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/mojom/webpreferences/web_preferences.mojom.h"
 #include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -118,8 +119,7 @@ AwSettings::~AwSettings() {
   ScopedJavaLocalRef<jobject> scoped_obj = aw_settings_.get(env);
   if (!scoped_obj)
     return;
-  Java_AwSettings_nativeAwSettingsGone(env, scoped_obj,
-                                       reinterpret_cast<intptr_t>(this));
+  Java_AwSettings_nativeAwSettingsGone(env, scoped_obj);
 }
 
 bool AwSettings::GetJavaScriptCanOpenWindowsAutomatically() {
@@ -731,10 +731,16 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   web_prefs->accelerated_2d_canvas_enabled =
       web_prefs->accelerated_2d_canvas_enabled &&
       enable_supported_hardware_accelerated_features;
-  // Always allow webgl. Webview always requires access to the GPU even if
-  // it only does software draws. WebGL will not show up in software draw so
-  // there is no more brokenness for user. This makes it easier for apps that
-  // want to start running webgl content before webview is first attached.
+  // Always allow web graphics (WebGL and WebGPU) unless explicitly disabled
+  // via AwSettings. Webview always requires access to the GPU even if it only
+  // does software draws. WebGL will not show up in software draw so there is
+  // no more brokenness for user. This makes it easier for apps that want to
+  // start running webgl content before webview is first attached.
+  bool web_graphics_enabled =
+      Java_AwSettings_getWebGraphicsEnabledLocked(env, obj);
+  web_prefs->webgl1_enabled = web_prefs->webgl1_enabled && web_graphics_enabled;
+  web_prefs->webgl2_enabled = web_prefs->webgl2_enabled && web_graphics_enabled;
+  web_prefs->webgpu_enabled = web_prefs->webgpu_enabled && web_graphics_enabled;
 
   // If strict mixed content checking is enabled then running should not be
   // allowed.
@@ -831,13 +837,14 @@ bool AwSettings::GetAllowFileAccessFromFileURLs() {
   return allow_file_access_from_file_urls_;
 }
 
-static int64_t JNI_AwSettings_Init(JNIEnv* env,
-                                   const JavaRef<jobject>& obj,
-                                   const JavaRef<jobject>& web_contents) {
+static jni_zero::JniRawPtr<AwSettings> JNI_AwSettings_Init(
+    JNIEnv* env,
+    const JavaRef<jobject>& obj,
+    const JavaRef<jobject>& web_contents) {
   content::WebContents* contents =
       content::WebContents::FromJavaWebContents(web_contents);
   AwSettings* settings = new AwSettings(env, obj, contents);
-  return reinterpret_cast<intptr_t>(settings);
+  return jni_zero::MakeRaw(settings);
 }
 
 static ScopedJavaLocalRef<jobject> JNI_AwSettings_FromWebContents(

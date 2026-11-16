@@ -54,7 +54,7 @@ public class ArchivePersistedTabData extends PersistedTabData {
         super(
                 tab,
                 PersistedTabDataConfiguration.get(ArchivePersistedTabData.class, tab.isIncognito())
-                        .getStorage(),
+                        .getStorage(tab.getProfile()),
                 PersistedTabDataConfiguration.get(ArchivePersistedTabData.class, tab.isIncognito())
                         .getId());
     }
@@ -73,11 +73,11 @@ public class ArchivePersistedTabData extends PersistedTabData {
     @Override
     Serializer<ByteBuffer> getSerializer() {
         return () ->
-                ArchivePersistedTabDataProto.newBuilder()
-                        .setArchivedTimeMs(mArchivedTimeMs)
-                        .build()
-                        .toByteString()
-                        .asReadOnlyByteBuffer();
+                ByteBuffer.wrap(
+                        ArchivePersistedTabDataProto.newBuilder()
+                                .setArchivedTimeMs(mArchivedTimeMs)
+                                .build()
+                                .toByteArray());
     }
 
     @Override

@@ -172,13 +172,15 @@ public class RestoreTabsFeatureHelperUnitTest {
                 /* modalDialogManagerSupplier= */ null);
         verify(mMockTracker)
                 .shouldTriggerHelpUi(
-                        eq(RESTORE_TABS_FEATURE),
-                        eq(new FeatureProperties(UiFormat.BOTTOM_SHEET, false, false)));
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
         verify(mDelegate).showPromo(anyList());
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.USER_EDUCATION_INTERRUPTIVE_COOLDOWN_GROUP)
+    @EnableFeatures({
+        ChromeFeatureList.USER_EDUCATION_FRAMEWORK,
+        ChromeFeatureList.USER_EDUCATION_INTERRUPTIVE_COOLDOWN_GROUP
+    })
     public void testRestoreTabsFeatureHelper_hasValidSyncedDevices_cooldownGroupEnabled() {
         ForeignSessionTab tab = new ForeignSessionTab(JUnitTestGURLs.URL_1, "title", 32L, 32L, 0);
         List<ForeignSessionTab> tabs = new ArrayList<>();
@@ -209,8 +211,7 @@ public class RestoreTabsFeatureHelperUnitTest {
                 /* modalDialogManagerSupplier= */ null);
         verify(mMockTracker)
                 .shouldTriggerHelpUi(
-                        eq(RESTORE_TABS_FEATURE),
-                        eq(new FeatureProperties(UiFormat.BOTTOM_SHEET, false, true)));
+                        eq(RESTORE_TABS_FEATURE), eq(new FeatureProperties(UiFormat.BOTTOM_SHEET)));
         verify(mDelegate).showPromo(anyList());
     }
 

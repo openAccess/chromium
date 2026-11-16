@@ -20,6 +20,8 @@
 #include "base/check_is_test.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -39,6 +41,7 @@
 #include "chrome/browser/context_hub/auto_todos/auto_todos_store.h"
 #include "chrome/browser/context_hub/features.h"
 #include "chrome/browser/context_hub/memory_bank/memory_bank.h"
+#include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
 #include "chrome/browser/context_hub/prefs.h"
 #include "chrome/browser/context_hub/storage/context_hub_backend.h"
 #include "chrome/browser/context_hub/tab_group_store/tab_group_entry.h"
@@ -49,6 +52,7 @@
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/webui/context_hub/context_hub.mojom-features.h"
 #include "components/image_fetcher/core/image_fetcher.h"
 #include "components/image_fetcher/core/image_fetcher_impl.h"
 #include "components/image_fetcher/core/request_metadata.h"
@@ -83,9 +87,11 @@
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
+#include "skia/ext/image_operations.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -150,6 +156,17 @@ constexpr net::NetworkTrafficAnnotationTag
             "subject to the URLBlocklist and URLAllowlist enterprise policies."
         })");
 
+// The Auto Tab Groups preferences shown when the user has not stored a
+// document of their own. Never persisted; see
+// `GetEffectiveAutoTabGroupsPreferences()`.
+// TODO(crbug.com/581841564): Drop hardcoding in favor of a localized
+// string resource.
+constexpr char kDefaultAutoTabGroupsPreferences[] =
+    "- Group tabs by task, project or topic, not just by website.\n"
+    "- Keep group names short, descriptive and free of personal details.\n"
+    "- Reuse my existing groups when new tabs fit.\n"
+    "- Only group tabs when you're confident they belong together.";
+
 optimization_guide::proto::MemoryBankEntry ToMemoryBankEntryProto(
     const MemoryBankEntry& entry) {
   optimization_guide::proto::MemoryBankEntry mb_proto;
@@ -186,12 +203,29 @@ bool HasHttpImageUrl(const MemoryBankEntry& entry) {
          entry.image_url->SchemeIsHTTPOrHTTPS();
 }
 
+// Downscales `bitmap` to fit within `max_dimension` x `max_dimension` pixels
+// (when `max_dimension` > 0 and either dimension exceeds it), preserving its
+// aspect ratio, and PNG-encodes it. Since PNG is lossless, a photo can be
+// many times larger re-encoded as PNG than the source image.
 FetchedChatImage EncodeChatImageToPng(std::vector<size_t> entry_indices,
+                                      int max_dimension,
                                       const SkBitmap& bitmap) {
+  SkBitmap scaled_bitmap = bitmap;
+  const int longest_side = std::max(bitmap.width(), bitmap.height());
+  if (max_dimension > 0 && longest_side > max_dimension) {
+    gfx::Size scaled_size = gfx::ScaleToRoundedSize(
+        gfx::Size(bitmap.width(), bitmap.height()),
+        static_cast<float>(max_dimension) / longest_side);
+    // Ensure neither dimension rounds down to 0 for extreme aspect ratios.
+    scaled_size.SetToMax(gfx::Size(1, 1));
+    scaled_bitmap = skia::ImageOperations::Resize(
+        bitmap, skia::ImageOperations::RESIZE_BEST, scaled_size.width(),
+        scaled_size.height());
+  }
   return FetchedChatImage{
       .entry_indices = std::move(entry_indices),
       .png_bytes = gfx::PNGCodec::EncodeBGRASkBitmap(
-          bitmap, /*discard_transparency=*/false),
+          scaled_bitmap, /*discard_transparency=*/false),
   };
 }
 
@@ -210,6 +244,7 @@ void OnChatImageFetched(
       {base::TaskPriority::USER_VISIBLE,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
       base::BindOnce(&EncodeChatImageToPng, std::move(entry_indices),
+                     features::kMaxMemoryBankChatImageDimension.Get(),
                      image.AsBitmap()),
       std::move(barrier_callback));
 }
@@ -372,12 +407,42 @@ const net::BackoffEntry::Policy* GetFirstPartyAutoTodosBackoffPolicy() {
   return &policy;
 }
 
+void AppendTrimmedPart(std::vector<std::string_view>& parts,
+                       std::string_view text) {
+  std::string_view trimmed = base::TrimWhitespaceASCII(text, base::TRIM_ALL);
+  if (!trimmed.empty()) {
+    parts.push_back(trimmed);
+  }
+}
+
+// Returns the passage to embed for an image `entry`, combining its host page
+// title and any user-provided annotations (note, collection, and tags).
+std::vector<std::string> GetPassagesForImageMemoryBankEntry(
+    const MemoryBankEntry& entry) {
+  std::vector<std::string_view> parts;
+  AppendTrimmedPart(parts, entry.tab_title);
+  if (entry.note) {
+    AppendTrimmedPart(parts, *entry.note);
+  }
+  if (entry.collection) {
+    AppendTrimmedPart(parts, *entry.collection);
+  }
+  for (const std::string& tag : entry.tags) {
+    AppendTrimmedPart(parts, tag);
+  }
+  if (parts.empty()) {
+    return {};
+  }
+  return {base::JoinString(parts, " ")};
+}
+
 // Returns the passages to embed for `entry`, mirroring the candidates that
 // `page_content_annotations::GenerateEmbeddingsCandidates()` creates for pages:
 // the text split into passages, followed by the title and the title with the
 // URL. Tab entries hold the extracted page content. Text selections are split
 // the same way so long selections fit the model input, but without a minimum
-// passage length so short selections are kept.
+// passage length so short selections are kept. Image entries are embedded as a
+// single passage combining their page title and user annotations.
 std::vector<std::string> GetPassagesForMemoryBankEntry(
     const MemoryBankEntry& entry) {
   switch (entry.type) {
@@ -403,7 +468,7 @@ std::vector<std::string> GetPassagesForMemoryBankEntry(
       return passages;
     }
     case MemoryBankType::kImage:
-      return {};
+      return GetPassagesForImageMemoryBankEntry(entry);
   }
   return {};
 }
@@ -450,6 +515,13 @@ ContextHubService::ContextHubService(
   // is turned off (e.g. via Finch at teardown), wipe anything left behind.
   if (!features::kTopicsFishfoodFeedback.Get()) {
     profile_->GetPrefs()->ClearPref(prefs::kContextHubTopicsFishfoodFeedback);
+  }
+  // Auto Tab Groups preferences are only kept while the feature is enabled;
+  // wipe anything left behind once it is turned off (e.g. at experiment
+  // teardown).
+  if (!base::FeatureList::IsEnabled(
+          browser::context_hub::mojom::kAutoTabGroups)) {
+    profile_->GetPrefs()->ClearPref(prefs::kContextHubAutoTabGroupsPreferences);
   }
   if (scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
           profile_->GetURLLoaderFactory()) {
@@ -639,6 +711,17 @@ void ContextHubService::OnMemoryBankEntryUpdated(
     const std::vector<std::string>& tags,
     const std::optional<std::string>& note,
     const std::optional<std::string>& collection) {
+  if (CanComputeMemoryBankEmbeddings()) {
+    // TODO(crbug.com/570703760): Have `UpdateMemoryBankEntryAnnotations()` pass
+    // the updated `MemoryBankEntry` to `OnMemoryBankEntryUpdated()` so
+    // recomputing embeddings does not require re-fetching the entry.
+    memory_bank_pending_annotation_update_ids_[id]++;
+    context_hub_backend_->GetMemoryBankEntriesByIds(
+        base::span_from_ref(id),
+        base::BindOnce(
+            &ContextHubService::OnMemoryBankEntriesFetchedForAnnotationUpdate,
+            weak_factory_.GetWeakPtr(), id));
+  }
   observers_.Notify(&Observer::OnMemoryBankEntryUpdated, id, tags, note,
                     collection);
 }
@@ -650,17 +733,19 @@ void ContextHubService::OnMemoryBankEntriesDeleted(
 
 void ContextHubService::EmbedderMetadataUpdated(
     passage_embeddings::EmbedderMetadata metadata) {
-  if (!metadata.IsValid() ||
-      embedder_metadata_.model_version == metadata.model_version) {
+  if (embedder_metadata_ &&
+      embedder_metadata_->model_version == metadata.model_version) {
     return;
   }
   embedder_metadata_ = metadata;
   // Embeddings computed by a different model are not comparable, so drop any
   // in-flight jobs from a previous model version and let the backend wipe
   // stored embeddings before recomputing them below.
+  memory_bank_pending_annotation_update_ids_.clear();
   memory_bank_embedding_jobs_.clear();
+  memory_bank_query_embedding_job_.reset();
   context_hub_backend_->SetMemoryBankEmbeddingsVersion(
-      embedder_metadata_.model_version,
+      embedder_metadata_->model_version,
       base::BindOnce(&ContextHubService::OnMemoryBankEmbeddingsVersionSet,
                      weak_factory_.GetWeakPtr()));
 }
@@ -669,8 +754,10 @@ void ContextHubService::OnMemoryBankEmbeddingsVersionSet(bool success) {
   if (!success) {
     // Stored embeddings may still come from a previous model, so stop computing
     // new ones rather than mixing models. A later metadata update retries.
-    embedder_metadata_ = passage_embeddings::EmbedderMetadata(0, 0);
+    embedder_metadata_.reset();
+    memory_bank_pending_annotation_update_ids_.clear();
     memory_bank_embedding_jobs_.clear();
+    memory_bank_query_embedding_job_.reset();
     return;
   }
   context_hub_backend_->GetMemoryBankEntryIdsWithoutEmbeddings(base::BindOnce(
@@ -696,13 +783,35 @@ void ContextHubService::OnMemoryBankEntriesFetchedForEmbeddings(
   }
 }
 
+void ContextHubService::OnMemoryBankEntriesFetchedForAnnotationUpdate(
+    int64_t id,
+    std::vector<MemoryBankEntry> entries) {
+  auto it = memory_bank_pending_annotation_update_ids_.find(id);
+  if (it == memory_bank_pending_annotation_update_ids_.end()) {
+    return;
+  }
+  if (--it->second == 0) {
+    memory_bank_pending_annotation_update_ids_.erase(it);
+    if (!entries.empty() && entries[0].type == MemoryBankType::kImage) {
+      ComputeMemoryBankEmbeddings(entries[0]);
+    }
+  }
+}
+
+bool ContextHubService::CanComputeMemoryBankEmbeddings() {
+  return embedder_ && context_hub_backend_ && embedder_metadata_.has_value();
+}
+
 void ContextHubService::ComputeMemoryBankEmbeddings(
     const MemoryBankEntry& entry) {
-  if (!embedder_ || !context_hub_backend_ || !embedder_metadata_.IsValid()) {
+  if (!CanComputeMemoryBankEmbeddings()) {
     return;
   }
   std::vector<std::string> passages = GetPassagesForMemoryBankEntry(entry);
   if (passages.empty()) {
+    // TODO(crbug.com/570703760): Clear stored embeddings for the entry in
+    // `ContextHubBackend` once per-entry embedding deletion is supported.
+    memory_bank_embedding_jobs_.erase(entry.id);
     return;
   }
   // Saved entries are not time critical, so yield to user-initiated work such
@@ -1327,6 +1436,41 @@ void ContextHubService::ClearTabGroupChatHistory() {
   tab_group_chat_history_cache_.Clear();
 }
 
+std::string ContextHubService::GetEffectiveAutoTabGroupsPreferences() const {
+  const std::string& stored = profile_->GetPrefs()->GetString(
+      prefs::kContextHubAutoTabGroupsPreferences);
+  return stored.empty() ? kDefaultAutoTabGroupsPreferences : stored;
+}
+
+bool ContextHubService::SetAutoTabGroupsPreferences(std::string_view text) {
+  if (!StoreAutoTabGroupsPreferences(text)) {
+    return false;
+  }
+  ++auto_tab_groups_preferences_generation_;
+  return true;
+}
+
+bool ContextHubService::StoreAutoTabGroupsPreferences(std::string_view text) {
+  if (!base::FeatureList::IsEnabled(
+          browser::context_hub::mojom::kAutoTabGroups)) {
+    return false;
+  }
+  std::string_view trimmed = base::TrimWhitespaceASCII(text, base::TRIM_ALL);
+  if (trimmed.size() > kMaxAutoTabGroupsPreferencesLength) {
+    return false;
+  }
+  PrefService* pref_service = profile_->GetPrefs();
+  if (trimmed.empty()) {
+    pref_service->ClearPref(prefs::kContextHubAutoTabGroupsPreferences);
+  } else {
+    pref_service->SetString(prefs::kContextHubAutoTabGroupsPreferences,
+                            trimmed);
+  }
+  observers_.Notify(&Observer::OnAutoTabGroupsPreferencesChanged,
+                    GetEffectiveAutoTabGroupsPreferences());
+  return true;
+}
+
 void ContextHubService::AddMemoryBankChatHistoryTurn(
     optimization_guide::proto::ChatHistoryTurn::Role role,
     std::string_view message_content,
@@ -1464,6 +1608,7 @@ void ContextHubService::DeleteEntries(
   // Drop in-flight embedding jobs first so a late result cannot store
   // embeddings for an entry that no longer exists.
   for (int64_t id : ids) {
+    memory_bank_pending_annotation_update_ids_.erase(id);
     memory_bank_embedding_jobs_.erase(id);
   }
   memory_bank_->DeleteEntries(ids, std::move(callback));
@@ -1488,6 +1633,50 @@ void ContextHubService::GetAllMemoryBankTags(
 void ContextHubService::GetAllMemoryBankCollections(
     MemoryBank::GetStringsCallback callback) const {
   memory_bank_->GetAllCollections(std::move(callback));
+}
+
+void ContextHubService::SearchMemoryBankEntries(
+    std::string query,
+    MemoryBank::GetEntriesCallback callback) {
+  // Drop any in-flight query job first so a newer search (including a blank
+  // one) always supersedes the previous query and causes its callback to
+  // receive no results in `OnMemoryBankQueryEmbeddingComputed()`.
+  memory_bank_query_embedding_job_.reset();
+  if (!CanComputeMemoryBankEmbeddings() ||
+      base::TrimWhitespaceASCII(query, base::TRIM_ALL).empty()) {
+    std::move(callback).Run({});
+    return;
+  }
+  memory_bank_query_embedding_job_ = embedder_->ComputePassagesEmbeddings(
+      passage_embeddings::PassagePriority::kUserInitiated, {std::move(query)},
+      base::BindOnce(&ContextHubService::OnMemoryBankQueryEmbeddingComputed,
+                     weak_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void ContextHubService::OnMemoryBankQueryEmbeddingComputed(
+    MemoryBank::GetEntriesCallback callback,
+    std::vector<std::string> query_passages,
+    std::vector<passage_embeddings::Embedding> query_embeddings,
+    uint64_t job_id,
+    passage_embeddings::ComputeEmbeddingsStatus status) {
+  // Ignore queries that were superseded by a newer query or computed by a
+  // previous model version (`EmbedderMetadataUpdated()` drops the job), since
+  // their embeddings would not be comparable with the stored ones.
+  if (!memory_bank_query_embedding_job_ ||
+      memory_bank_query_embedding_job_->id() != job_id) {
+    std::move(callback).Run({});
+    return;
+  }
+  memory_bank_query_embedding_job_.reset();
+  if (status != passage_embeddings::ComputeEmbeddingsStatus::kSuccess ||
+      query_embeddings.size() != 1u) {
+    std::move(callback).Run({});
+    return;
+  }
+  context_hub_backend_->SearchMemoryBankEntriesByEmbedding(
+      std::move(query_embeddings.front()),
+      features::kMemoryBankSearchScoreThreshold.Get(),
+      features::kMaxMemoryBankSearchResults.Get(), std::move(callback));
 }
 
 void ContextHubService::GetTabGroups(GetTabGroupsCallback callback) const {
@@ -1562,8 +1751,84 @@ void ContextHubService::OnAllTabGroupsFetchedForConfirmation(
     ConfirmAllTabGroupsCallback callback,
     std::vector<TabGroupEntry> groups) {
   std::vector<base::Uuid> added_group_guids = AddTabGroupsToSyncService(groups);
-  DeleteAllTabGroups(
+  const bool groups_created = !added_group_guids.empty();
+  FinishTabGroupSession(
+      groups_created,
       base::BindOnce(std::move(callback), true, std::move(added_group_guids)));
+}
+
+void ContextHubService::FinishTabGroupSession(bool groups_created,
+                                              base::OnceClosure done) {
+  std::vector<optimization_guide::proto::ChatHistoryTurn> history =
+      GetTabGroupChatHistory();
+  if (groups_created &&
+      std::ranges::any_of(
+          history, [](const optimization_guide::proto::ChatHistoryTurn& turn) {
+            return turn.role() ==
+                   optimization_guide::proto::ChatHistoryTurn::ROLE_USER;
+          })) {
+    RefineAutoTabGroupsPreferences(std::move(history));
+  }
+  ClearTabGroupChatHistory();
+  DeleteAllTabGroups(std::move(done));
+}
+
+void ContextHubService::RefineAutoTabGroupsPreferences(
+    std::vector<optimization_guide::proto::ChatHistoryTurn> history) {
+  if (auto_tab_groups_preference_refinement_in_flight_) {
+    return;
+  }
+  optimization_guide::proto::ContextHubRequest request;
+  request.set_request_type(
+      optimization_guide::proto::
+          CONTEXT_HUB_REQUEST_TYPE_AUTO_TAB_GROUPS_PREFERENCE_REFINEMENT);
+  for (optimization_guide::proto::ChatHistoryTurn& turn : history) {
+    *request.add_chat_history() = std::move(turn);
+  }
+  request.set_auto_tab_groups_preferences(
+      GetEffectiveAutoTabGroupsPreferences());
+
+  auto_tab_groups_preference_refinement_in_flight_ = true;
+  optimization_guide_remote_model_executor_->ExecuteModel(
+      optimization_guide::ModelBasedCapabilityKey::kContextHub, request,
+      optimization_guide::ModelExecutionOptions(),
+      base::BindOnce(
+          &ContextHubService::HandleAutoTabGroupsPreferenceRefinementResult,
+          weak_factory_.GetWeakPtr(), auto_tab_groups_preferences_generation_));
+}
+
+void ContextHubService::HandleAutoTabGroupsPreferenceRefinementResult(
+    uint64_t generation,
+    optimization_guide::OptimizationGuideModelExecutionResult result,
+    std::unique_ptr<optimization_guide::ModelQualityLogEntry> log_entry) {
+  auto_tab_groups_preference_refinement_in_flight_ = false;
+  if (!result.response.has_value()) {
+    return;
+  }
+  std::optional<optimization_guide::proto::ContextHubResponse> response =
+      optimization_guide::ParsedAnyMetadata<
+          optimization_guide::proto::ContextHubResponse>(*result.response);
+  if (!response ||
+      !response->has_auto_tab_groups_preference_refinement_response()) {
+    return;
+  }
+  std::string_view refined = base::TrimWhitespaceASCII(
+      response->auto_tab_groups_preference_refinement_response().preferences(),
+      base::TRIM_ALL);
+  // Ignore empty responses so `StoreAutoTabGroupsPreferences()` does not reset
+  // to defaults.
+  if (refined.empty()) {
+    return;
+  }
+  // Drop stale results if the user saved or reset while the request was in
+  // flight.
+  if (generation != auto_tab_groups_preferences_generation_) {
+    return;
+  }
+  if (refined == GetEffectiveAutoTabGroupsPreferences()) {
+    return;
+  }
+  StoreAutoTabGroupsPreferences(refined);
 }
 
 std::vector<TabGroupEntry> ContextHubService::GetConfirmedTabGroups() const {
@@ -1676,6 +1941,13 @@ void ContextHubService::GenerateTabGroups(std::vector<TabData> tabs,
     request.set_user_command(std::string(trimmed_command));
     AddTabGroupChatHistoryTurn(
         optimization_guide::proto::ChatHistoryTurn::ROLE_USER, trimmed_command);
+  }
+
+  // Send user/LLM generated grouping preferences.
+  if (const std::string& stored = profile_->GetPrefs()->GetString(
+          prefs::kContextHubAutoTabGroupsPreferences);
+      !stored.empty()) {
+    request.set_auto_tab_groups_preferences(stored);
   }
 
   optimization_guide_remote_model_executor_->ExecuteModel(

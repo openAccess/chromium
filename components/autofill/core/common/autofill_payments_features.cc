@@ -231,11 +231,6 @@ BASE_FEATURE(kAutofillEnableOAuth2TokenFix, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kAutofillEnableOffersAndLoyaltyCardsSettings,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, offers will be displayed in the Clank keyboard accessory during
-// downstream.
-BASE_FEATURE(kAutofillEnableOffersInClankKeyboardAccessory,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // When enabled, an "Autofill payments" omnibox chip will appear for relevant
 // payment checkout forms.
 BASE_FEATURE(kAutofillEnableOmniboxAutofill, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -361,13 +356,6 @@ BASE_FEATURE(kAutofillPreferBuyNowPayLaterBlocklists,
 // non-selectable on insecure pages and refuses to fill/unmask IBANs there.
 // TODO(crbug.com/577370514): Clean up after M162 branch.
 BASE_FEATURE(kAutofillRequireSecureContextForIbanManualFilling,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When enabled, Chrome will try to fetch payment account image resources again
-// upon failure. The number of attempts is a controllable parameter. This is a
-// kill-switch.
-// TODO(crbug.com/40276036): Clean up after M139 branch (June 23, 2025).
-BASE_FEATURE(kAutofillRetryImageFetchOnFailure,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_IOS)

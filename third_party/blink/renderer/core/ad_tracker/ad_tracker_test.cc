@@ -15,6 +15,7 @@
 #include "components/subresource_filter/core/mojom/subresource_filter.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
@@ -173,10 +174,9 @@ class TestAdTracker : public AdTracker {
 
   // Test-only override for IsAdScriptInStack. Calls the base implementation
   // and caches its results for later verification in tests.
-  bool IsAdScriptInStack(StackType stack_type,
-                         MonkeyPatchableApi ignore_monkey_patch,
+  bool IsAdScriptInStack(MonkeyPatchableApi ignore_monkey_patch,
                          AdScriptAncestry* out_ad_script_ancestry) override {
-    bool result = AdTracker::IsAdScriptInStack(stack_type, ignore_monkey_patch,
+    bool result = AdTracker::IsAdScriptInStack(ignore_monkey_patch,
                                                out_ad_script_ancestry);
 
     if (sim_test_) {
@@ -226,7 +226,12 @@ class TestAdTracker : public AdTracker {
             std::move(known_ad_provenance), scan_javascript_stack);
 
     String resource_url = request_url.GetString();
-    is_ad_.insert(resource_url, observed_ad_provenance.has_value());
+    auto result =
+        is_ad_.insert(resource_url, observed_ad_provenance.has_value());
+    // `HashMap::insert` does not overwrite existing entries, so OR the value to
+    // record `true` if a subsequent response-time CNAME alias check (or earlier
+    // load) tags this URL as an ad.
+    result.stored_value->value |= observed_ad_provenance.has_value();
 
     if (quit_closure_ && url_to_wait_for_ == resource_url) {
       std::move(quit_closure_).Run();
@@ -268,12 +273,14 @@ void SetIsAdFrame(LocalFrame* frame, bool created_by_ad_script = true) {
 class AdTrackerSimTest : public SimTest {
  protected:
   AdTrackerSimTest() {
-    // Build a subresource filter ruleset that will consider *ad_script.js and
-    // *ad=true urls as ads.
+    // Build a subresource filter ruleset that will consider *ad_script.js,
+    // *ad=true, and ||ad.com/* urls as ads.
     std::vector<url_pattern_index::proto::UrlRule> rules;
     rules.push_back(
         subresource_filter::testing::CreateSuffixRule("ad_script.js"));
     rules.push_back(subresource_filter::testing::CreateSuffixRule("ad=true"));
+    rules.push_back(
+        subresource_filter::testing::CreateSubdomainRule("ad.com/"));
 
     subresource_filter::testing::TestRulesetPair test_ruleset_pair;
     subresource_filter::testing::TestRulesetCreator ruleset_creator;
@@ -307,7 +314,7 @@ class AdTrackerSimTest : public SimTest {
   }
 
   bool IsKnownAdScript(ExecutionContext* execution_context, const String& url) {
-    return ad_tracker_->IsKnownAdScript(execution_context, url);
+    return ad_tracker_->IsKnownAdScriptForTesting(execution_context, url);
   }
 
   std::unique_ptr<SimRequest> main_resource_;
@@ -3834,6 +3841,70 @@ TEST_F(AdTrackerSimTest,
   EXPECT_TRUE(ad_tracker_->last_is_ad_script_in_stack_result());
 }
 
+// Tests that different MonkeyPatchableApi values are tracked independently in
+// the per-task EnumSet, so calling one monkeypatched API does not consume the
+// allow-once budget of other monkeypatched APIs in the same synchronous task.
+TEST_F(AdTrackerSimTest,
+       IgnoreMonkeyPatchHeuristic_DifferentApisTrackedIndependentlyInSameTask) {
+  String ad_script_url = "https://example.com/script.js?ad=true";
+  String vanilla_script_url = "https://example.com/script.js";
+  String second_vanilla_script_url = "https://example.com/script2.js";
+  SimSubresourceRequest ad_script(ad_script_url, "text/javascript");
+  SimSubresourceRequest vanilla_script(vanilla_script_url, "text/javascript");
+  SimSubresourceRequest second_vanilla_script(second_vanilla_script_url,
+                                              "text/javascript");
+
+  main_resource_->Complete(R"HTML(
+    <body><script src="script.js?ad=true"></script>
+          <script src="script.js"></script>
+          <script src="script2.js"></script></body>
+  )HTML");
+
+  // The ad script monkeypatches pushState, replaceState, and appendChild.
+  ad_script.Complete(R"SCRIPT(
+    const originalPushState = window.history.pushState;
+    window.history.pushState = function(...args) {
+      originalPushState.apply(window.history, args);
+    };
+    const originalReplaceState = window.history.replaceState;
+    window.history.replaceState = function(...args) {
+      originalReplaceState.apply(window.history, args);
+    };
+    const originalAppendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function(child) {
+      return originalAppendChild.call(this, child);
+    };
+  )SCRIPT");
+
+  // The non-ad script calls all three monkeypatched APIs once within a single
+  // synchronous task. Each distinct API should be ignored on its first call.
+  vanilla_script.Complete(R"SCRIPT(
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    window.history.pushState({}, '', '/pushed-url');
+    window.history.replaceState({}, '', '/replaced-url');
+  )SCRIPT");
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_FALSE(ad_tracker_->last_is_ad_script_in_stack_result());
+  LocalFrame* child_frame =
+      To<LocalFrame>(GetDocument().GetFrame()->Tree().FirstChild());
+  ASSERT_TRUE(child_frame);
+  EXPECT_FALSE(child_frame->IsFrameCreatedByAdScript());
+
+  // Repeating one of those APIs a second time within a single synchronous task
+  // still flags the duplicate call as ad-related.
+  second_vanilla_script.Complete(R"SCRIPT(
+    window.history.pushState({}, '', '/pushed-url-2');
+    window.history.replaceState({}, '', '/replaced-url-2');
+    window.history.replaceState({}, '', '/replaced-url-3');
+  )SCRIPT");
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_TRUE(ad_tracker_->last_is_ad_script_in_stack_result());
+}
+
 // Tests that the bottom-of-stack check takes precedence over the monkeypatching
 // heuristic. When an ad script initiates the execution (and is thus at the
 // bottom of the stack), any calls it makes are flagged as ads, even if it also
@@ -5130,10 +5201,34 @@ TEST_F(AdTrackerSimTest, FormSubmissionTriggeredByVanillaScript_IsNotAd) {
   dest_resource.Complete("<body></body>");
 }
 
+class TestCpuTimingObserver : public WebLocalFrameObserver {
+ public:
+  explicit TestCpuTimingObserver(WebLocalFrame* frame)
+      : WebLocalFrameObserver(frame) {}
+
+  void OnFrameDetached() override {}
+  void DidChangeCpuTiming(base::TimeDelta time,
+                          base::TimeDelta ad_time) override {
+    total_cpu_time_ += time;
+    total_ad_cpu_time_ += ad_time;
+  }
+
+  base::TimeDelta total_cpu_time() const { return total_cpu_time_; }
+  base::TimeDelta total_ad_cpu_time() const { return total_ad_cpu_time_; }
+  void reset_cpu_timing() {
+    total_cpu_time_ = base::TimeDelta();
+    total_ad_cpu_time_ = base::TimeDelta();
+  }
+
+ private:
+  base::TimeDelta total_cpu_time_;
+  base::TimeDelta total_ad_cpu_time_;
+};
+
 TEST_F(AdTrackerSimTest, AdScriptExecutionAccumulatesAdTaskTime) {
   LocalFrame* frame = GetDocument().GetFrame();
-  WebFrameClient().reset_cpu_timing();
-  EXPECT_EQ(WebFrameClient().total_ad_cpu_time(), base::TimeDelta());
+  TestCpuTimingObserver cpu_observer(WebLocalFrameImpl::FromFrame(frame));
+  EXPECT_EQ(cpu_observer.total_ad_cpu_time(), base::TimeDelta());
 
   const char kAdUrl[] = "https://example.com/ad_script.js";
   SimSubresourceRequest ad_script(kAdUrl, "text/javascript");
@@ -5148,19 +5243,19 @@ TEST_F(AdTrackerSimTest, AdScriptExecutionAccumulatesAdTaskTime) {
 
   // Trigger UpdateTaskTime by adding task time to the frame scheduler.
   frame->GetFrameScheduler()->AddTaskTime(base::Milliseconds(100));
-  base::TimeDelta ad_time = WebFrameClient().total_ad_cpu_time();
+  base::TimeDelta ad_time = cpu_observer.total_ad_cpu_time();
   EXPECT_GT(ad_time, base::TimeDelta());
 
   // Verify that UpdateTaskTime cleared `unreported_ad_task_time_` so a
   // subsequent flush with no new ad script execution reports zero ad time.
-  WebFrameClient().reset_cpu_timing();
+  cpu_observer.reset_cpu_timing();
   frame->GetFrameScheduler()->AddTaskTime(base::Milliseconds(100));
-  EXPECT_EQ(WebFrameClient().total_ad_cpu_time(), base::TimeDelta());
+  EXPECT_EQ(cpu_observer.total_ad_cpu_time(), base::TimeDelta());
 }
 
 TEST_F(AdTrackerSimTest, VanillaScriptDoesNotAccumulateAdTaskTime) {
   LocalFrame* frame = GetDocument().GetFrame();
-  WebFrameClient().reset_cpu_timing();
+  TestCpuTimingObserver cpu_observer(WebLocalFrameImpl::FromFrame(frame));
 
   const char kVanillaUrl[] = "https://example.com/vanilla_script.js";
   SimSubresourceRequest vanilla_script(kVanillaUrl, "text/javascript");
@@ -5175,7 +5270,7 @@ TEST_F(AdTrackerSimTest, VanillaScriptDoesNotAccumulateAdTaskTime) {
       IsKnownAdScript(GetDocument().GetExecutionContext(), kVanillaUrl));
 
   frame->GetFrameScheduler()->AddTaskTime(base::Milliseconds(100));
-  EXPECT_EQ(WebFrameClient().total_ad_cpu_time(), base::TimeDelta());
+  EXPECT_EQ(cpu_observer.total_ad_cpu_time(), base::TimeDelta());
 }
 
 TEST_F(AdTrackerSimTest, AdFrameReportsFullTaskTimeAsAdTaskTime) {
@@ -5189,14 +5284,176 @@ TEST_F(AdTrackerSimTest, AdFrameReportsFullTaskTimeAsAdTaskTime) {
   SetIsAdFrame(child_frame);
   ASSERT_TRUE(child_frame->IsAdFrame());
 
-  frame_test_helpers::TestWebFrameClient* child_client =
-      static_cast<frame_test_helpers::TestWebFrameClient*>(
-          WebLocalFrameImpl::FromFrame(child_frame)->Client());
-  child_client->reset_cpu_timing();
+  TestCpuTimingObserver child_observer(
+      WebLocalFrameImpl::FromFrame(child_frame));
 
   child_frame->GetFrameScheduler()->AddTaskTime(base::Milliseconds(100));
-  EXPECT_EQ(child_client->total_ad_cpu_time(), child_client->total_cpu_time());
-  EXPECT_GE(child_client->total_ad_cpu_time(), base::Milliseconds(100));
+  EXPECT_EQ(child_observer.total_ad_cpu_time(),
+            child_observer.total_cpu_time());
+  EXPECT_GE(child_observer.total_ad_cpu_time(), base::Milliseconds(100));
+}
+
+TEST_F(AdTrackerSimTest, GetAncestryEmptyScriptId) {
+  main_resource_->Complete("<body></body>");
+  EXPECT_TRUE(ad_tracker_->GetAncestry(V8ScriptId()).ancestry_chain.empty());
+  EXPECT_TRUE(ad_tracker_->GetAncestry(V8ScriptId(-1)).ancestry_chain.empty());
+}
+
+TEST_F(AdTrackerSimTest, ShutdownClearsAdScripts) {
+  const char kAdUrl[] = "https://example.com/ad_script.js";
+  SimSubresourceRequest ad_script(kAdUrl, "text/javascript");
+  main_resource_->Complete(
+      "<body><script src=\"ad_script.js\"></script></body>");
+  test::RunPendingTasks();
+
+  ad_script.Complete("console.log('ad');");
+  test::RunPendingTasks();
+
+  EXPECT_TRUE(IsKnownAdScript(GetDocument().GetExecutionContext(), kAdUrl));
+  EXPECT_FALSE(ad_tracker_->GetAdScripts().empty());
+
+  ad_tracker_->Shutdown();
+
+  EXPECT_FALSE(IsKnownAdScript(GetDocument().GetExecutionContext(), kAdUrl));
+  EXPECT_TRUE(ad_tracker_->GetAdScripts().empty());
+}
+
+TEST_F(AdTrackerSimTest,
+       CnameAliasedClassicScript_TracksAncestryAndSubresource) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kSendCnameAliasesToSubresourceFilterFromRenderer);
+
+  const String kCnameScriptUrl = "https://foo.example.com/cname_script.js";
+  const String kAliasScriptUrl = "https://ad.com/cname_script.js";
+  const String kImageUrl = "https://example.com/pixel.gif";
+
+  SimRequest::Params cname_params;
+  cname_params.dns_aliases = {"ad.com", "foo.example.com"};
+
+  SimSubresourceRequest cname_script(kCnameScriptUrl, "text/javascript",
+                                     cname_params);
+  SimSubresourceRequest image(kImageUrl, "image/gif");
+
+  main_resource_->Complete(
+      "<body><script "
+      "src=\"https://foo.example.com/cname_script.js\"></script></body>");
+
+  cname_script.Complete("(new Image()).src = 'pixel.gif';");
+  ad_tracker_->WaitForSubresource(kImageUrl);
+
+  EXPECT_TRUE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kCnameScriptUrl));
+  EXPECT_FALSE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kAliasScriptUrl));
+  EXPECT_TRUE(ad_tracker_->RequestWithUrlTaggedAsAd(kCnameScriptUrl));
+  EXPECT_TRUE(ad_tracker_->RequestWithUrlTaggedAsAd(kImageUrl));
+
+  ASSERT_EQ(ad_tracker_->GetAdScripts().size(), 1u);
+  V8ScriptId script_id = ad_tracker_->GetAdScripts().begin()->key;
+  EXPECT_EQ(String(ad_tracker_->GetAncestry(script_id)
+                       .root_script_filterlist_rule.ToString()),
+            "||ad.com/");
+
+  image.Complete();
+}
+
+TEST_F(AdTrackerSimTest,
+       CnameAliasedModuleScript_TracksAncestryAndSubresource) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kSendCnameAliasesToSubresourceFilterFromRenderer);
+
+  const String kCnameModuleUrl = "https://foo.example.com/cname_module.js";
+  const String kAliasModuleUrl = "https://sub.ad.com/cname_module.js";
+  const String kImageUrl = "https://example.com/pixel.gif";
+
+  SimRequest::Params cname_params;
+  cname_params.dns_aliases = {"sub.ad.com", "foo.example.com"};
+  cname_params.response_http_headers.insert("Access-Control-Allow-Origin", "*");
+
+  SimSubresourceRequest cname_module(kCnameModuleUrl, "text/javascript",
+                                     cname_params);
+  SimSubresourceRequest image(kImageUrl, "image/gif");
+
+  main_resource_->Complete(
+      "<head><script type=\"module\" "
+      "src=\"https://foo.example.com/cname_module.js\"></script></head>");
+
+  cname_module.Complete("(new Image()).src = 'pixel.gif';");
+  ad_tracker_->WaitForSubresource(kImageUrl);
+
+  EXPECT_TRUE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kCnameModuleUrl));
+  EXPECT_FALSE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kAliasModuleUrl));
+  EXPECT_TRUE(ad_tracker_->RequestWithUrlTaggedAsAd(kCnameModuleUrl));
+  EXPECT_TRUE(ad_tracker_->RequestWithUrlTaggedAsAd(kImageUrl));
+
+  ASSERT_EQ(ad_tracker_->GetAdScripts().size(), 1u);
+  V8ScriptId script_id = ad_tracker_->GetAdScripts().begin()->key;
+  EXPECT_EQ(String(ad_tracker_->GetAncestry(script_id)
+                       .root_script_filterlist_rule.ToString()),
+            "||ad.com/");
+
+  image.Complete();
+}
+
+TEST_F(AdTrackerSimTest, CnameAliasedScript_FeatureDisabled_NotTracked) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(
+      features::kSendCnameAliasesToSubresourceFilterFromRenderer);
+
+  const String kCnameScriptUrl = "https://foo.example.com/cname_script.js";
+  const String kImageUrl = "https://example.com/pixel.gif";
+
+  SimRequest::Params cname_params;
+  cname_params.dns_aliases = {"ad.com", "foo.example.com"};
+
+  SimSubresourceRequest cname_script(kCnameScriptUrl, "text/javascript",
+                                     cname_params);
+  SimSubresourceRequest image(kImageUrl, "image/gif");
+
+  main_resource_->Complete(
+      "<body><script "
+      "src=\"https://foo.example.com/cname_script.js\"></script></body>");
+
+  cname_script.Complete("(new Image()).src = 'pixel.gif';");
+  ad_tracker_->WaitForSubresource(kImageUrl);
+
+  EXPECT_FALSE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kCnameScriptUrl));
+  EXPECT_FALSE(ad_tracker_->RequestWithUrlTaggedAsAd(kCnameScriptUrl));
+  EXPECT_FALSE(ad_tracker_->RequestWithUrlTaggedAsAd(kImageUrl));
+
+  image.Complete();
+}
+
+TEST_F(AdTrackerSimTest, CnameAliasedScript_NonMatchingAlias_NotTracked) {
+  base::test::ScopedFeatureList scoped_feature_list(
+      features::kSendCnameAliasesToSubresourceFilterFromRenderer);
+
+  const String kCnameScriptUrl = "https://foo.example.com/cname_script.js";
+  const String kImageUrl = "https://example.com/pixel.gif";
+
+  SimRequest::Params cname_params;
+  cname_params.dns_aliases = {"benign-cdn.com", "foo.example.com"};
+
+  SimSubresourceRequest cname_script(kCnameScriptUrl, "text/javascript",
+                                     cname_params);
+  SimSubresourceRequest image(kImageUrl, "image/gif");
+
+  main_resource_->Complete(
+      "<body><script "
+      "src=\"https://foo.example.com/cname_script.js\"></script></body>");
+
+  cname_script.Complete("(new Image()).src = 'pixel.gif';");
+  ad_tracker_->WaitForSubresource(kImageUrl);
+
+  EXPECT_FALSE(
+      IsKnownAdScript(GetDocument().GetExecutionContext(), kCnameScriptUrl));
+  EXPECT_FALSE(ad_tracker_->RequestWithUrlTaggedAsAd(kCnameScriptUrl));
+  EXPECT_FALSE(ad_tracker_->RequestWithUrlTaggedAsAd(kImageUrl));
+
+  image.Complete();
 }
 
 }  // namespace blink

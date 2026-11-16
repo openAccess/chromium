@@ -87,6 +87,7 @@
 #include "services/network/url_request_context_owner.h"
 #include "services/network/warc_range_completer.h"
 #include "services/network/web_bundle/web_bundle_manager.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
@@ -375,11 +376,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
 
   void SetSocketLayerNetworkConditions(
       const base::UnguessableToken& throttling_profile_id,
+      const base::UnguessableToken& throttling_client_id,
+      uint64_t client_order,
       base::TimeDelta latency,
       double download_throughput_bytes_per_second,
       double upload_throughput_bytes_per_second) override;
   void ClearSocketLayerNetworkConditions(
-      const base::UnguessableToken& throttling_profile_id) override;
+      const base::UnguessableToken& throttling_profile_id,
+      const base::UnguessableToken& throttling_client_id) override;
 
   scoped_refptr<net::HttpTransactionFactoryHandle>
   GetIsolatedTransactionFactory(
@@ -482,6 +486,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
           anticipated_concurrent_incoming_bidirectional_streams,
       std::vector<net::HttpRequestHeaders::HeaderKeyValuePair>
           additional_headers,
+      const std::optional<base::UnguessableToken>& throttling_profile_id,
       mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
       mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
           url_loader_network_observer,
@@ -623,6 +628,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
       ClearSharedDictionaryCacheForIsolationKeyCallback callback) override;
   void ClearSharedDictionarySessionOnlyData(
       ClearSharedDictionarySessionOnlyDataCallback callback) override;
+  void ClearDeviceBoundSessionsSessionOnlyData(
+      ClearDeviceBoundSessionsSessionOnlyDataCallback callback) override;
 #if BUILDFLAG(ENABLE_DISK_CACHE_SQL_BACKEND)
   void RegisterHttpCacheClient(
       const net::NetworkIsolationKey& key,
@@ -710,6 +717,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   void DestroyURLLoaderFactory(
       PrefetchMatchingURLLoaderFactory* url_loader_factory);
 
+  // Tracks active CorsURLLoaderFactory instances associated with a given
+  // `network_restrictions_id` so that `ClearNetworkRestrictions` defers
+  // removing a restriction entry until all factories referencing that ID have
+  // been destroyed.
+  void OnURLLoaderFactoryCreatedWithNetworkRestrictionsId(
+      const base::UnguessableToken& network_restrictions_id);
+  void OnURLLoaderFactoryDestroyedWithNetworkRestrictionsId(
+      const base::UnguessableToken& network_restrictions_id);
+
   // Removes |transport| and destroys it.
   void Remove(WebTransport* transport);
 
@@ -782,11 +798,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   size_t num_url_loader_factories_for_testing() const {
     return url_loader_factories_.size();
   }
-
-  // Returns how many URLLoaderFactories owned by `this` are bound to
-  // `target_network`.
-  size_t CountURLLoaderFactoriesBoundToNetworkForTesting(
-      net::handles::NetworkHandle target_network) const;
 
   GURL GetNetworkRestrictionResponseUrlForTesting(
       const base::UnguessableToken& network_restrictions_id) const;
@@ -938,6 +949,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
     ~IsolatedSession();
   };
 
+  // The isolated session applying a throttling client's socket-layer
+  // conditions, if they throttle.
+  struct ClientIsolatedSession {
+    base::UnguessableToken throttling_client_id;
+    uint64_t client_order;
+    // Null if the client's conditions don't throttle, so that its requests use
+    // the primary session.
+    scoped_refptr<IsolatedSession> session;
+  };
+
   // To be called back from CookieManager on settings change.
   void OnCookieManagerSettingsChanged();
 
@@ -946,8 +967,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
           url_loader_factory_for_cert_net_fetcher,
       scoped_refptr<SessionCleanupCookieStore>,
       OnURLRequestContextBuilderConfiguredCallback
-          on_url_request_context_builder_configured,
-      net::handles::NetworkHandle bound_network);
+          on_url_request_context_builder_configured);
   scoped_refptr<SessionCleanupCookieStore> MakeSessionCleanupCookieStore()
       const;
 
@@ -1073,13 +1093,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   // session while the iteration is still using it.
   std::vector<scoped_refptr<IsolatedSession>> GetAllIsolatedSessions();
 
-  // Moves the session for `it` into `retired_isolated_sessions_`. The
-  // session's handle stays functional, so in-flight requests continue under
-  // their captured conditions; the session is freed as soon as its last
-  // handle reference drains (which may be within this very call).
-  void RetireIsolatedSession(
-      std::map<base::UnguessableToken, scoped_refptr<IsolatedSession>>::iterator
-          it);
+  // Moves `session`, which the caller removed from `isolated_sessions_`, into
+  // `retired_isolated_sessions_`. The session's handle stays functional, so
+  // in-flight requests continue under their captured conditions; the session
+  // is freed as soon as its last handle reference drains (which may be within
+  // this very call).
+  void RetireIsolatedSession(scoped_refptr<IsolatedSession> session);
 
   // Runs when the last reference to an isolated session's factory handle is
   // released; drops the (retired) session's tracking entries, freeing it.
@@ -1361,9 +1380,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
         ConnectionAllowlist::RedirectBehavior::kBlock;
     GURL response_url;
     std::optional<base::UnguessableToken> reporting_source;
+    bool pending_clear = false;
   };
   std::map<base::UnguessableToken, NetworkRestriction>
       network_restrictions_ids_;
+  absl::flat_hash_map<base::UnguessableToken, size_t>
+      url_loader_factory_count_per_network_restrictions_id_;
 
   // An LRU cache for in-progress prefetches. Created on first use.
   std::unique_ptr<PrefetchCache> prefetch_cache_;
@@ -1392,9 +1414,11 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
   // updated from those passed via the initial params.
   variations::mojom::VariationsHeadersPtr variations_headers_;
 
-  // Isolated throttling sessions (see IsolatedSession), keyed by
-  // throttling_profile_id.
-  std::map<base::UnguessableToken, scoped_refptr<IsolatedSession>>
+  // Isolated throttling sessions (see IsolatedSession) by throttling profile:
+  // one per client of the profile, sorted by `client_order`. Requests use the
+  // conditions of their profile's first client, as legacy conditions apply
+  // those of the first client that matches.
+  std::map<base::UnguessableToken, std::vector<ClientIsolatedSession>>
       isolated_sessions_;
 
   // Sessions retired by a conditions update or clear but kept alive because

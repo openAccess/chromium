@@ -85,24 +85,11 @@ void RecordDownloadCancelReason(DownloadCancelReason reason) {
   base::UmaHistogramEnumeration("Download.CancelReason", reason);
 }
 
-void RecordDownloadShelfDragInfo(DownloadDragInfo drag_info) {
-  base::UmaHistogramEnumeration("Download.Shelf.DragInfo", drag_info,
-                                DownloadDragInfo::COUNT);
-}
-
 void RecordDownloadStartPerProfileType(Profile* profile) {
   base::UmaHistogramEnumeration(
       "Download.Start.PerProfileType",
       profile_metrics::GetBrowserProfileType(profile));
 }
-
-#if BUILDFLAG(IS_ANDROID)
-// Records whether the download dialog is shown to the user.
-void RecordDownloadPromptStatus(DownloadPromptStatus status) {
-  base::UmaHistogramEnumeration("MobileDownload.DownloadPromptStatus", status,
-                                DownloadPromptStatus::MAX_VALUE);
-}
-#endif  // BUILDFLAG(IS_ANDROID)
 
 DownloadUiContextMenuAction DownloadCommandToContextMenuAction(
     DownloadCommands::Command download_command,

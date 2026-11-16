@@ -44,7 +44,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_everywhere/omnibox_everywhere_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_drag_api/desktop_tab_drag_impl/tab_drag_session_desktop_injector.h"
-#include "components/autofill/content/browser/integrators/custom_form_controls/custom_form_control_script_index.h"
+#include "components/autofill/core/browser/integrators/custom_form_controls/custom_form_control_script_index.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_switches.h"
 #endif
@@ -161,11 +161,13 @@ void GlobalFeatures::PostBrowserProcessInit() {
 #endif
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
-  if (unexportable_keys::UnexportableKeyServiceImpl::
+  // Check the feature first. On Windows, asking for the key provider loads
+  // tbs.dll on the UI thread.
+  if (base::FeatureList::IsEnabled(
+          unexportable_keys::kUnexportableKeyDeletion) &&
+      unexportable_keys::UnexportableKeyServiceImpl::
           IsStatefulUnexportableKeyProviderSupported(
-              unexportable_keys::GetDefaultConfig()) &&
-      base::FeatureList::IsEnabled(
-          unexportable_keys::kUnexportableKeyDeletion)) {
+              unexportable_keys::GetDefaultConfig())) {
     unexportable_key_obsolete_profile_garbage_collector_ = std::make_unique<
         unexportable_keys::UnexportableKeyObsoleteProfileGarbageCollector>(
         g_browser_process->profile_manager());

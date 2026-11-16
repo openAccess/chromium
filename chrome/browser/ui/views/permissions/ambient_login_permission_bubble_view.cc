@@ -62,8 +62,10 @@
 #include "ui/views/style/typography.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/dialog_client_view.h"
+#include "url/origin.h"
 
 namespace {
 
@@ -346,7 +348,15 @@ AmbientLoginPermissionBubbleView::AmbientLoginPermissionBubbleView(
   set_title_margins(
       gfx::Insets::TLBR(12, kHorizontalPadding, 8, kHorizontalPadding));
 
-  SetTitle(l10n_util::GetStringUTF16(IDS_AMBIENT_LOGIN_TITLE));
+  CHECK(delegate);
+  if (url::Origin::Create(delegate->GetRequestingOrigin())
+          .IsSameOriginWith(delegate->GetEmbeddingOrigin())) {
+    SetTitle(l10n_util::GetStringUTF16(IDS_AMBIENT_LOGIN_TITLE));
+  } else {
+    SetTitle(
+        l10n_util::GetStringFUTF16(IDS_WEBAUTHN_SIGN_IN_TO_WEBSITE_DIALOG_TITLE,
+                                   GetUrlIdentityObject().name));
+  }
 
   std::u16string username;
   std::u16string provider;
@@ -373,6 +383,7 @@ AmbientLoginPermissionBubbleView::AmbientLoginPermissionBubbleView(
     provider = fed_cred.idp_name;
     provider_elide_behavior = kIdpNameElideBehavior;
     credential_icon = GetFederatedCredentialIcon(fed_cred);
+    credential_badge = fed_cred.badge;
   }
 
   if (username.empty()) {
@@ -453,6 +464,37 @@ AmbientLoginPermissionBubbleView::AmbientLoginPermissionBubbleView(
 
 AmbientLoginPermissionBubbleView::~AmbientLoginPermissionBubbleView() = default;
 
+AmbientLoginPermissionBubbleView::WidgetCloseObserver::WidgetCloseObserver(
+    AmbientLoginPermissionBubbleView* owner)
+    : owner_(owner) {}
+
+AmbientLoginPermissionBubbleView::WidgetCloseObserver::~WidgetCloseObserver() =
+    default;
+
+void AmbientLoginPermissionBubbleView::WidgetCloseObserver::Observe(
+    views::Widget* widget) {
+  observation_.Reset();
+  observation_.Observe(widget);
+}
+
+void AmbientLoginPermissionBubbleView::WidgetCloseObserver::OnWidgetClosing(
+    views::Widget* widget) {
+  observation_.Reset();
+  const views::Widget::ClosedReason reason = widget->closed_reason();
+  if (reason == views::Widget::ClosedReason::kCloseButtonClicked ||
+      reason == views::Widget::ClosedReason::kEscKeyPressed) {
+    if (ambient_signin::AmbientLoginPermissionRequest* ambient_request =
+            owner_->GetAmbientRequest()) {
+      ambient_request->OnBubbleDismissed();
+    }
+  }
+}
+
+void AmbientLoginPermissionBubbleView::WidgetCloseObserver::OnWidgetDestroying(
+    views::Widget* widget) {
+  observation_.Reset();
+}
+
 void AmbientLoginPermissionBubbleView::Show() {
   CHECK(GetNativeWindow());
   UpdateAnchorPosition();
@@ -463,14 +505,16 @@ void AmbientLoginPermissionBubbleView::Show() {
 
 void AmbientLoginPermissionBubbleView::AddedToWidget() {
   PermissionPromptBubbleBaseView::AddedToWidget();
+  widget_close_observer_.Observe(GetWidget());
+  if (ambient_signin::AmbientLoginPermissionRequest* ambient_request =
+          GetAmbientRequest()) {
+    ambient_request->OnBubbleShown();
+  }
 
-  auto title_label = std::make_unique<views::Label>(
-      GetWindowTitle(), views::style::CONTEXT_DIALOG_TITLE,
-      views::style::STYLE_BODY_3_MEDIUM);
-  title_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  title_label->GetViewAccessibility().SetRole(ax::mojom::Role::kHeading);
-  title_label->GetViewAccessibility().SetHierarchicalLevel(1);
-  GetBubbleFrameView()->SetTitleView(std::move(title_label));
+  if (auto* title_label =
+          views::AsViewClass<views::Label>(GetBubbleFrameView()->title())) {
+    title_label->SetTextStyle(views::style::STYLE_BODY_3_MEDIUM);
+  }
 }
 
 ambient_signin::AmbientLoginPermissionRequest*
@@ -496,7 +540,7 @@ void AmbientLoginPermissionBubbleView::OnSignInButtonClicked(
   if (ambient_signin::AmbientLoginPermissionRequest* ambient_request =
           GetAmbientRequest()) {
     if (!ambient_request->credentials().empty()) {
-      ambient_request->SelectCredential(0);
+      ambient_request->SelectCredential(0, /*from_expanded_list=*/false);
     } else if (!ambient_request->federated_credentials().empty()) {
       ambient_request->SelectFederatedCredential(0);
     }
@@ -592,7 +636,7 @@ void AmbientLoginPermissionBubbleView::OnCredentialClicked(
   }
   if (ambient_signin::AmbientLoginPermissionRequest* ambient_request =
           GetAmbientRequest()) {
-    ambient_request->SelectCredential(index);
+    ambient_request->SelectCredential(index, /*from_expanded_list=*/true);
   }
   RunButtonCallback(static_cast<int>(PermissionDialogButton::kAccept));
 }
@@ -648,7 +692,8 @@ AmbientLoginPermissionBubbleView::CreateFederatedCredentialRow(
     const ambient_signin::FederatedCredential& credential,
     size_t index) {
   HoverButton::Params params;
-  params.icon_view = CreateIconView(GetFederatedCredentialIcon(credential));
+  params.icon_view =
+      CreateIconView(GetFederatedCredentialIcon(credential), credential.badge);
   const bool has_name_and_email =
       !credential.account_name.empty() && !credential.email.empty();
   if (has_name_and_email) {

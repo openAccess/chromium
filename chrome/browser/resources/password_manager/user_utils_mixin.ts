@@ -1,12 +1,12 @@
-// Copyright 2023 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {WebUiListenerMixin} from '/shared/settings/web_ui_listener_mixin.js';
+import {WebUiListenerMixinLit} from 'chrome://resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {dedupingMixin} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import type {CrLitElement, PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {dedupingMixin} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {PasswordManagerActionableError} from './password_manager.mojom-webui.js';
 import {PasswordManagerImpl, toMojoActionableError} from './password_manager_proxy.js';
@@ -16,13 +16,43 @@ import {SyncBrowserProxyImpl} from './sync_browser_proxy.js';
 type Constructor<T> = new (...args: any[]) => T;
 
 /**
+ * What caused the trusted vault unlock dialog to be shown. The values are used
+ * as suffixes of the PasswordManager.TrustedVaultUnlockDialog.Action.{Source}
+ * histogram.
+ */
+// LINT.IfChange(TrustedVaultUnlockDialogSource)
+export enum TrustedVaultUnlockDialogSource {
+  // Shown automatically when the trusted vault becomes locked, e.g. when the
+  // page loads in a locked state.
+  AUTO_ON_LOAD = 'AutoOnLoad',
+  // Shown when the user tried to add a password.
+  ADD_PASSWORD = 'AddPassword',
+  // Shown when the user tried to import passwords.
+  IMPORT = 'Import',
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/password/histograms.xml:TrustedVaultUnlockDialogSource)
+
+export type ShowTrustedVaultErrorDialogEvent =
+    CustomEvent<{source: TrustedVaultUnlockDialogSource}>;
+
+declare global {
+  interface HTMLElementEventMap {
+    'show-trusted-vault-error-dialog': ShowTrustedVaultErrorDialogEvent;
+  }
+}
+
+const WebUiListenerMixinLitBase =
+    <T extends Constructor<CrLitElement>>(superClass: T) =>
+        WebUiListenerMixinLit(superClass);
+
+/**
  * This mixin bundles functionality related to syncing, sign in status and
  * account storage.
  */
 export const UserUtilMixin = dedupingMixin(
-    <T extends Constructor<PolymerElement>>(superClass: T): T&
+    <T extends Constructor<CrLitElement>>(superClass: T): T&
     Constructor<UserUtilMixinInterface> => {
-      class UserUtilMixin extends WebUiListenerMixin
+      class UserUtilMixin extends WebUiListenerMixinLitBase
       (superClass) implements UserUtilMixinInterface {
         static get properties() {
           return {
@@ -30,55 +60,31 @@ export const UserUtilMixin = dedupingMixin(
              * If true, the edit dialog and removal notification show
              * information about which location(s) a password is stored.
              */
-            isAccountStoreUser: {
-              type: Boolean,
-              value: false,
-            },
+            isAccountStoreUser: {type: Boolean},
 
-            isSyncingPasswords: {
-              type: Boolean,
-              value: true,
-              computed: 'computeIsSyncingPasswords_(syncInfo_)',
-            },
+            isSyncingPasswords: {type: Boolean},
 
-            actionableError: {
-              type: Number,
-              value: null,
-            },
+            actionableError: {type: Number},
 
             /* Email of the primary account. */
-            accountEmail: {
-              type: String,
-              value: '',
-              computed: 'computeAccountEmail_(accountInfo_)',
-            },
+            accountEmail: {type: String},
 
             /* Avatar image of the primary account. */
-            avatarImage: {
-              type: String,
-              value: '',
-              computed: 'computeAvatarImage_(accountInfo_)',
-            },
+            avatarImage: {type: String},
 
-            syncInfo_: {
-              type: Object,
-              value: null,
-            },
+            syncInfo_: {type: Object},
 
-            accountInfo_: {
-              type: Object,
-              value: null,
-            },
+            accountInfo_: {type: Object},
           };
         }
 
-        declare isAccountStoreUser: boolean;
-        declare isSyncingPasswords: boolean;
-        declare actionableError: PasswordManagerActionableError|null;
-        declare accountEmail: string;
-        declare avatarImage: string;
-        declare private syncInfo_: SyncInfo|null;
-        declare private accountInfo_: AccountInfo|null;
+        accessor isAccountStoreUser: boolean = false;
+        accessor isSyncingPasswords: boolean = true;
+        accessor actionableError: PasswordManagerActionableError|null = null;
+        accessor accountEmail: string = '';
+        accessor avatarImage: string = '';
+        private accessor syncInfo_: SyncInfo|null = null;
+        private accessor accountInfo_: AccountInfo|null = null;
 
         private setIsAccountStorageActiveListener_: ((active: boolean) => void)|
             null = null;
@@ -139,6 +145,20 @@ export const UserUtilMixin = dedupingMixin(
           this.setPasswordManagerActionableErrorListener_ = null;
         }
 
+        override willUpdate(changedProperties: PropertyValues<this>) {
+          super.willUpdate(changedProperties);
+
+          const changedPrivateProperties =
+              changedProperties as Map<PropertyKey, unknown>;
+          if (changedPrivateProperties.has('syncInfo_')) {
+            this.isSyncingPasswords = this.computeIsSyncingPasswords_();
+          }
+          if (changedPrivateProperties.has('accountInfo_')) {
+            this.accountEmail = this.computeAccountEmail_();
+            this.avatarImage = this.computeAvatarImage_();
+          }
+        }
+
         isTrustedVaultKeyNeeded(): boolean {
           return loadTimeData.getBoolean('enableTrustedVaultUnlock') &&
               this.actionableError ===
@@ -148,14 +168,13 @@ export const UserUtilMixin = dedupingMixin(
         /**
          * Executes `action` if the trusted vault is unlocked. If the vault is
          * locked, dispatches an event to display the unlock/recovery dialog.
+         * `source` identifies the user action that was blocked by the locked
+         * vault and is used for metrics.
          */
-        executeIfTrustedVaultUnlocked(action: () => void) {
+        executeIfTrustedVaultUnlocked(
+            action: () => void, source: TrustedVaultUnlockDialogSource) {
           if (this.isTrustedVaultKeyNeeded()) {
-            this.dispatchEvent(
-                new CustomEvent('show-trusted-vault-error-dialog', {
-                  bubbles: true,
-                  composed: true,
-                }));
+            this.fire('show-trusted-vault-error-dialog', {source});
             return;
           }
           action();
@@ -185,5 +204,6 @@ export interface UserUtilMixinInterface {
   accountEmail: string;
   avatarImage: string;
   isTrustedVaultKeyNeeded(): boolean;
-  executeIfTrustedVaultUnlocked(action: () => void): void;
+  executeIfTrustedVaultUnlocked(
+      action: () => void, source: TrustedVaultUnlockDialogSource): void;
 }

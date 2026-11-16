@@ -10,6 +10,9 @@ include_rules = [
 ]
 
 specific_include_rules = {
+  "chrome_web_contents_view_delegate_views_unittest\\.cc": [
+    "+ash/clipboard/test_support/mock_clipboard_history_controller.h",
+  ],
   "browser_user_education_service\\.cc": [
     "+ash/user_education/views/help_bubble_factory_views_ash.h",
   ],
@@ -24,6 +27,9 @@ specific_include_rules = {
   "isolated_web_app_installer_view_browsertest\\.cc": [
     "+ash/shell.h",
   ],
+  "omnibox_popup_full_presenter\\.cc": [
+    "+ash/ash_element_identifiers.h",
+  ],
   "save_card_bubble_views_browsertest\\.cc": [
     "+chromeos/ash/services/multidevice_setup/public/cpp/prefs.h",
   ],
@@ -34,10 +40,10 @@ specific_include_rules = {
     "+ash/shell.h",
     "+ash/wm/window_state.h",
   ],
-  "tab_group_editor_bubble_view\\.cc": [
+  "tab_group_editor_bubble_view_browsertest\\.cc": [
     "+ash/ash_element_identifiers.h",
   ],
-  "tab_group_editor_bubble_view_browsertest\\.cc": [
+  "tab_group_editor_title_field\\.cc": [
     "+ash/ash_element_identifiers.h",
   ],
   ".*test.*": [

@@ -163,6 +163,8 @@ SimplifiedLayoutAlgorithm::SimplifiedLayoutAlgorithm(
     container_builder_.SetGapGeometry(gap_geometry);
   }
 
+  container_builder_.SetReadingFlowNodes(physical_fragment.ReadingFlowNodes());
+
   if (auto first_baseline = physical_fragment.FirstBaseline())
     container_builder_.SetFirstBaseline(*first_baseline);
   if (auto last_baseline = physical_fragment.LastBaseline())
@@ -292,7 +294,9 @@ const LayoutResult* SimplifiedLayoutAlgorithm::Layout() {
       previous_result_.InitialBreakBefore());
   container_builder_.SetPreviousBreakAfter(previous_result_.FinalBreakAfter());
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  DCHECK_EQ(oof_status, LayoutResult::kSuccess);
 
   return container_builder_.ToBoxFragment();
 }
@@ -323,16 +327,19 @@ void SimplifiedLayoutAlgorithm::AddChildFragment(
           .ToLogical(old_fragment.Offset(), new_fragment.Size());
 
   // Unapply the relative offset as `AddChild` will reapply it.
+  BoxStrut margins;
   PhysicalBoxStrut relative_insets;
-  if (const auto* box = DynamicTo<PhysicalBoxFragment>(old_fragment.get());
-      box && box->Style().GetPosition() == EPosition::kRelative) {
-    relative_insets = box->UsedPositionInsets();
-    child_offset -=
-        relative_insets.ConvertToLogical(writing_direction_).StartOffset();
+  if (const auto* box = DynamicTo<PhysicalBoxFragment>(old_fragment.get())) {
+    margins = box->Margins().ConvertToLogical(writing_direction_);
+    if (box->Style().GetPosition() == EPosition::kRelative) {
+      relative_insets = box->UsedPositionInsets();
+      child_offset -=
+          relative_insets.ConvertToLogical(writing_direction_).StartOffset();
+    }
   }
 
   // Add the new fragment to the builder.
-  container_builder_.AddChild(new_fragment, child_offset, margin_strut,
+  container_builder_.AddChild(new_fragment, child_offset, margins, margin_strut,
                               is_self_collapsing, relative_insets);
 }
 

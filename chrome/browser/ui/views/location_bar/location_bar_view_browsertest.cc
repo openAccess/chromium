@@ -27,6 +27,8 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
@@ -34,17 +36,18 @@
 #include "chrome/browser/ui/omnibox/omnibox_popup_webui_creation.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/location_bar/webui_content_setting_image_control.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h"
 #include "chrome/browser/ui/views/location_bar/zoom_bubble_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_context_menu.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
@@ -56,11 +59,14 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/lens/lens_features.h"
 #include "components/omnibox/browser/aim_eligibility_service_features.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/security_state/core/security_state.h"
+#include "components/tabs/public/tab_interface.h"
+#include "components/vector_icons/vector_icons.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/common/content_features.h"
@@ -94,6 +100,16 @@
 #endif
 
 namespace {
+
+// Expected icon sizes and inter-item spacing between Content Setting icons and
+// Page Action icons in normal vs. touch mode.
+gfx::Size GetNormalIconSize() {
+  const gfx::Insets insets =
+      GetLayoutInsets(LOCATION_BAR_PAGE_ACTION_ICON_PADDING);
+  return gfx::Size(20 + insets.width(), 20 + insets.height());
+}
+constexpr gfx::Size kIconSizeTouch(40, 30);
+constexpr int kBetweenIconSpacing = 8;
 
 class TestLocationBarObserver : public LocationBar::Observer {
  public:
@@ -320,6 +336,95 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest, BoundsObserver) {
   run_loop.Run();
 }
 
+IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest,
+                       ContentSettingIconBoundsAndSpacingMatchPageActions) {
+  LocationBarView* location_bar = GetLocationBarView();
+  ASSERT_TRUE(location_bar);
+  content::WebContents* web_contents =
+      browser()->GetTabStripModel()->GetActiveWebContents();
+
+  auto* content_settings =
+      content_settings::PageSpecificContentSettings::GetForFrame(
+          web_contents->GetPrimaryMainFrame());
+  content_settings->OnContentBlocked(ContentSettingsType::IMAGES);
+  content_settings->OnContentBlocked(ContentSettingsType::JAVASCRIPT);
+
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents);
+  auto* page_action_controller = page_actions::PageActionController::From(tab);
+  for (views::View* child : location_bar->page_action_container()->children()) {
+    if (auto* page_action_view =
+            views::AsViewClass<page_actions::PageActionView>(child)) {
+      page_action_controller->Hide(page_action_view->GetActionId());
+    }
+  }
+  for (actions::ActionId action_id :
+       {kActionShowTranslate, kActionBookmarkThisTab}) {
+    actions::ActionItem* action_item = actions::ActionManager::Get().FindAction(
+        action_id, BrowserActions::From(browser())->root_action_item());
+    ASSERT_TRUE(action_item);
+    action_item->SetVisible(true);
+    action_item->SetEnabled(true);
+    if (action_item->GetImage().IsEmpty()) {
+      action_item->SetImage(
+          ui::ImageModel::FromVectorIcon(vector_icons::kFeedbackIcon));
+    }
+    page_action_controller->Show(action_id);
+  }
+  location_bar->Update(web_contents);
+  views::test::RunScheduledLayout(location_bar);
+
+  ContentSettingImageView& images_view =
+      GetContentSettingImageView(ContentSettingImageModel::ImageType::kImages);
+  ContentSettingImageView& js_view = GetContentSettingImageView(
+      ContentSettingImageModel::ImageType::kJavaScript);
+  ASSERT_TRUE(images_view.GetVisible());
+  ASSERT_TRUE(js_view.GetVisible());
+  EXPECT_EQ(GetNormalIconSize(), images_view.size());
+  EXPECT_EQ(GetNormalIconSize(), js_view.size());
+  const int cs_left_right =
+      std::min(images_view.bounds().right(), js_view.bounds().right());
+  const int cs_right_x = std::max(images_view.x(), js_view.x());
+  EXPECT_EQ(kBetweenIconSpacing, cs_right_x - cs_left_right);
+
+  std::vector<page_actions::PageActionView*> visible_page_actions;
+  for (views::View* child : location_bar->page_action_container()->children()) {
+    auto* page_action_view =
+        views::AsViewClass<page_actions::PageActionView>(child);
+    if (page_action_view && page_action_view->GetVisible() &&
+        !page_action_view->ShouldShowLabel() &&
+        page_action_view->GetActionId() != kActionAiMode) {
+      visible_page_actions.push_back(page_action_view);
+    }
+  }
+  ASSERT_GE(visible_page_actions.size(), 2u);
+  EXPECT_EQ(GetNormalIconSize(), visible_page_actions[0]->size());
+  EXPECT_EQ(GetNormalIconSize(), visible_page_actions[1]->size());
+  EXPECT_EQ(kBetweenIconSpacing, visible_page_actions[1]->x() -
+                                     visible_page_actions[0]->bounds().right());
+
+  {
+    ui::TouchUiController::TouchUiScoperForTesting touch_ui_scoper(true);
+    views::test::RunScheduledLayout(location_bar);
+    EXPECT_EQ(kIconSizeTouch, images_view.size());
+    EXPECT_EQ(kIconSizeTouch, js_view.size());
+    const int touch_cs_left_right =
+        std::min(images_view.bounds().right(), js_view.bounds().right());
+    const int touch_cs_right_x = std::max(images_view.x(), js_view.x());
+    EXPECT_EQ(kBetweenIconSpacing, touch_cs_right_x - touch_cs_left_right);
+    EXPECT_EQ(kBetweenIconSpacing,
+              visible_page_actions[1]->x() -
+                  visible_page_actions[0]->bounds().right());
+  }
+
+  views::test::RunScheduledLayout(location_bar);
+  EXPECT_EQ(GetNormalIconSize(), images_view.size());
+  EXPECT_EQ(GetNormalIconSize(), js_view.size());
+  EXPECT_EQ(GetNormalIconSize(), visible_page_actions[0]->size());
+  EXPECT_EQ(GetNormalIconSize(), visible_page_actions[1]->size());
+  EXPECT_EQ(kBetweenIconSpacing, visible_page_actions[1]->x() -
+                                     visible_page_actions[0]->bounds().right());
+}
+
 class TouchLocationBarViewBrowserTest : public LocationBarViewBrowserTest {
  public:
   TouchLocationBarViewBrowserTest() = default;
@@ -436,8 +541,11 @@ IN_PROC_BROWSER_TEST_F(SecurityIndicatorTest, CheckIndicatorText) {
 // Tests that `LocationBarView::Update()` animates security indicator changes on
 // in-tab navigations (`contents == nullptr`), suppresses the animation on tab
 // switches (`contents != nullptr`), and invalidates layout.
-IN_PROC_BROWSER_TEST_F(SecurityIndicatorTest,
-                       UpdateAnimationAndLayoutOnNavigationAndTabSwitch) {
+// TODO(crbug.com/580096852): Flaky across platforms because the security chip
+// animation can complete before NavigateToURL returns.
+IN_PROC_BROWSER_TEST_F(
+    SecurityIndicatorTest,
+    DISABLED_UpdateAnimationAndLayoutOnNavigationAndTabSwitch) {
   net::EmbeddedTestServer secure_server(net::EmbeddedTestServer::TYPE_HTTPS);
   secure_server.SetSSLConfig(
       net::test_server::EmbeddedTestServer::CERT_TEST_NAMES);
@@ -465,7 +573,8 @@ IN_PROC_BROWSER_TEST_F(SecurityIndicatorTest,
   // (`Update(contents)` with non-null `contents`): animation is suppressed and
   // layout is invalidated.
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), mock_secure_url, WindowOpenDisposition::kNewForegroundTab,
+      browser(), mock_secure_url,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
   EXPECT_FALSE(icon_view->ShouldShowLabel());
   views::test::RunScheduledLayout(location_bar_view);
@@ -597,10 +706,9 @@ class LocationBarViewPageActionHideWhileEditingTests
     zoom_action->SetEnabled(true);
 
     // 2. For the active tab, actually show it in the new PageActionController.
-    auto* tab_features = browser()->GetActiveTabInterface()->GetTabFeatures();
-    ASSERT_TRUE(tab_features);
     page_actions::PageActionController* controller =
-        tab_features->page_action_controller();
+        page_actions::PageActionController::From(
+            browser()->GetActiveTabInterface());
     ASSERT_TRUE(controller);
     controller->Show(kActionShowZoomBubble);
 
@@ -688,7 +796,7 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewFullWebUIPopupAppearanceTest,
 
   auto* state_manager =
       location_bar->GetOmniboxController()->popup_state_manager();
-  auto* presenter = location_bar->GetOmniboxPopupView()->presenter();
+  auto* presenter = location_bar->GetOmniboxPopupPresenterForTesting();
   ASSERT_TRUE(presenter);
 
   // The initial tab focuses the omnibox, which can open the full popup and
@@ -788,6 +896,15 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewAddContextButtonBrowserTest,
   EXPECT_FALSE(location_bar_view->ShouldShowAddContextButton());
   const auto icon_when_closed =
       location_icon_view->GetImageModel(views::Button::STATE_NORMAL);
+
+  // The button needs the AI Mode popup's content, which the deferral creates
+  // after the window's first frame. The location icon refreshes on popup state
+  // changes and typing, so wait for the content before opening the popup.
+  OmniboxPopupAimPresenter* aim_presenter =
+      location_bar_view->GetOmniboxPopupAimPresenter();
+  ASSERT_TRUE(aim_presenter);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return aim_presenter->GetWebUIContent() != nullptr; }));
 
   // The "Add Context" button does show up when the Omnibox popup is open.
   location_bar_view->FocusLocation(/*is_user_initiated=*/true,
@@ -965,9 +1082,8 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewElevatedToolbarBrowserTest,
   LocationBarView* location_bar = GetLocationBarView();
   ASSERT_TRUE(location_bar);
 
-  auto* tab_features = browser()->GetActiveTabInterface()->GetTabFeatures();
-  ASSERT_TRUE(tab_features);
-  auto* controller = tab_features->page_action_controller();
+  auto* controller = page_actions::PageActionController::From(
+      browser()->GetActiveTabInterface());
   ASSERT_TRUE(controller);
   auto* const root_action_item =
       BrowserActions::From(browser())->root_action_item();
@@ -1023,4 +1139,16 @@ IN_PROC_BROWSER_TEST_F(LocationBarViewElevatedToolbarBrowserTest,
   EnsureLayout();
   EXPECT_TRUE(location_bar->page_action_container()->IsFirstVisibleViewChip());
   EXPECT_FALSE(location_bar->page_action_container()->IsCapsuleActive());
+}
+
+IN_PROC_BROWSER_TEST_F(LocationBarViewBrowserTest,
+                       ContentSettingImageViewUsesSemanticColorId) {
+  LocationBarView* location_bar_view = GetLocationBarView();
+  ASSERT_TRUE(location_bar_view);
+
+  for (ContentSettingImageView* image_view :
+       location_bar_view->GetContentSettingViewsForTest()) {
+    EXPECT_EQ(image_view->GetIconColor(),
+              ui::ColorVariant(kColorOmniboxActionIcon));
+  }
 }

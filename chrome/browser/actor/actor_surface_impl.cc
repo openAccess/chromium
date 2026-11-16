@@ -8,32 +8,60 @@
 
 #include "base/check.h"
 #include "chrome/browser/actor/actor_tab_data.h"
+#include "chrome/browser/password_manager/chrome_password_manager_client.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/autofill/autofill_client_provider.h"
+#include "chrome/browser/ui/autofill/autofill_client_provider_factory.h"
 #include "content/public/browser/web_contents.h"
 
 namespace actor {
 
-ActorSurfaceImpl::ActorSurfaceImpl(ActorSurfaceHandle handle,
-                                   tabs::TabHandle tab)
-    : handle_(handle), tab_(tab) {
-  CHECK(tab.Get());
-  ActorSurfaceHandle::Register(handle_, this);
+namespace {
+
+// Attaches to a headless page the WebContents helpers that actor tools depend
+// on. A tab gets these from TabFeatures. Must run before the page's first
+// navigation, so the helpers see every frame and form. Helpers that already
+// exist are kept.
+void AttachHelpers(content::WebContents* contents) {
+  Profile* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
+  CHECK(profile);
+
+  // Same autofill and password manager setup as TabFeatures::Init().
+  autofill::AutofillClientProvider& autofill_client_provider =
+      autofill::AutofillClientProviderFactory::GetForProfile(profile);
+  autofill_client_provider.CreateClientForWebContents(contents);
+  if (!autofill_client_provider.uses_platform_autofill()) {
+    ChromePasswordManagerClient::CreateForWebContents(contents);
+  }
 }
 
-ActorSurfaceImpl::ActorSurfaceImpl(ActorSurfaceHandle handle,
+}  // namespace
+
+ActorSurfaceImpl::ActorSurfaceImpl(ActorSurfaceHandle actor_surface_handle,
+                                   tabs::TabHandle tab)
+    : actor_surface_handle_(actor_surface_handle),
+      tab_(tab),
+      actor_tab_data_(std::make_unique<ActorTabData>()) {
+  CHECK(tab.Get());
+  ActorSurfaceHandle::Register(actor_surface_handle_, this);
+}
+
+ActorSurfaceImpl::ActorSurfaceImpl(ActorSurfaceHandle actor_surface_handle,
                                    content::WebContents* headless_contents)
-    : handle_(handle),
+    : actor_surface_handle_(actor_surface_handle),
       headless_contents_(headless_contents),
       actor_tab_data_(std::make_unique<ActorTabData>()) {
   CHECK(headless_contents_);
-  ActorSurfaceHandle::Register(handle_, this);
+  AttachHelpers(headless_contents_);
+  ActorSurfaceHandle::Register(actor_surface_handle_, this);
 }
 
 ActorSurfaceImpl::~ActorSurfaceImpl() {
-  ActorSurfaceHandle::Unregister(handle_);
+  ActorSurfaceHandle::Unregister(actor_surface_handle_);
 }
 
 ActorSurfaceHandle ActorSurfaceImpl::GetHandle() const {
-  return handle_;
+  return actor_surface_handle_;
 }
 
 bool ActorSurfaceImpl::IsTab() const {
@@ -56,25 +84,18 @@ std::optional<tabs::TabHandle> ActorSurfaceImpl::GetTabHandle() const {
 }
 
 ActorTabData* ActorSurfaceImpl::GetActorTabData() const {
-  if (IsTab()) {
-    tabs::TabInterface* tab = tab_->Get();
-    CHECK(tab);
-    return ActorTabData::From(tab);
-  }
+  CHECK(actor_tab_data_);
   return actor_tab_data_.get();
 }
 
 void ActorSurfaceImpl::SetTab(tabs::TabHandle tab) {
   tab_ = tab;
   headless_contents_ = nullptr;
-  // The tab's own `ActorTabData` takes over.
-  actor_tab_data_.reset();
 }
 
 void ActorSurfaceImpl::SetHeadless() {
   headless_contents_ = GetWebContents();
   tab_.reset();
-  actor_tab_data_ = std::make_unique<ActorTabData>();
 }
 
 }  // namespace actor

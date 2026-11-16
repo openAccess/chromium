@@ -9,7 +9,6 @@
 #include "components/webapps/browser/installable/installable_logging.h"
 #include "components/webapps/browser/installable/installable_page_data.h"
 #include "components/webapps/browser/installable/installable_params.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace blink {
@@ -27,9 +26,6 @@ class InstallableEvaluator {
   // the `kValidManifestIgnoreDisplay` criteria.
   static InstallableStatusCode GetDisplayError(const blink::Manifest& manifest,
                                                InstallableCriteria criteria);
-  static InstallableStatusCode GetDisplayError(
-      const blink::mojom::Manifest& manifest,
-      InstallableCriteria criteria);
 
   InstallableEvaluator(content::WebContents* web_contents,
                        const InstallablePageData& data,
@@ -46,6 +42,13 @@ class InstallableEvaluator {
 
   // Returns the minimum icon size in pixels for a site to be installable.
   static int GetMinimumIconSizeInPx();
+
+  // Returns the ideal download size for a manifest screenshot. The returned
+  // value is always >= `kMinimumScreenshotSizeInPx` so the
+  // `ManifestIconDownloader::Download()` precondition `minimum <= ideal`
+  // holds.
+  static int ComputeIdealScreenshotSize(
+      const blink::Manifest::Screenshot& screenshot);
 
   // Returns true if the overall security state of |web_contents| is sufficient
   // to be considered installable.

@@ -324,6 +324,9 @@ enum class TipsNotificationType;
 // Returns the number of foreground (visible on screen) windows.
 + (NSUInteger)foregroundWindowCount [[nodiscard]];
 
+// Returns a diagnostic summary of `connectedScenes` and `openSessions`.
++ (NSString*)windowStateDebugDescription;
+
 // Closes all but one window, including all non-foreground windows.
 + (void)closeAllExtraWindows;
 
@@ -711,9 +714,6 @@ enum class TipsNotificationType;
 
 // Returns whether the UseLensToSearchForImage feature is enabled.
 + (BOOL)isUseLensToSearchForImageEnabled;
-
-// Returns whether the YourSavedInfoSettingsPageIos feature is enabled.
-+ (BOOL)isYourSavedInfoSettingsPageIosEnabled;
 
 // Returns whether the current layout is showing the bottom omnibox.
 + (BOOL)isCurrentLayoutBottomOmnibox;

@@ -16,6 +16,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "components/mirroring/mojom/cast_message_channel.mojom.h"
@@ -133,8 +134,8 @@ class COMPONENT_EXPORT(MIRRORING_SERVICE) OpenscreenSessionHost final
       mojo::PendingRemote<media::mojom::Remoter> remoter,
       mojo::PendingReceiver<media::mojom::RemotingSource> source_receiver)
       override;
-  void RequestRemotingStreaming() override;
-  void RestartMirroringStreaming() override;
+  void StartRemoting() override;
+  void StopRemoting(media::mojom::RemotingStopReason reason) override;
   std::unique_ptr<media::mojom::RemotingDataStreamSender>
   CreateRemotingDataStreamSender(
       bool is_audio,
@@ -212,14 +213,25 @@ class COMPONENT_EXPORT(MIRRORING_SERVICE) OpenscreenSessionHost final
   // Called by media::cast::VideoSender to help determine the video bitrate.
   uint32_t GetVideoNetworkBandwidth() const;
 
-  // Called periodically to update the `bandwidth_estimate_`.
+  // Called periodically to update `usable_bandwidth_`.
   void UpdateBandwidthEstimate();
   void UpdateBandwidthEstimate(int bandwidth_estimate);
+  void UpdateBandwidthLegacy(bool is_congested, uint32_t usable_bandwidth);
+  void UpdateBandwidthGradualBackoff(bool is_congested,
+                                     uint32_t usable_bandwidth);
+
+  // Records how often the usable bandwidth was reduced while sending video,
+  // and resets the counters. Called when the video sender is replaced or
+  // destroyed.
+  void RecordBandwidthMetrics();
 
   // Create and send OFFER message.
-  void Negotiate();
   void NegotiateMirroring();
   void NegotiateRemoting();
+
+  // Leaves remoting, or gives up on a remoting OFFER that is no longer
+  // wanted. Resumes mirroring, or stops the session in Remote Playback mode.
+  void StopRemotingAndMaybeResumeMirroring();
 
   // Initialize `media_remoter_` and `rpc_dispatcher_`.
   void InitMediaRemoter(
@@ -269,16 +281,29 @@ class COMPONENT_EXPORT(MIRRORING_SERVICE) OpenscreenSessionHost final
     // The session is initializing, and can't be used yet.
     kInitializing,
 
-    // A mirroring streaming session is starting or started.
+    // A mirroring streaming session is starting or active.
     kMirroring,
 
-    // A remoting streaming session is starting or started.
+    // A remoting streaming session is negotiated and active.
     kRemoting,
 
     // The session is stopped due to a user request or a fatal error.
     kStopped,
   };
   State state_ = State::kInitializing;
+
+  // Tracks the mode of an in-flight OFFER until OnNegotiated() or OnError()
+  // completes.
+  enum class PendingOfferMode {
+    kNone,
+    kMirroring,
+    kRemoting,
+  };
+  PendingOfferMode pending_offer_mode_ = PendingOfferMode::kNone;
+
+  // True if the source cancelled the remoting OFFER that is in flight. An
+  // OFFER cannot be recalled, so the receiver can still accept it.
+  bool remoting_offer_cancelled_ = false;
 
   // Informed of changes to session state.
   mojo::Remote<mojom::SessionObserver> observer_;
@@ -410,6 +435,16 @@ class COMPONENT_EXPORT(MIRRORING_SERVICE) OpenscreenSessionHost final
   // update so downward bandwidth estimates during idle/static screen periods
   // (where no frames are dropped) do not falsely crush the target bitrate.
   int num_video_frames_dropped_ = 0;
+
+  // The usable bandwidth in use before the most recent backoff due to
+  // congestion. Used to quickly recover after congestion clears.
+  uint32_t usable_bandwidth_before_backoff_ = 0;
+
+  // Used to report how often the usable bandwidth is reduced while video is
+  // being sent. The start time is set by the first bandwidth update with a
+  // video sender, and both values are reset by `RecordBandwidthMetrics()`.
+  base::TimeTicks first_video_bandwidth_update_time_;
+  int num_bandwidth_reductions_ = 0;
 
   // Indicate whether we're in the middle of switching tab sources.
   bool switching_tab_source_ = false;

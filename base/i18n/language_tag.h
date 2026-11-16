@@ -21,10 +21,6 @@
 #include "base/i18n/internal/immutable_string.h"
 #include "base/types/pass_key.h"
 
-namespace base {
-class Value;
-}  // namespace base
-
 // Forward declaration of the Mojo deserialization tag, see the
 // `LanguageTag(typename T::Tag)` constructor below.
 namespace mojo {
@@ -44,8 +40,6 @@ namespace base::i18n {
 class LanguageTagConverter;
 class LanguageTag;
 consteval LanguageTag GetKnownLanguageTag(std::string_view);
-COMPONENT_EXPORT(LANGUAGE_TAG)
-std::optional<LanguageTag> ValueToLanguageTag(const base::Value&);
 
 // A type-safe wrapper for BCP47 language tags (locales).
 //
@@ -258,10 +252,6 @@ class COMPONENT_EXPORT(LANGUAGE_TAG) LanguageTag {
  private:
   friend class LanguageTagConverter;
   friend consteval LanguageTag GetKnownLanguageTag(std::string_view);
-  // Allow base::Value conversion from and to `LanguageTag` without having to
-  // depend on ICU.
-  friend COMPONENT_EXPORT(LANGUAGE_TAG)
-      std::optional<LanguageTag> ValueToLanguageTag(const base::Value&);
 
   std::vector<std::string_view> GetExtensionSubtagsInternal(char key) const;
   LanguageTag WithExtensionStringInternal(char key,
@@ -274,6 +264,13 @@ class COMPONENT_EXPORT(LANGUAGE_TAG) LanguageTag {
   // tha ImmutableString on its own.
   constexpr explicit LanguageTag(base::span<const std::string_view> parts)
       : tag_(i18n_internal::ImmutableString(parts)) {}
+  // Consteval constructor that constructs the ImmutableString via its consteval
+  // constructor.
+  consteval LanguageTag(
+      i18n_internal::ImmutableString::ForceConstevalConstructor,
+      std::string_view tag)
+      : tag_(i18n_internal::ImmutableString::ForceConstevalConstructor{}, tag) {
+  }
 
   // The BCP47 language tag, e.g. "pt-BR".
   // Supports language, script, region, variants and extensions.
@@ -296,8 +293,7 @@ std::ostream& operator<<(std::ostream& os,
 // - region subtag: must be all uppercase (US).
 // - variant subtags: must be all lowercase (oxendict).
 //
-// The function currently does not support extensions or tags that have fewer
-// than 14 characters; that is when LanguageTag fits in the stack.
+// The function currently does not support extensions.
 //
 // Usage examples:
 //     // OK
@@ -312,13 +308,6 @@ std::ostream& operator<<(std::ostream& os,
 //   - GetKnownLanguageTag("xx");
 //
 consteval LanguageTag GetKnownLanguageTag(std::string_view tag) {
-  // It is only possible to construct `LanguageTag`s at compile-time if they
-  // are small.
-  if (tag.size() > i18n_internal::ImmutableString::kSmallBufferSize) {
-    void ERROR_TagIsTooLarge();
-    ERROR_TagIsTooLarge();
-  }
-
   std::optional<i18n_internal::ParsedBcp47Tag> parsed =
       i18n_internal::ParseBcp47Tag(tag);
   // Check if the input `tag` is a well-formed bcp47 tag
@@ -331,8 +320,11 @@ consteval LanguageTag GetKnownLanguageTag(std::string_view tag) {
     void ERROR_TagIsUnknown();
     ERROR_TagIsUnknown();
   }
-
-  return LanguageTag(base::span<const std::string_view>({tag}));
+  if (tag.size() <= i18n_internal::ImmutableString::kSmallBufferSize) {
+    return LanguageTag(base::span<const std::string_view>({tag}));
+  }
+  return LanguageTag(
+      i18n_internal::ImmutableString::ForceConstevalConstructor{}, tag);
 }
 
 template <typename T>

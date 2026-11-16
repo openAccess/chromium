@@ -89,10 +89,11 @@ export class GlicSelectionOverlayElement extends
       enableSelectionOverlayPromptBox: {type: Boolean},
       enableSelectionOverlayDogfoodFeedback: {type: Boolean},
       hideHandles: {type: Boolean},
-      disableMultiSelect: {type: Boolean, reflect: true},
+      hasSelection: {type: Boolean, reflect: true},
       skipIntroAnimation: {type: Boolean, reflect: true},
       hasPromptText: {type: Boolean},
       sidePanelOpen: {type: Boolean, reflect: true},
+      pageContextReceived: {type: Boolean},
     };
   }
 
@@ -112,7 +113,7 @@ export class GlicSelectionOverlayElement extends
   accessor enableSelectionOverlayDogfoodFeedback: boolean =
       loadTimeData.getBoolean('enableSelectionOverlayDogfoodFeedback');
   accessor hideHandles: boolean = false;
-  accessor disableMultiSelect: boolean = false;
+  accessor hasSelection: boolean = false;
   accessor skipIntroAnimation: boolean = false;
   // Whether the prompt input has non-whitespace text, which shows the submit
   // button.
@@ -123,6 +124,13 @@ export class GlicSelectionOverlayElement extends
   // `sidePanelOpened`, which applies the Lens side panel margins; the Glic
   // overlay is tab-scoped and never applies them.
   accessor sidePanelOpen: boolean = false;
+  // Whether the browser has the page content. Until then a prompt can't be
+  // submitted.
+  accessor pageContextReceived: boolean = false;
+  // Whether the current gesture started with the right button.
+  private isRightButtonGesture_: boolean = false;
+  // Number of selected regions, as last sent by the browser.
+  private regionCount_: number = 0;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -130,18 +138,59 @@ export class GlicSelectionOverlayElement extends
     this.listenerIds.push(handlerImpl.addSetInteractionOptionsListener(
         (options: InteractionOptions) => {
           this.hideHandles = options.hideHandles;
-          this.disableMultiSelect = options.disableMultiSelect;
           this.skipIntroAnimation = options.skipIntroAnimation;
         }));
     this.listenerIds.push(
         handlerImpl.addSetSidePanelOpenListener((open: boolean) => {
           this.sidePanelOpen = open;
         }));
+    this.listenerIds.push(handlerImpl.addPageContextReceivedListener(() => {
+      this.pageContextReceived = true;
+    }));
+    this.listenerIds.push(this.baseHandler.addMultiRegionSelectionListener(
+        (regions) => this.onRegionCountChanged_(regions.length)));
+  }
+
+  // The prompt and its suggestions are for a single area. With more, hide
+  // them; bring them back once there is one again.
+  private onRegionCountChanged_(count: number) {
+    const wasMultiple = this.hasMultipleRegions_();
+    this.regionCount_ = count;
+    if (count === 0) {
+      this.activeSelection = null;
+    }
+    if (this.hasMultipleRegions_()) {
+      this.showFloatingPrompt = false;
+      this.clearSuggestedActions_();
+    } else if (wasMultiple && count === 1) {
+      this.fetchSuggestedActions();
+      this.updateFloatingPromptPosition();
+    }
+  }
+
+  private hasMultipleRegions_(): boolean {
+    return this.regionCount_ > 1;
+  }
+
+  private hasSelection_(): boolean {
+    return Boolean(this.activeRegionId) ||
+        (this.activeSelection !== null &&
+         (this.activeSelection.width > 0 || this.activeSelection.height > 0));
+  }
+
+  // When the side panel is closed, only one region can be selected.
+  private canSelectRegion_(): boolean {
+    return this.sidePanelOpen || !this.hasSelection_();
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     this.floatingPromptResizeObserver_.disconnect();
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    this.hasSelection = this.hasSelection_();
   }
 
   override firstUpdated() {
@@ -198,6 +247,15 @@ export class GlicSelectionOverlayElement extends
     this.eventTracker_.add(window, 'resize', () => {
       if (this.showFloatingPrompt) {
         this.updateFloatingPromptPosition();
+      }
+    });
+
+    // A context menu would interrupt a right drag. Keep it in the prompt
+    // input for copy and paste.
+    this.eventTracker_.add(this, 'contextmenu', (e: Event) => {
+      if (this.enableSelectionOverlayPromptBox &&
+          !(e.composedPath()[0] instanceof HTMLInputElement)) {
+        e.preventDefault();
       }
     });
 
@@ -290,6 +348,13 @@ export class GlicSelectionOverlayElement extends
     }
   }
 
+  // A prewarmed overlay is on screen while the screenshot is still being
+  // captured. Until it is shown, ignore input so a click on the live page can't
+  // draw a region or dismiss the overlay.
+  protected override shouldIgnoreEvent(event: PointerEvent): boolean {
+    return !this.isScreenshotRendered || super.shouldIgnoreEvent(event);
+  }
+
   // Repositions the prompt when its size changes, e.g. when a card is added
   // or its content grows, so it doesn't overflow the viewport.
   private floatingPromptResizeObserver_ = new ResizeObserver(() => {
@@ -330,17 +395,23 @@ export class GlicSelectionOverlayElement extends
   private suggestedActionsListenerRouter_:
       SuggestedActionsListenerCallbackRouter|null = null;
 
+  private clearSuggestedActions_() {
+    this.suggestedActionsListenerRouter_?.$.close();
+    this.suggestedActionsListenerRouter_ = null;
+    this.suggestedActions = [];
+    // A card belongs to the previous selection's actions.
+    this.clearInlineFulfillment_();
+  }
+
   private fetchSuggestedActions() {
     if (!this.enableSelectionOverlayPrompt &&
         !this.enableSelectionOverlayPromptBox) {
       return;
     }
-    if (this.suggestedActionsListenerRouter_) {
-      this.suggestedActionsListenerRouter_.$.close();
+    this.clearSuggestedActions_();
+    if (this.hasMultipleRegions_()) {
+      return;
     }
-    this.suggestedActions = [];
-    // A card belongs to the previous selection's actions.
-    this.clearInlineFulfillment_();
     this.suggestedActionsListenerRouter_ =
         new SuggestedActionsListenerCallbackRouter();
     this.suggestedActionsListenerRouter_.onSuggestedActionsAvailable
@@ -372,7 +443,8 @@ export class GlicSelectionOverlayElement extends
       return;
     }
 
-    if (!this.selectionElements.postSelectionRenderer.hasSelection()) {
+    if (!this.selectionElements.postSelectionRenderer.hasSelection() ||
+        this.hasMultipleRegions_()) {
       this.showFloatingPrompt = false;
       return;
     }
@@ -390,7 +462,6 @@ export class GlicSelectionOverlayElement extends
     const selHeight = bounds.height * overlayRect.height;
     const selBottom = selTop + selHeight;
     const selRight = selLeft + selWidth;
-    const selCenterX = selLeft + selWidth / 2;
 
     const margin = 16;
     const viewportWidth = window.innerWidth;
@@ -398,33 +469,153 @@ export class GlicSelectionOverlayElement extends
     const maxAvailableWidth = Math.max(0, viewportWidth - 2 * margin);
 
     const computeStyle = (width: number, height: number): string => {
-      const effectiveWidth = Math.min(width, maxAvailableWidth);
       if (this.enableSelectionOverlayPromptBox) {
-        let clampedCenterX: number;
-        if (effectiveWidth >= maxAvailableWidth) {
-          clampedCenterX = viewportWidth / 2;
-        } else {
-          const minCenter = effectiveWidth / 2 + margin;
-          const maxCenter = viewportWidth - effectiveWidth / 2 - margin;
-          clampedCenterX = Math.max(minCenter, Math.min(selCenterX, maxCenter));
-        }
+        const isRtl = getComputedStyle(this).direction === 'rtl';
+        // Sufficient space requires fitting the input box (320px wide, 44px
+        // tall) plus two 1-line contextual suggestions (32px tall each) with
+        // 6px gaps (44 + 6 + 32 + 6 + 32 = 120px). The inline fulfillment host
+        // prefers 380px width but can shrink down to 320px to fit the available
+        // space at the chosen position without moving.
+        const minWidth = 320;
+        const minHeight = 120;
 
-        let targetTop = selBottom + margin;
-        let aboveSelection = false;
-        if (targetTop + height > viewportHeight - margin) {
-          const topAbove = selTop - height - margin;
-          if (topAbove >= margin) {
-            targetTop = topAbove;
-            aboveSelection = true;
-          } else {
-            targetTop = Math.max(margin, viewportHeight - height - margin);
-          }
-        }
-        this.promptAboveSelection = aboveSelection;
-        return `left: ${clampedCenterX}px; top: ${
-            targetTop}px; transform: translateX(-50%);`;
+        const fitsVertically = (reqTop: number): boolean => {
+          return reqTop >= margin &&
+              reqTop + minHeight <= viewportHeight - margin;
+        };
+
+        const leftAligned =
+            (anchorLeft: number,
+             limitRight: number = viewportWidth - margin) => {
+              const availableWidth = limitRight - anchorLeft;
+              const maxWidth = Math.max(minWidth, availableWidth);
+              return {
+                left: anchorLeft,
+                maxWidth,
+                validX: anchorLeft >= margin && availableWidth >= minWidth,
+              };
+            };
+
+        const rightAligned =
+            (anchorRight: number, limitLeft: number = margin) => {
+              const availableWidth = anchorRight - limitLeft;
+              const maxWidth = Math.max(minWidth, availableWidth);
+              return {
+                left: anchorRight - Math.min(width, maxWidth),
+                maxWidth,
+                validX: anchorRight <= viewportWidth - margin &&
+                    availableWidth >= minWidth,
+              };
+            };
+
+        const alignStart = {
+          ...(isRtl ? rightAligned(selRight) : leftAligned(selLeft)),
+          alignItems: 'flex-start',
+        };
+        const alignEnd = {
+          ...(isRtl ? leftAligned(selLeft) : rightAligned(selRight)),
+          alignItems: 'flex-end',
+        };
+        const afterSelection = {
+          ...(isRtl ? rightAligned(selLeft - margin) :
+                      leftAligned(selRight + margin)),
+          alignItems: 'flex-start',
+        };
+        const beforeSelection = {
+          ...(isRtl ? leftAligned(selRight + margin) :
+                      rightAligned(selLeft - margin)),
+          alignItems: 'flex-end',
+        };
+        const insideSelection = {
+          ...(isRtl ?
+                  rightAligned(
+                      selRight - margin, Math.max(selLeft + margin, margin)) :
+                  leftAligned(
+                      selLeft + margin,
+                      Math.min(selRight - margin, viewportWidth - margin))),
+          alignItems: 'flex-start',
+        };
+        const windowCorner = {
+          ...(isRtl ? rightAligned(viewportWidth - margin) :
+                      leftAligned(margin)),
+          alignItems: 'flex-start',
+        };
+
+        const candidates = [
+          // 1. Below selected area, with both left edges aligned (right for
+          // RTL).
+          {
+            ...alignStart,
+            top: selBottom + margin,
+            above: false,
+            valid: alignStart.validX && fitsVertically(selBottom + margin),
+          },
+          // 2. Below selected area, with both right edges aligned (left for
+          // RTL).
+          {
+            ...alignEnd,
+            top: selBottom + margin,
+            above: false,
+            valid: alignEnd.validX && fitsVertically(selBottom + margin),
+          },
+          // 3. Above selected area, with both left edges aligned (right for
+          // RTL).
+          {
+            ...alignStart,
+            top: selTop - margin - height,
+            above: true,
+            valid: alignStart.validX &&
+                fitsVertically(selTop - margin - minHeight),
+          },
+          // 4. Above selected area, with both right edges aligned (left for
+          // RTL).
+          {
+            ...alignEnd,
+            top: selTop - margin - height,
+            above: true,
+            valid:
+                alignEnd.validX && fitsVertically(selTop - margin - minHeight),
+          },
+          // 5. To the right of selected area (left for RTL), with both top
+          // edges aligned.
+          {
+            ...afterSelection,
+            top: selTop,
+            above: false,
+            valid: afterSelection.validX && fitsVertically(selTop),
+          },
+          // 6. To the left of selected area (right for RTL), with both top
+          // edges aligned.
+          {
+            ...beforeSelection,
+            top: selTop,
+            above: false,
+            valid: beforeSelection.validX && fitsVertically(selTop),
+          },
+          // 7. Within the selected area, with top-left corners aligned
+          // (top-right for RTL).
+          {
+            ...insideSelection,
+            top: selTop + margin,
+            above: false,
+            valid: insideSelection.validX && fitsVertically(selTop + margin) &&
+                selTop + margin + minHeight <= selBottom - margin,
+          },
+        ];
+
+        const chosen = candidates.find(c => c.valid) ?? {
+          // 8. In the top-left corner of the window (top-right for RTL).
+          ...windowCorner,
+          top: margin,
+          above: false,
+        };
+
+        this.promptAboveSelection = chosen.above;
+        return `left: ${chosen.left}px; top: ${chosen.top}px; max-width: ${
+            chosen.maxWidth}px; align-items: ${chosen.alignItems};`;
       }
 
+      const effectiveWidth = Math.min(width, maxAvailableWidth);
       this.promptAboveSelection = false;
 
       // When the prompt box is not shown, anchor the bottom-left of the row at
@@ -444,8 +635,8 @@ export class GlicSelectionOverlayElement extends
 
     const container =
         this.shadowRoot.querySelector<HTMLElement>('#floatingPromptContainer');
-    let promptWidth = this.enableSelectionOverlayPromptBox ? 360 : 32;
-    let promptHeight = this.enableSelectionOverlayPromptBox ? 96 : 32;
+    let promptWidth = this.enableSelectionOverlayPromptBox ? 320 : 32;
+    let promptHeight = this.enableSelectionOverlayPromptBox ? 44 : 32;
 
     if (container) {
       const rect = container.getBoundingClientRect();
@@ -483,24 +674,40 @@ export class GlicSelectionOverlayElement extends
     requestAnimationFrame(refinePosition);
   }
 
+  // With the prompt box and the side panel open, a right drag adds an area and
+  // a left drag replaces it.
+  protected override dragsOnRightButton(): boolean {
+    return this.enableSelectionOverlayPromptBox && this.sidePanelOpen;
+  }
+
+  protected override onPointerDown(event: PointerEvent) {
+    this.isRightButtonGesture_ = event.button === 2;
+    super.onPointerDown(event);
+  }
+
   override handleGestureStart() {
     super.handleGestureStart();
-    this.showFloatingPrompt = false;
-    if (this.selectionElements.postSelectionRenderer.handleGestureStart(
+    // A right drag always draws a new area, even over an existing one.
+    if (!this.isRightButtonGesture_ &&
+        this.selectionElements.postSelectionRenderer.handleGestureStart(
             this.currentGesture)) {
       this.draggingRespondent = DragFeature.POST_SELECTION;
+    }
+    if (this.draggingRespondent !== DragFeature.NONE ||
+        this.canSelectRegion_()) {
+      this.showFloatingPrompt = false;
     }
   }
 
   protected override handleGestureDrag(event: PointerEvent) {
     assert(this.currentGesture.state === GestureState.DRAGGING);
-    this.showFloatingPrompt = false;
     // Capture pointer events so gestures still work if the users pointer
     // leaves the selection overlay div. Pointer capture is implicitly
     // released after pointerup or pointercancel events.
     this.setPointerCapture(event.pointerId);
 
     if (this.draggingRespondent === DragFeature.POST_SELECTION) {
+      this.showFloatingPrompt = false;
       this.selectionElements.postSelectionRenderer.handleGestureDrag(
           this.currentGesture);
       return;
@@ -509,17 +716,22 @@ export class GlicSelectionOverlayElement extends
     // If no one is responding to the drag yet, then let the region selection
     // layer respond.
     if (this.draggingRespondent === DragFeature.NONE) {
-      // Disable region selection on click.
       // TODO(b/565871325): Allow adding regions while Ctrl or Cmd is held, here
       // and in `handleGestureEnd()`.
-      if (this.disableMultiSelect) {
+      if (!this.canSelectRegion_()) {
         return;
       }
       this.setCursorToCrosshair();
       this.draggingRespondent = DragFeature.MANUAL_REGION;
+      this.hideHandles = false;
 
-      this.activeRegionId = '';
-      this.baseHandler.activeRegionId = '';
+      // With the prompt box, only a right drag with the side panel open adds
+      // an area. Otherwise keep the active id so the drag replaces it.
+      if (!this.enableSelectionOverlayPromptBox ||
+          (this.isRightButtonGesture_ && this.sidePanelOpen)) {
+        this.activeRegionId = '';
+        this.baseHandler.activeRegionId = '';
+      }
       this.selectionElements.postSelectionRenderer.clearSelection();
 
       // TODO(crbug.com/421002691): follow the convention where the layer
@@ -530,13 +742,14 @@ export class GlicSelectionOverlayElement extends
     }
 
     if (this.draggingRespondent === DragFeature.MANUAL_REGION) {
+      this.showFloatingPrompt = false;
       this.selectionElements.regionSelectionLayer.handleGestureDrag(
           this.currentGesture);
     }
   }
 
   protected override handleGestureEnd() {
-    if (this.disableMultiSelect &&
+    if (!this.canSelectRegion_() &&
         this.draggingRespondent === DragFeature.NONE) {
       (this.baseHandler as SelectionOverlayBaseHandlerImpl)
           .dismissOverlay(DismissOverlayReason.kBackgroundClick);
@@ -551,21 +764,23 @@ export class GlicSelectionOverlayElement extends
         if (this.draggingRespondent === DragFeature.MANUAL_REGION) {
           this.selectionElements.regionSelectionLayer.handleGestureEnd(
               this.currentGesture);
+          this.fetchSuggestedActions();
         } else if (this.draggingRespondent === DragFeature.POST_SELECTION) {
           this.selectionElements.postSelectionRenderer.handleGestureEnd();
           // Fade out scrim which is currently being managed by region selection
           // TODO(crbug.com/420998632): move scrim out to its own component
           this.selectionElements.regionSelectionLayer
               .handlePostSelectionDragGestureEnd();
+          this.fetchSuggestedActions();
         }
-        this.fetchSuggestedActions();
         break;
       case GestureState.STARTING:
         if (this.draggingRespondent === DragFeature.NONE) {
-          // With the prompt box, a click doesn't select an area around it. It
-          // closes the overlay once there is a region, and does nothing before.
+          // With the prompt box, a click doesn't select an area around it. A
+          // left click closes the overlay once there is a region; otherwise it
+          // does nothing.
           if (this.enableSelectionOverlayPromptBox) {
-            if (this.activeRegionId) {
+            if (this.hasSelection_() && !this.isRightButtonGesture_) {
               (this.baseHandler as SelectionOverlayBaseHandlerImpl)
                   .dismissOverlay(DismissOverlayReason.kBackgroundClick);
             }
@@ -611,7 +826,15 @@ export class GlicSelectionOverlayElement extends
     this.shadowRoot.querySelector<HTMLInputElement>('#promptInput')?.focus();
   }
 
+  protected getSubmitPromptTitle(): string {
+    return loadTimeData.getString(
+        this.pageContextReceived ? 'submitPrompt' : 'fetchingPageContent');
+  }
+
   private submitPromptInput_() {
+    if (!this.pageContextReceived) {
+      return;
+    }
     const input =
         this.shadowRoot.querySelector<HTMLInputElement>('#promptInput');
     const prompt = input?.value.trim() ?? '';

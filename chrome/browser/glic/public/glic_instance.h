@@ -74,6 +74,11 @@ class GlicInstance {
   // context update is not.
   virtual void SendAdditionalContext(mojom::AdditionalContextPtr context) = 0;
 
+  // Sends a blocked data-transfer action notice to this instance's web client
+  // if one exists.
+  virtual void NotifyDataTransferActionsBlocked(
+      mojom::DataTransferActionsBlockedNoticePtr notice) = 0;
+
   // Focuses the instance if it is active.
   // More specifically, it will focus the active embedder.
   virtual void FocusIfActive() = 0;
@@ -125,6 +130,10 @@ class GlicInstance {
 
   // Returns true if the instance is currently performing an actuation task.
   virtual bool IsActuating() const = 0;
+
+  // Returns true if the instance has a surface (a bound tab or a floating
+  // panel) that a `LastActiveOrNew` invoke target can resolve to.
+  virtual bool HasLiveSurface() const = 0;
 
   // Cancels ongoing actuation task if one exists.
   virtual void CancelTask() = 0;

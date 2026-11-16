@@ -44,9 +44,11 @@ namespace updater {
 class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
                       public update_client::PersistedData {
  public:
-  // Constructs a provider using the specified |pref_service|.
-  // The associated preferences are assumed to already be registered.
-  // The |pref_service| must outlive the instance of this class.
+  // Stores updater data in `pref_service`, which must not be null and must
+  // outlive this object. The caller must register the prefs with
+  // `update_client::RegisterPrefs()` and `RegisterPersistedDataPrefs()` first.
+  // If `activity_service` is null, no app counts as active. Logs the current
+  // data to the event history.
   PersistedData(
       UpdaterScope scope,
       PrefService* pref_service,
@@ -180,6 +182,8 @@ class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
   void SetCohortHint(const std::string& id,
                      const std::string& cohort_hint) override;
   std::string GetPingFreshness(const std::string& id) const override;
+  base::Time GetPingFreshnessWriteTime(const std::string& id) const override;
+  void RotatePingFreshness(const std::string& id) override;
   void SetDateLastData(const std::vector<std::string>& ids,
                        int datenum,
                        base::OnceClosure callback) override;
@@ -218,7 +222,7 @@ class PersistedData : public base::RefCountedThreadSafe<PersistedData>,
   SEQUENCE_CHECKER(sequence_checker_);
 
   const UpdaterScope scope_;
-  raw_ptr<PrefService, DanglingUntriaged> pref_service_ = nullptr;
+  raw_ptr<PrefService> pref_service_ = nullptr;
   std::unique_ptr<update_client::PersistedData> delegate_;
 };
 

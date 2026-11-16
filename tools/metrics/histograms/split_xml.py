@@ -8,7 +8,7 @@ Intended to be used to split up the large histograms.xml or enums.xml file.
 """
 
 import os
-from pathlib import Path
+import pathlib
 import re
 import xml.etree.ElementTree as ET
 
@@ -78,6 +78,10 @@ _PREDEFINED_NAMES_MAPPING = {
   'WebUITabStrip': 'WebUI',
 }
 
+# Maps a name part of nodes to either these nodes or a nested dict that splits
+# them by their next name part.
+_DocumentDict = dict[str, 'list[ET.Element] | _DocumentDict']
+
 
 def _ParseMergedXML():
   """Parses merged xml into different types of nodes"""
@@ -116,7 +120,7 @@ def _CreateXMLFile(comment, parent_node_string, nodes, output_dir, filename):
   second_comment = f'<!--{SECOND_TOP_LEVEL_COMMENT_TEMPLATE % comment}-->'
   full_xml_string = f'{first_comment}\n{second_comment}\n{xml_string}'
 
-  output_path = str(Path(output_dir) / filename)
+  output_path = str(pathlib.Path(output_dir) / filename)
   if os.path.exists(output_path):
     os.remove(output_path)
 
@@ -197,7 +201,7 @@ def _OutputToFolderAndXML(nodes, output_dir, key):
     key: The prefix of the histograms, also the name of the new folder.
   """
   # Convert CamelCase name to snake_case when creating a directory.
-  output_dir = Path(output_dir) / _CamelCaseToSnakeCase(key)
+  output_dir = pathlib.Path(output_dir) / _CamelCaseToSnakeCase(key)
   output_dir.mkdir(parents=True, exist_ok=True)
   _CreateXMLFile(
     key + ' histograms', 'histograms', nodes, output_dir, 'histograms.xml'
@@ -216,7 +220,7 @@ def _WriteDocumentDict(document_dict, output_dir):
     if isinstance(val, list):
       _OutputToFolderAndXML(val, output_dir, key)
     else:
-      _WriteDocumentDict(val, str(Path(output_dir) / key))
+      _WriteDocumentDict(val, str(pathlib.Path(output_dir) / key))
 
 
 def _AggregateMinorNodes(node_dict):
@@ -239,7 +243,9 @@ def _AggregateMinorNodes(node_dict):
     node_dict['others'] = others
 
 
-def _BuildDocumentDict(nodes, depth):
+def _BuildDocumentDict(
+  nodes: list[ET.Element], depth: int
+) -> list[ET.Element] | _DocumentDict:
   """Recursively builds a document dict which will be written later.
 
   This function recursively builds a document dict which the key of the dict is
@@ -257,7 +263,7 @@ def _BuildDocumentDict(nodes, depth):
   if depth == TARGET_DEPTH:
     return nodes
 
-  temp_dict = document_dict = {}
+  temp_dict: dict[str, list[ET.Element]] = {}
   for node in nodes:
     name_part = _GetCamelCaseName(node, depth)
     if name_part not in temp_dict:
@@ -267,6 +273,7 @@ def _BuildDocumentDict(nodes, depth):
   # Aggregate keys with less than |AGGREGATE_THRESHOLD| values to 'others'.
   _AggregateMinorNodes(temp_dict)
 
+  document_dict: _DocumentDict = {}
   for key, nodes in temp_dict.items():
     if key == 'others':
       document_dict[key] = nodes

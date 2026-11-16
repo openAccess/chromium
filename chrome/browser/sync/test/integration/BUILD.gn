@@ -17,6 +17,7 @@ testonly = true
 source_set("sync_integration_tests_impl") {
   configs += [ "//build/config:precompiled_headers" ]
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  public_deps = []
   deps = [
     ":sync_integration_test_support",
     "//chrome/browser:browser_features",
@@ -33,6 +34,7 @@ source_set("sync_integration_tests_impl") {
     "//chrome/browser/reading_list",
     "//chrome/browser/search_engines",
     "//chrome/browser/signin",
+    "//chrome/browser/skills",
     "//chrome/browser/subscription_eligibility",
     "//chrome/browser/sync",
     "//chrome/browser/tab_group_sync:factories",
@@ -59,6 +61,7 @@ source_set("sync_integration_tests_impl") {
     "//components/saved_tab_groups/test_support",
     "//components/search_engines",
     "//components/skills:features",
+    "//components/skills/public",
     "//components/sync:test_support",
     "//components/sync_bookmarks",
     "//components/sync_device_info:test_support",
@@ -88,6 +91,7 @@ source_set("sync_integration_tests_impl") {
     "single_client_reading_list_sync_test.cc",
     "single_client_search_engines_sync_test.cc",
     "single_client_shared_tab_group_data_sync_test.cc",
+    "single_client_skills_sync_test.cc",
     "single_client_standalone_transport_sync_test.cc",
     "single_client_sync_invalidations_test.cc",
     "single_client_tab_context_sync_test.cc",
@@ -163,7 +167,6 @@ source_set("sync_integration_tests_impl") {
       "single_client_send_tab_to_self_sync_test.cc",
       "single_client_sessions_sync_test.cc",
       "single_client_sharing_message_sync_test.cc",
-      "single_client_skills_sync_test.cc",
       "single_client_themes_sync_test.cc",
       "single_client_user_consents_sync_test.cc",
       "single_client_user_events_sync_test.cc",
@@ -257,6 +260,7 @@ source_set("sync_integration_tests_impl") {
       ]
     }
 
+    public_deps += [ "//chrome/browser/ui/views/web_apps:test_support" ]
     deps += [
       "//chrome:packed_resources",
       "//chrome:resources",
@@ -274,7 +278,6 @@ source_set("sync_integration_tests_impl") {
       "//chrome/browser/send_tab_to_self",
       "//chrome/browser/send_tab_to_self:impl",
       "//chrome/browser/sharing",
-      "//chrome/browser/skills",
       "//chrome/browser/themes",
       "//chrome/browser/ui:browser_commands",
       "//chrome/browser/ui:browser_tabstrip",
@@ -286,12 +289,12 @@ source_set("sync_integration_tests_impl") {
       "//chrome/browser/ui/views/send_tab_to_self",
       "//chrome/browser/ui/views/toolbar",
       "//chrome/browser/ui/web_applications",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications:features",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/browser/webdata_services",
       "//chrome/common",
       "//chrome/renderer",
-      "//chrome/test:test_support_ui",
       "//components/app_constants",
       "//components/bookmarks/test",
       "//components/browser_sync",
@@ -304,7 +307,6 @@ source_set("sync_integration_tests_impl") {
       "//components/saved_tab_groups/internal:tab_group_sync_bridge",
       "//components/send_tab_to_self",
       "//components/send_tab_to_self:test_support",
-      "//components/skills/public",
       "//components/spellcheck/common",
       "//components/sync",
       "//components/trusted_vault",
@@ -492,6 +494,7 @@ source_set("sync_integration_test_support") {
   public_deps = [
     "//chrome/browser/favicon",
     "//chrome/test:test_support",
+    "//chrome/test/base:platform_browser_test",
     "//components/autofill/content/browser",
   ]
 
@@ -689,7 +692,6 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/select_file_policy",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/bookmarks/browser",
       "//components/password_manager/core/browser",
       "//components/spellcheck/common",

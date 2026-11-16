@@ -130,7 +130,7 @@ const LayoutResult* TableSectionLayoutAlgorithm::Layout() {
       first_baseline = offset.block_offset + *physical_fragment.FirstBaseline();
     last_baseline = offset.block_offset + *physical_fragment.LastBaseline();
 
-    container_builder_.AddResult(*row_result, offset);
+    container_builder_.AddResult(*row_result, offset, /*margins=*/BoxStrut());
     offset.block_offset += fragment.BlockSize();
     is_first_non_collapsed_row &= is_row_collapsed;
 
@@ -183,7 +183,10 @@ const LayoutResult* TableSectionLayoutAlgorithm::Layout() {
     DCHECK_EQ(status, BreakStatus::kContinue);
   }
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  DCHECK_EQ(oof_status, LayoutResult::kSuccess);
+
   return container_builder_.ToBoxFragment();
 }
 

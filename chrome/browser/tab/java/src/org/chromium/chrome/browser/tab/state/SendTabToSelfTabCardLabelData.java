@@ -204,7 +204,7 @@ public class SendTabToSelfTabCardLabelData extends PersistedTabData {
                 tab,
                 PersistedTabDataConfiguration.get(
                                 SendTabToSelfTabCardLabelData.class, tab.isIncognito())
-                        .getStorage(),
+                        .getStorage(tab.getProfile()),
                 PersistedTabDataConfiguration.get(
                                 SendTabToSelfTabCardLabelData.class, tab.isIncognito())
                         .getId());
@@ -241,13 +241,13 @@ public class SendTabToSelfTabCardLabelData extends PersistedTabData {
     @Override
     Serializer<ByteBuffer> getSerializer() {
         return () ->
-                SendTabToSelfPersistedTabDataProto.newBuilder()
-                        .setGuid(mGuid)
-                        .setSenderDeviceName(mSenderDeviceName)
-                        .setAdditionTimestampMs(mAdditionTimestampMs)
-                        .build()
-                        .toByteString()
-                        .asReadOnlyByteBuffer();
+                ByteBuffer.wrap(
+                        SendTabToSelfPersistedTabDataProto.newBuilder()
+                                .setGuid(mGuid)
+                                .setSenderDeviceName(mSenderDeviceName)
+                                .setAdditionTimestampMs(mAdditionTimestampMs)
+                                .build()
+                                .toByteArray());
     }
 
     @Override

@@ -65,8 +65,8 @@ export class SkillsAppElement extends CrLitElement {
 
   protected accessor selectedPage_: Page = Page.USER_SKILLS;
   protected accessor narrow_: boolean = false;
-  protected accessor isDrawerOpen_: boolean = false;
-  protected accessor isSkillsEnabled_: boolean =
+  private accessor isDrawerOpen_: boolean = false;
+  private accessor isSkillsEnabled_: boolean =
       loadTimeData.getBoolean('isSkillsEnabled');
 
   private eventTracker_: EventTracker = new EventTracker();
@@ -118,6 +118,10 @@ export class SkillsAppElement extends CrLitElement {
   }
 
   protected getErrorType_(): ErrorType|null {
+    if (loadTimeData.valueExists('isSkillsSupported') &&
+        !loadTimeData.getBoolean('isSkillsSupported')) {
+      return ErrorType.SKILLS_UNSUPPORTED;
+    }
     if (!loadTimeData.getBoolean('isGlicEnabled')) {
       return ErrorType.GLIC_NOT_ENABLED;
     }

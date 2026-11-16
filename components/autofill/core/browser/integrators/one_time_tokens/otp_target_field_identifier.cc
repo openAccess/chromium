@@ -16,14 +16,6 @@
 
 namespace autofill {
 
-namespace {
-
-bool IsActiveNonEmbeddedFrame(BrowserAutofillManager& manager) {
-  return !manager.driver().IsEmbedded() && manager.driver().IsActive();
-}
-
-}  // namespace
-
 OtpTargetFieldIdentifier::OtpTargetFieldIdentifier() = default;
 OtpTargetFieldIdentifier::~OtpTargetFieldIdentifier() = default;
 
@@ -67,32 +59,16 @@ void OtpTargetFieldIdentifier::OnFocusChanged(
   }
 }
 
-void OtpTargetFieldIdentifier::OnOtpFieldsDetected() {
-  has_detected_otp_field_ = true;
-}
-
-void OtpTargetFieldIdentifier::OnOtpFieldsCleared() {
-  has_detected_otp_field_ = false;
-  typed_in_any_field_after_otp_detection_ = false;
-}
-
-void OtpTargetFieldIdentifier::OnTextFieldValueChanged() {
-  if (has_detected_otp_field_) {
-    typed_in_any_field_after_otp_detection_ = true;
-  }
-}
-
 std::optional<OtpTarget> OtpTargetFieldIdentifier::GetTarget() const {
   if (focused_field_.has_value()) {
     auto it = std::ranges::find_if(
         managers_, [this](BrowserAutofillManager* manager) {
           return manager->driver().GetFrameToken() == focused_field_->frame;
         });
-    if (it != managers_.end() && IsActiveNonEmbeddedFrame(**it)) {
+    if (it != managers_.end()) {
       if (auto [form_structure, autofill_field] = FindOtpField(
               **it, focused_field_->form_id, focused_field_->field_id);
-          form_structure && autofill_field &&
-          IsFrameActive(autofill_field->host_frame())) {
+          form_structure && autofill_field) {
         return BuildOtpTarget(**it, *form_structure, *autofill_field);
       }
     }
@@ -110,7 +86,7 @@ std::optional<OtpTarget> OtpTargetFieldIdentifier::GetTarget() const {
 std::vector<OtpTarget> OtpTargetFieldIdentifier::GetEligibleTargets() const {
   std::vector<OtpTarget> targets;
   for (BrowserAutofillManager* manager : managers_) {
-    if (!IsActiveNonEmbeddedFrame(*manager)) {
+    if (!IsActiveNonEmbeddedDriver(manager->driver())) {
       continue;
     }
     manager->ForEachCachedForm([&](const FormStructure& form) {
@@ -133,36 +109,9 @@ bool OtpTargetFieldIdentifier::HasNonOtpFocusAnywhere() const {
 }
 
 bool OtpTargetFieldIdentifier::AnyOtpFieldContainsTypedInput() const {
-  // TODO(crbug.com/415273270): Update `form_cache_query_util` and delegate to
-  // `autofill::AnyOtpFieldContainsTypedInput()` once `OtpManagerImpl` is no
-  // longer used.
-  for (BrowserAutofillManager* manager : managers_) {
-    if (!IsActiveNonEmbeddedFrame(*manager)) {
-      continue;
-    }
-    bool has_typed_input = false;
-    manager->ForEachCachedForm(
-        [this, &has_typed_input](const FormStructure& form) {
-          if (has_typed_input || !OtpFieldDetector::IsOtpForm(form)) {
-            return;
-          }
-          has_typed_input = std::ranges::any_of(
-              form.fields(),
-              [this, &form](const std::unique_ptr<AutofillField>& field) {
-                return OtpFieldDetector::IsOtpField(form, *field) &&
-                       IsFrameActive(field->host_frame()) &&
-                       field->all_modifiers().contains(FieldModifier::kUser);
-              });
-        });
-    if (has_typed_input) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool OtpTargetFieldIdentifier::TypedInAnyFieldAfterOtpDetection() const {
-  return typed_in_any_field_after_otp_detection_;
+  return std::ranges::any_of(managers_, [](BrowserAutofillManager* manager) {
+    return autofill::AnyOtpFieldContainsTypedInput(*manager);
+  });
 }
 
 bool OtpTargetFieldIdentifier::IsFieldFocused(FieldGlobalId field_id) const {
@@ -173,7 +122,7 @@ bool OtpTargetFieldIdentifier::IsFrameActive(LocalFrameToken frame) const {
   return std::ranges::any_of(
       managers_, [frame](BrowserAutofillManager* manager) {
         return manager->driver().GetFrameToken() == frame &&
-               IsActiveNonEmbeddedFrame(*manager);
+               IsActiveNonEmbeddedDriver(manager->driver());
       });
 }
 

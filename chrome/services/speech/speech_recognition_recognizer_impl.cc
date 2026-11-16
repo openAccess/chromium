@@ -21,7 +21,6 @@
 #include "base/synchronization/lock.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/task/task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
@@ -539,9 +538,7 @@ void SpeechRecognitionRecognizerImpl::SendAudioToSpeechRecognitionService(
       // No nonzero data for several seconds. Don't send this buffer of zeroes,
       // and release the SODA instance to free memory until non-empty audio
       // resumes.
-      if (soda_client_) {
-        soda_client_->Destroy();
-      }
+      ReleaseSodaForSilence();
 
       // Forward `media_start_pts` since we can seek into the middle of long
       // stretches of silence.
@@ -569,6 +566,15 @@ void SpeechRecognitionRecognizerImpl::OnSpeechRecognitionError() {
 }
 
 void SpeechRecognitionRecognizerImpl::MarkDone() {
+  const bool already_marked_done = std::exchange(marked_done_, true);
+  if (soda_released_for_silence_) {
+    // SODA is already released, so notify the client directly.
+    if (!already_marked_done) {
+      speech_recognition_stopped_callback_.Run();
+    }
+    return;
+  }
+
   soda_client_->MarkDone();
 }
 
@@ -617,6 +623,9 @@ void SpeechRecognitionRecognizerImpl::
     mojo::ReportBadMessage(kInvalidAudioDataError);
     return;
   }
+  if (marked_done_) {
+    return;
+  }
 
   CHECK(soda_client_);
   if (!soda_client_->IsInitialized() ||
@@ -632,13 +641,20 @@ void SpeechRecognitionRecognizerImpl::OnLanguageChanged(
     const std::string& language) {
   std::optional<speech::SodaLanguagePackComponentConfig>
       language_component_config = GetLanguageComponentConfig(language);
-  if (!language_component_config.has_value())
+  if (!language_component_config.has_value()) {
     return;
+  }
 
   // Only reset SODA if the language changed.
-  if (language_component_config.value().language_name ==
-          primary_language_name_ ||
-      language_component_config.value().language_code == LanguageCode::kNone) {
+  std::string_view language_name = language_component_config->language_name;
+  if (language_name == primary_language_name_ ||
+      language_component_config->language_code == LanguageCode::kNone) {
+    return;
+  }
+
+  // Only change the language if the new language pack is installed.
+  auto it = config_paths_.find(language_name);
+  if (it == config_paths_.end() || it->second.empty()) {
     return;
   }
 
@@ -650,23 +666,10 @@ void SpeechRecognitionRecognizerImpl::OnLanguageChanged(
 
   // Changing the language requires a blocking call to check if the language
   // pack exists on the device.
-  scoped_refptr<base::SequencedTaskRunner> current_task_runner =
-      base::SequencedTaskRunner::GetCurrentDefault();
-
   task_runner_->PostTaskAndReplyWithResult(
-      FROM_HERE,
-      base::BindOnce(
-          [](const std::string& language) {
-            base::FilePath config_file_path =
-                GetLatestSodaLanguagePackDirectory(language);
-            return std::make_pair(config_file_path,
-                                  base::PathExists(config_file_path));
-          },
-          language),
-      base::BindOnce(
-          &SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
-          weak_factory_.GetWeakPtr(),
-          std::string(language_component_config.value().language_name)));
+      FROM_HERE, base::BindOnce(&base::PathExists, it->second),
+      base::BindOnce(&SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage,
+                     weak_factory_.GetWeakPtr(), std::string(language_name)));
 }
 
 void SpeechRecognitionRecognizerImpl::OnMaskOffensiveWordsChanged(
@@ -678,10 +681,9 @@ void SpeechRecognitionRecognizerImpl::OnMaskOffensiveWordsChanged(
 }
 
 void SpeechRecognitionRecognizerImpl::ResetSodaWithNewLanguage(
-    std::string language_name,
-    std::pair<base::FilePath, bool> config_and_exists) {
-  if (config_and_exists.second) {
-    config_paths_[language_name] = config_and_exists.first;
+    const std::string& language_name,
+    bool config_exists) {
+  if (config_exists) {
     primary_language_name_ = language_name;
     if (soda_client_ && soda_client_->IsInitialized()) {
       ResetSoda();
@@ -709,7 +711,7 @@ void SpeechRecognitionRecognizerImpl::RecordDuration() {
 }
 
 void SpeechRecognitionRecognizerImpl::ResetSoda() {
-  if (!is_client_requesting_speech_recognition_) {
+  if (!is_client_requesting_speech_recognition_ || marked_done_) {
     return;
   }
 
@@ -781,8 +783,25 @@ void SpeechRecognitionRecognizerImpl::ResetSoda() {
       reinterpret_cast<void*>(static_cast<uintptr_t>(soda_client_id_));
   CHECK(soda_client_);
   soda_client_->Reset(config, sample_rate_, channel_count_);
+  if (soda_client_->IsInitialized()) {
+    soda_released_for_silence_ = false;
+  }
 
   timestamp_estimator_ = std::make_unique<SpeechTimestampEstimator>();
+}
+
+void SpeechRecognitionRecognizerImpl::ReleaseSodaForSilence() {
+  if (!soda_client_ || marked_done_) {
+    return;
+  }
+
+  if (soda_client_->IsInitialized()) {
+    // Unregister first to drop the STOP event emitted during Destroy().
+    SodaClientRegistry::GetInstance()->Unregister(soda_client_id_);
+    soda_client_->Destroy();
+    soda_client_id_ = SodaClientRegistry::GetInstance()->Register(this);
+  }
+  soda_released_for_silence_ = true;
 }
 
 soda::chrome::ExtendedSodaConfigMsg*

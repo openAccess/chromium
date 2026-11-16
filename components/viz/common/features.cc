@@ -338,6 +338,15 @@ BASE_FEATURE(kUseDisplaySDRMaxLuminanceNits, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kUseDisplaySDRMaxLuminanceNits, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
 
+#if BUILDFLAG(IS_OZONE)
+// When a single full screen HDR10 video is the only HDR content on screen,
+// skip tone mapping it in viz and instead pass its HDR metadata to the system
+// compositor with the primary plane, so the system compositor can tone map it
+// using the video's real metadata. Only used if the platform reports that the
+// system compositor tone maps using client HDR metadata. Kill switch.
+BASE_FEATURE(kHdrVideoMetadataPassthrough, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif
+
 // On mac, when the RenderWidgetHostViewMac is hidden, also hide the
 // DelegatedFrameHost. Among other things, it unlocks the compositor frames,
 // which can saves hundreds of MiB of memory with bfcache entries.
@@ -423,7 +432,6 @@ const base::FeatureParam<int> kNumberPendingFramesUntilThrottle{
     &kNoCompositorFrameAcks, "pending_frames", 1};
 BASE_FEATURE(kNoUndrawnFrameThrottleWhileEmbedderWaits,
              base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kDisplaySchedulerAsClient, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Kill switch for constraining render pass texture sampling to logical content
 // bounds. Remove after the behavior is stable.

@@ -239,7 +239,6 @@ after discussions on the right group.
       <annotation id="back_navigation_cache_query"/>
       <annotation id="cws_info_service"/>
       <annotation id="promise_app_service"/>
-      <annotation id="crash_file_uploader"/>
       <annotation id="glanceables_classroom_integration"/>
       <annotation id="promise_app_service_download_icon"/>
       <annotation id="supervised_user_request_blocked_site_permission"/>
@@ -438,6 +437,7 @@ after discussions on the right group.
       <annotation id="private_ai_tls_client"/>
       <annotation id="actor_file_upload_tool"/>
       <annotation id="context_hub_memory_bank_image_fetch"/>
+      <annotation id="android_connectivity_detector"/>
     </sender>
   </group>
   <group name="Admin Features">

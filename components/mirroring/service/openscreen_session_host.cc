@@ -18,11 +18,14 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
+#include "base/notreached.h"
 #include "base/numerics/clamped_math.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/to_string.h"
 #include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -105,6 +108,50 @@ int NumberOfEncodeThreads() {
   // with only 1 or 2 cores, use only one thread for encoding. On systems with
   // more cores, allow half of the cores to be used for encoding.
   return std::min(8, (base::SysInfo::NumberOfProcessors() + 1) / 2);
+}
+
+// Tunables for OpenscreenSessionHost::UpdateBandwidthEstimate(). See
+// mirroring_features.h for a description of each value.
+struct BandwidthBackoffParams {
+  double good_network_citizen_factor;
+  double min_backoff_factor;
+  double max_backoff_factor;
+  double fast_recovery_increase;
+  double conservative_increase;
+};
+
+// Reads the bandwidth backoff params, clamping them to sane ranges so that a
+// bad field trial config can't stop the bandwidth from ever recovering or
+// backing off.
+BandwidthBackoffParams GetBandwidthBackoffParams() {
+  BandwidthBackoffParams params;
+  params.good_network_citizen_factor = std::clamp(
+      features::kCastStreamingGoodNetworkCitizenFactor.Get(), 0.1, 1.0);
+  params.min_backoff_factor =
+      std::clamp(features::kCastStreamingMinBackoffFactor.Get(), 0.1, 1.0);
+  params.max_backoff_factor =
+      std::clamp(features::kCastStreamingMaxBackoffFactor.Get(),
+                 params.min_backoff_factor, 1.0);
+  params.conservative_increase =
+      std::clamp(features::kCastStreamingConservativeIncrease.Get(), 1.0, 4.0);
+  params.fast_recovery_increase =
+      std::clamp(features::kCastStreamingFastRecoveryIncrease.Get(),
+                 params.conservative_increase, 4.0);
+  return params;
+}
+
+// Returns how many of the video frames dropped so far count as a congestion
+// signal.
+int GetCongestionFrameDrops(const media::cast::VideoSender& video_sender) {
+  switch (features::kCastStreamingCongestionSignal.Get()) {
+    case features::CongestionSignal::kBeforeOrAfterEncoding:
+      return video_sender.GetFramesDropped();
+    case features::CongestionSignal::kBeforeEncoding:
+      return video_sender.GetFramesDroppedBeforeEncoding();
+    case features::CongestionSignal::kAfterEncoding:
+      return video_sender.GetFramesDroppedAfterEncoding();
+  }
+  NOTREACHED();
 }
 
 const std::string ToString(const media::VideoCaptureParams& params) {
@@ -293,8 +340,22 @@ void OpenscreenSessionHost::OnNegotiated(
     openscreen::cast::SenderSession::ConfiguredSenders senders,
     Recommendations capture_recommendations) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const PendingOfferMode negotiated_mode =
+      std::exchange(pending_offer_mode_, PendingOfferMode::kNone);
+  const bool remoting_offer_cancelled =
+      std::exchange(remoting_offer_cancelled_, false);
   offering_fallback_codecs_ = false;
   if (state_ == State::kStopped) {
+    return;
+  }
+
+  if (negotiated_mode == PendingOfferMode::kRemoting &&
+      remoting_offer_cancelled) {
+    // The receiver accepted a remoting OFFER that the source cancelled while
+    // it was in flight, so the receiver is in remoting mode. Drop the
+    // remoting `senders` and negotiate mirroring again.
+    StopStreaming();
+    NegotiateMirroring();
     return;
   }
 
@@ -356,7 +417,10 @@ void OpenscreenSessionHost::OnNegotiated(
         std::move(deletion_cb_));
   }
 
-  if (state_ == State::kRemoting) {
+  StopStreaming();
+
+  if (negotiated_mode == PendingOfferMode::kRemoting) {
+    state_ = State::kRemoting;
     CHECK(media_remoter_);
     CHECK(!audio_config || audio_config->is_remoting());
     CHECK(!video_config || video_config->is_remoting());
@@ -370,6 +434,8 @@ void OpenscreenSessionHost::OnNegotiated(
     }
     return;
   }
+
+  state_ = State::kMirroring;
 
   SetConstraints(capture_recommendations, audio_config, video_config);
   if (senders.audio_sender) {
@@ -439,8 +505,10 @@ void OpenscreenSessionHost::OnNegotiated(
         // the video sender instance.
         base::BindRepeating(&OpenscreenSessionHost::GetVideoNetworkBandwidth,
                             base::Unretained(this)));
+    RecordBandwidthMetrics();
     video_sender_ = std::move(video_sender);
     num_video_frames_dropped_ = 0;
+    usable_bandwidth_before_backoff_ = 0;
     refresh_interval_ = mirror_settings_.refresh_interval();
     expecting_a_refresh_frame_ = false;
     if (refresh_interval_.is_positive()) {
@@ -467,7 +535,10 @@ void OpenscreenSessionHost::OnNegotiated(
   }
 
   if (media_remoter_) {
-    media_remoter_->OnMirroringResumed(switching_tab_source_);
+    if (switching_tab_source_) {
+      media_remoter_->OnSourceChanged();
+    }
+    media_remoter_->OnReadyForRemoting();
   }
 
   switching_tab_source_ = false;
@@ -541,7 +612,8 @@ void OpenscreenSessionHost::OnError(
 
     case openscreen::Error::Code::kNoStreamSelected: {
       const bool should_send_fallback_offer =
-          state_ == State::kMirroring && !offering_fallback_codecs_ &&
+          pending_offer_mode_ == PendingOfferMode::kMirroring &&
+          !offering_fallback_codecs_ &&
           base::FeatureList::IsEnabled(
               mirroring::features::kCastStreamingOfferHardwareFirst);
       if (should_send_fallback_offer) {
@@ -563,7 +635,7 @@ void OpenscreenSessionHost::OnError(
     // remoting, report the error so that the session can fallback to
     // mirroring.
     case openscreen::Error::Code::kRemotingNotSupported:
-      if (state_ == State::kRemoting) {
+      if (pending_offer_mode_ == PendingOfferMode::kRemoting) {
         ReportAndLogError(SessionError::ANSWER_NOT_OK, error.ToString());
         return;
       }
@@ -683,31 +755,37 @@ void OpenscreenSessionHost::ConnectToRemotingSource(
                                               std::move(receiver));
 }
 
-void OpenscreenSessionHost::RequestRemotingStreaming() {
+void OpenscreenSessionHost::StartRemoting() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(media_remoter_);
   CHECK_EQ(State::kMirroring, state_);
-  StopStreaming();
-  state_ = State::kRemoting;
-  Negotiate();
+  NegotiateRemoting();
 }
 
-void OpenscreenSessionHost::RestartMirroringStreaming() {
+void OpenscreenSessionHost::StopRemoting(
+    media::mojom::RemotingStopReason reason) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (state_ != State::kRemoting) {
+  logger_.LogInfo(base::StrCat(
+      {"media remoter stopped remoting. reason=", base::ToString(reason)}));
+  if (state_ != State::kRemoting &&
+      pending_offer_mode_ != PendingOfferMode::kRemoting) {
     return;
   }
 
-  // Stop session instead of switching to mirroring when in Remote Playback
-  // mode.
-  if (session_params_.is_remote_playback) {
-    StopSession();
+  // A remoting OFFER that is in flight cannot be recalled. Keep mirroring and
+  // wait: OnNegotiated() or ReportAndLogError() finishes the cancellation when
+  // the receiver replies or the OFFER times out. Remote Playback has no
+  // mirroring to keep, so it does not wait.
+  if (pending_offer_mode_ == PendingOfferMode::kRemoting &&
+      !session_params_.is_remote_playback) {
+    remoting_offer_cancelled_ = true;
+    if (observer_) {
+      observer_->OnRemotingStateChanged(false);
+    }
     return;
   }
 
-  StopStreaming();
-  state_ = State::kMirroring;
-  Negotiate();
+  StopRemotingAndMaybeResumeMirroring();
 }
 
 std::unique_ptr<media::mojom::RemotingDataStreamSender>
@@ -740,10 +818,13 @@ void OpenscreenSessionHost::SwitchSourceTab() {
     observer_->OnSourceChanged();
   }
 
-  if (state_ == State::kRemoting) {
+  if (state_ == State::kRemoting ||
+      pending_offer_mode_ == PendingOfferMode::kRemoting) {
     switching_tab_source_ = true;
     video_capture_client_.reset();
-    media_remoter_->Stop(media::mojom::RemotingStopReason::LOCAL_PLAYBACK);
+    media_remoter_->OnRemotingStopped(
+        media::mojom::RemotingStopReason::LOCAL_PLAYBACK);
+    StopRemotingAndMaybeResumeMirroring();
     return;
   }
 
@@ -764,7 +845,7 @@ void OpenscreenSessionHost::SwitchSourceTab() {
   }
 
   if (media_remoter_) {
-    media_remoter_->OnMirroringResumed(true);
+    media_remoter_->OnSourceChanged();
   }
 }
 
@@ -781,7 +862,7 @@ void OpenscreenSessionHost::OnAsyncInitialized(
   CHECK_EQ(state_, State::kInitializing);
   state_ = State::kMirroring;
 
-  Negotiate();
+  NegotiateMirroring();
   if (!initialized_cb_.is_null()) {
     std::move(initialized_cb_).Run();
   }
@@ -794,9 +875,13 @@ void OpenscreenSessionHost::ReportAndLogError(SessionError error,
                                 error);
   logger_.LogError(error, message);
 
-  if (state_ == State::kRemoting && IsAnswerError(error)) {
-    // Try to fallback to mirroring.
-    media_remoter_->OnRemotingFailed();
+  // An ANSWER error can only belong to the OFFER that is in flight. If that is
+  // a remoting OFFER, the start of remoting failed. The remoter ignores the
+  // failure if the source already cancelled the start.
+  if (pending_offer_mode_ == PendingOfferMode::kRemoting &&
+      IsAnswerError(error)) {
+    media_remoter_->OnRemotingStartFailed();
+    StopRemotingAndMaybeResumeMirroring();
     return;
   }
 
@@ -837,6 +922,7 @@ void OpenscreenSessionHost::StopStreaming() {
   StopCapturingAudio();
   PauseCapturingVideo();
   audio_sender_.reset();
+  RecordBandwidthMetrics();
   video_sender_.reset();
   refresh_timer_.Stop();
   remoting_stream_data_.reset();
@@ -852,6 +938,8 @@ void OpenscreenSessionHost::StopSession() {
   }
 
   state_ = State::kStopped;
+  pending_offer_mode_ = PendingOfferMode::kNone;
+  remoting_offer_cancelled_ = false;
   offering_fallback_codecs_ = false;
   StopStreaming();
 
@@ -1065,10 +1153,18 @@ void OpenscreenSessionHost::UpdateBandwidthEstimate() {
 void OpenscreenSessionHost::UpdateBandwidthEstimate(
     const int bandwidth_estimate) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  const int current_frames_dropped =
-      video_sender_ ? video_sender_->GetFramesDropped() : 0;
-  const bool frames_dropped_since_last_update =
-      video_sender_ && (current_frames_dropped > num_video_frames_dropped_);
+  if (!video_sender_) {
+    return;
+  }
+  if (first_video_bandwidth_update_time_.is_null()) {
+    first_video_bandwidth_update_time_ = base::TimeTicks::Now();
+  }
+
+  const int current_frames_dropped = GetCongestionFrameDrops(*video_sender_);
+  // `current_frames_dropped` is cumulative for the lifetime of `video_sender_`,
+  // so `!is_congested` means zero frames were dropped since the last update.
+  CHECK_GE(current_frames_dropped, num_video_frames_dropped_);
+  const bool is_congested = current_frames_dropped > num_video_frames_dropped_;
   num_video_frames_dropped_ = current_frames_dropped;
 
   // Nothing to do yet.
@@ -1076,45 +1172,143 @@ void OpenscreenSessionHost::UpdateBandwidthEstimate(
     return;
   }
 
+  const BandwidthBackoffParams params = GetBandwidthBackoffParams();
+
   // Don't ever try to use *all* of the network bandwidth! However, don't go
   // below the absolute minimum requirement either.
-  constexpr double kGoodNetworkCitizenFactor = 0.8;
   const uint32_t usable_bandwidth = std::max<uint32_t>(
-      kGoodNetworkCitizenFactor * bandwidth_estimate, kMinRequiredBitrate);
+      params.good_network_citizen_factor * bandwidth_estimate,
+      kMinRequiredBitrate);
 
-  if (usable_bandwidth > usable_bandwidth_) {
-    constexpr double kConservativeIncrease = 1.1;
-    usable_bandwidth_ = std::min<uint32_t>(
-        usable_bandwidth_ * kConservativeIncrease, usable_bandwidth);
-  } else if (usable_bandwidth < usable_bandwidth_) {
-    if (!video_sender_ || frames_dropped_since_last_update) {
-      usable_bandwidth_ = usable_bandwidth;
-    }
+  const uint32_t prev_usable_bandwidth = usable_bandwidth_;
+  const bool was_recovering =
+      usable_bandwidth_ < usable_bandwidth_before_backoff_;
+  const bool gradual_backoff_enabled = base::FeatureList::IsEnabled(
+      features::kCastStreamingGradualBandwidthBackoff);
+  if (gradual_backoff_enabled) {
+    UpdateBandwidthGradualBackoff(is_congested, usable_bandwidth);
+  } else {
+    UpdateBandwidthLegacy(is_congested, usable_bandwidth);
   }
 
-  VLOG(2) << ": updated available bandwidth to " << usable_bandwidth_ << "/"
-          << bandwidth_estimate << " ("
-          << static_cast<int>(static_cast<float>(usable_bandwidth_) * 100 /
-                              bandwidth_estimate)
-          << "%).";
+  if (usable_bandwidth_ < prev_usable_bandwidth) {
+    ++num_bandwidth_reductions_;
+  }
+
+  if (VLOG_IS_ON(2)) {
+    const char* mode = "holding";
+    if (is_congested && usable_bandwidth_ <= prev_usable_bandwidth) {
+      mode = "backing off";
+    } else if (usable_bandwidth_ > prev_usable_bandwidth) {
+      mode = (gradual_backoff_enabled && was_recovering) ? "recovering"
+                                                         : "post-recovery";
+    }
+    const double factor =
+        prev_usable_bandwidth > 0
+            ? static_cast<double>(usable_bandwidth_) / prev_usable_bandwidth
+            : 1.0;
+
+    VLOG(2) << ": updated available bandwidth to " << usable_bandwidth_ << "/"
+            << bandwidth_estimate << " ("
+            << static_cast<int>(static_cast<float>(usable_bandwidth_) * 100 /
+                                bandwidth_estimate)
+            << "%, experiment="
+            << (gradual_backoff_enabled ? "GradualBandwidthBackoff" : "Legacy")
+            << ", mode=" << mode << ", factor=" << factor << ").";
+  }
 }
 
-void OpenscreenSessionHost::Negotiate() {
+void OpenscreenSessionHost::UpdateBandwidthLegacy(bool is_congested,
+                                                  uint32_t usable_bandwidth) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  switch (state_) {
-    case State::kMirroring:
-      NegotiateMirroring();
-      return;
+  const double conservative_increase =
+      std::clamp(features::kCastStreamingConservativeIncrease.Get(), 1.0, 4.0);
 
-    case State::kRemoting:
-      NegotiateRemoting();
-      return;
-
-    case State::kStopped:
-    case State::kInitializing:
-      return;
+  // Legacy behavior: increase conservatively, but snap straight down to the
+  // estimate when video frames are being dropped.
+  if (usable_bandwidth > usable_bandwidth_) {
+    usable_bandwidth_ = std::min<uint32_t>(
+        usable_bandwidth_ * conservative_increase, usable_bandwidth);
+  } else if (is_congested) {
+    CHECK_LE(usable_bandwidth, usable_bandwidth_);
+    usable_bandwidth_ = usable_bandwidth;
   }
-  NOTREACHED();
+  // Otherwise (`!is_congested && usable_bandwidth <= usable_bandwidth_`), leave
+  // `usable_bandwidth_` unchanged. Open Screen's bandwidth estimate is based on
+  // the current send rate, which drops during idle or static-screen periods
+  // even when the network is not congested. Without frame drops, a lower
+  // estimate does not indicate congestion and must not reduce the usable
+  // bandwidth.
+}
+
+void OpenscreenSessionHost::UpdateBandwidthGradualBackoff(
+    bool is_congested,
+    uint32_t usable_bandwidth) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const BandwidthBackoffParams params = GetBandwidthBackoffParams();
+
+  if (is_congested) {
+    // The bandwidth estimate is based on what is currently being sent, so a
+    // low estimate is not, on its own, evidence of congestion. For example,
+    // while the screen is static very little data is sent. Only reduce the
+    // usable bandwidth when video frames are being dropped.
+    //
+    // Back off multiplicatively, toward the estimate, rather than snapping to
+    // it: a single dropped frame should not discard most of the bandwidth.
+    // By default, each update reduces the usable bandwidth by between 15% and
+    // 50%.
+    const uint32_t backed_off_bandwidth = std::clamp<uint32_t>(
+        usable_bandwidth, usable_bandwidth_ * params.min_backoff_factor,
+        usable_bandwidth_ * params.max_backoff_factor);
+
+    // Remember the level that was in use before backing off, so it can be
+    // quickly recovered once the congestion clears. If congestion happens
+    // again while recovering, the previous level was not sustainable, so only
+    // recover up to the current level.
+    usable_bandwidth_before_backoff_ = usable_bandwidth_;
+    usable_bandwidth_ =
+        std::max<uint32_t>(backed_off_bandwidth, kMinRequiredBitrate);
+    CHECK_LE(usable_bandwidth_, usable_bandwidth_before_backoff_);
+  } else if (usable_bandwidth > usable_bandwidth_) {
+    // Quickly recover to the level that was in use before the last backoff,
+    // and then continue to increase conservatively.
+    const bool is_recovering =
+        usable_bandwidth_ < usable_bandwidth_before_backoff_;
+    uint32_t increased_bandwidth =
+        usable_bandwidth_ * (is_recovering ? params.fast_recovery_increase
+                                           : params.conservative_increase);
+    if (is_recovering) {
+      increased_bandwidth = std::min(
+          increased_bandwidth,
+          std::max<uint32_t>(usable_bandwidth_before_backoff_,
+                             usable_bandwidth_ * params.conservative_increase));
+    }
+    usable_bandwidth_ = std::min(increased_bandwidth, usable_bandwidth);
+  }
+  // Otherwise (`!is_congested && usable_bandwidth <= usable_bandwidth_`), leave
+  // `usable_bandwidth_` unchanged: without frame drops, a lower estimate (such
+  // as during a static screen when little data is sent) is not evidence of
+  // congestion.
+}
+
+void OpenscreenSessionHost::RecordBandwidthMetrics() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!first_video_bandwidth_update_time_.is_null()) {
+    const base::TimeDelta duration =
+        base::TimeTicks::Now() - first_video_bandwidth_update_time_;
+    // A rate over a short period is too noisy to be useful.
+    if (duration >= base::Minutes(1)) {
+      constexpr int kMaxReductionsPerMinute =
+          base::Minutes(1) / kBandwidthUpdateInterval;
+      base::UmaHistogramCustomCounts(
+          "CastStreaming.Sender.Video.BandwidthReductionsPerMinute",
+          base::ClampRound(num_bandwidth_reductions_ /
+                           (duration / base::Minutes(1))),
+          1, kMaxReductionsPerMinute + 1, 50);
+    }
+  }
+  first_video_bandwidth_update_time_ = base::TimeTicks();
+  num_bandwidth_reductions_ = 0;
 }
 
 void OpenscreenSessionHost::NegotiateMirroring() {
@@ -1177,6 +1371,7 @@ void OpenscreenSessionHost::NegotiateMirroring() {
   }
 
   CHECK(!audio_configs.empty() || !video_configs.empty());
+  pending_offer_mode_ = PendingOfferMode::kMirroring;
   session_->Negotiate(audio_configs, video_configs);
 
   if (observer_) {
@@ -1194,6 +1389,8 @@ void OpenscreenSessionHost::NegotiateRemoting() {
 
   last_offered_audio_config_ = audio_config;
   last_offered_video_configs_ = {video_config};
+  pending_offer_mode_ = PendingOfferMode::kRemoting;
+  remoting_offer_cancelled_ = false;
 
   session_->NegotiateRemoting(ToOpenscreenAudioConfig(audio_config),
                               ToOpenscreenVideoConfig(video_config));
@@ -1201,6 +1398,38 @@ void OpenscreenSessionHost::NegotiateRemoting() {
   if (observer_) {
     observer_->OnRemotingStateChanged(true);
   }
+}
+
+void OpenscreenSessionHost::StopRemotingAndMaybeResumeMirroring() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Only called while remoting or while a remoting OFFER is in flight.
+  CHECK(state_ == State::kRemoting ||
+        pending_offer_mode_ == PendingOfferMode::kRemoting);
+  pending_offer_mode_ = PendingOfferMode::kNone;
+  remoting_offer_cancelled_ = false;
+
+  // Stop session instead of switching to mirroring when in Remote Playback
+  // mode.
+  if (session_params_.is_remote_playback) {
+    StopSession();
+    return;
+  }
+
+  // If a remoting OFFER failed before OnNegotiated() transitioned `state_` to
+  // `kRemoting`, mirroring is still active as long as its senders were not
+  // torn down (e.g. by a tab switch or hardware encoder error).
+  if (state_ == State::kMirroring && !switching_tab_source_ &&
+      (audio_sender_ || video_sender_)) {
+    if (observer_) {
+      observer_->OnRemotingStateChanged(false);
+    }
+    media_remoter_->OnReadyForRemoting();
+    return;
+  }
+
+  StopStreaming();
+  state_ = State::kMirroring;
+  NegotiateMirroring();
 }
 
 void OpenscreenSessionHost::InitMediaRemoter(
@@ -1357,7 +1586,10 @@ void OpenscreenSessionHost::MaybeDenylistHardwareCodecAndRenegotiate(
   if (!media::cast::encoding_support::IsHardwareDenyListed(codec)) {
     media::cast::encoding_support::DenyListHardwareCodec(codec);
     StopStreaming();
-    Negotiate();
+    if (state_ == State::kMirroring &&
+        pending_offer_mode_ != PendingOfferMode::kRemoting) {
+      NegotiateMirroring();
+    }
     base::UmaHistogramEnumeration(
         "MediaRouter.MirroringService."
         "DisabledHardwareCodecAndRenegotiated",

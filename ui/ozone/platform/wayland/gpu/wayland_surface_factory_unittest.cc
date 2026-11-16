@@ -36,11 +36,13 @@
 #include "ui/gfx/native_pixmap.h"
 #include "ui/gfx/overlay_plane_data.h"
 #include "ui/gfx/overlay_priority_hint.h"
+#include "ui/gfx/vsync_provider.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/ozone/platform/wayland/gpu/gbm_pixmap_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/gbm_surfaceless_wayland.h"
 #include "ui/ozone/platform/wayland/gpu/wayland_buffer_manager_gpu.h"
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
+#include "ui/ozone/platform/wayland/host/wayland_frame_manager.h"
 #include "ui/ozone/platform/wayland/host/wayland_subsurface.h"
 #include "ui/ozone/platform/wayland/host/wayland_window.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
@@ -212,13 +214,14 @@ class WaylandSurfaceFactoryTest : public WaylandTest {
     WaylandTest::SetUp();
 
     auto manager_ptr = connection_->buffer_manager_host()->BindInterface();
-    buffer_manager_gpu_->Initialize(std::move(manager_ptr),
-                                    kSupportedFormatsWithModifiers,
-                                    /*supports_dma_buf=*/false,
-                                    /*supports_viewporter=*/true,
-                                    /*supports_acquire_fence=*/false,
-                                    /*supports_overlays=*/true,
-                                    /*supports_single_pixel_buffer=*/true);
+    buffer_manager_gpu_->Initialize(
+        std::move(manager_ptr), kSupportedFormatsWithModifiers,
+        ozone::mojom::WaylandBufferManagerCapabilities::New(
+            /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+            /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+            /*supports_single_pixel_buffer=*/true,
+            /*compositor_tone_maps_using_clli=*/false,
+            /*compositor_tone_maps_using_mdcv=*/false));
 
     // Wait until initialization and mojo calls go through.
     base::RunLoop().RunUntilIdle();
@@ -1304,6 +1307,88 @@ TEST_P(WaylandSurfaceFactoryTest, CanvasBufferSwapAck3) {
   }
 }
 
+// Verifies that WaylandCanvasSurface's VSyncProvider only updates its timebase
+// and interval from VSync-aligned presentation feedback, ignoring synthetic and
+// discarded feedback.
+TEST_P(WaylandSurfaceFactoryTest, CanvasVSyncProviderIgnoresNonVSyncFeedback) {
+  auto canvas = CreateCanvas(widget_);
+  ASSERT_TRUE(canvas);
+  auto vsync_provider = canvas->CreateVSyncProvider();
+  ASSERT_TRUE(vsync_provider);
+
+  const auto bounds_px = window_->GetBoundsInPixels();
+  canvas->ResizeCanvas(bounds_px.size(), 1.0f);
+
+  const uint32_t surface_id = window_->root_surface()->get_surface_id();
+
+  // Without wp_presentation, synthetic feedback is sent on submission. It is
+  // not VSync-aligned and must not populate VSyncProvider parameters.
+  ASSERT_FALSE(connection_->presentation());
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  base::TimeTicks timebase;
+  base::TimeDelta interval;
+  EXPECT_FALSE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+
+  // Enable wp_presentation and verify that a discarded feedback is also
+  // ignored, while a real presented feedback updates the VSync parameters.
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    ASSERT_TRUE(server->EnsureAndGetWpPresentation());
+  });
+  ASSERT_TRUE(connection_->presentation());
+
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+    server->EnsureAndGetWpPresentation()->SendPresentationCallbackDiscarded(
+        /*last=*/false);
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  EXPECT_FALSE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+
+  ASSERT_TRUE(canvas->GetCanvas());
+  canvas->PresentCanvas(gfx::Rect(bounds_px.size()));
+  canvas->OnSwapBuffers(base::DoNothing(), gfx::FrameData());
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  PostToServerAndWait([surface_id](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(surface_id);
+    mock_surface->ReleaseBuffer(mock_surface->attached_buffer());
+    mock_surface->SendFrameCallback();
+    server->EnsureAndGetWpPresentation()->SendPresentationCallback();
+  });
+  task_environment_.FastForwardBy(
+      WaylandFrameManager::GetPresentationFlushTimerDurationForTesting());
+
+  EXPECT_TRUE(
+      vsync_provider->GetVSyncParametersIfAvailable(&timebase, &interval));
+  EXPECT_FALSE(timebase.is_null());
+}
+
 TEST_P(WaylandSurfaceFactoryTest, CreateSurfaceCheckGbm) {
   gl::SetGLImplementation(gl::kGLImplementationEGLGLES2);
 
@@ -1472,6 +1557,74 @@ TEST_P(WaylandSurfaceFactoryTest, ConcurrentBufferIDAllocation) {
   ids.insert(delegate_b.ids().begin(), delegate_b.ids().end());
   EXPECT_EQ(ids.size(), delegate_a.ids().size() + delegate_b.ids().size());
   EXPECT_FALSE(ids.contains(0u));
+}
+
+// When the compositor advertises `DRM_FORMAT_MOD_INVALID` and allocation with
+// the advertised explicit modifiers fails, the buffer is allocated without
+// modifiers. If the driver then reports a modifier the compositor did not
+// advertise (e.g. `DRM_FORMAT_MOD_LINEAR` on virgl), the buffer must be
+// submitted with `DRM_FORMAT_MOD_INVALID` instead. Otherwise, the compositor
+// may reject the buffer.
+TEST_P(WaylandSurfaceFactoryTest, ImplicitModifierFallbackWlBufferModifier) {
+  gl::SetGLImplementation(gl::kGLImplementationEGLGLES2);
+
+  buffer_manager_gpu_->use_fake_gbm_device_for_test_ = true;
+  // MockGbmDevice fails to allocate with an explicit `DRM_FORMAT_MOD_INVALID`
+  // modifier, like Mesa, and allocations without modifiers report
+  // `DRM_FORMAT_MOD_LINEAR`.
+  buffer_manager_gpu_->gbm_device_ = std::make_unique<MockGbmDevice>();
+  buffer_manager_gpu_->supports_dmabuf_ = true;
+
+  auto* gl_ozone = surface_factory_->GetGLOzone(
+      gl::GLImplementationParts(gl::kGLImplementationEGLGLES2));
+  ASSERT_TRUE(gl_ozone);
+  auto presenter = gl_ozone->CreateSurfacelessViewGLSurface(
+      gl::GetDefaultDisplay(), widget_);
+  ASSERT_TRUE(presenter);
+
+  struct {
+    std::vector<uint64_t> advertised_modifiers;
+    uint64_t expected_modifier;
+  } const kTestCases[] = {
+      // Only implicit modifiers are advertised (e.g. Mir on virgl): the
+      // driver-reported `DRM_FORMAT_MOD_LINEAR` is not advertised.
+      {{DRM_FORMAT_MOD_INVALID}, DRM_FORMAT_MOD_INVALID},
+      // The driver-reported modifier is advertised, so it is sent as is.
+      {{DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_INVALID}, DRM_FORMAT_MOD_LINEAR},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(testing::Message()
+                 << "advertised modifiers: "
+                 << testing::PrintToString(test_case.advertised_modifiers));
+    buffer_manager_gpu_->supported_formats_with_modifiers_ = {
+        {viz::SinglePlaneFormat::kBGRA_8888, test_case.advertised_modifiers}};
+
+    auto native_pixmap = surface_factory()->CreateNativePixmap(
+        widget_, nullptr, window_->applied_state().size_px,
+        viz::SinglePlaneFormat::kBGRA_8888, gfx::BufferUsage::SCANOUT);
+    ASSERT_TRUE(native_pixmap);
+    // The buffer object was allocated without modifiers.
+    EXPECT_EQ(native_pixmap->GetFormatModifier(), DRM_FORMAT_MOD_LINEAR);
+
+    ScheduleOverlayPlane(presenter.get(), native_pixmap, /*z_order=*/INT32_MIN);
+
+    // Wait until the wl_buffer creation request reaches the server.
+    base::RunLoop().RunUntilIdle();
+
+    PostToServerAndWait([expected_modifier = test_case.expected_modifier](
+                            wl::TestWaylandServerThread* server) {
+      auto params_vector = server->zwp_linux_dmabuf_v1()->buffer_params();
+      ASSERT_FALSE(params_vector.empty());
+      wl::TestZwpLinuxBufferParamsV1* params = params_vector.back();
+      const uint64_t modifier =
+          (static_cast<uint64_t>(params->modifier_hi_) << 32) |
+          params->modifier_lo_;
+      EXPECT_EQ(modifier, expected_modifier);
+      zwp_linux_buffer_params_v1_send_created(params->resource(),
+                                              params->buffer_resource());
+    });
+  }
 }
 
 class WaylandSurfaceFactoryCompositorV3 : public WaylandSurfaceFactoryTest {};

@@ -160,6 +160,7 @@ source_set("impl") {
     "//chrome/browser/profiles:profile",
     "//chrome/browser/safe_browsing",
     "//chrome/browser/safe_browsing:advanced_protection",
+    "//chrome/browser/search",
     "//chrome/browser/signin",
     "//chrome/browser/sync",
     "//chrome/browser/sync:factories",
@@ -269,7 +270,10 @@ source_set("impl") {
     sources += [ "multi_profile_credentials_filter.cc" ]
   }
   if (!is_android) {
-    deps += [ "//chrome/browser/ui:browser_window_header" ]
+    deps += [
+      "//chrome/browser/ui:browser_window_header",
+      "//components/trusted_vault",
+    ]
   }
 }
 
@@ -365,6 +369,7 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/passwords",
       "//chrome/browser/ui/tabs:tab_enums",
+      "//chrome/test/base:ui_test_utils",
       "//components/autofill/core/browser:test_support",
       "//components/password_manager/core/browser:password_form",
       "//components/password_manager/core/browser:test_support",
@@ -417,7 +422,10 @@ source_set("unit_tests") {
     "//base",
     "//base:i18n",
     "//base/test:test_support",
+    "//chrome/browser/actor",
+    "//chrome/browser/actor:test_support",
     "//chrome/browser/critical_actions",
+    "//chrome/browser/enterprise/connectors/reporting",
     "//chrome/browser/optimization_guide",
     "//chrome/browser/optimization_guide:test_support",
     "//chrome/browser/password_manager",
@@ -434,6 +442,7 @@ source_set("unit_tests") {
     "//chrome/test:test_support",
     "//chrome/test/base:chrome_render_view_host_test_harness",
     "//chrome/test/base:testing_browser_process",
+    "//components/actor/core",
     "//components/affiliations/core/browser:test_support",
     "//components/autofill/content/browser",
     "//components/autofill/content/browser:test_support",
@@ -446,6 +455,9 @@ source_set("unit_tests") {
     "//components/critical_actions/core/browser",
     "//components/device_reauth",
     "//components/device_reauth:test_support",
+    "//components/enterprise/buildflags",
+    "//components/enterprise/common/proto:browser_events_proto",
+    "//components/enterprise/connectors/core",
     "//components/metrics",
     "//components/metrics:test_support",
     "//components/optimization_guide/core:features",
@@ -466,6 +478,7 @@ source_set("unit_tests") {
     "//components/sync:test_support",
     "//components/sync/base",
     "//components/sync_preferences:test_support",
+    "//components/tabs:test_support",
     "//components/variations",
     "//components/variations:test_support",
     "//components/variations/service",
@@ -502,7 +515,6 @@ source_set("unit_tests") {
       "password_manager_critical_action_logger_unittest.cc",
     ]
     deps += [
-      "//chrome/browser/actor:test_support",
       "//chrome/browser/affiliations",
       "//chrome/browser/extensions:test_support",
       "//chrome/browser/glic/test_support",
@@ -511,14 +523,12 @@ source_set("unit_tests") {
       "//chrome/browser/signin:test_support",
       "//chrome/browser/ui/hats",
       "//chrome/browser/ui/hats:test_support",
-      "//chrome/browser/ui/passwords:impl",
-      "//chrome/browser/ui/passwords:test_support_ui",
       "//components/optimization_guide/core",
       "//components/optimization_guide/core:model_execution_test_support",
       "//components/password_manager/core/browser/actor_login:actor_login_service_impl",
       "//components/safe_browsing/core/common:safe_browsing_prefs",
       "//components/signin/public/identity_manager:test_support",
-      "//components/tabs:test_support",
+      "//components/trusted_vault",
       "//components/ukm:test_support",
       "//services/metrics/public/cpp:metrics_cpp",
       "//services/network:test_support",
@@ -577,7 +587,6 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/login",
       "//chrome/browser/ui/passwords",
-      "//chrome/browser/ui/passwords:impl",
       "//chrome/browser/ui/passwords/bubble_controllers",
       "//chrome/browser/ui/tabs:tab_enums",
       "//chrome/browser/ui/tabs:tab_strip",
@@ -612,6 +621,7 @@ if (!is_android) {
       "//components/signin/public/identity_manager:test_support",
       "//components/sync:test_support",
       "//components/tabs:public",
+      "//components/trusted_vault",
       "//content/public/browser",
       "//content/public/common",
       "//content/test:browsertest_support",
@@ -665,6 +675,7 @@ if (!is_android) {
         "//chrome/test:test_support",
         "//chrome/test/user_education:impl",
         "//components/autofill/content/browser",
+        "//components/autofill/content/browser:test_support",
         "//components/autofill/core/browser:test_support",
         "//components/autofill/core/common",
         "//components/autofill/core/common:features",
@@ -692,9 +703,13 @@ if (!is_android) {
       if (!is_chromeos) {
         sources += [ "web_app_profile_switcher_interactive_uitest.cc" ]
         deps += [
+          "//chrome/browser/ui/profiles",
           "//chrome/browser/ui/web_applications",
+          "//chrome/browser/ui/web_applications:test_support",
+          "//chrome/browser/ui/web_applications/test:test_support_ui",
           "//chrome/browser/web_applications",
           "//chrome/browser/web_applications:web_applications_test_support",
+          "//chrome/test/base:chrome_test_utils",
         ]
       }
     }
@@ -717,6 +732,7 @@ if (!is_android) {
       "//chrome/browser/password_manager",
       "//chrome/browser/password_manager:impl",
       "//chrome/browser/password_manager/factories",
+      "//chrome/browser/password_manager/password_change",
       "//chrome/browser/sync:factories",
       "//chrome/browser/ui:tab_dialogs",
       "//chrome/browser/ui/passwords",
@@ -729,6 +745,7 @@ if (!is_android) {
       "//components/password_manager/core/common:features",
       "//components/safe_browsing/core/common:safe_browsing_prefs",
       "//components/sync:test_support",
+      "//components/tabs:public",
       "//content/test:test_support",
       "//net:test_support",
       "//testing/gmock",

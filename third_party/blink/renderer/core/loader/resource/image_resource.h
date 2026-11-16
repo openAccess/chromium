@@ -92,6 +92,7 @@ class CORE_EXPORT ImageResource final
   bool CanUseCacheValidator() const override;
 
   scoped_refptr<const SharedBuffer> ResourceBuffer() const override;
+  bool HasResourceBuffer() const override;
   void NotifyStartLoad() override;
   void ResponseReceived(const ResourceResponse&) override;
   void AppendData(
@@ -105,8 +106,7 @@ class CORE_EXPORT ImageResource final
   bool ShouldIgnoreHTTPStatusCodeErrors() const override { return true; }
 
   void UpdateResourceInfoFromObservers() override;
-  std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
-  PriorityFromObservers() const override;
+  std::optional<ResourcePriority> PriorityFromObservers() const override;
   bool IsAboveSpeculativeDecodeSizeThreshold() const override;
 
   // MultipartImageResourceParser::Client

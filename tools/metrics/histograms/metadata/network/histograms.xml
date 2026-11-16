@@ -2048,7 +2048,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.DnsProxy.{ProcessType}.Event"
-    enum="DnsProxy.ProcessEvent" expires_after="2027-03-07">
+    enum="DnsProxy.ProcessEvent" expires_after="2027-05-09">
   <owner>garrick@chromium.org</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -2163,11 +2163,15 @@ chromium-metrics-reviews@google.com.
 
     Logged each time the Sec-GPC header is attached to an outgoing request,
     during request finalization. Subsampled to one out of one thousand times.
+    For `Prefetch`, this is logged during prefetch header preparation (including
+    for decoy prefetches and `PrePrefetch` header pre-calculations that may not
+    result in a network request), and a served prefetch will also record
+    `FrameNavigation` upon navigation.
   </summary>
 </histogram>
 
 <histogram name="Network.Mdns.{ServiceType}" enum="MdnsQueryType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>nmuggli@google.com</owner>
   <owner>project-bolton@google.com</owner>
   <summary>
@@ -2485,7 +2489,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Network.SharedDictionary.CreateBrotliSourceStreamWithDictionary"
-    units="microseconds" expires_after="2027-03-07">
+    units="microseconds" expires_after="2027-05-09">
   <owner>pmeenan@chromium.org</owner>
   <owner>blink-network-stack@google.com</owner>
   <summary>
@@ -2902,7 +2906,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.Eap.EventCaCertExperiment2"
-    enum="NetworkEapConnectionEvent" expires_after="2027-03-07">
+    enum="NetworkEapConnectionEvent" expires_after="2027-05-09">
   <owner>olsa@google.com</owner>
   <owner>chromeos-commercial-networking@google.com</owner>
   <summary>
@@ -3129,7 +3133,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Network.Shill.PortalDetector.AttemptsToRedirectFound.{Technology}"
-    units="attempts" expires_after="2027-03-07">
+    units="attempts" expires_after="2027-05-09">
   <owner>hugobenichi@chromium.org</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -3254,7 +3258,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.PortalDetector.InitialResult.{Technology}"
-    enum="PortalDetectorResult" expires_after="2027-03-07">
+    enum="PortalDetectorResult" expires_after="2027-05-09">
   <owner>hugobenichi@chromium.org</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -3320,7 +3324,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.PortalDetector.{Transition}.{Technology}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>hugobenichi@google.com</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -3355,7 +3359,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.Vpn.Driver" enum="VPNDriver"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>jiejiang@chromium.org</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -4906,7 +4910,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.{Technology}.DHCPv4ProvisionDurationMillis"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>jiejiang@chromium.org</owner>
   <owner>cros-device-enablement@google.com</owner>
   <owner>cros-network-metrics@google.com</owner>
@@ -4920,7 +4924,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.{Technology}.DHCPv4RenewRebind"
-    enum="DHCPv4RenewRebind" expires_after="2027-03-07">
+    enum="DHCPv4RenewRebind" expires_after="2027-05-09">
   <owner>chenzikai@google.com</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -4932,7 +4936,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Network.Shill.{Technology}.IPType" enum="NetworkIPType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>jiejiang@chromium.org</owner>
   <owner>cros-device-enablement@google.com</owner>
   <owner>cros-network-metrics@google.com</owner>
@@ -4962,7 +4966,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Network.Shill.{Technology}.{DHCPProvisionReason}.DHCPv4ProvisionResult"
-    enum="DHCPv4ProvisionResult" expires_after="2027-03-07">
+    enum="DHCPv4ProvisionResult" expires_after="2027-05-09">
   <owner>chenzikai@google.com</owner>
   <owner>cros-network-metrics@google.com</owner>
   <summary>
@@ -5137,20 +5141,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="NetworkService.CorsPreflightMethodAllowed"
-    enum="NetworkServiceCorsPreflightMethodAllowed" expires_after="2023-06-18">
-  <owner>hiroshige@chromium.org</owner>
-  <owner>toyoshim@chromium.org</owner>
-  <summary>
-    Whether method or normalized method are allowed in CORS preflight request in
-    PreflightResult::EnsureAllowedCrossOriginMethod(), to measure the impact of
-    https://crbug.com/1228178.
-
-    Logged for preflight requests that have method checked (i.e. those without
-    errors before EnsureAllowedCrossOriginMethod).
-  </summary>
-</histogram>
-
 <histogram
     name="NetworkService.CorsURLLoaderFactory.CreateLoaderAndStart2.Duration"
     units="microseconds" expires_after="2027-03-28">
@@ -5311,10 +5301,21 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
+<histogram name="NetworkService.Scheduler.IOThread.NumberOfPendingTasks.Total"
+    units="count" expires_after="2027-03-14">
+  <owner>yoichio@chromium.org</owner>
+  <owner>net-dev@chromium.org</owner>
+  <summary>
+    Records the total number of pending tasks across all queues of
+    NetworkServiceScheduler. Recorded with 0.001 probability when a task
+    scheduled on the IO thread starts.
+  </summary>
+</histogram>
+
 <histogram
     name="NetworkService.Scheduler.IOThread.NumberOfPendingTasks.{QueueName}Queue"
     units="count" expires_after="2027-03-14">
-  <owner>bashi@chromium.org</owner>
+  <owner>yoichio@chromium.org</owner>
   <owner>net-dev@chromium.org</owner>
   <summary>
     Records the number of pending tasks in {QueueName}Queue of
@@ -5327,7 +5328,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="NetworkService.Scheduler.IOThread.QueuingTime.{QueueName}Queue"
     units="ms" expires_after="2027-03-14">
-  <owner>bashi@chromium.org</owner>
+  <owner>yoichio@chromium.org</owner>
   <owner>net-dev@chromium.org</owner>
   <summary>
     Records the queuing time (from post to start processing) of a task posted to
@@ -5339,7 +5340,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NetworkService.Scheduler.IOThread.TaskOffCpuDuration"
     units="ms" expires_after="2027-12-01">
-  <owner>bashi@chromium.org</owner>
+  <owner>yoichio@chromium.org</owner>
   <owner>net-dev@chromium.org</owner>
   <summary>
     Records the duration spent off-CPU by tasks running on the Network Service
@@ -5350,7 +5351,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NetworkService.Scheduler.IOThread.TaskOnCpuDuration"
     units="ms" expires_after="2027-12-01">
-  <owner>bashi@chromium.org</owner>
+  <owner>yoichio@chromium.org</owner>
   <owner>net-dev@chromium.org</owner>
   <summary>
     Records the duration spent on-CPU by tasks running on the Network Service IO
@@ -5361,7 +5362,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NetworkService.Scheduler.IOThread.TaskOnCpuPercentage"
     units="%" expires_after="2027-12-01">
-  <owner>bashi@chromium.org</owner>
+  <owner>yoichio@chromium.org</owner>
   <owner>net-dev@chromium.org</owner>
   <summary>
     Records the percentage of wall time spent on-CPU by tasks running on the

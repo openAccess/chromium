@@ -17,7 +17,7 @@ BASE_FEATURE(kOnDeviceModelConversationBackend,
 
 BASE_FEATURE(kOnDeviceModelGpuProgramCache, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kOnDeviceModelGpuWeightCache, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kOnDeviceModelGpuWeightCache, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kOnDeviceModelSpeculativeDecoding,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -39,5 +39,35 @@ const base::FeatureParam<int> kOnDeviceModelAsrInterimReleaseSilenceMs{
 
 const base::FeatureParam<int> kOnDeviceModelAsrInterimStabilitySteps{
     &kOnDeviceModelAsrTokenStability, "interim_stability_steps", 0};
+
+BASE_FEATURE(kOnDeviceModelAsrSpeculativeDecoding,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<bool> kOnDeviceModelAsrEnableDraftVerification{
+    &kOnDeviceModelAsrSpeculativeDecoding, "enable_draft_verification", true};
+
+const base::FeatureParam<int> kOnDeviceModelAsrInterimDecoderPrefillBackoff{
+    &kOnDeviceModelAsrSpeculativeDecoding, "decoder_prefill_backoff", -1};
+
+const base::FeatureParam<int> kOnDeviceModelAsrFinalDecoderPrefillBackoff{
+    &kOnDeviceModelAsrSpeculativeDecoding, "final_decoder_prefill_backoff", -2};
+
+BASE_FEATURE(kTextSafetyScanLanguageDetection,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelPerformanceParams, base::FEATURE_ENABLED_BY_DEFAULT);
+
+const base::FeatureParam<std::string> kPerformanceClassListForOnDeviceModel{
+    &kOnDeviceModelPerformanceParams,
+    "compatible_on_device_performance_classes", "3,4,5,6"};
+
+const base::FeatureParam<std::string>
+    kLowTierPerformanceClassListForOnDeviceModel{
+        &kOnDeviceModelPerformanceParams,
+        "compatible_low_tier_on_device_performance_classes", "3,4"};
+
+const base::FeatureParam<std::string> kPerformanceClassListForImageInput{
+    &kOnDeviceModelPerformanceParams,
+    "compatible_on_device_performance_classes_image_input", "3,4,5,6"};
 
 }  // namespace on_device_model::features

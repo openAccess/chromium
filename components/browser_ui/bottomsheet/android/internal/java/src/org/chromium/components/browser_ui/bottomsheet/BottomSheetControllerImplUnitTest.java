@@ -111,6 +111,8 @@ public class BottomSheetControllerImplUnitTest {
                         mInsetObserver,
                         /* enableLargeFormFactorUi= */ false);
         mController.setBottomSheetForTesting(mBottomSheet);
+        when(mSheetContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
+        when(mOtherSheetContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
     }
 
     @Test
@@ -207,6 +209,23 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    public void testTopInsetChanged_SheetInitialized() {
+        mController.runSheetInitializerForTesting();
+
+        mController.onTopInsetChanged(50);
+        verify(mBottomSheet).onTopInsetChanged(50);
+    }
+
+    @Test
+    public void testTopInsetChanged_NoInsetChange() {
+        mController.runSheetInitializerForTesting();
+
+        mController.onTopInsetChanged(50);
+        mController.onTopInsetChanged(50);
+        verify(mBottomSheet).onTopInsetChanged(50);
+    }
+
+    @Test
     public void testScrimZOrdering() {
         mController.runSheetInitializerForTesting();
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
@@ -290,6 +309,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.setBottomControlsOffset(100);
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        doReturn(new BottomSheetType.Builder().build()).when(content).getSheetType();
         doReturn(true).when(content).coversBottomControls();
         doReturn(ObservableSuppliers.alwaysFalse())
                 .when(content)
@@ -367,6 +387,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_currentLow_newHigh_canBeSuppressed_returnsFalse() {
         mController.runSheetInitializerForTesting();
 
@@ -388,6 +409,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_currentLow_newHigh_canBeSuppressed_returnsTrue() {
         mController.runSheetInitializerForTesting();
 
@@ -409,6 +431,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_currentHigh_newLow_canBeSuppressed_returnsTrue() {
         mController.runSheetInitializerForTesting();
 
@@ -430,6 +453,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_currentHigh_newHigh_canBeSuppressed_returnsTrue() {
         mController.runSheetInitializerForTesting();
 
@@ -451,6 +475,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_newCobrowse_closesCurrentSheet() {
         mController.runSheetInitializerForTesting();
 
@@ -471,6 +496,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testRequestShowContent_newCobrowse_alreadySuppressed_clearsContent() {
         mController.runSheetInitializerForTesting();
 
@@ -491,6 +517,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testCobrowseSuppressionAndReturn() {
         mController.runSheetInitializerForTesting();
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
@@ -534,6 +561,129 @@ public class BottomSheetControllerImplUnitTest {
 
         // 5. Verify COBROWSE content returns.
         verify(mBottomSheet, times(2)).showContent(cobrowseContent);
+    }
+
+    @Test
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testRequestShowContent_BottomSheetTypes_cannotSupersede_returnsFalse() {
+        mController.runSheetInitializerForTesting();
+
+        BottomSheetContent newContent = mock(BottomSheetContent.class);
+        when(newContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(false).build());
+        BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(true).build());
+        when(currentContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        when(mBottomSheet.getCurrentSheetContent()).thenReturn(currentContent);
+        when(mBottomSheet.isSheetOpen()).thenReturn(true);
+
+        boolean result = mController.requestShowContent(newContent, /* animate= */ true);
+
+        assertFalse("Request should return false as incoming content cannot supersede", result);
+        verify(mBottomSheet, times(0)).setSheetState(SheetState.HIDDEN, true);
+    }
+
+    @Test
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testRequestShowContent_BottomSheetTypes_canSupersede_returnsTrue() {
+        mController.runSheetInitializerForTesting();
+
+        BottomSheetContent newContent = mock(BottomSheetContent.class);
+        when(newContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(true).build());
+        BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(false).build());
+        when(currentContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        when(mBottomSheet.getCurrentSheetContent()).thenReturn(currentContent);
+        when(mBottomSheet.isSheetOpen()).thenReturn(true);
+
+        boolean result = mController.requestShowContent(newContent, /* animate= */ true);
+
+        assertTrue("Request should return true as incoming content can supersede", result);
+        verify(mBottomSheet).setSheetState(SheetState.HIDDEN, true);
+    }
+
+    @Test
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testRequestShowContent_BottomSheetTypes_alreadySuppressed_clearsContent() {
+        mController.runSheetInitializerForTesting();
+
+        BottomSheetContent newContent = mock(BottomSheetContent.class);
+        when(newContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(true).build());
+        BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(false).build());
+        when(currentContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        when(mBottomSheet.getCurrentSheetContent()).thenReturn(currentContent);
+
+        // Suppress the sheet
+        mController.suppressSheet(StateChangeReason.NONE);
+
+        boolean result = mController.requestShowContent(newContent, /* animate= */ true);
+
+        assertFalse("Request should return false as sheet is suppressed", result);
+        verify(mBottomSheet).showContent(null);
+    }
+
+    @Test
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testPersistentSheetSuppressionAndReturn_BottomSheetTypes() {
+        mController.runSheetInitializerForTesting();
+        verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
+        when(mBottomSheet.getOpeningState()).thenReturn(BottomSheetController.SheetState.PEEK);
+
+        BottomSheetContent persistentContent = mock(BottomSheetContent.class);
+        when(persistentContent.getSheetType())
+                .thenReturn(
+                        new BottomSheetType.Builder()
+                                .setPersistent(true)
+                                .setSuppressible(true)
+                                .build());
+        when(persistentContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        BottomSheetContent userInitiatedContent = mock(BottomSheetContent.class);
+        when(userInitiatedContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(true).build());
+        when(userInitiatedContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        // 1. Show persistent content.
+        mController.requestShowContent(persistentContent, /* animate= */ true);
+        verify(mBottomSheet).showContent(persistentContent);
+        when(mBottomSheet.getCurrentSheetContent()).thenReturn(persistentContent);
+
+        // 2. Request to show user-initiated content.
+        mController.requestShowContent(userInitiatedContent, /* animate= */ true);
+
+        // Verify it hides the current sheet (persistent) to swap.
+        verify(mBottomSheet).setSheetState(SheetState.HIDDEN, true);
+
+        // Simulate sheet going to HIDDEN state.
+        when(mBottomSheet.getSheetState()).thenReturn(SheetState.HIDDEN);
+        simulateSheetHidden(StateChangeReason.NONE);
+
+        // 3. Verify user-initiated content is shown.
+        verify(mBottomSheet).showContent(userInitiatedContent);
+        when(mBottomSheet.getCurrentSheetContent()).thenReturn(userInitiatedContent);
+
+        // 4. Dismiss user-initiated content.
+        mBottomSheetObserverCaptor.getValue().onSheetClosed(StateChangeReason.BACK_PRESS);
+
+        // Simulate sheet going to HIDDEN state again after dismissal.
+        simulateSheetHidden(StateChangeReason.NONE);
+
+        // 5. Verify persistent content returns.
+        verify(mBottomSheet, times(2)).showContent(persistentContent);
     }
 
     @Test
@@ -658,6 +808,7 @@ public class BottomSheetControllerImplUnitTest {
         when(mBottomSheet.getSheetState()).thenReturn(SheetState.HIDDEN);
 
         BottomSheetContent nextContent = mock(BottomSheetContent.class);
+        when(nextContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(nextContent.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         assertFalse(mController.requestShowContent(nextContent, /* animate= */ true));
@@ -688,6 +839,8 @@ public class BottomSheetControllerImplUnitTest {
 
         BottomSheetContent currentContent = mock(BottomSheetContent.class);
         BottomSheetContent nextContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
+        when(nextContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(currentContent.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(nextContent.getBackPressStateChangedSupplier())
@@ -728,6 +881,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.shouldRestoreStateOnUnsuppress()).thenReturn(true);
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
@@ -750,6 +904,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.shouldRestoreStateOnUnsuppress()).thenReturn(false);
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
@@ -800,6 +955,7 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testCustomScrimLifecycleBehavior() {
         mController.runSheetInitializerForTesting();
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
@@ -822,10 +978,36 @@ public class BottomSheetControllerImplUnitTest {
     }
 
     @Test
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testNonModalSheetBehavior() {
+        mController.runSheetInitializerForTesting();
+        verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
+        doReturn(true).when(mBottomSheet).isSheetOpen();
+
+        // 1. Mock the current sheet content to be non-modal.
+        doReturn(new BottomSheetType.Builder().setModal(false).build())
+                .when(mSheetContent)
+                .getSheetType();
+        doReturn(mSheetContent).when(mBottomSheet).getCurrentSheetContent();
+        when(mSheetContent.getBackPressStateChangedSupplier())
+                .thenReturn(ObservableSuppliers.alwaysFalse());
+
+        // 2. Simulate bottom sheet opening.
+        mBottomSheetObserverCaptor.getValue().onSheetOpened(StateChangeReason.NONE);
+
+        // 3. Verify that showScrim was NOT called on ScrimManager.
+        verify(mScrimManager, never()).showScrim(any());
+
+        // 4. Verify that Z-elevation remains 0.0f (not elevated to 1.0f automatically).
+        assertEquals(0.0f, mRoot.getZ(), 0f);
+    }
+
+    @Test
     public void testSuppressSheet_doesNotCaptureIfTargetStateIsHidden() {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(currentContent.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
 
@@ -845,8 +1027,12 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent newContent = mock(BottomSheetContent.class);
+        when(newContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setUserInitiated(true).build());
         when(newContent.getPriority()).thenReturn(BottomSheetContent.ContentPriority.HIGH);
         BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setSuppressible(true).build());
         when(currentContent.getPriority()).thenReturn(BottomSheetContent.ContentPriority.LOW);
         when(currentContent.canBeSuppressed(newContent)).thenReturn(true);
         when(currentContent.getBackPressStateChangedSupplier())
@@ -872,6 +1058,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent currentContent = mock(BottomSheetContent.class);
+        when(currentContent.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(currentContent.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
 
@@ -890,6 +1077,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(mBottomSheet.getSheetState()).thenReturn(SheetState.HIDDEN);
@@ -911,6 +1099,7 @@ public class BottomSheetControllerImplUnitTest {
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(mBottomSheet.getCurrentSheetContent()).thenReturn(content);
@@ -942,6 +1131,7 @@ public class BottomSheetControllerImplUnitTest {
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(mBottomSheet.getCurrentSheetContent()).thenReturn(content);
@@ -1294,6 +1484,8 @@ public class BottomSheetControllerImplUnitTest {
         BottomSheetContent next = showContentAndQueueNextContent();
         // Make the queued content able to supersede the current one, so that closing the sheet
         // would normally queue the current content again.
+        when(mSheetContent.getSheetType())
+                .thenReturn(new BottomSheetType.Builder().setSuppressible(true).build());
         when(mSheetContent.getPriority()).thenReturn(BottomSheetContent.ContentPriority.LOW);
         when(mBottomSheet.getSheetState()).thenReturn(SheetState.FULL);
 
@@ -1356,6 +1548,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysTrue());
         when(mBottomSheet.getCurrentSheetContent()).thenReturn(content);
@@ -1377,6 +1570,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(mBottomSheet.getCurrentSheetContent()).thenReturn(content);
@@ -1413,6 +1607,7 @@ public class BottomSheetControllerImplUnitTest {
         assertFalse("Initially false before any content is shown", backPressSupplier.get());
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(content.shouldRestoreStateOnUnsuppress()).thenReturn(true);
@@ -1448,6 +1643,7 @@ public class BottomSheetControllerImplUnitTest {
         verify(mBottomSheet).addObserver(mBottomSheetObserverCaptor.capture());
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.shouldRestoreStateOnUnsuppress()).thenReturn(true);
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
@@ -1493,6 +1689,7 @@ public class BottomSheetControllerImplUnitTest {
         mController.runSheetInitializerForTesting();
 
         BottomSheetContent content = mock(BottomSheetContent.class);
+        when(content.getSheetType()).thenReturn(new BottomSheetType.Builder().build());
         when(content.getBackPressStateChangedSupplier())
                 .thenReturn(ObservableSuppliers.alwaysFalse());
         when(mBottomSheet.getCurrentSheetContent()).thenReturn(content);

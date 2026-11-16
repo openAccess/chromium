@@ -24,7 +24,6 @@ import android.widget.FrameLayout;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -37,7 +36,6 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
@@ -46,14 +44,12 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.offlinepages.OfflinePageItem;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
-import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegate;
 import org.chromium.chrome.browser.suggestions.SuggestionsUiDelegateImpl;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
@@ -80,7 +76,6 @@ import java.util.concurrent.TimeoutException;
 /** Instrumentation tests for the {@link MostVisitedTilesLayout} on the New Tab Page. */
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @DoNotBatch(reason = "AI automated batching was unsuccessful.")
 public class MostVisitedTilesLayoutTest {
 
@@ -123,6 +118,7 @@ public class MostVisitedTilesLayoutTest {
     private final CallbackHelper mLoadCompleteHelper = new CallbackHelper();
     private MostVisitedTilesCoordinator mCoordinator;
     private TileGroup.Delegate mTileGroupDelegate;
+    private SuggestionsUiDelegateImpl mSuggestionsUiDelegate;
 
     @BeforeClass
     public static void setUpBeforeActivityLaunched() {
@@ -133,11 +129,6 @@ public class MostVisitedTilesLayoutTest {
     public void setupNightMode(boolean nightModeEnabled) {
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(nightModeEnabled);
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
-    }
-
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ChromeNightModeTestUtils.tearDownNightModeAfterChromeActivityDestroyed();
     }
 
     @After
@@ -152,9 +143,10 @@ public class MostVisitedTilesLayoutTest {
             ThreadUtils.runOnUiThreadBlocking(() -> mTileGroupDelegate.destroy());
             mTileGroupDelegate = null;
         }
-        // Since renderTiles() calls setContentView() on the Activity, the clean up causes an
-        // exception.
-        mActivityTestRule.skipWindowAndTabStateCleanup();
+        if (mSuggestionsUiDelegate != null) {
+            ThreadUtils.runOnUiThreadBlocking(() -> mSuggestionsUiDelegate.onDestroy());
+            mSuggestionsUiDelegate = null;
+        }
     }
 
     @Test
@@ -301,7 +293,14 @@ public class MostVisitedTilesLayoutTest {
         return ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     setOfflinePageBridge(offlineUrls);
-                    activity.setContentView(contentView);
+                    // Overlay the content instead of replacing it with setContentView(), which
+                    // would break the hub when the test rule closes the tabs during cleanup.
+                    ViewGroup activityContent = activity.findViewById(android.R.id.content);
+                    activityContent.addView(
+                            contentView,
+                            new FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT));
                     ViewGroup containerLayout =
                             (ViewGroup)
                                     LayoutInflater.from(contentView.getContext())
@@ -340,7 +339,7 @@ public class MostVisitedTilesLayoutTest {
 
         // TODO (https://crbug.com/40680929):  Add incognito mode tests.
         Profile profile = ProfileManager.getLastUsedRegularProfile();
-        SuggestionsUiDelegate uiDelegate =
+        mSuggestionsUiDelegate =
                 new SuggestionsUiDelegateImpl(null, profile, null, activity.getSnackbarManager());
 
         mTileGroupDelegate =
@@ -360,6 +359,7 @@ public class MostVisitedTilesLayoutTest {
                         new UiConfig(containerLayout),
                         null,
                         null);
-        mCoordinator.initWithNative(profile, uiDelegate, mTileGroupDelegate, mTouchEnabledDelegate);
+        mCoordinator.initWithNative(
+                profile, mSuggestionsUiDelegate, mTileGroupDelegate, mTouchEnabledDelegate);
     }
 }

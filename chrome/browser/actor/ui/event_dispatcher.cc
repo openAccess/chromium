@@ -141,6 +141,7 @@ constexpr absl::Overload PreToolEventsFn{
     NoUiEvents<AttemptFormFillingToolRequest>,
     NoUiEvents<AttemptOtpFillingToolRequest>,
     NoUiEvents<ChangePasswordToolRequest>,
+    NoUiEvents<ExecuteJsToolRequest>,
     NoUiEvents<ScriptToolRequest>,
     NoUiEvents<ScrollToToolRequest>};
 
@@ -159,6 +160,7 @@ constexpr absl::Overload PostToolEventsFn{
     NoUiEvents<ExitFullscreenToolRequest>,
     NoUiEvents<FileUploadToolRequest>,
     NoUiEvents<FindAndHighlightToolRequest>,
+    NoUiEvents<ExecuteJsToolRequest>,
     NoUiEvents<HistoryBackToolRequest>,
     NoUiEvents<HistoryForwardToolRequest>,
 #if !BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
@@ -218,6 +220,9 @@ constexpr absl::Overload ActorTaskSyncChangeFn{
     [](const UiEventDispatcher::UpdateTaskStepProgress& c) {
       return EventSequence<SyncUiEvent>{
           TaskStepProgressUpdated(c.task_id, c.step_progress)};
+    },
+    [](const UiEventDispatcher::ActRequested& c) {
+      return EventSequence<SyncUiEvent>{TaskActRequested(c.task_id)};
     },
 };
 
@@ -303,6 +308,10 @@ struct InputTraits<UiEventDispatcher::ActorTaskSyncChange> {
               return absl::StrFormat(
                   "UpdateTaskStepProgress task_id=%d step_progress=%s",
                   c.task_id.GetUnsafeValue(), c.step_progress);
+            },
+            [](const UiEventDispatcher::ActRequested& c) {
+              return absl::StrFormat("ActRequested task_id=%d",
+                                     c.task_id.GetUnsafeValue());
             }};
         return std::visit(DebugFn, change);
       };

@@ -7,10 +7,13 @@
 
 #include <jni.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "base/android/scoped_java_ref.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_connection.h"
 
 namespace base {
 class FilePath;
@@ -18,13 +21,16 @@ class FilePath;
 
 namespace cronet {
 
+class CallbackConnectionListener;
 struct NativeTestServerServerCertificateConfig;
 class NativeTestServerHandleRequestCallback;
 
 class EmbeddedTestServerAdapter {
  public:
-  EmbeddedTestServerAdapter(const base::FilePath& test_files_root,
-                            net::EmbeddedTestServer::Type server_type);
+  EmbeddedTestServerAdapter(
+      const base::FilePath& test_files_root,
+      net::EmbeddedTestServer::Type server_type,
+      net::test_server::HttpConnection::Protocol protocol);
 
   void SetSSLConfigWithServerCertificate(
       JNIEnv* env,
@@ -40,10 +46,13 @@ class EmbeddedTestServerAdapter {
 
   // Starts the server serving files from default test data directory.
   // Returns true if started, false if server is already running.
-  // This will run the server in default mode (HTTP/1 with no SSL)
   bool Start(JNIEnv* env);
 
   void EnableConnectProxy(JNIEnv* env, const std::vector<std::string>& urls);
+
+  // See NativeTestServer.java. Can be called after Start().
+  void SetConnectionCallback(JNIEnv* env,
+                             const base::android::JavaRef<jobject>& callback);
 
   // Returns port number of the server.
   int GetPort(JNIEnv* env);
@@ -107,6 +116,8 @@ class EmbeddedTestServerAdapter {
           callback);
 
  private:
+  // Declared before `test_server` so that it outlives the server's IO thread.
+  std::unique_ptr<CallbackConnectionListener> connection_listener_;
   net::test_server::EmbeddedTestServer test_server;
 };
 

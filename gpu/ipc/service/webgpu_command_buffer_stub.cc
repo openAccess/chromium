@@ -8,12 +8,12 @@
 #include <utility>
 
 #include "base/memory/unsafe_shared_memory_region.h"
-#include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/common/mailbox.h"
 #include "gpu/command_buffer/service/dawn_caching_interface.h"
+#include "gpu/command_buffer/service/dawn_instance.h"
 #include "gpu/command_buffer/service/gl_context_virtual.h"
 #include "gpu/command_buffer/service/gl_state_restorer_impl.h"
 #include "gpu/command_buffer/service/logger.h"
@@ -65,12 +65,6 @@ WebGPUCommandBufferStub::~WebGPUCommandBufferStub() {
 gpu::ContextResult WebGPUCommandBufferStub::Initialize(
     const mojom::CreateCommandBufferParams& init_params,
     base::UnsafeSharedMemoryRegion shared_state_shm) {
-#if BUILDFLAG(IS_FUCHSIA)
-  // TODO(crbug.com/40513405): Implement this.
-  NOTIMPLEMENTED();
-  LOG(ERROR) << "ContextResult::kFatalFailure: no fuchsia support";
-  return gpu::ContextResult::kFatalFailure;
-#else
   TRACE_EVENT0("gpu", "WebGPUBufferStub::Initialize");
   UpdateActiveUrl();
 
@@ -101,6 +95,7 @@ gpu::ContextResult WebGPUCommandBufferStub::Initialize(
           this, command_buffer_.get(), manager->shared_image_manager(),
           memory_tracker_.get(), manager->outputter(),
           manager->gpu_preferences(), std::move(shared_context_state),
+          webgpu::DawnInstance::CreateForWebGPU(manager->gpu_preferences()),
           dawn_cache_options, channel_);
 
   scoped_sync_point_client_state_ =
@@ -135,7 +130,6 @@ gpu::ContextResult WebGPUCommandBufferStub::Initialize(
   manager->delegate()->DidCreateContextSuccessfully();
   initialized_ = true;
   return gpu::ContextResult::kSuccess;
-#endif  // BUILDFLAG(IS_FUCHSIA)
 }
 
 base::WeakPtr<CommandBufferStub> WebGPUCommandBufferStub::AsWeakPtr() {

@@ -212,9 +212,8 @@ FormStructureBrowserTest::FormStructureBrowserTest()
   TestProfileIOS::Builder builder;
   builder.AddTestingFactory(
       IOSChromeProfilePasswordStoreFactory::GetInstance(),
-      base::BindOnce(
-          &password_manager::BuildPasswordStoreInterface<
-              ProfileIOS, password_manager::MockPasswordStoreInterface>));
+      base::BindOnce(&password_manager::BuildPasswordStoreInterface<
+                     password_manager::MockPasswordStoreInterface>));
   builder.AddTestingFactory(
       IOSUserEventServiceFactory::GetInstance(),
       base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
@@ -388,9 +387,10 @@ bool IsFailingTestName(const std::string& test_name) {
   }
   static constexpr auto kFailingTestNames =
       base::MakeFixedFlatSet<std::string_view>({
-          // TODO(crbug.com/40266699): These pages contains iframes. Until
-          // filling across iframes is also supported on iOS, iOS has has
-          // different expectations compared to non-iOS platforms.
+          // TODO(crbug.com/585083988): These pages contain child iframes whose
+          // relative `src` URLs load duplicate copies of the main HTML page on
+          // Desktop (via `EmbeddedTestServer` wildcard routing), whereas iOS
+          // uses `LoadHtmlWithoutSubresources`.
           "049_register_ebay.com.html",
           "148_payment_dickblick.com.html",
           // TODO(crbug.com/40229922): These pages contain labels which are only

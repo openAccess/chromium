@@ -77,6 +77,11 @@ void InitSkiaGraphiteFeatureParams(const base::Feature* feature) {
           feature, "max_pending_recordings",
           g_skia_graphite_feature_params.max_pending_recordings)
           .Get();
+  g_skia_graphite_feature_params.max_pending_commands =
+      base::FeatureParam<int>(
+          feature, "max_pending_commands",
+          g_skia_graphite_feature_params.max_pending_commands)
+          .Get();
   g_skia_graphite_feature_params.max_time_between_submits =
       base::FeatureParam<base::TimeDelta>(
           feature, "max_time_between_submits",
@@ -147,6 +152,10 @@ BASE_FEATURE(kAggressiveShaderCacheLimits, base::FEATURE_DISABLED_BY_DEFAULT);
 // and using overlays on Android. Also used by webview to disable surface
 // SurfaceControl.
 BASE_FEATURE(kAndroidSurfaceControl, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Launches the GPU process using SandboxedGpuProcessService.
+BASE_FEATURE(kEnableAndroidSandboxedGpuProcess,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Hardware Overlays for WebView.
 BASE_FEATURE(kWebViewSurfaceControl, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -237,6 +246,17 @@ BASE_FEATURE(kNoUndamagedOverlayPromotion, base::FEATURE_DISABLED_BY_DEFAULT);
 // adjusted to match the one from the browser process every time it changes.
 BASE_FEATURE(kAdjustGpuProcessPriority, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
+
+// When enabled, caps the initial GPU scheduler priority boost during
+// synchronous command buffer waits (WaitForTokenInRange /
+// WaitForGetOffsetInRange) at kNormal so routine per-frame waits cannot
+// preempt kHigh Viz display tasks, and escalates to kHigh if the wait remains
+// unresolved after `kCommandBufferWaitHighPriorityDelay`.
+BASE_FEATURE(kCapCommandBufferWaitPriority, base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<base::TimeDelta> kCommandBufferWaitHighPriorityDelay{
+    &kCapCommandBufferWaitPriority, "high_priority_delay",
+    base::Milliseconds(100)};
 
 // When enabled, Grshader disk cache will be cleared on startup if any cache
 // entry prefix does not match with the current prefix. prefix is made up of
@@ -750,6 +770,10 @@ bool IsAndroidSurfaceControlEnabled() {
   }
 
   return base::FeatureList::IsEnabled(kAndroidSurfaceControl);
+}
+
+bool IsAndroidSandboxedGpuProcessEnabled() {
+  return base::FeatureList::IsEnabled(kEnableAndroidSandboxedGpuProcess);
 }
 
 // Many devices do not support more than 1 image to be acquired from the

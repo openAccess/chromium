@@ -29,6 +29,7 @@
 #include "chromeos/ash/components/login/auth/public/auth_failure.h"
 #include "chromeos/ash/components/login/auth/public/auth_session_intent.h"
 #include "chromeos/ash/components/login/auth/public/cryptohome_key_constants.h"
+#include "chromeos/ash/components/login/auth/public/online_password_mismatch_behavior.h"
 #include "chromeos/ash/components/login/auth/public/operation_chain_runner.h"
 #include "chromeos/ash/components/login/auth/public/user_context.h"
 #include "components/device_event_log/device_event_log.h"
@@ -45,6 +46,57 @@ std::unique_ptr<UserContext> RecordConfiguredFactors(
   AuthEventsRecorder::Get()->RecordSessionAuthFactors(
       context->GetAuthFactorsData());
   return context;
+}
+
+// Whether a locked out password factor may be handled like an online password
+// mismatch (i.e. routed to the alternative authentication flow), given the
+// cryptohome `error` of the attempt.
+// With the DeviceOnlinePasswordMismatchBehavior AutoWipe policy, that flow
+// wipes the cryptohome without asking the user. Only CREDENTIAL_LOCKED (the
+// attempt that triggers the lockout, for which the secret was checked) proves a
+// mismatch. For other errors, e.g. TPM_DEFEND_LOCK (attempts on an already
+// locked out factor, which don't check the secret), we can't tell a lockout
+// from a mismatch, so they are not routed, to avoid wiping users whose password
+// didn't change. They keep failing as before, and once the lockout expires the
+// next attempt either succeeds or reports the mismatch.
+bool IsLockoutRoutingAllowedByCachedPolicy(
+    PrefService* local_state,
+    const UserContext& context,
+    const cryptohome::ErrorWrapper& error) {
+  if (cryptohome::ErrorMatches(
+          error, user_data_auth::CRYPTOHOME_ERROR_CREDENTIAL_LOCKED)) {
+    return true;
+  }
+  // Without local state (only in tests), there is no AutoWipe policy.
+  return !local_state || !ShouldAutoWipeOnOnlinePasswordMismatch(
+                             *local_state, context.GetAccountId());
+}
+
+// Whether `error`, returned for the online password during online
+// re-authentication, means that the (PinWeaver-backed) password factor is
+// locked out after too many wrong attempts, and the user can use cryptohome
+// recovery instead. Recovery doesn't depend on the locked password factor and
+// replaces it with the online password, which also clears the lockout.
+// Cryptohome reports both the attempt that triggers the lockout
+// (CREDENTIAL_LOCKED) and attempts on an already locked out factor
+// (TPM_DEFEND_LOCK) with the PRIMARY_FACTOR_LOCKED_OUT primary action.
+// A TPM-wide dictionary attack lockout (PRIMARY_TPM_LOCKOUT) is deliberately
+// not matched: recovery wouldn't help with it.
+bool ShouldRouteLockoutToRecovery(PrefService* local_state,
+                                  const UserContext& context,
+                                  const AuthenticationError& error) {
+  if (!features::IsPasswordLockoutRecoveryRoutingEnabled() ||
+      error.get_origin() != AuthenticationError::Origin::kCryptohome) {
+    return false;
+  }
+  const cryptohome::ErrorWrapper cryptohome_error =
+      error.get_cryptohome_error();
+  return cryptohome_error.info().has_value() &&
+         cryptohome_error.info()->primary_action() ==
+             user_data_auth::PRIMARY_FACTOR_LOCKED_OUT &&
+         context.GetAuthFactorsData().FindRecoveryFactor() != nullptr &&
+         IsLockoutRoutingAllowedByCachedPolicy(local_state, context,
+                                               cryptohome_error);
 }
 
 }  // namespace
@@ -350,7 +402,7 @@ void AuthSessionAuthenticator::DoCompleteLogin(
       // We are sure that password is correct, so intercept authentication
       // failure events and treat them as password change signals.
       error_callback = base::BindOnce(
-          &AuthSessionAuthenticator::HandlePasswordChangeDetected,
+          &AuthSessionAuthenticator::HandleOnlinePasswordAuthFailure,
           weak_factory_.GetWeakPtr(), std::move(error_callback));
     }
     // Existing users might require encryption migration: intercept related
@@ -1056,10 +1108,19 @@ void AuthSessionAuthenticator::ProcessCryptohomeError(
   NotifyFailure(error.get_resolved_failure(), std::move(context));
 }
 
-void AuthSessionAuthenticator::HandlePasswordChangeDetected(
+void AuthSessionAuthenticator::HandleOnlinePasswordAuthFailure(
     AuthErrorCallback fallback,
     std::unique_ptr<UserContext> context,
     AuthenticationError error) {
+  if (ShouldRouteLockoutToRecovery(local_state_, *context, error)) {
+    // Same as a password change: the alternative authentication flow uses
+    // recovery.
+    LOGIN_LOG(EVENT) << "Password is locked out, using recovery: "
+                     << error.get_cryptohome_error();
+    NotifyOnlinePasswordUnusable(std::move(context),
+                                 /*online_password_mismatch=*/true);
+    return;
+  }
   if (cryptohome::ErrorMatches(
           error.get_cryptohome_error(),
           user_data_auth::CRYPTOHOME_ERROR_AUTHORIZATION_KEY_FAILED)) {

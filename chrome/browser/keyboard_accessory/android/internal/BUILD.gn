@@ -131,6 +131,7 @@ android_resources("java_resources") {
     "//chrome/android:chrome_app_java_resources",
     "//components/browser_ui/strings/android:browser_ui_strings_grd",
     "//components/browser_ui/widget/android/shared_with_webview:java_resources",
+    "//components/strings:components_strings_grd",
   ]
   visibility = [
     ":*",
@@ -183,6 +184,7 @@ robolectric_library("junit_tests") {
     "java/src/org/chromium/chrome/browser/keyboard_accessory/all_passwords_bottom_sheet/AllPasswordsBottomSheetControllerTest.java",
     "java/src/org/chromium/chrome/browser/keyboard_accessory/all_passwords_bottom_sheet/AllPasswordsBottomSheetIntegrationTest.java",
     "java/src/org/chromium/chrome/browser/keyboard_accessory/all_passwords_bottom_sheet/AllPasswordsBottomSheetViewTest.java",
+    "java/src/org/chromium/chrome/browser/keyboard_accessory/bar_component/KeyboardAccessoryIphUtilsTest.java",
   ]
 
   deps = [
@@ -201,6 +203,7 @@ robolectric_library("junit_tests") {
     "//components/browser_ui/bottomsheet/android/test:java",
     "//components/browser_ui/widget/android:java",
     "//components/embedder_support/android:util_java",
+    "//components/feature_engagement/public:public_java",
     "//components/url_formatter/android:url_formatter_java",
     "//third_party/android_deps:espresso_java",
     "//third_party/androidx:androidx_annotation_annotation_java",

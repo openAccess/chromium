@@ -45,10 +45,11 @@ class COMPONENT_EXPORT(INPUT) StylusHandwritingHandler {
   virtual void EndStylusWriting();
 
   bool StylusWritingStarted() const { return stylus_writing_started_; }
-  bool StartStylusWriting();
+  virtual bool StartStylusWriting();
 
  protected:
   InputRouterClient* client() const { return client_; }
+  virtual void OnStartStylusWriting();
 
  private:
   raw_ptr<InputRouterClient> client_;

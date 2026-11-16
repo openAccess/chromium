@@ -96,6 +96,10 @@ const base::FeatureParam<double> kWebViewCodeCacheSizeLimitMultiplier{
     &kWebViewCacheSizeLimitDerivedFromAppCacheQuota,
     "WebViewCodeCacheSizeLimitMultiplier", 0.5};
 
+// Enables access to the request body for content restriction in WebView.
+BASE_FEATURE(kWebViewContentRestrictionRequestBodySupport,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enables content restriction support in WebView.
 BASE_FEATURE(kWebViewContentRestrictionSupport,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -453,6 +457,11 @@ BASE_FEATURE(kWebViewTestNonembeddedLowEntropySource,
 // regardless of the user agent reduction policy.
 BASE_FEATURE(kWebViewUnreducedProductVersion, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Kill switch for updating the DisplayAndroid observer when the display
+// changes.
+BASE_FEATURE(kWebViewUpdateDisplayObserverOnDisplayChanges,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Use WebView's nonembedded MetricsUploadService to upload UMA metrics instead
 // of sending it directly to GMS-core when running within the SDK Runtime.
 BASE_FEATURE(kWebViewUseMetricsUploadServiceOnlySdkRuntime,
@@ -460,8 +469,7 @@ BASE_FEATURE(kWebViewUseMetricsUploadServiceOnlySdkRuntime,
 
 // If enabled, all the layered studies in WebView will use WebView low entropy
 // source instead of the app's low entropy source.
-BASE_FEATURE(kWebViewUseWVLESForLayeredStudy,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kWebViewUseWVLESForLayeredStudy, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // When enabled, binds FrameSinkManager as a DirectReceiver, allowing IPCs
 // targeting that interface, and any other interfaces passed through it to
@@ -475,6 +483,10 @@ BASE_FEATURE(kWebViewWarmupNetworkService, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, WebAuthn requests are blocked on pages with TLS/SSL errors.
 BASE_FEATURE(kWebViewWebAuthnRequiresSecureOrigin,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Kill switch for WebSettings setWebGraphicsEnabled.
+BASE_FEATURE(kWebViewWebGraphicsSwitchEnabled,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Kill switch for reporting web performance metrics.

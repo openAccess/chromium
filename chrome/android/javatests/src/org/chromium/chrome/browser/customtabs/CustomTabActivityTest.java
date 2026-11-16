@@ -10,13 +10,11 @@ import static androidx.browser.customtabs.CustomTabsIntent.EXTRA_INITIAL_ACTIVIT
 import static androidx.browser.customtabs.CustomTabsIntent.EXTRA_INITIAL_ACTIVITY_WIDTH_PX;
 import static androidx.browser.customtabs.CustomTabsIntent.SHARE_STATE_ON;
 import static androidx.test.espresso.matcher.ViewMatchers.assertThat;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
 import static com.google.common.truth.Truth.assertThat;
 
-import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.is;
@@ -30,10 +28,10 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.customtabs.CustomTabsTestUtils.createTestBitmap;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
 import static org.chromium.components.content_settings.PrefNames.COOKIE_CONTROLS_MODE;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.app.Activity;
 import android.app.Instrumentation;
@@ -180,6 +178,7 @@ import org.chromium.chrome.test.OverrideContextWrapperTestRule;
 import org.chromium.chrome.test.transit.CctTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.CctPageStation;
 import org.chromium.chrome.test.transit.page.ReferrerCondition;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
@@ -200,6 +199,7 @@ import org.chromium.content_public.browser.test.util.DOMUtils;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.content_public.browser.test.util.PrefetchTestUtil;
 import org.chromium.content_public.common.ContentSwitches;
+import org.chromium.net.NetError;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.util.TestWebServer;
 import org.chromium.ui.base.AcceleratorManager;
@@ -452,6 +452,7 @@ public class CustomTabActivityTest {
     @Test
     @SmallTest
     @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/394668480
+    @DisabledTest(message = "https://crbug.com/584456889")
     public void testContextMenuEntriesBeforeFirstRun() throws Exception {
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(createMinimalCustomTabIntent());
         // Mark the first run as not completed. This has to be done after we start the intent,
@@ -484,6 +485,7 @@ public class CustomTabActivityTest {
     @Test
     @SmallTest
     @DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/394668480
+    @DisabledTest(message = "https://crbug.com/584456889")
     public void testContextMenuPreviewPage() throws Exception {
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(createMinimalCustomTabIntent());
         ContextMenuUtils.selectContextMenuItem(
@@ -1328,6 +1330,7 @@ public class CustomTabActivityTest {
     /** Tests that page load metrics are sent. */
     @Test
     @MediumTest
+    @DisabledTest(message = "https://crbug.com/584456889")
     public void testPageLoadMetricsAreSent() throws Exception {
         checkPageLoadMetrics(true);
     }
@@ -1698,13 +1701,11 @@ public class CustomTabActivityTest {
 
     @Test
     @SmallTest
-    @DisabledTest(message = "https://crbug.com/572881868")
     public void testParallelRequest() throws Exception {
-        String url = mTestServer.getURL("/echoheader?Cookie");
         Uri requestUri = Uri.parse(mTestServer.getURL("/set-cookie?acookie"));
 
         final Context context = ApplicationProvider.getApplicationContext();
-        Intent intent = CustomTabsIntentTestUtils.createMinimalCustomTabIntent(context, url);
+        Intent intent = CustomTabsIntentTestUtils.createMinimalCustomTabIntent(context, mTestPage);
         final var token =
                 SessionHolder.of(CustomTabsSessionToken.getSessionTokenFromIntent(intent));
 
@@ -1721,16 +1722,22 @@ public class CustomTabActivityTest {
                             CustomTabsService.RELATION_USE_AS_ORIGIN);
                 });
 
+        // The detached parallel request runs concurrently with the main-frame navigation, so wait
+        // for the detached request to finish before reading the cookie jar via document.cookie.
+        HistogramWatcher finalStatusWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "CustomTabs.DetachedResourceRequest.FinalStatus", NetError.OK);
         intent.putExtra(CustomTabsConnection.PARALLEL_REQUEST_URL_KEY, requestUri);
         intent.putExtra(
                 CustomTabsConnection.PARALLEL_REQUEST_REFERRER_KEY, Uri.parse(origin.toString()));
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
+        finalStatusWatcher.pollInstrumentationThreadUntilSatisfied();
 
         Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
-        String content =
+        String cookie =
                 JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                        tab.getWebContents(), "document.body.textContent");
-        assertEquals("\"acookie\"", content);
+                        tab.getWebContents(), "document.cookie");
+        assertEquals("\"acookie\"", cookie);
     }
 
     /**
@@ -2130,11 +2137,9 @@ public class CustomTabActivityTest {
     public void testHistoryNoSpeculation() throws Exception {
         Context context = getInstrumentation().getTargetContext().getApplicationContext();
         Intent intent = CustomTabsIntentTestUtils.createMinimalCustomTabIntent(context, mTestPage);
-        mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
-        final Tab tab = mCustomTabActivityTestRule.getActivity().getActivityTab();
-        ThreadUtils.runOnUiThreadBlocking(
-                (Runnable) () -> tab.loadUrl(new LoadUrlParams(mTestPage2)));
-        ChromeTabUtils.waitForTabPageLoaded(tab, mTestPage2);
+        CctPageStation page = mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
+        page = page.loadPageProgrammatically(mTestPage2);
+        final Tab tab = page.getTab();
 
         Assert.assertTrue(tab.canGoBack());
         Assert.assertFalse(tab.canGoForward());
@@ -2193,6 +2198,7 @@ public class CustomTabActivityTest {
 
     @Test
     @SmallTest
+    @DisabledTest(message = "https://crbug.com/584456889")
     public void closeButton_closesActivityIfNoLandingPage() throws TimeoutException {
         Context context = getInstrumentation().getTargetContext().getApplicationContext();
         Intent intent =
@@ -2306,17 +2312,7 @@ public class CustomTabActivityTest {
         connection.newSession(token.getToken());
         setCanUseHiddenTabForSession(token, true);
         Assert.assertTrue(connection.mayLaunchUrl(token.getToken(), Uri.parse(url), null, null));
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            connection.getHiddenTabForTesting(), Matchers.notNullValue());
-                });
-        Tab hiddenTab =
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> {
-                            return connection.getHiddenTabForTesting();
-                        });
-        ChromeTabUtils.waitForTabPageLoaded(hiddenTab, url);
+        CustomTabsTestUtils.ensureCompletedSpeculationForUrl(url);
         String actualHeader = webServer.getLastRequest("/ok.html").headerValue("X-CCT-Client-Data");
         assertEquals(expectedHeader, actualHeader);
         webServer.shutdown();
@@ -2441,7 +2437,7 @@ public class CustomTabActivityTest {
             return;
         }
 
-        onViewWaiting(allOf(withId(R.id.custom_tabs_sidepanel_maximize), isDisplayed()));
+        waitForView(withId(R.id.custom_tabs_sidepanel_maximize));
         View toolbarView = mCustomTabActivityTestRule.getActivity().findViewById(R.id.toolbar);
         CustomTabToolbar toolbar = (CustomTabToolbar) toolbarView;
         ImageButton maximizeButton = toolbar.getMaximizeButtonForTest();
@@ -2457,7 +2453,7 @@ public class CustomTabActivityTest {
         assertEquals("The window should be max width", maxWidth, attrs.width);
 
         ThreadUtils.runOnUiThreadBlocking((Runnable) maximizeButton::performClick);
-        onViewWaiting(allOf(withId(R.id.custom_tabs_sidepanel_maximize), isDisplayed()));
+        waitForView(withId(R.id.custom_tabs_sidepanel_maximize));
 
         CriteriaHelper.pollInstrumentationThread(
                 () ->
@@ -2611,17 +2607,7 @@ public class CustomTabActivityTest {
             setCanUseHiddenTabForSession(token, true);
             Assert.assertTrue(
                     connection.mayLaunchUrl(token.getToken(), Uri.parse(url), null, null));
-            CriteriaHelper.pollUiThread(
-                    () -> {
-                        Criteria.checkThat(
-                                connection.getHiddenTabForTesting(), Matchers.notNullValue());
-                    });
-            Tab hiddenTab =
-                    ThreadUtils.runOnUiThreadBlocking(
-                            () -> {
-                                return connection.getHiddenTabForTesting();
-                            });
-            ChromeTabUtils.waitForTabPageLoaded(hiddenTab, url);
+            CustomTabsTestUtils.ensureCompletedSpeculationForUrl(url);
         } else {
             mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
         }
@@ -2885,16 +2871,22 @@ public class CustomTabActivityTest {
 
     private static List<HistoryItem> getHistory(Tab tab) throws TimeoutException {
         final TestBrowsingHistoryObserver historyObserver = new TestBrowsingHistoryObserver();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    Profile profile = Profile.fromWebContents(tab.getWebContents());
-                    BrowsingHistoryBridge historyService = new BrowsingHistoryBridge(profile);
-                    historyService.setObserver(historyObserver);
-                    String historyQueryFilter = "";
-                    historyService.queryHistory(historyQueryFilter);
-                });
-        historyObserver.getQueryCallback().waitForCallback(0);
-        return historyObserver.getHistoryQueryResults();
+        BrowsingHistoryBridge historyService =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            Profile profile = Profile.fromWebContents(tab.getWebContents());
+                            BrowsingHistoryBridge service = new BrowsingHistoryBridge(profile);
+                            service.setObserver(historyObserver);
+                            String historyQueryFilter = "";
+                            service.queryHistory(historyQueryFilter);
+                            return service;
+                        });
+        try {
+            historyObserver.getQueryCallback().waitForCallback(0);
+            return historyObserver.getHistoryQueryResults();
+        } finally {
+            ThreadUtils.runOnUiThreadBlocking(historyService::destroy);
+        }
     }
 
     private void assertLastLaunchedClientAppRecorded(
@@ -2940,12 +2932,9 @@ public class CustomTabActivityTest {
     public void testBackPressNavigationFailure() {
         Context context = getInstrumentation().getTargetContext().getApplicationContext();
         Intent intent = CustomTabsIntentTestUtils.createMinimalCustomTabIntent(context, mTestPage);
-        mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
-        final Tab tab = getActivity().getActivityTab();
-
-        ThreadUtils.runOnUiThreadBlocking(
-                (Runnable) () -> tab.loadUrl(new LoadUrlParams(mTestPage2)));
-        ChromeTabUtils.waitForTabPageLoaded(tab, mTestPage2);
+        mCustomTabActivityTestRule
+                .startCustomTabActivityWithIntent(intent)
+                .loadPageProgrammatically(mTestPage2);
 
         BackPressHandler navigationHandler =
                 getActivity()
@@ -3187,12 +3176,12 @@ public class CustomTabActivityTest {
         assertEquals(
                 mTestPage,
                 ChromeTabUtils.getUrlStringOnUiThread(recreatedActivity.getActivityTab()));
-        onViewWaiting(withId(R.id.toolbar))
+        waitForView(withId(R.id.toolbar))
                 .check(
                         (view, e) -> {
                             ColorDrawable toolbarBg = (ColorDrawable) view.getBackground();
                             assertEquals(Color.BLUE, toolbarBg.getColor());
                         });
-        onViewWaiting(withId(R.id.title_bar));
+        waitForView(withId(R.id.title_bar));
     }
 }

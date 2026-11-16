@@ -45,6 +45,7 @@
 
 using lookalikes::DomainInfo;
 using lookalikes::GetETLDPlusOne;
+using lookalikes::GetUrlForLookalikeChecks;
 using lookalikes::LookalikeActionType;
 using lookalikes::LookalikeUrlMatchType;
 
@@ -183,8 +184,9 @@ void LookalikeUrlNavigationThrottle::PrewarmLookalikeCheckSync() {
 }
 
 void LookalikeUrlNavigationThrottle::PrewarmLookalikeCheckForURL(
-    const GURL& url,
+    const GURL& raw_url,
     const std::vector<DomainInfo>& engaged_sites) {
+  const GURL url = GetUrlForLookalikeChecks(raw_url);
   auto host = url.GetHost();
   if (lookalike_cache_.count(host) > 0) {
     return;
@@ -266,8 +268,9 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::WillProcessResponse() {
   // for the engaged sites list to be loaded. This avoids deferring e.g. the
   // New Tab Page navigation at browser startup.
   if (base::FeatureList::IsEnabled(kLookalikeSkipEngagedSitesWaitForNonHttp) &&
-      !handle->GetRedirectChain()[0].SchemeIsHTTPOrHTTPS() &&
-      !handle->GetURL().SchemeIsHTTPOrHTTPS()) {
+      !GetUrlForLookalikeChecks(handle->GetRedirectChain()[0])
+           .SchemeIsHTTPOrHTTPS() &&
+      !GetUrlForLookalikeChecks(handle->GetURL()).SchemeIsHTTPOrHTTPS()) {
     return content::NavigationThrottle::PROCEED;
   }
 
@@ -286,8 +289,9 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::WillProcessResponse() {
 
 bool LookalikeUrlNavigationThrottle::NeedsEngagedSitesForNavigation(
     const LookalikeUrlService* service) const {
-  const GURL& first_url = navigation_handle()->GetRedirectChain()[0];
-  const GURL& last_url = navigation_handle()->GetURL();
+  const GURL first_url =
+      GetUrlForLookalikeChecks(navigation_handle()->GetRedirectChain()[0]);
+  const GURL last_url = GetUrlForLookalikeChecks(navigation_handle()->GetURL());
   if (first_url.GetHost() != last_url.GetHost() &&
       !lookalike_cache_.contains(first_url.GetHost()) &&
       service->NeedsEngagedSitesForCheck(first_url)) {
@@ -427,8 +431,9 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::PerformChecks(
         base::NotFatalUntil::M161);
 
   // Check for two lookalikes -- at the beginning and end of the redirect chain.
-  const GURL& first_url = navigation_handle()->GetRedirectChain()[0];
-  const GURL& last_url = navigation_handle()->GetURL();
+  const GURL first_url =
+      GetUrlForLookalikeChecks(navigation_handle()->GetRedirectChain()[0]);
+  const GURL last_url = GetUrlForLookalikeChecks(navigation_handle()->GetURL());
 
   base::TimeTicks is_lookalike_url_start = base::TimeTicks::Now();
 
@@ -522,28 +527,35 @@ ThrottleCheckResult LookalikeUrlNavigationThrottle::PerformChecks(
   ukm::SourceId source_id = ukm::ConvertToSourceId(
       navigation_handle()->GetNavigationId(), ukm::SourceIdType::NAVIGATION_ID);
 
-  LookalikeUrlMatchType match_type =
+  const auto* proto = lookalikes::GetSafetyTipsRemoteConfigProto();
+  const LookalikeActionType first_action_type =
+      first_is_lookalike
+          ? GetActionForMatchType(proto, chrome::GetChannel(),
+                                  GetETLDPlusOne(first_url.GetHost()),
+                                  first_match_type)
+          : LookalikeActionType::kNone;
+  if (first_action_type == LookalikeActionType::kShowInterstitial) {
+    return CheckAndMaybeShowInterstitial(first_suggested_url, first_url,
+                                         source_id, first_match_type,
+                                         /*triggered_by_initial_url=*/true);
+  }
+
+  const LookalikeActionType last_action_type =
+      last_is_lookalike
+          ? GetActionForMatchType(proto, chrome::GetChannel(),
+                                  GetETLDPlusOne(last_url.GetHost()),
+                                  last_match_type)
+          : LookalikeActionType::kNone;
+  if (last_action_type == LookalikeActionType::kShowInterstitial) {
+    return CheckAndMaybeShowInterstitial(last_suggested_url, last_url,
+                                         source_id, last_match_type,
+                                         /*triggered_by_initial_url=*/false);
+  }
+
+  const LookalikeUrlMatchType match_type =
       first_is_lookalike ? first_match_type : last_match_type;
-  std::string etld_plus_one = first_is_lookalike
-                                  ? GetETLDPlusOne(first_url.GetHost())
-                                  : GetETLDPlusOne(last_url.GetHost());
-  LookalikeActionType action_type =
-      GetActionForMatchType(lookalikes::GetSafetyTipsRemoteConfigProto(),
-                            chrome::GetChannel(), etld_plus_one, match_type);
-
-  if (first_is_lookalike &&
-      action_type == LookalikeActionType::kShowInterstitial) {
-    return CheckAndMaybeShowInterstitial(
-        first_suggested_url, first_url, source_id, first_match_type,
-        /*triggered_by_initial_url=*/first_is_lookalike);
-  }
-
-  if (last_is_lookalike &&
-      action_type == LookalikeActionType::kShowInterstitial) {
-    return CheckAndMaybeShowInterstitial(
-        last_suggested_url, last_url, source_id, last_match_type,
-        /*triggered_by_initial_url=*/first_is_lookalike);
-  }
+  const LookalikeActionType action_type =
+      first_is_lookalike ? first_action_type : last_action_type;
 
   // IMPORTANT: Every time that a new lookalike heuristic is added, before
   // adding a warning UI, a console message should be printed here. To do that,

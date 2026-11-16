@@ -12,6 +12,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/run_until.h"
@@ -25,19 +26,19 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/dom_distiller/content/browser/distiller_javascript_utils.h"
-#include "components/dom_distiller/content/browser/dom_distiller_viewer_source.h"
-#include "components/dom_distiller/core/article_entry.h"
-#include "components/dom_distiller/core/distilled_page_prefs.h"
-#include "components/dom_distiller/core/distiller.h"
-#include "components/dom_distiller/core/dom_distiller_service.h"
-#include "components/dom_distiller/core/dom_distiller_switches.h"
-#include "components/dom_distiller/core/fake_distiller.h"
-#include "components/dom_distiller/core/fake_distiller_page.h"
-#include "components/dom_distiller/core/task_tracker.h"
-#include "components/dom_distiller/core/url_constants.h"
-#include "components/dom_distiller/core/url_utils.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/web_distiller/content/browser/distiller_javascript_utils.h"
+#include "components/web_distiller/content/browser/web_distiller_viewer_source.h"
+#include "components/web_distiller/core/article_entry.h"
+#include "components/web_distiller/core/distilled_page_prefs.h"
+#include "components/web_distiller/core/distiller.h"
+#include "components/web_distiller/core/fake_distiller.h"
+#include "components/web_distiller/core/fake_distiller_page.h"
+#include "components/web_distiller/core/task_tracker.h"
+#include "components/web_distiller/core/url_constants.h"
+#include "components/web_distiller/core/url_utils.h"
+#include "components/web_distiller/core/web_distiller_service.h"
+#include "components/web_distiller/core/web_distiller_switches.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_contents.h"
@@ -46,6 +47,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/base/url_util.h"
+#include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -54,26 +56,26 @@
 
 namespace reader_mode {
 
-using dom_distiller::DistilledArticleProto;
-using dom_distiller::DistilledPagePrefs;
-using dom_distiller::DistilledPageProto;
-using dom_distiller::DistillerJavaScriptWorldIdIsSet;
-using dom_distiller::kDomDistillerScheme;
-using dom_distiller::kUrlKey;
-using dom_distiller::kViewerCssPath;
-using dom_distiller::SetDistillerJavaScriptWorldId;
-using dom_distiller::ThemeSettingsUpdateSource;
-using dom_distiller::test::FakeDistiller;
-using dom_distiller::test::MockDistillerFactory;
-using dom_distiller::test::MockDistillerPage;
-using dom_distiller::test::MockDistillerPageFactory;
 using testing::Eq;
 using testing::ExplainMatchResult;
 using testing::HasSubstr;
 using testing::Not;
+using web_distiller::DistilledArticleProto;
+using web_distiller::DistilledPagePrefs;
+using web_distiller::DistilledPageProto;
+using web_distiller::DistillerJavaScriptWorldIdIsSet;
+using web_distiller::kUrlKey;
+using web_distiller::kViewerCssPath;
+using web_distiller::kWebDistillerScheme;
+using web_distiller::SetDistillerJavaScriptWorldId;
+using web_distiller::ThemeSettingsUpdateSource;
+using web_distiller::test::FakeDistiller;
+using web_distiller::test::MockDistillerFactory;
+using web_distiller::test::MockDistillerPage;
+using web_distiller::test::MockDistillerPageFactory;
 
-namespace mojom = dom_distiller::mojom;
-namespace url_utils = dom_distiller::url_utils;
+namespace mojom = web_distiller::mojom;
+namespace url_utils = web_distiller::url_utils;
 
 namespace {
 
@@ -139,7 +141,7 @@ class ReaderModeViewerSourceBrowserTest : public InProcessBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(switches::kEnableDomDistiller);
+    command_line->AppendSwitch(switches::kEnableWebDistiller);
   }
 
   std::unique_ptr<KeyedService> Build(content::BrowserContext* context) {
@@ -186,7 +188,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   expect_distillation_ = false;
   expect_distiller_page_ = false;
   const GURL url = url_utils::GetDistillerViewUrlFromEntryId(
-      kDomDistillerScheme, "DOES_NOT_EXIST");
+      kWebDistillerScheme, "DOES_NOT_EXIST");
   ViewSingleDistilledPage(url, "text/html");
 }
 
@@ -199,7 +201,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   expect_distiller_page_ = true;
   GURL original_url("http://www.example.com/1");
   const GURL view_url = url_utils::GetDistillerViewUrlFromUrl(
-      kDomDistillerScheme, original_url, "Title");
+      kWebDistillerScheme, original_url, "Title");
   ViewSingleDistilledPage(view_url, "text/html");
 }
 
@@ -248,11 +250,11 @@ void ReaderModeViewerSourceBrowserTest::
   std::string result = content::EvalJs(contents, kGetContent).ExtractString();
   EXPECT_THAT(result,
               HasSubstr(l10n_util::GetStringUTF8(
-                  IDS_DOM_DISTILLER_VIEWER_FAILED_TO_FIND_ARTICLE_CONTENT)));
+                  IDS_WEB_DISTILLER_VIEWER_FAILED_TO_FIND_ARTICLE_CONTENT)));
   result = content::EvalJs(contents, kGetTitle).ExtractString();
   EXPECT_THAT(result,
               HasSubstr(l10n_util::GetStringUTF8(
-                  IDS_DOM_DISTILLER_VIEWER_FAILED_TO_FIND_ARTICLE_TITLE)));
+                  IDS_WEB_DISTILLER_VIEWER_FAILED_TO_FIND_ARTICLE_TITLE)));
 }
 
 // The viewer source renders untrusted content, so ensure no bindings are
@@ -264,7 +266,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   expect_distiller_page_ = false;
   // Navigate to a URL which the source should respond to with CSS.
   std::string url_without_scheme = std::string("://foobar/") + kViewerCssPath;
-  GURL url(kDomDistillerScheme + url_without_scheme);
+  GURL url(kWebDistillerScheme + url_without_scheme);
   ViewSingleDistilledPage(url, "text/css");
 }
 
@@ -273,7 +275,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   // This is a bogus URL, so no distillation will happen.
   expect_distillation_ = false;
   expect_distiller_page_ = false;
-  const GURL url(std::string(kDomDistillerScheme) + "://bogus/");
+  const GURL url(std::string(kWebDistillerScheme) + "://bogus/");
   ViewSingleDistilledPage(url, "text/html");
 }
 
@@ -282,7 +284,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   // This is a bogus URL, so no distillation will happen.
   expect_distillation_ = false;
   expect_distiller_page_ = false;
-  const GURL url(std::string(kDomDistillerScheme) + "://bogus/foobar");
+  const GURL url(std::string(kWebDistillerScheme) + "://bogus/foobar");
   ViewSingleDistilledPage(url, "text/html");
 }
 
@@ -291,7 +293,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
   const GURL original_url("http://www.example.com/1");
   const GURL different_url("http://www.example.com/2");
   const GURL view_url = url_utils::GetDistillerViewUrlFromUrl(
-      kDomDistillerScheme, original_url, "Title");
+      kWebDistillerScheme, original_url, "Title");
   // This is a bogus URL, so no distillation will happen.
   const GURL bad_view_url = net::AppendOrReplaceQueryParameter(
       view_url, kUrlKey, different_url.spec());
@@ -314,7 +316,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest, EarlyTemplateLoad) {
 
   // Navigate to a URL.
   GURL url(url_utils::GetDistillerViewUrlFromUrl(
-      kDomDistillerScheme, GURL("http://urlthatlooksvalid.com"), "Title"));
+      kWebDistillerScheme, GURL("http://urlthatlooksvalid.com"), "Title"));
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
   Navigate(&params);
   distillation_done_loop.Run();
@@ -348,10 +350,71 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest, EarlyTemplateLoad) {
   EXPECT_THAT(result, HasSubstr("content"));
 }
 
+// Tests that the viewer CSP doesn't block anything a distilled article with
+// cross-origin and data: images needs to render.
+IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
+                       NoContentSecurityPolicyViolations) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ReaderModeServiceFactory::GetInstance()->SetTestingFactoryAndUse(
+      browser()->GetProfile(),
+      base::BindRepeating(&ReaderModeViewerSourceBrowserTest::Build,
+                          base::Unretained(this)));
+
+  base::RunLoop distillation_done_loop;
+  FakeDistiller* distiller =
+      new FakeDistiller(false, distillation_done_loop.QuitClosure());
+  EXPECT_CALL(*distiller_factory_, CreateDistillerImpl())
+      .WillOnce(testing::Return(distiller));
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::WebContentsConsoleObserver console_observer(contents);
+  console_observer.SetFilter(base::BindRepeating(
+      [](const content::WebContentsConsoleObserver::Message& message) {
+        return message.message.find(u"Content Security Policy") !=
+                   std::u16string::npos ||
+               message.message.find(u"Refused to") != std::u16string::npos;
+      }));
+
+  GURL url(url_utils::GetDistillerViewUrlFromUrl(
+      kWebDistillerScheme, GURL("http://urlthatlooksvalid.com"), "Title"));
+  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
+  Navigate(&params);
+  distillation_done_loop.Run();
+  EXPECT_TRUE(content::WaitForLoadStop(contents));
+
+  const GURL image_url = embedded_test_server()->GetURL("/handbag.png");
+  auto article = std::make_unique<DistilledArticleProto>();
+  DistilledPageProto* page = article->add_pages();
+  page->set_url("http://foo.html");
+  page->set_html(base::StrCat(
+      {"<div>content<img src=\"", image_url.spec(), "\">",
+       "<img src=\"data:image/gif;base64,"
+       "R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==\"></div>"}));
+  distiller->RunDistillerCallback(std::move(article));
+
+  // Wait for the article and both of its images to finish rendering.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(contents, kGetLoadIndicatorClassName)
+               .ExtractString() == "hidden";
+  }));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(contents,
+                           "(() => { const images = document.querySelectorAll("
+                           "'#content img'); return images.length == 2 && "
+                           "Array.from(images).every(i => i.complete && "
+                           "i.naturalWidth > 0); })()")
+        .ExtractBool();
+  }));
+
+  EXPECT_TRUE(console_observer.messages().empty())
+      << console_observer.GetMessageAt(0);
+}
+
 IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
                        DISABLED_DistillerJavaScriptExposed) {
   // Navigate to a distiller URL.
-  GURL url(std::string(kDomDistillerScheme) + "://url");
+  GURL url(std::string(kWebDistillerScheme) + "://url");
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
   Navigate(&params);
 
@@ -370,7 +433,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
 IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest,
                        DistillerJavaScriptNotInMainWorld) {
   // Navigate to a distiller URL.
-  GURL url(std::string(kDomDistillerScheme) + "://url");
+  GURL url(std::string(kWebDistillerScheme) + "://url");
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
   Navigate(&params);
 
@@ -418,7 +481,7 @@ void ReaderModeViewerSourceBrowserTest::PrefTest(bool is_error_page) {
     expect_distillation_ = true;
     expect_distiller_page_ = true;
     GURL original_url("http://www.example.com/1");
-    view_url = url_utils::GetDistillerViewUrlFromUrl(kDomDistillerScheme,
+    view_url = url_utils::GetDistillerViewUrlFromUrl(kWebDistillerScheme,
                                                      original_url, "Title");
   }
   content::WebContents* contents =
@@ -520,7 +583,7 @@ IN_PROC_BROWSER_TEST_F(ReaderModeViewerSourceBrowserTest, MAYBE_UISetsPrefs) {
   expect_distillation_ = true;
   expect_distiller_page_ = true;
   GURL original_url("http://www.example.com/1");
-  view_url = url_utils::GetDistillerViewUrlFromUrl(kDomDistillerScheme,
+  view_url = url_utils::GetDistillerViewUrlFromUrl(kWebDistillerScheme,
                                                    original_url, "Title");
   ViewSingleDistilledPage(view_url, "text/html");
   EXPECT_TRUE(content::WaitForLoadStop(contents));

@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/app_menu/app_menu_search_controller.h"
 
+#include <array>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -11,17 +13,62 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/fuzzy_search/fuzzy_finder.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_action_item.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_search_bar_view.h"
+#include "chrome/browser/ui/views/app_menu/bookmarks_dynamic_menu.h"
+#include "chrome/browser/ui/views/app_menu/recent_tabs_dynamic_menu.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/url_formatter/elide_url.h"
 #include "ui/actions/actions.h"
+#include "ui/base/accelerators/menu_label_accelerator_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/gfx/range/range.h"
+#include "ui/gfx/text_utils.h"
+#include "url/gurl.h"
 
 namespace {
+
+// Returns the fuzzy search scoring params, starting from the kChroMenuSearch
+// feature params. If the --chro-menu-search-scoring switch (settable from
+// chrome://flags) is present, each valid "title,secondary,synonym,min_score"
+// entry in it overrides the corresponding feature param value. Empty or invalid
+// entries are ignored.
+FuzzyFinder::ScoringParams GetScoringParams() {
+  FuzzyFinder::ScoringParams params{
+      .title = features::kChroMenuSearchTitleWeight.Get(),
+      .secondary_text = features::kChroMenuSearchSecondaryWeight.Get(),
+      .synonym = features::kChroMenuSearchSynonymWeight.Get(),
+      .min_score = features::kChroMenuSearchMinScore.Get(),
+  };
+
+  const std::string switch_value =
+      base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+          switches::kChroMenuSearchScoring);
+  if (switch_value.empty()) {
+    return params;
+  }
+
+  const std::array<double*, 4> fields = {&params.title, &params.secondary_text,
+                                         &params.synonym, &params.min_score};
+  const std::vector<std::string_view> parts = base::SplitStringPiece(
+      switch_value, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  for (size_t i = 0; i < fields.size() && i < parts.size(); ++i) {
+    double value;
+    if (base::StringToDouble(parts[i], &value) && std::isfinite(value)) {
+      *fields[i] = value;
+    }
+  }
+  return params;
+}
 
 // Maximum number of candidates returned by fuzzy finder across all categories.
 constexpr size_t kMaxGlobalCandidates = 50;
@@ -82,23 +129,30 @@ bool CanProcessItem(actions::BaseAction* action) {
          AppMenuActionItem::DisplayType::kMaxSearchable;
 }
 
-// Determines if an action item is a submenu or container (e.g. has children or
-// has a dynamic populate callback).
+// Determines if an action item is a submenu or container (e.g. has children,
+// has a dynamic populate callback, or is explicitly marked as a submenu).
 bool IsSubmenuContainer(const actions::BaseAction* action) {
   return !action->GetChildren().children().empty() ||
-         action->HasPopulateChildActionsCallback();
+         action->HasPopulateChildActionsCallback() ||
+         action->GetProperty(AppMenuActionItem::kIsSubmenuKey);
 }
 
 // Extracts the display title for an item with fallback priority:
 // 1. Text override -> 2. ActionItem text -> 3. Tooltip text fallback.
-std::u16string_view ExtractItemTitle(actions::BaseAction* action) {
+// The returned title is plain display text: menu label mnemonic markers are
+// stripped and escaped ampersands ("&&") are collapsed to a literal "&".
+std::u16string ExtractItemTitle(actions::BaseAction* action) {
   const std::u16string* text_override =
       action->GetProperty(AppMenuActionItem::kTextOverrideKey);
-  const std::u16string_view raw_text = text_override
-                                           ? std::u16string_view(*text_override)
-                                           : action->GetActionItem()->GetText();
-  return raw_text.empty() ? action->GetActionItem()->GetTooltipText()
-                          : raw_text;
+  // Text overrides are menu labels and may contain mnemonics, whereas
+  // ActionItem::GetText() already has them removed.
+  const std::u16string text =
+      text_override ? gfx::RemoveAccelerator(*text_override)
+                    : std::u16string(action->GetActionItem()->GetText());
+  if (!text.empty()) {
+    return text;
+  }
+  return std::u16string(action->GetActionItem()->GetTooltipText());
 }
 
 }  // namespace
@@ -121,9 +175,6 @@ AppMenuSearchController::AppMenuSearchController(
   query_changed_subscription_ =
       search_bar_->AddTextChangedCallback(base::BindRepeating(
           &AppMenuSearchController::OnQueryChanged, base::Unretained(this)));
-  back_pressed_subscription_ =
-      search_bar_->AddBackPressedCallback(base::BindRepeating(
-          &AppMenuSearchController::OnBackPressed, base::Unretained(this)));
 }
 
 AppMenuSearchController::~AppMenuSearchController() = default;
@@ -140,7 +191,8 @@ void AppMenuSearchController::InitializeSearchIndex() {
     raw_items.push_back(item.get());
   }
 
-  fuzzy_finder_ = std::make_unique<FuzzyFinder>(std::move(raw_items));
+  fuzzy_finder_ =
+      std::make_unique<FuzzyFinder>(std::move(raw_items), GetScoringParams());
 }
 
 std::unique_ptr<actions::ActionItem> AppMenuSearchController::Search(
@@ -160,26 +212,33 @@ std::unique_ptr<actions::ActionItem> AppMenuSearchController::Search(
 }
 
 void AppMenuSearchController::OnQueryChanged() {
-  std::unique_ptr<actions::ActionItem> results = Search(search_bar_->GetText());
-  if (!results) {
-    // The query is below the minimum query length threshold. Keep the current
-    // rows, so only the back button leaves the results.
+  const std::u16string_view query = search_bar_->GetText();
+  if (base::TrimWhitespace(query, base::TRIM_ALL).empty()) {
+    // The query was cleared. Show the main menu
+    // instead of previous search results.
+    RestoreMenu();
     return;
   }
 
-  delegate_->ShowSearchResults(results.get());
+  std::unique_ptr<actions::ActionItem> results = Search(query);
+  if (!results) {
+    // The query is below the minimum query length threshold. Keep the current
+    // rows until the query is long enough or cleared.
+    return;
+  }
+
+  actions::ActionItem* results_ptr = results.get();
+  std::unique_ptr<actions::ActionItem> old_results = std::move(search_results_);
   search_results_ = std::move(results);
-  search_bar_->SetLeadingIcon(AppMenuSearchBarView::LeadingIcon::kBack);
+  delegate_->ShowSearchResults(results_ptr, std::move(old_results));
 }
 
-void AppMenuSearchController::OnBackPressed() {
+void AppMenuSearchController::RestoreMenu() {
   if (!search_results_) {
     return;
   }
 
-  delegate_->RestoreMenu();
-  search_results_.reset();
-  search_bar_->SetLeadingIcon(AppMenuSearchBarView::LeadingIcon::kSearch);
+  delegate_->RestoreMenu(std::move(search_results_));
 }
 
 void AppMenuSearchController::FlattenHierarchyRecursive(
@@ -204,7 +263,7 @@ void AppMenuSearchController::FlattenHierarchyRecursive(
     return;
   }
 
-  const std::u16string_view title = ExtractItemTitle(action);
+  const std::u16string title = ExtractItemTitle(action);
 
   // Tab groups: only the groups are searchable, one result each.
   if (current_type == AppMenuSearchItem::Type::kTabGroup) {
@@ -229,11 +288,32 @@ void AppMenuSearchController::FlattenHierarchyRecursive(
     return;
   }
 
-  if (!title.empty()) {
-    AddSearchItem(action,
-                  GetSearchItemType(action->GetActionItem(), current_type),
-                  title, context);
+  if (title.empty()) {
+    return;
   }
+
+  const AppMenuSearchItem::Type item_type =
+      GetSearchItemType(action->GetActionItem(), current_type);
+
+  // Bookmarks and recent tabs show the domain of the page they open instead of
+  // where they live in the menu.
+  const GURL* url = nullptr;
+  if (item_type == AppMenuSearchItem::Type::kBookmark) {
+    url = BookmarksDynamicMenu::GetBookmarkUrl(action);
+  } else if (item_type == AppMenuSearchItem::Type::kRecentTabs) {
+    url = RecentTabsDynamicMenu::GetTabUrl(action);
+    // Only the tabs are searchable, not the commands that restore a whole
+    // window, group or split.
+    if (!url) {
+      return;
+    }
+  }
+
+  AddSearchItem(
+      action, item_type, title,
+      url ? url_formatter::
+                FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(*url)
+          : std::u16string(context));
 }
 
 void AppMenuSearchController::AddSearchItem(
@@ -268,8 +348,8 @@ AppMenuSearchController::ProcessSearchResults(
 
   auto try_add_item = [&remaining_capacity](
                           std::vector<SearchResults::Item>& section,
-                          size_t max_cap,
-                          const AppMenuSearchItem* search_item) {
+                          size_t max_cap, const AppMenuSearchItem* search_item,
+                          const gfx::Range& highlight_range) {
     if (section.size() < max_cap) {
       section.push_back({
           .action_item = search_item->GetActionItem(),
@@ -277,6 +357,7 @@ AppMenuSearchController::ProcessSearchResults(
           .breadcrumb = search_item->GetSecondaryText(),
           .icon_override = search_item->GetIconOverride(),
           .is_checkable = search_item->IsCheckable(),
+          .highlight_range = highlight_range,
       });
       --remaining_capacity;
     }
@@ -297,16 +378,20 @@ AppMenuSearchController::ProcessSearchResults(
     // maximum per-section result caps to keep search results concise.
     switch (search_item->GetType()) {
       case AppMenuSearchItem::Type::kAction:
-        try_add_item(results.actions, kMaxActions, search_item);
+        try_add_item(results.actions, kMaxActions, search_item,
+                     match.exact_match_range);
         break;
       case AppMenuSearchItem::Type::kBookmark:
-        try_add_item(results.bookmarks, kMaxBookmarks, search_item);
+        try_add_item(results.bookmarks, kMaxBookmarks, search_item,
+                     match.exact_match_range);
         break;
       case AppMenuSearchItem::Type::kRecentTabs:
-        try_add_item(results.recent_tabs, kMaxRecentTabs, search_item);
+        try_add_item(results.recent_tabs, kMaxRecentTabs, search_item,
+                     match.exact_match_range);
         break;
       case AppMenuSearchItem::Type::kTabGroup:
-        try_add_item(results.tab_groups, kMaxTabGroups, search_item);
+        try_add_item(results.tab_groups, kMaxTabGroups, search_item,
+                     match.exact_match_range);
         break;
     }
   }
@@ -350,12 +435,26 @@ AppMenuSearchController::BuildSearchResultsTree(SearchResults results) const {
       // Always show the title that matched, even when it's the action's own
       // text. Otherwise the row shows the action's text, which can differ
       // (e.g. a text override on the menu row) or be empty (icon-only
-      // buttons, which are titled by their tooltip).
-      indirect_item->SetProperty(AppMenuActionItem::kTextOverrideKey,
-                                 item.title);
+      // buttons, which are titled by their tooltip). Highlighted rows disable
+      // mnemonics on the MenuItemView so UTF-16 offsets match `item.title`;
+      // unhighlighted rows keep mnemonics enabled, so both title and
+      // secondary title need ampersands escaped.
+      const bool has_highlight = item.highlight_range.IsValid();
+      if (has_highlight) {
+        indirect_item->SetProperty(AppMenuActionItem::kHighlightRangeKey,
+                                   item.highlight_range);
+      }
+      indirect_item->SetProperty(
+          AppMenuActionItem::kTextOverrideKey,
+          has_highlight
+              ? std::u16string(item.title)
+              : ui::EscapeMenuLabelAmpersands(std::u16string(item.title)));
       if (!item.breadcrumb.empty()) {
         indirect_item->SetProperty(AppMenuActionItem::kSecondaryTextKey,
-                                   item.breadcrumb);
+                                   has_highlight
+                                       ? std::u16string(item.breadcrumb)
+                                       : ui::EscapeMenuLabelAmpersands(
+                                             std::u16string(item.breadcrumb)));
       }
       if (item.icon_override) {
         indirect_item->SetProperty(AppMenuActionItem::kIconOverrideKey,

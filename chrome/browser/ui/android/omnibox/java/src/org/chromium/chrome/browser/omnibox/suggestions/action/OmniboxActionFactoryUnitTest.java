@@ -11,9 +11,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.ActionType;
 import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.search_engines.StarterPackId;
+import org.chromium.url.JUnitTestGURLs;
 
 /** Tests for {@link OmniboxActionFactory}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -38,7 +39,7 @@ public class OmniboxActionFactoryUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                1,
+                                ActionType.DIRECTIONS,
                                 "url",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.CHIP)));
@@ -52,7 +53,7 @@ public class OmniboxActionFactoryUnitTest {
                         0,
                         "hint",
                         "accessibility",
-                        SuggestTemplateInfo.TemplateAction.ActionType.CALL_VALUE,
+                        ActionType.CALL,
                         "url",
                         /* tabId= */ 0,
                         ActionPresentationMode.CHIP));
@@ -66,7 +67,7 @@ public class OmniboxActionFactoryUnitTest {
                         0,
                         "hint",
                         "accessibility",
-                        SuggestTemplateInfo.TemplateAction.ActionType.CALL_VALUE,
+                        ActionType.CALL,
                         "url",
                         /* tabId= */ 0,
                         ActionPresentationMode.CHIP));
@@ -79,5 +80,12 @@ public class OmniboxActionFactoryUnitTest {
         assertNotNull(
                 OmniboxActionFactory.buildSiteSearchAction(
                         0, "hint", "accessibility", "keyword", StarterPackId.NONE));
+    }
+
+    @Test
+    public void contextualSearchFulfillmentActionBuild() {
+        assertNotNull(
+                OmniboxActionFactory.buildOmniboxContextualSearchFulfillmentAction(
+                        0, "hint", "accessibility", JUnitTestGURLs.SEARCH_URL));
     }
 }

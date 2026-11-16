@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import type {DomainInfo} from './password_manager.mojom-webui.js';
+
 export interface PasswordCheckParams {
   state?: chrome.passwordsPrivate.PasswordCheckState;
   totalNumber?: number;
@@ -242,6 +244,14 @@ export function createAffiliatedDomain(domain: string):
     chrome.passwordsPrivate.DomainInfo {
   return {
     name: domain,
+    url: `https://${domain}/login`,
+    signonRealm: `https://${domain}/login`,
+  };
+}
+
+export function createDomainInfo(domain: string): DomainInfo {
+  return {
+    humanReadableName: domain,
     url: `https://${domain}/login`,
     signonRealm: `https://${domain}/login`,
   };

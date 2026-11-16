@@ -181,6 +181,41 @@ TEST_F(EventsXTest, ButtonEvents) {
   // TODO(derat): Test XInput code.
 }
 
+TEST_F(EventsXTest, BackForwardButtonEvents) {
+  x11::Event event;
+  constexpr gfx::Point kLocation(5, 10);
+
+  // X buttons 8 and 11 (BTN_SIDE and BTN_BACK) are back; 9 and 10 (BTN_EXTRA
+  // and BTN_FORWARD) are forward.
+  constexpr struct {
+    int button;
+    int flag;
+  } kCases[] = {
+      {8, ui::EF_BACK_MOUSE_BUTTON},
+      {9, ui::EF_FORWARD_MOUSE_BUTTON},
+      {10, ui::EF_FORWARD_MOUSE_BUTTON},
+      {11, ui::EF_BACK_MOUSE_BUTTON},
+  };
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(test_case.button);
+
+    InitButtonEvent(&event, true, kLocation, test_case.button, {});
+    EXPECT_EQ(ui::EventType::kMousePressed, ui::EventTypeFromXEvent(event));
+    EXPECT_EQ(test_case.flag, ui::EventFlagsFromXEvent(event));
+    EXPECT_EQ(test_case.flag, ui::GetChangedMouseButtonFlagsFromXEvent(event));
+
+    InitButtonEvent(&event, false, kLocation, test_case.button, {});
+    EXPECT_EQ(ui::EventType::kMouseReleased, ui::EventTypeFromXEvent(event));
+    EXPECT_EQ(test_case.flag, ui::EventFlagsFromXEvent(event));
+    EXPECT_EQ(test_case.flag, ui::GetChangedMouseButtonFlagsFromXEvent(event));
+  }
+
+  // Buttons beyond 11 have no event flag.
+  InitButtonEvent(&event, true, kLocation, 12, {});
+  EXPECT_EQ(ui::EventType::kMousePressed, ui::EventTypeFromXEvent(event));
+  EXPECT_EQ(ui::EF_NONE, ui::GetChangedMouseButtonFlagsFromXEvent(event));
+}
+
 TEST_F(EventsXTest, AvoidExtraEventsOnWheelRelease) {
   x11::Event event;
   gfx::Point location(5, 10);
@@ -462,6 +497,52 @@ TEST_F(EventsXTest, DisableKeyboard) {
   xev.InitGenericKeyEvent(master_device_id, blocked_device_id,
                           ui::EventType::kKeyPressed, ui::VKEY_A, 0);
   EXPECT_EQ(ui::EventType::kKeyPressed, ui::EventTypeFromXEvent(*xev));
+}
+
+// Verifies that key events from every master keyboard are processed when MPX
+// is used (e.g. after `xinput create-master`), and that key events from slave
+// keyboards are still ignored. https://crbug.com/573208179
+TEST_F(EventsXTest, MultipleMasterKeyboards) {
+  using DeviceId = x11::Input::DeviceId;
+  using DeviceType = x11::Input::DeviceType;
+  constexpr int kCorePointer = 2;
+  constexpr int kCoreKeyboard = 3;
+  constexpr int kCoreSlaveKeyboard = 6;
+  constexpr int kNewPointer = 16;
+  constexpr int kNewKeyboard = 17;
+  constexpr int kNewSlaveKeyboard = 19;
+  auto device = [](int id, DeviceType type, int attachment) {
+    x11::Input::XIDeviceInfo info;
+    info.deviceid = static_cast<DeviceId>(id);
+    info.type = type;
+    info.attachment = static_cast<DeviceId>(attachment);
+    info.enabled = true;
+    return info;
+  };
+  TouchFactory::GetInstance()->SetXI2DeviceListForTest({
+      device(kCorePointer, DeviceType::MasterPointer, kCoreKeyboard),
+      device(kCoreKeyboard, DeviceType::MasterKeyboard, kCorePointer),
+      device(kCoreSlaveKeyboard, DeviceType::SlaveKeyboard, kCoreKeyboard),
+      device(kNewPointer, DeviceType::MasterPointer, kNewKeyboard),
+      device(kNewKeyboard, DeviceType::MasterKeyboard, kNewPointer),
+      device(kNewSlaveKeyboard, DeviceType::SlaveKeyboard, kNewKeyboard),
+  });
+
+  ScopedXI2Event xev;
+  xev.InitGenericKeyEvent(kCoreKeyboard, kCoreSlaveKeyboard,
+                          EventType::kKeyPressed, VKEY_A, 0);
+  EXPECT_EQ(EventType::kKeyPressed, EventTypeFromXEvent(*xev));
+  xev.InitGenericKeyEvent(kNewKeyboard, kNewSlaveKeyboard,
+                          EventType::kKeyPressed, VKEY_A, 0);
+  EXPECT_EQ(EventType::kKeyPressed, EventTypeFromXEvent(*xev));
+
+  // Events reported by the slave devices themselves are duplicates.
+  xev.InitGenericKeyEvent(kCoreSlaveKeyboard, kCoreSlaveKeyboard,
+                          EventType::kKeyPressed, VKEY_A, 0);
+  EXPECT_EQ(EventType::kUnknown, EventTypeFromXEvent(*xev));
+  xev.InitGenericKeyEvent(kNewSlaveKeyboard, kNewSlaveKeyboard,
+                          EventType::kKeyPressed, VKEY_A, 0);
+  EXPECT_EQ(EventType::kUnknown, EventTypeFromXEvent(*xev));
 }
 
 // Verifies that the type of events from a disabled mouse is

@@ -5,8 +5,10 @@
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
 
 #include "base/no_destructor.h"
+#include "chrome/browser/glic/public/glic_provider_latch_factory.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service.h"
+#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/page_content_annotations/page_content_extraction_service_factory.h"
 #include "chrome/browser/predictors/loading_predictor.h"
@@ -42,6 +44,10 @@ ContextualCueingServiceFactory::ContextualCueingServiceFactory()
   DependsOn(OptimizationGuideKeyedServiceFactory::GetInstance());
   DependsOn(predictors::LoadingPredictorFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
+  // The service's RecentPagesCollector holds the HistoryService.
+  DependsOn(HistoryServiceFactory::GetInstance());
+  // The service reads the profile's Glic provider when it is built.
+  DependsOn(GlicProviderLatchFactory::GetInstance());
 }
 
 ContextualCueingServiceFactory::~ContextualCueingServiceFactory() = default;
@@ -49,12 +55,15 @@ ContextualCueingServiceFactory::~ContextualCueingServiceFactory() = default;
 std::unique_ptr<KeyedService>
 ContextualCueingServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
-  if (!glic::IsContextualCueingEnabled() &&
-      !glic::IsZeroStateSuggestionsEnabled()) {
+  Profile* profile = Profile::FromBrowserContext(context);
+  const bool zero_state_suggestions_enabled =
+      glic::IsZeroStateSuggestionsEnabled(profile);
+  if (!glic::IsContextualCueingEnabled(profile) &&
+      !zero_state_suggestions_enabled) {
     return nullptr;
   }
-  Profile* profile = Profile::FromBrowserContext(context);
   return std::make_unique<ContextualCueingService>(
+      zero_state_suggestions_enabled,
       page_content_annotations::PageContentExtractionServiceFactory::
           GetForProfile(profile),
       OptimizationGuideKeyedServiceFactory::GetForProfile(profile),

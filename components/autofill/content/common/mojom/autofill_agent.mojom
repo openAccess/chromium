@@ -6,6 +6,7 @@ module autofill.mojom;
 
 import "components/autofill/core/common/mojom/autofill_types.mojom";
 import "mojo/public/mojom/base/string16.mojom";
+import "third_party/blink/public/mojom/tokens/tokens.mojom";
 
 // There is one instance of this interface per render frame in the render
 // process. All methods are called by browser on renderer.
@@ -27,7 +28,8 @@ interface AutofillAgent {
   // If `force` is true, the form cache is cleared before extracting forms so
   // that all forms are re-extracted.
   // If `success == false`, TriggerFormExtractionWithResponse() was triggered
-  // while another TriggerFormExtractionWithResponse() was ongoing.
+  // while another TriggerFormExtractionWithResponse() was ongoing, or form
+  // extraction was aborted (e.g., due to a navigation before the timer fired).
   TriggerFormExtractionWithResponse(bool force) => (bool success);
 
   // Fills or previews the form identified by `form` with the data of its
@@ -269,4 +271,95 @@ interface PasswordGenerationAgent {
   // Tells the renderer to advance focus to the next field after password fields
   // (assuming that password fields are adjacent in account creation).
   FocusNextFieldAfterPasswords();
+};
+
+// A custom select (a select-like widget that isn't a <select> element) that the
+// custom form control script found. This is how the renderer's
+// `CustomFormControl` crosses the IPC: the element is identified by its
+// `FieldRendererId`. The renderer validates the `field_id`s that the
+// site-specific script returned before sending them, so the browser may treat
+// a violation of the requirements below as a bad message.
+struct DetectedCustomFormControl {
+  // The element that represents the control. Never null, and different for
+  // each control in a reply.
+  FieldRendererId field_id;
+  // The Autofill field type name that the script assigned, e.g.
+  // "ADDRESS_HOME_STATE". Untrusted: the browser must check that it names a
+  // `FieldType` (see `TypeNameToFieldType()`) before using it.
+  string field_type;
+  // Whether the control can be filled now, e.g. because it is visible and
+  // enabled.
+  bool is_active;
+};
+
+// The options that the script extracted from a custom form control.
+struct ExtractedCustomFormControlOptions {
+  // Valid (see `IsValidOptionVector()`): the renderer doesn't send invalid
+  // options, so the browser may treat them as a bad message.
+  array<SelectOption> options;
+  // Whether the script opened a popover to extract the options and left it
+  // open. Selecting an option with `SetValue()` closes it; otherwise,
+  // `ClosePopover()` must close it.
+  bool popover_needs_to_be_closed;
+};
+
+// Runs the custom form control script of a frame's current document in the
+// renderer. A custom form control script can detect, read and fill the page's
+// custom form controls (e.g. select-like widgets that aren't <select>
+// elements) from an isolated world. Only available if the embedder enables
+// custom form control scripts through
+// `AutofillAgent::EnableCustomFormControlScripts()` (in Chrome, if
+// `features::kAutofillCustomFormControlScripts` is enabled); then there is one
+// instance per render frame. All methods are called by the browser on the
+// renderer; replies come from the renderer, are informational and untrusted.
+// Calls fail while the script still handles a previous call, so the browser
+// waits for each reply before it sends the next call.
+//
+// For prototyping only: this isn't safe to ship yet (see `LoadUnsafeScript()`).
+interface CustomFormControlAgent {
+  // Loads `script` (whose size the browser limits) for `document`, which must
+  // be the frame's current document. The browser may send a call after it sent
+  // a navigation to the renderer, but before it learned that the navigation
+  // committed. Then the call names the previous document, which isn't the
+  // current document anymore when the call arrives. In that case, this does
+  // nothing and `success` is false. Otherwise, any previous script is dropped,
+  // even if loading fails, and `success` is false if the script couldn't be
+  // loaded, e.g. because it threw or didn't declare the expected entry point.
+  // Scripts are dropped when a new document is committed.
+  //
+  // Unsafe: the script can read and change the frame's DOM, and how to make
+  // that safe is still open. Only for prototyping behind
+  // `features::kAutofillCustomFormControlScripts`.
+  LoadUnsafeScript(blink.mojom.DocumentToken document, string script)
+      => (bool success);
+
+  // Returns the custom form controls (for now, custom selects) that the loaded
+  // script finds in `document`. `controls` is empty if no script is loaded, if
+  // the script fails, or if `document` isn't the current document (see
+  // `LoadUnsafeScript()`). Has at most `kMaxExtractableFields` controls, with
+  // different `field_id`s (see `DetectedCustomFormControl`).
+  DetectCustomFormControls(blink.mojom.DocumentToken document)
+      => (array<DetectedCustomFormControl> controls);
+
+  // Extracts the options of the custom form control `field` (as detected by
+  // `DetectCustomFormControls()`) in `document` with the loaded script. The
+  // script may open the control's popover to do so. `options` is null if no
+  // script is loaded, if the script fails or returns invalid options, if
+  // `field` isn't an element of `document`, or if `document` isn't the current
+  // document.
+  ExtractOptions(blink.mojom.DocumentToken document, FieldRendererId field)
+      => (ExtractedCustomFormControlOptions? options);
+
+  // Closes the popover of the custom form control `field` in `document` that
+  // `ExtractOptions()` left open. Replies once done, also if it fails.
+  ClosePopover(blink.mojom.DocumentToken document, FieldRendererId field)
+      => ();
+
+  // Selects `option` (one of the extracted options) in the custom form control
+  // `field` in `document` with the loaded script, which also closes its
+  // popover. Replies once done, also if it fails.
+  SetValue(blink.mojom.DocumentToken document,
+           FieldRendererId field,
+           SelectOption option)
+      => ();
 };

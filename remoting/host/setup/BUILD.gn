@@ -89,6 +89,21 @@ source_set("start_host_main_headers") {
   deps = [ "//remoting/host:host_main_headers" ]
 }
 
+if (is_linux) {
+  source_set("start_host_linux") {
+    sources = [
+      "start_host_linux.cc",
+      "start_host_linux.h",
+    ]
+    deps = [
+      ":common",
+      "//base",
+      "//remoting/base:os_utils",
+      "//remoting/host/linux:host_types",
+    ]
+  }
+}
+
 static_library("start_host_common") {
   sources = [
     "host_starter.cc",
@@ -140,11 +155,10 @@ source_set("start_host_main") {
   ]
 
   if (is_linux) {
-    sources += [
-      "start_host_as_root.cc",
-      "start_host_as_root.h",
+    deps += [
+      ":start_host_linux",
+      "//remoting/host/linux:host_types",
     ]
-    deps += [ "//remoting/host/linux:host_types" ]
   }
 
   if (remoting_internal) {

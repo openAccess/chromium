@@ -117,7 +117,6 @@
 #include "content/shell/browser/shell_browser_context.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/test/content_browser_test_utils_internal.h"
-#include "content/test/mock_reduce_accept_language_controller_delegate.h"
 #include "mojo/public/cpp/bindings/clone_traits.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/features.h"
@@ -3345,95 +3344,6 @@ IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTestClientHintsEnabled,
       ->set_client_hints_controller_delegate(nullptr);
 }
 
-class WebContentsImplBrowserTestReduceAcceptLanguageOn
-    : public WebContentsImplBrowserTest {
- public:
-  void SetUp() override {
-    scoped_feature_list_.Reset();
-    scoped_feature_list_.InitWithFeatures(
-        {network::features::kReduceAcceptLanguage}, {});
-    WebContentsImplBrowserTest::SetUp();
-  }
-
-  void VerifyAcceptLanguageHeader(net::EmbeddedTestServer& http_server) {
-    ReduceAcceptLanguageControllerDelegate* delegate =
-        ShellContentBrowserClient::Get()
-            ->browser_context()
-            ->GetReduceAcceptLanguageControllerDelegate();
-
-    ASSERT_EQ(delegate->GetUserAcceptLanguages(),
-              std::vector<std::string>({"en-us", "en"}));
-
-    http_server.ServeFilesFromSourceDirectory("content/test/data");
-
-    base::RunLoop run_loop;
-    http_server.RegisterRequestMonitor(base::BindRepeating(
-        [](base::RunLoop* run_loop,
-           const net::test_server::HttpRequest& request) {
-          if (request.relative_url.compare("/empty.html") == 0) {
-            // Default mock user language is "en-us,en", see
-            // content/shell/browser/shell_content_browser_client.h
-            ASSERT_EQ(request.headers.at("Accept-Language"), "en-us,en;q=0.9");
-            run_loop->Quit();
-          }
-        },
-        &run_loop));
-
-    auto handle = http_server.StartAndReturnHandle();
-    EXPECT_TRUE(NavigateToURL(shell(), http_server.GetURL("/empty.html")));
-
-    run_loop.Run();
-  }
-
-  void VerifyPersistAndGetReduceAcceptLanguage(
-      const GURL& url,
-      const std::string& persist_lang,
-      const std::optional<std::string>& expect_lang) {
-    ReduceAcceptLanguageControllerDelegate* delegate =
-        ShellContentBrowserClient::Get()
-            ->browser_context()
-            ->GetReduceAcceptLanguageControllerDelegate();
-
-    url::Origin origin = url::Origin::Create(url);
-    delegate->PersistReducedLanguage(origin, persist_lang);
-    const std::optional<std::string>& language =
-        delegate->GetReducedLanguage(origin);
-    EXPECT_EQ(expect_lang, language);
-
-    delegate->ClearReducedLanguage(origin);
-    EXPECT_FALSE(delegate->GetReducedLanguage(origin).has_value());
-  }
-};
-
-// Verifies accept-language are updated when DidStartNavigation().
-IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTestReduceAcceptLanguageOn,
-                       HttpsReduceAcceptLanguageInNavigation) {
-  net::EmbeddedTestServer http2_server(
-      net::EmbeddedTestServer::TYPE_HTTPS,
-      net::test_server::HttpConnection::Protocol::kHttp2);
-  VerifyAcceptLanguageHeader(http2_server);
-}
-
-IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTestReduceAcceptLanguageOn,
-                       HttpReduceAcceptLanguageInNavigation) {
-  net::EmbeddedTestServer http_server_http(net::EmbeddedTestServer::TYPE_HTTP);
-  VerifyAcceptLanguageHeader(http_server_http);
-}
-
-IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTestReduceAcceptLanguageOn,
-                       PersistAndGetReduceAcceptLanguage) {
-  std::string test_lang("en-us");
-  VerifyPersistAndGetReduceAcceptLanguage(/*url=*/GURL("https://example.com/"),
-                                          /*persist_lang=*/test_lang,
-                                          /*expect_lang=*/test_lang);
-  VerifyPersistAndGetReduceAcceptLanguage(/*url=*/GURL("http://example.com/"),
-                                          /*persist_lang=*/test_lang,
-                                          /*expect_lang=*/test_lang);
-  VerifyPersistAndGetReduceAcceptLanguage(/*url=*/GURL("ws://example.com/"),
-                                          /*persist_lang=*/test_lang,
-                                          /*expect_lang=*/std::nullopt);
-}
-
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,
                        DialogsFromJavaScriptEndFullscreen) {
   WebContentsImpl* wc = static_cast<WebContentsImpl*>(shell()->web_contents());
@@ -3905,7 +3815,6 @@ class LoadStateWaiter : public WebContentsDelegate {
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest, DISABLED_UpdateLoadState) {
   std::u16string a_host = url_formatter::IDNToUnicode("a.com");
   std::u16string b_host = url_formatter::IDNToUnicode("b.com");
-  std::u16string paused_host = url_formatter::IDNToUnicode("paused.com");
 
   // Controlled responses for image requests made in the test. They will
   // alternate being the "most interesting" for the purposes of notifying the
@@ -6581,6 +6490,50 @@ IN_PROC_BROWSER_TEST_F(UnownedInnerWebContentsBrowserTest,
 class SurfaceEmbedConnectorWebContentsBrowserTest
     : public WebContentsImplBrowserTest {
  public:
+  class SurfaceEmbedViewObserver : public WebContentsObserver {
+   public:
+    explicit SurfaceEmbedViewObserver(WebContents* child_web_contents)
+        : WebContentsObserver(child_web_contents) {}
+
+    void VerifyCurrentViewStatus() {
+      WebContents* child_web_contents = web_contents();
+      ASSERT_TRUE(child_web_contents);
+      auto* connector = static_cast<SurfaceEmbedConnectorImpl*>(
+          child_web_contents->GetSurfaceEmbedConnector());
+      auto* view = static_cast<RenderWidgetHostViewBase*>(
+          child_web_contents->GetRenderWidgetHostView());
+      if (!view) {
+        // Before the first navigation, a WebContents has no view.
+        EXPECT_EQ(nullptr, connector);
+        return;
+      }
+
+      if (!connector) {
+        EXPECT_FALSE(view->IsRenderWidgetHostViewChildFrame());
+        return;
+      }
+
+      ASSERT_TRUE(view->IsRenderWidgetHostViewChildFrame());
+      auto* child_view = static_cast<RenderWidgetHostViewChildFrame*>(view);
+      EXPECT_EQ(connector, child_view->FrameConnectorForTesting());
+      EXPECT_NE(nullptr, child_view->GetRootRenderWidgetHostView());
+    }
+
+    void RenderViewHostChanged(RenderViewHost* old_host,
+                               RenderViewHost* new_host) override {
+      VerifyCurrentViewStatus();
+    }
+
+    void RenderFrameHostChanged(RenderFrameHost* old_host,
+                                RenderFrameHost* new_host) override {
+      if (new_host->IsInPrimaryMainFrame()) {
+        EXPECT_EQ(new_host->GetView(),
+                  web_contents()->GetRenderWidgetHostView());
+      }
+      VerifyCurrentViewStatus();
+    }
+  };
+
   SurfaceEmbedConnectorWebContentsBrowserTest()
       : prerender_helper_(base::BindRepeating(
             &SurfaceEmbedConnectorWebContentsBrowserTest::web_contents,
@@ -6610,6 +6563,47 @@ class SurfaceEmbedConnectorWebContentsBrowserTest
         parent_web_contents->GetPrimaryMainFrame(),
         &surface_embed_connector_delegate_,
         SurfaceEmbedConnector::PinchGestureMode::kDelegateToParentWebContents));
+  }
+
+  SurfaceEmbedViewObserver* StartMonitoringViewStatus(
+      WebContents* child_web_contents) {
+    SurfaceEmbedViewObserver* view_observer =
+        GetSurfaceEmbedViewObserver(child_web_contents);
+    if (!view_observer) {
+      view_observers_.push_back(
+          std::make_unique<SurfaceEmbedViewObserver>(child_web_contents));
+      view_observer = view_observers_.back().get();
+    }
+    view_observer->VerifyCurrentViewStatus();
+    return view_observer;
+  }
+
+  void VerifySurfaceEmbedView(WebContents* child_web_contents) {
+    SurfaceEmbedViewObserver* view_observer =
+        GetSurfaceEmbedViewObserver(child_web_contents);
+    ASSERT_TRUE(view_observer) << "Surface Embed view is not being monitored";
+    view_observer->VerifyCurrentViewStatus();
+  }
+
+  SurfaceEmbedViewObserver* GetSurfaceEmbedViewObserver(
+      WebContents* child_web_contents) {
+    for (const auto& observer : view_observers_) {
+      if (observer->web_contents() == child_web_contents) {
+        return observer.get();
+      }
+    }
+    return nullptr;
+  }
+
+  void SetConnector(WebContentsImpl* child_web_contents,
+                    std::unique_ptr<SurfaceEmbedConnectorImpl> connector) {
+    child_web_contents->SetSurfaceEmbedConnector(std::move(connector));
+    VerifySurfaceEmbedView(child_web_contents);
+  }
+
+  void ClearConnector(WebContentsImpl* child_web_contents) {
+    child_web_contents->ClearSurfaceEmbedConnector();
+    VerifySurfaceEmbedView(child_web_contents);
   }
 
   void ExpectRegisteredViews(
@@ -6655,7 +6649,108 @@ class SurfaceEmbedConnectorWebContentsBrowserTest
   base::WeakPtr<WebContents> prerender_target_web_contents_;
   base::test::ScopedFeatureList scoped_feature_list_;
   MockSurfaceEmbedConnectorDelegate surface_embed_connector_delegate_;
+  std::vector<std::unique_ptr<SurfaceEmbedViewObserver>> view_observers_;
 };
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
+                       SameSiteSubframeNavigationKeepsMainFrameConnector) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  if (!AreAllSitesIsolatedForTesting()) {
+    IsolateOriginsForTesting(embedded_test_server(), shell()->web_contents(),
+                             {"b.com", "c.com"});
+  }
+
+  const GURL outer_url =
+      embedded_test_server()->GetURL("outer.com", "/simple_page.html");
+  const GURL inner_url = embedded_test_server()->GetURL(
+      "a.com", "/cross_site_iframe_factory.html?a(b(c))");
+  const GURL nested_frame_url =
+      embedded_test_server()->GetURL("b.com", "/title1.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), outer_url));
+  auto* outer_wc = static_cast<WebContentsImpl*>(shell()->web_contents());
+  WebContents::CreateParams inner_params(outer_wc->GetBrowserContext());
+  std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
+  ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url));
+  auto* inner_wc_impl = static_cast<WebContentsImpl*>(inner_wc.get());
+  auto* main_frame = inner_wc->GetPrimaryMainFrame();
+  auto* parent_frame = ChildFrameAt(main_frame, 0);
+  ASSERT_TRUE(parent_frame);
+  auto* nested_frame = ChildFrameAt(parent_frame, 0);
+  ASSERT_TRUE(nested_frame);
+  ASSERT_NE(main_frame->GetView(), parent_frame->GetView());
+  ASSERT_NE(parent_frame->GetView(), nested_frame->GetView());
+
+  auto connector = CreateConnector(inner_wc_impl, outer_wc);
+  auto* connector_ptr = connector.get();
+  SetConnector(inner_wc_impl, std::move(connector));
+  auto* main_view =
+      static_cast<RenderWidgetHostViewChildFrame*>(main_frame->GetView());
+  ASSERT_EQ(connector_ptr, main_view->FrameConnectorForTesting());
+
+  ASSERT_TRUE(NavigateFrameToURL(
+      static_cast<RenderFrameHostImpl*>(nested_frame)->frame_tree_node(),
+      nested_frame_url));
+
+  auto* new_nested_frame = ChildFrameAt(parent_frame, 0);
+  ASSERT_TRUE(new_nested_frame);
+  EXPECT_EQ(parent_frame->GetView(), new_nested_frame->GetView());
+  EXPECT_EQ(nullptr, static_cast<RenderFrameHostImpl*>(new_nested_frame)
+                         ->frame_tree_node()
+                         ->render_manager()
+                         ->GetProxyToParentOrOuterDelegate());
+  EXPECT_EQ(main_view, inner_wc->GetRenderWidgetHostView());
+  EXPECT_EQ(connector_ptr, main_view->FrameConnectorForTesting());
+  EXPECT_NE(connector_ptr, static_cast<RenderWidgetHostViewChildFrame*>(
+                               parent_frame->GetView())
+                               ->FrameConnectorForTesting());
+  VerifySurfaceEmbedView(inner_wc.get());
+}
+
+IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
+                       PrerenderNavigationKeepsMainFrameConnector) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL outer_url =
+      embedded_test_server()->GetURL("outer.com", "/simple_page.html");
+  const GURL inner_url =
+      embedded_test_server()->GetURL("a.com", "/title1.html");
+  const GURL prerender_url =
+      embedded_test_server()->GetURL("a.com", "/simple_page.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), outer_url));
+  auto* outer_wc = static_cast<WebContentsImpl*>(shell()->web_contents());
+  WebContents::CreateParams inner_params(outer_wc->GetBrowserContext());
+  std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
+  inner_wc->SetDelegate(outer_wc->GetDelegate());
+  set_prerender_target_web_contents(inner_wc.get());
+  ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url));
+  auto* inner_wc_impl = static_cast<WebContentsImpl*>(inner_wc.get());
+
+  auto connector = CreateConnector(inner_wc_impl, outer_wc);
+  auto* connector_ptr = connector.get();
+  SetConnector(inner_wc_impl, std::move(connector));
+  auto* main_view = static_cast<RenderWidgetHostViewChildFrame*>(
+      inner_wc->GetPrimaryMainFrame()->GetView());
+  ASSERT_EQ(connector_ptr, main_view->FrameConnectorForTesting());
+
+  PrerenderHostId prerender_host_id =
+      prerender_helper().AddPrerender(prerender_url);
+  auto* prerender_frame =
+      prerender_helper().GetPrerenderedMainFrameHost(prerender_host_id);
+  ASSERT_TRUE(prerender_frame);
+  auto* prerender_view =
+      static_cast<RenderWidgetHostViewBase*>(prerender_frame->GetView());
+  ASSERT_TRUE(prerender_view);
+  ASSERT_TRUE(prerender_view->IsRenderWidgetHostViewChildFrame());
+  EXPECT_EQ(main_view, inner_wc->GetRenderWidgetHostView());
+  EXPECT_EQ(connector_ptr, main_view->FrameConnectorForTesting());
+  EXPECT_NE(connector_ptr,
+            static_cast<RenderWidgetHostViewChildFrame*>(prerender_view)
+                ->FrameConnectorForTesting());
+  VerifySurfaceEmbedView(inner_wc.get());
+}
 
 // Test setting and clearing a SurfaceEmbedConnector
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -6673,6 +6768,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url));
@@ -6723,7 +6819,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
   // Set SurfaceEmbedConnector
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   // Verify that the connection is established.
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
   // Verify that the inner WebContents doesn't have outer WebContents set since
@@ -6759,7 +6855,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
 
   // Verify that the connection is broken.
   EXPECT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
@@ -6803,7 +6899,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector again to verify it works as expected.
   auto connector2 = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr2 = connector2.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector2));
+  SetConnector(inner_wc_impl, std::move(connector2));
   EXPECT_EQ(connector_ptr2, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that inner WebContents now share the same native view with outer
@@ -6836,6 +6932,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
     EXPECT_EQ(0U,
               inner_text_input_manager->GetRegisteredViewsCountForTesting());
   }
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -6845,6 +6942,8 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams create_params(root->GetBrowserContext());
   auto parent = WebContents::Create(create_params);
   auto child = WebContents::Create(create_params);
+  StartMonitoringViewStatus(parent.get());
+  StartMonitoringViewStatus(child.get());
   auto* parent_impl = static_cast<WebContentsImpl*>(parent.get());
   auto* child_impl = static_cast<WebContentsImpl*>(child.get());
   ASSERT_TRUE(NavigateToURL(parent.get(), GURL("about:blank")));
@@ -6862,31 +6961,32 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   ExpectRegisteredViews(child_event_router, child_text_input_manager,
                         {child_impl});
 
-  child_impl->SetSurfaceEmbedConnector(
-      CreateConnector(child_impl, parent_impl));
+  SetConnector(child_impl, CreateConnector(child_impl, parent_impl));
   ExpectRegisteredViews(root_event_router, root_text_input_manager, {root});
   ExpectRegisteredViews(parent_event_router, parent_text_input_manager,
                         {parent_impl, child_impl});
   ExpectRegisteredViews(child_event_router, child_text_input_manager, {});
 
-  parent_impl->SetSurfaceEmbedConnector(CreateConnector(parent_impl, root));
+  SetConnector(parent_impl, CreateConnector(parent_impl, root));
   ExpectRegisteredViews(root_event_router, root_text_input_manager,
                         {root, parent_impl, child_impl});
   ExpectRegisteredViews(parent_event_router, parent_text_input_manager, {});
   ExpectRegisteredViews(child_event_router, child_text_input_manager, {});
 
-  parent_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(parent_impl);
   ExpectRegisteredViews(root_event_router, root_text_input_manager, {root});
   ExpectRegisteredViews(parent_event_router, parent_text_input_manager,
                         {parent_impl, child_impl});
   ExpectRegisteredViews(child_event_router, child_text_input_manager, {});
 
-  child_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(child_impl);
   ExpectRegisteredViews(root_event_router, root_text_input_manager, {root});
   ExpectRegisteredViews(parent_event_router, parent_text_input_manager,
                         {parent_impl});
   ExpectRegisteredViews(child_event_router, child_text_input_manager,
                         {child_impl});
+  VerifySurfaceEmbedView(parent.get());
+  VerifySurfaceEmbedView(child.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -6896,6 +6996,8 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams create_params(root->GetBrowserContext());
   auto parent = WebContents::Create(create_params);
   auto child = WebContents::Create(create_params);
+  auto* parent_view_observer = StartMonitoringViewStatus(parent.get());
+  StartMonitoringViewStatus(child.get());
   auto* parent_impl = static_cast<WebContentsImpl*>(parent.get());
   auto* child_impl = static_cast<WebContentsImpl*>(child.get());
   ASSERT_TRUE(NavigateToURL(parent.get(), GURL("about:blank")));
@@ -6906,19 +7008,20 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   auto* child_event_router = child_impl->GetInputEventRouter();
   auto* child_text_input_manager = child_impl->GetTextInputManager();
 
-  parent_impl->SetSurfaceEmbedConnector(CreateConnector(parent_impl, root));
-  child_impl->SetSurfaceEmbedConnector(
-      CreateConnector(child_impl, parent_impl));
+  SetConnector(parent_impl, CreateConnector(parent_impl, root));
+  SetConnector(child_impl, CreateConnector(child_impl, parent_impl));
   ExpectRegisteredViews(root_event_router, root_text_input_manager,
                         {root, parent_impl, child_impl});
   ExpectRegisteredViews(child_event_router, child_text_input_manager, {});
 
   parent.reset();
 
+  EXPECT_EQ(nullptr, parent_view_observer->web_contents());
   EXPECT_EQ(nullptr, child_impl->GetSurfaceEmbedConnector());
   ExpectRegisteredViews(root_event_router, root_text_input_manager, {root});
   ExpectRegisteredViews(child_event_router, child_text_input_manager,
                         {child_impl});
+  VerifySurfaceEmbedView(child.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -6945,6 +7048,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url));
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
@@ -7029,7 +7133,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that RenderFrameHosts are not changed after setting connector.
@@ -7088,7 +7192,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
   ASSERT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive.
@@ -7160,6 +7264,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
           ->IsRenderViewLive());
   EXPECT_TRUE(static_cast<RenderViewHostImpl*>(rfh_b2->GetRenderViewHost())
                   ->IsRenderViewLive());
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -7188,6 +7293,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   auto* inner_event_router = inner_wc_impl->GetInputEventRouter();
@@ -7246,7 +7352,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector.
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that RenderFrameHosts are not changed after setting connector.
@@ -7277,7 +7383,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector.
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
   ASSERT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive.
@@ -7310,7 +7416,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector again.
   auto connector2 = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr2 = connector2.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector2));
+  SetConnector(inner_wc_impl, std::move(connector2));
   ASSERT_EQ(connector_ptr2, inner_wc->GetSurfaceEmbedConnector());
 
   // Let the navigation complete.
@@ -7341,6 +7447,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
     EXPECT_EQ(0U,
               inner_text_input_manager->GetRegisteredViewsCountForTesting());
   }
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -7362,6 +7469,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url_a));
@@ -7398,7 +7506,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector.
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that RenderFrameHosts are not changed after setting connector.
@@ -7432,6 +7540,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
     ASSERT_TRUE(rwhv_b);
     ASSERT_TRUE(rwhv_b->IsRenderWidgetHostViewChildFrame());
   }
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -7452,6 +7561,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   // Setup Delegate for inner WebContents so that prerender request would not be
   // dropped by PrerenderHostRegistry::CreateAndStartHost.
   // In production code, inner WebContents is expected to have delegate set.
@@ -7486,7 +7596,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector.
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7509,7 +7619,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector.
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
   ASSERT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7534,7 +7644,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector again.
   auto connector2 = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr2 = connector2.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector2));
+  SetConnector(inner_wc_impl, std::move(connector2));
   EXPECT_EQ(connector_ptr2, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7569,6 +7679,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
     ASSERT_TRUE(prerender_rwhv);
     ASSERT_TRUE(prerender_rwhv->IsRenderWidgetHostViewChildFrame());
   }
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
@@ -7590,6 +7701,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   // Setup Delegate for inner WebContents so that IsBackForwardCacheSupported()
@@ -7626,7 +7738,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector.
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7647,7 +7759,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector.
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
   ASSERT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7670,7 +7782,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector again.
   auto connector2 = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr2 = connector2.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector2));
+  SetConnector(inner_wc_impl, std::move(connector2));
   EXPECT_EQ(connector_ptr2, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7712,6 +7824,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
     ASSERT_TRUE(rwhv2);
     EXPECT_TRUE(rwhv2->IsRenderWidgetHostViewChildFrame());
   }
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 #if BUILDFLAG(IS_LINUX)
@@ -7741,6 +7854,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   // Setup Delegate for inner WebContents so that IsBackForwardCacheSupported()
@@ -7752,7 +7866,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Set the SurfaceEmbedConnector.
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
   auto* connector_ptr = connector.get();
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
   EXPECT_EQ(connector_ptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Navigate to first page, then second page to put first page in BFCache.
@@ -7791,7 +7905,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   }
 
   // Clear the SurfaceEmbedConnector.
-  inner_wc_impl->ClearSurfaceEmbedConnector();
+  ClearConnector(inner_wc_impl);
   ASSERT_EQ(nullptr, inner_wc->GetSurfaceEmbedConnector());
 
   // Verify that the inner WebContents's RFHs are still alive and not changed.
@@ -7824,6 +7938,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
 
   // End the test, there should be no CHECK when everything is unregistered
   // properly.
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 // A subframe of a surface-embedded WebContents is not the accessibility root:
@@ -7847,12 +7962,13 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   WebContents::CreateParams inner_params(
       shell()->web_contents()->GetBrowserContext());
   std::unique_ptr<WebContents> inner_wc = WebContents::Create(inner_params);
+  StartMonitoringViewStatus(inner_wc.get());
   WebContentsImpl* inner_wc_impl =
       static_cast<WebContentsImpl*>(inner_wc.get());
   inner_wc->SetDelegate(outer_wc->GetDelegate());
 
   auto connector = CreateConnector(inner_wc_impl, outer_wc);
-  inner_wc_impl->SetSurfaceEmbedConnector(std::move(connector));
+  SetConnector(inner_wc_impl, std::move(connector));
 
   // Navigate to a page with an out-of-process iframe.
   ASSERT_TRUE(NavigateToURL(inner_wc.get(), inner_url));
@@ -7870,6 +7986,7 @@ IN_PROC_BROWSER_TEST_F(SurfaceEmbedConnectorWebContentsBrowserTest,
   // Neither is the AX root.
   EXPECT_FALSE(rfh_a->AccessibilityIsRootFrame());
   EXPECT_FALSE(rfh_b->AccessibilityIsRootFrame());
+  VerifySurfaceEmbedView(inner_wc.get());
 }
 
 IN_PROC_BROWSER_TEST_F(WebContentsImplBrowserTest,

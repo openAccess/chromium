@@ -98,6 +98,10 @@ if (enable_smart_card) {
       "//testing/gmock",
       "//testing/gtest",
     ]
+
+    if (is_chromeos) {
+      deps += [ "//chrome/browser/ui/web_applications/test:test_support_ui" ]
+    }
   }
 
   source_set("interactive_ui_tests") {
@@ -116,9 +120,10 @@ if (enable_smart_card) {
       "//chrome/browser/policy:test_support",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui/views/permissions",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/interaction",
       "//components/permissions:permissions_common",
       "//content/test:test_support",
+      "//net:test_support",
     ]
   }
 }  # enable_smart_card

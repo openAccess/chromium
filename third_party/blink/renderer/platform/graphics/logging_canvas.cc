@@ -227,7 +227,7 @@ std::unique_ptr<JSONObject> ObjectForSkImage(const SkImage* image) {
   image_item->SetInteger("width", image->width());
   image_item->SetInteger("height", image->height());
   image_item->SetBoolean("opaque", image->isOpaque());
-  image_item->SetInteger("uniqueID", image->uniqueID());
+  image_item->SetDouble("uniqueID", static_cast<double>(image->uniqueID()));
   return image_item;
 }
 
@@ -265,7 +265,7 @@ String StringForSkPaintFlags(const SkPaint& paint) {
   StringBuilder flags_string;
   AppendFlagToString(&flags_string, paint.isAntiAlias(), "AntiAlias");
   AppendFlagToString(&flags_string, paint.isDither(), "Dither");
-  return flags_string.ToString();
+  return flags_string.ReleaseString();
 }
 
 String StrokeCapName(SkPaint::Cap cap) {

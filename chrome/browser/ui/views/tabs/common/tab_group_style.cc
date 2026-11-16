@@ -14,6 +14,7 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/views/controls/focus_ring.h"
 
 namespace {
 
@@ -144,10 +145,16 @@ int TabGroupStyle::GetLeadingGroupHeaderPadding() {
 
 // static
 int TabGroupStyle::GetTrailingGroupHeaderPadding() {
-  // Spacing between a trailing collapsed group header and the New Tab Button,
-  // accounting for the tab bottom extension, strip padding, and NTB margin.
-  return GetLeadingGroupHeaderPadding() -
-         TabStyle::Get()->GetBottomExtensionWidth() +
-         GetLayoutConstant(LayoutConstant::kTabStripPadding) +
-         GetLayoutConstant(LayoutConstant::kNewTabButtonLeadingMargin);
+  return GetLeadingGroupHeaderPadding();
+}
+
+// static
+int TabGroupStyle::GetUnderlineStrokeThickness() {
+  return views::FocusRing::kDefaultHaloThickness;
+}
+
+// static
+int TabGroupStyle::GetUnderlineStrokeInset() {
+  return TabStyle::Get()->GetTabOverlap() - GetTabGroupOverlapAdjustment() +
+         GetUnderlineStrokeThickness();
 }

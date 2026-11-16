@@ -12,6 +12,8 @@
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/files/file_util.h"
+#include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -19,8 +21,11 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/common/features.h"
 #include "content/public/browser/web_contents_delegate.h"
+#include "content/public/browser/web_drag_dest_delegate.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/fake_frame_widget.h"
@@ -65,7 +70,6 @@
 #if BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
 #include "ui/base/x/selection_utils.h"
 #include "ui/base/x/x11_os_exchange_data_provider.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/ozone/public/ozone_platform.h"
 #endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(SUPPORTS_OZONE_X11)
@@ -136,6 +140,14 @@ void UpdateLeftMouseState(aura::Window* target,
 
 class TestDragDropClient : public aura::client::DragDropClient {
  public:
+  explicit TestDragDropClient(aura::Window* root_window)
+      : root_window_(root_window) {
+    aura::client::SetDragDropClient(root_window, this);
+  }
+  ~TestDragDropClient() override {
+    aura::client::SetDragDropClient(root_window_, nullptr);
+  }
+
   // aura::client::DragDropClient:
   DragOperation StartDragAndDrop(std::unique_ptr<ui::OSExchangeData> data,
                                  aura::Window* root_window,
@@ -168,6 +180,7 @@ class TestDragDropClient : public aura::client::DragDropClient {
   }
 
  private:
+  raw_ptr<aura::Window> root_window_ = nullptr;
   bool drag_in_progress_ = false;
   std::unique_ptr<ui::OSExchangeData> drag_drop_data_;
   gfx::Point last_screen_location_;
@@ -248,10 +261,13 @@ class WebContentsViewAuraTest : public RenderViewHostTestHarness {
     aura::test::EnvTestHelper(aura::Env::GetInstance())
         .SetInputStateLookup(nullptr);
     aura::Env::GetInstance()->set_mouse_button_flags(ui::EF_LEFT_MOUSE_BUTTON);
+    drag_data_ = std::make_unique<ui::OSExchangeData>();
+    drag_data_->SetString(u"Current drag");
   }
 
   void TearDown() override {
     occluding_window_.reset();
+    drag_data_.reset();
     aura::Env::GetInstance()->SetLastMouseLocation(gfx::Point());
     aura::test::EnvTestHelper(aura::Env::GetInstance())
         .SetInputStateLookup(aura::InputStateLookup::Create());
@@ -268,6 +284,40 @@ class WebContentsViewAuraTest : public RenderViewHostTestHarness {
 
   aura::Window* GetNativeView() { return web_contents()->GetNativeView(); }
 
+  ui::DropTargetEvent DragEvent() const {
+    return ui::DropTargetEvent(*drag_data_, kClientPt, kScreenPt,
+                               ui::DragDropTypes::DRAG_COPY);
+  }
+
+  void EnterDrag() { GetView()->OnDragEntered(DragEvent()); }
+
+  base::OnceClosure TargetingCallback(bool enter, uint64_t session_id) {
+    auto* view = GetView();
+    auto* target = static_cast<RenderWidgetHostViewBase*>(
+        main_rfh()->GetRenderWidgetHost()->GetView());
+    auto drop_data = std::make_unique<DropData>();
+    drop_data->text = u"Stale drag";
+    return base::BindOnce(enter ? &WebContentsViewAura::DragEnteredCallback
+                                : &WebContentsViewAura::DragUpdatedCallback,
+                          view->weak_ptr_factory_.GetWeakPtr(), session_id,
+                          WebContentsViewAura::DropMetadata(DragEvent()),
+                          std::move(drop_data), target->GetWeakPtr(),
+                          kClientPt);
+  }
+
+  void ExpectCurrentDrag(uint64_t session_id, const DropData* data) {
+    auto* view = GetView();
+    EXPECT_NE(nullptr, data);
+    EXPECT_EQ(session_id, view->drag_session_id_);
+    EXPECT_TRUE(view->drag_in_progress_);
+    EXPECT_EQ(data, view->current_drag_data_.get());
+    EXPECT_EQ(main_rfh()->GetRenderWidgetHost(),
+              view->current_rwh_for_drag_.get());
+    if (view->current_drag_data_) {
+      EXPECT_EQ(u"Current drag", view->current_drag_data_->text);
+    }
+  }
+
   void CheckDropData(WebContentsViewAura* view) const {
     EXPECT_EQ(nullptr, view->current_drag_data_);
     ASSERT_NE(nullptr, drop_complete_data_);
@@ -283,6 +333,7 @@ class WebContentsViewAuraTest : public RenderViewHostTestHarness {
 
   // |occluding_window_| occludes |web_contents()| when it's shown.
   std::unique_ptr<aura::Window> occluding_window_;
+  std::unique_ptr<ui::OSExchangeData> drag_data_;
 
   // A closure indicating that async drop operation has completed.
   base::OnceClosure async_drop_closure_;
@@ -309,6 +360,11 @@ class WebContentsViewAuraTest : public RenderViewHostTestHarness {
     const bool drop_allowed;
   };
   std::unique_ptr<DropCompleteData> drop_complete_data_;
+};
+
+class WebContentsViewAuraSessionIdTest : public WebContentsViewAuraTest {
+ private:
+  base::test::ScopedFeatureList feature_list_{features::kAuraDragDropSessionId};
 };
 
 TEST_F(WebContentsViewAuraTest, EnableDisableOverscroll) {
@@ -578,8 +634,9 @@ TEST_F(WebContentsViewAuraTest, MAYBE_DragDropImageFromRenderer) {
   if (ui::OzonePlatform::GetPlatformNameForTest() == "x11") {
     auto* connection = x11::Connection::Get();
     x11::Window xwindow = connection->CreateDummyWindow("Test Window");
-    connection->SetStringProperty(xwindow, x11::GetAtom("XdndDirectSave0"),
-                                  x11::GetAtom("text/plain"), "image.jpg");
+    connection->SetStringProperty(
+        xwindow, connection->GetAtom("XdndDirectSave0"),
+        connection->GetAtom("text/plain"), "image.jpg");
     data = std::make_unique<ui::OSExchangeData>(
         std::make_unique<ui::XOSExchangeDataProvider>(
             xwindow, xwindow, ui::SelectionFormatMap()));
@@ -671,8 +728,9 @@ TEST_F(WebContentsViewAuraTest,
   if (ui::OzonePlatform::GetPlatformNameForTest() == "x11") {
     auto* connection = x11::Connection::Get();
     x11::Window xwindow = connection->CreateDummyWindow("Test Window");
-    connection->SetStringProperty(xwindow, x11::GetAtom("XdndDirectSave0"),
-                                  x11::GetAtom("text/plain"), "image.jpg");
+    connection->SetStringProperty(
+        xwindow, connection->GetAtom("XdndDirectSave0"),
+        connection->GetAtom("text/plain"), "image.jpg");
     data = std::make_unique<ui::OSExchangeData>(
         std::make_unique<ui::XOSExchangeDataProvider>(
             xwindow, xwindow, ui::SelectionFormatMap()));
@@ -803,7 +861,7 @@ TEST_F(WebContentsViewAuraTest, DragDropVirtualFiles) {
 // Ensures that when two virtual file drops overlap, navigations during the
 // first drop's extraction are correctly respected and disallow the drop.
 // This is a regression test for https://crbug.com/503720291.
-TEST_F(WebContentsViewAuraTest,
+TEST_F(WebContentsViewAuraSessionIdTest,
        DragDropVirtualFilesNavigationObservedAcrossOverlappingDrops) {
   WebContentsViewAura* view = GetView();
 
@@ -856,6 +914,7 @@ TEST_F(WebContentsViewAuraTest,
   DeferredVirtualFileProvider::TempFilesCallback second_temp_files_cb =
       second_provider_ptr->TakePendingCallback();
   ASSERT_TRUE(second_temp_files_cb);
+  const uint64_t second_drag_session_id = view->drag_session_id_;
 
   // Temp-file retrieval for the first drop completes.
   std::move(first_temp_files_cb)
@@ -866,6 +925,8 @@ TEST_F(WebContentsViewAuraTest,
   // drop was initiated, regardless of any later drag activity.
   ASSERT_TRUE(first_drop_allowed.has_value());
   EXPECT_FALSE(first_drop_allowed.value());
+  EXPECT_EQ(second_drag_session_id, view->drag_session_id_);
+  EXPECT_TRUE(view->drag_in_progress_);
 }
 
 TEST_F(WebContentsViewAuraTest, DragDropVirtualFiles_DestroyDuringExtraction) {
@@ -1072,8 +1133,7 @@ TEST_F(WebContentsViewAuraTest, StartDragging) {
   NavigateAndCommit(GURL(kGmailUrl));
   FocusWebContentsOnMainFrame();
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   // This condition is needed to avoid calling WebContentsViewAura::EndDrag
@@ -1181,8 +1241,7 @@ TEST_F(WebContentsViewAuraTest, StartDraggingBlockedByPolicy) {
   BlockDragContentBrowserClient block_drag_client;
   ContentBrowserClient* old_client = SetBrowserClientForTesting(&block_drag_client);
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   view->drag_in_progress_ = true;
@@ -1223,8 +1282,7 @@ class OffTheRecordUserContentBrowserClient : public ContentBrowserClient {
   }
 
   // ContentBrowserClient:
-  BrowserContext* GetUserBrowserContext(
-      RenderFrameHost& render_frame_host) override {
+  BrowserContext* GetUserBrowserContext(WebContents& web_contents) override {
     return &browser_context_;
   }
 
@@ -1242,8 +1300,7 @@ TEST_F(WebContentsViewAuraTest, StartDraggingUsesUserBrowserContext) {
   OffTheRecordUserContentBrowserClient browser_client;
   ScopedContentBrowserClientSetting browser_client_setting(&browser_client);
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   view->drag_in_progress_ = true;
@@ -1327,8 +1384,7 @@ TEST_F(WebContentsViewAuraTest, StartDragFromPrivilegedWebContents) {
   const char kGoogleUrl[] = "https://google.com/";
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1358,12 +1414,9 @@ TEST_F(WebContentsViewAuraTest, StartDragFromPrivilegedWebContents) {
 TEST_F(WebContentsViewAuraTest, RejectDragFromHiddenWebContents) {
   const char kGoogleUrl[] = "https://google.com/";
 
-  std::u16string url_string = u"https://google.com/";
-
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1389,12 +1442,9 @@ TEST_F(WebContentsViewAuraTest, RejectDragFromHiddenWebContents) {
 TEST_F(WebContentsViewAuraTest, ClampMouseLocationToBrowserObservedPoint) {
   const char kGoogleUrl[] = "https://google.com/";
 
-  std::u16string url_string = u"https://google.com/";
-
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1438,8 +1488,7 @@ TEST_F(WebContentsViewAuraTest, ClampMouseLocationToBrowserObservedPoint) {
 TEST_F(WebContentsViewAuraTest, ClampTouchLocationToBrowserObservedPoint) {
   NavigateAndCommit(GURL("https://example.com/"));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   view->drag_in_progress_ = true;
@@ -1477,8 +1526,7 @@ TEST_F(WebContentsViewAuraTest, ClampTouchLocationToBrowserObservedPoint) {
 TEST_F(WebContentsViewAuraTest, TouchDragRequiresTouchOnWebContents) {
   NavigateAndCommit(GURL("https://example.com/"));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   // Needed to avoid calling WebContentsViewAura::EndDrag, which results in
@@ -1519,8 +1567,7 @@ TEST_F(WebContentsViewAuraTest, TouchDragRequiresTouchOnWebContents) {
 TEST_F(WebContentsViewAuraTest, StartDraggingMouseRequiresLeftButton) {
   NavigateAndCommit(GURL("https://google.com/"));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   aura::Env* const env = aura::Env::GetInstance();
@@ -1570,8 +1617,7 @@ TEST_F(WebContentsViewAuraTest, StartDraggingMouseRequiresLeftButton) {
 TEST_F(WebContentsViewAuraTest, MouseDragRequiresPressOnWebContents) {
   NavigateAndCommit(GURL("https://example.com/"));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   // Needed to avoid calling WebContentsViewAura::EndDrag, which results in
@@ -1624,8 +1670,7 @@ TEST_F(WebContentsViewAuraTest, MouseDragRequiresPressOnWebContents) {
 TEST_F(WebContentsViewAuraTest, RefusedDragDoesNotBlockSubsequentDrags) {
   NavigateAndCommit(GURL("https://google.com/"));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   WebContentsViewAura* view = GetView();
   aura::Env* const env = aura::Env::GetInstance();
@@ -1687,8 +1732,7 @@ TEST_F(WebContentsViewAuraTest, EmptyTextInDropDataIsNonNullInOSExchangeData) {
   std::u16string empty_string;
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1722,8 +1766,7 @@ TEST_F(WebContentsViewAuraTest,
   std::u16string empty_string;
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1759,8 +1802,7 @@ TEST_F(WebContentsViewAuraTest,
 
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1797,8 +1839,7 @@ TEST_F(WebContentsViewAuraTest, EndDragIsCalledAfterAsyncDrop) {
   drop_data.text = empty_string;
   drop_data.url_infos = {ui::ClipboardUrlInfo{GURL(kGoogleUrl), u""}};
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   // Mark the Web Contents as native UI.
   WebContentsViewAura* view = GetView();
@@ -1865,15 +1906,15 @@ class MockWebContentsViewAura : public WebContentsViewAura {
   // `RenderWidgetHostViewBase::TransformPointToCoordSpaceForView` which will
   // result NOTREACHED being called.
   void EndDrag(base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
-               ui::mojom::DragOperation op) override {}
+               ui::mojom::DragOperation op,
+               bool drag_started) override {}
 };
 
 TEST_F(WebContentsViewAuraTest, StartDragBlockedByPolicy) {
   const char kGoogleUrl[] = "https://google.com/";
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   MockWebContentsViewAura mock_view(
       static_cast<WebContentsImpl*>(web_contents()), nullptr);
@@ -1900,8 +1941,7 @@ TEST_F(WebContentsViewAuraTest, StartDragAllowedByPolicy) {
   const char kGoogleUrl[] = "https://google.com/";
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   MockWebContentsViewAura mock_view(
       static_cast<WebContentsImpl*>(web_contents()), nullptr);
@@ -1938,17 +1978,83 @@ class TestDragEndedWebContentsDelegate : public WebContentsDelegate {
   bool handle_drag_ended_called_ = false;
 };
 
+class TestAsyncDropWebContentsViewDelegate : public WebContentsViewDelegate {
+ public:
+  void OnPerformingDrop(const DropData& drop_data,
+                        DropCompletionCallback callback) override {
+    drop_completion_ = std::move(callback);
+  }
+
+  DropCompletionCallback drop_completion_;
+};
+
+class TestDragDestDelegate : public WebDragDestDelegate {
+ public:
+  void DragInitialize(WebContents*) override {}
+  void OnDragOver() override {}
+  void OnDragEnter() override {}
+  void OnDrop() override {
+    ++drop_count_;
+    drag_text_.clear();
+  }
+  void OnDragLeave() override { drag_text_.clear(); }
+  void OnReceiveDragData(const ui::OSExchangeData& data) override {
+    drag_text_ = data.GetString().value_or(std::u16string());
+  }
+
+  int drop_count() const { return drop_count_; }
+  const std::u16string& drag_text() const { return drag_text_; }
+
+ private:
+  int drop_count_ = 0;
+  std::u16string drag_text_;
+};
+
 class TestDragEndedFrameWidget : public FakeFrameWidget {
  public:
   explicit TestDragEndedFrameWidget(
       mojo::PendingAssociatedReceiver<blink::mojom::FrameWidget> receiver)
       : FakeFrameWidget(std::move(receiver)) {}
 
-  void DragSourceEndedAt(const gfx::PointF& client_point,
-                         const gfx::PointF& screen_point,
+  void DragTargetDragEnter(blink::mojom::DragDataPtr drag_data,
+                           const gfx::PointF& point_in_viewport,
+                           const gfx::PointF& screen_point,
+                           blink::DragOperationsMask operations_allowed,
+                           uint32_t key_modifiers,
+                           DragTargetDragEnterCallback callback) override {
+    std::move(callback).Run(DragOperation::kNone, false);
+  }
+
+  void DragTargetDragOver(const gfx::PointF& point_in_viewport,
+                          const gfx::PointF& screen_point,
+                          blink::DragOperationsMask operations_allowed,
+                          uint32_t key_modifiers,
+                          DragTargetDragOverCallback callback) override {
+    drag_target_drag_over_called_ = true;
+    if (delay_next_drag_target_drag_over_) {
+      delay_next_drag_target_drag_over_ = false;
+      pending_drag_target_drag_over_callback_ = std::move(callback);
+      return;
+    }
+    std::move(callback).Run(DragOperation::kNone, false);
+  }
+
+  void DragTargetDrop(blink::mojom::DragDataPtr drag_data,
+                      const gfx::PointF& point_in_viewport,
+                      const gfx::PointF& screen_point,
+                      uint32_t key_modifiers,
+                      base::OnceClosure callback) override {
+    ++drag_target_drop_count_;
+    std::move(callback).Run();
+  }
+
+  void DragSourceEndedAt(const std::optional<gfx::PointF>& client_point,
+                         const std::optional<gfx::PointF>& screen_point,
                          ui::mojom::DragOperation operation,
                          base::OnceClosure callback) override {
     drag_source_ended_at_called_ = true;
+    last_drag_source_ended_client_point_ = client_point;
+    last_drag_source_ended_screen_point_ = screen_point;
     operation_ = operation;
     std::move(callback).Run();
   }
@@ -1966,25 +2072,53 @@ class TestDragEndedFrameWidget : public FakeFrameWidget {
   bool drag_source_ended_at_called() const {
     return drag_source_ended_at_called_;
   }
+  const std::optional<gfx::PointF>& last_drag_source_ended_client_point()
+      const {
+    return last_drag_source_ended_client_point_;
+  }
+  const std::optional<gfx::PointF>& last_drag_source_ended_screen_point()
+      const {
+    return last_drag_source_ended_screen_point_;
+  }
   bool system_drag_ended_called() const { return system_drag_ended_called_; }
+  bool drag_target_drag_over_called() const {
+    return drag_target_drag_over_called_;
+  }
+  void DelayNextDragTargetDragOver() {
+    delay_next_drag_target_drag_over_ = true;
+  }
+  bool has_pending_drag_target_drag_over_callback() const {
+    return !pending_drag_target_drag_over_callback_.is_null();
+  }
+  void RespondToPendingDragTargetDragOver(DragOperation operation,
+                                          bool document_is_handling_drag) {
+    std::move(pending_drag_target_drag_over_callback_)
+        .Run(operation, document_is_handling_drag);
+  }
+  int drag_target_drop_count() const { return drag_target_drop_count_; }
   ui::mojom::DragOperation operation() const { return operation_; }
 
  private:
   bool drag_source_ended_at_called_ = false;
+  std::optional<gfx::PointF> last_drag_source_ended_client_point_;
+  std::optional<gfx::PointF> last_drag_source_ended_screen_point_;
   bool system_drag_ended_called_ = false;
+  bool drag_target_drag_over_called_ = false;
+  bool delay_next_drag_target_drag_over_ = false;
+  DragTargetDragOverCallback pending_drag_target_drag_over_callback_;
+  int drag_target_drop_count_ = 0;
   ui::mojom::DragOperation operation_ = ui::mojom::DragOperation::kCopy;
   base::OnceClosure quit_closure_;
 };
 
 // Tests that if the user releases the mouse before WebContentsViewAura::
 // StartDragging is called, the drag is aborted and WebContents is notified via
-// SystemDragEnded and DragSourceEndedAt.
+// SystemDragEnded and DragSourceEndedAt without leaking cursor coordinates.
 TEST_F(WebContentsViewAuraTest, StartDraggingMouseReleasedEndsDrag) {
   const char kGoogleUrl[] = "https://google.com/";
   NavigateAndCommit(GURL(kGoogleUrl));
 
-  TestDragDropClient drag_drop_client;
-  aura::client::SetDragDropClient(root_window(), &drag_drop_client);
+  TestDragDropClient drag_drop_client(root_window());
 
   TestDragEndedWebContentsDelegate delegate;
   web_contents()->SetDelegate(&delegate);
@@ -2017,10 +2151,363 @@ TEST_F(WebContentsViewAuraTest, StartDraggingMouseReleasedEndsDrag) {
 
   run_loop.Run();
   EXPECT_TRUE(frame_widget.drag_source_ended_at_called());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_client_point());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_screen_point());
   EXPECT_EQ(ui::mojom::DragOperation::kNone, frame_widget.operation());
   EXPECT_TRUE(frame_widget.system_drag_ended_called());
 
   web_contents()->SetDelegate(nullptr);
+}
+
+// Tests that if StartDragging is called for a touch drag without an active
+// touch press on the web contents, the drag is aborted and DragSourceEndedAt
+// is sent without cursor coordinates.
+TEST_F(WebContentsViewAuraTest,
+       StartDraggingTouchNotPressedEndsDragWithoutCoordinates) {
+  const char kGoogleUrl[] = "https://google.com/";
+  NavigateAndCommit(GURL(kGoogleUrl));
+
+  TestDragDropClient drag_drop_client(root_window());
+
+  TestDragEndedWebContentsDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  base::RunLoop run_loop;
+  frame_widget.set_quit_closure(run_loop.QuitClosure());
+
+  WebContentsViewAura* view = GetView();
+
+  DropData drop_data;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{GURL(kGoogleUrl), u""}};
+
+  view->StartDragging(*main_rfh(), drop_data,
+                      blink::DragOperationsMask::kDragOperationCopy,
+                      gfx::ImageSkia(), gfx::Vector2d(), gfx::Rect(),
+                      blink::mojom::DragEventSourceInfo(
+                          gfx::Point(), ui::mojom::DragEventSource::kTouch));
+
+  EXPECT_FALSE(drag_drop_client.GetDragDropData());
+  EXPECT_FALSE(view->drag_security_info_.did_initiate());
+  EXPECT_TRUE(delegate.handle_drag_ended_called());
+
+  run_loop.Run();
+  EXPECT_TRUE(frame_widget.drag_source_ended_at_called());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_client_point());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_screen_point());
+  EXPECT_EQ(ui::mojom::DragOperation::kNone, frame_widget.operation());
+  EXPECT_TRUE(frame_widget.system_drag_ended_called());
+
+  web_contents()->SetDelegate(nullptr);
+}
+
+// Tests that if StartDragging is called while the view is hidden, the drag is
+// aborted and DragSourceEndedAt is sent without cursor coordinates.
+TEST_F(WebContentsViewAuraTest,
+       StartDraggingHiddenViewEndsDragWithoutCoordinates) {
+  const char kGoogleUrl[] = "https://google.com/";
+  NavigateAndCommit(GURL(kGoogleUrl));
+
+  TestDragDropClient drag_drop_client(root_window());
+
+  TestDragEndedWebContentsDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  base::RunLoop run_loop;
+  frame_widget.set_quit_closure(run_loop.QuitClosure());
+
+  WebContentsViewAura* view = GetView();
+  aura::Env::GetInstance()->SetLastMouseLocation(
+      view->GetContentNativeView()->GetBoundsInScreen().CenterPoint());
+  UpdateLeftMouseState(view->GetContentNativeView(),
+                       ui::EventType::kMousePressed);
+  view->GetContentNativeView()->Hide();
+
+  DropData drop_data;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{GURL(kGoogleUrl), u""}};
+
+  view->StartDragging(*main_rfh(), drop_data,
+                      blink::DragOperationsMask::kDragOperationCopy,
+                      gfx::ImageSkia(), gfx::Vector2d(), gfx::Rect(),
+                      blink::mojom::DragEventSourceInfo(
+                          gfx::Point(), ui::mojom::DragEventSource::kMouse));
+
+  EXPECT_FALSE(drag_drop_client.GetDragDropData());
+  EXPECT_FALSE(view->drag_security_info_.did_initiate());
+  EXPECT_TRUE(delegate.handle_drag_ended_called());
+
+  run_loop.Run();
+  EXPECT_TRUE(frame_widget.drag_source_ended_at_called());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_client_point());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_screen_point());
+  EXPECT_EQ(ui::mojom::DragOperation::kNone, frame_widget.operation());
+  EXPECT_TRUE(frame_widget.system_drag_ended_called());
+
+  web_contents()->SetDelegate(nullptr);
+}
+
+// Tests that if StartDragging is called when the trusted pointer location is
+// outside the view bounds, the drag is aborted and DragSourceEndedAt is sent
+// without cursor coordinates.
+TEST_F(WebContentsViewAuraTest,
+       StartDraggingOutsideBoundsEndsDragWithoutCoordinates) {
+  const char kGoogleUrl[] = "https://google.com/";
+  NavigateAndCommit(GURL(kGoogleUrl));
+
+  TestDragDropClient drag_drop_client(root_window());
+
+  TestDragEndedWebContentsDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  base::RunLoop run_loop;
+  frame_widget.set_quit_closure(run_loop.QuitClosure());
+
+  WebContentsViewAura* view = GetView();
+  const gfx::Rect bounds = view->GetContentNativeView()->GetBoundsInScreen();
+  aura::Env::GetInstance()->SetLastMouseLocation(
+      gfx::Point(bounds.right() + 50, bounds.bottom() + 50));
+  UpdateLeftMouseState(view->GetContentNativeView(),
+                       ui::EventType::kMousePressed);
+
+  DropData drop_data;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{GURL(kGoogleUrl), u""}};
+
+  view->StartDragging(*main_rfh(), drop_data,
+                      blink::DragOperationsMask::kDragOperationCopy,
+                      gfx::ImageSkia(), gfx::Vector2d(), gfx::Rect(),
+                      blink::mojom::DragEventSourceInfo(
+                          gfx::Point(), ui::mojom::DragEventSource::kMouse));
+
+  EXPECT_FALSE(drag_drop_client.GetDragDropData());
+  EXPECT_FALSE(view->drag_security_info_.did_initiate());
+  EXPECT_TRUE(delegate.handle_drag_ended_called());
+
+  run_loop.Run();
+  EXPECT_TRUE(frame_widget.drag_source_ended_at_called());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_client_point());
+  EXPECT_EQ(std::nullopt, frame_widget.last_drag_source_ended_screen_point());
+  EXPECT_EQ(ui::mojom::DragOperation::kNone, frame_widget.operation());
+  EXPECT_TRUE(frame_widget.system_drag_ended_called());
+
+  web_contents()->SetDelegate(nullptr);
+}
+
+// Tests that a delayed enter-targeting reply after exit cannot restore drag
+// state or prevent drag-ended notifications when the native drag loop returns.
+TEST_F(WebContentsViewAuraSessionIdTest,
+       DragEnterCallbackAfterExitEndsSourceDrag) {
+  NavigateAndCommit(GURL("https://example.com/"));
+  TestDragEndedWebContentsDelegate delegate;
+  web_contents()->SetDelegate(&delegate);
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  WebContentsViewAura* view = GetView();
+  auto* source_rwh =
+      static_cast<RenderWidgetHostImpl*>(main_rfh()->GetRenderWidgetHost());
+  DropData drop_data;
+  drop_data.text = u"Source drag";
+  auto delayed_enter =
+      TargetingCallback(/*enter=*/true, view->drag_session_id_);
+
+  view->drag_security_info_.OnDragInitiated(source_rwh, drop_data);
+  view->OnDragExited();
+  std::move(delayed_enter).Run();
+  view->EndDragAfterNativeLoop(source_rwh->GetWeakPtr(), DragOperation::kNone);
+  frame_widget.FlushForTesting();
+
+  // The stale reply must not revive the drag or delay source completion.
+  EXPECT_FALSE(view->drag_in_progress_);
+  EXPECT_FALSE(static_cast<bool>(view->end_drag_runner_));
+  EXPECT_FALSE(view->drag_security_info_.did_initiate());
+  EXPECT_TRUE(delegate.handle_drag_ended_called());
+  EXPECT_TRUE(frame_widget.drag_source_ended_at_called());
+  EXPECT_TRUE(frame_widget.last_drag_source_ended_client_point().has_value());
+  EXPECT_TRUE(frame_widget.last_drag_source_ended_screen_point().has_value());
+  EXPECT_TRUE(frame_widget.system_drag_ended_called());
+
+  view->end_drag_runner_.RunAndReset();
+  web_contents()->SetDelegate(nullptr);
+}
+
+// Tests that updates before the enter reply and stale enter/update replies are
+// ignored.
+TEST_F(WebContentsViewAuraSessionIdTest,
+       DragTargetingCallbacksFromPreviousDragAreIgnored) {
+  NavigateAndCommit(GURL("https://example.com/"));
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+
+  auto* view = GetView();
+  // An update arriving before the initial enter reply must not start a drag.
+  const uint64_t pending_session_id = ++view->drag_session_id_;
+  TargetingCallback(/*enter=*/false, pending_session_id).Run();
+  EXPECT_FALSE(view->drag_in_progress_);
+  EXPECT_FALSE(view->current_drag_data_);
+
+  // Hold the old replies while the pointer exits and enters a new session.
+  auto delayed_enter = TargetingCallback(/*enter=*/true, pending_session_id);
+  auto delayed_update = TargetingCallback(/*enter=*/false, pending_session_id);
+  view->OnDragExited();
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  ASSERT_TRUE(view->current_drag_data_);
+  const uint64_t session_id = view->drag_session_id_;
+  ASSERT_NE(pending_session_id, session_id);
+  const DropData* current_data = view->current_drag_data_.get();
+
+  // Old replies must neither replace the new data nor send a drag-over IPC.
+  std::move(delayed_enter).Run();
+  std::move(delayed_update).Run();
+  frame_widget.FlushForTesting();
+  ExpectCurrentDrag(session_id, current_data);
+  EXPECT_FALSE(frame_widget.drag_target_drag_over_called());
+
+  view->OnDragExited();
+}
+
+// Tests that a renderer drag-over reply from an earlier session cannot update
+// the operation or handling state of a newer drag.
+TEST_F(WebContentsViewAuraSessionIdTest,
+       RendererDragReplyFromPreviousSessionIsIgnored) {
+  NavigateAndCommit(GURL("https://example.com/"));
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  auto* view = GetView();
+
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  frame_widget.DelayNextDragTargetDragOver();
+  view->OnDragUpdated(DragEvent());
+  frame_widget.FlushForTesting();
+  ASSERT_TRUE(frame_widget.has_pending_drag_target_drag_over_callback());
+
+  view->OnDragExited();
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  ASSERT_TRUE(view->current_drag_data_);
+  view->current_drag_data_->operation = DragOperation::kCopy;
+  view->current_drag_data_->document_is_handling_drag = false;
+  const uint64_t session_id = view->drag_session_id_;
+  const DropData* current_data = view->current_drag_data_.get();
+
+  frame_widget.RespondToPendingDragTargetDragOver(
+      DragOperation::kMove, /*document_is_handling_drag=*/true);
+  frame_widget.FlushForTesting();
+
+  ExpectCurrentDrag(session_id, current_data);
+  EXPECT_EQ(DragOperation::kCopy, current_data->operation);
+  EXPECT_FALSE(current_data->document_is_handling_drag);
+  view->OnDragExited();
+}
+
+// Completes an older accepted drop after a new drag enters. The old drop may
+// reach the renderer without changing the new drag or its delegate state.
+TEST_F(WebContentsViewAuraSessionIdTest, OldDropCompletionDoesNotEndNewDrag) {
+  NavigateAndCommit(GURL("https://example.com/"));
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  auto* view = GetView();
+  auto async_drop_delegate =
+      std::make_unique<TestAsyncDropWebContentsViewDelegate>();
+  auto* delegate = async_drop_delegate.get();
+  view->SetDelegateForTesting(std::move(async_drop_delegate));
+  TestDragDestDelegate drag_dest_delegate;
+  view->SetDragDestDelegateForTesting(&drag_dest_delegate);
+
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  ASSERT_TRUE(view->current_drag_data_);
+  std::optional<DropData> result = *view->current_drag_data_;
+  DragOperation output_drag_op = DragOperation::kNone;
+  view->GetDropCallback(DragEvent())
+      .Run(std::make_unique<ui::OSExchangeData>(drag_data_->provider().Clone()),
+           output_drag_op, /*drag_image_layer_owner=*/nullptr);
+  ASSERT_TRUE(delegate->drop_completion_);
+
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  const uint64_t session_id = view->drag_session_id_;
+  const DropData* current_data = view->current_drag_data_.get();
+  ASSERT_TRUE(current_data->text);
+  EXPECT_EQ(*current_data->text, drag_dest_delegate.drag_text());
+  bool end_drag_called = false;
+  view->end_drag_runner_.ReplaceClosure(
+      base::BindLambdaForTesting([&] { end_drag_called = true; }));
+  view->end_drag_runner_session_id_ = session_id;
+  const int drop_count = frame_widget.drag_target_drop_count();
+  const int delegate_drop_count = drag_dest_delegate.drop_count();
+
+  std::move(delegate->drop_completion_).Run(std::move(result));
+  frame_widget.FlushForTesting();
+  ExpectCurrentDrag(session_id, current_data);
+  EXPECT_EQ(drop_count + 1, frame_widget.drag_target_drop_count());
+  EXPECT_EQ(delegate_drop_count, drag_dest_delegate.drop_count());
+  EXPECT_EQ(*current_data->text, drag_dest_delegate.drag_text());
+  EXPECT_FALSE(end_drag_called);
+
+  view->OnDropExit(session_id);
+  EXPECT_TRUE(end_drag_called);
+
+  view->SetDragDestDelegateForTesting(nullptr);
+}
+
+// Deferred drop cleanup must affect only its originating session, whether the
+// callback is cancelled or its delayed targeting reply eventually arrives.
+TEST_F(WebContentsViewAuraSessionIdTest,
+       OldDropTargetingReplyDoesNotEndNewDrag) {
+  NavigateAndCommit(GURL("https://example.com/"));
+  TestDragEndedFrameWidget frame_widget(
+      BindFakeFrameWidgetInterfaces(main_rfh()));
+  WebContentsViewAura* view = GetView();
+  auto* target = static_cast<RenderWidgetHostViewBase*>(
+      main_rfh()->GetRenderWidgetHost()->GetView());
+
+  // Hold a drop callback and its targeting reply until a newer drag enters.
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  const uint64_t old_session_id = view->drag_session_id_;
+  auto cancelled_callback = view->GetDropCallback(DragEvent());
+  auto callback = base::BindOnce(
+      &WebContentsViewAura::PerformDropCallback,
+      view->weak_ptr_factory_.GetWeakPtr(),
+      WebContentsViewAura::DropMetadata(DragEvent()), old_session_id,
+      std::make_unique<ui::OSExchangeData>(drag_data_->provider().Clone()),
+      target->GetWeakPtr(), kClientPt);
+
+  EnterDrag();
+  frame_widget.FlushForTesting();
+  const uint64_t session_id = view->drag_session_id_;
+  const DropData* current_data = view->current_drag_data_.get();
+  bool end_drag_called = false;
+  view->end_drag_runner_.ReplaceClosure(
+      base::BindLambdaForTesting([&] { end_drag_called = true; }));
+  view->end_drag_runner_session_id_ = old_session_id;
+
+  cancelled_callback.Reset();
+  ExpectCurrentDrag(session_id, current_data);
+  EXPECT_TRUE(end_drag_called);
+
+  end_drag_called = false;
+  view->end_drag_runner_.ReplaceClosure(
+      base::BindLambdaForTesting([&] { end_drag_called = true; }));
+  view->end_drag_runner_session_id_ = session_id;
+
+  std::move(callback).Run();
+  frame_widget.FlushForTesting();
+  ExpectCurrentDrag(session_id, current_data);
+  EXPECT_EQ(0, frame_widget.drag_target_drop_count());
+  EXPECT_FALSE(end_drag_called);
+  EXPECT_TRUE(view->end_drag_runner_);
+  EXPECT_EQ(session_id, view->end_drag_runner_session_id_);
+
+  // Only the newer drag's own cleanup should run its completion runner.
+  view->OnDropExit(session_id);
+  EXPECT_TRUE(end_drag_called);
 }
 
 }  // namespace content

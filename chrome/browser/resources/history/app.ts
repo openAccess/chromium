@@ -26,6 +26,7 @@ import {HistoryResultType} from 'chrome://resources/cr_components/history/consta
 import type {ForeignSession, ForeignSessionPageCallbackRouter} from 'chrome://resources/cr_components/history/foreign_sessions.mojom-webui.js';
 import {browserProxyFactory as foreignSessionBrowserProxyFactory} from 'chrome://resources/cr_components/history/foreign_sessions.mojom-webui.js';
 import type {Device, PageCallbackRouter, QueryResult, QueryState, TimePeriodOption} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {TimePeriodOptionId} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrDrawerElement} from 'chrome://resources/cr_elements/cr_drawer/cr_drawer.js';
 import type {CrLazyRenderLitElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
@@ -157,13 +158,16 @@ export class HistoryAppElement extends HistoryAppElementBase {
       tabsNames_: {type: Array},
       scrollTarget_: {type: Object},
       devices_: {type: Array},
+      domain_: {type: String},
       includeActorVisits_: {type: Boolean},
       includeUserVisits_: {type: Boolean},
       clientIds_: {type: Array},
       isGlicWebActuationAvailable_: {type: Boolean},
       isBrowsingHistoryFilterByDeviceEnabled_: {type: Boolean},
+      isBrowsingHistoryFilterByDomainEnabled_: {type: Boolean},
       isBrowsingHistoryFilterByTimePeriodEnabled_: {type: Boolean},
       timePeriodOptions_: {type: Array},
+      selectedTimePeriodOptionId_: {type: Number},
     };
   }
 
@@ -173,9 +177,9 @@ export class HistoryAppElement extends HistoryAppElementBase {
     geminiAppsActivity: loadTimeData.getBoolean('isGlicEnabled'),
   };
   // <if expr="not is_chromeos">
-  protected accessor unoPhase2FollowUpEnabled_: boolean =
+  private accessor unoPhase2FollowUpEnabled_: boolean =
       loadTimeData.getBoolean('unoPhase2FollowUp');
-  protected accessor shouldShowHistorySyncPromo_: boolean = false;
+  private accessor shouldShowHistorySyncPromo_: boolean = false;
   protected accessor shouldShowHistoryCrossDeviceSigninPromo_: boolean = false;
   // </if>
   protected accessor hasDrawer_: boolean = false;
@@ -183,7 +187,7 @@ export class HistoryAppElement extends HistoryAppElementBase {
       loadTimeData.getBoolean('isHistoryClustersEnabled');
   protected accessor historyClustersVisible_: boolean =
       loadTimeData.getBoolean('isHistoryClustersVisible');
-  protected accessor identityState_: HistoryIdentityState = {
+  private accessor identityState_: HistoryIdentityState = {
     signIn: HistorySignInState.SIGNED_OUT,
     tabsSync: SyncState.TURNED_OFF,
     historySync: SyncState.TURNED_OFF,
@@ -206,6 +210,7 @@ export class HistoryAppElement extends HistoryAppElementBase {
     includeUserVisits: true,
     includeActorVisits: true,
     clientIds: [],
+    timePeriodOptionId: TimePeriodOptionId.kAllTime,
   };
   protected accessor selectedPage_: string = Page.HISTORY;
   protected accessor selectedTab_: number =
@@ -226,16 +231,21 @@ export class HistoryAppElement extends HistoryAppElementBase {
   ];
   protected accessor scrollTarget_: HTMLElement = document.body;
   protected accessor devices_: Device[] = [];
+  protected accessor domain_: string = '';
   protected accessor includeActorVisits_: boolean = true;
   protected accessor includeUserVisits_: boolean = true;
   protected accessor clientIds_: string[] = [];
-  protected accessor isGlicWebActuationAvailable_: boolean =
+  private accessor isGlicWebActuationAvailable_: boolean =
       loadTimeData.getBoolean('isGlicWebActuationAvailable');
-  protected accessor isBrowsingHistoryFilterByDeviceEnabled_: boolean =
+  private accessor isBrowsingHistoryFilterByDeviceEnabled_: boolean =
       loadTimeData.getBoolean('isBrowsingHistoryFilterByDeviceEnabled');
-  protected accessor isBrowsingHistoryFilterByTimePeriodEnabled_: boolean =
+  private accessor isBrowsingHistoryFilterByDomainEnabled_: boolean =
+      loadTimeData.getBoolean('isBrowsingHistoryFilterByDomainEnabled');
+  private accessor isBrowsingHistoryFilterByTimePeriodEnabled_: boolean =
       loadTimeData.getBoolean('isBrowsingHistoryFilterByTimePeriodEnabled');
   protected accessor timePeriodOptions_: TimePeriodOption[] = [];
+  protected accessor selectedTimePeriodOptionId_: TimePeriodOptionId =
+      TimePeriodOptionId.kAllTime;
 
   private callbackRouter_: PageCallbackRouter;
   private foreignSessionCallbackRouter_: ForeignSessionPageCallbackRouter;
@@ -815,20 +825,27 @@ export class HistoryAppElement extends HistoryAppElementBase {
     this.historyClustersVisible_ = e.detail.value;
   }
 
+  protected onDomainFilterSelected_(e: CustomEvent<{domain: string}>) {
+    this.domain_ = e.detail.domain;
+  }
+
   protected onFilterChanged_(e: CustomEvent<{
     userVisits: boolean,
     actorVisits: boolean,
     clientIds: string[],
+    timePeriodOptionId: TimePeriodOptionId,
   }>) {
     this.includeUserVisits_ = e.detail.userVisits;
     this.includeActorVisits_ = e.detail.actorVisits;
     this.clientIds_ = e.detail.clientIds;
+    this.selectedTimePeriodOptionId_ = e.detail.timePeriodOptionId;
 
     this.fire('change-query', {
       search: this.queryState_.searchTerm,
       includeActorVisits: this.includeActorVisits_,
       includeUserVisits: this.includeUserVisits_,
       clientIds: this.clientIds_,
+      timePeriodOptionId: this.selectedTimePeriodOptionId_,
     });
   }
 
@@ -841,6 +858,10 @@ export class HistoryAppElement extends HistoryAppElementBase {
         this.devices_.length > 1;
   }
 
+  protected showDomainFilter_(): boolean {
+    return this.isBrowsingHistoryFilterByDomainEnabled_ && this.domain_ !== '';
+  }
+
   protected showTimePeriodFilter_(): boolean {
     return this.isBrowsingHistoryFilterByTimePeriodEnabled_ &&
         this.timePeriodOptions_.length > 0;
@@ -848,7 +869,7 @@ export class HistoryAppElement extends HistoryAppElementBase {
 
   protected showFilterChips_(): boolean {
     return (this.showActorFilter_() || this.showDeviceFilter_() ||
-            this.showTimePeriodFilter_()) &&
+            this.showDomainFilter_() || this.showTimePeriodFilter_()) &&
         !this.getShowResultsByGroup_();
   }
 

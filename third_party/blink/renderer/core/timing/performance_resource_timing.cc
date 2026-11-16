@@ -233,7 +233,7 @@ DOMHighResTimeStamp PerformanceResourceTiming::workerStart() const {
 
 DOMHighResTimeStamp PerformanceResourceTiming::workerRouterEvaluationStart()
     const {
-  if (!info_->timing ||
+  if (!info_->allow_timing_details || !info_->timing ||
       info_->timing->service_worker_router_evaluation_start.is_null()) {
     return 0.0;
   }
@@ -244,7 +244,7 @@ DOMHighResTimeStamp PerformanceResourceTiming::workerRouterEvaluationStart()
 }
 
 DOMHighResTimeStamp PerformanceResourceTiming::workerCacheLookupStart() const {
-  if (!info_->timing ||
+  if (!info_->allow_timing_details || !info_->timing ||
       info_->timing->service_worker_cache_lookup_start.is_null()) {
     return 0.0;
   }
@@ -254,8 +254,11 @@ DOMHighResTimeStamp PerformanceResourceTiming::workerCacheLookupStart() const {
       info_->allow_negative_values, CrossOriginIsolatedCapability());
 }
 
-AtomicString PerformanceResourceTiming::workerMatchedSourceType() const {
-  if (!info_->service_worker_router_info ||
+AtomicString PerformanceResourceTiming::GetWorkerMatchedRouterSource() const {
+  // The router source types are response-derived attributes and must be
+  // masked when the timing allow check failed.
+  // https://fetch.spec.whatwg.org/#create-an-opaque-timing-info
+  if (!info_->allow_timing_details || !info_->service_worker_router_info ||
       !info_->service_worker_router_info->matched_source_type) {
     return AtomicString();
   }
@@ -264,14 +267,85 @@ AtomicString PerformanceResourceTiming::workerMatchedSourceType() const {
       *info_->service_worker_router_info->matched_source_type));
 }
 
-AtomicString PerformanceResourceTiming::workerFinalSourceType() const {
-  if (!info_->service_worker_router_info ||
+AtomicString PerformanceResourceTiming::GetWorkerFinalRouterSource() const {
+  if (!info_->allow_timing_details || !info_->service_worker_router_info ||
       !info_->service_worker_router_info->actual_source_type) {
     return AtomicString();
   }
 
   return AtomicString(ServiceWorkerRouterInfo::GetRouterSourceTypeString(
       *info_->service_worker_router_info->actual_source_type));
+}
+
+AtomicString PerformanceResourceTiming::workerMatchedRouterSource(
+    ExecutionContext* context) const {
+  AtomicString result = GetWorkerMatchedRouterSource();
+  if (!result.empty()) {
+    UseCounter::Count(
+        context,
+        WebFeature::
+            kPerformanceResourceTimingWorkerMatchedRouterSourceNonEmpty);
+    matched_router_source_read_ = true;
+    if (matched_source_type_read_) {
+      UseCounter::Count(
+          context,
+          WebFeature::
+              kPerformanceResourceTimingWorkerMatchedBothGettersNonEmpty);
+    }
+  }
+  return result;
+}
+
+AtomicString PerformanceResourceTiming::workerFinalRouterSource(
+    ExecutionContext* context) const {
+  AtomicString result = GetWorkerFinalRouterSource();
+  if (!result.empty()) {
+    UseCounter::Count(
+        context,
+        WebFeature::kPerformanceResourceTimingWorkerFinalRouterSourceNonEmpty);
+    final_router_source_read_ = true;
+    if (final_source_type_read_) {
+      UseCounter::Count(
+          context,
+          WebFeature::kPerformanceResourceTimingWorkerFinalBothGettersNonEmpty);
+    }
+  }
+  return result;
+}
+
+AtomicString PerformanceResourceTiming::workerMatchedSourceType(
+    ExecutionContext* context) const {
+  AtomicString result = GetWorkerMatchedRouterSource();
+  if (!result.empty()) {
+    UseCounter::Count(
+        context,
+        WebFeature::kPerformanceResourceTimingWorkerMatchedSourceTypeNonEmpty);
+    matched_source_type_read_ = true;
+    if (matched_router_source_read_) {
+      UseCounter::Count(
+          context,
+          WebFeature::
+              kPerformanceResourceTimingWorkerMatchedBothGettersNonEmpty);
+    }
+  }
+  return result;
+}
+
+AtomicString PerformanceResourceTiming::workerFinalSourceType(
+    ExecutionContext* context) const {
+  AtomicString result = GetWorkerFinalRouterSource();
+  if (!result.empty()) {
+    UseCounter::Count(
+        context,
+        WebFeature::kPerformanceResourceTimingWorkerFinalSourceTypeNonEmpty);
+    final_source_type_read_ = true;
+    if (final_router_source_read_) {
+      UseCounter::Count(
+          context,
+          WebFeature::kPerformanceResourceTimingWorkerFinalBothGettersNonEmpty);
+    }
+  }
+  return result;
 }
 
 DOMHighResTimeStamp PerformanceResourceTiming::WorkerReady() const {
@@ -325,10 +399,12 @@ DOMHighResTimeStamp PerformanceResourceTiming::fetchStart() const {
   // source type is cache, we will not have a fetch start. For compatibility,
   // we set this to responseStart (as written in explainer
   // https://github.com/WICG/service-worker-static-routing-api/blob/main/resource-timing-api.md
-  // ).
+  // ). responseStart() is masked to 0 when the timing allow check failed, so
+  // only take this shortcut when it passed; otherwise fetchStart would drop
+  // below startTime.
   if (RuntimeEnabledFeatures::ServiceWorkerStaticRouterTimingInfoEnabled(
           DynamicTo<LocalDOMWindow>(source())) &&
-      info_->service_worker_router_info &&
+      info_->allow_timing_details && info_->service_worker_router_info &&
       info_->service_worker_router_info->actual_source_type ==
           network::mojom::ServiceWorkerRouterSourceType::kCache) {
     return responseStart();
@@ -537,13 +613,22 @@ void PerformanceResourceTiming::BuildJSONValue(V8ObjectBuilder& builder) const {
   builder.AddString("contentType", contentType());
   builder.AddString("contentEncoding", contentEncoding());
   builder.AddNumber("workerStart", workerStart());
+  ExecutionContext* context = ExecutionContext::From(builder.GetScriptState());
   if (RuntimeEnabledFeatures::ServiceWorkerStaticRouterTimingInfoEnabled(
-          ExecutionContext::From(builder.GetScriptState()))) {
+          context)) {
     builder.AddNumber("workerRouterEvaluationStart",
                       workerRouterEvaluationStart());
     builder.AddNumber("workerCacheLookupStart", workerCacheLookupStart());
-    builder.AddString("workerMatchedSourceType", workerMatchedSourceType());
-    builder.AddString("workerFinalSourceType", workerFinalSourceType());
+    if (RuntimeEnabledFeatures::
+            ServiceWorkerStaticRouterTimingRouterSourceFieldsEnabled(context)) {
+      builder.AddString("workerMatchedRouterSource",
+                        GetWorkerMatchedRouterSource());
+      builder.AddString("workerFinalRouterSource",
+                        GetWorkerFinalRouterSource());
+    }
+    builder.AddString("workerMatchedSourceType",
+                      GetWorkerMatchedRouterSource());
+    builder.AddString("workerFinalSourceType", GetWorkerFinalRouterSource());
   }
   if (RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled()) {
     builder.AddString("initiatorUrl", initiatorUrl());

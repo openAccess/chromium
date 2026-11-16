@@ -9,6 +9,7 @@
 #include <string>
 #include <string_view>
 
+#include "base/component_export.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ref.h"
@@ -60,7 +61,12 @@ class GraphBuilderOrt {
   // Factory method that creates a `GraphBuilderOrt`, builds the graph and
   // returns `ModelEditor::ModelInfo` which contains the model itself and the
   // external data (weights).
-  static std::unique_ptr<ModelEditor::ModelInfo> CreateAndBuild(
+  //
+  // Returns unexpected if it fails.
+  COMPONENT_EXPORT(WEBNN_SERVICE)
+  static base::expected<std::unique_ptr<ModelEditor::ModelInfo>,
+                        mojom::ErrorPtr>
+  CreateAndBuild(
       const mojom::GraphInfo& graph_info,
       ContextProperties context_properties,
       EpWorkarounds ep_workarounds,
@@ -226,21 +232,37 @@ class GraphBuilderOrt {
   std::string CreateTransposeNode(base::cstring_view input,
                                   base::span<const uint32_t> perm_value);
 
+  // Validates the byte length of a tensor inserted by this builder against
+  // `ContextProperties::tensor_byte_length_limit`.
+  base::expected<void, mojom::ErrorPtr> ValidateInsertedTensorByteLength(
+      OperandDataType data_type,
+      base::span<const uint32_t> shape,
+      std::string_view label) const;
+
   void EmulateWithIdentityNode(base::cstring_view label,
                                base::cstring_view input,
                                base::cstring_view output);
 
-  // Clamp the indices to the range [-dim_size, dim_size), the given data type
-  // should be indices's data type.
-  std::string ClampIndices(base::cstring_view indices,
-                           OperandDataType data_type,
-                           uint32_t dim_size);
+  // Shifts negative indices to their equivalent non-negative value:
+  // where(indices < zero, indices + dim_sizes, indices). Both `zero` and
+  // `dim_sizes` must have the same data type as `indices` and be broadcastable
+  // to `indices`.
+  std::string ShiftNegativeIndices(base::cstring_view indices,
+                                   base::cstring_view zero,
+                                   base::cstring_view dim_sizes);
+
+  // Clamps `indices` to the range [-dim_size, dim_size). Then, if
+  // `ep_workarounds_` requires it, shifts negative indices to their equivalent
+  // non-negative value. The given data type should be int32 or int64, matching
+  // `indices`'s data type.
+  std::string NormalizeGatherScatterIndices(base::cstring_view indices,
+                                            OperandDataType data_type,
+                                            uint32_t dim_size);
 
   // Clamps `indices` so that all values are within bounds [-s, s) along axis
   // of size s, i.e. -input_shape[i] <= indices[..., i] <= input_shape[i] - 1.
   // Then, if `ep_workarounds_` requires it, shifts negative indices to their
-  // equivalent non-negative value: where(indices < 0, indices +
-  // input_shape[axis], indices). The data type of indices is assumed to be
+  // equivalent non-negative value. The data type of indices is assumed to be
   // int64.
   std::string NormalizeGatherScatterNDIndices(
       base::cstring_view indices,
@@ -254,7 +276,8 @@ class GraphBuilderOrt {
   template <typename T>
   void AddGatherOperation(const T& operation, base::cstring_view op_type);
 
-  void AddArgMinMaxOperation(const mojom::ArgMinMax& arg_min_max);
+  base::expected<void, mojom::ErrorPtr> AddArgMinMaxOperation(
+      const mojom::ArgMinMax& arg_min_max);
   void AddBatchNormalizationOperation(
       const mojom::BatchNormalization& batch_normalization);
   void AddCastOperation(const mojom::ElementWiseUnary& cast);
@@ -278,7 +301,8 @@ class GraphBuilderOrt {
   void AddElementWiseUnaryOperation(
       const mojom::ElementWiseUnary& element_wise_unary);
   void AddExpandOperation(const mojom::Expand& expand);
-  void AddGatherNDOperation(const mojom::GatherND& gather_nd);
+  base::expected<void, mojom::ErrorPtr> AddGatherNDOperation(
+      const mojom::GatherND& gather_nd);
   void AddGemmOperation(const mojom::Gemm& gemm);
   template <typename GruType>
     requires(std::is_same_v<GruType, mojom::Gru> ||
@@ -305,7 +329,8 @@ class GraphBuilderOrt {
   void AddReverseOperation(const mojom::Reverse& reverse);
   void AddScatterElementsOperation(
       const mojom::ScatterElements& scatter_elements);
-  void AddScatterNDOperation(const mojom::ScatterND& scatter_nd);
+  base::expected<void, mojom::ErrorPtr> AddScatterNDOperation(
+      const mojom::ScatterND& scatter_nd);
   void AddSliceOperation(const mojom::Slice& slice);
   void AddSoftmaxOperation(const mojom::Softmax& softmax);
   void AddSplitOperation(const mojom::Split& split);
@@ -314,7 +339,8 @@ class GraphBuilderOrt {
   void AddTriangularOperation(const mojom::Triangular& triangular);
   void AddWhereOperation(const mojom::Where& where);
 
-  std::unique_ptr<ModelEditor::ModelInfo> BuildModel();
+  base::expected<std::unique_ptr<ModelEditor::ModelInfo>, mojom::ErrorPtr>
+  BuildModel();
 
   // An increasing id used for generating unique names for inserted operand.
   base::CheckedNumeric<uint32_t> next_operand_id_;

@@ -29,7 +29,9 @@
 #include "base/memory/raw_span.h"
 #include "base/memory/stack_allocated.h"
 #include "base/notimplemented.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/numerics/safe_math.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/memory_allocator_dump.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/process_memory_dump.h"
@@ -47,6 +49,7 @@
 #include "gpu/command_buffer/client/raster_cmd_helper.h"
 #include "gpu/command_buffer/client/shared_memory_limits.h"
 #include "gpu/command_buffer/client/transfer_buffer.h"
+#include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/rect.h"
@@ -104,22 +107,22 @@ const uint32_t kMaxTransferCacheEntrySizeForTransferBuffer = 1024;
 const size_t kMaxImmediateDeletedPaintCachePaths = 1024;
 constexpr size_t kMaxImmediateDeletedPaintCacheEffects = 10u;
 
-#define DEFINE_PAINT_CACHE_DELETION(                                     \
-    IMMEDIATE_SIZE_CONSTANT, IMMEDIATE_FUNCTION, NON_IMMEDIATE_FUNCTION) \
-  if (ids.size() <= IMMEDIATE_SIZE_CONSTANT) {                           \
-    helper_->IMMEDIATE_FUNCTION(ids.size(), ids.data());                 \
-  } else {                                                               \
-    size_t data_size = ids.size() * sizeof(cc::PaintCacheId);            \
-    ScopedSharedMemoryPtr dest(data_size, transfer_buffer_,              \
-                               mapped_memory_.get(), helper());          \
-    if (dest.valid()) {                                                  \
-      memcpy(dest.address(), ids.data(), data_size);                     \
-      helper_->NON_IMMEDIATE_FUNCTION(ids.size(), dest.shm_id(),         \
-                                      dest.offset());                    \
-    } else {                                                             \
-      SetGLError(GL_INVALID_OPERATION, "glDeletePaintCacheINTERNAL",     \
-                 "couldn't allocate shared memory");                     \
-    }                                                                    \
+#define DEFINE_PAINT_CACHE_DELETION(                                           \
+    IMMEDIATE_SIZE_CONSTANT, IMMEDIATE_FUNCTION, NON_IMMEDIATE_FUNCTION)       \
+  if (ids.size() <= IMMEDIATE_SIZE_CONSTANT) {                                 \
+    helper_->IMMEDIATE_FUNCTION(ids.size(), ids.data());                       \
+  } else {                                                                     \
+    size_t data_size = ids.size() * sizeof(cc::PaintCacheId);                  \
+    ScopedSharedMemoryPtr dest(data_size, transfer_buffer_,                    \
+                               mapped_memory_.get(), helper());                \
+    if (dest.valid()) {                                                        \
+      dest.as_byte_span().first(data_size).copy_from(base::as_byte_span(ids)); \
+      helper_->NON_IMMEDIATE_FUNCTION(ids.size(), dest.shm_id(),               \
+                                      dest.offset());                          \
+    } else {                                                                   \
+      SetGLError(GL_INVALID_OPERATION, "glDeletePaintCacheINTERNAL",           \
+                 "couldn't allocate shared memory");                           \
+    }                                                                          \
   }
 
 class ScopedSharedMemoryPtr {
@@ -128,39 +131,57 @@ class ScopedSharedMemoryPtr {
                         TransferBufferInterface* transfer_buffer,
                         MappedMemoryManager* mapped_memory,
                         RasterCmdHelper* helper) {
+    uint32_t checked_size = 0;
+    if (size == 0 ||
+        !base::CheckedNumeric<uint32_t>(size).AssignIfValid(&checked_size)) {
+      return;
+    }
     // Prefer transfer buffer but fall back to MappedMemory if there's not
-    // enough free space.
-    if (transfer_buffer->GetFreeSize() < size) {
-      scoped_mapped_ptr_.emplace(size, helper, mapped_memory);
-    } else {
-      scoped_transfer_ptr_.emplace(size, helper, transfer_buffer);
+    // enough free space or if the transfer buffer allocation is smaller than
+    // requested.
+    if (transfer_buffer->GetFreeSize() >= checked_size) {
+      scoped_transfer_ptr_.emplace(checked_size, helper, transfer_buffer);
+      if (!scoped_transfer_ptr_->valid() ||
+          scoped_transfer_ptr_->size() < checked_size) {
+        scoped_transfer_ptr_->Discard();
+        scoped_transfer_ptr_.reset();
+      }
+    }
+    if (!scoped_transfer_ptr_) {
+      scoped_mapped_ptr_.emplace(checked_size, helper, mapped_memory);
+      if (!scoped_mapped_ptr_->valid() ||
+          scoped_mapped_ptr_->size() < checked_size) {
+        scoped_mapped_ptr_.reset();
+      }
     }
   }
   ~ScopedSharedMemoryPtr() = default;
 
-  GLuint size() {
-    return scoped_transfer_ptr_ ? scoped_transfer_ptr_->size()
-                                : scoped_mapped_ptr_->size();
+  GLint shm_id() const {
+    if (scoped_transfer_ptr_) {
+      return scoped_transfer_ptr_->shm_id();
+    }
+    return scoped_mapped_ptr_ ? scoped_mapped_ptr_->shm_id() : 0;
   }
 
-  GLint shm_id() {
-    return scoped_transfer_ptr_ ? scoped_transfer_ptr_->shm_id()
-                                : scoped_mapped_ptr_->shm_id();
+  GLuint offset() const {
+    if (scoped_transfer_ptr_) {
+      return scoped_transfer_ptr_->offset();
+    }
+    return scoped_mapped_ptr_ ? scoped_mapped_ptr_->offset() : 0;
   }
 
-  GLuint offset() {
-    return scoped_transfer_ptr_ ? scoped_transfer_ptr_->offset()
-                                : scoped_mapped_ptr_->offset();
+  bool valid() const {
+    return (scoped_transfer_ptr_ && scoped_transfer_ptr_->valid()) ||
+           (scoped_mapped_ptr_ && scoped_mapped_ptr_->valid());
   }
 
-  bool valid() {
-    return scoped_transfer_ptr_ ? scoped_transfer_ptr_->valid()
-                                : scoped_mapped_ptr_->valid();
-  }
-
-  void* address() {
-    return scoped_transfer_ptr_ ? scoped_transfer_ptr_->address()
-                                : scoped_mapped_ptr_->address();
+  base::span<uint8_t> as_byte_span() {
+    if (scoped_transfer_ptr_) {
+      return scoped_transfer_ptr_->as_byte_span();
+    }
+    return scoped_mapped_ptr_ ? scoped_mapped_ptr_->as_byte_span()
+                              : base::span<uint8_t>();
   }
 
  private:
@@ -447,78 +468,50 @@ struct RasterImplementation::AsyncARGBReadbackRequest {
 };
 
 struct RasterImplementation::AsyncYUVReadbackRequest {
-  AsyncYUVReadbackRequest(gfx::Rect output_rect,
-                          GLuint query,
-                          int y_plane_stride,
-                          GLuint y_plane_offset,
-                          uint8_t* y_plane_data,
-                          int u_plane_stride,
-                          GLuint u_plane_offset,
-                          uint8_t* u_plane_data,
-                          int v_plane_stride,
-                          GLuint v_plane_offset,
-                          uint8_t* v_plane_data,
-                          std::unique_ptr<ScopedMappedMemoryPtr> shared_memory,
-                          base::OnceCallback<void()> release_mailbox,
-                          base::OnceCallback<void(bool)> readback_done)
-      : output_rect(output_rect),
+  AsyncYUVReadbackRequest(
+      const std::array<SkPixmap, SkYUVAInfo::kMaxPlanes>& src_pixmaps,
+      const SkYUVAPixmaps& dst_pixmaps,
+      GLuint query,
+      std::unique_ptr<ScopedMappedMemoryPtr> shared_memory,
+      base::OnceCallback<void()> release_mailbox,
+      base::OnceCallback<void(bool)> readback_done)
+      : src_pixmaps(src_pixmaps),
+        dst_pixmaps(dst_pixmaps),
         query(query),
-        y_plane_stride(y_plane_stride),
-        y_plane_offset(y_plane_offset),
-        y_plane_data(y_plane_data),
-        u_plane_stride(u_plane_stride),
-        u_plane_offset(u_plane_offset),
-        u_plane_data(u_plane_data),
-        v_plane_stride(v_plane_stride),
-        v_plane_offset(v_plane_offset),
-        v_plane_data(v_plane_data),
         shared_memory(std::move(shared_memory)),
         release_mailbox(std::move(release_mailbox)),
         readback_done(std::move(readback_done)) {}
   ~AsyncYUVReadbackRequest() {
-    // Sometimes `callback` owns plane ptrs, this prevents dangling raw ptrs
-    y_plane_data = nullptr;
-    u_plane_data = nullptr;
-    v_plane_data = nullptr;
+    // Sometimes `readback_done` owns the memory referenced by `dst_pixmaps`.
+    dst_pixmaps = SkYUVAPixmaps();
     std::move(release_mailbox).Run();
     std::move(readback_done).Run(readback_successful);
   }
 
   void CopyYUVPlanes() {
-    void* shm_address = shared_memory->address();
     auto* result =
         static_cast<cmds::ReadbackYUVImagePixelsINTERNALImmediate::Result*>(
-            shm_address);
+            shared_memory->address());
     if (!*result) {
       return;
     }
 
-    CopyYUVPlane(output_rect.width(), output_rect.height(), y_plane_stride,
-                 y_plane_offset, shm_address, y_plane_data);
-
-    // U and V planes are half the size of the Y plane.
-    CopyYUVPlane(output_rect.width() / 2, output_rect.height() / 2,
-                 u_plane_stride, u_plane_offset, shm_address, u_plane_data);
-    CopyYUVPlane(output_rect.width() / 2, output_rect.height() / 2,
-                 v_plane_stride, v_plane_offset, shm_address, v_plane_data);
-
+    for (int plane = 0; plane < dst_pixmaps.numPlanes(); ++plane) {
+      const SkPixmap& src = src_pixmaps[plane];
+      const SkPixmap& dst = dst_pixmaps.plane(plane);
+      RelaxedAtomicWriteMemcpyImageRowsSkippingPadding(
+          /*dst=*/skia::as_writable_byte_span(dst),
+          /*src=*/skia::as_writable_byte_span(src),
+          /*row_bytes=*/dst.info().minRowBytes(), /*height=*/dst.height(),
+          /*dst_stride=*/dst.rowBytes(), /*src_stride=*/src.rowBytes());
+    }
     readback_successful = true;
   }
 
-  const gfx::Rect output_rect;
+  // Reference the planes in `shared_memory`.
+  const std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> src_pixmaps;
+  SkYUVAPixmaps dst_pixmaps;
   GLuint query;
-
-  int y_plane_stride;
-  GLuint y_plane_offset;
-  raw_ptr<uint8_t> y_plane_data;
-
-  int u_plane_stride;
-  GLuint u_plane_offset;
-  raw_ptr<uint8_t> u_plane_data;
-
-  int v_plane_stride;
-  GLuint v_plane_offset;
-  raw_ptr<uint8_t> v_plane_data;
 
   std::unique_ptr<ScopedMappedMemoryPtr> shared_memory;
   base::OnceCallback<void()> release_mailbox;
@@ -526,25 +519,6 @@ struct RasterImplementation::AsyncYUVReadbackRequest {
 
   bool done = false;
   bool readback_successful = false;
-
- private:
-  void CopyYUVPlane(GLuint plane_width,
-                    GLuint plane_height,
-                    int plane_stride,
-                    GLuint plane_offset,
-                    void* in_buffer,
-                    uint8_t* out_buffer) {
-    // RasterDecoder writes the pixels into |in_buffer| with the requested
-    // stride so we can copy the whole block here.
-    size_t plane_size = plane_height * plane_stride;
-    auto dst = UNSAFE_TODO(base::span(out_buffer, plane_size));
-    auto src = UNSAFE_TODO(base::span(
-        static_cast<uint8_t*>(in_buffer) + plane_offset, plane_size));
-    RelaxedAtomicWriteMemcpyImageRowsSkippingPadding(
-        /*dst=*/dst, /*src=*/src, /*row_bytes=*/plane_width,
-        /*height=*/plane_height, /*dst_stride=*/plane_stride,
-        /*src_stride=*/plane_stride);
-  }
 };
 
 RasterImplementation::RasterImplementation(
@@ -670,15 +644,21 @@ void RasterImplementation::SetErrorMessageCallback(
 
 base::span<uint8_t> RasterImplementation::MapTransferCacheEntry(
     uint32_t serialized_size) {
+  if (serialized_size == 0) {
+    return {};
+  }
   // Prefer to use transfer buffer when possible, since transfer buffer
   // allocations are much cheaper.
-  if (raster_mapped_buffer_ ||
-      transfer_buffer_->GetFreeSize() < serialized_size) {
-    return transfer_cache_.MapEntry(mapped_memory_.get(), serialized_size);
+  if (!raster_mapped_buffer_ &&
+      transfer_buffer_->GetFreeSize() >= serialized_size) {
+    base::span<uint8_t> entry = transfer_cache_.MapTransferBufferEntry(
+        transfer_buffer_, serialized_size);
+    if (!entry.empty()) {
+      return entry;
+    }
   }
 
-  return transfer_cache_.MapTransferBufferEntry(transfer_buffer_,
-                                                serialized_size);
+  return transfer_cache_.MapEntry(mapped_memory_.get(), serialized_size);
 }
 
 void RasterImplementation::UnmapAndCreateTransferCacheEntry(uint32_t type,
@@ -1231,18 +1211,42 @@ void RasterImplementation::WritePixels(const gpu::Mailbox& dest_mailbox,
   // Get the size of the SkColorSpace while maintaining 8-byte alignment.
   GLuint pixels_offset = 0;
   if (src_info.colorSpace()) {
-    pixels_offset = base::bits::AlignUp(
+    size_t color_space_size = base::bits::AlignUp(
         src_info.colorSpace()->writeToMemory(nullptr), sizeof(uint64_t));
+    if (!base::CheckedNumeric<GLuint>(color_space_size)
+             .AssignIfValid(&pixels_offset)) {
+      SetGLError(GL_INVALID_OPERATION, "WritePixels", "size too big");
+      return;
+    }
   }
 
-  GLuint src_size = src_sk_pixmap.computeByteSize();
-  GLuint total_size =
-      pixels_offset +
-      base::bits::AlignUp(src_size, static_cast<GLuint>(sizeof(uint64_t)));
+  size_t src_byte_size = src_sk_pixmap.computeByteSize();
+  if (SkImageInfo::ByteSizeOverflowed(src_byte_size)) {
+    SetGLError(GL_INVALID_OPERATION, "WritePixels", "size too big");
+    return;
+  }
+
+  GLuint src_size = 0;
+  GLuint checked_row_bytes = 0;
+  if (!base::CheckedNumeric<GLuint>(src_byte_size).AssignIfValid(&src_size) ||
+      !base::CheckedNumeric<GLuint>(src_row_bytes)
+           .AssignIfValid(&checked_row_bytes)) {
+    SetGLError(GL_INVALID_OPERATION, "WritePixels", "size too big");
+    return;
+  }
+
+  base::CheckedNumeric<GLuint> total_size = pixels_offset;
+  total_size +=
+      base::bits::AlignUp(uint64_t{src_size}, uint64_t{sizeof(uint64_t)});
+  GLuint checked_total_size = 0;
+  if (!total_size.AssignIfValid(&checked_total_size)) {
+    SetGLError(GL_INVALID_OPERATION, "WritePixels", "size too big");
+    return;
+  }
 
   std::unique_ptr<ScopedSharedMemoryPtr> scoped_shared_memory =
-      std::make_unique<ScopedSharedMemoryPtr>(total_size, transfer_buffer_,
-                                              mapped_memory_.get(), helper());
+      std::make_unique<ScopedSharedMemoryPtr>(
+          checked_total_size, transfer_buffer_, mapped_memory_.get(), helper());
 
   if (!scoped_shared_memory->valid()) {
     SetGLError(GL_INVALID_OPERATION, "WritePixels", "size too big");
@@ -1251,18 +1255,20 @@ void RasterImplementation::WritePixels(const gpu::Mailbox& dest_mailbox,
 
   GLint shm_id = scoped_shared_memory->shm_id();
   GLuint shm_offset = scoped_shared_memory->offset();
-  void* address = scoped_shared_memory->address();
+  base::span<uint8_t> shm_span = scoped_shared_memory->as_byte_span();
 
   if (src_info.colorSpace()) {
-    size_t bytes_written = src_info.colorSpace()->writeToMemory(address);
+    size_t bytes_written = src_info.colorSpace()->writeToMemory(
+        shm_span.first(pixels_offset).data());
     DCHECK_LE(bytes_written, pixels_offset);
   }
-  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(address) + pixels_offset,
-                     src_sk_pixmap.addr(), src_size));
+  shm_span.subspan(pixels_offset, src_size)
+      .copy_from(UNSAFE_TODO(base::span(
+          static_cast<const uint8_t*>(src_sk_pixmap.addr()), src_size)));
 
   helper_->WritePixelsINTERNALImmediate(
       dst_x_offset, dst_y_offset, src_info.width(), src_info.height(),
-      src_row_bytes, src_info.colorType(), src_info.alphaType(), shm_id,
+      checked_row_bytes, src_info.colorType(), src_info.alphaType(), shm_id,
       shm_offset, pixels_offset, dest_mailbox.name);
 }
 
@@ -1279,15 +1285,37 @@ void RasterImplementation::WritePixelsYUV(const gpu::Mailbox& dest_mailbox,
   const std::array<SkPixmap, SkYUVAInfo::kMaxPlanes>& src_sk_pixmaps =
       src_yuv_pixmap.planes();
 
-  GLuint total_size = 0;
+  std::array<GLuint, SkYUVAInfo::kMaxPlanes> plane_row_bytes = {};
+  std::array<GLuint, SkYUVAInfo::kMaxPlanes> plane_sizes = {};
+  std::array<GLuint, SkYUVAInfo::kMaxPlanes> plane_offsets = {};
+  base::CheckedNumeric<GLuint> total_size = 0;
   for (int plane = 0; plane < src_yuv_info.numPlanes(); plane++) {
     CHECK(src_sk_pixmaps[plane].addr());
-    total_size += base::bits::AlignUp(src_sk_pixmaps[plane].computeByteSize(),
-                                      sizeof(uint64_t));
+    size_t plane_byte_size = src_sk_pixmaps[plane].computeByteSize();
+    if (SkImageInfo::ByteSizeOverflowed(plane_byte_size)) {
+      SetGLError(GL_INVALID_OPERATION, "WritePixelsYUV", "size too big");
+      return;
+    }
+    if (!base::CheckedNumeric<GLuint>(plane_byte_size)
+             .AssignIfValid(&plane_sizes[plane]) ||
+        !base::CheckedNumeric<GLuint>(src_sk_pixmaps[plane].rowBytes())
+             .AssignIfValid(&plane_row_bytes[plane]) ||
+        !total_size.AssignIfValid(&plane_offsets[plane])) {
+      SetGLError(GL_INVALID_OPERATION, "WritePixelsYUV", "size too big");
+      return;
+    }
+    total_size += base::bits::AlignUp(uint64_t{plane_sizes[plane]},
+                                      uint64_t{sizeof(uint64_t)});
   }
 
-  ScopedSharedMemoryPtr scoped_shared_memory(total_size, transfer_buffer_,
-                                             mapped_memory_.get(), helper());
+  GLuint checked_total_size = 0;
+  if (!total_size.AssignIfValid(&checked_total_size)) {
+    SetGLError(GL_INVALID_OPERATION, "WritePixelsYUV", "size too big");
+    return;
+  }
+
+  ScopedSharedMemoryPtr scoped_shared_memory(
+      checked_total_size, transfer_buffer_, mapped_memory_.get(), helper());
   if (!scoped_shared_memory.valid()) {
     SetGLError(GL_INVALID_OPERATION, "WritePixelsYUV", "size too big");
     return;
@@ -1295,33 +1323,18 @@ void RasterImplementation::WritePixelsYUV(const gpu::Mailbox& dest_mailbox,
 
   GLint shm_id = scoped_shared_memory.shm_id();
   GLuint shm_offset = scoped_shared_memory.offset();
-  void* address = scoped_shared_memory.address();
+  base::span<uint8_t> shm_span = scoped_shared_memory.as_byte_span();
 
-  // Copy the pixels for first plane at `address`.
-  CHECK(src_sk_pixmaps[0].addr());
-  UNSAFE_TODO(memcpy(static_cast<uint8_t*>(address), src_sk_pixmaps[0].addr(),
-                     src_sk_pixmaps[0].computeByteSize()));
-
-  std::array<GLuint, SkYUVAInfo::kMaxPlanes> plane_offsets = {};
-  for (int plane = 1; plane < src_yuv_info.numPlanes(); plane++) {
-    CHECK(src_sk_pixmaps[plane].addr());
-    // Calculate the offset based on previous plane offset and previous plane
-    // size, and copy pixels for current plane starting at current plane
-    // offset.
-    GLuint prev_plane_size = src_sk_pixmaps[plane - 1].computeByteSize();
-    plane_offsets[plane] =
-        plane_offsets[plane - 1] +
-        base::bits::AlignUp(prev_plane_size,
-                            static_cast<GLuint>(sizeof(uint64_t)));
-    UNSAFE_TODO(memcpy(static_cast<uint8_t*>(address) + plane_offsets[plane],
-                       src_sk_pixmaps[plane].addr(),
-                       src_sk_pixmaps[plane].computeByteSize()));
+  for (int plane = 0; plane < src_yuv_info.numPlanes(); plane++) {
+    shm_span.subspan(plane_offsets[plane], plane_sizes[plane])
+        .copy_from(UNSAFE_TODO(base::span(
+            static_cast<const uint8_t*>(src_sk_pixmaps[plane].addr()),
+            plane_sizes[plane])));
   }
 
   helper_->WritePixelsYUVINTERNALImmediate(
-      src_yuv_info.width(), src_yuv_info.height(), src_sk_pixmaps[0].rowBytes(),
-      src_sk_pixmaps[1].rowBytes(), src_sk_pixmaps[2].rowBytes(),
-      src_sk_pixmaps[3].rowBytes(),
+      src_yuv_info.width(), src_yuv_info.height(), plane_row_bytes[0],
+      plane_row_bytes[1], plane_row_bytes[2], plane_row_bytes[3],
       static_cast<int>(src_yuv_info.planeConfig()),
       static_cast<int>(src_yuv_info.subsampling()),
       static_cast<int>(src_yuv_pixmap_info.dataType()), shm_id, shm_offset,
@@ -1635,12 +1648,14 @@ void RasterImplementation::ReadbackARGBPixelsAsync(
     GrSurfaceOrigin source_origin,
     const gfx::Size& source_size,
     const gfx::Point& source_starting_point,
-    const SkImageInfo& dst_info,
-    GLuint dst_row_bytes,
-    base::span<uint8_t> out,
+    const SkPixmap& dst_pixmap,
     base::OnceCallback<void(bool)> readback_done) {
   TRACE_EVENT0("gpu", "RasterImplementation::ReadbackARGBPixelsAsync");
   DCHECK(!!readback_done);
+  const SkImageInfo& dst_info = dst_pixmap.info();
+  const GLuint dst_row_bytes =
+      base::checked_cast<GLuint>(dst_pixmap.rowBytes());
+  base::span<uint8_t> out = skia::as_writable_byte_span(dst_pixmap);
   // Note: It's possible the GL implementation supports other readback
   // types. However, as of this writing, no caller of this method will
   // request a different |color_type| (i.e., requiring using some other GL
@@ -1660,16 +1675,15 @@ void RasterImplementation::ReadbackARGBPixelsAsync(
 bool RasterImplementation::ReadbackImagePixels(
     const gpu::Mailbox& source_mailbox,
     const gfx::Size& source_size,
-    const SkImageInfo& dst_info,
-    GLuint dst_row_bytes,
     int src_x,
     int src_y,
     int plane_index,
-    void* dst_pixels) {
+    const SkPixmap& dst_pixmap) {
   TRACE_EVENT0("gpu", "RasterImplementation::ReadbackImagePixels");
-  size_t dst_size = dst_info.computeByteSize(dst_row_bytes);
-  base::span<uint8_t> dst_span =
-      UNSAFE_TODO(base::span(static_cast<uint8_t*>(dst_pixels), dst_size));
+  const SkImageInfo& dst_info = dst_pixmap.info();
+  const GLuint dst_row_bytes =
+      base::checked_cast<GLuint>(dst_pixmap.rowBytes());
+  base::span<uint8_t> dst_span = skia::as_writable_byte_span(dst_pixmap);
   return ReadbackImagePixelsINTERNAL(
              source_mailbox, source_size, dst_info, dst_row_bytes, src_x, src_y,
              plane_index, base::OnceCallback<void(bool)>(), dst_span) ||
@@ -1680,98 +1694,90 @@ void RasterImplementation::ReadbackYUVPixelsAsync(
     const gpu::Mailbox& source_mailbox,
     GLenum source_target,
     const gfx::Rect& source_rect,
-    const gfx::Rect& output_rect,
     bool vertically_flip_texture,
-    int y_plane_row_stride_bytes,
-    base::span<uint8_t> y_plane_data,
-    int u_plane_row_stride_bytes,
-    base::span<uint8_t> u_plane_data,
-    int v_plane_row_stride_bytes,
-    base::span<uint8_t> v_plane_data,
+    const SkYUVAPixmaps& dst_pixmaps,
+    sk_sp<SkColorSpace> dst_color_space,
     base::OnceCallback<void()> release_mailbox,
     base::OnceCallback<void(bool)> readback_done) {
   TRACE_EVENT0("gpu", "RasterImplementation::ReadbackYUVPixelsAsync");
   DCHECK(!!release_mailbox);
   DCHECK(!!readback_done);
 
-  if (output_rect.width() % 2 != 0 || output_rect.height() % 2 != 0) {
-    SetGLError(GL_INVALID_VALUE, "glReadbackYUVPixelsAsync",
-               "|output_rect| width and height must be divisible by 2");
-    return;
-  }
+  // On failure, post the callbacks, so that they never run before this
+  // returns.
+  auto fail = [&](const char* msg) {
+    SetGLError(GL_INVALID_VALUE, "glReadbackYUVPixelsAsync", msg);
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::OnceClosure release_mailbox,
+                          base::OnceCallback<void(bool)> readback_done) {
+                         std::move(release_mailbox).Run();
+                         std::move(readback_done).Run(/*success=*/false);
+                       },
+                       std::move(release_mailbox), std::move(readback_done)));
+  };
 
-  auto y_offset = static_cast<GLuint>(base::bits::AlignUp(
+  // TODO(crbug.com/40261346): Support more than 8-bit I420, and use
+  // `dst_color_space` and the SkYUVColorSpace of `dst_pixmaps`.
+  const SkYUVAInfo& yuva_info = dst_pixmaps.yuvaInfo();
+  if (!dst_pixmaps.isValid() ||
+      yuva_info.planeConfig() != SkYUVAInfo::PlaneConfig::kY_U_V ||
+      yuva_info.subsampling() != SkYUVAInfo::Subsampling::k420 ||
+      dst_pixmaps.dataType() != SkYUVAPixmaps::DataType::kUnorm8) {
+    return fail("|dst_pixmaps| must be 8-bit I420");
+  }
+  if (yuva_info.width() % 2 != 0 || yuva_info.height() % 2 != 0) {
+    return fail("|dst_pixmaps| width and height must be divisible by 2");
+  }
+  const int num_planes = dst_pixmaps.numPlanes();
+
+  // The result, followed by the tightly packed planes, each 8-byte aligned.
+  constexpr size_t kAlignment = sizeof(uint64_t);
+  std::array<GLuint, SkYUVAInfo::kMaxPlanes> plane_offsets = {};
+  base::CheckedNumeric<GLuint> shm_size = base::bits::AlignUp(
       sizeof(cmds::ReadbackYUVImagePixelsINTERNALImmediate::Result),
-      sizeof(uint64_t)));
-
-  if (y_plane_row_stride_bytes < output_rect.width()) {
-    SetGLError(
-        GL_INVALID_VALUE, "glReadbackYUVPixelsAsync",
-        "|y_plane_row_stride_bytes| must be >= the width of the y plane.");
-    return;
+      kAlignment);
+  for (int plane = 0; plane < num_planes; ++plane) {
+    plane_offsets[plane] = shm_size.ValueOrDefault(0);
+    shm_size += dst_pixmaps.plane(plane).info().computeMinByteSize();
+    shm_size = (shm_size + kAlignment - 1) / kAlignment * kAlignment;
   }
-  GLuint y_padded_size = output_rect.height() * y_plane_row_stride_bytes;
-
-  constexpr auto kSizeofUint64 = static_cast<GLuint>(sizeof(uint64_t));
-  GLuint u_offset =
-      base::bits::AlignUp(y_offset + y_padded_size, kSizeofUint64);
-  if (u_plane_row_stride_bytes < ((output_rect.width() + 1) / 2)) {
-    SetGLError(
-        GL_INVALID_VALUE, "glReadbackYUVPixelsAsync",
-        "|u_plane_row_stride_bytes| must be >= the width of the u plane.");
-    return;
+  if (!shm_size.IsValid()) {
+    return fail("|dst_pixmaps| is too large");
   }
-  GLuint u_padded_size =
-      ((output_rect.height() + 1) / 2) * u_plane_row_stride_bytes;
 
-  GLuint v_offset =
-      base::bits::AlignUp(u_offset + u_padded_size, kSizeofUint64);
-  if (v_plane_row_stride_bytes < ((output_rect.width() + 1) / 2)) {
-    SetGLError(
-        GL_INVALID_VALUE, "glReadbackYUVPixelsAsync",
-        "|v_plane_row_stride_bytes| must be >= the width of the v plane.");
-    return;
-  }
-  GLuint v_padded_size =
-      ((output_rect.height() + 1) / 2) * v_plane_row_stride_bytes;
-
-  size_t total_size =
-      base::bits::AlignUp(v_offset + v_padded_size, kSizeofUint64);
-
-  std::unique_ptr<ScopedMappedMemoryPtr> scoped_shared_memory =
-      std::make_unique<ScopedMappedMemoryPtr>(total_size, helper(),
-                                              mapped_memory_.get());
+  auto scoped_shared_memory = std::make_unique<ScopedMappedMemoryPtr>(
+      shm_size.ValueOrDie(), helper(), mapped_memory_.get());
   if (!scoped_shared_memory->valid()) {
-    SetGLError(GL_INVALID_VALUE, "glReadbackYUVPixelsAsync",
-               "couldn't allocate shared memory");
-    return;
+    return fail("couldn't allocate shared memory");
   }
+  *static_cast<cmds::ReadbackYUVImagePixelsINTERNALImmediate::Result*>(
+      scoped_shared_memory->address()) = 0;
 
-  GLint shm_id = scoped_shared_memory->shm_id();
-  GLuint shm_offset = scoped_shared_memory->offset();
-  void* shm_address = scoped_shared_memory->address();
-
-  auto* readback_result =
-      static_cast<cmds::ReadbackYUVImagePixelsINTERNALImmediate::Result*>(
-          shm_address);
-  *readback_result = 0;
+  std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> src_pixmaps;
+  for (int plane = 0; plane < num_planes; ++plane) {
+    src_pixmaps[plane] =
+        skia::MakeSkPixmap(
+            dst_pixmaps.plane(plane).info(),
+            scoped_shared_memory->as_byte_span().subspan(plane_offsets[plane]))
+            .value();
+  }
 
   GLuint query;
   GenQueriesEXT(1, &query);
   BeginQueryEXT(GL_COMMANDS_ISSUED_CHROMIUM, query);
   helper_->ReadbackYUVImagePixelsINTERNALImmediate(
       source_rect.x(), source_rect.y(), source_rect.width(),
-      source_rect.height(), output_rect.width(), output_rect.height(), shm_id,
-      shm_offset, y_offset, y_plane_row_stride_bytes, u_offset,
-      u_plane_row_stride_bytes, v_offset, v_plane_row_stride_bytes,
+      source_rect.height(), yuva_info.width(), yuva_info.height(),
+      scoped_shared_memory->shm_id(), scoped_shared_memory->offset(),
+      plane_offsets[0], static_cast<GLuint>(src_pixmaps[0].rowBytes()),
+      plane_offsets[1], static_cast<GLuint>(src_pixmaps[1].rowBytes()),
+      plane_offsets[2], static_cast<GLuint>(src_pixmaps[2].rowBytes()),
       source_mailbox.name);
   EndQueryEXT(GL_COMMANDS_ISSUED_CHROMIUM);
 
   auto request = std::make_unique<AsyncYUVReadbackRequest>(
-      output_rect, query, y_plane_row_stride_bytes, y_offset,
-      y_plane_data.data(), u_plane_row_stride_bytes, u_offset,
-      u_plane_data.data(), v_plane_row_stride_bytes, v_offset,
-      v_plane_data.data(), std::move(scoped_shared_memory),
+      src_pixmaps, dst_pixmaps, query, std::move(scoped_shared_memory),
       std::move(release_mailbox), std::move(readback_done));
   auto* request_ptr = request.get();
   yuv_request_queue_.push(std::move(request));

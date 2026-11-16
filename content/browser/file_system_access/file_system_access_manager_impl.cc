@@ -1211,9 +1211,20 @@ base::FilePath DeserializePath(const std::string& bytes) {
   return base::FilePath(s);
 }
 
+bool HasLeadingCurrentDirectoryPrefix(const base::FilePath& path) {
+  // `FilePath::GetComponents()` drops a leading `.`, so check the prefix first.
+  return path.value().starts_with(base::FilePath::kCurrentDirectory) &&
+         (path.value().size() == 1 ||
+          base::FilePath::IsSeparator(path.value()[1]));
+}
+
 bool IsValidRootPath(FileSystemAccessHandleData::DataCase data_case,
                      const base::FilePath& root_path) {
-  if (root_path.empty() || root_path.ReferencesParent()) {
+  if (root_path.empty() || root_path.ReferencesParent() ||
+      HasLeadingCurrentDirectoryPrefix(root_path) ||
+      std::ranges::contains(
+          root_path.GetComponents(),
+          base::FilePath::StringViewType(base::FilePath::kCurrentDirectory))) {
     return false;
   }
   if (data_case == FileSystemAccessHandleData::kLocal) {
@@ -1231,13 +1242,8 @@ bool IsPlainRelativePath(const base::FilePath& path) {
   if (path.empty()) {
     return true;
   }
-  if (path.IsAbsolute() || path.ReferencesParent()) {
-    return false;
-  }
-  // `FilePath::GetComponents()` drops a leading `.`, so check the prefix first.
-  if (path.value().starts_with(base::FilePath::kCurrentDirectory) &&
-      (path.value().size() == 1 ||
-       base::FilePath::IsSeparator(path.value()[1]))) {
+  if (path.IsAbsolute() || path.ReferencesParent() ||
+      HasLeadingCurrentDirectoryPrefix(path)) {
     return false;
   }
   for (const auto& component : path.GetComponents()) {
@@ -1428,12 +1434,10 @@ void FileSystemAccessManagerImpl::DeserializeHandle(
         // Use the default storage bucket.
         context_->quota_manager_proxy()->UpdateOrCreateBucket(
             storage::BucketInitParams::ForDefaultBucket(storage_key),
-            base::SequencedTaskRunner::GetCurrentDefault(),
             std::move(bucket_callback));
       } else {
         context_->quota_manager_proxy()->GetBucketById(
             storage::BucketId::FromUnsafeValue(data.sandboxed().bucket_id()),
-            base::SequencedTaskRunner::GetCurrentDefault(),
             std::move(bucket_callback));
       }
       break;
@@ -1583,9 +1587,7 @@ FileSystemAccessManagerImpl::CreateDirectoryHandle(
     const storage::FileSystemURL& url,
     const SharedHandleState& handle_state) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  // TODO(crbug.com/569993648): CHECK-exclusion: Convert to a CHECK once we are
-  // confident it won't be triggered.
-  DCHECK(url.is_valid());
+  CHECK(url.is_valid(), base::NotFatalUntil::M161);
 
   mojo::PendingRemote<blink::mojom::FileSystemAccessDirectoryHandle> result;
   directory_receivers_.Add(
@@ -2489,7 +2491,6 @@ void FileSystemAccessManagerImpl::CleanupAccessHandleCapacityAllocationImpl(
   context_->quota_manager_proxy()->NotifyBucketModified(
       storage::QuotaClientType::kFileSystem, *url.bucket(), -overallocation,
       base::Time::Now(),
-      /*callback_task_runner=*/base::SequencedTaskRunner::GetCurrentDefault(),
       std::move(callback));
 }
 

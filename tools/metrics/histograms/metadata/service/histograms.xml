@@ -405,7 +405,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ServiceWorker.Database.DestroyDatabaseResult"
-    enum="ServiceWorkerDatabaseStatus" expires_after="2027-03-07">
+    enum="ServiceWorkerDatabaseStatus" expires_after="2027-05-09">
   <owner>yyanagisawa@google.com</owner>
   <owner>chrome-worker@google.com</owner>
   <summary>
@@ -425,14 +425,14 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ServiceWorker.Database.ReadResult"
-    enum="ServiceWorkerDatabaseStatus" expires_after="2027-03-07">
+    enum="ServiceWorkerDatabaseStatus" expires_after="2027-05-09">
   <owner>yyanagisawa@google.com</owner>
   <owner>chrome-worker@google.com</owner>
   <summary>Records result of read operations in ServiceWorkerDatabase.</summary>
 </histogram>
 
 <histogram name="ServiceWorker.Database.WriteResult"
-    enum="ServiceWorkerDatabaseStatus" expires_after="2027-03-07">
+    enum="ServiceWorkerDatabaseStatus" expires_after="2027-05-09">
   <owner>yyanagisawa@google.com</owner>
   <owner>chrome-worker@google.com</owner>
   <summary>
@@ -1709,7 +1709,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ServiceWorker.RouterEvaluator.RuleCount" units="count"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>sisidovski@chromium.org</owner>
   <owner>chrome-worker@google.com</owner>
   <summary>
@@ -1852,42 +1852,6 @@ chromium-metrics-reviews@google.com.
     The time taken from (a) the renderer receiving the start worker IPC message,
     to (b) initial JavaScript evaluation starting on the worker thread. Recorded
     when ServiceWorker.StartTiming.Duration is recorded.
-  </summary>
-</histogram>
-
-<histogram name="ServiceWorker.StartTiming.ScriptEvaluationEndToEnd" units="ms"
-    expires_after="2024-10-01">
-  <owner>yyanagisawa@chromium.org</owner>
-  <owner>chrome-worker@google.com</owner>
-  <summary>
-    The time taken from (a) initial JavaScript evaluation finishing on the
-    worker thread, to (b) the browser receiving the worker started IPC message
-    (the final step of worker startup). Recorded when
-    ServiceWorker.StartTiming.Duration is recorded.
-  </summary>
-</histogram>
-
-<histogram
-    name="ServiceWorker.StartTiming.ScriptEvaluationStartToScriptEvaluationEnd"
-    units="ms" expires_after="2024-10-01">
-  <owner>yyanagisawa@chromium.org</owner>
-  <owner>chrome-worker@google.com</owner>
-  <summary>
-    The time taken from (a) initial JavaScript evaluation starting on the worker
-    thread, to (b) initial JavaScript evaluation finishing on the worker thread.
-    Recorded when ServiceWorker.StartTiming.Duration is recorded.
-  </summary>
-</histogram>
-
-<histogram
-    name="ServiceWorker.StartTiming.SentStartWorkerToReceivedStartWorker"
-    units="ms" expires_after="2024-10-01">
-  <owner>yyanagisawa@chromium.org</owner>
-  <owner>chrome-worker@google.com</owner>
-  <summary>
-    The time taken from (a) the browser sending the start worker IPC message, to
-    (b) the renderer receiving the start worker IPC message. Recorded when
-    ServiceWorker.StartTiming.Duration is recorded.
   </summary>
 </histogram>
 
@@ -2311,9 +2275,11 @@ chromium-metrics-reviews@google.com.
   <summary>
     Records whether the response headers are successfully stored to the memory.
 
-    This is recorded in navigation, when the browser receives the response from
-    the network, and there is no stored header locally yet for the synthetic
-    response.
+    This is recorded in navigation when the browser receives the response from
+    the network (or from an embedder preload interceptor under
+    `capture_intercepted_headers`) and evaluates storing headers for synthetic
+    response (either when no header is stored locally yet, or when refreshing a
+    mismatched stored header under `refresh_header_on_mismatch`).
   </summary>
 </histogram>
 

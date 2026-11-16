@@ -469,18 +469,20 @@ TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnly) {
     EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
     EXPECT_EQ(expected_label, permission_element->computedName());
 
-    permission_element->setAttribute(html_names::kDisplaymodeAttr,
-                                     AtomicString("icon-only"));
-    EXPECT_TRUE(permission_element->IsIconOnly());
-    CheckInnerText(permission_element, g_empty_string);
-    EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
-    EXPECT_EQ(expected_label, permission_element->computedName());
+    for (const QualifiedName& attr :
+         {html_names::kDisplayhintAttr, html_names::kDisplaymodeAttr}) {
+      permission_element->setAttribute(attr, AtomicString("icon-only"));
+      EXPECT_TRUE(permission_element->IsIconOnly());
+      CheckInnerText(permission_element, g_empty_string);
+      EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
+      EXPECT_EQ(expected_label, permission_element->computedName());
 
-    permission_element->removeAttribute(html_names::kDisplaymodeAttr);
-    EXPECT_FALSE(permission_element->IsIconOnly());
-    CheckInnerText(permission_element, expected_label);
-    EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
-    EXPECT_EQ(expected_label, permission_element->computedName());
+      permission_element->removeAttribute(attr);
+      EXPECT_FALSE(permission_element->IsIconOnly());
+      CheckInnerText(permission_element, expected_label);
+      EXPECT_EQ(expected_label, permission_element->AccessibleLabel());
+      EXPECT_EQ(expected_label, permission_element->computedName());
+    }
   }
 }
 
@@ -491,10 +493,13 @@ TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnlyCaseInsensitive) {
   GetDocument().body()->AppendChild(permission_element);
   GetDocument().View()->UpdateAllLifecyclePhasesForTest();
   WaitForPermissionElementRegistration(permission_element);
-  permission_element->setAttribute(html_names::kDisplaymodeAttr,
-                                   AtomicString("iCoN-oNlY"));
-  EXPECT_TRUE(permission_element->IsIconOnly());
-  CheckInnerText(permission_element, g_empty_string);
+  for (const QualifiedName& attr :
+       {html_names::kDisplayhintAttr, html_names::kDisplaymodeAttr}) {
+    permission_element->setAttribute(attr, AtomicString("iCoN-oNlY"));
+    EXPECT_TRUE(permission_element->IsIconOnly());
+    CheckInnerText(permission_element, g_empty_string);
+    permission_element->removeAttribute(attr);
+  }
 }
 
 TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnlyDisabled) {
@@ -509,14 +514,17 @@ TEST_F(HTMLCapabilityElementBaseTest, DisplayModeIconOnlyDisabled) {
                    ->innerText()
                    .empty());
 
-  permission_element->setAttribute(html_names::kDisplaymodeAttr,
-                                   AtomicString("icon-only"));
-  GetDocument().View()->UpdateAllLifecyclePhasesForTest();
-  EXPECT_FALSE(permission_element->IsIconOnly());
-  CheckInnerText(permission_element, kCameraString);
-  EXPECT_NE(nullptr, permission_element->permission_text_span_for_testing()
-                         ->GetComputedStyle());
-  EXPECT_EQ(kCameraString, permission_element->computedName());
+  for (const QualifiedName& attr :
+       {html_names::kDisplayhintAttr, html_names::kDisplaymodeAttr}) {
+    permission_element->setAttribute(attr, AtomicString("icon-only"));
+    GetDocument().View()->UpdateAllLifecyclePhasesForTest();
+    EXPECT_FALSE(permission_element->IsIconOnly());
+    CheckInnerText(permission_element, kCameraString);
+    EXPECT_NE(nullptr, permission_element->permission_text_span_for_testing()
+                           ->GetComputedStyle());
+    EXPECT_EQ(kCameraString, permission_element->computedName());
+    permission_element->removeAttribute(attr);
+  }
 }
 
 TEST_F(HTMLCapabilityElementBaseTest,
@@ -786,6 +794,41 @@ TEST_F(HTMLCapabilityElementBaseTest,
   dialog->showModal(ASSERT_NO_EXCEPTION);
   EXPECT_TRUE(dialog->IsOpenAndActive());
   EXPECT_NE(permission_element, GetDocument().FocusedElement());
+}
+
+TEST_F(HTMLCapabilityElementBaseTest,
+       PermissionTextSpanUsesGenericFontFamilyAndIgnoresAuthorFontFace) {
+  ScopedInstallElementForTest scoped_install_feature(true);
+  ScopedUserMediaElementLegacyForTest scoped_legacy_feature(false);
+  String ahem_path = test::CoreTestDataPath("Ahem.ttf");
+  for (const char* family : {"Arial", "Helvetica", "sans-serif"}) {
+    LoadFontFromFile(GetFrame(), ahem_path, AtomicString(family));
+  }
+
+  HeapVector<Member<HTMLCapabilityElementBase>> elements = {
+      MakeGarbageCollected<HTMLCameraElement>(GetDocument()),
+      MakeGarbageCollected<HTMLMicrophoneElement>(GetDocument()),
+      MakeGarbageCollected<HTMLGeolocationElement>(GetDocument()),
+      MakeGarbageCollected<HTMLInstallElement>(GetDocument()),
+      MakeGarbageCollected<HTMLUserMediaElement>(GetDocument()),
+  };
+
+  for (const auto& element : elements) {
+    GetDocument().body()->AppendChild(element);
+  }
+  UpdateAllLifecyclePhasesForTest();
+
+  for (const auto& element : elements) {
+    SCOPED_TRACE(element->TagQName().ToString());
+    auto* text_span = element->permission_text_span_for_testing().Get();
+    ASSERT_TRUE(text_span);
+    const ComputedStyle* style = text_span->GetComputedStyle();
+    ASSERT_TRUE(style);
+    const FontFamily& family = style->GetFontDescription().Family();
+    EXPECT_TRUE(family.FamilyIsGeneric());
+    EXPECT_EQ(nullptr, family.Next());
+    EXPECT_FALSE(style->GetFont()->HasCustomFont());
+  }
 }
 
 class HTMLCapabilityElementBaseClickingEnabledTest

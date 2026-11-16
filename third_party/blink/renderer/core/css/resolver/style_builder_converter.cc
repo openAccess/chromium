@@ -650,7 +650,7 @@ FontVariantEmoji StyleBuilderConverter::ConvertFontVariantEmoji(
   // properties. The auto generated converter does not handle this incoming
   // value.
   if (value.IsPendingSystemFontValue()) {
-    return kNormalVariantEmoji;
+    return FontVariantEmoji::kNormal;
   }
 
   return To<CSSIdentifierValue>(value).ConvertTo<FontVariantEmoji>();
@@ -1125,8 +1125,7 @@ FontSelectionValue StyleBuilderConverterBase::ConvertFontStyle(
     if (values->length()) {
       const double angle_degrees = To<CSSPrimitiveValue>(values->Item(0))
                                        .ComputeDegrees(length_resolver);
-      if (RuntimeEnabledFeatures::FontStyleObliqueZeroDegreeAsNormalEnabled() &&
-          angle_degrees == 0.0) {
+      if (angle_degrees == 0.0) {
         return kNormalSlopeValue;
       }
       return FontSelectionValue(angle_degrees);
@@ -2161,6 +2160,8 @@ Length StyleBuilderConverter::ConvertLengthSizing(StyleResolverState& state,
     case CSSValueID::kWebkitFitContent:
     case CSSValueID::kFitContent:
       return Length::FitContent();
+    case CSSValueID::kShrinkContent:
+      return Length::ShrinkContent();
     case CSSValueID::kContent:
       return Length::Content();
     case CSSValueID::kAuto:
@@ -2307,8 +2308,7 @@ AtomicString StyleBuilderConverter::ConvertNoneOrCustomIdentUnscoped(
 AtomicString StyleBuilderConverter::ConvertCustomIdentUnscoped(
     StyleResolverState& state,
     const CSSValue& value) {
-  return To<CSSCustomIdentValue>(value).ComputeIdent(
-      state.CssToLengthConversionData());
+  return To<CSSCustomIdentValue>(value).Value();
 }
 
 StylePositionAnchor StyleBuilderConverter::ConvertPositionAnchor(
@@ -2880,7 +2880,8 @@ const CSSValue& ResolveLightDarkPair(const CSSLightDarkValuePair& value,
                                      const ResolveColorValueContext& context);
 
 StyleColor ResolveColorValueImpl(const CSSValue& value,
-                                 const ResolveColorValueContext& context) {
+                                 const ResolveColorValueContext& context,
+                                 bool* depends_on_accent_color = nullptr) {
   if (auto* color_value = DynamicTo<cssvalue::CSSColor>(value)) {
     Color result_color = color_value->Value();
     result_color.ResolveNonFiniteValues();
@@ -2889,6 +2890,10 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* identifier_value = DynamicTo<CSSIdentifierValue>(value)) {
     CSSValueID value_id = identifier_value->GetValueID();
+    if (depends_on_accent_color && (value_id == CSSValueID::kAccentcolor ||
+                                    value_id == CSSValueID::kAccentcolortext)) {
+      *depends_on_accent_color = true;
+    }
     if (value_id == CSSValueID::kCurrentcolor) {
       return StyleColor::CurrentColor();
     }
@@ -2907,34 +2912,40 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
   }
 
   if (auto* color_mix_value = DynamicTo<cssvalue::CSSColorMixValue>(value)) {
-    const StyleColor style_color1 =
-        ResolveColorValueImpl(color_mix_value->Color1(), context);
-    const StyleColor style_color2 =
-        ResolveColorValueImpl(color_mix_value->Color2(), context);
-    double alpha_multiplier;
-    double mix_amount;
-    color_mix_value->NormalizePercentages(mix_amount, alpha_multiplier,
-                                          context.length_resolver);
-    const StyleColor::UnresolvedColorMix* unresolved_color_mix =
-        MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
-            color_mix_value->ColorInterpolationSpace(),
-            color_mix_value->HueInterpolationMethod(), style_color1,
-            style_color2, mix_amount, alpha_multiplier);
+    const HeapVector<StyleColor, 2> style_colors(
+        color_mix_value->Items(), [&context, depends_on_accent_color](
+                                      const cssvalue::CSSColorMixItem& item) {
+          return ResolveColorValueImpl(*item.color, context,
+                                       depends_on_accent_color);
+        });
+    const cssvalue::CSSColorMixValue::NormalizedPercentages normalized =
+        color_mix_value->NormalizeMixPercentages(context.length_resolver);
     // https://drafts.csswg.org/css-color-5/#resolving-mix
-    // If both parameters are resolvable at computed-value time, the color-mix
+    // If all parameters are resolvable at computed-value time, the color-mix
     // function should be resolved at computed-value time as well.
     // Otherwise we need to store an unresolved value on StyleColor.
-    if (style_color1.IsAbsoluteColor() && style_color2.IsAbsoluteColor()) {
-      return StyleColor(unresolved_color_mix->Resolve(Color()));
-    } else {
-      return StyleColor(unresolved_color_mix);
+    if (std::ranges::all_of(style_colors, &StyleColor::IsAbsoluteColor)) {
+      return StyleColor(Color::FromColorMix(
+          color_mix_value->ColorInterpolationSpace(),
+          color_mix_value->HueInterpolationMethod(),
+          Vector<Color, 2>(style_colors, &StyleColor::GetColor),
+          normalized.percentages, normalized.alpha_multiplier));
     }
+    StyleColor::UnresolvedColorMix::ItemVector items;
+    items.reserve(style_colors.size());
+    for (wtf_size_t i = 0; i < style_colors.size(); ++i) {
+      items.emplace_back(style_colors[i], normalized.percentages[i]);
+    }
+    return StyleColor(MakeGarbageCollected<StyleColor::UnresolvedColorMix>(
+        color_mix_value->ColorInterpolationSpace(),
+        color_mix_value->HueInterpolationMethod(), std::move(items),
+        normalized.alpha_multiplier));
   }
 
   if (auto* relative_color_value =
           DynamicTo<cssvalue::CSSRelativeColorValue>(value)) {
-    const StyleColor origin_color =
-        ResolveColorValueImpl(relative_color_value->OriginColor(), context);
+    const StyleColor origin_color = ResolveColorValueImpl(
+        relative_color_value->OriginColor(), context, depends_on_accent_color);
     const StyleColor::UnresolvedRelativeColor* unresolved_relative_color =
         MakeGarbageCollected<StyleColor::UnresolvedRelativeColor>(
             origin_color, relative_color_value->ColorInterpolationSpace(),
@@ -2954,8 +2965,8 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* contrast_color_value =
           DynamicTo<cssvalue::CSSContrastColorValue>(value)) {
-    const StyleColor param_color =
-        ResolveColorValueImpl(contrast_color_value->Color(), context);
+    const StyleColor param_color = ResolveColorValueImpl(
+        contrast_color_value->Color(), context, depends_on_accent_color);
     const StyleColor::UnresolvedContrastColor* unresolved_contrast_color =
         MakeGarbageCollected<StyleColor::UnresolvedContrastColor>(param_color);
     if (param_color.IsAbsoluteColor()) {
@@ -2967,8 +2978,8 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   if (auto* alpha_color_value =
           DynamicTo<cssvalue::CSSAlphaColorValue>(value)) {
-    const StyleColor origin_color =
-        ResolveColorValueImpl(alpha_color_value->OriginColor(), context);
+    const StyleColor origin_color = ResolveColorValueImpl(
+        alpha_color_value->OriginColor(), context, depends_on_accent_color);
     const StyleColor::UnresolvedAlphaColor* unresolved_alpha_color =
         MakeGarbageCollected<StyleColor::UnresolvedAlphaColor>(
             origin_color, alpha_color_value->Alpha(), context.length_resolver);
@@ -2986,7 +2997,7 @@ StyleColor ResolveColorValueImpl(const CSSValue& value,
 
   auto& light_dark_pair = To<CSSLightDarkValuePair>(value);
   const CSSValue& color_value = ResolveLightDarkPair(light_dark_pair, context);
-  return ResolveColorValueImpl(color_value, context);
+  return ResolveColorValueImpl(color_value, context, depends_on_accent_color);
 }
 
 const CSSValue& ResolveLightDarkPair(
@@ -3005,16 +3016,19 @@ bool ShouldConvertLegacyColorSpaceToSRGB(const CSSValue& value) {
 }  // anonymous namespace
 
 StyleColor ResolveColorValue(const CSSValue& value,
-                             const ResolveColorValueContext& context) {
+                             const ResolveColorValueContext& context,
+                             bool* depends_on_accent_color) {
   // The rules for converting at the top level should apply transitively through
   // light-dark().
   if (auto* light_dark_pair = DynamicTo<CSSLightDarkValuePair>(value)) {
     const CSSValue& light_dark_result =
         ResolveLightDarkPair(*light_dark_pair, context);
-    return ResolveColorValue(light_dark_result, context);
+    return ResolveColorValue(light_dark_result, context,
+                             depends_on_accent_color);
   }
 
-  StyleColor result = ResolveColorValueImpl(value, context);
+  StyleColor result =
+      ResolveColorValueImpl(value, context, depends_on_accent_color);
   if (ShouldConvertLegacyColorSpaceToSRGB(value) && result.IsAbsoluteColor()) {
     Color color = result.GetColor();
     if (color.IsLegacy()) {
@@ -3628,9 +3642,6 @@ static const CSSValue& ComputeRegisteredPropertyValue(
       value.IsUnresolvedColorValue()) {
     return ComputeColorValue(css_to_length_conversion_data, value, document,
                              theme_info);
-  }
-  if (auto* custom_ident = DynamicTo<CSSCustomIdentValue>(value)) {
-    return *custom_ident->Resolve(css_to_length_conversion_data);
   }
   return value;
 }

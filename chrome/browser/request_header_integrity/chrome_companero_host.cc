@@ -16,7 +16,9 @@
 #include "base/files/file_path.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/native_library.h"
 #include "base/path_service.h"
+#include "base/power_monitor/power_monitor.h"
 #include "base/scoped_native_library.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
@@ -35,6 +37,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "base/apple/bundle_locations.h"
+#include "base/apple/foundation_util.h"
 #endif
 
 namespace request_header_integrity {
@@ -69,21 +72,20 @@ BASE_FEATURE_ENUM_PARAM(base::TaskPriority,
 namespace {
 
 base::FilePath GetLibraryPath() {
+  const std::string library_name =
+      base::GetNativeLibraryName("chromecompaneros");
 #if BUILDFLAG(IS_MAC)
-  base::FilePath framework_dir = base::apple::FrameworkBundlePath();
-  return framework_dir.Append(FILE_PATH_LITERAL("Libraries"))
-      .Append(FILE_PATH_LITERAL("libchromecompaneros.dylib"));
-#else
+  if (base::apple::AmIBundled()) {
+    return base::apple::FrameworkBundlePath()
+        .Append(FILE_PATH_LITERAL("Libraries"))
+        .AppendASCII(library_name);
+  }
+#endif  // BUILDFLAG(IS_MAC)
   base::FilePath module_dir;
   if (!base::PathService::Get(base::DIR_MODULE, &module_dir)) {
     return base::FilePath();
   }
-#if BUILDFLAG(IS_WIN)
-  return module_dir.Append(FILE_PATH_LITERAL("chromecompaneros.dll"));
-#else
-  return module_dir.Append(FILE_PATH_LITERAL("libchromecompaneros.so"));
-#endif  // BUILDFLAG(IS_WIN)
-#endif  // BUILDFLAG(IS_MAC)
+  return module_dir.AppendASCII(library_name);
 }
 
 }  // namespace
@@ -227,11 +229,15 @@ ChromeCompaneroHost::ChromeCompaneroHost(ChromeCompaneroLoader& loader)
         FROM_HERE, kTokenRefreshInterval,
         base::BindRepeating(&ChromeCompaneroHost::RefreshBrowserToken,
                             base::Unretained(this)));
+    base::PowerMonitor::GetInstance()->AddPowerSuspendObserver(this);
   }
 }
 
 ChromeCompaneroHost::~ChromeCompaneroHost() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (backend_) {
+    base::PowerMonitor::GetInstance()->RemovePowerSuspendObserver(this);
+  }
 }
 
 void ChromeCompaneroHost::BindReceiver(
@@ -251,6 +257,16 @@ void ChromeCompaneroHost::GetHeaderNameAndValue(
   } else {
     std::move(callback).Run(nullptr);
   }
+}
+
+void ChromeCompaneroHost::OnResume() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // The refresh timer may stand still while the system is suspended, but the
+  // token ages in wall-clock time. Refresh unconditionally: telling whether
+  // the suspend crossed the timer deadline would need the wall clock, and an
+  // extra refresh after a short suspend is cheap.
+  browser_token_refresh_timer_.Reset();
+  RefreshBrowserToken();
 }
 
 void ChromeCompaneroHost::RefreshBrowserToken() {

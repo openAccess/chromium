@@ -104,8 +104,9 @@ public class AutocompleteInput implements UserData {
         /**
          * Active input session retaining draft text, but disengaged (no keyboard/focus ring, and
          * text selection is not drawn). Entered when focus is lost due to clicking on the content
-         * area while modifications to the url text are present. While a selection should be saved,
-         * it will not be drawn.
+         * area while modifications to the url text are present, or when an input session begins
+         * without focus ({@link AutocompleteState#STANDBY_NO_FOCUS}, e.g. the NTP Plus button or
+         * gallery chips). While a selection should be saved, it will not be drawn.
          */
         int DRAFTING_NO_FOCUS = 1;
 
@@ -273,7 +274,10 @@ public class AutocompleteInput implements UserData {
                     PageClassification.NTP_OMNIBOX_COMPOSEBOX;
             case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT ->
                     PageClassification.SRP_OMNIBOX_COMPOSEBOX;
-            case PageClassification.OTHER, PageClassification.ANDROID_SHORTCUTS_WIDGET ->
+            case PageClassification.BLANK,
+                    PageClassification.HOME_PAGE,
+                    PageClassification.OTHER,
+                    PageClassification.ANDROID_SHORTCUTS_WIDGET ->
                     PageClassification.OTHER_OMNIBOX_COMPOSEBOX;
             // LINT.ThenChange(/chrome/browser/ui/android/omnibox/java/src/org/chromium/chrome/browser/omnibox/fusebox/FuseboxCoordinator.java:FuseboxSupportedPageClassifications)
             default -> {

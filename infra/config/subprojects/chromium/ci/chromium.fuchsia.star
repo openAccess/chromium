@@ -139,6 +139,13 @@ ci.builder(
             "linux-ubuntu",
         ],
         per_test_modifications = {
+            "content_browsertests": [
+                targets.mixin(
+                    swarming = targets.swarming(
+                        shards = 24,
+                    ),
+                ),
+            ],
             "context_lost_validating_tests": targets.remove(
                 reason = "crbug.com/42050042, crbug.com/42050537 this test does not work on swiftshader on arm64",
             ),
@@ -225,7 +232,7 @@ ci.builder(
         mixins = [
             "fuchsia-large-device-spec",
             "isolate_profile_data",
-            "linux-jammy",
+            "linux-ubuntu",
             "no_ssd",
             targets.mixin(
                 swarming = targets.swarming(
@@ -331,7 +338,7 @@ ci.builder(
         mixins = [
             "fuchsia-large-device-spec",
             "isolate_profile_data",
-            "linux-jammy",
+            "linux-ubuntu",
             targets.mixin(
                 swarming = targets.swarming(
                     dimensions = {

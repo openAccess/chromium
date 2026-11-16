@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -26,6 +27,7 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/file_system_access/file_system_access_directory_handle.mojom.h"
+#include "third_party/blink/public/mojom/frame/user_activation_notification_type.mojom-shared.h"
 #include "third_party/blink/public/mojom/web_launch/web_launch.mojom.h"
 #include "url/origin.h"
 
@@ -36,20 +38,17 @@ namespace {
 class EntriesBuilder {
  public:
   EntriesBuilder(content::WebContents* web_contents,
-                 const GURL& launch_url,
                  size_t expected_number_of_entries)
-      : entry_factory_(web_contents->GetPrimaryMainFrame()
-                           ->GetProcess()
+      : entry_factory_(CHECK_DEREF(web_contents->GetPrimaryMainFrame())
+                           .GetProcess()
                            ->GetStoragePartition()
                            ->GetFileSystemAccessEntryFactory()),
-        context_(blink::StorageKey::CreateFirstParty(
-                     url::Origin::Create(launch_url)),
-                 launch_url,
-                 content::GlobalRenderFrameHostId(
-                     web_contents->GetPrimaryMainFrame()
-                         ->GetProcess()
-                         ->GetDeprecatedID(),
-                     web_contents->GetPrimaryMainFrame()->GetRoutingID())) {
+        context_(web_contents->GetPrimaryMainFrame()->GetStorageKey(),
+                 web_contents->GetPrimaryMainFrame()->GetLastCommittedURL(),
+                 web_contents->GetPrimaryMainFrame()->GetGlobalId()) {
+    content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
+    CHECK(!rfh->GetLastCommittedOrigin().opaque());
+    CHECK(!rfh->GetStorageKey().IsThirdPartyContext());
     entries_.reserve(expected_number_of_entries);
   }
 
@@ -98,7 +97,7 @@ void LaunchQueue::Enqueue(LaunchParams launch_params) {
   }
 
   SendLaunchParams(std::move(launch_params),
-                   web_contents_->GetLastCommittedURL());
+                   web_contents_->GetPrimaryMainFrame()->GetLastCommittedURL());
 }
 
 bool LaunchQueue::IsInScope(const LaunchParams& launch_params,
@@ -147,8 +146,22 @@ void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
   // is also reached after a launch navigation commits, and whether that commit
   // is opaque depends on the response. So this is a runtime conditional, not a
   // CHECK: it is reachable by web content.
-  if (web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque()) {
+  const url::Origin& committed_origin =
+      web_contents_->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  if (committed_origin.opaque()) {
     return;
+  }
+
+  // The producer of LaunchParams verified that a user action caused the launch
+  // and the UA just focused this window, mirroring notificationclick window
+  // interaction. Grant transient user activation for deliveries into an
+  // existing document.
+  if (launch_params.user_initiated() &&
+      !launch_params.started_new_navigation() &&
+      base::FeatureList::IsEnabled(
+          features::kWebAppLaunchHandlerUserActivation)) {
+    web_contents_->GetPrimaryMainFrame()->NotifyUserActivation(
+        blink::mojom::UserActivationNotificationType::kWebAppLaunch);
   }
 
   mojo::AssociatedRemote<blink::mojom::WebLaunchService> launch_service;
@@ -159,8 +172,8 @@ void LaunchQueue::SendLaunchParams(LaunchParams launch_params,
 
   std::vector<blink::mojom::FileSystemAccessEntryPtr> files;
 
-  if (!launch_params.paths().empty() || !launch_params.dir().empty()) {
-    EntriesBuilder entries_builder(web_contents_, launch_params.target_url(),
+  if (launch_params.HasFiles()) {
+    EntriesBuilder entries_builder(web_contents_,
                                    launch_params.paths().size() + 1);
     if (!launch_params.dir().empty()) {
       entries_builder.AddDirectoryEntry(

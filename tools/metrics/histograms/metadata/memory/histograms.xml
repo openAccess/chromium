@@ -1091,7 +1091,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.Browser.MemoryFootprint.Active" units="MB"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>justincohen@chromium.org</owner>
   <owner>bling-fundamentals@google.com</owner>
   <summary>
@@ -1118,7 +1118,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.Browser.MemoryFootprint.Background" units="MB"
-    expires_after="2027-02-28">
+    expires_after="2027-05-09">
   <owner>justincohen@chromium.org</owner>
   <owner>bling-fundamentals@google.com</owner>
   <summary>
@@ -1134,7 +1134,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.Browser.MemoryFootprint.Inactive" units="MB"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>justincohen@chromium.org</owner>
   <owner>bling-fundamentals@google.com</owner>
   <summary>
@@ -1147,7 +1147,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.Browser.MemoryFootprint.NumOpenTabs" units="tabs"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>justincohen@chromium.org</owner>
   <owner>rkgibson@google.com</owner>
   <summary>
@@ -1319,7 +1319,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.CommitPercentageUsed" units="%"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>aattar@google.com</owner>
   <owner>catan-team@chromium.org</owner>
   <summary>
@@ -1783,6 +1783,47 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
+<histogram name="Memory.Experimental.Mac{MacMemoryActivity}RateKBPerSecond"
+    units="KiB/s" expires_after="2027-10-01">
+  <owner>andresrperez@chromium.org</owner>
+  <owner>catan-team@chromium.org</owner>
+  <summary>
+    The rate of {MacMemoryActivity} on the system, computed from cumulative page
+    counts in host_statistics64() over each 2 minute awake interval. Page counts
+    are scaled to bytes using PAGE_SIZE in base::GetSystemMemoryInfo(), which is
+    16 KiB on Apple Silicon and 4 KiB on Intel (note that x86_64 builds running
+    under Rosetta 2 report a 4 KiB page size).
+
+    Recorded every 2 minutes on macOS starting on the second timer tick (4
+    minutes after browser startup), once an initial baseline snapshot has been
+    captured. Values at or above 10,000,000 KiB/s (~9.5 GiB/s) fall in the
+    overflow bucket.
+  </summary>
+  <token key="MacMemoryActivity">
+    <variant name="Compression"
+        summary="anonymous memory compressed into the kernel compressor
+                 (compressions)"/>
+    <variant name="Decompression"
+        summary="compressed memory unpacked back into RAM on fault
+                 (decompressions)"/>
+    <variant name="PageIn"
+        summary="memory paged in from backing store (pageins)"/>
+    <variant name="PageOut"
+        summary="dirty memory written out to backing store (pageouts)"/>
+    <variant name="Purge"
+        summary="volatile purgeable memory discarded by the kernel without
+                 disk I/O (purges)"/>
+    <variant name="Reactivation"
+        summary="inactive pages rescued back to the active queue before
+                 reclamation (reactivations)"/>
+    <variant name="SwapIn"
+        summary="compressor segments read back from disk swap files (swapins)"/>
+    <variant name="SwapOut"
+        summary="compressor segments flushed out to disk swap files
+                 (swapouts)"/>
+  </token>
+</histogram>
+
 <histogram name="Memory.Experimental.Mac{MacMemoryKind}MemoryMB" units="MB"
     expires_after="2027-10-01">
   <owner>andresrperez@chromium.org</owner>
@@ -2190,6 +2231,40 @@ chromium-metrics-reviews@google.com.
     Recorded at Poisson sampled time intervals with a mean of 5 minutes on
     Android and 30 minutes on other platforms. {ProcessMemoryAllocator2}
   </summary>
+</histogram>
+
+<histogram
+    name="Memory.Experimental.{Process}2.V8.Main.Heap{Scope}.Fragmentation"
+    units="%" expires_after="2027-05-12">
+  <owner>dinfuehr@chromium.org</owner>
+  <owner>v8-memory-sheriffs@google.com</owner>
+  <improvement direction="LOWER_IS_BETTER"/>
+  <summary>
+    Fragmentation of {Scope} of the V8 main thread heap in {Process}: the
+    percentage of its physical size that is not used by allocated objects, as
+    reported by the memory instrumentation service.
+
+    On platforms where V8 tracks which system pages of a heap page are in use
+    (e.g. Linux, Android and macOS), the physical size excludes unused system
+    pages. On other platforms (e.g. Windows) it is the full committed size, so
+    values are not directly comparable across platforms. Objects that are
+    unreachable but were not collected yet count as allocated.
+
+    Recorded at Poisson sampled time intervals with a mean of 5 minutes on
+    Android and 30 minutes on other platforms.
+  </summary>
+  <token key="Process">
+    <variant name="Extension" summary="extension processes"/>
+    <variant name="Renderer" summary="renderer processes"/>
+  </token>
+  <token key="Scope">
+    <variant name=""
+        summary="all spaces, including the unused part of the new space such
+                 as the semi-space reserved for the next scavenge,"/>
+    <variant name=".OldGeneration"
+        summary="the old generation, i.e. all spaces except the new space and
+                 the new large object space,"/>
+  </token>
 </histogram>
 
 <histogram name="Memory.Extension.PrivateMemoryFootprint" units="MB"
@@ -2898,6 +2973,31 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Memory.PressureVoter.{Level}" enum="MemoryPressureVoter"
+    expires_after="2027-03-01">
+  <owner>andresrperez@chromium.org</owner>
+  <owner>catan-team@chromium.org</owner>
+  <summary>
+    Time attributed to each voter while Chrome was at {Level} memory pressure.
+    One sample is one second spent at {Level} with that voter voting at {Level}.
+
+    Recorded on macOS only. Emitted whenever a voter's vote changes, whenever
+    the aggregated pressure level changes, and by a periodic 5-minute timer.
+
+    Voters are co-attributed, not split: if N voters are simultaneously at
+    {Level} for T seconds, each receives the full T seconds. The total across
+    all buckets therefore exceeds the wall-clock time spent at {Level}, and the
+    buckets must be read as per-voter shares of that time rather than as
+    percentages of a whole.
+
+    Voters created without an explicit type are recorded as Unknown/Other.
+  </summary>
+  <token key="Level">
+    <variant name="Critical"/>
+    <variant name="Moderate"/>
+  </token>
+</histogram>
+
 <histogram name="Memory.PressureWindowDuration2.{Type}" units="ms"
     expires_after="2027-04-18">
   <owner>fdoray@chromium.org</owner>
@@ -3118,7 +3218,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Memory.RenderProcessHost.Count2.All" units="processes"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>alexmos@chromium.org</owner>
   <owner>creis@chromium.org</owner>
   <owner>lukasza@chromium.org</owner>

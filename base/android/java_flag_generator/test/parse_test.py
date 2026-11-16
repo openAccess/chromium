@@ -19,6 +19,38 @@ import models
 _PATH = 'feature_list.cc'
 
 
+def _views(text, is_desktop_android=False):
+    """Returns the text and its code and structure views without the code that
+    is not compiled, which the cpp_parser functions expect, like
+    java_flag_generator._FileCache.read().
+    """
+    code, structure = cpp_lexer.lex(text)
+    return cpp_lexer.blank_inactive_branches(
+        text, code, structure, is_desktop_android
+    )
+
+
+def _parse_source(text, is_desktop_android=False):
+    """Calls cpp_parser.parse_source() with the views that it expects."""
+    return cpp_parser.parse_source(_PATH, *_views(text, is_desktop_android))
+
+
+def _parse_feature_definitions(text):
+    """Calls cpp_parser.parse_feature_definitions() with the views that it
+    expects.
+    """
+    _, code, structure = _views(text)
+    return cpp_parser.parse_feature_definitions(_PATH, code, structure)
+
+
+def _parse_param_definitions(text):
+    """Calls cpp_parser.parse_param_definitions() with the views that it
+    expects.
+    """
+    _, code, structure = _views(text)
+    return cpp_parser.parse_param_definitions(_PATH, code, structure)
+
+
 class CppLexerTest(unittest.TestCase):
     def _blanked(self, text):
         """Returns the expected lexer output, where '~' marks a blanked char."""
@@ -159,54 +191,265 @@ class CppLexerTest(unittest.TestCase):
             ['x', ' g(y, z)'], [structure[start:end] for start, end in ranges]
         )
 
-    def testBlankPreprocessorLines(self):
-        code, structure = cpp_lexer.blank_preprocessor_lines(
-            *cpp_lexer.lex(
-                '#include "a.h"\n'
-                'a;\n'
-                '  # define M(x) \\\n'
-                '    (x)\n'
-                'b;\n'
-                'R"(\n'
-                '#not_a_directive\n'
-                ')";\n'
+
+class BlankInactiveBranchesTest(unittest.TestCase):
+    def _assert_blanked(self, annotated, is_desktop_android=False):
+        """Checks which lines blank_inactive_branches() blanks in the text, code
+        and structure views. Each line of `annotated` starts with '-' if it is
+        blanked, or with ' ' if it is kept.
+        """
+        lines = annotated.split('\n')
+        text = '\n'.join(line[1:] for line in lines)
+        blanked = [line.startswith('-') for line in lines]
+
+        def blank(view):
+            return '\n'.join(
+                ' ' * len(line) if line_blanked else line
+                for line, line_blanked in zip(view.split('\n'), blanked)
             )
+
+        code, structure = cpp_lexer.lex(text)
+        actual = cpp_lexer.blank_inactive_branches(
+            text, code, structure, is_desktop_android
         )
-        self.assertEqual(
-            self._blanked(
-                '~~~~~~~~~~~~~~\n'
-                'a;\n'
-                '~~~~~~~~~~~~~~~~~\n'
-                '~~~~~~~\n'
-                'b;\n'
-                'R"(\n'
-                '#not_a_directive\n'
-                ')";\n'
-            ),
-            code,
-        )
-        self.assertEqual(
-            self._blanked(
-                '~~~~~~~~~~~~~~\n'
-                'a;\n'
-                '~~~~~~~~~~~~~~~~~\n'
-                '~~~~~~~\n'
-                'b;\n'
-                'R"(\n'
-                '~~~~~~~~~~~~~~~~\n'
-                ')";\n'
-            ),
-            structure,
-        )
+        for name, view, actual_view in zip(
+            ('text', 'code', 'structure'), (text, code, structure), actual
+        ):
+            self.assertEqual(blank(view), actual_view, f'{name} view')
+
+    def testOsBuildflags(self):
+        text = """\
+-#if BUILDFLAG(IS_ANDROID)
+ android
+-#else
+-not_android
+-#endif
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_IOS)
+-win_or_ios
+-#endif
+-#if !BUILDFLAG(IS_MAC) && BUILDFLAG(IS_POSIX)
+ posix_but_not_mac
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testDesktopAndroid(self):
+        desktop = """\
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
+ desktop
+-#else
+-not_desktop
+-#endif
+"""
+        not_desktop = """\
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
+-desktop
+-#else
+ not_desktop
+-#endif
+"""
+        self._assert_blanked(desktop, is_desktop_android=True)
+        self._assert_blanked(not_desktop, is_desktop_android=False)
+
+    def testUnknownBuildflagsAreTrue(self):
+        # Even when they are negated.
+        text = """\
+-#if BUILDFLAG(ENABLE_FOO)
+ foo
+-#else
+-not_foo
+-#endif
+-#if !BUILDFLAG(ENABLE_FOO)
+ not_foo
+-#else
+-foo
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testThreeValuedLogic(self):
+        # Known values only decide a condition if the unknown ones can't change
+        # it. Otherwise, the condition is unknown, and assumed to be true.
+        text = """\
+-#if BUILDFLAG(IS_WIN) && BUILDFLAG(ENABLE_FOO)
+-win_and_foo
+-#endif
+-#if defined(FOO) && BUILDFLAG(IS_WIN)
+-foo_and_win
+-#endif
+-#if !(BUILDFLAG(IS_ANDROID) || defined(FOO))
+-neither_android_nor_foo
+-#endif
+-#if BUILDFLAG(IS_WIN) || BUILDFLAG(ENABLE_FOO)
+ win_or_foo
+-#endif
+-#if !BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_FOO)
+ not_android_or_foo
+-#endif
+-#if !(BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_32_BITS))
+ not_32_bit_android
+-#endif
+-#if BUILDFLAG(IS_ANDROID) && !BUILDFLAG(ENABLE_FOO)
+ android_and_not_foo
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testElif(self):
+        text = """\
+-#if BUILDFLAG(IS_IOS)
+-ios
+-#elif BUILDFLAG(IS_ANDROID)
+ android
+-#elif BUILDFLAG(IS_POSIX)
+-other_posix
+-#else
+-other
+-#endif
+-#if BUILDFLAG(IS_WIN)
+-win
+-#elif BUILDFLAG(IS_MAC)
+-mac
+-#else
+ other
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testNestedBlocks(self):
+        text = """\
+-#if BUILDFLAG(IS_WIN)
+-#if BUILDFLAG(IS_ANDROID)
+-win_and_android
+-#else
+-win_only
+-#endif
+-#ifdef FOO
+-win_and_foo
+-#else
+-win_and_not_foo
+-#endif
+-win
+-#else
+ not_win
+-#if BUILDFLAG(IS_DESKTOP_ANDROID)
+-desktop
+-#else
+ not_desktop
+-#endif
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testOtherConditionsAreTrue(self):
+        text = """\
+-#if DCHECK_IS_ON()
+ dcheck
+-#else
+-no_dcheck
+-#endif
+-#if !defined(FOO)
+ not_foo
+-#endif
+-#ifdef FOO
+ foo
+-#elif BUILDFLAG(IS_ANDROID)
+-android
+-#endif
+-#ifndef FOO
+ not_foo
+-#endif
+-#if BUILDFLAG(IS_WIN)
+-win
+-#elifdef FOO
+ foo
+-#else
+-other
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testUnparsableConditionsAreTrue(self):
+        text = """\
+-#if BUILDFLAG(IS_WIN) == 1
+ compared
+-#endif
+-#if BUILDFLAG(IS_WIN) ? 1 : 0
+ ternary
+-#endif
+-#if BUILDFLAG(IS_WIN) &&
+ incomplete
+-#endif
+-#if BUILDFLAG(IS_WIN
+ unterminated
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testFormatting(self):
+        text = """\
+-  #  if BUILDFLAG(IS_WIN)  // Windows only.
+-win
+-  #  endif  // BUILDFLAG(IS_WIN)
+-#if BUILDFLAG(IS_WIN) /* Windows */ || \\
+-    BUILDFLAG(IS_MAC)
+-win_or_mac
+-#endif
+-#if(BUILDFLAG(IS_ANDROID)&&!BUILDFLAG(IS_WIN))
+ android
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testOtherDirectives(self):
+        text = """\
+ #include "foo.h"
+ #define FOO(x) \\
+   (x)
+ #pragma once
+-#if BUILDFLAG(IS_WIN)
+-#include "win.h"
+-#define BAR(x) \\
+-  (x)
+-#endif
+"""
+        self._assert_blanked(text)
+
+    def testDirectivesInCommentsAndStrings(self):
+        text = """\
+ /*
+ #if BUILDFLAG(IS_WIN)
+ */
+ not_in_comment
+ const char kText[] = R"(
+ #if BUILDFLAG(IS_WIN)
+ )";
+ not_in_string
+"""
+        self._assert_blanked(text)
+
+    def testUnbalancedDirectives(self):
+        # An unterminated #if ends at the end of the file.
+        text = """\
+ #endif
+ #else
+ stray
+-#if BUILDFLAG(IS_WIN)
+-unterminated
+"""
+        self._assert_blanked(text)
 
 
 class ParseSourceTest(unittest.TestCase):
     def _entries(self, source):
-        return [(entry.line, entry.written) for entry in source.entries]
+        return [
+            (entry.line, entry.written)
+            for entry in source.feature_array.entries
+        ]
 
     def _assert_error(self, expected_messages, text):
         with self.assertRaises(models.GeneratorError) as cm:
-            cpp_parser.parse_source(_PATH, text)
+            _parse_source(text)
         self.assertEqual(expected_messages, cm.exception.messages)
 
     def testParseSource(self):
@@ -244,12 +487,6 @@ static int64_t JNI_ChromeFeatureMap_GetNativeMap(JNIEnv* env) {
         self.assertEqual(
             models.ParsedSource(
                 path=_PATH,
-                entries=(
-                    models.FeatureEntry(_PATH, 17, '', 'kLocal'),
-                    models.FeatureEntry(_PATH, 18, 'features::', 'kQualified'),
-                    models.FeatureEntry(_PATH, 19, '::', 'kAbsolute'),
-                ),
-                array_namespace=('chrome', 'android'),
                 includes=('chrome/flags/feature_list.h', 'base/feature_list.h'),
                 directives=(
                     models.DefinitionDirective(
@@ -260,8 +497,19 @@ static int64_t JNI_ChromeFeatureMap_GetNativeMap(JNIEnv* env) {
                     ),
                 ),
                 feature_map_names=('ChromeFeatureMap',),
+                feature_array=models.Array(
+                    param_type=None,
+                    namespace=('chrome', 'android'),
+                    entries=(
+                        models.ArrayEntry(_PATH, 17, '', 'kLocal'),
+                        models.ArrayEntry(
+                            _PATH, 18, 'features::', 'kQualified'
+                        ),
+                        models.ArrayEntry(_PATH, 19, '::', 'kAbsolute'),
+                    ),
+                ),
             ),
-            cpp_parser.parse_source(_PATH, text),
+            _parse_source(text),
         )
 
     def testArrayDeclarations(self):
@@ -273,8 +521,8 @@ static int64_t JNI_ChromeFeatureMap_GetNativeMap(JNIEnv* env) {
             'kFeaturesExposedToJava = {',
         ):
             with self.subTest(declaration=declaration):
-                source = cpp_parser.parse_source(
-                    _PATH, declaration + '\n    &kFoo,\n    &kBar,\n};\n'
+                source = _parse_source(
+                    declaration + '\n    &kFoo,\n    &kBar,\n};\n'
                 )
                 self.assertEqual(
                     [(2, 'kFoo'), (3, 'kBar')], self._entries(source)
@@ -287,9 +535,7 @@ static int64_t JNI_ChromeFeatureMap_GetNativeMap(JNIEnv* env) {
 const char kText[] = "kFeaturesExposedToJava[] = {&kInString}";
 const base::Feature* const kFeaturesExposedToJava[] = {&kReal};
 """
-        self.assertEqual(
-            [(4, 'kReal')], self._entries(cpp_parser.parse_source(_PATH, text))
-        )
+        self.assertEqual([(4, 'kReal')], self._entries(_parse_source(text)))
 
     def testEntryFormatting(self):
         text = """\
@@ -311,14 +557,14 @@ const base::Feature* const kFeaturesExposedToJava[] = {
                 (7, 'kAfterBlockComment'),
                 (8, 'kLast'),
             ],
-            self._entries(cpp_parser.parse_source(_PATH, text)),
+            self._entries(_parse_source(text)),
         )
 
     def testEmptyArray(self):
         text = """\
 const std::array<const base::Feature*, 0> kFeaturesExposedToJava = {};
 """
-        self.assertEqual((), cpp_parser.parse_source(_PATH, text).entries)
+        self.assertEqual((), _parse_source(text).feature_array.entries)
 
     def testIncludes(self):
         text = """\
@@ -328,13 +574,39 @@ const std::array<const base::Feature*, 0> kFeaturesExposedToJava = {};
 // #include "commented_out.h"
 /* #include "block_commented_out.h" */
 #include "d.inc"
+#if BUILDFLAG(IS_WIN)
+#include "not_compiled.h"
+#endif
 const char kText[] = "#include \\"in_string.h\\"";
 const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
 """
         self.assertEqual(
-            ('a/b.h', 'c.h', 'd.inc'),
-            cpp_parser.parse_source(_PATH, text).includes,
+            ('a/b.h', 'c.h', 'd.inc'), _parse_source(text).includes
         )
+
+    def testDirectivesInInactiveBranches(self):
+        text = """\
+// FEATURE_DEFINITION_FILE: //always.cc
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+// FEATURE_DEFINITION_FILE: //desktop.cc
+#else
+// FEATURE_DEFINITION_FILE: //not_desktop.cc
+#endif
+#if BUILDFLAG(IS_WIN)
+// FEATURE_DEFINITION_FILE: not/a/valid/path.cc
+#endif
+const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
+"""
+        for is_desktop_android, expected in (
+            (True, [(1, '//always.cc'), (3, '//desktop.cc')]),
+            (False, [(1, '//always.cc'), (5, '//not_desktop.cc')]),
+        ):
+            with self.subTest(is_desktop_android=is_desktop_android):
+                source = _parse_source(text, is_desktop_android)
+                self.assertEqual(
+                    expected,
+                    [(d.line, d.written_path) for d in source.directives],
+                )
 
     def testArrayNamespace(self):
         array = 'const base::Feature* const kFeaturesExposedToJava[] = {};'
@@ -348,16 +620,14 @@ const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
             ('namespace a {\nstruct S {\n  void F() {}\n};\n', ('a',)),
             ('namespace a {\nnamespace b = c;\n', ('a',)),
             ('namespace a {\n// }\nconst char kText[] = "}";\n', ('a',)),
-            ('namespace a {\n#define CLOSE_NAMESPACE }\n', ('a',)),
         ):
             with self.subTest(prefix=prefix):
-                source = cpp_parser.parse_source(_PATH, prefix + array)
-                self.assertEqual(expected, source.array_namespace)
+                source = _parse_source(prefix + array)
+                self.assertEqual(expected, source.feature_array.namespace)
 
     def testFeatureMapNames(self):
         text = """\
 // JNI_InComment_GetNativeMap(
-#define JNI_InMacro_GetNativeMap(env) 0
 const char kText[] = "JNI_InString_GetNativeMap(";
 static int64_t JNI_SecondFeatureMap_GetNativeMap(JNIEnv* env);
 static int64_t JNI_FirstFeatureMap_GetNativeMap(JNIEnv* env) {
@@ -370,8 +640,81 @@ const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
 """
         self.assertEqual(
             ('FirstFeatureMap', 'SecondFeatureMap'),
-            cpp_parser.parse_source(_PATH, text).feature_map_names,
+            _parse_source(text).feature_map_names,
         )
+
+    def testParamArrays(self):
+        text = """\
+namespace chrome {
+
+const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
+
+namespace android {
+const base::FeatureParam<std::string>* const kStringParamsExposedToJava[] = {
+    &kStringParam,
+};
+}  // namespace android
+
+const std::array<const base::FeatureParam<double>*, 1>
+    kDoubleParamsExposedToJava = {&kDoubleParam};
+const base::FeatureParam<int>* const kIntParamsExposedToJava[] = {
+    &::kAbsoluteParam,
+};
+const base::FeatureParam<bool>* const kBooleanParamsExposedToJava[] = {
+    &kBoolParam,
+    &params::kQualifiedParam,
+};
+
+// Uses of the arrays are not definitions.
+base::android::FeatureMap* GetFeatureMap() {
+  static base::NoDestructor<base::android::FeatureMap> kFeatureMap(
+      kFeaturesExposedToJava, kBooleanParamsExposedToJava,
+      kIntParamsExposedToJava, kDoubleParamsExposedToJava,
+      kStringParamsExposedToJava);
+  return kFeatureMap.get();
+}
+
+}  // namespace chrome
+"""
+        boolean_type, int_type, double_type, string_type = models.PARAM_TYPES
+        # The arrays are in PARAM_TYPES order, regardless of their order in the
+        # file.
+        self.assertEqual(
+            (
+                models.Array(
+                    param_type=boolean_type,
+                    namespace=('chrome',),
+                    entries=(
+                        models.ArrayEntry(_PATH, 17, '', 'kBoolParam'),
+                        models.ArrayEntry(
+                            _PATH, 18, 'params::', 'kQualifiedParam'
+                        ),
+                    ),
+                ),
+                models.Array(
+                    param_type=int_type,
+                    namespace=('chrome',),
+                    entries=(
+                        models.ArrayEntry(_PATH, 14, '::', 'kAbsoluteParam'),
+                    ),
+                ),
+                models.Array(
+                    param_type=double_type,
+                    namespace=('chrome',),
+                    entries=(models.ArrayEntry(_PATH, 12, '', 'kDoubleParam'),),
+                ),
+                models.Array(
+                    param_type=string_type,
+                    namespace=('chrome', 'android'),
+                    entries=(models.ArrayEntry(_PATH, 7, '', 'kStringParam'),),
+                ),
+            ),
+            _parse_source(text).param_arrays,
+        )
+
+    def testParamArraysAreOptional(self):
+        text = 'const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};'
+        self.assertEqual((), _parse_source(text).param_arrays)
 
     def testErrorNoArray(self):
         text = """\
@@ -382,22 +725,6 @@ BASE_FEATURE(kFoo, base::FEATURE_DISABLED_BY_DEFAULT);
             [
                 f'{_PATH}: error: Cannot find the definition of '
                 'kFeaturesExposedToJava.'
-            ],
-            text,
-        )
-
-    def testErrorMultipleArrays(self):
-        text = """\
-#if BUILDFLAG(IS_DESKTOP_ANDROID)
-const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
-#else
-const base::Feature* const kFeaturesExposedToJava[] = {&kBar};
-#endif
-"""
-        self._assert_error(
-            [
-                f'{_PATH}: error: Found multiple definitions of '
-                'kFeaturesExposedToJava (lines 2, 4).'
             ],
             text,
         )
@@ -432,7 +759,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
             return (
                 f'{_PATH}:{line}: error: Unsupported entry "{entry}" in '
                 'kFeaturesExposedToJava. Expected the form '
-                '"&namespace::kFeatureName".'
+                '"&namespace::kSomeName".'
             )
 
         self._assert_error(
@@ -477,22 +804,50 @@ const base::Feature* const kFeaturesExposedToJava[] = {
             text,
         )
 
+    def testConditionsInArrays(self):
+        text = """\
+const base::Feature* const kFeaturesExposedToJava[] = {
+    &kFoo,
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+    &kDesktopOnly,
+#else
+    &kNotDesktopOnly,
+#endif
+#if BUILDFLAG(IS_WIN)
+    &kWinOnly,
+#endif
+#ifdef BAR
+    &kBar,
+#else
+    &kNotBar,
+#endif
+};
+"""
+        for is_desktop_android, expected in (
+            (True, [(2, 'kFoo'), (4, 'kDesktopOnly'), (12, 'kBar')]),
+            (False, [(2, 'kFoo'), (6, 'kNotDesktopOnly'), (12, 'kBar')]),
+        ):
+            with self.subTest(is_desktop_android=is_desktop_android):
+                self.assertEqual(
+                    expected,
+                    self._entries(_parse_source(text, is_desktop_android)),
+                )
+
     def testErrorPreprocessorDirectivesInArray(self):
         text = """\
 const base::Feature* const kFeaturesExposedToJava[] = {
     &kFoo,
-#if BUILDFLAG(IS_ANDROID)
-    &kBar,
-#endif  // BUILDFLAG(IS_ANDROID)
+#define BAR_FEATURE &kBar
+#include "more_features.inc"
 };
 """
         message = (
-            'error: Preprocessor directives are not supported inside '
-            'kFeaturesExposedToJava, because the generated Java class '
-            'is not conditional.'
+            'error: Unsupported preprocessor directive inside '
+            'kFeaturesExposedToJava. Only #if, #ifdef, #ifndef, #elif, #else '
+            'and #endif are supported.'
         )
         self._assert_error(
-            [f'{_PATH}:3: {message}', f'{_PATH}:5: {message}'], text
+            [f'{_PATH}:3: {message}', f'{_PATH}:4: {message}'], text
         )
 
     def testErrorInvalidDirectives(self):
@@ -520,8 +875,48 @@ const base::Feature* const kFeaturesExposedToJava[] = {&kFoo};
             text,
         )
 
+    def testErrorsInParamArrays(self):
+        # The errors in all arrays are reported at once.
+        text = """\
+const base::Feature* const kFeaturesExposedToJava[] = {kNotAPointer};
+const base::FeatureParam<bool>* const kBooleanParamsExposedToJava[] = {
+    &kFoo,
+    &kFoo,
+};
+const base::FeatureParam<int>* const kIntParamsExposedToJava[] = {
+    kNotAPointer,
+};
+const base::FeatureParam<double>* const kDoubleParamsExposedToJava[] = {
+#include "double_params.inc"
+};
+const base::FeatureParam<std::string>* const kStringParamsExposedToJava[] = {};
+const base::FeatureParam<std::string>* const kStringParamsExposedToJava[] = {};
+"""
 
-class ParseDefinitionsTest(unittest.TestCase):
+        def unsupported_entry_message(line, array_name):
+            return (
+                f'{_PATH}:{line}: error: Unsupported entry "kNotAPointer" '
+                f'in {array_name}. Expected the form '
+                '"&namespace::kSomeName".'
+            )
+
+        self._assert_error(
+            [
+                unsupported_entry_message(1, 'kFeaturesExposedToJava'),
+                f'{_PATH}:4: error: Duplicate entry "kFoo" (first listed on '
+                'line 3).',
+                unsupported_entry_message(7, 'kIntParamsExposedToJava'),
+                f'{_PATH}:10: error: Unsupported preprocessor directive inside '
+                'kDoubleParamsExposedToJava. Only #if, #ifdef, #ifndef, #elif, '
+                '#else and #endif are supported.',
+                f'{_PATH}: error: Found multiple definitions of '
+                'kStringParamsExposedToJava (lines 12, 13).',
+            ],
+            text,
+        )
+
+
+class ParseFeatureDefinitionsTest(unittest.TestCase):
     def _definition(self, line, namespace, identifier, macro, name):
         return models.FeatureDefinition(
             _PATH, line, namespace, identifier, macro, name
@@ -579,7 +974,7 @@ BASE_FEATURE(kGlobal, base::FEATURE_DISABLED_BY_DEFAULT);
                 ),
                 self._definition(18, (), 'kGlobal', 'BASE_FEATURE', 'Global'),
             ],
-            cpp_parser.parse_definitions(_PATH, text),
+            _parse_feature_definitions(text),
         )
 
     def testOtherFeatureMacros(self):
@@ -609,7 +1004,7 @@ DEFINE_SYNC_AUTOFILL_AI_FEATURE(kSyncAutofillAi);
                     'SyncAutofillAi',
                 ),
             ],
-            cpp_parser.parse_definitions(_PATH, text),
+            _parse_feature_definitions(text),
         )
 
     def testIgnoredMacroCalls(self):
@@ -625,7 +1020,7 @@ EXPECT_SINGLE_FEATURE(features::kFeature);
 const char kText[] = "BASE_FEATURE(kInString, FEATURE_DISABLED_BY_DEFAULT)";
 bool enabled = base::FeatureList::IsEnabled(kFeature);
 """
-        self.assertEqual([], cpp_parser.parse_definitions(_PATH, text))
+        self.assertEqual([], _parse_feature_definitions(text))
 
     def testPreprocessorLinesBetweenArguments(self):
         text = """\
@@ -646,7 +1041,7 @@ BASE_FEATURE(kPlatformDependent,
                     'PlatformDependent',
                 ),
             ],
-            cpp_parser.parse_definitions(_PATH, text),
+            _parse_feature_definitions(text),
         )
 
     def testSpecialCharactersInFeatureName(self):
@@ -656,10 +1051,7 @@ BASE_FEATURE(kParen, "Paren)Name", base::FEATURE_DISABLED_BY_DEFAULT);
 """
         self.assertEqual(
             [('kComma', 'Comma,Name'), ('kParen', 'Paren)Name')],
-            [
-                (d.identifier, d.name)
-                for d in cpp_parser.parse_definitions(_PATH, text)
-            ],
+            [(d.identifier, d.name) for d in _parse_feature_definitions(text)],
         )
 
     def testInvalidFeatureNames(self):
@@ -670,7 +1062,7 @@ BASE_FEATURE(kConcatenated, "Foo" "Bar", base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kTooManyArgs, "Name", base::FEATURE_DISABLED_BY_DEFAULT, 1);
 DEFINE_CUSTOM_FEATURE(kCustomMacro, "CustomName");
 """
-        definitions = cpp_parser.parse_definitions(_PATH, text)
+        definitions = _parse_feature_definitions(text)
         self.assertEqual(
             [None, None, None, None], [d.name for d in definitions]
         )
@@ -699,7 +1091,162 @@ BASE_FEATURE(kValid, base::FEATURE_DISABLED_BY_DEFAULT);
             [
                 self._definition(3, (), 'kValid', 'BASE_FEATURE', 'Valid'),
             ],
-            cpp_parser.parse_definitions(_PATH, text),
+            _parse_feature_definitions(text),
+        )
+
+
+class ParseParamDefinitionsTest(unittest.TestCase):
+    def _definition(
+        self,
+        line,
+        namespace,
+        identifier,
+        name,
+        feature_qualifier,
+        feature_identifier,
+    ):
+        return models.ParamDefinition(
+            _PATH,
+            line,
+            namespace,
+            identifier,
+            name,
+            models.ArrayEntry(
+                _PATH, line, feature_qualifier, feature_identifier
+            ),
+        )
+
+    def testParseParamDefinitions(self):
+        text = """\
+namespace foo {
+
+BASE_FEATURE_PARAM(bool, kDerivedName, &kFeature, false);
+BASE_FEATURE_PARAM(int,
+                   kCustomName,
+                   &kFeature,
+                   "custom_name",
+                   0);
+BASE_FEATURE_PARAM(double, kQualifiedFeature, &features::kFeature, 0.5);
+BASE_FEATURE_PARAM(std::string, kGlobalFeature, & :: kGlobal, "global", "");
+
+namespace bar {
+BASE_FEATURE_PARAM(base::TimeDelta, kNested, &kFeature, base::Seconds(1));
+}  // namespace bar
+
+}  // namespace foo
+"""
+        self.assertEqual(
+            [
+                self._definition(
+                    3, ('foo',), 'kDerivedName', 'DerivedName', '', 'kFeature'
+                ),
+                self._definition(
+                    4, ('foo',), 'kCustomName', 'custom_name', '', 'kFeature'
+                ),
+                self._definition(
+                    9,
+                    ('foo',),
+                    'kQualifiedFeature',
+                    'QualifiedFeature',
+                    'features::',
+                    'kFeature',
+                ),
+                self._definition(
+                    10, ('foo',), 'kGlobalFeature', 'global', '::', 'kGlobal'
+                ),
+                self._definition(
+                    13, ('foo', 'bar'), 'kNested', 'Nested', '', 'kFeature'
+                ),
+            ],
+            _parse_param_definitions(text),
+        )
+
+    def testIgnoredMacroCalls(self):
+        text = """\
+#define BASE_FEATURE_PARAM(T, name, ...) Define(name)
+BASE_DECLARE_FEATURE_PARAM(int, kDeclared);
+BASE_FEATURE(kFeature, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_ENUM_PARAM(Mode, kEnumParam, &kFeature, "mode", Mode::kA,
+                        &kModeOptions);
+constexpr base::FeatureParam<int> kNotAMacro{&kFeature, "not_a_macro", 0};
+// BASE_FEATURE_PARAM(int, kInLineComment, &kFeature, 0);
+/* BASE_FEATURE_PARAM(int, kInBlockComment, &kFeature, 0); */
+const char kText[] = "BASE_FEATURE_PARAM(int, kInString, &kFeature, 0)";
+"""
+        self.assertEqual([], _parse_param_definitions(text))
+
+    def testPreprocessorLinesBetweenArguments(self):
+        text = """\
+BASE_FEATURE_PARAM(int, kPlatformDependent, &kFeature, "size",
+#if BUILDFLAG(IS_DESKTOP_ANDROID)
+                   2);
+#else
+                   1);
+#endif
+"""
+        self.assertEqual(
+            [
+                self._definition(
+                    1, (), 'kPlatformDependent', 'size', '', 'kFeature'
+                ),
+            ],
+            _parse_param_definitions(text),
+        )
+
+    def testSpecialCharactersInParamName(self):
+        text = """\
+BASE_FEATURE_PARAM(int, kComma, &kFeature, "comma,name", 0);
+BASE_FEATURE_PARAM(int, kParen, &kFeature, "paren)name", 0);
+"""
+        self.assertEqual(
+            [('kComma', 'comma,name'), ('kParen', 'paren)name')],
+            [(d.identifier, d.name) for d in _parse_param_definitions(text)],
+        )
+
+    def testInvalidParamDefinitions(self):
+        text = """\
+BASE_FEATURE_PARAM(int, kNotALiteral, &kFeature, kName, 0);
+BASE_FEATURE_PARAM(int, kConcatenated, &kFeature, "foo" "bar", 0);
+BASE_FEATURE_PARAM(int, kTooFewArgs, &kFeature);
+BASE_FEATURE_PARAM(int, kTooManyArgs, &kFeature, "name", 0, 1);
+BASE_FEATURE_PARAM(int, kNotAPointer, kFeature, 0);
+BASE_FEATURE_PARAM(int, kFunctionCall, &GetFeature(), 0);
+"""
+        definitions = _parse_param_definitions(text)
+        self.assertEqual(
+            [(None, None)] * 6, [(d.name, d.feature) for d in definitions]
+        )
+        self.assertEqual(
+            [
+                f'{_PATH}:1: The param name of kNotALiteral must be a plain '
+                'string literal, found "kName".',
+                f'{_PATH}:2: The param name of kConcatenated must be a plain '
+                'string literal, found ""foo" "bar"".',
+                f'{_PATH}:3: BASE_FEATURE_PARAM(int, kTooFewArgs, ...) has 3 '
+                'arguments; expected 4 or 5.',
+                f'{_PATH}:4: BASE_FEATURE_PARAM(int, kTooManyArgs, ...) has 6 '
+                'arguments; expected 4 or 5.',
+                f'{_PATH}:5: The feature of kNotAPointer must have the form '
+                '"&namespace::kFeatureName", found "kFeature".',
+                f'{_PATH}:6: The feature of kFunctionCall must have the form '
+                '"&namespace::kFeatureName", found "&GetFeature()".',
+            ],
+            [d.error for d in definitions],
+        )
+
+    def testSkipsMacroCallsThatAreNotDefinitions(self):
+        text = """\
+BASE_FEATURE_PARAM(int, notAKIdentifier, &kFeature, 0);
+BASE_FEATURE_PARAM(kOnlyOneArgument);
+BASE_FEATURE_PARAM(int, kUnterminated, &kFeature,
+BASE_FEATURE_PARAM(int, kMismatched, &kFeature, ];
+BASE_FEATURE_PARAM(int, kValid, &kFeature, 0);
+"""
+        self.assertEqual(
+            [
+                self._definition(5, (), 'kValid', 'Valid', '', 'kFeature'),
+            ],
+            _parse_param_definitions(text),
         )
 
 

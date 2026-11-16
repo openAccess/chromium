@@ -101,7 +101,10 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
      * @param promoShownOneshotSupplier Potentially delayed information about if a promo was shown.
      * @param layoutStateProviderSupplier Allows observing layout state.
      * @param activityTabSupplier Supplier of the activity tab.
-     * @param tabModelSelectorSupplier Supplier for @{@link TabModelSelector}.
+     * @param tabModelSelectorSupplier Supplier for {@link TabModelSelector}.
+     * @param themeColorProvider The {@link ThemeColorProvider} used for tinting.
+     * @param incognitoStateProvider The {@link IncognitoStateProvider} for observing incognito
+     *     state.
      */
     public ToggleTabStackButtonCoordinator(
             Context context,
@@ -293,7 +296,6 @@ public class ToggleTabStackButtonCoordinator extends ToolbarChildButton {
             @Nullable ColorStateList tint,
             @Nullable ColorStateList activityFocusTint,
             @BrandedColorScheme int brandedColorScheme) {
-        super.onTintChanged(tint, activityFocusTint, brandedColorScheme);
         if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext)) {
             ImageViewCompat.setImageTintList(mToggleTabStackButton, activityFocusTint);
         } else {

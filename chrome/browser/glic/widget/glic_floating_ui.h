@@ -83,11 +83,11 @@ class GlicFloatingUi : public GlicUiEmbedder,
       glic::mojom::ConversationInfoPtr info,
       mojom::WebClientHandler::SwitchConversationCallback callback) override;
   void ClosePanel() override;
-  void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override;
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void ContentsCreated() override;
   void NativeLoadingStateChanged(bool is_showing) override;
 
   // views::WidgetObserver implementation, monitoring the glic window widget.
@@ -108,6 +108,7 @@ class GlicFloatingUi : public GlicUiEmbedder,
   void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) override;
   void ShowTitleBarContextMenuAt(gfx::Point event_loc) override;
   bool Print() override;
+  bool Find() override;
 #if !BUILDFLAG(IS_ANDROID)
   bool HasSelectionOverlay() override;
   void CloseSelectionOverlay() override;

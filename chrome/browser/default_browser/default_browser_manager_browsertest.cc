@@ -21,7 +21,6 @@
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/grit/branded_strings.h"
@@ -58,11 +57,8 @@ constexpr wchar_t kRegistryPath[] =
 class DefaultBrowserManagerWinBrowserTest : public InProcessBrowserTest {
  protected:
   DefaultBrowserManagerWinBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enable_features*/ {kDefaultBrowserFramework,
-                             kDefaultBrowserChangedOsNotification},
-        /*disabled_features=*/{omnibox::internal::kWebUIOmniboxPopup,
-                               omnibox::internal::kWebUIOmniboxAimPopup});
+    scoped_feature_list_.InitAndEnableFeature(
+        kDefaultBrowserChangedOsNotification);
   }
   ~DefaultBrowserManagerWinBrowserTest() override = default;
 

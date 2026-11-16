@@ -31,8 +31,8 @@ import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.base.test.transit.ViewElement.displayingAtLeastOption;
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -99,6 +99,7 @@ import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.CoreAccountInfo;
@@ -110,7 +111,6 @@ import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.WindowAndroid.IntentCallback;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -215,6 +215,12 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
                         if (modalDialogManager != null) {
                             modalDialogManager.dismissAllDialogs(
                                     org.chromium.ui.modaldialog.DialogDismissalCause.UNKNOWN);
+                        }
+                        BottomSheetController bottomSheetController =
+                                BottomSheetControllerProvider.from(
+                                        mBaseActivityTestRule.getActivity().getWindowAndroid());
+                        if (bottomSheetController != null) {
+                            new BottomSheetTestSupport(bottomSheetController).endAllAnimations();
                         }
                     }
                 });
@@ -391,7 +397,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
 
         // Dismiss history sync.
         waitForView(withId(R.id.history_sync_illustration));
-        onViewWaiting(withId(R.id.button_secondary)).perform(click());
+        waitForView(withId(R.id.button_secondary)).click();
 
         verifyHistorySyncDialogDismissed();
 
@@ -449,7 +455,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
 
         // Verify that the history opt-in dialog is shown and decline.
         waitForView(withId(R.id.history_sync_illustration));
-        onViewWaiting(withId(R.id.button_secondary)).perform(click());
+        waitForView(withId(R.id.button_secondary)).click();
 
         verifyHistorySyncDialogDismissed();
 
@@ -643,7 +649,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
         mBaseActivityTestRule.recreateActivity();
         createSigninCoordinator();
 
-        onViewWaiting(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).perform(click());
+        waitForView(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).click();
 
         acceptHistorySyncAndVerifyFlowCompletion(/* hasSignedIn= */ true);
         addAccountStateWatcher.assertExpected();
@@ -671,7 +677,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
         onView(allOf(withText(R.string.signin_add_account_to_device), isCompletelyDisplayed()))
                 .perform(click());
         mSigninTestRule.setAddAccountFlowResult(TestAccounts.AADC_ADULT_ACCOUNT);
-        onViewWaiting(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).perform(click());
+        waitForView(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).click();
 
         acceptHistorySyncAndVerifyFlowCompletion(/* hasSignedIn= */ true);
         addAccountStateWatcher.assertExpected();
@@ -726,8 +732,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
                 HistorySyncConfig.OptInMode.OPTIONAL);
 
         // Verifies that the expanded sign-in bottom-sheet is shown.
-        ViewUtils.waitForVisibleView(
-                allOf(withId(R.id.account_picker_state_expanded), isCompletelyDisplayed()));
+        waitForView(withId(R.id.account_picker_state_expanded), displayingAtLeastOption(100));
 
         Espresso.pressBack();
 
@@ -760,8 +765,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
                 HistorySyncConfig.OptInMode.OPTIONAL);
 
         // Verifies that the no account sign-in bottom-sheet is shown.
-        ViewUtils.waitForVisibleView(
-                allOf(withId(R.id.account_picker_state_no_account), isCompletelyDisplayed()));
+        waitForView(withId(R.id.account_picker_state_no_account), displayingAtLeastOption(100));
 
         Espresso.pressBack();
 
@@ -805,13 +809,13 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
                                 withParent(withId(R.id.account_picker_state_no_account)),
                                 isCompletelyDisplayed()))
                 .perform(click());
-        onViewWaiting(SigninTestRule.CANCEL_ADD_ACCOUNT_BUTTON_MATCHER).perform(click());
+        waitForView(SigninTestRule.CANCEL_ADD_ACCOUNT_BUTTON_MATCHER).click();
 
-        onViewWaiting(
+        waitForView(
                 allOf(
                         withId(R.id.account_picker_continue_as_button),
-                        withParent(withId(R.id.account_picker_state_no_account)),
-                        isCompletelyDisplayed()));
+                        withParent(withId(R.id.account_picker_state_no_account))),
+                displayingAtLeastOption(100));
         assertNull(mSigninTestRule.getPrimaryAccount());
         assertFalse(SyncTestUtil.isHistorySyncEnabled());
         addAccountStateWatcher.assertExpected();
@@ -950,8 +954,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
         ThreadUtils.runOnUiThreadBlocking(() -> mCoordinator.startSigninFlow(config));
 
         // Verify that the expanded sign-in bottom-sheet is shown.
-        ViewUtils.waitForVisibleView(
-                allOf(withId(R.id.account_picker_state_expanded), isCompletelyDisplayed()));
+        waitForView(withId(R.id.account_picker_state_expanded), displayingAtLeastOption(100));
 
         // Cancel flow 1. This should call resetSigninFlow().
         Espresso.pressBack();
@@ -974,7 +977,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
         // Verify that in flow 2, mDidShowSigninStep is false, meaning the email IS shown in footer,
         // and the completion result doesn't state that a sign-in has been done.
         String expectedEmail = TestAccounts.ACCOUNT1.getEmail();
-        onViewWaiting(withId(R.id.history_sync_footer))
+        waitForView(withId(R.id.history_sync_footer))
                 .check(matches(withText(containsString(expectedEmail))));
         acceptHistorySyncAndVerifyFlowCompletion(/* hasSignedIn= */ false);
     }
@@ -1033,8 +1036,6 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
 
     @Test
     @MediumTest
-    @DisableIf.Build(
-            sdk_is_less_than = Build.VERSION_CODES.R) // TODO(crbug.com/573646619): Re-enable.
     public void testDelegatePostSigninGeneralError_retrySuccess() {
         mSigninTestRule.addAccount(TestAccounts.ACCOUNT1);
 
@@ -1245,7 +1246,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
                                 isCompletelyDisplayed()))
                 .perform(click());
         mSigninTestRule.setAddAccountFlowResult(TestAccounts.AADC_ADULT_ACCOUNT);
-        onViewWaiting(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).perform(click());
+        waitForView(SigninTestRule.ADD_ACCOUNT_BUTTON_MATCHER).click();
 
         signinHistogramWatcher.assertExpected();
 
@@ -1259,7 +1260,7 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
     private void acceptHistorySyncAndVerifyFlowCompletion(boolean hasSignedIn) {
         // Verify that the history opt-in dialog is shown and accept.
         waitForView(withId(R.id.history_sync_illustration));
-        onViewWaiting(withId(R.id.button_primary)).perform(click());
+        waitForView(withId(R.id.button_primary)).click();
 
         // Verify history sync state.
         SyncTestUtil.waitForHistorySyncEnabled();
@@ -1303,20 +1304,22 @@ public class BottomSheetSigninAndHistorySyncIntegrationTest {
     }
 
     private void clickContinueButtonOnCollapsedBottomSheet() {
-        onView(
+        var continueButton =
+                waitForView(
                         allOf(
                                 withId(R.id.account_picker_continue_as_button),
-                                withParent(withId(R.id.account_picker_state_collapsed)),
-                                isCompletelyDisplayed()))
-                .perform(click());
+                                withParent(withId(R.id.account_picker_state_collapsed))),
+                        displayingAtLeastOption(100));
+        BottomSheetTestSupport.waitForOpen(getBottomSheetController());
+        continueButton.click();
     }
 
     private void clickContinueButtonToTryAgainGeneralError() {
-        onView(
-                        allOf(
-                                withId(R.id.account_picker_continue_as_button),
-                                isDescendantOfA(withId(R.id.account_picker_state_general_error)),
-                                isDisplayed()))
-                .perform(click());
+        var continueButton =
+                waitForView(
+                        withId(R.id.account_picker_continue_as_button),
+                        isDescendantOfA(withId(R.id.account_picker_state_general_error)));
+        BottomSheetTestSupport.waitForOpen(getBottomSheetController());
+        continueButton.click();
     }
 }

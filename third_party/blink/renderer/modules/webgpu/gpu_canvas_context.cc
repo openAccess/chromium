@@ -29,7 +29,6 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_non_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
@@ -245,11 +244,16 @@ GPUCanvasContext::GetOrCreateCanvasNon2DResourceProvider() {
     if (Host()->IsValidImageSize()) {
       if (SharedGpuContext::IsGpuCompositingEnabled()) {
         // This code path could be used for compositing so add the necessary
-        // shared image usage flags.
-        resource_provider_ = CanvasNon2DResourceProvider::CreateForWebGPU(
+        // shared image usage flags. Export from WebGPU into a static bitmap
+        // image in PaintRenderingResultsToSnapshot() happens via the WebGPU
+        // interface, so WEBGPU_READ and WEBGPU_WRITE usage are also needed.
+        resource_provider_ = CanvasNon2DResourceProvider::Create(
             Host()->Size(), GetSharedImageFormat(), GetAlphaType(),
             GetColorSpace(), swap_buffers_->GetHDRMetadata(),
-            swap_buffers_->GetSharedImageUsagesForDisplay(),
+            SharedGpuContext::ContextProviderWrapper(),
+            swap_buffers_->GetSharedImageUsagesForDisplay() |
+                gpu::SHARED_IMAGE_USAGE_WEBGPU_READ |
+                gpu::SHARED_IMAGE_USAGE_WEBGPU_WRITE,
             blink::BindOnce(&CanvasRenderingContextHost::NotifyGpuContextLost,
                             WrapWeakPersistent(Host())));
       }
@@ -367,8 +371,10 @@ scoped_refptr<ExportedCanvasResource> GPUCanvasContext::GetResourceForPushFrame(
   return base::MakeRefCounted<ExportedCanvasResource>(
       std::move(client_si), sync_token,
       viz::TransferableResource::ResourceSource::kWebGPUSwapBuffer,
-      swap_buffers_->GetHDRMetadata(), std::move(release_callback),
-      context_provider_wrapper);
+      swap_buffers_->GetHDRMetadata(), context_provider_wrapper,
+      /*accelerated_raster=*/true, /*wait_sync_token=*/base::NullCallback(),
+      std::move(release_callback),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/true);
 }
 
 ImageBitmap* GPUCanvasContext::TransferToImageBitmap(

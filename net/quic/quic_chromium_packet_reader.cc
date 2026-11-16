@@ -24,12 +24,8 @@ namespace {
 const size_t kReadBufferSize =
     static_cast<size_t>(quic::kMaxIncomingPacketSize + 1);
 
-// Number of packets to read when using ReadMultiple. Computed to ensure the
-// total read buffer size (kNumPacketsToRead * kReadBufferSize) is at least 64KB
-// (kMinimumReadMultipleBufferSize) to prevent packet truncation when GRO is
-// enabled.
-constexpr size_t kNumPacketsToRead =
-    (kMinimumReadMultipleBufferSize + kReadBufferSize - 1) / kReadBufferSize;
+// Maximum number of packets to read per ReadMultiple call.
+constexpr size_t kNumPacketsToRead = 16;
 }  // namespace
 
 QuicChromiumPacketReader::QuicChromiumPacketReader(
@@ -100,7 +96,6 @@ void QuicChromiumPacketReader::StartReading() {
           read_buffer_.get(), read_buffer_->size(),
           base::BindOnce(&QuicChromiumPacketReader::OnReadComplete,
                          weak_factory_.GetWeakPtr()));
-      UMA_HISTOGRAM_BOOLEAN("Net.QuicSession.AsyncRead", rv == ERR_IO_PENDING);
       if (rv == ERR_IO_PENDING) {
         num_packets_read_ = 0;
         return;

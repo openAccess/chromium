@@ -61,7 +61,6 @@
 #include "components/password_manager/core/common/password_manager_features.h"
 #include "components/password_manager/core/common/password_manager_util.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/signin/public/base/signin_buildflags.h"
 #include "content/public/renderer/render_frame.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
@@ -777,9 +776,14 @@ void PasswordAutofillAgent::PasswordValueGatekeeper::Reset() {
 
 void PasswordAutofillAgent::PasswordValueGatekeeper::ShowValue(
     WebInputElement element) {
-  if (element && !element.SuggestedValue().IsEmpty()) {
-    element.SetAutofillValue(element.SuggestedValue());
+  if (!element || element.SuggestedValue().IsEmpty() ||
+      element.GetAutofillState() != WebAutofillState::kAutofilled) {
+    // If the element does not have WebAutofillState::kAutofilled, the suggested
+    // value may be a previewed value (e.g., a credit card number), rather than
+    // a username or password that has been made inaccessible to JavaScript.
+    return;
   }
+  element.SetAutofillValue(element.SuggestedValue());
   // WARNING: SetAutofillValue can trigger JS that detaches the frame.
   // Do not add code here that assumes the frame is still valid without
   // checking.
@@ -1038,6 +1042,11 @@ void PasswordAutofillAgent::FillChangePasswordForm(
       continue;
     }
 
+    // Mark the field as a password field to trigger redaction in
+    // Annotated Page Content.
+    // This matters if the field is a plain text field, which would
+    // otherwise not be redacted.
+    input_element.MaybeSetHasBeenPasswordField();
     DoFillField(input_element, task.second,
                 FieldPropertiesFlags::kAutofilledChangePasswordFormOnPageLoad);
     last_element = input_element;
@@ -1190,10 +1199,18 @@ PasswordAutofillAgent::CreateSuggestionRequest(
   // the caller who needs it anyways for autofill requests.
   std::optional<form_util::FormAndField> form_and_field =
       form_util::FindFormAndFieldForFormControlElement(
-          user_input, field_data_manager(),
-          autofill_agent_->GetCallTimerState(
-              CallTimerState::CallSite::kShowSuggestionPopup),
-          autofill_agent_->button_titles_cache(), form_cache);
+          user_input, [&](const WebDocument& document, FormRendererId form_id) {
+            return form_cache.GetOrExtractForm(
+                form_id, [&](FormRendererId form_id) {
+                  // Custom form controls are not supported in Password Manager.
+                  return form_util::ExtractFormData(
+                      document, form_id, field_data_manager(),
+                      autofill_agent_->GetCallTimerState(
+                          CallTimerState::CallSite::kShowSuggestionPopup),
+                      autofill_agent_->button_titles_cache(),
+                      /*custom_controls=*/{});
+                });
+          });
   if (!form_and_field) {
     return std::nullopt;
   }
@@ -1700,10 +1717,7 @@ void PasswordAutofillAgent::AnnotateFieldsWithParsingResult(
 void PasswordAutofillAgent::InformNoSavedCredentials(
     bool should_show_popup_without_passwords) {
   autofilled_elements_cache_.clear();
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   should_show_popup_without_passwords_ = should_show_popup_without_passwords;
-#endif
 
   // Clear the actual field values.
   std::vector<WebFormControlElement> elements;
@@ -1951,6 +1965,7 @@ void PasswordAutofillAgent::CleanupOnDocumentShutdown() {
   field_renderer_id_to_submit_ = FieldRendererId();
   suggestion_banned_fields_.clear();
   times_received_fill_data_.clear();
+  should_show_popup_without_passwords_ = false;
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
   page_passwords_analyser_.Reset();
 #endif
@@ -2171,12 +2186,8 @@ void PasswordAutofillAgent::HidePopup() {
 
 bool PasswordAutofillAgent::CanShowPopupWithoutPasswords(
     const WebInputElement& password_element) const {
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
   return password_element && IsElementEditable(password_element) &&
          should_show_popup_without_passwords_;
-#else
-  return false;
-#endif
 }
 
 mojom::PasswordManagerDriver* PasswordAutofillAgent::unsafe_driver() {
@@ -2356,6 +2367,7 @@ void PasswordAutofillAgent::TryFixAutofilledForm(
     // state if JavaScript modifies the field's value.
     if (*cached_value != control_element.SuggestedValue()) {
       control_element.SetSuggestedValue(*cached_value);
+      control_element.SetAutofillState(WebAutofillState::kAutofilled);
     }
   }
 }
@@ -2395,12 +2407,14 @@ bool PasswordAutofillAgent::IsPasswordFieldFilledByUser(
 void PasswordAutofillAgent::NotifyPasswordManagerAboutClearedForm(
     const WebFormElement& cleared_form) {
   CHECK(cleared_form);
+  // Custom form controls are not supported in Password Manager.
   if (std::optional<FormData> form_data = form_util::ExtractFormData(
           cleared_form.GetDocument(), GetFormRendererId(cleared_form),
           field_data_manager(),
           autofill_agent_->GetCallTimerState(
               CallTimerState::CallSite::kNotifyPasswordManagerAboutClearedForm),
-          autofill_agent_->button_titles_cache())) {
+          autofill_agent_->button_titles_cache(),
+          /*custom_controls=*/{})) {
     if (auto* driver = unsafe_driver()) {
       driver->PasswordFormCleared(*form_data);
     }

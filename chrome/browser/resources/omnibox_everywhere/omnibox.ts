@@ -27,6 +27,7 @@ import {SearchboxSelectionMixin} from '//resources/cr_components/searchbox/searc
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
+import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
@@ -36,9 +37,9 @@ import {ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebo
 import type {InputState} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {MenuSourceType} from '//resources/mojo/ui/base/mojom/menu_source_type.mojom-webui.js';
 
-import {OmniboxEverywhereBrowserProxyImpl} from './browser_proxy.js';
 import {getCss} from './omnibox.css.js';
 import {getHtml} from './omnibox.html.js';
+import {browserProxyFactory} from './omnibox_everywhere.mojom-webui.js';
 import type {OmniboxEverywhereProfileIconElement} from './profile_icon.js';
 
 
@@ -48,10 +49,16 @@ import type {OmniboxEverywhereProfileIconElement} from './profile_icon.js';
 const DEFAULT_PLACEHOLDER_CHANGE_INTERVAL_MS = 4000;
 const DEFAULT_PLACEHOLDER_FADE_DURATION_MS = 250;
 
+const GOOGLE_G_CR23_ICON =
+    '//resources/cr_components/searchbox/icons/google_g_cr23.svg';
+const GOOGLE_G_GRADIENT_ICON =
+    '//resources/cr_components/searchbox/icons/google_g_gradient.svg';
+
 export interface OmniboxEverywhereOmniboxElement {
   $: {
     input: SearchboxInputElement,
     inputWrapper: HTMLElement,
+    lensPlaceholder: HTMLElement,
     matches: SearchboxDropdownElement,
     overflowMenuButton: HTMLButtonElement,
     profileIcon: OmniboxEverywhereProfileIconElement,
@@ -133,7 +140,6 @@ export class OmniboxEverywhereOmniboxElement extends
         reflect: true,
       },
       composeButtonEnabled: {type: Boolean, reflect: true},
-      profileAvatarUrl_: {type: String},
       isFuseboxEnabled: {type: Boolean, reflect: true},
       hasUserInput_: {
         type: Boolean,
@@ -141,8 +147,8 @@ export class OmniboxEverywhereOmniboxElement extends
         attribute: 'has-user-input',
       },
       ntpRealboxDynamicAiModeButtonEnabled_: {type: Boolean},
+      ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: {type: Boolean},
       inputState_: {type: Object},
-      searchboxLayoutMode: {type: String},
       contextManagementInComposeboxEnabled: {type: Boolean},
       isDraggingFile: {
         reflect: true,
@@ -170,11 +176,15 @@ export class OmniboxEverywhereOmniboxElement extends
         attribute: 'is-active',
       },
       isLensHelpBubbleShowing: {type: Boolean},
+      showLensPlaceholder_: {type: Boolean},
     };
   }
 
   accessor isActive: boolean = true;
   accessor isLensHelpBubbleShowing: boolean = false;
+  protected accessor showLensPlaceholder_: boolean = false;
+  private readonly lensPlaceholderText_: string =
+      this.i18n('searchBoxHintLens', '');
   override accessor multiLineEnabled: boolean =
       loadTimeData.getBoolean('searchboxMultiline');
   // Keeps the input on a single line during inline autocomplete when enabled,
@@ -193,7 +203,7 @@ export class OmniboxEverywhereOmniboxElement extends
   protected dragAndDropHandler: DragAndDropHandler;
   protected accessor energyEffectAnimationEnabled_: boolean =
       loadTimeData.getBoolean('energyEffectAnimationEnabled');
-  protected accessor fileContextEnabled_: boolean =
+  private accessor fileContextEnabled_: boolean =
       loadTimeData.getBoolean('composeboxContextDragAndDropEnabled');
   accessor searchboxChromeRefreshTheming: boolean =
       loadTimeData.getBoolean('searchboxCr23Theming');
@@ -211,16 +221,14 @@ export class OmniboxEverywhereOmniboxElement extends
   accessor inVoiceSearchMode: boolean = false;
   protected accessor composeButtonEnabled: boolean =
       loadTimeData.getBoolean('searchboxShowComposeEntrypoint');
-  protected accessor profileAvatarUrl_: string =
-      loadTimeData.getString('profileAvatarUrl');
   protected accessor isFuseboxEnabled: boolean =
       loadTimeData.getBoolean('isFuseboxEnabled');
   protected accessor hasUserInput_: boolean = false;
   protected accessor ntpRealboxDynamicAiModeButtonEnabled_: boolean =
       loadTimeData.getBoolean('ntpRealboxDynamicAiModeButton');
+  protected accessor ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: boolean =
+      loadTimeData.getBoolean('ntpRealboxDynamicAiModeButtonPreventEarlyPaint');
   protected accessor inputState_: InputState|null = null;
-  protected accessor searchboxLayoutMode: string =
-      loadTimeData.getString('searchboxLayoutMode');
 
   private pageHandler_: PageHandlerInterface;
   private callbackRouter_: PageCallbackRouter;
@@ -233,6 +241,9 @@ export class OmniboxEverywhereOmniboxElement extends
   private currentCyclerInputEl_: HTMLInputElement|HTMLTextAreaElement|null =
       null;
   private isPlaceholderCycling_: boolean = false;
+  private darkModeMediaQuery_: MediaQueryList =
+      window.matchMedia('(prefers-color-scheme: dark)');
+  private eventTracker_: EventTracker = new EventTracker();
 
   constructor() {
     super();
@@ -268,6 +279,9 @@ export class OmniboxEverywhereOmniboxElement extends
 
   override connectedCallback() {
     super.connectedCallback();
+    this.updateSearchboxIcon_();
+    this.eventTracker_.add(
+        this.darkModeMediaQuery_, 'change', () => this.updateSearchboxIcon_());
     this.autocompleteResultChangedListenerId_ =
         this.callbackRouter_.autocompleteResultChanged.addListener(
             this.onAutocompleteResultChanged.bind(this));
@@ -293,6 +307,7 @@ export class OmniboxEverywhereOmniboxElement extends
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this.eventTracker_.removeAll();
     if (this.autocompleteResultChangedListenerId_ !== null) {
       this.callbackRouter_.removeListener(
           this.autocompleteResultChangedListenerId_);
@@ -328,10 +343,15 @@ export class OmniboxEverywhereOmniboxElement extends
     } else if (this.dropdownIsVisible || this.hasUserInput_) {
       this.toggleAttribute('has-expanded', true);
     }
+    if (!this.canCyclePlaceholders_()) {
+      this.showLensPlaceholder_ = false;
+    }
   }
 
   override firstUpdated(changedProperties: PropertyValues<this>) {
     super.firstUpdated(changedProperties);
+    this.$.lensPlaceholder.innerHTML = this.i18nAdvanced(
+        'searchBoxHintLens', {substitutions: ['<span></span>']});
     const lensButton =
         this.shadowRoot?.querySelector<HTMLElement>('#lensSearchButton');
     if (lensButton) {
@@ -349,6 +369,15 @@ export class OmniboxEverywhereOmniboxElement extends
 
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
+    if (changedProperties.has('multiLineEnabled') ||
+        this.$.input?.isUpdatePending) {
+      this.$.input.updateComplete.then(() => {
+        if (this.isConnected) {
+          this.updatePlaceholderCycler_();
+        }
+      });
+      return;
+    }
     this.updatePlaceholderCycler_();
   }
 
@@ -368,6 +397,7 @@ export class OmniboxEverywhereOmniboxElement extends
   setInputText(text: string) {
     this.$.input.setInputText(text);
     this.hasUserInput_ = !!text.trim();
+    this.updatePlaceholderCycler_();
   }
 
   getDropTarget() {
@@ -420,8 +450,14 @@ export class OmniboxEverywhereOmniboxElement extends
   // Event handlers
   //========================================================================
 
-  protected onInputFocusin_() {
+  protected onInputFocusin_(e: FocusEvent) {
     this.pageHandler_.onFocusChanged(true);
+    // Report text input focus (not the slotted compose button) to the app.
+    // A `focusin` moving between two controls inside this shadow tree is not
+    // dispatched past it, so the app cannot observe it directly.
+    if (e.composedPath().includes(this.$.input.inputElement)) {
+      this.fire('text-input-focused');
+    }
   }
 
   override stepCyclesSelection(
@@ -438,6 +474,10 @@ export class OmniboxEverywhereOmniboxElement extends
 
   protected isLensSearchVirtualFocused_(): boolean {
     return this.selection.state === SelectionLineState.kFocusedButtonLensSearch;
+  }
+
+  protected isProfileVirtualFocused_(): boolean {
+    return this.selection.state === SelectionLineState.kFocusedButtonProfile;
   }
 
   override getAvailableSelections(result: AutocompleteResult|null):
@@ -460,6 +500,15 @@ export class OmniboxEverywhereOmniboxElement extends
         actionIndex: 0,
       });
     }
+    // The profile button is selectable only when it opens the profile menu.
+    // It renders last, so Tab reaches it last.
+    if (this.$.profileIcon.isMenuEnabled) {
+      available.push({
+        line: -1,
+        state: SelectionLineState.kFocusedButtonProfile,
+        actionIndex: 0,
+      });
+    }
     return available;
   }
 
@@ -470,6 +519,8 @@ export class OmniboxEverywhereOmniboxElement extends
         return this.i18n('voiceSearchButtonLabel');
       case SelectionLineState.kFocusedButtonLensSearch:
         return this.i18n('lensSearchButtonLabel');
+      case SelectionLineState.kFocusedButtonProfile:
+        return this.$.profileIcon.getA11yLabel();
       default:
         return super.getSelectionA11yLabel(match, selection);
     }
@@ -492,6 +543,11 @@ export class OmniboxEverywhereOmniboxElement extends
       button.click();
       return true;
     }
+    if (this.isProfileVirtualFocused_()) {
+      e.preventDefault();
+      this.$.profileIcon.toggleMenu();
+      return true;
+    }
     return super.handleVirtualFocusEnter(e);
   }
 
@@ -501,6 +557,12 @@ export class OmniboxEverywhereOmniboxElement extends
 
   protected showLensSearchButton_(): boolean {
     return this.isFuseboxEnabled && this.searchboxLensSearchEnabled_;
+  }
+
+  private updateSearchboxIcon_() {
+    this.searchboxIcon_ = this.darkModeMediaQuery_.matches ?
+        GOOGLE_G_CR23_ICON :
+        GOOGLE_G_GRADIENT_ICON;
   }
 
   protected computePlaceholderText_(): string {
@@ -516,21 +578,30 @@ export class OmniboxEverywhereOmniboxElement extends
   protected onSearchboxInputEmptyChanged_(e: CustomEvent<{value: boolean}>) {
     // `SearchboxMixin` clears `<cr-searchbox-input>` directly via
     // `getInputElement().setInput({text: '', inline: ''})` on `Escape` and
-    // `focusout` without firing `searchbox-input-text-updated`. Reset
-    // `hasUserInput_` whenever the input becomes empty so the omnibox does not
-    // stay stuck in the 2-line expanded `[has-user-input]` state.
-    if (e.detail.value) {
-      this.hasUserInput_ = false;
-    }
+    // `focusout` (and sets text on Mojo `setInputText`) without firing
+    // `searchbox-input-text-updated`. Synchronize `hasUserInput_` with the
+    // empty state (`!e.detail.value`) so the omnibox and placeholder cycler
+    // stay in sync.
+    this.hasUserInput_ = !e.detail.value;
+    this.updatePlaceholderCycler_();
+  }
+
+  private canCyclePlaceholders_(): boolean {
+    // Only cycle in the collapsed 1-line pill state; stop cycling and show the
+    // static placeholder once suggestions open (`!this.dropdownIsVisible`) or a
+    // match is selected (`!this.selectedMatch`).
+    return !this.placeholderText && this.isFuseboxEnabled && this.isActive &&
+        !this.dropdownIsVisible && !this.hasUserInput_ &&
+        !this.selectedMatch && !this.inKeywordMode && !this.inVoiceSearchMode;
   }
 
   private computeCyclingPlaceholderTexts_(): string[] {
-    if (this.placeholderText || !this.isFuseboxEnabled) {
+    if (!this.canCyclePlaceholders_()) {
       return [];
     }
     const texts: string[] = [this.i18n('searchBoxHintAskOrType')];
     if (this.showLensSearchButton_()) {
-      texts.push(this.i18n('searchBoxHintLens'));
+      texts.push(this.lensPlaceholderText_);
     }
     texts.push(this.i18n('searchBoxHintFileOrImage'));
     if (this.canAddFileContext_()) {
@@ -553,15 +624,20 @@ export class OmniboxEverywhereOmniboxElement extends
       return;
     }
 
-    const texts = this.computeCyclingPlaceholderTexts_();
-    const shouldCycle = texts.length > 1 && this.isActive &&
-        !this.hasUserInput_ && !this.inKeywordMode && !this.inVoiceSearchMode;
+    // Also check `!inputEl.value.length` so typing whitespace (e.g. a single
+    // space `' '`, where `hasUserInput_` remains false while native
+    // `:placeholder-shown` becomes false) immediately stops cycling and hides
+    // `#lensPlaceholder`.
+    const texts =
+        !inputEl.value.length ? this.computeCyclingPlaceholderTexts_() : [];
+    const shouldCycle = texts.length > 1;
 
     if (!shouldCycle) {
       if (this.isPlaceholderCycling_) {
         this.placeholderCycler_?.stop();
         this.isPlaceholderCycling_ = false;
       }
+      this.showLensPlaceholder_ = false;
       inputEl.placeholder = this.inKeywordMode ?
           (this.inputKeywordModel?.placeholder || '') :
           this.computePlaceholderText_();
@@ -574,7 +650,13 @@ export class OmniboxEverywhereOmniboxElement extends
       this.placeholderCycler_?.stop();
       this.placeholderCycler_ = new PlaceholderTextCycler(
           inputEl, texts, DEFAULT_PLACEHOLDER_CHANGE_INTERVAL_MS,
-          DEFAULT_PLACEHOLDER_FADE_DURATION_MS);
+          DEFAULT_PLACEHOLDER_FADE_DURATION_MS, {
+            animationTarget: this.$.input.$.mirrorContainer,
+            onPlaceholderChange: (placeholder: string) => {
+              this.showLensPlaceholder_ =
+                  placeholder === this.lensPlaceholderText_;
+            },
+          });
       this.currentCyclerTextsKey_ = textsKey;
       this.currentCyclerInputEl_ = inputEl;
       this.isPlaceholderCycling_ = false;
@@ -590,6 +672,7 @@ export class OmniboxEverywhereOmniboxElement extends
       e: CustomEvent<{value: string, isComposing: boolean}>) {
     this.hasUserInput_ = !!e.detail.value.trim();
     this.onSearchboxInputTextUpdated(e);
+    this.updatePlaceholderCycler_();
   }
 
   protected async onVoiceSearchButtonClick_() {
@@ -674,7 +757,7 @@ export class OmniboxEverywhereOmniboxElement extends
     // `rect` is in WebUI viewport coordinates (CSS DIPs); the browser converts
     // it to screen coordinates to anchor the native menu.
     const rect = this.$.overflowMenuButton.getBoundingClientRect();
-    OmniboxEverywhereBrowserProxyImpl.getInstance().handler.showOverflowMenu(
+    browserProxyFactory.getInstance().handler.showOverflowMenu(
         {
           x: Math.round(rect.left),
           y: Math.round(rect.top),
@@ -793,13 +876,12 @@ export class OmniboxEverywhereOmniboxElement extends
     const rect = e?.detail?.anchorRect ||
         this.shadowRoot?.querySelector('#context')?.getBoundingClientRect();
     if (rect) {
-      OmniboxEverywhereBrowserProxyImpl.getInstance()
-          .handler.showContextActionMenu({
-            x: Math.round(rect.x),
-            y: Math.round(rect.y),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-          });
+      browserProxyFactory.getInstance().handler.showContextActionMenu({
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      });
     }
   }
 
@@ -827,6 +909,25 @@ export class OmniboxEverywhereOmniboxElement extends
 
   onOverflowMenuClosed() {
     this.isOverflowMenuOpen = false;
+  }
+
+  // `cr-action-menu` returns focus to the profile button when the profile menu
+  // closes. While the dropdown is visible, keys act on the virtual selection,
+  // so move focus back to the input. The input's blur cleared the selection's
+  // screen reader label, so narrate the profile button again if it still has
+  // virtual focus. The menu also closes after this element is removed (e.g.
+  // when switching to the composebox) and when Omnibox Everywhere hides or,
+  // in persistent mode, stays visible but inactive; leave focus and narration
+  // alone then.
+  protected onProfileMenuClose_() {
+    if (!this.isConnected || document.hidden || !this.isActive ||
+        !this.virtualFocusEnabled || !this.dropdownIsVisible) {
+      return;
+    }
+    this.focusInput();
+    if (this.isProfileVirtualFocused_()) {
+      this.narrateSelection(this.selection);
+    }
   }
 
   override onInputWrapperFocusout(e: FocusEvent) {

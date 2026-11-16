@@ -55,16 +55,7 @@ ScopedJavaLocalRef<jobject> JNI_ActorKeyedServiceFactory_GetForProfile(
     return nullptr;
   }
 
-  ActorKeyedServiceAndroid* bridge = static_cast<ActorKeyedServiceAndroid*>(
-      service->GetUserData(kActorKeyedServiceBridgeKey));
-  if (!bridge) {
-    service->SetUserData(kActorKeyedServiceBridgeKey,
-                         std::make_unique<ActorKeyedServiceAndroid>(service));
-    bridge = static_cast<ActorKeyedServiceAndroid*>(
-        service->GetUserData(kActorKeyedServiceBridgeKey));
-  }
-
-  return bridge->GetJavaObject();
+  return ActorKeyedServiceAndroid::Get(service)->GetJavaObject();
 }
 
 ActorKeyedServiceAndroid::ActorKeyedServiceAndroid(ActorKeyedService* service)
@@ -80,11 +71,6 @@ ActorKeyedServiceAndroid::ActorKeyedServiceAndroid(ActorKeyedService* service)
   task_step_progress_subscription_ =
       service_->AddTaskStepProgressChangedCallback(base::BindRepeating(
           &ActorKeyedServiceAndroid::OnTaskStepProgressChanged,
-          base::Unretained(this)));
-
-  ensure_fgs_started_subscription_ =
-      service_->AddForegroundServiceStartedCallback(base::BindRepeating(
-          &ActorKeyedServiceAndroid::EnsureForegroundServiceStarted,
           base::Unretained(this)));
 
   message_trigger_task_stopped_subscription_ =
@@ -186,13 +172,6 @@ void ActorKeyedServiceAndroid::OnTaskStepProgressChanged(
   JNIEnv* env = AttachCurrentThread();
   Java_ActorKeyedService_onTaskStepProgressChanged(
       env, java_obj_, task.id().GetUnsafeValue(), step_progress);
-}
-
-void ActorKeyedServiceAndroid::EnsureForegroundServiceStarted(
-    const std::string& glic_trigger_message_id) {
-  JNIEnv* env = AttachCurrentThread();
-  Java_ActorKeyedService_ensureForegroundServiceStarted(
-      env, java_obj_, glic_trigger_message_id);
 }
 
 void ActorKeyedServiceAndroid::OnPendingTaskCountChanged(size_t pending_count) {

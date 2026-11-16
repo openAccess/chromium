@@ -77,11 +77,9 @@ DECLARE_ELEMENT_IDENTIFIER_VALUE(kContentsSeparatorLeadingEdgeElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContentsSeparatorTopCornerElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContentsSeparatorTopEdgeElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContentsSeparatorTrailingEdgeElementId);
-DECLARE_ELEMENT_IDENTIFIER_VALUE(
-    kContextualTasksEphemeralToolbarButtonElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksFaviconsElementId);
-DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksGhostLoaderViewElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksPageActionElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksScrimViewElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksSidePanelWebViewElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksWebUIPinButtonElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kContextualTasksWebUIToolbarElementId);
@@ -168,6 +166,8 @@ DECLARE_ELEMENT_IDENTIFIER_VALUE(
 DECLARE_ELEMENT_IDENTIFIER_VALUE(
     kPinnedToolbarActionShowSidePanelLensOverlayResultsElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPinnedToolbarActionTtcElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(
+    kPinnedToolbarActionGlicSmartSelectionElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPriceInsightsChipElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPriceTrackingBookmarkViewElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPriceTrackingChipElementId);
@@ -274,8 +274,6 @@ DECLARE_ELEMENT_IDENTIFIER_VALUE(kTranslatePageActionElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kUnfocusTabGroupButtonElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabStripCollapseButtonElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabStripBottomContainerElementId);
-DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabStripOrganizerButtonElementId);
-DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabStripTabStripButtonElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabStripTopContainerElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kVerticalTabTitleElementId);
 DECLARE_ELEMENT_IDENTIFIER_VALUE(kPageActionGmailOtpOptInElementId);
@@ -300,7 +298,7 @@ DECLARE_CUSTOM_ELEMENT_EVENT_TYPE(kVerticalTabStripCollapsedCustomEventId);
 // enabled, you can (temporarily) alias it here. Please put a TODO to eliminate
 // the old name once the feature is shipped.
 
-// TODO(https://crbug.com/579025166): Once the Organizer Panel is shipped, this
+// TODO(https://crbug.com/586517298): Once the Organizer Panel is shipped, this
 // surface won't exist and this can be removed.
 inline constexpr ui::ElementIdentifier kTabSearchBubbleElementId =
     kOrganizerPanelElementId;

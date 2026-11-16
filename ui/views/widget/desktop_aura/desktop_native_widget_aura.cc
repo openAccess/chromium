@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
@@ -68,10 +69,10 @@
 #include "ui/views/widget/window_reorderer.h"
 #include "ui/wm/core/compound_event_filter.h"
 #include "ui/wm/core/cursor_manager.h"
+#include "ui/wm/core/decoration_controller.h"
+#include "ui/wm/core/decoration_controller_delegate.h"
 #include "ui/wm/core/focus_controller.h"
 #include "ui/wm/core/native_cursor_manager.h"
-#include "ui/wm/core/shadow_controller.h"
-#include "ui/wm/core/shadow_controller_delegate.h"
 #include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/visibility_controller.h"
 #include "ui/wm/core/window_animations.h"
@@ -128,6 +129,12 @@ class DesktopNativeWidgetTopLevelHandler : public aura::WindowObserver {
       init_params.remove_standard_frame = true;
     }
 #endif
+    if (base::FeatureList::IsEnabled(
+            ::features::kOmitNativeFrameOnShadowlessMenus) &&
+        child_window->GetProperty(wm::kShadowElevationKey) ==
+            wm::kShadowElevationNone) {
+      init_params.shadow_type = Widget::InitParams::ShadowType::kNone;
+    }
     // If the window should be transparent, then ensure the top level widget
     // is also not opaque.
     if (child_window->GetTransparent()) {
@@ -357,9 +364,10 @@ void DesktopNativeWidgetAura::OnHostClosed() {
     }
   }
 
-  // DesktopWindowTreeHost owns the ActivationController which ShadowController
-  // references. Make sure we destroy ShadowController early on.
-  shadow_controller_.reset();
+  // DesktopWindowTreeHost owns the ActivationController which
+  // DecorationController references. Make sure we destroy DecorationController
+  // early on.
+  decoration_controller_.reset();
   tooltip_manager_.reset();
   if (tooltip_controller_.get()) {
     host_->window()->RemovePreTargetHandler(tooltip_controller_.get());
@@ -504,6 +512,19 @@ void DesktopNativeWidgetAura::HandleActivationChanged(bool active) {
           // operation can be ignored.
           restore_focus_on_activate_ = false;
         }
+      }
+
+      // A modal transient child, e.g. a window-modal dialog shown before this
+      // widget was first activated, takes activation instead of
+      // `content_window_`, so focus wasn't restored above. As `content_window_`
+      // isn't active, it won't lose activation either, which is what normally
+      // schedules a restore (see `OnWindowActivated()`). Schedule one for when
+      // `content_window_` is activated, e.g. when the modal closes, so that a
+      // view focused while the widget is inactive (see
+      // `FocusManager::SetFocusedViewWithReason()`) gets focus then.
+      if (wm::GetModalTransient(GetWidget()->GetNativeView()) &&
+          !wm::IsActiveWindow(content_window_)) {
+        restore_focus_on_activate_ = true;
       }
 
       // Refreshes the focus info to IMF in case that IMF cached the old info
@@ -748,7 +769,7 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
   event_client_ = std::make_unique<DesktopEventClient>();
   aura::client::SetEventClient(host_->window(), event_client_.get());
 
-  shadow_controller_ = std::make_unique<wm::ShadowController>(
+  decoration_controller_ = std::make_unique<wm::DecorationController>(
       wm::GetActivationClient(host_->window()), nullptr);
 
   OnSizeConstraintsChanged();
@@ -1530,21 +1551,7 @@ void DesktopNativeWidgetAura::OnScrollEvent(ui::ScrollEvent* event) {
     return;
   }
 
-  if (event->type() == ui::EventType::kScroll) {
-    native_widget_delegate_->OnScrollEvent(event);
-    if (event->handled()) {
-      return;
-    }
-
-    // Convert unprocessed scroll events into wheel events.
-    ui::MouseWheelEvent mwe(*event->AsScrollEvent());
-    native_widget_delegate_->OnMouseEvent(&mwe);
-    if (mwe.handled()) {
-      event->SetHandled();
-    }
-  } else {
-    native_widget_delegate_->OnScrollEvent(event);
-  }
+  native_widget_delegate_->OnScrollEvent(event);
 }
 
 void DesktopNativeWidgetAura::OnGestureEvent(ui::GestureEvent* event) {

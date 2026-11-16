@@ -12,11 +12,14 @@
 #include "third_party/blink/public/mojom/ai/ai_manager.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_content_embedding.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_create_core_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_create_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_embed_options.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_input.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_input_type.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_params.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_result.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_space_info.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_semantic_embedder_task_type.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_semanticembedderinput_semanticembedderinputorstringsequence_string.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_union_semanticembedderinput_string.h"
@@ -25,6 +28,7 @@
 #include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/timing/epoch_time_stamp.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/modules/ai/ai_context_observer.h"
 #include "third_party/blink/renderer/modules/ai/ai_interface_proxy.h"
@@ -67,6 +71,12 @@ mojom::blink::AISemanticEmbedderEmbedOptionsPtr EmbedOptionsToMojo(
   return mojo_options;
 }
 
+mojom::blink::AISemanticEmbedderCreateOptionsPtr CreateOptionsToMojo(
+    const SemanticEmbedderCreateCoreOptions* options) {
+  return mojom::blink::AISemanticEmbedderCreateOptions::New(
+      options->embeddingSpace());
+}
+
 // Returns the text of a typed input item; "text" is the only type so far. The
 // switch has no default, so a new type does not compile until it is handled.
 String InputText(const SemanticEmbedderInput& item) {
@@ -104,6 +114,7 @@ class CreateSemanticEmbedderClient
         AIInterfaceProxy::GetAIManagerRemote(GetExecutionContext());
 
     ai_manager_remote->CanCreateSemanticEmbedder(
+        CreateOptionsToMojo(options_),
         BindOnce(&CreateSemanticEmbedderClient::Create, WrapPersistent(this)));
   }
 
@@ -115,8 +126,9 @@ class CreateSemanticEmbedderClient
   }
 
   // mojom::blink::AIManagerCreateSemanticEmbedderClient:
-  void OnResult(mojo::PendingRemote<mojom::blink::AISemanticEmbedder>
-                    pending_remote) override {
+  void OnResult(
+      mojo::PendingRemote<mojom::blink::AISemanticEmbedder> pending_remote,
+      mojom::blink::AISemanticEmbedderInfoPtr info) override {
     if (!GetResolver()) {
       return;
     }
@@ -125,7 +137,8 @@ class CreateSemanticEmbedderClient
         return;
       }
       GetResolver()->Resolve(MakeGarbageCollected<SemanticEmbedder>(
-          GetScriptState(), task_runner_, std::move(pending_remote), options_));
+          GetScriptState(), task_runner_, std::move(pending_remote), options_,
+          info->max_input_tokens));
     } else {
       GetResolver()->RejectWithDOMException(
           DOMExceptionCode::kInvalidStateError,
@@ -187,6 +200,7 @@ class CreateSemanticEmbedderClient
         BindOnce(&CreateSemanticEmbedderClient::OnConnectionError,
                  WrapWeakPersistent(this)));
     ai_manager_remote->CreateSemanticEmbedder(std::move(client_remote),
+                                              CreateOptionsToMojo(options_),
                                               BindMonitorRemote());
   }
 
@@ -246,6 +260,7 @@ class EmbedRequest final : public GarbageCollected<EmbedRequest> {
       auto* content_embedding = ContentEmbedding::Create();
       content_embedding->setValues(NotShared<DOMFloat32Array>(
           DOMFloat32Array::Create(embedding->values)));
+      content_embedding->setEmbeddingSpace(embedder_->embeddingSpace());
       embeddings.push_back(content_embedding);
     }
     embedder_result->setEmbeddings(embeddings);
@@ -282,10 +297,13 @@ SemanticEmbedder::SemanticEmbedder(
     ScriptState* script_state,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     mojo::PendingRemote<mojom::blink::AISemanticEmbedder> pending_remote,
-    SemanticEmbedderCreateOptions* options)
+    SemanticEmbedderCreateOptions* options,
+    uint32_t max_input_tokens)
     : ExecutionContextClient(ExecutionContext::From(script_state)),
       task_runner_(std::move(task_runner)),
-      embedder_remote_(ExecutionContext::From(script_state)) {
+      embedder_remote_(ExecutionContext::From(script_state)),
+      embedding_space_(options->embeddingSpace()),
+      max_input_tokens_(max_input_tokens) {
   embedder_remote_.Bind(std::move(pending_remote), task_runner_);
 }
 
@@ -298,7 +316,7 @@ void SemanticEmbedder::Trace(Visitor* visitor) const {
 // static
 ScriptPromise<V8Availability> SemanticEmbedder::availability(
     ScriptState* script_state,
-    SemanticEmbedderCreateOptions* options,
+    SemanticEmbedderCreateCoreOptions* options,
     ExceptionState& exception_state) {
   if (!script_state->ContextIsValid()) {
     ThrowInvalidContextException(exception_state);
@@ -320,6 +338,7 @@ ScriptPromise<V8Availability> SemanticEmbedder::availability(
       AIInterfaceProxy::GetAIManagerRemote(execution_context);
 
   ai_manager_remote->CanCreateSemanticEmbedder(
+      CreateOptionsToMojo(options),
       BindOnce(
           [](ScriptPromiseResolver<V8Availability>* resolver,
              ExecutionContext* execution_context,
@@ -364,6 +383,56 @@ ScriptPromise<SemanticEmbedder> SemanticEmbedder::create(
 
   MakeGarbageCollected<CreateSemanticEmbedderClient>(script_state, resolver,
                                                      options);
+  return promise;
+}
+
+// static
+ScriptPromise<SemanticEmbedderParams> SemanticEmbedder::params(
+    ScriptState* script_state,
+    ExceptionState& exception_state) {
+  if (!script_state->ContextIsValid()) {
+    ThrowInvalidContextException(exception_state);
+    return ScriptPromise<SemanticEmbedderParams>();
+  }
+
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<SemanticEmbedderParams>>(
+          script_state);
+  auto promise = resolver->Promise();
+
+  ExecutionContext* execution_context = ExecutionContext::From(script_state);
+  if (!execution_context->IsFeatureEnabled(
+          network::mojom::PermissionsPolicyFeature::kSemanticEmbedder)) {
+    resolver->Reject(MakeGarbageCollected<DOMException>(
+        DOMExceptionCode::kNotAllowedError, kExceptionMessagePermissionPolicy));
+    return promise;
+  }
+
+  HeapMojoRemote<mojom::blink::AIManager>& ai_manager_remote =
+      AIInterfaceProxy::GetAIManagerRemote(execution_context);
+
+  ai_manager_remote->GetSupportedEmbeddingSpaces(
+      BindOnce(
+          [](ScriptPromiseResolver<SemanticEmbedderParams>* resolver,
+             Vector<mojom::blink::AISemanticEmbedderSpaceInfoPtr>
+                 supported_spaces) {
+            HeapVector<Member<SemanticEmbedderSpaceInfo>> spaces;
+            spaces.ReserveInitialCapacity(supported_spaces.size());
+            for (const auto& space : supported_spaces) {
+              auto* info = SemanticEmbedderSpaceInfo::Create();
+              info->setEmbeddingSpace(space->embedding_space);
+              if (space->shutdown_date) {
+                info->setShutdownDate(
+                    ConvertTimeToEpochTimeStamp(*space->shutdown_date));
+              }
+              spaces.push_back(info);
+            }
+            auto* params = SemanticEmbedderParams::Create();
+            params->setSupportedSpaces(std::move(spaces));
+            resolver->Resolve(params);
+          },
+          WrapPersistent(resolver))
+          .Then(RejectOnDestruction(resolver)));
   return promise;
 }
 

@@ -251,14 +251,19 @@ chromium-metrics-reviews@google.com.
   <variant name="VideoCapture"/>
 </variants>
 
+<!-- LINT.IfChange(PermissionTypes) -->
+
 <variants name="PermissionTypes">
   <variant name=".AR" summary="AR permission actions"/>
   <variant name=".AudioCapture" summary="Microphone permission actions"/>
   <variant name=".CameraPanTiltZoom"
       summary="Camera movements permission actions"/>
+  <variant name=".CapturedSurfaceControl"
+      summary="Captured Surface Control permission actions"/>
   <variant name=".ClipboardReadWrite" summary="Clipboard permission actions"/>
   <variant name=".DisplayCapture" summary="Display capture permission actions"/>
   <variant name=".Geolocation" summary="Geolocation permission actions"/>
+  <variant name=".HandTracking" summary="Hand tracking permission actions"/>
   <variant name=".IdleDetection" summary="Idle detection permission actions"/>
   <variant name=".KeyboardAndPointerLock"
       summary="Keyboard and pointer lock permission"/>
@@ -277,15 +282,19 @@ chromium-metrics-reviews@google.com.
   <variant name=".ProtectedMedia" summary="Protected media permission actions"/>
   <variant name=".PushMessaging" summary="Push messaging permission actions"/>
   <variant name=".Sensors" summary="Sensors permission actions"/>
+  <variant name=".SmartCard" summary="Smart card permission actions"/>
   <variant name=".StorageAccess"
       summary="Storage Access API permission actions"/>
   <variant name=".VideoCapture" summary="Camera permission actions"/>
   <variant name=".VR" summary="VR permission actions"/>
   <variant name=".WebAppInstallation"
       summary="Web app installation permission actions"/>
+  <variant name=".WebPrinting" summary="Web Printing permission actions"/>
   <variant name=".WindowPlacement"
       summary="Window Management permission actions"/>
 </variants>
+
+<!-- LINT.ThenChange(//components/permissions/permission_uma_util.cc:PermissionTypes) -->
 
 <variants name="PermissionTypesSupportPermissionsPolicy">
   <variant name="AR"/>
@@ -456,9 +465,6 @@ chromium-metrics-reviews@google.com.
     The suffix of the histogram indicates which particular permission.
     {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -659,7 +665,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.ClapperLoud.MessageUI.Deny" enum="Boolean"
-    expires_after="2026-12-09">
+    expires_after="2027-12-09">
   <owner>elklm@chromium.org</owner>
   <owner>hempjudith@google.com</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -707,7 +713,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.ClapperLoud.PageInfo.OsPromptResolved"
-    enum="Boolean" expires_after="2026-12-06">
+    enum="Boolean" expires_after="2027-12-06">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -740,7 +746,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.CPSS.SiteSettingsChanged2.{Flavor}"
-    enum="ContentType" expires_after="2026-11-29">
+    enum="ContentType" expires_after="2027-11-29">
   <owner>lyf@chromium.org</owner>
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -786,7 +792,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.CrowdDeny.PreloadData.NotificationUxQuality"
-    enum="CrowdDenyNotificationUxQuality" expires_after="2027-01-03">
+    enum="CrowdDenyNotificationUxQuality" expires_after="2028-01-03">
   <owner>andypaicu@chromium.org</owner>
   <owner>engedy@chromium.org</owner>
   <owner>hkamila@chromium.org</owner>
@@ -851,9 +857,6 @@ chromium-metrics-reviews@google.com.
     recorded for Android as that is the only platform where the DSE permissions
     were enabled. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -892,7 +895,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.Experimental.Usage.{PermissionType}.IsBlockedDueToActuation"
-    enum="Boolean" expires_after="2026-11-26">
+    enum="Boolean" expires_after="2027-11-26">
   <owner>michelleabreo@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -942,9 +945,6 @@ chromium-metrics-reviews@google.com.
     `PermissionTypes` to provide information per permission type.
     {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -963,9 +963,6 @@ chromium-metrics-reviews@google.com.
     made. Suffixed by `PermissionTypes` to provide information per permission
     type. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -1092,7 +1089,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.PredictionService.Action.{PermissionType}.{Likelihood}.{Prominence}"
-    enum="PermissionAction" expires_after="2026-11-29">
+    enum="PermissionAction" expires_after="2027-11-29">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1128,7 +1125,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.PredictionService.ConcurrentRequests"
-    enum="PermissionPredictionSupportedType" expires_after="2026-11-13">
+    enum="PermissionPredictionSupportedType" expires_after="2027-11-13">
   <owner>elklm@chromium.org</owner>
   <owner>hempjudith@google.com</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -1217,7 +1214,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.PredictionService.{PermissionType}.PostPromptSessionDuration10m"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1272,7 +1269,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.PredictionService.{PermissionType}.PostPromptSessionDuration5m"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1286,7 +1283,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.PredictionService.{PermissionType}.PrePromptSessionDuration1h"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1324,7 +1321,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.PredictionService.{PermissionType}{Gesture}"
-    enum="PermissionRequestLikelihood" expires_after="2026-11-29">
+    enum="PermissionRequestLikelihood" expires_after="2027-11-29">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1363,14 +1360,11 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2025-01-25 to 2025-06-27; data may
     be missing.
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
     name="Permissions.Prompt.Accepted.PriorIgnoreCount2{PermissionTypes}"
-    units="units" expires_after="2026-11-26">
+    units="units" expires_after="2027-11-26">
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1383,9 +1377,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -1403,9 +1394,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -1423,13 +1411,10 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22 and from
     2026-04-20 to 2026-04-21; data may be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.AcceptedOnce{PermissionRequestGesture}"
-    enum="PermissionRequestType" expires_after="2026-12-09">
+    enum="PermissionRequestType" expires_after="2027-12-09">
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1474,13 +1459,10 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.Denied.PriorIgnoreCount2{PermissionTypes}"
-    units="units" expires_after="2026-11-26">
+    units="units" expires_after="2027-11-26">
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1493,9 +1475,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.Denied{PermissionRequestGesture}"
@@ -1514,7 +1493,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.Prompt.Dismissed.PriorDismissCount2{PermissionTypes}"
-    units="units" expires_after="2026-11-13">
+    units="units" expires_after="2027-11-13">
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1527,9 +1506,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-07-09 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram
@@ -1547,9 +1523,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.Geolocation.{Action}.Accuracy"
@@ -1597,9 +1570,6 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.Ignored.PriorIgnoreCount2{PermissionTypes}"
@@ -1616,13 +1586,10 @@ chromium-metrics-reviews@google.com.
     Warning: this histogram was expired from 2024-10-31 to 2024-11-22; data may
     be missing. {PermissionTypes}
   </summary>
-  <token key="PermissionTypes" variants="PermissionTypes">
-    <variant name=""/>
-  </token>
 </histogram>
 
 <histogram name="Permissions.Prompt.Notifications.EnabledAppLevel"
-    enum="Boolean" expires_after="2026-11-12">
+    enum="Boolean" expires_after="2027-11-12">
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1675,7 +1642,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.Prompt.{PermissionType}.ElementAnchoredBubble.DismissedReason"
-    enum="DismissedReason" expires_after="2026-11-26">
+    enum="DismissedReason" expires_after="2027-11-26">
   <owner>hkamila@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1806,7 +1773,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.Prompt.{PermissionType}.{Disposition}.Dismissed.Method"
-    enum="PermissionPromptDismissMethod" expires_after="2026-11-29">
+    enum="PermissionPromptDismissMethod" expires_after="2027-11-29">
   <owner>fjacky@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1820,7 +1787,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Permissions.Prompt.{PermissionType}.{Disposition}.Ignored.DidShowBubble"
-    enum="Boolean" expires_after="2026-11-12">
+    enum="Boolean" expires_after="2027-11-12">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -1980,7 +1947,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.QuietPrompt.Preignore" enum="PermissionType"
-    expires_after="2026-12-27">
+    expires_after="2027-12-27">
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
   <summary>
@@ -2083,7 +2050,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.SiteSettingsChanged" enum="ContentType"
-    expires_after="2026-12-06">
+    expires_after="2027-12-06">
   <owner>lyf@chromium.org</owner>
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -2098,7 +2065,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.SiteSettingsChanged.{ContentSettingType}"
-    enum="ContentType" expires_after="2026-12-06">
+    enum="ContentType" expires_after="2027-12-06">
   <owner>lyf@chromium.org</owner>
   <owner>elklm@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -2118,7 +2085,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Permissions.Status.Notifications.EnabledAppLevel"
-    enum="Boolean" expires_after="2027-01-03">
+    enum="Boolean" expires_after="2028-01-03">
   <owner>antoniosartori@chromium.org</owner>
   <owner>engedy@chromium.org</owner>
   <owner>src/components/permissions/PERMISSIONS_OWNERS</owner>
@@ -2426,7 +2393,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebsiteSettings.OriginInfo.PermissionChanged"
-    enum="ContentType" expires_after="2026-12-09">
+    enum="ContentType" expires_after="2027-12-09">
   <owner>andypaicu@chromium.org</owner>
   <owner>engedy@chromium.org</owner>
   <owner>hkamila@chromium.org</owner>

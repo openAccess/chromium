@@ -31,6 +31,13 @@
   -webkit-user-drag: none;
 }
 
+/* Fill the viewport before the first resize. A prewarmed page loads with no
+ * size, and would otherwise measure the canvas at its default size. */
+:host(:not([is-resized])) #selectionOverlay {
+  height: 100%;
+  width: 100%;
+}
+
 :host([is-initial-size]) #backgroundImageCanvas {
   animation:
     initial-blur-animation 700ms cubic-bezier(0.2, 0, 0, 1),
@@ -167,13 +174,28 @@
   visibility: hidden;
 }
 
-/* Clicks dismiss the overlay instead of drawing a region, so show the normal
- * cursor. */
-:host([disable-multi-select]) #selectionOverlay {
+/* With a selection and the side panel closed, clicks dismiss the overlay
+ * instead of drawing a region, so show the normal cursor. */
+:host([has-selection]:not([side-panel-open])) #selectionOverlay {
   cursor: default;
 }
 
-:host([disable-multi-select]) #cursor {
+:host([has-selection]:not([side-panel-open])) #cursor {
+  visibility: hidden;
+}
+
+/* Until the screenshot is shown, the user sees the live page through the
+ * transparent overlay and input is ignored. A prewarmed overlay is on screen
+ * while the screenshot is still being captured, so keep the normal cursor and
+ * draw nothing over the page until the screenshot is shown.
+ */
+:host(:not([is-screenshot-rendered])) #selectionOverlay {
+  cursor: default;
+}
+
+:host(:not([is-screenshot-rendered])) #cursor,
+:host(:not([is-screenshot-rendered])) #initialFlashScrim,
+:host(:not([is-screenshot-rendered])) #selectionElements {
   visibility: hidden;
 }
 
@@ -268,11 +290,11 @@
 @keyframes promptFadeIn {
   from {
     opacity: 0;
-    transform: translate(-50%, 6px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: translateY(0);
   }
 }
 
@@ -286,7 +308,7 @@
 
 .searchbox-pill {
   align-items: center;
-  background-color: #FFF;
+  background-color: var(--cr-fallback-color-surface);
   border-radius: 28px;
   box-shadow: var(--cr-elevation-2);
   box-sizing: border-box;
@@ -319,7 +341,7 @@
 #promptInput {
   background: transparent;
   border: none;
-  color: #1F1F1F;
+  color: var(--cr-primary-text-color);
   flex: 1;
   font-family: inherit;
   font-size: 14px;
@@ -329,7 +351,7 @@
 }
 
 #promptInput::placeholder {
-  color: #747775;
+  color: var(--cr-fallback-color-outline);
 }
 
 #submitPromptButton {
@@ -345,6 +367,12 @@
 
 #submitPromptButton[hidden] {
   display: none;
+}
+
+/* cr-icon-button turns off pointer events when disabled, which would hide
+   the tooltip. */
+#submitPromptButton[disabled] {
+  pointer-events: auto;
 }
 
 .action-chips-row {
@@ -391,21 +419,18 @@
   max-width: 100%;
 }
 
-.action-chip {
-  height: auto;
-  min-height: var(--cr-button-height);
+.chip-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.chip-label {
-  /* -webkit-box is required for -webkit-line-clamp multi-line truncation. */
-  display: -webkit-box;
-  overflow: hidden;
-  text-align: start;
-  text-overflow: ellipsis;
-  white-space: normal;
-  word-break: break-word;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.searchbox-row + .action-chips-row > .action-chip > .chip-label {
+  max-width: calc(320px - 24px);
+}
+
+.searchbox-row + .action-chips-row > .action-chip:has(.chip-icon) > .chip-label {
+  max-width: calc(320px - 37px);
 }
 
 .action-chip:has(.chip-icon) {
@@ -533,6 +558,7 @@
   font-size: 14px;
   line-height: 20px;
   max-width: 100%;
+  min-width: 320px;
   padding: 20px 20px 16px 20px;
   width: 380px;
 }
@@ -636,6 +662,7 @@
   /* Add a border since the shadow is not visible in hcm. */
   #inlineFulfillmentHost,
   .action-chip,
+  .searchbox-pill,
   .settings-button,
   .dogfood-feedback-button {
     border: 1px solid ButtonBorder;

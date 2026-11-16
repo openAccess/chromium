@@ -5,7 +5,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_WEBRTC_VIDEO_TRACK_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_PEERCONNECTION_WEBRTC_VIDEO_TRACK_SOURCE_H_
 
-#include <cstdint>
 #include <optional>
 
 #include "base/functional/callback.h"
@@ -101,7 +100,7 @@ class PLATFORM_EXPORT WebRtcVideoTrackSource
     raw_ptr<WebRtcVideoTrackSource> parent_ GUARDED_BY(lock_);
   };
 
-  void SendFeedback();
+  void SendFeedback(bool require_mapped_frame);
 
   FrameAdaptationParams ComputeAdaptationParams(int width,
                                                 int height,

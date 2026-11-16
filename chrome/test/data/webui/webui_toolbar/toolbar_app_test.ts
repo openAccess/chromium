@@ -3,37 +3,23 @@
 // found in the LICENSE file.
 
 import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {browserProxyFactory} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
 import type {HelpBubbleHandlerInterface} from 'chrome://resources/cr_components/help_bubble/help_bubble.mojom-webui.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import type {TrackedElementIdentifier} from 'chrome://resources/mojo/ui/webui/resources/js/tracked_element/tracked_element.mojom-webui.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {TestSearchboxBrowserProxy} from 'chrome://webui-test/cr_components/searchbox/test_searchbox_browser_proxy.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {AppMenuIconType, AppMenuSeverity, AvatarToolbarButtonState, BrowserProxyImpl, ContentSettingImageType, createDefaultLocationBarState, INVALID_FOCUS_REQUEST_HANDLE, PageActionAnimationStyle, PageActionId, SearchboxBrowserProxy, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import type {GlicActorTaskIconElement, GlicButtonElement} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {AppMenuIconType, AppMenuSeverity, AvatarToolbarButtonState, BrowserProxyImpl, COLOR_PROVIDER_CHANGED, ColorChangeUpdater, ContentSettingImageType, createDefaultLocationBarState, INVALID_FOCUS_REQUEST_HANDLE, PageActionAnimationStyle, PageActionId, TrackedElementManager} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 import type {FocusRequestListener, ToolbarAppElement, ToolbarStateListener} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarBrowserProxy as BaseTestToolbarBrowserProxy} from './test_toolbar_browser_proxy.js';
 
-class TestBrowserControlsHandler extends TestBrowserProxy {
-  constructor() {
-    super(['navigate']);
-  }
-
-  navigate(url: any, disposition: any) {
-    this.methodCalled('navigate', url, disposition);
-  }
-}
-
 class TestToolbarBrowserProxy extends BaseTestToolbarBrowserProxy {
   private listener_: ToolbarStateListener|null = null;
-
-  constructor() {
-    super();
-    this.browserControlsHandler = new TestBrowserControlsHandler();
-  }
 
   override addToolbarStateListener(listener: ToolbarStateListener) {
     this.methodCalled('addToolbarStateListener', listener);
@@ -138,6 +124,13 @@ function createMockToolbarState() {
       shouldMatchToolbarStyle: false,
       useCustomThemeFallback: false,
       nudgeLabel: null as string | null,
+      isSplit: false,
+    },
+    glicActorTaskIconState: {
+      shouldShow: false,
+      nudgeLabel: null as string | null,
+      tooltip: '',
+      isPressed: false,
     },
     overflowButtonControlState: {
       isContextMenuVisible: false,
@@ -185,7 +178,6 @@ suite('ToolbarAppTest', () => {
 
     browserProxy = new TestToolbarBrowserProxy();
     BrowserProxyImpl.setInstance(browserProxy);
-    SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
 
     loadTimeData.overrideValues({
       enableReloadButton: true,
@@ -279,7 +271,7 @@ suite('ToolbarAppTest', () => {
     assertEquals(9, startTrackingCalls.length);
 
     // Verify initial boot snapshot captures the correct values
-    const snapshot = (app as any).initialBootSnapshot_;
+    const snapshot = app.initialBootSnapshotForTesting;
     assertTrue(snapshot.initializedSync);
     assertFalse(snapshot.isNavigationLoading);
     assertTrue(snapshot.backButtonEnabled);
@@ -808,7 +800,7 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+    const textSpan = avatarButton.$.text;
 
     assertTrue(avatarButton.classList.contains('initial-load'));
 
@@ -858,7 +850,7 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     const avatarButton = app.shadowRoot.querySelector('avatar-button')!;
-    const textSpan = avatarButton.shadowRoot.querySelector('#text')!;
+    const textSpan = avatarButton.$.text;
 
     assertTrue(avatarButton.classList.contains('initial-load'));
 
@@ -926,7 +918,7 @@ suite('ToolbarAppTest', () => {
     browserProxy.fireToolbarStateListener([], navState);
     await microtasksFinished();
 
-    assertFalse(avatarButton.hasAttribute('has-label'));
+    assertEquals('no-text', avatarButton.getAttribute('label-mode'));
     assertFalse(appMenuButton.hasAttribute('has-label'));
     assertEquals(
         '0px', window.getComputedStyle(appMenuButton).marginInlineStart);
@@ -939,7 +931,7 @@ suite('ToolbarAppTest', () => {
     browserProxy.fireToolbarStateListener([], appMenuExpandedState);
     await microtasksFinished();
 
-    assertFalse(avatarButton.hasAttribute('has-label'));
+    assertEquals('no-text', avatarButton.getAttribute('label-mode'));
     assertTrue(appMenuButton.hasAttribute('has-label'));
     assertEquals(
         '3px', window.getComputedStyle(appMenuButton).marginInlineStart);
@@ -954,15 +946,47 @@ suite('ToolbarAppTest', () => {
     browserProxy.fireToolbarStateListener([], bothExpandedState);
     await microtasksFinished();
 
-    assertTrue(avatarButton.hasAttribute('has-label'));
+    assertEquals('text', avatarButton.getAttribute('label-mode'));
     assertTrue(appMenuButton.hasAttribute('has-label'));
     assertEquals(
         '0px', window.getComputedStyle(appMenuButton).marginInlineStart);
 
-    // 4. If avatar button is overflowed/hidden, appMenuButton's leading margin
-    // uncollapses to 3px.
-    avatarButton.classList.add('overflow-display-none');
+    // 4. Avatar label collapsed due to lack of space, but the avatar button is
+    // still visible, since overflow is prevented. The avatar button keeps its
+    // 3px trailing margin, so appMenuButton's leading margin stays collapsed to
+    // 0px.
+    const avatarCollapsedState = createMockToolbarState();
+    avatarCollapsedState.avatarControlState.text = 'Paused';
+    avatarCollapsedState.appMenuControlState.labelText = 'Update';
+    browserProxy.fireToolbarStateListener([], {
+      ...avatarCollapsedState,
+      avatarControlState: {
+        ...avatarCollapsedState.avatarControlState,
+        preventOverflow: true,
+      },
+    });
     await microtasksFinished();
+    avatarButton.setToMinWidth();
+
+    assertEquals('collapsed', avatarButton.getAttribute('label-mode'));
+    assertFalse(avatarButton.classList.contains('overflow-display-none'));
+    assertTrue(appMenuButton.hasAttribute('has-label'));
+    assertEquals(
+        '3px', window.getComputedStyle(avatarButton.$.button).marginInlineEnd);
+    assertEquals(
+        '0px', window.getComputedStyle(appMenuButton).marginInlineStart);
+
+    // 5. If avatar button is overflowed/hidden, appMenuButton's leading margin
+    // uncollapses to 3px.
+    const avatarHiddenState = createMockToolbarState();
+    avatarHiddenState.avatarControlState.text = 'Paused';
+    avatarHiddenState.appMenuControlState.labelText = 'Update';
+    browserProxy.fireToolbarStateListener([], avatarHiddenState);
+    await microtasksFinished();
+    avatarButton.setToMinWidth();
+
+    assertEquals('collapsed', avatarButton.getAttribute('label-mode'));
+    assertTrue(avatarButton.classList.contains('overflow-display-none'));
     assertEquals(
         '3px', window.getComputedStyle(appMenuButton).marginInlineStart);
   });
@@ -1002,6 +1026,7 @@ suite('ToolbarAppTest', () => {
           'avatar',
           'split-tabs',
           'glic-button',
+          'glic-actor-task-icon',
           'forward',
           'home',
           'pinnedToolbarActions',
@@ -1090,8 +1115,62 @@ suite('ToolbarAppTest', () => {
         'Glic button should be excluded from responsive controls when resizing flag is disabled');
   });
 
+  test('GlicSplitButtonAndActorTaskIconStatePropagation', async () => {
+    loadTimeData.overrideValues({enableGlicButton: true});
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+
+    const state = createMockToolbarState();
+    state.glicButtonState.shouldShow = true;
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+
+    const glicButton =
+        app.shadowRoot.querySelector<GlicButtonElement>('#glic-button')!;
+    const actorIcon = app.shadowRoot.querySelector<GlicActorTaskIconElement>(
+        '#glic-actor-task-icon')!;
+    assertEquals(actorIcon, glicButton.nextElementSibling);
+    assertTrue(
+        startTrackingCalls.some(c => c[1] === 'kGlicActorTaskIconElementId'));
+    assertFalse(glicButton.hidden);
+    assertTrue(actorIcon.hidden);
+    assertEquals(null, glicButton.$.button.flatEdge);
+
+    const splitState = createMockToolbarState();
+    splitState.glicButtonState.shouldShow = true;
+    splitState.glicButtonState.isSplit = true;
+    splitState.glicActorTaskIconState.shouldShow = true;
+    splitState.glicActorTaskIconState.nudgeLabel = 'Check task';
+    browserProxy.fireToolbarStateListener([], splitState);
+    await microtasksFinished();
+    assertFalse(glicButton.hidden);
+    assertFalse(actorIcon.hidden);
+    assertEquals('end', glicButton.$.button.flatEdge);
+    assertEquals('Check task', actorIcon.state.nudgeLabel);
+    // Like Views, the actor task icon starts right after the 41px collapsed
+    // Glic button, whatever the toolbar gap (0 in touch mode).
+    for (const gap of ['2px', '0px']) {
+      app.style.setProperty('--toolbar-icon-default-margin', gap);
+      assertEquals(
+          41,
+          actorIcon.getBoundingClientRect().left -
+              glicButton.getBoundingClientRect().left);
+    }
+
+    browserProxy.fireToolbarStateListener([], state);
+    await microtasksFinished();
+    assertFalse(glicButton.hidden);
+    assertTrue(actorIcon.hidden);
+    assertEquals(null, glicButton.$.button.flatEdge);
+    assertEquals(null, actorIcon.state.nudgeLabel);
+  });
+
   test('ControlsAppearInactive', async () => {
-    loadTimeData.overrideValues({enableAppMenuButton: true});
+    loadTimeData.overrideValues({
+      enableAppMenuButton: true,
+      enableGlicButton: true,
+    });
     const rootStyle = document.documentElement.style;
     rootStyle.setProperty('--color-toolbar-button-icon', 'rgb(1, 2, 3)');
     rootStyle.setProperty(
@@ -1100,6 +1179,10 @@ suite('ToolbarAppTest', () => {
     app = document.createElement('toolbar-app');
     document.body.appendChild(app);
     const state = createMockToolbarState();
+    // An active actor task shows the icon next to the split Glic button.
+    state.glicButtonState.shouldShow = true;
+    state.glicButtonState.isSplit = true;
+    state.glicActorTaskIconState.shouldShow = true;
     browserProxy.fireToolbarStateListener([], state);
     await microtasksFinished();
 
@@ -1107,6 +1190,8 @@ suite('ToolbarAppTest', () => {
         app.shadowRoot.querySelector('reload-button')!.$.button;
     const appMenuChip = app.shadowRoot.querySelector('app-menu-button')!
                             .shadowRoot.querySelector('toolbar-chip-button')!;
+    const actorIcon = app.shadowRoot.querySelector('glic-actor-task-icon')!
+                          .shadowRoot.querySelector<HTMLElement>('#icon')!;
     function getFillColor(): string {
       return getComputedStyle(reloadIconButton)
           .getPropertyValue('--cr-icon-button-fill-color')
@@ -1115,6 +1200,7 @@ suite('ToolbarAppTest', () => {
     assertFalse(app.hasAttribute('controls-appear-inactive'));
     assertEquals('rgb(1, 2, 3)', getFillColor());
     assertEquals('rgb(1, 2, 3)', getComputedStyle(appMenuChip).color);
+    assertEquals('rgb(1, 2, 3)', getComputedStyle(actorIcon).color);
 
     state.controlsAppearInactive = true;
     browserProxy.fireToolbarStateListener([], {...state});
@@ -1122,6 +1208,7 @@ suite('ToolbarAppTest', () => {
     assertTrue(app.hasAttribute('controls-appear-inactive'));
     assertEquals('rgb(4, 5, 6)', getFillColor());
     assertEquals('rgb(4, 5, 6)', getComputedStyle(appMenuChip).color);
+    assertEquals('rgb(4, 5, 6)', getComputedStyle(actorIcon).color);
 
     state.controlsAppearInactive = false;
     browserProxy.fireToolbarStateListener([], {...state});
@@ -1129,6 +1216,7 @@ suite('ToolbarAppTest', () => {
     assertFalse(app.hasAttribute('controls-appear-inactive'));
     assertEquals('rgb(1, 2, 3)', getFillColor());
     assertEquals('rgb(1, 2, 3)', getComputedStyle(appMenuChip).color);
+    assertEquals('rgb(1, 2, 3)', getComputedStyle(actorIcon).color);
 
     rootStyle.removeProperty('--color-toolbar-button-icon');
     rootStyle.removeProperty('--color-toolbar-button-icon-inactive');
@@ -1138,6 +1226,7 @@ suite('ToolbarAppTest', () => {
     loadTimeData.overrideValues({
       enableAvatarButton: true,
       enableAppMenuButton: true,
+      enableGlicButton: true,
     });
     const disabledLabelColor = 'rgb(7, 8, 9)';
     const rootStyle = document.documentElement.style;
@@ -1149,6 +1238,10 @@ suite('ToolbarAppTest', () => {
     const state = createMockToolbarState();
     state.avatarControlState.text = 'Paused';
     state.appMenuControlState.labelText = 'Update';
+    state.glicButtonState.shouldShow = true;
+    state.glicButtonState.isSplit = true;
+    state.glicActorTaskIconState.shouldShow = true;
+    state.glicActorTaskIconState.nudgeLabel = 'Needs review';
     state.locationBarState.selectedKeyword = {
       shortName: 'Bookmarks',
       fullName: 'Search Bookmarks',
@@ -1187,8 +1280,10 @@ suite('ToolbarAppTest', () => {
     const root = app.shadowRoot;
     const locationBar = root.querySelector('location-bar')!.shadowRoot;
     const labels = [
-      root.querySelector('avatar-button')!.shadowRoot.querySelector('#text')!,
+      root.querySelector('avatar-button')!.$.text,
       root.querySelector('app-menu-button')!.shadowRoot.querySelector('#text')!,
+      root.querySelector('glic-actor-task-icon')!.shadowRoot.querySelector(
+          '#text')!,
       locationBar.querySelector('selected-keyword')!.shadowRoot.querySelector(
           '#text-wrap')!,
       locationBar.querySelector('content-settings-icons')!.shadowRoot
@@ -1242,5 +1337,344 @@ suite('ToolbarAppTest', () => {
     await microtasksFinished();
 
     assertFalse(!!app.shadowRoot.querySelector('avatar-button'));
+  });
+
+  // Dispatches a drop of `dataTransfer` on the empty toolbar area.
+  async function dropOnToolbar(dataTransfer: DataTransfer) {
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await microtasksFinished();
+    app.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clientX: 10,
+      clientY: 20,
+      dataTransfer,
+    }));
+  }
+
+  test('DropUrlOnToolbar', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData(
+        'text/uri-list', 'https://example.com/\nhttps://other.com/');
+    dataTransfer.setData('text/plain', 'some text');
+    await dropOnToolbar(dataTransfer);
+
+    await browserProxy.toolbarUIHandler.whenCalled('onToolbarDropUrl');
+    assertEquals(
+        0, browserProxy.toolbarUIHandler.getCallCount('onToolbarDropText'));
+  });
+
+  // Dispatches a drop of `dataTransfer` on the home button.
+  async function dropOnHomeButton(dataTransfer: DataTransfer) {
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await microtasksFinished();
+
+    const homeButton = app.shadowRoot.querySelector<HTMLElement>('home-button');
+    assertTrue(!!homeButton);
+    const button = homeButton.shadowRoot!.querySelector('#button');
+    assertTrue(!!button);
+    button.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      dataTransfer,
+    }));
+    await microtasksFinished();
+  }
+
+  // The browser uses the first valid URL of the list, which skips empty lines,
+  // so a leading line break does not make the URL empty.
+  test('DropUrlListWithLeadingCrlfOnToolbar', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', '\r\nhttps://example.com/');
+    await dropOnToolbar(dataTransfer);
+    await microtasksFinished();
+
+    assertEquals(
+        1, browserProxy.toolbarUIHandler.getCallCount('onToolbarDropUrl'));
+  });
+
+  // A type can be present with empty data, e.g. setData(type, ''). Like native
+  // Views, which ignores a drop's empty URLs, the drop then falls back to its
+  // plain text.
+  test('DropEmptyUrlAndTextOnToolbar', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', '');
+    dataTransfer.setData('text/plain', 'some text');
+    await dropOnToolbar(dataTransfer);
+    await microtasksFinished();
+
+    assertEquals(
+        0, browserProxy.toolbarUIHandler.getCallCount('onToolbarDropUrl'));
+    assertEquals(
+        1, browserProxy.toolbarUIHandler.getCallCount('onToolbarDropText'));
+    assertEquals(
+        'some text',
+        browserProxy.toolbarUIHandler.getArgs('onToolbarDropText')[0]);
+  });
+
+  // See DropUrlListWithLeadingCrlfOnToolbar.
+  test('DropUrlListWithLeadingCrlfOnHomeButton', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', '\r\nhttps://example.com/');
+    await dropOnHomeButton(dataTransfer);
+
+    assertEquals(
+        1, browserProxy.toolbarUIHandler.getCallCount('onHomeButtonDropUrl'));
+  });
+
+  // See DropEmptyUrlAndTextOnToolbar.
+  test('DropEmptyUrlAndTextOnHomeButton', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/uri-list', '');
+    dataTransfer.setData('text/plain', 'some text');
+    await dropOnHomeButton(dataTransfer);
+
+    assertEquals(
+        0, browserProxy.toolbarUIHandler.getCallCount('onHomeButtonDropUrl'));
+    assertEquals(
+        1, browserProxy.toolbarUIHandler.getCallCount('onHomeButtonDropText'));
+    assertEquals(
+        'some text',
+        browserProxy.toolbarUIHandler.getArgs('onHomeButtonDropText')[0]);
+  });
+
+  test('DropTextOnToolbar', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.setData('text/plain', 'some text');
+    await dropOnToolbar(dataTransfer);
+
+    assertEquals(
+        'some text',
+        await browserProxy.toolbarUIHandler.whenCalled('onToolbarDropText'));
+  });
+
+  test('DropFileOnToolbar', async () => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(['contents'], 'file.txt'));
+    await dropOnToolbar(dataTransfer);
+
+    assertDeepEquals(
+        {x: 10, y: 20},
+        await browserProxy.toolbarUIHandler.whenCalled('onToolbarDropFile'));
+  });
+
+  test('UnboundApplyBoundProfileUpdatesColorsAndButtons', async () => {
+    loadTimeData.overrideValues({
+      enableGlicButton: true,
+      enableAvatarButton: true,
+      enableHomeButton: true,
+    });
+    document.adoptedStyleSheets = [];
+
+    // With `isUnbound` unset (flag off), no global bind hook is installed.
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: false,
+    });
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await app.updateComplete;
+    assertEquals(undefined, window.__webuiToolbarApplyBoundProfile);
+    document.body.removeChild(app);
+
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: true,
+      isFallbackPrewarming: true,
+      isNavigationLoading: false,
+      backButtonEnabled: false,
+      forwardButtonEnabled: false,
+      homeButtonShouldBeShown: false,
+      isProfileEligibleForGlic: false,
+      canShowAvatarForProfile: false,
+      isUnbound: true,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await app.updateComplete;
+    assertEquals('function', typeof window.__webuiToolbarApplyBoundProfile);
+
+    assertFalse(!!app.shadowRoot.querySelector('#glic-button'));
+    assertFalse(!!app.shadowRoot.querySelector('#avatar'));
+    const homeBefore = app.shadowRoot.querySelector<HTMLElement>('#home');
+    assertTrue(!!homeBefore);
+    assertTrue(homeBefore.hidden);
+
+    let scheduleLayoutCalls = 0;
+    const appInternal = app as unknown as {
+      scheduleLayoutResponsiveControls_: () => void,
+    };
+    const origSchedule = appInternal.scheduleLayoutResponsiveControls_;
+    appInternal.scheduleLayoutResponsiveControls_ = function() {
+      scheduleLayoutCalls++;
+      origSchedule.call(app);
+    };
+
+    // Apply `colorsCss` and button diffs first on the fresh unbound element so
+    // the `!this.isColorChangeUpdaterStarted_` branch runs and the adopted
+    // sheet stays installed across `updateComplete` until
+    // `COLOR_PROVIDER_CHANGED` fires.
+    window.__webuiToolbarApplyBoundProfile!({
+      colorsCss: ':root { --test-bound-toolbar-color: rgb(12, 34, 56); }',
+      isProfileEligibleForGlic: true,
+      canShowAvatarForProfile: true,
+      homeButtonShouldBeShown: true,
+    });
+    assertEquals(1, document.adoptedStyleSheets.length);
+    assertEquals(1, scheduleLayoutCalls);
+    assertEquals(
+        'rgb(12, 34, 56)',
+        getComputedStyle(document.documentElement)
+            .getPropertyValue('--test-bound-toolbar-color')
+            .trim());
+    await app.updateComplete;
+    assertEquals(1, document.adoptedStyleSheets.length);
+
+    assertTrue(!!app.shadowRoot.querySelector('#glic-button'));
+    assertTrue(!!app.shadowRoot.querySelector('#avatar'));
+    const homeAfter = app.shadowRoot.querySelector<HTMLElement>('#home');
+    assertTrue(!!homeAfter);
+    assertFalse(homeAfter.hidden);
+
+    // Next ColorChangeUpdater refresh removes the temporary adopted sheet.
+    ColorChangeUpdater.forDocument().eventTarget.dispatchEvent(
+        new CustomEvent(COLOR_PROVIDER_CHANGED));
+    assertEquals(0, document.adoptedStyleSheets.length);
+
+    // Empty or unchanged values do no stylesheet or responsive-controls work.
+    scheduleLayoutCalls = 0;
+    window.__webuiToolbarApplyBoundProfile!({});
+    window.__webuiToolbarApplyBoundProfile!({
+      isProfileEligibleForGlic: true,
+      canShowAvatarForProfile: true,
+      homeButtonShouldBeShown: true,
+    });
+    assertEquals(0, document.adoptedStyleSheets.length);
+    assertEquals(0, scheduleLayoutCalls);
+
+    // Resetting `adoptedStyleSheets` externally does not block re-applying the
+    // same `colorsCss` string.
+    const repeatedCss =
+        ':root { --test-bound-toolbar-color: rgb(78, 90, 12); }';
+    window.__webuiToolbarApplyBoundProfile!({colorsCss: repeatedCss});
+    assertEquals(1, document.adoptedStyleSheets.length);
+    document.adoptedStyleSheets = [];
+    window.__webuiToolbarApplyBoundProfile!({colorsCss: repeatedCss});
+    assertEquals(1, document.adoptedStyleSheets.length);
+    ColorChangeUpdater.forDocument().eventTarget.dispatchEvent(
+        new CustomEvent(COLOR_PROVIDER_CHANGED));
+    assertEquals(0, document.adoptedStyleSheets.length);
+
+    // Added buttons get help bubble anchors, and removed ones lose them.
+    await microtasksFinished();
+    assertTrue(app.canShowHelpBubble('kGlicButtonElementId'));
+    assertTrue(app.canShowHelpBubble('kToolbarAvatarButtonElementId'));
+    window.__webuiToolbarApplyBoundProfile!({
+      isProfileEligibleForGlic: false,
+      canShowAvatarForProfile: false,
+    });
+    await app.updateComplete;
+    await microtasksFinished();
+    assertFalse(!!app.shadowRoot.querySelector('#glic-button'));
+    assertFalse(app.canShowHelpBubble('kGlicButtonElementId'));
+    assertFalse(app.canShowHelpBubble('kToolbarAvatarButtonElementId'));
+
+    // Once the window's ToolbarState arrives, it owns the home button.
+    browserProxy.fireToolbarStateListener([], createMockToolbarState());
+    await app.updateComplete;
+    window.__webuiToolbarApplyBoundProfile!({homeButtonShouldBeShown: true});
+    await app.updateComplete;
+    assertTrue(app.shadowRoot.querySelector<HTMLElement>('#home')!.hidden);
+  });
+
+  test('UnboundAppliesStashedBoundProfile', async () => {
+    loadTimeData.overrideValues({
+      enableGlicButton: true,
+      enableAvatarButton: true,
+      enableHomeButton: true,
+    });
+    document.adoptedStyleSheets = [];
+    // The browser stashes the bound state when it binds before this script
+    // installs the bind hook.
+    window.__webuiToolbarBoundProfile = {
+      colorsCss: ':root { --test-stashed-color: rgb(1, 2, 3); }',
+      isProfileEligibleForGlic: true,
+    };
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: true,
+      isFallbackPrewarming: true,
+      isNavigationLoading: false,
+      isProfileEligibleForGlic: false,
+      canShowAvatarForProfile: false,
+      isUnbound: true,
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await app.updateComplete;
+
+    assertEquals(undefined, window.__webuiToolbarBoundProfile);
+    assertEquals(1, document.adoptedStyleSheets.length);
+    assertEquals(
+        'rgb(1, 2, 3)',
+        getComputedStyle(document.documentElement)
+            .getPropertyValue('--test-stashed-color')
+            .trim());
+    assertTrue(!!app.shadowRoot.querySelector('#glic-button'));
+    assertFalse(!!app.shadowRoot.querySelector('#avatar'));
+
+    document.body.removeChild(app);
+    assertEquals(0, document.adoptedStyleSheets.length);
+  });
+
+  test('UnboundPreDomContentLoadedInitialStateAppliesColorsCss', async () => {
+    loadTimeData.overrideValues({
+      enableGlicButton: true,
+      enableAvatarButton: true,
+      enableHomeButton: true,
+    });
+    document.adoptedStyleSheets = [];
+    browserProxy.setInitialState({
+      initialWebUISurfaceSyncEnabled: true,
+      isFallbackPrewarming: true,
+      isNavigationLoading: false,
+      backButtonEnabled: false,
+      forwardButtonEnabled: false,
+      homeButtonShouldBeShown: true,
+      isProfileEligibleForGlic: true,
+      canShowAvatarForProfile: true,
+      isUnbound: true,
+      colorsCss: ':root { --test-pre-dcl-color: rgb(90, 80, 70); }',
+    });
+
+    app = document.createElement('toolbar-app');
+    document.body.appendChild(app);
+    await app.updateComplete;
+
+    assertEquals(1, document.adoptedStyleSheets.length);
+    assertEquals(
+        'rgb(90, 80, 70)',
+        getComputedStyle(document.documentElement)
+            .getPropertyValue('--test-pre-dcl-color')
+            .trim());
+    assertTrue(!!app.shadowRoot.querySelector('#glic-button'));
+    assertTrue(!!app.shadowRoot.querySelector('#avatar'));
+
+    // Re-applying the same diff at commit leaves the sheet as is.
+    window.__webuiToolbarApplyBoundProfile!({
+      colorsCss: ':root { --test-pre-dcl-color: rgb(90, 80, 70); }',
+      isProfileEligibleForGlic: true,
+      canShowAvatarForProfile: true,
+      homeButtonShouldBeShown: true,
+    });
+    assertEquals(1, document.adoptedStyleSheets.length);
+
+    ColorChangeUpdater.forDocument().eventTarget.dispatchEvent(
+        new CustomEvent(COLOR_PROVIDER_CHANGED));
+    assertEquals(0, document.adoptedStyleSheets.length);
   });
 });

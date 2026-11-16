@@ -139,6 +139,8 @@ chromium-metrics-reviews@google.com.
   <int value="10" label="ProofreaderSmallExpert"/>
   <int value="11" label="SpeechRecognitionSmallExpert"/>
   <int value="12" label="SummarizerSmallExpert"/>
+  <int value="13" label="LayaEnWint8"/>
+  <int value="14" label="LayaMlWint8"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/on_device_model_names.h:OnDeviceBaseModelEnum) -->
@@ -356,6 +358,8 @@ chromium-metrics-reviews@google.com.
   </int>
 </enum>
 
+<!-- LINT.IfChange(OptimizationGuideOnDeviceExecuteModelResult) -->
+
 <enum name="OptimizationGuideOnDeviceExecuteModelResult">
   <int value="0" label="On-device not used">
     Session was not eligible for on-device and the on-device model was not used.
@@ -378,7 +382,7 @@ chromium-metrics-reviews@google.com.
   </int>
   <int value="7" label="Cancelled">
     Execution was cancelled because either AddContext or ExecuteModel was called
-    again.
+    again, or the client cancelled the request.
   </int>
   <int value="8" label="Destroyed while waiting">
     The Session was destroyed while waiting for a response. This likely means
@@ -421,6 +425,8 @@ chromium-metrics-reviews@google.com.
     Used on-device, but a request safety check failed.
   </int>
 </enum>
+
+<!-- LINT.ThenChange(//components/optimization_guide/core/model_execution/on_device_telemetry_logger.h:OptimizationGuideOnDeviceExecuteModelResult) -->
 
 <!-- LINT.IfChange(OptimizationGuideOnDeviceModelEligibilityReason) -->
 
@@ -867,6 +873,7 @@ chromium-metrics-reviews@google.com.
   <int value="133" label="FILTER_EXECUTION_STRATEGY"/>
   <int value="134" label="PAYMENT_QR_CODE_MERCHANT_URL_REGEX_ALLOWLIST"/>
   <int value="135" label="QUICK_ANSWERS"/>
+  <int value="136" label="DICTATION_ELIGIBLE"/>
 </enum>
 
 <enum name="PageContentAnnotationsStorageStatus">

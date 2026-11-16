@@ -4,7 +4,6 @@
 
 #include "net/device_bound_sessions/single_sign_on_key_manager.h"
 
-#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -14,13 +13,16 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/map_util.h"
 #include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
@@ -28,11 +30,12 @@
 #include "components/unexportable_keys/background_task_priority.h"
 #include "components/unexportable_keys/unexportable_key_service.h"
 #include "crypto/unexportable_key.h"
+#include "net/base/schemeful_site.h"
 #include "net/device_bound_sessions/cookie_access_check_params.h"
 #include "net/device_bound_sessions/jwk_utils.h"
-#include "net/device_bound_sessions/session.h"
 #include "net/device_bound_sessions/session_binding_utils.h"
 #include "net/device_bound_sessions/session_error.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "url/origin.h"
 
 namespace net::device_bound_sessions {
@@ -48,12 +51,15 @@ bool CanAccessPreProvisionedKey(
                                .relying_party_origin{rp_origin}});
 }
 
-// Deletes `key_id` in the background, e.g. after a generated key turned out
-// not to be needed.
-void DeleteSigningKey(unexportable_keys::UnexportableKeyService& key_service,
-                      unexportable_keys::UnexportableSigningKeyId key_id) {
+// Deletes `key_ids` from `key_service` in the background, if non-empty.
+void DeleteSigningKeys(
+    unexportable_keys::UnexportableKeyService& key_service,
+    base::span<const unexportable_keys::UnexportableSigningKeyId> key_ids) {
+  if (key_ids.empty()) {
+    return;
+  }
   key_service.DeleteKeysSlowlyAsync(
-      {key_id}, unexportable_keys::BackgroundTaskPriority::kBestEffort,
+      key_ids, unexportable_keys::BackgroundTaskPriority::kBestEffort,
       base::DoNothing());
 }
 
@@ -67,7 +73,8 @@ struct SingleSignOnKeyManager::GeneratedKey {
 };
 
 // Generates an RP signing key and certifies it with the IdP's AIK. The manager
-// owns the request and decides whether to store the key.
+// owns the request and decides whether to store the key. The request owns the
+// caller's callback and stops early once that callback is cancelled.
 class SingleSignOnKeyManager::GenerateKeyRequest {
  public:
   // Receives the generated key or an error. Always runs in a posted task, and
@@ -78,12 +85,13 @@ class SingleSignOnKeyManager::GenerateKeyRequest {
       unexportable_keys::UnexportableKeyService& key_service,
       unexportable_keys::UnexportableAttestationKeyId idp_aik,
       GenerateKeyParam param,
-      url::Origin provider_origin)
+      url::Origin provider_origin,
+      SessionService::KeyBindingCallback callback)
       : key_service_(key_service),
         idp_aik_(idp_aik),
         param_(std::move(param)),
         provider_origin_(std::move(provider_origin)),
-        provider_site_(provider_origin_) {}
+        callback_(std::move(callback)) {}
 
   GenerateKeyRequest(const GenerateKeyRequest&) = delete;
   GenerateKeyRequest& operator=(const GenerateKeyRequest&) = delete;
@@ -94,18 +102,28 @@ class SingleSignOnKeyManager::GenerateKeyRequest {
   // `OnGenerateSigningKeyDoneOrDelete()`.
   ~GenerateKeyRequest() {
     if (rp_key_id_) {
-      DeleteSigningKey(*key_service_, *rp_key_id_);
+      DeleteSigningKeys(*key_service_, {*rp_key_id_});
     }
   }
 
   const url::Origin& provider_origin() const { return provider_origin_; }
-  const net::SchemefulSite& provider_site() const { return provider_site_; }
   const url::Origin& rp_origin() const { return param_.target_origin; }
-  bool site_data_cleared() const { return site_data_cleared_; }
 
   // Records that the RP's site data was cleared while the request was running,
   // so its key must not be stored.
   void MarkSiteDataCleared() { site_data_cleared_ = true; }
+
+  // Returns true once the key must not be stored, because the caller cancelled
+  // its callback or the RP's site data was cleared.
+  bool ShouldStop() const {
+    return callback_.IsCancelled() || site_data_cleared_;
+  }
+
+  // Hands the caller's callback to the manager. Afterwards `ShouldStop()` must
+  // not be called.
+  SessionService::KeyBindingCallback TakeCallback() {
+    return std::move(callback_);
+  }
 
   void Start(DoneCallback on_done) {
     // A static function rather than a weak method, so it still runs, and
@@ -135,7 +153,7 @@ class SingleSignOnKeyManager::GenerateKeyRequest {
     // The key service also runs callbacks with an error after it was
     // destroyed. Only a success result means that `key_service` is alive.
     if (result.has_value()) {
-      DeleteSigningKey(*key_service, *result);
+      DeleteSigningKeys(*key_service, {*result});
     }
   }
 
@@ -147,9 +165,8 @@ class SingleSignOnKeyManager::GenerateKeyRequest {
       Finish(std::move(on_done),
              base::unexpected(SessionError::kSigningKeyGenerationError));
     });
-
     // Skip the slow certify call if its result would be thrown away anyway.
-    if (site_data_cleared_) {
+    if (ShouldStop()) {
       Finish(std::move(on_done),
              base::unexpected(SessionError::kSigningKeyGenerationError));
       return;
@@ -211,7 +228,8 @@ class SingleSignOnKeyManager::GenerateKeyRequest {
   const unexportable_keys::UnexportableAttestationKeyId idp_aik_;
   GenerateKeyParam param_;
   url::Origin provider_origin_;
-  net::SchemefulSite provider_site_;
+  // The caller's callback. Destroying the request drops it.
+  SessionService::KeyBindingCallback callback_;
   std::optional<unexportable_keys::UnexportableSigningKeyId> rp_key_id_;
   // JWK thumbprint of `rp_key_id_`, set right after keygen.
   std::string thumbprint_;
@@ -225,17 +243,23 @@ SingleSignOnKeyManager::SingleSignOnKeyManager(
     : key_service_(key_service),
       has_cookie_access_cb_(std::move(has_cookie_access_cb)) {}
 
-// TODO(crbug.com/573951667): Delete the stored keys from `key_service_`.
-SingleSignOnKeyManager::~SingleSignOnKeyManager() = default;
+// Deleting unclaimed keys here is best-effort. It covers the network context
+// being torn down while the key service is still alive. If the key service
+// shuts down first, or browser shutdown skips the task
+// (`UnexportableKeyTaskManager` uses `SKIP_ON_SHUTDOWN`), the keys are left to
+// key garbage collection.
+SingleSignOnKeyManager::~SingleSignOnKeyManager() {
+  DeleteSigningKeys(*key_service_, base::ToVector(pre_provisioned_keys_,
+                                                  [](const auto& entry) {
+                                                    return entry.second.key_id;
+                                                  }));
+}
 
 bool SingleSignOnKeyManager::CanGenerateKey(
     const url::Origin& provider_origin,
     const url::Origin& rp_origin) const {
   return CanAccessPreProvisionedKey(has_cookie_access_cb_, provider_origin,
-                                    rp_origin) &&
-         CountKeys(net::SchemefulSite(provider_origin),
-                   InFlightRequests::kCount) <
-             kMaxPreProvisionedKeysPerIdentityProvider;
+                                    rp_origin);
 }
 
 void SingleSignOnKeyManager::GenerateKey(
@@ -244,23 +268,17 @@ void SingleSignOnKeyManager::GenerateKey(
     url::Origin provider_origin,
     SessionService::KeyBindingCallback callback) {
   CHECK(!callback.is_null());
-  // Checks the count part of `CanGenerateKey()`. The cookie part depends on
-  // `has_cookie_access_cb_`, so it is only checked again when storing the key.
-  CHECK_LT(
-      CountKeys(net::SchemefulSite(provider_origin), InFlightRequests::kCount),
-      kMaxPreProvisionedKeysPerIdentityProvider);
   GenerateKeyRequest* request =
       generate_key_requests_
           .insert(std::make_unique<GenerateKeyRequest>(
               *key_service_, idp_aik, std::move(param),
-              std::move(provider_origin)))
+              std::move(provider_origin), std::move(callback)))
           .first->get();
-  // `request` posts its result, so `callback` never runs before
+  // `request` posts its result, so the caller's callback never runs before
   // `GenerateKey()` returns. `base::Unretained` is safe because `this` owns
-  // `request`, which only runs the callback while it is alive.
+  // `request`, which only calls `OnGenerateKeyDone()` while it is alive.
   request->Start(base::BindOnce(&SingleSignOnKeyManager::OnGenerateKeyDone,
-                                base::Unretained(this), request,
-                                std::move(callback)));
+                                base::Unretained(this), request));
 }
 
 bool SingleSignOnKeyManager::AddPreProvisionedKey(
@@ -268,27 +286,21 @@ bool SingleSignOnKeyManager::AddPreProvisionedKey(
     std::string_view provider_key,
     const url::Origin& provider_origin,
     unexportable_keys::UnexportableSigningKeyId key_id) {
-  // An opaque origin is its own `SchemefulSite`, so it would escape the per-IdP
-  // key limit.
-  CHECK(!provider_origin.opaque());
-  if (!CanAddPreProvisionedKey(provider_origin, rp_origin)) {
+  if (!CanAccessPreProvisionedKey(has_cookie_access_cb_, provider_origin,
+                                  rp_origin)) {
     return false;
   }
 
   // `FindPreProvisionedKey()` looks keys up by RP origin and digest only, so
   // these must be unique across IdPs.
-  if (std::ranges::any_of(pre_provisioned_keys_, [&](const auto& pk) {
-        return pk.rp_origin == rp_origin && pk.provider_key == provider_key;
-      })) {
+  auto [_, inserted] = pre_provisioned_keys_.try_emplace(
+      RpAndProviderKeyView(rp_origin, provider_key), provider_origin, key_id);
+  if (!inserted) {
     return false;
   }
 
-  pre_provisioned_keys_.push_back(
-      {.provider_origin{provider_origin},
-       .provider_site{SchemefulSite(provider_origin)},
-       .rp_origin{rp_origin},
-       .provider_key{std::string(provider_key)},
-       .key_id{key_id}});
+  base::UmaHistogramCounts1000("Net.DeviceBoundSessions.PreProvisionedKeyCount",
+                               pre_provisioned_keys_.size());
   return true;
 }
 
@@ -304,28 +316,25 @@ SingleSignOnKeyManager::FindPreProvisionedKey(
   // Keys are looked up by (initiator, digest), as in WICG/dbsc-sso#18. The IdP
   // that generated the key is only used for the cookie access check below,
   // which goes beyond the explainer.
-  auto key_it =
-      std::ranges::find_if(pre_provisioned_keys_, [&](const auto& pk) {
-        return pk.rp_origin == *initiator && pk.provider_key == provider_key;
-      });
-  if (key_it == pre_provisioned_keys_.end()) {
+  const KeyMetadata* metadata = base::FindOrNull(
+      pre_provisioned_keys_, RpAndProviderKeyView(*initiator, provider_key));
+  if (!metadata) {
     return base::unexpected(SessionError::kPreProvisionedKeyNotFound);
   }
 
   if (!CanAccessPreProvisionedKey(has_cookie_access_cb_,
-                                  key_it->provider_origin, *initiator)) {
+                                  metadata->provider_origin, *initiator)) {
     return base::unexpected(SessionError::kPreProvisionedKeyAccessNotGranted);
   }
 
-  return key_it->key_id;
+  return metadata->key_id;
 }
 
-void SingleSignOnKeyManager::ConsumeKeyForSession(const Session& session) {
-  if (session.unexportable_key_id().has_value()) {
-    std::erase_if(pre_provisioned_keys_, [&](const PreProvisionedKeyEntry& pk) {
-      return pk.key_id == session.unexportable_key_id();
-    });
-  }
+bool SingleSignOnKeyManager::ConsumePreProvisionedKey(
+    unexportable_keys::UnexportableSigningKeyId key_id) {
+  return absl::erase_if(pre_provisioned_keys_, [&](const auto& entry) {
+           return entry.second.key_id == key_id;
+         }) > 0;
 }
 
 void SingleSignOnKeyManager::ClearPreProvisionedKeys(
@@ -337,10 +346,16 @@ void SingleSignOnKeyManager::ClearPreProvisionedKeys(
     return !matcher || matcher.Run(rp_origin, net::SchemefulSite(rp_origin));
   };
 
-  // TODO(crbug.com/573951667): Also delete the erased keys from `key_service_`.
-  std::erase_if(pre_provisioned_keys_, [&](const PreProvisionedKeyEntry& key) {
-    return matches_rp(key.rp_origin);
+  std::vector<unexportable_keys::UnexportableSigningKeyId> key_ids;
+  absl::erase_if(pre_provisioned_keys_, [&](const auto& entry) {
+    const url::Origin& rp_origin = entry.first.first;
+    if (matches_rp(rp_origin)) {
+      key_ids.push_back(entry.second.key_id);
+      return true;
+    }
+    return false;
   });
+  DeleteSigningKeys(*key_service_, key_ids);
 
   // In-flight requests would otherwise store their key after the clear. They
   // fail and delete their key instead. Their callbacks still run
@@ -352,42 +367,26 @@ void SingleSignOnKeyManager::ClearPreProvisionedKeys(
   }
 }
 
-bool SingleSignOnKeyManager::CanAddPreProvisionedKey(
-    const url::Origin& provider_origin,
-    const url::Origin& rp_origin) const {
-  // Called while the finishing request is still in `generate_key_requests_`,
-  // so counting in-flight requests would count it against its own key. The
-  // slots of in-flight requests were already reserved by `CanGenerateKey()`.
-  return CanAccessPreProvisionedKey(has_cookie_access_cb_, provider_origin,
-                                    rp_origin) &&
-         CountKeys(SchemefulSite(provider_origin), InFlightRequests::kIgnore) <
-             kMaxPreProvisionedKeysPerIdentityProvider;
-}
-
-size_t SingleSignOnKeyManager::CountKeys(
-    const net::SchemefulSite& provider_site,
-    InFlightRequests in_flight_requests) const {
-  size_t count = static_cast<size_t>(
-      std::ranges::count(pre_provisioned_keys_, provider_site,
-                         &PreProvisionedKeyEntry::provider_site));
-  if (in_flight_requests == InFlightRequests::kCount) {
-    count += static_cast<size_t>(
-        std::ranges::count(generate_key_requests_, provider_site,
-                           &GenerateKeyRequest::provider_site));
-  }
-  return count;
+void SingleSignOnKeyManager::CompleteRequest(
+    GenerateKeyRequest* request,
+    SessionErrorOr<std::string> result) {
+  SessionService::KeyBindingCallback callback = request->TakeCallback();
+  // Destroys `request`.
+  CHECK_EQ(generate_key_requests_.erase(request), 1u);
+  // Runs last: `callback` may re-enter `this` (e.g. start another request) or
+  // destroy it. Running a cancelled callback does nothing.
+  std::move(callback).Run(std::move(result));
 }
 
 void SingleSignOnKeyManager::OnGenerateKeyDone(
     GenerateKeyRequest* request,
-    SessionService::KeyBindingCallback callback,
     SessionErrorOr<GeneratedKey> result) {
   SessionErrorOr<std::string> binding_statement = std::move(result).and_then(
       [&](GeneratedKey key) -> SessionErrorOr<std::string> {
-        if (request->site_data_cleared() ||
+        if (request->ShouldStop() ||
             !AddPreProvisionedKey(request->rp_origin(), key.thumbprint,
                                   request->provider_origin(), key.id)) {
-          DeleteSigningKey(*key_service_, key.id);
+          DeleteSigningKeys(*key_service_, {key.id});
           // TODO(crbug.com/575710508): Report a cleared site and a rejected
           // store with their own errors, e.g. `kPreProvisionedKeyCleared` and
           // `kPreProvisionedKeyStoreRejected`.
@@ -396,11 +395,7 @@ void SingleSignOnKeyManager::OnGenerateKeyDone(
         return std::move(key.binding_statement);
       });
 
-  // Destroys `request`.
-  CHECK_EQ(generate_key_requests_.erase(request), 1u);
-  // Runs last: `callback` may re-enter `this` (e.g. start another request) or
-  // destroy it.
-  std::move(callback).Run(std::move(binding_statement));
+  CompleteRequest(request, std::move(binding_statement));
 }
 
 }  // namespace net::device_bound_sessions

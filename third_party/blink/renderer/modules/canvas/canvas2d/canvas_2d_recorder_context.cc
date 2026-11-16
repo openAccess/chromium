@@ -27,7 +27,6 @@
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/numerics/safe_conversions.h"
@@ -103,7 +102,6 @@
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
 #include "third_party/blink/renderer/platform/graphics/bitmap_image.h"
 #include "third_party/blink/renderer/platform/graphics/blend_mode.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/graphics/filters/filter_effect.h"
 #include "third_party/blink/renderer/platform/graphics/filters/paint_filter_builder.h"
@@ -388,10 +386,7 @@ Canvas2DRecorderContext::Canvas2DRecorderContext(float effective_zoom)
   state_stack_.push_back(MakeGarbageCollected<CanvasRenderingContext2DState>());
 }
 
-Canvas2DRecorderContext::~Canvas2DRecorderContext() {
-  UMA_HISTOGRAM_CUSTOM_COUNTS("Blink.Canvas.MaximumStateStackDepth",
-                              max_state_stack_depth_, 1, 33, 32);
-}
+Canvas2DRecorderContext::~Canvas2DRecorderContext() = default;
 
 void Canvas2DRecorderContext::save() {
   if (isContextLost()) [[unlikely]] {
@@ -408,8 +403,6 @@ void Canvas2DRecorderContext::save() {
   state_stack_.push_back(MakeGarbageCollected<CanvasRenderingContext2DState>(
       GetState(), CanvasRenderingContext2DState::kDontCopyClipList,
       CanvasRenderingContext2DState::SaveType::kSaveRestore));
-  max_state_stack_depth_ =
-      std::max(state_stack_.size(), max_state_stack_depth_);
 
   if (canvas) {
     canvas->save();
@@ -523,8 +516,6 @@ void Canvas2DRecorderContext::beginLayerImpl(ScriptState* script_state,
       SaveLayerForState(state, filter, layer_canvas);
   state_stack_.push_back(MakeGarbageCollected<CanvasRenderingContext2DState>(
       state, CanvasRenderingContext2DState::kDontCopyClipList, save_type));
-  max_state_stack_depth_ =
-      std::max(state_stack_.size(), max_state_stack_depth_);
 
   ValidateStateStack();
 
@@ -1380,7 +1371,7 @@ void Canvas2DRecorderContext::scale(double sx, double sy) {
   // TODO(crbug.com/40153853): Investigate the performance impact of simply
   // calling the 3d version of this function
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return;
   }
 
@@ -1398,7 +1389,9 @@ void Canvas2DRecorderContext::scale(double sx, double sy) {
   }
 
   SetTransform(new_transform);
-  c->scale(fsx, fsy);
+  if (c) {
+    c->scale(fsx, fsy);
+  }
 
   if (IsTransformInvertible()) [[likely]] {
     GetModifiablePath().Transform(
@@ -1408,7 +1401,7 @@ void Canvas2DRecorderContext::scale(double sx, double sy) {
 
 void Canvas2DRecorderContext::rotate(double angle_in_radians) {
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return;
   }
 
@@ -1424,7 +1417,9 @@ void Canvas2DRecorderContext::rotate(double angle_in_radians) {
   }
 
   SetTransform(new_transform);
-  c->rotate(ClampTo<float>(base::RadToDeg(angle_in_radians)));
+  if (c) {
+    c->rotate(ClampTo<float>(base::RadToDeg(angle_in_radians)));
+  }
 
   if (IsTransformInvertible()) [[likely]] {
     GetModifiablePath().Transform(
@@ -1436,7 +1431,7 @@ void Canvas2DRecorderContext::translate(double tx, double ty) {
   // TODO(crbug.com/40153853): Investigate the performance impact of simply
   // calling the 3d version of this function
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return;
   }
 
@@ -1459,7 +1454,9 @@ void Canvas2DRecorderContext::translate(double tx, double ty) {
   }
 
   SetTransform(new_transform);
-  c->translate(ftx, fty);
+  if (c) {
+    c->translate(ftx, fty);
+  }
 
   if (IsTransformInvertible()) [[likely]] {
     GetModifiablePath().Transform(AffineTransform().Translate(-ftx, -fty));
@@ -1473,7 +1470,7 @@ void Canvas2DRecorderContext::transform(double m11,
                                         double dx,
                                         double dy) {
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return;
   }
 
@@ -1498,7 +1495,9 @@ void Canvas2DRecorderContext::transform(double m11,
   }
 
   SetTransform(new_transform);
-  c->concat(transform.ToSkM44());
+  if (c) {
+    c->concat(transform.ToSkM44());
+  }
 
   if (IsTransformInvertible()) [[likely]] {
     GetModifiablePath().Transform(transform.Inverse());
@@ -1515,7 +1514,7 @@ void Canvas2DRecorderContext::transform(double m11,
 // integrating it twice if we have resetTransform and setTransform API calls.
 void Canvas2DRecorderContext::resetTransform() {
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return;
   }
 
@@ -1535,7 +1534,9 @@ void Canvas2DRecorderContext::resetTransform() {
   state.ResetTransform();
   SetIsTransformInvertible(true);
   // Set the SkCanvas' matrix to identity.
-  c->setMatrix(SkM44());
+  if (c) {
+    c->setMatrix(SkM44());
+  }
 
   if (invertible_ctm) {
     GetModifiablePath().Transform(ctm);
@@ -1881,13 +1882,18 @@ bool Canvas2DRecorderContext::isPointInPath(
   return IsPointInPathInternal(dom_path->GetPath(), x, y, winding_rule);
 }
 
+bool Canvas2DRecorderContext::CanRunPathOpsWithoutCanvas() const {
+  return RuntimeEnabledFeatures::Canvas2dPathOpsWithoutBitmapEnabled() &&
+         !isContextLost();
+}
+
 bool Canvas2DRecorderContext::IsPointInPathInternal(
     const Path& path,
     const double x,
     const double y,
     const V8CanvasFillRule& winding_rule) {
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return false;
   }
   if (!IsTransformInvertible()) [[unlikely]] {
@@ -1920,7 +1926,7 @@ bool Canvas2DRecorderContext::IsPointInStrokeInternal(const Path& path,
                                                       const double x,
                                                       const double y) {
   cc::PaintCanvas* c = GetOrCreatePaintCanvas();
-  if (!c) {
+  if (!c && !CanRunPathOpsWithoutCanvas()) {
     return false;
   }
   if (!IsTransformInvertible()) [[unlikely]] {
@@ -2505,7 +2511,9 @@ CanvasPattern* Canvas2DRecorderContext::createPattern(
           "Source image is in the 'broken' state.");
       return nullptr;
     case kInvalidSourceImageStatus:
-      image_for_rendering = BitmapImage::Create();
+      image_for_rendering =
+          BitmapImage::Create(/*observer=*/nullptr, /*is_multipart=*/false,
+                              !WouldTaintCanvasOrigin(image_source));
       break;
     case kIncompleteSourceImageStatus:
       return nullptr;

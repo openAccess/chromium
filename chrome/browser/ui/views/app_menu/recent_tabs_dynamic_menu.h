@@ -8,12 +8,14 @@
 #include <memory>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/recent_tabs_builder.h"
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
+#include "chrome/browser/ui/views/app_menu/app_menu_drag_and_drop_delegate.h"
 #include "components/favicon_base/favicon_types.h"
 #include "ui/actions/actions.h"
 #include "ui/base/mojom/window_open_disposition.mojom-forward.h"
@@ -22,7 +24,8 @@
 // submenu
 class RecentTabsDynamicMenu {
  public:
-  explicit RecentTabsDynamicMenu(BrowserWindowInterface* browser);
+  RecentTabsDynamicMenu(BrowserWindowInterface* browser,
+                        AppMenuDragAndDropDelegate::Host* host);
   ~RecentTabsDynamicMenu();
 
   base::WeakPtr<RecentTabsDynamicMenu> GetWeakPtr() {
@@ -31,6 +34,10 @@ class RecentTabsDynamicMenu {
 
   void BuildRecentTabsActions(actions::BaseAction* parent_item);
   void BuildOtherDeviceTabsActions(actions::BaseAction* parent_item);
+
+  // Returns the URL of the tab `action` restores, or null if `action` is not a
+  // tab (e.g. a command that restores a whole window, group or split).
+  static const GURL* GetTabUrl(const actions::BaseAction* action);
 
   void CreateRecentTabsActionForTesting(
       actions::BaseAction* parent_item,
@@ -63,6 +70,8 @@ class RecentTabsDynamicMenu {
       RecentTabItem recent_item);
 
   raw_ptr<BrowserWindowInterface> browser_window_interface_;
+  raw_ptr<AppMenuDragAndDropDelegate::Host> host_;
+  base::CallbackListSubscription foreign_session_updated_subscription_;
   base::CancelableTaskTracker cancelable_task_tracker_;
   base::WeakPtrFactory<RecentTabsDynamicMenu> weak_ptr_factory_{this};
 };

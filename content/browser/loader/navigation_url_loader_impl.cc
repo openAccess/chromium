@@ -57,6 +57,7 @@
 #include "content/browser/web_package/signed_exchange_request_handler.h"
 #include "content/browser/web_package/signed_exchange_utils.h"
 #include "content/browser/webui/url_data_manager_backend.h"
+#include "content/common/features.h"
 #include "content/common/navigation_params_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -571,8 +572,6 @@ void CheckParsedHeadersEquals(const network::mojom::ParsedHeadersPtr& lhs,
   CHECK(mojo::Equals(adjusted_lhs->reporting_endpoints,
                      rhs->reporting_endpoints));
   CHECK(mojo::Equals(adjusted_lhs->cookie_indices, rhs->cookie_indices));
-  CHECK(mojo::Equals(adjusted_lhs->avail_language, rhs->avail_language));
-  CHECK(mojo::Equals(adjusted_lhs->content_language, rhs->content_language));
   CHECK(mojo::Equals(adjusted_lhs->no_vary_search_with_parse_error,
                      rhs->no_vary_search_with_parse_error));
   CHECK(mojo::Equals(adjusted_lhs->allow_cross_origin_event_reporting,
@@ -723,7 +722,11 @@ void NavigationURLLoaderImpl::Start() {
               url_loader_factory::TerminalParams::ForNonNetwork(
                   CreateWebUIURLLoaderFactoryWithoutOriginLock(
                       WebUIURLLoaderFactoryPasskey::GetPassKey(),
-                      frame_tree_node->current_frame_host(), scheme, {}),
+                      frame_tree_node->current_frame_host(), scheme, {},
+                      base::FeatureList::IsEnabled(
+                          features::kPrioritizeWebUINavigationURLLoader)
+                          ? GetNavigationNetworkResponseTaskRunner()
+                          : nullptr),
                   network::mojom::kBrowserProcessId),
               url_loader_factory::ContentClientParams(
                   browser_context_, frame_tree_node->current_frame_host(),
@@ -2354,6 +2357,11 @@ NavigationURLLoaderImpl::CreateNetworkLoaderFactory(
     // `allow-same-site-none-cookies` value in its sandbox policy.
     cookie_overrides.Put(
         net::CookieSettingOverride::kAllowSameSiteNoneCookiesInSandbox);
+  }
+  WebContents* web_contents =
+      WebContents::FromFrameTreeNodeId(frame_tree_node->frame_tree_node_id());
+  if (web_contents && web_contents->IsPrivileged()) {
+    cookie_overrides.Put(net::CookieSettingOverride::kForceAllowCookies);
   }
 
   if (header_client) {

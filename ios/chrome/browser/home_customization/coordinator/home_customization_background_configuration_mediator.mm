@@ -7,6 +7,7 @@
 #import <Foundation/Foundation.h>
 
 #import <optional>
+#import <string_view>
 
 #import "base/debug/dump_without_crashing.h"
 #import "base/files/file_path.h"
@@ -111,9 +112,6 @@ const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
   std::unique_ptr<HomeBackgroundCustomizationServiceObserverBridge>
       _backgroundCustomizationServiceObserverBridge;
 }
-
-// Redefine public property as readwrite
-@property(nonatomic, readwrite, assign) BOOL themeHasChanged;
 
 @end
 
@@ -313,23 +311,23 @@ const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 }
 
 - (void)saveCurrentTheme {
-  if (!self.themeHasChanged) {
+  if (!_themeHasChanged) {
     return;
   }
 
   _backgroundCustomizationService->StoreCurrentTheme();
-  self.themeHasChanged = NO;
+  _themeHasChanged = NO;
   self.backgroundSelectionOutcome = BackgroundSelectionOutcome::kApplied;
 }
 
 - (void)cancelThemeSelection {
-  if (!self.themeHasChanged) {
+  if (!_themeHasChanged) {
     self.backgroundSelectionOutcome = BackgroundSelectionOutcome::kCanceled;
     return;
   }
 
   _backgroundCustomizationService->RestoreCurrentTheme();
-  self.themeHasChanged = NO;
+  _themeHasChanged = NO;
   self.backgroundSelectionOutcome =
       BackgroundSelectionOutcome::kCanceledAfterSelected;
 }
@@ -476,7 +474,7 @@ const net::NetworkTrafficAnnotationTag kTrafficAnnotation =
 
 - (void)homeBackgroundCustomizationServiceDidChangeBackground:
     (HomeBackgroundCustomizationService*)service {
-  self.themeHasChanged = YES;
+  _themeHasChanged = YES;
 
   id<BackgroundCustomizationConfiguration> currentConfiguration;
 

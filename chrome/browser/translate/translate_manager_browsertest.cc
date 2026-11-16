@@ -585,7 +585,6 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerBrowserTest,
   histograms.ExpectTotalCount("Translate.LanguageDetection.ContentLength", 1);
   histograms.ExpectBucketCount("Translate.LanguageDetection.ContentLength", 149,
                                1);
-  histograms.ExpectTotalCount("Translate.LanguageDeterminedDuration", 1);
 }
 
 // Test that the translation was successful in an about:blank page.
@@ -1298,7 +1297,6 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerPrerenderBrowserTest,
   EXPECT_FALSE(chrome_translate_client->GetLanguageState().translation_error());
   EXPECT_EQ(TranslateErrors::NONE, GetPageTranslatedResult());
   histograms.ExpectTotalCount("Translate.LanguageDetection.ContentLength", 1);
-  histograms.ExpectTotalCount("Translate.LanguageDeterminedDuration", 1);
 
   // Activate the prerendered page.
   prerender_helper_.NavigatePrimaryPage(
@@ -1319,9 +1317,6 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerPrerenderBrowserTest,
   EXPECT_FALSE(chrome_translate_client->GetLanguageState().translation_error());
   EXPECT_EQ(TranslateErrors::NONE, GetPageTranslatedResult());
   histograms.ExpectTotalCount("Translate.LanguageDetection.ContentLength", 2);
-
-  // Check noisy data was filtered out.
-  histograms.ExpectTotalCount("Translate.LanguageDeterminedDuration", 1);
 }
 
 class TranslateManagerBackForwardCacheBrowserTest
@@ -2053,16 +2048,8 @@ IN_PROC_BROWSER_TEST_F(TranslateManagerReadingModeBrowserTest,
   EXPECT_FALSE(language_state->pending_target_language().has_value());
 }
 
-// TODO(crbug.com/568700021): Fix test failure on Linux MSan.
-#if BUILDFLAG(IS_LINUX) && defined(MEMORY_SANITIZER)
-#define MAYBE_TogglePresentationKeepsPdfTranslation \
-  DISABLED_TogglePresentationKeepsPdfTranslation
-#else
-#define MAYBE_TogglePresentationKeepsPdfTranslation \
-  TogglePresentationKeepsPdfTranslation
-#endif
 IN_PROC_BROWSER_TEST_F(TranslateManagerReadingModeBrowserTest,
-                       MAYBE_TogglePresentationKeepsPdfTranslation) {
+                       TogglePresentationKeepsPdfTranslation) {
   ChromeTranslateClient* chrome_translate_client = OpenFrenchPage();
   TranslateManager* manager = chrome_translate_client->GetTranslateManager();
   ASSERT_TRUE(manager);

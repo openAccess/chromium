@@ -951,8 +951,6 @@ TEST_F(SessionSyncBridgeTest, ShouldRecycleTabNodeAfterCommitCompleted) {
       SessionStore::GetTabClientTagForTest(kLocalCacheGuid, kTabNodeId1);
   const std::string tab_client_tag2 =
       SessionStore::GetTabClientTagForTest(kLocalCacheGuid, kTabNodeId2);
-  const std::string tab_client_tag3 =
-      SessionStore::GetTabClientTagForTest(kLocalCacheGuid, kTabNodeId3);
 
   InitializeBridge();
   StartSyncing();
@@ -1242,7 +1240,8 @@ TEST_F(SessionSyncBridgeTest, ShouldMergeForeignSession) {
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
       foreign_sessions;
   EXPECT_TRUE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
   EXPECT_THAT(foreign_sessions,
               ElementsAre(MatchesSyncedSession(
                   kForeignSessionTag,
@@ -1288,7 +1287,8 @@ TEST_F(SessionSyncBridgeTest, ShouldNotExposeForeignHeaderWithoutTabs) {
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
       foreign_sessions;
   EXPECT_FALSE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
 
   // Restart bridge to verify the state doesn't change.
   ShutdownBridge();
@@ -1297,7 +1297,8 @@ TEST_F(SessionSyncBridgeTest, ShouldNotExposeForeignHeaderWithoutTabs) {
   ASSERT_THAT(GetDataForCommit(foreign_header_storage_key), NotNull());
 
   EXPECT_FALSE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
 }
 
 // Regression test for crbug.com/837517: Ensure that the bridge doesn't crash
@@ -1399,7 +1400,8 @@ TEST_F(SessionSyncBridgeTest, ShouldHandleRemoteDeletion) {
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
       foreign_sessions;
   ASSERT_TRUE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
   ASSERT_THAT(foreign_sessions,
               ElementsAre(MatchesSyncedSession(
                   kForeignSessionTag,
@@ -1426,7 +1428,8 @@ TEST_F(SessionSyncBridgeTest, ShouldHandleRemoteDeletion) {
       &foreign_session_tab));
 
   EXPECT_FALSE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
 
   EXPECT_FALSE(real_processor()->HasLocalChangesForTest());
 
@@ -1804,8 +1807,6 @@ TEST_F(SessionSyncBridgeTest, ShouldNotRestoreLocalSessionWithoutMetadata) {
   // The TabNodeId gets re-used now that tab1 is gone.
   const std::string tab_storage_key2_reused =
       SessionStore::GetTabStorageKey(kLocalCacheGuid, kTabNodeId1);
-  const std::string tab_client_tag2_reused =
-      SessionStore::GetTabClientTagForTest(kLocalCacheGuid, kTabNodeId1);
 
   // The header and non-placeholder tab should both be restored, but the
   // placeholder tab got lost.
@@ -1858,7 +1859,8 @@ TEST_F(SessionSyncBridgeTest, ShouldDeleteForeignSessionFromUI) {
   std::vector<raw_ptr<const SyncedSession, VectorExperimental>>
       foreign_sessions;
   ASSERT_TRUE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
   ASSERT_THAT(foreign_sessions,
               ElementsAre(MatchesSyncedSession(
                   kForeignSessionTag,
@@ -1877,7 +1879,8 @@ TEST_F(SessionSyncBridgeTest, ShouldDeleteForeignSessionFromUI) {
       kForeignSessionTag, SessionID::FromSerializedValue(kForeignTabId),
       &foreign_session_tab));
   EXPECT_FALSE(bridge()->GetOpenTabsUIDelegate()->GetAllForeignSessions(
-      &foreign_sessions));
+      &foreign_sessions,
+      OpenTabsUIDelegate::ForeignSessionFilter::kPresentable));
 
   // Verify store.
   EXPECT_THAT(GetDataForCommit(foreign_header_storage_key), IsNull());

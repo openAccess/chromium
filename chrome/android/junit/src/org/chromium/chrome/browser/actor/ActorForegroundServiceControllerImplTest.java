@@ -136,17 +136,9 @@ public class ActorForegroundServiceControllerImplTest {
         mController.startAndBindService(() -> {});
         mController.getServiceConnectionForTesting().onServiceConnected(null, mBinder);
 
-        mController.startOrUpdateForegroundService(
-                /* newNotificationId= */ 1,
-                mNotification,
-                /* oldNotificationId= */ 2,
-                /* killOldNotification= */ true);
+        mController.startOrUpdateForegroundService(/* newNotificationId= */ 1, mNotification);
         verify(mServiceImpl)
-                .startOrUpdateForegroundService(
-                        /* newNotificationId= */ 1,
-                        mNotification,
-                        /* oldNotificationId= */ 2,
-                        /* killOldNotification= */ true);
+                .startOrUpdateForegroundService(/* newNotificationId= */ 1, mNotification);
 
         mController.stopActorForegroundService(/* flags= */ ServiceCompat.STOP_FOREGROUND_REMOVE);
         verify(mServiceImpl)
@@ -363,16 +355,6 @@ public class ActorForegroundServiceControllerImplTest {
     }
 
     @Test
-    public void testIsActivityVisibleForTabs_WithTabs_SilencesWhenTabInActivity() {
-        int tabId = 123;
-        ApplicationStatus.onStateChangeForTesting(mChromeActivity, ActivityState.CREATED);
-        ApplicationStatus.onStateChangeForTesting(mChromeActivity, ActivityState.RESUMED);
-        when(mTabModelSelector.getTabById(tabId)).thenReturn(mTab);
-
-        assertTrue(mController.isActivityVisibleForTabs(Collections.singleton(tabId)));
-    }
-
-    @Test
     public void testIsActivityVisibleForTabs_WithTabs_NoSilenceWhenTabNotInActivity() {
         int tabId = 123;
         ApplicationStatus.onStateChangeForTesting(mChromeActivity, ActivityState.CREATED);
@@ -537,11 +519,19 @@ public class ActorForegroundServiceControllerImplTest {
         ActorKeyedServiceFactory.setForTesting(null);
     }
 
+    // TODO(crbug.com/585092074): Move this test to a dedicated ActorTaskTest.
     @Test
     public void testActorTask_getTargetTabId() {
         long nativeTaskPtr = 123L;
         ActorTaskJni.setInstanceForTesting(mActorTaskJni);
-        ActorTask task = new ActorTask(nativeTaskPtr, 1, "Task", mProfile, null);
+        ActorTask task =
+                new ActorTask(
+                        nativeTaskPtr,
+                        1,
+                        "Task",
+                        mProfile,
+                        /* glicConversationId= */ null,
+                        /* isExperimentalTriggering= */ false);
 
         when(mActorTaskJni.getLastActuatedTabId(nativeTaskPtr)).thenReturn(789);
         when(mActorTaskJni.getTabs(nativeTaskPtr)).thenReturn(new int[] {456});
@@ -618,6 +608,19 @@ public class ActorForegroundServiceControllerImplTest {
         verify(mMockBackgroundManager, never()).startBackgroundActuation(any(), any());
 
         ActorKeyedServiceFactory.setForTesting(null);
+    }
+
+    @Test
+    public void testCreateTrustedPendingActorTaskNewTabIntent() {
+        Intent intent = mController.createTrustedPendingActorTaskNewTabIntent();
+
+        assertNotNull(intent);
+        assertEquals(Intent.ACTION_VIEW, intent.getAction());
+        assertEquals(UrlConstants.NTP_URL, intent.getDataString());
+        assertTrue((intent.getFlags() & Intent.FLAG_ACTIVITY_NEW_TASK) != 0);
+        assertTrue(
+                intent.getBooleanExtra(GlicIntentConstants.EXTRA_GLIC_PENDING_ACTOR_TASK, false));
+        assertTrue(IntentHandler.wasIntentSenderChrome(intent));
     }
 
     public ServiceConnection getServiceConnectionForTesting() {

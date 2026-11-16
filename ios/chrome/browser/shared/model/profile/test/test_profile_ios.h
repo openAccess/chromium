@@ -38,20 +38,23 @@ class TestProfileIOS final : public ProfileIOS {
  public:
   // Wrapper over std::variant to help type deduction when calling
   // AddTestingFactories(). See example call in the method's comment.
+  //
+  // The constructor adapts the signature of the `testing_factory` to
+  // conforms to the type expected by the `service_factory`. This allow
+  // callback returning a sub-class of {Refcounted,}KeyedService and/or
+  // taking no parameters.
+  //
+  // This allows using `base::BindOnce(&std::make_unique<FakeService>)`
+  // as testing factory which can simplify the factory when creating a
+  // simple test double.
   struct TestingFactory {
-    TestingFactory(ProfileKeyedServiceFactoryIOS* service_factory,
-                   KeyedServiceTestingFactoryIOSByPtr testing_factory);
-
-    TestingFactory(ProfileKeyedServiceFactoryIOS* service_factory,
-                   KeyedServiceTestingFactoryIOSByRef testing_factory);
-
-    TestingFactory(
-        RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-        RefcountedKeyedServiceTestingFactoryIOSByPtr testing_factory);
-
-    TestingFactory(
-        RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-        RefcountedKeyedServiceTestingFactoryIOSByRef testing_factory);
+    template <typename ServiceFactory, typename TestingFactory>
+    TestingFactory(ServiceFactory* service_factory,
+                   TestingFactory testing_factory)
+        : service_factory_and_testing_factory(
+              std::make_pair(service_factory,
+                             ::ios::test::internal::AdaptTestingFactory(
+                                 std::move(testing_factory)))) {}
 
     TestingFactory(TestingFactory&&);
     TestingFactory& operator=(TestingFactory&&);
@@ -59,13 +62,9 @@ class TestProfileIOS final : public ProfileIOS {
     ~TestingFactory();
 
     std::variant<std::pair<ProfileKeyedServiceFactoryIOS*,
-                           KeyedServiceTestingFactoryIOSByPtr>,
-                 std::pair<ProfileKeyedServiceFactoryIOS*,
-                           KeyedServiceTestingFactoryIOSByRef>,
+                           KeyedServiceTestingFactoryIOS>,
                  std::pair<RefcountedProfileKeyedServiceFactoryIOS*,
-                           RefcountedKeyedServiceTestingFactoryIOSByPtr>,
-                 std::pair<RefcountedProfileKeyedServiceFactoryIOS*,
-                           RefcountedKeyedServiceTestingFactoryIOSByRef>>
+                           RefcountedKeyedServiceTestingFactoryIOS>>
         service_factory_and_testing_factory;
   };
 
@@ -141,7 +140,7 @@ class TestProfileIOS final : public ProfileIOS {
   // method `GetOffTheRecordProfile()` is called on
   // this object.
   TestProfileIOS* CreateOffTheRecordProfileWithTestingFactories(
-      TestingFactories testing_factories = {});
+      TestingFactories testing_factories);
 
   // Returns the preferences as a TestingPrefServiceSyncable if possible or
   // null. Returns null for off-the-record TestProfileIOS and also
@@ -164,18 +163,13 @@ class TestProfileIOS final : public ProfileIOS {
 
     // Adds a testing factory to the TestProfileIOS. These testing factories
     // are installed before the Profile's KeyedServices are created.
-    Builder& AddTestingFactory(
-        ProfileKeyedServiceFactoryIOS* service_factory,
-        KeyedServiceTestingFactoryIOSByPtr testing_factory);
-    Builder& AddTestingFactory(
-        ProfileKeyedServiceFactoryIOS* service_factory,
-        KeyedServiceTestingFactoryIOSByRef testing_factory);
-    Builder& AddTestingFactory(
-        RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-        RefcountedKeyedServiceTestingFactoryIOSByPtr testing_factory);
-    Builder& AddTestingFactory(
-        RefcountedProfileKeyedServiceFactoryIOS* service_factory,
-        RefcountedKeyedServiceTestingFactoryIOSByRef testing_factory);
+    template <typename ServiceFactory, typename TestingFactory>
+    Builder& AddTestingFactory(ServiceFactory* service_factory,
+                               TestingFactory testing_factory) {
+      testing_factories_.emplace_back(service_factory,
+                                      std::move(testing_factory));
+      return *this;
+    }
 
     // Adds multiple testing factories to TestProfileIOS. These testing
     // factories are installed before the Profile's KeyedServices are created.
@@ -265,8 +259,7 @@ class TestProfileIOS final : public ProfileIOS {
   // If non-null, `testing_prefs_` points to `prefs_`. It is there to avoid
   // casting as `prefs_` may not be a TestingPrefServiceSyncable.
   std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs_;
-  raw_ptr<sync_preferences::TestingPrefServiceSyncable, DanglingUntriaged>
-      testing_prefs_;
+  raw_ptr<sync_preferences::TestingPrefServiceSyncable> testing_prefs_;
 
   // The WebKit storage identifier. May be invalid.
   const base::Uuid webkit_storage_id_;

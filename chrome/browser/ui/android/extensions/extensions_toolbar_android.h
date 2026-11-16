@@ -9,6 +9,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ui/android/extensions/extension_keybinding_registry_android.h"
 #include "chrome/browser/ui/extensions/extension_popup_types.h"
@@ -95,6 +96,8 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
   bool OnRequestAccessButtonClicked(content::WebContents* web_contents);
   void MovePinnedAction(const ToolbarActionsModel::ActionId& action_id,
                         int target_index);
+  void MovePinnedActionBy(const ToolbarActionsModel::ActionId& action_id,
+                          int move_by);
 
  private:
   void RegisterIconObserverForAction(
@@ -102,6 +105,8 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
 
   void OnActionIconUpdated(const ToolbarActionsModel::ActionId& action_id);
 
+  void NotifyActionRemoved(const ToolbarActionsModel::ActionId& action_id);
+  void NotifyPinnedActionsChanged();
 
   const raw_ptr<BrowserWindowInterface> browser_;
 
@@ -133,6 +138,8 @@ class ExtensionsToolbarAndroid : public ExtensionsToolbarViewModel::Delegate,
 
   // Java counterpart that `this` is owned by.
   const jni_zero::ScopedJavaGlobalRef<jobject> java_object_;
+
+  base::WeakPtrFactory<ExtensionsToolbarAndroid> weak_ptr_factory_{this};
 };
 
 }  // namespace extensions

@@ -8,13 +8,10 @@
 #include <memory>
 #include <string>
 
+#include "base/feature_list.h"
 #include "build/build_config.h"
 #include "components/policy/policy_export.h"
 #include "components/version_info/channel.h"
-
-#if BUILDFLAG(IS_ANDROID)
-#include "base/feature_list.h"
-#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "base/functional/callback_forward.h"
@@ -27,11 +24,27 @@ enum Channel : int;
 
 namespace policy {
 
+class NetworkNameCache;
+
 #if BUILDFLAG(IS_ANDROID)
 // Enables reporting the Android device name (falling back to the hardware model
 // name when unset) in `policy::GetMachineName()`. Used as a kill switch.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kReportAndroidMachineName);
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_IOS)
+// When enabled, the machine name reported by Chrome on iOS (e.g. in enterprise
+// reports) is the device name configured by the MDM administrator in the
+// Managed App Configuration (falling back to the Vendor ID when unset). Used as
+// a kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kIOSReportMachineName);
+#endif  // BUILDFLAG(IS_IOS)
+
+// When enabled, `GetNetworkName()` returns the network name cached by
+// `NetworkNameCache`, which is queried on a background sequence, instead of
+// calling `net::GetWifiSSID()` synchronously on the calling thread. Used as a
+// kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUseCachedNetworkName);
 
 // Returns the name of the machine. This function is platform specific.
 POLICY_EXPORT std::string GetMachineName();
@@ -67,7 +80,17 @@ GetBrowserDeviceIdentifier();
 POLICY_EXPORT std::string GetDeviceFqdn();
 
 // Returns the name of the network the device is connected to.
-POLICY_EXPORT std::string GetNetworkName();
+//
+// If `kUseCachedNetworkName` is enabled, returns the value cached by
+// `network_name_cache` without blocking. In that case, the result is empty if
+// `network_name_cache` is null, or while the name is not known yet (e.g. on the
+// first call, or right after a network change), and this must be called on the
+// sequence that owns `network_name_cache` (the UI thread in the browser).
+//
+// If `kUseCachedNetworkName` is disabled, `network_name_cache` is ignored and
+// the network name is queried synchronously, except on Windows 11 24H2+ where
+// that can hang, in which case an empty string is returned.
+POLICY_EXPORT std::string GetNetworkName(NetworkNameCache* network_name_cache);
 
 #if BUILDFLAG(IS_WIN)
 // Get browser device identifier for non-CrOS platforms, in a background thread.
@@ -98,10 +121,11 @@ POLICY_EXPORT bool IsMachineLevelPolicyType(const std::string& policy_type);
 // Returns true if the given policy type is a user-level policy type.
 POLICY_EXPORT bool IsUserLevelPolicyType(const std::string& policy_type);
 
-// Returns a log prefix for the given policy type and settings entity id. This is
-// used for logging purposes only.
-POLICY_EXPORT std::string PolicyTypeLogPrefix(std::string_view policy_type,
-                                              std::string_view settings_entity_id);
+// Returns a log prefix for the given policy type and settings entity id. This
+// is used for logging purposes only.
+POLICY_EXPORT std::string PolicyTypeLogPrefix(
+    std::string_view policy_type,
+    std::string_view settings_entity_id);
 }  // namespace policy
 
 #endif  // COMPONENTS_POLICY_CORE_COMMON_CLOUD_CLOUD_POLICY_UTIL_H_

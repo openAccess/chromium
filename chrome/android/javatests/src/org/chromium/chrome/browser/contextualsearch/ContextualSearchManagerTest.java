@@ -36,7 +36,7 @@ import org.mockito.Mock;
 
 import org.chromium.base.RequiredCallback;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.supplier.SupplierUtils;
+import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
@@ -78,6 +78,7 @@ import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeUtils;
 import org.chromium.chrome.browser.ui.signin.ForcedSigninStatusProvider;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.FullscreenTestUtils;
 import org.chromium.chrome.test.util.MenuUtils;
@@ -135,7 +136,7 @@ public class ContextualSearchManagerTest extends ContextualSearchInstrumentation
     public void tearDown() throws Exception {
         super.tearDown();
         if (mActionTester != null) mActionTester.tearDown();
-        mPanel.setEdgeToEdgeControllerSupplierForTesting(SupplierUtils.ofNull());
+        mPanel.setEdgeToEdgeControllerSupplierForTesting(ObservableSuppliers.alwaysNull());
     }
 
     // ============================================================================================
@@ -646,7 +647,6 @@ public class ContextualSearchManagerTest extends ContextualSearchInstrumentation
     @Test
     @SmallTest
     @Feature({"ContextualSearch"})
-    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/572590826: No geo: handler on AVD.
     // Previously disabled: https://crbug.com/40221759
     public void testQuickActionIntent() throws Exception {
         // Add a new filter to the activity monitor that matches the intent that should be fired.
@@ -986,7 +986,7 @@ public class ContextualSearchManagerTest extends ContextualSearchInstrumentation
 
         // Create a new tab so |ca| isn't destroyed.
         ChromeTabUtils.newTabFromMenu(InstrumentationRegistry.getInstrumentation(), ca);
-        ChromeTabUtils.switchTabInCurrentTabModel(ca, 0);
+        ChromeTriggers.selectTabProgrammatically(mActivityTestRule.getActivity(), 0);
 
         int testTabId = mActivityTestRule.getActivityTab().getId();
         MenuUtils.invokeCustomMenuActionSync(
@@ -1163,7 +1163,10 @@ public class ContextualSearchManagerTest extends ContextualSearchInstrumentation
     public void testPeekStateHeightGrowsForEdgeToEdge() throws Exception {
         EdgeToEdgeUtils.setAlwaysDrawWebEdgeToEdgeForTesting(true);
         // Run through with the fake controller using the default logic.
-        mPanel.setEdgeToEdgeControllerSupplierForTesting(() -> mMockEdgeToEdgeController);
+        ThreadUtils.runOnUiThreadBlocking(
+                () ->
+                        mPanel.setEdgeToEdgeControllerSupplierForTesting(
+                                ObservableSuppliers.createNonNull(mMockEdgeToEdgeController)));
         when(mMockEdgeToEdgeController.getBottomInset()).thenReturn(0);
         final float defaultHeight = 70;
 

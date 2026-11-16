@@ -338,21 +338,29 @@ if (toolkit_views) {
       "//chrome/browser/subscription_eligibility",
       "//chrome/browser/sync:factories",
       "//chrome/browser/themes",
+      "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:layout_constants",
+      "//chrome/browser/ui:toolbar_controller_util",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/interaction",
       "//chrome/browser/ui/profiles",
       "//chrome/browser/ui/signin",
       "//chrome/browser/ui/toolbar",
       "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/toolbar",
       "//chrome/browser/ui/views/toolbar:test_support",
+      "//chrome/browser/ui/views/web_apps/frame_toolbar:test_support",
+      "//chrome/browser/ui/views/web_apps/frame_toolbar:web_app_frame_toolbar_view",
+      "//chrome/browser/ui/views/web_apps/frame_toolbar:web_app_toolbar_button_container",
       "//chrome/browser/ui/waap:manager",
+      "//chrome/browser/web_applications",
+      "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/browser/webauthn",
       "//chrome/common",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:chrome_test_scoped_utils",
       "//chrome/test/base:profile_lifecycle_test_utils",
       "//chrome/test/base:testing_browser_process",
       "//chrome/test/user_education",
@@ -373,6 +381,7 @@ if (toolkit_views) {
       "//components/user_education/common",
       "//components/user_education/views",
       "//components/user_manager",
+      "//components/webapps/common",
       "//content/public/browser",
       "//content/public/common",
       "//content/test:test_support",
@@ -381,7 +390,11 @@ if (toolkit_views) {
       "//skia",
       "//testing/gtest",
       "//ui/base",
+      "//ui/base/interaction",
       "//ui/gfx",
+      "//ui/views",
+      "//ui/views:test_support",
+      "//url",
     ]
 
     if (is_chromeos) {
@@ -668,12 +681,12 @@ if (toolkit_views) {
     ]
   }
 
-  source_set("device_signals_disclaimer_test_utils") {
+  source_set("managed_user_profile_notice_test_utils") {
     testonly = true
 
     sources = [
-      "device_signals_disclaimer_test_utils.cc",
-      "device_signals_disclaimer_test_utils.h",
+      "managed_user_profile_notice_test_utils.cc",
+      "managed_user_profile_notice_test_utils.h",
     ]
 
     public_deps = [ "//testing/gtest" ]
@@ -824,9 +837,9 @@ if (is_win || is_mac || is_linux) {
     ]
     deps = [
       ":avatar_toolbar_button",
-      ":device_signals_disclaimer_test_utils",
       ":dice_web_signin_interception_bubble_view",
       ":first_run_flow_controller",
+      ":managed_user_profile_notice_test_utils",
       ":profile_management_flow_controller",
       ":profile_menu_view",
       ":profile_menu_view_base",
@@ -844,11 +857,11 @@ if (is_win || is_mac || is_linux) {
       "//chrome/browser/ui/startup:test_support_ui",
       "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/views/profiles/feature_showcase:metrics",
+      "//chrome/browser/ui/views/toolbar:test_support",
       "//chrome/browser/ui/webui/intro",
       "//chrome/browser/ui/webui/signin:signin_ui_error",
       "//chrome/browser/ui/webui/whats_new",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//chrome/test/user_education",
       "//content/test:test_support",
       "//services/audio/public/cpp",
@@ -1311,7 +1324,6 @@ source_set("browser_tests") {
     ":profiles_pixel_test_utils",
     "//chrome/browser/ui/views/frame:browser_view_header",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//content/test:test_support",
     "//testing/gmock",
     "//testing/gtest",
@@ -1328,8 +1340,13 @@ source_set("browser_tests") {
       ":signin_view_controller_delegate_views",
       "//chrome/browser/profiles/batch_upload:test_support",
       "//chrome/browser/sync/test/integration:sync_integration_test_support",
+      "//chrome/browser/ui/views/toolbar:test_support",
+      "//chrome/browser/ui/web_applications:test_support",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/ui/webui/signin/signout_confirmation",
       "//chrome/browser/ui/webui/signin/signout_confirmation:test_support",
+      "//chrome/browser/web_applications:web_applications_test_support",
+      "//chrome/test/base:chrome_test_scoped_utils",
       "//components/signin/core/browser:test_support",
       "//components/subscription_eligibility:tier_names",
       "//components/sync_bookmarks",
@@ -1347,7 +1364,7 @@ source_set("browser_tests") {
     ]
     deps += [
       ":avatar_toolbar_button",
-      ":device_signals_disclaimer_test_utils",
+      ":managed_user_profile_notice_test_utils",
       ":profile_menu_view",
       ":profile_picker_test_base",
       ":profile_picker_utils",

@@ -50,6 +50,16 @@ void MockNetworkChangeNotifier::GetCurrentConnectedNetworks(
   *network_list = connected_networks_;
 }
 
+void MockNetworkChangeNotifier::SetDefaultNetwork(
+    handles::NetworkHandle network) {
+  default_network_ = network;
+}
+
+handles::NetworkHandle MockNetworkChangeNotifier::GetCurrentDefaultNetwork()
+    const {
+  return default_network_;
+}
+
 void MockNetworkChangeNotifier::NotifyNetworkMadeDefault(
     handles::NetworkHandle network) {
   QueueNetworkMadeDefault(network);
@@ -92,6 +102,15 @@ void MockNetworkChangeNotifier::SetConnectionTypeAndNotifyObservers(
     ConnectionType connection_type) {
   SetConnectionType(connection_type);
   NetworkChangeNotifier::NotifyObserversOfConnectionTypeChange();
+  // Spin the message loop so the notification is delivered.
+  base::RunLoop().RunUntilIdle();
+}
+
+void MockNetworkChangeNotifier::SetConnectionCostAndNotifyObservers(
+    ConnectionCost connection_cost) {
+  SetConnectionCost(connection_cost);
+  NetworkChangeNotifier::NotifyObserversOfConnectionCostChangeForTests(
+      GetConnectionCost());
   // Spin the message loop so the notification is delivered.
   base::RunLoop().RunUntilIdle();
 }

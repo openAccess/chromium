@@ -4,7 +4,10 @@
 
 package org.chromium.chrome.browser.locale;
 
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
@@ -17,36 +20,44 @@ import org.chromium.chrome.browser.profiles.ProfileManager;
  */
 @NullMarked
 public class LocaleTemplateUrlLoader {
-    private long mNativeLocaleTemplateUrlLoader;
+    @JniType("::LocaleTemplateUrlLoader")
+    interface NativeLocaleTemplateUrlLoader extends JniTypeToken {}
+
+    private final JniUniquePtr<NativeLocaleTemplateUrlLoader> mNativeLocaleTemplateUrlLoader;
     private boolean mAddedToService;
+
+    /**
+     * @param localeId Country id of the locale. Should be 2 characters long.
+     * @deprecated Use {@link #LocaleTemplateUrlLoader(String, Profile)} instead.
+     */
+    @Deprecated
+    public LocaleTemplateUrlLoader(String localeId) {
+        this(localeId, ProfileManager.getLastUsedRegularProfile());
+    }
 
     /**
      * Creates a {@link LocaleTemplateUrlLoader} that handles changes for the given locale.
      *
      * @param localeId Country id of the locale. Should be 2 characters long.
+     * @param profile Profile of the user.
      */
-    public LocaleTemplateUrlLoader(String localeId) {
+    public LocaleTemplateUrlLoader(String localeId, Profile profile) {
         assert localeId.length() == 2;
-        // TODO(b/344633755): Remove getLastUsedRegularProfile().
-        mNativeLocaleTemplateUrlLoader =
-                LocaleTemplateUrlLoaderJni.get()
-                        .init(localeId, ProfileManager.getLastUsedRegularProfile());
+        mNativeLocaleTemplateUrlLoader = LocaleTemplateUrlLoaderJni.get().init(localeId, profile);
     }
 
     /** This *must* be called after the {@link LocaleTemplateUrlLoader} is not used anymore. */
     public void destroy() {
-        assert mNativeLocaleTemplateUrlLoader != 0;
-        LocaleTemplateUrlLoaderJni.get().destroy(mNativeLocaleTemplateUrlLoader);
-        mNativeLocaleTemplateUrlLoader = 0;
+        mNativeLocaleTemplateUrlLoader.destroy();
     }
 
     /**
      * Loads the template urls for this locale, and adds it to template url service. If the device
      * was initialized in the given special locale, no-op here.
+     *
      * @return Whether loading is needed.
      */
     public boolean loadTemplateUrls() {
-        assert mNativeLocaleTemplateUrlLoader != 0;
         // If the locale is the same as the one set at install time, there is no need to load the
         // search engines, as they are already cached in the template url service.
         mAddedToService =
@@ -55,11 +66,10 @@ public class LocaleTemplateUrlLoader {
     }
 
     /**
-     * Removes the template urls that was added by {@link #loadTemplateUrls()}. No-op if
-     * {@link #loadTemplateUrls()} returned false.
+     * Removes the template urls that was added by {@link #loadTemplateUrls()}. No-op if {@link
+     * #loadTemplateUrls()} returned false.
      */
     public void removeTemplateUrls() {
-        assert mNativeLocaleTemplateUrlLoader != 0;
         if (mAddedToService) {
             LocaleTemplateUrlLoaderJni.get().removeTemplateUrls(mNativeLocaleTemplateUrlLoader);
         }
@@ -67,29 +77,26 @@ public class LocaleTemplateUrlLoader {
 
     /** Overrides the default search provider in special locale. */
     public void overrideDefaultSearchProvider() {
-        assert mNativeLocaleTemplateUrlLoader != 0;
         LocaleTemplateUrlLoaderJni.get()
                 .overrideDefaultSearchProvider(mNativeLocaleTemplateUrlLoader);
     }
 
     /** Sets the default search provider back to Google. */
     public void setGoogleAsDefaultSearch() {
-        assert mNativeLocaleTemplateUrlLoader != 0;
         LocaleTemplateUrlLoaderJni.get().setGoogleAsDefaultSearch(mNativeLocaleTemplateUrlLoader);
     }
 
     @NativeMethods
     interface Natives {
-        long init(@JniType("std::string") String localeId, @JniType("Profile*") Profile profile);
+        JniUniquePtr<NativeLocaleTemplateUrlLoader> init(
+                @JniType("std::string") String localeId, @JniType("Profile*") Profile profile);
 
-        void destroy(long nativeLocaleTemplateUrlLoader);
+        boolean loadTemplateUrls(JniPtr<NativeLocaleTemplateUrlLoader> self);
 
-        boolean loadTemplateUrls(long nativeLocaleTemplateUrlLoader);
+        void removeTemplateUrls(JniPtr<NativeLocaleTemplateUrlLoader> self);
 
-        void removeTemplateUrls(long nativeLocaleTemplateUrlLoader);
+        void overrideDefaultSearchProvider(JniPtr<NativeLocaleTemplateUrlLoader> self);
 
-        void overrideDefaultSearchProvider(long nativeLocaleTemplateUrlLoader);
-
-        void setGoogleAsDefaultSearch(long nativeLocaleTemplateUrlLoader);
+        void setGoogleAsDefaultSearch(JniPtr<NativeLocaleTemplateUrlLoader> self);
     }
 }

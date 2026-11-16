@@ -753,9 +753,14 @@ void AutofillKeyboardAccessoryControllerImpl::Show(
     return;
   }
 
+  // Showing suggestions can be posted asynchronously after the caller checked
+  // `CanShowAutofillUi()`, and `FindRenderFrameHostByToken()` resolves inactive
+  // (e.g. BFCached) frames via `ForEachRenderFrameHost()`. Enforce
+  // `rfh->IsActive()` before emplacing `popup_hide_helper_` so keyboard
+  // accessory UI from an inactive frame cannot appear over the active page.
   content::RenderFrameHost* rfh = FindRenderFrameHostByToken(
       *web_contents_, controller_common_.field_id.frame_token);
-  if (!rfh) {
+  if (!rfh || !rfh->IsActive()) {
     Hide(SuggestionHidingReason::kNoFrameHasFocus);
     return;
   }
@@ -946,8 +951,8 @@ bool AutofillKeyboardAccessoryControllerImpl::ShowAutofillAiSuggestionDetails(
     std::vector<EntityInstance::PersonalContextRecordTypePayload::Source>
         sources(payload.sources.begin(), payload.sources.begin() + count);
     AutofillAiSuggestionDetailsText details_text =
-        GetAutofillAiSuggestionDetailsText(*entity, client->GetAppLocale(),
-                                           sources);
+        GetAutofillAiSuggestionDetailsText(
+            *entity, client->GetAppLocale().tag_string(), sources);
     view_->ShowAutofillAiSuggestionDetails(
         details_text.title, details_text.body, details_text.confirm_button_text,
         details_text.primary_button_text, std::move(sources),

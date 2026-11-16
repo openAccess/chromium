@@ -5,6 +5,7 @@
 #include "remoting/base/util.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -18,6 +19,34 @@ int RoundToTwosMultiple(int x) {
   return x & (~1);
 }
 
+webrtc::DesktopSize ScaleSizeToFit(const webrtc::DesktopSize& size,
+                                   const webrtc::DesktopSize& max_size) {
+  if (size.is_empty() || max_size.is_empty()) {
+    return webrtc::DesktopSize();
+  }
+
+  int64_t width = size.width();
+  int64_t height = size.height();
+  int64_t max_width = max_size.width();
+  int64_t max_height = max_size.height();
+
+  if (width <= max_width && height <= max_height) {
+    return size;
+  }
+
+  // Compare scale factors (max_width / width) vs (max_height / height) via
+  // cross-multiplication to avoid floating-point inaccuracy.
+  if (max_width * height <= max_height * width) {
+    int32_t scaled_height =
+        std::max<int64_t>(1, (height * max_width + width / 2) / width);
+    return webrtc::DesktopSize(max_width, scaled_height);
+  }
+
+  int32_t scaled_width =
+      std::max<int64_t>(1, (width * max_height + height / 2) / height);
+  return webrtc::DesktopSize(scaled_width, max_height);
+}
+
 webrtc::DesktopRect AlignRect(const webrtc::DesktopRect& rect) {
   int x = RoundToTwosMultiple(rect.left());
   int y = RoundToTwosMultiple(rect.top());
@@ -28,8 +57,8 @@ webrtc::DesktopRect AlignRect(const webrtc::DesktopRect& rect) {
 
 webrtc::DesktopRect GetRowAlignedRect(const webrtc::DesktopRect rect,
                                       int max_right) {
-  static const int align = GetSimdMemoryAlignment();
-  static const int align_mask = ~(align - 1);
+  const int align = GetSimdMemoryAlignment();
+  const int align_mask = ~(align - 1);
   int new_left = (rect.left() & align_mask);
   int new_right = std::min((rect.right() + align - 1) & align_mask, max_right);
   return webrtc::DesktopRect::MakeLTRB(new_left, rect.top(), new_right,

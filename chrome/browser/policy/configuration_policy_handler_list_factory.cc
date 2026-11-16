@@ -246,11 +246,15 @@
 #include "components/enterprise/browser/controller/chrome_browser_cloud_management_controller.h"
 #include "components/enterprise/idle/idle_timeout_policy_handler.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/policy/restrict_signin_to_pattern_policy_handler.h"
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/extensions/extension_management_constants.h"
 #include "chrome/browser/extensions/policy_handlers.h"
 #include "chrome/browser/policy/extension_developer_mode_policy_handler.h"
+#include "extensions/browser/isolated_mode_extension_settings.h"
 #include "extensions/browser/pref_names.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
@@ -299,6 +303,10 @@
 #include "chrome/browser/indigo/indigo_prefs.h"
 #endif
 
+#if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/policy/system_title_bar_enabled_policy_handler.h"
+#endif
+
 namespace policy {
 namespace {
 
@@ -323,6 +331,9 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kAutoplayAllowlist,
     prefs::kAutoplayAllowlist,
     base::Value::Type::LIST },
+  { key::kBuiltInAIAPIsEnabled,
+    policy_prefs::kBuiltInAIAPIsEnabled,
+    base::Value::Type::BOOLEAN },
   { key::kClipboardAllowedForUrls,
     prefs::kManagedClipboardAllowedForUrls,
     base::Value::Type::LIST },
@@ -433,6 +444,12 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     prefs::kTranslatorAPIAllowed,
     base::Value::Type::BOOLEAN },
 #endif
+  { key::kWebRtcIPHandling,
+    prefs::kWebRTCIPHandlingPolicy,
+    base::Value::Type::STRING },
+  { key::kWebRtcIPHandlingUrl,
+    prefs::kWebRTCIPHandlingUrl,
+    base::Value::Type::LIST },
   { key::kWindowCaptureAllowedByOrigins,
     prefs::kWindowCaptureAllowedByOrigins,
     base::Value::Type::LIST },
@@ -915,12 +932,6 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
   { key::kWebAuthenticationRemoteProxiedRequestsAllowed,
     webauthn::pref_names::kRemoteProxiedRequestsAllowed,
     base::Value::Type::BOOLEAN },
-  { key::kWebRtcIPHandling,
-    prefs::kWebRTCIPHandlingPolicy,
-    base::Value::Type::STRING },
-  { key::kWebRtcIPHandlingUrl,
-    prefs::kWebRTCIPHandlingUrl,
-    base::Value::Type::LIST },
   { key::kWebRtcLocalIpsAllowedUrls,
     prefs::kWebRtcLocalIpsAllowedUrls,
     base::Value::Type::LIST },
@@ -1513,7 +1524,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     chromeos::prefs::kCaptivePortalAuthenticationIgnoresProxy,
     base::Value::Type::BOOLEAN },
   { key::kUnifiedDesktopEnabledByDefault,
-    prefs::kUnifiedDesktopEnabledByDefault,
+    ash::prefs::kUnifiedDesktopEnabledByDefault,
     base::Value::Type::BOOLEAN },
   { key::kArcEnabled,
     arc::prefs::kArcEnabled,
@@ -1639,7 +1650,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     ash::prefs::kKerberosCustomPrefilledConfig,
     base::Value::Type::STRING },
   { key::kStartupBrowserWindowLaunchSuppressed,
-    prefs::kStartupBrowserWindowLaunchSuppressed,
+    ash::prefs::kStartupBrowserWindowLaunchSuppressed,
     base::Value::Type::BOOLEAN },
   { key::kLockScreenMediaPlaybackEnabled,
     ash::prefs::kLockScreenMediaControlsEnabled,
@@ -1675,7 +1686,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     ash::prefs::kPinUnlockAutosubmitEnabled,
     base::Value::Type::BOOLEAN },
   { key::kCastReceiverEnabled,
-    prefs::kCastReceiverEnabled,
+    ash::prefs::kCastReceiverEnabled,
     base::Value::Type::BOOLEAN },
   { key::kVpnConfigAllowed,
     ash::prefs::kVpnConfigAllowed,
@@ -1694,9 +1705,6 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     base::Value::Type::BOOLEAN },
   { key::kDeletePrintJobHistoryAllowed,
     ash::prefs::kDeletePrintJobHistoryAllowed,
-    base::Value::Type::BOOLEAN },
-  { key::kSuggestedContentEnabled,
-    ash::prefs::kSuggestedContentEnabled,
     base::Value::Type::BOOLEAN },
   { key::kRequiredClientCertificateForUser,
     ash::prefs::kRequiredClientCertificateForUser,
@@ -1891,7 +1899,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     ash::prefs::kHmwManagedSettings,
     base::Value::Type::INTEGER},
   { key::kAllowExcludeDisplayInMirrorMode,
-    prefs::kAllowExcludeDisplayInMirrorMode,
+    ash::prefs::kAllowExcludeDisplayInMirrorMode,
     base::Value::Type::BOOLEAN},
   { key::kArcOpenLinksInBrowserByDefault,
     arc::prefs::kArcOpenLinksInBrowserByDefault,
@@ -2077,9 +2085,6 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     prefs::kImportDialogAutofillFormData,
     base::Value::Type::BOOLEAN },
 
-  { key::kRestrictSigninToPattern,
-    prefs::kGoogleServicesUsernamePattern,
-    base::Value::Type::STRING },
   { key::kHardwareAccelerationModeEnabled,
     prefs::kHardwareAccelerationModeEnabled,
     base::Value::Type::BOOLEAN },
@@ -2165,10 +2170,10 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     ash::prefs::kClipboardHistoryEnabled,
     base::Value::Type::INTEGER },
   { key::kDeskAPIThirdPartyAccessEnabled,
-    prefs::kDeskAPIThirdPartyAccessEnabled,
+    ash::prefs::kDeskAPIThirdPartyAccessEnabled,
     base::Value::Type::BOOLEAN },
   { key::kDeskAPIThirdPartyAllowlist,
-    prefs::kDeskAPIThirdPartyAllowlist,
+    ash::prefs::kDeskAPIThirdPartyAllowlist,
     base::Value::Type::LIST },
   { key::kDeskAPIDeskSaveAndShareEnabled,
     prefs::kDeskAPIDeskSaveAndShareEnabled,
@@ -2210,7 +2215,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     prefs::kForceMaximizeOnFirstRun,
     base::Value::Type::BOOLEAN },
   { key::kInsightsExtensionEnabled,
-    prefs::kInsightsExtensionEnabled,
+    ash::prefs::kInsightsExtensionEnabled,
     base::Value::Type::BOOLEAN },
   { key::kEnableSyncConsent,
     ash::prefs::kEnableSyncConsent,
@@ -2219,7 +2224,7 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     chromeos::prefs::kKeepFullscreenWithoutNotificationUrlAllowList,
     base::Value::Type::LIST },
   { key::kRestrictedManagedGuestSessionExtensionCleanupExemptList,
-    prefs::kRestrictedManagedGuestSessionExtensionCleanupExemptList,
+    ash::prefs::kRestrictedManagedGuestSessionExtensionCleanupExemptList,
     base::Value::Type::LIST },
   { key::kNewWindowsInKioskAllowed,
     ash::prefs::kNewWindowsInKioskAllowed,
@@ -2512,20 +2517,9 @@ const PolicyToPreferenceMapEntry kSimplePolicyMap[] = {
     base::Value::Type::INTEGER },
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-#if BUILDFLAG(IS_MAC)
-  { key::kAdHocCodeSigningForPWAsEnabled,
-    prefs::kWebAppsUseAdHocCodeSigningForAppShims,
-    base::Value::Type::BOOLEAN },
-#endif // BUILDFLAG(IS_MAC)
-
   { key::kWebAudioOutputBufferingEnabled,
     prefs::kWebAudioOutputBufferingEnabled,
     base::Value::Type::BOOLEAN },
-#if !BUILDFLAG(IS_ANDROID)
-  { key::kBuiltInAIAPIsEnabled,
-    policy_prefs::kBuiltInAIAPIsEnabled,
-    base::Value::Type::BOOLEAN },
-#endif  // BUILDFLAG(IS_ANDROID)
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   { key::kNTPFooterManagementNoticeEnabled,
     prefs::kNTPFooterManagementNoticeEnabled,
@@ -3161,7 +3155,7 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
 #if BUILDFLAG(USE_CUPS)
   handlers->AddHandler(std::make_unique<extensions::ExtensionListPolicyHandler>(
       key::kPrintingAPIExtensionsAllowlist,
-      prefs::kPrintingAPIExtensionsAllowlist, /*allow_wildcards=*/false));
+      ash::prefs::kPrintingAPIExtensionsAllowlist, /*allow_wildcards=*/false));
 #endif  // BUILDFLAG(USE_CUPS)
 #else   // BUILDFLAG(IS_CHROMEOS)
   std::vector<std::unique_ptr<ConfigurationPolicyHandler>>
@@ -3520,6 +3514,8 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
       SCHEMA_ALLOW_UNKNOWN,
       SimpleSchemaValidatingPolicyHandler::RECOMMENDED_PROHIBITED,
       SimpleSchemaValidatingPolicyHandler::MANDATORY_ALLOWED));
+  handlers->AddHandler(
+      std::make_unique<RestrictSigninToPatternPolicyHandler>());
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -3547,6 +3543,17 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
       key::kExtensionUnpublishedAvailability,
       extensions::pref_names::kExtensionUnpublishedAvailability,
       /*min=*/0, /*max=*/1, /*clamp=*/false));
+  handlers->AddHandler(std::make_unique<IntRangePolicyHandler>(
+      key::kIsolatedModeUserInstalledExtensionsSettings,
+      extensions::pref_names::kIsolatedModeUserInstalledExtensionsSettings,
+      /*min=*/
+      std::to_underlying(
+          extensions::IsolatedModeUserInstalledExtensionsSetting::
+              kEnabledByDefault),
+      /*max=*/
+      std::to_underlying(
+          extensions::IsolatedModeUserInstalledExtensionsSetting::kMaxValue),
+      /*clamp=*/false));
   handlers->AddHandler(std::make_unique<ExtensionDeveloperModePolicyHandler>());
   handlers->AddHandler(
       std::make_unique<enterprise_reporting::ExtensionRequestPolicyHandler>());
@@ -3570,6 +3577,7 @@ std::unique_ptr<ConfigurationPolicyHandlerList> BuildHandlerList(
 #endif  // BUILDFLAG(ENABLE_SPELLCHECK)
 
 #if BUILDFLAG(IS_LINUX)
+  handlers->AddHandler(std::make_unique<SystemTitleBarEnabledPolicyHandler>());
   handlers->AddHandler(std::make_unique<SimplePolicyHandler>(
       key::kAllowSystemNotifications, prefs::kAllowSystemNotifications,
       base::Value::Type::BOOLEAN));

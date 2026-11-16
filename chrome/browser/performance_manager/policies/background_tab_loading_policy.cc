@@ -125,8 +125,9 @@ void ScheduleLoadForRestoredTabs(
     // Cannot use GetPermissionStatusForCurrentDocument() because the navigation
     // hasn't been committed in the RenderFrameHost yet, as evidenced by the
     // DCHECK below.
-    CHECK_EQ(content->GetPrimaryMainFrame()->GetLastCommittedURL(), GURL(),
-             base::NotFatalUntil::M163);
+    // TODO(crbug.com/583678251): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_EQ(content->GetPrimaryMainFrame()->GetLastCommittedURL(), GURL());
     CHECK_NE(content->GetLastCommittedURL(), GURL(), base::NotFatalUntil::M163);
 
     auto permission_descriptor = content::PermissionDescriptorUtil::
@@ -423,7 +424,7 @@ bool BackgroundTabLoadingPolicy::ShouldLoad(
   // Enforce a max time since last use.
   const base::TimeDelta time_since_last_visibility_change =
       base::TimeTicks::Now() -
-      page_node_data.page_node->GetLastVisibilityChangeTime();
+      page_node_data.page_node->GetVisibilityState().last_change_time;
   if (time_since_last_visibility_change > kMaxTimeSinceLastUseToLoad) {
     return false;
   }
@@ -511,7 +512,7 @@ void BackgroundTabLoadingPolicy::ScoreTab(
   // higher scores.
   const base::TimeDelta time_since_last_visibility_change =
       base::TimeTicks::Now() -
-      page_node_to_load_data->page_node->GetLastVisibilityChangeTime();
+      page_node_to_load_data->page_node->GetVisibilityState().last_change_time;
   score += CalculateAgeScore(time_since_last_visibility_change.InSecondsF());
 
   ++tabs_scored_;

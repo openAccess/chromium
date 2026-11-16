@@ -12,6 +12,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
+#include "ui/gfx/range/range.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 
 class BrowserWindowInterface;
@@ -38,6 +39,9 @@ class AppMenuItemView : public views::MenuItemView {
   const std::optional<std::u16string>& text_override() const {
     return text_override_;
   }
+  const std::optional<gfx::Range>& highlight_range_override() const {
+    return highlight_range_;
+  }
   const std::optional<ui::ImageModel>& icon_override() const {
     return icon_override_;
   }
@@ -45,15 +49,26 @@ class AppMenuItemView : public views::MenuItemView {
   std::optional<ui::ColorId> default_icon_color() const {
     return default_icon_color_;
   }
+  // The row's own secondary text (e.g. the search result breadcrumb), shown
+  // unless the bound action provides chrome::kActionSecondaryTextKey.
+  const std::u16string& default_secondary_text() const {
+    return default_secondary_text_;
+  }
+
+  // Shows `secondary_title` in place, repainting without relayout. Called from
+  // the action binding whenever the bound action changes.
+  void UpdateSecondaryTitle(const std::u16string& secondary_title);
 
   // views::MenuItemView:
   std::unique_ptr<views::ActionViewInterface> GetActionViewInterface() override;
 
  private:
   std::optional<std::u16string> text_override_;
+  std::optional<gfx::Range> highlight_range_;
   std::optional<ui::ImageModel> icon_override_;
   int default_icon_size_ = 0;
   std::optional<ui::ColorId> default_icon_color_;
+  std::u16string default_secondary_text_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_APP_MENU_APP_MENU_ITEM_VIEW_H_

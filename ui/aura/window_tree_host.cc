@@ -77,8 +77,9 @@ class ScopedLocalSurfaceIdValidator {
 
   ~ScopedLocalSurfaceIdValidator() {
     if (window_) {
-      CHECK_EQ(local_surface_id_, window_->GetLocalSurfaceId(),
-               base::NotFatalUntil::M163);
+      // TODO(crbug.com/583557534): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK_EQ(local_surface_id_, window_->GetLocalSurfaceId());
     }
   }
 
@@ -355,6 +356,10 @@ gfx::Rect WindowTreeHost::GetBoundsInAcceleratedWidgetPixelCoordinates() {
   return gfx::Rect(GetBoundsInPixels().size());
 }
 
+gfx::Insets WindowTreeHost::GetInvisibleFrameInsetsInDIP() const {
+  return gfx::Insets();
+}
+
 std::unique_ptr<ScopedKeyboardHook> WindowTreeHost::CaptureSystemKeyEvents(
     std::optional<base::flat_set<ui::DomCode>> dom_codes) {
   // TODO(joedow): Remove the simple hook class/logic once this flag is removed.
@@ -557,9 +562,12 @@ void WindowTreeHost::CreateCompositor(bool use_external_begin_frame_control,
   Env* env = Env::GetInstance();
   ui::ContextFactory* context_factory = env->context_factory();
   CHECK(context_factory, base::NotFatalUntil::M163);
+  // Note: `ui::Compositor` retains this task runner for its entire lifetime
+  // (including after startup completes). Implementations that prioritize a
+  // startup queue should reset that queue's priority once startup finishes.
   compositor_ = std::make_unique<ui::Compositor>(
       context_factory->AllocateFrameSinkId(), context_factory,
-      base::SingleThreadTaskRunner::GetCurrentDefault(),
+      context_factory->GetCompositorTaskRunner(),
       features::IsPixelCanvasRecordingEnabled(),
       use_external_begin_frame_control, enable_compositing_based_throttling,
       memory_limit_when_visible_mb);

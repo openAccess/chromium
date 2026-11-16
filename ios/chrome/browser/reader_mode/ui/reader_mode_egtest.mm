@@ -6,12 +6,12 @@
 
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/dom_distiller/core/dom_distiller_features.h"
-#import "components/dom_distiller/core/mojom/distilled_page_prefs.mojom.h"
-#import "components/dom_distiller/core/pref_names.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/signin/internal/identity_manager/account_capabilities_constants.h"
 #import "components/translate/core/browser/translate_pref_names.h"
+#import "components/web_distiller/core/mojom/distilled_page_prefs.mojom.h"
+#import "components/web_distiller/core/pref_names.h"
+#import "components/web_distiller/core/web_distiller_features.h"
 #import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
 #import "ios/chrome/browser/badges/ui_bundled/badge_constants.h"
 #import "ios/chrome/browser/flags/chrome_switches.h"
@@ -64,7 +64,7 @@ id<GREYMatcher> ReaderModeBadge() {
 
 // Base font size for Reader Mode, in pixels. This is the font size that is
 // multiplied by the font scale multipliers. This value is defined in
-// components/dom_distiller/core/javascript/font_size_slider.js.
+// components/web_distiller/core/javascript/font_size_slider.js.
 constexpr double kReaderModeBaseFontSize = 16.0;
 
 // Return the number of links on the page.
@@ -201,13 +201,12 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
       feature_engagement::kIPHiOSReaderModeLargeOmniboxEntrypointFeature.name;
 
   if ([self isRunningTest:@selector(testTurnOnReaderModeViaPageActionMenu)] ||
-      [self isRunningTest:@selector(testReaderModeDistillationFailure)] ||
-      [self isRunningTest:@selector(testReaderModeDistillationTimeout)] ||
       [self isRunningTest:@selector(testReaderModeChipShowsAIHubIfAvailable)] ||
       [self isRunningTest:@selector(
                               testPageActionMenuDismissedOnReaderModeHide)] ||
       [self isRunningTest:@selector(
-                              testSampleContextualChipVisibleInReaderMode)]) {
+                              testSampleContextualChipVisibleInReaderMode)] ||
+      [self isRunningTest:@selector(testReaderModeChipHiddenInReaderMode)]) {
     config.features_enabled.push_back(kPageActionMenu);
     config.features_enabled.push_back(kProactiveSuggestionsFramework);
   } else {
@@ -222,19 +221,33 @@ std::unique_ptr<net::test_server::HttpResponse> HandleReaderModeTestRequests(
 
   // TODO(crbug.com/517120013): Fix or clean up legacy contextual panel and
   // incognito badge tests under Chrome Next.
-  if ([self isRunningTest:@selector(testReaderModeDistillationFailure)] ||
+  if ([self
+          isRunningTest:
+              @selector(
+                  testToggleReaderModeInContextualPanelEntrypointForDistillablePage)] ||
+      [self isRunningTest:@selector(testReaderModeDistillationFailure)] ||
       [self isRunningTest:@selector(testReaderModeDistillationTimeout)] ||
       [self isRunningTest:@selector(testTurnOnReaderModeViaPageActionMenu)] ||
       [self isRunningTest:
                 @selector(
                     testToggleReaderModeForDistillablePageInIncognitoMode)] ||
-      [self isRunningTest:@selector(testReaderModeBadgeVisibleInIncognito)]) {
+      [self isRunningTest:@selector(testReaderModeBadgeVisibleInIncognito)] ||
+      [self
+          isRunningTest:
+              @selector(
+                  testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled)]) {
     config.features_disabled.push_back(kChromeNextIa);
   }
 
   if ([self isRunningTest:@selector(testReaderModeDistillationTimeout)]) {
     config.additional_args.push_back(
         "--" + std::string(switches::kForceReaderModeDistillationTimeout));
+  }
+  if ([self
+          isRunningTest:
+              @selector(
+                  testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled)]) {
+    config.features_disabled.push_back(kProactiveSuggestionsFramework);
   }
   if ([self isRunningTest:@selector(
                               testSampleContextualChipVisibleInReaderMode)]) {
@@ -460,6 +473,23 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                   @"Did not navigate to non-Reader Mode url.");
 }
 
+// Tests that the user can show Reader Mode from the contextual panel entrypoint
+// on an eligible web page.
+- (void)testToggleReaderModeInContextualPanelEntrypointForDistillablePage {
+  [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
+  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
+                                              "/article.html")];
+
+  // Open Reader Mode UI.
+  [self openReaderModeWithBadgeEntrypoint];
+  [self assertReaderModePageIsVisible];
+
+  // Check that the chip is a button with the expected accessibility label.
+  [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
+      assertWithMatcher:chrome_test_util::ButtonWithAccessibilityLabelId(
+                            IDS_IOS_READER_MODE_CHIP_ACCESSIBILITY_LABEL)];
+}
+
 // Tests that theme change is applied to the Reading Mode web page.
 - (void)testUpdateReaderModeTheme {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
@@ -470,8 +500,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
 
   ExpectBodyHasThemeAndFont("light", "sans-serif");
 
-  [ChromeEarlGrey setIntegerValue:(int)dom_distiller::mojom::Theme::kDark
-                      forUserPref:dom_distiller::prefs::kTheme];
+  [ChromeEarlGrey setIntegerValue:(int)web_distiller::mojom::Theme::kDark
+                      forUserPref:web_distiller::prefs::kTheme];
 
   ExpectBodyHasThemeAndFont("dark", "sans-serif");
 }
@@ -486,8 +516,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
       @"Reader mode content could not be loaded");
 
   // Set the user-selected preference to Dark theme.
-  [ChromeEarlGrey setIntegerValue:(int)dom_distiller::mojom::Theme::kDark
-                      forUserPref:dom_distiller::prefs::kTheme];
+  [ChromeEarlGrey setIntegerValue:(int)web_distiller::mojom::Theme::kDark
+                      forUserPref:web_distiller::prefs::kTheme];
 
   // Open Reading Mode options view.
   [self openReaderModeCustomizationOptions];
@@ -550,8 +580,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
 
   // Change the font family to Monospace.
   [ChromeEarlGrey
-      setIntegerValue:(int)dom_distiller::mojom::FontFamily::kMonospace
-          forUserPref:dom_distiller::prefs::kFont];
+      setIntegerValue:(int)web_distiller::mojom::FontFamily::kMonospace
+          forUserPref:web_distiller::prefs::kFont];
   ExpectBodyHasThemeAndFont("light", "monospace");
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::ButtonWithAccessibilityLabelId(
@@ -559,8 +589,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
       assertWithMatcher:grey_notNil()];
 
   // Change the font family to Serif.
-  [ChromeEarlGrey setIntegerValue:(int)dom_distiller::mojom::FontFamily::kSerif
-                      forUserPref:dom_distiller::prefs::kFont];
+  [ChromeEarlGrey setIntegerValue:(int)web_distiller::mojom::FontFamily::kSerif
+                      forUserPref:web_distiller::prefs::kFont];
   ExpectBodyHasThemeAndFont("light", "serif");
   [[EarlGrey selectElementWithMatcher:
                  chrome_test_util::ButtonWithAccessibilityLabelId(
@@ -607,8 +637,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                  VisibleContextMenuItem(
                      IDS_IOS_READER_MODE_OPTIONS_FONT_FAMILY_SERIF_LABEL)]
       performAction:grey_tap()];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kFont],
-                  static_cast<int>(dom_distiller::mojom::FontFamily::kSerif),
+  GREYAssertEqual([ChromeEarlGrey userIntegerPref:web_distiller::prefs::kFont],
+                  static_cast<int>(web_distiller::mojom::FontFamily::kSerif),
                   @"Pref should be updated to Serif");
   ExpectBodyHasThemeAndFont("light", "serif");
 
@@ -622,8 +652,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                      IDS_IOS_READER_MODE_OPTIONS_FONT_FAMILY_MONOSPACE_LABEL)]
       performAction:grey_tap()];
   GREYAssertEqual(
-      [ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kFont],
-      static_cast<int>(dom_distiller::mojom::FontFamily::kMonospace),
+      [ChromeEarlGrey userIntegerPref:web_distiller::prefs::kFont],
+      static_cast<int>(web_distiller::mojom::FontFamily::kMonospace),
       @"Pref should be updated to Monospace");
   ExpectBodyHasThemeAndFont("light", "monospace");
 
@@ -637,8 +667,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                      IDS_IOS_READER_MODE_OPTIONS_FONT_FAMILY_SANS_SERIF_LABEL)]
       performAction:grey_tap()];
   GREYAssertEqual(
-      [ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kFont],
-      static_cast<int>(dom_distiller::mojom::FontFamily::kSansSerif),
+      [ChromeEarlGrey userIntegerPref:web_distiller::prefs::kFont],
+      static_cast<int>(web_distiller::mojom::FontFamily::kSansSerif),
       @"Pref should be updated to Sans-Serif");
   ExpectBodyHasThemeAndFont("light", "sans-serif");
 }
@@ -647,7 +677,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
 - (void)testChangeReaderModeFontSizeFromOptionsView {
   std::vector<double> multipliers = ReaderModeFontScaleMultipliers();
   [ChromeEarlGrey setDoubleValue:multipliers[0]
-                     forUserPref:dom_distiller::prefs::kFontScale];
+                     forUserPref:web_distiller::prefs::kFontScale];
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
 
@@ -675,7 +705,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                 kReaderModeOptionsIncreaseFontSizeButtonAccessibilityIdentifier)]
         performAction:grey_tap()];
     GREYAssertEqual(
-        [ChromeEarlGrey userDoublePref:dom_distiller::prefs::kFontScale],
+        [ChromeEarlGrey userDoublePref:web_distiller::prefs::kFontScale],
         multipliers[i], @"Pref should be updated to next multiplier");
     ExpectFontSize(multipliers[i] * kReaderModeBaseFontSize);
     // Decrease button should be enabled.
@@ -701,7 +731,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                 kReaderModeOptionsDecreaseFontSizeButtonAccessibilityIdentifier)]
         performAction:grey_tap()];
     GREYAssertEqual(
-        [ChromeEarlGrey userDoublePref:dom_distiller::prefs::kFontScale],
+        [ChromeEarlGrey userDoublePref:web_distiller::prefs::kFontScale],
         multipliers[i], @"Pref should be updated to previous multiplier");
     ExpectFontSize(multipliers[i] * kReaderModeBaseFontSize);
     // Increase button should be enabled.
@@ -715,8 +745,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
 
 // Tests that color theme can be changed from the options view.
 - (void)testChangeReaderModeThemeFromOptionsView {
-  [ChromeEarlGrey setIntegerValue:(int)dom_distiller::mojom::Theme::kLight
-                      forUserPref:dom_distiller::prefs::kTheme];
+  [ChromeEarlGrey setIntegerValue:(int)web_distiller::mojom::Theme::kLight
+                      forUserPref:web_distiller::prefs::kTheme];
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
 
@@ -734,8 +764,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                  grey_accessibilityID(
                      kReaderModeOptionsDarkThemeButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kTheme],
-                  static_cast<int>(dom_distiller::mojom::Theme::kDark),
+  GREYAssertEqual([ChromeEarlGrey userIntegerPref:web_distiller::prefs::kTheme],
+                  static_cast<int>(web_distiller::mojom::Theme::kDark),
                   @"Pref should be updated to dark");
   ExpectBodyHasThemeAndFont("dark", "sans-serif");
 
@@ -744,8 +774,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                  grey_accessibilityID(
                      kReaderModeOptionsSepiaThemeButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kTheme],
-                  static_cast<int>(dom_distiller::mojom::Theme::kSepia),
+  GREYAssertEqual([ChromeEarlGrey userIntegerPref:web_distiller::prefs::kTheme],
+                  static_cast<int>(web_distiller::mojom::Theme::kSepia),
                   @"Pref should be updated to sepia");
   ExpectBodyHasThemeAndFont("sepia", "sans-serif");
 
@@ -754,8 +784,8 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                  grey_accessibilityID(
                      kReaderModeOptionsLightThemeButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
-  GREYAssertEqual([ChromeEarlGrey userIntegerPref:dom_distiller::prefs::kTheme],
-                  static_cast<int>(dom_distiller::mojom::Theme::kLight),
+  GREYAssertEqual([ChromeEarlGrey userIntegerPref:web_distiller::prefs::kTheme],
+                  static_cast<int>(web_distiller::mojom::Theme::kLight),
                   @"Pref should be updated to light");
   ExpectBodyHasThemeAndFont("light", "sans-serif");
 }
@@ -863,18 +893,27 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
   [ChromeEarlGrey verifyAccessibilityForCurrentScreen];
 }
 
-// Tests that a failure snackbar is presented when distillation fails.
+// Tests that the contextual panel entrypoint disappears and a failure snackbar
+// is presented when distillation fails.
 - (void)testReaderModeDistillationFailure {
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
 
+  // Wait for the contextual panel entrypoint to appear.
+  id<GREYMatcher> entrypoint = chrome_test_util::ButtonWithAccessibilityLabelId(
+      IDS_IOS_CONTEXTUAL_PANEL_READER_MODE_MODEL_ENTRYPOINT_MESSAGE);
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:entrypoint];
+
   // Make the page not distillable.
   [ChromeEarlGrey
       evaluateJavaScriptForSideEffect:@"document.body.outerHTML = ''"];
 
-  // Trigger distillation.
+  // Tap the entrypoint to trigger distillation.
   [self openReaderModeWithBadgeEntrypoint];
+
+  // The entrypoint should disappear.
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:entrypoint];
 
   // A snackbar should be displayed with a failure message.
   NSString* failureMessage =
@@ -885,13 +924,19 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
   [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:snackbarMatcher];
 }
 
-// Tests that a failure snackbar is presented when distillation times out.
+// Tests that the contextual panel entrypoint disappears and a failure snackbar
+// is presented when distillation times out.
 - (void)testReaderModeDistillationTimeout {
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
 
   [self openReaderModeWithBadgeEntrypoint];
+
+  // The entrypoint should disappear.
+  id<GREYMatcher> entrypoint = chrome_test_util::ButtonWithAccessibilityLabelId(
+      IDS_IOS_CONTEXTUAL_PANEL_READER_MODE_MODEL_ENTRYPOINT_MESSAGE);
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:entrypoint];
 
   // A snackbar should be displayed with a failure message.
   NSString* failureMessage =
@@ -934,6 +979,31 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
       assertWithMatcher:grey_sufficientlyVisible()];
 }
 
+// Tests that the Reader mode contextual chip is hidden inside Reader mode.
+- (void)testReaderModeChipHiddenInReaderMode {
+  [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
+  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
+                                              "/article.html")];
+
+  // Wait for the Reader Mode contextual entrypoint to appear.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
+  // Open Reader Mode UI.
+  GREYAssertTrue(
+      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
+      @"Reader mode content could not be loaded");
+  [self assertReaderModePageIsVisible];
+
+  // The Reader Mode contextual entrypoint should be hidden.
+  [[EarlGrey
+      selectElementWithMatcher:ContextualPanelEntrypointImageViewMatcher()]
+      assertWithMatcher:grey_notVisible()];
+  // The Reader mode badge button should be visible instead.
+  [[EarlGrey selectElementWithMatcher:ReaderModeBadge()]
+      assertWithMatcher:grey_sufficientlyVisible()];
+}
+
 // Tests that the user can turn on Reader Mode from the page action menu.
 - (void)testTurnOnReaderModeViaPageActionMenu {
   GREYAssertTrue([ChromeEarlGrey isProactiveSuggestionsFrameworkEnabled],
@@ -942,6 +1012,13 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
   [SigninEarlGrey signinWithFakeIdentity:self.fakeIdentity];
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
+
+  // Wait for the contextual chip to appear and then disappear.
+  id<GREYMatcher> entrypoint = chrome_test_util::ButtonWithAccessibilityLabelId(
+      IDS_IOS_CONTEXTUAL_PANEL_READER_MODE_MODEL_ENTRYPOINT_MESSAGE);
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:entrypoint];
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:entrypoint
+                                                 timeout:base::Seconds(10)];
 
   [self openReaderModeWithBadgeEntrypoint];
 
@@ -1052,7 +1129,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
 
   std::vector<double> multipliers = ReaderModeFontScaleMultipliers();
   [ChromeEarlGrey setDoubleValue:multipliers[2]
-                     forUserPref:dom_distiller::prefs::kFontScale];
+                     forUserPref:web_distiller::prefs::kFontScale];
 
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/article.html")];
 
@@ -1077,7 +1154,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
           grey_accessibilityID(kTextZoomIncreaseButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
   GREYAssertEqual(
-      [ChromeEarlGrey userDoublePref:dom_distiller::prefs::kFontScale],
+      [ChromeEarlGrey userDoublePref:web_distiller::prefs::kFontScale],
       multipliers[3], @"Pref should be updated to next multiplier");
   ExpectFontSize(multipliers[3] * kReaderModeBaseFontSize);
 
@@ -1087,7 +1164,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
           grey_accessibilityID(kTextZoomDecreaseButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
   GREYAssertEqual(
-      [ChromeEarlGrey userDoublePref:dom_distiller::prefs::kFontScale],
+      [ChromeEarlGrey userDoublePref:web_distiller::prefs::kFontScale],
       multipliers[2], @"Pref should be updated to previous multiplier");
   ExpectFontSize(multipliers[2] * kReaderModeBaseFontSize);
 
@@ -1097,7 +1174,7 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
                                    kTextZoomResetButtonAccessibilityIdentifier)]
       performAction:grey_tap()];
   GREYAssertEqual(
-      [ChromeEarlGrey userDoublePref:dom_distiller::prefs::kFontScale], 1.0,
+      [ChromeEarlGrey userDoublePref:web_distiller::prefs::kFontScale], 1.0,
       @"Pref should be updated to 1.0");
   ExpectFontSize(1.0 * kReaderModeBaseFontSize);
 }
@@ -1195,11 +1272,43 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
   }
 }
 
+// Tests that the Reader mode chip is visible when leaving Reader mode if
+// PSF is disabled.
+// TODO(crbug.com/467908483): Remove this test once PSF is launched with
+// Reading Mode.
+- (void)testReaderModeChipVisibleWhenLeavingReaderModeWithPSFDisabled {
+  [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
+                                              "/article.html")];
+
+  // Wait for the Reader mode contextual panel entry point chip to be visible.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+
+  // Open Reader Mode UI.
+  GREYAssertTrue(
+      [ChromeEarlGrey showReaderModeAndWaitUntilReaderModeWebStateIsReady],
+      @"Reader mode content could not be loaded");
+  [self assertReaderModePageIsVisible];
+
+  // Close Reader Mode UI.
+  [ChromeEarlGrey hideReaderMode];
+
+  [self assertReaderModePageIsHidden];
+
+  // Wait for the Reader mode contextual panel entry point chip to be visible.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
+}
+
 // Tests that the Reading Mode section in Content Settings shows multiple
 // options.
 - (void)testReaderModeContentSettingsNewOptions {
   [self loadURLWithOptimizationGuideHints:self.testServer->GetURL(
                                               "/article.html")];
+
+  // Wait for the contextual panel entrypoint to appear.
+  [ChromeEarlGrey waitForSufficientlyVisibleElementWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
 
   // Open Content Settings.
   [ChromeEarlGreyUI openSettingsMenu];
@@ -1233,6 +1342,13 @@ TAG_SMOKE_TEST(ReaderModeTestCase, testToggleReaderModeForDistillablePage);
   // Go back to the page.
   [[EarlGrey selectElementWithMatcher:chrome_test_util::SettingsDoneButton()]
       performAction:grey_tap()];
+
+  // Reload the page to ensure the contextual panel entrypoint is updated.
+  [ChromeEarlGrey reload];
+
+  // The contextual panel entrypoint should be hidden.
+  [ChromeEarlGrey waitForUIElementToDisappearWithMatcher:
+                      ContextualPanelEntrypointImageViewMatcher()];
 
   // Open Reader Mode UI to check for links-hidden class.
   GREYAssertTrue(

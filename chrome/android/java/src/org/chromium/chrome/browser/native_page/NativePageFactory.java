@@ -360,7 +360,7 @@ public class NativePageFactory {
                     mActivity,
                     mSnackbarManagerSupplier.get(),
                     mWindowAndroid.getModalDialogManager(),
-                    profile.getOtrProfileId(),
+                    profile,
                     new TabShim(
                             tab,
                             mBrowserControlsManager,
@@ -401,7 +401,7 @@ public class NativePageFactory {
                             mSnackbarManagerSupplier.get(),
                             () ->
                                     HistoryManagerUtils.showHistoryManager(
-                                            mActivity, tab, tab.getProfile()),
+                                            mWindowAndroid, tab, tab.getProfile()),
                             mRecentlyClosedEntriesManager);
 
             NativePageHost host =
@@ -754,6 +754,14 @@ public class NativePageFactory {
                 return;
             }
             DownloadController.downloadUrl(url, mTab);
+        }
+
+        @Override
+        public void downloadLocalFile(String uri, @Nullable String suggestedFileName) {
+            if (mTab.isDestroyed() || mTab.getWebContents() == null || TextUtils.isEmpty(uri)) {
+                return;
+            }
+            DownloadController.downloadLocalFile(uri, suggestedFileName, mTab);
         }
 
         @Override

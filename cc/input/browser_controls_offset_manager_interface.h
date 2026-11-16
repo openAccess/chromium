@@ -21,6 +21,7 @@
 namespace cc {
 
 class BrowserControlsOffsetManagerClient;
+struct BrowserControlsAnimationParams;
 
 // Manages the position of the browser controls.
 //
@@ -137,6 +138,13 @@ class CC_EXPORT BrowserControlsOffsetManagerInterface {
 
   virtual void OnBrowserControlsParamsChanged(bool animate_changes) = 0;
 
+  // Animates the visible heights of the controls to the targets in `params`
+  // as dictated by the browser process. A zero duration applies the
+  // targets on the next Animate() together with the counter-scroll of the
+  // page. Replaces a running animation. Only called when the browser process
+  // owns the controls position.
+  virtual void SetAnimation(const BrowserControlsAnimationParams& params) = 0;
+
   virtual void ScrollBegin() = 0;
   // Scrolls the browser controls by the given `pending_delta` and returns the
   // remaining scroll delta that was not applied. `is_inertial` indicates
@@ -169,6 +177,18 @@ class CC_EXPORT BrowserControlsOffsetManagerInterface {
                                              BrowserControlsState current,
                                              bool animate) = 0;
 
+  BrowserControlsOffsetManagerClient& client() const { return *client_; }
+
+  BrowserControlsState permitted_state() const { return permitted_state_; }
+
+  void set_top_controls_min_height_offset(float offset) {
+    top_controls_min_height_offset_ = offset;
+  }
+  void set_bottom_controls_min_height_offset(float offset) {
+    bottom_controls_min_height_offset_ = offset;
+  }
+
+ private:
   // The client manages the lifecycle of this.
   raw_ptr<BrowserControlsOffsetManagerClient> client_;
 

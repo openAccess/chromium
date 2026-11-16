@@ -28,6 +28,8 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_test_util.h"
+#include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
+#include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/sessions/chrome_tab_restore_service_client.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
@@ -36,10 +38,11 @@
 #include "chrome/browser/ui/browser_ui_controller/browser_ui_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
@@ -68,6 +71,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_web_ui.h"
@@ -76,6 +80,8 @@
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
 #include "ui/base/unowned_user_data/user_data_factory.h"
 #include "ui/gfx/color_utils.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/widget/widget.h"
 
 using testing::_;
 using testing::Truly;
@@ -179,7 +185,8 @@ class TestTabSearchPageHandler : public TabSearchPageHandler {
             std::move(page),
             web_ui,
             webui_controller,
-            &metrics_reporter_) {
+            &metrics_reporter_,
+            /*log_metrics=*/true) {
     auto timer = std::make_unique<base::MockRetainingOneShotTimer>();
     mock_debounce_timer_ = timer.get();
     SetTimerForTesting(std::move(timer));
@@ -200,16 +207,11 @@ class TabSearchPageHandlerTest : public InProcessBrowserTest,
   TabSearchPageHandlerTest() {
     // Parametrize tests on kTabSearchPerformanceImprovements to verify
     // behavior in both enabled and disabled experiment arms.
-    feature_list_.InitWithFeatureState(tabs::kTabSearchPerformanceImprovements,
-                                       GetParam());
-    webui_omnibox_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {features::kTabGroupsFocusing, features::kNonGroupFocus},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+    feature_list_.InitWithFeatureStates(
+        {{tabs::kTabSearchPerformanceImprovements, GetParam()},
+         {features::kTabGroupsFocusing, true},
+         {features::kNonGroupFocus, true},
+         {features::kWebContentsDiscard, false}});
   }
 
   void SetUpOnMainThread() override {
@@ -330,7 +332,7 @@ class TabSearchPageHandlerTest : public InProcessBrowserTest,
     auto observer_1 =
         std::make_unique<tab_groups::TabGroupSyncServiceInitializedObserver>(
             tab_group_service_1);
-    observer_1->Wait();
+    ASSERT_TRUE(observer_1->Wait());
 
 #if !BUILDFLAG(IS_CHROMEOS)
     tab_groups::TabGroupSyncService* tab_group_service_2 =
@@ -338,7 +340,7 @@ class TabSearchPageHandlerTest : public InProcessBrowserTest,
     auto observer_2 =
         std::make_unique<tab_groups::TabGroupSyncServiceInitializedObserver>(
             tab_group_service_2);
-    observer_2->Wait();
+    ASSERT_TRUE(observer_2->Wait());
 #endif
   }
 
@@ -395,7 +397,6 @@ class TabSearchPageHandlerTest : public InProcessBrowserTest,
  private:
   content::TestWebUI web_ui_;
   base::test::ScopedFeatureList feature_list_;
-  base::test::ScopedFeatureList webui_omnibox_feature_list_;
   std::unique_ptr<TestTabSearchPageHandler> handler_;
   std::unique_ptr<TabSearchUI> webui_controller_;
 };
@@ -1040,10 +1041,23 @@ IN_PROC_BROWSER_TEST_P(TabSearchPageHandlerTest, CloseTab) {
   const int tab_id =
       browser2()->tab_strip_model()->GetTabAtIndex(0)->GetHandle().raw_value();
   EXPECT_CALL(page_, TabUpdated(_)).Times(testing::AnyNumber());
-  EXPECT_CALL(page_, TabsRemoved(_)).Times(1);
+  EXPECT_CALL(
+      page_,
+      TabsRemoved(Truly(
+          [this, tab_id](const tab_search::mojom::TabsRemovedInfoPtr& info) {
+            if (info->tab_ids.size() != 1u || info->tab_ids[0] != tab_id ||
+                info->recently_closed_tabs.size() != 1u) {
+              return false;
+            }
+            ExpectRecentlyClosedTab(info->recently_closed_tabs[0].get(),
+                                    this->tab_url2_.spec(), kTabName2);
+            return true;
+          })))
+      .Times(1);
   handler()->CloseTab(tab_id);
   ASSERT_TRUE(base::test::RunUntil(
       [&]() { return browser2()->tab_strip_model()->count() == 1; }));
+  page_.receiver_.FlushForTesting();
   ASSERT_EQ(2, browser1()->tab_strip_model()->count());
   ASSERT_EQ(1, browser2()->tab_strip_model()->count());
 }
@@ -1789,6 +1803,190 @@ IN_PROC_BROWSER_TEST_P(TabSearchPageHandlerTest,
   EXPECT_TRUE(ntp_tab->favicon_url.has_value());
   EXPECT_TRUE(ntp_tab->favicon_url->SchemeIs(url::kDataScheme));
   EXPECT_FALSE(ntp_tab->is_default_favicon);
+}
+
+class TabSearchPageHandlerOrganizerMetricsTest : public InProcessBrowserTest {
+ public:
+  TabSearchPageHandlerOrganizerMetricsTest() {
+    feature_list_.InitAndEnableFeature(organizer_panel::kOrganizerPanel);
+  }
+
+  void SetUpOnMainThread() override {
+    InProcessBrowserTest::SetUpOnMainThread();
+    ASSERT_TRUE(embedded_test_server()->Start());
+
+    web_contents_ = content::WebContents::Create(
+        content::WebContents::CreateParams(browser()->GetProfile()));
+    web_ui_.set_web_contents(web_contents_.get());
+    webui::SetBrowserWindowInterface(web_contents_.get(), browser());
+    webui_controller_ = std::make_unique<TabSearchUI>(&web_ui_);
+    metrics_reporter_ =
+        std::make_unique<testing::NiceMock<MockMetricsReporter>>();
+    page_ = std::make_unique<testing::StrictMock<MockPage>>();
+    handler_ = std::make_unique<TabSearchPageHandler>(
+        mojo::PendingReceiver<tab_search::mojom::PageHandler>(),
+        page_->BindAndGetRemote(), &web_ui_, webui_controller_.get(),
+        metrics_reporter_.get(), /*log_metrics=*/false);
+    EXPECT_CALL(*page_, HostWindowChanged()).Times(testing::AnyNumber());
+    EXPECT_CALL(*page_, TabUpdated(_)).Times(testing::AnyNumber());
+    EXPECT_CALL(*page_, TabsChanged(_)).Times(testing::AnyNumber());
+    EXPECT_CALL(*page_, TabsRemoved(_)).Times(testing::AnyNumber());
+    EXPECT_CALL(*page_, TabUnsplit()).Times(testing::AnyNumber());
+  }
+
+  void TearDownOnMainThread() override {
+    handler_.reset();
+    page_.reset();
+    metrics_reporter_.reset();
+    webui_controller_.reset();
+    web_contents_.reset();
+    InProcessBrowserTest::TearDownOnMainThread();
+  }
+
+ protected:
+  TabSearchPageHandler* handler() { return handler_.get(); }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+  std::unique_ptr<content::WebContents> web_contents_;
+  content::TestWebUI web_ui_;
+  std::unique_ptr<TabSearchUI> webui_controller_;
+  std::unique_ptr<testing::NiceMock<MockMetricsReporter>> metrics_reporter_;
+  std::unique_ptr<testing::StrictMock<MockPage>> page_;
+  std::unique_ptr<TabSearchPageHandler> handler_;
+};
+
+IN_PROC_BROWSER_TEST_F(TabSearchPageHandlerOrganizerMetricsTest,
+                       RecordsOrganizerCloseMetricsDirectly) {
+  base::HistogramTester histogram_tester;
+  auto* const controller = OrganizerPanelController::From(browser());
+  ASSERT_TRUE(controller);
+
+  ASSERT_TRUE(AddTabAtIndex(0, embedded_test_server()->GetURL("/title1.html?1"),
+                            ui::PAGE_TRANSITION_TYPED));
+  ASSERT_TRUE(AddTabAtIndex(1, embedded_test_server()->GetURL("/title1.html?2"),
+                            ui::PAGE_TRANSITION_TYPED));
+  ASSERT_TRUE(AddTabAtIndex(2, embedded_test_server()->GetURL("/title1.html?3"),
+                            ui::PAGE_TRANSITION_TYPED));
+  ASSERT_TRUE(AddTabAtIndex(3, embedded_test_server()->GetURL("/title1.html?4"),
+                            ui::PAGE_TRANSITION_TYPED));
+
+  // Session 1: CloseTab + CloseTabs accumulate count and record kClosedTab.
+  controller->SetOrganizerVisible(true, /*immediate=*/true);
+  int32_t tab_id0 =
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle().raw_value();
+  int32_t tab_id1 =
+      browser()->GetTabStripModel()->GetTabAtIndex(1)->GetHandle().raw_value();
+  int32_t tab_id2 =
+      browser()->GetTabStripModel()->GetTabAtIndex(2)->GetHandle().raw_value();
+  handler()->CloseTab(tab_id0);
+  handler()->CloseTabs({tab_id1, tab_id2});
+  // Invalid tab IDs must not affect metrics.
+  handler()->CloseTab(-1);
+  handler()->CloseTabs({-1});
+  if (controller->IsOrganizerPanelVisible()) {
+    controller->SetOrganizerVisible(false, /*immediate=*/true);
+  }
+  histogram_tester.ExpectBucketCount("Tabs.Organizer.CloseAction",
+                                     OrganizerPanelCloseAction::kClosedTab, 1);
+  histogram_tester.ExpectBucketCount("Tabs.Organizer.NumTabsClosedPerInstance",
+                                     3, 1);
+
+  // Session 2: CloseTab followed by SwitchToTab records kSwitchToTab and 1.
+  sessions::TabRestoreService* tab_restore_service =
+      TabRestoreServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !tab_restore_service->entries().empty(); }));
+  controller->SetOrganizerVisible(true, /*immediate=*/true);
+  int32_t switch_tab_id =
+      browser()->GetTabStripModel()->GetTabAtIndex(0)->GetHandle().raw_value();
+  int32_t close_tab_id =
+      browser()->GetTabStripModel()->GetTabAtIndex(1)->GetHandle().raw_value();
+  handler()->CloseTab(close_tab_id);
+  auto switch_to_tab_info = tab_search::mojom::SwitchToTabInfo::New();
+  switch_to_tab_info->tab_id = switch_tab_id;
+  handler()->SwitchToTab(std::move(switch_to_tab_info));
+  if (controller->IsOrganizerPanelVisible()) {
+    controller->SetOrganizerVisible(false, /*immediate=*/true);
+  }
+  histogram_tester.ExpectBucketCount(
+      "Tabs.Organizer.CloseAction", OrganizerPanelCloseAction::kSwitchToTab, 1);
+  histogram_tester.ExpectBucketCount("Tabs.Organizer.NumTabsClosedPerInstance",
+                                     1, 1);
+
+  // Session 3: OpenRecentlyClosedEntry records kOpenRecentlyClosed.
+  controller->SetOrganizerVisible(true, /*immediate=*/true);
+  int32_t recent_id = tab_restore_service->entries().front()->id.id();
+  handler()->OpenRecentlyClosedEntry(recent_id);
+  if (controller->IsOrganizerPanelVisible()) {
+    controller->SetOrganizerVisible(false, /*immediate=*/true);
+  }
+  histogram_tester.ExpectBucketCount(
+      "Tabs.Organizer.CloseAction",
+      OrganizerPanelCloseAction::kOpenRecentlyClosed, 1);
+
+  // No Tab Search close metrics are recorded when log_metrics is false.
+  histogram_tester.ExpectTotalCount("Tabs.TabSearch.CloseAction2", 0);
+}
+
+IN_PROC_BROWSER_TEST_P(TabSearchPageHandlerTest,
+                       SwitchToDiscardedTabReloadsTab) {
+  AddTabWithTitle(browser1(), tab_url2_, kTabName2);
+  AddTabWithTitle(browser1(), tab_url1_, kTabName1);
+
+  TabStripModel* tab_strip_model = browser1()->GetTabStripModel();
+  content::WebContents* background_contents =
+      tab_strip_model->GetWebContentsAt(1);
+  auto* lifecycle_unit =
+      resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+          background_contents);
+  ASSERT_TRUE(lifecycle_unit);
+  ASSERT_TRUE(lifecycle_unit->DiscardTab(
+      ::mojom::LifecycleUnitDiscardReason::EXTERNAL));
+
+  content::WebContents* discarded_contents =
+      tab_strip_model->GetWebContentsAt(1);
+  ASSERT_EQ(::mojom::LifecycleUnitState::DISCARDED,
+            resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+                discarded_contents)
+                ->GetTabState());
+
+  // When the Tab Search bubble widget is open and focused, it holds a
+  // PaintAsActiveLock on the browser widget while the bubble widget itself is
+  // the active OS widget (`GetWindow()->IsActive()` is false, while
+  // `browser1()->IsActive()` remains true).
+  views::Widget* browser_widget = views::Widget::GetWidgetForNativeWindow(
+      browser1()->GetWindow()->GetNativeWindow());
+  ASSERT_TRUE(browser_widget);
+  views::BubbleDialogDelegate bubble_delegate(browser_widget->GetRootView(),
+                                              views::BubbleBorder::TOP_RIGHT);
+  std::unique_ptr<views::Widget> bubble_widget =
+      views::BubbleDialogDelegate::CreateBubble(&bubble_delegate);
+  bubble_widget->Show();
+  ASSERT_TRUE(browser1()->IsActive());
+  ASSERT_FALSE(browser1()->GetWindow()->IsActive());
+
+  base::HistogramTester histogram_tester;
+  const int32_t discarded_tab_id =
+      tab_strip_model->GetTabAtIndex(1)->GetHandle().raw_value();
+  auto switch_to_tab_info = tab_search::mojom::SwitchToTabInfo::New();
+  switch_to_tab_info->tab_id = discarded_tab_id;
+  handler()->SwitchToTab(std::move(switch_to_tab_info));
+  bubble_widget->CloseNow();
+
+  EXPECT_EQ(1, tab_strip_model->active_index());
+  content::WebContents* active_contents =
+      tab_strip_model->GetActiveWebContents();
+  ASSERT_TRUE(active_contents);
+  ASSERT_NE(::mojom::LifecycleUnitState::DISCARDED,
+            resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+                active_contents)
+                ->GetTabState());
+  histogram_tester.ExpectUniqueSample("Tab.Discarding.Reload.CausedByFocus",
+                                      true, 1);
+  EXPECT_TRUE(content::WaitForLoadStop(active_contents));
+  EXPECT_FALSE(active_contents->WasDiscarded());
+  EXPECT_TRUE(active_contents->GetPrimaryMainFrame()->IsRenderFrameLive());
 }
 
 }  // namespace

@@ -74,11 +74,9 @@
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
-#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
-#include "content/public/browser/reduce_accept_language_utils.h"
 #include "content/public/browser/shared_cors_origin_access_list.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/common/content_features.h"
@@ -519,7 +517,9 @@ bool GetHttpCacheBackendResetParam(
 
 ProfileNetworkContextService::ProfileNetworkContextService(Profile* profile)
     : profile_(profile),
-      proxy_config_monitor_(std::make_unique<ProxyConfigMonitor>(profile)) {
+      proxy_config_monitor_(std::make_unique<ProxyConfigMonitor>(
+          profile,
+          /*record_affiliation_metrics=*/profile->IsRegularProfile())) {
   TRACE_EVENT0("startup", "ProfileNetworkContextService::ctor");
   PrefService* profile_prefs = profile->GetPrefs();
   quic_allowed_.Init(prefs::kQuicAllowed, profile_prefs,
@@ -711,11 +711,10 @@ void ProfileNetworkContextService::OnThirdPartyCookieBlockingChanged(
 }
 
 std::string ProfileNetworkContextService::ComputeAcceptLanguage() const {
-  return ComputeAcceptLanguageFromPref(
-      content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
-          profile_->IsOffTheRecord() ? language::GetIncognitoLanguageList(
-                                           pref_accept_language_.GetValue())
-                                     : pref_accept_language_.GetValue()));
+  return ComputeAcceptLanguageFromPref(language::GetLanguagesWithMaxCount(
+      profile_->IsOffTheRecord()
+          ? language::GetIncognitoLanguageList(pref_accept_language_.GetValue())
+          : pref_accept_language_.GetValue()));
 }
 
 void ProfileNetworkContextService::UpdateReferrersEnabled() {
@@ -746,7 +745,6 @@ void ProfileNetworkContextService::UpdateCTPolicy() {
   // TODO(crbug.com/41392053): CT policy needs to be sent to both network
   // service and cert verifier service. Finish refactoring so that it is only
   // sent to cert verifier service.
-  std::vector<network::mojom::NetworkContext*> contexts;
   profile_->ForEachLoadedStoragePartition(
       [&](content::StoragePartition* storage_partition) {
         storage_partition->GetNetworkContext()->SetCTPolicy(GetCTPolicy());

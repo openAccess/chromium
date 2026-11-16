@@ -7,6 +7,9 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/numerics/byte_conversions.h"
 #include "ipcz/driver_object.h"
 #include "ipcz/driver_transport.h"
 #include "ipcz/ipcz.h"
@@ -18,7 +21,6 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "util/ref_counted.h"
-#include "util/unsafe_buffers.h"
 
 namespace ipcz {
 namespace {
@@ -41,14 +43,13 @@ class MessageTest : public testing::Test {
   MessageTest() {
     // All serialized messages transmitted through `transport()` will be
     // captured directly in `received_messages_`.
-    EXPECT_CALL(driver(), Transmit(kTransportHandle, _, _, _, _, _, _))
-        .WillRepeatedly([&](IpczDriverHandle driver_transport, const void* data,
-                            size_t num_bytes, const IpczDriverHandle* handles,
-                            size_t num_handles, uint32_t, const void*) {
-          const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    EXPECT_CALL(driver(), Transmit(kTransportHandle, _, _, _, _))
+        .WillRepeatedly([&](IpczDriverHandle driver_transport,
+                            base::span<const uint8_t> data,
+                            base::span<const IpczDriverHandle> handles,
+                            uint32_t, const void*) {
           received_messages_.push(
-              {{bytes, IPCZ_UNSAFE_TODO(bytes + num_bytes)},
-               {handles, IPCZ_UNSAFE_TODO(handles + num_handles)}});
+              {{data.begin(), data.end()}, {handles.begin(), handles.end()}});
           return IPCZ_RESULT_OK;
         });
 
@@ -82,19 +83,19 @@ class MessageTest : public testing::Test {
     // "Deserialization" reverses the process above: 2 data bytes are expected
     // and 1 transmissible handle is expected, and these are combined into a
     // single new driver handle value to represent the deserialized object.
-    EXPECT_CALL(driver(), Deserialize(_, _, _, _, kTransportHandle, _, _, _))
-        .WillRepeatedly([&](const volatile void* data, size_t num_bytes,
-                            const IpczDriverHandle* handles, size_t num_handles,
+    EXPECT_CALL(driver(), Deserialize(_, _, kTransportHandle, _, _, _))
+        .WillRepeatedly([&](base::span<const uint8_t> data,
+                            base::span<const IpczDriverHandle> handles,
                             IpczDriverHandle transport, uint32_t, const void*,
                             IpczDriverHandle* handle) {
           if (reject_driver_objects_) {
             return IPCZ_RESULT_INVALID_ARGUMENT;
           }
 
-          ABSL_ASSERT(num_bytes == 2);
-          ABSL_ASSERT(num_handles == 1);
+          ABSL_ASSERT(data.size() == 2);
+          ABSL_ASSERT(handles.size() == 1);
           const uint16_t data_value =
-              reinterpret_cast<const volatile uint16_t*>(data)[0];
+              base::U16FromNativeEndian(data.first<sizeof(uint16_t)>());
           *handle =
               (static_cast<IpczDriverHandle>(data_value) << 16) | handles[0];
           return IPCZ_RESULT_OK;
@@ -223,8 +224,8 @@ TEST_F(MessageTest, DriverObjectArray) {
                                                  0x42425555};
   DriverObject in_objects[std::size(kObjectHandles)];
   for (size_t i = 0; i < std::size(kObjectHandles); ++i) {
-    IPCZ_UNSAFE_TODO(in_objects[i]) = DriverObject(
-        test::GetMockDriver(), IPCZ_UNSAFE_TODO(kObjectHandles[i]));
+    UNSAFE_TODO(in_objects[i]) =
+        DriverObject(test::GetMockDriver(), UNSAFE_TODO(kObjectHandles[i]));
   }
 
   test::msg::MessageWithDriverObjectArray in;
@@ -239,7 +240,7 @@ TEST_F(MessageTest, DriverObjectArray) {
   auto objects = out.GetDriverObjectArrayView(out.v0()->objects);
   EXPECT_EQ(3u, objects.size());
   for (size_t i = 0; i < objects.size(); ++i) {
-    IPCZ_UNSAFE_TODO(EXPECT_EQ(kObjectHandles[i], objects[i].release()));
+    UNSAFE_TODO(EXPECT_EQ(kObjectHandles[i], objects[i].release()));
   }
 }
 
@@ -328,8 +329,8 @@ TEST_F(MessageTest, DriverObjectClaimedTwice) {
                                                  0x42425555};
   DriverObject in_objects[std::size(kObjectHandles)];
   for (size_t i = 0; i < std::size(kObjectHandles); ++i) {
-    IPCZ_UNSAFE_TODO(in_objects[i]) = DriverObject(
-        test::GetMockDriver(), IPCZ_UNSAFE_TODO(kObjectHandles[i]));
+    UNSAFE_TODO(in_objects[i]) =
+        DriverObject(test::GetMockDriver(), UNSAFE_TODO(kObjectHandles[i]));
   }
 
   test::msg::MessageWithDriverArrayAndExtraObject in;
@@ -429,9 +430,8 @@ TEST_F(MessageTest, OverlappingDriverHandles) {
   // test manually executes the steps normally taken by `Message::Serialize()`
   // to build an invalid message.
   transport().driver_object().driver()->Transmit(
-      transport().driver_object().handle(), in.data_view().data(),
-      in.data_view().size(), handles.data(), handles.size(), IPCZ_NO_FLAGS,
-      nullptr);
+      transport().driver_object().handle(), in.data_view(), handles,
+      IPCZ_NO_FLAGS, nullptr);
 
   ReceivedMessage serialized = TakeNextReceivedMessage();
 

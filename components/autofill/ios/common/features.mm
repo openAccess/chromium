@@ -44,8 +44,6 @@ BASE_FEATURE(kAutofillPaymentsSheetStateless,
 
 BASE_FEATURE(kAutofillPaymentsSheetV2Ios, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kAutofillPaymentsSheetV3Ios, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kAutofillRejectFormSubmissionsWithoutUserGesture,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -55,6 +53,20 @@ BASE_FEATURE(kAutofillReportFormSubmissionErrors,
 // LINT.ThenChange(/components/autofill/ios/form_util/resources/autofill_form_features.ts:autofill_report_form_submission_errors)
 
 BASE_FEATURE(kAutofillStickyInfobarIos, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kAutofillSuggestionPipelineIOS, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<AutofillSuggestionPipelineStage>::Option
+    kAutofillSuggestionPipelineStageOptions[] = {
+        {AutofillSuggestionPipelineStage::kLegacy, "0"},
+        {AutofillSuggestionPipelineStage::kBAMAutofill, "1"}};
+
+BASE_FEATURE_ENUM_PARAM(AutofillSuggestionPipelineStage,
+                        kAutofillSuggestionPipelineStageParam,
+                        &kAutofillSuggestionPipelineIOS,
+                        kAutofillSuggestionPipelineStageParamName,
+                        AutofillSuggestionPipelineStage::kLegacy,
+                        &kAutofillSuggestionPipelineStageOptions);
 
 // LINT.IfChange(autofill_support_content_editable_ios)
 BASE_FEATURE(kAutofillSupportContentEditableIos,

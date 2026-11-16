@@ -105,7 +105,7 @@ class MediaSessionImpl : public MediaSession,
   CONTENT_EXPORT void RemovePlayers(MediaSessionPlayerObserver* observer);
 
   // Called when the position state of the session might have changed.
-  CONTENT_EXPORT void RebuildAndNotifyMediaPositionChanged();
+  CONTENT_EXPORT void RebuildAndNotifyMediaPositionChanged() override;
 
   // Returns if the session is currently active.
   CONTENT_EXPORT bool IsActive() const;
@@ -227,6 +227,8 @@ class MediaSessionImpl : public MediaSession,
   // Returns the current media session metadata for a one-off request.
   CONTENT_EXPORT const media_session::MediaMetadata& GetMediaSessionMetadata()
       override;
+
+  CONTENT_EXPORT void RebuildAndNotifyMetadataChanged() override;
 
   // Returns the current media session actions synchronously for a one-off
   // request.
@@ -508,10 +510,6 @@ class MediaSessionImpl : public MediaSession,
   // Rebuilds |actions_| and notifies observers if they have changed.
   void RebuildAndNotifyActionsChanged();
 
-  // Rebuilds |metadata_| and |images_| and notifies observers if they have
-  // changed.
-  void RebuildAndNotifyMetadataChanged();
-
 #if BUILDFLAG(IS_CHROMEOS)
   void BuildPlaceholderMetadata(
       media_session::MediaMetadata& metadata,
@@ -520,6 +518,7 @@ class MediaSessionImpl : public MediaSession,
 
   void BuildMetadata(media_session::MediaMetadata& metadata,
                      std::vector<media_session::MediaImage>& artwork);
+  void MaybeApplyPlayerMetadata(media_session::MediaMetadata& metadata);
 
   bool IsPictureInPictureAvailable() const;
   bool IsVideoFrameAvailable() const;

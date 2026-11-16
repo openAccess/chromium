@@ -1572,12 +1572,16 @@ public class NtpCustomizationUtils {
      *
      * <p>Used to ignore synced themes that don't change anything, e.g. the synced state replayed
      * when the native bridge attaches on startup, or a duplicate delivery of the current theme.
-     * Skipping these keeps the local state (e.g. a local chrome color daily refresh with the same
-     * color id) intact instead of clearing SharedPreferences and re-staging the same theme.
+     * Skipping these keeps the local state intact instead of clearing SharedPreferences and
+     * re-staging the same theme.
      *
      * <p>The comparison is with SharedPreferences rather than with the in-memory state, which may
      * not be initialized yet or may be stale between a synced update and the NTP applying it. A
      * pending daily refresh isn't considered either: a synced copy of the persisted theme keeps it.
+     *
+     * <p>A Chrome color with daily refresh rotates on each device on its own schedule, so two such
+     * colors are the same theme whichever color each device currently shows, e.g. the color this
+     * device started from, replayed on startup after it rotated.
      *
      * <p>Colors are compared with {@link NtpBackgroundDataBase#hasSameThemeAndCompatibleColor}, so
      * a theme collection image synced without a primary color (e.g. from iOS) still matches the
@@ -1596,8 +1600,16 @@ public class NtpCustomizationUtils {
         // TODO(crbug.com/488439751): Check NtpBackgroundDataCustomizedColor once custom hex color
         // sync is supported.
         if (syncedBackgroundData instanceof NtpBackgroundDataColor colorData) {
-            return persistedType == NtpBackgroundType.CHROME_COLOR
-                    && colorData.getThemeColorId() == getNtpThemeColorIdFromSharedPreference();
+            if (persistedType != NtpBackgroundType.CHROME_COLOR) return false;
+
+            boolean isDailyRefreshEnabled = colorData.isChromeColorDailyRefreshEnabled();
+            if (isDailyRefreshEnabled
+                    != getIsChromeColorDailyRefreshEnabledFromSharedPreference()) {
+                return false;
+            }
+
+            return isDailyRefreshEnabled
+                    || colorData.getThemeColorId() == getNtpThemeColorIdFromSharedPreference();
         }
 
         return syncedBackgroundData.hasSameThemeAndCompatibleColor(
@@ -1802,13 +1814,16 @@ public class NtpCustomizationUtils {
     /**
      * Calculates the adjusted bottom margin for the Logo view in pixels. Offsets the standard logo
      * margin against the vertical shadow padding to prevent visual layout shifts regardless of
-     * whether the shadow is visible or not.
+     * whether the shadow is visible or not. In the NTP Aurora V2 layouts without the composeplate
+     * row, this includes extra space that keeps the feed aligned, see {@link
+     * NewTabPageUtils#getLogoBottomMarginDeltaPx(Resources)}.
      *
      * @param resources Android resources.
      * @return The final adjusted bottom margin in pixels.
      */
     public static int getLogoViewBottomMarginPx(Resources resources) {
-        return resources.getDimensionPixelSize(R.dimen.ntp_logo_margin_bottom);
+        return resources.getDimensionPixelSize(R.dimen.ntp_logo_margin_bottom)
+                + NewTabPageUtils.getLogoBottomMarginDeltaPx(resources);
     }
 
     /**

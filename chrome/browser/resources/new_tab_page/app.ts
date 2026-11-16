@@ -40,7 +40,7 @@ import {CustomizeChromeSection} from './customize_chrome.mojom-webui.js';
 import {CustomizeDialogPage} from './customize_dialog_types.js';
 import type {IframeElement} from './iframe.js';
 import type {LogoElement} from './logo.js';
-import {recordBoolean, recordDuration, recordEnumeration, recordLinearValue, recordLoadDuration, recordSparseValueWithPersistentHash, recordVoiceAction, VoiceAction} from './metrics_utils.js';
+import {recordBoolean, recordDuration, recordEnumeration, recordLinearValue, recordSparseValueWithPersistentHash, recordVoiceAction, VoiceAction} from './metrics_utils.js';
 import {ParentTrustedDocumentProxy} from './modules/microsoft_auth_frame_connector.js';
 import type {PageCallbackRouter, PageHandlerInterface, Theme} from './new_tab_page.mojom-webui.js';
 import {browserProxyFactory as newTabPageProxyFactory, NtpBackgroundImageSource} from './new_tab_page.mojom-webui.js';
@@ -266,8 +266,6 @@ export class AppElement extends AppElementBase {
       modulesEnabled_: {type: Boolean},
 
       browserPromoType_: {type: String},
-      browserPromoLimit_: {type: Number},
-      browserPromoCompletedLimit_: {type: Number},
       showBrowserPromo_: {type: Boolean},
       caretAnimationsEnabled_: {type: Boolean},
       usePecApi_: {type: Boolean},
@@ -409,10 +407,10 @@ export class AppElement extends AppElementBase {
   protected accessor backgroundImageAttribution2_: string = '';
   protected accessor backgroundImageAttributionUrl_: string = '';
   protected accessor colorSourceIsBaseline: boolean = false;
-  protected accessor logoColor_: SkColor|null = null;
+  private accessor logoColor_: SkColor|null = null;
   protected accessor singleColoredLogo_: boolean = false;
   protected accessor realboxShown_: boolean = false;
-  protected accessor wasComposeboxOpened_: boolean = false;
+  private accessor wasComposeboxOpened_: boolean = false;
   protected accessor showLensUploadDialog_: boolean = false;
   protected accessor showComposebox_: boolean = false;
   protected accessor caretAnimationsEnabled_: boolean =
@@ -435,10 +433,6 @@ export class AppElement extends AppElementBase {
       loadTimeData.getBoolean('modulesEnabled');
   protected accessor browserPromoType_: string =
       loadTimeData.getString('browserPromoType');
-  protected accessor browserPromoLimit_: number =
-      loadTimeData.getInteger('browserPromoLimit');
-  protected accessor browserPromoCompletedLimit_: number =
-      loadTimeData.getInteger('browserPromoCompletedLimit');
   protected accessor showBrowserPromo_: boolean = false;
   protected accessor modulesShownToUser: boolean = false;
   protected accessor microsoftModuleEnabled_: boolean =
@@ -451,7 +445,7 @@ export class AppElement extends AppElementBase {
   protected accessor scrolledToTop_: boolean = true;
   protected accessor wallpaperSearchButtonAnimationEnabled_: boolean =
       loadTimeData.getBoolean('wallpaperSearchButtonAnimationEnabled');
-  protected accessor wallpaperSearchButtonEnabled_: boolean =
+  private accessor wallpaperSearchButtonEnabled_: boolean =
       loadTimeData.getBoolean('wallpaperSearchButtonEnabled');
   protected accessor showWallpaperSearchButton_: boolean = false;
   protected accessor isActionChipsVisible_: boolean =
@@ -471,16 +465,16 @@ export class AppElement extends AppElementBase {
       loadTimeData.getInteger('maxMostVisitedTilesInExpandedState');
   protected accessor maxEnterpriseShortcuts_: number =
       loadTimeData.getInteger('maxEnterpriseShortcuts');
-  protected accessor containerFocused_: boolean = false;
+  private accessor containerFocused_: boolean = false;
   protected accessor composeboxFocused_: boolean = false;
   protected accessor pageContentHidden_: boolean = false;
   protected accessor composeboxOutsideClickEnabled_: boolean =
       loadTimeData.getBoolean('composeboxRealboxOutsideClick');
   protected accessor showScrim_: boolean = false;
-  protected realboxContextMenuAnimationAllowed_: boolean = false;
+  private realboxContextMenuAnimationAllowed_: boolean = false;
   protected accessor contextMenuGlifAnimationState_: GlifAnimationState =
       GlifAnimationState.INELIGIBLE;
-  protected accessor undoToastCallback_: (() => void)|null = null;
+  private accessor undoToastCallback_: (() => void)|null = null;
   protected accessor undoToastMessage_: string|null = null;
   protected accessor enableThreadsRail_: boolean =
       loadTimeData.getBoolean('enableThreadsRail');
@@ -492,7 +486,7 @@ export class AppElement extends AppElementBase {
       loadTimeData.getString('energyEffectVariant');
   protected accessor showCustomizeButton_: boolean =
       loadTimeData.getBoolean('showCustomizeButton');
-  protected contextMenuAnimationLimitingEnabled_: boolean =
+  private contextMenuAnimationLimitingEnabled_: boolean =
       loadTimeData.getBoolean('contextMenuAnimationLimitingEnabled');
   protected accessor searchboxCallbackRouter_: SearchboxPageCallbackRouter;
   protected accessor rhsWidth_: number|null = null;
@@ -1092,7 +1086,7 @@ export class AppElement extends AppElementBase {
           ?.focusInput();
     }
     if (!this.wasComposeboxOpened_) {
-      recordLoadDuration(
+      recordDuration(
           'NewTabPage.Composebox.FromNTPLoadToSessionStart',
           WindowProxy.getInstance().now());
       this.wasComposeboxOpened_ = true;
@@ -1130,13 +1124,7 @@ export class AppElement extends AppElementBase {
       const composebox =
           this.shadowRoot.querySelector<NtpComposeboxElement>('#composebox');
       assert(composebox);
-      const closeComposebox = new CustomEvent('closeComposebox', {
-        detail: {composeboxText: composebox.input},
-        bubbles: true,
-        cancelable: true,
-      });
-
-      this.onCloseComposebox_(closeComposebox);
+      composebox.closeComposebox();
     }
   }
 
@@ -1165,7 +1153,6 @@ export class AppElement extends AppElementBase {
         this.shadowRoot.querySelector<NtpComposeboxElement>('#composebox');
     assert(composebox);
     composebox.input = '';
-    composebox.resetModes();
     if (this.ntpRealboxNextEnabled_) {
       composebox.closeDropdown();
     }
@@ -1455,7 +1442,7 @@ export class AppElement extends AppElementBase {
   private onModulesLoadedChange_() {
     if (this.modulesLoaded_ &&
         loadTimeData.getBoolean('modulesEnabled')) {
-      recordLoadDuration(
+      recordDuration(
           'NewTabPage.Modules.ShownTime', WindowProxy.getInstance().now());
     }
   }

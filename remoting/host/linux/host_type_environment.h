@@ -8,15 +8,19 @@
 #include <sys/types.h>
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "base/files/file_path.h"
 
 namespace remoting {
 
-// Wraps the system state that host types inspect and modify (systemd units and
-// the session routing config file), so that host type logic can be unit
-// tested. The unit methods run `systemctl` and block.
+// Wraps the system state that host types inspect and modify (systemd units,
+// the multi-process host config file, the host type record and the session
+// routing config file), so that host type logic can be unit tested. The unit
+// methods run `systemctl` and block.
 class HostTypeEnvironment {
  public:
   // Creates an environment that operates on the real system with `systemctl`.
@@ -24,9 +28,17 @@ class HostTypeEnvironment {
 
   virtual ~HostTypeEnvironment();
 
-  // Returns whether the systemd unit `unit` (e.g. `foo@user.service`) is
-  // active.
-  virtual bool IsUnitActive(const std::string& unit) const = 0;
+  // Returns the active state of the systemd unit `unit` (e.g.
+  // `foo@user.service`) as printed by `systemctl is-active`, e.g. "active",
+  // "activating", "reloading", "deactivating", "inactive" or "failed". Returns
+  // an empty string if the state can't be determined.
+  virtual std::string GetUnitActiveState(const std::string& unit) const = 0;
+
+  // Returns whether `unit` is running or about to run, i.e. its active state
+  // (see GetUnitActiveState()) is "active", "activating", "reloading" or
+  // "refreshing". Unlike the exit status of `systemctl is-active`, this
+  // includes "activating", e.g. for a host that is starting up.
+  bool IsUnitActive(const std::string& unit) const;
 
   // Returns whether `systemctl is-enabled` succeeds for `unit`. Note that this
   // is also true for states other than `enabled`, e.g. `static`, `alias` and
@@ -39,12 +51,26 @@ class HostTypeEnvironment {
   // Disables and stops `unit`. Returns false on failure.
   virtual bool DisableAndStopUnit(const std::string& unit) = 0;
 
+  // Returns the names of the units matching the glob `unit_pattern` (e.g.
+  // `foo@*.service`) that are enabled or active (see IsUnitActive()). Returns
+  // std::nullopt if this can't be determined, so that callers can fail
+  // instead of leaving such a unit behind.
+  virtual std::optional<std::vector<std::string>> ListEnabledOrActiveUnits(
+      std::string_view unit_pattern) const = 0;
+
   // Returns the path of the session routing config file.
   virtual base::FilePath GetSessionRoutingConfigPath() const = 0;
 
-  // Returns the UID that must own the session routing config file and its
-  // directory: 0 in production. Passed to
-  // SessionRoutingConfig::LoadAndValidate().
+  // Returns the path of the host type record (see
+  // HostType::WriteHostTypeRecord()).
+  virtual base::FilePath GetHostTypeRecordPath() const = 0;
+
+  // Returns whether the multi-process host config file exists.
+  virtual bool MultiProcessConfigExists() const = 0;
+
+  // Returns the UID that must own the session routing config file, the host
+  // type record, and their directory: 0 in production. Passed to
+  // SessionRoutingConfig::LoadAndValidate() and ReadSecureFile().
   virtual uid_t GetExpectedOwnerUid() const = 0;
 };
 

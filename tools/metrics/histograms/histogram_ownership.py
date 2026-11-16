@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2014 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -6,8 +6,6 @@
 """A simple tool to go through histograms.xml and print out the owners for
 histograms.
 """
-
-from __future__ import print_function
 
 import os
 import sys
@@ -28,7 +26,7 @@ def PrintOwners(root):
     if node.tag == 'histograms':
       histograms = node
       break
-  assert histograms
+  assert histograms is not None
 
   for histogram in histograms:
     if histogram.tag != 'histogram':
@@ -55,10 +53,10 @@ def main():
         histograms.xml.
 
   Example usage to print owners of metadata/Accessibility/histograms.xml:
-    python histogram_ownership.py metadata/Accessibility/histograms.xml
+    python3 histogram_ownership.py metadata/Accessibility/histograms.xml
 
   Example usage to print owners of all histograms:
-    python histogram_ownership.py
+    python3 histogram_ownership.py
   """
   if len(sys.argv) == 1:
     root = merge_xml.MergeFiles(

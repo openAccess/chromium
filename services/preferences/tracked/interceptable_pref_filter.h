@@ -55,7 +55,9 @@ class InterceptablePrefFilter : public PrefFilter {
       scoped_refptr<os_crypt_async::Encryptor> encryptor) = 0;
 
   // Sets the preference paths that were migrated from another store during
-  // FilterOnLoad interception (e.g. initial preferences on first run).
+  // FilterOnLoad interception. Only called on a first run where Preferences
+  // was seeded from initial preferences in this process; their encrypted
+  // hashes are then initialized once the encryptor is available.
   virtual void SetMigratedPaths(base::span<const std::string> migrated_paths) {}
 
  private:

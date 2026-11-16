@@ -8,8 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <ctime>
-#include <map>
 #include <memory>
 #include <ostream>
 #include <set>
@@ -21,6 +21,8 @@
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 #include "ui/accessibility/ax_common.h"
 #include "ui/accessibility/ax_error_types.h"
 #include "ui/accessibility/ax_export.h"
@@ -236,7 +238,7 @@ class AXTreeSerializer {
   raw_ptr<ClientTreeNode, DanglingUntriaged> client_root_ = nullptr;
 
   // A map from IDs to nodes in the client tree.
-  std::map<AXNodeID, ClientTreeNode*> client_id_map_;
+  absl::flat_hash_map<AXNodeID, ClientTreeNode*> client_id_map_;
 
   // The maximum number of nodes to serialize in a given call to
   // SerializeChanges, or 0 if there's no maximum.
@@ -394,9 +396,10 @@ std::vector<AXNodeID> AXTreeSerializer<AXSourceNode,
                                        AXNodeDataType>::ClientTreeNodeIds()
     const {
   std::vector<AXNodeID> keys;
-  std::transform(
-      client_id_map_.begin(), client_id_map_.end(), std::back_inserter(keys),
-      [](std::pair<AXNodeID, ClientTreeNode*> item) { return item.first; });
+  keys.reserve(client_id_map_.size());
+  for (const auto& item : client_id_map_) {
+    keys.push_back(item.first);
+  }
   return keys;
 }
 
@@ -627,9 +630,10 @@ AXTreeSerializer<AXSourceNode,
                  AXTreeUpdateType,
                  AXTreeDataType,
                  AXNodeDataType>::ClientTreeNodeById(AXNodeID id) {
-  std::map<AXNodeID, ClientTreeNode*>::iterator iter = client_id_map_.find(id);
-  if (iter != client_id_map_.end())
+  auto iter = client_id_map_.find(id);
+  if (iter != client_id_map_.end()) {
     return iter->second;
+  }
   return nullptr;
 }
 
@@ -967,12 +971,13 @@ bool AXTreeSerializer<AXSourceNode,
   // If we've hit the maximum number of serialized nodes, pretend
   // this node has no children but keep going so that we get
   // consistent results.
-  std::set<AXNodeID> new_ignored_ids;
-  std::set<AXNodeID> new_child_ids;
+  absl::flat_hash_set<AXNodeID> new_ignored_ids;
+  absl::flat_hash_set<AXNodeID> new_child_ids;
   size_t num_children = 0;
   if (!should_terminate_early) {
     tree_->CacheChildrenIfNeeded(node);
     num_children = tree_->GetChildCount(node);
+    new_child_ids.reserve(num_children);
   }
   for (size_t i = 0; i < num_children; ++i) {
     AXSourceNode child = tree_->ChildAt(node, i);
@@ -1016,13 +1021,14 @@ bool AXTreeSerializer<AXSourceNode,
   // first in a separate pass so that nodes that are reparented
   // don't end up children of two different parents in the middle
   // of an update, which can lead to a double-free.
-  std::map<AXNodeID, ClientTreeNode*> client_child_id_map;
+  absl::flat_hash_map<AXNodeID, ClientTreeNode*> client_child_id_map;
   std::vector<raw_ptr<ClientTreeNode, UnprotectedInRelease>> old_children;
   old_children.swap(client_node->children);
+  client_child_id_map.reserve(std::min(old_children.size(), num_children));
   for (size_t i = 0; i < old_children.size(); ++i) {
     ClientTreeNode* old_child = old_children[i];
     int old_child_id = old_child->id;
-    if (new_child_ids.find(old_child_id) == new_child_ids.end()) {
+    if (!new_child_ids.contains(old_child_id)) {
       old_children[i] = nullptr;
       DeleteClientSubtree(old_child);
     } else {
@@ -1066,6 +1072,7 @@ bool AXTreeSerializer<AXSourceNode,
   // Iterate over the children, serialize them, and update the ClientTreeNode
   // data structure to reflect the new tree.
   std::vector<AXNodeID> actual_serialized_node_child_ids;
+  actual_serialized_node_child_ids.reserve(num_children);
   client_node->children.reserve(num_children);
   for (size_t i = 0; i < num_children; ++i) {
     AXSourceNode child = tree_->ChildAt(node, i);
@@ -1073,19 +1080,20 @@ bool AXTreeSerializer<AXSourceNode,
     int child_id = tree_->GetId(child);
 
     // Skip if the same child is included more than once.
-    if (new_child_ids.find(child_id) == new_child_ids.end())
+    if (new_child_ids.erase(child_id) == 0) {
       continue;
+    }
 
-    new_child_ids.erase(child_id);
     actual_serialized_node_child_ids.push_back(child_id);
     ClientTreeNode* reused_child = nullptr;
-    if (client_child_id_map.find(child_id) != client_child_id_map.end())
-      reused_child = ClientTreeNodeById(child_id);
+    if (auto it = client_child_id_map.find(child_id);
+        it != client_child_id_map.end()) {
+      reused_child = it->second;
+    }
     if (reused_child) {
       client_node->children.push_back(reused_child);
       const bool ignored_state_changed =
-          reused_child->ignored !=
-          (new_ignored_ids.find(reused_child->id) != new_ignored_ids.end());
+          reused_child->ignored != new_ignored_ids.contains(reused_child->id);
       // Re-serialize it if the child is marked as dirty, otherwise
       // we don't have to because the client already has it.
       if (reused_child->IsDirty() || ignored_state_changed) {
@@ -1100,7 +1108,8 @@ bool AXTreeSerializer<AXSourceNode,
       new_child->in_dirty_subtree = false;
       new_child->is_dirty = false;
       client_node->children.push_back(new_child);
-      if (ClientTreeNodeById(child_id)) {
+      if (auto [it, inserted] = client_id_map_.try_emplace(child_id, new_child);
+          !inserted) {
         // TODO(accessibility) Remove all cases where this occurs and re-add
         // This condition leads to performance problems. It will
         // also reset virtual buffers, causing users to lose their place.
@@ -1110,8 +1119,8 @@ bool AXTreeSerializer<AXSourceNode,
               << tree_->GetDebugString(tree_->EnsureGetFromId(child_id))
               << "\nWanted for parent " << tree_->GetDebugString(node)
               << "\nAlready had parent "
-              << tree_->GetDebugString(tree_->EnsureGetFromId(
-                     ClientTreeNodeById(child_id)->parent->id));
+              << tree_->GetDebugString(
+                     tree_->EnsureGetFromId(it->second->parent->id));
         static auto* dupe_id_err = base::debug::AllocateCrashKeyString(
             "ax_ts_dupe_id_err", base::debug::CrashKeySize::Size256);
         base::debug::SetCrashKeyString(dupe_id_err, error.str().substr(0, 230));
@@ -1124,7 +1133,6 @@ bool AXTreeSerializer<AXSourceNode,
         tree_->ClearChildCache(node);
         return false;
       }
-      client_id_map_[child_id] = new_child;
       if (!SerializeChangedNodes(child, out_update, out_error)) {
         tree_->ClearChildCache(node);
         return false;

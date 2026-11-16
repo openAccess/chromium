@@ -101,7 +101,9 @@ public interface BottomSheetController {
         // STOP: Updates here require an update in enums.xml.
         int MAX_VALUE = CLOSE_BUTTON;
     }
-    // LINT.ThenChange(//tools/metrics/histograms/enums.xml:BottomSheet.StateChangeReason)
+
+    // LINT.ThenChange(//tools/metrics/histograms/enums.xml:BottomSheet.StateChangeReason,
+    // //components/browser_ui/adaptive_ui/android/java/src/org/chromium/components/browser_ui/adaptive_ui/DismissReason.java:DismissReason)
 
     /**
      * Request that some content be shown in the bottom sheet.
@@ -287,6 +289,17 @@ public interface BottomSheetController {
      *     margin or is covered by the keyboard.
      */
     default @Px int getEdgeToEdgeBottomInset() {
+        return 0;
+    }
+
+    /**
+     * Returns the projected height of the sheet's content container in pixels for the target IME
+     * state from the window insets, or 0 if no sheet content is currently shown in HALF or FULL
+     * state.
+     *
+     * @return The projected container height in pixels, or 0 if inactive/hidden.
+     */
+    default @Px int getProjectedContentHeightForIme() {
         return 0;
     }
 

@@ -15,6 +15,7 @@ source_set("eg2_tests") {
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/assistant/ui:constants",
     "//ios/chrome/browser/composebox/coordinator:constants",
+    "//ios/chrome/browser/composebox/public:features",
     "//ios/chrome/browser/composebox/shared/metrics:metrics_constants",
     "//ios/chrome/browser/composebox/shared/ui:ui_constants",
     "//ios/chrome/browser/metrics/model:eg_test_support+eg2",
@@ -44,13 +45,11 @@ source_set("eg_app_support+eg2") {
     "//ios/chrome/browser/aim/model:test_support",
     "//ios/chrome/browser/composebox/model",
     "//ios/chrome/browser/composebox/model:test_support",
-    "//ios/chrome/browser/composebox/public:features",
-    "//ios/chrome/browser/composebox/ui",
-    "//ios/chrome/browser/composebox/ui:state",
     "//ios/chrome/browser/shared/model/profile",
     "//ios/chrome/test/app:test_support",
     "//testing/gmock",
   ]
+  public_deps = [ "//third_party/omnibox_proto" ]
 }
 
 source_set("eg_test_support+eg2") {
@@ -61,4 +60,5 @@ source_set("eg_test_support+eg2") {
     "composebox_app_interface_stub.mm",
   ]
   deps = [ "//ios/testing/earl_grey:eg_test_support+eg2" ]
+  public_deps = [ "//third_party/omnibox_proto" ]
 }

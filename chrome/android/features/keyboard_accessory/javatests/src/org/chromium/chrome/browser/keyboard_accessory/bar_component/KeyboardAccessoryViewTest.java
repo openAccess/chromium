@@ -18,6 +18,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -77,7 +78,6 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.transit.ViewPresence;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.CriteriaNotSatisfiedException;
@@ -91,7 +91,6 @@ import org.chromium.chrome.browser.autofill.AutofillImageFetcher;
 import org.chromium.chrome.browser.autofill.AutofillImageFetcherFactory;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.ActionBarItem;
 import org.chromium.chrome.browser.keyboard_accessory.bar_component.KeyboardAccessoryProperties.AutofillBarItem;
@@ -130,7 +129,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /** View tests for the keyboard accessory component. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 @SuppressWarnings("DoNotMock") // Mocks GURL
 public class KeyboardAccessoryViewTest {
@@ -667,7 +665,6 @@ public class KeyboardAccessoryViewTest {
 
     @Test
     @MediumTest
-    @DisableIf.Device(DeviceFormFactor.TABLET_OR_DESKTOP) // TODO(crbug.com/572882852): Re-enable.
     public void testScrollingNotResetOnItemUpdate() throws InterruptedException {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -700,8 +697,13 @@ public class KeyboardAccessoryViewTest {
                                         }));
         onActivityViewWaiting(withText("Item 1 - very long text to fill width"));
 
-        // Scroll the view manually
-        ThreadUtils.runOnUiThreadBlocking(() -> view.mBarItemsView.scrollBy(500, 0));
+        // Scroll by two-thirds of the first chip's width so the first item remains partially
+        // visible (itemsBefore == 0) while item 2 is also attached across all screen densities.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    int scrollOffset = view.mBarItemsView.getChildAt(0).getWidth() * 2 / 3;
+                    view.mBarItemsView.scrollBy(scrollOffset, 0);
+                });
 
         // Wait until it actually scrolled
         CriteriaHelper.pollUiThread(() -> view.mBarItemsView.computeHorizontalScrollOffset() > 0);
@@ -710,17 +712,27 @@ public class KeyboardAccessoryViewTest {
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> view.mBarItemsView.computeHorizontalScrollOffset());
 
-        // Update an item in the middle
+        // Update an item in the middle without shrinking total content width on wide viewports.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
-                    AutofillBarItem updatedItem = createAutofillBarItem("Item 3 Updated", null);
+                    AutofillBarItem updatedItem =
+                            createAutofillBarItem(
+                                    "Item 3 Updated - very long text to fill width", null);
                     updatedItem.setLoading(true);
                     mModel.get(BAR_ITEMS).update(2, updatedItem);
                 });
 
-        // The scroll offset should not be reset to 0
+        // The scroll offset should not be reset to 0 after the updated item is bound and laid out.
         CriteriaHelper.pollUiThread(
-                () -> view.mBarItemsView.computeHorizontalScrollOffset() == initialScrollOffset);
+                () -> {
+                    var holder = view.mBarItemsView.findViewHolderForAdapterPosition(2);
+                    if (holder == null || view.mBarItemsView.isLayoutRequested()) return false;
+                    ChipView chipView = (ChipView) holder.itemView;
+                    return "Item 3 Updated - very long text to fill width"
+                                    .contentEquals(chipView.getPrimaryTextView().getText())
+                            && view.mBarItemsView.computeHorizontalScrollOffset()
+                                    == initialScrollOffset;
+                });
     }
 
     @Test
@@ -1175,6 +1187,64 @@ public class KeyboardAccessoryViewTest {
 
         ThreadUtils.runOnUiThreadBlocking(() -> setModelSelectedSuggestion(null));
         CriteriaHelper.pollUiThread(() -> !firstChip.isHovered() && !secondChip.isHovered());
+    }
+
+    @Test
+    @MediumTest
+    public void testSparkIconSetsSuggestedByGeminiContentDescription() throws InterruptedException {
+        AutofillBarItem sparkIconItem =
+                new AutofillBarItem(
+                        new AutofillSuggestion.Builder()
+                                .setLabel("AN-147338")
+                                .setSubLabel("Order • amazon.de")
+                                .setIconId(R.drawable.shopping_bag_spark)
+                                .setSuggestionType(SuggestionType.FILL_AUTOFILL_AI)
+                                .build(),
+                        new Action(AUTOFILL_SUGGESTION, wasObscured -> {}),
+                        mProfile,
+                        /* hasGeminiAttribution= */ true);
+        AutofillBarItem regularIconItem =
+                new AutofillBarItem(
+                        new AutofillSuggestion.Builder()
+                                .setLabel("Regular Order")
+                                .setSubLabel("Order • amazon.de")
+                                .setIconId(R.drawable.shopping_bag)
+                                .setSuggestionType(SuggestionType.FILL_AUTOFILL_AI)
+                                .build(),
+                        new Action(AUTOFILL_SUGGESTION, wasObscured -> {}),
+                        mProfile,
+                        /* hasGeminiAttribution= */ false);
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mModel.set(VISIBLE, true);
+                    mModel.get(BAR_ITEMS)
+                            .set(
+                                    new BarItem[] {
+                                        sparkIconItem,
+                                        createSheetOpener(/* atMemoryEnabled= */ true)
+                                    });
+                });
+        KeyboardAccessoryView view = mKeyboardAccessoryView.take();
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(view.mBarItemsView.getChildCount() > 0, is(true));
+                    ChipView chipView = (ChipView) view.mBarItemsView.getChildAt(0);
+                    ImageView iconImageView = chipView.findViewById(R.id.chip_view_start_icon);
+                    String expectedDescription =
+                            view.getContext().getString(R.string.autofill_ai_suggested_by_gemini);
+                    Criteria.checkThat(
+                            iconImageView.getContentDescription(), is(expectedDescription));
+                });
+
+        ThreadUtils.runOnUiThreadBlocking(() -> mModel.get(BAR_ITEMS).update(0, regularIconItem));
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    ChipView chipView = (ChipView) view.mBarItemsView.getChildAt(0);
+                    ImageView iconImageView = chipView.findViewById(R.id.chip_view_start_icon);
+                    Criteria.checkThat(iconImageView.getContentDescription(), is(nullValue()));
+                });
     }
 
     /**

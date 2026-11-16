@@ -52,6 +52,8 @@ source_set("app") {
   sources = [
     "app_startup_parameters.h",
     "app_startup_parameters.mm",
+    "app_switcher_params.h",
+    "app_switcher_params.mm",
     "deferred_initialization_queue.h",
     "deferred_initialization_queue.mm",
     "deferred_initialization_runner.h",
@@ -59,6 +61,7 @@ source_set("app") {
   ]
 
   deps = [
+    ":actor_request",
     "//base",
     "//ios/chrome/app/startup:utils",
     "//ios/chrome/browser/app_switcher/metrics",
@@ -73,6 +76,11 @@ source_set("app") {
   ]
 
   frameworks = [ "Foundation.framework" ]
+}
+
+source_set("actor_request") {
+  sources = [ "actor_request.h" ]
+  public_deps = [ "//ios/chrome/browser/passwords/model/remote_actor/proto" ]
 }
 
 source_set("tasks_handling_header") {
@@ -106,11 +114,14 @@ source_set("tasks_handling") {
     "task_request_url_context_private.h",
     "task_request_user_activity.h",
     "task_request_user_activity.mm",
+    "task_request_utils.h",
+    "task_request_utils.mm",
   ]
 
   public_deps = [ ":tasks_handling_header" ]
 
   deps = [
+    ":app",
     ":change_profile_commands",
     ":change_profile_continuation",
     ":custom_scheme_buildflags",
@@ -147,6 +158,7 @@ source_set("tasks_handling") {
     "//ios/chrome/browser/intents/model:user_activity_browser_agent",
     "//ios/chrome/browser/intents/model:user_activity_compatibility_util",
     "//ios/chrome/browser/lens/ui_bundled:lens_entrypoint",
+    "//ios/chrome/browser/passwords/model/remote_actor",
     "//ios/chrome/browser/policy/model:policy_util",
     "//ios/chrome/browser/reading_list/model",
     "//ios/chrome/browser/search_engines/model",
@@ -209,6 +221,7 @@ source_set("unit_tests") {
   sources = [
     "app_metrics_app_state_agent_unittest.mm",
     "app_startup_parameters_unittest.mm",
+    "app_switcher_params_unittest.mm",
     "change_profile_animator_unittest.mm",
     "deferred_initialization_runner_unittest.mm",
     "legacy_scene_identifier_map_unittest.mm",
@@ -226,6 +239,7 @@ source_set("unit_tests") {
     ":app",
     ":app_internal",
     ":app_metrics_app_state_agent",
+    ":blocking_scene_commands",
     ":change_profile_animator",
     ":change_profile_commands",
     ":change_profile_continuation",
@@ -250,6 +264,7 @@ source_set("unit_tests") {
     "//components/sync_preferences:test_support",
     "//components/variations",
     "//components/variations/service",
+    "//google_apis",
     "//ios/chrome/app:enterprise_app_agent",
     "//ios/chrome/app/application_delegate",
     "//ios/chrome/app/application_delegate:app_init_stage",
@@ -265,6 +280,7 @@ source_set("unit_tests") {
     "//ios/chrome/app/spotlight",
     "//ios/chrome/app/startup:startup_basic",
     "//ios/chrome/app/startup:utils",
+    "//ios/chrome/app/test:test_support",
     "//ios/chrome/browser/app_switcher/metrics",
     "//ios/chrome/browser/app_switcher/test:test_support",
     "//ios/chrome/browser/bookmarks/model",
@@ -286,6 +302,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/reading_list/model",
     "//ios/chrome/browser/reading_list/model:test_support",
     "//ios/chrome/browser/safe_mode/ui_bundled",
+    "//ios/chrome/browser/scoped_ui_blocker/ui_bundled:protocols",
     "//ios/chrome/browser/search_engines/model:template_url_service_factory",
     "//ios/chrome/browser/sessions/model",
     "//ios/chrome/browser/sessions/model:fake",
@@ -607,6 +624,7 @@ source_set("app_internal") {
     "//components/metrics",
     "//components/optimization_guide/core:features",
     "//components/password_manager/core/common",
+    "//components/password_manager/core/common/remote_actor:features",
     "//components/policy/core/common",
     "//components/prefs",
     "//components/prefs/ios",
@@ -673,6 +691,7 @@ source_set("app_internal") {
     "//ios/chrome/browser/ntp/ui_bundled:feature_flags",
     "//ios/chrome/browser/omaha/model",
     "//ios/chrome/browser/passwords/model",
+    "//ios/chrome/browser/passwords/model/remote_actor:app_agent",
     "//ios/chrome/browser/policy/model",
     "//ios/chrome/browser/promos_manager/model:factory",
     "//ios/chrome/browser/push_notification/model:push_notification_delegate",

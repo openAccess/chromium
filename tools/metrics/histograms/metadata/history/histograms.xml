@@ -43,10 +43,12 @@ chromium-metrics-reviews@google.com.
 
 <variants name="HasCriticalActions">
   <variant name="WithCriticalActions"
-      summary="results were non-empty and critical actions were queried from
-               the database"/>
+      summary="results contained local visits and critical actions were
+               queried from the database"/>
   <variant name="WithoutCriticalActions"
-      summary="results were empty or the critical actions feature is disabled"/>
+      summary="critical actions were not queried (no local visits in results,
+               service unavailable for the profile, or the critical actions
+               feature is disabled)"/>
 </variants>
 
 <variants name="PassagePriority">
@@ -171,6 +173,11 @@ chromium-metrics-reviews@google.com.
     (i.e. when the page is opened, when the user scrolls to the bottom of the
     available list, and when the user changes the search terms). Records the
     number of {LocalOrRemote} visits from {VisitAge}.
+
+    Counts entries after BrowsingHistoryService merges visits. Since M159,
+    chrome://history queries with QueryOptions::KEEP_ALL_DUPLICATES, so a batch
+    holds a fixed number of visits rather than entries, and Desktop values
+    decrease from M159.
   </summary>
   <token key="LocalOrRemote">
     <variant name="Combined" summary="combined (local and remote)"/>
@@ -1659,7 +1666,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="History.Embeddings.Embedder.EmbeddingsModelLoadDuration"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>sophiechang@chromium.org</owner>
   <owner>zekunjiang@google.com</owner>
   <summary>
@@ -2085,7 +2092,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="History.MostVisitedTilesVisualDeduplication" units="tiles"
-    expires_after="2026-12-16">
+    expires_after="2027-11-05">
   <owner>hitarthkothari@google.com</owner>
   <owner>ckitagawa@chromium.org</owner>
   <summary>
@@ -2121,6 +2128,10 @@ chromium-metrics-reviews@google.com.
     Records the backend thread execution duration (in milliseconds) for
     HistoryBackend::QueryHistoryBasic to scan visits, look up URL rows, and
     attach visit content annotations.
+
+    Since M159, chrome://history queries with QueryOptions::KEEP_ALL_DUPLICATES,
+    so the database no longer skips earlier same-day visits to a URL for that
+    query, and Desktop values may change from M159.
   </summary>
 </histogram>
 
@@ -2131,6 +2142,24 @@ chromium-metrics-reviews@google.com.
   <summary>
     Records the number of URLResult items assembled and returned by
     HistoryBackend::QueryHistoryBasic.
+
+    Since M159, chrome://history queries with QueryOptions::KEEP_ALL_DUPLICATES,
+    so results include earlier same-day visits to a URL, and Desktop values
+    increase from M159.
+  </summary>
+</histogram>
+
+<histogram name="History.QueryHistoryText.Duration" units="ms"
+    expires_after="2027-11-15">
+  <owner>kutylbeky@google.com</owner>
+  <owner>kalinino@google.com</owner>
+  <owner>src/components/history/OWNERS</owner>
+  <summary>
+    Records how long a history search takes on the history backend thread, in
+    milliseconds. A history search looks for visits whose page title or URL
+    matches a search text, or whose host matches a hostname. Recorded once per
+    search. History queries without a search text or hostname are recorded in
+    History.QueryHistoryBasic.Duration.
   </summary>
 </histogram>
 
@@ -2411,7 +2440,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="History.WebHistory.QueryHistoryResultsCount" units="visits"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>treib@chromium.org</owner>
   <owner>src/components/history/OWNERS</owner>
   <component>1456716</component>
@@ -2422,7 +2451,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="History.WebHistory.QueryWebAndAppActivityResult"
-    enum="BooleanOptedIn" expires_after="2027-03-07">
+    enum="BooleanOptedIn" expires_after="2027-05-09">
   <owner>treib@chromium.org</owner>
   <owner>src/components/history/OWNERS</owner>
   <component>1456716</component>
@@ -2512,10 +2541,9 @@ chromium-metrics-reviews@google.com.
   <owner>polonium@google.com</owner>
   <summary>
     Records the total number of critical actions attached to a single browsing
-    history visit item on the chrome://history page. Recorded for each visit
-    that has at least one critical action attached whenever browsing history
-    entries are retrieved and prepared for display (on initial page load,
-    search, or infinite scroll).
+    history entry in BrowsingHistoryService. Recorded for each entry that has at
+    least one critical action attached whenever browsing history entries are
+    retrieved and prepared for display (on initial load, search, or pagination).
   </summary>
 </histogram>
 
@@ -2526,8 +2554,8 @@ chromium-metrics-reviews@google.com.
   <summary>
     Records the time (in milliseconds) taken to query and retrieve critical
     actions from the local database for history visits. Recorded each time
-    chrome://history receives a non-empty batch of history results and completes
-    fetching their corresponding critical actions.
+    BrowsingHistoryService assembles a batch of history results with local visit
+    IDs and completes fetching their corresponding critical actions.
   </summary>
 </histogram>
 
@@ -2571,6 +2599,20 @@ chromium-metrics-reviews@google.com.
     Recorded for queries where {HasCriticalActions}.
   </summary>
   <token key="HasCriticalActions" variants="HasCriticalActions"/>
+</histogram>
+
+<histogram name="HistoryPage.TimePeriodFilterSelected"
+    enum="HistoryTimePeriodOptionId" expires_after="2027-05-06">
+  <owner>zalmashni@google.com</owner>
+  <owner>rainhard@chromium.org</owner>
+  <owner>chrome-browser-privacy-team@google.com</owner>
+  <summary>
+    Records the time period option the user selected in the time period filter
+    chip on the chrome://history page. Recorded every time the user selects an
+    option in the dropdown, including when switching back to &quot;All
+    time&quot;. Not recorded when the filter is reset via the &quot;Clear
+    all&quot; button.
+  </summary>
 </histogram>
 
 <histogram name="HistoryPage.TimeToFirstVisibleContent" units="ms"

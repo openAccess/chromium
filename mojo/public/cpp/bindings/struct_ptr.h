@@ -53,11 +53,8 @@ class StructPtr {
     return *this;
   }
 
-  StructPtr(StructPtr&& other) { Take(&other); }
-  StructPtr& operator=(StructPtr&& other) {
-    Take(&other);
-    return *this;
-  }
+  StructPtr(StructPtr&& other) noexcept : ptr_(std::move(other.ptr_)) {}
+  StructPtr& operator=(StructPtr&& other) noexcept = default;
 
   template <typename... Args>
   StructPtr(std::in_place_t, Args&&... args)
@@ -123,10 +120,6 @@ class StructPtr {
 
  private:
   friend class internal::StructPtrWTFHelper<Struct>;
-  void Take(StructPtr* other) {
-    reset();
-    Swap(other);
-  }
 
   std::unique_ptr<Struct> ptr_;
 };
@@ -142,7 +135,7 @@ class StructPtr {
 // `valid-but-moved-from` state explicitly and deferring destruction of the
 // contained value to the destructor, but it adds quite a bit of complexity.
 template <typename S>
-class InlinedStructPtr {
+class [[maybe_unused]] InlinedStructPtr {
  public:
   using Struct = S;
 
@@ -156,6 +149,7 @@ class InlinedStructPtr {
   InlinedStructPtr(const InlinedStructPtr&) = delete;
   InlinedStructPtr& operator=(const InlinedStructPtr&) = delete;
 
+  ~InlinedStructPtr() = default;
   ~InlinedStructPtr()
     requires(!std::is_trivially_destructible_v<Struct>)
   {
@@ -191,7 +185,9 @@ class InlinedStructPtr {
   }
 
   void reset() {
-    if (state_ != NIL) {
+    if constexpr (std::is_trivially_destructible_v<Struct>) {
+      state_ = NIL;
+    } else if (state_ != NIL) {
       state_ = NIL;
       storage_.value.~Struct();
     }
@@ -263,7 +259,10 @@ class InlinedStructPtr {
 
   union Storage {
     Storage() {}
-    ~Storage() {}
+    ~Storage() = default;
+    ~Storage()
+      requires(!std::is_trivially_destructible_v<Struct>)
+    {}
 
     template <typename... Args>
     explicit Storage(std::in_place_t, Args&&... args)

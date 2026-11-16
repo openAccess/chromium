@@ -312,8 +312,6 @@
   E_CPONLY(kColorTabStripControlButtonInkDropFrameInactive) \
   E_CPONLY(kColorTabStripControlButtonInkDropRipple) \
   E_CPONLY(kColorTabStripControlButtonInkDropRippleFrameInactive) \
-  E_CPONLY(kColorTabStripScrollButtonBackground) \
-  E_CPONLY(kColorTabStripScrollButtonIcon) \
   /* New tab button colors for ChromeRefresh.*/ \
   /* TODO (crbug.com/40883407) remove when theming works */ \
   E_CPONLY(kColorNewTabButtonCRForegroundFrameActive) \
@@ -1073,6 +1071,10 @@
   E_CPONLY(kColorTabGroupTabStripFrameInactivePurple) \
   E_CPONLY(kColorTabGroupTabStripFrameInactiveCyan) \
   E_CPONLY(kColorTabGroupTabStripFrameInactiveOrange) \
+  E_CPONLY(kColorTabGroupEphemeralHeaderBackgroundFrameActive) \
+  E_CPONLY(kColorTabGroupEphemeralHeaderBackgroundFrameInactive) \
+  E_CPONLY(kColorTabGroupEphemeralHeaderForegroundFrameActive) \
+  E_CPONLY(kColorTabGroupEphemeralHeaderForegroundFrameInactive) \
   E_CPONLY(kColorTabStrokeFrameActive) \
   E_CPONLY(kColorTabStrokeFrameInactive) \
   E_CPONLY(kColorTabstripScrollContainerShadow) \
@@ -1151,7 +1153,6 @@
   E_CPONLY(kColorToolbarButtonText) \
   E_CPONLY(kColorToolbarCloseButtonBackgroundDefault) \
   E_CPONLY(kColorToolbarContentAreaSeparator) \
-  E_CPONLY(kColorToolbarContextualTasksButtonShadow) \
   E_CPONLY(kColorToolbarExtensionSeparatorDisabled) \
   E_CPONLY(kColorToolbarExtensionSeparatorEnabled) \
   E_CPONLY(kColorToolbarFeaturePromoHighlight) \

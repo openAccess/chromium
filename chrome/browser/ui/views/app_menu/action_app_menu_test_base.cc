@@ -134,6 +134,7 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionShowContactInfo, u"Addresses and more");
   add_action(kActionShowIdentityDocs, u"Identity docs");
   add_action(kActionShowTravel, u"Travel");
+  add_action(kActionShowOffersAndLoyaltyCards, u"Offers and loyalty cards");
   add_action(kActionShowHistory, u"History");
   add_action(kActionRecentTabsSubmenu, u"Recent Tabs");
   add_action(kActionOtherDeviceTabsSubmenu, u"Other device tabs");
@@ -157,7 +158,7 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionExtensionsSubmenuVisitChromeWebStore,
              u"Visit Chrome Web Store");
   add_action(kActionFindExtensions, u"Find Extensions");
-  add_action(kActionSkillsAndExtensionsSubmenu, u"Extensions and Skills");
+  add_action(kActionSkillsAndExtensionsSubmenu, u"Extensions and skills");
   add_action(kActionManageSkills, u"Your skills");
   add_action(kActionClearBrowsingData, u"Clear Browsing Data");
   add_action(kActionSavedTabGroupsSubmenu, u"Tab Groups");
@@ -202,7 +203,6 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionProfilingEnabled, u"Profiling enabled");
   add_action(kActionShowChromeLabs, u"Chrome Labs");
   add_action(kActionRecentTabsSeeDeviceTabs, u"See Device Tabs");
-  add_action(kActionRecentTabsLoginForDeviceTabs, u"Login for Device Tabs");
   add_action(kActionSidePanelShowHistoryCluster, u"History Clusters");
   add_action(kActionSidePanelShowHistory, u"History");
   add_action(kActionSidePanelShowTabsFromOtherDevices,
@@ -226,6 +226,11 @@ void ActionAppMenuTestBase::SetUp() {
   add_action(kActionOpenInChrome, u"Open in Chrome");
   add_action(kActionWebAppMenuAppInfo, u"App Info");
   add_action(kActionUninstallWebApp, u"Uninstall");
+  add_action(kActionWebAppUpgradeDialog, u"Review update");
+  add_action(kActionWebAppShowExtensions, u"Extensions");
+#if BUILDFLAG(IS_CHROMEOS)
+  add_action(kActionMoveToDesksSubmenu, u"Move window to desk");
+#endif
 
   actions::ActionManager::Get().AddAction(std::move(root));
 

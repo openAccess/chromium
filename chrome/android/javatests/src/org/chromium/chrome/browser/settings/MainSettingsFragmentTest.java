@@ -19,6 +19,7 @@ import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
 import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
+import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withParent;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
@@ -50,6 +51,7 @@ import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 import androidx.preference.Preference;
+import androidx.preference.PreferenceScreen;
 import androidx.test.espresso.contrib.RecyclerViewActions;
 import androidx.test.espresso.intent.Intents;
 import androidx.test.filters.LargeTest;
@@ -147,6 +149,8 @@ import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Test for {@link MainSettings}. Main purpose is to have a quick confidence check on the xml. */
@@ -159,6 +163,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
                 + ":set_default_to_false_on_homepage_on_desktop/false")
 public class MainSettingsFragmentTest {
     private static final String SEARCH_ENGINE_SHORT_NAME = "Google";
+    private static final String ADVANCED_SECTION = "advanced_section";
 
     private static final int RENDER_TEST_REVISION = 15;
     private static final String RENDER_TEST_DESCRIPTION =
@@ -230,7 +235,6 @@ public class MainSettingsFragmentTest {
         if (mSyncTestRule.getSigninTestRule().getPrimaryAccount() != null) {
             mSyncTestRule.getSigninTestRule().forceSignOut();
         }
-        SubscriptionEligibilityServiceFactory.setForTesting(null);
     }
 
     @Test
@@ -310,6 +314,149 @@ public class MainSettingsFragmentTest {
         assertSettingsExists(MainSettings.PREF_DOWNLOADS, DownloadSettings.class);
         assertSettingsExists(MainSettings.PREF_DEVELOPER, DeveloperSettings.class);
         assertSettingsExists("about_chrome", AboutChromeSettings.class);
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION)
+    public void testSettingsIaReorganization_dropsHeadersAndGroupsRows() {
+        startSettings();
+
+        // The category headers are removed from the screen.
+        Assert.assertNull(
+                mMainSettings.findPreference(
+                        MainSettings.PREF_ACCOUNT_AND_GOOGLE_SERVICES_SECTION));
+        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_BASICS_SECTION));
+        Assert.assertNull(mMainSettings.findPreference(ADVANCED_SECTION));
+
+        // Each row reports its top-level group as its section id.
+        assertSectionId(
+                SettingsIaArmHelper.GROUP_USER_AND_ACCOUNT, MainSettings.PREF_GOOGLE_SERVICES);
+        assertSectionId(SettingsIaArmHelper.GROUP_SAFETY_AND_PROTECTION, MainSettings.PREF_PRIVACY);
+        assertSectionId(
+                SettingsIaArmHelper.GROUP_SAFETY_AND_PROTECTION,
+                MainSettings.PREF_AUTOFILL_AND_PASSWORDS);
+        assertSectionId(SettingsIaArmHelper.GROUP_PERSONALIZATION, MainSettings.PREF_SEARCH_ENGINE);
+        assertSectionId(SettingsIaArmHelper.GROUP_PERSONALIZATION, MainSettings.PREF_APPEARANCE);
+        assertSectionId(SettingsIaArmHelper.GROUP_SUPPORT, MainSettings.PREF_DOWNLOADS);
+        assertSectionId(SettingsIaArmHelper.GROUP_SUPPORT, MainSettings.PREF_ABOUT_CHROME);
+
+        // The visible rows besides the promo card and search header follow the group layout
+        // exactly. Rows that this configuration hides are skipped.
+        List<String> expected = new ArrayList<>();
+        for (SettingsIaArmHelper.Group group : SettingsIaArmHelper.getGroups()) {
+            for (String key : group.keys) {
+                Preference pref = mMainSettings.findPreference(key);
+                if (pref != null && pref.isVisible()) expected.add(key);
+            }
+        }
+        Assert.assertEquals(expected, getVisibleGroupedKeysInOrder());
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION)
+    public void testSettingsIaReorganization_readdedRowKeepsGroupAndOrder() {
+        startSettings();
+        List<String> before = getVisibleGroupedKeysInOrder();
+        Assert.assertTrue(before.contains(MainSettings.PREF_DEVELOPER));
+
+        // Remove the developer row, then add it back.
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    DeveloperSettings.setIsEnabledForTests(false);
+                    mMainSettings.onSignInAllowedChanged();
+                });
+        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_DEVELOPER));
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    DeveloperSettings.setIsEnabledForTests(true);
+                    mMainSettings.onSignInAllowedChanged();
+                });
+
+        assertSectionId(SettingsIaArmHelper.GROUP_SUPPORT, MainSettings.PREF_DEVELOPER);
+        Assert.assertEquals(before, getVisibleGroupedKeysInOrder());
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION + ":arm/direction_1")
+    public void testSettingsIaReorganization_direction1NestsSiteSettingsAndSafetyCheck() {
+        startSettings();
+
+        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_CONTENT_SETTINGS));
+        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION + ":arm/direction_2")
+    public void testSettingsIaReorganization_direction2NestsSafetyCheck() {
+        startSettings();
+
+        assertSectionId(
+                SettingsIaArmHelper.GROUP_SAFETY_AND_PROTECTION,
+                MainSettings.PREF_CONTENT_SETTINGS);
+        Assert.assertNull(mMainSettings.findPreference(MainSettings.PREF_SAFETY_HUB));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION + ":arm/direction_3")
+    public void testSettingsIaReorganization_direction3KeepsSiteSettingsAndSafetyCheck() {
+        startSettings();
+
+        assertSectionId(
+                SettingsIaArmHelper.GROUP_SAFETY_AND_PROTECTION,
+                MainSettings.PREF_CONTENT_SETTINGS);
+        if (!DeviceInfo.isAutomotive()) {
+            assertSectionId(
+                    SettingsIaArmHelper.GROUP_SAFETY_AND_PROTECTION, MainSettings.PREF_SAFETY_HUB);
+        }
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(ChromeFeatureList.SETTINGS_IA_REORGANIZATION)
+    public void testSettingsIaReorganizationDisabled_keepsHeadersAndNoGroups() {
+        startSettings();
+
+        Assert.assertNotNull(mMainSettings.findPreference(MainSettings.PREF_BASICS_SECTION));
+        Assert.assertNotNull(mMainSettings.findPreference(ADVANCED_SECTION));
+        Assert.assertNull(
+                mMainSettings.getSectionId(
+                        mMainSettings.findPreference(MainSettings.PREF_SEARCH_ENGINE)));
+    }
+
+    /** Returns the keys of the visible rows other than the promo card and search header. */
+    private List<String> getVisibleGroupedKeysInOrder() {
+        List<Preference> prefs = new ArrayList<>();
+        PreferenceScreen screen = mMainSettings.getPreferenceScreen();
+        for (int i = 0; i < screen.getPreferenceCount(); ++i) {
+            Preference pref = screen.getPreference(i);
+            String key = pref.getKey();
+            if (!pref.isVisible()
+                    || MainSettings.PREF_SETTINGS_PROMO_CARD.equals(key)
+                    || MainSettings.PREF_SEARCH_HEADER.equals(key)) {
+                continue;
+            }
+            Assert.assertNotNull(
+                    "Row should be in a group: " + key, mMainSettings.getSectionId(pref));
+            prefs.add(pref);
+        }
+        prefs.sort((a, b) -> Integer.compare(a.getOrder(), b.getOrder()));
+        List<String> keys = new ArrayList<>();
+        for (Preference pref : prefs) keys.add(pref.getKey());
+        return keys;
+    }
+
+    private void assertSectionId(String expectedSectionId, String key) {
+        Preference preference = mMainSettings.findPreference(key);
+        Assert.assertNotNull("Preference should exist: " + key, preference);
+        Assert.assertEquals(
+                "Unexpected section for " + key,
+                expectedSectionId,
+                mMainSettings.getSectionId(preference));
     }
 
     @Test
@@ -597,6 +744,49 @@ public class MainSettingsFragmentTest {
         startSettings();
 
         Assert.assertTrue(signinRowHasAiTierRing(accountInfo));
+        // Screen readers also read the membership.
+        String description =
+                mMainSettings.getString(
+                        R.string.settings_account_row_description_with_membership,
+                        TestAccounts.ACCOUNT1.getFullName(),
+                        TestAccounts.ACCOUNT1.getEmail());
+        // The Account page, shown next to Main Settings on large screens, can have the same text.
+        onView(
+                        allOf(
+                                withContentDescription(description),
+                                isDescendantOfA(withId(R.id.preferences_header))))
+                .check(matches(isDisplayed()));
+    }
+
+    // Tests that screen readers read the email only once for an account without a name, whose
+    // account row shows the email as both its title and summary.
+    @Test
+    @SmallTest
+    @EnableFeatures({
+        SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING,
+        SigninFeatures.AI_SUBSCRIPTION_AVATAR_RING_FOLLOWUP
+    })
+    // Avoids UserActionableError.NEEDS_UPM_BACKEND_UPGRADE, which would hide the ring.
+    @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
+    @RequiresRestart(
+            "SigninManagerImpl only observes the AccountManagerFacade installed for the first test"
+                    + " of a batched process, so accounts added later are never seeded into native")
+    public void testSigninRowDescriptionReadsEmailOnceWithoutName() {
+        setEligibleAiSubscriptionTier();
+        AccountInfo accountInfo = TestAccounts.TEST_ACCOUNT_NO_NAME;
+        mSyncTestRule.getSigninTestRule().addAccountThenSignin(accountInfo);
+        startSettings();
+
+        CriteriaHelper.pollInstrumentationThread(() -> signinRowHasAiTierRing(accountInfo));
+        String description =
+                mMainSettings.getString(
+                        R.string.settings_account_row_description_single_line_with_membership,
+                        accountInfo.getEmail());
+        onView(
+                        allOf(
+                                withContentDescription(description),
+                                isDescendantOfA(withId(R.id.preferences_header))))
+                .check(matches(isDisplayed()));
     }
 
     // Tests that the account row shows no AI tier ring while it shows an identity error.
@@ -625,6 +815,17 @@ public class MainSettingsFragmentTest {
 
         onView(allOf(withId(R.id.alert_icon), isDisplayed())).check(matches(isDisplayed()));
         Assert.assertFalse(signinRowHasAiTierRing(accountInfo));
+        // Without the ring, screen readers read the title and summary, without the membership.
+        String description =
+                mMainSettings.getString(
+                        R.string.settings_account_row_description_with_membership,
+                        TestAccounts.ACCOUNT1.getFullName(),
+                        TestAccounts.ACCOUNT1.getEmail());
+        onView(
+                        allOf(
+                                withContentDescription(description),
+                                isDescendantOfA(withId(R.id.preferences_header))))
+                .check(doesNotExist());
     }
 
     // Tests that the account row shows the AI tier ring again after the identity error is fixed on
@@ -1112,7 +1313,6 @@ public class MainSettingsFragmentTest {
     @Test
     @SmallTest
     public void testDefaultBrowserPromoCard() throws InterruptedException {
-        FeatureOverrides.enable(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2);
         when(mTestTracker.shouldTriggerHelpUi(any())).thenReturn(true);
         TrackerFactory.setTrackerForTests(mTestTracker);
         when(mMockDefaultBrowserPromoUtils.shouldShowNonRoleManagerPromo(any())).thenReturn(true);
@@ -1120,8 +1320,7 @@ public class MainSettingsFragmentTest {
 
         startSettings();
         Preference preference = mMainSettings.findPreference(MainSettings.PREF_SETTINGS_PROMO_CARD);
-        Assert.assertNotNull(
-                "Settings promo preference exist when feature flag is enabled", preference);
+        Assert.assertNotNull("Settings promo preference should exist", preference);
     }
 
     @Test

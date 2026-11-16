@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_AFFILIATIONS_CORE_BROWSER_AFFILIATION_SERVICE_H_
 #define COMPONENTS_AFFILIATIONS_CORE_BROWSER_AFFILIATION_SERVICE_H_
 
+#include <optional>
 #include <vector>
 
 #include "base/functional/callback_forward.h"
@@ -12,8 +13,7 @@
 #include "components/affiliations/core/browser/affiliation_source.h"
 #include "components/affiliations/core/browser/affiliation_utils.h"
 #include "components/keyed_service/core/keyed_service.h"
-
-class GURL;
+#include "url/gurl.h"
 
 namespace affiliations {
 
@@ -22,6 +22,27 @@ namespace affiliations {
 // See affiliation_utils.h for details of what this means.
 class AffiliationService : public KeyedService {
  public:
+  // Encapsulates the change password URL and the facets affiliated with the
+  // requested URL's facet, returned by `FetchChangePasswordURL()`.
+  struct ChangePasswordUrlMatch {
+    explicit ChangePasswordUrlMatch(GURL change_password_url,
+                                    std::vector<FacetURI> affiliations = {});
+    ChangePasswordUrlMatch(const ChangePasswordUrlMatch&);
+    ChangePasswordUrlMatch(ChangePasswordUrlMatch&&);
+    ChangePasswordUrlMatch& operator=(const ChangePasswordUrlMatch&);
+    ChangePasswordUrlMatch& operator=(ChangePasswordUrlMatch&&);
+    ~ChangePasswordUrlMatch();
+
+    friend bool operator==(const ChangePasswordUrlMatch&,
+                           const ChangePasswordUrlMatch&) = default;
+
+    GURL change_password_url;
+    std::vector<FacetURI> affiliations;
+  };
+
+  using ChangePasswordUrlCallback =
+      base::OnceCallback<void(std::optional<ChangePasswordUrlMatch>)>;
+
   using ResultCallback =
       base::OnceCallback<void(const AffiliatedFacets& /* results */,
                               bool /* success */)>;
@@ -29,14 +50,11 @@ class AffiliationService : public KeyedService {
   using GroupsCallback =
       base::OnceCallback<void(const std::vector<GroupedFacets>&)>;
 
-  // Fetches change password URLs for sites requested. Receives a callback to
-  // run when the fetch finishes.
-  virtual void FetchChangePasswordURL(
-      const GURL& url,
-      base::OnceCallback<void(GURL)> callback) = 0;
-
-  // Returns a URL with change password form for a site requested.
-  virtual GURL GetChangePasswordURL(const GURL& url) const = 0;
+  // Fetches the change password URL and affiliated facets for `url`. Invokes
+  // `callback` with `std::nullopt` if no change password URL is found or the
+  // fetch fails.
+  virtual void FetchChangePasswordURL(const GURL& url,
+                                      ChangePasswordUrlCallback callback) = 0;
 
   // Looks up facets affiliated with the facet identified by |facet_uri| and
   // branding information in the local cache if it's fresh. Invokes

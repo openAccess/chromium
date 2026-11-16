@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -2476,6 +2475,11 @@ void RTCVideoEncoder::Impl::EncodeOneFrameWithNativeInput(
 void RTCVideoEncoder::Impl::DoNativeEncodeWithNativeInput(
     FrameChunk frame_chunk,
     scoped_refptr<media::VideoFrame> frame) {
+  if (!video_encoder_) {
+    // Accelerated pool path may call this asynchronously after the encoder has
+    // been destroyed.
+    return;
+  }
   frame->set_timestamp(base::Microseconds(frame_chunk.timestamp_us));
 
   if (!failed_timestamp_match_) {

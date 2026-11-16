@@ -49,7 +49,6 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
@@ -72,6 +71,7 @@ import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ChromeTriggers;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
 import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
@@ -288,7 +288,7 @@ public class TabsTest {
                     boolean isKeyboardShowing =
                             mActivityTestRule
                                     .getKeyboardDelegate()
-                                    .isKeyboardShowing(
+                                    .isKeyboardObscuring(
                                             mActivityTestRule
                                                     .getActivity()
                                                     .getTabsViewForTesting());
@@ -323,7 +323,7 @@ public class TabsTest {
         assertWaitForKeyboardStatus(true);
 
         // Switch to the 1st tab.
-        ChromeTabUtils.switchTabInCurrentTabModel(mActivityTestRule.getActivity(), 1);
+        ChromeTriggers.selectTabProgrammatically(mActivityTestRule.getActivity(), 1);
         assertWaitForKeyboardStatus(false);
 
         // Click node in the 1st tab.
@@ -425,7 +425,6 @@ public class TabsTest {
      */
     @Test
     @SmallTest
-    @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/572964289
     public void testNewTabSetsContentViewSize() throws TimeoutException {
         ChromeTabUtils.newTabFromMenu(
                 InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity());
@@ -444,10 +443,12 @@ public class TabsTest {
                         .replace("\"", "");
 
         DisplayMetrics metrics = mActivityTestRule.getActivity().getResources().getDisplayMetrics();
+        float dipScale =
+                mActivityTestRule.getActivity().getWindowAndroid().getDisplay().getDipScale();
 
         // For non-integer pixel ratios like the N7v1 (1.333...), the layout system will actually
         // ceil the width.
-        int expectedWidth = (int) Math.ceil(metrics.widthPixels / metrics.density);
+        int expectedWidth = (int) Math.ceil(metrics.widthPixels / dipScale);
 
         String[] nums = innerText.split(",");
         assertTrue(nums.length == 2);
@@ -710,7 +711,7 @@ public class TabsTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     boolean keyboardVisible =
-                            mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar);
+                            mActivityTestRule.getKeyboardDelegate().isKeyboardObscuring(urlBar);
                     Criteria.checkThat(keyboardVisible, Matchers.is(true));
                 });
 
@@ -730,7 +731,7 @@ public class TabsTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     boolean keyboardVisible =
-                            mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar);
+                            mActivityTestRule.getKeyboardDelegate().isKeyboardObscuring(urlBar);
                     Criteria.checkThat(keyboardVisible, Matchers.is(true));
                 });
 
@@ -744,7 +745,7 @@ public class TabsTest {
         CriteriaHelper.pollUiThread(
                 () -> {
                     boolean keyboardVisible =
-                            mActivityTestRule.getKeyboardDelegate().isKeyboardShowing(urlBar);
+                            mActivityTestRule.getKeyboardDelegate().isKeyboardObscuring(urlBar);
                     Criteria.checkThat(keyboardVisible, Matchers.is(false));
                 });
     }
@@ -888,7 +889,6 @@ public class TabsTest {
     @Test
     @LargeTest
     @Feature({"Android-TabSwitcher"})
-    @EnableFeatures(ChromeFeatureList.TAB_ANDROID_GRACEFUL_SHUTDOWN)
     @RequiresRestart("Destroys Activity to test shutdown")
     public void testTabsWithUnloadHandlerAreKeptAliveOnShutdown() throws Exception {
         final Tab tab = mActivityTestRule.getActivityTab();

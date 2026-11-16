@@ -33,9 +33,13 @@ Manifest::Builder CreateValidBuilder() {
 }
 
 Manifest CreateFullManifest() {
+  // Use `"https://example.com/"` for `scope` so it differs from
+  // `Manifest::GetDefaultScope(start_url)` (`"https://example.com/app/"`) in
+  // `ManifestTest.Equality`, while keeping `start_url` and `shortcuts`
+  // in-scope.
   Manifest::Builder builder(GURL("https://example.com/app/index.html"),
                             GURL("https://example.com/app/id"),
-                            GURL("https://example.com/app/"));
+                            GURL("https://example.com/"));
 
   builder.SetManifestUrl(GURL("https://example.com/app/manifest.json"));
   builder.SetDir(mojom::Manifest_TextDirection::kLTR);
@@ -201,6 +205,40 @@ Manifest CreateFullManifest() {
                          std::move(en_name));
   builder.SetNameLocalized(std::move(name_localized));
 
+  // Localized short name
+  absl::flat_hash_map<base::i18n::LanguageTag,
+                      Manifest::ManifestLocalizedTextObject>
+      short_name_localized;
+  Manifest::ManifestLocalizedTextObject en_short_name;
+  en_short_name.value = u"App";
+  en_short_name.lang = u"en";
+  en_short_name.dir = mojom::Manifest_TextDirection::kLTR;
+  short_name_localized.emplace(base::i18n::GetKnownLanguageTag("en"),
+                               std::move(en_short_name));
+  builder.SetShortNameLocalized(std::move(short_name_localized));
+
+  // Localized description
+  absl::flat_hash_map<base::i18n::LanguageTag,
+                      Manifest::ManifestLocalizedTextObject>
+      description_localized;
+  Manifest::ManifestLocalizedTextObject en_description;
+  en_description.value = u"A complete test app description.";
+  en_description.lang = u"en";
+  en_description.dir = mojom::Manifest_TextDirection::kLTR;
+  description_localized.emplace(base::i18n::GetKnownLanguageTag("en"),
+                                std::move(en_description));
+  builder.SetDescriptionLocalized(std::move(description_localized));
+
+  // Localized icons
+  absl::flat_hash_map<base::i18n::LanguageTag,
+                      std::vector<Manifest::ImageResource>>
+      icons_localized;
+  std::vector<Manifest::ImageResource> en_icons;
+  en_icons.push_back(icons[0]);
+  icons_localized.emplace(base::i18n::GetKnownLanguageTag("en"),
+                          std::move(en_icons));
+  builder.SetIconsLocalized(std::move(icons_localized));
+
   return std::move(builder).BuildChecked();
 }
 
@@ -308,12 +346,23 @@ TEST_F(ManifestInvariantsTest, Invariant5_FileHandlers) {
               ManifestInvariantError::kFileHandlerActionCrossOrigin);
   }
 
-  // Invalid MIME type
-  {
+  // Invalid MIME types (malformed, FreeDesktop pseudo-MIME, and non-IANA
+  // top-level types)
+  for (const std::u16string_view invalid_mime_type : {
+           u"invalid-mime",
+           u"x-scheme-handler/mailto",
+           u"x-content/image-dcf",
+           u"x-directory/normal",
+           u"x-special/socket",
+           u"x-custom/foo",
+           u"X-Custom/foo",
+           u"inode/directory",
+       }) {
+    SCOPED_TRACE(base::UTF16ToUTF8(invalid_mime_type));
     auto b = CreateValidBuilder();
     Manifest::FileHandler fh;
     fh.action = GURL("https://example.com/open");
-    fh.accept[u"invalid-mime"].push_back(u".txt");
+    fh.accept[std::u16string(invalid_mime_type)].push_back(u".txt");
     b.SetFileHandlers({fh});
     auto result = std::move(b).Build();
     ASSERT_FALSE(result.has_value());
@@ -757,14 +806,126 @@ TEST(ManifestTest, ToBuilderRoundTrip) {
   EXPECT_EQ(original, round_tripped);
 }
 
-TEST(ManifestTest, BridgeRoundTrip) {
+TEST(ManifestTest, SharedDataCopyAndBuilderIsolation) {
   Manifest original = CreateFullManifest();
-  mojom::ManifestPtr mojom_manifest = ManifestToMojom(original);
-  ASSERT_TRUE(mojom_manifest);
+  Manifest copy = original;
+  EXPECT_EQ(original, copy);
+  EXPECT_EQ(&original.start_url(), &copy.start_url());
+  EXPECT_EQ(&original.name(), &copy.name());
 
-  auto round_tripped = ManifestFromMojom(*mojom_manifest);
-  ASSERT_TRUE(round_tripped.has_value());
-  EXPECT_EQ(original, *round_tripped);
+  Manifest::Builder builder = original.ToBuilder();
+  Manifest::Builder builder_copy = builder;
+  Manifest::Builder builder_assigned(GURL("https://other.example/"));
+  builder_assigned = builder;
+  builder.SetName(u"Modified App Name");
+  builder_copy.SetName(u"Second Modified Name");
+  builder_assigned.SetName(u"Third Modified Name");
+
+  Manifest modified = std::move(builder).BuildChecked();
+  Manifest second_modified = std::move(builder_copy).BuildChecked();
+  Manifest third_modified = std::move(builder_assigned).BuildChecked();
+
+  EXPECT_EQ(original.name(), u"Test App Name");
+  EXPECT_EQ(copy.name(), u"Test App Name");
+  EXPECT_EQ(modified.name(), u"Modified App Name");
+  EXPECT_EQ(second_modified.name(), u"Second Modified Name");
+  EXPECT_EQ(third_modified.name(), u"Third Modified Name");
+  EXPECT_EQ(third_modified.GetOrigin(), original.GetOrigin());
+  EXPECT_NE(&original.start_url(), &modified.start_url());
+  EXPECT_NE(&modified.start_url(), &second_modified.start_url());
+  EXPECT_NE(&modified.start_url(), &third_modified.start_url());
+  EXPECT_NE(&second_modified.start_url(), &third_modified.start_url());
+}
+
+TEST(ManifestTest, Equality) {
+  const Manifest full = CreateFullManifest();
+  Manifest shared_copy = full;
+  EXPECT_EQ(full, full);
+  EXPECT_EQ(full, shared_copy);
+
+  Manifest deep_copy = full.ToBuilder().BuildChecked();
+  EXPECT_NE(&full.start_url(), &deep_copy.start_url());
+  EXPECT_EQ(full, deep_copy);
+
+  // Verify that mutating each of the 40 fields produces an unequal Manifest,
+  // and that CreateFullManifest() populated a non-default value for each field.
+  // LINT.IfChange(ManifestEqualityTest)
+  EXPECT_NE(full, full.ToBuilder().SetManifestUrl(GURL()).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetDir(mojom::Manifest_TextDirection::kAuto)
+                      .BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetName(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetShortName(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetDescription(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetId(GURL("https://example.com/app/other_id"))
+                      .BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetHasCustomId(false).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetStartUrl(GURL("https://example.com/app/other.html"))
+                      .BuildChecked());
+  EXPECT_NE(
+      full,
+      full.ToBuilder().SetHasValidSpecifiedStartUrl(false).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetDisplay(mojom::DisplayMode::kUndefined)
+                      .BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetDisplayOverride({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetOrientation(
+                          device::mojom::ScreenOrientationLockType::DEFAULT)
+                      .BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetIcons({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetScreenshots({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetShortcuts({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetShareTarget(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetFileHandlers({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetProtocolHandlers({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetScopeExtensions({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetLockScreen(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetNoteTaking(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetRelatedApplications({}).BuildChecked());
+  EXPECT_NE(
+      full,
+      full.ToBuilder().SetPreferRelatedApplications(false).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetMigrateFrom({}).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetMigrateTo(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetThemeColor(std::nullopt).BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetBackgroundColor(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetGcmSenderId(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder()
+                      .SetScope(Manifest::GetDefaultScope(full.start_url()))
+                      .BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetUpdateManifestUrl(std::nullopt).BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetLaunchHandler(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetTranslations({}).BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetDarkThemeColor(std::nullopt).BuildChecked());
+  EXPECT_NE(
+      full,
+      full.ToBuilder().SetDarkBackgroundColor(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetTabStrip(std::nullopt).BuildChecked());
+  EXPECT_NE(full, full.ToBuilder().SetVersion(std::nullopt).BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetNameLocalized(std::nullopt).BuildChecked());
+  EXPECT_NE(
+      full,
+      full.ToBuilder().SetShortNameLocalized(std::nullopt).BuildChecked());
+  EXPECT_NE(
+      full,
+      full.ToBuilder().SetDescriptionLocalized(std::nullopt).BuildChecked());
+  EXPECT_NE(full,
+            full.ToBuilder().SetIconsLocalized(std::nullopt).BuildChecked());
+  // LINT.ThenChange(
+  //   //third_party/blink/public/common/manifest/manifest.h:ManifestFields,
+  //   //third_party/blink/public/mojom/manifest/manifest.mojom:ManifestFields,
+  //   //third_party/blink/common/manifest/manifest.cc:ManifestEquality,
+  //   //third_party/blink/common/manifest/manifest_mojom_traits.cc:ManifestStructTraitsRead,
+  //   //third_party/blink/common/manifest/manifest_mojom_traits_unittest.cc:ManifestMojomRoundTripFields
+  // )
 }
 
 }  // namespace blink

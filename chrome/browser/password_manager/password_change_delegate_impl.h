@@ -7,10 +7,10 @@
 
 #include <string>
 
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "chrome/browser/password_manager/password_change/change_password_form_filling_submission_helper.h"
@@ -19,6 +19,9 @@
 #include "chrome/browser/password_manager/password_change/password_change_submission_verifier.h"
 #include "chrome/browser/password_manager/password_change_delegate.h"
 #include "chrome/browser/ui/passwords/password_change_ui_controller.h"
+#include "chrome/browser/ui/passwords/password_change_ui_delegate.h"
+#include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
+#include "components/password_manager/core/browser/password_change/password_change_credentials_provider.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "components/tabs/public/tab_interface.h"
@@ -40,8 +43,11 @@ class Profile;
 // This class controls password change process including acceptance of privacy
 // notice, opening of a new tab, navigation to the change password url, password
 // generation and form submission.
-class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
-                                   public PasswordChangeActuator::Observer {
+class PasswordChangeDelegateImpl
+    : public PasswordChangeDelegate,
+      public PasswordChangeUIDelegate,
+      public PasswordChangeActuator::Observer,
+      public password_manager::PasswordChangeCredentialsProvider {
  public:
   static constexpr char kFinalPasswordChangeStatusHistogram[] =
       "PasswordManager.FinalPasswordChangeStatus";
@@ -52,10 +58,46 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   static constexpr char kOtpPresentInMainTabHistogram[] =
       "PasswordManager.OtpPresentInMainTab";
 
-  PasswordChangeDelegateImpl(GURL change_password_url,
-                             password_manager::PasswordForm credentials,
+  // Password change flow state used for UMA and UKM. Corresponds to
+  // `CoarseFinalPasswordChangeState` in enums.xml.
+  //
+  // These values are persisted to logs.
+  // Entries should not be renumbered and numeric values should never be reused.
+  // LINT.IfChange(CoarseFinalPasswordChangeState)
+  enum class CoarseFinalPasswordChangeState {
+    // Password change is being offered to the user, waiting for the user to
+    // accept or reject it or waiting for the user to accept privacy notice.
+    kOffered = 0,
+
+    // Password change was canceled by the user.
+    kCanceled = 1,
+
+    // Password is successfully updated.
+    kSuccessful = 2,
+
+    // Password change failed.
+    kFailed = 3,
+
+    // Change password form wasn't found.
+    kFormNotDetected = 4,
+
+    // One time password (OTP) was detected on a page. The flow is stopped, user
+    // input is required.
+    kOtpDetected = 5,
+
+    kMaxValue = kOtpDetected,
+  };
+  // LINT.ThenChange(/tools/metrics/histograms/metadata/password/enums.xml:CoarseFinalPasswordChangeState)
+
+  PasswordChangeDelegateImpl(password_manager::LeakedPasswordDetails details,
                              tabs::TabInterface* tab_interface);
   ~PasswordChangeDelegateImpl() override;
+
+  // Starts the flow. `completion_callback` is run once the flow is stopped and
+  // the delegate can be destroyed. It may run from within `Start()` or other
+  // methods of the delegate, so the owner must not destroy the delegate
+  // synchronously.
+  void Start(base::OnceClosure completion_callback);
 
   PasswordChangeDelegateImpl(const PasswordChangeDelegateImpl&) = delete;
   PasswordChangeDelegateImpl& operator=(const PasswordChangeDelegateImpl&) =
@@ -68,10 +110,6 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   PasswordChangeActuator* actuator() { return actuator_.get(); }
   PasswordChangeUIController* ui_controller() { return ui_controller_.get(); }
   ModelQualityLogsUploader* logs_uploader() { return logs_uploader_.get(); }
-  password_manager::PasswordString generated_password() const {
-    return actuator_ ? actuator_->GetGeneratedPassword()
-                     : password_manager::PasswordString();
-  }
 
   void SetCustomUIController(
       std::unique_ptr<PasswordChangeUIController> controller) {
@@ -92,20 +130,29 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   void OnActuationStateChanged(
       PasswordChangeActuator::State new_state) override;
 
-  // PasswordChangeDelegate Impl
-  void StartPasswordChangeFlow() override;
-  void CancelPasswordChangeFlow() override;
+  // PasswordChangeDelegate:
   bool IsPasswordChangeOngoing(content::WebContents* web_contents) override;
-  State GetCurrentState() const override;
   void Stop() override;
-  void OpenPasswordChangeTab() override;
-  void OpenPasswordDetails() override;
-  void OnPrivacyNoticeAccepted() override;
-  void OnPasswordChangeDeclined() override;
-  void RetryLoginCheck() override;
+
+  // PasswordChangeUIDelegate:
+  State GetCurrentState() const override;
+  const GURL& GetChangePasswordUrl() const override;
   std::u16string GetDisplayOrigin() const override;
-  void AddObserver(PasswordChangeDelegate::Observer* observer) override;
-  void RemoveObserver(PasswordChangeDelegate::Observer* observer) override;
+  const std::u16string& GetUsername() const override;
+  password_manager::PasswordString GetGeneratedPassword() const override;
+  void OnPrivacyNoticeAccepted() override;
+  void StartPasswordChangeFlow() override;
+  void OnPasswordChangeDeclined() override;
+  void CancelPasswordChangeFlow() override;
+  void RetryLoginCheck() override;
+  void OpenPasswordChangeTab() override;
+  void OnUiDismissed() override;
+
+  // password_manager::PasswordChangeCredentialsProvider impl
+  base::expected<password_manager::PasswordString, Error> GetOldPassword()
+      const override;
+  base::expected<password_manager::PasswordString, Error>
+  GetNewPassword(password_manager::PasswordFormManager* form_manager) override;
 
  private:
   void OnOtpNotFound();
@@ -115,7 +162,7 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
 
   void OnLoginStateCheckedWithoutPIResult(LoginCheckResult login_status);
   void OnLoginStateCheckedWithPIResult(LoginCheckResult login_status);
-  // Updates `current_state_` and notifies `observers_`.
+  // Updates `current_state_` and notifies `ui_controller_`.
   void UpdateState(State new_state);
 
   bool IsPrivacyNoticeAcknowledged() const;
@@ -133,8 +180,9 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
 
   void RecordLoggedInCheckQuality(LoginCheckResult result);
 
-  const GURL change_password_url_;
-  password_manager::PasswordForm password_form_info_;
+  // Leaked credentials for which password change is offered. Also used to
+  // show a regular leak warning if password change isn't possible.
+  password_manager::LeakedPasswordDetails leak_details_;
 
   raw_ptr<content::WebContents> originator_ = nullptr;
 
@@ -153,8 +201,8 @@ class PasswordChangeDelegateImpl : public PasswordChangeDelegate,
   // Inference before the user accepts the feature.
   std::unique_ptr<LoginCheckResult> login_check_result_;
 
-  base::ObserverList<PasswordChangeDelegate::Observer, /*check_empty=*/true>
-      observers_;
+  // Notifies the owner that the flow is stopped.
+  base::OnceClosure completion_callback_;
 
   // The time when the user started the password change flow.
   base::Time flow_start_time_;

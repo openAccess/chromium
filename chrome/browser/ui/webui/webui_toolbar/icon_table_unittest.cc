@@ -70,7 +70,7 @@ TEST_F(IconTableTest, BasicOperation) {
   auto i1 = std::move(maybe_i1.value());
 
   auto expected_i1 = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/std::nullopt);
 
   // Binding i1 in both full state and pending updates.
@@ -142,7 +142,7 @@ TEST_F(IconTableTest, MakeIconTableFetcher) {
   ASSERT_TRUE(maybe_i1.has_value());
   auto i1 = maybe_i1.value();
   auto expected_i1 = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/std::nullopt);
 
   // Binding i1 in both full state and pending updates.
@@ -195,13 +195,23 @@ TEST_F(IconTableTest, RegisterImageModel) {
   ASSERT_FALSE(i2.is_null());
   // kColorMenuIcon is default, and we set it to green.
   auto expected_i2 = toolbar_ui_api::mojom::IconUpdate::New(
-      2u, "webui-toolbar:password_manager", IconType::kIconSet,
+      2u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorGREEN);
 
   EXPECT_THAT(
       icon_table_.GetFullState(),
       testing::UnorderedElementsAre(MatchesBitmapIconUpdate(1u),
                                     MatchesIconUpdate(std::ref(expected_i2))));
+}
+
+TEST_F(IconTableTest, GetKnownIconsetName) {
+  EXPECT_EQ(IconTable::GetKnownIconsetName(vector_icons::kVideocamIcon),
+            "webui-toolbar-shared:videocam");
+  EXPECT_EQ(IconTable::GetKnownIconsetName(vector_icons::kPasswordManagerIcon),
+            "webui-toolbar-shared:password_manager");
+  // Not mapped.
+  EXPECT_EQ(IconTable::GetKnownIconsetName(vector_icons::kCardboardFilledIcon),
+            std::nullopt);
 }
 
 TEST_F(IconTableTest, RegisterColorUrl) {
@@ -255,7 +265,7 @@ TEST_F(IconTableTest, RegisterImageModelTryReuse) {
       toolbar_ui_api::IconHandle());
   ASSERT_FALSE(i1.is_null());
   auto expected_i1 = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorGREEN);
 
   // Now try to create the same one.
@@ -326,7 +336,7 @@ TEST_F(IconTableTest, ScaleFactorChange) {
   ASSERT_TRUE(maybe_i2.has_value());
   auto i2 = maybe_i2.value();
   auto expected_i2 = toolbar_ui_api::mojom::IconUpdate::New(
-      2u, "webui-toolbar:password_manager", IconType::kIconSet,
+      2u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/std::nullopt);
 
   EXPECT_THAT(
@@ -358,7 +368,7 @@ TEST_F(IconTableTest, Colors) {
           vector_icons::kPasswordManagerIcon, ui::kColorIcon));
   ASSERT_FALSE(i1.is_null());
   auto expected_i1 = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorBLUE);
 
   toolbar_ui_api::IconHandle i2 =
@@ -366,7 +376,7 @@ TEST_F(IconTableTest, Colors) {
           vector_icons::kPasswordManagerIcon, ui::kColorMenuIcon));
   ASSERT_FALSE(i2.is_null());
   auto expected_i2 = toolbar_ui_api::mojom::IconUpdate::New(
-      2u, "webui-toolbar:password_manager", IconType::kIconSet,
+      2u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorGREEN);
 
   toolbar_ui_api::IconHandle i3 =
@@ -398,7 +408,7 @@ TEST_F(IconTableTest, OnThemeChanged) {
 
   // Consume initial pending updates
   auto expected_i2_initial = toolbar_ui_api::mojom::IconUpdate::New(
-      2u, "webui-toolbar:password_manager", IconType::kIconSet,
+      2u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorBLUE);
 
   EXPECT_THAT(icon_table_.TakePendingUpdates(),
@@ -416,7 +426,7 @@ TEST_F(IconTableTest, OnThemeChanged) {
   // Verify TakePendingUpdates() re-evaluates all registered icons and returns
   // updated rasterization / color data for both bitmap and vector icons.
   auto expected_i2_updated = toolbar_ui_api::mojom::IconUpdate::New(
-      2u, "webui-toolbar:password_manager", IconType::kIconSet,
+      2u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorRED);
 
   EXPECT_THAT(icon_table_.TakePendingUpdates(),
@@ -576,6 +586,29 @@ TEST_F(IconTableTest, PinnedToolbarActionIconsAreMapped) {
 #endif
 }
 
+// Verifies that the search journey omnibox chip vector icons (rounded and old)
+// are mapped to their WebUI toolbar iconset entries.
+TEST_F(IconTableTest, SearchJourneyCueIconsAreMapped) {
+  std::optional<toolbar_ui_api::IconHandle> rounded_handle =
+      icon_table_.RegisterVectorIcon(kDockToRightIcon);
+  ASSERT_TRUE(rounded_handle.has_value());
+
+  std::optional<toolbar_ui_api::IconHandle> old_handle =
+      icon_table_.RegisterVectorIcon(kDockToLeftOldIcon);
+  ASSERT_TRUE(old_handle.has_value());
+
+  auto expected_rounded = toolbar_ui_api::mojom::IconUpdate::New(
+      /*handle_id=*/1u, "webui-toolbar:dock_to_right", IconType::kIconSet,
+      /*color=*/std::nullopt);
+  auto expected_old = toolbar_ui_api::mojom::IconUpdate::New(
+      /*handle_id=*/2u, "webui-toolbar:dock_to_left_old", IconType::kIconSet,
+      /*color=*/std::nullopt);
+  EXPECT_THAT(icon_table_.GetFullState(),
+              testing::UnorderedElementsAre(
+                  MatchesIconUpdate(std::ref(expected_rounded)),
+                  MatchesIconUpdate(std::ref(expected_old))));
+}
+
 TEST_F(IconTableTest, HasPendingUpdates) {
   EXPECT_FALSE(icon_table_.HasPendingUpdates());
 
@@ -590,7 +623,7 @@ TEST_F(IconTableTest, HasPendingUpdates) {
   EXPECT_TRUE(icon_table_.HasPendingUpdates());
 
   auto expected_blue = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorBLUE);
   EXPECT_THAT(icon_table_.TakePendingUpdates(),
               testing::UnorderedElementsAre(
@@ -602,7 +635,7 @@ TEST_F(IconTableTest, HasPendingUpdates) {
   icon_table_.OnThemeChanged();
   EXPECT_TRUE(icon_table_.HasPendingUpdates());
   auto expected_red = toolbar_ui_api::mojom::IconUpdate::New(
-      1u, "webui-toolbar:password_manager", IconType::kIconSet,
+      1u, "webui-toolbar-shared:password_manager", IconType::kIconSet,
       /*color=*/SK_ColorRED);
   EXPECT_THAT(
       icon_table_.TakePendingUpdates(),

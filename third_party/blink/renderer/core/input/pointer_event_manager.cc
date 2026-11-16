@@ -203,7 +203,12 @@ WebInputEventResult PointerEventManager::DispatchPointerEvent(
         target_element && !pointer_event->FromTouch() &&
         (event_type == event_type_names::kPointerover ||
          event_type == event_type_names::kPointerout)) {
-      target_element->HandlePointerEventsForInterestFor(event_type);
+      Node* newly_hovered_node = event_type == event_type_names::kPointerout &&
+                                         pointer_event->relatedTarget()
+                                     ? pointer_event->relatedTarget()->ToNode()
+                                     : nullptr;
+      target_element->HandlePointerEventsForInterestFor(event_type,
+                                                        newly_hovered_node);
     }
   }
 
@@ -267,9 +272,9 @@ void PointerEventManager::SendMouseAndPointerBoundaryEvents(
 }
 
 void PointerEventManager::SendBoundaryEvents(
-    EventTarget* exited_target,
+    Element* exited_target,
     bool original_exited_target_removed,
-    EventTarget* entered_target,
+    Element* entered_target,
     PointerEvent* pointer_event) {
   PointerEventBoundaryEventDispatcher boundary_event_dispatcher(this,
                                                                 pointer_event);
@@ -848,7 +853,8 @@ WebInputEventResult PointerEventManager::HandlePointerEvent(
       !non_hovering_pointers_canceled_ && pointer_event_target.target_frame) {
     LocalFrame::NotifyUserActivation(
         pointer_event_target.target_frame,
-        mojom::blink::UserActivationNotificationType::kInteraction);
+        mojom::blink::UserActivationNotificationType::kInteraction,
+        RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
   }
 
   if (!event.hovering && !IsAnyTouchActive()) {

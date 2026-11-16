@@ -17,6 +17,7 @@ class MockChange(object):
     def __init__(self, input_api):
         self._input_api = input_api
         self.description = ''
+        self.issue = None
 
     def AffectedFiles(self):
         return self._input_api.files
@@ -25,11 +26,51 @@ class MockChange(object):
         return self.description
 
 
+class MockGerrit(object):
+    """Minimal stand-in for presubmit_support.GerritAccessor."""
+
+    def __init__(self, owner_email, approvers=None, owners_override=False):
+        self._owner_email = owner_email
+        self._approvers = list(approvers or [])
+        self._owners_override = owners_override
+
+    def IsOwnersOverrideApproved(self, issue):
+        return self._owners_override
+
+    def GetChangeOwner(self, issue):
+        return self._owner_email
+
+    def GetChangeReviewers(self, issue, approving_only=True):
+        return list(self._approvers)
+
+
+class MockCannedChecks(object):
+    """Mirrors presubmit_canned_checks.GetCodereviewOwnerAndReviewers."""
+
+    def GetCodereviewOwnerAndReviewers(
+        self, input_api, _email_regexp=None, approval_needed=True
+    ):
+        issue = input_api.change.issue
+        if not issue:
+            return None, set()
+        owner_email = input_api.gerrit.GetChangeOwner(issue)
+        reviewers = set(
+            r
+            for r in input_api.gerrit.GetChangeReviewers(issue, approval_needed)
+            if r != owner_email
+        )
+        return owner_email, reviewers
+
+
 class MockInputApi(object):
     def __init__(self):
         self.re = re
         self.files = []
         self.change = MockChange(self)
+        self.is_committing = False
+        self.dry_run = False
+        self.gerrit = None
+        self.canned_checks = MockCannedChecks()
 
     def AffectedFiles(self):
         return [
@@ -948,7 +989,11 @@ class FeatureEngagementConstantsPresubmitTest(unittest.TestCase):
             ),
         ]
         results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
-        self.assertEqual(0, len(results))
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+        self.assertNotIn('not sorted alphabetically', warnings[0].message)
 
     def testAllowlistSorting_UnsortedWarning(self):
         input_api = MockInputApi()
@@ -970,9 +1015,12 @@ class FeatureEngagementConstantsPresubmitTest(unittest.TestCase):
             ),
         ]
         results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
-        warnings = [r for r in results if r.type == 'Warning']
-        self.assertEqual(1, len(warnings))
-        self.assertIn('not sorted alphabetically', warnings[0].message)
+        sorting_warnings = [
+            r
+            for r in results
+            if r.type == 'Warning' and 'not sorted alphabetically' in r.message
+        ]
+        self.assertEqual(1, len(sorting_warnings))
 
     def testEnterprisePolicyBypass_AllowlistAdditionMissingTag(self):
         input_api = MockInputApi()
@@ -1084,6 +1132,562 @@ class FeatureEngagementConstantsPresubmitTest(unittest.TestCase):
         self.assertIn(
             'Removing the isAllowedToBypassEnterprisePolicy() check',
             errors[0].message,
+        )
+
+    def _TaggedAllowlistAddition(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassPolicyCheck]=b/571067209 Approved'
+        )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._ENTERPRISE_POLICY_ALLOWLIST_PATH,
+                new_contents=[
+                    '    FeatureConstants.A_FEATURE,',
+                    '    FeatureConstants.B_FEATURE',
+                ],
+                old_contents=['    FeatureConstants.A_FEATURE'],
+            ),
+        ]
+        return input_api
+
+    def testPolicyBypassReview_TaggedUploadWarns(self):
+        input_api = self._TaggedAllowlistAddition()
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+        self.assertIn('Code-Review+1', warnings[0].message)
+        self.assertIn('User Education (Java) owner', warnings[0].message)
+        self.assertNotIn('jhimawan@google.com', warnings[0].message)
+        self.assertNotIn('mschillaci@google.com', warnings[0].message)
+        self.assertIn('[UserEducation.BypassPolicyCheck]=', warnings[0].message)
+
+    def testPolicyBypassReview_TagWithoutAllowlistChangeStillWarns(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassPolicyCheck]=b/571067209 Approved'
+        )
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+
+    def testPolicyBypassReview_UntaggedAllowlistAdditionNamesOwners(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.change.description = ''
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+        self.assertIn('mschillaci@google.com', errors[0].message)
+        self.assertIn('[UserEducation.BypassPolicyCheck]=', errors[0].message)
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(0, len(warnings))
+
+    def testPolicyBypassReview_UntaggedTrackerImplTamperingNamesOwners(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._TRACKER_IMPL_JAVA_PATH,
+                new_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    '    // Check removed!',
+                    '}',
+                ],
+                old_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    (
+                        '    boolean allowed = '
+                        'isAllowedToBypassEnterprisePolicy(feature);'
+                    ),
+                    '}',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+
+    def testPolicyBypassReview_DryRunWarnsOnly(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        input_api.dry_run = True
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit('dev@chromium.org')
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+        self.assertNotIn('jhimawan@google.com', warnings[0].message)
+        self.assertNotIn('mschillaci@google.com', warnings[0].message)
+
+    def testPolicyBypassReview_CommitWithoutOwnerApprovalBlocked(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit(
+            'dev@chromium.org', approvers=['someone@chromium.org']
+        )
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('Code-Review+1', errors[0].message)
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+        self.assertIn('mschillaci@google.com', errors[0].message)
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(0, len(warnings))
+
+    def testPolicyBypassReview_CommitWithOwnerApprovalPasses(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit(
+            'dev@chromium.org', approvers=['mschillaci@google.com']
+        )
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testPolicyBypassReview_OwnerAuthoredCommitPasses(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit('jhimawan@google.com')
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testPolicyBypassReview_OwnersOverrideCommitPasses(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit('dev@chromium.org', owners_override=True)
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testPolicyBypassReview_CommitWithoutIssuePasses(self):
+        input_api = self._TaggedAllowlistAddition()
+        input_api.is_committing = True
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    _UI_FORMAT_OLD = [
+        '@IntDef({',
+        '    UiFormat.UNKNOWN,',
+        '    UiFormat.DIALOG,',
+        '})',
+        'public @interface UiFormat {',
+        '    int UNKNOWN = 0;',
+        '    int DIALOG = 10;',
+        '}',
+    ]
+    _UI_FORMAT_NEW = [
+        '@IntDef({',
+        '    UiFormat.UNKNOWN,',
+        '    UiFormat.DIALOG,',
+        '    UiFormat.TOAST,',
+        '})',
+        'public @interface UiFormat {',
+        '    int UNKNOWN = 0;',
+        '    int DIALOG = 10;',
+        '    int TOAST = 11;',
+        '}',
+    ]
+
+    def _UiFormatAddition(
+        self,
+        tag=True,
+        feature_properties_cases=1,
+        tracker_impl_cases=2,
+        new_contents=None,
+    ):
+        input_api = MockInputApi()
+        if tag:
+            input_api.change.description = (
+                '[UserEducation.NewUiFormat]=Toasts are non-interruptive'
+            )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._UI_FORMAT_JAVA_PATH,
+                new_contents=new_contents or self._UI_FORMAT_NEW,
+                old_contents=self._UI_FORMAT_OLD,
+            ),
+        ]
+        if feature_properties_cases is not None:
+            input_api.files.append(
+                MockFile(
+                    PRESUBMIT._FEATURE_PROPERTIES_JAVA_PATH,
+                    new_contents=['case UiFormat.TOAST:']
+                    * feature_properties_cases,
+                    old_contents=['case UiFormat.DIALOG:'],
+                )
+            )
+        if tracker_impl_cases is not None:
+            input_api.files.append(
+                MockFile(
+                    PRESUBMIT._TRACKER_IMPL_JAVA_PATH,
+                    new_contents=['case UiFormat.TOAST:'] * tracker_impl_cases,
+                    old_contents=['case UiFormat.DIALOG:'],
+                )
+            )
+        return input_api
+
+    def testUiFormatAdditions_NoNewConstantPasses(self):
+        input_api = self._UiFormatAddition(
+            tag=False,
+            feature_properties_cases=None,
+            tracker_impl_cases=None,
+            new_contents=self._UI_FORMAT_OLD + ['// trailing comment'],
+        )
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testUiFormatAdditions_InitialCreationIgnored(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._UI_FORMAT_JAVA_PATH,
+                new_contents=self._UI_FORMAT_NEW,
+                old_contents=[],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testUiFormatAdditions_MissingSwitchUpdatesBlocked(self):
+        input_api = self._UiFormatAddition(
+            feature_properties_cases=None, tracker_impl_cases=None
+        )
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('FeatureProperties.formatToString()', errors[0].message)
+        self.assertIn('TrackerImpl.getCooldownFeature()', errors[0].message)
+        self.assertIn('UiFormat.TOAST', errors[0].message)
+
+    def testUiFormatAdditions_MissingSecondTrackerImplSwitchBlocked(self):
+        input_api = self._UiFormatAddition(tracker_impl_cases=1)
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('2 case label(s) expected', errors[0].message)
+        self.assertIn('found 1', errors[0].message)
+        self.assertNotIn(
+            'FeatureProperties.formatToString()', errors[0].message
+        )
+
+    def testUiFormatAdditions_MissingIntDefEntryBlocked(self):
+        new_contents = [
+            line for line in self._UI_FORMAT_NEW if line != '    UiFormat.TOAST,'
+        ]
+        input_api = self._UiFormatAddition(new_contents=new_contents)
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('missing from the @IntDef list', errors[0].message)
+
+    def testUiFormatAdditions_MissingJustificationTagBlocked(self):
+        input_api = self._UiFormatAddition(tag=False)
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('[UserEducation.NewUiFormat]=', errors[0].message)
+
+    def testUiFormatAdditions_CompleteUpdateWithTagPasses(self):
+        input_api = self._UiFormatAddition()
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def _TaggedCooldownAllowlistAddition(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassCooldownCheck]=b/571067209 Approved'
+        )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    '    FeatureConstants.A_FEATURE,',
+                    '    FeatureConstants.B_FEATURE',
+                ],
+                old_contents=['    FeatureConstants.A_FEATURE'],
+            ),
+        ]
+        return input_api
+
+    def testCooldownBypass_UntaggedAllowlistAdditionBlocked(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    '    FeatureConstants.A_FEATURE,',
+                    '    FeatureConstants.NEW_EXEMPT_FEATURE',
+                ],
+                old_contents=[
+                    '    FeatureConstants.A_FEATURE',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+        self.assertIn('mschillaci@google.com', errors[0].message)
+        self.assertIn('[UserEducation.BypassCooldownCheck]=', errors[0].message)
+
+    def testCooldownBypass_TaggedAllowlistAdditionWarnsOnUpload(self):
+        input_api = self._TaggedCooldownAllowlistAddition()
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+        self.assertIn('User Education (Java) owner', warnings[0].message)
+        self.assertNotIn('jhimawan@google.com', warnings[0].message)
+        self.assertNotIn('mschillaci@google.com', warnings[0].message)
+
+    def testCooldownBypass_InitialAllowlistCreationIgnored(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    'public abstract class CooldownBypassAllowlist {',
+                    '    static final Set<String> ALLOWLISTED = Set.of(',
+                    '        FeatureConstants.IPH_SOME_FEATURE',
+                    '    );',
+                    '}',
+                ],
+                old_contents=None,
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testCooldownBypass_ReturnTrueBlocked(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassCooldownCheck]=b/571067209 Approved'
+        )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    'public abstract class CooldownBypassAllowlist {',
+                    '    public static boolean '
+                    'isAllowedToBypassCooldownGroup(String feature) {',
+                    '        return true;',
+                    '    }',
+                    '}',
+                ],
+                old_contents=[],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('Do not return true', errors[0].message)
+
+    def testCooldownBypass_UntaggedTrackerImplRemovalBlocked(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._TRACKER_IMPL_JAVA_PATH,
+                new_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    '    // Check removed!',
+                    '}',
+                ],
+                old_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    (
+                        '    boolean allowed = '
+                        'isAllowedToBypassCooldownGroup(feature);'
+                    ),
+                    '}',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+        self.assertIn('mschillaci@google.com', errors[0].message)
+        self.assertIn('[UserEducation.BypassCooldownCheck]=', errors[0].message)
+
+    def testCooldownBypass_CommitWithoutOwnerApprovalBlocked(self):
+        input_api = self._TaggedCooldownAllowlistAddition()
+        input_api.is_committing = True
+        input_api.dry_run = False
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit(
+            'dev@chromium.org', approvers=['someone@chromium.org']
+        )
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('Code-Review+1', errors[0].message)
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('jhimawan@google.com', errors[0].message)
+        self.assertIn('mschillaci@google.com', errors[0].message)
+
+    def testCooldownBypass_CommitWithOwnerApprovalPasses(self):
+        input_api = self._TaggedCooldownAllowlistAddition()
+        input_api.is_committing = True
+        input_api.dry_run = False
+        input_api.change.issue = 123
+        input_api.gerrit = MockGerrit(
+            'dev@chromium.org', approvers=['jhimawan@google.com']
+        )
+        results = PRESUBMIT.CheckChangeOnCommit(input_api, MockOutputApi())
+        self.assertEqual(0, len(results))
+
+    def testCooldownBypass_UntaggedSkipBlockingAdditionBlocked(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    '    DO_NOT_BLOCK_COOLDOWN_GROUP_FEATURES = Set.of(',
+                    '        FeatureConstants.NEW_EXEMPT_FEATURE',
+                    '    );',
+                ],
+                old_contents=[
+                    '    DO_NOT_BLOCK_COOLDOWN_GROUP_FEATURES = Set.of(',
+                    '    );',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('FeatureConstants.NEW_EXEMPT_FEATURE', errors[0].message)
+        self.assertIn('possible owners:', errors[0].message)
+        self.assertIn('[UserEducation.BypassCooldownCheck]=', errors[0].message)
+
+    def testCooldownBypass_TaggedSkipBlockingAdditionWarnsOnUpload(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassCooldownCheck]=b/571067209 Approved'
+        )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    '    DO_NOT_BLOCK_COOLDOWN_GROUP_FEATURES = Set.of(',
+                    '        FeatureConstants.NEW_EXEMPT_FEATURE',
+                    '    );',
+                ],
+                old_contents=[
+                    '    DO_NOT_BLOCK_COOLDOWN_GROUP_FEATURES = Set.of(',
+                    '    );',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(0, len(errors))
+        warnings = [r for r in results if r.type == 'Warning']
+        self.assertEqual(1, len(warnings))
+        self.assertIn('User Education (Java) owner', warnings[0].message)
+
+    def testCooldownBypass_UntaggedTrackerImplSkipBlockingRemovalBlocked(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._TRACKER_IMPL_JAVA_PATH,
+                new_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    (
+                        '    boolean bypass = '
+                        'isAllowedToBypassCooldownGroup(feature);'
+                    ),
+                    '}',
+                ],
+                old_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    (
+                        '    boolean bypass = '
+                        'isAllowedToBypassCooldownGroup(feature);'
+                    ),
+                    (
+                        '    boolean skip = '
+                        'isAllowedToSkipBlockingCooldownGroup(feature);'
+                    ),
+                    '}',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn(
+            'isAllowedToSkipBlockingCooldownGroup', errors[0].message
+        )
+        self.assertIn('[UserEducation.BypassCooldownCheck]=', errors[0].message)
+
+    def testCooldownBypass_UntaggedTrackerImplBothRemovalsBlocked(self):
+        input_api = MockInputApi()
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._TRACKER_IMPL_JAVA_PATH,
+                new_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    '    // Both removed!',
+                    '}',
+                ],
+                old_contents=[
+                    'public class TrackerImpl implements Tracker {',
+                    (
+                        '    boolean bypass = '
+                        'isAllowedToBypassCooldownGroup(feature);'
+                    ),
+                    (
+                        '    boolean skip = '
+                        'isAllowedToSkipBlockingCooldownGroup(feature);'
+                    ),
+                    '}',
+                ],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(2, len(errors))
+
+    def testCooldownBypass_SkipBlockingReturnTrueBlocked(self):
+        input_api = MockInputApi()
+        input_api.change.description = (
+            '[UserEducation.BypassCooldownCheck]=b/571067209 Approved'
+        )
+        input_api.files = [
+            MockFile(
+                PRESUBMIT._COOLDOWN_BYPASS_ALLOWLIST_PATH,
+                new_contents=[
+                    'public abstract class CooldownBypassAllowlist {',
+                    '    public static boolean '
+                    'isAllowedToSkipBlockingCooldownGroup(String feature) {',
+                    '        return true;',
+                    '    }',
+                    '}',
+                ],
+                old_contents=[],
+            ),
+        ]
+        results = PRESUBMIT.CheckChangeOnUpload(input_api, MockOutputApi())
+        errors = [r for r in results if r.type == 'Error']
+        self.assertEqual(1, len(errors))
+        self.assertIn('Do not return true', errors[0].message)
+        self.assertIn(
+            'isAllowedToSkipBlockingCooldownGroup', errors[0].message
         )
 
     def testNoUnauthorizedTrackerJni_BlocksCustomBridge(self):

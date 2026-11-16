@@ -4,22 +4,85 @@
 
 #include "components/password_manager/core/browser/ode/on_device_encryption_data_type_specific_metrics_reporter.h"
 
+#include <algorithm>
 #include <optional>
 #include <string_view>
 #include <utility>
 
 #include "base/check.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/sequence_checker.h"
+#include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/common/password_manager_pref_names.h"
 #include "components/prefs/pref_service.h"
 
 namespace password_manager {
 
 namespace {
+
+// Upper bound for the time-to-unlock histogram (in seconds) before overflowing
+// into the max bucket.
+constexpr base::TimeDelta kMaxTimeToUnlockDuration = base::Days(30);
+constexpr size_t kTimeToUnlockBucketCount = 100;
+
+using DataType = OnDeviceEncryptionDataTypeSpecificMetricsReporter::DataType;
+
+std::string_view DataTypeToHistogramSuffix(DataType data_type) {
+  switch (data_type) {
+    case DataType::kPasskeys:
+      return "Passkeys";
+    case DataType::kPasswords:
+      return "Passwords";
+  }
+  NOTREACHED();
+}
+
+std::string_view GetLastReportingTimePrefName(DataType data_type) {
+  switch (data_type) {
+    case DataType::kPasskeys:
+      return prefs::kOnDeviceEncryptionStatePasskeyLastReportingTime;
+    case DataType::kPasswords:
+      return prefs::kOnDeviceEncryptionStatePasswordLastReportingTime;
+  }
+  NOTREACHED();
+}
+
+std::string_view GetLastReportedBucketPrefName(DataType data_type) {
+  switch (data_type) {
+    case DataType::kPasskeys:
+      return prefs::kOnDeviceEncryptionStatePasskeyLastReportedBucket;
+    case DataType::kPasswords:
+      return prefs::kOnDeviceEncryptionStatePasswordLastReportedBucket;
+  }
+  NOTREACHED();
+}
+
+std::string_view GetFirstUnlockTimePrefName(DataType data_type) {
+  switch (data_type) {
+    case DataType::kPasskeys:
+      return prefs::kOnDeviceEncryptionPasskeyFirstUnlockTime;
+    case DataType::kPasswords:
+      return prefs::kOnDeviceEncryptionPasswordFirstUnlockTime;
+  }
+  NOTREACHED();
+}
+
+std::string_view GetTimeToUnlockLastReportingTimePrefName(DataType data_type) {
+  switch (data_type) {
+    case DataType::kPasskeys:
+      return prefs::kOnDeviceEncryptionPasskeyTimeToUnlockLastReportingTime;
+    case DataType::kPasswords:
+      return prefs::kOnDeviceEncryptionPasswordTimeToUnlockLastReportingTime;
+  }
+  NOTREACHED();
+}
 
 std::optional<OnDeviceEncryptionStateHistogramBucket>
 ToOnDeviceEncryptionStateHistogramBucket(OnDeviceEncryptionState state) {
@@ -47,23 +110,36 @@ ToOnDeviceEncryptionStateHistogramBucket(OnDeviceEncryptionState state) {
   NOTREACHED();
 }
 
+bool ShouldRecordPeriodicReport(base::Time last_reported_time, base::Time now) {
+  // Also trigger reporting if `last_reported_time` is in the future (e.g., due
+  // to a system clock change) to heal the stored timestamp.
+  return last_reported_time.is_null() ||
+         now - last_reported_time >= kPeriodicReportingDelay ||
+         now < last_reported_time;
+}
+
+void RecordTimeToUnlockHistogram(DataType data_type,
+                                 base::TimeDelta time_to_unlock) {
+  base::UmaHistogramCustomCounts(
+      base::StrCat({"PasswordManager.OnDeviceEncryptionTimeToUnlock.",
+                    DataTypeToHistogramSuffix(data_type)}),
+      base::saturated_cast<int>(time_to_unlock.InSeconds()),
+      /*min=*/1,
+      /*exclusive_max=*/
+      base::checked_cast<int>(kMaxTimeToUnlockDuration.InSeconds()),
+      /*buckets=*/kTimeToUnlockBucketCount);
+}
+
 }  // namespace
 
 OnDeviceEncryptionDataTypeSpecificMetricsReporter::
     OnDeviceEncryptionDataTypeSpecificMetricsReporter(
-        std::string_view histogram_name,
-        std::string_view pref_name_last_reporting_time,
-        std::string_view pref_name_last_reported_bucket,
+        DataType data_type,
         std::unique_ptr<OnDeviceEncryptionStateTracker> tracker,
         PrefService& pref_service)
-    : histogram_name_(histogram_name),
-      pref_name_last_reporting_time_(pref_name_last_reporting_time),
-      pref_name_last_reported_bucket_(pref_name_last_reported_bucket),
+    : data_type_(data_type),
       tracker_(std::move(tracker)),
       pref_service_(pref_service) {
-  CHECK(!histogram_name_.empty());
-  CHECK(!pref_name_last_reporting_time_.empty());
-  CHECK(!pref_name_last_reported_bucket_.empty());
   CHECK(tracker_);
   // During startup, services are actively initializing, and might also start
   // notifying the observers. On the other hand, it is good practice to avoid
@@ -92,7 +168,7 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::
     OnDeviceEncryptionStateChanged(OnDeviceEncryptionState /*previous_state*/,
                                    OnDeviceEncryptionState /*new_state*/) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  MaybeRecordReadiness();
+  MaybeRecordMetrics();
 }
 
 void OnDeviceEncryptionDataTypeSpecificMetricsReporter::
@@ -108,15 +184,26 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(tracker_);
   observation_.Observe(tracker_.get());
-  MaybeRecordReadiness();
+  MaybeRecordMetrics();
 }
 
-void OnDeviceEncryptionDataTypeSpecificMetricsReporter::MaybeRecordReadiness() {
+void OnDeviceEncryptionDataTypeSpecificMetricsReporter::MaybeRecordMetrics() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const base::Time now = base::Time::Now();
+  const base::Time next_readiness_time =
+      MaybeRecordReadinessAndSuggestNextReportingTime(now);
+  const base::Time next_time_to_unlock_time =
+      MaybeRecordTimeToUnlockAndSuggestNextReportingTime(now);
+  ScheduleNextReporting(
+      std::min(next_readiness_time, next_time_to_unlock_time));
+}
+
+base::Time OnDeviceEncryptionDataTypeSpecificMetricsReporter::
+    MaybeRecordReadinessAndSuggestNextReportingTime(base::Time now) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(tracker_);
   std::optional<OnDeviceEncryptionStateHistogramBucket> bucket =
       ToOnDeviceEncryptionStateHistogramBucket(tracker_->GetEncryptionState());
-  const base::Time now = base::Time::Now();
   base::Time next_scheduled_reporting_time;
 
   bool current_state_cannot_be_reported = !bucket.has_value();
@@ -127,22 +214,15 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::MaybeRecordReadiness() {
     const auto [last_reported_time, last_reported_bucket] =
         GetLastReportedTimeAndBucket();
 
-    bool metric_has_never_been_reported = last_reported_time.is_null();
-    bool metric_has_been_reported_long_ago =
-        now - last_reported_time >= kPeriodicReportingDelay;
-    bool state_changed_since_last_reporting = bucket != last_reported_bucket;
-    // Detecting a potential edge case: when `last_reported_time` is in the
-    // future (e.g., due to the system clock change). The safest option in this
-    // case is to publish a metric (this might lead to the fact that we publish
-    // a redundant event - but, this does not harm).
-    bool reporting_time_mismatch_detected = now < last_reported_time;
-
-    bool current_state_must_be_reported =
-        metric_has_never_been_reported || state_changed_since_last_reporting ||
-        metric_has_been_reported_long_ago || reporting_time_mismatch_detected;
+    const bool current_state_must_be_reported =
+        bucket != last_reported_bucket ||
+        ShouldRecordPeriodicReport(last_reported_time, now);
 
     if (current_state_must_be_reported) {
-      base::UmaHistogramEnumeration(histogram_name_, *bucket);
+      base::UmaHistogramEnumeration(
+          base::StrCat({"PasswordManager.OnDeviceEncryptionState.",
+                        DataTypeToHistogramSuffix(data_type_)}),
+          *bucket);
       SetLastReportedTimeAndBucket(now, *bucket);
       next_scheduled_reporting_time = now + kPeriodicReportingDelay;
     } else {
@@ -150,7 +230,54 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::MaybeRecordReadiness() {
           last_reported_time + kPeriodicReportingDelay;
     }
   }
-  ScheduleNextReporting(next_scheduled_reporting_time);
+  return next_scheduled_reporting_time;
+}
+
+base::Time OnDeviceEncryptionDataTypeSpecificMetricsReporter::
+    MaybeRecordTimeToUnlockAndSuggestNextReportingTime(base::Time now) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(tracker_);
+
+  if (tracker_->GetEncryptionState() != OnDeviceEncryptionState::kDeviceReady) {
+    return now + kPeriodicReportingDelay;
+  }
+
+  const base::Time sign_in_time =
+      pref_service_->GetTime(prefs::kOnDeviceEncryptionLastSignInTime);
+  if (sign_in_time.is_null() || now < sign_in_time) {
+    // Do not persist or emit durations if sign-in time is missing or in the
+    // future (e.g., due to a backward system clock jump).
+    return now + kPeriodicReportingDelay;
+  }
+
+  // Check feature enablement after eligibility checks so any associated field
+  // trial is activated only for eligible profiles.
+  if (!base::FeatureList::IsEnabled(
+          features::kPasswordManagerOnDeviceEncryptionTimeToUnlockMetrics)) {
+    return now + kPeriodicReportingDelay;
+  }
+
+  const std::string_view first_unlock_pref =
+      GetFirstUnlockTimePrefName(data_type_);
+  base::Time first_unlock_time = pref_service_->GetTime(first_unlock_pref);
+  if (first_unlock_time.is_null() || first_unlock_time < sign_in_time) {
+    first_unlock_time = now;
+    pref_service_->SetTime(first_unlock_pref, first_unlock_time);
+  }
+
+  const base::TimeDelta time_to_unlock = first_unlock_time - sign_in_time;
+
+  const std::string_view last_reporting_time_pref =
+      GetTimeToUnlockLastReportingTimePrefName(data_type_);
+  const base::Time last_reported_time =
+      pref_service_->GetTime(last_reporting_time_pref);
+  if (!ShouldRecordPeriodicReport(last_reported_time, now)) {
+    return last_reported_time + kPeriodicReportingDelay;
+  }
+
+  RecordTimeToUnlockHistogram(data_type_, time_to_unlock);
+  pref_service_->SetTime(last_reporting_time_pref, now);
+  return now + kPeriodicReportingDelay;
 }
 
 void OnDeviceEncryptionDataTypeSpecificMetricsReporter::ScheduleNextReporting(
@@ -159,7 +286,7 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::ScheduleNextReporting(
   timer_.Start(
       FROM_HERE, execution_time,
       base::BindOnce(&OnDeviceEncryptionDataTypeSpecificMetricsReporter::
-                         MaybeRecordReadiness,
+                         MaybeRecordMetrics,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
@@ -168,8 +295,9 @@ OnDeviceEncryptionDataTypeSpecificMetricsReporter::
     GetLastReportedTimeAndBucket() const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const base::Time time =
-      pref_service_->GetTime(pref_name_last_reporting_time_);
-  const int bucket = pref_service_->GetInteger(pref_name_last_reported_bucket_);
+      pref_service_->GetTime(GetLastReportingTimePrefName(data_type_));
+  const int bucket =
+      pref_service_->GetInteger(GetLastReportedBucketPrefName(data_type_));
   if (time.is_null() || bucket < 0 ||
       bucket >
           static_cast<int>(OnDeviceEncryptionStateHistogramBucket::kMaxValue)) {
@@ -184,8 +312,8 @@ void OnDeviceEncryptionDataTypeSpecificMetricsReporter::
         base::Time time,
         OnDeviceEncryptionStateHistogramBucket bucket) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  pref_service_->SetTime(pref_name_last_reporting_time_, time);
-  pref_service_->SetInteger(pref_name_last_reported_bucket_,
+  pref_service_->SetTime(GetLastReportingTimePrefName(data_type_), time);
+  pref_service_->SetInteger(GetLastReportedBucketPrefName(data_type_),
                             static_cast<int>(bucket));
 }
 

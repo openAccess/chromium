@@ -49,8 +49,8 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/password_protection/chrome_password_reuse_detection_manager_client.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/sessions/session_tab_helper_factory.h"
 #include "chrome/browser/subresource_filter/chrome_content_subresource_filter_web_contents_helper_factory.h"
@@ -81,7 +81,7 @@
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/paint_preview/buildflags/buildflags.h"
 #include "components/pdf/common/constants.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager_delegate.h"
 #include "content/public/browser/file_select_listener.h"
@@ -670,9 +670,9 @@ WebContents* TabWebContentsDelegateAndroid::AddNewContents(
            base::NotFatalUntil::M161);
 
   if (disposition == ui::mojom::WindowOpenDisposition::kNewPictureInPicture) {
-    const GURL& opener_url = source ? source->GetLastCommittedURL() : GURL();
-    if (!PictureInPictureWindowManager::IsSupportedForDocumentPictureInPicture(
-            opener_url)) {
+    if (!source || PictureInPictureWindowManager::IsChildWebContents(source) ||
+        !PictureInPictureWindowManager::IsSupportedForDocumentPictureInPicture(
+            source->GetLastCommittedURL())) {
       if (was_blocked) {
         *was_blocked = true;
       }

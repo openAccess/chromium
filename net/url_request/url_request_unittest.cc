@@ -102,6 +102,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/secure_dns_policy.h"
+#include "net/filter/source_stream_type.h"
 #include "net/http/http_byte_range.h"
 #include "net/http/http_cache.h"
 #include "net/http/http_connection_info.h"
@@ -5068,7 +5069,6 @@ class AsyncDelegateLogger : public base::RefCounted<AsyncDelegateLogger> {
       ADD_FAILURE() << "Not enough log entries";
       return entries.size();
     }
-    std::string delegate_info;
     EXPECT_EQ(NetLogEventType::DELEGATE_INFO, entries[log_position].type);
     EXPECT_EQ(NetLogEventPhase::BEGIN, entries[log_position].phase);
     EXPECT_EQ(
@@ -8797,7 +8797,7 @@ TEST_F(URLRequestTestHTTP, DefaultAcceptEncodingOverridden) {
   ASSERT_TRUE(http_test_server()->Start());
 
   struct {
-    base::flat_set<SourceStreamType> accepted_types;
+    SourceStreamTypeSet accepted_types;
     const char* expected_accept_encoding;
   } tests[] = {
       {{SourceStreamType::kDeflate}, "deflate"},
@@ -12887,6 +12887,38 @@ TEST_F(URLRequestTest, SetIsolationInfoFromNak) {
   EXPECT_TRUE(r->isolation_info().IsEqualForTesting(net::IsolationInfo()));
   r->Start();
   d.RunUntilComplete();
+}
+
+TEST_F(URLRequestTest,
+       SetIsolationInfoFromNakPreservesNetworkIsolationPartition) {
+  TestDelegate d;
+  SchemefulSite site_a(GURL("https://a.test/"));
+  base::UnguessableToken nak_nonce = base::UnguessableToken::Create();
+  NetworkAnonymizationKey partitioned_nak =
+      NetworkAnonymizationKey::CreateFromParts(
+          site_a, /*is_cross_site=*/false, nak_nonce,
+          NetworkIsolationPartition::kDnsOverHttps);
+  NetworkAnonymizationKey empty_partitioned_nak =
+      NetworkAnonymizationKey::CreateEmptyWithPartition(
+          NetworkIsolationPartition::kDnsOverHttps);
+
+  std::unique_ptr<URLRequest> r(default_context().CreateRequest(
+      GURL("http://localhost"), DEFAULT_PRIORITY, &d,
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
+  r->SetLoadFlags(LOAD_DISABLE_CACHE);
+  r->set_disallow_credentials();
+
+  r->set_isolation_info_from_network_anonymization_key(partitioned_nak);
+  EXPECT_EQ(r->isolation_info().network_anonymization_key(), partitioned_nak);
+  EXPECT_EQ(r->isolation_info().GetNetworkIsolationPartition(),
+            NetworkIsolationPartition::kDnsOverHttps);
+
+  r->set_isolation_info_from_network_anonymization_key(empty_partitioned_nak);
+  EXPECT_EQ(r->isolation_info().network_anonymization_key(),
+            empty_partitioned_nak);
+  EXPECT_TRUE(r->isolation_info().IsEmpty());
+  EXPECT_EQ(r->isolation_info().GetNetworkIsolationPartition(),
+            NetworkIsolationPartition::kDnsOverHttps);
 }
 
 TEST_F(URLRequestTest, CookiePartitionKey) {

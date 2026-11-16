@@ -56,6 +56,19 @@ BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankChatHistoryTurns);
 // without image bytes.
 BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankChatImages);
 
+// The maximum width and height, in pixels, of each image attached to a memory
+// bank chat request. Larger images are downscaled to fit, preserving their
+// aspect ratio, before they are PNG-encoded; non-positive values disable
+// downscaling.
+BASE_DECLARE_FEATURE_PARAM(int, kMaxMemoryBankChatImageDimension);
+
+// The minimum similarity score a memory bank entry must reach to be returned by
+// semantic search. Defaults to 0.7.
+BASE_DECLARE_FEATURE_PARAM(double, kMemoryBankSearchScoreThreshold);
+
+// The maximum number of entries returned by memory bank semantic search.
+BASE_DECLARE_FEATURE_PARAM(size_t, kMaxMemoryBankSearchResults);
+
 // The maximum number of tab groups stored in the in-memory tab group store.
 BASE_DECLARE_FEATURE_PARAM(int, kMaxTabGroups);
 

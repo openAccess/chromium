@@ -15,6 +15,7 @@ import("//build/config/win/console_app.gni")
 import("//build/config/win/manifest.gni")
 import("//build/private_code_test/private_code_test.gni")
 import("//build/toolchain/toolchain.gni")
+import("//build/util/compatible_versions.gni")
 import("//chrome/browser/buildflags.gni")
 import("//chrome/chrome_paks.gni")
 import("//chrome/common/features.gni")
@@ -229,6 +230,7 @@ if (!is_android && !is_mac) {
         "//components/activity_reporter:buildflags",
         "//components/crash/core/app",
         "//components/crash/core/app:run_as_crashpad_handler",
+        "//components/startup_metric_utils/common:constants",
         "//components/version_info:channel",
         "//content:sandbox_helper_win",
         "//content/public/common:static_switches",
@@ -237,6 +239,10 @@ if (!is_android && !is_mac) {
         "//sandbox/policy/mojom",
         "//third_party/crashpad/crashpad/util",
       ]
+
+      if (has_compatible_versions) {
+        deps += [ ":copy_compatible_versions" ]
+      }
 
       data_deps += [
         "//chrome/app/version_assembly:version_assembly_manifest",
@@ -485,8 +491,17 @@ if (is_win) {
     outputs = [ "$root_out_dir/First Run" ]
   }
 
+  if (has_compatible_versions) {
+    copy("copy_compatible_versions") {
+      sources = [ compatible_versions_file ]
+      outputs = [ "$root_out_dir/COMPATIBLE_VERSIONS" ]
+    }
+  }
+
+  # TODO(crbug.com/562102239): Remove along with //build/util/MINIBRANCH.dummy
+  # once src-internal archives COMPATIBLE_VERSIONS instead of MINIBRANCH.
   copy("copy_minibranch") {
-    sources = [ "//build/util/MINIBRANCH" ]
+    sources = [ "//build/util/MINIBRANCH.dummy" ]
     outputs = [ "$root_out_dir/MINIBRANCH" ]
   }
 } else if (is_mac) {
@@ -1342,6 +1357,7 @@ if (is_win) {
     deps = [
       ":dependencies",
       "//build:chromeos_buildflags",
+      "//chrome/app:chrome_crash_user_streams",
       "//chrome/app:command_ids",
       "//chrome/browser:chrome_browser_application_mac",
       "//chrome/browser:chrome_content_browser_client",
@@ -1411,7 +1427,6 @@ if (is_win) {
       ":widevine_cdm_library",
       "//chrome/browser/resources/media/mei_preload:component_bundle",
       "//chrome/browser/web_applications/isolated_web_apps/key_distribution/preload:component_bundle",
-      "//components/privacy_sandbox/privacy_sandbox_attestations/preload:component_bundle",
     ]
 
     if (is_chrome_branded) {
@@ -2097,10 +2112,15 @@ if (enable_separate_renderer_binary) {
 
   if (is_win) {
     process_version_rc_template("chrome_renderer_dll_version") {
-      sources = [
-        "app/chrome_renderer_dll.ver",
-        minibranch_file,
-      ]
+      sources = [ "app/chrome_renderer_dll.ver" ]
+      if (has_compatible_versions) {
+        sources += [ compatible_versions_file ]
+      } else {
+        extra_args = [
+          "-e",
+          "COMPATIBLE_VERSIONS=\"\"",
+        ]
+      }
       template_file = "app/chrome_renderer_dll_version.rc.version"
       output = "$target_gen_dir/chrome_renderer_dll_version.rc"
     }
@@ -2138,6 +2158,9 @@ if (enable_separate_renderer_binary) {
 
       defines = [ "BUILDING_CHROME_RENDERER" ]
       deps = _chrome_renderer_deps + [ "//chrome/child" ]
+      if (is_mac) {
+        deps += [ "//chrome/app:chrome_crash_user_streams" ]
+      }
       if (is_win) {
         deps += [
           ":chrome_renderer_dll_version",
@@ -2160,6 +2183,7 @@ if (enable_separate_renderer_binary) {
                 ]
       defines = [ "BUILDING_CHROME_RENDERER" ]
       deps = _chrome_renderer_deps + [
+               "//chrome/app:chrome_crash_user_streams",
                "//chrome/child",
                "//sandbox/linux:sandbox_services",
              ]

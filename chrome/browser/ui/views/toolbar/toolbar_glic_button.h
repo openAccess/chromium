@@ -49,6 +49,7 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton>,
   void SetForegroundFrameInactiveColorId(ui::ColorId new_color_id) override;
   void SetBackgroundFrameActiveColorId(ui::ColorId new_color_id) override;
   void SetBackgroundFrameInactiveColorId(ui::ColorId new_color_id) override;
+  void SetSplitButtonCornerStyling() override;
   void ResetSplitButtonCornerStyling() override;
   void SetLeftRightCornerRadii(int left, int right) override;
   float GetCornerRadiusFor(ToolbarButton::Edge edge) const override;
@@ -58,8 +59,6 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton>,
   ui::ColorId GetBackgroundColor();
   SkColor GetForegroundColor(ButtonState state) const override;
 
-  void Collapse() override;
-  void Expand() override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
   void OnThemeChanged() override;
   bool GetIsShowingNudge()
@@ -74,13 +73,15 @@ class ToolbarGlicButton : public GlicButton<ToolbarButton>,
   bool IsVisible() const override;
   void SetGlicPanelIsOpen(bool open) override;
   void UpdateStyle(bool should_match_toolbar) override;
+  void SetIsSplit(bool is_split) override;
+
+  float GetWidthFactor() const override;
 
  private:
   void UpdateBackground();
   void UpdateInkDrop();
   void UpdateCloseButton();
 
-  float GetWidthFactor() const override;
   void SetWidthFactor(float factor) override;
 
   // GlicButton:

@@ -118,6 +118,9 @@ BASE_FEATURE(kMdnsResponderGeneratedNameListing,
 BASE_FEATURE(kOpaqueResponseBlockingErrorsForAllFetches,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+// Controls whether ORB content sniffers use the Rust implementation.
+BASE_FEATURE(kOrbSniffersInRust, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Enable support for ACCEPT_CH H2/3 frame as part of Client Hint Reliability.
 // See:
 // https://tools.ietf.org/html/draft-davidben-http-client-hint-reliability-02#section-4.3
@@ -187,33 +190,6 @@ BASE_FEATURE(kDisallowInterventionInCorsSafelistedHeaders,
 // Do not send TLS client certificates in CORS preflight. Omit all client certs
 // and continue the handshake without sending one if requested.
 BASE_FEATURE(kOmitCorsClientCert, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables support for the `Variants` response header and reduce
-// accept-language. https://github.com/Tanych/accept-language
-BASE_FEATURE(kReduceAcceptLanguage, base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE_PARAM(base::TimeDelta,
-                   kReduceAcceptLanguageCacheDuration,
-                   &kReduceAcceptLanguage,
-                   "reduce-accept-language-cache-duration",
-                   base::Days(30));
-
-// Enables support for the `Variants` response header and reduce
-// Accept-Language HTTP header only.
-BASE_FEATURE(kReduceAcceptLanguageHTTP, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled this feature will limit the total number of languages for
-// Accept-Language to enhance privacy. See details in
-// https://datatracker.ietf.org/doc/html/rfc7231#section-9.7.
-BASE_FEATURE(kReduceAcceptLanguageCount, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// When non-zero, the number of Accept-Language of this size will return as the
-// HTTP header and JavaScript getter.
-BASE_FEATURE_PARAM(int,
-                   kMaxAcceptLanguage,
-                   &kReduceAcceptLanguageCount,
-                   /*name=*/"MaxAcceptLanguage",
-                   /*default_value=*/10);
 
 // Enables Local Network Access checks.
 // Blocks local network requests without user permission to prevent exploitation
@@ -570,5 +546,25 @@ BASE_FEATURE(kEnforceIsolatedWorldOriginLock, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kForwardProxyAuthWithoutPrompt, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kPrewarmCryptbase, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRateLimitProxyConfigPolls, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Minimum interval between consecutive `OnLazyProxyConfigPoll()` Mojo IPCs sent
+// by `ProxyConfigServiceMojo`. Kept well below `PollingProxyConfigService`'s
+// 10-second `kPollIntervalSec` so IPC/queuing jitter cannot delay an eligible
+// browser-side poll window while still coalescing subresource request bursts.
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kRateLimitProxyConfigPollsInterval,
+                   &kRateLimitProxyConfigPolls,
+                   base::Seconds(1));
+
+BASE_FEATURE(kDnsHostMappingExperiment, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(std::string,
+                   kDnsHostMappingExperimentRules,
+                   &kDnsHostMappingExperiment,
+                   /*name=*/"rules",
+                   /*default_value=*/"");
+BASE_FEATURE(kSocketLayerNetworkThrottling, base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace network::features

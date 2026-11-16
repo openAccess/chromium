@@ -20,6 +20,8 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
 #include "chrome/browser/profiles/profile.h"
@@ -83,6 +85,9 @@ class TestGlicSelectionWidgetController : public GlicSelectionWidgetController {
   bool show_selection_overlay_called() const {
     return show_selection_overlay_called_;
   }
+  bool dismissed_before_show_overlay() const {
+    return dismissed_before_show_overlay_;
+  }
 
   std::optional<ToastId> shown_toast_id() const { return shown_toast_id_; }
 
@@ -93,6 +98,7 @@ class TestGlicSelectionWidgetController : public GlicSelectionWidgetController {
   // `GlicSelectionWidgetController`:
   void ShowSelectionOverlay() override {
     show_selection_overlay_called_ = true;
+    dismissed_before_show_overlay_ = dismiss_called_;
     GlicSelectionWidgetController::ShowSelectionOverlay();
   }
 
@@ -105,6 +111,7 @@ class TestGlicSelectionWidgetController : public GlicSelectionWidgetController {
   bool dismiss_called_ = false;
   std::optional<DismissReason> dismiss_reason_;
   bool show_selection_overlay_called_ = false;
+  bool dismissed_before_show_overlay_ = false;
   std::optional<ToastId> shown_toast_id_;
 };
 
@@ -241,7 +248,9 @@ TEST_F(GlicSelectionWidgetControllerPromptTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
       {{features::kGlicSelectionPrompt,
-        {{"auto_send_prompt", "true"}, {"cta", "explain"}}}},
+        {{features::kGlicSelectionAutoSendPromptParam, "true"},
+         {features::kGlicSelectionCtaParam,
+          GlicSelectionInlineCueFeatureParams::kCtaExplain}}}},
       {});
 
   tabs::MockTabInterface mock_tab;
@@ -268,7 +277,9 @@ TEST_F(GlicSelectionWidgetControllerPromptTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
       {{features::kGlicSelectionPrompt,
-        {{"auto_send_prompt", "true"}, {"cta", "tell_me_about_this"}}}},
+        {{features::kGlicSelectionAutoSendPromptParam, "true"},
+         {features::kGlicSelectionCtaParam,
+          GlicSelectionInlineCueFeatureParams::kCtaTellMe}}}},
       {});
 
   tabs::MockTabInterface mock_tab;
@@ -294,7 +305,9 @@ TEST_F(GlicSelectionWidgetControllerPromptTest,
        InvokeGlicFromSelectionAffordanceAutoSendDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
-      {{features::kGlicSelectionPrompt, {{"auto_send_prompt", "false"}}}}, {});
+      {{features::kGlicSelectionPrompt,
+        {{features::kGlicSelectionAutoSendPromptParam, "false"}}}},
+      {});
 
   tabs::MockTabInterface mock_tab;
   MockBrowserWindowInterface mock_bwi;
@@ -317,7 +330,9 @@ TEST_F(GlicSelectionWidgetControllerPromptTest,
        InvokeGlicFromSelectionAffordanceOptsOutOfLiveMode) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitWithFeaturesAndParameters(
-      {{features::kGlicSelectionPrompt, {{"auto_send_prompt", "false"}}}}, {});
+      {{features::kGlicSelectionPrompt,
+        {{features::kGlicSelectionAutoSendPromptParam, "false"}}}},
+      {});
 
   tabs::MockTabInterface mock_tab;
   MockBrowserWindowInterface mock_bwi;
@@ -340,7 +355,7 @@ TEST_F(GlicSelectionWidgetControllerTest,
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       features::kGlicSelectionPrompt,
-      {{features::kGlicSelectionDefaultBlockedSites.name,
+      {{features::kGlicSelectionDefaultBlockedSitesParam,
         "https://blocked-site.com"}});
 
   NavigateAndCommit(GURL("https://blocked-site.com/page"));
@@ -373,6 +388,7 @@ TEST_F(GlicSelectionWidgetControllerTest, OnAskGeminiWithSmallChipDismissesUI) {
   EXPECT_EQ(GlicSelectionObserver::DismissReason::kActionTaken,
             controller->dismiss_reason());
   EXPECT_TRUE(controller->show_selection_overlay_called());
+  EXPECT_FALSE(controller->dismissed_before_show_overlay());
 }
 
 TEST_F(GlicSelectionWidgetControllerTest,
@@ -391,6 +407,7 @@ TEST_F(GlicSelectionWidgetControllerTest,
   EXPECT_EQ(GlicSelectionObserver::DismissReason::kActionTaken,
             controller->dismiss_reason());
   EXPECT_TRUE(controller->show_selection_overlay_called());
+  EXPECT_FALSE(controller->dismissed_before_show_overlay());
 }
 
 TEST_F(GlicSelectionWidgetControllerTest,

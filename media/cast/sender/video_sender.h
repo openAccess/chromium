@@ -6,6 +6,7 @@
 #define MEDIA_CAST_SENDER_VIDEO_SENDER_H_
 
 #include <memory>
+#include <optional>
 
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
@@ -17,7 +18,6 @@
 #include "media/cast/cast_config.h"
 #include "media/cast/common/rtp_time.h"
 #include "media/cast/sender/frame_sender.h"
-#include "media/cast/sender/video_bitrate_suggester.h"
 
 namespace openscreen::cast {
 class Sender;
@@ -41,17 +41,17 @@ class VideoEncoder;
 class VideoSender : public FrameSender::Client {
  public:
   using PlayoutDelayChangeCB = base::RepeatingCallback<void(base::TimeDelta)>;
+  using GetVideoNetworkBandwidthCB = base::RepeatingCallback<uint32_t()>;
 
   // NOTE: Since the `Sender` instance is destroyed when renegotiation is
   // complete, `this` is also invalid and should be immediately torn down.
-  VideoSender(
-      std::unique_ptr<VideoEncoder> video_encoder,
-      scoped_refptr<CastEnvironment> cast_environment,
-      const FrameSenderConfig& video_config,
-      std::unique_ptr<openscreen::cast::Sender> sender,
-      VideoSender::PlayoutDelayChangeCB playout_delay_change_cb,
-      media::VideoCaptureFeedbackCB feedback_cb,
-      VideoBitrateSuggester::GetVideoNetworkBandwidthCB get_bandwidth_cb);
+  VideoSender(std::unique_ptr<VideoEncoder> video_encoder,
+              scoped_refptr<CastEnvironment> cast_environment,
+              const FrameSenderConfig& video_config,
+              std::unique_ptr<openscreen::cast::Sender> sender,
+              VideoSender::PlayoutDelayChangeCB playout_delay_change_cb,
+              media::VideoCaptureFeedbackCB feedback_cb,
+              GetVideoNetworkBandwidthCB get_bandwidth_cb);
 
   VideoSender(const VideoSender&) = delete;
   VideoSender& operator=(const VideoSender&) = delete;
@@ -71,8 +71,13 @@ class VideoSender : public FrameSender::Client {
   virtual double GetLossiness() const;
   virtual int GetFramesInserted() const;
   // Frames dropped by the sender before or after encoding, e.g. due to network
-  // or receiver backpressure.
+  // or receiver backpressure. This is the sum of the two methods below.
   virtual int GetFramesDropped() const;
+  // Frames dropped before encoding, because too many frames or too much media
+  // duration would be in flight.
+  virtual int GetFramesDroppedBeforeEncoding() const;
+  // Encoded frames that the frame sender refused to enqueue.
+  virtual int GetFramesDroppedAfterEncoding() const;
   // Frames dropped by the encoder itself, e.g. due to rate control.
   virtual int GetFramesDroppedByEncoder() const;
 
@@ -103,6 +108,14 @@ class VideoSender : public FrameSender::Client {
   // against the target utilization.
   void ReportResourceUtilization(double utilization, bool is_key_frame);
 
+  // Adds the time since the last call, at `last_bitrate_`, to the
+  // time-weighted bitrate metrics. Called whenever the target bitrate changes,
+  // and when the sender is destroyed.
+  void AccumulateBitrateTime();
+
+  // Records the session-level UMA. Called once, from the destructor.
+  void RecordSessionMetrics();
+
   // The backing frame sender implementation.
   std::unique_ptr<FrameSender> frame_sender_;
 
@@ -127,8 +140,12 @@ class VideoSender : public FrameSender::Client {
   // we get the same value.
   uint32_t last_bitrate_ = 0;
 
-  // Keeps track of frame drops and uses that to drive the video bitrate.
-  std::unique_ptr<VideoBitrateSuggester> bitrate_suggester_;
+  // Callback that provides the current estimated network bandwidth available
+  // for video.
+  GetVideoNetworkBandwidthCB get_bandwidth_cb_;
+
+  const uint32_t min_bitrate_ = 0;
+  const uint32_t max_bitrate_ = 0;
 
   // The total amount of time between a frame's capture/recording on the sender
   // and its playback on the receiver (i.e., shown to a user).
@@ -148,12 +165,13 @@ class VideoSender : public FrameSender::Client {
   // OnEncodedVideoFrame().  See header file comments for SenderEncodedFrame for
   // an explanation of these values.
   double last_reported_encoder_utilization_ = -1.0;
-  double last_reported_lossiness_ = -1.0;
+  std::optional<double> last_reported_lossiness_;
 
   // Used to calculate the percentage of lost frames. We currently report this
   // metric as the number of frames dropped in the entire session.
   int number_of_frames_inserted_ = 0;
-  int number_of_frames_dropped_ = 0;
+  int number_of_frames_dropped_before_encoding_ = 0;
+  int number_of_frames_dropped_after_encoding_ = 0;
 
   // Used to report the session-average encoder utilization and the percentage
   // of encoded frames with utilization above 100%. Hardware and software
@@ -165,6 +183,20 @@ class VideoSender : public FrameSender::Client {
 
   // The number of frames dropped by the encoder itself (empty outputs).
   int number_of_frames_dropped_by_encoder_ = 0;
+
+  // Used to report the session-average lossiness of encoded frames. Frames
+  // whose lossiness was not computed are not included.
+  double lossiness_sum_ = 0.0;
+  int lossiness_samples_ = 0;
+
+  // Used to report the time-weighted average target bitrate, and the
+  // percentage of time spent at the maximum bitrate. These are weighted by
+  // time rather than by frame, so that low frame rate periods, such as a static
+  // screen, are not under-represented.
+  base::TimeTicks last_bitrate_change_time_;
+  double bitrate_seconds_sum_ = 0.0;
+  base::TimeDelta time_with_bitrate_;
+  base::TimeDelta time_at_max_bitrate_;
 
   // Used to throttle metrics reporting of the bitrate.
   int frames_since_bitrate_reported_ = 0;

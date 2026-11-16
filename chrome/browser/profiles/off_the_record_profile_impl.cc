@@ -47,7 +47,6 @@
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/profiles/profile_metrics.h"
 #include "chrome/browser/reader_mode/profile_utils.h"
-#include "chrome/browser/reduce_accept_language/reduce_accept_language_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ssl/stateful_ssl_host_state_delegate_factory.h"
 #include "chrome/browser/themes/theme_service.h"
@@ -234,7 +233,7 @@ void OffTheRecordProfileImpl::Init() {
   extensions::ProcessManager::Get(this);
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
-  // The DomDistillerViewerSource is not a normal WebUI so it must be registered
+  // The WebDistillerViewerSource is not a normal WebUI so it must be registered
   // as a URLDataSource early.
   reader_mode::RegisterViewerSource(this);
 
@@ -526,11 +525,6 @@ OffTheRecordProfileImpl::GetBackgroundSyncController() {
 content::BrowsingDataRemoverDelegate*
 OffTheRecordProfileImpl::GetBrowsingDataRemoverDelegate() {
   return ChromeBrowsingDataRemoverDelegateFactory::GetForProfile(this);
-}
-
-content::ReduceAcceptLanguageControllerDelegate*
-OffTheRecordProfileImpl::GetReduceAcceptLanguageControllerDelegate() {
-  return ReduceAcceptLanguageFactory::GetForProfile(this);
 }
 
 std::unique_ptr<media::VideoDecodePerfHistory>

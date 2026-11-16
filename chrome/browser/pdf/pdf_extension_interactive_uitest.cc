@@ -4,8 +4,6 @@
 
 #include "base/run_loop.h"
 #include "base/test/run_until.h"
-#include "base/test/scoped_feature_list.h"
-#include "base/test/with_feature_override.h"
 #include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -14,13 +12,11 @@
 #include "chrome/browser/pdf/pdf_extension_test_util.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/pdf/browser/pdf_frame_util.h"
-#include "content/public/browser/browser_plugin_guest_manager.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
@@ -29,11 +25,8 @@
 #include "content/public/test/focus_changed_observer.h"
 #include "content/public/test/hit_test_region_observer.h"
 #include "content/public/test/test_utils.h"
-#include "extensions/browser/api/extensions_api_client.h"
-#include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "pdf/pdf_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/input/focus_type.mojom-shared.h"
@@ -61,23 +54,9 @@ namespace {
 using ::pdf_extension_test_util::ConvertPageCoordToScreenCoord;
 using ::pdf_extension_test_util::SetInputFocusOnPlugin;
 
-class PDFExtensionInteractiveUITest : public base::test::WithFeatureOverride,
-                                      public PDFExtensionTestBase {
+class PDFExtensionInteractiveUITest : public PDFExtensionTestBase {
  public:
-  PDFExtensionInteractiveUITest()
-      : base::test::WithFeatureOverride(chrome_pdf::features::kPdfOopif) {}
-
-  void SetUpInProcessBrowserTestFixture() override {
-    PDFExtensionTestBase::SetUpInProcessBrowserTestFixture();
-
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove this.
-    webui_omnibox_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
-  }
+  PDFExtensionInteractiveUITest() = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
     PDFExtensionTestBase::SetUpCommandLine(command_line);
@@ -98,11 +77,6 @@ class PDFExtensionInteractiveUITest : public base::test::WithFeatureOverride,
     }
     return focus_observer.Wait();
   }
-
-  bool UseOopif() const override { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList webui_omnibox_feature_list_;
 };
 
 class TabChangedWaiter : public TabStripModelObserver {
@@ -133,7 +107,7 @@ class TabChangedWaiter : public TabStripModelObserver {
 
 // TODO(crbug.com/333802743): re-enable the test
 // For crbug.com/40113375
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest,
                        DISABLED_CtrlPageUpDownSwitchesTabs) {
   content::RenderFrameHost* extension_host = LoadPdfInNewTabGetExtensionHost(
       embedded_test_server()->GetURL("/pdf/test.pdf"));
@@ -143,7 +117,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
   ASSERT_EQ(2, tab_strip_model->count());
   EXPECT_EQ(1, tab_strip_model->active_index());
 
-  SetInputFocusOnPlugin(extension_host, GetEmbedderWebContents());
+  SetInputFocusOnPlugin(extension_host, GetActiveWebContents());
 
   {
     TabChangedWaiter tab_changed_waiter(browser());
@@ -170,7 +144,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
   EXPECT_EQ(1, tab_strip_model->active_index());
 }
 
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, FocusForwardTraversal) {
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest, FocusForwardTraversal) {
   content::RenderFrameHost* extension_host = LoadPdfInNewTabGetExtensionHost(
       embedded_test_server()->GetURL("/pdf/test.pdf#toolbar=0"));
   ASSERT_TRUE(extension_host);
@@ -187,7 +161,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, FocusForwardTraversal) {
   EXPECT_EQ(blink::mojom::FocusType::kNone, details.focus_type);
 }
 
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, FocusReverseTraversal) {
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest, FocusReverseTraversal) {
   content::RenderFrameHost* extension_host = LoadPdfInNewTabGetExtensionHost(
       embedded_test_server()->GetURL("/pdf/test.pdf#toolbar=0"));
   ASSERT_TRUE(extension_host);
@@ -205,7 +179,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, FocusReverseTraversal) {
 }
 
 // Regression test for https://crbug.com/326275041
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, SpaceKeyInForm) {
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest, SpaceKeyInForm) {
   content::RenderFrameHost* extension_host = LoadPdfGetExtensionHost(
       embedded_test_server()->GetURL("/pdf/text_form.pdf"));
   ASSERT_TRUE(extension_host);
@@ -226,9 +200,9 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, SpaceKeyInForm) {
 
   // Since the PDF contains a text form that takes up the entire PDF page, this
   // clicks into that form.
-  auto* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
-  SetInputFocusOnPlugin(extension_host, embedder_web_contents);
+  auto* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+  SetInputFocusOnPlugin(extension_host, web_contents);
 
   // Wait for the input event to propagate into `plugin_host`.
   while (true) {
@@ -253,8 +227,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, SpaceKeyInForm) {
   // back to the browser.
   //
   // If the space key press did not register at all, this hangs.
-  EXPECT_TRUE(base::test::RunUntil([embedder_web_contents, view]() {
-    embedder_web_contents->SelectAll();
+  EXPECT_TRUE(base::test::RunUntil([web_contents, view]() {
+    web_contents->SelectAll();
     return view->GetSelectedText() == u" ";
   }));
 }
@@ -263,18 +237,17 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest, SpaceKeyInForm) {
 namespace {
 
 // Simulates a touch press event and touch release event on `contents` at
-// `screen_pos`. Waits for the PDF viewer to notify `listener_host` that text
+// `screen_pos`. Waits for the PDF viewer to notify `extension_host` that text
 // has been selected in the PDF.
 views::Widget* TouchSelectText(content::WebContents* contents,
-                               content::RenderFrameHost* listener_host,
-                               bool use_oopif,
+                               content::RenderFrameHost* extension_host,
                                const gfx::Point& screen_pos) {
   views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey{},
                                        "TouchSelectionMenuViews");
   content::SimulateTouchEventAt(contents, ui::EventType::kTouchPressed,
                                 screen_pos);
 
-  static constexpr char kEnsureOopifTouchSelectionScript[] = R"(
+  static constexpr char kEnsureTouchSelectionScript[] = R"(
     new Promise(resolve => {
       const source = new MessageChannel().port1;
       source.postMessage = data => {
@@ -289,19 +262,7 @@ views::Widget* TouchSelectText(content::WebContents* contents,
       }));
     });
   )";
-  static constexpr char kEnsureGuestViewTouchSelectionScript[] = R"(
-    new Promise(resolve => {
-      window.addEventListener('message', function(event) {
-        if (event.data.type == 'touchSelectionOccurred') {
-          resolve(true);
-        }
-      });
-    });
-  )";
-  EXPECT_EQ(true,
-            content::EvalJs(listener_host,
-                            use_oopif ? kEnsureOopifTouchSelectionScript
-                                      : kEnsureGuestViewTouchSelectionScript));
+  EXPECT_EQ(true, content::EvalJs(extension_host, kEnsureTouchSelectionScript));
 
   content::SimulateTouchEventAt(contents, ui::EventType::kTouchReleased,
                                 screen_pos);
@@ -312,7 +273,7 @@ views::Widget* TouchSelectText(content::WebContents* contents,
 
 // On text selection, a touch selection menu should pop up. On clicking ellipsis
 // icon on the menu, the context menu should open up.
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest,
                        ContextMenuOpensFromTouchSelectionMenu) {
   const GURL url = embedded_test_server()->GetURL("/pdf/text_large.pdf");
   content::RenderFrameHost* extension_host =
@@ -321,19 +282,11 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
 
   content::WaitForHitTestData(extension_host);
 
-  content::WebContents* contents = GetActiveWebContents();
-
-  // For GuestView PDF viewer, the listener host can be the PDF embedder host.
-  // For OOPIF PDF viewer, the listener host can't be the embedder host, since
-  // the PDF extension host doesn't send it messages. Instead, the listener host
-  // can be the extension host.
-  content::RenderFrameHost* listener_host =
-      UseOopif() ? extension_host : contents->GetPrimaryMainFrame();
   const gfx::Point point_in_root_coords =
       extension_host->GetView()->TransformPointToRootCoordSpace(
           ConvertPageCoordToScreenCoord(extension_host, {12, 12}));
-  views::Widget* widget = TouchSelectText(contents, listener_host, UseOopif(),
-                                          point_in_root_coords);
+  views::Widget* widget = TouchSelectText(GetActiveWebContents(),
+                                          extension_host, point_in_root_coords);
   ASSERT_TRUE(widget);
   views::View* menu = widget->GetContentsView();
   ASSERT_TRUE(menu);
@@ -366,7 +319,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
 #else
 #define MAYBE_TouchSelectionBounds TouchSelectionBounds
 #endif  // BUILDFLAG(IS_WIN)
-IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
+IN_PROC_BROWSER_TEST_F(PDFExtensionInteractiveUITest,
                        MAYBE_TouchSelectionBounds) {
   // Use test.pdf here because it has embedded font metrics. With a fixed zoom,
   // coordinates should be consistent across platforms.
@@ -385,14 +338,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
 
   content::WebContents* contents = GetActiveWebContents();
 
-  // For GuestView PDF viewer, the listener host can be the PDF embedder host.
-  // For OOPIF PDF viewer, the listener host can't be the embedder host, since
-  // the PDF extension host doesn't send it messages. Instead, the listener host
-  // can be the extension host.
-  content::RenderFrameHost* listener_host =
-      UseOopif() ? extension_host : contents->GetPrimaryMainFrame();
-  views::Widget* widget =
-      TouchSelectText(contents, listener_host, UseOopif(), {473, 166});
+  views::Widget* widget = TouchSelectText(contents, extension_host, {473, 166});
   ASSERT_TRUE(widget);
 
   EXPECT_EQ(u"some", view->GetSelectedText());
@@ -414,7 +360,3 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionInteractiveUITest,
   EXPECT_POINTF_NEAR(gfx::PointF(494.0f, 174.0f), end_bound.edge_end(), 1.0f);
 }
 #endif  // defined(TOOLKIT_VIEWS) && defined(USE_AURA)
-
-// TODO(crbug.com/40268279): Stop testing both modes after OOPIF PDF viewer
-// launches.
-INSTANTIATE_FEATURE_OVERRIDE_TEST_SUITE(PDFExtensionInteractiveUITest);

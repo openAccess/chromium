@@ -205,7 +205,18 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   bool OnAccountSelected(const IdentityRequestAccountPtr& account,
                          const ui::Event& event);
 
-  // Called when the user clicks "privacy policy" or "terms of service" link.
+  // Returns whether selecting `account` in the bubble replaces the bubble with
+  // the modal dialog's request permission sheet, which also shows the identity
+  // provider's links, instead of asking for permission in the bubble. If so,
+  // the bubble doesn't show disclosure text for `account`. True only with
+  // `kFedCmIdpLinks`, and if `account` needs permission to share its `fields`.
+  // With multiple identity providers, it also requires
+  // `kFedCmActiveModeMultipleIdentityProviders` to be enabled.
+  bool ShouldSwitchToModalForPermission(
+      const content::IdentityRequestAccount& account) const;
+
+  // Called when the user clicks the RP's "privacy policy" or "terms of service"
+  // link, or one of the identity provider's links (`LinkType::IDP_LINK`).
   void OnLinkClicked(
       content::IdentityRequestDialogController::LinkType link_type,
       const GURL& url,
@@ -430,10 +441,10 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // the background, becomes foregrounded.
   void BackgroundTaskTabForegrounded(tabs::TabInterface* tab);
 
-  // Calls a delegate method while guarding against `this` being deleted.
-  // Returns false if `this` got deleted. In that case, the caller must early
-  // return.
-  [[nodiscard]] bool NotifyDelegate(base::FunctionRef<void()> notify_callback);
+  // Runs `callback` while guarding against `this` being deleted, e.g. by
+  // a delegate method or by closing the pop-up window. Returns false if `this`
+  // got deleted. In that case, the caller must early return.
+  [[nodiscard]] bool RunAndCheckAlive(base::FunctionRef<void()> callback);
 
   // Shows the verifying sheet.
   void ShowVerifyingSheet(const IdentityRequestAccountPtr& account);
@@ -463,8 +474,8 @@ class FedCmAccountSelectionView : public AccountSelectionView,
 
   // Attempts to show the accounts in the ambient bubble. Returns false if the
   // ambient bubble cannot be used for this request, in which case the caller
-  // should fall back to the regular UI. If this returns true, `this` may have
-  // been deleted.
+  // should fall back to the regular UI. This isn't known to destroy `this`,
+  // but callers must check either way, e.g. with `RunAndCheckAlive()`.
   bool ShowAmbientBubble(
       const std::vector<IdentityProviderDataPtr>& idp_list,
       const std::vector<IdentityRequestAccountPtr>& accounts,
@@ -489,11 +500,12 @@ class FedCmAccountSelectionView : public AccountSelectionView,
       std::optional<size_t> selected_account_index);
 
   // Shows the request permission dialog with the disclosure text for `account`
-  // in the modal dialog, after the user accepted the ambient bubble. Used for
-  // accounts that require disclosure text, e.g. new accounts. The rest of the
-  // flow is handled by the regular modal dialog logic.
-  void ShowAmbientRequestPermissionModal(
-      const IdentityRequestAccountPtr& account);
+  // in the modal dialog, in passive mode: after the user accepted the ambient
+  // bubble, or selected `account` in the bubble when
+  // `ShouldSwitchToModalForPermission()` is true. Used for accounts that
+  // require disclosure text, e.g. new accounts. The rest of the flow is handled
+  // by the regular modal dialog logic.
+  void ShowRequestPermissionModal(const IdentityRequestAccountPtr& account);
 
   // Cancels the outstanding ambient bubble request, if any, e.g. because the
   // FedCM UI is closed or replaced. A decision on the bubble that has not been
@@ -514,6 +526,11 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   using DismissReason = content::IdentityRequestDialogController::DismissReason;
   void LogDialogDismissal(DismissReason dismiss_reason);
 
+  // Closes the existing dialog widget and resets `account_selection_view_`
+  // without notifying `delegate_` when `CreateOrUpdateViewAndWidget()` cannot
+  // reuse them, e.g. for a multi-IDP bubble or a dialog without modal support.
+  void MaybeResetViewAndWidget(bool has_modal_support);
+
   // Creates account_selection_view_ (different subclasses for
   // bubble/modal) and dialog_widget_ if it hasn't been created yet.
   // Otherwise, updates the view's title if any data has changed.
@@ -530,11 +547,16 @@ class FedCmAccountSelectionView : public AccountSelectionView,
                    views::Widget::ClosedReason reason,
                    bool hide_widget);
 
-  // Called when the user closes the dialog. This is called by
-  // OnCloseButtonClicked() if the user clicks the close button, and directly
-  // called by views toolkit if the user dismisses with another mechanism such
-  // as pressing "esc".
+  // Called when the user closes the dialog. This is called (in a separate task)
+  // by `OnCloseButtonClicked()` if the user clicks the close button, and
+  // directly called by views toolkit if the user dismisses with another
+  // mechanism such as pressing "esc".
   void OnUserClosedDialog(views::Widget::ClosedReason reason);
+
+  // Closes the dialog for a click on the close button, unless `closing_widget`
+  // was destroyed or replaced since the click. Posted by
+  // `OnCloseButtonClicked()`.
+  void CloseDialogForCloseButton(base::WeakPtr<views::Widget> closing_widget);
 
   // This method calculates whether the dialog should be visible. This method
   // always updates the dialog position if the dialog should be visible. If the
@@ -544,7 +566,7 @@ class FedCmAccountSelectionView : public AccountSelectionView,
   // This ensures the complex logic to determine visibility is centralized.
   void UpdateDialogVisibilityAndPosition();
 
-  // Called when any of the Show*() methods is called.
+  // Called when any of the `Show*()` methods is called.
   void ResetDialogWidgetStateOnAnyShow();
 
   // Returns the intended bounds and position of the dialog. Rather than

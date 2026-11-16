@@ -6,6 +6,7 @@
 
 #include "third_party/blink/renderer/core/dom/document_fragment.h"
 #include "third_party/blink/renderer/core/dom/element.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/html/cross_origin_attribute.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
@@ -13,6 +14,7 @@
 #include "third_party/blink/renderer/core/html/parser/patch.h"
 #include "third_party/blink/renderer/core/html/parser/text_resource_decoder.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
 #include "third_party/blink/renderer/platform/loader/subresource_integrity.h"
@@ -23,8 +25,13 @@ namespace blink {
 
 ExternalPatchLoader::ExternalPatchLoader(Patch* owner,
                                          HTMLTemplateElement* template_element,
-                                         const AtomicString& src_attr)
-    : owner_(owner), template_(template_element) {
+                                         const AtomicString& src_attr,
+                                         StreamingSanitizer* sanitizer,
+                                         ParserContentPolicy content_policy)
+    : owner_(owner),
+      template_(template_element),
+      sanitizer_(sanitizer),
+      content_policy_(content_policy) {
   CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
   CHECK(!src_attr.empty());
 
@@ -102,42 +109,34 @@ void ExternalPatchLoader::Cancel() {
 void ExternalPatchLoader::ResponseReceived(Resource* resource,
                                            const ResourceResponse& response) {
   CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
-  if (response.HttpStatusCode() != 200 || response.MimeType() != "text/html") {
+  if (response.HttpStatusCode() != 200 ||
+      response.HttpContentType() != "text/fragment") {
     ready_state_ = kErrorOccurred;
     return;
   }
 
-  DocumentFragment* fragment = nullptr;
-  if (owner_->is_buffered()) {
-    fragment = template_->content();
-    fragment->RemoveChildren();
+  DocumentFragment* fragment =
+      DocumentFragment::Create(template_->GetDocument());
+  ContainerNode* target = owner_->parent();
+  ParserRootInsertionPoint* root_insertion_point =
+      MakeGarbageCollected<ParserRootInsertionPoint>(*target,
+                                                     owner_->end_marker());
+
+  Element* context_element = nullptr;
+  CustomElementRegistry* registry = nullptr;
+  if (auto* element = DynamicTo<Element>(target)) {
+    context_element = element;
+    registry = element->customElementRegistry();
+  } else if (auto* shadow = DynamicTo<ShadowRoot>(target)) {
+    context_element = &shadow->host();
+    registry = shadow->customElementRegistry();
   } else {
-    fragment = DocumentFragment::Create(template_->GetDocument());
-  }
-
-  ContainerNode* target = owner_->is_buffered() ? fragment : owner_->parent();
-  ParserRootInsertionPoint* root_insertion_point = nullptr;
-
-  if (!owner_->is_buffered()) {
-    // For targeted streaming, parse directly into target scope
-    // Use end marker as the anchor node for insertion
-    root_insertion_point = MakeGarbageCollected<ParserRootInsertionPoint>(
-        *target, owner_->end_marker());
-  }
-
-  Element* context_element = DynamicTo<Element>(target);
-  if (!context_element) {
     context_element = template_;
   }
 
-  ParserContentPolicy content_policy =
-      owner_->is_buffered()
-          ? ParserContentPolicy::kDisallowScriptingAndPluginContent
-          : ParserContentPolicy::kAllowScriptingContentAndMarkAsParserInserted;
-
   parser_ = MakeGarbageCollected<HTMLDocumentParser>(
-      fragment, context_element, content_policy,
-      ParserPrefetchPolicy::kDisallowPrefetching, nullptr, nullptr,
+      fragment, context_element, content_policy_,
+      ParserPrefetchPolicy::kDisallowPrefetching, registry, sanitizer_.Get(),
       root_insertion_point);
 
   parser_->SetDecoder(
@@ -148,21 +147,30 @@ void ExternalPatchLoader::ResponseReceived(Resource* resource,
 void ExternalPatchLoader::DataReceived(Resource* resource,
                                        base::span<const char> data) {
   CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
-  if (ready_state_ != kErrorOccurred && parser_) {
+  if (ready_state_ != kErrorOccurred && parser_ &&
+      resource->GetIntegrityMetadata().empty()) {
     parser_->AppendBytes(base::as_bytes(data));
   }
 }
 
 void ExternalPatchLoader::NotifyFinished(Resource* resource) {
   CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
+  const bool errored = ready_state_ == kErrorOccurred ||
+                       resource->ErrorOccurred() ||
+                       !resource->PassedIntegrityChecks();
+  if (!errored && parser_ && !resource->GetIntegrityMetadata().empty()) {
+    if (const SharedBuffer* buffer = resource->ResourceBuffer().get()) {
+      for (const auto& span : *buffer) {
+        parser_->AppendBytes(base::as_bytes(span));
+      }
+    }
+  }
+
   if (parser_) {
     static_cast<DocumentParser*>(parser_.Get())->Finish();
     parser_ = nullptr;
   }
 
-  const bool errored = ready_state_ == kErrorOccurred ||
-                       resource->ErrorOccurred() ||
-                       !resource->PassedIntegrityChecks();
   ready_state_ = errored ? kErrorOccurred : kReady;
   resource_ = nullptr;
 
@@ -177,6 +185,7 @@ void ExternalPatchLoader::Trace(Visitor* visitor) const {
   visitor->Trace(template_);
   visitor->Trace(resource_);
   visitor->Trace(parser_);
+  visitor->Trace(sanitizer_);
   RawResourceClient::Trace(visitor);
 }
 

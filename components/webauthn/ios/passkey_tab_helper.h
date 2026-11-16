@@ -125,13 +125,11 @@ class PasskeyTabHelper : public web::WebStateObserver,
 
   // Requests a passkey to be created given the provided request ID. Fetches the
   // shared keys list and calls the CompletePasskeyCreation callback.
-  // TODO(crbug.com/460485333): Test passkey creation flow.
   void StartPasskeyCreation(std::string request_id, bool did_complete_uv);
 
   // Requests that the passkey matching the provided credential ID be used for
   // passkey assertion given the provided request ID. Fetches the shared keys
   // list and calls the CompletePasskeyAssertion callback.
-  // TODO(crbug.com/460485333): Test passkey assertion flow.
   void StartPasskeyAssertion(std::string request_id,
                              std::string credential_id,
                              bool did_complete_uv);
@@ -307,8 +305,8 @@ class PasskeyTabHelper : public web::WebStateObserver,
   // Callback handling the user's decision from the interstitial.
   void OnInterstitialDecision(RegistrationRequestParams params, bool proceed);
 
-  // Adds a passkey to the passkey model while enabling the passkey creation
-  // infobar to be displayed if possible.
+  // Adds `passkey` to the passkey model and displays the passkey creation
+  // infobar via `client_`.
   void AddNewPasskey(sync_pb::WebauthnCredentialSpecifics& passkey);
 
   PasskeyUserVerificationStatus DetermineUserVerificationStatus(
@@ -342,6 +340,10 @@ class PasskeyTabHelper : public web::WebStateObserver,
   // them. Returns std::nullopt otherwise.
   std::optional<RegistrationRequestParams>
   ExtractParamsFromRegistrationRequestsMap(std::string request_id);
+
+  // Clears passkey credentials on the delegate associated with `request_id` if
+  // that delegate is still alive and still holds credentials for `request_id`.
+  void ClearAssertionDelegateCredentials(const std::string& request_id);
 
   // Determines the frame hierarchy for the given `web_frame`. Returns the top
   // origin and whether the frame is a cross-origin iframe relative to the main
@@ -388,6 +390,13 @@ class PasskeyTabHelper : public web::WebStateObserver,
 
   // A map of request IDs (as std::string) to assertion request parameters.
   absl::flat_hash_map<std::string, AssertionRequestParams> assertion_requests_;
+
+  // A map of assertion request IDs to the WebAuthn credentials delegate that
+  // received their passkey suggestions, used to clear stale credentials when a
+  // request is deferred or cancelled.
+  absl::flat_hash_map<std::string,
+                      base::WeakPtr<IOSWebAuthnCredentialsDelegate>>
+      assertion_request_delegates_;
 
   // A map of request IDs (as std::string) to registration request parameters.
   absl::flat_hash_map<std::string, RegistrationRequestParams>

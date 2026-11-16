@@ -137,6 +137,7 @@ import org.chromium.components.sync.SyncService;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
@@ -206,6 +207,8 @@ public class NewTabPageCoordinatorUnitTest {
     private NewTabPageLayout mNewTabPageLayout;
     private NewTabPageCoordinator mCoordinator;
     private BrowserStateBrowserControlsVisibilityDelegate mVisibilityDelegate;
+    private EdgeToEdgeStateProvider mEdgeToEdgeStateProvider;
+
     private final OneshotSupplierImpl<ModuleRegistry> mModuleRegistrySupplier =
             new OneshotSupplierImpl<>();
     private final OneshotSupplierImpl<SideUiStateProvider> mSideUiStateProviderSupplier =
@@ -287,6 +290,9 @@ public class NewTabPageCoordinatorUnitTest {
 
     @After
     public void tearDown() {
+        if (mEdgeToEdgeStateProvider != null) {
+            mEdgeToEdgeStateProvider.detach();
+        }
         mCoordinator.destroy();
     }
 
@@ -2237,6 +2243,17 @@ public class NewTabPageCoordinatorUnitTest {
                 baseTransitionStartOffset + 50,
                 mCoordinator.getCurrentNtpFakeSearchBoxTransitionStartOffset());
 
+        // Updating search provider info while edge-to-edge is active should preserve the top inset
+        // in the transition start offset.
+        mCoordinator.setSearchProviderInfo(/* hasLogo= */ false, /* isGoogle= */ false);
+        assertEquals(
+                baseTransitionStartOffset + 50,
+                mCoordinator.getCurrentNtpFakeSearchBoxTransitionStartOffset());
+        mCoordinator.setSearchProviderInfo(/* hasLogo= */ true, /* isGoogle= */ true);
+        assertEquals(
+                baseTransitionStartOffset + 50,
+                mCoordinator.getCurrentNtpFakeSearchBoxTransitionStartOffset());
+
         // When the controller is drawing to the top edge (systemTopInset = 50) but the NTP has a
         // default background (supportsEdgeToEdgeOnTop = false), top inset should reset to
         // toolbarHeightNoShadow.
@@ -2257,6 +2274,60 @@ public class NewTabPageCoordinatorUnitTest {
         mCoordinator.onToEdgeChange(/* systemTopInset= */ 0, /* supportsEdgeToEdgeOnTop= */ false);
         assertEquals(toolbarHeightNoShadow, model.get(NewTabPageLayoutProperties.TOP_INSET_PX));
         assertEquals(toolbarHeightNoShadow, mNewTabPageLayout.getPaddingTop());
+    }
+
+    @Test
+    public void testOnToEdgeChange_BeforeInitializePreservesTransitionStartOffset() {
+        int baseTransitionStartOffset =
+                mActivity
+                        .getResources()
+                        .getDimensionPixelSize(R.dimen.ntp_search_box_transition_start_offset);
+        mCoordinator.destroy();
+
+        mNewTabPageLayout =
+                (NewTabPageLayout)
+                        LayoutInflater.from(mActivity)
+                                .inflate(R.layout.new_tab_page_layout, null, false);
+        mCoordinator =
+                new NewTabPageCoordinator(
+                        mManager,
+                        mActivity,
+                        mNewTabPageLayout,
+                        mTab,
+                        mTabModelSelector,
+                        mModuleRegistrySupplier,
+                        mProfile,
+                        mWindowAndroid,
+                        mActivityResultTracker,
+                        mBottomSheetController,
+                        mModalDialogManager,
+                        mSnackbarManager,
+                        /* isLff= */ false,
+                        mTabStripHeightSupplier,
+                        mSideUiStateProviderSupplier,
+                        mHomeSurfaceTracker,
+                        mBackPressManager,
+                        mTemplateUrlService);
+
+        // In NewTabPage, TopInsetProvider.Observer can notify onToEdgeChange() synchronously
+        // before mNewTabPageCoordinator.initialize() is called.
+        mCoordinator.onToEdgeChange(/* systemTopInset= */ 50, /* supportsEdgeToEdgeOnTop= */ true);
+        assertEquals(
+                baseTransitionStartOffset + 50,
+                mCoordinator.getCurrentNtpFakeSearchBoxTransitionStartOffset());
+
+        mCoordinator.initialize(
+                mTileGroupDelegate,
+                /* searchProviderHasLogo= */ true,
+                /* searchProviderIsGoogle= */ true,
+                mScrollDelegate,
+                mTouchEnabledDelegate,
+                mUiConfig,
+                mLifecycleDispatcher);
+
+        assertEquals(
+                baseTransitionStartOffset + 50,
+                mCoordinator.getCurrentNtpFakeSearchBoxTransitionStartOffset());
     }
 
     /**
@@ -2281,7 +2352,7 @@ public class NewTabPageCoordinatorUnitTest {
     private NtpCustomizationCoordinator setUpThemeTipTrigger() {
         mCoordinator.destroy();
         createCoordinator(/* isLff= */ false);
-        NtpCustomizationTestHelper.setupEdgeToEdge(mWindowAndroid);
+        mEdgeToEdgeStateProvider = NtpCustomizationTestHelper.setupEdgeToEdge(mWindowAndroid);
         ChromeFeatureList.sNewTabPageCustomizationV2ForceShowTipBottomSheet.setForTesting(true);
         ChromeFeatureList.sNewTabPageCustomizationV2ShowTipBottomSheet.setForTesting(true);
         NtpCustomizationPromoManager.setEnableForTesting(true);

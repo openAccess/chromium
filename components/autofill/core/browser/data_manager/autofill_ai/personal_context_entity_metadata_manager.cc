@@ -5,13 +5,15 @@
 #include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/containers/map_util.h"
-#include "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_entry.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_util.h"
 
 namespace autofill {
 
@@ -71,13 +73,24 @@ bool PersonalContextEntityMetadataManager::UndoInSessionSuppressedEntity(
   return modified;
 }
 
-bool PersonalContextEntityMetadataManager::ClearSuppressions(
-    base::Time delete_begin,
-    base::Time delete_end) {
+bool PersonalContextEntityMetadataManager::ConfirmEntity(
+    const EntityInstance& entity) {
+  CHECK_EQ(entity.record_type(), EntityInstance::RecordType::kPersonalContext);
+  CHECK(entity.IsMaskedEntity());
   if (!sync_bridge_->IsLoaded()) {
     return false;
   }
-  if (!sync_bridge_->ClearSuppressions(delete_begin, delete_end)) {
+  std::optional<EntityConfirmationHash> hash =
+      GetEntityConfirmationHash(entity);
+  return hash.has_value() && sync_bridge_->Confirm(*hash);
+}
+
+bool PersonalContextEntityMetadataManager::ClearEntries(base::Time delete_begin,
+                                                        base::Time delete_end) {
+  if (!sync_bridge_->IsLoaded()) {
+    return false;
+  }
+  if (!sync_bridge_->ClearEntries(delete_begin, delete_end)) {
     return false;
   }
   absl::erase_if(suppressed_entries_by_entity_id_,
@@ -100,13 +113,22 @@ bool PersonalContextEntityMetadataManager::IsSuppressed(
                              });
 }
 
-size_t PersonalContextEntityMetadataManager::CountSuppressionsCreatedBetween(
+bool PersonalContextEntityMetadataManager::IsConfirmed(
+    const EntityInstance& entity) const {
+  CHECK_EQ(entity.record_type(), EntityInstance::RecordType::kPersonalContext);
+  CHECK(entity.IsMaskedEntity());
+  std::optional<EntityConfirmationHash> hash =
+      GetEntityConfirmationHash(entity);
+  return hash.has_value() && sync_bridge_->IsConfirmed(*hash);
+}
+
+size_t PersonalContextEntityMetadataManager::CountEntriesCreatedBetween(
     base::Time begin,
     base::Time end) const {
   if (!sync_bridge_->IsLoaded()) {
     return 0;
   }
-  return sync_bridge_->CountSuppressionsCreatedBetween(begin, end);
+  return sync_bridge_->CountEntriesCreatedBetween(begin, end);
 }
 
 void PersonalContextEntityMetadataManager::OnSuppressionsChanged() {

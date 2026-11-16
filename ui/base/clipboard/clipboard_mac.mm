@@ -14,6 +14,7 @@
 #include "base/apple/foundation_util.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/callback_list.h"
+#include "base/check.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
@@ -600,11 +601,8 @@ void ClipboardMac::WriteFilenames(std::vector<ui::FileInfo> filenames) {
   clipboard_util::WriteFilesToPasteboard(GetPasteboard(), filenames);
 }
 
-void ClipboardMac::WriteURL(const ClipboardUrlInfo& url_info) {
-  NSArray<NSPasteboardItem*>* items = clipboard_util::PasteboardItemsFromUrls(
-      @[ base::SysUTF8ToNSString(url_info.url.spec()) ],
-      @[ base::SysUTF16ToNSString(url_info.title) ]);
-  clipboard_util::AddDataToPasteboard(GetPasteboard(), items.firstObject);
+void ClipboardMac::WriteURLs(base::span<const ClipboardUrlInfo> url_infos) {
+  WriteURLsInternal(url_infos, GetPasteboard());
 }
 
 void ClipboardMac::WriteBitmap(const SkBitmap& bitmap) {
@@ -659,6 +657,30 @@ void ClipboardMac::ReadPngInternal(ClipboardBuffer buffer,
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
       base::BindOnce(&EncodeGfxImageToPng, std::move(gfx_image)),
       std::move(callback));
+}
+
+void ClipboardMac::WriteURLsInternal(
+    base::span<const ClipboardUrlInfo> url_infos,
+    NSPasteboard* pasteboard) {
+  CHECK(!url_infos.empty());
+  NSMutableArray<NSString*>* urls =
+      [NSMutableArray arrayWithCapacity:url_infos.size()];
+  NSMutableArray<NSString*>* titles =
+      [NSMutableArray arrayWithCapacity:url_infos.size()];
+  for (const auto& url_info : url_infos) {
+    [urls addObject:base::SysUTF8ToNSString(url_info.url.spec())];
+    [titles addObject:base::SysUTF16ToNSString(url_info.title)];
+  }
+  NSArray<NSPasteboardItem*>* items =
+      clipboard_util::PasteboardItemsFromUrls(urls, titles);
+  if (items.count == 1) {
+    // A single link shares the first pasteboard item with any co-written
+    // format such as plain text.
+    clipboard_util::AddDataToPasteboard(pasteboard, items.firstObject);
+    return;
+  }
+  // Write one pasteboard item per link, matching WriteBookmarksToPasteboard().
+  [pasteboard writeObjects:items];
 }
 
 void ClipboardMac::WriteBitmapInternal(const SkBitmap& bitmap,

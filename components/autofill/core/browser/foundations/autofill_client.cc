@@ -483,9 +483,18 @@ void AutofillClient::ShowAutofillAiSuggestionRemovedNotification(
   NOTIMPLEMENTED();
 }
 
+void AutofillClient::ShowAutofillAiAttributionVerification(
+    const EntityInstance& entity,
+    const GURL& source_url,
+    const gfx::RectF& field_bounds,
+    AutofillAiVerificationDecisionCallback decision_cb) {
+  NOTIMPLEMENTED();
+}
+
 void AutofillClient::ShowEmailVerificationPopup(
     const gfx::RectF& element_bounds,
     const url::Origin& issuer_origin,
+    const gfx::Image& issuer_logo,
     const std::u16string& email,
     base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback) {
   NOTIMPLEMENTED();
@@ -519,6 +528,10 @@ OtpFieldDetector* AutofillClient::GetOtpFieldDetector() {
   return nullptr;
 }
 
+OtpCoordinator* AutofillClient::GetOtpCoordinator() {
+  return nullptr;
+}
+
 OtpMetricsTracker* AutofillClient::GetOtpMetricsTracker() {
   return nullptr;
 }
@@ -537,10 +550,6 @@ one_time_tokens::GmailOtpService* AutofillClient::GetGmailOtpService() {
 
 one_time_tokens::GmailOtpBackend* AutofillClient::GetGmailOtpBackend() const {
   return nullptr;
-}
-
-bool AutofillClient::DocumentUsedWebOTP() {
-  return false;
 }
 
 PasswordManagerAutofillHelperDelegate*
@@ -575,6 +584,11 @@ bool AutofillClient::IsAutofillTypeBlockedByPolicy(
     const GURL& url,
     AutofillPolicyDataCategory category) const {
   return false;
+}
+
+const CustomFormControlScriptIndex*
+AutofillClient::GetCustomFormControlScriptIndex() const {
+  return nullptr;
 }
 
 }  // namespace autofill

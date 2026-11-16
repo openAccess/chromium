@@ -42,8 +42,6 @@ class WaveformView : public views::View, public gfx::AnimationDelegate {
   void SetBarCount(size_t bar_count);
   size_t bar_count() const { return bars_.size(); }
 
-  void SetCollapseWhenIdle(bool collapse_when_idle);
-
   // Sets what the waveform draws.
   void SetMode(WaveformMode mode);
   WaveformMode mode() const { return mode_; }
@@ -66,6 +64,7 @@ class WaveformView : public views::View, public gfx::AnimationDelegate {
  private:
   FRIEND_TEST_ALL_PREFIXES(WaveformViewTest, ProcessingWaveAnimation);
   FRIEND_TEST_ALL_PREFIXES(WaveformViewTest, AudioLevelMath);
+  FRIEND_TEST_ALL_PREFIXES(WaveformViewTest, AnimatesOnlyWhenLiveOrProcessing);
 
   struct AnimationState {
     float center_y = 0.0f;
@@ -73,6 +72,7 @@ class WaveformView : public views::View, public gfx::AnimationDelegate {
   };
   // Animation update ticks (running at 60 FPS).
   void UpdatePhysics(base::TimeDelta delta);
+  void UpdateAnimation();
   float GetTargetHeightForBar(size_t index,
                               float min_height,
                               float max_height) const;
@@ -80,10 +80,8 @@ class WaveformView : public views::View, public gfx::AnimationDelegate {
                                              base::TimeTicks now) const;
 
   size_t GetCenterBarIndex() const;
-  bool IsCollapsed() const;
 
   const bool full_size_;
-  bool collapse_when_idle_ = false;
 
   WaveformMode mode_ = WaveformMode::kIdle;
 

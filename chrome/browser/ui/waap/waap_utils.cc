@@ -9,32 +9,45 @@
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
-#include "chrome/browser/themes/theme_service.h"
-#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/prefs/prefs_tab_helper.h"
-#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
-#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/performance_manager/embedder/performance_manager_registry.h"
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/ukm/content/source_url_recorder.h"
 #include "content/public/browser/frame_eviction_opt_out_client.h"
-#include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
-#include "content/public/browser/site_instance.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
+#include "third_party/skia/include/core/SkColor.h"
+#include "url/gurl.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#else
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "base/check.h"
+#include "base/supports_user_data.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
+#include "chrome/grit/generated_resources.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_process_host.h"
+#include "content/public/browser/site_instance.h"
+#include "content/public/common/referrer.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/color/color_provider_key.h"
 #include "ui/color/color_provider_manager.h"
 #include "ui/color/color_provider_source.h"
 #include "ui/color/color_provider_utils.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/controls/webview/web_contents_set_background_color.h"
-#include "url/gurl.h"
 
 namespace {
 
@@ -73,37 +86,108 @@ class PrewarmColorProviderSource : public ui::ColorProviderSource,
   const ui::ColorProviderKey key_;
 };
 
+void SetPrewarmColorProviderSource(content::WebContents* web_contents,
+                                   ui::ColorProviderKey key) {
+  auto source = std::make_unique<PrewarmColorProviderSource>(std::move(key));
+  // Switch the observed source before replacing UserData so destroying a
+  // previous PrewarmColorProviderSource does not transiently fall back to the
+  // default source.
+  web_contents->SetColorProviderSource(source.get());
+  web_contents->SetUserData(PrewarmColorProviderSource::kUserDataKey,
+                            std::move(source));
+}
+
+std::unique_ptr<content::WebContents> CreateToolbarWebContents(
+    Profile& contents_profile) {
+  return content::WebContents::Create(content::WebContents::CreateParams(
+      &contents_profile,
+      content::SiteInstance::CreateForURL(
+          &contents_profile, GURL(chrome::kChromeUIWebUIToolbarURL))));
+}
+
+void NavigateToolbarWebContents(content::WebContents& web_contents) {
+  web_contents.GetController().LoadURL(
+      GURL(chrome::kChromeUIWebUIToolbarURL), content::Referrer(),
+      ui::PAGE_TRANSITION_AUTO_TOPLEVEL, std::string());
+}
+
 }  // namespace
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace waap {
 
 bool IsForInitialWebUI(const GURL& url) {
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI) &&
-      base::FeatureList::IsEnabled(features::kWebUIReloadButton)) {
+  if (!base::FeatureList::IsEnabled(features::kInitialWebUI)) {
+    return false;
+  }
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(
+          chrome::android::kAndroidNewTabButtonTabstripWebUI)) {
+    return url.SchemeIs(content::kChromeUIScheme) &&
+           url.host() == chrome::kChromeUITabStripNtbHost;
+  }
+#else
+  if (base::FeatureList::IsEnabled(features::kWebUIReloadButton)) {
     return url.SchemeIs(content::kChromeUIScheme) &&
            url.host() == chrome::kChromeUIWebUIToolbarHost;
   }
+#endif
   return false;
 }
 
 bool IsForInitialWebUI(const content::SecurityPrincipal& principal) {
-  if (base::FeatureList::IsEnabled(features::kInitialWebUI) &&
-      base::FeatureList::IsEnabled(features::kWebUIReloadButton)) {
+  if (!base::FeatureList::IsEnabled(features::kInitialWebUI)) {
+    return false;
+  }
+#if BUILDFLAG(IS_ANDROID)
+  if (base::FeatureList::IsEnabled(
+          chrome::android::kAndroidNewTabButtonTabstripWebUI)) {
+    return principal.SchemeIs(content::kChromeUIScheme) &&
+           principal.GetHost() == chrome::kChromeUITabStripNtbHost;
+  }
+#else
+  if (base::FeatureList::IsEnabled(features::kWebUIReloadButton)) {
     return principal.SchemeIs(content::kChromeUIScheme) &&
            principal.GetHost() == chrome::kChromeUIWebUIToolbarHost;
   }
+#endif
   return false;
 }
 
 void PrewarmHelper::ConfigureWebUIContents(content::WebContents* web_contents,
-                                           Profile* profile) {
+                                           Profile* profile,
+                                           int task_manager_string_id) {
+#if !BUILDFLAG(IS_ANDROID)
   if (Profile::FromBrowserContext(web_contents->GetBrowserContext())
           ->IsTopChromeWebUIProfile()) {
     // Set first: SetColorProviderSource() below computes WebPreferences for the
     // first time, which need the user profile.
     webui::SetUserProfile(web_contents, profile);
   }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
+  ConfigureCommonWebUIContents(web_contents, task_manager_string_id,
+                               /*create_prefs_tab_helper=*/true);
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Set up the color provider source so that early navigation during background
+  // prewarming (before a views::Widget exists) can resolve theme color
+  // properties. Skipped on Android, where the NTB starts loading only after
+  // NtbWebUiCoordinator attaches the WindowAndroid (the real
+  // ColorProviderSource), so a temporary source would only cause an extra
+  // ColorProvider and WebPreferences recomputation.
+  // TODO(crbug.com/581783426): Enable for Android if the NTB WebContents is
+  // prewarmed before a window exists (e.g. PrewarmWebUIContents with
+  // TopChromeWebUIProfile), with an Android ColorProviderKey source.
+  SetPrewarmColorProviderSource(web_contents, GetColorProviderKey(profile));
+#endif  // !BUILDFLAG(IS_ANDROID)
+}
+
+// static
+void PrewarmHelper::ConfigureCommonWebUIContents(
+    content::WebContents* web_contents,
+    int task_manager_string_id,
+    bool create_prefs_tab_helper) {
   if (auto* registry =
           performance_manager::PerformanceManagerRegistry::GetInstance()) {
     registry->SetPageType(web_contents,
@@ -115,30 +199,33 @@ void PrewarmHelper::ConfigureWebUIContents(content::WebContents* web_contents,
   // Needed for UKM PageLoad metrics.
   ukm::InitializeSourceUrlRecorderForWebContents(web_contents);
 
-  PrefsTabHelper::CreateForWebContents(web_contents);
-  task_manager::WebContentsTags::CreateForToolContents(
-      web_contents, IDS_TASK_MANAGER_WEBUI_TOOLBAR);
+  if (create_prefs_tab_helper) {
+    PrefsTabHelper::CreateForWebContents(web_contents);
+  }
+  task_manager::WebContentsTags::CreateForToolContents(web_contents,
+                                                       task_manager_string_id);
 
   web_contents->SetPageBaseBackgroundColor(SK_ColorTRANSPARENT);
+#if !BUILDFLAG(IS_ANDROID)
   views::WebContentsSetBackgroundColor::CreateForWebContentsWithColor(
       web_contents, SK_ColorTRANSPARENT);
+#endif  // !BUILDFLAG(IS_ANDROID)
   web_contents->SetIgnoreZoomGestures(true);
   if (base::FeatureList::IsEnabled(
           features::kWebUIToolbarFrameEvictionOptOut)) {
+    // TODO(crbug.com/581783426): Implement
+    // RenderWidgetHostViewAndroid::OptOutFrameEviction() so this takes effect
+    // on Android.
     web_contents->OptOutFrameEviction(
         content::FrameEvictionOptOutClient::GetPassKey());
   }
+}
 
-  // Set up the color provider source so that early navigation can resolve
-  // theme color properties.
-  auto* theme_service = ThemeServiceFactory::GetForProfile(profile);
-  ui::ColorProviderKey key = theme_service->GetColorProviderKey(
+#if !BUILDFLAG(IS_ANDROID)
+ui::ColorProviderKey PrewarmHelper::GetColorProviderKey(Profile* profile) {
+  return ThemeServiceFactory::GetForProfile(profile)->GetColorProviderKey(
       ui::NativeTheme::GetInstanceForNativeUi()->GetColorProviderKey(nullptr),
       profile);
-  auto source = std::make_unique<PrewarmColorProviderSource>(key);
-  web_contents->SetColorProviderSource(source.get());
-  web_contents->SetUserData(PrewarmColorProviderSource::kUserDataKey,
-                            std::move(source));
 }
 
 std::unique_ptr<content::WebContents> PrewarmHelper::PrewarmWebUIContents(
@@ -146,24 +233,62 @@ std::unique_ptr<content::WebContents> PrewarmHelper::PrewarmWebUIContents(
     bool pre_navigate) {
   Profile& contents_profile =
       webui::GetProfileForTopChromeWebUIContents(profile);
-  scoped_refptr<content::SiteInstance> site_instance =
-      content::SiteInstance::CreateForURL(
-          &contents_profile, GURL(chrome::kChromeUIWebUIToolbarURL));
   std::unique_ptr<content::WebContents> web_contents =
-      content::WebContents::Create(
-          content::WebContents::CreateParams(&contents_profile, site_instance));
+      CreateToolbarWebContents(contents_profile);
 
-  ConfigureWebUIContents(web_contents.get(), profile);
+  ConfigureWebUIContents(web_contents.get(), profile,
+                         IDS_TASK_MANAGER_WEBUI_TOOLBAR);
 
   if (pre_navigate) {
-    web_contents->GetController().LoadURL(
-        GURL(chrome::kChromeUIWebUIToolbarURL), content::Referrer(),
-        ui::PAGE_TRANSITION_AUTO_TOPLEVEL, std::string());
+    NavigateToolbarWebContents(*web_contents);
   } else {
-    site_instance->GetProcess()->Init();
+    web_contents->GetSiteInstance()->GetProcess()->Init();
   }
 
   return web_contents;
 }
+
+std::unique_ptr<content::WebContents>
+PrewarmHelper::PrewarmUnboundWebUIContents(
+    Profile& template_profile,
+    base::FunctionRef<void(content::WebContents&)> seed) {
+  Profile* top_chrome_profile = webui::GetTopChromeWebUIProfile();
+  CHECK(top_chrome_profile);
+  std::unique_ptr<content::WebContents> web_contents =
+      CreateToolbarWebContents(*top_chrome_profile);
+
+  ConfigureCommonWebUIContents(web_contents.get(),
+                               IDS_TASK_MANAGER_WEBUI_TOOLBAR,
+                               /*create_prefs_tab_helper=*/false);
+  // Set up the color provider source so that early navigation can resolve
+  // theme color properties.
+  SetPrewarmColorProviderSource(web_contents.get(),
+                                GetColorProviderKey(&template_profile));
+  seed(*web_contents);
+  NavigateToolbarWebContents(*web_contents);
+  return web_contents;
+}
+
+bool PrewarmHelper::BindUserProfile(content::WebContents& web_contents,
+                                    Profile& profile) {
+  webui::SetUserProfile(&web_contents, &profile);
+
+  CHECK(!PrefsTabHelper::FromWebContents(&web_contents));
+  PrefsTabHelper::CreateForWebContents(&web_contents);
+  web_contents.SyncRendererPrefs();
+
+  const auto* current_source = static_cast<const PrewarmColorProviderSource*>(
+      web_contents.GetUserData(PrewarmColorProviderSource::kUserDataKey));
+  CHECK(current_source);
+  ui::ColorProviderKey profile_key = GetColorProviderKey(&profile);
+  const bool colors_changed =
+      profile_key != current_source->GetColorProviderKey();
+  if (colors_changed) {
+    SetPrewarmColorProviderSource(&web_contents, std::move(profile_key));
+  }
+  web_contents.OnWebPreferencesChanged();
+  return colors_changed;
+}
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace waap

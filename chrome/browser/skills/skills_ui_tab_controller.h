@@ -63,12 +63,18 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
                    std::string_view skill_name,
                    std::string_view skill_icon,
                    bool auto_submit) override;
-  void SendPrompt(std::string_view prompt) override;
+  void SendPrompt(std::string_view prompt, bool new_conversation) override;
 
-  // SkillsDialogDelegate override:
+  // SkillsDialogDelegate & SkillsUiTabControllerInterface override:
   void CloseDialog() override;
   void OnSkillSaved(const std::string& skill_id) override;
+  void OnSkillSaved(const std::string& skill_id,
+                    const std::string& skill_name,
+                    const std::string& skill_icon) override;
   void OnSkillDeleted(const std::string& skill_id) override;
+  void OnSkillDeleted(const std::string& skill_id,
+                      base::OnceCallback<void(bool)> callback) override;
+  void InvokeSkill(std::string_view skill_id) override;
   BrowserWindowInterface* GetBrowserWindowInterface() override;
 
   // views::WidgetObserver override:
@@ -91,6 +97,8 @@ class SkillsUiTabController : public SkillsUiTabControllerInterface,
   const std::string& GetLastInvokedSkillIdForTesting() const {
     return last_invoked_skill_id_for_testing_;
   }
+
+  void SetTargetForTesting(std::unique_ptr<glic::Target> target);
 
   // Returns true if the skills dialog is currently being shown.
   bool IsShowing() const override;

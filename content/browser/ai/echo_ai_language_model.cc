@@ -12,11 +12,9 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/location.h"
-#include "base/notimplemented.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
-#include "components/optimization_guide/core/optimization_guide_features.h"
 #include "content/browser/ai/echo_ai_manager_impl.h"
 #include "content/public/browser/browser_thread.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -231,8 +229,18 @@ void EchoAILanguageModel::DoMockExecution(
 void EchoAILanguageModel::Prompt(
     std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
     on_device_model::mojom::ResponseConstraintPtr constraint,
+    std::optional<blink::mojom::AILanguageModelThinkingEffort> thinking_effort,
     mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
         pending_responder) {
+  if (thinking_effort.has_value() &&
+      *thinking_effort != blink::mojom::AILanguageModelThinkingEffort::kNone) {
+    mojo::Remote<blink::mojom::ModelStreamingResponder> responder(
+        std::move(pending_responder));
+    responder->OnError(
+        blink::mojom::ModelStreamingResponseStatus::kErrorInvalidRequest,
+        /*quota_error_info=*/nullptr);
+    return;
+  }
   AppendOrPrompt(std::move(prompts), std::move(constraint),
                  std::move(pending_responder),
                  /*generate_response=*/true);
@@ -309,7 +317,7 @@ void EchoAILanguageModel::Fork(
           base::ToVector(output_types_),
           /*audio_sample_rate_hz=*/std::nullopt,
           /*audio_channel_count=*/std::nullopt,
-          /*sampling_mode=*/std::nullopt));
+          /*sampling_mode=*/std::nullopt, /*thinking_effort=*/std::nullopt));
 }
 
 void EchoAILanguageModel::Destroy() {
@@ -382,9 +390,10 @@ std::optional<std::string> EchoAILanguageModel::PromptsToText(
             return std::nullopt;
           }
           break;
-        default:
-          NOTIMPLEMENTED_LOG_ONCE();
-          break;
+        case blink::mojom::AILanguageModelPromptContent::Tag::kThought:
+          // TODO(crbug.com/546151578): Handle thought inputs in EchoAI.
+          mojo::ReportBadMessage("Thought input is not supported.");
+          return std::nullopt;
       }
     }
   }

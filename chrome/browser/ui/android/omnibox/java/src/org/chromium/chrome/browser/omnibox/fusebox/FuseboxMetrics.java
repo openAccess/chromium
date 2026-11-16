@@ -21,6 +21,7 @@ import org.chromium.components.contextual_search.ContextUploadErrorType;
 import org.chromium.components.contextual_search.ContextUploadStatus;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.InputSourceProtoIntDef.InputSource;
@@ -88,11 +89,17 @@ public class FuseboxMetrics {
     /* package */ static final String REANCHOR_VIEWS_DURATION_HISTOGRAM =
             "Android.Omnibox.MobileFusebox.ReanchorViews.Duration";
 
-    private static final String PICKER_OUTCOME_HISTOGRAM = "Omnibox.MobileFusebox.PickerOutcome";
+    @VisibleForTesting
+    static final String PICKER_OUTCOME_HISTOGRAM = "Omnibox.MobileFusebox.PickerOutcome";
+
     private static final String DRIVE_DOCUMENT_TYPE_HISTOGRAM =
             "Omnibox.MobileFusebox.Drive.DocumentType";
     private static final String ATTACHMENT_TYPE_AT_SUBMISSION_HISTOGRAM =
             "Omnibox.MobileFusebox.AttachmentTypeAtSubmission";
+
+    @VisibleForTesting
+    static final String TAB_ATTACHMENT_COUNT_AT_SUBMISSION_HISTOGRAM =
+            "Omnibox.MobileFusebox.AttachmentCountAtSubmission.Tab";
 
     @VisibleForTesting
     static final String ATTACHMENT_ICON_FALLBACK_HISTOGRAM =
@@ -226,6 +233,41 @@ public class FuseboxMetrics {
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:MobileFuseboxPickerOutcome)
+
+    /** Why the Drive picker ended with {@link MobileFuseboxPickerOutcome#PERMISSION_DENIED}. */
+    // LINT.IfChange(MobileFuseboxDrivePermissionDeniedReason)
+    @IntDef({
+        DrivePermissionDeniedReason.ACCOUNT_RESTRICTED,
+        DrivePermissionDeniedReason.PAGE_NOT_SHOWN,
+        DrivePermissionDeniedReason.PAGE_FAILED_AFTER_SHOWN,
+        DrivePermissionDeniedReason.USER_CLOSED_AFTER_SHOWN,
+        DrivePermissionDeniedReason.COUNT
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.TYPE_USE})
+    @NullMarked
+    public @interface DrivePermissionDeniedReason {
+        int ACCOUNT_RESTRICTED = 0;
+        int PAGE_NOT_SHOWN = 1;
+        int PAGE_FAILED_AFTER_SHOWN = 2;
+        int USER_CLOSED_AFTER_SHOWN = 3;
+        int COUNT = 4;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/enums.xml:MobileFuseboxDrivePermissionDeniedReason)
+
+    /** Slices for {@code Omnibox.MobileFusebox.PickerOutcome{AttachmentType}} in histograms.xml. */
+    @IntDef({
+        MobileFuseboxPickerAttachmentType.DRIVE,
+        MobileFuseboxPickerAttachmentType.TABS,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @Target({ElementType.TYPE_USE})
+    @NullMarked
+    public @interface MobileFuseboxPickerAttachmentType {
+        int DRIVE = 0;
+        int TABS = 1;
+    }
 
     // LINT.IfChange(MobileFuseboxDriveDocumentType)
     @IntDef({
@@ -369,14 +411,8 @@ public class FuseboxMetrics {
                     notifyAttachmentButtonShown(buttonType);
                 }
             }
-            List<PopupButtonData> toolButtons =
-                    model.get(FuseboxProperties.POPUP_TOOL_BUTTON_DATA_LIST);
-            if (toolButtons != null) {
-                for (PopupButtonData buttonData : toolButtons) {
-                    assert buttonData.type == PopupButtonType.TOOL;
-                    notifyToolButtonShown(buttonData.protoId);
-                }
-            }
+            notifyToolButtonsShown(model.get(FuseboxProperties.POPUP_PINNED_TOOL_BUTTON_DATA_LIST));
+            notifyToolButtonsShown(model.get(FuseboxProperties.POPUP_TOOL_BUTTON_DATA_LIST));
             List<PopupButtonData> popupButtons =
                     model.get(FuseboxProperties.POPUP_MODEL_BUTTON_DATA_LIST);
             if (popupButtons != null) {
@@ -410,9 +446,15 @@ public class FuseboxMetrics {
         mAttachmentButtonsUsedInSession[attachmentType] = true;
     }
 
-    private static void notifyToolButtonShown(@ToolMode int toolMode) {
-        RecordHistogram.recordEnumeratedHistogram(
-                "Omnibox.MobileFusebox.ToolButtonShown", toolMode, TOOL_MODE_HISTOGRAM_BOUND);
+    private static void notifyToolButtonsShown(@Nullable List<PopupButtonData> toolButtons) {
+        if (toolButtons == null) return;
+        for (PopupButtonData buttonData : toolButtons) {
+            assert buttonData.type == PopupButtonType.TOOL;
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Omnibox.MobileFusebox.ToolButtonShown",
+                    buttonData.protoId,
+                    TOOL_MODE_HISTOGRAM_BOUND);
+        }
     }
 
     static void notifyToolButtonSelected(@ToolMode int toolMode) {
@@ -446,13 +488,17 @@ public class FuseboxMetrics {
 
     void notifyOmniboxSessionEnded(
             boolean userDidNavigate,
+            @PageClassification int pageClassification,
             @AutocompleteRequestType int autocompleteRequestType,
             @ModelMode int modelMode,
             @Nullable FuseboxAttachmentModelList modelList) {
         if (!mSessionStarted) return;
         if (userDidNavigate && modelList != null) {
+            RecordHistogram.recordCount100Histogram(
+                    TAB_ATTACHMENT_COUNT_AT_SUBMISSION_HISTOGRAM,
+                    modelList.getAttachedTabIds().size());
             for (FuseboxAttachment attachment : modelList) {
-                recordAttachmentTypeAtSubmission(attachment.buttonType);
+                recordAttachmentTypeAtSubmission(attachment.buttonType, pageClassification);
             }
         }
         RecordHistogram.recordBooleanHistogram(
@@ -489,6 +535,10 @@ public class FuseboxMetrics {
                         : "Omnibox.MobileFusebox.ModelAtAbandon";
         RecordHistogram.recordEnumeratedHistogram(
                 requestTypeHistogram, autocompleteRequestType, AutocompleteRequestType.COUNT);
+        RecordHistogram.recordEnumeratedHistogram(
+                requestTypeHistogram + TOKEN_SEPARATOR + getStringForSurface(pageClassification),
+                autocompleteRequestType,
+                AutocompleteRequestType.COUNT);
         if (ToolModeUtils.isAimRequest(autocompleteRequestType)) {
             RecordHistogram.recordEnumeratedHistogram(
                     modelHistogram, modelMode, MODEL_MODE_HISTOGRAM_BOUND);
@@ -694,13 +744,45 @@ public class FuseboxMetrics {
                 + getHistogramExtensionForMimeType(fileType);
     }
 
+    private static String getHistogramExtensionForPickerAttachmentType(
+            @MobileFuseboxPickerAttachmentType int type) {
+        return switch (type) {
+            case MobileFuseboxPickerAttachmentType.DRIVE -> "Drive";
+            case MobileFuseboxPickerAttachmentType.TABS -> "Tabs";
+            default ->
+                    throw new IllegalArgumentException(
+                            "Unsupported picker attachment type: " + type);
+        };
+    }
+
+    @VisibleForTesting
+    static String getPickerOutcomeHistogram(@MobileFuseboxPickerAttachmentType int type) {
+        return PICKER_OUTCOME_HISTOGRAM
+                + TOKEN_SEPARATOR
+                + getHistogramExtensionForPickerAttachmentType(type);
+    }
+
     static void recordDrivePickerOutcome(@MobileFuseboxPickerOutcome int outcome) {
+        recordPickerOutcome(MobileFuseboxPickerAttachmentType.DRIVE, outcome);
+    }
+
+    public static void recordDrivePermissionDeniedReason(@DrivePermissionDeniedReason int reason) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Omnibox.MobileFusebox.Drive.PermissionDeniedReason",
+                reason,
+                DrivePermissionDeniedReason.COUNT);
+    }
+
+    static void recordTabPickerOutcome(@MobileFuseboxPickerOutcome int outcome) {
+        recordPickerOutcome(MobileFuseboxPickerAttachmentType.TABS, outcome);
+    }
+
+    private static void recordPickerOutcome(
+            @MobileFuseboxPickerAttachmentType int type, @MobileFuseboxPickerOutcome int outcome) {
         RecordHistogram.recordEnumeratedHistogram(
                 PICKER_OUTCOME_HISTOGRAM, outcome, MobileFuseboxPickerOutcome.COUNT);
         RecordHistogram.recordEnumeratedHistogram(
-                PICKER_OUTCOME_HISTOGRAM + TOKEN_SEPARATOR + "Drive",
-                outcome,
-                MobileFuseboxPickerOutcome.COUNT);
+                getPickerOutcomeHistogram(type), outcome, MobileFuseboxPickerOutcome.COUNT);
     }
 
     static void recordDriveDocumentType(@Nullable String mimeType, @Nullable String fileName) {
@@ -710,8 +792,28 @@ public class FuseboxMetrics {
                 DriveDocumentType.COUNT);
     }
 
-    static void recordAttachmentTypeAtSubmission(@FuseboxAttachmentButtonType int type) {
+    static void recordAttachmentTypeAtSubmission(
+            @FuseboxAttachmentButtonType int type, @PageClassification int pageClassification) {
         RecordHistogram.recordEnumeratedHistogram(
                 ATTACHMENT_TYPE_AT_SUBMISSION_HISTOGRAM, type, FuseboxAttachmentButtonType.COUNT);
+        RecordHistogram.recordEnumeratedHistogram(
+                ATTACHMENT_TYPE_AT_SUBMISSION_HISTOGRAM
+                        + TOKEN_SEPARATOR
+                        + getStringForSurface(pageClassification),
+                type,
+                FuseboxAttachmentButtonType.COUNT);
     }
+
+    // LINT.IfChange(getStringForSurface)
+    @SuppressLint("SwitchIntDef") // Non-Fusebox surfaces fall back to "Other".
+    private static String getStringForSurface(@PageClassification int pageClassification) {
+        return switch (pageClassification) {
+            case PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS -> "NTP";
+            case PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT -> "SRP";
+            case PageClassification.ANDROID_SHORTCUTS_WIDGET -> "ShortcutsWidget";
+            default -> "Other";
+        };
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/omnibox/histograms.xml:MobileFuseboxSurface)
 }

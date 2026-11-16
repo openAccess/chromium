@@ -59,7 +59,6 @@
 #include "ui/actions/actions.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/l10n/time_format.h"
-#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/window_open_disposition_utils.h"
@@ -277,7 +276,8 @@ void HistoryClustersHandler::CommonInit() {
   browsing_history_service_ = std::make_unique<history::BrowsingHistoryService>(
       this, history_service_, web_history_service, sync_service,
       device_info_service ? device_info_service->GetDeviceInfoTracker()
-                          : nullptr);
+                          : nullptr,
+      /*critical_action_provider=*/nullptr);
 }
 
 HistoryClustersHandler::~HistoryClustersHandler() = default;

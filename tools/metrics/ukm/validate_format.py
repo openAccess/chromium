@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2019 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -11,7 +11,7 @@ import setup_modules  # pylint: disable=unused-import
 
 
 import chromium_src.tools.metrics.common.path_util as path_util
-from chromium_src.tools.metrics.ukm.xml_validations import UkmXmlValidation
+import chromium_src.tools.metrics.ukm.xml_validations as xml_validations
 
 UKM_XML = path_util.GetInputFile('tools/metrics/ukm/ukm.xml')
 
@@ -22,16 +22,13 @@ def main():
   with open(UKM_XML, 'r') as config_file:
     document = minidom.parse(config_file)
     [config] = document.getElementsByTagName('ukm-configuration')
-    validator = UkmXmlValidation(config)
+    validator = xml_validations.UkmXmlValidation(config)
 
     owner_check_success, owner_check_errors = (
       validator.check_events_have_owners()
     )
     metric_check_success, metric_check_errors, metric_check_warnings = (
       validator.check_metric_type_is_specified()
-    )
-    aggregation_check_success, aggregation_check_errors = (
-      validator.check_local_metric_is_aggregated()
     )
     statistic_check_success, statistic_check_errors = (
       validator.check_statistics_non_empty_valid()
@@ -55,7 +52,6 @@ def main():
       (
         owner_check_success,
         metric_check_success,
-        aggregation_check_success,
         statistic_check_success,
         metric_name_check_success,
         time_unit_check_success,
@@ -66,7 +62,6 @@ def main():
       results['Errors'] = (
         owner_check_errors
         + metric_check_errors
-        + aggregation_check_errors
         + statistic_check_errors
         + metric_name_check_errors
         + time_unit_check_errors

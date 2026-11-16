@@ -80,12 +80,18 @@ BASE_DECLARE_FEATURE(kEventReportingCdpAttribution);
 // tracked per tab.
 BASE_DECLARE_FEATURE_PARAM(int, kCdpAttributionMaxActorsPerTab);
 
-// Post-detach TTL retention window for external CDP actors on a tab.
-BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kCdpAttributionDetachedActorTtl);
+// Command-inactivity TTL retention window for external CDP actors on a tab.
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kCdpAttributionActorIdleTtl);
 
 // Maximum number of concurrent pending OS process tree extraction tasks before
 // new attachment extractions are shed.
 BASE_DECLARE_FEATURE_PARAM(int, kCdpAttributionMaxPendingExtractions);
+
+// Controls whether enterprise security events carry `Event.initiator`
+// identifying the in-browser AI agent (Gemini in Chrome) whose task was
+// controlling the tab when the reported action happened (in-browser agent
+// attribution). See crbug.com/570683671.
+BASE_DECLARE_FEATURE(kEnterpriseGlicActorAttribution);
 
 }  // namespace enterprise_connectors
 

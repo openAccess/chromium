@@ -251,10 +251,11 @@ source_set("impl") {
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/toasts/api:toasts",
       "//chrome/browser/ui/waap:manager",
-      "//chrome/browser/ui/waap:window_metrics_manager",
+      "//chrome/browser/ui/waap:window_creation",
       "//chrome/browser/ui/webui/settings",
       "//chrome/browser/ui/webui/whats_new",
       "//chrome/browser/web_applications",
+      "//chrome/browser/web_applications/isolated_web_apps",
       "//chrome/common",
       "//chrome/common:buildflags",
       "//chrome/common:version_header",
@@ -399,18 +400,21 @@ if (!is_android) {
         "first_run_test_util.cc",
         "first_run_test_util.h",
       ]
-      public_deps = [ "//chrome/browser/ui/profiles" ]
+      public_deps = [
+        "//chrome/browser/ui/profiles",
+        "//chrome/test/base:in_process_browser_test",
+      ]
       deps += [
         ":startup",
         "//base/test:test_support",
         "//chrome/browser:browser_process",
         "//chrome/browser/first_run",
         "//chrome/browser/profiles:profile",
+        "//chrome/browser/profiles:profile_manager",
         "//chrome/browser/profiles:profile_util",
         "//chrome/browser/ui/browser_window",
         "//chrome/common:constants",
         "//chrome/common:non_code_constants",
-        "//chrome/test:test_support_ui",
         "//components/prefs",
         "//testing/gtest",
       ]
@@ -492,6 +496,7 @@ if (!is_android) {
       "//chrome/browser:buildflags",
       "//chrome/browser:chrome_browser_main",
       "//chrome/browser/extensions",
+      "//chrome/browser/first_run:test_support",
       "//chrome/browser/infobars",
       "//chrome/browser/lifetime",
       "//chrome/browser/prefs:util",
@@ -515,6 +520,7 @@ if (!is_android) {
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/views/web_apps:launch_dialogs",
       "//chrome/browser/ui/web_applications",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/ui/window_metadata",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications:web_applications_test_support",
@@ -523,7 +529,7 @@ if (!is_android) {
       "//chrome/common:non_code_constants",
       "//chrome/common:version_header",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:chrome_test_path_utils",
       "//components/infobars/content",
       "//components/infobars/core",
       "//components/keep_alive_registry",
@@ -616,7 +622,7 @@ if (!is_android && !is_chromeos_device) {
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/common:constants",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:chrome_test_path_utils",
       "//content/test:test_support",
       "//testing/gtest",
       "//url",
@@ -630,6 +636,7 @@ if (!is_android && !is_chromeos_device) {
       deps += [
         "//chrome/browser/infobars",
         "//chrome/browser/ui/views/infobars",
+        "//chrome/test/base:chrome_test_scoped_utils",
       ]
     }
 

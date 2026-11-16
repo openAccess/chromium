@@ -23,7 +23,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
 import org.chromium.components.browser_ui.settings.PreferenceUpdateObserver;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 
 /**
  * Base class for settings in Chrome.
@@ -35,11 +35,11 @@ import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 public abstract class ChromeBaseSettingsFragment extends PreferenceFragmentCompat
         implements EmbeddableSettingsPage,
                 ProfileDependentSetting,
-                SettingsCustomTabLauncher.SettingsCustomTabLauncherClient,
+                CustomTabLauncher.CustomTabLauncherClient,
                 CustomDividerFragment,
                 PreferenceUpdateObserver.Provider {
     private Profile mProfile;
-    private SettingsCustomTabLauncher mCustomTabLauncher;
+    private CustomTabLauncher mCustomTabLauncher;
     private @Nullable PreferenceUpdateObserver mPreferenceUpdateObserver;
     private @Nullable Context mThemedContext;
 
@@ -70,9 +70,7 @@ public abstract class ChromeBaseSettingsFragment extends PreferenceFragmentCompa
         return inflater.cloneInContext(getContext());
     }
 
-    /**
-     * @return The profile associated with the current Settings screen.
-     */
+    /** Returns the profile associated with the current Settings screen. */
     public Profile getProfile() {
         assert mProfile != null : "Attempting to use the profile before initialization.";
         return mProfile;
@@ -86,7 +84,7 @@ public abstract class ChromeBaseSettingsFragment extends PreferenceFragmentCompa
 
     @Initializer
     @Override
-    public void setCustomTabLauncher(SettingsCustomTabLauncher customTabLauncher) {
+    public void setCustomTabLauncher(CustomTabLauncher customTabLauncher) {
         mCustomTabLauncher = customTabLauncher;
     }
 
@@ -107,24 +105,18 @@ public abstract class ChromeBaseSettingsFragment extends PreferenceFragmentCompa
         return false;
     }
 
-    /**
-     * @return The launcher for help and feedback actions.
-     */
+    /** Returns the launcher for help and feedback actions. */
     public HelpAndFeedbackLauncher getHelpAndFeedbackLauncher() {
         return HelpAndFeedbackLauncherFactory.getForProfile(mProfile);
     }
 
-    /**
-     * @return The resource ID of the help string that is valid for the current policy.
-     */
+    /** Returns the resource ID of the help string that is valid for the current policy. */
     protected @StringRes int getHelpMenuStringRes() {
         return HelpAndFeedbackLauncher.getHelpMenuStringRes();
     }
 
-    /**
-     * @return The launcher for CCT.
-     */
-    public SettingsCustomTabLauncher getCustomTabLauncher() {
+    /** Returns the launcher for CCT. */
+    public CustomTabLauncher getCustomTabLauncher() {
         return mCustomTabLauncher;
     }
 

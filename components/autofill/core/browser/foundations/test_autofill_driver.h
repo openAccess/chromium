@@ -78,6 +78,7 @@ class TestAutofillDriverTemplate : public T {
     return policy_controlled_feature_manual_text_enabled_;
   }
   bool CanShowAutofillUi() const override { return true; }
+  bool DocumentUsedWebOtp() const override { return false; }
   void ApplyFieldAction(mojom::FieldActionType action_type,
                         mojom::ActionPersistence action_persistence,
                         const FieldGlobalId& field,
@@ -134,6 +135,7 @@ class TestAutofillDriverTemplate : public T {
                                   const std::string& email,
                                   const std::string& token) override {}
   void ScrollFieldIntoView(FieldGlobalId field_id) override {}
+  void LoadCustomFormControlScript(const std::string& script) override {}
   bool IsSafeToFill(const FormFieldData& field,
                     FieldType filled_type,
                     const url::Origin& main_origin,
@@ -184,7 +186,6 @@ class TestAutofillDriverTemplate : public T {
   void SetIsolationInfo(const net::IsolationInfo& isolation_info) {
     isolation_info_ = isolation_info;
   }
-
 
   void SetSharedURLLoaderFactory(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);

@@ -9,15 +9,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.content.ClipData;
@@ -48,7 +42,6 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -58,14 +51,13 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
-import org.chromium.chrome.browser.prefs.LocalStatePrefsJni;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.toolbar.ToolbarLongPressMenuHandler.MenuItemType;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController.ToolbarPositionAndSource;
 import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarMetrics.IphEvent;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.prefs.PrefService;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.ClipboardImpl;
 import org.chromium.ui.base.DeviceFormFactor;
@@ -78,7 +70,6 @@ import org.chromium.ui.widget.ViewRectProvider;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
 
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
 /** Unit tests for {@link ToolbarLongPressMenuHandler}. */
@@ -100,8 +91,6 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private DisplayAndroid mDisplayAndroid;
-    @Mock LocalStatePrefs.Natives mLocalStatePrefsNatives;
-    @Mock PrefService mLocalPrefService;
 
     private ToolbarLongPressMenuHandler mToolbarLongPressMenuHandler;
     private SettableNonNullObservableSupplier<Profile> mProfileSupplier;
@@ -157,23 +146,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 .when(mBasicListMenu)
                 .getMenuDimensions();
 
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
         mSharedPreferencesManager = ChromeSharedPreferences.getInstance();
-        LocalStatePrefsJni.setInstanceForTesting(mLocalStatePrefsNatives);
-        when(mLocalStatePrefsNatives.getPrefService()).thenReturn(mLocalPrefService);
-
-        AtomicReference<@Nullable Boolean> localPrefValue = new AtomicReference<>();
-        doAnswer(
-                        invocation -> {
-                            localPrefValue.set(invocation.getArgument(1));
-                            return null;
-                        })
-                .when(mLocalPrefService)
-                .setBoolean(eq(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION), anyBoolean());
-        when(mLocalPrefService.hasPrefPath(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION))
-                .thenAnswer(invocation -> localPrefValue.get() != null);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION))
-                .thenAnswer(invocation -> localPrefValue.get() != null && localPrefValue.get());
     }
 
     @After
@@ -217,14 +190,13 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_bottom,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
@@ -236,28 +208,25 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_top,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
     public void testPreferenceKeyMigration() {
         mSharedPreferencesManager.writeBoolean(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED, true);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
 
         mSharedPreferencesManager.writeBoolean(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED, false);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
@@ -266,41 +235,33 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     @Test
     public void testHandleMoveAddressBarTo() {
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_LONG_PRESS);
-        clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
-        verify(mLocalPrefService, times(1)).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
+        assertTrue(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
 
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
-        clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
-        verify(mLocalPrefService, times(1)).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
+        assertTrue(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
 
         AddressBarPreference.setToolbarPositionAndSource(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS);
-        clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
-        verify(mLocalPrefService, times(1)).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
+        assertFalse(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
 
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.BOTTOM_SETTINGS);
-        clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
-        verify(mLocalPrefService, times(1)).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
+        assertFalse(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
     }
 
     @Test
@@ -311,8 +272,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         HistogramWatcher watcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Android.BottomBar.IPH.AddressBar.Event", IphEvent.MOVED_TO_BOTTOM);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         watcher.assertExpected();
     }
 
@@ -320,17 +280,14 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     public void testHandleMoveAddressBarTo_RecordsMetricOnlyOncePerIphShown() {
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
         mToolbarLongPressMenuHandler.onBottomBarAddressBarIphShown();
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
 
         HistogramWatcher noRecordWatcher =
                 HistogramWatcher.newBuilder()
                         .expectNoRecords("Android.BottomBar.IPH.AddressBar.Event")
                         .build();
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         noRecordWatcher.assertExpected();
     }
 
@@ -342,8 +299,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 HistogramWatcher.newBuilder()
                         .expectNoRecords("Android.BottomBar.IPH.AddressBar.Event")
                         .build();
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         watcher.assertExpected();
     }
 
@@ -354,8 +310,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ((ClipboardImpl) clipboard).overrideClipboardManagerForTesting(clipboardManager);
         mUrl = JUnitTestGURLs.URL_1;
 
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.COPY_LINK);
 
         ArgumentCaptor<ClipData> clipCaptor = ArgumentCaptor.forClass(ClipData.class);
         verify(clipboardManager).setPrimaryClip(clipCaptor.capture());
@@ -369,8 +324,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ClipboardManager clipboardManager = mock(ClipboardManager.class);
         ((ClipboardImpl) clipboard).overrideClipboardManagerForTesting(clipboardManager);
         mUrl = null;
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.COPY_LINK);
 
         ArgumentCaptor<ClipData> clipCaptor = ArgumentCaptor.forClass(ClipData.class);
         verify(clipboardManager).setPrimaryClip(clipCaptor.capture());
@@ -546,19 +500,19 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_bottom,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
-                R.string.menu_send_to_devices, list.get(2).model.get(ListMenuItemProperties.TITLE_ID));
+                R.string.menu_send_to_devices,
+                list.get(2).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF,
+                MenuItemType.SEND_TAB_TO_SELF,
                 list.get(2).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
@@ -618,7 +572,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                         () -> mViewRectProvider,
                         url -> true,
                         onSendTabToSelfClicked);
-        handler.handleMenuClick(ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF);
+        handler.handleMenuClick(MenuItemType.SEND_TAB_TO_SELF);
         verify(onSendTabToSelfClicked).run();
     }
 
@@ -631,10 +585,9 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ModelList list = mToolbarLongPressMenuHandler.buildMenuItems(/* onTop= */ true);
         assertEquals(2, list.size());
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF,
+                MenuItemType.SEND_TAB_TO_SELF,
                 list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 }

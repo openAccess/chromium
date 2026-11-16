@@ -82,6 +82,7 @@ import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
 import org.chromium.chrome.browser.history.FilterSheetCoordinator.FilterItem;
 import org.chromium.chrome.browser.history.HistoryContentManager.ActorFilter;
 import org.chromium.chrome.browser.history.HistoryManagerToolbar.InfoHeaderPref;
+import org.chromium.chrome.browser.history.HistoryProvider.TimePeriodOption;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -96,7 +97,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.DateDividedAdapter;
 import org.chromium.components.browser_ui.widget.MoreProgressButton;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
-import org.chromium.components.browser_ui.widget.selectable_list.SelectableItemView;
+import org.chromium.components.browser_ui.widget.selectable_list.SelectableItemViewBase;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableItemViewHolder;
 import org.chromium.components.browser_ui.widget.selectable_list.SelectableListToolbar.NavigationButton;
 import org.chromium.components.favicon.LargeIconBridge;
@@ -138,7 +139,8 @@ import java.util.function.Supplier;
     ChromeFeatureList.ANDROID_DESKTOP_HISTORY_LAYOUT,
     ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_ACTOR,
     ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_DEVICE,
-    ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_DOMAIN_V2
+    ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_DOMAIN_V2,
+    ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_TIME
 })
 public class HistoryUiTest {
     private static final int PAGE_INCREMENT = 2;
@@ -162,6 +164,7 @@ public class HistoryUiTest {
     private StubbedHistoryProvider mHistoryProvider;
     private HistoryAdapter mAdapter;
     private HistoryManager mHistoryManager;
+    private final List<HistoryManager> mCreatedHistoryManagers = new ArrayList<>();
     private HistoryContentManager mContentManager;
     private RecyclerView mRecyclerView;
     private Activity mActivity;
@@ -193,6 +196,7 @@ public class HistoryUiTest {
     @Mock private PackageManager mPackageManager;
     @Mock private FilterSheetCoordinator<String> mAppFilterSheet;
     @Mock private FilterSheetCoordinator<List<String>> mClientFilterSheet;
+    @Mock private FilterSheetCoordinator<TimePeriodOption> mTimePeriodFilterSheet;
     @Mock private ApplicationInfo mPackageAppInfo;
     @Mock private GlicEnabling.Natives mGlicEnablingJni;
     @Mock private GlicKeyedService mGlicKeyedService;
@@ -279,30 +283,44 @@ public class HistoryUiTest {
     }
 
     private HistoryManager createHistoryManager() {
-        return new HistoryManager(
-                mProfile,
-                mWindowAndroid,
-                mActivity,
-                true,
-                mSnackbarManager,
-                SupplierUtils.of(mBottomSheetController),
-                /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                /* activityResultTracker= */ mActivityResultTracker,
-                /* tabSupplier= */ null,
-                mHistoryProvider,
-                new HistoryUmaRecorder(),
+        return createHistoryManager(
                 /* clientPackageName= */ null,
-                /* shouldShowClearData= */ true,
                 /* launchedForApp= */ false,
                 /* showAppFilter= */ ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.APP_SPECIFIC_HISTORY),
-                /* shouldClusterByDomain= */ false,
-                /* openHistoryItemCallback= */ null,
-                /* edgeToEdgePadAdjusterGenerator= */ null);
+                        ChromeFeatureList.APP_SPECIFIC_HISTORY));
+    }
+
+    private HistoryManager createHistoryManager(
+            String clientPackageName, boolean launchedForApp, boolean showAppFilter) {
+        HistoryManager historyManager =
+                new HistoryManager(
+                        mProfile,
+                        mWindowAndroid,
+                        mActivity,
+                        /* isSeparateActivity= */ true,
+                        mSnackbarManager,
+                        SupplierUtils.of(mBottomSheetController),
+                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
+                        /* activityResultTracker= */ mActivityResultTracker,
+                        /* tabSupplier= */ null,
+                        mHistoryProvider,
+                        new HistoryUmaRecorder(),
+                        clientPackageName,
+                        /* shouldShowClearData= */ true,
+                        launchedForApp,
+                        showAppFilter,
+                        /* shouldClusterByDomain= */ false,
+                        /* openHistoryItemCallback= */ null,
+                        /* edgeToEdgePadAdjusterGenerator= */ null);
+        mCreatedHistoryManagers.add(historyManager);
+        return historyManager;
     }
 
     @After
     public void tearDown() {
+        for (HistoryManager historyManager : mCreatedHistoryManagers) {
+            historyManager.onDestroyed();
+        }
         mUserActionTester.tearDown();
     }
 
@@ -648,25 +666,10 @@ public class HistoryUiTest {
     @Test
     public void testSearch_HostFilterChipVisibleWhenAppSpecificHistoryDisabled() {
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ null,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ false,
-                        /* showAppFilter= */ true,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ true);
         mContentManager = mHistoryManager.getContentManagerForTests();
         mAdapter = mContentManager.getAdapter();
         mAdapter.setClearBrowsingDataButtonVisibilityForTest(false);
@@ -868,25 +871,10 @@ public class HistoryUiTest {
         mHistoryProvider.addItem(other);
 
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ null,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ false,
-                        /* showAppFilter= */ true,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ true);
         mContentManager = mHistoryManager.getContentManagerForTests();
 
         // Repeated queries should not overwrite the host filter list.
@@ -909,25 +897,10 @@ public class HistoryUiTest {
         mHistoryProvider.addItem(mItem1);
 
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ null,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ false,
-                        /* showAppFilter= */ false,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ false);
         mContentManager = mHistoryManager.getContentManagerForTests();
         mAdapter = mContentManager.getAdapter();
         mAdapter.setClearBrowsingDataButtonVisibilityForTest(false);
@@ -1062,6 +1035,78 @@ public class HistoryUiTest {
     @Test
     public void testSearch_ActorFilterDisabled() {
         Assert.assertFalse(mContentManager.showActorFilter());
+    }
+
+    @EnableFeatures(ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_TIME)
+    @Test
+    public void testSearch_TimePeriodFilterSheet() {
+        HistoryFilterChip<TimePeriodOption> timePeriodFilter =
+                mContentManager.getTimePeriodFilterForTesting();
+        timePeriodFilter.setFilterSheetForTesting(mTimePeriodFilterSheet);
+
+        performMenuAction(R.id.search_menu_id);
+
+        // The options are provided by the backend. The "All time" option is not offered as an
+        // item since the chip's unselected state already means "all time".
+        TimePeriodOption yesterday =
+                new TimePeriodOption(TimePeriodOptionId.YESTERDAY, "Yesterday", 1000L, 2000L);
+        TimePeriodOption lastWeek =
+                new TimePeriodOption(TimePeriodOptionId.LAST_WEEK, "Last week", 3000L, 4000L);
+        mAdapter.onQueryTimePeriodOptionsComplete(
+                List.of(
+                        new TimePeriodOption(TimePeriodOptionId.ALL_TIME, "All time", 0L, 0L),
+                        yesterday,
+                        lastWeek));
+        List<FilterItem<TimePeriodOption>> items = timePeriodFilter.getItemsForTesting();
+        Assert.assertEquals(2, items.size());
+        Assert.assertEquals(yesterday, items.get(0).id);
+        Assert.assertEquals("Yesterday", items.get(0).label.toString());
+        Assert.assertEquals(lastWeek, items.get(1).id);
+        Assert.assertEquals("Last week", items.get(1).label.toString());
+        Assert.assertTrue(timePeriodFilter.isVisible());
+
+        timePeriodFilter.getChipViewForTesting().performClick();
+        verify(mTimePeriodFilterSheet).openSheet(eq(null));
+
+        // Selecting a time period restricts the query to its begin/end times.
+        timePeriodFilter.onItemSelected(items.get(0));
+        Assert.assertEquals(items.get(0), timePeriodFilter.getSelectedItemForTesting());
+        Assert.assertEquals(yesterday, mAdapter.getTimePeriodForTest());
+        Assert.assertEquals(1000L, mHistoryProvider.getLastQueryOptions().beginTimeMs);
+        Assert.assertEquals(2000L, mHistoryProvider.getLastQueryOptions().endTimeMs);
+
+        timePeriodFilter.onItemSelected(null);
+        Assert.assertNull(timePeriodFilter.getSelectedItemForTesting());
+        Assert.assertNull(mAdapter.getTimePeriodForTest());
+        Assert.assertEquals(
+                QueryOptions.UNBOUNDED_TIME_MS, mHistoryProvider.getLastQueryOptions().beginTimeMs);
+        Assert.assertEquals(
+                QueryOptions.UNBOUNDED_TIME_MS, mHistoryProvider.getLastQueryOptions().endTimeMs);
+    }
+
+    @EnableFeatures(ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_TIME)
+    @Test
+    public void testSearch_TimePeriodFilterHiddenWithoutOptions() {
+        HistoryFilterChip<TimePeriodOption> timePeriodFilter =
+                mContentManager.getTimePeriodFilterForTesting();
+        performMenuAction(R.id.search_menu_id);
+
+        // The backend returns an empty list when the filter is disabled natively.
+        mAdapter.onQueryTimePeriodOptionsComplete(List.of());
+        Assert.assertFalse(timePeriodFilter.isVisible());
+        Assert.assertEquals(View.GONE, timePeriodFilter.getChipViewForTesting().getVisibility());
+    }
+
+    @DisableFeatures(ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_TIME)
+    @Test
+    public void testSearch_TimePeriodFilterDisabled() {
+        Assert.assertFalse(mContentManager.showTimePeriodFilter());
+        Assert.assertEquals(
+                View.GONE,
+                mContentManager
+                        .getTimePeriodFilterForTesting()
+                        .getChipViewForTesting()
+                        .getVisibility());
     }
 
     @EnableFeatures(ChromeFeatureList.BROWSING_HISTORY_FILTER_BY_ACTOR)
@@ -1279,25 +1324,10 @@ public class HistoryUiTest {
     public void testInfoHeaderInSearchModeOnLFFDevice() {
         DeviceInput.setSupportsKeyboardForTesting(true);
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ null,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ false,
-                        /* showAppFilter= */ true,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ true);
         mContentManager = mHistoryManager.getContentManagerForTests();
         mAdapter = mContentManager.getAdapter();
         mRecyclerView = mContentManager.getRecyclerView();
@@ -1337,25 +1367,10 @@ public class HistoryUiTest {
         final String appId = "org.chromium.app.AwesomeApp";
         when(mPackageManager.getApplicationInfo(eq(appId), anyInt())).thenReturn(mPackageAppInfo);
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ appId,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ true,
-                        /* showAppFilter= */ false,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ false);
 
         final HistoryManagerToolbar toolbar = mHistoryManager.getToolbarForTests();
         Assert.assertNull(toolbar.getItemById(R.id.close_menu_id));
@@ -1378,25 +1393,10 @@ public class HistoryUiTest {
         final String appId = "org.chromium.app.AwesomeApp";
         when(mPackageManager.getApplicationInfo(eq(appId), anyInt())).thenReturn(mPackageAppInfo);
         mHistoryManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ appId,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ true,
-                        /* showAppFilter= */ false,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ false);
         InfoHeaderPref headerPref = mHistoryManager.getInfoHeaderPrefForTests();
         assertFalse(headerPref.isVisible());
         HistoryManagerToolbar toolbar = mHistoryManager.getToolbarForTests();
@@ -1552,25 +1552,10 @@ public class HistoryUiTest {
         // Arrange 1: Re-initialize HistoryManager in a tablet-with-keyboard configuration.
         DeviceInput.setSupportsKeyboardForTesting(true);
         HistoryManager historyManager =
-                new HistoryManager(
-                        mProfile,
-                        mWindowAndroid,
-                        mActivity,
-                        true,
-                        mSnackbarManager,
-                        SupplierUtils.of(mBottomSheetController),
-                        /* modalDialogManagerSupplier= */ mModalDialogManagerSupplier,
-                        /* activityResultTracker= */ mActivityResultTracker,
-                        /* tabSupplier= */ null,
-                        mHistoryProvider,
-                        new HistoryUmaRecorder(),
+                createHistoryManager(
                         /* clientPackageName= */ null,
-                        /* shouldShowClearData= */ true,
                         /* launchedForApp= */ false,
-                        /* showAppFilter= */ false,
-                        /* shouldClusterByDomain= */ false,
-                        /* openHistoryItemCallback= */ null,
-                        /* edgeToEdgePadAdjusterGenerator= */ null);
+                        /* showAppFilter= */ false);
 
         // Arrange 2: Create a test-only handler that delegates to THIS specific historyManager.
         BackPressHandler testHandler =
@@ -1618,7 +1603,7 @@ public class HistoryUiTest {
     }
 
     private void toggleItemSelection(int position) {
-        final SelectableItemView<HistoryItem> itemView = getItemView(position);
+        final SelectableItemViewBase<HistoryItem> itemView = getItemView(position);
         itemView.performLongClick();
         layoutRecyclerView();
     }
@@ -1628,7 +1613,7 @@ public class HistoryUiTest {
     }
 
     @SuppressWarnings("unchecked")
-    private SelectableItemView<HistoryItem> getItemView(int position) {
+    private SelectableItemViewBase<HistoryItem> getItemView(int position) {
         ViewHolder mostRecentHolder = mRecyclerView.findViewHolderForAdapterPosition(position);
         Assert.assertTrue(
                 mostRecentHolder + " should be instance of SelectableItemViewHolder",

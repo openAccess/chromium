@@ -427,7 +427,15 @@ TEST_F(PageContentProtoUtilTest, ConvertImageInfo) {
   const auto expected_origin = url::Origin::Create(expected_url);
   image_node->content_attributes->image_info->source_origin = expected_origin;
   image_node->content_attributes->image_info->url = expected_url;
+  image_node->content_attributes->image_info->has_c2pa_manifest = true;
   root_content->root_node->children_nodes.emplace_back(std::move(image_node));
+
+  auto image_node_without_c2pa =
+      CreateContentNode(blink::mojom::AIPageContentAttributeType::kImage);
+  image_node_without_c2pa->content_attributes->image_info =
+      blink::mojom::AIPageContentImageInfo::New();
+  root_content->root_node->children_nodes.emplace_back(
+      std::move(image_node_without_c2pa));
 
   AIPageContentResult page_content;
   EXPECT_TRUE(
@@ -435,7 +443,7 @@ TEST_F(PageContentProtoUtilTest, ConvertImageInfo) {
 
   EXPECT_EQ(page_content.proto.version(),
             optimization_guide::proto::ANNOTATED_PAGE_CONTENT_VERSION_1_0);
-  ASSERT_EQ(page_content.proto.root_node().children_nodes_size(), 1);
+  ASSERT_EQ(page_content.proto.root_node().children_nodes_size(), 2);
 
   EXPECT_EQ(page_content.proto.root_node()
                 .children_nodes(0)
@@ -453,6 +461,14 @@ TEST_F(PageContentProtoUtilTest, ConvertImageInfo) {
   EXPECT_EQ(image_data.image_caption(), "image caption");
   AssertValidOrigin(image_data.security_origin(), expected_origin);
   EXPECT_EQ(image_data.url(), expected_url.spec());
+  EXPECT_TRUE(image_data.has_has_c2pa_manifest());
+  EXPECT_TRUE(image_data.has_c2pa_manifest());
+
+  const auto& image_data_without_c2pa = page_content.proto.root_node()
+                                            .children_nodes(1)
+                                            .content_attributes()
+                                            .image_data();
+  EXPECT_FALSE(image_data_without_c2pa.has_has_c2pa_manifest());
 }
 
 TEST_F(PageContentProtoUtilTest, AttributeTypeDoesNotMatchData_Image) {
@@ -1583,6 +1599,30 @@ TEST_F(PageContentProtoUtilTest, ConvertFormControlData) {
   EXPECT_EQ(
       form_control_data_proto.redaction_decision(),
       optimization_guide::proto::REDACTION_DECISION_NO_REDACTION_NECESSARY);
+}
+
+TEST_F(PageContentProtoUtilTest, ConvertRangeGroupFormControlData) {
+  auto root_content = CreatePageContent();
+  auto form_control_node =
+      CreateContentNode(blink::mojom::AIPageContentAttributeType::kFormControl);
+  form_control_node->content_attributes->form_control_data =
+      blink::mojom::AIPageContentFormControlData::New();
+  form_control_node->content_attributes->form_control_data->form_control_type =
+      blink::mojom::FormControlType::kRangeGroup;
+  root_content->root_node->children_nodes.emplace_back(
+      std::move(form_control_node));
+
+  AIPageContentResult page_content;
+  EXPECT_TRUE(
+      ConvertAIPageContentToProto(root_content, page_content).has_value());
+
+  ASSERT_EQ(page_content.proto.root_node().children_nodes_size(), 1);
+  EXPECT_EQ(page_content.proto.root_node()
+                .children_nodes(0)
+                .content_attributes()
+                .form_control_data()
+                .form_control_type(),
+            optimization_guide::proto::FORM_CONTROL_TYPE_UNSPECIFIED);
 }
 
 TEST_F(PageContentProtoUtilTest, ConvertInteractionDisabledReasons) {

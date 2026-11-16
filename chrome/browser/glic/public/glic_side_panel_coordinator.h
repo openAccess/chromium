@@ -20,10 +20,6 @@ namespace tabs {
 class TabInterface;
 }  // namespace tabs
 
-namespace content {
-class WebContents;
-}  // namespace content
-
 #if !BUILDFLAG(IS_ANDROID)
 namespace views {
 class View;
@@ -31,6 +27,10 @@ class View;
 #endif
 
 namespace glic {
+
+#if BUILDFLAG(IS_ANDROID)
+class GlicCoBrowseViews;
+#endif
 
 // GlicSidePanelCoordinator handles the creation and registration of the
 // glic SidePanelEntry.
@@ -97,8 +97,10 @@ class GlicSidePanelCoordinator {
   // Sets the content view for the Glic side panel.
   virtual void SetContentsView(std::unique_ptr<views::View> contents_view) = 0;
 #else
-  // Sets the web contents for the Glic side panel.
-  virtual void SetWebContents(content::WebContents* web_contents) = 0;
+  // Sets and returns the CoBrowseViews controller for the Glic side panel.
+  virtual void SetCoBrowseViews(
+      std::unique_ptr<GlicCoBrowseViews> co_browse_views) = 0;
+  virtual GlicCoBrowseViews* GetCoBrowseViews() const = 0;
 #endif
 
   // Returns preferred side panel width. Not guaranteed to be used if user

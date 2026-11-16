@@ -28,10 +28,10 @@
 #include "base/memory/raw_span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/checked_math.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/token.h"
-#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
@@ -410,32 +410,39 @@ bool VideoCaptureImpl::ProcessBuffer(
                  media::VideoFrame::RowBytes(media::VideoFrame::Plane::kV,
                                              pixel_format, coded_width));
         const size_t y_size =
-            (media::VideoFrame::Rows(
-                 media::VideoFrame::Plane::kY,
-                 video_frame_init_data.ready_buffer->info->pixel_format,
-                 video_frame_init_data.ready_buffer->info->coded_size
-                     .height()) *
-             video_frame_init_data.ready_buffer->info->strides
-                 ->stride_by_plane[0]);
+            base::CheckMul(
+                media::VideoFrame::Rows(
+                    media::VideoFrame::Plane::kY,
+                    video_frame_init_data.ready_buffer->info->pixel_format,
+                    video_frame_init_data.ready_buffer->info->coded_size
+                        .height()),
+                video_frame_init_data.ready_buffer->info->strides
+                    ->stride_by_plane[0])
+                .ValueOrDie<size_t>();
         const size_t u_size =
-            (media::VideoFrame::Rows(
-                 media::VideoFrame::Plane::kU,
-                 video_frame_init_data.ready_buffer->info->pixel_format,
-                 video_frame_init_data.ready_buffer->info->coded_size
-                     .height()) *
-             video_frame_init_data.ready_buffer->info->strides
-                 ->stride_by_plane[1]);
+            base::CheckMul(
+                media::VideoFrame::Rows(
+                    media::VideoFrame::Plane::kU,
+                    video_frame_init_data.ready_buffer->info->pixel_format,
+                    video_frame_init_data.ready_buffer->info->coded_size
+                        .height()),
+                video_frame_init_data.ready_buffer->info->strides
+                    ->stride_by_plane[1])
+                .ValueOrDie<size_t>();
         base::span<const uint8_t> data = buffer_context->data();
         auto [y_data, uv_data] = data.split_at(y_size);
         auto [u_data, v_data] = uv_data.split_at(u_size);
-        CHECK_GE(v_data.size(),
-                 (media::VideoFrame::Rows(
-                      media::VideoFrame::Plane::kV,
-                      video_frame_init_data.ready_buffer->info->pixel_format,
-                      video_frame_init_data.ready_buffer->info->coded_size
-                          .height()) *
-                  video_frame_init_data.ready_buffer->info->strides
-                      ->stride_by_plane[2]));
+        const size_t v_size =
+            base::CheckMul(
+                media::VideoFrame::Rows(
+                    media::VideoFrame::Plane::kV,
+                    video_frame_init_data.ready_buffer->info->pixel_format,
+                    video_frame_init_data.ready_buffer->info->coded_size
+                        .height()),
+                video_frame_init_data.ready_buffer->info->strides
+                    ->stride_by_plane[2])
+                .ValueOrDie<size_t>();
+        CHECK_GE(v_data.size(), v_size);
         video_frame_init_data.frame = media::VideoFrame::WrapExternalYuvData(
             video_frame_init_data.ready_buffer->info->pixel_format,
             gfx::Size(video_frame_init_data.ready_buffer->info->coded_size),
@@ -1221,13 +1228,6 @@ void VideoCaptureImpl::OnBufferReady(
   // requestVideoFrameCallback.
   if (!buffer->info->metadata.capture_begin_time)
     buffer->info->metadata.capture_begin_time = reference_time;
-
-  // TODO(qiangchen): Change the metric name to "reference_time" and
-  // "timestamp", so that we have consistent naming everywhere.
-  // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
-  TRACE_EVENT_INSTANT("cast_perf_test", "OnBufferReceived", "timestamp",
-                      (reference_time - base::TimeTicks()).InMicroseconds(),
-                      "time_delta", buffer->info->timestamp.InMicroseconds());
 
   const int buffer_id = buffer->buffer_id;
   // Process the `buffer` to convert it into a media::VideoFrame directly or via

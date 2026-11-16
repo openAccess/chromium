@@ -142,8 +142,6 @@ void GlicWebUIContentsManager::DidFinishNavigation(
   printing::InitializePrintingForWebContents(web_contents());
 #endif
 
-  host_->OnWebContentsNavigated();
-
   // Re-attach to the (possibly new) GlicUI.
   if (auto* glic_ui = GlicUI::From(web_contents())) {
     glic_ui->AttachToHost(host_);
@@ -216,6 +214,10 @@ void GlicWebUIContentsManager::UpdateGuestMounted() {
 }
 
 content::WebContents* GlicWebUIContentsManager::active_web_contents() const {
+  return WebContentsObserver::web_contents();
+}
+
+content::WebContents* GlicWebUIContentsManager::webui_contents() const {
   return WebContentsObserver::web_contents();
 }
 
@@ -328,7 +330,7 @@ void GlicWebUIContentsManager::WebUIPageHandlerRemoved(
 void GlicWebUIContentsManager::OnWebUiLoadComplete(
     GlicPageHandler* page_handler,
     uint64_t request_id,
-    bool failed) {
+    std::optional<ClientLoadErrorReason> error_reason) {
   if (page_handler != page_handler_) {
     return;
   }
@@ -339,9 +341,13 @@ void GlicWebUIContentsManager::OnWebUiLoadComplete(
   auto callback = std::move(it->second);
   pending_wait_for_load_callbacks_.erase(it);
   if (host_) {
-    host_->SetClientLoadFailed(page_handler, failed);
+    if (error_reason.has_value()) {
+      host_->SetClientLoadFailed(page_handler, *error_reason);
+    } else {
+      host_->ClearClientLoadFailed(page_handler);
+    }
   }
-  std::move(callback).Run(failed);
+  std::move(callback).Run(/*failed=*/error_reason.has_value());
 }
 
 }  // namespace glic

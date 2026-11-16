@@ -133,18 +133,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Download.Android.OpenPdfFromDuplicates"
-    enum="BooleanOpenFromDuplicates" expires_after="2024-12-31">
-  <owner>qinmin@chromium.org</owner>
-  <owner>dtrainor@chromium.org</owner>
-  <summary>
-    Records whether opening a pdf download on Android triggers opening an
-    existing downloaded file, instead of creating a new file. This metric is
-    only recorded when Chrome enables rendering PDFs inside a tab, and it is
-    reorded once each time a PDF is displayed.
-  </summary>
-</histogram>
-
 <histogram name="Download.Android.ResumedFromNotification"
     enum="DownloadAndroidResumedFromNotificationEvent"
     expires_after="2027-04-18">
@@ -324,7 +312,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Download.DangerousDialog.Events"
-    enum="DangerousDownloadDialogEvent" expires_after="2027-03-07">
+    enum="DangerousDownloadDialogEvent" expires_after="2027-05-09">
   <owner>qinmin@chromium.org</owner>
   <summary>
     Records user interactions with the dangerous download dialog on Android.
@@ -359,7 +347,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Download.DownloadDangerPrompt.{DownloadDangerTypeString}.{Action}"
-    enum="SBClientDownloadExtensions" expires_after="2027-03-07">
+    enum="SBClientDownloadExtensions" expires_after="2027-05-09">
   <owner>vakh@chromium.org</owner>
   <owner>chrome-counter-abuse-alerts@google.com</owner>
   <summary>
@@ -539,37 +527,6 @@ chromium-metrics-reviews@google.com.
     <variant name=".BackgroundDownload"
         summary="Download that started in background."/>
   </token>
-</histogram>
-
-<histogram name="Download.Incognito.Message" enum="IncognitoMessageEvent"
-    expires_after="2023-06-30">
-  <owner>tommasin@chromium.org</owner>
-  <owner>chrome-incognito@google.com</owner>
-  <summary>
-    Records the clicks on Incognito download message in Android, when users
-    click download or dismiss the message.
-  </summary>
-</histogram>
-
-<histogram name="Download.InputStreamReadError"
-    enum="DownloadInputStreamReadErrorType" expires_after="2024-01-14">
-  <owner>qinmin@chromium.org</owner>
-  <owner>shaktisahu@chromium.org</owner>
-  <summary>
-    Records errors when reading from the mojo input stream before a download
-    completes.
-  </summary>
-</histogram>
-
-<histogram name="Download.InsecureBlocking.Totals"
-    enum="InsecureDownloadSecurityStatus" expires_after="2025-01-26">
-  <owner>jdeblasio@chromium.org</owner>
-  <owner>estark@chromium.org</owner>
-  <owner>cthomp@chromium.org</owner>
-  <summary>
-    Records security state of downloads to support analysis for mixed content
-    file download blocking.
-  </summary>
 </histogram>
 
 <histogram name="Download.InterruptedReason.ParallelDownload"
@@ -870,15 +827,6 @@ chromium-metrics-reviews@google.com.
     Records the profile type for opening the Downloads page. This may be
     triggered by different entry points like mobile menu, notification or info
     bar.
-  </summary>
-</histogram>
-
-<histogram name="Download.OpenDownloadsFromMenu.PerProfileType"
-    enum="BrowserProfileType" expires_after="2024-06-30">
-  <owner>sideyilmaz@chromium.org</owner>
-  <owner>chrome-incognito@google.com</owner>
-  <summary>
-    Records the profile type for opening the Downloads page from menu.
   </summary>
 </histogram>
 
@@ -1185,16 +1133,6 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
-<histogram name="Download.Shelf.DragInfo" enum="Download.DragInfo"
-    expires_after="2023-11-22">
-  <owner>chlily@chromium.org</owner>
-  <owner>chrome-counter-abuse-alerts@google.com</owner>
-  <summary>
-    This tracks drag events on a complete download on the shelf, and also
-    general download completion on the shelf as a point of reference.
-  </summary>
-</histogram>
-
 <histogram name="Download.ShowedDownloadWarning" enum="DownloadItem.DangerType"
     expires_after="never">
 <!-- expires-never: Monitors warning bypass rate. -->
@@ -1278,7 +1216,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Download.Start.ContentType.{TransientType}"
-    enum="DownloadContentType" expires_after="2027-03-07">
+    enum="DownloadContentType" expires_after="2027-05-09">
   <owner>qinmin@chromium.org</owner>
   <owner>clank-downloads@google.com</owner>
   <summary>

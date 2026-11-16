@@ -679,7 +679,8 @@ void LocalDOMWindow::ReportPermissionsPolicyViolation(
 
   PermissionsPolicyViolationReportBody* body =
       MakeGarbageCollected<PermissionsPolicyViolationReportBody>(
-          feature_name, message, disp_str);
+          feature_name, message, disp_str, /*allow_attribute=*/g_empty_string,
+          /*src_attribute=*/g_empty_string, this);
 
   Report* report = MakeGarbageCollected<Report>(
       ReportType::kPermissionsPolicyViolation, Url().GetString(), body);
@@ -719,7 +720,8 @@ void LocalDOMWindow::ReportPotentialPermissionsPolicyViolation(
 
   PermissionsPolicyViolationReportBody* body =
       MakeGarbageCollected<PermissionsPolicyViolationReportBody>(
-          feature_name, message, disp_str, allow_attribute, src_attribute);
+          feature_name, message, disp_str, allow_attribute, src_attribute,
+          this);
 
   Report* report = MakeGarbageCollected<Report>(
       ReportType::kPotentialPermissionsPolicyViolation, Url().GetString(),
@@ -760,8 +762,11 @@ void LocalDOMWindow::ReportDocumentPolicyViolation(
                      : GetSecurityContext().GetDocumentPolicy();
 
   DocumentPolicyViolationReportBody* body =
-      MakeGarbageCollected<DocumentPolicyViolationReportBody>(
-          feature_name, message, disp_str, source_file);
+      source_file.empty()
+          ? MakeGarbageCollected<DocumentPolicyViolationReportBody>(
+                feature_name, message, disp_str, this)
+          : MakeGarbageCollected<DocumentPolicyViolationReportBody>(
+                feature_name, message, disp_str, source_file);
 
   Report* report = MakeGarbageCollected<Report>(
       ReportType::kDocumentPolicyViolation, Url().GetString(), body);
@@ -1688,10 +1693,7 @@ bool LocalDOMWindow::offscreenBuffering() const {
 }
 
 bool LocalDOMWindow::alwaysOnTopPopup() const {
-  if (!GetFrame() || !GetFrame()->GetPage()) {
-    return false;
-  }
-  return GetFrame()->GetPage()->AlwaysOnTopPopup();
+  return GetFrame() && GetFrame()->GetPage()->AlwaysOnTopPopup();
 }
 
 int LocalDOMWindow::outerHeight() const {
@@ -2122,117 +2124,71 @@ void LocalDOMWindow::scrollToForTesting(double x, double y) const {
 }
 
 void LocalDOMWindow::moveBy(int x, int y) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
-    return;
-  }
-
-  if (IsPictureInPictureWindow()) {
+  if (!CanMoveWindow()) {
     return;
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
-  gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
+  gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
   window_rect.Offset(x, y);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().MoveWindowTo(window_rect.origin(), *frame);
+    chrome_client.MoveWindowTo(window_rect.origin(), *frame);
   } else {
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
 void LocalDOMWindow::moveTo(int x, int y) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
-    return;
-  }
-
-  if (IsPictureInPictureWindow()) {
+  if (!CanMoveWindow()) {
     return;
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().MoveWindowTo(gfx::Point(x, y), *frame);
+    chrome_client.MoveWindowTo(gfx::Point(x, y), *frame);
   } else {
-    gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+    gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
     window_rect.set_origin(gfx::Point(x, y));
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
 void LocalDOMWindow::resizeBy(int x,
                               int y,
                               ExceptionState& exception_state) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
+  if (!CanResizeWindow("resizeBy", exception_state)) {
     return;
-  }
-
-  if (IsPictureInPictureWindow()) {
-    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotAllowedError,
-          "resizeBy() requires user activation in document picture-in-picture");
-      return;
-    }
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
-  gfx::Rect fr = page->GetChromeClient().RootWindowRect(*frame);
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
+  gfx::Rect fr = chrome_client.RootWindowRect(*frame);
   gfx::Size dest(fr.width() + x, fr.height() + y);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().ResizeWindowTo(dest, *frame);
+    chrome_client.ResizeWindowTo(dest, *frame);
   } else {
-    page->GetChromeClient().SetWindowRect(gfx::Rect(fr.origin(), dest), *frame);
+    chrome_client.SetWindowRect(gfx::Rect(fr.origin(), dest), *frame);
   }
 }
 
 void LocalDOMWindow::resizeTo(int width,
                               int height,
                               ExceptionState& exception_state) const {
-  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
-      document()->IsPrerendering()) {
+  if (!CanResizeWindow("resizeTo", exception_state)) {
     return;
-  }
-
-  if (IsPictureInPictureWindow()) {
-    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kNotAllowedError,
-          "resizeTo() requires user activation in document picture-in-picture");
-      return;
-    }
   }
 
   LocalFrame* frame = GetFrame();
-  Page* page = frame->GetPage();
-  if (!page) {
-    return;
-  }
-
+  ChromeClient& chrome_client = frame->GetPage()->GetChromeClient();
   const gfx::Size dest(width, height);
   if (base::FeatureList::IsEnabled(features::kMoveResizeWindowToIPCs)) {
-    page->GetChromeClient().ResizeWindowTo(dest, *frame);
+    chrome_client.ResizeWindowTo(dest, *frame);
   } else {
-    gfx::Rect window_rect = page->GetChromeClient().RootWindowRect(*frame);
+    gfx::Rect window_rect = chrome_client.RootWindowRect(*frame);
     window_rect.set_size(dest);
-    page->GetChromeClient().SetWindowRect(window_rect, *frame);
+    chrome_client.SetWindowRect(window_rect, *frame);
   }
 }
 
@@ -2738,7 +2694,13 @@ bool LocalDOMWindow::CrossOriginIsolatedCapability() const {
 }
 
 bool LocalDOMWindow::IsIsolatedContext() const {
-  return Agent::IsIsolatedContext();
+  // `Agent::IsIsolatedContext()` is process-wide. Windows with an opaque origin
+  // (e.g. sandboxed iframes that weren't moved to their own process) can share
+  // an isolated process, but are never isolated contexts, since an opaque
+  // origin can't be in the origin integrity verification map. See
+  // https://wicg.github.io/isolated-web-apps/isolated-contexts.html#isolated-context.
+  const SecurityOrigin* origin = GetSecurityOrigin();
+  return Agent::IsIsolatedContext() && origin && !origin->IsOpaque();
 }
 
 ukm::UkmRecorder* LocalDOMWindow::UkmRecorder() {
@@ -2848,6 +2810,40 @@ bool LocalDOMWindow::IsPictureInPictureWindow() const {
 
 void LocalDOMWindow::SetIsPictureInPictureWindow() {
   is_picture_in_picture_window_ = true;
+}
+
+bool LocalDOMWindow::CanMoveWindow() const {
+  return GetFrame() && GetFrame()->IsOutermostMainFrame() &&
+         !document()->IsPrerendering() && !IsPictureInPictureWindow() &&
+         !alwaysOnTopPopup();
+}
+
+bool LocalDOMWindow::CanResizeWindow(const char* method_name,
+                                     ExceptionState& exception_state) const {
+  if (!GetFrame() || !GetFrame()->IsOutermostMainFrame() ||
+      document()->IsPrerendering()) {
+    return false;
+  }
+
+  if (IsPictureInPictureWindow()) {
+    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotAllowedError,
+          StrCat({method_name,
+                  "() requires user activation in document "
+                  "picture-in-picture"}));
+      return false;
+    }
+  } else if (alwaysOnTopPopup()) {
+    if (!LocalFrame::ConsumeTransientUserActivation(GetFrame())) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kNotAllowedError,
+          StrCat({method_name,
+                  "() requires user activation in always-on-top popups"}));
+      return false;
+    }
+  }
+  return true;
 }
 
 net::StorageAccessApiStatus LocalDOMWindow::GetStorageAccessApiStatus() const {

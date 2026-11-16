@@ -1704,64 +1704,9 @@ CSSIdentifierValue* ConsumeIdentRange(CSSParserTokenStream& stream,
   return ConsumeIdent(stream);
 }
 
-// https://drafts.csswg.org/css-values-5/#ident
-CSSFunctionValue* ConsumeIdentFunction(CSSParserTokenStream& stream,
-                                       const CSSParserContext& context) {
-  CHECK(RuntimeEnabledFeatures::CSSIdentFunctionEnabled());
-  if (stream.Peek().FunctionId() != CSSValueID::kIdent) {
-    return nullptr;
-  }
-
-  CSSParserTokenStream::RestoringBlockGuard guard(stream);
-  stream.ConsumeWhitespace();
-
-  HeapVector<Member<const CSSValue>, 4> values;
-
-  CSSParserLocalContext local_context =
-      CSSParserLocalContext::CreateWithoutPropertyForIdent();
-  while (!stream.AtEnd()) {
-    if (CSSValue* custom_ident =
-            ConsumeCustomIdent(stream, context, local_context)) {
-      values.push_back(custom_ident);
-      continue;
-    }
-    if (CSSValue* string_value = ConsumeString(stream)) {
-      values.push_back(string_value);
-      continue;
-    }
-    if (CSSValue* integer_value =
-            ConsumeInteger(stream, context, local_context,
-                           CSSPrimitiveValue::ValueRange::kInteger,
-                           /*is_percentage_allowed=*/false)) {
-      // TODO(crbug.com/488111037): Add support for random() inside ident().
-      if (integer_value->HasRandomFunctions()) {
-        return nullptr;
-      }
-      values.push_back(integer_value);
-      continue;
-    }
-    return nullptr;
-  }
-
-  if (values.empty()) {
-    return nullptr;
-  }
-
-  CHECK(guard.Release());
-  stream.ConsumeWhitespace();
-
-  return MakeGarbageCollected<CSSFunctionValue>(
-      CSSValueID::kIdent, CSSValueList::kSpaceSeparator, std::move(values));
-}
-
 CSSCustomIdentValue* ConsumeCustomIdent(CSSParserTokenStream& stream,
                                         const CSSParserContext& context,
                                         CSSParserLocalContext& local_context) {
-  if (RuntimeEnabledFeatures::CSSIdentFunctionEnabled()) {
-    if (auto* ident_function = ConsumeIdentFunction(stream, context)) {
-      return MakeGarbageCollected<CSSCustomIdentValue>(*ident_function);
-    }
-  }
   if (stream.Peek().GetType() != kIdentToken ||
       IsCSSWideKeyword(stream.Peek().Id()) ||
       stream.Peek().Id() == CSSValueID::kDefault) {
@@ -1774,11 +1719,10 @@ CSSCustomIdentValue* ConsumeCustomIdent(CSSParserTokenStream& stream,
 CSSCustomIdentValue* ConsumeDashedIdent(CSSParserTokenStream& stream,
                                         const CSSParserContext& context,
                                         CSSParserLocalContext& local_context) {
-  // Note that the ident() function can currently bypass the double-dash
-  // requirement of <dashed-ident>.
-  // https://github.com/w3c/csswg-drafts/issues/12206
-  if (stream.Peek().GetType() == kIdentToken &&
-      !stream.Peek().Value().starts_with(kTwoDashes)) {
+  if (stream.Peek().GetType() != kIdentToken) {
+    return nullptr;
+  }
+  if (!stream.Peek().Value().starts_with(kTwoDashes)) {
     return nullptr;
   }
   return ConsumeCustomIdent(stream, context, local_context);
@@ -2177,6 +2121,38 @@ static std::optional<ColorInterpolationSpace> ConsumeColorInterpolationSpace(
 
 namespace {
 
+// Consumes a `<color> && <percentage [0,100]>?` argument of color-mix() and
+// appends it to `items`. Returns false if the argument is invalid.
+bool ConsumeColorMixItem(CSSParserTokenStream& stream,
+                         const CSSParserContext& context,
+                         CSSParserLocalContext& local_context,
+                         const ColorParserContext& color_parser_context,
+                         cssvalue::CSSColorMixValue::ItemVector& items) {
+  CSSValue* color =
+      ConsumeColor(stream, context, local_context, color_parser_context);
+  CSSPrimitiveValue* percentage = ConsumePercent(
+      stream, context, local_context, CSSPrimitiveValue::ValueRange::kAll);
+  if (!IsAllowedColorValue(percentage, color_parser_context)) {
+    return false;
+  }
+  if (!color) {
+    color = ConsumeColor(stream, context, local_context, color_parser_context);
+    if (!color) {
+      return false;
+    }
+  }
+  // Only literals are range-checked when parsing; numeric functions such as
+  // calc() are clamped later instead.
+  // https://drafts.csswg.org/css-values-4/#functional-numeric
+  if (auto* numeric = DynamicTo<CSSNumericLiteralValue>(percentage);
+      numeric && (numeric->ComputePercentage() < 0.0 ||
+                  numeric->ComputePercentage() > 100.0)) {
+    return false;
+  }
+  items.push_back(cssvalue::CSSColorMixItem{color, percentage});
+  return true;
+}
+
 // https://www.w3.org/TR/css-color-5/#color-mix
 CSSValue* ConsumeColorMixFunction(
     CSSParserTokenStream& stream,
@@ -2209,51 +2185,17 @@ CSSValue* ConsumeColorMixFunction(
       return nullptr;
     }
 
-    CSSValue* color1 =
-        ConsumeColor(stream, context, local_context, color_parser_context);
-    CSSPrimitiveValue* p1 = ConsumePercent(stream, context, local_context,
-                                           CSSPrimitiveValue::ValueRange::kAll);
-    if (!IsAllowedColorValue(p1, color_parser_context)) {
+    cssvalue::CSSColorMixValue::ItemVector items;
+    items.reserve(2);
+    if (!ConsumeColorMixItem(stream, context, local_context,
+                             color_parser_context, items)) {
       return nullptr;
     }
-    // Color can come after the percentage
-    if (!color1) {
-      color1 =
-          ConsumeColor(stream, context, local_context, color_parser_context);
-      if (!color1) {
-        return nullptr;
-      }
-    }
-    // Reject negative values and values > 100%, but not calc() values.
-    if (auto* p1_numeric = DynamicTo<CSSNumericLiteralValue>(p1);
-        p1_numeric && (p1_numeric->ComputePercentage() < 0.0 ||
-                       p1_numeric->ComputePercentage() > 100.0)) {
-      return nullptr;
-    }
-
     if (!ConsumeCommaIncludingWhitespace(stream)) {
       return nullptr;
     }
-
-    CSSValue* color2 =
-        ConsumeColor(stream, context, local_context, color_parser_context);
-    CSSPrimitiveValue* p2 = ConsumePercent(stream, context, local_context,
-                                           CSSPrimitiveValue::ValueRange::kAll);
-    if (!IsAllowedColorValue(p2, color_parser_context)) {
-      return nullptr;
-    }
-    // Color can come after the percentage
-    if (!color2) {
-      color2 =
-          ConsumeColor(stream, context, local_context, color_parser_context);
-      if (!color2) {
-        return nullptr;
-      }
-    }
-    // Reject negative values and values > 100%, but not calc() values.
-    if (auto* p2_numeric = DynamicTo<CSSNumericLiteralValue>(p2);
-        p2_numeric && (p2_numeric->ComputePercentage() < 0.0 ||
-                       p2_numeric->ComputePercentage() > 100.0)) {
+    if (!ConsumeColorMixItem(stream, context, local_context,
+                             color_parser_context, items)) {
       return nullptr;
     }
 
@@ -2263,7 +2205,7 @@ CSSValue* ConsumeColorMixFunction(
 
     guard.Release();
     result = MakeGarbageCollected<cssvalue::CSSColorMixValue>(
-        color1, color2, p1, p2, color_space, hue_interpolation_method);
+        std::move(items), color_space, hue_interpolation_method);
   }
   stream.ConsumeWhitespace();
 
@@ -3762,6 +3704,7 @@ static CSSImageSetOptionValue* ConsumeImageSetOption(
     return nullptr;
   }
 
+  const wtf_size_t value_start_offset = stream.LookAheadOffset();
   // Type could appear before or after resolution
   CSSImageSetTypeValue* type = ConsumeImageSetType(stream);
   CSSPrimitiveValue* resolution =
@@ -3777,6 +3720,13 @@ static CSSImageSetOptionValue* ConsumeImageSetOption(
   }
   if (!type) {
     type = ConsumeImageSetType(stream);
+  }
+
+  const wtf_size_t value_end_offset = stream.LookAheadOffset();
+  if (stream.IsAttrTainted(value_start_offset, value_end_offset)) {
+    // Resolution and type() can select which URL is fetched, so they must not
+    // depend on attribute data.
+    return nullptr;
   }
 
   return MakeGarbageCollected<CSSImageSetOptionValue>(image, resolution, type);
@@ -4413,20 +4363,9 @@ bool FontFamilyNeedsQuoting(const AtomicString& string) {
           !can_serialize_unquoted);
 }
 
-// https://drafts.csswg.org/css-cascade/#default
-bool IsRevertKeyword(StringView keyword) {
-  return EqualIgnoringAsciiCase(keyword, "revert");
-}
-
 // https://drafts.csswg.org/css-values-4/#identifier-value
 bool IsDefaultKeyword(StringView keyword) {
   return EqualIgnoringAsciiCase(keyword, "default");
-}
-
-// https://drafts.csswg.org/css-syntax/#typedef-hash-token
-bool IsHashIdentifier(const CSSParserToken& token) {
-  return token.GetType() == kHashToken &&
-         token.GetHashTokenType() == kHashTokenId;
 }
 
 bool IsDashedIdent(const CSSParserToken& token) {
@@ -4470,14 +4409,6 @@ CSSValue* ConsumeCSSWideKeyword(CSSParserTokenStream& stream,
     default:
       NOTREACHED();
   }
-}
-
-bool IsTimelineName(const CSSParserToken& token) {
-  if (token.GetType() == kStringToken) {
-    return true;
-  }
-  return token.GetType() == kIdentToken &&
-         IsCustomIdent<CSSValueID::kNone>(token.Id());
 }
 
 CSSValue* ConsumeSelfPositionOverflowPosition(
@@ -4806,13 +4737,6 @@ CSSValue* ConsumeTimelineRangeNameAndPercent(
   }
   list->Append(*percentage);
   return list;
-}
-
-CSSValue* ConsumeAnimationDelay(CSSParserTokenStream& stream,
-                                const CSSParserContext& context,
-                                CSSParserLocalContext& local_context) {
-  return ConsumeTime(stream, context, local_context,
-                     CSSPrimitiveValue::ValueRange::kAll);
 }
 
 CSSValue* ConsumeAnimationRange(CSSParserTokenStream& stream,
@@ -5805,32 +5729,29 @@ CSSValue* ConsumeCornerShape(CSSParserTokenStream& stream,
   return MakeGarbageCollected<cssvalue::CSSSuperellipseValue>(*param);
 }
 
-bool ConsumeCorner(CSSParserTokenStream& stream,
-                   const CSSParserContext& context,
-                   CSSParserLocalContext& local_context,
-                   CSSValue*& radius,
-                   CSSValue*& shape) {
-  if (stream.Peek().GetType() == kIdentToken &&
-      stream.Peek().Id() == CSSValueID::kNormal) {
-    ConsumeIdent(stream);
-    radius = MakeGarbageCollected<CSSValuePair>(
-        CSSNumericLiteralValue::Create(0, CSSPrimitiveValue::UnitType::kPixels),
-        CSSNumericLiteralValue::Create(0, CSSPrimitiveValue::UnitType::kPixels),
-        CSSValuePair::kDropIdenticalValues);
-    shape = CSSIdentifierValue::Create(CSSValueID::kRound);
-    return true;
+CSSValue* ConsumeSingleCornerRadius(CSSParserTokenStream& stream,
+                                    const CSSParserContext& context,
+                                    CSSParserLocalContext& local_context) {
+  CSSParserSavePoint savepoint(stream);
+  CSSValue* horizontal =
+      ConsumeLengthOrPercent(stream, context, local_context,
+                             CSSPrimitiveValue::ValueRange::kNonNegative);
+  if (!horizontal) {
+    return nullptr;
   }
-
-  shape = ConsumeCornerShape(stream, context, local_context);
-  radius = ParseBorderRadiusCorner(stream, context, local_context);
-  if (!radius) {
-    return false;
+  const bool slash_separated = ConsumeSlashIncludingWhitespace(stream);
+  CSSValue* vertical =
+      ConsumeLengthOrPercent(stream, context, local_context,
+                             CSSPrimitiveValue::ValueRange::kNonNegative);
+  if (!vertical) {
+    if (slash_separated) {
+      return nullptr;
+    }
+    vertical = horizontal;
   }
-
-  if (!shape) {
-    shape = ConsumeCornerShape(stream, context, local_context);
-  }
-  return shape != nullptr;
+  savepoint.Release();
+  return MakeGarbageCollected<CSSValuePair>(horizontal, vertical,
+                                            CSSValuePair::kDropIdenticalValues);
 }
 
 CSSValue* ParseBorderWidthSide(CSSParserTokenStream& stream,
@@ -6446,7 +6367,6 @@ bool IsAngleWithinLimits(CSSPrimitiveValue* angle) {
 }
 
 bool IsAngleZero(CSSPrimitiveValue* angle) {
-  DCHECK(RuntimeEnabledFeatures::FontStyleObliqueZeroDegreeAsNormalEnabled());
   auto* numeric_angle = DynamicTo<CSSNumericLiteralValue>(angle);
   if (!numeric_angle) {
     return false;
@@ -6485,8 +6405,7 @@ CSSValue* ConsumeFontStyle(CSSParserTokenStream& stream,
   }
 
   if (context.Mode() != kCSSFontFaceRuleMode || stream.AtEnd()) {
-    if (RuntimeEnabledFeatures::FontStyleObliqueZeroDegreeAsNormalEnabled() &&
-        IsAngleZero(start_angle)) {
+    if (IsAngleZero(start_angle)) {
       return MakeGarbageCollected<CSSIdentifierValue>(CSSValueID::kNormal);
     }
     CSSValueList* value_list = CSSValueList::CreateSpaceSeparated();
@@ -6501,8 +6420,7 @@ CSSValue* ConsumeFontStyle(CSSParserTokenStream& stream,
     return nullptr;
   }
 
-  if (RuntimeEnabledFeatures::FontStyleObliqueZeroDegreeAsNormalEnabled() &&
-      IsAngleZero(start_angle) && IsAngleZero(end_angle)) {
+  if (IsAngleZero(start_angle) && IsAngleZero(end_angle)) {
     return MakeGarbageCollected<CSSIdentifierValue>(CSSValueID::kNormal);
   }
 
@@ -8332,6 +8250,10 @@ bool ValidWidthOrHeightKeyword(CSSValueID id, const CSSParserContext& context) {
     }
     return true;
   }
+  if (RuntimeEnabledFeatures::CssSizeShrinkContentEnabled() &&
+      id == CSSValueID::kShrinkContent) {
+    return true;
+  }
   return false;
 }
 
@@ -9719,19 +9641,20 @@ CSSValue* ParseSpacing(CSSParserTokenStream& stream,
 CSSValue* ConsumeSingleContainerName(CSSParserTokenStream& stream,
                                      const CSSParserContext& context,
                                      CSSParserLocalContext& local_context) {
-  if (stream.Peek().GetType() == kIdentToken) {
-    if (stream.Peek().Id() == CSSValueID::kNone) {
-      return nullptr;
-    }
-    if (EqualIgnoringAsciiCase(stream.Peek().Value(), "not")) {
-      return nullptr;
-    }
-    if (EqualIgnoringAsciiCase(stream.Peek().Value(), "and")) {
-      return nullptr;
-    }
-    if (EqualIgnoringAsciiCase(stream.Peek().Value(), "or")) {
-      return nullptr;
-    }
+  if (stream.Peek().GetType() != kIdentToken) {
+    return nullptr;
+  }
+  if (stream.Peek().Id() == CSSValueID::kNone) {
+    return nullptr;
+  }
+  if (EqualIgnoringAsciiCase(stream.Peek().Value(), "not")) {
+    return nullptr;
+  }
+  if (EqualIgnoringAsciiCase(stream.Peek().Value(), "and")) {
+    return nullptr;
+  }
+  if (EqualIgnoringAsciiCase(stream.Peek().Value(), "or")) {
+    return nullptr;
   }
   return ConsumeCustomIdent(stream, context, local_context);
 }

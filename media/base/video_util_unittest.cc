@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <cmath>
 #include <memory>
 
@@ -16,6 +17,7 @@
 #include "media/base/limits.h"
 #include "media/base/video_frame.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 
 namespace {
@@ -343,6 +345,71 @@ INSTANTIATE_TEST_SUITE_P(All,
                          VideoUtilRotationTest,
                          testing::ValuesIn(kVideoRotationTestData));
 
+TEST_F(VideoUtilTest, RotateVideoFrameToI420) {
+  constexpr gfx::Size kSize(16, 8);
+  constexpr gfx::Rect kRect(4, 2, 8, 4);
+  constexpr std::array<VideoFrame::Plane, 3> kPlanes = {
+      VideoFrame::Plane::kY, VideoFrame::Plane::kU, VideoFrame::Plane::kV};
+
+  for (VideoPixelFormat format : {PIXEL_FORMAT_I420, PIXEL_FORMAT_NV12}) {
+    SCOPED_TRACE(VideoPixelFormatToString(format));
+    auto src_frame = VideoFrame::CreateZeroInitializedFrame(
+        format, kSize, kRect, kRect.size(), base::TimeDelta());
+    for (size_t i = 0; i < std::size(kPlanes); ++i) {
+      const bool interleaved = format == PIXEL_FORMAT_NV12 && i > 0;
+      const size_t plane = interleaved ? VideoFrame::Plane::kUV : kPlanes[i];
+      const gfx::Size size =
+          VideoFrame::PlaneSize(PIXEL_FORMAT_I420, kPlanes[i], kRect.size());
+      auto data = src_frame->GetWritableVisiblePlaneData(plane);
+      for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+          data[y * src_frame->stride(plane) +
+               (interleaved ? 2 * x + i - 1 : x)] =
+              i * 100 + y * size.width() + x;
+        }
+      }
+    }
+
+    for (VideoRotation rotation :
+         {VIDEO_ROTATION_90, VIDEO_ROTATION_180, VIDEO_ROTATION_270}) {
+      SCOPED_TRACE(rotation);
+      const gfx::Size dest_size = IsOrthogonal(rotation)
+                                      ? gfx::TransposeSize(kRect.size())
+                                      : kRect.size();
+      auto dest_frame = VideoFrame::CreateZeroInitializedFrame(
+          PIXEL_FORMAT_I420, dest_size, gfx::Rect(dest_size), dest_size,
+          base::TimeDelta());
+      ASSERT_TRUE(
+          RotateVideoFrameToI420(*src_frame, rotation, *dest_frame).is_ok());
+      for (size_t i = 0; i < std::size(kPlanes); ++i) {
+        const gfx::Size size =
+            VideoFrame::PlaneSize(PIXEL_FORMAT_I420, kPlanes[i], kRect.size());
+        auto data = dest_frame->GetVisiblePlaneData(kPlanes[i]);
+        for (int y = 0; y < size.height(); ++y) {
+          for (int x = 0; x < size.width(); ++x) {
+            gfx::Point dest(size.width() - 1 - x, size.height() - 1 - y);
+            if (rotation == VIDEO_ROTATION_90) {
+              dest = gfx::Point(size.height() - 1 - y, x);
+            } else if (rotation == VIDEO_ROTATION_270) {
+              dest = gfx::Point(y, size.width() - 1 - x);
+            }
+            ASSERT_EQ(
+                i * 100 + y * size.width() + x,
+                data[dest.y() * dest_frame->stride(kPlanes[i]) + dest.x()]);
+          }
+        }
+      }
+    }
+
+    auto dest_frame = VideoFrame::CreateZeroInitializedFrame(
+        PIXEL_FORMAT_I420, kRect.size(), gfx::Rect(kRect.size()), kRect.size(),
+        base::TimeDelta());
+    EXPECT_FALSE(
+        RotateVideoFrameToI420(*src_frame, VIDEO_ROTATION_90, *dest_frame)
+            .is_ok());
+  }
+}
+
 // Tests the ComputeLetterboxRegion function.  Also, because of shared code
 // internally, this also tests ScaleSizeToFitWithinTarget().
 TEST_F(VideoUtilTest, ComputeLetterboxRegion) {
@@ -628,6 +695,79 @@ TEST_F(VideoUtilTest, WrapAsI420VideoFrame) {
   for (auto plane : planes)
     UNSAFE_TODO(
         memset(dst_frame->writable_data(plane), 1, dst_frame->stride(plane)));
+}
+
+TEST_F(VideoUtilTest, GetSkInfoForFormat) {
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_I420);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kY_U_V);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::k420);
+    EXPECT_EQ(info.plane_color_types[0], kR8_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[1], kR8_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[2], kR8_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[3], kUnknown_SkColorType);
+    EXPECT_EQ(info.plane_alpha_types[0], kOpaque_SkAlphaType);
+    EXPECT_EQ(info.plane_alpha_types[1], kOpaque_SkAlphaType);
+    EXPECT_EQ(info.plane_alpha_types[2], kOpaque_SkAlphaType);
+    EXPECT_EQ(info.plane_alpha_types[3], kUnknown_SkAlphaType);
+    EXPECT_EQ(info.bit_depth, 8u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kExact);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_YUV420P10);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kY_U_V);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::k420);
+    EXPECT_EQ(info.plane_color_types[0], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[1], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[2], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[3], kUnknown_SkColorType);
+    EXPECT_EQ(info.bit_depth, 10u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kLSB);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_YUV420P12);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kY_U_V);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::k420);
+    EXPECT_EQ(info.plane_color_types[0], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[1], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[2], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[3], kUnknown_SkColorType);
+    EXPECT_EQ(info.bit_depth, 12u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kLSB);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_P010LE);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kY_UV);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::k420);
+    EXPECT_EQ(info.plane_color_types[0], kR16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[1], kR16G16_unorm_SkColorType);
+    EXPECT_EQ(info.plane_color_types[2], kUnknown_SkColorType);
+    EXPECT_EQ(info.bit_depth, 10u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kMSB);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_XRGB);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kUnknown);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::kUnknown);
+    EXPECT_EQ(info.plane_color_types[0], kBGRA_8888_SkColorType);
+    EXPECT_EQ(info.plane_alpha_types[0], kOpaque_SkAlphaType);
+    EXPECT_EQ(info.bit_depth, 8u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kExact);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_ARGB);
+    EXPECT_EQ(info.yuva_plane_config, SkYUVAInfo::PlaneConfig::kUnknown);
+    EXPECT_EQ(info.yuva_subsampling, SkYUVAInfo::Subsampling::kUnknown);
+    EXPECT_EQ(info.plane_color_types[0], kBGRA_8888_SkColorType);
+    EXPECT_EQ(info.plane_alpha_types[0], kUnpremul_SkAlphaType);
+    EXPECT_EQ(info.bit_depth, 8u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kExact);
+  }
+  {
+    const auto info = GetSkInfoForFormat(PIXEL_FORMAT_UNKNOWN);
+    EXPECT_EQ(info.bit_depth, 0u);
+    EXPECT_EQ(info.bit_alignment, skia::YUVBitAlignment::kExact);
+  }
 }
 
 }  // namespace media

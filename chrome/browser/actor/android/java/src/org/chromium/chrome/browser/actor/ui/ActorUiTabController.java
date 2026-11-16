@@ -16,13 +16,15 @@ import org.jni_zero.NativeMethods;
 import org.chromium.base.Callback;
 import org.chromium.base.JniOnceCallback;
 import org.chromium.base.ObserverList;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.UserData;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
 import org.chromium.chrome.browser.actor.StoppedReason;
-import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileKeyedMap;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.content_public.browser.ImeAdapter;
@@ -34,6 +36,11 @@ import org.chromium.url.GURL;
 @NullMarked
 public class ActorUiTabController implements UserData {
     private static final Class<ActorUiTabController> USER_DATA_KEY = ActorUiTabController.class;
+    private static @Nullable Boolean sActorUiSupportedForTesting;
+    private static final ProfileKeyedMap<Boolean> sProfileMap =
+            new ProfileKeyedMap<>(
+                    ProfileKeyedMap.ProfileSelection.OWN_INSTANCE,
+                    ProfileKeyedMap.noRequiredCleanupAction());
 
     /** Represents visual state of the tab's actor components. */
     public static class UiTabState {
@@ -127,33 +134,35 @@ public class ActorUiTabController implements UserData {
      * Returns the controller for a given tab, creating it if necessary.
      *
      * @param tab The tab to get the controller for.
-     * @return The controller for the given tab, or null if the tab is null, destroyed, or if the
-     *     tab's profile is not eligible for Glic (e.g. incognito profiles).
+     * @return The controller for the given tab, or null if the tab is null or destroyed, or if the
+     *     tab's profile does not support actor UI.
      */
     public static @Nullable ActorUiTabController from(@Nullable Tab tab) {
-        if (tab == null || tab.isDestroyed()) return null;
-        if (!GlicEnabling.isProfileEligible(tab.getProfile())) return null;
+        if (tab == null || tab.isDestroyed() || tab.getUserDataHost() == null) return null;
 
         ActorUiTabController controller = tab.getUserDataHost().getUserData(USER_DATA_KEY);
-        if (controller == null) {
-            controller = new ActorUiTabController(tab);
-        }
-        return controller;
+        if (controller != null) return controller;
+
+        if (!isActorUiSupported(tab.getProfile())) return null;
+
+        return new ActorUiTabController(tab);
+    }
+
+    private static boolean isActorUiSupported(@Nullable Profile profile) {
+        if (sActorUiSupportedForTesting != null) return sActorUiSupportedForTesting;
+        if (profile == null) return false;
+        return sProfileMap.getForProfile(
+                profile, p -> ActorUiTabControllerJni.get().isActorUiSupported(p));
+    }
+
+    public static void setActorUiSupportedForTesting(@Nullable Boolean supported) {
+        sActorUiSupportedForTesting = supported;
+        ResettersForTesting.register(() -> sActorUiSupportedForTesting = null);
     }
 
     private ActorUiTabController(Tab tab) {
         mTab = tab;
         mTab.getUserDataHost().setUserData(USER_DATA_KEY, this);
-    }
-
-    /** Pauses the ActorTask associated with this tab. */
-    public void setActorTaskPaused() {
-        ActorUiTabControllerJni.get().setActorTaskPaused(mTab);
-    }
-
-    /** Resumes the ActorTask associated with this tab. */
-    public void setActorTaskResume() {
-        ActorUiTabControllerJni.get().setActorTaskResume(mTab);
     }
 
     /** Allows Java UI components to listen for tab state changes. */
@@ -182,9 +191,6 @@ public class ActorUiTabController implements UserData {
             @TabIndicatorStatus int indicator,
             boolean borderGlow) {
         ActorUiTabController controller = from(tab);
-
-        // TODO(crbug.com/520161144): `controller` should never be null here, since this call is
-        // coming from native counter part.
         if (controller == null) {
             return false;
         }
@@ -235,8 +241,6 @@ public class ActorUiTabController implements UserData {
             @JniType("GURL") GURL url,
             JniOnceCallback<Boolean> navigationConfirmedCallback) {
         ActorUiTabController controller = from(tab);
-        // TODO(crbug.com/520161144): `controller` should never be null here, since this call is
-        // coming from native counter part.
         if (controller != null && controller.showConfirmationDialog(navigationConfirmedCallback)) {
             return true;
         }
@@ -291,8 +295,6 @@ public class ActorUiTabController implements UserData {
 
     @NativeMethods
     interface Natives {
-        void setActorTaskPaused(Tab tab);
-
-        void setActorTaskResume(Tab tab);
+        boolean isActorUiSupported(@JniType("Profile*") Profile profile);
     }
 }

@@ -76,7 +76,6 @@ class LoggedInSpokenFeedbackTest
   // Simulate key press event.
   void SendKeyPress(ui::KeyboardCode key);
   void SendKeyPressWithControl(ui::KeyboardCode key);
-  void SendKeyPressWithControlAndAlt(ui::KeyboardCode key);
   void SendKeyPressWithControlAndShift(ui::KeyboardCode key);
   void SendKeyPressWithShift(ui::KeyboardCode key);
   void SendKeyPressWithAltAndShift(ui::KeyboardCode key);
@@ -93,9 +92,6 @@ class LoggedInSpokenFeedbackTest
   bool PerformAcceleratorAction(AcceleratorAction action);
 
   void StablizeChromeVoxState();
-
-  void PressRepeatedlyUntilUtterance(ui::KeyboardCode key,
-                                     const std::string& expected_utterance);
 
   ui::test::EventGenerator* event_generator() { return event_generator_.get(); }
 

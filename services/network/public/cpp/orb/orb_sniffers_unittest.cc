@@ -2,26 +2,39 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// This file contains the ResponseAnalyzerTests (which test the response
-// analyzer's behavior in several parameterized test scenarios) and at the end
-// includes the CrossOriginReadBlockingTests, which are more typical unittests.
-
 #include "services/network/public/cpp/orb/orb_sniffers.h"
 
-#include <initializer_list>
-#include <memory>
-#include <string>
+#include <array>
 #include <string_view>
 #include <utility>
-#include <vector>
 
-#include "net/base/mime_sniffer.h"
-#include "testing/gmock/include/gmock/gmock.h"
+#include "base/strings/strcat.h"
+#include "base/test/scoped_feature_list.h"
+#include "services/network/public/cpp/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/fuzztest/src/fuzztest/fuzztest.h"
 
 namespace network::orb {
+namespace {
 
-TEST(OrbSnifferTest, SniffForHTML) {
+class OrbSnifferTest : public ::testing::TestWithParam<bool> {
+ public:
+  OrbSnifferTest() {
+    features_.InitWithFeatureState(features::kOrbSniffersInRust, GetParam());
+  }
+
+ private:
+  base::test::ScopedFeatureList features_;
+};
+
+INSTANTIATE_TEST_SUITE_P(,
+                         OrbSnifferTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Rust" : "Cpp";
+                         });
+
+TEST_P(OrbSnifferTest, SniffForHTML) {
   // Something that technically matches the start of a valid HTML tag.
   EXPECT_EQ(SniffingResult::kYes,
             SniffForHTML("  \t\r\n    <HtMladfokadfkado"));
@@ -33,20 +46,18 @@ TEST(OrbSnifferTest, SniffForHTML) {
   // All whitespace characters listed by
   // https://infra.spec.whatwg.org/#ascii-whitespace
   // (regression test for https://crbug.com/527665262).
-  const std::array<std::pair<std::string_view, std::string_view>, 5>
-      kWhitespaceStrings{{
+  constexpr auto kWhitespaceStrings =
+      std::to_array<std::pair<std::string_view, std::string_view>>({
           {"\u0009", "tab"},
           {"\u000a", "lf"},
           {"\u000c", "ff"},
           {"\u000d", "cr"},
           {"\u0020", "space"},
-      }};
-  for (const auto& kTestInput : kWhitespaceStrings) {
-    SCOPED_TRACE(testing::Message() << "Testing `" << kTestInput.second << "`");
-    std::string input;
-    input += kTestInput.first;
-    input += "<html>";
-    EXPECT_EQ(SniffingResult::kYes, SniffForHTML(input));
+      });
+  for (const auto& [whitespace, name] : kWhitespaceStrings) {
+    SCOPED_TRACE(testing::Message() << "Testing `" << name << "`");
+    EXPECT_EQ(SniffingResult::kYes,
+              SniffForHTML(base::StrCat({whitespace, "<html>"})));
   }
 
   // HTML comment, whitespace, more HTML comments, HTML tags.
@@ -133,7 +144,7 @@ TEST(OrbSnifferTest, SniffForHTML) {
   EXPECT_EQ(SniffingResult::kYes, SniffForHTML("\xEF\xBB\xBF<html><body>"));
 }
 
-TEST(OrbSnifferTest, SniffForXML) {
+TEST_P(OrbSnifferTest, SniffForXML) {
   std::string_view xml_data(
       "   \t \r \n \f    <?xml version=\"1.0\"?>\n <catalog");
   std::string_view non_xml_data("        var name=window.location;\nadfadf");
@@ -151,7 +162,7 @@ TEST(OrbSnifferTest, SniffForXML) {
             SniffForXML("\xEF\xBB\xBF<?xml version=\"1.0\"?>\n <catalog"));
 }
 
-TEST(OrbSnifferTest, SniffForJSON) {
+TEST_P(OrbSnifferTest, SniffForJSON) {
   std::string_view json_data("\t\t\r\n   { \"name\" : \"chrome\", ");
   std::string_view json_corrupt_after_first_key(
       "\t\t\r\n\f   { \"name\" :^^^^!!@#\1\", ");
@@ -204,4 +215,75 @@ TEST(OrbSnifferTest, SniffForJSON) {
             SniffForJSON("\xEF\xBB\xBF   { \"name\" : \"chrome\", "));
 }
 
+TEST_P(OrbSnifferTest, SniffForFetchOnlyResource) {
+  constexpr auto kPrefixes = std::to_array<std::string_view>({
+      ")]}'",
+      "{}&&",
+      "{} &&",
+      "for(;;);",
+      "while(1);",
+      "for (;;);",
+      "while (1);",
+  });
+
+  for (std::string_view prefix : kPrefixes) {
+    SCOPED_TRACE(prefix);
+    EXPECT_EQ(SniffingResult::kYes, SniffForFetchOnlyResource(prefix));
+    EXPECT_EQ(SniffingResult::kYes,
+              SniffForFetchOnlyResource(base::StrCat({prefix, "\n[1, 2, 3]"})));
+    EXPECT_EQ(
+        SniffingResult::kYes,
+        SniffForFetchOnlyResource(base::StrCat({"\xEF\xBB\xBF", prefix})));
+
+    // Strict prefixes of a parser breaker (including "{}" via "{}&&") are
+    // indeterminate.
+    std::string_view partial = prefix;
+    while (!partial.empty()) {
+      partial.remove_suffix(1);
+      EXPECT_EQ(SniffingResult::kMaybe, SniffForFetchOnlyResource(partial))
+          << partial;
+    }
+
+    // Leading whitespace is not ignored before parser-breaker prefixes.
+    EXPECT_EQ(SniffingResult::kNo,
+              SniffForFetchOnlyResource(base::StrCat({" ", prefix})));
+  }
+
+  // Parser-breaker matching is case-sensitive.
+  EXPECT_EQ(SniffingResult::kNo, SniffForFetchOnlyResource("FOR(;;);"));
+  EXPECT_EQ(SniffingResult::kNo, SniffForFetchOnlyResource("WHILE(1);"));
+
+  // UTF-8 BOM alone is indeterminate.
+  EXPECT_EQ(SniffingResult::kMaybe, SniffForFetchOnlyResource("\xEF\xBB\xBF"));
+
+  // Falls back to SniffForJSON when no parser-breaker prefix matches.
+  EXPECT_EQ(SniffingResult::kYes,
+            SniffForFetchOnlyResource("   { \"key\": 1 }"));
+  EXPECT_EQ(SniffingResult::kMaybe, SniffForFetchOnlyResource("   { \"key\""));
+  EXPECT_EQ(SniffingResult::kNo, SniffForFetchOnlyResource("[1, 2, 3]"));
+  EXPECT_EQ(SniffingResult::kNo, SniffForFetchOnlyResource("var x = 1;"));
+}
+
+void SniffForHTMLParity(std::string_view data) {
+  EXPECT_EQ(internal::SniffForHTMLCpp(data), internal::SniffForHTMLRust(data));
+}
+FUZZ_TEST(OrbSnifferParityTest, SniffForHTMLParity);
+
+void SniffForXMLParity(std::string_view data) {
+  EXPECT_EQ(internal::SniffForXMLCpp(data), internal::SniffForXMLRust(data));
+}
+FUZZ_TEST(OrbSnifferParityTest, SniffForXMLParity);
+
+void SniffForJSONParity(std::string_view data) {
+  EXPECT_EQ(internal::SniffForJSONCpp(data), internal::SniffForJSONRust(data));
+}
+FUZZ_TEST(OrbSnifferParityTest, SniffForJSONParity);
+
+void SniffForFetchOnlyResourceParity(std::string_view data) {
+  EXPECT_EQ(internal::SniffForFetchOnlyResourceCpp(data),
+            internal::SniffForFetchOnlyResourceRust(data));
+}
+FUZZ_TEST(OrbSnifferParityTest, SniffForFetchOnlyResourceParity);
+
+}  // namespace
 }  // namespace network::orb

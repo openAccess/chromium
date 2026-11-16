@@ -32,6 +32,8 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+
 import android.app.Activity;
 import android.app.PendingIntent;
 import android.content.Context;
@@ -119,17 +121,16 @@ import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.SpinnerPreference;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.browsing_data.DeleteBrowsingDataAction;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.sync.DataType;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.util.Arrays;
 import java.util.List;
@@ -159,7 +160,7 @@ public class ClearBrowsingDataFragmentTest {
 
     @Mock private SettingsIndexData mSearchIndexDataMock;
 
-    @Mock private SettingsCustomTabLauncher mCustomTabLauncherMock;
+    @Mock private CustomTabLauncher mCustomTabLauncherMock;
 
     @Mock private TemplateUrlService mTemplateUrlServiceMock;
 
@@ -257,7 +258,7 @@ public class ClearBrowsingDataFragmentTest {
         final ClearBrowsingDataFragment preferences =
                 (ClearBrowsingDataFragment) startPreferences().getMainFragment();
         if (!SettingsInTab.shouldOpenSettingsInTab()) {
-            ViewUtils.waitForVisibleView(withId(R.id.menu_id_targeted_help));
+            waitForView(withId(R.id.menu_id_targeted_help));
         }
 
         onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
@@ -292,7 +293,7 @@ public class ClearBrowsingDataFragmentTest {
         final ClearBrowsingDataFragment preferences =
                 (ClearBrowsingDataFragment) startPreferences().getMainFragment();
         if (!SettingsInTab.shouldOpenSettingsInTab()) {
-            ViewUtils.waitForVisibleView(withId(R.id.menu_id_targeted_help));
+            waitForView(withId(R.id.menu_id_targeted_help));
         }
 
         onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
@@ -511,10 +512,9 @@ public class ClearBrowsingDataFragmentTest {
     public void testTitleShown() {
         startPreferences();
         if (!SettingsInTab.shouldOpenSettingsInTab()) {
-            ViewUtils.waitForVisibleView(withId(R.id.menu_id_targeted_help));
+            waitForView(withId(R.id.menu_id_targeted_help));
         }
-        ViewUtils.waitForVisibleView(
-                allOf(withText(R.string.clear_browsing_data_title), isDisplayed()));
+        waitForView(withText(R.string.clear_browsing_data_title));
     }
 
     @Test

@@ -447,7 +447,7 @@ def _performance_browser_tests(
       '--ui-test-action-timeout=60000',
       '--ui-test-action-max-timeout=60000',
       '--test-launcher-timeout=60000',
-      '--gtest_filter=*/TabCapturePerformanceTest.*:*/CastV2PerformanceTest.*',
+      '--gtest_filter=*/TabCapturePerformanceTest.*',
       *flags,
     ),
     estimated_runtime=estimated_runtime,
@@ -642,17 +642,22 @@ def _browser_startup_crossbench(
   # We cannot use --browser-config here because it conflicts with the
   # --browser flag automatically added by the Chromium test runner.
 
-  # NOTE: Keep this list in sync with:
-  # third_party/crossbench/config/benchmark/browser_startup/browser.config.hjson
-  # chrome/browser/ui/webui/webui_toolbar/scripts/enabled.sh
-  # The shard maps in tools/perf/core/shard_maps/ also embed these flags, so
-  # update them too.
+  # NOTE: To update INITIAL_WEBUI_FEATURES and the shard maps:
+  # 1. Edit chrome/browser/ui/webui/webui_toolbar/scripts/enabled.sh.
+  # 2. Run generate_chrome_flags.py in that directory (which updates
+  #    about_flags.cc, INITIAL_WEBUI_FEATURES below, and the
+  #    browser_startup.crossbench entries in tools/perf/core/shard_maps/).
+  #    Pass --update-crossbench to also update
+  #    config/benchmark/browser_startup/browser.config.hjson in
+  #    third_party/crossbench.
   INITIAL_WEBUI_FEATURES = (
     "BypassOutdatedSurfaceActivation,"
     "DeferHistoryBackendInit,"
     "DeferLayoutDuringBrowserStartup,"
     "DeferSessionStorageScavengingOnStartup,"
     "DeferSpellcheckInitialization,"
+    "GpuPersistentCacheAsyncInitialize,"
+    "GtkPrefetchNavButtonIcons,"
     "InitialWebUI,"
     "InitialWebUISurfaceSync:deadline_in_frames/12000/"
     "renderer_commit_delay_ms/100000,"
@@ -660,11 +665,16 @@ def _browser_startup_crossbench(
     "InitialWebUIWithoutSpellCheckForNtp,"
     "InitialWebUIWithoutTranslateForNtp,"
     "LazyKeyedServiceInstantiation,"
+    "OmniboxAimPopupDeferCreation,"
+    "OmniboxWebUIPopupDeferCreation,"
     "OnlyUseWindowResizeHelperOnResize,"
+    "OptimizeVariationsIpc,"
     "PerDependencyDeadlines,"
+    "PrioritizeCompositorTaskRunnerOnStartup,"
     "PrioritizeResizeTaskRunnerOnStartup,"
     "SendGPUChannelEarly,"
     "SkipIPCChannelPausingForNonGuests,"
+    "TopChromeWebUISharedRenderer,"
     "WebUIBackForwardButton,"
     "WebUIBundledCodeCache,"
     "WebUIBypassMojoConnections,"
@@ -1010,6 +1020,22 @@ def _crossbench_blink_ai(
   )
 
 
+# TODO(crbug.com/582419288): Remove after defaulting to Gemma 4.
+@_register('blink-ai-v4.crossbench')
+def _crossbench_blink_ai_v4(
+  estimated_runtime: int = 300, flags: tuple[str, ...] = ()
+):
+  flags += ('--model=v4',)
+  return CrossbenchConfig(
+    'blink-ai-v4.crossbench',
+    'blink-ai',
+    estimated_runtime=estimated_runtime,
+    stories=('language_model',),
+    flags=flags,
+    auto_enable_field_trials=False,
+  )
+
+
 PLATFORM_INFO = {
   'linux-perf': {
     'description': (
@@ -1046,12 +1072,16 @@ PLATFORM_INFO = {
   },
   # Uses the shared chrome.tests.intelligence pool and is reserved exclusively
   # for blink-ai.crossbench. Do not schedule other benchmarks on this bot.
+  # TODO(crbug.com/582419288): Remove blink-ai-v4.crossbench after defaulting
+  # to Gemma 4.
   'linux-rtx4070-perf': {
     'description': 'Ubuntu-24.04, NVIDIA GeForce RTX 4070',
     'num_shards': 1,
     'platform_os': 'linux',
     'is_fyi': False,
-    'allowed_benchmarks': frozenset({'blink-ai.crossbench'}),
+    'allowed_benchmarks': frozenset(
+      {'blink-ai.crossbench', 'blink-ai-v4.crossbench'}
+    ),
   },
   'linux-nvidia-dgx-spark-arm-perf': {
     'description': 'Ubuntu-24.04, Nvidia DGX Spark',

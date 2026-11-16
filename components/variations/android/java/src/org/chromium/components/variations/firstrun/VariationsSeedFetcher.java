@@ -15,6 +15,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.FileUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
@@ -84,11 +85,16 @@ public class VariationsSeedFetcher {
                     }\
                     """);
 
-    @IntDef({VariationsPlatform.ANDROID, VariationsPlatform.ANDROID_WEBVIEW})
+    @IntDef({
+        VariationsPlatform.ANDROID,
+        VariationsPlatform.ANDROID_WEBVIEW,
+        VariationsPlatform.ANDROID_DESKTOP
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface VariationsPlatform {
         int ANDROID = 0;
         int ANDROID_WEBVIEW = 1;
+        int ANDROID_DESKTOP = 2;
     }
 
     private static final String DEFAULT_VARIATIONS_SERVER_URL =
@@ -250,6 +256,9 @@ public class VariationsSeedFetcher {
         if (params.mChannel != null && !params.mChannel.isEmpty()) {
             urlString += "&channel=" + params.mChannel;
         }
+        if (params.mCorpus != null && !params.mCorpus.isEmpty()) {
+            urlString += "&corpus=" + params.mCorpus;
+        }
 
         return urlString;
     }
@@ -265,6 +274,7 @@ public class VariationsSeedFetcher {
         if (forcedPlatform != null) {
             if (Arrays.asList(
                             "android",
+                            "android_desktop",
                             "android_webview",
                             "chromeos",
                             "fuchsia",
@@ -282,6 +292,8 @@ public class VariationsSeedFetcher {
                 return "android";
             case VariationsPlatform.ANDROID_WEBVIEW:
                 return "android_webview";
+            case VariationsPlatform.ANDROID_DESKTOP:
+                return "android_desktop";
             default:
                 assert false;
                 return "";
@@ -295,6 +307,7 @@ public class VariationsSeedFetcher {
         private final @Nullable String mMilestone;
         private @Nullable String mChannel;
         private final boolean mIsFastFetchMode;
+        private final @Nullable String mCorpus;
 
         // This is added as a convenience for using Mockito.
         @Override
@@ -306,12 +319,14 @@ public class VariationsSeedFetcher {
                     && getIsFastFetchMode() == castObj.getIsFastFetchMode()
                     && Objects.equals(getMilestone(), castObj.getMilestone())
                     && Objects.equals(getRestrictMode(), castObj.getRestrictMode())
-                    && Objects.equals(getChannel(), castObj.getChannel());
+                    && Objects.equals(getChannel(), castObj.getChannel())
+                    && Objects.equals(getCorpus(), castObj.getCorpus());
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode);
+            return Objects.hash(
+                    mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode, mCorpus);
         }
 
         private SeedFetchParameters(
@@ -319,12 +334,14 @@ public class VariationsSeedFetcher {
                 @Nullable String restrictMode,
                 @Nullable String milestone,
                 @Nullable String channel,
-                boolean isFastFetchMode) {
+                boolean isFastFetchMode,
+                @Nullable String corpus) {
             this.mPlatform = platform;
             this.mRestrictMode = restrictMode;
             this.mMilestone = milestone;
             this.mChannel = channel;
             this.mIsFastFetchMode = isFastFetchMode;
+            this.mCorpus = corpus;
         }
 
         /** Builder class for {@link SeedFetchParameters}. */
@@ -334,6 +351,7 @@ public class VariationsSeedFetcher {
             private @Nullable String mMilestone;
             private @Nullable String mChannel;
             private boolean mIsFastFetchMode;
+            private @Nullable String mCorpus;
 
             private Builder() {
                 this.mPlatform = VariationsPlatform.ANDROID;
@@ -342,7 +360,7 @@ public class VariationsSeedFetcher {
 
             public SeedFetchParameters build() {
                 return new SeedFetchParameters(
-                        mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode);
+                        mPlatform, mRestrictMode, mMilestone, mChannel, mIsFastFetchMode, mCorpus);
             }
 
             public static Builder newBuilder() {
@@ -373,6 +391,11 @@ public class VariationsSeedFetcher {
                 this.mIsFastFetchMode = isFastFetchMode;
                 return this;
             }
+
+            public Builder setCorpus(@Nullable String corpus) {
+                this.mCorpus = corpus;
+                return this;
+            }
         }
 
         // Getters
@@ -395,6 +418,10 @@ public class VariationsSeedFetcher {
         public boolean getIsFastFetchMode() {
             return mIsFastFetchMode;
         }
+
+        public @Nullable String getCorpus() {
+            return mCorpus;
+        }
     }
 
     /** Object holding information about the status of a seed download attempt. */
@@ -414,6 +441,9 @@ public class VariationsSeedFetcher {
         // If you add fields, see VariationsTestUtils.
         public @Nullable String signature;
         public @Nullable String country;
+        // TODO(crbug.com/576284821): Plumb geoLevel1 through WebView (AwVariationsSeed,
+        // VariationsUtils, and AwFeatureListCreator::SetUpFieldTrials).
+        public @Nullable String geoLevel1;
         // Date according to the Variations server in milliseconds since UNIX epoch GMT.
         public long date;
         public boolean isGzipCompressed;
@@ -483,6 +513,8 @@ public class VariationsSeedFetcher {
                         + signature
                         + "\" country=\""
                         + country
+                        + "\" geoLevel1=\""
+                        + geoLevel1
                         + "\" date=\""
                         + date
                         + "\" isGzipCompressed="
@@ -520,9 +552,17 @@ public class VariationsSeedFetcher {
                 return;
             }
 
+            // Use DeviceInfo.isDesktop() to determine the platform to fetch a seed for, since the
+            // variations platform is a device-level OS property rather than a dynamic UI
+            // affordance (crbug.com/567605929).
+            @VariationsPlatform
+            int platform =
+                    DeviceInfo.isDesktop() // nocheck
+                            ? VariationsPlatform.ANDROID_DESKTOP
+                            : VariationsPlatform.ANDROID;
             SeedFetchParameters params =
                     SeedFetchParameters.Builder.newBuilder()
-                            .setPlatform(VariationsSeedFetcher.VariationsPlatform.ANDROID)
+                            .setPlatform(platform)
                             .setRestrictMode(null)
                             .setMilestone(milestone)
                             .setChannel(channel)
@@ -534,6 +574,7 @@ public class VariationsSeedFetcher {
                         info.seedData,
                         info.signature,
                         info.country,
+                        info.geoLevel1,
                         info.date,
                         info.isGzipCompressed);
             }
@@ -633,6 +674,7 @@ public class VariationsSeedFetcher {
                 SeedInfo seedInfo = new SeedInfo();
                 seedInfo.signature = getHeaderFieldOrEmpty(connection, "X-Seed-Signature");
                 seedInfo.country = getHeaderFieldOrEmpty(connection, "X-Country");
+                seedInfo.geoLevel1 = getHeaderFieldOrEmpty(connection, "X-Geo-Level-1");
                 seedInfo.date = connection.getHeaderFieldDate("Date", 0);
                 recordSeedDateMetrics(seedInfo.date);
 

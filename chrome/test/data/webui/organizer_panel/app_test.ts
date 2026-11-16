@@ -7,6 +7,7 @@ import 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 import type {ForeignTab, OrganizerPanelAppElement, OrganizerPanelPageRemote, RecentlyClosedSplitView, RecentlyClosedTab, RecentlyClosedTabGroup, Tab, TabGroup} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 import {browserProxyFactory, foreignTabsBrowserProxyFactory, ForeignTabsDelegate, ForeignTabsPageHandlerRemote, OpenTabsDelegate, OpenTabsItemType, organizerPanelBrowserProxyFactory, OrganizerPanelPageHandlerRemote, PageHandlerRemote, RecentTabsDelegate, SearchApiProxyImpl, tabGroupsBrowserProxyFactory, TabGroupsDelegate, TabGroupsOrganizerPageHandlerRemote} from 'chrome://organizer-panel.top-chrome/organizer_panel.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {render} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
@@ -33,26 +34,33 @@ suite('OrganizerPanelAppTest', () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     metrics = fakeMetricsPrivate();
     loadTimeData.resetForTesting({
+      audioMuted: 'Audio muted',
       clearSearch: 'Clear search',
       close: 'Close',
-      closeTab: 'Close tab',
+      closeSplitView: 'Close split view: $1, $2',
+      closeTab: 'Close $1',
       collapse: 'Collapse',
       createTabGroup: 'Create tab group',
       currentlyPlaying: 'Currently playing',
-      diceSupportEnabled: true,
       expand: 'Expand',
       foreignTabsEnabled: false,
       isIncognitoMode: false,
-      isUserSignedIn: true,
       noRecentlyClosedTabs: 'No recently closed tabs',
       noResults: 'No results',
+      openTabGroup: 'Open tab group',
       options: 'Options',
       recentlyClosed: 'Recently closed',
       recentlyVisited: 'Recently visited',
+      savedTabGroup: 'Saved tab group',
       searchTabs: 'Search Tabs',
+      sectionNavigationHint: 'Use up and down arrow keys to navigate the list.',
+      sectionOptions: 'Options for $1',
       shortcutText: 'Ctrl+Shift+A',
       signInOnPhone: 'Sign in on your phone',
+      splitView: 'Split view',
+      tabGroup: 'Tab group',
       tabGroupMoreOptions: 'More options',
+      tabGroupMoreOptionsWithTitle: 'More options for $1',
       tabGroups: 'Tab groups',
       tabsOnOtherDevices: 'Tabs on other devices',
     });
@@ -89,8 +97,10 @@ suite('OrganizerPanelAppTest', () => {
     tabGroupsBrowserProxyFactory.setInstance(tabGroupsInstance);
 
     mockForeignTabsHandler = TestMock.fromClass(ForeignTabsPageHandlerRemote);
-    mockForeignTabsHandler.setResultFor(
-        'getForeignTabs', Promise.resolve({tabs: []}));
+    mockForeignTabsHandler.setResultFor('getForeignTabs', Promise.resolve({
+      tabs: [],
+      canShowCrossDeviceSignInPromo: false,
+    }));
     foreignTabsBrowserProxyFactory.setInstance(
         {handler: mockForeignTabsHandler});
 
@@ -163,8 +173,12 @@ suite('OrganizerPanelAppTest', () => {
         delegate => !(delegate instanceof RecentTabsDelegate)));
   });
 
-  test('renders foreign tabs section when flag is enabled', async () => {
+  test('renders foreign tabs section when promo can show', async () => {
     loadTimeData.overrideValues({foreignTabsEnabled: true});
+    mockForeignTabsHandler.setResultFor('getForeignTabs', Promise.resolve({
+      tabs: [],
+      canShowCrossDeviceSignInPromo: true,
+    }));
     const testApp = document.createElement('organizer-panel-app');
     document.body.appendChild(testApp);
     await microtasksFinished();
@@ -180,11 +194,12 @@ suite('OrganizerPanelAppTest', () => {
     assertEquals(4, testApp.$.list.getVisibleSections().length);
   });
 
-  test('hides foreign tabs section when user is signed out', async () => {
-    loadTimeData.overrideValues({
-      foreignTabsEnabled: true,
-      isUserSignedIn: false,
-    });
+  test('hides foreign tabs section when empty and no promo', async () => {
+    loadTimeData.overrideValues({foreignTabsEnabled: true});
+    mockForeignTabsHandler.setResultFor('getForeignTabs', Promise.resolve({
+      tabs: [],
+      canShowCrossDeviceSignInPromo: false,
+    }));
     const testApp = document.createElement('organizer-panel-app');
     document.body.appendChild(testApp);
     await microtasksFinished();
@@ -202,9 +217,9 @@ suite('OrganizerPanelAppTest', () => {
     assertEquals('test search', app.$.list.searchQuery);
   });
 
-  test('updates divider color when vertical tabs enabled', async () => {
-    app.style.setProperty('--color-sys-divider', 'rgb(10, 20, 30)');
+  test('uses organizer panel divider color', async () => {
     app.style.setProperty('--color-sys-on-header-divider', 'rgb(40, 50, 60)');
+    app.style.setProperty('--color-organizer-panel-divider', 'rgb(10, 20, 30)');
     await microtasksFinished();
 
     const divider =
@@ -219,6 +234,10 @@ suite('OrganizerPanelAppTest', () => {
 
     assertTrue(app.verticalTabsEnabled);
     assertTrue(app.hasAttribute('vertical-tabs-enabled'));
+    assertEquals('rgb(10, 20, 30)', getComputedStyle(divider).backgroundColor);
+
+    app.style.removeProperty('--color-organizer-panel-divider');
+    await microtasksFinished();
     assertEquals('rgb(40, 50, 60)', getComputedStyle(divider).backgroundColor);
 
     remotePage.onVerticalTabsEnabledChanged(false);
@@ -226,7 +245,7 @@ suite('OrganizerPanelAppTest', () => {
 
     assertFalse(app.verticalTabsEnabled);
     assertFalse(app.hasAttribute('vertical-tabs-enabled'));
-    assertEquals('rgb(10, 20, 30)', getComputedStyle(divider).backgroundColor);
+    assertEquals('rgb(40, 50, 60)', getComputedStyle(divider).backgroundColor);
   });
 
   test(
@@ -337,23 +356,35 @@ suite('OrganizerPanelAppTest', () => {
     assertEquals('test search', app.$.list.searchQuery);
     assertEquals(50, app.$.list.scrollTop);
 
-    Object.defineProperty(
-        document, 'visibilityState', {value: 'hidden', writable: true});
-    document.dispatchEvent(new Event('visibilitychange'));
-    await microtasksFinished();
+    const originalDescriptor =
+        Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    try {
+      Object.defineProperty(
+          document, 'visibilityState',
+          {value: 'hidden', configurable: true, writable: true});
+      document.dispatchEvent(new Event('visibilitychange'));
+      await microtasksFinished();
 
-    assertEquals('', app.$.searchField.getValue());
-    assertEquals('', app.$.list.searchQuery);
-    assertEquals(0, app.$.list.scrollTop);
+      assertEquals('', app.$.searchField.getValue());
+      assertEquals('', app.$.list.searchQuery);
+      assertEquals(0, app.$.list.scrollTop);
 
-    Object.defineProperty(
-        document, 'visibilityState', {value: 'visible', writable: true});
-    document.dispatchEvent(new Event('visibilitychange'));
-    await microtasksFinished();
+      Object.defineProperty(
+          document, 'visibilityState',
+          {value: 'visible', configurable: true, writable: true});
+      document.dispatchEvent(new Event('visibilitychange'));
+      await microtasksFinished();
 
-    assertEquals('', app.$.searchField.getValue());
-    assertEquals('', app.$.list.searchQuery);
-    assertEquals(0, app.$.list.scrollTop);
+      assertEquals('', app.$.searchField.getValue());
+      assertEquals('', app.$.list.searchQuery);
+      assertEquals(0, app.$.list.scrollTop);
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(document, 'visibilityState', originalDescriptor);
+      } else {
+        Reflect.deleteProperty(document, 'visibilityState');
+      }
+    }
   });
 
   test('clicking close button closes panel', async () => {
@@ -473,13 +504,12 @@ suite('OrganizerPanelAppTest', () => {
         assertEquals(lastSection.$.header.$.menuButton, getDeepActiveElement());
 
         // When not in tray view (without close button): Tab forwards
-        // focus-after-list without preventDefault, and expandButton has
-        // tabindex=-1 so focus is not trapped within the header.
+        // focus-after-list without preventDefault, and menuButton follows
+        // expandButton in DOM order so focus is not trapped within the header.
         app.inTrayView = false;
         await microtasksFinished();
 
         lastSection.$.header.focusMenuButton();
-        lastSection.$.header.$.menuButton.dispatchEvent(new Event('focus'));
         await microtasksFinished();
 
         const withoutCloseEvent = new KeyboardEvent('keydown', {
@@ -491,11 +521,10 @@ suite('OrganizerPanelAppTest', () => {
         lastSection.$.header.$.menuButton.dispatchEvent(withoutCloseEvent);
         await microtasksFinished();
         assertFalse(withoutCloseEvent.defaultPrevented);
-        assertEquals(-1, lastSection.$.header.$.expandButton.tabIndex);
-        assertEquals(
-            '-1',
-            lastSection.$.header.$.expandButton.$.icon.getAttribute(
-                'tabindex'));
+        assertTrue(Boolean(
+            lastSection.$.header.$.expandButton.compareDocumentPosition(
+                lastSection.$.header.$.menuButton) &
+            Node.DOCUMENT_POSITION_FOLLOWING));
 
         // When in tray view (with close button): Tab focuses close
         // button and prevents default.
@@ -545,8 +574,11 @@ suite('OrganizerPanelAppTest', () => {
     app.$.searchField.setValue('Tab');
     await microtasksFinished();
 
-    // Tab on searchInput does not prevent default (allowing natural Tab to the
-    // clear button).
+    assertTrue(app.$.searchField.hideClearButton);
+    assertEquals(
+        null, app.$.searchField.shadowRoot.querySelector('#clearSearch'));
+
+    // Tab on searchInput focuses the first section header directly.
     searchInput.focus();
     const inputTabEvent = new KeyboardEvent('keydown', {
       key: 'Tab',
@@ -556,26 +588,8 @@ suite('OrganizerPanelAppTest', () => {
     });
     searchInput.dispatchEvent(inputTabEvent);
     await microtasksFinished();
-    assertFalse(inputTabEvent.defaultPrevented);
-
-    // Tab on the clear button focuses the first search result item.
-    const clearButton = app.$.searchField.shadowRoot.querySelector<HTMLElement>(
-        '#clearSearch')!;
-    assertTrue(!!clearButton);
-    clearButton.focus();
-    const clearButtonTabEvent = new KeyboardEvent('keydown', {
-      key: 'Tab',
-      bubbles: true,
-      composed: true,
-      cancelable: true,
-    });
-    clearButton.dispatchEvent(clearButtonTabEvent);
-    await microtasksFinished();
-    assertTrue(clearButtonTabEvent.defaultPrevented);
-    assertEquals(
-        sections[0]!.getVisibleItems()[0]!.$.crUrlListItem
-            .getFocusableElement(),
-        getDeepActiveElement());
+    assertTrue(inputTabEvent.defaultPrevented);
+    assertEquals(sections[0]!.$.header, getDeepActiveElement());
   });
 
   test('records user actions when delegates are interacted with', () => {
@@ -659,4 +673,159 @@ suite('OrganizerPanelAppTest', () => {
     foreignTabsDelegate.onItemClick(foreignTabItem);
     assertEquals(1, metrics.count('OrganizerPanel.OpenCrossDeviceTab'));
   });
+
+  async function withVisibilityState(
+      fn: (setVisibility: (state: DocumentVisibilityState) => void) =>
+          Promise<void>| void) {
+    const originalDescriptor =
+        Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    try {
+      await fn((state: DocumentVisibilityState) => {
+        Object.defineProperty(
+            document, 'visibilityState',
+            {value: state, configurable: true, writable: true});
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(document, 'visibilityState', originalDescriptor);
+      } else {
+        Reflect.deleteProperty(document, 'visibilityState');
+      }
+    }
+  }
+
+  test('records StartSearch user action at most once per session', async () => {
+    // Empty search does not record StartSearch.
+    app.$.searchField.setValue('');
+    assertEquals(0, metrics.count('OrganizerPanel.StartSearch'));
+
+    // Entering a search query records StartSearch once.
+    app.$.searchField.setValue('a');
+    assertEquals(1, metrics.count('OrganizerPanel.StartSearch'));
+
+    // Subsequent queries in the same session do not record again, even
+    // after clearing the search field.
+    app.$.searchField.setValue('ab');
+    app.$.searchField.setValue('');
+    app.$.searchField.setValue('c');
+    assertEquals(1, metrics.count('OrganizerPanel.StartSearch'));
+
+    // Hiding the panel starts a new session, so searching again records
+    // StartSearch once more.
+    await withVisibilityState(setVisibility => {
+      setVisibility('hidden');
+      setVisibility('visible');
+      assertEquals(1, metrics.count('OrganizerPanel.StartSearch'));
+
+      app.$.searchField.setValue('d');
+      assertEquals(2, metrics.count('OrganizerPanel.StartSearch'));
+    });
+  });
+
+  test('calls showUI once initial section load finishes', async () => {
+    assertEquals(1, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+    const sectionStateResolver =
+        new PromiseResolver<{state: {expanded: boolean, showAll: boolean}}>();
+    mockOrganizerPanelHandler.resetResolver('showUI');
+    mockOrganizerPanelHandler.setResultMapperFor(
+        'getSectionState', () => sectionStateResolver.promise);
+
+    const delayedApp = document.createElement('organizer-panel-app');
+    document.body.appendChild(delayedApp);
+    await microtasksFinished();
+    assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+    sectionStateResolver.resolve({state: {expanded: false, showAll: false}});
+    await microtasksFinished();
+    assertEquals(1, mockOrganizerPanelHandler.getCallCount('showUI'));
+  });
+
+  test('calls showUI when initial section load rejects', async () => {
+    const sectionStateResolver =
+        new PromiseResolver<{state: {expanded: boolean, showAll: boolean}}>();
+    mockOrganizerPanelHandler.resetResolver('showUI');
+    mockOrganizerPanelHandler.setResultMapperFor(
+        'getSectionState', () => sectionStateResolver.promise);
+
+    const failingApp = document.createElement('organizer-panel-app');
+    document.body.appendChild(failingApp);
+    await microtasksFinished();
+    assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+    sectionStateResolver.reject(new Error('load failed'));
+    await microtasksFinished();
+    assertEquals(1, mockOrganizerPanelHandler.getCallCount('showUI'));
+  });
+
+  test('calls showUI when reshown section data finishes loading', async () => {
+    mockOrganizerPanelHandler.reset();
+    mockOrganizerPanelHandler.setPromiseResolveFor(
+        'getSectionState', {state: {expanded: false, showAll: false}});
+    mockTabGroupsHandler.resetResolver('getTabGroups');
+    const tabGroupsResolver = new PromiseResolver<{tabGroups: TabGroup[]}>();
+    mockTabGroupsHandler.setResultFor(
+        'getTabGroups', tabGroupsResolver.promise);
+
+    await withVisibilityState(async setVisibility => {
+      setVisibility('hidden');
+      setVisibility('visible');
+      await microtasksFinished();
+
+      // Still waiting on getTabGroups to resolve before notifying.
+      assertEquals(1, mockTabGroupsHandler.getCallCount('getTabGroups'));
+      assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+      tabGroupsResolver.resolve({tabGroups: []});
+      await microtasksFinished();
+
+      assertEquals(1, mockOrganizerPanelHandler.getCallCount('showUI'));
+    });
+  });
+
+  test(
+      'ignores stale load completion if hidden before sections finish',
+      async () => {
+        mockOrganizerPanelHandler.reset();
+        mockOrganizerPanelHandler.setPromiseResolveFor(
+            'getSectionState', {state: {expanded: false, showAll: false}});
+        const staleResolver = new PromiseResolver<{tabGroups: TabGroup[]}>();
+        mockTabGroupsHandler.setResultFor(
+            'getTabGroups', staleResolver.promise);
+
+        await withVisibilityState(async setVisibility => {
+          setVisibility('hidden');
+          setVisibility('visible');
+          await microtasksFinished();
+          assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+          setVisibility('hidden');
+          staleResolver.resolve({tabGroups: []});
+          await microtasksFinished();
+          assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+
+          // A subsequent reshow still calls showUI once the fresh load
+          // settles.
+          mockTabGroupsHandler.setResultFor(
+              'getTabGroups', Promise.resolve({tabGroups: []}));
+          setVisibility('visible');
+          await microtasksFinished();
+          assertEquals(1, mockOrganizerPanelHandler.getCallCount('showUI'));
+        });
+      });
+
+  test(
+      'does not reload sections on visible if never hidden first', async () => {
+        mockOrganizerPanelHandler.reset();
+        mockTabGroupsHandler.resetResolver('getTabGroups');
+
+        await withVisibilityState(async setVisibility => {
+          setVisibility('visible');
+          await microtasksFinished();
+
+          assertEquals(0, mockTabGroupsHandler.getCallCount('getTabGroups'));
+          assertEquals(0, mockOrganizerPanelHandler.getCallCount('showUI'));
+        });
+      });
 });

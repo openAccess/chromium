@@ -45,10 +45,6 @@ const base::FeatureParam<bool> kQrCodeDetectionRequireKeywordMatch{
 BASE_FEATURE(kEnableEwalletNewAccountLinking,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, pix pay flow will be triggered when users click the copy button
-// within iframe.
-BASE_FEATURE(kEnableIframeForPix, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // When enabled, Chrome will offer a native Pix account linking flow for
 // users on Chrome, removing the Wallet app dependency.
 BASE_FEATURE(kEnablePixAccountLinkingNative, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -74,19 +70,10 @@ BASE_FEATURE(kEnablePixInCct, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kEnablePixPaymentsInLandscapeMode,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// When enabled, static qr code will be supported for pix pay flow.
-BASE_FEATURE(kEnableStaticQrCodeForPix, base::FEATURE_DISABLED_BY_DEFAULT);
-
 #if BUILDFLAG(IS_ANDROID)
 // When enabled, Chrome will offer to pay with eWallet accounts if a payment
 // link is detected.
 BASE_FEATURE(kEwalletPayments, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
-
-// When enabled, Chrome will offer an app list when a supported payment link is
-// detected. Users can choose the payment app they want to
-// use and be redirected to the chosen app to complete the payment flow.
-BASE_FEATURE(kFacilitatedPaymentsEnableA2APayment,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace payments::facilitated

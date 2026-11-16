@@ -20,6 +20,13 @@ export const LIT_IMPORT_REGEX =
 export const POLYMER_ELEMENT_EXTENDS_MIXIN_SELECTOR =
     'CallExpression[callee.name=/Mixin(Polymer)?$/][arguments.0.name="PolymerElement"]';
 
+export const PROPERTIES_METHOD_PROPERTY_SELECTOR =
+    'ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement > ObjectExpression > Property';
+
+export const THIS_MEMBER_EXPRESSION_QUERY = esquery.parse(
+    'MemberExpression[object.type="ThisExpression"], ' +
+    'MemberExpression[object.type="Identifier"][object.name="this"]');
+
 export function isCrLitElementType(
     type: ts.Type, checker: ts.TypeChecker,
     visited: Set<ts.Type> = new Set()): boolean {
@@ -267,16 +274,32 @@ export function getLitPropertyType(
   return null;
 }
 
-export function extractPropertiesFromClass(
-    file: ts.SourceFile, className: string,
-    context: TSESLint.RuleContext<string, readonly unknown[]>) {
+export function getSourceFiles(
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    ts.SourceFile[] {
+  const services = ESLintUtils.getParserServices(context);
+  const compilerOptions = services.program.getCompilerOptions();
+  return services.program.getSourceFiles().filter(
+      f => f.fileName.startsWith(compilerOptions.rootDir + '/'));
+}
+
+export function parseSourceFile(
+    file: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    TSESTree.Program {
   const parser = context.languageOptions.parser as TSESLint.Parser.ParserModule;
   const parserOptions = context.languageOptions.parserOptions;
   assert.ok(parser && 'parse' in parser);
-  const ast = parser.parse(file.text, {
+  return parser.parse(file.text, {
     ...parserOptions,
     filePath: file.fileName,
   }) as TSESTree.Program;
+}
+
+export function extractPropertiesFromClass(
+    file: ts.SourceFile, className: string,
+    context: TSESLint.RuleContext<string, readonly unknown[]>) {
+  const ast = parseSourceFile(file, context);
 
   // Handle case where `className` points to a TSTypeAliasDeclaration in the
   // same file. For example className='FooBarElement' and the code is as follows
@@ -296,6 +319,46 @@ export function extractPropertiesFromClass(
 
   // Match on class name suffix as well because some UIs use aliasing.
   const propertiesQuery = esquery.parse(`ClassDeclaration[id.name=/${
-      className}/] > ClassBody > MethodDefinition[key.name="properties"] > FunctionExpression > BlockStatement > ReturnStatement > ObjectExpression > Property`);
+      className}/] > ${PROPERTIES_METHOD_PROPERTY_SELECTOR}`);
   return esquery.match(ast, propertiesQuery);
+}
+
+export function extractTemplateFromFile(
+    templateFile: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>):
+    TSESTree.BlockStatement|null {
+  return extractTemplatesFromFile(templateFile, context)[0] || null;
+}
+
+export function extractTemplatesFromFile(
+    templateFile: ts.SourceFile,
+    context: TSESLint.RuleContext<string, readonly unknown[]>,
+    sourceFiles: ts.SourceFile[] = []): TSESTree.BlockStatement[] {
+  const templateAst = parseSourceFile(templateFile, context);
+  const blocks: TSESTree.BlockStatement[] = [];
+  const templateDir = path.posix.dirname(templateFile.fileName);
+  for (const statement of templateAst.body) {
+    if (isType(statement, Node.ImportDeclaration) &&
+        statement.importKind === 'value' && statement.specifiers.length > 0 &&
+        statement.source.value.endsWith('.html.js')) {
+      const subTemplateFilename = path.posix.join(
+          templateDir,
+          statement.source.value.replace(/\.html\.js$/, '.html.ts'));
+      const subTemplateFile =
+          sourceFiles.find(f => f.fileName === subTemplateFilename);
+      if (subTemplateFile) {
+        blocks.push(
+            ...extractTemplatesFromFile(subTemplateFile, context, sourceFiles));
+      }
+      continue;
+    }
+    const decl = isType(statement, Node.ExportNamedDeclaration) ?
+        statement.declaration :
+        statement;
+    if (decl && isType(decl, Node.FunctionDeclaration) &&
+        decl.id?.name === 'getHtml') {
+      blocks.push(decl.body);
+    }
+  }
+  return blocks;
 }

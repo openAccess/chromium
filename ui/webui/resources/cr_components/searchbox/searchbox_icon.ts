@@ -7,7 +7,7 @@ import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import type {AutocompleteMatch} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {SecondaryTextPlacement} from '//resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
+import {BadgeType, SecondaryTextPlacement} from '//resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 
 import {getCss} from './searchbox_icon.css.js';
 import {getHtml} from './searchbox_icon.html.js';
@@ -354,6 +354,23 @@ export class SearchboxIconElement extends CrLitElement {
     return `${this.faviconImage_} 1x, ${url2x.toString()} 2x`;
   }
 
+  /**
+   * Returns true if this icon should display the DSE icon (rather than a page
+   * favicon, navigation match favicon, or fallback icon).
+   */
+  private shouldShowDseIcon_(): boolean {
+    // Only the searchbox input displays the DSE icon, not dropdown suggestion
+    // rows or keyword mode.
+    if (!this.inSearchbox || this.inKeywordMode) {
+      return false;
+    }
+
+    // Display the DSE icon for empty input (no match selected and not focused
+    // on an existing page URL), or when typing/selecting a search query.
+    return (!this.match && !this.pageUrl) ||
+        (!!this.match && this.match.isSearchType);
+  }
+
   private computeFaviconImage_(): string {
     if (this.inSearchbox && this.inKeywordMode) {
       return '';
@@ -384,8 +401,9 @@ export class SearchboxIconElement extends CrLitElement {
       return this.computeFaviconUrl_(/* scaleFactor= */ 1);
     }
 
-    if (THEMED_ICONS.has(this.defaultIcon) ||
-        THEMED_ICONS.has(this.defaultIcon.replace('_old.svg', '.svg')) ||
+    if ((this.shouldShowDseIcon_() &&
+         (THEMED_ICONS.has(this.defaultIcon) ||
+          THEMED_ICONS.has(this.defaultIcon.replace('_old.svg', '.svg')))) ||
         (this.inSearchbox && isFaviconUrl(this.defaultIcon))) {
       // Colored icons (Google G, DSE favicons) must render as an <img>; a CSS
       // mask would strip their colors.
@@ -423,6 +441,15 @@ export class SearchboxIconElement extends CrLitElement {
     if (this.isLensSearchbox_ && this.inSearchbox) {
       return this.defaultIcon;
     }
+
+    // In dark mode WebUI Omnibox with Google as the DSE, display the
+    // monochrome Google G icon instead of the search loupe icon.
+    if (this.shouldShowDseIcon_() &&
+        this.defaultIcon ===
+            '//resources/cr_components/searchbox/icons/google_g_cr23.svg') {
+      return this.defaultIcon;
+    }
+
     // Enterprise search aggregator people, top-chrome searchbox (WebUI
     // Omnibox), and suggestions whose secondary text isn't placed below the
     // primary text should show icon even in searchbox.
@@ -536,6 +563,21 @@ export class SearchboxIconElement extends CrLitElement {
   private computeIsFeaturedSearch_(): boolean {
     return this.match?.type === STARTER_PACK ||
         this.match?.type === FEATURED_ENTERPRISE_SEARCH;
+  }
+
+  // Returns the class that styles the badge on the type icon, or an empty
+  // string if there is no badge to show. The searchbox input icon never shows
+  // one.
+  protected getBadgeClass_(): string {
+    if (this.inSearchbox) {
+      return '';
+    }
+    switch (this.match?.suggestTemplate.typeIconBadge) {
+      case BadgeType.kDot:
+        return 'dot';
+      default:
+        return '';
+    }
   }
 }
 

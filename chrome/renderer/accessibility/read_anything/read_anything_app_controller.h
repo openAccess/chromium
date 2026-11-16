@@ -170,14 +170,19 @@ class ReadAnythingAppController
   void SetLanguageCode(const std::string& code) override;
   void SetDefaultLanguageCode(const std::string& code) override;
   void ScreenAIServiceReady() override;
-  void OnGetPresentationState(
-      read_anything::mojom::ReadAnythingPresentationState presentation_state)
-      override;
   void OnGetVoicePackInfo(
       read_anything::mojom::VoicePackInfoPtr voice_pack_info) override;
-  void OnReadingModeHidden(bool tab_active) override;
+  void OnReadingModeHidden(bool tab_active,
+                           read_anything::mojom::ReadAnythingPresentationState
+                               presentation_state) override;
   void OnReadingModeShown(
-      read_anything::mojom::ReadAnythingOpenTrigger open_trigger) override;
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+      read_anything::mojom::ReadAnythingPresentationState presentation_state)
+      override;
+  void OnPresentationTransitioned(
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger,
+      read_anything::mojom::ReadAnythingPresentationState presentation_state)
+      override;
   void OnTabWillDetach() override;
   void OnTabMuteStateChange(bool muted) override;
   void UpdateContent(const std::string& title,
@@ -292,8 +297,6 @@ class ReadAnythingAppController
   std::string GetReadabilityContentHtml() const;
   // Serializes accessibility tree anchors into a V8 object for the frontend.
   v8::Local<v8::Value> GetReadabilityAnchors() const;
-  // Returns the presentation through the OnGetPresentationState callback.
-  void SendGetPresentationStateRequest() const;
   // The results of these are sent back via UntrustedPage::OnGetVoicePackInfo.
 
   void SendPinStateRequest();
@@ -324,7 +327,8 @@ class ReadAnythingAppController
   bool IsGoogleDocs() const;
   bool IsPdf() const;
   bool IsContentTranslated() const;
-  bool IsAwaitingTranslation() const;
+  // The model's TranslationState, as an int for the WebUI.
+  int GetTranslationState() const;
   bool IsImprovedReadAloudEnabled() const;
   bool IsReadAnythingImprovedUiEnabled() const;
   bool IsReadAnythingTranslateEntryPointEnabled() const;
@@ -332,7 +336,6 @@ class ReadAnythingAppController
   bool IsTranslatePdfEnabled() const;
   bool IsReadAnythingReadAloudExperimentalPlaybackUiEnabled() const;
   bool IsReadabilityEnabled() const;
-  bool IsLineFocusEnabled() const;
   bool IsReadabilityWithLinksEnabled() const;
   bool IsPhraseHighlightingEnabled() const;
   void OnLetterSpacingChange(int value);
@@ -420,6 +423,17 @@ class ReadAnythingAppController
  private:
   friend ReadAnythingAppControllerTest;
   friend ReadAnythingAppControllerReadabilityTest;
+
+  // A selection that the side panel asked the main page to set.
+  struct SelectionRequest {
+    ui::AXNodeID anchor_node_id;
+    int anchor_offset;
+    ui::AXNodeID focus_node_id;
+    int focus_offset;
+
+    bool operator==(const SelectionRequest&) const = default;
+  };
+
   // The fallback language code if GetLanguageCodeForSpeech has an error.
   // However, this may be the same value as GetLanguageCodeForSpeech.
   const std::string& GetDefaultLanguageCodeForSpeech() const;
@@ -465,9 +479,9 @@ class ReadAnythingAppController
 
   void ExecuteJavaScript(const std::string& script);
 
-  // Updates the model's awaiting-translation state and notifies the WebUI if
-  // it changed.
-  void SetAwaitingTranslation(bool awaiting);
+  // Updates the model's translation state and notifies the WebUI if it
+  // changed.
+  void SetTranslationState(ReadAnythingAppModel::TranslationState state);
 
   // Returns true if a draw occurred.
   bool PostProcessSelection();
@@ -501,11 +515,17 @@ class ReadAnythingAppController
   // perform cleaning operations on it.
   void ReadingModeWillClose();
 
-  // Helper method for recording all reading mode per-session metrics. If
-  // reading mode is hidden, this will no-op unless overridden with the
-  // recently_hidden parameter.
-  void RecordSessionMetricsIfShownOrRecentlyHidden(
-      bool recently_hidden = false);
+  // Applies the presentation state that a lifecycle message carries.
+  void ApplyPresentationState(
+      read_anything::mojom::ReadAnythingPresentationState presentation_state);
+
+  // Applies what the entry point that opened Reading Mode asks for, both when
+  // it's shown and when it moves to the other presentation.
+  void ApplyOpenTrigger(
+      read_anything::mojom::ReadAnythingOpenTrigger open_trigger);
+
+  // Records the per-session metrics if Reading Mode is shown.
+  void RecordSessionMetricsIfShown();
 
   // Records the number of selections that occurred for the active page. Called
   // when the active tree changes.
@@ -521,9 +541,13 @@ class ReadAnythingAppController
   // accurate for voices that don't support word boundaries.
   void RecordEstimatedWordsHeard();
 
-  void RecordScreen2xDistillationStatus(bool just_hidden);
+  void RecordScreen2xDistillationStatus();
   void RecordDistillationStatus(
       read_anything::mojom::DistillationStatus status);
+
+  // Starts the delay for recording the Screen2x distillation status, unless
+  // it's already running or the page's status was already recorded.
+  void MaybeStartDistillationStatusTimer();
 
   // Helpers for logging UmaHistograms based on times recorded in WebUI.
   void IncrementMetricCount(const std::string& metric);
@@ -544,7 +568,16 @@ class ReadAnythingAppController
 
   void OnUrlInformationSet();
 
+  // Called when the delayed redraw after the user types on the page is due
+  // (see post_user_entry_draw_timer_).
+  void OnPostUserEntryDrawTimerFired();
+
   void OnPdfDebounceFinished();
+
+  // Returns whether the active PDF's distilled content can be reported as
+  // kDistillationWithContent, which waits for the whole PDF to load when
+  // translate::kEnableTranslatePdf is enabled.
+  bool ShouldReportPdfContent() const;
 
   // Logs the time it took for the AXTree to become ready after the active
   // tree ID changed.
@@ -556,8 +589,6 @@ class ReadAnythingAppController
   // This function is expected to be called just once. There would be a mismatch
   // between the training protos and the screenshot if it runs more than once.
   void DistillAndScreenshot();
-
-  bool IsHidden() const;
 
   // TODO(crbug.com/554114724): Remove `distiller_` once the
   // ReadAnythingDistiller refactoring is complete and enabled by default.
@@ -616,9 +647,10 @@ class ReadAnythingAppController
   // The time when the WebUI connects i.e. when onConnected is called.
   base::TimeTicks web_ui_connected_time_ms_;
 
-  // Flag to ensure the AXTree ready metric is logged only once per active
-  // tree change. Initially set as true to make sure that the variable reset is
-  // called before trying to log the metric.
+  // Whether the AXTree ready metric was recorded for the current active tree,
+  // or won't be because the tree's readiness can't be timed (see
+  // AccessibilityEventReceived() and OnActiveAXTreeIDChanged()). Initially
+  // true, so that nothing is recorded before the first active tree.
   bool ax_tree_ready_for_current_active_tree_recorded_ = true;
 
   // Flag to ensure the AXTree ready metric is measured only once per active
@@ -650,18 +682,21 @@ class ReadAnythingAppController
   // is re-triggered multiple times before completion. Used for logging.
   int distillation_attempts_;
 
-  // The distilled title result of Readability distillation.
-  std::string readability_title_;
-
   // Tracks whether the distillation status for the current active tree
   // navigation has already been recorded.
   bool has_logged_distillation_status_ = false;
 
-  // The distilled content result of Readability distillation.
-  std::string readability_content_html_;
-
   std::optional<ReadAnythingAppModel::DistillationMethod>
       forced_distillation_method_for_testing_;
+
+  // The last selection that the side panel asked the main page to set, or
+  // nullopt if a collapse was requested since. It may still be in flight only
+  // while the model has unprocessed selections from reading mode, so it's only
+  // compared against then. The count already drops to 0 when pending requests
+  // become stale, e.g. when the active tree changes or the user selects in the
+  // main page, so this isn't reset then. If the browser drops this request
+  // while others are pending, resending it waits for the count to drop to 0.
+  std::optional<SelectionRequest> last_selection_request_;
 
   // As a subclass of RenderFrameObserver, all objects of this class are stored
   // in data structure and should not get deallocated as long as the object is

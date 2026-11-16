@@ -10,6 +10,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
@@ -422,7 +423,8 @@ class MockHashRealTimeService : public HashRealTimeService {
             /*get_network_context=*/base::NullCallback(),
             /*cache_manager=*/nullptr,
             /*ohttp_key_service=*/nullptr,
-            /*webui_delegate=*/nullptr) {}
+            /*webui_delegate=*/nullptr,
+            /*profile_mode_suffix=*/"Regular") {}
   base::WeakPtr<MockHashRealTimeService> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
@@ -477,6 +479,7 @@ class MockHashRealTimeService : public HashRealTimeService {
 struct CreateSafeBrowsingUrlCheckerOptionalArgs {
   std::string url_lookup_service_metric_suffix = ".Enterprise";
   std::optional<int64_t> navigation_id = std::nullopt;
+  base::WeakPtr<web::WebState> weak_web_state = nullptr;
   base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager =
       nullptr;
   scoped_refptr<UrlCheckerDelegate> url_checker_delegate = nullptr;
@@ -538,7 +541,7 @@ class SafeBrowsingUrlCheckerTest : public PlatformTest {
         /*has_user_gesture=*/false,
         optional_args.url_checker_delegate ? optional_args.url_checker_delegate
                                            : url_checker_delegate_,
-        mock_web_contents_getter.Get(), /*weak_web_state=*/nullptr,
+        mock_web_contents_getter.Get(), optional_args.weak_web_state,
         UnsafeResource::kNoRenderProcessId, std::nullopt,
         UnsafeResource::kNoFrameTreeNodeId, optional_args.navigation_id,
         url_real_time_lookup_enabled, can_check_safe_browsing_db,
@@ -550,9 +553,10 @@ class SafeBrowsingUrlCheckerTest : public PlatformTest {
                                      : nullptr,
         /*hash_realtime_service=*/hash_realtime_service_->GetWeakPtr(),
         hash_real_time_selection,
-        /*is_async_check=*/false,
-        SessionID::InvalidValue(), /*referring_app_info=*/std::nullopt,
-        optional_args.v5_get_hash_protocol_manager);
+        /*is_async_check=*/false, SessionID::InvalidValue(),
+        /*referring_app_info=*/std::nullopt,
+        optional_args.v5_get_hash_protocol_manager,
+        /*profile_mode_suffix=*/"Regular");
   }
 
  protected:
@@ -661,7 +665,11 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_SafeUrl) {
                                        /*sample=*/false,
                                        /*expected_bucket_count=*/1);
   histogram_tester_.ExpectUniqueSample(
-      "SafeBrowsing.CheckUrl.Result.HashDatabase",
+      "SafeBrowsing.CheckUrl.ThreatType.HashDatabase",
+      SBThreatType::SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashDatabase.Regular",
       SBThreatType::SB_THREAT_TYPE_SAFE,
       /*expected_bucket_count=*/1);
   ValidateCheckUrlTimeTakenMetrics(/*expected_hprt_log_count=*/0,
@@ -690,7 +698,12 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_DangerousUrl) {
   safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
   url_checker_delegate_->WaitForStartDisplayingBlockingPageHelper();
   histogram_tester_.ExpectUniqueSample(
-      "SafeBrowsing.CheckUrl.Result.HashDatabase", SB_THREAT_TYPE_URL_PHISHING,
+      "SafeBrowsing.CheckUrl.ThreatType.HashDatabase",
+      SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashDatabase.Regular",
+      SB_THREAT_TYPE_URL_PHISHING,
       /*expected_bucket_count=*/1);
   ValidateCheckUrlTimeTakenMetrics(/*expected_hprt_log_count=*/0,
                                    /*expected_urt_log_count=*/0,
@@ -854,6 +867,11 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_UrlRealTimeEnabledAllowlistMatch) {
       "SafeBrowsing.RT.HashDatabaseFallbackThreatType.AllowlistMatch",
       /*sample=*/SB_THREAT_TYPE_URL_PHISHING,
       /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      /*name=*/
+      "SafeBrowsing.RT.HighConfidenceAllowlistMatchThreatType",
+      /*sample=*/SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
 }
 
 TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_UrlRealTimeEnabledSafeUrl) {
@@ -885,6 +903,14 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_UrlRealTimeEnabledSafeUrl) {
   histogram_tester_.ExpectUniqueSample("SafeBrowsing.CheckUrl.Timeout",
                                        /*sample=*/false,
                                        /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.UrlRealTime",
+      SBThreatType::SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.UrlRealTime.Regular",
+      SBThreatType::SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
 
   // The false positive metric should not be logged, because the
   // verdict is not from cache.
@@ -1177,6 +1203,121 @@ TEST_F(
       "SafeBrowsing.SuspiciousSiteWarning.VerdictReceived", false, 1);
 }
 
+// Tests that `ShowSuspiciousSiteWarning` is invoked when `weak_web_state` is
+// populated without a `navigation_id` (as on iOS).
+TEST_F(
+    SafeBrowsingUrlCheckerTest,
+    CheckUrl_UrlRealTimeEnabled_WarnableSuspiciousSiteDetection_WebStateWithoutNavigationId) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeature(kSuspiciousSiteWarnings);
+
+  // `web::WebState` is forward-declared in cross-platform `.cc` files (its
+  // header imports UIKit); `SafeBrowsingUrlCheckerImpl` only checks validity of
+  // `weak_web_state` and forwards it into `UnsafeResource`.
+  uintptr_t dummy_web_state = 0;
+  base::WeakPtrFactory<web::WebState> web_state_factory(
+      reinterpret_cast<web::WebState*>(&dummy_web_state));
+
+  CreateSafeBrowsingUrlCheckerOptionalArgs optional_args;
+  optional_args.weak_web_state = web_state_factory.GetWeakPtr();
+  auto safe_browsing_url_checker = CreateSafeBrowsingUrlChecker(
+      /*url_real_time_lookup_enabled=*/true,
+      /*can_check_safe_browsing_db=*/true,
+      /*hash_real_time_selection=*/
+      hash_realtime_utils::HashRealTimeSelection::kNone, optional_args);
+
+  GURL url("https://example.test/");
+  url_lookup_service_->SetThreatTypeForUrl(
+      url, SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE,
+      /*should_complete_lookup=*/true);
+  database_manager_->SetAllowlistLookupDetailsForUrl(
+      url, /*match=*/false,
+      /*logging_details=*/std::nullopt);
+
+  WaitableNativeCheckUrlCallback callback;
+  EXPECT_CALL(
+      callback,
+      Run(/*proceed=*/true, /*showed_interstitial=*/false,
+          /*has_post_commit_interstitial_skipped=*/false,
+          SafeBrowsingUrlCheckerImpl::PerformedCheck::kUrlRealTimeCheck))
+      .Times(1);
+  EXPECT_CALL(
+      *url_checker_delegate_,
+      ShowSuspiciousSiteWarning(
+          ::testing::AllOf(
+              ::testing::Field(&security_interstitials::UnsafeResource::url,
+                               url),
+              ::testing::Field(
+                  &security_interstitials::UnsafeResource::threat_type,
+                  SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE),
+              ::testing::Field(
+                  &security_interstitials::UnsafeResource::navigation_id,
+                  std::optional<int64_t>(std::nullopt)),
+              ::testing::Field(
+                  &security_interstitials::UnsafeResource::weak_web_state,
+                  web_state_factory.GetWeakPtr().get())),
+          _))
+      .Times(1);
+  EXPECT_CALL(*url_checker_delegate_, NotifySuspiciousSiteDetected(_)).Times(0);
+  EXPECT_CALL(*url_checker_delegate_,
+              StartDisplayingBlockingPageHelper(_, _, _, _))
+      .Times(0);
+  safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
+
+  callback.Wait();
+  CheckUrlRealTimeLocalMatchMetrics(
+      /*expected_local_match_result=*/false,
+      /*expect_url_lookup_service_metric_suffix=*/true);
+  ValidateCheckUrlTimeTakenMetrics(/*expected_hprt_log_count=*/0,
+                                   /*expected_urt_log_count=*/1,
+                                   /*expected_hpd_log_count=*/0);
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.SuspiciousSiteWarning.VerdictReceived", true, 1);
+}
+
+// Tests that `ShowSuspiciousSiteWarning` is not invoked when neither
+// `navigation_id` nor `weak_web_state` is populated on the URL checker.
+TEST_F(
+    SafeBrowsingUrlCheckerTest,
+    CheckUrl_UrlRealTimeEnabled_WarnableSuspiciousSiteDetection_NoNavigationIdOrWebState) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeature(kSuspiciousSiteWarnings);
+
+  auto safe_browsing_url_checker = CreateSafeBrowsingUrlChecker(
+      /*url_real_time_lookup_enabled=*/true,
+      /*can_check_safe_browsing_db=*/true,
+      /*hash_real_time_selection=*/
+      hash_realtime_utils::HashRealTimeSelection::kNone);
+
+  GURL url("https://example.test/");
+  url_lookup_service_->SetThreatTypeForUrl(
+      url, SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE,
+      /*should_complete_lookup=*/true);
+  database_manager_->SetAllowlistLookupDetailsForUrl(
+      url, /*match=*/false,
+      /*logging_details=*/std::nullopt);
+
+  WaitableNativeCheckUrlCallback callback;
+  EXPECT_CALL(
+      callback,
+      Run(/*proceed=*/true, /*showed_interstitial=*/false,
+          /*has_post_commit_interstitial_skipped=*/false,
+          SafeBrowsingUrlCheckerImpl::PerformedCheck::kUrlRealTimeCheck))
+      .Times(1);
+  EXPECT_CALL(*url_checker_delegate_, ShowSuspiciousSiteWarning(_, _)).Times(0);
+  EXPECT_CALL(*url_checker_delegate_, NotifySuspiciousSiteDetected(_)).Times(0);
+  EXPECT_CALL(*url_checker_delegate_,
+              StartDisplayingBlockingPageHelper(_, _, _, _))
+      .Times(0);
+  safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
+
+  callback.Wait();
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.SuspiciousSiteWarning.VerdictReceived", true, 1);
+}
+
 TEST_F(SafeBrowsingUrlCheckerTest,
        CheckUrl_UrlRealTimeEnabledSafeBrowsingDisabled_ManagedWarn) {
   auto safe_browsing_url_checker = CreateSafeBrowsingUrlChecker(
@@ -1275,6 +1416,14 @@ TEST_F(SafeBrowsingUrlCheckerTest,
   safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
 
   url_checker_delegate_->WaitForStartDisplayingBlockingPageHelper();
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.UrlRealTime",
+      SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.UrlRealTime.Regular",
+      SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
   CheckUrlRealTimeLocalMatchMetrics(
       /*expected_local_match_result=*/false,
       /*expect_url_lookup_service_metric_suffix=*/true);
@@ -1463,6 +1612,11 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_CancelCheckOnTimeout) {
         "SafeBrowsing.CheckUrl.TimeTaken.UrlRealTime",
         /*sample=*/base::Seconds(5),
         /*expected_bucket_count=*/1);
+    histograms.ExpectTotalCount("SafeBrowsing.CheckUrl.ThreatType.UrlRealTime",
+                                /*expected_count=*/0);
+    histograms.ExpectTotalCount(
+        "SafeBrowsing.CheckUrl.ThreatType.UrlRealTime.Regular",
+        /*expected_count=*/0);
   }
   // Timeout for local checks should cancel the database check.
   {
@@ -1495,6 +1649,11 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_CancelCheckOnTimeout) {
         "SafeBrowsing.CheckUrl.TimeTaken.HashDatabase",
         /*sample=*/base::Seconds(5),
         /*expected_bucket_count=*/1);
+    histograms.ExpectTotalCount("SafeBrowsing.CheckUrl.ThreatType.HashDatabase",
+                                /*expected_count=*/0);
+    histograms.ExpectTotalCount(
+        "SafeBrowsing.CheckUrl.ThreatType.HashDatabase.Regular",
+        /*expected_count=*/0);
   }
 }
 
@@ -1569,6 +1728,10 @@ TEST_F(SafeBrowsingUrlCheckerTest,
       "SafeBrowsing.HPRT.HashDatabaseFallbackThreatType.AllowlistMatch",
       /*sample=*/SB_THREAT_TYPE_SAFE,
       /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      /*name=*/"SafeBrowsing.HPRT.HighConfidenceAllowlistMatchThreatType",
+      /*sample=*/SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
 }
 
 TEST_F(SafeBrowsingUrlCheckerTest,
@@ -1608,6 +1771,11 @@ TEST_F(SafeBrowsingUrlCheckerTest,
       "SafeBrowsing.HPRT.HashDatabaseFallbackThreatType.AllowlistMatch",
       /*sample=*/SB_THREAT_TYPE_URL_PHISHING,
       /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      /*name=*/
+      "SafeBrowsing.HPRT.HighConfidenceAllowlistMatchThreatType",
+      /*sample=*/SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
 }
 
 TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_HashRealTimeService_SafeLookup) {
@@ -1639,6 +1807,13 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_HashRealTimeService_SafeLookup) {
       .Times(0);
   safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
   callback.Wait();
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashRealTime", SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashRealTime.Regular",
+      SB_THREAT_TYPE_SAFE,
+      /*expected_bucket_count=*/1);
   CheckHashRealTimeMetrics(/*expected_local_match_result=*/false,
                            /*expected_is_service_found=*/true,
                            /*expected_can_check_reputation=*/true);
@@ -1674,6 +1849,14 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_HashRealTimeService_UnsafeLookup) {
       .Times(1);
   safe_browsing_url_checker->CheckUrl(url, "GET", callback.Get());
   url_checker_delegate_->WaitForStartDisplayingBlockingPageHelper();
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashRealTime",
+      SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
+  histogram_tester_.ExpectUniqueSample(
+      "SafeBrowsing.CheckUrl.ThreatType.HashRealTime.Regular",
+      SB_THREAT_TYPE_URL_PHISHING,
+      /*expected_bucket_count=*/1);
   CheckHashRealTimeMetrics(/*expected_local_match_result=*/false,
                            /*expected_is_service_found=*/true,
                            /*expected_can_check_reputation=*/true);
@@ -2269,89 +2452,121 @@ TEST_F(SafeBrowsingUrlCheckerTest, CheckUrl_AllowlistCheckLoggingDetails) {
         logging_details;
     std::optional<bool> expected_all_stores_available_log;
     std::optional<bool> expected_allowlist_size_too_small_log;
+    bool expected_allowlist_match_threat_type_logged_on_match;
   } test_cases[] = {
       {"https://example.test/no_logging_details", std::nullopt, std::nullopt,
-       std::nullopt},
+       std::nullopt, true},
       {"https://example.test/stores_available__allowlist_too_small",
        SafeBrowsingDatabaseManager::HighConfidenceAllowlistCheckLoggingDetails(
            true, true),
-       true, true},
+       true, true, false},
       {"https://example.test/stores_available__allowlist_not_too_small",
        SafeBrowsingDatabaseManager::HighConfidenceAllowlistCheckLoggingDetails(
            true, false),
-       true, false},
+       true, false, true},
       {"https://example.test/stores_unavailable__allowlist_too_small",
        SafeBrowsingDatabaseManager::HighConfidenceAllowlistCheckLoggingDetails(
            false, true),
-       false, true},
+       false, true, false},
       {"https://example.test/stores_unavailable__allowlist_not_too_small",
        SafeBrowsingDatabaseManager::HighConfidenceAllowlistCheckLoggingDetails(
            false, false),
-       false, false}};
+       false, false, false}};
 
   for (const auto& test_case : test_cases) {
-    GURL url(test_case.url);
-    database_manager_->SetAllowlistLookupDetailsForUrl(
-        url, /*match=*/false, test_case.logging_details);
+    for (bool match : {false, true}) {
+      GURL url(test_case.url);
+      database_manager_->SetAllowlistLookupDetailsForUrl(
+          url, match, test_case.logging_details);
+      database_manager_->SetThreatTypeForUrl(url, SB_THREAT_TYPE_SAFE,
+                                             /*delayed_callback=*/false);
 
-    // Check URT logging.
-    {
-      url_lookup_service_->SetThreatTypeForUrl(url, SB_THREAT_TYPE_SAFE,
-                                               /*should_complete_lookup=*/true);
-      base::HistogramTester urt_histogram_tester;
-      WaitableNativeCheckUrlCallback urt_callback;
-      urt_safe_browsing_url_checker->CheckUrl(url, "GET", urt_callback.Get());
-      urt_callback.Wait();
-      if (test_case.expected_all_stores_available_log.has_value()) {
-        urt_histogram_tester.ExpectUniqueSample(
-            "SafeBrowsing.RT.AllStoresAvailable",
-            /*sample=*/test_case.expected_all_stores_available_log.value(),
-            /*expected_bucket_count=*/1);
-      } else {
-        urt_histogram_tester.ExpectTotalCount(
-            /*name=*/"SafeBrowsing.RT.AllStoresAvailable",
-            /*expected_count=*/0);
+      // Check URT logging.
+      {
+        url_lookup_service_->SetThreatTypeForUrl(
+            url, SB_THREAT_TYPE_SAFE,
+            /*should_complete_lookup=*/true);
+        base::HistogramTester urt_histogram_tester;
+        WaitableNativeCheckUrlCallback urt_callback;
+        urt_safe_browsing_url_checker->CheckUrl(url, "GET", urt_callback.Get());
+        urt_callback.Wait();
+        if (test_case.expected_all_stores_available_log.has_value()) {
+          urt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.RT.AllStoresAvailable",
+              /*sample=*/test_case.expected_all_stores_available_log.value(),
+              /*expected_bucket_count=*/1);
+        } else {
+          urt_histogram_tester.ExpectTotalCount(
+              /*name=*/"SafeBrowsing.RT.AllStoresAvailable",
+              /*expected_count=*/0);
+        }
+        if (test_case.expected_allowlist_size_too_small_log.has_value()) {
+          urt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.RT.AllowlistSizeTooSmall",
+              /*sample=*/
+              test_case.expected_allowlist_size_too_small_log.value(),
+              /*expected_bucket_count=*/1);
+        } else {
+          urt_histogram_tester.ExpectTotalCount(
+              /*name=*/"SafeBrowsing.RT.AllowlistSizeTooSmall",
+              /*expected_count=*/0);
+        }
+        if (match &&
+            test_case.expected_allowlist_match_threat_type_logged_on_match) {
+          urt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.RT.HighConfidenceAllowlistMatchThreatType",
+              /*sample=*/SB_THREAT_TYPE_SAFE,
+              /*expected_bucket_count=*/1);
+        } else {
+          urt_histogram_tester.ExpectTotalCount(
+              /*name=*/"SafeBrowsing.RT.HighConfidenceAllowlistMatchThreatType",
+              /*expected_count=*/0);
+        }
       }
-      if (test_case.expected_allowlist_size_too_small_log.has_value()) {
-        urt_histogram_tester.ExpectUniqueSample(
-            "SafeBrowsing.RT.AllowlistSizeTooSmall",
-            /*sample=*/test_case.expected_allowlist_size_too_small_log.value(),
-            /*expected_bucket_count=*/1);
-      } else {
-        urt_histogram_tester.ExpectTotalCount(
-            /*name=*/"SafeBrowsing.RT.AllowlistSizeTooSmall",
-            /*expected_count=*/0);
-      }
-    }
 
-    // Check HPRT logging.
-    {
-      hash_realtime_service_->SetThreatTypeForUrl(
-          url, SB_THREAT_TYPE_SAFE,
-          /*should_fail_lookup=*/false, /*should_delay_lookup=*/false);
-      base::HistogramTester hprt_histogram_tester;
-      WaitableNativeCheckUrlCallback hprt_callback;
-      hprt_safe_browsing_url_checker->CheckUrl(url, "GET", hprt_callback.Get());
-      hprt_callback.Wait();
-      if (test_case.expected_all_stores_available_log.has_value()) {
-        hprt_histogram_tester.ExpectUniqueSample(
-            "SafeBrowsing.HPRT.AllStoresAvailable",
-            /*sample=*/test_case.expected_all_stores_available_log.value(),
-            /*expected_bucket_count=*/1);
-      } else {
-        hprt_histogram_tester.ExpectTotalCount(
-            /*name=*/"SafeBrowsing.HPRT.AllStoresAvailable",
-            /*expected_count=*/0);
-      }
-      if (test_case.expected_allowlist_size_too_small_log.has_value()) {
-        hprt_histogram_tester.ExpectUniqueSample(
-            "SafeBrowsing.HPRT.AllowlistSizeTooSmall",
-            /*sample=*/test_case.expected_allowlist_size_too_small_log.value(),
-            /*expected_bucket_count=*/1);
-      } else {
-        hprt_histogram_tester.ExpectTotalCount(
-            /*name=*/"SafeBrowsing.HPRT.AllowlistSizeTooSmall",
-            /*expected_count=*/0);
+      // Check HPRT logging.
+      {
+        hash_realtime_service_->SetThreatTypeForUrl(
+            url, SB_THREAT_TYPE_SAFE,
+            /*should_fail_lookup=*/false, /*should_delay_lookup=*/false);
+        base::HistogramTester hprt_histogram_tester;
+        WaitableNativeCheckUrlCallback hprt_callback;
+        hprt_safe_browsing_url_checker->CheckUrl(url, "GET",
+                                                 hprt_callback.Get());
+        hprt_callback.Wait();
+        if (test_case.expected_all_stores_available_log.has_value()) {
+          hprt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.HPRT.AllStoresAvailable",
+              /*sample=*/test_case.expected_all_stores_available_log.value(),
+              /*expected_bucket_count=*/1);
+        } else {
+          hprt_histogram_tester.ExpectTotalCount(
+              /*name=*/"SafeBrowsing.HPRT.AllStoresAvailable",
+              /*expected_count=*/0);
+        }
+        if (test_case.expected_allowlist_size_too_small_log.has_value()) {
+          hprt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.HPRT.AllowlistSizeTooSmall",
+              /*sample=*/
+              test_case.expected_allowlist_size_too_small_log.value(),
+              /*expected_bucket_count=*/1);
+        } else {
+          hprt_histogram_tester.ExpectTotalCount(
+              /*name=*/"SafeBrowsing.HPRT.AllowlistSizeTooSmall",
+              /*expected_count=*/0);
+        }
+        if (match &&
+            test_case.expected_allowlist_match_threat_type_logged_on_match) {
+          hprt_histogram_tester.ExpectUniqueSample(
+              "SafeBrowsing.HPRT.HighConfidenceAllowlistMatchThreatType",
+              /*sample=*/SB_THREAT_TYPE_SAFE,
+              /*expected_bucket_count=*/1);
+        } else {
+          hprt_histogram_tester.ExpectTotalCount(
+              /*name=*/
+              "SafeBrowsing.HPRT.HighConfidenceAllowlistMatchThreatType",
+              /*expected_count=*/0);
+        }
       }
     }
   }

@@ -8,6 +8,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
@@ -37,7 +38,9 @@
 #include "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/shared_preferences/shared_preferences_manager.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
+#include "chrome/browser/preferences/android/chrome_shared_preferences.h"
 #else
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #endif
@@ -60,6 +63,22 @@
 
 namespace profiles {
 
+#if BUILDFLAG(IS_ANDROID)
+namespace {
+
+// Returns whether `base_name` has an entry in ProfileAttributesStorage
+// (prefs::kProfileAttributes in `local_state`). It doesn't check the profile
+// directory on disk. Returns false for values that are not profile directory
+// names, such as "..", since they have no entry.
+bool DoesProfileExist(const PrefService& local_state,
+                      const base::FilePath& base_name) {
+  return local_state.GetDict(prefs::kProfileAttributes)
+      .contains(base_name.AsUTF8Unsafe());
+}
+
+}  // namespace
+#endif
+
 bool IsMultipleProfilesEnabled() {
 #if BUILDFLAG(IS_ANDROID)
   return base::FeatureList::IsEnabled(chrome::android::kAndroidMultiprofile);
@@ -80,6 +99,57 @@ base::FilePath GetDefaultProfileDir(const base::FilePath& user_data_dir) {
   default_profile_dir =
       default_profile_dir.AppendASCII(chrome::kInitialProfile);
   return default_profile_dir;
+}
+
+base::FilePath GetLastUsedProfileBaseName(const PrefService& local_state) {
+  const base::FilePath initial_profile =
+      base::FilePath::FromASCII(chrome::kInitialProfile);
+  base::FilePath base_name = local_state.GetFilePath(prefs::kProfileLastUsed);
+  if (base_name.empty() || base_name.value() == chrome::kSystemProfileDir) {
+    return initial_profile;
+  }
+
+#if BUILDFLAG(IS_ANDROID)
+  // With AndroidMultiprofileStartupData, the startup profile is chosen from
+  // this value, so require a ProfileAttributesStorage entry. This also rejects
+  // deleted profiles and values that are not profile directory names, such as
+  // "..".
+  if (IsAndroidMultiprofileStartupDataEnabled() &&
+      !DoesProfileExist(local_state, base_name)) {
+    return initial_profile;
+  }
+#endif
+
+  return base_name;
+}
+
+base::FilePath GetProfileDirFromCommandLine(
+    const base::CommandLine& command_line,
+    const base::FilePath& user_data_dir,
+    const PrefService& local_state) {
+  if (!IsMultipleProfilesEnabled() ||
+      !command_line.HasSwitch(switches::kProfileDirectory)) {
+    return base::FilePath();
+  }
+
+  base::FilePath profile_dir =
+      command_line.GetSwitchValuePath(switches::kProfileDirectory);
+#if BUILDFLAG(IS_ANDROID)
+  // StartupData starts with this profile, so require a ProfileAttributesStorage
+  // entry, as for the last used profile. Otherwise, Chrome starts with the last
+  // used profile. This runs before the value is used as a path.
+  if (IsAndroidMultiprofileStartupDataEnabled() &&
+      !DoesProfileExist(local_state, profile_dir)) {
+    return base::FilePath();
+  }
+#endif
+
+  if (command_line.HasSwitch(switches::kIgnoreProfileDirectoryIfNotExists) &&
+      !base::DirectoryExists(user_data_dir.Append(profile_dir))) {
+    return base::FilePath();
+  }
+
+  return profile_dir;
 }
 
 void RegisterPrefs(PrefRegistrySimple* registry) {
@@ -115,7 +185,33 @@ void SetLastUsedProfile(const base::FilePath& profile_dir) {
   PrefService* local_state = g_browser_process->local_state();
   CHECK(local_state, base::NotFatalUntil::M162);
   local_state->SetFilePath(prefs::kProfileLastUsed, profile_dir);
+
+#if BUILDFLAG(IS_ANDROID)
+  // Without AndroidMultiprofileStartupData, Chrome always starts with the
+  // initial profile, whose base name StartupData writes at startup.
+  if (IsAndroidMultiprofileStartupDataEnabled()) {
+    // Record the profile that Chrome will start with, which falls back to the
+    // initial profile if `profile_dir` isn't a known profile.
+    WriteLastUsedProfileBaseName(GetLastUsedProfileBaseName(*local_state));
+  }
+#endif
 }
+
+#if BUILDFLAG(IS_ANDROID)
+void WriteLastUsedProfileBaseName(const base::FilePath& base_name) {
+  // See ProfileManager#getLastUsedProfileBaseName() for how Java uses it.
+  base::android::SharedPreferencesManager shared_prefs =
+      android::shared_preferences::GetChromeSharedPreferences();
+  // Avoid a write at every startup when the base name is already up to date.
+  if (shared_prefs.ReadString(kLastUsedProfileBaseNameSharedPreferenceKey,
+                              std::string()) == base_name.value()) {
+    return;
+  }
+
+  shared_prefs.WriteString(kLastUsedProfileBaseNameSharedPreferenceKey,
+                           base_name.value());
+}
+#endif
 
 bool IsRegularUserProfile(Profile* profile) {
   ProfileSelections selections =

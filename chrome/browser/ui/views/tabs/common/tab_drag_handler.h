@@ -28,6 +28,7 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/view_targeter_delegate.h"
 
+class RootTabCollectionNode;
 class TabCollectionNode;
 class TabStripModel;
 class TabLinkDropHandler;
@@ -45,9 +46,11 @@ class TabDragHandler : public TabDragContext,
                        public views::ViewTargeterDelegate {
   METADATA_HEADER(TabDragHandler, TabDragContext)
  public:
-  explicit TabDragHandler(TabStripModel& tab_strip_model,
-                          TabCollectionNode& root_node,
-                          TabStripRegionView& tab_strip_region_view);
+  explicit TabDragHandler(
+      TabStripModel& tab_strip_model,
+      RootTabCollectionNode& root_node,
+      TabStripRegionView& tab_strip_region_view,
+      base::RepeatingCallback<gfx::Rect()> get_draggable_bounds_callback);
   ~TabDragHandler() override;
   TabDragHandler(const TabDragHandler&) = delete;
   TabDragHandler& operator=(const TabDragHandler&) = delete;
@@ -89,6 +92,9 @@ class TabDragHandler : public TabDragContext,
 
   // Returns true if there is an ongoing drag where a group is being moved.
   bool IsDraggingGroups() const;
+
+  // Returns the range occupied by dragged tabs in a detached window.
+  gfx::Range detached_drag_range() const { return detached_drag_range_; }
 
   // For some tabs (e.g. split tabs or tabs in a dragged group), the attached
   // view in `TabDragData` doesn't represent the actual container view being
@@ -148,6 +154,8 @@ class TabDragHandler : public TabDragContext,
   std::unique_ptr<TabDragController> ReleaseDragController() override;
   void DestroyDragController() override;
   void StartedDragging(const std::vector<views::View*>& views) override;
+  void PrepareForDetachedWindowDrag(TabDragContext* source_context,
+                                    const gfx::Point& point_in_screen) override;
   void DraggedTabsDetached() override;
   void StoppedDragging() override;
   void SetDragControllerCallbackForTesting(
@@ -199,9 +207,13 @@ class TabDragHandler : public TabDragContext,
   // was not initiated by a group header.
   std::optional<tab_groups::TabGroupId> GetDraggingGroupHeaderId() const;
 
+  // Invalidates the pinned and unpinned container layouts.
+  void InvalidateContainerLayouts();
+
   const raw_ref<TabStripModel> tab_strip_model_;
-  const raw_ref<TabCollectionNode> root_node_;
+  const raw_ref<RootTabCollectionNode> root_node_;
   const raw_ref<TabStripRegionView> tab_strip_region_view_;
+  const base::RepeatingCallback<gfx::Rect()> get_draggable_bounds_callback_;
 
   std::unique_ptr<TabLinkDropHandler> link_drop_handler_;
 
@@ -212,6 +224,11 @@ class TabDragHandler : public TabDragContext,
 
   std::vector<std::unique_ptr<views::ScrollView::ScopedScrollSynchronizer>>
       scroll_synchronizers_;
+
+  // The range [start, end) in local tab strip coordinates occupied by dragged
+  // tabs when detached into a new browser window. Empty when not dragging in a
+  // detached window.
+  gfx::Range detached_drag_range_;
 
   base::WeakPtrFactory<TabDragHandler> weak_factory_{this};
 };

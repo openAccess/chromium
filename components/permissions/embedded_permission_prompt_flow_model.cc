@@ -14,6 +14,7 @@
 #include "components/permissions/permission_uma_util.h"
 #include "components/permissions/permissions_client.h"
 #include "components/permissions/resolvers/permission_prompt_options.h"
+#include "content/public/browser/user_browser_context.h"
 #include "content/public/browser/web_contents.h"
 #if BUILDFLAG(IS_ANDROID)
 #include "components/permissions/android/android_permission_util.h"
@@ -98,7 +99,7 @@ EmbeddedPermissionPromptFlowModel::DeterminePromptVariant(
     const PermissionRequest* request) const {
   ContentSettingsType type = request->GetContentSettingsType();
   auto* map = PermissionsClient::Get()->GetSettingsMap(
-      web_contents()->GetBrowserContext());
+      content::GetUserBrowserContext(*web_contents()));
   content_settings::SettingInfo info;
   PermissionSetting setting = map->GetPermissionSetting(
       request->requesting_origin(), request->embedding_origin(), type, &info);
@@ -111,13 +112,22 @@ EmbeddedPermissionPromptFlowModel::DeterminePromptVariant(
   auto* permission_info =
       content_settings::PermissionSettingsRegistry::GetInstance()->Get(type);
 
+  // Once a request has been granted in the current prompt flow, treat its
+  // site-level permission as allowed even if a higher-priority provider (e.g. a
+  // policy or extension forcing `CONTENT_SETTING_ASK`) shadows the stored user
+  // grant in `HostContentSettingsMap`. This allows the flow to advance to
+  // OS-level permission screens if needed, or finalize instead of re-prompting
+  // for a site-level decision whose callback was already consumed.
+  const bool is_site_permission_allowed =
+      request->IsPermissionGranted() ||
+      permission_info->delegate().IsAnyPermissionAllowed(setting);
+
 #if BUILDFLAG(IS_ANDROID)
   if (!HasSystemPermission(type, web_contents_) &&
       !CanRequestSystemPermission(type, web_contents_)) {
     return Variant::kOsSystemSettings;
   }
-  if (permission_info->delegate().IsAnyPermissionAllowed(setting) &&
-      !HasSystemPermission(type, web_contents_) &&
+  if (is_site_permission_allowed && !HasSystemPermission(type, web_contents_) &&
       CanRequestSystemPermission(type, web_contents_)) {
     return Variant::kOsPrompt;
   }
@@ -125,7 +135,7 @@ EmbeddedPermissionPromptFlowModel::DeterminePromptVariant(
   if (PermissionsClient::Get()->IsSystemDenied(type)) {
     return Variant::kOsSystemSettings;
   }
-  if (permission_info->delegate().IsAnyPermissionAllowed(setting) &&
+  if (is_site_permission_allowed &&
       PermissionsClient::Get()->CanPromptSystemPermission(type)) {
     return Variant::kOsPrompt;
   }
@@ -136,14 +146,14 @@ EmbeddedPermissionPromptFlowModel::DeterminePromptVariant(
     return Variant::kAdministratorGranted;
   }
 
+  if (is_site_permission_allowed) {
+    return Variant::kPreviouslyGranted;
+  }
   if (permission_info->delegate().IsUndecided(setting)) {
     return Variant::kAsk;
-  } else if (permission_info->delegate().IsAnyPermissionAllowed(setting)) {
-    return Variant::kPreviouslyGranted;
-  } else {
-    DCHECK(permission_info->delegate().IsBlocked(setting));
-    return Variant::kPreviouslyDenied;
   }
+  DCHECK(permission_info->delegate().IsBlocked(setting));
+  return Variant::kPreviouslyDenied;
 }
 
 void EmbeddedPermissionPromptFlowModel::CalculateCurrentVariant(
@@ -262,7 +272,7 @@ void EmbeddedPermissionPromptFlowModel::RecordPermissionActionUKM(
       PermissionUtil::GetUmaValueForRequests(delegate_->Requests()), action,
       GetElementAnchoredBubbleVariant(prompt_variant()),
       prompt_screen_counter_for_metrics_, delegate_->GetRequestingOrigin(),
-      delegate_->GetAssociatedWebContents()->GetBrowserContext());
+      content::GetUserBrowserContext(*delegate_->GetAssociatedWebContents()));
 
   ++prompt_screen_counter_for_metrics_;
 }

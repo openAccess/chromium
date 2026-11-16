@@ -138,6 +138,13 @@ group = 'safe'
 allow_first_party_usage = false
 extra_kv = { allow_unsafe = false }
 
+[crate.alloc-no-stdlib]
+extra_kv = { allow_unsafe = false }
+
+[crate.alloc-stdlib]
+license_files = ["../alloc-no-stdlib-v3/LICENSE"]
+extra_kv = { allow_unsafe = false }
+
 [crate.android_system_properties]
 extra_kv = { allow_unsafe = true }
 
@@ -194,6 +201,14 @@ extra_kv = { allow_unsafe = false }
 
 [crate.bitflags.extra_kv]
 allow_unsafe = false
+
+[crate.brotli-decompressor.extra_kv]
+allow_unsafe = false
+# Like //third_party/brotli:dec, always optimize the decoder for speed, also in
+# Debug builds and where the default optimizes for size. Most of the decoder is
+# generic, so //net:rust_brotli_decoder, which instantiates it, does the same.
+configs_to_remove = ['//build/config/compiler:default_optimization']
+configs_to_add = ['//build/config/compiler:optimize_max']
 
 [crate.build_id2]
 extra_input_roots = ["../README.md"]
@@ -365,8 +380,13 @@ allow_unsafe = false
 # Web tests (aka WPT tests, also formerly known as Layout Tests) require fast
 # PNG encoding and decoding even in Debug builds.  See
 # https://crbug.com/396419181.
+#
+# `optimize_speed` (and not `optimize`), because `optimize` builds Rust with
+# `-Copt-level=s` on ChromeOS and where `optimize_for_size` is set (32-bit
+# Android, Cast, Fuchsia), which makes PNG code considerably slower there.
+# `//third_party/zlib` also uses `optimize_speed` (in non-debug builds).
 configs_to_remove = ['//build/config/compiler:default_optimization']
-configs_to_add = ['//build/config/compiler:optimize']
+configs_to_add = ['//build/config/compiler:optimize_speed']
 
 [crate.fend-core.extra_kv]
 allow_unsafe = false
@@ -455,8 +475,7 @@ extra_kv = { allow_unsafe = true }
 allow_unsafe = true
 
 [crate.icu_calendar_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_capi]
 group = 'safe'
@@ -476,8 +495,7 @@ visibility = [
 allow_unsafe = true
 
 [crate.icu_casemap_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_collections.extra_kv]
 allow_unsafe = true
@@ -486,26 +504,19 @@ allow_unsafe = true
 allow_unsafe = false
 
 [crate.icu_decimal_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_experimental.extra_kv]
 allow_unsafe = true
 
 [crate.icu_experimental_data]
-extra_input_roots = ['../data']
-
-[crate.icu_experimental_data.extra_kv]
-allow_unsafe = false
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_list.extra_kv]
 allow_unsafe = true
 
 [crate.icu_list_data]
-extra_input_roots = ['../data']
-
-[crate.icu_list_data.extra_kv]
-allow_unsafe = false
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_locale]
 group = 'safe'
@@ -520,16 +531,14 @@ group = 'safe'
 allow_unsafe = true
 
 [crate.icu_locale_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_locale_fallback]
 group = 'safe'
 extra_kv = { allow_unsafe = true }
 
 [crate.icu_locale_fallback_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_normalizer]
 group = 'safe'
@@ -538,8 +547,7 @@ group = 'safe'
 allow_unsafe = true
 
 [crate.icu_normalizer_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_pattern.extra_kv]
 allow_unsafe = true
@@ -548,15 +556,13 @@ allow_unsafe = true
 allow_unsafe = true
 
 [crate.icu_plurals_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_properties.extra_kv]
 allow_unsafe = false
 
 [crate.icu_properties_data]
-extra_input_roots = ['../data']
-extra_kv = { allow_unsafe = false }
+replace_with = "//third_party/rust/icu4x_data:lib"
 
 [crate.icu_provider]
 group = 'safe'
@@ -588,8 +594,12 @@ allow_unsafe = true
 [crate.ixdtf.extra_kv]
 allow_unsafe = false
 
-[crate.jpeg-encoder]
-extra_kv = { allow_unsafe = true }
+[crate.jpeg-encoder.extra_kv]
+allow_unsafe = true
+# Keep image encoding usable in Debug builds. Optimize for speed rather than
+# the size-oriented platform default, as for the PNG codecs.
+configs_to_remove = ['//build/config/compiler:default_optimization']
+configs_to_add = ['//build/config/compiler:optimize_speed']
 
 [crate.jxl]
 extra_input_roots = ["util/dither_32x32.bin"]
@@ -800,8 +810,13 @@ allow_unsafe = false
 # Web tests (aka WPT tests, also formerly known as Layout Tests) require fast
 # PNG encoding and decoding even in Debug builds.  See
 # https://crbug.com/396419181.
+#
+# `optimize_speed` (and not `optimize`), because `optimize` builds Rust with
+# `-Copt-level=s` on ChromeOS and where `optimize_for_size` is set (32-bit
+# Android, Cast, Fuchsia), which makes PNG code considerably slower there.
+# `//third_party/zlib` also uses `optimize_speed` (in non-debug builds).
 configs_to_remove = ['//build/config/compiler:default_optimization']
-configs_to_add = ['//build/config/compiler:optimize']
+configs_to_add = ['//build/config/compiler:optimize_speed']
 
 [crate.portable-atomic]
 extra_build_script_input_roots = ['gen/build.rs', '../version.rs']
@@ -1249,5 +1264,9 @@ extra_kv = { allow_unsafe = true }
 [crate.zune-core]
 extra_kv = { allow_unsafe = false }
 
-[crate.zune-jpeg]
-extra_kv = { allow_unsafe = true }
+[crate.zune-jpeg.extra_kv]
+allow_unsafe = true
+# JPEG decoding also needs optimization in Debug builds. Use the same speed
+# policy as the encoder rather than the size-oriented platform default.
+configs_to_remove = ['//build/config/compiler:default_optimization']
+configs_to_add = ['//build/config/compiler:optimize_speed']

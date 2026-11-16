@@ -16,6 +16,7 @@
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_move_support.h"
@@ -64,6 +65,7 @@
 #include "chrome/browser/ui/webui/new_tab_page/composebox/variations/composebox_fieldtrial.h"
 #include "chrome/browser/ui/webui/searchbox/contextual_searchbox_test_utils.h"
 #include "chrome/browser/ui/webui/searchbox/searchbox_test_utils.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_profile.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/contextual_search/contextual_search_metrics_recorder.h"
@@ -249,11 +251,16 @@ class FakeContextualTasksUIInterface
   void RemoveObserver(Observer* observer) override {}
   bool is_history_thread_loading() const override { return false; }
   void set_is_history_thread_loading(bool loading) override {}
+  base::WeakPtr<contextual_tasks::ContextualTasksUIInterface> GetWeakPtr()
+      override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
 
  private:
   std::vector<int32_t> restored_tab_ids_;
   mojo::Remote<contextual_tasks::mojom::Page> page_remote_;
   mojo::PendingReceiver<contextual_tasks::mojom::Page> page_receiver_;
+  base::WeakPtrFactory<FakeContextualTasksUIInterface> weak_ptr_factory_{this};
 };
 
 class FakeContextualSearchboxHandler : public ContextualSearchboxHandler {
@@ -1166,6 +1173,100 @@ TEST_F(ContextualSearchboxHandlerTest, AddFileFromBrowser_FileTooLarge) {
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), contextual_search::ContextUploadErrorType::
                                 kBrowserProcessingFileTooLargeError);
+}
+
+TEST_F(ContextualSearchboxHandlerTest,
+       AddFileFromBrowser_ImageSizeLimitDefaultLimitsAllImages) {
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeatureWithParameters(
+      omnibox::kComposeboxImageFileSizeLimit,
+      {{"max_image_size_bytes", "10"}, {"limit_all_images", "true"}});
+
+  profile()->GetPrefs()->SetInteger(
+      contextual_search::kSearchContentSharingSettings,
+      static_cast<int>(
+          contextual_search::SearchContentSharingSettingsValue::kEnabled));
+
+  scoped_config()
+      .config.mutable_composebox()
+      ->mutable_attachment_upload()
+      ->set_max_size_bytes(100);
+  scoped_config()
+      .config.mutable_composebox()
+      ->mutable_attachment_upload()
+      ->set_mime_types_allowed("application/pdf");
+  scoped_config()
+      .config.mutable_composebox()
+      ->mutable_image_upload()
+      ->set_mime_types_allowed("image/png,image/heic");
+
+  // 15-byte HEIC and PNG exceed the 10-byte image limit.
+  for (const std::string& mime_type : {"image/heic", "image/png"}) {
+    std::vector<uint8_t> test_data(15, 1);
+    base::test::TestFuture<base::expected<
+        base::UnguessableToken, contextual_search::ContextUploadErrorType>>
+        future;
+    handler().AddFileContextFromBrowser("large_image", mime_type,
+                                        mojo_base::BigBuffer(test_data),
+                                        std::nullopt, future.GetCallback());
+    auto result = future.Take();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), contextual_search::ContextUploadErrorType::
+                                  kBrowserProcessingFileTooLargeError);
+  }
+}
+
+TEST_F(ContextualSearchboxHandlerTest,
+       AddFileFromBrowser_ImageSizeLimitFallbackLimitsHeifOnly) {
+  base::test::ScopedFeatureList local_feature_list;
+  local_feature_list.InitAndEnableFeatureWithParameters(
+      omnibox::kComposeboxImageFileSizeLimit,
+      {{"max_image_size_bytes", "10"}, {"limit_all_images", "false"}});
+
+  profile()->GetPrefs()->SetInteger(
+      contextual_search::kSearchContentSharingSettings,
+      static_cast<int>(
+          contextual_search::SearchContentSharingSettingsValue::kEnabled));
+
+  scoped_config().config.mutable_composebox()->set_max_num_files(5);
+  scoped_config()
+      .config.mutable_composebox()
+      ->mutable_attachment_upload()
+      ->set_max_size_bytes(100);
+  scoped_config()
+      .config.mutable_composebox()
+      ->mutable_image_upload()
+      ->set_mime_types_allowed("image/png,image/heic");
+
+  // 15-byte HEIC fails when limit_all_images=false.
+  {
+    std::vector<uint8_t> heic_data(15, 1);
+    base::test::TestFuture<base::expected<
+        base::UnguessableToken, contextual_search::ContextUploadErrorType>>
+        future;
+    handler().AddFileContextFromBrowser("photo.heic", "image/heic",
+                                        mojo_base::BigBuffer(heic_data),
+                                        std::nullopt, future.GetCallback());
+    auto result = future.Take();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error(), contextual_search::ContextUploadErrorType::
+                                  kBrowserProcessingFileTooLargeError);
+  }
+
+  // 15-byte PNG succeeds when limit_all_images=false (under 100-byte attachment
+  // limit).
+  {
+    EXPECT_CALL(query_controller(), StartFileUploadFlow);
+    std::vector<uint8_t> png_data(15, 1);
+    base::test::TestFuture<base::expected<
+        base::UnguessableToken, contextual_search::ContextUploadErrorType>>
+        future;
+    handler().AddFileContextFromBrowser("photo.png", "image/png",
+                                        mojo_base::BigBuffer(png_data),
+                                        std::nullopt, future.GetCallback());
+    auto result = future.Take();
+    EXPECT_TRUE(result.has_value());
+  }
 }
 
 TEST_F(ContextualSearchboxHandlerTest, AddFileFromBrowser_UnsupportedType) {
@@ -2725,6 +2826,20 @@ TEST_F(ContextualSearchboxHandlerTest,
   }
 }
 
+// The opt-in applies to the current model and whenever the handler re-attaches.
+TEST_F(ContextualSearchboxHandlerTest, OptInToDynamicAimFulfillment) {
+  ASSERT_TRUE(handler().input_state_model());
+  EXPECT_FALSE(
+      handler().input_state_model()->dynamic_aim_fulfillment_enabled());
+
+  handler().OptInToDynamicAimFulfillment();
+  EXPECT_TRUE(handler().input_state_model()->dynamic_aim_fulfillment_enabled());
+
+  handler().InitializeInputStateModel();
+  ASSERT_TRUE(handler().input_state_model());
+  EXPECT_TRUE(handler().input_state_model()->dynamic_aim_fulfillment_enabled());
+}
+
 TEST_F(ContextualSearchboxHandlerTest, SubmitQueryWithAdditionalParams) {
   // Ensure udm param is always set as an additional param.
   SubmitQueryAndWaitForNavigation();
@@ -4243,7 +4358,9 @@ TEST_F(ContextualSearchboxHandlerTestTabsTest, GetRecentTabs) {
     auto tabs = future.Take();
     ASSERT_EQ(tabs.size(), 2u);
     EXPECT_EQ(tabs[0]->tab_id, gmail_tab->GetHandle().raw_value());
+    EXPECT_TRUE(tabs[0]->recent_tab);
     EXPECT_EQ(tabs[1]->tab_id, youtube_tab->GetHandle().raw_value());
+    EXPECT_FALSE(tabs[1]->recent_tab);
   }
 
   content::WebContentsTester::For(example_tab->GetContents())
@@ -4257,7 +4374,9 @@ TEST_F(ContextualSearchboxHandlerTestTabsTest, GetRecentTabs) {
     handler().GetRecentTabs(future.GetCallback());
     auto tabs = future.Take();
     EXPECT_EQ(tabs[0]->tab_id, example_tab->GetHandle().raw_value());
+    EXPECT_TRUE(tabs[0]->recent_tab);
     EXPECT_EQ(tabs[1]->tab_id, gmail_tab->GetHandle().raw_value());
+    EXPECT_FALSE(tabs[1]->recent_tab);
   }
 }
 
@@ -4312,8 +4431,10 @@ TEST_F(ContextualSearchboxHandlerTestTabsTest,
   ASSERT_EQ(tabs.size(), 2u);
   EXPECT_EQ(tabs[0]->tab_id, active_tab->GetHandle().raw_value());
   EXPECT_TRUE(tabs[0]->show_in_current_tab_chip);
+  EXPECT_TRUE(tabs[0]->recent_tab);
   EXPECT_EQ(tabs[1]->tab_id, background_tab->GetHandle().raw_value());
   EXPECT_FALSE(tabs[1]->show_in_current_tab_chip);
+  EXPECT_FALSE(tabs[1]->recent_tab);
 }
 
 TEST_F(ContextualSearchboxHandlerTestTabsTest,
@@ -4838,6 +4959,49 @@ TEST_F(ContextualSearchboxHandlerTest, AddFileContextToPage_ForwardsToPage) {
 
   handler().AddFileContextToPage(token, std::move(file_info));
   mock_searchbox_page_.FlushForTesting();
+}
+
+TEST_F(ContextualSearchboxHandlerTestTabsTest,
+       InitializeInputStateModel_TopChromeWebUIWithoutActiveTab) {
+  webui::ScopedTopChromeWebUIProfileForTesting scoped_top_chrome_profile;
+  auto top_chrome_web_contents =
+      content::WebContentsTester::CreateTestWebContents(
+          webui::GetTopChromeWebUIProfile(), /*instance=*/nullptr);
+  webui::SetBrowserWindowInterface(top_chrome_web_contents.get(),
+                                   browser_window_interface());
+
+  testing::NiceMock<MockSearchboxPage> local_page;
+  FakeContextualSearchboxHandler top_chrome_handler(
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>(),
+      local_page.BindAndGetRemote(), profile(), top_chrome_web_contents.get(),
+      std::make_unique<TestOmniboxClient>(), base::BindLambdaForTesting([&]() {
+        return contextual_session_handle_.get();
+      }));
+
+  // With no active tab, the handler must not fall back to the
+  // `TopChromeWebUIProfile` host `WebContents`.
+  EXPECT_EQ(top_chrome_handler.input_state_model(), nullptr);
+  EXPECT_EQ(
+      contextual_tasks::ContextualTasksWebContentsUserData::FromWebContents(
+          top_chrome_web_contents.get()),
+      nullptr);
+
+  // Once a tab is active, `OnActiveTabChanged()` initializes the model and
+  // attaches it to the active tab's `WebContents`.
+  tabs::TabInterface* active_tab = AddTab(GURL("https://example.com"));
+  top_chrome_handler.OnActiveTabChanged(*tab_list(), active_tab);
+  EXPECT_NE(top_chrome_handler.input_state_model(), nullptr);
+  EXPECT_NE(
+      contextual_tasks::ContextualTasksWebContentsUserData::FromWebContents(
+          active_tab->GetContents()),
+      nullptr);
+  EXPECT_EQ(
+      contextual_tasks::ContextualTasksWebContentsUserData::FromWebContents(
+          top_chrome_web_contents.get()),
+      nullptr);
+
+  webui::SetBrowserWindowInterface(top_chrome_web_contents.get(),
+                                   /*browser_window_interface=*/nullptr);
 }
 #else
 TEST_F(ContextualSearchboxHandlerTest, StartScreenshare_AndroidAlwaysFails) {

@@ -112,7 +112,8 @@ class TabAndroid : public tabs::TabInterface,
   static std::unique_ptr<TabAndroid> CreateForTesting(
       Profile* profile,
       int tab_id,
-      std::unique_ptr<content::WebContents> web_contents);
+      std::unique_ptr<content::WebContents> web_contents,
+      std::optional<int> launch_type_at_creation = std::nullopt);
 
   // TabAndroidDataProvider
   SessionID GetWindowId() const override;
@@ -237,7 +238,6 @@ class TabAndroid : public tabs::TabInterface,
                                     int32_t height);
   void SetActiveNavigationEntryTitleForUrl(const std::string& jurl,
                                            std::u16string jtitle);
-  void LoadOriginalImage();
   void OnShow();
   void NotifyPinnedStateChanged(bool is_pinned);
   void NotifyTabGroupChanged(std::optional<base::Token> tab_group_id);

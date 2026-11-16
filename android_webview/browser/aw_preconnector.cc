@@ -13,6 +13,7 @@
 #include "android_webview/common/aw_features.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
 #include "content/public/browser/browser_context.h"
@@ -20,7 +21,10 @@
 #include "content/public/browser/preconnect_request.h"
 #include "content/public/browser/storage_partition.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "net/base/features.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/reconnect_notifier.h"
+#include "net/base/request_priority.h"
 #include "net/socket/next_proto.h"
 #include "services/network/public/cpp/constants.h"
 #include "services/network/public/mojom/network_context.mojom.h"
@@ -135,6 +139,18 @@ bool AwPreconnector::Preconnect(JNIEnv* env, const GURL& url) {
                  std::move(context));
 
   std::optional<net::ConnectionKeepAliveConfig> keepalive_config;
+  if (std::optional<base::TimeDelta> initial_rtt =
+          net::features::GetQuicPreconnectInitialRtt()) {
+    keepalive_config.emplace();
+    keepalive_config->initial_rtt = *initial_rtt;
+  }
+  if (std::optional<net::RequestPriority> preconnect_priority =
+          net::features::GetPreconnectInitialPriority()) {
+    if (!keepalive_config.has_value()) {
+      keepalive_config.emplace();
+    }
+    keepalive_config->preconnect_priority = *preconnect_priority;
+  }
 
   bool was_blocked = !browser_context_->GetDefaultStoragePartition()
                           ->IsNetworkContextInitialized();

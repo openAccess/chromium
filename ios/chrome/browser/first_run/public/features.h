@@ -69,6 +69,24 @@ enum class AndroidSwitcherDefaultBrowserPromoInFREVariationType {
   kSwitcherInfoSignal = 2,
 };
 
+// Enum to represent UI copy arms of feature
+// `kAndroidSwitcherDefaultBrowserPromoInFRE`.
+enum class AndroidSwitcherDefaultBrowserPromoInFREArm {
+  // Highlights Google ecosystem integration.
+  kGoogleEcosystem = 0,
+  // Combines Google ecosystem utility with Chrome branding.
+  kHybrid = 1,
+};
+
+// Enum to represent variations of feature `kFREAblation`.
+enum class FREAblationVariationType {
+  // Skips the History Sync screen in the FRE.
+  kSkipHistorySync = 0,
+  // Skips all FRE screens except for the Sign-in screen and the Search Engine
+  // Choice screen (if applicable).
+  kSkipAllExceptSignInAndChoice = 1,
+};
+
 // Flag to enable the FRE Default Browser Experiment.
 BASE_DECLARE_FEATURE(kAnimatedDefaultBrowserPromoInFRE);
 
@@ -85,6 +103,13 @@ BASE_DECLARE_FEATURE(kPostFREIphInProfileAgent);
 
 // Feature flag to enable the Android Switcher Default Browser Promo in the FRE.
 BASE_DECLARE_FEATURE(kAndroidSwitcherDefaultBrowserPromoInFRE);
+
+// Feature flag (killswitch) to record `.SwitcherInfo.*` Default Browser
+// metrics.
+BASE_DECLARE_FEATURE(kRecordSwitcherInfoDefaultBrowserMetrics);
+
+// Feature flag to enable the FRE ablation experiment.
+BASE_DECLARE_FEATURE(kFREAblation);
 
 // Name of the parameter that controls the experiment type for the Animated
 // Default Browser Promo in the FRE experiment, which determines the layout of
@@ -103,12 +128,28 @@ extern const char kUpdatedFirstRunSequenceParam[];
 // `kAndroidSwitcherDefaultBrowserPromoInFRE` feature is enabled.
 extern const char kAndroidSwitcherDefaultBrowserPromoInFREParam[];
 
+// Name of the parameter that indicates which variation of the `kFREAblation`
+// feature is enabled.
+extern const char kFREAblationParam[];
+
 // Parameter values for `kAndroidSwitcherDefaultBrowserPromoInFREParam`.
 extern const char kAndroidSwitcherDefaultBrowserPromoInFREParamDisabled[];
 extern const char
     kAndroidSwitcherDefaultBrowserPromoInFREParamSegmentationSignal[];
 extern const char
     kAndroidSwitcherDefaultBrowserPromoInFREParamSwitcherInfoSignal[];
+
+// Name of the parameter that indicates which UI arm of the
+// `kAndroidSwitcherDefaultBrowserPromoInFRE` feature is enabled.
+extern const char kAndroidSwitcherDefaultBrowserPromoInFREArmParam[];
+
+// Parameter values for `kAndroidSwitcherDefaultBrowserPromoInFREArmParam`.
+extern const char kAndroidSwitcherDefaultBrowserPromoInFREArmGoogleEcosystem[];
+extern const char kAndroidSwitcherDefaultBrowserPromoInFREArmHybrid[];
+
+// Parameter values for `kFREAblationParam`.
+extern const char kFREAblationParamSkipHistorySync[];
+extern const char kFREAblationParamSkipAllExceptSignInAndChoice[];
 
 // Returns which variation of the kBestFeaturesScreenInFirstRun feature is
 // enabled or `kDisabled` if the feature is disabled.
@@ -135,6 +176,18 @@ bool IsPostFREIphInProfileAgentEnabled();
 // feature is enabled or `kDisabled` if the feature is disabled.
 AndroidSwitcherDefaultBrowserPromoInFREVariationType
 GetAndroidSwitcherDefaultBrowserPromoInFREVariationType();
+
+// Returns which UI arm of the `kAndroidSwitcherDefaultBrowserPromoInFRE`
+// feature is enabled.
+AndroidSwitcherDefaultBrowserPromoInFREArm
+GetAndroidSwitcherDefaultBrowserPromoInFREArm();
+
+// Returns whether the `kFREAblation` feature is enabled.
+bool IsFREAblationEnabled();
+
+// Returns which variation of the `kFREAblation` feature is enabled. Must only
+// be called when `IsFREAblationEnabled()` returns true.
+FREAblationVariationType GetFREAblationVariationType();
 
 }  // namespace first_run
 

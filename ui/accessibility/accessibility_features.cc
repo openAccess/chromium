@@ -68,6 +68,13 @@ bool IsAccessibilityLabeledByEnabled() {
   return base::FeatureList::IsEnabled(::features::kAccessibilityLabeledBy);
 }
 
+BASE_FEATURE(kAccessibilityMapToNewClassNames,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsAccessibilityMapToNewClassNamesEnabled() {
+  return base::FeatureList::IsEnabled(
+      ::features::kAccessibilityMapToNewClassNames);
+}
+
 BASE_FEATURE(kAccessibilityTreeForViews, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsAccessibilityTreeForViewsEnabled() {
   return base::FeatureList::IsEnabled(::features::kAccessibilityTreeForViews);
@@ -385,11 +392,6 @@ BASE_FEATURE(kReadAnythingTranslateEntryPoint,
 bool IsReadAnythingTranslateEntryPointEnabled() {
   return base::FeatureList::IsEnabled(
       ::features::kReadAnythingTranslateEntryPoint);
-}
-
-BASE_FEATURE(kReadAnythingLineFocus, base::FEATURE_ENABLED_BY_DEFAULT);
-bool IsReadAnythingLineFocusEnabled() {
-  return base::FeatureList::IsEnabled(::features::kReadAnythingLineFocus);
 }
 
 BASE_FEATURE(kHatsReadingModeSurvey, base::FEATURE_DISABLED_BY_DEFAULT);

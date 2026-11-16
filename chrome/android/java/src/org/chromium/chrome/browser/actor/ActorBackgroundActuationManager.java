@@ -7,17 +7,10 @@ package org.chromium.chrome.browser.actor;
 import android.app.Activity;
 import android.text.TextUtils;
 import android.util.ArrayMap;
-import android.util.DisplayMetrics;
-import android.view.View;
 
-import androidx.annotation.VisibleForTesting;
-
-import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
-import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.TimeUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
@@ -26,31 +19,21 @@ import org.chromium.chrome.browser.actor.background_tabs.BackgroundSession;
 import org.chromium.chrome.browser.actor.background_tabs.OffscreenRenderingManager;
 import org.chromium.chrome.browser.app.tabmodel.TabModelOrchestrator;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
-import org.chromium.chrome.browser.compositor.CompositorViewHolderSupplier;
-import org.chromium.chrome.browser.init.AsyncInitializationActivity;
-import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
-import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabBuilder;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
-import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabPersistentStore;
 import org.chromium.chrome.browser.tabwindow.TabWindowInfo;
 import org.chromium.chrome.browser.tabwindow.TabWindowManager;
-import org.chromium.content_public.browser.LoadUrlParams;
-import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.WindowAndroid;
-import org.chromium.url.GURL;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -68,8 +51,7 @@ public class ActorBackgroundActuationManager {
 
     // List of active background sessions.
     private final List<BackgroundSession> mBackgroundSessions = new ArrayList<>();
-    // Map of triggering message ID to pending tab undergoing initial about:blank load.
-    private final Map<String, Tab> mPendingActuationTabs = new ArrayMap<>();
+    private final OffscreenTabProvisioner mTabProvisioner = new OffscreenTabProvisioner();
     // Set of tab IDs originally provisioned via FCM background triggering.
     private final Set<Integer> mFcmInitiatedTabIds = new HashSet<>();
 
@@ -125,7 +107,7 @@ public class ActorBackgroundActuationManager {
                 glicTriggerMessageId);
         ThreadUtils.assertOnUiThread();
 
-        setupBackgroundTab(
+        mTabProvisioner.setupBackgroundTab(
                 profile,
                 glicTriggerMessageId,
                 (tab) -> {
@@ -145,7 +127,7 @@ public class ActorBackgroundActuationManager {
                         notifySetupFailed(profile, glicTriggerMessageId);
                         return;
                     }
-                    mPendingActuationTabs.remove(glicTriggerMessageId);
+                    mTabProvisioner.releasePendingTab(glicTriggerMessageId);
                     mFcmInitiatedTabIds.add(tab.getId());
                     tab.addObserver(
                             new TabObserver() {
@@ -177,9 +159,9 @@ public class ActorBackgroundActuationManager {
     public void provisionBackgroundTabForTask(
             Profile profile, int taskId, Callback<@Nullable Tab> callback) {
         ThreadUtils.assertOnUiThread();
-        Tab tab = createOffscreenTab(profile);
+        Tab tab = mTabProvisioner.createOffscreenTab(profile);
 
-        loadBlankThenCallback(
+        mTabProvisioner.loadBlankThenCallback(
                 tab,
                 (preparedTab) -> {
                     if (preparedTab == null) {
@@ -223,7 +205,7 @@ public class ActorBackgroundActuationManager {
 
         List<BackgroundSession> detachedSessions =
                 ActorTabStateHelper.detachActiveBackgroundSessions(
-                        selector, windowId, this::startOffscreenRendering);
+                        selector, windowId, mTabProvisioner::startOffscreenRendering);
         if (detachedSessions.isEmpty()) {
             return;
         }
@@ -282,11 +264,7 @@ public class ActorBackgroundActuationManager {
                                 placeholderId != null ? placeholderId : Tab.INVALID_TAB_ID;
                         LiveBackgroundTab liveTab =
                                 new LiveBackgroundTab(
-                                        pool,
-                                        tab,
-                                        placeholderTabId,
-                                        session.getTaskId(),
-                                        tabData.getOriginalTabIndex());
+                                        pool, tab, placeholderTabId, tabData.getOriginalTabIndex());
                         LiveBackgroundTab.markDirty(tab);
                         pool.addLiveTab(liveTab);
                     }
@@ -304,10 +282,7 @@ public class ActorBackgroundActuationManager {
      */
     public void cleanupContext(String glicTriggerMessageId) {
         ThreadUtils.assertOnUiThread();
-        Tab pendingTab = mPendingActuationTabs.remove(glicTriggerMessageId);
-        if (pendingTab != null) {
-            OffscreenRenderingManager.getInstance().stopOffscreenRendering(pendingTab);
-            pendingTab.destroy();
+        if (mTabProvisioner.cancelPendingTab(glicTriggerMessageId)) {
             return;
         }
 
@@ -433,13 +408,7 @@ public class ActorBackgroundActuationManager {
     /** Destroys all active background sessions. */
     public void destroy() {
         ThreadUtils.assertOnUiThread();
-        for (Tab pendingTab : mPendingActuationTabs.values()) {
-            if (pendingTab != null) {
-                OffscreenRenderingManager.getInstance().stopOffscreenRendering(pendingTab);
-                pendingTab.destroy();
-            }
-        }
-        mPendingActuationTabs.clear();
+        mTabProvisioner.destroyPendingTabs();
         mFcmInitiatedTabIds.clear();
 
         restoreWarmSessions();
@@ -474,56 +443,20 @@ public class ActorBackgroundActuationManager {
             TabDelegateFactory tabDelegateFactory,
             long waitDurationMs,
             boolean isColdStart) {
-        return restoreTabsForWindow(
+        return WarmBackgroundTabRestorer.restoreTabsForWindow(
                         selector,
                         activeWindowId,
                         window,
                         mBackgroundSessions,
                         tabDelegateFactory,
                         waitDurationMs,
-                        isColdStart)
+                        isColdStart,
+                        this::removeBackgroundSessions)
                 > 0;
-    }
-
-    private int restoreTabsForWindow(
-            TabModelSelector selector,
-            int activeWindowId,
-            WindowAndroid window,
-            List<BackgroundSession> targetSessions,
-            TabDelegateFactory tabDelegateFactory,
-            long waitDurationMs,
-            boolean isColdStart) {
-        long startTimeMs = TimeUtils.uptimeMillis();
-        List<BackgroundSession> sessionsToRemove = new ArrayList<>();
-        int restoredTabCount =
-                restoreActiveWindowBackgroundTabsInternal(
-                        selector,
-                        activeWindowId,
-                        window,
-                        targetSessions,
-                        tabDelegateFactory,
-                        sessionsToRemove);
-        removeBackgroundSessions(sessionsToRemove);
-        if (restoredTabCount > 0) {
-            long restoreDurationMs = TimeUtils.uptimeMillis() - startTimeMs;
-            if (isColdStart) {
-                ActorMetrics.recordWaitForTabStateInitializedLatency(waitDurationMs);
-            }
-            ActorMetrics.recordTotalRestoreLatency(
-                    (isColdStart ? waitDurationMs : 0) + restoreDurationMs, isColdStart);
-        }
-        return restoredTabCount;
     }
 
     /**
      * Restores background tabs belonging to the active window context from the given sessions.
-     *
-     * <p>Note: This method is kept here in {@code //chrome/android:chrome_java} rather than in
-     * {@link ActorTabStateHelper} (in {@code //chrome/browser/actor/android:java}) because {@link
-     * BackgroundTabPool} and {@link BackgroundTabPoolManager} reside in {@code
-     * //chrome/android:chrome_java}, which depends on {@code //chrome/browser/actor/android:java}.
-     * Moving this method into {@link ActorTabStateHelper} would introduce an illegal circular GN
-     * build dependency.
      *
      * @param selector The TabModelSelector of the active foreground window.
      * @param activeWindowId The WindowId of the active foreground window.
@@ -532,171 +465,36 @@ public class ActorBackgroundActuationManager {
      * @param tabDelegateFactory The delegate factory for the foreground window.
      * @return List of BackgroundSession instances that have been completely restored.
      */
-    @VisibleForTesting
+    // TODO(crbug.com/585091618): Call WarmBackgroundTabRestorer directly from tests and remove
+    // this wrapper.
     public static List<BackgroundSession> restoreActiveWindowBackgroundTabsForTesting(
             TabModelSelector selector,
             int activeWindowId,
             WindowAndroid window,
             List<BackgroundSession> backgroundSessions,
             TabDelegateFactory tabDelegateFactory) {
-        List<BackgroundSession> sessionsToRemove = new ArrayList<>();
-        restoreActiveWindowBackgroundTabsInternal(
-                selector,
-                activeWindowId,
-                window,
-                backgroundSessions,
-                tabDelegateFactory,
-                sessionsToRemove);
-        return sessionsToRemove;
-    }
-
-    private static int restoreActiveWindowBackgroundTabsInternal(
-            TabModelSelector selector,
-            int activeWindowId,
-            WindowAndroid window,
-            List<BackgroundSession> backgroundSessions,
-            TabDelegateFactory tabDelegateFactory,
-            List<BackgroundSession> sessionsToRemove) {
-        ThreadUtils.assertOnUiThread();
-        TabModel model = selector.getModel(/* incognito= */ false);
-        if (model == null) {
-            return 0;
-        }
-        Profile profile = model.getProfile();
-        if (profile == null || profile.isOffTheRecord()) {
-            return 0;
-        }
-
-        BackgroundTabPool pool = BackgroundTabPoolManager.acquire(profile);
-        int restoredTabCount = 0;
-        Set<Integer> usableWindowIds =
-                MultiWindowUtils.getUsableInstanceIds(PersistedInstanceType.ACTIVE);
-        try {
-            for (BackgroundSession session : backgroundSessions) {
-                Iterator<BackgroundSession.BackgroundTabData> iterator =
-                        session.getTabDataList().iterator();
-                while (iterator.hasNext()) {
-                    BackgroundSession.BackgroundTabData tabData = iterator.next();
-                    int tabWindowId = tabData.getTabWindowId();
-
-                    // A window whose task is gone can never claim its tabs back.
-                    boolean shouldRestoreIntoThisWindow =
-                            (tabWindowId == TabWindowManager.INVALID_WINDOW_ID
-                                    || tabWindowId == activeWindowId
-                                    || !usableWindowIds.contains(tabWindowId));
-
-                    if (shouldRestoreIntoThisWindow) {
-                        if (restoreSessionTab(tabData, pool, model, window, tabDelegateFactory)) {
-                            restoredTabCount++;
-                        }
-                        iterator.remove();
-                    }
-                }
-
-                if (session.getTabDataList().isEmpty()) {
-                    sessionsToRemove.add(session);
-                }
-            }
-        } finally {
-            BackgroundTabPoolManager.release(pool);
-        }
-
-        return restoredTabCount;
-    }
-
-    private static boolean restoreSessionTab(
-            BackgroundSession.BackgroundTabData tabData,
-            BackgroundTabPool pool,
-            TabModel model,
-            WindowAndroid window,
-            TabDelegateFactory tabDelegateFactory) {
-        Tab originalTab = tabData.getTab();
-        if (originalTab == null) return false;
-
-        LiveBackgroundTab liveTab = pool.getLiveTab(originalTab.getId());
-        if (liveTab != null) {
-            liveTab.attachToForeground(model, window, tabDelegateFactory);
-            return true;
-        } else if (tabData.getPlaceholderTabId() == null) {
-            if (!originalTab.isDestroyed()) {
-                ActorTabStateHelper.restoreSessionTabToForeground(
-                        originalTab,
-                        Tab.INVALID_TAB_ID,
-                        tabData.getOriginalTabIndex(),
-                        model,
-                        window,
-                        tabDelegateFactory);
-                return true;
-            }
-            return false;
-        } else {
-            Log.w(
-                    TAG,
-                    "LiveBackgroundTab %d was evicted or destroyed; skipping warm attach.",
-                    originalTab.getId());
-            Integer placeholderId = tabData.getPlaceholderTabId();
-            if (placeholderId != null) {
-                ActorTabStateHelper.removePlaceholderTab(model, placeholderId);
-            }
-            return false;
-        }
+        return WarmBackgroundTabRestorer.restoreActiveWindowBackgroundTabs(
+                selector, activeWindowId, window, backgroundSessions, tabDelegateFactory);
     }
 
     private void restoreWarmSessions() {
-        restoreWarmSessions(mBackgroundSessions);
+        WarmBackgroundTabRestorer.restoreWarmSessions(
+                mBackgroundSessions,
+                mBackgroundSessions,
+                this::removeBackgroundSessions,
+                ActorBackgroundActuationManager::flushTabStateToDisk);
     }
 
     private void restoreWarmSession(BackgroundSession session) {
-        restoreWarmSessions(Collections.singletonList(session));
+        WarmBackgroundTabRestorer.restoreWarmSessions(
+                Collections.singletonList(session),
+                mBackgroundSessions,
+                this::removeBackgroundSessions,
+                ActorBackgroundActuationManager::flushTabStateToDisk);
     }
 
-    private void restoreWarmSessions(List<BackgroundSession> targetSessions) {
-        if (targetSessions.isEmpty() || mBackgroundSessions.isEmpty()) return;
-
-        TabWindowManager windowManager = TabWindowManagerSingleton.getInstance();
-        for (Activity activity : ApplicationStatus.getRunningActivities()) {
-            if (!(activity instanceof AsyncInitializationActivity asyncActivity)) continue;
-            if (asyncActivity.isFinishing() || asyncActivity.isDestroyed()) continue;
-
-            // Only tabbed activities managed by TabWindowManager have valid window IDs;
-            // non-tabbed activities and CCTs return INVALID_WINDOW_ID and are safely skipped.
-            int windowId = windowManager.getIdForWindow(activity);
-            if (windowId == TabWindowManager.INVALID_WINDOW_ID) continue;
-
-            ActivityWindowAndroid windowAndroid = asyncActivity.getWindowAndroid();
-            if (windowAndroid == null) continue;
-
-            TabModelSelector selector = windowManager.getTabModelSelectorById(windowId);
-            if (selector == null || !selector.isTabStateInitialized()) continue;
-
-            TabDelegateFactory tabDelegateFactory =
-                    selector.getTabCreatorManager()
-                            .getTabCreator(/* incognito= */ false)
-                            .createDefaultTabDelegateFactory();
-            if (tabDelegateFactory == null) continue;
-
-            if (restoreTabsForWindow(
-                            selector,
-                            windowId,
-                            windowAndroid,
-                            targetSessions,
-                            tabDelegateFactory,
-                            /* waitDurationMs= */ 0,
-                            /* isColdStart= */ false)
-                    > 0) {
-                // Synchronously save tab state to disk upon restoring warm background
-                // sessions. When Chrome is in the background or stopped, deferred async saves
-                // may not execute before process or Foreground Service terminates, which
-                // could cause tab loss on the next cold start.
-                flushTabStateToDisk(activity);
-            }
-
-            if (mBackgroundSessions.isEmpty()) {
-                return;
-            }
-        }
-    }
-
+    // TODO(crbug.com/585189803): Move flushTabStateToDisk into WarmBackgroundTabRestorer and drop
+    // flushStateCallback once the ChromeTabbedActivity DEPS restriction is removed.
     private static void flushTabStateToDisk(Activity activity) {
         if (!(activity instanceof ChromeTabbedActivity cta)) {
             return;
@@ -717,109 +515,6 @@ public class ActorBackgroundActuationManager {
             }
         }
         return null;
-    }
-
-    private Tab createOffscreenTab(Profile profile) {
-        WindowAndroid window = OffscreenRenderingManager.getInstance().getOffscreenWindow();
-        // TODO(crbug.com/548875143): Persist TabState to disk whenever the background tab's
-        // URL/navigation updates so that on-disk state remains continuously accurate.
-        Tab tab =
-                TabBuilder.createLiveTab(profile, true)
-                        .setWindow(window)
-                        .setLaunchType(TabLaunchType.FROM_CHROME_UI)
-                        .setDelegateFactory(new ActorTabDelegateFactory())
-                        .build();
-        startOffscreenRendering(tab);
-        return tab;
-    }
-
-    private void startOffscreenRendering(Tab tab) {
-        View compositorView =
-                CompositorViewHolderSupplier.getValueOrNullFrom(tab.getWindowAndroid());
-
-        int width;
-        int height;
-        if (compositorView != null
-                && compositorView.getWidth() > 0
-                && compositorView.getHeight() > 0) {
-            width = compositorView.getWidth();
-            height = compositorView.getHeight();
-        } else {
-            // Fallback to display metrics might behave incorrectly for floating window or
-            // split screen mode, but is sufficient for this use case.
-            DisplayMetrics displayMetrics =
-                    ContextUtils.getApplicationContext().getResources().getDisplayMetrics();
-            width = displayMetrics.widthPixels;
-            height = displayMetrics.heightPixels;
-        }
-
-        OffscreenRenderingManager.getInstance().startOffscreenRendering(tab, width, height);
-    }
-
-    private void setupBackgroundTab(
-            Profile profile, String glicTriggerMessageId, Callback<@Nullable Tab> callback) {
-        ThreadUtils.assertOnUiThread();
-        Log.d(TAG, "Provisioning offscreen tab for message: %s", glicTriggerMessageId);
-        Tab tab = createOffscreenTab(profile);
-        mPendingActuationTabs.put(glicTriggerMessageId, tab);
-
-        loadBlankThenCallback(
-                tab,
-                (preparedTab) -> {
-                    if (!mPendingActuationTabs.containsKey(glicTriggerMessageId)) {
-                        return;
-                    }
-                    callback.onResult(preparedTab);
-                });
-    }
-
-    private void loadBlankThenCallback(Tab tab, Callback<@Nullable Tab> callback) {
-        ThreadUtils.assertOnUiThread();
-        TabObserver observer =
-                new TabObserver() {
-                    private boolean mInitialLoadFinished;
-
-                    @Override
-                    public void onPageLoadFinished(Tab tab, GURL url) {
-                        Log.d(TAG, "Actor: Offscreen page load finished: %s", url.getSpec());
-                        if (!mInitialLoadFinished) {
-                            mInitialLoadFinished = true;
-                            callback.onResult(tab);
-                            tab.removeObserver(this);
-                        }
-                    }
-
-                    @Override
-                    public void onPageLoadFailed(Tab tab, int errorCode) {
-                        Log.d(TAG, "Actor: Offscreen page load failed, error: %d", errorCode);
-                        if (!mInitialLoadFinished) {
-                            mInitialLoadFinished = true;
-                            callback.onResult(null);
-                            tab.removeObserver(this);
-                        }
-                    }
-
-                    @Override
-                    public void onCrash(Tab tab) {
-                        Log.d(TAG, "Actor: Offscreen tab crashed");
-                        if (!mInitialLoadFinished) {
-                            mInitialLoadFinished = true;
-                            callback.onResult(null);
-                            tab.removeObserver(this);
-                        }
-                    }
-
-                    @Override
-                    public void onDestroyed(Tab tab) {
-                        if (!mInitialLoadFinished) {
-                            mInitialLoadFinished = true;
-                            callback.onResult(null);
-                        }
-                        tab.removeObserver(this);
-                    }
-                };
-        tab.addObserver(observer);
-        tab.loadUrl(new LoadUrlParams("about:blank"));
     }
 
     private void notifySetupFailed(Profile profile, String glicTriggerMessageId) {

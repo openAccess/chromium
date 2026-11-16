@@ -43,8 +43,7 @@ class OtpSuggestionDropdownDispatcher {
   ~OtpSuggestionDropdownDispatcher();
 
   // Triggers a proactive suggestion for `target` with `candidate` if a
-  // strictly newer OTP (with a different value or never offered yet) has
-  // arrived.
+  // strictly newer OTP has arrived.
   // If `can_show_on_screen_now` is false (e.g. tab hidden or window
   // unfocused), records `target` as pending to be retried when the tab becomes
   // active.
@@ -61,6 +60,12 @@ class OtpSuggestionDropdownDispatcher {
   // Returns true if `field` currently has a deferred proactive trigger waiting
   // for the tab/window to become active.
   bool HasPendingTrigger(FieldGlobalId field) const;
+
+  // Returns true if `identity` is suppressed on `field` because the same or a
+  // newer OTP has already been offered or shown on `field`, i.e. `identity` is
+  // not strictly newer than the last offered OTP.
+  bool IsSuppressedByDeduplication(FieldGlobalId field,
+                                   const OtpTokenIdentity& identity) const;
 
   // Records that `identity` was displayed in an OTP suggestion popup for
   // `field` (`OnSuggestionsShown()` with an OTP suggestion type) so proactive

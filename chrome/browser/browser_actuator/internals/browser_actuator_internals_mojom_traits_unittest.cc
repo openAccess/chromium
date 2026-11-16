@@ -9,7 +9,7 @@
 
 #include "base/time/time.h"
 #include "chrome/browser/browser_actuator/internals/browser_actuator_internals.mojom.h"
-#include "components/browser_actuator/internal/transport/session_stream_recorder.h"
+#include "components/stream_transport/internal/session_stream_recorder.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -19,33 +19,79 @@ namespace {
 
 namespace mojom = browser_actuator_internals::mojom;
 
-transport::SessionEventSnapshot MakeEvent(bool is_downstream) {
-  transport::SessionEventSnapshot event;
+stream_transport::SessionEventSnapshot MakeEvent(bool is_downstream) {
+  stream_transport::SessionEventSnapshot event;
   event.timestamp = base::Time::FromMillisecondsSinceUnixEpoch(1'000'000);
   event.is_downstream = is_downstream;
   event.payload_types = {"Control", "Unspecified"};
   event.message = R"({"session_id":"s1"})";
   event.message_truncated = true;
+  event.http_response_code = is_downstream ? 0 : 200;
+  event.downstream_status =
+      is_downstream ? stream_transport::DownstreamDeliveryStatus::kSuccess
+                    : stream_transport::DownstreamDeliveryStatus::kUnknown;
   return event;
 }
 
 TEST(BrowserActuatorInternalsMojomTraitsTest, RecordedEventRoundTrip) {
-  for (bool is_downstream : {true, false}) {
-    transport::SessionEventSnapshot input = MakeEvent(is_downstream);
-    transport::SessionEventSnapshot output;
+  // Test upstream round-trips with pending status (0), success, error, and -1.
+  for (int http_code : {0, 200, 500, -1}) {
+    stream_transport::SessionEventSnapshot input =
+        MakeEvent(/*is_downstream=*/false);
+    input.http_response_code = http_code;
+    stream_transport::SessionEventSnapshot output;
     ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::RecordedEvent>(
         input, output));
     EXPECT_EQ(output.timestamp, input.timestamp);
-    EXPECT_EQ(output.is_downstream, is_downstream);
+    EXPECT_FALSE(output.is_downstream);
     EXPECT_THAT(output.payload_types,
                 testing::ElementsAre("Control", "Unspecified"));
     EXPECT_EQ(output.message, input.message);
     EXPECT_TRUE(output.message_truncated);
+    EXPECT_EQ(output.http_response_code, http_code);
+    EXPECT_EQ(output.downstream_status,
+              stream_transport::DownstreamDeliveryStatus::kUnknown);
+  }
+
+  // Test downstream round-trips with kUnknown, kSuccess, and kFailure.
+  for (auto status : {stream_transport::DownstreamDeliveryStatus::kUnknown,
+                      stream_transport::DownstreamDeliveryStatus::kSuccess,
+                      stream_transport::DownstreamDeliveryStatus::kFailure}) {
+    stream_transport::SessionEventSnapshot input =
+        MakeEvent(/*is_downstream=*/true);
+    input.downstream_status = status;
+    stream_transport::SessionEventSnapshot output;
+    ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::RecordedEvent>(
+        input, output));
+    EXPECT_EQ(output.timestamp, input.timestamp);
+    EXPECT_TRUE(output.is_downstream);
+    EXPECT_THAT(output.payload_types,
+                testing::ElementsAre("Control", "Unspecified"));
+    EXPECT_EQ(output.message, input.message);
+    EXPECT_TRUE(output.message_truncated);
+    EXPECT_EQ(output.http_response_code, 0);
+    EXPECT_EQ(output.downstream_status, status);
+  }
+}
+
+TEST(BrowserActuatorInternalsMojomTraitsTest,
+     DownstreamDeliveryStatusEnumTraits) {
+  for (auto status : {stream_transport::DownstreamDeliveryStatus::kUnknown,
+                      stream_transport::DownstreamDeliveryStatus::kSuccess,
+                      stream_transport::DownstreamDeliveryStatus::kFailure}) {
+    auto mojom_status = mojo::EnumTraits<
+        mojom::DownstreamDeliveryStatus,
+        stream_transport::DownstreamDeliveryStatus>::ToMojom(status);
+    auto round_trip = mojo::EnumTraits<
+        mojom::DownstreamDeliveryStatus,
+        stream_transport::DownstreamDeliveryStatus>::FromMojom(mojom_status);
+    ASSERT_TRUE(round_trip.has_value());
+    EXPECT_EQ(*round_trip, status);
   }
 }
 
 TEST(BrowserActuatorInternalsMojomTraitsTest, SessionSummaryRoundTrip) {
-  transport::SessionSnapshot input;
+  stream_transport::SessionSnapshot input;
   input.session_id = "session_1";
   input.start_wall_time = base::Time::FromMillisecondsSinceUnixEpoch(500'000);
   input.end_wall_time = input.start_wall_time + base::Seconds(10);
@@ -55,7 +101,7 @@ TEST(BrowserActuatorInternalsMojomTraitsTest, SessionSummaryRoundTrip) {
   input.events.push_back(MakeEvent(/*is_downstream=*/true));
   input.events.push_back(MakeEvent(/*is_downstream=*/false));
 
-  transport::SessionSnapshot output;
+  stream_transport::SessionSnapshot output;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::SessionSummary>(
       input, output));
   EXPECT_EQ(output.session_id, "session_1");
@@ -70,11 +116,11 @@ TEST(BrowserActuatorInternalsMojomTraitsTest, SessionSummaryRoundTrip) {
 }
 
 TEST(BrowserActuatorInternalsMojomTraitsTest, ActiveSessionHasNoEndTime) {
-  transport::SessionSnapshot input;
+  stream_transport::SessionSnapshot input;
   input.session_id = "active";
   input.start_wall_time = base::Time::FromMillisecondsSinceUnixEpoch(500'000);
 
-  transport::SessionSnapshot output;
+  stream_transport::SessionSnapshot output;
   output.end_wall_time = base::Time::Now();
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::SessionSummary>(
       input, output));
@@ -88,12 +134,12 @@ TEST(BrowserActuatorInternalsMojomTraitsTest, CountsSaturateAtUint32Max) {
   if constexpr (sizeof(size_t) <= sizeof(uint32_t)) {
     GTEST_SKIP() << "size_t cannot exceed uint32_t on this platform.";
   }
-  transport::SessionSnapshot input;
+  stream_transport::SessionSnapshot input;
   input.total_downstream_messages = kHuge;
   input.total_upstream_messages = kHuge;
   input.total_events = kHuge;
 
-  transport::SessionSnapshot output;
+  stream_transport::SessionSnapshot output;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::SessionSummary>(
       input, output));
   EXPECT_EQ(output.total_downstream_messages,

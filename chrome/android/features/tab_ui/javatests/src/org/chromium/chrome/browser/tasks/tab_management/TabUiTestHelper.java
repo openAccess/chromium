@@ -59,6 +59,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import org.hamcrest.Matcher;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.Token;
 import org.chromium.base.test.transit.TrafficControl;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Criteria;
@@ -75,6 +76,7 @@ import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_ui.TabCardThemeUtil;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
@@ -318,44 +320,40 @@ public class TabUiTestHelper {
                                 isDescendantOfA(withId(getTabSwitcherAncestorId(context))),
                                 withId(R.id.tab_list_recycler_view)))
                 .perform(
-                        new ViewAction() {
-                            @Override
-                            public Matcher<View> getConstraints() {
-                                return isDisplayed();
-                            }
+                        RecyclerViewActions.actionOnItemAtPosition(
+                                index,
+                                new ViewAction() {
+                                    @Override
+                                    public Matcher<View> getConstraints() {
+                                        return isDisplayed();
+                                    }
 
-                            @Override
-                            public String getDescription() {
-                                return "close tab with index " + index;
-                            }
+                                    @Override
+                                    public String getDescription() {
+                                        return "close tab with index " + index;
+                                    }
 
-                            @Override
-                            public void perform(UiController uiController, View view) {
-                                RecyclerView recyclerView = (RecyclerView) view;
-                                RecyclerView.ViewHolder viewHolder =
-                                        recyclerView.findViewHolderForAdapterPosition(index);
-                                assert viewHolder != null;
+                                    @Override
+                                    public void perform(UiController uiController, View view) {
+                                        View actionButton = view.findViewById(R.id.action_button);
+                                        if (!performMouseClick) {
+                                            actionButton.performClick();
+                                            return;
+                                        }
 
-                                View actionButton =
-                                        viewHolder.itemView.findViewById(R.id.action_button);
-                                if (!performMouseClick) {
-                                    actionButton.performClick();
-                                    return;
-                                }
-
-                                long motionDownTime = SystemClock.uptimeMillis();
-                                actionButton.dispatchTouchEvent(
-                                        MotionEventTestUtils.createMouseMotionEvent(
-                                                motionDownTime,
-                                                /* eventTime= */ motionDownTime,
-                                                MotionEvent.ACTION_DOWN));
-                                actionButton.dispatchTouchEvent(
-                                        MotionEventTestUtils.createMouseMotionEvent(
-                                                motionDownTime,
-                                                /* eventTime= */ motionDownTime + 200,
-                                                MotionEvent.ACTION_UP));
-                            }
-                        });
+                                        long motionDownTime = SystemClock.uptimeMillis();
+                                        actionButton.dispatchTouchEvent(
+                                                MotionEventTestUtils.createMouseMotionEvent(
+                                                        motionDownTime,
+                                                        /* eventTime= */ motionDownTime,
+                                                        MotionEvent.ACTION_DOWN));
+                                        actionButton.dispatchTouchEvent(
+                                                MotionEventTestUtils.createMouseMotionEvent(
+                                                        motionDownTime,
+                                                        /* eventTime= */ motionDownTime + 200,
+                                                        MotionEvent.ACTION_UP));
+                                    }
+                                }));
     }
 
     /**
@@ -513,15 +511,36 @@ public class TabUiTestHelper {
      */
     public static void createTabGroup(
             ChromeTabbedActivity cta, boolean isIncognito, List<Tab> tabs) {
-        if (tabs.size() == 0) return;
+        if (tabs.isEmpty()) return;
         TabModel tabModel = cta.getTabModelSelector().getModel(isIncognito);
-        Tab rootTab = tabs.get(0);
-        for (int i = 1; i < tabs.size(); i++) {
-            Tab tab = tabs.get(i);
-            assertEquals(isIncognito, tab.isIncognito());
+        Tab destinationTab = tabs.get(0);
+        if (tabs.size() == 1) {
             ThreadUtils.runOnUiThreadBlocking(
-                    () -> tabModel.mergeTabsToGroup(tab.getId(), rootTab.getId()));
+                    () -> {
+                        assertEquals(isIncognito, destinationTab.isIncognito());
+                        tabModel.createSingleTabGroup(destinationTab);
+                    });
+            return;
         }
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    assertEquals(isIncognito, destinationTab.isIncognito());
+                    List<Tab> tabsToMerge = new ArrayList<>();
+                    for (int i = 1; i < tabs.size(); i++) {
+                        Tab tab = tabs.get(i);
+                        assertEquals(isIncognito, tab.isIncognito());
+                        Token groupId = tab.getTabGroupId();
+                        if (groupId != null) {
+                            tabsToMerge.addAll(tabModel.getTabsInGroup(groupId));
+                        } else {
+                            tabsToMerge.add(tab);
+                        }
+                    }
+                    tabModel.mergeListOfTabsToGroup(
+                            tabsToMerge,
+                            destinationTab,
+                            TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
+                });
     }
 
     /**

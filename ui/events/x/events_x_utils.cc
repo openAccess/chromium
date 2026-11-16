@@ -28,7 +28,6 @@
 #include "ui/events/pointer_details.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/extension_manager.h"
 #include "ui/gfx/x/xproto.h"
 
@@ -194,9 +193,14 @@ int GetEventFlagsForButton(int button) {
       return ui::EF_MIDDLE_MOUSE_BUTTON;
     case 3:
       return ui::EF_RIGHT_MOUSE_BUTTON;
+    // X buttons 8 and 9 come from BTN_SIDE and BTN_EXTRA; 10 and 11 come from
+    // BTN_FORWARD and BTN_BACK with the evdev and libinput drivers. Map them
+    // the same way the Wayland backend maps those evdev codes.
     case 8:
+    case 11:
       return ui::EF_BACK_MOUSE_BUTTON;
     case 9:
+    case 10:
       return ui::EF_FORWARD_MOUSE_BUTTON;
     default:
       return 0;

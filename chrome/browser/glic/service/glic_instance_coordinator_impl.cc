@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <string>
+#include <utility>
 
 #include "base/check.h"
 #include "base/check_deref.h"
@@ -27,6 +29,7 @@
 #include "chrome/browser/glic/common/glic_tab_observer.h"
 #include "chrome/browser/glic/common/instance_independent_hotkey_manager.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/glic_pref_names_internal.h"
 #include "chrome/browser/glic/host/context/glic_active_instance_sharing_manager.h"
 #include "chrome/browser/glic/host/context/glic_sharing_utils.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
@@ -41,6 +44,7 @@
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/service/glic_instance_helper.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
+#include "chrome/browser/glic/service/glic_invoke_preparation.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_coordinator_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/glic/service/metrics/glic_invoke_metrics.h"
@@ -84,25 +88,8 @@ GlicTabRestoreData* GetTabRestoreData(const TabCreationEvent& creation_event) {
 
 bool IsEligibleForHibernation(const GlicInstanceImpl* instance) {
   return !instance->IsHibernated() && !instance->IsActuating() &&
+         !instance->HasActiveExperimentalTriggeringSession() &&
          !instance->IsShowing();
-}
-
-// Whether `target.live_mode_behavior` can have any effect on an invocation
-// targeting `target.surface`. Apart from `kFail`, these behaviors work by
-// choosing between a tab's side panel and the floaty, so they need a surface
-// that resolves to one of those up front. `LastActiveOrNew` instead resolves
-// to whichever surface the instance is already on, so nothing can steer it.
-bool CanLiveModeBehaviorTakeEffect(const Target& target) {
-  switch (target.live_mode_behavior) {
-    case LiveModeBehavior::kProceedInLiveMode:
-    case LiveModeBehavior::kFail:
-      return true;
-    case LiveModeBehavior::kForceSidePanelTextMode:
-      return !std::holds_alternative<Floating>(target.surface) &&
-             !std::holds_alternative<LastActiveOrNew>(target.surface);
-    case LiveModeBehavior::kForceFloatingTextMode:
-      return !std::holds_alternative<LastActiveOrNew>(target.surface);
-  }
 }
 
 constexpr base::MemoryConsumerTraits kGlicInstanceCoordinatorTraits(
@@ -120,6 +107,12 @@ constexpr base::MemoryConsumerTraits kGlicInstanceCoordinatorTraits(
     base::MemoryConsumerTraits::RecreateMemoryCost::kExpensive);
 }  // namespace
 
+// static
+GlicInstanceCoordinator* GlicInstanceCoordinator::Get(Profile* profile) {
+  auto* glic_service = GlicKeyedService::Get(profile);
+  return glic_service ? &glic_service->instance_coordinator() : nullptr;
+}
+
 GlicInstanceCoordinatorImpl::GlicInstanceCoordinatorImpl(
     Profile* profile,
     signin::IdentityManager* identity_manager,
@@ -132,6 +125,7 @@ GlicInstanceCoordinatorImpl::GlicInstanceCoordinatorImpl(
       service_(service),
       contextual_cueing_service_(contextual_cueing_service),
       memory_consumer_registration_(
+          std::in_place,
           kMemoryConsumerName,
           kGlicInstanceCoordinatorTraits,
           this,
@@ -157,10 +151,16 @@ GlicInstanceCoordinatorImpl::GlicInstanceCoordinatorImpl(
       this, profile_, enabling);
   onboarding_tracker_ =
       std::make_unique<GlicOnboardingTracker>(profile_, enabling);
-  metrics_.StartPeriodicMemoryMetricsRecording();
+  wayfinding_controller_ = std::make_unique<GlicWayfindingController>(
+      profile_->GetPrefs(),
+      /*was_opened_before=*/!profile_->GetPrefs()
+          ->GetTime(prefs::kGlicLastInvokedTime)
+          .is_null());
+  metrics_.StartPeriodicMetricsRecording();
 }
 
 GlicInstanceCoordinatorImpl::~GlicInstanceCoordinatorImpl() {
+  metrics_.OnShutdown();
   CHECK(active_instance_sharing_manager_);
   active_instance_sharing_manager_->SetActiveSharingManager(nullptr);
 
@@ -207,13 +207,6 @@ void GlicInstanceCoordinatorImpl::OnInstanceActivationChanged(
   }
   NotifyActiveInstanceChanged();
   ComputeContentAccessIndicator();
-}
-
-void GlicInstanceCoordinatorImpl::OnInstanceWillAwaken() {
-  // Before an existing instance creates its WebUI container and awakens,
-  // enforce the max awake limit so that older background instances are pruned
-  // to make room for this one if we are already at capacity.
-  ApplyMaxAwakeInstancesLimit();
 }
 
 void GlicInstanceCoordinatorImpl::OnInstanceVisibilityChanged(
@@ -276,6 +269,9 @@ GlicInstanceCoordinatorImpl::TakeInvokeHandlers(GlicInstance* instance) {
 
 void GlicInstanceCoordinatorImpl::OnInvoked(mojom::InvocationSource source,
                                             ukm::SourceId source_id) {
+  if (wayfinding_controller_) {
+    wayfinding_controller_->OnInvoke(source);
+  }
   if (onboarding_tracker_) {
     onboarding_tracker_->OnInvoke(source, source_id);
   }
@@ -372,7 +368,8 @@ GlicInstanceCoordinatorImpl::GetAllUnhibernatedWebContents() {
       result;
   for (const auto& entry : instances_) {
     if (entry.second && !entry.second->IsHibernated()) {
-      result.push_back({entry.second->host().webui_contents(),
+      auto* manager = entry.second->host().contents_manager();
+      result.push_back({manager ? manager->webui_contents() : nullptr,
                         entry.second->host().web_client_contents()});
     }
   }
@@ -398,6 +395,17 @@ bool GlicInstanceCoordinatorImpl::IsAnyPanelShowing() const {
 bool GlicInstanceCoordinatorImpl::IsConversationPresent(
     const std::string& conversation_id) const {
   return !!GetInstanceImplForConversationId(conversation_id);
+}
+
+bool GlicInstanceCoordinatorImpl::IsConversationPanelShowingForTab(
+    const std::string& conversation_id,
+    const tabs::TabInterface* tab) const {
+  if (const GlicInstanceImpl* instance =
+          GetInstanceImplForConversationId(conversation_id)) {
+    return instance->IsActiveEmbedder(FloatingEmbedderKey{}) ||
+           (tab && instance->IsShowingInSidePanel(*tab));
+  }
+  return false;
 }
 
 GlicInstanceCoordinator::ActivateTabResult
@@ -462,11 +470,6 @@ GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForTab(
   return GetInstanceImplForTab(tab);
 }
 
-GlicInstance* GlicInstanceCoordinatorImpl::GetInstanceForTabGroup(
-    tab_groups::TabGroupId group_id) const {
-  return GetInstanceImplForTabGroup(group_id);
-}
-
 GlicInstance* GlicInstanceCoordinatorImpl::ShowInstanceForTabGroup(
     tab_groups::TabGroupId group_id) {
   GlicInstanceImpl* existing_instance = GetInstanceImplForTabGroup(group_id);
@@ -507,12 +510,8 @@ bool GlicInstanceCoordinatorImpl::MaybeInvoke(BrowserWindowInterface* bwi,
   }
 
   bool panel_closed = !IsPanelShowingForBrowser(*target_bwi);
-  bool fre_override_compatible =
-      !GlicEnabling::HasConsentedForProfile(profile_);
 
-  if (fre_override_compatible && panel_closed &&
-      (base::FeatureList::IsEnabled(features::kGlicMessageFirstFre) ||
-       base::FeatureList::IsEnabled(features::kGlicActionFirstFRE))) {
+  if (panel_closed && ShouldUseTrustFirstInlineFre(profile_)) {
     GlicInvokeOptions options(source);
     if (auto* active_tab = TabListInterface::From(target_bwi)->GetActiveTab()) {
       options.target = Target(*active_tab);
@@ -655,6 +654,9 @@ bool GlicInstanceCoordinatorImpl::MaybeStartWarming(
 }
 
 void GlicInstanceCoordinatorImpl::Shutdown() {
+  memory_consumer_registration_.reset();
+  metrics_.OnShutdown();
+
   // Take ownership of the handlers to avoid iterator invalidation when
   // Cancel() removes them from invoke_handlers_.
   std::multimap<GlicInstance*, std::unique_ptr<GlicInvokeHandler>> handlers(
@@ -674,12 +676,6 @@ void GlicInstanceCoordinatorImpl::Shutdown() {
   }
   web_contents_warming_pool_->Shutdown();
   hotkey_manager_.reset();
-}
-
-void GlicInstanceCoordinatorImpl::Close(const CloseOptions& options) {
-  // TODO(crbug.com/450286204): Determine whether there are cases where this
-  // should be able to close a side panel UI instead.
-  CloseFloaty(options);
 }
 
 void GlicInstanceCoordinatorImpl::RemoveAllInstances(
@@ -731,6 +727,12 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
       base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
           FROM_HERE, base::BindOnce(std::move(options.on_error), error));
     }
+    if (options.on_error_with_diagnostics_) {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(std::move(options.on_error_with_diagnostics_), error,
+                         std::string()));
+    }
   };
 
   if (!GlicEnabling::IsEnabledForProfile(profile_)) {
@@ -749,33 +751,16 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
     }
   }
 
-  if (const auto* tab_handle =
-          std::get_if<tabs::TabHandle>(&options.target.surface)) {
-    if (tab_handle->raw_value() == tabs::TabHandle::NullValue) {
-      metrics->RecordError(GlicInvokeError::kInvalidTab);
-      notify_error(GlicInvokeError::kInvalidTab);
-      return nullptr;
-    }
-  }
-
   // Validate against the requested surface, before it gets resolved and
   // rewritten below: a behavior that could never take effect is a caller
   // configuration error, whether or not an instance happens to be live.
   // TODO(b/559214349): Expose a way for callers to ask up front whether an
   // invocation would be rejected here or by the `kFail` check below, so that
   // UI entry points can be disabled or hidden instead of failing on click.
-  if (!CanLiveModeBehaviorTakeEffect(options.target)) {
-    metrics->RecordError(GlicInvokeError::kInvalidConfiguration);
-    notify_error(GlicInvokeError::kInvalidConfiguration);
-    return nullptr;
-  }
-
-  if (options.RequiresContextClipboardPolicyCheck() &&
-      options.RequiresPromptClipboardPolicyCheck()) {
-    metrics->RecordError(GlicInvokeError::kInvalidConfiguration);
-    if (options.on_error) {
-      std::move(options.on_error).Run(GlicInvokeError::kInvalidConfiguration);
-    }
+  if (std::optional<GlicInvokeError> validation_error =
+          ValidateInvokeOptions(options)) {
+    metrics->RecordError(*validation_error);
+    notify_error(*validation_error);
     return nullptr;
   }
 
@@ -868,39 +853,24 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
   // never in live mode, so this only affects invocations that joined an
   // existing conversation. The interaction mode is sticky once reported by the
   // client, so a hidden instance doesn't count as being in live mode.
-  const bool is_showing_live_mode =
-      instance->IsShowing() && instance->IsLiveMode();
-  if (is_showing_live_mode &&
-      options.target.live_mode_behavior == LiveModeBehavior::kFail) {
-    metrics->RecordError(GlicInvokeError::kLiveModeActive);
-    notify_error(GlicInvokeError::kLiveModeActive);
+  const base::expected<bool, GlicInvokeError> keep_in_floaty =
+      ResolveFloatyPreservation(
+          /*is_showing_live_mode=*/instance->IsShowing() &&
+              instance->IsLiveMode(),
+          /*is_floating=*/instance->IsActiveEmbedder(FloatingEmbedderKey{}),
+          options);
+  if (!keep_in_floaty.has_value()) {
+    metrics->RecordError(keep_in_floaty.error());
+    notify_error(keep_in_floaty.error());
     return nullptr;
   }
 
-  const bool is_floating = instance->IsActiveEmbedder(FloatingEmbedderKey{});
-  bool keep_in_floaty = false;
-  if (is_showing_live_mode) {
-    switch (options.target.live_mode_behavior) {
-      case LiveModeBehavior::kProceedInLiveMode:
-        // Live mode runs in the floaty, so carrying on in live mode means
-        // leaving the conversation where it is.
-        keep_in_floaty = is_floating;
-        break;
-      case LiveModeBehavior::kForceFloatingTextMode:
-        // Unlike the above, this pulls the conversation into the floaty.
-        keep_in_floaty = true;
-        break;
-      case LiveModeBehavior::kForceSidePanelTextMode:
-      case LiveModeBehavior::kFail:
-        break;
-    }
-  } else {
-    keep_in_floaty = options.preserve_active_surface && is_floating;
-  }
+  const GlicInvokeHandler::ResolvedTarget initial_resolved_target =
+      resolved_target;
 
   // Leave the conversation in the floaty instead of pulling it into the
   // targeted tab's side panel.
-  if (keep_in_floaty && tab) {
+  if (*keep_in_floaty && tab) {
     // A `DefaultConversation` only resolves to a floating instance when the tab
     // is already bound to it. An explicitly targeted one may still need to
     // adopt the tab.
@@ -920,6 +890,8 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
   // Now that the instance is fully resolved, we can safely resolve the
   // `LastActiveOrNew` surface and mutate `options.target.surface` to point to
   // the appropriate final target, before running the surface resolver.
+  const bool had_last_active_or_new =
+      std::holds_alternative<LastActiveOrNew>(options.target.surface);
   if (auto* last_active_or_new =
           std::get_if<LastActiveOrNew>(&options.target.surface)) {
     std::optional<Target::Surface> last_active =
@@ -934,6 +906,17 @@ base::WeakPtr<GlicInstanceImpl> GlicInstanceCoordinatorImpl::InvokeInternal(
     if (!resolve_surface()) {
       return nullptr;
     }
+  }
+
+  const GlicInvokeHandler::ResolvedTarget& target_for_pinning =
+      had_last_active_or_new ? resolved_target : initial_resolved_target;
+  MaybePopulateSelectedTabsToPin(
+      profile_, instance->GetSharingManagerInternal(), target_for_pinning,
+      auto_submit_passkey.has_value(), options);
+
+  // Route eligible profiles to Android native FRE.
+  if (CanUseNativeFre(options, profile_)) {
+    options.fre_override = mojom::FreOverride::kNativeFre;
   }
 
   // Only invocations that send an invoke message to the web client conflict
@@ -1015,16 +998,6 @@ void GlicInstanceCoordinatorImpl::CloseAndShutdownInstanceWithFrame(
   }
 }
 
-void GlicInstanceCoordinatorImpl::CloseInstanceWithFrame(
-    content::RenderFrameHost* render_frame_host) {
-  for (auto& [id, instance] : instances_) {
-    if (instance->host().IsWebContentPresentAndMatches(render_frame_host)) {
-      instance->host().Close();
-      return;
-    }
-  }
-}
-
 void GlicInstanceCoordinatorImpl::ArchiveInstanceWithFrame(
     content::RenderFrameHost* render_frame_host) {
   for (auto& [id, instance] : instances_) {
@@ -1035,14 +1008,10 @@ void GlicInstanceCoordinatorImpl::ArchiveInstanceWithFrame(
   }
 }
 
-void GlicInstanceCoordinatorImpl::CloseFloaty(const CloseOptions& options) {
+void GlicInstanceCoordinatorImpl::CloseFloatingPanel() {
   if (auto* floaty_instance = GetInstanceWithFloaty()) {
-    floaty_instance->Close(FloatingEmbedderKey{}, options);
+    floaty_instance->Close(FloatingEmbedderKey{});
   }
-}
-
-bool GlicInstanceCoordinatorImpl::IsDetached() const {
-  return GetInstanceWithFloaty() != nullptr;
 }
 
 bool GlicInstanceCoordinatorImpl::IsPanelShowingForBrowser(
@@ -1062,6 +1031,12 @@ base::CallbackListSubscription
 GlicInstanceCoordinatorImpl::AddGlobalShowHideCallback(
     base::RepeatingClosure callback) {
   return global_show_hide_callback_list_.Add(std::move(callback));
+}
+
+base::CallbackListSubscription
+GlicInstanceCoordinatorImpl::AddInstanceCreatedCallback(
+    InstanceCreatedCallback callback) {
+  return instance_created_callback_list_.Add(std::move(callback));
 }
 
 void GlicInstanceCoordinatorImpl::Reload(
@@ -1260,6 +1235,7 @@ GlicInstanceImpl* GlicInstanceCoordinatorImpl::CreateGlicInstance(
   }
 
   metrics_.RecordCountOnCreation();
+  instance_created_callback_list_.Notify(instance_ptr);
 
   return instance_ptr;
 }
@@ -1309,9 +1285,7 @@ void GlicInstanceCoordinatorImpl::InvokeAndLogToggle(
   GlicInvokeOptions invoke_options(source);
   invoke_options.target.surface = std::move(surface);
   invoke_options.fre_completion_wait_mode = FreCompletionWaitMode::kNever;
-  if (!GlicEnabling::HasConsentedForProfile(profile_) &&
-      (base::FeatureList::IsEnabled(features::kGlicMessageFirstFre) ||
-       base::FeatureList::IsEnabled(features::kGlicActionFirstFRE))) {
+  if (ShouldUseTrustFirstInlineFre(profile_)) {
     invoke_options.fre_override = mojom::FreOverride::kTrustFirstInline;
   }
   auto weak_instance = InvokeInternal(std::nullopt, std::move(invoke_options),
@@ -1526,6 +1500,10 @@ void GlicInstanceCoordinatorImpl::ContextAccessIndicatorChanged(
 
 std::unique_ptr<GlicWebContentsManager>
 GlicInstanceCoordinatorImpl::CreateWebContentsManager() {
+  // Before an existing instance creates its WebUI container and awakens,
+  // enforce the max awake limit so that older background instances are pruned
+  // to make room for this one if we are already at capacity.
+  ApplyMaxAwakeInstancesLimit();
   metrics_.RecordCountAwakeOnContentsCreated();
   return web_contents_warming_pool_->TakeContainer();
 }
@@ -1552,7 +1530,7 @@ GlicInstanceImpl* GlicInstanceCoordinatorImpl::GetInstanceWithFloaty() const {
 }
 
 void GlicInstanceCoordinatorImpl::OnWillCreateFloaty() {
-  CloseFloaty();
+  CloseFloatingPanel();
 }
 
 void GlicInstanceCoordinatorImpl::OnTabEvent(const GlicTabEvent& event) {
@@ -1788,14 +1766,6 @@ void GlicInstanceCoordinatorImpl::MaybeStopListeningFloaty(
       mojom::MicrophoneStatus::kListening) {
     floaty_instance->host().StopMicrophone(base::DoNothing());
   }
-}
-
-std::string GlicInstanceCoordinatorImpl::DescribeForTesting() {
-  std::stringstream ss;
-  for (auto& inst : instances_) {
-    ss << inst.second->DescribeForTesting();  // IN-TEST
-  }
-  return ss.str();
 }
 
 Profile* GlicInstanceCoordinatorImpl::GetProfile() const {

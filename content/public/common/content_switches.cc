@@ -133,9 +133,6 @@ const char kDisableGestureRequirementForPresentation[] =
 // then the GPU process won't launch.
 const char kDisableGpu[]                    = "disable-gpu";
 
-// Prevent the compositor from using its GPU implementation.
-const char kDisableGpuCompositing[]         = "disable-gpu-compositing";
-
 // Disable proactive early init of GPU process.
 const char kDisableGpuEarlyInit[]           = "disable-gpu-early-init";
 
@@ -575,14 +572,6 @@ const char kProcessType[]                   = "type";
 // Handle to shared memory containing the pseudonymization salt, passed to
 // child processes at launch. See https://crbug.com/40850085.
 const char kPseudonymizationSaltHandle[] = "pseudonymization-salt-handle";
-
-// Reduce the accept-language for HTTP header and JS navigator.languages, and
-// only most preferred language: https://github.com/Tanych/accept-language.
-const char kReduceAcceptLanguage[] = "reduce-accept-language";
-
-// Reduce the accept-language for HTTP header, and only send most preferred
-// language in the request header: https://github.com/Tanych/accept-language.
-const char kReduceAcceptLanguageHTTP[] = "reduce-accept-language-http";
 
 // Reduce the minor version number in the User-Agent string. This flag
 // implements phase 4 of User-Agent reduction:

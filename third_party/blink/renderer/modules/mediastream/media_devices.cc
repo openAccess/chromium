@@ -776,12 +776,6 @@ ScriptPromise<MediaStream> MediaDevices::getDisplayMedia(
       network::mojom::PermissionsPolicyFeature::kDisplayCapture,
       ReportOptions::kReportOnFailure);
 
-  base::UmaHistogramEnumeration(
-      "Media.Ui.GetDisplayMedia.DisplayCapturePolicyResult",
-      capture_allowed_by_permissions_policy
-          ? DisplayCapturePolicyResult::kAllowed
-          : DisplayCapturePolicyResult::kDisallowed);
-
   if (!capture_allowed_by_permissions_policy) {
     resolver->RecordAndThrowDOMException(
         exception_state, DOMExceptionCode::kNotAllowedError,
@@ -1616,8 +1610,10 @@ void MediaDevices::CloseFocusWindowOfOpportunity(
     return;
   }
 
-  if (capture_controller) {
-    capture_controller->FinalizeFocusDecision();
+  if (capture_controller && capture_controller->FinalizeFocusDecision()) {
+    // An explicit focus decision has already been dispatched on a separate Mojo
+    // pipe. Avoid racing it with the automatic default focus decision.
+    return;
   }
 
   GetDispatcherHost(window->GetFrame()).CloseFocusWindowOfOpportunity(id);

@@ -24,7 +24,6 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
 import org.chromium.chrome.browser.suggestions.SiteSuggestion;
@@ -33,7 +32,9 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.util.ChromeTabUtils;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
@@ -46,10 +47,7 @@ import java.util.List;
 
 /** Tests to check memory leak of the native android New Tab Page. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    "disable-features=IPH_FeedHeaderMenu"
-})
+@CommandLineFlags.Add("disable-features=IPH_FeedHeaderMenu")
 @Batch(Batch.PER_CLASS)
 // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
 @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
@@ -63,12 +61,13 @@ public class NewTabPageMemoryLeakTest {
     @Rule public SuggestionsDependenciesRule mSuggestionsDeps = new SuggestionsDependenciesRule();
     @Rule public SigninTestRule mSigninTestRule = new SigninTestRule();
 
+    private CtaPageStation mPage;
     private NewTabPage mNtp;
 
     @Before
     public void setUp() throws Exception {
         ComposeplateUtils.setIsEnabledForTesting(true);
-        mActivityTestRule.startOnBlankPage();
+        WebPageStation blankPage = mActivityTestRule.startOnBlankPage();
         NewTabPageTestUtils.fakeGoogleAiModeButtonUiConfig();
         var templateUrlService =
                 ThreadUtils.runOnUiThreadBlocking(
@@ -84,12 +83,10 @@ public class NewTabPageMemoryLeakTest {
         mostVisitedSites.setTileSuggestions(siteSuggestions);
         mSuggestionsDeps.getFactory().mostVisitedSites = mostVisitedSites;
 
-        mActivityTestRule.loadUrl(getOriginalNativeNtpUrl());
-        Tab tab = mActivityTestRule.getActivityTab();
-        // Not hopping on: the ACTIVE NTP Station would keep a reference to the NewTabPage and
-        // keep it from being garbage collected.
-        // TODO(crbug.com/428022848): Travel to the NTP and away from it through Stations instead.
-        ChromeTabUtils.waitForNtpLoaded(tab);
+        mPage =
+                blankPage.loadPageProgrammatically(
+                        getOriginalNativeNtpUrl(), RegularNewTabPageStation.newNativeNtpBuilder());
+        Tab tab = mPage.getTab();
 
         Assert.assertTrue(tab.getNativePage() instanceof NewTabPage);
         mNtp = (NewTabPage) tab.getNativePage();
@@ -103,7 +100,7 @@ public class NewTabPageMemoryLeakTest {
     public void testNewTabPageCanBeGarbageCollected() {
         WeakReference<NewTabPage> ntpRef = new WeakReference<>(mNtp);
 
-        mActivityTestRule.loadUrl("about:blank");
+        mPage = mPage.loadAboutBlank();
 
         mNtp = null;
         Assert.assertTrue(GarbageCollectionTestUtils.canBeGarbageCollected(ntpRef));

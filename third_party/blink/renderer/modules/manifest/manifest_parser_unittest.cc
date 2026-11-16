@@ -1413,6 +1413,29 @@ TEST_F(ManifestParserTest, DisplayOverrideParseRules) {
             DisplayOverrideItemIs(blink::mojom::DisplayMode::kBrowser)));
     EXPECT_EQ(0u, GetErrorCount());
   }
+
+  // Invalid property type in url_patterns reports 'url_patterns' as member.
+  {
+    base::test::ScopedFeatureList feature_list(blink::features::kUnframedIwa);
+    auto& manifest = ParseManifest(R"({
+      "display_override": [
+        {
+          "display": "unframed",
+          "url_patterns": [ {"protocol": 123} ]
+        }
+      ]
+    })");
+    EXPECT_THAT(manifest->display_override,
+                ElementsAre(DisplayOverrideItemIs(
+                    blink::mojom::DisplayMode::kUnframed,
+                    {PatternDataEq({.protocol = {"http"},
+                                    .hostname = {"foo.com"},
+                                    .pathname = {"/manifest.json"}})})));
+    EXPECT_EQ(1u, GetErrorCount());
+    EXPECT_EQ(
+        "property 'protocol' of 'url_patterns' ignored, type string expected.",
+        errors()[0]);
+  }
 }
 
 TEST_F(ManifestParserTest, DisplayOverrideAcceptsOutOfScopeUrlPatterns) {
@@ -3127,6 +3150,17 @@ TEST_F(ManifestParserTest, FileHandlerParseRules) {
                 "application/foobar;parameter=25": ".foobar",
                 "x-scheme-handler/mailto": ".eml",
                 "X-Scheme-Handler/http": ".html",
+                "x-content/image-dcf": ".dcf",
+                "X-Content/audio-cdda": ".cdda",
+                "x-directory/normal": ".dir",
+                "X-Directory/normal": ".dir2",
+                "x-special/socket": ".sock",
+                "X-Special/fifo": ".fifo",
+                "x-custom/foo": ".custom",
+                "X-Custom/bar": ".custom2",
+                " x-custom/foo": ".custom3",
+                "inode/directory": ".inode",
+                "application/x-custom": ".xcustom",
                 "application/its+xml": ".itsml"
               }
             }
@@ -3134,18 +3168,29 @@ TEST_F(ManifestParserTest, FileHandlerParseRules) {
         })");
     auto& file_handlers = manifest->file_handlers;
 
-    ASSERT_EQ(5u, GetErrorCount());
+    ASSERT_EQ(15u, GetErrorCount());
     EXPECT_EQ("invalid MIME type: image_png", errors()[0]);
     EXPECT_EQ("invalid MIME type: foo/bar", errors()[1]);
     EXPECT_EQ("invalid MIME type: application/foobar;parameter=25",
               errors()[2]);
     EXPECT_EQ("invalid MIME type: x-scheme-handler/mailto", errors()[3]);
     EXPECT_EQ("invalid MIME type: X-Scheme-Handler/http", errors()[4]);
+    EXPECT_EQ("invalid MIME type: x-content/image-dcf", errors()[5]);
+    EXPECT_EQ("invalid MIME type: X-Content/audio-cdda", errors()[6]);
+    EXPECT_EQ("invalid MIME type: x-directory/normal", errors()[7]);
+    EXPECT_EQ("invalid MIME type: X-Directory/normal", errors()[8]);
+    EXPECT_EQ("invalid MIME type: x-special/socket", errors()[9]);
+    EXPECT_EQ("invalid MIME type: X-Special/fifo", errors()[10]);
+    EXPECT_EQ("invalid MIME type: x-custom/foo", errors()[11]);
+    EXPECT_EQ("invalid MIME type: X-Custom/bar", errors()[12]);
+    EXPECT_EQ("invalid MIME type:  x-custom/foo", errors()[13]);
+    EXPECT_EQ("invalid MIME type: inode/directory", errors()[14]);
     ASSERT_EQ(1u, file_handlers.size());
 
     EXPECT_EQ("Foo", file_handlers[0]->name);
     EXPECT_EQ(KURL("http://foo.com/files"), file_handlers[0]->action);
-    ASSERT_EQ(1U, file_handlers[0]->accept.size());
+    ASSERT_EQ(2U, file_handlers[0]->accept.size());
+    ASSERT_TRUE(file_handlers[0]->accept.Contains("application/x-custom"));
     ASSERT_TRUE(file_handlers[0]->accept.Contains("application/its+xml"));
     EXPECT_EQ(0u, file_handlers[0]
                       ->accept.find("application/its+xml")
@@ -4920,13 +4965,18 @@ TEST_F(ManifestParserTest, ShareTargetUrlTemplateParseRules) {
     EXPECT_EQ(0u, GetErrorCount());
   }
 
-  // Pseudo-MIME types like x-scheme-handler are invalid in share_target.
-  {
+  // Pseudo-MIME types like x-scheme-handler, x-content, x-directory, and
+  // x-special are invalid in share_target.
+  for (const char* invalid_mime :
+       {"x-scheme-handler/mailto", "x-content/image-dcf", "x-directory/normal",
+        "x-special/socket"}) {
     auto& manifest = ParseManifestWithURLs(
-        R"({ "share_target": { "action": "https://foo.com/#", "method":
+        String(
+            R"({ "share_target": { "action": "https://foo.com/#", "method":
         "POST", "enctype": "multipart/form-data", "params":
         { "title": "mytitle", "files": [{ "name": "name",
-        "accept": ["x-scheme-handler/mailto"]}] } }
+        "accept": [")") +
+            invalid_mime + R"("]}] } }
         })",
         manifest_url, document_url);
     EXPECT_FALSE(manifest->share_target.get());
@@ -6313,7 +6363,7 @@ TEST_F(ManifestParserTest, TranslationsParseRules) {
       auto& manifest = ParseManifest(R"({ "translations": [] })");
       EXPECT_TRUE(manifest->translations.empty());
       EXPECT_EQ(1u, GetErrorCount());
-      EXPECT_EQ("property 'translations' ignored, object expected.",
+      EXPECT_EQ("property 'translations' ignored, type object expected.",
                 errors()[0]);
     }
 

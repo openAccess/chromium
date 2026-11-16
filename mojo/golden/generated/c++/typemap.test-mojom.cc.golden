@@ -53,6 +53,7 @@ Typemapped::Typemapped(
       optional(std::move(optional_in)),
       optional_container(std::move(optional_container_in)) {}
 
+
 Typemapped::~Typemapped() = default;
 
 void Typemapped::WriteIntoTrace(
@@ -186,14 +187,12 @@ void IFaceWithTypemapProxy::Echo(
       ((kAllowInterrupt) ? 0 : mojo::Message::kFlagNoInterrupt) |
       ((is_urgent) ? mojo::Message::kFlagIsUrgent : 0);
 
-  const size_t estimated_payload_size =
-    0;
   STACK_UNINITIALIZED mojo::Message message(
-      std::to_underlying(messages::IFaceWithTypemap::kEcho), kFlags, estimated_payload_size);
-  mojo::internal::MessageFragment<
-      ::golden::internal::IFaceWithTypemap_Echo_Params_Data> params(
-          message);
-  params.Allocate();
+      std::to_underlying(messages::IFaceWithTypemap::kEcho), kFlags,
+      {sizeof(::golden::internal::IFaceWithTypemap_Echo_Params_Data), 0});
+  mojo::internal::MessageFragment<::golden::internal::IFaceWithTypemap_Echo_Params_Data> params(
+      message);
+  params.ClaimInitialPayload();
   mojo::internal::MessageFragment<
       typename decltype(params->param)::BaseType> param_fragment(
           params.message());
@@ -201,8 +200,7 @@ void IFaceWithTypemapProxy::Echo(
   mojo::internal::Serialize<::golden::TypemappedDataView>(
     in_param,
     param_fragment);
-
-  params->param.Set(param_fragment);
+  params.SetPointer(8, param_fragment);
 
   
   MOJO_INTERNAL_CHECK_SERIALIZATION(
@@ -252,20 +250,16 @@ class IFaceWithTypemap_Echo_ProxyToResponder {
 bool IFaceWithTypemap_Echo_ForwardToCallback::Accept(
     mojo::Message* message) {
   DCHECK(message->is_serialized());
-  internal::IFaceWithTypemap_Echo_ResponseParams_Data* params =
-      reinterpret_cast<
-          internal::IFaceWithTypemap_Echo_ResponseParams_Data*>(
-              message->mutable_payload());
   
 
   // Validation for IFaceWithTypemap.0
-  bool success = true;
   TypemappedPtr p_out{};
-  IFaceWithTypemap_Echo_ResponseParamsDataView input_data_view(params, message);
-  
-  if (success && !input_data_view.ReadOut(&p_out))
-    success = false;
-  if (!success) {
+  IFaceWithTypemap_Echo_ResponseParamsDataView input_data_view(
+      reinterpret_cast<internal::IFaceWithTypemap_Echo_ResponseParams_Data*>(
+          message->mutable_payload()),
+      message);
+
+  if (!input_data_view.ReadOut(&p_out)) {
     mojo::internal::ReportDeserializationErrorForMessage(
         message, IFaceWithTypemap::Name_, 0, true);
     return false;
@@ -290,14 +284,12 @@ void IFaceWithTypemap_Echo_ProxyToResponder::Run(
    });
 #endif
 
-  const size_t estimated_payload_size =
-    0;
   STACK_UNINITIALIZED mojo::Message message(
-      std::to_underlying(messages::IFaceWithTypemap::kEcho), proxy->response_flags(), estimated_payload_size);
-  mojo::internal::MessageFragment<
-      ::golden::internal::IFaceWithTypemap_Echo_ResponseParams_Data> params(
-          message);
-  params.Allocate();
+      std::to_underlying(messages::IFaceWithTypemap::kEcho), proxy->response_flags(),
+      {sizeof(::golden::internal::IFaceWithTypemap_Echo_ResponseParams_Data), 0});
+  mojo::internal::MessageFragment<::golden::internal::IFaceWithTypemap_Echo_ResponseParams_Data> params(
+      message);
+  params.ClaimInitialPayload();
   mojo::internal::MessageFragment<
       typename decltype(params->out)::BaseType> out_fragment(
           params.message());
@@ -305,8 +297,7 @@ void IFaceWithTypemap_Echo_ProxyToResponder::Run(
   mojo::internal::Serialize<::golden::TypemappedDataView>(
     in_out,
     out_fragment);
-
-  params->out.Set(out_fragment);
+  params.SetPointer(8, out_fragment);
 
   
   MOJO_INTERNAL_CHECK_SERIALIZATION(
@@ -345,20 +336,16 @@ bool IFaceWithTypemapStubDispatch::AcceptWithResponder(
   [[maybe_unused]] const uint64_t request_id = message->request_id();
   switch (static_cast<messages::IFaceWithTypemap>(message->header()->name)) {
     case messages::IFaceWithTypemap::kEcho: {
-      internal::IFaceWithTypemap_Echo_Params_Data* params =
-          reinterpret_cast<
-              internal::IFaceWithTypemap_Echo_Params_Data*>(
-                  message->mutable_payload());
       
 
       // Validation for IFaceWithTypemap.0
-      bool success = true;
       TypemappedPtr p_param{};
-      IFaceWithTypemap_Echo_ParamsDataView input_data_view(params, message);
-      
-      if (success && !input_data_view.ReadParam(&p_param))
-        success = false;
-      if (!success) {
+      IFaceWithTypemap_Echo_ParamsDataView input_data_view(
+          reinterpret_cast<internal::IFaceWithTypemap_Echo_Params_Data*>(
+              message->mutable_payload()),
+          message);
+
+      if (!input_data_view.ReadParam(&p_param)) {
         mojo::internal::ReportDeserializationErrorForMessage(
             message, IFaceWithTypemap::Name_, 0, false);
         return false;
@@ -404,21 +391,18 @@ namespace mojo {
 
 
 // static
-bool StructTraits<::golden::Typemapped::DataView, ::golden::TypemappedPtr>::Read(
+NOINLINE bool StructTraits<::golden::Typemapped::DataView, ::golden::TypemappedPtr>::Read(
     ::golden::Typemapped::DataView input,
     ::golden::TypemappedPtr* output) {
-  bool success = true;
   ::golden::TypemappedPtr result(::golden::Typemapped::New());
-  
-      if (success)
-        result->field = input.field();
-      if (success) {
-        result->optional = input.optional();
-      }
-      if (success && !input.ReadOptionalContainer(&result->optional_container))
-        success = false;
+
+  if (!input.ReadOptionalContainer(&result->optional_container)) {
+    return false;
+  }
+  result->field = input.field();
+  result->optional = input.optional();
   *output = std::move(result);
-  return success;
+  return true;
 }
 
 }  // namespace mojo

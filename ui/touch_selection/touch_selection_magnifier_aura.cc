@@ -203,7 +203,7 @@ TouchSelectionMagnifierAura::~TouchSelectionMagnifierAura() = default;
 void TouchSelectionMagnifierAura::ShowFocusBound(Layer* parent,
                                                  const gfx::Point& focus_start,
                                                  const gfx::Point& focus_end) {
-  DCHECK(parent);
+  CHECK(parent, base::NotFatalUntil::M163);
   if (magnifier_layer_->parent() != parent) {
     // Hide the magnifier when parenting or reparenting the magnifier so that it
     // doesn't appear with the wrong bounds.
@@ -298,7 +298,6 @@ void TouchSelectionMagnifierAura::CreateMagnifierLayer() {
   // layer.
   magnifier_layer_ = std::make_unique<LayerNotDrawn>();
   magnifier_layer_->SetName("TouchSelectionMagnifierAura:MagnifierLayer");
-  magnifier_layer_->SetFillsBoundsOpaquely(false);
 
   // Create the zoom layer, which will show the zoomed contents.
   zoom_layer_ = std::make_unique<LayerSolidColor>();

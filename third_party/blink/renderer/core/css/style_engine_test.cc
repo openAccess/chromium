@@ -38,6 +38,7 @@
 #include "third_party/blink/renderer/core/css/parser/css_tokenizer.h"
 #include "third_party/blink/renderer/core/css/properties/css_property_ref.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/css/property_registry.h"
 #include "third_party/blink/renderer/core/css/resolver/scoped_style_resolver.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/resolver/style_resolver_stats.h"
@@ -175,6 +176,10 @@ class StyleEngineTest : public PageTestBase {
     return GetStyleEngine().GetDocumentStyleSheetCollection();
   }
 
+  wtf_size_t MixinCacheRevisionCount() {
+    return GetDocumentStyleSheetCollection().mixin_cache_revisions_.size();
+  }
+
   // Returns the total size of the random() base value caches (element-shared
   // and element-dependent).
   wtf_size_t GetRandomBaseValueCacheSize() {
@@ -204,7 +209,7 @@ void StyleEngineTest::ApplyRuleSetInvalidation(TreeScope& tree_scope,
           : *tree_scope.GetDocument().documentElement());
   GetStyleEngine().ApplyRuleSetInvalidationForTreeScope(
       tree_scope, tree_scope.RootNode(), selector_filter, style_scope_frame,
-      rule_sets, /*changed_rule_flags=*/0);
+      rule_sets, /*changed_rule_flags=*/{}, InvalidationScope::kCurrentScope);
 }
 
 TEST_F(StyleEngineTest, ClearWebDXFeatureCounter) {
@@ -233,9 +238,7 @@ TEST_F(StyleEngineTest, UnrelatedStyleChangePreservesMixinMapIdentity) {
   SetBodyInnerHTML(R"HTML(
     <style id="mixins">
       @mixin --mixin() {
-        @result {
-          color: green;
-        }
+        color: green;
       }
     </style>
     <style id="unrelated">#unused { color: red; }</style>
@@ -253,13 +256,76 @@ TEST_F(StyleEngineTest, UnrelatedStyleChangePreservesMixinMapIdentity) {
 
   GetElementById("mixins")->setTextContent(R"CSS(
         @mixin --mixin() {
-          @result {
-            color: blue;
-          }
+          color: blue;
         }
       )CSS");
   UpdateAllLifecyclePhases();
   EXPECT_NE(original_identifier, collection.Mixins().map_identifier);
+}
+
+TEST_F(StyleEngineTest, MixinFreeSheetsSkipMixinBookkeeping) {
+  ScopedCSSMixinsForTest scoped_css_mixins(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @media (min-width: 1px) {
+        @supports (display: block) {
+          #target { color: green; }
+        }
+      }
+    </style>
+    <style id="unrelated">#unused { color: red; }</style>
+    <div id="target"></div>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_EQ(0u, MixinCacheRevisionCount());
+  EXPECT_FALSE(GetDocumentStyleSheetCollection().Mixins().HasMixins());
+
+  GetElementById("unrelated")->setTextContent("#unused { color: blue; }");
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(0u, MixinCacheRevisionCount());
+}
+
+TEST_F(StyleEngineTest, MixinCacheRevisionsExcludeMixinFreeSheets) {
+  ScopedCSSMixinsForTest scoped_css_mixins(true);
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @mixin --mixin() {
+        @result { color: green; }
+      }
+    </style>
+    <style>#target { @apply --mixin; }</style>
+    <style>#unused { color: red; }</style>
+    <div id="target"></div>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_EQ(1u, MixinCacheRevisionCount());
+  EXPECT_TRUE(GetDocumentStyleSheetCollection().Mixins().HasMixins());
+}
+
+TEST_F(StyleEngineTest, RemovingLastMixinClearsMixinBookkeeping) {
+  ScopedCSSMixinsForTest scoped_css_mixins(true);
+  SetBodyInnerHTML(R"HTML(
+    <style id="mixins">
+      @mixin --mixin() {
+        @result { color: green; }
+      }
+    </style>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  EXPECT_EQ(1u, MixinCacheRevisionCount());
+  EXPECT_TRUE(GetDocumentStyleSheetCollection().Mixins().HasMixins());
+
+  GetElementById("mixins")->setTextContent("#unused { color: red; }");
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(0u, MixinCacheRevisionCount());
+  EXPECT_FALSE(GetDocumentStyleSheetCollection().Mixins().HasMixins());
+
+  GetElementById("mixins")->setTextContent("#unused { color: blue; }");
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(0u, MixinCacheRevisionCount());
 }
 
 TEST_F(StyleEngineTest, AnalyzedInject) {
@@ -1607,6 +1673,126 @@ TEST_F(StyleEngineTest, FocusedInvalidationSetFeatureDisabled) {
   EXPECT_EQ(Color::FromRGB(0, 128, 0),
             focusable->ComputedStyleRef().VisitedDependentColor(
                 GetCSSPropertyColor()));
+}
+
+// The "is focused" feature is matched outside of InvalidationSet::
+// InvalidatesElement(), so this covers each path StyleInvalidator takes to an
+// element: descendants, shadow trees for tree-boundary-crossing sets, slotted
+// elements, shadow hosts which match :focus, and matched siblings and their
+// descendants. Each rule sets a different non-inherited property, so the
+// checks are independent of the cascade and of inheritance.
+TEST_F(StyleEngineTest, FocusedInvalidationSetFeatureShadowDom) {
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      .a :focus { background-color: green }
+      .d ~ .e :focus { border-right-color: purple }
+    </style>
+    <div id=outer>
+      <div><div><div></div></div></div>
+      <div id=host>
+        <div id=slotted tabindex=0></div>
+      </div>
+    </div>
+    <div>
+      <div id=sibling></div>
+      <div class=e>
+        <div><div></div></div>
+        <div id=sibling_focusable tabindex=0></div>
+      </div>
+    </div>
+  )HTML");
+  Element* host = GetDocument().getElementById(AtomicString("host"));
+  ASSERT_TRUE(host);
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      :host(.b) :focus { border-top-color: red }
+      .c :focus { border-bottom-color: blue }
+      .s ::slotted(:focus) { border-left-color: yellow }
+    </style>
+    <div id=wrapper>
+      <div><div><div></div></div></div>
+      <slot></slot>
+      <div id=inner tabindex=0></div>
+    </div>
+  )HTML");
+  GetDocument().GetPage()->GetFocusController().SetActive(true);
+  GetDocument().GetPage()->GetFocusController().SetFocused(true);
+  UpdateAllLifecyclePhases();
+
+  Element* outer = GetDocument().getElementById(AtomicString("outer"));
+  Element* slotted = GetDocument().getElementById(AtomicString("slotted"));
+  Element* sibling = GetDocument().getElementById(AtomicString("sibling"));
+  Element* sibling_focusable =
+      GetDocument().getElementById(AtomicString("sibling_focusable"));
+  Element* wrapper = shadow_root.getElementById(AtomicString("wrapper"));
+  Element* inner = shadow_root.getElementById(AtomicString("inner"));
+  ASSERT_TRUE(outer && slotted && sibling && sibling_focusable && wrapper &&
+              inner);
+
+  auto color_of = [](Element* element, const Longhand& property) {
+    return element->ComputedStyleRef().VisitedDependentColor(property);
+  };
+  const Color black = Color::FromRGB(0, 0, 0);
+
+  inner->Focus();
+  UpdateAllLifecyclePhases();
+  ASSERT_TRUE(inner->IsFocused());
+  // The author shadow host matches :focus along with the focused element.
+  ASSERT_TRUE(host->IsFocused());
+
+  // .a :focus can only match the host from the document scope, since #inner is
+  // in the shadow tree.
+  unsigned start_count = GetStyleEngine().StyleForElementCount();
+  outer->classList().Add(AtomicString("a"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_EQ(Color::FromRGB(0, 128, 0),
+            color_of(host, GetCSSPropertyBackgroundColor()));
+  EXPECT_EQ(Color::kTransparent,
+            color_of(inner, GetCSSPropertyBackgroundColor()));
+
+  // :host(.b) :focus crosses the tree boundary and reaches #inner.
+  start_count = GetStyleEngine().StyleForElementCount();
+  host->classList().Add(AtomicString("b"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_EQ(Color::FromRGB(255, 0, 0),
+            color_of(inner, GetCSSPropertyBorderTopColor()));
+
+  // .c :focus in the shadow tree.
+  start_count = GetStyleEngine().StyleForElementCount();
+  wrapper->classList().Add(AtomicString("c"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_EQ(Color::FromRGB(0, 0, 255),
+            color_of(inner, GetCSSPropertyBorderBottomColor()));
+
+  // .s ::slotted(:focus) reaches the focused slotted element through the slot.
+  slotted->Focus();
+  UpdateAllLifecyclePhases();
+  ASSERT_TRUE(slotted->IsFocused());
+  EXPECT_EQ(black, color_of(slotted, GetCSSPropertyBorderLeftColor()));
+  start_count = GetStyleEngine().StyleForElementCount();
+  wrapper->classList().Add(AtomicString("s"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_EQ(Color::FromRGB(255, 255, 0),
+            color_of(slotted, GetCSSPropertyBorderLeftColor()));
+
+  // .d ~ .e :focus: the focused descendant of the matched sibling.
+  sibling_focusable->Focus();
+  UpdateAllLifecyclePhases();
+  ASSERT_TRUE(sibling_focusable->IsFocused());
+  EXPECT_EQ(black,
+            color_of(sibling_focusable, GetCSSPropertyBorderRightColor()));
+  start_count = GetStyleEngine().StyleForElementCount();
+  sibling->classList().Add(AtomicString("d"));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(1u, GetStyleEngine().StyleForElementCount() - start_count);
+  EXPECT_EQ(Color::FromRGB(128, 0, 128),
+            color_of(sibling_focusable, GetCSSPropertyBorderRightColor()));
 }
 
 TEST_F(StyleEngineTest, EmptyHttpEquivDefaultStyle) {
@@ -3979,6 +4165,118 @@ TEST_F(StyleEngineTest, CustomFunctionInUserOrigin) {
   EXPECT_EQ("10px", ComputedValue(GetDocument().body(), "width")->CssText());
 }
 
+TEST_F(StyleEngineTest, UserFunctionInvalidationAcrossShadowRoots) {
+  // Function-only sheets isolate invalidation from selector matching.
+  InjectSheet("user1", WebCssOrigin::kUser, R"CSS(
+    @function --f() { result: 10px; }
+  )CSS");
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <style>#target { width: --f(); }</style>
+    <div id="target"></div>
+    <div id="unrelated"></div>
+    <div id="host">
+      <template shadowrootmode="open">
+        <style>#target { width: --f(); }</style>
+        <div id="target"></div>
+        <div id="unrelated"></div>
+        <div id="nested-host">
+          <template shadowrootmode="open">
+            <style>#target { width: --f(); }</style>
+            <div id="target"></div>
+            <div id="unrelated"></div>
+          </template>
+        </div>
+      </template>
+    </div>
+    <div id="override-host">
+      <template shadowrootmode="open">
+        <style>
+          @function --f() { result: 20px; }
+          #target { width: --f(); }
+        </style>
+        <div id="target"></div>
+      </template>
+    </div>
+  )HTML");
+
+  ShadowRoot* shadow = GetElementById("host")->GetShadowRoot();
+  ASSERT_TRUE(shadow);
+  ShadowRoot* nested =
+      shadow->getElementById(AtomicString("nested-host"))->GetShadowRoot();
+  ASSERT_TRUE(nested);
+  ShadowRoot* author_override =
+      GetElementById("override-host")->GetShadowRoot();
+  ASSERT_TRUE(author_override);
+  Element* override_target =
+      author_override->getElementById(AtomicString("target"));
+  ASSERT_TRUE(override_target);
+
+  struct TreeScopeTarget {
+    STACK_ALLOCATED();
+
+   public:
+    std::string_view scope_name;
+    Element* element;
+  };
+  const auto targets = std::to_array<TreeScopeTarget>({
+      {"document", GetElementById("target")},
+      {"shadow", shadow->getElementById(AtomicString("target"))},
+      {"nested shadow", nested->getElementById(AtomicString("target"))},
+  });
+  auto expect_widths = [&](const char* user_width) {
+    for (const auto& [scope_name, target] : targets) {
+      SCOPED_TRACE(scope_name);
+      ASSERT_TRUE(target);
+      ASSERT_TRUE(target->GetComputedStyle());
+      EXPECT_EQ(user_width, ComputedValue(target, "width")->CssText());
+    }
+    ASSERT_TRUE(override_target->GetComputedStyle());
+    EXPECT_EQ("20px", ComputedValue(override_target, "width")->CssText());
+  };
+
+  auto expect_invalidation = [&] {
+    for (const auto& [scope_name, target] : targets) {
+      SCOPED_TRACE(scope_name);
+      ASSERT_TRUE(target);
+      ASSERT_TRUE(target->GetComputedStyle());
+      EXPECT_TRUE(target->ComputedStyleRef().AffectedByCSSFunction());
+      EXPECT_EQ(kLocalStyleChange, target->GetStyleChangeType());
+
+      Element* unrelated =
+          target->GetTreeScope().getElementById(AtomicString("unrelated"));
+      ASSERT_TRUE(unrelated);
+      ASSERT_TRUE(unrelated->GetComputedStyle());
+      EXPECT_FALSE(unrelated->ComputedStyleRef().AffectedByCSSFunction());
+      EXPECT_FALSE(unrelated->NeedsStyleRecalc());
+    }
+    EXPECT_FALSE(GetDocument().documentElement()->NeedsStyleRecalc());
+    EXPECT_FALSE(GetDocument().body()->NeedsStyleRecalc());
+    EXPECT_FALSE(shadow->host().NeedsStyleRecalc());
+    EXPECT_FALSE(nested->host().NeedsStyleRecalc());
+    EXPECT_FALSE(author_override->host().NeedsStyleRecalc());
+  };
+
+  UpdateAllLifecyclePhases();
+  expect_widths("10px");
+  ASSERT_FALSE(GetStyleRecalcRoot());
+
+  InjectSheet("user2", WebCssOrigin::kUser, R"CSS(
+    @function --f() { result: 30px; }
+  )CSS");
+  GetStyleEngine().UpdateActiveStyle();
+  expect_invalidation();
+  UpdateAllLifecyclePhases();
+  expect_widths("30px");
+  ASSERT_FALSE(GetStyleRecalcRoot());
+
+  GetStyleEngine().RemoveInjectedSheet(StyleSheetKey("user2"),
+                                       WebCssOrigin::kUser);
+  GetStyleEngine().UpdateActiveStyle();
+  expect_invalidation();
+  UpdateAllLifecyclePhases();
+  expect_widths("10px");
+}
+
 TEST_F(StyleEngineTest, RevertUseCount) {
   GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
       "<style>div { display: unset; }</style><div></div>");
@@ -4221,10 +4519,65 @@ TEST_F(StyleEngineTest, AtScopeUseCount) {
   EXPECT_TRUE(GetDocument().IsUseCounted(WebFeature::kCSSAtRuleScope));
 }
 
-TEST_F(StyleEngineTest, RemoveDeclaredPropertiesEmptyRegistry) {
-  EXPECT_FALSE(GetDocument().GetPropertyRegistry());
-  PropertyRegistration::RemoveDeclaredProperties(GetDocument());
-  EXPECT_FALSE(GetDocument().GetPropertyRegistry());
+TEST_F(StyleEngineTest, UnchangedAtPropertyAfterMediaChange) {
+  GetDocument().View()->SetLayoutSizeFixedToFrameSize(false);
+  GetDocument().View()->SetLayoutSize(gfx::Size(800, 600));
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <style>
+      @property --unused {
+        syntax: "<number>";
+        inherits: false;
+        initial-value: 0;
+      }
+      @media (min-width: 1000px) {
+        .does-not-exist { color: red; }
+      }
+    </style>
+    <div><span>Unchanged</span></div>
+  )HTML");
+  UpdateAllLifecyclePhases();
+
+  const PropertyRegistry* registry = GetDocument().GetPropertyRegistry();
+  ASSERT_TRUE(registry);
+  const PropertyRegistration* registration =
+      registry->Registration(AtomicString("--unused"));
+  ASSERT_TRUE(registration);
+  const size_t version = registry->Version();
+  const unsigned initial_count = GetStyleEngine().StyleForElementCount();
+
+  GetDocument().View()->SetLayoutSize(gfx::Size(1100, 600));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(registration, registry->Registration(AtomicString("--unused")));
+  EXPECT_EQ(version, registry->Version());
+  EXPECT_EQ(initial_count, GetStyleEngine().StyleForElementCount());
+}
+
+TEST_F(StyleEngineTest, UnchangedUserAtPropertyAfterMediaChange) {
+  GetDocument().View()->SetLayoutSizeFixedToFrameSize(false);
+  GetDocument().View()->SetLayoutSize(gfx::Size(800, 600));
+  InjectSheet("user", WebCssOrigin::kUser, R"CSS(
+    @property --unused {
+      syntax: "<number>";
+      inherits: false;
+      initial-value: 0;
+    }
+    @media (min-width: 1000px) {
+      .does-not-exist { color: red; }
+    }
+  )CSS");
+  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
+      "<div><span>Unchanged</span></div>");
+  UpdateAllLifecyclePhases();
+
+  const PropertyRegistry* registry = GetDocument().GetPropertyRegistry();
+  ASSERT_TRUE(registry);
+  const size_t version = registry->Version();
+  const unsigned initial_count = GetStyleEngine().StyleForElementCount();
+
+  GetDocument().View()->SetLayoutSize(gfx::Size(1100, 600));
+  UpdateAllLifecyclePhases();
+  EXPECT_EQ(version, registry->Version());
+  EXPECT_EQ(initial_count, GetStyleEngine().StyleForElementCount());
 }
 
 TEST_F(StyleEngineTest, AtPropertyInUserOrigin) {
@@ -8263,19 +8616,6 @@ TEST_F(StyleEngineTest, ScrollStateUseCounter) {
   EXPECT_TRUE(
       IsWebDXFeatureCounted(WebDXFeature::kContainerScrollStateQueries));
   ClearWebDXFeatureCounter(WebDXFeature::kContainerScrollStateQueries);
-}
-
-TEST_F(StyleEngineTest, MissingVarArgument_IdentFunctionDisabled) {
-  ScopedCSSIdentFunctionForTest scoped_feature(false);
-  GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
-    <style>
-      div {
-        color: var();
-      }
-    </style>
-    <div></div>
-  )HTML");
-  UpdateAllLifecyclePhasesForTest();
 }
 
 TEST_F(StyleEngineTest, UpdateRootFontRelativeUnits_NoRecalcForNonInherited) {

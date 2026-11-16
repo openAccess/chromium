@@ -72,7 +72,7 @@ suite('SkillsWebviewBridgeTest', () => {
       onCloseDialogAndOpenEditor: (_data: PendingEditorData) => {},
       onHandshakeStarted: () => {},
       onHandshakeComplete: () => {},
-      onSendPrompt: (_prompt: string) => {},
+      onSendPrompt: (_prompt: string, _newConversation: boolean) => {},
       onGetProvidedSkill: (_skillId: string) => {},
       ...overrides,
     };
@@ -83,6 +83,25 @@ suite('SkillsWebviewBridgeTest', () => {
     Object.defineProperty(event, 'isTopLevel', {value: true});
     Object.defineProperty(event, 'url', {value: url});
     webview.dispatchEvent(event);
+  }
+
+  function triggerLoadStart(
+      url: string = getSkillsRemoteUrl(), isTopLevel: boolean = true) {
+    const event = new CustomEvent('loadstart');
+    Object.defineProperty(event, 'isTopLevel', {value: isTopLevel});
+    Object.defineProperty(event, 'url', {value: url});
+    webview.dispatchEvent(event);
+  }
+
+  function triggerLoadAbort(url: string = getSkillsRemoteUrl()) {
+    const event = new CustomEvent('loadabort');
+    Object.defineProperty(event, 'isTopLevel', {value: true});
+    Object.defineProperty(event, 'url', {value: url});
+    webview.dispatchEvent(event);
+  }
+
+  function countHandshakePings(): number {
+    return postedMessages.filter(m => m.type === SKILLS_HANDSHAKE_TYPE).length;
   }
 
   function sendMockMessage(data: unknown) {
@@ -275,6 +294,76 @@ suite('SkillsWebviewBridgeTest', () => {
     assertFalse(bridge.isConnected());
 
     mockTimer.uninstall();
+  });
+
+  test('NewDocumentRestartsHandshake', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    establishHandshake();
+    postedMessages = [];
+
+    // Back and Forward set the webview's src, which loads a new document.
+    const url = getRemoteUrlForChromePath('/yourSkills');
+    triggerLoadStart(url);
+    triggerLoadCommit(url);
+
+    assertFalse(bridge.isConnected());
+    assertEquals(1, countHandshakePings());
+
+    sendHandshakeAck();
+    assertTrue(bridge.isConnected());
+  });
+
+  test('NewDocumentDoesNotRecordInitialHandshakeMetricsAgain', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    establishHandshake();
+    recordedHistograms = [];
+
+    const url = getRemoteUrlForChromePath('/yourSkills');
+    triggerLoadStart(url);
+    triggerLoadCommit(url);
+    sendHandshakeAck();
+
+    assertTrue(bridge.isConnected());
+    assertEquals(0, recordedHistograms.length);
+  });
+
+  test('SameDocumentNavigationKeepsConnection', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    establishHandshake();
+    postedMessages = [];
+
+    // Route changes in the guest commit without a loadstart.
+    triggerLoadCommit(getRemoteUrlForChromePath('/yourSkills'));
+
+    assertTrue(bridge.isConnected());
+    assertEquals(0, countHandshakePings());
+  });
+
+  test('AbortedLoadKeepsConnection', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    establishHandshake();
+    postedMessages = [];
+
+    const url = getRemoteUrlForChromePath('/yourSkills');
+    triggerLoadStart(url);
+    triggerLoadAbort(url);
+    triggerLoadCommit(getRemoteUrlForChromePath('/editor'));
+
+    assertTrue(bridge.isConnected());
+    assertEquals(0, countHandshakePings());
+  });
+
+  test('MailtoAndSubframeLoadsKeepConnection', () => {
+    bridge = new SkillsWebviewBridge(webview, createMockDelegate());
+    establishHandshake();
+    postedMessages = [];
+
+    triggerLoadStart('mailto:someone@example.com');
+    triggerLoadStart(getSkillsRemoteUrl(), /*isTopLevel=*/ false);
+    triggerLoadCommit(getRemoteUrlForChromePath('/yourSkills'));
+
+    assertTrue(bridge.isConnected());
+    assertEquals(0, countHandshakePings());
   });
 
   test('HostReceivesShowToastMessage_Save', () => {
@@ -889,9 +978,11 @@ suite('SkillsWebviewBridgeTest', () => {
 
   test('HostReceivesSendPromptMessage', () => {
     let receivedPrompt: string|null = null;
+    let receivedNewConversation: boolean|null = null;
     const delegate = createMockDelegate({
-      onSendPrompt: (prompt: string) => {
+      onSendPrompt: (prompt: string, newConversation: boolean) => {
         receivedPrompt = prompt;
+        receivedNewConversation = newConversation;
       },
     });
     bridge = new SkillsWebviewBridge(webview, delegate);
@@ -924,6 +1015,22 @@ suite('SkillsWebviewBridgeTest', () => {
     window.dispatchEvent(promptEvent);
 
     assertEquals('test prompt content', receivedPrompt);
+    assertFalse(receivedNewConversation!);
+
+    // Send send-prompt message with newConversation set to true.
+    const newConvEvent = new MessageEvent('message', {
+      data: {
+        type: SKILLS_SEND_PROMPT,
+        prompt: 'Create a skill',
+        newConversation: true,
+      },
+      origin: new URL(getSkillsRemoteUrl()).origin,
+      source: window,
+    });
+    window.dispatchEvent(newConvEvent);
+
+    assertEquals('Create a skill', receivedPrompt);
+    assertTrue(receivedNewConversation!);
   });
 
   test('HostReceivesOpenFullPageEditorMessage', () => {

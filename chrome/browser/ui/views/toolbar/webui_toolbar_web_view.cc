@@ -50,11 +50,14 @@
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/glic/glic_actor_task_icon.h"
+#include "chrome/browser/ui/views/glic/glic_button.h"
 #include "chrome/browser/ui/views/global_media_controls/media_toolbar_button.h"
 #include "chrome/browser/ui/views/location_bar/webui_content_setting_image_control.h"
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/webui_home_control.h"
 #include "chrome/browser/ui/views/toolbar/webui_overflow_button.h"
 #include "chrome/browser/ui/views/toolbar/webui_performance_intervention_control.h"
@@ -69,6 +72,7 @@
 #include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher_impl.h"
 #include "chrome/browser/ui/webui/webui_toolbar/utils/toolbar_button_utils.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_drag_state.h"
+#include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_drop_navigator.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_extensions_container.h"
 #include "chrome/browser/ui/webui/webui_toolbar/webui_toolbar_ui.h"
 #include "chrome/common/chrome_features.h"
@@ -97,6 +101,7 @@
 #include "net/base/filename_util.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
+#include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -104,6 +109,7 @@
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/draggable_region.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -211,21 +217,23 @@ class WebUIToolbarInternalWebView : public views::WebView {
     } else {
       ClearCachedDraggedFile();
     }
-    const bool has_javascript_url =
-        !drop_data.url_infos.empty() &&
-        drop_data.url_infos.front().url.SchemeIs(url::kJavaScriptScheme);
     auto* drag_state =
         webui_toolbar::WebUIToolbarDragState::GetOrCreateForWebContents(
             web_contents());
     drag_state->set_drag_originated_from_renderer(did_originate_from_renderer);
-    drag_state->set_drag_has_javascript_url(has_javascript_url);
     drag_state->set_drag_url(
         drop_data.url_infos.empty()
             ? std::nullopt
             : std::make_optional(drop_data.url_infos.front().url));
   }
 
-  void PreHandleDragExit() override { ClearCachedDraggedFile(); }
+  void PreHandleDragExit() override {
+    ClearCachedDraggedFile();
+    // Like the dragged file, the drag state is only valid while the drag is
+    // over the toolbar, so that a later drop does not see stale data.
+    web_contents()->RemoveUserData(
+        webui_toolbar::WebUIToolbarDragState::UserDataKey());
+  }
 
   bool CanDragEnter(content::WebContents* source,
                     const content::DropData& data,
@@ -250,8 +258,8 @@ class WebUIToolbarInternalWebView : public views::WebView {
     //
     // Security is still maintained because accidental drops in the empty
     // toolbar area are intercepted and safely discarded by
-    // `BrowserControlsAdapterImpl::NavigateText`, and drops into the Omnibox
-    // are sanitized by `WebUIReadOnlyOmnibox::OnDropText`.
+    // `WebUIToolbarDropNavigator::NavigateToDroppedText`, and drops into the
+    // Omnibox are sanitized by `WebUIReadOnlyOmnibox::OnDropText`.
     return true;
   }
 
@@ -287,6 +295,13 @@ class WebUIToolbarInternalWebView : public views::WebView {
   void OnFocus() override {
     views::WebView::OnFocus();
     webui_toolbar_web_view_->OnInternalWebViewFocused();
+  }
+
+  void DraggableRegionsChanged(
+      const std::vector<blink::mojom::DraggableRegionPtr>& regions,
+      content::WebContents* contents) override {
+    webui_toolbar_web_view_->SetDraggableRegion(
+        gfx::DraggableRegionsToSkRegion(regions));
   }
 
   void OnBlur() override {
@@ -357,6 +372,7 @@ WebUIToolbarWebView::WebUIToolbarWebView(
       avatar_control_(this),
       media_control_(this),
       glic_control_(this),
+      glic_actor_task_icon_control_(this),
       location_bar_(std::move(location_bar)),
       extensions_container_(this),
       back_control_(this, BackForwardButton::Direction::kBack),
@@ -416,6 +432,8 @@ WebUIToolbarWebView::WebUIToolbarWebView(
       toolbar_ui_api::mojom::MediaControlState::New();
   last_queued_state_.glic_button_state =
       toolbar_ui_api::mojom::GlicButtonState::New();
+  last_queued_state_.glic_actor_task_icon_state =
+      toolbar_ui_api::mojom::GlicActorTaskIconState::New();
 
   SetLayoutManager(std::make_unique<views::FillLayout>());
 
@@ -486,11 +504,14 @@ WebUIToolbarWebView::WebUIToolbarWebView(
   // The accessibility and tooltip attributes are handled by the WebUI.
   SetProperty(views::kElementIdentifierKey, kWebUIToolbarElementIdentifier);
 
+  drop_navigator_ = std::make_unique<webui_toolbar::WebUIToolbarDropNavigator>(
+      *browser, web_contents);
+
   // `controller` may be nullptr in unit tests.
   if (controller) {
     browser_controls_adapter_ =
         std::make_unique<browser_controls_api::BrowserControlsAdapterImpl>(
-            browser, controller, web_contents);
+            browser, controller);
   }
 }
 
@@ -570,6 +591,10 @@ void WebUIToolbarWebView::AddedToWidget() {
     }
     if (features::IsWebUIGlicButtonEnabled()) {
       glic_control_.Init();
+      if (base::FeatureList::IsEnabled(features::kGlicActorUi) &&
+          features::kGlicActorUiTaskIcon.Get()) {
+        glic_actor_task_icon_control_.Init();
+      }
     }
     if (features::IsWebUIExtensionsContainerEnabled()) {
       extensions_container_.Init(web_contents());
@@ -778,6 +803,8 @@ void WebUIToolbarWebView::HandleContextMenu(
         kPinnedActionShowAiOverlayDialog:
     case toolbar_ui_api::mojom::ContextMenuType::kPinnedActionTtcToolbar:
     case toolbar_ui_api::mojom::ContextMenuType::
+        kPinnedActionGlicSmartSelection:
+    case toolbar_ui_api::mojom::ContextMenuType::
         kPinnedActionSidePanelShowHistory:
     case toolbar_ui_api::mojom::ContextMenuType::kPinnedActionShowChromeLabs:
     case toolbar_ui_api::mojom::ContextMenuType::kPinnedActionSidePanelShowGlic:
@@ -962,15 +989,15 @@ void WebUIToolbarWebView::OnAppMenuFocusChanged(bool focused) {
 }
 
 void WebUIToolbarWebView::ExecuteExtensionAction(
-    const std::string& extension_id) {
-  extensions_container_.ExecuteUserAction(extension_id);
+    extensions_bar::mojom::ExtensionActionIdPtr id) {
+  extensions_container_.ExecuteUserAction(std::move(id));
 }
 
 void WebUIToolbarWebView::ShowExtensionContextMenu(
-    const std::string& extension_id,
+    extensions_bar::mojom::ExtensionActionIdPtr id,
     ui::mojom::MenuSourceType source) {
   EnsureWidgetActive();
-  extensions_container_.ShowContextMenu(source, extension_id);
+  extensions_container_.ShowContextMenu(source, std::move(id));
 }
 
 base::expected<toolbar_ui_api::mojom::AdjustOmniboxTextForCopyResultPtr,
@@ -1024,6 +1051,10 @@ void WebUIToolbarWebView::OnMediaButtonClicked() {
 
 void WebUIToolbarWebView::OnGlicButtonClicked() {
   glic_control_.OnClicked();
+}
+
+void WebUIToolbarWebView::OnGlicActorTaskIconClicked() {
+  glic_actor_task_icon_control_.OnClicked();
 }
 
 ReloadControl* WebUIToolbarWebView::GetReloadControl() {
@@ -1217,6 +1248,10 @@ void WebUIToolbarWebView::DidFirstVisuallyNonEmptyPaint() {
 
 void WebUIToolbarWebView::PrimaryMainFrameRenderProcessGone(
     base::TerminationStatus status) {
+  // The reported draggable area is stale once the renderer is gone; it is
+  // reported again once the WebUI is reloaded.
+  draggable_region_.reset();
+
   // TODO(crbug.com/474228715): update the enum definition from
   // //base/process/kill.h to be a enum class, and add IFTTT lint.
   base::UmaHistogramEnumeration(kHistogramToolbarRenderProcessGone, status,
@@ -1520,8 +1555,18 @@ void WebUIToolbarWebView::SetDidFirstNonEmptyPaintCallbackForTesting(
   did_first_non_empty_paint_callback_ = std::move(callback);
 }
 
-void WebUIToolbarWebView::SetTickClockForTesting(const base::TickClock* clock) {
+base::ScopedClosureRunner WebUIToolbarWebView::SetTickClockForTesting(
+    const base::TickClock* clock) {
+  CHECK(clock);
+  CHECK_EQ(clock_, base::DefaultTickClock::GetInstance());
   clock_ = clock;
+  return base::ScopedClosureRunner(base::BindOnce(
+      [](base::WeakPtr<WebUIToolbarWebView> self) {
+        if (self) {
+          self->clock_ = base::DefaultTickClock::GetInstance();
+        }
+      },
+      weak_ptr_factory_.GetWeakPtr()));
 }
 
 views::WebView* WebUIToolbarWebView::GetWebViewForTesting() {
@@ -1543,8 +1588,13 @@ base::TimeTicks WebUIToolbarWebView::GetNavigationStartTicks() const {
   return ui ? ui->navigation_start_ticks() : base::TimeTicks();
 }
 
-void WebUIToolbarWebView::OnHomeButtonDropUrl(const GURL& url) {
-  home_control_.OnHomeButtonDropUrl(url);
+void WebUIToolbarWebView::OnHomeButtonDropUrl() {
+  // Use the drag's URL as captured before `RenderWidgetHost::FilterDropData`,
+  // which is the one the native home button sees.
+  if (std::optional<GURL> url =
+          webui_toolbar::WebUIToolbarDragState::TakeDragUrl(GetWebContents())) {
+    home_control_.OnHomeButtonDropUrl(*url);
+  }
 }
 
 void WebUIToolbarWebView::OnHomeButtonDropFile(
@@ -1558,9 +1608,19 @@ void WebUIToolbarWebView::OnHomeButtonDropText(const std::string& text) {
   if (!home_control_.ShouldHandleDropText()) {
     return;
   }
-  if (browser_controls_adapter_) {
-    browser_controls_adapter_->NavigateText(text);
+  drop_navigator_->NavigateToDroppedText(text);
+}
+
+void WebUIToolbarWebView::OnToolbarDropUrl() {
+  // See `OnHomeButtonDropUrl()`.
+  if (std::optional<GURL> url =
+          webui_toolbar::WebUIToolbarDragState::TakeDragUrl(GetWebContents())) {
+    drop_navigator_->NavigateToDroppedUrl(*url);
   }
+}
+
+void WebUIToolbarWebView::OnToolbarDropText(const std::string& text) {
+  drop_navigator_->NavigateToDroppedText(text);
 }
 
 void WebUIToolbarWebView::OnToolbarDropFile(const gfx::PointF& drop_position) {
@@ -1793,6 +1853,15 @@ void WebUIToolbarWebView::OnGlicButtonStateChanged(
     PostPushToolbarState();
   }
 }
+
+void WebUIToolbarWebView::OnGlicActorTaskIconStateChanged(
+    toolbar_ui_api::mojom::GlicActorTaskIconStatePtr state) {
+  if (!mojo::Equals(state, last_queued_state_.glic_actor_task_icon_state)) {
+    last_queued_state_.glic_actor_task_icon_state = std::move(state);
+    PostPushToolbarState();
+  }
+}
+
 void WebUIToolbarWebView::OnFocusRequested(
     toolbar_ui_api::mojom::FocusRequestTarget target) {
   // Record the request before focusing the WebView: if `RequestFocus()` grants
@@ -1899,6 +1968,32 @@ void WebUIToolbarWebView::EnsureWidgetActive() {
   }
 }
 
+bool WebUIToolbarWebView::IsPositionInWindowCaption(
+    const gfx::Point& point) const {
+  if (!draggable_region_ || !web_view_ || !web_view_->GetVisible()) {
+    return false;
+  }
+  // The draggable region is reported by the renderer in DIPs relative to the
+  // WebView's origin.
+  const gfx::Point point_in_web_view =
+      views::View::ConvertPointToTarget(this, web_view_, point);
+  return draggable_region_->contains(point_in_web_view.x(),
+                                     point_in_web_view.y());
+}
+
+void WebUIToolbarWebView::SetDraggableRegion(SkRegion draggable_region) {
+  draggable_region_ = std::move(draggable_region);
+}
+
+void WebUIToolbarWebView::SetDraggableRegionsEnabled(bool enabled) {
+  if (!enabled) {
+    draggable_region_.reset();
+  }
+  if (web_contents()) {
+    web_contents()->SetSupportsDraggableRegions(enabled);
+  }
+}
+
 std::optional<GURL> WebUIToolbarWebView::ConsumeDroppedUrl(
     const gfx::PointF& drop_position) {
   return web_view_->ConsumeDroppedUrl(drop_position);
@@ -1918,6 +2013,24 @@ void WebUIToolbarWebView::PostPushToolbarState() {
   // controls will complete their state changes before we do the actual push.
   // This way the eventual push updates all controls synchronously without
   // inter-element flicker.
+
+  // However, a steady stream of state updates must not be able to defer the
+  // push indefinitely. If a push is already pending and has been deferred for
+  // at least `kMaxStatePushDelay`, stop deferring it: leave the already-posted
+  // push in place rather than cancelling and re-posting it. It will push the
+  // latest state when it runs. The push still happens via PostTask(), rather
+  // than synchronously, because callers may rely on state pushes always
+  // happening via PostTask() to prevent sending inconsistent intermediate
+  // states.
+  static constexpr base::TimeDelta kMaxStatePushDelay = base::Milliseconds(100);
+  const base::TimeTicks now = clock_->NowTicks();
+  if (state_push_weak_ptr_factory_.HasWeakPtrs()) {
+    if (now - pending_state_push_start_time_ >= kMaxStatePushDelay) {
+      return;
+    }
+  } else {
+    pending_state_push_start_time_ = now;
+  }
 
   // We want to delay the actual monolithic state push until all controls
   // have had a chance to update their state. We do this by cancelling any
@@ -1964,31 +2077,65 @@ gfx::Size WebUIToolbarWebView::ComputeLayout(
     ButtonOverflowInfo* button_overflow_info,
     bool force_navigation_buttons,
     bool force_location_bar) const {
+  // When the WebUI toolbar is fully enabled, overflow is handled entirely in
+  // Javascript, so when computing a layout for a bounded width, exclude all
+  // elements that Javascript may overflow (split tabs button, avatar button,
+  // forward button, home button, pinned toolbar actions, and extension actions
+  // other than the extensions menu button), since they may be hidden to fit in
+  // the available space, and include the overflow button, which Javascript
+  // shows when elements are hidden. When unbounded, include everything other
+  // than the overflow button, so the preferred size has room for all elements.
+  const bool exclude_overflowable_elements =
+      is_webui_toolbar_fully_enabled_ && available_width.is_bounded();
+
   // Add everything that cannot overflow.
 
   int button_count = 0;
-  button_count += features::IsWebUIReloadButtonEnabled();
-  button_count += features::IsWebUISplitTabsButtonEnabled() &&
-                  split_tabs_control_.IsVisible();
+  // Back button
   button_count += features::IsWebUIBackForwardButtonEnabled();
-  button_count += features::IsWebUIAvatarButtonEnabled();
-  button_count += features::IsWebUIBatterySaverButtonEnabled() &&
-                  battery_saver_control_.IsVisible();
-  button_count += features::IsWebUIPerformanceInterventionButtonEnabled() &&
-                  performance_intervention_control_.IsButtonShowing();
-  button_count += features::IsWebUIAppMenuButtonEnabled();
-  button_count +=
-      features::IsWebUIGlicButtonEnabled() && glic_control_.IsVisible();
+  button_count += features::IsWebUIReloadButtonEnabled();
+  if (!exclude_overflowable_elements) {
+    button_count += features::IsWebUISplitTabsButtonEnabled() &&
+                    split_tabs_control_.IsVisible();
+    button_count +=
+        features::IsWebUIAvatarButtonEnabled() &&
+        AvatarToolbarButtonInterface::CanShowForProfile(browser_->GetProfile());
+    button_count += features::IsWebUIBatterySaverButtonEnabled() &&
+                    battery_saver_control_.IsVisible();
+    button_count += features::IsWebUIPerformanceInterventionButtonEnabled() &&
+                    performance_intervention_control_.IsButtonShowing();
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  button_count +=
-      features::IsWebUIMediaButtonEnabled() && media_control_.IsVisible();
+    button_count +=
+        features::IsWebUIMediaButtonEnabled() && media_control_.IsVisible();
 #endif
+  }
+  // Overflow button
+  button_count += exclude_overflowable_elements;
+  if (features::IsWebUIGlicButtonEnabled() && glic_control_.IsVisible()) {
+    button_count += 1 + glic_actor_task_icon_control_.ShouldShow();
+  }
+  button_count += features::IsWebUIAppMenuButtonEnabled();
 
   const int size = GetLayoutConstant(LayoutConstant::kToolbarButtonHeight);
   const int gap = GetLayoutConstant(LayoutConstant::kToolbarIconDefaultMargin);
   int width = button_count * size;
   if (button_count > 0) {
     width += (button_count - 1) * gap;
+  }
+  if (features::IsWebUIGlicButtonEnabled() && glic_control_.IsVisible()) {
+    // The split Glic half spans Views' collapsed GlicButton width, including
+    // its 2px unpainted kSpaceBetweenButtons padding (toolbar_glic_button.cc),
+    // and the actor task icon follows it with no gap. Kept in sync with
+    // glic_button.css.
+    if (glic_control_.GetIsSplit()) {
+      width += glic::kCollapsedWidth - (size + gap);
+    }
+    // The actor task icon is never narrower than the button height plus the
+    // nudge label margin, matching ToolbarGlicActorTaskIcon::GetMinimumSize().
+    // Kept in sync with glic_actor_task_icon.css.
+    if (glic_actor_task_icon_control_.ShouldShow()) {
+      width += glic::kActorNudgeLabelMargin;
+    }
   }
 
   // TODO(crbug.com/517948314): This isn't sizing the forward button correctly.
@@ -2021,8 +2168,12 @@ gfx::Size WebUIToolbarWebView::ComputeLayout(
     // This always sets `location_bar_width` to be a value between its min and
     // preferred widths.
 
-    // TODO(http://crbug.com/470042732): Where is the 4px margin from?
-    width += 4;
+    // Matches the margins in location_bar.css. The location bar has margins of
+    // `kLocationBarMargin - kToolbarIconDefaultMargin` on both sides, in
+    // addition to the `kToolbarIconDefaultMargin` gap between it and its
+    // neighbors. One of those gaps is already accounted for by the button gaps
+    // above.
+    width += 2 * GetLayoutConstant(LayoutConstant::kLocationBarMargin) - gap;
 
     int location_bar_width = 0;
     if (!available_width.is_bounded() || force_location_bar) {
@@ -2052,48 +2203,72 @@ gfx::Size WebUIToolbarWebView::ComputeLayout(
     }
   }
 
-  // Figure out if the forward button should be overflowed, and update width if
-  // it's visible.
-  bool allow_overflow = !ToolbarControllerUtil::PreventOverflow();
-  if (features::IsWebUIBackForwardButtonEnabled() &&
-      forward_control_.IsPinned()) {
-    int next_button_width = NextButtonWidth(size, gap, button_count);
-    bool is_forward_button_overflowed =
-        !force_navigation_buttons && allow_overflow &&
-        available_width.is_bounded() &&
-        next_button_width + width > available_width.value();
-    if (!is_forward_button_overflowed) {
-      ++button_count;
-      width += next_button_width;
+  if (!exclude_overflowable_elements) {
+    // Figure out if the forward button should be overflowed, and update width
+    // if it's visible.
+    bool allow_overflow = !ToolbarControllerUtil::PreventOverflow();
+    if (features::IsWebUIBackForwardButtonEnabled() &&
+        forward_control_.IsPinned()) {
+      int next_button_width = NextButtonWidth(size, gap, button_count);
+      bool is_forward_button_overflowed =
+          !force_navigation_buttons && allow_overflow &&
+          available_width.is_bounded() &&
+          next_button_width + width > available_width.value();
+      if (!is_forward_button_overflowed) {
+        ++button_count;
+        width += next_button_width;
+      }
+      if (button_overflow_info) {
+        button_overflow_info->is_forward_button_overflowed =
+            is_forward_button_overflowed;
+      }
     }
-    if (button_overflow_info) {
-      button_overflow_info->is_forward_button_overflowed =
-          is_forward_button_overflowed;
+
+    // Figure out if the home button should be overflowed, and update width if
+    // it's visible.
+    if (features::IsWebUIHomeButtonEnabled() && home_control_.IsPinned()) {
+      int next_button_width = NextButtonWidth(size, gap, button_count);
+      bool is_home_button_overflowed =
+          !force_navigation_buttons && allow_overflow &&
+          available_width.is_bounded() &&
+          next_button_width + width > available_width.value();
+      if (!is_home_button_overflowed) {
+        ++button_count;
+        width += next_button_width;
+      }
+      if (button_overflow_info) {
+        button_overflow_info->is_home_button_overflowed =
+            is_home_button_overflowed;
+      }
     }
+
+    if (features::IsWebUIPinnedToolbarActionsEnabled()) {
+      if (int pinned_width = pinned_toolbar_actions_.GetWidth()) {
+        width += !!width * gap;  // Add gap if prior controls.
+        width += pinned_width;
+      }
+    }
+  } else if (features::IsWebUIPinnedToolbarActionsEnabled() &&
+             pinned_toolbar_actions_.GetWidth()) {
+    // When Javascript hides all pinned toolbar actions due to overflow, the
+    // pinned toolbar actions container itself is still displayed, with a width
+    // of 0, so there's still a gap between it and the previous control.
+    //
+    // TODO(crbug.com/580772604): Pinned toolbar actions that are popped out are
+    // never hidden by Javascript, so should be included here.
+    width += gap;
   }
 
-  // Figure out if the home button should be overflowed, and update width if
-  // it's visible.
-  if (features::IsWebUIHomeButtonEnabled() && home_control_.IsPinned()) {
-    int next_button_width = NextButtonWidth(size, gap, button_count);
-    bool is_home_button_overflowed =
-        !force_navigation_buttons && allow_overflow &&
-        available_width.is_bounded() &&
-        next_button_width + width > available_width.value();
-    if (!is_home_button_overflowed) {
-      ++button_count;
-      width += next_button_width;
-    }
-    if (button_overflow_info) {
-      button_overflow_info->is_home_button_overflowed =
-          is_home_button_overflowed;
-    }
-  }
-
-  if (features::IsWebUIPinnedToolbarActionsEnabled()) {
-    if (int pinned_width = pinned_toolbar_actions_.GetWidth()) {
+  if (features::IsWebUIExtensionsContainerEnabled()) {
+    // Only use the minimum width when Javascript handles overflow. Otherwise,
+    // extension actions are never hidden.
+    if (int extensions_width = extensions_container_.GetWidth(
+            exclude_overflowable_elements
+                ? WebUIToolbarExtensionsContainerWrapper::WidthType::kMinWidth
+                : WebUIToolbarExtensionsContainerWrapper::WidthType::
+                      kPreferredWidth)) {
       width += !!width * gap;  // Add gap if prior controls.
-      width += pinned_width;
+      width += extensions_width;
     }
   }
 

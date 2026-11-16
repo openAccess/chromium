@@ -13,6 +13,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.base.test.util.CriteriaHelper.pollUiThread;
 import static org.chromium.chrome.browser.autofill.AutofillTestHelper.createClickActionWithFlags;
 import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.CredentialProperties.CREDENTIAL;
@@ -30,7 +31,6 @@ import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManag
 import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.VISIBLE;
 import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.WebAuthnCredentialProperties.WEBAUTHN_CREDENTIAL;
 import static org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.WebAuthnCredentialProperties.WEBAUTHN_ITEM_COLLECTION_INFO;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import static java.util.Arrays.asList;
 
@@ -51,7 +51,6 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TriState;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
@@ -60,7 +59,6 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.PayloadCallbackHelper;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.password_manager.GetLoginMatchType;
 import org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.FooterProperties;
 import org.chromium.chrome.browser.touch_to_fill.TouchToFillPasswordManagerProperties.HeaderProperties;
@@ -88,7 +86,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DisableFeatures(ChromeFeatureList.BOTTOM_SHEET_ON_DESKTOP_WINDOWING)
 public class TouchToFillPasswordManagerViewTest {
     private static final Credential ANA =
@@ -558,8 +555,8 @@ public class TouchToFillPasswordManagerViewTest {
         assertNotNull(getCredentials().getChildAt(0));
         assertNotNull(getCredentials().getChildAt(1));
 
-        onViewWaiting(withId(R.id.username))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
+        waitForView(withId(R.id.username))
+                .performViewAction(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
         assertThat(mCredentialCallback.getOnlyPayloadBlocking(), is(ANA));
     }
 
@@ -582,8 +579,8 @@ public class TouchToFillPasswordManagerViewTest {
         assertNotNull(getCredentials().getChildAt(0));
         assertNotNull(getCredentials().getChildAt(1));
 
-        onViewWaiting(withId(R.id.touch_to_fill_button_title))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
+        waitForView(withId(R.id.touch_to_fill_button_title))
+                .performViewAction(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
         assertThat(mCredentialCallback.getOnlyPayloadBlocking(), is(ANA));
     }
 
@@ -606,14 +603,16 @@ public class TouchToFillPasswordManagerViewTest {
         assertNotNull(getCredentials().getChildAt(0));
         assertNotNull(getCredentials().getChildAt(1));
 
-        onViewWaiting(withId(R.id.username))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
-        onViewWaiting(withId(R.id.username))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED));
-        onViewWaiting(withId(R.id.touch_to_fill_button_title))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
-        onViewWaiting(withId(R.id.touch_to_fill_button_title))
-                .perform(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED));
+        waitForView(withId(R.id.username))
+                .performViewAction(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
+        waitForView(withId(R.id.username))
+                .performViewAction(
+                        createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED));
+        waitForView(withId(R.id.touch_to_fill_button_title))
+                .performViewAction(createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_OBSCURED));
+        waitForView(withId(R.id.touch_to_fill_button_title))
+                .performViewAction(
+                        createClickActionWithFlags(MotionEvent.FLAG_WINDOW_IS_PARTIALLY_OBSCURED));
         assertThat(mCredentialCallback.getCallCount(), is(0));
     }
 

@@ -179,7 +179,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
@@ -262,6 +261,7 @@
 #import "ios/chrome/browser/url_loading/model/url_loading_notifier_browser_agent.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/browser/view_source/model/view_source_browser_agent.h"
+#import "ios/chrome/browser/voice/model/voice_search_navigations_tab_helper.h"
 #import "ios/chrome/browser/voice/ui_bundled/text_to_speech_playback_controller.h"
 #import "ios/chrome/browser/voice/ui_bundled/text_to_speech_playback_controller_factory.h"
 #import "ios/chrome/browser/web/model/choose_file/choose_file_tab_helper.h"
@@ -283,7 +283,6 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/fullscreen/fullscreen_api.h"
 #import "ios/public/provider/chrome/browser/signin/choice_api.h"
-#import "ios/public/provider/chrome/browser/text_zoom/text_zoom_api.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_api.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_controller.h"
 #import "ios/public/provider/chrome/browser/voice_search/voice_search_coordinator_delegate.h"
@@ -2377,7 +2376,7 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 - (void)closeTextZoom {
   web::WebState* activeWebState = self.activeWebState;
   if (activeWebState) {
-    if (ios::provider::IsTextZoomEnabled()) {
+    if (FontSizeTabHelper::IsTextZoomEnabled()) {
       FontSizeTabHelper* fontSizeTabHelper =
           FontSizeTabHelper::FromWebState(activeWebState);
       fontSizeTabHelper->SetTextZoomUIActive(false);
@@ -3291,7 +3290,23 @@ constexpr CGFloat kSnackbarFloatingBottomMargin = 10.0;
 
 - (void)voiceSearchCoordinator:(ChromeCoordinator*)coordinator
              didRecognizeQuery:(NSString*)query {
-  // TODO(crbug.com/571184218): Load the recognized query.
+  CHECK_EQ(coordinator, _voiceSearchCoordinator);
+  [self stopVoiceSearchCoordinator];
+  if (web::WebState* activeWebState = self.activeWebState) {
+    VoiceSearchNavigationTabHelper::FromWebState(activeWebState)
+        ->WillLoadVoiceSearchResult();
+  }
+  _urlLoadingBrowserAgent->LoadURLForQuery(query);
+}
+
+- (void)voiceSearchCoordinator:(ChromeCoordinator*)coordinator
+        didRequestEditingQuery:(NSString*)query {
+  CHECK_EQ(coordinator, _voiceSearchCoordinator);
+  [self stopVoiceSearchCoordinator];
+  // TODO(crbug.com/571185104): Consider adding a Voice Search
+  // `ComposeboxEntrypoint` to measure the composebox sessions it starts.
+  [self showComposeboxFromEntrypoint:ComposeboxEntrypoint::kOther
+                           withQuery:query];
 }
 
 - (void)voiceSearchCoordinatorDidFinish:(ChromeCoordinator*)coordinator {

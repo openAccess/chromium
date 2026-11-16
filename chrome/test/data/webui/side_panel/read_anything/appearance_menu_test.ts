@@ -9,7 +9,7 @@ import {ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chro
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {setupTestEnvironment, stubAnimationFrame} from './common.js';
+import {addDocumentListener, setupTestEnvironment, stubAnimationFrame} from './common.js';
 import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('AppearanceMenuElement', () => {
@@ -30,18 +30,9 @@ suite('AppearanceMenuElement', () => {
     window.matchMedia = originalMatchMedia;
   });
 
-  test('theme prop update changes selected items', async () => {
-    const yellowTheme = visualBrowserProxy.getYellowTheme();
-    appearanceMenu.theme = yellowTheme;
-    await microtasksFinished();
-
-    assertEquals(
-        yellowTheme, appearanceMenu.$.menu.menuGroups[1]!.selectedValue);
-  });
-
   test('on theme change does not close menus', async () => {
     let closeAllMenusCount = 0;
-    document.addEventListener(
+    addDocumentListener(
         ToolbarEvent.CLOSE_ALL_MENUS, () => closeAllMenusCount += 1);
 
     appearanceMenu.$.menu.dispatchEvent(new CustomEvent(
@@ -74,7 +65,7 @@ suite('AppearanceMenuElement', () => {
 
   test('on presentation change does not close menus', async () => {
     let closeAllMenusCount = 0;
-    document.addEventListener(
+    addDocumentListener(
         ToolbarEvent.CLOSE_ALL_MENUS, () => closeAllMenusCount += 1);
 
     appearanceMenu.$.menu.dispatchEvent(

@@ -50,6 +50,7 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.memory.MemoryPressureCallback;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -68,9 +69,6 @@ import org.chromium.chrome.browser.composeplate.ComposeplateUtils;
 import org.chromium.chrome.browser.feed.FeedActionDelegate;
 import org.chromium.chrome.browser.feed.FeedReliabilityLogger;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
-import org.chromium.chrome.browser.logo.LogoBridge;
-import org.chromium.chrome.browser.logo.LogoBridgeJni;
 import org.chromium.chrome.browser.logo.LogoCoordinator;
 import org.chromium.chrome.browser.native_page.ContextMenuManager;
 import org.chromium.chrome.browser.omnibox.OmniboxStub;
@@ -89,8 +87,8 @@ import org.chromium.chrome.browser.util.BrowserUiUtils.ModuleTypeOnStartAndNtp;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.OmniboxTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
@@ -106,7 +104,6 @@ import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.OmniboxFocusReason;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.search_engines.TemplateUrlService;
-import org.chromium.components.signin.SigninFeatureMap;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
@@ -116,6 +113,7 @@ import org.chromium.net.test.util.TestWebServer;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.mojom.WindowOpenDisposition;
+import org.chromium.ui.test.util.DeviceRestriction;
 import org.chromium.url.GURL;
 
 import java.io.IOException;
@@ -132,10 +130,7 @@ import java.util.concurrent.TimeUnit;
  * <p>TODO(crbug.com/40602800): Add new goldens and enable ExploreSites.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    "disable-features=IPH_FeedHeaderMenu"
-})
+@CommandLineFlags.Add("disable-features=IPH_FeedHeaderMenu")
 @EnableFeatures(
         ChromeFeatureList.HOME_BUTTON_REMOVAL
                 + ":set_default_to_false_on_homepage_on_desktop/false")
@@ -167,8 +162,6 @@ public class NewTabPageTest {
     @Mock VoiceRecognitionHandler mVoiceRecognitionHandler;
     @Mock FeedReliabilityLogger mFeedReliabilityLogger;
     @Mock FeedActionDelegate.PageLoadObserver mPageLoadObserver;
-    @Mock LogoBridge.Natives mLogoBridgeJniMock;
-    @Mock private LogoBridge mLogoBridge;
     @Mock ComposeboxQueryControllerBridge.Natives mComposeboxBridgeJni;
 
     private static final String TEST_PAGE = "/chrome/test/data/android/navigate/simple.html";
@@ -347,7 +340,10 @@ public class NewTabPageTest {
     @Test
     @SmallTest
     @Feature({"NewTabPage"})
-    @DisabledTest(message = "https://crbug.com/507770942")
+    @EnableFeatures(
+            OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT
+                    + ":show_ntp_plus_button/true/focus_fusebox_from_ntp_plus_button/true")
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
     public void testClickPlusButtonOnFakebox() {
         View plusButton = mNtp.getView().findViewById(R.id.search_box_plus_button);
         Assert.assertNotNull(plusButton);
@@ -355,27 +351,6 @@ public class NewTabPageTest {
         TouchCommon.singleClickView(plusButton);
 
         mOmnibox.checkFocus(true);
-    }
-
-    /** Tests clicking on a most visited item. */
-    @Test
-    @SmallTest
-    @Feature({"NewTabPage", "FeedNewTabPage"})
-    public void testClickMostVisitedItem() {
-        ensureTestServerStarted();
-        Assert.assertNotNull(mMvTilesLayout);
-        HistogramWatcher histogramWatcher = expectMostVisitedTilesRecordForNtpModuleClick();
-
-        ChromeTabUtils.waitForTabPageLoaded(
-                mTab,
-                mSiteSuggestions.get(0).url.getSpec(),
-                () -> {
-                    TileView mostVisitedItem = mMvTilesLayout.getTileAt(0);
-                    TouchCommon.singleClickView(mostVisitedItem);
-                });
-
-        Assert.assertEquals(mSiteSuggestions.get(0).url, ChromeTabUtils.getUrlOnUiThread(mTab));
-        histogramWatcher.assertExpected();
     }
 
     /** Tests deleting a most visited item. */
@@ -409,21 +384,19 @@ public class NewTabPageTest {
     public void testUrlFocusAnimationsDisabledOnLoad() {
         ensureTestServerStarted();
         Assert.assertFalse(getUrlFocusAnimationsDisabled());
-        ChromeTabUtils.waitForTabPageLoaded(
+        WebPageStation.waitForWebPageLoad(
+                Triggers.runOnUiThreadTo(
+                        () -> {
+                            int pageTransition =
+                                    PageTransition.TYPED | PageTransition.FROM_ADDRESS_BAR;
+                            mTab.loadUrl(
+                                    new LoadUrlParams(
+                                            mTestServer.getURL(TEST_PAGE), pageTransition));
+                            // It should be disabled as soon as a load URL is triggered.
+                            Assert.assertTrue(getUrlFocusAnimationsDisabled());
+                        }),
                 mTab,
-                mTestServer.getURL(TEST_PAGE),
-                () -> {
-                    ThreadUtils.runOnUiThreadBlocking(
-                            () -> {
-                                int pageTransition =
-                                        PageTransition.TYPED | PageTransition.FROM_ADDRESS_BAR;
-                                mTab.loadUrl(
-                                        new LoadUrlParams(
-                                                mTestServer.getURL(TEST_PAGE), pageTransition));
-                                // It should be disabled as soon as a load URL is triggered.
-                                Assert.assertTrue(getUrlFocusAnimationsDisabled());
-                            });
-                });
+                mTestServer.getURL(TEST_PAGE));
         // Ensure it is still marked as disabled once the new page is fully loaded.
         Assert.assertTrue(getUrlFocusAnimationsDisabled());
     }
@@ -808,18 +781,13 @@ public class NewTabPageTest {
     @Test
     @SmallTest
     public void testRecordHistogramProfileButtonClick_Ntp() {
-        // Identity Disc or Signin Button should be shown on sign-in state.
-        // TODO(crbug.com/475816843): Use only signin_button once migration is complete.
+        // The signin button is shown on the NTP when signed in.
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         HISTOGRAM_NTP_MODULE_CLICK, ModuleTypeOnStartAndNtp.PROFILE_BUTTON);
 
-        int profileButtonId =
-                SigninFeatureMap.sSigninLevelUpButton.isEnabled()
-                        ? R.id.signin_button
-                        : R.id.optional_toolbar_button;
-        onView(withId(profileButtonId)).perform(click());
+        onView(withId(R.id.signin_button)).perform(click());
 
         histogramWatcher.assertExpected(
                 HISTOGRAM_NTP_MODULE_CLICK
@@ -834,15 +802,16 @@ public class NewTabPageTest {
     @SmallTest
     @Feature({"NewTabPage"})
     public void testRecordHistogramLogoClick_Ntp() {
-        LogoBridgeJni.setInstanceForTesting(mLogoBridgeJniMock);
         NewTabPageCoordinator ntpCoordinator = mNtp.getNewTabPageCoordinator();
         LogoCoordinator logoCoordinator = ntpCoordinator.getLogoCoordinatorForTesting();
-        logoCoordinator.setLogoBridgeForTesting(mLogoBridge);
-        logoCoordinator.setOnLogoClickUrlForTesting(TEST_URL);
         HistogramWatcher histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         HISTOGRAM_NTP_MODULE_CLICK, ModuleTypeOnStartAndNtp.DOODLE);
-        ThreadUtils.runOnUiThreadBlocking(() -> logoCoordinator.onLogoClickedForTesting(true));
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    logoCoordinator.setOnLogoClickUrlForTesting(TEST_URL);
+                    logoCoordinator.onLogoClickedForTesting(true);
+                });
         histogramWatcher.assertExpected(
                 HISTOGRAM_NTP_MODULE_CLICK
                         + " is not recorded correctly when click on Logo with doodle enabled.");
@@ -923,8 +892,6 @@ public class NewTabPageTest {
     @DisableFeatures({OmniboxFeatureList.OMNIBOX_MULTIMODAL_INPUT})
     @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testAiModeButton_auroraV2Redirect() {
-        mActivityTestRule.skipWindowAndTabStateCleanup();
-
         clickAiModeButton();
         if (OmniboxCapabilities.isFuseboxSupportedDeviceType()) {
             mOmnibox.checkFocus(true);
@@ -944,8 +911,6 @@ public class NewTabPageTest {
         if (mActivityTestRule.getActivity().isTablet()) return;
 
         OmniboxFeatures.sRedirectComposeplateButton.setForTesting(true);
-        mActivityTestRule.skipWindowAndTabStateCleanup();
-
         clickAiModeButton();
         mOmnibox.checkFocus(true);
     }
@@ -958,8 +923,6 @@ public class NewTabPageTest {
     @DisableIf.Device(DeviceFormFactor.DESKTOP)
     public void testAiModeButton_fuseboxWithoutRedirect() {
         if (mActivityTestRule.getActivity().isTablet()) return;
-
-        mActivityTestRule.skipWindowAndTabStateCleanup();
 
         clickAiModeButton();
         verifyComposeplateUrlNavigation();

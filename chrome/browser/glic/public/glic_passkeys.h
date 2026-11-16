@@ -6,7 +6,6 @@
 #define CHROME_BROWSER_GLIC_PUBLIC_GLIC_PASSKEYS_H_
 
 #include "base/types/pass_key.h"
-#include "chrome/browser/glic/host/glic.mojom-shared.h"
 #include "chrome/browser/glic/public/glic_context_menu_invocation_helper.h"
 
 namespace tabs {
@@ -32,7 +31,7 @@ class ActorGeminiPanelToolBrowserTest;
 namespace ttc {
 class AiOverlayTools;
 class ToolController;
-}
+}  // namespace ttc
 
 namespace skills {
 class SkillsUiTabController;
@@ -45,9 +44,6 @@ class GlicExperimentalTriggeringCoordinator;
 class GlicInternalsPageHandler;
 class SelectionOverlayController;
 class SelectionSuggestion;
-
-template <mojom::InvocationSource Source>
-class AndroidAutoSubmitPasskeyHelper;
 
 // Passkey for invoking glic with auto submit. Reach out to OWNERS before
 // adding new callers.
@@ -85,12 +81,28 @@ class InvokeWithAutoSubmitPasskeyProvider {
   friend class ::ttc::ToolController;
   friend class ::skills::SkillsUiTabController;
   friend class ::skills::SkillsInvocationInteractiveUiTest;
-  friend class AndroidAutoSubmitPasskeyHelper<
-      mojom::InvocationSource::kUniversalCart>;
 };
 
 using InvokeWithAutoSubmitPasskey =
     base::PassKey<InvokeWithAutoSubmitPasskeyProvider>;
+
+// Passkey for subscribing to opaque invocation failure diagnostics on
+// `GlicInvokeOptions`. Reach out to c/b/glic/API_OWNERS before adding new
+// callers.
+class InvokeErrorDiagnosticsPasskeyProvider {
+ public:
+  using PassKey = base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>;
+
+ private:
+  static PassKey GetPassKey() { return PassKey(); }
+
+  friend class GlicApiTestPasskeys;
+  friend class GlicExperimentalTriggeringCoordinator;
+  friend class GlicInvokeBrowserTest;
+};
+
+using InvokeErrorDiagnosticsPasskey =
+    base::PassKey<InvokeErrorDiagnosticsPasskeyProvider>;
 
 }  // namespace glic
 

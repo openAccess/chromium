@@ -146,10 +146,14 @@ CSSSelector::CSSSelector(MatchType match_type,
 // static
 const AtomicString& CSSSelector::NameForInlineSelectorListPseudo(
     PseudoType pseudo_type) {
-  DEFINE_STATIC_LOCAL(const AtomicString, is_atom, ("is"));
-  DEFINE_STATIC_LOCAL(const AtomicString, where_atom, ("where"));
-  DEFINE_STATIC_LOCAL(const AtomicString, not_atom, ("not"));
-  DEFINE_STATIC_LOCAL(const AtomicString, has_atom, ("has"));
+  DEFINE_STATIC_LOCAL(const AtomicString, is_atom,
+                      (AtomicString::FromLiteral<"is">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, where_atom,
+                      (AtomicString::FromLiteral<"where">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, not_atom,
+                      (AtomicString::FromLiteral<"not">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, has_atom,
+                      (AtomicString::FromLiteral<"has">()));
   switch (pseudo_type) {
     case kPseudoIs:
       return is_atom;
@@ -474,8 +478,6 @@ PseudoId CSSSelector::GetPseudoId(PseudoType type) {
       return kPseudoIdViewTransitionNew;
     case kPseudoOverscrollAreaParent:
       return kPseudoIdOverscrollAreaParent;
-    case kPseudoOverscrollBackdrop:
-      return kPseudoIdOverscrollBackdrop;
     case kPseudoSkeleton:
       return kPseudoIdSkeleton;
     case kPseudoAnimatedImage:
@@ -762,7 +764,6 @@ constexpr static NameToPseudoStruct kPseudoTypeWithoutArgumentsMap[] = {
     {"open", CSSSelector::kPseudoOpen},
     {"optional", CSSSelector::kPseudoOptional},
     {"out-of-range", CSSSelector::kPseudoOutOfRange},
-    {"overscroll-backdrop", CSSSelector::kPseudoOverscrollBackdrop},
     {"overscroll-closed", CSSSelector::kPseudoOverscrollClosed},
     {"overscroll-open", CSSSelector::kPseudoOverscrollOpen},
     {"past", CSSSelector::kPseudoPastCue},
@@ -960,15 +961,6 @@ CSSSelector::PseudoType CSSSelector::NameToPseudoType(
     return CSSSelector::kPseudoUnknown;
   }
 
-  if ((match->type == CSSSelector::kPseudoOverscrollAreaParent ||
-       match->type == CSSSelector::kPseudoOverscrollBackdrop ||
-       match->type == CSSSelector::kPseudoOverscrollClosed ||
-       match->type == CSSSelector::kPseudoOverscrollOpen) &&
-      !RuntimeEnabledFeatures::OverscrollAreasEnabled(
-          document ? document->GetExecutionContext() : nullptr)) {
-    return CSSSelector::kPseudoUnknown;
-  }
-
   if ((match->type == CSSSelector::kPseudoActiveOption ||
        match->type == CSSSelector::kPseudoFiltered) &&
       !RuntimeEnabledFeatures::CustomizableComboboxEnabled() &&
@@ -1076,7 +1068,6 @@ void CSSSelector::UpdatePseudoType(AtomicString value,
     case kPseudoInterestButton:
     case kPseudoCheckMark:
     case kPseudoBackdrop:
-    case kPseudoOverscrollBackdrop:
     case kPseudoCue:
     case kPseudoMarker:
     case kPseudoPart:
@@ -1215,8 +1206,6 @@ void CSSSelector::UpdatePseudoType(AtomicString value,
     case kPseudoOpen:
     case kPseudoOptional:
     case kPseudoOutOfRange:
-    case kPseudoOverscrollClosed:
-    case kPseudoOverscrollOpen:
     case kPseudoParent:
     case kPseudoPastCue:
     case kPseudoPaused:
@@ -1260,6 +1249,15 @@ void CSSSelector::UpdatePseudoType(AtomicString value,
     case kPseudoToolFormActive:
     case kPseudoToolSubmitActive:
       if (Match() != kPseudoClass) {
+        bits_.set<PseudoTypeField>(kPseudoUnknown);
+      }
+      break;
+    case kPseudoOverscrollClosed:
+    case kPseudoOverscrollOpen:
+      if (Match() != kPseudoClass ||
+          (mode != kUASheetMode &&
+           !RuntimeEnabledFeatures::OverscrollAreasEnabled(
+               context.GetExecutionContext()))) {
         bits_.set<PseudoTypeField>(kPseudoUnknown);
       }
       break;
@@ -1882,7 +1880,6 @@ bool CSSSelector::IsTreeAbidingPseudoElement() const {
           GetPseudoType() == kPseudoPlaceholder ||
           GetPseudoType() == kPseudoFileSelectorButton ||
           GetPseudoType() == kPseudoBackdrop ||
-          GetPseudoType() == kPseudoOverscrollBackdrop ||
           GetPseudoType() == kPseudoViewTransition ||
           GetPseudoType() == kPseudoViewTransitionGroup ||
           GetPseudoType() == kPseudoViewTransitionGroupChildren ||
@@ -1937,7 +1934,6 @@ bool CSSSelector::IsAllowedAfterPart() const {
     case kPseudoSpellingError:
     case kPseudoGrammarError:
     case kPseudoBackdrop:
-    case kPseudoOverscrollBackdrop:
     case kPseudoCue:
     case kPseudoMarker:
     case kPseudoResizer:

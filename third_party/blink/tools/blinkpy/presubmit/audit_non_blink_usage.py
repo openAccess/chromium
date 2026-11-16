@@ -127,8 +127,6 @@ _CONFIG = [
             'base::MaxThreadType',
             'base::MemoryConsumer',
             'base::MemoryConsumerTraits',
-            'base::MemoryPressureListener',
-            'base::MemoryPressureListenerTag',
             'base::MessagePump',
             'base::MiBS',
             'base::MiB',
@@ -499,8 +497,10 @@ _CONFIG = [
     {
         'paths': [
             'third_party/blink/common/page_state/page_state_serialization.cc',
+            'third_party/blink/public/common/page_state/page_state_serialization.h',
         ],
         'allowed': [
+            'base::flat_set',
             'base::ToVector',
             'mojom::Element',
             'network::DataElementBytes',
@@ -544,6 +544,18 @@ _CONFIG = [
             'network::cors::IsCorsSafelistedResponseHeaderName',
             'network::mojom::FetchResponseType',
             'network::ParseUnencodedDigestsFromHeaders',
+        ],
+    },
+    {
+        'paths': [
+            'third_party/blink/common/navigation/commit_url.cc',
+            'third_party/blink/public/common/navigation/commit_url.h',
+        ],
+        'allowed': [
+            # Shared between content/ and Blink to validate commit URLs.
+            'GURL',
+            'url::kAboutScheme',
+            'url::kMaxURLChars',
         ],
     },
     {
@@ -610,6 +622,7 @@ _CONFIG = [
             'cc::PathEffect',
             'cc::RecordPaintCanvas',
             'cc::RefCountedBuffer',
+            'cc::ScopedSubnormalFloatDisabler',
             'cc::UsePaintCache',
             # Chromium geometry types.
             'gfx::DecomposedTransform',
@@ -1343,6 +1356,8 @@ _CONFIG = [
         'allowed': [
             'cc::CompositorCommitData',
             'cc::InputHandlerScrollResult',
+            'cc::ScrollTimingBufferConsumer',
+            'cc::ScrollTimingInfo',
             'cc::SwapPromise',
             'stylus_handwriting::win::IsStylusHandwritingWinEnabled',
             'stylus_handwriting::win::ProximateBoundsCollectionHalfLimit',
@@ -1359,6 +1374,7 @@ _CONFIG = [
         ],
         'allowed': [
             'cc::CompositorCommitData',
+            'cc::ScrollTimingBufferConsumer',
             'viz::CompositorFrame',
             'viz::ReturnedResource',
             'viz::TransferableResource',
@@ -1521,6 +1537,17 @@ _CONFIG = [
             # Blink code shouldn't need to be qualified with the Blink namespace,
             # but there are exceptions, e.g. traits for Mojo.
             'blink::.+',
+        ],
+    },
+    {
+        'paths': [
+            'third_party/blink/common/manifest/',
+        ],
+        'allowed': [
+            'base::CompareCase',
+            'base::StartsWith',
+            'net::IsValidTopLevelMimeType',
+            'net::ParseMimeTypeWithoutParameter',
         ],
     },
     {
@@ -1820,9 +1847,12 @@ _CONFIG = [
         'paths': [
             'third_party/blink/renderer/core/loader/document_loader.cc',
             'third_party/blink/renderer/core/loader/document_loader.h',
+            'third_party/blink/renderer/core/loader/history_item.cc',
+            'third_party/blink/renderer/core/loader/history_item.h',
         ],
         'allowed': [
             'base::flat_map',
+            'base::flat_set',
         ],
     },
     {
@@ -1858,16 +1888,19 @@ _CONFIG = [
         'allowed': [
             'base::flat_map',
             'display::Display',
+            'gfx::BufferUsage',
             'gl::GpuPreference',
             'gpu::ClientSharedImage',
             'gpu::ContextSupport',
             'gpu::gles2::GLES2Interface',
+            'gpu::ImageInfo',
             'gpu::Mailbox',
             'gpu::raster::RasterInterface',
             'gpu::RasterScopedAccess',
             'gpu::SHARED_IMAGE_USAGE_.+',
             'gpu::SharedImageExportResult',
             'gpu::SharedImageInterface',
+            'gpu::SharedImagePool',
             'gpu::SharedImageTexture',
             'gpu::SharedImageUsageSet',
             'gpu::SyncToken',
@@ -2269,9 +2302,10 @@ _CONFIG = [
         # base::RefCounted and base::RefCountedThreadSafe should still be
         # explicitly blocked. blink::RefCounted and blink::ThreadSafeRefCounted
         # should be used instead.
-        # Also, there is a blink-specific version of
-        # MemoryPressureListenerRegistration and MemoryConsumerRegistration that
-        # should be used over their base counterpart.
+        # Also, there is a blink-specific version of MemoryConsumerRegistration
+        # that should be used over its base counterpart, and
+        # base::MemoryPressureListener is deprecated in favor of
+        # base::MemoryConsumer.
         'allowed': ['.+'],
         'inclass_allowed': ['.+'],
         'disallowed': [
@@ -2287,11 +2321,7 @@ _CONFIG = [
             ),
             (
                 'base::MemoryPressureListenerRegistration',
-                'Use blink::MemoryPressureListenerRegistration',
-            ),
-            (
-                'base::AsyncMemoryPressureListenerRegistration',
-                'Use blink::MemoryPressureListenerRegistration',
+                'Use base::MemoryConsumer with blink::MemoryConsumerRegistration',
             ),
             # TODO(https://crbug.com/1267866): this warning is shown twice for
             # renderer/platform/ violations.
@@ -2305,15 +2335,6 @@ _CONFIG = [
         'allowed': [
             'base::AsyncMemoryConsumerRegistration',
             'base::MemoryConsumerRegistration',
-        ],
-    },
-    {
-        'paths': [
-            'third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.cc',
-            'third_party/blink/renderer/platform/instrumentation/memory_pressure_listener.h',
-        ],
-        'allowed': [
-            'base::AsyncMemoryPressureListenerRegistration',
         ],
     },
     {
@@ -3156,7 +3177,7 @@ _CONFIG = [
         'allowed': [
             'rust::(Str(ing)?|Box|Vec)',
             'xml_ffi::.*',
-            'base::(StringViewToRustSlice|RustStrToStringView)',
+            'base::(SpanToRustSlice|StringViewToRustSlice|RustStrToStringView)',
             're2::StringPiece',
         ],
     },
@@ -3212,9 +3233,8 @@ _CONFIG = [
     {
         'paths': [
             'third_party/blink/common/use_counter/webdx_feature_maps.cc',
-            'third_party/blink/public/common/use_counter/webdx_feature_maps.h',
         ],
-        'allowed': ['base::NoDestructor', 'base::flat_map'],
+        'allowed': ['base::MakeFixedFlatMap'],
     },
     {
         'paths': [

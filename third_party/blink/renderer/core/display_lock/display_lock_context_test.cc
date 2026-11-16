@@ -23,6 +23,7 @@
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
 #include "third_party/blink/renderer/core/dom/range.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
 #include "third_party/blink/renderer/core/editing/finder/text_finder.h"
 #include "third_party/blink/renderer/core/editing/markers/document_marker_controller.h"
@@ -35,6 +36,8 @@
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
 #include "third_party/blink/renderer/core/highlight/highlight.h"
 #include "third_party/blink/renderer/core/highlight/highlight_registry.h"
+#include "third_party/blink/renderer/core/html/html_dialog_element.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/html/html_plugin_element.h"
 #include "third_party/blink/renderer/core/html/html_template_element.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
@@ -195,6 +198,9 @@ class DisplayLockContextTest : public testing::Test {
     return context->render_affecting_state_[static_cast<int>(
         DisplayLockContext::RenderAffectingState::kSubtreeHasSelection)];
   }
+  bool SubtreeHasTopLayerElement(DisplayLockContext* context) {
+    return context->SubtreeHasTopLayerElement();
+  }
   DisplayLockUtilities::ScopedForcedUpdate GetScopedForcedUpdate(
       const Node* node,
       DisplayLockContext::ForcedPhase phase,
@@ -213,6 +219,130 @@ class DisplayLockContextTest : public testing::Test {
 
   frame_test_helpers::WebViewHelper web_view_helper_;
 };
+
+#define EXPECT_ALL_LOCKS_FORCED(state, expected)                     \
+  EXPECT_EQ((state).ActivatableDisplayLocksForced(/*is_auto=*/true), \
+            expected);                                               \
+  EXPECT_EQ((state).ActivatableDisplayLocksForced(/*is_auto=*/false), expected)
+
+TEST_F(DisplayLockContextTest,
+       ForceActivatableLocksExceptContentVisibilityAuto) {
+  ResizeAndFocus();
+  SetHtmlInnerHTML(R"HTML(
+    <style>
+      .spacer { height: 10000px; }
+      #auto { content-visibility: auto; }
+    </style>
+    <div class=spacer></div>
+    <div id=auto><div id=auto_child>auto</div></div>
+    <div id=until_found hidden=until-found>
+      <div id=until_found_child>until found</div>
+    </div>
+  )HTML");
+
+  auto* auto_element = GetDocument().getElementById(AtomicString("auto"));
+  auto* until_found = GetDocument().getElementById(AtomicString("until_found"));
+  auto* auto_context = auto_element->GetDisplayLockContext();
+  auto* until_found_context = until_found->GetDisplayLockContext();
+  ASSERT_TRUE(auto_context->IsLocked());
+  ASSERT_TRUE(until_found_context->IsLocked());
+
+  {
+    auto scope = GetDocument()
+                     .GetDisplayLockDocumentState()
+                     .GetScopedForceActivatableLocks(
+                         /*include_auto_locks=*/false);
+    EXPECT_FALSE(auto_context->ShouldLayoutChildren());
+    EXPECT_TRUE(until_found_context->ShouldLayoutChildren());
+
+    UpdateAllLifecyclePhasesForTest();
+    EXPECT_FALSE(GetDocument()
+                     .getElementById(AtomicString("auto_child"))
+                     ->GetLayoutObject());
+    EXPECT_TRUE(GetDocument()
+                    .getElementById(AtomicString("until_found_child"))
+                    ->GetLayoutObject());
+
+    {
+      // Forcing all activatable locks within the scope also forces
+      // content-visibility: auto and marks it for style/layout update.
+      auto all_scope = GetDocument()
+                           .GetDisplayLockDocumentState()
+                           .GetScopedForceActivatableLocks();
+      EXPECT_TRUE(auto_context->ShouldLayoutChildren());
+      EXPECT_TRUE(until_found_context->ShouldLayoutChildren());
+
+      UpdateAllLifecyclePhasesForTest();
+      EXPECT_TRUE(GetDocument()
+                      .getElementById(AtomicString("auto_child"))
+                      ->GetLayoutObject());
+    }
+
+    // Exiting `all_scope` unforces auto locks while `scope` keeps non-auto
+    // locks forced.
+    EXPECT_FALSE(auto_context->ShouldLayoutChildren());
+    EXPECT_TRUE(until_found_context->ShouldLayoutChildren());
+  }
+
+  EXPECT_FALSE(auto_context->ShouldLayoutChildren());
+  EXPECT_FALSE(until_found_context->ShouldLayoutChildren());
+  EXPECT_ALL_LOCKS_FORCED(GetDocument().GetDisplayLockDocumentState(), false);
+}
+
+TEST_F(DisplayLockContextTest,
+       ForceActivatableLocksNonAutoWithSlotAssignmentChange) {
+  ResizeAndFocus();
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <div id="unlocked_container">
+          <slot name="unlocked"></slot>
+        </div>
+        <div style="height: 10000px;"></div>
+        <div id="auto_container" style="content-visibility: auto">
+          <slot name="locked"></slot>
+        </div>
+      </template>
+      <div id="slotted" slot="unlocked">
+        <div id="inner" hidden="until-found">
+          <div id="inner_child">text</div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* slotted = GetDocument().getElementById(AtomicString("slotted"));
+  auto* inner = GetDocument().getElementById(AtomicString("inner"));
+  auto* inner_child = GetDocument().getElementById(AtomicString("inner_child"));
+  ASSERT_TRUE(inner->GetDisplayLockContext()->IsLocked());
+  EXPECT_FALSE(inner_child->GetLayoutObject());
+
+  // Reassign `#slotted` to the locked `content-visibility: auto` slot and
+  // immediately force non-auto locks before slot assignments are
+  // recalculated.
+  slotted->setAttribute(html_names::kSlotAttr, AtomicString("locked"));
+  {
+    auto scope = GetDocument()
+                     .GetDisplayLockDocumentState()
+                     .GetScopedForceActivatableLocks(
+                         /*include_auto_locks=*/false);
+    UpdateAllLifecyclePhasesForTest();
+    EXPECT_FALSE(inner_child->GetLayoutObject());
+  }
+
+  // Reassign `#slotted` back to the unlocked slot and immediately force
+  // non-auto locks before slot assignments are recalculated.
+  slotted->setAttribute(html_names::kSlotAttr, AtomicString("unlocked"));
+  {
+    auto scope = GetDocument()
+                     .GetDisplayLockDocumentState()
+                     .GetScopedForceActivatableLocks(
+                         /*include_auto_locks=*/false);
+    UpdateAllLifecyclePhasesForTest();
+    EXPECT_TRUE(inner_child->GetLayoutObject());
+  }
+}
 
 TEST_F(DisplayLockContextTest, UnlockWithBlockedChildLayoutMarksAncestors) {
   SetHtmlInnerHTML(
@@ -4321,9 +4451,11 @@ TEST_F(ContainerTimingDisplayLockContextTest, NestedRootsAcrossLockBoundary) {
     </div>
   )HTML");
 
-  auto* outer_element = GetDocument().getElementById(AtomicString("outer"));
+  auto* outer_element =
+      To<HTMLElement>(GetDocument().getElementById(AtomicString("outer")));
   auto* locked_element = GetDocument().getElementById(AtomicString("locked"));
-  auto* inner_element = GetDocument().getElementById(AtomicString("inner"));
+  auto* inner_element =
+      To<HTMLElement>(GetDocument().getElementById(AtomicString("inner")));
   auto* content_element = GetDocument().getElementById(AtomicString("content"));
 
   LockElement(*locked_element, false);
@@ -4459,49 +4591,58 @@ TEST_F(DisplayLockContextTest, ScopedForceActivatableDisplayLocks) {
       GetDocument().GetDisplayLockDocumentState();
   auto* state2 = MakeGarbageCollected<DisplayLockDocumentState>(&GetDocument());
 
-  EXPECT_FALSE(state1.ActivatableDisplayLocksForced());
-  EXPECT_FALSE(state2->ActivatableDisplayLocksForced());
+  EXPECT_ALL_LOCKS_FORCED(state1, false);
+  EXPECT_ALL_LOCKS_FORCED(*state2, false);
 
   // Default-constructed scope holds no states and destructs cleanly.
   {
     DisplayLockDocumentState::ScopedForceActivatableDisplayLocks empty_scope;
-    EXPECT_FALSE(state1.ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(state1, false);
   }
+
+  // Forcing only non-auto locks does not force auto locks.
+  {
+    auto non_auto_scope =
+        state1.GetScopedForceActivatableLocks(/*include_auto_locks=*/false);
+    EXPECT_FALSE(state1.ActivatableDisplayLocksForced(/*is_auto=*/true));
+    EXPECT_TRUE(state1.ActivatableDisplayLocksForced(/*is_auto=*/false));
+  }
+  EXPECT_ALL_LOCKS_FORCED(state1, false);
 
   {
     DisplayLockDocumentState::ScopedForceActivatableDisplayLocks combined_scope;
     {
       auto initial_scope = state1.GetScopedForceActivatableLocks();
-      EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
+      EXPECT_ALL_LOCKS_FORCED(state1, true);
 
       // Move construction transfers ownership without decrementing.
       DisplayLockDocumentState::ScopedForceActivatableDisplayLocks moved_scope(
           std::move(initial_scope));
-      EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
+      EXPECT_ALL_LOCKS_FORCED(state1, true);
 
       combined_scope.Add(std::move(moved_scope));
     }
     // `initial_scope` and `moved_scope` have been destroyed, but
     // `combined_scope` still holds the lock on `state1`.
-    EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(state1, true);
 
     // Destroy a second lock on `state1` in an inner scope to verify that
     // decrementing from 2 to 1 leaves `state1` forced.
     {
       auto inner_scope = state1.GetScopedForceActivatableLocks();
-      EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
+      EXPECT_ALL_LOCKS_FORCED(state1, true);
     }
-    EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(state1, true);
 
     // Add a duplicate lock on `state1` and a lock on `state2` (growing beyond
     // the inline capacity of 1).
     combined_scope.Add(state1.GetScopedForceActivatableLocks());
     combined_scope.Add(state2->GetScopedForceActivatableLocks());
-    EXPECT_TRUE(state1.ActivatableDisplayLocksForced());
-    EXPECT_TRUE(state2->ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(state1, true);
+    EXPECT_ALL_LOCKS_FORCED(*state2, true);
   }
-  EXPECT_FALSE(state1.ActivatableDisplayLocksForced());
-  EXPECT_FALSE(state2->ActivatableDisplayLocksForced());
+  EXPECT_ALL_LOCKS_FORCED(state1, false);
+  EXPECT_ALL_LOCKS_FORCED(*state2, false);
 }
 
 TEST_F(DisplayLockContextTest,
@@ -4514,25 +4655,113 @@ TEST_F(DisplayLockContextTest,
                                  weak_state2);
     ASSERT_TRUE(weak_state1);
     ASSERT_TRUE(weak_state2);
-    EXPECT_TRUE(weak_state1->ActivatableDisplayLocksForced());
-    EXPECT_TRUE(weak_state2->ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(*weak_state1, true);
+    EXPECT_ALL_LOCKS_FORCED(*weak_state2, true);
 
     ThreadState::Current()->CollectAllGarbageForTesting(
         ThreadState::StackState::kMayContainHeapPointers);
 
     ASSERT_TRUE(weak_state1);
     ASSERT_TRUE(weak_state2);
-    EXPECT_TRUE(weak_state1->ActivatableDisplayLocksForced());
-    EXPECT_TRUE(weak_state2->ActivatableDisplayLocksForced());
+    EXPECT_ALL_LOCKS_FORCED(*weak_state1, true);
+    EXPECT_ALL_LOCKS_FORCED(*weak_state2, true);
   }
 
-  EXPECT_FALSE(weak_state1->ActivatableDisplayLocksForced());
-  EXPECT_FALSE(weak_state2->ActivatableDisplayLocksForced());
+  EXPECT_ALL_LOCKS_FORCED(*weak_state1, false);
+  EXPECT_ALL_LOCKS_FORCED(*weak_state2, false);
 
   ThreadState::Current()->CollectAllGarbageForTesting(
       ThreadState::StackState::kNoHeapPointers);
   EXPECT_FALSE(weak_state1);
   EXPECT_FALSE(weak_state2);
+}
+
+TEST_F(DisplayLockContextTest,
+       TopLayerPendingSlotAssignmentRecalcDoesNotInvalidateIterator) {
+  ResizeAndFocus();
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <div id="host">
+      <template shadowrootmode="open">
+        <slot name="s">fallback</slot>
+        <div style="height: 10000px;"></div>
+        <div id="locked" style="content-visibility: auto">
+          <slot name="locked-slot"></slot>
+        </div>
+      </template>
+      <dialog id="dlg1" slot="s">top layer 1</dialog>
+      <dialog id="dlg2" slot="s">top layer 2</dialog>
+    </div>
+    <div id="ticker"
+         style="content-visibility: hidden; contain: layout style; width: 10px; height: 10px;"></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* host = GetDocument().getElementById(AtomicString("host"));
+  auto* locked = host->GetShadowRoot()->getElementById(AtomicString("locked"));
+  auto* dlg1 =
+      To<HTMLDialogElement>(GetDocument().getElementById(AtomicString("dlg1")));
+  auto* dlg2 =
+      To<HTMLDialogElement>(GetDocument().getElementById(AtomicString("dlg2")));
+  auto* ticker = GetDocument().getElementById(AtomicString("ticker"));
+  ASSERT_TRUE(locked->GetDisplayLockContext());
+  ASSERT_TRUE(ticker->GetDisplayLockContext());
+
+  dlg1->showModal(ASSERT_NO_EXCEPTION);
+  dlg2->showModal(ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_EQ(GetDocument().TopLayerElements().size(), 4u);
+
+  // Change both dialogs' `slot` attributes so the shadow root has a pending
+  // slot assignment recalc that will remove two ::backdrop elements from
+  // `Document::TopLayerElements()`.
+  dlg1->setAttribute(html_names::kSlotAttr, AtomicString("does-not-exist"));
+  dlg2->setAttribute(html_names::kSlotAttr, AtomicString("does-not-exist"));
+
+  // Disconnect and reconnect `ticker` so it runs
+  // `DetermineIfSubtreeHasTopLayerElement()` at the start of the next lifecycle
+  // update while slot assignment is dirty.
+  ticker->remove();
+  GetDocument().body()->AppendChild(ticker);
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(GetDocument().TopLayerElements().size(), 2u);
+  EXPECT_EQ(GetDocument().TopLayerElements()[0], dlg1);
+  EXPECT_EQ(GetDocument().TopLayerElements()[1], dlg2);
+  EXPECT_FALSE(SubtreeHasTopLayerElement(ticker->GetDisplayLockContext()));
+
+  // Now slot `dlg1` into `s` and `dlg2` into `locked-slot` inside `#locked`
+  // and show both as modal.
+  dlg1->close();
+  dlg2->close();
+  dlg1->setAttribute(html_names::kSlotAttr, AtomicString("s"));
+  dlg2->setAttribute(html_names::kSlotAttr, AtomicString("locked-slot"));
+  dlg1->showModal(ASSERT_NO_EXCEPTION);
+  dlg2->showModal(ASSERT_NO_EXCEPTION);
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_TRUE(SubtreeHasTopLayerElement(locked->GetDisplayLockContext()));
+  EXPECT_EQ(GetDocument().TopLayerElements().size(), 4u);
+
+  // Unslot `dlg1` while keeping `dlg2` inside `#locked`, and reconnect `ticker`
+  // to trigger the top-layer check while slot assignment is dirty.
+  dlg1->setAttribute(html_names::kSlotAttr, AtomicString("does-not-exist"));
+  ticker->remove();
+  GetDocument().body()->AppendChild(ticker);
+  UpdateAllLifecyclePhasesForTest();
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(GetDocument().TopLayerElements().size(), 3u);
+  EXPECT_TRUE(SubtreeHasTopLayerElement(locked->GetDisplayLockContext()));
+
+  // Finally unslot `dlg2` as well and verify `#locked` clears its top-layer
+  // state without iterator invalidation.
+  dlg2->setAttribute(html_names::kSlotAttr, AtomicString("does-not-exist"));
+  ticker->remove();
+  GetDocument().body()->AppendChild(ticker);
+  UpdateAllLifecyclePhasesForTest();
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_EQ(GetDocument().TopLayerElements().size(), 2u);
+  EXPECT_FALSE(SubtreeHasTopLayerElement(locked->GetDisplayLockContext()));
 }
 
 }  // namespace blink

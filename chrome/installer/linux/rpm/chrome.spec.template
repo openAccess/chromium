@@ -23,9 +23,10 @@ Autoreqprov     : No
 
 BuildRoot       : %{_tmppath}/%{name}-%{version}-root
 
-# The prefix is pretty important; RPM uses this to figure out
-# how to make a package relocatable
-prefix          : /opt
+# The package is intentionally not relocatable (no "Prefix:" tag): the
+# install scriptlets, the /usr/bin symlink, the desktop files and the
+# browser itself all refer to @@INSTALLDIR, so "rpm --prefix" would
+# produce a broken install. Without a prefix, rpm rejects --prefix.
 
 #------------------------------------------------------------------------------
 #   Description
@@ -82,7 +83,7 @@ rm -rf "$RPM_BUILD_ROOT"
 #%doc README
 
 # We cheat and just let RPM figure it out for us; everything we install
-# should go under this prefix anyways.
+# should go under this directory anyways.
 @@INSTALLDIR
 
 # Be explicit about the files we scatter throughout the system we don't
@@ -90,10 +91,10 @@ rm -rf "$RPM_BUILD_ROOT"
 /etc/cron.daily/@@PACKAGE
 %ghost %attr(755,root,root) /usr/bin/@@package_orig
 /usr/bin/@@usr_bin_symlink_name
-/usr/share/appdata/@@PACKAGE.appdata.xml
 /usr/share/applications/@@PACKAGE.desktop
 /usr/share/applications/@@rdn_desktop.desktop
 /usr/share/gnome-control-center/default-apps/@@PACKAGE.xml
+/usr/share/metainfo/@@PACKAGE.metainfo.xml
 %docdir /usr/share/man/man1
 # These two files will be the same on non-stable channels.
 /usr/share/man/man1/@@PACKAGE.1.gz

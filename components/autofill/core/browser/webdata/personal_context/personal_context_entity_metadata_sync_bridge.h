@@ -11,6 +11,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -18,13 +19,10 @@
 #include "base/observer_list_types.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/data_manager/autofill_ai/entity_suppression_entry.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_util.h"
 #include "components/sync/model/data_type_store.h"
 #include "components/sync/model/data_type_sync_bridge.h"
-
-namespace sync_pb {
-class AutofillEntitySuppressionSpecifics;
-}  // namespace sync_pb
+#include "components/sync/protocol/autofill_entity_suppression_specifics.pb.h"
 
 namespace os_crypt_async {
 class Encryptor;
@@ -81,24 +79,37 @@ class PersonalContextEntityMetadataSyncBridge
   // no such records. Returns `true` if suppression status was modified.
   bool Unsuppress(const EntitySuppressionEntry& entry);
 
-  // Deletes suppression records whose creation timestamp falls within the
-  // inclusive range `[delete_begin, delete_end]` from local storage and Sync,
-  // and notifies observers if any record was removed. Returns `false` if Sync
-  // is not tracking metadata or no entries matched the time range. Returns
-  // `true` if suppression status was modified.
-  bool ClearSuppressions(base::Time delete_begin, base::Time delete_end);
+  // Adds a confirmation `hash`, generates a GUID, encrypts and persists it,
+  // and notifies Sync. If this exceeds the maximum number of confirmations,
+  // the oldest ones are deleted. Returns `false` if Sync is not tracking
+  // metadata or `hash` was already confirmed. Returns `true` if confirmation
+  // status was modified.
+  bool Confirm(EntityConfirmationHash hash);
 
-  // Returns the keys of all currently active suppressions.
-  base::flat_set<EntitySuppressionKey> GetSuppressions() const;
+  // Deletes suppression and confirmation records whose creation timestamp falls
+  // within the inclusive range `[delete_begin, delete_end]` from local storage
+  // and Sync, and notifies observers if any suppression record was removed.
+  // Returns `false` if no entries matched the time range. Returns `true` if any
+  // record was removed.
+  bool ClearEntries(base::Time delete_begin, base::Time delete_end);
+
+  // Returns the hashes of all currently active suppressions.
+  base::flat_set<EntitySuppressionHash> GetSuppressions() const;
 
   // Returns true if `entry` is currently suppressed.
   bool IsSuppressed(const EntitySuppressionEntry& entry) const;
 
-  // Returns the number of suppression records whose creation timestamp falls
-  // within the inclusive range `[begin, end]`. Null `begin`/`end` are treated
-  // as `base::Time::Min()`/`base::Time::Max()`, matching `ClearSuppressions()`.
-  size_t CountSuppressionsCreatedBetween(base::Time begin,
-                                         base::Time end) const;
+  // Returns the hashes of all currently active confirmations.
+  base::flat_set<EntityConfirmationHash> GetConfirmations() const;
+
+  // Returns true if `hash` is currently confirmed.
+  bool IsConfirmed(EntityConfirmationHash hash) const;
+
+  // Returns the number of suppression and confirmation records whose creation
+  // timestamp falls within the inclusive range `[begin, end]`. Null
+  // `begin`/`end` are treated as `base::Time::Min()`/`base::Time::Max()`,
+  // matching `ClearEntries()`.
+  size_t CountEntriesCreatedBetween(base::Time begin, base::Time end) const;
 
   bool IsLoaded() const;
 
@@ -131,14 +142,41 @@ class PersonalContextEntityMetadataSyncBridge
   struct EntryMetadata {
     std::string guid;
     base::Time creation_time;
+    // Populated if the record carries the legacy `entity_suppression_key`, so
+    // that `CreateSuppressionEntityData()` preserves it for older clients that
+    // only read it.
+    // TODO(crbug.com/501036619): Remove once legacy entries are no longer
+    // supported.
+    std::optional<sync_pb::EntitySuppressionKey> legacy_key;
   };
 
+  static EntryMetadata CreateEntryMetadata(
+      const sync_pb::AutofillEntitySuppressionSpecifics& specifics);
+
+  // Outcome of inserting an entry into an in-memory metadata map via
+  // `InsertOrResolveConflict()`.
+  struct InsertOrResolveConflictResult {
+    // True if `key` was not already present in `metadata_map`.
+    bool entry_added = false;
+    // True if `new_metadata` was inserted or replaced the existing entry.
+    bool kept_new_entry = false;
+    // Set to the losing GUID if two distinct GUIDs mapped to the same `key`.
+    std::optional<std::string> guid_to_evict;
+  };
+
+  // Inserts `(key, new_metadata)` into `metadata_map`, resolving conflicts
+  // deterministically if an entry with the same `key` already exists under a
+  // different GUID.
+  template <typename Key>
+  static InsertOrResolveConflictResult InsertOrResolveConflict(
+      Key key,
+      EntryMetadata new_metadata,
+      base::flat_map<Key, EntryMetadata>& metadata_map);
+
   // Applies a remote entry to persistent storage and in-memory cache:
-  // Encrypts `specifics` and writes it to `batch` under `storage_key`, and
-  // indexes the parsed `key` in `metadata_map`. Resolves conflicts if an entry
-  // with the same `key` already exists under a different GUID.
-  // Returns `true` if `key` was not already in `metadata_map`, `false`
-  // otherwise.
+  // inserts `key` into `metadata_map`, deletes any evicted duplicate from
+  // `batch` and Sync, and writes encrypted `specifics` to `batch` if kept.
+  // Returns `true` if `key` was not already in `metadata_map`.
   template <typename Key>
   bool ApplyRemoteEntry(
       const std::string& storage_key,
@@ -146,6 +184,24 @@ class PersonalContextEntityMetadataSyncBridge
       Key key,
       base::flat_map<Key, EntryMetadata>& metadata_map,
       syncer::DataTypeStore::WriteBatch& batch);
+
+  // Applies an incoming remote `specifics` entry and returns `true` if a new
+  // entry was added to `suppression_metadata_by_entry_`.
+  bool ApplyRemoteSpecifics(
+      const std::string& storage_key,
+      const sync_pb::AutofillEntitySuppressionSpecifics& specifics,
+      syncer::DataTypeStore::WriteBatch& batch);
+
+  // Stages the encrypted write of `specifics` to local storage (via `batch`)
+  // and notifies Sync (via `change_processor()`).
+  void WriteEntryToStoreAndSync(
+      const sync_pb::AutofillEntitySuppressionSpecifics& specifics,
+      syncer::DataTypeStore::WriteBatch& batch);
+
+  // Stages the deletion of `guid` from local storage (via `batch`) and
+  // notifies Sync (via `change_processor()`).
+  void DeleteEntryFromStoreAndSync(const std::string& guid,
+                                   syncer::DataTypeStore::WriteBatch& batch);
 
   // Deletes the oldest entries from `metadata_map`, local storage (via `batch`)
   // and Sync until at most `max_entries` remain. Of entries with equal
@@ -155,6 +211,15 @@ class PersonalContextEntityMetadataSyncBridge
   bool DeleteOldestEntriesAboveLimit(
       base::flat_map<Key, EntryMetadata>& metadata_map,
       size_t max_entries,
+      syncer::DataTypeStore::WriteBatch& batch);
+
+  struct EvictedEntriesResult {
+    bool deleted_suppressions = false;
+    bool deleted_confirmations = false;
+  };
+
+  // Enforces `kMaxSuppressions` and `kMaxConfirmations` on both metadata maps.
+  EvictedEntriesResult DeleteOldestEntriesAboveLimits(
       syncer::DataTypeStore::WriteBatch& batch);
 
   void OnStoreCreated(base::RepeatingClosure barrier,
@@ -167,7 +232,17 @@ class PersonalContextEntityMetadataSyncBridge
       const std::optional<syncer::ModelError>& error,
       std::unique_ptr<syncer::DataTypeStore::RecordList> data_records,
       std::unique_ptr<syncer::MetadataBatch> metadata_batch);
+  void ApplyPostLoadCleanup(
+      base::span<const std::string> guids_to_evict,
+      base::span<const sync_pb::AutofillEntitySuppressionSpecifics>
+          records_to_migrate);
   void ReportErrorIfSet(const std::optional<syncer::ModelError>& error);
+
+  // Builds `EntityData` for a suppression `(hash, metadata)`, preserving any
+  // cached unknown fields and `metadata.legacy_key`.
+  std::unique_ptr<syncer::EntityData> CreateSuppressionEntityData(
+      EntitySuppressionHash hash,
+      const EntryMetadata& metadata) const;
 
   // Queries all suppression data and returns it as a
   // `syncer::MutableDataBatch`.
@@ -190,9 +265,13 @@ class PersonalContextEntityMetadataSyncBridge
 
   base::ObserverList<Observer> observers_;
 
-  // In-memory mapping from `EntitySuppressionKey` to its metadata.
-  base::flat_map<EntitySuppressionKey, EntryMetadata>
+  // In-memory mapping from `EntitySuppressionHash` to its metadata.
+  base::flat_map<EntitySuppressionHash, EntryMetadata>
       suppression_metadata_by_entry_;
+
+  // In-memory mapping from `EntityConfirmationHash` to its metadata.
+  base::flat_map<EntityConfirmationHash, EntryMetadata>
+      confirmation_metadata_by_entry_;
 
   base::WeakPtrFactory<PersonalContextEntityMetadataSyncBridge>
       weak_ptr_factory_{this};

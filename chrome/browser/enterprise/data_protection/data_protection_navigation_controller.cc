@@ -12,15 +12,20 @@
 #include "chrome/browser/enterprise/watermark/settings.h"
 #include "chrome/browser/enterprise/watermark/watermark_features.h"
 #include "chrome/browser/profiles/profile.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
 #include "components/enterprise/data_protection/utils.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "extensions/buildflags/buildflags.h"
+#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/tabs/public/tab_features.h"  // nogncheck
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) && \
+    BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/enterprise/connectors/reporting/extension_actor_tracker.h"
+#include "components/enterprise/connectors/core/features.h"
 #endif
 
 #if BUILDFLAG(ENTERPRISE_WATERMARK)
@@ -30,6 +35,14 @@
 
 namespace enterprise_data_protection {
 
+DEFINE_USER_DATA(DataProtectionNavigationController);
+
+// static
+DataProtectionNavigationController* DataProtectionNavigationController::From(
+    tabs::TabInterface* tab) {
+  return tab ? Get(tab->GetUnownedUserDataHost()) : nullptr;
+}
+
 // static
 DataProtectionNavigationController*
 DataProtectionNavigationController::FromWebContents(
@@ -37,16 +50,7 @@ DataProtectionNavigationController::FromWebContents(
   if (!web_contents) {
     return nullptr;
   }
-#if !BUILDFLAG(IS_ANDROID)
-  tabs::TabInterface* tab =
-      tabs::TabInterface::MaybeGetFromContents(web_contents);
-  if (!tab || !tab->GetTabFeatures()) {
-    return nullptr;
-  }
-  return tab->GetTabFeatures()->data_protection_controller();
-#else
-  return nullptr;
-#endif
+  return From(tabs::TabInterface::MaybeGetFromContents(web_contents));
 }
 
 bool IsScreenShareBlocked(content::WebContents* web_contents) {
@@ -61,7 +65,9 @@ bool IsScreenShareBlocked(content::WebContents* web_contents) {
 
 DataProtectionNavigationController::DataProtectionNavigationController(
     tabs::TabInterface* tab_interface)
-    : tab_interface_(tab_interface) {
+    : tab_interface_(tab_interface),
+      scoped_unowned_user_data_(tab_interface->GetUnownedUserDataHost(),
+                                *this) {
   Observe(tab_interface->GetContents());
   tab_subscriptions_.push_back(
       tab_interface_->RegisterWillDiscardContents(base::BindRepeating(
@@ -99,6 +105,12 @@ base::CallbackListSubscription
 DataProtectionNavigationController::RegisterScreenshotAllowedUpdatedCallback(
     ScreenshotAllowedUpdatedCallback callback) {
   return screenshot_allowed_updated_callbacks_.Add(std::move(callback));
+}
+
+void DataProtectionNavigationController::SetScreenshotAllowedForTesting(
+    bool allowed) {
+  screenshot_allowed_ = allowed;
+  screenshot_allowed_updated_callbacks_.Notify(screenshot_allowed_);
 }
 #endif  // BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
 
@@ -250,6 +262,19 @@ void DataProtectionNavigationController::
 
 void DataProtectionNavigationController::DidStartNavigation(
     content::NavigationHandle* navigation_handle) {
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS) && \
+    BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  // Update the extension actor before the lookup below reads it.
+  if (base::FeatureList::IsEnabled(
+          enterprise_connectors::kEnterpriseExtensionActorAttribution)) {
+    if (auto* tracker =
+            enterprise_connectors::ExtensionActorTracker::FromWebContents(
+                web_contents())) {
+      tracker->DidStartNavigation(navigation_handle);
+    }
+  }
+#endif
+
   auto navigation_observer = enterprise_data_protection::
       DataProtectionNavigationObserver::CreateForNavigationIfNeeded(
           this, tab_interface_->GetProfile(), navigation_handle,

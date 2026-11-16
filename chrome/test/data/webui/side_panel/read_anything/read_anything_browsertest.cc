@@ -135,6 +135,18 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SelectionController) {
                    "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, TranslatedSelectionController) {
+  RunSidePanelTest(
+      "side_panel/read_anything/translated_selection_controller_test.js",
+      "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, BlockSelectionHighlighter) {
+  RunSidePanelTest(
+      "side_panel/read_anything/block_selection_highlighter_test.js",
+      "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SpeechController) {
   RunSidePanelTest("side_panel/read_anything/speech_controller_test.js",
                    "mocha.run()");
@@ -282,6 +294,11 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, AccentMenu) {
                    "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, AiFeedbackDialog) {
+  RunSidePanelTest("side_panel/read_anything/ai_feedback_dialog_test.js",
+                   "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, LanguageMenu) {
   RunSidePanelTest("side_panel/read_anything/language_menu_test.js",
                    "mocha.run()");
@@ -294,12 +311,6 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, LanguageToast) {
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, RateMenu) {
   RunSidePanelTest("side_panel/read_anything/rate_menu_test.js", "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SpeechUsesMaxTextLength) {
-  RunSidePanelTest(
-      "side_panel/read_anything/speech_uses_max_text_length_test.js",
-      "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, LineFocusController) {
@@ -327,8 +338,8 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, ReadAloudNodeStore) {
                    "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, DomReadAloudNode) {
-  RunSidePanelTest("side_panel/read_anything/dom_read_aloud_node_test.js",
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, ReadAloudNode) {
+  RunSidePanelTest("side_panel/read_anything/read_aloud_node_test.js",
                    "mocha.run()");
 }
 

@@ -6,6 +6,7 @@
 
 #include "cc/slim/layer.h"
 #include "cc/slim/ui_resource_layer.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/StatusIndicatorSceneLayer_jni.h"
@@ -35,7 +36,8 @@ void StatusIndicatorSceneLayer::UpdateStatusIndicatorLayer(
     JNIEnv* env,
     const base::android::JavaRef<jobject>& jresource_manager,
     int32_t view_resource_id,
-    int32_t y_offset) {
+    int32_t top_offset,
+    int32_t visible_height) {
   ui::ResourceManager* resource_manager =
       ui::ResourceManagerImpl::FromJavaObject(jresource_manager);
   ui::Resource* resource = resource_manager->GetResource(
@@ -48,13 +50,13 @@ void StatusIndicatorSceneLayer::UpdateStatusIndicatorLayer(
   view_layer_->SetUIResourceId(resource->ui_resource()->id());
 
   view_container_->SetBounds(resource->size());
-  view_container_->SetPosition(gfx::PointF(0, 0));
+  view_container_->SetPosition(gfx::PointF(0, top_offset));
 
   // The view's layer should be the same size as the texture.
   view_layer_->SetBounds(resource->size());
-  // Position the layer at the bottom of the offset.
+  // Position the layer within view_container_ so only visible_height is shown.
   view_layer_->SetPosition(
-      gfx::PointF(0, y_offset - resource->size().height()));
+      gfx::PointF(0, visible_height - resource->size().height()));
 }
 
 void StatusIndicatorSceneLayer::SetContentTree(
@@ -83,13 +85,10 @@ bool StatusIndicatorSceneLayer::ShouldShowBackground() {
   return should_show_background_;
 }
 
-static int64_t JNI_StatusIndicatorSceneLayer_Init(
-    JNIEnv* env,
-    const JavaRef<jobject>& jobj) {
+static jni_zero::JniRawPtr<StatusIndicatorSceneLayer>
+JNI_StatusIndicatorSceneLayer_Init(JNIEnv* env, const JavaRef<jobject>& jobj) {
   // This will automatically bind to the Java object and pass ownership there.
-  StatusIndicatorSceneLayer* scene_layer =
-      new StatusIndicatorSceneLayer(env, jobj);
-  return reinterpret_cast<intptr_t>(scene_layer);
+  return jni_zero::MakeRaw(new StatusIndicatorSceneLayer(env, jobj));
 }
 
 }  // namespace android

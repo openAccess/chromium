@@ -30,6 +30,7 @@
 #import "components/autofill/ios/browser/autofill_agent.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/autofill_client_ios_bridge.h"
+#import "components/autofill/ios/browser/autofill_suggestion_controller_ios.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "components/prefs/pref_service.h"
 #import "components/strike_database/strike_database.h"
@@ -39,7 +40,6 @@
 #import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
-@protocol AtMemoryCommands;
 @protocol AutofillCommands;
 @protocol FormInputAccessoryCommands;
 @class UIViewController;
@@ -67,8 +67,6 @@ class WebState;
 
 namespace autofill {
 
-class AtMemoryManager;
-class AtMemoryQueryService;
 class AutofillAiSaveEntityInfoBarDelegateIOS;
 class AutofillSuggestionDelegate;
 class LogRouter;
@@ -108,11 +106,6 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   }
   id<AutofillCommands> commands_handler() const { return commands_handler_; }
 
-  void set_at_memory_handler(id<AtMemoryCommands> at_memory_handler) {
-    at_memory_handler_ = at_memory_handler;
-  }
-  id<AtMemoryCommands> at_memory_handler() const { return at_memory_handler_; }
-
   void set_form_input_accessory_commands_handler(
       id<FormInputAccessoryCommands> form_input_accessory_commands_handler) {
     form_input_accessory_commands_handler_ =
@@ -122,9 +115,18 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
     return form_input_accessory_commands_handler_;
   }
 
+  // Returns the suggestion controller managing the Autofill suggestions UI
+  // lifecycle.
+  AutofillSuggestionControllerIOS& suggestion_controller() {
+    return suggestion_controller_;
+  }
+  const AutofillSuggestionControllerIOS& suggestion_controller() const {
+    return suggestion_controller_;
+  }
+
   // AutofillClient:
   base::WeakPtr<AutofillClient> GetWeakPtr() override;
-  const std::string& GetAppLocale() const override;
+  const base::i18n::LanguageTag& GetAppLocale() const override;
   version_info::Channel GetChannel() const override;
   bool IsOffTheRecord() const override;
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
@@ -136,8 +138,8 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   PersonalContextEntityMetadataManager*
   GetPersonalContextEntityMetadataManager() override;
   WalletPassAccessManager* GetWalletPassAccessManager() override;
-  FieldClassificationModelHandler*
-  GetAutofillFieldClassificationModelHandler() override;
+  FieldClassificationModelHandler* GetAutofillFieldClassificationModelHandler()
+      override;
   FieldClassificationModelHandler*
   GetPasswordManagerFieldClassificationModelHandler() override;
   SingleFieldFillRouter& GetSingleFieldFillRouter() override;
@@ -152,8 +154,6 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   AutofillAiModelExecutor* GetAutofillAiModelExecutor() override;
   consent_auditor::ConsentAuditor* GetConsentAuditor() final;
   optimization_guide::RemoteModelExecutor* GetRemoteModelExecutor() override;
-  AtMemoryQueryService* GetAtMemoryQueryService() override;
-  AtMemoryManager* GetAtMemoryManager() override;
   personal_context::PersonalContextEligibilityState
   GetPersonalContextEligibilityState() const override;
   personal_context::PersonalContextEligibilityService*
@@ -299,7 +299,6 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   std::unique_ptr<AutofillAiManager> autofill_ai_manager_;
   std::unique_ptr<FormPredictionsTracker> form_predictions_tracker_;
   PageContextWrapper* page_context_wrapper_;
-  std::unique_ptr<AtMemoryManager> at_memory_manager_;
 
   // Order matters for this initialization. This initialization must happen
   // after all of the members passed into the constructor of
@@ -315,9 +314,11 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
 
   __weak id<AutofillCommands> commands_handler_;
 
-  __weak id<AtMemoryCommands> at_memory_handler_;
-
   __weak id<FormInputAccessoryCommands> form_input_accessory_commands_handler_;
+
+  // Controller managing the Autofill suggestions UI lifecycle and tapjacking
+  // protection when the BAM suggestion flow is enabled.
+  AutofillSuggestionControllerIOS suggestion_controller_;
 
   // Holds a weak reference to the delegate driving the active suggestions
   // popup.

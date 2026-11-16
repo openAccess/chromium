@@ -208,8 +208,7 @@ void TextControlElement::DefaultEventHandler(Event& event) {
         ComputeSelection(kStart | kEnd | kDirection, computed_selection);
         CacheSelection(computed_selection.start, computed_selection.end,
                        computed_selection.direction);
-      } else if (RuntimeEnabledFeatures::
-                     ClampUnfocusedSelectionCacheEnabled()) {
+      } else {
         // If the element is not focused, the selection cache is not updated
         // during text mutations because the global Selection doesn't point to
         // this element. This can cause the cache to exceed the new text length.
@@ -252,7 +251,7 @@ void TextControlElement::NotifyEditableContentChanged() {
       ComputeSelection(kStart | kEnd | kDirection, computed_selection);
       CacheSelection(computed_selection.start, computed_selection.end,
                      computed_selection.direction);
-    } else if (RuntimeEnabledFeatures::ClampUnfocusedSelectionCacheEnabled()) {
+    } else {
       // If the element is not focused, the selection cache is not updated
       // during text mutations because the global Selection doesn't point to
       // this element. This can cause the cache to exceed the new text length.
@@ -779,8 +778,10 @@ unsigned TextControlElement::selectionEnd() const {
 
 static const AtomicString& DirectionString(
     TextFieldSelectionDirection direction) {
-  DEFINE_STATIC_LOCAL(const AtomicString, forward, ("forward"));
-  DEFINE_STATIC_LOCAL(const AtomicString, backward, ("backward"));
+  DEFINE_STATIC_LOCAL(const AtomicString, forward,
+                      (AtomicString::FromLiteral<"forward">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, backward,
+                      (AtomicString::FromLiteral<"backward">()));
 
   switch (direction) {
     case kSelectionHasNoDirection:

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/base64.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/i18n/char_iterator.h"
@@ -30,6 +31,7 @@
 #include "services/image_annotation/public/mojom/image_annotation.mojom-forward.h"
 #include "services/metrics/public/cpp/mojo_ukm_recorder.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "third_party/blink/public/web/web_ax_context.h"
 #include "third_party/blink/public/web/web_ax_object.h"
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_element.h"
@@ -602,6 +604,11 @@ std::string AXImageAnnotator::GenerateImageSourceId(
 }
 
 void AXImageAnnotator::MarkDirty(const blink::WebAXObject& image) const {
+  // The image may remain attached while ignored and excluded from the AX tree
+  // (e.g. via `visibility: hidden` or `alt=""`).
+  if (!image.IsIncludedInTree()) {
+    return;
+  }
   render_accessibility_->MarkWebAXObjectDirty(image);
 
   // Check two unignored parents. If either of them is a link or root web area,
@@ -675,8 +682,26 @@ SkBitmap AXImageAnnotator::GetImageData(const blink::WebAXObject& image) {
 void AXImageAnnotator::OnImageAnnotated(
     const blink::WebAXObject& image,
     image_annotation::mojom::AnnotateImageResultPtr result) {
-  DCHECK(render_accessibility_->GetAXContext());
-  render_accessibility_->GetAXContext()->UpdateAXForAllDocuments();
+  blink::WebAXContext* ax_context = render_accessibility_->GetAXContext();
+  CHECK(ax_context);
+  // Bail out if the document is already shutting down or stopped.
+  if (!ax_context->HasActiveDocument()) {
+    return;
+  }
+
+  // Updating layout and AX across all documents can synchronously run script or
+  // frame observers (crbug.com/580869107) and destroy `this` or deactivate the
+  // document.
+  base::WeakPtr<AXImageAnnotator> weak_this = weak_factory_.GetWeakPtr();
+  ax_context->UpdateAXForAllDocuments();
+  if (!weak_this) {
+    return;
+  }
+  ax_context = render_accessibility_->GetAXContext();
+  CHECK(ax_context);
+  if (!ax_context->HasActiveDocument()) {
+    return;
+  }
 
   const auto it = image_annotations_.find(image.AxID());
   if (it == image_annotations_.end()) {

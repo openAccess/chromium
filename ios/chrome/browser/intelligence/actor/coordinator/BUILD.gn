@@ -16,14 +16,12 @@ source_set("coordinator") {
     "actuation_worklog_mediator.mm",
   ]
   deps = [
+    ":actor_task_data_source",
     "//base",
     "//components/autofill/core/browser",
     "//components/autofill/ios/browser",
-    "//ios/chrome/app/strings",
-    "//ios/chrome/browser/intelligence/actor/model",
     "//ios/chrome/browser/intelligence/actor/public:actor_task_ui_protocols",
     "//ios/chrome/browser/intelligence/actor/public:actor_types",
-    "//ios/chrome/browser/intelligence/actor/public:actuation_worklog_data_source",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_interface",
     "//ios/chrome/browser/intelligence/actor/ui",
     "//ios/chrome/browser/passwords/bottom_sheet/coordinator",
@@ -32,12 +30,13 @@ source_set("coordinator") {
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/coordinator/scene/state",
     "//ios/chrome/browser/shared/model/browser",
-    "//ios/chrome/browser/shared/model/profile",
-    "//ios/chrome/browser/shared/ui/symbols",
     "//ios/chrome/common/ui/colors",
-    "//ui/base",
     "//url",
   ]
+}
+
+source_set("actor_task_data_source") {
+  sources = [ "actor_task_data_source.h" ]
 }
 
 source_set("unit_tests") {
@@ -48,21 +47,15 @@ source_set("unit_tests") {
     "actuation_worklog_mediator_unittest.mm",
   ]
   deps = [
+    ":actor_task_data_source",
     ":coordinator",
     "//base",
-    "//base/test:test_support",
-    "//components/actor/core",
-    "//components/autofill/core/browser/integrators/actor:actor_form_filling_types",
     "//components/password_manager/core/browser/actor_login:common",
     "//ios/chrome/app/strings",
-    "//ios/chrome/browser/intelligence/actor/model",
     "//ios/chrome/browser/intelligence/actor/public:actor_task_ui_protocols",
     "//ios/chrome/browser/intelligence/actor/public:actor_types",
-    "//ios/chrome/browser/intelligence/actor/public:actuation_worklog_data_source",
     "//ios/chrome/browser/intelligence/actor/tools/model:actor_tool_interface",
     "//ios/chrome/browser/intelligence/actor/ui",
-    "//ios/chrome/browser/intelligence/actor/util:test_support",
-    "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/shared/coordinator/layout_guide:layout_guide_scene_agent",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
     "//ios/chrome/browser/shared/model/browser/test:test_support",

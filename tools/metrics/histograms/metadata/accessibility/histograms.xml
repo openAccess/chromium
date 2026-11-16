@@ -158,7 +158,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Accessibility.Android.CaretBrowsing.Enabled"
-    enum="BooleanEnabled" expires_after="2027-03-07">
+    enum="BooleanEnabled" expires_after="2027-05-09">
   <owner>lokeric@google.com</owner>
   <owner>mschillaci@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -166,7 +166,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Accessibility.Android.CaretBrowsing.SelectedAction"
-    enum="AccessibilityCaretBrowsingAction" expires_after="2027-03-07">
+    enum="AccessibilityCaretBrowsingAction" expires_after="2027-05-09">
   <owner>lokeric@google.com</owner>
   <owner>mschillaci@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -1780,7 +1780,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.DisabledAfterHide" enum="BooleanHit"
-    expires_after="2026-12-06">
+    expires_after="2027-12-06">
   <owner>grt@chromium.org</owner>
   <owner>lucasradaelli@google.com</owner>
   <summary>
@@ -1874,23 +1874,6 @@ recorded in the same way, even if they fit the naming pattern. -->
     is first used. This is tracked only one per instance, and is recorded as the
     accessibility code is enable.
   </summary>
-</histogram>
-
-<histogram name="Accessibility.EventProcessingTime3{Variation}" units="ms"
-    expires_after="2026-12-06">
-  <owner>grt@chromium.org</owner>
-  <owner>lucasradaelli@google.com</owner>
-  <summary>
-    The round-trip time to send a set of accessibility mode flags from the
-    browser process to a renderer and receive and process the first set of
-    updates and events. Recorded once each time the browser process receives the
-    first set of updates and events from a renderer following {Variation} call
-    to RenderAccessibility::SetMode.
-  </summary>
-  <token key="Variation">
-    <variant name=".First" summary="the very first"/>
-    <variant name=".NotFirst" summary="all but the first"/>
-  </token>
 </histogram>
 
 <histogram name="Accessibility.ExperimentalModeFlag.FormControls"
@@ -2398,7 +2381,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.LiveTranslate.OnDeviceTranslation.ErrorReason"
-    enum="OnDeviceTranslationErrorReason" expires_after="2027-03-07">
+    enum="OnDeviceTranslationErrorReason" expires_after="2027-05-09">
   <owner>danft@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
@@ -3216,7 +3199,6 @@ recorded in the same way, even if they fit the naming pattern. -->
   <owner>lucasradaelli@google.com</owner>
   <owner>javiercon@microsoft.com</owner>
   <owner>janewman@microsoft.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     The time to execute a call to the UMA_API_ELEMENT_PROVIDER_FROM_POINT method
@@ -3303,7 +3285,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <histogram
     name="Accessibility.ReadAnything.DistillationQuality.EvaluationStatus"
     enum="ReadAnythingDistillationQualityEvaluationStatus"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>alfredohiguera@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
@@ -3316,7 +3298,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.DistillationQuality.{Metric}"
-    units="%" expires_after="2027-03-07">
+    units="%" expires_after="2027-05-09">
   <owner>alfredohiguera@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3336,7 +3318,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.DistillationScheme"
-    enum="ReadAnythingDistillationScheme" expires_after="2027-03-07">
+    enum="ReadAnythingDistillationScheme" expires_after="2027-05-09">
   <owner>davidsegovia@google.com</owner>
   <owner>ammedina@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -3347,7 +3329,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.DistillationStatusAfterOmnibox"
-    enum="ReadAnythingDistillationStatus" expires_after="2027-03-07">
+    enum="ReadAnythingDistillationStatus" expires_after="2027-05-09">
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
   <summary>
@@ -3455,7 +3437,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.HiddenBeforeShown"
-    enum="BooleanYesNo" expires_after="2027-03-07">
+    enum="BooleanYesNo" expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3486,7 +3468,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.LineFocusKeyboardToggle"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
   <summary>
@@ -3502,7 +3484,9 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records the length of time the user spends in Reading mode with line focus
     on. This is measured from when line focus is enabled to when the user
-    disables line focus, changes pages, or hides Reading mode.
+    disables line focus, changes pages, or hides Reading mode. Note: starting in
+    M160, switching between the side panel and full-page view no longer ends the
+    session.
   </summary>
 </histogram>
 
@@ -3512,7 +3496,8 @@ recorded in the same way, even if they fit the naming pattern. -->
   <owner>komo-eng@google.com</owner>
   <summary>
     Records the total distance moved with line focus in a session, either via
-    mouse movement or via scroll.
+    mouse movement or via scroll. Note: starting in M160, switching between the
+    side panel and full-page view no longer ends the session.
   </summary>
   <token key="Type">
     <variant name="Mouse" summary="total mouse movement"/>
@@ -3527,6 +3512,8 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records the total number of lines highlighted or underlined with line focus
     in a session, either via keyboard arrow keys or with Read aloud speech.
+    Note: starting in M160, switching between the side panel and full-page view
+    no longer ends the session.
   </summary>
   <token key="Type">
     <variant name="Keyboard" summary="total line changes by keyboard"/>
@@ -3553,12 +3540,14 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records whether audio playback successfully started within 5 seconds after
     the user selected the &quot;Listen to this page&quot; context menu item and
-    sustained continuous playback for at least 2 seconds.
+    sustained continuous playback for at least 2 seconds. Note: starting in
+    M160, switching between the side panel and full-page view no longer records
+    a pending request as failed.
   </summary>
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.MainPanelSelectionOnOpen"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3637,7 +3626,10 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Measures the duration a user spent reading a {PageType} page in {ViewMode}
     view mode. Logged when the page is changed, or the panel is closed or
-    destroyed.
+    destroyed. Note: starting in M160, switching between the side panel and
+    full-page view modes while shown logs the elapsed duration for the previous
+    view mode and continues timing in the new view mode, instead of stopping
+    until the next distillation.
   </summary>
   <token key="PageType">
     <variant name="Pdf" summary="PDF"/>
@@ -3739,7 +3731,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.ReadabilityMapping.SuccessRate"
-    units="%" expires_after="2027-03-07">
+    units="%" expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3751,7 +3743,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 
 <histogram
     name="Accessibility.ReadAnything.ReadabilityMapping.{Step}.ExecutionTime"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3794,7 +3786,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.ReadAloud.PlaybackContext"
-    enum="ReadAnythingPlaybackContext" expires_after="2027-03-07">
+    enum="ReadAnythingPlaybackContext" expires_after="2027-05-09">
   <owner>ericchao@google.com</owner>
   <owner>ammedina@google.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -3822,7 +3814,9 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records which kind of voice the user is using to read aloud text in the Read
     Anything panel. This is recorded when speech stops, either from user action
-    or when speech completes, to avoid blocking speech.
+    or when speech completes, to avoid blocking speech. Note: starting in M160,
+    switching between the side panel and full-page view no longer stops speech
+    without recording this.
   </summary>
 </histogram>
 
@@ -3833,7 +3827,11 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records how often the user changes the voice for reading aloud in reading
     mode from one langauge to another. This excludes automatic voice language
-    changes done directly from reading mode.
+    changes done directly from reading mode. Note: starting in M160, a
+    backgrounded side panel tab no longer records an extra sample (usually 0)
+    when it closes or navigates before Reading mode is shown again, and
+    switching between the side panel and full-page view no longer splits a
+    session into two samples.
   </summary>
 </histogram>
 
@@ -3853,6 +3851,10 @@ recorded in the same way, even if they fit the naming pattern. -->
   <owner>komo-eng@google.com</owner>
   <summary>
     Records the count per session of the number of Read Aloud {Action} actions.
+    Note: starting in M160, a backgrounded side panel tab no longer records an
+    extra sample (usually 0) when it closes or navigates before Reading mode is
+    shown again, and switching between the side panel and full-page view no
+    longer splits a session into two samples.
   </summary>
   <token key="Action">
     <variant name="NextButton" summary="next granularity"/>
@@ -3915,7 +3917,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.ShownDurationMax1Day" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3931,7 +3933,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.ShowTriggered"
-    enum="ReadAnythingOpenTrigger" expires_after="2027-03-07">
+    enum="ReadAnythingOpenTrigger" expires_after="2027-05-09">
   <owner>gusmartin@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3941,7 +3943,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.SidePanelTriggeredByEmptyState"
-    enum="ReadAnythingOpenTrigger" expires_after="2027-03-07">
+    enum="ReadAnythingOpenTrigger" expires_after="2027-05-09">
   <owner>martinglopez@google.com</owner>
   <owner>chrome-irm-devs@google.com</owner>
   <summary>
@@ -3968,7 +3970,10 @@ recorded in the same way, even if they fit the naming pattern. -->
   <summary>
     Records the length of time of a speech playback session from play to pause
     or from play to speech stopped, either due to reaching the end of content or
-    an error. Recorded for a {PageType} in {ViewMode}.
+    an error. Recorded for a {PageType} in {ViewMode}. Note: starting in M160,
+    switching between the side panel and full-page view no longer stops speech
+    without recording this. A session that continues past a switch is recorded
+    for the view mode where it stops.
   </summary>
   <token key="PageType">
     <variant name="Pdf" summary="PDF document"/>
@@ -3993,11 +3998,16 @@ recorded in the same way, even if they fit the naming pattern. -->
                  speech stopped, either due to reaching the end of content or
                  an error. To not disrupt any active experiments, this metric
                  will remain, but in a few milestones the team will evaluate
-                 if the .PerPage variant can replace this entirely."/>
+                 if the .PerPage variant can replace this entirely. Note:
+                 starting in M160, switching between the side panel and
+                 full-page view no longer stops speech without recording
+                 this."/>
     <variant name=".PerPage"
         summary="cumulatively for a single page, from when content is loaded
                  until the page changes or the panel is closed. Only recorded
-                 if speech was played on the page."/>
+                 if speech was played on the page. Note: starting in M160, a
+                 switch between the side panel and full-page view no longer
+                 records it early, which left out the speech still playing."/>
   </token>
 </histogram>
 
@@ -4005,7 +4015,11 @@ recorded in the same way, even if they fit the naming pattern. -->
     enum="ReadAnythingSpeechStopSource" expires_after="2027-04-11">
   <owner>kristislee@google.com</owner>
   <owner>komo-eng@google.com</owner>
-  <summary>Records when speech stops and why.</summary>
+  <summary>
+    Records when speech stops and why. Note: starting in M160, switching between
+    the side panel and full-page view no longer stops speech without recording a
+    stop source.
+  </summary>
 </histogram>
 
 <histogram
@@ -4031,8 +4045,13 @@ recorded in the same way, even if they fit the naming pattern. -->
     {Event}.
   </summary>
   <token key="Event">
-    <variant name="AXTreeReady"
-        summary="the AXTree is ready in the Read Anything App model"/>
+    <variant name="AXTreeReady2"
+        summary="the AXTree is ready in the Read Anything App model. Not
+                 recorded for trees whose accessibility updates were queued
+                 while update processing was paused (e.g. while Reading Mode
+                 wasn't shown), or that were ready before they became active,
+                 since those samples measure the wait. Replaced AXTreeReady
+                 in M160"/>
     <variant name="RenderedTextBlocks"
         summary="the WebUI finishes layout and renders the distilled text
                  content in the viewport"/>
@@ -4104,7 +4123,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 </histogram>
 
 <histogram name="Accessibility.ReadAnything.WordsDistilled{Type}" units="words"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>lwinston@google.com</owner>
   <owner>kristislee@google.com</owner>
   <owner>martinglopez@google.com</owner>
@@ -4146,6 +4165,11 @@ recorded in the same way, even if they fit the naming pattern. -->
     the voice does not support word boundaries, especially for languages that
     don't separate words with whitespace. WordsSeen currently works only for
     languages that separate words with whitespace.
+
+    Note: starting in M160, a backgrounded side panel tab no longer records an
+    extra sample (usually 0) when it closes or navigates before Reading mode is
+    shown again, and switching between the side panel and full-page view no
+    longer splits a session into two samples.
   </summary>
   <token key="Action">
     <variant name="Heard" summary="heard via Read aloud"/>
@@ -4191,7 +4215,9 @@ recorded in the same way, even if they fit the naming pattern. -->
                  the corresponding AXTree is distilled."/>
     <variant name="ReadAloud."
         summary="which language the user is using to read aloud text in the
-                 Read Anything panel."/>
+                 Read Anything panel. Note: starting in M160, switching
+                 between the side panel and full-page view no longer stops
+                 speech without recording this."/>
   </token>
 </histogram>
 
@@ -4692,7 +4718,6 @@ recorded in the same way, even if they fit the naming pattern. -->
 <histogram name="Accessibility.Win.ActiveClientApis" enum="ActiveClientApi"
     expires_after="2027-04-17">
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <owner>janewman@microsoft.com</owner>
   <summary>
@@ -4707,7 +4732,6 @@ recorded in the same way, even if they fit the naming pattern. -->
 <histogram name="Accessibility.Win.RequestedClientApis" enum="ActiveClientApi"
     expires_after="2027-04-17">
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <owner>janewman@microsoft.com</owner>
   <summary>
@@ -4742,7 +4766,6 @@ recorded in the same way, even if they fit the naming pattern. -->
     expires_after="2026-12-06">
   <owner>lucasradaelli@google.com</owner>
   <owner>almaher@microsoft.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
   <owner>janewman@microsoft.com</owner>
   <owner>javiercon@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
@@ -4765,7 +4788,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <!-- expires-never: usage drives a11y prioritization in browser and content. -->
 
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
+  <owner>janewman@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     Tracks if the JAWS version predates the fix for Chrome’s UIA support. True
@@ -4779,7 +4802,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <!-- expires-never: usage drives a11y prioritization in browser and content. -->
 
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
+  <owner>janewman@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     Tracks the major version of JAWS detected. Recorded when the AXMode in the
@@ -4793,7 +4816,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <!-- expires-never: usage drives a11y prioritization in browser and content. -->
 
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
+  <owner>janewman@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     Tracks the major version of NVDA detected. Recorded when the AXMode in the
@@ -4817,7 +4840,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <histogram name="Accessibility.WinUIA.ClientDisconnected"
     enum="UiaClientProcess" expires_after="2027-04-28">
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
+  <owner>janewman@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     Records the base::PersistentHash of the lowercased process name of a UIA
@@ -4831,7 +4854,7 @@ recorded in the same way, even if they fit the naming pattern. -->
 <histogram name="Accessibility.WinUIA.ClientProcess.{AXModeFlag}"
     enum="UiaClientProcess" expires_after="2027-04-28">
   <owner>lucasradaelli@google.com</owner>
-  <owner>benjamin.beaudry@microsoft.com</owner>
+  <owner>janewman@microsoft.com</owner>
   <owner>chrome-a11y-core@google.com</owner>
   <summary>
     Records the base::PersistentHash of each distinct lowercased UIA client

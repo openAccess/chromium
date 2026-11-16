@@ -4,6 +4,9 @@
 
 #include "chrome/browser/glic/service/glic_invoke_task.h"
 
+#include <set>
+#include <string_view>
+
 #include "base/functional/callback_helpers.h"
 #include "base/run_loop.h"
 #include "base/test/mock_callback.h"
@@ -231,6 +234,39 @@ TEST(GlicInvokeTaskTest, PostCallbackTask) {
   run_loop.Run();
 }
 
+TEST(GlicInvokeTaskTest, PostCallbackTaskConditionFalseSkipsPosting) {
+  base::test::TaskEnvironment task_environment;
+  base::MockCallback<base::OnceClosure> done_cb;
+  base::MockCallback<base::OnceClosure> mock_callback;
+
+  PostCallbackTask task(mock_callback.Get(),
+                        base::BindOnce([]() { return false; }));
+
+  EXPECT_CALL(mock_callback, Run()).Times(0);
+  EXPECT_CALL(done_cb, Run()).Times(1);
+
+  task.Start(done_cb.Get());
+  task_environment.RunUntilIdle();
+}
+
+TEST(GlicInvokeTaskTest, PostCallbackTaskConditionTruePosts) {
+  base::test::TaskEnvironment task_environment;
+  base::MockCallback<base::OnceClosure> done_cb;
+  base::MockCallback<base::OnceClosure> mock_callback;
+
+  PostCallbackTask task(mock_callback.Get(),
+                        base::BindOnce([]() { return true; }));
+
+  EXPECT_CALL(mock_callback, Run()).Times(0);
+  EXPECT_CALL(done_cb, Run()).Times(1);
+
+  task.Start(done_cb.Get());
+  testing::Mock::VerifyAndClearExpectations(&mock_callback);
+
+  EXPECT_CALL(mock_callback, Run()).Times(1);
+  task_environment.RunUntilIdle();
+}
+
 TEST(GlicInvokeTaskTest, SequentialTaskGroupLastActiveTaskType) {
   auto task1 =
       std::make_unique<MockTask>(base::DoNothing(), /*complete_sync=*/false,
@@ -303,6 +339,20 @@ TEST(
   EXPECT_FALSE(
       actor::ui::ActorUiStateManager::Get(&profile)->ClearTabPendingActuation(
           mock_tab.GetHandle()));
+}
+
+TEST(GlicInvokeTaskTest, EveryTaskTypeHasADistinctDiagnosticString) {
+  std::set<std::string_view> seen;
+  for (int value = 0; value <= static_cast<int>(GlicTaskType::kMaxValue);
+       ++value) {
+    const auto task_type = static_cast<GlicTaskType>(value);
+    const std::string_view identifier =
+        GlicTaskTypeToDiagnosticString(task_type);
+    EXPECT_FALSE(identifier.empty()) << "No identifier for task type " << value;
+    EXPECT_TRUE(seen.insert(identifier).second)
+        << "Duplicate identifier \"" << identifier << "\" for task type "
+        << value;
+  }
 }
 
 }  // namespace glic

@@ -9,7 +9,6 @@
 
 #include "base/check.h"
 #include "base/functional/callback.h"
-#include "base/notimplemented.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/trusted_vault/standalone_trusted_vault_frontend.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
@@ -77,17 +76,13 @@ void StandaloneTrustedVaultClient::AddTrustedRecoveryMethod(
 void StandaloneTrustedVaultClient::CanEnroll(
     const CoreAccountInfo& account_info,
     base::OnceCallback<void(bool)> cb) {
-  // TODO(crbug.com/579292788): Implement for desktop.
-  NOTIMPLEMENTED();
-  std::move(cb).Run(false);
+  frontend_->CanEnroll(account_info, security_domain_, std::move(cb));
 }
 
 void StandaloneTrustedVaultClient::Enroll(
     const CoreAccountInfo& account_info,
     base::OnceCallback<void(const std::vector<uint8_t>&, int)> cb) {
-  // TODO(crbug.com/579292788): Implement for desktop.
-  NOTIMPLEMENTED();
-  std::move(cb).Run(std::vector<uint8_t>(), -1);
+  frontend_->Enroll(account_info, security_domain_, std::move(cb));
 }
 
 void StandaloneTrustedVaultClient::ClearLocalDataForAccount(

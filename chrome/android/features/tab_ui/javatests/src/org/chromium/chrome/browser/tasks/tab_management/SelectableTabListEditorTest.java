@@ -62,7 +62,6 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
@@ -74,7 +73,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.bookmarks.BookmarkEditActivity;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
@@ -87,6 +85,8 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListEditorAction.Show
 import org.chromium.chrome.browser.tasks.tab_management.TabListEditorCoordinator.CreationMode;
 import org.chromium.chrome.browser.tasks.tab_management.TabListMediator.TabListLayoutType;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.GroupedTabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
 import org.chromium.chrome.browser.ui.desktop_windowing.AppHeaderCoordinator;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
@@ -116,7 +116,6 @@ import java.util.Map;
 
 /** End-to-end test for the selectable TabListEditor. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Batch(Batch.PER_CLASS)
 public class SelectableTabListEditorTest {
     private static final String PAGE_WITH_HTTPS_CANONICAL_URL =
@@ -152,6 +151,7 @@ public class SelectableTabListEditorTest {
     private TabListEditorCoordinator.TabListEditorController mTabListEditorController;
     private TabListEditorLayout mTabListEditorLayout;
     private TabListEditorCoordinator mTabListEditorCoordinator;
+    private TabListDataProvider mDataProvider;
     private WeakReference<TabListEditorLayout> mRef;
     private ViewGroup mParentView;
     private SnackbarManager mSnackbarManager;
@@ -196,6 +196,13 @@ public class SelectableTabListEditorTest {
                                             .getRootUiCoordinatorForTesting()
                                             .getDesktopWindowStateManager();
                     mEdgeToEdgeSupplier = ObservableSuppliers.createMonotonic();
+                    mDataProvider =
+                            TabUiFeatureUtilities.isTabUiDataVirtualizationEnabled(
+                                            TabListLayoutType.GROUPED)
+                                    ? new GroupedTabListDataProvider(
+                                            currentTabModelSupplier,
+                                            /* supportsGroupExpansion= */ false)
+                                    : null;
                     mTabListEditorCoordinator =
                             new TabListEditorCoordinator(
                                     cta,
@@ -217,7 +224,8 @@ public class SelectableTabListEditorTest {
                                     /* itemPickerSelectionHandler= */ null,
                                     /* undoBarExplicitTrigger= */ null,
                                     /* componentId= */ null,
-                                    TabListEditorCoordinator.UNLIMITED_SELECTION);
+                                    TabListEditorCoordinator.UNLIMITED_SELECTION,
+                                    mDataProvider);
 
                     mTabListEditorController = mTabListEditorCoordinator.getController();
                     mTabListEditorLayout =
@@ -244,6 +252,8 @@ public class SelectableTabListEditorTest {
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
+                    // After the editor, which may already be destroyed by the test.
+                    if (mDataProvider != null) mDataProvider.destroy();
                     if (mSnackbarManager == null) return;
                     mSnackbarManager.destroy();
                 });

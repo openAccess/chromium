@@ -4,8 +4,6 @@
 
 package org.chromium.chrome.browser.download;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
-
 import android.app.Activity;
 import android.content.Context;
 
@@ -17,7 +15,6 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.download.DownloadLocationDialogMetrics.DownloadLocationSuggestionEvent;
 import org.chromium.chrome.browser.download.dialogs.DownloadDialogUtils;
 import org.chromium.chrome.browser.download.dialogs.DownloadLocationDialogController;
 import org.chromium.chrome.browser.download.dialogs.DownloadLocationDialogCoordinator;
@@ -42,9 +39,7 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
     private @Nullable Context mContext;
     private @Nullable ModalDialogManager mModalDialogManager;
     private @Nullable WindowAndroid mWindowAndroid;
-    private @DownloadLocationDialogType int mLocationDialogType;
     private @Nullable String mSuggestedPath;
-    private @Nullable Profile mProfile;
     // Whether the user actively confirmed the result of the dialog. This is false when the dialog
     // is not shown and the result is selected without user input, e.g. because there is only one
     // option to choose from.
@@ -82,7 +77,6 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
             @JniType("std::string") String suggestedPath,
             Profile profile) {
         mWindowAndroid = windowAndroid;
-        mProfile = profile;
         Activity activity = windowAndroid.getActivity().get();
         if (!(activity instanceof ModalDialogManagerHolder)) {
             onCancel();
@@ -105,8 +99,6 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
                                             totalBytes)) {
                                 suggestedDialogType =
                                         DownloadLocationDialogType.LOCATION_SUGGESTION;
-                                DownloadLocationDialogMetrics.recordDownloadLocationSuggestionEvent(
-                                        DownloadLocationSuggestionEvent.LOCATION_SUGGESTION_SHOWN);
                             }
 
                             showDialog(
@@ -132,7 +124,6 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
         mContext = context;
         mModalDialogManager = modalDialogManager;
 
-        mLocationDialogType = dialogType;
         mSuggestedPath = suggestedPath;
 
         mLocationDialog.showDialog(
@@ -168,7 +159,6 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
         mContext = null;
         mModalDialogManager = null;
         mWindowAndroid = null;
-        mProfile = null;
         mSuggestedPath = null;
     }
 
@@ -178,12 +168,6 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
         mSuggestedPath = returnedPath;
         mDidUserConfirm = didUserConfirm;
 
-        if (mLocationDialogType == DownloadLocationDialogType.LOCATION_SUGGESTION) {
-            assumeNonNull(mProfile);
-            boolean isSelected = !mSuggestedPath.equals(getDownloadDefaultDirectory(mProfile));
-            DownloadLocationDialogMetrics.recordDownloadLocationSuggestionChoice(isSelected);
-        }
-
         onComplete();
     }
 
@@ -192,15 +176,16 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
         onCancel();
     }
 
-    /**
-     * @return The stored download default directory.
-     */
+    /** Returns the stored download default directory. */
     public static String getDownloadDefaultDirectory(Profile profile) {
         return UserPrefs.get(profile.getOriginalProfile())
                 .getString(Pref.DOWNLOAD_DEFAULT_DIRECTORY);
     }
 
     /**
+     * Sets the download and save file default directory.
+     *
+     * @param profile The profile whose preference is updated.
      * @param directory New directory to set as the download default directory.
      */
     public static void setDownloadAndSaveFileDefaultDirectory(
@@ -210,15 +195,16 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
                         UserPrefs.get(profile.getOriginalProfile()), directory);
     }
 
-    /**
-     * @return The status of prompt for download pref, defined by {@link DownloadPromptStatus}.
-     */
+    /** Returns the status of prompt for download pref, defined by {@link DownloadPromptStatus}. */
     public static @DownloadPromptStatus int getPromptForDownloadAndroid(Profile profile) {
         return UserPrefs.get(profile.getOriginalProfile())
                 .getInteger(Pref.PROMPT_FOR_DOWNLOAD_ANDROID);
     }
 
     /**
+     * Sets the prompt for download preference status.
+     *
+     * @param profile The profile whose preference is updated.
      * @param status New status to update the prompt for download preference.
      */
     public static void setPromptForDownloadAndroid(
@@ -227,14 +213,15 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
                 .setInteger(Pref.PROMPT_FOR_DOWNLOAD_ANDROID, status);
     }
 
-    /**
-     * @return The value for {@link Pref#PROMPT_FOR_DOWNLOAD}.
-     */
+    /** Returns the value for {@link Pref#PROMPT_FOR_DOWNLOAD}. */
     public static boolean getPromptForDownload(Profile profile) {
         return UserPrefs.get(profile.getOriginalProfile()).getBoolean(Pref.PROMPT_FOR_DOWNLOAD);
     }
 
     /**
+     * Sets the value for {@link Pref#PROMPT_FOR_DOWNLOAD}.
+     *
+     * @param profile The profile whose preference is updated.
      * @param enabled New value to update {@link Pref#PROMPT_FOR_DOWNLOAD}.
      */
     public static void setPromptForDownload(Profile profile, boolean enabled) {
@@ -242,7 +229,7 @@ public class DownloadDialogBridge implements DownloadLocationDialogController {
     }
 
     /**
-     * @return whether to prompt the download location dialog is controlled by enterprise policy.
+     * Returns whether to prompt the download location dialog is controlled by enterprise policy.
      */
     public static boolean isLocationDialogManaged(Profile profile) {
         return UserPrefs.get(profile.getOriginalProfile())

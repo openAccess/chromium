@@ -198,6 +198,10 @@ static_library("chrome_test_launcher") {
   if (is_posix && !is_mac) {
     deps += [ "//chrome/app:chrome_crash_reporter_client" ]
   }
+
+  if (!is_chromeos) {
+    deps += [ "//chrome/browser/first_run:test_support" ]
+  }
 }
 
 source_set("test_launcher_utils") {
@@ -598,7 +602,7 @@ source_set("chrome_unit_test_suite") {
     deps += [
       "//chrome/browser/apps/app_service",
       "//chrome/browser/apps/app_service/publishers",
-      "//chrome/browser/web_applications",
+      "//chrome/browser/web_applications/isolated_web_apps",
     ]
   }
   if (enable_extensions) {
@@ -1002,7 +1006,6 @@ if (!is_android) {
     if (is_chromeos) {
       deps += [
         "//ash",
-        "//chrome/browser/ui/ash/multi_user",
         "//components/account_id",
       ]
     }
@@ -1355,9 +1358,9 @@ if (is_mac) {
     sources = [ "in_process_browser_test_mac_interactive_uitest.mm" ]
     deps = [
       ":in_process_browser_test",
+      ":interactive_test_utils",
       "//base/test:test_support",
       "//chrome/browser/ui/browser_window",
-      "//chrome/test:test_support_ui",
       "//content/test:test_support",
       "//ui/base",
     ]
@@ -1462,12 +1465,14 @@ if (is_android) {
     deps = [
       ":android_browser_test",
       "//base",
+      "//base/test:test_support",
       "//chrome/browser:browser_features",
       "//chrome/browser/flags:flags_android",
       "//chrome/browser/navigation_predictor",
       "//chrome/browser/preloading",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui/android/tab_model",
+      "//components/background_task_scheduler",
       "//components/performance_manager",
       "//content/public/browser",
       "//content/test:test_support",
@@ -1671,9 +1676,11 @@ if (use_aura || is_android || is_mac) {
     } else if (is_android) {
       sources += [ "android/drag_and_drop_test_utils_android.cc" ]
       deps += [
+        "//chrome/test:drag_and_drop_test_support_jni_headers",
         "//content/public/android:jar_jni",
         "//content/public/common",
         "//net",
+        "//third_party/blink/public/common:headers",
         "//ui/android",
         "//ui/base/clipboard:clipboard_types",
       ]

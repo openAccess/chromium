@@ -140,7 +140,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Startup.Android.BrowserProcessCreationReason"
-    enum="ProcessCreationReason" expires_after="2027-03-07">
+    enum="ProcessCreationReason" expires_after="2027-05-09">
   <owner>mthiesse@chromium.org</owner>
   <owner>pasko@chromium.org</owner>
   <summary>
@@ -724,7 +724,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Startup.Android.StartComponent" enum="ProcessCreationReason"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>nafisabedin@google.com</owner>
   <owner>mthiesse@chromium.org</owner>
   <summary>
@@ -746,7 +746,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Startup.Android.Warm.MainIntentTimeToFirstDraw" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>nafisabedin@google.com</owner>
   <owner>mthiesse@chromium.org</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -1125,25 +1125,6 @@ chromium-metrics-reviews@google.com.
     How long it takes to load the original profile synchronously on the UI
     thread.
   </summary>
-</histogram>
-
-<histogram name="Startup.CreateProcessLauncher2.{Status}" units="ms"
-    expires_after="2025-02-05">
-  <owner>ganesh@chromium.org</owner>
-  <owner>grt@chromium.org</owner>
-  <summary>
-    Records the time it took for the creation attempt of the ProcessLauncher COM
-    class when {Status}. The `AtStartup` variants record the creation attempt
-    times for when Windows has just started up, and the non-`AtStartup` variants
-    record the creation attempt times for all the other cases. Only recorded on
-    Windows.
-  </summary>
-  <token key="Status">
-    <variant name="TimedWaitFailed"/>
-    <variant name="TimedWaitFailedAtStartup"/>
-    <variant name="TimedWaitSucceeded"/>
-    <variant name="TimedWaitSucceededAtStartup"/>
-  </token>
 </histogram>
 
 <histogram name="Startup.DirectLaunch.PayloadResult"
@@ -1625,7 +1606,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Startup.GPU.LoadTime.ProcessCreationToGpuInitialized"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>spvm@chromium.org</owner>
   <owner>etienneb@chromium.org</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -1803,16 +1784,6 @@ chromium-metrics-reviews@google.com.
     screen. Fixed in M129.
 
     {StartupTemperature}
-  </summary>
-</histogram>
-
-<histogram name="Startup.LoadTime.RecordedProcessCreation" enum="Boolean"
-    expires_after="2024-12-30">
-  <owner>spvm@chromium.org</owner>
-  <owner>fdoray@chromium.org</owner>
-  <summary>
-    Whether Process::Current().CreationTime() was able to acquire the process
-    startup time. Recorded once per process startup, as early as possible.
   </summary>
 </histogram>
 

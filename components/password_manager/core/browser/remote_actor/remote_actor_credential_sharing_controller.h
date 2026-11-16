@@ -22,6 +22,7 @@
 #include "components/password_manager/core/browser/password_store/password_store_consumer.h"
 #include "components/password_manager/core/browser/password_store/stored_credential.h"
 #include "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_result.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "url/origin.h"
 
 namespace device_reauth {
@@ -84,18 +85,23 @@ class RemoteActorCredentialSharingController : public PasswordStoreConsumer {
       const RemoteActorCredentialSharingController&) = delete;
   ~RemoteActorCredentialSharingController() override;
 
-  // Starts sharing a credential for `domain` on behalf of the user identified
-  // by `gaia_id`, scoped to `task_id`. Must be called at most once.
+  // Starts sharing a credential for `domain_or_origin` on behalf of the user
+  // identified by `gaia_id`, scoped to `task_id`. `domain_or_origin` may be a
+  // bare host ("example.com"), in which case HTTPS is assumed, or a full origin
+  // ("https://example.com"). Reports `kOtherError` if `domain_or_origin` does
+  // not form a valid origin. Must be called at most once.
   void Start(std::string_view gaia_id,
-             std::string_view domain,
+             std::string_view domain_or_origin,
              std::string_view task_id,
              ResultCallback callback);
 
-  // Configures optional per-actor OAuth client ID and task namespace ID
-  // overrides to forward when sharing a credential. Must be called before
-  // `Start()`. If not set (or empty / `std::nullopt`), the permission client
-  // falls back to default values.
-  void SetActorParameters(std::string_view actor_oauth_client_id,
+  // Configures the requesting remote actor type (used for per-actor metrics)
+  // and optional per-actor OAuth client ID and task namespace ID overrides to
+  // forward when sharing a credential. Must be called before `Start()`. If not
+  // set (or empty / `std::nullopt`), only aggregate metrics are recorded and
+  // the permission client falls back to default values.
+  void SetActorParameters(RemoteActorType actor_type,
+                          std::string_view actor_oauth_client_id,
                           std::optional<int> task_namespace_id);
 
   // Returns whether `Start()` was called and the result was not reported yet.
@@ -111,8 +117,9 @@ class RemoteActorCredentialSharingController : public PasswordStoreConsumer {
   // Verifies the GAIA ID matches the signed-in user and sync is not in error.
   bool VerifyUserIdentityAndSyncState(std::string_view gaia_id) const;
 
-  // Initiates asynchronous queries to the relevant password stores.
-  void QueryPasswordStores(std::string_view domain);
+  // Initiates asynchronous queries to the relevant password stores for
+  // `origin_`.
+  void QueryPasswordStores();
 
   // Called when all password store queries have completed.
   void OnAllLoginsRetrieved();
@@ -136,6 +143,9 @@ class RemoteActorCredentialSharingController : public PasswordStoreConsumer {
   // Asynchronously posts `result` to the result callback.
   void RespondWithError(RemoteActorCredentialSharingResult result);
 
+  // Records `result` to the aggregate and (if known) per-actor histograms.
+  void LogResult(RemoteActorCredentialSharingResult result) const;
+
   // Runs `callback_` with `result`.
   void RunResultCallback(RemoteActorCredentialSharingResult result);
 
@@ -153,6 +163,8 @@ class RemoteActorCredentialSharingController : public PasswordStoreConsumer {
   url::Origin origin_;
   // The ID of the remote actor task requesting credentials.
   std::string task_id_;
+  // The requesting remote actor type, if configured.
+  std::optional<RemoteActorType> actor_type_;
   // Optional override for the remote actor's OAuth client ID.
   std::string actor_oauth_client_id_;
   // Optional override for the remote actor's task ID namespace.

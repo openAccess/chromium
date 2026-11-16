@@ -15,15 +15,21 @@ import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.TraceEvent;
+import org.chromium.base.UnownedUserDataHost;
+import org.chromium.base.UnownedUserDataKey;
 import org.chromium.base.version_info.VersionInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.toolbar.ControlContainer;
 import org.chromium.components.embedder_support.view.ContentView;
@@ -45,15 +51,24 @@ import org.chromium.ui.base.WindowAndroid;
  */
 @JNINamespace("android")
 @NullMarked
-public class NtbWebUiCoordinator implements AccessibilityState.Listener {
-    private final ControlContainer mControlContainer;
+public class NtbWebUiCoordinator
+        implements AccessibilityState.Listener, WindowAndroid.ActivityStateObserver {
+    @JniType("::android::TabStripNtbWebUiHost")
+    public interface NativeTabStripNtbWebUiHost extends JniTypeToken {}
+
+    private static final UnownedUserDataKey<NtbWebUiCoordinator> KEY = new UnownedUserDataKey<>();
+
+    private final WindowAndroid mWindowAndroid;
+    private final Profile mProfile;
     // The WebContents' ContentView. It draws nothing (the WebUI is drawn by the tab strip scene
     // layer) and only routes touch, mouse and hover events in the WebUI region to the WebContents.
     private final @Nullable ContentView mInputView;
     private final @Nullable EventForwarder mEventForwarder;
-    private long mNativePtr;
+    private @Nullable ControlContainer mControlContainer;
+    private @Nullable JniUniquePtr<NativeTabStripNtbWebUiHost> mNativePtr;
     private int mWidthPx;
     private int mHeightPx;
+    private boolean mBoundsInitialized;
     private boolean mStripInteractive = true;
     private boolean mButtonVisible = true;
     // The SystemClock.uptimeMillis() timestamp of the most recent input event forwarded from the
@@ -73,30 +88,77 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
     }
 
     /**
+     * Prewarms an {@link NtbWebUiCoordinator} (and its native {@code WebContents} and top-chrome
+     * navigation) for {@code windowAndroid} and {@code profile} before the tab strip is
+     * constructed.
+     */
+    public static void prewarm(
+            WindowAndroid windowAndroid, Profile profile, long activityCreationUptimeMs) {
+        UnownedUserDataHost host = windowAndroid.getUnownedUserDataHost();
+        if (KEY.isAttachedToHost(host)) {
+            // Already prewarmed.
+            return;
+        }
+        NtbWebUiCoordinator coordinator =
+                new NtbWebUiCoordinator(windowAndroid, profile, activityCreationUptimeMs);
+        if (coordinator.getNativePtr() == null) return;
+        KEY.attachToHost(host, coordinator);
+    }
+
+    /**
+     * Claims a matching prewarmed {@link NtbWebUiCoordinator} if available, or creates a new one,
+     * and attaches it to {@code tabModel} and {@code controlContainer}.
+     *
      * @param windowAndroid The {@link WindowAndroid} of the activity hosting the tab strip.
      * @param tabModel The {@link TabModel} of the window.
      * @param controlContainer The control container, which sits on top of the tab strip.
      * @param activityCreationUptimeMs The {@code SystemClock.uptimeMillis()} timestamp when the
      *     hosting activity was created, or 0 if unavailable.
      */
-    public NtbWebUiCoordinator(
+    public static NtbWebUiCoordinator create(
             WindowAndroid windowAndroid,
             TabModel tabModel,
             ControlContainer controlContainer,
             long activityCreationUptimeMs) {
+        try (TraceEvent e = TraceEvent.scoped("NtbWebUiCoordinator.create")) {
+            Profile profile = assertNonNull(tabModel.getProfile());
+            UnownedUserDataHost host = windowAndroid.getUnownedUserDataHost();
+            NtbWebUiCoordinator coordinator = KEY.retrieveDataFromHost(host);
+            // In an incognito window, a prewarmed OTR profile can be destroyed before the
+            // TabModel is initialized (e.g. if another incognito window closes its last tab),
+            // causing the TabModel to create a new OTR profile.
+            if (coordinator != null
+                    && (coordinator.mProfile != profile
+                            || coordinator.mProfile.shutdownStarted())) {
+                coordinator.destroy();
+                coordinator = null;
+            }
+            if (coordinator == null) {
+                coordinator =
+                        new NtbWebUiCoordinator(windowAndroid, profile, activityCreationUptimeMs);
+                if (coordinator.getNativePtr() != null) {
+                    KEY.attachToHost(host, coordinator);
+                }
+            }
+            coordinator.attach(tabModel, controlContainer);
+            return coordinator;
+        }
+    }
+
+    private NtbWebUiCoordinator(
+            WindowAndroid windowAndroid, Profile profile, long activityCreationUptimeMs) {
         try (TraceEvent e = TraceEvent.scoped("NtbWebUiCoordinator.<init>")) {
             // The coordinator is created and owned by the activity's tab strip, so the activity
             // is alive at this point.
             Activity activity = assertNonNull(windowAndroid.getActivity().get());
-            mControlContainer = controlContainer;
+            mWindowAndroid = windowAndroid;
+            mProfile = profile;
 
-            // Native creates and owns the TabStripService and WebContents, and starts navigating
-            // it to the WebUI. The navigation commits asynchronously, so the view and the window
-            // attached below are in place before the page is created.
-            int sessionId = assertNonNull(tabModel.getNativeSessionId());
-            mNativePtr =
-                    NtbWebUiCoordinatorJni.get().init(this, sessionId, activityCreationUptimeMs);
-            if (mNativePtr == 0) {
+            // Native creates and owns the WebContents. The WebUI is loaded below, once the
+            // WebContents is attached to the window, so that the first load uses the window's
+            // ColorProvider.
+            mNativePtr = NtbWebUiCoordinatorJni.get().init(this, profile, activityCreationUptimeMs);
+            if (mNativePtr == null) {
                 mInputView = null;
                 mEventForwarder = null;
                 return;
@@ -118,14 +180,34 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
             mInputView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
             mInputView.setFocusable(false);
             mInputView.setVisibility(View.GONE);
-            // Adds the view on top of the tab strip.
-            mControlContainer.setTabStripInputView(mInputView);
             AccessibilityState.addListener(this);
+            mWindowAndroid.addActivityStateObserver(this);
+
+            // Pre-size the WebContents to the default button touch target so Blink can layout and
+            // produce its first compositor frame before strip layout runs.
+            int defaultSizePx =
+                    ViewUtils.dpToPx(
+                            activity, StripLayoutUtils.getButtonTouchTargetSizeDp(activity));
+            mWidthPx = defaultSizePx;
+            mHeightPx = defaultSizePx;
+            NtbWebUiCoordinatorJni.get().resize(mNativePtr, defaultSizePx, defaultSizePx);
+
+            // Load the WebUI now that the WebContents is attached to the window and sized.
+            NtbWebUiCoordinatorJni.get().startLoad(mNativePtr);
         }
     }
 
-    /** Returns the pointer to the native TabStripNtbWebUiHost, or 0 if disabled or destroyed. */
-    public long getNativePtr() {
+    private void attach(TabModel tabModel, ControlContainer controlContainer) {
+        if (mNativePtr == null) return;
+        mControlContainer = controlContainer;
+        int sessionId = assertNonNull(tabModel.getNativeSessionId());
+        NtbWebUiCoordinatorJni.get().setTabModel(mNativePtr, sessionId);
+        // Adds the view on top of the tab strip.
+        mControlContainer.setTabStripInputView(mInputView);
+    }
+
+    /** Returns the pointer to the native TabStripNtbWebUiHost, or null if disabled or destroyed. */
+    public @Nullable JniPtr<NativeTabStripNtbWebUiHost> getNativePtr() {
         return mNativePtr;
     }
 
@@ -153,7 +235,7 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
      */
     public void updateBounds(
             float xDp, float yDp, float widthDp, float heightDp, float stripHeightDp) {
-        if (mNativePtr == 0) return;
+        if (mNativePtr == null) return;
         assert mInputView != null && mEventForwarder != null;
         DisplayMetrics metrics = mInputView.getResources().getDisplayMetrics();
         int widthPx = ViewUtils.dpToPx(metrics, widthDp);
@@ -183,6 +265,7 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
                 NtbWebUiCoordinatorJni.get().resize(mNativePtr, widthPx, heightPx);
             }
         }
+        mBoundsInitialized = true;
         updateInputViewVisibility();
     }
 
@@ -203,18 +286,29 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
      * Sets whether the new tab button is visible (e.g. faded out during tab strip reorder mode).
      */
     public void setButtonVisible(boolean visible) {
-        if (mNativePtr == 0 || mButtonVisible == visible) return;
+        if (mNativePtr == null || mButtonVisible == visible) return;
         mButtonVisible = visible;
         NtbWebUiCoordinatorJni.get().setButtonVisible(mNativePtr, visible);
     }
 
     /** Destroys the WebUI and removes the input view. */
     public void destroy() {
-        if (mNativePtr == 0) return;
+        KEY.detachFromAllHosts(this);
+        if (mNativePtr == null) return;
+        mWindowAndroid.removeActivityStateObserver(this);
         AccessibilityState.removeListener(this);
-        mControlContainer.setTabStripInputView(null);
-        NtbWebUiCoordinatorJni.get().destroy(mNativePtr);
-        mNativePtr = 0;
+        if (mControlContainer != null) {
+            mControlContainer.setTabStripInputView(null);
+            mControlContainer = null;
+        }
+        mNativePtr.destroy();
+        mNativePtr = null;
+    }
+
+    // WindowAndroid.ActivityStateObserver:
+    @Override
+    public void onActivityDestroyed() {
+        destroy();
     }
 
     // AccessibilityState.Listener:
@@ -226,7 +320,7 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
     }
 
     private void updateInputViewVisibility() {
-        if (mNativePtr == 0) return;
+        if (mNativePtr == null) return;
         assert mInputView != null;
         // Accessibility for the new tab button is currently provided by the native strip, not by
         // the WebUI: StripLayoutHelper still exposes the (undrawn) native new tab button as a
@@ -237,24 +331,28 @@ public class NtbWebUiCoordinator implements AccessibilityState.Listener {
         // rendering the button through the scene layer either way.
         // TODO(crbug.com/565326385): Expose the WebUI's own accessibility tree and keyboard focus.
         boolean showInputView =
-                mStripInteractive
-                        && mWidthPx > 0
-                        && mHeightPx > 0
+                mBoundsInitialized
+                        && mStripInteractive
                         && !AccessibilityState.isTouchExplorationEnabled();
         mInputView.setVisibility(showInputView ? View.VISIBLE : View.GONE);
     }
 
     @NativeMethods
     interface Natives {
-        long init(NtbWebUiCoordinator caller, int sessionId, long activityCreationUptimeMs);
+        @Nullable JniUniquePtr<NativeTabStripNtbWebUiHost> init(
+                NtbWebUiCoordinator caller,
+                @JniType("Profile*") Profile profile,
+                long activityCreationUptimeMs);
+
+        void setTabModel(JniPtr<NativeTabStripNtbWebUiHost> host, int sessionId);
+
+        void startLoad(JniPtr<NativeTabStripNtbWebUiHost> self);
 
         @JniType("content::WebContents*")
-        WebContents getWebContents(long hostPtr);
+        WebContents getWebContents(JniPtr<NativeTabStripNtbWebUiHost> self);
 
-        void resize(long hostPtr, int widthPx, int heightPx);
+        void resize(JniPtr<NativeTabStripNtbWebUiHost> self, int widthPx, int heightPx);
 
-        void setButtonVisible(long hostPtr, boolean visible);
-
-        void destroy(long hostPtr);
+        void setButtonVisible(JniPtr<NativeTabStripNtbWebUiHost> self, boolean visible);
     }
 }

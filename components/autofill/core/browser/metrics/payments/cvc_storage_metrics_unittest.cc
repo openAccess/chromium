@@ -7,6 +7,7 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_test_base.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 
@@ -169,12 +170,9 @@ TEST_P(CvcStorageMetricsTest, LogSelectedMetrics) {
       form(), form().fields().back().global_id());
   DidShowAutofillSuggestions(form(), /*field_index=*/form().fields().size() - 1,
                              SuggestionType::kCreditCardEntry);
-  autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form().global_id(),
-      form().fields().back().global_id(),
-      paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
-      /*blocked_fields=*/{});
+  FillOrPreviewCreditCard(form(), form().fields().back(),
+                          paydm().GetCreditCardByGUID(kCardGuid),
+                          mojom::ActionPersistence::kFill);
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples(GetExpectedHistogramName()),
@@ -188,12 +186,9 @@ TEST_P(CvcStorageMetricsTest, LogSelectedMetrics) {
                        1)));
 
   // Simulate selecting the suggestion again.
-  autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form().global_id(),
-      form().fields().front().global_id(),
-      paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
-      /*blocked_fields=*/{});
+  FillOrPreviewCreditCard(form(), form().fields().front(),
+                          paydm().GetCreditCardByGUID(kCardGuid),
+                          mojom::ActionPersistence::kFill);
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples(GetExpectedHistogramName()),
@@ -219,12 +214,9 @@ TEST_P(CvcStorageMetricsTest, LogFilledMetrics) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
         .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
-  autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form().global_id(),
-      form().fields().front().global_id(),
-      paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
-      /*blocked_fields=*/{});
+  FillOrPreviewCreditCard(form(), form().fields().front(),
+                          paydm().GetCreditCardByGUID(kCardGuid),
+                          mojom::ActionPersistence::kFill);
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples(GetExpectedHistogramName()),
@@ -242,12 +234,9 @@ TEST_P(CvcStorageMetricsTest, LogFilledMetrics) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
         .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
-  autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form().global_id(),
-      form().fields().front().global_id(),
-      paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
-      /*blocked_fields=*/{});
+  FillOrPreviewCreditCard(form(), form().fields().front(),
+                          paydm().GetCreditCardByGUID(kCardGuid),
+                          mojom::ActionPersistence::kFill);
 
   EXPECT_THAT(
       histogram_tester.GetAllSamples(GetExpectedHistogramName()),
@@ -275,12 +264,9 @@ TEST_P(CvcStorageMetricsTest, LogSubmitMetrics) {
     EXPECT_CALL(credit_card_access_manager(), FetchCreditCard)
         .WillOnce(base::test::RunOnceCallback<2>(card()));
   }
-  autofill_manager().FillOrPreviewForm(
-      mojom::ActionPersistence::kFill, form().global_id(),
-      form().fields().front().global_id(),
-      paydm().GetCreditCardByGUID(kCardGuid), AutofillTriggerSource::kPopup,
-      /*require_user_confirmation=*/false,
-      /*blocked_fields=*/{});
+  FillOrPreviewCreditCard(form(), form().fields().front(),
+                          paydm().GetCreditCardByGUID(kCardGuid),
+                          mojom::ActionPersistence::kFill);
   SubmitForm(form());
 
   EXPECT_THAT(

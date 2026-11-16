@@ -21,6 +21,7 @@ import {IconType} from 'chrome://resources/mojo/components/omnibox/browser/sugge
 
 import type {ActionChip, ActionChipsHandlerInterface, PageCallbackRouter} from '../action_chips.mojom-webui.js';
 import {browserProxyFactory} from '../action_chips.mojom-webui.js';
+import {recordDuration, recordEnumeration} from '../metrics_utils.js';
 import {ActionChipsRetrievalState} from '../utils.js';
 import {WindowProxy} from '../window_proxy.js';
 
@@ -35,13 +36,13 @@ export interface ActionChipClickDetail {
 
 // Records a click metric for the given action chip icon type.
 function recordClick(iconType: IconType) {
-  chrome.metricsPrivate.recordEnumerationValue(
+  recordEnumeration(
       'NewTabPage.ActionChips.Click2', iconType, IconType.MAX_VALUE + 1);
 }
 
 // Records a latency metric.
 function recordLatency(metricName: string, latency: number) {
-  chrome.metricsPrivate.recordTime(metricName, Math.round(latency));
+  recordDuration(metricName, Math.round(latency));
 }
 
 const kActionChipsRetrievalStateChangedEvent =
@@ -86,6 +87,11 @@ export class ActionChipsElement extends CrLitElement {
         reflect: true,
         attribute: 'small-chips-enabled',
       },
+      uncappedWidthEnabled_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'uncapped-width-enabled',
+      },
     };
   }
 
@@ -98,6 +104,8 @@ export class ActionChipsElement extends CrLitElement {
       loadTimeData.getBoolean('ntpNextDisablementContextMenuEnabled');
   protected accessor smallChipsEnabled_: boolean =
       loadTimeData.getBoolean('ntpSmallActionChipsEnabled');
+  protected accessor uncappedWidthEnabled_: boolean =
+      loadTimeData.getBoolean('ntpSmallActionChipsUncappedWidthEnabled');
   private webuiRoundedIconsEnabled_: boolean =
       loadTimeData.getBoolean('webuiRoundedIconsEnabled');
 

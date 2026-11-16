@@ -220,10 +220,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
         boolean hasPixAccounts = hasPixAccounts(personalDataManager);
         boolean hasEwallets = hasEwallets(personalDataManager);
-        boolean showA2aToggle =
-                personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref()
-                        && ChromeFeatureList.isEnabled(
-                                ChromeFeatureList.FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+        boolean showA2aToggle = personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref();
 
         if (shouldShowManagePix(personalDataManager, getProfile())) {
             Preference pixFinancialAccountsPref = new ChromeBasePreference(getStyledContext());
@@ -323,7 +320,10 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
         for (CreditCard card : personalDataManager.getCreditCardsForSettings()) {
             // Add a preference for the credit card. It's multi-line to support cards with long
             // nicknames.
-            Preference cardPref = new ChromeBasePreference(getStyledContext());
+            Preference cardPref =
+                    card.getIsLocal()
+                            ? new ChromeBasePreference(getStyledContext())
+                            : new AutofillServerDataPreference(getStyledContext());
             cardPref.setTitle(card.getCardLabel());
 
             // Show virtual card enabled status for enrolled cards, expiration date otherwise.
@@ -353,7 +353,6 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                         this::showLocalCardEditPageAfterAuthenticationIfRequired);
             } else {
                 cardPref.setFragment(AutofillServerCardEditor.class.getName());
-                cardPref.setWidgetLayoutResource(R.layout.autofill_server_data_label);
             }
 
             Bundle args = cardPref.getExtras();
@@ -364,7 +363,10 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
 
         // Display all IBANs.
         for (Iban iban : personalDataManager.getIbansForSettings()) {
-            Preference ibanPref = new ChromeBasePreference(getStyledContext());
+            Preference ibanPref =
+                    iban.getRecordType() == IbanRecordType.SERVER_IBAN
+                            ? new AutofillServerDataPreference(getStyledContext())
+                            : new ChromeBasePreference(getStyledContext());
             ibanPref.setIcon(R.drawable.iban_icon);
             ibanPref.setTitle(iban.getLabel());
             ibanPref.setSummary(iban.getNickname());
@@ -373,7 +375,6 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                 Bundle args = ibanPref.getExtras();
                 args.putString(AutofillEditorBase.AUTOFILL_GUID, iban.getGuid());
             } else if (iban.getRecordType() == IbanRecordType.SERVER_IBAN) {
-                ibanPref.setWidgetLayoutResource(R.layout.autofill_server_data_label);
                 ibanPref.setOnPreferenceClickListener(
                         preference -> {
                             mServerIbanManageLinkOpenerCallback.onResult(
@@ -891,10 +892,7 @@ public class AutofillPaymentMethodsFragment extends ChromeBaseSettingsFragment
                     boolean hasPixAccounts = hasPixAccounts(personalDataManager);
                     boolean hasEwallets = hasEwallets(personalDataManager);
                     boolean showA2aToggle =
-                            personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref()
-                                    && ChromeFeatureList.isEnabled(
-                                            ChromeFeatureList
-                                                    .FACILITATED_PAYMENTS_ENABLE_A2A_PAYMENT);
+                            personalDataManager.getFacilitatedPaymentsA2ATriggeredOncePref();
                     if (isPlatformAutofillEnabledForProfile(profile)) {
                         indexData.addEntryForKey(
                                 frag,

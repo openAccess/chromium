@@ -7,6 +7,7 @@
 #import "base/apple/foundation_util.h"
 #import "base/memory/raw_ptr.h"
 #import "base/test/metrics/histogram_tester.h"
+#import "base/test/metrics/user_action_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/test/task_environment.h"
 #import "components/commerce/core/mock_shopping_service.h"
@@ -97,16 +98,6 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 
-namespace {
-
-std::unique_ptr<KeyedService> BuildMockIOSChromeAimEligibilityService(
-    ProfileIOS* profile) {
-  return MockIOSChromeAimEligibilityService::CreateTestingProfileService(
-      profile);
-}
-
-}  // namespace
-
 @interface NewTabPageHeaderView (Testing)
 @property(nonatomic, readonly) UIButton* customizationMenuButton;
 @property(nonatomic, readonly) UIVisualEffectView* blurBackgroundView;
@@ -156,7 +147,8 @@ class NewTabPageCoordinatorTest : public PlatformTest {
         tab_groups::TabGroupSyncServiceFactory::GetDefaultFactory());
     test_profile_builder.AddTestingFactory(
         IOSChromeAimEligibilityServiceFactory::GetInstance(),
-        base::BindRepeating(&BuildMockIOSChromeAimEligibilityService));
+        base::BindRepeating(
+            &MockIOSChromeAimEligibilityService::CreateTestingProfileService));
     test_profile_builder.AddTestingFactory(
         SyncServiceFactory::GetInstance(),
         base::BindRepeating(&CreateTestSyncService));
@@ -167,10 +159,6 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     toolbar_delegate_ =
         OCMProtocolMock(@protocol(NewTabPageControllerDelegate));
     histogram_tester_ = std::make_unique<base::HistogramTester>();
-  }
-
-  ~NewTabPageCoordinatorTest() override {
-    EXPECT_OCMOCK_VERIFY(component_factory_mock_);
   }
 
   ProfileIOS* GetProfile() { return profile_.get(); }
@@ -185,7 +173,6 @@ class NewTabPageCoordinatorTest : public PlatformTest {
     EXPECT_OCMOCK_VERIFY(lens_handler_mock_);
     EXPECT_OCMOCK_VERIFY(browser_coordinator_handler_mock_);
     EXPECT_OCMOCK_VERIFY(popup_menu_commands_handler_mock_);
-    EXPECT_OCMOCK_VERIFY(component_factory_mock_);
   }
 
   std::unique_ptr<web::FakeWebState> CreateWebState(const char* url) {
@@ -221,6 +208,16 @@ class NewTabPageCoordinatorTest : public PlatformTest {
               DiscoverFeedServiceFactory::GetForProfile(profile_.get()));
       eligibility_handler_ =
           test_discover_feed_service->get_eligibility_handler();
+      // Configures a fake Discover feed view controller so the NTP can test
+      // feed-dependent views, such as the feed top section.
+      fake_feed_view_controller_ = [[UIViewController alloc] init];
+      UICollectionView* fake_feed_collection_view = [[UICollectionView alloc]
+                 initWithFrame:CGRectZero
+          collectionViewLayout:[[UICollectionViewFlowLayout alloc] init]];
+      fake_feed_collection_view.translatesAutoresizingMaskIntoConstraints = NO;
+      [fake_feed_view_controller_.view addSubview:fake_feed_collection_view];
+      test_discover_feed_service->set_feed_view_controller(
+          fake_feed_view_controller_);
       // Create non-NTP WebState
       browser_.get()->GetWebStateList()->InsertWebState(
           CreateWebState("http://chromium.org"),
@@ -233,26 +230,9 @@ class NewTabPageCoordinatorTest : public PlatformTest {
       browser_agent->SaveMostRecentTab();
     }
 
-    // Mocks the component factory so that the NTP is tested with a fake feed.
-    // This allows testing of feed-dependent views, such as the feed top
-    // section.
-    // TODO(crbug.com/40266435): Replace this with a
-    // FakeNewTabPageComponentFactory implementation.
-    component_factory_mock_ =
-        OCMPartialMock([[NewTabPageComponentFactory alloc] init]);
-    fake_feed_view_controller_ = [[UIViewController alloc] init];
-    UICollectionView* fakeFeedCollectionView = [[UICollectionView alloc]
-               initWithFrame:CGRectZero
-        collectionViewLayout:[[UICollectionViewFlowLayout alloc] init]];
-    fakeFeedCollectionView.translatesAutoresizingMaskIntoConstraints = NO;
-    [fake_feed_view_controller_.view addSubview:fakeFeedCollectionView];
-    OCMStub([component_factory_mock_ discoverFeedForBrowser:browser_.get()
-                                viewControllerConfiguration:[OCMArg any]])
-        .andReturn(fake_feed_view_controller_);
-
-    coordinator_ =
-        [[NewTabPageCoordinator alloc] initWithBrowser:browser_.get()
-                                      componentFactory:component_factory_mock_];
+    coordinator_ = [[NewTabPageCoordinator alloc]
+         initWithBrowser:browser_.get()
+        componentFactory:[[NewTabPageComponentFactory alloc] init]];
     coordinator_.baseViewController = base_view_controller_;
     coordinator_.toolbarDelegate = toolbar_delegate_;
 
@@ -412,7 +392,6 @@ class NewTabPageCoordinatorTest : public PlatformTest {
   NewTabPageCoordinator* coordinator_;
   NewTabPageMetricsRecorder* NTPMetricsRecorder_;
   FakeDiscoverFeedEligibilityHandler* eligibility_handler_;
-  id component_factory_mock_;
   UIViewController* base_view_controller_;
   id application_handler_mock_;
   id help_commands_handler_mock_;
@@ -850,11 +829,23 @@ TEST_F(NewTabPageCoordinatorTest, NTPShortcutsMetricLogging) {
                                        IOSHomeActionType::kQuickActionAIM, 1);
 
   // Test Plus Button Tap
+  base::UserActionTester user_action_tester;
   [shortcutsHandler openMultimodalActionsMenu];
   histogram_tester_->ExpectBucketCount("IOS.NTP.Click",
                                        IOSHomeActionType::kPlusButton, 1);
   histogram_tester_->ExpectBucketCount("IOS.Home.Click",
                                        IOSHomeActionType::kPlusButton, 1);
+  EXPECT_EQ(1,
+            user_action_tester.GetActionCount(kNTPAIMPlusButtonTappedAction));
+
+  // Test Plus Button Contextual Menu Open
+  [shortcutsHandler didOpenContextualMultimodalActionsMenu];
+  histogram_tester_->ExpectBucketCount("IOS.NTP.Click",
+                                       IOSHomeActionType::kPlusButton, 2);
+  histogram_tester_->ExpectBucketCount("IOS.Home.Click",
+                                       IOSHomeActionType::kPlusButton, 2);
+  EXPECT_EQ(2,
+            user_action_tester.GetActionCount(kNTPAIMPlusButtonTappedAction));
 
   [coordinator_ stop];
 }

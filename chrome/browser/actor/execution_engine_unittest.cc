@@ -29,7 +29,9 @@
 #include "chrome/browser/actor/site_policy.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/fake_tool_request.h"
+#include "chrome/browser/actor/tools/history_tool_request.h"
 #include "chrome/browser/actor/tools/tool_request.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/tools/wait_tool.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/actor/ui/test_support/mock_event_dispatcher.h"
@@ -54,6 +56,7 @@
 #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/test/mock_navigation_handle.h"
+#include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
 #include "mojo/public/cpp/bindings/associated_receiver_set.h"
 #include "net/http/http_response_headers.h"
@@ -462,6 +465,51 @@ TEST_F(ExecutionEngineTest, MAYBE_ActFailsWhenTabDestroyed) {
 
 // TODO(crbug.com/480230075): Crashing on Android.
 #if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents \
+  DISABLED_ActFailsWithRendererCrashedWhenToolActsOnWebContents
+#define MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents \
+  DISABLED_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents
+#else
+#define MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents \
+  ActFailsWithRendererCrashedWhenToolActsOnWebContents
+#define MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents \
+  ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_ActFailsWithRendererCrashedWhenToolActsOnWebContents) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  process()->SimulateCrash();
+  ASSERT_TRUE(web_contents()->IsCrashed());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action =
+      MakeClickCallback(kFakeContentNodeId).Run();
+  task_->Act(ToRequestList(action), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kRendererCrashed);
+}
+
+TEST_F(ExecutionEngineTest,
+       MAYBE_ActDoesNotFailWithRendererCrashedWhenToolDoesNotActOnWebContents) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+  process()->SimulateCrash();
+  ASSERT_TRUE(web_contents()->IsCrashed());
+
+  ActResultFuture result;
+  std::unique_ptr<ToolRequest> action = std::make_unique<ReloadPageToolRequest>(
+      ActorSurfaceHandle::From(GetTab()->GetHandle()));
+  task_->Act(ToRequestList(action), result.GetCallback());
+  const auto& action_results = result.Get();
+  ASSERT_FALSE(action_results.empty());
+  for (const auto& action_result : action_results) {
+    EXPECT_NE(action_result.result->code,
+              mojom::ActionResultCode::kRendererCrashed);
+  }
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
 #define MAYBE_CrossOriginNavigationBeforeAction \
   DISABLED_CrossOriginNavigationBeforeAction
 #else
@@ -526,6 +574,227 @@ TEST_F(ExecutionEngineTest, MAYBE_CancelOngoingAction) {
   EXPECT_TRUE(on_destroy_future.Wait());
 
   ExpectErrorResult(result, mojom::ActionResultCode::kTaskWentAway);
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionPreservesParentMessageWhenEmpty \
+  DISABLED_FollowupActionPreservesParentMessageWhenEmpty
+#else
+#define MAYBE_FollowupActionPreservesParentMessageWhenEmpty \
+  FollowupActionPreservesParentMessageWhenEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionPreservesParentMessageWhenEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResult(/*requires_page_stabilization=*/false));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message, "Parent message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionSetsMessageWhenParentEmpty \
+  DISABLED_FollowupActionSetsMessageWhenParentEmpty
+#else
+#define MAYBE_FollowupActionSetsMessageWhenParentEmpty \
+  FollowupActionSetsMessageWhenParentEmpty
+#endif
+TEST_F(ExecutionEngineTest, MAYBE_FollowupActionSetsMessageWhenParentEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResultWithMessage(
+                          /*requires_page_stabilization=*/false,
+                          "Followup message."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(
+            MakeOkResult(/*requires_page_stabilization=*/false));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message, "Followup message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty \
+  DISABLED_FollowupActionOverwritesParentMessageWhenNonEmpty
+#else
+#define MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty \
+  FollowupActionOverwritesParentMessageWhenNonEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionOverwritesParentMessageWhenNonEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResultWithMessage(
+                          /*requires_page_stabilization=*/false,
+                          "Followup message."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message, "Followup message.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionFailureUsesFollowupErrorMessage \
+  DISABLED_FollowupActionFailureUsesFollowupErrorMessage
+#else
+#define MAYBE_FollowupActionFailureUsesFollowupErrorMessage \
+  FollowupActionFailureUsesFollowupErrorMessage
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionFailureUsesFollowupErrorMessage) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeResult(mojom::ActionResultCode::kElementDisabled,
+                                      /*requires_page_stabilization=*/false,
+                                      "Followup failed."));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kElementDisabled);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message, "Followup failed.");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty \
+  DISABLED_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty
+#else
+#define MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty \
+  FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty
+#endif
+TEST_F(ExecutionEngineTest,
+       MAYBE_FollowupActionFailureClearsParentMessageWhenErrorMessageEmpty) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeResult(
+                          mojom::ActionResultCode::kElementDisabled));
+                }),
+                base::DoNothing()));
+        std::move(callback).Run(MakeOkResultWithMessage(
+            /*requires_page_stabilization=*/false, "Parent message."));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result, mojom::ActionResultCode::kElementDisabled);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message, "");
+}
+
+// TODO(crbug.com/480230075): Crashing on Android.
+#if BUILDFLAG(SKIP_ANDROID_UNMIGRATED_ACTOR_FILES)
+#define MAYBE_FollowupActionPreservesParentMetadata \
+  DISABLED_FollowupActionPreservesParentMetadata
+#else
+#define MAYBE_FollowupActionPreservesParentMetadata \
+  FollowupActionPreservesParentMetadata
+#endif
+TEST_F(ExecutionEngineTest, MAYBE_FollowupActionPreservesParentMetadata) {
+  content::NavigationSimulator::NavigateAndCommitFromBrowser(
+      web_contents(), GURL("http://localhost/"));
+
+  std::unique_ptr<ToolRequest> request = std::make_unique<FakeToolRequest>(
+      base::BindLambdaForTesting([this](ToolCallback callback) {
+        task_->GetExecutionEngine().EnqueueFollowupAction(
+            std::make_unique<FakeToolRequest>(
+                base::BindOnce([](ToolCallback followup_callback) {
+                  std::move(followup_callback)
+                      .Run(MakeOkResult(/*requires_page_stabilization=*/false));
+                }),
+                base::DoNothing()));
+        mojom::ActionResultPtr parent_result =
+            MakeOkResult(/*requires_page_stabilization=*/true);
+        parent_result->attempt_login_status =
+            mojom::AttemptLoginStatus::kPasswordManager;
+        parent_result->screenshot_policy = mojom::ScreenshotPolicy::kRequired;
+        parent_result->page_content_policy =
+            mojom::PageContentExtractionPolicy::kRequired;
+        std::move(callback).Run(std::move(parent_result));
+      }),
+      base::DoNothing());
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  const mojom::ActionResult& final_result = *result.Get()[0].result;
+  EXPECT_TRUE(final_result.requires_page_stabilization);
+  EXPECT_EQ(final_result.attempt_login_status,
+            mojom::AttemptLoginStatus::kPasswordManager);
+  EXPECT_EQ(final_result.screenshot_policy, mojom::ScreenshotPolicy::kRequired);
+  EXPECT_EQ(final_result.page_content_policy,
+            mojom::PageContentExtractionPolicy::kRequired);
 }
 
 // TODO(crbug.com/480230075): Crashing on Android.
@@ -1034,6 +1303,51 @@ TEST_F(ExecutionEngineTest,
   EXPECT_EQ(received_requests[0].requested_data,
             autofill::ActorFormFillingRequestedData::kAddress);
   EXPECT_EQ(received_handler.get(), &event_handler);
+}
+
+struct TestToolData : public ToolResultData {
+  explicit TestToolData(int value) : value(value) {}
+  ~TestToolData() override = default;
+
+  base::DictValue ToDict() const override {
+    return base::DictValue().Set("value", value);
+  }
+
+  std::unique_ptr<ToolResultData> Clone() const override {
+    return std::make_unique<TestToolData>(*this);
+  }
+
+  int value = 0;
+};
+
+TEST_F(ExecutionEngineTest, ToolResultSuccessWithData) {
+  std::unique_ptr<ToolRequest> action =
+      std::make_unique<FakeToolRequest>(ToolResult::Success(TestToolData(42)));
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  ASSERT_TRUE(result.Wait());
+  const auto& action_results = result.Get();
+  ASSERT_EQ(action_results.size(), 1u);
+  EXPECT_TRUE(IsOk(*action_results[0].result));
+}
+
+TEST_F(ExecutionEngineTest, ToolResultError) {
+  std::unique_ptr<ToolRequest> action =
+      std::make_unique<FakeToolRequest>(ToolResult::Error(
+          ToolError(mojom::ActionResultCode::kTabWentAway, "No matching tab")));
+
+  ActResultFuture result;
+  task_->Act(ToRequestList(action), result.GetCallback());
+
+  ASSERT_TRUE(result.Wait());
+  const auto& action_results = result.Get();
+  ASSERT_EQ(action_results.size(), 1u);
+  EXPECT_FALSE(IsOk(*action_results[0].result));
+  EXPECT_EQ(action_results[0].result->code,
+            mojom::ActionResultCode::kTabWentAway);
+  EXPECT_EQ(action_results[0].result->message, "No matching tab");
 }
 
 INSTANTIATE_TEST_SUITE_P(

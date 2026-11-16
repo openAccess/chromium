@@ -52,7 +52,6 @@
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "third_party/blink/renderer/platform/wtf/shared_buffer.h"
-#include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/wtf.h"
@@ -68,18 +67,22 @@
 
 namespace blink {
 
-Image::Image(ImageObserver* observer, bool is_multipart)
+Image::Image(ImageObserver* observer,
+             bool is_multipart,
+             bool is_cors_same_origin)
     : image_observer_disabled_(false),
       image_observer_(observer),
       stable_image_id_(PaintImage::GetNextId()),
-      is_multipart_(is_multipart) {}
+      is_multipart_(is_multipart),
+      is_cors_same_origin_(is_cors_same_origin) {}
 
 Image::~Image() = default;
 
 Image* Image::NullImage() {
   DCHECK(IsMainThread());
   static const base::NoDestructor<scoped_refptr<Image>> null_image(
-      BitmapImage::Create());
+      BitmapImage::Create(/*observer=*/nullptr, /*is_multipart=*/false,
+                          /*is_cors_same_origin=*/true));
   return null_image->get();
 }
 
@@ -91,15 +94,13 @@ cc::ImageDecodeCache& Image::SharedCCDecodeCache(SkColorType color_type) {
   DCHECK(color_type == kN32_SkColorType || color_type == kRGBA_F16_SkColorType);
   static const size_t kLockedMemoryLimitBytes = 64 * 1024 * 1024;
   if (color_type == kRGBA_F16_SkColorType) {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(
-        cc::SoftwareImageDecodeCache, image_decode_cache,
-        (kRGBA_F16_SkColorType, kLockedMemoryLimitBytes));
-    return image_decode_cache;
+    static base::NoDestructor<cc::SoftwareImageDecodeCache> image_decode_cache(
+        kRGBA_F16_SkColorType, kLockedMemoryLimitBytes);
+    return *image_decode_cache;
   }
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(cc::SoftwareImageDecodeCache,
-                                  image_decode_cache,
-                                  (kN32_SkColorType, kLockedMemoryLimitBytes));
-  return image_decode_cache;
+  static base::NoDestructor<cc::SoftwareImageDecodeCache> image_decode_cache(
+      kN32_SkColorType, kLockedMemoryLimitBytes);
+  return *image_decode_cache;
 }
 
 scoped_refptr<Image> Image::LoadPlatformResource(
@@ -110,7 +111,9 @@ scoped_refptr<Image> Image::LoadPlatformResource(
   if (resource.IsEmpty())
     return Image::NullImage();
 
-  scoped_refptr<Image> image = BitmapImage::Create();
+  scoped_refptr<Image> image =
+      BitmapImage::Create(/*observer=*/nullptr, /*is_multipart=*/false,
+                          /*is_cors_same_origin=*/true);
   image->SetData(resource, true);
   return image;
 }
@@ -362,7 +365,9 @@ PaintImageBuilder Image::CreatePaintImageBuilder(
                                         : PaintImage::AnimationType::kStatic;
   auto builder = PaintImageBuilder::WithDefault();
   builder.set_id(paint_id.value_or(stable_image_id_));
-  builder.set_animation_type(animation_type).set_is_multipart(is_multipart_);
+  builder.set_animation_type(animation_type)
+      .set_is_multipart(is_multipart_)
+      .set_is_read_back_disallowed(!IsCorsSameOrigin());
 
   return builder;
 }

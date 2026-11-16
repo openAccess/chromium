@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "base/feature_list.h"
+#include "base/i18n/language_tag.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -290,7 +291,8 @@ TEST_P(AutofillAiMayPerformActionTest,
 // is saved in the EntityDataManager.
 TEST_P(AutofillAiMayPerformActionTest, ActionsWhenAddressAutofillDisabled) {
   client().SetAutofillProfileEnabled(false);
-  EXPECT_FALSE(MayPerformAutofillAiAction(client(), GetParam()));
+  EXPECT_FALSE(
+      MayPerformAutofillAiAction(client(), GetParam(), EntityType(kPassport)));
 }
 
 // Tests that listing, editing and removing entities is permitted if address
@@ -302,7 +304,9 @@ TEST_P(AutofillAiMayPerformActionTest,
   const bool is_allowed =
       GetParam() == AutofillAiAction::kEditAndDeleteEntityInstanceInSettings ||
       GetParam() == AutofillAiAction::kListEntityInstancesInSettings;
-  EXPECT_EQ(MayPerformAutofillAiAction(client(), GetParam()), is_allowed);
+  EXPECT_EQ(
+      MayPerformAutofillAiAction(client(), GetParam(), EntityType(kPassport)),
+      is_allowed);
 }
 
 // Verifies that only MQLS logging and online model calls require an opt-in.
@@ -521,7 +525,7 @@ TEST_P(AutofillAiMayPerformActionTest, IgnoreGeoIpBlocklistAndAllowlist) {
 }
 
 TEST_P(AutofillAiMayPerformActionTest, AppLocale) {
-  client().set_app_locale("de-DE");
+  client().set_app_locale(base::i18n::GetKnownLanguageTag("de-DE"));
 
   constexpr auto kForbiddenActions =
       DenseSet({AutofillAiAction::kWalletDataSharingPromotion});
@@ -582,9 +586,13 @@ TEST_F(AutofillAiPermissionUtilsTest, kTypeSupportsAmbientAutofillData) {
         EntityType(type)));
   }
   for (const EntityTypeName type : {kRedressNumber, kKnownTravelerNumber}) {
+    std::string debug_message;
     EXPECT_FALSE(MayPerformAutofillAiAction(
         client(), AutofillAiAction::kTypeSupportsAmbientAutofillData,
-        EntityType(type)));
+        EntityType(type), &debug_message));
+    EXPECT_EQ(
+        debug_message,
+        "Entity type is not supported by Ambient Autofill feature param.");
   }
 
   // Without device re-auth, SPII types (Passport, Driver's license, National ID
@@ -597,11 +605,13 @@ TEST_F(AutofillAiPermissionUtilsTest, kTypeSupportsAmbientAutofillData) {
         client(), AutofillAiAction::kTypeSupportsAmbientAutofillData,
         EntityType(type)));
   }
-  for (const EntityTypeName type : {kPassport, kDriversLicense, kNationalIdCard,
-                                    kRedressNumber, kKnownTravelerNumber}) {
+  for (const EntityTypeName type :
+       {kPassport, kDriversLicense, kNationalIdCard}) {
+    std::string debug_message;
     EXPECT_FALSE(MayPerformAutofillAiAction(
         client(), AutofillAiAction::kTypeSupportsAmbientAutofillData,
-        EntityType(type)));
+        EntityType(type), &debug_message));
+    EXPECT_EQ(debug_message, "Reauth is not available for SPII entity type.");
   }
 }
 
@@ -722,8 +732,12 @@ TEST_F(AutofillAiPermissionUtilsTest, kAmbientAutofill) {
 
   client().set_personal_context_eligibility_state(
       personal_context::PersonalContextEligibilityState::kDisabledNotEligible);
-  EXPECT_FALSE(
-      MayPerformAutofillAiAction(client(), AutofillAiAction::kAmbientAutofill));
+  std::string debug_message;
+  EXPECT_FALSE(MayPerformAutofillAiAction(client(),
+                                          AutofillAiAction::kAmbientAutofill,
+                                          std::nullopt, &debug_message));
+  EXPECT_EQ(debug_message,
+            "PersonalContextEligibilityService state is not eligible.");
 }
 
 #if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
@@ -764,11 +778,18 @@ TEST_F(AutofillAiPermissionUtilsTest,
   client().GetPrefs()->SetBoolean(
       personal_context::prefs::kPersonalContextInAutofillSettingsToggleStatus,
       false);
-  EXPECT_FALSE(
-      MayPerformAutofillAiAction(client(), AutofillAiAction::kAmbientAutofill));
+  std::string debug_message;
+  EXPECT_FALSE(MayPerformAutofillAiAction(client(),
+                                          AutofillAiAction::kAmbientAutofill,
+                                          std::nullopt, &debug_message));
+  EXPECT_EQ(debug_message,
+            "Personal Context toggle in Autofill settings is disabled.");
+  debug_message.clear();
   EXPECT_FALSE(MayPerformAutofillAiAction(
       client(), AutofillAiAction::kTypeSupportsAmbientAutofillData,
-      EntityType(kPassport)));
+      EntityType(kPassport), &debug_message));
+  EXPECT_EQ(debug_message,
+            "Personal Context toggle in Autofill settings is disabled.");
   EXPECT_TRUE(MayPerformAutofillAiAction(
       client(), AutofillAiAction::kShowAmbientAutofillInSettings));
 }
@@ -1142,6 +1163,99 @@ TEST_F(AutofillAiMayPerformImportToWalletTest,
   // Expect that imports of private passes are not allowed.
   EXPECT_FALSE(MayPerformAutofillAiAction(
       client(), AutofillAiAction::kImportToWallet, EntityType(kPassport)));
+}
+
+// Tests that `MayPerformAutofillAiAction()` returns `false` for `kImport` and
+// `kImportToWallet` on private passes when
+// `kAutofillRegionalizedPrivatePassesUxRefine` is enabled and the
+// `must_show_equally_weighted_buttons_for_private_passes_in_autofill()`
+// capability is `kUnknown`.
+TEST_F(
+    AutofillAiMayPerformImportToWalletTest,
+    ImportAndImportToWallet_FalseForPrivatePassesIfButtonsCapabilityUnknown) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/
+      {features::kAutofillAiWalletPrivatePasses,
+       features::kAutofillRegionalizedPrivatePassesUxRefine},
+      /*disabled_features=*/{});
+  client().SetWalletPublicPassStorageEnabled(true);
+  client().ResetAccountCapabilities();
+  client().SetCanUseModelExecutionFeatures(true);
+  client().SetSupportsWalletPrivatePassesInAutofill(true);
+
+  // Expect that public pass import is allowed.
+  EXPECT_TRUE(MayPerformAutofillAiAction(client(), AutofillAiAction::kImport,
+                                         EntityType(kOrder)));
+  EXPECT_TRUE(MayPerformAutofillAiAction(
+      client(), AutofillAiAction::kImportToWallet, EntityType(kVehicle)));
+
+  // Expect that all private pass imports are disallowed with the unknown
+  // account capability.
+  EXPECT_FALSE(MayPerformAutofillAiAction(client(), AutofillAiAction::kImport,
+                                          EntityType(kPassport)));
+  EXPECT_FALSE(MayPerformAutofillAiAction(
+      client(), AutofillAiAction::kImportToWallet, EntityType(kPassport)));
+  EXPECT_FALSE(MayPerformAutofillAiAction(client(),
+                                          AutofillAiAction::kImportToWallet,
+                                          EntityType(kDriversLicense)));
+  EXPECT_FALSE(MayPerformAutofillAiAction(client(), AutofillAiAction::kImport,
+                                          EntityType(kRedressNumber)));
+}
+
+// Tests that equally weighted buttons are not shown when
+// `kAutofillRegionalizedPrivatePassesUxRefine` is disabled.
+TEST_F(AutofillAiPermissionUtilsTest,
+       MustShowEquallyWeightedButtonsForPrivatePasses_FeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      features::kAutofillRegionalizedPrivatePassesUxRefine);
+  client().SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(true);
+  EXPECT_FALSE(MustShowEquallyWeightedButtonsForPrivatePasses(
+      client().GetIdentityManager()));
+}
+
+// Tests that equally weighted buttons are shown when the account capability is
+// true or unknown, and not shown when it is false or when `IdentityManager` is
+// `nullptr`.
+TEST_F(AutofillAiPermissionUtilsTest,
+       MustShowEquallyWeightedButtonsForPrivatePasses_CapabilityValues) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillRegionalizedPrivatePassesUxRefine};
+  EXPECT_FALSE(MustShowEquallyWeightedButtonsForPrivatePasses(nullptr));
+
+  client().SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(false);
+  EXPECT_FALSE(MustShowEquallyWeightedButtonsForPrivatePasses(
+      client().GetIdentityManager()));
+
+  client().SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(true);
+  EXPECT_TRUE(MustShowEquallyWeightedButtonsForPrivatePasses(
+      client().GetIdentityManager()));
+
+  client().ResetAccountCapabilities();
+  EXPECT_TRUE(MustShowEquallyWeightedButtonsForPrivatePasses(
+      client().GetIdentityManager()));
+}
+
+// Tests that `MustShowEquallyWeightedButtons()` returns true only for
+// private passes when `MustShowEquallyWeightedButtonsForPrivatePasses()` is
+// true.
+TEST_F(AutofillAiPermissionUtilsTest,
+       MustShowEquallyWeightedButtons_EntityTypes) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillRegionalizedPrivatePassesUxRefine};
+
+  client().SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(true);
+  EXPECT_TRUE(MustShowEquallyWeightedButtons(client().GetIdentityManager(),
+                                             EntityType(kPassport)));
+  EXPECT_FALSE(MustShowEquallyWeightedButtons(client().GetIdentityManager(),
+                                              EntityType(kVehicle)));
+
+  client().SetMustShowEquallyWeightedButtonsForPrivatePassesInAutofill(false);
+  EXPECT_FALSE(MustShowEquallyWeightedButtons(client().GetIdentityManager(),
+                                              EntityType(kPassport)));
+  EXPECT_FALSE(MustShowEquallyWeightedButtons(client().GetIdentityManager(),
+                                              EntityType(kVehicle)));
 }
 
 }  // namespace

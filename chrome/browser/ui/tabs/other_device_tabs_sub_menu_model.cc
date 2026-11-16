@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/tabs/other_device_tabs_sub_menu_model.h"
 
+#include <memory>
 #include <utility>
 
 #include "base/check.h"
@@ -18,7 +19,8 @@
 #include "chrome/browser/ui/tabs/remote_tabs_menu_util.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "components/sync_sessions/session_sync_service.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/models/menu_model_delegate.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/window_open_disposition_utils.h"
 
 OtherDeviceTabsSubMenuModel::OtherDeviceTabsSubMenuModel(
@@ -31,6 +33,13 @@ OtherDeviceTabsSubMenuModel::OtherDeviceTabsSubMenuModel(
           SessionSyncServiceFactory::GetForProfile(browser->GetProfile())),
       next_menu_id_(AppMenuModel::kMinOtherDeviceTabsCommandId) {
   CHECK(log_menu_metrics_callback_);
+  CHECK(session_sync_service_);
+  // Unretained is safe because `this` owns the subscription.
+  foreign_session_updated_subscription_ =
+      session_sync_service_->SubscribeToForeignSessionsChanged(
+          base::BindRepeating(
+              &OtherDeviceTabsSubMenuModel::OnForeignSessionUpdated,
+              base::Unretained(this)));
   Build();
 }
 
@@ -40,6 +49,21 @@ void OtherDeviceTabsSubMenuModel::ExecuteCommand(int command_id,
                                                  int event_flags) {}
 
 void OtherDeviceTabsSubMenuModel::Build() {
+  // Adds the tab row to `model`, binds its open callback, and fetches its
+  // favicon.
+  auto add_tab = [this](ui::SimpleMenuModel& model, const RecentTabItem& tab) {
+    const int command_id = GetAndIncrementNextMenuID();
+    model.AddItem(command_id, tab.title());
+    model.SetExecuteCallbackAt(
+        model.GetItemCount() - 1,
+        base::BindRepeating(&OtherDeviceTabsSubMenuModel::OpenTab,
+                            base::Unretained(this), tab.session_tag(),
+                            tab.session_id()));
+    remote_tabs_menu_util::AddRemoteTabFavicon(
+        browser_->GetProfile(), favicon_weak_ptr_factory_.GetWeakPtr(), &model,
+        command_id, tab.url());
+  };
+
   // Populates device headers, open tabs, and separators ordered by recency.
   for (const RecentTabItem& item :
        RecentTabsBuilder::BuildOtherDeviceTabs(browser_->GetProfile())) {
@@ -52,23 +76,33 @@ void OtherDeviceTabsSubMenuModel::Build() {
         // Non-interactive device name header.
         AddTitle(item.title());
         break;
-      case RecentTabItem::Type::kTab: {
-        // Add the tab row, bind its open callback, and fetch its favicon.
-        const int command_id = GetAndIncrementNextMenuID();
-        AddItem(command_id, item.title());
-        SetExecuteCallbackAt(
-            GetItemCount() - 1,
-            base::BindRepeating(&OtherDeviceTabsSubMenuModel::OpenTab,
-                                base::Unretained(this), item.session_tag(),
-                                item.session_id()));
-        remote_tabs_menu_util::AddRemoteTabFavicon(
-            browser_->GetProfile(), favicon_weak_ptr_factory_.GetWeakPtr(),
-            this, command_id, item.url());
+      case RecentTabItem::Type::kTab:
+        add_tab(*this, item);
+        break;
+      case RecentTabItem::Type::kMoreTabs: {
+        // Flyout with the device's tabs that don't fit inline.
+        ui::SimpleMenuModel& more_tabs = *more_tabs_sub_menus_.emplace_back(
+            std::make_unique<ui::SimpleMenuModel>(this));
+        for (const RecentTabItem& tab : item.children()) {
+          add_tab(more_tabs, tab);
+        }
+        AddSubMenuWithIcon(GetAndIncrementNextMenuID(), item.title(),
+                           &more_tabs, item.icon());
         break;
       }
       default:
         NOTREACHED();
     }
+  }
+}
+
+void OtherDeviceTabsSubMenuModel::OnForeignSessionUpdated() {
+  Clear();
+  more_tabs_sub_menus_.clear();
+  favicon_weak_ptr_factory_.InvalidateWeakPtrs();
+  Build();
+  if (ui::MenuModelDelegate* delegate = menu_model_delegate()) {
+    delegate->OnMenuStructureChanged();
   }
 }
 
@@ -79,13 +113,11 @@ void OtherDeviceTabsSubMenuModel::OpenTab(const std::string& session_tag,
 
   // Restore the selected foreign tab using the window disposition derived
   // from event flags (e.g. foreground vs. background tab on middle-click).
-  sync_sessions::OpenTabsUIDelegate* open_tabs =
-      session_sync_service_ ? session_sync_service_->GetOpenTabsUIDelegate()
-                            : nullptr;
   remote_tabs_menu_util::OpenForeignSessionTab(
-      browser_, open_tabs, session_tag, tab_id,
-      ui::DispositionFromEventFlags(event_flags,
-                                    WindowOpenDisposition::kNewForegroundTab),
+      browser_, session_sync_service_->GetOpenTabsUIDelegate(), session_tag,
+      tab_id,
+      ui::DispositionFromEventFlags(
+          event_flags, ui::mojom::WindowOpenDisposition::kNewForegroundTab),
       base::UserMetricsAction("WrenchMenu_OpenRecentTabFromDevice"));
 }
 

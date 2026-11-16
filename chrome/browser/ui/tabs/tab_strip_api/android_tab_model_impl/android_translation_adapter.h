@@ -12,6 +12,10 @@ class TabModel;
 
 namespace tabs_api {
 
+namespace types {
+struct TabStates;
+}  // namespace types
+
 class AndroidTabStripModelAdapter;
 
 class AndroidTranslationAdapter : public TranslationAdapter {
@@ -23,8 +27,10 @@ class AndroidTranslationAdapter : public TranslationAdapter {
       delete;
   ~AndroidTranslationAdapter() override;
 
+  static Tab BuildMojoTab(tabs::TabHandle handle, types::TabStates states);
+
   // TranslationAdapter:
-  base::expected<mojom::TabPtr, mojo_base::mojom::ErrorPtr> ToMojoTab(
+  base::expected<Tab, mojo_base::mojom::ErrorPtr> ToMojoTab(
       tabs::TabHandle handle) override;
   base::expected<mojom::DataPtr, mojo_base::mojom::ErrorPtr> ToMojoData(
       tabs::TabCollectionHandle handle) override;

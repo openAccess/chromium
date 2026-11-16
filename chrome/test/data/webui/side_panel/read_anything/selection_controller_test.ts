@@ -698,8 +698,7 @@ suite('SelectionController', () => {
         assertEquals(expectedFocusOffset, selection.focusOffset);
         assertEquals(
             1, contentBrowserProxy.getCallCount('attemptLogEarlySelection'));
-        assertFalse(
-            contentBrowserProxy.getArgs('attemptLogEarlySelection')[0]);
+        assertFalse(contentBrowserProxy.getArgs('attemptLogEarlySelection')[0]);
       });
 
       test('does nothing when ids are unknown in readability', () => {
@@ -942,6 +941,41 @@ suite('SelectionController', () => {
         assertEquals(expectedSelection, selection.toString());
         assertEquals(expectedAnchorOffset, selection.anchorOffset);
         assertEquals(expectedFocusOffset, selection.focusOffset);
+      });
+
+      test('selects text in the first of two fragments of one AX node', () => {
+        // Simulates one AXNode split into two DOM fragments with an unmapped
+        // gap (getNodeAt(1)) between them.
+        const first = getNodeAt(0);
+        const second = getNodeAt(2);
+        nodeStore.setDomNode(first.node, first.id);
+        nodeStore.setDomNode(second.node, first.id);
+        nodeStore.setAxNodeOffset(second.node, first.text.length);
+
+        selectNodesInMainPanel(first.id, 1, first.id, 6);
+        selectionController.updateSelection(selection);
+
+        assertEquals(first.node, selection.anchorNode);
+        assertEquals(first.node, selection.focusNode);
+        assertEquals(1, selection.anchorOffset);
+        assertEquals(6, selection.focusOffset);
+        assertEquals(first.text.substring(1, 6), selection.toString());
+      });
+
+      test('selects text across two fragments of one AX node', () => {
+        const first = getNodeAt(0);
+        const second = getNodeAt(2);
+        nodeStore.setDomNode(first.node, first.id);
+        nodeStore.setDomNode(second.node, first.id);
+        nodeStore.setAxNodeOffset(second.node, first.text.length);
+
+        selectNodesInMainPanel(first.id, 7, first.id, first.text.length + 6);
+        selectionController.updateSelection(selection);
+
+        assertEquals(first.node, selection.anchorNode);
+        assertEquals(second.node, selection.focusNode);
+        assertEquals(7, selection.anchorOffset);
+        assertEquals(6, selection.focusOffset);
       });
 
       test(

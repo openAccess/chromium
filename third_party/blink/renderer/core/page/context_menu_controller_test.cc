@@ -27,7 +27,9 @@
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-blink.h"
+#include "third_party/blink/public/web/web_element.h"
 #include "third_party/blink/public/web/web_plugin.h"
+#include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/dom/xml_document.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
@@ -56,6 +58,7 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 #include "third_party/blink/renderer/platform/testing/empty_web_media_player.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/scoped_mocked_url.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
@@ -67,6 +70,7 @@
 #include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "ui/base/mojom/menu_source_type.mojom-blink.h"
+#include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/geometry/rect.h"
 
 using testing::Return;
@@ -998,6 +1002,223 @@ TEST_F(ContextMenuControllerTest, EditingActionsEnabledInSVGDocument) {
                 ContextMenuDataEditFlags::kCanEditRichly);
 }
 
+TEST_F(ContextMenuControllerTest, StandaloneSVGHasImageContextMenuData) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>
+      <rect width='120' height='80' fill='red'/>
+    </svg>
+  )SVG");
+
+  Document* document = GetDocument();
+  ASSERT_TRUE(document->IsSVGDocument());
+  ASSERT_TRUE(ShowContextMenuForElement(
+      document->documentElement(), ui::mojom::blink::MenuSourceType::kMouse));
+
+  const ContextMenuData& data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage, data.media_type);
+  EXPECT_EQ(document->Url().GetString().Utf8(), data.src_url.spec());
+  EXPECT_TRUE(data.has_image_contents);
+  EXPECT_TRUE(data.media_flags & ContextMenuData::kMediaCanPrint);
+  Node* image_node = web_view_helper_.GetWebView()
+                         ->GetPage()
+                         ->GetContextMenuController()
+                         .ContextMenuImageNodeForFrame(document->GetFrame());
+  ASSERT_EQ(document->documentElement(), image_node);
+  SkBitmap image = WebElement(document->documentElement()).ImageContents();
+  ASSERT_FALSE(image.isNull());
+  EXPECT_EQ(gfx::Size(120, 80), gfx::Size(image.width(), image.height()));
+  EXPECT_EQ(SK_ColorRED, image.getColor(20, 20));
+
+  ContextMenuAllowedScope context_menu_allowed_scope;
+  ASSERT_TRUE(ShowContextMenu(PhysicalOffset(200, 200),
+                              ui::mojom::blink::MenuSourceType::kMouse));
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
+            GetWebFrameClient().GetContextMenuData().media_type);
+}
+
+TEST_F(ContextMenuControllerTest, StandaloneSVGImageActionsDisabled) {
+  ScopedStandaloneSVGImageActionsForTest feature(false);
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>
+      <rect width='120' height='80' fill='red'/>
+    </svg>
+  )SVG");
+  Element* root = GetDocument()->documentElement();
+  ASSERT_TRUE(ShowContextMenuForElement(
+      root, ui::mojom::blink::MenuSourceType::kMouse));
+  EXPECT_EQ(GetWebFrameClient().GetContextMenuData().media_type,
+            mojom::blink::ContextMenuDataMediaType::kNone);
+  EXPECT_TRUE(WebElement(root).ImageContents().isNull());
+
+  LocalFrame& frame = *GetDocument()->GetFrame();
+  PageTestBase::MockClipboardHostProvider clipboard_provider(
+      frame.GetBrowserInterfaceBroker());
+  SystemClipboard* clipboard = frame.GetSystemClipboard();
+  clipboard->WritePlainText("existing clipboard contents");
+  clipboard->CommitWrite();
+  test::RunPendingTasks();
+  const auto sequence_number = clipboard->SequenceNumber();
+
+  frame.CopyImageAtViewportPoint(gfx::Point(20, 20));
+  test::RunPendingTasks();
+
+  EXPECT_EQ(clipboard->SequenceNumber(), sequence_number);
+  EXPECT_EQ(clipboard->ReadPlainText(), "existing clipboard contents");
+  EXPECT_EQ(clipboard->ReadPng(mojom::blink::ClipboardBuffer::kStandard).size(),
+            0u);
+}
+
+TEST_F(ContextMenuControllerTest,
+       StandaloneSVGSnapshotIgnoresZoomAndDeviceScale) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>
+      <rect width='120' height='80' fill='red'/>
+    </svg>
+  )SVG");
+  for (float device_scale : {1.0f, 2.0f}) {
+    LocalMainFrame()->FrameWidget()->SetDeviceScaleFactorForTesting(
+        device_scale);
+    for (double zoom : {-1.0, 0.0, 2.0}) {
+      SCOPED_TRACE(device_scale);
+      SCOPED_TRACE(zoom);
+      LocalMainFrame()->FrameWidget()->SetZoomLevelForTesting(zoom);
+      SkBitmap image =
+          WebElement(GetDocument()->documentElement()).ImageContents();
+      ASSERT_FALSE(image.isNull());
+      EXPECT_EQ(gfx::Size(image.width(), image.height()), gfx::Size(120, 80));
+      EXPECT_EQ(image.getColor(20, 20), SK_ColorRED);
+    }
+  }
+}
+
+TEST_F(ContextMenuControllerTest,
+       StandaloneSVGWithoutIntrinsicSizeUsesViewport) {
+  for (const char* dimensions :
+       {"viewBox='0 0 120 80'", "width='100%' height='100%'"}) {
+    SCOPED_TRACE(dimensions);
+    const String url =
+        String("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' ") +
+        dimensions + "><rect width='120' height='80' fill='red'/></svg>";
+    frame_test_helpers::LoadFrame(LocalMainFrame(), url.Utf8().c_str());
+    SkBitmap image =
+        WebElement(GetDocument()->documentElement()).ImageContents();
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(gfx::Size(image.width(), image.height()), gfx::Size(640, 480));
+  }
+}
+
+TEST_F(ContextMenuControllerTest, StandaloneSVGSnapshotUpdatesDirtyLayout) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>
+      <rect width='100%' height='100%' fill='red'/>
+    </svg>
+  )SVG");
+  Element* root = GetDocument()->documentElement();
+  root->setAttribute(html_names::kStyleAttr,
+                     AtomicString("width:160px;height:100px"));
+  SkBitmap image = WebElement(root).ImageContents();
+  ASSERT_FALSE(image.isNull());
+  EXPECT_EQ(gfx::Size(image.width(), image.height()), gfx::Size(160, 100));
+  EXPECT_EQ(image.getColor(150, 90), SK_ColorRED);
+}
+
+TEST_F(ContextMenuControllerTest, DetachedStandaloneSVGHasNoSnapshot) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'/>
+  )SVG");
+  Persistent<Element> root = GetDocument()->documentElement();
+  frame_test_helpers::LoadFrame(LocalMainFrame(), "about:blank");
+  EXPECT_TRUE(WebElement(root.Get()).ImageContents().isNull());
+}
+
+TEST_F(ContextMenuControllerTest, ZeroWidthStandaloneSVGHasNoImageActions) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='0' height='80'/>
+  )SVG");
+  ContextMenuAllowedScope context_menu_allowed_scope;
+  ASSERT_TRUE(ShowContextMenu(PhysicalOffset(20, 20),
+                              ui::mojom::blink::MenuSourceType::kMouse));
+  EXPECT_EQ(GetWebFrameClient().GetContextMenuData().media_type,
+            mojom::blink::ContextMenuDataMediaType::kNone);
+  EXPECT_TRUE(
+      WebElement(GetDocument()->documentElement()).ImageContents().isNull());
+}
+
+TEST_F(ContextMenuControllerTest, EmbeddedSVGHasImageActions) {
+  for (const char* tag : {"iframe", "object", "embed"}) {
+    SCOPED_TRACE(tag);
+    String attribute = String(tag) == "object" ? "data" : "src";
+    String html =
+        String("<") + tag + " style='width:120px;height:80px;border:0' " +
+        attribute +
+        "=\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
+        "width='120' height='80'><rect width='120' height='80' fill='red'/>"
+        "</svg>\"></" +
+        tag + ">";
+    frame_test_helpers::LoadHTMLString(
+        LocalMainFrame(), html.Utf8().c_str(),
+        url_test_helpers::ToKURL("https://example.com/"));
+    Frame* child = GetDocument()->GetFrame()->Tree().FirstChild();
+    ASSERT_TRUE(child);
+    auto* child_frame = DynamicTo<LocalFrame>(child);
+    ASSERT_TRUE(child_frame);
+    ASSERT_TRUE(child_frame->GetDocument()->IsSVGDocument());
+    // Child frames normally use the generic test client. Capture their menu
+    // data with the fixture's client, then restore it before teardown.
+    auto* web_child = WebLocalFrameImpl::FromFrame(child_frame);
+    WebLocalFrameClient* original_client = web_child->Client();
+    web_child->SetClient(&GetWebFrameClient());
+    ContextMenuAllowedScope context_menu_allowed_scope;
+    const bool shown = ShowContextMenu(
+        PhysicalOffset(30, 30), ui::mojom::blink::MenuSourceType::kMouse);
+    web_child->SetClient(original_client);
+    ASSERT_TRUE(shown);
+    EXPECT_EQ(GetWebFrameClient().GetContextMenuData().media_type,
+              mojom::blink::ContextMenuDataMediaType::kImage);
+    SkBitmap image = WebElement(child_frame->GetDocument()->documentElement())
+                         .ImageContents();
+    ASSERT_FALSE(image.isNull());
+    EXPECT_EQ(gfx::Size(image.width(), image.height()), gfx::Size(120, 80));
+  }
+}
+
+TEST_F(ContextMenuControllerTest, CopyStandaloneSVGWritesImage) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='120' height='80'>
+      <rect width='120' height='80' fill='red'/>
+      <rect x='10000' width='100' height='100' fill='blue'/>
+    </svg>
+  )SVG");
+
+  LocalFrame& frame = *GetDocument()->GetFrame();
+  PageTestBase::MockClipboardHostProvider clipboard_provider(
+      frame.GetBrowserInterfaceBroker());
+  frame.CopyImageAtViewportPoint(gfx::Point(20, 20));
+  test::RunPendingTasks();
+
+  const auto png = frame.GetSystemClipboard()->ReadPng(
+      mojom::blink::ClipboardBuffer::kStandard);
+  SkBitmap bitmap = gfx::PNGCodec::Decode(png);
+  ASSERT_FALSE(bitmap.isNull());
+  EXPECT_EQ(120, bitmap.width());
+  EXPECT_EQ(80, bitmap.height());
+  EXPECT_EQ(SK_ColorRED, bitmap.getColor(20, 20));
+}
+
+TEST_F(ContextMenuControllerTest, OversizedStandaloneSVGHasNoImageActions) {
+  frame_test_helpers::LoadFrame(LocalMainFrame(), R"SVG(data:image/svg+xml,
+    <svg xmlns='http://www.w3.org/2000/svg' width='9000' height='4000'>
+      <rect width='9000' height='4000' fill='red'/>
+    </svg>
+  )SVG");
+
+  ContextMenuAllowedScope context_menu_allowed_scope;
+  ASSERT_TRUE(ShowContextMenu(PhysicalOffset(20, 20),
+                              ui::mojom::blink::MenuSourceType::kMouse));
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
+            GetWebFrameClient().GetContextMenuData().media_type);
+}
+
 TEST_F(ContextMenuControllerTest, EditingActionsEnabledInXMLDocument) {
   frame_test_helpers::LoadFrame(LocalMainFrame(), R"XML(data:text/xml,
     <root>
@@ -1300,8 +1521,6 @@ TEST_F(ContextMenuControllerTest,
     </body>
   )HTML");
 
-  base::HistogramTester histograms;
-
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
   EXPECT_TRUE(
       ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
@@ -1311,25 +1530,7 @@ TEST_F(ContextMenuControllerTest,
   EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
-  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.image_bounds);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
+  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.node_bounds);
 }
 
 TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestClippedImageBounds) {
@@ -1366,7 +1567,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestClippedImageBounds) {
   EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
-  EXPECT_EQ(gfx::Rect(20, 10, 40, 30), context_menu_data.image_bounds);
+  EXPECT_EQ(gfx::Rect(20, 10, 40, 30), context_menu_data.node_bounds);
 }
 
 // Test that image selection can penetrate through a fully transparent div
@@ -1400,8 +1601,6 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
     </body>
   )HTML");
 
-  base::HistogramTester histograms;
-
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
   EXPECT_TRUE(
       ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
@@ -1411,25 +1610,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
   EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
-  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.image_bounds);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
+  EXPECT_EQ(gfx::Rect(0, 0, 100, 100), context_menu_data.node_bounds);
 }
 
 // Test that a basic image hit test works and is no† impacted by
@@ -1453,8 +1634,6 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
     </body>
   )HTML");
 
-  base::HistogramTester histograms;
-
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
   EXPECT_TRUE(
       ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
@@ -1464,24 +1643,6 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kCanvas,
             context_menu_data.media_type);
   EXPECT_TRUE(context_menu_data.has_image_contents);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 TEST_F(ContextMenuControllerTest, TaintedCanvasHasNoCopyableImageContents) {
@@ -1543,8 +1704,6 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestOpaqueNodeBlocking) {
     </body>
   )HTML");
 
-  base::HistogramTester histograms;
-
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
   EXPECT_TRUE(
       ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
@@ -1553,24 +1712,6 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestOpaqueNodeBlocking) {
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
             context_menu_data.media_type);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node will not be selected if a node with a context menu
@@ -1617,7 +1758,6 @@ TEST_F(ContextMenuControllerTest,
 
   Persistent<MockEventListener> event_listener =
       MakeGarbageCollected<MockEventListener>();
-  base::HistogramTester histograms;
 
   Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kContextmenu,
@@ -1631,24 +1771,6 @@ TEST_F(ContextMenuControllerTest,
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
             context_menu_data.media_type);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node will not be selected if the image node itself has a
@@ -1686,7 +1808,6 @@ TEST_F(ContextMenuControllerTest,
   // Attaching a listener for the finished event indicates pending activity.
   Persistent<MockEventListener> event_listener =
       MakeGarbageCollected<MockEventListener>();
-  base::HistogramTester histograms;
 
   Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kContextmenu,
@@ -1700,24 +1821,6 @@ TEST_F(ContextMenuControllerTest,
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
             context_menu_data.media_type);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node will be selected if the image node itself has an
@@ -1754,7 +1857,6 @@ TEST_F(ContextMenuControllerTest,
 
   Persistent<MockEventListener> event_listener =
       MakeGarbageCollected<MockEventListener>();
-  base::HistogramTester histograms;
 
   Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kClick, event_listener);
@@ -1767,24 +1869,6 @@ TEST_F(ContextMenuControllerTest,
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
             context_menu_data.media_type);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node will still be selected if it is the topmost node
@@ -1822,7 +1906,6 @@ TEST_F(ContextMenuControllerTest,
 
   Persistent<MockEventListener> event_listener =
       MakeGarbageCollected<MockEventListener>();
-  base::HistogramTester histograms;
 
   Element* hidden_ancestor =
       GetDocument()->getElementById(AtomicString("hiddenancestor"));
@@ -1838,24 +1921,6 @@ TEST_F(ContextMenuControllerTest,
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   // EXPECT_TRUE(context_menu_data.has_image_contents);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node will not be selected if a non image node with a
@@ -1903,7 +1968,6 @@ TEST_F(ContextMenuControllerTest,
 
   Persistent<MockEventListener> event_listener =
       MakeGarbageCollected<MockEventListener>();
-  base::HistogramTester histograms;
 
   Element* hidden_ancestor =
       GetDocument()->getElementById(AtomicString("hiddenancestor"));
@@ -1918,24 +1982,6 @@ TEST_F(ContextMenuControllerTest,
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kNone,
             context_menu_data.media_type);
-
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundStandard, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kImageFoundPenetrating, 1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByOpaqueNode, 0);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kFoundContextMenuListener,
-      1);
-  histograms.ExpectBucketCount(
-      "Blink.ContextMenu.ImageSelection.Outcome",
-      ContextMenuController::ImageSelectionOutcome::kBlockedByCrossFrameNode,
-      0);
 }
 
 // Test that an image node is successfully cached and retrieved in the common
@@ -2750,6 +2796,59 @@ TEST_F(ContextMenuControllerTest, ImageReplacement) {
   EXPECT_TRUE(context_menu_data.image_replacement_frame_token.has_value());
   EXPECT_EQ(context_menu_data.image_replacement_frame_token,
             image_element->ReplacementFrameToken());
+}
+
+TEST_F(ContextMenuControllerTest, NodeBoundsForLinkAndEditableElements) {
+  frame_test_helpers::LoadHTMLString(
+      LocalMainFrame(), R"HTML(
+        <style>
+          body { margin: 0; }
+          #link {
+            position: fixed;
+            left: 10px;
+            top: 20px;
+            width: 80px;
+            height: 40px;
+            display: block;
+          }
+          #svg-child {
+            width: 80px;
+            height: 40px;
+          }
+          #input {
+            position: fixed;
+            left: 15px;
+            top: 70px;
+            width: 120px;
+            height: 30px;
+            box-sizing: border-box;
+          }
+        </style>
+        <a id="link" href="https://example.com">
+          <svg id="svg-child"><rect width="80" height="40"/></svg>
+        </a>
+        <input id="input" type="text" value="hello">
+      )HTML",
+      url_test_helpers::ToKURL("https://example.com/"));
+
+  Document* document = GetDocument();
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  Element* svg_child = document->getElementById(AtomicString("svg-child"));
+  ASSERT_TRUE(svg_child);
+  ASSERT_TRUE(ShowContextMenuForElement(
+      svg_child, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData link_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(link_data.link_url, GURL("https://example.com/"));
+  EXPECT_EQ(link_data.node_bounds, gfx::Rect(10, 20, 80, 40));
+
+  Element* input = document->getElementById(AtomicString("input"));
+  ASSERT_TRUE(input);
+  ASSERT_TRUE(ShowContextMenuForElement(
+      input, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData input_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_TRUE(input_data.is_editable);
+  EXPECT_EQ(input_data.node_bounds, gfx::Rect(15, 70, 120, 30));
 }
 
 }  // namespace blink

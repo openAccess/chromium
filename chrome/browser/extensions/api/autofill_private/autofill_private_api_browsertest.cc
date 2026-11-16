@@ -250,6 +250,13 @@ class MockAutofillClient : public autofill::TestContentAutofillClient {
     return autofill::AutofillEntityDataManagerFactory::GetForProfile(
         Profile::FromBrowserContext(GetWebContents().GetBrowserContext()));
   }
+  autofill::MockWalletPassAccessManager* GetWalletPassAccessManager() override {
+    return &wallet_pass_access_manager_;
+  }
+
+ private:
+  testing::NiceMock<autofill::MockWalletPassAccessManager>
+      wallet_pass_access_manager_;
 };
 
 class AutofillPrivateApiBrowserTest : public extensions::ExtensionApiTest {
@@ -436,6 +443,10 @@ IN_PROC_BROWSER_TEST_F(AutofillPrivateApiBrowserTest, TypedEntityInstances) {
 IN_PROC_BROWSER_TEST_F(AutofillPrivateApiBrowserTest,
                        GetEmptyPayOverTimeIssuerList) {
   ASSERT_TRUE(RunAutofillSubtest("getEmptyPayOverTimeIssuerList"));
+}
+
+IN_PROC_BROWSER_TEST_F(AutofillPrivateApiBrowserTest, GetEmptyLoyaltyCardList) {
+  ASSERT_TRUE(RunAutofillSubtest("getEmptyLoyaltyCardList"));
 }
 
 IN_PROC_BROWSER_TEST_F(AutofillPrivateApiBrowserTest, SetAutofillAiOptIn) {
@@ -739,9 +750,6 @@ class AutofillPrivateApiSavePrivatePassToWalletTest
     autofill_client()->SetVariationConfigCountryCode(
         autofill::GeoIpCountryCode("US"));
 
-    autofill_client()->set_wallet_pass_access_manager(
-        std::make_unique<
-            testing::NiceMock<autofill::MockWalletPassAccessManager>>());
     address_data_manager().SetSyncServiceForTest(&mock_sync_service_);
     autofill_client()->set_sync_service(&mock_sync_service_);
     autofill_client()->GetSyncService()->GetUserSettings()->SetSelectedType(
@@ -753,8 +761,7 @@ class AutofillPrivateApiSavePrivatePassToWalletTest
   }
 
   autofill::MockWalletPassAccessManager& wallet_manager() {
-    return static_cast<autofill::MockWalletPassAccessManager&>(
-        *autofill_client()->GetWalletPassAccessManager());
+    return *autofill_client()->GetWalletPassAccessManager();
   }
 
   consent_auditor::FakeConsentAuditor& consent_auditor() {
@@ -866,9 +873,6 @@ class AutofillPrivateApiPublicPassTest : public AutofillPrivateApiBrowserTest {
     autofill_client()->SetVariationConfigCountryCode(
         autofill::GeoIpCountryCode("US"));
 
-    autofill_client()->set_wallet_pass_access_manager(
-        std::make_unique<
-            testing::NiceMock<autofill::MockWalletPassAccessManager>>());
     address_data_manager().SetSyncServiceForTest(&mock_sync_service_);
     autofill_client()->set_sync_service(&mock_sync_service_);
     autofill_client()->GetSyncService()->GetUserSettings()->SetSelectedType(
@@ -878,8 +882,7 @@ class AutofillPrivateApiPublicPassTest : public AutofillPrivateApiBrowserTest {
   }
 
   autofill::MockWalletPassAccessManager& wallet_manager() {
-    return static_cast<autofill::MockWalletPassAccessManager&>(
-        *autofill_client()->GetWalletPassAccessManager());
+    return *autofill_client()->GetWalletPassAccessManager();
   }
 
  private:

@@ -223,7 +223,11 @@ enum class ResponseSegmentation {
   kActorToolAttachedAudio = 198,
   kActorToolDetachedText = 199,
   kActorToolDetachedAudio = 200,
-  kMaxValue = kActorToolDetachedAudio,
+  kActivityListBubbleAttachedText = 201,
+  kActivityListBubbleAttachedAudio = 202,
+  kActivityListBubbleDetachedText = 203,
+  kActivityListBubbleDetachedAudio = 204,
+  kMaxValue = kActivityListBubbleDetachedAudio,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicResponseSegmentation)
 
@@ -373,7 +377,8 @@ enum class GlicInstanceEvent {
   kResponseStoppedSuccess = 58,
   kWebUiStateGuestLoaded = 59,
   kInputFocused = 60,
-  kMaxValue = kInputFocused,
+  kWebUiStatePendingProviderChangeGeminiToGeic = 61,
+  kMaxValue = kWebUiStatePendingProviderChangeGeminiToGeic,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInstanceEvent)
 
@@ -407,6 +412,17 @@ enum class OnboardingFunnelStep {
   kMaxValue = kFirstPromptSubmitted,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicOnboardingFunnelStep)
+
+// LINT.IfChange(GlicTurnShowingOutcome)
+enum class GlicTurnShowingOutcome {
+  kShowingAndActive = 0,
+  kShowingInactiveThenActive = 1,
+  kShowingInactiveNeverActive = 2,
+  kHiddenThenShowing = 3,
+  kHiddenNeverShowing = 4,
+  kMaxValue = kHiddenNeverShowing,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicTurnShowingOutcome)
 
 std::string GetDaisyChainSourceString(DaisyChainSource source);
 

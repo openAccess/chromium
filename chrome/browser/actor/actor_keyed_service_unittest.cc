@@ -12,6 +12,8 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_command_line.h"
+#include "chrome/browser/actor/actor_surface.h"
+#include "chrome/browser/actor/actor_surface_handle.h"
 #include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/actor_task.h"
 #include "chrome/browser/actor/actor_test_util.h"
@@ -28,6 +30,7 @@
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/tabs/public/mock_tab_interface.h"
 #include "content/public/test/browser_task_environment.h"
+#include "content/public/test/test_renderer_host.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -95,6 +98,9 @@ class ActorKeyedServiceTest : public testing::Test {
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
   content::BrowserTaskEnvironment task_environment_;
+  // Lets ActorKeyedService::CreateHeadlessActorSurface() create a WebContents
+  // in this unit test.
+  content::RenderViewHostTestEnabler rvh_test_enabler_;
   std::unique_ptr<ui::ActorUiStateManagerInterface> ui_state_manager_;
   TestingProfileManager testing_profile_manager_;
   raw_ptr<TestingProfile> profile_;
@@ -309,7 +315,7 @@ TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   auto mock_tab = CreateMockTab();
   const tabs::TabHandle tab_handle = mock_tab->GetHandle();
   auto options = webui::mojom::TaskOptions::New();
-  options->actuation_tab_id = tab_handle.raw_value();
+  options->actuation_tab_id = ActorSurfaceHandle::From(tab_handle).raw_value();
 
   TaskId id = actor_service->CreateTaskWithOptions(
       TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
@@ -321,6 +327,128 @@ TEST_F(ActorKeyedServiceTest, InitialTabAssociationOnCreate) {
   EXPECT_TRUE(task->IsActingOnTab(tab_handle));
   EXPECT_EQ(task->GetTabs().size(), 1u);
   EXPECT_TRUE(task->GetTabs().contains(tab_handle));
+}
+
+TEST_F(ActorKeyedServiceTest, InitialHeadlessSurfaceAssociationOnCreate) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ScopedHeadlessActorSurface headless =
+      actor_service->CreateHeadlessActorSurface();
+  const ActorSurfaceHandle handle = headless.actor_surface_handle();
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id = handle.raw_value();
+
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->HasActorSurface(handle));
+  EXPECT_TRUE(task->IsActingOnActorSurface(handle));
+}
+
+// `actuation_tab_id` can come from the web client, so a surface ID that another
+// profile owns must not be attached to the task.
+TEST_F(ActorKeyedServiceTest, InitialSurfaceFromOtherProfileNotAssociated) {
+  TestingProfile* other_profile =
+      testing_profile_manager()->CreateTestingProfile("other_profile");
+  ScopedHeadlessActorSurface other_headless =
+      ActorKeyedService::Get(other_profile)->CreateHeadlessActorSurface();
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id = other_headless.actor_surface_handle().raw_value();
+
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->GetActorSurfaces().empty());
+}
+
+// ActorTask::AddActorSurface() does not attach a surface ID that resolves to no
+// surface, but CreateTaskImpl() still creates the task.
+TEST_F(ActorKeyedServiceTest, InitialUnknownSurfaceNotAssociated) {
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id =
+      ActorSurfaceHandle::CreateForTesting().raw_value();
+
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager());
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_TRUE(task->GetActorSurfaces().empty());
+}
+
+// A kHeadless task that has no initial surface gets a new headless surface.
+TEST_F(ActorKeyedServiceTest, HeadlessModeCreatesHeadlessSurface) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), /*options=*/nullptr,
+      /*delegate=*/nullptr, ui_state_manager(),
+      /*initial_invocation_source=*/std::nullopt,
+      ActorKeyedService::AllowedSchemes::kRequireHttpsOrHttp,
+      /*agent_container_config=*/std::nullopt,
+      ActorKeyedService::ExecutionMode::kHeadless);
+
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  const ActorSurfaceHandle handle = task->GetLastActuatedActorSurface();
+  ActorSurface* surface = actor_service->GetSurfaceRegistry().Get(handle);
+  ASSERT_TRUE(surface);
+  EXPECT_FALSE(surface->IsTab());
+  EXPECT_TRUE(task->IsActingOnActorSurface(handle));
+}
+
+// The service destroys the headless surface that it created for a task as
+// soon as the task completes.
+TEST_F(ActorKeyedServiceTest, StoppingTaskDestroysItsHeadlessSurface) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), /*options=*/nullptr,
+      /*delegate=*/nullptr, ui_state_manager(),
+      /*initial_invocation_source=*/std::nullopt,
+      ActorKeyedService::AllowedSchemes::kRequireHttpsOrHttp,
+      /*agent_container_config=*/std::nullopt,
+      ActorKeyedService::ExecutionMode::kHeadless);
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  const ActorSurfaceHandle handle = task->GetLastActuatedActorSurface();
+  ASSERT_TRUE(actor_service->GetSurfaceRegistry().Get(handle));
+
+  actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
+
+  EXPECT_FALSE(actor_service->GetSurfaceRegistry().Get(handle));
+}
+
+// A kHeadless task that already has an initial surface uses that surface, and
+// the service does not destroy it.
+TEST_F(ActorKeyedServiceTest, HeadlessModeKeepsCallerOwnedSurface) {
+  auto* actor_service = ActorKeyedService::Get(profile());
+  ScopedHeadlessActorSurface headless =
+      actor_service->CreateHeadlessActorSurface();
+  const ActorSurfaceHandle handle = headless.actor_surface_handle();
+  auto options = webui::mojom::TaskOptions::New();
+  options->actuation_tab_id = handle.raw_value();
+  TaskId id = actor_service->CreateTaskWithOptions(
+      TestTaskSourceInfo(), NoEnterprisePolicyChecker(), std::move(options),
+      /*delegate=*/nullptr, ui_state_manager(),
+      /*initial_invocation_source=*/std::nullopt,
+      ActorKeyedService::AllowedSchemes::kRequireHttpsOrHttp,
+      /*agent_container_config=*/std::nullopt,
+      ActorKeyedService::ExecutionMode::kHeadless);
+  ActorTask* task = actor_service->GetTask(id);
+  ASSERT_TRUE(task);
+  EXPECT_EQ(task->GetActorSurfaces().size(), 1u);
+  EXPECT_TRUE(task->HasActorSurface(handle));
+
+  actor_service->StopTask(id, ActorTask::StoppedReason::kTaskComplete);
+
+  EXPECT_TRUE(actor_service->GetSurfaceRegistry().Get(handle));
 }
 
 TEST_F(ActorKeyedServiceTest, TraceRecordingToFile) {
@@ -440,6 +568,19 @@ TEST_F(ActorKeyedServiceTest, PendingTasksLifecycle) {
   EXPECT_EQ(4, notification_call_count);
   EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
   EXPECT_EQ(0u, last_notified_count);
+
+  // Adding without background setup updates the count but skips the added
+  // callback.
+  actor_service->AddPendingTaskWithoutBackgroundSetup("msg-no-notify");
+  EXPECT_EQ(5, notification_call_count);
+  EXPECT_EQ(1u, actor_service->GetPendingTasksCount());
+  EXPECT_TRUE(actor_service->HasPendingTask("msg-no-notify"));
+  EXPECT_EQ(1u, last_notified_count);
+  EXPECT_THAT(added_tasks, testing::ElementsAre("msg-1", "msg-2"));
+
+  actor_service->RemovePendingTask("msg-no-notify");
+  EXPECT_EQ(6, notification_call_count);
+  EXPECT_EQ(0u, actor_service->GetPendingTasksCount());
 }
 
 TEST_F(ActorKeyedServiceTest, PendingTaskRemovedOnFailureAndCancellation) {

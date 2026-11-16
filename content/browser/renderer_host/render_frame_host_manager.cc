@@ -649,10 +649,6 @@ void RecordWastedAndReplacementRFHDiff(
     RenderProcessHost* new_rph = new_site_instance->HasProcess()
                                      ? new_site_instance->GetProcess()
                                      : nullptr;
-    base::UmaHistogramBoolean(
-        base::StrCat({"Navigation.", initiator_type,
-                      ".WastedSpeculativeRFH.ProcessDiffers"}),
-        wasted_rfh_site_instance->GetProcess() != new_rph);
     // If the previous speculative RFH's process only has the speculative RFH in
     // it, it's likely that the renderer process was created for that
     // speculative RFH (it's also possible but less likely that all other RFH
@@ -1158,8 +1154,7 @@ void RenderFrameHostManager::DidChangeOpener(
   FrameTreeNode* opener = nullptr;
   if (opener_frame_token) {
     RenderFrameHostImpl* opener_rfhi = RenderFrameHostImpl::FromFrameToken(
-        source_site_instance_group->process()->GetDeprecatedID(),
-        *opener_frame_token);
+        source_site_instance_group->process()->GetID(), *opener_frame_token);
     // If |opener_rfhi| is null, the opener RFH has already disappeared.  In
     // this case, clear the opener rather than keeping the old opener around.
     if (opener_rfhi) {
@@ -1413,14 +1408,6 @@ void RenderFrameHostManager::UnloadOldFrame(
       bool is_same_process =
           (old_render_frame_host->GetProcess() ==
            frame_tree_node_->current_frame_host()->GetProcess());
-      if (old_render_frame_host->GetSiteInstance()->IsSameSiteWithURL(
-              frame_tree_node_->current_url())) {
-        base::UmaHistogramBoolean("BackForwardCache.ProcessReuse.SameSite",
-                                  is_same_process);
-      } else {
-        base::UmaHistogramBoolean("BackForwardCache.ProcessReuse.CrossSite",
-                                  is_same_process);
-      }
       if (old_render_frame_host->GetSiteInstance()
               ->GetRelatedActiveContentsCount() > 0) {
         SCOPED_CRASH_KEY_NUMBER("rvh-double", "related_active_contents",
@@ -1567,8 +1554,7 @@ void RenderFrameHostManager::ActivatePrerender(
   BackForwardCacheMetrics* back_forward_cache_metrics =
       render_frame_host_->GetBackForwardCacheMetrics();
   if (back_forward_cache_metrics)
-    back_forward_cache_metrics->SetBrowsingInstanceSwapResult(std::nullopt,
-                                                              nullptr);
+    back_forward_cache_metrics->SetBrowsingInstanceSwapResult(std::nullopt);
 
   RestorePage(std::move(stored_page));
 }
@@ -1724,12 +1710,6 @@ void RenderFrameHostManager::DidCreateNavigationRequest(
               request->GetNavigationId(), request->IsInOutermostMainFrame()));
       if (result.has_value()) {
         CHECK(result.value());
-      } else if (result.error() ==
-                 GetFrameHostForNavigationFailed::kBlockedByPendingCommit) {
-        frame_tree_node_->render_manager()
-            ->speculative_frame_host()
-            ->RecordMetricsForBlockedGetFrameHostAttempt(
-                /* commit_attempt=*/false);
       }
     }
     base::UmaHistogramEnumeration("Navigation.DeferSpeculativeRFHAction",
@@ -3195,7 +3175,7 @@ RenderFrameHostManager::GetSiteInstanceForNavigation(
     if (BackForwardCacheMetrics* back_forward_cache_metrics =
             render_frame_host_->GetBackForwardCacheMetrics()) {
       back_forward_cache_metrics->SetBrowsingInstanceSwapResult(
-          should_swap_result->reason(), render_frame_host_.get());
+          should_swap_result->reason());
     }
   }
 
@@ -5581,6 +5561,14 @@ void RenderFrameHostManager::CommitPending(
         render_widget_host_view_base->is_evicted();
   }
 
+  // Update the Surface Embed view before notifying observers of the swap.
+  if (render_frame_host_->IsInPrimaryMainFrame() &&
+      new_view->IsRenderWidgetHostViewChildFrame()) {
+    delegate_->NotifySwappedRWHVChildFrameFromRenderManager(
+        static_cast<RenderWidgetHostViewChildFrame*>(new_view),
+        allow_paint_holding);
+  }
+
   // Notify that we've swapped RenderFrameHosts. We do this before shutting down
   // the RFH so that we can clean up RendererResources related to the RFH first.
   delegate_->NotifySwappedFromRenderManager(old_render_frame_host.get(),
@@ -5694,9 +5682,6 @@ void RenderFrameHostManager::CommitPending(
     }
   }
 
-  bool is_child_view = static_cast<RenderWidgetHostViewBase*>(new_view)
-                           ->IsRenderWidgetHostViewChildFrame();
-
   // If this is a subframe or inner frame tree, it should have a
   // CrossProcessFrameConnector created already.  Use it to link the new RFH's
   // view to the proxy that belongs to the parent frame's SiteInstance. If this
@@ -5711,12 +5696,6 @@ void RenderFrameHostManager::CommitPending(
     proxy_to_parent_or_outer_delegate->SetChildRWHView(
         static_cast<RenderWidgetHostViewChildFrame*>(new_view),
         old_size ? &*old_size : nullptr, allow_paint_holding);
-  } else if (is_child_view) {
-    // Only use this mechanism when there is no proxy to parent or outer
-    // delegate. Otherwise we will partially duplicate SetChildRWHView work.
-    delegate_->NotifySwappedRWHVChildFrameFromRenderManager(
-        static_cast<RenderWidgetHostViewChildFrame*>(new_view),
-        allow_paint_holding);
   }
 
   UpdateViewVisibilityAfterCommit(/*was_same_render_frame_host=*/false);
@@ -6151,21 +6130,20 @@ void RenderFrameHostManager::CreateNewFrameForInnerDelegateAttachIfNecessary() {
 void RenderFrameHostManager::NotifyPrepareForInnerDelegateAttachComplete(
     bool success) {
   CHECK(is_attaching_inner_delegate());
-  int32_t process_id = success
-                           ? render_frame_host_->GetProcess()->GetDeprecatedID()
-                           : ChildProcessHost::kInvalidUniqueID;
-  int32_t routing_id =
-      success ? render_frame_host_->GetRoutingID() : IPC::mojom::kRoutingIdNone;
+  GlobalRenderFrameHostToken frame_token;
+  if (success) {
+    frame_token = render_frame_host_->GetGlobalFrameToken();
+  }
   // Invoking the callback asynchronously to meet the APIs promise.
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           [](RenderFrameHost::PrepareForInnerWebContentsAttachCallback callback,
-             int32_t process_id, int32_t routing_id) {
+             const GlobalRenderFrameHostToken& frame_token) {
             std::move(callback).Run(
-                RenderFrameHostImpl::FromID(process_id, routing_id));
+                RenderFrameHostImpl::FromFrameToken(frame_token));
           },
-          std::move(attach_inner_delegate_callback_), process_id, routing_id));
+          std::move(attach_inner_delegate_callback_), frame_token));
 }
 
 NavigationControllerImpl& RenderFrameHostManager::GetNavigationController() {

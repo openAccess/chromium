@@ -611,6 +611,9 @@ String BoxFragmentPainter::AdLabelText(AdLabelTypes labels) {
       case AdLabelType::kPopup:
         builder.Append("popup");
         break;
+      case AdLabelType::kPrestitial:
+        builder.Append("prestitial");
+        break;
       case AdLabelType::kSticky:
         builder.Append("sticky");
         break;
@@ -673,14 +676,17 @@ void BoxFragmentPainter::PaintAdHighlightIfNeeded(
                      SkBlendMode::kHardLight);
   }
 
-  // Ads detected as a notable kind (popup, sticky, video) get an additional
-  // label in the top-right corner of the highlight listing those kinds, e.g.
-  // "sticky" or "popup, video". An ad of several kinds gets one combined label,
-  // not one per kind.
+  // Ads detected as a notable kind (popup, prestitial, sticky, video) get an
+  // additional label in the top-right corner of the highlight listing those
+  // kinds, e.g. "sticky" or "popup, prestitial". An ad of several kinds gets
+  // one combined label, not one per kind.
   if (base::FeatureList::IsEnabled(features::kAdHighlightLabel)) {
     AdLabelTypes labels;
     if (element->IsOverlayPopupAd()) {
       labels.Put(AdLabelType::kPopup);
+    }
+    if (element->IsPrestitialAd()) {
+      labels.Put(AdLabelType::kPrestitial);
     }
     if (element->IsStickyAd()) {
       labels.Put(AdLabelType::kSticky);
@@ -2304,6 +2310,9 @@ void BoxFragmentPainter::PaintTextClipMask(const PaintInfo& paint_info,
                                            const gfx::Rect& mask_rect,
                                            const PhysicalOffset& paint_offset,
                                            bool object_has_multiple_boxes) {
+  ScopedPaintTimingDetectorBlockPaintHook
+      scoped_paint_timing_detector_block_paint_hook;
+  scoped_paint_timing_detector_block_paint_hook.ResetTop();
   PaintInfo mask_paint_info(paint_info.context, CullRect(mask_rect),
                             PaintPhase::kTextClip,
                             paint_info.DescendantPaintingBlocked(),

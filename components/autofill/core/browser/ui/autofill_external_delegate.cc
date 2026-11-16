@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/check.h"
@@ -26,6 +27,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/not_fatal_until.h"
 #include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
@@ -101,6 +103,8 @@
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
+#include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace autofill {
 
@@ -124,10 +128,10 @@ void OnCreditCardFetched(base::WeakPtr<BrowserAutofillManager> manager,
   if (manager) {
     // TODO(crbug.com/561395976): Figure out if credit cards filled via this
     // method require additional protection.
-    manager->FillOrPreviewForm(mojom::ActionPersistence::kFill, form_id,
-                               field_id, &card, trigger_source,
-                               /*require_user_confirmation=*/false,
-                               /*blocked_fields=*/{});
+    manager->FillOrPreviewForm(
+        mojom::ActionPersistence::kFill, form_id, field_id,
+        FillingProduct::kCreditCard, &card, trigger_source,
+        /*require_user_confirmation=*/false, /*blocked_fields=*/{});
   }
 }
 
@@ -176,6 +180,7 @@ void OnEntityInstanceFetched(
     const FieldGlobalId& field_id,
     const FieldTypeSet& ai_field_types,
     EntityInstance::RecordType record_type,
+    base::OnceCallback<void(const EntityInstance&)> on_entity_filled,
     base::expected<EntityInstance, AutofillAiAccessManager::FailureReason>
         result,
     bool reauth_attempted,
@@ -200,10 +205,10 @@ void OnEntityInstanceFetched(
   }
 
   if (result.has_value()) {
-    manager->FillOrPreviewForm(mojom::ActionPersistence::kFill, form_id,
-                               field_id, &result.value(), trigger_source,
-                               /*require_user_confirmation=*/false,
-                               /*blocked_fields=*/{});
+    manager->FillOrPreviewForm(
+        mojom::ActionPersistence::kFill, form_id, field_id,
+        FillingProduct::kAutofillAi, &result.value(), trigger_source,
+        /*require_user_confirmation=*/false, /*blocked_fields=*/{});
   } else if (result.error() ==
              AutofillAiAccessManager::FailureReason::kFetchFailed) {
     manager->client().ShowAutofillAiFetchEntityFailureNotification();
@@ -211,6 +216,33 @@ void OnEntityInstanceFetched(
 
   manager->client().HideSuggestions(SuggestionHidingReason::kAcceptSuggestion,
                                     FillingProduct::kAutofillAi);
+  if (result.has_value() && on_entity_filled) {
+    std::move(on_entity_filled).Run(result.value());
+  }
+}
+
+// Returns the HTTPS source URL to show in the in-context SPII verification UI
+// after filling `entity`: the most recent source, or the first one in server
+// order if no source has a timestamp. Returns an empty `GURL` if verification
+// is disabled or `entity` is ineligible.
+GURL GetSpiiVerificationSourceUrl(const EntityInstance& entity) {
+  using Payload = EntityInstance::PersonalContextRecordTypePayload;
+  const Payload* payload = std::get_if<Payload>(&entity.record_type_data());
+  if (!payload ||
+      !base::FeatureList::IsEnabled(features::kAutofillAiSpiiVerification) ||
+      GetPersonalContextSpiiType(entity.type(), entity.record_type()) !=
+          EntityInstance::PersonalContextSpiiType::kSpii) {
+    return GURL();
+  }
+  // Sources without a timestamp compare as oldest; ties keep server order.
+  const Payload::Source* best = nullptr;
+  for (const Payload::Source& source : payload->sources) {
+    if (source.url.is_valid() && source.url.SchemeIs(url::kHttpsScheme) &&
+        (!best || source.timestamp() > best->timestamp())) {
+      best = &source;
+    }
+  }
+  return best ? best->url : GURL();
 }
 
 std::optional<AutofillProfile> GetTestAddressByGUID(
@@ -665,10 +697,14 @@ void AutofillExternalDelegate::OnAutofillAvailabilityEvent(
 void AutofillExternalDelegate::OnSuggestionsShown(
     base::span<const Suggestion> suggestions,
     const SuggestionUiMetadata& metadata) {
-  // Popups are expected to be Autofill or Autocomplete.
-  DCHECK(suggestions.empty() ||
-         GetFillingProductFromSuggestionType(suggestions[0].type) !=
-             FillingProduct::kPassword);
+  // Popups are expected to be Autofill or Autocomplete (or a standalone
+  // Trusted Vault unlock item merged on a username field).
+  CHECK(suggestions.empty() ||
+            suggestions[0].type ==
+                SuggestionType::kPendingStateTrustedVaultError ||
+            GetFillingProductFromSuggestionType(suggestions[0].type) !=
+                FillingProduct::kPassword,
+        base::NotFatalUntil::M163);
 
   const DenseSet<SuggestionType> shown_suggestion_types(suggestions,
                                                         &Suggestion::type);
@@ -824,11 +860,11 @@ void AutofillExternalDelegate::DidSelectSuggestion(
     case SuggestionType::kFillAutofillAi:
       if (base::optional_ref<const EntityInstance> entity =
               GetEntityInstance(suggestion)) {
-        manager_->FillOrPreviewForm(mojom::ActionPersistence::kPreview,
-                                    effective_form_id, effective_field_id,
-                                    entity.as_ptr(), GetTriggerSource(),
-                                    /*require_user_confirmation=*/false,
-                                    /*blocked_fields=*/{});
+        manager_->FillOrPreviewForm(
+            mojom::ActionPersistence::kPreview, effective_form_id,
+            effective_field_id, FillingProduct::kAutofillAi, entity.as_ptr(),
+            GetTriggerSource(), /*require_user_confirmation=*/false,
+            /*blocked_fields=*/{});
       }
       break;
     case SuggestionType::kAddressEntryOnTyping:
@@ -842,11 +878,11 @@ void AutofillExternalDelegate::DidSelectSuggestion(
     case SuggestionType::kIdentityCredential: {
       VerifiedProfile profile =
           suggestion.GetPayload<Suggestion::IdentityCredentialPayload>().fields;
-      manager_->FillOrPreviewForm(mojom::ActionPersistence::kPreview,
-                                  effective_form_id, effective_field_id,
-                                  &profile, GetTriggerSource(),
-                                  /*require_user_confirmation=*/false,
-                                  /*blocked_fields=*/{});
+      manager_->FillOrPreviewForm(
+          mojom::ActionPersistence::kPreview, effective_form_id,
+          effective_field_id, FillingProduct::kIdentityCredential, &profile,
+          GetTriggerSource(), /*require_user_confirmation=*/false,
+          /*blocked_fields=*/{});
       break;
     }
     case SuggestionType::kLoyaltyCardEntry:
@@ -1069,7 +1105,7 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
       }
       const bool will_fill_sensitive_info = WillFillSensitiveAttributes(
           *entity, *form_structure, autofill_field->section(),
-          manager_->client().GetAppLocale());
+          manager_->client().GetAppLocale().tag_string());
 
       // The loading dialog is displayed when the user successfully
       // authenticates and the entity is fetched from server. It is closed when
@@ -1081,6 +1117,15 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
           base::BindOnce(&AutofillClient::DismissAutofillAiLoadingDialog,
                          manager_->client().GetWeakPtr());
 #endif  // BUILDFLAG(IS_ANDROID)
+      base::OnceCallback<void(const EntityInstance&)> on_entity_filled;
+      if (GURL source_url = GetSpiiVerificationSourceUrl(*entity);
+          !source_url.is_empty()) {
+        on_entity_filled = base::BindOnce(
+            &AutofillExternalDelegate::ShowAttributionVerification,
+            weak_ptr_factory_.GetWeakPtr(), effective_form_id,
+            effective_field_id, autofill_field->bounds(),
+            std::move(source_url));
+      }
       const bool is_async =
           manager_->GetAutofillAiAccessManager().FetchEntityInstance(
               *entity, will_fill_sensitive_info,
@@ -1095,7 +1140,7 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
                   manager_->GetBrowserAutofillManagerWeakPtr(),
                   GetTriggerSource(), effective_form_id, effective_field_id,
                   autofill_field->Type().GetAutofillAiTypes(),
-                  entity->record_type()));
+                  entity->record_type(), std::move(on_entity_filled)));
 
       if (is_async &&
           (base::FeatureList::IsEnabled(features::kAutofillAmbientAutofill) ||
@@ -1147,8 +1192,8 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
                   // require additional authentication for security reasons.
                   manager->FillOrPreviewForm(
                       mojom::ActionPersistence::kFill, form_id, field_id,
-                      &profile, trigger_source,
-                      /*require_user_confirmation=*/false,
+                      FillingProduct::kIdentityCredential, &profile,
+                      trigger_source, /*require_user_confirmation=*/false,
                       /*blocked_fields=*/{});
                 },
                 manager_->GetBrowserAutofillManagerWeakPtr(), suggestion,
@@ -1191,11 +1236,11 @@ void AutofillExternalDelegate::DidAcceptSuggestion(
           *form_structure, *autofill_field, suggestion.main_text.value);
       // TODO(crbug.com/561395976): Figure out if OTPs require additional
       // protection for security reasons.
-      manager_->FillOrPreviewForm(mojom::ActionPersistence::kFill,
-                                  effective_form_id, effective_field_id,
-                                  &otp_fill_data, GetTriggerSource(),
-                                  /*require_user_confirmation=*/false,
-                                  /*blocked_fields=*/{});
+      manager_->FillOrPreviewForm(
+          mojom::ActionPersistence::kFill, effective_form_id,
+          effective_field_id, FillingProduct::kOneTimePassword, &otp_fill_data,
+          GetTriggerSource(),
+          /*require_user_confirmation=*/false, /*blocked_fields=*/{});
       break;
     }
     case SuggestionType::kAtMemoryInactivityNudge:
@@ -1470,7 +1515,8 @@ void AutofillExternalDelegate::OnTabSelected(TabbedPaneTabType tab_type) {
                   // TODO(crbug.com/561395976): Figure out if authentication
                   // can be required here.
                   manager->FillOrPreviewForm(
-                      mojom::ActionPersistence::kFill, form_id, field_id, &card,
+                      mojom::ActionPersistence::kFill, form_id, field_id,
+                      FillingProduct::kCreditCard, &card,
                       AutofillTriggerSource::kPopup,
                       /*require_user_confirmation=*/false,
                       /*blocked_fields=*/{});
@@ -1510,7 +1556,7 @@ void AutofillExternalDelegate::PreviewAddressFieldByFieldFillingSuggestion(
   }
   const auto& [filling_value, select_text, filling_type] =
       GetFillingValueAndTypeForProfile(
-          profile, manager_->client().GetAppLocale(),
+          profile, std::string(manager_->client().GetAppLocale().tag_string()),
           *suggestion.field_by_field_filling_type_used, *trigger_field,
           manager_->client().GetAddressNormalizer());
   if (!filling_value.empty()) {
@@ -1534,7 +1580,7 @@ void AutofillExternalDelegate::FillAddressFieldByFieldFillingSuggestion(
   }
   const auto& [filling_value, select_text, filling_type] =
       GetFillingValueAndTypeForProfile(
-          profile, manager_->client().GetAppLocale(),
+          profile, std::string(manager_->client().GetAppLocale().tag_string()),
           *suggestion.field_by_field_filling_type_used, *trigger_field,
           manager_->client().GetAddressNormalizer());
   if (!filling_value.empty()) {
@@ -1578,10 +1624,10 @@ void AutofillExternalDelegate::AutofillForm(
             : GetProfileFromPayload(pdm.address_data_manager(),
                                     *profile_payload);
     if (profile) {
-      manager_->FillOrPreviewForm(action_persistence, form_id, field_id,
-                                  &*profile, trigger_source,
-                                  /*require_user_confirmation=*/false,
-                                  /*blocked_fields=*/{});
+      manager_->FillOrPreviewForm(
+          action_persistence, form_id, field_id, FillingProduct::kAddress,
+          &*profile, trigger_source, /*require_user_confirmation=*/false,
+          /*blocked_fields=*/{});
     }
     return;
   }
@@ -1932,6 +1978,57 @@ void AutofillExternalDelegate::OnAutofillAiSuppressionUndone(
   manager_->driver().RendererShouldTriggerSuggestions(
       field_id, AutofillSuggestionTriggerSource::kFormControlElementClicked);
 #endif  // BUILDFLAG(IS_ANDROID)
+}
+
+struct AutofillExternalDelegate::PendingVerification {
+  EntityInstance::EntityId entity_id;
+  FormGlobalId form;
+  FieldGlobalId field;
+};
+
+void AutofillExternalDelegate::ShowAttributionVerification(
+    const FormGlobalId& form_id,
+    const FieldGlobalId& field_id,
+    const gfx::RectF& field_bounds,
+    const GURL& source_url,
+    const EntityInstance& filled_entity) {
+  PendingVerification verified{
+      .entity_id = filled_entity.guid(), .form = form_id, .field = field_id};
+  LogSpiiVerificationShown();
+  manager_->client().ShowAutofillAiAttributionVerification(
+      filled_entity, source_url, field_bounds,
+      base::BindOnce(&AutofillExternalDelegate::ApplyVerificationDecision,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(verified)));
+}
+
+void AutofillExternalDelegate::ApplyVerificationDecision(
+    const PendingVerification& v,
+    Decision decision) {
+  LogSpiiVerificationDecision(decision);
+  switch (decision) {
+    case Decision::kConfirm:
+      // TODO(crbug.com/583800808): Record verification confirmation via
+      // `PersonalContextEntityMetadataManager`.
+      break;
+    case Decision::kDismiss:
+      break;
+    case Decision::kUndo:
+      manager_->UndoAutofill(mojom::ActionPersistence::kFill, v.form, v.field);
+      break;
+    case Decision::kHide: {
+      manager_->UndoAutofill(mojom::ActionPersistence::kFill, v.form, v.field);
+      EntityDataManager* edm = manager_->client().GetEntityDataManager();
+      base::optional_ref<const EntityInstance> stored =
+          edm ? edm->GetEntityInstance(v.entity_id) : std::nullopt;
+      if (stored && base::FeatureList::IsEnabled(
+                        features::kAutofillAmbientAutofillSuppression)) {
+        // `UndoAutofill` above reverts the filled form values; the undo action
+        // offered here shows a notification to revert the entity suppression.
+        SuppressEntityAndOfferUndo(*stored, v.field);
+      }
+      break;
+    }
+  }
 }
 
 }  // namespace autofill

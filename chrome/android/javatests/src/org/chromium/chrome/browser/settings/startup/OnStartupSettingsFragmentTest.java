@@ -378,6 +378,7 @@ public class OnStartupSettingsFragmentTest {
                     PropertyModel dialogModel = modalDialogManager.getCurrentDialogForTest();
                     assertNotNull(dialogModel);
                     assertEquals(ModalDialogType.TAB, modalDialogManager.getCurrentType());
+                    assertFalse(dialogModel.get(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE));
                     assertTrue(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
 
                     EditText urlEditText =
@@ -444,6 +445,9 @@ public class OnStartupSettingsFragmentTest {
                                     .get(ModalDialogProperties.CUSTOM_VIEW)
                                     .findViewById(R.id.url_edit_text);
                     assertEquals(URL_ESPN, urlEditText.getText().toString());
+                    // A URL with whitespace inside the host disables Save in edit mode.
+                    urlEditText.setText("http://exam      ple.com");
+                    assertTrue(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
                     urlEditText.setText(URL_DOCS);
                     assertFalse(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
                     urlEditText.onEditorAction(EditorInfo.IME_ACTION_DONE);
@@ -490,12 +494,23 @@ public class OnStartupSettingsFragmentTest {
                                     .findViewById(R.id.url_edit_text);
 
                     for (String invalidInput :
-                            List.of("", "   ", "chrome://flags", "about:blank")) {
+                            List.of(
+                                    "",
+                                    "   ",
+                                    "chrome://flags",
+                                    "about:blank",
+                                    "http://exam      ple.com",
+                                    "exam ple.com",
+                                    "https://exa mple.com/path")) {
                         urlEditText.setText(invalidInput);
                         assertTrue(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
                         urlEditText.onEditorAction(EditorInfo.IME_ACTION_DONE);
                         assertNotNull(modalDialogManager.getCurrentDialogForTest());
                     }
+
+                    // Whitespace in the path stays valid because it is percent-escaped.
+                    urlEditText.setText("http://example.com/a b");
+                    assertFalse(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
 
                     urlEditText.setText(URL_WIKIPEDIA);
                     assertFalse(dialogModel.get(ModalDialogProperties.POSITIVE_BUTTON_DISABLED));
@@ -557,11 +572,12 @@ public class OnStartupSettingsFragmentTest {
         setRestoreOnStartupPref(SessionStartupPref.URLS);
         RadioButtonGroupOnStartupPreference pref = launchAndGetRadioGroupPreference();
 
-        // Act.
+        // Open the URL dialog via "Add a new page".
         ThreadUtils.runOnUiThreadBlocking(
                 () -> pref.getAddNewPageButtonForTesting().performClick());
 
-        // Verify opening the URL dialog in SettingsActivity uses ModalDialogType.APP.
+        // Verify opening the URL dialog in SettingsActivity uses ModalDialogType.APP and disables
+        // cancel-on-touch-outside.
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     ModalDialogManager modalDialogManager =
@@ -569,6 +585,7 @@ public class OnStartupSettingsFragmentTest {
                     PropertyModel dialogModel = modalDialogManager.getCurrentDialogForTest();
                     assertNotNull(dialogModel);
                     assertEquals(ModalDialogType.APP, modalDialogManager.getCurrentType());
+                    assertFalse(dialogModel.get(ModalDialogProperties.CANCEL_ON_TOUCH_OUTSIDE));
                     modalDialogManager.dismissDialog(
                             dialogModel, DialogDismissalCause.NAVIGATE_BACK_OR_TOUCH_OUTSIDE);
                     assertNull(modalDialogManager.getCurrentDialogForTest());

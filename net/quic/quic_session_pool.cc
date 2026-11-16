@@ -429,6 +429,11 @@ std::optional<int> GetQuicSocketSendBufferSize() {
   return quic::kMaxOutgoingPacketSize * 20;
 }
 
+bool ShouldPromoteActiveQuicJobPriorityOnAttach() {
+  return base::FeatureList::IsEnabled(features::kPreconnectPriorityBoost) &&
+         features::kPromoteActiveQuicJobPriorityOnAttach.Get();
+}
+
 }  // namespace
 
 QuicSessionRequest::QuicSessionRequest(QuicSessionPool* pool) : pool_(pool) {}
@@ -551,8 +556,22 @@ void QuicSessionRequest::OnQuicSessionCreationComplete(int rv) {
   }
 }
 
+void QuicSessionRequest::WaitForAttemptFailure(
+    CompletionOnceCallback callback) {
+  CHECK(pool_);
+  CHECK(attempt_failure_callback_.is_null());
+  attempt_failure_callback_ = std::move(callback);
+}
+
+void QuicSessionRequest::OnAttemptFailure(int rv) {
+  if (!attempt_failure_callback_.is_null()) {
+    std::move(attempt_failure_callback_).Run(rv);
+  }
+}
+
 void QuicSessionRequest::OnRequestComplete(int rv) {
   pool_ = nullptr;
+  attempt_failure_callback_.Reset();
   std::move(callback_).Run(rv);
 }
 
@@ -987,6 +1006,12 @@ int QuicSessionPool::RequestSession(
   if (active_job != active_jobs_.end()) {
     active_job->second->AssociateWithNetLogSource(net_log);
     active_job->second->AddRequest(request);
+    if (ShouldPromoteActiveQuicJobPriorityOnAttach() &&
+        priority > active_job->second->priority()) {
+      // TODO(crbug.com/582702053): Also override `ProxyJob::UpdatePriority()`
+      // so priority promotion forwards to `proxy_session_request_`.
+      active_job->second->SetPriority(priority);
+    }
     return ERR_IO_PENDING;
   }
 
@@ -1155,6 +1180,13 @@ void QuicSessionPool::SetRequestPriority(QuicSessionRequest* request,
   if (job_iter == active_jobs_.end()) {
     return;
   }
+  // Avoid downgrading a shared job when another attached request may require
+  // its current priority.
+  if (job_iter->second->requests().size() > 1 &&
+      priority < job_iter->second->priority() &&
+      ShouldPromoteActiveQuicJobPriorityOnAttach()) {
+    return;
+  }
   job_iter->second->SetPriority(priority);
 }
 
@@ -1314,18 +1346,7 @@ void QuicSessionPool::FinishConnectAndConfigureSocket(
     socket->SetIOSNetworkServiceType(params_.ios_network_service_type);
   }
 
-  socket->GetLocalAddress(&local_address_);
-  if (need_to_check_persisted_supports_quic_) {
-    need_to_check_persisted_supports_quic_ = false;
-    if (http_server_properties_->WasLastLocalAddressWhenQuicWorked(
-            local_address_.address())) {
-      has_quic_ever_worked_on_current_network_ = true;
-      // Clear the persisted IP address, in case the network no longer supports
-      // QUIC so the next restart will require confirmation. It will be
-      // re-persisted when the first job completes successfully.
-      http_server_properties_->ClearLastLocalAddressWhenQuicWorked();
-    }
-  }
+  CheckPersistedSupportsQuic(socket);
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
@@ -1447,20 +1468,40 @@ int QuicSessionPool::ConfigureSocket(DatagramClientSocket* socket,
     socket->SetIOSNetworkServiceType(params_.ios_network_service_type);
   }
 
-  socket->GetLocalAddress(&local_address_);
-  if (need_to_check_persisted_supports_quic_) {
-    need_to_check_persisted_supports_quic_ = false;
+  CheckPersistedSupportsQuic(socket);
+
+  return OK;
+}
+
+void QuicSessionPool::CheckPersistedSupportsQuic(DatagramClientSocket* socket) {
+  int rv = socket->GetLocalAddress(&local_address_);
+  // GetLocalAddress() can fail in broken environments, but should never fail on
+  // try bots or on developers' machines.
+  if (rv != OK) {
+    LOG(DFATAL) << "GetLocalAddress failed with " << ErrorToString(rv);
+    // Fallthrough to preserve legacy behavior.
+  }
+  if (!need_to_check_persisted_supports_quic_) {
+    return;
+  }
+  need_to_check_persisted_supports_quic_ = false;
+  StartupLocalAddressCheck check_result =
+      StartupLocalAddressCheck::kNoPersistedAddress;
+  if (http_server_properties_->HasLastLocalAddressWhenQuicWorked()) {
     if (http_server_properties_->WasLastLocalAddressWhenQuicWorked(
             local_address_.address())) {
+      check_result = StartupLocalAddressCheck::kMatch;
       has_quic_ever_worked_on_current_network_ = true;
       // Clear the persisted IP address, in case the network no longer supports
       // QUIC so the next restart will require confirmation. It will be
       // re-persisted when the first job completes successfully.
       http_server_properties_->ClearLastLocalAddressWhenQuicWorked();
+    } else {
+      check_result = StartupLocalAddressCheck::kMismatch;
     }
   }
-
-  return OK;
+  base::UmaHistogramEnumeration("Net.QuicSession.StartupLocalAddressCheck",
+                                check_result);
 }
 
 handles::NetworkHandle QuicSessionPool::FindAlternateNetwork(
@@ -1574,9 +1615,12 @@ void QuicSessionPool::OnNetworkMadeDefault(handles::NetworkHandle network) {
   CollectDataOnPlatformNotification(NETWORK_MADE_DEFAULT, network);
   connectivity_monitor_.OnDefaultNetworkUpdated(network);
 
-  // Clear alternative services that were marked as broken until default network
-  // changes.
-  if (params_.retry_on_alternate_network_before_handshake &&
+  // Clear alternative services that were marked as broken until default
+  // network changes, or all broken alternative services if
+  // `kClearBrokenAlternativeServicesOnDefaultNetworkChange` is enabled.
+  if ((params_.retry_on_alternate_network_before_handshake ||
+       base::FeatureList::IsEnabled(
+           features::kClearBrokenAlternativeServicesOnDefaultNetworkChange)) &&
       default_network_ != handles::kInvalidNetworkHandle &&
       network != default_network_) {
     http_server_properties_->OnDefaultNetworkChanged();
@@ -2522,18 +2566,31 @@ QuicSessionPool::CreateSessionHelper(
   bool enabled_connection_keep_alive = false;
   if (connection_management_config.has_value() &&
       connection_management_config->keep_alive_config.has_value()) {
-    config.SetIdleNetworkTimeout(quic::QuicTime::Delta::FromSeconds(
-        connection_management_config->keep_alive_config
-            ->idle_timeout_in_seconds));
-    config.AddConnectionOptionsToSend(
-        quic::ParseQuicTagVector(connection_management_config->keep_alive_config
-                                     ->quic_connection_options));
-    keep_alive_timeout = quic::QuicTime::Delta::FromSeconds(
-        connection_management_config->keep_alive_config
-            ->ping_interval_in_seconds);
+    const auto& keep_alive_config =
+        connection_management_config->keep_alive_config.value();
+    if (keep_alive_config.idle_timeout.is_positive()) {
+      config.SetIdleNetworkTimeout(quic::QuicTime::Delta::FromMicroseconds(
+          keep_alive_config.idle_timeout.InMicroseconds()));
+    }
+    if (!keep_alive_config.quic_connection_options.empty()) {
+      config.AddConnectionOptionsToSend(
+          quic::ParseQuicTagVector(keep_alive_config.quic_connection_options));
+    }
+    if (keep_alive_config.ping_interval.is_positive()) {
+      keep_alive_timeout = quic::QuicTime::Delta::FromMicroseconds(
+          keep_alive_config.ping_interval.InMicroseconds());
+    }
     enabled_connection_keep_alive =
-        connection_management_config->keep_alive_config
-            ->enable_connection_keep_alive;
+        keep_alive_config.enable_connection_keep_alive;
+    // Set the initial RTT locally on the client connection to avoid advertising
+    // a synthetic `IRTT` transport parameter to the server.
+    if (keep_alive_config.initial_rtt.is_positive() &&
+        !config.HasInitialRoundTripTimeUsToSend()) {
+      connection->sent_packet_manager().SetInitialRtt(
+          quic::QuicTime::Delta::FromMicroseconds(
+              keep_alive_config.initial_rtt.InMicroseconds()),
+          /*trusted=*/false);
+    }
   }
   connection->set_keep_alive_ping_timeout(keep_alive_timeout);
 
@@ -2610,6 +2667,42 @@ void QuicSessionPool::ActivateSession(const QuicSessionAliasKey& key,
   ip_aliases_[peer_address].insert(session);
   DCHECK(!session_peer_ip_.contains(session));
   session_peer_ip_[session] = peer_address;
+
+  if (!active_jobs_.empty() &&
+      base::FeatureList::IsEnabled(
+          features::kProactiveIpPoolingForInFlightJobs)) {
+    // Post asynchronously so the activating job (if in `active_jobs_` with
+    // `DoConfirmConnection()` / `OnTlsHandshakeComplete()` on the stack)
+    // finishes `OnJobComplete()` first, and synchronous request callbacks on
+    // pooled jobs cannot reentrantly close `session` or destroy `this`
+    // mid-activation.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&QuicSessionPool::NotifyActiveJobsOfSessionActivation,
+                       weak_factory_.GetWeakPtr(), peer_address));
+  }
+}
+
+void QuicSessionPool::NotifyActiveJobsOfSessionActivation(
+    const IPEndPoint& peer_address) {
+  if (active_jobs_.empty()) {
+    return;
+  }
+  std::vector<QuicSessionKey> job_keys;
+  job_keys.reserve(active_jobs_.size());
+  for (const auto& [job_key, job] : active_jobs_) {
+    job_keys.push_back(job_key);
+  }
+  base::WeakPtr<QuicSessionPool> weak_this = weak_factory_.GetWeakPtr();
+  for (const QuicSessionKey& job_key : job_keys) {
+    if (!weak_this) {
+      return;
+    }
+    auto it = active_jobs_.find(job_key);
+    if (it != active_jobs_.end()) {
+      it->second->OnSessionActivatedForIp(peer_address);
+    }
+  }
 }
 
 void QuicSessionPool::MarkAllActiveSessionsGoingAway(
@@ -2772,6 +2865,16 @@ void QuicSessionPool::InitializeMigrationOptions() {
   }
 
   NetworkChangeNotifier::AddNetworkObserver(this);
+
+  if (base::FeatureList::IsEnabled(
+          features::kClearBrokenAlternativeServicesOnDefaultNetworkChange) &&
+      default_network_ == handles::kInvalidNetworkHandle) {
+    default_network_ = NetworkChangeNotifier::GetDefaultNetwork();
+    if (default_network_ != handles::kInvalidNetworkHandle) {
+      connectivity_monitor_.SetInitialDefaultNetwork(default_network_);
+    }
+  }
+
   // Perform checks on the connection migration options.
   if (!migrate_sessions_on_network_change) {
     DCHECK(!migrate_sessions_early);
@@ -2871,15 +2974,17 @@ void QuicSessionPool::ProcessGoingAwaySession(
   }
 
   // A session closed by a local cancellation, such as the loser of a
-  // connection race, says nothing about the path. Keep the stats recorded by
-  // earlier sessions.
+  // connection race or an attempt cancelled for proactive IP pooling, says
+  // nothing about the path. Keep the stats recorded by earlier sessions.
   if (record_network_stats && !session->WasClosedByLocalCancellation()) {
     http_server_properties_->ClearServerNetworkStats(
         server, session->quic_session_key().network_anonymization_key());
   }
 
-  UMA_HISTOGRAM_COUNTS_1M("Net.QuicHandshakeNotConfirmedNumPacketsReceived",
-                          stats.packets_received);
+  if (!session->ShouldSkipUnconfirmedHandshakeMetrics()) {
+    UMA_HISTOGRAM_COUNTS_1M("Net.QuicHandshakeNotConfirmedNumPacketsReceived",
+                            stats.packets_received);
+  }
 
   if (!session_was_active) {
     return;

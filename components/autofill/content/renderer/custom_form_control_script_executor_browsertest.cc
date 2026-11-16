@@ -16,10 +16,14 @@
 #include "base/memory/raw_ref.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
+#include "base/test/test_future.h"
+#include "components/autofill/content/renderer/custom_form_control_util.h"
+#include "components/autofill/core/common/form_field_data.h"
 #include "content/public/common/isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
-#include "content/public/renderer/render_frame_observer.h"
 #include "content/public/test/render_view_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/public/platform/web_string.h"
@@ -40,17 +44,19 @@ namespace autofill {
 class CustomFormControlScriptExecutorTestApi {
  public:
   using Argument = CustomFormControlScriptExecutor::Argument;
+  using MayReturnPromise = CustomFormControlScriptExecutor::MayReturnPromise;
   using ResultCallback = CustomFormControlScriptExecutor::ResultCallback;
 
   explicit CustomFormControlScriptExecutorTestApi(
       CustomFormControlScriptExecutor* executor)
       : executor_(CHECK_DEREF(executor)) {}
 
-  void CallFunction(std::string_view function_name,
+  void CallFunction(MayReturnPromise may_return_promise,
+                    std::string_view function_name,
                     std::vector<Argument> arguments,
                     ResultCallback callback) {
-    executor_->CallFunction(function_name, std::move(arguments),
-                            std::move(callback));
+    executor_->CallFunction(may_return_promise, function_name,
+                            std::move(arguments), std::move(callback));
   }
 
  private:
@@ -63,6 +69,8 @@ namespace {
 constexpr int32_t kWorldId = content::ISOLATED_WORLD_ID_CONTENT_END + 1;
 
 using Argument = CustomFormControlScriptExecutorTestApi::Argument;
+using MayReturnPromise =
+    CustomFormControlScriptExecutorTestApi::MayReturnPromise;
 
 // A minimal script that returns an empty manager.
 constexpr char kValidScript[] = R"(
@@ -84,7 +92,7 @@ class CustomFormControlScriptExecutorTest : public content::RenderViewTest {
     content::RenderViewTest::SetUp();
     LoadHTML("<div>Hello</div>");
     executor_ = std::make_unique<CustomFormControlScriptExecutor>(
-        *GetMainRenderFrame(), kWorldId);
+        GetMainRenderFrame(), kWorldId);
   }
 
   void TearDown() override {
@@ -119,34 +127,57 @@ class CustomFormControlScriptExecutorTest : public content::RenderViewTest {
     return ToUtf8(isolate, result.As<v8::String>());
   }
 
-  // Calls `function_name` and returns the result converted to a string, or
-  // `std::nullopt` if the call or the conversion failed.
-  std::optional<std::string> Call(std::string_view function_name,
-                                  std::vector<Argument> arguments = {}) {
-    std::optional<std::string> result;
-    bool called = false;
+  struct CallResult {
+    bool done = false;
+    // Whether the callback got an isolate.
+    bool had_isolate = false;
+    // The result converted to a string, or `std::nullopt` if the call or the
+    // conversion failed.
+    std::optional<std::string> value;
+  };
+
+  // Starts a call. `result` is updated when the call finishes.
+  void StartCall(MayReturnPromise may_return_promise,
+                 std::string_view function_name,
+                 CallResult& result,
+                 std::vector<Argument> arguments = {}) {
     CustomFormControlScriptExecutorTestApi(executor_.get())
         .CallFunction(
-            function_name, std::move(arguments),
-            base::BindLambdaForTesting([&](v8::Isolate* isolate,
-                                           v8::Local<v8::Context> context,
-                                           v8::MaybeLocal<v8::Value> value) {
-              called = true;
-              // Converting the value may run script (e.g. `toString()`), which
-              // may throw.
-              v8::TryCatch try_catch(isolate);
-              v8::Local<v8::Value> local;
-              v8::Local<v8::String> string;
-              if (value.ToLocal(&local) &&
-                  local->ToString(context).ToLocal(&string)) {
-                result = ToUtf8(isolate, string);
-              }
-            }));
-    EXPECT_TRUE(called);
-    return result;
+            may_return_promise, function_name, std::move(arguments),
+            base::BindLambdaForTesting(
+                [&result](v8::Isolate* isolate, v8::Local<v8::Context> context,
+                          v8::MaybeLocal<v8::Value> value) {
+                  result.done = true;
+                  result.had_isolate = isolate;
+                  // The call failed if the frame is gone.
+                  if (!isolate) {
+                    return;
+                  }
+                  // Converting the value may run script (e.g. `toString()`),
+                  // which may throw.
+                  v8::TryCatch try_catch(isolate);
+                  v8::Local<v8::Value> local;
+                  v8::Local<v8::String> string;
+                  if (value.ToLocal(&local) &&
+                      local->ToString(context).ToLocal(&string)) {
+                    result.value = ToUtf8(isolate, string);
+                  }
+                }));
   }
 
-  blink::WebNode GetTarget() {
+  // Makes a call that may return a promise and is expected to finish
+  // synchronously. Returns the result converted to a string, or `std::nullopt`
+  // if the call or the conversion failed.
+  std::optional<std::string> Call(std::string_view function_name,
+                                  std::vector<Argument> arguments = {}) {
+    CallResult result;
+    StartCall(MayReturnPromise(true), function_name, result,
+              std::move(arguments));
+    EXPECT_TRUE(result.done);
+    return result.value;
+  }
+
+  blink::WebElement GetTarget() {
     return GetMainFrame()->GetDocument().GetElementById("target");
   }
 
@@ -278,38 +309,18 @@ TEST_F(CustomFormControlScriptExecutorTest,
   EXPECT_FALSE(executor_->LoadScript("var y = 1;"));
 }
 
-// Stands in for an owner that destroys the executor synchronously in its own
-// `OnDestruct()` (unlike `AutofillAgent`, which is deleted asynchronously).
-// This lets a test destroy the executor while `LoadScript()` is still running
-// the script that detaches the frame.
-class DestroyExecutorOnFrameDestruction : public content::RenderFrameObserver {
- public:
-  DestroyExecutorOnFrameDestruction(
-      content::RenderFrame* render_frame,
-      std::unique_ptr<CustomFormControlScriptExecutor>& executor)
-      : content::RenderFrameObserver(render_frame), executor_(executor) {}
-
- private:
-  void OnDestruct() override { executor_->reset(); }
-
-  const raw_ref<std::unique_ptr<CustomFormControlScriptExecutor>> executor_;
-};
-
-// Tests that loading fails, without using the executor after it is destroyed,
-// if the script detaches the frame and the owner destroys the executor.
-TEST_F(CustomFormControlScriptExecutorTest,
-       LoadFailsIfExecutorIsDestroyedDuringLoad) {
+// Tests that loading fails, and no manager is kept, if the script detaches
+// the frame.
+TEST_F(CustomFormControlScriptExecutorTest, LoadFailsIfFrameIsDetached) {
   LoadHTML("<iframe src='about:blank'></iframe>");
   content::RenderFrame* child = content::RenderFrame::FromWebFrame(
       GetMainFrame()->FirstChild()->ToWebLocalFrame());
-  auto child_executor =
-      std::make_unique<CustomFormControlScriptExecutor>(*child, kWorldId);
-  DestroyExecutorOnFrameDestruction owner(child, child_executor);
-  EXPECT_FALSE(child_executor->LoadScript(R"(
+  CustomFormControlScriptExecutor child_executor(child, kWorldId);
+  EXPECT_FALSE(child_executor.LoadScript(R"(
     frameElement.remove();
     function createCustomFormControlManager() { return {}; }
   )"));
-  EXPECT_FALSE(child_executor);
+  EXPECT_FALSE(child_executor.has_manager());
 }
 
 // Tests that the manager of a subframe is dropped when the subframe is
@@ -318,7 +329,7 @@ TEST_F(CustomFormControlScriptExecutorTest, DropsManagerOnFrameDetach) {
   LoadHTML("<iframe src='about:blank'></iframe>");
   blink::WebLocalFrame* child = GetMainFrame()->FirstChild()->ToWebLocalFrame();
   CustomFormControlScriptExecutor child_executor(
-      *content::RenderFrame::FromWebFrame(child), kWorldId);
+      content::RenderFrame::FromWebFrame(child), kWorldId);
   ASSERT_TRUE(child_executor.LoadScript(kValidScript));
 
   ExecuteJavaScriptForTests("document.querySelector('iframe').remove();");
@@ -409,6 +420,239 @@ TEST_F(CustomFormControlScriptExecutorTest, CallsUseIsolatedWorld) {
       IsUndefinedInMainWorld("document.getElementById('target').marked"));
 }
 
+constexpr char kClosePopoverScript[] = R"(
+  function createCustomFormControlManager() {
+    return {
+      closePopover(node) {
+        switch (node.dataset.mode) {
+          case 'sync': node.dataset.closed = 'sync'; return 42;
+          case 'throw': throw new Error('error');
+          case 'reject': return Promise.reject(new Error('error'));
+          default:
+            return new Promise(r => setTimeout(() => {
+              node.dataset.closed = 'async';
+              r();
+            }, 0));
+        }
+      },
+    };
+  }
+)";
+
+// Tests that `ClosePopover()` passes the element to `closePopover()` and
+// succeeds once its promise is fulfilled, or right away if it returns
+// something else.
+TEST_F(CustomFormControlScriptExecutorTest, ClosesPopover) {
+  LoadHTML("<div id=target></div>");
+  ASSERT_TRUE(executor_->LoadScript(kClosePopoverScript));
+  base::test::TestFuture<bool> later;
+  executor_->ClosePopover(GetTarget(), later.GetCallback());
+  EXPECT_FALSE(later.IsReady());
+  EXPECT_TRUE(later.Get());
+  EXPECT_EQ(GetTarget().GetAttribute("data-closed").Utf8(), "async");
+
+  ExecuteJavaScriptForTests(
+      "document.getElementById('target').dataset.mode = 'sync';");
+  base::test::TestFuture<bool> now;
+  executor_->ClosePopover(GetTarget(), now.GetCallback());
+  ASSERT_TRUE(now.IsReady());
+  EXPECT_TRUE(now.Get());
+  EXPECT_EQ(GetTarget().GetAttribute("data-closed").Utf8(), "sync");
+}
+
+// Tests that `ClosePopover()` fails if there is no manager, or if
+// `closePopover()` throws or its promise is rejected.
+TEST_F(CustomFormControlScriptExecutorTest, ClosePopoverFails) {
+  LoadHTML("<div id=target></div>");
+  base::test::TestFuture<bool> no_manager;
+  executor_->ClosePopover(GetTarget(), no_manager.GetCallback());
+  EXPECT_FALSE(no_manager.Get());
+
+  ASSERT_TRUE(executor_->LoadScript(kClosePopoverScript));
+  for (const char* mode : {"throw", "reject"}) {
+    SCOPED_TRACE(mode);
+    ExecuteJavaScriptForTests(
+        std::string("document.getElementById('target').dataset.mode = '") +
+        mode + "';");
+    base::test::TestFuture<bool> future;
+    executor_->ClosePopover(GetTarget(), future.GetCallback());
+    EXPECT_FALSE(future.Get());
+  }
+}
+
+using OptionsFuture =
+    base::test::TestFuture<std::optional<CustomFormControlOptions>>;
+
+// Tests that `ExtractOptions()` passes the element to `extractOptions()` and
+// returns the options once its promise is fulfilled.
+TEST_F(CustomFormControlScriptExecutorTest, ExtractsOptions) {
+  LoadHTML("<div id=target></div>");
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        async extractOptions(node) {
+          await new Promise(r => setTimeout(r, 0));
+          return {
+            options: [
+              {text: node.id, value: 'v'},
+              {text: 'no value'},
+            ],
+            popoverNeedsToBeClosed: true,
+          };
+        },
+      };
+    }
+  )"));
+  OptionsFuture future;
+  executor_->ExtractOptions(GetTarget(), future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_EQ(future.Take(),
+            (CustomFormControlOptions{
+                .options = {{.value = u"v", .text = u"target"},
+                            {.value = u"no value", .text = u"no value"}},
+                .popover_needs_to_be_closed = true,
+            }));
+}
+
+// Tests that `ExtractOptions()` skips invalid entries, only treats `true` as
+// true and defaults `value` to `text` if it isn't a string.
+TEST_F(CustomFormControlScriptExecutorTest, ExtractOptionsSkipsInvalidEntries) {
+  LoadHTML("<div id=target></div>");
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        extractOptions() {
+          return {
+            options: [
+              null,
+              {text: 'first'},
+              42,
+              {},
+              {text: 42},
+              {text: {toString() { return 'text'; }}},
+              {get text() { throw new Error('error'); }},
+              {text: 'text', get value() { throw new Error(); }},
+              {text: 'last', value: 42},
+            ],
+            popoverNeedsToBeClosed: 1,
+          };
+        },
+      };
+    }
+  )"));
+  OptionsFuture future;
+  executor_->ExtractOptions(GetTarget(), future.GetCallback());
+  EXPECT_EQ(future.Take(),
+            (CustomFormControlOptions{
+                .options = {{.value = u"first", .text = u"first"},
+                            {.value = u"last", .text = u"last"}},
+            }));
+}
+
+// Tests that `ExtractOptions()` fails if there is no manager, if
+// `extractOptions()` throws or its promise is rejected, or if the result isn't
+// valid.
+TEST_F(CustomFormControlScriptExecutorTest, ExtractOptionsFails) {
+  LoadHTML("<div id=target></div>");
+  OptionsFuture no_manager;
+  executor_->ExtractOptions(GetTarget(), no_manager.GetCallback());
+  EXPECT_EQ(no_manager.Take(), std::nullopt);
+
+  for (const char* result : {
+           "null",
+           "{}",
+           "{options: {length: 1, 0: {text: 'text'}}}",
+           "{get options() { throw new Error('error'); }}",
+           "{options: [], get popoverNeedsToBeClosed() { throw 1; }}",
+           "Promise.reject(new Error('error'))",
+           "(() => { throw new Error('error'); })()",
+       }) {
+    SCOPED_TRACE(result);
+    ASSERT_TRUE(executor_->LoadScript(
+        std::string("function createCustomFormControlManager() {"
+                    "  return { extractOptions() { return ") +
+        result + "; } };}"));
+    OptionsFuture future;
+    executor_->ExtractOptions(GetTarget(), future.GetCallback());
+    EXPECT_EQ(future.Take(), std::nullopt);
+  }
+}
+
+using SetValueResult = CustomFormControlSetValueResult;
+using SetValueFuture = base::test::TestFuture<CustomFormControlSetValueResult>;
+
+// Tests that `SetValue()` passes the element, the option's value and its text
+// to `setValue()` and returns its result once its promise is fulfilled.
+TEST_F(CustomFormControlScriptExecutorTest, SetsValue) {
+  LoadHTML("<div id=target></div>");
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        async setValue(node, value, text) {
+          await new Promise(r => setTimeout(r, 0));
+          switch (value) {
+            case 'missing': return {status: 'OPTION_NOT_FOUND'};
+            case 'error': return {status: 'EXECUTION_ERROR'};
+          }
+          node.textContent = `${value}:${text}`;
+          return {status: 'OK'};
+        },
+      };
+    }
+  )"));
+  SetValueFuture future;
+  executor_->SetValue(GetTarget(), {.value = u"AL", .text = u"Alabama"},
+                      future.GetCallback());
+  EXPECT_FALSE(future.IsReady());
+  EXPECT_EQ(future.Take(), SetValueResult::kOk);
+  EXPECT_EQ(GetTarget().TextContent().Utf8(), "AL:Alabama");
+
+  const struct {
+    std::u16string value;
+    SetValueResult result;
+  } kTestCases[] = {
+      {u"missing", SetValueResult::kOptionNotFound},
+      {u"error", SetValueResult::kExecutionError},
+  };
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(base::UTF16ToUTF8(test_case.value));
+    executor_->SetValue(GetTarget(), {.value = test_case.value},
+                        future.GetCallback());
+    EXPECT_EQ(future.Take(), test_case.result);
+  }
+}
+
+// Tests that `SetValue()` returns `kExecutionError` if there is no manager, if
+// `setValue()` throws or its promise is rejected, or if the result isn't valid.
+TEST_F(CustomFormControlScriptExecutorTest, SetValueFails) {
+  LoadHTML("<div id=target></div>");
+  SetValueFuture no_manager;
+  executor_->SetValue(GetTarget(), {.value = u"value", .text = u"text"},
+                      no_manager.GetCallback());
+  EXPECT_EQ(no_manager.Take(), SetValueResult::kExecutionError);
+
+  for (const char* result : {
+           "null",
+           "{}",
+           "{status: 'ok'}",
+           "{status: 0}",
+           "{status: {toString() { return 'OK'; }}}",
+           "{get status() { throw new Error('error'); }}",
+           "Promise.reject(new Error('error'))",
+           "(() => { throw new Error('error'); })()",
+       }) {
+    SCOPED_TRACE(result);
+    ASSERT_TRUE(executor_->LoadScript(
+        std::string("function createCustomFormControlManager() {"
+                    "  return { setValue() { return ") +
+        result + "; } };}"));
+    SetValueFuture future;
+    executor_->SetValue(GetTarget(), {.value = u"value", .text = u"text"},
+                        future.GetCallback());
+    EXPECT_EQ(future.Take(), SetValueResult::kExecutionError);
+  }
+}
+
 // Tests that loading another script replaces the manager, so that calls go to
 // the new one.
 TEST_F(CustomFormControlScriptExecutorTest, ReplacesManager) {
@@ -427,8 +671,8 @@ TEST_F(CustomFormControlScriptExecutorTest, ReplacesManager) {
 }
 
 // Tests that calls fail if there is no manager or no such method, if an
-// argument is a null node, or if the method throws or returns a promise, and
-// that later calls still work.
+// argument is a null node, or if the method throws, and that later calls still
+// work.
 TEST_F(CustomFormControlScriptExecutorTest, CallFails) {
   EXPECT_EQ(Call("anything"), std::nullopt);  // No manager.
   ASSERT_TRUE(executor_->LoadScript(R"(
@@ -436,7 +680,6 @@ TEST_F(CustomFormControlScriptExecutorTest, CallFails) {
       return {
         notAFunction: 1,
         throws() { throw new Error('error'); },
-        async isAsync() { return 1; },
         works() { return 'ok'; },
       };
     }
@@ -444,7 +687,6 @@ TEST_F(CustomFormControlScriptExecutorTest, CallFails) {
   EXPECT_EQ(Call("missing"), std::nullopt);
   EXPECT_EQ(Call("notAFunction"), std::nullopt);
   EXPECT_EQ(Call("throws"), std::nullopt);
-  EXPECT_EQ(Call("isAsync"), std::nullopt);
   EXPECT_EQ(Call("works", {blink::WebNode()}), std::nullopt);  // Null node.
   EXPECT_EQ(Call("works"), "ok");
 }
@@ -495,7 +737,7 @@ TEST_F(CustomFormControlScriptExecutorTest, CallFailsIfFrameIsDetached) {
   LoadHTML("<iframe src='about:blank'></iframe>");
   blink::WebLocalFrame* child = GetMainFrame()->FirstChild()->ToWebLocalFrame();
   CustomFormControlScriptExecutor child_executor(
-      *content::RenderFrame::FromWebFrame(child), kWorldId);
+      content::RenderFrame::FromWebFrame(child), kWorldId);
   ASSERT_TRUE(child_executor.LoadScript(R"(
     function createCustomFormControlManager() {
       return { detach() { frameElement.remove(); return 'detached'; } };
@@ -504,7 +746,7 @@ TEST_F(CustomFormControlScriptExecutorTest, CallFailsIfFrameIsDetached) {
   bool called = false;
   CustomFormControlScriptExecutorTestApi(&child_executor)
       .CallFunction(
-          "detach", {},
+          MayReturnPromise(true), "detach", {},
           base::BindLambdaForTesting([&](v8::Isolate* isolate,
                                          v8::Local<v8::Context> context,
                                          v8::MaybeLocal<v8::Value> value) {
@@ -522,7 +764,7 @@ TEST_F(CustomFormControlScriptExecutorTest, FailedCallPassesIsolate) {
   bool called = false;
   CustomFormControlScriptExecutorTestApi(executor_.get())
       .CallFunction(
-          "anything", {},
+          MayReturnPromise(true), "anything", {},
           base::BindLambdaForTesting([&](v8::Isolate* isolate,
                                          v8::Local<v8::Context> context,
                                          v8::MaybeLocal<v8::Value> value) {
@@ -532,6 +774,299 @@ TEST_F(CustomFormControlScriptExecutorTest, FailedCallPassesIsolate) {
             EXPECT_TRUE(value.IsEmpty());
           }));
   EXPECT_TRUE(called);
+}
+
+// Tests that `DetectCustomFormControls()` extracts valid custom form controls.
+TEST_F(CustomFormControlScriptExecutorTest, DetectCustomFormControls) {
+  LoadHTML("<div id=c1></div><div id=c2></div><div id=c3></div>");
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        detectCustomFormControls() {
+          return [
+            {
+              canonicalDomNode: document.getElementById("c1"),
+              controlType: "select",
+              fieldType: "ADDRESS_HOME_COUNTRY",
+              isActive: true,
+            },
+            {
+              canonicalDomNode: document.getElementById("c2"),
+              controlType: "select",
+              fieldType: "ADDRESS_HOME_STATE",
+              isActive: false,
+              label: "State",
+              currentValue: { text: "Bavaria", value: "BY" },
+            },
+            {
+              canonicalDomNode: document.getElementById("c3"),
+              controlType: "select",
+              fieldType: "ADDRESS_HOME_CITY",
+              isActive: true,
+              currentValue: { text: "Munich" },
+            },
+          ];
+        },
+      };
+    }
+  )"));
+
+  blink::WebDocument doc = GetMainFrame()->GetDocument();
+  EXPECT_THAT(executor_->DetectCustomFormControls(),
+              testing::ElementsAre(
+                  CustomFormControl{
+                      .canonical_dom_node = doc.GetElementById("c1"),
+                      .field_type = u"ADDRESS_HOME_COUNTRY",
+                      .is_active = true,
+                  },
+                  CustomFormControl{
+                      .canonical_dom_node = doc.GetElementById("c2"),
+                      .field_type = u"ADDRESS_HOME_STATE",
+                      .is_active = false,
+                      .label = u"State",
+                      .current_option =
+                          SelectOption{.value = u"BY", .text = u"Bavaria"},
+                  },
+                  CustomFormControl{
+                      .canonical_dom_node = doc.GetElementById("c3"),
+                      .field_type = u"ADDRESS_HOME_CITY",
+                      .is_active = true,
+                      .current_option =
+                          SelectOption{.value = u"Munich", .text = u"Munich"},
+                  }));
+}
+
+// Tests that `DetectCustomFormControls()` skips invalid controls and returns
+// empty when no script is loaded.
+TEST_F(CustomFormControlScriptExecutorTest,
+       DetectCustomFormControlsSkipsInvalidControls) {
+  EXPECT_TRUE(executor_->DetectCustomFormControls().empty());
+
+  LoadHTML(R"(
+    <div id=custom-select></div>
+    <form id=form></form>
+    <input id=text-input>
+    <select id=select></select>
+    <textarea id=textarea></textarea>
+    <iframe id=iframe src="about:blank"></iframe>
+  )");
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        detectCustomFormControls() {
+          const base = {
+            canonicalDomNode: document.getElementById("custom-select"),
+            controlType: "select",
+            fieldType: "ADDRESS_HOME_COUNTRY",
+            isActive: true,
+          };
+          return [
+            // Not an object.
+            null,
+            // Missing `canonicalDomNode`.
+            { ...base, canonicalDomNode: null },
+            // Detached `canonicalDomNode`.
+            { ...base, canonicalDomNode: document.createElement("div") },
+            // Cross-frame `canonicalDomNode`.
+            {
+              ...base,
+              canonicalDomNode:
+                  document.getElementById("iframe").contentDocument.body,
+            },
+            // `<form>` element.
+            { ...base, canonicalDomNode: document.getElementById("form") },
+            // Standard autofillable form control elements.
+            {
+              ...base,
+              canonicalDomNode: document.getElementById("text-input"),
+            },
+            { ...base, canonicalDomNode: document.getElementById("select") },
+            { ...base, canonicalDomNode: document.getElementById("textarea") },
+            // Non-string `fieldType`.
+            { ...base, fieldType: 123 },
+            // Non-boolean `isActive`.
+            { ...base, isActive: "true" },
+            // `currentValue` missing `text`.
+            { ...base, currentValue: {} },
+            // Throwing property getter.
+            { ...base, get label() { throw new Error("boom"); } },
+          ];
+        },
+      };
+    }
+  )"));
+
+  EXPECT_TRUE(executor_->DetectCustomFormControls().empty());
+}
+
+constexpr char kAsyncScript[] = R"(
+  function createCustomFormControlManager() {
+    return {
+      async pending() { await null; return 'later'; },
+      later() { return new Promise(r => setTimeout(() => r('later'), 0)); },
+      rejectLater() {
+        return new Promise((_, r) => setTimeout(() => r(new Error()), 0));
+      },
+      never() { return new Promise(() => {}); },
+      async succeedNow() { return 'now'; },
+      async failNow() { throw new Error(); },
+      sync() { return 'sync'; },
+    };
+  }
+)";
+
+// Tests that calls that may return a promise wait for it and finish with the
+// value it is fulfilled with, or fail if it is rejected.
+TEST_F(CustomFormControlScriptExecutorTest, CallsWaitForPromises) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  CallResult later;
+  StartCall(MayReturnPromise(true), "later", later);
+  EXPECT_FALSE(later.done);
+  ASSERT_TRUE(base::test::RunUntil([&] { return later.done; }));
+  EXPECT_EQ(later.value, "later");
+
+  CallResult rejected;
+  StartCall(MayReturnPromise(true), "rejectLater", rejected);
+  ASSERT_TRUE(base::test::RunUntil([&] { return rejected.done; }));
+  EXPECT_TRUE(rejected.had_isolate);
+  EXPECT_EQ(rejected.value, std::nullopt);
+}
+
+// Tests that calls that may not return a promise fail if they do.
+TEST_F(CustomFormControlScriptExecutorTest, OnlySomeCallsMayReturnPromises) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  CallResult result;
+  StartCall(MayReturnPromise(false), "pending", result);
+  EXPECT_TRUE(result.done);
+  EXPECT_EQ(result.value, std::nullopt);
+}
+
+// Tests that other calls fail while a call waits for a promise, and work again
+// afterwards.
+TEST_F(CustomFormControlScriptExecutorTest, CallsFailWhileWaiting) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  CallResult later;
+  StartCall(MayReturnPromise(true), "later", later);
+  CallResult sync;
+  StartCall(MayReturnPromise(false), "sync", sync);
+  EXPECT_TRUE(sync.done);
+  EXPECT_EQ(sync.value, std::nullopt);
+  ASSERT_TRUE(base::test::RunUntil([&] { return later.done; }));
+  EXPECT_EQ(later.value, "later");
+  EXPECT_EQ(Call("sync"), "sync");
+}
+
+// Tests that a call waiting for a promise fails when a new document is
+// committed, since the promise can no longer settle. The frame is still alive,
+// so the callback gets the isolate.
+TEST_F(CustomFormControlScriptExecutorTest, FailsPendingCallOnNavigation) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  CallResult never;
+  StartCall(MayReturnPromise(true), "never", never);
+  EXPECT_FALSE(never.done);
+  LoadHTML("<div>Another document</div>");
+  EXPECT_TRUE(never.done);
+  EXPECT_TRUE(never.had_isolate);
+  EXPECT_EQ(never.value, std::nullopt);
+}
+
+// Tests that loading a script fails a call that waits for a promise of the
+// previous manager, and that the promise settling afterwards is ignored.
+TEST_F(CustomFormControlScriptExecutorTest, LoadScriptFailsPendingCall) {
+  ASSERT_TRUE(executor_->LoadScript(R"(
+    function createCustomFormControlManager() {
+      return {
+        later() {
+          return new Promise(r => setTimeout(() => {
+            window.resolved = true;
+            r('later');
+          }, 0));
+        },
+      };
+    }
+  )"));
+  CallResult later;
+  StartCall(MayReturnPromise(true), "later", later);
+  EXPECT_FALSE(later.done);
+  EXPECT_TRUE(executor_->LoadScript(kValidScript));
+  EXPECT_TRUE(later.done);
+  EXPECT_TRUE(later.had_isolate);
+  EXPECT_EQ(later.value, std::nullopt);
+  EXPECT_TRUE(executor_->has_manager());
+  // The promise's reaction finds no waiting call.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return EvaluateInIsolatedWorld("String(window.resolved === true)") ==
+           "true";
+  }));
+}
+
+// Tests that calls finish right away if their promise is already fulfilled
+// when the call returns.
+TEST_F(CustomFormControlScriptExecutorTest, FinishesOnFulfilledPromise) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  CallResult result;
+  StartCall(MayReturnPromise(true), "succeedNow", result);
+  EXPECT_TRUE(result.done);
+  EXPECT_EQ(result.value, "now");
+}
+
+// Tests that calls fail if their promise is already rejected when the call
+// returns.
+TEST_F(CustomFormControlScriptExecutorTest, FailsOnRejectedPromise) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  for (MayReturnPromise may_return_promise :
+       {MayReturnPromise(true), MayReturnPromise(false)}) {
+    CallResult result;
+    StartCall(may_return_promise, "failNow", result);
+    EXPECT_TRUE(result.done);
+    EXPECT_TRUE(result.had_isolate);
+    EXPECT_EQ(result.value, std::nullopt);
+  }
+}
+
+// Tests that the callback of a call that waited for a promise may make another
+// call.
+TEST_F(CustomFormControlScriptExecutorTest, CallbackMayMakeAnotherCall) {
+  ASSERT_TRUE(executor_->LoadScript(kAsyncScript));
+  std::optional<std::string> nested;
+  bool done = false;
+  CustomFormControlScriptExecutorTestApi(executor_.get())
+      .CallFunction(
+          MayReturnPromise(true), "later", {},
+          base::BindLambdaForTesting(
+              [this, &nested, &done](v8::Isolate*, v8::Local<v8::Context>,
+                                     v8::MaybeLocal<v8::Value>) {
+                nested = Call("sync");
+                done = true;
+              }));
+  ASSERT_TRUE(base::test::RunUntil([&] { return done; }));
+  EXPECT_EQ(nested, "sync");
+}
+
+// Tests that a call waiting for a promise fails when its frame is detached, and
+// that the callback still gets the isolate, since it runs while the frame's
+// script contexts are released.
+TEST_F(CustomFormControlScriptExecutorTest, FailsPendingCallOnFrameDetach) {
+  LoadHTML("<iframe src='about:blank'></iframe>");
+  blink::WebLocalFrame* child = GetMainFrame()->FirstChild()->ToWebLocalFrame();
+  CustomFormControlScriptExecutor child_executor(
+      content::RenderFrame::FromWebFrame(child), kWorldId);
+  ASSERT_TRUE(child_executor.LoadScript(kAsyncScript));
+  CallResult never;
+  CustomFormControlScriptExecutorTestApi(&child_executor)
+      .CallFunction(
+          MayReturnPromise(true), "never", {},
+          base::BindLambdaForTesting([&never](v8::Isolate* isolate,
+                                              v8::Local<v8::Context> context,
+                                              v8::MaybeLocal<v8::Value> value) {
+            never.done = true;
+            never.had_isolate = isolate;
+            EXPECT_TRUE(value.IsEmpty());
+          }));
+  EXPECT_FALSE(never.done);
+  ExecuteJavaScriptForTests("document.querySelector('iframe').remove();");
+  EXPECT_TRUE(never.done);
+  EXPECT_TRUE(never.had_isolate);
 }
 
 }  // namespace

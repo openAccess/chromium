@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 
 #include "base/check_op.h"
 #include "base/functional/function_ref.h"
@@ -296,8 +297,6 @@ class ComputedStyle final : public ComputedStyleBase {
   friend class StyleCascade;
   // Editing has to only reveal unvisited info.
   friend class EditingStyle;
-  // Saves Border/Background information for later comparison.
-  friend class CachedUAStyle;
   // Accesses visited and unvisited colors.
   friend class ColorPropertyFunctions;
   // Accesses inset and sizing property values.
@@ -1652,7 +1651,7 @@ class ComputedStyle final : public ComputedStyleBase {
       EContentVisibility content_visibility,
       bool skips_contents,
       bool has_size_containment_for_vt_scope,
-      EOverscrollContainerType overscroll_container_type,
+      bool has_layout_containment_for_overscroll_container,
       bool has_layout_containment_for_vt_scope) {
     unsigned effective = contain;
 
@@ -1677,13 +1676,14 @@ class ComputedStyle final : public ComputedStyleBase {
                                ScopedViewTransitionSizeContainmentEnabled())) {
       effective |= kContainsSize;
     }
-    if (overscroll_container_type != EOverscrollContainerType::kNone) {
-      // TODO(crbug.com/467112943): Layout containment is currently forced to
-      // ensure that the container of the overscroll areas actually contains
-      // the overscroll areas. However, requiring layout containment is
-      // overly restrictive to the child content that can be used within
-      // the scroller. We should remove this requirement while ensuring they are
-      // layout children of the container element.
+    if (has_layout_containment_for_overscroll_container) {
+      // TODO(crbug.com/467112943): Layout containment is currently forced on
+      // overscroll containers (except root-scrolled <body>; see
+      // StyleAdjuster::AdjustComputedStyle()) so that they contain their
+      // out-of-flow ::-internal-overscroll-area-parent children. However,
+      // requiring layout containment is overly restrictive to the child content
+      // that can be used within the scroller. We should remove this requirement
+      // while ensuring they are layout children of the container element.
       effective |= kContainsLayout;
     }
 
@@ -1700,7 +1700,7 @@ class ComputedStyle final : public ComputedStyleBase {
         HasSizeContainmentForViewTransitionScope() &&
             RuntimeEnabledFeatures::
                 ScopedViewTransitionSizeContainmentEnabled(),
-        EffectiveOverscrollContainerType(),
+        HasLayoutContainmentForOverscrollContainer(),
         HasLayoutContainmentForViewTransitionScope());
   }
 
@@ -1914,8 +1914,9 @@ class ComputedStyle final : public ComputedStyleBase {
   CORE_EXPORT TextDecorationLine TextDecorationsInEffect() const;
   CORE_EXPORT const AppliedTextDecorationVector& AppliedTextDecorations() const;
   CORE_EXPORT AppliedTextDecorationVector* AppliedTextDecorationData() const {
-    return IsDecoratingBox() ? EnsureAppliedTextDecorationsCache()
-                             : BaseTextDecorationData();
+    return IsDecoratingBoxIncludingPrecomputedHover()
+               ? EnsureAppliedTextDecorationsCache()
+               : BaseTextDecorationData();
   }
 
   // Returns true if this a "decorating box".
@@ -1930,9 +1931,20 @@ class ComputedStyle final : public ComputedStyleBase {
     return true;
   }
 
+  // Returns true if this box or its precomputed :hover style (see
+  // kPseudoIdPrecomputedHover) adds a text decoration.
+  bool IsDecoratingBoxIncludingPrecomputedHover() const {
+    if (IsDecoratingBox()) {
+      return true;
+    }
+    const ComputedStyle* hover_style =
+        GetCachedPseudoElementStyle(kPseudoIdPrecomputedHover);
+    return hover_style && hover_style->IsDecoratingBox();
+  }
+
   // Returns true if there are any text decorations.
   bool HasAppliedTextDecorations() const {
-    if (IsDecoratingBox()) {
+    if (IsDecoratingBoxIncludingPrecomputedHover()) {
       return true;
     }
     if (BaseTextDecorationData()) {
@@ -1945,7 +1957,14 @@ class ComputedStyle final : public ComputedStyleBase {
   // Returns (by value) the last text decoration, if any.
   std::optional<AppliedTextDecoration> LastAppliedTextDecoration() const {
     if (HasAppliedTextDecorations()) {
-      return AppliedTextDecorations().back();
+      for (const AppliedTextDecoration& decoration :
+           std::views::reverse(AppliedTextDecorations())) {
+        // Skip decorations that only apply on hover (see
+        // IsDecoratingBoxIncludingPrecomputedHover()).
+        if (decoration.Lines() != TextDecorationLine::kNone) {
+          return decoration;
+        }
+      }
     }
     return std::nullopt;
   }
@@ -2515,11 +2534,6 @@ class ComputedStyle final : public ComputedStyleBase {
       // measurable cost on list-heavy pages.
       return IsDisplayListItem() && (HasPseudoElementStyle(kPseudoIdMarker) ||
                                      ListStyleType() || GeneratesMarkerImage());
-    }
-    // ::backdrop is generated for top layer elements (where Overlay is not
-    // none).
-    if (pseudo == kPseudoIdBackdrop && Overlay() == EOverlay::kNone) {
-      return false;
     }
     if (pseudo == kPseudoIdScrollMarkerGroupBefore) {
       return HasScrollMarkerGroupBefore() && IsScrollContainer();
@@ -3213,7 +3227,7 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
         HasSizeContainmentForViewTransitionScope() &&
             RuntimeEnabledFeatures::
                 ScopedViewTransitionSizeContainmentEnabled(),
-        EffectiveOverscrollContainerType(),
+        HasLayoutContainmentForOverscrollContainer(),
         HasLayoutContainmentForViewTransitionScope());
     return ComputedStyle::ShouldApplyAnyContainment(element, GetDisplayStyle(),
                                                     effective_containment);
@@ -3694,22 +3708,10 @@ class ComputedStyleBuilder final : public ComputedStyleBuilderBase {
   CORE_EXPORT StyleNonInheritedVariables& MutableNonInheritedVariables();
   CORE_EXPORT void SetVariableData(const AtomicString& name,
                                    CSSVariableData* value,
-                                   bool is_inherited_property) {
-    if (is_inherited_property) {
-      MutableInheritedVariables().SetData(name, value);
-    } else {
-      MutableNonInheritedVariables().SetData(name, value);
-    }
-  }
+                                   bool is_inherited_property);
   CORE_EXPORT void SetVariableValue(const AtomicString& name,
                                     const CSSValue* value,
-                                    bool is_inherited_property) {
-    if (is_inherited_property) {
-      MutableInheritedVariables().SetValue(name, value);
-    } else {
-      MutableNonInheritedVariables().SetValue(name, value);
-    }
-  }
+                                    bool is_inherited_property);
 
   EWhiteSpace WhiteSpace() const {
     return ToWhiteSpace(GetWhiteSpaceCollapse(), GetTextWrapMode());

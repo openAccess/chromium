@@ -4,9 +4,6 @@
 
 package org.chromium.chrome.browser.customtabs;
 
-import static androidx.test.espresso.Espresso.onView;
-import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.junit.Assert.assertEquals;
@@ -15,6 +12,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.customtabs.CustomTabActivityTestRule.LONG_TIMEOUT_MS;
 import static org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils.addActionButtonToIntent;
 import static org.chromium.chrome.browser.customtabs.CustomTabsTestUtils.createTestBitmap;
@@ -253,7 +251,7 @@ public class CustomTabActivityIncognitoTest {
         Intent intent = createTestCustomTabIntent();
         launchIncognitoCustomTab(intent);
 
-        onView(withId(R.id.incognito_cct_logo_image_view)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.incognito_cct_logo_image_view));
     }
 
     @Test
@@ -506,17 +504,7 @@ public class CustomTabActivityIncognitoTest {
         mCustomTabActivityTestRule.buildSessionWithHiddenTab(token);
         Assert.assertTrue(
                 connection.mayLaunchUrl(token.getToken(), Uri.parse(mTestPage), null, null));
-        CriteriaHelper.pollUiThread(
-                () -> {
-                    Criteria.checkThat(
-                            "Tab was not created",
-                            connection.getSpeculationParamsForTesting(),
-                            Matchers.notNullValue());
-                },
-                LONG_TIMEOUT_MS,
-                CriteriaHelper.DEFAULT_POLLING_INTERVAL);
-        ChromeTabUtils.waitForTabPageLoaded(
-                connection.getSpeculationParamsForTesting().hiddenTab.tab, mTestPage);
+        CustomTabsTestUtils.ensureCompletedSpeculationForUrl(mTestPage);
         mCustomTabActivityTestRule.setCustomSessionInitiatedForIntent();
         mCustomTabActivityTestRule.startCustomTabActivityWithIntent(intent);
         connection.cleanUpSession(token.getToken());
@@ -638,6 +626,6 @@ public class CustomTabActivityIncognitoTest {
                         () -> recreatedActivity.getActivityTab().getProfile());
         assertEquals(initialProfile, recreatedProfile);
         assertEquals(getIncognitoThemeColor(recreatedActivity), getToolbarColor(recreatedActivity));
-        onView(withId(R.id.incognito_cct_logo_image_view)).check(matches(isDisplayed()));
+        waitForView(withId(R.id.incognito_cct_logo_image_view));
     }
 }

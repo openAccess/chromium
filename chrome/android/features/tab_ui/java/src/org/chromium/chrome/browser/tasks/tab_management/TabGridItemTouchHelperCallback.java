@@ -143,6 +143,8 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
      *     considered as a remove operation.
      * @param mergeThreshold Defines the percentage threshold as a decimal of how much area of the
      *     two items need to be overlapped in order to be considered as a merge operation.
+     * @param ungroupThreshold Defines the threshold for a drag to be considered as an ungroup
+     *     operation.
      */
     void setupCallback(
             float swipeToDismissThreshold, float mergeThreshold, float ungroupThreshold) {
@@ -302,7 +304,13 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                     !(hoveredViewHolder instanceof SimpleRecyclerViewAdapter.ViewHolder)
                             || hasTabPropertiesModel(hoveredViewHolder);
 
-            boolean wasMergedToGroup = false;
+            // Reset hover and selection before merging, while the card indexes still match the
+            // drag. With a data provider, the dragged card can survive a group-onto-tab merge.
+            if (mHoveredTabIndex != TabModel.INVALID_TAB_INDEX && shouldUpdate) {
+                mModel.updateHoveredCardForHover(mHoveredTabIndex, false);
+                mActionAttempted = true;
+            }
+
             if (wasHoveredOnArchivedMessageCard()
                     && mSelectedTabIndex != TabModel.INVALID_TAB_INDEX) {
                 onDropOnArchivalMessageCard();
@@ -310,26 +318,18 @@ public class TabGridItemTouchHelperCallback extends TabListItemTouchHelperCallba
                     && mLayoutType == TabListLayoutType.GROUPED
                     && !hasCollaboration(viewHolder)
                     && !isPinnedRegularTab(viewHolder)) {
+                deselectSelectedCard();
                 if (selectedViewHolder != null
                         && !recyclerView.isComputingLayout()
                         && shouldUpdate) {
                     View selectedItemView = selectedViewHolder.itemView;
-                    wasMergedToGroup = onTabMergeToGroup(mSelectedTabIndex, mHoveredTabIndex);
-                    if (wasMergedToGroup) {
+                    if (onTabMergeToGroup(mSelectedTabIndex, mHoveredTabIndex)) {
                         maybeRemoveRecyclerViewChild(recyclerView, selectedItemView);
                     }
                 }
                 mActionAttempted = true;
             } else {
                 deselectSelectedCard();
-            }
-            if (mHoveredTabIndex != TabModel.INVALID_TAB_INDEX && shouldUpdate) {
-                mModel.updateHoveredCardForHover(
-                        mSelectedTabIndex > mHoveredTabIndex || !wasMergedToGroup
-                                ? mHoveredTabIndex
-                                : mModel.getTabIndexBefore(mHoveredTabIndex),
-                        false);
-                mActionAttempted = true;
             }
             if (mUnGroupTabIndex != TabModel.INVALID_TAB_INDEX) {
                 TabModel tabModel = mCurrentTabModelSupplier.get();

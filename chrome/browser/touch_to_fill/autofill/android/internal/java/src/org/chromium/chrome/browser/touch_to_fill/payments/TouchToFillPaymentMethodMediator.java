@@ -572,7 +572,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
 
     private void setTabbedHomeScreenItems() {
         mModel.set(CURRENT_SCREEN, TABBED_HOME_SCREEN);
-        mModel.set(TABBED_HEADER_LOGO_DRAWABLE_ID, R.drawable.google_pay);
+        mModel.set(TABBED_HEADER_LOGO_DRAWABLE_ID, AutofillUiUtils.getGPayLogoDrawableId());
         mModel.set(TABBED_HEADER_TITLE_ID, R.string.autofill_payment_method_bottom_sheet_title);
         // Default to Pay Now tab
         onTabSelected(PAY_NOW);
@@ -1150,16 +1150,21 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
     }
 
     void hideSheet() {
-        onDismissed(BottomSheetController.StateChangeReason.NONE);
+        dismiss(BottomSheetController.StateChangeReason.NONE);
     }
 
     void setVisible(boolean visible) {
         mModel.set(VISIBLE, visible);
     }
 
+    public void onDismissed(@StateChangeReason int reason) {
+        if (!mModel.get(VISIBLE)) return; // Dismiss only if not hidden via setVisible(false).
+        dismiss(reason);
+    }
+
     // TODO(crbug.com/461545861): Split logic by screen (e.g. BNPL_ISSUER_SELECTION_SCREEN) instead
     // of the type of payment method set (e.g. mIbans).
-    public void onDismissed(@StateChangeReason int reason) {
+    private void dismiss(@StateChangeReason int reason) {
         if (isDestroyed()) return;
         // Tear down first so that re-entrant calls (e.g. via native callbacks or VISIBLE
         // observers) return early.
@@ -1642,7 +1647,7 @@ class TouchToFillPaymentMethodMediator implements AutofillImageFetcher.Observer 
                         .with(
                                 IMAGE_DRAWABLE_ID,
                                 shouldShowGPayLogo
-                                        ? R.drawable.google_pay
+                                        ? AutofillUiUtils.getGPayLogoDrawableId()
                                         : R.drawable.fre_product_logo)
                         .with(TITLE_ID, R.string.autofill_payment_method_bottom_sheet_title)
                         .build());

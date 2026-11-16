@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -79,6 +80,17 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   // that gets send to an application shortly afterwards.
   bool DidRecentlyHandleClickAction() const;
 
+  // Queries `UNUserNotificationCenter` for the current authorization status and
+  // reports any change via `permission_status_changed_callback_`. If `callback`
+  // is provided, it is invoked with the current `PermissionStatus` and whether
+  // the per-app badge setting (`UNNotificationSettings.badgeSetting`) is
+  // enabled once the query completes.
+  using SynchronizePermissionStatusCallback =
+      base::OnceCallback<void(mojom::PermissionStatus status,
+                              bool badge_enabled)>;
+  void SynchronizePermissionStatus(
+      SynchronizePermissionStatusCallback callback = base::NullCallback());
+
  private:
   // Holds state for an in-flight notification delivery request (including its
   // temporary icon file and attachment-retry state) across asynchronous
@@ -106,11 +118,18 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
 
   void DoDisplayNotification(mojom::NotificationPtr notification,
                              DisplayNotificationCallback callback);
+  // If OS notification permission is currently undecided (`kPromptPending` or
+  // `kNotDetermined`), removes any delivered notification with
+  // `notification_id`, cleans up tracking state, runs `callback` with the
+  // corresponding failure result, and returns true.
+  bool MaybeFailDisplayForUndecidedPermission(
+      const std::string& notification_id,
+      DisplayNotificationCallback& callback);
   void DeliverNotificationContent(PendingDelivery delivery);
   void OnNotificationDelivered(PendingDelivery delivery, NSError* error);
-  void OnNotificationDeliveryFailedWithStatus(
-      DisplayNotificationCallback callback,
-      UNAuthorizationStatus status);
+  void OnNotificationDeliveredWithStatus(PendingDelivery delivery,
+                                         bool has_error,
+                                         UNAuthorizationStatus status);
   // Queries `UNUserNotificationCenter` for notifications currently delivered in
   // the OS notification center, without merging in-flight deliveries. Used by
   // `SynchronizeNotifications()` to detect when delivered notifications have
@@ -139,6 +158,7 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   void DoInitializeDeliveredNotifications(
       NSArray<UNNotification*>* notifications,
       NSSet<UNNotificationCategory*>* categories);
+  void MaybeFinishInitialization();
 
   // Called regularly while we think that notifications are on screen to detect
   // when they get closed.
@@ -147,7 +167,9 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   void DoSynchronizeNotifications(
       std::vector<mojom::NotificationIdentifierPtr> notifications);
 
-  void SynchronizePermissionStatus(bool log_result);
+  void SynchronizePermissionStatus(
+      bool log_result,
+      SynchronizePermissionStatusCallback callback = base::NullCallback());
 
   // Called when the application becomes active. macOS doesn't notify apps when
   // their notification permission changes, so this is a good moment to poll
@@ -160,6 +182,11 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   // Called when the notifications got closed for any reason.
   void OnNotificationsClosed(const std::vector<std::string>& notification_ids);
 
+  // Called when `SynchronizePermissionStatus` finishes querying settings.
+  void OnSynchronizePermissionStatusComplete(
+      UNAuthorizationStatus status,
+      UNNotificationSetting badge_setting);
+
   // Called when we got an updated UNAuthorizationStatus.
   void OnGotAuthorizationStatus(UNAuthorizationStatus status);
 
@@ -169,8 +196,13 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
   // Observer token for NSApplicationDidBecomeActiveNotification.
   id<NSObject> __strong did_become_active_observer_;
 
-  // Set to true when initialization has finished, and this service is ready
-  // to receive mojo calls. `binding_` will not be bound until this happens.
+  // Set to true when `DoInitializeDeliveredNotifications()` has finished.
+  bool delivered_notifications_initialized_
+      GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  // Set to true when both `DoInitializeDeliveredNotifications()` and the
+  // initial `SynchronizePermissionStatus()` have finished, and this service is
+  // ready to receive mojo calls. `binding_` will not be bound until this
+  // happens.
   bool finished_initialization_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   // If set, this callback is called when initialization completes.
   base::OnceClosure after_initialization_callback_
@@ -218,6 +250,9 @@ class MacNotificationServiceUN : public mojom::MacNotificationService {
       GUARDED_BY_CONTEXT(sequence_checker_);
   bool is_synchronizing_permission_status_
       GUARDED_BY_CONTEXT(sequence_checker_) = false;
+  std::vector<SynchronizePermissionStatusCallback>
+      pending_synchronize_permission_callbacks_
+          GUARDED_BY_CONTEXT(sequence_checker_);
 
   // Declared after members that may hold Mojo response callbacks (such as
   // `synchronize_notifications_done_callbacks_` and `notification_center_`) so

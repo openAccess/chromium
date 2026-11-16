@@ -349,6 +349,20 @@ export enum CancelActionsResult {
   FAILED = 3,
 }
 
+// Types of multi-tab sharing tooltip impressions.
+export enum TooltipImpressionType {
+  // Default value for unknown or unrecognized tooltip variants.
+  UNKNOWN = 0,
+  // Step 1: Initial contextual tooltip shown when a tab is first shared.
+  TOOLTIP1 = 1,
+  // Step 2 (Copy A): Follow-up tooltip highlighting multi-tab comparison.
+  TOOLTIP2A = 2,
+  // Step 2 (Copy B): Follow-up tooltip highlighting managing shared tabs.
+  TOOLTIP2B = 3,
+  // Step 3: Tooltip shown inside the tab picker guiding multi-tab selection.
+  TOOLTIP3 = 4,
+}
+
 // Reason for failure when switching a conversation.
 export enum SwitchConversationErrorReason {
   UNKNOWN = 0,
@@ -427,6 +441,29 @@ export enum AdditionalContextSource {
   TEXT_SELECTION = 3,
   WEB_DRAG_DROP = 4,
   EXPERIMENTAL_TRIGGERING = 5,
+}
+
+// The user data-transfer action that attempted to send input into Glic.
+// Note: New actions may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+export enum DataTransferAction {
+  UNKNOWN = 0,
+  PASTE = 1,
+  DROP = 2,
+}
+
+// The reason a data-transfer action into Glic was blocked by product or context
+// eligibility checks.
+// Note: New reasons may be added over time; callers switching on this enum
+// should handle unknown/default values gracefully.
+export enum DataTransferActionsBlockedReason {
+  UNKNOWN = 0,
+  // The source page's context is ineligible for sharing with Glic.
+  INELIGIBLE_PAGE_CONTEXT = 1,
+  // The source belongs to a different browser profile (e.g., Incognito).
+  CROSS_PROFILE = 2,
+  // The source is not a supported tab or was invalidated before completion.
+  UNSUPPORTED_OR_EXPIRED_SOURCE = 3,
 }
 
 // Types of updates that may be relayed back by the web client.
@@ -629,6 +666,11 @@ export enum FreOverride {
   TRUST_FIRST_CLICK = 2,
   // Variation that starts with full client unlocked and shows inline consent.
   TRUST_FIRST_INLINE = 3,
+  // The host shows a native FRE overlay above the client. The client must not
+  // show its own FRE or consent UI. The overlay blocks the client until the
+  // user accepts. On accept, the host marks the FRE as completed. On decline,
+  // the host closes the panel.
+  NATIVE_FRE = 4,
 }
 
 // Entry points that can trigger the opening of the panel.
@@ -740,6 +782,8 @@ export enum InvocationSource {
   WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION = 48,
   // Invoked by the actor GeminiPanelTool.
   ACTOR_TOOL = 49,
+  // User clicked a conversation row in the activity list bubble.
+  ACTIVITY_LIST_BUBBLE = 50,
 }
 
 // Target for actuation.
@@ -1261,7 +1305,10 @@ export declare interface InvokeOptions {
   zssConfig?: ZssConfig;
   // Source-specific payload for the invocation.
   payload?: InvocationPayload;
-  // The ID of the tab to actuate on, if actuationTarget is kTargetSurface.
+  // TODO(b/582448011): Replace actuation_target and actuation_tab_id with one
+  // union that matches Target::actuation_target in glic_invoke_options.h.
+  // The ID of the ActorSurface (which can be a tab or a headless surface), to
+  // actuate on, if actuation_target == kTargetSurface.
   actuationTabId?: string;
 }
 
@@ -1294,6 +1341,13 @@ export declare interface AdditionalContext {
   frameUrl?: string;
   // The parts of the context.
   parts: AdditionalContextPart[];
+}
+
+// Notice emitted when a data-transfer action into Glic is blocked by
+// eligibility checks.
+export declare interface DataTransferActionsBlockedNotice {
+  action: DataTransferAction;
+  reason: DataTransferActionsBlockedReason;
 }
 
 // An update event sent to the browser by the web client.
@@ -1493,7 +1547,10 @@ export declare interface TaskOptions {
   duration?: TaskDuration;
   // The feature mode for the task.
   featureMode?: FeatureMode;
-  // The initial target tab to actuate on.
+  // The actor surface ID of the initial target to actuate on, such as a tab's
+  // surface or a headless surface. A tab's actor surface ID matches its tab ID
+  // only while kUseTabHandleAsSurfaceHandle is enabled. The field name
+  // predates actor surfaces.
   actuationTabId?: string;
 }
 

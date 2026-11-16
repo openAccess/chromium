@@ -15,7 +15,6 @@
 #include "base/feature.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/time/time.h"
 #include "base/types/optional_ref.h"
 #include "content/browser/preloading/proxy_lookup_client_impl.h"
 #include "content/browser/preloading/resolve_host_client_impl.h"
@@ -23,6 +22,7 @@
 #include "content/public/browser/preconnect_request.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/request_priority.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
 #include "url/gurl.h"
 
@@ -99,7 +99,6 @@ struct CONTENT_EXPORT PreresolveJob {
   // May be equal to nullptr in case of detached job.
   raw_ptr<PreresolveInfo, DanglingUntriaged> info;
   std::unique_ptr<ResolveHostClientImpl> resolve_host_client;
-  base::TimeTicks creation_time;
   base::UnguessableToken network_restrictions_id;
 };
 
@@ -171,6 +170,7 @@ class CONTENT_EXPORT PreconnectManagerImpl : public PreconnectManager {
       const net::NetworkAnonymizationKey& network_anonymization_key,
       const content::StoragePartitionConfig* storage_partition_config,
       const base::UnguessableToken& network_restrictions_id,
+      net::RequestPriority initial_priority,
       ResolveHostCallback callback) const;
   void LookupProxyForUrl(
       const GURL& url,

@@ -230,9 +230,9 @@ chromium_luci.configure_targets(
             # //testing/buildbot/waterfalls.pyl
             "11-x86-emulator": True,
             "android_extra_verbosity": True,
-            "amd_radeon_rx_5500_xt": True,
             "android": True,
             "blink_tests_write_run_histories": True,
+            "chrome_ai_wpt_component_cache": True,
             "chrome-finch-swarming-pool": True,
             "chrome-flame-fleet-pool": True,
             "chrome-intelligence-swarming-pool": True,
@@ -241,7 +241,6 @@ chromium_luci.configure_targets(
             "chromeos-betty-finch": True,
             "ci_only": True,
             "crosier-no-arc": True,
-            "experiments": True,
             "gce": True,
             "gpu_enable_metal_debug_layers": True,
             "gpu_force_angle_d3d11": True,
@@ -294,8 +293,11 @@ chromium_luci.configure_targets(
             "win-arm64": True,
             "win10": True,
             "win10-any": True,
+            "win_cpu_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "win_gpu_ai_wpt_dimensions": targets.IGNORE_UNUSED,
             "win_gpu_gemma4_ai_wpt_dimensions": targets.IGNORE_UNUSED,
+            "win_high_perf_amd_gpu": targets.IGNORE_UNUSED,
+            "win_high_perf_nvidia_gpu": targets.IGNORE_UNUSED,
             "xcode_27_main": True,
             "xctest": True,
 
@@ -372,7 +374,6 @@ chromium_luci.configure_targets(
         variant_overrides = {
             # The following variants are referenced via
             # //testing/buildbot/waterfalls.pyl
-            "AMD_RADEON_RX_5500_XT": True,
             "CHANNEL_BETA": True,
             "CHANNEL_DEV": True,
             "CHANNEL_STABLE": True,
@@ -384,6 +385,9 @@ chromium_luci.configure_targets(
             "IPHONE_13": True,
             "NVIDIA_GEFORCE_GTX_1660": True,
             "SIM_IPHONE_14_18_5": True,
+            "WIN_HIGH_PERF_AMD": True,
+            "WIN_HIGH_PERF_NVIDIA": True,
+            "WIN10_NVIDIA_GTX_1660": True,
         },
     ),
     autoshard_exceptions_file = "//autoshard_exceptions.json",

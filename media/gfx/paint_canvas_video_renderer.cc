@@ -133,19 +133,45 @@ gpu::SyncToken ConvertYuvVideoFrameToRgbSharedImage(
   auto* ri = raster_context_provider->RasterInterface();
   DCHECK(ri);
 
-  auto source_rect = use_visible_rect ? video_frame->visible_rect()
-                                      : gfx::Rect(video_frame->coded_size());
+  // Determine the region of `video_frame` to upload (`upload_rect`) and the
+  // part of it to copy into `dest_shared_image` (`source_rect`). When only the
+  // visible rect is needed, upload just the visible rect expanded to the chroma
+  // sample grid (i.e., starting at `visible_data()`). Otherwise chroma
+  // upsampling during YUV to RGB conversion may sample from padding outside of
+  // the visible rect, which may be uninitialized.
+  gfx::Rect upload_rect(video_frame->coded_size());
+  gfx::Rect source_rect = upload_rect;
+  if (use_visible_rect) {
+    const gfx::Rect& visible_rect = video_frame->visible_rect();
+    // The largest chroma sample size, as used by `visible_data()`.
+    const gfx::Size alignment = VideoFrame::DetermineAlignedSize(
+        video_frame->format(), gfx::Size(1, 1));
+    const gfx::Size aligned_end = VideoFrame::DetermineAlignedSize(
+        video_frame->format(),
+        gfx::Size(visible_rect.right(), visible_rect.bottom()));
+    gfx::Rect aligned_visible_rect;
+    aligned_visible_rect.SetByBounds(
+        visible_rect.x() - visible_rect.x() % alignment.width(),
+        visible_rect.y() - visible_rect.y() % alignment.height(),
+        aligned_end.width(), aligned_end.height());
+    upload_rect.Intersect(aligned_visible_rect);
+    source_rect = visible_rect - upload_rect.OffsetFromOrigin();
+  }
 
   // This SharedImage will be written to (and later read from) via the raster
   // interface.
   gpu::SharedImageUsageSet src_usage = gpu::SHARED_IMAGE_USAGE_RASTER_READ |
                                        gpu::SHARED_IMAGE_USAGE_RASTER_WRITE;
+  const viz::SharedImageFormat si_format =
+      VideoPixelFormatToSharedImageFormat(video_frame->format()).value();
+  CHECK(si_format.is_multi_plane());
 
   // For pure software pixel upload path with video frame that does not have
   // textures.
   auto [src_shared_image, si_sync_token, status] =
       shared_image_cache->GetOrCreateSharedImage(
-          video_frame, raster_context_provider, src_usage);
+          video_frame, raster_context_provider, src_usage, si_format,
+          kUnpremul_SkAlphaType, video_frame->ColorSpace(), upload_rect.size());
   CHECK(src_shared_image);
   if (status == VideoFrameSharedImageCache::Status::kMatchedVideoFrameId) {
     // Since the video frame id matches, no need to upload pixels or copy shared
@@ -153,22 +179,23 @@ gpu::SyncToken ConvertYuvVideoFrameToRgbSharedImage(
     return dest_sync_token;
   }
 
-  const viz::SharedImageFormat si_format = src_shared_image->format();
   constexpr SkAlphaType kPlaneAlphaType = kUnpremul_SkAlphaType;
   std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> pixmaps = {};
 
   for (int plane = 0; plane < si_format.NumberOfPlanes(); ++plane) {
     SkColorType color_type = viz::ToClosestSkColorType(si_format, plane);
-    gfx::Size plane_size =
-        si_format.GetPlaneSize(plane, video_frame->coded_size());
+    gfx::Size plane_size = si_format.GetPlaneSize(plane, upload_rect.size());
     SkImageInfo info = SkImageInfo::Make(gfx::SizeToSkISize(plane_size),
                                          color_type, kPlaneAlphaType);
     pixmaps[plane] =
-        SkPixmap(info, video_frame->data(plane), video_frame->stride(plane));
+        SkPixmap(info,
+                 use_visible_rect ? video_frame->visible_data(plane)
+                                  : video_frame->data(plane),
+                 video_frame->stride(plane));
   }
 
   // Prepare the SkYUVAInfo
-  SkISize video_size = gfx::SizeToSkISize(video_frame->coded_size());
+  SkISize video_size = gfx::SizeToSkISize(upload_rect.size());
   SkYUVAInfo::PlaneConfig plane_config = ToSkYUVAPlaneConfig(si_format);
   SkYUVAInfo::Subsampling subsampling = ToSkYUVASubsampling(si_format);
 
@@ -315,9 +342,10 @@ void ConvertVideoFrameToRGBPixelsTask(const VideoFrame* video_frame,
   if (format == PIXEL_FORMAT_ARGB || format == PIXEL_FORMAT_XRGB ||
       format == PIXEL_FORMAT_ABGR || format == PIXEL_FORMAT_XBGR ||
       format == PIXEL_FORMAT_RGBAF16) {
+    const auto sk_info = GetSkInfoForFormat(format);
     const auto src_info = SkImageInfo::Make(
-        width, rows, SkColorTypeForPlane(format, VideoFrame::Plane::kARGB),
-        media::IsOpaque(format) ? kOpaque_SkAlphaType : kUnpremul_SkAlphaType);
+        width, rows, sk_info.plane_color_types[VideoFrame::Plane::kARGB],
+        sk_info.plane_alpha_types[VideoFrame::Plane::kARGB]);
     const base::span<const uint8_t> src_data =
         plane_meta[VideoFrame::Plane::kARGB].data;
     const size_t src_stride = plane_meta[VideoFrame::Plane::kARGB].stride;
@@ -583,6 +611,7 @@ void ConvertVideoFrameToRGBPixelsTask(const VideoFrame* video_frame,
     case PIXEL_FORMAT_XB30:
     case PIXEL_FORMAT_RGBAF16:
     case PIXEL_FORMAT_Y410:
+    case PIXEL_FORMAT_Y210:
     case PIXEL_FORMAT_UNKNOWN:
       NOTREACHED() << "Only YUV formats and Y16 are supported, got: "
                    << media::VideoPixelFormatToString(format);
@@ -867,30 +896,24 @@ class VideoTextureBacking : public cc::TextureBacking {
 
   sk_sp<SkImage> GetSkImageViaReadback() override {
     CHECK(sequence_checker_.CalledOnValidSequence());
-    sk_sp<SkData> image_pixels =
-        SkData::MakeUninitialized(sk_image_info_.computeMinByteSize());
-    if (!readPixels(sk_image_info_, image_pixels->writable_data(),
-                    sk_image_info_.minRowBytes(), 0, 0)) {
+    SkBitmap bitmap;
+    if (!bitmap.tryAllocPixels(sk_image_info_) ||
+        !readPixels(bitmap.pixmap(), 0, 0)) {
       DLOG(ERROR) << "VideoTextureBacking::GetSkImageViaReadback failed.";
       return nullptr;
     }
-    return SkImages::RasterFromData(sk_image_info_, std::move(image_pixels),
-                                    sk_image_info_.minRowBytes());
+    bitmap.setImmutable(); // To ensure the SkImage create a copy of the pixels
+    return SkImages::RasterFromBitmap(bitmap);
   }
 
-  bool readPixels(const SkImageInfo& dst_info,
-                  void* dst_pixels,
-                  size_t dst_row_bytes,
-                  int src_x,
-                  int src_y) override {
+  bool readPixels(const SkPixmap& dst_pixmap, int src_x, int src_y) override {
     CHECK(sequence_checker_.CalledOnValidSequence());
     CHECK(raster_context_provider_);
     gpu::raster::RasterInterface* ri =
         raster_context_provider_->RasterInterface();
     return ri->ReadbackImagePixels(shared_image_->mailbox(),
-                                   shared_image_->size(), dst_info,
-                                   dst_row_bytes, src_x, src_y,
-                                   /*plane_index=*/0, dst_pixels);
+                                   shared_image_->size(), src_x, src_y,
+                                   /*plane_index=*/0, dst_pixmap);
   }
 
   const gpu::SyncToken& sync_token() {
@@ -1501,6 +1524,7 @@ bool PaintCanvasVideoRenderer::
     case PIXEL_FORMAT_YUV444AP10:
     // TODO(crbug.com/537818862): Add packed YUV GPU conversion support.
     case PIXEL_FORMAT_Y410:
+    case PIXEL_FORMAT_Y210:
     case PIXEL_FORMAT_UNKNOWN:
       return false;
   }
@@ -1573,7 +1597,8 @@ bool PaintCanvasVideoRenderer::CopyVideoFrameYUVDataToGLTexture(
       rgb_si_cache->GetOrCreateSharedImage(
           video_frame.get(), raster_context_provider, src_usage,
           SHARED_IMAGE_FORMAT, kPremul_SkAlphaType,
-          video_frame->CompatRGBColorSpace());
+          video_frame->CompatRGBColorSpace(),
+          video_frame->visible_rect().size());
   CHECK(rgb_shared_image);
 
   // On the source Raster context, do the YUV->RGB conversion.
@@ -1581,17 +1606,16 @@ bool PaintCanvasVideoRenderer::CopyVideoFrameYUVDataToGLTexture(
   // tasks.
   gpu::SyncToken post_conversion_sync_token = CopyVideoFrameToSharedImage(
       raster_context_provider, video_frame, rgb_shared_image, rgb_sync_token,
-      /*use_visible_rect=*/false, yuv_si_cache);
+      /*use_visible_rect=*/true, yuv_si_cache);
 
-  // On the destination GL context, do a copy (with cropping) into the
-  // destination texture.
+  // On the destination GL context, do a copy into the destination texture.
   destination_gl->BindTexture(target, texture);
   destination_gl->TexImage2D(
       target, level, internal_format, video_frame->visible_rect().width(),
       video_frame->visible_rect().height(), 0, format, type, nullptr);
   base::OnceCallback<gpu::SyncToken()> sync_callback =
       destination_gl->CopySharedImageToGLTextureViaTextureCopy(
-          video_frame->visible_rect(), rgb_shared_image.get(),
+          gfx::Rect(video_frame->visible_rect().size()), rgb_shared_image.get(),
           post_conversion_sync_token, target, texture, internal_format, format,
           type, level, dst_alpha_type, dst_origin);
 

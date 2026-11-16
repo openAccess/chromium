@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/containers/span.h"
@@ -37,6 +39,7 @@
 #include "cc/raster/tile_task.h"
 #include "cc/tiles/mipmap_util.h"
 #include "cc/tiles/raster_dark_mode_filter.h"
+#include "components/viz/common/gpu/context_cache_controller.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "gpu/command_buffer/client/context_support.h"
 #include "gpu/command_buffer/client/raster_interface.h"
@@ -1362,6 +1365,16 @@ bool GpuImageDecodeCache::TryFlushPendingWork() {
     return false;
   }
 
+  // Only notify `ContextCacheController` when there is pending unlock or
+  // deletion work to flush. The flush itself always runs below so that the
+  // GPU channel's deferred messages keep being sent every frame, but no-op
+  // calls must not count as busy periods: that would keep invalidating the
+  // controller's pending idle cleanup on every frame.
+  std::unique_ptr<viz::ContextCacheController::ScopedBusy> busy;
+  if (!ids_pending_unlock_.empty() || !ids_pending_deletion_.empty()) {
+    busy = context_->CacheController()->ClientBecameBusy();
+  }
+
   // The calls below will empty the cache on the GPU side. These calls will
   // also happen on the next frame, but we want to call them ourselves here to
   // avoid having to wait for the next frame (which might be a long wait/never
@@ -1377,6 +1390,9 @@ bool GpuImageDecodeCache::TryFlushPendingWork() {
   // deleted. We only need a shallow flush because no glFlush() is required, we
   // merely need the deletion commands to be processed service-side.
   context_->RasterInterface()->ShallowFlushCHROMIUM();
+  if (busy) {
+    context_->CacheController()->ClientBecameNotBusy(std::move(busy));
+  }
   if (context_->GetLock()) {
     CheckContextLockAcquiredIfNecessary();
     context_->GetLock()->Release();

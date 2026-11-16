@@ -98,8 +98,8 @@ class ActiveTabTracker : public TabModelObserver {
 // `ActiveTabTracker` with `TabModelObserver` on Android.
 class ActiveTabObserver : public TabModelListObserver {
  public:
-  ActiveTabObserver() { TabModelList::AddObserver(this); }
-  ~ActiveTabObserver() override { TabModelList::RemoveObserver(this); }
+  ActiveTabObserver() { TabModelList::AddGlobalObserver(this); }
+  ~ActiveTabObserver() override { TabModelList::RemoveGlobalObserver(this); }
 
  private:
   void OnTabModelAdded(TabModel* tab_model) override {
@@ -187,9 +187,12 @@ class ActiveTabObserver : public TabStripModelObserver,
     }
   }
 
-  void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override {
+  void OnTabPinnedStateChanged(tabs::TabHandle tab) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    PageLiveStateDecorator::SetIsPinnedTab(tab->GetContents(), tab->IsPinned());
+    if (tabs::TabInterface* tab_interface = tab.Get()) {
+      PageLiveStateDecorator::SetIsPinnedTab(tab_interface->GetContents(),
+                                             tab_interface->IsPinned());
+    }
   }
 
   // BrowserCollectionObserver:

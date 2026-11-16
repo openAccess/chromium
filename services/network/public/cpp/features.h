@@ -49,6 +49,9 @@ COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOpaqueResponseBlockingErrorsForAllFetches);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kOrbSniffersInRust);
+
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kAcceptCHFrame);
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOffloadAcceptCHFrameCheck);
@@ -76,17 +79,6 @@ BASE_DECLARE_FEATURE(kDisallowInterventionInCorsSafelistedHeaders);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kOmitCorsClientCert);
-
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguage);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguageHTTP);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kReduceAcceptLanguageCacheDuration);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE(kReduceAcceptLanguageCount);
-COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(int, kMaxAcceptLanguage);
 
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kLocalNetworkAccessChecks);
@@ -418,6 +410,40 @@ BASE_DECLARE_FEATURE(kForwardProxyAuthWithoutPrompt);
 // synchronous delay-loading of `cryptbase.dll` (via `dpapi.dll`).
 COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
 BASE_DECLARE_FEATURE(kPrewarmCryptbase);
+
+// Rate-limits cross-process `ProxyConfigPollerClient::OnLazyProxyConfigPoll()`
+// IPCs sent from `ProxyConfigServiceMojo::OnLazyPoll()` during network activity
+// on polling platforms (Windows and iOS), avoiding redundant Browser IO and UI
+// thread wakeups during page-load request bursts that
+// `PollingProxyConfigService` would discard within its 10-second polling
+// interval.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kRateLimitProxyConfigPolls);
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kRateLimitProxyConfigPollsInterval);
+
+// When enabled, applies strictly validated DNS host-mapping rules (restricted
+// to exact `MAP <source_host> <target_host>` clauses within `google.com`) from
+// `kDnsHostMappingExperimentRules` when constructing a `NetworkContext`'s
+// `HostResolver`, unless `--host-resolver-rules` or `--host-rules` is present
+// on the command line.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kDnsHostMappingExperiment);
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE_PARAM(std::string, kDnsHostMappingExperimentRules);
+
+// When enabled, the latency and throughputs of network conditions (e.g. those
+// that DevTools emulates) are applied at the socket layer, so that TCP and TLS
+// handshakes, HTTP/2 prioritization and congestion control experience them,
+// instead of to requests' responses. Their offline emulation still applies at
+// the request level.
+//
+// This feature must not be enabled by default before URL pattern support lands
+// for socket-layer throttling: until then, rules with a URL pattern can only
+// emulate offline, and DevTools clients that throttle requests by URL pattern
+// would break.
+COMPONENT_EXPORT(NETWORK_CPP_FLAGS_AND_SWITCHES)
+BASE_DECLARE_FEATURE(kSocketLayerNetworkThrottling);
 
 }  // namespace network::features
 

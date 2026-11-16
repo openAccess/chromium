@@ -15,7 +15,6 @@
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
@@ -61,8 +60,10 @@
 #include "chrome/browser/ui/views/global_media_controls/media_item_ui_helper.h"
 #include "chrome/browser/ui/views/tabs/groups/avatar_container_view.h"
 #include "chrome/browser/ui/views/tabs/groups/color_picker_view.h"
+#include "chrome/browser/ui/views/tabs/groups/ephemeral_tab_group_promotion_bubble_view.h"
 #include "chrome/browser/ui/views/tabs/groups/manage_sharing_row.h"
 #include "chrome/browser/ui/views/tabs/groups/recent_activity_bubble_dialog_view.h"
+#include "chrome/browser/ui/views/tabs/groups/tab_group_editor_title_field.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
 #include "chrome/common/url_constants.h"
@@ -79,7 +80,6 @@
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/vector_icons/vector_icons.h"
-#include "tab_group_editor_bubble_view.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -121,16 +121,6 @@
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(IS_CHROMEOS)
-#include "ash/ash_element_identifiers.h"
-#include "ui/base/interaction/element_tracker.h"
-#include "ui/strings/grit/ui_strings.h"
-#endif
-
-#if BUILDFLAG(IS_OZONE)
-#include "ui/ozone/public/ozone_platform.h"
-#endif
 
 namespace {
 // The amount of vertical padding in dips the separator should have to
@@ -223,59 +213,21 @@ std::unique_ptr<views::Widget> TabGroupEditorBubbleView::Show(
   BrowserUserEducationInterface::From(browser)->NotifyAdditionalConditionEvent(
       "tab_group_editor_shown");
 
+  // Ephemeral (non-group focus) groups cannot be edited; they get a dedicated
+  // bubble that offers to promote them into a regular group instead.
+  if (browser->GetTabStripModel()->IsEphemeralTabGroup(group)) {
+    return EphemeralTabGroupPromotionBubbleView::Show(
+        browser, group, anchor_view, anchor_rect,
+        stop_context_menu_propagation);
+  }
+
   // If `header_view` is not null, use `header_view` as the `anchor_view`.
   TabGroupEditorBubbleView* tab_group_editor_bubble_view =
       new TabGroupEditorBubbleView(browser, group, anchor_view, anchor_rect,
                                    stop_context_menu_propagation);
 
-  // In ozone/wayland platforms, BubbleDialogDelegateView ignores calls to
-  // `set_adjust_if_offscreen()`. Instead calculate if there is not enough room
-  // below or to the trailing side of the bubble and adjust the arrow position
-  // instead.
-#if BUILDFLAG(IS_OZONE)
-  if (!ui::OzonePlatform::GetInstance()
-           ->GetPlatformProperties()
-           .supports_global_screen_coordinates) {
-    const gfx::Size bubble_size =
-        tab_group_editor_bubble_view->GetPreferredSize();
-    const BrowserView* const browser_view =
-        BrowserView::GetBrowserViewForBrowser(browser);
-    if (browser_view && browser_view->GetWidget()) {
-      const gfx::Rect window_bounds =
-          browser_view->GetWidget()->GetWindowBoundsInScreen();
-      const gfx::Rect bubble_anchor_rect =
-          tab_group_editor_bubble_view->GetAnchorRect();
-      const bool near_bottom =
-          window_bounds.height() > 2 * bubble_size.height() &&
-          window_bounds.bottom() - bubble_anchor_rect.bottom() <
-              bubble_size.height();
-      const bool near_trailing =
-          window_bounds.width() > 2 * bubble_size.width() &&
-          (base::i18n::IsRTL()
-               ? bubble_anchor_rect.x() - window_bounds.x() <
-                     bubble_size.width()
-               : window_bounds.right() - bubble_anchor_rect.right() <
-                     bubble_size.width());
-      if (near_bottom && near_trailing) {
-        tab_group_editor_bubble_view->SetArrow(
-            views::BubbleBorder::Arrow::BOTTOM_RIGHT);
-      } else if (near_bottom) {
-        tab_group_editor_bubble_view->SetArrow(
-            views::BubbleBorder::Arrow::BOTTOM_LEFT);
-      } else if (near_trailing) {
-        tab_group_editor_bubble_view->SetArrow(
-            views::BubbleBorder::Arrow::TOP_RIGHT);
-      }
-    }
-  }
-#endif
-
   std::unique_ptr<views::Widget> widget =
       BubbleDialogDelegate::CreateBubble(tab_group_editor_bubble_view);
-  tab_group_editor_bubble_view->set_adjust_if_offscreen(true);
-  tab_group_editor_bubble_view->GetBubbleFrameView()
-      ->SetPreferredArrowAdjustment(
-          views::BubbleFrameView::PreferredArrowAdjustment::kOffset);
   widget->Show();
   return widget;
 }
@@ -297,6 +249,9 @@ gfx::Rect TabGroupEditorBubbleView::GetAnchorRect() const {
 }
 
 void TabGroupEditorBubbleView::AddedToWidget() {
+  GetBubbleFrameView()->SetPreferredArrowAdjustment(
+      views::BubbleFrameView::PreferredArrowAdjustment::kOffset);
+
   const auto* const color_provider = GetColorProvider();
 
   for (views::LabelButton* menu_item : simple_menu_items_) {
@@ -374,6 +329,7 @@ TabGroupEditorBubbleView::TabGroupEditorBubbleView(
     SetAnchorRect(anchor_rect.value());
   }
   set_margins(gfx::Insets());
+  set_adjust_if_offscreen(true);
 
   SetModalType(ui::mojom::ModalType::kNone);
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -458,13 +414,6 @@ void TabGroupEditorBubbleView::OnDisplayTabletStateChanged(
 }
 
 void TabGroupEditorBubbleView::UpdateGroup() {
-  if (IsEphemeralTabGroup()) {
-    return;
-  }
-  UpdateGroupVisuals();
-}
-
-void TabGroupEditorBubbleView::UpdateGroupVisuals() {
   const std::optional<int> selected_element =
       color_selector_->GetSelectedElement();
   TabGroup* const tab_group =
@@ -566,15 +515,7 @@ bool TabGroupEditorBubbleView::IsGroupShared() const {
   return maybe_saved_group.value().is_shared_tab_group();
 }
 
-bool TabGroupEditorBubbleView::IsEphemeralTabGroup() const {
-  return browser_ && browser_->GetTabStripModel() &&
-         browser_->GetTabStripModel()->IsEphemeralTabGroup(group_);
-}
-
 bool TabGroupEditorBubbleView::ShouldShowSavedFooter() const {
-  if (IsEphemeralTabGroup()) {
-    return false;
-  }
   PrefService* pref_service = browser_->GetProfile()->GetPrefs();
   return (CanSaveGroups() && pref_service &&
           saved_tab_group_prefs::GetLearnMoreFooterShownCount(pref_service) <
@@ -599,26 +540,9 @@ bool TabGroupEditorBubbleView::OwnsGroup() const {
       browser_->GetProfile(), maybe_saved_group->saved_guid());
 }
 
-void TabGroupEditorBubbleView::OnEphemeralGroupPromoted() {
-  UpdateGroupVisuals();
-  browser_->GetTabStripModel()->PromoteEphemeralTabGroup(group_);
-  OnBubbleClose();
-  if (GetWidget()) {
-    GetWidget()->CloseWithReason(
-        views::Widget::ClosedReason::kAcceptButtonClicked);
-  }
-}
-
-void TabGroupEditorBubbleView::CancelEphemeralGroup() {
-  if (GetWidget()) {
-    GetWidget()->CloseWithReason(
-        views::Widget::ClosedReason::kCancelButtonClicked);
-  }
-}
-
 void TabGroupEditorBubbleView::RebuildMenuContents() {
   simple_menu_items_.clear();
-  std::unique_ptr<TitleField> title_field;
+  std::unique_ptr<TabGroupEditorTitleField> title_field;
   if (title_field_) {
     // Reuse title_field_ if one exists, but update with the latest title. This
     // is different from what we do for other child views, as creating a new
@@ -635,17 +559,9 @@ void TabGroupEditorBubbleView::RebuildMenuContents() {
 
   RemoveAllChildViews();
 
-  if (IsEphemeralTabGroup()) {
-    AddChildView(BuildEphemeralGroupTitle());
-  }
-
   title_field_ = AddChildView(title_field ? std::move(title_field)
                                           : BuildTitleField(title_at_opening_));
   color_selector_ = AddChildView(BuildColorPicker());
-  if (IsEphemeralTabGroup()) {
-    AddChildView(BuildEphemeralGroupButtons());
-    return;
-  }
   AddChildView(BuildSeparator());
 
   if (!CanSaveGroups()) {
@@ -767,7 +683,7 @@ std::unique_ptr<ColorPickerView> TabGroupEditorBubbleView::BuildColorPicker() {
 
   std::unique_ptr<ColorPickerView> color_selector =
       std::make_unique<ColorPickerView>(
-          this, colors_, initial_color_id,
+          colors_, initial_color_id,
           base::BindRepeating(&TabGroupEditorBubbleView::UpdateGroup,
                               base::Unretained(this)));
 
@@ -775,57 +691,6 @@ std::unique_ptr<ColorPickerView> TabGroupEditorBubbleView::BuildColorPicker() {
                               gfx::Insets::VH(0, horizontal_spacing));
 
   return color_selector;
-}
-
-std::unique_ptr<views::Label>
-TabGroupEditorBubbleView::BuildEphemeralGroupTitle() {
-  auto title_label = std::make_unique<views::Label>(
-      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CONVERT_TO_GROUP),
-      views::style::CONTEXT_LABEL, views::style::STYLE_HEADLINE_5);
-  title_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-
-  const gfx::Insets control_insets = GetControlInsets();
-  title_label->SetProperty(
-      views::kMarginsKey,
-      gfx::Insets::TLBR(control_insets.top(), control_insets.left(), 0,
-                        control_insets.right()));
-
-  return title_label;
-}
-
-std::unique_ptr<views::View>
-TabGroupEditorBubbleView::BuildEphemeralGroupButtons() {
-  auto button_row = std::make_unique<views::View>();
-  const int button_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
-      views::DISTANCE_RELATED_BUTTON_HORIZONTAL);
-  button_row->SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kHorizontal)
-      .SetDefault(
-          views::kFlexBehaviorKey,
-          views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
-                                   views::MaximumFlexSizeRule::kUnbounded)
-              .WithWeight(1));
-
-  button_row->SetProperty(views::kMarginsKey, GetControlInsets());
-
-  auto cancel_button = std::make_unique<views::MdTextButton>(
-      base::BindRepeating(&TabGroupEditorBubbleView::CancelEphemeralGroup,
-                          base::Unretained(this)),
-      l10n_util::GetStringUTF16(IDS_CANCEL));
-  cancel_button->SetProperty(views::kMarginsKey,
-                             gfx::Insets::TLBR(0, 0, 0, button_spacing / 2));
-
-  auto create_button = std::make_unique<views::MdTextButton>(
-      base::BindRepeating(&TabGroupEditorBubbleView::OnEphemeralGroupPromoted,
-                          base::Unretained(this)),
-      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CREATE_GROUP));
-  create_button->SetStyle(ui::ButtonStyle::kProminent);
-  create_button->SetProperty(views::kMarginsKey,
-                             gfx::Insets::TLBR(0, button_spacing / 2, 0, 0));
-
-  button_row->AddChildView(std::move(cancel_button));
-  button_row->AddChildView(std::move(create_button));
-  return button_row;
 }
 
 std::unique_ptr<views::LabelButton>
@@ -1150,7 +1015,6 @@ void TabGroupEditorBubbleView::CloseGroupPressed() {
   }
 }
 
-
 void TabGroupEditorBubbleView::DeleteGroupPressed() {
   base::RecordAction(
       base::UserMetricsAction("TabGroups_TabGroupBubble_DeleteGroup"));
@@ -1226,6 +1090,8 @@ void TabGroupEditorBubbleView::MoveGroupToNewWindowPressed() {
 }
 
 void TabGroupEditorBubbleView::FocusGroupPressed() {
+  base::RecordAction(
+      base::UserMetricsAction("TabGroups_TabGroupBubble_FocusGroup"));
   shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
       shared_tab_group_metrics::TabGroupEditorBubbleAction::
           kFocusOrUnfocusGroup);
@@ -1237,6 +1103,8 @@ void TabGroupEditorBubbleView::FocusGroupPressed() {
 }
 
 void TabGroupEditorBubbleView::UnfocusGroupPressed() {
+  base::RecordAction(
+      base::UserMetricsAction("TabGroups_TabGroupBubble_UnfocusGroup"));
   shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
       shared_tab_group_metrics::TabGroupEditorBubbleAction::
           kFocusOrUnfocusGroup);
@@ -1271,9 +1139,6 @@ bool TabGroupEditorBubbleView::CanMoveGroupToNewWindow() {
 }
 
 void TabGroupEditorBubbleView::OnBubbleClose() {
-  if (IsEphemeralTabGroup()) {
-    return;
-  }
   if (title_at_opening_ != title_field_->GetText()) {
     base::RecordAction(
         base::UserMetricsAction("TabGroups_TabGroupBubble_NameChanged"));
@@ -1299,53 +1164,8 @@ void TabGroupEditorBubbleView::OnBrowserDidClose(
   browser_ = nullptr;
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
-void TabGroupEditorBubbleView::PreventCloseOnDeactivateForEmoji() {
-  if (!close_on_deactivate_pin_) {
-    close_on_deactivate_pin_ = PreventCloseOnDeactivate();
-  }
-
-  if (!emoji_picker_hidden_subscription_) {
-    emoji_picker_hidden_subscription_ =
-        ui::ElementTracker::GetElementTracker()
-            ->AddElementHiddenInAnyContextCallback(
-                ash::kEmojiPickerElementId,
-                base::BindRepeating(
-                    &TabGroupEditorBubbleView::OnEmojiPickerClosed,
-                    base::Unretained(this)));
-  }
-}
-
-void TabGroupEditorBubbleView::ClearCloseOnDeactivatePin() {
-  close_on_deactivate_pin_.reset();
-}
-
-void TabGroupEditorBubbleView::OnEmojiPickerClosed(
-    ui::TrackedElement* element) {
-  emoji_picker_hidden_subscription_ = {};
-
-  ClearCloseOnDeactivatePin();
-
-  // Close the editor bubble if it is no longer active, i.e. when the user
-  // clicks elsewhere, off of both the bubble and emoji picker.
-  if (GetWidget() && !(GetWidget()->IsActive())) {
-    GetWidget()->Close();
-  }
-}
-#endif
-
 tab_groups::TabGroupColorId TabGroupEditorBubbleView::InitColorSet() {
-  colors_.clear();
-  tab_groups::ColorLabelMap color_map = tab_groups::GetTabGroupColorLabelMap();
-
-  const std::vector<tab_groups::TabGroupColorId> color_ordering =
-      TabGroupModel::GetColorOrdering();
-
-  // TODO(tluk) remove the reliance on the ordering of the color pairs in the
-  // vector and use the ColorLabelMap structure instead.
-  for (const tab_groups::TabGroupColorId color_id : color_ordering) {
-    colors_.emplace_back(color_id, color_map.at(color_id));
-  }
+  colors_ = ColorPickerView::GetTabGroupColors();
 
   // Keep track of the current group's color, to be returned as the initial
   // selected value.
@@ -1394,12 +1214,8 @@ bool TabGroupEditorBubbleView::TitleFieldController::HandleKeyEvent(
       return true;
     }
     if (key_code == ui::VKEY_RETURN) {
-      if (parent_->IsEphemeralTabGroup()) {
-        parent_->OnEphemeralGroupPromoted();
-      } else {
-        parent_->GetWidget()->CloseWithReason(
-            views::Widget::ClosedReason::kUnspecified);
-      }
+      parent_->GetWidget()->CloseWithReason(
+          views::Widget::ClosedReason::kUnspecified);
       return true;
     }
   }
@@ -1407,53 +1223,10 @@ bool TabGroupEditorBubbleView::TitleFieldController::HandleKeyEvent(
   return false;
 }
 
-void TabGroupEditorBubbleView::TitleField::ShowContextMenu(
-    const gfx::Point& p,
-    ui::mojom::MenuSourceType source_type) {
-  // There is no easy way to stop the propagation of a ShowContextMenu event,
-  // which is sometimes used to open the bubble itself. So when the bubble is
-  // opened this way, we manually hide the textfield's context menu the first
-  // time. Otherwise, the textfield, which is automatically focused, would show
-  // an extra context menu when the bubble first opens.
-  if (stop_context_menu_propagation_) {
-    stop_context_menu_propagation_ = false;
-    return;
-  }
-  views::Textfield::ShowContextMenu(p, source_type);
-}
-
-#if BUILDFLAG(IS_CHROMEOS)
-void TabGroupEditorBubbleView::TitleField::ExecuteCommand(int command_id,
-                                                          int event_flags) {
-  if (command_id == IDS_CONTENT_CONTEXT_EMOJI) {
-    parent_->PreventCloseOnDeactivateForEmoji();
-  }
-  views::Textfield::ExecuteCommand(command_id, event_flags);
-}
-#endif
-
-std::unique_ptr<TabGroupEditorBubbleView::TitleField>
+std::unique_ptr<TabGroupEditorTitleField>
 TabGroupEditorBubbleView::BuildTitleField(const std::u16string& title) {
-  std::unique_ptr<TitleField> title_field =
-      std::make_unique<TitleField>(*this, stop_context_menu_propagation_);
-  title_field->SetText(title);
-  title_field->GetViewAccessibility().SetName(l10n_util::GetStringUTF16(
-      IDS_TAB_GROUP_HEADER_CXMENU_TAB_GROUP_TITLE_ACCESSIBLE_NAME));
-  title_field->SetPlaceholderText(
-      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_BUBBLE_TITLE_PLACEHOLDER));
-  title_field->set_controller(&title_field_controller_);
-  title_field->SetProperty(views::kElementIdentifierKey,
-                           kTabGroupEditorBubbleId);
-
-  const gfx::Insets control_insets = GetControlInsets();
-  const int vertical_spacing = control_insets.top();
-  const int horizontal_spacing = control_insets.left();
-
-  title_field->SetProperty(
-      views::kMarginsKey,
-      gfx::Insets::VH(vertical_spacing, horizontal_spacing));
-
-  return title_field;
+  return TabGroupEditorTitleField::Create(&title_field_controller_, title,
+                                          stop_context_menu_propagation_);
 }
 
 std::u16string TabGroupEditorBubbleView::GetGroupTitle() {
@@ -1465,9 +1238,6 @@ std::u16string TabGroupEditorBubbleView::GetGroupTitle() {
                    ->title()
              : std::u16string();
 }
-
-BEGIN_METADATA(TabGroupEditorBubbleView, TitleField)
-END_METADATA
 
 TabGroupEditorBubbleView::Footer::Footer(BrowserWindowInterface* browser) {
   views::FlexLayout* flex_layout =

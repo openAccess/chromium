@@ -5,10 +5,13 @@
 #ifndef CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_BUBBLE_CONTROLLER_BASE_H_
 #define CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_BUBBLE_CONTROLLER_BASE_H_
 
+#include <optional>
+#include <string>
+
+#include "base/callback_list.h"
 #include "base/check_deref.h"
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/autofill/bubble_controller_base.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/actions/action_id.h"
@@ -16,6 +19,10 @@
 namespace content {
 class WebContents;
 }
+
+namespace tabs {
+class TabInterface;
+}  // namespace tabs
 
 namespace autofill {
 
@@ -26,7 +33,31 @@ class AutofillBubbleHandler;
 class AutofillBubbleControllerBase : public BubbleControllerBase,
                                      public content::WebContentsObserver {
  public:
-  explicit AutofillBubbleControllerBase(content::WebContents* web_contents);
+  // Configures how `AutofillBubbleControllerBase` interacts with the browser
+  // action (`action_id`) associated with this bubble.
+  struct PageActionConfig {
+    actions::ActionId action_id;
+
+    // If true, `UpdatePageActionIcon()` shows and hides `action_id`'s omnibox
+    // icon based on `ShouldShowPageAction()`. Set to false if omnibox icon
+    // visibility is owned by a separate `*PageActionController` or if the
+    // bubble never shows an omnibox icon.
+    bool should_manage_visibility = false;
+
+    // If true, marks `action_id`'s `ActionItem` as showing a bubble while this
+    // bubble is open (`ActionItem::SetIsShowingBubble()`). This prevents
+    // clicking the anchor icon from immediately re-triggering the action after
+    // mouse-down closes the bubble, and lets `PageActionController` suppress
+    // competing anchored messages.
+    // TODO(crbug.com/582209796): Enable for pinnable toolbar actions once
+    // clicking a `PinnedActionToolbarButton` dismisses inactive bubbles.
+    bool should_sync_bubble_showing_state = false;
+  };
+
+  AutofillBubbleControllerBase(content::WebContents* web_contents,
+                               PageActionConfig page_action_config);
+  AutofillBubbleControllerBase(tabs::TabInterface* tab_interface,
+                               PageActionConfig page_action_config);
   ~AutofillBubbleControllerBase() override;
 
   // Calls the bubble manager to show the bubble on desktop. On Android, just
@@ -81,31 +112,21 @@ class AutofillBubbleControllerBase : public BubbleControllerBase,
     return DoNotShowNextQueuedBubbleGuard(this, {});
   }
 
-  bool IsBubbleManagerEnabled() const;
-
-  // Migrated page action bubble controller subclasses should override this
-  // method to supply their page action's `ActionId`.
-  virtual std::optional<actions::ActionId> GetActionIdForPageAction();
-
-  // This method should only be overridden if `GetActionIdForPageAction` is not
-  // overridden (page action not migrated yet) or to override the
-  // `ActionId`->`PageActionIconType` mapping defined in
-  // `page_action_properties_provider.cc`.
-  virtual std::optional<PageActionIconType> GetPageActionIconType();
+  bool IsBubbleManagerEnabled();
 
   // Subclasses should implement this method to actually show the bubble and
   // potentially log metrics.
   virtual void DoShowBubble() = 0;
 
   // Updates page action visibility.
-  virtual void UpdatePageActionIcon();
+  void UpdatePageActionIcon();
 
   // Subclasses can override this method to provide custom page action
-  // visibility logic with the new page action framework.
+  // visibility logic.
   virtual bool ShouldShowPageAction();
 
-  // For migrated page actions, subclasses can override this method to supply
-  // custom tooltip text.
+  // Subclasses can override this method to supply custom tooltip text for their
+  // page action.
   virtual std::optional<std::u16string> GetPageActionTooltipText();
 
   // Returns `false` if a bubble is already queued to be shown.
@@ -119,6 +140,8 @@ class AutofillBubbleControllerBase : public BubbleControllerBase,
 
   AutofillBubbleBase* bubble_view() const { return bubble_view_; }
 
+  tabs::TabInterface* GetTabInterface();
+
   AutofillBubbleHandler* GetAutofillBubbleHandler();
 
   // True if anytime, the bubble was shown to the user in the lifecycle of the
@@ -131,6 +154,18 @@ class AutofillBubbleControllerBase : public BubbleControllerBase,
   bool bubble_hide_initiated_by_bubble_manager_ = false;
 
  private:
+  void WillDiscardContents(tabs::TabInterface* tab,
+                           content::WebContents* old_contents,
+                           content::WebContents* new_contents);
+  void SetActionItemIsShowingBubble(bool showing);
+
+  // Non-null when constructed with `tabs::TabInterface*`.
+  const raw_ptr<tabs::TabInterface> tab_interface_ = nullptr;
+
+  const PageActionConfig page_action_config_;
+
+  base::CallbackListSubscription will_discard_contents_subscription_;
+
   // This indicates to the `BubbleManager` whether it should show the next
   // bubble.
   bool allow_bubble_manager_to_show_next_ = true;

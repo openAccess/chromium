@@ -36,6 +36,7 @@ import android.view.ViewStub;
 
 import androidx.annotation.ColorInt;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -87,6 +88,7 @@ import org.chromium.chrome.browser.glic.GlicEnabling;
 import org.chromium.chrome.browser.glic.GlicKeyedService;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
+import org.chromium.chrome.browser.init.ActivityProfileProvider;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.layouts.animation.CompositorAnimationHandler;
 import org.chromium.chrome.browser.layouts.components.VirtualView;
@@ -96,6 +98,7 @@ import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestrator;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
 import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
@@ -104,6 +107,7 @@ import org.chromium.chrome.browser.tab.TabObscuringHandler;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.ActionConfirmationManager;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tabmodel.SupportedProfileType;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -111,6 +115,7 @@ import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabstrip.StripVisibilityState;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
 import org.chromium.chrome.browser.toolbar.ToolbarManager;
 import org.chromium.chrome.browser.toolbar.top.ToolbarControlContainer;
@@ -171,6 +176,7 @@ public class StripLayoutHelperManagerTest {
     @Mock private MultiInstanceOrchestrator mMultiInstanceOrchestrator;
     @Mock private DragAndDropDelegate mDragDropDelegate;
     @Mock private TabModelSelector mTabModelSelector;
+    @Mock private TabWindowManager mTabWindowManager;
     @Mock private TabCreatorManager mTabCreatorManager;
     @Mock private TabModel mStandardTabModel;
     @Mock private Profile mProfile;
@@ -220,6 +226,7 @@ public class StripLayoutHelperManagerTest {
     private Activity mActivity;
     private ToolbarControlContainer mControlContainer;
     private ViewStub mTabHoverCardViewStub;
+    private ViewStub mTabGroupHoverCardViewStub;
     private SettableMonotonicObservableSupplier<TabModelStartupInfo> mTabModelStartupInfoSupplier;
     private SettableNonNullObservableSupplier<Integer> mTabStripHeightSupplier;
     private int mToolbarPrimaryColor;
@@ -231,6 +238,8 @@ public class StripLayoutHelperManagerTest {
     private static final int FADE_TRANSITION_DURATION_MS = 200;
     private static final int FIRST_TAB_ID = 1;
     private static final int SECOND_TAB_ID = 2;
+
+    private JniUniquePtr<NtbWebUiCoordinator.NativeTabStripNtbWebUiHost> mNtbWebUiNativePtr;
 
     @Before
     public void beforeTest() {
@@ -249,9 +258,12 @@ public class StripLayoutHelperManagerTest {
         when(mUserPrefsJniMock.get(mProfile)).thenReturn(mPrefService);
         PrefChangeRegistrarJni.setInstanceForTesting(mPrefChangeRegistrarJniMock);
         when(mPrefChangeRegistrarJniMock.init(any(), any())).thenReturn(1L);
+        mNtbWebUiNativePtr = JniUniquePtr.createForTesting(1L);
         NtbWebUiCoordinatorJni.setInstanceForTesting(mNtbWebUiCoordinatorJniMock);
-        when(mNtbWebUiCoordinatorJniMock.init(any(), anyInt(), anyLong())).thenReturn(1L);
-        when(mNtbWebUiCoordinatorJniMock.getWebContents(1L)).thenReturn(mWebContents);
+        when(mNtbWebUiCoordinatorJniMock.init(any(), any(), anyLong()))
+                .thenReturn(mNtbWebUiNativePtr);
+        when(mNtbWebUiCoordinatorJniMock.getWebContents(mNtbWebUiNativePtr))
+                .thenReturn(mWebContents);
         when(mWebContents.getEventForwarder()).thenReturn(mEventForwarder);
 
         mLayerTitleCacheSupplier.set(mLayerTitleCache);
@@ -260,6 +272,7 @@ public class StripLayoutHelperManagerTest {
 
         mControlContainer = new ToolbarControlContainer(mActivity, null);
         mTabHoverCardViewStub = new ViewStub(mActivity);
+        mTabGroupHoverCardViewStub = new ViewStub(mActivity);
         when(mToolbarManager.getStatusBarColorController()).thenReturn(mStatusBarColorController);
         when(mDesktopWindowStateManager.isInUnfocusedDesktopWindow()).thenReturn(false);
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
@@ -281,9 +294,11 @@ public class StripLayoutHelperManagerTest {
         if (mStripLayoutHelperManager != null) {
             mStripLayoutHelperManager.destroy();
         }
+        mNtbWebUiNativePtr.destroy();
         TabStripSceneLayer.setTestFlag(false);
         CompositorAnimationHandler.setTestingMode(false);
         DeviceInfo.resetIsDesktopForTesting();
+        ProfileManager.resetForTesting();
     }
 
     private void initializeTest() {
@@ -314,6 +329,7 @@ public class StripLayoutHelperManagerTest {
                         mDragDropDelegate,
                         mControlContainer,
                         mTabHoverCardViewStub,
+                        mTabGroupHoverCardViewStub,
                         mTabContentManagerSupplier,
                         mBrowserControlStateProvider,
                         mWindowAndroid,
@@ -335,7 +351,8 @@ public class StripLayoutHelperManagerTest {
                         mTabObscuringHandler,
                         /* canActivateTabLayoutToggleMenuSupplier= */ null,
                         mMenuOrKeyboardActionController,
-                        /* activityCreationUptimeMs= */ 0L);
+                        /* activityCreationUptimeMs= */ 0L,
+                        () -> mTabWindowManager);
         ShadowLooper.idleMainLooper();
         mStripLayoutHelperManager.setTabStripTreeProviderForTesting(mTabStripTreeProvider);
         mStripLayoutHelperManager.setTabModelSelector(mTabModelSelector, mTabCreatorManager);
@@ -1567,20 +1584,65 @@ public class StripLayoutHelperManagerTest {
     public void testNtbWebUiCoordinator_Lifecycle() {
         mStripLayoutHelperManager.destroy();
         IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
+
+        ActivityProfileProvider profileProviderSupplier =
+                new ActivityProfileProvider(mLifecycleDispatcher);
+        WebUiPreloadManager.maybePreload(
+                mLifecycleDispatcher,
+                mWindowAndroid,
+                profileProviderSupplier,
+                SupportedProfileType.REGULAR,
+                /* isTablet= */ true,
+                123L);
+        verify(mNtbWebUiCoordinatorJniMock, never()).init(any(), any(), anyLong());
+
+        ProfileManager.setLastUsedProfileForTesting(mProfile);
+        verify(mNtbWebUiCoordinatorJniMock).init(any(), eq(mProfile), eq(123L));
+        verify(mNtbWebUiCoordinatorJniMock, never()).setTabModel(any(), anyInt());
+        // The prewarmed WebUI starts loading only once the WebContents is attached to the window.
+        InOrder loadOrder = Mockito.inOrder(mNtbWebUiCoordinatorJniMock, mWebContents);
+        loadOrder.verify(mNtbWebUiCoordinatorJniMock).init(any(), eq(mProfile), eq(123L));
+        loadOrder.verify(mWebContents).setDelegates(any(), any(), any(), any(), any());
+        loadOrder.verify(mNtbWebUiCoordinatorJniMock).startLoad(mNtbWebUiNativePtr);
+        assertEquals(0, mControlContainer.getChildCount());
+
         initializeTest();
 
         NtbWebUiCoordinator coordinator =
                 mStripLayoutHelperManager.getNtbWebUiCoordinatorForTesting();
-        verify(mNtbWebUiCoordinatorJniMock).init(eq(coordinator), eq(1), eq(0L));
-        assertEquals(1L, mStripLayoutHelperManager.getNtbWebUiNativePtr());
+        verify(mNtbWebUiCoordinatorJniMock).init(eq(coordinator), eq(mProfile), eq(123L));
+        verify(mNtbWebUiCoordinatorJniMock).setTabModel(mNtbWebUiNativePtr, 1);
+        assertEquals(mNtbWebUiNativePtr, mStripLayoutHelperManager.getNtbWebUiNativePtr());
         assertEquals(1, mControlContainer.getChildCount());
         assertTrue(AccessibilityState.getListeners().contains(coordinator));
 
         mStripLayoutHelperManager.destroy();
-        verify(mNtbWebUiCoordinatorJniMock).destroy(1L);
-        assertEquals(0L, mStripLayoutHelperManager.getNtbWebUiNativePtr());
+        assertNull(mStripLayoutHelperManager.getNtbWebUiNativePtr());
         assertEquals(0, mControlContainer.getChildCount());
         assertFalse(AccessibilityState.getListeners().contains(coordinator));
+    }
+
+    @Test
+    public void testSetProfileOnSceneLayer_NativeNewTabButton() {
+        // initializeTest() in beforeTest() already set the TabModelSelector with the WebUI new tab
+        // button disabled.
+        assertNull(mStripLayoutHelperManager.getNtbWebUiNativePtr());
+        verify(mTabStripTreeProvider).setProfile(mProfile);
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_NEW_TAB_BUTTON_TABSTRIP_WEB_UI,
+        ChromeFeatureList.ANDROID_OPEN_INCOGNITO_AS_WINDOW
+    })
+    public void testSetProfileOnSceneLayer_NotCalledWithNtbWebUi() {
+        mStripLayoutHelperManager.destroy();
+        IncognitoUtils.setShouldOpenIncognitoAsWindowForTesting(true);
+        clearInvocations(mTabStripTreeProvider);
+        initializeTest();
+
+        assertEquals(mNtbWebUiNativePtr, mStripLayoutHelperManager.getNtbWebUiNativePtr());
+        verify(mTabStripTreeProvider, never()).setProfile(any());
     }
 
     @Test
@@ -1620,13 +1682,15 @@ public class StripLayoutHelperManagerTest {
         assertEquals(expectedWidthPx, inputView.getLayoutParams().width);
         assertEquals(expectedInputHeightPx, inputView.getLayoutParams().height);
         verify(mEventForwarder).setContainerViewOriginInCompositorSurface(expectedXPx, expectedYPx);
-        verify(mNtbWebUiCoordinatorJniMock).resize(1L, expectedWidthPx, expectedHeightPx);
+        verify(mNtbWebUiCoordinatorJniMock)
+                .resize(mNtbWebUiNativePtr, expectedWidthPx, expectedHeightPx);
 
         // Updating the scene tree again without changing button dimensions should not re-trigger
         // native resize.
         mStripLayoutHelperManager.getUpdatedSceneOverlayTree(
                 new RectF(), new RectF(), mResourceManager);
-        verify(mNtbWebUiCoordinatorJniMock, times(1)).resize(eq(1L), anyInt(), anyInt());
+        verify(mNtbWebUiCoordinatorJniMock, times(1))
+                .resize(eq(mNtbWebUiNativePtr), anyInt(), anyInt());
     }
 
     @Test

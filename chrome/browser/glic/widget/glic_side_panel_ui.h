@@ -71,11 +71,11 @@ class GlicSidePanelUi
   bool IsShowing() const override;
   bool IsShowingOrBackgrounded() const override;
   void ClosePanel() override;
-  void OnReload() override;
   void OnMicrophoneStatusChanged(mojom::MicrophoneStatus status) override {}
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void ContentsCreated() override;
   void NativeLoadingStateChanged(bool is_showing) override;
 
   void SidePanelStateChanged(GlicSidePanelCoordinator::State state);
@@ -85,6 +85,8 @@ class GlicSidePanelUi
   bool HasFocus() override;
   bool ActivateBrowser() override;
   void Zoom(mojom::ZoomAction zoom_action, ZoomSource source) override;
+  bool Print() override;
+  bool Find() override;
   bool HasSelectionOverlay() override;
   void CloseSelectionOverlay() override;
   base::WeakPtr<views::View> GetView() override;

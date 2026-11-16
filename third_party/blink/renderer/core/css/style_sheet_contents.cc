@@ -81,6 +81,7 @@ StyleSheetContents::StyleSheetContents(const CSSParserContext* context,
       is_mutable_(false),
       has_font_face_rule_(false),
       has_media_queries_(false),
+      has_mixin_rules_(false),
       has_single_owner_document_(true),
       is_used_from_text_cache_(false),
       is_used_from_resource_cache_(false),
@@ -102,6 +103,7 @@ StyleSheetContents::StyleSheetContents(const StyleSheetContents& o)
       is_mutable_(false),
       has_font_face_rule_(o.has_font_face_rule_),
       has_media_queries_(o.has_media_queries_),
+      has_mixin_rules_(o.has_mixin_rules_),
       has_single_owner_document_(true),
       is_used_from_text_cache_(false),
       is_used_from_resource_cache_(false),
@@ -226,6 +228,16 @@ void StyleSheetContents::SetHasMediaQueries() {
   has_media_queries_ = true;
   if (ParentStyleSheet()) {
     ParentStyleSheet()->SetHasMediaQueries();
+  }
+}
+
+void StyleSheetContents::SetHasMixinRules() {
+  if (has_mixin_rules_) {
+    return;
+  }
+  has_mixin_rules_ = true;
+  if (StyleSheetContents* parent_sheet = ParentStyleSheet()) {
+    parent_sheet->SetHasMixinRules();
   }
 }
 
@@ -587,17 +599,6 @@ bool StyleSheetContents::HasSingleOwnerNode() const {
   return RootStyleSheet()->HasOneClient();
 }
 
-Node* StyleSheetContents::SingleOwnerNode() const {
-  StyleSheetContents* root = RootStyleSheet();
-  if (!root->HasOneClient()) {
-    return nullptr;
-  }
-  if (root->loading_clients_.size()) {
-    return (*root->loading_clients_.begin())->ownerNode();
-  }
-  return (*root->completed_clients_.begin())->ownerNode();
-}
-
 Document* StyleSheetContents::SingleOwnerDocument() const {
   StyleSheetContents* root = RootStyleSheet();
   return root->ClientSingleOwnerDocument();
@@ -607,7 +608,7 @@ CSSStyleSheet* StyleSheetContents::ClientInTreeScope(
     const TreeScope& tree_scope) const {
   auto is_in_tree_scope = [&](CSSStyleSheet* sheet,
                               const TreeScope& tree_scope) -> bool {
-    return sheet->IsAdoptedByTreeScope(tree_scope) ||
+    return sheet->IsReferencedByTreeScope(tree_scope) ||
            (sheet->ownerNode() != nullptr &&
             sheet->ownerNode()->GetTreeScope() == tree_scope);
   };
@@ -682,7 +683,6 @@ static bool ChildRulesHaveFailedOrCanceledSubresources(
       case StyleRuleBase::kCustomMedia:
       case StyleRuleBase::kLocation:
         break;
-      case StyleRuleBase::kResult:
       case StyleRuleBase::kApplyMixin:
       case StyleRuleBase::kContents:
       case StyleRuleBase::kPrivate:
@@ -872,7 +872,8 @@ static bool ExtractMixinsFromSheet(const StyleSheetContents& contents,
                                    MixinMap& mixins) {
   bool found = false;
   for (const StyleRuleImport* import_rule : contents.ImportRules()) {
-    if (!import_rule->GetStyleSheet()) {
+    if (!import_rule->GetStyleSheet() ||
+        !import_rule->GetStyleSheet()->HasMixinRules()) {
       continue;
     }
     if (!import_rule->IsSupported()) {
@@ -891,6 +892,10 @@ static bool ExtractMixinsFromSheet(const StyleSheetContents& contents,
 }
 
 MixinMap& StyleSheetContents::ExtractMixins(const MediaQueryEvaluator& medium) {
+  if (!HasMixinRules()) {
+    DCHECK(!mixins_.HasMixins());
+    return mixins_;
+  }
   if (has_cached_mixins_ &&
       !medium.DidResultsChange(mixins_.media_query_set_results)) {
     return mixins_;

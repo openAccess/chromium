@@ -15,12 +15,12 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/settings/pages/date_time/date_time_handler.h"
 #include "chrome/browser/ui/webui/ash/settings/search/search_tag_registry.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "chromeos/ash/components/settings/system_settings_provider.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "chromeos/ash/components/timezone/timezone_util.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -93,11 +93,13 @@ bool IsFineGrainedTimeZoneEnabled() {
 DateTimeSection::DateTimeSection(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
+    system::TimeZoneResolverManager* timezone_resolver_manager,
     Profile* profile,
     SearchTagRegistry* search_tag_registry)
     : OsSettingsSection(profile, search_tag_registry),
       local_state_(CHECK_DEREF(local_state)),
-      application_locale_storage_(CHECK_DEREF(application_locale_storage)) {
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      timezone_resolver_manager_(CHECK_DEREF(timezone_resolver_manager)) {
   CHECK(profile);
   SearchTagRegistry::ScopedTagUpdater updater = registry()->StartUpdate();
 
@@ -166,8 +168,8 @@ void DateTimeSection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 }
 
 void DateTimeSection::AddHandlers(content::WebUI* web_ui) {
-  web_ui->AddMessageHandler(
-      std::make_unique<DateTimeHandler>(&local_state_.get()));
+  web_ui->AddMessageHandler(std::make_unique<DateTimeHandler>(
+      &local_state_.get(), &timezone_resolver_manager_.get()));
 }
 
 int DateTimeSection::GetSectionNameMessageId() const {

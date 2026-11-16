@@ -7,6 +7,11 @@ package org.chromium.base.test.transit;
 import static org.chromium.base.test.transit.Condition.whether;
 
 import android.app.Activity;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.os.Build;
+import android.view.View;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -33,9 +38,7 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
     private static int sLastStationId;
 
     private final int mId;
-    // All facilities that have ever been entered. Exited ones remain so that the history is can
-    // be queried.
-    private final List<Facility<?>> mFacilities = new ArrayList<>();
+    private final List<Facility<?>> mDefaultFacilities = new ArrayList<>();
     private final String mName;
     private final @Nullable Class<HostActivityT> mActivityClass;
 
@@ -58,35 +61,21 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
         }
     }
 
-    protected List<Facility<?>> getFacilitiesWithPhase(@Phase int phase) {
-        List<Facility<?>> facilities = new ArrayList<>();
-        for (Facility<?> facility : mFacilities) {
-            if (facility.getPhase() == phase) {
-                facilities.add(facility);
-            }
-        }
-        return facilities;
-    }
-
     /**
-     * Forcibly finish this Station and all its Facilities that are not FINISHED yet.
+     * Declare a Facility that is entered together with this Station in every Trip to it.
      *
-     * <p>Used when Public Transit abandons a Station it does not trust anymore, e.g. {@link
-     * TrafficControl#hopOffPublicTransit()}. Finishing the Facilities too ensures their Elements
-     * fail loudly if read afterwards, instead of returning stale values.
+     * <p>Call before the Station is transitioned to, e.g. in its constructor. Passing the same
+     * Facility to {@link TripBuilder#arriveAt(Station, Facility[])} as well is fine; it is entered
+     * once.
      */
-    void finishForcibly() {
-        // Iterate over a copy: finishing a Facility runs its transition hooks, which must not be
-        // able to invalidate the iteration by registering or removing Facilities.
-        for (Facility<?> facility : new ArrayList<>(mFacilities)) {
-            facility.setStateFinishedForcibly();
-        }
-        setStateFinishedForcibly();
+    protected <FacilityT extends Facility<?>> FacilityT declareDefaultFacility(FacilityT facility) {
+        assertInPhase(Phase.NEW);
+        mDefaultFacilities.add(facility);
+        return facility;
     }
 
-    void registerFacility(Facility<?> facility) {
-        facility.setHostStation(this);
-        mFacilities.add(facility);
+    List<Facility<?>> getDefaultFacilities() {
+        return mDefaultFacilities;
     }
 
     @Override
@@ -186,7 +175,6 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
     /** Finish the activity associated with this station. */
     public void finishActivity() {
         assert mActivityElement != null;
-        mActivityElement.expectActivityDestroyed();
         runTo(() -> getActivity().finish()).reachLastStop();
     }
 
@@ -204,5 +192,70 @@ public abstract class Station<HostActivityT extends Activity> extends Conditiona
                                                 activity.getWindow()
                                                         .getDecorView()
                                                         .hasWindowFocus())));
+    }
+
+    /**
+     * Rotates the activity to the given orientation and waits for the orientation and layout to
+     * settle.
+     *
+     * @param orientation Either {@link Configuration#ORIENTATION_LANDSCAPE} or {@link
+     *     Configuration#ORIENTATION_PORTRAIT}.
+     */
+    public void rotateTo(int orientation) {
+        assert orientation == Configuration.ORIENTATION_LANDSCAPE
+                        || orientation == Configuration.ORIENTATION_PORTRAIT
+                : "Incorrect orientation supplied: " + orientation;
+        int screenOrientation =
+                orientation == Configuration.ORIENTATION_LANDSCAPE
+                        ? ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                        : ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
+        Condition settledCondition =
+                UiThreadCondition.from(
+                        "Station orientation and layout settled: " + orientation,
+                        () -> checkRotationSettled(orientation));
+        HostActivityT activity = getActivity();
+        if (activity.getResources().getConfiguration().orientation == orientation) {
+            noopTo().waitFor(settledCondition);
+            return;
+        }
+        runTo(() -> activity.setRequestedOrientation(screenOrientation))
+                .withPossiblyAlreadyFulfilled()
+                .waitFor(settledCondition);
+    }
+
+    private ConditionStatus checkRotationSettled(int orientation) {
+        HostActivityT activity = getActivity();
+        if (activity.getResources().getConfiguration().orientation != orientation) {
+            return Condition.notFulfilled("Orientation not updated yet");
+        }
+        View decorView = activity.getWindow().getDecorView();
+        if (!areDecorBoundsSettled(activity, decorView, orientation)) {
+            return Condition.notFulfilled("DecorView bounds not settled for configuration");
+        }
+        if (decorView.isLayoutRequested()) {
+            return Condition.notFulfilled("DecorView layout pending");
+        }
+        return Condition.fulfilled();
+    }
+
+    private static boolean areDecorBoundsSettled(
+            Activity activity, View decorView, int orientation) {
+        int width = decorView.getWidth();
+        int height = decorView.getHeight();
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+        // WindowMetrics#getBounds is available on API 30+ (Android R+). On API 30+, match the
+        // decor view bounds directly against the window metrics for the configuration.
+        // On API 29, compare aspect ratio against orientation to ensure the orientation
+        // change dimensions have taken effect.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Rect bounds = activity.getWindowManager().getCurrentWindowMetrics().getBounds();
+            if (!bounds.isEmpty()) {
+                return width == bounds.width() && height == bounds.height();
+            }
+        }
+        boolean isLandscape = orientation == Configuration.ORIENTATION_LANDSCAPE;
+        return width != height && isLandscape == (width > height);
     }
 }

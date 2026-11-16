@@ -45,7 +45,6 @@ import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.back_press.BackPressMetrics;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.Tab.LoadUrlResult;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -81,7 +80,6 @@ import java.util.concurrent.TimeUnit;
 
 /** Navigate in UrlBar tests. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class NavigateTest {
     @ClassRule
@@ -799,7 +797,6 @@ public class NavigateTest {
 
     @Test
     @DisableIf.Build(hardware_is = "sprout", message = "fails on android-one: crbug.com/40439157")
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(crbug.com/574520523): Re-enable.
     @MediumTest
     @Feature({"Navigation"})
     @CommandLineFlags.Add({"ip-address-space-overrides=[::1]:0=public"})
@@ -858,19 +855,21 @@ public class NavigateTest {
             // Wait for the proper URL to be served.
             Assert.assertTrue(urlServedSemaphore.tryAcquire(5, TimeUnit.SECONDS));
 
-            // Wait for the url to change.
+            // Wait for the url and body text to update once navigation commits and the new
+            // document body is parsed.
             final Tab tab =
                     ThreadUtils.runOnUiThreadBlocking(() -> TabModelUtils.getCurrentTab(model));
             waitForPageScaleFactor(0.75f);
             CriteriaHelper.pollInstrumentationThread(
                     () -> {
                         Criteria.checkThat(getTabUrlOnUiThread(tab), Matchers.is(mockedUrl));
+                        Criteria.checkThat(
+                                "Still showing spoofed data",
+                                getTabBodyText(tab),
+                                Matchers.is("\"Real\""));
                     },
                     5000,
                     50);
-
-            // Make sure that we're showing new content now.
-            Assert.assertEquals("Still showing spoofed data", "\"Real\"", getTabBodyText(tab));
         } finally {
             webServer.shutdown();
         }

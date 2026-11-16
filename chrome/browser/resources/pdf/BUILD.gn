@@ -91,6 +91,7 @@ build_webui("build") {
   if (enable_pdf_ink2) {
     ts_files += [
       "elements/ink_annotation_brush_mixin.ts",
+      "elements/ink_annotation_signature_mixin.ts",
       "elements/ink_annotation_text_mixin.ts",
       "elements/ink_brush_selector.html.ts",
       "elements/ink_brush_selector.ts",
@@ -105,6 +106,8 @@ build_webui("build") {
       "elements/ink_text_observer_mixin.ts",
       "elements/selectable_icon_button.html.ts",
       "elements/selectable_icon_button.ts",
+      "elements/signature_selector.html.ts",
+      "elements/signature_selector.ts",
       "elements/text_alignment_selector.html.ts",
       "elements/text_alignment_selector.ts",
       "elements/text_styles_selector.html.ts",
@@ -179,6 +182,7 @@ build_webui("build") {
       "elements/ink_text_box.css",
       "elements/selectable_icon_button.css",
       "elements/side_panel_shared.css",
+      "elements/signature_selector.css",
       "elements/text_alignment_selector.css",
       "elements/text_styles_selector.css",
       "elements/viewer_bottom_toolbar.css",

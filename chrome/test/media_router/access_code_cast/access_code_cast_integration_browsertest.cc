@@ -10,6 +10,7 @@
 #include "base/byte_size.h"
 #include "base/memory/ptr_util.h"
 #include "base/strings/string_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -36,7 +37,6 @@
 #include "components/media_router/common/test/test_helper.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
@@ -152,12 +152,11 @@ void AccessCodeCastIntegrationBrowserTest::OnWillCreateBrowserContextServices(
   // Handler so MockMediaRouter will respond to requests to create a route.
   // Will construct a RouteRequestResult based on the set result code and
   // then call the handler's callback, which should call the page's callback.
-  ON_CALL(*media_router_, CreateRouteInternal(_, _, _, _, _, _))
+  ON_CALL(*media_router_, CreateRoute(_, _, _, _, _, _))
       .WillByDefault(
           [this](const MediaSource::Id& source_id, const MediaSink::Id& sink_id,
                  const url::Origin& origin, content::WebContents* web_contents,
-                 MediaRouteResponseCallback& callback,
-                 base::TimeDelta timeout) {
+                 MediaRouteResponseCallback callback, base::TimeDelta timeout) {
             std::unique_ptr<RouteRequestResult> result;
             if (result_code_ == mojom::RouteRequestResultCode::OK) {
               MediaSource source(source_id);
@@ -220,19 +219,14 @@ void AccessCodeCastIntegrationBrowserTest::SetUpPrimaryAccountWithHostedDomain(
     bool sign_in_account) {
   ASSERT_TRUE(identity_test_environment_);
 
-  signin::ConsentLevel consent_level =
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync;
-
   // Ensure that the stub user is signed in.
   identity_test_environment_->MakePrimaryAccountAvailable(
-      user_manager::kStubUserEmail, consent_level);
+      user_manager::kStubUserEmail, signin::ConsentLevel::kSignin);
 
   if (sign_in_account) {
     signin::MakePrimaryAccountAvailable(
         IdentityManagerFactory::GetForProfile(profile),
-        user_manager::kStubUserEmail, consent_level);
+        user_manager::kStubUserEmail, signin::ConsentLevel::kSignin);
   }
 
   identity_test_environment_->SetAutomaticIssueOfAccessTokens(true);
@@ -575,8 +569,8 @@ void AccessCodeCastIntegrationBrowserTest::ExpectStartRouteCallFromTabMirroring(
         media_router::MediaRouterFactory::GetInstance()
             ->GetApiForBrowserContext(browser()->GetProfile()));
   }
-  EXPECT_CALL(*media_router, CreateRouteInternal(media_source_id, sink_name, _,
-                                                 web_contents, _, timeout));
+  EXPECT_CALL(*media_router, CreateRoute(media_source_id, sink_name, _,
+                                         web_contents, _, timeout));
 }
 
 AccessCodeCastPrefUpdater*

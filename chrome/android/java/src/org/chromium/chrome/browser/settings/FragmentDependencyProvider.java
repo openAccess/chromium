@@ -13,6 +13,8 @@ import androidx.fragment.app.FragmentManager;
 
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.base.supplier.OneshotSupplierImpl;
+import org.chromium.base.supplier.SupplierUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.accessibility.settings.ChromeAccessibilitySettingsDelegate;
@@ -23,6 +25,7 @@ import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsCoor
 import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextCoordinator;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
+import org.chromium.chrome.browser.customtabs.CustomTabLauncherImpl;
 import org.chromium.chrome.browser.device_lock.DeviceLockActivityLauncherImpl;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsController;
 import org.chromium.chrome.browser.image_descriptions.ImageDescriptionsSettings;
@@ -53,9 +56,9 @@ import org.chromium.components.browser_ui.accessibility.AccessibilitySettings;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.settings.FragmentSettingsNavigation;
 import org.chromium.components.browser_ui.settings.SearchViewProvider;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.site_settings.BaseSiteSettingsFragment;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.ui.base.ActivityResultTracker;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
@@ -88,6 +91,13 @@ public class FragmentDependencyProvider extends FragmentManager.FragmentLifecycl
      */
     private final boolean mShownInTab;
 
+    // The UI suppliers of a provider made by createPending(), until populateFrom() has resolved
+    // them from the real provider. Null for a provider constructed with real suppliers.
+    private @Nullable OneshotSupplierImpl<WindowAndroid> mPendingWindowAndroidSupplier;
+    private @Nullable OneshotSupplierImpl<SnackbarManager> mPendingSnackbarManagerSupplier;
+    private @Nullable OneshotSupplierImpl<BottomSheetController>
+            mPendingBottomSheetControllerSupplier;
+
     public FragmentDependencyProvider(
             Activity activity,
             boolean shownInTab,
@@ -115,6 +125,71 @@ public class FragmentDependencyProvider extends FragmentManager.FragmentLifecycl
         attachDependencies(fragmentManager, fragment);
     }
 
+    /**
+     * Creates a provider for settings in a tab whose UI dependencies do not exist yet, e.g. for a
+     * {@link SettingsHostFragment} the FragmentManager restores during an activity recreation,
+     * before the activity has a WindowAndroid, SnackbarManager or BottomSheetController. Their
+     * suppliers stay empty until {@link #populateFrom} resolves them. https://crbug.com/579078839
+     */
+    public static FragmentDependencyProvider createPending(
+            Activity activity,
+            Profile profile,
+            ActivityResultTracker activityResultTracker,
+            MonotonicObservableSupplier<ModalDialogManager> modalDialogManagerSupplier) {
+        OneshotSupplierImpl<WindowAndroid> windowAndroidSupplier = new OneshotSupplierImpl<>();
+        OneshotSupplierImpl<SnackbarManager> snackbarManagerSupplier = new OneshotSupplierImpl<>();
+        OneshotSupplierImpl<BottomSheetController> bottomSheetControllerSupplier =
+                new OneshotSupplierImpl<>();
+        FragmentDependencyProvider provider =
+                new FragmentDependencyProvider(
+                        activity,
+                        /* shownInTab= */ true,
+                        profile,
+                        windowAndroidSupplier,
+                        activityResultTracker,
+                        snackbarManagerSupplier,
+                        bottomSheetControllerSupplier,
+                        modalDialogManagerSupplier,
+                        SupplierUtils.ofNull());
+        provider.mPendingWindowAndroidSupplier = windowAndroidSupplier;
+        provider.mPendingSnackbarManagerSupplier = snackbarManagerSupplier;
+        provider.mPendingBottomSheetControllerSupplier = bottomSheetControllerSupplier;
+        return provider;
+    }
+
+    /**
+     * Resolves the suppliers of a provider made by {@link #createPending} from {@code source}, so
+     * whatever a fragment captured from this provider early sees the source's values. Does nothing
+     * once resolved, or on a provider constructed with real suppliers.
+     */
+    public void populateFrom(FragmentDependencyProvider source) {
+        assert mActivity == source.mActivity;
+        if (mPendingWindowAndroidSupplier != null) {
+            forwardOneshot(source.mWindowAndroidSupplier, mPendingWindowAndroidSupplier);
+            mPendingWindowAndroidSupplier = null;
+        }
+        if (mPendingSnackbarManagerSupplier != null) {
+            forwardOneshot(source.mSnackbarManagerSupplier, mPendingSnackbarManagerSupplier);
+            mPendingSnackbarManagerSupplier = null;
+        }
+        if (mPendingBottomSheetControllerSupplier != null) {
+            forwardOneshot(
+                    source.mBottomSheetControllerSupplier, mPendingBottomSheetControllerSupplier);
+            mPendingBottomSheetControllerSupplier = null;
+        }
+    }
+
+    /** Sets {@code target} from {@code source}, synchronously if {@code source} has a value. */
+    private static <T> void forwardOneshot(
+            OneshotSupplier<T> source, OneshotSupplierImpl<T> target) {
+        T value = source.get();
+        if (value != null) {
+            target.set(value);
+        } else {
+            source.onAvailable(target::set);
+        }
+    }
+
     /** Attaches dependencies to a fragment. */
     public void attachDependencies(FragmentManager fragmentManager, Fragment fragment) {
         // Common dependencies attachments.
@@ -133,8 +208,8 @@ public class FragmentDependencyProvider extends FragmentManager.FragmentLifecycl
                             : SettingsNavigationFactory.createSettingsNavigation(mActivity);
             fragmentSettingsNavigation.setSettingsNavigation(settingsNavigation);
         }
-        if (fragment instanceof SettingsCustomTabLauncher.SettingsCustomTabLauncherClient client) {
-            client.setCustomTabLauncher(new SettingsCustomTabLauncherImpl());
+        if (fragment instanceof CustomTabLauncher.CustomTabLauncherClient client) {
+            client.setCustomTabLauncher(new CustomTabLauncherImpl());
         }
 
         if (!mShownInTab) {
@@ -174,7 +249,7 @@ public class FragmentDependencyProvider extends FragmentManager.FragmentLifecycl
                     SyncServiceFactory.getForProfile(mProfile),
                     new PasswordStoreBridge(mProfile),
                     PasswordManagerHelper.getForProfile(mProfile),
-                    new SettingsCustomTabLauncherImpl());
+                    new CustomTabLauncherImpl());
         }
         if (fragment instanceof SearchEngineSettings settings) {
             settings.setDisableAutoSwitchRunnable(
@@ -231,7 +306,7 @@ public class FragmentDependencyProvider extends FragmentManager.FragmentLifecycl
                             mBottomSheetControllerSupplier,
                             mModalDialogManagerSupplier,
                             SigninAndHistorySyncActivityLauncherImpl.get(),
-                            new SettingsCustomTabLauncherImpl()));
+                            new CustomTabLauncherImpl()));
         }
         if (fragment instanceof AccountManagementFragment accountManagementFragment) {
             accountManagementFragment.setSnackbarManagerSupplier(mSnackbarManagerSupplier);

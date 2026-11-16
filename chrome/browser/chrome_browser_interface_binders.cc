@@ -40,11 +40,6 @@
 #include "chrome/services/speech/buildflags/buildflags.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/credential_management/content_credential_manager.h"
-#include "components/dom_distiller/content/browser/distillability_driver.h"
-#include "components/dom_distiller/content/browser/distiller_javascript_service_impl.h"
-#include "components/dom_distiller/content/common/mojom/distillability_service.mojom.h"
-#include "components/dom_distiller/content/common/mojom/distiller_javascript_service.mojom.h"
-#include "components/dom_distiller/core/dom_distiller_service.h"
 #include "components/language_detection/content/common/language_detection.mojom.h"
 #include "components/live_caption/caption_util.h"
 #include "components/live_caption/pref_names.h"
@@ -59,6 +54,11 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/spellcheck/spellcheck_buildflags.h"
 #include "components/translate/content/common/translate.mojom.h"
+#include "components/web_distiller/content/browser/distillability_driver.h"
+#include "components/web_distiller/content/browser/distiller_javascript_service_impl.h"
+#include "components/web_distiller/content/common/mojom/distillability_service.mojom.h"
+#include "components/web_distiller/content/common/mojom/distiller_javascript_service.mojom.h"
+#include "components/web_distiller/core/web_distiller_service.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -83,6 +83,8 @@
 #include "third_party/blink/public/public_buildflags.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/accessibility/ax_mode.h"
+#include "url/origin.h"
+#include "url/url_constants.h"
 
 #if BUILDFLAG(ENABLE_UNHANDLED_TAP)
 #include "chrome/browser/android/contextualsearch/unhandled_tap_notifier_impl.h"  // nogncheck crbug.com/40147906
@@ -206,23 +208,34 @@ void BindImageAnnotator(
                            ui::AXMode::kLabelImages)) {
     return;
   }
-  AccessibilityLabelsServiceFactory::GetForProfile(
-      Profile::FromBrowserContext(
-          frame_host->GetProcess()->GetBrowserContext()))
-      ->BindImageAnnotator(std::move(receiver));
+  Profile* profile = Profile::FromBrowserContext(
+      frame_host->GetProcess()->GetBrowserContext());
+  url::Origin origin = frame_host->GetLastCommittedOrigin();
+  // Derive a unique opaque origin in two cases:
+  // - Most pages with file:// urls will have paths which are different from
+  //   other local files. However, all file:// urls share the same origin, which
+  //   could lead to cross-origin data leaks if we don't partition them.
+  // - Off the record profiles share the parent profile's
+  //   AccessibilityLabelsService, so use an opaque origin to prevent leaking
+  //   cached results between regular and incognito sessions.
+  if (origin.scheme() == url::kFileScheme || profile->IsOffTheRecord()) {
+    origin = origin.DeriveNewOpaqueOrigin();
+  }
+  AccessibilityLabelsServiceFactory::GetForProfile(profile)->BindImageAnnotator(
+      std::move(receiver), origin);
 }
 
 void BindDistillabilityService(
     content::RenderFrameHost* const frame_host,
-    mojo::PendingReceiver<dom_distiller::mojom::DistillabilityService>
+    mojo::PendingReceiver<web_distiller::mojom::DistillabilityService>
         receiver) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(frame_host);
   if (!web_contents) {
     return;
   }
 
-  dom_distiller::DistillabilityDriver* driver =
-      dom_distiller::DistillabilityDriver::FromWebContents(web_contents);
+  web_distiller::DistillabilityDriver* driver =
+      web_distiller::DistillabilityDriver::FromWebContents(web_contents);
   if (!driver) {
     return;
   }
@@ -238,22 +251,22 @@ void BindDistillabilityService(
 
 void BindDistillerJavaScriptService(
     content::RenderFrameHost* const frame_host,
-    mojo::PendingReceiver<dom_distiller::mojom::DistillerJavaScriptService>
+    mojo::PendingReceiver<web_distiller::mojom::DistillerJavaScriptService>
         receiver) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(frame_host);
   if (!web_contents) {
     return;
   }
 
-  dom_distiller::DomDistillerService* dom_distiller_service =
+  web_distiller::WebDistillerService* web_distiller_service =
       reader_mode::ReaderModeServiceFactory::GetForBrowserContext(
           web_contents->GetBrowserContext());
 #if BUILDFLAG(IS_ANDROID)
   static_cast<reader_mode::android::ReaderModeUIHandleAndroid*>(
-      dom_distiller_service->GetDistillerUIHandle())
+      web_distiller_service->GetDistillerUIHandle())
       ->set_render_frame_host(frame_host);
 #endif
-  CreateDistillerJavaScriptService(dom_distiller_service->GetWeakPtr(),
+  CreateDistillerJavaScriptService(web_distiller_service->GetWeakPtr(),
                                    std::move(receiver));
 }
 
@@ -499,10 +512,10 @@ void PopulateChromeFrameBinders(
   map->Add<blink::mojom::LCPCriticalPathPredictorHost>(
       &predictors::LCPCriticalPathPredictorHost::Create);
 
-  map->Add<dom_distiller::mojom::DistillabilityService>(
+  map->Add<web_distiller::mojom::DistillabilityService>(
       &BindDistillabilityService);
 
-  map->Add<dom_distiller::mojom::DistillerJavaScriptService>(
+  map->Add<web_distiller::mojom::DistillerJavaScriptService>(
       &BindDistillerJavaScriptService);
 
   map->Add<prerender::mojom::NoStatePrefetchCanceler>(

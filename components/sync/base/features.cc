@@ -5,6 +5,7 @@
 #include "components/sync/base/features.h"
 
 #include "base/feature_list.h"
+#include "build/build_config.h"
 
 namespace syncer {
 
@@ -19,10 +20,11 @@ BASE_FEATURE(kSyncContextualTask, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSyncGeminiThread, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSyncEncryptedTabContextContainer,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kSyncEncryptedTabContext, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSyncThemesIos, base::FEATURE_DISABLED_BY_DEFAULT);
+#if BUILDFLAG(IS_IOS)
+BASE_FEATURE(kSyncThemesIos, base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_IOS)
 
 BASE_FEATURE(kNewTabPageCustomizationThemeSync,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -33,7 +35,9 @@ BASE_FEATURE(kSyncNotebook, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSyncJourney, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSyncAutofillEntitySuppression, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_WITH_COUNTRY_RESTRICTIONS(kSyncAutofillEntitySuppression,
+                                       base::FEATURE_ENABLED_FOR_COUNTRIES,
+                                       "us");
 
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_IOS)
 BASE_FEATURE(kUnoPhase2FollowUp, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -56,20 +60,8 @@ bool IsContactInfoDataTypeForCustomPassphraseUsersEnabled() {
 BASE_FEATURE(kSyncEnableContactInfoDataTypeForDasherUsers,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kReplaceSyncPromosWithSignInPromos,
-#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_CHROMEOS)
-             base::FEATURE_ENABLED_BY_DEFAULT
-#else
-             base::FEATURE_DISABLED_BY_DEFAULT
-#endif
-);
-
 bool IsReplaceSyncPromosWithSignInPromosEnabled() {
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
   return true;
-#else
-  return base::FeatureList::IsEnabled(kReplaceSyncPromosWithSignInPromos);
-#endif
 }
 
 // Like DECLARE_SYNC_AUTOFILL_AI_FEATURE but for the definition.
@@ -154,6 +146,9 @@ BASE_FEATURE(kCrossDeviceTabsInAppMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
 BASE_FEATURE(kSyncRecordDeviceStatisticsMetrics,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSyncRecordDeviceStatisticsMetricsJitter,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 }  // namespace syncer

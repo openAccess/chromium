@@ -9,6 +9,7 @@ import android.text.TextUtils;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniType;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.url.GURL;
@@ -37,25 +38,33 @@ public final class MediaImage {
         mSizes = sizes;
     }
 
-    /**
-     * @return The URL of this MediaImage.
-     */
-    public GURL getSrc() {
+    /** Returns the URL of this MediaImage. */
+    @CalledByNative
+    public @JniType("GURL") GURL getSrc() {
         return mSrc;
     }
 
-    /**
-     * @return The MIME type of this MediaImage.
-     */
-    public String getType() {
+    /** Returns the MIME type of this MediaImage. */
+    @CalledByNative
+    public @JniType("std::u16string") String getType() {
         return mType;
     }
 
-    /**
-     * @return The hinted sizes of this MediaImage.
-     */
+    /** Returns the hinted sizes of this MediaImage. */
     public List<Rect> getSizes() {
         return mSizes;
+    }
+
+    @CalledByNative
+    @JniType("std::vector<int32_t>")
+    int[] getSizesFlatArray() {
+        int[] result = new int[mSizes.size() * 2];
+        for (int i = 0; i < mSizes.size(); ++i) {
+            Rect r = mSizes.get(i);
+            result[i * 2] = r.width();
+            result[i * 2 + 1] = r.height();
+        }
+        return result;
     }
 
     /** Sets the URL of this MediaImage. */
@@ -85,8 +94,8 @@ public final class MediaImage {
     }
 
     /**
-     * @return The hash code of this {@link MediaImage}. The method uses the same algorithm in
-     * {@link java.util.List} for combinine hash values.
+     * Returns the hash code of this {@link MediaImage}. The method uses the same algorithm in
+     * {@link java.util.List} for combining hash values.
      */
     @Override
     public int hashCode() {

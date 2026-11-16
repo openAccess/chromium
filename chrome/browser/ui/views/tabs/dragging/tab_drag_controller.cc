@@ -43,12 +43,13 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/tabs/dragging/drag_session_data.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_context.h"
 #include "chrome/browser/ui/views/tabs/dragging/tab_drag_target.h"
 #include "chrome/browser/ui/views/tabs/dragging/window_finder.h"
-#include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
+#include "chrome/browser/ui/waap/window_creation.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
@@ -76,6 +77,7 @@
 #include "ui/events/gestures/gesture_recognizer.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/image/image_skia_operations.h"
 #include "ui/gfx/range/range.h"
@@ -293,6 +295,16 @@ TabDragPointResolver* GetTabDragPointResolver() {
     g_tab_drag_point_resolver_ = &resolver;
   }
   return g_tab_drag_point_resolver_;
+}
+
+// Returns the restored invisible frame insets of the browser window that hosts
+// `widget`. See BrowserWidget::GetInvisibleFrameInsets().
+gfx::Insets GetRestoredInvisibleFrameInsets(views::Widget* widget) {
+  BrowserView* const browser_view = BrowserView::GetBrowserViewForNativeWindow(
+      widget->GetTopLevelWidget()->GetNativeWindow());
+  return browser_view ? browser_view->browser_widget()->GetInvisibleFrameInsets(
+                            /*restored=*/true)
+                      : gfx::Insets();
 }
 
 }  // namespace
@@ -1728,9 +1740,6 @@ TabDragController::Detach(ReleaseCapture release_capture) {
     }
   }
 
-  const std::vector<tab_groups::TabGroupId> groups_to_move =
-      attached_model->GetGroupsDestroyedFromRemovingIndices(dragged_indices);
-
   // If we are detaching from the source tabstrip, make sure the tab that was
   // initially active is selected. This ensures that when the currently active
   // dragged tab is removed, TabStripModel will fall back to activating the
@@ -1760,23 +1769,22 @@ TabDragController::Detach(ReleaseCapture release_capture) {
           attached_model->DetachTabsAndCollectionsForInsertion(dragged_indices);
 
   if (detaching_ephemeral_group_header) {
-    // DetachTabsAndCollectionsForInsertion() dissolves ephemeral focused groups
+    // DetachTabsAndCollectionsForInsertion() removes ephemeral focused groups
     // into ungrouped tabs so they are not promoted to a permanent group in the
     // target window. Update `drag_data_` to reflect that the group header no
     // longer exists and the remaining drag is a normal multi-tab drag.
-    const tab_groups::TabGroupId dissolved_group =
-        *drag_data_.group_header_id();
+    const tab_groups::TabGroupId removed_group = *drag_data_.group_header_id();
     std::erase_if(drag_data_.tab_drag_data_, [&](const TabDragData& datum) {
       return datum.is_group_header && datum.tab_group_data.has_value() &&
-             datum.tab_group_data->group_id == dissolved_group;
+             datum.tab_group_data->group_id == removed_group;
     });
     for (TabDragData& datum : drag_data_.tab_drag_data_) {
       if (datum.tab_group_data.has_value() &&
-          datum.tab_group_data->group_id == dissolved_group) {
+          datum.tab_group_data->group_id == removed_group) {
         datum.tab_group_data.reset();
       }
     }
-    drag_data_.dragging_groups.erase(dissolved_group);
+    drag_data_.dragging_groups.erase(removed_group);
     drag_data_.group_header_drag_data_.reset();
     drag_data_.source_view_index_ = 0;
   }
@@ -1905,8 +1913,13 @@ TabDragController::DetachIntoNewBrowserAndRunMoveLoop(
       can_release_capture_ ? ReleaseCapture::kReleaseCapture
                            : ReleaseCapture::kDontReleaseCapture;
 #endif
+  // Lay out the new browser window before detaching so
+  // `GetTabStripDraggableBounds()` is valid.
+  dragged_widget->LayoutRootViewIfNecessary();
+
   TabDragContext* new_context =
       attached_context_->GetContextForNewBrowser(dragged_browser_view);
+  new_context->PrepareForDetachedWindowDrag(attached_context_, point_in_screen);
   DetachAndAttachToNewContext(release_capture, new_context);
 
   if (ShouldDragWindowUsingSystemDnD()) {
@@ -1922,9 +1935,9 @@ TabDragController::DetachIntoNewBrowserAndRunMoveLoop(
                            drag_bounds);
   }
 
-  const gfx::Vector2d drag_offset = CalculateWindowDragOffset();
-
 #if (!BUILDFLAG(IS_MAC))
+  dragged_widget->LayoutRootViewIfNecessary();
+  const gfx::Vector2d drag_offset = CalculateWindowDragOffset();
   // Set the window origin before making it visible, to avoid flicker on
   // Windows. See https://crbug.com/394529650
   dragged_widget->SetBounds(
@@ -1943,9 +1956,10 @@ TabDragController::DetachIntoNewBrowserAndRunMoveLoop(
   }
   dragged_widget->SetVisibilityChangedAnimationsEnabled(true);
 
-  // When InitialWebUI is enabled, the asynchronous loading of WebUI might cause
-  // the detached browser window to be momentarily invisible during creation. To
-  // prevent the mouse drag from racing ahead of the window rendering and
+  // When the WebUIReloadButtonDeferBrowserViewShow param is on,
+  // InitialWebUIManager::RequestDeferShow() holds the detached window's show
+  // until the toolbar WebUI loads, so the window can still be invisible here.
+  // To prevent the mouse drag from racing ahead of the window rendering and
   // dispatching inputs to the wrong target, we wait for the widget to properly
   // show itself before starting the nested move loop.
   if (base::FeatureList::IsEnabled(features::kInitialWebUI)) {
@@ -1973,6 +1987,8 @@ TabDragController::DetachIntoNewBrowserAndRunMoveLoop(
 #if BUILDFLAG(IS_MAC)
   // Set the window origin after making it visible, to avoid child windows (such
   // as the find bar) being misplaced on Mac. See https://crbug.com/403129048
+  dragged_widget->LayoutRootViewIfNecessary();
+  const gfx::Vector2d drag_offset = CalculateWindowDragOffset();
   dragged_widget->SetBounds(
       gfx::Rect(point_in_screen - drag_offset, widget_size));
   last_sized_display_id_ =
@@ -2810,7 +2826,14 @@ void TabDragController::RestoreAttachedWindowForDrag() {
 
 gfx::Size TabDragController::CalculateDraggedWindowSize(
     TabDragContext* source) {
+  // `initial_window_size_` is a widget size. Do the calculations below with
+  // the window size, which excludes the invisible frame insets (e.g.
+  // client-drawn shadows on Linux X11), and convert the result back.
+  const gfx::Insets invisible_frame_insets =
+      GetRestoredInvisibleFrameInsets(source->GetWidget());
   gfx::Size new_size(initial_window_size_);
+  new_size.Enlarge(-invisible_frame_insets.width(),
+                   -invisible_frame_insets.height());
 
   // Limit the window size to the current display's size, less some insets.
   const gfx::Size work_area =
@@ -2818,16 +2841,36 @@ gfx::Size TabDragController::CalculateDraggedWindowSize(
           ->GetDisplayNearestPoint(last_point_in_screen_)
           .work_area()
           .size();
-  if (new_size.width() > work_area.width()) {
+  // Inset both axes when the window covers the full work area (e.g. when
+  // detaching from a window whose restored bounds equal the work area; see
+  // crbug.com/573531784). Otherwise, only inset axes that strictly exceed the
+  // work area (such as when dragging onto a smaller display; see
+  // crbug.com/40861006) so windows spanning just one axis (like half-screen
+  // tiled windows) keep that dimension.
+  const bool covers_work_area = new_size.width() >= work_area.width() &&
+                                new_size.height() >= work_area.height();
+  if (covers_work_area || new_size.width() > work_area.width()) {
     new_size.set_width(
         std::max(0, work_area.width() - 2 * kMaximizedWindowInset));
   }
-  if (new_size.height() > work_area.height()) {
+  if (covers_work_area || new_size.height() > work_area.height()) {
     new_size.set_height(
         std::max(0, work_area.height() - 2 * kMaximizedWindowInset));
   }
 
   if (source->GetWidget()->IsMaximized()) {
+#if BUILDFLAG(IS_LINUX)
+    // On Linux, window managers such as GNOME/Mutter auto-maximize newly mapped
+    // windows whose area exceeds 80% (MAX_UNMAXIMIZED_WINDOW_AREA) of the
+    // display's work area, and X11 may report the maximized work area as the
+    // restored bounds on initial launch. Cap dimensions so the detached window
+    // stays below the auto-maximize threshold and opens visibly restored.
+    constexpr float kMaxRestoredDimensionRatio = 0.8f;
+    if (new_size.Area64() >= (work_area.Area64() / 5) * 4) {
+      new_size.SetToMin(
+          gfx::ScaleToFlooredSize(work_area, kMaxRestoredDimensionRatio));
+    }
+#endif
     // If the restore bounds is really small, we don't want to honor it
     // (dragging a really small window looks wrong), instead make sure the new
     // window is at least 50% the size of the old.
@@ -2838,6 +2881,8 @@ gfx::Size TabDragController::CalculateDraggedWindowSize(
         std::max(maximized_size.height() / 2, new_size.height()));
   }
 
+  new_size.Enlarge(invisible_frame_insets.width(),
+                   invisible_frame_insets.height());
   return new_size;
 }
 
@@ -2928,7 +2973,7 @@ std::optional<webapps::AppId> TabDragController::GetControllingAppForDrag(
 
 BrowserWindowInterface* TabDragController::CreateBrowserForDrag(
     TabDragContext* source,
-    gfx::Size initial_size) {
+    gfx::Size initial_widget_size) {
   source->GetWidget()
       ->GetCompositor()
       ->RequestSuccessfulPresentationTimeForNextFrame(base::BindOnce(
@@ -2947,6 +2992,14 @@ BrowserWindowInterface* TabDragController::CreateBrowserForDrag(
           GetAttachedBrowserWidget()->GetNativeWindow())
           ->browser();
 
+  // BrowserWindowCreateParams take window bounds, which exclude the invisible
+  // frame insets that the widget size includes.
+  const gfx::Insets invisible_frame_insets =
+      GetRestoredInvisibleFrameInsets(source->GetWidget());
+  gfx::Size initial_window_size = initial_widget_size;
+  initial_window_size.Enlarge(-invisible_frame_insets.width(),
+                              -invisible_frame_insets.height());
+
   const std::optional<webapps::AppId> controlling_app =
       GetControllingAppForDrag(from_browser);
   const bool open_as_web_app = controlling_app.has_value();
@@ -2964,7 +3017,7 @@ BrowserWindowInterface* TabDragController::CreateBrowserForDrag(
   // Web app windows have their own initial size independent of the source
   // browser window.
   if (!open_as_web_app) {
-    create_params.initial_bounds = gfx::Rect(initial_size);
+    create_params.initial_bounds = gfx::Rect(initial_window_size);
   }
   create_params.from_user_gesture = true;
   create_params.in_tab_dragging = true;
@@ -2994,13 +3047,10 @@ BrowserWindowInterface* TabDragController::CreateBrowserForDrag(
   // the previous window.
   create_params.user_title = std::string();
 
-  base::TimeTicks now = base::TimeTicks::Now();
   BrowserWindowInterface* browser =
-      CreateBrowserWindow(std::move(create_params));
-  if (auto* manager = InitialWebUIWindowMetricsManager::From(browser)) {
-    manager->SetWindowCreationInfo(
-        waap::NewWindowCreationSource::kDragToNewWindow, now);
-  }
+      waap::CreateBrowserWindowAndRecordCreationSource(
+          std::move(create_params),
+          waap::NewWindowCreationSource::kDragToNewWindow);
   is_dragging_new_browser_ = true;
   BrowserView::GetBrowserViewForBrowser(browser)
       ->GetWidget()
@@ -3011,7 +3061,7 @@ BrowserWindowInterface* TabDragController::CreateBrowserForDrag(
   // We need to reset them again so they are honored. On ChromeOS, this is
   // handled in NativeWidgetAura.
   if (!open_as_web_app) {
-    browser->GetWindow()->SetBounds(gfx::Rect(initial_size));
+    browser->GetWindow()->SetBounds(gfx::Rect(initial_window_size));
   }
 #endif
 
@@ -3034,20 +3084,15 @@ gfx::Point TabDragController::GetCursorScreenPoint() {
 gfx::Vector2d TabDragController::CalculateWindowDragOffset() {
   const views::View* source_view =
       drag_data_.attached_views()[drag_data_.source_view_index_];
-  const gfx::Rect source_tab_bounds = source_view->bounds();
   const int cursor_x_offset_within_tab = base::ClampRound(
-      source_tab_bounds.width() * drag_data_.mouse_offset_to_size_ratios.x());
+      source_view->width() * drag_data_.mouse_offset_to_size_ratios.x());
   const int cursor_y_offset_within_tab = base::ClampRound(
-      source_tab_bounds.height() * drag_data_.mouse_offset_to_size_ratios.y());
-  gfx::Point desired_cursor_pos_in_widget(
-      attached_context_->GetMirroredXInView(source_tab_bounds.x() +
-                                            cursor_x_offset_within_tab),
-      source_tab_bounds.y() + cursor_y_offset_within_tab);
-  desired_cursor_pos_in_widget = views::View::ConvertPointToTarget(
-      source_view->parent(), attached_context_, desired_cursor_pos_in_widget);
-  views::View::ConvertPointToWidget(attached_context_,
-                                    &desired_cursor_pos_in_widget);
-  return desired_cursor_pos_in_widget.OffsetFromOrigin();
+      source_view->height() * drag_data_.mouse_offset_to_size_ratios.y());
+  gfx::Point desired_cursor_pos(
+      source_view->GetMirroredXInView(cursor_x_offset_within_tab),
+      cursor_y_offset_within_tab);
+  views::View::ConvertPointToWidget(source_view, &desired_cursor_pos);
+  return desired_cursor_pos.OffsetFromOrigin();
 }
 
 TabDragController::Liveness TabDragController::GetLocalProcessWindow(

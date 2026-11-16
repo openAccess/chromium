@@ -48,9 +48,14 @@ class TabCollectionAnimatingLayoutManager : public views::LayoutManagerBase {
     // if no other registered managers are animating.
     void StopAnimation(TabCollectionAnimatingLayoutManager* manager);
 
+    // Stops all running animations across all registered managers and resets
+    // animation progress to the end state.
+    void StopAllAnimationsForTesting();
+
     double current_offset() const { return current_offset_; }
     double starting_offset() const { return starting_offset_; }
     double GetCurrentProgress() const;
+    bool IsAnimating() const { return animation_.is_animating(); }
 
     // views::AnimationDelegateViews:
     void AnimationProgressed(const gfx::Animation* animation) override;
@@ -135,9 +140,9 @@ class TabCollectionAnimatingLayoutManager : public views::LayoutManagerBase {
       views::View* view_to_reparent,
       std::unique_ptr<SourceLayoutInfo> source_layout_info);
 
-  // Recalculates the target layout, and `views_to_snap` to the new target,
-  // skipping animations.
-  void ResetViewsToTargetLayout(
+  // Recalculates the target layout and updates the starting layout for
+  // `views_to_snap` so they snap to their target bounds without animating.
+  void SnapViewsToTargetLayout(
       const std::vector<const views::View*>& views_to_snap);
 
   // Animates the removal of `child_view` from the `host_view()` associated with
@@ -264,12 +269,13 @@ class TabCollectionAnimatingLayoutManager : public views::LayoutManagerBase {
     gfx::Vector2d current;
     gfx::Vector2d start_to_current_bounds;
 
-    // Converts `bounds_in_screen` into `host`'s starting coordinate space,
+    // Converts `bounds_in_top_host` (in the top-level animating container's
+    // logical coordinate space) into `host`'s starting coordinate space,
     // avoiding parabolic overshoot when `host` moves during a reparent
-    // animation.
-    gfx::Rect ConvertScreenRectToStartBounds(
+    // animation and preserving RTL mirroring across animating ancestors.
+    gfx::Rect ConvertTopHostRectToStartBounds(
         const views::View* host,
-        const gfx::Rect& bounds_in_screen) const;
+        const gfx::Rect& bounds_in_top_host) const;
 
     gfx::Rect InterpolateChildBounds(double value,
                                      const gfx::Rect& start_bounds,

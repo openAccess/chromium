@@ -7,6 +7,8 @@
 #include <string>
 
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/task_environment.h"
+#include "base/time/time.h"
 #include "components/image_fetcher/core/cache/image_store_types.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -51,6 +53,31 @@ class ImageFetcherMetricsReporterTest : public testing::Test {
   base::HistogramTester histogram_tester_;
 };
 
+TEST_F(ImageFetcherMetricsReporterTest, ReportCacheResult) {
+  for (auto result : {
+           ImageFetcherCacheResult::kDataStoreInitializationSucceeded,
+           ImageFetcherCacheResult::kDataStoreInitializationFailed,
+           ImageFetcherCacheResult::kDataStoreReadSucceeded,
+           ImageFetcherCacheResult::kDataStoreReadNotFound,
+           ImageFetcherCacheResult::kDataStoreReadFailed,
+           ImageFetcherCacheResult::kDataStoreWriteSucceeded,
+           ImageFetcherCacheResult::kDataStoreWriteFailed,
+           ImageFetcherCacheResult::kDataStoreDeleteSucceeded,
+           ImageFetcherCacheResult::kDataStoreDeleteFailed,
+           ImageFetcherCacheResult::kMetadataStoreInitializationSucceeded,
+           ImageFetcherCacheResult::kMetadataStoreInitializationFailed,
+           ImageFetcherCacheResult::kMetadataStoreReadSucceeded,
+           ImageFetcherCacheResult::kMetadataStoreReadMiss,
+           ImageFetcherCacheResult::kMetadataStoreReadFailed,
+           ImageFetcherCacheResult::kMetadataStoreUpdateSucceeded,
+           ImageFetcherCacheResult::kMetadataStoreUpdateFailed,
+       }) {
+    ImageFetcherMetricsReporter::ReportCacheResult(result);
+    histogram_tester().ExpectBucketCount("ImageFetcher.CacheResult", result, 1);
+  }
+  histogram_tester().ExpectTotalCount("ImageFetcher.CacheResult", 16);
+}
+
 TEST_F(ImageFetcherMetricsReporterTest, TestReportEvent) {
   ImageFetcherMetricsReporter::ReportEvent(kUmaClientName,
                                            ImageFetcherEvent::kCacheHit);
@@ -71,18 +98,26 @@ TEST_F(ImageFetcherMetricsReporterTest, TestReportEvent) {
 }
 
 TEST_F(ImageFetcherMetricsReporterTest, TestReportImageLoadFromCacheTime) {
+  base::test::SingleThreadTaskEnvironment task_environment{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  const base::TimeTicks start_time = base::TimeTicks::Now();
+  task_environment.AdvanceClock(base::Milliseconds(200));
   ImageFetcherMetricsReporter::ReportImageLoadFromCacheTime(kUmaClientName,
-                                                            base::Time());
+                                                            start_time);
+  task_environment.AdvanceClock(base::Milliseconds(300));
   ImageFetcherMetricsReporter::ReportImageLoadFromCacheTime(kUmaClientNameOther,
-                                                            base::Time());
+                                                            start_time);
+  histogram_tester().ExpectTimeBucketCount(kCacheLoadHistogramName,
+                                           base::Milliseconds(200), 1);
+  histogram_tester().ExpectTimeBucketCount(kCacheLoadHistogramName,
+                                           base::Milliseconds(500), 1);
   histogram_tester().ExpectTotalCount(kCacheLoadHistogramName, 2);
-  histogram_tester().ExpectTotalCount(
-      std::string(kCacheLoadHistogramName).append(".").append(kUmaClientName),
-      1);
-  histogram_tester().ExpectTotalCount(std::string(kCacheLoadHistogramName)
-                                          .append(".")
-                                          .append(kUmaClientNameOther),
-                                      1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kCacheLoadHistogramName) + "." + kUmaClientName,
+      base::Milliseconds(200), 1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kCacheLoadHistogramName) + "." + kUmaClientNameOther,
+      base::Milliseconds(500), 1);
 }
 
 TEST_F(ImageFetcherMetricsReporterTest, TestReportImageLoadFromCacheTimeJava) {
@@ -122,37 +157,51 @@ TEST_F(ImageFetcherMetricsReporterTest,
 }
 
 TEST_F(ImageFetcherMetricsReporterTest, TestReportImageLoadFromNetworkTime) {
+  base::test::SingleThreadTaskEnvironment task_environment{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  const base::TimeTicks start_time = base::TimeTicks::Now();
+  task_environment.AdvanceClock(base::Milliseconds(200));
   ImageFetcherMetricsReporter::ReportImageLoadFromNetworkTime(kUmaClientName,
-                                                              base::Time());
+                                                              start_time);
+  task_environment.AdvanceClock(base::Milliseconds(300));
   ImageFetcherMetricsReporter::ReportImageLoadFromNetworkTime(
-      kUmaClientNameOther, base::Time());
+      kUmaClientNameOther, start_time);
+  histogram_tester().ExpectTimeBucketCount(kNetworkLoadHistogramName,
+                                           base::Milliseconds(200), 1);
+  histogram_tester().ExpectTimeBucketCount(kNetworkLoadHistogramName,
+                                           base::Milliseconds(500), 1);
   histogram_tester().ExpectTotalCount(kNetworkLoadHistogramName, 2);
-  histogram_tester().ExpectTotalCount(
-      std::string(kNetworkLoadHistogramName).append(".").append(kUmaClientName),
-      1);
-  histogram_tester().ExpectTotalCount(std::string(kNetworkLoadHistogramName)
-                                          .append(".")
-                                          .append(kUmaClientNameOther),
-                                      1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kNetworkLoadHistogramName) + "." + kUmaClientName,
+      base::Milliseconds(200), 1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kNetworkLoadHistogramName) + "." + kUmaClientNameOther,
+      base::Milliseconds(500), 1);
 }
 
 TEST_F(ImageFetcherMetricsReporterTest,
        TestReportImageLoadFromNetworkAfterCacheHit) {
+  base::test::SingleThreadTaskEnvironment task_environment{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  const base::TimeTicks start_time = base::TimeTicks::Now();
+  task_environment.AdvanceClock(base::Milliseconds(200));
   ImageFetcherMetricsReporter::ReportImageLoadFromNetworkAfterCacheHit(
-      kUmaClientName, base::Time());
+      kUmaClientName, start_time);
+  task_environment.AdvanceClock(base::Milliseconds(300));
   ImageFetcherMetricsReporter::ReportImageLoadFromNetworkAfterCacheHit(
-      kUmaClientNameOther, base::Time());
+      kUmaClientNameOther, start_time);
+  histogram_tester().ExpectTimeBucketCount(kNetworkLoadAfterCacheHitHistogram,
+                                           base::Milliseconds(200), 1);
+  histogram_tester().ExpectTimeBucketCount(kNetworkLoadAfterCacheHitHistogram,
+                                           base::Milliseconds(500), 1);
   histogram_tester().ExpectTotalCount(kNetworkLoadAfterCacheHitHistogram, 2);
-  histogram_tester().ExpectTotalCount(
-      std::string(kNetworkLoadAfterCacheHitHistogram)
-          .append(".")
-          .append(kUmaClientName),
-      1);
-  histogram_tester().ExpectTotalCount(
-      std::string(kNetworkLoadAfterCacheHitHistogram)
-          .append(".")
-          .append(kUmaClientNameOther),
-      1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kNetworkLoadAfterCacheHitHistogram) + "." + kUmaClientName,
+      base::Milliseconds(200), 1);
+  histogram_tester().ExpectUniqueTimeSample(
+      std::string(kNetworkLoadAfterCacheHitHistogram) + "." +
+          kUmaClientNameOther,
+      base::Milliseconds(500), 1);
 }
 
 TEST_F(ImageFetcherMetricsReporterTest,

@@ -144,13 +144,16 @@ class TabStrip : public views::View,
                    int model_index,
                    bool was_active);
 
-  void OnTabWillBeRemoved(content::WebContents* contents, int model_index);
+  void OnTabWillBeRemoved(content::WebContents* contents);
 
   void OnTabPinnedStateChanged(int model_index, bool is_pinned);
+  void OnTabPinnedStateChanged(tabs::TabHandle tab, bool is_pinned);
 
-  // Sets the tab group at the specified model index.
+  // Sets the tab group at the specified model index or tab handle.
   void AddTabToGroup(std::optional<tab_groups::TabGroupId> group,
                      int model_index);
+  void AddTabToGroup(std::optional<tab_groups::TabGroupId> group,
+                     tabs::TabHandle tab);
 
   // Creates the views associated with a newly-created tab group.
   void OnGroupCreated(const tab_groups::TabGroupId& group);
@@ -186,12 +189,16 @@ class TabStrip : public views::View,
   // Updates the tab slot view split state and animates to bounds.
   void OnSplitCreated(const std::vector<int>& split_indices,
                       split_tabs::SplitTabId split_id);
+  void OnSplitCreated(const std::vector<tabs::TabHandle>& split_tabs,
+                      split_tabs::SplitTabId split_id);
 
   // Updates the tab slot view split state and animates to bounds.
   void OnSplitRemoved(const std::vector<int>& split_indices);
+  void OnSplitRemoved(const std::vector<tabs::TabHandle>& split_tabs);
 
   // Updates the tab slot view split state and animates to bounds.
   void OnSplitContentsChanged(const std::vector<int>& split_indices);
+  void OnSplitContentsChanged(const std::vector<tabs::TabHandle>& split_tabs);
 
   // Invoked when the selection is updated.
   void SetSelection(const ui::ListSelectionModel& new_selection);
@@ -204,10 +211,15 @@ class TabStrip : public views::View,
   // Returns the TabGroup with ID `id`.
   TabGroup* GetTabGroup(const tab_groups::TabGroupId& id) const override;
 
-  // Returns the index of the specified view in the model coordinate system, or
-  // std::nullopt if view is closing not a tab, or is not in this tabstrip.
+  // Returns the Tab view corresponding to `handle`, or nullptr if not found.
+  Tab* GetTabForHandle(tabs::TabHandle handle) const;
+
+  // Returns the index of the specified view or tab handle in the model
+  // coordinate system, or std::nullopt if the view is closing, not a tab, or is
+  // not in this tabstrip.
   // TODO(tbergquist): This should return an optional<size_t>.
   std::optional<int> GetModelIndexOf(const TabSlotView* view) const;
+  std::optional<int> GetModelIndexOf(tabs::TabHandle handle) const;
 
   // Cover method for TabStripController::GetCount.
   int GetModelCount() const;
@@ -364,6 +376,10 @@ class TabStrip : public views::View,
   };
 
   void Init();
+
+  std::optional<int> GetTabViewModelIndex(tabs::TabHandle handle) const;
+  std::vector<int> GetTabViewModelIndices(
+      const std::vector<tabs::TabHandle>& handles) const;
 
   std::map<tab_groups::TabGroupId, TabGroupHeader*> GetGroupHeaders();
 

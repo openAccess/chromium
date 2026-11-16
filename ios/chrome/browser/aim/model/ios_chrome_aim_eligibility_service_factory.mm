@@ -77,7 +77,7 @@ AimEligibilityService::Configuration CreateConfiguration(
 }
 
 std::unique_ptr<KeyedService> BuildAimEligibilityService(ProfileIOS& profile) {
-  if (auto service = tests_hook::CreateAimEligibilityService(&profile)) {
+  if (auto service = tests_hook::CreateAimEligibilityService(profile)) {
     return service;
   }
   return std::make_unique<IOSChromeAimEligibilityService>(
@@ -91,7 +91,7 @@ std::unique_ptr<KeyedService> BuildAimEligibilityService(ProfileIOS& profile) {
 }  // namespace
 
 // static
-IOSChromeAimEligibilityServiceFactory::TestingFactoryByRef
+IOSChromeAimEligibilityServiceFactory::TestingFactory
 IOSChromeAimEligibilityServiceFactory::GetDefaultFactory() {
   return base::BindOnce(&BuildAimEligibilityService);
 }

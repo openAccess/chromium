@@ -60,7 +60,6 @@ class RTCOfferOptionsPlatform;
 class RTCPeerConnectionHandlerClient;
 class RTCSessionDescriptionInit;
 class RTCVoidRequest;
-class SetLocalDescriptionRequest;
 
 // Helper class for passing pre-parsed session descriptions to functions.
 // Create a ParsedSessionDescription by calling one of the Parse functions.
@@ -250,8 +249,6 @@ class MODULES_EXPORT RTCPeerConnectionHandler {
   friend class Observer;
   class WebRtcSetDescriptionObserverImpl;
   friend class WebRtcSetDescriptionObserverImpl;
-  class SetLocalDescriptionRequest;
-  friend class SetLocalDescriptionRequest;
 
   void OnSessionDescriptionsUpdated(
       std::unique_ptr<webrtc::SessionDescriptionInterface>
@@ -340,10 +337,12 @@ class MODULES_EXPORT RTCPeerConnectionHandler {
   void CreateOfferOnSignalingThread(
       webrtc::CreateSessionDescriptionObserver* observer,
       webrtc::PeerConnectionInterface::RTCOfferAnswerOptions offer_options,
+      bool capture_synchronous_failure,
       blink::TransceiverStateSurfacer* transceiver_state_surfacer);
   void CreateAnswerOnSignalingThread(
       webrtc::CreateSessionDescriptionObserver* observer,
-      webrtc::PeerConnectionInterface::RTCOfferAnswerOptions answer_options);
+      webrtc::PeerConnectionInterface::RTCOfferAnswerOptions answer_options,
+      bool capture_synchronous_failure);
   Vector<std::unique_ptr<blink::RTCRtpSenderImpl>>::iterator FindSender(
       uintptr_t id);
   Vector<std::unique_ptr<blink::RTCRtpReceiverImpl>>::iterator FindReceiver(

@@ -14,7 +14,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/hashprefix_realtime/hash_realtime_service.h"
-#include "components/safe_browsing/core/browser/referring_app_info.h"
+#include "components/safe_browsing/core/browser/referring_app_info/referring_app_info.h"
 #include "components/safe_browsing/core/browser/url_checker/safe_browsing_lookup_mechanism_runner.h"
 #include "components/safe_browsing/core/browser/url_checker/url_checker_delegate.h"
 #include "components/safe_browsing/core/common/hashprefix_realtime/hash_realtime_utils.h"
@@ -110,7 +110,8 @@ class SafeBrowsingUrlCheckerImpl : public mojom::SafeBrowsingUrlChecker {
       bool is_async_check,
       SessionID tab_id,
       std::optional<internal::ReferringAppInfo> referring_app_info,
-      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager);
+      base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager,
+      std::string profile_mode_suffix);
 
   SafeBrowsingUrlCheckerImpl(const SafeBrowsingUrlCheckerImpl&) = delete;
   SafeBrowsingUrlCheckerImpl& operator=(const SafeBrowsingUrlCheckerImpl&) =
@@ -347,6 +348,11 @@ class SafeBrowsingUrlCheckerImpl : public mojom::SafeBrowsingUrlChecker {
 
   // The protocol manager used for Safe Browsing v5 get hash requests.
   base::WeakPtr<V5GetHashProtocolManager> v5_get_hash_protocol_manager_;
+
+  // Suffix indicating the profile mode (e.g., "Regular", "Incognito", or
+  // "Guest") for logging profile-mode-specific check result metrics. Must not
+  // be empty.
+  std::string profile_mode_suffix_;
 
   base::WeakPtrFactory<SafeBrowsingUrlCheckerImpl> weak_factory_{this};
 };

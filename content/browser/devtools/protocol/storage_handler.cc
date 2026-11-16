@@ -25,7 +25,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "components/services/storage/privileged/mojom/indexed_db_control.mojom.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
@@ -324,7 +323,6 @@ class StorageHandler::QuotaManagerObserver
     }
     manager->GetBucketsForStorageKey(
         storage_key, /*delete_expired=*/false,
-        base::SingleThreadTaskRunner::GetCurrentDefault(),
         base::BindOnce(
             [](base::WeakPtr<StorageHandler> owner_storage_handler,
                storage::QuotaErrorOr<std::set<storage::BucketInfo>> buckets) {
@@ -690,7 +688,6 @@ void StorageHandler::GetUsageAndQuota(
 
   GetQuotaManagerProxy()->GetUsageAndQuotaForDevtools(
       blink::StorageKey::CreateFirstParty(*origin),
-      base::SequencedTaskRunner::GetCurrentDefault(),
       base::BindOnce(&ReportUsageAndQuotaDataOnUIThread, std::move(callback)));
 }
 
@@ -917,10 +914,18 @@ void StorageHandler::NotifyIndexedDBContentChanged(
 Response StorageHandler::FindStoragePartition(
     const std::optional<std::string>& browser_context_id,
     StoragePartition** storage_partition) {
-  if (browser_context_id.has_value() &&
-      host_->GetType() != DevToolsAgentHost::kTypeBrowser) {
-    return Response::InvalidParams(
-        "browserContextId is only allowed for Browser target");
+  if (host_->GetType() != DevToolsAgentHost::kTypeBrowser) {
+    if (browser_context_id.has_value()) {
+      return Response::InvalidParams(
+          "browserContextId is only allowed for Browser target");
+    }
+    // Non-browser targets must only access their own storage partition; never
+    // fall back to the default browser context.
+    *storage_partition = storage_partition_;
+    if (!*storage_partition) {
+      return Response::InternalError();
+    }
+    return Response::Success();
   }
 
   BrowserContext* browser_context = nullptr;
@@ -1059,7 +1064,6 @@ DispatchResponse StorageHandler::DeleteStorageBucket(
   }
 
   manager->DeleteBucket(*storage_key, bucket->GetName(""),
-                        base::SingleThreadTaskRunner::GetCurrentDefault(),
                         base::DoNothing());
   return Response::Success();
 }

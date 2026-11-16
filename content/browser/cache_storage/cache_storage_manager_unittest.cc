@@ -23,7 +23,6 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
-#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
@@ -796,7 +795,7 @@ class CacheStorageManagerTest : public testing::Test {
     std::optional<int64_t> usage;
     base::RunLoop loop;
     quota_manager_proxy_->GetUsageAndQuota(
-        storage_key, base::SingleThreadTaskRunner::GetCurrentDefault(),
+        storage_key,
         base::BindOnce(&CacheStorageManagerTest::DidGetQuotaOriginUsage,
                        base::Unretained(this), base::Unretained(&usage),
                        &loop));
@@ -825,7 +824,6 @@ class CacheStorageManagerTest : public testing::Test {
         name == storage::kDefaultBucketName
             ? storage::BucketInitParams::ForDefaultBucket(storage_key)
             : storage::BucketInitParams(storage_key, name),
-        base::SingleThreadTaskRunner::GetCurrentDefault(),
         future.GetCallback());
     return future.Take().transform(&storage::BucketInfo::ToBucketLocator);
   }
@@ -834,7 +832,6 @@ class CacheStorageManagerTest : public testing::Test {
   // Temporary directory must be allocated first so as to be destroyed last.
   base::ScopedTempDir temp_dir_;
 
-  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
   BrowserTaskEnvironment task_environment_;
   TestBrowserContext browser_context_;
   scoped_refptr<BlobStorageContextWrapper> blob_storage_context_;

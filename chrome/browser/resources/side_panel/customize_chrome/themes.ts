@@ -69,7 +69,7 @@ export class ThemesElement extends ThemesElementBase {
   accessor selectedCollection: BackgroundCollection|null = null;
 
   protected accessor header_: string = '';
-  protected accessor imageErrorDetectionEnabled_: boolean =
+  private accessor imageErrorDetectionEnabled_: boolean =
       loadTimeData.getBoolean('imageErrorDetectionEnabled');
   protected accessor isRefreshToggleChecked_: boolean = false;
   private accessor theme_: Theme|undefined;
@@ -143,6 +143,9 @@ export class ThemesElement extends ThemesElementBase {
   }
 
   protected onPreviewImageLoad_(e: Event) {
+    if (!(e.currentTarget as HTMLElement).isConnected) {
+      return;
+    }
     if (this.imageErrorDetectionEnabled_) {
       const index = Number((e.currentTarget as HTMLElement).dataset['index']);
       assert(this.themes_[index]);
@@ -163,7 +166,10 @@ export class ThemesElement extends ThemesElementBase {
             this.previewImageLoadStartEpoch_));
   }
 
-  protected onPreviewImageError_() {
+  protected onPreviewImageError_(e: Event) {
+    if (!(e.currentTarget as HTMLElement).isConnected) {
+      return;
+    }
     if (this.imageErrorDetectionEnabled_) {
       recordCustomizeChromeImageError(NtpImageType.BACKGROUND_IMAGE);
     }

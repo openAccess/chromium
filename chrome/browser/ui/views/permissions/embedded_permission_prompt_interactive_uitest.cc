@@ -53,14 +53,17 @@
 #include "services/device/public/mojom/geoposition.mojom.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "third_party/blink/public/common/features_generated.h"
+#include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/views/accessibility/ax_update_notifier.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/test/ax_event_counter.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/views_switches.h"
 #include "ui/views/widget/any_widget_observer.h"
@@ -201,20 +204,20 @@ class EmbeddedPermissionPromptInteractiveTest
 #if !BUILDFLAG(IS_CHROMEOS)
   auto CheckMediaPreviewViewType(
       std::optional<MediaCoordinator::ViewType> expected_view_type) {
-    return InAnyContext(CheckView(
-        EmbeddedPermissionPromptBaseView::kMainViewId,
-        [expected_view_type](views::View* view) {
-          auto* prompt_view =
-              static_cast<EmbeddedPermissionPromptBaseView*>(view);
-          const auto& media_previews =
-              prompt_view->GetMediaPreviewsForTesting();
-          if (!expected_view_type.has_value()) {
-            return !media_previews.has_value();
-          }
-          return media_previews.has_value() &&
-                 media_previews->GetViewTypeForTesting() ==
-                     expected_view_type.value();
-        }));
+    return InAnyContext(
+        CheckView(EmbeddedPermissionPromptBaseView::kMainViewId,
+                  [expected_view_type](views::View* view) {
+                    auto* prompt_view =
+                        static_cast<EmbeddedPermissionPromptBaseView*>(view);
+                    const auto& media_previews =
+                        prompt_view->GetMediaPreviewsForTesting();
+                    if (!expected_view_type.has_value()) {
+                      return !media_previews.has_value();
+                    }
+                    return media_previews.has_value() &&
+                           media_previews->GetViewTypeForTesting() ==
+                               expected_view_type.value();
+                  }));
   }
 #endif
 
@@ -456,8 +459,7 @@ class EmbeddedPermissionPromptInteractiveTest
                             CONTENT_SETTING_ASK);
         }),
         NavigateWebContents(kWebContentsElementId, GURL("about:blank")),
-        NavigateWebContents(kWebContentsElementId, GetURL()),
-        Do([&, this]() {
+        NavigateWebContents(kWebContentsElementId, GetURL()), Do([&, this]() {
           SetContentSetting(ContentSettingsType::MEDIASTREAM_CAMERA,
                             camera_setting);
           SetContentSetting(ContentSettingsType::MEDIASTREAM_MIC, mic_setting);
@@ -1608,6 +1610,33 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptPolicyInteractiveTest,
              u"Your administrator doesn't allow location for this site");
 }
 
+// Regression test for https://crbug.com/585118316: when
+// DefaultGeolocationSetting is set to AskGeolocation (CONTENT_SETTING_ASK),
+// allowing the embedded prompt must close the prompt cleanly instead of
+// re-showing the Ask view and crashing on a second click.
+IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptPolicyInteractiveTest,
+                       GeolocationPolicyAsk) {
+  policy::PolicyMap policies;
+  policies.Set(policy::key::kDefaultGeolocationSetting,
+               policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+               policy::POLICY_SOURCE_CLOUD, base::Value(CONTENT_SETTING_ASK),
+               nullptr);
+  UpdateProviderPolicy(policies);
+
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ClickOnPEPCElement("geolocation"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptAskView::kAllowId)),
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowId),
+      NavigateWebContents(kWebContentsElementId, GURL("about:blank")),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ClickOnPEPCElement("geolocation"),
+      InAnyContext(
+          WaitForShow(EmbeddedPermissionPromptAskView::kAllowThisTimeId)),
+      PushPEPCPromptButton(EmbeddedPermissionPromptAskView::kAllowThisTimeId));
+}
+
 IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
                        ScrimSnapsToWebContentsBounds) {
   views::NamedWidgetShownWaiter waiter(
@@ -1838,6 +1867,29 @@ IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
   widget.reset();
   ASSERT_TRUE(base::test::RunUntil(
       [&]() { return !deletion_observer.IsWidgetAlive(); }));
+}
+
+IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,
+                       AccessibleWindowRoleIsDialog) {
+  views::test::AXEventCounter counter(views::AXUpdateNotifier::Get());
+  RunTestSequence(
+      InstrumentTab(kWebContentsElementId),
+      NavigateWebContents(kWebContentsElementId, GetURL()),
+      ClickOnPEPCElement("camera"),
+      InAnyContext(WaitForShow(EmbeddedPermissionPromptBaseView::kMainViewId)),
+      InAnyContext(CheckView(
+          EmbeddedPermissionPromptBaseView::kMainViewId,
+          [](EmbeddedPermissionPromptBaseView* view) {
+            return view->GetAccessibleWindowRole();
+          },
+          ax::mojom::Role::kDialog)),
+      CheckResult([&]() { return counter.GetCount(ax::mojom::Event::kAlert); },
+                  0),
+      Do([this]() {
+        auto* manager = permissions::PermissionRequestManager::FromWebContents(
+            browser()->tab_strip_model()->GetActiveWebContents());
+        manager->Dismiss(/*prompt_options=*/std::monostate());
+      }));
 }
 
 IN_PROC_BROWSER_TEST_P(EmbeddedPermissionPromptInteractiveTest,

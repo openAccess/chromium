@@ -12,6 +12,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/affiliations/core/browser/fake_affiliation_service.h"
@@ -20,6 +21,7 @@
 #include "components/autofill/content/browser/test_autofill_manager_injector.h"
 #include "components/autofill/content/browser/test_content_autofill_client.h"
 #include "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
@@ -263,8 +265,11 @@ IN_PROC_BROWSER_TEST_P(OtpManagerWithWebOtpApiBrowserTest,
                        content::EXECUTE_SCRIPT_DEFAULT_OPTIONS,
                        /*world_id=*/1));
     // As the WebOTP is asynchronous, wait until the use has been propagated.
-    ASSERT_TRUE(base::test::RunUntil(
-        [&] { return autofill_client().DocumentUsedWebOTP(); }));
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      AutofillManager* manager =
+          autofill_client().GetAutofillManagerForPrimaryMainFrame();
+      return manager && manager->driver().DocumentUsedWebOtp();
+    }));
     // From this point on, Autofill should not suggest OTPs anymore.
   }
 
@@ -294,8 +299,18 @@ IN_PROC_BROWSER_TEST_P(OtpManagerWithWebOtpApiBrowserTest,
   }
 }
 
-class OtpManagerGmailOtpBrowserTest : public OtpManagerBrowserTest {
+// Test fixture for Gmail OTP Autofill integration. If the parameter is true,
+// `features::kAutofillOtpCoordinator` is enabled; otherwise `OtpManagerImpl` is
+// used.
+class OtpManagerGmailOtpBrowserTest : public OtpManagerBrowserTest,
+                                      public testing::WithParamInterface<bool> {
  public:
+  OtpManagerGmailOtpBrowserTest() {
+    feature_list_.InitWithFeatureStates(
+        {{features::kAutofillShowGmailOtpSuggestions, true},
+         {features::kAutofillOtpCoordinator, is_otp_coordinator_enabled()}});
+  }
+
   void SetUpOnMainThread() override {
     OtpManagerBrowserTest::SetUpOnMainThread();
     url_loader_interceptor_ =
@@ -312,6 +327,8 @@ class OtpManagerGmailOtpBrowserTest : public OtpManagerBrowserTest {
   }
 
  protected:
+  bool is_otp_coordinator_enabled() const { return GetParam(); }
+
   void NavigateAndRequestGmailOtpSuggestions(std::string_view sender_address) {
     base::HistogramTester histogram_tester;
     ASSERT_TRUE(chrome_test_utils::NavigateToURL(
@@ -323,28 +340,32 @@ class OtpManagerGmailOtpBrowserTest : public OtpManagerBrowserTest {
         one_time_tokens::OneTimeToken(one_time_tokens::OneTimeTokenType::kGmail,
                                       "123456", base::TimeTicks::Now(),
                                       std::string(sender_address)));
-    // Wait for `GmailOtpRetriever` to finish the asynchronous sender domain
-    // check.
+
+    // Wait for the asynchronous sender domain check to complete.
+    constexpr char kAcceptedHistogram[] =
+        "OneTimeTokens.GmailAutofill.SenderDomainMatchAcceptedMatchType."
+        "Received";
+    constexpr char kRejectedHistogram[] =
+        "OneTimeTokens.GmailAutofill.SenderDomainMatchRejectionReason.Received";
     ASSERT_TRUE(base::test::RunUntil([&] {
-      return !histogram_tester
-                  .GetAllSamples(
-                      "OneTimeTokens.Gmail."
-                      "SenderDomainMatchAcceptedMatchType.Received")
-                  .empty() ||
-             !histogram_tester
-                  .GetAllSamples(
-                      "OneTimeTokens.Gmail."
-                      "SenderDomainMatchRejectionReason.Received")
-                  .empty();
+      return !histogram_tester.GetAllSamples(kAcceptedHistogram).empty() ||
+             !histogram_tester.GetAllSamples(kRejectedHistogram).empty();
     }));
 
     // Accepted tokens proactively trigger `AskForValuesToFill()` via
-    // `RendererShouldTriggerSuggestions()`. For rejected tokens, simulate a
-    // click on the field to request suggestions and verify none are shown.
-    if (histogram_tester
-            .GetAllSamples("OneTimeTokens.Gmail."
-                           "SenderDomainMatchAcceptedMatchType.Received")
-            .empty()) {
+    // `RendererShouldTriggerSuggestions()`, except on Android with
+    // `OtpCoordinator` where `OtpDeliveryPolicy` suppresses unfocused proactive
+    // triggers (`kProactiveUnfocusedOnAndroid`). When no proactive trigger is
+    // expected, click/tap `#otp` to request suggestions.
+    const bool accepted =
+        !histogram_tester.GetAllSamples(kAcceptedHistogram).empty();
+#if BUILDFLAG(IS_ANDROID)
+    const bool expects_proactive_trigger =
+        accepted && !is_otp_coordinator_enabled();
+#else
+    const bool expects_proactive_trigger = accepted;
+#endif
+    if (!expects_proactive_trigger) {
       content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents());
       content::MainThreadFrameObserver(
           web_contents()->GetPrimaryMainFrame()->GetRenderWidgetHost())
@@ -355,15 +376,19 @@ class OtpManagerGmailOtpBrowserTest : public OtpManagerBrowserTest {
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_{
-      features::kAutofillShowGmailOtpSuggestions};
+  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<content::URLLoaderInterceptor> url_loader_interceptor_;
 };
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    OtpManagerGmailOtpBrowserTest,
+    ::testing::Bool());
 
 // Tests that a Gmail OTP whose sender domain exactly matches the page's origin
 // (e.g., `otp@example.test` on `https://example.test`) is accepted and
 // suggested by Autofill.
-IN_PROC_BROWSER_TEST_F(OtpManagerGmailOtpBrowserTest,
+IN_PROC_BROWSER_TEST_P(OtpManagerGmailOtpBrowserTest,
                        GmailOtpSenderDomainMatch_ExactMatch) {
   NavigateAndRequestGmailOtpSuggestions("otp@example.test");
 
@@ -379,7 +404,7 @@ IN_PROC_BROWSER_TEST_F(OtpManagerGmailOtpBrowserTest,
 // Tests that a Gmail OTP from a sender domain matching the page's origin via
 // the Public Suffix List (e.g., `otp@mail.example.test` on
 // `https://example.test`) is accepted and suggested by Autofill.
-IN_PROC_BROWSER_TEST_F(OtpManagerGmailOtpBrowserTest,
+IN_PROC_BROWSER_TEST_P(OtpManagerGmailOtpBrowserTest,
                        GmailOtpSenderDomainMatch_PslMatch) {
   NavigateAndRequestGmailOtpSuggestions("otp@mail.example.test");
 
@@ -396,7 +421,7 @@ IN_PROC_BROWSER_TEST_F(OtpManagerGmailOtpBrowserTest,
 // Tests that a Gmail OTP from an unrelated sender domain (e.g.,
 // `otp@other.test` on `https://example.test`) is rejected and not suggested by
 // Autofill.
-IN_PROC_BROWSER_TEST_F(OtpManagerGmailOtpBrowserTest,
+IN_PROC_BROWSER_TEST_P(OtpManagerGmailOtpBrowserTest,
                        GmailOtpSenderDomainMatch_NoMatch) {
   NavigateAndRequestGmailOtpSuggestions("otp@other.test");
 

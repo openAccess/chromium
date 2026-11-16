@@ -173,7 +173,6 @@ void SimpleFontData::PlatformInit(bool subpixel_ascent_descent,
   } else {
     line_gap = metrics.fLeading;
   }
-  font_metrics_.SetLineGap(line_gap);
   font_metrics_.SetLineSpacing(lroundf(ascent) + lroundf(descent) +
                                lroundf(line_gap));
 
@@ -271,7 +270,7 @@ Glyph SimpleFontData::GlyphForMathCharacter(UChar32 codepoint,
       direction == TextDirection::kRtl) {
     StringBuilder builder;
     builder.Append(codepoint);
-    HarfBuzzShaper shaper(builder.ToString());
+    HarfBuzzShaper shaper(builder.ReleaseString());
     HarfBuzzShaper::GlyphDataList glyph_data_list;
     shaper.GetGlyphData(*this, LayoutLocale::GetDefault(),
                         UScriptCode::USCRIPT_MATHEMATICAL_NOTATION,
@@ -583,17 +582,7 @@ inline float SimpleFontData::ZeroInlineSize() const {
   // vertical-lr and text-orientation is upright).
   SkScalar size = font_.getSize();
   if (!platform_data_->IsVerticalNonCjkUpright()) {
-    if (RuntimeEnabledFeatures::CSSChUnitSpecCompliantFallbackEnabled()) {
-      return size * 0.5f;
-    }
-
-    // This is a bug that was unfortunately introduced in
-    // crrev.com/c/6333369, and has shipped in m136.
-    // TODO(crbug.com/416145497): Remove this old behaviour
-    // when feature flag
-    // `RuntimeEnabledFeatures::CSSChUnitSpecCompliantFallbackEnabled` is tested
-    // out and is enabled by default.
-    return size / 0.5f;
+    return size * 0.5f;
   }
   return size;
 }

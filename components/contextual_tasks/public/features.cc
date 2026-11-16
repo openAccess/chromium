@@ -15,6 +15,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 #include "ui/base/device_form_factor.h"
 
@@ -81,10 +82,9 @@ BASE_FEATURE(kEnableContextualTasksPinButtonOnSrp,
 BASE_FEATURE(kContextualTasksPinningV2, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Routes the unpinned Contextual Tasks ephemeral toolbar button through
-// PinnedToolbarActions::ShowActionEphemerallyInToolbar in Pinning V2 instead of
-// the separate ContextualTasksButton view.
+// PinnedToolbarActions::ShowActionEphemerallyInToolbar in Pinning V2.
 BASE_FEATURE(kContextualTasksEphemeralPinButtonRefactor,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Shows an active indicator (blue icon and underline pill) on the permanent
 // pinned contextual tasks toolbar button when the active tab has an ongoing
@@ -302,9 +302,6 @@ BASE_FEATURE(kEnableNotifyZeroStateRenderedCapability,
 BASE_FEATURE(kContextualTasksSendFullVersionListEnabled,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kContextualTasksSendContextualInputUploadType,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kContextualTasksUrlRedirectToAimUrl,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -332,6 +329,9 @@ BASE_FEATURE(kContextualTasksUnboundedMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kContextualTasksAccountMenuGoogleComSignOutLabel,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kContextualTasksSingleTabMenuItem,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kContextualTasksHideCloseButtonInVerticalTabs,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -357,10 +357,6 @@ BASE_FEATURE(kContextualTasksCloseTabExpandsSidePanel,
 // Enables the use of APC comparison for webpages in the recontextualization
 // flow.
 BASE_FEATURE(kContextualTasksWebpageApcComparison,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables overriding side panel to show Bottom Sheet on demand.
-BASE_FEATURE(kContextualTasksOverrideShowBottomSheetOnLargeScreen,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables prefetching of cookies for contextual tasks.
@@ -397,6 +393,11 @@ const base::FeatureParam<bool> kABASearchJourneysAllowIntermediateTabs(
     "aba_search_journeys_allow_intermediate_tabs",
     false);
 
+const base::FeatureParam<size_t> kABASearchJourneysMinWordsWithoutHint(
+    &kABASearchJourneys,
+    "aba_search_journeys_min_words_without_hint",
+    0);
+
 bool IsABASearchJourneysEnabled() {
   return base::FeatureList::IsEnabled(kABASearchJourneys);
 }
@@ -425,6 +426,13 @@ size_t GetABASearchJourneysMinQueryMatchLength() {
 bool ShouldAllowABASearchJourneysIntermediateTabs() {
   return IsABASearchJourneysEnabled() &&
          kABASearchJourneysAllowIntermediateTabs.Get();
+}
+
+size_t GetABASearchJourneysMinWordsWithoutHint() {
+  if (!IsABASearchJourneysEnabled()) {
+    return 0;
+  }
+  return kABASearchJourneysMinWordsWithoutHint.Get();
 }
 
 BASE_FEATURE(kContextualTasksEnableSpatialModelToolbarLayout,
@@ -503,6 +511,48 @@ bool IsAllowSignedOutUserInDesktopAndroidEnabled() {
 #else
   // Desktop platforms admit signed-out users through Lens side panel
   // unification instead; this feature must not widen that behaviour.
+  return false;
+#endif
+}
+
+BASE_FEATURE(kContextualTasksEntryPoints, base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<bool> kContextualTasksEntryPointsPageContextMenu(
+    &kContextualTasksEntryPoints,
+    "page_context_menu",
+    true);
+
+const base::FeatureParam<bool> kContextualTasksEntryPointsAppMenu(
+    &kContextualTasksEntryPoints,
+    "app_menu",
+    true);
+
+const base::FeatureParam<bool> kContextualTasksEntryPointsImageContextMenu(
+    &kContextualTasksEntryPoints,
+    "image_context_menu",
+    true);
+
+const base::FeatureParam<bool> kContextualTasksEntryPointsToolbarButton(
+    &kContextualTasksEntryPoints,
+    "toolbar_button",
+    true);
+
+const base::FeatureParam<bool> kContextualTasksEntryPointsOmnibox(
+    &kContextualTasksEntryPoints,
+    "omnibox",
+    true);
+
+const base::FeatureParam<bool>
+    kContextualTasksEntryPointsOmniboxContextualSuggestions(
+        &kContextualTasksEntryPoints,
+        "omnibox_contextual_suggestions",
+        false);
+
+bool IsContextualTasksEntryPointsEnabled() {
+#if BUILDFLAG(IS_ANDROID)
+  return base::FeatureList::IsEnabled(kContextualTasksEntryPoints) &&
+         ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP;
+#else
   return false;
 #endif
 }
@@ -716,13 +766,6 @@ const base::FeatureParam<double> kContextualTasksContextLoggingSampleRate{
 
 const base::FeatureParam<int> kMinQueryWords{
     &kContextualTasksContext, "ContextualTasksContextMinQueryWords", 3};
-
-const base::FeatureParam<bool> kSendContextualInputUploadTypeInSearchUrl{
-    &kContextualTasksSendContextualInputUploadType, "send_in_search_url", true};
-
-const base::FeatureParam<bool> kSendContextualInputUploadTypeInAimRequest{
-    &kContextualTasksSendContextualInputUploadType, "send_in_aim_request",
-    true};
 
 // Enables tab auto-chip for contextual tasks.
 const base::FeatureParam<bool> kContextualTasksTabAutoSuggestionChipEnabled(
@@ -986,6 +1029,12 @@ bool IsContextualTasksEphemeralPinButtonRefactorEnabled() {
   return IsContextualTasksPinningV2Enabled() &&
          base::FeatureList::IsEnabled(
              kContextualTasksEphemeralPinButtonRefactor);
+}
+
+bool IsEphemeralPinningVisibleWhenPermanentlyPinnedEnabled() {
+  return base::FeatureList::IsEnabled(
+             kEphemeralPinningVisibleWhenPermanentlyPinned) &&
+         !IsContextualTasksEphemeralPinButtonRefactorEnabled();
 }
 
 bool IsContextualTasksEphemeralEntryPointEnabled() {
@@ -1259,7 +1308,24 @@ bool IsContextualTasksUnboundedMenuEnabled() {
          IsContextualTasksSidePanelRearchitectureEnabled();
 }
 
+bool IsContextualTasksSingleTabMenuItemEnabled() {
+  return base::FeatureList::IsEnabled(kContextualTasksSingleTabMenuItem);
+}
+
+bool IsContextualTasksFormFactorSupported() {
+#if BUILDFLAG(IS_ANDROID)
+  // Supported on desktop Android only; not supported on phones and tablets.
+  return ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_DESKTOP;
+#else
+  // Supported on all desktop platforms (Windows, Mac, Linux, ChromeOS).
+  return true;
+#endif
+}
+
 bool IsContextualTasksUIEnabled() {
+  if (!IsContextualTasksFormFactorSupported()) {
+    return false;
+  }
   return base::FeatureList::IsEnabled(kContextualTasksSidePanel) ||
          base::FeatureList::IsEnabled(kContextualTasks) ||
          base::FeatureList::IsEnabled(kContextualTasksRearchitecture) ||
@@ -1321,12 +1387,6 @@ const char kContextualTasksCloseTabExpandsSidePanelName[] =
     "Contextual Tasks Close Tab Expands Side Panel";
 const char kContextualTasksCloseTabExpandsSidePanelDescription[] =
     "Enables expanding the contextual tasks side panel on close tab actions.";
-
-const char kContextualTasksOverrideShowBottomSheetOnLargeScreenName[] =
-    "Override Show Bottom Sheet On Large Screen for Contextual Tasks";
-const char kContextualTasksOverrideShowBottomSheetOnLargeScreenDescription[] =
-    "Enables overriding side panel to show Bottom Sheet on large screens for "
-    "contextual tasks.";
 
 const char kContextualTasksCookiePrefetchName[] =
     "Contextual Tasks Cookie Prefetch";
@@ -1404,6 +1464,12 @@ const char kContextualTasksTabBasedSuggestionsDescription[] =
     "Enables sending attached tab context tokens to Search for tab-based "
     "query suggestions.";
 
+const char kContextualTasksSingleTabMenuItemName[] =
+    "Contextual Tasks Single Tab Menu Item";
+const char kContextualTasksSingleTabMenuItemDescription[] =
+    "Shows the most recent tab as a single menu item above \"Add tabs\" in "
+    "the Contextual Tasks tab picker.";
+
 const char kContextualTasksSidePanelTabStateName[] =
     "Contextual Tasks Side Panel Tab State";
 const char kContextualTasksSidePanelTabStateDescription[] =
@@ -1466,6 +1532,13 @@ const char kAllowSignedOutUserInDesktopAndroidName[] =
     "Contextual Tasks Allow Signed-Out User In Desktop Android";
 const char kAllowSignedOutUserInDesktopAndroidDescription[] =
     "Allows signed-out users to use side panel cobrowse on Desktop Android.";
+
+const char kContextualTasksEntryPointsName[] =
+    "Contextual Tasks Entry Points on Desktop Android";
+const char kContextualTasksEntryPointsDescription[] =
+    "Enables Contextual Search (Ask Google) entry points in the page context "
+    "menu, app menu, image context menu, toolbar button, and omnibox on "
+    "Desktop Android.";
 
 }  // namespace flag_descriptions
 

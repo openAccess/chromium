@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_helpers.h"
@@ -25,8 +26,8 @@
 #include "chrome/browser/ui/webui/side_panel/read_anything/read_anything_translate_observer.h"
 #include "chrome/common/read_anything/distillation_evaluator.mojom.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
-#include "components/dom_distiller/core/task_tracker.h"
 #include "components/translate/core/browser/translate_client.h"
+#include "components/web_distiller/core/task_tracker.h"
 #include "content/public/browser/tts_controller.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -224,7 +225,6 @@ class ReadAnythingUntrustedPageHandler :
   bool CheckForPdfContentFrame();
 
   // read_anything::mojom::UntrustedPageHandler:
-  void GetPresentationState() override;
   void OnVoiceChange(const std::string& voice,
                      const std::string& lang) override;
   void OnLanguagePrefChange(const std::string& lang, bool enabled) override;
@@ -280,7 +280,8 @@ class ReadAnythingUntrustedPageHandler :
       bool active,
       ReadAnythingOpenTrigger open_trigger,
       std::optional<base::TimeDelta> completed_session_duration) override;
-  void OnReadingModePresenterChanged() override;
+  void OnPresentationTransitioned(
+      ReadAnythingOpenTrigger open_trigger) override;
 
   void OnTabWillDetach(tabs::TabInterface* tab,
                        tabs::TabInterface::DetachReason reason);
@@ -353,6 +354,15 @@ class ReadAnythingUntrustedPageHandler :
   // if the page is HTTP/HTTPS or a PDF.
   bool AreActionsAllowedInTree(const ui::AXTreeID& tree_id) const;
 
+  // Returns whether a renderer request (e.g. a link click or image download)
+  // targeting `tree_id` may be acted on, i.e. the tree is observed and actions
+  // are allowed in it. Records the result to `histogram_name`. `request_name`
+  // describes the request in logs.
+  bool CheckAndRecordRendererRequestAllowed(
+      const ui::AXTreeID& tree_id,
+      std::string_view histogram_name,
+      std::string_view request_name) const;
+
   // ui::AXActionHandlerObserver:
   void TreeRemoved(ui::AXTreeID ax_tree_id) override;
 
@@ -397,12 +407,16 @@ class ReadAnythingUntrustedPageHandler :
   void SetUpPdfObserver();
   void CheckIfActiveAXTreeChangedToPdf();
 
-  void OnGetPresentationState();
   ReadAnythingController* GetReadAnythingController();
 
   // Called when reading_mode_hidden_ack_timer_ times out without hearing back
   // from the page_.
   void OnReadingModeHiddenAckTimeout();
+
+  // Starts waiting for Read Aloud to play if Reading Mode was opened from the
+  // "Listen to this page" context menu.
+  void MaybeStartListenToThisPagePlaybackTimer(
+      ReadAnythingOpenTrigger open_trigger);
 
   void OnGetVoicePackInfo(read_anything::mojom::VoicePackInfoPtr info);
 
@@ -456,7 +470,7 @@ class ReadAnythingUntrustedPageHandler :
   // Called by the ReadabilityDistillerDelegate with the result of a
   // Readability distillation.
   void ProcessDistilledArticle(
-      const dom_distiller::DistilledArticleProto* article_proto);
+      const web_distiller::DistilledArticleProto* article_proto);
 
   // Tells the page that Readability distillation produced no content, so it
   // can update from showing loading to showing no content. No-op when
@@ -492,7 +506,7 @@ class ReadAnythingUntrustedPageHandler :
   // contained.
   std::unique_ptr<ReadAnythingWebContentsObserver> pdf_observer_;
 
-  // Private implementation for dom_distiller::ViewRequestDelegate, not part of
+  // Private implementation for web_distiller::ViewRequestDelegate, not part of
   // the public API.
   class ReadabilityDistillerDelegate;
   std::unique_ptr<ReadabilityDistillerDelegate> distiller_delegate_;

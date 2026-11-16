@@ -20,6 +20,7 @@
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
 #include "components/one_time_tokens/core/browser/util/expiring_subscription.h"
 #include "components/one_time_tokens/core/browser/util/expiring_subscription_manager.h"
+#include "services/metrics/public/cpp/ukm_source_id.h"
 #include "url/origin.h"
 
 namespace one_time_tokens {
@@ -34,10 +35,14 @@ class FakeGmailOtpService : public GmailOtpService {
   // GmailOtpService:
   GmailOtpBackend* GetBackend() override;
   void GetFreshestCachedOtp(const url::Origin& origin,
+                            GmailOtpFlow flow,
+                            ukm::SourceId ukm_source_id,
                             bool allow_psl_matching,
                             GetFreshestCachedOtpCallback callback) override;
   [[nodiscard]] ExpiringSubscription Subscribe(
       const url::Origin& origin,
+      GmailOtpFlow flow,
+      ukm::SourceId ukm_source_id,
       bool allow_psl_matching,
       base::Time expiration,
       IncomingTokenCallback callback,
@@ -56,6 +61,10 @@ class FakeGmailOtpService : public GmailOtpService {
   void ClearCache();
 
   size_t num_callbacks() const;
+  size_t num_get_freshest_cached_otp_calls() const {
+    return num_get_freshest_cached_otp_calls_;
+  }
+  size_t num_subscribe_calls() const { return num_subscribe_calls_; }
 
  private:
   void NotifySubscriber(
@@ -75,6 +84,8 @@ class FakeGmailOtpService : public GmailOtpService {
   FakeGmailOtpBackend backend_;
   std::vector<OneTimeToken> cached_tokens_;
   bool has_pending_requests_ = false;
+  size_t num_get_freshest_cached_otp_calls_ = 0;
+  size_t num_subscribe_calls_ = 0;
   ExpiringSubscriptionManager<void(
       base::expected<OneTimeToken, OneTimeTokenRetrievalError>)>
       subscription_manager_;

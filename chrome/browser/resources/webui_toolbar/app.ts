@@ -4,21 +4,11 @@
 
 import './back_forward_button.js';
 import './reload_button.js';
-import './location_bar.js';
 import './split_tabs_button.js';
 import './home_button.js';
-import './battery_saver_button.js';
-import './performance_intervention_button.js';
-import './pinned_toolbar_actions.js';
-import './extensions.js';
-import './app_menu_button.js';
-import './glic_button.js';
-import './avatar_button.js';
-import './media_button.js';
-import './overflow_button.js';
 import '/shared/icon_table.js';
-import '/shared/icon_from_table.js';
 import './icons.js';
+import './tab_focus_disabler.js';
 
 import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
@@ -31,18 +21,60 @@ import {HighlightTracker, setHasHelpBubble} from '/shared/toolbar_button.js';
 import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
 import {AppMenuIconType, AppMenuSeverity, AvatarToolbarButtonState, SplitTabActiveLocation} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import type {ToolbarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
+import {COLOR_PROVIDER_CHANGED, ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {HelpBubbleMixinLit} from 'chrome://resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import {BrowserProxyImpl, INVALID_TOOLBAR_STATE_LISTENER_HANDLE, ToolbarStateKey} from './browser_proxy.js';
-import type {BrowserProxy, InitialStateReader, ToolbarStateListenerHandle} from './browser_proxy.js';
+import {BrowserProxyImpl, createDefaultLocationBarState, INVALID_TOOLBAR_STATE_LISTENER_HANDLE, ToolbarStateKey} from './browser_proxy.js';
+import type {BoundProfileState, BrowserProxy, InitialStateReader, ToolbarStateListenerHandle} from './browser_proxy.js';
+import {ensureLazyLoaded} from './ensure_lazy_loaded.js';
 import type {ExtensionsElement} from './extensions.js';
-import {createDefaultLocationBarState} from './location_bar.js';
 import type {LocationBarElement} from './location_bar.js';
 import type {OverflowButtonElement} from './overflow_button.js';
 import type {ResponsiveControl} from './responsive_control.js';
+
+let boundColorsStyleSheet: CSSStyleSheet|null = null;
+let boundColorsCss = '';
+let boundColorsAbortController: AbortController|null = null;
+
+function clearBoundColorsCss() {
+  boundColorsAbortController?.abort();
+  boundColorsAbortController = null;
+  if (boundColorsStyleSheet) {
+    const sheet = boundColorsStyleSheet;
+    boundColorsStyleSheet = null;
+    document.adoptedStyleSheets =
+        document.adoptedStyleSheets.filter(s => s !== sheet);
+  }
+  boundColorsCss = '';
+}
+
+// Adopts `colorsCss` until the next `COLOR_PROVIDER_CHANGED` event. Returns
+// false if `colorsCss` is empty or already applied.
+function applyBoundColorsCss(colorsCss?: string): boolean {
+  if (!colorsCss ||
+      (colorsCss === boundColorsCss && boundColorsStyleSheet !== null &&
+       document.adoptedStyleSheets.includes(boundColorsStyleSheet))) {
+    return false;
+  }
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(colorsCss);
+  clearBoundColorsCss();
+  boundColorsCss = colorsCss;
+  boundColorsStyleSheet = sheet;
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+
+  const abortController = new AbortController();
+  boundColorsAbortController = abortController;
+  ColorChangeUpdater.forDocument().eventTarget.addEventListener(
+      COLOR_PROVIDER_CHANGED, () => {
+        if (boundColorsStyleSheet === sheet) {
+          clearBoundColorsCss();
+        }
+      }, {once: true, signal: abortController.signal});
+  return true;
+}
 
 // LINT.IfChange(InitialWebUIRendererMilestones)
 const MARK_JS_RESOURCES_LOADED = 'JsResourcesLoaded';
@@ -65,9 +97,16 @@ const TRACKED_ELEMENTS: Array<{selector: string, id: string}> = [
   },
   {selector: '#media', id: 'kToolbarMediaButtonElementId'},
   {selector: '#glic-button', id: 'kGlicButtonElementId'},
+  {selector: '#glic-actor-task-icon', id: 'kGlicActorTaskIconElementId'},
   {selector: '#avatar', id: 'kToolbarAvatarButtonElementId'},
   {selector: '#app-menu', id: 'kToolbarAppMenuButtonElementId'},
 ];
+
+// Resolves once `el` is upgraded and has completed its initial render.
+async function whenUpgraded(el: CrLitElement): Promise<void> {
+  await customElements.whenDefined(el.localName);
+  await el.updateComplete;
+}
 
 const AppElementBase = HelpBubbleMixinLit(CrLitElement);
 
@@ -107,7 +146,9 @@ export class ToolbarAppElement extends AppElementBase {
       isGlicButtonEnabled_: {type: Boolean},
       isAvatarButtonEnabled_: {type: Boolean},
       isPerformanceInterventionButtonEnabled_: {type: Boolean},
+      // <if expr="is_win or is_macosx or is_linux">
       isMediaButtonEnabled_: {type: Boolean},
+      // </if>
       isInitialized_: {type: Boolean},
       hasReceivedToolbarState_: {type: Boolean},
       webUIToolbarFullyEnabled_: {type: Boolean},
@@ -145,13 +186,15 @@ export class ToolbarAppElement extends AppElementBase {
           ToolbarStateKey.CAN_SHOW_AVATAR_FOR_PROFILE);
   protected accessor isPerformanceInterventionButtonEnabled_: boolean =
       loadTimeData.getBoolean('enablePerformanceInterventionButton');
+  // <if expr="is_win or is_macosx or is_linux">
   protected accessor isMediaButtonEnabled_: boolean =
       loadTimeData.getBoolean('enableMediaButton');
+  // </if>
   /**
    * Tracks whether the element has received its first toolbar state
    * update from the browser and completed its initial visual render.
    */
-  protected accessor isInitialized_: boolean =
+  private accessor isInitialized_: boolean =
       !this.initialState_.getBoolean(
           ToolbarStateKey.INITIAL_WEBUI_SURFACE_SYNC_ENABLED) ||
       this.initialState_.hasKey(ToolbarStateKey.IS_NAVIGATION_LOADING);
@@ -246,6 +289,13 @@ export class ToolbarAppElement extends AppElementBase {
       shouldMatchToolbarStyle: false,
       useCustomThemeFallback: false,
       nudgeLabel: null,
+      isSplit: false,
+    },
+    glicActorTaskIconState: {
+      shouldShow: false,
+      nudgeLabel: null,
+      tooltip: '',
+      isPressed: false,
     },
     layoutConstantsVersion:
         this.initialState_.getInteger(ToolbarStateKey.LAYOUT_CONSTANTS_VERSION),
@@ -258,10 +308,14 @@ export class ToolbarAppElement extends AppElementBase {
       INVALID_TOOLBAR_STATE_LISTENER_HANDLE;
   private iconTable_: IconTable;
   private isPageInitialized_: boolean = false;
+  private registeredTrackedElements_ = new Map<string, HTMLElement>();
+  private hasStartedRegisteringTrackedElements_ = false;
+  private isColorChangeUpdaterStarted_ = false;
   private hasReadState_ = false;
-  // Set when the browser's first ToolbarState (the ToolbarUIService.bind()
-  // answer) arrives, and reset when this element is disconnected. Reactive
-  // because the template derives the location bar's waitForState from it.
+  // Set when the browser's first ToolbarState (the
+  // ToolbarUIService.getInitialState() answer) arrives, and reset when this
+  // element is disconnected. Reactive because the template derives the location
+  // bar's waitForState from it.
   protected accessor hasReceivedToolbarState_: boolean = false;
   private initializeSessionId_: number = 0;
   private resizeObserver_?: ResizeObserver;
@@ -287,11 +341,25 @@ export class ToolbarAppElement extends AppElementBase {
 
   private isRtl_: boolean = loadTimeData.getString('textdirection') === 'rtl';
 
+  // Whether controls on the toolbar other than those inside the location bar
+  // should be navigable by keyboard. The expected value per platform:
+  // 1) On Mac, it should match the platform keyboard navigable setting.
+  //    (Keyboard shortcut that activates VoiceOver activates that setting as
+  //     well by default, but it is actually an independent toggle).
+  //
+  // 2) On other platforms, it should depend on pane_has_focus() of
+  //    ToolbarView's AccessiblePaneView base, which basically gets enabled
+  //    short-term if focus toolbar or focus menu shortcuts are used (but not
+  //    the focus location bar shortcuts).
+  //
+  //    TODO(crbug.com/567215920): Send proper value over Mojo.
+  private keyboardNavigable_: boolean = true;
+
   get browserProxyForTesting(): BrowserProxy {
     return this.browserProxy_;
   }
 
-  protected readonly initialBootSnapshot_: {
+  readonly initialBootSnapshotForTesting: {
     backButtonEnabled: boolean,
     forwardButtonEnabled: boolean,
     isNavigationLoading: boolean,
@@ -304,7 +372,7 @@ export class ToolbarAppElement extends AppElementBase {
         this.initialState_.hasKey(ToolbarStateKey.IS_NAVIGATION_LOADING) &&
         this.initialState_.hasKey(ToolbarStateKey.BACK_BUTTON_ENABLED) &&
         this.initialState_.hasKey(ToolbarStateKey.FORWARD_BUTTON_ENABLED);
-    this.initialBootSnapshot_ = Object.freeze({
+    this.initialBootSnapshotForTesting = Object.freeze({
       backButtonEnabled:
           this.initialState_.getBoolean(ToolbarStateKey.BACK_BUTTON_ENABLED),
       forwardButtonEnabled:
@@ -331,8 +399,96 @@ export class ToolbarAppElement extends AppElementBase {
       e.preventDefault();
     });
     this.iconTable_ = IconTable.getInstance();
-    ColorChangeUpdater.forDocument().start();
+    if (!this.initialState_.getBoolean(ToolbarStateKey.IS_UNBOUND)) {
+      this.startColorChangeUpdater_();
+    }
     MetricsReporterImpl.getInstance().mark(MARK_JS_RESOURCES_LOADED);
+  }
+
+  // Starts `colors.css` updates. An unbound spare defers this until a window
+  // adopts it, so the first `COLOR_PROVIDER_CHANGED` event follows a
+  // `colors.css` load for the bound profile, not for the template profile.
+  private startColorChangeUpdater_() {
+    if (this.isColorChangeUpdaterStarted_) {
+      return;
+    }
+    this.isColorChangeUpdaterStarted_ = true;
+    ColorChangeUpdater.forDocument().start();
+  }
+
+  /**
+   * Applies the user profile's theme colors CSS and button eligibility
+   * synchronously when an unbound toolbar spare is adopted by a window.
+   */
+  applyBoundProfile(state: BoundProfileState) {
+    const colorsApplied = applyBoundColorsCss(state.colorsCss);
+    if (!this.isColorChangeUpdaterStarted_) {
+      this.startColorChangeUpdater_();
+    } else if (colorsApplied) {
+      // The `colors.css` load that start() triggered may have finished
+      // already, so load it again to retire the adopted sheet.
+      ColorChangeUpdater.forDocument().onColorProviderChanged();
+    }
+
+    let controlsChanged = false;
+    if (state.isProfileEligibleForGlic !== undefined) {
+      const nextGlic = loadTimeData.getBoolean('enableGlicButton') &&
+          state.isProfileEligibleForGlic;
+      if (this.isGlicButtonEnabled_ !== nextGlic) {
+        this.isGlicButtonEnabled_ = nextGlic;
+        controlsChanged = true;
+      }
+    }
+    if (state.canShowAvatarForProfile !== undefined) {
+      const nextAvatar = loadTimeData.getBoolean('enableAvatarButton') &&
+          state.canShowAvatarForProfile;
+      if (this.isAvatarButtonEnabled_ !== nextAvatar) {
+        this.isAvatarButtonEnabled_ = nextAvatar;
+        controlsChanged = true;
+        // The first toolbar state clears `initial-load` on the avatar it
+        // renders, so an avatar added after it clears its own.
+        if (nextAvatar && this.hasReceivedToolbarState_) {
+          this.updateComplete.then(() => this.clearAvatarInitialLoad_());
+        }
+      }
+    }
+    if (!this.hasReceivedToolbarState_ &&
+        state.homeButtonShouldBeShown !== undefined &&
+        this.toolbarState_.homeControlState.shouldBeShown !==
+            state.homeButtonShouldBeShown) {
+      this.toolbarState_ = {
+        ...this.toolbarState_,
+        homeControlState: {
+          ...this.toolbarState_.homeControlState,
+          shouldBeShown: state.homeButtonShouldBeShown,
+        },
+      };
+      controlsChanged = true;
+    }
+    if (!controlsChanged) {
+      return;
+    }
+    if (this.hasNonNavigationControlsEnabled_() && this.isConnected) {
+      ensureLazyLoaded().then(() => this.scheduleLayoutResponsiveControls_());
+    }
+    this.scheduleLayoutResponsiveControls_();
+    if (this.hasStartedRegisteringTrackedElements_) {
+      const sessionId = this.initializeSessionId_;
+      this.updateComplete.then(() => this.registerTrackedElements_(sessionId));
+    }
+  }
+
+  // Removes `initial-load` from the avatar button once it has rendered, so
+  // later changes animate.
+  private async clearAvatarInitialLoad_() {
+    const avatar = this.shadowRoot.querySelector<CrLitElement>('#avatar');
+    if (!avatar) {
+      return;
+    }
+    await whenUpgraded(avatar);
+    requestAnimationFrame(() => {
+      avatar.classList.remove('initial-load');
+    });
   }
 
   /**
@@ -344,6 +500,22 @@ export class ToolbarAppElement extends AppElementBase {
 
     if (this.webUIToolbarFullyEnabled_) {
       this.setAttribute('webui-toolbar-fully-enabled', '');
+    }
+    // An unbound spare may enable the Glic or avatar button when a window
+    // adopts it, so it also preloads lazy_load.js for them.
+    const mayEnableBoundControls =
+        this.initialState_.getBoolean(ToolbarStateKey.IS_UNBOUND) &&
+        (loadTimeData.getBoolean('enableGlicButton') ||
+         loadTimeData.getBoolean('enableAvatarButton'));
+    if (this.hasNonNavigationControlsEnabled_() || mayEnableBoundControls) {
+      // Request loading of the lazy loaded module within an idle callback.
+      // Pass a timeout because untimed idle callbacks only run during Blink
+      // idle periods, which never start while the toolbar has a zero-width
+      // viewport (e.g. when only hidden controls are enabled).
+      requestIdleCallback(async () => {
+        await ensureLazyLoaded();
+        this.scheduleLayoutResponsiveControls_();
+      }, {timeout: 500});
     }
 
     const sessionId = ++this.initializeSessionId_;
@@ -397,22 +569,24 @@ export class ToolbarAppElement extends AppElementBase {
               const isFirstToolbarState = !this.hasReceivedToolbarState_;
               if (isFirstToolbarState) {
                 this.hasReceivedToolbarState_ = true;
-                this.updateComplete.then(() => {
-                  const avatar =
-                      this.shadowRoot.querySelector<HTMLElement>('#avatar');
-                  if (avatar) {
-                    requestAnimationFrame(() => {
-                      avatar.classList.remove('initial-load');
-                    });
-                  }
+                // An unbound spare adopted with no bound-state diff starts
+                // `colors.css` updates here.
+                this.startColorChangeUpdater_();
+                this.updateComplete.then(async () => {
                   const extensions =
                       this.shadowRoot.querySelector<ExtensionsElement>(
                           '#extensions');
-                  if (extensions) {
-                    requestAnimationFrame(() => {
-                      extensions.markInitialStateRendered();
-                    });
-                  }
+                  await Promise.all([
+                    this.clearAvatarInitialLoad_(),
+                    (async () => {
+                      if (extensions) {
+                        await whenUpgraded(extensions);
+                        requestAnimationFrame(() => {
+                          extensions.markInitialStateRendered();
+                        });
+                      }
+                    })(),
+                  ]);
                 });
               }
 
@@ -443,18 +617,71 @@ export class ToolbarAppElement extends AppElementBase {
         this.initializePage_(sessionId);
       });
     }
+
+    if (this.initialState_.getBoolean(ToolbarStateKey.IS_UNBOUND)) {
+      // A window that adopted this spare before commit overwrote
+      // `initialState`, adding `colorsCss` if its colors differ.
+      if (applyBoundColorsCss(
+              this.initialState_.getString(ToolbarStateKey.COLORS_CSS))) {
+        this.startColorChangeUpdater_();
+      }
+      window.__webuiToolbarApplyBoundProfile = (state: BoundProfileState) =>
+          this.applyBoundProfile(state);
+      // The browser stashes the bound state here if a window adopted this
+      // spare after commit but before this script ran.
+      const stashedState = window.__webuiToolbarBoundProfile;
+      if (stashedState) {
+        delete window.__webuiToolbarBoundProfile;
+        this.applyBoundProfile(stashedState);
+      }
+    }
   }
 
-  private initializePage_(sessionId: number) {
-    if (sessionId !== this.initializeSessionId_ || !this.isConnected ||
-        this.isPageInitialized_) {
-      return;
+  // Returns whether any control other than the navigation buttons (back,
+  // forward, reload, home and split tabs) is enabled. Only the navigation
+  // buttons are in the main webui_toolbar.js bundle; all other controls are
+  // defined by lazy_load.js, which is only loaded if this returns true.
+  private hasNonNavigationControlsEnabled_(): boolean {
+    return this.webUIToolbarFullyEnabled_ || this.isLocationBarEnabled_ ||
+        this.isExtensionsContainerEnabled_ ||
+        this.isPinnedToolbarActionsEnabled_ ||
+        this.isBatterySaverButtonEnabled_ ||
+        this.isPerformanceInterventionButtonEnabled_ ||
+        this.isGlicButtonEnabled_ || this.isAvatarButtonEnabled_ ||
+        // <if expr="is_win or is_macosx or is_linux">
+        this.isMediaButtonEnabled_ ||
+        // </if>
+        this.isAppMenuButtonEnabled_;
+  }
+
+  private async registerTrackedElements_(sessionId: number): Promise<boolean> {
+    if (sessionId !== this.initializeSessionId_ || !this.isConnected) {
+      return false;
     }
-    this.isPageInitialized_ = true;
+    const undefinedElements =
+        this.shadowRoot.querySelectorAll(':not(:defined)');
+    if (undefinedElements.length > 0) {
+      await Promise.all(Array.from(
+          undefinedElements, el => customElements.whenDefined(el.localName)));
+      if (sessionId !== this.initializeSessionId_ || !this.isConnected) {
+        return false;
+      }
+    }
 
     for (const {selector, id} of TRACKED_ELEMENTS) {
-      const el = this.shadowRoot.querySelector<HTMLElement>(selector);
+      const el =
+          this.shadowRoot.querySelector<HTMLElement>(selector) ?? undefined;
+      const registeredEl = this.registeredTrackedElements_.get(id);
+      if (el === registeredEl) {
+        continue;
+      }
+      // A control that applyBoundProfile() removed or re-rendered.
+      if (registeredEl) {
+        this.unregisterHelpBubble(id);
+        this.registeredTrackedElements_.delete(id);
+      }
       if (el) {
+        this.registeredTrackedElements_.set(id, el);
         const tracker = (el as {highlightTracker?: unknown}).highlightTracker;
         this.registerHelpBubble(id, el, {
           onHighlightChanged: (highlighted: boolean) => {
@@ -468,6 +695,21 @@ export class ToolbarAppElement extends AppElementBase {
         });
       }
     }
+    return true;
+  }
+
+  private async initializePage_(sessionId: number) {
+    if (sessionId !== this.initializeSessionId_ || !this.isConnected ||
+        this.isPageInitialized_) {
+      return;
+    }
+
+    this.hasStartedRegisteringTrackedElements_ = true;
+    if (!await this.registerTrackedElements_(sessionId) ||
+        this.isPageInitialized_) {
+      return;
+    }
+    this.isPageInitialized_ = true;
 
     const waitSelectors = [
       '#back',
@@ -481,6 +723,7 @@ export class ToolbarAppElement extends AppElementBase {
       '#battery-saver',
       '#performance-intervention',
       '#glic-button',
+      '#glic-actor-task-icon',
       '#avatar',
       '#media',
       '#overflow',
@@ -490,12 +733,12 @@ export class ToolbarAppElement extends AppElementBase {
         waitSelectors.map(s => this.shadowRoot.querySelector<CrLitElement>(s))
             .filter(el => !!el)
             .map(el => el.updateComplete);
-    Promise.all(promises).then(() => {
-      if (sessionId !== this.initializeSessionId_ || !this.isConnected) {
-        return;
-      }
-      this.browserProxy_.toolbarUIHandler.onPageInitialized();
-    });
+    await Promise.all(promises);
+    if (sessionId !== this.initializeSessionId_ || !this.isConnected) {
+      return;
+    }
+    this.layoutIfNeeded_();
+    this.browserProxy_.toolbarUIHandler.onPageInitialized();
   }
 
   /**
@@ -504,6 +747,9 @@ export class ToolbarAppElement extends AppElementBase {
    */
   override disconnectedCallback() {
     super.disconnectedCallback();
+
+    delete window.__webuiToolbarApplyBoundProfile;
+    clearBoundColorsCss();
 
     this.removeEventListener('dragover', this.dragOverListener_);
     this.removeEventListener('drop', this.dropListener_);
@@ -525,15 +771,12 @@ export class ToolbarAppElement extends AppElementBase {
     this.hasReceivedToolbarState_ = false;
     this.initializeSessionId_++;
 
-    if (this.isPageInitialized_) {
-      for (const {selector, id} of TRACKED_ELEMENTS) {
-        const el = this.shadowRoot.querySelector<HTMLElement>(selector);
-        if (el) {
-          this.unregisterHelpBubble(id);
-        }
-      }
-      this.isPageInitialized_ = false;
+    for (const id of this.registeredTrackedElements_.keys()) {
+      this.unregisterHelpBubble(id);
     }
+    this.registeredTrackedElements_.clear();
+    this.hasStartedRegisteringTrackedElements_ = false;
+    this.isPageInitialized_ = false;
   }
 
   // Drill down to find the actual active element
@@ -742,6 +985,17 @@ export class ToolbarAppElement extends AppElementBase {
   }
 
   /**
+   * Like getAvailableWidth(), but uses the toolbar's fractional width, rather
+   * than its `clientWidth`, which is rounded to an integer. Useful for
+   * controls that size themselves to fill the available width, as using the
+   * rounded value may leave them up to a pixel narrower or wider than they
+   * should be.
+   */
+  getExactAvailableWidth(): number {
+    return window.innerWidth - this.getBoundingClientRect().width;
+  }
+
+  /**
    * Resizes / shows / hides responsive controls based on available space in the
    * toolbar. Returns true if all controls were successfully laid out; returns
    * false if `failOnOverflow` is true and any control overflowed.
@@ -813,6 +1067,10 @@ export class ToolbarAppElement extends AppElementBase {
           this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
               '#glic-button') :
           null,
+      this.toolbarGlicButtonResizingEnabled_ ?
+          this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
+              '#glic-actor-task-icon') :
+          null,
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#forward'),
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>('#home'),
       this.shadowRoot.querySelector<ResponsiveControl&HTMLElement>(
@@ -863,6 +1121,13 @@ export class ToolbarAppElement extends AppElementBase {
     // If `webUIToolbarFullyEnabled_` is false, the C++ FlexLayout class will
     // handle laying out controls.
     if (!this.webUIToolbarFullyEnabled_) {
+      return;
+    }
+
+    // Wait until the initial template has rendered (#location-bar and
+    // #overflow exist in shadowRoot) and lazy_load.js has upgraded the
+    // ResponsiveControl elements (so methods like shouldBeShown() exist).
+    if (!this.isInitialized_ || !customElements.get('overflow-button')) {
       return;
     }
 
@@ -929,22 +1194,25 @@ export class ToolbarAppElement extends AppElementBase {
       return;
     }
 
-    if (e.dataTransfer.types.includes('text/uri-list')) {
-      const url = e.dataTransfer.getData('text/uri-list');
-      if (url) {
-        this.browserProxy_.browserControlsHandler.navigate(url.split('\n')[0]!);
-      }
+    // A type can be present with empty data, e.g. setData(type, ''). Fall
+    // through to the other types then, like the native toolbar.
+    if (e.dataTransfer.types.includes('text/uri-list') &&
+        e.dataTransfer.getData('text/uri-list')) {
+      this.browserProxy_.toolbarUIHandler.onToolbarDropUrl();
     } else if (e.dataTransfer.types.includes('Files')) {
       this.browserProxy_.toolbarUIHandler.onToolbarDropFile(
           {x: e.clientX, y: e.clientY});
     } else if (e.dataTransfer.types.includes('text/plain')) {
       const text = e.dataTransfer.getData('text/plain');
       if (text) {
-        this.browserProxy_.browserControlsHandler.navigateText(text);
+        this.browserProxy_.toolbarUIHandler.onToolbarDropText(text);
       }
     }
   }
 
+  protected keyboardNavigable(): boolean {
+    return this.keyboardNavigable_;
+  }
 }
 
 declare global {

@@ -81,15 +81,32 @@ Browser* GetBrowserForWebState(web::WebState* web_state) {
   return browser_and_index.browser;
 }
 
-// Returns the `SessionID` of the regular `Browser` owning `web_state`, or an
-// invalid `SessionID` if `web_state` is not attached to a regular browser.
-SessionID GetBrowserIdForWebState(web::WebState* web_state) {
-  Browser* browser = GetBrowserForWebState(web_state);
-  if (!browser) {
+// Resolves the regular `Browser` to target from `browser`, falling back to the
+// regular `Browser` owning `target_web_state`. Returns `nullptr` if neither
+// identifies a regular browser.
+Browser* ResolveRegularBrowser(Browser* browser,
+                               web::WebState* target_web_state) {
+  if (browser && browser->type() == Browser::Type::kRegular) {
+    return browser;
+  }
+  return GetBrowserForWebState(target_web_state);
+}
+
+// Returns the `SessionID` of `browser` when it is a regular `Browser` with an
+// attached `ActorBrowserAgent`, or an invalid `SessionID` otherwise.
+SessionID GetBrowserId(Browser* browser) {
+  if (!browser || browser->type() != Browser::Type::kRegular) {
     return SessionID::InvalidValue();
   }
   ActorBrowserAgent* agent = ActorBrowserAgent::FromBrowser(browser);
   return agent ? agent->browser_id() : SessionID::InvalidValue();
+}
+
+// Returns whether `action` requires a non-null `target_web_state` when
+// dispatched through TTC.
+bool ActionRequiresTargetWebState(
+    const optimization_guide::proto::Action& action) {
+  return action.action_case() != optimization_guide::proto::Action::kCreateTab;
 }
 
 // Sets `tab_id` on `sub_action` if not already explicitly populated.
@@ -302,7 +319,8 @@ void TtcActuationHandler::Disconnect() {
 #pragma mark - Public Actuation
 
 void TtcActuationHandler::ProcessToolCall(const ttc::ToolRequest& tool_request,
-                                          web::WebState* active_web_state,
+                                          web::WebState* target_web_state,
+                                          Browser* browser,
                                           ActuationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(callback);
@@ -313,7 +331,8 @@ void TtcActuationHandler::ProcessToolCall(const ttc::ToolRequest& tool_request,
   }
 
   if (TtcToolValidator::IsOpenUrlInNewTab(tool_request)) {
-    OpenUrlInNewTab(tool_request, active_web_state, std::move(callback));
+    OpenUrlInNewTab(tool_request, target_web_state, browser,
+                    std::move(callback));
     return;
   }
 
@@ -327,12 +346,14 @@ void TtcActuationHandler::ProcessToolCall(const ttc::ToolRequest& tool_request,
     return;
   }
 
-  DispatchActuationRequest(*request, active_web_state, std::move(callback));
+  DispatchActuationRequest(*request, target_web_state, browser,
+                           std::move(callback));
 }
 
 void TtcActuationHandler::DispatchActuationRequest(
     const TtcActuationRequest& request,
-    web::WebState* active_web_state,
+    web::WebState* target_web_state,
+    Browser* browser,
     ActuationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(callback);
@@ -343,12 +364,13 @@ void TtcActuationHandler::DispatchActuationRequest(
     return;
   }
 
-  web::BrowserState* browser_state =
-      active_web_state ? active_web_state->GetBrowserState() : nullptr;
-  if (!browser_state || browser_state->IsOffTheRecord()) {
-    FailWithError(std::move(callback),
-                  actor::mojom::ActionResultCode::kTabWentAway);
-    return;
+  if (target_web_state) {
+    web::BrowserState* browser_state = target_web_state->GetBrowserState();
+    if (!browser_state || browser_state->IsOffTheRecord()) {
+      FailWithError(std::move(callback),
+                    actor::mojom::ActionResultCode::kTabWentAway);
+      return;
+    }
   }
 
   if (request.action_protos.empty()) {
@@ -364,7 +386,8 @@ void TtcActuationHandler::DispatchActuationRequest(
     return;
   }
 
-  SessionID window_id = GetBrowserIdForWebState(active_web_state);
+  SessionID window_id =
+      GetBrowserId(ResolveRegularBrowser(browser, target_web_state));
   std::vector<optimization_guide::proto::Action> actions;
   actions.reserve(request.action_protos.size());
 
@@ -375,7 +398,18 @@ void TtcActuationHandler::DispatchActuationRequest(
                     actor::mojom::ActionResultCode::kArgumentsInvalid);
       return;
     }
-    InjectDataIntoAction(action, active_web_state, window_id);
+    if (!target_web_state && ActionRequiresTargetWebState(action)) {
+      FailWithError(std::move(callback),
+                    actor::mojom::ActionResultCode::kTabWentAway);
+      return;
+    }
+    InjectDataIntoAction(action, target_web_state, window_id);
+    if (action.action_case() == optimization_guide::proto::Action::kCreateTab &&
+        !action.create_tab().has_window_id()) {
+      FailWithError(std::move(callback),
+                    actor::mojom::ActionResultCode::kWindowWentAway);
+      return;
+    }
     actions.push_back(std::move(action));
   }
 
@@ -463,7 +497,8 @@ void TtcActuationHandler::CloseSession(ActuationCallback callback) {
 }
 
 void TtcActuationHandler::OpenUrlInNewTab(const ttc::ToolRequest& tool_request,
-                                          web::WebState* active_web_state,
+                                          web::WebState* target_web_state,
+                                          Browser* browser,
                                           ActuationCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   base::expected<void, std::string> validation =
@@ -481,12 +516,13 @@ void TtcActuationHandler::OpenUrlInNewTab(const ttc::ToolRequest& tool_request,
     return;
   }
 
-  web::BrowserState* browser_state =
-      active_web_state ? active_web_state->GetBrowserState() : nullptr;
-  if (!browser_state || browser_state->IsOffTheRecord()) {
-    FailWithError(std::move(callback),
-                  actor::mojom::ActionResultCode::kTabWentAway);
-    return;
+  if (target_web_state) {
+    web::BrowserState* browser_state = target_web_state->GetBrowserState();
+    if (!browser_state || browser_state->IsOffTheRecord()) {
+      FailWithError(std::move(callback),
+                    actor::mojom::ActionResultCode::kTabWentAway);
+      return;
+    }
   }
 
   if (active_callback_) {
@@ -496,9 +532,10 @@ void TtcActuationHandler::OpenUrlInNewTab(const ttc::ToolRequest& tool_request,
     return;
   }
 
-  Browser* browser = GetBrowserForWebState(active_web_state);
+  Browser* resolved_browser = ResolveRegularBrowser(browser, target_web_state);
   TabInsertionBrowserAgent* insertion_agent =
-      browser ? TabInsertionBrowserAgent::FromBrowser(browser) : nullptr;
+      resolved_browser ? TabInsertionBrowserAgent::FromBrowser(resolved_browser)
+                       : nullptr;
   if (!insertion_agent) {
     FailWithError(std::move(callback),
                   actor::mojom::ActionResultCode::kWindowWentAway);
@@ -526,7 +563,7 @@ void TtcActuationHandler::OpenUrlInNewTab(const ttc::ToolRequest& tool_request,
       GURL(url_string ? *url_string : std::string()));
   TabInsertion::Params insertion_params;
   insertion_params.in_background = false;
-  insertion_params.parent = active_web_state;
+  insertion_params.parent = target_web_state;
   web::WebState* new_web_state =
       insertion_agent->InsertWebState(load_params, insertion_params);
   if (!new_web_state) {
@@ -680,6 +717,10 @@ void TtcActuationHandler::OnTaskStopped(actor::ActorTaskId task_id) {
             (void (^)(ActorFormSuggestion* selectedSuggestion,
                       BOOL shouldStorePermission))completionHandler {
   completionHandler(suggestions.firstObject, NO);
+}
+
+- (void)actorTaskDidCancelSuggestionSelection:(actor::ActorTaskId)taskID {
+  // No-op: suggestions are selected synchronously, so none is ever pending.
 }
 
 - (void)actorTask:(actor::ActorTaskId)taskID

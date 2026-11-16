@@ -36,6 +36,7 @@
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
 #import "components/strings/grit/components_strings.h"
+#import "components/subscription_eligibility/ai_subscription_tier_names.h"
 #import "components/subscription_eligibility/objc/subscription_eligibility_observer_bridge.h"
 #import "components/subscription_eligibility/subscription_eligibility_service.h"
 #import "components/sync/service/sync_service.h"
@@ -52,6 +53,7 @@
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_view_controller_presenter.h"
 #import "ios/chrome/browser/catalogs/ui/button_catalog_view_controller.h"
+#import "ios/chrome/browser/catalogs/ui/lottie_catalog_view_controller.h"
 #import "ios/chrome/browser/catalogs/ui/table_cell_catalog_view_controller.h"
 #import "ios/chrome/browser/catalogs/ui/view_catalog_view_controller.h"
 #import "ios/chrome/browser/catalogs/ui/view_controller_catalog_view_controller.h"
@@ -724,6 +726,8 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
         toSectionWithIdentifier:SettingsSectionIdentifierDebug];
     [model addItem:[self viewCatalogDetailItem]
         toSectionWithIdentifier:SettingsSectionIdentifierDebug];
+    [model addItem:[self lottieCatalogDetailItem]
+        toSectionWithIdentifier:SettingsSectionIdentifierDebug];
   }
 
   if (experimental_flags::ShouldShowBackendPromoDebugTools()) {
@@ -1336,6 +1340,15 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
           accessibilityIdentifier:nil];
 }
 
+- (TableViewDetailIconItem*)lottieCatalogDetailItem {
+  return [self detailItemWithType:SettingsItemTypeLottieCatalog
+                             text:@"Lottie Catalog"
+                       detailText:nil
+                           symbol:SettingsRootSymbol(SymbolCart)
+            symbolBackgroundColor:[UIColor colorNamed:kGrey400Color]
+          accessibilityIdentifier:nil];
+}
+
 #pragma mark Item Constructors
 
 - (TableViewDetailIconItem*)detailItemWithType:(NSInteger)type
@@ -1592,6 +1605,11 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
       [self.navigationController
           pushViewController:[[ViewCatalogViewController alloc]
                                  initWithBrowser:_browser]
+                    animated:YES];
+      break;
+    case SettingsItemTypeLottieCatalog:
+      [self.navigationController
+          pushViewController:[[LottieCatalogViewController alloc] init]
                     animated:YES];
       break;
     case SettingsItemTypeBWGSettings:
@@ -2069,8 +2087,10 @@ enum class IOSDefaultBrowserSettingsPassivePromoAction {
   if (GetAccountErrorUIInfo(syncService) != nil) {
     identityAccountItem.detailImage = TableViewAccountDetailImage::kError;
   } else if (_subscriptionEligibilityService &&
-             _subscriptionEligibilityService->GetAiSubscriptionTier() > 0 &&
-             IsAiSubscriptionAvatarRingFollowupIOSEnabled()) {
+             IsAiSubscriptionAvatarRingFollowupIOSEnabled() &&
+             subscription_eligibility::GetAiSubscriptionTierDisplayInfo(
+                 _subscriptionEligibilityService->GetAiSubscriptionTier())
+                 .show_decoration) {
     identityAccountItem.detailImage = TableViewAccountDetailImage::kAITierRing;
   } else {
     identityAccountItem.detailImage = TableViewAccountDetailImage::kNone;

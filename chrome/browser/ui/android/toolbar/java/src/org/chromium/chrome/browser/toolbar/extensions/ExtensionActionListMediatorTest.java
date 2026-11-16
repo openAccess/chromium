@@ -27,6 +27,7 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.os.Looper;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
@@ -66,11 +67,13 @@ import org.chromium.chrome.browser.ui.extensions.ExtensionsToolbarBridge;
 import org.chromium.chrome.browser.ui.toolbar.AdminPolicy;
 import org.chromium.chrome.browser.ui.toolbar.SiteAccess;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.ListMenuButton;
-import org.chromium.ui.listmenu.ListMenuHost;
+import org.chromium.ui.listmenu.ListMenuHost.PopupMenuShownListener;
 import org.chromium.ui.listmenu.MenuModelBridge;
 import org.chromium.ui.modaldialog.ModalDialogManager;
+import org.chromium.ui.modaldialog.ModalDialogManager.ModalDialogManagerObserver;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 
@@ -154,7 +157,7 @@ public class ExtensionActionListMediatorTest {
     @Mock private ModalDialogManager mModalDialogManager;
     @Mock private Runnable mClearOmniboxFocus;
 
-    @Captor private ArgumentCaptor<ListMenuHost.PopupMenuShownListener> mPopupListenerCaptor;
+    @Captor private ArgumentCaptor<PopupMenuShownListener> mPopupListenerCaptor;
 
     @Captor
     private ArgumentCaptor<ExtensionsToolbarBridge.ActionListDelegate> mBridgeDelegateCaptor;
@@ -267,6 +270,9 @@ public class ExtensionActionListMediatorTest {
         assertNotNull(
                 "Click listener should be set",
                 item.model.get(ExtensionActionButtonProperties.ON_CLICK_LISTENER));
+        assertNotNull(
+                "Key listener should be set",
+                item.model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER));
         assertNotNull(
                 "Long click listener should be set",
                 item.model.get(ExtensionActionButtonProperties.ON_LONG_CLICK_LISTENER));
@@ -466,8 +472,8 @@ public class ExtensionActionListMediatorTest {
 
     @Test
     public void testDismissPopupOnDialogAdded() {
-        ArgumentCaptor<ModalDialogManager.ModalDialogManagerObserver> observerCaptor =
-                ArgumentCaptor.forClass(ModalDialogManager.ModalDialogManagerObserver.class);
+        ArgumentCaptor<ModalDialogManagerObserver> observerCaptor =
+                ArgumentCaptor.forClass(ModalDialogManagerObserver.class);
         verify(mModalDialogManager).addObserver(observerCaptor.capture());
 
         // Trigger a popup.
@@ -646,7 +652,7 @@ public class ExtensionActionListMediatorTest {
 
         // Set up the mock action to track if its state is queried.
         ExtensionAction action = mock(ExtensionAction.class);
-        ExtensionAction.HoverCardState state = mock(ExtensionAction.HoverCardState.class);
+        HoverCardState state = mock(HoverCardState.class);
         when(action.getHoverCardState()).thenReturn(state);
         doReturn(action).when(mExtensionsToolbarBridge).getAction(eq(ACTION1_ID), any());
 
@@ -680,7 +686,7 @@ public class ExtensionActionListMediatorTest {
                 item.model.get(ExtensionActionButtonProperties.ON_HOVER_LISTENER);
 
         ExtensionAction action = mock(ExtensionAction.class);
-        ExtensionAction.HoverCardState state = mock(ExtensionAction.HoverCardState.class);
+        HoverCardState state = mock(HoverCardState.class);
         when(action.getHoverCardState()).thenReturn(state);
         doReturn(action).when(mExtensionsToolbarBridge).getAction(eq(ACTION1_ID), any());
 
@@ -716,7 +722,7 @@ public class ExtensionActionListMediatorTest {
                 item.model.get(ExtensionActionButtonProperties.ON_HOVER_LISTENER);
 
         ExtensionAction action = mock(ExtensionAction.class);
-        ExtensionAction.HoverCardState state = mock(ExtensionAction.HoverCardState.class);
+        HoverCardState state = mock(HoverCardState.class);
         when(action.getHoverCardState()).thenReturn(state);
         doReturn(action).when(mExtensionsToolbarBridge).getAction(eq(ACTION1_ID), any());
 
@@ -786,7 +792,7 @@ public class ExtensionActionListMediatorTest {
                 item.model.get(ExtensionActionButtonProperties.ON_HOVER_LISTENER);
 
         ExtensionAction action = mock(ExtensionAction.class);
-        ExtensionAction.HoverCardState state = mock(ExtensionAction.HoverCardState.class);
+        HoverCardState state = mock(HoverCardState.class);
         when(action.getHoverCardState()).thenReturn(state);
         doReturn(action).when(mExtensionsToolbarBridge).getAction(eq(ACTION1_ID), any());
 
@@ -824,6 +830,192 @@ public class ExtensionActionListMediatorTest {
         assertEquals(2, mModels.size());
         assertEquals(ACTION1_ID, mModels.get(0).model.get(ExtensionActionButtonProperties.ID));
         assertEquals(ACTION2_ID, mModels.get(1).model.get(ExtensionActionButtonProperties.ID));
+    }
+
+    @Test
+    public void testKeyReorder_Ltr() {
+        when(mExtensionsToolbarBridge.isActionDraggable(ACTION1_ID)).thenReturn(true);
+        mMediator.reconcileActionItems();
+
+        View.OnKeyListener keyListener =
+                mModels.get(0).model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER);
+
+        // Plain DPAD_RIGHT / DPAD_LEFT without Ctrl should not reorder.
+        assertFalse(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        /* metaState= */ 0));
+        assertFalse(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_LEFT,
+                        /* metaState= */ 0));
+        verify(mExtensionsToolbarBridge, never()).movePinnedActionBy(anyString(), anyInt());
+
+        // Additional modifiers (e.g. Ctrl+Shift or Ctrl+Alt) should not reorder.
+        assertFalse(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON | KeyEvent.META_SHIFT_ON));
+        assertFalse(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON | KeyEvent.META_ALT_ON));
+        verify(mExtensionsToolbarBridge, never()).movePinnedActionBy(anyString(), anyInt());
+
+        // ACTION_UP with Ctrl should not reorder.
+        assertFalse(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_UP,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge, never()).movePinnedActionBy(anyString(), anyInt());
+
+        // Ctrl + DPAD_RIGHT on ACTION_DOWN moves toward end (+1) in LTR.
+        assertTrue(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge).movePinnedActionBy(ACTION1_ID, 1);
+
+        // Ctrl + DPAD_LEFT on ACTION_DOWN moves toward start (-1) in LTR.
+        assertTrue(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_LEFT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge).movePinnedActionBy(ACTION1_ID, -1);
+    }
+
+    @Test
+    public void testKeyReorder_Rtl() {
+        LocalizationUtils.setRtlForTesting(true);
+        when(mExtensionsToolbarBridge.isActionDraggable(ACTION1_ID)).thenReturn(true);
+        mMediator.reconcileActionItems();
+
+        View.OnKeyListener keyListener =
+                mModels.get(0).model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER);
+
+        // Ctrl + DPAD_RIGHT on ACTION_DOWN moves toward start (-1) in RTL.
+        assertTrue(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge).movePinnedActionBy(ACTION1_ID, -1);
+
+        // Ctrl + DPAD_LEFT on ACTION_DOWN moves toward end (+1) in RTL.
+        assertTrue(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_LEFT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge).movePinnedActionBy(ACTION1_ID, 1);
+    }
+
+    @Test
+    public void testKeyReorder_NonDraggableOrPoppedOutIgnored() {
+        when(mExtensionsToolbarBridge.isActionDraggable(ACTION1_ID)).thenReturn(false);
+        when(mExtensionsToolbarBridge.isActionDraggable(ACTION3_ID)).thenReturn(true);
+
+        // Pop out ACTION3_ID, simulating a pinned action that overflowed and popped out.
+        mBridgeDelegateCaptor
+                .getValue()
+                .triggerPopup(ACTION3_ID, mPopupContentsMock, /* inspectWithDevTools= */ false);
+        mMediator.reconcileActionItems();
+
+        // ACTION1_ID is not draggable (e.g. force-pinned or incognito).
+        View.OnKeyListener action1KeyListener =
+                mModels.get(0).model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER);
+        assertFalse(
+                sendKeyEvent(
+                        action1KeyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON));
+
+        // ACTION3_ID is popped out at index 2.
+        View.OnKeyListener action3KeyListener =
+                mModels.get(2).model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER);
+        assertFalse(
+                sendKeyEvent(
+                        action3KeyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_LEFT,
+                        KeyEvent.META_CTRL_ON));
+
+        verify(mExtensionsToolbarBridge, never()).movePinnedActionBy(anyString(), anyInt());
+    }
+
+    @Test
+    public void testHoverCard_CancelsPendingRunnableOnKeyReorder() {
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
+        when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(activity));
+        when(mExtensionsToolbarBridge.isActionDraggable(ACTION1_ID)).thenReturn(true);
+
+        mMediator.reconcileActionItems();
+        ListItem item = mModels.get(0);
+        View.OnHoverListener hoverListener =
+                item.model.get(ExtensionActionButtonProperties.ON_HOVER_LISTENER);
+        View.OnKeyListener keyListener =
+                item.model.get(ExtensionActionButtonProperties.ON_KEY_LISTENER);
+
+        ExtensionAction action = mock(ExtensionAction.class);
+        HoverCardState state = mock(HoverCardState.class);
+        when(action.getHoverCardState()).thenReturn(state);
+        doReturn(action).when(mExtensionsToolbarBridge).getAction(eq(ACTION1_ID), any());
+
+        View anchorView = new View(activity);
+        when(mRecyclerViewDelegate.getButtonViewForId(ACTION1_ID)).thenReturn(anchorView);
+
+        // Trigger hover enter to start hover card delay timer.
+        MotionEvent enterEvent = mock(MotionEvent.class);
+        when(enterEvent.getAction()).thenReturn(MotionEvent.ACTION_HOVER_ENTER);
+        hoverListener.onHover(anchorView, enterEvent);
+
+        // Reorder via keyboard while hover card timer is pending.
+        assertTrue(
+                sendKeyEvent(
+                        keyListener,
+                        KeyEvent.ACTION_DOWN,
+                        KeyEvent.KEYCODE_DPAD_RIGHT,
+                        KeyEvent.META_CTRL_ON));
+        verify(mExtensionsToolbarBridge).movePinnedActionBy(ACTION1_ID, 1);
+
+        // Fast forward looper past the long press timeout.
+        shadowOf(Looper.getMainLooper())
+                .idleFor(ViewConfiguration.getLongPressTimeout(), TimeUnit.MILLISECONDS);
+
+        // Verify the pending hover card runnable was cancelled and never constructed the hover
+        // card.
+        verify(action, never()).getHoverCardState();
+    }
+
+    private static boolean sendKeyEvent(
+            View.OnKeyListener listener, int action, int keyCode, int metaState) {
+        return listener.onKey(
+                null,
+                keyCode,
+                new KeyEvent(
+                        /* downTime= */ 0,
+                        /* eventTime= */ 0,
+                        action,
+                        keyCode,
+                        /* repeat= */ 0,
+                        metaState));
     }
 
     private static Bitmap createSimpleIcon(int color) {

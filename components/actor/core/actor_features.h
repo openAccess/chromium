@@ -53,11 +53,6 @@ BASE_DECLARE_FEATURE_PARAM(bool, kGlicConfirmNavigationToNewOrigins);
 // relying on the web client making a server call.
 // kGlicConfirmNavigationToNewOrigins must be enabled for this feature to work.
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicPromptUserForNavigationToNewOrigins);
-// Toggles whether we are in "dark launch" mode where we ask the server for
-// validation in the background but only log the response.
-// If kGlicConfirmNavigationToNewOrigins is enabled, it overrides this parameter
-// and performs active gating (blocking the navigation).
-BASE_DECLARE_FEATURE_PARAM(bool, kGlicConfirmNavigationToNewOriginsDarkLaunch);
 // Toggles whether novel origin gating is based on site (true) or origin
 // (false).
 BASE_DECLARE_FEATURE_PARAM(bool, kGlicNavigationGatingUseSiteNotOrigin);
@@ -134,8 +129,7 @@ extern const base::FeatureParam<base::TimeDelta>
 // chooser request with files downloaded from model-provided URLs instead of
 // showing the native file picker.
 BASE_DECLARE_FEATURE(kGlicActorFileUploadTool);
-// Maximum size, in bytes, of a single downloaded file. Capped by
-// network::SimpleURLLoader::kMaxBoundedStringDownloadSize.
+// Maximum size, in bytes, of a single downloaded file.
 extern const base::FeatureParam<int> kGlicActorFileUploadToolMaxFileSizeBytes;
 // How long the tool waits for the page to open a file chooser after the target
 // element is clicked before giving up and tearing down the staged files.
@@ -158,9 +152,6 @@ extern const base::FeatureParam<base::TimeDelta>
 extern const base::FeatureParam<base::TimeDelta>
     kActorScriptToolCrossDocumentTimeout;
 
-BASE_DECLARE_FEATURE(kActorScriptToolDelayObservation);
-extern const base::FeatureParam<int> kActorScriptToolDelayObservationMillis;
-
 BASE_DECLARE_FEATURE(kActorObserveScreenshotDefault);
 BASE_DECLARE_FEATURE(kActorObservePageContentDefault);
 
@@ -172,6 +163,8 @@ BASE_DECLARE_FEATURE(kActorScriptToolTransientUserActivation);
 // instead of running a different tool that the page registered under the same
 // name since the observation.
 BASE_DECLARE_FEATURE(kActorScriptToolIdValidation);
+
+BASE_DECLARE_FEATURE(kActorExecuteJsTool);
 
 // Guards the new Actor Task invocation source completion metrics.
 BASE_DECLARE_FEATURE(kActorRecordInvocationSourceCompletionMetrics);

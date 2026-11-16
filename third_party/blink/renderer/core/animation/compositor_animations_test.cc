@@ -51,6 +51,7 @@
 #include "content/test/test_blink_web_unit_test_support.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/web/web_settings.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_evaluation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_animation_play_state.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_double.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_string_unrestricteddouble.h"
@@ -84,12 +85,14 @@
 #include "third_party/blink/renderer/core/layout/layout_object.h"
 #include "third_party/blink/renderer/core/paint/object_paint_properties.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
+#include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/style/computed_style.h"
 #include "third_party/blink/renderer/core/style/filter_operations.h"
 #include "third_party/blink/renderer/core/style/style_generated_image.h"
 #include "third_party/blink/renderer/core/svg/svg_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length.h"
 #include "third_party/blink/renderer/core/svg/svg_use_element.h"
+#include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/testing/color_scheme_helper.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
 #include "third_party/blink/renderer/core/testing/dummy_page_holder.h"
@@ -2732,6 +2735,94 @@ TEST_P(AnimationCompositorAnimationsTest,
 }
 
 TEST_P(AnimationCompositorAnimationsTest,
+       CancelIncompatibleSVGTransformCompositorAnimation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      .animate {
+        width: 100px;
+        height: 100px;
+        animation: move 100s linear infinite;
+      }
+      @keyframes move {
+        0% { transform: translateX(0px); }
+        100% { transform: translateX(10px); }
+      }
+    </style>
+    <svg width="200" height="200">
+      <defs>
+        <rect id="rect-useref" width="100" height="100" fill="green"/>
+      </defs>
+      <use id="use" href="#rect-useref" x="0" y="0" class="animate"/>
+    </svg>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* use = GetElementById("use");
+  Animation* use_animation =
+      use->GetElementAnimations()->Animations().begin()->key;
+  EXPECT_TRUE(use_animation->HasActiveAnimationsOnCompositor());
+
+  const ObjectPaintProperties* use_properties =
+      use->GetLayoutObject()->FirstFragment().PaintProperties();
+  ASSERT_NE(nullptr, use_properties);
+  const auto* use_transform = use_properties->Transform();
+  ASSERT_NE(nullptr, use_transform);
+  auto* property_trees =
+      GetDocument().View()->RootCcLayer()->layer_tree_host()->property_trees();
+  const auto* cc_transform =
+      property_trees->transform_tree().FindNodeFromElementId(
+          use_transform->GetCompositorElementId());
+  ASSERT_NE(nullptr, cc_transform);
+  EXPECT_TRUE(use_transform->HasActiveTransformAnimation());
+  EXPECT_EQ(gfx::Vector2dF(0, 0), cc_transform->local.To2dTranslation());
+
+  // Setting a non-zero x offset on <use> introduces an additional transform
+  // that cannot be represented alongside a composited transform animation on a
+  // single TransformPaintPropertyNode.
+  use->setAttribute(svg_names::kXAttr, AtomicString("-500"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(use_animation->HasActiveAnimationsOnCompositor());
+
+  use_properties = use->GetLayoutObject()->FirstFragment().PaintProperties();
+  ASSERT_NE(nullptr, use_properties);
+  use_transform = use_properties->Transform();
+  ASSERT_NE(nullptr, use_transform);
+  EXPECT_FALSE(use_transform->HasActiveTransformAnimation());
+  EXPECT_EQ(gfx::Vector2dF(-500, 0), use_transform->Matrix().To2dTranslation());
+  cc_transform = property_trees->transform_tree().FindNodeFromElementId(
+      use_transform->GetCompositorElementId());
+  EXPECT_EQ(nullptr, cc_transform);
+}
+
+TEST_P(AnimationCompositorAnimationsTest,
+       IncompatibleSVGTransformWithOpacityCompositorAnimation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes move-and-fade {
+        0% { transform: translateX(0px); opacity: 1; }
+        100% { transform: translateX(10px); opacity: 0.5; }
+      }
+      .animate {
+        width: 100px;
+        height: 100px;
+        animation: move-and-fade 100s linear infinite;
+      }
+    </style>
+    <svg width="200" height="200">
+      <rect id="rect" fill="green" vector-effect="non-scaling-stroke"
+            class="animate"/>
+    </svg>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  Element* rect = GetElementById("rect");
+  Animation* rect_animation =
+      rect->GetElementAnimations()->Animations().begin()->key;
+  EXPECT_FALSE(rect_animation->HasActiveAnimationsOnCompositor());
+}
+
+TEST_P(AnimationCompositorAnimationsTest,
        SVGUseInstancesIndependentlyAnimate) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -3030,7 +3121,7 @@ class ScopedBackgroundColorPaintImageGenerator {
                                const Node* node) override {
       LayoutObject* layout_object = node->GetLayoutObject();
       layout_object->GetMutableForPainting().FirstFragment().EnsureId();
-      return BitmapImage::Create();
+      return BitmapImage::CreateForTesting();
     }
 
     Animation* GetAnimationIfCompositable(const Element* element) override {
@@ -3071,7 +3162,7 @@ class ScopedClipPathPaintImageGenerator {
                                const Node& node) override {
       LayoutObject* layout_object = node.GetLayoutObject();
       layout_object->GetMutableForPainting().FirstFragment().EnsureId();
-      return BitmapImage::Create();
+      return BitmapImage::CreateForTesting();
     }
 
     Animation* GetAnimationIfCompositable(const Element* element) override {
@@ -6082,6 +6173,134 @@ TEST_F(CompositorAnimationTriggerTest,
   EXPECT_FALSE(source->HasActiveAnimationsOnCompositor());
   EXPECT_EQ(source->GetCompositingDecisionState().disposition,
             CompositorAnimations::kUnsupportedInheritance);
+}
+
+// The main thread receives a compositor trigger event at the start of its next
+// main frame, before "update animations and send events". The event takes
+// effect after that step, so that if the animation reached its end by then, its
+// finish event listeners and finished promise callbacks run first.
+class CompositorTimelineTriggerFinishRaceTest
+    : public CompositorTimelineTriggerBehaviorTest {
+ public:
+  // The finish event listener cancels the animation, so that the animation's
+  // state shows whether the listener ran before the trigger acted.
+  void ObserveFinish() {
+    ClassicScript::CreateUnspecifiedScript(R"JS(
+      window.finishEventCount = 0;
+      window.finishedPromiseFulfilled = false;
+      window.currentTimeOnFinish = -1;
+      const anim = document.getElementById('target').getAnimations()[0];
+      anim.finished.then(() => { window.finishedPromiseFulfilled = true; });
+      anim.addEventListener('finish', () => {
+        window.finishEventCount++;
+        window.currentTimeOnFinish = anim.currentTime;
+        anim.cancel();
+      });
+    )JS")
+        ->RunScript(&Window());
+  }
+
+  double EvaluateNumber(const char* expression) {
+    ScriptState* script_state =
+        ToScriptStateForMainWorld(GetDocument().GetFrame());
+    ScriptState::Scope scope(script_state);
+    return ClassicScript::CreateUnspecifiedScript(expression)
+        ->RunScriptAndReturnValue(&Window())
+        .GetSuccessValue()
+        ->ToNumber(script_state->GetContext())
+        .ToLocalChecked()
+        ->Value();
+  }
+
+  // Scrolls the source into or out of view, and runs a frame in which the
+  // compositor trigger observes the scroll. The main thread receives the
+  // trigger's activation or deactivation at the start of the next frame.
+  void ScrollToActivate() {
+    source_->scrollIntoView(nullptr);
+    Compositor().BeginFrame(0.016);
+  }
+  void ScrollToDeactivate() {
+    scroller_->scrollTo(nullptr, 0, 0);
+    Compositor().BeginFrame(0.016);
+  }
+};
+
+// The main thread receives a replay in the frame in which it observes that the
+// animation finished. The finish event listeners and finished promise callbacks
+// run first.
+TEST_F(CompositorTimelineTriggerFinishRaceTest,
+       ReplayAfterEndRunsFinishNotificationFirst) {
+  Initialize("play", "replay");
+  ObserveFinish();
+
+  // The compositor starts the 500ms animation.
+  ScrollToActivate();
+
+  // The main thread receives the activation. The current time is now ~450ms.
+  Compositor().BeginFrame(0.45);
+
+  // Scroll out of the trigger range. The current time is now ~466ms, before the
+  // animation's end.
+  ScrollToDeactivate();
+
+  // The current time is now ~530ms (450ms + 16ms + 64ms). In this frame, the
+  // main thread receives the deactivation and sees that the animation finished.
+  // The finish listener runs before the replay.
+  Compositor().BeginFrame(0.064);
+
+  EXPECT_EQ(EvaluateNumber("window.finishEventCount"), 1);
+  EXPECT_EQ(EvaluateNumber("window.finishedPromiseFulfilled"), 1);
+  EXPECT_NEAR(EvaluateNumber("window.currentTimeOnFinish"), 500, 0.001);
+  // The finish listener cancelled the animation before the replay.
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kIdle);
+}
+
+// A style update forced before "update animations and send events" doesn't run
+// the trigger's behavior before the finish event listeners and finished promise
+// callbacks.
+TEST_F(CompositorTimelineTriggerFinishRaceTest,
+       ReplayAfterEndWaitsForFinishDespiteForcedStyleUpdate) {
+  Initialize("play", "replay");
+  ObserveFinish();
+
+  // The compositor starts the 500ms animation.
+  ScrollToActivate();
+
+  // The main thread receives the activation. The current time is now ~450ms.
+  Compositor().BeginFrame(0.45);
+
+  // Scroll out of the trigger range. The current time is now ~466ms, before the
+  // animation's end.
+  ScrollToDeactivate();
+
+  // A scroll event listener forces a style update. Scroll events are dispatched
+  // before "update animations and send events".
+  ClassicScript::CreateUnspecifiedScript(R"JS(
+    window.scrollEventCount = 0;
+    document.getElementById('scroller').addEventListener('scroll', () => {
+      window.scrollEventCount++;
+      document.getElementById('target').getBoundingClientRect();
+    });
+  )JS")
+      ->RunScript(&Window());
+
+  // Scroll by a pixel, staying out of the trigger range, so that the next frame
+  // dispatches a scroll event.
+  scroller_->setScrollTop(scroller_->scrollTop() + 1);
+
+  // The current time is now ~530ms (450ms + 16ms + 64ms). In this frame, the
+  // main thread receives the deactivation, the scroll event listener forces a
+  // style update, and then the main thread sees that the animation finished.
+  // The forced style update doesn't run the replay, so the finish listener
+  // still runs before the replay.
+  Compositor().BeginFrame(0.064);
+
+  EXPECT_EQ(EvaluateNumber("window.scrollEventCount"), 1);
+  EXPECT_EQ(EvaluateNumber("window.finishEventCount"), 1);
+  EXPECT_EQ(EvaluateNumber("window.finishedPromiseFulfilled"), 1);
+  EXPECT_EQ(blink_animation_->CalculateAnimationPlayState(),
+            V8AnimationPlayState::Enum::kIdle);
 }
 
 // Cancelling a CSS animation detaches it from its trigger, and the next trigger

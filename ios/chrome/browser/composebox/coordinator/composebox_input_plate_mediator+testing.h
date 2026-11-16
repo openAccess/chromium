@@ -32,7 +32,7 @@ class WebState;
 - (base::UnguessableToken)createInputItemForWebState:(web::WebState*)webState
                                               source:(ComposeboxInputItemSource)
                                                          source;
-- (BOOL)isWebStateIDRemoved:(web::WebStateID)webStateID;
+- (BOOL)isWebStateIDRemovedByUser:(web::WebStateID)webStateID;
 - (void)removeDeselectedIDs:(std::set<web::WebStateID>)deselectedIDs;
 - (void)updateAutoAttachedCurrentTab;
 - (void)handleFailedAttachment:(base::UnguessableToken)identifier;
@@ -43,7 +43,7 @@ class WebState;
                        identifier:(base::UnguessableToken)identifier;
 - (void)reloadSuggestions;
 - (void)sendAIMFollowup:(NSString*)text;
-- (void)didCreateSearchURL:(GURL)URL;
+- (void)didCreateSearchURL:(GURL)URL fromVoiceSearch:(BOOL)fromVoiceSearch;
 
 @end
 

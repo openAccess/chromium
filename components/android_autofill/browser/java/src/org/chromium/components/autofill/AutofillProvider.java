@@ -281,6 +281,7 @@ public class AutofillProvider {
             FocusField focusField = mRequest.getFocusField();
             @Nullable Rect clampedBounds = clampToVisibleBounds(focusField.absBound);
             if (clampedBounds == null) return;
+            maybeRefetchAutofillManager();
             getAutofillManagerWrapper()
                     .requestAutofill(
                             mContainerView,
@@ -316,6 +317,7 @@ public class AutofillProvider {
         mPrefillRequest = new PrefillRequest(form);
         mStructureProvidedForPrefillRequest = false;
 
+        maybeRefetchAutofillManager();
         getAutofillManagerWrapper()
                 .notifyVirtualViewsReady(mContainerView, mPrefillRequest.getPrefillHints());
     }
@@ -347,6 +349,7 @@ public class AutofillProvider {
 
         transformFormFieldToContainViewCoordinates(formData);
         initializeFrameworkWrapper();
+        maybeRefetchAutofillManager();
         mAutofillUMA.onSessionStarted(getAutofillManagerWrapper().isDisabled());
         mRequest =
                 new AutofillRequest(
@@ -601,6 +604,10 @@ public class AutofillProvider {
                 return;
             }
 
+            // The WebView may have moved to another Activity since the session started, e.g.
+            // when the app recreates its Activity and keeps the WebView.
+            if (!causedByValueChange) maybeRefetchAutofillManager();
+
             // Notify focus changed.
             if (prev != null) {
                 notifyVirtualViewExited(mContainerView, prev.fieldIndex);
@@ -675,6 +682,22 @@ public class AutofillProvider {
             initializeFrameworkWrapper();
         }
         return mAutofillManager;
+    }
+
+    private void maybeRefetchAutofillManager() {
+        if (mAutofillManager == null) return;
+        Context context = getContext();
+        if (!mAutofillManager.canRefetch(context)) return;
+        // Check the feature only when a refetch is possible, so that only the affected WebViews
+        // are enrolled in the experiment.
+        if (!AndroidAutofillFeatures.ANDROID_AUTOFILL_REFETCH_MANAGER_IF_DISABLED.isEnabled()) {
+            return;
+        }
+        if (mAutofillManager.refetch(context) && mAutofillUMA != null) {
+            mAutofillUMA.setCurrentProvider(
+                    mAutofillManager.isAwGCurrentAutofillService(),
+                    mAutofillManager.getPackageName());
+        }
     }
 
     /**
@@ -846,7 +869,13 @@ public class AutofillProvider {
 
     private int getToolbarOffset() {
         return mWebContents != null
-                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetYPixInt()
+                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetTopPixInt()
+                : 0;
+    }
+
+    private int getBottomToolbarOffset() {
+        return mWebContents != null
+                ? RenderCoordinates.fromWebContents(mWebContents).getContentOffsetBottomPixInt()
                 : 0;
     }
 
@@ -865,21 +894,24 @@ public class AutofillProvider {
      */
     private Rect getContainerVisibleScreenBounds() {
         Rect rect = new Rect();
-        if (mContainerView.getGlobalVisibleRect(rect)) {
-            int[] windowLocation = new int[2];
-            mContainerView.getLocationInWindow(windowLocation);
-            int[] screenLocation = new int[2];
-            mContainerView.getLocationOnScreen(screenLocation);
-            int offsetX = screenLocation[0] - windowLocation[0];
-            int offsetY = screenLocation[1] - windowLocation[1];
-            // Translate the rect from window coordinates to screen coordinates.
-            rect.offset(offsetX, offsetY);
-            // In Chrome, the omnibox toolbar sits on top of `mContainerView`, obscuring the top
-            // content. We must add the toolbar offset to `rect.top` to exclude this obscured area
-            // from the visible bounds. We cannot use `getWebContentScreenLocation()` to translate
-            // the whole rect because that would incorrectly offset rect.bottom (which is not
-            // obscured by the top toolbar).
-            rect.top += getToolbarOffset();
+        if (!mContainerView.getGlobalVisibleRect(rect)) {
+            return new Rect();
+        }
+        int[] windowLocation = new int[2];
+        mContainerView.getLocationInWindow(windowLocation);
+        int[] screenLocation = new int[2];
+        mContainerView.getLocationOnScreen(screenLocation);
+        int offsetX = screenLocation[0] - windowLocation[0];
+        int offsetY = screenLocation[1] - windowLocation[1];
+        // Translate the rect from window coordinates to screen coordinates.
+        rect.offset(offsetX, offsetY);
+        // Browser controls (e.g. top/bottom omnibox toolbars in Chrome) sit on top of
+        // `mContainerView`, obscuring its top and/or bottom edges. Exclude both obscured areas
+        // from the visible bounds.
+        rect.top += getToolbarOffset();
+        rect.bottom -= getBottomToolbarOffset();
+        if (rect.isEmpty()) {
+            return new Rect();
         }
         return rect;
     }
@@ -888,20 +920,22 @@ public class AutofillProvider {
      * Clamps the given absolute bounds to the visible screen bounds of the container view.
      *
      * <p>Calculates the intersection of {@code absBounds} with the visible area of {@code
-     * mContainerView}. If the bounds are entirely outside the visible area, returns {@code null}.
+     * mContainerView}. If {@code absBounds} is empty or lies entirely outside the visible area,
+     * returns {@code null}.
      *
      * <p>This method returns new coordinates and does not mutate the input.
      *
      * @param absBounds the absolute bounds in screen coordinates to clamp.
-     * @return coordinates representing the clamped bounds, or {@code null} if the bounds do not
-     *     intersect with the container's visible area.
+     * @return coordinates representing the clamped bounds, or {@code null} if the bounds are empty
+     *     or do not intersect with the container's visible area.
      */
     private @Nullable Rect clampToVisibleBounds(Rect absBounds) {
-        Rect visibleBounds = getContainerVisibleScreenBounds();
         if (absBounds.isEmpty()) {
-            return visibleBounds.contains(absBounds.left, absBounds.top)
-                    ? new Rect(absBounds)
-                    : null;
+            return null;
+        }
+        Rect visibleBounds = getContainerVisibleScreenBounds();
+        if (visibleBounds.isEmpty()) {
+            return null;
         }
 
         Rect clampedBounds = new Rect(absBounds);
@@ -1003,6 +1037,9 @@ public class AutofillProvider {
      */
     @CalledByNative
     public boolean isAutofillDisabled() {
+        // Native calls this when a new page loads and skips the page's metrics if Autofill is
+        // disabled. Refetch first in case the app has moved the WebView to an Activity.
+        maybeRefetchAutofillManager();
         return mAutofillManager != null && mAutofillManager.isDisabled();
     }
 

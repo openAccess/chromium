@@ -5,6 +5,7 @@
 #include "components/affiliations/core/browser/affiliation_service_impl.h"
 
 #include <memory>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -16,7 +17,6 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/task/current_thread.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
@@ -128,7 +128,6 @@ class AffiliationServiceImplTest : public testing::Test {
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~AffiliationServiceImplTest() override = default;
 
-  base::HistogramTester& histogram_tester() { return histogram_tester_; }
   MockAffiliationFetcherFactory& mock_fetcher_factory() {
     return *fetcher_factory_;
   }
@@ -187,7 +186,6 @@ class AffiliationServiceImplTest : public testing::Test {
     background_task_runner_->RunUntilIdle();
   }
 
-  base::HistogramTester histogram_tester_;
   raw_ptr<MockAffiliationFetcherFactory> fetcher_factory_;
 
   base::test::SingleThreadTaskEnvironment task_environment_;
@@ -195,10 +193,6 @@ class AffiliationServiceImplTest : public testing::Test {
   network::TestURLLoaderFactory test_url_loader_factory_;
   MockAffiliationConsumer mock_consumer_;
 };
-
-TEST_F(AffiliationServiceImplTest, GetChangePasswordURLReturnsEmpty) {
-  EXPECT_EQ(GURL(), service()->GetChangePasswordURL(GURL(k1ExampleURL)));
-}
 
 TEST_F(AffiliationServiceImplTest, FetchRequestIsStarted) {
   base::test::ScopedFeatureList feature_list;
@@ -216,7 +210,7 @@ TEST_F(AffiliationServiceImplTest, FetchRequestIsStarted) {
 }
 
 TEST_F(AffiliationServiceImplTest,
-       OnFetchSuccededInsertsChangePasswordURLOfRequestedSiteIfFound) {
+       OnFetchSucceededReturnsChangePasswordURLOfRequestedSiteIfFound) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
 
@@ -224,7 +218,9 @@ TEST_F(AffiliationServiceImplTest,
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
@@ -245,15 +241,14 @@ TEST_F(AffiliationServiceImplTest,
   AffiliationFetcherInterface::ParsedFetchResponse test_result;
   test_result.groupings.push_back(group);
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
 
-  // Expect Change Password URL of requested site.
+  ASSERT_TRUE(completion_callback.Get().has_value());
   EXPECT_EQ(GURL(k1ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin));
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest,
-       OnFetchSuccededInsertsChangePasswordURLOfAnotherSiteFromAGroup) {
+       OnFetchSucceededIgnoresChangePasswordURLOfAnotherSiteFromAGroup) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
 
@@ -261,7 +256,9 @@ TEST_F(AffiliationServiceImplTest,
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
@@ -279,14 +276,12 @@ TEST_F(AffiliationServiceImplTest,
   AffiliationFetcherInterface::ParsedFetchResponse test_result;
   test_result.groupings.push_back(group);
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
 
-  // Expect Change Password URL of another site from a grouping.
-  EXPECT_EQ(GURL(), service()->GetChangePasswordURL(origin));
+  EXPECT_EQ(std::nullopt, completion_callback.Get());
 }
 
 TEST_F(AffiliationServiceImplTest,
-       OnFetchSucceedTakesNoActionWhenNoChangePasswordURLsAvailable) {
+       OnFetchSucceededReturnsEmptyWhenNoChangePasswordURLsAvailable) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
 
@@ -294,6 +289,9 @@ TEST_F(AffiliationServiceImplTest,
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
@@ -302,7 +300,7 @@ TEST_F(AffiliationServiceImplTest,
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
 
-  service()->FetchChangePasswordURL(origin, base::DoNothing());
+  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
 
   GroupedFacets group;
   group.facets = {Facet(FacetURI::FromPotentiallyInvalidSpec(k1ExampleURL)),
@@ -310,9 +308,12 @@ TEST_F(AffiliationServiceImplTest,
                   Facet(FacetURI::FromPotentiallyInvalidSpec(kOneExampleURL))};
   AffiliationFetcherInterface::ParsedFetchResponse test_result;
   test_result.groupings.push_back(group);
+  test_result.affiliations.push_back(
+      {Facet(FacetURI::FromCanonicalSpec(k1ExampleURL)),
+       Facet(FacetURI::FromCanonicalSpec("https://affiliated.org"))});
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
 
-  EXPECT_EQ(GURL(), service()->GetChangePasswordURL(origin));
+  EXPECT_EQ(std::nullopt, completion_callback.Get());
 }
 
 TEST_F(AffiliationServiceImplTest, OnFetchFailedResetsFetcher) {
@@ -332,7 +333,9 @@ TEST_F(AffiliationServiceImplTest, OnFetchFailedResetsFetcher) {
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
 
-  base::test::TestFuture<GURL> callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      callback;
   service()->FetchChangePasswordURL(GURL(k1ExampleURL), callback.GetCallback());
 
   std::move(fetch_result_callback).Run(fetch_result);
@@ -357,7 +360,9 @@ TEST_F(AffiliationServiceImplTest, OnMalformedResponseResetsFetcher) {
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
 
-  base::test::TestFuture<GURL> callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      callback;
   service()->FetchChangePasswordURL(GURL(k1ExampleURL), callback.GetCallback());
   std::move(fetch_result_callback).Run(fetch_result);
   base::test::RunUntil([&]() { return callback.IsReady(); });
@@ -366,7 +371,9 @@ TEST_F(AffiliationServiceImplTest, OnMalformedResponseResetsFetcher) {
 
 TEST_F(AffiliationServiceImplTest,
        FetchChangePasswordURLWhenFetcherNotCreated) {
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance).WillOnce(Return(nullptr));
 
@@ -400,41 +407,7 @@ TEST_F(AffiliationServiceImplTest,
   service()->FetchChangePasswordURL(origin2, base::DoNothing());
 }
 
-// Below are the tests veryfing recorded metrics for
-// PasswordManager.AffiliationService.GetChangePasswordUsage.
-
-TEST_F(AffiliationServiceImplTest, NotFetchedYetMetricIfWaitingForResponse) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
-
-  const GURL origin(k1ExampleURL);
-  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
-  auto expected_fetched_facets = std::vector<FacetURI>{ToFacetsURIs(origin)};
-  EXPECT_CALL(*mock_fetcher,
-              StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
-                           testing::_));
-  EXPECT_CALL(*mock_fetcher, GetRequestedFacetURIs)
-      .WillOnce(testing::ReturnRef(expected_fetched_facets));
-  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
-      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
-
-  service()->FetchChangePasswordURL(origin, base::DoNothing());
-  service()->GetChangePasswordURL(origin);
-
-  histogram_tester().ExpectUniqueSample(
-      kGetChangePasswordURLMetricName,
-      GetChangePasswordUrlMetric::kNotFetchedYet, 1);
-}
-
-TEST_F(AffiliationServiceImplTest, NoUrlOverrideAvailableMetric) {
-  service()->GetChangePasswordURL(GURL(k1ExampleURL));
-
-  histogram_tester().ExpectUniqueSample(
-      kGetChangePasswordURLMetricName,
-      GetChangePasswordUrlMetric::kNoUrlOverrideAvailable, 1);
-}
-
-TEST_F(AffiliationServiceImplTest, FoundForRequestedFacetMetric) {
+TEST_F(AffiliationServiceImplTest, OnFetchSucceededFallsBackToMainDomain) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
 
@@ -442,79 +415,9 @@ TEST_F(AffiliationServiceImplTest, FoundForRequestedFacetMetric) {
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
-
-  EXPECT_CALL(*mock_fetcher,
-              StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
-                           testing::_))
-      .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
-  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
-      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
-
-  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
-
-  GroupedFacets group;
-  group.facets = {
-      Facet(FacetURI::FromPotentiallyInvalidSpec(k1ExampleURL),
-            FacetBrandingInfo(), GURL(k1ExampleChangePasswordURL)),
-      Facet(FacetURI::FromPotentiallyInvalidSpec(kOneExampleURL),
-            FacetBrandingInfo(), GURL(kOneExampleChangePasswordURL))};
-  AffiliationFetcherInterface::ParsedFetchResponse test_result;
-  test_result.groupings.push_back(group);
-
-  std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
-  service()->GetChangePasswordURL(origin);
-
-  histogram_tester().ExpectUniqueSample(
-      kGetChangePasswordURLMetricName,
-      GetChangePasswordUrlMetric::kUrlOverrideUsed, 1);
-}
-
-TEST_F(AffiliationServiceImplTest, NotFoundForGroupedFacetMetric) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
-
-  const GURL origin(kM1ExampleURL);
-  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
-  base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
-      fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
-
-  EXPECT_CALL(*mock_fetcher,
-              StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
-                           testing::_))
-      .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
-  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
-      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
-
-  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
-
-  GroupedFacets group;
-  group.facets = {Facet(FacetURI::FromPotentiallyInvalidSpec(k1ExampleURL),
-                        FacetBrandingInfo(), GURL(k1ExampleChangePasswordURL)),
-                  Facet(FacetURI::FromPotentiallyInvalidSpec(kM1ExampleURL))};
-  AffiliationFetcherInterface::ParsedFetchResponse test_result;
-  test_result.groupings.push_back(group);
-
-  std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
-  EXPECT_EQ(GURL(), service()->GetChangePasswordURL(origin));
-
-  histogram_tester().ExpectUniqueSample(
-      kGetChangePasswordURLMetricName,
-      GetChangePasswordUrlMetric::kNoUrlOverrideAvailable, 1);
-}
-
-TEST_F(AffiliationServiceImplTest, FoundForMainDomainMetric) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(kFetchChangePasswordPatterns);
-
-  const GURL origin(k1ExampleURL);
-  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
-  base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
-      fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ToFacetsURIs(origin), kChangePasswordUrlRequestInfo,
@@ -537,13 +440,9 @@ TEST_F(AffiliationServiceImplTest, FoundForMainDomainMetric) {
   test_result.groupings.push_back(main_domain_group);
 
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
+  ASSERT_TRUE(completion_callback.Get().has_value());
   EXPECT_EQ(GURL(k1ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin));
-
-  histogram_tester().ExpectUniqueSample(
-      kGetChangePasswordURLMetricName,
-      GetChangePasswordUrlMetric::kMainDomainUsed, 1);
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest, OnFetchSuccedeedRunsCallback) {
@@ -562,7 +461,9 @@ TEST_F(AffiliationServiceImplTest, OnFetchSuccedeedRunsCallback) {
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
 
-  base::test::TestFuture<GURL> callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      callback;
   service()->FetchChangePasswordURL(origin, callback.GetCallback());
 
   std::move(fetch_result_callback)
@@ -583,8 +484,12 @@ TEST_F(AffiliationServiceImplTest, SupportForMultipleRequests) {
   auto new_mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       new_fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback_1;
-  base::test::TestFuture<GURL> completion_callback_2;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback_1;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback_2;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ToFacetsURIs(origin1), kChangePasswordUrlRequestInfo,
@@ -610,9 +515,9 @@ TEST_F(AffiliationServiceImplTest, SupportForMultipleRequests) {
   AffiliationFetcherInterface::ParsedFetchResponse test_result1;
   test_result1.groupings.push_back(group1);
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result1));
-  base::test::RunUntil([&]() { return completion_callback_1.IsReady(); });
+  ASSERT_TRUE(completion_callback_1.Get().has_value());
   EXPECT_EQ(GURL(k1ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin1));
+            completion_callback_1.Get()->change_password_url);
 
   GroupedFacets group2;
   group2.facets = {Facet(FacetURI::FromPotentiallyInvalidSpec(k2ExampleURL),
@@ -622,9 +527,9 @@ TEST_F(AffiliationServiceImplTest, SupportForMultipleRequests) {
   test_result2.groupings.push_back(group2);
   std::move(new_fetch_result_callback)
       .Run(GetSuccessfulFetchResult(test_result2));
-  base::test::RunUntil([&]() { return completion_callback_2.IsReady(); });
+  ASSERT_TRUE(completion_callback_2.Get().has_value());
   EXPECT_EQ(GURL(k2ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin2));
+            completion_callback_2.Get()->change_password_url);
 }
 
 // Test fixture to imitate a fetch factory for testing and not just mock it.
@@ -746,7 +651,9 @@ TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForAndroidApp) {
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher,
               StartRequest(ElementsAre(android_facet),
@@ -767,10 +674,9 @@ TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForAndroidApp) {
   test_result.groupings.push_back(group);
 
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
-
+  ASSERT_TRUE(completion_callback.Get().has_value());
   EXPECT_EQ(GURL(k1ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin));
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForUrlWithPath) {
@@ -781,7 +687,9 @@ TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForUrlWithPath) {
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   EXPECT_CALL(*mock_fetcher, StartRequest)
       .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
@@ -800,10 +708,9 @@ TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForUrlWithPath) {
   test_result.groupings.push_back(group);
 
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
-  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
-
+  ASSERT_TRUE(completion_callback.Get().has_value());
   EXPECT_EQ(GURL(k1ExampleChangePasswordURL),
-            service()->GetChangePasswordURL(origin));
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForDomainInEPSL) {
@@ -829,7 +736,9 @@ TEST_F(AffiliationServiceImplTest, FetchChangePasswordURLForDomainInEPSL) {
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   // Verify that fetch is made only for the one.example.com.
   EXPECT_CALL(*mock_fetcher,
@@ -850,16 +759,20 @@ TEST_F(AffiliationServiceImplTest, OnFetchSucceededMatchesPattern) {
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   AffiliationFetcherInterface::RequestInfo expected_request_info =
       kChangePasswordUrlRequestInfo;
   expected_request_info.fetch_patterns = true;
 
-  FacetURI expected_facet = FacetURI::FromCanonicalSpec("https://example.com");
-
-  EXPECT_CALL(*mock_fetcher, StartRequest(ElementsAre(expected_facet),
-                                          expected_request_info, testing::_))
+  EXPECT_CALL(
+      *mock_fetcher,
+      StartRequest(
+          ElementsAre(FacetURI::FromCanonicalSpec(k1ExampleURL),
+                      FacetURI::FromCanonicalSpec("https://example.com")),
+          expected_request_info, testing::_))
       .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
@@ -882,14 +795,13 @@ TEST_F(AffiliationServiceImplTest, OnFetchSucceededMatchesPattern) {
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
   base::test::RunUntil([&]() { return completion_callback.IsReady(); });
 
-  EXPECT_EQ(GURL("https://matched.example.com"), completion_callback.Get());
-
-  // Verify that the URL is not cached when patterns are enabled.
-  EXPECT_EQ(GURL(), service()->GetChangePasswordURL(origin));
+  ASSERT_TRUE(completion_callback.Get().has_value());
+  EXPECT_EQ(GURL("https://matched.example.com"),
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest,
-       FetchChangePasswordURLRequestsOnlyMainDomainWhenPatternsEnabled) {
+       FetchChangePasswordURLRequestsOriginalAndMainDomainWhenPatternsEnabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeature(kFetchChangePasswordPatterns);
 
@@ -900,10 +812,12 @@ TEST_F(AffiliationServiceImplTest,
       kChangePasswordUrlRequestInfo;
   expected_request_info.fetch_patterns = true;
 
-  FacetURI expected_facet = FacetURI::FromCanonicalSpec("https://example.com");
-
-  EXPECT_CALL(*mock_fetcher, StartRequest(ElementsAre(expected_facet),
-                                          expected_request_info, testing::_));
+  EXPECT_CALL(
+      *mock_fetcher,
+      StartRequest(
+          ElementsAre(FacetURI::FromCanonicalSpec(k1ExampleURL),
+                      FacetURI::FromCanonicalSpec("https://example.com")),
+          expected_request_info, testing::_));
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
 
@@ -919,16 +833,20 @@ TEST_F(AffiliationServiceImplTest,
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   AffiliationFetcherInterface::RequestInfo expected_request_info =
       kChangePasswordUrlRequestInfo;
   expected_request_info.fetch_patterns = true;
 
-  FacetURI expected_facet = FacetURI::FromCanonicalSpec("https://example.com");
-
-  EXPECT_CALL(*mock_fetcher, StartRequest(ElementsAre(expected_facet),
-                                          expected_request_info, testing::_))
+  EXPECT_CALL(
+      *mock_fetcher,
+      StartRequest(
+          ElementsAre(FacetURI::FromCanonicalSpec("https://auth.example.com"),
+                      FacetURI::FromCanonicalSpec("https://example.com")),
+          expected_request_info, testing::_))
       .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
   EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
       .WillOnce(Return(ByMove(std::move(mock_fetcher))));
@@ -937,6 +855,7 @@ TEST_F(AffiliationServiceImplTest,
 
   GroupedFacets group;
   group.facets = {
+      Facet(FacetURI::FromPotentiallyInvalidSpec("https://auth.example.com")),
       Facet(FacetURI::FromPotentiallyInvalidSpec("https://example.com"))};
 
   ChangePasswordPattern pattern;
@@ -951,7 +870,9 @@ TEST_F(AffiliationServiceImplTest,
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
   base::test::RunUntil([&]() { return completion_callback.IsReady(); });
 
-  EXPECT_EQ(GURL("https://matched.example.com"), completion_callback.Get());
+  ASSERT_TRUE(completion_callback.Get().has_value());
+  EXPECT_EQ(GURL("https://matched.example.com"),
+            completion_callback.Get()->change_password_url);
 }
 
 TEST_F(AffiliationServiceImplTest,
@@ -963,7 +884,9 @@ TEST_F(AffiliationServiceImplTest,
   auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
   base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
       fetch_result_callback;
-  base::test::TestFuture<GURL> completion_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
 
   AffiliationFetcherInterface::RequestInfo expected_request_info =
       kChangePasswordUrlRequestInfo;
@@ -995,7 +918,177 @@ TEST_F(AffiliationServiceImplTest,
   std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
   base::test::RunUntil([&]() { return completion_callback.IsReady(); });
 
-  EXPECT_EQ(GURL("https://matched.example.com"), completion_callback.Get());
+  ASSERT_TRUE(completion_callback.Get().has_value());
+  EXPECT_EQ(GURL("https://matched.example.com"),
+            completion_callback.Get()->change_password_url);
+}
+
+TEST_F(AffiliationServiceImplTest,
+       FetchChangePasswordURLReturnsAffiliatedFacets) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kFetchChangePasswordPatterns);
+
+  const GURL origin("https://1.example.com/path1/login");
+  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
+  base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
+      fetch_result_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
+
+  EXPECT_CALL(*mock_fetcher, StartRequest)
+      .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
+  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
+      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
+
+  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
+
+  GroupedFacets group;
+  group.facets = {
+      Facet(FacetURI::FromPotentiallyInvalidSpec("https://example.com"))};
+  group.facets.back().change_password_patterns.push_back(
+      {.url_pattern_re2 = "^https://1\\.example\\.com/path1.*",
+       .change_password_url = GURL("https://matched.example.com")});
+
+  AffiliationFetcherInterface::ParsedFetchResponse test_result;
+  test_result.groupings.push_back(group);
+  test_result.affiliations.push_back(
+      {Facet(FacetURI::FromCanonicalSpec(k1ExampleURL)),
+       Facet(FacetURI::FromCanonicalSpec("https://affiliated.org")),
+       Facet(FacetURI::FromCanonicalSpec(kTestAndroidFacetURIAlpha))});
+  test_result.affiliations.push_back(
+      {Facet(FacetURI::FromCanonicalSpec("https://example.com")),
+       Facet(FacetURI::FromCanonicalSpec("https://main-domain-only.org"))});
+
+  std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
+
+  ASSERT_TRUE(completion_callback.Get().has_value());
+  EXPECT_EQ(GURL("https://matched.example.com"),
+            completion_callback.Get()->change_password_url);
+  EXPECT_THAT(completion_callback.Get()->affiliations,
+              testing::UnorderedElementsAre(
+                  FacetURI::FromCanonicalSpec(k1ExampleURL),
+                  FacetURI::FromCanonicalSpec("https://affiliated.org"),
+                  FacetURI::FromCanonicalSpec(kTestAndroidFacetURIAlpha)));
+}
+
+TEST_F(AffiliationServiceImplTest,
+       OnFetchSucceededPrefersRequestedFacetPatternsOverMainDomain) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kFetchChangePasswordPatterns);
+
+  // Simulates an ePSL domain (e.g. `1.example.com` where `example.com` is in
+  // the server's ePSL) when the client's `psl_extension_list_` is empty or
+  // stale: the server attaches patterns to `https://1.example.com`.
+  const GURL origin("https://1.example.com/path1/login");
+  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
+  base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
+      fetch_result_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
+
+  AffiliationFetcherInterface::RequestInfo expected_request_info =
+      kChangePasswordUrlRequestInfo;
+  expected_request_info.fetch_patterns = true;
+
+  EXPECT_CALL(
+      *mock_fetcher,
+      StartRequest(
+          ElementsAre(FacetURI::FromCanonicalSpec(k1ExampleURL),
+                      FacetURI::FromCanonicalSpec("https://example.com")),
+          expected_request_info, testing::_))
+      .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
+  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
+      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
+
+  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
+
+  Facet requested_facet(FacetURI::FromCanonicalSpec(k1ExampleURL));
+  ChangePasswordPattern requested_pattern;
+  requested_pattern.url_pattern_re2 = "^https://1\\.example\\.com/path1.*";
+  requested_pattern.change_password_url =
+      GURL("https://1.example.com/change-password");
+  requested_facet.change_password_patterns.push_back(requested_pattern);
+
+  Facet main_domain_facet(FacetURI::FromCanonicalSpec("https://example.com"));
+  ChangePasswordPattern main_domain_pattern;
+  main_domain_pattern.url_pattern_re2 =
+      "^https://([^/]+\\.)*example\\.com/path1.*";
+  main_domain_pattern.change_password_url =
+      GURL("https://example.com/change-password");
+  main_domain_facet.change_password_patterns.push_back(main_domain_pattern);
+
+  GroupedFacets group;
+  group.facets = {std::move(requested_facet), std::move(main_domain_facet)};
+
+  AffiliationFetcherInterface::ParsedFetchResponse test_result;
+  test_result.groupings.push_back(group);
+
+  std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
+  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
+
+  ASSERT_TRUE(completion_callback.Get().has_value());
+  EXPECT_EQ(GURL("https://1.example.com/change-password"),
+            completion_callback.Get()->change_password_url);
+}
+
+TEST_F(
+    AffiliationServiceImplTest,
+    OnFetchSucceededDoesNotFallBackToMainDomainWhenRequestedFacetPatternMismatches) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kFetchChangePasswordPatterns);
+
+  const GURL origin("https://1.example.com/path1/login");
+  auto mock_fetcher = std::make_unique<MockAffiliationFetcher>();
+  base::OnceCallback<void(AffiliationFetcherInterface::FetchResult)>
+      fetch_result_callback;
+  base::test::TestFuture<
+      std::optional<AffiliationService::ChangePasswordUrlMatch>>
+      completion_callback;
+
+  AffiliationFetcherInterface::RequestInfo expected_request_info =
+      kChangePasswordUrlRequestInfo;
+  expected_request_info.fetch_patterns = true;
+
+  EXPECT_CALL(
+      *mock_fetcher,
+      StartRequest(
+          ElementsAre(FacetURI::FromCanonicalSpec(k1ExampleURL),
+                      FacetURI::FromCanonicalSpec("https://example.com")),
+          expected_request_info, testing::_))
+      .WillOnce(testing::SaveArgByMove<2>(&fetch_result_callback));
+  EXPECT_CALL(mock_fetcher_factory(), CreateInstance)
+      .WillOnce(Return(ByMove(std::move(mock_fetcher))));
+
+  service()->FetchChangePasswordURL(origin, completion_callback.GetCallback());
+
+  Facet requested_facet(FacetURI::FromCanonicalSpec(k1ExampleURL));
+  ChangePasswordPattern non_matching_pattern;
+  non_matching_pattern.url_pattern_re2 =
+      "^https://1\\.example\\.com/other_path.*";
+  non_matching_pattern.change_password_url =
+      GURL("https://1.example.com/change-password");
+  requested_facet.change_password_patterns.push_back(non_matching_pattern);
+
+  Facet main_domain_facet(FacetURI::FromCanonicalSpec("https://example.com"));
+  ChangePasswordPattern main_domain_pattern;
+  main_domain_pattern.url_pattern_re2 =
+      "^https://([^/]+\\.)*example\\.com/path1.*";
+  main_domain_pattern.change_password_url =
+      GURL("https://example.com/change-password");
+  main_domain_facet.change_password_patterns.push_back(main_domain_pattern);
+
+  GroupedFacets group;
+  group.facets = {std::move(requested_facet), std::move(main_domain_facet)};
+
+  AffiliationFetcherInterface::ParsedFetchResponse test_result;
+  test_result.groupings.push_back(group);
+
+  std::move(fetch_result_callback).Run(GetSuccessfulFetchResult(test_result));
+  base::test::RunUntil([&]() { return completion_callback.IsReady(); });
+
+  EXPECT_EQ(std::nullopt, completion_callback.Get());
 }
 
 }  // namespace affiliations

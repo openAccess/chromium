@@ -90,7 +90,7 @@ export class HistorySyncedDeviceManagerElement extends
        */
       actionMenuModel_: {type: String},
 
-      replaceSyncPromosWithSignInPromos_: {type: Boolean},
+      enableDeviceTabVisibilitySettings_: {type: Boolean},
 
       // <if expr="not is_chromeos">
       accountInfo_: {type: Object},
@@ -102,14 +102,19 @@ export class HistorySyncedDeviceManagerElement extends
   private focusGridUpdateTimeout_: number|null = null;
   protected accessor syncedDevices_: ForeignDeviceInternal[] = [];
   private accessor hasSeenForeignData_: boolean = false;
+  // <if expr="is_android">
   protected accessor fetchingSyncedTabs_: boolean = false;
+  // </if>
+  // <if expr="not is_android">
+  private accessor fetchingSyncedTabs_: boolean = false;
+  // </if>
   private accessor actionMenuModel_: string|null = null;
   private accessor guestSession_: boolean =
       loadTimeData.getBoolean('isGuestSession');
   private accessor signInAllowed_: boolean =
       loadTimeData.getBoolean('isSignInAllowed');
-  protected accessor replaceSyncPromosWithSignInPromos_: boolean =
-      loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos');
+  protected accessor enableDeviceTabVisibilitySettings_: boolean =
+      loadTimeData.getBoolean('enableDeviceTabVisibilitySettings');
   private signinPausedImpressionRecorded_: boolean = false;
   // <if expr="not is_chromeos">
   protected accessor accountInfo_: AccountInfo|null = null;
@@ -123,6 +128,9 @@ export class HistorySyncedDeviceManagerElement extends
   };
   accessor searchTerm: string = '';
   accessor sessionList: ForeignSession[]|null = null;
+
+  protected readonly replaceSyncPromosWithSignInPromos_: boolean =
+      loadTimeData.getBoolean('replaceSyncPromosWithSignInPromos');
 
   override connectedCallback() {
     super.connectedCallback();
@@ -319,6 +327,15 @@ export class HistorySyncedDeviceManagerElement extends
         this.actionMenuModel_);
     this.actionMenuModel_ = null;
     menu.close();
+  }
+
+  protected onManageVisibilityClick_(e: MouseEvent) {
+    const menu = this.$.menu.getIfExists();
+    assert(menu);
+    this.actionMenuModel_ = null;
+    menu.close();
+    BrowserProxyImpl.getInstance().navigateToUrl(
+        loadTimeData.getString('deviceTabVisibilitySettingsUrl'), '_blank', e);
   }
 
   clearSyncedDevicesForTest() {

@@ -160,7 +160,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.ActionChips.Handler.ActionChipsRetrievalLatency"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>giannich@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
   <summary>
@@ -431,6 +431,10 @@ chromium-metrics-reviews@google.com.
     lazy loading completes, if applicable) following a click on the compose
     entrypoint on desktop. This only gets recorded if the compose button leads
     to a compose session starting (i.e. the composebox opening).
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -558,7 +562,7 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
-<histogram name="NewTabPage.Count" units="count" expires_after="2027-03-07">
+<histogram name="NewTabPage.Count" units="count" expires_after="2027-05-09">
   <owner>kawasin@google.com</owner>
   <owner>clank-performance-team@google.com</owner>
   <summary>
@@ -581,7 +585,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Customization.BottomSheet.Shown"
-    enum="NtpCustomizationBottomSheetType" expires_after="2027-03-07">
+    enum="NtpCustomizationBottomSheetType" expires_after="2027-05-09">
   <owner>hanxi@chromium.org</owner>
   <owner>yanlinghu@google.com</owner>
   <owner>clank-start@google.com</owner>
@@ -594,7 +598,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Customization.MvtEnabled" enum="BooleanEnabled"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>hanxi@chromium.org</owner>
   <owner>yanlinghu@google.com</owner>
   <owner>clank-start@google.com</owner>
@@ -714,7 +718,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="NewTabPage.Customization.Theme.UploadImage.PreviewInteractions"
     enum="NtpCustomizationThemeUploadImagePreviewInteractions"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>hanxi@chromium.org</owner>
   <owner>yyanting@google.com</owner>
   <owner>clank-start@google.com</owner>
@@ -726,7 +730,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Customization.Theme.UploadImage.PreviewShow"
-    enum="BooleanVisible" expires_after="2027-03-07">
+    enum="BooleanVisible" expires_after="2027-05-09">
   <owner>hanxi@chromium.org</owner>
   <owner>yyanting@google.com</owner>
   <owner>clank-start@google.com</owner>
@@ -787,7 +791,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="NewTabPage.Customization.UserEngagement.MostVisitedSitesEnabled"
-    enum="BooleanVisible" expires_after="2027-03-07">
+    enum="BooleanVisible" expires_after="2027-05-09">
   <owner>hanxi@chromium.org</owner>
   <owner>yanlinghu@google.com</owner>
   <owner>clank-start@google.com</owner>
@@ -848,7 +852,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.CustomizeChromeSidePanelAction"
-    enum="NTPCustomizeChromeSidePanelAction" expires_after="2027-03-07">
+    enum="NTPCustomizeChromeSidePanelAction" expires_after="2027-05-09">
   <owner>pauladedeji@google.com</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>rtatum@google.com</owner>
@@ -1216,7 +1220,12 @@ chromium-metrics-reviews@google.com.
   <improvement direction="LOWER_IS_BETTER"/>
   <summary>
     Histogram of the time, in milliseconds, it took for the NTP to load all of
-    its tiles since navigation start. {NewTabPageTimings}
+    its tiles since navigation start.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
+    {NewTabPageTimings}
   </summary>
   <token key="NewTabPageTimings">
     <variant name=""/>
@@ -1314,6 +1323,10 @@ chromium-metrics-reviews@google.com.
   <summary>
     The amount of time between opening an NTP and the logo appearing. Only
     recorded when there is a logo, and only recorded once per NTP.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -1336,7 +1349,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.MainUi.ShownTime" units="ms"
-    expires_after="2027-01-17">
+    expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1344,6 +1357,10 @@ chromium-metrics-reviews@google.com.
     Records the time until the top-level ntp-app Custom Element's |ready|
     callback is called. The intention is to measure how quickly the contents of
     new_tab_page.rollup.js (main JS bundle) are rendered.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -1531,7 +1548,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Modules.AutoRemoval" units="count"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1545,7 +1562,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Modules.AutoRemovalModuleId" enum="NtpModules"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1606,7 +1623,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Modules.AutoRemovalUndone" units="count"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1620,7 +1637,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Modules.AutoRemovalUndoneModuleId"
-    enum="NtpModules" expires_after="2027-03-07">
+    enum="NtpModules" expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1737,7 +1754,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.Modules.ImpressionRatio{NewTabPageModules}"
-    units="perdecage" expires_after="2027-03-07">
+    units="perdecage" expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -1769,7 +1786,12 @@ chromium-metrics-reviews@google.com.
     an NTP module header is mostly visible in the window's content area
     (viewport). If the module header is mostly below the page fold, the time
     delta will include the time it takes for the user to scroll the module into
-    view. {NewTabPageModules}
+    view.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
+    {NewTabPageModules}
   </summary>
   <token key="NewTabPageModules" variants="NewTabPageModules">
     <variant name=""/>
@@ -1827,6 +1849,10 @@ chromium-metrics-reviews@google.com.
     an NTP module loaded.
 
     Logged for modules that were loaded after the initial NTP load.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -1853,6 +1879,10 @@ chromium-metrics-reviews@google.com.
     an NTP module loaded.
 
     Logged for modules that were loaded during the initial NTP load.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -1890,6 +1920,10 @@ chromium-metrics-reviews@google.com.
     an NTP module loaded.
 
     Logged by all modules, regardless of if they loaded at or before NTP load.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
     {NewTabPageModules}
   </summary>
   <token key="NewTabPageModules" variants="NewTabPageModules">
@@ -1962,6 +1996,10 @@ chromium-metrics-reviews@google.com.
   <summary>
     Histogram of the time, in milliseconds since navigation start, it took until
     the modules showed up on the NTP.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -1996,7 +2034,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.MostVisited.AutoRemovalSkipped"
-    enum="NtpShortcutsAutoRemovalReason" expires_after="2027-03-07">
+    enum="NtpShortcutsAutoRemovalReason" expires_after="2027-05-09">
   <owner>giannich@google.com</owner>
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
@@ -2013,7 +2051,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.MostVisited.AutoRemovalStaleDays" units="count"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>giannich@google.com</owner>
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
@@ -2051,6 +2089,16 @@ chromium-metrics-reviews@google.com.
     <variant name="8"/>
     <variant name="9"/>
   </token>
+</histogram>
+
+<histogram name="NewTabPage.MostVisited.MenuAction"
+    enum="MostVisitedMenuAction" expires_after="2027-05-09">
+  <owner>jennserrano@google.com</owner>
+  <owner>chrome-desktop-ntp@google.com</owner>
+  <summary>
+    Logs the action taken by the user in the most visited action menu. Recorded
+    when one of the menu items is clicked.
+  </summary>
 </histogram>
 
 <histogram name="NewTabPage.MostVisited.ReselectMatch.{StrictnessSuffix}"
@@ -2137,7 +2185,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="NewTabPage.OneGoogleBar.RequestLatency{NewTabPage_OneGoogleBar_RequestLatency}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -2161,6 +2209,10 @@ chromium-metrics-reviews@google.com.
   <summary>
     Histogram of the time, in milliseconds since navigation start, it took until
     the OneGoogleBar showed up on the NTP. Recorded only on the local NTP.
+
+    Note: https://crrev.com/c/8710958 switched this from subtracting a
+    browser-captured base::Time::Now() navigation start from renderer Date.now()
+    to renderer performance.now(), which may slightly shift recorded values.
   </summary>
 </histogram>
 
@@ -2389,7 +2441,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.TabGroups.CreateNewTabGroup{ExperimentalState}"
-    units="count" expires_after="2027-03-07">
+    units="count" expires_after="2027-05-09">
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
   <summary>
@@ -2510,24 +2562,28 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="NewTabPage.ThreadsRail.Action" enum="NTPThreadsRailAction"
     expires_after="2027-03-28">
+  <owner>bofengchen@google.com</owner>
   <owner>romanarora@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
   <summary>
-    Logs count of each type of user action within the threads rail. Only logged
-    on the 1P NTP. Note that Incognito and Guest mode NTPs are not considered 1P
-    and don't log this histogram.
+    Logs count of each type of user click action (configured rail items, logo
+    button, and folded rail background) within the native folded threads rail.
+    Only logged on the 1P NTP when hybrid rail mode is enabled. Note that
+    Incognito and Guest mode NTPs are not considered 1P and don't log this
+    histogram.
   </summary>
 </histogram>
 
 <histogram name="NewTabPage.ThreadsRail.Shown" enum="BooleanShown"
     expires_after="2027-03-21">
+  <owner>bofengchen@google.com</owner>
   <owner>romanarora@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
   <summary>
-    Recorded when the threads rail is shown on the New Tab Page. This is
-    recorded once when the threads rail is attached to DOM. Only logged on the
-    1P NTP. Note that Incognito and Guest mode NTPs are not considered 1P and
-    don't log this histogram.
+    Recorded when the native folded threads rail is shown on the New Tab Page.
+    This is recorded once when the threads rail element is attached to DOM (when
+    hybrid rail mode is enabled). Only logged on the 1P NTP. Note that Incognito
+    and Guest mode NTPs are not considered 1P and don't log this histogram.
   </summary>
 </histogram>
 
@@ -2596,7 +2652,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.VoiceErrors" enum="NewTabPageVoiceError"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>romanarora@chromium.org</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>chrome-desktop-ntp@google.com</owner>
@@ -2682,7 +2738,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="NewTabPage.WallpaperSearch.Status"
-    enum="NtpWallpaperSearchStatus" expires_after="2027-03-07">
+    enum="NtpWallpaperSearchStatus" expires_after="2027-05-09">
   <owner>pauladedeji@google.com</owner>
   <owner>tiborg@chromium.org</owner>
   <owner>rtatum@google.com</owner>

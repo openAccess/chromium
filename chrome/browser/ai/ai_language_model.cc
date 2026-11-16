@@ -33,6 +33,7 @@
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_telemetry_logger.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
+#include "components/optimization_guide/core/model_execution/session_impl.h"
 #include "components/optimization_guide/core/model_execution/substitution.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
@@ -131,6 +132,9 @@ on_device_model::mojom::InputPtr ConvertToInput(
         case blink::mojom::AILanguageModelPromptContent::Tag::kText:
           input->pieces.push_back(InputPiece::NewText(content->get_text()));
           break;
+        case blink::mojom::AILanguageModelPromptContent::Tag::kThought:
+          // TODO(crbug.com/546151578): Handle thought inputs in browser AI.
+          return nullptr;
         case blink::mojom::AILanguageModelPromptContent::Tag::kBitmap:
           if (!capabilities.Has(
                   on_device_model::CapabilityFlags::kImageInput)) {
@@ -202,6 +206,33 @@ on_device_model::mojom::AppendOptionsPtr MakeAppendOptions(
   return append_options;
 }
 
+optimization_guide::OnDeviceRequestTelemetryLogger::Result
+ConvertToOnDeviceExecutionResult(
+    blink::mojom::ModelStreamingResponseStatus status) {
+  switch (status) {
+    case blink::mojom::ModelStreamingResponseStatus::kErrorInvalidRequest:
+    case blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge:
+      return optimization_guide::OnDeviceRequestTelemetryLogger::Result::
+          kFailedConstructingMessage;
+    case blink::mojom::ModelStreamingResponseStatus::kErrorCancelled:
+      return optimization_guide::OnDeviceRequestTelemetryLogger::Result::
+          kCancelled;
+    case blink::mojom::ModelStreamingResponseStatus::
+        kErrorResponseExceedsMaxTokens:
+      // The model successfully executed and generated tokens up to the
+      // output limit.
+      return optimization_guide::OnDeviceRequestTelemetryLogger::Result::
+          kUsedOnDevice;
+    case blink::mojom::ModelStreamingResponseStatus::kErrorSessionDestroyed:
+    case blink::mojom::ModelStreamingResponseStatus::kErrorFailedToCountTokens:
+    case blink::mojom::ModelStreamingResponseStatus::kErrorUnknown:
+      return optimization_guide::OnDeviceRequestTelemetryLogger::Result::
+          kDisconnectAndCancel;
+    default:
+      NOTREACHED();
+  }
+}
+
 }  // namespace
 
 // Contains state for a currently active prompt call. Makes sure everything is
@@ -223,33 +254,45 @@ class AILanguageModel::PromptState
       on_device_model::mojom::InputPtr input,
       on_device_model::mojom::ResponseConstraintPtr constraint,
       base::WeakPtr<OptimizationGuideLogger> logger,
-      Mode mode)
+      Mode mode,
+      std::unique_ptr<optimization_guide::OnDeviceRequestTelemetryLogger>
+          telemetry_logger)
       : responder_(std::move(responder)),
         input_(std::move(input)),
         constraint_(std::move(constraint)),
         logger_(std::move(logger)),
-        mode_(mode) {
-    responder_.set_disconnect_with_reason_handler(
-        base::BindOnce(&PromptState::OnDisconnect, base::Unretained(this)));
+        mode_(mode),
+        telemetry_logger_(std::move(telemetry_logger)) {
+    CHECK(telemetry_logger_);
+    if (mode_ == Mode::kAppendAndGenerate) {
+      // `kUsedOnDevice` represents a completed generation and will be
+      // overwritten in `OnError()` if execution fails or is cancelled.
+      telemetry_logger_->set_result(
+          optimization_guide::OnDeviceRequestTelemetryLogger::Result::
+              kUsedOnDevice);
+    }
+    responder_.set_disconnect_handler(base::BindOnce(
+        &PromptState::OnError, base::Unretained(this),
+        blink::mojom::ModelStreamingResponseStatus::kErrorCancelled, nullptr));
   }
 
   ~PromptState() override {
-    if (!completed_ && telemetry_logger_.has_value()) {
+    if (!completed_ && telemetry_logger_) {
       telemetry_logger_->RecordDestroyedWhileWaiting();
+      telemetry_logger_.reset();
     }
     OnError(blink::mojom::ModelStreamingResponseStatus::kErrorCancelled);
   }
 
-  // Appends input and generates a response on `session`. `callback` will be
-  // called on completion or error, with the full response and number of
+  // Appends input and optionally generates a response on `session`. `callback`
+  // will be called on completion or error, with the full response and number of
   // input+output tokens. `callback` may delete this object.
-  void AppendAndGenerate(
+  void AppendAndMaybeGenerate(
       mojo::PendingRemote<on_device_model::mojom::Session> session,
       uint32_t available_context_tokens,
       std::optional<uint32_t> configured_max_output_tokens,
       base::OnceClosure callback) {
-    telemetry_logger_.emplace(
-        optimization_guide::mojom::OnDeviceFeature::kPromptApi);
+    telemetry_logger_->StartTelemetryTimer();
     callback_ = std::move(callback);
     // Subtract 1 to make sure the model's max tokens is never actually reached.
     max_output_tokens_ =
@@ -291,11 +334,29 @@ class AILanguageModel::PromptState
                          response_receiver_.BindNewPipeAndPassRemote());
       response_receiver_.set_disconnect_with_reason_handler(
           base::BindOnce(&PromptState::OnDisconnect, base::Unretained(this)));
+    } else {
+      base::UmaHistogramEnumeration(
+          "OptimizationGuide.ModelExecution.OnDeviceAddContextResult.PromptApi",
+          optimization_guide::SessionImpl::AddContextResult::kUsingOnDevice);
     }
   }
 
   void OnError(blink::mojom::ModelStreamingResponseStatus error,
                blink::mojom::QuotaErrorInfoPtr quota_error_info = nullptr) {
+    if (telemetry_logger_) {
+      if (mode_ == Mode::kAppendAndGenerate) {
+        telemetry_logger_->set_result(ConvertToOnDeviceExecutionResult(error));
+      }
+      telemetry_logger_.reset();
+    }
+    if (mode_ == Mode::kAppendOnly &&
+        error ==
+            blink::mojom::ModelStreamingResponseStatus::kErrorInputTooLarge) {
+      base::UmaHistogramEnumeration(
+          "OptimizationGuide.ModelExecution.OnDeviceAddContextResult.PromptApi",
+          optimization_guide::SessionImpl::AddContextResult::
+              kFailedConstructingInput);
+    }
     completed_ = true;
     if (responder_) {
       on_device_ai::SendStreamingStatus(responder_, error,
@@ -364,7 +425,7 @@ class AILanguageModel::PromptState
 
   // on_device_model::mojom::ContextClient:
   void OnComplete(uint32_t tokens_processed) override {
-    CHECK(telemetry_logger_.has_value());
+    CHECK(telemetry_logger_);
     telemetry_logger_->RecordContextTime();
     base::UmaHistogramMediumTimes(
         "AI.Session.LanguageModel.ContextTime",
@@ -381,6 +442,7 @@ class AILanguageModel::PromptState
     token_count_ = tokens_processed;
     if (mode_ == Mode::kAppendOnly) {
       completed_ = true;
+      telemetry_logger_.reset();
       RunCallback();
     }
   }
@@ -388,7 +450,7 @@ class AILanguageModel::PromptState
   // on_device_model::mojom::StreamingResponder:
   void OnResponse(on_device_model::mojom::ResponseChunkPtr chunk) override {
     if (output_tokens_ == 0) {
-      CHECK(telemetry_logger_.has_value());
+      CHECK(telemetry_logger_);
       telemetry_logger_->RecordFirstResponse();
     }
     output_tokens_++;
@@ -401,7 +463,7 @@ class AILanguageModel::PromptState
     response_token_count_ = summary->output_token_count;
     token_count_ += summary->output_token_count;
 
-    CHECK(telemetry_logger_.has_value());
+    CHECK(telemetry_logger_);
     telemetry_logger_->RecordCompletion(summary->output_token_count);
 
     // The `OnComplete()` method on `responder_` will be called in
@@ -422,6 +484,7 @@ class AILanguageModel::PromptState
           << "Model generates text response with PromptApi:\n"
           << full_response_;
     }
+    telemetry_logger_.reset();
     RunCallback();
   }
 
@@ -498,7 +561,7 @@ class AILanguageModel::PromptState
   uint32_t max_output_tokens_ = 0;
   Mode mode_;
 
-  std::optional<optimization_guide::OnDeviceRequestTelemetryLogger>
+  std::unique_ptr<optimization_guide::OnDeviceRequestTelemetryLogger>
       telemetry_logger_;
 
   base::WeakPtrFactory<PromptState> weak_factory_{this};
@@ -715,11 +778,13 @@ void AILanguageModel::Initialize(
 void AILanguageModel::Prompt(
     std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
     on_device_model::mojom::ResponseConstraintPtr constraint,
+    std::optional<blink::mojom::AILanguageModelThinkingEffort> thinking_effort,
     mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
         pending_responder) {
-  AddToQueue(base::BindOnce(
-      &AILanguageModel::PromptInternal, weak_ptr_factory_.GetWeakPtr(),
-      std::move(prompts), std::move(constraint), std::move(pending_responder)));
+  AddToQueue(base::BindOnce(&AILanguageModel::PromptInternal,
+                            weak_ptr_factory_.GetWeakPtr(), std::move(prompts),
+                            std::move(constraint), thinking_effort,
+                            std::move(pending_responder)));
 }
 
 void AILanguageModel::Append(
@@ -806,7 +871,7 @@ AILanguageModel::GetLanguageModelInstanceInfo() {
           session_params_->top_k, session_params_->temperature),
       std::move(input_types).extract(), std::move(output_types).extract(),
       audio_sample_rate_hz, audio_channel_count,
-      /*sampling_mode=*/std::nullopt);
+      /*sampling_mode=*/std::nullopt, /*thinking_effort=*/std::nullopt);
 }
 
 mojo::PendingRemote<blink::mojom::AILanguageModel>
@@ -936,10 +1001,11 @@ void AILanguageModel::ForkInternal(
 void AILanguageModel::PromptInternal(
     std::vector<blink::mojom::AILanguageModelPromptPtr> prompts,
     on_device_model::mojom::ResponseConstraintPtr constraint,
+    std::optional<blink::mojom::AILanguageModelThinkingEffort> thinking_effort,
     mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
         pending_responder,
     base::OnceClosure on_complete) {
-  if (!initial_session_) {
+  if (!initial_session_ || !model_client_) {
     mojo::Remote<blink::mojom::ModelStreamingResponder> responder(
         std::move(pending_responder));
     on_device_ai::SendStreamingStatus(
@@ -948,8 +1014,18 @@ void AILanguageModel::PromptInternal(
     return;
   }
 
+  auto logger =
+      std::make_unique<optimization_guide::OnDeviceRequestTelemetryLogger>(
+          optimization_guide::mojom::OnDeviceFeature::kPromptApi,
+          model_client_->base_model());
   auto input = ConvertToInputForExecute(prompts, session_params_->capabilities);
-  if (!input) {
+  // TODO(crbug.com/546151578): Support per prompt thinking effort.
+  bool has_unsupported_thinking_effort =
+      thinking_effort.has_value() &&
+      *thinking_effort != blink::mojom::AILanguageModelThinkingEffort::kNone;
+  if (!input || has_unsupported_thinking_effort) {
+    logger->set_result(optimization_guide::OnDeviceRequestTelemetryLogger::
+                           Result::kFailedConstructingMessage);
     mojo::Remote<blink::mojom::ModelStreamingResponder> responder(
         std::move(pending_responder));
     on_device_ai::SendStreamingStatus(
@@ -959,7 +1035,7 @@ void AILanguageModel::PromptInternal(
   }
   prompt_state_ = std::make_unique<PromptState>(
       std::move(pending_responder), input.Clone(), std::move(constraint),
-      logger_, PromptState::Mode::kAppendAndGenerate);
+      logger_, PromptState::Mode::kAppendAndGenerate, std::move(logger));
   GetSizeInTokens(
       std::move(input),
       base::BindOnce(&AILanguageModel::PromptGetInputSizeComplete,
@@ -1009,7 +1085,7 @@ void AILanguageModel::PromptGetInputSizeComplete(
       model_client_
           ? std::make_optional(model_client_->token_limits().max_output_tokens)
           : std::nullopt;
-  prompt_state_->AppendAndGenerate(
+  prompt_state_->AppendAndMaybeGenerate(
       std::move(session), context_->GetAvailableTokens() - *token_count,
       configured_max_output_tokens, std::move(on_complete));
 }
@@ -1075,7 +1151,7 @@ void AILanguageModel::AppendInternal(
     mojo::PendingRemote<blink::mojom::ModelStreamingResponder>
         pending_responder,
     base::OnceClosure on_complete) {
-  if (!initial_session_) {
+  if (!initial_session_ || !model_client_) {
     mojo::Remote<blink::mojom::ModelStreamingResponder> responder(
         std::move(pending_responder));
     on_device_ai::SendStreamingStatus(
@@ -1087,6 +1163,10 @@ void AILanguageModel::AppendInternal(
   auto input =
       ConvertToInput(prompts, session_params_->capabilities, /*tools=*/{});
   if (!input) {
+    base::UmaHistogramEnumeration(
+        "OptimizationGuide.ModelExecution.OnDeviceAddContextResult.PromptApi",
+        optimization_guide::SessionImpl::AddContextResult::
+            kFailedConstructingInput);
     mojo::Remote<blink::mojom::ModelStreamingResponder> responder(
         std::move(pending_responder));
     on_device_ai::SendStreamingStatus(
@@ -1094,9 +1174,12 @@ void AILanguageModel::AppendInternal(
         blink::mojom::ModelStreamingResponseStatus::kErrorInvalidRequest);
     return;
   }
+  auto logger =
+      std::make_unique<optimization_guide::OnDeviceRequestTelemetryLogger>(
+          optimization_guide::mojom::OnDeviceFeature::kPromptApi);
   prompt_state_ = std::make_unique<PromptState>(
       std::move(pending_responder), input.Clone(), /*constraint=*/nullptr,
-      logger_, PromptState::Mode::kAppendOnly);
+      logger_, PromptState::Mode::kAppendOnly, std::move(logger));
   // The rest of the logic can be shared with Prompt() since PromptState() will
   // handle correctly calling this for append mode.
   GetSizeInTokens(

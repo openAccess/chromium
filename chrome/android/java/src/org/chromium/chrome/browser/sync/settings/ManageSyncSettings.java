@@ -426,7 +426,7 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
                             getContext(), identityManager, R.dimen.account_management_picture_size);
         }
         centralAccountCardPreference.initialize(
-                assumeNonNull(identityManager.getPrimaryAccountInfo()), profileDataCache);
+                assumeNonNull(identityManager.getPrimaryAccountInfo()).getId(), profileDataCache);
     }
 
     private void setupIdentityErrorCardPreference(Profile profile) {
@@ -956,6 +956,9 @@ public class ManageSyncSettings extends ChromeBaseSettingsFragment
             case UserActionableError.SIGN_IN_NEEDS_UPDATE:
                 AccountManagerFacadeProvider.getInstance()
                         .updateCredentials(primaryAccountInfo.getId(), getActivity(), null);
+                return;
+            case UserActionableError.DEVICE_MANAGEMENT_ERROR:
+                SyncSettingsUtils.openDeviceManagementResolution(getContext(), mSyncService);
                 return;
             case UserActionableError.NEEDS_CLIENT_UPGRADE:
                 // Opens the client in play store for update.

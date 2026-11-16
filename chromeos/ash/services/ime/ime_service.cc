@@ -158,7 +158,11 @@ void ImeService::RunInMainSequence(ImeSequencedTask task, int task_id) {
 
 bool ImeService::IsFeatureEnabled(const char* feature_name) {
   static const base::Feature* kConsideredFeatures[] = {
-      &features::kAutocorrectParamsTuning, &features::kImeDownloaderExperiment};
+      &features::kAutocorrectParamsTuning,
+      &features::kImeDownloaderExperiment,
+      &features::kUseDirectXkbLayoutForThaiKedmaneeInputMethod,
+      &features::kUseDirectXkbLayoutForThaiTisInputMethod,
+  };
 
   static constexpr std::string_view kEnabledFeatures[] = {
       "AssistMultiWord",

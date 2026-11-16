@@ -22,6 +22,9 @@
 #import "ios/web/public/web_state_user_data.h"
 #import "url/origin.h"
 
+class AutofillAiSaveEntityPromptModel;
+class AutofillPendingPromptManager;
+
 namespace autofill {
 class AutofillBottomSheetObserver;
 class CardUnmaskAuthenticationSelectionDialogControllerImpl;
@@ -98,6 +101,23 @@ class AutofillBottomSheetTabHelper
           autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
           model_controller);
 
+  // Shows the Autofill AI Save Entity bottom sheet prompt.
+  void ShowAutofillAiSaveEntityBottomSheet(
+      std::unique_ptr<AutofillAiSaveEntityPromptModel> model);
+
+  // Returns a non-owning pointer to the pending Autofill AI Save Entity prompt
+  // model, if one exists on this tab. Used by the coordinator and mediator to
+  // inspect parameters and bind to the active prompt without consuming it.
+  const AutofillAiSaveEntityPromptModel* GetAutofillAiSaveEntityPromptModel()
+      const;
+  AutofillAiSaveEntityPromptModel* GetAutofillAiSaveEntityPromptModel();
+
+  // Takes and transfers ownership of the pending Autofill AI Save Entity
+  // prompt model from the tab helper. Used by the mediator when the user
+  // makes a terminal decision (accept, cancel, dismiss) to report the outcome
+  // and clear the pending state.
+  std::unique_ptr<AutofillAiSaveEntityPromptModel>
+  TakeAutofillAiSaveEntityPromptModel();
   // Send a command to show save card bottomsheet.
   void ShowSaveCardBottomSheet(
       std::unique_ptr<autofill::SaveCardBottomSheetModel> model);
@@ -168,6 +188,7 @@ class AutofillBottomSheetTabHelper
   void RefocusElementIfNeeded(const std::string& frame_id);
 
   // WebStateObserver:
+  void WasShown(web::WebState* web_state) override;
   void DidStartNavigation(web::WebState* web_state,
                           web::NavigationContext* navigation_context) override;
   void DidFinishNavigation(web::WebState* web_state,
@@ -210,8 +231,9 @@ class AutofillBottomSheetTabHelper
   // Updates the listeners for the payments form corresponding to `form_id`.
   // Only attaches the listeners on newly discovered payment fields when
   // `only_new` is true, or attaches the listeners on all payment fields
-  // otherwise. In V3, it also detaches the listeners for the fields that are no
-  // longer related to payments (from later discovery).
+  // otherwise. When listeners invalidation is enabled, it also detaches the
+  // listeners for the fields that are no longer related to payments (from later
+  // discovery).
   void UpdateListenersForPaymentsForm(autofill::AutofillManager& manager,
                                       autofill::FormGlobalId form_id,
                                       bool only_new);
@@ -265,7 +287,7 @@ class AutofillBottomSheetTabHelper
   // Conditionally show the payments bottom sheet based on the Autofill
   // suggestions that can be retrieved for the form that corresponds to
   // `params`.
-  void MaybeShowPaymentsBottomSheet(const autofill::FormActivityParams params);
+  void MaybeShowPaymentsBottomSheet(const autofill::FormActivityParams& params);
 
   // Send command to show the Payments Bottom Sheet. Detach all listeners if
   // `detach`.
@@ -300,7 +322,7 @@ class AutofillBottomSheetTabHelper
   // The WebState with which this object is associated.
   raw_ptr<web::WebState> web_state_;
 
-  // TODO(crbug.com/40266699): Remove once this class uses FormGlobalIds.
+  // TODO(crbug.com/585077444): Remove once this class uses FormGlobalIds.
   base::ScopedObservation<web::WebFramesManager,
                           web::WebFramesManager::Observer>
       frames_manager_observation_{this};
@@ -310,12 +332,12 @@ class AutofillBottomSheetTabHelper
       autofill_manager_observations_{this};
 
   // List of credential bottom sheet related renderer ids, mapped to a frame id.
-  // TODO(crbug.com/40266699): Maybe migrate to FieldGlobalIds.
+  // TODO(crbug.com/585077444): Maybe migrate to FieldGlobalIds.
   std::map<std::string, std::set<autofill::FieldRendererId>>
       registered_password_renderer_ids_;
 
   // List of payments bottom sheet related renderer ids, mapped to a frame id.
-  // TODO(crbug.com/40266699): Migrate to FieldGlobalIds.
+  // TODO(crbug.com/585077444): Migrate to FieldGlobalIds.
   std::map<std::string, std::set<autofill::FieldRendererId>>
       registered_payments_renderer_ids_;
 
@@ -326,7 +348,7 @@ class AutofillBottomSheetTabHelper
 
   // Set of proactive password generation bottom sheet related renderer ids,
   // mapped to their frame id.
-  // TODO(crbug.com/40266699): Migrate to FieldGlobalIds.
+  // TODO(crbug.com/585077444): Migrate to FieldGlobalIds.
   std::map<std::string, std::set<autofill::FieldRendererId>>
       registered_password_generation_renderer_ids_;
 
@@ -347,6 +369,9 @@ class AutofillBottomSheetTabHelper
   // Callbacks to be run when the virtual card enrollment bottom sheet UI has
   // completed.
   autofill::VirtualCardEnrollmentCallbacks virtual_card_enrollment_callbacks_;
+
+  // Coordinates lifecycle of staged pending prompts across tab switches.
+  std::unique_ptr<AutofillPendingPromptManager> pending_prompt_manager_;
 
   // Weak pointers handed out to pending suggestion retrieval callbacks. Kept
   // separate from `weak_factory_` because `CancelPendingSuggestionRequests()`

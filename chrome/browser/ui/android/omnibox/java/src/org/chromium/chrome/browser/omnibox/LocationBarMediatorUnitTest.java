@@ -94,6 +94,7 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.toolbar.ToolbarWidthConsumer;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.omnibox.LocationBarDataProvider.AppInstallState;
+import org.chromium.chrome.browser.omnibox.OmniboxPrerender.NativeOmniboxPrerender;
 import org.chromium.chrome.browser.omnibox.OmniboxPrerender.Natives;
 import org.chromium.chrome.browser.omnibox.SearchEngineService.SearchEngineNameObserver;
 import org.chromium.chrome.browser.omnibox.UrlBar.ScrollType;
@@ -131,7 +132,7 @@ import org.chromium.chrome.test.util.browser.signin.AccountManagerTestRule;
 import org.chromium.components.browser_ui.accessibility.PageZoomIndicatorCoordinator;
 import org.chromium.components.browser_ui.styles.ChromeColors;
 import org.chromium.components.browser_ui.widget.chips.ChipView;
-import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
+import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
@@ -197,7 +198,7 @@ public class LocationBarMediatorUnitTest {
 
     private static final String TEST_URL = "http://www.example.org";
     private static final String TEST_USER_TEXT = "user query";
-    private static final String TEST_INITIAL_USER_TEXT = "inital text";
+    private static final String TEST_INITIAL_USER_TEXT = "initial text";
 
     private static int sGeoHeaderPrimeCount;
     private static int sGeoHeaderStopCount;
@@ -220,7 +221,7 @@ public class LocationBarMediatorUnitTest {
     @Mock private UrlBarCoordinator mUrlCoordinator;
     @Mock private StatusCoordinator mStatusCoordinator;
     @Mock private Natives mPrerenderJni;
-    @Mock private JniUniquePtr<OmniboxPrerender.NativeOmniboxPrerender> mNativeOmniboxPrerender;
+    @Mock private JniUniquePtr<NativeOmniboxPrerender> mNativeOmniboxPrerender;
     @Mock private TextView mView;
     @Mock private View mTabView;
     @Mock private KeyEvent mKeyEvent;
@@ -898,6 +899,9 @@ public class LocationBarMediatorUnitTest {
 
         mMediator.beginInput(input);
         verify(mUrlCoordinator, never()).requestFocus();
+        assertEquals(DisplayState.DRAFTING_NO_FOCUS, input.getDisplayState());
+        verify(mLocationBarLayout, never()).setShowFocusRing(true);
+        verify(mLocationBarLayout, atLeastOnce()).setShowFocusRing(false);
     }
 
     @Test
@@ -916,6 +920,18 @@ public class LocationBarMediatorUnitTest {
         assertAutocompleteState(AutocompleteState.ENABLED);
         assertEquals(OmniboxFocusReason.FAKE_BOX_TAP, input.getFocusReason());
         verify(mUrlCoordinator).requestFocus();
+    }
+
+    @Test
+    public void testBeginInput_StandbyNoFocus_focusGainedShowsFocusRing() {
+        var input = mSessionState.getAutocompleteInput();
+        input.setAutocompleteState(AutocompleteState.STANDBY_NO_FOCUS);
+        mMediator.beginInput(input);
+        clearInvocations(mLocationBarLayout);
+
+        mMediator.onUrlFocusChange(true);
+        assertEquals(DisplayState.DRAFTING, input.getDisplayState());
+        verify(mLocationBarLayout, atLeastOnce()).setShowFocusRing(true);
     }
 
     @Test
@@ -5296,6 +5312,24 @@ public class LocationBarMediatorUnitTest {
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
+    public void testOnWindowFocusChanged_attachedSession_doesNotBeginInputAgain() {
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
+        doReturn(GURL.emptyGURL()).when(mLocationBarDataProvider).getCurrentGurl();
+
+        // Gaining window focus without a session places the cursor and starts a session.
+        mWindowHasFocusSupplier.set(false);
+        mWindowHasFocusSupplier.set(true);
+        assertTrue(mSessionState.isSessionActive());
+        clearInvocations(mFuseboxCoordinator);
+
+        // Regaining window focus (e.g. after a popup closes) must not begin input again.
+        mWindowHasFocusSupplier.set(false);
+        mWindowHasFocusSupplier.set(true);
+        verify(mFuseboxCoordinator, never()).beginInput(any());
+    }
+
+    @Test
     public void testBeginInput_ReentrancyGuard() {
         mMediator.onFinishNativeInitialization();
         mProfileSupplier.set(mProfile);
@@ -5412,6 +5446,9 @@ public class LocationBarMediatorUnitTest {
         mMediator.onUrlFocusChange(/* hasFocus= */ false);
 
         assertDraftingNoFocusProperties();
+        verify(mUrlCoordinator)
+                .setUrlBarData(
+                        any(), eq(ScrollType.SCROLL_TO_BEGINNING), eq(TextSelection.SELECT_END));
     }
 
     @Test
@@ -5628,25 +5665,26 @@ public class LocationBarMediatorUnitTest {
         input.setPreviewMatchUrl(new GURL("https://page.com"));
         clearInvocations(mLocationBarLayout);
         mMediator.beginInput(input);
-        verify(mLocationBarLayout, never()).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, never()).setAiModeButtonState(AiModeButtonState.HIDDEN);
         clearInvocations(mLocationBarLayout);
 
         input.setSiteSearchData(new SiteSearchData("test", "Test"));
-        verify(mLocationBarLayout).setActivationChipVisibility(false);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.HIDDEN);
 
         input.setSiteSearchData(null);
-        verify(mLocationBarLayout).setActivationChipVisibility(true);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
 
         // When user types a new URL, it hides the chip.
         input.setUserText("https://example.com");
         input.setPreviewMatchUrl(new GURL("https://example.com"));
-        verify(mLocationBarLayout, times(2)).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, times(2)).setAiModeButtonState(AiModeButtonState.HIDDEN);
 
         input.setPreviewMatchUrl(null);
-        verify(mLocationBarLayout, times(2)).setActivationChipVisibility(true);
+        verify(mLocationBarLayout, times(2))
+                .setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
 
         input.setRequestType(AutocompleteRequestType.AI_MODE);
-        verify(mLocationBarLayout, times(3)).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, times(3)).setAiModeButtonState(AiModeButtonState.HIDDEN);
 
         mMediator.endInput();
     }
@@ -5661,14 +5699,14 @@ public class LocationBarMediatorUnitTest {
         clearInvocations(mLocationBarLayout);
         mMediator.beginInput(input);
 
-        verify(mLocationBarLayout, never()).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, never()).setAiModeButtonState(AiModeButtonState.HIDDEN);
         clearInvocations(mLocationBarLayout);
 
         mWindowHasFocusSupplier.set(false);
-        verify(mLocationBarLayout).setActivationChipVisibility(false);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.HIDDEN);
 
         mWindowHasFocusSupplier.set(true);
-        verify(mLocationBarLayout).setActivationChipVisibility(true);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
     }
 
     @Test
@@ -5681,14 +5719,14 @@ public class LocationBarMediatorUnitTest {
         clearInvocations(mLocationBarLayout);
         mMediator.beginInput(input);
 
-        verify(mLocationBarLayout, never()).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, never()).setAiModeButtonState(AiModeButtonState.HIDDEN);
         clearInvocations(mLocationBarLayout);
 
         doReturn(123L).when(mProfile).getNativeBrowserContextPointer();
         doReturn(false).when(mPrefService).getBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON);
         mMediator.updateActivationChip();
 
-        verify(mLocationBarLayout).setActivationChipVisibility(false);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.HIDDEN);
     }
 
     @Test
@@ -5702,7 +5740,8 @@ public class LocationBarMediatorUnitTest {
         mMediator.beginInput(input);
         mMediator.updateActivationChip();
 
-        verify(mLocationBarLayout, never()).setActivationChipVisibility(true);
+        verify(mLocationBarLayout, never())
+                .setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
     }
 
     @Test
@@ -5714,7 +5753,7 @@ public class LocationBarMediatorUnitTest {
         mMediator.onUrlFocusChange(/* hasFocus= */ true);
 
         assertEquals(DisplayState.DRAFTING, mSessionState.getAutocompleteInput().getDisplayState());
-        verify(mLocationBarLayout).setActivationChipVisibility(true);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
     }
 
     @Test
@@ -5990,7 +6029,7 @@ public class LocationBarMediatorUnitTest {
         clearInvocations(mLocationBarLayout);
         mMediator.beginInput(input);
 
-        verify(mLocationBarLayout, never()).setActivationChipVisibility(false);
+        verify(mLocationBarLayout, never()).setAiModeButtonState(AiModeButtonState.HIDDEN);
     }
 
     /**
@@ -6048,7 +6087,7 @@ public class LocationBarMediatorUnitTest {
 
         mAiModeButtonUiConfigSupplier.set(null);
 
-        verify(mLocationBarLayout).setActivationChipVisibility(false);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.HIDDEN);
         verify(mActivationChip).setText("");
         verify(mActivationChip).setContentDescription(null);
         verify(mActivationChip).setTooltipText(null);
@@ -6062,7 +6101,7 @@ public class LocationBarMediatorUnitTest {
 
         mAiModeButtonUiConfigSupplier.set(createTestAiModeButtonUiConfig());
 
-        verify(mLocationBarLayout).setActivationChipVisibility(true);
+        verify(mLocationBarLayout).setAiModeButtonState(AiModeButtonState.VISIBLE_INACTIVE);
         verify(mActivationChip).setText("AI Mode");
         verify(mActivationChip).setContentDescription("AI Mode button");
         verify(mActivationChip).setTooltipText("Ask AI Mode");
@@ -6071,27 +6110,27 @@ public class LocationBarMediatorUnitTest {
     @Test
     public void testActivationChip_iconUpdatedFromSupplier_resourceIconTinted() {
         mMediator.onFinishNativeInitialization();
-        clearInvocations(mActivationChip);
+        clearInvocations(mLocationBarLayout);
 
         mAiModeButtonIconSupplier.set(
                 new StatusIconResource(
                         R.drawable.ic_search_24dp, R.color.default_icon_color_tint_list));
 
-        verify(mActivationChip)
-                .setIconWithTint(any(Drawable.class), /* tintWithTextColor= */ eq(true));
+        verify(mLocationBarLayout)
+                .setAiModeButtonIcon(any(Drawable.class), /* tintWithTextColor= */ eq(true));
     }
 
     @Test
     public void testActivationChip_iconUpdatedFromSupplier_bitmapIconNotTinted() {
         mMediator.onFinishNativeInitialization();
-        clearInvocations(mActivationChip);
+        clearInvocations(mLocationBarLayout);
 
         Bitmap bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888);
         mAiModeButtonIconSupplier.set(
                 new StatusIconResource("https://3p.com/favicon.ico", bitmap, 0));
 
-        verify(mActivationChip)
-                .setIconWithTint(any(Drawable.class), /* tintWithTextColor= */ eq(false));
+        verify(mLocationBarLayout)
+                .setAiModeButtonIcon(any(Drawable.class), /* tintWithTextColor= */ eq(false));
     }
 
     @Test
@@ -6362,11 +6401,11 @@ public class LocationBarMediatorUnitTest {
     @Test
     public void testHandleBackPress_reflectedByBackPressChangedSupplier() {
         assertFalse(mMediator.getHandleBackPressChangedSupplier().get());
-        assertEquals(BackPressHandler.BackPressResult.FAILURE, mMediator.handleBackPress());
+        assertEquals(BackPressResult.FAILURE, mMediator.handleBackPress());
 
         mMediator.onUrlFocusChange(/* hasFocus= */ true);
         assertTrue(mMediator.getHandleBackPressChangedSupplier().get());
-        assertEquals(BackPressHandler.BackPressResult.SUCCESS, mMediator.handleBackPress());
+        assertEquals(BackPressResult.SUCCESS, mMediator.handleBackPress());
 
         mMediator.onUrlFocusChange(/* hasFocus= */ false);
         assertFalse(mMediator.getHandleBackPressChangedSupplier().get());

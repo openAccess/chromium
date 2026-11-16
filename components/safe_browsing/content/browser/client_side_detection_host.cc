@@ -10,6 +10,7 @@
 #include <string_view>
 #include <utility>
 
+#include "base/check.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
@@ -27,12 +28,16 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "base/task/thread_pool.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/tick_clock.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
+#include "base/types/expected.h"
 #include "base/uuid.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
 #include "components/autofill/core/browser/field_types.h"
@@ -42,15 +47,15 @@
 #include "components/history/core/browser/history_types.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/base_ui_manager.h"
 #include "components/safe_browsing/content/browser/client_side_detection_feature_cache.h"
 #include "components/safe_browsing/content/browser/client_side_detection_service.h"
-#include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
+#include "components/safe_browsing/content/browser/interstitials/base_ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/content_unsafe_resource_util.h"
 #include "components/safe_browsing/content/common/safe_browsing.mojom.h"
-#include "components/safe_browsing/core/browser/credit_card_form_event.h"
+#include "components/safe_browsing/core/browser/client_side_detection/credit_card_form_event.h"
+#include "components/safe_browsing/core/browser/client_side_detection/intelligent_scan_delegate/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/db/allowlist_checker_client.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
 #include "components/safe_browsing/core/browser/sync/sync_utils.h"
 #include "components/safe_browsing/core/browser/verdict_cache_manager.h"
@@ -91,6 +96,10 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/geometry/size_conversions.h"
+#include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -107,6 +116,11 @@ namespace {
 
 // How long to wait to run the user report callback.
 const int kUserReportCallbackTimer = 30;
+
+// Extra time the browser waits for `CopyFromSurface()` beyond the viz timeout
+// before giving up on a browser-side page capture.
+constexpr base::TimeDelta kCopyFromSurfaceTimeoutAllowance =
+    base::Milliseconds(500);
 
 bool HasDebugFeatureDirectory() {
   return base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -726,7 +740,8 @@ ClientSideDetectionHost::ClientSideDetectionHost(
       tab_(tab),
       classification_request_(nullptr),
       delegate_(std::move(delegate)),
-      account_signed_in_callback_(account_signed_in_callback) {
+      account_signed_in_callback_(account_signed_in_callback),
+      visual_capturer_(std::make_unique<VisualCapturer>()) {
   DCHECK(tab);
   DCHECK(pref_service);
   // Note: the CSD service will be nullptr here in testing.
@@ -757,19 +772,386 @@ ClientSideDetectionHost::~ClientSideDetectionHost() {
 void ClientSideDetectionHost::CancelPendingRequests() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   weak_factory_.InvalidateWeakPtrs();
+  DropPendingCapture();
+  browser_classification_.reset();
   CancelBrowserSideClassification();
   ClientSideDetectionHostBase::CancelPendingRequests();
 }
 
 void ClientSideDetectionHost::CaptureScreenshot(ScreenshotCallback callback) {
-  // TODO(crbug.com/454896977): Capture the composited surface via
-  // `RenderWidgetHostView::CopyFromSurface()` behind
-  // `kClientSideDetectionCopyFromSurface`.
-  std::move(callback).Run(gfx::Image());
+  // The base class only asks for a capture outside of classification when it
+  // needs one for image embedding.
+  RequestCapture(CapturePurpose::kImageEmbedding, std::move(callback));
 }
 
+void ClientSideDetectionHost::OnVisualClassificationEarlyReturn(
+    VisualClassificationEarlyReturnReason reason) {
+  ClientSideDetectionHostBase::OnVisualClassificationEarlyReturn(reason);
+  // The other gates run before the capture in StartBrowserSideClassification(),
+  // so the only reason that reaches this point is a `Scorer` that went away
+  // while the capture was in flight. Report it the way the renderer reports a
+  // missing scorer so that PhishingDetectorResult keeps its semantics.
+  if (browser_classification_) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::CLASSIFIER_NOT_READY);
+  }
+}
+
+void ClientSideDetectionHost::SetVisualCapturerForTesting(
+    std::unique_ptr<VisualCapturer> capturer) {
+  visual_capturer_ = std::move(capturer);
+}
+
+// --- VisualCapturer ----------------------------------------------------------
+
+bool ClientSideDetectionHost::VisualCapturer::IsSurfaceAvailableForCopy(
+    content::WebContents* web_contents) {
+  content::RenderWidgetHostView* view = web_contents->GetRenderWidgetHostView();
+  // A view without bounds has nothing to copy (and nothing to scale to).
+  return view && !view->GetViewBounds().IsEmpty() &&
+         view->IsSurfaceAvailableForCopy();
+}
+
+void ClientSideDetectionHost::VisualCapturer::CopyFromSurface(
+    content::WebContents* web_contents,
+    base::TimeDelta timeout,
+    CopyCallback callback) {
+  content::RenderWidgetHostView* view = web_contents->GetRenderWidgetHostView();
+  CHECK(view);
+
+  // Scale the capture to the view's size in DIPs, capped to
+  // `kMaxHighResScreenshotWidth` x `kMaxHighResScreenshotHeight` while
+  // preserving aspect ratio. This matches what the renderer-side extractor
+  // produces (the visual viewport in DIPs), keeps high-DPI captures small, and
+  // bounds readback size on ultrawide/maximized displays; viz does the scaling.
+  const gfx::Size view_size = view->GetViewBounds().size();
+  gfx::Size output_size = view_size;
+  if (output_size.width() > kMaxHighResScreenshotWidth ||
+      output_size.height() > kMaxHighResScreenshotHeight) {
+    const float scale = std::min(
+        static_cast<float>(kMaxHighResScreenshotWidth) / output_size.width(),
+        static_cast<float>(kMaxHighResScreenshotHeight) / output_size.height());
+    output_size = gfx::ScaleToFlooredSize(output_size, scale);
+    output_size.SetToMax(gfx::Size(1, 1));
+  }
+  gfx::Rect src_rect;
+#if BUILDFLAG(IS_ANDROID)
+  // The Android surface can extend below the web contents to make room for
+  // the browser controls. Crop to the content area, which starts at the
+  // origin and is specified in physical pixels on Android, so that the scaling
+  // stays uniform. See PageContextFetcher::GetTabScreenshot().
+  src_rect = gfx::Rect(
+      gfx::ScaleToRoundedSize(view_size, view->GetDeviceScaleFactor()));
+#endif
+  // The callback is not guaranteed to run on the calling sequence.
+  view->CopyFromSurface(
+      src_rect, output_size, timeout,
+      base::BindPostTaskToCurrentDefault(std::move(callback)));
+}
+
+// --- Browser-side classification ---------------------------------------------
+
+ClientSideDetectionHost::PendingCapture::PendingCapture(
+    int capture_id,
+    CapturePurpose purpose,
+    ScreenshotCallback callback)
+    : capture_id(capture_id), purpose(purpose), callback(std::move(callback)) {}
+ClientSideDetectionHost::PendingCapture::~PendingCapture() = default;
+
+void ClientSideDetectionHost::StartBrowserSideClassification(
+    ClientSideDetectionType request_type,
+    bool is_sample_ping,
+    std::optional<bool> did_match_high_confidence_allowlist,
+    bool is_invalid_ip) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface));
+
+  // Like the renderer path, classification counts as started at dispatch, and
+  // the begin event carries the requested type while the request itself is
+  // upgraded for Enhanced Protection users (see StartVisualClassification()).
+  LogClientSideDetectionEvent(
+      ClientSideDetectionEvent::kImageClassificationBegin, request_type);
+  request_type = MaybeUpgradeRequestTypeForImageEmbeddingMatch(request_type);
+  browser_classification_ =
+      BrowserClassificationRequest{.url = current_url(),
+                                   .request_type = request_type,
+                                   .is_sample_ping = is_sample_ping,
+                                   .did_match_high_confidence_allowlist =
+                                       did_match_high_confidence_allowlist,
+                                   .is_invalid_ip = is_invalid_ip,
+                                   .start_time = tick_clock()->NowTicks()};
+  set_is_classifying(true);
+
+  // The renderer's gates, in its order (see
+  // ContentPhishingClassifierDelegate::MaybeStartClassification() and
+  // CanPerformPhishingDetection()).
+  base::WeakPtr<ClientSideDetectionServiceBase> service =
+      GetClientSideDetectionService();
+  if (!service || !service->GetScorer()) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::CLASSIFIER_NOT_READY);
+    return;
+  }
+  content::NavigationEntry* entry =
+      web_contents()->GetController().GetLastCommittedEntry();
+  if (entry &&
+      (entry->GetTransitionType() & ui::PAGE_TRANSITION_FORWARD_BACK) != 0) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::FORWARD_BACK_TRANSITION);
+    return;
+  }
+  if (!current_url().SchemeIsHTTPOrHTTPS()) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::INVALID_URL_FORMAT_REQUEST);
+    return;
+  }
+  if (entry && entry->GetHasPostData()) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::INVALID_DOCUMENT_LOADER);
+    return;
+  }
+
+  RequestCapture(
+      CapturePurpose::kClassification,
+      base::BindOnce(&ClientSideDetectionHost::OnClassificationCaptureDone,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void ClientSideDetectionHost::OnClassificationCaptureDone(
+    const gfx::Image& image) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  CHECK(browser_classification_);
+  if (image.IsEmpty()) {
+    FinishBrowserSideClassification(
+        PhishingDetectorResult::VISUAL_EXTRACTION_FAILED);
+    return;
+  }
+  // `browser_classification_` stays set while the classifier runs so that a
+  // request arriving before the result can cancel it.
+  const BrowserClassificationRequest& request = *browser_classification_;
+  StartVisualClassification(request.url, request.request_type,
+                            request.is_sample_ping,
+                            request.did_match_high_confidence_allowlist,
+                            request.is_invalid_ip, image, request.start_time);
+}
+
+void ClientSideDetectionHost::CancelPendingBrowserSideClassification() {
+  if (!browser_classification_ || !is_classifying()) {
+    return;
+  }
+  if (pending_capture_ &&
+      pending_capture_->purpose == CapturePurpose::kClassification) {
+    RecordCaptureResult(*pending_capture_, BrowserCaptureResult::kSuperseded);
+    pending_capture_.reset();
+  }
+  // Leave `image_embedder_` alone: cancelling it drops its callback and would
+  // silently abort an outgoing ping that already finished classification.
+  classifier_->CancelPendingClassification();
+  FinishBrowserSideClassification(
+      PhishingDetectorResult::CLASSIFICATION_CANCELLED);
+  // Reporting the cancelled request marked CSD as idle, but the new request
+  // is running.
+  set_is_csd_running(true);
+}
+
+void ClientSideDetectionHost::FinishBrowserSideClassification(
+    PhishingDetectorResult result) {
+  CHECK(browser_classification_);
+  BrowserClassificationRequest request = *browser_classification_;
+  browser_classification_.reset();
+  ClientSideDetectionHostBase::PhishingDetectionDone(
+      request.request_type, request.is_sample_ping,
+      request.did_match_high_confidence_allowlist, request.is_invalid_ip,
+      request.start_time, result, /*verdict=*/std::nullopt);
+}
+
+void ClientSideDetectionHost::RequestCapture(CapturePurpose purpose,
+                                             ScreenshotCallback callback) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (pending_capture_) {
+    // Classification and image embedding are serialized by the base class, and
+    // CancelPendingBrowserSideClassification() already handled any in-flight
+    // classification capture, so this is a newer request overtaking an
+    // image-embedding capture.
+    CHECK_EQ(pending_capture_->purpose, CapturePurpose::kImageEmbedding);
+    RecordCaptureResult(*pending_capture_, BrowserCaptureResult::kSuperseded);
+    ScreenshotCallback superseded_callback =
+        std::move(pending_capture_->callback);
+    pending_capture_.reset();
+    // Answer the superseded image-embedding capture without an image,
+    // asynchronously so that its flow completes after the new capture has been
+    // set up.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&ClientSideDetectionHost::RunSupersededCaptureCallback,
+                       weak_factory_.GetWeakPtr(),
+                       std::move(superseded_callback)));
+  }
+
+  pending_capture_.emplace(next_capture_id_++, purpose, std::move(callback));
+  pending_capture_->request_type = last_request_type();
+  pending_capture_->requested_at = tick_clock()->NowTicks();
+
+  if (!web_contents()->IsDocumentOnLoadCompletedInPrimaryMainFrame()) {
+    // Wait to be notified the main frame has loaded by
+    // DocumentOnLoadCompletedInPrimaryMainFrame().
+    pending_capture_->stage = CaptureStage::kWaitingForLoad;
+    return;
+  }
+  ScheduleSurfaceCopy();
+}
+
+void ClientSideDetectionHost::RunSupersededCaptureCallback(
+    ScreenshotCallback callback) {
+  std::move(callback).Run(gfx::Image());
+  if (is_classifying() || pending_capture_.has_value()) {
+    set_is_csd_running(true);
+  }
+}
+
+void ClientSideDetectionHost::ScheduleSurfaceCopy() {
+  CHECK(pending_capture_);
+  if (web_contents()->GetVisibility() != content::Visibility::VISIBLE) {
+    // Wait to be notified the tab is visible by OnVisibilityChanged(VISIBLE).
+    pending_capture_->stage = CaptureStage::kWaitingForVisibility;
+    return;
+  }
+  MaybeCopySurface();
+}
+
+void ClientSideDetectionHost::MaybeCopySurface() {
+  CHECK(pending_capture_);
+  // Hidden and occluded tabs do not produce frames to copy; resumed from
+  // OnVisibilityChanged().
+  if (web_contents()->GetVisibility() != content::Visibility::VISIBLE) {
+    pending_capture_->stage = CaptureStage::kWaitingForVisibility;
+    return;
+  }
+  if (!web_contents()->GetRenderWidgetHostView()) {
+    FinishCapture(BrowserCaptureResult::kViewMissing, gfx::Image());
+    return;
+  }
+  if (!visual_capturer_->IsSurfaceAvailableForCopy(web_contents())) {
+    FinishCapture(BrowserCaptureResult::kSurfaceUnavailable, gfx::Image());
+    return;
+  }
+
+  pending_capture_->stage = CaptureStage::kCopying;
+  pending_capture_->copy_started_at = tick_clock()->NowTicks();
+  const base::TimeDelta timeout = kCsdCopyFromSurfaceTimeout.Get();
+  // Watchdog in case the copy callback never runs. Started before
+  // `CopyFromSurface()` so that a synchronous test callback still finds
+  // `pending_capture_` intact and cancels the timer on completion.
+  pending_capture_->watchdog_timer.Start(
+      FROM_HERE, timeout + kCopyFromSurfaceTimeoutAllowance,
+      base::BindOnce(&ClientSideDetectionHost::OnCopyFromSurfaceTimeout,
+                     weak_factory_.GetWeakPtr()));
+  visual_capturer_->CopyFromSurface(
+      web_contents(), timeout,
+      base::BindOnce(&ClientSideDetectionHost::OnCopyFromSurfaceDone,
+                     weak_factory_.GetWeakPtr(), pending_capture_->capture_id));
+}
+
+void ClientSideDetectionHost::OnCopyFromSurfaceDone(
+    int capture_id,
+    const content::CopyFromSurfaceResult& result) {
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!pending_capture_ || pending_capture_->capture_id != capture_id) {
+    return;
+  }
+  base::UmaHistogramTimes(
+      "SBClientPhishing.BrowserCaptureCopyDuration",
+      tick_clock()->NowTicks() - pending_capture_->copy_started_at);
+  if (!result.has_value()) {
+    base::UmaHistogramEnumeration(
+        "SBClientPhishing.BrowserCaptureCopyFromSurfaceError", result.error());
+    FinishCapture(BrowserCaptureResult::kCopyFailed, gfx::Image());
+    return;
+  }
+  // Android reports an unavailable surface as a successful, empty bitmap.
+  if (result->bitmap.drawsNothing()) {
+    FinishCapture(BrowserCaptureResult::kEmptyBitmap, gfx::Image());
+    return;
+  }
+  FinishCapture(BrowserCaptureResult::kSuccess,
+                gfx::Image::CreateFrom1xBitmap(result->bitmap));
+}
+
+void ClientSideDetectionHost::OnCopyFromSurfaceTimeout() {
+  FinishCapture(BrowserCaptureResult::kTimedOut, gfx::Image());
+}
+
+void ClientSideDetectionHost::FinishCapture(BrowserCaptureResult result,
+                                            const gfx::Image& image) {
+  CHECK(pending_capture_);
+  CHECK_EQ(result == BrowserCaptureResult::kSuccess, !image.IsEmpty());
+  RecordCaptureResult(*pending_capture_, result);
+  ScreenshotCallback callback = std::move(pending_capture_->callback);
+  pending_capture_.reset();
+  std::move(callback).Run(image);
+}
+
+void ClientSideDetectionHost::RecordCaptureResult(
+    const PendingCapture& capture,
+    BrowserCaptureResult result) const {
+  std::string_view request_type_name = GetRequestTypeName(capture.request_type);
+  base::UmaHistogramEnumeration("SBClientPhishing.BrowserCaptureResult",
+                                result);
+  base::UmaHistogramEnumeration(
+      base::StrCat(
+          {"SBClientPhishing.BrowserCaptureResult.", request_type_name}),
+      result);
+  base::UmaHistogramMediumTimes(
+      "SBClientPhishing.BrowserCaptureTotalDuration",
+      tick_clock()->NowTicks() - capture.requested_at);
+}
+
+void ClientSideDetectionHost::DropPendingCapture() {
+  pending_capture_.reset();
+}
+
+void ClientSideDetectionHost::DocumentOnLoadCompletedInPrimaryMainFrame() {
+  if (pending_capture_ &&
+      pending_capture_->stage == CaptureStage::kWaitingForLoad) {
+    ScheduleSurfaceCopy();
+  }
+}
+
+void ClientSideDetectionHost::OnVisibilityChanged(
+    content::Visibility visibility) {
+  if (pending_capture_ && visibility == content::Visibility::VISIBLE &&
+      pending_capture_->stage == CaptureStage::kWaitingForVisibility) {
+    ScheduleSurfaceCopy();
+  }
+}
+
+void ClientSideDetectionHost::PrimaryMainFrameRenderProcessGone(
+    base::TerminationStatus status) {
+  // There is nothing left to capture or warn about. Cancel any in-flight work
+  // and reset classification state so same-page triggers or tests do not see
+  // stale flags before the next PrimaryPageChanged().
+  MaybeRunUserReportCallback();
+  if (classification_request_.get()) {
+    classification_request_->Cancel();
+  }
+  CancelPendingRequests();
+  set_is_classifying(false);
+  set_is_csd_running(false);
+}
 void ClientSideDetectionHost::GetInnerText(HostInnerTextCallback callback) {
   delegate_->GetInnerText(std::move(callback));
+}
+
+std::string ClientSideDetectionHost::GetPageTitle() const {
+  if (!web_contents()) {
+    return std::string();
+  }
+  content::NavigationEntry* entry =
+      web_contents()->GetController().GetLastCommittedEntry();
+  if (!entry) {
+    return std::string();
+  }
+  return base::UTF16ToUTF8(entry->GetTitle());
 }
 
 bool ClientSideDetectionHost::IsAccountSignedIn() {
@@ -898,9 +1280,11 @@ void ClientSideDetectionHost::MaybeStartPreClassification(
     }
   }
 
-  // If there is a renderer classification going on and the incoming request
-  // type is not higher, do not let that cancel pending classification.
-  if (is_classifying() &&
+  // If there is a classification, page capture, or uniform-image retry check
+  // going on and the incoming request type is not higher, do not let that
+  // cancel the pending work.
+  if ((is_classifying() || pending_capture_.has_value() ||
+       is_uniform_image_retry_timer_running()) &&
       base::FeatureList::IsEnabled(kClientSideDetectionTierSystem) &&
       !NewRequestTypeTierHigher(request_type)) {
     base::UmaHistogramExactLinear(
@@ -916,6 +1300,12 @@ void ClientSideDetectionHost::MaybeStartPreClassification(
     }
     return;
   }
+
+  ResetUniformImageRetryState();
+
+  // Prevent any in-flight StartImageEmbedding callback from progressing
+  // due to being interrupted by a higher priority scan.
+  phishing_image_embedder_.reset();
 
   if (!preclassification_started_cb_for_testing_.is_null()) {
     preclassification_started_cb_for_testing_.Run(request_type);
@@ -1165,6 +1555,7 @@ void ClientSideDetectionHost::OnPhishingPreClassificationDone(
   }
 
   set_is_csd_running(true);
+  ResetUniformImageRetryState();
 
   bool intelligent_scan_ongoing = GetIntelligentScanId().has_value();
   base::UmaHistogramBoolean(
@@ -1183,6 +1574,27 @@ void ClientSideDetectionHost::OnPhishingPreClassificationDone(
 
   RecordSurfaceAvailabilityForCopy(request_type);
 
+  if (base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface)) {
+    // Classify in the browser process instead of asking the renderer. A
+    // request still being captured or scored is answered with CANCELLED first,
+    // before the new request records its own result. The skip-scoring shortcut
+    // applies here too; the base class captures the page for image embedding
+    // on its own if it needs to.
+    CancelPendingBrowserSideClassification();
+    if (request_type != ClientSideDetectionType::TRIGGER_MODELS &&
+        base::FeatureList::IsEnabled(
+            kSkipImageClassificationScoringForNonPageLoadTriggers)) {
+      ReportSkippedClassification(request_type, is_sample_ping,
+                                  did_match_high_confidence_allowlist,
+                                  is_invalid_ip);
+      return;
+    }
+    StartBrowserSideClassification(request_type, is_sample_ping,
+                                   did_match_high_confidence_allowlist,
+                                   is_invalid_ip);
+    return;
+  }
+
   content::RenderFrameHost* rfh = web_contents()->GetPrimaryMainFrame();
 
   phishing_detector_.reset();
@@ -1198,41 +1610,19 @@ void ClientSideDetectionHost::OnPhishingPreClassificationDone(
   // For TRIGGER_MODELS and IMAGE_EMBEDDING_MATCH only, perform phishing
   // classification as the next step.
   // For all other triggers, if enabled, skip phishing detection.
-  if (IsEnhancedProtectionEnabled() &&
-      request_type == ClientSideDetectionType::TRIGGER_MODELS &&
-      // Only ESB users should be in the study.
-      base::FeatureList::IsEnabled(kClientSideDetectionImageEmbeddingMatch)) {
-    LogClientSideDetectionEvent(
-        ClientSideDetectionEvent::kImageClassificationBegin, request_type);
-    set_is_classifying(true);
-    phishing_detector_->StartPhishingDetection(
-        current_url(),
-        GetClientSideDetectionMojomType(
-            ClientSideDetectionType::IMAGE_EMBEDDING_MATCH),
-        base::BindOnce(&ClientSideDetectionHost::PhishingDetectionDone,
-                       weak_factory_.GetWeakPtr(),
-                       ClientSideDetectionType::IMAGE_EMBEDDING_MATCH,
-                       is_sample_ping, did_match_high_confidence_allowlist,
-                       is_invalid_ip, tick_clock()->NowTicks()));
-    return;
-  }
-
   if (request_type != ClientSideDetectionType::TRIGGER_MODELS &&
       base::FeatureList::IsEnabled(
           kSkipImageClassificationScoringForNonPageLoadTriggers)) {
-    ClientPhishingRequest verdict;
-    verdict.set_url(current_url().spec());
-    verdict.set_client_score(0.0);
-    PhishingDetectionDone(request_type, is_sample_ping,
-                          did_match_high_confidence_allowlist, is_invalid_ip,
-                          tick_clock()->NowTicks(),
-                          mojom::PhishingDetectorResult::CLASSIFICATION_SKIPPED,
-                          mojo_base::ProtoWrapper(verdict));
+    phishing_detector_.reset();
+    ReportSkippedClassification(request_type, is_sample_ping,
+                                did_match_high_confidence_allowlist,
+                                is_invalid_ip);
     return;
   }
 
   LogClientSideDetectionEvent(
       ClientSideDetectionEvent::kImageClassificationBegin, request_type);
+  request_type = MaybeUpgradeRequestTypeForImageEmbeddingMatch(request_type);
   set_is_classifying(true);
   phishing_detector_->StartPhishingDetection(
       current_url(), GetClientSideDetectionMojomType(request_type),
@@ -1262,12 +1652,8 @@ void ClientSideDetectionHost::RecordSurfaceAvailabilityForCopy(
       break;
   }
 
-  if (IsEnhancedProtectionEnabled() &&
-      request_type == ClientSideDetectionType::TRIGGER_MODELS &&
-      base::FeatureList::IsEnabled(kClientSideDetectionImageEmbeddingMatch)) {
-    request_type = ClientSideDetectionType::IMAGE_EMBEDDING_MATCH;
-  }
-  std::string_view request_type_name = GetRequestTypeName(request_type);
+  std::string_view request_type_name = GetRequestTypeName(
+      MaybeUpgradeRequestTypeForImageEmbeddingMatch(request_type));
   base::UmaHistogramBoolean("SBClientPhishing.SurfaceAvailableForCopy",
                             surface_available);
   base::UmaHistogramBoolean(
@@ -1500,6 +1886,13 @@ void ClientSideDetectionHost::MaybeStartImageEmbedding(
     std::optional<bool> did_match_high_confidence_allowlist,
     bool is_invalid_ip,
     PhishingDetectorResult result) {
+  set_last_phishing_detector_result(result);
+  if (base::FeatureList::IsEnabled(kClientSideDetectionCopyFromSurface)) {
+    StartBrowserSideImageEmbedding(std::move(verdict),
+                                   did_match_high_confidence_allowlist,
+                                   is_invalid_ip, result);
+    return;
+  }
   visual_utils::CanExtractVisualFeaturesResult
       can_extract_visual_features_result = DetermineVisualFeaturesExtraction();
 
@@ -1540,11 +1933,14 @@ void ClientSideDetectionHost::MaybeStartImageEmbedding(
           base::BindOnce(&ClientSideDetectionHost::PhishingImageEmbeddingDone,
                          weak_factory_.GetWeakPtr(), std::move(verdict),
                          did_match_high_confidence_allowlist, is_invalid_ip));
+    } else {
+      ResetUniformImageRetryState();
     }
 
     return;
   }
 
+  ResetUniformImageRetryState();
   MaybeStartIntelligentScanForScamDetection(
       std::move(verdict), did_match_high_confidence_allowlist, is_invalid_ip);
 }
@@ -1593,8 +1989,12 @@ void ClientSideDetectionHost::MaybeCaptureScreenshotAndStartIntelligentScan(
           base::BindOnce(&ClientSideDetectionHost::OnScreenshotTaken,
                          weak_factory_.GetWeakPtr(), std::move(verdict),
                          did_match_high_confidence_allowlist, is_invalid_ip,
-                         std::move(inner_text)));
+                         std::move(inner_text), tick_clock()->NowTicks()));
       return;
+    } else {
+      base::UmaHistogramEnumeration(
+          "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+          MultimodalScreenshotCaptureStatus::kRenderWidgetHostViewUnavailable);
     }
   }
   StartIntelligentScan(std::move(verdict), did_match_high_confidence_allowlist,
@@ -1607,9 +2007,24 @@ void ClientSideDetectionHost::OnScreenshotTaken(
     std::optional<bool> did_match_high_confidence_allowlist,
     bool is_invalid_ip,
     std::string inner_text,
+    base::TimeTicks capture_start_time,
     const content::CopyFromSurfaceResult& result) {
-  if (!IsTabVisibleAndOnUrl(GURL(verdict->url())) || !result.has_value() ||
-      result->bitmap.drawsNothing()) {
+  base::UmaHistogramTimes(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureLatency",
+      tick_clock()->NowTicks() - capture_start_time);
+
+  std::optional<MultimodalScreenshotCaptureStatus> failure_status;
+  if (!IsTabVisibleAndOnUrl(GURL(verdict->url()))) {
+    failure_status =
+        MultimodalScreenshotCaptureStatus::kTabNotVisibleOrUrlChanged;
+  } else if (!result.has_value()) {
+    failure_status = MultimodalScreenshotCaptureStatus::kCopyFromSurfaceFailed;
+  } else if (result->bitmap.drawsNothing()) {
+    failure_status = MultimodalScreenshotCaptureStatus::kEmptyBitmap;
+  }
+  if (failure_status.has_value()) {
+    base::UmaHistogramEnumeration(
+        "SBClientPhishing.Multimodal.ScreenshotCaptureStatus", *failure_status);
     StartIntelligentScan(std::move(verdict),
                          did_match_high_confidence_allowlist, is_invalid_ip,
                          std::move(inner_text),
@@ -1635,8 +2050,21 @@ void ClientSideDetectionHost::OnScreenshotEncoded(
     std::string inner_text,
     std::string png_bytes) {
   std::optional<std::string> tab_screenshot;
-  if (IsTabVisibleAndOnUrl(GURL(verdict->url())) && !png_bytes.empty()) {
-    tab_screenshot = std::move(png_bytes);
+  if (IsTabVisibleAndOnUrl(GURL(verdict->url()))) {
+    if (!png_bytes.empty()) {
+      tab_screenshot = std::move(png_bytes);
+      base::UmaHistogramEnumeration(
+          "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+          MultimodalScreenshotCaptureStatus::kSuccess);
+    } else {
+      base::UmaHistogramEnumeration(
+          "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+          MultimodalScreenshotCaptureStatus::kEncodingFailed);
+    }
+  } else {
+    base::UmaHistogramEnumeration(
+        "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+        MultimodalScreenshotCaptureStatus::kTabNotVisibleOrUrlChanged);
   }
   StartIntelligentScan(std::move(verdict), did_match_high_confidence_allowlist,
                        is_invalid_ip, std::move(inner_text),

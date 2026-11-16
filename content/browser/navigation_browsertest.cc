@@ -5083,16 +5083,8 @@ IN_PROC_BROWSER_TEST_F(NavigationBrowserTest, OriginToCommitSandboxFromFrame) {
   EXPECT_NE(origin_to_commit, origin_committed);
 }
 
-// TODO(crbug.com/424764870): Fix flakiness.
-#if BUILDFLAG(IS_FUCHSIA)
-#define MAYBE_NavigateToAboutBlankWhileFirstNavigationPending \
-  DISABLED_NavigateToAboutBlankWhileFirstNavigationPending
-#else
-#define MAYBE_NavigateToAboutBlankWhileFirstNavigationPending \
-  NavigateToAboutBlankWhileFirstNavigationPending
-#endif  // BUILDFLAG(IS_FUCHSIA)
 IN_PROC_BROWSER_TEST_F(NavigationBrowserTest,
-                       MAYBE_NavigateToAboutBlankWhileFirstNavigationPending) {
+                       NavigateToAboutBlankWhileFirstNavigationPending) {
   GURL url_a = embedded_test_server()->GetURL("a.com", "/empty.html");
   GURL url_b = embedded_test_server()->GetURL("b.com", "/empty.html");
 
@@ -6252,7 +6244,7 @@ IN_PROC_BROWSER_TEST_F(NavigationQueueingBrowserTest, Regular) {
 
   // Cancel the c.com navigation that was previously queued and (nearly) ready
   // for commit, to make sure one pending commit navigation that causes multiple
-  // subsequent navigations to queue is correctly counted in the metrics.
+  // subsequent navigations to queue is handled correctly.
   const GURL final_url =
       embedded_test_server()->GetURL("d.com", "/title1.html");
   std::optional<ResumeCommitClosureSetWaiter> resume_commit_closure_set_waiter;
@@ -6271,30 +6263,6 @@ IN_PROC_BROWSER_TEST_F(NavigationQueueingBrowserTest, Regular) {
   // time.
   histogram_tester().ExpectTotalCount(
       "Navigation.PendingCommit.Duration.Regular", 2);
-  // The d.com navigation should not have blocked any navigation requests from
-  // making progress.
-  histogram_tester().ExpectBucketCount(
-      "Navigation.PendingCommit.DidBlockGetFrameHostForNavigation.Regular",
-      false, 1);
-  // But the b.com navigation blocked c.com and d.com.
-  histogram_tester().ExpectBucketCount(
-      "Navigation.PendingCommit.DidBlockGetFrameHostForNavigation.Regular",
-      true, 1);
-  if (base::FeatureList::IsEnabled(features::kDeferSpeculativeRFHCreation)) {
-    // For 2 blocked navigations, 2 total blocks are expected when trying to
-    // pick a final RenderFrameHost to commit the navigation. The attempt to
-    // create a RenderFrameHost when starting the navigation will be skipped.
-    histogram_tester().ExpectBucketCount(
-        "Navigation.PendingCommit.BlockedCount.Regular", 2, 1);
-  } else {
-    // For 2 blocked navigations, 4 total blocks are expected: 2 when trying to
-    // assign a RenderFrameHost when starting a navigation, and 2 when trying to
-    // pick a final RenderFrameHost to commit the navigation.
-    histogram_tester().ExpectBucketCount(
-        "Navigation.PendingCommit.BlockedCount.Regular", 4, 1);
-  }
-  histogram_tester().ExpectBucketCount(
-      "Navigation.PendingCommit.BlockedCommitCount.Regular", 2, 1);
 }
 
 class CommitNavigationRaceBrowserTest : public NavigationBrowserTest {
@@ -8077,7 +8045,7 @@ IN_PROC_BROWSER_TEST_F(NavigationBrowserTest, AboutMumble) {
   // The renderer will try to commit the original "about:mumble" URL, which will
   // still show up via `window.location.href`, but the URL passed back in the
   // DidCommit IPC will be rewritten to `about:blank#blocked` due to
-  // `RenderFrameImpl`'s `IsValidCommitUrl` and therefore this is what we expect
+  // `blink::IsValidCommitUrl` and therefore this is what we expect
   // in `GetLastCommittedURL`.
   ASSERT_FALSE(NavigateToURL(shell(), GURL("about:mumble")));
   EXPECT_EQ(EvalJs(shell(), "window.location.href"), "about:mumble");
@@ -8840,7 +8808,6 @@ IN_PROC_BROWSER_TEST_P(NavigationBrowserTestPaintHoldingSubframe, Basic) {
       embedded_test_server()->GetURL("/render-blocking-mainframe.html"));
   ASSERT_TRUE(NavigateToURL(web_contents, main_url));
 
-  const std::string iframe_id = "iframe_id";
   RenderFrameHostImpl* subframe_rfh = nullptr;
 
   {
@@ -8915,7 +8882,6 @@ IN_PROC_BROWSER_TEST_P(NavigationBrowserTestPaintHoldingSubframe,
       embedded_test_server()->GetURL("/render-blocking-mainframe.html"));
   ASSERT_TRUE(NavigateToURL(web_contents, main_url));
 
-  const std::string iframe_id = "iframe_id";
   RenderFrameHostImpl* subframe_rfh = nullptr;
 
   {
@@ -9002,7 +8968,6 @@ IN_PROC_BROWSER_TEST_P(NavigationBrowserTestPaintHoldingSubframe, CrossOrigin) {
       embedded_test_server()->GetURL("/render-blocking-mainframe.html"));
   ASSERT_TRUE(NavigateToURL(web_contents, main_url));
 
-  const std::string iframe_id = "iframe_id";
   RenderFrameHostImpl* subframe_rfh = nullptr;
 
   {
@@ -9078,7 +9043,6 @@ IN_PROC_BROWSER_TEST_P(NavigationBrowserTestPaintHoldingSubframe,
       embedded_test_server()->GetURL("/render-blocking-mainframe.html"));
   ASSERT_TRUE(NavigateToURL(web_contents, main_url));
 
-  const std::string iframe_id = "iframe_id";
   RenderFrameHostImpl* subframe_rfh = nullptr;
 
   {

@@ -7,26 +7,32 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
 #include "base/time/time.h"
 #include "net/base/chunked_upload_data_stream.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/load_timing_info.h"
+#include "net/base/net_errors.h"
 #include "net/http/http_transaction_test_util.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_with_source.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/throttling/network_conditions.h"
 #include "services/network/throttling/scoped_throttling_token.h"
 #include "services/network/throttling/throttling_network_interceptor.h"
 #include "services/network/throttling/throttling_network_transaction.h"
 #include "services/network/throttling/throttling_upload_data_stream.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
 
@@ -161,6 +167,10 @@ class ThrottlingControllerTestHelper {
   TestCallback* callback() { return &callback_; }
   ThrottlingNetworkTransaction* transaction() { return transaction_.get(); }
 
+  const std::vector<int>& body_decoding_results() {
+    return network_layer_.last_transaction()->body_decoding_results();
+  }
+
   void FastForwardUntilNoTasksRemain() {
     task_environment_.FastForwardUntilNoTasksRemain();
   }
@@ -223,6 +233,42 @@ TEST(ThrottlingControllerTest, FailOnStart) {
 
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(helper.callback()->run_count(), 0);
+}
+
+TEST(ThrottlingControllerTest, BodyDecodingCompleteForwarded) {
+  ThrottlingControllerTestHelper helper;
+  helper.SetNetworkState(false, 0, 0);
+  ASSERT_EQ(net::OK, helper.Start(false));
+  ASSERT_FALSE(helper.HasFailed());
+
+  const std::vector<int> results = {net::OK, net::ERR_CONTENT_DECODING_FAILED,
+                                    net::ERR_CONNECTION_RESET,
+                                    net::ERR_INTERNET_DISCONNECTED};
+  for (int result : results) {
+    helper.transaction()->CompleteNetworkErrorLoggingForBodyDecoding(result);
+  }
+
+  EXPECT_EQ(results, helper.body_decoding_results());
+}
+
+// Verifies that DevTools-emulated disconnects are not forwarded to NEL.
+TEST(ThrottlingControllerTest, BodyDecodingCompleteNotForwardedWhenOffline) {
+  ThrottlingControllerTestHelper helper;
+  helper.SetNetworkState(false, 0, 0);
+  ASSERT_EQ(net::OK, helper.Start(false));
+  ASSERT_FALSE(helper.HasFailed());
+
+  // Update the active interceptor without replacing it in the controller.
+  ThrottlingNetworkInterceptor* interceptor =
+      helper.GetThrottlingProfile()->FindInterceptor(GURL("http://dot.com"));
+  ASSERT_TRUE(interceptor);
+  interceptor->UpdateConditions(NetworkConditions(true));
+  int result = helper.Read();
+  ASSERT_EQ(net::ERR_INTERNET_DISCONNECTED, result);
+  ASSERT_TRUE(helper.HasFailed());
+
+  helper.transaction()->CompleteNetworkErrorLoggingForBodyDecoding(result);
+  EXPECT_THAT(helper.body_decoding_results(), testing::IsEmpty());
 }
 
 TEST(ThrottlingControllerTest, CancelTransaction) {
@@ -546,6 +592,56 @@ TEST(ThrottlingControllerTest, MultipleMatchedConditions) {
                 ->conditions()
                 .upload_throughput(),
             1.0);
+}
+
+// With socket-layer network throttling, sockets apply the conditions' latency
+// and throughputs, so requests don't, but keep reporting the conditions' rule
+// id. P2P sockets still get all of the global conditions.
+TEST(ThrottlingControllerTest, SocketLayerNetworkThrottlingDoesNotThrottle) {
+  base::test::ScopedFeatureList feature_list(
+      features::kSocketLayerNetworkThrottling);
+  ThrottlingControllerTestHelper helper;
+  const base::UnguessableToken rule_id = base::UnguessableToken::Create();
+  helper.SetNetworkState(
+      {{std::string{}, NetworkConditions{false, 100.0, 1000.0, 1000.0, 0.0, 0,
+                                         false, rule_id}}});
+
+  EXPECT_EQ(helper.Start(false), net::OK);
+  ThrottlingNetworkInterceptor* interceptor =
+      helper.GetThrottlingProfile()->FindInterceptor(GURL("http://dot.com"));
+  ASSERT_TRUE(interceptor);
+  EXPECT_FALSE(interceptor->conditions().IsThrottling());
+  EXPECT_EQ(interceptor->conditions().rule_id(), rule_id);
+
+  std::optional<NetworkConditions> global_conditions =
+      helper.GetThrottlingProfile()->GetGlobalConditions();
+  ASSERT_TRUE(global_conditions);
+  EXPECT_EQ(global_conditions->latency(), 100.0);
+  EXPECT_EQ(global_conditions->download_throughput(), 1000.0);
+  EXPECT_EQ(global_conditions->upload_throughput(), 1000.0);
+}
+
+// With socket-layer network throttling, requests still emulate offline.
+TEST(ThrottlingControllerTest, SocketLayerNetworkThrottlingEmulatesOffline) {
+  base::test::ScopedFeatureList feature_list(
+      features::kSocketLayerNetworkThrottling);
+  ThrottlingControllerTestHelper helper;
+  helper.SetNetworkState(
+      {{"http://offline.test/*", NetworkConditions{true}},
+       {std::string{}, NetworkConditions{false, 100.0, 1000.0, 1000.0}}});
+
+  ThrottlingNetworkInterceptor* offline_interceptor =
+      helper.GetThrottlingProfile()->FindInterceptor(
+          GURL("http://offline.test/"));
+  ASSERT_TRUE(offline_interceptor);
+  EXPECT_TRUE(offline_interceptor->IsOffline());
+
+  helper.SetNetworkState(true, 0, 0);
+  EXPECT_EQ(helper.Start(false), net::ERR_INTERNET_DISCONNECTED);
+  // The failure is synchronous: no completion callback runs, even once any
+  // timers fire.
+  helper.FastForwardUntilNoTasksRemain();
+  EXPECT_EQ(helper.callback()->run_count(), 0);
 }
 
 TEST(ThrottlingControllerTest, LatencyThrottlesLoadTimingReceiveHeadersStart) {

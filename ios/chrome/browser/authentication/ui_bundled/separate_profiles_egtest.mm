@@ -547,15 +547,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 
 // Tests switching to a managed account (and thus managed profile) and back via
 // the account menu.
-// TODO(crbug.com/411035267): Re-enable this test.
-#if !TARGET_OS_SIMULATOR
-#define MAYBE_testSwitchFromPersonalToManagedAndBack \
-  DISABLED_testSwitchFromPersonalToManagedAndBack
-#else
-#define MAYBE_testSwitchFromPersonalToManagedAndBack \
-  FLAKY_testSwitchFromPersonalToManagedAndBack
-#endif
-- (void)MAYBE_testSwitchFromPersonalToManagedAndBack {
+- (void)testSwitchFromPersonalToManagedAndBack {
   NSString* personalProfileName = [ChromeEarlGrey currentProfileName];
 
   // Setup: There's 1 personal and 1 managed account. The personal account is
@@ -625,14 +617,6 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 
 // Tests switching to a managed account (and thus managed profile) and the
 // managed account is removed while the enterprise onboarding is shown.
-// TODO(crbug.com/411035267): Re-enable this test on device.
-#if !TARGET_OS_SIMULATOR
-#define MAYBE_testSwitchFromPersonalToManagedAndManagedAccountRemovedFromDevice \
-  DISABLED_testSwitchFromPersonalToManagedAndManagedAccountRemovedFromDevice
-#else
-#define MAYBE_testSwitchFromPersonalToManagedAndManagedAccountRemovedFromDevice \
-  testSwitchFromPersonalToManagedAndManagedAccountRemovedFromDevice
-#endif
 - (void)testSwitchFromPersonalToManagedAndManagedAccountRemovedFromDevice {
   NSString* personalProfileName = [ChromeEarlGrey currentProfileName];
 
@@ -675,15 +659,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 
 // Tests switching to a managed account but refusing the enterprise onboarding
 // screen.
-// TODO(crbug.com/411035267): Re-enable this test on device.
-#if !TARGET_OS_SIMULATOR
-#define MAYBE_testRefuseToSwitchToManageAccount \
-  DISABLED_testRefuseToSwitchToManageAccount
-#else
-#define MAYBE_testRefuseToSwitchToManageAccount \
-  testRefuseToSwitchToManageAccount
-#endif
-- (void)MAYBE_testRefuseToSwitchToManageAccount {
+- (void)testRefuseToSwitchToManageAccount {
   NSString* personalProfileName = [ChromeEarlGrey currentProfileName];
 
   // Setup: There's 1 personal and 1 managed account. The personal account is
@@ -862,15 +838,7 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
       @"Profile should have been switched back to personal");
 }
 
-// TODO(crbug.com/411035267): Re-enable this test on device.
-#if !TARGET_OS_SIMULATOR
-#define MAYBE_testProfileDeletedOnManagedAccountGone \
-  DISABLED_testProfileDeletedOnManagedAccountGone
-#else
-#define MAYBE_testProfileDeletedOnManagedAccountGone \
-  testProfileDeletedOnManagedAccountGone
-#endif
-- (void)MAYBE_testProfileDeletedOnManagedAccountGone {
+- (void)testProfileDeletedOnManagedAccountGone {
   // Setup: There's 1 personal and 1 managed account. The personal account is
   // signed in.
   FakeSystemIdentity* const personalIdentity =
@@ -1068,10 +1036,10 @@ id<GREYMatcher> ManagedProfileCreationDataMigrationDisabledSubtitleMatcher() {
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config = [super appConfigurationForTestCase];
 
-  // Note: Can't use the actual feature definition, because its build target
-  // depends on a bunch of stuff that mustn't make it into the EG test target.
-  config.additional_args.push_back(
-      "--disable-features=UpdatedFirstRunSequence");
+  // Add a fake identity at startup so the Sign-In screen is included in the FRE
+  // sequence.
+  config.additional_args.push_back(std::string("-") +
+                                   test_switches::kAddFakeIdentitiesAtStartup);
 
   // Disable AnimatedDefaultBrowserPromoInFRE because it introduces a new
   // Default Browser screen with a different ID.

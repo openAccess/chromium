@@ -39,6 +39,89 @@ chromium-metrics-reviews@google.com.
       summary="recovery_key_store/wrap_pin_and_secret"/>
 </variants>
 
+<histogram name="WebAuthentication.Ambient.BubbleCredentialCount"
+    units="credentials" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records the number of passkey and password credentials available in the
+    request when the Ambient sign-in bubble is shown.
+  </summary>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.BubbleResolution.{BubbleTrigger}"
+    enum="AmbientBubbleResolution" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records how the Ambient sign-in request was resolved when the bubble was
+    shown ({BubbleTrigger}): whether the user selected a credential, explicitly
+    dismissed the bubble, or ignored it.
+  </summary>
+  <token key="BubbleTrigger">
+    <variant name="InitiallyShown" summary="bubble was initially shown"/>
+    <variant name="OpenedFromChip"
+        summary="chip was initially shown and the user clicked it to open the
+                 bubble"/>
+  </token>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.ChipOnlyOutcome"
+    enum="AmbientChipOnlyOutcome" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records whether the user clicked the omnibox chip to activate the bubble or
+    ignored it when Ambient sign-in UI was initially shown in chip-only mode.
+  </summary>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.CredentialSelectionMethod"
+    enum="AmbientCredentialSelectionMethod" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records how the user selected a passkey or password credential in the
+    Ambient sign-in bubble: by clicking the Sign in button without unfolding the
+    bubble, unfolding the bubble and clicking the default credential, or
+    unfolding the bubble and selecting a non-default credential.
+  </summary>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.DisplayOutcome"
+    enum="AmbientDisplayOutcome" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records whether the Ambient sign-in UI was shown upon a WebAuthn Ambient
+    request in the browser UI layer, or the reason it was not shown.
+  </summary>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.InitialUiMode"
+    enum="AmbientInitialUiMode" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records the initial UI mode when Ambient sign-in UI is shown: whether the
+    bubble is shown initially, only the chip is shown because chip-only mode was
+    requested by the site, or only the chip is shown because the dismissal
+    cooldown is active.
+  </summary>
+</histogram>
+
+<histogram name="WebAuthentication.Ambient.RequestedCredentialTypes"
+    enum="AmbientRequestedCredentialTypes" expires_after="2027-05-01">
+  <owner>kenrb@chromium.org</owner>
+  <owner>chrome-webauthn@google.com</owner>
+  <summary>
+    Records whether a WebAuthn Ambient get() request asked for passkeys only,
+    passwords only, or both passkeys and passwords. Emitted in
+    AuthenticatorCommonImpl::GetCredential before browser-side request
+    validation is done.
+  </summary>
+</histogram>
+
 <histogram name="WebAuthentication.Android.CredManApiCall.{Operation}"
     enum="WebAuthenticationAndroidApiCallEvent" expires_after="2027-11-01">
   <owner>derinel@google.com</owner>
@@ -96,7 +179,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.Android.CredManModalRequests"
-    enum="CredManGetRequestEnum" expires_after="2027-03-07">
+    enum="CredManGetRequestEnum" expires_after="2027-05-09">
   <owner>derinel@google.com</owner>
   <owner>kenrb@chromium.org</owner>
   <summary>
@@ -361,9 +444,9 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.CredentialExchange.PasskeyImportStatus"
-    enum="ImportedPasskeyStatus" expires_after="2026-12-21">
+    enum="ImportedPasskeyStatus" expires_after="2027-09-21">
   <owner>rgod@google.com</owner>
-  <owner>chrome-webauthns@google.com</owner>
+  <owner>chrome-webauthn@google.com</owner>
   <summary>
     Tracks the individual status of a single passkey entry during import.
     Recorded when it has been checked for errors or missing fields.
@@ -425,7 +508,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.CspAllow.Remote" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>kenrb@chromium.org</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -437,7 +520,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.CspAllow.{RequestType}" enum="Boolean"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>kenrb@chromium.org</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -516,7 +599,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.Enclave.GetAccessTokenError"
-    enum="GoogleServiceAuthError" expires_after="2027-03-07">
+    enum="GoogleServiceAuthError" expires_after="2027-05-09">
   <owner>ylahodiuk@google.com</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -676,7 +759,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram name="WebAuthentication.GetAssertion.Immediate.RejectionReason"
     enum="WebAuthenticationImmediateMediationRejectionReason"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>derinel@google.com</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -726,7 +809,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="WebAuthentication.GetCredentials.Immediate.CombinedSelectorActions"
-    enum="CombinedSelectorAction" expires_after="2027-03-07">
+    enum="CombinedSelectorAction" expires_after="2027-05-09">
   <owner>derinel@google.com</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -800,7 +883,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.GPM.RecoveryEvent"
-    enum="WebAuthenticationGPMRecoveryEvent" expires_after="2027-03-07">
+    enum="WebAuthenticationGPMRecoveryEvent" expires_after="2027-05-09">
   <owner>ylahodiuk@google.com</owner>
   <owner>izuzic@google.com</owner>
   <owner>chrome-webauthn@google.com</owner>
@@ -884,7 +967,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.IsUVPlatformAuthenticatorAvailable2"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>kenrb@chromium.org</owner>
   <owner>martinkr@google.com</owner>
   <summary>
@@ -1143,7 +1226,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.Windows.ForegroundedWindowsHelloDialog"
-    enum="WindowsForegroundedHelloDialog" expires_after="2027-03-07">
+    enum="WindowsForegroundedHelloDialog" expires_after="2027-05-09">
   <owner>kenrb@chromium.org</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>
@@ -1154,7 +1237,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="WebAuthentication.Windows.KeyCredentialCreation"
-    enum="WindowsKeyCredentialCreateResult" expires_after="2027-03-07">
+    enum="WindowsKeyCredentialCreateResult" expires_after="2027-05-09">
   <owner>kenrb@chromium.org</owner>
   <owner>chrome-webauthn@google.com</owner>
   <summary>

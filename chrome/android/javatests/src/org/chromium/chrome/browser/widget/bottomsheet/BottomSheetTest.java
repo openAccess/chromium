@@ -12,7 +12,7 @@ import static org.junit.Assert.assertTrue;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
 import static org.chromium.base.test.util.CriteriaHelper.pollUiThread;
-import static org.chromium.chrome.browser.flags.ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE;
+import static org.chromium.chrome.browser.fullscreen.FullscreenManagerTestUtils.waitForBottomControlsMinHeightOffset;
 
 import android.view.View;
 import android.view.ViewGroup;
@@ -30,9 +30,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.MathUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
@@ -49,6 +47,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.Shee
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.bottomsheet.TestBottomSheetContent;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.OmniboxFocusReason;
@@ -61,7 +60,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** This class tests the functionality of the {@link BottomSheet}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Restriction(DeviceFormFactor.PHONE)
-@CommandLineFlags.Add({DISABLE_FIRST_RUN_EXPERIENCE})
 public class BottomSheetTest {
     private static final float VELOCITY_WHEN_MOVING_UP = 1.0f;
     private static final float VELOCITY_WHEN_MOVING_DOWN = -1.0f;
@@ -97,6 +95,8 @@ public class BottomSheetTest {
                                     mTestRule.getActivity(),
                                     BottomSheetContent.ContentPriority.HIGH,
                                     false);
+                    mHighPriorityContent.setSheetType(
+                            new BottomSheetType.Builder().setUserInitiated(true).build());
                 });
         mHighPriorityContent.setPeekHeight(HeightMode.DISABLED);
         mHighPriorityContent.setHalfHeightRatio(0.5f);
@@ -261,6 +261,8 @@ public class BottomSheetTest {
                                     obscuringStateChangedHelper.notifyCalled());
                 });
         mHighPriorityContent.setHasCustomScrimLifecycle(true);
+        mHighPriorityContent.setSheetType(
+                new BottomSheetType.Builder().setUserInitiated(true).setModal(false).build());
 
         assertFalse("The tab should not be obscured.", handler.isTabContentObscured());
 
@@ -563,7 +565,6 @@ public class BottomSheetTest {
 
     @Test
     @MediumTest
-    @DisabledTest(message = "crbug.com/503771877")
     public void testAdditionalBottomOffset() {
         final int height = 300;
         final int margin = 100;
@@ -596,6 +597,8 @@ public class BottomSheetTest {
 
         BottomSheetTestSupport.waitForState(mSheetController, SheetState.FULL);
         assertEquals(height, mSheetController.getCurrentOffset());
+
+        waitForBottomControlsMinHeightOffset(mTestRule.getActivity());
 
         // Change bottom margin; the margin and height should change.
         runOnUiThreadBlocking(

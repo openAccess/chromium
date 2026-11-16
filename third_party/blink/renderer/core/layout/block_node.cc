@@ -618,15 +618,6 @@ const LayoutResult* BlockNode::Layout(
       params.previous_result = nullptr;
       box_->SetShouldSkipLayoutCache(true);
 
-#if DCHECK_IS_ON()
-      // Ensure turning on/off scrollbars only once at most, when we call
-      // |LayoutWithAlgorithm| recursively.
-      DEFINE_STATIC_LOCAL(
-          Persistent<GCedHeapHashSet<WeakMember<LayoutBox>>>, scrollbar_changed,
-          (MakeGarbageCollected<GCedHeapHashSet<WeakMember<LayoutBox>>>()));
-      DCHECK(scrollbar_changed->insert(box_.Get()).is_new_entry);
-#endif
-
       // Scrollbar changes are hard to detect. Make sure everyone gets the
       // message.
       box_->SetNeedsLayout(layout_invalidation_reason::kScrollbarChanged,
@@ -637,10 +628,6 @@ const LayoutResult* BlockNode::Layout(
       layout_result = LayoutWithAlgorithm(params);
       FinishLayout(block_flow, constraint_space, break_token, layout_result,
                    old_box_size);
-
-#if DCHECK_IS_ON()
-      scrollbar_changed->erase(box_);
-#endif
 
       scrollbars_after = ComputeScrollbars(constraint_space, *this);
       DCHECK(!freeze_horizontal || !freeze_vertical ||
@@ -916,6 +903,17 @@ void BlockNode::StoreResultInLayoutBox(const LayoutResult* result,
                                        bool clear_trailing_results) const {
   const auto& fragment = To<PhysicalBoxFragment>(result->GetPhysicalFragment());
   wtf_size_t fragment_idx = 0;
+
+  // If the "is hidden due to layout" flag changed, we must mark this on the
+  // layout object.
+  if (!break_token && !box_->IsFragmentLessBox()) {
+    const auto& previous_fragment =
+        box_->GetLayoutResult(0)->GetPhysicalFragment();
+    if (fragment.IsHiddenDueToLayout() !=
+        previous_fragment.IsHiddenDueToLayout()) {
+      box_->MarkIsHiddenDueToLayoutChanged();
+    }
+  }
 
   if (fragment.IsOnlyForNode()) {
     box_->SetCachedLayoutResult(std::move(result), 0);

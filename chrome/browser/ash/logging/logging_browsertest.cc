@@ -10,11 +10,10 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
 #include "base/threading/thread_restrictions.h"
-#include "chrome/browser/ash/logging/logging.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
-#include "chrome/common/env_vars.h"
-#include "chrome/common/logging_chrome.h"
+#include "chromeos/ash/components/logging/log_redirect.h"
+#include "chromeos/ash/components/logging/session_log.h"
 #include "components/account_id/account_id.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
@@ -72,7 +71,7 @@ class LoggingBrowserTest : public LoginManagerTest {
     command_line->AppendSwitch(::switches::kEnableLogging);
     command_line->AppendSwitchNative(::switches::kLogFile,
                                      GetLogFilePath(system_temp_dir_).value());
-    base::Environment::Create()->SetVar(env_vars::kSessionLogDir,
+    base::Environment::Create()->SetVar(kSessionLogDirEnvVar,
                                         user_temp_dir_.GetPath().value());
   }
 

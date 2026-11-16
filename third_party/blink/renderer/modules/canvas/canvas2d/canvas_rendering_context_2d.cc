@@ -103,7 +103,6 @@
 #include "third_party/blink/renderer/platform/geometry/path_builder.h"
 #include "third_party/blink/renderer/platform/geometry/physical_offset.h"
 #include "third_party/blink/renderer/platform/geometry/stroke_data.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_2d_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_hibernation_handler.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
@@ -241,7 +240,7 @@ bool CanvasRenderingContext2D::IsComposited() const {
     return false;
   }
 
-  if (!GetSharedImageProvider()) {
+  if (!HasSharedImagePool()) {
     return false;
   }
 
@@ -723,8 +722,12 @@ bool CanvasRenderingContext2D::CanCreateBacking() {
 
 scoped_refptr<StaticBitmapImage> blink::CanvasRenderingContext2D::GetImage() {
   if (IsHibernating()) {
-    return UnacceleratedStaticBitmapImage::Create(
+    auto image = UnacceleratedStaticBitmapImage::Create(
         GetHibernationHandler()->GetImage());
+    if (image) {
+      image->SetOriginClean(OriginClean());
+    }
+    return image;
   }
 
   return PaintRenderingResultsToSnapshot(kBackBuffer);
@@ -823,11 +826,9 @@ void CanvasRenderingContext2D::PageVisibilityChanged() {
 
   bool page_is_visible = element->IsPageVisible();
 
-  // If the canvas is backed by a SharedImage resource provider, toggle
-  // whether resource recycling is enabled based on page visibility.
-  if (GetSharedImageProvider()) {
-    GetSharedImageProvider()->SetResourceRecyclingEnabled(page_is_visible);
-  }
+  // If the canvas is backed by a SharedImage pool, toggle whether resource
+  // recycling is enabled based on page visibility.
+  SetResourceRecyclingEnabled(page_is_visible);
 
   // Conserve memory.
   SetAggressivelyFreeSharedGpuContextResourcesIfPossible(!page_is_visible);
@@ -986,7 +987,7 @@ void CanvasRenderingContext2D::UpdateElementAccessibility(const Path& path,
 void CanvasRenderingContext2D::DisableAcceleration() {
   canvas()->OnAccelerationDisabled();
 
-  // Create and configure an unaccelerated CanvasResourceProvider.
+  // Switch to CPU raster and recreate the backing.
   canvas()->SetPreferred2DRasterMode(RasterModeHint::kPreferCPU);
 
   DropAndRecreateExistingBacking();
@@ -1023,26 +1024,30 @@ UniqueFontSelector* CanvasRenderingContext2D::GetFontSelector() const {
 }
 
 void CanvasRenderingContext2D::Reshape(gfx::Size old_size, gfx::Size new_size) {
+  if (old_size == new_size) {
+    ResetInternal();
+    return;
+  }
+
   if (IsHibernating()) {
     CanvasHibernationHandler::ReportHibernationEvent(
         CanvasHibernationHandler::HibernationEvent::kHibernationEndedOnReset);
     GetHibernationHandler()->Clear();
   }
+
   ResetState();
   ClearCanvas(old_size);
   set_clear_frame(true);
 
-  if (old_size != new_size) {
-    ResetBacking();
-    ResetRecorder();
-    did_fail_to_create_backing_ = false;
+  ResetBacking();
+  ResetRecorder();
+  did_fail_to_create_backing_ = false;
 
-    canvas()->ResetLayer();
-    Host()->UpdateMemoryUsage();
-    Host()->ClearDirtyRect();
-    if (isContextLost()) {
-      RestoreFromInvalidSizeIfNeeded();
-    }
+  canvas()->ResetLayer();
+  Host()->UpdateMemoryUsage();
+  Host()->ClearDirtyRect();
+  if (isContextLost()) {
+    RestoreFromInvalidSizeIfNeeded();
   }
 }
 
@@ -1069,7 +1074,7 @@ void CanvasRenderingContext2D::CreateBacking() {
   const bool use_gpu_raster = canvas()->ShouldTryToUseGpuRaster() &&
                               canvas()->ShouldAccelerate2dContext();
 
-  // If using GPU compositing, try to create a SharedImage-backed provider if
+  // If using GPU compositing, try to create a SharedImage pool if
   // either (a) using GPU raster or (b) using CPU raster and want to use
   // mappable SharedImage for Canvas2D.
   // The content=drawable check is so that html-in-canvas uses the shared image
@@ -1097,14 +1102,13 @@ void CanvasRenderingContext2D::CreateBacking() {
       }
     }
 
-    CreateSharedImageProvider(raster_mode, shared_image_usage_flags);
+    CreateSharedImagePool(raster_mode, shared_image_usage_flags);
   } else if (!is_gpu_compositing_enabled) {
-    // Create a CanvasResourceProvider that uses a SharedImage backed by a
-    // shared-memory buffer that can be written by canvas SW raster and read by
-    // the SW compositor.
-    CreateSharedImageProviderForSoftwareCompositor();
+    // Create a SharedImage pool backed by a shared-memory buffer that can be
+    // written by canvas SW raster and read by the SW compositor.
+    CreateSharedImagePoolForSoftwareCompositor();
   }
-  if (!GetSharedImageProvider()) {
+  if (!HasBacking()) {
     // The final fallback is to raster into a bitmap that will then either be
     // uploaded into GPU memory (for GPU compositing) or copied into the Viz
     // process (for software compositing).
@@ -1127,7 +1131,7 @@ bool CanvasRenderingContext2D::IsBackingValid() const {
 }
 
 bool CanvasRenderingContext2D::IsBackingAccelerated() const {
-  return GetSharedImageProvider() && GetSharedImageProvider()->IsAccelerated();
+  return BaseRenderingContext2D::IsBackingAccelerated();
 }
 
 bool CanvasRenderingContext2D::HasBacking() const {

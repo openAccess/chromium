@@ -7,6 +7,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssstylevalue_string.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssstylevalue_undefined.h"
+#include "third_party/blink/renderer/core/css/css_property_keywords.h"
 #include "third_party/blink/renderer/core/css/cssom/css_keyword_value.h"
 #include "third_party/blink/renderer/core/css/cssom/cssom_keywords.h"
 #include "third_party/blink/renderer/core/css/cssom/inline_style_property_map.h"
@@ -15,6 +16,7 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/html/html_element.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -84,6 +86,116 @@ TEST_F(StylePropertyMapTest, SetCustomIdentExcludedByTheProperty) {
       SetKeyword(GetDocument(), style_map, "container-name", "default"));
   EXPECT_FALSE(
       SetKeyword(GetDocument(), style_map, "animation-name", "default"));
+}
+
+TEST_F(StylePropertyMapTest, SetRuntimeEnabledKeyword) {
+  StylePropertyMap* style_map = GetDocument().body()->attributeStyleMap();
+
+  {
+    ScopedCSSTextAlignMatchParentForTest feature(false);
+    EXPECT_FALSE(
+        SetKeyword(GetDocument(), style_map, "text-align", "match-parent"));
+  }
+  {
+    ScopedCSSTextAlignMatchParentForTest feature(true);
+    EXPECT_TRUE(
+        SetKeyword(GetDocument(), style_map, "text-align", "match-parent"));
+  }
+
+  {
+    ScopedCSSGridLanesLayoutForTest feature(false);
+    EXPECT_FALSE(SetKeyword(GetDocument(), style_map, "display", "grid-lanes"));
+    EXPECT_FALSE(
+        SetKeyword(GetDocument(), style_map, "display", "inline-grid-lanes"));
+    EXPECT_FALSE(SetKeyword(GetDocument(), style_map, "reading-flow",
+                            "grid-lanes-track"));
+  }
+  {
+    ScopedCSSGridLanesLayoutForTest feature(true);
+    EXPECT_TRUE(SetKeyword(GetDocument(), style_map, "display", "grid-lanes"));
+    EXPECT_TRUE(
+        SetKeyword(GetDocument(), style_map, "display", "inline-grid-lanes"));
+    EXPECT_TRUE(SetKeyword(GetDocument(), style_map, "reading-flow",
+                           "grid-lanes-track"));
+  }
+
+  {
+    ScopedCSSTextDecorationSkipInkAllForTest feature(false);
+    EXPECT_FALSE(SetKeyword(GetDocument(), style_map,
+                            "text-decoration-skip-ink", "all"));
+  }
+  {
+    ScopedCSSTextDecorationSkipInkAllForTest feature(true);
+    EXPECT_TRUE(SetKeyword(GetDocument(), style_map, "text-decoration-skip-ink",
+                           "all"));
+  }
+
+  {
+    ScopedCSSUserSelectContainForTest feature(false);
+    EXPECT_FALSE(
+        SetKeyword(GetDocument(), style_map, "user-select", "contain"));
+  }
+  {
+    ScopedCSSUserSelectContainForTest feature(true);
+    EXPECT_TRUE(SetKeyword(GetDocument(), style_map, "user-select", "contain"));
+  }
+
+  {
+    ScopedCSSScrollSnapStopBeforeForTest feature(false);
+    EXPECT_FALSE(
+        SetKeyword(GetDocument(), style_map, "scroll-snap-stop", "before"));
+  }
+  {
+    ScopedCSSScrollSnapStopBeforeForTest feature(true);
+    EXPECT_TRUE(
+        SetKeyword(GetDocument(), style_map, "scroll-snap-stop", "before"));
+  }
+
+  {
+    ScopedCSSResizeAutoForTest feature(false);
+    EXPECT_FALSE(SetKeyword(GetDocument(), style_map, "resize", "auto"));
+  }
+  {
+    ScopedCSSResizeAutoForTest feature(true);
+    EXPECT_TRUE(SetKeyword(GetDocument(), style_map, "resize", "auto"));
+  }
+}
+
+TEST_F(StylePropertyMapTest, KeywordValidationExceptions) {
+  const struct {
+    CSSPropertyID property;
+    CSSValueID keyword;
+    bool shared;
+    bool typed_om;
+  } cases[] = {
+      {CSSPropertyID::kGridLanesDirection, CSSValueID::kNormal, true, true},
+      {CSSPropertyID::kGridLanesDirection, CSSValueID::kRow, true, false},
+      {CSSPropertyID::kGridLanesDirection, CSSValueID::kFillReverse, true,
+       false},
+      {CSSPropertyID::kGridTemplateColumns, CSSValueID::kNone, true, true},
+      {CSSPropertyID::kGridTemplateColumns, CSSValueID::kAuto, true, false},
+      {CSSPropertyID::kGridTemplateRows, CSSValueID::kNone, true, true},
+      {CSSPropertyID::kGridTemplateRows, CSSValueID::kMaxContent, true, false},
+      {CSSPropertyID::kPositionArea, CSSValueID::kNone, true, true},
+      {CSSPropertyID::kPositionArea, CSSValueID::kTop, true, false},
+      {CSSPropertyID::kPositionTryFallbacks, CSSValueID::kNone, true, true},
+      {CSSPropertyID::kPositionTryFallbacks, CSSValueID::kFlipBlock, true,
+       false},
+      {CSSPropertyID::kOutlineStyle, CSSValueID::kAuto, false, true},
+      {CSSPropertyID::kOutlineStyle, CSSValueID::kHidden, true, true},
+      {CSSPropertyID::kLineBreak, CSSValueID::kAfterWhiteSpace, true, true},
+      {CSSPropertyID::kAppRegion, CSSValueID::kDrag, true, false},
+      {CSSPropertyID::kMinWidth, CSSValueID::kAuto, true, false},
+  };
+  for (const auto& test : cases) {
+    SCOPED_TRACE(static_cast<int>(test.property));
+    SCOPED_TRACE(static_cast<int>(test.keyword));
+    EXPECT_EQ(test.shared,
+              IsValidCSSPropertyKeyword(test.property, test.keyword));
+    auto* keyword = MakeGarbageCollected<CSSKeywordValue>(test.keyword);
+    EXPECT_EQ(test.typed_om,
+              CSSOMKeywords::ValidKeywordForProperty(test.property, *keyword));
+  }
 }
 
 TEST_F(StylePropertyMapTest, SetRevertWithFeatureEnabled) {
@@ -186,8 +298,8 @@ TEST_F(StylePropertyMapTest, CSSKeywordValuesTest) {
       switch (property_id) {
         // TODO(crbug.com/460361858): These properties need to support the
         // listed 'keywords' in css_properties.json5 as CSSIdentifierValue
-        // internally, or add a separate 'typedom_keywords' to list the set of
-        // keywords which can be reified as and set via CSSKeywordValue.
+        // internally, or restrict which keywords can be reified as and set via
+        // CSSKeywordValue in CSSOMKeywords.
         //
         // If the property definition in css_properties.json5 contains the
         // 'separator' field (CSSProperty::IsRepeated()), a CSSKeywordValue will

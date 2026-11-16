@@ -16,12 +16,10 @@ import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Matchers;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -31,7 +29,6 @@ import org.chromium.paint_preview.mojom.ClipCoordOverride;
 
 /** Tests for the Paint Preview Tab Manager. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class LongScreenshotsTabServiceTest {
     @Rule
     public final FreshCtaTransitTestRule mActivityTestRule =
@@ -82,7 +79,7 @@ public class LongScreenshotsTabServiceTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     mLongScreenshotsTabService =
-                            LongScreenshotsTabServiceFactory.getServiceInstance();
+                            LongScreenshotsTabServiceFactory.getServiceInstance(mTab.getProfile());
                     mLongScreenshotsTabService.setCaptureProcessor(mProcessor);
                 });
     }
@@ -145,5 +142,46 @@ public class LongScreenshotsTabServiceTest {
         mLongScreenshotsTabService.releaseNativeCaptureResultPtr(
                 mProcessor.getNativeCaptureResultPtr());
         mLongScreenshotsTabService.longScreenshotsClosed();
+    }
+
+    /**
+     * Verifies that an off-the-record Profile gets its own LongScreenshotsTabService instance that
+     * forces in-memory capture even when inMemory=false is passed.
+     */
+    @Test
+    @MediumTest
+    @Feature({"LongScreenshots"})
+    public void testCapturedOffTheRecordForcesInMemory() throws Exception {
+        LongScreenshotsTabService otrService =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> {
+                            LongScreenshotsTabService service =
+                                    LongScreenshotsTabServiceFactory.getServiceInstance(
+                                            mTab.getProfile()
+                                                    .getPrimaryOtrProfile(
+                                                            /* createIfNeeded= */ true));
+                            Assert.assertNotEquals(mLongScreenshotsTabService, service);
+                            service.setCaptureProcessor(mProcessor);
+                            service.captureTab(
+                                    mTab,
+                                    new Rect(0, 0, 100, 100),
+                                    /* inMemory= */ false,
+                                    ClipCoordOverride.NONE,
+                                    ClipCoordOverride.NONE);
+                            return service;
+                        });
+
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "Callback was not called",
+                            mProcessor.getProcessCapturedTabCalled(),
+                            Matchers.is(true));
+                });
+
+        Assert.assertEquals(Status.OK, mProcessor.getStatus());
+        Assert.assertNotEquals(0, mProcessor.getNativeCaptureResultPtr());
+        otrService.releaseNativeCaptureResultPtr(mProcessor.getNativeCaptureResultPtr());
+        otrService.longScreenshotsClosed();
     }
 }

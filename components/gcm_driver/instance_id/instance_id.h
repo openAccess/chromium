@@ -102,7 +102,9 @@ class InstanceID {
   // automatically. Thus you should not store tokens for long periods yourself,
   // instead call this function each time it's needed.
   //
-  // To receive messages, register an |AppIdHandler| on |gcm_driver()|.
+  // To receive messages, register a `gcm::GCMAppHandler` on `gcm_driver()` via
+  // `GCMDriver::AddAppHandler()`. On desktop, an app handler must be registered
+  // before calling `GetToken()`.
   //
   // |authorized_entity|: identifies the entity that is authorized to access
   //                      resources associated with this Instance ID. It can be
@@ -135,7 +137,8 @@ class InstanceID {
   virtual void GetEncryptionInfo(const std::string& authorized_entity,
                                  GetEncryptionInfoCallback callback);
 
-  // Revokes a granted token.
+  // Revokes a granted token. For the GCM scope, also removes the encryption
+  // info of the authorized entity.
   // |authorized_entity|: the authorized entity passed when obtaining the token.
   // |scope|: the scope that was passed when obtaining the token.
   // |callback|: to be called once the asynchronous operation is done.
@@ -144,8 +147,10 @@ class InstanceID {
                            DeleteTokenCallback callback);
 
   // Resets the app instance identifier and revokes all tokens associated with
-  // it.
-  // |callback|: to be called once the asynchronous operation is done.
+  // it. Also removes all encryption info of the `app_id`, including the
+  // encryption info of a legacy non-InstanceID GCM registration, which is
+  // stored with an empty authorized entity.
+  // `callback`: to be called once the asynchronous operation is done.
   void DeleteID(DeleteIDCallback callback);
 
   std::string app_id() const { return app_id_; }
@@ -160,8 +165,6 @@ class InstanceID {
                                const std::string& scope,
                                DeleteTokenCallback callback) = 0;
   virtual void DeleteIDImpl(DeleteIDCallback callback) = 0;
-
-  void NotifyTokenRefresh(bool update_id);
 
  private:
   void DidDelete(const std::string& authorized_entity,

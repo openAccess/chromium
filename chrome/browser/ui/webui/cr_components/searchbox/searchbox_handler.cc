@@ -67,6 +67,7 @@
 #include "components/omnibox/browser/omnibox_popup_selection.h"
 #include "components/omnibox/browser/omnibox_pref_names.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
+#include "components/omnibox/browser/omnibox_text_util.h"
 #include "components/omnibox/browser/searchbox_utils.h"
 #include "components/omnibox/browser/suggest_template_info_mojo_utils.h"
 #include "components/omnibox/browser/vector_icons.h"
@@ -212,6 +213,8 @@ constexpr char kPageIconResourceName[] =
     "//resources/cr_components/searchbox/icons/page_cr23.svg";
 constexpr char kPedalsIconResourceName[] =
     "//resources/cr_components/searchbox/icons/chrome_product_cr23.svg";
+constexpr char kPromptSuggestionIconResourceName[] =
+    "//resources/cr_components/searchbox/icons/prompt_suggestion.svg";
 constexpr char kSearchIconResourceName[] =
     "//resources/cr_components/searchbox/icons/search_cr23.svg";
 constexpr char kSearchOldIconResourceName[] =
@@ -340,6 +343,9 @@ bool SearchboxHandler::GetVoiceSearchCoherenceCobrowsingComposeboxEnabled() {
 // Returns if the new voice search animation/metrics/stop button are enabled,
 // regardless of transcription.
 bool SearchboxHandler::GetVoiceSearchCoherenceAnySearchboxExperimentEnabled() {
+  if (omnibox::kVoiceSearchCoherenceRealboxKeepLegacyUi.Get()) {
+    return false;
+  }
   return base::FeatureList::IsEnabled(
              omnibox::kVoiceSearchCoherenceSearchbox) ||
          omnibox::kVoiceSearchCoherenceSearchboxWithLiveTranscription.Get();
@@ -426,6 +432,7 @@ base::DictValue SearchboxHandler::GetProfileIndependentWebUIDataSourceDict(
       {"addImage", IDS_NTP_COMPOSE_ADD_IMAGE},
       {"addDriveFile", IDS_NTP_COMPOSE_ADD_DRIVE},
       {"addTab", IDS_NTP_COMPOSEBOX_TAB_PICKER_ADD_TABS_TITLE},
+      {"tabsHeader", IDS_OMNIBOX_NAVATTACH_TABS},
       {"shareTabs", IDS_COMPOSE_ADD_TABS},
       {"recentTabsSuffix", IDS_NTP_COMPOSEBOX_RECENT_TAB_SUFFIX},
       {"sharingTabsWithGoogle", IDS_COMPOSE_SHARING_TABS_WITH_GOOGLE},
@@ -574,6 +581,12 @@ base::DictValue SearchboxHandler::GetProfileIndependentWebUIDataSourceDict(
   dict.Set(
       "composeboxUnselectMatchOnTabExit",
       base::FeatureList::IsEnabled(omnibox::kComposeboxUnselectMatchOnTabExit));
+  dict.Set("composeboxImageMaxSize",
+           base::FeatureList::IsEnabled(omnibox::kComposeboxImageFileSizeLimit)
+               ? omnibox::kComposeboxImageMaxSizeBytes.Get()
+               : 0);
+  dict.Set("composeboxLimitAllImages",
+           omnibox::kComposeboxLimitAllImages.Get());
 
   return dict;
 }
@@ -598,8 +611,15 @@ base::DictValue SearchboxHandler::GetProfileDependentWebUIDataSourceDict(
   const omnibox::SearchboxConfig* config =
       service ? service->GetSearchboxConfig() : nullptr;
   if (config && config->has_rule_set()) {
-    max_files = config->rule_set().max_total_inputs();
+    if (config->rule_set().has_max_total_inputs()) {
+      max_files = config->rule_set().max_total_inputs();
+      max_images = max_files;
+      max_pdfs = max_files;
+    }
     for (const auto& rule : config->rule_set().input_type_rules()) {
+      if (!rule.has_max_instance()) {
+        continue;
+      }
       if (rule.input_type() == omnibox::INPUT_TYPE_LENS_IMAGE) {
         max_images = rule.max_instance();
       } else if (rule.input_type() == omnibox::INPUT_TYPE_LENS_FILE) {
@@ -748,6 +768,8 @@ std::string SearchboxHandler::VectorIconToResourceName(
                                ? omnibox::kChromeProductIcon.name
                                : omnibox::kProductChromeRefreshOldIcon.name)) {
     resource_name = kPedalsIconResourceName;
+  } else if (icon.name == omnibox::kPromptSuggestionIcon.name) {
+    resource_name = kPromptSuggestionIconResourceName;
   } else if (icon.name == omnibox::kReplyRotated180CustomIcon.name) {
     resource_name = searchbox_internal::kReplyRotated180IconResourceName;
   } else if (icon.name == (features::IsRoundedIconsEnabled()
@@ -851,6 +873,7 @@ std::string SearchboxHandler::VectorIconToResourceName(
         base::MakeFixedFlatSet<std::string_view>({
             kDriveLogoIconResourceName,
             kEnterpriseIconResourceName,
+            kPromptSuggestionIconResourceName,
             searchbox_internal::kReplyRotated180IconResourceName,
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
             kGoogleAgentspaceMonochromeLogoIcon,
@@ -1096,6 +1119,8 @@ SearchboxHandler::CreateAutocompleteMatch(
   }
   mojom_match->fill_into_edit = match.fill_into_edit;
   mojom_match->inline_autocompletion = match.inline_autocompletion;
+  mojom_match->additional_text =
+      omnibox::FormatAdditionalText(match.additional_text);
   mojom_match->is_search_type = AutocompleteMatch::IsSearchType(match.type);
   mojom_match->type = omnibox::AutocompleteMatchTypeToString(match.type);
   mojom_match->supports_deletion = match.SupportsDeletion();
@@ -1748,8 +1773,10 @@ OmniboxPopupSelection ConvertSelection(
     case searchbox::mojom::SelectionLineState::kFocusedButtonContextEntrypoint:
     case searchbox::mojom::SelectionLineState::kFocusedButtonVoiceSearch:
     case searchbox::mojom::SelectionLineState::kFocusedButtonLensSearch:
-    case searchbox::mojom::SelectionLineState::kFocusedButtonContextualChip: {
-      // Handled directly by webui omnibox popup.
+    case searchbox::mojom::SelectionLineState::kFocusedButtonContextualChip:
+    case searchbox::mojom::SelectionLineState::kFocusedButtonProfile: {
+      // Buttons that only WebUI handles. Renderers don't send these; see
+      // `selectionIsNativelySupported()`.
       NOTREACHED();
     }
     case searchbox::mojom::SelectionLineState::kCtrlEnter: {
@@ -1783,6 +1810,21 @@ void SearchboxHandler::SetPopupSelection(
 }
 
 void SearchboxHandler::OpenPopupSelection(
+    uint32_t result_sequence_id,
+    searchbox::mojom::OmniboxPopupSelectionPtr selection,
+    searchbox::mojom::ActionModifiersPtr modifiers) {
+  // All current call paths are keyboard events (Enter on a keyword chip); mouse
+  // clicks use `OpenAutocompleteMatch()`, `ExecuteAction()`, or
+  // `ActivateKeyword()`.
+  OpenPopupSelectionWithDisposition(
+      result_sequence_id, std::move(selection),
+      ComputeWindowOpenDisposition(/*mouse_button=*/0, modifiers->alt_key,
+                                   modifiers->ctrl_key, modifiers->meta_key,
+                                   modifiers->shift_key,
+                                   /*via_keyboard=*/true));
+}
+
+void SearchboxHandler::OpenPopupSelectionWithDisposition(
     uint32_t result_sequence_id,
     searchbox::mojom::OmniboxPopupSelectionPtr selection,
     ui::mojom::WindowOpenDisposition disposition) {
@@ -1819,7 +1861,10 @@ void SearchboxHandler::OpenPopupSelection(
       return;
     }
 
-    edit_model()->OpenSelection(popup_selection);
+    // All current call paths are keyboard events (Ctrl+Enter, Enter in the
+    // Omnibox view, or `OpenPopupSelection()` above).
+    edit_model()->OpenSelection(popup_selection, base::TimeTicks::Now(),
+                                disposition, /*via_keyboard=*/true);
     return;
   }
 

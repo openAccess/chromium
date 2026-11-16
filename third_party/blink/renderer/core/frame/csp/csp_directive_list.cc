@@ -15,6 +15,7 @@
 #include "services/network/public/mojom/content_security_policy.mojom-blink.h"
 #include "services/network/public/mojom/integrity_algorithm.mojom-blink.h"
 #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
+#include "third_party/blink/renderer/bindings/core/v8/capture_source_location.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/space_split_string.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
@@ -57,7 +58,7 @@ String GetRawDirectiveForMessage(
 String GetSha256String(const String& content) {
   DigestValue digest;
   StringUtf8Adaptor utf8_content(content);
-  bool digest_success = ComputeDigest(kHashAlgorithmSha256,
+  bool digest_success = ComputeDigest(HashAlgorithm::kSha256,
                                       base::as_byte_span(utf8_content), digest);
   if (!digest_success) {
     return "sha256-...";
@@ -145,17 +146,12 @@ void ReportViolation(
                   ? " The policy is report-only, so the violation has been "
                     "logged but no further action has been taken."
                   : " The action has been blocked."});
-  auto error_level = CSPDirectiveListIsReportOnly(csp)
-                         ? mojom::blink::ConsoleMessageLevel::kInfo
-                         : mojom::blink::ConsoleMessageLevel::kError;
-  policy->LogToConsole(MakeGarbageCollected<ConsoleMessage>(
-      mojom::ConsoleMessageSource::kSecurity, error_level, message));
-  policy->ReportViolation(effective_type, blocked_url, csp.report_endpoints,
-                          csp.use_reporting_api, csp.header->header_value,
-                          csp.header->type, violation_type,
-                          /*source_location=*/nullptr,
-                          /*context_frame=*/nullptr, /*element=*/nullptr,
-                          sample, sample_prefix, issue_id, eval_hash, url_hash);
+  policy->LogToConsoleAndReportViolation(
+      effective_type, message, blocked_url, csp.report_endpoints,
+      csp.use_reporting_api, csp.header->header_value, csp.header->type,
+      violation_type, /*source_location=*/nullptr, /*context_frame=*/nullptr,
+      /*element=*/nullptr, sample, sample_prefix, issue_id, eval_hash,
+      url_hash);
 }
 
 void ReportViolationWithLocation(
@@ -175,18 +171,13 @@ void ReportViolationWithLocation(
                     "logged but no further action has been taken."
                   : " The action has been blocked."});
 
-  auto error_level = CSPDirectiveListIsReportOnly(csp)
-                         ? mojom::blink::ConsoleMessageLevel::kInfo
-                         : mojom::blink::ConsoleMessageLevel::kError;
-  SourceLocation* source_location =
-      CaptureSourceLocation(context_url, context_position.line_.OneBasedInt(),
-                            context_position.column_.OneBasedInt());
-  policy->LogToConsole(MakeGarbageCollected<ConsoleMessage>(
-      mojom::ConsoleMessageSource::kSecurity, error_level, message,
-      source_location));
-  policy->ReportViolation(
-      effective_type, blocked_url, csp.report_endpoints, csp.use_reporting_api,
-      csp.header->header_value, csp.header->type,
+  SourceLocation* source_location = CaptureSourceLocationForReporting(
+      policy->GetExecutionContext(), context_url,
+      context_position.line_.OneBasedInt(),
+      context_position.column_.OneBasedInt());
+  policy->LogToConsoleAndReportViolation(
+      effective_type, message, blocked_url, csp.report_endpoints,
+      csp.use_reporting_api, csp.header->header_value, csp.header->type,
       ContentSecurityPolicyViolationType::kInlineViolation, source_location,
       /*context_frame=*/nullptr, element, source);
 }
@@ -1031,7 +1022,7 @@ String GetRelativeScriptUrl(const KURL& document_url, const KURL& script_url) {
 
 bool URLHashMatchesSourceList(
     const String& url_string,
-    const HashSet<IntegrityAlgorithm>& hash_algorithms_used,
+    IntegrityAlgorithmSet hash_algorithms_used,
     const network::mojom::blink::CSPSourceList* source_list) {
   Vector<network::IntegrityMetadata> url_hashes;
   FillInCSPHashValues(url_string, hash_algorithms_used, url_hashes);
@@ -1046,9 +1037,9 @@ bool CheckURLHash(const KURL& document_url,
   if (!source_list) {
     return false;
   }
-  HashSet<IntegrityAlgorithm> hash_algorithms_used;
+  IntegrityAlgorithmSet hash_algorithms_used;
   for (const network::IntegrityMetadata& hash : source_list->url_hashes) {
-    hash_algorithms_used.insert(hash.algorithm);
+    hash_algorithms_used.Put(hash.algorithm);
   }
   // First check the full URL, then the relative URL.
   if (URLHashMatchesSourceList(CSPStripURL(url).GetString(),
@@ -1307,19 +1298,18 @@ CSPOperativeDirective CSPDirectiveListOperativeDirective(
   return OperativeDirective(csp, type);
 }
 
-void FillInCSPHashValues(
-    const String& source,
-    const HashSet<IntegrityAlgorithm>& hash_algorithms_used,
-    Vector<network::IntegrityMetadata>& csp_hash_values) {
+void FillInCSPHashValues(const String& source,
+                         IntegrityAlgorithmSet hash_algorithms_used,
+                         Vector<network::IntegrityMetadata>& csp_hash_values) {
   // Any additions or subtractions from this struct should also modify the
   // respective entries in the kSupportedPrefixes array in
   // SourceListDirective::parseHash().
   static const struct {
     IntegrityAlgorithm csp_hash_algorithm;
     HashAlgorithm algorithm;
-  } kAlgorithmMap[] = {{IntegrityAlgorithm::kSha256, kHashAlgorithmSha256},
-                       {IntegrityAlgorithm::kSha384, kHashAlgorithmSha384},
-                       {IntegrityAlgorithm::kSha512, kHashAlgorithmSha512}};
+  } kAlgorithmMap[] = {{IntegrityAlgorithm::kSha256, HashAlgorithm::kSha256},
+                       {IntegrityAlgorithm::kSha384, HashAlgorithm::kSha384},
+                       {IntegrityAlgorithm::kSha512, HashAlgorithm::kSha512}};
 
   // Only bother normalizing the source/computing digests if there are any
   // checks to be done.
@@ -1332,7 +1322,7 @@ void FillInCSPHashValues(
 
   for (const auto& algorithm_map : kAlgorithmMap) {
     DigestValue digest;
-    if (hash_algorithms_used.Contains(algorithm_map.csp_hash_algorithm)) {
+    if (hash_algorithms_used.Has(algorithm_map.csp_hash_algorithm)) {
       bool digest_success = ComputeDigest(
           algorithm_map.algorithm, base::as_byte_span(utf8_source), digest);
       if (digest_success) {

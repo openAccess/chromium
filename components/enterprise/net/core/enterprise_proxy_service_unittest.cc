@@ -61,6 +61,9 @@ constexpr char kTestDomain1[] = "domain1.example.com";
 constexpr char kTestDomain2[] = "domain2.example.com";
 constexpr char kTestFailDomain[] = "fail.example.com";
 
+// A user agent with characters that must be escaped in the Basic auth username.
+constexpr char kUserAgent[] = "Mozilla/5.0 (iPhone; CPU) CriOS/1.0";
+
 const char kValidPvdJson1[] = R"({
   "identifier": "domain1.example.com",
   "expires": "Wed, 21 Oct 2026 07:28:00 GMT",
@@ -162,7 +165,10 @@ base::DictValue CreateDomainPolicyEntry(const std::string& pvd_id,
 
 class EnterpriseProxyServiceTest : public testing::Test {
  protected:
-  EnterpriseProxyServiceTest() {
+  explicit EnterpriseProxyServiceTest(
+      base::test::TaskEnvironment::TimeSource time_source =
+          base::test::TaskEnvironment::TimeSource::DEFAULT)
+      : task_environment_(time_source) {
     RegisterProfilePrefs(pref_service_.registry());
   }
 
@@ -171,6 +177,9 @@ class EnterpriseProxyServiceTest : public testing::Test {
     scoped_allowed_domains_ =
         std::make_unique<ScopedExtraAllowedDomainsForTesting>(
             std::vector<std::string>{"example.com"});
+    // On ChromeOS, IdentityTestEnvironment loads initial refresh tokens
+    // asynchronously; finish startup before observing account state changes.
+    identity_test_env_.WaitForRefreshTokensLoaded();
     auth_service_ = std::make_unique<EnterpriseNetworkAuthService>(
         identity_test_env_.identity_manager(), &pref_service_,
         &profile_id_service_, version_info::Channel::UNKNOWN);
@@ -214,7 +223,7 @@ class EnterpriseProxyServiceTest : public testing::Test {
         base::Unretained(&test_url_loader_factory_));
     service_ = std::make_unique<EnterpriseProxyService>(
         &pref_service_, auth_service_.get(), std::move(callback),
-        profile_id_service, net_log);
+        profile_id_service, net_log, user_agent_);
   }
 
   void SetPolicyDomains(const std::vector<std::string>& domain_ids,
@@ -238,13 +247,18 @@ class EnterpriseProxyServiceTest : public testing::Test {
   std::unique_ptr<EnterpriseNetworkAuthService> auth_service_;
   std::unique_ptr<EnterpriseProxyService> service_;
   std::unique_ptr<ScopedExtraAllowedDomainsForTesting> scoped_allowed_domains_;
+  // User agent passed to the service by `CreateService()`.
+  std::optional<std::string> user_agent_;
 };
 
 TEST_F(EnterpriseProxyServiceTest, InitializesAndRegistersPrefs) {
+  base::HistogramTester histogram_tester;
   CreateService();
   EXPECT_TRUE(service_->GetProvisioningDomainConfigs().empty());
   EXPECT_FALSE(service_->IsRefreshInProgress());
   EXPECT_EQ(0, *service_->GetDebugInfo().FindInt("refreshing_configs_count"));
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 0);
 }
 
 // Tests service width: Covers the complete lifecycle of EnterpriseProxyService
@@ -285,10 +299,15 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
         EXPECT_EQ(1u, service_->GetDynamicRoutingConfig().routing_rules.size());
       });
 
+  base::HistogramTester histogram_tester;
+
   // Set 3 policy domains and run pending tasks to execute initial fetch calls.
   SetPolicyDomains({kTestDomain1, kTestDomain2, kTestFailDomain});
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 3);
 
   auto pause_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
@@ -314,6 +333,8 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
     return *service_->GetDebugInfo().FindInt("refreshing_configs_count") == 2;
   }));
   EXPECT_TRUE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 0);
 
   test_url_loader_factory_.SimulateResponseForPendingRequest(
       "https://domain2.example.com/.well-known/pvd", kValidPvdJson2);
@@ -321,6 +342,8 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
     return *service_->GetDebugInfo().FindInt("refreshing_configs_count") == 1;
   }));
   EXPECT_TRUE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 0);
 
   while (test_url_loader_factory_.NumPending() > 0) {
     test_url_loader_factory_.SimulateResponseForPendingRequest(
@@ -332,6 +355,8 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
 
   // All 3 fetches completed -> counter hits 0 and network pause ends.
   EXPECT_FALSE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 1);
 
   pause_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_NETWORK_PAUSE);
@@ -368,6 +393,9 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
   SetPolicyDomains({kTestDomain1});
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 4);
 
   EXPECT_TRUE(service_->IsRefreshInProgress());
 
@@ -376,6 +404,8 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
   EXPECT_FALSE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 2);
 
   EXPECT_EQ(1u, service_->GetProvisioningDomainConfigs().size());
 
@@ -401,6 +431,7 @@ TEST_F(EnterpriseProxyServiceTest, MultiDomainServiceLifecycle) {
 // - transient failure
 // - recovery via another success
 TEST_F(EnterpriseProxyServiceTest, SingleDomainLifecycleAndStateTransitions) {
+  base::HistogramTester histogram_tester;
   CreateService();
   MockObserver observer;
   service_->AddObserver(&observer);
@@ -520,6 +551,15 @@ TEST_F(EnterpriseProxyServiceTest, SingleDomainLifecycleAndStateTransitions) {
       GURL("https://foo.example.com/test"),
       MakeHttpsProxyChain("proxy1.example.com:443"));
   EXPECT_FALSE(old_endpoint.has_value());
+
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 1);
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kManual, 3);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger", 4);
 
   service_->RemoveObserver(&observer);
 }
@@ -739,6 +779,7 @@ TEST_F(EnterpriseProxyServiceTest,
 }
 
 TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
+  base::HistogramTester histogram_tester;
   CreateService();
   MockObserver observer;
   service_->AddObserver(&observer);
@@ -749,6 +790,9 @@ TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
 
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 2);
 
   test_url_loader_factory_.SimulateResponseForPendingRequest(
       "https://domain1.example.com/.well-known/pvd", kValidPvdJson1);
@@ -766,6 +810,8 @@ TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
       net::NetworkChangeNotifier::CONNECTION_NONE);
   EXPECT_FALSE(service_->IsRefreshInProgress());
   EXPECT_EQ(0, test_url_loader_factory_.NumPending());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger", 2);
   testing::Mock::VerifyAndClearExpectations(&observer);
 
   // Active connection change (e.g. CONNECTION_WIFI) SHOULD trigger a refresh
@@ -776,6 +822,11 @@ TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
   EXPECT_EQ(2, test_url_loader_factory_.NumPending());
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kNetworkChange, 2);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger", 4);
 
   test_url_loader_factory_.SimulateResponseForPendingRequest(
       "https://domain1.example.com/.well-known/pvd", kValidPvdJson1Updated);
@@ -790,6 +841,7 @@ TEST_F(EnterpriseProxyServiceTest, NetworkChangeTriggersRefresh) {
 }
 
 TEST_F(EnterpriseProxyServiceTest, AccountChangeTriggersRefresh) {
+  base::HistogramTester histogram_tester;
   CreateService();
   SetPolicyDomains({kTestDomain1}, /*use_oauth=*/true);
 
@@ -798,6 +850,9 @@ TEST_F(EnterpriseProxyServiceTest, AccountChangeTriggersRefresh) {
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return !service_->IsRefreshInProgress(); }));
   EXPECT_EQ(0u, service_->GetDynamicRoutingConfig().routing_rules.size());
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 1);
   std::vector<ProvisioningDomainProxyConfig> configs =
       service_->GetProvisioningDomainConfigs();
   ASSERT_EQ(1u, configs.size());
@@ -814,6 +869,18 @@ TEST_F(EnterpriseProxyServiceTest, AccountChangeTriggersRefresh) {
 
   ASSERT_TRUE(
       base::test::RunUntil([&]() { return service_->IsRefreshInProgress(); }));
+  // SetUpPrimaryAccount() emits primary account, refresh token, and extended
+  // account info updates, each triggering an account-change refresh.
+  const base::HistogramBase::Count32 account_change_count =
+      histogram_tester.GetBucketCount(
+          "Enterprise.ProvisioningDomain.RefreshTrigger",
+          ProvisioningDomainRefreshTrigger::kAccountChange);
+  EXPECT_GE(account_change_count, 1);
+  histogram_tester.ExpectBucketCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger",
+      ProvisioningDomainRefreshTrigger::kInitialOrPolicy, 1);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.ProvisioningDomain.RefreshTrigger", 1 + account_change_count);
 
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
       "test_token", base::Time::Max());
@@ -1018,6 +1085,7 @@ TEST_F(EnterpriseProxyServiceTest,
 }
 
 TEST_F(EnterpriseProxyServiceTest, NetLogEmittedOnShutdownDuringNetworkPause) {
+  base::HistogramTester histogram_tester;
   CreateService();
 
   SetPolicyDomains({kTestDomain1});
@@ -1036,6 +1104,8 @@ TEST_F(EnterpriseProxyServiceTest, NetLogEmittedOnShutdownDuringNetworkPause) {
   ASSERT_EQ(2u, pause_entries.size());
   EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
   EXPECT_EQ(net::NetLogEventPhase::END, pause_entries[1].phase);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 1);
 }
 
 TEST_F(EnterpriseProxyServiceTest, ClearsDynamicRoutingWhenPolicyCleared) {
@@ -1070,6 +1140,7 @@ TEST_F(EnterpriseProxyServiceTest, ClearsDynamicRoutingWhenPolicyCleared) {
 
 TEST_F(EnterpriseProxyServiceTest,
        ClearsDynamicRoutingWhenPolicyClearedDuringRefresh) {
+  base::HistogramTester histogram_tester;
   CreateService();
   MockObserver observer;
   service_->AddObserver(&observer);
@@ -1098,6 +1169,8 @@ TEST_F(EnterpriseProxyServiceTest,
   ASSERT_EQ(2u, pause_entries.size());
   EXPECT_EQ(net::NetLogEventPhase::BEGIN, pause_entries[0].phase);
   EXPECT_EQ(net::NetLogEventPhase::END, pause_entries[1].phase);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 1);
 
   service_->RemoveObserver(&observer);
 }
@@ -1183,11 +1256,71 @@ TEST_F(EnterpriseProxyServiceTest, LogsPolicyAndRoutingConfigChanges) {
       }));
 }
 
+class EnterpriseProxyServiceMockTimeTest : public EnterpriseProxyServiceTest {
+ protected:
+  EnterpriseProxyServiceMockTimeTest()
+      : EnterpriseProxyServiceTest(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
+};
+
+TEST_F(EnterpriseProxyServiceMockTimeTest, RecordsExactNetworkPauseDuration) {
+  base::HistogramTester histogram_tester;
+  CreateService();
+
+  // Multi-domain pause records duration only when the final domain completes.
+  SetPolicyDomains({kTestDomain1, kTestDomain2});
+  ASSERT_EQ(2, test_url_loader_factory_.NumPending());
+  ASSERT_TRUE(service_->IsRefreshInProgress());
+
+  task_environment_.FastForwardBy(base::Milliseconds(100));
+  ASSERT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain1.example.com/.well-known/pvd", kValidPvdJson1));
+  EXPECT_TRUE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 0);
+
+  task_environment_.FastForwardBy(base::Milliseconds(150));
+  ASSERT_TRUE(test_url_loader_factory_.SimulateResponseForPendingRequest(
+      "https://domain2.example.com/.well-known/pvd", kValidPvdJson2));
+  EXPECT_FALSE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.NetworkPause.Duration", base::Milliseconds(250),
+      1);
+
+  // Policy clearance during a refresh records the interrupted pause duration.
+  service_->ForceRefreshAllConfigs();
+  ASSERT_TRUE(service_->IsRefreshInProgress());
+  task_environment_.FastForwardBy(base::Milliseconds(80));
+  SetPolicyDomains({});
+  EXPECT_FALSE(service_->IsRefreshInProgress());
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 2);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", base::Milliseconds(80),
+      1);
+
+  // Shutdown during a refresh records the interrupted pause duration.
+  SetPolicyDomains({kTestDomain1});
+  ASSERT_EQ(1, test_url_loader_factory_.NumPending());
+  ASSERT_TRUE(service_->IsRefreshInProgress());
+  task_environment_.FastForwardBy(base::Milliseconds(120));
+  service_->Shutdown();
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", 3);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.NetworkPause.Duration", base::Milliseconds(120),
+      1);
+}
+
 class EnterpriseProxyServiceAuthChallengeTest
     : public EnterpriseProxyServiceTest {
  protected:
   using Decision = EnterpriseProxyService::ProxyAuthChallengeMatch::Decision;
   using Outcome = EnterpriseProxyService::CredentialFetchOutcome;
+
+  EnterpriseProxyServiceAuthChallengeTest()
+      : EnterpriseProxyServiceTest(
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
   void SetUp() override {
     EnterpriseProxyServiceTest::SetUp();
@@ -1333,6 +1466,13 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, ForcedSignInRequired) {
   EXPECT_EQ(Outcome::kSignInRequired, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
   ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSignInRequired);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.SignInRequired",
+      base::TimeDelta(), 1);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success", 0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure", 0);
 
   auto resolved_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
@@ -1375,6 +1515,13 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, ClassifyDoesNotStartAsyncWork) {
   // FetchProxyAuthCredentials(), so its histogram must still be empty.
   histogram_tester.ExpectTotalCount(
       "Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome", 0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success", 0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.SignInRequired",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure", 0);
 
   // Neither classification may have queued anything, so dropping the
   // `kNeedsCredentials` match above is inert rather than merely survivable.
@@ -1395,11 +1542,20 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchSuccess) {
   AuthChallengeFuture future;
   service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
+  task_environment_.FastForwardBy(base::Milliseconds(45));
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
       "access_token", base::Time::Max());
 
   EXPECT_EQ(Outcome::kSuccess, future.Get<0>());
   ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSuccess);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success",
+      base::Milliseconds(45), 1);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.SignInRequired",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure", 0);
 
   ASSERT_TRUE(future.Get<1>().has_value());
   EXPECT_EQ(u"access_token", future.Get<1>()->password());
@@ -1434,12 +1590,21 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest, CredentialFetchFailure) {
   AuthChallengeFuture future;
   service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
+  task_environment_.FastForwardBy(base::Milliseconds(60));
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
       GoogleServiceAuthError::FromServiceUnavailable("error"));
 
   EXPECT_EQ(Outcome::kFailure, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
   ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kFailure);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure",
+      base::Milliseconds(60), 1);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success", 0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.SignInRequired",
+      0);
 
   auto resolved_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
@@ -1459,6 +1624,7 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
   AuthChallengeFuture future;
   service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
+  task_environment_.FastForwardBy(base::Milliseconds(35));
   identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
       GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
           GoogleServiceAuthError::InvalidGaiaCredentialsReason::
@@ -1467,6 +1633,13 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
   EXPECT_EQ(Outcome::kSignInRequired, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
   ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kSignInRequired);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.SignInRequired",
+      base::Milliseconds(35), 1);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success", 0);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure", 0);
 
   auto resolved_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
@@ -1479,6 +1652,7 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
 
 TEST_F(EnterpriseProxyServiceAuthChallengeTest,
        ShutdownDuringPendingAuthRequest) {
+  base::HistogramTester histogram_tester;
   auto match = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
                         GURL("https://foo.example.com/test"));
   ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
@@ -1486,10 +1660,15 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
   AuthChallengeFuture future;
   service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
 
+  task_environment_.FastForwardBy(base::Milliseconds(50));
   service_->Shutdown();
 
   EXPECT_EQ(Outcome::kFailure, future.Get<0>());
   EXPECT_FALSE(future.Get<1>().has_value());
+  ExpectFetchOutcomeHistogram(histogram_tester, Outcome::kFailure);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure",
+      base::Milliseconds(50), 1);
 
   auto resolved_entries = net_log_observer_.GetEntriesWithType(
       net::NetLogEventType::ENTERPRISE_PROXY_AUTH_CHALLENGE_RESOLVED);
@@ -1576,6 +1755,7 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
 // callbacks must still run exactly once when the request is torn down.
 TEST_F(EnterpriseProxyServiceAuthChallengeTest,
        CoalescedRequestsAllRunOnDestruction) {
+  base::HistogramTester histogram_tester;
   AuthChallengeFuture first_future;
   AuthChallengeFuture second_future;
 
@@ -1584,6 +1764,8 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
   ASSERT_EQ(Decision::kNeedsCredentials, first.decision);
   service_->FetchProxyAuthCredentials(std::move(first),
                                       first_future.GetCallback());
+
+  task_environment_.FastForwardBy(base::Milliseconds(30));
 
   auto second = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
                          GURL("https://foo.example.com/two"));
@@ -1594,12 +1776,142 @@ TEST_F(EnterpriseProxyServiceAuthChallengeTest,
   ASSERT_FALSE(first_future.IsReady());
   ASSERT_FALSE(second_future.IsReady());
 
+  task_environment_.FastForwardBy(base::Milliseconds(70));
   service_.reset();
 
   EXPECT_TRUE(first_future.IsReady());
   EXPECT_TRUE(second_future.IsReady());
   EXPECT_EQ(Outcome::kFailure, first_future.Get<0>());
   EXPECT_EQ(Outcome::kFailure, second_future.Get<0>());
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome",
+      Outcome::kFailure, 2);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure", 2);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure",
+      base::Milliseconds(100), 1);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Failure",
+      base::Milliseconds(70), 1);
+}
+
+TEST_F(EnterpriseProxyServiceAuthChallengeTest,
+       CoalescedRequestsRecordIndividualSuccessLatencies) {
+  base::HistogramTester histogram_tester;
+  AuthChallengeFuture first_future;
+  AuthChallengeFuture second_future;
+
+  auto first = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                        GURL("https://foo.example.com/one"));
+  ASSERT_EQ(Decision::kNeedsCredentials, first.decision);
+  service_->FetchProxyAuthCredentials(std::move(first),
+                                      first_future.GetCallback());
+
+  task_environment_.FastForwardBy(base::Milliseconds(40));
+
+  auto second = Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+                         GURL("https://foo.example.com/two"));
+  ASSERT_EQ(Decision::kNeedsCredentials, second.decision);
+  service_->FetchProxyAuthCredentials(std::move(second),
+                                      second_future.GetCallback());
+
+  task_environment_.FastForwardBy(base::Milliseconds(80));
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "coalesced_token", base::Time::Max());
+
+  EXPECT_EQ(Outcome::kSuccess, first_future.Get<0>());
+  EXPECT_EQ(Outcome::kSuccess, second_future.Get<0>());
+  histogram_tester.ExpectUniqueSample(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchOutcome",
+      Outcome::kSuccess, 2);
+  histogram_tester.ExpectTotalCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success", 2);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success",
+      base::Milliseconds(120), 1);
+  histogram_tester.ExpectTimeBucketCount(
+      "Enterprise.SecureGateway.ProxyAuthCredentialFetchLatency.Success",
+      base::Milliseconds(80), 1);
+}
+
+// Fixture for a service that embeds the browser user agent in proxy
+// credentials, as on iOS.
+class EnterpriseProxyServiceUserAgentTest
+    : public EnterpriseProxyServiceAuthChallengeTest {
+ protected:
+  EnterpriseProxyServiceUserAgentTest() { user_agent_ = kUserAgent; }
+};
+
+// Tests that the user agent is appended to the Basic auth username as
+// `x-user-agent`, URL-escaped with spaces as "+", which Secure Gateway decodes
+// back to the original value.
+TEST_F(EnterpriseProxyServiceUserAgentTest, CredentialsEmbedUserAgent) {
+  EnterpriseProxyService::ProxyAuthChallengeMatch match =
+      Classify(CreateProxyAuthChallengeInfo("proxy1.example.com"),
+               GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "access_token", base::Time::Max());
+
+  ASSERT_TRUE(future.Get<1>().has_value());
+  EXPECT_EQ(
+      u"X-Client-ID=test_client&X-Profile-ID=test_profile_id&x-user-agent="
+      u"Mozilla%2F5.0+(iPhone%3B+CPU)+CriOS%2F1.0",
+      future.Get<1>()->username());
+}
+
+// Tests that a PvD `X-User-Agent` entry is replaced by a single lowercase
+// `x-user-agent` entry carrying the browser user agent, since Secure Gateway
+// matches the key case-sensitively and reads only its first occurrence.
+TEST_F(EnterpriseProxyServiceUserAgentTest, CredentialsReplacePvdUserAgent) {
+  constexpr char kPvdUserAgentJson[] = R"({
+    "identifier": "domain2.example.com",
+    "proxies": [
+      {
+        "protocol": "https-connect",
+        "identity": "proxy2",
+        "proxy": "proxy2.example.com:443",
+        "google_chrome": {
+          "auth": {
+            "type": "profile_bearer_token",
+            "scope": "cloud_secure_gateway"
+          },
+          "extra_headers": [
+            {
+              "key": "X-User-Agent",
+              "value": "pvd_user_agent",
+              "type": "constant"
+            }
+          ]
+        }
+      }
+    ],
+    "proxy-match": [
+      {
+        "proxies": ["proxy2"],
+        "domains": ["*.example.com"]
+      }
+    ]
+  })";
+  SetUpDomainAndSimulateResponse(kTestDomain2, kPvdUserAgentJson);
+
+  EnterpriseProxyService::ProxyAuthChallengeMatch match =
+      Classify(CreateProxyAuthChallengeInfo("proxy2.example.com"),
+               GURL("https://foo.example.com/test"));
+  ASSERT_EQ(Decision::kNeedsCredentials, match.decision);
+
+  AuthChallengeFuture future;
+  service_->FetchProxyAuthCredentials(std::move(match), future.GetCallback());
+  identity_test_env_.WaitForAccessTokenRequestIfNecessaryAndRespondWithToken(
+      "access_token", base::Time::Max());
+
+  ASSERT_TRUE(future.Get<1>().has_value());
+  EXPECT_EQ(u"x-user-agent=Mozilla%2F5.0+(iPhone%3B+CPU)+CriOS%2F1.0",
+            future.Get<1>()->username());
 }
 
 }  // namespace

@@ -32,13 +32,6 @@
       },
     },
   },
-  'amd_radeon_rx_5500_xt': {
-    'swarming': {
-      'dimensions': {
-        'gpu': '1002:7340',
-      },
-    },
-  },
   'android': {
     'swarming': {
       'dimensions': {
@@ -91,6 +84,21 @@
   'chrome-tester-service-account': {
     'swarming': {
       'service_account': 'chrome-tester@chops-service-accounts.iam.gserviceaccount.com',
+    },
+  },
+  'chrome_ai_wpt_component_cache': {
+    'swarming': {
+      'optional_dimensions': {
+        '60': {
+          'caches': 'chrome_ai_wpt_components',
+        },
+      },
+      'named_caches': [
+        {
+          'name': 'chrome_ai_wpt_components',
+          'path': 'chrome_ai_wpt_components',
+        },
+      ],
     },
   },
   'chromeos-betty-finch': {
@@ -168,9 +176,6 @@
     'args': [
       '--test-launcher-filter-file=../../testing/buildbot/filters/chromeos.reven.chromeos_integration_tests.filter',
     ],
-  },
-  'experiments': {
-    'experiment_percentage': 100,
   },
   'gce': {
     'swarming': {
@@ -628,8 +633,8 @@
     'swarming': {
       'dimensions': {
         'display_server': 'x11',
-        'gpu': '10de:2184-535.183.01|10de:2184-595.104.02',
-        'os': 'Ubuntu-22.04|Ubuntu-24.04',
+        'gpu': '10de:2184-595.104.02',
+        'os': 'Ubuntu-24.04',
         'pool': 'chromium.tests.gpu',
       },
     },
@@ -1046,8 +1051,8 @@
     'swarming': {
       'dimensions': {
         'display_attached': '1',
-        'gpu': '10de:2184-31.0.15.4601|10de:2184-32.0.16.1074',
-        'os': 'Windows-10-19045|Windows-11-26200',
+        'gpu': '10de:2184-32.0.16.1074',
+        'os': 'Windows-11-26200',
         'pool': 'chromium.tests.gpu',
       },
     },
@@ -1142,6 +1147,15 @@
       },
     },
   },
+  'win_cpu_ai_wpt_dimensions': {
+    'fail_if_unused': False,
+    'swarming': {
+      'dimensions': {
+        'cpu': 'x86-64',
+        'os': 'Windows',
+      },
+    },
+  },
   'win_gpu_ai_wpt_dimensions': {
     'fail_if_unused': False,
     'swarming': {
@@ -1158,6 +1172,26 @@
       'dimensions': {
         'cpu': 'x86-64',
         'gpu': '10de',
+        'os': 'Windows',
+      },
+    },
+  },
+  'win_high_perf_amd_gpu': {
+    'fail_if_unused': False,
+    'swarming': {
+      'dimensions': {
+        'cpu': 'x86-64',
+        'gpu': '1002:7340|1002:7550',
+        'os': 'Windows',
+      },
+    },
+  },
+  'win_high_perf_nvidia_gpu': {
+    'fail_if_unused': False,
+    'swarming': {
+      'dimensions': {
+        'cpu': 'x86-64',
+        'gpu': '10de:2184|10de:2783|10de:2f04',
         'os': 'Windows',
       },
     },

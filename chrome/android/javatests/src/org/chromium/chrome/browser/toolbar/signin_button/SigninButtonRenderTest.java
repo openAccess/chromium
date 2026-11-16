@@ -6,10 +6,11 @@ package org.chromium.chrome.browser.toolbar.signin_button;
 
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
+
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
@@ -21,13 +22,10 @@ import org.chromium.base.test.params.ParameterAnnotations.UseMethodParameterBefo
 import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -42,8 +40,7 @@ import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
-import org.chromium.ui.test.util.NightModeTestUtils;
-import org.chromium.ui.test.util.ViewUtils;
+import org.chromium.ui.test.util.NightModeTestUtils.NightModeParams;
 
 import java.io.IOException;
 
@@ -51,10 +48,7 @@ import java.io.IOException;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class SigninButtonRenderTest {
 
     // Mock sign-in environment needs to be destroyed after ChromeTabbedActivity in case there are
@@ -80,15 +74,10 @@ public class SigninButtonRenderTest {
         ChromeNightModeTestUtils.setUpNightModeBeforeChromeActivityLaunched();
     }
 
-    @UseMethodParameterBefore(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameterBefore(NightModeParams.class)
     public void setupNightMode(boolean nightModeEnabled) {
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(nightModeEnabled);
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
-    }
-
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ChromeNightModeTestUtils.tearDownNightModeAfterChromeActivityDestroyed();
     }
 
     @After
@@ -108,11 +97,11 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut(boolean nightModeEnabled) throws IOException {
         startActivityOnNtp();
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         mRenderTestRule.render(
                 mActivityTestRule.getActivity().findViewById(R.id.signin_button),
@@ -123,12 +112,12 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut_aiTierRingEnabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         mRenderTestRule.render(
                 mActivityTestRule.getActivity().findViewById(R.id.signin_button),
@@ -139,14 +128,14 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut_SigninDisabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
 
         setSigninAllowed(false);
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         mRenderTestRule.render(
                 mActivityTestRule.getActivity().findViewById(R.id.signin_button),
@@ -157,13 +146,13 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_Avatar(boolean nightModeEnabled) throws IOException {
         startActivityOnNtp();
 
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         mRenderTestRule.render(
                 mActivityTestRule.getActivity().findViewById(R.id.signin_button),
@@ -174,7 +163,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButtonWithErrorBadge(boolean nightModeEnabled) throws IOException {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ThreadUtils.runOnUiThreadBlocking(
@@ -190,7 +179,7 @@ public class SigninButtonRenderTest {
         // Test transition to error.
         mFakeSyncServiceImpl.setRequiresClientUpgrade(true);
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         mRenderTestRule.render(
                 mActivityTestRule.getActivity().findViewById(R.id.signin_button),
@@ -201,7 +190,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_withAiTierRingEnabled_identityErrorExist(
             boolean nightModeEnabled) throws IOException {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
@@ -218,7 +207,7 @@ public class SigninButtonRenderTest {
         // Test transition to error.
         mFakeSyncServiceImpl.setRequiresClientUpgrade(true);
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         // Set the pref natively to trigger the AI tier ring.
         ThreadUtils.runOnUiThreadBlocking(
@@ -236,14 +225,14 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_withAiTierRingEnabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
 
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
-        ViewUtils.waitForVisibleView(withId(R.id.signin_button));
+        waitForView(withId(R.id.signin_button));
 
         // Set the pref natively to trigger the AI tier ring.
         ThreadUtils.runOnUiThreadBlocking(

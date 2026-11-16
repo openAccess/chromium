@@ -475,8 +475,7 @@ class LearningTestUserContentBrowserClient : public TestContentBrowserClient {
   }
 
   // ContentBrowserClient:
-  BrowserContext* GetUserBrowserContext(
-      RenderFrameHost& render_frame_host) override {
+  BrowserContext* GetUserBrowserContext(WebContents& web_contents) override {
     return &browser_context_;
   }
 
@@ -3415,7 +3414,16 @@ TEST_F(WebContentsImplTest, RegisterProtocolHandlerOpaqueOrigin) {
   contents()->SetDelegate(nullptr);
 }
 
-TEST_F(WebContentsImplTest, RegisterProtocolHandlerInvalidURLSyntax) {
+// TODO(crbug.com/585636031): Crashes on Android when run in a batch after
+// other tests; passes when retried alone.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_RegisterProtocolHandlerInvalidURLSyntax \
+  DISABLED_RegisterProtocolHandlerInvalidURLSyntax
+#else
+#define MAYBE_RegisterProtocolHandlerInvalidURLSyntax \
+  RegisterProtocolHandlerInvalidURLSyntax
+#endif
+TEST_F(WebContentsImplTest, MAYBE_RegisterProtocolHandlerInvalidURLSyntax) {
   MockWebContentsDelegate delegate;
   contents()->SetDelegate(&delegate);
 

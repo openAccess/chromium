@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.omnibox.styles;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -34,15 +35,27 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString.ColorType;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString.FormattedStringFragment;
+
+import java.util.List;
 
 /** Tests for {@link SuggestionSpannable}. */
 @RunWith(BaseRobolectricTestRunner.class)
 public class SuggestionSpannableUnitTest {
+    private static final int DEFAULT_COLOR = 0xFF112233;
+    private static final int DIM_COLOR = 0xFF445566;
+
     @Rule
     public final MockitoRule mMockitoRule = MockitoJUnit.rule().strictness(Strictness.STRICT_STUBS);
 
     private Context mContext;
+    private OmniboxResourceProvider mResourceProvider;
     @Mock private ColorStateList mColor1;
     @Mock private ColorStateList mColor2;
 
@@ -51,6 +64,7 @@ public class SuggestionSpannableUnitTest {
         mContext =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
     }
 
     @Test
@@ -503,6 +517,106 @@ public class SuggestionSpannableUnitTest {
                         new SpannedString(original), twoBoldRegionsPlusColor(0, 10, 10, 17)));
     }
 
+    @Test
+    public void applyFormattedStringColors_colorsFragments() {
+        String description = "Open now - Closes 9 PM";
+        SuggestionSpannable text = new SuggestionSpannable(description);
+
+        text.applyFormattedStringColors(
+                createFormattedString(description, "Open now".length()), mResourceProvider);
+
+        // Only the color of the bold fragment is applied, not the bolding.
+        assertEquals(createColoredText(description, 0, "Open now".length()), text);
+    }
+
+    @Test
+    public void applyFormattedStringColors_ignoresFormattedStringWithOtherText() {
+        // Dedupe can change the description without updating the SuggestTemplateInfo.
+        String description = "Open now - Closes 10 PM";
+        SuggestionSpannable text = new SuggestionSpannable(description);
+
+        text.applyFormattedStringColors(
+                createFormattedString("Open now - Closes 9 PM", "Open now".length()),
+                mResourceProvider);
+
+        assertEquals(new SuggestionSpannable(description), text);
+    }
+
+    @Test
+    public void applyFormattedStringColors_skipsFragmentWithoutStartIndex() {
+        String description = "Pizza - Open now";
+        int styledStart = "Pizza - ".length();
+        FormattedString formattedString =
+                FormattedString.newBuilder()
+                        .setText(description)
+                        .addFragments(
+                                FormattedStringFragment.newBuilder()
+                                        .setStartIndex(0)
+                                        .setText("Pizza - "))
+                        .addFragments(
+                                FormattedStringFragment.newBuilder()
+                                        .setStartIndex(styledStart)
+                                        .setText("Open now")
+                                        .setColor(ColorType.COLOR_SUGGEST_ACTION_HIGH)
+                                        .setIsBolded(true))
+                        .addFragments(FormattedStringFragment.newBuilder().setText("ignored"))
+                        .build();
+        SuggestionSpannable text = new SuggestionSpannable(description);
+
+        text.applyFormattedStringColors(formattedString, mResourceProvider);
+
+        assertEquals(createColoredText(description, styledStart, description.length()), text);
+    }
+
+    @Test
+    public void applyFormattedStringColors_clampsFragmentEndToTextLength() {
+        String description = "Open now - Closes 9 PM";
+        // The second fragment starts past the end of the text.
+        FormattedString formattedString =
+                createFormattedString(description, "Open now".length()).toBuilder()
+                        .setFragments(
+                                1,
+                                FormattedStringFragment.newBuilder()
+                                        .setStartIndex(description.length() + 1))
+                        .build();
+        SuggestionSpannable text = new SuggestionSpannable(description);
+
+        text.applyFormattedStringColors(formattedString, mResourceProvider);
+
+        assertEquals(createColoredText(description, 0, description.length()), text);
+    }
+
+    /**
+     * Returns a FormattedString for {@code text} whose first {@code prefixLength} characters are
+     * bold and use the ACTION_HIGH color. The rest of the text has no style.
+     */
+    private static FormattedString createFormattedString(String text, int prefixLength) {
+        return FormattedString.newBuilder()
+                .setText(text)
+                .addFragments(
+                        FormattedStringFragment.newBuilder()
+                                .setStartIndex(0)
+                                .setText(text.substring(0, prefixLength))
+                                .setColor(ColorType.COLOR_SUGGEST_ACTION_HIGH)
+                                .setIsBolded(true))
+                .addFragments(
+                        FormattedStringFragment.newBuilder()
+                                .setStartIndex(prefixLength)
+                                .setText(text.substring(prefixLength)))
+                .build();
+    }
+
+    /** Returns {@code text} that uses the ACTION_HIGH color from start to end. */
+    private SuggestionSpannable createColoredText(String text, int start, int end) {
+        SuggestionSpannable coloredText = new SuggestionSpannable(text);
+        coloredText.setSpan(
+                new ForegroundColorSpan(mResourceProvider.getSuggestionUrlTextColor()),
+                start,
+                end,
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return coloredText;
+    }
+
     /**
      * Build the shape of text BasicSuggestionProcessor produces: two bold match regions plus a
      * full-length foreground colour span, in that insertion order.
@@ -532,5 +646,67 @@ public class SuggestionSpannableUnitTest {
         SuggestionSpannable s = new SuggestionSpannable(" x");
         s.setSpan(new ImageSpan(icon, alignment), 0, 1, Spanned.SPAN_INCLUSIVE_EXCLUSIVE);
         return s;
+    }
+
+    @Test
+    public void applyTextColor_nonDimClassification() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(
+                        new MatchClassification(0, MatchClassificationStyle.NONE),
+                        new MatchClassification(4, MatchClassificationStyle.MATCH));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR),
+                0,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
+    }
+
+    @Test
+    public void applyTextColor_allDim() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(new MatchClassification(0, MatchClassificationStyle.DIM));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DIM_COLOR),
+                0,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
+    }
+
+    @Test
+    public void applyTextColor_mixedDimAndDefault() {
+        SuggestionSpannable text = new SuggestionSpannable("0123456789");
+        List<MatchClassification> classifications =
+                List.of(
+                        new MatchClassification(0, MatchClassificationStyle.NONE),
+                        new MatchClassification(3, MatchClassificationStyle.DIM),
+                        new MatchClassification(
+                                6, MatchClassificationStyle.MATCH | MatchClassificationStyle.DIM),
+                        new MatchClassification(8, MatchClassificationStyle.NONE));
+
+        text.applyTextColor(classifications, DEFAULT_COLOR, DIM_COLOR);
+
+        SuggestionSpannable expected = new SuggestionSpannable("0123456789");
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR), 0, 3, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        expected.setSpan(
+                new ForegroundColorSpan(DIM_COLOR), 3, 8, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        expected.setSpan(
+                new ForegroundColorSpan(DEFAULT_COLOR),
+                8,
+                expected.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        assertEquals(expected, text);
     }
 }

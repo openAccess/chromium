@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "base/auto_reset.h"
+#include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
@@ -36,6 +37,7 @@
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/rrect_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/native_ui_types.h"
@@ -99,6 +101,25 @@ WaylandWindow::WaylandWindow(PlatformWindowDelegate* delegate,
   SetWmDragHandler(this, this);
 }
 
+WaylandWindow::PendingSubsurfaceDestroy::PendingSubsurfaceDestroy(
+    int64_t after_seq,
+    gfx::AcceleratedWidget child_widget,
+    std::unique_ptr<WaylandSurface> surface,
+    wl::Object<wl_subsurface> subsurface)
+    : after_seq(after_seq),
+      child_widget(child_widget),
+      surface(std::move(surface)),
+      subsurface(std::move(subsurface)) {}
+
+WaylandWindow::PendingSubsurfaceDestroy::PendingSubsurfaceDestroy(
+    PendingSubsurfaceDestroy&&) noexcept = default;
+
+WaylandWindow::PendingSubsurfaceDestroy&
+WaylandWindow::PendingSubsurfaceDestroy::operator=(
+    PendingSubsurfaceDestroy&&) noexcept = default;
+
+WaylandWindow::PendingSubsurfaceDestroy::~PendingSubsurfaceDestroy() = default;
+
 WaylandWindow::~WaylandWindow() {
   CHECK(ui_task_runner_->BelongsToCurrentThread());
   shutting_down_ = true;
@@ -107,7 +128,7 @@ WaylandWindow::~WaylandWindow() {
 
   ReleaseCapture();
 
-  if (wayland_overlay_delegation_enabled_) {
+  if (wayland_overlay_delegation_enabled_ && primary_subsurface_) {
     connection_->window_manager()->RemoveSubsurface(GetWidget(),
                                                     primary_subsurface_.get());
     connection_->window_manager()->RecycleSubsurface(
@@ -117,7 +138,7 @@ WaylandWindow::~WaylandWindow() {
     connection_->window_manager()->RemoveSubsurface(GetWidget(),
                                                     widget_subsurface.get());
   }
-  if (root_surface_) {
+  if (connection_->window_manager()->IsWindowValid(this)) {
     connection_->window_manager()->RemoveWindow(GetWidget());
   }
 
@@ -150,6 +171,7 @@ WaylandWindow::~WaylandWindow() {
   for (auto bubble : child_bubbles_) {
     bubble->set_parent_window(nullptr);
   }
+  pending_subsurface_destroys_.clear();
 
   if (focus_client_) {
     focus_client_->OnKeyboardFocusChanged(false);
@@ -275,6 +297,54 @@ void WaylandWindow::ActivateBubble(WaylandBubble* window) {
     auto weak_this = AsWeakPtr();
     delegate()->OnActivationChanged(IsActive());
   }
+}
+
+wl::Object<wl_subsurface> WaylandWindow::RemoveChildSubsurface(
+    gfx::AcceleratedWidget child,
+    std::unique_ptr<WaylandSurface> surface,
+    wl::Object<wl_subsurface> subsurface) {
+  if (!surface && !subsurface) {
+    std::erase_if(pending_subsurface_destroys_, [child](const auto& e) {
+      return !e.surface && e.child_widget == child;
+    });
+    return {};
+  }
+
+  if (surface && !subsurface) {
+    for (auto& e : pending_subsurface_destroys_) {
+      if (!e.surface && e.child_widget == child) {
+        e.surface = std::move(surface);
+        return {};
+      }
+    }
+    return {};
+  }
+
+  const std::optional<int64_t> after_seq = GetInFlightAppliedVizSeq();
+  if (!after_seq.has_value()) {
+    if (surface) {
+      subsurface.reset();
+      return {};
+    }
+    return subsurface;
+  }
+
+  // Per the wl_subsurface protocol specification, destroying a subsurface takes
+  // effect immediately. When this window has an unlatched state transition in
+  // flight (e.g. a compositor-initiated fullscreen exit during which Mutter
+  // freezes the window's surface actors until the resized parent buffer is
+  // committed), synchronize removal with the parent commit by switching to sync
+  // mode, attaching a null buffer, and deferring wl_subsurface destruction
+  // until OnFrameCommitted() commits that frame.
+  wl_subsurface_set_sync(subsurface.get());
+  if (surface) {
+    wl_surface_attach(surface->surface(), nullptr, 0, 0);
+    surface->Commit(false);
+    connection_->Flush();
+  }
+  pending_subsurface_destroys_.emplace_back(
+      *after_seq, child, std::move(surface), std::move(subsurface));
+  return {};
 }
 
 void WaylandWindow::SetWindowScale(float new_scale) {
@@ -500,12 +570,35 @@ void WaylandWindow::Hide() {
     wl_surface_attach(root_surface_->surface(), nullptr, 0, 0);
     root_surface_->Commit(false);
   }
+
+  pending_subsurface_destroys_.clear();
 }
 
 void WaylandWindow::ClearInFlightRequestsSerial() {
   for (auto& request : in_flight_requests_) {
     request.serial = -1;
   }
+}
+
+void WaylandWindow::OnFrameCommitted(int64_t seq) {
+  if (std::erase_if(pending_subsurface_destroys_, [seq](const auto& e) {
+        return seq == -1 || e.after_seq <= seq;
+      })) {
+    connection_->Flush();
+  }
+}
+
+std::optional<int64_t> WaylandWindow::GetInFlightAppliedVizSeq() {
+  if (!IsSurfaceConfigured() ||
+      applied_state_.window_state == PlatformWindowState::kMinimized) {
+    return std::nullopt;
+  }
+  for (const auto& req : base::Reversed(in_flight_requests_)) {
+    if (req.applied) {
+      return req.viz_seq;
+    }
+  }
+  return std::nullopt;
 }
 
 void WaylandWindow::OnChannelDestroyed() {
@@ -724,7 +817,76 @@ void WaylandWindow::ConfineCursorToBounds(const gfx::Rect& bounds) {
 }
 
 void WaylandWindow::SetRestoredBoundsInDIP(const gfx::Rect& bounds) {
+  SetRestoredGeometry(bounds, gfx::Size());
+}
+
+void WaylandWindow::SetRestoredGeometry(const gfx::Rect& bounds,
+                                        const gfx::Size& geometry_size_dip) {
   restored_bounds_dip_ = bounds;
+  restored_geometry_size_dip_ = geometry_size_dip;
+}
+
+gfx::Size WaylandWindow::GetRestoredGeometrySizeDIP() const {
+  if (!restored_geometry_size_dip_.IsEmpty()) {
+    return restored_geometry_size_dip_;
+  }
+  return BoundsSizeToGeometrySizeDIP(restored_bounds_dip_.size(),
+                                     PlatformWindowState::kNormal,
+                                     applied_state_.ui_scale);
+}
+
+gfx::Size WaylandWindow::GeometrySizeToBoundsSizeDIP(
+    const gfx::Size& geometry_size_dip,
+    PlatformWindowState window_state,
+    float ui_scale) const {
+  // Decoration insets are in UI DIP, so they are added after applying
+  // `ui_scale`.
+  gfx::Size size = gfx::ScaleToEnclosingRectIgnoringError(
+                       gfx::Rect(geometry_size_dip), 1.f / ui_scale)
+                       .size();
+  const gfx::Insets insets = delegate()->CalculateInsetsInDIP(window_state);
+  size.Enlarge(insets.width(), insets.height());
+  return size;
+}
+
+gfx::Size WaylandWindow::BoundsSizeToGeometrySizeDIP(
+    const gfx::Size& bounds_size_dip,
+    PlatformWindowState window_state,
+    float ui_scale) const {
+  // Decoration insets are in UI DIP, so they are removed before applying
+  // `ui_scale`.
+  gfx::Size size = bounds_size_dip;
+  const gfx::Insets insets = delegate()->CalculateInsetsInDIP(window_state);
+  size.Enlarge(-insets.width(), -insets.height());
+  // Round down, since GeometrySizeToBoundsSizeDIP() rounds up. Otherwise a
+  // geometry size derived from client-requested bounds could map back to
+  // bounds 1 DIP larger.
+  size = gfx::ToEnclosedRectIgnoringError(
+             gfx::ScaleRect(gfx::RectF(gfx::Rect(size)), ui_scale),
+             /*error=*/0.001f)
+             .size();
+  // As per spec, width and height must be greater than zero.
+  size.SetToMax(gfx::Size(1, 1));
+  return size;
+}
+
+gfx::Size WaylandWindow::GetSurfaceSizeInWaylandDIP(
+    const PlatformWindowDelegate::State& state) const {
+  if (delegate()->CalculateInsetsInDIP(state.window_state).IsEmpty()) {
+    return state.geometry_size_dip;
+  }
+  // The insets are in UI DIP, so the surface size can't be derived exactly
+  // from the geometry size.
+  return gfx::ScaleToEnclosingRectIgnoringError(
+             gfx::Rect(state.bounds_dip.size()), state.ui_scale)
+      .size();
+}
+
+gfx::Point WaylandWindow::GetWindowGeometryOriginInWaylandDIP(
+    const PlatformWindowDelegate::State& state) const {
+  const gfx::Insets insets = gfx::ScaleToRoundedInsets(
+      delegate()->CalculateInsetsInDIP(state.window_state), state.ui_scale);
+  return {insets.left(), insets.top()};
 }
 
 gfx::Rect WaylandWindow::GetRestoredBoundsInDIP() const {
@@ -862,6 +1024,9 @@ std::string WaylandWindow::WindowStates::ToString() const {
   }
   if (is_minimized) {
     states += "minimized ";
+  }
+  if (is_resizing) {
+    states += "resizing ";
   }
   if (states.empty()) {
     states = "<default>";
@@ -1044,6 +1209,8 @@ bool WaylandWindow::Initialize(PlatformWindowInitProperties properties) {
                       gfx::Rect(state.bounds_dip.size()),
                       state.window_scale * state.ui_scale)
                       .size();
+  state.geometry_size_dip = BoundsSizeToGeometrySizeDIP(
+      state.bounds_dip.size(), state.window_state, state.ui_scale);
 
   applied_state_ = state;
   latched_state_ = state;
@@ -1173,6 +1340,10 @@ uint32_t WaylandWindow::DispatchEventToDelegate(
 std::unique_ptr<WaylandSurface> WaylandWindow::TakeWaylandSurface() {
   CHECK(shutting_down_, base::NotFatalUntil::M163);
   CHECK(root_surface_, base::NotFatalUntil::M163);
+  // Clear pending and submitted frames referencing `root_surface_` before
+  // transferring ownership, as the caller may destroy the returned surface
+  // before `~WaylandWindow()` destroys `frame_manager_`.
+  frame_manager_->ClearStates();
   root_surface_->UnsetRootWindow();
   return std::move(root_surface_);
 }
@@ -1385,6 +1556,9 @@ void WaylandWindow::ProcessPendingConfigureState(uint32_t serial) {
   }
   if (pending_configure_state_.bounds_dip.has_value()) {
     state.bounds_dip = pending_configure_state_.bounds_dip.value();
+    // An empty geometry size is derived from `bounds_dip` in RequestState().
+    state.geometry_size_dip =
+        pending_configure_state_.geometry_size_dip.value_or(gfx::Size());
   }
   if (pending_configure_state_.size_px.has_value()) {
     state.size_px = pending_configure_state_.size_px.value();
@@ -1402,9 +1576,11 @@ void WaylandWindow::ProcessPendingConfigureState(uint32_t serial) {
     // For the window activated from minimized state,
     // the saved window placement should be set as window geometry.
     state.bounds_dip = GetBoundsInDIP();
+    state.geometry_size_dip = applied_state_.geometry_size_dip;
     // As per spec, width and height must be greater than zero.
     if (state.bounds_dip.IsEmpty()) {
       state.bounds_dip = gfx::Rect(0, 0, 1, 1);
+      state.geometry_size_dip = gfx::Size();
     }
   }
 
@@ -1472,19 +1648,43 @@ void WaylandWindow::RequestState(PlatformWindowDelegate::State state,
     CHECK_EQ(applied_state_copy, latched_state_);
   }
 
+  // `geometry_size_dip` must correspond to `bounds_dip`. Derive it from
+  // `bounds_dip` if it is unset or stale (e.g. the bounds were changed by the
+  // client).
+  if (state.geometry_size_dip.IsEmpty() ||
+      GeometrySizeToBoundsSizeDIP(state.geometry_size_dip, state.window_state,
+                                  state.ui_scale) != state.bounds_dip.size()) {
+    state.geometry_size_dip = BoundsSizeToGeometrySizeDIP(
+        state.bounds_dip.size(), state.window_state, state.ui_scale);
+  }
+
   // ui_scale determines how the window content, ie: UI, will be laid out and
   // sized. See WaylandWindowManager::DetermineUiScale docs for more details.
+  // The size is recomputed from `geometry_size_dip` so that it does not drift
+  // with repeated rounding.
   const float new_ui_scale = connection_->window_manager()->DetermineUiScale();
-  state.bounds_dip = gfx::ScaleToEnclosingRectIgnoringError(
-      state.bounds_dip, state.ui_scale / new_ui_scale);
-  state.ui_scale = new_ui_scale;
+  if (new_ui_scale != state.ui_scale) {
+    state.bounds_dip = gfx::Rect(
+        gfx::ScaleToEnclosingRectIgnoringError(state.bounds_dip,
+                                               state.ui_scale / new_ui_scale)
+            .origin(),
+        GeometrySizeToBoundsSizeDIP(state.geometry_size_dip, state.window_state,
+                                    new_ui_scale));
+    state.ui_scale = new_ui_scale;
+  }
 
   // Adjust state values if necessary. Size constraints only apply to normal
   // windows; per the xdg-shell specification, maximized geometry must be obeyed
   // exactly, and fullscreen geometry is an upper bound (otherwise compositors
   // raise xdg_wm_base.invalid_surface_state).
   if (state.window_state == PlatformWindowState::kNormal) {
-    state.bounds_dip = AdjustBoundsToConstraintsDIP(state.bounds_dip);
+    const gfx::Rect adjusted_bounds_dip =
+        AdjustBoundsToConstraintsDIP(state.bounds_dip);
+    if (adjusted_bounds_dip.size() != state.bounds_dip.size()) {
+      state.geometry_size_dip = BoundsSizeToGeometrySizeDIP(
+          adjusted_bounds_dip.size(), state.window_state, state.ui_scale);
+    }
+    state.bounds_dip = adjusted_bounds_dip;
   }
 
   const float scale = state.window_scale * state.ui_scale;
@@ -1499,7 +1699,8 @@ void WaylandWindow::RequestState(PlatformWindowDelegate::State state,
                       gfx::Rect(state.bounds_dip.size()), scale)
                       .size();
 
-  StateRequest req{.state = state, .serial = serial};
+  StateRequest req{
+      .state = state, .serial = serial, .from_client = serial == -1};
   if (in_flight_requests_.empty()) {
     in_flight_requests_.push_back(req);
   } else {
@@ -1564,7 +1765,11 @@ void WaylandWindow::ProcessSequencePoint(int64_t viz_seq) {
   }
 
   // Latch the latest state which was actually applied.
+  auto weak_this = AsWeakPtr();
   LatchStateRequest(*iter);
+  if (!weak_this) {
+    return;
+  }
 
   in_flight_requests_.erase(in_flight_requests_.begin(), ++iter);
 
@@ -1635,9 +1840,10 @@ void WaylandWindow::LatchStateRequest(const StateRequest& req) {
   latched_state_ = req.state;
 
   // Update the geometry if:
-  // - either bounds, tiling or insets has changed since the latest latched
-  //   request.
+  // - either bounds, geometry size, tiling or insets has changed since the
+  //   latest latched request.
   if (req.state.bounds_dip.size() != old_state.bounds_dip.size() ||
+      req.state.geometry_size_dip != old_state.geometry_size_dip ||
       req.state.tiled_edges != old_state.tiled_edges ||
       delegate()->CalculateInsetsInDIP(req.state.window_state) !=
           delegate()->CalculateInsetsInDIP(old_state.window_state)) {
@@ -1697,6 +1903,19 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
     return;
   }
   latest.viz_seq = viz_seq;
+  if (viz_seq == -1) {
+    if (std::erase_if(pending_subsurface_destroys_,
+                      [](const auto& e) { return e.after_seq == -1; })) {
+      connection_->Flush();
+    }
+  } else {
+    for (auto& e : pending_subsurface_destroys_) {
+      if (e.after_seq == -1) {
+        e.after_seq = viz_seq;
+      }
+    }
+  }
+  OnStateRequestApplied(old, latest.state, viz_seq, latest.from_client);
 
   if (UseTestConfigForPlatformWindows()) {
     latest_applied_viz_seq_for_testing_ = std::max(
@@ -1740,6 +1959,9 @@ void WaylandWindow::MaybeApplyLatestStateRequest(bool force) {
   // Otherwise, such tests as interactive_ui_tests fail.
   if (UseTestConfigForPlatformWindows() && latch_immediately_for_testing_) {
     ProcessSequencePoint(INT64_MAX);
+    if (weak_this) {
+      pending_subsurface_destroys_.clear();
+    }
   }
 }
 

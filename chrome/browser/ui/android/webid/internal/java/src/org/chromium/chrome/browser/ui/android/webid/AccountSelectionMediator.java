@@ -24,6 +24,7 @@ import org.chromium.build.annotations.MonotonicNonNull;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.customtabs.CustomTabActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabObserver;
@@ -49,7 +50,6 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.Shee
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetFeatureMap;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.ukm.UkmRecorder;
-import org.chromium.content.webid.IdentityRequestDialogDisclosureField;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
 import org.chromium.content.webid.IdentityRequestDialogLinkType;
 import org.chromium.content_public.browser.NavigationHandle;
@@ -169,7 +169,7 @@ class AccountSelectionMediator {
     private final KeyboardVisibilityListener mKeyboardVisibilityListener =
             new KeyboardVisibilityListener() {
                 @Override
-                public void keyboardVisibilityChanged(boolean isShowing) {
+                public void keyboardObscuringChanged(boolean isShowing) {
                     if (isShowing) {
                         mBottomSheetController.hideContent(mBottomSheetContent, true);
                     } else if (mTab.isUserInteractable()) {
@@ -680,16 +680,17 @@ class AccountSelectionMediator {
                         : LoadingDialogResult.PROCEED;
         maybeRecordLoadingDialogResult();
 
-        if (accounts.size() == 1) {
-            // An account is automatically 'selected' if that is the
-            // only option.
-            if (!mIsMultipleIdps
-                    && !mIdpDataListForShowAccounts
-                            .get(0)
-                            .getIdpMetadata()
-                            .showUseDifferentAccountButton()) {
-                mSelectedAccount = accounts.get(0);
-            }
+        // In passive mode, an account is automatically 'selected' if that is the only option.
+        // Active mode first shows the single-account chooser without disclosure text, and
+        // updateSheet() selects the account for its continue button.
+        if (mRpMode == RpMode.PASSIVE
+                && accounts.size() == 1
+                && !mIsMultipleIdps
+                && !mIdpDataListForShowAccounts
+                        .get(0)
+                        .getIdpMetadata()
+                        .showUseDifferentAccountButton()) {
+            mSelectedAccount = accounts.get(0);
         }
 
         if (!showAccountsInternal(newAccounts)) {
@@ -866,6 +867,11 @@ class AccountSelectionMediator {
                 RecordHistogram.recordBooleanHistogram(
                         "Blink.FedCm.SignUp.PrivacyPolicyClicked", true);
                 break;
+            case IdentityRequestDialogLinkType.IDP_LINK:
+                // Not recorded, so that the histograms above only count the RP's links.
+                // TODO(crbug.com/581372729): Record clicks on each of the identity provider's
+                // links, and how often the links are shown.
+                break;
         }
         CustomTabActivity.showInfoPage(context, url.getSpec());
     }
@@ -993,10 +999,13 @@ class AccountSelectionMediator {
         IdentityProviderData uniqueIdp =
                 distinctIdps.size() == 1 ? distinctIdps.iterator().next() : null;
 
-        boolean showUseDifferentAccountInSingleAccountChooserActiveMode =
+        boolean isSingleAccountChooserActiveMode =
                 isSingleAccountChooser
+                        && !mIsMultipleIdps
                         && mRpMode == RpMode.ACTIVE
-                        && mHeaderType == HeaderType.SIGN_IN
+                        && mHeaderType == HeaderType.SIGN_IN;
+        boolean showUseDifferentAccountInSingleAccountChooserActiveMode =
+                isSingleAccountChooserActiveMode
                         && areAccountsClickable
                         && firstAccountIdp != null
                         && firstAccountIdp.getIdpMetadata().showUseDifferentAccountButton();
@@ -1027,6 +1036,8 @@ class AccountSelectionMediator {
 
         boolean isDataSharingConsentVisible = false;
         Callback<ButtonData> continueButtonCallback = null;
+        // The account that the continue button passes to `continueButtonCallback`, if any.
+        Account continueButtonAccount = mSelectedAccount;
         if (mHeaderType == HeaderType.SIGN_IN && mSelectedAccount != null) {
             isDataSharingConsentVisible = mSelectedAccount.getFields().length > 0;
             continueButtonCallback = this::onClickAccountSelected;
@@ -1044,9 +1055,12 @@ class AccountSelectionMediator {
             continueButtonCallback = this::onLoginToIdP;
         }
 
-        if (showUseDifferentAccountInSingleAccountChooserActiveMode) {
+        if (isSingleAccountChooserActiveMode) {
+            // The active mode single-account chooser shows no disclosure text, and its continue
+            // button selects the only account. This doesn't set `mSelectedAccount`;
+            // onAccountSelected() does once the user selects the account.
             assert !isDataSharingConsentVisible;
-            mSelectedAccount = accounts.get(0);
+            continueButtonAccount = accounts.get(0);
             continueButtonCallback = this::onClickAccountSelected;
         }
 
@@ -1069,21 +1083,16 @@ class AccountSelectionMediator {
             mModel.set(
                     ItemProperties.DATA_SHARING_CONSENT,
                     isDataSharingConsentVisible
-                            ? createDataSharingConsentItem(
-                                    mIdpForDisplay,
-                                    assumeNonNull(mSelectedAccount)
-                                            .getIdentityProviderData()
-                                            .getClientMetadata(),
-                                    mSelectedAccount.getFields())
+                            ? createDataSharingConsentItem(assumeNonNull(mSelectedAccount))
                             : null);
         }
         mModel.set(
                 ItemProperties.CONTINUE_BUTTON,
                 (continueButtonCallback != null)
                         ? createContinueBtnItem(
-                                mSelectedAccount,
-                                mSelectedAccount != null
-                                        ? mSelectedAccount
+                                continueButtonAccount,
+                                continueButtonAccount != null
+                                        ? continueButtonAccount
                                                 .getIdentityProviderData()
                                                 .getIdpMetadata()
                                         : assertNonNull(mIdpMetadataForLoginOrError),
@@ -1097,12 +1106,7 @@ class AccountSelectionMediator {
             mModel.set(
                     ItemProperties.DATA_SHARING_CONSENT,
                     isDataSharingConsentVisible
-                            ? createDataSharingConsentItem(
-                                    mIdpForDisplay,
-                                    assumeNonNull(mSelectedAccount)
-                                            .getIdentityProviderData()
-                                            .getClientMetadata(),
-                                    mSelectedAccount.getFields())
+                            ? createDataSharingConsentItem(assumeNonNull(mSelectedAccount))
                             : null);
         }
         mModel.set(
@@ -1405,13 +1409,16 @@ class AccountSelectionMediator {
                 .build();
     }
 
-    private PropertyModel createDataSharingConsentItem(
-            @Nullable String idpForDisplay,
-            ClientIdMetadata metadata,
-            @IdentityRequestDialogDisclosureField int[] disclosureFields) {
+    private PropertyModel createDataSharingConsentItem(Account account) {
+        IdentityProviderData identityProvider = account.getIdentityProviderData();
+        ClientIdMetadata metadata = identityProvider.getClientMetadata();
+        IdentityProviderMetadata idpMetadata = identityProvider.getIdpMetadata();
+        // Only the active mode sheet shows the identity provider's links, in the container UI.
+        boolean showIdpLinks =
+                mRpMode == RpMode.ACTIVE && ChromeFeatureList.sFedCmIdpLinks.isEnabled();
         DataSharingConsentProperties.Properties properties =
                 new DataSharingConsentProperties.Properties(
-                        idpForDisplay,
+                        identityProvider.getIdpForDisplay(),
                         metadata.getTermsOfServiceUrl(),
                         metadata.getPrivacyPolicyUrl(),
                         (Context context) -> {
@@ -1426,8 +1433,14 @@ class AccountSelectionMediator {
                                     IdentityRequestDialogLinkType.PRIVACY_POLICY,
                                     metadata.getPrivacyPolicyUrl());
                         },
+                        showIdpLinks ? idpMetadata.getAccountManagementUrl() : GURL.emptyGURL(),
+                        showIdpLinks ? idpMetadata.getPrivacyPolicyUrl() : GURL.emptyGURL(),
+                        showIdpLinks ? idpMetadata.getTermsOfServiceUrl() : GURL.emptyGURL(),
+                        (Context context, GURL url) -> {
+                            showUrl(context, IdentityRequestDialogLinkType.IDP_LINK, url);
+                        },
                         this::setFocusView,
-                        disclosureFields);
+                        account.getFields());
 
         return new PropertyModel.Builder(DataSharingConsentProperties.ALL_KEYS)
                 .with(DataSharingConsentProperties.PROPERTIES, properties)

@@ -53,6 +53,7 @@ namespace glic {
 class AuthController;
 class ContextualCueingService;
 class GlicActivityManager;
+class GlicActivityManagerImpl;
 class LegacyGlicActivityManager;
 class GlicActorPolicyChecker;
 class GlicEnabling;
@@ -64,6 +65,7 @@ class GlicClientDataStorage;
 class GlicTabDataObserver;
 class GlicTabFaviconObserver;
 class GlicInstanceCoordinator;
+class GlicInstanceCoordinatorImpl;
 class GlicExperimentalOptInController;
 class GlicExperimentalTriggeringTransportHandlerFactory;
 #if BUILDFLAG(IS_ANDROID)
@@ -158,12 +160,6 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   // with this render frame host.
   void CloseAndShutdown(content::RenderFrameHost* render_frame_host);
 
-  // Close the panel. Virtual for testing.
-  // TODO(crbug.com/448406730): Remove testing logic that relies on
-  // GKS::CloseFloatingPanel since close panel is now being handled by
-  // EmbedderDelegate.
-  virtual void CloseFloatingPanel();
-
   GlicEnabling& enabling() { return *enabling_.get(); }
 
   GlicMetrics* metrics() { return metrics_.get(); }
@@ -182,9 +178,6 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   // for testing.
   virtual bool IsPanelShowingForBrowser(
       const BrowserWindowInterface& bwi) const;
-
-  // Virtual for testing.
-  virtual bool IsWindowDetached() const;
 
   void SetContextAccessIndicator(bool show);
 
@@ -244,9 +237,6 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   virtual void TryPreload(GlicWarmingTrigger trigger);
   void TryPreloadAfterDelay(GlicWarmingTrigger trigger);
   void Reload(content::RenderFrameHost* render_frame_host);
-  // Close the active embedder for an instance associated with this render frame
-  // host.
-  void Close(content::RenderFrameHost* outermost_render_frame_host);
   // Archive the active embedder for an instance associated with this render
   // frame host.
   void Archive(content::RenderFrameHost* outermost_render_frame_host);
@@ -327,9 +317,8 @@ class GlicKeyedService : public KeyedService, public base::SupportsUserData {
   std::unique_ptr<GlicMetrics> metrics_;
   std::unique_ptr<GlicExperimentalOptInController> opt_in_controller_;
   std::unique_ptr<GlicClientDataStorage> client_data_storage_;
-  // Is a GlicInstanceCoordinatorImpl.
-  std::unique_ptr<GlicInstanceCoordinator> instance_coordinator_;
-  std::unique_ptr<GlicActivityManager> activity_manager_;
+  std::unique_ptr<GlicInstanceCoordinatorImpl> instance_coordinator_;
+  std::unique_ptr<GlicActivityManagerImpl> activity_manager_;
   std::unique_ptr<LegacyGlicActivityManager> legacy_activity_manager_;
   std::unique_ptr<GlicShareImageHandler> share_image_handler_;
 

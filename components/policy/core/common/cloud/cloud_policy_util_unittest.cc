@@ -7,29 +7,28 @@
 #include <memory>
 #include <string>
 
+#include "base/functional/bind.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "build/build_config.h"
+#include "components/policy/core/common/cloud/network_name_cache.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/android_info.h"
-#include "base/android/device_info.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/android/device_info_test_support.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_WIN)
+#include "base/win/windows_version.h"
+#endif  // BUILDFLAG(IS_WIN)
 
 namespace policy {
 
-class CloudPolicyUtilTest : public testing::Test {
- protected:
-  void TearDown() override {
-#if BUILDFLAG(IS_ANDROID)
-    base::android::device_info::reset_device_name_for_testing();
-#endif  // BUILDFLAG(IS_ANDROID)
-  }
-};
-
 #if !BUILDFLAG(IS_CHROMEOS)
-TEST_F(CloudPolicyUtilTest, GetMachineNameAndDeviceIdentifier) {
+TEST(CloudPolicyUtilTest, GetMachineNameAndDeviceIdentifier) {
   const std::string machine_name = GetMachineName();
   EXPECT_FALSE(machine_name.empty());
   EXPECT_EQ(machine_name, GetDeviceName());
@@ -42,9 +41,10 @@ TEST_F(CloudPolicyUtilTest, GetMachineNameAndDeviceIdentifier) {
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(IS_ANDROID)
-TEST_F(CloudPolicyUtilTest, GetMachineNameAndroidCustomDeviceNameSet) {
+TEST(CloudPolicyUtilTest, GetMachineNameAndroidCustomDeviceNameSet) {
   constexpr char kCustomDeviceName[] = "Custom Pixel Device";
-  base::android::device_info::set_device_name_for_testing(kCustomDeviceName);
+  base::android::device_info::ScopedDeviceName scoped_device_name(
+      kCustomDeviceName);
 
   EXPECT_EQ(kCustomDeviceName, GetMachineName());
   EXPECT_EQ(kCustomDeviceName, GetDeviceName());
@@ -55,9 +55,9 @@ TEST_F(CloudPolicyUtilTest, GetMachineNameAndroidCustomDeviceNameSet) {
   EXPECT_EQ(kCustomDeviceName, device_identifier->computer_name());
 }
 
-TEST_F(CloudPolicyUtilTest,
-       GetMachineNameAndroidEmptyDeviceNameFallsBackToModel) {
-  base::android::device_info::set_device_name_for_testing("");
+TEST(CloudPolicyUtilTest,
+     GetMachineNameAndroidEmptyDeviceNameFallsBackToModel) {
+  base::android::device_info::ScopedDeviceName scoped_device_name("");
 
   const std::string expected_model = base::android::android_info::model();
   EXPECT_FALSE(expected_model.empty());
@@ -70,10 +70,10 @@ TEST_F(CloudPolicyUtilTest,
   EXPECT_EQ(expected_model, device_identifier->computer_name());
 }
 
-TEST_F(CloudPolicyUtilTest, GetMachineNameAndroidFeatureDisabled) {
+TEST(CloudPolicyUtilTest, GetMachineNameAndroidFeatureDisabled) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndDisableFeature(kReportAndroidMachineName);
-  base::android::device_info::set_device_name_for_testing(
+  base::android::device_info::ScopedDeviceName scoped_device_name(
       "Custom Pixel Device");
 
   EXPECT_TRUE(GetMachineName().empty());
@@ -85,5 +85,34 @@ TEST_F(CloudPolicyUtilTest, GetMachineNameAndroidFeatureDisabled) {
   EXPECT_TRUE(device_identifier->computer_name().empty());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+TEST(CloudPolicyUtilTest, GetNetworkName_EmptyWithoutNetworkNameCache) {
+  base::test::ScopedFeatureList scoped_feature_list(kUseCachedNetworkName);
+  EXPECT_EQ("", GetNetworkName(/*network_name_cache=*/nullptr));
+}
+
+TEST(CloudPolicyUtilTest, GetNetworkName_ReturnsValueFromNetworkNameCache) {
+  base::test::ScopedFeatureList scoped_feature_list(kUseCachedNetworkName);
+  base::test::TaskEnvironment task_environment;
+  std::unique_ptr<NetworkNameCache> cache = NetworkNameCache::CreateForTesting(
+      base::BindRepeating([] { return std::string("CorpWiFi"); }));
+
+  // The first call starts the background query and returns immediately.
+  EXPECT_EQ("", GetNetworkName(cache.get()));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&cache] { return GetNetworkName(cache.get()) == "CorpWiFi"; }));
+}
+
+#if BUILDFLAG(IS_WIN)
+TEST(CloudPolicyUtilTest,
+     GetNetworkName_FeatureDisabledDoesNotQueryOnWin11_24H2) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndDisableFeature(kUseCachedNetworkName);
+  if (base::win::GetVersion() < base::win::Version::WIN11_24H2) {
+    GTEST_SKIP() << "Only relevant on Windows 11 24H2+.";
+  }
+  EXPECT_EQ("", GetNetworkName(/*network_name_cache=*/nullptr));
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace policy

@@ -5,11 +5,13 @@
 #ifndef CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_EVENT_ROUTER_H_
 #define CHROME_BROWSER_EXTENSIONS_API_AUTOFILL_PRIVATE_AUTOFILL_PRIVATE_EVENT_ROUTER_H_
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager_observer.h"
+#include "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_service_observer.h"
@@ -21,13 +23,17 @@ class BrowserContext;
 
 namespace extensions {
 
+BASE_DECLARE_FEATURE(kAutofillPrivateEventRouterObserveOnDemand);
+
 // An event router that observes changes to autofill addresses and credit cards
 // and notifies listeners to the autofill API events.
-class AutofillPrivateEventRouter : public KeyedService,
-                                   public EventRouter::Observer,
-                                   public autofill::PersonalDataManagerObserver,
-                                   public autofill::EntityDataManager::Observer,
-                                   public syncer::SyncServiceObserver {
+class AutofillPrivateEventRouter
+    : public KeyedService,
+      public EventRouter::Observer,
+      public autofill::PersonalDataManagerObserver,
+      public autofill::EntityDataManager::Observer,
+      public autofill::ValuablesDataManager::Observer,
+      public syncer::SyncServiceObserver {
  public:
   // Uses AutofillPrivateEventRouterFactory instead.
   explicit AutofillPrivateEventRouter(content::BrowserContext* context);
@@ -45,17 +51,30 @@ class AutofillPrivateEventRouter : public KeyedService,
   // KeyedService overrides:
   void Shutdown() override;
 
+  // EventRouter::Observer overrides:
+  void OnListenerAdded(const EventListenerInfo& details) override;
+  void OnListenerRemoved(const EventListenerInfo& details) override;
+
   // PersonalDataManagerObserver implementation.
   void OnPersonalDataChanged() override;
 
   // autofill::EntityDataManager::Observer implementation.
   void OnEntityInstancesChanged() override;
 
+  // autofill::ValuablesDataManager::Observer implementation.
+  void OnValuablesDataChanged() override;
+
   // SyncServiceObserver implementation.
   void OnStateChanged(syncer::SyncService*) override;
   void OnSyncShutdown(syncer::SyncService*) override;
 
  private:
+  // Attaches or detaches `pdm_observer_`, `sync_observer_`,
+  // `entity_data_manager_observer_` and `valuables_data_manager_observer_`
+  // depending on whether `event_router_` has active listeners for the
+  // corresponding events.
+  void UpdateObservations();
+
   // Triggers an event on the router with current user's data.
   void BroadcastCurrentData();
 
@@ -72,6 +91,10 @@ class AutofillPrivateEventRouter : public KeyedService,
   base::ScopedObservation<autofill::EntityDataManager,
                           autofill::EntityDataManager::Observer>
       entity_data_manager_observer_{this};
+
+  base::ScopedObservation<autofill::ValuablesDataManager,
+                          autofill::ValuablesDataManager::Observer>
+      valuables_data_manager_observer_{this};
 
   base::ScopedObservation<syncer::SyncService, syncer::SyncServiceObserver>
       sync_observer_{this};

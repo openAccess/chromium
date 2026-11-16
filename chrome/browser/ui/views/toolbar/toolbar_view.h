@@ -36,6 +36,7 @@
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/animation/animation_delegate_views.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/mouse_watcher.h"
 #include "ui/views/view.h"
@@ -78,7 +79,7 @@ namespace glic {
 class ToolbarGlicButton;
 class ToolbarGlicButtonInterface;
 class ToolbarGlicActorTaskIcon;
-class GlicButtonInterface;
+class ToolbarGlicActorTaskIconInterface;
 class GlicSplitButtonController;
 }  // namespace glic
 
@@ -88,6 +89,12 @@ enum class ExpansionMode {
   kNone = 0,
   kWillShow,
   kWillHide,
+};
+
+// The toolbar Glic control that shows a nudge.
+enum class GlicNudgeTarget {
+  kGlicButton,
+  kActorTaskIcon,
 };
 
 // The Browser Window's toolbar.
@@ -182,9 +189,6 @@ class ToolbarView : public views::AccessiblePaneView,
   ExtensionsToolbarDesktop* extensions_container_for_testing() const {
     return extensions_container_;
   }
-  ToolbarButton* contextual_tasks_button() const {
-    return contextual_tasks_button_;
-  }
   ToolbarButton* forward_button() const { return forward_; }
   // Returns the Views extensions (puzzle piece) button, or null if the toolbar
   // doesn't host the Views extensions container (e.g. when
@@ -227,8 +231,8 @@ class ToolbarView : public views::AccessiblePaneView,
   // services disconnect.
   void DestroyWebUIToolbarWebContents();
 
-  glic::ToolbarGlicActorTaskIcon* glic_actor_task_icon() {
-    return glic_actor_task_icon_;
+  glic::ToolbarGlicActorTaskIcon* glic_secondary_button() {
+    return glic_secondary_button_view_;
   }
 
   // LocationBarView::Delegate:
@@ -266,18 +270,20 @@ class ToolbarView : public views::AccessiblePaneView,
   void OnTriggerGlicNudgeUI(glic::NudgeParams params) override;
   void OnHideGlicNudgeUI() override;
   bool GetIsShowingGlicNudge() override;
-  void ShowGlicActorTaskIcon() override;
-  void HideGlicActorTaskIcon() override;
-  bool GetIsShowingGlicActorTaskIconNudge() override;
-  void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override;
-  void TriggerGlicActorNudge(const std::u16string& nudge_label) override;
-  void SetGlicActorNudgePressedState(bool pressed) override;
+  void ShowGlicSecondaryButton() override;
+  void HideGlicSecondaryButton() override;
+  bool GetIsShowingGlicSecondaryNudge() override;
+  void SetGlicSecondaryNudgeLabel(const std::u16string& nudge_label) override;
+  void TriggerGlicSecondaryNudge(const std::u16string& nudge_label) override;
+  void SetGlicSecondaryButtonPressedState(bool pressed) override;
+  void UpdateGlicSplitButtonUi(
+      const glic::GlicSplitButtonUiState& state) override;
   void ShowActivityListBubble() override;
   void CloseActivityListBubble() override;
   bool IsActivityListBubbleShowing() override;
 
-  // Updates glic button parenting after hiding glic actor task icon.
-  void FinalizeHideGlicActorTaskIcon();
+  // Updates glic button parenting after hiding glic secondary button.
+  void FinalizeHideGlicSecondaryButton();
 
  protected:
   // This controls Toolbar, LocationBar and CustomTabBar visibility.
@@ -286,11 +292,6 @@ class ToolbarView : public views::AccessiblePaneView,
   void SetToolbarVisibility(bool visible);
 
  private:
-  FRIEND_TEST_ALL_PREFIXES(ToolbarViewCircularContextualTasksBrowserTest,
-                           CircularButtonRetainsInteriorMarginsAndPosition);
-  FRIEND_TEST_ALL_PREFIXES(ToolbarViewCircularContextualTasksBrowserTest,
-                           LeftSidePanelUsesOriginalLeftButton);
-
   // Forwards view overrides to this class.
   class ContainerView;
 
@@ -306,23 +307,6 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Logic that must be done on initialization and then on layout.
   void LayoutCommon();
-
-  // Returns whether the app menu control should apply Fitts' law edge padding
-  // to extend to the window border when maximized or fullscreen.
-  bool ShouldAppMenuApplyFittsLaw(bool is_maximized_or_fullscreen) const;
-
-  // Positions `contextual_tasks_button_` in the toolbar hierarchy based on
-  // whether it should dock at the edges or sit as a circular button to the
-  // left of profile (and glic button if visible).
-  void PositionContextualTasksButton();
-
-  // Returns true if the contextual tasks button is visible and positioned at
-  // the leading edge of the toolbar.
-  bool IsLeadingContextualTasksButtonVisible() const;
-
-  // Returns true if the contextual tasks button is visible and positioned at
-  // the trailing edge of the toolbar.
-  bool IsTrailingContextualTasksButtonVisible() const;
 
   // AppMenuIconController::Delegate:
   void UpdateTypeAndSeverity(
@@ -348,7 +332,6 @@ class ToolbarView : public views::AccessiblePaneView,
   AvatarToolbarButtonInterface* GetAvatarToolbarButtonInterface() override;
   ToolbarButton* GetBackButton() override;
   ReloadControl* GetReloadButton() override;
-  ToolbarButton* GetDownloadButton() override;
 
   // BrowserRootView::DropTarget
   std::optional<BrowserRootView::DropIndex> GetDropIndex(
@@ -385,33 +368,35 @@ class ToolbarView : public views::AccessiblePaneView,
   void OnGlicButtonClicked();
   void OnGlicButtonDismissed();
   void OnGlicButtonAnimationEnded();
-  void ShowToolbarNudge(glic::GlicButtonInterface* button);
-  void HideToolbarNudge(glic::GlicButtonInterface* button);
-  void ShowGlicActorNudge(const std::u16string nudge_label);
-  void ExecuteShowToolbarNudge(glic::GlicButtonInterface* button);
-  void ExecuteHideToolbarNudge(glic::GlicButtonInterface* button);
-  void UpdateGlicActorVisibility();
+  void ShowToolbarNudge(GlicNudgeTarget target);
+  void HideToolbarNudge(GlicNudgeTarget target);
+  void ShowGlicSecondaryNudge(const std::u16string nudge_label);
+  void ExecuteShowToolbarNudge(GlicNudgeTarget target);
+  void ExecuteHideToolbarNudge(GlicNudgeTarget target);
+  void UpdateGlicSecondaryButtonVisibility();
+  // Shows the activity list bubble at `anchor`, provided by the actor task
+  // icon.
+  void ShowActivityListBubbleAt(views::BubbleAnchor anchor);
   void UpdateGlicButtonVisibility();
-  void SetGlicActorShowState(bool show);
+  void SetGlicSecondaryButtonShowState(bool show);
   void UpdateGlicActorButtonContainerBorders();
 
-  std::unique_ptr<glic::ToolbarGlicActorTaskIcon> CreateGlicActorTaskIcon();
-  void OnGlicActorTaskIconClicked();
+  std::unique_ptr<glic::ToolbarGlicActorTaskIcon> CreateGlicSecondaryButton();
+  void OnGlicSecondaryButtonClicked();
   std::unique_ptr<GlicAndActorButtonsContainer>
   CreateGlicActorButtonContainer();
 
   // Update the expansion mode to be executed once the mouse is no longer over
-  // the nudge. This button will be what is expanded, either the glic button or
-  // actor button.
+  // the nudge. `target` is what will be expanded, either the glic button or
+  // actor button. It is nullopt when `mode` is `ExpansionMode::kNone`.
   void SetLockedExpansionMode(ExpansionMode mode,
-                              glic::GlicButtonInterface* button);
+                              std::optional<GlicNudgeTarget> target);
 
   gfx::SlideAnimation size_animation_{this};
 
   // Controls. Most of these can be null, e.g. in popup windows. Only
   // |location_bar_| is guaranteed to exist. These pointers are owned by the
   // view hierarchy.
-  raw_ptr<ToolbarButton> contextual_tasks_button_ = nullptr;
   raw_ptr<ToolbarButton> back_ = nullptr;
   raw_ptr<ToolbarButton> forward_ = nullptr;
   raw_ptr<ReloadButton> reload_ = nullptr;
@@ -438,13 +423,16 @@ class ToolbarView : public views::AccessiblePaneView,
   raw_ptr<MediaToolbarButton> media_button_ = nullptr;
   raw_ptr<BrowserAppMenuButton> app_menu_button_ = nullptr;
 
-  // The button currently holding the lock to be shown/hidden.
-  raw_ptr<glic::GlicButtonInterface> locked_expansion_button_ = nullptr;
+  // The control currently holding the lock to be shown/hidden.
+  std::optional<GlicNudgeTarget> locked_expansion_target_;
   raw_ptr<GlicAndActorButtonsContainer> glic_actor_button_container_ = nullptr;
   raw_ptr<glic::ToolbarGlicButton> glic_button_view_ = nullptr;
   // An alias for `glic_button_view_` or `toolbar_webview_->GetGlicControl()`.
   raw_ptr<glic::ToolbarGlicButtonInterface> glic_button_ = nullptr;
-  raw_ptr<glic::ToolbarGlicActorTaskIcon> glic_actor_task_icon_ = nullptr;
+  raw_ptr<glic::ToolbarGlicActorTaskIcon> glic_secondary_button_view_ = nullptr;
+  // An alias for `glic_secondary_button_view_`.
+  raw_ptr<glic::ToolbarGlicActorTaskIconInterface> glic_secondary_button_ =
+      nullptr;
   raw_ptr<ToolbarDivider> glic_button_divider_ = nullptr;
   std::unique_ptr<glic::GlicActivityListBubble> activity_list_bubble_;
 
@@ -503,15 +491,13 @@ class ToolbarView : public views::AccessiblePaneView,
   // Subscription for when tab strip mode changes
   base::CallbackListSubscription vertical_tab_subscription_;
 
-  // Subscription for when contextual tasks button position should update.
-  base::CallbackListSubscription
-      contextual_tasks_button_position_subscription_;
-
   bool should_display_vertical_tabs_ = false;
   bool should_show_glic_button_ = false;
-  bool should_show_glic_actor_ = false;
+  bool should_show_glic_secondary_button_ = false;
 
   bool was_mouse_down_ = false;
+
+  base::WeakPtrFactory<ToolbarView> weak_ptr_factory_{this};
 };
 
 extern const ui::ClassProperty<bool>* const kActionItemUnderlineIndicatorKey;

@@ -27,10 +27,11 @@ import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.CriteriaNotSatisfiedException;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -39,6 +40,7 @@ import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.browser.TabLoadObserver;
 import org.chromium.components.browser_ui.media.AudioBecomingNoisyReceiver;
+import org.chromium.components.browser_ui.media.MediaFeatureList;
 import org.chromium.components.browser_ui.media.MediaNotificationController;
 import org.chromium.components.browser_ui.media.MediaNotificationManager;
 import org.chromium.components.browser_ui.media.MediaSessionHelper;
@@ -54,10 +56,7 @@ import java.util.concurrent.TimeoutException;
 
 /** Tests for checking whether the media are paused when unplugging the headset */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY,
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE
-})
+@CommandLineFlags.Add(MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY)
 @Batch(Batch.PER_CLASS)
 public class MediaSessionTest {
     @Rule
@@ -83,9 +82,8 @@ public class MediaSessionTest {
 
     @Test
     @LargeTest
-    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
-    public void testPauseOnHeadsetUnplug_NonDesktopDevice()
-            throws IllegalArgumentException, TimeoutException {
+    @EnableFeatures(MediaFeatureList.PAUSE_MEDIA_ON_HEADPHONE_UNPLUG)
+    public void testPauseOnHeadsetUnplug() throws IllegalArgumentException, TimeoutException {
         mActivityTestRule.startOnTestServerUrl(TEST_PATH);
         Tab tab = mActivityTestRule.getActivityTab();
 
@@ -100,8 +98,8 @@ public class MediaSessionTest {
 
     @Test
     @LargeTest
-    @Restriction(DeviceFormFactor.DESKTOP)
-    public void testNoPauseOnHeadsetUnplug_DesktopDevice()
+    @DisableFeatures(MediaFeatureList.PAUSE_MEDIA_ON_HEADPHONE_UNPLUG)
+    public void testNoPauseOnHeadsetUnplug_FeatureDisabled()
             throws IllegalArgumentException, TimeoutException {
         mActivityTestRule.startOnTestServerUrl(TEST_PATH);
         Tab tab = mActivityTestRule.getActivityTab();
@@ -301,7 +299,7 @@ public class MediaSessionTest {
 
     @Test
     @LargeTest
-    @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
+    @EnableFeatures(MediaFeatureList.PAUSE_MEDIA_ON_HEADPHONE_UNPLUG)
     public void testNoAudioBecomingNoisyPausedMetricWhenAlreadyPaused() throws Exception {
         mActivityTestRule.startOnTestServerUrl(TEST_PATH);
         Tab tab = mActivityTestRule.getActivityTab();

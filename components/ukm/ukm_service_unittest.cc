@@ -711,7 +711,6 @@ TEST_F(UkmServiceTest, PurgeMsbbDataFromUnsentLogStore) {
 
   // A URL from browser navigation.
   std::string non_app_url = "https://www.google.ca";
-  std::string non_app_url2 = "https://www.google.com";
   // A URL with app:// scheme.
   std::string app_url = "app://mgndgikekgjfcpckkfioiadnlibdjbkf";
   // OS Settings is an app on ChromeOS without the app:// scheme.
@@ -1053,6 +1052,9 @@ TEST_F(UkmServiceTest, SystemProfileTest) {
   Report proto_report = GetPersistedReport();
   EXPECT_EQ(metrics::TestMetricsServiceClient::kBrandForTesting,
             proto_report.system_profile().brand_code());
+  // UMA-specific session identifiers must not be included in UKM reports.
+  EXPECT_FALSE(proto_report.system_profile().has_session_hash());
+  EXPECT_FALSE(proto_report.system_profile().has_fg_bg_id());
 }
 
 TEST_F(UkmServiceTest, RecordingEnabledWithoutConsentRestructure) {

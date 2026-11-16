@@ -35,7 +35,7 @@
 #include "base/functional/callback.h"
 #include "base/immediate_crash.h"
 #include "base/logging/logging_settings.h"
-#include "base/logging/rust_logger/lib.rs.h"
+#include "base/logging/rust_logger/rust_logger.h"
 #include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/pending_task.h"
@@ -554,6 +554,10 @@ void SetMinLogLevel(int level) {
 
 int GetMinLogLevel() {
   return g_min_log_level;
+}
+
+uint32_t GetLoggingDestination() {
+  return g_logging_destination;
 }
 
 bool ShouldCreateLogMessage(int severity) {
@@ -1244,12 +1248,17 @@ void RawLog(int level, const char* message) {
 bool IsLoggingToFileEnabled() {
   return g_logging_destination & LOG_TO_FILE;
 }
+#endif
 
-std::wstring GetLogFileFullPath() {
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
+PathString GetLogFileFullPath() {
+#if BUILDFLAG(IS_CHROMEOS)
+  base::AutoLock guard(GetLoggingLock());
+#endif
   if (g_log_file_name) {
     return *g_log_file_name;
   }
-  return std::wstring();
+  return PathString();
 }
 #endif
 

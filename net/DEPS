@@ -24,8 +24,8 @@ specific_include_rules = {
   "directory_lister(\\.cc|_unittest\\.cc)": [
     "+base/i18n",
   ],
-  "structured_headers\.cc": [
-    "+third_party/rust/sfv/v0_15/wrapper",
+  "structured_headers\\.cc": [
+    "+third_party/rust/sfv/v0_16/wrapper",
   ],
 
   # Functions largely not used by the rest of net.
@@ -41,7 +41,6 @@ specific_include_rules = {
   # Consolidated string functions that depend on icu.
   "net_string_util_icu\\.cc": [
     "+base/i18n/case_conversion.h",
-    "+base/i18n/i18n_constants.h",
     "+base/i18n/icu_string_conversions.h",
     "+third_party/icu/source/common/unicode/ucnv.h"
   ],
@@ -54,7 +53,18 @@ specific_include_rules = {
     "+third_party/brotli",
   ],
 
+  # The tests compress bodies with BrotliEncoderCompress() and check the error
+  # codes of the decoder.
+  "brotli_source_stream_unittest\\.cc": [
+    "+third_party/brotli",
+  ],
+
   "cert_compression\\.cc": [
+    "+third_party/brotli",
+  ],
+
+  # The test server compresses certificates with BrotliEncoderCompress().
+  "cert_compression_unittest\\.cc": [
     "+third_party/brotli",
   ],
 

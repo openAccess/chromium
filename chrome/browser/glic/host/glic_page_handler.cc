@@ -7,6 +7,7 @@
 #include <cmath>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
@@ -22,6 +23,7 @@
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/auth_controller.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
+#include "chrome/browser/glic/host/glic_provider_change_relaunch.h"
 #include "chrome/browser/glic/host/glic_web_client_access.h"
 #include "chrome/browser/glic/host/glic_web_client_handler.h"
 #include "chrome/browser/glic/host/glic_webui_contents_manager.h"
@@ -61,6 +63,7 @@ namespace {
 // Translates the wire enum into the browser-side vocabulary. Exhaustive with
 // no default so that a new mojom value cannot be added without deciding what
 // it means.
+// LINT.IfChange(ToClientLoadErrorReason)
 ClientLoadErrorReason ToClientLoadErrorReason(
     mojom::ClientLoadErrorReason reason) {
   switch (reason) {
@@ -94,8 +97,15 @@ ClientLoadErrorReason ToClientLoadErrorReason(
       return ClientLoadErrorReason::kGuestOriginBlocked;
     case mojom::ClientLoadErrorReason::kGuestApiNotAllowed:
       return ClientLoadErrorReason::kGuestApiNotAllowed;
+    case mojom::ClientLoadErrorReason::kPendingProviderChange:
+      return ClientLoadErrorReason::kPendingProviderChange;
+    case mojom::ClientLoadErrorReason::kGuestHttpClientError:
+      return ClientLoadErrorReason::kGuestHttpClientError;
+    case mojom::ClientLoadErrorReason::kGuestHttpServerError:
+      return ClientLoadErrorReason::kGuestHttpServerError;
   }
 }
+// LINT.ThenChange(//chrome/browser/glic/glic_enums.h:ClientLoadErrorReason)
 
 }  // namespace
 
@@ -129,6 +139,15 @@ GlicPageHandler::GlicPageHandler(
           base::BindRepeating(&GlicPageHandler::UpdateProfileReadyState,
                               base::Unretained(this))));
   UpdateProfileReadyState();
+
+  // Decided once per instance, when its host is created. GEiC requires
+  // NoWebview, so this WebUI only hosts Gemini-latched profiles and the only
+  // possible pending change is Gemini to GEiC.
+  if (host_->pending_provider_change() != GlicProviderChange::kNone) {
+    CHECK_EQ(host_->pending_provider_change(),
+             GlicProviderChange::kGeminiToGeic);
+    page_->ShowPendingProviderChange();
+  }
 }
 
 GlicPageHandler::~GlicPageHandler() {
@@ -221,12 +240,20 @@ void GlicPageHandler::NotifyWindowIntentToShow() {
   // synchronously by invocations in the same call stack as the show, which
   // would otherwise fail on the stale verdict and never see the retry. A page
   // that does not retry reasserts its failure in response to `IntentToShow()`.
-  host().SetClientLoadFailed(this, false);
+  host().ClearClientLoadFailed(this);
   page_->IntentToShow();
 }
 
-void GlicPageHandler::WaitForLoad(mojom::Page::WaitForLoadCallback callback) {
-  page_->WaitForLoad(std::move(callback));
+void GlicPageHandler::WaitForLoad(
+    base::OnceCallback<void(std::optional<ClientLoadErrorReason>)> callback) {
+  page_->WaitForLoad(base::BindOnce(
+      [](base::OnceCallback<void(std::optional<ClientLoadErrorReason>)>
+             callback,
+         std::optional<mojom::ClientLoadErrorReason> error_reason) {
+        std::move(callback).Run(
+            error_reason.transform(&ToClientLoadErrorReason));
+      },
+      std::move(callback)));
 }
 
 void GlicPageHandler::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
@@ -380,6 +407,10 @@ void GlicPageHandler::SignInAndClosePanel() {
   }
 }
 
+void GlicPageHandler::RelaunchForProviderChange() {
+  MaybeRelaunchForProviderChange(Profile::FromBrowserContext(browser_context_));
+}
+
 void GlicPageHandler::ResizeWidget(const gfx::Size& size,
                                    base::TimeDelta duration,
                                    ResizeWidgetCallback callback) {
@@ -395,8 +426,13 @@ void GlicPageHandler::NotifyClientLoadError(
   host().ClientLoadErrorOccurred(ToClientLoadErrorReason(reason));
 }
 
-void GlicPageHandler::OnClientLoadFailed(bool failed) {
-  host().SetClientLoadFailed(this, failed);
+void GlicPageHandler::OnClientLoadFailed(
+    std::optional<glic::mojom::ClientLoadErrorReason> error_reason) {
+  if (error_reason.has_value()) {
+    host().SetClientLoadFailed(this, ToClientLoadErrorReason(*error_reason));
+  } else {
+    host().ClearClientLoadFailed(this);
+  }
 }
 
 void GlicPageHandler::ClientReadyToShow(const mojom::OpenPanelInfo& open_info) {

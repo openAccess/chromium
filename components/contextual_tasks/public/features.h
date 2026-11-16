@@ -73,10 +73,6 @@ BASE_DECLARE_FEATURE(kEnableNotifyZeroStateRenderedCapability);
 // requests initiated from within an embedded Co-Browse <webview>.
 BASE_DECLARE_FEATURE(kContextualTasksSendFullVersionListEnabled);
 
-// If enabled, AIM will send the ContextualInputUploadType enum on
-// ContextualInputs.
-BASE_DECLARE_FEATURE(kContextualTasksSendContextualInputUploadType);
-
 // When contextual tasks is disabled and this flag is enabled, intecept the
 // contextual tasks URL and redirect to aim URL.
 BASE_DECLARE_FEATURE(kContextualTasksUrlRedirectToAimUrl);
@@ -104,6 +100,10 @@ BASE_DECLARE_FEATURE(kContextualTasksUnboundedMenu);
 // out of google.com, rather than just "Sign out".
 BASE_DECLARE_FEATURE(kContextualTasksAccountMenuGoogleComSignOutLabel);
 
+// Enables the single-tab menu item above the "Add tabs" row in the Contextual
+// Tasks context menu and tab picker.
+BASE_DECLARE_FEATURE(kContextualTasksSingleTabMenuItem);
+
 // Enables hiding the close button when in vertical tabs or immersive mode.
 BASE_DECLARE_FEATURE(kContextualTasksHideCloseButtonInVerticalTabs);
 
@@ -126,9 +126,6 @@ BASE_DECLARE_FEATURE(kContextualTasksLazyFetchClusterInfo);
 
 // Enables the use of APC comparison for webpages in the recontextualization
 BASE_DECLARE_FEATURE(kContextualTasksWebpageApcComparison);
-
-// Enables overriding side panel to show Bottom Sheet on demand.
-BASE_DECLARE_FEATURE(kContextualTasksOverrideShowBottomSheetOnLargeScreen);
 
 // When enabled, AIM must send the browser a message to initiate the cobrowse
 // experience for link clicks.
@@ -214,6 +211,28 @@ BASE_DECLARE_FEATURE(kAllowSignedOutUserInDesktopAndroid);
 // Desktop Android.
 bool IsAllowSignedOutUserInDesktopAndroidEnabled();
 
+// Enables Contextual Search ("Ask Google") entry points on Desktop Android,
+// including page context menu, app menu, image context menu, toolbar button,
+// and omnibox suggestions.
+BASE_DECLARE_FEATURE(kContextualTasksEntryPoints);
+
+extern const base::FeatureParam<bool>
+    kContextualTasksEntryPointsPageContextMenu;
+extern const base::FeatureParam<bool> kContextualTasksEntryPointsAppMenu;
+extern const base::FeatureParam<bool>
+    kContextualTasksEntryPointsImageContextMenu;
+extern const base::FeatureParam<bool> kContextualTasksEntryPointsToolbarButton;
+extern const base::FeatureParam<bool> kContextualTasksEntryPointsOmnibox;
+// Whether contextual zero-prefix suggestions are requested without Lens and
+// fulfilled in the Contextual Tasks side panel. Separate from `omnibox`, which
+// controls the static "Ask Google about this page" action.
+extern const base::FeatureParam<bool>
+    kContextualTasksEntryPointsOmniboxContextualSuggestions;
+
+// Returns whether Contextual Search entry points are enabled on Desktop
+// Android.
+bool IsContextualTasksEntryPointsEnabled();
+
 // When enabled, tracks cross-tab ABA search journeys (Tab A -> Search in Tab B
 // -> Return to Tab A) to trigger an in-product help promo for Contextual Tasks.
 BASE_DECLARE_FEATURE(kABASearchJourneys);
@@ -222,6 +241,7 @@ extern const base::FeatureParam<base::TimeDelta> kABASearchJourneysTtl;
 extern const base::FeatureParam<size_t> kABASearchJourneysMaxRingBufferSize;
 extern const base::FeatureParam<size_t> kABASearchJourneysMinQueryMatchLength;
 extern const base::FeatureParam<bool> kABASearchJourneysAllowIntermediateTabs;
+extern const base::FeatureParam<size_t> kABASearchJourneysMinWordsWithoutHint;
 
 bool IsABASearchJourneysEnabled();
 
@@ -233,6 +253,11 @@ size_t GetABASearchJourneysMinQueryMatchLength();
 // the source tab (A -> B -> C -> A) keeps the journey. Off by default, so only
 // A -> B -> A counts.
 bool ShouldAllowABASearchJourneysIntermediateTabs();
+
+// Minimum word count required for an ABA search journey's query when the search
+// results page didn't register any `AimPromoQueryHint`s. `0` (the default)
+// allows queries of any length.
+size_t GetABASearchJourneysMinWordsWithoutHint();
 
 BASE_DECLARE_FEATURE(kContextualTasksEnableSpatialModelToolbarLayout);
 
@@ -263,12 +288,18 @@ bool GetContextualTasksSpatialModelToolbarLayoutEnabled();
 
 bool GetContextualTasksSpatialModelToolbarLayoutNewThreadInOverflow();
 
+// Returns whether the device's form factor supports Contextual Tasks UI: all
+// desktop platforms, and desktop Android. Returns false on Android phones and
+// tablets.
+bool IsContextualTasksFormFactorSupported();
+
 // Returns whether the Contextual Tasks side panel container, coordinator,
 // and supporting response services should be initialized.
 // Returns true if full Contextual Tasks (`kContextualTasks`),
 // infrastructure-only mode (`kContextualTasksSidePanel`), or the Contextual
 // Tasks rearchitecture (`kContextualTasksRearchitecture` /
-// `kContextualTasksSidePanelRearchitecture`) is enabled.
+// `kContextualTasksSidePanelRearchitecture`) is enabled. Always returns false
+// when `IsContextualTasksFormFactorSupported()` is false.
 bool IsContextualTasksUIEnabled();
 
 bool IsStickyConversationEnabled();
@@ -366,13 +397,6 @@ extern const base::FeatureParam<double>
 // The minimum number of words required in a query for contextual tasks context
 // tab relevancy selection.
 extern const base::FeatureParam<int> kMinQueryWords;
-
-// Controls whether we set the upload type in CreateSearchUrl.
-extern const base::FeatureParam<bool> kSendContextualInputUploadTypeInSearchUrl;
-
-// Controls whether we set the upload type in CreateClientToAimRequest.
-extern const base::FeatureParam<bool>
-    kSendContextualInputUploadTypeInAimRequest;
 
 // Controls whether the contextual task page action should show
 extern const base::FeatureParam<EntryPointOption, true> kShowEntryPoint;
@@ -664,9 +688,16 @@ extern bool IsContextualTasksPinningV2Enabled();
 
 // Returns whether the ephemeral pin button refactor is enabled under Pinning
 // V2, routing the unpinned ephemeral toolbar button through
-// PinnedToolbarActions::ShowActionEphemerallyInToolbar instead of
-// ContextualTasksButton.
+// PinnedToolbarActions::ShowActionEphemerallyInToolbar.
 extern bool IsContextualTasksEphemeralPinButtonRefactorEnabled();
+
+// Returns whether the ephemeral toolbar button should stay visible alongside
+// the permanently pinned button
+// (`kEphemeralPinningVisibleWhenPermanentlyPinned`). Always false under the
+// ephemeral pin button refactor: there, the ephemeral and permanent buttons are
+// the same toolbar action, which can only be shown once, so the two-button mode
+// is unsupported.
+extern bool IsEphemeralPinningVisibleWhenPermanentlyPinnedEnabled();
 
 // Returns whether an ephemeral toolbar entry point for Contextual Tasks is
 // active, either the legacy `toolbar-ephemeral-branded` entry point param or
@@ -712,6 +743,7 @@ extern bool IsContextualTasksSidePanelRearchitectureExpandToFullTabEnabled();
 extern bool IsContextualTasksClobberActiveTabEnabled();
 extern bool IsContextualTasksTabBasedSuggestionsEnabled();
 extern bool IsContextualTasksUnboundedMenuEnabled();
+extern bool IsContextualTasksSingleTabMenuItemEnabled();
 
 inline constexpr char kContextualTasksSearchCapabilitiesHeaderName[] =
     "Chrome-Search-Capabilities-Version";
@@ -750,9 +782,6 @@ extern const char kContextualTasksBackButtonExpandsSidePanelName[];
 extern const char kContextualTasksBackButtonExpandsSidePanelDescription[];
 extern const char kContextualTasksCloseTabExpandsSidePanelName[];
 extern const char kContextualTasksCloseTabExpandsSidePanelDescription[];
-extern const char kContextualTasksOverrideShowBottomSheetOnLargeScreenName[];
-extern const char
-    kContextualTasksOverrideShowBottomSheetOnLargeScreenDescription[];
 extern const char kContextualTasksCookiePrefetchName[];
 extern const char kContextualTasksCookiePrefetchDescription[];
 extern const char kEnableContextualTasksPinButtonInToolbarName[];
@@ -781,6 +810,8 @@ extern const char kContextualTasksClobberActiveTabName[];
 extern const char kContextualTasksClobberActiveTabDescription[];
 extern const char kContextualTasksTabBasedSuggestionsName[];
 extern const char kContextualTasksTabBasedSuggestionsDescription[];
+extern const char kContextualTasksSingleTabMenuItemName[];
+extern const char kContextualTasksSingleTabMenuItemDescription[];
 extern const char kContextualTasksSidePanelTabStateName[];
 extern const char kContextualTasksSidePanelTabStateDescription[];
 extern const char kContextualTasksBypassDismissedCapName[];
@@ -799,6 +830,8 @@ extern const char kABASearchJourneysName[];
 extern const char kABASearchJourneysDescription[];
 extern const char kAllowSignedOutUserInDesktopAndroidName[];
 extern const char kAllowSignedOutUserInDesktopAndroidDescription[];
+extern const char kContextualTasksEntryPointsName[];
+extern const char kContextualTasksEntryPointsDescription[];
 
 }  // namespace flag_descriptions
 

@@ -34,7 +34,6 @@
 #include "ash/webui/os_feedback_ui/os_feedback_untrusted_ui.h"
 #include "ash/webui/personalization_app/personalization_app_ui.h"
 #include "ash/webui/print_management/print_management_ui.h"
-#include "ash/webui/recorder_app_ui/recorder_app_ui.h"
 #include "ash/webui/sanitize_ui/sanitize_ui.h"
 #include "ash/webui/scanner_feedback_ui/scanner_feedback_untrusted_ui.h"
 #include "ash/webui/scanning/scanning_ui.h"
@@ -77,10 +76,9 @@
 #include "chrome/browser/ash/system_web_apps/apps/media_app/media_app_guest_ui_config.h"
 #include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_utils.h"
 #include "chrome/browser/ash/system_web_apps/apps/projector_app/untrusted_projector_ui_config.h"
-#include "chrome/browser/ash/system_web_apps/apps/recorder_app/chrome_recorder_app_ui_delegate.h"
+#include "chrome/browser/ash/system_web_apps/apps/recorder_app/recorder_app_ui_config.h"
 #include "chrome/browser/ash/system_web_apps/apps/terminal_ui.h"
 #include "chrome/browser/ash/system_web_apps/apps/vc_background_ui/vc_background_ui_utils.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/feedback/feedback_dialog_utils.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
@@ -134,11 +132,9 @@
 #include "chrome/browser/ui/webui/nearby_internals/nearby_internals_ui.h"
 #include "chrome/browser/ui/webui/nearby_share/nearby_share_dialog_ui.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
-#include "chromeos/ash/components/consent_auditor/consent_auditor_provider.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/manta/manta_service_provider.h"
 #include "chromeos/ash/components/media_device_salt/media_device_salt_service_provider.h"
-#include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/user_manager/user_names.h"
 #include "content/public/browser/webui_config.h"
@@ -299,43 +295,6 @@ std::unique_ptr<content::WebUIConfig> MakeCameraAppUIConfig() {
 
   return std::make_unique<CameraAppUIConfig>(create_controller_func);
 }
-
-// `local_state` and `application_locale_storage` must not be null and must
-// outlive the returned config.
-std::unique_ptr<content::WebUIConfig> MakeRecorderAppUIConfig(
-    PrefService* local_state,
-    const ApplicationLocaleStorage* application_locale_storage) {
-  CHECK(local_state);
-  CHECK(application_locale_storage);
-  CreateWebUIControllerFunc create_controller_func = base::BindRepeating(
-      [](PrefService* local_state,
-         const ApplicationLocaleStorage* application_locale_storage,
-         content::WebUI* web_ui,
-         const GURL& url) -> std::unique_ptr<content::WebUIController> {
-        Profile* profile = Profile::FromWebUI(web_ui);
-        const AccountId& account_id =
-            CHECK_DEREF(AnnotatedAccountId::Get(profile));
-        signin::IdentityManager* identity_manager =
-            IdentityManagerProvider::Get().Find(account_id);
-        consent_auditor::ConsentAuditor* consent_auditor =
-            ConsentAuditorProvider::Get().Find(account_id);
-        media_device_salt::MediaDeviceSaltService* media_device_salt_service =
-            MediaDeviceSaltServiceProvider::Get().Find(account_id);
-
-        auto delegate = std::make_unique<ChromeRecorderAppUIDelegate>(
-            application_locale_storage, g_browser_process->variations_service(),
-            user_manager::UserManager::Get(), account_id, identity_manager,
-            consent_auditor);
-        return std::make_unique<RecorderAppUI>(local_state, web_ui,
-                                               std::move(delegate),
-                                               media_device_salt_service);
-      },
-      base::Unretained(local_state),
-      base::Unretained(application_locale_storage));
-
-  return std::make_unique<RecorderAppUIConfig>(create_controller_func);
-}
-
 std::unique_ptr<content::WebUIConfig> MakeDemoModeAppUntrustedUIConfig() {
   auto create_controller_func = base::BindRepeating(
       [](content::WebUI* web_ui,
@@ -408,12 +367,22 @@ AshWebUIConfigManager* AshWebUIConfigManager::GetInstance() {
 AshWebUIConfigManager::AshWebUIConfigManager(
     PrefService* local_state,
     const ApplicationLocaleStorage* application_locale_storage,
+    MetricsServiceGetter metrics_service_getter,
+    variations::VariationsService* variations_service,
     policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory)
     : local_state_(CHECK_DEREF(local_state)),
       application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      metrics_service_getter_(std::move(metrics_service_getter)),
       browser_policy_connector_ash_(browser_policy_connector_ash),
-      shared_url_loader_factory_(std::move(shared_url_loader_factory)) {
+      shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      variations_service_(variations_service) {
+  CHECK(metrics_service_getter_);
+  if (variations_service_) {
+    variations_service_observation_.Observe(variations_service_);
+  } else {
+    CHECK_IS_TEST();
+  }
   if (!browser_policy_connector_ash_) {
     CHECK_IS_TEST();
   }
@@ -433,6 +402,7 @@ AshWebUIConfigManager::~AshWebUIConfigManager() {
 
 void AshWebUIConfigManager::RegisterWebUIConfigs() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(variations_service_);
   CHECK(browser_policy_connector_ash_);
   CHECK(shared_url_loader_factory_);
   // Add trusted `WebUIConfig`s (chrome://) for Ash ChromeOS to the list here.
@@ -443,7 +413,11 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
   //
   // Pass `is_stateful=true` for configs that capture dependencies injected via
   // `AshWebUIConfigManager` so they are unregistered before those dependencies
-  // are torn down.
+  // are torn down. `VariationsService` and `MetricsService` are exceptions:
+  // both are destroyed in `BrowserProcessImpl::StartTearDown()`, before the
+  // unregistration (`VariationsService` is cleared via
+  // `OnVariationsServiceDestroyed()`, and `MetricsService` is accessed via
+  // `MetricsServiceGetter` until crbug.com/558489113 is resolved).
   AddWebUIConfig(MakeCameraAppUIConfig(), /*is_stateful=*/false);
   AddWebUIConfig(std::make_unique<cellular_setup::MobileSetupUIConfig>(
                      &application_locale_storage_.get()),
@@ -494,10 +468,22 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
                                       ChromeFilesInternalsUIDelegate>(),
       /*is_stateful=*/false);
   AddWebUIConfig(
-      MakeComponentConfigWithDelegate<file_manager::FileManagerUIConfig,
-                                      file_manager::FileManagerUI,
-                                      ChromeFileManagerUIDelegate>(),
-      /*is_stateful=*/false);
+      std::make_unique<file_manager::FileManagerUIConfig>(base::BindRepeating(
+          [](const ApplicationLocaleStorage* application_locale_storage,
+             const variations::VariationsService* variations_service,
+             content::WebUI* web_ui,
+             const GURL& url) -> std::unique_ptr<content::WebUIController> {
+            return std::make_unique<file_manager::FileManagerUI>(
+                CHECK_DEREF(application_locale_storage).GetTag(),
+                CHECK_DEREF(variations_service), web_ui,
+                std::make_unique<ChromeFileManagerUIDelegate>(web_ui));
+          },
+          base::Unretained(&application_locale_storage_.get()),
+          // Safe because `CreateWebUIController()` is never called after
+          // `BrowserProcessImpl::StartTearDown()` destroys
+          // `VariationsService`.
+          base::Unretained(variations_service_.get()))),
+      /*is_stateful=*/true);
   AddWebUIConfig(std::make_unique<FirmwareUpdateAppUIConfig>(),
                  /*is_stateful=*/false);
   AddWebUIConfig(std::make_unique<FocusModeUIConfig>(), /*is_stateful=*/false);
@@ -545,7 +531,8 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
   AddWebUIConfig(
       std::make_unique<OobeUIConfig>(
           &local_state_.get(), &application_locale_storage_.get(),
-          browser_policy_connector_ash_.get(), shared_url_loader_factory_),
+          metrics_service_getter_, browser_policy_connector_ash_.get(),
+          shared_url_loader_factory_),
       /*is_stateful=*/true);
   AddWebUIConfig(std::make_unique<OSCreditsUI>(), /*is_stateful=*/false);
   AddWebUIConfig(MakeOSFeedbackUIConfig(&application_locale_storage_.get()),
@@ -566,6 +553,7 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
           base::BindRepeating(
               [](PrefService* local_state,
                  const ApplicationLocaleStorage* application_locale_storage,
+                 const variations::VariationsService* variations_service,
                  scoped_refptr<network::SharedURLLoaderFactory>
                      shared_url_loader_factory,
                  content::WebUI* web_ui,
@@ -577,11 +565,16 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
                     MantaServiceProvider::Get().Find(account_id);
                 return personalization_app::CreatePersonalizationAppUI(
                     local_state, application_locale_storage,
+                    CHECK_DEREF(variations_service),
                     std::move(shared_url_loader_factory), web_ui, url,
                     manta_service);
               },
               base::Unretained(&local_state_.get()),
               base::Unretained(&application_locale_storage_.get()),
+              // Safe because `CreateWebUIController()` is never called after
+              // `BrowserProcessImpl::StartTearDown()` destroys
+              // `VariationsService`.
+              base::Unretained(variations_service_.get()),
               shared_url_loader_factory_)),
       /*is_stateful=*/true);
   AddWebUIConfig(std::make_unique<PowerUIConfig>(), /*is_stateful=*/false);
@@ -593,8 +586,9 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
       /*is_stateful=*/false);
   AddWebUIConfig(std::make_unique<multidevice::ProximityAuthUIConfig>(),
                  /*is_stateful=*/false);
-  AddWebUIConfig(MakeRecorderAppUIConfig(&local_state_.get(),
-                                         &application_locale_storage_.get()),
+  AddWebUIConfig(std::make_unique<RecorderAppUIConfig>(
+                     &local_state_.get(), &application_locale_storage_.get(),
+                     variations_service_.get()),
                  /*is_stateful=*/true);
   AddWebUIConfig(
       std::make_unique<RemoteMaintenanceCurtainUIConfig>(&local_state_.get()),
@@ -630,6 +624,7 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
       std::make_unique<vc_background_ui::VcBackgroundUIConfig>(
           base::BindRepeating(
               [](const ApplicationLocaleStorage* application_locale_storage,
+                 const variations::VariationsService* variations_service,
                  scoped_refptr<network::SharedURLLoaderFactory>
                      shared_url_loader_factory,
                  content::WebUI* web_ui,
@@ -640,11 +635,15 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
                 manta::MantaService* manta_service =
                     MantaServiceProvider::Get().Find(account_id);
                 return vc_background_ui::CreateVcBackgroundUI(
-                    application_locale_storage,
+                    application_locale_storage, CHECK_DEREF(variations_service),
                     std::move(shared_url_loader_factory), web_ui, url,
                     manta_service);
               },
               base::Unretained(&application_locale_storage_.get()),
+              // Safe because `CreateWebUIController()` is never called after
+              // `BrowserProcessImpl::StartTearDown()` destroys
+              // `VariationsService`.
+              base::Unretained(variations_service_.get()),
               shared_url_loader_factory_)),
       /*is_stateful=*/true);
   AddWebUIConfig(std::make_unique<GrowthInternalsUIConfig>(),
@@ -662,6 +661,7 @@ void AshWebUIConfigManager::RegisterWebUIConfigs() {
 
 void AshWebUIConfigManager::RegisterUntrustedWebUIConfigs() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK(variations_service_);
   // Add untrusted `WebUIConfig`s for Ash ChromeOS to the list here.
   //
   // All `WebUIConfig`s should be registered here, irrespective of whether their
@@ -670,7 +670,10 @@ void AshWebUIConfigManager::RegisterUntrustedWebUIConfigs() {
   //
   // Pass `is_stateful=true` for configs that capture dependencies injected via
   // `AshWebUIConfigManager` so they are unregistered before those dependencies
-  // are torn down.
+  // are torn down. `VariationsService` is the exception: it is destroyed in
+  // `BrowserProcessImpl::StartTearDown()`, before the unregistration, so
+  // configs that capture it must observe it and reset their pointer in
+  // `OnVariationsServiceDestroyed()`.
   AddUntrustedWebUIConfig(
       std::make_unique<BocaUIConfig>(&application_locale_storage_.get()),
       /*is_stateful=*/true);
@@ -683,12 +686,14 @@ void AshWebUIConfigManager::RegisterUntrustedWebUIConfigs() {
   AddUntrustedWebUIConfig(
       std::make_unique<eche_app::UntrustedEcheAppUIConfig>(),
       /*is_stateful=*/false);
-  AddUntrustedWebUIConfig(std::make_unique<MediaAppGuestUIConfig>(
-                              &application_locale_storage_.get()),
-                          /*is_stateful=*/true);
-  AddUntrustedWebUIConfig(std::make_unique<HelpAppUntrustedUIConfig>(
-                              &application_locale_storage_.get()),
-                          /*is_stateful=*/true);
+  AddUntrustedWebUIConfig(
+      std::make_unique<MediaAppGuestUIConfig>(
+          &application_locale_storage_.get(), variations_service_.get()),
+      /*is_stateful=*/true);
+  AddUntrustedWebUIConfig(
+      std::make_unique<HelpAppUntrustedUIConfig>(
+          &application_locale_storage_.get(), variations_service_.get()),
+      /*is_stateful=*/true);
   AddUntrustedWebUIConfig(std::make_unique<CameraAppUntrustedUIConfig>(),
                           /*is_stateful=*/false);
   AddUntrustedWebUIConfig(
@@ -718,6 +723,15 @@ void AshWebUIConfigManager::RegisterUntrustedWebUIConfigs() {
       std::make_unique<SampleSystemWebAppUntrustedUIConfig>(),
       /*is_stateful=*/false);
 #endif  // !defined(OFFICIAL_BUILD)
+}
+
+void AshWebUIConfigManager::OnVariationsServiceDestroyed() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // `VariationsService` is destroyed in `BrowserProcessImpl::StartTearDown()`,
+  // before `this` is destroyed in
+  // `ChromeBrowserMainPartsAsh::PostMainMessageLoopRun()`.
+  variations_service_observation_.Reset();
+  variations_service_ = nullptr;
 }
 
 void AshWebUIConfigManager::AddWebUIConfig(

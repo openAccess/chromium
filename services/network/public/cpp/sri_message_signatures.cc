@@ -5,6 +5,7 @@
 #include "services/network/public/cpp/sri_message_signatures.h"
 
 #include <algorithm>
+#include <array>
 
 #include "base/base64.h"
 #include "base/compiler_specific.h"
@@ -35,14 +36,20 @@ const size_t kEd25519KeyLength = 32;
 const size_t kEd25519SigLength = 64;
 constexpr std::string_view kAcceptSignature = "accept-signature";
 
-constexpr std::array<std::string_view, 9u> kDerivedComponents = {
-    "@authority", "@query-param", "@query",  "@method",
-    "@path",      "@scheme",      "@status", "@target-uri",
+constexpr auto kDerivedComponents = std::to_array<std::string_view>({
+    "@authority",
+    "@query-param",
+    "@query",
+    "@method",
+    "@path",
+    "@scheme",
+    "@status",
+    "@target-uri",
     // TODO(383409584): We should support the remaining derived components from
     // https://www.rfc-editor.org/rfc/rfc9421.html#name-derived-components:
     //
     // "@request-target"
-};
+});
 
 ParameterType ParamNameToType(std::string_view name) {
   if (name == "name") {
@@ -176,7 +183,6 @@ std::optional<mojom::SRIMessageSignatureComponentPtr> ParseComponent(
     // The `@query-param` derived component must have only a `name` parameter
     // with a string value, and a `req` parameter.
     if (*name == "@query-param") {
-      std::string name_value;
       if (!ItemHasStringParam(component, "name") ||
           !ItemHasBooleanParam(component, "req") ||
           component.params.size() != 2u) {
@@ -220,6 +226,15 @@ std::optional<std::string> SerializeByteSequence(std::string_view input) {
           net::structured_headers::ItemView::byte_sequence, input));
 }
 
+// Percent-decodes `input` (including replacing `+` with space) and re-encodes
+// all characters except RFC 3986 unreserved characters, per Step 1 and Step 2
+// of https://www.rfc-editor.org/rfc/rfc9421.html#name-query-parameters.
+std::string PercentEncodeQueryPiece(std::string_view input) {
+  return base::EscapeAllExceptUnreserved(base::UnescapeBinaryURLComponent(
+      input, base::UnescapeRule::NORMAL |
+                 base::UnescapeRule::REPLACE_PLUS_WITH_SPACE));
+}
+
 // net::StructuredHeaders doesn't expose the ability to serialize a parameter
 // list outside the context of a parameterized item. So, we'll do it ourselves
 // by serializing each individually as an Item.
@@ -248,10 +263,16 @@ std::string SerializeComponentParams(
   for (const ComponentParameterPtr& param : params) {
     param_list << ';';
     switch (param->type) {
-      case ParameterType::kName:
+      case ParameterType::kName: {
         DCHECK(param->value.has_value());
-        param_list << "name=\"" << *param->value << "\"";
+        std::optional<std::string> serialized_item =
+            net::structured_headers::SerializeItem(
+                net::structured_headers::ItemView(
+                    net::structured_headers::ItemView::string, *param->value));
+        DCHECK(serialized_item.has_value());
+        param_list << "name=" << serialized_item.value();
         break;
+      }
       case ParameterType::kRequest:
         param_list << "req";
         break;
@@ -344,6 +365,7 @@ std::string SerializeDerivedComponent(
     // https://www.rfc-editor.org/rfc/rfc9421.html#name-query
     return base::StrCat({"?", request_url.GetQuery()});
   } else if (component->name == "@query-param") {
+    // https://www.rfc-editor.org/rfc/rfc9421.html#name-query-parameters
     DCHECK(component->params.size() == 2u);
     auto name_it =
         std::find_if(component->params.begin(), component->params.end(),
@@ -351,10 +373,10 @@ std::string SerializeDerivedComponent(
                        return p->type == ParameterType::kName;
                      });
     DCHECK(name_it != component->params.end() && (*name_it)->value.has_value());
-    std::string param_value;
-    if (net::GetValueForKeyInQuery(request_url, *(*name_it)->value,
-                                   &param_value)) {
-      return base::EscapeAllExceptUnreserved(param_value);
+    for (net::QueryIterator it(request_url); !it.IsAtEnd(); it.Advance()) {
+      if (PercentEncodeQueryPiece(it.GetKey()) == *(*name_it)->value) {
+        return PercentEncodeQueryPiece(it.GetValue());
+      }
     }
     return std::string();
   } else if (component->name == "@method") {
@@ -770,8 +792,9 @@ ConstructSignatureBaseImpl(const mojom::SRIMessageSignaturePtr& signature,
         // Fortunately, we only support one header at the moment, so the list is
         // manageable.
         if (component->name == "unencoded-digest") {
-          // TODO(mkwst): We shouldn't parse this header both here and in Blink.
-          // Ideally we'll migrate the implementation into the network stack.
+          // Unencoded-Digest is parsed into `network::mojom::UnencodedDigests`
+          // in the network stack upon receiving headers. For signature-base
+          // construction, re-serialize the dictionary as required by RFC 9421.
           std::optional<net::structured_headers::Dictionary> dict =
               net::structured_headers::ParseDictionary(header.value());
           if (!dict.has_value()) {

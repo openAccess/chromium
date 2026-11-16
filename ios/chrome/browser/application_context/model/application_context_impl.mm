@@ -5,6 +5,8 @@
 #import "ios/chrome/browser/application_context/model/application_context_impl.h"
 
 #import <algorithm>
+#import <optional>
+#import <utility>
 #import <vector>
 
 #import "base/base_paths.h"
@@ -15,6 +17,8 @@
 #import "base/files/file_path.h"
 #import "base/functional/bind.h"
 #import "base/functional/callback_helpers.h"
+#import "base/i18n/language_tag.h"
+#import "base/i18n/tag_converters.h"
 #import "base/memory/ptr_util.h"
 #import "base/metrics/histogram_functions.h"
 #import "base/path_service.h"
@@ -105,6 +109,7 @@
 
 #if !BUILDFLAG(USE_BLINK)
 #import "base/memory/memory_pressure_listener_registry.h"
+#import "base/memory_coordinator/memory_pressure_source.h"
 #endif
 
 ApplicationContextImpl::ApplicationContextImpl(
@@ -116,6 +121,7 @@ ApplicationContextImpl::ApplicationContextImpl(
       local_state_task_runner_(local_state_task_runner)
 #if !BUILDFLAG(USE_BLINK)
       ,
+      memory_pressure_source_(std::make_unique<base::MemoryPressureSource>()),
       memory_pressure_listener_registry_(
           std::make_unique<base::MemoryPressureListenerRegistry>())
 #endif
@@ -123,7 +129,10 @@ ApplicationContextImpl::ApplicationContextImpl(
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
 
-  application_locale_storage_->Set(locale);
+  if (std::optional<base::i18n::LanguageTag> locale_tag =
+          base::i18n::GetLanguageTagFromString(locale)) {
+    application_locale_storage_->SetTag(*std::move(locale_tag));
+  }
   application_country_ = country;
 
   update_client::UpdateQueryParams::SetDelegate(

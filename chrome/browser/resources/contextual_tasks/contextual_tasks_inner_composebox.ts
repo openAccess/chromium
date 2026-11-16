@@ -267,10 +267,12 @@ export class
 
   override updated(changedProperties: PropertyValues<this>) {
     super.updated(changedProperties);
-    if (changedProperties.has('result') ||
+    if (changedProperties.has('input') || changedProperties.has('result') ||
         changedProperties.has('showDropdown')) {
       // Fires `show-suggestion-activity-link`; the wrapper owns the link UI.
-      this.shouldShowSuggestionActivityLink();
+      this.fire(
+          'show-suggestion-activity-link',
+          this.shouldShowSuggestionActivityLink());
     }
   }
 
@@ -316,18 +318,6 @@ export class
     // `result-changed` only for accepted results.
     const isValidResult =
         !this.submitting && result.queryId === this.activeQueryId;
-    if (isValidResult && this.composeboxNoFlickerSuggestionsFix &&
-        this.showTypedSuggest &&
-        !this.haveReceivedSynchronousAutocompleteResponse) {
-      // First typed-suggest response can collapse the dropdown; carry over
-      // the prior non-verbatim matches.
-      if (this.result && this.result.matches.length > 0 &&
-          result.matches.length <= 1) {
-        result.matches.push(...this.result.matches.filter(
-            match => match.type !== 'search-what-you-typed'));
-      }
-      this.haveReceivedSynchronousAutocompleteResponse = true;
-    }
     super.onAutocompleteResultChanged(result);
     if (isValidResult) {
       this.fire('result-changed', result);

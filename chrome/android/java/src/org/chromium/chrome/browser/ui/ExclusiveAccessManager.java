@@ -78,9 +78,7 @@ public class ExclusiveAccessManager
                         }
                         mLatestFullscreenOptions = null;
                         if (tab == null) {
-                            ExclusiveAccessManagerJni.get()
-                                    .exitExclusiveAccess(
-                                            mExclusiveAccessManagerAndroidNativePointer);
+                            exitAllExclusiveAccess();
                         } else {
                             deactivateTab(tab);
                         }
@@ -88,18 +86,6 @@ public class ExclusiveAccessManager
                 });
         mTabModelObserver =
                 new TabModelObserver() {
-                    @Override
-                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        if (mExclusiveAccessManagerAndroidNativePointer == null) {
-                            return;
-                        }
-                        mLatestFullscreenOptions = null;
-                        ExclusiveAccessManagerJni.get()
-                                .onTabClosing(
-                                        mExclusiveAccessManagerAndroidNativePointer,
-                                        tab.getWebContents());
-                    }
-
                     @Override
                     public void willCloseTabs(
                             List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
@@ -251,6 +237,20 @@ public class ExclusiveAccessManager
                 .exitFullscreenModeForTab(mExclusiveAccessManagerAndroidNativePointer, webContents);
     }
 
+    /**
+     * Toggles browser-initiated fullscreen mode (e.g. from the 3-dot app menu button).
+     *
+     * @param userInitiated whether the toggle was directly initiated by the user.
+     */
+    public void toggleBrowserFullscreenMode(boolean userInitiated) {
+        if (mExclusiveAccessManagerAndroidNativePointer == null) {
+            return;
+        }
+        ExclusiveAccessManagerJni.get()
+                .toggleBrowserFullscreenMode(
+                        mExclusiveAccessManagerAndroidNativePointer, userInitiated);
+    }
+
     /** Force exit of all exclusive access controllers */
     public void exitExclusiveAccess() {
         if (mExclusiveAccessManagerAndroidNativePointer == null) {
@@ -259,7 +259,27 @@ public class ExclusiveAccessManager
         mLatestFullscreenOptions = null;
         ExclusiveAccessManagerJni.get()
                 .exitExclusiveAccess(mExclusiveAccessManagerAndroidNativePointer);
-        // Marking state in case of enabled locks without fullscreen
+        // Re-check exclusive access state: e.g. when in nested fullscreen (tab fullscreen on top
+        // of browser immersive mode), exiting once only exits tab fullscreen while
+        // browser immersive mode remains active.
+        mExclusiveAccessState.set(hasExclusiveAccess());
+    }
+
+    /**
+     * Exits all active exclusive access modes, including both tab fullscreen and browser immersive
+     * mode when in nested fullscreen (e.g. when the activity is hidden or when restoring the window
+     * into desktop windowing mode).
+     */
+    private void exitAllExclusiveAccess() {
+        if (mExclusiveAccessManagerAndroidNativePointer == null) {
+            return;
+        }
+        mLatestFullscreenOptions = null;
+        ExclusiveAccessManagerJni.get()
+                .exitAllExclusiveAccess(mExclusiveAccessManagerAndroidNativePointer);
+        // Unlike single-step exitExclusiveAccess() (where browser immersive mode may remain active
+        // after exiting nested tab fullscreen), exitAllExclusiveAccess() tears down all exclusive
+        // access layers at once, so no exclusive access remains active.
         mExclusiveAccessState.set(false);
     }
 
@@ -309,8 +329,10 @@ public class ExclusiveAccessManager
                         .preHandleKeyboardEvent(
                                 mExclusiveAccessManagerAndroidNativePointer, nativeKeyEvent);
         if (handled) {
-            // Marking state when escape key was consumed in case of no changes in the fullscreen
-            mExclusiveAccessState.set(false);
+            // Re-check exclusive access state when the Escape key was consumed (e.g. when in
+            // nested fullscreen, pressing Esc once exits tab fullscreen back to browser immersive
+            // mode, so exclusive access remains active).
+            mExclusiveAccessState.set(hasExclusiveAccess());
         }
         return handled;
     }
@@ -430,10 +452,10 @@ public class ExclusiveAccessManager
         }
 
         if (isInDesktopWindow && mFullscreenManager.getPersistentFullscreenMode()) {
-            mLatestFullscreenOptions = null;
-            // Exiting when fullscreen should be lost
-            ExclusiveAccessManagerJni.get()
-                    .exitExclusiveAccess(mExclusiveAccessManagerAndroidNativePointer);
+            // When the window transitions into desktop windowing mode, exit all fullscreen layers
+            // (both tab fullscreen and browser immersive mode) so browser immersive mode does not
+            // remain active inside a desktop window.
+            exitAllExclusiveAccess();
         }
     }
 
@@ -474,6 +496,9 @@ public class ExclusiveAccessManager
                 JniPtr<NativeExclusiveAccessManagerAndroid> self,
                 @Nullable WebContents webContents);
 
+        void toggleBrowserFullscreenMode(
+                JniPtr<NativeExclusiveAccessManagerAndroid> self, boolean userInitiated);
+
         boolean isFullscreenForTabOrPending(
                 JniPtr<NativeExclusiveAccessManagerAndroid> self, WebContents webContents);
 
@@ -501,6 +526,8 @@ public class ExclusiveAccessManager
         boolean isPointerLocked(JniPtr<NativeExclusiveAccessManagerAndroid> self);
 
         void exitExclusiveAccess(JniPtr<NativeExclusiveAccessManagerAndroid> self);
+
+        void exitAllExclusiveAccess(JniPtr<NativeExclusiveAccessManagerAndroid> self);
 
         boolean hasExclusiveAccess(JniPtr<NativeExclusiveAccessManagerAndroid> self);
 

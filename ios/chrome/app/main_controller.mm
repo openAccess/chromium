@@ -41,6 +41,7 @@
 #import "components/metrics/metrics_service.h"
 #import "components/password_manager/core/common/password_manager_features.h"
 #import "components/password_manager/core/common/passwords_directory_util_ios.h"
+#import "components/password_manager/core/common/remote_actor/remote_actor_features.h"
 #import "components/policy/core/common/management/management_service.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
 #import "components/prefs/pref_change_registrar.h"
@@ -112,6 +113,7 @@
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
 #import "ios/chrome/browser/omaha/model/omaha_service.h"
 #import "ios/chrome/browser/passwords/model/password_manager_util_ios.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_app_agent.h"
 #import "ios/chrome/browser/policy/model/browser_management_service_factory.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/screenshot/model/screenshot_metrics_recorder.h"
@@ -127,7 +129,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_ios.h"
@@ -238,6 +239,9 @@ NSString* const kLogInstallAttribution = @"LogInstallAttribution";
 
 // Constant for deferred MetricKit registration.
 NSString* const kRegisterMetricKit = @"RegisterMetricKit";
+
+// Constant for deferred registration of RemoteActorAppAgent.
+NSString* const kAddRemoteActorAppAgent = @"AddRemoteActorAppAgent";
 
 // Adapted from chrome/browser/ui/browser_init.cc.
 void RegisterComponentsForUpdate() {
@@ -1479,6 +1483,7 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 
   [self scheduleProcessingShareExtensionFiles];
   [self scheduleMetricKitRegistration];
+  [self scheduleRemoteActorAppAgent];
 }
 
 - (void)scheduleDeleteTempDownloadsDirectory {
@@ -1579,6 +1584,20 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
       enqueueBlockNamed:kRegisterMetricKit
                   block:^{
                     [weakMetricsMediator registerMetricKitSubscriberIfNeeded];
+                  }];
+}
+
+- (void)scheduleRemoteActorAppAgent {
+  if (!password_manager::features::
+          RemoteActorCredentialSharingGeminiEnabled()) {
+    return;
+  }
+  __weak __typeof(self) weakSelf = self;
+  [_appState.deferredRunner
+      enqueueBlockNamed:kAddRemoteActorAppAgent
+                  block:^{
+                    [weakSelf.appState
+                        addAgent:[[RemoteActorAppAgent alloc] init]];
                   }];
 }
 
@@ -1686,6 +1705,14 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 
 - (void)activateBlockingScene:(UIScene*)requestingScene {
   id<UIBlockerTarget> uiBlocker = self.appState.currentUIBlocker;
+  if (!uiBlocker) {
+    for (SceneState* sceneState in self.appState.connectedScenes) {
+      if (sceneState.scene == requestingScene) {
+        uiBlocker = sceneState.profileState.currentUIBlocker;
+        break;
+      }
+    }
+  }
   if (!uiBlocker) {
     return;
   }

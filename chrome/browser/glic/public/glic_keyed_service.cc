@@ -25,7 +25,6 @@
 #include "chrome/browser/actor/actor_task_metadata.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/ui/actor_ui_state_manager_interface.h"
-#include "chrome/browser/browser_actuator/transport/transport_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/common/application_hotkey_delegate.h"
@@ -34,7 +33,6 @@
 #include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_controller.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_transport_handler.h"
 #include "chrome/browser/glic/glic_enums.h"
-#include "chrome/browser/glic/glic_metrics_provider.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/glic_warming_checks.h"
@@ -53,12 +51,14 @@
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_fre_store.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/public/service/glic_activity_manager.h"
 #include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
+#include "chrome/browser/glic/service/glic_activity_manager_impl.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_service_factory.h"
@@ -67,6 +67,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
 #include "chrome/browser/sync/device_info_sync_service_factory.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -78,12 +79,12 @@
 #include "chrome/common/chrome_switches.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/browser_actuator/public/features.h"
-#include "components/browser_actuator/public/transport/transport_channel.h"
-#include "components/browser_actuator/public/transport/transport_handler_factory_registry.h"
-#include "components/browser_actuator/public/transport/transport_service.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
 #include "components/prefs/pref_service.h"
+#include "components/stream_transport/public/transport_channel.h"
+#include "components/stream_transport/public/transport_handler_factory_registry.h"
+#include "components/stream_transport/public/transport_service.h"
 #include "components/sync_device_info/device_info_sync_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_context.h"
@@ -200,7 +201,9 @@ GlicKeyedService::GlicKeyedService(
           enabling_.get(),
           contextual_cueing_service)),
       activity_manager_(base::FeatureList::IsEnabled(features::kGlicActivityHub)
-                            ? std::make_unique<GlicActivityManager>(profile_)
+                            ? std::make_unique<GlicActivityManagerImpl>(
+                                  profile_,
+                                  *instance_coordinator_)
                             : nullptr),
       legacy_activity_manager_(
           base::FeatureList::IsEnabled(features::kGlicActivityHub)
@@ -227,11 +230,6 @@ GlicKeyedService::GlicKeyedService(
       tab_favicon_observer_(std::make_unique<GlicTabFaviconObserver>(profile)) {
   CHECK(GlicEnabling::IsProfileEligible(Profile::FromBrowserContext(profile)));
 
-  // Reconcile `prefs::kGlicPromotionSourceCohort` across loaded profiles and
-  // register the in-memory synthetic trial on startup if any profile has a
-  // persisted cohort (or mark `MultiProfileDetected` if profiles conflict).
-  GlicMetricsProvider::RegisterPromotionSourceSyntheticTrial(profile);
-
   GlicEnabling::RegisterDefaultHotkeyScopeSyntheticTrial(profile);
 
   metrics_->RecordGlicProfilePreferences();
@@ -254,6 +252,10 @@ GlicKeyedService::GlicKeyedService(
     TryPreload(GlicWarmingTrigger::kStartup);
   }
 
+#if !BUILDFLAG(IS_ANDROID)
+  GlicMediaIntegration::EnsurePeerConnectionTrackerInitialized(profile_);
+#endif
+
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&GlicKeyedService::InitializeAfterConstruction,
                                 GetWeakPtr()));
@@ -264,13 +266,13 @@ GlicKeyedService::GlicKeyedService(
               &GlicKeyedService::OnExperimentalTriggeringStateChanged,
               base::Unretained(this)));
 
-  if (base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
+  if (provider_spec().SupportsFeature(GlicFeature::kExperimentalTriggering) &&
+      base::FeatureList::IsEnabled(browser_actuator::kBrowserActuator) &&
       base::FeatureList::IsEnabled(
           browser_actuator::
               kEnableBrowserActuatorForGlicExperimentalTriggering)) {
-    browser_actuator::transport::TransportService* transport_service =
-        browser_actuator::transport::TransportServiceFactory::GetForProfile(
-            profile_);
+    stream_transport::TransportService* transport_service =
+        stream_transport::TransportServiceFactory::GetForProfile(profile_);
     if (transport_service && transport_service->GetChannel()) {
       experimental_triggering_transport_handler_factory_ =
           std::make_unique<GlicExperimentalTriggeringTransportHandlerFactory>(
@@ -324,9 +326,8 @@ void GlicKeyedService::Shutdown() {
   cold_warming_scheduler_.Cancel();
   gemini_web_warming_scheduler_.Cancel();
   if (experimental_triggering_transport_handler_factory_) {
-    browser_actuator::transport::TransportService* transport_service =
-        browser_actuator::transport::TransportServiceFactory::GetForProfile(
-            profile_);
+    stream_transport::TransportService* transport_service =
+        stream_transport::TransportServiceFactory::GetForProfile(profile_);
     if (transport_service && transport_service->GetChannel()) {
       transport_service->GetChannel()
           ->GetHandlerFactoryRegistry()
@@ -336,10 +337,10 @@ void GlicKeyedService::Shutdown() {
     experimental_triggering_transport_handler_factory_.reset();
   }
   experimental_triggering_state_subscription_ = {};
-  instance_coordinator().Shutdown();
   if (activity_manager_) {
     activity_manager_->Shutdown();
   }
+  instance_coordinator().Shutdown();
   if (legacy_activity_manager_) {
     legacy_activity_manager_->Shutdown();
   }
@@ -401,10 +402,6 @@ void GlicKeyedService::CloseAndShutdown(
   instance_coordinator().CloseAndShutdownInstanceWithFrame(render_frame_host);
 }
 
-void GlicKeyedService::CloseFloatingPanel() {
-  instance_coordinator().Close({});
-}
-
 GlicInstanceCoordinator& GlicKeyedService::instance_coordinator() const {
   CHECK(instance_coordinator_);
   return *instance_coordinator_.get();
@@ -423,10 +420,6 @@ GlicKeyedService::active_instance_sharing_manager() {
 bool GlicKeyedService::IsPanelShowingForBrowser(
     const BrowserWindowInterface& bwi) const {
   return instance_coordinator().IsPanelShowingForBrowser(bwi);
-}
-
-bool GlicKeyedService::IsWindowDetached() const {
-  return instance_coordinator().IsDetached();
 }
 
 base::CallbackListSubscription
@@ -607,11 +600,6 @@ GlicInstance* GlicKeyedService::GetInstanceForActiveTab(
     return nullptr;
   }
   return instance_coordinator().GetInstanceForTab(tab_list->GetActiveTab());
-}
-
-void GlicKeyedService::Close(
-    content::RenderFrameHost* outermost_render_frame_host) {
-  instance_coordinator().CloseInstanceWithFrame(outermost_render_frame_host);
 }
 
 void GlicKeyedService::Archive(

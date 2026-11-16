@@ -9,7 +9,6 @@
 
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
-#import "components/actor/core/task_source_info.h"
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/prefs/ios/pref_observer_bridge.h"
@@ -21,11 +20,11 @@
 #import "ios/chrome/browser/assistant/coordinator/assistant_container_commands.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_view_controller.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
-#import "ios/chrome/browser/intelligence/actor/model/actor_service.h"
-#import "ios/chrome/browser/intelligence/actor/public/actor_task_lifecycle_observer.h"
-#import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_actor_task_store.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_actor_task_store_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_event_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_ui_state_manager.h"
@@ -37,7 +36,7 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_handler.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_delegate.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper_observer.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_picker_handler.h"
@@ -59,7 +58,11 @@
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list_observer.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/grit/ios_strings.h"
@@ -70,10 +73,11 @@
 using enum AssistantContainerDetent;
 using ios::provider::GeminiClientMode;
 using ios::provider::GeminiDormantReason;
+using ios::provider::GeminiErrorCode;
 using ios::provider::GeminiViewMode;
 using ios::provider::GeminiViewState;
 
-@interface GeminiContainerMediator () <ActorTaskLifecycleObserver,
+@interface GeminiContainerMediator () <GeminiActorTaskStoreManagerObserver,
                                        GeminiContainerUIStateManagerDelegate,
                                        IdentityManagerObserving,
                                        IncognitoStateObserver,
@@ -100,6 +104,14 @@ using ios::provider::GeminiViewState;
 @end
 
 namespace {
+
+// Returns whether a page context in computation `state` can be shared with
+// Gemini.
+bool IsPageContextComputationEligible(
+    ios::provider::GeminiPageContextComputationState state) {
+  return state == ios::provider::GeminiPageContextComputationState::kSuccess ||
+         state == ios::provider::GeminiPageContextComputationState::kPending;
+}
 
 // Internal C++ observer for `WebStateList` active `WebState` changes.
 class GeminiContainerMediatorWebStateListObserver
@@ -164,14 +176,8 @@ class GeminiContainerMediatorTabHelperObserver
   raw_ptr<WebStateList> _webStateList;
   // Profile for the browser.
   raw_ptr<ProfileIOS> _profile;
-  // Service tracking actor tasks and updates.
-  raw_ptr<actor::ActorService> _actorService;
-  // ID of the Gemini actor task driving actuation, if any.
-  std::optional<actor::ActorTaskId> _actuationTaskId;
-  // Store of the Gemini actor task driving actuation, if any.
-  // TODO(crbug.com/579385900): Move ownership to a profile-scoped
-  // `GeminiActorTaskManager` so the store outlives the container.
-  GeminiActorTaskStore* _actuationTaskStore;
+  // Creates the stores of the Gemini actor tasks.
+  GeminiActorTaskStoreManager* _taskStoreManager;
   // Authentication service used to retrieve the primary identity.
   raw_ptr<AuthenticationService> _authService;
   // Incognito state for the browser's scene.
@@ -183,8 +189,8 @@ class GeminiContainerMediatorTabHelperObserver
   std::unique_ptr<PrefChangeRegistrar> _prefChangeRegistrar;
   // Observer bridge for preference changes.
   std::unique_ptr<PrefObserverBridge> _prefObserverBridge;
-  // Delegate for shared tabs in a Gemini session.
-  raw_ptr<GeminiSharedTabsDelegate> _sharedTabsDelegate;
+  // Manager for shared tabs in a Gemini session.
+  raw_ptr<GeminiSharedTabsManager> _sharedTabsManager;
   // Manager for tracking and recording Gemini session metrics.
   GeminiSessionMetricsManager* _sessionMetricsManager;
   // Track if we have triggered feature engagement for Gemini Live IPH or New
@@ -204,6 +210,14 @@ class GeminiContainerMediatorTabHelperObserver
   // Lens overlay state notifier observed to dismiss the container when Lens
   // Overlay prepares.
   LensOverlayStateNotifier* _lensOverlayStateNotifier;
+  // Incremented whenever the zero-state suggestions are updated, so that
+  // results from superseded fetches are dropped.
+  // TODO(crbug.com/582737077): Remove and cancel in-flight fetch instead
+  NSUInteger _zeroStateSuggestionsRequestID;
+  // Whether the last page context propagated for the active tab can't be
+  // shared with Gemini (e.g. protected page). Updated on every page context
+  // propagation, including partial ones on navigation and tab switches.
+  BOOL _activePageContextIneligible;
 }
 
 - (instancetype)
@@ -211,12 +225,12 @@ class GeminiContainerMediatorTabHelperObserver
              actorService:(actor::ActorService*)actorService
     authenticationService:(AuthenticationService*)authService
              eventHandler:(GeminiContainerMediatorEventHandler*)eventHandler
-       sharedTabsDelegate:(GeminiSharedTabsDelegate*)sharedTabsDelegate
+        sharedTabsManager:(GeminiSharedTabsManager*)sharedTabsManager
     sessionMetricsManager:(GeminiSessionMetricsManager*)sessionMetricsManager {
   self = [super init];
   if (self) {
     _eventHandler = eventHandler;
-    _sharedTabsDelegate = sharedTabsDelegate;
+    _sharedTabsManager = sharedTabsManager;
     _sessionMetricsManager = sessionMetricsManager;
     _authService = authService;
     if (browser) {
@@ -227,10 +241,12 @@ class GeminiContainerMediatorTabHelperObserver
           browser->GetSceneState().lensOverlayStateNotifier;
       _incognitoState = browser->GetSceneState().incognitoState;
     }
-    _actorService = actorService;
+    _taskStoreManager =
+        [[GeminiActorTaskStoreManager alloc] initWithActorService:actorService];
+    [_taskStoreManager addObserver:self];
     _gatewayManager = [[GeminiGatewayManager alloc] initWithBrowser:browser
                                                   viewStateDelegate:self];
-    _gatewayManager.tabPickerHandler.sharedTabsDelegate = sharedTabsDelegate;
+    _gatewayManager.tabPickerHandler.sharedTabsManager = sharedTabsManager;
     _stateManager = [[GeminiContainerUIStateManager alloc] init];
     _stateManager.delegate = self;
   }
@@ -260,6 +276,10 @@ class GeminiContainerMediatorTabHelperObserver
   GeminiPageContext* initialPageContext =
       pageContext ? pageContext : geminiTabHelper->GetPartialPageContext();
   [self applyUserPrefsToPageContext:initialPageContext];
+  // Seed the eligibility before the initial zero-state fetch, which runs before
+  // the first page context propagation.
+  _activePageContextIneligible = !IsPageContextComputationEligible(
+      initialPageContext.geminiPageContextComputationState);
 
   return [self createGeminiConfigurationWithTabHelper:geminiTabHelper
                                           pageContext:initialPageContext
@@ -291,21 +311,25 @@ class GeminiContainerMediatorTabHelperObserver
   }
 
   GeminiTabHelper* geminiTabHelper = [self activeTabHelper];
-  if (!geminiTabHelper ||
+  BOOL pageContextDetached =
+      ios::provider::GetCurrentPageContextAttachmentState() ==
+      ios::provider::GeminiPageContextAttachmentState::kDetached;
+  if (!geminiTabHelper || pageContextDetached || _activePageContextIneligible ||
+      ![self isPageContextEligibleForTabHelper:geminiTabHelper] ||
       ![self shouldShowSuggestionChipsForEntryPoint:startupState.entryPoint]) {
-    [self.zeroStateConsumer setZeroStateSuggestions:@[]];
-    [self updateZeroStateMediumDetentHeight];
+    [self setZeroStateSuggestions:@[]];
     return;
   }
 
   // Set the suggestions to nil to show empty buttons while fetching them.
-  [self.zeroStateConsumer setZeroStateSuggestions:nil];
-  [self updateZeroStateMediumDetentHeight];
+  [self setZeroStateSuggestions:nil];
 
+  NSUInteger requestID = _zeroStateSuggestionsRequestID;
   __weak __typeof(self) weakSelf = self;
   geminiTabHelper->FetchZeroStateSuggestions(
       base::BindOnce(^(NSArray<ZeroStateSuggestion*>* suggestions) {
-        [weakSelf onZeroStateSuggestionsFetched:suggestions];
+        [weakSelf onZeroStateSuggestionsFetched:suggestions
+                                      requestID:requestID];
       }));
 }
 
@@ -322,9 +346,6 @@ class GeminiContainerMediatorTabHelperObserver
 }
 
 - (void)connect {
-  if (_actorService) {
-    _actorService->AddTaskLifecycleObserver(self);
-  }
   [_tabGridState addObserver:self];
   [_lensOverlayStateNotifier addObserver:self];
   [self updateSharedTabsForActiveWebState];
@@ -371,13 +392,9 @@ class GeminiContainerMediatorTabHelperObserver
 - (void)disconnect {
   [self onFloatyDismiss];
 
-  if (_actorService) {
-    _actorService->RemoveTaskLifecycleObserver(self);
-    _actorService = nullptr;
-  }
-  _actuationTaskId.reset();
-  [_actuationTaskStore disconnect];
-  _actuationTaskStore = nil;
+  [_taskStoreManager removeObserver:self];
+  [_taskStoreManager disconnect];
+  _taskStoreManager = nil;
   [_tabGridState removeObserver:self];
   _tabGridState = nil;
   [_lensOverlayStateNotifier removeObserver:self];
@@ -388,8 +405,11 @@ class GeminiContainerMediatorTabHelperObserver
   _eventHandler = nullptr;
   _containerHandler = nil;
   _geminiHandler = nil;
-  _sharedTabsDelegate = nullptr;
+  _sharedTabsManager = nullptr;
   _sessionMetricsManager = nil;
+  self.fullscreenHandler = nil;
+  _fullscreenController = nullptr;
+  self.snackbarHandler = nil;
   _consumer = nil;
   _webStateList = nullptr;
   _prefObserverBridge.reset();
@@ -468,42 +488,24 @@ class GeminiContainerMediatorTabHelperObserver
   [self forceDismiss];
 }
 
-#pragma mark - ActorTaskLifecycleObserver
+#pragma mark - GeminiActorTaskStoreManagerObserver
 
-- (void)actorServiceDidStartTaskWithID:(actor::ActorTaskId)taskID
-                            sourceInfo:
-                                (const actor::TaskSourceInfo&)sourceInfo {
-  if (sourceInfo.type != actor::TaskSourceInfo::Client::kGlic) {
-    return;
-  }
-  // TODO(crbug.com/565875367): Track multiple concurrent tasks.
-  _actuationTaskId = taskID;
-  [_actuationTaskStore disconnect];
-  _actuationTaskStore =
-      [[GeminiActorTaskStore alloc] initWithTaskID:taskID
-                                      actorService:_actorService];
+- (void)actorTaskStoreManager:(GeminiActorTaskStoreManager*)manager
+               didCreateStore:(GeminiActorTaskStore*)store {
   // Actuation must be active before the worklog starts, otherwise its initial
   // height updates are ignored by `containerDidChangeActuationHeight:`.
   [self setActuationActive:YES];
   [self.delegate geminiContainerMediator:self
-             didStartActuationTaskWithID:taskID
-                              dataSource:_actuationTaskStore];
+      didStartActuationTaskWithDataSource:store
+                            actionHandler:store];
 }
 
-- (void)actorServiceDidStopTaskWithID:(actor::ActorTaskId)taskID
-                           sourceInfo:(const actor::TaskSourceInfo&)sourceInfo
-                           finalState:(actor::ActorTaskState)finalState {
-  if (_actuationTaskId != taskID) {
-    return;
-  }
+- (void)actorTaskStoreManager:(GeminiActorTaskStoreManager*)manager
+           didDisconnectStore:(GeminiActorTaskStore*)store {
   // Deactivate first so the worklog reset doesn't override the restored
   // minimized detent height.
   [self setActuationActive:NO];
-  [self.delegate geminiContainerMediator:self
-              didStopActuationTaskWithID:taskID];
-  _actuationTaskId.reset();
-  [_actuationTaskStore disconnect];
-  _actuationTaskStore = nil;
+  [self.delegate geminiContainerMediatorDidStopActuationTask:self];
 }
 
 #pragma mark - AssistantContainerDelegate
@@ -571,15 +573,28 @@ class GeminiContainerMediatorTabHelperObserver
                    conversationID:(NSString*)conversationID {
   [self didUpdateProcessingStatus:processingStatus
                     dormantReason:GeminiDormantReason::kUnknown
+                            error:nil
+                        errorCode:GeminiErrorCode::kNone
                         sessionID:sessionID
                    conversationID:conversationID];
 }
 
 - (void)didUpdateProcessingStatus:(GeminiClientMode)processingStatus
                     dormantReason:(GeminiDormantReason)dormantReason
+                            error:(NSError*)error
+                        errorCode:(GeminiErrorCode)errorCode
                         sessionID:(NSString*)sessionID
                    conversationID:(NSString*)conversationID {
-  if (_stateManager.processingStatus == processingStatus) {
+  // Only deduplicate processing status updates when the view mode hasn't
+  // changed, ensuring mode-switch status updates (e.g., an immediate `kDormant`
+  // failure upon entering Live) are forwarded even if `processingStatus`
+  // matches the previous mode's status. `lastProcessingStatusUpdateViewMode` is
+  // updated inside `transitionToProcessingStatus:error:` rather than in
+  // `didSwitchToMode:` so the mode change remains detectable until the next
+  // status update arrives.
+  if (_stateManager.processingStatus == processingStatus &&
+      _stateManager.lastProcessingStatusUpdateViewMode ==
+          _stateManager.viewMode) {
     return;
   }
 
@@ -587,7 +602,16 @@ class GeminiContainerMediatorTabHelperObserver
     _eventHandler->OnProcessingStatusChanged(processingStatus, dormantReason);
   }
 
-  [_stateManager transitionToProcessingStatus:processingStatus];
+  [_stateManager transitionToProcessingStatus:processingStatus error:error];
+
+  if (IsIOSGeminiBottomSheetMigrationEnabled() &&
+      [_stateManager isInGeminiLiveMode] &&
+      processingStatus == GeminiClientMode::kDormant) {
+    // Always switch to chat mode when receiving dormant status while in Live
+    // mode, even if `dormantReason` is `kUnknown`.
+    [self handleLiveDormantReason:dormantReason];
+  }
+
   [self updatePageContextForLiveProcessingStatus:processingStatus];
 }
 
@@ -665,33 +689,47 @@ class GeminiContainerMediatorTabHelperObserver
   [_stateManager didFinishLoadingConversationWithID:conversationID error:error];
 }
 
+- (void)inputPlateDidChangePageContextAttachment:(BOOL)isAttached {
+  [self updateZeroStateMediumDetentHeight];
+}
+
+- (void)inputPlateDidChangeNanoBananaAttachment:(BOOL)isSelected {
+  [self updateZeroStateMediumDetentHeight];
+}
+
 - (void)didRequestToDetachTabWithID:(NSString*)tabID {
-  if (_sharedTabsDelegate) {
-    _sharedTabsDelegate->DetachTabWithID(tabID);
+  if (_sharedTabsManager) {
+    _sharedTabsManager->DetachTabWithID(tabID);
   }
 }
 
 - (void)didAttachTabWithID:(NSString*)tabID {
-  if (_sharedTabsDelegate) {
-    _sharedTabsDelegate->UpdateLocalTabAttachmentState(
+  if (_sharedTabsManager) {
+    _sharedTabsManager->UpdateLocalTabAttachmentState(
         tabID, ios::provider::GeminiPageContextAttachmentState::kAttached);
+  }
+  if ([self isActiveTabID:tabID]) {
+    [self fetchZeroStateSuggestions:_startupState];
   }
 }
 
 - (void)didDetachTabWithID:(NSString*)tabID {
-  if (_sharedTabsDelegate) {
-    _sharedTabsDelegate->UpdateLocalTabAttachmentState(
+  if (_sharedTabsManager) {
+    _sharedTabsManager->UpdateLocalTabAttachmentState(
         tabID, ios::provider::GeminiPageContextAttachmentState::kDetached);
+  }
+  if ([self isActiveTabID:tabID]) {
+    [self setZeroStateSuggestions:@[]];
   }
 }
 
 - (NSUInteger)attachedTabsCount {
-  return _sharedTabsDelegate ? _sharedTabsDelegate->SharedTabsCount() : 0;
+  return _sharedTabsManager ? _sharedTabsManager->SharedTabsCount() : 0;
 }
 
 - (BOOL)isMultiTabUsed {
-  return _sharedTabsDelegate &&
-         _sharedTabsDelegate->GetInactiveSharedTabs().count > 0;
+  return _sharedTabsManager &&
+         _sharedTabsManager->GetInactiveSharedTabs().count > 0;
 }
 
 - (void)setActuationActive:(BOOL)actuationActive {
@@ -850,6 +888,10 @@ class GeminiContainerMediatorTabHelperObserver
         setAssistantContainerMediumDetentHeight:std::nullopt];
   }
 
+  if (containerUIState.detent != AssistantContainerDetent::kMinimized) {
+    [self exitFullscreen];
+  }
+
   [self.containerHandler
       animateAssistantContainerToDetent:containerUIState.detent];
   [self.containerHandler
@@ -906,12 +948,68 @@ class GeminiContainerMediatorTabHelperObserver
 
 #pragma mark - Private
 
+// Exits fullscreen mode.
+- (void)exitFullscreen {
+  if (IsFullscreenRefactoringEnabled()) {
+    [self.fullscreenHandler
+        exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                         animated:YES];
+  } else {
+    _fullscreenController->ExitFullscreen();
+  }
+}
+
 // Updates the zero-state consumer with fetched `suggestions` and adapts the
-// medium detent height of the assistant container.
+// medium detent height of the assistant container. Results of superseded
+// requests are dropped so they don't re-show hidden suggestions.
 - (void)onZeroStateSuggestionsFetched:
-    (NSArray<ZeroStateSuggestion*>*)suggestions {
+            (NSArray<ZeroStateSuggestion*>*)suggestions
+                            requestID:(NSUInteger)requestID {
+  if (requestID != _zeroStateSuggestionsRequestID) {
+    return;
+  }
+  [self setZeroStateSuggestions:suggestions];
+}
+
+// Forwards `suggestions` to the zero-state consumer, drops any in-flight fetch
+// result and adapts the medium detent height of the assistant container.
+- (void)setZeroStateSuggestions:(NSArray<ZeroStateSuggestion*>*)suggestions {
+  if (!self.zeroStateConsumer) {
+    return;
+  }
+  ++_zeroStateSuggestionsRequestID;
   [self.zeroStateConsumer setZeroStateSuggestions:suggestions];
-  [self updateZeroStateMediumDetentHeight];
+  if (suggestions && suggestions.count == 0) {
+    [self resetZeroStateMediumDetentHeight];
+  } else {
+    [self updateZeroStateMediumDetentHeight];
+  }
+}
+
+// Returns whether the page context of `tabHelper` can be attached: the user
+// allows sharing page content and the page is eligible for Gemini.
+- (BOOL)isPageContextEligibleForTabHelper:(GeminiTabHelper*)tabHelper {
+  return _profile->GetPrefs()->GetBoolean(prefs::kIOSBWGPageContentSetting) &&
+         tabHelper->IsGeminiChatAvailableForWebState();
+}
+
+// Returns whether `tabID` identifies the active tab. In multi-tab mode, other
+// tabs can be attached or detached without affecting the active page context.
+- (BOOL)isActiveTabID:(NSString*)tabID {
+  GeminiTabHelper* tabHelper = [self activeTabHelper];
+  return tabHelper && [tabID isEqualToString:base::SysUTF8ToNSString(
+                                                 tabHelper->GetClientId())];
+}
+
+// Resets the medium detent height of the assistant container to its default
+// when in zero state. Used when suggestions are hidden since the remaining
+// content is too short for a content-sized detent.
+- (void)resetZeroStateMediumDetentHeight {
+  if (!_stateManager.currentUIState.zeroStateVisible ||
+      !IsIOSGeminiBottomSheetMigrationEnabled()) {
+    return;
+  }
+  [self.containerHandler setAssistantContainerMediumDetentHeight:std::nullopt];
 }
 
 // Updates the medium detent height of the assistant container to match the
@@ -1041,21 +1139,24 @@ class GeminiContainerMediatorTabHelperObserver
 
 - (void)propagatePageContext:(GeminiPageContext*)pageContext {
   [self updatePageContextState:pageContext];
-  if (_sharedTabsDelegate) {
-    _sharedTabsDelegate->SaveActivePageContextToSharedTabs(pageContext);
+  if (_sharedTabsManager) {
+    _sharedTabsManager->SaveActivePageContextToSharedTabs(pageContext);
   }
 
   ios::provider::UpdateActivePageContext(
       pageContext,
-      _sharedTabsDelegate ? _sharedTabsDelegate->GetInactiveSharedTabs() : nil);
+      _sharedTabsManager ? _sharedTabsManager->GetInactiveSharedTabs() : nil);
 
-  // Update the zero-state height to match the content height since the page
-  // context chip might change it.
-  if (_stateManager.currentUIState.zeroStateVisible &&
-      IsIOSGeminiBottomSheetMigrationEnabled()) {
-    [self.containerHandler
-        setAssistantContainerMediumDetentHeight:ceil([self.consumer
-                                                          contentHeight])];
+  // Some pages are only known to be ineligible once their page context is
+  // computed (e.g. protected pages). Suggestions are refetched only when the
+  // page becomes eligible again, rather than on every page context update.
+  BOOL wasIneligible = _activePageContextIneligible;
+  _activePageContextIneligible = !IsPageContextComputationEligible(
+      pageContext.geminiPageContextComputationState);
+  if (_activePageContextIneligible) {
+    [self setZeroStateSuggestions:@[]];
+  } else if (wasIneligible && _stateManager.currentUIState.zeroStateVisible) {
+    [self fetchZeroStateSuggestions:_startupState];
   }
 }
 
@@ -1073,8 +1174,8 @@ class GeminiContainerMediatorTabHelperObserver
 - (void)updateSharedTabsForActiveWebState {
   web::WebState* activeWebState =
       _webStateList ? _webStateList->GetActiveWebState() : nullptr;
-  if (activeWebState && _sharedTabsDelegate) {
-    _sharedTabsDelegate->UpdateSharedTabsForActiveWebState(activeWebState);
+  if (activeWebState && _sharedTabsManager) {
+    _sharedTabsManager->UpdateSharedTabsForActiveWebState(activeWebState);
   }
 }
 
@@ -1091,13 +1192,16 @@ class GeminiContainerMediatorTabHelperObserver
   }
 
   if (newActive) {
-    if (_sharedTabsDelegate) {
-      _sharedTabsDelegate->UpdateSharedTabsForActiveWebState(newActive);
+    if (_sharedTabsManager) {
+      _sharedTabsManager->UpdateSharedTabsForActiveWebState(newActive);
     }
     GeminiTabHelper* newTabHelper = GeminiTabHelper::FromWebState(newActive);
     if (newTabHelper && _tabHelperObserver) {
       newTabHelper->AddObserver(_tabHelperObserver.get());
       [self onPageContextUpdated:newActive];
+    }
+    if (_stateManager.currentUIState.zeroStateVisible) {
+      [self fetchZeroStateSuggestions:_startupState];
     }
   }
 }
@@ -1137,6 +1241,9 @@ class GeminiContainerMediatorTabHelperObserver
   }
 
   [self updateFloatyWithPartialPageContext];
+  if (_stateManager.currentUIState.zeroStateVisible) {
+    [self fetchZeroStateSuggestions:_startupState];
+  }
 }
 
 - (void)onWebStateListDestroyed {
@@ -1191,6 +1298,20 @@ class GeminiContainerMediatorTabHelperObserver
 }
 
 #pragma mark - Gemini Live
+
+// Handles a dormant status event for an active Live session.
+- (void)handleLiveDormantReason:(GeminiDormantReason)dormantReason {
+  [self exitFullscreen];
+  ios::provider::SwitchToMode(GeminiViewMode::kFloaty, /*animated=*/true);
+
+  std::optional<int> messageID =
+      gemini::GetLiveDormantSnackbarMessageId(dormantReason);
+  if (messageID.has_value() && self.snackbarHandler) {
+    SnackbarMessage* message = [[SnackbarMessage alloc]
+        initWithTitle:l10n_util::GetNSString(*messageID)];
+    [self.snackbarHandler showSnackbarMessage:message];
+  }
+}
 
 // Updates page context for Gemini Live based on `processingStatus` changes.
 - (void)updatePageContextForLiveProcessingStatus:

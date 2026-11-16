@@ -342,10 +342,57 @@ TEST_F(ResolvedFrameDataTest, ReusePreviousRootPassId) {
                                    prev_root_pass_id);
 
   resolved_frame.UpdateForAggregation(render_pass_id_generator_);
-
   EXPECT_EQ(resolved_frame.GetRootRenderPassData().remapped_id(),
             prev_root_pass_id);
+  resolved_frame.ResetAfterAggregation();
 
+  // Submitting another frame with the same root pass ID should continue to use
+  // `prev_root_pass_id`.
+  SubmitCompositorFrame(MakeSimpleFrame());
+  resolved_frame.UpdateForAggregation(render_pass_id_generator_);
+  EXPECT_EQ(resolved_frame.GetRootRenderPassData().remapped_id(),
+            prev_root_pass_id);
+  resolved_frame.ResetAfterAggregation();
+
+  // Submitting a frame where the original root pass ID becomes a non-root pass
+  // and a new root pass ID is introduced should not assign `prev_root_pass_id`
+  // a second time.
+  auto frame =
+      CompositorFrameBuilder()
+          .AddRenderPass(
+              RenderPassBuilder(CompositorRenderPassId{1}, kOutputRect)
+                  .AddSolidColorQuad(kOutputRect, SkColors::kRed))
+          .AddRenderPass(
+              RenderPassBuilder(CompositorRenderPassId{2}, kOutputRect)
+                  .AddRenderPassQuad(kOutputRect, CompositorRenderPassId{1}))
+          .Build();
+  SubmitCompositorFrame(std::move(frame));
+  resolved_frame.UpdateForAggregation(render_pass_id_generator_);
+  ASSERT_TRUE(resolved_frame.is_valid());
+  EXPECT_NE(resolved_frame.GetRenderPassDataById(CompositorRenderPassId{1})
+                .remapped_id(),
+            prev_root_pass_id);
+  EXPECT_EQ(resolved_frame.GetRootRenderPassData().remapped_id(),
+            prev_root_pass_id);
+  resolved_frame.ResetAfterAggregation();
+
+  // Taking the root render pass ID returns `prev_root_pass_id` and clears the
+  // root pass ID on `resolved_frame` so a new ID is generated on the next
+  // aggregation.
+  EXPECT_EQ(resolved_frame.TakeRootRenderPassId(), prev_root_pass_id);
+  EXPECT_TRUE(resolved_frame.GetRootRenderPassData().remapped_id().is_null());
+
+  resolved_frame.UpdateForAggregation(render_pass_id_generator_);
+  AggregatedRenderPassId new_root_pass_id =
+      resolved_frame.GetRootRenderPassData().remapped_id();
+  EXPECT_FALSE(new_root_pass_id.is_null());
+  EXPECT_NE(new_root_pass_id, prev_root_pass_id);
+  resolved_frame.ResetAfterAggregation();
+
+  SubmitCompositorFrame(MakeSimpleFrame());
+  resolved_frame.UpdateForAggregation(render_pass_id_generator_);
+  EXPECT_NE(resolved_frame.GetRootRenderPassData().remapped_id(),
+            prev_root_pass_id);
   resolved_frame.ResetAfterAggregation();
 }
 
@@ -554,10 +601,20 @@ TEST_F(ResolvedFrameDataTest, OffsetTagWithCopyRequest) {
   EXPECT_THAT(resolved_frame.GetResolvedPasses()[0].render_pass().copy_requests,
               testing::IsEmpty());
 
-  // Confirm that taking requests from surface still works.
-  Surface::CopyRequestsMap copy_request_map;
-  surface->TakeCopyOutputRequests(&copy_request_map);
-  EXPECT_THAT(copy_request_map, testing::SizeIs(1));
+  // Confirm that taking requests from ResolvedPassData works and
+  // `has_copy_request` stays true for the aggregation.
+  EXPECT_FALSE(resolved_frame.HasCopyOutputRequests());
+  EXPECT_TRUE(resolved_frame.GetResolvedPasses()[0].CheckCopyOutputRequests());
+  EXPECT_TRUE(resolved_frame.HasCopyOutputRequests());
+  EXPECT_TRUE(
+      resolved_frame.GetResolvedPasses()[0].aggregation().has_copy_request);
+  EXPECT_THAT(resolved_frame.GetResolvedPasses()[0].TakeCopyOutputRequests(),
+              testing::SizeIs(1));
+  EXPECT_TRUE(resolved_frame.HasCopyOutputRequests());
+  EXPECT_TRUE(
+      resolved_frame.GetResolvedPasses()[0].aggregation().has_copy_request);
+  EXPECT_THAT(surface->GetActiveFrame().render_pass_list[0]->copy_requests,
+              testing::IsEmpty());
 
   resolved_frame.ResetAfterAggregation();
 }

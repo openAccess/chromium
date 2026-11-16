@@ -30,11 +30,13 @@ class LaunchParams {
 
   // Getters
   bool started_new_navigation() const { return started_new_navigation_; }
+  bool user_initiated() const { return user_initiated_; }
   const webapps::AppId& app_id() const { return app_id_; }
   const GURL& target_url() const { return target_url_; }
   const base::FilePath& dir() const { return dir_; }
   const std::vector<base::FilePath>& paths() const { return paths_; }
   const std::vector<bool>& can_write() const { return can_write_; }
+  bool HasFiles() const { return !paths_.empty() || !dir_.empty(); }
   base::TimeTicks time_navigation_started_for_enqueue() const {
     return time_navigation_started_for_enqueue_;
   }
@@ -42,6 +44,9 @@ class LaunchParams {
   // Setters
   void set_started_new_navigation(bool started_new_navigation) {
     started_new_navigation_ = started_new_navigation;
+  }
+  void set_user_initiated(bool user_initiated) {
+    user_initiated_ = user_initiated;
   }
   // Setting a different `app_id` after one was already populated clears any
   // file or directory handles (`paths_`, `can_write_`, `dir_`), which are
@@ -85,6 +90,8 @@ class LaunchParams {
   // Whether this launch triggered a navigation that needs to be awaited before
   // sending the launch params to the document.
   bool started_new_navigation_ = true;
+
+  bool user_initiated_ = false;
 
   // The app being launched, used for scope validation.
   webapps::AppId app_id_;

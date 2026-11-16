@@ -47,9 +47,17 @@ BASE_FEATURE(kAsyncDns,
 #endif
 );
 
-BASE_FEATURE(kOptimisticDnsForTcp, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kOptimisticDnsForTcp,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet is excluded because it disables HappyEyeballsV2 and has
+             // not gathered field data for OptimisticDnsForTcp.
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 const base::FeatureParam<bool> kUseStaleConnectorsForOptimisticDns{
-    &kOptimisticDnsForTcp, "use_stale_connectors", false};
+    &kOptimisticDnsForTcp, "use_stale_connectors", true};
 
 BASE_FEATURE(kOptimisticDnsForQuic, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -89,6 +97,9 @@ const base::FeatureParam<bool> kDnsPlatformCancelPreviousAttemptOnRetry{
 
 BASE_FEATURE(kDnsTaskAllowPartialAddressResults,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDnsHttpsDontAppendToMultiLabelName,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kUseDnsHttpsSvcb, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -135,26 +146,57 @@ BASE_FEATURE(kHappyEyeballsV2,
 
 BASE_FEATURE(kHappyEyeballsV3, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kEnableIntermediateDnsResults, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kEnableIntermediateDnsResults,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet uses TransportConnectJob and has not gathered field data
+             // for intermediate DNS per-transaction sorting.
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 BASE_FEATURE_PARAM(bool,
                    kEnableIntermediateDnsResultsSortTransactionsIndividually,
                    &kEnableIntermediateDnsResults,
                    true);
 
-BASE_FEATURE(kAdjustIPv6FallbackTime, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kKeepHostResolverJobAliveForCache,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kKeepHostResolverJobAliveForCacheTimeout,
+                   &kKeepHostResolverJobAliveForCache,
+                   base::Seconds(2));
+
+BASE_FEATURE(kAdjustIPv6FallbackTime,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet uses TransportConnectJob and has not gathered field data
+             // for the adjusted IPv6 fallback timer.
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kIPv6FallbackTime,
                    &kAdjustIPv6FallbackTime,
                    "fallback_time",
-                   TcpConnectJob::kIPv6FallbackTime);
+                   base::Milliseconds(100));
 
-BASE_FEATURE(kIPv6FallbackBasedOnRTT, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIPv6FallbackBasedOnRTT,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet uses TransportConnectJob and has not gathered field data
+             // for RTT-based IPv6 fallback timing.
+             base::FEATURE_DISABLED_BY_DEFAULT
+#else
+             base::FEATURE_ENABLED_BY_DEFAULT
+#endif
+);
 
 BASE_FEATURE_PARAM(double,
                    kIPv6FallbackRTTMultiplier,
                    &kIPv6FallbackBasedOnRTT,
-                   1.5);
+                   1.1);
 
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kIPv6FallbackMin,
@@ -274,6 +316,55 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kConnectionKeepAliveForHttp2, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kQuicPreconnectInitialRtt, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kQuicPreconnectInitialRttParam,
+                   &kQuicPreconnectInitialRtt,
+                   base::Milliseconds(25));
+
+std::optional<base::TimeDelta> GetQuicPreconnectInitialRtt() {
+  if (!base::FeatureList::IsEnabled(kQuicPreconnectInitialRtt)) {
+    return std::nullopt;
+  }
+  const base::TimeDelta initial_rtt = kQuicPreconnectInitialRttParam.Get();
+  if (!initial_rtt.is_positive() || initial_rtt.is_inf()) {
+    return std::nullopt;
+  }
+  return initial_rtt;
+}
+
+BASE_FEATURE(kPreconnectPriorityBoost, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<RequestPriority>::Option
+    kPreconnectInitialPriorityOptions[] = {
+        {RequestPriority::IDLE, "idle"},
+        {RequestPriority::LOW, "low"},
+        {RequestPriority::MEDIUM, "medium"},
+};
+
+BASE_FEATURE_ENUM_PARAM(RequestPriority,
+                        kPreconnectInitialPriority,
+                        &kPreconnectPriorityBoost,
+                        RequestPriority::IDLE,
+                        &kPreconnectInitialPriorityOptions);
+
+BASE_FEATURE_PARAM(bool,
+                   kPromoteActiveQuicJobPriorityOnAttach,
+                   &kPreconnectPriorityBoost,
+                   true);
+
+std::optional<RequestPriority> GetPreconnectInitialPriority() {
+  if (!base::FeatureList::IsEnabled(kPreconnectPriorityBoost)) {
+    return std::nullopt;
+  }
+  const RequestPriority priority = kPreconnectInitialPriority.Get();
+  if (priority <= RequestPriority::IDLE) {
+    return std::nullopt;
+  }
+  return priority;
+}
+
 BASE_FEATURE(kShortLaxAllowUnsafeThreshold, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSameSiteDefaultChecksMethodRigorously,
@@ -368,6 +459,10 @@ BASE_FEATURE_PARAM(bool,
                    kAsyncDnsQuicJobSortTransactionsIndividually,
                    &kAsyncDnsQuicJob,
                    true);
+BASE_FEATURE_PARAM(bool,
+                   kAsyncDnsQuicJobKeepHostResolverJobAliveForCache,
+                   &kAsyncDnsQuicJob,
+                   true);
 
 BASE_FEATURE(kAdjustQuicSlowTimerDelay, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(base::TimeDelta,
@@ -421,6 +516,8 @@ inline constexpr auto kMigrateSessionsOnNetworkChangeV2Default =
 #endif  // BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kMigrateSessionsOnNetworkChangeV2,
              kMigrateSessionsOnNetworkChangeV2Default);
+
+BASE_FEATURE(kEnableQuicV6ToV4Migration, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables binding of cookies to the port that originally set them by default.
 BASE_FEATURE(kEnablePortBoundCookies, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -559,6 +656,8 @@ BASE_FEATURE(kNoVarySearchIgnoreUnrecognizedKeys,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnforceOneRfc6962CtPolicy, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kCRLSetCompactSerials, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kDiskCacheBackendExperiment, base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr base::FeatureParam<DiskCacheBackend>::Option
@@ -750,7 +849,7 @@ BASE_FEATURE(kSelfSignedLocalNetworkInterstitial,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
-BASE_FEATURE(kVerifyQWACs, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kVerifyQWACs, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 
 BASE_FEATURE(kRestrictAbusePorts, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -761,9 +860,7 @@ BASE_FEATURE(kTLSTrustAnchorIDs, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kNonMtcTrustAnchorIDs, base::FEATURE_ENABLED_BY_DEFAULT);
 
-#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 BASE_FEATURE(kVerifyMTCs, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
 
 BASE_FEATURE(kTcpSocketPoolLimitRandomization,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -911,8 +1008,6 @@ BASE_FEATURE(kQuicUseReadMultiple,
              base::FEATURE_DISABLED_BY_DEFAULT
 #endif
 );
-
-BASE_FEATURE(kEnableUdpGro, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kConfigureQuicHints, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE_PARAM(std::string,
@@ -1089,21 +1184,31 @@ BASE_FEATURE(kPartitionWebSocketEndpointLocksByNetworkAnonymizationKey,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kInitialDelayForBrokenAlternativeService,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet is running its own experiment and will launch separately.
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else   // BUILDFLAG(CRONET_BUILD)
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(CRONET_BUILD)
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kInitialDelayForBrokenAlternativeServiceParam,
                    &kInitialDelayForBrokenAlternativeService,
-                   base::Seconds(300));
+                   base::Seconds(10));
 
 BASE_FEATURE(kPersistBrokenAlternativeServices,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kMaxDelayForBrokenAlternativeService,
+#if BUILDFLAG(CRONET_BUILD)
+             // Cronet is running its own experiment and will launch separately.
              base::FEATURE_DISABLED_BY_DEFAULT);
+#else   // BUILDFLAG(CRONET_BUILD)
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(CRONET_BUILD)
 BASE_FEATURE_PARAM(base::TimeDelta,
                    kMaxDelayForBrokenAlternativeServiceParam,
                    &kMaxDelayForBrokenAlternativeService,
-                   base::Days(2));
+                   base::Minutes(30));
 
 #if BUILDFLAG(IS_WIN)
 BASE_FEATURE(kEnableWindowsTcpLoopbackFastFail,
@@ -1143,5 +1248,31 @@ BASE_FEATURE_PARAM(bool,
 
 BASE_FEATURE(kHttpChunkedDecoderInRust, base::FEATURE_DISABLED_BY_DEFAULT);
 
-}  // namespace net::features
+BASE_FEATURE(kPostHandshakeIpPoolingAllEndpoints,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kProactiveIpPoolingForInFlightJobs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPosixUdpEmulatedConnect, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE_PARAM(bool,
+                   kPosixUdpEmulatedConnectForDns,
+                   &kPosixUdpEmulatedConnect,
+                   false);
+
+BASE_FEATURE_PARAM(bool,
+                   kPosixUdpEmulatedConnectForQuic,
+                   &kPosixUdpEmulatedConnect,
+                   false);
+
+BASE_FEATURE(kClearBrokenAlternativeServicesOnDefaultNetworkChange,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRustBrotliInNet, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRestrictProxyPorts, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kRejectHttp09FromHttpProxy, base::FEATURE_ENABLED_BY_DEFAULT);
+
+}  // namespace net::features

@@ -17,11 +17,13 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApplicationState;
 import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ApplicationStateListener;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.base.WindowAndroid.IntentCallback;
@@ -31,6 +33,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Handles the speech recognition intent, either the platform-specific one or the Google app Voice
@@ -107,14 +110,17 @@ public class VoiceRecognitionIntentHandler {
     }
 
     private final WindowAndroid mWindowAndroid;
+    private final Supplier<@Nullable Profile> mProfileSupplier;
     private @Nullable Long mQueryStartTimeMs;
     private @Nullable Boolean mIsVoiceSearchEnabledCached;
     private boolean mRegisteredActivityStateListener;
-    private final ApplicationStatus.ApplicationStateListener mApplicationStateListener =
+    private final ApplicationStateListener mApplicationStateListener =
             this::onApplicationStateChange;
 
-    public VoiceRecognitionIntentHandler(WindowAndroid windowAndroid) {
+    public VoiceRecognitionIntentHandler(
+            WindowAndroid windowAndroid, Supplier<@Nullable Profile> profileSupplier) {
         mWindowAndroid = windowAndroid;
+        mProfileSupplier = profileSupplier;
     }
 
     public void destroy() {
@@ -135,14 +141,16 @@ public class VoiceRecognitionIntentHandler {
         if (mWindowAndroid == null) return false;
         Activity activity = mWindowAndroid.getActivity().get();
         if (activity == null) return false;
-        if (!VoiceRecognitionUtil.isVoiceSearchPermittedByPolicy(/* strictPolicyCheck= */ false)) {
+        Profile profile = mProfileSupplier.get();
+        if (!VoiceRecognitionUtil.isVoiceSearchPermittedByPolicy(
+                profile, /* strictPolicyCheck= */ false)) {
             return false;
         }
 
         if (mIsVoiceSearchEnabledCached == null) {
             mIsVoiceSearchEnabledCached =
                     !BrowserUiUtils.isAndroidAutoProjected(activity)
-                            && VoiceRecognitionUtil.isVoiceSearchEnabled(mWindowAndroid);
+                            && VoiceRecognitionUtil.isVoiceSearchEnabled(mWindowAndroid, profile);
 
             if (!mRegisteredActivityStateListener) {
                 ApplicationStatus.registerApplicationStateListener(mApplicationStateListener);
@@ -193,7 +201,8 @@ public class VoiceRecognitionIntentHandler {
             return;
         }
 
-        if (!VoiceRecognitionUtil.isVoiceSearchPermittedByPolicy(/* strictPolicyCheck= */ true)) {
+        if (!VoiceRecognitionUtil.isVoiceSearchPermittedByPolicy(
+                mProfileSupplier.get(), /* strictPolicyCheck= */ true)) {
             callback.onCanceled();
             return;
         }
@@ -359,7 +368,7 @@ public class VoiceRecognitionIntentHandler {
                     }
 
                     VoiceResult topResult = results.get(0);
-                    if (!stopped && TextUtils.isEmpty(topResult.getMatch())) {
+                    if (TextUtils.isEmpty(topResult.getMatch())) {
                         recordVoiceSearchResult(/* result= */ false);
                         callback.onCanceled();
                         return;

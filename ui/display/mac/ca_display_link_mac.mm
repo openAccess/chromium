@@ -194,8 +194,7 @@ void CADisplayLinkMac::TryRecordDisplayLinkCreation(
 
 // static
 scoped_refptr<DisplayLinkMac> CADisplayLinkMac::GetForDisplay(
-    CGDirectDisplayID display_id,
-    bool in_gpu_process) {
+    CGDirectDisplayID display_id) {
   if (@available(macos 14.0, *)) {
     TRACE_EVENT("gpu", "CADisplayLinkMac::GetForDisplay");
 
@@ -526,7 +525,6 @@ void WindowServerEventPumpThread::DisableDisplayLink(Result failure) {
     return;
   }
 
-  CHECK_NE(failure, Result::kSuccess, base::NotFatalUntil::M163);
   RecordWindowServerEventPumpResult(failure);
 
   shutdown_ = true;

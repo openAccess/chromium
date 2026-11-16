@@ -60,13 +60,6 @@ struct HW {
 };
 
 struct OS {
-  OS();
-  OS(const OS&) = delete;
-  OS& operator=(const OS&) = delete;
-  OS(OS&&);
-  OS& operator=(OS&&);
-  ~OS();
-
   std::string platform;
   std::string version;
   std::string service_pack;
@@ -75,10 +68,6 @@ struct OS {
 };
 
 struct Updater {
-  Updater();
-  Updater(const Updater&);
-  ~Updater();
-
   std::string name;
   std::string version;
   bool is_machine = false;
@@ -89,9 +78,6 @@ struct Updater {
 };
 
 struct UpdateCheck {
-  UpdateCheck();
-  ~UpdateCheck();
-
   bool is_update_disabled = false;
   std::string target_version_prefix;
   bool rollback_allowed = false;
@@ -100,14 +86,6 @@ struct UpdateCheck {
 
 // `data` element.
 struct Data {
-  Data();
-  Data(const Data& other);
-  Data& operator=(const Data& other);
-  Data(const std::string& name,
-       const std::string& install_data_index,
-       const std::string& untrusted_data);
-  ~Data();
-
   // `name` can be either "install" or "untrusted", corresponding to
   // `install_data_index` and `untrusted_data`.
   std::string name;
@@ -117,10 +95,6 @@ struct Data {
 
 // didrun element. The element is named "ping" for legacy reasons.
 struct Ping {
-  Ping();
-  Ping(const Ping&);
-  ~Ping();
-
   // Preferred user count metrics ("ad" and "rd").
   std::optional<int> date_last_active;
   std::optional<int> date_last_roll_call;
@@ -133,13 +107,6 @@ struct Ping {
 };
 
 struct App {
-  App();
-  App(const App&) = delete;
-  App& operator=(const App&) = delete;
-  App(App&&);
-  App& operator=(App&&);
-  ~App();
-
   std::string app_id;
   std::string version;
   std::string ap;
@@ -176,13 +143,6 @@ struct App {
 };
 
 struct Request {
-  Request();
-  Request(const Request&) = delete;
-  Request& operator=(const Request&) = delete;
-  Request(Request&&);
-  Request& operator=(Request&&);
-  ~Request();
-
   std::string protocol_version;
 
   // True if the updater operates in the per-system configuration.

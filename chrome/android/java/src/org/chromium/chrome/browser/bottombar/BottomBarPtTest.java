@@ -8,7 +8,7 @@ import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.view.View;
 import android.widget.ListView;
@@ -21,23 +21,19 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.page.RegularWebPageAppMenuFacility;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.test.util.ViewUtils;
 
 /** Public transit tests for the Bottom Bar. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.PHONE)
 @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
 @Batch(Batch.PER_CLASS)
@@ -52,14 +48,14 @@ public class BottomBarPtTest {
         mActivityTestRule.startOnBlankPage();
 
         // Will fail or timeout if the bottom bar container is not inflated and visible.
-        ViewUtils.waitForVisibleView(withId(R.id.bottom_app_bar_container));
+        waitForView(withId(R.id.bottom_app_bar_container));
     }
 
     @Test
     @MediumTest
     public void testBottomBarAppMenuKeptBelowTopControls() {
         WebPageStation page = mActivityTestRule.startOnBlankPage();
-        View toolbar = assumeNonNull(page.toolbarElement).value();
+        View toolbar = page.toolbar.toolbarElement.value();
         RegularWebPageAppMenuFacility menu = page.openRegularTabAppMenu();
         ListView listView = menu.menuListElement.value();
 

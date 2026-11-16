@@ -5,13 +5,17 @@
 #include "chrome/browser/ui/webui/tabstrip_ntb/tabstrip_ntb_ui.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/trace_event/trace_event.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/theme_colors_source_manager.h"
+#include "chrome/browser/ui/webui/theme_colors_source_manager_factory.h"
 #include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/common/buildflags.h"
 #include "chrome/common/webui_url_constants.h"
@@ -24,6 +28,7 @@
 #include "content/public/browser/web_contents_user_data.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "ui/webui/webui_util.h"
 
 #if !BUILDFLAG(OPTIMIZE_WEBUI)
@@ -34,20 +39,22 @@ namespace tabstrip_ntb {
 
 namespace {
 
-// Associates a `tabs_api::TabStripService` with the WebContents hosting
-// chrome://tabstrip-ntb.top-chrome/. If a `TabStripNtbUI` is created before
-// there is a service, it leaves the service end of its pipe here, and the
-// service picks it up when it is set.
+// Associates a `tabs_api::TabStripService` and button visibility state with the
+// WebContents hosting chrome://tabstrip-ntb.top-chrome/. Stored on the
+// WebContents rather than on `TabStripNtbUI` so they survive renderer crashes
+// and reloads. If a `TabStripNtbUI` is created before there is a service, it
+// leaves the service end of its pipe here, and the service picks it up when it
+// is set.
 class TabStripServiceUserData
     : public content::WebContentsUserData<TabStripServiceUserData> {
  public:
   ~TabStripServiceUserData() override = default;
 
   // Connects `service_end` to the service, or holds it until there is one.
+  // Replaces any unconsumed pending end if the WebUI is recreated (e.g., on
+  // renderer crash recovery) before a service is attached.
   void Connect(
       mojo::PendingReceiver<tabs_api::mojom::TabStripService> service_end) {
-    CHECK(!pending_service_end_.is_valid())
-        << "TabStripServiceUserData already has a pending service end";
     pending_service_end_ = std::move(service_end);
     MaybeConnect();
   }
@@ -55,6 +62,23 @@ class TabStripServiceUserData
   void SetService(tabs_api::TabStripService* service) {
     service_ = service;
     MaybeConnect();
+  }
+
+  void BindPage(mojo::PendingRemote<tabstrip_ntb::mojom::Page> page) {
+    page_.reset();
+    page_.Bind(std::move(page));
+    if (button_visible_.has_value()) {
+      // If the button visibility was set before the page was bound (or before a
+      // renderer crash recreated the controller), set it now.
+      page_->SetButtonVisible(*button_visible_);
+    }
+  }
+
+  void SetButtonVisible(bool visible) {
+    button_visible_ = visible;
+    if (page_.is_bound()) {
+      page_->SetButtonVisible(visible);
+    }
   }
 
  private:
@@ -72,6 +96,8 @@ class TabStripServiceUserData
 
   raw_ptr<tabs_api::TabStripService> service_ = nullptr;
   mojo::PendingReceiver<tabs_api::mojom::TabStripService> pending_service_end_;
+  mojo::Remote<tabstrip_ntb::mojom::Page> page_;
+  std::optional<bool> button_visible_;
 };
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(TabStripServiceUserData);
@@ -88,6 +114,7 @@ TabStripNtbUI::TabStripNtbUI(content::WebUI* web_ui)
     : TopChromeWebUIController(web_ui,
                                /*enable_chrome_send=*/false,
                                /*enable_chrome_histograms=*/true) {
+  TRACE_EVENT("ui", "TabStripNtbUI::TabStripNtbUI");
   Profile* profile = Profile::FromWebUI(web_ui);
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 
@@ -118,6 +145,15 @@ void TabStripNtbUI::SetTabStripServiceForWebContents(
       ->SetService(service);
 }
 
+// static
+void TabStripNtbUI::SetButtonVisibleForWebContents(
+    content::WebContents* web_contents,
+    bool visible) {
+  CHECK(web_contents);
+  TabStripServiceUserData::GetOrCreateForWebContents(web_contents)
+      ->SetButtonVisible(visible);
+}
+
 void TabStripNtbUI::BindInterface(
     mojo::PendingReceiver<tabs_api::mojom::TabStripService> receiver) {
   CHECK(tab_strip_client_end_.is_valid())
@@ -133,19 +169,22 @@ void TabStripNtbUI::BindInterface(
 
 void TabStripNtbUI::BindPage(
     mojo::PendingRemote<tabstrip_ntb::mojom::Page> page) {
-  page_.reset();
-  page_.Bind(std::move(page));
-  if (button_visible_.has_value()) {
-    // If the button visibility was set before the page was bound, set it now.
-    page_->SetButtonVisible(*button_visible_);
-  }
+  TabStripServiceUserData::GetOrCreateForWebContents(web_ui()->GetWebContents())
+      ->BindPage(std::move(page));
 }
 
-void TabStripNtbUI::SetButtonVisible(bool visible) {
-  button_visible_ = visible;
-  if (page_.is_bound()) {
-    page_->SetButtonVisible(visible);
+void TabStripNtbUI::PopulateLocalResourceLoaderConfig(
+    blink::mojom::LocalResourceLoaderConfig* config,
+    const url::Origin& requesting_origin) {
+  TRACE_EVENT("ui", "TabStripNtbUI::PopulateLocalResourceLoaderConfig");
+  auto* theme_colors_manager = ThemeColorsSourceManagerFactory::GetForProfile(
+      Profile::FromWebUI(web_ui()));
+  // Without a manager the stylesheet is still fetched over the network.
+  if (!theme_colors_manager) {
+    return;
   }
+  theme_colors_manager->PopulateLocalResourceLoaderConfig(
+      config, requesting_origin, web_ui()->GetWebContents());
 }
 
 WEB_UI_CONTROLLER_TYPE_IMPL(TabStripNtbUI)

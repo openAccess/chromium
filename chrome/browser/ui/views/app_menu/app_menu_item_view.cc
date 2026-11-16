@@ -9,6 +9,7 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_action_item.h"
@@ -20,7 +21,10 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_id.h"
+#include "ui/gfx/range/range.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
 
 namespace {
@@ -77,6 +81,9 @@ class AppMenuItemActionViewInterface
     if (menu_item->text_override().has_value()) {
       menu_item->SetTitle(*menu_item->text_override());
     }
+    if (menu_item->highlight_range_override().has_value()) {
+      menu_item->SetHighlightRange(*menu_item->highlight_range_override());
+    }
 
     const int default_icon_size = menu_item->default_icon_size();
     const std::optional<ui::ColorId> default_icon_color =
@@ -103,6 +110,14 @@ class AppMenuItemActionViewInterface
       menu_item->GetViewAccessibility().SetName(
           std::u16string(action_item->GetAccessibleName()));
     }
+
+    // The action's secondary text (e.g. the live zoom level on zoom in/out)
+    // takes precedence over the row's own.
+    const std::u16string* const action_secondary_text =
+        action_item->GetProperty(chrome::kActionSecondaryTextKey);
+    menu_item->UpdateSecondaryTitle(action_secondary_text
+                                        ? *action_secondary_text
+                                        : menu_item->default_secondary_text());
   }
 };
 
@@ -140,7 +155,17 @@ AppMenuItemView::AppMenuItemView(views::MenuItemView* parent,
 
   if (std::u16string* secondary_text =
           base_action->GetProperty(AppMenuActionItem::kSecondaryTextKey)) {
-    SetSecondaryTitle(*secondary_text);
+    default_secondary_text_ = *secondary_text;
+    SetSecondaryTitle(default_secondary_text_);
+    // The secondary title is not part of the accessible name, so expose it as
+    // the description for screen readers.
+    GetViewAccessibility().SetDescription(default_secondary_text_);
+  }
+
+  if (gfx::Range* highlight_range =
+          base_action->GetProperty(AppMenuActionItem::kHighlightRangeKey)) {
+    highlight_range_ = *highlight_range;
+    set_may_have_mnemonics(false);
   }
 
   if (const ui::ElementIdentifier element_id =
@@ -168,6 +193,36 @@ AppMenuItemView::AppMenuItemView(views::MenuItemView* parent,
 }
 
 AppMenuItemView::~AppMenuItemView() = default;
+
+void AppMenuItemView::UpdateSecondaryTitle(
+    const std::u16string& secondary_title) {
+  if (secondary_title == this->secondary_title()) {
+    return;
+  }
+
+  // The row keeps its bounds, so a repaint is enough; ChildrenChanged() would
+  // move the menu selection back to the root mid-activation.
+  SetSecondaryTitle(secondary_title);
+  SchedulePaint();
+
+  // The secondary title is not part of the accessible name, so expose it as
+  // the description. Guard against the accessibility update destroying this
+  // view before the announcement below.
+  views::ViewTracker tracker(this);
+  GetViewAccessibility().SetDescription(secondary_title);
+  if (!tracker.view()) {
+    return;
+  }
+
+  // A description change is not read out on an already focused item, so also
+  // announce it like the inline AppMenuZoomView label does. Only the activated
+  // (selected) row announces: several rows may show the same text, and a
+  // single change must not be read out once per row. Falling back to the
+  // row's own text (e.g. no zoomable tab) is not worth announcing.
+  if (IsSelected() && secondary_title != default_secondary_text_) {
+    GetViewAccessibility().AnnounceAlert(secondary_title);
+  }
+}
 
 std::unique_ptr<views::ActionViewInterface>
 AppMenuItemView::GetActionViewInterface() {

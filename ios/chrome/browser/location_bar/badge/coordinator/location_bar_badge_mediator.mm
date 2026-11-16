@@ -298,7 +298,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   // ignore the update.
   if (![self shouldShowBadge:config.badgeType] ||
       [self.consumer isBadgeVisible]) {
-    // TODO (crbug.com/445719031): Store badge updates in consumer instead of
+    // TODO(crbug.com/574559217): Store badge updates in consumer instead of
     // ignoring the update.
     return;
   }
@@ -791,23 +791,28 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
     return;
   }
 
+  // Prevents entrypoint updates from showing while Gemini prevents them, and
+  // preserves an already-displayed Gemini contextual cue chip.
+  if (IsPageActionMenuEnabled() && _activeWebState) {
+    GeminiTabHelper* geminiTabHelper =
+        GeminiTabHelper::FromWebState(_activeWebState);
+    if (geminiTabHelper &&
+        geminiTabHelper->ShouldPreventContextualPanelEntryPoint()) {
+      if (!_currentBadgeConfig ||
+          _currentBadgeConfig.badgeType !=
+              LocationBarBadgeType::kGeminiContextualCueChip) {
+        [self resetTimersAndUIStateAnimated:NO];
+        [self.consumer hideBadge];
+      }
+      return;
+    }
+  }
+
   [self resetTimersAndUIStateAnimated:NO];
 
   if (!config) {
     [self.consumer hideBadge];
     return;
-  }
-
-  // Prevents entrypoint from showing while the Gemini promo is showing.
-  if (IsPageActionMenuEnabled()) {
-    GeminiTabHelper* geminiTabHelper =
-        GeminiTabHelper::FromWebState(_webStateList->GetActiveWebState());
-    if (geminiTabHelper) {
-      if (geminiTabHelper->ShouldPreventContextualPanelEntryPoint()) {
-        [self.consumer hideBadge];
-        return;
-      }
-    }
   }
 
   ContextualPanelTabHelper* contextualPanelTabHelper =
@@ -875,7 +880,7 @@ constexpr base::TimeDelta kStartCollapseTransitionTime = base::Seconds(5);
   }
 
   RecordLocationBarBadgeUpdate(badgeType);
-  // TODO(crbug.com/448422022): Store Contextual Panel Entrypoint badges
+  // TODO(crbug.com/574559217): Store Contextual Panel Entrypoint badges
   // instead of preventing them.
   if ([self.consumer isBadgeVisible]) {
     return nil;

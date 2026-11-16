@@ -4,6 +4,13 @@
 
 source_set("resource_broker") {
   sources = [
+    "body_pump.cc",
+    "body_pump.h",
+    "eligibility_evaluator.cc",
+    "eligibility_evaluator.h",
+    "observation_record.h",
+    "observation_table.cc",
+    "observation_table.h",
     "resource_broker_service_impl.cc",
     "resource_broker_service_impl.h",
   ]
@@ -11,25 +18,36 @@ source_set("resource_broker") {
   configs += [ "//content:content_implementation" ]
 
   public_deps = [
+    "//base",
     "//content/services/resource_broker/public/mojom",
+    "//crypto",
     "//mojo/public/cpp/bindings",
+    "//mojo/public/cpp/system",
+    "//services/network/public/mojom",
   ]
 
-  deps = [ "//base" ]
+  deps = [
+    "//net",
+    "//services/network/public/cpp",
+  ]
 }
 
 source_set("tests") {
   testonly = true
 
-  sources = [ "resource_broker_service_impl_unittest.cc" ]
+  sources = [
+    "body_pump_unittest.cc",
+    "eligibility_evaluator_unittest.cc",
+    "observation_table_unittest.cc",
+    "resource_broker_service_impl_unittest.cc",
+  ]
 
   public_deps = [ ":resource_broker" ]
 
   deps = [
-    "//base",
     "//base/test:test_support",
-    "//content/services/resource_broker/public/mojom",
-    "//mojo/public/cpp/bindings",
+    "//net",
+    "//services/network/public/cpp",
     "//testing/gtest",
   ]
 }

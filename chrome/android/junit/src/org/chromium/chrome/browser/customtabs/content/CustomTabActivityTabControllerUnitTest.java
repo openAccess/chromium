@@ -21,6 +21,7 @@ import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -42,6 +43,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -56,6 +58,8 @@ import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.privacy.settings.PrivacyPreferencesManagerImpl;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabReparentingParams;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.components.user_prefs.UserPrefsJni;
 import org.chromium.content_public.browser.WebContents;
@@ -235,6 +239,30 @@ public class CustomTabActivityTabControllerUnitTest {
         mTabController.finishNativeInitialization();
         assertEquals(env.tabFromFactory, env.tabProvider.getTab());
         assertEquals(TabCreationMode.DEFAULT, env.tabProvider.getInitialTabCreationMode());
+    }
+
+    @Test
+    public void doesntCreateTabAfterRestoreCookies_IfControllerDestroyed() {
+        env.isOffTheRecord = true;
+        mTabController = env.createTabController();
+        when(env.intentDataProvider.isOffTheRecord()).thenReturn(true);
+        when(env.cipherFactory.restoreFromBundle(any())).thenReturn(true);
+
+        CookiesFetcher mockFetcher = mock(CookiesFetcher.class);
+        mTabController.setCookiesFetcherForTesting(mockFetcher);
+
+        mTabController.setUpInitialTab(null);
+        clearInvocations(env.tabFactory);
+
+        mTabController.finishNativeInitialization();
+        ArgumentCaptor<Runnable> callbackCaptor = ArgumentCaptor.forClass(Runnable.class);
+        verify(mockFetcher).restoreCookies(callbackCaptor.capture());
+
+        mTabController.destroy();
+        callbackCaptor.getValue().run();
+
+        verify(env.tabFactory, never()).createTab(any(), any(), any());
+        verify(env.tabModel, never()).addTab(any(), anyInt(), anyInt(), anyInt());
     }
 
     @Test
@@ -449,6 +477,32 @@ public class CustomTabActivityTabControllerUnitTest {
     }
 
     @Test
+    public void usesTabFromIntent_RunsFinalizeCallbackAndDetachesBeforeAddTab() {
+        Tab tab = env.prepareTransferredTab();
+        TabModelSelector sourceSelector = mock(TabModelSelector.class);
+        Runnable finalizeCallback = mock(Runnable.class);
+        AsyncTabParamsManagerSingleton.getInstance().remove(tab.getId());
+        AsyncTabParamsManagerSingleton.getInstance()
+                .add(tab.getId(), new TabReparentingParams(tab, sourceSelector, finalizeCallback));
+        doAnswer(
+                        invocation -> {
+                            Runnable callback = invocation.getArgument(1);
+                            if (callback != null) callback.run();
+                            return null;
+                        })
+                .when(env.reparentingTask)
+                .finish(any(), any());
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        InOrder inOrder = inOrder(finalizeCallback, sourceSelector, env.tabModel);
+        inOrder.verify(finalizeCallback).run();
+        inOrder.verify(sourceSelector).detachTabForReparenting(tab);
+        inOrder.verify(env.tabModel).addTab(eq(tab), anyInt(), anyInt(), anyInt());
+    }
+
+    @Test
     public void doesNotUseTabFromIntent_IfNotInAsyncParamsManager() {
         Tab tab = env.prepareTransferredTab();
         AsyncTabParamsManagerSingleton.getInstance().remove(tab.getId());
@@ -509,5 +563,28 @@ public class CustomTabActivityTabControllerUnitTest {
         assertNotNull(env.tabProvider.getTab());
 
         verify(mTabController, never()).updateIntentInTab(any(), anyBoolean());
+    }
+
+    @Test
+    public void restoresAllTabsInOrder_WhenMultipleTabsSaved() {
+        Tab openerTab = env.prepareTab();
+        when(openerTab.getId()).thenReturn(101);
+        when(openerTab.getParentId()).thenReturn(Tab.INVALID_TAB_ID);
+        Tab childTab = env.prepareTab();
+        when(childTab.getId()).thenReturn(102);
+        when(childTab.getParentId()).thenReturn(101);
+
+        env.saveTab(childTab);
+        when(env.tabModel.iterator()).thenAnswer(inv -> List.of(openerTab, childTab).iterator());
+        when(env.tabModel.getTabById(101)).thenReturn(openerTab);
+
+        mTabController.setUpInitialTab(null);
+        mTabController.finishNativeInitialization();
+
+        verify(env.tabModelOrchestrator).loadState(false, false, null);
+        verify(env.tabModelOrchestrator).restoreTabs(true);
+        assertEquals(childTab, env.tabProvider.getTab());
+        verify(mTabController).updateIntentInTab(eq(openerTab), eq(true));
+        verify(mTabController, never()).updateIntentInTab(eq(childTab), anyBoolean());
     }
 }

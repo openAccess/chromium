@@ -1745,7 +1745,9 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter serverTiming
     getter transferSize
     getter workerCacheLookupStart
+    getter workerFinalRouterSource
     getter workerFinalSourceType
+    getter workerMatchedRouterSource
     getter workerMatchedSourceType
     getter workerRouterEvaluationStart
     getter workerStart
@@ -2017,7 +2019,10 @@ interface SecurityPolicyViolationEvent : Event
 interface SemanticEmbedder
     static method availability
     static method create
+    static method params
     attribute @@toStringTag
+    getter embeddingSpace
+    getter maxInputTokens
     method constructor
     method destroy
     method embed

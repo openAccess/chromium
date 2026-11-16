@@ -13,8 +13,10 @@ import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.history.HistoryProvider.ClientGroup;
+import org.chromium.chrome.browser.history.HistoryProvider.TimePeriodOption;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browsing_data.DeleteBrowsingDataAction;
+import org.chromium.components.critical_actions.ActionType;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -58,7 +60,9 @@ public class BrowsingHistoryBridge implements HistoryProvider {
                         options.hostName,
                         options.clientIds,
                         options.includeUserVisits,
-                        options.includeActorVisits);
+                        options.includeActorVisits,
+                        options.beginTimeMs,
+                        options.endTimeMs);
     }
 
     @Override
@@ -85,6 +89,21 @@ public class BrowsingHistoryBridge implements HistoryProvider {
             @JniType("std::vector<std::string>") List<String> clientIds,
             @JniType("std::string") String clientName) {
         return new ClientGroup(clientIds, clientName);
+    }
+
+    @Override
+    public void queryTimePeriodOptions() {
+        List<TimePeriodOption> options = BrowsingHistoryBridgeJni.get().getTimePeriodOptions();
+        if (mObserver != null) mObserver.onQueryTimePeriodOptionsComplete(options);
+    }
+
+    @CalledByNative
+    public static TimePeriodOption createTimePeriodOption(
+            @TimePeriodOptionId int id,
+            @JniType("std::u16string") String label,
+            long beginTimeMs,
+            long endTimeMs) {
+        return new TimePeriodOption(id, label, beginTimeMs, endTimeMs);
     }
 
     @Override
@@ -135,7 +154,9 @@ public class BrowsingHistoryBridge implements HistoryProvider {
             @JniType("std::vector<GURL>") List<GURL> urls,
             @JniType("std::vector<std::vector<int64_t>>") List<long[]> nativeTimestampsList,
             boolean blockedVisit,
-            boolean isActorVisit) {
+            boolean isActorVisit,
+            @JniType("std::vector<critical_actions::CriticalActionEntry>")
+                    List<CriticalAction> criticalActions) {
         assert urls.size() == nativeTimestampsList.size();
         Map<GURL, long[]> allTimestamps = new HashMap<>();
         for (int i = 0; i < urls.size(); i++) {
@@ -150,7 +171,17 @@ public class BrowsingHistoryBridge implements HistoryProvider {
                         mostRecentJavaTimestamp,
                         allTimestamps,
                         blockedVisit,
-                        isActorVisit));
+                        isActorVisit,
+                        criticalActions));
+    }
+
+    @CalledByNative
+    public static CriticalAction createCriticalAction(
+            @JniType("std::string") String id,
+            @ActionType int actionType,
+            @JniType("std::string") String label,
+            @JniType("std::string") String tooltip) {
+        return new CriticalAction(id, actionType, label, tooltip);
     }
 
     @CalledByNative
@@ -231,7 +262,9 @@ public class BrowsingHistoryBridge implements HistoryProvider {
                 @JniType("std::optional<std::string>") @Nullable String hostnameSuffix,
                 @JniType("std::vector<std::string>") List<String> clientIds,
                 boolean includeUserVisits,
-                boolean includeActorVisits);
+                boolean includeActorVisits,
+                long beginTimeMs,
+                long endTimeMs);
 
         void queryHistoryContinuation(
                 long nativeBrowsingHistoryBridge, List<HistoryItem> historyItems);
@@ -262,6 +295,9 @@ public class BrowsingHistoryBridge implements HistoryProvider {
 
         @JniType("std::vector<history::BrowsingHistoryService::ClientGroup>")
         List<ClientGroup> getAllClients(long nativeBrowsingHistoryBridge);
+
+        @JniType("std::vector<history::TimePeriodOption>")
+        List<TimePeriodOption> getTimePeriodOptions();
 
         void getPageTitleForUrl(
                 @JniType("Profile*") Profile profile,

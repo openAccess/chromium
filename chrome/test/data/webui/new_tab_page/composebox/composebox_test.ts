@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import type {ComposeboxElement, NtpComposeboxElement} from 'chrome://new-tab-page/lazy_load.js';
+import type {NtpComposeboxElement} from 'chrome://new-tab-page/lazy_load.js';
 import {AimButtonMode, SubmitButtonIconType} from 'chrome://new-tab-page/lazy_load.js';
 import {$$, InputSource, QueryActionOverride, SearchboxTutorial} from 'chrome://new-tab-page/new_tab_page.js';
 import {GlifAnimationState} from 'chrome://resources/cr_components/composebox/common.js';
@@ -14,19 +14,18 @@ import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_componen
 import {WindowProxy as CrWindowProxy} from 'chrome://resources/cr_components/composebox/window_proxy.js';
 import type {SearchAnimatedGlowElement} from 'chrome://resources/cr_components/search/animated_glow.js';
 import {GlowMode} from 'chrome://resources/cr_components/search/constants.js';
-import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import type {CrIconElement} from 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import type {SelectedFileInfo} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {MockInputState} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNear, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {createAutocompleteResult, createSearchMatch, MockInputState} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createFuseboxAction} from '../test_support.js';
+import {assertCenterAligned, createFuseboxAction, getCenter, getTextCenter, LAYOUT_TOLERANCE_PX} from '../test_support.js';
 
-import {ADD_FILE_CONTEXT_FN, createComposeboxElement, getSubmitContainer, getSubmitIcon, setupComposeboxTest} from './test_support.js';
+import {ADD_FILE_CONTEXT_FN, createComposeboxElement, createComposeboxFile, getSubmitContainer, getSubmitIcon, setupComposeboxTest} from './test_support.js';
 
 suite('NewTabPageComposeboxTest', () => {
   const testProxy = setupComposeboxTest();
@@ -238,6 +237,7 @@ suite('NewTabPageComposeboxTest', () => {
           showInPreviousTabChip: false,
           lastActive: {internalValue: 0n},
           isLoading: false,
+          recentTab: false,
         }]);
         await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
         await microtasksFinished();
@@ -281,6 +281,7 @@ suite('NewTabPageComposeboxTest', () => {
           showInPreviousTabChip: false,
           lastActive: {internalValue: 0n},
           isLoading: false,
+          recentTab: false,
         };
         testProxy.searchboxCallbackRouterRemote.setAimThreadRestoredTabs(
             [restoredTab]);
@@ -325,9 +326,9 @@ suite('NewTabPageComposeboxTest', () => {
         createComposeboxElement(testProxy);
         await microtasksFinished();
 
-        const matches = [createSearchMatchForTesting()];
+        const matches = [createSearchMatch()];
         testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
+            createAutocompleteResult({
               queryId: testProxy.element.activeQueryId,
               matches,
               showAimActivityLink: true,
@@ -339,9 +340,20 @@ suite('NewTabPageComposeboxTest', () => {
         const suggestionActivity =
             testProxy.element.shadowRoot.querySelector('#suggestionActivity');
         assertTrue(!!suggestionActivity);
+        assertEquals(
+            suggestionActivity,
+            testProxy.element.$.composebox.lastElementChild);
         const localizedLink =
             suggestionActivity.querySelector('localized-link');
         assertTrue(!!localizedLink);
+        const enterEvent = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        });
+        localizedLink.dispatchEvent(enterEvent);
+        assertFalse(enterEvent.defaultPrevented);
 
         const testUrl = 'about:blank?activity';
         const anchor = document.createElement('a');
@@ -371,9 +383,9 @@ suite('NewTabPageComposeboxTest', () => {
         createComposeboxElement(testProxy);
         await microtasksFinished();
 
-        const matches = [createSearchMatchForTesting()];
+        const matches = [createSearchMatch()];
         testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-            createAutocompleteResultForTesting({
+            createAutocompleteResult({
               queryId: testProxy.element.activeQueryId,
               matches,
               showAimActivityLink: false,
@@ -457,10 +469,9 @@ suite('NewTabPageComposeboxTest', () => {
                       .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
     input.value = 'test';
     input.dispatchEvent(new Event('input'));
-    const matches =
-        [createSearchMatchForTesting({allowedToBeDefaultMatch: true})];
+    const matches = [createSearchMatch({allowedToBeDefaultMatch: true})];
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
+        createAutocompleteResult({
           queryId: testProxy.element.activeQueryId,
           input: 'test',
           matches,
@@ -490,10 +501,9 @@ suite('NewTabPageComposeboxTest', () => {
                       .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
     input.value = 'test';
     input.dispatchEvent(new Event('input'));
-    const matches =
-        [createSearchMatchForTesting({allowedToBeDefaultMatch: true})];
+    const matches = [createSearchMatch({allowedToBeDefaultMatch: true})];
     testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-        createAutocompleteResultForTesting({
+        createAutocompleteResult({
           queryId: testProxy.element.activeQueryId,
           input: 'test',
           matches: matches,
@@ -1423,12 +1433,12 @@ suite('NewTabPageComposeboxTest', () => {
 
     async function sendTwoMatches(queryId: number, sequenceId: number = 0) {
       testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId,
             sequenceId,
             matches: [
-              createSearchMatchForTesting(),
-              createSearchMatchForTesting(),
+              createSearchMatch(),
+              createSearchMatch(),
             ],
           }));
       await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
@@ -1507,7 +1517,7 @@ suite('NewTabPageComposeboxTest', () => {
     // overridden before createComposeboxElement().
     async function createWithAimButton(
         enabled: boolean, withX: boolean,
-        properties: Partial<ComposeboxElement> = {}) {
+        properties: Partial<NtpComposeboxElement> = {}) {
       loadTimeData.overrideValues({
         'composeboxPersistentAimButton': enabled,
         'composeboxPersistentAimButtonWithX': withX,
@@ -1541,14 +1551,38 @@ suite('NewTabPageComposeboxTest', () => {
 
     async function showMatch(allowedToBeDefaultMatch: boolean) {
       testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             queryId: testProxy.element.activeQueryId,
             input: 'test',
-            matches: [createSearchMatchForTesting(
+            matches: [createSearchMatch(
                 {fillIntoEdit: 'test', allowedToBeDefaultMatch})],
           }));
       await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
       await microtasksFinished();
+    }
+
+    function queryDivider(): Element|null {
+      return testProxy.element.shadowRoot.querySelector('.carousel-divider');
+    }
+
+    async function showSuggestions() {
+      testProxy.element.queryAutocomplete(/*clearMatches=*/ false);
+      testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
+          createAutocompleteResult({
+            queryId: testProxy.element.activeQueryId,
+            input: testProxy.element.lastQueriedInput,
+            matches: [
+              createSearchMatch(),
+              createSearchMatch(),
+            ],
+          }));
+      await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+      await microtasksFinished();
+    }
+
+    function getDropdownTop(): number {
+      return testProxy.element.$.matches.getBoundingClientRect().top -
+          testProxy.element.$.composebox.getBoundingClientRect().top;
     }
 
     [false, true].forEach(enabled => {
@@ -1568,6 +1602,9 @@ suite('NewTabPageComposeboxTest', () => {
                   !enabled,
                   !!testProxy.element.shadowRoot.querySelector(
                       'cr-composebox-submit'));
+              assertEquals(
+                  enabled,
+                  testProxy.element.getInputElement().skipEmptyHeightLock);
               if (aimButton) {
                 assertEquals(withX, aimButton.showExitIcon);
               }
@@ -1648,6 +1685,106 @@ suite('NewTabPageComposeboxTest', () => {
           new FocusEvent('focusin', {bubbles: true, composed: true}));
       await microtasksFinished();
       assertEquals(0, testProxy.element.selectedMatchIndex);
+    });
+
+    test('typed and zero-prefix suggestions start at the same y', async () => {
+      await createWithAimButton(true, false);
+
+      await showSuggestions();
+      assertTrue(testProxy.element.showDropdown);
+      assertFalse(testProxy.element.hasAttribute('has-context-row_'));
+      assertFalse(!!queryDivider());
+      const zpsDropdownTop = getDropdownTop();
+
+      await typeInput('test');
+      await showSuggestions();
+      assertTrue(testProxy.element.showDropdown);
+      assertTrue(testProxy.element.submitEnabled);
+      assertFalse(testProxy.element.hasAttribute('has-context-row_'));
+      assertFalse(!!queryDivider());
+      assertNear(zpsDropdownTop, getDropdownTop(), LAYOUT_TOLERANCE_PX);
+    });
+
+    test('attached file adds the context row and divider', async () => {
+      await createWithAimButton(true, false);
+      testProxy.element.addFileContextForTesting(createComposeboxFile(1));
+      await microtasksFinished();
+      assertTrue(testProxy.element.hasAttribute('has-context-row_'));
+      assertFalse(!!queryDivider());
+
+      await showSuggestions();
+      assertTrue(testProxy.element.showDropdown);
+      assertTrue(!!queryDivider());
+    });
+
+    test('tool mode or tab context adds the context row', async () => {
+      await createWithAimButton(
+          true, false, {tabFaviconChipsToCoinsEnabled: true});
+      assertFalse(testProxy.element.hasAttribute('has-context-row_'));
+
+      testProxy.element.inToolMode = true;
+      await microtasksFinished();
+      assertTrue(testProxy.element.hasAttribute('has-context-row_'));
+
+      testProxy.element.inToolMode = false;
+      await microtasksFinished();
+      assertFalse(testProxy.element.hasAttribute('has-context-row_'));
+
+      testProxy.element.addFileContextForTesting(createComposeboxFile(1, {
+        type: 'tab',
+        inputType: InputType.kBrowserTab,
+        tabId: 1,
+        url: 'https://example.com',
+      }));
+      await microtasksFinished();
+      assertTrue(testProxy.element.hasTabs());
+      assertTrue(testProxy.element.hasAttribute('has-context-row_'));
+    });
+
+    test(
+        'single line without suggestions keeps the searchbox height',
+        async () => {
+          await createWithAimButton(true, false, {showVoiceSearch: true});
+          testProxy.element.style.setProperty('--cr-searchbox-height', '56px');
+          await typeInput('test');
+          testProxy.element.queryAutocomplete(/*clearMatches=*/ false);
+          testProxy.searchboxCallbackRouterRemote.autocompleteResultChanged(
+              createAutocompleteResult({
+                queryId: testProxy.element.activeQueryId,
+                matches: [createSearchMatch(
+                    {allowedToBeDefaultMatch: true, fillIntoEdit: 'test'})],
+              }));
+          await testProxy.searchboxCallbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          assertFalse(testProxy.element.hasAttribute('should-remain-folded_'));
+          assertFalse(testProxy.element.showDropdown);
+          assertFalse(testProxy.element.hasAttribute('has-context-row_'));
+          const composebox = testProxy.element.$.composebox;
+          assertNear(56, composebox.getBoundingClientRect().height, 1);
+
+          const input =
+              testProxy.element.getInputElement()
+                  .shadowRoot.querySelector<HTMLTextAreaElement>('#input')!;
+          const voiceButton =
+              testProxy.element.shadowRoot.querySelector('#voiceSearchButton');
+          assertTrue(!!voiceButton);
+          assertCenterAligned(
+              testProxy.element, {
+                composebox: getCenter(composebox),
+                text: getTextCenter(input),
+                aimButton: getAimButton(),
+                voiceButton,
+              },
+              'y', 0.5);
+        });
+
+    test('divider stays above suggestions without the AIM button', async () => {
+      await createWithAimButton(false, false);
+      await typeInput('test');
+      await showSuggestions();
+      assertTrue(testProxy.element.showDropdown);
+      assertTrue(!!queryDivider());
     });
   });
 });

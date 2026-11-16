@@ -72,13 +72,15 @@
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/base64.h"
 #include "base/base_paths.h"
 #include "base/i18n/case_conversion.h"
 #include "base/i18n/file_util_icu.h"
 #include "base/path_service.h"
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
-#include "chrome/browser/context_hub/record_replay/skill_recording_service.h"
+#include "chrome/browser/context_hub/memory_banks_shortcut.h"
+#include "chrome/browser/context_hub/record_replay/recording_artifacts.h"
 #include "chrome/browser/context_hub/record_replay/skill_recording_service_factory.h"
 #include "chrome/browser/glic/host/context/glic_sharing_utils.h"  // nogncheck
 #include "chrome/browser/glic/host/glic.mojom.h"                  // nogncheck
@@ -93,9 +95,13 @@
 #include "chrome/browser/ui/singleton_tabs.h"
 #include "chrome/browser/ui/webui/context_hub/context_hub_tab_provider_desktop.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"  // nogncheck
 #include "content/public/browser/page_navigator.h"
 #include "net/base/url_util.h"  // nogncheck
+#include "ui/base/accelerators/accelerator.h"
+#include "ui/base/accelerators/command.h"
+#include "url/url_constants.h"
 #endif
 #include "components/sessions/content/session_tab_helper.h"  // nogncheck
 #include "ui/base/mojom/window_open_disposition.mojom-shared.h"
@@ -335,6 +341,39 @@ BrowserWindowInterface* GetBrowserWindowInterface(
   return nullptr;
 }
 
+// Returns the localized UI label for `accelerator` (for example, "⇧⌘K" on
+// macOS or "Ctrl+Shift+K" on Windows/Linux), or an empty string if empty.
+// Unlike `ui::Command::AcceleratorToString()`, this is localized for display
+// and cannot be parsed back.
+std::string ToDisplayText(const ui::Accelerator& accelerator) {
+  return accelerator.IsEmpty()
+             ? std::string()
+             : base::UTF16ToUTF8(accelerator.GetShortcutText());
+}
+
+browser::context_hub::mojom::SkillRecordingSessionDataPtr ToMojoSessionData(
+    const context_hub::RecordingArtifacts& artifacts) {
+  auto session_data =
+      browser::context_hub::mojom::SkillRecordingSessionData::New();
+  session_data->actions.reserve(artifacts.actions.size());
+  for (const context_hub::RecordedAction& action : artifacts.actions) {
+    auto mojo_action = browser::context_hub::mojom::SkillRecordingAction::New();
+    mojo_action->type = action.type;
+    mojo_action->description = action.description;
+    mojo_action->timestamp = action.timestamp;
+    if (!action.screenshot_jpeg_bytes.empty()) {
+      GURL data_url(
+          base::StrCat({"data:image/jpeg;base64,",
+                        base::Base64Encode(action.screenshot_jpeg_bytes)}));
+      if (data_url.is_valid() && data_url.spec().size() <= url::kMaxURLChars) {
+        mojo_action->screenshot_data_url = std::move(data_url);
+      }
+    }
+    session_data->actions.push_back(std::move(mojo_action));
+  }
+  return session_data;
+}
+
 }  // namespace
 #endif
 
@@ -375,6 +414,11 @@ ContextHubPageHandler::ContextHubPageHandler(
   // the system temp directory until OS-level cleanup.
   GetClipboardFileTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&PruneStaleClipboardBatchDirectories));
+
+  if (context_hub::SkillRecordingService* skill_service =
+          SkillRecordingServiceFactory::GetForProfile(profile_)) {
+    skill_recording_service_observation_.Observe(skill_service);
+  }
 #endif
 }
 
@@ -457,6 +501,14 @@ void ContextHubPageHandler::OnMemoryBankEntriesDeleted(
     const std::vector<int64_t>& ids) {
   page_->OnMemoryBankEntriesDeleted(ids);
 }
+
+#if !BUILDFLAG(IS_ANDROID)
+void ContextHubPageHandler::OnTranscriptUpdate(const std::string& text,
+                                               base::TimeDelta timestamp,
+                                               bool is_final) {
+  page_->OnTranscriptUpdate(text, timestamp, is_final);
+}
+#endif
 
 void ContextHubPageHandler::GenerateFirstPartyAutoTodos(
     GenerateFirstPartyAutoTodosCallback callback) {
@@ -626,6 +678,24 @@ void ContextHubPageHandler::GetAllMemoryBankEntries(
         std::move(callback).Run(entries);
       },
       std::move(callback)));
+}
+
+void ContextHubPageHandler::SearchMemoryBankEntries(
+    const std::string& query,
+    SearchMemoryBankEntriesCallback callback) {
+  auto* service = ContextHubServiceFactory::GetForProfile(profile_);
+  if (!service) {
+    std::move(callback).Run({});
+    return;
+  }
+
+  service->SearchMemoryBankEntries(
+      query, base::BindOnce(
+                 [](SearchMemoryBankEntriesCallback callback,
+                    std::vector<context_hub::MemoryBankEntry> entries) {
+                   std::move(callback).Run(entries);
+                 },
+                 std::move(callback)));
 }
 
 void ContextHubPageHandler::DeleteMemoryBankEntries(
@@ -1077,7 +1147,10 @@ void ContextHubPageHandler::ConfirmAllTabGroups(
           return;
         }
         bool success = handler->tab_provider_->ConfirmTabGroups(groups);
-        service->DeleteAllTabGroups(
+        // End the session and trigger preference refinement if groups were
+        // created.
+        service->FinishTabGroupSession(
+            /*groups_created=*/success,
             base::BindOnce(std::move(callback), success));
       },
       weak_factory_.GetWeakPtr(), service->GetWeakPtr(), std::move(callback)));
@@ -1780,6 +1853,42 @@ void ContextHubPageHandler::OpenContextHubPage(
 #endif
 }
 
+void ContextHubPageHandler::GetBrowseMemoryBanksShortcut(
+    GetBrowseMemoryBanksShortcutCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  NOTREACHED();
+#else
+  std::move(callback).Run(
+      ToDisplayText(context_hub::GetBrowseMemoryBanksShortcutFromPrefs(
+          *profile_->GetPrefs())));
+#endif
+}
+
+void ContextHubPageHandler::GetSuggestedBrowseMemoryBanksShortcut(
+    GetSuggestedBrowseMemoryBanksShortcutCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  NOTREACHED();
+#else
+  const ui::Accelerator accelerator =
+      context_hub::GetSuggestedBrowseMemoryBanksShortcut();
+  std::move(callback).Run(accelerator.IsEmpty()
+                              ? std::string()
+                              : ui::Command::AcceleratorToString(accelerator),
+                          ToDisplayText(accelerator));
+#endif
+}
+
+void ContextHubPageHandler::SetBrowseMemoryBanksShortcut(
+    const std::string& shortcut,
+    SetBrowseMemoryBanksShortcutCallback callback) {
+#if BUILDFLAG(IS_ANDROID)
+  NOTREACHED();
+#else
+  std::move(callback).Run(context_hub::SetBrowseMemoryBanksShortcutInPrefs(
+      *profile_->GetPrefs(), shortcut));
+#endif
+}
+
 void ContextHubPageHandler::CopyAttachmentsToClipboard(
     std::vector<browser::context_hub::mojom::MemoryBankFileAttachmentPtr> files,
     CopyAttachmentsToClipboardCallback callback) {
@@ -1862,7 +1971,8 @@ void ContextHubPageHandler::StopSkillRecording(
 #else
   if (context_hub::SkillRecordingService* service =
           SkillRecordingServiceFactory::GetForProfile(profile_)) {
-    std::move(callback).Run(service->StopRecording());
+    service->StopRecording();
+    std::move(callback).Run(ToMojoSessionData(service->artifacts()));
     return;
   }
   std::move(callback).Run(

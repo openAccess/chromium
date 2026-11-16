@@ -32,6 +32,7 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kAggressiveShaderCacheLimits);
 
 #if BUILDFLAG(IS_ANDROID)
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kAndroidSurfaceControl);
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kEnableAndroidSandboxedGpuProcess);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebViewSurfaceControl);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kWebViewSurfaceControlForTV);
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kLimitAImageReaderMaxSizeToOne);
@@ -55,6 +56,10 @@ GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kNoUndamagedOverlayPromotion);
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_IOS)
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kAdjustGpuProcessPriority);
 #endif
+
+GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kCapCommandBufferWaitPriority);
+GPU_CONFIG_EXPORT extern const base::FeatureParam<base::TimeDelta>
+    kCommandBufferWaitHighPriorityDelay;
 
 GPU_CONFIG_EXPORT BASE_DECLARE_FEATURE(kClearGrShaderDiskCacheOnInvalidPrefix);
 
@@ -93,6 +98,9 @@ struct GPU_CONFIG_EXPORT SkiaGraphiteFeatureParams {
 
   // Maximum number of pending recordings before submitting to the GPU.
   int max_pending_recordings = 100;
+
+  // Maximum number of pending commands before submitting to the GPU.
+  int max_pending_commands = 500000;
 
   // Maximum time since the last submit before a newly inserted recording
   // forces a submit to the GPU.
@@ -154,6 +162,9 @@ inline bool SkiaGraphiteDawnEnableAutoMap() {
 }
 inline int SkiaGraphiteMaxPendingRecordings() {
   return GetSkiaGraphiteFeatureParams().max_pending_recordings;
+}
+inline int SkiaGraphiteMaxPendingCommands() {
+  return GetSkiaGraphiteFeatureParams().max_pending_commands;
 }
 inline base::TimeDelta SkiaGraphiteMaxTimeBetweenSubmits() {
   return GetSkiaGraphiteFeatureParams().max_time_between_submits;
@@ -255,6 +266,7 @@ GPU_CONFIG_EXPORT bool IsLegacyIpcDisabled();
 
 #if BUILDFLAG(IS_ANDROID)
 GPU_CONFIG_EXPORT bool IsAndroidSurfaceControlEnabled();
+GPU_CONFIG_EXPORT bool IsAndroidSandboxedGpuProcessEnabled();
 GPU_CONFIG_EXPORT bool LimitAImageReaderMaxSizeToOne();
 GPU_CONFIG_EXPORT bool IncreaseBufferCountForHighFrameRate();
 GPU_CONFIG_EXPORT bool IncreaseBufferCountForWebViewOverlays();

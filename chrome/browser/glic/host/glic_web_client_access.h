@@ -16,6 +16,8 @@
 
 namespace glic {
 
+class GlicWebClientResponsivenessMonitor;
+
 // Access to the glic web client, from outside of the WebUI handler.
 class GlicWebClientAccess {
  public:
@@ -50,6 +52,11 @@ class GlicWebClientAccess {
   // Informs the web client that additional context is available.
   virtual void NotifyAdditionalContext(mojom::AdditionalContextPtr context) = 0;
 
+  // Informs the web client that a paste or drop into Glic was blocked by
+  // product or context eligibility checks.
+  virtual void NotifyDataTransferActionsBlocked(
+      mojom::DataTransferActionsBlockedNoticePtr notice) = 0;
+
   virtual void FloatingPanelCanAttachChanged(bool can_attach) = 0;
 
   // Informs the web client that an actor task list row was clicked.
@@ -63,6 +70,9 @@ class GlicWebClientAccess {
   virtual void OnUserInputSubmittedForTesting(
       mojom::WebClientMode mode,
       mojom::PromptType prompt_type) = 0;
+
+  virtual GlicWebClientResponsivenessMonitor*
+  responsiveness_monitor_for_testing() = 0;
 };
 
 }  // namespace glic

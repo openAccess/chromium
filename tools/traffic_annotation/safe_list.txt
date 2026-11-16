@@ -33,9 +33,6 @@ missing,components/manta/walrus_provider.cc
 
 # Android-specific annotations.
 # TODO(crbug.com/40641204): Complete these.
-missing,chrome/android/java/src/org/chromium/chrome/browser/feedback/ConnectivityChecker.java
-missing,chrome/android/java/src/org/chromium/chrome/browser/net/connectivitydetector/ConnectivityDetector.java
-missing,chrome/android/java/src/org/chromium/chrome/browser/offlinepages/measurements/OfflineMeasurementsBackgroundTask.java
 missing,chrome/browser/android/compositor/scene_layer/contextual_search_scene_layer.cc
 missing,chrome/browser/android/feedback/connectivity_checker.cc
 missing,net/proxy_resolution/proxy_config_service_android.cc
@@ -208,11 +205,11 @@ missing_new_fields,components/policy/core/browser/signin/user_cloud_signin_restr
 missing_new_fields,components/policy/core/common/cloud/external_policy_data_fetcher.cc
 missing_new_fields,components/policy/core/common/cloud/user_info_fetcher.cc
 missing_new_fields,components/proxy_config/pref_proxy_config_tracker_impl.cc
-missing_new_fields,components/safe_browsing/content/browser/threat_details_cache.cc
+missing_new_fields,components/safe_browsing/content/browser/threat_details/threat_details_cache.cc
 missing_new_fields,components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.cc
 missing_new_fields,components/safe_browsing/core/browser/db/v4_update_protocol_manager.cc
 missing_new_fields,components/safe_browsing/core/browser/password_protection/password_protection_request.cc
-missing_new_fields,components/safe_browsing/core/browser/ping_manager.cc
+missing_new_fields,components/safe_browsing/core/browser/ping_manager/ping_manager.cc
 missing_new_fields,components/safe_browsing/core/browser/realtime/chrome_enterprise_url_lookup_service.cc
 missing_new_fields,components/safe_browsing/core/browser/realtime/url_lookup_service.cc
 missing_new_fields,components/safe_browsing/core/browser/tailored_security_service/tailored_security_service.cc
@@ -263,7 +260,6 @@ missing_new_fields,content/browser/web_package/web_bundle_utils.cc
 missing_new_fields,content/browser/webid/idp_network_request_manager.cc
 missing_new_fields,content/browser/websockets/websocket_connector_impl.cc
 missing_new_fields,content/browser/worker_host/worker_script_fetcher.cc
-missing_new_fields,content/services/shared_storage_worklet/module_script_downloader.cc
 missing_new_fields,content/shell/browser/shell_devtools_bindings.cc
 missing_new_fields,device/bluetooth/bluetooth_socket_net.cc
 missing_new_fields,device/fido/cable/fido_tunnel_device.cc

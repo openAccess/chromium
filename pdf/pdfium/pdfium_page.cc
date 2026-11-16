@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/check_op.h"
 #include "base/containers/extend.h"
 #include "base/containers/span.h"
@@ -828,6 +829,15 @@ bool PDFiumPage::Unload() {
     return false;
   }
 
+  // Also do not unload when already unloading.
+  if (is_unloading_) {
+    return false;
+  }
+
+  base::AutoReset scoped_is_unloading(&is_unloading_, true);
+  // Also mark `this` as unavailable for the duration of Unload().
+  base::AutoReset scoped_unavailable(&available_, false);
+
   text_page_.reset();
 
   if (page_) {
@@ -1148,6 +1158,16 @@ uint32_t PDFiumPage::GetCharUnicode(int char_index) {
   // If this page is unavailable, GetTextPage() returns nullptr and
   // FPDFText_GetUnicode() naturally returns 0.
   return FPDFText_GetUnicode(GetTextPage(), char_index);
+}
+
+bool PDFiumPage::IsSynthesizedNewline(int char_index) {
+  CHECK(IsCharIndexInBounds(char_index));
+  if (FPDFText_IsGenerated(GetTextPage(), char_index) != 1) {
+    return false;
+  }
+
+  uint32_t char_code = GetCharUnicode(char_index);
+  return char_code == '\r' || char_code == '\n';
 }
 
 gfx::RectF PDFiumPage::GetCharBounds(int char_index) {
@@ -1741,9 +1761,22 @@ AccessibilityTextRunInfo PDFiumPage::CalculateTextRunInfoAt(
   // If the first character in a text run is a space, we need to start
   // `text_run_bounds` from the space character instead of the first
   // non-space unicode character.
+  bool include_leading_whitespace = actual_start_char_index > start_char_index;
+
+  // With heuristic enhancements, skip leading whitespace that ends the previous
+  // line, such as the space after a footnote link at the end of a line.
+  // Otherwise, the bounds would span both lines.
+  //
+  // This only changes the bounds. The run still starts at `start_char_index`.
+  if (::features::IsPdfAccessibilityHeuristicEnhancementsEnabled()) {
+    for (uint32_t i = start_char_index; i < actual_start_char_index; ++i) {
+      include_leading_whitespace &= !IsSynthesizedNewline(i);
+    }
+  }
+
   FPDF_PAGE page = GetPage();
   gfx::RectF text_run_bounds =
-      actual_start_char_index > start_char_index
+      include_leading_whitespace
           ? GetFloatCharRectInPixels(page, text_page, start_char_index)
           : gfx::RectF();
 
@@ -2544,21 +2577,16 @@ Thumbnail PDFiumPage::GenerateThumbnail(float device_pixel_ratio) {
   return thumbnail;
 }
 
-#if BUILDFLAG(ENABLE_PDF_INK2)
-gfx::Size PDFiumPage::GetThumbnailSize(float device_pixel_ratio) {
-  CHECK(available());
-  FPDF_PAGE page = GetPage();
-  return Thumbnail::CalculateImageSize(GetPageSizeInPoints(page),
-                                       device_pixel_ratio);
-}
-#endif
-
 void PDFiumPage::GenerateAndSendThumbnail(float device_pixel_ratio,
                                           SendThumbnailCallback send_callback) {
   std::move(send_callback).Run(GenerateThumbnail(device_pixel_ratio));
 }
 
 void PDFiumPage::MarkAvailable() {
+  if (is_unloading_) {
+    return;
+  }
+
   available_ = true;
 
   // Fulfill pending thumbnail request.

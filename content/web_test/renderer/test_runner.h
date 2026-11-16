@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/circular_deque.h"
@@ -160,8 +161,7 @@ class TestRunner {
 
   // Replicates changes to web test runtime flags (i.e. changes that happened in
   // another renderer). See also `OnWebTestRuntimeFlagsChanged()`.
-  void ReplicateWebTestRuntimeFlagsChanges(
-      const base::DictValue& changed_values);
+  void ReplicateWebTestRuntimeFlagsChanges(base::DictValue&& changed_values);
 
   // If custom text dump is present (i.e. if testRunner.setCustomTextOutput has
   // been called from javascript), then returns |true| and populates the
@@ -184,11 +184,11 @@ class TestRunner {
   // Methods used by WebViewTestClient and WebFrameTestClient.
   bool ShouldStayOnPageAfterHandlingBeforeUnload() const;
   bool ShouldDumpAsCustomText() const;
-  std::string CustomDumpText() const;
+  const std::string& CustomDumpText() const;
   void ShowDevTools(const std::string& settings,
                     const std::string& frontend_url);
   void SetShouldDumpAsLayout(bool, WebFrameTestProxy& source);
-  void SetCustomTextOutput(const std::string& text, WebFrameTestProxy& source);
+  void SetCustomTextOutput(std::string_view text, WebFrameTestProxy& source);
   void SetShouldGeneratePixelResults(bool, WebFrameTestProxy& source);
   void SetShouldDumpFrameLoadCallbacks(bool, WebFrameTestProxy& source);
   bool ShouldDumpEditingCallbacks() const;
@@ -203,7 +203,9 @@ class TestRunner {
   bool ClearReferrer() const;
   bool IsWebPlatformTestsMode() const;
   void SetIsWebPlatformTestsMode(WebFrameTestProxy& source);
-  bool animation_requires_raster() const { return animation_requires_raster_; }
+  bool animation_requires_raster() const {
+    return test_params_.animation_requires_raster;
+  }
   void SetAnimationRequiresRaster(bool do_raster);
 
   // Add |frame| to the set of loading frames.
@@ -248,7 +250,7 @@ class TestRunner {
       WebFrameTestProxy& source);
 
   void ProcessWorkItem(mojom::WorkItemPtr work_item, WebFrameTestProxy& source);
-  void ReplicateWorkQueueStates(const base::DictValue& changed_values,
+  void ReplicateWorkQueueStates(base::DictValue&& changed_values,
                                 WebFrameTestProxy& source);
 
   blink::WebEffectiveConnectionType effective_connection_type() const {
@@ -266,8 +268,7 @@ class TestRunner {
 
   // Returns an asbsolute file path. This depends on the current test
   // configuration so it should only be called while a test is running.
-  blink::WebString GetAbsoluteWebStringFromUTF8Path(
-      const std::string& utf8_path);
+  blink::WebString GetAbsoluteWebStringFromUTF8Path(std::string_view utf8_path);
 
   // Disables automatic drag and drop in web tests' web frame widget
   // (WebTestWebFrameWidgetImpl).
@@ -288,7 +289,7 @@ class TestRunner {
   // Helper class for managing events queued by methods like QueueLoad or
   // QueueScript.
   class WorkQueue {
-    static constexpr const char* kKeyFrozen = "frozen";
+    static constexpr std::string_view kKeyFrozen = "frozen";
 
    public:
     explicit WorkQueue(TestRunner* controller);
@@ -301,8 +302,7 @@ class TestRunner {
     void RequestWork(WebFrameTestProxy& source);
     void ProcessWorkItem(mojom::WorkItemPtr work_item,
                          WebFrameTestProxy& source);
-    void ReplicateStates(const base::DictValue& values,
-                         WebFrameTestProxy& source);
+    void ReplicateStates(base::DictValue&& values, WebFrameTestProxy& source);
 
     // Takes care of notifying the browser after a change to the state.
     void OnStatesChanged(WebFrameTestProxy& source);
@@ -321,7 +321,7 @@ class TestRunner {
 
     bool is_frozen() const { return GetStateValue(kKeyFrozen); }
 
-    bool GetStateValue(const char* key) const {
+    bool GetStateValue(std::string_view key) const {
       std::optional<bool> value =
           states_.current_values().FindBoolByDottedPath(key);
       DCHECK(value.has_value());
@@ -333,6 +333,31 @@ class TestRunner {
     TrackedDictionary states_;
 
     raw_ptr<TestRunner> controller_;
+  };
+
+  struct TestParams {
+    // If true, the test runner will output a base64 encoded WAVE file.
+    bool dump_as_audio = false;
+
+    // If true, the test runner will produce a dump of the back forward list as
+    // well.
+    bool dump_back_forward_list = false;
+
+    // True if rasterization should be performed during tests that examine
+    // fling-style animations. This includes middle-click auto-scroll behaviors.
+    // This does not include most "ordinary" animations, such as CSS animations.
+    bool animation_requires_raster = false;
+
+    // The scale factor to apply to printed content.
+    float print_scale_factor = 1.0;
+
+    // If set, pretend that the specified default page size when printing (see
+    // `SetPrintingSize()`) is also the size of the imaginary paper, so that any
+    // CSS @page size that overrides the default page size will be centered on
+    // paper, and scaled down to fit if required. This is the default behavior
+    // when printing to an actual printer (as opposed to generating a PDF) in
+    // Chrome.
+    bool should_center_and_shrink_to_fit_paper = false;
   };
 
   // If the main test window's main frame is hosted in this renderer process,
@@ -361,7 +386,7 @@ class TestRunner {
   void QueueNonLoadingScript(const std::string& script,
                              WebFrameTestProxy& source);
   void QueueLoad(const GURL& current_url,
-                 const std::string& relative_url,
+                 std::string_view relative_url,
                  const std::string& target,
                  WebFrameTestProxy& source);
 
@@ -384,9 +409,9 @@ class TestRunner {
   int InProcessWindowCount();
 
   // Allows web tests to manage origins' allow list.
-  void AddOriginAccessAllowListEntry(const std::string& source_origin,
-                                     const std::string& destination_protocol,
-                                     const std::string& destination_host,
+  void AddOriginAccessAllowListEntry(const GURL& source_origin,
+                                     std::string_view destination_protocol,
+                                     std::string_view destination_host,
                                      bool allow_destination_subdomains);
 
   // Enables or disables subpixel positioning (i.e. fractional X positions for
@@ -397,7 +422,7 @@ class TestRunner {
   void SetTextSubpixelPositioning(bool value);
 
   // Set the mock orientation on |view| to |orientation|.
-  void SetMockScreenOrientation(const std::string& orientation,
+  void SetMockScreenOrientation(std::string_view orientation,
                                 WebFrameTestProxy& frame);
   // Disable any mock orientation on |view| that is set.
   void DisableMockScreenOrientation(blink::WebView* view);
@@ -483,15 +508,17 @@ class TestRunner {
 
   // Causes layout to happen as if targeted to printed pages.
   void SetPrinting(WebFrameTestProxy& source);
-  void SetPrintingForFrame(const std::string& frame_name,
+  void SetPrintingForFrame(std::string_view frame_name,
                            WebFrameTestProxy& source);
   void SetPrintingSize(int width, int height, WebFrameTestProxy& source);
   void SetPrintingMargin(int size, WebFrameTestProxy& source);
   void SetSafePrintableInset(int inset, WebFrameTestProxy& source);
   void SetShouldCenterAndShrinkToFitPaper(bool b) {
-    should_center_and_shrink_to_fit_paper_ = b;
+    test_params_.should_center_and_shrink_to_fit_paper = b;
   }
-  void SetPrintingScaleFactor(float factor) { printing_scale_factor_ = factor; }
+  void SetPrintingScaleFactor(float factor) {
+    test_params_.print_scale_factor = factor;
+  }
 
   void SetShouldStayOnPageAfterHandlingBeforeUnload(bool value,
                                                     WebFrameTestProxy& source);
@@ -551,31 +578,7 @@ class TestRunner {
   // Flags controlling what content gets dumped as a layout text result.
   WebTestRuntimeFlags web_test_runtime_flags_;
 
-  // If true, the test runner will output a base64 encoded WAVE file.
-  bool dump_as_audio_;
-
-  // If true, the test runner will produce a dump of the back forward list as
-  // well.
-  bool dump_back_forward_list_;
-
-  // If true, pixel dump will be produced as a series of 1px-tall, view-wide
-  // individual paints over the height of the view.
-  bool test_repaint_;
-
-  // If true and test_repaint_ is true as well, pixel dump will be produced as
-  // a series of 1px-wide, view-tall paints across the width of the view.
-  bool sweep_horizontally_;
-
-  // If set, pretend that the specified default page size when printing (see
-  // `SetPrintingSize()`) is also the size of the imaginary paper, so that any
-  // CSS @page size that overrides the default page size will be centered on
-  // paper, and scaled down to fit if required. This is the default behavior
-  // when printing to an actual printer (as opposed to generating a PDF) in
-  // Chrome.
-  bool should_center_and_shrink_to_fit_paper_ = false;
-
-  // The scale factor to apply to printed content.
-  float printing_scale_factor_ = 1.0;
+  TestParams test_params_;
 
   std::set<std::string> http_headers_to_clear_;
   bool clear_referrer_ = false;
@@ -612,11 +615,6 @@ class TestRunner {
 
   // Captured drag image.
   SkBitmap drag_image_;
-
-  // True if rasterization should be performed during tests that examine
-  // fling-style animations. This includes middle-click auto-scroll behaviors.
-  // This does not include most "ordinary" animations, such as CSS animations.
-  bool animation_requires_raster_ = false;
 
   // An effective connection type settable by web tests.
   blink::WebEffectiveConnectionType effective_connection_type_ =

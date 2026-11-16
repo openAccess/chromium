@@ -174,10 +174,13 @@ bool ReplaceCopyFromFindBar(std::u16string_view selected_text,
                             content::WebContents* web_contents,
                             std::u16string* replacement);
 
-// Checks if the given `web_contents` is allowed to receive replaced clipboard
-// data, and returns it if so. This is used so `FindBarView` code doesn't always
-// receive blocked pasted data in safe cases like searching a string in the same
-// page it was copied from.
+// Checks if the find bar of `web_contents` is allowed to receive the clipboard
+// data that was replaced in the OS clipboard when it was copied, and returns it
+// if so. This is used so `FindBarView` code doesn't always receive the
+// replacement message in safe cases like searching a string kept in managed
+// Chrome, while never receiving data that was blocked, that is still being
+// scanned, or that was kept in a different profile, since text in the find bar
+// can be copied back out.
 void ReplacePasteToFindBar(
     content::WebContents* web_contents,
     base::OnceCallback<void(std::optional<std::u16string>)> callback);
@@ -206,8 +209,11 @@ bool IsClipboardCopyAllowedByPolicyForUI(content::WebContents* web_contents);
 
 // Copies `text` to the OS clipboard. This routes the data to
 // `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.
-void CopyTextToClipboard(content::RenderFrameHost* rfh,
-                         const std::u16string& text);
+// `callback` always runs once policies are evaluated, which can be after a
+// content analysis scan, with whether `text` itself ended up on the clipboard.
+void CopyTextToClipboard(content::RenderFrameHost& rfh,
+                         const std::u16string& text,
+                         base::OnceCallback<void(bool copied)> callback);
 
 // Copies `bitmap` to the OS clipboard. This routes the data to
 // `IsClipboardCopyAllowedByPolicy` to check if the copy is allowed.

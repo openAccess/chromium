@@ -59,6 +59,11 @@ public class EdgeToEdgeUtils {
             "Android.EdgeToEdge.Eligible2.OnCreateController";
     private static final String INELIGIBLE_REASON_ON_CREATE_HISTOGRAM =
             "Android.EdgeToEdge.IneligibilityReason2.OnCreateController";
+    private static final String TOP_ELIGIBLE_HISTOGRAM = "Android.EdgeToEdge.Top.Eligible";
+    private static final String TOP_INELIGIBLE_REASON_HISTOGRAM =
+            "Android.EdgeToEdge.Top.IneligibilityReason";
+    private static final String TOP_SCALP_PAGE_LOAD_STATE_HISTOGRAM =
+            "Android.EdgeToEdge.TopScalp.PageLoadState";
     private static final String MISSING_NAVBAR_INSETS_HISTOGRAM =
             "Android.EdgeToEdge.MissingNavbarInsets2";
     private static final String DRAW_TO_EDGE_UNSUPPORTED_CONFIG_HISTOGRAM =
@@ -178,6 +183,32 @@ public class EdgeToEdgeUtils {
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:SupportedConfigurationStrangeInsetsState)
 
+    /** The top scalp state recorded when a page finishes loading. */
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    // LINT.IfChange(TopScalpPageLoadState)
+    @IntDef({
+        TopScalpPageLoadState.DEFAULT_FIXED_SCALP,
+        TopScalpPageLoadState.OPTED_IN_SCROLLABLE_SCALP,
+        TopScalpPageLoadState.FULL_TOP_EDGE_TO_EDGE_NO_SCALP,
+        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_STATUS_INDICATOR,
+        TopScalpPageLoadState.OPTED_IN_SUPPRESSED_BY_UNSUPPORTED_CONFIG,
+        TopScalpPageLoadState.DISABLED_IN_FULLSCREEN,
+        TopScalpPageLoadState.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface TopScalpPageLoadState {
+        int DEFAULT_FIXED_SCALP = 0;
+        int OPTED_IN_SCROLLABLE_SCALP = 1;
+        int FULL_TOP_EDGE_TO_EDGE_NO_SCALP = 2;
+        int OPTED_IN_SUPPRESSED_BY_STATUS_INDICATOR = 3;
+        int OPTED_IN_SUPPRESSED_BY_UNSUPPORTED_CONFIG = 4;
+        int DISABLED_IN_FULLSCREEN = 5;
+        int NUM_ENTRIES = 6;
+    }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:TopScalpPageLoadState)
+
     /** Whether it is allowed to use other insets as a backup for missing navigation bar insets. */
     public static boolean isUseBackupNavbarInsetsEnabled() {
         return ChromeFeatureList.sEdgeToEdgeUseBackupNavbarInsets.isEnabled();
@@ -185,8 +216,8 @@ public class EdgeToEdgeUtils {
 
     /**
      * Returns whether the configuration of the device should allow Edge To Edge bottom chin. Note
-     * the results are false-negative, if the method is called before the |activity|'s decor view
-     * being attached to the window.
+     * the results are false-negative, if the method is called before the {@code activity}'s decor
+     * view being attached to the window.
      */
     public static boolean isEdgeToEdgeBottomChinSupportedByDevice(Activity activity) {
         // Make sure we test SDK version before checking the Feature so Field Trials only collect
@@ -305,23 +336,26 @@ public class EdgeToEdgeUtils {
     }
 
     /**
-     * Record if the current activity is eligible for edge to edge. If not, also record the reason
-     * why it is ineligible. This is for the general "for all users" check at startup.
+     * Record if the current activity is eligible for bottom edge to edge. If not, also record the
+     * reason why it is ineligible. This is for the general "for all users" check at startup.
      *
      * @param activity The current active activity.
-     * @return Whether the activity is eligible for edge to edge based on device configuration.
+     * @return Whether the activity is eligible for bottom edge to edge based on device
+     *     configuration.
      */
-    public static boolean recordEligibilityForEveryStart(Activity activity) {
+    public static boolean recordBottomEligibilityForEveryStart(Activity activity) {
         return recordEligibility(activity, ELIGIBLE_HISTOGRAM, INELIGIBLE_REASON_HISTOGRAM);
     }
 
     /**
-     * Record if the current activity is eligible for edge to edge when the controller is created.
+     * Record if the current activity is eligible for bottom edge to edge when the controller is
+     * created.
      *
      * @param activity The current active activity.
-     * @return Whether the activity is eligible for edge to edge based on device configuration.
+     * @return Whether the activity is eligible for bottom edge to edge based on device
+     *     configuration.
      */
-    public static boolean recordEligibilityOnCreate(Activity activity) {
+    public static boolean recordEligibilityOnCreateForBottomChin(Activity activity) {
         return recordEligibility(
                 activity, ELIGIBLE_ON_CREATE_HISTOGRAM, INELIGIBLE_REASON_ON_CREATE_HISTOGRAM);
     }
@@ -370,6 +404,55 @@ public class EdgeToEdgeUtils {
         RecordHistogram.recordBooleanHistogram(eligibleName, eligible);
 
         return eligible;
+    }
+
+    /**
+     * Record if the current activity is eligible for top edge to edge. If not, also record the
+     * reason why it is ineligible. This is for the general "for all users" check at startup.
+     *
+     * @param activity The current active activity.
+     * @return Whether the activity is eligible for top edge to edge based on device configuration.
+     */
+    public static boolean recordTopEligibilityForEveryStart(Activity activity) {
+        boolean eligible = true;
+
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(activity)) {
+            eligible = false;
+            RecordHistogram.recordEnumeratedHistogram(
+                    TOP_INELIGIBLE_REASON_HISTOGRAM,
+                    IneligibilityReason.FORM_FACTOR,
+                    IneligibilityReason.NUM_TYPES);
+        }
+
+        if (Build.VERSION.SDK_INT < VERSION_CODES.R) {
+            eligible = false;
+            RecordHistogram.recordEnumeratedHistogram(
+                    TOP_INELIGIBLE_REASON_HISTOGRAM,
+                    IneligibilityReason.OS_VERSION,
+                    IneligibilityReason.NUM_TYPES);
+        }
+
+        if (DeviceInfo.isAutomotive()) {
+            eligible = false;
+            RecordHistogram.recordEnumeratedHistogram(
+                    TOP_INELIGIBLE_REASON_HISTOGRAM,
+                    IneligibilityReason.DEVICE_TYPE,
+                    IneligibilityReason.NUM_TYPES);
+        }
+
+        RecordHistogram.recordBooleanHistogram(TOP_ELIGIBLE_HISTOGRAM, eligible);
+
+        return eligible;
+    }
+
+    /**
+     * Record the top scalp state when a page finishes loading.
+     *
+     * @param state The {@link TopScalpPageLoadState} to record.
+     */
+    public static void recordTopScalpPageLoadState(@TopScalpPageLoadState int state) {
+        RecordHistogram.recordEnumeratedHistogram(
+                TOP_SCALP_PAGE_LOAD_STATE_HISTOGRAM, state, TopScalpPageLoadState.NUM_ENTRIES);
     }
 
     /**
@@ -583,7 +666,8 @@ public class EdgeToEdgeUtils {
     }
 
     /**
-     * @return whether the given window's insets indicate a tappable navigation bar.
+     * Returns whether the given window's insets indicate a tappable navigation bar.
+     *
      * @deprecated Use {@link #hasTappableNavigationBar(Supplier)}.
      */
     @Deprecated
@@ -711,10 +795,12 @@ public class EdgeToEdgeUtils {
 
     /**
      * Returns whether the top edge-to-edge feature is enabled (beyond the {@link
-     * EdgeToEdgeController} refactor). Implies {@link #isEdgeToEdgeRefactorEnabled()}.
+     * EdgeToEdgeController} refactor). Implies {@link #isEdgeToEdgeRefactorEnabled()} and {@link
+     * #isEdgeToEdgeEverywhereEnabled()}.
      */
     public static boolean isTopEdgeToEdgeEnabled() {
         return isEdgeToEdgeRefactorEnabled()
+                && isEdgeToEdgeEverywhereEnabled()
                 && ChromeFeatureList.sEdgeToEdgeTopInsetEnableTopEdgeToEdge.getValue();
     }
 

@@ -14,8 +14,8 @@ static_library("base") {
 
   deps = [
     "//ash/constants",
+    "//base/i18n:language_tag",
     "//chrome/browser/profiles:profile",
-    "//chrome/common:constants",
     "//components/application_locale_storage",
     "//components/language/core/browser",
     "//components/language/core/common",

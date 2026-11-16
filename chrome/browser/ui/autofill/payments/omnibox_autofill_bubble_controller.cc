@@ -4,11 +4,15 @@
 
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_bubble_controller.h"
 
+#include <algorithm>
+#include <utility>
+
+#include "base/check_deref.h"
+#include "base/functional/bind.h"
 #include "chrome/browser/autofill/personal_data_manager_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
 #include "chrome/browser/ui/autofill/payments/omnibox_autofill_page_action_controller.h"
-#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -21,7 +25,6 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
-#include "ui/actions/actions.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -49,22 +52,23 @@ SuggestionHidingReason ToSuggestionHidingReason(PaymentsUiClosedReason reason) {
 DEFINE_USER_DATA(OmniboxAutofillBubbleController);
 
 OmniboxAutofillBubbleController::OmniboxAutofillBubbleController(
-    tabs::TabInterface& tab_interface,
-    content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
-      tab_interface_(tab_interface),
-      scoped_unowned_user_data_(tab_interface.GetUnownedUserDataHost(), *this),
+    tabs::TabInterface* tab_interface)
+    : AutofillBubbleControllerBase(
+          tab_interface,
+          PageActionConfig{.action_id = kActionAutofillPayment,
+                           .should_sync_bubble_showing_state = true}),
+      scoped_unowned_user_data_(
+          CHECK_DEREF(tab_interface).GetUnownedUserDataHost(),
+          *this),
+      will_discard_contents_subscription_(
+          tab_interface->RegisterWillDiscardContents(base::BindRepeating(
+              &OmniboxAutofillBubbleController::WillDiscardContents,
+              base::Unretained(this)))),
       payments_data_manager_(PersonalDataManagerFactory::GetForBrowserContext(
-                                 web_contents->GetBrowserContext())
+                                 web_contents()->GetBrowserContext())
                                  ->payments_data_manager()) {}
 
-OmniboxAutofillBubbleController::~OmniboxAutofillBubbleController() {
-  if (IsShowingBubble()) {
-    if (actions::ActionItem* action_item = GetActionItem()) {
-      action_item->SetIsShowingBubble(false);
-    }
-  }
-}
+OmniboxAutofillBubbleController::~OmniboxAutofillBubbleController() = default;
 
 void OmniboxAutofillBubbleController::Initialize(
     std::vector<Suggestion> suggestions,
@@ -89,17 +93,13 @@ void OmniboxAutofillBubbleController::Initialize(
   // autofill flow.
   // TODO(crbug.com/527195586): The underlying fix should be to use instrument
   // IDs rather than GUIDs.
-  if (!should_show_google_pay_logo_) {
-    for (const auto& suggestion : suggestions_) {
-      const CreditCard* credit_card =
-          payments_data_manager_->GetCreditCardByGUID(
-              std::get<Suggestion::Guid>(suggestion.payload).value());
-      if (credit_card && payments_data_manager_->IsServerCard(credit_card)) {
-        should_show_google_pay_logo_ = true;
-        break;
-      }
-    }
-  }
+  should_show_google_pay_logo_ =
+      std::ranges::any_of(suggestions_, [this](const Suggestion& suggestion) {
+        const CreditCard* const credit_card =
+            payments_data_manager_->GetCreditCardByGUID(
+                suggestion.GetPayload<Suggestion::Guid>().value());
+        return credit_card && payments_data_manager_->IsServerCard(credit_card);
+      });
 }
 
 // static
@@ -118,7 +118,8 @@ OmniboxAutofillBubbleController::GetBubbleControllerBaseWeakPtr() {
 }
 
 void OmniboxAutofillBubbleController::DoShowBubble() {
-  BrowserWindowInterface* browser = tab_interface_->GetBrowserWindowInterface();
+  BrowserWindowInterface* browser =
+      GetTabInterface()->GetBrowserWindowInterface();
   if (!browser) {
     return;
   }
@@ -130,10 +131,6 @@ void OmniboxAutofillBubbleController::DoShowBubble() {
           browser_window->GetAutofillBubbleHandler()->ShowOmniboxAutofillBubble(
               web_contents(), this)) {
     SetBubbleView(*bubble_view);
-
-    if (actions::ActionItem* action_item = GetActionItem()) {
-      action_item->SetIsShowingBubble(true);
-    }
   }
 }
 
@@ -172,15 +169,11 @@ void OmniboxAutofillBubbleController::OnBubbleClosed(
     on_suggestions_hidden_callback_.Run(ToSuggestionHidingReason(reason));
   }
 
-  if (actions::ActionItem* action_item = GetActionItem()) {
-    action_item->SetIsShowingBubble(false);
-  }
-
   // When the bubble is closed without accepting a suggestion, collapse the
   // expanded omnibox chip down to icon-only mode.
   if (reason != PaymentsUiClosedReason::kAccepted) {
     if (OmniboxAutofillPageActionController* page_action_controller =
-            OmniboxAutofillPageActionController::From(*tab_interface_)) {
+            OmniboxAutofillPageActionController::From(*GetTabInterface())) {
       page_action_controller->ShowCollapsedChip();
     }
   }
@@ -210,19 +203,22 @@ OmniboxAutofillBubbleController::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
-actions::ActionItem* OmniboxAutofillBubbleController::GetActionItem() {
-  BrowserWindowInterface* browser_window =
-      tab_interface_->GetBrowserWindowInterface();
-  if (!browser_window) {
-    return nullptr;
+void OmniboxAutofillBubbleController::WillDiscardContents(
+    tabs::TabInterface* tab,
+    content::WebContents* old_contents,
+    content::WebContents* new_contents) {
+  HideBubble(/*initiated_by_bubble_manager=*/false);
+  suggestions_.clear();
+  on_suggestions_shown_callback_.Reset();
+  on_suggestions_hidden_callback_.Reset();
+  did_select_suggestion_callback_.Reset();
+  did_deselect_suggestion_callback_.Reset();
+  did_accept_suggestion_callback_.Reset();
+  should_show_google_pay_logo_ = false;
+  if (OmniboxAutofillPageActionController* const page_action_controller =
+          OmniboxAutofillPageActionController::From(*GetTabInterface())) {
+    page_action_controller->HideChip();
   }
-  actions::ActionItem* root_action_item =
-      BrowserActions::From(browser_window)->root_action_item();
-  if (!root_action_item) {
-    return nullptr;
-  }
-  return actions::ActionManager::Get().FindAction(kActionAutofillPayment,
-                                                  root_action_item);
 }
 
 }  // namespace autofill

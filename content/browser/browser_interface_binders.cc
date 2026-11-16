@@ -256,7 +256,10 @@
 #endif
 
 #if BUILDFLAG(IS_MAC)
+#include "base/apple/foundation_util.h"
+#include "base/files/file_path.h"
 #include "content/browser/renderer_host/text_input_host_impl.h"
+#include "content/public/browser/child_process_host.h"
 #include "services/webnn/public/cpp/coreml_initializer.h"
 #include "third_party/blink/public/mojom/input/text_input_host.mojom.h"
 #endif
@@ -307,6 +310,17 @@ void BindTextDetection(
   GetShapeDetectionService()->BindTextDetection(std::move(receiver));
 }
 
+#if BUILDFLAG(IS_MAC)
+void InitializeWebNNCacheDirAndRun(base::OnceClosure callback) {
+  // SwiftShader is disabled by default, so the GPU process runs in this helper.
+  // When enabled, it runs in the (GPU) helper, which has the same bundle ID.
+  static const base::NoDestructor<base::FilePath> gpu_helper_app_path(
+      base::apple::GetInnermostAppBundlePath(
+          ChildProcessHost::GetChildPath(ChildProcessHost::CHILD_NORMAL)));
+  webnn::InitializeCacheDirAndRun(*gpu_helper_app_path, std::move(callback));
+}
+#endif
+
 void BindWebNNContextProviderForRenderFrame(
     RenderFrameHost* host,
     mojo::PendingReceiver<webnn::mojom::WebNNContextProvider> receiver) {
@@ -322,7 +336,7 @@ void BindWebNNContextProviderForRenderFrame(
   auto* process_host = static_cast<RenderProcessHostImpl*>(host->GetProcess());
   const bool is_incognito = host->GetBrowserContext()->IsOffTheRecord();
 #if BUILDFLAG(IS_MAC)
-  webnn::InitializeCacheDirAndRun(
+  InitializeWebNNCacheDirAndRun(
       base::BindOnce(&viz::GpuClient::BindWebNNContextProvider,
                      process_host->GetGpuClient()->GetWeakPtr(),
                      std::move(receiver), is_incognito));
@@ -364,7 +378,7 @@ void BindWebNNContextProviderForWorker(
       static_cast<RenderProcessHostImpl*>(host->GetProcessHost());
   const bool is_incognito = process_host->GetBrowserContext()->IsOffTheRecord();
 #if BUILDFLAG(IS_MAC)
-  webnn::InitializeCacheDirAndRun(
+  InitializeWebNNCacheDirAndRun(
       base::BindOnce(&viz::GpuClient::BindWebNNContextProvider,
                      process_host->GetGpuClient()->GetWeakPtr(),
                      std::move(receiver), is_incognito));
@@ -956,6 +970,24 @@ void BindPictureInPictureService(
   PictureInPictureServiceImpl::Create(host, std::move(receiver));
 }
 
+void BindWebOTPService(
+    RenderFrameHost* host,
+    mojo::PendingReceiver<blink::mojom::WebOTPService> receiver) {
+  // Blink checks the "otp-credentials" Permissions Policy before requesting
+  // WebOTPService, but a compromised renderer can skip that check.
+  if (!host->IsFeatureEnabled(
+          network::mojom::PermissionsPolicyFeature::kOTPCredentials)) {
+    bad_message::ReceivedBadMessage(
+        host->GetProcess(),
+        bad_message::BadMessageReason::
+            BIBI_BIND_WEBOTP_SERVICE_BLOCKED_BY_PERMISSIONS_POLICY);
+    return;
+  }
+
+  RenderFrameHostImpl::From(host)->BindWebOTPServiceReceiver(
+      std::move(receiver));
+}
+
 template <auto Method, typename Interface>
 void BindRenderFrameHostImpl(RenderFrameHost* host,
                              mojo::PendingReceiver<Interface> receiver)
@@ -1524,9 +1556,7 @@ void PopulateBinderMapWithContext(
       &BindRenderFrameHostImpl<
           &RenderFrameHostImpl::GetWebAuthenticationService>);
   if (base::FeatureList::IsEnabled(features::kWebOTP)) {
-    map->Add<blink::mojom::WebOTPService>(
-        &BindRenderFrameHostImpl<
-            &RenderFrameHostImpl::BindWebOTPServiceReceiver>);
+    map->Add<blink::mojom::WebOTPService>(&BindWebOTPService);
   }
   map->Add<blink::mojom::DigitalIdentityRequest>(
       &BindRenderFrameHostImpl<
@@ -1799,6 +1829,9 @@ void PopulateSharedWorkerBinders(SharedWorkerHost* host, mojo::BinderMap* map) {
       &CreateReportingServiceProxyForSharedWorker, base::Unretained(host)));
   map->Add<blink::mojom::BucketManagerHost>(base::BindRepeating(
       &SharedWorkerHost::CreateBucketManagerHost, base::Unretained(host)));
+  map->Add<blink::mojom::FileSystemAccessManager>(
+      base::BindRepeating(&SharedWorkerHost::CreateFileSystemAccessManager,
+                          base::Unretained(host)));
   map->Add<blink::mojom::AIManager>(
       base::BindRepeating(&ContentBrowserClient::BindAIManager,
                           base::Unretained(GetContentClient()->browser()),
@@ -1851,9 +1884,6 @@ void PopulateSharedWorkerBinders(SharedWorkerHost* host, mojo::BinderMap* map) {
       &RenderProcessHostImpl::BindWebrtcVideoPerfHistory, host));
 
   // RenderProcessHost binders taking a StorageKey
-  map->Add<blink::mojom::FileSystemAccessManager>(
-      BindWorkerReceiverForStorageKey(
-          &RenderProcessHostImpl::BindFileSystemAccessManager, host));
   map->Add<blink::mojom::FileSystemManager>(BindWorkerReceiverForStorageKey(
       &RenderProcessHostImpl::BindFileSystemManager, host));
   map->Add<blink::mojom::IDBFactory>(

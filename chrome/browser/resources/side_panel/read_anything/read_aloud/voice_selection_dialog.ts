@@ -70,8 +70,8 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
   accessor previewVoicePlaying: SpeechSynthesisVoice|null = null;
 
   protected accessor candidateVoice_: SpeechSynthesisVoice|null = null;
-  protected accessor previewVoiceInitiated_: SpeechSynthesisVoice|null = null;
-  protected accessor currentNotifications_:
+  private accessor previewVoiceInitiated_: SpeechSynthesisVoice|null = null;
+  private accessor currentNotifications_:
       {[language: string]: NotificationType} = {};
 
   protected errorMessages_: string[] = [];
@@ -307,6 +307,13 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
         previewPlaying ? 'stopLabel' : 'previewTooltip');
   }
 
+  protected previewAriaLabel_(voiceItem: VoiceDropdownItem): string {
+    return voiceItem.previewInitiated ?
+        loadTimeData.getString('stopLabel') :
+        loadTimeData.getStringF(
+            'previewVoiceLabel', this.voiceDisplayName_(voiceItem));
+  }
+
   protected hideSpinner_(voiceDropdown: VoiceDropdownItem): boolean {
     return !isVoicePreviewSpinning(voiceDropdown);
   }
@@ -317,15 +324,6 @@ export class VoiceSelectionDialogElement extends CrLitElement implements
 
   protected voiceLang_(voiceItem: VoiceDropdownItem): string|typeof nothing {
     return voiceItem.natureNaming ? voiceItem.voice.lang : nothing;
-  }
-
-  // TODO(crbug.com/565495310): Trigger voice preview on right arrow key within
-  // the voice selection dialog menu. Screen readers currently play "use right
-  // arrow key to preview voice" which isn't accurate within the voice selection
-  // dialog menu.
-  protected voiceLabel_(voiceName: string): string {
-    return loadTimeData.getStringF(
-        'readingModeLanguageMenuItemLabel', voiceName);
   }
 
   protected previewIcon_(previewInitiated: boolean): string {

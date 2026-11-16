@@ -105,8 +105,6 @@ BASE_FEATURE(kIOSChooseFromDriveSignedOut, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kIOSDateToCalendarSignedOut, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kIOSSaveToDriveSignedOut, base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kIOSSaveToPhotosSignedOut, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableFeedBackgroundRefresh, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -404,9 +402,6 @@ bool IsIOSExpandedTipsEnabled() {
 BASE_FEATURE(kIOSOneTimeDefaultBrowserNotification,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kIOSPushNotificationMultiProfile,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 const char kFullscreenTransitionSlower[] = "SlowFullscreenTransitionSpeed";
 const char kFullscreenTransitionDefaultSpeed[] =
     "MediumFullscreenTransitionSpeed";
@@ -562,7 +557,7 @@ bool IsMiniMapUniversalLinkEnabled() {
   return !IsInExcludedCountry();
 }
 
-BASE_FEATURE(kIOSMiniMapLinkifiedAddress, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIOSMiniMapLinkifiedAddress, base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool IsNotificationCollisionManagementEnabled() {
   return base::FeatureList::IsEnabled(kNotificationCollisionManagement);
@@ -969,7 +964,7 @@ bool IsDisableFeedbackForIneligibleUsersEnabled() {
   return base::FeatureList::IsEnabled(kDisableFeedbackForIneligibleUsers);
 }
 
-BASE_FEATURE(kIncludeSystemLogInFeedback, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kIncludeSystemLogInFeedback, base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool IsIncludeSystemLogInFeedbackEnabled() {
   return base::FeatureList::IsEnabled(kIncludeSystemLogInFeedback);
@@ -1014,12 +1009,6 @@ BASE_FEATURE(kAssistantSidePanel, base::FEATURE_DISABLED_BY_DEFAULT);
 bool IsAssistantSidePanelEnabled() {
   return base::FeatureList::IsEnabled(kAssistantSidePanel) &&
          IsChromeNextIaEnabled() && IsFullscreenRefactoringEnabled();
-}
-
-BASE_FEATURE(kYourSavedInfoSettingsPageIos, base::FEATURE_ENABLED_BY_DEFAULT);
-
-bool IsYourSavedInfoSettingsPageIosEnabled() {
-  return base::FeatureList::IsEnabled(kYourSavedInfoSettingsPageIos);
 }
 
 BASE_FEATURE(kBackgroundRefreshRegressionTest,
@@ -1125,12 +1114,6 @@ bool IsIOSDarkModeDetectionEnabled() {
   return base::FeatureList::IsEnabled(kIOSDarkModeDetection);
 }
 
-BASE_FEATURE(kIdentityAwareness, base::FEATURE_ENABLED_BY_DEFAULT);
-
-bool IsIdentityAwarenessEnabled() {
-  return base::FeatureList::IsEnabled(kIdentityAwareness);
-}
-
 BASE_FEATURE(kAiSubscriptionAvatarRingIOS, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsAiSubscriptionAvatarRingIOSEnabled() {
@@ -1184,7 +1167,6 @@ const base::FeatureParam<base::TimeDelta>
     kDiscoverFeedBackgroundRefreshMinBuffer{&kEnableDiscoverBackgroundRefresh,
                                             "discover_refresh_min_buffer",
                                             base::Minutes(15)};
-
 
 BASE_FEATURE(kDefaultBottomOmniboxOnIOS, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -1303,4 +1285,27 @@ BASE_FEATURE(kAppBarDisableLongPress, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsAppBarDisableLongPressEnabled() {
   return base::FeatureList::IsEnabled(kAppBarDisableLongPress);
+}
+
+BASE_FEATURE(kCleanupCorruptedAccountProfileMappings,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kEphemeralBottomSheet, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsEphemeralBottomSheetEnabled() {
+  return IsAimCobrowseEnabled() &&
+         base::FeatureList::IsEnabled(kEphemeralBottomSheet);
+}
+
+BASE_FEATURE(kVariationsHeaderWebExtension, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsVariationsHeaderWebExtensionEnabled() {
+  return base::FeatureList::IsEnabled(kVariationsHeaderWebExtension);
+}
+
+BASE_FEATURE(kIOSSupportMediaCapturePolicies,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsIOSSupportMediaCapturePoliciesEnabled() {
+  return base::FeatureList::IsEnabled(kIOSSupportMediaCapturePolicies);
 }

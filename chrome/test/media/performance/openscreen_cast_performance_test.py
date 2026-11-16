@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -25,6 +26,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as ec
 
 import common
+import test_results
 
 # Must follow common, which puts these modules on sys.path.
 from repeating_log import RepeatingLog
@@ -65,29 +67,54 @@ CHROME_OPTIONS = [
     "--enable-webrtc-event-logging-extensions",
 ]
 
-PERFETTO_CONFIG = """
-buffers: {
+CHROME_RECEIVER_TRACE_CONFIG = (
+    r'{\"included_categories\":[\"openscreen\",\"cast.stream\",\"media\"]}'
+)
+
+PERFETTO_CONFIG = f"""
+buffers: {{
     size_kb: 65536
     fill_policy: DISCARD
-}
-data_sources: {
-    config {
+}}
+data_sources: {{
+    config {{
         name: "linux.ftrace"
-        ftrace_config {
+        ftrace_config {{
             ftrace_events: "sched/sched_switch"
             ftrace_events: "sched/sched_wakeup"
             ftrace_events: "power/cpu_frequency"
             ftrace_events: "power/cpu_idle"
-        }
-    }
-}
-data_sources: {
-    config {
-        name: "android.track_event"
-    }
-}
+        }}
+    }}
+}}
+data_sources: {{
+    config {{
+        name: "track_event"
+        track_event_config {{
+            disabled_categories: "*"
+            enabled_categories: "openscreen"
+            enabled_categories: "cast.stream"
+            enabled_categories: "media"
+        }}
+    }}
+}}
+data_sources: {{
+    config {{
+        name: "org.chromium.trace_event"
+        chrome_config {{
+            trace_config: "{CHROME_RECEIVER_TRACE_CONFIG}"
+        }}
+    }}
+}}
 duration_ms: 45000
 """
+
+# Chrome trace categories recorded on the sender. `openscreen` carries the
+# Open Screen frame and flow events, `cast.stream` carries frame drops and
+# transport slices, and `cast_perf_test` marks frames for this test.
+SENDER_TRACE_CATEGORIES = (
+    'openscreen,cast.stream,cast_perf_test,media,webrtc,gpu,blink'
+)
 
 
 def should_run_vp9_tests(args) -> bool:
@@ -112,6 +139,16 @@ def should_run_vp9_tests(args) -> bool:
     return True
 
 
+class SenderSession(NamedTuple):
+    """What setup_test_environment started on the sender."""
+
+    driver: object
+    # The SSH tunnel process; on ChromeOS, the Crossbench platform instead.
+    tunnel_proc: object
+    chrome_version: str
+    trace_file_path: str
+
+
 def setup_test_environment(
     args,
     chrome_version,
@@ -130,8 +167,8 @@ def setup_test_environment(
         video_name (str): The name of the video being tested.
 
     Returns:
-        tuple: A tuple containing the WebDriver, the tunnel process, and the
-               actual chrome version used.
+        SenderSession: The WebDriver, the tunnel process, the actual Chrome
+            version used, and the sender's trace file path.
     """
     sender = common.make_sender(args)
     sender.verify_connectivity()
@@ -149,7 +186,7 @@ def setup_test_environment(
             [
                 '--trace-startup',
                 f'--trace-startup-file={trace_file_path}',
-                '--trace-startup-categories=cast,media,webrtc,gpu,blink',
+                f'--trace-startup-categories={SENDER_TRACE_CATEGORIES}',
                 '--trace-startup-duration=45',
             ]
         )
@@ -157,7 +194,9 @@ def setup_test_environment(
             args, chrome_version, chrome_options_list
         )
         enable_tab_mirroring(driver)
-        return driver, cb_platform, actual_version, trace_file_path
+        return SenderSession(
+            driver, cb_platform, actual_version, trace_file_path
+        )
 
     sender.terminate_chromedriver()
     remote_app_path, actual_version = sender.install_chrome(chrome_version)
@@ -172,7 +211,7 @@ def setup_test_environment(
     chrome_options.add_argument('--trace-startup')
     chrome_options.add_argument(f'--trace-startup-file={trace_file_path}')
     chrome_options.add_argument(
-        '--trace-startup-categories=cast,media,webrtc,gpu,blink'
+        f'--trace-startup-categories={SENDER_TRACE_CATEGORIES}'
     )
     chrome_options.add_argument('--trace-startup-duration=45')
 
@@ -190,7 +229,7 @@ def setup_test_environment(
 
     enable_tab_mirroring(driver)
 
-    return driver, tunnel_proc, actual_version, trace_file_path
+    return SenderSession(driver, tunnel_proc, actual_version, trace_file_path)
 
 
 def enable_tab_mirroring(driver):
@@ -603,7 +642,11 @@ def run_performance_test(
             common.make_sender(args).copy_from(
                 log_file_path, sender_log_local_path, timeout=30
             )
-        except (subprocess.SubprocessError, OSError) as e:
+        except (
+            common.RemoteDeviceError,
+            subprocess.SubprocessError,
+            OSError,
+        ) as e:
             logging.error("Failed to collect sender log: %s", e)
 
         if glances_proc:
@@ -621,6 +664,73 @@ def run_performance_test(
     return rec_proc_local
 
 
+def run_video_case(args, session, codec_name, video_name, case):
+    """Mirrors one video, then tears down `session` and pulls its trace.
+
+    Args:
+        session: The SenderSession from setup_test_environment().
+        case: The test_results case handle, used to report a skip.
+    """
+    try:
+        logging.info("Starting test for video: %s", video_name)
+        rec_proc = None
+        try:
+            rec_proc = run_performance_test(
+                video_name, session.driver, codec_name, args
+            )
+            if rec_proc is None:
+                logging.warning("Video %s was skipped.", video_name)
+                case.skip(
+                    "Video did not load on the sender within the timeout."
+                )
+        except Exception:
+            logging.exception("Error during video %s test", video_name)
+            common.dump_remote_logs(args)
+            raise
+        finally:
+            common.teardown_recording_process(rec_proc)
+    finally:
+        if session.driver or session.tunnel_proc:
+            common.teardown_test_environment(
+                session.driver, session.tunnel_proc, args
+            )
+        if session.chrome_version and session.trace_file_path:
+            collect_sender_trace(
+                args, codec_name, video_name, session.trace_file_path
+            )
+
+
+def collect_sender_trace(args, codec_name, video_name, trace_file_path):
+    """Pulls the sender Perfetto trace from the remote machine.
+
+    Best effort: RemoteDeviceError, SubprocessError and OSError are logged,
+    not raised, since this runs during teardown.
+    """
+    # Since the browser exited, we wait a few seconds for it to finish
+    # flushing the trace file to disk.
+    try:
+        logging.info("Sleeping 5s to let Chrome finish flushing the trace...")
+        time.sleep(5)
+
+        logging.info("Collecting Sender Perfetto trace...")
+        video_key = f"{codec_name}_{video_name}"
+        sender_trace_local_path = os.path.join(
+            common.TRACES_DIR,
+            f"{video_key}_sender.perfetto-trace",
+        )
+        common.make_sender(args).copy_from(
+            trace_file_path,
+            sender_trace_local_path,
+            timeout=60,
+        )
+    except (
+        common.RemoteDeviceError,
+        subprocess.SubprocessError,
+        OSError,
+    ) as e:
+        logging.error("Failed to collect sender perfetto trace: %s", e)
+
+
 def main():
     """
     Runs the performance testing suite for all videos.
@@ -631,11 +741,20 @@ def main():
     resources (like the recording process). Finally, it tears down the shared
     test environment (Chromedriver and SSH tunnel).
 
+    Each codec/video pair is reported as a test case, so a failed run names
+    the case that failed and why.
+
     Returns:
         int: The exit code for the script, typically 0 for success.
     """
     logging.getLogger().setLevel(logging.INFO)
+    reporter = test_results.TestReporter.from_argv()
+    with reporter:
+        return _run_tests(reporter)
 
+
+def _run_tests(reporter):
+    """Runs every codec/video case, reporting each one to `reporter`."""
     parser = argparse.ArgumentParser(
         description="Performance test for media played via Chromecast.",
     )
@@ -839,7 +958,26 @@ def main():
 
         CONFIGURATIONS[codec] = config
 
+    def case_name(codec_name, video):
+        return f"{codec_name}/{video['name']}"
+
+    reporter.plan(
+        case_name(codec_name, video)
+        for codec_name, config in CONFIGURATIONS.items()
+        for video in config['videos']
+    )
+    # Reported up front so that they read as deliberate skips even if an
+    # earlier case fails and stops the run.
+    if not run_vp9_tests:
+        for video in CONFIGURATIONS['VP9']['videos']:
+            reporter.skip(
+                case_name('VP9', video),
+                "Sender or receiver does not support VP9.",
+            )
+
     actual_version = None
+    last_version = None
+    first_clip_error = None
     try:
         for codec_name, config in CONFIGURATIONS.items():
             if codec_name == 'VP9' and not run_vp9_tests:
@@ -887,80 +1025,54 @@ def main():
                 # so we skip them to bring up the other cros tests.
                 if args.sender_os == 'cros' and 'HEVC' in video['name']:
                     logging.info("Skipping HEVC on ChromeOS: %s", video['name'])
+                    reporter.skip(
+                        case_name(codec_name, video),
+                        "HEVC is disabled on ChromeOS (b/512198717).",
+                    )
                     continue
 
-                driver = None
-                tunnel_proc = None
-                actual_version = None
-                trace_file_path = None
+                setup_done = False
                 try:
-                    (driver, tunnel_proc, actual_version, trace_file_path) = (
-                        setup_test_environment(
-                            args,
-                            cv,
-                            chrome_options_list,
-                            codec_name,
-                            video['name'],
-                        )
-                    )
-
-                    logging.info("Starting test for video: %s", video['name'])
-                    rec_proc = None
-                    try:
-                        rec_proc = run_performance_test(
-                            video['name'], driver, codec_name, args
-                        )
-                        if rec_proc is None:
-                            logging.warning(
-                                "Video %s was skipped.", video['name']
-                            )
-                            continue
-                    except Exception:
-                        logging.exception(
-                            "Error during video %s test", video['name']
-                        )
-                        common.dump_remote_logs(
-                            args, actual_version, codec_name
-                        )
-                        raise
-                    finally:
-                        common.teardown_recording_process(rec_proc)
-                finally:
-                    if driver or tunnel_proc:
-                        common.teardown_test_environment(
-                            driver, tunnel_proc, args
-                        )
-
-                    # Pull the sender trace from the remote machine.
-                    # Since the browser exited, we wait a few seconds
-                    # to finish flushing the trace file to disk.
-                    if actual_version and trace_file_path:
+                    with reporter.case(case_name(codec_name, video)) as case:
+                        # Reset first: setup may fail before reporting one.
+                        actual_version = None
                         try:
-                            logging.info(
-                                "Sleeping 5s to let Chrome finish flushing "
-                                "the trace..."
+                            session = setup_test_environment(
+                                args,
+                                cv,
+                                chrome_options_list,
+                                codec_name,
+                                video['name'],
                             )
-                            time.sleep(5)
-
-                            logging.info("Collecting Sender Perfetto trace...")
-                            video_key = f"{codec_name}_{video['name']}"
-                            sender_trace_local_path = os.path.join(
-                                common.TRACES_DIR,
-                                f"{video_key}_sender.perfetto-trace",
+                        except Exception:
+                            logging.exception(
+                                "Setup failed for video %s", video['name']
                             )
-                            common.make_sender(args).copy_from(
-                                trace_file_path,
-                                sender_trace_local_path,
-                                timeout=60,
-                            )
-                        except (subprocess.SubprocessError, OSError) as e:
-                            logging.error(
-                                "Failed to collect sender perfetto trace: %s", e
-                            )
+                            common.dump_remote_logs(args)
+                            raise
+                        setup_done = True
+                        actual_version = session.chrome_version
+                        last_version = actual_version
+                        run_video_case(
+                            args, session, codec_name, video['name'], case
+                        )
+                except common.RemoteDeviceError:
+                    raise
+                except Exception as e:
+                    if not setup_done:
+                        raise
+                    # `reporter.case()` already recorded FAIL for this clip.
+                    # Continue so the remaining videos still run and collect
+                    # their traces, then re-raise after the loop.
+                    if first_clip_error is None:
+                        first_clip_error = e
+        if first_clip_error is not None:
+            raise first_clip_error
     finally:
-        common.cleanup_binaries(args, actual_version)
+        final_version = actual_version or last_version
+        common.cleanup_binaries(args, final_version)
         # Last, since it raises if the upload fails.
-        common.finalize_results(actual_version)
+        common.finalize_results(final_version)
 
 
 if __name__ == '__main__':

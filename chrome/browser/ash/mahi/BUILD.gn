@@ -36,6 +36,7 @@ static_library("mahi") {
     ":mahi_availability",
     "//ash",
     "//ash/constants",
+    "//ash/public/cpp",
     "//ash/webui/settings/public/constants:mojom",
     "//base",
     "//chrome/browser/ash/magic_boost",
@@ -54,6 +55,8 @@ static_library("mahi") {
     "//components/history/core/browser",
     "//components/manta",
     "//components/session_manager/core",
+    "//third_party/zstd:compress",
+    "//third_party/zstd:decompress",
     "//ui/aura",
     "//ui/base",
     "//ui/gfx",
@@ -119,6 +122,7 @@ source_set("unit_tests") {
     "//ui/gfx",
     "//ui/lottie",
     "//ui/views",
+    "//ui/views:test_support",
   ]
 }
 
@@ -142,6 +146,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/views/mahi",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_test_utils",
     "//chromeos/components/magic_boost/public/cpp",
     "//chromeos/components/mahi/public/cpp",
     "//chromeos/components/quick_answers/public/cpp",
@@ -168,6 +173,8 @@ static_library("test_util") {
     "mahi_ui_browser_test_base.h",
   ]
 
+  public_deps = [ "//content/test:test_support" ]
+
   deps = [
     ":mahi",
     "//ash:test_support",
@@ -178,7 +185,7 @@ static_library("test_util") {
     "//chrome/browser/manta",
     "//chrome/browser/manta:impl",
     "//chrome/browser/ui/views/mahi",
-    "//chrome/test:test_support_ui",
+    "//chrome/test/base:ui_test_utils",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/signin:identity_manager_provider",
     "//chromeos/ash/experiences/settings_ui",

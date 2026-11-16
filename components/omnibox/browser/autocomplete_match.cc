@@ -60,7 +60,7 @@
 #include "url/third_party/mozilla/url_parse.h"
 #include "url/url_util.h"
 
-#if (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_VR)) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
 #include "components/omnibox/browser/vector_icons.h"  // nogncheck
 #include "components/vector_icons/vector_icons.h"     // nogncheck
 #endif
@@ -188,6 +188,19 @@ std::optional<omnibox::SuggestTemplateInfo> ReplaceSuggestTemplatePresentation(
   return result;
 }
 
+// Returns the `udm` search parameter of `suggest_template`, i.e. its search
+// mode, e.g. "50" for AI Mode. Empty if it has none.
+std::string_view GetSuggestTemplateUdm(
+    const std::optional<omnibox::SuggestTemplateInfo>& suggest_template) {
+  if (!suggest_template) {
+    return std::string_view();
+  }
+  const auto& search_parameters = suggest_template->default_search_parameters();
+  const auto it = search_parameters.find("udm");
+  return it != search_parameters.end() ? std::string_view(it->second)
+                                       : std::string_view();
+}
+
 int GetOrderForActionType(scoped_refptr<OmniboxAction> action) {
   // Sort: Call -> Directions -> Reviews -> Tab Switch.
   auto* action_in_suggest = OmniboxActionInSuggest::FromAction(action.get());
@@ -227,7 +240,8 @@ size_t ACMatchKeyHash<Args...>::operator()(
 // declaration here.
 // Deduplication key hash for `AutocompleteResult`.
 template struct ACMatchKeyHash<std::string,  // URL
-                               AutocompleteMatchDedupeType>;
+                               AutocompleteMatchDedupeType,
+                               std::string>;  // Suggest template behavior.
 
 // RichAutocompletionParams ---------------------------------------------------
 
@@ -435,6 +449,8 @@ AutocompleteMatch& AutocompleteMatch::operator=(
   android_tab_id = std::move(match.android_tab_id);
   DestroyJavaObject();
   std::swap(java_match_, match.java_match_);
+  std::swap(java_vector_icon_, match.java_vector_icon_);
+  std::swap(java_bookmark_vector_icon_, match.java_bookmark_vector_icon_);
   UpdateJavaObjectNativeRef();
 #endif
   return *this;
@@ -528,7 +544,7 @@ AutocompleteMatch& AutocompleteMatch::operator=(
   return *this;
 }
 
-#if (!BUILDFLAG(IS_ANDROID) || BUILDFLAG(ENABLE_VR)) && !BUILDFLAG(IS_IOS)
+#if !BUILDFLAG(IS_IOS)
 // static
 
 const gfx::VectorIcon& AutocompleteMatch::GetVectorIcon(
@@ -537,7 +553,7 @@ const gfx::VectorIcon& AutocompleteMatch::GetVectorIcon(
   if (suggest_template.has_value() && suggest_template->has_type_icon()) {
     // Update this assertion and the switch below whenever values are added.
     static_assert(omnibox::SuggestTemplateInfo::IconType_MAX ==
-                  omnibox::SuggestTemplateInfo::IMAGE_CREATE);
+                  omnibox::SuggestTemplateInfo::PROMPT_SUGGESTION);
     switch (suggest_template->type_icon()) {
       case omnibox::SuggestTemplateInfo::ICON_TYPE_UNSPECIFIED:
         // When not specified, fall back on regular match icon logic below.
@@ -564,6 +580,8 @@ const gfx::VectorIcon& AutocompleteMatch::GetVectorIcon(
         return features::IsRoundedIconsEnabled()
                    ? omnibox::kSubdirectoryArrowRightIcon
                    : omnibox::kSubdirectoryArrowRightOldIcon;
+      case omnibox::SuggestTemplateInfo::PROMPT_SUGGESTION:
+        return omnibox::kPromptSuggestionIcon;
       case omnibox::SuggestTemplateInfo::GLOBE_WITH_SEARCH_LOOP:
       case omnibox::SuggestTemplateInfo::BANANA:
       case omnibox::SuggestTemplateInfo::DRAFT_SPARK:
@@ -1872,13 +1890,45 @@ bool AutocompleteMatch::HasLensSearchAction() const {
 }
 
 bool AutocompleteMatch::IsSearchAimSuggestion() const {
-  if (suggest_template.has_value()) {
-    if (auto it = suggest_template->default_search_parameters().find("udm");
-        it != suggest_template->default_search_parameters().end()) {
-      return it->second == "50";
-    }
+  return GetSuggestTemplateUdm(suggest_template) == "50";
+}
+
+std::string AutocompleteMatch::GetSuggestTemplateBehaviorKey() const {
+  if (!suggest_template) {
+    return std::string();
   }
-  return false;
+  std::string key;
+  // The search mode, e.g. AI Mode for udm=50. Other search parameters, e.g.
+  // an entity's, don't change what the click does, so they're left out and an
+  // entity still dedupes with a plain search for the same query.
+  if (std::string_view udm = GetSuggestTemplateUdm(suggest_template);
+      !udm.empty()) {
+    base::StrAppend(&key, {"udm=", udm, ";"});
+  }
+  if (!suggest_template->has_fusebox_action()) {
+    return key;
+  }
+  // A fusebox action changes what clicking the suggestion does in the
+  // searchbox, e.g. preselecting a tool or pasting the query instead of
+  // submitting it. Each field below changes the click behavior unless it's 0. The two
+  // fields left out, `searchbox_tutorial` and `preferred_inventory`, only
+  // change what the searchbox shows after the click when clicking does
+  // not lead to navigation).
+  const omnibox::SuggestTemplateInfo::FuseboxAction& fusebox_action =
+      suggest_template->fusebox_action();
+  auto append_if_set = [&key](std::string_view name, int value) {
+    if (value != 0) {
+      base::StrAppend(&key, {name, "=", base::NumberToString(value), ";"});
+    }
+  };
+  append_if_set("preselected_tool", fusebox_action.preselected_tool());
+  append_if_set("preselected_model", fusebox_action.preselected_model());
+  append_if_set("preselected_input_source",
+                fusebox_action.preselected_input_source());
+  append_if_set("query_action_override",
+                fusebox_action.query_action_override());
+  append_if_set("searchbox_override", fusebox_action.searchbox_override());
+  return key;
 }
 
 OmniboxSuggestionKind AutocompleteMatch::GetOmniboxSuggestionKind() const {
@@ -2088,14 +2138,9 @@ void AutocompleteMatch::UpgradeMatchWithPropertiesFrom(
     // So should the template describing how to display it, since the text
     // above may come from the duplicate's template. What the template does,
     // e.g. its search parameters, stays with this match. Some presentation
-    // implies behavior, e.g. the AIM sparkle icon goes with udm=50, so this is
-    // only right for matches that act the same. That's intentionally left to
-    // the dedupe key (see `AutocompleteResult::GetMatchComparisonFields()`),
-    // which e.g. keeps AIM suggestions from deduping with other matches by
-    // default.
-    // TODO(crbug.com/579936021): Support deduping matches with behavioral
-    //  differences so the presentation taken here always fits what the winning
-    //  match is supposed to do.
+    // implies behavior, e.g. the AIM sparkle icon goes with udm=50. That's fine
+    // since by default, matches only dedupe if their templates say they do the
+    // same thing (see `GetSuggestTemplateBehaviorKey()`).
     suggest_template = ReplaceSuggestTemplatePresentation(
         std::move(suggest_template), duplicate_match.suggest_template);
 

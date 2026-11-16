@@ -5,12 +5,13 @@
 #ifndef COMPONENTS_PASSAGE_EMBEDDINGS_CORE_PASSAGE_EMBEDDINGS_TYPES_H_
 #define COMPONENTS_PASSAGE_EMBEDDINGS_CORE_PASSAGE_EMBEDDINGS_TYPES_H_
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
-#include "base/check_op.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list_types.h"
@@ -77,18 +78,20 @@ enum class ComputeEmbeddingsStatus {
   kMaxValue = kCanceled,
 };
 
+// Metadata describing a loaded embeddings model. `model_version`,
+// `output_size`, and `input_window_size` are always strictly positive.
 struct EmbedderMetadata {
+  // `model_version`, `output_size`, and `input_window_size` must be strictly
+  // positive.
   EmbedderMetadata(int64_t model_version,
                    size_t output_size,
-                   std::optional<double> search_score_threshold = std::nullopt)
-      : model_version(model_version),
-        output_size(output_size),
-        search_score_threshold(search_score_threshold) {}
-
-  bool IsValid() { return model_version != 0 && output_size != 0; }
+                   uint32_t input_window_size,
+                   std::optional<double> search_score_threshold = std::nullopt);
 
   int64_t model_version;
   size_t output_size;
+  // The size of the input window expected by the model, in tokens.
+  uint32_t input_window_size;
   std::optional<double> search_score_threshold;
 };
 
@@ -150,8 +153,9 @@ class Embedding {
   //   value of similarity score - consider using it for sorting (ranking).
   float ScoreWith(const Embedding& other_embedding) const;
 
-  // Scale the vector to unit length. Returns nullopt if the vector has
-  // near-zero magnitude and cannot be normalized.
+  // Scales the vector to unit length. Returns nullopt if that isn't possible:
+  // the magnitude is near zero, or isn't finite because a component is NaN or
+  // infinite or the sum of squares overflows.
   static std::optional<std::vector<float>> Normalize(std::vector<float> data);
 
   // Const accessor used for storage.
@@ -227,10 +231,10 @@ class Embedder {
  protected:
   Embedder();
 
-  // Cancels computation of embeddings iff none of the passages given to
-  // `ComputePassagesEmbeddings()` has been submitted for embedding yet.
-  // If successful, the callback for the canceled job will be invoked with
-  // `ComputeEmbeddingsStatus::kCanceled` status.
+  // Cancels the job with `job_id` if it has not finished. If this returns
+  // true, the job's callback is invoked once, asynchronously, with
+  // `ComputeEmbeddingsStatus::kCanceled` and no embeddings. Returns false if
+  // the job is unknown, has already finished or was already canceled.
   virtual bool TryCancel(uint64_t job_id) = 0;
 };
 

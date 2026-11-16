@@ -264,6 +264,7 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
   void OnWidgetBoundsChanged(views::Widget* widget,
                              const gfx::Rect& new_bounds) override;
+  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
   void OnWidgetDestroying(views::Widget* widget) override;
 
   // views::ViewObserver:
@@ -272,6 +273,7 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
 
  private:
   class ExclusiveAccessContextImpl;
+  class NoOpContextMenuController;
 
   friend class content::WebContentsUserData<DocumentPipHost>;
   friend class DocumentPipHostTestApi;
@@ -335,6 +337,10 @@ class DocumentPipHost : public content::WebContentsUserData<DocumentPipHost>,
   // user's most recent size and position. Mirrors
   // PictureInPictureBrowserFrameView::OnUserDesiredBoundsChanged().
   void OnUserDesiredBoundsChanged(const gfx::Rect& bounds) override;
+
+  // Suppresses the title bar context menu. Declared before `widget_` so it
+  // outlives the views that point to it.
+  std::unique_ptr<NoOpContextMenuController> context_menu_controller_;
 
   // The delegate for the floating Widget. Owned by this host (not by the
   // Widget): `CLIENT_OWNS_WIDGET` + not `SetOwnedByWidget()` means the Widget

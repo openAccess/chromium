@@ -7,7 +7,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -20,7 +19,6 @@
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
 #include "components/actor/core/shared_types.h"
-#include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/test/browser_test.h"
@@ -36,24 +34,6 @@ namespace actor {
 namespace {
 
 using ::content::EvalJs;
-using ::content::GetDOMNodeId;
-using ::optimization_guide::DocumentIdentifierUserData;
-
-std::optional<DomNode> GetDomNodeOnPage(content::RenderFrameHost& rfh,
-                                        std::string_view query_selector) {
-  std::optional<int> node_id = GetDOMNodeId(rfh, query_selector);
-  if (!node_id) {
-    return std::nullopt;
-  }
-  std::optional<std::string> document_identifier =
-      DocumentIdentifierUserData::GetDocumentIdentifier(
-          rfh.GetGlobalFrameToken());
-  if (!document_identifier) {
-    return std::nullopt;
-  }
-  return DomNode{.node_id = *node_id,
-                 .document_identifier = std::move(*document_identifier)};
-}
 
 class ChangePasswordToolBrowserTest : public ActorToolsTest {
  public:
@@ -64,21 +44,28 @@ class ChangePasswordToolBrowserTest : public ActorToolsTest {
     ActorToolsTest::SetUpOnMainThread();
     ASSERT_TRUE(embedded_https_test_server().Start());
   }
+
+  [[nodiscard]] bool NavigateAndCaptureApc() {
+    const GURL url = embedded_https_test_server().GetURL(
+        "example.com", "/actor/change_password.html");
+    if (!content::NavigateToURL(web_contents(), url)) {
+      return false;
+    }
+    GetPageApc();
+    return true;
+  }
 };
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_AllFields_Succeeds) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> current_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input");
+      GetDomNodeOnPage(*main_frame(), "#current_password");
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input3");
+      GetDomNodeOnPage(*main_frame(), "#confirm_password");
   ASSERT_TRUE(current_password_node);
   ASSERT_TRUE(new_password_node);
   ASSERT_TRUE(confirm_password_node);
@@ -104,22 +91,22 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
           confirm_password_node->node_id));
 
   EXPECT_EQ("dummy_current_password",
-            EvalJs(main_frame(), "document.getElementById('input').value"));
+            EvalJs(main_frame(),
+                   "document.getElementById('current_password').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
   EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input3').value"));
+            EvalJs(main_frame(),
+                   "document.getElementById('confirm_password').value"));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_PartialFields_Succeeds) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   ASSERT_TRUE(new_password_node);
 
   std::unique_ptr<ToolRequest> request =
@@ -139,26 +126,31 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
       absl::StrFormat("Filled new generated password into field with id %d.",
                       new_password_node->node_id));
 
-  EXPECT_EQ("", EvalJs(main_frame(), "document.getElementById('input').value"));
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
+  EXPECT_EQ("", EvalJs(main_frame(),
+                       "document.getElementById('current_password').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
+  EXPECT_EQ("", EvalJs(main_frame(),
+                       "document.getElementById('confirm_password').value"));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_FillFails_ReturnsError) {
-  const GURL url = embedded_https_test_server().GetURL(
-      "example.com", "/actor/select_tool.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
-  std::optional<DomNode> select_node =
-      GetDomNodeOnPage(*main_frame(), "#plainSelect");
-  ASSERT_TRUE(select_node);
+  std::optional<DomNode> new_password_node =
+      GetDomNodeOnPage(*main_frame(), "#new_password");
+  ASSERT_TRUE(new_password_node);
+
+  ASSERT_TRUE(content::ExecJs(
+      main_frame(), "document.getElementById('new_password').remove();"));
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<ChangePasswordToolRequest>(
           ActorSurfaceHandle::From(active_tab()->GetHandle()),
-          /*current_password_field=*/std::nullopt, PageTarget(*select_node),
+          /*current_password_field=*/std::nullopt,
+          PageTarget(*new_password_node),
           /*confirm_new_password_field=*/std::nullopt,
           /*confirm_button=*/std::nullopt);
 
@@ -172,30 +164,25 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_SomeFieldsFailToFill_ReturnsError) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  ASSERT_TRUE(
-      content::ExecJs(main_frame(),
-                      "const s = document.createElement('select');"
-                      "s.id = 'unfillableSelect';"
-                      "document.getElementById('form').appendChild(s);"));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> current_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input");
-  std::optional<DomNode> select_node =
-      GetDomNodeOnPage(*main_frame(), "#unfillableSelect");
+      GetDomNodeOnPage(*main_frame(), "#current_password");
+  std::optional<DomNode> new_password_node =
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_button_node =
       GetDomNodeOnPage(*main_frame(), "#submit");
   ASSERT_TRUE(current_password_node);
-  ASSERT_TRUE(select_node);
+  ASSERT_TRUE(new_password_node);
   ASSERT_TRUE(confirm_button_node);
+
+  ASSERT_TRUE(content::ExecJs(
+      main_frame(), "document.getElementById('new_password').remove();"));
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<ChangePasswordToolRequest>(
           ActorSurfaceHandle::From(active_tab()->GetHandle()),
-          PageTarget(*current_password_node), PageTarget(*select_node),
+          PageTarget(*current_password_node), PageTarget(*new_password_node),
           /*confirm_new_password_field=*/std::nullopt,
           PageTarget(*confirm_button_node));
 
@@ -204,45 +191,41 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
   ExpectErrorResult(result,
                     mojom::ActionResultCode::kFormFillingUnknownAutofillError);
   ASSERT_EQ(result.Get().size(), 1u);
-  EXPECT_EQ(
-      result.Get()[0].result->message,
-      absl::StrFormat("Filled old password into field with id %d. Failed "
-                      "to fill new generated password into field with id "
-                      "%d.",
-                      current_password_node->node_id, select_node->node_id));
+  EXPECT_EQ(result.Get()[0].result->message,
+            absl::StrFormat("Filled old password into field with id %d. Failed "
+                            "to fill new generated password into field with id "
+                            "%d.",
+                            current_password_node->node_id,
+                            new_password_node->node_id));
   EXPECT_THAT(EvalJs(main_frame(), "getStableEventLog()").ExtractString(),
               testing::Not(testing::HasSubstr("click")));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_MultipleFieldsFailToFill_ReturnsError) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  ASSERT_TRUE(
-      content::ExecJs(main_frame(),
-                      "const s = document.createElement('select');"
-                      "s.id = 'unfillableSelect';"
-                      "document.getElementById('form').appendChild(s);"
-                      "document.getElementById('input2').addEventListener("
-                      "    'keyup', e => { e.target.value = ''; });"));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> current_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input");
+      GetDomNodeOnPage(*main_frame(), "#current_password");
   std::optional<DomNode> cleared_input_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
-  std::optional<DomNode> select_node =
-      GetDomNodeOnPage(*main_frame(), "#unfillableSelect");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
+  std::optional<DomNode> confirm_password_node =
+      GetDomNodeOnPage(*main_frame(), "#confirm_password");
   ASSERT_TRUE(current_password_node);
   ASSERT_TRUE(cleared_input_node);
-  ASSERT_TRUE(select_node);
+  ASSERT_TRUE(confirm_password_node);
+
+  ASSERT_TRUE(content::ExecJs(
+      main_frame(),
+      "document.getElementById('new_password').addEventListener("
+      "    'keyup', e => { e.target.value = ''; });"
+      "document.getElementById('confirm_password').remove();"));
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<ChangePasswordToolRequest>(
           ActorSurfaceHandle::From(active_tab()->GetHandle()),
           PageTarget(*current_password_node), PageTarget(*cleared_input_node),
-          PageTarget(*select_node),
+          PageTarget(*confirm_password_node),
           /*confirm_button=*/std::nullopt);
 
   ActResultFuture result;
@@ -257,22 +240,19 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
           "generated password into field with id %d and confirmation password "
           "into field with id %d.",
           current_password_node->node_id, cleared_input_node->node_id,
-          select_node->node_id));
+          confirm_password_node->node_id));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_FieldNotAutofilled_ReturnsError) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  ASSERT_TRUE(
-      content::ExecJs(main_frame(),
-                      "document.getElementById('input2').addEventListener("
-                      "    'keyup', e => { e.target.value = ''; });"));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
+  ASSERT_TRUE(content::ExecJs(
+      main_frame(),
+      "document.getElementById('new_password').addEventListener("
+      "    'keyup', e => { e.target.value = ''; });"));
 
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   ASSERT_TRUE(new_password_node);
 
   std::unique_ptr<ToolRequest> request =
@@ -296,13 +276,10 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_WithConfirmButton_ClicksButton) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_button_node =
       GetDomNodeOnPage(*main_frame(), "#submit");
   ASSERT_TRUE(new_password_node);
@@ -319,25 +296,29 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
   ActResultFuture result;
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
   ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message,
+            absl::StrFormat(
+                "Filled new generated password into field with id %d. "
+                "Triggered click on confirm button with id %d.",
+                new_password_node->node_id, confirm_button_node->node_id));
 
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
   EXPECT_EQ("click", EvalJs(main_frame(), "getStableEventLog()"));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_AllFieldsWithConfirmButton_ClicksButton) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> current_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input");
+      GetDomNodeOnPage(*main_frame(), "#current_password");
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input3");
+      GetDomNodeOnPage(*main_frame(), "#confirm_password");
   std::optional<DomNode> confirm_button_node =
       GetDomNodeOnPage(*main_frame(), "#submit");
   ASSERT_TRUE(current_password_node);
@@ -354,26 +335,35 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
   ActResultFuture result;
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
   ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(
+      result.Get()[0].result->message,
+      absl::StrFormat(
+          "Filled old password into field with id %d and new generated "
+          "password into field with id %d and confirmation password into field "
+          "with id %d. Triggered click on confirm button with id %d.",
+          current_password_node->node_id, new_password_node->node_id,
+          confirm_password_node->node_id, confirm_button_node->node_id));
 
   EXPECT_EQ("dummy_current_password",
-            EvalJs(main_frame(), "document.getElementById('input').value"));
+            EvalJs(main_frame(),
+                   "document.getElementById('current_password').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
   EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input3').value"));
+            EvalJs(main_frame(),
+                   "document.getElementById('confirm_password').value"));
   EXPECT_THAT(EvalJs(main_frame(), "getStableEventLog()").ExtractString(),
               testing::EndsWith("click"));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_WithCoordinateConfirmButton_ClicksButton) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   ASSERT_TRUE(new_password_node);
   gfx::Point confirm_button_point = gfx::ToFlooredPoint(
       content::GetCenterCoordinatesOfElementWithId(web_contents(), "submit"));
@@ -389,35 +379,38 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
   ActResultFuture result;
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
   ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(result.Get()[0].result->message,
+            absl::StrFormat(
+                "Filled new generated password into field with id %d. "
+                "Triggered click on confirm button %s.",
+                new_password_node->node_id, confirm_button_point.ToString()));
 
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
   EXPECT_EQ("click", EvalJs(main_frame(), "getStableEventLog()"));
 }
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_FillFails_DoesNotClickConfirmButton) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
-  ASSERT_TRUE(
-      content::ExecJs(main_frame(),
-                      "const s = document.createElement('select');"
-                      "s.id = 'unfillableSelect';"
-                      "document.getElementById('form').appendChild(s);"));
-  GetPageApc();
+  ASSERT_TRUE(NavigateAndCaptureApc());
 
-  std::optional<DomNode> select_node =
-      GetDomNodeOnPage(*main_frame(), "#unfillableSelect");
+  std::optional<DomNode> new_password_node =
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_button_node =
       GetDomNodeOnPage(*main_frame(), "#submit");
-  ASSERT_TRUE(select_node);
+  ASSERT_TRUE(new_password_node);
   ASSERT_TRUE(confirm_button_node);
+
+  ASSERT_TRUE(content::ExecJs(
+      main_frame(), "document.getElementById('new_password').remove();"));
 
   std::unique_ptr<ToolRequest> request =
       std::make_unique<ChangePasswordToolRequest>(
           ActorSurfaceHandle::From(active_tab()->GetHandle()),
-          /*current_password_field=*/std::nullopt, PageTarget(*select_node),
+          /*current_password_field=*/std::nullopt,
+          PageTarget(*new_password_node),
           /*confirm_new_password_field=*/std::nullopt,
           PageTarget(*confirm_button_node));
 
@@ -432,15 +425,12 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
                        Invoke_WithDisabledConfirmButton_FailsClickAfterFill) {
-  const GURL url =
-      embedded_https_test_server().GetURL("example.com", "/actor/input.html");
-  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  ASSERT_TRUE(NavigateAndCaptureApc());
   ASSERT_TRUE(content::ExecJs(
       main_frame(), "document.getElementById('submit').disabled = true;"));
-  GetPageApc();
 
   std::optional<DomNode> new_password_node =
-      GetDomNodeOnPage(*main_frame(), "#input2");
+      GetDomNodeOnPage(*main_frame(), "#new_password");
   std::optional<DomNode> confirm_button_node =
       GetDomNodeOnPage(*main_frame(), "#submit");
   ASSERT_TRUE(new_password_node);
@@ -458,9 +448,118 @@ IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
   actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
   ExpectErrorResult(result, mojom::ActionResultCode::kElementDisabled);
   ASSERT_EQ(result.Get().size(), 1u);
-  EXPECT_EQ("dummy_new_password",
-            EvalJs(main_frame(), "document.getElementById('input2').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
   EXPECT_EQ("", EvalJs(main_frame(), "getStableEventLog()"));
+}
+
+IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
+                       Invoke_PasswordFieldsOutsideForm_Succeeds) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/change_password_without_form.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  GetPageApc();
+
+  std::optional<DomNode> current_password_node =
+      GetDomNodeOnPage(*main_frame(), "#current_password");
+  std::optional<DomNode> new_password_node =
+      GetDomNodeOnPage(*main_frame(), "#new_password");
+  std::optional<DomNode> confirm_password_node =
+      GetDomNodeOnPage(*main_frame(), "#confirm_password");
+  ASSERT_TRUE(current_password_node);
+  ASSERT_TRUE(new_password_node);
+  ASSERT_TRUE(confirm_password_node);
+
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<ChangePasswordToolRequest>(
+          ActorSurfaceHandle::From(active_tab()->GetHandle()),
+          PageTarget(*current_password_node), PageTarget(*new_password_node),
+          PageTarget(*confirm_password_node),
+          /*confirm_button=*/std::nullopt);
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectOkResult(result);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ("dummy_current_password",
+            EvalJs(main_frame(),
+                   "document.getElementById('current_password').value"));
+  EXPECT_EQ(
+      "dummy_new_password",
+      EvalJs(main_frame(), "document.getElementById('new_password').value"));
+  EXPECT_EQ("dummy_new_password",
+            EvalJs(main_frame(),
+                   "document.getElementById('confirm_password').value"));
+}
+
+IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
+                       Invoke_NoPasswordFormOnPage_ReturnsError) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/select_tool.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  GetPageApc();
+
+  std::optional<DomNode> select_node =
+      GetDomNodeOnPage(*main_frame(), "#plainSelect");
+  ASSERT_TRUE(select_node);
+
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<ChangePasswordToolRequest>(
+          ActorSurfaceHandle::From(active_tab()->GetHandle()),
+          /*current_password_field=*/std::nullopt, PageTarget(*select_node),
+          /*confirm_new_password_field=*/std::nullopt,
+          /*confirm_button=*/std::nullopt);
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result,
+                    mojom::ActionResultCode::kFormFillingUnknownAutofillError);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(
+      result.Get()[0].result->message,
+      absl::StrFormat(
+          "Target field is not a valid password field: new_password_field "
+          "(id %d).",
+                      select_node->node_id));
+}
+
+IN_PROC_BROWSER_TEST_F(ChangePasswordToolBrowserTest,
+                       Invoke_NonPasswordFieldPassedAsTarget_ReturnsError) {
+  const GURL url = embedded_https_test_server().GetURL(
+      "example.com", "/actor/sign_in_page.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), url));
+  GetPageApc();
+
+  std::optional<DomNode> password_node =
+      GetDomNodeOnPage(*main_frame(), "#password");
+  std::optional<DomNode> username_node =
+      GetDomNodeOnPage(*main_frame(), "#username");
+  ASSERT_TRUE(password_node);
+  ASSERT_TRUE(username_node);
+
+  std::unique_ptr<ToolRequest> request =
+      std::make_unique<ChangePasswordToolRequest>(
+          ActorSurfaceHandle::From(active_tab()->GetHandle()),
+          PageTarget(*password_node), PageTarget(*username_node),
+          /*confirm_new_password_field=*/std::nullopt,
+          /*confirm_button=*/std::nullopt);
+
+  ActResultFuture result;
+  actor_task().Act(ToRequestList(std::move(request)), result.GetCallback());
+  ExpectErrorResult(result,
+                    mojom::ActionResultCode::kFormFillingUnknownAutofillError);
+  ASSERT_EQ(result.Get().size(), 1u);
+  EXPECT_EQ(
+      result.Get()[0].result->message,
+      absl::StrFormat(
+          "Target field is not a valid password field: new_password_field "
+          "(id %d).",
+                      username_node->node_id));
+  EXPECT_EQ("",
+            EvalJs(main_frame(), "document.getElementById('password').value"));
+  EXPECT_EQ("",
+            EvalJs(main_frame(), "document.getElementById('username').value"));
 }
 
 }  // namespace

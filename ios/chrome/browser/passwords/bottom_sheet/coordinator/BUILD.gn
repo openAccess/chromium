@@ -28,6 +28,7 @@ source_set("coordinator") {
   ]
   deps = [
     "//base",
+    "//components/autofill/core/browser",
     "//components/autofill/ios/browser",
     "//components/autofill/ios/form_util",
     "//components/feature_engagement/public",
@@ -106,11 +107,16 @@ source_set("unit_tests") {
     "//components/autofill/ios/form_util:child_frame_registrar",
     "//components/password_manager/core/browser:test_support",
     "//components/password_manager/core/browser/features:password_features",
+    "//components/password_manager/core/browser/password_store:password_store_interface",
+    "//components/password_manager/core/browser/remote_actor",
     "//components/password_manager/ios",
     "//components/password_manager/ios:password_manager_feature_header",
     "//components/password_manager/ios:test_support",
     "//components/prefs:test_support",
+    "//components/signin/public/identity_manager",
+    "//components/signin/public/identity_manager:test_support",
     "//components/strings",
+    "//components/sync:test_support",
     "//components/sync/protocol",
     "//components/webauthn/core/browser:test_support",
     "//components/webauthn/ios",
@@ -122,6 +128,7 @@ source_set("unit_tests") {
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/autofill/model",
     "//ios/chrome/browser/favicon/model",
+    "//ios/chrome/browser/favicon/model:test_support",
     "//ios/chrome/browser/history/model",
     "//ios/chrome/browser/passwords/bottom_sheet/ui",
     "//ios/chrome/browser/passwords/model",
@@ -138,6 +145,7 @@ source_set("unit_tests") {
     "//ios/web/public/test/fakes",
     "//testing/gtest",
     "//third_party/ocmock",
+    "//ui/base",
     "//url",
   ]
 }

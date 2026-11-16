@@ -94,6 +94,7 @@
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/browser_window_theme_observer/browser_window_theme_observer.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/color/chrome_color_provider_utils.h"
 #include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
@@ -108,7 +109,10 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
 #include "chrome/browser/ui/omnibox/omnibox_view.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
@@ -127,7 +131,6 @@
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/collaboration_messaging_tab_data.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_service_feature.h"
@@ -353,6 +356,7 @@
 #include "ui/views/animation/compositor_animation_runner.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/menu_button.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -910,8 +914,11 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   // Layout deferral during startup is only intended for normal browser windows
   // (which experience redundant layout passes while loading the WebUI toolbar).
   // Non-normal windows (popups, app windows, etc.) do not use the WebUI toolbar
-  // and must not defer layout while invisible.
-  if (!GetIsNormalType()) {
+  // and must not defer layout while invisible. A window created for a tab drag
+  // must not defer either, because TabDragController places it from its tab
+  // strip bounds before showing it.
+  if (!GetIsNormalType() ||
+      BrowserInitState::From(&*browser_)->create_params().in_tab_dragging) {
     startup_layout_state_ = StartupLayoutState::kDisabled;
   }
 
@@ -1437,7 +1444,6 @@ bool BrowserView::ShouldDrawTabStrokes() const {
   // enough contrast, fall back to a stroke.  Always compute the contrast ratio
   // against the active frame color, to avoid toggling the stroke on and off as
   // the window activation state changes.
-  constexpr float kMinimumContrastRatioForOutlines = 1.3f;
   const SkColor background_color = TabStyle::Get()->GetTabBackgroundColor(
       TabStyle::TabSelectionState::kActive, /*hovered=*/false,
       /*frame_active=*/true, GetColorProvider());
@@ -1445,7 +1451,7 @@ bool BrowserView::ShouldDrawTabStrokes() const {
       GetFrameView()->GetFrameColor(BrowserFrameActiveState::kActive);
   const float contrast_ratio =
       color_utils::GetContrastRatio(background_color, frame_color);
-  return contrast_ratio < kMinimumContrastRatioForOutlines;
+  return contrast_ratio < kMinimumActiveTabContrastRatio;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 }
 
@@ -1712,9 +1718,19 @@ void BrowserView::Show() {
 }
 
 void BrowserView::ShowInactive() {
-  if (!browser_widget_->IsVisible()) {
-    browser_widget_->ShowInactive();
+  // Attempts to show closed windows should no-op.
+  if (browser_widget_->IsClosed() || browser_widget_->IsVisible()) {
+    return;
   }
+
+  if (auto* manager = InitialWebUIManager::From(browser())) {
+    if (manager->RequestDeferShow(base::BindOnce(
+            &BrowserView::ShowInactive, weak_ptr_factory_.GetWeakPtr()))) {
+      return;
+    }
+  }
+
+  browser_widget_->ShowInactive();
 }
 
 void BrowserView::Hide() {
@@ -1736,12 +1752,18 @@ void BrowserView::SetBounds(const gfx::Rect& bounds) {
     return;
   }
 
+  // `bounds` excludes the invisible frame insets, but the widget's bounds
+  // include them.
+  gfx::Rect widget_bounds = bounds;
+  widget_bounds.Inset(
+      -browser_widget_->GetInvisibleFrameInsets(/*restored=*/true));
+
   // If the BrowserFrameView has been created, give it a chance to handle the
   // BrowserWidget's bounds change.
   if (auto* const frame_view = GetFrameView()) {
-    frame_view->SetFrameBounds(bounds);
+    frame_view->SetFrameBounds(widget_bounds);
   } else {
-    browser_widget_->SetBounds(bounds);
+    browser_widget_->SetBounds(widget_bounds);
   }
 }
 
@@ -1768,6 +1790,17 @@ void BrowserView::Activate() {
       return;
     }
   }
+
+#if BUILDFLAG(IS_LINUX)
+  // Ozone platform windows ignore activation requests while unmapped, so
+  // activating a window that was never shown would leave the previously active
+  // window active. Show the window instead, which also activates it. This
+  // matches Mac, where activating a hidden window shows it.
+  if (!browser_widget_->IsVisible()) {
+    Show();
+    return;
+  }
+#endif
 
 #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
   // Update the list managed by `BrowserList` synchronously the same way
@@ -2192,6 +2225,7 @@ gfx::Rect BrowserView::GetRestoredBounds() const {
   gfx::Rect bounds;
   ui::mojom::WindowShowState state = ui::mojom::WindowShowState::kDefault;
   browser_widget_->GetWindowPlacement(&bounds, &state);
+  bounds.Inset(browser_widget_->GetInvisibleFrameInsets(/*restored=*/true));
   return bounds;
 }
 
@@ -2203,7 +2237,9 @@ ui::mojom::WindowShowState BrowserView::GetRestoredState() const {
 }
 
 gfx::Rect BrowserView::GetBounds() const {
-  return browser_widget_->GetWindowBoundsInScreen();
+  gfx::Rect bounds = browser_widget_->GetWindowBoundsInScreen();
+  bounds.Inset(browser_widget_->GetInvisibleFrameInsets(/*restored=*/false));
+  return bounds;
 }
 
 gfx::Size BrowserView::GetContentsSize() const {
@@ -2340,6 +2376,20 @@ void BrowserView::FullscreenStateChanged() {
     if (auto* const fullscreen_control_host =
             FullscreenControlHost::From(browser_.get())) {
       fullscreen_control_host->OnExitFullscreen();
+    }
+  }
+
+  // Reopen a popup that `OmniboxPopupView::OnFullscreenTransitionStarting()`
+  // closed for the transition. This runs after entering and after exiting, as
+  // immersive fullscreen keeps the location bar drawn. Skip it in content
+  // fullscreen, where the toolbar is hidden. `ReshowPopup()` only reopens the
+  // popup for an unfocused draft.
+  if (!fullscreen_utils::IsInContentFullscreen(browser())) {
+    if (LocationBar* const location_bar = GetLocationBar()) {
+      if (OmniboxPopupView* const popup_view =
+              location_bar->GetOmniboxPopupView()) {
+        popup_view->ReshowPopup();
+      }
     }
   }
 
@@ -3043,6 +3093,12 @@ void BrowserView::DidFinishNavigation(
   }
 }
 
+void BrowserView::DidStopLoading() {
+  if (content::WebContents* contents = GetActiveWebContents()) {
+    UpdateAccessibleURLForRootView(contents->GetURL());
+  }
+}
+
 void BrowserView::TouchModeChanged() {
 #if BUILDFLAG(IS_CHROMEOS)
   if (ui::TouchUiController::Get()->touch_ui()) {
@@ -3422,6 +3478,15 @@ void BrowserView::Paste() {
 // manager to do that.
 void BrowserView::CutCopyPaste(int command_id) {
 #if BUILDFLAG(IS_MAC)
+  // The command is forwarded to NSApp below, which dispatches it to the first
+  // responder of whichever window is key at that time, not necessarily this
+  // one. If this window is no longer active (e.g. another window became key
+  // between the command being chosen and it being executed), drop the command
+  // so it can't be delivered to a different window.
+  if (!GetWidget() || !GetWidget()->IsActive()) {
+    return;
+  }
+
   auto command = CommandFromBrowserCommand(command_id);
   auto* application_host =
       GetWidget() ? remote_cocoa::ApplicationHost::GetForNativeView(
@@ -3433,44 +3498,58 @@ void BrowserView::CutCopyPaste(int command_id) {
     remote_cocoa::ApplicationBridge::ForwardCutCopyPasteToNSApp(command);
   }
 #else
-  // If a WebContents is focused, call its member method.
-  //
-  // We could make WebContents register accelerators and then just use the
-  // plumbing for accelerators below to dispatch these, but it's not clear
-  // whether that would still allow keypresses of ctrl-X/C/V to be sent as
-  // key events (and not accelerators) to the WebContents so it can give the web
-  // page a chance to override them.
-  WebContents* contents = browser_->GetTabStripModel()->GetActiveWebContents();
-  if (contents) {
-    void (WebContents::*method)();
-    if (command_id == IDC_CUT) {
-      method = &content::WebContents::Cut;
-    } else if (command_id == IDC_COPY) {
-      method = &content::WebContents::Copy;
-    } else {
-      method = &content::WebContents::Paste;
-    }
-    if (DoCutCopyPasteForWebContents(contents, method)) {
-      return;
-    }
+  void (WebContents::*method)();
+  if (command_id == IDC_CUT) {
+    method = &content::WebContents::Cut;
+  } else if (command_id == IDC_COPY) {
+    method = &content::WebContents::Copy;
+  } else {
+    method = &content::WebContents::Paste;
+  }
 
-    WebContents* devtools =
-        DevToolsWindow::GetInTabWebContents(contents, nullptr);
-    if (devtools && DoCutCopyPasteForWebContents(devtools, method)) {
-      return;
+  // If a child/owned widget (such as a bubble or modal dialog) is currently
+  // active, use its FocusManager; otherwise use the browser widget's.
+  views::Widget* target_widget = GetWidget();
+  for (views::Widget* child :
+       views::Widget::GetAllOwnedWidgets(GetWidget()->GetNativeView())) {
+    if (child->IsActive()) {
+      target_widget = child;
+      break;
     }
   }
 
-  // If a native View (such as the Omnibox or FindBar) is focused, execute the
-  // accelerator directly on it rather than processing through FocusManager
-  // (which would re-enter BrowserView and ActionItems).
-  views::View* focused_view = GetFocusManager()->GetFocusedView();
+  views::FocusManager* focus_manager = target_widget->GetFocusManager();
+  views::View* focused_view =
+      focus_manager ? focus_manager->GetFocusedView() : nullptr;
+  if (!focused_view && focus_manager) {
+    focused_view = focus_manager->GetStoredFocusView();
+  }
   if (focused_view) {
-    ui::Accelerator accelerator;
-    if (GetAccelerator(command_id, &accelerator) &&
-        focused_view->CanHandleAccelerators() &&
-        focused_view->AcceleratorPressed(accelerator)) {
-      return;
+    // If a WebContents (such as the active tab, docked DevTools, a side panel,
+    // or a WebUI dialog) is focused, call its member method directly rather
+    // than forwarding an accelerator to the hosting WebView.
+    for (views::View* view = focused_view; view; view = view->parent()) {
+      if (auto* web_view = views::AsViewClass<views::WebView>(view)) {
+        if (content::WebContents* web_contents = web_view->web_contents()) {
+          DoCutCopyPasteForWebContents(web_contents, method);
+        }
+        return;
+      }
+    }
+
+    // If a native Textfield (such as the Omnibox or FindBar) or selectable
+    // Label is focused, execute the accelerator directly on it rather than
+    // processing through FocusManager (which would re-enter BrowserView and
+    // ActionItems). Other non-text Views do not register Cut/Copy/Paste
+    // accelerators and may misinterpret raw AcceleratorPressed() calls.
+    if (views::IsViewClass<views::Textfield>(focused_view) ||
+        views::IsViewClass<views::Label>(focused_view)) {
+      ui::Accelerator accelerator;
+      if (GetAccelerator(command_id, &accelerator) &&
+          focused_view->CanHandleAccelerators() &&
+          focused_view->AcceleratorPressed(accelerator)) {
+        return;
+      }
     }
   }
 #endif  // BUILDFLAG(IS_MAC)
@@ -3573,21 +3652,6 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
   if (change.type != SplitTabChange::Type::kVisualsChanged) {
     UpdateTabModalDialogHost();
   }
-}
-
-void BrowserView::OnTabChangedAt(tabs::TabInterface* tab,
-                                 TabChangeType change_type) {
-  content::WebContents* contents = tab->GetContents();
-
-  if (change_type != TabChangeType::kLoadingOnly || contents->IsLoading()) {
-    return;
-  }
-
-  if (contents != GetActiveWebContents()) {
-    return;
-  }
-
-  UpdateAccessibleURLForRootView(contents->GetURL());
 }
 
 void BrowserView::OnTabBlockedStateChanged(tabs::TabInterface* tab) {
@@ -3824,14 +3888,24 @@ BrowserView::GetNativeViewHostsForTopControlsSlide() {
   return results;
 }
 
-void BrowserView::ReparentTopContainerForStartOfImmersive() {
+void BrowserView::ReparentTopContainerToOverlayViewIfNeeded() {
+  const ImmersiveModeController* const controller =
+      ImmersiveModeController::From(browser());
+  CHECK(controller);
+  if (!controller->ShouldMoveTopContainerToOverlayView()) {
+    return;
+  }
+
+  CHECK(overlay_view_tracker_);
+  if (top_container()->parent() == overlay_view_tracker_.view()) {
+    return;
+  }
+
   top_container()->SetPaintToLayer();
   top_container()->layer()->SetFillsBoundsOpaquely(false);
 
   ReparentTabStripAndWebAppViewsToTopContainer(
       TabStripAndWebAppViewsReparentedState::kImmersiveMode);
-
-  CHECK(overlay_view_tracker_);
 
   // Note: while `BrowserViewLayout` is responsible for positioning controls in
   // the top container, these controls can still internally invalidate. When the
@@ -3852,7 +3926,7 @@ void BrowserView::ReparentTopContainerForStartOfImmersive() {
   overlay_view_tracker_.view()->SetVisible(true);
 }
 
-void BrowserView::ReparentTopContainerForEndOfImmersive() {
+void BrowserView::ReparentTopContainerToBrowserView() {
   if (top_container()->parent() == this && tab_strip_view()->parent() == this) {
     return;
   }
@@ -3871,7 +3945,7 @@ void BrowserView::ReparentTopContainerForEndOfImmersive() {
 
   EnsureFocusOrder();
 
-  // See comment in `ReparentTopContainerForStartOfImmersive()`; this isn't
+  // See comment in `ReparentTopContainerToOverlayViewIfNeeded()`; this isn't
   // strictly necessary on all platforms but doesn't break anything either as
   // this is the default state.
   top_container()->SetProperty(views::kViewDoesNotLayOutChildren, true);
@@ -4071,8 +4145,12 @@ void BrowserView::SaveWindowPlacement(const gfx::Rect& bounds,
                                       ui::mojom::WindowShowState show_state) {
   CHECK(ShouldSaveWindowPlacement(), base::NotFatalUntil::M162);
 
-  WidgetDelegate::SaveWindowPlacement(bounds, show_state);
+  // The saved bounds are window bounds, which exclude the invisible frame
+  // insets, so they round-trip through GetSavedWindowPlacement().
   gfx::Rect saved_bounds = bounds;
+  saved_bounds.Inset(
+      browser_widget_->GetInvisibleFrameInsets(/*restored=*/true));
+  WidgetDelegate::SaveWindowPlacement(saved_bounds, show_state);
   if (chrome::SavedBoundsAreContentBounds(browser_.get())) {
     // Invert the transformation done in GetSavedWindowPlacement().
     gfx::Size client_size = GetFrameView()->GetBoundsForClientView().size();
@@ -4089,6 +4167,10 @@ bool BrowserView::GetSavedWindowPlacement(
     gfx::Rect* bounds,
     ui::mojom::WindowShowState* show_state) const {
   chrome::GetSavedWindowBoundsAndShowState(browser_.get(), bounds, show_state);
+  // The saved bounds are window bounds. Convert them to widget bounds, which
+  // include the invisible frame insets.
+  const gfx::Insets invisible_frame_insets =
+      browser_widget_->GetInvisibleFrameInsets(/*restored=*/true);
   // TODO(crbug.com/40092782): Generalize this code for app and non-app popups?
   if (chrome::SavedBoundsAreContentBounds(browser_.get()) &&
       browser_->GetType() == BrowserWindowInterface::Type::TYPE_POPUP) {
@@ -4110,6 +4192,10 @@ bool BrowserView::GetSavedWindowPlacement(
     gfx::Rect rect =
         browser_widget_->non_client_view()->GetWindowBoundsForClientBounds(
             *bounds);
+    // GetWindowBoundsForClientBounds() returns widget bounds, which include
+    // the invisible frame insets, but the code below and the conversion after
+    // this block work with window bounds.
+    rect.Inset(invisible_frame_insets);
     rect.set_origin(bounds->origin());
 
     // Set a default popup origin if the x/y coordinates are 0 and the original
@@ -4131,6 +4217,7 @@ bool BrowserView::GetSavedWindowPlacement(
     *bounds = rect;
     *show_state = ui::mojom::WindowShowState::kNormal;
   }
+  bounds->Inset(-invisible_frame_insets);
 
   // We return true because we can _always_ locate reasonable bounds using the
   // WindowSizer, and we don't want to trigger the Window's built-in "size to
@@ -4443,8 +4530,7 @@ void BrowserView::UpdateTabModalDialogHost() {
         SafeInvoke(contents_view->web_contents())
             .Then(Overload<content::WebContents*>(
                 &tabs::TabInterface::GetFromContents))
-            .Then(Overload<>(&tabs::TabInterface::GetTabFeatures))
-            .Then(&tabs::TabFeatures::tab_dialog_manager)
+            .Then(&tabs::TabDialogManager::From)
             .Then(&tabs::TabDialogManager::UpdateModalDialogHost);
       }));
 }
@@ -4911,12 +4997,17 @@ void BrowserView::Layout(PassKey) {
     // However, if the window size changed since the last layout pass, do not
     // defer; child views must be laid out to match the new window size.
     //
-    // Also, if the active contents container has not yet received its
-    // initial non-empty bounds (e.g. during tab restore or when the first tab
-    // is added to the window), allow this layout pass so that the web contents
-    // gets properly sized before it starts loading.
+    // Also, if the active contents container or visible tab strip has not yet
+    // received initial non-empty bounds (e.g. during tab restore or when the
+    // first tab is added or attached to the window), allow this layout pass so
+    // views get properly sized before loading or computing drag offsets.
+    const bool needs_initial_tab_strip_layout =
+        GetTabStripVisible() && !browser_->GetTabStripModel()->empty() &&
+        tab_strip_view() && tab_strip_view()->GetTabStripView() &&
+        tab_strip_view()->GetTabStripView()->size().IsEmpty();
     const bool size_changed = size() != last_laid_out_size_;
-    if (!size_changed && (size().IsEmpty() || !GetContentsSize().IsEmpty())) {
+    if (!size_changed && !needs_initial_tab_strip_layout &&
+        (size().IsEmpty() || !GetContentsSize().IsEmpty())) {
       layout_deferred_while_invisible_ = true;
       return;
     }
@@ -5553,6 +5644,13 @@ void BrowserView::PrepareFullscreen(bool fullscreen) {
         fullscreen);
   }
 
+  if (LocationBar* const location_bar = GetLocationBar()) {
+    if (OmniboxPopupView* const popup_view =
+            location_bar->GetOmniboxPopupView()) {
+      popup_view->OnFullscreenTransitionStarting();
+    }
+  }
+
   // Reduce jankiness during the following position changes by:
   //   * Hiding the window until it's in the final position
   //   * Ignoring all intervening layout attempts, which would resize the
@@ -5561,6 +5659,24 @@ void BrowserView::PrepareFullscreen(bool fullscreen) {
   if (fullscreen) {
     // Move focus out of the location bar if necessary.
     LocationBar* location_bar = GetLocationBar();
+#if BUILDFLAG(IS_CHROMEOS)
+    // The Full WebUI popup sits on top of the location bar but isn't part of
+    // it, and immersive fullscreen keeps the location bar drawn, so blur the
+    // omnibox here. A draft keeps the popup open.
+    // TODO(crbug.com/582521205): Update macOS to have the same behavior and
+    // unify code flow if possible.
+    if (OmniboxController* const controller =
+            location_bar ? location_bar->GetOmniboxController() : nullptr;
+        controller && controller->edit_model()->has_focus() &&
+        controller->popup_state_manager()->popup_state() ==
+            OmniboxPopupState::kFull) {
+      // A tab switch while the popup held activation may have set this. Hiding
+      // the popup would then restore the tab's focus, which is the omnibox on
+      // the NTP, and reopen the popup.
+      restore_focus_on_activation_ = false;
+      location_bar->GetOmniboxPopupView()->Blur();
+    }
+#endif  // BUILDFLAG(IS_CHROMEOS)
     if (location_bar && location_bar->IsFocusWithin()) {
       views::FocusManager* focus_manager = GetFocusManager();
       CHECK(focus_manager, base::NotFatalUntil::M162);
@@ -5675,7 +5791,19 @@ void BrowserView::RequestFullscreen(bool fullscreen, int64_t display_id) {
               if (view && view->browser_widget()) {
                 // Adjust restored bounds to be on-screen, in case the original
                 // screen was disconnected or repositioned during fullscreen.
-                view->browser_widget()->SetBoundsConstrained(bounds);
+                // `bounds` excludes the invisible frame insets, so constrain
+                // it before converting it to widget bounds.
+                gfx::Rect widget_bounds = bounds;
+                const gfx::Rect work_area = display::Screen::Get()
+                                                ->GetDisplayMatching(bounds)
+                                                .work_area();
+                if (!work_area.IsEmpty()) {
+                  widget_bounds.AdjustToFit(work_area);
+                }
+                widget_bounds.Inset(
+                    -view->browser_widget()->GetInvisibleFrameInsets(
+                        /*restored=*/true));
+                view->browser_widget()->SetBounds(widget_bounds);
                 if (maximize) {
                   view->Maximize();
                 }
@@ -5689,8 +5817,7 @@ void BrowserView::RequestFullscreen(bool fullscreen, int64_t display_id) {
       if (was_maximized) {
         Restore();
       }
-      SetBounds({display.work_area().origin(),
-                 browser_widget_->GetWindowBoundsInScreen().size()});
+      SetBounds({display.work_area().origin(), GetBounds().size()});
     }
   }
   browser_widget_->SetFullscreen(fullscreen);
@@ -6073,10 +6200,23 @@ void BrowserView::OnImmersiveFullscreenEntered() {
     control->CloseMenu();
   }
 
-  ReparentTopContainerForStartOfImmersive();
+  ReparentTopContainerToOverlayViewIfNeeded();
 
   InvalidateLayout();
   GetWidget()->GetRootView()->DeprecatedLayoutImmediately();
+}
+
+void BrowserView::UpdateTopContainerParentForImmersive() {
+  const ImmersiveModeController* const controller =
+      ImmersiveModeController::From(browser());
+  CHECK(controller);
+  if (controller->IsEnabled() &&
+      controller->ShouldMoveTopContainerToOverlayView()) {
+    ReparentTopContainerToOverlayViewIfNeeded();
+  } else {
+    ReparentTopContainerToBrowserView();
+  }
+  InvalidateLayout();
 }
 
 void BrowserView::OnImmersiveFullscreenExited() {
@@ -6090,7 +6230,7 @@ void BrowserView::OnImmersiveFullscreenExited() {
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  ReparentTopContainerForEndOfImmersive();
+  ReparentTopContainerToBrowserView();
 
   InvalidateLayout();
   GetWidget()->GetRootView()->DeprecatedLayoutImmediately();
@@ -6099,7 +6239,7 @@ void BrowserView::OnImmersiveFullscreenExited() {
 }
 
 void BrowserView::OnImmersiveModeControllerDestroyed() {
-  ReparentTopContainerForEndOfImmersive();
+  ReparentTopContainerToBrowserView();
 
   vertical_tabs_enable_state_lock_.reset();
 }

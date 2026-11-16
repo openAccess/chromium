@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.os.Build;
 import android.view.View;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.view.ViewStub;
@@ -68,16 +69,20 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.cc.input.BrowserControlsState;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
+import org.chromium.chrome.browser.ActivityTabProvider.ActivityTabTabObserver;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BottomControlsStacker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsSizer;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider.ControlsPosition;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.browser_controls.TopControlsStacker;
+import org.chromium.chrome.browser.browser_controls.TopControlsStacker.TopControlType;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.compositor.overlay_panel.OverlayPanelManager;
@@ -147,6 +152,7 @@ import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.theme.BottomUiThemeColorProvider;
 import org.chromium.chrome.browser.theme.ToolbarThemeColorProvider;
+import org.chromium.chrome.browser.toolbar.LocationBarModel.NativeLocationBarModelAndroid;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController.ToolbarPositionAndSource;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.menu_button.MenuButtonCoordinator.VisibilityDelegate;
@@ -226,10 +232,7 @@ import java.util.function.Supplier;
     ChromeFeatureList.GLIC,
     SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING
 })
-@DisableFeatures({
-    SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS,
-    SigninFeatures.SIGNIN_LEVEL_UP_BUTTON
-})
+@DisableFeatures({SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS})
 public class ToolbarManagerUnitTest {
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -245,11 +248,7 @@ public class ToolbarManagerUnitTest {
     @Mock private TabModelSelector mTabModelSelector;
     @Mock private TabModelDotInfo mTabModelDotInfo;
     @Mock private LocationBarModel.Natives mLocationBarModelNatives;
-
-    @Mock
-    private JniUniquePtr<LocationBarModel.NativeLocationBarModelAndroid>
-            mNativeLocationBarModelAndroid;
-
+    @Mock private JniUniquePtr<NativeLocationBarModelAndroid> mNativeLocationBarModelAndroid;
     @Mock private FaviconHelper.Natives mFaviconHelperNatives;
     @Mock private LargeIconBridge.Natives mLargeIconBridgeNatives;
     @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
@@ -317,12 +316,10 @@ public class ToolbarManagerUnitTest {
     @Mock private TabModel mIncognitoTabModel;
     @Mock private Profile mIncognitoProfile;
     @Mock private SubscriptionEligibilityService mSubscriptionEligibilityService;
-    @Mock private ButtonDataProvider mIdentityDiscProvider;
     @Mock private ButtonDataProvider mAdaptiveButtonProvider;
     @Mock private HubManager mHubManager;
     @Mock private TabCreator mTabCreator;
 
-    @Captor private ArgumentCaptor<ButtonDataObserver> mIdentityDiscObserverCaptor;
     @Captor private ArgumentCaptor<ButtonDataObserver> mAdaptiveButtonObserverCaptor;
 
     private List<ButtonDataProvider> mButtonDataProviders;
@@ -342,6 +339,7 @@ public class ToolbarManagerUnitTest {
         ActorKeyedServiceFactory.setForTesting(mActorKeyedService);
         GlicKeyedServiceFactory.setForTesting(mGlicKeyedService);
         GlicEnabling.setEnabledForTesting(true);
+        ActorUiTabController.setActorUiSupportedForTesting(true);
         ComposeboxQueryControllerBridge.setInstanceForTesting(null);
         ComposeboxQueryControllerBridgeJni.setInstanceForTesting(mComposeboxBridgeJni);
         ChromeAutocompleteSchemeClassifierJni.setInstanceForTesting(
@@ -356,7 +354,7 @@ public class ToolbarManagerUnitTest {
                 mPictureInPictureBridgeNatives);
         PaintPreviewTabServiceFactoryJni.setInstanceForTesting(
                 mPaintPreviewTabServiceFactoryNatives);
-        when(mPaintPreviewTabServiceFactoryNatives.getServiceInstanceForCurrentProfile())
+        when(mPaintPreviewTabServiceFactoryNatives.getServiceInstanceForProfile(any()))
                 .thenReturn(null);
         LocationBarModelJni.setInstanceForTesting(mLocationBarModelNatives);
         when(mLocationBarModelNatives.init(any())).thenReturn(mNativeLocationBarModelAndroid);
@@ -444,11 +442,10 @@ public class ToolbarManagerUnitTest {
         mActivityTabProvider = new ActivityTabProvider();
         mActivityTabProvider.setForTesting(mTab);
 
-        mButtonDataProviders = List.of(mIdentityDiscProvider, mAdaptiveButtonProvider);
+        mButtonDataProviders = List.of(mAdaptiveButtonProvider);
 
         mToolbarManager = createToolbarManager(LazyOneshotSupplier.fromValue(mFindToolbarManager));
 
-        verify(mIdentityDiscProvider).addObserver(mIdentityDiscObserverCaptor.capture());
         verify(mAdaptiveButtonProvider).addObserver(mAdaptiveButtonObserverCaptor.capture());
 
         RobolectricUtil.runAllBackgroundAndUi();
@@ -717,6 +714,28 @@ public class ToolbarManagerUnitTest {
     }
 
     @Test
+    public void testRefreshSelectedTab_NullTabAndNullIncognitoProfile() {
+        LocationBarModel locationBarModel = mToolbarManager.getLocationBarModelForTesting();
+        assertEquals(mTab, locationBarModel.getTab());
+
+        // When the last tab in an Incognito-only window closes, IncognitoTabModelImpl destroys its
+        // delegate model (so getProfile() becomes null) while remaining the selected model.
+        when(mIncognitoTabModel.getProfile()).thenReturn(null);
+        when(mTabModelSelector.isOffTheRecordModelSelected()).thenReturn(true);
+        when(mTabModelSelector.getCurrentTab()).thenReturn(null);
+        when(mTabModelSelector.getCurrentModel()).thenReturn(mIncognitoTabModel);
+
+        mActivityTabProvider.setForTesting(null);
+        mCurrentTabModelSupplier.set(mIncognitoTabModel);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        assertNull(locationBarModel.getTab());
+        assertNull(locationBarModel.getProfile());
+        assertTrue(locationBarModel.isOffTheRecord());
+        assertTrue(locationBarModel.isIncognitoBranded());
+    }
+
+    @Test
     public void testHomeButtonClickCollapsesBottomSheet() {
         TabBottomSheetUtils.attachManagerToWindow(mWindowAndroid, mTabBottomSheetManager);
 
@@ -855,26 +874,23 @@ public class ToolbarManagerUnitTest {
 
     @Test
     @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
-    public void testNtpOptionalButtonHidden_whenSignInLevelUpEnabled() {
-        Tab ntpTab = mockTab(/* isNtp= */ true);
-        mActivityTabProvider.setForTesting(ntpTab);
+    public void testToolbarOptionalButton_shownOnWebPage_hiddenOnNtp_whenBottomBarDisabled() {
+        Tab webTab = mockTab(/* isNtp= */ false);
+        mActivityTabProvider.setForTesting(webTab);
 
-        ButtonDataImpl identityDiskData =
+        ButtonDataImpl shareButtonData =
                 new ButtonDataImpl(
                         /* canShow= */ true,
                         /* isEnabled= */ true,
                         new ButtonSpec.Builder(
                                         /* drawable= */ null,
-                                        /* contentDescription= */ "Identity Disk",
+                                        /* contentDescription= */ "Share",
                                         /* supportsTinting= */ false)
-                                .setButtonVariant(AdaptiveToolbarButtonVariant.UNKNOWN)
-                                .setIdentityDiscConfig(
-                                        /* isIdentityDisc= */ true, /* hasAiTierRing= */ false)
+                                .setButtonVariant(AdaptiveToolbarButtonVariant.SHARE)
                                 .build());
-        when(mIdentityDiscProvider.get(ntpTab)).thenReturn(identityDiskData);
+        when(mAdaptiveButtonProvider.get(webTab)).thenReturn(shareButtonData);
 
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
+        mAdaptiveButtonObserverCaptor.getValue().buttonDataChanged(true);
         RobolectricUtil.runAllBackgroundAndUi();
 
         AppCompatActivity activity = mActivityController.get();
@@ -882,43 +898,25 @@ public class ToolbarManagerUnitTest {
         View toolbarButton =
                 toolbar.findViewById(R.id.toolbar_buttons)
                         .findViewById(R.id.optional_toolbar_button_container);
+        assertNotNull(toolbarButton);
+        assertEquals(View.VISIBLE, toolbarButton.getVisibility());
+
+        Tab ntpTab = mockTab(/* isNtp= */ true);
+        when(mAdaptiveButtonProvider.get(ntpTab)).thenReturn(shareButtonData);
+
+        mActivityTabProvider.setForTesting(ntpTab);
+        mAdaptiveButtonObserverCaptor.getValue().buttonDataChanged(true);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        toolbarButton =
+                toolbar.findViewById(R.id.toolbar_buttons)
+                        .findViewById(R.id.optional_toolbar_button_container);
         assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
     }
 
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
-    public void testLocationBarOptionalButtonHidden_whenIdentityDisk() {
-        Tab webTab = mockTab(/* isNtp= */ false);
-        mActivityTabProvider.setForTesting(webTab);
-
-        ButtonDataImpl identityDiskData =
-                new ButtonDataImpl(
-                        /* canShow= */ true,
-                        /* isEnabled= */ true,
-                        new ButtonSpec.Builder(
-                                        /* drawable= */ null,
-                                        /* contentDescription= */ "Identity Disk",
-                                        /* supportsTinting= */ false)
-                                .setButtonVariant(AdaptiveToolbarButtonVariant.UNKNOWN)
-                                .setIdentityDiscConfig(
-                                        /* isIdentityDisc= */ true, /* hasAiTierRing= */ false)
-                                .build());
-        when(mIdentityDiscProvider.get(webTab)).thenReturn(identityDiskData);
-
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
-        RobolectricUtil.runAllBackgroundAndUi();
-
-        AppCompatActivity activity = mActivityController.get();
-        View locationBar = activity.findViewById(R.id.location_bar);
-        View locationBarButton = locationBar.findViewById(R.id.optional_button);
-        assertTrue(locationBarButton == null || locationBarButton.getVisibility() == View.GONE);
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
-    public void testToolbarOptionalButtonHidden_whenBottomBarEnabled_andNotIdentityDisk() {
+    public void testToolbarOptionalButtonHidden_onNtp_whenBottomBarEnabled() {
         Tab ntpTab = mockTab(/* isNtp= */ true);
         mActivityTabProvider.setForTesting(ntpTab);
 
@@ -946,39 +944,7 @@ public class ToolbarManagerUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_BOTTOM_BAR, SigninFeatures.SIGNIN_LEVEL_UP_BUTTON})
-    public void testToolbarOptionalButtonHidden_whenBottomBarEnabled_andSignInLevelUpEnabled() {
-        Tab ntpTab = mockTab(/* isNtp= */ true);
-        mActivityTabProvider.setForTesting(ntpTab);
-
-        ButtonDataImpl identityDiskData =
-                new ButtonDataImpl(
-                        /* canShow= */ true,
-                        /* isEnabled= */ true,
-                        new ButtonSpec.Builder(
-                                        /* drawable= */ null,
-                                        /* contentDescription= */ "Identity Disk",
-                                        /* supportsTinting= */ false)
-                                .setButtonVariant(AdaptiveToolbarButtonVariant.UNKNOWN)
-                                .setIdentityDiscConfig(
-                                        /* isIdentityDisc= */ true, /* hasAiTierRing= */ false)
-                                .build());
-        when(mIdentityDiscProvider.get(ntpTab)).thenReturn(identityDiskData);
-
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
-        RobolectricUtil.runAllBackgroundAndUi();
-
-        AppCompatActivity activity = mActivityController.get();
-        View toolbar = activity.findViewById(R.id.toolbar);
-        View toolbarButton =
-                toolbar.findViewById(R.id.toolbar_buttons)
-                        .findViewById(R.id.optional_toolbar_button_container);
-        assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
-    }
-
-    @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     public void testMutualExclusion_bothOptionalButtonsNeverVisibleSimultaneously() {
         Tab webTab = mockTab(/* isNtp= */ false);
         mActivityTabProvider.setForTesting(webTab);
@@ -1013,7 +979,6 @@ public class ToolbarManagerUnitTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     public void testTransition_WebPageToNtp_optionalButtonsUpdate() {
         Tab webTab = mockTab(/* isNtp= */ false);
         mActivityTabProvider.setForTesting(webTab);
@@ -1045,23 +1010,9 @@ public class ToolbarManagerUnitTest {
         assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
 
         Tab ntpTab = mockTab(/* isNtp= */ true);
-        ButtonDataImpl identityDiskData =
-                new ButtonDataImpl(
-                        /* canShow= */ true,
-                        /* isEnabled= */ true,
-                        new ButtonSpec.Builder(
-                                        /* drawable= */ null,
-                                        /* contentDescription= */ "Identity Disk",
-                                        /* supportsTinting= */ false)
-                                .setButtonVariant(AdaptiveToolbarButtonVariant.UNKNOWN)
-                                .setIdentityDiscConfig(
-                                        /* isIdentityDisc= */ true, /* hasAiTierRing= */ false)
-                                .build());
-        when(mIdentityDiscProvider.get(ntpTab)).thenReturn(identityDiskData);
-        when(mAdaptiveButtonProvider.get(ntpTab)).thenReturn(null);
+        when(mAdaptiveButtonProvider.get(ntpTab)).thenReturn(shareButtonData);
 
         mActivityTabProvider.setForTesting(ntpTab);
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
         mAdaptiveButtonObserverCaptor.getValue().buttonDataChanged(true);
         RobolectricUtil.runAllBackgroundAndUi();
 
@@ -1071,32 +1022,28 @@ public class ToolbarManagerUnitTest {
                         .findViewById(R.id.optional_toolbar_button_container);
 
         assertTrue(locationBarButton == null || locationBarButton.getVisibility() == View.GONE);
-        assertNotNull(toolbarButton);
-        assertEquals(View.VISIBLE, toolbarButton.getVisibility());
+        assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
     }
 
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    @DisableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     public void testTransition_NtpToWebPage_optionalButtonsUpdate() {
         Tab ntpTab = mockTab(/* isNtp= */ true);
         mActivityTabProvider.setForTesting(ntpTab);
 
-        ButtonDataImpl identityDiskData =
+        ButtonDataImpl shareButtonData =
                 new ButtonDataImpl(
                         /* canShow= */ true,
                         /* isEnabled= */ true,
                         new ButtonSpec.Builder(
                                         /* drawable= */ null,
-                                        /* contentDescription= */ "Identity Disk",
+                                        /* contentDescription= */ "Share",
                                         /* supportsTinting= */ false)
-                                .setButtonVariant(AdaptiveToolbarButtonVariant.UNKNOWN)
-                                .setIdentityDiscConfig(
-                                        /* isIdentityDisc= */ true, /* hasAiTierRing= */ false)
+                                .setButtonVariant(AdaptiveToolbarButtonVariant.SHARE)
                                 .build());
-        when(mIdentityDiscProvider.get(ntpTab)).thenReturn(identityDiskData);
+        when(mAdaptiveButtonProvider.get(ntpTab)).thenReturn(shareButtonData);
 
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
+        mAdaptiveButtonObserverCaptor.getValue().buttonDataChanged(true);
         RobolectricUtil.runAllBackgroundAndUi();
 
         AppCompatActivity activity = mActivityController.get();
@@ -1106,15 +1053,14 @@ public class ToolbarManagerUnitTest {
         View toolbarButton =
                 toolbar.findViewById(R.id.toolbar_buttons)
                         .findViewById(R.id.optional_toolbar_button_container);
-        assertNotNull(toolbarButton);
-        assertEquals(View.VISIBLE, toolbarButton.getVisibility());
+        assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
         assertTrue(locationBarButton == null || locationBarButton.getVisibility() == View.GONE);
 
         Tab webTab = mockTab(/* isNtp= */ false);
-        when(mIdentityDiscProvider.get(webTab)).thenReturn(identityDiskData);
+        when(mAdaptiveButtonProvider.get(webTab)).thenReturn(shareButtonData);
 
         mActivityTabProvider.setForTesting(webTab);
-        mIdentityDiscObserverCaptor.getValue().buttonDataChanged(true);
+        mAdaptiveButtonObserverCaptor.getValue().buttonDataChanged(true);
         RobolectricUtil.runAllBackgroundAndUi();
 
         locationBarButton = locationBar.findViewById(R.id.optional_button);
@@ -1122,8 +1068,9 @@ public class ToolbarManagerUnitTest {
                 toolbar.findViewById(R.id.toolbar_buttons)
                         .findViewById(R.id.optional_toolbar_button_container);
 
+        assertNotNull(locationBarButton);
+        assertEquals(View.VISIBLE, locationBarButton.getVisibility());
         assertTrue(toolbarButton == null || toolbarButton.getVisibility() == View.GONE);
-        assertTrue(locationBarButton == null || locationBarButton.getVisibility() == View.GONE);
     }
 
     @Test
@@ -1481,8 +1428,7 @@ public class ToolbarManagerUnitTest {
         mActivityTabProvider.setForTesting(tab);
         RobolectricUtil.runAllBackgroundAndUi();
 
-        ActivityTabProvider.ActivityTabTabObserver observer =
-                mToolbarManager.getActivityTabTabObserverForTesting();
+        ActivityTabTabObserver observer = mToolbarManager.getActivityTabTabObserverForTesting();
         assertNotNull(observer);
 
         NavigationHandle navigation = mock(NavigationHandle.class);
@@ -1539,7 +1485,7 @@ public class ToolbarManagerUnitTest {
         verify(findToolbarManager, never()).addObserver(any());
     }
 
-    private ActivityTabProvider.ActivityTabTabObserver setUpForTabLoadStopped(Tab activeTab) {
+    private ActivityTabTabObserver setUpForTabLoadStopped(Tab activeTab) {
         // onLoadStopped() calls mToolbar.onPageLoadStopped(), which triggers bitmap texture
         // capture (ViewResourceAdapter). Stub the JNI and theme color providers required during
         // the view drawing and native container resource creation.
@@ -1554,8 +1500,7 @@ public class ToolbarManagerUnitTest {
         mToolbarManager
                 .getLocationBarModelForTesting()
                 .addObserver(mLocationBarDataProviderObserver);
-        ActivityTabProvider.ActivityTabTabObserver tabObserver =
-                mToolbarManager.getActivityTabTabObserverForTesting();
+        ActivityTabTabObserver tabObserver = mToolbarManager.getActivityTabTabObserverForTesting();
         assertNotNull(tabObserver);
         return tabObserver;
     }
@@ -1564,7 +1509,7 @@ public class ToolbarManagerUnitTest {
     @EnableFeatures(OmniboxFeatureList.ZERO_SUGGEST_PREFETCH_ON_PAGE_LOAD_AND_TAB_SWITCH)
     public void testOnLoadStopped_zeroSuggestPrefetch_featureEnabled() {
         Tab tab = mockTab(/* isNtp= */ true);
-        ActivityTabProvider.ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
+        ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
 
         tabObserver.onLoadStopped(tab, /* toDifferentDocument= */ true);
         verify(mLocationBarDataProviderObserver).hintZeroSuggestRefresh();
@@ -1574,7 +1519,7 @@ public class ToolbarManagerUnitTest {
     @DisableFeatures(OmniboxFeatureList.ZERO_SUGGEST_PREFETCH_ON_PAGE_LOAD_AND_TAB_SWITCH)
     public void testOnLoadStopped_zeroSuggestPrefetch_featureDisabled() {
         Tab tab = mockTab(/* isNtp= */ true);
-        ActivityTabProvider.ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
+        ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
 
         tabObserver.onLoadStopped(tab, /* toDifferentDocument= */ true);
         verify(mLocationBarDataProviderObserver, never()).hintZeroSuggestRefresh();
@@ -1584,7 +1529,7 @@ public class ToolbarManagerUnitTest {
     @EnableFeatures(OmniboxFeatureList.ZERO_SUGGEST_PREFETCH_ON_PAGE_LOAD_AND_TAB_SWITCH)
     public void testOnLoadStopped_zeroSuggestPrefetch_notDifferentDocument() {
         Tab tab = mockTab(/* isNtp= */ true);
-        ActivityTabProvider.ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
+        ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(tab);
 
         tabObserver.onLoadStopped(tab, /* toDifferentDocument= */ false);
         verify(mLocationBarDataProviderObserver, never()).hintZeroSuggestRefresh();
@@ -1595,7 +1540,7 @@ public class ToolbarManagerUnitTest {
     public void testOnLoadStopped_zeroSuggestPrefetch_notActiveTab() {
         Tab activeTab = mockTab(/* isNtp= */ true);
         Tab backgroundTab = mockTab(/* isNtp= */ true);
-        ActivityTabProvider.ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(activeTab);
+        ActivityTabTabObserver tabObserver = setUpForTabLoadStopped(activeTab);
 
         tabObserver.onLoadStopped(backgroundTab, /* toDifferentDocument= */ true);
         verify(mLocationBarDataProviderObserver, never()).hintZeroSuggestRefresh();
@@ -1651,5 +1596,175 @@ public class ToolbarManagerUnitTest {
         Tab webTab = mockTab(/* isNtp= */ false);
         mActivityTabProvider.setForTesting(webTab);
         RobolectricUtil.runAllBackgroundAndUi();
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testControlContainerTopMargin_TopScalpNonScrollableAndScrollable() {
+        int statusBarHeight = 60;
+        int toolbarHeight = 56;
+        BrowserControlsStateProvider.Observer observer =
+                mToolbarManager.getBrowserControlsObserverForTesting();
+        MarginLayoutParams layoutParams = (MarginLayoutParams) mControlContainer.getLayoutParams();
+        assertEquals(0, layoutParams.topMargin);
+
+        // Non-scrollable TOP_SCALP (minHeight == statusBarHeight) at ControlsPosition.TOP:
+        // onTopControlsHeightChanged updates topMargin even without onControlsOffsetChanged.
+        when(mControlsSizer.getControlsPosition()).thenReturn(ControlsPosition.TOP);
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(statusBarHeight);
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, statusBarHeight);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        // Reset via hidden TOP_SCALP (e.g., customized-background NTP where topMargin becomes 0).
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP)).thenReturn(0);
+        observer.onTopControlsHeightChanged(toolbarHeight, 0);
+        assertEquals(0, layoutParams.topMargin);
+
+        // Scrollable TOP_SCALP (minHeight == 0, e.g., switching from customized-background NTP to
+        // a viewport-fit=cover web tab where offsets stay 0 and onControlsOffsetChanged does not
+        // fire): onTopControlsHeightChanged updates topMargin to statusBarHeight.
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(statusBarHeight);
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, 0);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        // Scrolled web page (topOffset == -30): onControlsOffsetChanged keeps topMargin anchored
+        // at statusBarHeight.
+        observer.onControlsOffsetChanged(
+                /* topOffset= */ -30,
+                /* topControlsMinHeightOffset= */ 0,
+                /* topControlsMinHeightChanged= */ false,
+                /* bottomOffset= */ 0,
+                /* bottomControlsMinHeightOffset= */ 0,
+                /* bottomControlsMinHeightChanged= */ false,
+                /* requestNewFrame= */ false,
+                /* isVisibilityForced= */ false);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        // Animated height change (e.g., status indicator sliding in below TOP_SCALP):
+        // onTopControlsHeightChanged defers the margin update until onControlsOffsetChanged
+        // delivers animation frames so the visible toolbar does not jump prematurely.
+        int statusIndicatorHeight = 24;
+        int combinedHeight = statusBarHeight + statusIndicatorHeight;
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(true);
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(combinedHeight);
+        observer.onTopControlsHeightChanged(combinedHeight + toolbarHeight, combinedHeight);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        observer.onControlsOffsetChanged(
+                /* topOffset= */ 0,
+                /* topControlsMinHeightOffset= */ combinedHeight,
+                /* topControlsMinHeightChanged= */ true,
+                /* bottomOffset= */ 0,
+                /* bottomControlsMinHeightOffset= */ 0,
+                /* bottomControlsMinHeightChanged= */ false,
+                /* requestNewFrame= */ false,
+                /* isVisibilityForced= */ false);
+        assertEquals(combinedHeight, layoutParams.topMargin);
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(false);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/true")
+    public void testControlContainerTopMargin_TopScalpHiddenAndBottomControlsPosition() {
+        int statusBarHeight = 60;
+        int toolbarHeight = 56;
+        BrowserControlsStateProvider.Observer observer =
+                mToolbarManager.getBrowserControlsObserverForTesting();
+        MarginLayoutParams layoutParams = (MarginLayoutParams) mControlContainer.getLayoutParams();
+
+        // Start with visible TOP_SCALP at ControlsPosition.TOP.
+        when(mControlsSizer.getControlsPosition()).thenReturn(ControlsPosition.TOP);
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(statusBarHeight);
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, 0);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        // Hidden TOP_SCALP (customized-background NTP / fullscreen / bottom split-screen).
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP)).thenReturn(0);
+        observer.onTopControlsHeightChanged(toolbarHeight, 0);
+        assertEquals(0, layoutParams.topMargin);
+
+        // Restore visible TOP_SCALP.
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(statusBarHeight);
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, 0);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+
+        // Animated switch ControlsPosition.TOP -> ControlsPosition.BOTTOM (where
+        // onControlsOffsetChanged is skipped): onTopControlsHeightChanged defers while animating,
+        // and onControlsPositionChanged updates topMargin to 0.
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(true);
+        when(mControlsSizer.getControlsPosition()).thenReturn(ControlsPosition.BOTTOM);
+        observer.onTopControlsHeightChanged(statusBarHeight, statusBarHeight);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+        observer.onControlsPositionChanged(ControlsPosition.BOTTOM);
+        assertEquals(0, layoutParams.topMargin);
+
+        // Non-animated height changes while at ControlsPosition.BOTTOM must keep topMargin == 0.
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(false);
+        observer.onTopControlsHeightChanged(statusBarHeight, statusBarHeight);
+        assertEquals(0, layoutParams.topMargin);
+
+        // Animated switch ControlsPosition.BOTTOM -> ControlsPosition.TOP without
+        // onControlsOffsetChanged: onTopControlsHeightChanged defers while animating, and
+        // onControlsPositionChanged updates topMargin to statusBarHeight.
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(true);
+        when(mControlsSizer.getControlsPosition()).thenReturn(ControlsPosition.TOP);
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, statusBarHeight);
+        assertEquals(0, layoutParams.topMargin);
+        observer.onControlsPositionChanged(ControlsPosition.TOP);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
+        when(mControlsSizer.shouldAnimateBrowserControlsHeightChanges()).thenReturn(false);
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @DisableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET)
+    public void testControlContainerTopMargin_TopScalpFlagDisabled() {
+        verifyControlContainerTopMarginOnlyUpdatesOnOffsetChanged();
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.R)
+    @EnableFeatures(ChromeFeatureList.EDGE_TO_EDGE_TOP_INSET + ":enable_top_edge_to_edge/false")
+    public void testControlContainerTopMargin_RefactorOnlyArmDisabled() {
+        verifyControlContainerTopMarginOnlyUpdatesOnOffsetChanged();
+    }
+
+    private void verifyControlContainerTopMarginOnlyUpdatesOnOffsetChanged() {
+        int statusBarHeight = 60;
+        int toolbarHeight = 56;
+        BrowserControlsStateProvider.Observer observer =
+                mToolbarManager.getBrowserControlsObserverForTesting();
+        MarginLayoutParams layoutParams = (MarginLayoutParams) mControlContainer.getLayoutParams();
+
+        when(mControlsSizer.getControlsPosition()).thenReturn(ControlsPosition.TOP);
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.TABSTRIP))
+                .thenReturn(statusBarHeight);
+
+        // When EdgeToEdgeUtils.isTopEdgeToEdgeEnabled() is false, height and position changes do
+        // not update topMargin.
+        observer.onTopControlsHeightChanged(statusBarHeight + toolbarHeight, statusBarHeight);
+        assertEquals(0, layoutParams.topMargin);
+
+        observer.onControlsPositionChanged(ControlsPosition.TOP);
+        assertEquals(0, layoutParams.topMargin);
+
+        // onControlsOffsetChanged continues to update topMargin as before.
+        observer.onControlsOffsetChanged(
+                /* topOffset= */ 0,
+                /* topControlsMinHeightOffset= */ statusBarHeight,
+                /* topControlsMinHeightChanged= */ true,
+                /* bottomOffset= */ 0,
+                /* bottomControlsMinHeightOffset= */ 0,
+                /* bottomControlsMinHeightChanged= */ false,
+                /* requestNewFrame= */ false,
+                /* isVisibilityForced= */ false);
+        assertEquals(statusBarHeight, layoutParams.topMargin);
     }
 }

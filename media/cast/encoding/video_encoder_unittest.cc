@@ -58,6 +58,8 @@ static const std::vector<media::VideoEncodeAccelerator::SupportedProfile>
         media::VideoEncodeAccelerator::SupportedProfile(VP9PROFILE_PROFILE0,
                                                         kDefaultSize),
         media::VideoEncodeAccelerator::SupportedProfile(AV1PROFILE_PROFILE_MAIN,
+                                                        kDefaultSize),
+        media::VideoEncodeAccelerator::SupportedProfile(HEVCPROFILE_MAIN,
                                                         kDefaultSize)};
 
 using EncodedFrames = std::vector<std::unique_ptr<SenderEncodedFrame>>;
@@ -351,8 +353,9 @@ TEST_P(VideoEncoderTest, EncodesVariedFrameSizes) {
     if (is_testing_software_vp8_encoder()) {
       ASSERT_TRUE(std::isfinite(encoded_frame->encoder_utilization));
       EXPECT_LE(0.0, encoded_frame->encoder_utilization);
-      ASSERT_TRUE(std::isfinite(encoded_frame->lossiness));
-      EXPECT_LE(0.0, encoded_frame->lossiness);
+      ASSERT_TRUE(encoded_frame->lossiness.has_value());
+      ASSERT_TRUE(std::isfinite(*encoded_frame->lossiness));
+      EXPECT_LE(0.0, *encoded_frame->lossiness);
     }
   }
 }
@@ -410,6 +413,7 @@ std::vector<VideoEncoderTestParam> DetermineEncodersToTest() {
   values.emplace_back(VideoCodec::kVP8, true);
   values.emplace_back(VideoCodec::kH264, true);
   values.emplace_back(VideoCodec::kVP9, true);
+  values.emplace_back(VideoCodec::kHEVC, true);
 
   return values;
 }

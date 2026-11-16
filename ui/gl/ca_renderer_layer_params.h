@@ -5,7 +5,9 @@
 #ifndef UI_GL_CA_RENDERER_LAYER_PARAMS_H_
 #define UI_GL_CA_RENDERER_LAYER_PARAMS_H_
 
+#include <array>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
@@ -31,17 +33,28 @@ enum CALayerEdge : uint32_t {
   kLayerEdgeTop = 0x8,
 };
 
-// A single CoreAnimation hardware-accelerated CSS backdrop-filter operation.
-// Requires `CARendererLayerParams::opacity == 1.0f` because sibling backdrop
-// and content CALayers do not form an isolated group for non-unit opacity.
-struct GL_EXPORT CABackdropFilter {
-  friend bool operator==(const CABackdropFilter&,
-                         const CABackdropFilter&) = default;
-
+struct GL_EXPORT CABackdropBlurFilter {
   // Blur radius in RenderPass local space (scaled by `filters_scale`, before
   // `CARendererLayerParams::transform` is applied by TransformLayer).
   float blur_radius = 0.0f;
+
+  friend bool operator==(const CABackdropBlurFilter&,
+                         const CABackdropBlurFilter&) = default;
 };
+
+struct GL_EXPORT CABackdropColorFilter {
+  // Optional 4x5 row-major color matrix matching CAColorMatrix.
+  std::array<float, 20> color_matrix;
+
+  friend bool operator==(const CABackdropColorFilter&,
+                         const CABackdropColorFilter&) = default;
+};
+
+// A single CoreAnimation hardware-accelerated CSS backdrop-filter operation.
+// Requires `CARendererLayerParams::opacity == 1.0f` because sibling backdrop
+// and content CALayers do not form an isolated group for non-unit opacity.
+using CABackdropFilter =
+    std::variant<CABackdropBlurFilter, CABackdropColorFilter>;
 
 struct GL_EXPORT CARendererLayerParams {
   CARendererLayerParams(
@@ -62,7 +75,8 @@ struct GL_EXPORT CARendererLayerParams {
       gfx::ProtectedVideoType protected_video_type,
       bool is_render_pass_draw_quad,
       std::vector<CABackdropFilter> backdrop_filters = {},
-      std::optional<gfx::RRectF> backdrop_filter_bounds = std::nullopt);
+      std::optional<gfx::RRectF> backdrop_filter_bounds = std::nullopt,
+      std::optional<gfx::RectF> backdrop_filter_clip = std::nullopt);
   CARendererLayerParams(const CARendererLayerParams& other);
   ~CARendererLayerParams();
 
@@ -86,6 +100,7 @@ struct GL_EXPORT CARendererLayerParams {
   // Clip bounds in RenderPass local space. Must be representable via native
   // CALayer cornerRadius + maskedCorners. If std::nullopt, defaults to `rect`.
   std::optional<gfx::RRectF> backdrop_filter_bounds;
+  std::optional<gfx::RectF> backdrop_filter_clip;
 };
 
 }  // namespace ui

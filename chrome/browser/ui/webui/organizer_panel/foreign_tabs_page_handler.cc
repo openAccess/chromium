@@ -10,20 +10,18 @@
 #include <vector>
 
 #include "base/check.h"
-#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/session_restore.h"
-#include "chrome/browser/signin/cross_device_signin_promo_manager.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/signin/public/base/signin_buildflags.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
 #include "components/sync_sessions/synced_session.h"
@@ -32,6 +30,14 @@
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "url/gurl.h"
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "base/feature_list.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
+#include "chrome/browser/signin/cross_device_signin_promo_manager.h"
+#include "components/signin/public/base/signin_switches.h"
+#endif
 
 namespace {
 
@@ -62,6 +68,15 @@ ForeignTabsPageHandler::ForeignTabsPageHandler(
       web_contents_(web_contents),
       profile_(Profile::FromBrowserContext(web_contents->GetBrowserContext())) {
   CHECK(profile_);
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  browser_window_changed_subscription_ =
+      webui::RegisterBrowserWindowInterfaceChanged(
+          web_contents_,
+          base::BindRepeating(
+              &ForeignTabsPageHandler::OnBrowserWindowInterfaceChanged,
+              base::Unretained(this)));
+  OnBrowserWindowInterfaceChanged();
+#endif
 }
 
 ForeignTabsPageHandler::~ForeignTabsPageHandler() = default;
@@ -99,6 +114,9 @@ void ForeignTabsPageHandler::OpenTab(const std::string& session_tag,
       !session_tab || session_tab->navigations.empty()) {
     return;
   }
+  if (auto* controller = OrganizerPanelController::From(browser)) {
+    controller->SetCloseAction(OrganizerPanelCloseAction::kOpenCrossDeviceTab);
+  }
   SessionRestore::RestoreForeignSessionTab(
       source_web_contents, *session_tab,
       ui::mojom::WindowOpenDisposition::kNewForegroundTab);
@@ -111,7 +129,8 @@ void ForeignTabsPageHandler::GetForeignTabs(GetForeignTabsCallback callback) {
       SessionSyncServiceFactory::GetInstance()->GetForProfile(profile_);
   // This will be null if sync of the tab sync datatype are disabled.
   if (!session_sync_service) {
-    std::move(callback).Run(std::move(result));
+    std::move(callback).Run(std::move(result),
+                            CanShowCrossDeviceSignInPromo(/*has_tabs=*/false));
     return;
   }
 
@@ -119,8 +138,11 @@ void ForeignTabsPageHandler::GetForeignTabs(GetForeignTabsCallback callback) {
       session_sync_service->GetOpenTabsUIDelegate();
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  if (!open_tabs || !open_tabs->GetAllForeignSessions(&sessions)) {
-    std::move(callback).Run(std::move(result));
+  if (!open_tabs || !open_tabs->GetAllForeignSessions(
+                        &sessions, sync_sessions::OpenTabsUIDelegate::
+                                       ForeignSessionFilter::kPresentable)) {
+    std::move(callback).Run(std::move(result),
+                            CanShowCrossDeviceSignInPromo(/*has_tabs=*/false));
     return;
   }
 
@@ -175,12 +197,14 @@ void ForeignTabsPageHandler::GetForeignTabs(GetForeignTabsCallback callback) {
     result.push_back(std::move(tab_mojom));
   }
 
-  std::move(callback).Run(std::move(result));
+  const bool can_show_promo = CanShowCrossDeviceSignInPromo(!result.empty());
+  std::move(callback).Run(std::move(result), can_show_promo);
 }
 
 void ForeignTabsPageHandler::ShowCrossDeviceSignInPromo() {
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-  if (!base::FeatureList::IsEnabled(
+  if (!base::FeatureList::IsEnabled(switches::kCrossDeviceSigninFromDesktop) ||
+      !base::FeatureList::IsEnabled(
           switches::kCrossDeviceSigninFromDesktopFollowup)) {
     return;
   }
@@ -189,8 +213,59 @@ void ForeignTabsPageHandler::ShowCrossDeviceSignInPromo() {
   if (!browser) {
     return;
   }
+  if (auto* controller = OrganizerPanelController::From(browser)) {
+    controller->SetCloseAction(
+        OrganizerPanelCloseAction::kOpenCrossDevicePromo);
+  }
   OpenSigninToPhoneQrCodeBubble(browser,
                                 CrossDeviceSigninPromoEntryPoint::kForeignTabs,
                                 base::DoNothing());
 #endif
 }
+
+bool ForeignTabsPageHandler::CanShowCrossDeviceSignInPromo(bool has_tabs) {
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  if (has_tabs || !is_panel_visible_) {
+    return false;
+  }
+  if (!can_show_cross_device_sign_in_promo_.has_value()) {
+    can_show_cross_device_sign_in_promo_ =
+        ShouldStartShowingCrossDeviceSigninPromo(
+            CrossDeviceSigninPromoEntryPoint::kForeignTabs, profile_);
+  }
+  return *can_show_cross_device_sign_in_promo_;
+#else
+  return false;
+#endif
+}
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+void ForeignTabsPageHandler::OnBrowserWindowInterfaceChanged() {
+  organizer_panel_subscription_ = {};
+  OnOrganizerPanelStateChanged(nullptr);
+  BrowserWindowInterface* browser =
+      webui::GetBrowserWindowInterface(web_contents_);
+  if (!browser) {
+    return;
+  }
+  if (auto* panel_controller = OrganizerPanelController::From(browser)) {
+    OnOrganizerPanelStateChanged(panel_controller);
+    organizer_panel_subscription_ =
+        panel_controller->RegisterOnStateChanged(base::BindRepeating(
+            &ForeignTabsPageHandler::OnOrganizerPanelStateChanged,
+            base::Unretained(this)));
+  }
+}
+
+void ForeignTabsPageHandler::OnOrganizerPanelStateChanged(
+    OrganizerPanelController* controller) {
+  const bool is_visible = controller && controller->IsOrganizerPanelVisible();
+  if (is_visible == is_panel_visible_) {
+    return;
+  }
+  is_panel_visible_ = is_visible;
+  if (!is_panel_visible_) {
+    can_show_cross_device_sign_in_promo_.reset();
+  }
+}
+#endif

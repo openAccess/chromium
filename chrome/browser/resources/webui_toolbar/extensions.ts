@@ -6,6 +6,7 @@ import './extension.js';
 import './toolbar_divider.js';
 
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import {getExtensionActionKey, isExtensionAction} from '/shared/extension_action_id.js';
 import type {ExtensionActionInfo} from '/shared/extensions_bar_data_model.mojom-webui.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
@@ -54,14 +55,17 @@ export class ExtensionsElement extends ExtensionsElementBase {
 
   // ToolbarActionContainerMixin override
   override getKey(state: ExtensionActionInfo): string {
-    return state.id;
+    return getExtensionActionKey(state.id);
   }
 
-  // OverflowableToolbarActionContainerMixin override. Relies on the template
-  // only containing extension actions and the divider.
+  // OverflowableToolbarActionContainerMixin override. Selects the extension
+  // actions and the divider by tag name, since they may not be the only
+  // children: TrackedElementManager adds an element after an action while a
+  // dialog is anchored to it.
   override getActions(): OverflowableToolbarActionElement[] {
-    return Array.from(this.shadowRoot.children) as
-        OverflowableToolbarActionElement[];
+    return Array.from(
+        this.shadowRoot.querySelectorAll<OverflowableToolbarActionElement>(
+            `${this.childTagName}, toolbar-divider`));
   }
 
   override moveItem(id: string, index: number) {
@@ -87,7 +91,13 @@ export class ExtensionsElement extends ExtensionsElementBase {
   }
 
   override isDraggable(state: ExtensionActionInfo, _index: number): boolean {
-    return state.id !== '';
+    return this.isExtensionAction(state);
+  }
+
+  // Returns whether `state` is for an actual extension, as opposed to the
+  // extensions menu button or the request access button.
+  isExtensionAction(state: ExtensionActionInfo): boolean {
+    return isExtensionAction(state.id);
   }
 }
 

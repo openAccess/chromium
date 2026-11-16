@@ -33,6 +33,8 @@ class AccountsInCookieJarInfo;
 
 namespace trusted_vault {
 
+class EnrollmentHandler;
+
 // Provides interfaces to store/remove keys to/from file storage.
 // This class performs expensive operations and expected to be run from
 // dedicated sequence (using thread pool). Can be constructed on any thread/
@@ -42,6 +44,9 @@ class StandaloneTrustedVaultBackend
  public:
   using FetchKeysCallback = base::OnceCallback<void(
       const std::vector<std::vector<uint8_t>>& vault_keys)>;
+  using EnrollCallback =
+      base::OnceCallback<void(const std::vector<uint8_t>& new_shared_key,
+                              int new_key_version)>;
 
   class Delegate {
    public:
@@ -74,6 +79,25 @@ class StandaloneTrustedVaultBackend
     CreateLocalRecoveryFactors(StandaloneTrustedVaultStorage* storage,
                                TrustedVaultThrottlingConnection* connection,
                                const CoreAccountInfo& primary_account) = 0;
+  };
+
+  class EnrollmentHandlerFactory {
+   public:
+    EnrollmentHandlerFactory() = default;
+    EnrollmentHandlerFactory(const EnrollmentHandlerFactory&) = delete;
+    EnrollmentHandlerFactory& operator=(const EnrollmentHandlerFactory&) =
+        delete;
+    virtual ~EnrollmentHandlerFactory() = default;
+
+    // Creates an `EnrollmentHandler` for `security_domain` and
+    // `primary_account`, or returns null if enrollment is not supported for
+    // `security_domain`. `storage` and `connection` must not be null and must
+    // outlive the returned handler, which retains references to them.
+    virtual std::unique_ptr<EnrollmentHandler> CreateEnrollmentHandler(
+        SecurityDomainId security_domain,
+        const CoreAccountInfo& primary_account,
+        KeyStorage* storage,
+        TrustedVaultConnection* connection) = 0;
   };
 
   enum class RefreshTokenErrorState {
@@ -157,6 +181,19 @@ class StandaloneTrustedVaultBackend
                                 int method_type_hint,
                                 base::OnceCallback<void(bool)> cb);
 
+  // Checks whether `account_info` can be enrolled in `security_domain` without
+  // user interaction.
+  void CanEnroll(const CoreAccountInfo& account_info,
+                 SecurityDomainId security_domain,
+                 base::OnceCallback<void(bool)> cb);
+
+  // Enrolls `account_info` into `security_domain`. On success, `cb` is run
+  // with the newly generated shared key and its version. On failure, `cb` is
+  // run with an empty vector and -1.
+  void Enroll(const CoreAccountInfo& account_info,
+              SecurityDomainId security_domain,
+              EnrollCallback cb);
+
   void ClearLocalDataForAccount(const CoreAccountInfo& account_info);
 
   std::optional<CoreAccountInfo> GetPrimaryAccountForTesting() const;
@@ -175,18 +212,20 @@ class StandaloneTrustedVaultBackend
       std::unique_ptr<Delegate> delegate,
       std::unique_ptr<TrustedVaultThrottlingConnection> connection,
       std::unique_ptr<LocalRecoveryFactorsFactory>
-          local_recovery_factors_factory);
+          local_recovery_factors_factory,
+      std::unique_ptr<EnrollmentHandlerFactory> enrollment_handler_factory);
 
  private:
-  // Constructor which allows specifying a TrustedVaultThrottlingConnection and
-  // a LocalRecoveryFactorsFactory.
+  // Constructor which allows specifying a `TrustedVaultThrottlingConnection`, a
+  // `LocalRecoveryFactorsFactory`, and an `EnrollmentHandlerFactory`.
   // Only used in tests.
   StandaloneTrustedVaultBackend(
       std::unique_ptr<StandaloneTrustedVaultStorage> storage,
       std::unique_ptr<Delegate> delegate,
       std::unique_ptr<TrustedVaultThrottlingConnection> connection,
       std::unique_ptr<LocalRecoveryFactorsFactory>
-          local_recovery_factors_factory);
+          local_recovery_factors_factory,
+      std::unique_ptr<EnrollmentHandlerFactory> enrollment_handler_factory);
 
   static TrustedVaultDownloadKeysStatusForUMA
   GetDownloadKeysStatusForUMAFromResponse(
@@ -224,6 +263,17 @@ class StandaloneTrustedVaultBackend
                                     base::OnceCallback<void(bool)> cb,
                                     TrustedVaultRegistrationStatus status,
                                     int unused_epoch);
+
+  void OnCanEnrollCompleted(SecurityDomainId security_domain,
+                            base::OnceCallback<void(bool)> cb,
+                            bool can_enroll,
+                            TrustedVaultCanEnrollOutcomeForUMA outcome);
+
+  void OnEnrolled(SecurityDomainId security_domain,
+                  EnrollCallback cb,
+                  const std::vector<uint8_t>& new_shared_key,
+                  int new_key_version,
+                  TrustedVaultEnrollOutcomeForUMA outcome);
 
   // Invokes |callback| with currently available keys for |gaia_id|.
   void FulfillFetchKeys(
@@ -325,6 +375,15 @@ class StandaloneTrustedVaultBackend
                  std::unique_ptr<TrustedVaultConnection::Request>>
       ongoing_add_recovery_method_requests_;
 
+  // Factory to create `EnrollmentHandler` instances. Can be overridden in
+  // tests.
+  const std::unique_ptr<EnrollmentHandlerFactory> enrollment_handler_factory_;
+  // Handles enrollment into supported security domains for `primary_account_`.
+  // Map entries may be null for security domains that do not support
+  // enrollment. Instances change whenever `primary_account_` changes.
+  base::flat_map<SecurityDomainId, std::unique_ptr<EnrollmentHandler>>
+      enrollment_handlers_;
+
   // Used to take care of polling the degraded recoverability state from the
   // server for the |primary_account|. Instance changes whenever
   // |primary_account| changes.
@@ -362,7 +421,10 @@ class StandaloneTrustedVaultBackend
 
   std::vector<base::OnceClosure> idle_callbacks_for_testing_;
 
-  base::WeakPtrFactory<StandaloneTrustedVaultBackend> weak_ptr_factory_{this};
+  // Used for callbacks tied to `primary_account_`. Invalidated whenever
+  // `primary_account_` changes in `SetPrimaryAccount()`.
+  base::WeakPtrFactory<StandaloneTrustedVaultBackend>
+      primary_account_weak_ptr_factory_{this};
 };
 
 }  // namespace trusted_vault

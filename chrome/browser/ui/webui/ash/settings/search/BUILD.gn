@@ -25,7 +25,7 @@ static_library("search") {
   ]
 
   deps = [
-    "//chrome/app:generated_resources",
+    "//ash/strings",
     "//chrome/browser/ui/webui/ash/settings/constants",
     "//ui/base",
   ]
@@ -46,12 +46,12 @@ source_set("unit_tests") {
     "//ash/webui/settings/public/constants:mojom",
     "//base",
     "//base/test:test_support",
-    "//chrome/app:generated_resources",
     "//chrome/browser:browser_process",
     "//chrome/browser/ui/webui/ash/settings/search/mojom",
     "//chrome/browser/ui/webui/ash/settings/test_support",
     "//chromeos/ash/components/local_search_service/public/cpp",
     "//chromeos/ash/components/local_search_service/public/mojom",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//mojo/public/cpp/bindings",
     "//testing/gtest",
     "//ui/base",

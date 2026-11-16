@@ -4,10 +4,15 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 
+#include <tuple>
+#include <vector>
+
 #include "base/i18n/base_i18n_switches.h"
 #include "base/i18n/rtl.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/layout_constants.h"
@@ -15,14 +20,15 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/toolbar_controller_util.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_button.h"
-#include "chrome/browser/ui/views/contextual_tasks/contextual_tasks_ephemeral_button_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/home_button.h"
+#include "chrome/browser/ui/views/toolbar/overflow_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_divider.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_glic_actor_task_icon.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
@@ -31,13 +37,20 @@
 #include "components/contextual_tasks/public/features.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/view.h"
+#include "ui/views/view_utils.h"
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "chromeos/constants/chromeos_features.h"
+#endif
 
 using ToolbarViewUnitTest = InProcessBrowserTest;
 
@@ -455,158 +468,6 @@ class ToolbarViewInteriorMarginBrowserTestBase
   }
 };
 
-class ToolbarViewContextualTasksInteriorMarginBrowserTest
-    : public ToolbarViewInteriorMarginBrowserTestBase {
- public:
-  ToolbarViewContextualTasksInteriorMarginBrowserTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/{{contextual_tasks::kContextualTasks, {}},
-                              {contextual_tasks::
-                                   kContextualTasksEphemeralBrandedEntryPoint,
-                               {{contextual_tasks::kShowEntryPoint.name,
-                                 "toolbar-ephemeral-branded"}}}},
-        /*disabled_features=*/{features::kWebUIToolbar,
-                               features::kWebUIBackForwardButton,
-                               features::kWebUIAppMenuButton});
-  }
-
-  void SetUpOnMainThread() override {
-    ToolbarViewInteriorMarginBrowserTestBase::SetUpOnMainThread();
-    // These tests expect the contextual tasks button on the leading edge, so
-    // align the side panel to the leading side (left in LTR, right in RTL)
-    // instead of relying on its default alignment.
-    SetContextualTasksRightAligned(/*right_aligned=*/base::i18n::IsRTL());
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_P(ToolbarViewContextualTasksInteriorMarginBrowserTest,
-                       InteriorMarginRespectsVisibilityAndDirection) {
-  const bool is_rtl = GetParam();
-  EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
-
-  ToolbarButton* button = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(button);
-
-  // 1. By default, the contextual tasks button is not visible. Neither margin
-  // should be zeroed out (fixing the 4px Back button gap in both LTR and RTL).
-  EXPECT_FALSE(button->GetVisible());
-  ExpectDefaultMargins();
-
-  // 2. When the contextual tasks button becomes visible, only the leading
-  // margin is zeroed out (left in logical DIPs for both LTR and RTL). The
-  // trailing margin remains untouched.
-  button->SetVisible(true);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectLeadingMarginZeroed();
-
-  // 3. When the button is hidden again, the margin is restored to the default.
-  button->SetVisible(false);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectDefaultMargins();
-}
-
-IN_PROC_BROWSER_TEST_P(ToolbarViewContextualTasksInteriorMarginBrowserTest,
-                       InteriorMarginWithVerticalTabsEnabled) {
-  ToolbarButton* button = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(button);
-
-  auto* vts_controller = tabs::VerticalTabStripStateController::From(browser());
-  if (vts_controller) {
-    vts_controller->SetVerticalTabsEnabled(true);
-    button->SetVisible(true);
-    toolbar()->DeprecatedLayoutImmediately();
-
-    // In vertical tab strip mode, the tab strip is positioned vertically along
-    // the side, so the contextual tasks button does not sit flush at the window
-    // edge. The default interior margin must remain untouched even if visible.
-    ExpectDefaultMargins();
-  }
-}
-
-IN_PROC_BROWSER_TEST_P(ToolbarViewContextualTasksInteriorMarginBrowserTest,
-                       BackButtonLeadingMarginInMaximizedWindow) {
-  const bool is_rtl = GetParam();
-  EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
-
-  ToolbarButton* contextual_tasks_btn = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(contextual_tasks_btn);
-  ToolbarButton* back_button = toolbar_button_provider()->GetBackButton();
-  ASSERT_TRUE(back_button);
-
-  const gfx::Insets* insets =
-      back_button->GetProperty(views::kInternalPaddingKey);
-  ASSERT_TRUE(insets);
-
-  // In windowed mode, leading and trailing margins are always 0.
-  EXPECT_EQ(insets->left(), 0);
-  EXPECT_EQ(insets->right(), 0);
-
-  // Maximize the browser window to test Fitts' law leading margin.
-  browser()->GetWindow()->Maximize();
-  toolbar()->DeprecatedLayoutImmediately();
-
-  if (browser()->GetWindow()->IsMaximized()) {
-    const int expected_leading_margin = default_margin().left();
-
-    // 1. When contextual tasks is hidden, Back button is the leading button and
-    // extends to the screen edge with the leading interior margin (left in
-    // logical coordinates). The trailing side padding must remain 0.
-    EXPECT_FALSE(contextual_tasks_btn->GetVisible());
-    EXPECT_EQ(insets->left(), expected_leading_margin);
-    EXPECT_EQ(insets->right(), 0);
-
-    // 2. When contextual tasks becomes visible, Back button is no longer the
-    // leading button, so Fitts' law is suppressed (leading margin reset to 0).
-    contextual_tasks_btn->SetVisible(true);
-    toolbar()->DeprecatedLayoutImmediately();
-    EXPECT_EQ(insets->left(), 0);
-    EXPECT_EQ(insets->right(), 0);
-
-    // 3. When contextual tasks is hidden again, Back button's leading margin is
-    // restored.
-    contextual_tasks_btn->SetVisible(false);
-    toolbar()->DeprecatedLayoutImmediately();
-    EXPECT_EQ(insets->left(), expected_leading_margin);
-    EXPECT_EQ(insets->right(), 0);
-  }
-}
-
-IN_PROC_BROWSER_TEST_P(ToolbarViewContextualTasksInteriorMarginBrowserTest,
-                       TrailingButtonInteriorMargin) {
-  const bool is_rtl = GetParam();
-  EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
-
-  ToolbarButton* contextual_tasks_btn = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(contextual_tasks_btn);
-
-  // Move the button to the trailing position.
-  toolbar()->ReorderChildView(contextual_tasks_btn,
-                              toolbar()->children().size());
-
-  // 1. By default, the trailing button is not visible. Neither margin should be
-  // zeroed out.
-  EXPECT_FALSE(contextual_tasks_btn->GetVisible());
-  ExpectDefaultMargins();
-
-  // 2. When the trailing button becomes visible, only the trailing margin is
-  // zeroed out (right in logical DIPs).
-  contextual_tasks_btn->SetVisible(true);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectTrailingMarginZeroed();
-
-  // 3. When hidden again, default margin is restored.
-  contextual_tasks_btn->SetVisible(false);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectDefaultMargins();
-}
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         ToolbarViewContextualTasksInteriorMarginBrowserTest,
-                         testing::Bool());
-
 // Tests the baseline scenario without the ContextualTasks feature enabled in
 // both LTR and RTL modes.
 class ToolbarViewDefaultInteriorMarginBrowserTest
@@ -619,6 +480,7 @@ class ToolbarViewDefaultInteriorMarginBrowserTest
             contextual_tasks::kContextualTasks,
             contextual_tasks::kContextualTasksSidePanel,
             contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
             contextual_tasks::kContextualTasksEphemeralBrandedEntryPoint,
             features::kWebUIToolbar, features::kWebUIBackForwardButton,
             features::kWebUIAppMenuButton});
@@ -633,8 +495,6 @@ IN_PROC_BROWSER_TEST_P(ToolbarViewDefaultInteriorMarginBrowserTest,
   const bool is_rtl = GetParam();
   EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
 
-  // Without ContextualTasks, the button does not exist.
-  EXPECT_EQ(toolbar()->contextual_tasks_button(), nullptr);
   ExpectDefaultMargins();
 }
 
@@ -642,125 +502,119 @@ INSTANTIATE_TEST_SUITE_P(All,
                          ToolbarViewDefaultInteriorMarginBrowserTest,
                          testing::Bool());
 
-class ToolbarViewCircularContextualTasksBrowserTest
-    : public ToolbarViewInteriorMarginBrowserTestBase {
+class ToolbarViewGlicAvatarCrashTest
+    : public InProcessBrowserTest,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
-  ToolbarViewCircularContextualTasksBrowserTest() {
-    feature_list_.InitWithFeaturesAndParameters(
-        /*enabled_features=*/
-        {{contextual_tasks::kContextualTasks, {}},
-         {contextual_tasks::kContextualTasksEphemeralBrandedEntryPoint,
-          {{contextual_tasks::kShowEntryPoint.name,
-            "toolbar-ephemeral-branded"},
-           {contextual_tasks::kEnableCircularEphemeralButtonNextToBatterySaver
-                .name,
-            "true"}}}},
-        /*disabled_features=*/{features::kWebUIToolbar,
-                               features::kWebUIBackForwardButton,
-                               features::kWebUIAppMenuButton});
+  ToolbarViewGlicAvatarCrashTest() {
+    const char* location =
+        IsLeftOfProfile()
+            ? features::kGlicToolbarButtonLocationLeftOfProfileChip
+            : features::kGlicToolbarButtonLocationRightOfOmnibox;
+    std::vector<base::test::FeatureRefAndParams> enabled_features = {
+        {features::kInitialWebUI, {}},
+        {features::kGlic, {}},
+        {features::kGlicHorizontalTabToolbarButton, {}},
+        {features::kGlicActorUi,
+         {{features::kGlicActorUiTaskIconName, "true"}}},
+        {features::kGlicToolbarButtonLocation,
+         {{features::kGlicToolbarButtonLocationParam.name, location}}},
+#if BUILDFLAG(IS_CHROMEOS)
+        {chromeos::features::kFeatureManagementGlic, {}},
+#endif
+    };
+    std::vector<base::test::FeatureRef> disabled_features = {
+        features::kGlicCountryFiltering,
+        features::kGlicLocaleFiltering,
+        features::kWebUIGlicButton,
+        features::kWebUIToolbar,
+    };
+    if (IsWebUIAvatarEnabled()) {
+      enabled_features.push_back({features::kWebUIAvatarButton, {}});
+    } else {
+      disabled_features.push_back(features::kWebUIAvatarButton);
+    }
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
   }
 
-  void SetUpOnMainThread() override {
-    ToolbarViewInteriorMarginBrowserTestBase::SetUpOnMainThread();
-    SetContextualTasksRightAligned(true);
-  }
+  bool IsLeftOfProfile() const { return std::get<0>(GetParam()); }
+  bool IsWebUIAvatarEnabled() const { return std::get<1>(GetParam()); }
 
  private:
   base::test::ScopedFeatureList feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_P(ToolbarViewCircularContextualTasksBrowserTest,
-                       CircularButtonRetainsInteriorMarginsAndPosition) {
-  const bool is_rtl = GetParam();
-  EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
+IN_PROC_BROWSER_TEST_P(ToolbarViewGlicAvatarCrashTest,
+                       ShowAndHideGlicSecondaryButton) {
+  ToolbarView* toolbar_view =
+      BrowserView::GetBrowserViewForBrowser(browser())->toolbar();
 
-  ToolbarButton* button = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(button);
+  ASSERT_EQ(toolbar_view->avatar_toolbar_button() == nullptr,
+            IsWebUIAvatarEnabled());
 
-  auto* contextual_tasks_button = static_cast<ContextualTasksButton*>(button);
-  EXPECT_EQ(contextual_tasks_button->GetShape(),
-            contextual_tasks::EphemeralButtonShape::kCircle);
+  views::LabelButton* glic_button = toolbar_view->GetGlicButton();
+  ASSERT_TRUE(glic_button);
+  ASSERT_EQ(glic_button->parent(), toolbar_view);
 
-  // Positioned to the left of profile (and glic button if visible).
-  views::View* anchor = nullptr;
-  if (toolbar()->GetGlicButton() && toolbar()->GetGlicButton()->GetVisible()) {
-    anchor = toolbar()->GetGlicButton();
-  } else if (toolbar()->avatar_toolbar_button()) {
-    anchor = toolbar()->avatar_toolbar_button();
-  }
-  if (anchor) {
-    std::optional<size_t> button_idx = toolbar()->GetIndexOf(button);
-    std::optional<size_t> anchor_idx = toolbar()->GetIndexOf(anchor);
-    ASSERT_TRUE(button_idx.has_value());
-    ASSERT_TRUE(anchor_idx.has_value());
-    EXPECT_EQ(*button_idx, *anchor_idx - 1);
-  }
+  // Show the Glic button first so sibling buttons anchored relative to a
+  // visible Glic button (such as `contextual_tasks_button_`) settle into their
+  // pre-task positions before recording `initial_index`.
+  toolbar_view->SetGlicShowState(true);
+  ASSERT_TRUE(glic_button->GetVisible());
+  const size_t initial_index = toolbar_view->GetIndexOf(glic_button).value();
 
-  // Neither margin should be zeroed out when hidden.
-  EXPECT_FALSE(button->GetVisible());
-  ExpectDefaultMargins();
+  auto expect_expected_slot = [&]() {
+    EXPECT_EQ(toolbar_view->GetIndexOf(glic_button), initial_index);
+    if (IsLeftOfProfile()) {
+      views::View* expected_next =
+          IsWebUIAvatarEnabled()
+              ? static_cast<views::View*>(toolbar_view->overflow_button())
+              : static_cast<views::View*>(
+                    toolbar_view->avatar_toolbar_button());
+      ASSERT_TRUE(expected_next);
+      EXPECT_EQ(initial_index + 1, toolbar_view->GetIndexOf(expected_next));
+    } else {
+      ASSERT_LT(initial_index + 1, toolbar_view->children().size());
+      EXPECT_TRUE(views::IsViewClass<ToolbarDivider>(
+          toolbar_view->children()[initial_index + 1]));
+      ASSERT_TRUE(toolbar_view->overflow_button());
+      EXPECT_LT(initial_index + 1,
+                toolbar_view->GetIndexOf(toolbar_view->overflow_button()));
+    }
+  };
+  expect_expected_slot();
 
-  // Neither margin should be zeroed out when visible.
-  button->SetVisible(true);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectDefaultMargins();
-  EXPECT_FALSE(toolbar()->IsTrailingContextualTasksButtonVisible());
+  auto* secondary_button = toolbar_view->glic_secondary_button();
+  ASSERT_TRUE(secondary_button);
+  EXPECT_FALSE(secondary_button->GetVisible());
 
-  // App menu should still apply Fitts' law when maximized because the button
-  // is not trailing.
-  browser()->GetWindow()->Maximize();
-  toolbar()->DeprecatedLayoutImmediately();
-  if (browser()->GetWindow()->IsMaximized()) {
-    EXPECT_TRUE(toolbar()->ShouldAppMenuApplyFittsLaw(true));
-  }
+  // Showing the Glic secondary button reparents `glic_button` into the actor
+  // buttons container.
+  toolbar_view->ShowGlicSecondaryButton();
+  EXPECT_TRUE(secondary_button->GetVisible());
+  EXPECT_TRUE(secondary_button->parent()->GetVisible());
+  EXPECT_EQ(toolbar_view->GetGlicButton(), glic_button);
+  EXPECT_EQ(glic_button->parent(), secondary_button->parent());
+  EXPECT_NE(glic_button->parent(), toolbar_view);
+  EXPECT_FALSE(toolbar_view->GetIndexOf(glic_button).has_value());
 
-  button->SetVisible(false);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectDefaultMargins();
-}
+  // Hiding the Glic secondary button must not crash when `avatar_` is null and
+  // must restore `glic_button` to its original toolbar index.
+  toolbar_view->HideGlicSecondaryButton();
+  EXPECT_FALSE(secondary_button->GetVisible());
+  EXPECT_FALSE(secondary_button->parent()->GetVisible());
+  EXPECT_TRUE(glic_button->GetVisible());
+  EXPECT_EQ(toolbar_view->GetGlicButton(), glic_button);
+  EXPECT_EQ(glic_button->parent(), toolbar_view);
+  expect_expected_slot();
 
-IN_PROC_BROWSER_TEST_P(ToolbarViewCircularContextualTasksBrowserTest,
-                       LeftSidePanelUsesOriginalLeftButton) {
-  const bool is_rtl = GetParam();
-  EXPECT_EQ(base::i18n::IsRTL(), is_rtl);
-
-  ToolbarButton* button = toolbar()->contextual_tasks_button();
-  ASSERT_TRUE(button);
-
-  auto* contextual_tasks_button = static_cast<ContextualTasksButton*>(button);
-
-  // Switch side panel alignment to the left.
-  SetContextualTasksRightAligned(false);
-  toolbar()->PositionContextualTasksButton();
-
-  EXPECT_FALSE(
-      contextual_tasks::IsContextualTasksSidePanelRightAligned(browser()));
-  EXPECT_EQ(contextual_tasks_button->GetShape(),
-            contextual_tasks::EphemeralButtonShape::kFlatEdgeLeft);
-
-  // In LTR, the button is on the leading edge (index 0).
-  if (!is_rtl) {
-    EXPECT_EQ(toolbar()->GetIndexOf(button), 0u);
-  }
-
-  // Neither margin should be zeroed out when hidden.
-  EXPECT_FALSE(button->GetVisible());
-  ExpectDefaultMargins();
-
-  // When visible on the leading edge (in LTR), the leading margin is zeroed
-  // out.
-  button->SetVisible(true);
-  toolbar()->DeprecatedLayoutImmediately();
-  if (!is_rtl) {
-    EXPECT_TRUE(toolbar()->IsLeadingContextualTasksButtonVisible());
-    ExpectLeadingMarginZeroed();
-  }
-
-  button->SetVisible(false);
-  toolbar()->DeprecatedLayoutImmediately();
-  ExpectDefaultMargins();
+  // Re-running `FinalizeHideGlicSecondaryButton()` when `glic_button` is
+  // already parented to `toolbar_view` must remain a no-op on child ordering.
+  toolbar_view->FinalizeHideGlicSecondaryButton();
+  expect_expected_slot();
 }
 
 INSTANTIATE_TEST_SUITE_P(All,
-                         ToolbarViewCircularContextualTasksBrowserTest,
-                         testing::Bool());
+                         ToolbarViewGlicAvatarCrashTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));

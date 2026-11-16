@@ -65,7 +65,6 @@ class ASH_EXPORT LockContentsViewTestApi {
   void ShowAuthErrorBubble(int unlock_attempt) const;
   void HideAuthErrorBubble() const;
   void PressAuthErrorRecoveryButton() const;
-  void PressAuthErrorLearnMoreButton() const;
 
   // Called for debugging to make |user| managed and display an icon along with
   // a note in the menu user view.
@@ -89,7 +88,7 @@ class ASH_EXPORT LockContentsViewTestApi {
   void SetKioskLicenseMode(bool is_kiosk_license_mode);
 
  private:
-  const raw_ptr<LockContentsView, DanglingUntriaged> view_;
+  const raw_ptr<LockContentsView> view_;
 };
 
 }  // namespace ash

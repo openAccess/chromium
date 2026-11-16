@@ -467,12 +467,20 @@ MockRenderProcessHost::TakeMetricsAllocator() {
 }
 
 const base::TimeTicks& MockRenderProcessHost::GetLastInitTime() {
+  if (!last_init_time_.is_null()) {
+    return last_init_time_;
+  }
   static base::TimeTicks dummy_time = base::TimeTicks::Now();
   return dummy_time;
 }
 
 base::TimeTicks MockRenderProcessHost::GetProcessLaunchedTime() const {
   return process_launched_time_;
+}
+
+const RenderProcessHost::StartupTimings&
+MockRenderProcessHost::GetStartupTimings() const {
+  return startup_timings_;
 }
 
 base::Process::Priority MockRenderProcessHost::GetPriority() const {
@@ -618,11 +626,9 @@ bool MockRenderProcessHost::IsSpare() const {
       SpareRenderProcessHostManagerImpl::Get().GetSpares(), this);
 }
 
-void MockRenderProcessHost::SetProcessLock(
-    const IsolationContext& isolation_context,
-    const ProcessLock& process_lock) {
-  ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(
-      isolation_context, GetID(), process_lock);
+void MockRenderProcessHost::SetProcessLock(const ProcessLock& process_lock) {
+  ChildProcessSecurityPolicyImpl::GetInstance()->LockProcess(GetID(),
+                                                             process_lock);
   if (process_lock.IsASiteOrOrigin())
     is_renderer_locked_to_site_ = true;
 }
@@ -779,6 +785,10 @@ base::ScopedClosureRunner MockRenderProcessHost::DelayProcessShutdown(
 void MockRenderProcessHost::StopTrackingProcessForShutdownDelay() {}
 
 bool MockRenderProcessHost::IsOnlyHostingPrerenderedFramesOrEmpty() {
+  return false;
+}
+
+bool MockRenderProcessHost::HasLoadingFrames() const {
   return false;
 }
 

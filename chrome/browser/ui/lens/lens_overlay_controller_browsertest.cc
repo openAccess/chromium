@@ -775,6 +775,8 @@ class LensOverlayControllerBrowserTest : public InProcessBrowserTest {
         /*disabled_features=*/{
             contextual_tasks::kContextualTasks,
             contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
             lens::features::kLensAimSuggestions,
             lens::features::kLensOverlaySuggestionsMigration,
             lens::features::kLensOverlayNonBlockingPrivacyNotice});
@@ -816,11 +818,8 @@ class LensOverlayControllerBrowserTest : public InProcessBrowserTest {
   }
 
   LensOverlayController* GetLensOverlayController() {
-    return browser()
-        ->GetTabStripModel()
-        ->GetActiveTab()
-        ->GetTabFeatures()
-        ->lens_overlay_controller();
+    return LensOverlayController::From(
+        browser()->GetTabStripModel()->GetActiveTab());
   }
 
   content::WebContents* GetOverlayWebContents() {
@@ -1814,7 +1813,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserTest,
                                        _, _, _, _, _, _, _, _));
   WaitForPaint();
 
-  std::string text_query = "Apples";
   // State should start in off.
   auto* controller = GetLensOverlayController();
   ASSERT_EQ(controller->state(), State::kOff);
@@ -5330,8 +5328,13 @@ class LensOverlayControllerEntrypointsBrowserTest
         {lens::features::kLensOverlayOmniboxEntryPoint, {}},
         {lens::features::kLensOverlaySurvey, {}},
         {lens::features::kLensOverlaySidePanelOpenInNewTab, {}}};
-    feature_list_.InitWithFeaturesAndParameters(enabled_features,
-                                                /*disabled_features=*/{});
+    feature_list_.InitWithFeaturesAndParameters(
+        enabled_features,
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasks,
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 
   void VerifyEntrypoints(bool expected_visible) {
@@ -5631,15 +5634,21 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserTest,
             1);
 
   // Objects request latency should not have an analytics id associated with it.
-  EXPECT_FALSE(
-      fake_query_controller->last_latency_gen204_analytics_id().has_value());
+  EXPECT_FALSE(fake_query_controller
+                   ->last_latency_gen204_analytics_id(
+                       lens::LensOverlayGen204Controller::LatencyType::
+                           kFullPageObjectsRequestFetchLatency)
+                   .has_value());
 
   // Objects request latency gen204 should have the same vsrid as the actual
   // request.
   EXPECT_THAT(
       fake_query_controller->sent_full_image_request_id(),
-      EqualsProto(
-          fake_query_controller->last_latency_gen204_request_id().value()));
+      EqualsProto(fake_query_controller
+                      ->last_latency_gen204_request_id(
+                          lens::LensOverlayGen204Controller::LatencyType::
+                              kFullPageObjectsRequestFetchLatency)
+                      .value()));
 
   std::string encoded_sent_objects_analytics_id = base32::Base32Encode(
       base::as_byte_span(
@@ -5738,11 +5747,18 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserTest,
                     kInteractionRequestFetchLatency),
             1);
   EXPECT_EQ(encoded_sent_interaction_analytics_id,
-            fake_query_controller->last_latency_gen204_analytics_id().value());
+            fake_query_controller
+                ->last_latency_gen204_analytics_id(
+                    lens::LensOverlayGen204Controller::LatencyType::
+                        kInteractionRequestFetchLatency)
+                .value());
   EXPECT_THAT(
       fake_query_controller->sent_interaction_request_id(),
-      EqualsProto(
-          fake_query_controller->last_latency_gen204_request_id().value()));
+      EqualsProto(fake_query_controller
+                      ->last_latency_gen204_request_id(
+                          lens::LensOverlayGen204Controller::LatencyType::
+                              kInteractionRequestFetchLatency)
+                      .value()));
 
   // Log a copy text user task completion event.
   controller->RecordUkmAndTaskCompletionForLensOverlayInteractionForTesting(
@@ -5867,7 +5883,10 @@ class LensOverlayControllerBrowserFullscreenDisabled
           {
               {"enable-in-fullscreen", "false"},
           }}},
-        {});
+        {contextual_tasks::kContextualTasks,
+         contextual_tasks::kContextualTasksSidePanel,
+         contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 };
 
@@ -5969,6 +5988,11 @@ class LensOverlayControllerBrowserPDFTest
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
     auto disabled = PDFExtensionTestBase::GetDisabledFeatures();
+    disabled.emplace_back(contextual_tasks::kContextualTasks);
+    disabled.emplace_back(contextual_tasks::kContextualTasksSidePanel);
+    disabled.emplace_back(contextual_tasks::kContextualTasksRearchitecture);
+    disabled.emplace_back(
+        contextual_tasks::kContextualTasksSidePanelRearchitecture);
     disabled.emplace_back(lens::features::kLensOverlayContextualSearchbox);
     disabled.emplace_back(lens::features::kLensOverlayKeyboardSelection);
     return disabled;
@@ -5995,11 +6019,8 @@ class LensOverlayControllerBrowserPDFTest
   }
 
   LensOverlayController* GetLensOverlayController() {
-    return browser()
-        ->GetTabStripModel()
-        ->GetActiveTab()
-        ->GetTabFeatures()
-        ->lens_overlay_controller();
+    return LensOverlayController::From(
+        browser()->GetTabStripModel()->GetActiveTab());
   }
 
   void OpenLensOverlay(LensOverlayInvocationSource invocation_source) {
@@ -6221,7 +6242,9 @@ class LensOverlayControllerBrowserPDFContextualizationTest
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
     return {contextual_tasks::kContextualTasks,
-            contextual_tasks::kContextualTasksSidePanel};
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture};
   }
 
  protected:
@@ -6930,7 +6953,9 @@ class LensOverlayControllerBrowserPDFUpdatedContentFieldsTest
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
     return {contextual_tasks::kContextualTasks,
-            contextual_tasks::kContextualTasksSidePanel};
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture};
   }
 
  protected:
@@ -6986,7 +7011,9 @@ class LensOverlayControllerBrowserPDFIncreaseLimitTest
 
   std::vector<base::test::FeatureRef> GetDisabledFeatures() const override {
     return {contextual_tasks::kContextualTasks,
-            contextual_tasks::kContextualTasksSidePanel};
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture};
   }
 
  protected:
@@ -7054,6 +7081,8 @@ class LensOverlayControllerBrowserWithPixelsTest
         /*enabled_features=*/{}, /*disabled_features=*/{
             contextual_tasks::kContextualTasks,
             contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
             lens::features::kLensOverlayVisualSelectionUpdates});
   }
 
@@ -8416,7 +8445,11 @@ class LensOverlayControllerInnerTextEnabledSmallByteLimitTest
               {"use-apc-as-context", "false"},
               {"file-upload-limit-bytes", "10"},
           }}},
-        /*disabled_features=*/{});
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasks,
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 };
 
@@ -8504,7 +8537,10 @@ class LensOverlayControllerApcOnlyTest
               {"use-apc-as-context", "true"},
           }},
          {lens::features::kLensSearchProtectedPage, {}}},
-        {});
+        {contextual_tasks::kContextualTasks,
+         contextual_tasks::kContextualTasksSidePanel,
+         contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 };
 
@@ -8651,7 +8687,9 @@ class LensOverlayControllerInnerTextAndApc
           }},
          {lens::features::kLensSearchProtectedPage, {}}},
         {contextual_tasks::kContextualTasks,
-         contextual_tasks::kContextualTasksSidePanel});
+         contextual_tasks::kContextualTasksSidePanel,
+         contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 };
 
@@ -8899,6 +8937,8 @@ class LensOverlayControllerContextualFeaturesDisabledTest
         /*disabled_features=*/{
             contextual_tasks::kContextualTasks,
             contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
             lens::features::kLensOverlayContextualSearchbox,
             lens::features::kLensOverlayNonBlockingPrivacyNotice});
   }
@@ -9110,8 +9150,11 @@ class LensOverlayControllerOverlaySearchbox
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{lens::features::kLensOverlay,
                               lens::features::kLensOverlayContextualSearchbox},
-        /*disabled_features=*/{contextual_tasks::kContextualTasks,
-                               contextual_tasks::kContextualTasksSidePanel});
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasks,
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 
   void VerifyContextualSearchQueryParameters(const GURL& url_to_process) {
@@ -9343,8 +9386,16 @@ class LensOverlayControllerSideBySideBrowserTest
   void SetupFeatureList() override {
     feature_list_.InitWithFeaturesAndParameters(
         {{lens::features::kLensOverlay, {{"use-blur", "true"}}}},
-        {contextual_tasks::kContextualTasks,
-         contextual_tasks::kContextualTasksSidePanel});
+        /*disabled_features=*/{});
+  }
+
+  void SetUpOnMainThread() override {
+    LensOverlayControllerBrowserTest::SetUpOnMainThread();
+    // Clear default per-entry side panel alignment overrides so tests can
+    // exercise both global horizontal alignment and explicit per-entry
+    // overrides.
+    browser()->GetProfile()->GetPrefs()->SetDict(
+        prefs::kSidePanelAlignmentOverrides, base::DictValue());
   }
 
   bool AreAnyRoundedCornersShowing() {
@@ -9437,11 +9488,12 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(GetOverlayWebContents()));
 
   // Open a side panel.
-  controller->IssueTextSelectionRequestForTesting(/*text_query=*/"Apples",
-                                                  /*selection_start_index=*/0,
-                                                  /*selection_end_index=*/0);
-  ASSERT_TRUE(
-      base::test::RunUntil([&]() { return IsLensResultsSidePanelShowing(); }));
+  controller->IssueLensRegionRequestForTesting(kTestRegion->Clone(),
+                                               /*is_click=*/false);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return static_cast<LensOverlayControllerFake*>(controller)
+        ->IsResultsSidePanelShowing();
+  }));
 
   // Expect the side panel rounded corner to exist.
   ASSERT_TRUE(controller->GetOverlayViewForTesting()->layer());
@@ -9468,8 +9520,8 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
   WaitForPaint();
 
   // State should start in off.
-  auto* controller_1 = GetLensOverlayController();
-  auto* side_panel_coordinator_1 = GetLensOverlaySidePanelCoordinator();
+  auto* controller_1 =
+      static_cast<LensOverlayControllerFake*>(GetLensOverlayController());
   ASSERT_EQ(controller_1->state(), State::kOff);
 
   // Showing UI should change the state to screenshot and eventually to overlay.
@@ -9480,11 +9532,10 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(GetOverlayWebContents()));
 
   // Open a side panel.
-  controller_1->IssueTextSelectionRequestForTesting(/*text_query=*/"Apples",
-                                                    /*selection_start_index=*/0,
-                                                    /*selection_end_index=*/0);
+  controller_1->IssueLensRegionRequestForTesting(kTestRegion->Clone(),
+                                                 /*is_click=*/false);
   ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return side_panel_coordinator_1->IsEntryShowing(); }));
+      [&]() { return controller_1->IsResultsSidePanelShowing(); }));
 
   // Expect overlay view's corners to be rounded.
   EXPECT_TRUE(controller_1->GetOverlayViewForTesting()->layer() &&
@@ -9501,7 +9552,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
 
   // State should start in off.
   auto* controller_0 = GetLensOverlayController();
-  auto* side_panel_coordinator_0 = GetLensOverlaySidePanelCoordinator();
   ASSERT_EQ(controller_0->state(), State::kOff);
 
   // Showing UI should change the state to screenshot and eventually to overlay.
@@ -9524,7 +9574,7 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
 
   // Wait for backgrounded state to be restored.
   ASSERT_TRUE(base::test::RunUntil(
-      [&]() { return side_panel_coordinator_0->IsEntryShowing(); }));
+      [&]() { return controller_1->IsResultsSidePanelShowing(); }));
 
   // Expect overlay view's corners to be rounded.
   EXPECT_TRUE(controller_1->GetOverlayViewForTesting()->layer() &&
@@ -9554,11 +9604,12 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerSideBySideBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(GetOverlayWebContents()));
 
   // Open a side panel.
-  controller->IssueTextSelectionRequestForTesting(/*text_query=*/"Apples",
-                                                  /*selection_start_index=*/0,
-                                                  /*selection_end_index=*/0);
-  ASSERT_TRUE(
-      base::test::RunUntil([&]() { return IsLensResultsSidePanelShowing(); }));
+  controller->IssueLensRegionRequestForTesting(kTestRegion->Clone(),
+                                               /*is_click=*/false);
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return static_cast<LensOverlayControllerFake*>(controller)
+        ->IsResultsSidePanelShowing();
+  }));
 
   // Expect overlay view's top right corner to be rounded.
   gfx::RoundedCornersF rounded_corners = controller->GetOverlayViewForTesting()
@@ -9658,7 +9709,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserTest,
 
   // 3. Add Empty Text Query (Should revert to Image-Only)
   // Issue an empty text search request from the search box.
-  const std::string empty_test_text = std::string();
   GetLensOverlaySidePanelCoordinator()->OnImageQueryWithEmptyText();
   content::TestNavigationObserver empty_observer(
       controller->GetSidePanelWebContentsForTesting());
@@ -9711,7 +9761,6 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerBrowserTest,
   EXPECT_FALSE(image_only_query->selected_region_bitmap_.drawsNothing());
 
   // 2. Send the textless image query again
-  const std::string empty_test_text = std::string();
   GetLensOverlaySidePanelCoordinator()->OnImageQueryWithEmptyText();
   content::TestNavigationObserver empty_observer(
       controller->GetSidePanelWebContentsForTesting());
@@ -9826,7 +9875,9 @@ class LensOverlayControllerReinvocationBrowserTest
          lens::features::kLensOverlayContextualSearchbox,
          lens::features::kLensSearchReinvocationAffordance},
         {contextual_tasks::kContextualTasks,
-         contextual_tasks::kContextualTasksSidePanel});
+         contextual_tasks::kContextualTasksSidePanel,
+         contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 };
 
@@ -10332,8 +10383,11 @@ class LensOverlayControllerNonBlockingPrivacyNoticeForImageSearchBrowserTest
         /*enabled_features=*/
         {lens::features::kLensOverlayNonBlockingPrivacyNotice,
          lens::features::kLensOverlayNonBlockingPrivacyNoticeForImageSearch},
-        /*disabled_features=*/{contextual_tasks::kContextualTasks,
-                               contextual_tasks::kContextualTasksSidePanel});
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasks,
+            contextual_tasks::kContextualTasksSidePanel,
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 
   void SetUpOnMainThread() override {
@@ -10552,8 +10606,7 @@ class LensOverlayControllerCoBrowsePreselectionTest
          {lens::features::kLensOverlay,
           {{"results-search-url", kResultsSearchBaseUrl}}},
          {lens::features::kLensOverlayContextualSearchbox, {}}},
-        /*disabled_features=*/{contextual_tasks::kContextualTasks,
-                               contextual_tasks::kContextualTasksSidePanel});
+        /*disabled_features=*/{});
   }
 };
 
@@ -10564,18 +10617,17 @@ IN_PROC_BROWSER_TEST_F(LensOverlayControllerCoBrowsePreselectionTest,
   auto* controller = GetLensOverlayController();
   ASSERT_EQ(controller->state(), State::kOff);
 
-  // Show UI via kOmniboxPageAction invocation source.
+  auto* fake_controller = static_cast<LensOverlayControllerFake*>(controller);
+  ASSERT_TRUE(fake_controller);
+  fake_controller->set_mock_results_side_panel_showing(true);
+
+  // Show UI via `kOmniboxPageAction` invocation source while the results side
+  // panel is already showing.
   OpenLensOverlay(LensOverlayInvocationSource::kOmniboxPageAction);
   ASSERT_EQ(controller->state(), State::kScreenshot);
   ASSERT_TRUE(base::test::RunUntil(
       [&]() { return controller->state() == State::kOverlay; }));
-
-  auto* fake_controller = static_cast<LensOverlayControllerFake*>(controller);
-  ASSERT_TRUE(fake_controller);
-
-  // Open the results side panel to simulate the panel being visible.
-  fake_controller->OpenSidePanelForTesting();
-  ASSERT_TRUE(IsLensResultsSidePanelShowing());
+  ASSERT_TRUE(fake_controller->IsResultsSidePanelShowing());
 
   // Preselection toast should remain visible even though the results side panel
   // is showing.
@@ -10600,7 +10652,7 @@ class LensOverlayControllerNonBlockingPrivacyNoticeBrowserTest
         /*enabled_features=*/
         {lens::features::kLensOverlayNonBlockingPrivacyNotice,
          lens::features::kLensOverlayContextualSearchbox},
-        /*disabled_features=*/{contextual_tasks::kContextualTasks});
+        /*disabled_features=*/{});
   }
 
   void SetUpOnMainThread() override {
@@ -10805,8 +10857,7 @@ class LensOverlayControllerPrivacyNoticeFeatureDisabledBrowserTest
         /*enabled_features=*/
         {lens::features::kLensOverlayContextualSearchbox},
         /*disabled_features=*/{
-            lens::features::kLensOverlayNonBlockingPrivacyNotice,
-            contextual_tasks::kContextualTasks});
+            lens::features::kLensOverlayNonBlockingPrivacyNotice});
   }
 };
 

@@ -32,6 +32,7 @@
 
 #include "base/byte_size.h"
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/checked_math.h"
@@ -62,6 +63,7 @@
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 #include "third_party/blink/renderer/platform/timer.h"
+#include "third_party/blink/renderer/platform/wtf/casting.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/skia/include/core/SkData.h"
 
@@ -858,6 +860,10 @@ class MODULES_EXPORT WebGLRenderingContextBase
   HeapTaskRunnerTimer<WebGLRenderingContextBase> restore_timer_;
 
   bool destruction_in_progress_ = false;
+  // Tracks whether ActivateContext() was ever called for this context, so
+  // Dispose() does not restore an evicted context when disposing an
+  // uninitialized context whose initial CreateDrawingBuffer() failed.
+  bool was_activated_ = false;
   bool marked_canvas_dirty_;
   // For performance reasons we must separately track whether we've
   // copied WebGL's drawing buffer to the canvas's backing store, for
@@ -1842,9 +1848,15 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   // Reports an error to glGetError, sends a message to the JavaScript
   // console.
+  // Keep a non-inlined const char* overload to avoid constructing temporary
+  // StringViews at hundreds of string-literal call sites.
+  NOINLINE void SynthesizeGLError(GLenum,
+                                  const char* function_name,
+                                  const char* description,
+                                  ConsoleDisplayPreference = kDisplayInConsole);
   void SynthesizeGLError(GLenum,
                          const char* function_name,
-                         const char* description,
+                         const StringView& description,
                          ConsoleDisplayPreference = kDisplayInConsole);
   void EmitGLWarning(const char* function, const char* reason);
 
@@ -1881,8 +1893,6 @@ class MODULES_EXPORT WebGLRenderingContextBase
                                        GLsizei height,
                                        const char* function_name);
 
-  friend class WebGLStateRestorer;
-  friend class WebGLRenderingContextEvictionManager;
 
   static void ActivateContext(WebGLRenderingContextBase*);
   static void DeactivateContext(WebGLRenderingContextBase*);

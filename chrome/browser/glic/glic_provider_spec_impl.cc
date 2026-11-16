@@ -14,6 +14,8 @@
 #include "base/logging.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
+#include "build/build_config.h"
+#include "chrome/browser/glic/gemini_enterprise/geic_url_allowlist.h"
 #include "chrome/browser/glic/glic_fre_store_impl.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
@@ -23,32 +25,68 @@
 #include "chrome/browser/glic/public/glic_provider.h"
 #include "chrome/browser/glic/public/glic_provider_latch.h"
 #include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/public/provider_features.h"
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/skills/features.h"
 #include "net/base/url_util.h"
+#include "pdf/buildflags.h"
 #include "url/gurl.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "components/guest_view/common/guest_view_features.h"  // nogncheck
+#endif
+
 namespace glic {
+
+GlicIndigoFeatureParams::GlicIndigoFeatureParams() = default;
+GlicIndigoFeatureParams::GlicIndigoFeatureParams(
+    const GlicIndigoFeatureParams&) = default;
+GlicIndigoFeatureParams& GlicIndigoFeatureParams::operator=(
+    const GlicIndigoFeatureParams&) = default;
+GlicIndigoFeatureParams::GlicIndigoFeatureParams(GlicIndigoFeatureParams&&) =
+    default;
+GlicIndigoFeatureParams& GlicIndigoFeatureParams::operator=(
+    GlicIndigoFeatureParams&&) = default;
+GlicIndigoFeatureParams::~GlicIndigoFeatureParams() = default;
+
+GlicMarketingAutoOpenFeatureParams::GlicMarketingAutoOpenFeatureParams() =
+    default;
+GlicMarketingAutoOpenFeatureParams::GlicMarketingAutoOpenFeatureParams(
+    const GlicMarketingAutoOpenFeatureParams&) = default;
+GlicMarketingAutoOpenFeatureParams&
+GlicMarketingAutoOpenFeatureParams::operator=(
+    const GlicMarketingAutoOpenFeatureParams&) = default;
+GlicMarketingAutoOpenFeatureParams::GlicMarketingAutoOpenFeatureParams(
+    GlicMarketingAutoOpenFeatureParams&&) = default;
+GlicMarketingAutoOpenFeatureParams&
+GlicMarketingAutoOpenFeatureParams::operator=(
+    GlicMarketingAutoOpenFeatureParams&&) = default;
+GlicMarketingAutoOpenFeatureParams::~GlicMarketingAutoOpenFeatureParams() =
+    default;
 
 namespace {
 
 // Appended by `GetLocalizedGuestURL()` from Chrome's UI locale.
 constexpr char kLocaleParam[] = "hl";
 
-// Returns `guest_url` without `hl`, so the key survives UI language changes.
-// Other params may identify the GE instance, so they are kept. Persisted; must
-// not change.
+// Returns `guest_url` without `hl` or `idp`, so the key survives UI language
+// changes and migrating between direct and BYOID-wrapped URLs. Other params may
+// identify the GE instance, so they are kept. Persisted; must not change.
 std::string GuestUrlToKey(const GURL& guest_url) {
   GURL key =
       net::AppendOrReplaceQueryParameter(guest_url, kLocaleParam, std::nullopt);
+  key = net::AppendOrReplaceQueryParameter(
+      key, geic::kWorkforceProviderQueryParam, std::nullopt);
   if (key.query().empty()) {
     // AppendOrReplaceQueryParameter() always sets a query, so drop the empty
     // "?" it leaves when no other params remain.
@@ -97,6 +135,9 @@ GURL MaybeAppendAuthUser(const GURL& guest_url, Profile* profile) {
 
 class GeminiGlicProviderSpec final : public GlicProviderSpec {
  public:
+  explicit GeminiGlicProviderSpec(GeicProviderInitOptions options = {})
+      : can_switch_between_gemini_providers_(
+            options.can_switch_between_gemini_providers) {}
   ~GeminiGlicProviderSpec() override = default;
   std::string_view GetSettingsSectionId() const override {
     return kGeminiSettingsSectionId;
@@ -104,7 +145,11 @@ class GeminiGlicProviderSpec final : public GlicProviderSpec {
   std::string_view GetSettingsSubpage() const override {
     return chrome::kGlicSettingsSubpage;
   }
+  bool CanSwitchBetweenGeminiProviders() const override {
+    return can_switch_between_gemini_providers_;
+  }
   int GetEntryPointIconId() const override { return IDR_GLIC_BUTTON_ALT_ICON; }
+  int GetPromoBodyStringId() const override { return IDS_GLIC_PROMO_BODY; }
   std::string_view GetSyntheticTrialGroupName() const override {
     return "Gemini";
   }
@@ -139,19 +184,132 @@ class GeminiGlicProviderSpec final : public GlicProviderSpec {
   }
   bool MigratesWebviewLocalStorage() const override { return true; }
   bool RequiresGeminiAccountEligibility() const override { return true; }
-  bool SupportsFeature(GlicFeature feature) const override { return true; }
+  bool SupportsFeature(GlicFeature feature) const override {
+    switch (feature) {
+      case GlicFeature::kLive:
+        // TODO(crbug.com/578498098): Return features::kGlicLiveMode once
+        // callers that skip the flag are updated.
+        return true;
+      case GlicFeature::kShareImage:
+        // TODO(crbug.com/578498098): Return features::kGlicShareImage once
+        // share_image_allowed checks the flag.
+        return true;
+      case GlicFeature::kOsEntryPoints:
+        // No flag: OS entry points are controlled by prefs.
+        return true;
+      case GlicFeature::kExperimentalTriggering:
+        return base::FeatureList::IsEnabled(
+            features::kGlicExperimentalTriggering);
+      case GlicFeature::kPdfAutoOpen:
+        return base::FeatureList::IsEnabled(features::kAutoOpenGlicForPdf);
+      case GlicFeature::kPdfSummarize:
+#if BUILDFLAG(ENABLE_PDF)
+        return base::FeatureList::IsEnabled(features::kPdfGlicSummarize);
+#else
+        return false;
+#endif  // BUILDFLAG(ENABLE_PDF)
+      case GlicFeature::kSelectionInlineCue:
+        return base::FeatureList::IsEnabled(features::kGlicSelectionPrompt);
+      case GlicFeature::kCaptureRegion:
+        return base::FeatureList::IsEnabled(features::kGlicCaptureRegion);
+      case GlicFeature::kFirstRunShowcase:
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+        return base::FeatureList::IsEnabled(
+            features::kFirstRunFeatureShowcaseGeminiStep);
+#else
+        return false;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+      // Callers apply the flags: the contextual cueing helpers, glicPrivate
+      // (per-source `extensions_features` flags) and the web continuity
+      // navigation throttle.
+      case GlicFeature::kContextualCueing:
+      case GlicFeature::kZeroStateSuggestions:
+      case GlicFeature::kGooglePageInvocation:
+      case GlicFeature::kWebContinuity:
+      case GlicFeature::kAutofill:
+      case GlicFeature::kAiOverlay:
+      case GlicFeature::kPersonalContext:
+        return true;
+      case GlicFeature::kTextSelectionContextMenu:
+        return base::FeatureList::IsEnabled(
+            features::kGlicTextSelectionContextMenu);
+      case GlicFeature::kSkills:
+#if BUILDFLAG(IS_ANDROID)
+        // Android only supports the WebView V2 UI, which relies on <webview>
+        // handling autosize in logical pixels: the host page is generally
+        // zoomed on Android (the OS font scale is folded into the default
+        // zoom).
+        if (!base::FeatureList::IsEnabled(
+                ::features::kSkillsWebViewV2Enabled) ||
+            !base::FeatureList::IsEnabled(
+                guest_view::kGuestViewAutoSizeInLogicalPixels)) {
+          return false;
+        }
+#endif
+        return base::FeatureList::IsEnabled(::features::kSkillsEnabled);
+      case GlicFeature::kMarketingAutoOpen:
+        return base::FeatureList::IsEnabled(features::kGlicMarketingAutoOpen);
+      case GlicFeature::kIndigoOpenGlic:
+        return base::FeatureList::IsEnabled(features::kIndigoOpenGlic);
+      case GlicFeature::kDynamicChromeTools:
+        return base::FeatureList::IsEnabled(features::kGlicDynamicChromeTools);
+    }
+    NOTREACHED();
+  }
+  GlicExperimentalTriggeringFeatureParams
+  GetExperimentalTriggeringFeatureParams() const override {
+    return features::PopulateExperimentalTriggeringFeatureParams(
+        features::kGlicExperimentalTriggering);
+  }
+  GlicPdfAutoOpenFeatureParams GetPdfAutoOpenFeatureParams() const override {
+    return features::PopulatePdfAutoOpenFeatureParams(
+        features::kAutoOpenGlicForPdf);
+  }
+  GlicPdfSummarizeFeatureParams GetPdfSummarizeFeatureParams() const override {
+#if BUILDFLAG(ENABLE_PDF)
+    return features::PopulatePdfSummarizeFeatureParams(
+        features::kPdfGlicSummarize);
+#else
+    return {};
+#endif  // BUILDFLAG(ENABLE_PDF)
+  }
+  GlicSelectionInlineCueFeatureParams GetSelectionInlineCueFeatureParams()
+      const override {
+    return features::PopulateSelectionInlineCueFeatureParams(
+        features::kGlicSelectionPrompt);
+  }
+  GlicIndigoFeatureParams GetIndigoFeatureParams() const override {
+    return features::PopulateIndigoFeatureParams(features::kIndigoOpenGlic);
+  }
+  GlicMarketingAutoOpenFeatureParams GetMarketingAutoOpenFeatureParams()
+      const override {
+    return features::PopulateMarketingAutoOpenFeatureParams(
+        features::kGlicMarketingAutoOpen);
+  }
+  GlicTextSelectionContextMenuFeatureParams
+  GetTextSelectionContextMenuFeatureParams() const override {
+    return features::PopulateTextSelectionContextMenuFeatureParams(
+        features::kGlicTextSelectionContextMenu);
+  }
   bool SupportsSsr() const override {
     return base::FeatureList::IsEnabled(features::kGlicSsr);
   }
+  bool SupportsApiBundleResource() const override {
+    return base::FeatureList::IsEnabled(features::kGlicApiBundleResource);
+  }
+  bool PinOnBindEnabled() const override { return true; }
 
  private:
+  const bool can_switch_between_gemini_providers_;
   const std::unique_ptr<GlicFreStore> fre_store_ = CreateGeminiFreStore();
 };
 
 class GeminiEnterpriseGlicProviderSpec final : public GlicProviderSpec {
  public:
   explicit GeminiEnterpriseGlicProviderSpec(GeicProviderInitOptions options)
-      : guest_url_(std::move(options.guest_url)) {}
+      : guest_url_(std::move(options.guest_url)),
+        can_switch_between_gemini_providers_(
+            options.can_switch_between_gemini_providers) {}
   ~GeminiEnterpriseGlicProviderSpec() override = default;
   std::string_view GetSettingsSectionId() const override {
     return kGeminiEnterpriseSettingsSectionId;
@@ -159,7 +317,11 @@ class GeminiEnterpriseGlicProviderSpec final : public GlicProviderSpec {
   std::string_view GetSettingsSubpage() const override {
     return chrome::kGlicEnterpriseSettingsSubpage;
   }
+  bool CanSwitchBetweenGeminiProviders() const override {
+    return can_switch_between_gemini_providers_;
+  }
   int GetEntryPointIconId() const override { return IDR_GEIC_BUTTON_ICON; }
+  int GetPromoBodyStringId() const override { return IDS_GEIC_PROMO_BODY; }
   std::string_view GetSyntheticTrialGroupName() const override {
     return "GeminiEnterprise";
   }
@@ -193,17 +355,66 @@ class GeminiEnterpriseGlicProviderSpec final : public GlicProviderSpec {
       case GlicFeature::kLive:
       case GlicFeature::kShareImage:
       case GlicFeature::kOsEntryPoints:
+      case GlicFeature::kExperimentalTriggering:
+      case GlicFeature::kPdfAutoOpen:
+      case GlicFeature::kPdfSummarize:
+      case GlicFeature::kSelectionInlineCue:
+      case GlicFeature::kCaptureRegion:
+      case GlicFeature::kFirstRunShowcase:
+      case GlicFeature::kContextualCueing:
+      case GlicFeature::kZeroStateSuggestions:
+      case GlicFeature::kSkills:
+      case GlicFeature::kGooglePageInvocation:
+      case GlicFeature::kMarketingAutoOpen:
+      case GlicFeature::kWebContinuity:
+      case GlicFeature::kIndigoOpenGlic:
+      case GlicFeature::kAutofill:
+      case GlicFeature::kAiOverlay:
+      case GlicFeature::kDynamicChromeTools:
+      case GlicFeature::kPersonalContext:
+      case GlicFeature::kTextSelectionContextMenu:
         return false;
     }
     NOTREACHED();
+  }
+  GlicExperimentalTriggeringFeatureParams
+  GetExperimentalTriggeringFeatureParams() const override {
+    return {};
+  }
+  GlicPdfAutoOpenFeatureParams GetPdfAutoOpenFeatureParams() const override {
+    return {};
+  }
+  GlicPdfSummarizeFeatureParams GetPdfSummarizeFeatureParams() const override {
+    return {};
+  }
+  GlicSelectionInlineCueFeatureParams GetSelectionInlineCueFeatureParams()
+      const override {
+    return {};
+  }
+  GlicIndigoFeatureParams GetIndigoFeatureParams() const override { return {}; }
+  GlicMarketingAutoOpenFeatureParams GetMarketingAutoOpenFeatureParams()
+      const override {
+    return {};
+  }
+  GlicTextSelectionContextMenuFeatureParams
+  GetTextSelectionContextMenuFeatureParams() const override {
+    return {};
   }
   // TODO(b/576365433): Enable `kGeicSsr` once the webapp supports it.
   bool SupportsSsr() const override {
     return base::FeatureList::IsEnabled(features::kGeicSsr);
   }
+  bool SupportsApiBundleResource() const override {
+    return base::FeatureList::IsEnabled(features::kGeicApiBundleResource);
+  }
+  // GEiC uses explicit single-tab attachment; tabs created via CreateTab or
+  // link clicks (e.g. Send feedback, Help, citations) should not be auto-pinned
+  // as shared tab context.
+  bool PinOnBindEnabled() const override { return false; }
 
  private:
   const GURL guest_url_;
+  const bool can_switch_between_gemini_providers_;
   const std::unique_ptr<GlicFreStore> fre_store_ =
       CreateGeminiEnterpriseFreStore();
 };
@@ -223,7 +434,7 @@ std::unique_ptr<const GlicProviderSpec> CreateGlicProviderSpec(
     GeicProviderInitOptions geic_options) {
   switch (provider) {
     case GlicProvider::kGemini:
-      return std::make_unique<GeminiGlicProviderSpec>();
+      return std::make_unique<GeminiGlicProviderSpec>(std::move(geic_options));
     case GlicProvider::kGeminiEnterprise:
       return std::make_unique<GeminiEnterpriseGlicProviderSpec>(
           std::move(geic_options));

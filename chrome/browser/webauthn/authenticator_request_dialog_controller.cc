@@ -23,6 +23,9 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/i18n/icu4c_tag_converter.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/string_compare.h"
 #include "base/location.h"
 #include "base/memory/weak_ptr.h"
@@ -86,7 +89,6 @@
 #include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public/fido_types.h"
 #include "third_party/abseil-cpp/absl/functional/overload.h"
-#include "third_party/icu/source/common/unicode/locid.h"
 #include "third_party/icu/source/common/unicode/utypes.h"
 #include "third_party/icu/source/i18n/unicode/coll.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -366,7 +368,7 @@ const gfx::VectorIcon& GetMechanismIcon(
             if (show_modal_provider_icons) {
               if (const gfx::VectorIcon* provider_icon =
                       webauthn_ui_helpers::GetProviderIcon(
-                          credential.value().source)) {
+                          credential.value())) {
                 return *provider_icon;
               }
             }
@@ -1878,8 +1880,7 @@ void AuthenticatorRequestDialogController::StartAutofillRequest() {
   }
   ReportConditionalUiPasskeyCount(credentials.size());
 
-  if (ui_presentation() == UIPresentation::kAmbient &&
-      (!credentials.empty() || !passwords_.empty())) {
+  if (ui_presentation() == UIPresentation::kAmbient) {
     auto* controller =
         ambient_signin::AmbientSigninController::GetOrCreateForCurrentDocument(
             render_frame_host);
@@ -1924,9 +1925,11 @@ void AuthenticatorRequestDialogController::SortRecognizedCredentials() {
                     std::ref(id_comparator));
 
   struct UsernameComparator {
-    explicit UsernameComparator(const icu::Locale* locale) {
+    explicit UsernameComparator(const base::i18n::LanguageTag& locale) {
       UErrorCode error = U_ZERO_ERROR;
-      collator_.reset(icu::Collator::createInstance(*locale, error));
+      collator_.reset(icu::Collator::createInstance(
+          base::i18n::IcuLocaleConverter::GetInstance().FromLanguageTag(locale),
+          error));
     }
 
     bool operator()(const device::DiscoverableCredentialMetadata& a,
@@ -1938,7 +1941,7 @@ void AuthenticatorRequestDialogController::SortRecognizedCredentials() {
 
     std::unique_ptr<icu::Collator> collator_;
   };
-  UsernameComparator user_name_comparator(&icu::Locale::getDefault());
+  UsernameComparator user_name_comparator(base::i18n::GetDefaultIcuLocale());
 
   std::ranges::stable_sort(transport_availability_.recognized_credentials,
                            std::ref(user_name_comparator));
@@ -1965,8 +1968,9 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
       }
       specific_local_passkeys_listed = true;
       std::u16string name = base::UTF8ToUTF16(cred.user.name.value_or(""));
-      Mechanism::Type mechanism_type = Mechanism::Credential(
-          {cred.source, cred.user.id, cred.last_used_time});
+      Mechanism::Type mechanism_type =
+          Mechanism::Credential({cred.source, cred.user.id, cred.last_used_time,
+                                 cred.is_apple_passwords});
       auto& mechanism = model_->mechanisms.emplace_back(
           mechanism_type, name,
           GetMechanismIcon(mechanism_type, ui_presentation()),

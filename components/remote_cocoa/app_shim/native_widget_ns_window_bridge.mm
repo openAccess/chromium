@@ -48,9 +48,10 @@
 #include "net/cert/x509_util_apple.h"
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
 #include "ui/base/cocoa/animation_utils.h"
+#import "ui/base/cocoa/appkit_utils.h"
 #import "ui/base/cocoa/constrained_window/constrained_window_animation.h"
 #include "ui/base/cocoa/cursor_utils.h"
-#include "ui/base/cocoa/drag_permission.h"
+#include "ui/base/cocoa/drag_coordinator.h"
 #include "ui/base/cocoa/remote_accessibility_api.h"
 #import "ui/base/cocoa/window_size_constants.h"
 #include "ui/base/emoji/emoji_panel_helper.h"
@@ -1185,6 +1186,7 @@ void NativeWidgetNSWindowBridge::SetCursor(const ui::Cursor& cursor) {
 void NativeWidgetNSWindowBridge::EnableImmersiveFullscreen(
     uint64_t fullscreen_overlay_widget_id,
     uint64_t tab_widget_id) {
+  CHECK(!immersive_transparent_titlebar_controller_);
   NativeWidgetNSWindowBridge* tab_widget_bridge = GetFromId(tab_widget_id);
   if (tab_widget_bridge) {
     NSWindow* tab_window = tab_widget_bridge->ns_window();
@@ -1213,8 +1215,30 @@ void NativeWidgetNSWindowBridge::EnableImmersiveFullscreen(
   }
 }
 
+void NativeWidgetNSWindowBridge::
+    EnableImmersiveFullscreenWithTransparentTitlebar() {
+  CHECK(!immersive_mode_controller_);
+  immersive_transparent_titlebar_controller_ =
+      std::make_unique<ImmersiveModeTransparentTitlebarControllerCocoa>(
+          window_,
+          // Unretained is safe: `this` owns the controller.
+          base::BindRepeating(&NativeWidgetNSWindowBridge::
+                                  OnImmersiveFullscreenTitlebarFrameChanged,
+                              base::Unretained(this)));
+  immersive_transparent_titlebar_controller_->Init();
+
+  // It is possible for the fullscreen transition to complete before the
+  // immersive mode controller is created. Mark the transition as complete as
+  // needed here.
+  if (!fullscreen_controller_.IsInFullscreenTransition() &&
+      fullscreen_controller_.GetTargetFullscreenState()) {
+    immersive_transparent_titlebar_controller_->FullscreenTransitionCompleted();
+  }
+}
+
 void NativeWidgetNSWindowBridge::DisableImmersiveFullscreen() {
   immersive_mode_controller_.reset();
+  immersive_transparent_titlebar_controller_.reset();
 }
 
 void NativeWidgetNSWindowBridge::UpdateToolbarVisibility(
@@ -1222,12 +1246,18 @@ void NativeWidgetNSWindowBridge::UpdateToolbarVisibility(
   if (immersive_mode_controller_) {
     immersive_mode_controller_->UpdateToolbarVisibility(style);
   }
+  if (immersive_transparent_titlebar_controller_) {
+    immersive_transparent_titlebar_controller_->UpdateToolbarVisibility(style);
+  }
 }
 
 void NativeWidgetNSWindowBridge::OnTopContainerViewBoundsChanged(
     const gfx::Rect& bounds) {
   if (immersive_mode_controller_) {
     immersive_mode_controller_->OnTopViewBoundsChanged(bounds);
+  }
+  if (immersive_transparent_titlebar_controller_) {
+    immersive_transparent_titlebar_controller_->OnTopViewBoundsChanged(bounds);
   }
 }
 
@@ -1248,6 +1278,10 @@ void NativeWidgetNSWindowBridge::ImmersiveFullscreenRevealUnlock() {
 
 bool NativeWidgetNSWindowBridge::ShouldUseCustomTitlebarHeightForFullscreen()
     const {
+  if (immersive_transparent_titlebar_controller_) {
+    return immersive_transparent_titlebar_controller_->is_initialized() &&
+           !immersive_transparent_titlebar_controller_->IsContentFullscreen();
+  }
   return immersive_mode_controller_ &&
          immersive_mode_controller_->is_initialized() &&
          immersive_mode_controller_->IsTabbed() &&
@@ -1262,6 +1296,11 @@ void NativeWidgetNSWindowBridge::OnImmersiveFullscreenToolbarRevealChanged(
 void NativeWidgetNSWindowBridge::OnImmersiveFullscreenMenuBarRevealChanged(
     float reveal_amount) {
   host_->OnImmersiveFullscreenMenuBarRevealChanged(reveal_amount);
+}
+
+void NativeWidgetNSWindowBridge::OnImmersiveFullscreenTitlebarFrameChanged(
+    const gfx::Rect& frame) {
+  host_->OnImmersiveFullscreenTitlebarFrameChanged(frame);
 }
 
 void NativeWidgetNSWindowBridge::OnAutohidingMenuBarHeightChanged(
@@ -1563,7 +1602,7 @@ void NativeWidgetNSWindowBridge::OnScreenOrBackingPropertiesChanged() {
 void NativeWidgetNSWindowBridge::OnWindowKeyStatusChangedTo(bool is_key) {
   host_->OnWindowKeyStatusChanged(
       is_key, [window_ contentView] == [window_ firstResponder],
-      [NSApp isFullKeyboardAccessEnabled]);
+      ui::IsFullKeyboardAccessEnabled());
   // If the window just became key, this is a good chance to add child windows
   // from when the window wasn't on the current space.
   if (is_key)
@@ -1727,6 +1766,15 @@ void NativeWidgetNSWindowBridge::FullscreenControllerTransitionStart(
 void NativeWidgetNSWindowBridge::FullscreenControllerTransitionComplete(
     bool is_fullscreen) {
   DCHECK(!fullscreen_controller_.IsInFullscreenTransition());
+  // The titlebar transparency must be reset before the window enters
+  // fullscreen again, see ImmersiveModeTransparentTitlebarControllerCocoa.
+  // Reset it only once the window has left fullscreen, so that the titlebar
+  // doesn't turn opaque while it animates out. This is a no-op if the
+  // transparency was never set.
+  if (!is_fullscreen) {
+    ImmersiveModeTransparentTitlebarControllerCocoa::ResetTitlebarTransparency(
+        window_);
+  }
   UpdateWindowGeometry();
   UpdateWindowDisplay();
 
@@ -1736,6 +1784,9 @@ void NativeWidgetNSWindowBridge::FullscreenControllerTransitionComplete(
   host_->OnWindowFullscreenTransitionComplete(is_fullscreen);
   if (is_fullscreen && immersive_mode_controller_) {
     immersive_mode_controller_->FullscreenTransitionCompleted();
+  }
+  if (is_fullscreen && immersive_transparent_titlebar_controller_) {
+    immersive_transparent_titlebar_controller_->FullscreenTransitionCompleted();
   }
 }
 
@@ -2304,6 +2355,10 @@ bool NativeWidgetNSWindowBridge::SendWindowFrameChangeToHost(
 
   host_->OnWindowGeometryChanged(window_in_screen, content_in_screen);
   return content_dip_size_changed;
+}
+
+bool NativeWidgetNSWindowBridge::HasPendingLiveResizeFrame() const {
+  return live_resize_.pending_window_frame.has_value();
 }
 
 void NativeWidgetNSWindowBridge::UpdateWindowDisplay() {

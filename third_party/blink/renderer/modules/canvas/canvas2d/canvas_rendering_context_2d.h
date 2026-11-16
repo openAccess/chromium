@@ -86,7 +86,6 @@ class ImageDataSettings;
 class MemoryManagedPaintCanvas;
 class Path2D;
 class SVGResource;
-class Canvas2DResourceProvider;
 enum class FlushReason;
 enum class PredefinedColorSpace;
 
@@ -232,10 +231,6 @@ class MODULES_EXPORT CanvasRenderingContext2D final
   bool InitializeBacking() override;
   void CreateSoftwareSurfaceForTesting();
 
-  // TODO(crbug.com/352263194): Migrate canvas_rendering_context_2d_test.cc
-  // callsites and make this method private.
-  CanvasHibernationHandler* GetHibernationHandler() const;
-
   void EnableAccelerationIfPossible() override;
   base::ByteSize AllocatedBufferSize() const override;
 
@@ -254,10 +249,11 @@ class MODULES_EXPORT CanvasRenderingContext2D final
   bool ResolveFont(const String& new_font) final;
 
  private:
-  friend class CanvasRenderingContext2DAutoRestoreSkCanvas;
   friend class CanvasRenderingContext2DTestBase;
   FRIEND_TEST_ALL_PREFIXES(CanvasRenderingContext2DTestAccelerated,
                            PrepareMailboxWhenContextIsLostWithFailedRestore);
+
+  CanvasHibernationHandler* GetHibernationHandler() const;
 
   void ResetInternal() override;
   void Reshape(gfx::Size old_size, gfx::Size new_size) override;

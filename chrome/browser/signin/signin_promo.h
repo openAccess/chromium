@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_SIGNIN_SIGNIN_PROMO_H_
 #define CHROME_BROWSER_SIGNIN_SIGNIN_PROMO_H_
 
+#include <optional>
 #include <string>
 
 #include "base/functional/callback_forward.h"
@@ -61,7 +62,8 @@ GURL GetEmbeddedReauthURLWithEmail(signin_metrics::AccessPoint access_point,
 // Controls the information displayed around the Gaia Sign In page via the
 // "flow" url parameter.
 enum class Flow {
-  // No value set for the "flow" parameter.
+  // Default value ("history_opt_in") for the "flow" parameter: uses a
+  // customized sign-in screen that does not mention history sync benefits.
   NONE,
   // The "promo" flow indicates to the user that they are signing in to Chrome
   // but unlike the default dice sign-in page, they don't mention sync
@@ -166,15 +168,21 @@ enum class ReauthProceedToChallengeResult {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:ReauthProceedToChallengeResult)
 
-// Returns whether a reauth for `email` can use `GetChromeReauthURL()` with
-// `proceed_to_challenge`, based on `accounts_in_cookie_jar`.
-// Returns false (i.e. callers should keep using `GetAddAccountURLForDice()`)
-// if `email` is empty, if the cookie jar info is stale, or if `email` still
-// has a valid signed-in Gaia session.
-// When `email` is non-empty, records `Signin.Reauth.ProceedToChallengeResult`.
-bool CanReauthProceedToChallenge(
+// Returns the result of checking whether a reauth for `email` can use
+// `GetChromeReauthURL()` with `proceed_to_challenge`, based on
+// `accounts_in_cookie_jar`.
+// Returns an `/AddSession` fallback (i.e. callers should keep using
+// `GetAddAccountURLForDice()`) if the cookie jar info is stale, or if `email`
+// still has a valid signed-in Gaia session.
+// Returns `std::nullopt` if `email` is empty.
+std::optional<ReauthProceedToChallengeResult> GetReauthProceedToChallengeResult(
     const std::string& email,
     const AccountsInCookieJarInfo& accounts_in_cookie_jar);
+
+// Records `Signin.Reauth.ProceedToChallengeResult2`. Call it when loading the
+// URL selected with `GetReauthProceedToChallengeResult()`.
+void RecordReauthProceedToChallengeResult(
+    ReauthProceedToChallengeResult result);
 
 // Returns the URL to be used to add (secondary) account when DICE is enabled.
 // If email is not empty, then it will pass email as hint to the page so that it

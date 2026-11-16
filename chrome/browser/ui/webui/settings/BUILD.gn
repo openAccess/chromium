@@ -139,6 +139,7 @@ source_set("settings") {
 
   if (is_chrome_branded) {
     sources += [ "on_device_ai_settings_handler.h" ]
+    public_deps += [ "//components/optimization_guide/core:ondevice" ]
   }
 
   if (is_mac) {
@@ -229,6 +230,7 @@ source_set("impl") {
     "//chrome/browser/custom_handlers",
     "//chrome/browser/dictation",
     "//chrome/browser/engagement",
+    "//chrome/browser/enterprise/browser_management:management_identity",
     "//chrome/browser/extensions",
     "//chrome/browser/feedback",
     "//chrome/browser/file_system_access",
@@ -386,6 +388,10 @@ source_set("impl") {
 
   if (is_chrome_branded) {
     sources += [ "on_device_ai_settings_handler.cc" ]
+    deps += [
+      "//chrome/browser/optimization_guide",
+      "//components/optimization_guide/core:ondevice",
+    ]
   }
 
   if (is_mac) {
@@ -506,6 +512,7 @@ source_set("browser_tests") {
     "//chrome/browser/ui/webui/settings/search/mojom",
     "//chrome/common",
     "//chrome/test:test_support",
+    "//chrome/test/base:browser_test_waiters",
     "//components/browsing_data/core",
     "//components/country_codes",
     "//components/password_manager/core/browser/actor_login:common",
@@ -642,6 +649,7 @@ if (!is_android) {
       "//chrome/browser/ui/safety_hub:test_support",
       "//chrome/browser/ui/signin",
       "//chrome/browser/ui/toasts",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/ui/webui/version",
       "//chrome/browser/upgrade_detector",
       "//chrome/browser/usb",
@@ -747,7 +755,10 @@ if (!is_android) {
 
     if (is_chrome_branded) {
       sources += [ "on_device_ai_settings_handler_unittest.cc" ]
-      deps += [ "//components/optimization_guide/core:ondevice" ]
+      deps += [
+        "//chrome/app:generated_resources",
+        "//components/optimization_guide/core:ondevice",
+      ]
     }
 
     if (toolkit_views && !is_chromeos) {
@@ -764,6 +775,10 @@ if (!is_android) {
       deps += [ "//chrome/browser/smart_card" ]
     }
 
+    if (is_win) {
+      deps += [ "//device/fido" ]
+    }
+
     if (is_chromeos) {
       deps += [
         "//ash/constants",
@@ -771,6 +786,11 @@ if (!is_android) {
         "//chromeos/constants",
         "//components/account_id",
         "//components/user_manager",
+      ]
+    } else {
+      deps += [
+        "//chrome/browser/ui/profiles",
+        "//chrome/test/base:web_ui_test_support",
       ]
     }
   }

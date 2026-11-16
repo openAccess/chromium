@@ -190,6 +190,7 @@ source_set("unit_tests") {
   deps = [
     ":session",
     "//ash/public/cpp",
+    "//ash/strings",
     "//base",
     "//base/test:test_support",
     "//chrome/app/vector_icons",
@@ -211,7 +212,6 @@ source_set("unit_tests") {
     "//chrome/browser/prefs:util",
     "//chrome/browser/signin",
     "//chrome/browser/ui/ash/login:test_support",
-    "//chrome/browser/ui/ash/multi_user",
     "//chrome/test:test_support",
     "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/browser_context_helper",

@@ -6,6 +6,7 @@
 
 #import "base/check_op.h"
 #import "base/feature_list.h"
+#import "base/i18n/language_tag.h"
 #import "base/memory/ptr_util.h"
 #import "base/notreached.h"
 #import "base/time/default_clock.h"
@@ -54,7 +55,7 @@ TestingApplicationContext::TestingApplicationContext()
           std::make_unique<ApplicationLocaleStorage>()) {
   DCHECK(!GetApplicationContext());
   SetApplicationContext(this);
-  application_locale_storage_->Set("en-US");
+  application_locale_storage_->SetTag(base::i18n::GetKnownLanguageTag("en-US"));
 }
 
 TestingApplicationContext::~TestingApplicationContext() {
@@ -133,6 +134,12 @@ void TestingApplicationContext::SetSharedURLLoaderFactory(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   test_url_loader_factory_ = std::move(url_loader_factory);
+}
+
+void TestingApplicationContext::SetSafeBrowsingService(
+    SafeBrowsingService* safe_browsing_service) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  fake_safe_browsing_service_ = safe_browsing_service;
 }
 
 void TestingApplicationContext::OnAppEnterForeground() {

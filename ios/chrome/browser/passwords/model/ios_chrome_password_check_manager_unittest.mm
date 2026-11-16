@@ -127,8 +127,7 @@ class IOSChromePasswordCheckManagerTest : public PlatformTest {
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
         base::BindOnce(
-            &password_manager::BuildPasswordStore<ProfileIOS,
-                                                  TestPasswordStore>));
+            &password_manager::BuildPasswordStore<TestPasswordStore>));
     builder.AddTestingFactory(
         IOSChromeAffiliationServiceFactory::GetInstance(),
         base::BindOnce([](ProfileIOS*) -> std::unique_ptr<KeyedService> {
@@ -419,6 +418,8 @@ TEST_F(IOSChromePasswordCheckManagerTest, WeakCredentialsAreReturned) {
       password_manager::LeakDetectionInitiator::kIosProactivePasswordCheckup);
   RunUntilIdle();
 
+  weak_form.password_issues.insert(
+      {InsecureType::kWeak, password_manager::InsecurityMetadata()});
   EXPECT_THAT(manager().GetInsecureCredentials(),
               ElementsAre(CredentialUIEntry(
                   password_manager::ToPasswordForm(weak_form))));
@@ -441,6 +442,10 @@ TEST_F(IOSChromePasswordCheckManagerTest, ReusedCredentialsAreReturned) {
       password_manager::LeakDetectionInitiator::kIosProactivePasswordCheckup);
   RunUntilIdle();
 
+  form_with_same_password_1.password_issues.insert(
+      {InsecureType::kReused, password_manager::InsecurityMetadata()});
+  form_with_same_password_2.password_issues.insert(
+      {InsecureType::kReused, password_manager::InsecurityMetadata()});
   std::vector<CredentialUIEntry> insecure_credentials =
       manager().GetInsecureCredentials();
 

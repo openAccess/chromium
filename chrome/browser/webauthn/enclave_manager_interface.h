@@ -10,6 +10,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/webauthn/gpm_pin_availability.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "google_apis/gaia/gaia_id.h"
@@ -24,26 +25,15 @@ class EnclaveManagerInterface : public KeyedService {
   // that they were passed to returns.)
   using Callback = base::OnceCallback<void(bool)>;
 
-  // LINT.IfChange(GpmPinAvailability)
-  //
-  // An enum that expresses whether a GPM PIN is set on an account.
-  // These values are persisted to logs. Entries should not be renumbered and
-  // numeric values should never be reused.
-  enum class GpmPinAvailability {
-    // The PIN is set but not usable (there are 0 remaining attempts for
-    // entering the pin).
-    kGpmPinSetButNotUsable = 0,
-    // The PIN is set and usable (there are > 0 remaining attempts for entering
-    // the pin).
-    kGpmPinSetAndUsable = 1,
-    // The PIN is unset.
-    kGpmPinUnset = 2,
-    kMaxValue = kGpmPinUnset,
-  };
-  // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:GpmPinAvailability)
+  using GpmPinAvailability = webauthn::GpmPinAvailability;
 
-  using GpmPinAvailabilityCallback =
-      base::OnceCallback<void(GpmPinAvailability)>;
+  // Callback for `DownloadAccountState()`. Receives the downloaded security
+  // domain state and the `GaiaId` of the account it was downloaded for. The
+  // primary account may have changed while the download was in flight, so
+  // callers must not assume the `GaiaId` still matches the primary account.
+  using DownloadAccountStateCallback = base::OnceCallback<void(
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId)>;
 
   // An enum that expresses the outcome of the operation of storing the
   // opportunistically retrieved keys.
@@ -87,7 +77,8 @@ class EnclaveManagerInterface : public KeyedService {
   // by a real `EnclaveManager`, i.e. when it's a mock.
   virtual EnclaveManager* GetEnclaveManager();
 
-  // Returns true if the current user has been registered with the enclave.
+  // Returns true if the persistent state has been loaded and the current user
+  // has been registered with the enclave.
   virtual bool IsRegistered() const = 0;
 
   // Loads the persistent state from disk if needed and invokes `callback` with
@@ -108,12 +99,19 @@ class EnclaveManagerInterface : public KeyedService {
   // any state and is a no-op if no registration exists.
   virtual void Unenroll(Callback callback) = 0;
 
-  // Asynchronously checks if the current user has a GPM PIN. The caller must
-  // keep the returned Request object alive until the callback is run.
-  // Destroying the Request object will cancel the operation.
+  // Downloads the security domain state of the current user and invokes
+  // `callback` with the downloaded state and the `GaiaId` of the account it was
+  // downloaded for (which may no longer be the primary account when `callback`
+  // runs). The caller must keep the returned Request object alive until the
+  // callback is run. Destroying the Request object will cancel the operation.
   [[nodiscard]] virtual std::unique_ptr<
       trusted_vault::TrustedVaultConnection::Request>
-  CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) = 0;
+  DownloadAccountState(DownloadAccountStateCallback callback) = 0;
+
+  // Returns the GPM PIN availability described by `account_state`.
+  virtual GpmPinAvailability CheckGpmPinAvailability(
+      const trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult&
+          account_state) const = 0;
 
 #if BUILDFLAG(IS_MAC)
   // Attempts to recover the security domain secret using local iCloud Keychain

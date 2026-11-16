@@ -19,6 +19,7 @@ import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyLong;
 import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
@@ -327,6 +328,7 @@ public class ReadAloudControllerUnitTest {
         TapToSeekSelectionManager.setSelectionPopupController(mSelectionPopupController);
 
         GlicEnabling.setEnabledForTesting(false);
+        ActorUiTabController.setActorUiSupportedForTesting(false);
         mController = createController();
         verify(mLayoutStateProvider).addObserver(mLayoutStateObserver.capture());
         verify(mFullscreenManager).addObserver(mFullscreenObserver.capture());
@@ -847,35 +849,7 @@ public class ReadAloudControllerUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testClosingTab() {
-        // Close a tab before any playback starts - tests null checks
-        mController.getTabModelTabObserverforTests().willCloseTab(mTab);
-
-        verify(mPlayerCoordinator, never()).dismissPlayers();
-        verify(mPlayback, never()).release();
-
-        // now start playing a tab
-        requestAndStartPlayback();
-
-        // close some other tab, playback should keep going
-        MockTab newTab = mTabModelSelector.addMockTab();
-        newTab.setGurlOverrideForTesting(new GURL("https://en.wikipedia.org/wiki/Alphabet_Inc."));
-        mController.getTabModelTabObserverforTests().willCloseTab(newTab);
-
-        verify(mPlayerCoordinator, never()).dismissPlayers();
-        verify(mPlayback, never()).release();
-
-        // now close the playing tab
-        mController.getTabModelTabObserverforTests().willCloseTab(mTab);
-
-        verify(mPlayerCoordinator).dismissPlayers();
-        verify(mPlayback).release();
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testClosingTab_WillCloseTabs() {
         // Close a tab before any playback starts - tests null checks
         mController.getTabModelTabObserverforTests()
                 .willCloseTabs(List.of(mTab), /* isAllTabs= */ false, /* allowUndo= */ false);
@@ -904,26 +878,7 @@ public class ReadAloudControllerUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testClosingTab_errorUiDismissed() {
-        // start a playback with an error
-        mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
-        resolvePromises();
-        verify(mPlaybackHooks, times(1))
-                .createPlayback(Mockito.any(), mPlaybackCallbackCaptor.capture());
-        mPlaybackCallbackCaptor.getValue().onFailure(new Exception("Very bad error"));
-        resolvePromises();
-
-        // Close this tab
-        mController.getTabModelTabObserverforTests().willCloseTab(mTab);
-
-        // No playback but error UI should get dismissed
-        verify(mPlayerCoordinator).dismissPlayers();
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testClosingTab_errorUiDismissed_WillCloseTabs() {
         // start a playback with an error
         mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
         resolvePromises();
@@ -1069,6 +1024,223 @@ public class ReadAloudControllerUnitTest {
 
         assertTrue(mController.isReadable(mTab));
         assertEquals(PlaybackMode.CLASSIC, mController.getModeToPlay(mTab));
+    }
+
+    @Test
+    public void testReadabilityInfo_withOverviewUnsupported_keepsClassicResult() {
+        ReadAloudController.ReadabilityInfo info =
+                new ReadAloudController.ReadabilityInfo(
+                        ImmutableMap.of(
+                                PlaybackMode.CLASSIC,
+                                new ReadAloudReadabilityHooks.ReadabilityResult(
+                                        /* readable= */ true, /* supportsHighlighting= */ false),
+                                PlaybackMode.OVERVIEW,
+                                new ReadAloudReadabilityHooks.ReadabilityResult(
+                                        /* readable= */ true, /* supportsHighlighting= */ true)),
+                        /* responseTimestamp= */ 1234L);
+
+        ReadAloudController.ReadabilityInfo result = info.withOverviewUnsupported();
+
+        assertTrue(result.isReadable(PlaybackMode.CLASSIC));
+        assertFalse(result.getTimepointsSupported(PlaybackMode.CLASSIC));
+        assertFalse(result.isReadable(PlaybackMode.OVERVIEW));
+        assertEquals(1234L, result.getResponseTime());
+    }
+
+    @Test
+    @EnableFeatures({
+        ReadAloudFeatures.READ_ALOUD_NATIVE,
+        ChromeFeatureList.READALOUD_AUDIO_OVERVIEWS
+    })
+    public void testOnPlaybackError_nativeOverview_fallsBackToClassic() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mFakeTranslateBridge.setIsPageTranslated(false);
+        mFakeTranslateBridge.setCurrentLanguage("en");
+        when(mPrefService.getInteger("readaloud.playback_mode"))
+                .thenReturn(PlaybackMode.OVERVIEW.getValue());
+        mController.onReadabilityResult(sTestGURL, true);
+
+        mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
+        resolvePromises();
+        verify(mNativeBridgeNatives).setPlaybackMode(any(), eq(PlaybackMode.OVERVIEW.getValue()));
+        Runnable readabilityListener = Mockito.mock(Runnable.class);
+        mController.addReadabilityUpdateListener(readabilityListener);
+
+        // AI Playback fails on this page (e.g. overview generation failed). Native reports STOPPED
+        // before the error (ReadAloudService::HandlePlaybackError).
+        mController.onPlaybackStateChanged(PlaybackListener.State.STOPPED);
+        mController.onPlaybackError("Overview generation failed");
+        resolvePromises();
+
+        // Overview is marked unsupported for this page in the readability cache, Classic is not,
+        // and readability listeners are notified.
+        ReadAloudController.ReadabilityInfo cachedInfo = mController.getReadabilityInfoForTab(mTab);
+        assertNotNull(cachedInfo);
+        assertFalse(cachedInfo.isReadable(PlaybackMode.OVERVIEW));
+        assertTrue(cachedInfo.isReadable(PlaybackMode.CLASSIC));
+        verify(readabilityListener, atLeastOnce()).run();
+
+        // Falls back to Standard Playback and starts playing instead of showing an error.
+        verify(mNativeBridgeNatives).setPlaybackMode(any(), eq(PlaybackMode.CLASSIC.getValue()));
+        verify(mPlayerCoordinator, times(2))
+                .playbackReady(
+                        any(NativePlayback.class), eq(PlaybackListener.State.PLAYBACK_CREATION));
+        verify(mPlayerCoordinator, never()).playbackFailed();
+        // The user's preferred playback mode is left unchanged.
+        verify(mPrefService, never()).setInteger(eq("readaloud.playback_mode"), anyInt());
+    }
+
+    @Test
+    @EnableFeatures({
+        ReadAloudFeatures.READ_ALOUD_NATIVE,
+        ChromeFeatureList.READALOUD_AUDIO_OVERVIEWS
+    })
+    public void testOnPlaybackError_classicFallbackFails_showsError() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mFakeTranslateBridge.setIsPageTranslated(false);
+        mFakeTranslateBridge.setCurrentLanguage("en");
+        when(mPrefService.getInteger("readaloud.playback_mode"))
+                .thenReturn(PlaybackMode.OVERVIEW.getValue());
+        mController.onReadabilityResult(sTestGURL, true);
+
+        mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
+        resolvePromises();
+        mController.onPlaybackError("Overview generation failed");
+        resolvePromises();
+
+        // The Classic fallback also fails: show the error, no further retries.
+        mController.onPlaybackError("Distillation failed");
+        resolvePromises();
+
+        verify(mPlayerCoordinator, times(1)).playbackFailed();
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testOnPlaybackError_nativeClassic_doesNotFallBack_showsError() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mController.onReadabilityResult(sTestGURL, true);
+
+        mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
+        resolvePromises();
+
+        mController.onPlaybackError("Distillation failed");
+        resolvePromises();
+
+        verify(mPlayerCoordinator).playbackFailed();
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testIsReadable_nativeEnabled_languageUnsupported() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mController.onReadabilityResult(sTestGURL, true);
+        assertFalse(mController.isReadable(null));
+
+        mFakeTranslateBridge.setCurrentLanguage("en");
+        assertTrue(mController.isReadable(mTab));
+
+        // No voices are available for "ko", so entry points should be hidden.
+        mFakeTranslateBridge.setCurrentLanguage("ko");
+        assertFalse(mController.isReadable(mTab));
+        assertEquals(PlaybackMode.UNSPECIFIED, mController.getModeToPlay(mTab));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testIsReadable_nativeEnabled_unsupportedLanguageTranslatedToSupported() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mController.onReadabilityResult(sTestGURL, true);
+
+        mFakeTranslateBridge.setCurrentLanguage("ko");
+        assertFalse(mController.isReadable(mTab));
+
+        // Translating the page to a supported language should show entry points.
+        mFakeTranslateBridge.setCurrentLanguage("en");
+        assertTrue(mController.isReadable(mTab));
+        assertEquals(PlaybackMode.CLASSIC, mController.getModeToPlay(mTab));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testOnVoicesAvailable_nativeEnabled_notifiesReadabilityListeners() {
+        Runnable listener = Mockito.mock(Runnable.class);
+        mController.addReadabilityUpdateListener(listener);
+
+        mController.onVoicesAvailable(
+                new String[] {"voiceA"},
+                new String[] {"Ruby"},
+                new String[] {"en"},
+                new String[] {"US"},
+                new int[] {PlaybackVoice.Pitch.MID},
+                new int[] {PlaybackVoice.Tone.WARM});
+
+        verify(listener).run();
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testIsReadable_nativeEnabled_hebrewMappedToVoiceCatalogCode() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mController.onVoicesAvailable(
+                new String[] {"voiceA"},
+                new String[] {"Ruby"},
+                new String[] {"iw"},
+                new String[] {"IL"},
+                new int[] {PlaybackVoice.Pitch.MID},
+                new int[] {PlaybackVoice.Tone.WARM});
+        mController.onReadabilityResult(sTestGURL, true);
+
+        // TranslateBridge reports "he", but the voice catalog uses "iw".
+        mFakeTranslateBridge.setCurrentLanguage("he");
+        assertTrue(mController.isReadable(mTab));
+
+        mFakeTranslateBridge.setCurrentLanguage("he-IL");
+        assertTrue(mController.isReadable(mTab));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testIsReadable_nativeEnabled_voicesArriveAfterReadability() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        // Start with an empty voice catalog.
+        mController.onVoicesAvailable(
+                new String[] {},
+                new String[] {},
+                new String[] {},
+                new String[] {},
+                new int[] {},
+                new int[] {});
+        mFakeTranslateBridge.setCurrentLanguage("en");
+        mController.onReadabilityResult(sTestGURL, true);
+        assertFalse(mController.isReadable(mTab));
+
+        Runnable listener = Mockito.mock(Runnable.class);
+        mController.addReadabilityUpdateListener(listener);
+        mController.onVoicesAvailable(
+                new String[] {"voiceA"},
+                new String[] {"Ruby"},
+                new String[] {"en"},
+                new String[] {"US"},
+                new int[] {PlaybackVoice.Pitch.MID},
+                new int[] {PlaybackVoice.Tone.WARM});
+
+        verify(listener).run();
+        assertTrue(mController.isReadable(mTab));
     }
 
     @Test
@@ -2920,6 +3092,77 @@ public class ReadAloudControllerUnitTest {
         verify(mNativeBridgeNatives).stop(any());
         verify(mNativeBridgeNatives).setVoice(any(), eq("voiceB"));
         verify(mNativeBridgeNatives, times(2)).play(any(), eq(mWebContents));
+    }
+
+    /** Starts a native playback reading "bar": chunk 1, offset 4 of "Hello world Foo bar". */
+    private void startNativePlaybackReadingWord() {
+        when(mNativeBridgeNatives.init(any(), any()))
+                .thenAnswer(invocation -> JniRawPtr.createForTesting(12345L));
+        mController.onProfileAvailable(mMockProfile);
+        mController.onVoicesAvailable(
+                new String[] {"voiceA", "voiceB"},
+                new String[] {"Ruby", "River"},
+                new String[] {"en", "en"},
+                new String[] {"US", "US"},
+                new int[] {PlaybackVoice.Pitch.MID, PlaybackVoice.Pitch.MID},
+                new int[] {PlaybackVoice.Tone.WARM, PlaybackVoice.Tone.CALM});
+
+        mController.playTab(mTab, ReadAloudController.Entrypoint.MAGIC_TOOLBAR);
+        resolvePromises();
+
+        mController.onTextChunked(new String[] {"Hello world", "Foo bar"});
+        mController.onWordHighlightUpdated(
+                /* absoluteStartIndex= */ 16, /* absoluteEndIndex= */ 19);
+        mController.onPlaybackStateChanged(PlaybackListener.State.PLAYING);
+        verify(mNativeBridgeNatives).play(any(), eq(mWebContents));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testSetVoice_nativeEnabled_resumesFromCurrentWord() {
+        startNativePlaybackReadingWord();
+
+        MockPrefServiceHelper.setVoices(mReadAloudPrefsNatives, Map.of("en", "voiceB"));
+        mController.setVoiceOverrideAndApplyToPlayback(new PlaybackVoice("en", "voiceB", ""));
+        resolvePromises();
+
+        // The new session resumes from the same word instead of the beginning.
+        verify(mNativeBridgeNatives, times(2)).play(any(), eq(mWebContents));
+        verify(mNativeBridgeNatives).seekToWord(any(), eq(1), eq(4));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testPreviewThenCloseVoiceMenu_nativeEnabled_resumesFromCurrentWord() {
+        startNativePlaybackReadingWord();
+
+        // Previewing stops the tab playback; selecting a voice must not restart it yet.
+        mController.previewVoice(new PlaybackVoice("en", "voiceB", ""));
+        resolvePromises();
+        MockPrefServiceHelper.setVoices(mReadAloudPrefsNatives, Map.of("en", "voiceB"));
+        mController.setVoiceOverrideAndApplyToPlayback(new PlaybackVoice("en", "voiceB", ""));
+        resolvePromises();
+        verify(mNativeBridgeNatives, times(1)).play(any(), eq(mWebContents));
+        verify(mNativeBridgeNatives, never()).seekToWord(any(), anyInt(), anyInt());
+
+        // Closing the menu restores the tab playback from the same word.
+        mController.onVoiceMenuClosed();
+        resolvePromises();
+        verify(mNativeBridgeNatives, times(2)).play(any(), eq(mWebContents));
+        verify(mNativeBridgeNatives).seekToWord(any(), eq(1), eq(4));
+    }
+
+    @Test
+    @EnableFeatures(ReadAloudFeatures.READ_ALOUD_NATIVE)
+    public void testSetPlaybackMode_nativeEnabled_restartsFromBeginning() {
+        startNativePlaybackReadingWord();
+
+        mController.setPlaybackModeAndApplyToPlayback(PlaybackMode.OVERVIEW);
+        resolvePromises();
+
+        // A playback mode change restarts without restoring the position.
+        verify(mNativeBridgeNatives, times(2)).play(any(), eq(mWebContents));
+        verify(mNativeBridgeNatives, never()).seekToWord(any(), anyInt(), anyInt());
     }
 
     @Test

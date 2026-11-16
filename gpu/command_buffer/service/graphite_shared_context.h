@@ -8,6 +8,7 @@
 #include <atomic>
 
 #include "base/functional/callback.h"
+#include "base/functional/function_ref.h"
 #include "base/synchronization/lock.h"
 #include "base/time/time.h"
 #include "gpu/command_buffer/common/constants.h"
@@ -65,13 +66,14 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
       void(void* ctx, std::unique_ptr<const SkSurface::AsyncReadResult>)>;
 
   // insertRecording() forces a submit once |max_pending_recordings| recordings
-  // are pending, or once |max_time_between_submits| has passed since the last
-  // submit.
+  // or |max_pending_commands| commands are pending, or once
+  // |max_time_between_submits| has passed since the last submit.
   GraphiteSharedContext(
       std::unique_ptr<skgpu::graphite::Context> graphite_context,
       GpuProcessShmCount* use_shader_cache_shm_count,
       bool is_thread_safe,
       size_t max_pending_recordings,
+      int max_pending_commands,
       base::TimeDelta max_time_between_submits,
       Delegate* delegate = nullptr);
 
@@ -116,6 +118,19 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
 
   bool hasUnfinishedGpuWork() const;
 
+  // Runs `do_work_fn` with the context locked and then submits with
+  // SyncToCpu::kYes under the same lock. `do_work_fn` issues readbacks with
+  // the asyncRescaleAndReadPixels*() methods below (the lock is recursive, so
+  // they can be called while it is held). Holding the lock across the
+  // readbacks and the submit guarantees that their callbacks have run on the
+  // calling thread when this returns (unless the context is lost), so the
+  // results can be used synchronously afterwards. Returns the result of the
+  // submit.
+  bool RunLockedAndSubmitSync(base::FunctionRef<void()> do_work_fn);
+
+  // Asynchronous readbacks. The callback runs on the calling thread once the
+  // read has finished, which needs a submit; use RunLockedAndSubmitSync() to
+  // wait for it synchronously.
   void asyncRescaleAndReadPixels(const SkImage* src,
                                  const SkImageInfo& dstImageInfo,
                                  const SkIRect& srcRect,
@@ -130,22 +145,6 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
                                  SkImage::RescaleMode rescaleMode,
                                  SkImageReadPixelsCallback callback,
                                  SkImage::ReadPixelsContext context);
-
-  bool asyncRescaleAndReadPixelsAndSubmit(const SkImage* src,
-                                          const SkImageInfo& dstImageInfo,
-                                          const SkIRect& srcRect,
-                                          SkImage::RescaleGamma rescaleGamma,
-                                          SkImage::RescaleMode rescaleMode,
-                                          SkImageReadPixelsCallback callback,
-                                          SkImage::ReadPixelsContext context);
-  bool asyncRescaleAndReadPixelsAndSubmit(const SkSurface* src,
-                                          const SkImageInfo& dstImageInfo,
-                                          const SkIRect& srcRect,
-                                          SkImage::RescaleGamma rescaleGamma,
-                                          SkImage::RescaleMode rescaleMode,
-                                          SkImageReadPixelsCallback callback,
-                                          SkImage::ReadPixelsContext context);
-
   void asyncRescaleAndReadPixelsYUV420(const SkImage* src,
                                        SkYUVColorSpace yuvColorSpace,
                                        sk_sp<SkColorSpace> dstColorSpace,
@@ -164,28 +163,6 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
                                        SkImage::RescaleMode rescaleMode,
                                        SkImageReadPixelsCallback callback,
                                        SkImage::ReadPixelsContext context);
-
-  bool asyncRescaleAndReadPixelsYUV420AndSubmit(
-      const SkImage* src,
-      SkYUVColorSpace yuvColorSpace,
-      sk_sp<SkColorSpace> dstColorSpace,
-      const SkIRect& srcRect,
-      const SkISize& dstSize,
-      SkImage::RescaleGamma rescaleGamma,
-      SkImage::RescaleMode rescaleMode,
-      SkImageReadPixelsCallback callback,
-      SkImage::ReadPixelsContext context);
-  bool asyncRescaleAndReadPixelsYUV420AndSubmit(
-      const SkSurface* src,
-      SkYUVColorSpace yuvColorSpace,
-      sk_sp<SkColorSpace> dstColorSpace,
-      const SkIRect& srcRect,
-      const SkISize& dstSize,
-      SkImage::RescaleGamma rescaleGamma,
-      SkImage::RescaleMode rescaleMode,
-      SkImageReadPixelsCallback callback,
-      SkImage::ReadPixelsContext context);
-
   void asyncRescaleAndReadPixelsYUVA420(const SkImage* src,
                                         SkYUVColorSpace yuvColorSpace,
                                         sk_sp<SkColorSpace> dstColorSpace,
@@ -204,27 +181,6 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
                                         SkImage::RescaleMode rescaleMode,
                                         SkImageReadPixelsCallback callback,
                                         SkImage::ReadPixelsContext context);
-
-  bool asyncRescaleAndReadPixelsYUVA420AndSubmit(
-      const SkImage* src,
-      SkYUVColorSpace yuvColorSpace,
-      sk_sp<SkColorSpace> dstColorSpace,
-      const SkIRect& srcRect,
-      const SkISize& dstSize,
-      SkImage::RescaleGamma rescaleGamma,
-      SkImage::RescaleMode rescaleMode,
-      SkImageReadPixelsCallback callback,
-      SkImage::ReadPixelsContext context);
-  bool asyncRescaleAndReadPixelsYUVA420AndSubmit(
-      const SkSurface* src,
-      SkYUVColorSpace yuvColorSpace,
-      sk_sp<SkColorSpace> dstColorSpace,
-      const SkIRect& srcRect,
-      const SkISize& dstSize,
-      SkImage::RescaleGamma rescaleGamma,
-      SkImage::RescaleMode rescaleMode,
-      SkImageReadPixelsCallback callback,
-      SkImage::ReadPixelsContext context);
 
   void checkAsyncWorkCompletion();
 
@@ -290,12 +246,14 @@ class GPU_GLES2_EXPORT GraphiteSharedContext {
   const size_t max_pending_recordings_;
   size_t num_pending_recordings_ = 0;
 
+  const int max_pending_commands_;
+
   // The number of pending commands in the graphite::Context's command buffer,
   // as reported by the last successful insertRecording() since last submit.
   int num_pending_commands_ = 0;
 
   // The max of pending commands across all non-skipped submits since creation.
-  int max_pending_commands_ = 0;
+  int peak_pending_commands_ = 0;
 
   const base::TimeDelta max_time_between_submits_;
   base::TimeTicks last_submit_time_;

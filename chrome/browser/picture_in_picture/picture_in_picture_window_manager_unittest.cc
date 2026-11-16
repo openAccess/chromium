@@ -372,6 +372,60 @@ TEST_F(PictureInPictureWindowManagerTest, OnEnterDocumentPictureInPicture) {
       web_contents(), child_web_contents());
 }
 
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterDocumentPipRejectedForDocumentPipChildWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController document_pip_controller;
+  ON_CALL(document_pip_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(document_pip_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(child_web_contents()));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &document_pip_controller);
+
+  std::unique_ptr<content::WebContents> second_child = CreateTestWebContents();
+
+  // Entering Document PiP from the Document PiP child WebContents must be
+  // rejected without closing the active Document PiP window.
+  EXPECT_CALL(document_pip_controller, Close).Times(0);
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      child_web_contents(), second_child.get());
+  EXPECT_EQ(child_web_contents(),
+            picture_in_picture_window_manager->GetChildWebContents());
+
+  EXPECT_CALL(document_pip_controller, Close(/*should_pause_video=*/false));
+  EXPECT_TRUE(picture_in_picture_window_manager->ExitPictureInPicture());
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterDocumentPipFromClosingWindowDoesNotUseFreedWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController existing_controller;
+  ON_CALL(existing_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(existing_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(nullptr));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &existing_controller);
+
+  // Simulate closing the existing PiP window synchronously destroying the
+  // requesting parent WebContents.
+  EXPECT_CALL(existing_controller, Close(/*should_pause_video=*/false))
+      .WillOnce([this](bool) { ResetChildWebContents(); });
+
+  std::unique_ptr<content::WebContents> new_child = CreateTestWebContents();
+  content::WebContents* requesting_parent = child_web_contents();
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      requesting_parent, new_child.get());
+  EXPECT_FALSE(picture_in_picture_window_manager->IsInPictureInPicture());
+}
+
 TEST_F(PictureInPictureWindowManagerTest, DontShowAutoPipSettingUiWithoutPip) {
   PictureInPictureWindowManager* picture_in_picture_window_manager =
       PictureInPictureWindowManager::GetInstance();
@@ -812,6 +866,51 @@ TEST_F(PictureInPictureWindowManagerTest,
   // Video PiP (where `GetChildWebContents()` is null).
   picture_in_picture_window_manager->UpdateCachedBounds(
       gfx::Rect(10, 20, 100, 100), display::Display(1));
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       DestroyingPreviousDocumentPipOpenerDoesNotClearActiveVideoPip) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  // Destroying the Document PiP opener while Document PiP is active should
+  // clear the active controller.
+  std::unique_ptr<content::WebContents> document_pip_opener =
+      CreateTestWebContents();
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      document_pip_opener.get(), child_web_contents());
+  EXPECT_TRUE(picture_in_picture_window_manager->IsInPictureInPicture());
+  EXPECT_EQ(document_pip_opener.get(),
+            picture_in_picture_window_manager->GetWebContents());
+  document_pip_opener.reset();
+  EXPECT_FALSE(picture_in_picture_window_manager->IsInPictureInPicture());
+
+  // When Document PiP is replaced by Video PiP on another WebContents,
+  // destroying the former Document PiP opener must not clear the active Video
+  // PiP controller.
+  document_pip_opener = CreateTestWebContents();
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      document_pip_opener.get(), child_web_contents());
+  EXPECT_TRUE(picture_in_picture_window_manager->IsInPictureInPicture());
+  EXPECT_EQ(document_pip_opener.get(),
+            picture_in_picture_window_manager->GetWebContents());
+
+  EXPECT_CALL(*mock_video_picture_in_picture_controller(),
+              SetOnWindowCreatedNotifyObserversCallback);
+  EXPECT_EQ(content::PictureInPictureResult::kSuccess,
+            picture_in_picture_window_manager->EnterVideoPictureInPicture(
+                web_contents()));
+  EXPECT_TRUE(picture_in_picture_window_manager->IsInPictureInPicture());
+  EXPECT_EQ(web_contents(),
+            picture_in_picture_window_manager->GetWebContents());
+
+  document_pip_opener.reset();
+  EXPECT_TRUE(picture_in_picture_window_manager->IsInPictureInPicture());
+  EXPECT_EQ(web_contents(),
+            picture_in_picture_window_manager->GetWebContents());
+
+  EXPECT_TRUE(picture_in_picture_window_manager->ExitPictureInPicture());
+  EXPECT_FALSE(picture_in_picture_window_manager->IsInPictureInPicture());
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

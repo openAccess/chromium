@@ -10,7 +10,10 @@ import android.os.ParcelUuid;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
 import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.ContextUtils;
@@ -38,9 +41,12 @@ import java.util.UUID;
 @JNINamespace("device")
 @NullMarked
 final class ChromeBluetoothDevice {
+    @JniType("::device::BluetoothDeviceAndroid")
+    interface NativeBluetoothDeviceAndroid extends JniTypeToken {}
+
     private static final String TAG = "Bluetooth";
 
-    private long mNativeBluetoothDeviceAndroid;
+    private @Nullable JniRawPtr<NativeBluetoothDeviceAndroid> mNativeBluetoothDeviceAndroid;
     final BluetoothDeviceWrapper mDevice;
     @Nullable BluetoothGattWrapper mBluetoothGatt;
     private boolean mPendingGattConnection;
@@ -51,7 +57,8 @@ final class ChromeBluetoothDevice {
             mWrapperToChromeDescriptorsMap;
 
     private ChromeBluetoothDevice(
-            long nativeBluetoothDeviceAndroid, BluetoothDeviceWrapper deviceWrapper) {
+            JniRawPtr<NativeBluetoothDeviceAndroid> nativeBluetoothDeviceAndroid,
+            BluetoothDeviceWrapper deviceWrapper) {
         mNativeBluetoothDeviceAndroid = nativeBluetoothDeviceAndroid;
         mDevice = deviceWrapper;
         mBluetoothGattCallbackImpl = new BluetoothGattCallbackImpl();
@@ -67,7 +74,10 @@ final class ChromeBluetoothDevice {
             mBluetoothGatt.close();
             mBluetoothGatt = null;
         }
-        mNativeBluetoothDeviceAndroid = 0;
+        if (mNativeBluetoothDeviceAndroid != null) {
+            mNativeBluetoothDeviceAndroid.release();
+            mNativeBluetoothDeviceAndroid = null;
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -75,8 +85,9 @@ final class ChromeBluetoothDevice {
 
     // Implements BluetoothDeviceAndroid::Create.
     @CalledByNative
-    private static ChromeBluetoothDevice create(
-            long nativeBluetoothDeviceAndroid, BluetoothDeviceWrapper deviceWrapper) {
+    static ChromeBluetoothDevice create(
+            JniRawPtr<NativeBluetoothDeviceAndroid> nativeBluetoothDeviceAndroid,
+            BluetoothDeviceWrapper deviceWrapper) {
         return new ChromeBluetoothDevice(nativeBluetoothDeviceAndroid, deviceWrapper);
     }
 
@@ -190,7 +201,7 @@ final class ChromeBluetoothDevice {
             mPendingGattConnection = false;
             mBluetoothGatt.close();
             mBluetoothGatt = null;
-            if (mNativeBluetoothDeviceAndroid != 0) {
+            if (mNativeBluetoothDeviceAndroid != null) {
                 ChromeBluetoothDeviceJni.get()
                         .onConnectionStateChange(
                                 mNativeBluetoothDeviceAndroid,
@@ -234,7 +245,7 @@ final class ChromeBluetoothDevice {
                     mBluetoothGatt = null;
                 }
             }
-            if (mNativeBluetoothDeviceAndroid != 0) {
+            if (mNativeBluetoothDeviceAndroid != null) {
                 ChromeBluetoothDeviceJni.get()
                         .onConnectionStateChange(
                                 mNativeBluetoothDeviceAndroid,
@@ -245,18 +256,17 @@ final class ChromeBluetoothDevice {
 
         @Override
         public void onMtuChanged(final int mtu, final int status) {
-            Log.i(
-                    TAG,
-                    "onMtuChanged mtu:%d status:%d==%s",
-                    mtu,
-                    status,
-                    status == android.bluetooth.BluetoothGatt.GATT_SUCCESS ? "OK" : "Error");
+            final boolean success = status == android.bluetooth.BluetoothGatt.GATT_SUCCESS;
+            Log.i(TAG, "onMtuChanged mtu:%d status:%d==%s", mtu, status, success ? "OK" : "Error");
             ThreadUtilsWrapper.getInstance()
                     .runOnUiThread(
                             () -> {
-                                if (mNativeBluetoothDeviceAndroid == 0 || mBluetoothGatt == null) {
+                                if (mNativeBluetoothDeviceAndroid == null
+                                        || mBluetoothGatt == null) {
                                     return;
                                 }
+                                ChromeBluetoothDeviceJni.get()
+                                        .onMtuChanged(mNativeBluetoothDeviceAndroid, mtu, success);
                                 mBluetoothGatt.discoverServices();
                             });
         }
@@ -273,7 +283,7 @@ final class ChromeBluetoothDevice {
         }
 
         private void onServicesDiscoveredUiThread() {
-            if (mNativeBluetoothDeviceAndroid != 0) {
+            if (mNativeBluetoothDeviceAndroid != null) {
                 // When the device disconnects it deletes mBluetoothGatt, so we need to check it's
                 // not null.
                 if (mBluetoothGatt == null) {
@@ -410,15 +420,18 @@ final class ChromeBluetoothDevice {
     interface Natives {
         // Binds to BluetoothDeviceAndroid::OnConnectionStateChange.
         void onConnectionStateChange(
-                long nativeBluetoothDeviceAndroid, int status, boolean connected);
+                JniPtr<NativeBluetoothDeviceAndroid> self, int status, boolean connected);
+
+        // Binds to BluetoothDeviceAndroid::OnMtuChanged.
+        void onMtuChanged(JniPtr<NativeBluetoothDeviceAndroid> self, int mtu, boolean success);
 
         // Binds to BluetoothDeviceAndroid::CreateGattRemoteService.
         void createGattRemoteService(
-                long nativeBluetoothDeviceAndroid,
+                JniPtr<NativeBluetoothDeviceAndroid> self,
                 String instanceId,
                 BluetoothGattServiceWrapper serviceWrapper);
 
         // Binds to BluetoothDeviceAndroid::GattServicesDiscovered.
-        void onGattServicesDiscovered(long nativeBluetoothDeviceAndroid);
+        void onGattServicesDiscovered(JniPtr<NativeBluetoothDeviceAndroid> self);
     }
 }

@@ -32,14 +32,13 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.SadTab;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -56,7 +55,9 @@ import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.CtaPageStation;
 import org.chromium.chrome.test.transit.page.RecentTabsPageStation;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeApplicationTestUtils;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
@@ -69,7 +70,6 @@ import java.util.List;
 
 /** Tests for Tab class. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class TabTest {
     @Rule
@@ -422,32 +422,32 @@ public class TabTest {
             assertNotNull(bgTab.getWebContents());
         }
 
-        Runnable loadPage =
-                () -> {
-                    ThreadUtils.runOnUiThreadBlocking(
-                            () -> {
-                                TabModel model =
-                                        mActivityTestRule.getActivity().getCurrentTabModel();
-                                TabModelUtils.setIndex(model, model.indexOf(bgTab));
-                            });
-                };
-        ChromeTabUtils.waitForTabPageLoaded(bgTab, secondUrl, loadPage);
+        WebPageStation bgPage =
+                WebPageStation.waitForWebPageLoad(
+                        Triggers.runOnUiThreadTo(
+                                () -> {
+                                    TabModel model =
+                                            mActivityTestRule.getActivity().getCurrentTabModel();
+                                    TabModelUtils.setIndex(model, model.indexOf(bgTab));
+                                }),
+                        bgTab,
+                        secondUrl);
         assertNotNull(bgTab.getView());
 
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     assertFalse(bgTab.canGoForward());
                     // Pending navigations get clobbered on subsequent pending navigations.
-                    if (hadPendingLoad) {
-                        assertFalse(bgTab.canGoBack());
-                    } else {
-                        assertTrue(bgTab.canGoBack());
-                        bgTab.goBack();
-                    }
+                    assertEquals(!hadPendingLoad, bgTab.canGoBack());
                 });
         if (hadPendingLoad) return;
 
-        ChromeTabUtils.waitForTabPageLoaded(bgTab, firstUrl);
+        // |firstUrl| may be the NTP, so use a generic page Station.
+        bgPage.runOnUiThreadTo(bgTab::goBack)
+                .arriveAt(
+                        CtaPageStation.newGenericBuilder()
+                                .initForLoadingUrlOnSameTab(firstUrl, bgPage)
+                                .build());
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     assertFalse(bgTab.canGoBack());

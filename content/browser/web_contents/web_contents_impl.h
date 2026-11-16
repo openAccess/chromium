@@ -99,6 +99,7 @@
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/color/color_provider_source_observer.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/native_theme/native_theme_observer.h"
 #include "url/origin.h"
@@ -281,11 +282,11 @@ class CONTENT_EXPORT WebContentsImpl
   void CancelActiveAndPendingDialogs();
 
   // Informs the render view host and the BrowserPluginEmbedder, if present, of
-  // a Drag Source End.
-  void DragSourceEndedAt(float client_x,
-                         float client_y,
-                         float screen_x,
-                         float screen_y,
+  // a Drag Source End. `client_point` and `screen_point` must either both be
+  // set or both be omitted (when the drag was rejected before starting a system
+  // drag session).
+  void DragSourceEndedAt(const std::optional<gfx::PointF>& client_point,
+                         const std::optional<gfx::PointF>& screen_point,
                          ui::mojom::DragOperation operation,
                          RenderWidgetHost* source_rwh);
 
@@ -764,6 +765,8 @@ class CONTENT_EXPORT WebContentsImpl
   void FrameSizeChanged(RenderFrameHostImpl* render_frame_host,
                         const gfx::Size& frame_size) override;
   void DOMContentLoaded(RenderFrameHostImpl* render_frame_host) override;
+  void ScriptToolsReadyStateChanged(
+      RenderFrameHostImpl* render_frame_host) override;
   void DocumentOnLoadCompleted(RenderFrameHostImpl* render_frame_host) override;
   void UpdateTitle(RenderFrameHostImpl* render_frame_host,
                    const std::u16string& title) override;
@@ -1075,7 +1078,8 @@ class CONTENT_EXPORT WebContentsImpl
       base::RepeatingCallback<bool(const GURL&,
                                    const std::optional<UrlMatchType>&)>,
       base::RepeatingCallback<void(NavigationHandle&)>,
-      bool allow_reuse) override;
+      bool allow_reuse,
+      std::unique_ptr<NavigationUIData> navigation_ui_data) override;
   void CancelAllPrerendering() override;
   bool IsAllowedToStartPrerendering() override;
   void BackNavigationLikely(
@@ -1342,6 +1346,7 @@ class CONTENT_EXPORT WebContentsImpl
   RenderFrameHostImpl* GetProspectiveOuterDocument() override;
   FrameTree* LoadingTree() override;
   void SetFocusedFrame(FrameTreeNode* node, SiteInstanceGroup* source) override;
+  void DidChangeFocusedFrame() override;
   FrameTree* GetOwnedDocumentPictureInPictureFrameTree() override;
   FrameTree* GetDocumentPictureInPictureOpenerFrameTree() override;
   std::optional<int64_t> GetPrivilegedContentsFeatureId() override;
@@ -2343,6 +2348,13 @@ class CONTENT_EXPORT WebContentsImpl
   // A scope that disallows custom cursors has expired.
   void DisallowCustomCursorScopeExpired();
 
+  // Schedules a coalesced task to resync `TextInputManager`'s active view with
+  // focus. Focus changes can happen during destructors, `CommitPending()`, or
+  // input filtering, where running IME observers (which may spin nested message
+  // loops or destroy `this`) synchronously is unsafe.
+  void UpdateFocusedViewForTextInputManager();
+  void HandleFocusedViewUpdateForTextInputManager();
+
   // WarmUp a spare render process for future navigations.
   void WarmUpAndroidSpareRenderer();
 
@@ -2978,6 +2990,8 @@ class CONTENT_EXPORT WebContentsImpl
 
   // True while `SetColorProviderSource()` is updating the observed source.
   bool is_setting_color_provider_source_ = false;
+
+  bool focused_view_update_scheduled_ = false;
 
   base::WeakPtrFactory<WebContentsImpl> loading_weak_factory_{this};
   base::WeakPtrFactory<WebContentsImpl> weak_factory_{this};

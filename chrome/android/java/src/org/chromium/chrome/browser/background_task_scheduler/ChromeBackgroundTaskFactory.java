@@ -6,7 +6,7 @@ package org.chromium.chrome.browser.background_task_scheduler;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
-import org.jni_zero.CalledByNative;
+import org.jni_zero.CalledByNativeForTesting;
 
 import org.chromium.base.Log;
 import org.chromium.build.annotations.NullMarked;
@@ -18,6 +18,7 @@ import org.chromium.chrome.browser.notifications.NotificationTriggerBackgroundTa
 import org.chromium.chrome.browser.notifications.scheduler.NotificationSchedulerTask;
 import org.chromium.chrome.browser.offlinepages.OfflineBackgroundTask;
 import org.chromium.chrome.browser.omaha.OmahaService;
+import org.chromium.chrome.browser.omaha.inline.InAppUpdateRestartTask;
 import org.chromium.chrome.browser.safety_hub.SafetyHubFetchTask;
 import org.chromium.chrome.browser.services.gcm.GCMNativeBackgroundTask;
 import org.chromium.chrome.browser.webapps.WebApkUpdateTask;
@@ -26,7 +27,6 @@ import org.chromium.components.background_task_scheduler.BackgroundTaskFactory;
 import org.chromium.components.background_task_scheduler.BackgroundTaskSchedulerFactory;
 import org.chromium.components.background_task_scheduler.NativeBackgroundTask;
 import org.chromium.components.background_task_scheduler.TaskIds;
-import org.chromium.components.component_updater.UpdateTask;
 import org.chromium.components.enterprise.reporting.SignalsReportingBackgroundTask;
 
 /**
@@ -43,9 +43,14 @@ public class ChromeBackgroundTaskFactory implements BackgroundTaskFactory {
         static final ChromeBackgroundTaskFactory INSTANCE = new ChromeBackgroundTaskFactory();
     }
 
-    @CalledByNative
     public static void setAsDefault() {
         BackgroundTaskSchedulerFactory.setBackgroundTaskFactory(LazyHolder.INSTANCE);
+    }
+
+    @CalledByNativeForTesting
+    private static void setAsDefaultForTesting() {
+        setAsDefault();
+        BackgroundTaskSchedulerFactory.setSchedulerForTesting(null);
     }
 
     @Override
@@ -62,6 +67,8 @@ public class ChromeBackgroundTaskFactory implements BackgroundTaskFactory {
         switch (taskId) {
             case TaskIds.OMAHA_JOB_ID:
                 return new OmahaService();
+            case TaskIds.IN_APP_UPDATE_RESTART_JOB_ID:
+                return new InAppUpdateRestartTask();
             case TaskIds.GCM_BACKGROUND_TASK_JOB_ID:
                 return new GCMNativeBackgroundTask();
             case TaskIds.OFFLINE_PAGES_BACKGROUND_JOB_ID:
@@ -75,8 +82,6 @@ public class ChromeBackgroundTaskFactory implements BackgroundTaskFactory {
                 return new DownloadBackgroundTask();
             case TaskIds.WEBAPK_UPDATE_JOB_ID:
                 return new WebApkUpdateTask();
-            case TaskIds.COMPONENT_UPDATE_JOB_ID:
-                return new UpdateTask();
             case TaskIds.BACKGROUND_SYNC_ONE_SHOT_JOB_ID:
                 return new BackgroundSyncBackgroundTask();
             case TaskIds.NOTIFICATION_SCHEDULER_JOB_ID:

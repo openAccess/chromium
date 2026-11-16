@@ -25,6 +25,7 @@
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/version.h"
 #include "chrome/browser/ash/growth/campaigns_manager_session.h"
 #include "chrome/browser/ash/growth/install_web_app_action_performer.h"
@@ -199,11 +200,12 @@ bool CampaignsManagerClientImpl::IsAppIconOnShelf(
   return true;
 }
 
-const std::string& CampaignsManagerClientImpl::GetApplicationLocale() const {
+const base::i18n::LanguageTag&
+CampaignsManagerClientImpl::GetApplicationLocale() const {
   // User selected locale, then resolved using
   // `l10n_util::CheckAndResolveLocale` to a platform locale.
   // For example: `en-IN` will be resolved to `en-GB`.
-  return application_locale_storage_->Get();
+  return application_locale_storage_->GetTag();
 }
 
 const std::string& CampaignsManagerClientImpl::GetUserLocale() const {
@@ -214,8 +216,7 @@ const std::string& CampaignsManagerClientImpl::GetUserLocale() const {
       user_manager::UserManager::Get()->FindUser(account_id_);
   const PrefService* prefs = user ? user->GetProfilePrefs() : nullptr;
   if (!prefs) {
-    static const base::NoDestructor<std::string> empty_locale;
-    return *empty_locale;
+    return base::EmptyString();
   }
   return prefs->GetString(language::prefs::kApplicationLocale);
 }

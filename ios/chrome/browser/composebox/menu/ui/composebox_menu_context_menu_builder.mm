@@ -77,7 +77,7 @@ struct MenuItemAvailability {
         inlineMenuFromItemTypes:{kAttachmentGallery, kAttachmentCamera,
                                  kAttachmentTabs}
                       withTitle:_inputState.uiConfig.attachmentsSectionHeader];
-    UIMenu* aimMenu = [self inlineMenuFromItemTypes:{kAIM}];
+    UIMenu* aimMenu = [self inlineMenuFromItemTypes:{kAIM, kPTM}];
     UIMenu* moreOptions = [self createMoreOptionsSubmenu];
 
     if (currentTabMenu) {
@@ -98,7 +98,7 @@ struct MenuItemAvailability {
                                        kAttachmentCamera, kAttachmentGallery,
                                        kAttachmentFiles, kAttachmentDrive}];
     UIMenu* modeMenu = [self
-        inlineMenuFromItemTypes:{kAIM, kCreateImage, kDeepSearch, kCanvas}
+        inlineMenuFromItemTypes:{kAIM, kPTM, kCreateImage, kDeepSearch, kCanvas}
                       withTitle:[_inputState.uiConfig toolsSectionHeader]];
     UIMenu* modelPickerMenu = [self createModelPickerMenu];
 
@@ -188,10 +188,6 @@ struct MenuItemAvailability {
 
 // Creates the menu component for the model picker section.
 - (UIMenu*)createModelPickerMenu {
-  if (!_inputState.allowModelPicker) {
-    return nil;
-  }
-
   NSMutableArray<UIAction*>* actions = [[NSMutableArray alloc] init];
   for (ComposeboxModelItem* item in _inputState.modelItems) {
     [actions addObject:[self actionForModelItem:item]];
@@ -227,10 +223,14 @@ struct MenuItemAvailability {
   if (availability.hidden) {
     return nil;
   }
+  NSString* title = [self titleForMenuItem:menuItemType];
+  if (!title.length) {
+    return nil;
+  }
 
   __weak __typeof(self) weakSelf = self;
   UIAction* action =
-      [UIAction actionWithTitle:[self titleForMenuItem:menuItemType]
+      [UIAction actionWithTitle:title
                           image:[self imageForMenuItem:menuItemType]
                      identifier:nil
                         handler:^(UIAction*) {
@@ -281,6 +281,8 @@ struct MenuItemAvailability {
       return [_inputState.uiConfig iconForTool:ComposeboxMode::kDeepSearch];
     case ComposeboxMenuItemType::kCanvas:
       return [_inputState.uiConfig iconForTool:ComposeboxMode::kCanvas];
+    case ComposeboxMenuItemType::kPTM:
+      return [_inputState.uiConfig iconForTool:ComposeboxMode::kPTM];
     case ComposeboxMenuItemType::kCurrentTab: {
       UIImage* favicon = _inputState.currentTabFavicon;
       if (favicon) {
@@ -332,6 +334,8 @@ struct MenuItemAvailability {
           [_inputState.uiConfig menuLabelForTool:ComposeboxMode::kDeepSearch];
     case ComposeboxMenuItemType::kCanvas:
       return [_inputState.uiConfig menuLabelForTool:ComposeboxMode::kCanvas];
+    case ComposeboxMenuItemType::kPTM:
+      return [_inputState.uiConfig menuLabelForTool:ComposeboxMode::kPTM];
     case ComposeboxMenuItemType::kCurrentTab:
       return IsPlusButtonMenuStringUpdatesEnabled()
                  ? l10n_util::GetNSString(
@@ -394,6 +398,8 @@ struct MenuItemAvailability {
       return MenuItemAvailability(_inputState, ComposeboxMode::kDeepSearch);
     case ComposeboxMenuItemType::kCanvas:
       return MenuItemAvailability(_inputState, ComposeboxMode::kCanvas);
+    case ComposeboxMenuItemType::kPTM:
+      return MenuItemAvailability(_inputState, ComposeboxMode::kPTM);
     // Model actions are created from `ComposeboxModelItem`s.
     case ComposeboxMenuItemType::kModel:
     case ComposeboxMenuItemType::kUnknown:
@@ -413,6 +419,8 @@ struct MenuItemAvailability {
           menuSubtitleForTool:ComposeboxMode::kImageGeneration];
     case ComposeboxMenuItemType::kCanvas:
       return [_inputState.uiConfig menuSubtitleForTool:ComposeboxMode::kCanvas];
+    case ComposeboxMenuItemType::kPTM:
+      return [_inputState.uiConfig menuSubtitleForTool:ComposeboxMode::kPTM];
     default:
       return nil;
   }

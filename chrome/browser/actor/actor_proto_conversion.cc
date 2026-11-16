@@ -36,6 +36,7 @@
 #include "chrome/browser/actor/tools/autofill/attempt_form_filling/attempt_form_filling_tool_request.h"
 #include "chrome/browser/actor/tools/click_tool_request.h"
 #include "chrome/browser/actor/tools/drag_and_release_tool_request.h"
+#include "chrome/browser/actor/tools/execute_js_tool_request.h"
 #include "chrome/browser/actor/tools/file_upload_tool_request.h"
 #include "chrome/browser/actor/tools/gemini_panel_tool_request.h"
 #include "chrome/browser/actor/tools/history_tool_request.h"
@@ -95,7 +96,6 @@
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #else
-#include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #endif
 
@@ -120,6 +120,7 @@ using apc::CloseWindowAction;
 using apc::CreateTabAction;
 using apc::CreateWindowAction;
 using apc::DragAndReleaseAction;
+using apc::ExecuteJsAction;
 using apc::HistoryBackAction;
 using apc::HistoryForwardAction;
 using apc::LoadAndExtractContentAction;
@@ -442,13 +443,19 @@ std::unique_ptr<ToolRequest> CreateSelectRequest(const SelectAction& action) {
 
 std::unique_ptr<ToolRequest> CreateNavigateRequest(
     const NavigateAction& action) {
-  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
-  if (!action.has_url() || actor_surface_handle.is_null()) {
+  if (!action.has_url()) {
     return nullptr;
   }
 
-  return std::make_unique<NavigateToolRequest>(actor_surface_handle,
-                                               GURL(action.url()));
+  ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  // A navigate either names the tab to navigate, or opens a new tab (in the
+  // most recently active window).
+  if (actor_surface_handle.is_null() != action.has_new_surface()) {
+    return nullptr;
+  }
+
+  return std::make_unique<NavigateToolRequest>(
+      actor_surface_handle, GURL(action.url()), action.has_new_surface());
 }
 
 std::unique_ptr<ToolRequest> CreateCreateTabRequest(
@@ -833,6 +840,39 @@ std::unique_ptr<ToolRequest> CreateScriptToolRequest(
       action.input_arguments());
 }
 
+base::expected<std::unique_ptr<ToolRequest>, mojom::ActionResultCode>
+CreateExecuteJsRequest(const ExecuteJsAction& action) {
+  if (!base::FeatureList::IsEnabled(actor::kActorExecuteJsTool)) {
+    return base::unexpected(mojom::ActionResultCode::kToolUnknown);
+  }
+
+  const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
+  if (actor_surface_handle.is_null()) {
+    return base::unexpected(mojom::ActionResultCode::kTabWentAway);
+  }
+
+  if (action.script_code().empty()) {
+    return base::unexpected(mojom::ActionResultCode::kArgumentsInvalid);
+  }
+
+  std::optional<base::UnguessableToken> document_identifier =
+      base::UnguessableToken::DeserializeFromString(
+          action.document_identifier().serialized_token());
+  if (!document_identifier) {
+    return nullptr;
+  }
+
+  base::TimeDelta timeout = kExecuteJsDefaultTimeout;
+  if (action.timeout_ms() > 0) {
+    timeout =
+        std::min(base::Milliseconds(action.timeout_ms()), kExecuteJsMaxTimeout);
+  }
+
+  return std::make_unique<ExecuteJsToolRequest>(
+      actor_surface_handle, *document_identifier, action.script_code(),
+      base::checked_cast<uint32_t>(timeout.InMilliseconds()));
+}
+
 std::unique_ptr<ToolRequest> CreateMediaControlRequest(
     const MediaControlAction& action) {
   const ActorSurfaceHandle actor_surface_handle = GetActorSurfaceHandle(action);
@@ -996,6 +1036,10 @@ CreateToolRequest(const optimization_guide::proto::Action& action) {
       const ScriptToolAction& script_tool_action = action.script_tool();
       return CreateScriptToolRequest(script_tool_action);
     }
+    case optimization_guide::proto::Action::kExecuteJs: {
+      const ExecuteJsAction& execute_js_action = action.execute_js();
+      return CreateExecuteJsRequest(execute_js_action);
+    }
     case optimization_guide::proto::Action::kScrollTo: {
       const ScrollToAction& scroll_to_action = action.scroll_to();
       return CreateScrollToRequest(scroll_to_action);
@@ -1082,6 +1126,8 @@ constexpr absl::Overload kGetCapabilityFn{
                  apc::RuleMetadata::CAPABILITY_CREATE_TAB>,
     ToCapability<DragAndReleaseToolRequest,
                  apc::RuleMetadata::CAPABILITY_DRAG_AND_RELEASE>,
+    ToCapability<ExecuteJsToolRequest,
+                 apc::RuleMetadata::CAPABILITY_EXECUTE_JS>,
     ToCapability<FileUploadToolRequest,
                  apc::RuleMetadata::CAPABILITY_CLICK_TO_UPLOAD>,
     ToCapability<HistoryBackToolRequest, apc::RuleMetadata::CAPABILITY_BACK>,
@@ -1622,6 +1668,7 @@ apc::TabObservation::ScreenshotResult ToScreenshotResult(
     case ScreenshotCaptureStatus::kPaintPreviewError:
     case ScreenshotCaptureStatus::kRedactionError:
     case ScreenshotCaptureStatus::kEncodingError:
+    case ScreenshotCaptureStatus::kBlockedByEnterprisePolicy:
       return apc::TabObservation::SCREENSHOT_ERROR;
   }
 }
@@ -1749,6 +1796,7 @@ void BuildActionsResultWithObservations(
     response->set_index_of_failed_action(*index_of_failed_action);
   }
   CopyScriptToolResults(*response, action_results);
+  CopyExecuteJsResults(*response, action_results);
 
   for (const auto& action_result : action_results) {
     if (IsOk(*action_result.result)) {
@@ -1825,14 +1873,13 @@ void BuildActionsResultWithObservations(
         // Treat the first window as active.
         window_observation->set_active(response->windows_size() == 1);
 
-        if (TabModel* tab_model =
-                static_cast<TabModel*>(TabListInterface::From(browser))) {
-          if (tabs::TabInterface* active_tab = tab_model->GetActiveTab()) {
+        if (TabListInterface* tab_list = TabListInterface::From(browser)) {
+          if (tabs::TabInterface* active_tab = tab_list->GetActiveTab()) {
             window_observation->set_activated_tab_id(
                 active_tab->GetHandle().raw_value());
           }
 
-          for (const tabs::TabInterface* tab : tab_model->GetAllTabs()) {
+          for (const tabs::TabInterface* tab : tab_list->GetAllTabs()) {
             window_observation->add_tab_ids(tab->GetHandle().raw_value());
           }
         }
@@ -1854,20 +1901,20 @@ void BuildActionsResultWithObservations(
     // implemented by not putting the tab into the LastActedTabs set.
     // TODO(b/565820285): Decide how to handle headless surfaces here: observe
     // them, or skip them until headless observation is supported.
-    TabHandle handle = actor_surface_handle.GetTabHandle();
-    if (handle == TabHandle::Null()) {
+    TabHandle tab_handle = actor_surface_handle.GetTabHandle();
+    if (tab_handle == TabHandle::Null()) {
       continue;
     }
 
     ActorSurface* actor_surface = actor_surface_handle.Get();
     if (!actor_surface) {
       apc::TabObservation* tab_observation = response->add_tabs();
-      tab_observation->set_id(handle.raw_value());
+      tab_observation->set_id(tab_handle.raw_value());
       tab_observation->set_result(
           apc::TabObservation::TAB_OBSERVATION_TAB_WENT_AWAY);
       actor_service->GetJournal().Log(GURL(), task.id(), "TabObservationFailed",
                                       JournalDetailsBuilder()
-                                          .Add("tabId", handle.raw_value())
+                                          .Add("tabId", tab_handle.raw_value())
                                           .AddError("TabWentAway")
                                           .Build());
     } else if (!actor_surface->GetWebContents()
@@ -1876,18 +1923,18 @@ void BuildActionsResultWithObservations(
       // TODO(crbug.com/392167142): We should also handle the crashed subframes.
       // However we don't want unrelated subframe crash to terminate the task.
       apc::TabObservation* tab_observation = response->add_tabs();
-      tab_observation->set_id(handle.raw_value());
+      tab_observation->set_id(tab_handle.raw_value());
       tab_observation->set_result(
           apc::TabObservation::TAB_OBSERVATION_PAGE_CRASHED);
       actor_service->GetJournal().Log(GURL(), task.id(), "TabObservationFailed",
                                       JournalDetailsBuilder()
-                                          .Add("tabId", handle.raw_value())
+                                          .Add("tabId", tab_handle.raw_value())
                                           .AddError("Page crashed")
                                           .Build());
     } else {
       apc::TabObservation* tab_observation = response->add_tabs();
       tabs_to_fetch.emplace(actor_surface_handle, tab_observation);
-      tab_observation->set_id(handle.raw_value());
+      tab_observation->set_id(tab_handle.raw_value());
       if (skip_async_observation_information) {
         tab_observation->set_result(apc::TabObservation::TAB_OBSERVATION_OK);
       }

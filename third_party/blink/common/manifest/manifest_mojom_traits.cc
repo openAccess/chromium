@@ -10,11 +10,13 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "mojo/public/cpp/base/string16_mojom_traits.h"
 #include "mojo/public/cpp/bindings/type_converter.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 #include "third_party/blink/public/common/manifest/manifest.h"
+#include "third_party/blink/public/common/manifest/manifest_invariants.h"
 #include "third_party/blink/public/common/safe_url_pattern.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom-data-view.h"
@@ -455,6 +457,147 @@ bool StructTraits<blink::mojom::ManifestMigrateToDataView,
     return false;
   }
   return data.ReadInstallUrl(&out->install_url);
+}
+
+base::expected<void, mojo::DeserializationError>
+StructTraits<blink::mojom::ManifestDataView, ::blink::Manifest>::Read(
+    blink::mojom::ManifestDataView data,
+    ::blink::Manifest* out) {
+  auto manifest_data = base::MakeRefCounted<::blink::Manifest::Data>();
+  // LINT.IfChange(ManifestStructTraitsRead)
+  if (!data.ReadManifestUrl(&manifest_data->manifest_url)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDir(&manifest_data->dir)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadName(&manifest_data->name)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadShortName(&manifest_data->short_name)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDescription(&manifest_data->description)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadId(&manifest_data->id)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  manifest_data->has_custom_id = data.has_custom_id();
+  if (!data.ReadStartUrl(&manifest_data->start_url)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  manifest_data->has_valid_specified_start_url =
+      data.has_valid_specified_start_url();
+  if (!data.ReadDisplay(&manifest_data->display)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDisplayOverride(&manifest_data->display_override)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadOrientation(&manifest_data->orientation)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadIcons(&manifest_data->icons)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadScreenshots(&manifest_data->screenshots)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadShortcuts(&manifest_data->shortcuts)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadShareTarget(&manifest_data->share_target)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadFileHandlers(&manifest_data->file_handlers)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadProtocolHandlers(&manifest_data->protocol_handlers)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadScopeExtensions(&manifest_data->scope_extensions)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadLockScreen(&manifest_data->lock_screen)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadNoteTaking(&manifest_data->note_taking)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadRelatedApplications(&manifest_data->related_applications)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  manifest_data->prefer_related_applications =
+      data.prefer_related_applications();
+  if (!data.ReadMigrateFrom(&manifest_data->migrate_from)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadMigrateTo(&manifest_data->migrate_to)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadThemeColor(&manifest_data->theme_color)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadBackgroundColor(&manifest_data->background_color)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadGcmSenderId(&manifest_data->gcm_sender_id)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadScope(&manifest_data->scope)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadUpdateManifestUrl(&manifest_data->update_manifest_url)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadLaunchHandler(&manifest_data->launch_handler)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadTranslations(&manifest_data->translations)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDarkThemeColor(&manifest_data->dark_theme_color)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDarkBackgroundColor(&manifest_data->dark_background_color)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadTabStrip(&manifest_data->tab_strip)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadVersion(&manifest_data->version)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadNameLocalized(&manifest_data->name_localized)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadShortNameLocalized(&manifest_data->short_name_localized)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadDescriptionLocalized(&manifest_data->description_localized)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  if (!data.ReadIconsLocalized(&manifest_data->icons_localized)) {
+    return base::unexpected(mojo::DeserializationError());
+  }
+  // LINT.ThenChange(
+  //   //third_party/blink/public/common/manifest/manifest.h:ManifestFields,
+  //   //third_party/blink/public/mojom/manifest/manifest.mojom:ManifestFields,
+  //   //third_party/blink/common/manifest/manifest.cc:ManifestEquality,
+  //   //third_party/blink/common/manifest/manifest_unittest.cc:ManifestEqualityTest,
+  //   //third_party/blink/common/manifest/manifest_mojom_traits_unittest.cc:ManifestMojomRoundTripFields
+  // )
+
+  ::blink::Manifest candidate(std::move(manifest_data));
+  if (auto error = candidate.ValidateInvariants()) {
+    base::UmaHistogramEnumeration("WebApp.Manifest.InvariantViolation", *error);
+    return base::unexpected(
+        mojo::DeserializationError::CustomCode(static_cast<int>(*error)));
+  }
+
+  *out = std::move(candidate);
+  return base::ok();
 }
 
 }  // namespace mojo

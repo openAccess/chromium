@@ -48,7 +48,6 @@ class ScopedCrosSettingsTestHelper {
   // settings in memory unsigned; see StubCrosSettingsProvider for more info.
   void ReplaceDeviceSettingsProviderWithStub();
   void RestoreRealDeviceSettingsProvider();
-  bool IsDeviceSettingsProviderStubbed();
 
   // Method to create an owner settings service that uses
   // |stub_settings_provider_| as settings write path.
@@ -75,16 +74,6 @@ class ScopedCrosSettingsTestHelper {
   void SetInteger(const std::string& path, int in_value);
   void SetDouble(const std::string& path, double in_value);
   void SetString(const std::string& path, const std::string& in_value);
-
-  // This may be called before or after |ReplaceDeviceSettingsProviderWithStub|
-  // is called. It reads the value for |path| from the original, real,
-  // DeviceSettingsProvider, and copies it to the stub DeviceSettingsProvider.
-  void CopyStoredValue(const std::string& path);
-
-  // Write the setting from |path| in the stub DeviceSettingsProvider to local
-  // state so that it can be retrieved later on browser test startup by the
-  // device settings service.
-  void StoreCachedDeviceSetting(const std::string& path);
 
   // Get the scoped install attributes to change them as needed for the
   // current test.

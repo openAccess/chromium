@@ -69,8 +69,7 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
     public static TabWebContentsObserver from(Tab tab) {
         TabWebContentsObserver observer = get(tab);
         if (observer == null) {
-            observer = new TabWebContentsObserver(tab);
-            tab.getUserDataHost().setUserData(USER_DATA_KEY, observer);
+            observer = attachToTab(USER_DATA_KEY, new TabWebContentsObserver(tab));
         }
         return observer;
     }
@@ -86,10 +85,12 @@ public class TabWebContentsObserver extends TabWebContentsUserData {
     }
 
     /**
-     * Adds an observer triggered when |initWebContents| is invoked.
-     * <p>A newly created tab adding this observer misses the event because
-     * |TabObserver.onContentChanged| -&gt; |TabWebContentsObserver.initWebContents|
-     * occurs before the observer is added. Manually trigger it here.
+     * Adds an observer triggered when {@code initWebContents} is invoked.
+     *
+     * <p>A newly created tab adding this observer misses the event because {@code
+     * TabObserver.onContentChanged} -&gt; {@code TabWebContentsObserver.initWebContents} occurs
+     * before the observer is added. Manually trigger it here.
+     *
      * @param observer Observer to add.
      */
     public void addInitWebContentsObserver(Callback<WebContents> observer) {

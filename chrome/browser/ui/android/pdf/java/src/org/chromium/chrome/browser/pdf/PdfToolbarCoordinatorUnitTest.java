@@ -13,8 +13,10 @@ import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.app.Activity;
+import android.os.Build;
 import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -38,6 +40,7 @@ import org.mockito.AdditionalMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -46,10 +49,15 @@ import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.pdf.PdfUtils.PdfToolbarAction;
 import org.chromium.ui.base.TestActivity;
+import org.chromium.ui.listmenu.ListMenu;
 import org.chromium.ui.listmenu.ListMenuButton;
+import org.chromium.ui.listmenu.ListMenuItemProperties;
+import org.chromium.ui.listmenu.ListMenuSubmenuItemProperties;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures({ChromeFeatureList.INLINE_PDF_V2, ChromeFeatureList.INLINE_PDF_V2_DOWNLOAD})
+@EnableFeatures({ChromeFeatureList.INLINE_PDF_V2})
+@Config(sdk = Build.VERSION_CODES.VANILLA_ICE_CREAM)
 public class PdfToolbarCoordinatorUnitTest {
     private static final String TITLE = "test_title.pdf";
     private static final int PAGE_COUNT = 100;
@@ -356,8 +364,9 @@ public class PdfToolbarCoordinatorUnitTest {
 
     @Test
     public void testZoomInClick_recordsMetric() {
-        var histogramWatcher = HistogramWatcher.newSingleRecordWatcher(
-                "Android.Pdf.ToolbarAction", PdfToolbarAction.ZOOM_IN);
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.ZOOM_IN);
         View zoomIncreaseButton = mPdfPageView.findViewById(R.id.zoom_increase_button);
         zoomIncreaseButton.performClick();
         histogramWatcher.assertExpected();
@@ -365,8 +374,9 @@ public class PdfToolbarCoordinatorUnitTest {
 
     @Test
     public void testZoomOutClick_recordsMetric() {
-        var histogramWatcher = HistogramWatcher.newSingleRecordWatcher(
-                "Android.Pdf.ToolbarAction", PdfToolbarAction.ZOOM_OUT);
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.ZOOM_OUT);
         View zoomDecreaseButton = mPdfPageView.findViewById(R.id.zoom_decrease_button);
         zoomDecreaseButton.performClick();
         histogramWatcher.assertExpected();
@@ -723,6 +733,238 @@ public class PdfToolbarCoordinatorUnitTest {
     }
 
     @Test
+    public void testDownloadViaMenu() {
+        // Layout narrow to hide download button and show it in the menu.
+        setToolbarWidth(780);
+
+        View downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull("Download button should not be null", downloadButton);
+        assertEquals(View.GONE, downloadButton.getVisibility());
+
+        ListView listView = openMoreMenu();
+        View downloadItemView = null;
+        for (int i = 0; i < listView.getAdapter().getCount(); i++) {
+            View itemView = listView.getAdapter().getView(i, null, listView);
+            TextView textView = itemView.findViewById(R.id.menu_item_text);
+            if (textView != null
+                    && textView.getText()
+                            .toString()
+                            .equals(mActivity.getString(R.string.pdf_download))) {
+                downloadItemView = itemView;
+                break;
+            }
+        }
+        assertNotNull("Download menu item should be found", downloadItemView);
+
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_ORIGINAL);
+        downloadItemView.performClick();
+        verify(mDelegate).download();
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDownloadButtonClick_WithoutChanges_DownloadsImmediately() {
+        // Wide screen (e.g. 900dp) where download button should be directly visible on the toolbar.
+        setToolbarWidth(900);
+        when(mDelegate.hasChanges()).thenReturn(false);
+        View downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull("Download button should not be null", downloadButton);
+        assertEquals(View.VISIBLE, downloadButton.getVisibility());
+
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_ORIGINAL);
+        downloadButton.performClick();
+
+        verify(mDelegate).download();
+        assertNull(mPdfToolbarCoordinator.getDownloadListMenuForTesting());
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDownloadButtonClick_WithChanges_SelectsEditedOption() {
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn("https://example.com/test.pdf");
+        ListMenuButton downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull("Download button should not be null", downloadButton);
+        downloadButton.setAttachedToWindowForTesting();
+
+        var noActionWatcher =
+                HistogramWatcher.newBuilder().expectNoRecords("Android.Pdf.ToolbarAction").build();
+        downloadButton.performClick();
+        noActionWatcher.assertExpected();
+
+        verify(mDelegate, never()).download();
+        ListMenu menu = mPdfToolbarCoordinator.getDownloadListMenuForTesting();
+        assertNotNull(menu);
+        ListView listView = menu.getContentView().findViewById(R.id.menu_list);
+        assertEquals(2, listView.getAdapter().getCount());
+
+        var editedWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_EDITED);
+        ListItem editedItem = (ListItem) listView.getAdapter().getItem(0);
+        assertEquals(
+                R.string.pdf_download_edited,
+                editedItem.model.get(ListMenuItemProperties.TITLE_ID));
+        editedItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(downloadButton);
+        verify(mDelegate).download(/* includeAnnotations= */ true);
+        editedWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDownloadButtonClick_WithChanges_SelectsOriginalOption() {
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn("https://example.com/test.pdf");
+        ListMenuButton downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull("Download button should not be null", downloadButton);
+        downloadButton.setAttachedToWindowForTesting();
+
+        var noActionWatcher =
+                HistogramWatcher.newBuilder().expectNoRecords("Android.Pdf.ToolbarAction").build();
+        downloadButton.performClick();
+        noActionWatcher.assertExpected();
+
+        verify(mDelegate, never()).download();
+        ListMenu menu = mPdfToolbarCoordinator.getDownloadListMenuForTesting();
+        assertNotNull(menu);
+        ListView listView = menu.getContentView().findViewById(R.id.menu_list);
+        assertEquals(2, listView.getAdapter().getCount());
+
+        var originalWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_ORIGINAL);
+        ListItem originalItem = (ListItem) listView.getAdapter().getItem(1);
+        assertEquals(
+                R.string.pdf_download_original,
+                originalItem.model.get(ListMenuItemProperties.TITLE_ID));
+        originalItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(downloadButton);
+        verify(mDelegate).download(/* includeAnnotations= */ false);
+        originalWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDownloadButtonClick_WithChanges_LocalPdf_DownloadsImmediately() {
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn(null);
+        ListMenuButton downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull("Download button should not be null", downloadButton);
+        downloadButton.setAttachedToWindowForTesting();
+
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_EDITED);
+        downloadButton.performClick();
+
+        verify(mDelegate).download();
+        assertNull(mPdfToolbarCoordinator.getDownloadListMenuForTesting());
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDestroy_DismissesAndClearsMenus() {
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn("https://example.com/test.pdf");
+        ListMenuButton downloadButton = mPdfPageView.findViewById(R.id.download_button);
+        assertNotNull(downloadButton);
+        downloadButton.setAttachedToWindowForTesting();
+
+        downloadButton.performClick();
+        assertNotNull(mPdfToolbarCoordinator.getDownloadListMenuForTesting());
+
+        mPdfToolbarCoordinator.destroy();
+        assertNull(mPdfToolbarCoordinator.getDownloadListMenuForTesting());
+        assertNull(mPdfToolbarCoordinator.getListMenuForTesting());
+    }
+
+    @Test
+    public void testDownloadViaMenu_WithChanges_ShowsSubmenuOptions() {
+        setToolbarWidth(780);
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn("https://example.com/test.pdf");
+
+        ListMenuButton moreMenuButton = mPdfPageView.findViewById(R.id.more_menu_button);
+        ListView listView = openMoreMenu();
+        assertTrue(moreMenuButton.getHost().isMenuShowing());
+
+        ListItem downloadItem = (ListItem) listView.getAdapter().getItem(0);
+        assertEquals(
+                mActivity.getString(R.string.pdf_download),
+                downloadItem.model.get(ListMenuItemProperties.TITLE));
+
+        // Trigger drill-down into the submenu.
+        var noActionWatcher =
+                HistogramWatcher.newBuilder().expectNoRecords("Android.Pdf.ToolbarAction").build();
+        downloadItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(listView);
+        noActionWatcher.assertExpected();
+
+        View contentView = mPdfToolbarCoordinator.getListMenuForTesting().getContentView();
+        ListView headerListView = contentView.findViewById(R.id.menu_header);
+        assertEquals(1, headerListView.getAdapter().getCount());
+        ListItem headerItem = (ListItem) headerListView.getAdapter().getItem(0);
+        assertEquals(
+                mActivity.getString(R.string.pdf_download),
+                headerItem.model.get(ListMenuItemProperties.TITLE));
+
+        assertEquals(2, listView.getAdapter().getCount());
+        var editedWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_EDITED);
+        ListItem editedItem = (ListItem) listView.getAdapter().getItem(0);
+        assertEquals(
+                R.string.pdf_download_edited,
+                editedItem.model.get(ListMenuItemProperties.TITLE_ID));
+        editedItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(listView);
+        verify(mDelegate).download(/* includeAnnotations= */ true);
+        assertFalse(moreMenuButton.getHost().isMenuShowing());
+        editedWatcher.assertExpected();
+
+        // Reopen and drill down to verify the second option also triggers and dismisses the menu.
+        listView = openMoreMenu();
+        assertTrue(moreMenuButton.getHost().isMenuShowing());
+        downloadItem = (ListItem) listView.getAdapter().getItem(0);
+        downloadItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(listView);
+
+        var originalWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_ORIGINAL);
+        ListItem originalItem = (ListItem) listView.getAdapter().getItem(1);
+        assertEquals(
+                R.string.pdf_download_original,
+                originalItem.model.get(ListMenuItemProperties.TITLE_ID));
+        originalItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(listView);
+        verify(mDelegate).download(/* includeAnnotations= */ false);
+        assertFalse(moreMenuButton.getHost().isMenuShowing());
+        originalWatcher.assertExpected();
+    }
+
+    @Test
+    public void testDownloadViaMenu_WithChanges_LocalPdf_DownloadsDirectly() {
+        setToolbarWidth(780);
+        when(mDelegate.hasChanges()).thenReturn(true);
+        when(mDelegate.getDownloadUrl()).thenReturn(null);
+
+        ListView listView = openMoreMenu();
+        ListItem downloadItem = (ListItem) listView.getAdapter().getItem(0);
+        assertEquals(
+                R.string.pdf_download, downloadItem.model.get(ListMenuItemProperties.TITLE_ID));
+        assertFalse(
+                downloadItem
+                        .model
+                        .getAllProperties()
+                        .contains(ListMenuSubmenuItemProperties.SUBMENU_PROVIDER));
+
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.ToolbarAction", PdfToolbarAction.DOWNLOAD_EDITED);
+        downloadItem.model.get(ListMenuItemProperties.CLICK_LISTENER).onClick(listView);
+        verify(mDelegate).download();
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void testPrintButtonClick() {
         View printButton = mPdfPageView.findViewById(R.id.print_button);
         assertNotNull("Print button should not be null", printButton);
@@ -781,8 +1023,24 @@ public class PdfToolbarCoordinatorUnitTest {
 
         // Wide screen (e.g. 900dp) -> Should still be GONE because feature is disabled
         setToolbarWidth(900);
-
         assertEquals(View.GONE, downloadButton.getVisibility());
+
+        // Narrow screen (e.g. 780dp) -> Should not appear in the overflow menu
+        setToolbarWidth(780);
+        assertEquals(View.GONE, downloadButton.getVisibility());
+
+        ListView listView = openMoreMenu();
+        for (int i = 0; i < listView.getAdapter().getCount(); i++) {
+            View itemView = listView.getAdapter().getView(i, null, listView);
+            TextView textView = itemView.findViewById(R.id.menu_item_text);
+            if (textView != null) {
+                assertFalse(
+                        "Download item should not be in menu when feature is disabled",
+                        textView.getText()
+                                .toString()
+                                .equals(mActivity.getString(R.string.pdf_download)));
+            }
+        }
     }
 
     @Test

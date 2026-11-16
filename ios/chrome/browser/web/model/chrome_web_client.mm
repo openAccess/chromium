@@ -25,7 +25,6 @@
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/form_util/form_handlers_java_script_feature.h"
 #import "components/autofill/ios/form_util/programmatic_form_submission_handler_java_script_feature.h"
-#import "components/dom_distiller/core/url_constants.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
 #import "components/google/core/common/google_util.h"
@@ -39,8 +38,10 @@
 #import "components/search_engines/template_url_service.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/supervised_user/core/browser/supervised_user_interstitial.h"
+#import "components/sync/base/features.h"
 #import "components/translate/ios/browser/translate_java_script_feature.h"
 #import "components/version_info/version_info.h"
+#import "components/web_distiller/core/url_constants.h"
 #import "components/webauthn/ios/features.h"
 #import "components/webauthn/ios/passkey_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
@@ -94,6 +95,7 @@
 #import "ios/chrome/browser/supervised_user/model/supervised_user_interstitial_java_script_feature.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_service_factory.h"
 #import "ios/chrome/browser/supervised_user/model/supervised_user_url_filter_tab_helper.h"
+#import "ios/chrome/browser/sync/model/tab_context_decryption_token_java_script_feature.h"
 #import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_factory_ios.h"
 #import "ios/chrome/browser/unified_consent/model/url_keyed_data_collection_consent_helper_ios.h"
 #import "ios/chrome/browser/universal_optout/model/eligibility_utils.h"
@@ -408,7 +410,7 @@ scoped_refptr<base::RefCountedMemory> ChromeWebClient::GetDataResourceBytes(
 
 void ChromeWebClient::GetAdditionalWebUISchemes(
     std::vector<std::string>* additional_schemes) {
-  additional_schemes->push_back(dom_distiller::kDomDistillerScheme);
+  additional_schemes->push_back(web_distiller::kWebDistillerScheme);
 }
 
 void ChromeWebClient::PostBrowserURLRewriterCreation(
@@ -522,6 +524,11 @@ std::vector<web::JavaScriptFeature*> ChromeWebClient::GetJavaScriptFeatures(
 
   if (ShouldRegisterDeviceTrust(profile)) {
     features.push_back(DeviceTrustJavaScriptFeature::GetInstance());
+  }
+
+  if (base::FeatureList::IsEnabled(syncer::kSyncEncryptedTabContext)) {
+    features.push_back(
+        TabContextDecryptionTokenJavaScriptFeature::GetInstance());
   }
 
   return features;

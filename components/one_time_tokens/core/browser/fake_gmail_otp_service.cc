@@ -27,8 +27,11 @@ GmailOtpBackend* FakeGmailOtpService::GetBackend() {
 
 void FakeGmailOtpService::GetFreshestCachedOtp(
     const url::Origin& origin,
+    GmailOtpFlow flow,
+    ukm::SourceId ukm_source_id,
     bool allow_psl_matching,
     GetFreshestCachedOtpCallback callback) {
+  ++num_get_freshest_cached_otp_calls_;
   if (origin.opaque()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
@@ -55,10 +58,13 @@ void FakeGmailOtpService::GetFreshestCachedOtp(
 
 ExpiringSubscription FakeGmailOtpService::Subscribe(
     const url::Origin& origin,
+    GmailOtpFlow flow,
+    ukm::SourceId ukm_source_id,
     bool allow_psl_matching,
     base::Time expiration,
     IncomingTokenCallback callback,
     base::OnceClosure expiration_callback) {
+  ++num_subscribe_calls_;
   if (origin.opaque()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,

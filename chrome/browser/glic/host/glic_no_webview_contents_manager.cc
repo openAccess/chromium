@@ -22,6 +22,7 @@
 #include "chrome/browser/glic/glic_net_log.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/glic_overlay_ui.h"
+#include "chrome/browser/glic/host/glic_provider_change_relaunch.h"
 #include "chrome/browser/glic/host/glic_pwc_permission_delegate.h"
 #include "chrome/browser/glic/host/glic_pwc_policy_delegate.h"
 #include "chrome/browser/glic/host/glic_theme_util.h"
@@ -33,6 +34,7 @@
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_perf_traits_tracker.h"
+#include "chrome/browser/glic/public/glic_provider_change.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
@@ -120,6 +122,21 @@ ping();
   return base::UTF8ToUTF16(js);
 }
 
+// The relaunch panel variant for `pending_change`.
+mojom::ErrorPanelType ErrorForPendingProviderChange(
+    GlicProviderChange pending_change) {
+  switch (pending_change) {
+    case GlicProviderChange::kGeminiToGeic:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic;
+    case GlicProviderChange::kGeicToGemini:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini;
+    case GlicProviderChange::kGeicToOtherGeic:
+      return mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic;
+    case GlicProviderChange::kNone:
+      NOTREACHED();
+  }
+}
+
 std::optional<mojom::ErrorPanelType> ErrorForProfileReadyState(
     mojom::ProfileReadyState ready_state) {
   switch (ready_state) {
@@ -174,6 +191,9 @@ bool IsTransientError(mojom::ErrorPanelType error_type) {
     case mojom::ErrorPanelType::kDisabledByAdminWithLink:
     case mojom::ErrorPanelType::kSignIn:
     case mojom::ErrorPanelType::kLocationMismatch:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic:
       return false;
   }
 }
@@ -195,6 +215,10 @@ const char* ErrorPanelTypeToHistogramSuffix(mojom::ErrorPanelType error_type) {
       return "SignIn";
     case mojom::ErrorPanelType::kLocationMismatch:
       return "LocationMismatch";
+    case mojom::ErrorPanelType::kPendingProviderChangeGeminiToGeic:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToGemini:
+    case mojom::ErrorPanelType::kPendingProviderChangeGeicToOtherGeic:
+      return "PendingProviderChange";
   }
 }
 
@@ -577,6 +601,10 @@ void GlicNoWebviewContentsManager::OverlayContentsManager::
   owner_->ShowGuestDirectly(GuestState::kGuestError);
 }
 
+void GlicNoWebviewContentsManager::OverlayContentsManager::OnRelaunchClicked() {
+  MaybeRelaunchForProviderChange(profile_);
+}
+
 GlicNoWebviewContentsManager::GlicNoWebviewContentsManager(
     Profile* profile,
     GlicEnabling* enabling,
@@ -599,7 +627,7 @@ GlicNoWebviewContentsManager::GlicNoWebviewContentsManager(
           std::make_unique<GlicPwcPolicyDelegate>(profile),
           {.initially_hidden = initially_hidden})),
       zoom_controller_(
-          privileged_guest_contents_->web_contents(),
+          privileged_guest_contents_.get(),
           profile ? profile->GetPrefs() : nullptr,
           base::BindRepeating(&GlicNoWebviewContentsManager::OnZoomLevelChange,
                               base::Unretained(this))) {
@@ -640,6 +668,10 @@ GlicNoWebviewContentsManager::~GlicNoWebviewContentsManager() {
     actor::StopOffscreenRenderingForWebContents(guest_contents());
   }
 #endif
+}
+
+content::WebContents* GlicNoWebviewContentsManager::webui_contents() const {
+  return overlay_contents();
 }
 
 content::WebContents* GlicNoWebviewContentsManager::guest_contents() const {
@@ -689,8 +721,10 @@ void GlicNoWebviewContentsManager::AttachToHost(Host* host) {
     SetHostForGuest(*guest_contents(), host);
   }
 
-  if (auto error = std::exchange(pending_client_load_error_, std::nullopt)) {
-    host_->ClientLoadErrorOccurred(*error);
+  // A pending provider change takes priority over an error set before the
+  // contents were attached, which describes the latched provider.
+  if (!MaybeSetPendingProviderChangeError() && error_reason_.has_value()) {
+    host_->ClientLoadErrorOccurred(*error_reason_);
   }
 
   web_client_manager_.AttachToHost(host);
@@ -900,15 +934,33 @@ mojom::WebClientState GlicNoWebviewContentsManager::web_client_state() const {
 }
 
 bool GlicNoWebviewContentsManager::HasClientLoadFailed() const {
+  return CurrentClientLoadErrorReason().has_value();
+}
+
+std::optional<ClientLoadErrorReason>
+GlicNoWebviewContentsManager::CurrentClientLoadErrorReason() const {
   // Unresponsiveness is deliberately not included: the client is still
   // connected and can become responsive again without being reloaded.
-  return error_type_->has_value() || guest_state_ == GuestState::kGuestError ||
-         web_client_state() == mojom::WebClientState::kError;
+  if (error_type_->has_value()) {
+    return error_reason_;
+  }
+  if (web_client_state() == mojom::WebClientState::kError) {
+    return ClientLoadErrorReason::kClientError;
+  }
+  if (guest_state_ == GuestState::kGuestError) {
+    return ClientLoadErrorReason::kUnknown;
+  }
+  return std::nullopt;
 }
 
 void GlicNoWebviewContentsManager::UpdateClientLoadFailed() {
   if (host_) {
-    host_->SetClientLoadFailed(HasClientLoadFailed());
+    if (std::optional<ClientLoadErrorReason> reason =
+            CurrentClientLoadErrorReason()) {
+      host_->SetClientLoadFailed(*reason);
+    } else {
+      host_->ClearClientLoadFailed();
+    }
   }
   ResolvePendingWaitForLoadCallbacks();
 }
@@ -954,10 +1006,25 @@ void GlicNoWebviewContentsManager::OnGuestNavigated(
       SetErrorState(mojom::ErrorPanelType::kDisabledByAdminWithLink,
                     ClientLoadErrorReason::kDisabledByAdmin);
       break;
+    case mojom::GuestPageType::kOffline:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kOffline);
+      break;
     case mojom::GuestPageType::kLoadError:
       guest_state_.Set(GuestState::kLoading);
       SetErrorState(mojom::ErrorPanelType::kError,
                     ClientLoadErrorReason::kGuestLoadFailed);
+      break;
+    case mojom::GuestPageType::kHttpClientError:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestHttpClientError);
+      break;
+    case mojom::GuestPageType::kHttpServerError:
+      guest_state_.Set(GuestState::kLoading);
+      SetErrorState(mojom::ErrorPanelType::kError,
+                    ClientLoadErrorReason::kGuestHttpServerError);
       break;
     case mojom::GuestPageType::kOriginBlocked:
       guest_state_.Set(GuestState::kLoading);
@@ -1002,6 +1069,9 @@ void GlicNoWebviewContentsManager::OnGuestNavigated(
 }
 
 void GlicNoWebviewContentsManager::StartGuestBootstrap() {
+  if (GetGlicProviderSpec(profile_).SupportsApiBundleResource()) {
+    return;
+  }
   if (!guest_contents() || !guest_contents()->GetPrimaryMainFrame()) {
     return;
   }
@@ -1011,6 +1081,9 @@ void GlicNoWebviewContentsManager::StartGuestBootstrap() {
 }
 
 void GlicNoWebviewContentsManager::StopGuestBootstrap() {
+  if (GetGlicProviderSpec(profile_).SupportsApiBundleResource()) {
+    return;
+  }
   if (!guest_contents() || !guest_contents()->GetPrimaryMainFrame()) {
     return;
   }
@@ -1154,10 +1227,8 @@ void GlicNoWebviewContentsManager::SetErrorState(
   guest_state_.Set(GuestState::kLoading);
   if (host_) {
     host_->ClientLoadErrorOccurred(reason);
-  } else {
-    // Still warming; no Host to report to yet. AttachToHost() flushes this.
-    pending_client_load_error_ = reason;
   }
+  error_reason_ = reason;
   error_type_.Set(error_type);
 
   // An error occurred; transition to overlay if visible, or record for when
@@ -1169,7 +1240,7 @@ void GlicNoWebviewContentsManager::SetErrorState(
 }
 
 void GlicNoWebviewContentsManager::ClearErrorState() {
-  pending_client_load_error_.reset();
+  error_reason_.reset();
   error_type_.Set(std::nullopt);
   UpdateDisplayState();
 }
@@ -1181,11 +1252,15 @@ void GlicNoWebviewContentsManager::ClearTransientErrorState() {
 }
 
 void GlicNoWebviewContentsManager::UpdateForProfileReadyState(bool is_initial) {
+  // A pending provider change takes priority over profile errors, since a
+  // relaunch replaces the provider they describe.
+  if (MaybeSetPendingProviderChangeError()) {
+    return;
+  }
   mojom::ProfileReadyState ready_state =
       GlicEnabling::GetProfileReadyState(profile_);
-  std::optional<mojom::ErrorPanelType> error =
-      ErrorForProfileReadyState(ready_state);
-  if (error) {
+  if (std::optional<mojom::ErrorPanelType> error =
+          ErrorForProfileReadyState(ready_state)) {
     SetErrorState(*error, ReasonForProfileReadyState(ready_state));
   } else if (is_initial || error_type_->has_value()) {
     // Transitioned back to ready while showing an error, or initially ready;
@@ -1193,6 +1268,19 @@ void GlicNoWebviewContentsManager::UpdateForProfileReadyState(bool is_initial) {
     ClearErrorState();
     LoadGuest();
   }
+}
+
+bool GlicNoWebviewContentsManager::MaybeSetPendingProviderChangeError() {
+  // Decided once per instance, when its host is created. Contents that aren't
+  // attached to a host yet (e.g. warmed) load normally until they attach.
+  GlicProviderChange pending_change =
+      host_ ? host_->pending_provider_change() : GlicProviderChange::kNone;
+  if (pending_change == GlicProviderChange::kNone) {
+    return false;
+  }
+  SetErrorState(ErrorForPendingProviderChange(pending_change),
+                ClientLoadErrorReason::kPendingProviderChange);
+  return true;
 }
 
 void GlicNoWebviewContentsManager::OnProfileReadyStateChanged() {

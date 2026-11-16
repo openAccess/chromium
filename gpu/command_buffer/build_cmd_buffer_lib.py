@@ -1494,7 +1494,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   expected.cmd.Init(%(cmd_args)s);
 
   gl_->%(name)s(%(args)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
       cmd_arg_strings = [
@@ -2166,7 +2166,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   expected.cmd.Init(%(cmd_args)s);
 
   gl_->%(name)s(%(args)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));"""
+  EXPECT_TRUE(CommandsMatch(expected));"""
     if not func.IsES3():
       code += """
   ClearCommands();
@@ -2306,7 +2306,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   expected.data[0] = k%(types)sStartId;
   expected.data[1] = k%(types)sStartId + 1;
   gl_->%(name)s(std::size(ids), &ids[0]);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
   EXPECT_EQ(k%(types)sStartId, ids[0]);
   EXPECT_EQ(k%(types)sStartId + 1, ids[1]);
 }
@@ -2746,7 +2746,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   expected.data[0] = k%(types)sStartId;
   expected.data[1] = k%(types)sStartId + 1;
   gl_->%(name)s(std::size(ids), &ids[0]);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
     f.write(
@@ -3238,7 +3238,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
       .WillOnce(SetMemory(result1.ptr, SizedResultHelper<ResultType>(1)))
       .RetiresOnSaturation();
   gl_->%(name)s(%(args)s, &result);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
   EXPECT_EQ(static_cast<ResultType>(1), result);
 }
 """
@@ -3589,7 +3589,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   Cmds expected;
   expected.cmd.Init(%(cmd_args)s, data.data());
   gl_->%(name)s(%(args)s, data.data());
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
     cmd_arg_strings = [
@@ -3942,7 +3942,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   }
   expected.cmd.Init(%(cmd_args)s);
   gl_->%(name)s(%(args)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
     cmd_arg_strings = []
@@ -4299,7 +4299,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
   expected.clear_bucket_size.Init(kBucketId, 0);
   const char* kStrings[] = { kString1, kString2 };
   gl_->%(name)s(%(gl_args)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
     gl_args = []
@@ -4364,7 +4364,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)sWithLength) {
   const char* kStrings[] = { kString };
   const GLint kLength[] = { kStringSize };
   gl_->%(name)s(%(gl_args)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 """
     gl_args = []
@@ -4937,7 +4937,7 @@ TEST_F(%(prefix)sImplementationTest, %(name)s) {
       .RetiresOnSaturation();
 
   GLboolean result = gl_->%(name)s(%(gl_id_value)s);
-  EXPECT_EQ(0, UNSAFE_TODO(memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
   EXPECT_TRUE(result);
 }
 """
@@ -7002,22 +7002,11 @@ class GLGenerator:
       for state_name in sorted(_STATE_INFO.keys()):
         state = _STATE_INFO[state_name]
         for item in state['states']:
-          if isinstance(item['default'], list):
-            f.write(
-              "%s %s[%d];\n"
-              % (item['type'], item['name'], len(item['default']))
-            )
-          else:
-            f.write("%s %s;\n" % (item['type'], item['name']))
+          assert isinstance(item['default'], str)
+          f.write("%s %s;\n" % (item['type'], item['name']))
 
           if item.get('cached', False):
-            if isinstance(item['default'], list):
-              f.write(
-                "%s cached_%s[%d];\n"
-                % (item['type'], item['name'], len(item['default']))
-              )
-            else:
-              f.write("%s cached_%s;\n" % (item['type'], item['name']))
+            f.write("%s cached_%s;\n" % (item['type'], item['name']))
 
       f.write("\n")
       f.write("""
@@ -7073,7 +7062,7 @@ class GLGenerator:
       f.write(
         """
 bool %s::GetStateAs%s(
-    GLenum pname, %s* params, GLsizei* num_written) const {
+    GLenum pname, base::span<%s> params) const {
   switch (pname) {
 """
         % (class_name, gl_type, gl_type)
@@ -7081,59 +7070,26 @@ bool %s::GetStateAs%s(
       for state_name in sorted(_STATE_INFO.keys()):
         state = _STATE_INFO[state_name]
         if 'enum' in state:
+          values = ", ".join(
+            "static_cast<%s>(%s)" % (gl_type, item['name'])
+            for item in state['states']
+          )
           f.write("    case %s:\n" % state['enum'])
-          f.write("      *num_written = %d;\n" % len(state['states']))
-          f.write("      if (params) {\n")
-          for ndx, item in enumerate(state['states']):
-            f.write(
-              "        UNSAFE_TODO(params[%d]) = static_cast<%s>(%s);\n"
-              % (ndx, gl_type, item['name'])
-            )
-          f.write("      }\n")
+          f.write("      params.copy_from({%s});\n" % values)
           f.write("      return true;\n")
         else:
           for item in state['states']:
+            assert isinstance(item['default'], str)
+            conv = GetGLGetTypeConversion(gl_type, item['type'], item['name'])
             f.write("    case %s:\n" % item['enum'])
-            if isinstance(item['default'], list):
-              item_len = len(item['default'])
-              f.write("      *num_written = %d;\n" % item_len)
-              f.write("      if (params) {\n")
-              if item['type'] == gl_type:
-                f.write(
-                  "        UNSAFE_TODO(memcpy(params, %s, sizeof(%s) * %d));\n"
-                  % (item['name'], item['type'], item_len)
-                )
-              else:
-                f.write(
-                  "        for (size_t i = 0; i < %s; ++i) {\n" % item_len
-                )
-                f.write(
-                  "          UNSAFE_TODO(params[i]) = %s;\n"
-                  % (
-                    GetGLGetTypeConversion(
-                      gl_type, item['type'], "UNSAFE_TODO(%s[i])" % item['name']
-                    )
-                  )
-                )
-                f.write("        }\n")
-            else:
-              f.write("      *num_written = 1;\n")
-              f.write("      if (params) {\n")
-              f.write(
-                "        UNSAFE_TODO(params[0]) = %s;\n"
-                % (GetGLGetTypeConversion(gl_type, item['type'], item['name']))
-              )
-            f.write("      }\n")
+            f.write("      params.copy_from({%s});\n" % conv)
             f.write("      return true;\n")
       for capability in self.capability_flags:
         f.write("    case GL_%s:\n" % capability['name'].upper())
-        f.write("      *num_written = 1;\n")
-        f.write("      if (params) {\n")
         f.write(
-          "        params[0] = static_cast<%s>(enable_flags.%s);\n"
+          "      params.copy_from({static_cast<%s>(enable_flags.%s)});\n"
           % (gl_type, capability['name'])
         )
-        f.write("      }\n")
         f.write("      return true;\n")
       f.write("""    default:
       return false;
@@ -7165,17 +7121,10 @@ bool %s::GetStateAs%s(
       for state_name in sorted(_STATE_INFO.keys()):
         state = _STATE_INFO[state_name]
         for item in state['states']:
-          if isinstance(item['default'], list):
-            for ndx, value in enumerate(item['default']):
-              f.write("  %s[%d] = %s;\n" % (item['name'], ndx, value))
-          else:
-            f.write("  %s = %s;\n" % (item['name'], item['default']))
+          assert isinstance(item['default'], str)
+          f.write("  %s = %s;\n" % (item['name'], item['default']))
           if item.get('cached', False):
-            if isinstance(item['default'], list):
-              for ndx, value in enumerate(item['default']):
-                f.write("  cached_%s[%d] = %s;\n" % (item['name'], ndx, value))
-            else:
-              f.write("  cached_%s = %s;\n" % (item['name'], item['default']))
+            f.write("  cached_%s = %s;\n" % (item['name'], item['default']))
       f.write("}\n")
 
       f.write("""
@@ -7261,17 +7210,11 @@ void ContextState::InitState(const ContextState *prev_state) const {
               item_name = CachedStateName(item)
 
               operation = []
+              assert isinstance(item['default'], str)
               if test_prev:
-                if isinstance(item['default'], list):
-                  operation.append(
-                    "  if (UNSAFE_TODO(memcmp(prev_state->%s, %s, "
-                    "sizeof(%s) * %d))) {\n"
-                    % (item_name, item_name, item['type'], len(item['default']))
-                  )
-                else:
-                  operation.append(
-                    "  if (prev_state->%s != %s) {\n  " % (item_name, item_name)
-                  )
+                operation.append(
+                  "  if (prev_state->%s != %s) {\n  " % (item_name, item_name)
+                )
 
               operation.append(
                 "  api()->gl%sFn(%s, %s);\n"

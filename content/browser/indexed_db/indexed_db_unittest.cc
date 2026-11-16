@@ -167,7 +167,7 @@ struct MojoConnectionHelper {
                   connection_callbacks.CreateInterfacePtrAndBind(), db_name,
                   version, vc_txn.BindNewEndpointAndPassReceiver(),
                   upgrade_txn_id, /*priority=*/0,
-                  /*request_shared_connection=*/false);
+                  /*shared_connection_id=*/std::nullopt);
   }
 
   void OpenAndExpectUpgradeNeeded(
@@ -278,7 +278,8 @@ class IndexedDBTestBaseWithExtras : public IndexedDBTestBase {
           sqlite::DatabaseConnection::GetDestructionGracePeriodForTesting());
     }
     task_environment_.FastForwardBy(
-        BucketContext::GetBackingStoreGracePeriodForTesting());
+        BucketContext::GetBackingStoreGracePeriodForTesting(
+            IsSqliteBackingStoreEnabled()));
   }
 
   bool IsThirdPartyStoragePartitioningEnabled() {
@@ -328,7 +329,7 @@ class IndexedDBTestBaseWithExtras : public IndexedDBTestBase {
                           blink::IndexedDBDatabaseMetadata::NO_VERSION,
                           transaction_remote.BindNewEndpointAndPassReceiver(),
                           /*host_transaction_id=*/0, /*priority=*/0,
-                          /*request_shared_connection=*/false);
+                          /*shared_connection_id=*/std::nullopt);
     run_loop->Run();
     EXPECT_TRUE(base::DirectoryExists(test_path));
 
@@ -662,6 +663,76 @@ TEST_P(IndexedDBTest, InvalidObjectStoreId) {
     EXPECT_EQ("Invalid object_store_id or index_id.",
               bad_message_observer.WaitForBadMessage());
   }
+}
+
+// Operations (such as, but not limited to, Put) that try to act on an object
+// store outside the transaction's declared scope should be blocked.
+TEST_P(IndexedDBTest, PutOutsideTransactionScope) {
+  constexpr int64_t kObjectStoreId = 10;
+  constexpr int64_t kOtherObjectStoreId = 20;
+  mojo::Remote<blink::mojom::IDBFactory> factory;
+  BindFactory(factory.BindNewPipeAndPassReceiver(),
+              GetOrCreateBucket(GetTestStorageKey()));
+
+  MojoConnectionHelper mojo_helper;
+  mojo_helper.OpenAndExpectUpgradeNeeded(factory.get());
+  mojo_helper.vc_txn->CreateObjectStore(kObjectStoreId, u"store",
+                                        blink::IndexedDBKeyPath(),
+                                        /*auto_increment=*/false);
+  mojo_helper.vc_txn->CreateObjectStore(kOtherObjectStoreId, u"other",
+                                        blink::IndexedDBKeyPath(),
+                                        /*auto_increment=*/false);
+  base::RunLoop open_loop;
+  EXPECT_CALL(mojo_helper.open_callbacks, MockedOpenSuccess)
+      .WillOnce(RunClosure(open_loop.QuitClosure()));
+  mojo_helper.vc_txn->Commit(0);
+  open_loop.Run();
+
+  mojo::AssociatedRemote<blink::mojom::IDBTransaction> transaction;
+  mojo_helper.database->CreateTransaction(
+      transaction.BindNewEndpointAndPassReceiver(), /*transaction_id=*/2,
+      {kObjectStoreId}, blink::mojom::IDBTransactionMode::ReadWrite,
+      blink::mojom::IDBTransactionDurability::Relaxed);
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  transaction->Put(kOtherObjectStoreId, blink::mojom::IDBValue::New(),
+                   IndexedDBKey(u"key"), blink::mojom::IDBPutMode::AddOrUpdate,
+                   {}, base::DoNothing());
+  EXPECT_EQ("Object store is outside transaction scope",
+            bad_message_observer.WaitForBadMessage());
+}
+
+TEST_P(IndexedDBTest, CreateTransactionWithDeletedObjectStore) {
+  base::HistogramTester histograms;
+  constexpr int64_t kObjectStoreId = 10;
+  mojo::Remote<blink::mojom::IDBFactory> factory;
+  BindFactory(factory.BindNewPipeAndPassReceiver(),
+              GetOrCreateBucket(GetTestStorageKey()));
+
+  MojoConnectionHelper mojo_helper;
+  mojo_helper.OpenAndExpectUpgradeNeeded(factory.get());
+  mojo_helper.vc_txn->CreateObjectStore(kObjectStoreId, u"store",
+                                        blink::IndexedDBKeyPath(),
+                                        /*auto_increment=*/false);
+
+  mojo_helper.vc_txn->DeleteObjectStore(kObjectStoreId);
+  base::RunLoop open_loop;
+  EXPECT_CALL(mojo_helper.open_callbacks, MockedOpenSuccess)
+      .WillOnce(RunClosure(open_loop.QuitClosure()));
+  mojo_helper.vc_txn->Commit(0);
+  open_loop.Run();
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  mojo::AssociatedRemote<blink::mojom::IDBTransaction> transaction;
+  mojo_helper.database->CreateTransaction(
+      transaction.BindNewEndpointAndPassReceiver(), /*transaction_id=*/2,
+      {kObjectStoreId}, blink::mojom::IDBTransactionMode::ReadOnly,
+      blink::mojom::IDBTransactionDurability::Relaxed);
+  EXPECT_EQ("Invalid object_store_id in transaction scope",
+            bad_message_observer.WaitForBadMessage());
+  histograms.ExpectUniqueSample(
+      "IndexedDB.BadMessageReason",
+      BadMessageReason::kConnectionCreateTransactionInvalidScope, 1);
 }
 
 TEST_P(IndexedDBTest, NotifyIndexedDBListChanged) {
@@ -1269,7 +1340,7 @@ TEST_P(IndexedDBTest, AvoidCrashAfterForceCloseDbAndThenOpen) {
                         u"opendb", blink::IndexedDBDatabaseMetadata::NO_VERSION,
                         transaction_remote.BindNewEndpointAndPassReceiver(),
                         /*host_transaction_id=*/0, /*priority=*/0,
-                        /*request_shared_connection=*/false);
+                        /*shared_connection_id=*/std::nullopt);
 
   // Delete with force_close = true.
   MockMojoFactoryClient delete_client;
@@ -1292,7 +1363,7 @@ TEST_P(IndexedDBTest, AvoidCrashAfterForceCloseDbAndThenOpen) {
                         u"opendb", blink::IndexedDBDatabaseMetadata::NO_VERSION,
                         transaction_remote2.BindNewEndpointAndPassReceiver(),
                         /*host_transaction_id=*/42, /*priority=*/0,
-                        /*request_shared_connection=*/false);
+                        /*shared_connection_id=*/std::nullopt);
 
   // Block until expectations are satisfied.
   run_loop_for_first_open.Run();
@@ -1411,8 +1482,13 @@ TEST_P(IndexedDBTest, CloseWithReceiversActive) {
   // Something triggers starting the close sequence and the grace period
   // elapses.
   NudgeBackingStoreCloseLogic(bucket_context.get());
-  task_environment_.FastForwardBy(
-      BucketContext::GetBackingStoreGracePeriodForTesting());
+  const base::TimeDelta grace_period =
+      BucketContext::GetBackingStoreGracePeriodForTesting(
+          IsSqliteBackingStoreEnabled());
+  task_environment_.FastForwardBy(grace_period / 2);
+  VerifyBucketContext(bucket_locator, /*expected_context_exists=*/true,
+                      /*expected_backing_store_exists=*/true);
+  task_environment_.FastForwardBy(grace_period / 2);
 
   // This destroys the backing store, but the bucket context itself still
   // exists...
@@ -1453,7 +1529,8 @@ TEST_P(IndexedDBTest, CloseWithReceiversInactive) {
   // Something triggers backing store shutdown and the grace period elapses.
   NudgeBackingStoreCloseLogic(bucket_context.get());
   task_environment_.FastForwardBy(
-      BucketContext::GetBackingStoreGracePeriodForTesting());
+      BucketContext::GetBackingStoreGracePeriodForTesting(
+          IsSqliteBackingStoreEnabled()));
 
   VerifyBucketContext(bucket_locator, /*expected_context_exists=*/false);
   EXPECT_FALSE(bucket_context);
@@ -1487,7 +1564,8 @@ TEST_P(IndexedDBTest, PreCloseTasksStart) {
               GetBucketContext(bucket_locator.id)->closing_stage());
 
     task_environment_.FastForwardBy(
-        BucketContext::GetBackingStoreGracePeriodForTesting());
+        BucketContext::GetBackingStoreGracePeriodForTesting(
+            IsSqliteBackingStoreEnabled()));
 
     // The factory should be closed, as the pre close tasks are delayed.
     VerifyBucketContext(bucket_locator, /*expected_context_exists=*/true,
@@ -2185,7 +2263,7 @@ TEST_P(IndexedDBTest, QuotaErrorOnDbOpenError) {
       database_callbacks.CreateInterfacePtrAndBind(), kDatabaseName,
       /*version=*/1, transaction_remote.BindNewEndpointAndPassReceiver(),
       /*transaction_id=*/2, /*priority=*/0,
-      /*request_shared_connection=*/false);
+      /*shared_connection_id=*/std::nullopt);
   run_loop.Run();
 
   if (IsSqliteBackingStoreEnabled()) {
@@ -2235,7 +2313,7 @@ TEST_P(IndexedDBTest, DatabaseFailedOpen) {
                          kDatabaseName, db_version,
                          transaction_remote.BindNewEndpointAndPassReceiver(),
                          /*transaction_id=*/2, /*priority=*/0,
-                         /*request_shared_connection=*/false);
+                         /*shared_connection_id=*/std::nullopt);
     run_loop.Run();
     BucketContext* bucket_context = GetBucketContext(bucket_info.id);
     ASSERT_TRUE(bucket_context);
@@ -2319,7 +2397,7 @@ TEST_P(IndexedDBTest, FilePathLengthLogging) {
                            kDatabaseName, db_version,
                            transaction_remote.BindNewEndpointAndPassReceiver(),
                            /*transaction_id=*/1, /*priority=*/0,
-                           /*request_shared_connection=*/false);
+                           /*shared_connection_id=*/std::nullopt);
       run_loop.Run();
     }
   }
@@ -2354,7 +2432,7 @@ TEST_P(IndexedDBTest, FilePathLengthLogging) {
                            kDatabaseName, db_version,
                            transaction_remote.BindNewEndpointAndPassReceiver(),
                            /*transaction_id=*/1, /*priority=*/0,
-                           /*request_shared_connection=*/false);
+                           /*shared_connection_id=*/std::nullopt);
       run_loop.Run();
     }
   }
@@ -2514,7 +2592,11 @@ TEST_F(IndexedDBSqliteTest, BlobReadPutsOffIdleWork) {
                           blink::mojom::IDBPutMode::AddOnly,
                           std::vector<IndexedDBIndexKeys>(),
                           put_callback.Get());
+  base::RunLoop open_loop;
+  EXPECT_CALL(mojo_helper.open_callbacks, MockedOpenSuccess)
+      .WillOnce(RunClosure(open_loop.QuitClosure()));
   mojo_helper.vc_txn->Commit(0);
+  open_loop.Run();
 
   // Open a read transaction to get the record with the blob and verify reading
   // the blob resets the idle timer.
@@ -2617,7 +2699,7 @@ TEST_P(IndexedDBTest, BlobWithForgedSize) {
       database_callbacks.CreateInterfacePtrAndBind(), kDatabaseName,
       /*version=*/1, transaction_remote.BindNewEndpointAndPassReceiver(),
       kTransactionId, /*priority=*/0,
-      /*request_shared_connection=*/false);
+      /*shared_connection_id=*/std::nullopt);
   upgrade_loop.Run();
 
   mojo::AssociatedRemote<blink::mojom::IDBDatabase> database(

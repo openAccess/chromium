@@ -9,7 +9,7 @@ import {ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chro
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {getItemsInMenu, setupTestEnvironment, stubAnimationFrame} from './common.js';
+import {assertFontsEqual, getItemsInMenu, setupTestEnvironment, stubAnimationFrame} from './common.js';
 import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
 
 suite('FontMenu', () => {
@@ -24,12 +24,6 @@ suite('FontMenu', () => {
     document.body.appendChild(fontMenu);
   });
 
-  function assertFontsEqual(actual: string, expected: string): void {
-    assertEquals(
-        expected.trim().toLowerCase().replaceAll('"', ''),
-        actual.trim().toLowerCase().replaceAll('"', ''));
-  }
-
   async function updateFonts(supportedFonts: string[]): Promise<void> {
     visualBrowserProxy.supportedFonts = supportedFonts;
     fontMenu.pageLanguage = 'hi' + supportedFonts.length;
@@ -38,16 +32,11 @@ suite('FontMenu', () => {
   }
 
   test('updates fonts on page language change', async () => {
-    visualBrowserProxy.supportedFonts =
-        ['font 1', 'font 2', 'font 3', 'font 4'];
-    fontMenu.pageLanguage = 'hi';
-    await microtasksFinished();
-    assertEquals(4, getItemsInMenu(fontMenu.$.menu.$.lazyMenu).length);
+    await updateFonts(['font 1', 'font 2', 'font 3', 'font 4']);
+    assertEquals(4, fontMenuOptions.length);
 
-    visualBrowserProxy.supportedFonts = ['font 1', 'font 2'];
-    fontMenu.pageLanguage = 'jp';
-    await microtasksFinished();
-    assertEquals(2, getItemsInMenu(fontMenu.$.menu.$.lazyMenu).length);
+    await updateFonts(['font 1', 'font 2']);
+    assertEquals(2, fontMenuOptions.length);
   });
 
   test('updates font titles on fonts loaded', async () => {

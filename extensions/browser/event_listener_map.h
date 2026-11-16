@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
@@ -163,6 +164,7 @@ class EventListener {
 class EventListenerMap {
  public:
   using ListenerList = std::vector<std::unique_ptr<EventListener>>;
+  using ListenerSpan = base::span<const std::unique_ptr<EventListener>>;
   // The key here is an event name.
   // This is a std::map to guarantee iterator stability while entries are added
   // or removed.
@@ -210,8 +212,7 @@ class EventListenerMap {
   // Returns the set of listeners that want to be notified of `event`.
   std::set<const EventListener*> GetEventListeners(const Event& event);
 
-  const ListenerList& GetEventListenersByName(
-      const std::string& event_name) const;
+  ListenerSpan GetEventListenersByName(const std::string& event_name) const;
 
   // Removes all listeners with process equal to `process`.
   void RemoveListenersForProcess(const content::RenderProcessHost* process);
@@ -274,6 +275,17 @@ class EventListenerMap {
                                  const ExtensionId& extension_id,
                                  bool is_for_service_worker,
                                  const base::DictValue& filtered);
+
+  // Replaces `extension_id`'s lazy service worker listeners with the unfiltered
+  // `event_names` and `filtered` listeners (same format as
+  // `LoadUnfilteredLazyListeners()` and `LoadFilteredLazyListeners()`).
+  // Unchanged listeners are left in place so `delegate_` is only notified of
+  // actual additions and removals.
+  void ReplaceLazyServiceWorkerListeners(
+      content::BrowserContext* browser_context,
+      const ExtensionId& extension_id,
+      const std::set<std::string>& event_names,
+      const base::DictValue& filtered);
 
  private:
   // Removes the listeners for which `removal_predicate` returns true.

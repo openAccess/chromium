@@ -38,8 +38,10 @@
 #import "components/password_manager/ios/password_manager_java_script_feature.h"
 #import "components/personal_context/first_run/personal_context_first_run_service.h"
 #import "components/prefs/pref_service.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_observer.h"
+#import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_pending_prompt_manager.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
 #import "ios/chrome/browser/autofill/model/form_suggestion_tab_helper.h"
@@ -118,11 +120,6 @@ void RecordPaymentsOrScanCardBottomSheetTriggerOutcome(
                             /*sample=*/did_trigger);
 }
 
-bool UseV3() {
-  return base::FeatureList::IsEnabled(kStatelessFormSuggestionController) &&
-         base::FeatureList::IsEnabled(kAutofillPaymentsSheetV3Ios);
-}
-
 bool UseListenersInvalidation() {
   return base::FeatureList::IsEnabled(kStatelessFormSuggestionController) &&
          base::FeatureList::IsEnabled(
@@ -199,10 +196,31 @@ AutofillBottomSheetTabHelper::AutofillBottomSheetTabHelper(
       AutofillBottomSheetJavaScriptFeature::GetInstance()->GetWebFramesManager(
           web_state));
   web_state->AddObserver(this);
+  pending_prompt_manager_ = std::make_unique<AutofillPendingPromptManager>(
+      web_state, commands_handler_);
 }
 
 // Public methods
 
+void AutofillBottomSheetTabHelper::ShowAutofillAiSaveEntityBottomSheet(
+    std::unique_ptr<AutofillAiSaveEntityPromptModel> model) {
+  pending_prompt_manager_->ShowSaveEntityPrompt(std::move(model));
+}
+
+const AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() const {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+AutofillAiSaveEntityPromptModel*
+AutofillBottomSheetTabHelper::GetAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->GetSaveEntityPromptModel();
+}
+
+std::unique_ptr<AutofillAiSaveEntityPromptModel>
+AutofillBottomSheetTabHelper::TakeAutofillAiSaveEntityPromptModel() {
+  return pending_prompt_manager_->TakeSaveEntityPromptModel();
+}
 void AutofillBottomSheetTabHelper::ShowCardUnmaskAuthenticationSelection(
     std::unique_ptr<
         autofill::CardUnmaskAuthenticationSelectionDialogControllerImpl>
@@ -238,6 +256,7 @@ void AutofillBottomSheetTabHelper::SetAutofillBottomSheetHandler(
     [commands_handler_ dismissEditAddressBottomSheet];
   }
   commands_handler_ = commands_handler;
+  pending_prompt_manager_->SetAutofillBottomSheetHandler(commands_handler_);
 }
 
 void AutofillBottomSheetTabHelper::SetPasswordGenerationProvider(
@@ -281,20 +300,17 @@ void AutofillBottomSheetTabHelper::OnFormMessageReceived(
     // cross-origin frames. Only enforce this for payments because password
     // suggestions are origin-scoped, and opening the sheet on page load is
     // intentionally supported in that flow.
-    if (base::FeatureList::IsEnabled(
-            kAutofillPaymentsBottomSheetRequiresUserGesture)) {
-      PaymentsBottomSheetUserGestureStatus user_gesture_status =
-          EvaluateUserGestureSufficiency(params, message);
-      RecordPaymentsBottomSheetUserGestureStatus(user_gesture_status);
-      if (user_gesture_status !=
-          PaymentsBottomSheetUserGestureStatus::kValidGesture) {
-        // In its current state, the renderer will keep blurring the keyboard on
-        // subsequent focus events, so we need to detach listeners. Detaching on
-        // only this frame ensures a frame can't use this to block the bottom
-        // sheet on other frames.
-        DetachPaymentsListeners(params.frame_id, /*refocus=*/false);
-        return;
-      }
+    PaymentsBottomSheetUserGestureStatus user_gesture_status =
+        EvaluateUserGestureSufficiency(params, message);
+    RecordPaymentsBottomSheetUserGestureStatus(user_gesture_status);
+    if (user_gesture_status !=
+        PaymentsBottomSheetUserGestureStatus::kValidGesture) {
+      // In its current state, the renderer will keep blurring the keyboard on
+      // subsequent focus events, so we need to detach listeners. Detaching on
+      // only this frame ensures a frame can't use this to block the bottom
+      // sheet on other frames.
+      DetachPaymentsListeners(params.frame_id, /*refocus=*/false);
+      return;
     }
     MaybeShowPaymentsBottomSheet(params);
   } else if (is_password_generation_related) {
@@ -338,19 +354,20 @@ void AutofillBottomSheetTabHelper::ShowAmbientAutofillNotice(
 }
 
 void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
-    autofill::FormActivityParams params) {
-  if (!UseV3()) {
-    // Use the status quo logic for triggering the payments bottom sheet if
-    // V3 isn't enabled.
-    ShowPaymentsBottomSheet(std::move(params), /*detach=*/true);
+    const autofill::FormActivityParams& params) {
+  if (!base::FeatureList::IsEnabled(kStatelessFormSuggestionController)) {
+    // Fall back to showing the payments bottom sheet directly when the
+    // stateless FormSuggestionController is disabled, as querying suggestions
+    // asynchronously via its completion block requires stateless mode.
+    ShowPaymentsBottomSheet(params, /*detach=*/true);
     return;
   }
 
-  // In V3, first try to retrieve credit card suggestions before
-  // considering triggering the payments bottom sheet. Credit card suggestions
-  // are a good proxy for knowing that the type of the field is "settled" since
-  // we known that the PWM was tested for suggestions (including the server
-  // predictions) before getting the credit card suggestions.
+  // First try to retrieve credit card suggestions before considering triggering
+  // the payments bottom sheet. Credit card suggestions are a good proxy for
+  // knowing that the type of the field is "settled" since we know that PWM was
+  // tested for suggestions (including the server predictions) before getting
+  // the credit card suggestions.
 
   if (!web_state_) {
     return;
@@ -363,17 +380,9 @@ void AutofillBottomSheetTabHelper::MaybeShowPaymentsBottomSheet(
   id<FormInputSuggestionsProvider> provider =
       tabHelper->GetAccessoryViewProvider();
 
-  if (!base::FeatureList::IsEnabled(
-          kAutofillPaymentsBottomSheetRequiresUserGesture)) {
-    // Force this bit to true as retrieving Autofill suggestions for a form
-    // requires a user manual gesture and we consider the signal to trigger
-    // the bottom sheet as a valid signal as a manual gesture.
-    params.has_user_gesture = true;
-  } else {
-    // This is enforced upstream. Verify the invariant here because otherwise
-    // we will get unexpected behavior, including silent failures, later on.
-    CHECK(params.has_user_gesture);
-  }
+  // This is enforced upstream. Verify the invariant here because otherwise
+  // we will get unexpected behavior, including silent failures, later on.
+  CHECK(params.has_user_gesture);
 
   auto completion = base::CallbackToBlock(
       base::BindOnce(&AutofillBottomSheetTabHelper::
@@ -671,6 +680,10 @@ void AutofillBottomSheetTabHelper::CancelPendingSuggestionRequests() {
 
 // WebStateObserver:
 
+void AutofillBottomSheetTabHelper::WasShown(web::WebState* web_state) {
+  pending_prompt_manager_->WasShown(web_state);
+}
+
 void AutofillBottomSheetTabHelper::DidStartNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
@@ -686,6 +699,7 @@ void AutofillBottomSheetTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
   CHECK(navigation_context);
+  pending_prompt_manager_->DidFinishNavigation(web_state, navigation_context);
   if (navigation_context->IsSameDocument() ||
       !navigation_context->HasCommitted()) {
     return;
@@ -711,6 +725,7 @@ void AutofillBottomSheetTabHelper::RenderProcessGone(web::WebState* web_state) {
 }
 
 void AutofillBottomSheetTabHelper::WebStateDestroyed(web::WebState* web_state) {
+  pending_prompt_manager_->WebStateDestroyed(web_state);
   CancelPendingSuggestionRequests();
   web_state->RemoveObserver(this);
   frames_manager_observation_.Reset();

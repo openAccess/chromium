@@ -54,7 +54,9 @@
 #include "ui/views/background.h"
 #include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/bubble_histograms_variant.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/layout/layout_manager.h"
 #include "ui/views/layout/layout_provider.h"
 #include "ui/views/style/platform_style.h"
@@ -716,6 +718,7 @@ void BubbleDialogDelegate::OnBubbleWidgetClosing() {
 
 void BubbleDialogDelegate::OnAnchorWidgetDestroying() {
   anchor_tracked_element_ = nullptr;
+  anchor_tracked_element_bounds_subscription_.reset();
   SetAnchorView(nullptr);
 }
 
@@ -978,6 +981,21 @@ void BubbleDialogDelegate::OnAnchorBoundsChanged() {
   UpdateInputProtectorsTimeStamp();
 }
 
+void BubbleDialogDelegate::OnTrackedElementAnchorBoundsChanged(
+    ui::TrackedElement* element) {
+  if (!anchor_tracked_element_) {
+    anchor_tracked_element_bounds_subscription_.reset();
+    return;
+  }
+  if (element != anchor_tracked_element_.get()) {
+    return;
+  }
+  const std::optional<gfx::Rect> old_anchor_rect = anchor_rect_;
+  if (old_anchor_rect != GetAnchorRect()) {
+    OnAnchorBoundsChanged();
+  }
+}
+
 void BubbleDialogDelegate::UpdateInputProtectorsTimeStamp() {
   if (auto* dialog = GetDialogClientView()) {
     dialog->UpdateInputProtectorTimeStamp();
@@ -1060,17 +1078,6 @@ gfx::Rect BubbleDialogDelegate::GetBubbleBounds() {
   bool adjust_to_fix_available_bounds =
       adjust_if_offscreen_ && !anchor_minimized && has_anchor;
 
-  // Some platforms, such as ozone/wayland, do not support global screen
-  // coordinates manipulation by client applications, which makes bubble
-  // offscreen adjustments buggy, so bypass it if that's the case.
-#if BUILDFLAG(IS_OZONE)
-  if (!ui::OzonePlatform::GetInstance()
-           ->GetPlatformProperties()
-           .supports_global_screen_coordinates) {
-    adjust_to_fix_available_bounds = false;
-  }
-#endif
-
   return GetBubbleFrameView()->GetUpdatedWindowBounds(
       anchor_rect, arrow(), GetWidget()->client_view()->GetPreferredSize({}),
       adjust_to_fix_available_bounds);
@@ -1145,6 +1152,7 @@ void BubbleDialogDelegate::SetAnchorView(View* anchor_view) {
   ClearAnchoredDialogKey();
   if (anchor_view) {
     anchor_tracked_element_ = nullptr;
+    anchor_tracked_element_bounds_subscription_.reset();
   }
   if (anchor_view && anchor_view->GetWidget()) {
     anchor_widget_observer_ =
@@ -1211,10 +1219,19 @@ void BubbleDialogDelegate::SetAnchor(BubbleAnchor anchor) {
                     << "Widget.";
       SetAnchorWidget(widget);
       SetAnchoredDialogKey();
+
+      anchor_tracked_element_bounds_subscription_ =
+          ui::ElementTracker::GetElementTracker()->AddCustomEventCallback(
+              ViewSubregionAnchor::kAnchorBoundsChangedEvent,
+              tracked_element->context(),
+              base::BindRepeating(
+                  &BubbleDialogDelegate::OnTrackedElementAnchorBoundsChanged,
+                  base::Unretained(this)));
     }
   } else {
     CHECK(anchor.IsNull());
     anchor_tracked_element_ = nullptr;
+    anchor_tracked_element_bounds_subscription_.reset();
     SetAnchorView(nullptr);
     SetAnchorRect(gfx::Rect());
   }
@@ -1378,6 +1395,7 @@ void BubbleDialogDelegate::OnBubbleWidgetVisibilityChanged(bool visible) {
   if (anchor_view_observer_) {
     anchor_view_observer_->UpdateBubbleVisibility(visible);
   }
+  UpdateAnchoredDialogRegistration();
 
   UpdateHighlightedButton(visible);
 
@@ -1425,6 +1443,7 @@ void BubbleDialogDelegate::SetAnchoredDialogKey() {
     std::erase(delegates, this);
     delegates.push_back(this);
   }
+  UpdateAnchoredDialogRegistration();
 }
 
 void BubbleDialogDelegate::ClearAnchoredDialogKey() {
@@ -1433,6 +1452,58 @@ void BubbleDialogDelegate::ClearAnchoredDialogKey() {
     anchor_view->ClearProperty(kAnchoredDialogKey);
   }
   std::erase(GetAnchoredTrackedElementDelegates(), this);
+  anchored_dialog_registration_.reset();
+}
+
+void BubbleDialogDelegate::UpdateAnchoredDialogRegistration() {
+  // Bubbles anchored to Views use kAnchoredDialogKey instead.
+  //
+  // If showing the widget is asynchronous, IsVisible() becomes true when
+  // OnBubbleWidgetVisibilityChanged() is called, which calls this again.
+  const Widget* const widget = GetWidget();
+  const bool should_register = widget && widget->IsVisible() &&
+                               !widget->IsClosed() &&
+                               focus_traversable_from_anchor_view_ &&
+                               !GetAnchorView() && anchor_tracked_element_;
+  if (!should_register) {
+    anchored_dialog_registration_.reset();
+    return;
+  }
+  if (!anchored_dialog_registration_) {
+    anchored_dialog_registration_ =
+        ui::AnchoredDialogRegistry::GetInstance()->Register(
+            anchor_tracked_element_.get(), *this);
+  }
+}
+
+bool BubbleDialogDelegate::FocusFromAnchor(bool reverse) {
+  Widget* const widget = GetWidget();
+  if (!widget || widget->IsClosed() || !widget->IsVisible() ||
+      !widget->CanActivate()) {
+    return false;
+  }
+  FocusManager* const focus_manager = widget->GetFocusManager();
+  if (!focus_manager) {
+    return false;
+  }
+
+  // Mirror what FocusManager::AdvanceFocus() does when FocusSearch enters a
+  // dialog anchored to a View.
+  View* const view = focus_manager->GetNextFocusableView(
+      /*starting_view=*/nullptr, widget, reverse, /*dont_loop=*/true);
+  if (!view) {
+    return false;
+  }
+  ViewTracker view_tracker(view);
+  // E.g. lets a WebView in the bubble focus its first or last element.
+  view->AboutToRequestFocusFromTabTraversal(reverse);
+  if (!view_tracker.view() || widget->IsClosed()) {
+    return false;
+  }
+  focus_manager->SetFocusedViewWithReason(
+      view_tracker.view(), FocusManager::FocusChangeReason::kFocusTraversal);
+  widget->Activate();
+  return true;
 }
 
 void BubbleDialogDelegate::UpdateHighlightedButton(bool highlighted) {

@@ -72,6 +72,10 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_specification.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
+#include "chrome/browser/ui/views/site_data/page_specific_site_data_dialog_controller.h"
+#include "components/infobars/content/content_infobar_manager.h"
+#include "components/infobars/core/infobar.h"
+#include "components/infobars/core/infobar_delegate.h"
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/contextual_tasks/contextual_tasks_extensions_container.h"
 #endif
@@ -112,10 +116,18 @@
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "google_apis/gaia/gaia_constants.h"
+#include "google_apis/gaia/gaia_urls.h"
+#include "net/cookies/cookie_change_dispatcher.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "third_party/lens_server_proto/aim_communication.pb.h"
+#include "third_party/lens_server_proto/search_communication.pb.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -257,8 +269,16 @@ void RecordCacheItemSessionEndMetrics(
     base::UmaHistogramCounts100(
         "ContextualTasks.Session.LinkClickCount",
         base::saturated_cast<int>(cache_item.link_click_count));
+    if (cache_item.entry_source ==
+        contextual_tasks::ContextualTasksPanelController::EntrySource::
+            kAbaOnRamp) {
+      base::UmaHistogramCounts100(
+          "ContextualTasks.Session.QuerySubmitCount.AbaOnRamp",
+          base::saturated_cast<int>(cache_item.query_submit_count));
+    }
   }
   cache_item.link_click_count = 0;
+  cache_item.query_submit_count = 0;
 
   if (cache_item.open_time_ticks.is_null()) {
     return;
@@ -270,6 +290,13 @@ void RecordCacheItemSessionEndMetrics(
     base::TimeDelta duration =
         base::TimeTicks::Now() - cache_item.open_time_ticks;
     base::UmaHistogramLongTimes("ContextualTasks.Session.Duration.AioToCobr",
+                                duration);
+  } else if (cache_item.entry_source ==
+             contextual_tasks::ContextualTasksPanelController::EntrySource::
+                 kAbaOnRamp) {
+    base::TimeDelta duration =
+        base::TimeTicks::Now() - cache_item.open_time_ticks;
+    base::UmaHistogramLongTimes("ContextualTasks.Session.Duration.AbaOnRamp",
                                 duration);
   } else if (cache_item.entry_source ==
              contextual_tasks::ContextualTasksPanelController::EntrySource::
@@ -433,19 +460,27 @@ ContextualTasksSidePanelCoordinator::ContextualTasksSidePanelCoordinator(
   contextual_tasks_panel_host_->AddObserver(this);
 
   if (IsContextualTasksSidePanelRearchitectureEnabled()) {
+    Profile* profile = browser_window_->GetProfile();
     if (signin::IdentityManager* identity_manager =
-            IdentityManagerFactory::GetForProfile(
-                browser_window_->GetProfile())) {
+            IdentityManagerFactory::GetForProfile(profile)) {
       identity_manager_observation_.Observe(identity_manager);
       is_signed_in_to_web_ = !identity_manager->GetAccountsInCookieJar()
                                   .GetPotentiallyInvalidSignedInAccounts()
                                   .empty();
+    } else if (profile && profile->IsOffTheRecord()) {
+      if (content::StoragePartition* partition =
+              profile->GetDefaultStoragePartition()) {
+        partition->GetCookieManagerForBrowserProcess()->AddCookieChangeListener(
+            GaiaUrls::GetInstance()->secure_google_url(), std::nullopt,
+            otr_cookie_listener_receiver_.BindNewPipeAndPassRemote());
+      }
+      CheckOffTheRecordSigninCookie();
     }
   }
 
 #if !BUILDFLAG(IS_ANDROID)
   if (Profile* profile = browser_window_->GetProfile()) {
-    is_dark_mode_ = contextual_tasks::ShouldUseDarkMode(profile);
+    is_dark_mode_ = contextual_tasks::ShouldUseDarkModeForProfile(profile);
     if (ThemeService* theme_service =
             ThemeServiceFactory::GetForProfile(profile)) {
       theme_service_observation_.Observe(theme_service);
@@ -624,6 +659,9 @@ void ContextualTasksSidePanelCoordinator::Show(
   } else if (entry_point ==
              omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_COBROWSE_AIO_LINK) {
     entry_source = ContextualTasksPanelController::EntrySource::kAioToCobr;
+  } else if (entry_point ==
+             omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_ABA_ONRAMP_IPH) {
+    entry_source = ContextualTasksPanelController::EntrySource::kAbaOnRamp;
   } else if (is_continuing_existing_thread) {
     entry_source =
         ContextualTasksPanelController::EntrySource::kPermanentToolbarButton;
@@ -654,11 +692,16 @@ void ContextualTasksSidePanelCoordinator::Show(
   // ephemeral button, which only ever reopens an existing task. Fresh
   // zero-state opens, other entry points, and threads selected from thread
   // history are excluded.
+  const bool is_reopened_via_pinned_toolbar_button =
+      is_continuing_existing_thread;
+  const bool is_reopened_via_ephemeral_toolbar_button =
+      !is_reopened_via_pinned_toolbar_button &&
+      entry_source == ContextualTasksPanelController::EntrySource::
+                          kEphemeralToolbarButton &&
+      existing_task.has_value() && !is_opening_in_zero_state_;
   const bool is_reopened_via_toolbar_button =
-      is_continuing_existing_thread ||
-      (entry_source == ContextualTasksPanelController::EntrySource::
-                           kEphemeralToolbarButton &&
-       existing_task.has_value() && !is_opening_in_zero_state_);
+      is_reopened_via_pinned_toolbar_button ||
+      is_reopened_via_ephemeral_toolbar_button;
 
   if (!existing_task) {
     // If no task is found, create a new task and associate it with the active
@@ -679,8 +722,6 @@ void ContextualTasksSidePanelCoordinator::Show(
     if (it != task_id_to_web_contents_cache_.end()) {
       it->second->entry_source = entry_source;
       it->second->entry_point = entry_point;
-      it->second->is_reopened_via_toolbar_button =
-          is_reopened_via_toolbar_button;
       it->second->last_active_time_ticks = base::TimeTicks::Now();
       it->second->open_time_ticks =
           open_time_ticks.value_or(base::TimeTicks::Now());
@@ -688,6 +729,7 @@ void ContextualTasksSidePanelCoordinator::Show(
       it->second->time_to_handshake_complete_recorded = false;
       it->second->has_open_session = true;
       it->second->link_click_count = 0;
+      it->second->query_submit_count = 0;
     }
   }
   UpdateWebContentsForActiveTab();
@@ -734,6 +776,39 @@ void ContextualTasksSidePanelCoordinator::Show(
   if (content::WebContents* active_web_contents = GetActiveWebContents()) {
     if (auto* web_ui_interface = GetWebUiInterface(active_web_contents)) {
       web_ui_interface->FocusComposebox();
+    }
+    if (is_reopened_via_toolbar_button) {
+      if (IsContextualTasksSidePanelRearchitectureEnabled()) {
+        // Skip the reopen message if the Search page has not connected yet
+        // (e.g. the WebContents was just created or rebuilt). Otherwise it
+        // would be queued on the unconnected page and dropped on commit.
+        auto* user_data = ContextualTasksWebContentsUserData::FromWebContents(
+            active_web_contents);
+        if (user_data &&
+            (user_data->IsServiceWorkerPortConnected() ||
+             user_data->GetPageSearchDebugState().is_handshake_complete)) {
+          lens::ClientToSearchMessage message;
+          message.mutable_on_reopened_via_toolbar_button()
+              ->set_toolbar_button_type(
+                  is_reopened_via_pinned_toolbar_button
+                      ? lens::ClientToSearchMessage::
+                            OnReopenedViaToolbarButton::PINNED
+                      : lens::ClientToSearchMessage::
+                            OnReopenedViaToolbarButton::EPHEMERAL);
+          user_data->PostSearchMessage(message);
+        }
+      } else if (auto* web_ui_interface =
+                     GetWebUiInterface(active_web_contents);
+                 web_ui_interface && web_ui_interface->IsInitComplete()) {
+        // The page handler may not be bound yet if the WebUI was recreated.
+        lens::ClientToAimMessage message;
+        message.mutable_on_reopened_via_toolbar_button()
+            ->set_toolbar_button_type(
+                is_reopened_via_pinned_toolbar_button
+                    ? lens::OnReopenedViaToolbarButton::PINNED
+                    : lens::OnReopenedViaToolbarButton::EPHEMERAL);
+        web_ui_interface->PostAimMessage(message);
+      }
     }
   }
   ObserveWebContentsOnActiveTab();
@@ -889,7 +964,7 @@ void ContextualTasksSidePanelCoordinator::OpenUrlInNewTab(const GURL& url) {
       &is_opening_tab_from_panel_ui_, true);
   NavigateParams params(browser_window_->GetProfile(), url,
                         ui::PAGE_TRANSITION_LINK);
-  params.disposition = WindowOpenDisposition::kNewForegroundTab;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.browser = browser_window_;
   Navigate(&params);
 }
@@ -1195,7 +1270,8 @@ void ContextualTasksSidePanelCoordinator::UnshareTabs(
     target_web_contents.push_back(active_contents);
   }
 
-  // 2. Also include any open browser tabs hosting a full-tab AI Mode thread.
+  // 2. Also include any open browser tabs hosting a full-tab AI Mode session
+  // (including zero-state tabs that do not have a task ID yet).
   if (browser_window_) {
     if (auto* tab_list = TabListInterface::From(browser_window_)) {
       for (tabs::TabInterface* tab : tab_list->GetAllTabs()) {
@@ -1204,7 +1280,9 @@ void ContextualTasksSidePanelCoordinator::UnshareTabs(
             tab_contents ? ContextualTasksWebContentsUserData::FromWebContents(
                                tab_contents)
                          : nullptr;
-        if (user_data && user_data->GetEffectiveTaskId().has_value() &&
+        if (user_data &&
+            (user_data->GetEffectiveTaskId().has_value() ||
+             user_data->GetExistingContextualSessionHandle()) &&
             !std::ranges::contains(target_web_contents, tab_contents)) {
           target_web_contents.push_back(tab_contents);
         }
@@ -1247,6 +1325,23 @@ bool ContextualTasksSidePanelCoordinator::HasResults() const {
   return IsShowingLensResults() || IsShowingAimResults();
 }
 
+bool ContextualTasksSidePanelCoordinator::HasUnsubmittedInput() const {
+  std::optional<ContextualTask> task = GetCurrentTask();
+  if (!task) {
+    return false;
+  }
+
+  auto cache_it = task_id_to_web_contents_cache_.find(task->GetTaskId());
+  if (cache_it == task_id_to_web_contents_cache_.end() || !cache_it->second ||
+      !cache_it->second->web_contents) {
+    return false;
+  }
+
+  const auto* user_data = ContextualTasksWebContentsUserData::FromWebContents(
+      cache_it->second->web_contents.get());
+  return user_data && user_data->HasUnsubmittedQuery();
+}
+
 ContextualTasksPanelController::EntrySource
 ContextualTasksSidePanelCoordinator::GetActiveEntrySource() const {
   if (content::WebContents* active_web_contents = GetActiveWebContents()) {
@@ -1257,18 +1352,6 @@ ContextualTasksSidePanelCoordinator::GetActiveEntrySource() const {
     }
   }
   return ContextualTasksPanelController::EntrySource::kOther;
-}
-
-bool ContextualTasksSidePanelCoordinator::
-    IsActiveSessionReopenedViaToolbarButton() const {
-  if (content::WebContents* active_web_contents = GetActiveWebContents()) {
-    for (const auto& it : task_id_to_web_contents_cache_) {
-      if (it.second->web_contents.get() == active_web_contents) {
-        return it.second->is_reopened_via_toolbar_button;
-      }
-    }
-  }
-  return false;
 }
 
 bool ContextualTasksSidePanelCoordinator::IsOnboardingTooltipVisible() const {
@@ -1332,6 +1415,7 @@ void ContextualTasksSidePanelCoordinator::TransferWebContentsFromTab(
     it->second->first_contentful_paint_recorded = true;
     it->second->has_open_session = true;
     it->second->link_click_count = 0;
+    it->second->query_submit_count = 0;
   }
   UpdateOpenState(/*is_open=*/true);
   SetErrorPageVisible(false);
@@ -1472,6 +1556,7 @@ void ContextualTasksSidePanelCoordinator::OnTaskChanged(
     tasks_pending_panel_rebuild_.erase(new_task_id);
     const EntrySource old_entry_source = cache_item->entry_source;
     const size_t old_link_click_count = cache_item->link_click_count;
+    const size_t old_query_submit_count = cache_item->query_submit_count;
     const bool was_open = cache_item->is_open;
     const bool split_from_old_task =
         ShouldScopeSidePanelStateToTab() && old_task_id &&
@@ -1482,19 +1567,16 @@ void ContextualTasksSidePanelCoordinator::OnTaskChanged(
     // This will potentially kick out the existing WebContents with new_task_id
     // since only 1 WebContents per task is kept in the cache.
     size_t existing_new_task_link_clicks = 0;
+    size_t existing_new_task_query_submits = 0;
     auto it = task_id_to_web_contents_cache_.find(new_task_id);
     if (it != task_id_to_web_contents_cache_.end()) {
       existing_new_task_link_clicks = it->second->link_click_count;
+      existing_new_task_query_submits = it->second->query_submit_count;
       MaybeDetachWebContents(it->second->web_contents.get());
-    }
-    if (old_task_id && *old_task_id != new_task_id) {
-      // Switching to a different task (e.g. picking a thread from thread
-      // history or starting a new chat in the panel) means the active session
-      // is no longer the thread that was reopened via a toolbar button.
-      cache_item->is_reopened_via_toolbar_button = false;
     }
     if (split_from_old_task) {
       cache_item->link_click_count = existing_new_task_link_clicks;
+      cache_item->query_submit_count = existing_new_task_query_submits;
     }
     task_id_to_web_contents_cache_[new_task_id] = std::move(cache_item);
 
@@ -1510,6 +1592,7 @@ void ContextualTasksSidePanelCoordinator::OnTaskChanged(
         if (auto old_it = task_id_to_web_contents_cache_.find(*old_task_id);
             old_it != task_id_to_web_contents_cache_.end() && old_it->second) {
           old_it->second->link_click_count = old_link_click_count;
+          old_it->second->query_submit_count = old_query_submit_count;
         }
       }
     }
@@ -1537,6 +1620,23 @@ void ContextualTasksSidePanelCoordinator::OnLinkClicked() {
   if (WebContentsCacheItem* cache_item =
           GetWebContentsCacheItemForWebContents(web_contents)) {
     cache_item->link_click_count++;
+  }
+}
+
+void ContextualTasksSidePanelCoordinator::OnQuerySubmitted() {
+  content::WebContents* web_contents = GetActiveWebContents();
+  if (!web_contents) {
+    web_contents = GetPanelWebContentsForActiveTab();
+  }
+  WebContentsCacheItem* cache_item =
+      GetWebContentsCacheItemForWebContents(web_contents);
+  if (!cache_item || !cache_item->has_open_session) {
+    return;
+  }
+  cache_item->query_submit_count++;
+  if (cache_item->entry_source == EntrySource::kAbaOnRamp) {
+    base::RecordAction(base::UserMetricsAction(
+        "ContextualTasks.SearchJourney.QuerySubmitted"));
   }
 }
 
@@ -1726,6 +1826,34 @@ void ContextualTasksSidePanelCoordinator::OnAccountsInCookieUpdated(
       !accounts_in_cookie_jar_info.GetPotentiallyInvalidSignedInAccounts()
            .empty();
   if (was_signed_in_to_web && !is_signed_in_to_web_) {
+#if !BUILDFLAG(IS_ANDROID)
+    // Do not auto-refresh the side panel when the user deletes sign-in cookies
+    // directly from the side panel's "On-device site data" dialog; instead,
+    // let the dialog show the standard reload infobar prompt when closed.
+    auto has_site_data_dialog_or_reload_prompt = [](content::WebContents* wc) {
+      if (!wc) {
+        return false;
+      }
+      if (PageSpecificSiteDataDialogController::FromWebContents(wc)) {
+        return true;
+      }
+      if (auto* infobar_manager =
+              infobars::ContentInfoBarManager::FromWebContents(wc)) {
+        return std::ranges::any_of(
+            infobar_manager->infobars(), [](const infobars::InfoBar* infobar) {
+              return infobar->GetIdentifier() ==
+                     infobars::InfoBarDelegate::
+                         COLLECTED_COOKIES_INFOBAR_DELEGATE;
+            });
+      }
+      return false;
+    };
+    if (has_site_data_dialog_or_reload_prompt(GetActiveWebContents()) ||
+        std::ranges::any_of(GetPanelWebContentsList(),
+                            has_site_data_dialog_or_reload_prompt)) {
+      return;
+    }
+#endif
     ResetWebContentsToZeroStateAfterWebSignOut();
   }
 }
@@ -1733,6 +1861,15 @@ void ContextualTasksSidePanelCoordinator::OnAccountsInCookieUpdated(
 void ContextualTasksSidePanelCoordinator::OnIdentityManagerShutdown(
     signin::IdentityManager* identity_manager) {
   identity_manager_observation_.Reset();
+}
+
+void ContextualTasksSidePanelCoordinator::OnCookieChange(
+    const net::CookieChangeInfo& change) {
+  if (GaiaConstants::kGaiaSigninCookieName != change.cookie.Name() &&
+      change.cause != net::CookieChangeCause::EXPLICIT) {
+    return;
+  }
+  CheckOffTheRecordSigninCookie();
 }
 
 void ContextualTasksSidePanelCoordinator::
@@ -1843,6 +1980,40 @@ void ContextualTasksSidePanelCoordinator::
     panel.web_contents->GetController().LoadURL(
         url, content::Referrer(), ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
         std::string());
+  }
+}
+
+void ContextualTasksSidePanelCoordinator::CheckOffTheRecordSigninCookie() {
+  Profile* profile = browser_window_ ? browser_window_->GetProfile() : nullptr;
+  if (!profile || !profile->GetDefaultStoragePartition()) {
+    return;
+  }
+  network::mojom::CookieManager* cookie_manager =
+      profile->GetDefaultStoragePartition()
+          ->GetCookieManagerForBrowserProcess();
+  if (!cookie_manager) {
+    return;
+  }
+  cookie_manager->GetCookieList(
+      GaiaUrls::GetInstance()->secure_google_url(),
+      net::CookieOptions::MakeAllInclusive(),
+      net::CookiePartitionKeyCollection(),
+      base::BindOnce(
+          &ContextualTasksSidePanelCoordinator::OnOffTheRecordCookiesRead,
+          weak_ptr_factory_.GetWeakPtr()));
+}
+
+void ContextualTasksSidePanelCoordinator::OnOffTheRecordCookiesRead(
+    const net::CookieAccessResultList& cookies,
+    const net::CookieAccessResultList& /*excluded_cookies*/) {
+  const bool was_signed_in_to_web = is_signed_in_to_web_;
+  is_signed_in_to_web_ = std::ranges::any_of(
+      cookies, [](const net::CookieWithAccessResult& cookie_with_result) {
+        return cookie_with_result.cookie.Name() ==
+               GaiaConstants::kGaiaSigninCookieName;
+      });
+  if (was_signed_in_to_web && !is_signed_in_to_web_) {
+    ResetWebContentsToZeroStateAfterWebSignOut();
   }
 }
 
@@ -2213,6 +2384,7 @@ void ContextualTasksSidePanelCoordinator::Unhide() {
     if (!cache_item->has_open_session) {
       cache_item->has_open_session = true;
       cache_item->link_click_count = 0;
+      cache_item->query_submit_count = 0;
     }
 #if !BUILDFLAG(IS_ANDROID)
     onboarding_controller_->SetEntryPoint(cache_item->entry_point);
@@ -2313,7 +2485,8 @@ void ContextualTasksSidePanelCoordinator::DisassociateTabFromTask(
 
 bool ContextualTasksSidePanelCoordinator::ShouldPreserveTaskOnClose() const {
   if (!browser_window_ || !browser_window_->GetProfile() ||
-      browser_window_->GetProfile()->IsOffTheRecord()) {
+      browser_window_->GetProfile()->IsOffTheRecord() ||
+      (!HasResults() && !HasUnsubmittedInput())) {
     return false;
   }
   const bool can_resume_from_pinned_button =
@@ -2576,6 +2749,7 @@ void ContextualTasksSidePanelCoordinator::UpdateOpenState(bool is_open) {
         if (!it->second->has_open_session) {
           it->second->has_open_session = true;
           it->second->link_click_count = 0;
+          it->second->query_submit_count = 0;
         }
         it->second->is_open = true;
       }
@@ -2594,6 +2768,7 @@ void ContextualTasksSidePanelCoordinator::UpdateOpenState(bool is_open) {
     if (is_open && !it->second->has_open_session) {
       it->second->has_open_session = true;
       it->second->link_click_count = 0;
+      it->second->query_submit_count = 0;
     }
     it->second->is_open = is_open;
   }
@@ -2686,7 +2861,7 @@ bool ContextualTasksSidePanelCoordinator::IsShowingAimResults() const {
   auto cache_it = task_id_to_web_contents_cache_.find(task->GetTaskId());
   if (cache_it == task_id_to_web_contents_cache_.end() || !cache_it->second ||
       !cache_it->second->web_contents) {
-    return false;
+    return task->GetThread().has_value();
   }
 
   ContextualTasksUiService* ui_service = GetUiService();
@@ -2970,6 +3145,10 @@ void ContextualTasksSidePanelCoordinator::OnSurfaceStateChanged(
           case EntrySource::kAioToCobr:
             RecordUserActionAndHistogram(
                 "ContextualTasks.SidePanel.UserAction.Close.AioToCobr");
+            break;
+          case EntrySource::kAbaOnRamp:
+            RecordUserActionAndHistogram(
+                "ContextualTasks.SidePanel.UserAction.Close.AbaOnRamp");
             break;
           case EntrySource::kAskGoogle:
             RecordUserActionAndHistogram(
@@ -3296,7 +3475,7 @@ void ContextualTasksSidePanelCoordinator::
   }
 
   Profile* profile = browser_window_->GetProfile();
-  const bool dark_mode = contextual_tasks::ShouldUseDarkMode(profile);
+  const bool dark_mode = contextual_tasks::ShouldUseDarkModeForProfile(profile);
   if (dark_mode == is_dark_mode_) {
     return;
   }

@@ -7,6 +7,8 @@
 #import <Foundation/Foundation.h>
 #import <WebKit/WebKit.h>
 
+#import <algorithm>
+
 #import "base/apple/foundation_util.h"
 #import "base/apple/scoped_objc_class_swizzler.h"
 #import "base/format_macros.h"
@@ -126,6 +128,39 @@ double SimulatedDuoHingeAngleForStatus(UIHingeStatus status) {
 
 // Accessibility ID of the Activity menu.
 NSString* const kActivityMenuIdentifier = @"ActivityListView";
+
+// Accessibility ID of the system region behind a popover that dismisses it
+// when tapped.
+NSString* const kPopoverDismissRegionIdentifier = @"PopoverDismissRegion";
+
+// Accessibility ID of the out-of-process Activity View content.
+NSString* const kShareSheetContainerIdentifier =
+    @"ShareSheet.RemoteContainerView";
+
+// Returns the center of the largest band of `region` that is not covered by
+// `excluded`, among the bands above, below, left and right of `excluded`.
+CGPoint PointInRegionOutsideOfRect(CGRect region, CGRect excluded) {
+  CGFloat space_above = CGRectGetMinY(excluded) - CGRectGetMinY(region);
+  CGFloat space_below = CGRectGetMaxY(region) - CGRectGetMaxY(excluded);
+  CGFloat space_left = CGRectGetMinX(excluded) - CGRectGetMinX(region);
+  CGFloat space_right = CGRectGetMaxX(region) - CGRectGetMaxX(excluded);
+  CGFloat max_space =
+      std::max({space_above, space_below, space_left, space_right});
+  if (max_space == space_above) {
+    return CGPointMake(CGRectGetMidX(region),
+                       CGRectGetMinY(region) + space_above / 2);
+  }
+  if (max_space == space_below) {
+    return CGPointMake(CGRectGetMidX(region),
+                       CGRectGetMaxY(excluded) + space_below / 2);
+  }
+  if (max_space == space_left) {
+    return CGPointMake(CGRectGetMinX(region) + space_left / 2,
+                       CGRectGetMidY(region));
+  }
+  return CGPointMake(CGRectGetMaxX(excluded) + space_right / 2,
+                     CGRectGetMidY(region));
+}
 
 NSString* const kWaitForPageToStartLoadingError = @"Page did not start to load";
 NSString* const kWaitForPageToFinishLoadingError =
@@ -1409,18 +1444,25 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration) {
   // transitions to the background (`sceneDidEnterBackground:`). Also wait for
   // the extra scene and session to fully disconnect (`sceneDidDisconnect:`).
   bool extraWindowsClosed = WaitForAppInterfaceCondition(
-      kWaitForUIElementTimeout,
+      kWaitForActionTimeout,
       [ChromeEarlGreyAppInterface prepareConditionForWindowCount:1]);
-  EG_TEST_HELPER_ASSERT_TRUE(extraWindowsClosed,
-                             @"Failed waiting for extra windows to disconnect");
+  if (!extraWindowsClosed) {
+    NSString* errorString = [NSString
+        stringWithFormat:@"Failed waiting for extra windows to disconnect (%@)",
+                         [ChromeEarlGreyAppInterface
+                             windowStateDebugDescription]];
+    EG_TEST_HELPER_ASSERT_TRUE(extraWindowsClosed, errorString);
+  }
 }
 
 - (void)waitForForegroundWindowCount:(NSUInteger)count {
   // Allow the UI to become idle, in case any tabs are being opened or closed.
   GREYWaitForAppToIdle(@"App failed to idle");
 
+  // Scene creation and destruction on iPad devices can take longer than the 4s
+  // UI element timeout.
   bool windowCountEqual = WaitForAppInterfaceCondition(
-      kWaitForUIElementTimeout,
+      kWaitForActionTimeout,
       [ChromeEarlGreyAppInterface
           prepareConditionForForegroundWindowCount:count]);
 
@@ -1428,9 +1470,11 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration) {
     NSUInteger actualCount = [ChromeEarlGreyAppInterface foregroundWindowCount];
     NSString* errorString = [NSString
         stringWithFormat:
-            @"Failed waiting for window count to become %lu; actual count: %lu",
+            @"Failed waiting for window count to become %lu; actual count: %lu "
+            @"(%@)",
             static_cast<unsigned long>(count),
-            static_cast<unsigned long>(actualCount)];
+            static_cast<unsigned long>(actualCount),
+            [ChromeEarlGreyAppInterface windowStateDebugDescription]];
     EG_TEST_HELPER_ASSERT_TRUE(windowCountEqual, errorString);
   }
 }
@@ -1731,10 +1775,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration) {
 // Returns whether the UseLensToSearchForImage feature is enabled;
 - (BOOL)isUseLensToSearchForImageEnabled {
   return [ChromeEarlGreyAppInterface isUseLensToSearchForImageEnabled];
-}
-
-- (BOOL)isYourSavedInfoSettingsPageIosEnabled {
-  return [ChromeEarlGreyAppInterface isYourSavedInfoSettingsPageIosEnabled];
 }
 
 - (BOOL)isUnfocusedOmniboxAtBottom {
@@ -2099,6 +2139,42 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration) {
   [self waitForWebStateVisibleURL:URL];
 }
 
+// Dismisses the Activity View by tapping outside of its bounds.
+- (void)dismissActivityViewByTappingOutside:(XCUIApplication*)application {
+  if (@available(iOS 27, *)) {
+    XCUIElement* dismissRegion =
+        application.otherElements[kPopoverDismissRegionIdentifier].firstMatch;
+    XCUIElement* shareSheet =
+        application.otherElements[kShareSheetContainerIdentifier].firstMatch;
+    if (dismissRegion.exists && shareSheet.exists) {
+      // On iOS 27, the Activity View is an anchored popover whose position
+      // depends on the device, so the window center may be covered by it. The
+      // EarlGrey tap on the window also intermittently failed to dismiss the
+      // popover, so tap through XCUITest outside of the popover instead.
+      // `-closeActivitySheet` is not used, because it taps the center of the
+      // dismiss region, which may also be covered by the popover. The first
+      // matching dismiss region may belong to another presentation and extend
+      // beyond the screen (e.g. the form sheet dimming view in Recent Tabs on
+      // iPad), so only its on-screen part is considered.
+      CGRect visibleRegion =
+          CGRectIntersection(dismissRegion.frame, application.frame);
+      CGPoint tapPoint =
+          PointInRegionOutsideOfRect(visibleRegion, shareSheet.frame);
+      XCUICoordinate* screenOrigin =
+          [application coordinateWithNormalizedOffset:CGVectorMake(0, 0)];
+      [[screenOrigin coordinateWithOffset:CGVectorMake(tapPoint.x, tapPoint.y)]
+          tap];
+      return;
+    }
+  }
+
+  // Before iOS 27, tapping the window center dismisses the Activity View. A
+  // point computed from the container frame does not work there, because on
+  // iOS 18 iPhones the container spans the whole screen.
+  [[EarlGrey selectElementWithMatcher:grey_keyWindow()]
+      performAction:grey_tap()];
+}
+
 - (void)verifyShareActionWithURL:(const GURL&)URL
                        pageTitle:(NSString*)pageTitle {
   // Synchronization off due to an infinite spinner.
@@ -2120,9 +2196,7 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration) {
              @"Either hostString %d or pageTitle %d was not present",
              hostStringPresent, pageTitlePresent);
 
-  // Dismiss the Activity View by tapping outside its bounds.
-  [[EarlGrey selectElementWithMatcher:grey_keyWindow()]
-      performAction:grey_tap()];
+  [self dismissActivityViewByTappingOutside:currentApplication];
 
   [self verifyActivitySheetNotVisible];
 }

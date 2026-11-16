@@ -168,7 +168,6 @@ Suggestion ComposeManagerImpl::GetSuggestion(
     const autofill::FormData& form,
     const autofill::FormFieldData& field,
     AutofillSuggestionTriggerSource trigger_source) const {
-  std::u16string suggestion_text;
   std::u16string label_text;
   Suggestion suggestion(
       trigger_source == AutofillSuggestionTriggerSource::kComposeDialogLostFocus
@@ -244,7 +243,7 @@ void ComposeManagerImpl::GoToSettings() {
 }
 
 bool ComposeManagerImpl::ShouldAnchorNudgeOnCaret() {
-  return GetComposeConfig().is_nudge_shown_at_cursor;
+  return true;
 }
 
 }  // namespace compose

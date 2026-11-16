@@ -14,6 +14,7 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/json/json_writer.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/types/pass_key.h"
 #include "base/values.h"
@@ -41,11 +42,6 @@
 #include "chrome/common/read_anything/read_anything_util.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/dom_distiller/content/browser/distiller_javascript_utils.h"
-#include "components/dom_distiller/content/browser/distiller_page_web_contents.h"
-#include "components/dom_distiller/core/distiller_page.h"
-#include "components/dom_distiller/core/dom_distiller_service.h"
-#include "components/dom_distiller/core/task_tracker.h"
 #include "components/language/core/browser/language_model.h"
 #include "components/language/core/browser/language_model_manager.h"
 #include "components/language/core/common/locale_util.h"
@@ -56,6 +52,11 @@
 #include "components/prefs/scoped_user_pref_update.h"
 #include "components/translate/core/browser/translate_manager.h"
 #include "components/translate/core/common/translate_features.h"
+#include "components/web_distiller/content/browser/distiller_javascript_utils.h"
+#include "components/web_distiller/content/browser/distiller_page_web_contents.h"
+#include "components/web_distiller/core/distiller_page.h"
+#include "components/web_distiller/core/task_tracker.h"
+#include "components/web_distiller/core/web_distiller_service.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -112,25 +113,25 @@ using read_anything::mojom::UntrustedPageHandler;
 using read_anything::mojom::VoicePackInstallationState;
 
 // A helper class that orchestrates Readability page distillation using the
-// DomDistillerService.
+// WebDistillerService.
 //
 // It triggers distillation via StartDistillation() and implements the
-// dom_distiller::ViewRequestDelegate interface to receive the results.
+// web_distiller::ViewRequestDelegate interface to receive the results.
 //
-// It holds a dom_distiller::ViewerHandle to manage the lifetime of the active
+// It holds a web_distiller::ViewerHandle to manage the lifetime of the active
 // distillation request. Resetting or replacing this handle cancels any
 // outstanding request, ensuring that only one distillation request is active
 // at any given time. Once distillation completes, it forwards the resulting
 // article to the enclosing ReadAnythingUntrustedPageHandler.
 class ReadAnythingUntrustedPageHandler::ReadabilityDistillerDelegate
-    : public dom_distiller::ViewRequestDelegate {
+    : public web_distiller::ViewRequestDelegate {
  public:
   explicit ReadabilityDistillerDelegate(
       ReadAnythingUntrustedPageHandler* handler)
       : handler_(handler) {}
   ~ReadabilityDistillerDelegate() override = default;
 
-  void StartDistillation(dom_distiller::DomDistillerService* service,
+  void StartDistillation(web_distiller::WebDistillerService* service,
                          content::WebContents* contents) {
     start_time_ = base::TimeTicks::Now();
     // If existing distillation request, cancel it. This removes delegate as
@@ -140,7 +141,7 @@ class ReadAnythingUntrustedPageHandler::ReadabilityDistillerDelegate
     viewer_handle_ = service->ViewUrlIgnoreCache(
         this,
         service->CreateDefaultDistillerPageWithHandle(
-            std::make_unique<dom_distiller::SourcePageHandleWebContents>(
+            std::make_unique<web_distiller::SourcePageHandleWebContents>(
                 contents, /*owned=*/false)),
         url);
   }
@@ -153,9 +154,9 @@ class ReadAnythingUntrustedPageHandler::ReadabilityDistillerDelegate
     start_time_ = base::TimeTicks();
   }
 
-  // dom_distiller::ViewRequestDelegate:
+  // web_distiller::ViewRequestDelegate:
   void OnArticleReady(
-      const dom_distiller::DistilledArticleProto* article_proto) override {
+      const web_distiller::DistilledArticleProto* article_proto) override {
     CHECK(!start_time_.is_null());
     base::UmaHistogramMediumTimes(
         "Accessibility.ReadAnything.TimeFromStartDistillationToOnArticleReady",
@@ -166,7 +167,7 @@ class ReadAnythingUntrustedPageHandler::ReadabilityDistillerDelegate
 
  private:
   raw_ptr<ReadAnythingUntrustedPageHandler> handler_;
-  std::unique_ptr<dom_distiller::ViewerHandle> viewer_handle_;
+  std::unique_ptr<web_distiller::ViewerHandle> viewer_handle_;
   base::TimeTicks start_time_;
 };
 
@@ -274,6 +275,35 @@ InstallationState GetInstallationStateFromStatusCode(
     case content::LanguageInstallStatus::UNKNOWN:
       return InstallationState::kUnknown;
   }
+}
+
+EngineInstallationState GetTtsEngineInstallationState(
+    extensions::ExtensionRegistry* registry) {
+  if (registry->enabled_extensions().Contains(
+          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
+    return EngineInstallationState::kEnabled;
+  }
+  if (registry->disabled_extensions().Contains(
+          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
+    return EngineInstallationState::kDisabled;
+  }
+  if (registry->terminated_extensions().Contains(
+          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
+    return EngineInstallationState::kTerminated;
+  }
+  if (registry->blocked_extensions().Contains(
+          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
+    return EngineInstallationState::kBlocked;
+  }
+  if (registry->ready_extensions().Contains(
+          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
+    return EngineInstallationState::kReady;
+  }
+  if (component_updater::WasmTtsEngineComponentInstallerPolicy::
+          IsWasmTTSEngineDirectorySet()) {
+    return EngineInstallationState::kInstalling;
+  }
+  return EngineInstallationState::kUnknown;
 }
 #endif
 
@@ -509,8 +539,8 @@ ReadAnythingUntrustedPageHandler::ReadAnythingUntrustedPageHandler(
 
   if (features::IsReadAnythingWithReadabilityEnabled()) {
     // Set the JavaScript world ID.
-    if (!dom_distiller::DistillerJavaScriptWorldIdIsSet()) {
-      dom_distiller::SetDistillerJavaScriptWorldId(
+    if (!web_distiller::DistillerJavaScriptWorldIdIsSet()) {
+      web_distiller::SetDistillerJavaScriptWorldId(
           ISOLATED_WORLD_ID_CHROME_INTERNAL);
     }
 
@@ -811,17 +841,6 @@ ReadAnythingUntrustedPageHandler::GetReadAnythingController() {
   return ra_controller;
 }
 
-void ReadAnythingUntrustedPageHandler::OnGetPresentationState() {
-  auto* ra_controller = GetReadAnythingController();
-  CHECK(ra_controller);
-
-  page_->OnGetPresentationState(ra_controller->GetPresentationState());
-}
-
-void ReadAnythingUntrustedPageHandler::GetPresentationState() {
-  OnGetPresentationState();
-}
-
 void ReadAnythingUntrustedPageHandler::OnDistillationStateChanged(
     read_anything::mojom::ReadAnythingDistillationState new_state) {
   // Distillation state transitions to kNotAttempted are only valid during
@@ -984,6 +1003,32 @@ bool ReadAnythingUntrustedPageHandler::AreActionsAllowedInTree(
          rfh->GetLastCommittedURL().SchemeIsHTTPOrHTTPS();
 }
 
+bool ReadAnythingUntrustedPageHandler::CheckAndRecordRendererRequestAllowed(
+    const ui::AXTreeID& tree_id,
+    std::string_view histogram_name,
+    std::string_view request_name) const {
+  if (!IsObservingTree(tree_id)) {
+    base::UmaHistogramEnumeration(
+        histogram_name, ReadAnythingRendererRequestResult::kNotObservedTree);
+    VLOG(1) << "Received " << request_name << " request for tree_id " << tree_id
+            << " which is not currently being observed";
+    return false;
+  }
+
+  if (!AreActionsAllowedInTree(tree_id)) {
+    base::UmaHistogramEnumeration(
+        histogram_name,
+        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
+    VLOG(1) << "Ignoring " << request_name
+            << " request on non-HTTP/HTTPS frame";
+    return false;
+  }
+
+  base::UmaHistogramEnumeration(histogram_name,
+                                ReadAnythingRendererRequestResult::kAllowed);
+  return true;
+}
+
 void ReadAnythingUntrustedPageHandler::OnLineSpaceChange(
     read_anything::mojom::LineSpacing line_spacing) {
   profile_->GetPrefs()->SetInteger(prefs::kAccessibilityReadAnythingLineSpacing,
@@ -1057,16 +1102,59 @@ void ReadAnythingUntrustedPageHandler::OnSendFeedback() {
     return;
   }
 
-  // TODO(crbug.com/579419628): Use chrome::CanShowFeedback(profile_) via
-  // ReadAnythingUntrustedUI loadTimeData to hide the send feedback entry point
-  // when feedback is disabled by policy.
+  // Hide the send feedback entry point when feedback is disabled by policy.
+  if (!chrome::CanShowFeedback(profile_)) {
+    return;
+  }
+
+  PrefService* prefs = profile_->GetPrefs();
+  // Use IsPdfContents() rather than `is_pdf_with_frame_` so that feedback
+  // reports still log `is_pdf` as true when a PDF is open but its content
+  // frame failed to load or distill.
+  base::DictValue diagnostics =
+      base::DictValue()
+          .Set("presentation_state",
+               std::to_underlying(
+                   GetReadAnythingController()->GetPresentationState()))
+          .Set("distillation_state", std::to_underlying(distillation_state_))
+          .Set("is_pdf", IsPdfContents(GetWebContents(), !!pdf_observer_))
+          .Set("font_name",
+               prefs->GetString(prefs::kAccessibilityReadAnythingFontName))
+          .Set("font_scale",
+               prefs->GetDouble(prefs::kAccessibilityReadAnythingFontScale))
+          .Set("color_theme",
+               prefs->GetInteger(prefs::kAccessibilityReadAnythingColorInfo))
+          .Set("line_spacing",
+               prefs->GetInteger(prefs::kAccessibilityReadAnythingLineSpacing))
+          .Set(
+              "letter_spacing",
+              prefs->GetInteger(prefs::kAccessibilityReadAnythingLetterSpacing))
+          .Set("links_enabled",
+               prefs->GetBoolean(prefs::kAccessibilityReadAnythingLinksEnabled))
+          .Set(
+              "images_enabled",
+              prefs->GetBoolean(prefs::kAccessibilityReadAnythingImagesEnabled))
+          .Set("line_focus",
+               prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus))
+          .Set("speech_rate",
+               prefs->GetDouble(prefs::kAccessibilityReadAnythingSpeechRate))
+          .Set("highlight_granularity",
+               prefs->GetInteger(
+                   prefs::kAccessibilityReadAnythingHighlightGranularity));
+#if !BUILDFLAG(IS_CHROMEOS)
+  diagnostics.Set("tts_engine_state",
+                  std::to_underlying(GetTtsEngineInstallationState(
+                      extensions::ExtensionRegistry::Get(profile_))));
+#endif
+
+  std::string extra_diagnostics = base::WriteJson(diagnostics).value_or("");
+
   chrome::ShowFeedbackPage(
       tab_->GetBrowserWindowInterface(), feedback::kFeedbackSourceReadingMode,
       /*description_template=*/std::string(),
       /*description_placeholder_text=*/
       l10n_util::GetStringUTF8(IDS_READING_MODE_FEEDBACK_PLACEHOLDER),
-      /*category_tag=*/kFeedbackCategoryTag,
-      /*extra_diagnostics=*/std::string());
+      /*category_tag=*/kFeedbackCategoryTag, extra_diagnostics);
 }
 
 void ReadAnythingUntrustedPageHandler::OnImagesEnabledChanged(bool enabled) {
@@ -1117,19 +1205,17 @@ void ReadAnythingUntrustedPageHandler::OnHighlightGranularityChanged(
 void ReadAnythingUntrustedPageHandler::OnLineFocusChanged(
     read_anything::mojom::LineFocus current_line_focus,
     read_anything::mojom::LineFocus last_non_disabled_line_focus) {
-  if (features::IsReadAnythingLineFocusEnabled()) {
-    profile_->GetPrefs()->SetInteger(prefs::kAccessibilityReadAnythingLineFocus,
-                                     static_cast<size_t>(current_line_focus));
-    profile_->GetPrefs()->SetInteger(
-        prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
-        static_cast<size_t>(last_non_disabled_line_focus));
+  profile_->GetPrefs()->SetInteger(prefs::kAccessibilityReadAnythingLineFocus,
+                                   static_cast<size_t>(current_line_focus));
+  profile_->GetPrefs()->SetInteger(
+      prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
+      static_cast<size_t>(last_non_disabled_line_focus));
 
-    if (current_line_focus == read_anything::mojom::LineFocus::kOff) {
-      return;
-    }
-
-    iph_controller_->OnLineFocusTurnedOn();
+  if (current_line_focus == read_anything::mojom::LineFocus::kOff) {
+    return;
   }
+
+  iph_controller_->OnLineFocusTurnedOn();
 }
 
 void ReadAnythingUntrustedPageHandler::OnAiPlaybackStateChanged(bool enabled) {
@@ -1183,25 +1269,10 @@ void ReadAnythingUntrustedPageHandler::OnLinkClicked(
     return;
   }
 
-  if (!IsObservingTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererLinkRequestHistogram,
-        ReadAnythingRendererRequestResult::kNotObservedTree);
-    VLOG(1) << "Received link click request for tree_id " << target_tree_id
-            << " which is not currently being observed";
+  if (!CheckAndRecordRendererRequestAllowed(
+          target_tree_id, kRendererLinkRequestHistogram, "link click")) {
     return;
   }
-
-  if (!AreActionsAllowedInTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererLinkRequestHistogram,
-        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
-    VLOG(1) << "Ignoring link click on non-HTTP/HTTPS frame";
-    return;
-  }
-
-  base::UmaHistogramEnumeration(kRendererLinkRequestHistogram,
-                                ReadAnythingRendererRequestResult::kAllowed);
 
   if (!ui::IsValidAXNodeIDFromRenderer(target_node_id)) {
     VLOG(1) << "Received link click request with invalid target_node_id "
@@ -1219,25 +1290,10 @@ void ReadAnythingUntrustedPageHandler::OnLinkClicked(
 void ReadAnythingUntrustedPageHandler::OnImageDataRequested(
     const ui::AXTreeID& target_tree_id,
     ui::AXNodeID target_node_id) {
-  if (!IsObservingTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererImageRequestHistogram,
-        ReadAnythingRendererRequestResult::kNotObservedTree);
-    VLOG(1) << "Received image data request for tree_id " << target_tree_id
-            << " which is not currently being observed";
+  if (!CheckAndRecordRendererRequestAllowed(
+          target_tree_id, kRendererImageRequestHistogram, "image data")) {
     return;
   }
-
-  if (!AreActionsAllowedInTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererImageRequestHistogram,
-        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
-    VLOG(1) << "Ignoring image data request on non-HTTP/HTTPS frame";
-    return;
-  }
-
-  base::UmaHistogramEnumeration(kRendererImageRequestHistogram,
-                                ReadAnythingRendererRequestResult::kAllowed);
 
   if (!ui::IsValidAXNodeIDFromRenderer(target_node_id)) {
     VLOG(1) << "Received image data request with invalid target_node_id "
@@ -1455,27 +1511,12 @@ void ReadAnythingUntrustedPageHandler::OnSelectionChange(
     return;
   }
 
-  if (!IsObservingTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererSelectionRequestHistogram,
-        ReadAnythingRendererRequestResult::kNotObservedTree);
-    VLOG(1) << "Received selection request for tree_id " << target_tree_id
-            << " which is not currently being observed";
+  if (!CheckAndRecordRendererRequestAllowed(
+          target_tree_id, kRendererSelectionRequestHistogram, "selection")) {
     std::move(callback).Run(false);
     return;
   }
 
-  if (!AreActionsAllowedInTree(target_tree_id)) {
-    base::UmaHistogramEnumeration(
-        kRendererSelectionRequestHistogram,
-        ReadAnythingRendererRequestResult::kDisallowedActionOnPageType);
-    VLOG(1) << "Ignoring selection change on non-HTTP/HTTPS frame";
-    std::move(callback).Run(false);
-    return;
-  }
-
-  base::UmaHistogramEnumeration(kRendererSelectionRequestHistogram,
-                                ReadAnythingRendererRequestResult::kAllowed);
   if (!ui::IsValidAXNodeIDFromRenderer(anchor_node_id)) {
     VLOG(1) << "Received selection request with invalid anchor_node_id "
             << anchor_node_id;
@@ -1554,28 +1595,12 @@ void ReadAnythingUntrustedPageHandler::Activate(
     std::optional<base::TimeDelta> completed_session_duration) {
   if (active) {
     last_open_trigger_ = open_trigger;
-    if (features::IsReadAnythingImprovedUiEnabled() &&
-        open_trigger == ReadAnythingOpenTrigger::kListenToThisPageContextMenu) {
-      if (listen_to_this_page_playback_state_ !=
-          ListenToThisPagePlaybackMetricState::kInactive) {
-        RecordListenToThisPagePlaybackMetric(/*successful_playback=*/false);
-      }
-      listen_to_this_page_playback_state_ =
-          ListenToThisPagePlaybackMetricState::kWaitingForAudioStart;
-      listen_to_this_page_playback_timer_.Start(
-          FROM_HERE, kListenToThisPagePlaybackStartupTimeout,
-          base::BindOnce(&ReadAnythingUntrustedPageHandler::
-                             RecordListenToThisPagePlaybackMetric,
-                         base::Unretained(this),
-                         /*successful_playback=*/false));
-    }
+    MaybeStartListenToThisPagePlaybackTimer(open_trigger);
     page_->OnReadingModeShown(
         static_cast<read_anything::mojom::ReadAnythingOpenTrigger>(
-            open_trigger));
+            open_trigger),
+        read_anything_controller_->GetPresentationState());
     tab_will_detach_ = false;
-    // Signal that reading mode has been re-opened and is no longer hidden if
-    // it was previously marked as hidden.
-    OnGetPresentationState();
     RestoreSettingsFromPrefs();
 
     // The content may have been distilled before Reading Mode was shown, in
@@ -1592,7 +1617,8 @@ void ReadAnythingUntrustedPageHandler::Activate(
             ListenToThisPagePlaybackMetricState::kInactive) {
       RecordListenToThisPagePlaybackMetric(/*successful_playback=*/false);
     }
-    page_->OnReadingModeHidden(tab_->IsActivated());
+    page_->OnReadingModeHidden(
+        tab_->IsActivated(), read_anything_controller_->GetPresentationState());
 
     // When Reading mode is hidden (with immersive flag enabled), we need to
     // verify that the renderer is still responsive. Waiting until the mojo
@@ -1617,8 +1643,38 @@ void ReadAnythingUntrustedPageHandler::OnReadingModeHiddenAckTimeout() {
   read_anything_controller_->RecreateWebUIWrapper();
 }
 
-void ReadAnythingUntrustedPageHandler::OnReadingModePresenterChanged() {
-  OnGetPresentationState();
+void ReadAnythingUntrustedPageHandler::OnPresentationTransitioned(
+    ReadAnythingOpenTrigger open_trigger) {
+  MaybeStartListenToThisPagePlaybackTimer(open_trigger);
+  page_->OnPresentationTransitioned(
+      open_trigger, read_anything_controller_->GetPresentationState());
+  // Sent after the page applied `open_trigger`, so that a PDF translation
+  // requested from the new presentation stays behind the loading screen.
+  if (distillation_state_ ==
+      read_anything::mojom::ReadAnythingDistillationState::
+          kDistillationWithContent) {
+    MaybeTriggerPendingPdfTranslation();
+  }
+}
+
+void ReadAnythingUntrustedPageHandler::MaybeStartListenToThisPagePlaybackTimer(
+    ReadAnythingOpenTrigger open_trigger) {
+  if (!features::IsReadAnythingImprovedUiEnabled() ||
+      open_trigger != ReadAnythingOpenTrigger::kListenToThisPageContextMenu) {
+    return;
+  }
+  if (listen_to_this_page_playback_state_ !=
+      ListenToThisPagePlaybackMetricState::kInactive) {
+    RecordListenToThisPagePlaybackMetric(/*successful_playback=*/false);
+  }
+  listen_to_this_page_playback_state_ =
+      ListenToThisPagePlaybackMetricState::kWaitingForAudioStart;
+  listen_to_this_page_playback_timer_.Start(
+      FROM_HERE, kListenToThisPagePlaybackStartupTimeout,
+      base::BindOnce(&ReadAnythingUntrustedPageHandler::
+                         RecordListenToThisPagePlaybackMetric,
+                     base::Unretained(this),
+                     /*successful_playback=*/false));
 }
 
 // This is used for same-document navigations (such as fragment navigations) in
@@ -1730,10 +1786,13 @@ void ReadAnythingUntrustedPageHandler::SetUpPdfObserver() {
   }
 
   // Constructing the observer resets accessibility on the contents, which
-  // generates another round of accessibility events. Because this runs on every
-  // accessibility event until a PDF content frame is found, only recreate the
-  // observer when the contents to observe actually changes.
-  if (pdf_observer_ && pdf_observer_->web_contents() == pdf_contents) {
+  // generates another round of accessibility events. CheckForPdfContentFrame()
+  // can run several times before a PDF content frame is found, so only recreate
+  // the observer when the contents to observe changes. Without PDF contents,
+  // still reset the observer: a destroyed guest's observer has null contents
+  // too, and keeping it would hide the tab's contents.
+  if (pdf_contents && pdf_observer_ &&
+      pdf_observer_->web_contents() == pdf_contents) {
     return;
   }
 
@@ -1891,16 +1950,16 @@ bool ReadAnythingUntrustedPageHandler::MaybeStartReadabilityDistillation(
     return false;
   }
 
-  dom_distiller::DomDistillerService* dom_distiller_service =
+  web_distiller::WebDistillerService* web_distiller_service =
       reader_mode::ReaderModeServiceFactory::GetForBrowserContext(
           content->GetBrowserContext());
-  CHECK(dom_distiller_service, base::NotFatalUntil::M162);
+  CHECK(web_distiller_service, base::NotFatalUntil::M162);
   if (!features::IsReadAnythingDistillerRefactorEnabled()) {
     page_->OnReadabilityDistillationStateChanged(
         read_anything::mojom::ReadAnythingDistillationState::
             kDistillationInProgress);
   }
-  distiller_delegate_->StartDistillation(dom_distiller_service, content);
+  distiller_delegate_->StartDistillation(web_distiller_service, content);
   return true;
 }
 
@@ -1960,7 +2019,7 @@ void ReadAnythingUntrustedPageHandler::RecordDistillationSchemeHistogram(
 }
 
 void ReadAnythingUntrustedPageHandler::ProcessDistilledArticle(
-    const dom_distiller::DistilledArticleProto* article_proto) {
+    const web_distiller::DistilledArticleProto* article_proto) {
   CHECK(features::IsReadAnythingWithReadabilityEnabled() &&
         !is_pdf_with_frame_);
   if (article_proto && article_proto->pages_size() > 0) {
@@ -2211,35 +2270,11 @@ void ReadAnythingUntrustedPageHandler::SendTranslationFailed() {
 void ReadAnythingUntrustedPageHandler::LogExtensionState() {
 #if !BUILDFLAG(IS_CHROMEOS)
   // A system voice.
-  EngineInstallationState installation_state;
-  extensions::ExtensionRegistry* registry =
-      extensions::ExtensionRegistry::Get(profile_);
-  if (registry->enabled_extensions().Contains(
-          extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
-    installation_state = EngineInstallationState::kEnabled;
-  } else if (registry->disabled_extensions().Contains(
-                 extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
-    installation_state = EngineInstallationState::kDisabled;
-  } else if (registry->terminated_extensions().Contains(
-                 extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
-    installation_state = EngineInstallationState::kTerminated;
-  } else if (registry->blocked_extensions().Contains(
-                 extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
-    installation_state = EngineInstallationState::kBlocked;
-  } else if (registry->ready_extensions().Contains(
-                 extension_misc::kComponentUpdaterTTSEngineExtensionId)) {
-    installation_state = EngineInstallationState::kReady;
-  } else if (component_updater::WasmTtsEngineComponentInstallerPolicy::
-                 IsWasmTTSEngineDirectorySet()) {
-    installation_state = EngineInstallationState::kInstalling;
-  } else {
-    installation_state = EngineInstallationState::kUnknown;
-  }
-
   base::UmaHistogramEnumeration(
       "Accessibility.ReadAnything."
       "SystemVoiceExtensionInstallationState",
-      installation_state);
+      GetTtsEngineInstallationState(
+          extensions::ExtensionRegistry::Get(profile_)));
 #endif
 }
 
@@ -2269,12 +2304,10 @@ void ReadAnythingUntrustedPageHandler::LogTextStyle() {
   base::UmaHistogramBoolean(
       "Accessibility.ReadAnything.Links",
       prefs->GetBoolean(prefs::kAccessibilityReadAnythingLinksEnabled));
-  if (features::IsReadAnythingLineFocusEnabled()) {
-    auto line_focus = static_cast<read_anything::mojom::LineFocus>(
-        prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus));
-    base::UmaHistogramEnumeration("Accessibility.ReadAnything.LineFocus",
-                                  line_focus);
-  }
+  auto line_focus = static_cast<read_anything::mojom::LineFocus>(
+      prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus));
+  base::UmaHistogramEnumeration("Accessibility.ReadAnything.LineFocus",
+                                line_focus);
 }
 
 void ReadAnythingUntrustedPageHandler::RestoreSettingsFromPrefs() {
@@ -2282,16 +2315,12 @@ void ReadAnythingUntrustedPageHandler::RestoreSettingsFromPrefs() {
   base::DictValue voices = base::DictValue();
   voices = prefs->GetDict(prefs::kAccessibilityReadAnythingVoiceName).Clone();
   read_anything::mojom::LineFocus line_focus =
-      features::IsReadAnythingLineFocusEnabled()
-          ? static_cast<read_anything::mojom::LineFocus>(
-                prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus))
-          : read_anything::mojom::LineFocus::kDefaultValue;
+      static_cast<read_anything::mojom::LineFocus>(
+          prefs->GetInteger(prefs::kAccessibilityReadAnythingLineFocus));
   bool line_focus_enabled = line_focus != read_anything::mojom::LineFocus::kOff;
   read_anything::mojom::LineFocus last_non_disabled_line_focus =
-      features::IsReadAnythingLineFocusEnabled()
-          ? static_cast<read_anything::mojom::LineFocus>(prefs->GetInteger(
-                prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus))
-          : read_anything::mojom::LineFocus::kDefaultValue;
+      static_cast<read_anything::mojom::LineFocus>(prefs->GetInteger(
+          prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus));
 
   page_->OnSettingsRestoredFromPrefs(
       static_cast<read_anything::mojom::LineSpacing>(

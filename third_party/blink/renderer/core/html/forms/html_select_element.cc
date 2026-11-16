@@ -113,8 +113,10 @@ FormControlType HTMLSelectElement::FormControlType() const {
 }
 
 const AtomicString& HTMLSelectElement::FormControlTypeAsString() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, select_multiple, ("select-multiple"));
-  DEFINE_STATIC_LOCAL(const AtomicString, select_one, ("select-one"));
+  DEFINE_STATIC_LOCAL(const AtomicString, select_multiple,
+                      (AtomicString::FromLiteral<"select-multiple">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, select_one,
+                      (AtomicString::FromLiteral<"select-one">()));
   return is_multiple_ ? select_multiple : select_one;
 }
 
@@ -882,6 +884,8 @@ void HTMLSelectElement::IncreaseContentModelViolationCount() {
   bool dialog_mode_changed = !content_model_violations_count_;
   ++content_model_violations_count_;
   if (dialog_mode_changed) {
+    UseCounter::Count(GetDocument(),
+                      WebFeature::kCustomizableSelectBadContentModel);
     if (AXObjectCache* cache = GetDocument().ExistingAXObjectCache()) {
       cache->MarkElementDirty(this);
     }
@@ -1389,10 +1393,21 @@ void HTMLSelectElement::AppendToFormData(FormData& form_data) {
 
 void HTMLSelectElement::ResetImpl() {
   for (auto& option : GetOptionList()) {
-    option.SetSelectedState(option.FastHasAttribute(html_names::kSelectedAttr));
+    // skip_mutation_observer_update is set to true here because
+    // last_on_change_option_ isn't updated until ResetToDefaultSelection()
+    // below, and updating the MutationObserver of a newly selected option
+    // copies its text into the InnerElement, which hits a DCHECK in
+    // MenuListSelectType::OptionToBeShown because SelectedOption() doesn't
+    // match last_on_change_option_ yet. Instead, UpdateMutationObserver is
+    // explicitly called for each option after ResetToDefaultSelection().
+    option.SetSelectedState(option.FastHasAttribute(html_names::kSelectedAttr),
+                            /*skip_mutation_observer_update=*/true);
     option.SetDirty(false);
   }
   ResetToDefaultSelection();
+  for (auto& option : GetOptionList()) {
+    option.UpdateMutationObserver(/*in_style_recalc=*/false);
+  }
   if (RuntimeEnabledFeatures::SelectedcontentSpec2Enabled()) {
     UpdateAllSelectedcontents();
   }

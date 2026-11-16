@@ -30,7 +30,6 @@ import static org.junit.Assert.assertTrue;
 
 import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.test.util.ChromeTabUtils.getTabCountOnUiThread;
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
 import android.view.KeyEvent;
 import android.view.View;
@@ -52,7 +51,6 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
@@ -63,7 +61,6 @@ import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.color_picker.TabGroupColorPickerContainer;
@@ -85,10 +82,8 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 @Batch(Batch.PER_CLASS)
 @DisableFeatures({
     ChromeFeatureList.ANDROID_THEME_MODULE,
-    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS,
-    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID
+    TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS
 })
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
 @DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462592111
 public class TabStripGroupContextMenuTest {
@@ -386,7 +381,7 @@ public class TabStripGroupContextMenuTest {
 
         // Focus title edit box and replace text with rapid typing to verify debouncing.
         onView(withId(R.id.tab_group_title)).perform(click());
-        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
+        waitForView(withId(R.id.tab_group_title), isFocused());
         onView(withId(R.id.tab_group_title)).perform(replaceText("live"));
         onView(withId(R.id.tab_group_title)).perform(replaceText("liveTitle"));
 
@@ -463,7 +458,7 @@ public class TabStripGroupContextMenuTest {
 
         // Start with the edit text box. Click to focus, then hit down arrow.
         onView(withId(R.id.tab_group_title)).perform(click());
-        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
+        waitForView(withId(R.id.tab_group_title), isFocused());
         onView(withId(R.id.tab_group_title)).perform(pressKey(KeyEvent.KEYCODE_DPAD_DOWN));
 
         // One of the color picker circles should be focused in the first row.
@@ -719,7 +714,7 @@ public class TabStripGroupContextMenuTest {
                     mTabGroupId = stripLayoutGroupTitle.getTabGroupId();
                     manager.simulateLongPress(x, y);
                 });
-        onViewWaiting(allOf(withId(R.id.tab_group_action_menu_list), isDisplayed()));
+        waitForView(withId(R.id.tab_group_action_menu_list));
     }
 
     private void updateGroupTitle(String title) {
@@ -728,7 +723,7 @@ public class TabStripGroupContextMenuTest {
 
         // Click group title text box to focus it for editing.
         onView(withId(R.id.tab_group_title)).perform(click());
-        onViewWaiting(allOf(withId(R.id.tab_group_title), isFocused()));
+        waitForView(withId(R.id.tab_group_title), isFocused());
 
         // Enter new title in text box and press "enter" to dismiss menu and update group title.
         onView(withId(R.id.tab_group_title))
@@ -739,7 +734,7 @@ public class TabStripGroupContextMenuTest {
         CriteriaHelper.pollUiThread(
                 () ->
                         mActivityTestRule.getActivity().hasWindowFocus()
-                                && !delegate.isKeyboardShowing(
+                                && !delegate.isKeyboardObscuring(
                                         mActivityTestRule
                                                 .getActivity()
                                                 .getCompositorViewHolderForTesting()));

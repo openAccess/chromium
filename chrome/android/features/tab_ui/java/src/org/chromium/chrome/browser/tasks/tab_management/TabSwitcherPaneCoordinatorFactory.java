@@ -35,12 +35,13 @@ import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -82,6 +83,7 @@ public class TabSwitcherPaneCoordinatorFactory {
     private final Supplier<@Nullable LayoutStateProvider> mLayoutStateProviderSupplier;
     private @Nullable TabSwitcherMessageManager mMessageManager;
     private final @Nullable TabSwitcherDragHandler mTabSwitcherDragHandler;
+    private final Supplier<TabWindowManager> mTabWindowManagerSupplier;
 
     /**
      * @param activity The {@link Activity} that hosts the pane.
@@ -110,6 +112,7 @@ public class TabSwitcherPaneCoordinatorFactory {
      * @param layoutStateProviderSupplier Supplies the LayoutStateProvider, which is used to observe
      *     when the TabSwitcher is hidden.
      * @param tabSwitcherDragHandler An instance of the {@link TabSwitcherDragHandler}.
+     * @param tabWindowManagerSupplier Supplier for the {@link TabWindowManager}.
      */
     TabSwitcherPaneCoordinatorFactory(
             Activity activity,
@@ -134,7 +137,8 @@ public class TabSwitcherPaneCoordinatorFactory {
             Supplier<PaneManager> paneManagerSupplier,
             Supplier<TabGroupUiActionHandler> tabGroupUiActionHandlerSupplier,
             Supplier<@Nullable LayoutStateProvider> layoutStateProviderSupplier,
-            @Nullable TabSwitcherDragHandler tabSwitcherDragHandler) {
+            @Nullable TabSwitcherDragHandler tabSwitcherDragHandler,
+            Supplier<TabWindowManager> tabWindowManagerSupplier) {
         mActivity = activity;
         mLifecycleDispatcher = lifecycleDispatcher;
         mProfileProviderSupplier = profileProviderSupplier;
@@ -159,6 +163,7 @@ public class TabSwitcherPaneCoordinatorFactory {
         mTabGroupUiActionHandlerSupplier = tabGroupUiActionHandlerSupplier;
         mLayoutStateProviderSupplier = layoutStateProviderSupplier;
         mTabSwitcherDragHandler = tabSwitcherDragHandler;
+        mTabWindowManagerSupplier = tabWindowManagerSupplier;
     }
 
     /**
@@ -170,7 +175,6 @@ public class TabSwitcherPaneCoordinatorFactory {
      * @param isVisibleSupplier Supplies visibility information to the tab switcher.
      * @param isAnimatingSupplier Supplies animation information to the tab switcher.
      * @param onTabClickCallback Callback to be invoked with the tab ID of the selected tab.
-     * @param setHairlineVisibilityCallback Callback to be invoked to show or hide the hairline.
      * @param isIncognito Whether this is for the incognito tab switcher.
      * @param onTabGroupCreation Should be run when the UI is used to create a tab group.
      * @param edgeToEdgeSupplier Supplier to the {@link EdgeToEdgeController} instance.
@@ -220,7 +224,8 @@ public class TabSwitcherPaneCoordinatorFactory {
                 mUndoBarThrottle,
                 setOverlayViewCallback,
                 mTabSwitcherDragHandler,
-                hubSearchBoxVisibilitySupplier);
+                hubSearchBoxVisibilitySupplier,
+                mTabWindowManagerSupplier.get());
     }
 
     /** Returns the {@link TabListMode} of the produced {@link TabListCoordinator}s. */
@@ -273,7 +278,8 @@ public class TabSwitcherPaneCoordinatorFactory {
                             mEdgeToEdgeSupplier,
                             mPaneManagerSupplier,
                             mTabGroupUiActionHandlerSupplier,
-                            mLayoutStateProviderSupplier);
+                            mLayoutStateProviderSupplier,
+                            mTabWindowManagerSupplier.get());
             if (mLifecycleDispatcher.isNativeInitializationFinished()) {
                 mMessageManager.initWithNative(
                         assumeNonNull(mProfileProviderSupplier.get()).getOriginalProfile());

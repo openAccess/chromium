@@ -228,13 +228,50 @@ BASE_DECLARE_FEATURE(kInfiniteTabsFreezingOnMemoryPressure);
 BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
                            kInfiniteTabsFreezingOnMemoryPressureInterval);
 
-// The available physical memory percentage below which to trigger freezing when
-// enabled.
-BASE_DECLARE_FEATURE_PARAM(int, kInfiniteTabsFreezingOnMemoryPressurePercent);
+// The available physical memory percentage below which to enter freezing when
+// `kInfiniteTabsFreezingOnMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureEnterAvailableMemoryPercent);
+
+// The available physical memory percentage at or above which to exit freezing
+// when `kInfiniteTabsFreezingOnMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureExitAvailableMemoryPercent);
+
+// Whether the low-RAM enter and exit thresholds below apply only on Windows 11
+// 25H2 and later (build 26200+). `kInfiniteTabsFreezingOnMemoryPressure` is
+// Windows-only, so when false, the low-RAM thresholds apply on all Windows
+// versions for devices with at most 8 GiB of physical memory.
+BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamRequireWin1125H2OrLater);
+
+// The available physical memory percentage below which to enter freezing on
+// matching low-RAM devices (at most 8 GiB of physical memory). When
+// `kDisablePeriodicUnfreezeOnCriticalMemoryPressure` is also enabled, configure
+// `critical < enter <= exit` so devices enter periodic unfreezing before
+// suppressing it.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamEnterAvailableMemoryPercent);
+
+// The available physical memory percentage at or above which to exit freezing
+// on matching low-RAM devices (at most 8 GiB of physical memory).
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kInfiniteTabsFreezingOnMemoryPressureLowRamExitAvailableMemoryPercent);
 
 // If enabled, periodic unfreezing of tabs is disabled while the system is under
 // critical memory pressure.
 BASE_DECLARE_FEATURE(kDisablePeriodicUnfreezeOnCriticalMemoryPressure);
+
+// The available physical memory percentage below which periodic unfreezing is
+// disabled when `kDisablePeriodicUnfreezeOnCriticalMemoryPressure` is enabled.
+BASE_DECLARE_FEATURE_PARAM(
+    int,
+    kDisablePeriodicUnfreezeOnCriticalMemoryPressurePercent);
 
 // If enabled, tabs may be discarded on Windows when the system approaches the
 // commit limit.
@@ -300,9 +337,9 @@ BASE_DECLARE_FEATURE(kGlicActuationPriorityVoter);
 // shown (crbug.com/549552319).
 BASE_DECLARE_FEATURE(kPMWithheldFromViewVoter);
 
-// When enabled, registers SidePanelLoadingVoter, which ensures side panel
-// contents load at high priority even when not visible. Expected to be
-// superseded by kPMWithheldFromViewVoter (crbug.com/549552319).
+// When enabled, boosts the priority of side panel contents while loading even
+// when not visible (see performance_manager::priority::MarkAsSidePanel).
+// Expected to be superseded by kPMWithheldFromViewVoter (crbug.com/549552319).
 BASE_DECLARE_FEATURE(kPMSidePanelLoadingVoter);
 
 // When enabled, ignores kMediaQueryChange favicon updates (e.g.

@@ -391,17 +391,22 @@ suite('Basic', function() {
     resetPageVisibilityForTesting();
     resetRouterForTesting();
 
-    assertTrue(!!routes.PEOPLE);
-    assertEquals('/people', routes.PEOPLE.path);
-    assertEquals('people', routes.PEOPLE.section);
-    assertEquals(routes.PEOPLE, getTopLevelRoute());
+    assertEquals('/', routes.BASIC.path);
+    assertEquals('home', routes.BASIC.section);
+    assertEquals(routes.BASIC, getTopLevelRoute());
     assertEquals(routes.BASIC, Router.getInstance().getRouteForPath('/'));
-    assertEquals(
-        routes.PEOPLE, Router.getInstance().getRouteForPath('/people'));
+    assertFalse(!!routes.PEOPLE);
 
     assertTrue(!!routes.GENERAL);
     assertEquals('/general', routes.GENERAL.path);
     assertEquals('general', routes.GENERAL.section);
+
+    assertTrue(routes.BASIC.contains(routes.BASIC));
+    assertTrue(routes.BASIC.contains(routes.SYNC));
+    assertTrue(routes.BASIC.contains(routes.SYNC_ADVANCED));
+    assertFalse(routes.BASIC.contains(routes.APPEARANCE));
+    assertFalse(routes.BASIC.contains(routes.PRIVACY));
+    assertFalse(routes.BASIC.contains(routes.GENERAL));
 
     assertTrue(!!routes.RESET_DIALOG);
     assertEquals('/resetProfileSettings', routes.RESET_DIALOG.path);
@@ -421,6 +426,26 @@ suite('Basic', function() {
     assertFalse(!!routes.ON_STARTUP);
     assertFalse(!!routes.DOWNLOADS);
     assertFalse(!!routes.RESET);
+  });
+
+  // Verifies that the Device tab visibility route exists only when the
+  // corresponding feature flag is enabled.
+  test('device tab visibility route existence', function() {
+    resetPageVisibilityForTesting({people: true});
+
+    loadTimeData.overrideValues({
+      replaceSyncPromosWithSignInPromos: true,
+      enableDeviceTabVisibilitySettings: false,
+    });
+    resetRouterForTesting();
+    assertFalse(!!routes.DEVICE_TAB_VISIBILITY);
+
+    loadTimeData.overrideValues({
+      replaceSyncPromosWithSignInPromos: true,
+      enableDeviceTabVisibilitySettings: true,
+    });
+    resetRouterForTesting();
+    assertTrue(!!routes.DEVICE_TAB_VISIBILITY);
   });
 });
 

@@ -9,10 +9,10 @@
 #include <utility>
 #include <vector>
 
-#include "chrome/browser/browser_actuator/transport/transport_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/browser_actuator/internal/transport/session_stream_recorder.h"
-#include "components/browser_actuator/public/transport/transport_service.h"
+#include "chrome/browser/stream_transport/transport_service_factory.h"
+#include "components/stream_transport/internal/session_stream_recorder.h"
+#include "components/stream_transport/public/transport_service.h"
 
 namespace browser_actuator {
 
@@ -40,7 +40,7 @@ BrowserActuatorInternalsUIMojoImpl::~BrowserActuatorInternalsUIMojoImpl() =
 
 void BrowserActuatorInternalsUIMojoImpl::GetSessionHistory(
     GetSessionHistoryCallback callback) {
-  const transport::SessionStreamRecorderFactory* recorder_factory =
+  const stream_transport::SessionStreamRecorderFactory* recorder_factory =
       GetRecorderFactory();
   if (!recorder_factory) {
     // No service (feature off, or a non-regular profile), or the internals
@@ -58,7 +58,7 @@ void BrowserActuatorInternalsUIMojoImpl::GetSessionHistory(
 void BrowserActuatorInternalsUIMojoImpl::ExportSessionHistory(
     const std::vector<std::string>& session_ids,
     ExportSessionHistoryCallback callback) {
-  const transport::SessionStreamRecorderFactory* recorder_factory =
+  const stream_transport::SessionStreamRecorderFactory* recorder_factory =
       GetRecorderFactory();
   if (!recorder_factory) {
     std::move(callback).Run("");
@@ -68,11 +68,12 @@ void BrowserActuatorInternalsUIMojoImpl::ExportSessionHistory(
   std::move(callback).Run(recorder_factory->ExportSessionsAsJson(session_ids));
 }
 
-const transport::SessionStreamRecorderFactory*
+const stream_transport::SessionStreamRecorderFactory*
 BrowserActuatorInternalsUIMojoImpl::GetRecorderFactory() const {
-  transport::TransportService* transport_service =
-      profile_ ? transport::TransportServiceFactory::GetForProfile(profile_)
-               : nullptr;
+  stream_transport::TransportService* transport_service =
+      profile_
+          ? stream_transport::TransportServiceFactory::GetForProfile(profile_)
+          : nullptr;
   return transport_service ? transport_service->GetStreamRecorderFactory()
                            : nullptr;
 }

@@ -58,7 +58,6 @@
 #include "third_party/blink/public/mojom/page/page.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/permissions/permission.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink-forward.h"
-#include "third_party/blink/public/mojom/permissions_policy/document_policy_feature.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink-forward.h"
 #include "third_party/blink/public/web/web_form_related_change_type.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -418,9 +417,6 @@ class CORE_EXPORT Document : public ContainerNode,
 
   network::mojom::ReferrerPolicy GetReferrerPolicy() const;
 
-  bool DocumentPolicyFeatureObserved(
-      mojom::blink::DocumentPolicyFeature feature);
-
   bool CanContainRangeEndPoint() const override { return true; }
 
   SelectorQueryCache& GetSelectorQueryCache();
@@ -741,6 +737,7 @@ class CORE_EXPORT Document : public ContainerNode,
 
   void ScheduleUseShadowTreeUpdate(SVGUseElement&);
   void UnscheduleUseShadowTreeUpdate(SVGUseElement&);
+  void UpdateUseShadowTreesIfNeeded();
 
   void ScheduleSVGResourceInvalidation(LocalSVGResource&);
   void InvalidatePendingSVGResources();
@@ -2068,6 +2065,9 @@ class CORE_EXPORT Document : public ContainerNode,
   // This flag is immutable once set.
   // https://drafts.csswg.org/css-sizing-4/#document-responsive-embedded-sizing-flag
   void SetResponsiveEmbeddedSizing() { responsive_embedded_sizing_ = true; }
+  bool HasResponsiveEmbeddedSizing() const {
+    return responsive_embedded_sizing_;
+  }
 
   // A META element with name=text-scale was added, removed, or
   // modified. Re-collect the META values.
@@ -2574,7 +2574,6 @@ class CORE_EXPORT Document : public ContainerNode,
   StyleAndLayoutTreeUpdate CalculateStyleAndLayoutTreeUpdateForParentFrame()
       const;
 
-  void UpdateUseShadowTreesIfNeeded();
   void EvaluateMediaQueryListIfNeeded();
 
   void UpdateStyleInvalidationIfNeeded();
@@ -3216,11 +3215,6 @@ class CORE_EXPORT Document : public ContainerNode,
   bool is_for_external_handler_;
 
   Member<LazyLoadMediaObserver> lazy_load_media_observer_;
-
-  // Tracks which document policies have already been parsed, so as not to
-  // count them multiple times. The size of this vector is 0 until
-  // `DocumentPolicyFeatureObserved` is called.
-  Vector<bool> parsed_document_policies_;
 
   AtomicString override_last_modified_;
 

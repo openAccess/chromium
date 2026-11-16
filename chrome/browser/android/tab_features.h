@@ -24,7 +24,6 @@ class NewTabPagePreloadPipelineManager;
 
 namespace actor {
 class ActorSurfaceTabHelper;
-class ActorTabData;
 }  // namespace actor
 
 namespace contextual_tasks {
@@ -180,6 +179,7 @@ class OneTimePermissionsTrackerHelper;
 class OomInterventionTabHelper;
 class PluginObserverAndroid;
 class PolicyAuditorBridge;
+class PrewarmTabHelper;
 class RecentlyAudibleHelper;
 class RevokedPermissionsTabHelper;
 class SearchEngineTabHelper;
@@ -207,11 +207,6 @@ class TabFeatures {
  public:
   TabFeatures(content::WebContents* web_contents, Profile* profile);
   ~TabFeatures();
-
-  enterprise_data_protection::DataProtectionNavigationController*
-  data_protection_controller() {
-    return data_protection_tab_controller_.get();
-  }
 
   tasks::TaskTabHelper* task_tab_helper() { return task_tab_helper_.get(); }
 
@@ -249,7 +244,6 @@ class TabFeatures {
   std::unique_ptr<AskBeforeHttpDialogController>
       ask_before_http_dialog_controller_;
 
-  std::unique_ptr<actor::ActorTabData> actor_tab_data_;
   std::unique_ptr<actor::ActorSurfaceTabHelper> actor_surface_tab_helper_;
 
   std::unique_ptr<ConnectionHelpTabHelper> connection_help_tab_helper_;
@@ -258,6 +252,7 @@ class TabFeatures {
   std::unique_ptr<QwacWebContentsObserver> qwac_web_contents_observer_;
   std::unique_ptr<NewTabPagePreloadPipelineManager>
       new_tab_page_preload_pipeline_manager_;
+  std::unique_ptr<PrewarmTabHelper> prewarm_tab_helper_;
   std::unique_ptr<contextual_tasks::ContextualTasksTabVisitTracker>
       contextual_tasks_tab_visit_tracker_;
   std::unique_ptr<lens::TabContextualizationController>

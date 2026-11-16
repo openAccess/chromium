@@ -288,9 +288,12 @@ void WebStateImpl::RealizedWebState::SetWebController(
 
 void WebStateImpl::RealizedWebState::OnNavigationStarted(
     NavigationContextImpl* context) {
-  // When a navigation starts, immediately close any visible dialogs to avoid
-  // confusion about the origin of a dialog.
-  ClearDialogs();
+  // When a non-same-document navigation starts, immediately close any visible
+  // dialogs to avoid confusion about the origin of a dialog. Same-document
+  // navigations cannot change the origin, so dialogs should remain open.
+  if (!context->IsSameDocument()) {
+    ClearDialogs();
+  }
 
   // Navigation manager loads internal URLs to create back-forward entries for
   // WebUI. Do not trigger external callbacks.
@@ -936,10 +939,12 @@ void WebStateImpl::RealizedWebState::TakeSnapshot(const CGRect rect,
                              }];
 }
 
-void WebStateImpl::RealizedWebState::CreateFullPagePdf(
+void WebStateImpl::RealizedWebState::CreatePdf(
+    const CreatePdfParams& params,
     base::OnceCallback<void(NSData*)> callback) {
-  [web_controller_ createFullPagePDFWithCompletion:base::CallbackToBlock(
-                                                       std::move(callback))];
+  [web_controller_
+      createPDFWithDocumentRect:params.document_rect
+                     completion:base::CallbackToBlock(std::move(callback))];
 }
 
 void WebStateImpl::RealizedWebState::CloseMediaPresentations() {

@@ -8,8 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
-#include "base/containers/to_vector.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/uuid.h"
 #include "components/autofill/core/browser/autofill_field.h"
@@ -41,7 +41,6 @@ class FormAutofillHistoryTest : public testing::Test {
     FormFieldData field = test::CreateTestFormField(label, name, value, type);
     field.set_is_autofilled_according_to_renderer(
         is_autofilled_according_to_renderer);
-    filled_fields_.push_back(field);
     AutofillField autofill_field(field);
     autofill_field.SetTypeTo(AutofillType(field_type),
                              AutofillPredictionSource::kHeuristics);
@@ -55,13 +54,17 @@ class FormAutofillHistoryTest : public testing::Test {
   void AddFormFilling(
       bool is_refill,
       const base::flat_set<FieldGlobalId>& emptied_field_ids = {}) {
-    std::vector<const AutofillField*> autofill_fields = base::ToVector(
-        filled_autofill_fields_, [](const auto& field) { return &field; });
     form_autofill_history_.AddFormFillingEntry(
-        autofill_fields, emptied_field_ids, FillingProduct::kNone, is_refill);
+        base::MakeFlatMap<FieldGlobalId,
+                          FormAutofillHistory::FieldFillingEntry>(
+            filled_autofill_fields_, {},
+            [](const AutofillField& field) {
+              return std::pair(field.global_id(),
+                               FormAutofillHistory::FieldFillingEntry(field));
+            }),
+        emptied_field_ids, FillingProduct::kNone, is_refill);
   }
 
-  std::vector<FormFieldData> filled_fields_;
   std::vector<AutofillField> filled_autofill_fields_;
   FormAutofillHistory form_autofill_history_;
 
@@ -153,7 +156,7 @@ TEST_F(FormAutofillHistoryTest, AddFormFillingEntry_Refill) {
   AddFormFilling(/*is_refill=*/false);
 
   // Modify the first name filling to simulate a refill.
-  filled_fields_[0].set_value(u"some-other-first-name");
+  filled_autofill_fields_[0].set_value(u"some-other-first-name");
   FieldGlobalId last_name_id =
       AddNewFieldFilling("last name", "last name", "some-other-last-name",
                          FormControlType::kInputText, NAME_LAST,
@@ -208,7 +211,6 @@ TEST_F(FormAutofillHistoryTest, AddFormFillingEntry_HistoryLimit) {
   }
 
   // Adding an extra entry that will make the history size exceed the limit.
-  filled_fields_.clear();
   filled_autofill_fields_.clear();
   FieldGlobalId extra_field_id = AddNewFieldFilling(
       "extra-label", "extra-name", "", FormControlType::kInputText,
@@ -234,7 +236,6 @@ TEST_F(FormAutofillHistoryTest, AddFormFillingEntry_FormBiggerThanLimit) {
                        /*is_autofilled_according_to_renderer=*/false,
                        /*modifiers=*/{});
     AddFormFilling(/*is_refill=*/false);
-    filled_fields_.clear();
     filled_autofill_fields_.clear();
   }
   EXPECT_EQ(form_autofill_history_.size(), 5u);
@@ -283,7 +284,6 @@ TEST_F(FormAutofillHistoryTest, AddFormFillingEntry_RefillOnEmptyHistory) {
   AddFormFilling(/*is_refill=*/false);
   EXPECT_TRUE(form_autofill_history_.empty());
 
-  filled_fields_.clear();
   filled_autofill_fields_.clear();
   FieldGlobalId field_id = AddNewFieldFilling(
       "label", "name", "", FormControlType::kInputText, UNKNOWN_TYPE,
@@ -291,6 +291,29 @@ TEST_F(FormAutofillHistoryTest, AddFormFillingEntry_RefillOnEmptyHistory) {
   AddFormFilling(/*is_refill=*/true);
   EXPECT_EQ(form_autofill_history_.size(), 1u);
   EXPECT_TRUE(form_autofill_history_.HasHistory(field_id));
+}
+
+// Tests that `FieldFillingEntry(const AutofillField&)` captures all relevant
+// pre-fill attributes of an `AutofillField`.
+TEST_F(FormAutofillHistoryTest, FieldFillingEntry_FromAutofillField) {
+  FormFieldData field_data = test::CreateTestFormField(
+      "first name", "first_name", "Jane", FormControlType::kInputText);
+  field_data.set_is_autofilled_according_to_renderer(true);
+
+  AutofillField autofill_field(field_data);
+  autofill_field.set_autofill_source_profile_guid(kGuid);
+  autofill_field.set_autofilled_type(NAME_FIRST);
+  autofill_field.set_filling_product(FillingProduct::kAddress);
+  test_api(autofill_field)
+      .set_field_modifiers({FieldModifier::kUser, FieldModifier::kAutofill});
+
+  const FormAutofillHistory::FieldFillingEntry entry(autofill_field);
+  EXPECT_EQ(entry,
+            FormAutofillHistory::FieldFillingEntry(
+                u"Jane", /*field_is_autofilled_according_to_renderer=*/true,
+                {FieldModifier::kUser, FieldModifier::kAutofill}, kGuid,
+                NAME_FIRST, FillingProduct::kAddress,
+                /*ignore_is_autofilled=*/false));
 }
 
 }  // namespace

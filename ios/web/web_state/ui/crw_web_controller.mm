@@ -25,6 +25,7 @@
 #import "base/trace_event/trace_event.h"
 #import "build/branding_buildflags.h"
 #import "build/config/ios/buildflags.h"
+#import "ios/public/provider/web/zoom_api.h"
 #import "ios/web/common/annotations_utils.h"
 #import "ios/web/common/crw_edit_menu_builder.h"
 #import "ios/web/common/crw_input_view_provider.h"
@@ -929,9 +930,12 @@ JavaScriptCompletionBlock WrapCompletionBlock(
                   }];
 }
 
-- (void)createFullPagePDFWithCompletion:(void (^)(NSData*))completionBlock {
-  // Invoke the `completionBlock` with nil rather than a blank PDF for certain
-  // URLs or if there is a javascript dialog running.
+- (void)createPDFWithDocumentRect:(std::optional<CGRect>)documentRect
+                       completion:
+                           (void (^)(NSData* PDFDocumentData))completion {
+  CHECK(completion, base::NotFatalUntil::M160);
+  // Invoke `completion` with nil rather than a blank PDF for certain URLs or if
+  // there is a JavaScript dialog running.
   const std::string& mimeType = self.webState->GetContentsMimeType();
   const bool contentSupported =
       web::IsContentTypeHtml(mimeType) || web::IsContentTypePdf(mimeType);
@@ -940,11 +944,12 @@ JavaScriptCompletionBlock WrapCompletionBlock(
       web::GetWebClient()->IsAppSpecificURL(URL) ||
       self.webStateImpl->IsJavaScriptDialogRunning()) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      completionBlock(nil);
+      completion(nil);
     });
     return;
   }
-  web::CreateFullPagePdf(self.webView, base::BindOnce(completionBlock));
+
+  web::CreatePdf(self.webView, documentRect, base::BindOnce(completion));
 }
 
 - (void)closeMediaPresentations {
@@ -1172,6 +1177,10 @@ JavaScriptCompletionBlock WrapCompletionBlock(
 
 - (UIColor*)underPageBackgroundColor {
   return self.webView.underPageBackgroundColor;
+}
+
+- (BOOL)setZoomSize:(int)size {
+  return web::provider::SetZoomForWebView(self.webView, size);
 }
 
 #pragma mark - JavaScript

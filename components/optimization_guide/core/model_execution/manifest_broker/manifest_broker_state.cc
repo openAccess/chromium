@@ -22,6 +22,7 @@
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_solution_factory.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_validation.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/on_device_prefs.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom.h"
@@ -224,7 +225,7 @@ void ManifestBrokerState::OnManifestUpdated() {
   if (!asset_manager_) {
     asset_manager_ = std::make_unique<ManifestAssetManager>(
         *local_state_, usage_tracker_, *delegate_, component_update_service_,
-        std::move(factory));
+        model_observers_, std::move(factory));
   } else {
     asset_manager_->UpdateSolutionFactory(std::move(factory));
   }
@@ -250,10 +251,8 @@ void ManifestBrokerState::OnSolutionFactoryInit() {
 on_device_model::Capabilities
 ManifestBrokerState::GetPossibleOnDeviceCapabilities() const {
   CHECK(manifest_monitor_.manifest().has_value());
-  if (!performance_classifier_.IsPerformanceClassAvailable()) {
-    // This should only happen if a policy is disabling on-device models.
-    return {};
-  }
+  // `ManifestMonitor` only selects a manifest after perf class is available.
+  CHECK(performance_classifier_.IsPerformanceClassAvailable());
   return performance_classifier_.GetPossibleOnDeviceCapabilities();
 }
 
@@ -356,16 +355,66 @@ void ManifestBrokerState::UninstallModels() {
       weak_ptr_factory_.GetWeakPtr()));
 }
 
-void ManifestBrokerState::UninstallCapability(
-    const std::string& model_asset_id) {
+void ManifestBrokerState::UninstallCapability(OnDeviceBaseModel base_model) {
   EnsureInitialization(base::BindOnce(
-      [](base::WeakPtr<ManifestBrokerState> self, std::string model_asset_id,
+      [](base::WeakPtr<ManifestBrokerState> self, OnDeviceBaseModel base_model,
          const on_device_model::Capabilities&) {
         if (self && self->asset_manager_) {
-          self->asset_manager_->UninstallCapability(model_asset_id);
+          self->asset_manager_->UninstallCapability(base_model);
         }
       },
-      weak_ptr_factory_.GetWeakPtr(), model_asset_id));
+      weak_ptr_factory_.GetWeakPtr(), base_model));
+}
+
+void ManifestBrokerState::GetInstalledModels(InstalledModelsCallback callback) {
+  EnsureInitialization(base::BindOnce(
+      [](base::WeakPtr<ManifestBrokerState> self,
+         InstalledModelsCallback callback,
+         const on_device_model::Capabilities&) {
+        std::vector<std::pair<OnDeviceBaseModel, base::FilePath>>
+            models_with_paths;
+        if (self && self->asset_manager_) {
+          models_with_paths = self->asset_manager_->GetInstalledBaseModels();
+        }
+        base::ThreadPool::PostTaskAndReplyWithResult(
+            FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+            base::BindOnce(
+                [](std::vector<std::pair<OnDeviceBaseModel, base::FilePath>>
+                       models_with_paths) {
+                  std::vector<InstalledModel> result;
+                  result.reserve(models_with_paths.size());
+                  for (const auto& [base_model, path] : models_with_paths) {
+                    uint64_t size_bytes =
+                        path.empty()
+                            ? 0
+                            : static_cast<uint64_t>(
+                                  base::ComputeDirectorySize(path));
+                    result.push_back(InstalledModel{
+                        .base_model = base_model,
+                        .size_bytes = size_bytes,
+                    });
+                  }
+                  return result;
+                },
+                std::move(models_with_paths)),
+            std::move(callback));
+      },
+      weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+OnDeviceModelControl::ModelInstallState
+ManifestBrokerState::GetModelInstallState(OnDeviceBaseModel base_model) const {
+  return ManifestAssetManager::GetModelInstallState(*local_state_, base_model);
+}
+
+void ManifestBrokerState::AddObserver(
+    OnDeviceModelControl::Observer* observer) {
+  model_observers_.AddObserver(observer);
+}
+
+void ManifestBrokerState::RemoveObserver(
+    OnDeviceModelControl::Observer* observer) {
+  model_observers_.RemoveObserver(observer);
 }
 
 void ManifestBrokerState::ResetModelCrashCount() {

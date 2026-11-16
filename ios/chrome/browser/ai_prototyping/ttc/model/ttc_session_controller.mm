@@ -118,9 +118,11 @@ void TtcSessionController::OnConversationClosed() {
 
 void TtcSessionController::OnConversationMicMutedChanged(bool muted) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (lifecycle_ != TTCSessionLifecycle::kLive) {
+  if (lifecycle_ != TTCSessionLifecycle::kLive ||
+      notified_mic_muted_ == muted) {
     return;
   }
+  notified_mic_muted_ = muted;
   LogMicMuted(muted);
   for (TtcSessionControllerObserver& observer : observers_) {
     observer.OnMicMutedChanged(this, muted);
@@ -171,7 +173,11 @@ void TtcSessionController::OnToolCall(
     return;
   }
 
+  Browser* browser = voice_focused_web_state_tracker_
+                         ? voice_focused_web_state_tracker_->GetBrowser()
+                         : nullptr;
   actuation_handler_->ProcessToolCall(tool_request, GetVoiceFocusedWebState(),
+                                      browser,
                                       std::move(tool_response_callback));
 }
 
@@ -198,7 +204,7 @@ void TtcSessionController::OnVoiceFocusedWebStateChanged(
     return;
   }
   page_context_monitor_ =
-      std::make_unique<TtcPageContextMonitor>(*web_state, this);
+      std::make_unique<TtcPageContextMonitor>(*web_state, this, journal_.get());
 }
 
 #pragma mark - TtcPageContextMonitor::Delegate
@@ -301,6 +307,9 @@ void TtcSessionController::set_journal(TTCJournal* journal) {
   if (actuation_handler_) {
     actuation_handler_->set_journal(journal);
   }
+  if (page_context_monitor_) {
+    page_context_monitor_->set_journal(journal);
+  }
 }
 
 web::WebState* TtcSessionController::GetVoiceFocusedWebState() const {
@@ -326,17 +335,11 @@ bool TtcSessionController::SetMicMuted(bool muted) {
       conversation_->IsMicMuted() == muted) {
     return false;
   }
-  LogMicMuted(muted);
   base::WeakPtr<TtcSessionController> weak_this =
       weak_ptr_factory_.GetWeakPtr();
   conversation_->SetMicMuted(muted);
-  if (!weak_this || lifecycle_ != TTCSessionLifecycle::kLive) {
-    return false;
-  }
-  for (TtcSessionControllerObserver& observer : observers_) {
-    observer.OnMicMutedChanged(this, muted);
-  }
-  return true;
+  return weak_this && lifecycle_ == TTCSessionLifecycle::kLive &&
+         conversation_->IsMicMuted() == muted;
 }
 
 bool TtcSessionController::IsMicMuted() const {

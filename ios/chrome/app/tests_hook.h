@@ -24,6 +24,7 @@ class TrustedVaultClientBackend;
 @class UIImage;
 @class UIViewController;
 @class UIWindow;
+@class UIWindowScene;
 @protocol ChromeLensViewFinderController;
 @protocol ReauthenticationProtocol;
 
@@ -157,6 +158,10 @@ bool ShouldLoadMinimalAppUI();
 // simple UILabel into the first UIWindow).
 void LoadMinimalAppUI(UIWindow* window);
 
+// Returns true if `scene` is displayed on the cover display of a closed iPhone
+// Duo in tests.
+bool IsWindowSceneOnDuoCoverDisplay(UIWindowScene* scene);
+
 // Returns a policy provider that should be installed as the platform policy
 // provider when testing. May return nullptr.
 policy::ConfigurationPolicyProvider* GetOverriddenPlatformPolicyProvider();
@@ -177,21 +182,21 @@ std::unique_ptr<TrustedVaultClientBackend> CreateTrustedVaultClientBackend();
 // Allows overriding the TabGroupSyncService factory. The real factory will be
 // used if this hook returns null.
 std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Allows overriding the ShoppingService factory. The real factory will be used
 // if this hook returns null.
 std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Allows overriding the GCMProfileService factory. The real factory will be
 // used if this hook returns null.
 std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Allows overriding the ExtensionService factory. The real factory will be
 // used if this hook returns null.
-std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS* profile);
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS& profile);
 
 // Allows additional test setup for the DataSharingService.
 void DataSharingServiceHooks(
@@ -268,12 +273,12 @@ UIImage* GetPHPickerViewControllerImage();
 // Returns a mock AimEligibilityService for testing.
 // The real factory will be used if this hook returns null.
 std::unique_ptr<AimEligibilityService> CreateAimEligibilityService(
-    ProfileIOS* profile);
+    ProfileIOS& profile);
 
 // Returns a mock ContextualSearchService for testing.
 // The real factory will be used if this hook returns null.
 std::unique_ptr<contextual_search::ContextualSearchService>
-CreateContextualSearchService(ProfileIOS* profile);
+CreateContextualSearchService(ProfileIOS& profile);
 
 // Injects fake tabs into the given browser.
 void InjectFakeTabsInBrowser(Browser* browser);

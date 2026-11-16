@@ -38,6 +38,7 @@ import("//third_party/closure_compiler/compile_js.gni")
 import("//tools/ipc_fuzzer/ipc_fuzzer.gni")
 import("//ui/base/ui_features.gni")
 import("//ui/gl/features.gni")
+import("//ui/qt/qt.gni")
 import("//v8/gni/v8.gni")
 
 if (is_android) {
@@ -59,6 +60,7 @@ if (is_linux) {
 }
 
 if (use_blink) {
+  import("//chrome/common/features.gni")
   import("//v8/gni/snapshot_toolchain.gni")
 }
 
@@ -327,6 +329,10 @@ group("gn_all") {
 
     if (use_gtk) {
       deps += [ "//ui/gtk:gtk_unittests" ]
+    }
+
+    if (use_qt) {
+      deps += [ "//ui/qt:qt_unittests" ]
     }
 
     if (enterprise_watermark && toolkit_views) {
@@ -613,7 +619,8 @@ group("gn_all") {
         deps += [ "//chrome/test:chrome_app_unittests" ]
       }
 
-      if (!is_debug && !is_component_build && !is_castos) {
+      if (!is_debug && !is_component_build && !is_castos &&
+          enable_service_discovery) {
         deps += [ "//chrome/tools/service_discovery_sniffer" ]
       }
     }

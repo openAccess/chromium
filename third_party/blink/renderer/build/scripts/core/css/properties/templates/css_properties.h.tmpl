@@ -65,6 +65,7 @@ namespace {{namespace}} {
   (property.is_highlight_colors and 'kHighlightColors' or ''),
   (property.is_visited_highlight_colors and 'kVisitedHighlightColors' or ''),
   (property.valid_for_highlight and 'kValidForHighlight' or ''),
+  ((property.valid_for_highlight or property.valid_for_highlight_with_extensions) and 'kValidForHighlightWithExtensions' or ''),
   (property.logical_property_group and 'kInLogicalPropertyGroup' or ''),
   (property.percentages_depend_on_used_value and 'kPercentagesDependOnUsedValue' or ''),
   (property.percentages_depend_on_used_value == False and 'kPercentagesDoNotDependOnUsedValue' or ''),
@@ -77,9 +78,9 @@ namespace {{namespace}} {
 class CORE_EXPORT {{class_name}} final : public {{property.superclass}} {
  public:
   constexpr {{class_name}}() : {{property.superclass}}({{ctor_args | join(', ')}}) { }
-  const char* GetPropertyName() const override;
+  StringView GetPropertyName() const override;
   const AtomicString& GetPropertyNameAtomicString() const override;
-  const char* GetJSPropertyName() const override;
+  StringView GetJSPropertyName() const override;
   {% if not property.known_exposed %}
   CSSExposure Exposure(const ExecutionContext*) const override;
   {% endif %}

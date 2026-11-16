@@ -100,8 +100,9 @@ constexpr net::NetworkTrafficAnnotationTag kOhttpKeyTrafficAnnotation =
   policy {
     cookies_allowed: NO
     setting:
-      "Users can disable this feature by unselecting 'Standard protection' "
-      "in Chromium settings under Security. The feature is enabled by default."
+      "Users can disable Safe Browsing by checking 'No protection' in Chromium "
+      "settings under Security > Safe Browsing. The feature is enabled by "
+      "default."
     chrome_policy {
       SafeBrowsingProtectionLevel {
         policy_options {mode: MANDATORY}
@@ -116,30 +117,10 @@ constexpr net::NetworkTrafficAnnotationTag kOhttpKeyTrafficAnnotation =
     }
   }
   comments:
-      "SafeBrowsingProtectionLevel value of 0 or 2 disables fetching this "
-      "OHTTP key. A value of 1 enables the feature. The feature is enabled by "
+      "SafeBrowsingProtectionLevel value of 0 disables fetching this OHTTP "
+      "key. A value of 1 or 2 enables the feature. The feature is enabled by "
       "default."
   )");
-
-bool IsEnabled(PrefService* pref_service,
-               std::optional<std::string> country,
-               bool are_background_lookups_allowed) {
-  // If this class has been created, it is already known that the session is not
-  // off-the-record, so |is_off_the_record| is passed through as false.
-  safe_browsing::hash_realtime_utils::HashRealTimeSelection
-      hash_realtime_selection =
-          safe_browsing::hash_realtime_utils::DetermineHashRealTimeSelection(
-              /*is_off_the_record=*/false, pref_service,
-              /*latest_country=*/country, /*log_usage_histograms=*/false,
-              /*are_background_lookups_allowed=*/
-              are_background_lookups_allowed);
-  return hash_realtime_selection ==
-             safe_browsing::hash_realtime_utils::HashRealTimeSelection::
-                 kHashRealTimeService ||
-         hash_realtime_selection ==
-             safe_browsing::hash_realtime_utils::HashRealTimeSelection::
-                 kHashRealTimeServiceBackgroundOnly;
-}
 
 GURL GetKeyFetchingUrl() {
   GURL url(safe_browsing::kHashPrefixRealTimeLookupsKeyFetchUrl.Get());
@@ -150,12 +131,8 @@ GURL GetKeyFetchingUrl() {
   return url;
 }
 
-void RecordNetworkTime(std::string_view old_name,
-                       std::string_view new_name,
-                       base::TimeDelta duration) {
-  // For now we log both histograms to avoid disruptions in the data.
-  base::UmaHistogramTimes(old_name, duration);
-  base::UmaHistogramCustomTimes(new_name, duration, base::Milliseconds(1),
+void RecordNetworkTime(std::string_view name, base::TimeDelta duration) {
+  base::UmaHistogramCustomTimes(name, duration, base::Milliseconds(1),
                                 base::Seconds(30), 50);
 }
 
@@ -203,15 +180,15 @@ OhttpKeyService::OhttpKeyService(
                                   weak_factory_.GetWeakPtr()));
   }
 
-  SetEnabled(IsEnabled(pref_service_, country_getter_.Run(),
-                       are_background_lookups_allowed_));
+  SetEnabled(hash_realtime_utils::AreOhttpKeyFetchesEnabled(
+      pref_service_, country_getter_.Run(), are_background_lookups_allowed_));
 }
 
 OhttpKeyService::~OhttpKeyService() = default;
 
 void OhttpKeyService::OnConfiguringPrefsChanged() {
-  SetEnabled(IsEnabled(pref_service_, country_getter_.Run(),
-                       are_background_lookups_allowed_));
+  SetEnabled(hash_realtime_utils::AreOhttpKeyFetchesEnabled(
+      pref_service_, country_getter_.Run(), are_background_lookups_allowed_));
 }
 
 void OhttpKeyService::SetEnabled(bool enable) {
@@ -367,8 +344,7 @@ void OhttpKeyService::OnURLLoaderComplete(
 
   base::TimeDelta request_duration =
       base::TimeTicks::Now() - request_start_time;
-  RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time",
-                    "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2",
+  RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time2",
                     request_duration);
 
   RecordHttpResponseOrErrorCode(
@@ -395,7 +371,6 @@ void OhttpKeyService::OnURLLoaderComplete(
               "SafeBrowsing.HPRT.OhttpKeyService.ResponseSize.Valid",
               response_body->size());
           RecordNetworkTime(
-              "SafeBrowsing.HPRT.OhttpKeyService.Network.Time.Success",
               "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Success",
               request_duration);
 
@@ -409,7 +384,6 @@ void OhttpKeyService::OnURLLoaderComplete(
               "SafeBrowsing.HPRT.OhttpKeyService.Outcome",
               FetchOutcome::kNoKeys);
           RecordNetworkTime(
-              "SafeBrowsing.HPRT.OhttpKeyService.Network.Time.NoKeys",
               "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.NoKeys",
               request_duration);
 
@@ -422,7 +396,6 @@ void OhttpKeyService::OnURLLoaderComplete(
             "SafeBrowsing.HPRT.OhttpKeyService.Outcome",
             FetchOutcome::kInvalidResponse);
         RecordNetworkTime(
-            "SafeBrowsing.HPRT.OhttpKeyService.Network.Time.Invalid",
             "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Invalid",
             request_duration);
 
@@ -433,15 +406,13 @@ void OhttpKeyService::OnURLLoaderComplete(
     } else {
       base::UmaHistogramEnumeration("SafeBrowsing.HPRT.OhttpKeyService.Outcome",
                                     FetchOutcome::kEmptyResponse);
-      RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time.Empty",
-                        "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Empty",
+      RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Empty",
                         request_duration);
     }
   } else {
     base::UmaHistogramEnumeration("SafeBrowsing.HPRT.OhttpKeyService.Outcome",
                                   FetchOutcome::kNetworkError);
-    RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time.Failure",
-                      "SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Failure",
+    RecordNetworkTime("SafeBrowsing.HPRT.OhttpKeyService.Network.Time2.Failure",
                       request_duration);
   }
   if (is_key_fetch_successful) {

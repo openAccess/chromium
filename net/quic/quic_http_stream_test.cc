@@ -21,6 +21,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/default_tick_clock.h"
 #include "base/time/time.h"
@@ -51,6 +52,7 @@
 #include "net/quic/crypto/proof_verifier_chromium.h"
 #include "net/quic/mock_crypto_client_stream_factory.h"
 #include "net/quic/quic_chromium_alarm_factory.h"
+#include "net/quic/quic_chromium_client_session_peer.h"
 #include "net/quic/quic_chromium_connection_helper.h"
 #include "net/quic/quic_chromium_packet_reader.h"
 #include "net/quic/quic_chromium_packet_writer.h"
@@ -68,6 +70,7 @@
 #include "net/socket/socket_performance_watcher.h"
 #include "net/socket/socket_tag.h"
 #include "net/socket/socket_test_util.h"
+#include "net/spdy/multiplexed_session_creation_initiator.h"
 #include "net/spdy/spdy_http_utils.h"
 #include "net/ssl/ssl_config_service_defaults.h"
 #include "net/test/cert_test_util.h"
@@ -93,6 +96,7 @@
 #include "net/third_party/quiche/src/quiche/quic/test_tools/mock_random.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/qpack/qpack_test_utils.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_connection_peer.h"
+#include "net/third_party/quiche/src/quiche/quic/test_tools/quic_session_peer.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_spdy_session_peer.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_test_utils.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -436,7 +440,7 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<TestParams>,
         base::SingleThreadTaskRunner::GetCurrentDefault().get(),
         /*socket_performance_watcher=*/nullptr, ConnectionEndpointMetadata(),
         /*enable_origin_frame=*/true, /*allow_server_preferred_address=*/true,
-        MultiplexedSessionCreationInitiator::kUnknown,
+        session_creation_initiator_,
         NetLogWithSource::Make(NetLogSourceType::NONE),
         QuicConnectionReuseDetails());
     session_->Initialize();
@@ -466,6 +470,11 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<TestParams>,
 
   void SetResolutionDetails(ResolutionDetails resolution_details) {
     resolution_details_ = resolution_details;
+  }
+
+  void SetSessionCreationInitiator(
+      MultiplexedSessionCreationInitiator session_creation_initiator) {
+    session_creation_initiator_ = session_creation_initiator;
   }
 
   std::unique_ptr<quic::QuicReceivedPacket> ConstructClientDataPacket(
@@ -683,6 +692,8 @@ class QuicHttpStreamTest : public ::testing::TestWithParam<TestParams>,
   quic::test::NoopQpackStreamSenderDelegate noop_qpack_stream_sender_delegate_;
 
   std::optional<ResolutionDetails> resolution_details_;
+  MultiplexedSessionCreationInitiator session_creation_initiator_ =
+      MultiplexedSessionCreationInitiator::kUnknown;
 };
 
 INSTANTIATE_TEST_SUITE_P(VersionIncludeStreamDependencySequence,
@@ -736,6 +747,199 @@ TEST_P(QuicHttpStreamTest, IsConnectionReused) {
 
   // Subsequent streams on the same connection should be considered reused.
   EXPECT_TRUE(stream2.IsConnectionReused());
+}
+
+// A session that was never used to create a stream is not considered reused
+// if it closes before `InitializeStream()` creates a stream.
+TEST_P(QuicHttpStreamTest, IsConnectionReusedFreshSessionClosedBeforeStream) {
+  Initialize();
+  EXPECT_FALSE(stream_->IsConnectionReused());
+
+  session_->connection()->CloseConnection(
+      quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  stream_->RegisterRequest(&request_);
+  EXPECT_THAT(
+      stream_->InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                                callback_.callback()),
+      IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_FALSE(stream_->IsConnectionReused());
+}
+
+// If a session that was already used to create a stream closes before
+// `InitializeStream()` creates a stream for another request, that request's
+// connection is considered reused so that `HttpNetworkTransaction` retries it.
+TEST_P(QuicHttpStreamTest, IsConnectionReusedSessionClosedBeforeStream) {
+  Initialize();
+
+  stream_->RegisterRequest(&request_);
+  EXPECT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+  EXPECT_FALSE(stream_->IsConnectionReused());
+
+  QuicHttpStream stream2(session_->CreateHandle(url::SchemeHostPort(
+                             url::kHttpsScheme, "www.example.org", 443)),
+                         /*dns_aliases=*/{});
+  // The session has been used to create a stream, so `stream2` is considered
+  // reused even before it creates its own stream.
+  EXPECT_TRUE(stream2.IsConnectionReused());
+
+  session_->connection()->CloseConnection(
+      quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  // The reuse state must survive the session closing.
+  EXPECT_TRUE(stream2.IsConnectionReused());
+  stream2.RegisterRequest(&request_);
+  TestCompletionCallback callback2;
+  EXPECT_THAT(
+      stream2.InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                               callback2.callback()),
+      IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_TRUE(stream2.IsConnectionReused());
+
+  // The first stream on the session is still not considered reused.
+  EXPECT_FALSE(stream_->IsConnectionReused());
+
+  // A handle created after the session started going away is also considered
+  // reused.
+  QuicHttpStream stream3(session_->CreateHandle(url::SchemeHostPort(
+                             url::kHttpsScheme, "www.example.org", 443)),
+                         /*dns_aliases=*/{});
+  EXPECT_TRUE(stream3.IsConnectionReused());
+}
+
+// Streams on a preconnected session are always considered reused, including
+// the first stream and streams that fail before a stream is created.
+TEST_P(QuicHttpStreamTest, IsConnectionReusedPreconnectedSession) {
+  SetSessionCreationInitiator(MultiplexedSessionCreationInitiator::kPreconnect);
+  Initialize();
+  EXPECT_TRUE(stream_->IsConnectionReused());
+
+  QuicHttpStream stream2(session_->CreateHandle(url::SchemeHostPort(
+                             url::kHttpsScheme, "www.example.org", 443)),
+                         /*dns_aliases=*/{});
+
+  stream_->RegisterRequest(&request_);
+  EXPECT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+  // The first stream on a preconnected session is considered reused.
+  EXPECT_TRUE(stream_->IsConnectionReused());
+
+  session_->connection()->CloseConnection(
+      quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  EXPECT_TRUE(stream_->IsConnectionReused());
+  EXPECT_TRUE(stream2.IsConnectionReused());
+}
+
+// A preconnected session that closes before any stream is created is
+// considered reused.
+TEST_P(QuicHttpStreamTest,
+       IsConnectionReusedPreconnectedSessionClosedBeforeStream) {
+  SetSessionCreationInitiator(MultiplexedSessionCreationInitiator::kPreconnect);
+  Initialize();
+
+  session_->connection()->CloseConnection(
+      quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  stream_->RegisterRequest(&request_);
+  EXPECT_THAT(
+      stream_->InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                                callback_.callback()),
+      IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_TRUE(stream_->IsConnectionReused());
+}
+
+// If a session closes while `InitializeStream()` is `ERR_IO_PENDING` (queued in
+// `stream_requests_` due to `MAX_STREAMS`), `CloseAllHandles()` +
+// `CancelAllRequests()` fails `DoRequestStreamComplete()` with
+// `ERR_CONNECTION_CLOSED`, and the connection is still considered reused.
+TEST_P(QuicHttpStreamTest,
+       IsConnectionReusedSessionClosedWhileWaitingForStream) {
+  constexpr size_t kMaxStreams = 50;
+  int packet_number = 1;
+  AddWrite(ConstructInitialSettingsPacket(packet_number++));
+  AddWrite(client_maker_.Packet(packet_number++)
+               .AddStreamsBlockedFrame(/*control_frame_id=*/1,
+                                       /*stream_count=*/kMaxStreams,
+                                       /*unidirectional=*/false)
+               .Build());
+  Initialize();
+  ASSERT_EQ(quic::test::QuicSessionPeer::ietf_streamid_manager(session_.get())
+                ->max_outgoing_bidirectional_streams(),
+            kMaxStreams);
+  for (size_t i = 0; i < kMaxStreams; ++i) {
+    ASSERT_TRUE(
+        QuicChromiumClientSessionPeer::CreateOutgoingStream(session_.get()));
+  }
+
+  QuicHttpStream stream2(session_->CreateHandle(url::SchemeHostPort(
+                             url::kHttpsScheme, "www.example.org", 443)),
+                         /*dns_aliases=*/{});
+  stream2.RegisterRequest(&request_);
+  TestCompletionCallback callback2;
+  ASSERT_THAT(
+      stream2.InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                               callback2.callback()),
+      IsError(ERR_IO_PENDING));
+
+  session_->connection()->CloseConnection(
+      quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  EXPECT_THAT(callback2.WaitForResult(), IsError(ERR_CONNECTION_CLOSED));
+  EXPECT_TRUE(stream2.IsConnectionReused());
+  EXPECT_TRUE(AtEof());
+}
+
+// Disabling `QuicIsConnectionReusedBeforeStreamCreation` reverts to only
+// reporting reuse when `stream_` is non-null and not the first stream.
+TEST_P(QuicHttpStreamTest, IsConnectionReusedKillSwitchDisabled) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitFromCommandLine(
+      /*enable_features=*/"",
+      /*disable_features=*/"QuicIsConnectionReusedBeforeStreamCreation");
+
+  SetSessionCreationInitiator(MultiplexedSessionCreationInitiator::kPreconnect);
+  Initialize();
+  EXPECT_FALSE(stream_->IsConnectionReused());
+
+  stream_->RegisterRequest(&request_);
+  ASSERT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+  EXPECT_FALSE(stream_->IsConnectionReused());
+
+  // A stream without `stream_` created yet is not considered reused when the
+  // kill-switch is disabled, even after a prior stream was created.
+  QuicHttpStream stream2(session_->CreateHandle(url::SchemeHostPort(
+                             url::kHttpsScheme, "www.example.org", 443)),
+                         /*dns_aliases=*/{});
+  EXPECT_FALSE(stream2.IsConnectionReused());
+
+  // Once `stream2` actually creates a second stream, it is still considered
+  // reused.
+  stream2.RegisterRequest(&request_);
+  TestCompletionCallback callback2;
+  ASSERT_EQ(
+      OK, stream2.InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                                   callback2.callback()));
+  EXPECT_TRUE(stream2.IsConnectionReused());
+}
+
+TEST_P(QuicHttpStreamTest, InitializeStreamAfterGoAwayAndConnectionClose) {
+  Initialize();
+
+  session_->OnHttp3GoAway(0);
+  connection_->CloseConnection(quic::QUIC_NO_ERROR, "Graceful shutdown",
+                               quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  stream_->RegisterRequest(&request_);
+  EXPECT_THAT(
+      stream_->InitializeStream(true, DEFAULT_PRIORITY, net_log_with_source_,
+                                callback_.callback()),
+      IsError(ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED));
 }
 
 TEST_P(QuicHttpStreamTest, GetRequest) {
@@ -1027,6 +1231,247 @@ TEST_P(QuicHttpStreamTest, GetRequestWithTrailers) {
       entries, /*min_offset=*/pos,
       NetLogEventType::QUIC_CHROMIUM_CLIENT_STREAM_SEND_REQUEST_HEADERS,
       NetLogEventPhase::NONE);
+}
+
+// Regression test for https://crbug.com/581692068. When the caller reads the
+// response body and starts waiting on the final read (EOF) before the posted
+// trailer read task completes, consuming the trailers must not close the stream
+// out from under the pending body read with `ERR_CONNECTION_CLOSED`.
+TEST_P(QuicHttpStreamTest,
+       GetRequestWithTrailersReadBodyBeforeTrailersConsumed) {
+  SetRequest("GET", "/", DEFAULT_PRIORITY);
+  size_t spdy_request_header_frame_length;
+  int packet_number = 1;
+  AddWrite(ConstructInitialSettingsPacket(packet_number++));
+  AddWrite(InnerConstructRequestHeadersPacket(
+      packet_number++, GetNthClientInitiatedBidirectionalStreamId(0), kFin,
+      DEFAULT_PRIORITY, &spdy_request_header_frame_length));
+  AddWrite(
+      ConstructClientAckPacket(packet_number++, 3, 1));  // Ack the data packet.
+
+  Initialize();
+
+  request_.method = "GET";
+  request_.url = GURL("https://www.example.org/");
+  stream_->RegisterRequest(&request_);
+  EXPECT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+
+  EXPECT_EQ(OK,
+            stream_->SendRequest(headers_, &response_, callback_.callback()));
+  // Ack the request.
+  ProcessPacket(ConstructServerAckPacket(1, 1, 1, 1));
+
+  EXPECT_THAT(stream_->ReadResponseHeaders(callback_.callback()),
+              IsError(ERR_IO_PENDING));
+
+  SetResponse("200", string());
+
+  // Send the response headers.
+  size_t spdy_response_header_frame_length;
+  ProcessPacket(ConstructResponseHeadersPacket(
+      2, !kFin, &spdy_response_header_frame_length));
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  ASSERT_TRUE(response_.headers.get());
+  EXPECT_EQ(200, response_.headers->response_code());
+
+  // Send the response body and trailers without running the message loop first.
+  static constexpr std::string_view kResponseBody = "Hello world!";
+  std::string header = ConstructDataHeader(kResponseBody.size());
+  ProcessPacket(ConstructServerDataPacket(
+      3, !kFin, base::StrCat({header, kResponseBody})));
+  quiche::HttpHeaderBlock trailers;
+  size_t spdy_trailers_frame_length;
+  trailers["foo"] = "bar";
+  ProcessPacket(ConstructResponseTrailersPacket(4, kFin, std::move(trailers),
+                                                &spdy_trailers_frame_length));
+
+  // Read the buffered body synchronously before trailers are consumed.
+  EXPECT_EQ(static_cast<int>(kResponseBody.size()),
+            stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                      callback_.callback()));
+  EXPECT_FALSE(stream_->IsResponseBodyComplete());
+
+  // The next body read must wait on trailers to be consumed, and then complete
+  // with `OK` (0, EOF) rather than `ERR_CONNECTION_CLOSED`.
+  EXPECT_THAT(
+      stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                callback_.callback()),
+      IsError(ERR_IO_PENDING));
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+
+  EXPECT_TRUE(stream_->IsResponseBodyComplete());
+  EXPECT_FALSE(
+      QuicHttpStreamPeer::GetQuicChromiumClientStream(stream_.get())->IsOpen());
+  EXPECT_TRUE(AtEof());
+  EXPECT_EQ(spdy_request_header_frame_length,
+            stream_->GetTotalSentBytes().InBytes());
+  EXPECT_EQ(spdy_response_header_frame_length + kResponseBody.size() +
+                header.length() + spdy_trailers_frame_length,
+            stream_->GetTotalReceivedBytes().InBytes());
+}
+
+// Regression test for https://crbug.com/581692068. Exercises the asynchronous
+// `OnTrailingHeadersAvailable()` -> `OnReadTrailingHeadersComplete()` callback
+// path when `ReadTrailingHeaders()` is already waiting on `ERR_IO_PENDING` and
+// trailers arrive while the final `ReadResponseBody()` (for EOF) is pending.
+TEST_P(QuicHttpStreamTest, GetRequestWithAsyncTrailersWhileReadBodyPending) {
+  SetRequest("GET", "/", DEFAULT_PRIORITY);
+  size_t spdy_request_header_frame_length;
+  int packet_number = 1;
+  AddWrite(ConstructInitialSettingsPacket(packet_number++));
+  AddWrite(InnerConstructRequestHeadersPacket(
+      packet_number++, GetNthClientInitiatedBidirectionalStreamId(0), kFin,
+      DEFAULT_PRIORITY, &spdy_request_header_frame_length));
+  AddWrite(
+      ConstructClientAckPacket(packet_number++, 3, 1));  // Ack the data packet.
+
+  Initialize();
+
+  request_.method = "GET";
+  request_.url = GURL("https://www.example.org/");
+  stream_->RegisterRequest(&request_);
+  EXPECT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+
+  EXPECT_EQ(OK,
+            stream_->SendRequest(headers_, &response_, callback_.callback()));
+  // Ack the request.
+  ProcessPacket(ConstructServerAckPacket(1, 1, 1, 1));
+
+  EXPECT_THAT(stream_->ReadResponseHeaders(callback_.callback()),
+              IsError(ERR_IO_PENDING));
+
+  SetResponse("200", string());
+
+  // Send the response headers.
+  size_t spdy_response_header_frame_length;
+  ProcessPacket(ConstructResponseHeadersPacket(
+      2, !kFin, &spdy_response_header_frame_length));
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  ASSERT_TRUE(response_.headers.get());
+  EXPECT_EQ(200, response_.headers->response_code());
+
+  // Start an async body read before the body packet arrives. Waiting for the
+  // body packet also runs the posted `QuicHttpStream::ReadTrailingHeaders()`
+  // task, which sees no trailers yet and registers
+  // `OnReadTrailingHeadersComplete` as the async trailer callback on `Handle`.
+  EXPECT_THAT(
+      stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                callback_.callback()),
+      IsError(ERR_IO_PENDING));
+
+  static constexpr std::string_view kResponseBody = "Hello world!";
+  std::string header = ConstructDataHeader(kResponseBody.size());
+  ProcessPacket(ConstructServerDataPacket(
+      3, !kFin, base::StrCat({header, kResponseBody})));
+  EXPECT_EQ(static_cast<int>(kResponseBody.size()), callback_.WaitForResult());
+  EXPECT_FALSE(stream_->IsResponseBodyComplete());
+
+  // Now start the second body read (for EOF) and deliver the trailers packet so
+  // `Handle::OnTrailingHeadersAvailable()` invokes
+  // `QuicHttpStream::OnReadTrailingHeadersComplete()` asynchronously while
+  // `user_buffer_` is non-null.
+  EXPECT_THAT(
+      stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                callback_.callback()),
+      IsError(ERR_IO_PENDING));
+
+  quiche::HttpHeaderBlock trailers;
+  size_t spdy_trailers_frame_length;
+  trailers["foo"] = "bar";
+  ProcessPacket(ConstructResponseTrailersPacket(4, kFin, std::move(trailers),
+                                                &spdy_trailers_frame_length));
+
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  EXPECT_TRUE(stream_->IsResponseBodyComplete());
+  EXPECT_FALSE(
+      QuicHttpStreamPeer::GetQuicChromiumClientStream(stream_.get())->IsOpen());
+  EXPECT_TRUE(AtEof());
+  EXPECT_EQ(spdy_request_header_frame_length,
+            stream_->GetTotalSentBytes().InBytes());
+  EXPECT_EQ(spdy_response_header_frame_length + kResponseBody.size() +
+                header.length() + spdy_trailers_frame_length,
+            stream_->GetTotalReceivedBytes().InBytes());
+}
+
+// Verify that when trailers are consumed after the body chunk is read and while
+// no body read is pending (`stream_->IsDoneReading() && !user_buffer_`),
+// `OnReadTrailingHeadersComplete()` immediately calls `OnFinRead()` to close
+// the underlying stream.
+TEST_P(QuicHttpStreamTest,
+       GetRequestWithTrailersCompletedAfterBodyReadBeforeEofRead) {
+  SetRequest("GET", "/", DEFAULT_PRIORITY);
+  size_t spdy_request_header_frame_length;
+  int packet_number = 1;
+  AddWrite(ConstructInitialSettingsPacket(packet_number++));
+  AddWrite(InnerConstructRequestHeadersPacket(
+      packet_number++, GetNthClientInitiatedBidirectionalStreamId(0), kFin,
+      DEFAULT_PRIORITY, &spdy_request_header_frame_length));
+  AddWrite(
+      ConstructClientAckPacket(packet_number++, 3, 1));  // Ack the data packet.
+
+  Initialize();
+
+  request_.method = "GET";
+  request_.url = GURL("https://www.example.org/");
+  stream_->RegisterRequest(&request_);
+  EXPECT_EQ(OK, stream_->InitializeStream(true, DEFAULT_PRIORITY,
+                                          net_log_with_source_,
+                                          callback_.callback()));
+
+  EXPECT_EQ(OK,
+            stream_->SendRequest(headers_, &response_, callback_.callback()));
+  ProcessPacket(ConstructServerAckPacket(1, 1, 1, 1));
+
+  EXPECT_THAT(stream_->ReadResponseHeaders(callback_.callback()),
+              IsError(ERR_IO_PENDING));
+
+  SetResponse("200", string());
+
+  size_t spdy_response_header_frame_length;
+  ProcessPacket(ConstructResponseHeadersPacket(
+      2, !kFin, &spdy_response_header_frame_length));
+  EXPECT_THAT(callback_.WaitForResult(), IsOk());
+  ASSERT_TRUE(response_.headers.get());
+  EXPECT_EQ(200, response_.headers->response_code());
+
+  static constexpr std::string_view kResponseBody = "Hello world!";
+  std::string header = ConstructDataHeader(kResponseBody.size());
+  ProcessPacket(ConstructServerDataPacket(
+      3, !kFin, base::StrCat({header, kResponseBody})));
+  quiche::HttpHeaderBlock trailers;
+  size_t spdy_trailers_frame_length;
+  trailers["foo"] = "bar";
+  ProcessPacket(ConstructResponseTrailersPacket(4, kFin, std::move(trailers),
+                                                &spdy_trailers_frame_length));
+
+  // Read the body chunk synchronously so `sequencer()` is closed while
+  // `user_buffer_` is null.
+  EXPECT_EQ(static_cast<int>(kResponseBody.size()),
+            stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                      callback_.callback()));
+  EXPECT_FALSE(stream_->IsResponseBodyComplete());
+
+  // Wait for the posted `ReadTrailingHeaders()` ->
+  // `OnReadTrailingHeadersComplete()` task to consume trailers and close the
+  // stream while no body read is pending.
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return stream_->IsResponseBodyComplete(); }));
+  EXPECT_FALSE(
+      QuicHttpStreamPeer::GetQuicChromiumClientStream(stream_.get())->IsOpen());
+
+  EXPECT_EQ(OK,
+            stream_->ReadResponseBody(read_buffer_.get(), read_buffer_->size(),
+                                      callback_.callback()));
+  EXPECT_TRUE(AtEof());
+  EXPECT_EQ(spdy_request_header_frame_length,
+            stream_->GetTotalSentBytes().InBytes());
+  EXPECT_EQ(spdy_response_header_frame_length + kResponseBody.size() +
+                header.length() + spdy_trailers_frame_length,
+            stream_->GetTotalReceivedBytes().InBytes());
 }
 
 TEST_P(QuicHttpStreamTest, ElideHeadersInNetLog) {

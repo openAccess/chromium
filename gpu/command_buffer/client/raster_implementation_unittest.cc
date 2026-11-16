@@ -14,18 +14,22 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <memory>
 #include <numeric>
+#include <type_traits>
 
 #include "base/bits.h"
-#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_span.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "cc/paint/raw_memory_transfer_cache_entry.h"
 #include "cc/paint/transfer_cache_serialize_helper.h"
@@ -40,6 +44,10 @@
 #include "gpu/command_buffer/common/sync_token.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/skia/include/core/SkPixmap.h"
+#include "third_party/skia/include/core/SkYUVAInfo.h"
+#include "third_party/skia/include/core/SkYUVAPixmaps.h"
+#include "ui/gfx/skia_span_util.h"
 
 using gpu::gles2::QueryTracker;
 using testing::_;
@@ -56,12 +64,12 @@ using testing::ReturnRef;
 namespace gpu {
 namespace raster {
 
-ACTION_P2(SetMemory, dst, obj) {
-  UNSAFE_TODO(memcpy(dst, &obj, sizeof(obj)));
+ACTION_P2(SetMemory, dst_span, obj) {
+  dst_span.first(sizeof(obj)).copy_from(base::byte_span_from_ref(obj));
 }
 
-ACTION_P3(SetMemoryFromArray, dst, array, size) {
-  UNSAFE_TODO(memcpy(dst, array, size));
+ACTION_P3(SetMemoryFromArray, dst_span, src_span, size) {
+  dst_span.first(size).copy_from(src_span.first(size));
 }
 
 // Used to help set the transfer buffer result to SizedResult of a single value.
@@ -69,7 +77,8 @@ template <typename T>
 class SizedResultHelper {
  public:
   explicit SizedResultHelper(T result) : size_(sizeof(result)) {
-    memcpy(result_, &result, sizeof(T));
+    base::as_writable_byte_span(result_).copy_from(
+        base::byte_span_from_ref(result));
   }
 
  private:
@@ -93,9 +102,19 @@ class RasterImplementationTest : public testing::Test {
 
   typedef MockTransferBuffer::ExpectedMemoryInfo ExpectedMemoryInfo;
 
+  class TestTransferBuffer : public MockTransferBuffer {
+   public:
+    using MockTransferBuffer::MockTransferBuffer;
+    unsigned int GetFreeSize() const override { return free_size_; }
+    void SetFreeSize(unsigned int free_size) { free_size_ = free_size; }
+
+   private:
+    unsigned int free_size_ = 0;
+  };
+
   class TestContext {
    public:
-    TestContext() : commands_(nullptr), token_(0) {}
+    TestContext() : token_(0) {}
 
     bool Initialize(bool lose_context_when_out_of_memory,
                     bool transfer_buffer_initialize_fail,
@@ -103,7 +122,7 @@ class RasterImplementationTest : public testing::Test {
       SharedMemoryLimits limits = SharedMemoryLimitsForTesting();
       command_buffer_ = std::make_unique<StrictMock<MockClientCommandBuffer>>();
 
-      transfer_buffer_ = base::WrapUnique(new MockTransferBuffer(
+      transfer_buffer_ = base::WrapUnique(new TestTransferBuffer(
           command_buffer_.get(), kTransferBufferSize,
           RasterImplementation::kStartingOffset,
           RasterImplementation::kAlignment, transfer_buffer_initialize_fail));
@@ -114,6 +133,7 @@ class RasterImplementationTest : public testing::Test {
       gpu_control_ = std::make_unique<StrictMock<MockClientGpuControl>>();
       capabilities_.max_texture_size = kMaxTextureSize;
       capabilities_.sync_query = sync_query;
+      capabilities_.texture_rg = true;
       EXPECT_CALL(*gpu_control_, GetCapabilities())
           .WillOnce(ReturnRef(capabilities_));
 
@@ -135,9 +155,8 @@ class RasterImplementationTest : public testing::Test {
       Mock::VerifyAndClearExpectations(gl_.get());
 
       scoped_refptr<Buffer> ring_buffer = helper_->get_ring_buffer();
-      commands_ =
-          UNSAFE_TODO(static_cast<CommandBufferEntry*>(ring_buffer->memory()) +
-                      command_buffer()->GetServicePutOffset());
+      commands_ = ring_buffer->as_byte_span().subspan(
+          command_buffer()->GetServicePutOffset() * sizeof(CommandBufferEntry));
       ClearCommands();
       EXPECT_TRUE(transfer_buffer_->InSync());
 
@@ -165,35 +184,28 @@ class RasterImplementationTest : public testing::Test {
 
     void ClearCommands() {
       scoped_refptr<Buffer> ring_buffer = helper_->get_ring_buffer();
-      UNSAFE_TODO(
-          memset(ring_buffer->memory(), kInitialValue, ring_buffer->size()));
+      std::ranges::fill(ring_buffer->as_byte_span(), kInitialValue);
     }
 
     std::unique_ptr<MockClientCommandBuffer> command_buffer_;
     std::unique_ptr<MockClientGpuControl> gpu_control_;
     std::unique_ptr<RasterCmdHelper> helper_;
-    std::unique_ptr<MockTransferBuffer> transfer_buffer_;
+    std::unique_ptr<TestTransferBuffer> transfer_buffer_;
     std::unique_ptr<RasterImplementation> gl_;
-    raw_ptr<CommandBufferEntry> commands_;
+    base::raw_span<uint8_t> commands_;
     int token_;
     Capabilities capabilities_;
   };
 
-  RasterImplementationTest() : commands_(nullptr) {}
+  RasterImplementationTest() = default;
 
   void SetUp() override;
   void TearDown() override;
 
   bool NoCommandsWritten() {
     scoped_refptr<Buffer> ring_buffer = helper_->get_ring_buffer();
-    const uint8_t* cmds = static_cast<const uint8_t*>(ring_buffer->memory());
-    const uint8_t* end = UNSAFE_TODO(cmds + ring_buffer->size());
-    for (; cmds < end; UNSAFE_TODO(++cmds)) {
-      if (*cmds != kInitialValue) {
-        return false;
-      }
-    }
-    return true;
+    return std::ranges::all_of(ring_buffer->as_byte_span(),
+                               [](uint8_t c) { return c == kInitialValue; });
   }
 
   QueryTracker::Query* GetQuery(GLuint id) {
@@ -231,12 +243,33 @@ class RasterImplementationTest : public testing::Test {
 
   int GetNextToken() { return test_context_.GetNextToken(); }
 
-  const void* GetPut() { return helper_->GetSpace(0); }
+  // Returns whether the commands written to the command buffer since the
+  // start of the test begin with the bytes of `expected`.
+  template <typename T>
+  bool CommandsMatch(const T& expected) const {
+    return CommandsMatch(commands_, expected);
+  }
+
+  template <typename T>
+  static bool CommandsMatch(base::span<const uint8_t> commands,
+                            const T& expected) {
+    if constexpr (std::has_unique_object_representations_v<T>) {
+      return commands.first<sizeof(T)>() == base::byte_span_from_ref(expected);
+    } else {
+      return commands.first<sizeof(T)>() ==
+             base::byte_span_from_ref(base::allow_nonunique_obj, expected);
+    }
+  }
+
+  base::span<const uint8_t> GetPut() {
+    scoped_refptr<Buffer> ring_buffer = helper_->get_ring_buffer();
+    return ring_buffer->as_byte_span().subspan(helper_->GetPutOffsetForTest() *
+                                               sizeof(CommandBufferEntry));
+  }
 
   void ClearCommands() {
     scoped_refptr<Buffer> ring_buffer = helper_->get_ring_buffer();
-    UNSAFE_TODO(
-        memset(ring_buffer->memory(), kInitialValue, ring_buffer->size()));
+    std::ranges::fill(ring_buffer->as_byte_span(), kInitialValue);
   }
 
   uint32_t MaxTransferBufferSize() {
@@ -270,7 +303,7 @@ class RasterImplementationTest : public testing::Test {
     ExpectedMemoryInfo result =
         GetExpectedResultMemory(sizeof(cmds::GetError::Result));
     EXPECT_CALL(*command_buffer(), OnFlush())
-        .WillOnce(SetMemory(result.ptr, GLuint(GL_NO_ERROR)))
+        .WillOnce(SetMemory(result.span, GLuint(GL_NO_ERROR)))
         .RetiresOnSaturation();
     return gl_->GetError();
   }
@@ -309,9 +342,9 @@ class RasterImplementationTest : public testing::Test {
 
   raw_ptr<MockClientGpuControl> gpu_control_;
   raw_ptr<RasterCmdHelper> helper_;
-  raw_ptr<MockTransferBuffer> transfer_buffer_;
+  raw_ptr<TestTransferBuffer> transfer_buffer_;
   raw_ptr<RasterImplementation> gl_;
-  raw_ptr<CommandBufferEntry> commands_;
+  base::raw_span<uint8_t> commands_;
 };
 
 void RasterImplementationTest::SetUp() {
@@ -372,19 +405,19 @@ TEST_F(RasterImplementationTest, GetBucketContents) {
   expected.set_token2.Init(GetNextToken());
 
   EXPECT_CALL(*command_buffer(), OnFlush())
-      .WillOnce(DoAll(
-          SetMemory(result1.ptr, kTestSize),
-          SetMemoryFromArray(mem1.ptr, buf.data(), MaxTransferBufferSize())))
-      .WillOnce(SetMemoryFromArray(
-          mem2.ptr, UNSAFE_TODO(buf.data() + MaxTransferBufferSize()),
-          kTestSize - MaxTransferBufferSize()))
+      .WillOnce(DoAll(SetMemory(result1.span, kTestSize),
+                      SetMemoryFromArray(mem1.span, buf.as_span(),
+                                         MaxTransferBufferSize())))
+      .WillOnce(SetMemoryFromArray(mem2.span,
+                                   buf.subspan(MaxTransferBufferSize()),
+                                   kTestSize - MaxTransferBufferSize()))
       .RetiresOnSaturation();
 
   std::vector<int8_t> data;
   GetBucketContents(kBucketId, &data);
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
   ASSERT_EQ(kTestSize, data.size());
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(buf.data(), &data[0], data.size())));
+  EXPECT_EQ(buf.as_span(), base::as_byte_span(data));
 }
 
 TEST_F(RasterImplementationTest, BeginEndQueryEXT) {
@@ -401,8 +434,7 @@ TEST_F(RasterImplementationTest, BeginEndQueryEXT) {
   expected_gen_cmds.gen.Init(std::size(expected_ids), &expected_ids[0]);
   std::array<GLuint, std::size(expected_ids)> ids = {};
   gl_->GenQueriesEXT(std::size(expected_ids), &ids[0]);
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(&expected_gen_cmds, commands_, sizeof(expected_gen_cmds))));
+  EXPECT_TRUE(CommandsMatch(expected_gen_cmds));
   GLuint id1 = ids[0];
   GLuint id2 = ids[1];
   ClearCommands();
@@ -417,14 +449,13 @@ TEST_F(RasterImplementationTest, BeginEndQueryEXT) {
     cmds::BeginQueryEXT begin_query;
   };
   BeginCmds expected_begin_cmds;
-  const void* commands = GetPut();
+  base::span<const uint8_t> commands = GetPut();
   gl_->BeginQueryEXT(GL_COMMANDS_COMPLETED_CHROMIUM, id1);
   QueryTracker::Query* query = GetQuery(id1);
   ASSERT_TRUE(query != nullptr);
   expected_begin_cmds.begin_query.Init(GL_COMMANDS_COMPLETED_CHROMIUM, id1,
                                        query->shm_id(), query->shm_offset());
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(&expected_begin_cmds, commands, sizeof(expected_begin_cmds))));
+  EXPECT_TRUE(CommandsMatch(commands, expected_begin_cmds));
   ClearCommands();
 
   // Test BeginQueryEXT fails if between Begin/End.
@@ -441,8 +472,7 @@ TEST_F(RasterImplementationTest, BeginEndQueryEXT) {
   EndCmds expected_end_cmds;
   expected_end_cmds.end_query.Init(GL_COMMANDS_COMPLETED_CHROMIUM,
                                    query->submit_count());
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(&expected_end_cmds, commands, sizeof(expected_end_cmds))));
+  EXPECT_TRUE(CommandsMatch(commands, expected_end_cmds));
 
   // Test EndQueryEXT fails if no current query.
   ClearCommands();
@@ -459,8 +489,7 @@ TEST_F(RasterImplementationTest, BeginEndQueryEXT) {
   EXPECT_NE(old_submit_count, query->submit_count());
   expected_end_cmds.end_query.Init(GL_COMMANDS_COMPLETED_CHROMIUM,
                                    query->submit_count());
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(&expected_end_cmds, commands, sizeof(expected_end_cmds))));
+  EXPECT_TRUE(CommandsMatch(commands, expected_end_cmds));
 
   // Test GetQueryObjectuivEXT fails if unused id
   GLuint available = 0xBDu;
@@ -521,15 +550,14 @@ TEST_F(RasterImplementationTest, GenUnverifiedSyncTokenCHROMIUM) {
   EXPECT_TRUE(NoCommandsWritten());
   EXPECT_EQ(GL_INVALID_VALUE, CheckError());
 
-  const void* commands = GetPut();
+  base::span<const uint8_t> commands = GetPut();
   cmd::InsertFenceSync insert_fence_sync;
   insert_fence_sync.Init(kFenceSync);
 
   EXPECT_CALL(*gpu_control_, GenerateFenceSyncRelease())
       .WillOnce(Return(kFenceSync));
   gl_->GenUnverifiedSyncTokenCHROMIUM(sync_token.GetData());
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(&insert_fence_sync, commands, sizeof(insert_fence_sync))));
+  EXPECT_TRUE(CommandsMatch(commands, insert_fence_sync));
   EXPECT_EQ(GL_NO_ERROR, CheckError());
 
   EXPECT_FALSE(sync_token.verified_flush());
@@ -542,7 +570,7 @@ TEST_F(RasterImplementationTest, VerifySyncTokensCHROMIUM) {
   ExpectedMemoryInfo result =
       GetExpectedResultMemory(sizeof(cmds::GetError::Result));
   EXPECT_CALL(*command_buffer(), OnFlush())
-      .WillRepeatedly(SetMemory(result.ptr, GLuint(GL_NO_ERROR)))
+      .WillRepeatedly(SetMemory(result.span, GLuint(GL_NO_ERROR)))
       .RetiresOnSaturation();
 
   const CommandBufferNamespace kNamespaceId = CommandBufferNamespace::GPU_IO;
@@ -592,7 +620,7 @@ TEST_F(RasterImplementationTest, VerifySyncTokensCHROMIUM_Sequence) {
   ExpectedMemoryInfo result =
       GetExpectedResultMemory(sizeof(cmds::GetError::Result));
   EXPECT_CALL(*command_buffer(), OnFlush())
-      .WillRepeatedly(SetMemory(result.ptr, GLuint(GL_NO_ERROR)))
+      .WillRepeatedly(SetMemory(result.span, GLuint(GL_NO_ERROR)))
       .RetiresOnSaturation();
 
   const CommandBufferNamespace kNamespaceId = CommandBufferNamespace::GPU_IO;
@@ -646,7 +674,7 @@ TEST_F(RasterImplementationTest, VerifySyncTokensCHROMIUM_EmptySyncToken) {
   ExpectedMemoryInfo result =
       GetExpectedResultMemory(sizeof(cmds::GetError::Result));
   EXPECT_CALL(*command_buffer(), OnFlush())
-      .WillRepeatedly(SetMemory(result.ptr, GLuint(GL_NO_ERROR)))
+      .WillRepeatedly(SetMemory(result.span, GLuint(GL_NO_ERROR)))
       .RetiresOnSaturation();
 
   gpu::SyncToken sync_token1, sync_token2;
@@ -691,14 +719,14 @@ TEST_F(RasterImplementationTest, WaitSyncTokenCHROMIUM) {
   verified_sync_token.SetVerifyFlush();
   EXPECT_CALL(*gpu_control_, WaitSyncToken(verified_sync_token));
   gl_->WaitSyncTokenCHROMIUM(sync_token_data);
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 }
 
 TEST_F(RasterImplementationTest, WaitSyncTokenCHROMIUMErrors) {
   ExpectedMemoryInfo result =
       GetExpectedResultMemory(sizeof(cmds::GetError::Result));
   EXPECT_CALL(*command_buffer(), OnFlush())
-      .WillRepeatedly(SetMemory(result.ptr, GLuint(GL_NO_ERROR)))
+      .WillRepeatedly(SetMemory(result.span, GLuint(GL_NO_ERROR)))
       .RetiresOnSaturation();
 
   // Empty sync tokens should be produce no error and be a nop.
@@ -881,8 +909,7 @@ TEST_F(RasterImplementationTest, SetActiveURLCHROMIUM) {
   };
 
   ExpectedMemoryInfo mem = GetExpectedMemory(kPaddedStringSize);
-  UNSAFE_TODO(EXPECT_EQ(
-      0, memcmp(url.c_str(), reinterpret_cast<char*>(mem.ptr), url.size())));
+  EXPECT_EQ(url, base::as_string_view(mem.span.first(url.size())));
 
   Cmds expected;
   expected.url_size.Init(kURLBucketId, url.size());
@@ -890,7 +917,7 @@ TEST_F(RasterImplementationTest, SetActiveURLCHROMIUM) {
   expected.set_token.Init(GetNextToken());
   expected.set_url_call.Init(kURLBucketId);
   expected.url_size_end.Init(kURLBucketId, 0);
-  UNSAFE_TODO(EXPECT_EQ(0, memcmp(&expected, commands_, sizeof(expected))));
+  EXPECT_TRUE(CommandsMatch(expected));
 
   // Same URL shouldn't make any commands.
   EXPECT_FALSE(NoCommandsWritten());
@@ -937,8 +964,8 @@ TEST_F(RasterImplementationTest, ReadbackImagePixelsSyncPadding) {
       .RetiresOnSaturation();
 
   bool success = gl_->ReadbackImagePixels(
-      mailbox, /*source_size=*/gfx::Size(2, 2), dst_info, dst_row_bytes,
-      /*src_x=*/0, /*src_y=*/0, /*plane_index=*/0, dst_pixels.data());
+      mailbox, /*source_size=*/gfx::Size(2, 2), /*src_x=*/0, /*src_y=*/0,
+      /*plane_index=*/0, SkPixmap(dst_info, dst_pixels.data(), dst_row_bytes));
 
   EXPECT_TRUE(success);
 
@@ -1064,9 +1091,9 @@ TEST_F(RasterImplementationTest, ReadbackImagePixelsSyncOutOfBounds) {
 
   std::vector<uint8_t> dst_pixels(dst_row_bytes * dst_info.height(), 0xAA);
   EXPECT_TRUE(gl_->ReadbackImagePixels(
-      gpu::Mailbox::Generate(), /*source_size=*/gfx::Size(2, 2), dst_info,
-      dst_row_bytes, /*src_x=*/-1, /*src_y=*/-1, /*plane_index=*/0,
-      dst_pixels.data()));
+      gpu::Mailbox::Generate(), /*source_size=*/gfx::Size(2, 2), /*src_x=*/-1,
+      /*src_y=*/-1, /*plane_index=*/0,
+      SkPixmap(dst_info, dst_pixels.data(), dst_row_bytes)));
 
   std::vector<uint8_t> expected_pixels(dst_row_bytes * dst_info.height(), 0xAA);
   for (int y = 0; y < clipped_info.height(); ++y) {
@@ -1085,9 +1112,9 @@ TEST_F(RasterImplementationTest, ReadbackImagePixelsSyncCompletelyOutOfBounds) {
   SkImageInfo dst_info = SkImageInfo::MakeN32Premul(2, 2);
   std::vector<uint8_t> dst_pixels(dst_info.computeMinByteSize(), 0xAA);
   EXPECT_FALSE(gl_->ReadbackImagePixels(
-      gpu::Mailbox::Generate(), /*source_size=*/gfx::Size(2, 2), dst_info,
-      dst_info.minRowBytes(), /*src_x=*/3, /*src_y=*/3, /*plane_index=*/0,
-      dst_pixels.data()));
+      gpu::Mailbox::Generate(), /*source_size=*/gfx::Size(2, 2), /*src_x=*/3,
+      /*src_y=*/3, /*plane_index=*/0,
+      SkPixmap(dst_info, dst_pixels.data(), dst_info.minRowBytes())));
 
   EXPECT_EQ(dst_pixels,
             std::vector<uint8_t>(dst_info.computeMinByteSize(), 0xAA));
@@ -1162,19 +1189,22 @@ TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncPadding) {
   int u_plane_stride = 4;
   int v_plane_stride = 4;
 
+  // The planes are tightly packed in shared memory, each 8-byte aligned.
+  const int y_src_stride = output_rect.width();
+  const int uv_src_stride = output_rect.width() / 2;
   auto y_offset = static_cast<GLuint>(base::bits::AlignUp(
       sizeof(cmds::ReadbackYUVImagePixelsINTERNALImmediate::Result),
       sizeof(uint64_t)));
-  GLuint y_padded_size = output_rect.height() * y_plane_stride;
+  GLuint y_padded_size = output_rect.height() * y_src_stride;
 
   constexpr auto kSizeofUint64 = static_cast<GLuint>(sizeof(uint64_t));
   GLuint u_offset =
       base::bits::AlignUp(y_offset + y_padded_size, kSizeofUint64);
-  GLuint u_padded_size = (output_rect.height() / 2) * u_plane_stride;
+  GLuint u_padded_size = (output_rect.height() / 2) * uv_src_stride;
 
   GLuint v_offset =
       base::bits::AlignUp(u_offset + u_padded_size, kSizeofUint64);
-  GLuint v_padded_size = (output_rect.height() / 2) * v_plane_stride;
+  GLuint v_padded_size = (output_rect.height() / 2) * uv_src_stride;
 
   size_t total_size =
       base::bits::AlignUp(v_offset + v_padded_size, kSizeofUint64);
@@ -1208,11 +1238,27 @@ TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncPadding) {
       },
       &callback_run, &callback_success);
 
+  const SkYUVAInfo yuva_info(
+      SkISize::Make(output_rect.width(), output_rect.height()),
+      SkYUVAInfo::PlaneConfig::kY_U_V, SkYUVAInfo::Subsampling::k420,
+      kRec601_Limited_SkYUVColorSpace);
+  const std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> pixmaps = {
+      SkPixmap(SkImageInfo::Make(output_rect.width(), output_rect.height(),
+                                 kR8_unorm_SkColorType, kOpaque_SkAlphaType),
+               y_plane_data.data(), y_plane_stride),
+      SkPixmap(
+          SkImageInfo::Make(output_rect.width() / 2, output_rect.height() / 2,
+                            kR8_unorm_SkColorType, kOpaque_SkAlphaType),
+          u_plane_data.data(), u_plane_stride),
+      SkPixmap(
+          SkImageInfo::Make(output_rect.width() / 2, output_rect.height() / 2,
+                            kR8_unorm_SkColorType, kOpaque_SkAlphaType),
+          v_plane_data.data(), v_plane_stride),
+  };
   gl_->ReadbackYUVPixelsAsync(
-      mailbox, GL_TEXTURE_2D, source_rect, output_rect,
-      /*vertically_flip_texture=*/false, y_plane_stride,
-      base::span(y_plane_data), u_plane_stride, base::span(u_plane_data),
-      v_plane_stride, base::span(v_plane_data), std::move(release_mailbox),
+      mailbox, GL_TEXTURE_2D, source_rect, /*vertically_flip_texture=*/false,
+      SkYUVAPixmaps::FromExternalPixmaps(yuva_info, pixmaps.data()),
+      /*dst_color_space=*/nullptr, std::move(release_mailbox),
       std::move(readback_done));
 
   EXPECT_FALSE(callback_run);
@@ -1254,7 +1300,7 @@ TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncPadding) {
   for (int y = 0; y < output_rect.height(); ++y) {
     for (int x = 0; x < output_rect.width(); ++x) {
       size_t dst_idx = y * y_plane_stride + x;
-      size_t src_idx = y * y_plane_stride + x;
+      size_t src_idx = y * y_src_stride + x;
       expected_y[dst_idx] = static_cast<uint8_t>(src_idx + 1);
     }
   }
@@ -1266,7 +1312,7 @@ TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncPadding) {
   for (int y = 0; y < output_rect.height() / 2; ++y) {
     for (int x = 0; x < output_rect.width() / 2; ++x) {
       size_t dst_idx = y * u_plane_stride + x;
-      size_t src_idx = y * u_plane_stride + x;
+      size_t src_idx = y * uv_src_stride + x;
       expected_u[dst_idx] = static_cast<uint8_t>(src_idx + 41);
     }
   }
@@ -1278,11 +1324,302 @@ TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncPadding) {
   for (int y = 0; y < output_rect.height() / 2; ++y) {
     for (int x = 0; x < output_rect.width() / 2; ++x) {
       size_t dst_idx = y * v_plane_stride + x;
-      size_t src_idx = y * v_plane_stride + x;
+      size_t src_idx = y * uv_src_stride + x;
       expected_v[dst_idx] = static_cast<uint8_t>(src_idx + 51);
     }
   }
   EXPECT_EQ(v_plane_data, expected_v);
+}
+
+namespace {
+
+class CappedTransferBufferCommandBuffer : public MockClientCommandBuffer {
+ public:
+  void set_max_create_transfer_buffer_size(uint32_t max_size) {
+    max_create_transfer_buffer_size_ = max_size;
+  }
+
+  scoped_refptr<gpu::Buffer> CreateTransferBuffer(
+      uint32_t size,
+      int32_t* id,
+      uint32_t alignment,
+      TransferBufferAllocationOption option) override {
+    if (size > max_create_transfer_buffer_size_) {
+      *id = -1;
+      return nullptr;
+    }
+    return MockClientCommandBuffer::CreateTransferBuffer(size, id, alignment,
+                                                         option);
+  }
+
+ private:
+  uint32_t max_create_transfer_buffer_size_ = UINT32_MAX;
+};
+
+}  // namespace
+
+// https://crbug.com/575525279
+TEST_F(RasterImplementationTest, WritePixelsShortTransferBufferAlloc) {
+  gpu::Mailbox mailbox = gpu::Mailbox::Generate();
+  // 64x32 RGBA8888 is 8192 bytes, which is larger than MaxTransferBufferSize()
+  // (448 bytes).
+  SkImageInfo src_info = SkImageInfo::MakeN32Premul(64, 32);
+  size_t src_size = src_info.computeMinByteSize();
+  ASSERT_GT(src_size, MaxTransferBufferSize());
+
+  std::vector<uint8_t> src_pixels(src_size);
+  std::ranges::iota(src_pixels, 1);
+  SkPixmap src_pixmap(src_info, src_pixels.data(), src_info.minRowBytes());
+
+  GLuint total_size = base::bits::AlignUp(
+      static_cast<GLuint>(src_size), static_cast<GLuint>(sizeof(uint64_t)));
+
+  // Simulate TransferBuffer::GetFreeSize() reporting enough space before
+  // AllocUpTo() shrinks the ring buffer and returns a shorter allocation
+  // (MaxTransferBufferSize()).
+  transfer_buffer_->SetFreeSize(total_size);
+
+  // When MappedMemory also fails to allocate, WritePixels must fail with
+  // GL_INVALID_OPERATION rather than writing past the short transfer buffer.
+  SetMappedMemoryLimit(1);
+  GetExpectedMemory(MaxTransferBufferSize());
+  gl_->WritePixels(mailbox, /*dst_x_offset=*/0, /*dst_y_offset=*/0,
+                   GL_TEXTURE_2D, src_pixmap);
+  EXPECT_TRUE(transfer_buffer_->InSync());
+  EXPECT_TRUE(NoCommandsWritten());
+  EXPECT_EQ(GL_INVALID_OPERATION, CheckError());
+
+  // When MappedMemory is available, ScopedSharedMemoryPtr should discard the
+  // short transfer buffer allocation and fall back to MappedMemory.
+  SetMappedMemoryLimit(SharedMemoryLimits::kNoLimit);
+  ClearCommands();
+  GetExpectedMemory(MaxTransferBufferSize());
+  ExpectedMemoryInfo mem = GetExpectedMappedMemory(total_size);
+  gl_->WritePixels(mailbox, /*dst_x_offset=*/0, /*dst_y_offset=*/0,
+                   GL_TEXTURE_2D, src_pixmap);
+  EXPECT_TRUE(transfer_buffer_->InSync());
+  EXPECT_FALSE(NoCommandsWritten());
+  EXPECT_EQ(GL_NO_ERROR, CheckError());
+  EXPECT_EQ(mem.span.first(src_size), base::span(src_pixels));
+}
+
+TEST_F(RasterImplementationTest,
+       WritePixelsYUVFallbackWhenTransferBufferAllocUpToIsShort) {
+  gpu::Mailbox mailbox = gpu::Mailbox::Generate();
+  SkYUVAInfo yuva_info({32, 32}, SkYUVAInfo::PlaneConfig::kY_U_V,
+                       SkYUVAInfo::Subsampling::k420,
+                       kJPEG_Full_SkYUVColorSpace);
+  SkYUVAPixmapInfo pixmap_info(yuva_info, SkYUVAPixmapInfo::DataType::kUnorm8,
+                               /*rowBytes=*/nullptr);
+  SkYUVAPixmaps yuva_pixmaps = SkYUVAPixmaps::Allocate(pixmap_info);
+  ASSERT_TRUE(yuva_pixmaps.isValid());
+
+  GLuint total_size = 0;
+  for (int plane = 0; plane < yuva_info.numPlanes(); ++plane) {
+    size_t plane_size = yuva_pixmaps.plane(plane).computeByteSize();
+    auto plane_span = gfx::SkPixmapToWritableSpan(yuva_pixmaps.plane(plane));
+    std::ranges::iota(plane_span, static_cast<uint8_t>(plane * 10 + 1));
+    total_size += base::bits::AlignUp(static_cast<GLuint>(plane_size),
+                                      static_cast<GLuint>(sizeof(uint64_t)));
+  }
+  ASSERT_GT(total_size, MaxTransferBufferSize());
+
+  transfer_buffer_->SetFreeSize(total_size);
+  GetExpectedMemory(MaxTransferBufferSize());
+  ExpectedMemoryInfo mem = GetExpectedMappedMemory(total_size);
+
+  gl_->WritePixelsYUV(mailbox, yuva_pixmaps);
+  EXPECT_TRUE(transfer_buffer_->InSync());
+  EXPECT_FALSE(NoCommandsWritten());
+
+  GLuint offset = 0;
+  for (int plane = 0; plane < yuva_info.numPlanes(); ++plane) {
+    size_t plane_size = yuva_pixmaps.plane(plane).computeByteSize();
+    auto expected_plane = gfx::SkPixmapToSpan(yuva_pixmaps.plane(plane));
+    EXPECT_EQ(mem.span.subspan(offset, plane_size), expected_plane);
+    offset += base::bits::AlignUp(static_cast<GLuint>(plane_size),
+                                  static_cast<GLuint>(sizeof(uint64_t)));
+  }
+  EXPECT_EQ(GL_NO_ERROR, CheckError());
+}
+
+TEST_F(RasterImplementationTest,
+       MapTransferCacheEntryFallbackWhenTransferBufferAllocUpToIsShort) {
+  const uint32_t kEntrySize = MaxTransferBufferSize() + 64;
+  transfer_buffer_->SetFreeSize(kEntrySize);
+  GetExpectedMemory(MaxTransferBufferSize());
+  ExpectedMemoryInfo mem = GetExpectedMappedMemory(kEntrySize);
+
+  base::span<uint8_t> mapped = gl_->MapTransferCacheEntry(kEntrySize);
+  EXPECT_TRUE(transfer_buffer_->InSync());
+  ASSERT_EQ(mapped.size(), kEntrySize);
+  EXPECT_EQ(mapped.data(), mem.ptr);
+
+  std::ranges::iota(mapped, 1);
+  gl_->UnmapAndCreateTransferCacheEntry(1u, 1u);
+}
+
+TEST_F(RasterImplementationTest, MapTransferCacheEntryZeroSize) {
+  transfer_buffer_->SetFreeSize(MaxTransferBufferSize());
+  base::span<uint8_t> mapped = gl_->MapTransferCacheEntry(0);
+  EXPECT_TRUE(mapped.empty());
+  EXPECT_EQ(mapped.data(), nullptr);
+  EXPECT_TRUE(transfer_buffer_->InSync());
+
+  // Subsequent non-zero MapTransferCacheEntry must still succeed without
+  // tripping DCHECK(!transfer_buffer_ptr_).
+  constexpr uint32_t kEntrySize = 64;
+  ExpectedMemoryInfo mem = GetExpectedMemory(kEntrySize);
+  mapped = gl_->MapTransferCacheEntry(kEntrySize);
+  ASSERT_EQ(mapped.size(), kEntrySize);
+  EXPECT_EQ(mapped.data(), mem.ptr);
+  gl_->UnmapAndCreateTransferCacheEntry(1u, 1u);
+}
+
+TEST_F(RasterImplementationTest, WritePixelsRowBytesOverflowWhenHeightIsOne) {
+  if constexpr (sizeof(size_t) > sizeof(GLuint)) {
+    gpu::Mailbox mailbox = gpu::Mailbox::Generate();
+    SkImageInfo src_info = SkImageInfo::MakeN32Premul(4, 1);
+    std::vector<uint8_t> src_pixels(src_info.computeMinByteSize(), 0x5A);
+    // When height == 1, SkImageInfo::computeByteSize(rowBytes) ignores rowBytes
+    // because (height - 1) == 0. Ensure WritePixels still rejects a rowBytes
+    // value that overflows GLuint.
+    size_t oversized_row_bytes =
+        static_cast<size_t>(std::numeric_limits<GLuint>::max()) + 4;
+    SkPixmap src_pixmap(src_info, src_pixels.data(), oversized_row_bytes);
+
+    gl_->WritePixels(mailbox, /*dst_x_offset=*/0, /*dst_y_offset=*/0,
+                     GL_TEXTURE_2D, src_pixmap);
+    EXPECT_TRUE(NoCommandsWritten());
+    EXPECT_EQ(GL_INVALID_OPERATION, CheckError());
+  }
+}
+
+TEST_F(RasterImplementationTest, WritePixelsTransferBufferContractDuringAlloc) {
+  constexpr uint32_t kStartSize = 1024;
+  constexpr uint32_t kMinSize = 128;
+  constexpr uint32_t kMaxSize = 4096;
+
+  SharedMemoryLimits limits = SharedMemoryLimitsForTesting();
+  limits.start_transfer_buffer_size = kStartSize;
+  limits.min_transfer_buffer_size = kMinSize;
+  limits.max_transfer_buffer_size = kMaxSize;
+
+  StrictMock<CappedTransferBufferCommandBuffer> cmd_buffer;
+  EXPECT_CALL(cmd_buffer, OnFlush()).Times(AnyNumber());
+  EXPECT_CALL(cmd_buffer, DestroyTransferBuffer(_)).Times(AnyNumber());
+
+  RasterCmdHelper cmd_helper(&cmd_buffer);
+  ASSERT_EQ(cmd_helper.Initialize(limits.command_buffer_size),
+            gpu::ContextResult::kSuccess);
+
+  TransferBuffer real_transfer_buffer(&cmd_helper);
+
+  StrictMock<MockClientGpuControl> gpu_control;
+  Capabilities capabilities;
+  capabilities.max_texture_size = kMaxTextureSize;
+  capabilities.sync_query = true;
+  EXPECT_CALL(gpu_control, GetCapabilities()).WillOnce(ReturnRef(capabilities));
+
+  auto ri = std::make_unique<RasterImplementation>(
+      &cmd_helper, &real_transfer_buffer,
+      /*lose_context_when_out_of_memory=*/false, &gpu_control);
+  EXPECT_CALL(gpu_control, SetGpuControlClient(ri.get())).Times(1);
+  ASSERT_EQ(ri->Initialize(limits), gpu::ContextResult::kSuccess);
+
+  // First expand the ring buffer to kMaxSize (4096 bytes).
+  base::span<uint8_t> expand_block = real_transfer_buffer.Alloc(
+      kMaxSize - RasterImplementation::kStartingOffset);
+  ASSERT_FALSE(expand_block.empty());
+  real_transfer_buffer.FreePendingToken(expand_block.data(),
+                                        cmd_helper.InsertToken());
+
+  // Now advance bytes_since_last_shrink_ past the shrink threshold using
+  // 512-byte allocations so high_water_mark_ is 512 + kStartingOffset (576),
+  // whose target POT buffer size is 1024 (< current_size 4096).
+  constexpr uint32_t kStepAllocSize = 512;
+  for (uint32_t allocated = kMaxSize - RasterImplementation::kStartingOffset;
+       allocated <= (kStepAllocSize + RasterImplementation::kStartingOffset) *
+                        TransferBuffer::kShrinkThreshold;
+       allocated += kStepAllocSize) {
+    base::span<uint8_t> block = real_transfer_buffer.Alloc(kStepAllocSize);
+    ASSERT_FALSE(block.empty());
+    real_transfer_buffer.FreePendingToken(block.data(),
+                                          cmd_helper.InsertToken());
+  }
+
+  // Free size is still 4032 bytes prior to the next allocation.
+  ASSERT_EQ(real_transfer_buffer.GetFreeSize(),
+            kMaxSize - RasterImplementation::kStartingOffset);
+
+  // Restrict subsequent transfer buffer creations to kMinSize (128 bytes),
+  // which only has 64 usable bytes after kStartingOffset.
+  cmd_buffer.set_max_create_transfer_buffer_size(kMinSize);
+
+  // Request WritePixels with 512 bytes (16x8 RGBA8). GetFreeSize() is 4032 >=
+  // 512, so ScopedSharedMemoryPtr attempts TransferBuffer allocation first.
+  // TransferBuffer::AllocUpTo shrinks/reallocates the ring buffer, halving down
+  // to kMinSize (64 usable bytes < 512). WritePixels must not write 512 bytes
+  // into the 64-byte block.
+  SkImageInfo src_info =
+      SkImageInfo::Make(16, 8, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+  std::vector<uint8_t> pixels(src_info.computeMinByteSize(), 0x5A);
+  SkPixmap pixmap(src_info, pixels.data(), src_info.minRowBytes());
+
+  ri->WritePixels(gpu::Mailbox::Generate(), 0, 0, GL_TEXTURE_2D, pixmap);
+  EXPECT_EQ(static_cast<GLenum>(GL_INVALID_OPERATION), ri->GetError());
+
+  // Now allow MappedMemoryManager to allocate a fallback chunk while the
+  // transfer buffer remains contracted, and verify WritePixels succeeds via
+  // the mapped memory fallback.
+  cmd_buffer.set_max_create_transfer_buffer_size(UINT32_MAX);
+  ri->WritePixels(gpu::Mailbox::Generate(), 0, 0, GL_TEXTURE_2D, pixmap);
+  EXPECT_EQ(static_cast<GLenum>(GL_NO_ERROR), ri->GetError());
+
+  EXPECT_CALL(gpu_control, SetGpuControlClient(nullptr)).Times(1);
+  EXPECT_CALL(gpu_control, CancelAllQueries()).Times(1);
+  ri.reset();
+}
+
+// ReadbackYUVPixelsAsync only supports 8-bit Y_U_V 4:2:0 destinations.
+TEST_F(RasterImplementationTest, ReadbackYUVPixelsAsyncUnsupportedLayout) {
+  constexpr int kWidth = 4;
+  constexpr int kHeight = 4;
+  std::vector<uint8_t> y_plane_data(kWidth * kHeight);
+  std::vector<uint8_t> uv_plane_data(kWidth * kHeight / 2);
+  const SkYUVAInfo yuva_info(
+      SkISize::Make(kWidth, kHeight), SkYUVAInfo::PlaneConfig::kY_UV,
+      SkYUVAInfo::Subsampling::k420, kRec601_Limited_SkYUVColorSpace);
+  const std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> pixmaps = {
+      SkPixmap(SkImageInfo::Make(kWidth, kHeight, kR8_unorm_SkColorType,
+                                 kOpaque_SkAlphaType),
+               y_plane_data.data(), kWidth),
+      SkPixmap(SkImageInfo::Make(kWidth / 2, kHeight / 2,
+                                 kR8G8_unorm_SkColorType, kPremul_SkAlphaType),
+               uv_plane_data.data(), kWidth),
+  };
+  const SkYUVAPixmaps yuva_pixmaps =
+      SkYUVAPixmaps::FromExternalPixmaps(yuva_info, pixmaps.data());
+  ASSERT_TRUE(yuva_pixmaps.isValid());
+
+  // The callbacks are posted (with failure) even though no readback is issued.
+  base::test::SingleThreadTaskEnvironment task_environment;
+  base::test::TestFuture<void> release_mailbox_future;
+  base::test::TestFuture<bool> readback_done_future;
+  const uint8_t* commands_start = GetPut().data();
+  gl_->ReadbackYUVPixelsAsync(
+      gpu::Mailbox::Generate(), GL_TEXTURE_2D, gfx::Rect(kWidth, kHeight),
+      /*vertically_flip_texture=*/false, yuva_pixmaps,
+      /*dst_color_space=*/nullptr, release_mailbox_future.GetCallback(),
+      readback_done_future.GetCallback());
+  EXPECT_EQ(commands_start, GetPut().data());
+  EXPECT_FALSE(release_mailbox_future.IsReady());
+  EXPECT_FALSE(readback_done_future.IsReady());
+  EXPECT_TRUE(release_mailbox_future.Wait());
+  EXPECT_FALSE(readback_done_future.Get());
+  // GetError() waits for the command buffer.
+  EXPECT_CALL(*command_buffer(), OnFlush()).Times(AnyNumber());
+  EXPECT_EQ(static_cast<GLenum>(GL_INVALID_VALUE), gl_->GetError());
 }
 
 #include "gpu/command_buffer/client/raster_implementation_unittest_autogen.h"

@@ -6,8 +6,8 @@ import(
     "//chrome/browser/resources/chromeos/accessibility/tools/generate_message_formatting_data.gni")
 import(
     "//chrome/browser/resources/chromeos/accessibility/tools/run_jsbundler.gni")
-import("//chrome/common/features.gni")
 import("//chrome/test/base/ash/js2gtest.gni")
+import("//extensions/buildflags/buildflags.gni")
 import("//testing/test.gni")
 import("//tools/typescript/ts_library.gni")
 import("//ui/webui/resources/tools/bundle_js.gni")
@@ -211,9 +211,11 @@ ts_library("build_ts") {
     ":stage_ash_braille_table",
     ":stage_ts_build",
     ":stage_ts_build_sre",
+    "//chrome/browser/resources/chromeos/accessibility:chromevox_message_ids_dts",
   ]
 
   definitions = [
+    "$root_gen_dir/chrome/browser/resources/chromeos/accessibility/chromevox_message_ids.d.ts",
     "//tools/typescript/definitions/chrome_event.d.ts",
     "//tools/typescript/definitions/context_menus.d.ts",
     "//tools/typescript/definitions/metrics_private.d.ts",
@@ -488,11 +490,12 @@ js2gtest("chromevox_extension_js_tests") {
   # The test base classes generate C++ code with these deps.
   deps = [
     "//ash",
+    "//ash/constants",
     "//base",
     "//chrome/browser/ash/accessibility",
     "//chrome/browser/ash/system_web_apps",
-    "//chrome/common",
     "//chrome/test/base:cros_extension_js_browser_test",
+    "//extensions/common",
   ]
   test_deps_js_outputs = get_target_outputs(":chromevox_test_deps_js")
   deps_js = test_deps_js_outputs[0]

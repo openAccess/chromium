@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -62,6 +63,7 @@
 #include "content/browser/renderer_host/input/stylus_handwriting_callback_sink_win.h"
 #include "content/browser/renderer_host/input/stylus_handwriting_controller_win.h"
 #include "content/browser/renderer_host/input/stylus_handwriting_win_test_helper.h"
+#include "ui/events/win/stylus_handwriting_properties_win.h"
 
 using testing::_;
 using testing::Return;
@@ -159,6 +161,19 @@ class MockParentRenderWidgetHostView : public TestRenderWidgetHostView {
     bounds_without_transform_ = bounds_without;
   }
 
+#if BUILDFLAG(IS_WIN)
+  MOCK_METHOD(std::optional<ui::StylusHandwritingPropertiesWin>,
+              TakeStylusHandwritingProperties,
+              (uint32_t),
+              (override));
+  MOCK_METHOD(void,
+              StartStylusWritingFromChildHostView,
+              (RenderWidgetHostViewBase*,
+               OnFocusHandwritingTargetCallback,
+               const std::optional<input::StylusWritingProperties>&),
+              (override));
+#endif
+
  private:
   gfx::Rect bounds_;
   gfx::Rect bounds_without_transform_;
@@ -217,8 +232,18 @@ class MockRenderWidgetHostView : public TestRenderWidgetHostView {
       const gfx::PointF& point,
       input::RenderWidgetHostViewInput* target_view,
       gfx::PointF* transformed_point) override {
-    *transformed_point = point;
+    if (!can_transform_point_) {
+      return false;
+    }
+    *transformed_point = point + transform_offset_;
     return true;
+  }
+
+  void set_can_transform_point(bool can_transform_point) {
+    can_transform_point_ = can_transform_point;
+  }
+  void set_transform_offset(const gfx::Vector2dF& transform_offset) {
+    transform_offset_ = transform_offset;
   }
 
   bool TransformPointToLocalCoordSpace(
@@ -277,6 +302,8 @@ class MockRenderWidgetHostView : public TestRenderWidgetHostView {
   std::u16string last_tooltip_text_;
   gfx::Rect last_tooltip_bounds_;
   bool tooltip_cleared_ = false;
+  bool can_transform_point_ = true;
+  gfx::Vector2dF transform_offset_;
 };
 
 class RenderWidgetHostViewChildFrameTest
@@ -382,6 +409,57 @@ class RenderWidgetHostViewChildFrameTest
   raw_ptr<RenderWidgetHostViewChildFrame> view_ = nullptr;
   std::unique_ptr<MockFrameConnector> test_frame_connector_;
 };
+
+#if BUILDFLAG(IS_WIN)
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       ForwardsHandwritingPropertiesToRoot) {
+  auto root =
+      std::make_unique<testing::NiceMock<MockParentRenderWidgetHostView>>(
+          widget_host_.get());
+  test_frame_connector_->SetRootRenderWidgetHostView(root.get());
+  const ui::StylusHandwritingPropertiesWin properties(
+      1, 101, gfx::Vector2dF(192.f, 288.f));
+  EXPECT_CALL(*root, TakeStylusHandwritingProperties(1))
+      .WillOnce(Return(properties));
+  auto taken = view_->TakeStylusHandwritingProperties(1);
+  ASSERT_TRUE(taken);
+  EXPECT_EQ(properties.handwriting_pointer_id, taken->handwriting_pointer_id);
+  EXPECT_EQ(properties.handwriting_stroke_id, taken->handwriting_stroke_id);
+  EXPECT_EQ(properties.pixels_per_inch, taken->pixels_per_inch);
+  EXPECT_CALL(*root, StartStylusWritingFromChildHostView(view_.get(), _, _))
+      .WillOnce(
+          [&properties](
+              RenderWidgetHostViewBase*,
+              RenderWidgetHostViewBase::OnFocusHandwritingTargetCallback
+                  callback,
+              const std::optional<input::StylusWritingProperties>& forwarded) {
+            EXPECT_TRUE(callback);
+            ASSERT_TRUE(forwarded);
+            EXPECT_EQ(properties.handwriting_pointer_id,
+                      forwarded->handwriting_pointer_id);
+            EXPECT_EQ(properties.handwriting_stroke_id,
+                      forwarded->handwriting_stroke_id);
+            EXPECT_EQ(properties.pixels_per_inch, forwarded->pixels_per_inch);
+          });
+
+  view_->OnStartStylusWriting(*taken);
+  EXPECT_CALL(*root, StartStylusWritingFromChildHostView(view_.get(), _, _))
+      .WillOnce(
+          [](RenderWidgetHostViewBase*,
+             RenderWidgetHostViewBase::OnFocusHandwritingTargetCallback
+                 callback,
+             const std::optional<input::StylusWritingProperties>& forwarded) {
+            EXPECT_TRUE(callback);
+            EXPECT_FALSE(forwarded);
+          });
+  view_->OnStartStylusWriting(std::nullopt);
+  test_frame_connector_->SetRootRenderWidgetHostView(nullptr);
+
+  // Verify properties take and stylus writing fail after root is removed.
+  EXPECT_FALSE(view_->TakeStylusHandwritingProperties(1));
+  view_->OnStartStylusWriting(*taken);
+}
+#endif
 
 #if BUILDFLAG(IS_MAC)
 TEST_F(RenderWidgetHostViewChildFrameTest, ShowSharePickerFromChildFrame) {
@@ -1141,5 +1219,47 @@ TEST_F(RenderWidgetHostViewChildFrameTest, ReportScrollJankStats) {
   connector->SetRootRenderWidgetHostView(nullptr);
 }
 #endif
+
+TEST_F(RenderWidgetHostViewChildFrameTest,
+       TryTransformRootPointToViewCoordSpace) {
+  auto root_view =
+      std::make_unique<testing::NiceMock<MockRenderWidgetHostView>>(
+          widget_host_.get());
+  root_view->set_transform_offset(gfx::Vector2dF(-20.0f, -30.0f));
+
+  RenderWidgetHostViewChildFrame* child_view =
+      RenderWidgetHostViewChildFrame::Create(widget_host_.get(),
+                                             display::ScreenInfos());
+  auto connector = std::make_unique<MockFrameConnector>();
+  connector->SetView(child_view, false);
+  connector->SetRootRenderWidgetHostView(root_view.get());
+  child_view->SetFrameConnector(connector.get());
+
+  constexpr gfx::PointF kRootPoint(100.0f, 150.0f);
+  EXPECT_EQ(gfx::PointF(80.0f, 120.0f),
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  // When coordinate transformation fails in the root view,
+  // TryTransformRootPointToViewCoordSpace returns std::nullopt instead of
+  // falling back to the untransformed root point.
+  root_view->set_can_transform_point(false);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+  EXPECT_EQ(kRootPoint,
+            child_view->TransformRootPointToViewCoordSpace(kRootPoint));
+
+  // When detached from the root view or frame connector,
+  // TryTransformRootPointToViewCoordSpace returns std::nullopt.
+  root_view->set_can_transform_point(true);
+  connector->SetRootRenderWidgetHostView(nullptr);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  connector->SetView(nullptr, false);
+  EXPECT_EQ(std::nullopt,
+            child_view->TryTransformRootPointToViewCoordSpace(kRootPoint));
+
+  child_view->DestroyOrDefer();
+}
 
 }  // namespace content

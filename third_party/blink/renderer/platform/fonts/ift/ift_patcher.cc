@@ -63,6 +63,10 @@ IftPatcher::IftPatcher(IftPatcher&&) = default;
 
 IftPatcher& IftPatcher::operator=(IftPatcher&&) = default;
 
+std::unique_ptr<IftPatcher> IftPatcher::Clone() const {
+  return base::WrapUnique(new IftPatcher(ift_patcher_rs::IftPatcher(patcher_)));
+}
+
 std::unique_ptr<IftPatcher> IftPatcher::Create(
     base::span<const uint8_t> font_data) {
   if (!RuntimeEnabledFeatures::IncrementalFontTransferEnabled()) {
@@ -93,9 +97,17 @@ void IftPatcher::MarkFontDataRendered() {
   patcher_.mark_rendered();
 }
 
-Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
+void IftPatcher::BeginExtension() {
+  patcher_.begin_extension();
+}
+
+base::expected<Vector<String>, IftPatcher::RequestError>
+IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
   rs::Vec<::rs::alloc::string::String> urls =
       patcher_.request_patches(subset.subset_);
+  if (patcher_.patch_limit_exceeded()) {
+    return base::unexpected(RequestError::kPatchLimitExceeded);
+  }
   Vector<String> ret;
   ret.ReserveInitialCapacity(base::checked_cast<wtf_size_t>(urls.size()));
   for (const ::rs::alloc::string::String& url : urls) {
@@ -125,11 +137,18 @@ IftPatcher::ApplyStatus IftPatcher::ApplyPatches(
       return ApplyStatus::kPatchError;
     case ift_patcher_rs::IftApplyStatus::Tag::MissingPatches:
       return ApplyStatus::kMissingPatches;
+    case ift_patcher_rs::IftApplyStatus::Tag::PatchLimitExceeded:
+      return ApplyStatus::kPatchLimitExceeded;
   }
 }
 
 bool IftPatcher::HasPendingPatchRequests() const {
   return patcher_.has_pending_patch_requests();
+}
+
+void IftPatcher::SetPatchLimitsForTesting(uint32_t max_invalidating_patches,
+                                          uint32_t max_total_patches) {
+  patcher_.set_patch_limits(max_invalidating_patches, max_total_patches);
 }
 
 }  // namespace blink

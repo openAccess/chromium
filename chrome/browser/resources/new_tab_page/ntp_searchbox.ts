@@ -208,6 +208,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       energyEffectAnimationEnabled: {type: Boolean},
       hasUserInput_: {type: Boolean},
       ntpRealboxDynamicAiModeButtonEnabled_: {type: Boolean},
+      ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: {type: Boolean},
       contextManagementInComposeboxEnabled: {type: Boolean},
       composeboxContextMenuTooltipsEnabled: {type: Boolean},
       keepMenuOpenOnTabSelectForRealbox: {type: Boolean},
@@ -250,6 +251,8 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       getLoadTimeBoolean('composeboxContextMenuTooltipsEnabled', false);
   accessor keepMenuOpenOnTabSelectForRealbox: boolean =
       getLoadTimeBoolean('keepMenuOpenOnTabSelectForRealbox', false);
+  private dynamicAimFulfillmentEnabled_: boolean =
+      getLoadTimeBoolean('dynamicAimFulfillmentEnabled', false);
   accessor placeholderText: string = '';
   accessor recentTabId_: number|null = null;
 
@@ -271,10 +274,12 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       loadTimeData.getBoolean('searchboxLensSearch');
   protected accessor ntpRealboxDynamicAiModeButtonEnabled_: boolean =
       loadTimeData.getBoolean('ntpRealboxDynamicAiModeButton');
+  protected accessor ntpRealboxDynamicAiModeButtonPreventEarlyPaint_: boolean =
+      loadTimeData.getBoolean('ntpRealboxDynamicAiModeButtonPreventEarlyPaint');
   protected accessor useWebkitSearchIcons_: boolean = false;
   protected accessor hasUserInput_: boolean = false;
   protected dragAndDropHandler: DragAndDropHandler|null = null;
-  protected callbackRouter_: PageCallbackRouter;
+  private callbackRouter_: PageCallbackRouter;
 
   private placeholderCycler_: PlaceholderTextCycler|null = null;
   private dragAndDropEnabled_: boolean =
@@ -795,7 +800,12 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
           e.detail.ctrlKey, e.detail.metaKey, e.detail.shiftKey,
           /* isVoiceSearch */ false);
     } else {
-      this.openComposebox_();
+      // With dynamic AIM fulfillment, the compose box would otherwise open
+      // headed to SRP, so ask it to enter AI Mode.
+      this.openComposebox_(
+          [], ToolMode.kUnspecified, ModelMode.kUnspecified,
+          /*error=*/ undefined,
+          /*enterAimMode=*/ this.dynamicAimFulfillmentEnabled_);
     }
 
     recordBoolean(
@@ -809,7 +819,10 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
 
   protected openComposebox_(
       uploads: ContextualUpload[] = [], mode: ToolMode = ToolMode.kUnspecified,
-      model: ModelMode = ModelMode.kUnspecified, error?: DriveUploadError) {
+      model: ModelMode = ModelMode.kUnspecified, error?: DriveUploadError,
+      // Whether to force AI Mode. Ignored without dynamic AIM fulfillment
+      // enabled.
+      enterAimMode: boolean = false) {
     if (this.ntpRealboxNextEnabled) {
       const context =
           this.shadowRoot.querySelector<ContextualEntrypointAndMenuElement>(
@@ -833,6 +846,7 @@ export class NtpSearchboxElement extends NtpSearchboxElementBase implements
       files: uploads,
       mode: mode,
       model: model,
+      enterAimMode: enterAimMode,
       error: error,
       // <if expr="not is_android">
       smartTabSharingActive: this.smartTabSharingActive,

@@ -125,8 +125,6 @@ std::string GetEntryPointSuffix(ShareEntryPoint entry_point) {
       return "ShareSheet";
     case ShareEntryPoint::kTabMenu:
       return "TabMenu";
-    case ShareEntryPoint::kGesture:
-      return "Gesture";
     case ShareEntryPoint::kShareSheetDirectShare:
       return "ShareSheetDirectShare";
   }
@@ -153,6 +151,11 @@ void RecordAutoOpenOutcome(AutoOpenOutcome outcome) {
 
 void RecordActivatedEntryPoint(ShareActivatedEntryPoint entry_point) {
   base::UmaHistogramEnumeration("Sharing.SendTabToSelf.ActivatedEntryPoint",
+                                entry_point);
+}
+
+void RecordOpenedInNativeApp(NativeAppOpenEntryPoint entry_point) {
+  base::UmaHistogramEnumeration("Sharing.SendTabToSelf.OpenedInNativeApp",
                                 entry_point);
 }
 

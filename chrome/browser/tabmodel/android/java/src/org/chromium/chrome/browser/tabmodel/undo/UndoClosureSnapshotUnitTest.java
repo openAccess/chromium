@@ -12,7 +12,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot.forSavedGroups;
+import static org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot.forArchived;
 import static org.chromium.chrome.browser.tabmodel.undo.UndoClosureSnapshot.forTabModel;
 
 import org.junit.Test;
@@ -21,6 +21,7 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.TabRestoreEntryId;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabList;
@@ -49,6 +50,7 @@ public class UndoClosureSnapshotUnitTest {
                                         /* id= */ 1,
                                         "Tab 1",
                                         GROUP_1,
+                                        /* indexInGroup= */ 2,
                                         /* modelIndex= */ TabList.INVALID_TAB_INDEX,
                                         /* pinned= */ true,
                                         /* wasSelected= */ false)),
@@ -59,7 +61,8 @@ public class UndoClosureSnapshotUnitTest {
                                         /* color= */ 2,
                                         /* collapsed= */ true,
                                         /* isHiding= */ true,
-                                        /* survivesInModel= */ false)),
+                                        /* survivesInModel= */ false,
+                                        /* savedTabGroupSyncId= */ "sync-1")),
                         /* isTabGroupSyncEnabled= */ true,
                         /* isAllTabs= */ false,
                         /* entryId= */ 42,
@@ -73,6 +76,7 @@ public class UndoClosureSnapshotUnitTest {
         assertTrue(snapshot.tabs.get(0).pinned);
         assertFalse(snapshot.tabs.get(0).wasSelected);
         assertEquals(TabList.INVALID_TAB_INDEX, snapshot.tabs.get(0).modelIndex);
+        assertEquals(2, snapshot.tabs.get(0).indexInGroup);
 
         GroupData groupData = snapshot.groups.get(GROUP_1);
         assertNotNull(groupData);
@@ -81,6 +85,8 @@ public class UndoClosureSnapshotUnitTest {
         assertTrue(groupData.collapsed);
         assertTrue(groupData.isHiding);
         assertFalse(groupData.survivesInModel);
+        assertEquals("sync-1", groupData.savedTabGroupSyncId);
+        assertTrue(snapshot.hasReopenableHiddenGroups());
 
         assertEquals(42, snapshot.entryId);
         assertEquals(TabClosingSource.TABLET_TAB_STRIP, snapshot.closingSource);
@@ -88,14 +94,15 @@ public class UndoClosureSnapshotUnitTest {
     }
 
     @Test
-    public void testForSavedGroups() {
+    public void testForArchived() {
         UndoClosureSnapshot snapshot =
-                forSavedGroups(
+                forArchived(
                         List.of(
                                 new ClosedTab(
                                         /* id= */ 1,
                                         "Tab 1",
                                         /* groupId= */ null,
+                                        /* indexInGroup= */ TabList.INVALID_TAB_INDEX,
                                         /* modelIndex= */ TabList.INVALID_TAB_INDEX,
                                         /* pinned= */ false,
                                         /* wasSelected= */ false)),
@@ -103,7 +110,7 @@ public class UndoClosureSnapshotUnitTest {
                         /* savedGroupTitle= */ "Saved 1",
                         /* savedGroupTabCount= */ 3);
 
-        assertEquals(ClosureKind.SAVED_GROUPS, snapshot.kind);
+        assertEquals(ClosureKind.ARCHIVED, snapshot.kind);
         assertTrue(snapshot.groups.isEmpty());
         assertFalse(snapshot.isTabGroupSyncEnabled);
         assertFalse(snapshot.isAllTabs);
@@ -123,6 +130,7 @@ public class UndoClosureSnapshotUnitTest {
                         /* id= */ 1,
                         "Tab 1",
                         /* groupId= */ null,
+                        /* indexInGroup= */ TabList.INVALID_TAB_INDEX,
                         /* modelIndex= */ TabList.INVALID_TAB_INDEX,
                         /* pinned= */ false,
                         /* wasSelected= */ false));
@@ -135,7 +143,8 @@ public class UndoClosureSnapshotUnitTest {
                         /* color= */ 0,
                         /* collapsed= */ false,
                         /* isHiding= */ false,
-                        /* survivesInModel= */ true));
+                        /* survivesInModel= */ true,
+                        /* savedTabGroupSyncId= */ null));
 
         UndoClosureSnapshot snapshot =
                 forTabModel(
@@ -158,5 +167,47 @@ public class UndoClosureSnapshotUnitTest {
         // Verify snapshot collections are unmodifiable.
         assertThrows(UnsupportedOperationException.class, () -> snapshot.tabs.clear());
         assertThrows(UnsupportedOperationException.class, () -> snapshot.groups.clear());
+    }
+
+    @Test
+    public void testHasReopenableHiddenGroups() {
+        assertFalse(
+                createGroupSnapshot(
+                                /* isHiding= */ false,
+                                /* survivesInModel= */ false,
+                                /* savedTabGroupSyncId= */ "sync-1")
+                        .hasReopenableHiddenGroups());
+        assertFalse(
+                createGroupSnapshot(
+                                /* isHiding= */ true,
+                                /* survivesInModel= */ true,
+                                /* savedTabGroupSyncId= */ "sync-1")
+                        .hasReopenableHiddenGroups());
+        assertFalse(
+                createGroupSnapshot(
+                                /* isHiding= */ true,
+                                /* survivesInModel= */ false,
+                                /* savedTabGroupSyncId= */ null)
+                        .hasReopenableHiddenGroups());
+    }
+
+    private static UndoClosureSnapshot createGroupSnapshot(
+            boolean isHiding, boolean survivesInModel, @Nullable String savedTabGroupSyncId) {
+        return forTabModel(
+                /* tabs= */ List.of(),
+                Map.of(
+                        GROUP_1,
+                        new GroupData(
+                                "Group 1",
+                                /* color= */ 0,
+                                /* collapsed= */ false,
+                                isHiding,
+                                survivesInModel,
+                                savedTabGroupSyncId)),
+                /* isTabGroupSyncEnabled= */ true,
+                /* isAllTabs= */ false,
+                /* entryId= */ TabRestoreEntryId.INVALID_TAB_RESTORE_ENTRY_ID,
+                /* closingSource= */ TabClosingSource.UNKNOWN,
+                /* undoRunnable= */ null);
     }
 }

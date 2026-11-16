@@ -1253,10 +1253,10 @@ void InspectorPageAgent::LifecycleEvent(LocalFrame* frame,
 
 void InspectorPageAgent::PaintTiming(Document* document,
                                      const char* name,
-                                     double timestamp) {
+                                     base::TimeTicks timestamp) {
   LocalFrame* frame = document->GetFrame();
   DocumentLoader* loader = frame->Loader().GetDocumentLoader();
-  LifecycleEvent(frame, loader, name, timestamp);
+  LifecycleEvent(frame, loader, name, timestamp.since_origin().InSecondsF());
 }
 
 void InspectorPageAgent::Will(const probe::UpdateLayout&) {}
@@ -1500,7 +1500,8 @@ std::unique_ptr<protocol::Page::Frame> InspectorPageAgent::BuildObjectForFrame(
   // Url and MimeType in those cases. See e.g. https://crbug.com/1270184.
   const KURL url = loader ? loader->Url() : KURL();
   const String mime_type = loader ? loader->MimeType() : String();
-  auto security_origin = SecurityOrigin::Create(url);
+  const SecurityOrigin* security_origin =
+      frame->DomWindow()->GetSecurityOrigin();
   std::unique_ptr<protocol::Page::Frame> frame_object =
       protocol::Page::Frame::create()
           .setId(IdentifiersFactory::FrameId(frame))

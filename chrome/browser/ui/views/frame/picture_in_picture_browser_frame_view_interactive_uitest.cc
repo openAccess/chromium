@@ -27,7 +27,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
@@ -67,10 +66,10 @@
 #include "ui/views/window/non_client_view.h"
 
 #if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/themes/chrome_linux_ui_getter.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "ui/linux/fake_linux_ui.h"
-#include "ui/linux/linux_ui_getter.h"
 #endif
 
 #if BUILDFLAG(IS_OZONE)
@@ -360,14 +359,10 @@ class PictureInPictureBrowserFrameViewTestBase : public WebRtcTestBase {
   }
 
   void SetUp() override {
-    // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox is
-    // enabled and then remove the two omnibox features.
     scoped_feature_list_.InitWithFeatureStates(
         {{blink::features::kDocumentPictureInPictureAPI, true},
          {media::kPictureInPictureOcclusionTracking, true},
-         {features::kDocumentPipStandaloneWindow, UseStandaloneDocumentPip()},
-         {omnibox::internal::kWebUIOmniboxPopup, false},
-         {omnibox::internal::kWebUIOmniboxAimPopup, false}});
+         {features::kDocumentPipStandaloneWindow, UseStandaloneDocumentPip()}});
     InProcessBrowserTest::SetUp();
   }
 
@@ -1501,7 +1496,7 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureNativeWindowTest,
 
 #if BUILDFLAG(IS_LINUX)
 
-class FakeLinuxUiGetter : public ui::LinuxUiGetter {
+class FakeLinuxUiGetter : public ChromeLinuxUiGetter {
  public:
   FakeLinuxUiGetter() = default;
 
@@ -1509,7 +1504,7 @@ class FakeLinuxUiGetter : public ui::LinuxUiGetter {
     return &fake_linux_ui_;
   }
 
-  ui::LinuxUiTheme* GetForProfile(Profile* profile) override {
+  ui::LinuxUiTheme* GetForProfile(const Profile* profile) override {
     return &fake_linux_ui_;
   }
 

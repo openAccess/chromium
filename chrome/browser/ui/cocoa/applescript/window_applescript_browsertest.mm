@@ -11,6 +11,7 @@
 #import "chrome/browser/app_controller_mac.h"
 #import "chrome/browser/chrome_browser_application_mac.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/cocoa/applescript/apple_event_util.h"
 #import "chrome/browser/ui/cocoa/applescript/constants_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/error_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/tab_applescript.h"
@@ -20,6 +21,10 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #include "url/gurl.h"
+
+namespace AppleScript {
+
+namespace {
 
 using WindowAppleScriptTest = InProcessBrowserTest;
 
@@ -31,13 +36,6 @@ IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, DefaultCreation) {
   EXPECT_NSEQ(AppleScript::kNormalWindowMode, mode);
 }
 
-// Create a window with a |NULL profile|.
-IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, CreationWithNoProfile) {
-  WindowAppleScript* window =
-      [[WindowAppleScript alloc] initWithProfile:nullptr];
-  EXPECT_FALSE(window);
-}
-
 // Create a window with a particular profile.
 IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, CreationWithProfile) {
   Profile* lastProfile = AppController.sharedController.lastProfile;
@@ -47,14 +45,7 @@ IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, CreationWithProfile) {
   EXPECT_TRUE(window.uniqueID);
 }
 
-// Create a window with no |Browser*|.
-IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, CreationWithNoBrowser) {
-  WindowAppleScript* window =
-      [[WindowAppleScript alloc] initWithBrowser:nullptr];
-  EXPECT_FALSE(window);
-}
-
-// Create a window with |Browser*| already present.
+// Create a window with `Browser*` already present.
 IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, CreationWithBrowser) {
   WindowAppleScript* window =
       [[WindowAppleScript alloc] initWithBrowser:browser()];
@@ -149,13 +140,105 @@ IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, NSWindowTest) {
   EXPECT_FALSE([[window valueForKey:@"miniaturized"] boolValue]);
 }
 
-// Getting and setting the active tab.
-IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, ActiveTab) {
+// Getting and setting the active tab via index.
+IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, ActiveTabViaIndex) {
   WindowAppleScript* window =
       [[WindowAppleScript alloc] initWithBrowser:browser()];
   [window insertInTabs:[[TabAppleScript alloc] init]];
-  [window setActiveTabIndex:@2];
   EXPECT_EQ(2, window.activeTabIndex.intValue);
+
+  TabAppleScript* tab1 = window.tabs[0];
   TabAppleScript* tab2 = window.tabs[1];
-  EXPECT_NSEQ(window.activeTab.uniqueID, tab2.uniqueID);
+
+  // Switch to tab 1, verify.
+  window.activeTabIndex = @1;
+  EXPECT_EQ(1, window.activeTabIndex.intValue);
+  EXPECT_NSEQ(window.activeTab, tab1);
+
+  // Switch to tab 2, verify.
+  window.activeTabIndex = @2;
+  EXPECT_EQ(2, window.activeTabIndex.intValue);
+  EXPECT_NSEQ(window.activeTab, tab2);
+
+  // Switch to bogus tab, verify.
+  NSScriptCommand* fake_script_command = [[NSScriptCommand alloc] init];
+  ScopedCurrentScriptCommand scoped_current_command(fake_script_command);
+  window.activeTabIndex = @100;
+  EXPECT_EQ(std::to_underlying(Error::kInvalidTab),
+            fake_script_command.scriptErrorNumber);
 }
+
+// Getting and setting the active tab via object.
+IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, ActiveTabViaObject) {
+  WindowAppleScript* window =
+      [[WindowAppleScript alloc] initWithBrowser:browser()];
+  [window insertInTabs:[[TabAppleScript alloc] init]];
+  EXPECT_EQ(2, window.activeTabIndex.intValue);
+
+  TabAppleScript* tab1 = window.tabs[0];
+  TabAppleScript* tab2 = window.tabs[1];
+
+  // Switch to tab 1, verify.
+  window.activeTab = tab1;
+  EXPECT_EQ(1, window.activeTabIndex.intValue);
+  EXPECT_NSEQ(window.activeTab, tab1);
+
+  // Switch to tab 2, verify.
+  window.activeTab = tab2;
+  EXPECT_EQ(2, window.activeTabIndex.intValue);
+  EXPECT_NSEQ(window.activeTab, tab2);
+
+  // Switch to bogus tab, verify.
+  WindowAppleScript* window2 =
+      [[WindowAppleScript alloc] initWithBrowser:CreateBrowser(GetProfile())];
+  NSScriptCommand* fake_script_command = [[NSScriptCommand alloc] init];
+  ScopedCurrentScriptCommand scoped_current_command(fake_script_command);
+  window.activeTab = window2.tabs[0];
+  EXPECT_EQ(std::to_underlying(Error::kInvalidTab),
+            fake_script_command.scriptErrorNumber);
+}
+
+// Verify that InsertWindowAtIndex() works as expected.
+IN_PROC_BROWSER_TEST_F(WindowAppleScriptTest, InsertWindowAtIndex) {
+  // When running a script such as `make new window at end`, the NSCreateCommand
+  // looks like:
+  //
+  // Standard Suite.make
+  //  Direct Parameter: (null)
+  //  Receivers: (null)
+  //  Arguments: {
+  //    Location = "<NSPositionalSpecifier: at the end of (null)>";
+  //    ObjectClass = 1668770158;  /* 'cwin' aka cWindow */
+  //  }
+  //
+  // It would be nice to create such an NSScriptCommand and run it through
+  // end-to-end. Alas, actually creating and processing the Apple Event requires
+  // more Foundation machinery than is available in the testing environment. The
+  // best that can be done is verifying the window insertion code.
+
+  // The existing window will be in the rear, so call it "2".
+  WindowAppleScript* window2 =
+      [[WindowAppleScript alloc] initWithBrowser:browser()];
+  // A window will be in the front, so call it "1".
+  WindowAppleScript* window1 =
+      [[WindowAppleScript alloc] initWithBrowser:CreateBrowser(GetProfile())];
+
+  NSArray<WindowAppleScript*>* windows = GetWindows();
+  EXPECT_EQ(2u, windows.count);
+  EXPECT_NSEQ(window1, windows[0]);
+  EXPECT_NSEQ(window2, windows[1]);
+
+  WindowAppleScript* windowA =
+      [[WindowAppleScript alloc] initWithBrowser:CreateBrowser(GetProfile())];
+  InsertWindowAtIndex(windowA, 2);
+
+  windows = GetWindows();
+  EXPECT_EQ(3u, windows.count);
+  EXPECT_NSEQ(window1, windows[0]);
+  EXPECT_NSEQ(window2, windows[1]);
+  EXPECT_NSEQ(windowA, windows[2]);
+}
+
+}  // namespace
+
+}  // namespace AppleScript

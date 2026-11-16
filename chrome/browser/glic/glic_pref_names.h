@@ -95,12 +95,14 @@ inline constexpr char kGlicWebContinuityOriginatingHostUrlPreset[] =
 // Per-profile assistant selection preference. Evaluated once at profile
 // initialization by `geic::ShouldLatchToGeminiEnterprise()` (via
 // `GlicProviderLatchFactory`); changing it requires a browser restart.
+// LINT.IfChange(AssistantSelection)
 enum class AssistantSelection {
   kAuto = 0,
   kConsumer = 1,
   kEnterprise = 2,
   kMaxValue = kEnterprise,
 };
+// LINT.ThenChange(//chrome/browser/resources/settings/ai_page/constants.ts:GlicAssistantSelection)
 inline constexpr char kGlicAssistantSelection[] = "glic.assistant_selection";
 
 // Values for the "glic.actuation_on_web" pref.
@@ -244,10 +246,16 @@ inline constexpr char kGlicPreviouslyNotAllowed[] =
 inline constexpr char kGlicMarketingAutoOpenCount[] =
     "glic.marketing_auto_open_count";
 
-// String pref that records whether a Glic promotion page visit originated from
-// zss or a non-zss source.
-inline constexpr char kGlicPromotionSourceCohort[] =
-    "glic.promotion_source_cohort";
+// The `mojom::InvocationSource` of this profile's first Glic open, for Ask
+// Gemini Wayfinding. kUnsupported if the profile opened Glic before Wayfinding
+// was enabled, or hasn't opened it yet.
+inline constexpr char kGlicWayfindingFirstInvocationSource[] =
+    "glic.wayfinding.first_invocation_source";
+
+// Whether this profile has opened Glic from the Ask Gemini button or hotkey,
+// which shows the user already knows how to reach it.
+inline constexpr char kGlicWayfindingUsedSelfStartedOpen[] =
+    "glic.wayfinding.used_self_started_open";
 
 #if BUILDFLAG(IS_MAC)
 inline constexpr char kGlicUseAltOSIcon[] = "glic.use_alt_os_icon";

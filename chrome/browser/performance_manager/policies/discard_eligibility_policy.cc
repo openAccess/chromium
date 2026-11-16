@@ -273,22 +273,24 @@ DiscardEligibilityPolicy::CanDiscardWithCustomRecentVisibilityWindow(
                  : result;
   };
 
-  if (page_node->IsVisible()) {
+  auto [is_visible, visibility_change_time] = page_node->GetVisibilityState();
+  if (is_visible) {
     add_reason_and_update_result(CannotDiscardReason::kVisible,
                                  CanDiscardResult::kProtected);
-  } else if ((base::TimeTicks::Now() -
-              page_node->GetLastVisibilityChangeTime()) <
+  } else if ((base::TimeTicks::Now() - visibility_change_time) <
              minimum_time_in_background) {
     add_reason_and_update_result(CannotDiscardReason::kRecentlyVisible,
                                  CanDiscardResult::kProtected);
   }
 
   // Don't discard tabs that are playing or have recently played audio.
-  if (page_node->IsAudible()) {
+  auto [is_audible, audible_change_time] = page_node->GetAudibleState();
+  if (is_audible) {
     add_reason_and_update_result(CannotDiscardReason::kAudible,
                                  CanDiscardResult::kProtected);
-  } else if (page_node->GetTimeSinceLastAudibleChange().value_or(
-                 base::TimeDelta::Max()) < kTabAudioProtectionTime) {
+  } else if (audible_change_time.has_value() &&
+             (base::TimeTicks::Now() - audible_change_time.value()) <
+                 kTabAudioProtectionTime) {
     add_reason_and_update_result(CannotDiscardReason::kRecentlyAudible,
                                  CanDiscardResult::kProtected);
   }
@@ -546,7 +548,8 @@ void DiscardEligibilityPolicy::RecordDiscardDecisionMetrics(
   // Record heuristics signals to assist with future model tuning.
   if (page_node) {
     const base::TimeDelta time_hidden =
-        base::TimeTicks::Now() - page_node->GetLastVisibilityChangeTime();
+        base::TimeTicks::Now() -
+        page_node->GetVisibilityState().last_change_time;
     base::UmaHistogramCustomTimes(
         "PerformanceManager.Discarding.TimeHiddenAtDecision", time_hidden,
         base::Seconds(1), base::Days(1), 50);

@@ -5,7 +5,6 @@
 #include "chrome/browser/actor/execution_engine.h"
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -51,6 +50,7 @@
 #include "chrome/browser/actor/tools/password_manager/attempt_login/attempt_login_tool.h"
 #include "chrome/browser/actor/tools/tool_controller.h"
 #include "chrome/browser/actor/tools/tool_request.h"
+#include "chrome/browser/actor/tools/tool_result.h"
 #include "chrome/browser/actor/ui/event_dispatcher.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service.h"
@@ -61,10 +61,10 @@
 #include "chrome/browser/origin_gating/origin_gating_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_io_data.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/common/actor.mojom.h"
 #include "chrome/common/actor/action_result.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/actor/core/actor_features.h"
 #include "components/actor/core/actor_metrics.h"
 #include "components/actor/core/actor_switches.h"
@@ -100,7 +100,6 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "content/public/common/url_constants.h"
 #include "net/base/schemeful_site.h"
 #include "net/http/http_response_headers.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
@@ -114,7 +113,7 @@
 #include "url/origin.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "chrome/browser/safe_browsing/user_interaction_observer.h"
+#include "chrome/browser/safe_browsing/interstitials/user_interaction_observer.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #endif
 
@@ -294,11 +293,7 @@ origin_gating::Decision BlockTabErrorDocument(
   return origin_gating::Decision::kNoDecision;
 }
 
-constexpr auto kNewTabPageHosts = std::to_array<std::string_view>(
-    {chrome::kChromeUINewTabHost, chrome::kChromeUINewTabPageHost,
-     chrome::kChromeUINewTabPageThirdPartyHost});
-
-// Allow HTTP/HTTPS schemes, as well as NTP hosts under the chrome:// scheme.
+// Allow HTTP/HTTPS schemes, as well as NTP origins.
 origin_gating::Decision RequireHttpsOrHttpOrNtp(
     origin_gating::GatingDecisionContext* context,
     const GateableEvent& event) {
@@ -306,8 +301,7 @@ origin_gating::Decision RequireHttpsOrHttpOrNtp(
   if (destination.SchemeIsHTTPOrHTTPS()) {
     return origin_gating::Decision::kNoDecision;
   }
-  if (destination.SchemeIs(content::kChromeUIScheme) &&
-      std::ranges::contains(kNewTabPageHosts, destination.host())) {
+  if (search::IsWebUINewTabPageOrigin(destination)) {
     return origin_gating::Decision::kNoDecision;
   }
   return origin_gating::Decision::kBlocked;
@@ -558,6 +552,34 @@ void PostTaskForActCallback(
                                 std::move(observation_strategy)));
 }
 
+// Merges a follow-up or subsequent stage `ActionResult` into the existing
+// result for the top-level action, preserving parent message and metadata not
+// set by the follow-up.
+void MergeActionResult(mojom::ActionResult& target,
+                       mojom::ActionResultPtr followup) {
+  target.code = followup->code;
+  target.requires_page_stabilization = target.requires_page_stabilization ||
+                                       followup->requires_page_stabilization;
+  // TODO(crbug.com/581884304): if both parent and follow-up have messages,
+  // avoid overwriting.
+  if (!IsOk(*followup) || !followup->message.empty()) {
+    target.message = std::move(followup->message);
+  }
+  if (followup->script_tool_response) {
+    target.script_tool_response = std::move(followup->script_tool_response);
+  }
+  if (followup->execution_end_time) {
+    target.execution_end_time = followup->execution_end_time;
+  }
+  target.screenshot_policy =
+      std::max(target.screenshot_policy, followup->screenshot_policy);
+  target.page_content_policy =
+      std::max(target.page_content_policy, followup->page_content_policy);
+  if (followup->attempt_login_status.has_value()) {
+    target.attempt_login_status = followup->attempt_login_status;
+  }
+}
+
 // When operating on an opaque site, we choose to use the precursor's origin
 // when judging whether a user confirmation should be triggered or not. We are
 // effectively using `url::Origin::Create(rfh.GetLastCommittedUrl())` in lieu of
@@ -735,32 +757,6 @@ MayActOnUrlBlockReason ResolveGatingDecision(
   return MapGatingDecisionToBlockReason(decision, url);
 }
 
-void OnNavigationConfirmationDecisionInBackground(
-    ExecutionEngine::State state,
-    ukm::SourceId ukm_source_id,
-    base::ScopedUmaHistogramTimer timer,
-    webui::mojom::NavigationConfirmationResponsePtr response) {
-  switch (response->result->which()) {
-    case webui::mojom::ConfirmationRequestResult::Tag::kPermissionGranted: {
-      bool permission_granted = response->result->get_permission_granted();
-      base::UmaHistogramBoolean(kPermissionGrantedHistogram,
-                                permission_granted);
-      ukm::builders::Actor_OriginGating builder(ukm_source_id);
-      builder
-          .SetServerConfirmationResult(static_cast<int64_t>(
-              permission_granted
-                  ? ExecutionEngine::ActorServerConfirmationResult::kAccepted
-                  : ExecutionEngine::ActorServerConfirmationResult::kRejected))
-          .SetEngineState(static_cast<int64_t>(state));
-      builder.Record(ukm::UkmRecorder::Get());
-      return;
-    }
-    case webui::mojom::ConfirmationRequestResult::Tag::kErrorReason:
-      return;
-  }
-  NOTREACHED();
-}
-
 origin_gating::OriginGatingConfiguration::CacheScope
 GetOriginGatingCacheScope() {
   using CacheScope = origin_gating::OriginGatingConfiguration::CacheScope;
@@ -929,8 +925,7 @@ ExecutionEngine::ExecutionEngine(base::PassKey<ExecutionEngine>,
           std::make_unique<autofill::ActorOneTimeTokenFillingServiceImpl>(
               task_->GetProfile(),
               journal_,
-              task_->id())),
-      dark_launch_origin_gating_cache_(GetOriginGatingCacheScope()) {
+              task_->id())) {
   TRACE_EVENT0("actor", "ExecutionEngine::ExecutionEngine");
   origin_gating_registration_ =
       GetOriginGatingService().CreateAndRegisterChecker(
@@ -1224,22 +1219,6 @@ void ExecutionEngine::HandleNavigationToNewOrigin(
     base::ScopedUmaHistogramTimer timer,
     base::OnceCallback<void(NoVerdictResult)> callback) {
   if (!kGlicConfirmNavigationToNewOrigins.Get()) {
-    if (kGlicConfirmNavigationToNewOriginsDarkLaunch.Get() &&
-        !dark_launch_origin_gating_cache_.IsNavigationAllowed(url::Origin(),
-                                                              destination)) {
-      SendNavigationConfirmationRequest(
-          destination,
-          base::BindOnce(&OnNavigationConfirmationDecisionInBackground, state_,
-                         ukm_source_id,
-                         base::ScopedUmaHistogramTimer(
-                             "Actor.NavigationGating."
-                             "DarkLaunchConfirmationRequestLatency")));
-      // Navigation is auto-approved, so add to origin checker allowlist to skip
-      // future checks and metrics.
-      dark_launch_origin_gating_cache_.AllowNavigationTo(
-          destination,
-          /*is_user_confirmed=*/false);
-    }
     std::move(callback).Run({.is_allowed = true, .did_prompt_user = false});
     return;
   }
@@ -1506,7 +1485,7 @@ void ExecutionEngine::KickOffNextAction() {
       base::FeatureList::IsEnabled(kActorReloadCrashedTabBeforeAct)) {
     content::WebContents* contents = actor_surface->GetWebContents();
     CHECK(contents);
-    if (contents->IsCrashed()) {
+    if (contents->IsCrashed() && GetNextAction().ActsOnWebContents()) {
       GetJournal().Log(
           contents->GetLastCommittedURL(), task_->id(),
           "ExecutionEngine::KickOffNextAction",
@@ -1688,9 +1667,12 @@ void ExecutionEngine::FinishedUiPreInvoke(mojom::ActionResultPtr result) {
                                           GetActionSequenceWeakPtr()));
 }
 
-void ExecutionEngine::FinishedToolInvoke(mojom::ActionResultPtr result) {
+void ExecutionEngine::FinishedToolInvoke(ToolResult tool_result) {
   TRACE_EVENT0("actor", "ExecutionEngine::FinishedToolInvoke");
   CHECK_EQ(state_, State::kToolInvoke, base::NotFatalUntil::M161);
+  // TODO(crbug.com/574534362): Remove once all tools migrate off
+  // mojom::ActionResult.
+  CHECK(tool_result.deprecated_action_result());
 
   if (tool_invoke_complete_callback_for_testing_) {
     std::move(tool_invoke_complete_callback_for_testing_).Run();
@@ -1704,7 +1686,7 @@ void ExecutionEngine::FinishedToolInvoke(mojom::ActionResultPtr result) {
     CHECK(deferred_finish_tool_invoke_.is_null());
     deferred_finish_tool_invoke_ =
         base::BindOnce(&ExecutionEngine::FinishedToolInvoke,
-                       base::Unretained(this), std::move(result));
+                       base::Unretained(this), std::move(tool_result));
     return;
   }
 
@@ -1717,7 +1699,8 @@ void ExecutionEngine::FinishedToolInvoke(mojom::ActionResultPtr result) {
     return;
   }
 
-  if (!IsOk(*result)) {
+  mojom::ActionResultPtr& result = tool_result.deprecated_action_result();
+  if (!tool_result.Ok()) {
     CompleteActions(std::move(result), InProgressActionIndex());
     return;
   }
@@ -1752,10 +1735,10 @@ void ExecutionEngine::FinishedToolInvoke(mojom::ActionResultPtr result) {
         static_cast<PageContentExtractionPolicy>(result->page_content_policy));
   }
 
-  if (GetInProgressAction().IsFollowup()) {
+  if (current_action.IsFollowup()) {
     CHECK(!action_results_.empty());
     ActionResultWithLatencyInfo& action_result = action_results_.back();
-    action_result.result = std::move(result);
+    MergeActionResult(*action_result.result, std::move(result));
     action_result.end_time = end_time;
   } else {
     action_results_.emplace_back(action_start_time_, end_time,
@@ -1805,12 +1788,12 @@ void ExecutionEngine::CompleteActions(mojom::ActionResultPtr result,
                (!IsOk(*result) ||
                 action_sequence_[*action_index]->IsFollowup())) {
       // If we already have a result for this action, and the new result is an
-      // error, overwrite it. This can happen if a tool invocation succeeds
+      // error, merge it. This can happen if a tool invocation succeeds
       // but a subsequent UI post-invoke stage fails, or for follow up tools
       // that fail.
       ActionResultWithLatencyInfo& action_result =
           action_results_[result_index];
-      action_result.result = result->Clone();
+      MergeActionResult(*action_result.result, result->Clone());
       action_result.end_time = base::TimeTicks::Now();
     }
   } else if (!IsOk(*result)) {

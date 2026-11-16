@@ -8,6 +8,8 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
@@ -45,7 +47,7 @@ template <typename T>
 class PolicyStatus {
  public:
   struct Entry {
-    Entry(const std::string& s, T p) : source(s), policy(p) {}
+    Entry(const std::string& s, T p) : source(s), policy(std::move(p)) {}
     std::string source;
     T policy{};
 
@@ -54,7 +56,9 @@ class PolicyStatus {
 
   PolicyStatus() = default;
   PolicyStatus(const PolicyStatus&) = default;
+  PolicyStatus(PolicyStatus&&) noexcept = default;
   PolicyStatus& operator=(const PolicyStatus&) = default;
+  PolicyStatus& operator=(PolicyStatus&&) noexcept = default;
 
   void AddPolicy(bool is_managed, const std::string& source, const T& policy) {
     all_policies_.emplace_back(source, policy);
@@ -339,14 +343,6 @@ class PolicyService : public base::RefCountedThreadSafe<PolicyService> {
 
 // Decouples the proxy configuration from `PolicyService`.
 struct PolicyServiceProxyConfiguration {
-  PolicyServiceProxyConfiguration();
-  ~PolicyServiceProxyConfiguration();
-  PolicyServiceProxyConfiguration(const PolicyServiceProxyConfiguration&);
-  PolicyServiceProxyConfiguration(PolicyServiceProxyConfiguration&&);
-  PolicyServiceProxyConfiguration& operator=(
-      const PolicyServiceProxyConfiguration&);
-  PolicyServiceProxyConfiguration& operator=(PolicyServiceProxyConfiguration&&);
-
   // Note `Get()` returns a nullopt when there's no proxy policies. Otherwise
   // `proxy_auto_detect` must have a value, and is only set to true when the
   // policy chooses "auto-detect".

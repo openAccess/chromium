@@ -757,6 +757,9 @@ BASE_FEATURE(kFontAccessCheckFrameIsActive, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kFontResourceDecodedMemoryAccounting,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kResourceEncodedMemoryAccounting,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kBlockPartialResponseWithoutRange,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -837,8 +840,6 @@ BASE_FEATURE_PARAM(size_t,
                    20);
 
 BASE_FEATURE(kHeapVectorPromptlyFree, base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kImageLoadingPrioritizationFix, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kImageReplacement, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -1801,11 +1802,6 @@ BASE_FEATURE_PARAM(int,
 BASE_FEATURE(kUseAncestorRenderFrameForWorker,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enable deriving sandboxed frame origins from browser-generated tokens
-// instead of renderer-calculated opaque origins.
-BASE_FEATURE(kUseSandboxTokenForOriginDerivation,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kPrecompileInlineScripts, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Whether we should composite a PLSA (paint layer scrollable area) even if it
@@ -2055,6 +2051,17 @@ BASE_FEATURE(kSetIntervalWithoutClamp, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSetSelectionForAccessibilityHandlingInputEvent,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enables single-allocation SIMD UTF-8 decoding in TextCodecUtf8::Decode via
+// simdutf.
+BASE_FEATURE(kSimdutfTextCodecUtf8Decode, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Skips redundant RemoteFrameHost::CheckCompleted() IPCs from
+// RemoteFrame::DidStopLoading() when the parent frame in the current renderer
+// process is a RemoteFrame, notifying any in-process LocalFrame ancestor
+// directly instead.
+BASE_FEATURE(kSkipRedundantRemoteFrameCheckCompleted,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 const char kSkipTouchEventFilterTypeParamName[] = "type";
 const char kSkipTouchEventFilterTypeParamValueDiscrete[] = "discrete";
 const char kSkipTouchEventFilterTypeParamValueAll[] = "all";
@@ -2092,6 +2099,15 @@ const base::FeatureParam<bool> kSpeculativeServiceWorkerWarmUpOnPointerover{
 const base::FeatureParam<bool> kSpeculativeServiceWorkerWarmUpOnPointerdown{
     &kSpeculativeServiceWorkerWarmUp, "sw_warm_up_on_pointerdown", true};
 
+// Rejects `fetch(event.request)` in a ServiceWorker fetch handler with a
+// dedicated cancellation TypeError message instead of generic "Failed to fetch"
+// when a `race-network-and-fetch-handler` request fails with `net::ERR_ABORTED`
+// before receiving response headers.
+// TODO(crbug.com/584629540): Remove this temporary custom error message once
+// standardized cancellation reporting is defined and implemented.
+BASE_FEATURE(kServiceWorkerRaceNetworkRequestAbortedErrorMessage,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 // Enables fallback to network request when the RaceNetworkRequest Mojo pipe is
 // disconnected.
 BASE_FEATURE(kServiceWorkerRaceNetworkRequestFallbackOnDisconnect,
@@ -2107,7 +2123,7 @@ BASE_FEATURE(kServiceWorkerSyntheticResponse,
 // next available ID metadata as database corruption if registrations exist on
 // disk, triggering database doom and clean recovery.
 BASE_FEATURE(kServiceWorkerDatabaseDoomOnMissingNextId,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Define the allowed websites to enable SyntheticResponse. Allowed urls are
 // expected to be passed as a comma separated string.
@@ -2173,6 +2189,27 @@ BASE_FEATURE_PARAM(bool,
                    kServiceWorkerSyntheticResponseUseCacheStorageParam,
                    &kServiceWorkerSyntheticResponse,
                    "use_cache_storage",
+                   false);
+
+// If true, a mismatched network response header that still opts in to the
+// synthetic response is stored again right away instead of only being dropped.
+// Only browser-side processing modes can do this; in the `network_service`
+// mode the network service replaces mismatched headers before the browser sees
+// them, so the cached header is dropped as before.
+BASE_FEATURE_PARAM(bool,
+                   kServiceWorkerSyntheticResponseRefreshHeaderOnMismatch,
+                   &kServiceWorkerSyntheticResponse,
+                   "refresh_header_on_mismatch",
+                   false);
+
+// If true, response headers of navigations intercepted by an embedder preload
+// handler (`ServiceWorkerClient::TakeInterceptingPreloadHandler()`) are
+// observed to populate the synthetic response header cache for subsequent
+// navigations. The response body is forwarded without buffering.
+BASE_FEATURE_PARAM(bool,
+                   kServiceWorkerSyntheticResponseCaptureInterceptedHeaders,
+                   &kServiceWorkerSyntheticResponse,
+                   "capture_intercepted_headers",
                    false);
 
 // If enabled, force renderer process foregrounded from CommitNavigation to

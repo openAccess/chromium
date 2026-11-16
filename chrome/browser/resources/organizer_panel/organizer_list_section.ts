@@ -12,7 +12,7 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './organizer_list_section.css.js';
 import {getHtml} from './organizer_list_section.html.js';
-import type {OrganizerListSectionClient, OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
+import type {OrganizerAction, OrganizerListSectionClient, OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
 import type {OrganizerListSectionHeaderElement} from './organizer_list_section_header.js';
 import {OrganizerSectionMenuOption} from './organizer_list_section_header.js';
 import type {HighlightableOrganizerListSectionItem, OrganizerListSectionItem, OrganizerListSectionItemElement} from './organizer_list_section_item.js';
@@ -64,6 +64,7 @@ export class OrganizerListSectionElement extends CrLitElement implements
         notify: true,
       },
       noAnimation_: {type: Boolean},
+      prefersReducedMotion_: {type: Boolean},
       showAll_: {type: Boolean},
       searchQuery: {type: String},
       filteredItems_: {type: Array},
@@ -78,18 +79,25 @@ export class OrganizerListSectionElement extends CrLitElement implements
 
   private browserProxy_: BrowserProxy = browserProxyFactory.getInstance();
   private sectionStateChangedListenerId_: number|null = null;
+  private reducedMotionQuery_: MediaQueryList|null = null;
+  private windowShownTimestamp_: number = performance.now();
+  private loadPromise_: Promise<unknown> = Promise.resolve();
+  // Generation identifier used to associate async reload results with the
+  // current show/hide cycle.
+  private loadGeneration_: number = 0;
   accessor delegate: OrganizerListSectionDelegate<unknown>|null = null;
   accessor items: Array<OrganizerListSectionItem<unknown>> = [];
   accessor expanded: boolean = true;
   protected accessor noAnimation_: boolean = false;
+  protected accessor prefersReducedMotion_: boolean = false;
   protected accessor showAll_: boolean = false;
   accessor searchQuery: string = '';
-  protected accessor filteredItems_:
+  private accessor filteredItems_:
       Array<HighlightableOrganizerListSectionItem<unknown>> = [];
   // This is the search query that `filteredItems_` currently matches. This
   // ensures that we don't show the full list of elements until after the search
   // has been applied and the list of items has been filtered.
-  protected accessor filteredSearchQuery_: string = '';
+  private accessor filteredSearchQuery_: string = '';
   override accessor hidden: boolean = false;
 
   private searchOptions_:
@@ -123,19 +131,18 @@ export class OrganizerListSectionElement extends CrLitElement implements
             ],
       };
 
-  // The panel WebUI will remain loaded but invisible when the panel is closed.
-  // While invisible, the WebUI will not receive update events from the browser,
-  // so all sections need to refetch their data upon visibility change.
-  private onVisibilityChange_: () => void = () => {
-    if (document.visibilityState === 'visible') {
-      this.updateItems_();
-      this.updateSectionState_();
-    }
+  private onReducedMotionChange_: () => void = () => {
+    assert(this.reducedMotionQuery_ !== null);
+    this.prefersReducedMotion_ = this.reducedMotionQuery_.matches;
   };
 
   override connectedCallback() {
     super.connectedCallback();
-    document.addEventListener('visibilitychange', this.onVisibilityChange_);
+    this.reducedMotionQuery_ =
+        window.matchMedia('(prefers-reduced-motion: reduce)');
+    this.prefersReducedMotion_ = this.reducedMotionQuery_.matches;
+    this.reducedMotionQuery_.addEventListener(
+        'change', this.onReducedMotionChange_);
     this.sectionStateChangedListenerId_ =
         this.browserProxy_.callbackRouter.onSectionsStateChanged.addListener(
             (sectionsState: Record<string, SectionState>) => {
@@ -145,7 +152,10 @@ export class OrganizerListSectionElement extends CrLitElement implements
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    document.removeEventListener('visibilitychange', this.onVisibilityChange_);
+    assert(this.reducedMotionQuery_ !== null);
+    this.reducedMotionQuery_.removeEventListener(
+        'change', this.onReducedMotionChange_);
+    this.reducedMotionQuery_ = null;
     assert(this.sectionStateChangedListenerId_ !== null);
     this.browserProxy_.callbackRouter.removeListener(
         this.sectionStateChangedListenerId_);
@@ -157,8 +167,7 @@ export class OrganizerListSectionElement extends CrLitElement implements
 
     if (changedProperties.has('delegate')) {
       this.delegate?.init(this);
-      this.updateItems_();
-      this.updateSectionState_();
+      this.loadSection_();
     }
 
     if (changedProperties.has('searchQuery') ||
@@ -176,22 +185,49 @@ export class OrganizerListSectionElement extends CrLitElement implements
     this.items = items;
   }
 
-  private async updateItems_() {
-    if (!this.delegate) {
+  async waitForLoadComplete(): Promise<void> {
+    await this.updateComplete;
+    await this.loadPromise_;
+    await this.updateComplete;
+  }
+
+  // Called by the parent list when the panel becomes visible to reset the
+  // action-timing baseline and reload stale section data.
+  reload(): Promise<void> {
+    this.windowShownTimestamp_ = performance.now();
+    this.loadSection_();
+    return this.waitForLoadComplete();
+  }
+
+  private loadSection_(): void {
+    const generation = ++this.loadGeneration_;
+    this.loadPromise_ = Promise.allSettled([
+      this.updateItems_(generation),
+      this.updateSectionState_(generation),
+    ]);
+  }
+
+  private async updateItems_(generation: number) {
+    const delegate = this.delegate;
+    if (!delegate) {
       this.items = [];
       return;
     }
-    this.items = await this.delegate.getItems();
-  }
-
-  private async updateSectionState_() {
-    if (!this.delegate) {
+    const items = await delegate.getItems();
+    if (this.delegate !== delegate || generation !== this.loadGeneration_) {
       return;
     }
+    this.items = items;
+  }
+
+  private async updateSectionState_(generation: number) {
     const delegate = this.delegate;
+    if (!delegate) {
+      return;
+    }
     const {state} =
         await this.browserProxy_.handler.getSectionState(delegate.getId());
-    if (this.delegate !== delegate) {
+    if (this.delegate !== delegate || generation !== this.loadGeneration_) {
       return;
     }
     // Disable the transition when the expanded state is loaded from prefs.
@@ -296,10 +332,21 @@ export class OrganizerListSectionElement extends CrLitElement implements
         this.delegate.getId(), this.showAll_);
   }
 
+  private recordActionMetrics_(action: OrganizerAction, index: number) {
+    const state = this.isSearching_() ? 'Filtered' : 'Unfiltered';
+    chrome.histograms.recordSmallCount(
+        `Tabs.Organizer.WebUI.IndexOf${action}In${state}List`, index);
+    chrome.histograms.recordMediumTime(
+        `Tabs.Organizer.WebUI.TimeTo${action}In${state}List`,
+        Math.round(performance.now() - this.windowShownTimestamp_));
+  }
+
   protected onItemClick_(e: Event) {
     const target = e.currentTarget as OrganizerListSectionItemElement;
     assert(target.item);
     assert(this.delegate);
+    this.recordActionMetrics_(
+        this.delegate.getItemClickAction(), Number(target.dataset['index']));
     this.delegate.onItemClick(target.item);
     this.browserProxy_.handler.closePanel();
   }
@@ -312,6 +359,10 @@ export class OrganizerListSectionElement extends CrLitElement implements
     assert(e.detail.buttonElement);
     assert(this.delegate);
     const itemElement = e.currentTarget as OrganizerListSectionItemElement;
+    const action = this.delegate.getActionButtonClickAction?.();
+    if (action) {
+      this.recordActionMetrics_(action, Number(itemElement.dataset['index']));
+    }
     await this.delegate.onItemActionButtonClicked?.(
         e.detail.item, e.detail.buttonElement);
     itemElement.resetActionButtonStateIfNeeded();
@@ -354,10 +405,18 @@ export class OrganizerListSectionElement extends CrLitElement implements
   }
 
   override focus() {
+    this.$.header.focus();
+  }
+
+  focusLast(focusMenuButtonIfVisible: boolean = false) {
     if (this.isSearching_()) {
-      this.getVisibleItems()[0]?.focus();
+      this.getVisibleItems().at(-1)?.focusLast();
+      return;
+    }
+    if (focusMenuButtonIfVisible && this.$.header.isMenuButtonVisible()) {
+      this.$.header.focusMenuButton();
     } else {
-      this.$.header.focus();
+      this.focus();
     }
   }
 
@@ -365,7 +424,7 @@ export class OrganizerListSectionElement extends CrLitElement implements
     if (this.hidden) {
       return [];
     }
-    const elements: HTMLElement[] = this.isSearching_() ? [] : [this.$.header];
+    const elements: HTMLElement[] = [this.$.header];
     if (this.isExpanded_()) {
       elements.push(
           ...this.shadowRoot.querySelectorAll<OrganizerListSectionItemElement>(

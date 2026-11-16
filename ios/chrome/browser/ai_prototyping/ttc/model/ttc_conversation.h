@@ -150,6 +150,7 @@ class TtcConversation : public ttc::TtcBackend::Observer {
   void OnUserTurnStateUpdate(ttc::UserTurnStateUpdate update) override;
   void OnToolCall(const ttc::ToolRequest& tool_request,
                   ttc::ToolResponseCallback response_callback) override;
+  void OnToolCallBatch(std::vector<ttc::PendingToolCall> tool_calls) override;
   void OnJournalEvent(const ttc::ServerJournalEvent& journal_event) override;
 
  private:
@@ -157,6 +158,13 @@ class TtcConversation : public ttc::TtcBackend::Observer {
   void HandleStartCaptureResult(bool success,
                                 NSError* error,
                                 uint64_t generation);
+
+  // Handles completion of a capture resume request triggered by
+  // `SetMicMuted(false)`, rolling back to muted on failure instead of reporting
+  // a fatal session error.
+  void HandleResumeCaptureResult(uint64_t generation,
+                                 BOOL success,
+                                 NSError* error);
 
   // Notifies `delegate_` of a conversation error.
   void HandleError(ttc::ErrorCode error);

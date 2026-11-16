@@ -9,13 +9,14 @@
 
 namespace infobars {
 
-BASE_FEATURE(kCentralizedInfoBarFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kCentralizedInfoBarFramework, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE_PARAM(bool,
                    kEnableAll,
                    &kCentralizedInfoBarFramework,
                    false);
 
+// LINT.IfChange(InfoBarMigrationParams)
 BASE_FEATURE_PARAM(bool,
                    kMigratedAlternateNav,
                    &kCentralizedInfoBarFramework,
@@ -34,7 +35,7 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedCollectedCookies,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedDefaultBrowser,
@@ -64,7 +65,7 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedGoogleApiKeys,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedIncognitoConnectability,
@@ -74,7 +75,7 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedInstallerDownloader,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedJsOptimizations,
@@ -89,7 +90,7 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedKnownInterceptionDisclosure,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedLinkCapturing,
@@ -99,13 +100,13 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedPageInfo,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
-BASE_FEATURE_PARAM(bool, kMigratedPdf, &kCentralizedInfoBarFramework, false);
+BASE_FEATURE_PARAM(bool, kMigratedPdf, &kCentralizedInfoBarFramework, true);
 BASE_FEATURE_PARAM(bool,
                    kMigratedObsoleteSystem,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedOSCryptAsyncAvailability,
@@ -115,12 +116,12 @@ BASE_FEATURE_PARAM(bool,
 BASE_FEATURE_PARAM(bool,
                    kMigratedChromeForTesting,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedPinInfoBar,
                    &kCentralizedInfoBarFramework,
-                   false);
+                   true);
 
 BASE_FEATURE_PARAM(bool,
                    kMigratedLocalTestPolicies,
@@ -236,6 +237,7 @@ const base::FeatureParam<bool>* GetInfoBarMigrationParam(
       return nullptr;
   }
 }
+// LINT.ThenChange(//chrome/browser/infobars/infobar_features_unittest.cc:InfoBarMigrationParams)
 
 bool IsInfoBarMigrated(InfoBarDelegate::InfoBarIdentifier infobar_id) {
 #if BUILDFLAG(IS_ANDROID)

@@ -9,9 +9,9 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "base/functional/callback_helpers.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
@@ -22,14 +22,15 @@
 #include "media/base/decoder_buffer.h"
 #include "media/base/decoder_status.h"
 #include "media/base/limits.h"
-#include "media/base/media_switches.h"
 #include "media/base/media_util.h"
 #include "media/base/sample_format.h"
 #include "media/base/test_data_util.h"
 #include "media/ffmpeg/ffmpeg_common.h"
 #include "media/ffmpeg/scoped_av_packet.h"
 #include "media/filters/audio_file_reader.h"
+#include "media/filters/ffmpeg_audio_decoder.h"
 #include "media/filters/in_memory_url_protocol.h"
+#include "media/media_buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -45,9 +46,6 @@ TEST(SymphoniaAudioDecoderTest, ToSymphoniaPacketNullTimestamp) {
 
 TEST(SymphoniaAudioDecoderTest, DecodeTruncatedBufferDoesNotFail) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding}, {});
 
   NullMediaLog media_log;
   auto decoder = std::make_unique<SymphoniaAudioDecoder>(
@@ -79,11 +77,47 @@ TEST(SymphoniaAudioDecoderTest, DecodeTruncatedBufferDoesNotFail) {
   EXPECT_TRUE(eos_future.Get().is_ok());
 }
 
+// FFmpegDemuxer reports kSampleFormatPlanarF32 for PCM codecs it has no
+// decoder for. Fixed-width PCM codecs must still initialize.
+TEST(SymphoniaAudioDecoderTest, FixedWidthPcmIgnoresSampleFormat) {
+  base::test::TaskEnvironment task_environment;
+  NullMediaLog media_log;
+  struct {
+    AudioCodec codec;
+    size_t coded_bytes_per_sample;
+  } const kCases[] = {
+      {AudioCodec::kPCM_S16BE, 2},
+      {AudioCodec::kPCM_S24BE, 3},
+      {AudioCodec::kPCM_ALAW, 1},
+      {AudioCodec::kPCM_MULAW, 1},
+  };
+  constexpr int kFrames = 160;
+  for (const auto& test_case : kCases) {
+    SCOPED_TRACE(GetCodecName(test_case.codec));
+    SymphoniaAudioDecoder decoder(task_environment.GetMainThreadTaskRunner(),
+                                  &media_log);
+    AudioDecoderConfig config(test_case.codec, kSampleFormatPlanarF32,
+                              ChannelLayoutConfig::Mono(), 8000,
+                              EmptyExtraData(), EncryptionScheme::kUnencrypted);
+    base::test::TestFuture<DecoderStatus> init_future;
+    base::test::TestFuture<scoped_refptr<AudioBuffer>> output_future;
+    decoder.Initialize(config, nullptr, init_future.GetCallback(),
+                       output_future.GetRepeatingCallback(), base::DoNothing());
+    ASSERT_TRUE(init_future.Get().is_ok());
+
+    std::vector<uint8_t> data(kFrames * test_case.coded_bytes_per_sample);
+    auto buffer = DecoderBuffer::CopyFrom(data);
+    buffer->set_timestamp(base::TimeDelta());
+    buffer->set_duration(base::Milliseconds(20));
+    base::test::TestFuture<DecoderStatus> decode_future;
+    decoder.Decode(std::move(buffer), decode_future.GetCallback());
+    EXPECT_TRUE(decode_future.Get().is_ok());
+    EXPECT_EQ(kFrames, output_future.Take()->frame_count());
+  }
+}
+
 TEST(SymphoniaAudioDecoderTest, BackToBackDecodeErrorsFail) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding}, {});
 
   NullMediaLog media_log;
   auto decoder = std::make_unique<SymphoniaAudioDecoder>(
@@ -122,7 +156,6 @@ TEST(SymphoniaAudioDecoderTest, BackToBackDecodeErrorsFail) {
 
 TEST(SymphoniaAudioDecoderTest, PlanarF32ZeroCopyAudioBusAlignment) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList features(kSymphoniaPcmDecoding);
 
   NullMediaLog media_log;
   auto decoder = std::make_unique<SymphoniaAudioDecoder>(
@@ -177,9 +210,6 @@ TEST(SymphoniaAudioDecoderTest, PlanarF32ZeroCopyAudioBusAlignment) {
 
 TEST(SymphoniaAudioDecoderTest, DecodeMp3WithBlockTypeMismatchSucceeds) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding}, {});
 
   scoped_refptr<DecoderBuffer> data = ReadTestDataFile("repro-minimal.mp3");
   InMemoryUrlProtocol protocol(*data, false);
@@ -229,9 +259,6 @@ TEST(SymphoniaAudioDecoderTest, DecodeMp3WithBlockTypeMismatchSucceeds) {
 
 TEST(SymphoniaAudioDecoderTest, MidstreamSampleRateAndChannelChange) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding}, {});
 
   NullMediaLog media_log;
   auto decoder = std::make_unique<SymphoniaAudioDecoder>(
@@ -286,9 +313,6 @@ TEST(SymphoniaAudioDecoderTest, MidstreamSampleRateAndChannelChange) {
 
 TEST(SymphoniaAudioDecoderTest, RejectsInvalidDecodedParameters) {
   base::test::TaskEnvironment task_environment;
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding}, {});
 
   NullMediaLog media_log;
   auto decoder = std::make_unique<SymphoniaAudioDecoder>(
@@ -364,5 +388,39 @@ TEST(SymphoniaAudioDecoderTest, IsValidDecodedParametersValidation) {
   EXPECT_FALSE(SymphoniaAudioDecoder::IsValidDecodedParametersForTesting(
       kChannels, kSampleRate, kNumFrames, kUnknownSampleFormat));
 }
+
+#if BUILDFLAG(ENABLE_FFMPEG)
+TEST(SymphoniaAudioDecoderTest, FFmpegAudioDecoderRejectsSymphoniaCodecs) {
+  base::test::TaskEnvironment task_environment;
+  NullMediaLog media_log;
+  FFmpegAudioDecoder ffmpeg_decoder(task_environment.GetMainThreadTaskRunner(),
+                                    &media_log);
+
+  for (AudioCodec codec :
+       {AudioCodec::kFLAC, AudioCodec::kMP3, AudioCodec::kPCM,
+        AudioCodec::kPCM_S16BE, AudioCodec::kPCM_S24BE, AudioCodec::kPCM_ALAW,
+        AudioCodec::kPCM_MULAW, AudioCodec::kVorbis}) {
+    EXPECT_TRUE(SymphoniaAudioDecoder::IsCodecSupported(codec));
+    AudioDecoderConfig config(codec, kSampleFormatS16,
+                              ChannelLayoutConfig::Stereo(), 48000,
+                              EmptyExtraData(), EncryptionScheme::kUnencrypted);
+    base::test::TestFuture<DecoderStatus> init_future;
+    ffmpeg_decoder.Initialize(config, nullptr, init_future.GetCallback(),
+                              base::DoNothing(), base::DoNothing());
+    EXPECT_EQ(init_future.Get().code(),
+              DecoderStatus::Codes::kUnsupportedCodec);
+  }
+
+  AudioDecoderConfig opus_config(
+      AudioCodec::kOpus, kSampleFormatF32, ChannelLayoutConfig::Stereo(), 48000,
+      EmptyExtraData(), EncryptionScheme::kUnencrypted);
+  base::test::TestFuture<DecoderStatus> opus_init_future;
+  ffmpeg_decoder.Initialize(opus_config, nullptr,
+                            opus_init_future.GetCallback(), base::DoNothing(),
+                            base::DoNothing());
+  EXPECT_EQ(opus_init_future.Get().code(),
+            DecoderStatus::Codes::kUnsupportedCodec);
+}
+#endif  // BUILDFLAG(ENABLE_FFMPEG)
 
 }  // namespace media

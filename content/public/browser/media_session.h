@@ -79,6 +79,9 @@ class MediaSession : public media_session::mojom::MediaSession {
   virtual void OnPlayerPaused(MediaSessionPlayerObserver* observer,
                               int player_id) = 0;
 
+  // Called when the position state of the session might have changed.
+  virtual void RebuildAndNotifyMediaPositionChanged() = 0;
+
   // Set the volume multiplier applied during ducking.
   virtual void SetDuckingVolumeMultiplier(double multiplier) = 0;
 
@@ -112,6 +115,9 @@ class MediaSession : public media_session::mojom::MediaSession {
   // Report to all players that information related to automatic picture in
   // picture has changed.
   virtual void ReportAutoPictureInPictureInfoChanged() = 0;
+
+  // Rebuilds and notifies observers if the media session metadata has changed.
+  virtual void RebuildAndNotifyMetadataChanged() = 0;
 
   // media_session.mojom.MediaSession overrides -------------------------------
 

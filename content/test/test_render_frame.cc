@@ -180,8 +180,6 @@ class MockFrameHost : public mojom::FrameHost {
     last_commit_params_ = std::move(params);
   }
 
-  void DidOpenDocumentInputStream(const GURL& url) override {}
-
   void DidCommitDocumentReplacement() override {}
 
   void BeginNavigation(
@@ -204,8 +202,6 @@ class MockFrameHost : public mojom::FrameHost {
 
   void DidChangeName(const std::string& name,
                      const std::string& unique_name) override {}
-
-  void CancelInitialHistoryLoad() override {}
 
   void UpdateEncoding(const std::string& encoding_name) override {}
 

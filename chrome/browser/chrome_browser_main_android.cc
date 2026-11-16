@@ -28,14 +28,18 @@
 #include "components/crash/content/browser/child_exit_observer_android.h"
 #include "components/crash/content/browser/child_process_crash_observer_android.h"
 #include "components/metrics/stability_metrics_helper.h"
+#include "components/webauthn/features.h"
 #include "content/public/browser/android/compositor.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/main_function_params.h"
-#include "device/fido/public/features.h"
 #include "net/base/network_change_notifier.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/resource/resource_bundle_android.h"
 #include "ui/base/ui_base_paths.h"
+
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "chrome/browser/extensions/api/image_writer_private/removable_storage_provider_android.h"
+#endif
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/ChromeBackupWatcher_jni.h"
@@ -99,7 +103,10 @@ void ChromeBrowserMainPartsAndroid::PostProfileInit(Profile* profile,
   // been created. Register non-profile-specific things that use GCM so that no
   // messages can be processed (and dropped) because the handler wasn't
   // installed in time.
-  webauthn::authenticator::RegisterForCloudMessages();
+  if (base::FeatureList::IsEnabled(
+          webauthn::features::kWebAuthnRegisterForCloudMessages)) {
+    webauthn::authenticator::RegisterForCloudMessages();
+  }
 }
 
 int ChromeBrowserMainPartsAndroid::PreEarlyInitialization() {
@@ -110,6 +117,23 @@ int ChromeBrowserMainPartsAndroid::PreEarlyInitialization() {
   CHECK(base::CurrentThread::IsSet());
 
   return ChromeBrowserMainParts::PreEarlyInitialization();
+}
+
+int ChromeBrowserMainPartsAndroid::PreMainMessageLoopRun() {
+  TRACE_EVENT0("startup",
+               "ChromeBrowserMainPartsAndroid::PreMainMessageLoopRun");
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  android_usb_storage_provider_ =
+      std::make_unique<extensions::image_writer::AndroidUsbStorageProvider>();
+#endif
+  return ChromeBrowserMainParts::PreMainMessageLoopRun();
+}
+
+void ChromeBrowserMainPartsAndroid::PostMainMessageLoopRun() {
+  ChromeBrowserMainParts::PostMainMessageLoopRun();
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  android_usb_storage_provider_.reset();
+#endif
 }
 
 void ChromeBrowserMainPartsAndroid::PostBrowserStart() {
@@ -136,8 +160,8 @@ void ChromeBrowserMainPartsAndroid::PostBrowserStart() {
     // `base::Unretained(this)` is safe because `app_status_listener_` is owned
     // by `this` and unregisters the listener upon destruction, ensuring the
     // callback cannot be invoked after `this` is destroyed.
-    app_status_listener_ = base::android::ApplicationStatusListener::New(
-        base::BindRepeating(
+    app_status_listener_ =
+        base::android::ApplicationStatusListener::New(base::BindRepeating(
             &ChromeBrowserMainPartsAndroid::OnApplicationStateChange,
             base::Unretained(this)));
 

@@ -36,18 +36,6 @@ import java.util.Set;
  */
 @NullMarked
 public interface ActorForegroundServiceController {
-    /** Starts the service. */
-    default void startService() {
-        startService("");
-    }
-
-    /**
-     * Starts the service.
-     *
-     * @param glicTriggerMessageId The GLIC trigger message ID associated with the request.
-     */
-    void startService(String glicTriggerMessageId);
-
     /**
      * Starts the service and binds to it.
      *
@@ -66,14 +54,8 @@ public interface ActorForegroundServiceController {
      *
      * @param newNotificationId The ID for the new notification.
      * @param newNotification The notification to display.
-     * @param oldNotificationId The ID of the previous notification, or -1 if none.
-     * @param killOldNotification Whether to remove the old notification.
      */
-    void startOrUpdateForegroundService(
-            int newNotificationId,
-            Notification newNotification,
-            int oldNotificationId,
-            boolean killOldNotification);
+    void startOrUpdateForegroundService(int newNotificationId, Notification newNotification);
 
     /** Proxies the stopActorForegroundService call to the bound service. */
     void stopActorForegroundService(int flags);
@@ -151,14 +133,6 @@ public interface ActorForegroundServiceController {
     }
 
     /**
-     * Returns the placeholder tab ID associated with a given original tab ID if it's currently in a
-     * background session.
-     */
-    default @Nullable Integer getPlaceholderTabIdForTaskTab(int originalTabId) {
-        return null;
-    }
-
-    /**
      * Returns the window holding the tab handed off to background actuation for the given task.
      * Such a tab is detached from every window's tab model, so it cannot be found by tab ID alone.
      *
@@ -178,6 +152,14 @@ public interface ActorForegroundServiceController {
      * @return Created Intent.
      */
     @Nullable Intent createTrustedBringTabToFrontIntent(ActorTask task);
+
+    /**
+     * Creates a trusted Intent to open a new tab on the New Tab Page in Chrome and mark it with
+     * {@link GlicIntentConstants#EXTRA_GLIC_PENDING_ACTOR_TASK}.
+     *
+     * @return Created Intent.
+     */
+    Intent createTrustedPendingActorTaskNewTabIntent();
 
     /**
      * Returns true if there is a visible Chrome activity that has one of the tabs, the given task

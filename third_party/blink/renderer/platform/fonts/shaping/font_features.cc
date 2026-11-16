@@ -50,7 +50,8 @@ void FontFeatureRange::FromFontDescription(
   }
 
   {
-    bool default_is_off = description.TextRendering() == blink::kOptimizeSpeed;
+    bool default_is_off =
+        description.TextRendering() == TextRenderingMode::kOptimizeSpeed;
     bool letter_spacing = description.LetterSpacing() != 0;
     constexpr auto normal = FontDescription::kNormalLigaturesState;
     constexpr auto enabled = FontDescription::kEnabledLigaturesState;
@@ -90,16 +91,16 @@ void FontFeatureRange::FromFontDescription(
   static constexpr FontFeatureRange twid{{{'t', 'w', 'i', 'd'}, 1}};
   static constexpr FontFeatureRange qwid{{{'q', 'w', 'i', 'd'}, 1}};
   switch (description.WidthVariant()) {
-    case kHalfWidth:
+    case FontWidthVariant::kHalf:
       features.push_back(hwid);
       break;
-    case kThirdWidth:
+    case FontWidthVariant::kThird:
       features.push_back(twid);
       break;
-    case kQuarterWidth:
+    case FontWidthVariant::kQuarter:
       features.push_back(qwid);
       break;
-    case kRegularWidth:
+    case FontWidthVariant::kRegular:
       break;
   }
 

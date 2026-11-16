@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/views/passwords/password_change/password_change_toast.h"
 
+#include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
+#include "base/task/single_thread_task_runner.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
@@ -62,12 +65,14 @@ PasswordChangeToast::ToastOptions::ToastOptions(
     const gfx::VectorIcon& icon,
     base::OnceClosure close_callback,
     const std::optional<std::u16string>& action_button_text,
-    base::OnceClosure action_button_closure)
+    base::OnceClosure action_button_closure,
+    base::OnceClosure auto_dismiss_closure)
     : text(text),
       icon(icon),
       action_button_text(action_button_text),
       action_button_closure(std::move(action_button_closure)),
-      close_callback(std::move(close_callback)) {}
+      close_callback(std::move(close_callback)),
+      auto_dismiss_closure(std::move(auto_dismiss_closure)) {}
 
 PasswordChangeToast::ToastOptions::~ToastOptions() = default;
 PasswordChangeToast::ToastOptions::ToastOptions(
@@ -124,8 +129,8 @@ PasswordChangeToast::PasswordChangeToast(ToastOptions toast_configuration) {
                           base::Unretained(this)),
       toast_configuration.action_button_text.value_or(std::u16string())));
   action_button_->SetEnabledTextColors(ui::kColorToastButton);
-  action_button_->SetBgColorIdOverride(ui::kColorToastBackgroundProminent);
-  action_button_->SetStrokeColorIdOverride(ui::kColorToastButton);
+  action_button_->SetBgColorOverride(ui::kColorToastBackgroundProminent);
+  action_button_->SetStrokeColorOverride(ui::kColorToastButton);
   action_button_->SetStyle(ui::ButtonStyle::kProminent);
   action_button_->SetProperty(views::kElementIdentifierKey,
                               kPasswordChangeActionButton);
@@ -164,6 +169,25 @@ PasswordChangeToast::PasswordChangeToast(ToastOptions toast_configuration) {
 PasswordChangeToast::~PasswordChangeToast() = default;
 
 void PasswordChangeToast::UpdateLayout(ToastOptions configuration) {
+  // Store callbacks and update the auto-dismiss timer before mutating child
+  // views. Child view updates and `AnnounceText()` below fire synchronous
+  // accessibility events; an assistive technology handling them (e.g. via the
+  // Windows UIA STA message pump) can re-entrantly close the hosting tab,
+  // destroying the toast widget and `this`.
+  action_button_closure_ = std::move(configuration.action_button_closure);
+  close_callback_ = std::move(configuration.close_callback);
+  auto_dismiss_closure_ = std::move(configuration.auto_dismiss_closure);
+
+  weak_ptr_factory_.InvalidateWeakPtrs();
+  if (auto_dismiss_closure_) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&PasswordChangeToast::OnAutoDismissed,
+                       weak_ptr_factory_.GetWeakPtr()),
+        kAutoDismissDelay);
+  }
+  base::WeakPtr<PasswordChangeToast> weak_this = weak_ptr_factory_.GetWeakPtr();
+
   ChromeLayoutProvider* layout_provider = ChromeLayoutProvider::Get();
   icon_view_->SetVisible(configuration.icon.has_value());
   if (configuration.icon.has_value()) {
@@ -173,10 +197,21 @@ void PasswordChangeToast::UpdateLayout(ToastOptions configuration) {
   }
   throbber_->SetVisible(!configuration.icon.has_value());
 
+  // `Label::SetText()` updates the accessible name and synchronously fires
+  // `ax::mojom::Event::kTextChanged` (`::UiaRaiseAutomationEvent()`), which can
+  // pump the Windows UIA STA and close the tab, destroying `this`.
   label_->SetText(configuration.text);
+  if (!weak_this) {
+    return;
+  }
 
   if (configuration.action_button_text.has_value()) {
+    // `LabelButton::SetText()` synchronously fires `kTextChanged` via
+    // `ViewAccessibility::SetName()`, which can re-entrantly destroy `this`.
     action_button_->SetText(configuration.action_button_text.value());
+    if (!weak_this) {
+      return;
+    }
 
     // Only set kAlert a11y role when text is not empty, otherwise it triggers
     // a DCHECK in views::RunAccessibilityPaintChecks().
@@ -184,14 +219,18 @@ void PasswordChangeToast::UpdateLayout(ToastOptions configuration) {
     action_button_->SetVisible(true);
   } else {
     action_button_->GetViewAccessibility().SetRole(ax::mojom::Role::kButton);
+    // Hiding `action_button_` while focused calls `AdvanceFocusIfNecessary()`,
+    // synchronously firing `ax::mojom::Event::kFocus` via UIA.
     action_button_->SetVisible(false);
+    if (!weak_this) {
+      return;
+    }
   }
 
   layout_manager_->SetInteriorMargin(CalculateInteriorMargin());
+  // Fires an un-queued `ax::mojom::Event::kAlert` (`UIA_SystemAlertEventId`),
+  // which may re-entrantly destroy `this`; nothing below may touch members.
   GetViewAccessibility().AnnounceText(configuration.text);
-
-  action_button_closure_ = std::move(configuration.action_button_closure);
-  close_callback_ = std::move(configuration.close_callback);
 }
 
 gfx::Insets PasswordChangeToast::CalculateInteriorMargin() {
@@ -223,6 +262,10 @@ void PasswordChangeToast::OnActionButtonClicked() {
 
 void PasswordChangeToast::OnCloseButtonClicked() {
   std::move(close_callback_).Run();
+}
+
+void PasswordChangeToast::OnAutoDismissed() {
+  std::move(auto_dismiss_closure_).Run();
 }
 
 BEGIN_METADATA(PasswordChangeToast)

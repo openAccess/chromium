@@ -1353,6 +1353,98 @@ bool LocalFrameView::RecordNaturalDimensions() {
   return true;
 }
 
+bool LocalFrameView::ShouldSkipResponsiveIframeResize() const {
+  // Detached subframes (e.g., `display: none` same-origin `<iframe>`s) are not
+  // render-throttled, but have no `LayoutEmbeddedContent` in the parent and a
+  // `0x0` layout size. Skip them until `AttachToLayout()` so they do not lock
+  // a `0x0` ICB size or record natural dimensions measured at `0px` inline
+  // size.
+  if (!IsAttached() && !frame_->IsLocalRoot()) {
+    return true;
+  }
+  // Use `CanThrottleRendering()` rather than `ShouldThrottleRendering()` so
+  // callers outside `AllowThrottlingScope` (such as
+  // `ScheduleResponsiveIframeResize()` and `AttachToLayout()`) also recognize
+  // throttled frames.
+  return CanThrottleRendering() || LocalFrameTreeForcesThrottling();
+}
+
+void LocalFrameView::ScheduleResponsiveIframeResize() {
+  needs_responsive_iframe_resize_ = true;
+  // When detached or throttled, `AttachToLayout()`, `BeginLifecycleUpdates()`,
+  // or `RenderThrottlingStatusChanged()` schedules a visual update when the
+  // frame becomes renderable.
+  if (ShouldSkipResponsiveIframeResize()) {
+    return;
+  }
+  if (Page* page = GetPage()) {
+    page->Animator().ScheduleVisualUpdate(
+        frame_, cc::BeginMainFrameReason::kLayoutInvalidation);
+  }
+}
+
+bool LocalFrameView::HasPendingResponsiveIframeResize() {
+  if (ShouldSkipResponsiveIframeResize()) {
+    return false;
+  }
+  if (needs_responsive_iframe_resize_) {
+    return true;
+  }
+  bool has_pending = false;
+  ForAllChildLocalFrameViews([&has_pending](LocalFrameView& child) {
+    if (!has_pending) {
+      has_pending = child.HasPendingResponsiveIframeResize();
+    }
+  });
+  return has_pending;
+}
+
+void LocalFrameView::UpdateResponsiveIframeSizesIfNeeded() {
+  if (ShouldSkipResponsiveIframeResize()) {
+    return;
+  }
+
+  HeapVector<Member<LocalFrameView>> pending_children;
+  ForAllChildLocalFrameViews([&pending_children](LocalFrameView& child) {
+    if (child.HasPendingResponsiveIframeResize()) {
+      pending_children.push_back(&child);
+    }
+  });
+
+  if (!needs_responsive_iframe_resize_ && pending_children.empty()) {
+    return;
+  }
+
+  std::optional<NaturalSizeLayoutScope> natural_size_scope;
+  if (needs_responsive_iframe_resize_) {
+    needs_responsive_iframe_resize_ = false;
+    Document* document = frame_->GetDocument();
+    if (document && document->IsActive() && document->IsHTMLDocument() &&
+        document->HasResponsiveEmbeddedSizing() && frame_->Owner()) {
+      natural_size_scope.emplace(this);
+    }
+  }
+
+  if (!pending_children.empty() || natural_size_scope) {
+    UpdateStyleAndLayout();
+  }
+
+  for (LocalFrameView* child_view : pending_children) {
+    child_view->UpdateResponsiveIframeSizesIfNeeded();
+  }
+
+  if (natural_size_scope) {
+    // Recursing into nested responsive child frames above may have updated
+    // their natural sizes and dirtied `LayoutIFrame`s in this document.
+    if (!pending_children.empty()) {
+      UpdateStyleAndLayout();
+    }
+    if (RecordNaturalDimensions()) {
+      frame_->Owner()->NaturalSizingInfoChanged();
+    }
+  }
+}
+
 void LocalFrameView::RequestSameDocumentNavigationPresentationTime(
     base::OnceCallback<void(const viz::FrameTimingDetails&)> callback) {
   GetFrame()
@@ -1396,6 +1488,7 @@ std::optional<NaturalSizingInfo> LocalFrameView::GetNaturalDimensions() const {
 
 void LocalFrameView::ClearNaturalDimensions() {
   natural_size_.reset();
+  needs_responsive_iframe_resize_ = false;
 }
 
 void LocalFrameView::UpdateGeometry() {
@@ -2262,7 +2355,7 @@ bool LocalFrameView::UpdateAllLifecyclePhases(DocumentUpdateReason reason) {
     // kPrePaintClean.
     ForAllThrottledLocalFrameViews([](LocalFrameView& frame_view) {
       DCHECK(frame_view.intersection_observation_state_ != kRequired ||
-             frame_view.IsDisplayLocked() ||
+             frame_view.IsDisplayLockThrottled() ||
              frame_view.Lifecycle().GetState() >=
                  DocumentLifecycle::kPrePaintClean);
     });
@@ -2288,6 +2381,15 @@ bool LocalFrameView::UpdateAllLifecyclePhasesExceptPaint(
     DocumentUpdateReason reason) {
   return GetFrame().LocalFrameRoot().View()->UpdateLifecyclePhases(
       DocumentLifecycle::kPrePaintClean, reason);
+}
+
+bool LocalFrameView::UpdateLifecyclePhasesForHitTest(
+    const HitTestRequest& request) {
+  base::AutoReset<bool> throttle_child_frames(
+      &throttle_child_frames_,
+      frame_->IsLocalRoot() && !request.AllowsChildFrameContent() &&
+          RuntimeEnabledFeatures::HitTestSkipChildFrameLifecycleEnabled());
+  return UpdateAllLifecyclePhasesExceptPaint(DocumentUpdateReason::kHitTest);
 }
 
 void LocalFrameView::DryRunPaintingForPrerender() {
@@ -2422,16 +2524,20 @@ bool LocalFrameView::LocalFrameTreeAllowsThrottling() const {
 }
 
 bool LocalFrameView::LocalFrameTreeForcesThrottling() const {
-  if (LocalFrameView* root_view = GetFrame().LocalFrameRoot().View())
-    return root_view->force_throttling_;
+  if (LocalFrameView* root_view = GetFrame().LocalFrameRoot().View()) {
+    return root_view->force_throttling_ ||
+           (root_view->throttle_child_frames_ && root_view != this);
+  }
   return false;
 }
 
 void LocalFrameView::PrepareForLifecycleUpdateRecursive() {
   // We will run lifecycle phases for LocalFrameViews that are unthrottled; or
-  // are throttled but require IntersectionObserver steps to run.
+  // are throttled but require IntersectionObserver steps to run, unless the
+  // throttling is forced (see ShouldThrottleRendering()).
   if (!ShouldThrottleRendering() ||
-      intersection_observation_state_ == kRequired) {
+      (intersection_observation_state_ == kRequired &&
+       !LocalFrameTreeForcesThrottling())) {
     Lifecycle().EnsureStateAtMost(DocumentLifecycle::kVisualUpdatePending);
     ForAllChildLocalFrameViews([](LocalFrameView& child) {
       child.PrepareForLifecycleUpdateRecursive();
@@ -2972,7 +3078,19 @@ bool LocalFrameView::RunStyleAndLayoutLifecyclePhases(
     DocumentLifecycle::LifecycleState target_state) {
   TRACE_EVENT0("blink,benchmark",
                "LocalFrameView::RunStyleAndLayoutLifecyclePhases");
+  const bool should_update_responsive_iframes =
+      RuntimeEnabledFeatures::ResponsiveIframesAsyncResizeEnabled() &&
+      target_state == DocumentLifecycle::kPaintClean;
+  if (should_update_responsive_iframes) {
+    UpdateResponsiveIframeSizesIfNeeded();
+  }
   UpdateStyleAndLayoutIfNeededRecursive();
+  if (should_update_responsive_iframes && HasPendingResponsiveIframeResize()) {
+    // Style and layout above may have newly attached (e.g., `display: none` ->
+    // visible) or unthrottled a subframe with a pending responsive resize.
+    UpdateResponsiveIframeSizesIfNeeded();
+    UpdateStyleAndLayoutIfNeededRecursive();
+  }
   DCHECK(ShouldThrottleRendering() ||
          Lifecycle().GetState() >= DocumentLifecycle::kLayoutClean);
   if (Lifecycle().GetState() < DocumentLifecycle::kLayoutClean)
@@ -4204,7 +4322,14 @@ void LocalFrameView::AttachToLayout() {
     SetParentVisible(true);
   UpdateRenderThrottlingStatus(IsHiddenForThrottling(),
                                parent_view->CanThrottleRendering(),
-                               IsDisplayLocked());
+                               IsDisplayLockThrottled());
+  if (RuntimeEnabledFeatures::ResponsiveIframesAsyncResizeEnabled() &&
+      HasPendingResponsiveIframeResize()) {
+    if (Page* page = GetPage()) {
+      page->Animator().ScheduleVisualUpdate(
+          frame_, cc::BeginMainFrameReason::kLayoutInvalidation);
+    }
+  }
 
   // This is to handle a special case: a display:none iframe may have a fully
   // populated layout tree if it contains an <embed>. In that case, we must
@@ -4238,8 +4363,8 @@ void LocalFrameView::DetachFromLayout() {
 void LocalFrameView::AddPlugin(WebPluginContainerImpl* plugin) {
   DCHECK(!plugins_.Contains(plugin));
   plugins_.insert(plugin);
-  plugin->UpdateRenderThrottlingStatus(IsHiddenForThrottling(),
-                                       IsSubtreeThrottled(), IsDisplayLocked());
+  plugin->UpdateRenderThrottlingStatus(
+      IsHiddenForThrottling(), IsSubtreeThrottled(), IsDisplayLockThrottled());
 }
 
 void LocalFrameView::RemovePlugin(WebPluginContainerImpl* plugin) {
@@ -4974,20 +5099,41 @@ void LocalFrameView::CrossOriginToNearestMainFrameChanged() {
   // If any of these conditions hold, then a change in cross-origin status does
   // not affect throttling.
   if (lifecycle_updates_throttled_ || IsSubtreeThrottled() ||
-      IsDisplayLocked() || !IsHiddenForThrottling()) {
+      IsDisplayLockThrottled() || !IsHiddenForThrottling()) {
     return;
   }
   RenderThrottlingStatusChanged();
   // Immediately propagate changes to children.
   UpdateRenderThrottlingStatus(IsHiddenForThrottling(), IsSubtreeThrottled(),
-                               IsDisplayLocked(), true);
+                               IsDisplayLockThrottled(), true);
 }
 
 void LocalFrameView::CrossOriginToParentFrameChanged() {
-  if (LayoutView* layout_view = GetLayoutView()) {
-    if (PaintLayer* root_layer = layout_view->Layer())
-      root_layer->SetNeedsCompositingInputsUpdate();
-  }
+  auto invalidate_subtree = [](auto& self, LocalFrameView& view) -> void {
+    if (auto* owner = view.GetFrame().OwnerLayoutObject()) {
+      if (PaintLayer* owner_layer = owner->Layer()) {
+        owner_layer->SetNeedsRepaint();
+      }
+      if (LocalFrameView* owner_view = owner->GetFrameView()) {
+        owner_view->ScheduleVisualUpdateForPaintInvalidationIfNeeded();
+      }
+    }
+    if (LayoutView* layout_view = view.GetLayoutView()) {
+      layout_view->AddSubtreePaintPropertyUpdateReason(
+          SubtreePaintPropertyUpdateReason::kPreviouslySkipped);
+      layout_view->InvalidatePaintForViewAndDescendants();
+      if (PaintLayer* root_layer = layout_view->Layer()) {
+        root_layer->SetNeedsCompositingInputsUpdate();
+      }
+      view.ScheduleVisualUpdateForPaintInvalidationIfNeeded();
+    }
+    view.ForAllChildLocalFrameViews([&self](LocalFrameView& child_view) {
+      if (HasSameOriginLocalParentFrame(child_view.GetFrame())) {
+        self(self, child_view);
+      }
+    });
+  };
+  invalidate_subtree(invalidate_subtree, *this);
 }
 
 void LocalFrameView::SetViewportIntersection(
@@ -5192,7 +5338,8 @@ bool LocalFrameView::ShouldThrottleRendering() const {
   // geometry. So there is no point in suppressing throttling here.
   auto* local_frame_root_view = GetFrame().LocalFrameRoot().View();
   if (local_frame_root_view->IsUpdatingLifecycle() &&
-      intersection_observation_state_ == kRequired && !IsDisplayLocked()) {
+      intersection_observation_state_ == kRequired &&
+      !IsDisplayLockThrottled()) {
     return Lifecycle().GetState() >= DocumentLifecycle::kPrePaintClean;
   }
 
@@ -5206,7 +5353,7 @@ bool LocalFrameView::ShouldThrottleRenderingForTest() const {
 
 bool LocalFrameView::CanThrottleRendering() const {
   if (lifecycle_updates_throttled_ || IsSubtreeThrottled() ||
-      IsDisplayLocked() || throttled_for_view_transition_) {
+      IsDisplayLockThrottled() || throttled_for_view_transition_) {
     return true;
   }
   // We only throttle hidden cross-origin frames. This is to avoid a situation
@@ -5225,7 +5372,7 @@ void LocalFrameView::UpdateRenderThrottlingStatus(bool hidden_for_throttling,
   bool was_throttled = CanThrottleRendering();
   bool was_hidden = IsHiddenForThrottling();
   bool was_subtree_throttled = IsSubtreeThrottled();
-  bool was_display_locked = IsDisplayLocked();
+  bool was_display_locked = IsDisplayLockThrottled();
 
   FrameView::UpdateRenderThrottlingStatus(
       hidden_for_throttling, subtree_throttled, display_locked, recurse);
@@ -5235,10 +5382,11 @@ void LocalFrameView::UpdateRenderThrottlingStatus(bool hidden_for_throttling,
 
   if (was_hidden != IsHiddenForThrottling() ||
       was_subtree_throttled != IsSubtreeThrottled() ||
-      was_display_locked != IsDisplayLocked()) {
+      was_display_locked != IsDisplayLockThrottled()) {
     for (const auto& plugin : plugins_) {
-      plugin->UpdateRenderThrottlingStatus(
-          IsHiddenForThrottling(), IsSubtreeThrottled(), IsDisplayLocked());
+      plugin->UpdateRenderThrottlingStatus(IsHiddenForThrottling(),
+                                           IsSubtreeThrottled(),
+                                           IsDisplayLockThrottled());
     }
   }
 }

@@ -3,15 +3,16 @@
 // found in the LICENSE file.
 
 import 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
-import 'chrome://new-tab-page/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
 
-import {createAutocompleteResultForTesting, createSearchMatchForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {SearchboxBrowserProxy} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
 import type {SearchboxDropdownElement} from 'chrome://resources/cr_components/searchbox/searchbox_dropdown.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {$$, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
-import {createSuggestTemplateInfo} from './searchbox_test_utils.js';
+import {createAutocompleteResult, createSearchMatch, createSuggestTemplateInfo} from './searchbox_test_utils.js';
+import {TestSearchboxBrowserProxy} from './test_searchbox_browser_proxy.js';
 
 // TODO(crbug.com/455876602): Move dropdown-specific tests in searchbox_test.ts
 //  into this file.
@@ -21,6 +22,7 @@ suite('SearchboxDropdown', () => {
   setup(() => {
     loadTimeData.overrideValues({askGSuggestionSidePanelDescription: false});
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    SearchboxBrowserProxy.setInstance(new TestSearchboxBrowserProxy());
     dropdown = document.createElement('cr-searchbox-dropdown');
     document.body.appendChild(dropdown);
   });
@@ -28,17 +30,17 @@ suite('SearchboxDropdown', () => {
   test('hides matches that have `isHidden` field set to true', async () => {
     // Arrange.
     const matches = [
-      createSearchMatchForTesting({
+      createSearchMatch({
         suggestTemplate: createSuggestTemplateInfo({primaryText: 'bar'}),
         isHidden: true,
       }),
-      createSearchMatchForTesting({
+      createSearchMatch({
         suggestTemplate: createSuggestTemplateInfo({primaryText: 'foo'}),
       }),
     ];
 
     // Act.
-    dropdown.result = createAutocompleteResultForTesting({matches});
+    dropdown.result = createAutocompleteResult({matches});
     await microtasksFinished();
 
     // Assert.
@@ -100,15 +102,15 @@ suite('SearchboxDropdown', () => {
 
     const withDescription = (secondaryText: string) =>
         createSuggestTemplateInfo({secondaryText});
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       matches: [
-        createSearchMatchForTesting(
+        createSearchMatch(
             {suggestTemplate: withDescription('Opens in side panel')}),
-        createSearchMatchForTesting({
+        createSearchMatch({
           showSecondaryTextOnlyOnSelection: true,
           suggestTemplate: withDescription('Opens in side panel'),
         }),
-        createSearchMatchForTesting({
+        createSearchMatch({
           showSecondaryTextOnlyOnSelection: true,
           suggestTemplate: withDescription('Ask Google about this page'),
         }),

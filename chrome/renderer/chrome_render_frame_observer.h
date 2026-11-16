@@ -24,6 +24,7 @@
 #include "pdf/buildflags.h"
 #include "services/service_manager/public/cpp/binder_registry.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/blink/public/web/web_local_frame_observer.h"
 
 class SkBitmap;
 
@@ -59,6 +60,7 @@ class WebCacheImpl;
 // This class holds the Chrome specific parts of RenderFrame, and has the same
 // lifetime.
 class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+                                  public blink::WebLocalFrameObserver,
                                   public chrome::mojom::ChromeRenderFrame {
  public:
   ChromeRenderFrameObserver(content::RenderFrame* render_frame,
@@ -96,8 +98,6 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
       mojo::ScopedInterfaceEndpointHandle* handle) override;
   void ReadyToCommitNavigation(
       blink::WebDocumentLoader* document_loader) override;
-  void DidSetPageLifecycleState(
-      blink::BFCacheStateChange bfcache_change) override;
   void DidFinishLoad() override;
   void DidCreateNewDocument() override;
   void DidCommitProvisionalLoad(ui::PageTransition transition) override;
@@ -107,6 +107,11 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
   void DidMeaningfulLayout(blink::WebMeaningfulLayout layout_type) override;
   void OnDestruct() override;
   void WillDetach(blink::DetachReason detach_reason) override;
+
+  // blink::WebLocalFrameObserver:
+  void OnFrameDetached() override;
+  void DidSetPageLifecycleState(
+      blink::BFCacheStateChange bfcache_change) override;
 
   // chrome::mojom::ChromeRenderFrame:
   void SetWindowFeatures(

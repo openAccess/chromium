@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/tab_modal_confirm_dialog_views.h"
@@ -49,9 +50,14 @@
 #include "ui/views/test/widget_activation_waiter.h"
 
 #if BUILDFLAG(IS_MAC)
+#include "base/test/run_until.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands_mac.h"
+#include "chrome/browser/ui/omnibox/omnibox_view.h"
+#include "chrome/browser/ui/view_ids.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
 #endif
 
@@ -218,6 +224,46 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
 
   EXPECT_TRUE(browser_view()->IsFullscreen());
 }
+
+// Test that a paste command executed for a browser window that is not active is
+// not delivered to another, active browser window.
+IN_PROC_BROWSER_TEST_F(BrowserViewTest, PasteInInactiveWindowIsDropped) {
+  if (features::IsWebUILocationBarEnabled()) {
+    GTEST_SKIP() << "Not applicable when WebUILocationBar is enabled.";
+  }
+  BrowserWindowInterface* inactive_browser = browser();
+  BrowserWindowInterface* active_browser =
+      CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(active_browser));
+  ASSERT_FALSE(
+      BrowserView::GetBrowserViewForBrowser(inactive_browser)->IsActive());
+
+  chrome::FocusLocationBar(active_browser);
+  ASSERT_TRUE(ui_test_utils::IsViewFocused(active_browser, VIEW_ID_OMNIBOX));
+  OmniboxView* omnibox = BrowserView::GetBrowserViewForBrowser(active_browser)
+                             ->GetLocationBar()
+                             ->GetOmniboxView();
+  const std::u16string original_text = omnibox->GetText();
+
+  constexpr char16_t kClipboardText[] = u"pasted";
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kCopyPaste);
+    writer.WriteText(kClipboardText);
+  }
+
+  // Paste for the inactive window first. This must be dropped rather than
+  // forwarded to the omnibox of the active window.
+  chrome::ExecuteCommand(inactive_browser, IDC_PASTE);
+  // Paste for the active window, which should be delivered to its omnibox.
+  EXPECT_TRUE(chrome::ExecuteCommand(active_browser, IDC_PASTE));
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return omnibox->GetText() != original_text; }));
+
+  // If the first paste had been forwarded, the text would have been pasted
+  // twice.
+  EXPECT_EQ(kClipboardText, omnibox->GetText());
+}
 #endif  // BUILDFLAG(IS_MAC)
 
 // Test whether the top view including toolbar and tab strip shows up or hides
@@ -316,7 +362,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, MAYBE_BrowserFullscreenShowTopView) {
   EXPECT_EQ(top_view_in_browser_fullscreen, browser_view->GetTabStripVisible());
   // This makes sure that the layout was updated accordingly.
   EXPECT_EQ(top_view_in_browser_fullscreen,
-            browser_view->horizontal_tab_strip_for_testing()->GetVisible());
+            browser_view->tab_strip_view()->GetVisible());
   EXPECT_EQ(top_view_in_browser_fullscreen,
             chrome::IsCommandEnabled(browser(), IDC_SHOW_BOOKMARK_BAR));
 

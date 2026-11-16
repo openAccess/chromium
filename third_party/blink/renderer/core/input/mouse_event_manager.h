@@ -5,6 +5,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_INPUT_MOUSE_EVENT_MANAGER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_INPUT_MOUSE_EVENT_MANAGER_H_
 
+#include <optional>
+
 #include "base/time/time.h"
 #include "third_party/blink/public/common/input/pointer_id.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
@@ -95,9 +97,9 @@ class CORE_EXPORT MouseEventManager final
   void NodeWillBeRemoved(Node&);
   void HandlePseudoElementRemoval(PseudoElement&);
 
-  void SendBoundaryEvents(EventTarget* exited_target,
+  void SendBoundaryEvents(Element* exited_target,
                           bool original_exited_target_removed,
-                          EventTarget* entered_target,
+                          Element* entered_target,
                           const WebMouseEvent&);
 
   void SetElementUnderMouse(Element*,
@@ -130,7 +132,8 @@ class CORE_EXPORT MouseEventManager final
   // drag heuristics.
   void ClearDragHeuristicState();
 
-  void DragSourceEndedAt(const WebMouseEvent&, ui::mojom::blink::DragOperation);
+  void DragSourceEndedAt(const std::optional<WebMouseEvent>&,
+                         ui::mojom::blink::DragOperation);
 
   void UpdateSelectionForMouseDrag();
 

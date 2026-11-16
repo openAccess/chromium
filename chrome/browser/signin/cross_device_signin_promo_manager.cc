@@ -373,42 +373,69 @@ class QrBubbleState : public base::SupportsUserData::Data {
   base::WeakPtrFactory<QrBubbleState> active_bubble_weak_factory_{this};
 };
 
+// Returns whether `entry_point` is enabled by its feature flags.
 bool IsFeatureEnabledForEntryPoint(
     CrossDeviceSigninPromoEntryPoint entry_point) {
   if (!base::FeatureList::IsEnabled(switches::kCrossDeviceSigninFromDesktop)) {
     return false;
   }
-  if (entry_point == CrossDeviceSigninPromoEntryPoint::kWhatsNewPage &&
-      (!base::FeatureList::IsEnabled(
-           switches::kCrossDeviceSigninFromDesktopFollowup) ||
-       !switches::kCrossDeviceSigninFromDesktopWhatsNew.Get())) {
-    return false;
+  switch (entry_point) {
+    case CrossDeviceSigninPromoEntryPoint::kProfileMenu:
+    case CrossDeviceSigninPromoEntryPoint::kHistoryPage:
+      return true;
+    case CrossDeviceSigninPromoEntryPoint::kWhatsNewPage:
+      return base::FeatureList::IsEnabled(
+                 switches::kCrossDeviceSigninFromDesktopFollowup) &&
+             switches::kCrossDeviceSigninFromDesktopWhatsNew.Get();
+    case CrossDeviceSigninPromoEntryPoint::kSendTabToSelf:
+    case CrossDeviceSigninPromoEntryPoint::kForeignTabs:
+      return base::FeatureList::IsEnabled(
+          switches::kCrossDeviceSigninFromDesktopFollowup);
   }
-  if (entry_point == CrossDeviceSigninPromoEntryPoint::kForeignTabs &&
-      !base::FeatureList::IsEnabled(
-          switches::kCrossDeviceSigninFromDesktopFollowup)) {
-    return false;
+  NOTREACHED();
+}
+
+// Returns whether the promo at `entry_point` is blocked when the account
+// already has a phone.
+bool ShouldCheckForMobileDevice(CrossDeviceSigninPromoEntryPoint entry_point) {
+  switch (entry_point) {
+    case CrossDeviceSigninPromoEntryPoint::kProfileMenu:
+    case CrossDeviceSigninPromoEntryPoint::kHistoryPage:
+    case CrossDeviceSigninPromoEntryPoint::kForeignTabs:
+      return true;
+    case CrossDeviceSigninPromoEntryPoint::kSendTabToSelf:
+      // Send Tab To Self is only triggered when there is no valid target
+      // device, which already accounts for devices: a phone can be listed in
+      // the device info without being a valid target (e.g. inactive), and the
+      // promo must still be offered in that case.
+      return false;
+    case CrossDeviceSigninPromoEntryPoint::kWhatsNewPage:
+      // The What's New page always shows a QR code when the user asks for one,
+      // so signed-in users get the account-bound one even if they already have
+      // a phone (e.g. to set up a new one).
+      return false;
   }
-  return true;
+  NOTREACHED();
 }
 
 // Checks the user's state for the promo at `entry_point`, ignoring the
 // frequency caps: returns `kCanShow` if signed in with no error, without a
-// synced mobile device and with the required data types enabled, or the reason
-// it is not. Records no metrics.
+// synced mobile device (where applicable) and with the required data types
+// enabled, or the reason it is not. Records no metrics.
 CrossDeviceSigninPromoShouldShowResult CheckPromoPrerequisites(
     CrossDeviceSigninPromoEntryPoint entry_point,
     Profile* profile) {
-  // 1. General eligibility: Signed in with no errors, and (except for What's
-  // New) has NO mobile device.
+  // Non-regular (incognito, guest, system) profiles can never see the promo.
+  // Report them separately so they don't inflate `kNotSignedIn`.
+  if (!profile->IsRegularProfile()) {
+    return CrossDeviceSigninPromoShouldShowResult::kProfileTypeNotEligible;
+  }
+  // 1. General eligibility: Signed in with no errors, and (where applicable)
+  // has NO mobile device.
   if (!IsUserSignedInWithNoError(profile)) {
     return CrossDeviceSigninPromoShouldShowResult::kNotSignedIn;
   }
-  // The What's New page always shows a QR code when the user asks for one, so
-  // signed-in users get the account-bound one even if they already have a
-  // phone (e.g. to set up a new one).
-  if (entry_point != CrossDeviceSigninPromoEntryPoint::kWhatsNewPage &&
-      HasMobileDevice(profile)) {
+  if (ShouldCheckForMobileDevice(entry_point) && HasMobileDevice(profile)) {
     return CrossDeviceSigninPromoShouldShowResult::kHasMobileDevice;
   }
 
@@ -439,7 +466,14 @@ CrossDeviceSigninPromoShouldShowResult CheckPromoPrerequisites(
 bool ShouldStartShowingCrossDeviceSigninPromo(
     CrossDeviceSigninPromoEntryPoint entry_point,
     Profile* profile) {
-  if (!IsFeatureEnabledForEntryPoint(entry_point)) {
+  // The result is recorded even if the entry point is disabled, so that study
+  // arms can be compared on the same trigger. Evaluating it has no side
+  // effects.
+  const bool is_entry_point_enabled =
+      IsFeatureEnabledForEntryPoint(entry_point);
+  if (!is_entry_point_enabled &&
+      !base::FeatureList::IsEnabled(
+          switches::kCrossDeviceSigninPromoEligibilityLogging)) {
     return false;
   }
 
@@ -454,7 +488,8 @@ bool ShouldStartShowingCrossDeviceSigninPromo(
   }
 
   RecordShouldShowResult(entry_point, result);
-  return result == CrossDeviceSigninPromoShouldShowResult::kCanShow;
+  return is_entry_point_enabled &&
+         result == CrossDeviceSigninPromoShouldShowResult::kCanShow;
 }
 
 bool ShouldKeepShowingCrossDeviceSigninPromo(
@@ -559,4 +594,9 @@ RegisterCrossDeviceSigninPromoBubbleStateCallback(
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   CHECK(profile);
   return QrBubbleState::Get(profile)->AddObserver(std::move(callback));
+}
+
+std::string_view GetEntryPointHistogramSuffixForTesting(
+    CrossDeviceSigninPromoEntryPoint entry_point) {
+  return GetEntryPointHistogramSuffix(entry_point);
 }

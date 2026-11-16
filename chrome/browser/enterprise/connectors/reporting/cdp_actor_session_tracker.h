@@ -8,14 +8,15 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/process/process_handle.h"
 #include "base/sequence_checker.h"
+#include "base/time/time.h"
 #include "components/enterprise/common/proto/synced/browser_events.pb.h"
 #include "components/enterprise/connectors/core/process_extractor.h"
 #include "net/base/ip_endpoint.h"
@@ -32,11 +33,10 @@ class WebContents;
 
 namespace enterprise_connectors {
 
-// Tracks DevTools session attachments, first CDP command dispatches, and
-// detachments across the browser, owns serialized background OS process tree
-// extractions with bounded queue shedding, caches resolved `ProcessTree`s for
-// Pipe and WebSocket connections, and updates per-tab `TabCdpActorTracker`
-// buffers.
+// Tracks DevTools session attachments, CDP command dispatches, and detachments
+// across the browser, owns serialized background OS process tree extractions
+// with bounded queue shedding, caches resolved `ProcessTree`s for Pipe and
+// WebSocket connections, and updates per-tab `TabCdpActorTracker` buffers.
 //
 // Instances are sequence-affine (`SEQUENCE_CHECKER`) and must be constructed,
 // called, and destroyed on the same sequence (the browser UI thread).
@@ -50,12 +50,21 @@ class CdpActorSessionTracker {
   using WebSocketExtractorCallback =
       base::RepeatingCallback<ProcessTree(const net::IPEndPoint&)>;
 
+  // Categories of Chrome DevTools Protocol (CDP) sessions tracked by
+  // `CdpActorSessionTracker` and reported in
+  // `Enterprise.CdpAttribution.UploadSecurityEvent.Category`.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(CdpSessionCategory)
   enum class SessionCategory {
-    kIgnored,
-    kDevToolsUi,
-    kExternalPipe,
-    kExternalWebSocket,
+    kIgnored = 0,
+    kDevToolsUi = 1,
+    kExternalPipe = 2,
+    kExternalWebSocket = 3,
+    kMaxValue = kExternalWebSocket,
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:CdpSessionCategory)
 
   struct ClassifiedClient {
     SessionCategory category = SessionCategory::kIgnored;
@@ -65,9 +74,6 @@ class CdpActorSessionTracker {
   // Creates a `CdpActorSessionTracker` if `kEventReportingCdpAttribution` is
   // enabled, or returns `nullptr` if the feature is disabled.
   static std::unique_ptr<CdpActorSessionTracker> CreateIfEnabled();
-
-  // Creates a `CdpActorSessionTracker` for testing regardless of feature state.
-  static std::unique_ptr<CdpActorSessionTracker> CreateForTest();
 
   CdpActorSessionTracker(const CdpActorSessionTracker&) = delete;
   CdpActorSessionTracker& operator=(const CdpActorSessionTracker&) = delete;
@@ -95,21 +101,24 @@ class CdpActorSessionTracker {
 
   // Tracks a newly attached DevTools client `channel` when it targets an
   // eligible tab-bound `WebContents`, immediately recording built-in DevTools
-  // UI sessions. Does nothing if `channel` is null. A non-null `channel` stored
-  // in `active_channels_` is retained solely as an opaque lookup key (never
+  // UI sessions and pre-warming the OS process tree cache for external Pipe or
+  // WebSocket sessions (without recording a tab actor until `OnCommandHandled`
+  // fires). Does nothing if `channel` is null. A non-null `channel` stored in
+  // `active_channels_` is retained solely as an opaque lookup key (never
   // dereferenced after `OnClientAttached()` returns) until removed by
   // `OnClientDetached(channel)`.
   void OnClientAttached(content::DevToolsAgentHostClientChannel* channel);
 
-  // Records an attached external Pipe or WebSocket session on its target tab
-  // upon its first handled CDP command. Does nothing if `channel` is null, not
-  // tracked in `active_channels_`, or has already handled a command. `channel`
-  // is used only as an opaque map key and is not dereferenced.
+  // Records or refreshes an attached external Pipe or WebSocket session on its
+  // target tab upon handling a CDP command. Does nothing if `channel` is null
+  // or not tracked in `active_channels_`. `channel` is used only as an opaque
+  // map key and is not dereferenced.
   void OnCommandHandled(content::DevToolsAgentHostClientChannel* channel);
 
-  // Removes `channel` from `active_channels_` and detaches any recorded actor
-  // state from its target tab. Does nothing if `channel` is null or untracked.
-  // `channel` is used only as an opaque map key and is not dereferenced.
+  // Removes `channel` from `active_channels_`, detaching built-in DevTools UI
+  // state from its target tab or cleaning up unused WebSocket endpoint cache
+  // entries. Does nothing if `channel` is null or untracked. `channel` is used
+  // only as an opaque map key and is not dereferenced.
   void OnClientDetached(content::DevToolsAgentHostClientChannel* channel);
 
   // Test hooks for injecting custom OS process tree extractors, a custom task
@@ -141,7 +150,6 @@ class CdpActorSessionTracker {
     std::optional<net::IPEndPoint> remote_endpoint;
     base::WeakPtr<content::WebContents> web_contents;
     bool has_handled_command = false;
-    base::ProcessId resolved_leaf_pid = base::kNullProcessId;
   };
 
   struct ProcessTreeCacheEntry {
@@ -157,8 +165,8 @@ class CdpActorSessionTracker {
     std::vector<base::WeakPtr<content::WebContents>> waiting_tabs;
   };
 
-  void ActivateExternalSession(TrackedChannel& tracked,
-                               content::WebContents* web_contents);
+  void RecordExternalSessionCommand(TrackedChannel& tracked,
+                                    content::WebContents* web_contents);
 
   void StartExtraction(std::optional<net::IPEndPoint> remote_endpoint);
   void OnExtractionCompleted(std::optional<net::IPEndPoint> remote_endpoint,

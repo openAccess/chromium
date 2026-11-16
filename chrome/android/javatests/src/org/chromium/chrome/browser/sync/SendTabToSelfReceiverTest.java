@@ -60,6 +60,8 @@ import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
+import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
 import org.chromium.components.messages.DismissReason;
 import org.chromium.components.messages.ManagedMessageDispatcher;
 import org.chromium.components.messages.MessageDispatcherProvider;
@@ -98,6 +100,8 @@ public class SendTabToSelfReceiverTest {
     public void setUp() {
         AsyncInitializationActivity.interceptMoveTaskToBackForTesting();
         PersistedTabDataConfiguration.setUseTestConfig(true);
+        BaseNotificationManagerProxyFactory.setInstanceForTesting(
+                new MockNotificationManagerProxy());
         mSyncTestRule.setUpAccountAndSignInForTesting();
 
         mLocalCacheGuid = mSyncTestRule.getFakeServerHelper().getLocalCacheGuid();
@@ -213,7 +217,6 @@ public class SendTabToSelfReceiverTest {
     @Test
     @LargeTest
     @Feature({"Sync"})
-    @DisableIf.Device(DeviceFormFactor.ONLY_TABLET) // https://crbug.com/577466171
     public void testSendTabToSelfMessageBannerClickOpensSingleTab() {
         long now = getCurrentTimeSinceWindowsEpochMicros();
         injectSendTabToSelfEntity(
@@ -389,7 +392,7 @@ public class SendTabToSelfReceiverTest {
         // Explicitly save a label data for `tab` in MockPersistedTabDataStorage.
         PersistedTabDataStorage storage =
                 ThreadUtils.runOnUiThreadBlocking(
-                        () -> PersistedTabDataConfiguration.TEST_CONFIG.getStorage());
+                        () -> PersistedTabDataConfiguration.TEST_CONFIG.getStorage(tab.getProfile()));
         String deviceName = "Example Phone";
         String guid = "stts_test_guid";
         SendTabToSelfPersistedTabDataProto proto =

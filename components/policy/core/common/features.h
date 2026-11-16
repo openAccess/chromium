@@ -44,11 +44,6 @@ POLICY_EXPORT BASE_DECLARE_FEATURE(kUserPolicyCacheSizeLimit2MB);
 // Enables policy initialization for signed-in users in new entry points.
 POLICY_EXPORT BASE_DECLARE_FEATURE(
     kInitializePoliciesForSignedInUserInNewEntryPoints);
-
-// Controls whether to use RestrictionsManager instead of UserManager in
-// AppRestrictionsProvider to retrieve application restrictions.
-POLICY_EXPORT BASE_DECLARE_FEATURE(
-    kUseRestrictionsManagerInAppRestrictionsProvider);
 #endif
 
 // Enables a configurable delay for policy registration.
@@ -125,6 +120,10 @@ POLICY_EXPORT bool IsMigrateSecureConnectApiToDmServerEnabled();
 // CredentialsMode::kOmitBug_775438_Workaround instead of CredentialsMode::kOmit
 // for user info requests.
 POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyUserInfoFetcherUseOmitBugWorkaround);
+
+// When enabled, CBCM unenrollment on HTTP 410 requires an explicit
+// `DeviceManagementErrorDetail` in the response body.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kCbcmRequireErrorDetailForUnenrollment);
 
 }  // namespace policy::features
 

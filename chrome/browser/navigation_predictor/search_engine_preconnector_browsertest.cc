@@ -4,15 +4,22 @@
 
 #include "chrome/browser/navigation_predictor/search_engine_preconnector.h"
 
+#include <optional>
+#include <utility>
+#include <vector>
+
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
+#include "base/time/time.h"
 #include "chrome/browser/battery/battery_saver.h"
 #include "chrome/browser/navigation_predictor/navigation_predictor_keyed_service.h"
 #include "chrome/browser/navigation_predictor/navigation_predictor_keyed_service_factory.h"
+#include "chrome/browser/navigation_predictor/search_engine_dictionary_prewarmer.h"
 #include "chrome/browser/navigation_predictor/search_engine_preconnector_keyed_service_factory.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
@@ -20,28 +27,35 @@
 #include "chrome/browser/subresource_filter/subresource_filter_browser_test_harness.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/preconnect_manager.h"
 #include "content/public/browser/storage_partition.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/features.h"
+#include "net/base/reconnect_notifier.h"
+#include "net/base/request_priority.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/net_buildflags.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/network/test/test_network_context.h"
+#include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "url/gurl.h"
 #include "url/url_constants.h"
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 #include "chrome/browser/navigation_predictor/navigation_predictor_features.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
-#include "chrome/common/pref_names.h"
-#include "components/prefs/pref_service.h"
-#include "components/search_engines/template_url_service.h"
 #include "services/network/test/mock_device_bound_session_manager.h"
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
@@ -100,6 +114,12 @@ class SearchEnginePreconnectorBrowserTest
     SearchEnginePreconnector* preconnector = GetSearchEnginePreconnector();
     ASSERT_TRUE(preconnector);
     preconnector->GetPreconnectManager().SetObserverForTesting(this);
+
+    TemplateURLService* model =
+        TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+    ASSERT_TRUE(model);
+    search_test_utils::WaitForTemplateURLServiceToLoad(model);
+    ASSERT_TRUE(model->loaded());
   }
 
   const GURL GetTestURL(const char* file) const {
@@ -682,7 +702,11 @@ class SearchEnginePreconnectorWithPreconnect2FeatureBrowserTest
         {net::features::kSearchEnginePreconnectInterval,
          {{"preconnect_interval", "0"}}},
         {net::features::kSearchEnginePreconnect2,
-         {{"FallbackInLowPowerMode", "true"}}}};
+         {{"FallbackInLowPowerMode", "true"}}},
+        {net::features::kQuicPreconnectInitialRtt,
+         {{"QuicPreconnectInitialRttParam", "30ms"}}},
+        {net::features::kPreconnectPriorityBoost,
+         {{"PreconnectInitialPriority", "medium"}}}};
     battery::OverrideIsBatterySaverEnabledForTesting(false);
 
     std::vector<base::test::FeatureRef> disabled_features{
@@ -697,6 +721,10 @@ class SearchEnginePreconnectorWithPreconnect2FeatureBrowserTest
 
     feature_list_.InitWithFeaturesAndParameters(enabled_features,
                                                 disabled_features);
+  }
+
+  ~SearchEnginePreconnectorWithPreconnect2FeatureBrowserTest() override {
+    battery::ResetIsBatterySaverEnabledForTesting();
   }
 
   void SetUpOnMainThread() override {
@@ -1282,14 +1310,22 @@ IN_PROC_BROWSER_TEST_P(
 IN_PROC_BROWSER_TEST_P(
     SearchEnginePreconnectorWithPreconnect2FeatureBrowserTest,
     CheckConnectionKeepAliveConfig) {
+  absl::Cleanup reset_battery_saver = [] {
+    battery::ResetIsBatterySaverEnabledForTesting();
+  };
+
   auto config = GetSearchEnginePreconnector()->GetConnectionKeepAliveConfig();
   EXPECT_TRUE(config.enable_connection_keep_alive);
+  EXPECT_EQ(config.initial_rtt, base::Milliseconds(30));
+  EXPECT_EQ(config.preconnect_priority, net::RequestPriority::MEDIUM);
 
   battery::OverrideIsBatterySaverEnabledForTesting(true);
 
   config = GetSearchEnginePreconnector()->GetConnectionKeepAliveConfig();
   EXPECT_FALSE(config.enable_connection_keep_alive);
-  EXPECT_EQ(config.idle_timeout_in_seconds, 60);
+  EXPECT_EQ(config.idle_timeout, base::Seconds(60));
+  EXPECT_EQ(config.initial_rtt, base::TimeDelta());
+  EXPECT_EQ(config.preconnect_priority, net::RequestPriority::MEDIUM);
 }
 
 class SearchEnginePreconnectorWithBindReceiversEverytimeFeatureBrowserTest
@@ -1435,6 +1471,256 @@ IN_PROC_BROWSER_TEST_P(
               GetSearchEnginePreconnector()->CalculateBackoffMultiplier());
   }
 }
+
+namespace {
+
+class KeepAliveCapturingNetworkContext : public network::TestNetworkContext {
+ public:
+  void PreconnectSockets(
+      uint32_t num_streams,
+      const GURL& url,
+      network::mojom::CredentialsMode credentials_mode,
+      const net::NetworkAnonymizationKey& network_anonymization_key,
+      const base::UnguessableToken& network_restrictions_id,
+      const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
+      const std::optional<net::ConnectionKeepAliveConfig>& keepalive_config,
+      mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>
+          observer_client) override {
+    last_url_ = url;
+    last_keepalive_config_ = keepalive_config;
+    preconnect_called_ = true;
+  }
+
+  bool preconnect_called() const { return preconnect_called_; }
+  const GURL& last_url() const { return last_url_; }
+  const std::optional<net::ConnectionKeepAliveConfig>& last_keepalive_config()
+      const {
+    return last_keepalive_config_;
+  }
+
+ private:
+  bool preconnect_called_ = false;
+  GURL last_url_;
+  std::optional<net::ConnectionKeepAliveConfig> last_keepalive_config_;
+};
+
+class SearchEnginePreconnectorKeepAliveConfigBrowserTestBase
+    : public SearchEnginePreconnectorBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    SearchEnginePreconnector* preconnector = GetSearchEnginePreconnector();
+    ASSERT_TRUE(preconnector);
+    preconnector->ResetStateForTesting();
+
+    SearchEnginePreconnectorBrowserTest::SetUpOnMainThread();
+    battery::OverrideIsBatterySaverEnabledForTesting(false);
+    ASSERT_NO_FATAL_FAILURE(SetUpFakeHttpsSearchEngine());
+
+    network_context_receiver_.emplace(
+        &capturing_network_context_,
+        network_context_remote_.BindNewPipeAndPassReceiver());
+    preconnector->GetPreconnectManager().SetNetworkContextForTesting(
+        network_context_remote_.get());
+  }
+
+  void TearDownOnMainThread() override {
+    if (SearchEnginePreconnector* preconnector =
+            GetSearchEnginePreconnector()) {
+      preconnector->ResetStateForTesting();
+    }
+    network_context_remote_.reset();
+    network_context_receiver_.reset();
+    battery::ResetIsBatterySaverEnabledForTesting();
+    SearchEnginePreconnectorBrowserTest::TearDownOnMainThread();
+  }
+
+ protected:
+  void SetUpFakeHttpsSearchEngine() {
+    TemplateURLService* model =
+        TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+    ASSERT_TRUE(model);
+    search_test_utils::WaitForTemplateURLServiceToLoad(model);
+    ASSERT_TRUE(model->loaded());
+
+    TemplateURLData data;
+    data.SetShortName(u"https_engine");
+    data.SetKeyword(data.short_name());
+    data.SetURL("https://www.fakesearch.com/search?q={searchTerms}");
+    data.preconnect_to_search_url = true;
+    TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
+    ASSERT_TRUE(template_url);
+    model->SetUserSelectedDefaultSearchProvider(template_url);
+  }
+
+  KeepAliveCapturingNetworkContext capturing_network_context_;
+  std::optional<mojo::Receiver<network::mojom::NetworkContext>>
+      network_context_receiver_;
+  mojo::Remote<network::mojom::NetworkContext> network_context_remote_;
+};
+
+class SearchEnginePreconnectorInitialRttBrowserTest
+    : public SearchEnginePreconnectorKeepAliveConfigBrowserTestBase,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  SearchEnginePreconnectorInitialRttBrowserTest() {
+    std::vector<base::test::FeatureRefAndParams> enabled_features{
+        {features::kPreconnectToSearch,
+         {{"skip_in_background", "false"}, {"startup_delay_ms", "3600000"}}},
+        {::features::kPreconnectManagerDirectFastPath, {}},
+        {net::features::kQuicPreconnectInitialRtt,
+         {{"QuicPreconnectInitialRttParam", "30ms"}}}};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam()) {
+      enabled_features.push_back({net::features::kSearchEnginePreconnect2,
+                                  {{"FallbackInLowPowerMode", "true"}}});
+    } else {
+      disabled_features.emplace_back(net::features::kSearchEnginePreconnect2);
+    }
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         SearchEnginePreconnectorInitialRttBrowserTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(SearchEnginePreconnectorInitialRttBrowserTest,
+                       SetsInitialRtt) {
+  GetSearchEnginePreconnector()->StartPreconnecting(
+      /*with_startup_delay=*/false);
+  network_context_remote_.FlushForTesting();
+
+  ASSERT_TRUE(capturing_network_context_.preconnect_called());
+  EXPECT_EQ(capturing_network_context_.last_url(), GURL(kFakeSearch));
+
+  net::ConnectionKeepAliveConfig expected;
+  expected.initial_rtt = base::Milliseconds(30);
+  if (GetParam()) {
+    expected.idle_timeout =
+        base::Seconds(net::features::kIdleTimeoutInSeconds.default_value);
+    expected.ping_interval =
+        base::Seconds(net::features::kPingIntervalInSeconds.default_value);
+    expected.enable_connection_keep_alive = true;
+    expected.quic_connection_options =
+        net::features::kQuicConnectionOptions.default_value;
+  }
+  EXPECT_EQ(capturing_network_context_.last_keepalive_config(), expected);
+}
+
+IN_PROC_BROWSER_TEST_P(SearchEnginePreconnectorInitialRttBrowserTest,
+                       SuppressesPreconnectInLowPowerMode) {
+  battery::OverrideIsBatterySaverEnabledForTesting(true);
+  GetSearchEnginePreconnector()->StartPreconnecting(
+      /*with_startup_delay=*/false);
+  network_context_remote_.FlushForTesting();
+
+  EXPECT_FALSE(capturing_network_context_.preconnect_called());
+}
+
+class SearchEnginePreconnectorInvalidKeepAliveTimeoutsBrowserTest
+    : public SearchEnginePreconnectorKeepAliveConfigBrowserTestBase,
+      public ::testing::WithParamInterface<
+          std::pair<const char*, const char*>> {
+ public:
+  SearchEnginePreconnectorInvalidKeepAliveTimeoutsBrowserTest() {
+    feature_list_.InitWithFeaturesAndParameters(
+        {{features::kPreconnectToSearch,
+          {{"skip_in_background", "false"}, {"startup_delay_ms", "3600000"}}},
+         {::features::kPreconnectManagerDirectFastPath, {}},
+         {net::features::kQuicPreconnectInitialRtt,
+          {{"QuicPreconnectInitialRttParam", "30ms"}}},
+         {net::features::kSearchEnginePreconnect2,
+          {{"IdleTimeoutInSeconds", GetParam().first},
+           {"PingIntervalInSeconds", GetParam().second}}}},
+        {});
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    SearchEnginePreconnectorInvalidKeepAliveTimeoutsBrowserTest,
+    ::testing::Values(
+        // `PingIntervalInSeconds=29` equals `IdleTimeoutInSeconds - 1` (`29`),
+        // violating `effective_ping_interval < idle_timeout - 1s`.
+        std::make_pair("30", "29"),
+        // Negative `PingIntervalInSeconds` must fail `IsValid()` and fall back
+        // to `default_value` (`27s`) rather than clamping to `0s`.
+        std::make_pair("30", "-5")));
+
+IN_PROC_BROWSER_TEST_P(
+    SearchEnginePreconnectorInvalidKeepAliveTimeoutsBrowserTest,
+    FallsBackToDefaultTimeoutsWithoutDisconnectingNetworkContext) {
+  GetSearchEnginePreconnector()->StartPreconnecting(
+      /*with_startup_delay=*/false);
+  network_context_remote_.FlushForTesting();
+
+  EXPECT_TRUE(network_context_remote_.is_connected());
+  ASSERT_TRUE(capturing_network_context_.preconnect_called());
+  EXPECT_EQ(capturing_network_context_.last_url(), GURL(kFakeSearch));
+
+  net::ConnectionKeepAliveConfig expected;
+  expected.idle_timeout =
+      base::Seconds(net::features::kIdleTimeoutInSeconds.default_value);
+  expected.ping_interval =
+      base::Seconds(net::features::kPingIntervalInSeconds.default_value);
+  expected.enable_connection_keep_alive = true;
+  expected.initial_rtt = base::Milliseconds(30);
+  expected.quic_connection_options =
+      net::features::kQuicConnectionOptions.default_value;
+  EXPECT_EQ(capturing_network_context_.last_keepalive_config(), expected);
+}
+
+class SearchEnginePreconnectorPriorityBoostBrowserTest
+    : public SearchEnginePreconnectorKeepAliveConfigBrowserTestBase,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  SearchEnginePreconnectorPriorityBoostBrowserTest() {
+    std::vector<base::test::FeatureRefAndParams> enabled_features{
+        {features::kPreconnectToSearch,
+         {{"skip_in_background", "false"}, {"startup_delay_ms", "3600000"}}},
+        {::features::kPreconnectManagerDirectFastPath, {}},
+        {net::features::kPreconnectPriorityBoost,
+         {{"PreconnectInitialPriority", "medium"}}}};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam()) {
+      enabled_features.push_back({net::features::kSearchEnginePreconnect2, {}});
+    } else {
+      disabled_features.emplace_back(net::features::kSearchEnginePreconnect2);
+    }
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         SearchEnginePreconnectorPriorityBoostBrowserTest,
+                         ::testing::Bool());
+
+IN_PROC_BROWSER_TEST_P(SearchEnginePreconnectorPriorityBoostBrowserTest,
+                       SetsPreconnectPriorityInKeepAliveConfig) {
+  GetSearchEnginePreconnector()->StartPreconnecting(
+      /*with_startup_delay=*/false);
+  network_context_remote_.FlushForTesting();
+
+  ASSERT_TRUE(capturing_network_context_.preconnect_called());
+  EXPECT_EQ(capturing_network_context_.last_url(), GURL(kFakeSearch));
+
+  net::ConnectionKeepAliveConfig expected;
+  expected.preconnect_priority = net::RequestPriority::MEDIUM;
+  if (GetParam()) {
+    expected.idle_timeout =
+        base::Seconds(net::features::kIdleTimeoutInSeconds.default_value);
+    expected.ping_interval =
+        base::Seconds(net::features::kPingIntervalInSeconds.default_value);
+    expected.enable_connection_keep_alive = true;
+    expected.quic_connection_options =
+        net::features::kQuicConnectionOptions.default_value;
+  }
+  EXPECT_EQ(capturing_network_context_.last_keepalive_config(), expected);
+}
+
+}  // namespace
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 class SearchEnginePreconnectorDeviceBoundSessionBrowserTest
@@ -1633,15 +1919,6 @@ class SearchEnginePreconnectorDeviceBoundSessionModeBrowserTest
         {net::features::kSearchEnginePreconnect2});
   }
 
-  void SetUpOnMainThread() override {
-    SearchEnginePreconnectorBrowserTest::SetUpOnMainThread();
-    TemplateURLService* model =
-        TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
-    ASSERT_TRUE(model);
-    search_test_utils::WaitForTemplateURLServiceToLoad(model);
-    ASSERT_TRUE(model->loaded());
-  }
-
   bool IsSticky() const { return GetParam() != Mode::kFollowPreconnector; }
   bool IgnoresPrefs() const { return GetParam() == Mode::kSticky; }
 
@@ -1781,3 +2058,459 @@ IN_PROC_BROWSER_TEST_P(
             preconnector->GetDeviceBoundSessionPrewarmerUrlForTesting());
 }
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+
+class SearchEnginePreconnectorPrewarmDictionaryBrowserTest
+    : public SearchEnginePreconnectorBrowserTest {
+ public:
+  SearchEnginePreconnectorPrewarmDictionaryBrowserTest()
+      : SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+            /*cleanup_mode=*/"hybrid",
+            /*timeout=*/"30s",
+            /*preconnect2_enabled=*/true) {}
+
+  void SetUpOnMainThread() override {
+    GetSearchEnginePreconnector()->ResetStateForTesting();
+    SearchEnginePreconnectorBrowserTest::SetUpOnMainThread();
+    preresolve_counts_[GURL(kGoogleSearch)] = 0;
+  }
+
+ protected:
+  SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+      const std::string& cleanup_mode,
+      const std::string& timeout,
+      bool preconnect2_enabled = true) {
+    std::vector<base::test::FeatureRefAndParams> enabled_features{
+        {features::kSearchEnginePrewarmDictionaryOnPreconnect,
+         {{"SearchEnginePrewarmDictionaryCleanupMode", cleanup_mode},
+          {"SearchEnginePrewarmDictionaryTimeout", timeout}}},
+        {features::kPreconnectToSearch,
+         {{"skip_in_background", "false"}, {"startup_delay_ms", "1000000"}}}};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (preconnect2_enabled) {
+      enabled_features.push_back({net::features::kSearchEnginePreconnect2, {}});
+    } else {
+      disabled_features.emplace_back(net::features::kSearchEnginePreconnect2);
+    }
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       PrewarmsDictionaryOnStart) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  EXPECT_EQ(GURL(kGoogleSearch),
+            preconnector->GetPrewarmedDictionaryURLForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kPrewarmed,
+      1);
+
+  // Stopping preconnect should immediately destroy the prewarmer and record
+  // kDestroyed.
+  preconnector->StopPreconnecting();
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kDestroyed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       DoesNotPrewarmWhenSearchSuggestDisabled) {
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSearchSuggestEnabled,
+                                                  false);
+
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       DoesNotPrewarmWhenDseIsHttp) {
+  TemplateURLService* model =
+      TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(model);
+
+  TemplateURLData data;
+  data.SetShortName(u"http_engine");
+  data.SetKeyword(data.short_name());
+  data.SetURL("http://example.com/search?q={searchTerms}");
+  data.preconnect_to_search_url = true;
+
+  TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
+  ASSERT_TRUE(template_url);
+  model->SetUserSelectedDefaultSearchProvider(template_url);
+
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       ResetsPrewarmedDictionaryWhenDseSwitchesToHttp) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  // Initially prewarm HTTPS DSE.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+
+  // Switch DSE to an HTTP URL.
+  TemplateURLService* model =
+      TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(model);
+
+  TemplateURLData data;
+  data.SetShortName(u"http_engine");
+  data.SetKeyword(data.short_name());
+  data.SetURL("http://example.com/search?q={searchTerms}");
+  data.preconnect_to_search_url = true;
+
+  TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
+  ASSERT_TRUE(template_url);
+  model->SetUserSelectedDefaultSearchProvider(template_url);
+
+  // Preconnecting with HTTP DSE should reset the prewarmed dictionary and
+  // record kDestroyed.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kDestroyed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       ResetsPrewarmedDictionaryWhenSearchSuggestDisabled) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  // Initially prewarm HTTPS DSE.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+
+  // Disable search suggestions.
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kSearchSuggestEnabled,
+                                                  false);
+
+  // Subsequent preconnect attempt should reset the prewarmed dictionary and
+  // record kDestroyed.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kDestroyed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       HybridClosesOnSessionClosed) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  preconnector->OnSessionClosed(/*was_ever_used_to_create_streams=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::
+          kClosedSessionClosed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       HybridClosesOnConnectionFailed) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  preconnector->OnConnectionFailed();
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::
+          kClosedConnectionFailed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       RefreshesTimerOnSecondPreconnect) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  // First preconnect initiates prewarm.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kPrewarmed,
+      1);
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kRefreshed,
+      0);
+
+  // Second preconnect for the same DSE refreshes timer.
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kRefreshed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       DisconnectCleansUpHandleAndRecordsEvent) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  // Simulate Mojo pipe disconnection from NetworkContext (e.g. memory
+  // pressure).
+  preconnector->SimulatePrewarmedDictionaryDisconnectedForTesting();
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::
+          kDisconnected,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(SearchEnginePreconnectorPrewarmDictionaryBrowserTest,
+                       RePrewarmsAfterCleanupAndRebuildsWhenHttpsDseChanges) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_EQ(GURL(kGoogleSearch),
+            preconnector->GetPrewarmedDictionaryURLForTesting());
+
+  // Closing the session unbinds the handle while keeping dictionary_prewarmer_.
+  preconnector->OnSessionClosed(/*was_ever_used_to_create_streams=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  // Re-preconnecting to the same DSE after cleanup should re-prewarm via
+  // Refresh() -> Prewarm().
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kPrewarmed,
+      2);
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kRefreshed,
+      0);
+
+  // Switching to a different HTTPS DSE should destroy the previous
+  // dictionary_prewarmer_ (recording kDestroyed) and prewarm the new URL.
+  TemplateURLService* model =
+      TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+  ASSERT_TRUE(model);
+  TemplateURLData data;
+  data.SetShortName(u"https_engine");
+  data.SetKeyword(data.short_name());
+  data.SetURL("https://example.com/search?q={searchTerms}");
+  data.preconnect_to_search_url = true;
+  TemplateURL* template_url = model->Add(std::make_unique<TemplateURL>(data));
+  ASSERT_TRUE(template_url);
+  model->SetUserSelectedDefaultSearchProvider(template_url);
+
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_EQ(GURL("https://example.com/"),
+            preconnector->GetPrewarmedDictionaryURLForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kDestroyed,
+      1);
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kPrewarmed,
+      3);
+}
+
+class SearchEnginePreconnectorPrewarmDictionaryHybridShortTimeoutBrowserTest
+    : public SearchEnginePreconnectorPrewarmDictionaryBrowserTest {
+ public:
+  SearchEnginePreconnectorPrewarmDictionaryHybridShortTimeoutBrowserTest()
+      : SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+            /*cleanup_mode=*/"hybrid",
+            /*timeout=*/"50ms") {}
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SearchEnginePreconnectorPrewarmDictionaryHybridShortTimeoutBrowserTest,
+    HybridExpiresOnTimer) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  // Wait for the 50ms expiry timer to fire in hybrid mode.
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !preconnector->HasPrewarmedDictionaryForTesting(); }));
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kExpired,
+      1);
+}
+
+class SearchEnginePreconnectorPrewarmDictionaryEventsOnlyBrowserTest
+    : public SearchEnginePreconnectorPrewarmDictionaryBrowserTest {
+ public:
+  SearchEnginePreconnectorPrewarmDictionaryEventsOnlyBrowserTest()
+      : SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+            /*cleanup_mode=*/"events_only",
+            /*timeout=*/"30s") {}
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SearchEnginePreconnectorPrewarmDictionaryEventsOnlyBrowserTest,
+    EventsOnlyDoesNotStartTimerAndClosesOnSessionClosed) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  // In events_only mode, no timer is running.
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  preconnector->OnSessionClosed(/*was_ever_used_to_create_streams=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::
+          kClosedSessionClosed,
+      1);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    SearchEnginePreconnectorPrewarmDictionaryEventsOnlyBrowserTest,
+    EventsOnlyClosesOnConnectionFailed) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  preconnector->OnConnectionFailed();
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::
+          kClosedConnectionFailed,
+      1);
+}
+
+class SearchEnginePreconnectorPrewarmDictionaryTimerOnlyBrowserTest
+    : public SearchEnginePreconnectorPrewarmDictionaryBrowserTest {
+ public:
+  SearchEnginePreconnectorPrewarmDictionaryTimerOnlyBrowserTest()
+      : SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+            /*cleanup_mode=*/"timer_only",
+            /*timeout=*/"10ms") {}
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SearchEnginePreconnectorPrewarmDictionaryTimerOnlyBrowserTest,
+    TimerOnlyIgnoresSessionClosedAndExpiresOnTimer) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  base::HistogramTester histogram_tester;
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+  EXPECT_TRUE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  // Ensure the preconnect retry backoff delay is capped at the 60s max so a
+  // 50ms retry preconnect does not race with the dictionary expiry timer and
+  // refresh the dictionary before RunUntil observes expiry.
+  preconnector->SetConsecutiveFailureForTesting(50);
+
+  // In timer_only mode, connection events are ignored.
+  preconnector->OnSessionClosed(/*was_ever_used_to_create_streams=*/false);
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+
+  preconnector->OnConnectionFailed();
+  EXPECT_TRUE(preconnector->HasPrewarmedDictionaryForTesting());
+
+  // Wait for the 50ms expiry timer to fire.
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return !preconnector->HasPrewarmedDictionaryForTesting(); }));
+  EXPECT_FALSE(preconnector->IsPrewarmedDictionaryTimerRunningForTesting());
+
+  histogram_tester.ExpectBucketCount(
+      "NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event",
+      SearchEnginePreconnector::SearchEnginePrewarmDictionaryEvent::kExpired,
+      1);
+}
+
+class SearchEnginePreconnectorPrewarmDictionaryWithoutPreconnect2BrowserTest
+    : public SearchEnginePreconnectorPrewarmDictionaryBrowserTest {
+ public:
+  SearchEnginePreconnectorPrewarmDictionaryWithoutPreconnect2BrowserTest()
+      : SearchEnginePreconnectorPrewarmDictionaryBrowserTest(
+            /*cleanup_mode=*/"hybrid",
+            /*timeout=*/"30s",
+            /*preconnect2_enabled=*/false) {}
+};
+
+IN_PROC_BROWSER_TEST_F(
+    SearchEnginePreconnectorPrewarmDictionaryWithoutPreconnect2BrowserTest,
+    DoesNotPrewarmWhenPreconnect2Disabled) {
+  auto* preconnector = GetSearchEnginePreconnector();
+  ASSERT_TRUE(preconnector);
+
+  preconnector->StartPreconnecting(/*with_startup_delay=*/false);
+  EXPECT_FALSE(preconnector->HasPrewarmedDictionaryForTesting());
+}

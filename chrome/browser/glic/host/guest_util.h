@@ -21,6 +21,10 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
+namespace base {
+class TickClock;
+}
+
 namespace content {
 class BrowserContext;
 class RenderFrameHost;
@@ -160,12 +164,6 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
 // Returns the Glic zoom factor calculated from the zoom level pref.
 double GetZoomFactor(PrefService* pref_service);
 
-// Evaluates the copy-time page context eligibility for `source`. Returns
-// `std::nullopt` if paste eligibility checks are disabled or `source` does not
-// correspond to a tab frame.
-std::optional<bool> GetClipboardCopyEligibility(
-    const content::ClipboardEndpoint& source);
-
 // Stages `is_eligible` to be bound to the next clipboard sequence number
 // produced by an upcoming copy, or clears any pending staged eligibility when
 // `is_eligible` is `std::nullopt`. When `clear_at_end_of_task` is true, any
@@ -179,11 +177,6 @@ void StageClipboardCopyEligibility(std::optional<bool> is_eligible,
 // Returns true if copy eligibility is currently staged awaiting a clipboard
 // write.
 bool HasPendingClipboardCopyEligibilityForTesting();
-
-// Directly binds `is_eligible` to `seqno` and clears any pending staged copy
-// eligibility.
-void SetClipboardEligibilityForSeqno(ui::ClipboardSequenceNumberToken seqno,
-                                     bool is_eligible);
 
 // Called before the OS clipboard writes the sequence number. Checks and stashes
 // the eligibility for the upcoming copy event.
@@ -208,6 +201,10 @@ void SetClipboardEligibilitySeqnoForTesting(
 // Resets cached and pending clipboard eligibility state for tests.
 void ResetClipboardEligibilityMonitorForTesting();
 
+// Sets a custom tick clock for blocked-paste notice burst deduplication for
+// testing. Passing nullptr restores the default base::TimeTicks::Now().
+void SetBlockedPasteNoticeClockForTesting(const base::TickClock* clock);
+
 // Returns true if pasting data into Glic is allowed by policy (based on the
 // source tab's page context eligibility).
 bool IsClipboardPasteAllowed(const content::ClipboardEndpoint& source,
@@ -215,9 +212,10 @@ bool IsClipboardPasteAllowed(const content::ClipboardEndpoint& source,
                              const ui::ClipboardMetadata& metadata);
 
 // Returns true if pasting into Glic must be blocked because `metadata.seqno`
-// came from a blocked or still-scanning enterprise copy, or from a
-// Chrome-only copy whose source `BrowserContext` is gone. Surfaces a
-// paste-block dialog over Glic unless a copy scan is still in flight.
+// came from a blocked or still-scanning enterprise copy, from a Chrome-only
+// copy whose source `BrowserContext` is gone, or from a copy kept in a profile
+// other than Glic's. Surfaces a paste-block dialog over Glic unless a copy scan
+// is still in flight.
 bool MaybeBlockPasteForRestrictedCopy(
     const content::ClipboardEndpoint& source,
     const content::ClipboardEndpoint& destination,

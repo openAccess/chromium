@@ -55,6 +55,10 @@ inline constexpr char kSearchSparkIconResourceName[] =
     "//resources/cr_components/searchbox/icons/search_spark.svg";
 inline constexpr char kReplyRotated180IconResourceName[] =
     "//resources/cr_components/searchbox/icons/reply_rotated180.svg";
+// Side panel icons. Following Chrome's naming, "dock_to_right" shows the side
+// panel on the left and "dock_to_left" shows it on the right.
+inline constexpr char kDockToLeftIconResourceName[] =
+    "//resources/cr_components/searchbox/icons/dock_to_left.svg";
 inline constexpr char kDockToRightIconResourceName[] =
     "//resources/cr_components/searchbox/icons/dock_to_right.svg";
 }  // namespace searchbox_internal
@@ -215,6 +219,10 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
   void OpenPopupSelection(
       uint32_t result_sequence_id,
       searchbox::mojom::OmniboxPopupSelectionPtr selection,
+      searchbox::mojom::ActionModifiersPtr modifiers) override;
+  void OpenPopupSelectionWithDisposition(
+      uint32_t result_sequence_id,
+      searchbox::mojom::OmniboxPopupSelectionPtr selection,
       ui::mojom::WindowOpenDisposition disposition) override;
   void OnNavigationLikely(
       uint8_t line,
@@ -288,6 +296,7 @@ class SearchboxHandler : public searchbox::mojom::PageHandler,
   void ResetSmartTabSharing(ResetSmartTabSharingCallback callback) override;
 #endif
   void DismissFre(searchbox::mojom::FreStage stage) override {}
+  void RecordFreImpression(searchbox::mojom::FreStage stage) override {}
   void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds,
                           ShowHotkeyDropdownCallback callback) override;
   void OpenHotkeySettings() override {}

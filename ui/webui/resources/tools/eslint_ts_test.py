@@ -998,9 +998,13 @@ class EslintTsTest(unittest.TestCase):
 
     _INVALID_PROPERTY_EXPRESSION_ERROR = "Invalid property expression: '.%(propertyName)s=' only works with '${...}' rvalues. Use attribute expression '%(dashCaseName)s=\"...\"' for a static value, or '.%(propertyName)s=\"${...}\"' for a dynamic binding"
 
+    _BOOLEAN_PROPERTY_ATTRIBUTE_BINDING_ERROR = "Boolean property '%(propertyName)s' on element '%(tagName)s' can't be bound using a plain Lit attribute expression '%(attributeName)s=\"${...}\"'. Use either boolean attribute expression '?%(attributeName)s=\"${...}\"' or property expression '.%(propertyName)s=\"${...}\"' instead"
+
     _PROPERTY_TYPE_MISMATCH_ERROR = "Property type mismatch: '%(propertyName)s' is declared as '%(declaredType)s' reactive property but is typed as '%(tsType)s'"
 
     _BINDING_TYPE_MISMATCH_ERROR = "Type mismatch in property binding: Property '%(propertyName)s' on element '%(tagName)s' expects type '%(expectedType)s', but was provided '%(providedType)s'"
+
+    _ATTRIBUTE_BINDING_TYPE_MISMATCH_ERROR = "Type mismatch in attribute binding: Property '%(propertyName)s' on element '%(tagName)s' expects type '%(expectedType)s', but was provided '%(providedType)s'"
 
     _PROPERTY_NOT_FOUND_ERROR = (
       "Property '%(propertyName)s' was not found on element '%(tagName)s'"
@@ -1172,6 +1176,37 @@ class EslintTsTest(unittest.TestCase):
         'expectedType': 'boolean',
         'providedType': 'string',
       },
+      _BOOLEAN_PROPERTY_ATTRIBUTE_BINDING_ERROR
+      % {
+        'propertyName': 'fooBoolean',
+        'tagName': 'hello-world-child',
+        'attributeName': 'foo-boolean',
+      },
+      _BOOLEAN_PROPERTY_ATTRIBUTE_BINDING_ERROR
+      % {
+        'propertyName': 'readOnly',
+        'tagName': 'input',
+        'attributeName': 'readonly',
+      },
+      _ATTRIBUTE_BINDING_TYPE_MISMATCH_ERROR
+      % {
+        'propertyName': 'fooNumber',
+        'tagName': 'hello-world-child',
+        'expectedType': 'number',
+        'providedType': 'boolean',
+      },
+      _INCORRECT_ATTRIBUTE_ERROR
+      % {
+        'attributeName': 'foo-array',
+        'propertyName': 'fooArray',
+        'propertyExpression': '.fooArray=',
+      },
+      _INCORRECT_ATTRIBUTE_ERROR
+      % {
+        'attributeName': 'foo-object',
+        'propertyName': 'fooObject',
+        'propertyExpression': '.fooObject=',
+      },
     ]
     for e in errors:
       self.assertTrue(
@@ -1258,6 +1293,27 @@ class EslintTsTest(unittest.TestCase):
         'propertyName': 'fooString',
         'tagName': 'hello-world-child',
         'expectedType': 'string',
+        'providedType': 'string',
+      },
+      _ATTRIBUTE_BINDING_TYPE_MISMATCH_ERROR
+      % {
+        'propertyName': 'fooNumber',
+        'tagName': 'hello-world-child',
+        'expectedType': 'number',
+        'providedType': 'number',
+      },
+      _ATTRIBUTE_BINDING_TYPE_MISMATCH_ERROR
+      % {
+        'propertyName': 'fooString',
+        'tagName': 'hello-world-child',
+        'expectedType': 'string',
+        'providedType': 'number',
+      },
+      _ATTRIBUTE_BINDING_TYPE_MISMATCH_ERROR
+      % {
+        'propertyName': 'tabIndex',
+        'tagName': 'input',
+        'expectedType': 'number',
         'providedType': 'string',
       },
     ]
@@ -1568,6 +1624,121 @@ class EslintTsTest(unittest.TestCase):
         'elementExpr': 'anyElement',
         'id': 'myButton',
         'queryExpr': "anyElement.shadowRoot.querySelector('#myButton')",
+      },
+    ]
+    for e in non_errors:
+      self.assertFalse(
+        e in str(context.exception), f'Found unexpected error: {e}'
+      )
+
+  def testWebUiEslintPlugin_LitMemberVisibility(self):
+    with self.assertRaises(RuntimeError) as context:
+      self._run_test(
+        [
+          "with_webui_plugin_lit_member_visibility_violations.ts",
+          "with_webui_plugin_lit_member_visibility_violations.html.ts",
+          "with_webui_plugin_lit_member_visibility_violations_sub.html.ts",
+          "with_webui_plugin_lit_member_visibility_violations_no_template_file.ts",
+        ]
+      )
+
+    _EXPECTED_STRING = "@webui-eslint/lit-member-visibility"
+    self.assertTrue(_EXPECTED_STRING in str(context.exception))
+    self.assertNotIn(
+      "@webui-eslint/lit-reactive-properties", str(context.exception)
+    )
+    self.assertNotIn(
+      "@webui-eslint/lit-property-accessor", str(context.exception)
+    )
+
+    _UNNECESSARY_PROTECTED_PROPERTY_ERROR = "Property '%(propertyName)s' in class '%(className)s' is marked 'protected' but is not referenced in the HTML template. Mark it as 'private' instead"
+
+    class_name = 'WithWebuiPluginLitMemberVisibilityViolationsElement'
+    inline_class_name = 'InlineTemplateDummyTestElement'
+    no_template_class_name = 'NoTemplateDummyTestElement'
+
+    errors = [
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'unusedProtectedAccessor_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'unusedProtectedProp_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'unusedProtectedInlineAccessor_',
+        'className': inline_class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'unusedProtectedNoTemplateProp_',
+        'className': no_template_class_name,
+      },
+    ]
+    for e in errors:
+      self.assertTrue(
+        e in str(context.exception), f"Didn't find expected error: {e}"
+      )
+
+    non_errors = [
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'usedProtectedAccessor_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'usedInSubTemplateAccessor_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'usedProtectedProp_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'usedInNestedExpr_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'reflectedProtectedAccessor_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'privateAccessor_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'publicAccessor',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'baseProtectedProp_',
+        'className': class_name,
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'unusedBaseProp_',
+        'className': 'BaseDummyElement',
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'mixinProp_',
+        'className': 'DummyMixin',
+      },
+      _UNNECESSARY_PROTECTED_PROPERTY_ERROR
+      % {
+        'propertyName': 'usedProtectedInlineAccessor_',
+        'className': inline_class_name,
       },
     ]
     for e in non_errors:

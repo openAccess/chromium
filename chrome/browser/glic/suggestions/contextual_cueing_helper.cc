@@ -20,6 +20,7 @@
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_enums.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_page_data.h"
@@ -65,6 +66,14 @@
 namespace glic {
 
 DEFINE_USER_DATA(ContextualCueingHelper);
+
+namespace {
+
+Profile* GetProfile(content::WebContents* web_contents) {
+  return Profile::FromBrowserContext(web_contents->GetBrowserContext());
+}
+
+}  // namespace
 
 ContextualCueingHelper::AutoOpenResult
 ContextualCueingHelper::RecordAutoOpenResult(GlicAutoOpenResult result) {
@@ -112,10 +121,14 @@ ContextualCueingHelper::ContextualCueingHelper(
     OptimizationGuideKeyedService* ogks,
     ContextualCueingService* ccs)
     : content::WebContentsObserver(tab->GetContents()),
+      contextual_cueing_enabled_(
+          IsContextualCueingEnabled(GetProfile(tab->GetContents()))),
+      zero_state_suggestions_enabled_(
+          IsZeroStateSuggestionsEnabled(GetProfile(tab->GetContents()))),
       optimization_guide_keyed_service_(ogks),
       contextual_cueing_service_(ccs),
       scoped_unowned_user_data_(tab->GetUnownedUserDataHost(), *this) {
-  if (IsContextualCueingEnabled()) {
+  if (contextual_cueing_enabled_) {
     // LINT.IfChange(OptType)
     optimization_guide_keyed_service_->RegisterOptimizationTypes(
         {optimization_guide::proto::GLIC_CONTEXTUAL_CUEING});
@@ -126,7 +139,7 @@ ContextualCueingHelper::ContextualCueingHelper(
 ContextualCueingHelper::~ContextualCueingHelper() = default;
 
 glic::GlicNudgeController* ContextualCueingHelper::GetGlicNudgeController() {
-  if (!IsContextualCueingEnabled()) {
+  if (!contextual_cueing_enabled_) {
     return nullptr;
   }
   tabs::TabInterface* tab =
@@ -174,7 +187,7 @@ void ContextualCueingHelper::DidFinishNavigation(
   has_first_contentful_paint_ = false;
 
   // Clear zero state suggestions if needed.
-  if (IsZeroStateSuggestionsEnabled() && navigation_handle->IsSameDocument() &&
+  if (zero_state_suggestions_enabled_ && navigation_handle->IsSameDocument() &&
       ZeroStateSuggestionsPageData::GetForPage(
           web_contents()->GetPrimaryPage())) {
     ZeroStateSuggestionsPageData::DeleteForPage(
@@ -187,7 +200,7 @@ void ContextualCueingHelper::DidFinishNavigation(
     return;
   }
 
-  if (!IsContextualCueingEnabled()) {
+  if (!contextual_cueing_enabled_) {
     return;
   }
 
@@ -225,7 +238,7 @@ void ContextualCueingHelper::DidFinishNavigation(
 }
 
 void ContextualCueingHelper::PrimaryMainDocumentElementAvailable() {
-  if (!IsContextualCueingEnabled()) {
+  if (!contextual_cueing_enabled_) {
     return;
   }
 
@@ -250,7 +263,7 @@ void ContextualCueingHelper::PrimaryMainDocumentElementAvailable() {
 
 void ContextualCueingHelper::OnFirstContentfulPaintInPrimaryMainFrame(
     base::TimeTicks presentation_time) {
-  if (!IsZeroStateSuggestionsEnabled()) {
+  if (!zero_state_suggestions_enabled_) {
     return;
   }
 
@@ -265,7 +278,7 @@ void ContextualCueingHelper::OnFirstContentfulPaintInPrimaryMainFrame(
 }
 
 void ContextualCueingHelper::DocumentOnLoadCompletedInPrimaryMainFrame() {
-  if (!IsZeroStateSuggestionsEnabled()) {
+  if (!zero_state_suggestions_enabled_) {
     return;
   }
 
@@ -503,7 +516,9 @@ ContextualCueingHelper::AutoOpenGlicSidePanel(
     // Check if enough time has passed since last prompt submission.
     auto* glic_instance = glic_service->GetInstanceForTab(tab_interface);
     if (glic_instance && glic_instance->GetTimeSinceLastPromptSubmission() <
-                             features::kAutoOpenGlicCooldown.Get()) {
+                             glic::GetGlicProviderSpec(profile)
+                                 .GetPdfAutoOpenFeatureParams()
+                                 .cooldown) {
       return RecordAutoOpenResult(GlicAutoOpenResult::kPreventedFromCooldown);
     }
 
@@ -531,12 +546,12 @@ ContextualCueingHelper::AutoOpenGlicSidePanel(
 // static
 std::unique_ptr<ContextualCueingHelper> ContextualCueingHelper::MaybeCreate(
     tabs::TabInterface* tab) {
-  if (!IsContextualCueingEnabled() && !IsZeroStateSuggestionsEnabled()) {
+  Profile* profile = GetProfile(tab->GetContents());
+  if (!IsContextualCueingEnabled(profile) &&
+      !IsZeroStateSuggestionsEnabled(profile)) {
     return nullptr;
   }
 
-  Profile* profile =
-      Profile::FromBrowserContext(tab->GetContents()->GetBrowserContext());
   if (!glic::GlicEnabling::IsProfileEligible(profile)) {
     return nullptr;
   }

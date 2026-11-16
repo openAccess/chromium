@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_SIGNIN_CROSS_DEVICE_SIGNIN_PROMO_MANAGER_H_
 #define CHROME_BROWSER_SIGNIN_CROSS_DEVICE_SIGNIN_PROMO_MANAGER_H_
 
+#include <string_view>
+
 #include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 
@@ -35,15 +37,23 @@ enum class CrossDeviceSigninPromoShouldShowResult {
   kShownLimitReached = 4,
   kCooldownActive = 5,
   kAlreadyShownAfterDismissalLimitReached = 6,
-  kMaxValue = kAlreadyShownAfterDismissalLimitReached,
+  kProfileTypeNotEligible = 7,
+  kMaxValue = kProfileTypeNotEligible,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:CrossDeviceSigninPromoShouldShowResult)
 
 // Returns whether the cross-device sign-in promo should start being shown at
-// `entry_point`: the user is eligible (signed in with no error, without a
-// synced mobile device and with the required data types enabled) and the
-// impression/dismissal frequency caps allow it. Records the result in the
-// `Signin.CrossDeviceSigninPromo.ShouldShowResult.*` histograms.
+// `entry_point`: the entry point is enabled by its feature flags, the user is
+// eligible (signed in with no error, without a synced mobile device where
+// applicable, and with the required data types enabled) and the
+// impression/dismissal frequency caps allow it. Meant to be called once at the
+// promo's trigger point.
+// Records the eligibility result in the
+// `Signin.CrossDeviceSigninPromo.ShouldShowResult.*` histograms. While the
+// `kCrossDeviceSigninPromoEligibilityLogging` kill switch is enabled, the
+// result is recorded even when the entry point is disabled by its feature flags
+// (without side effects: no pref writes, no UI), so that study arms can be
+// compared on the same trigger.
 bool ShouldStartShowingCrossDeviceSigninPromo(
     CrossDeviceSigninPromoEntryPoint entry_point,
     Profile* profile);
@@ -93,5 +103,9 @@ base::CallbackListSubscription
 RegisterCrossDeviceSigninPromoBubbleStateCallback(
     Profile* profile,
     base::RepeatingCallback<void(bool)> callback);
+
+// Returns the histogram suffix for `entry_point`.
+std::string_view GetEntryPointHistogramSuffixForTesting(
+    CrossDeviceSigninPromoEntryPoint entry_point);
 
 #endif  // CHROME_BROWSER_SIGNIN_CROSS_DEVICE_SIGNIN_PROMO_MANAGER_H_

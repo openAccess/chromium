@@ -296,20 +296,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Preloading.Experimental.UpdateSpeculationCandidatesReason"
-    enum="PreloadingUpdateSpeculationCandidatesReason"
-    expires_after="2024-09-29">
-  <owner>taiyo@chromium.org</owner>
-  <owner>chrome-prerendering@google.com</owner>
-  <summary>
-    This metric counts the number of the update of speculation rules preloading,
-    classified by the reason for updates. Currently, this is introduced to
-    measure the overall impact of BFCache retrigger(crbug.com/1449163). This
-    metric is recorded when UpdateSpeculationCandidates is called on
-    DocumentSpeculationRules.
-  </summary>
-</histogram>
-
 <histogram
     name="Preloading.Experimental.{ExperimentalPreloadingPrediction}.{GroundTruth}"
     units="param" expires_after="2025-04-13">
@@ -411,6 +397,21 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="Preloading.Prefetch.PrefetchService.ServiceCreationTime"
+    units="microseconds" expires_after="2027-05-10">
+  <owner>hiroshige@chromium.org</owner>
+  <owner>taiyo@chromium.org</owner>
+  <owner>chrome-prerendering@google.com</owner>
+  <summary>
+    Records the time taken by `PrefetchService` creation, when
+    `BrowserContextImpl::GetPrefetchService()` creates a `PrefetchService` for a
+    `BrowserContext` (i.e. at most once per `BrowserContext`). Used to evaluate
+    the cost of creating `PrefetchService` at different timings.
+
+    Only recorded on clients with high-resolution clocks.
+  </summary>
+</histogram>
+
 <histogram name="Preloading.Prefetch.PrefetchStatus"
     enum="PrefetchProxyPrefetchStatus" expires_after="2027-05-02">
   <owner>adithyas@chromium.org</owner>
@@ -419,6 +420,24 @@ chromium-metrics-reviews@google.com.
     Records the final PrefetchStatus value for a PrefetchContainer. The value is
     recorded when a prefetch fails (in the failure case), or when the
     PrefetchContainer is destroyed (in all other cases).
+  </summary>
+</histogram>
+
+<histogram
+    name="Preloading.Prefetch.PrePrefetch.EagerPrefetchServiceCreationTime"
+    units="microseconds" expires_after="2027-05-10">
+  <owner>hiroshige@chromium.org</owner>
+  <owner>taiyo@chromium.org</owner>
+  <owner>chrome-prerendering@google.com</owner>
+  <summary>
+    Records the time taken by `BrowserContextImpl::GetPrefetchService()` called
+    in `PrePrefetchService::Create()`, which creates `PrefetchService` (if not
+    yet created) when the `PrePrefetchServiceCreatesPrefetchService` feature is
+    enabled. Used to evaluate the cost of creating `PrefetchService` in
+    `PrePrefetchService::Create()` (e.g. during
+    `android_webview::AwBrowserContext` construction).
+
+    Only recorded on clients with high-resolution clocks.
   </summary>
 </histogram>
 
@@ -432,6 +451,24 @@ chromium-metrics-reviews@google.com.
     `PrePrefetchServiceImpl::StartPrePrefetchRequestInternal()` waiting for
     `PrePrefetchServiceCore::StartPrePrefetchRequest` to complete execution on
     its core sequence task runner.
+  </summary>
+</histogram>
+
+<histogram name="Preloading.Prefetch.PrePrefetch.ServiceCreationTime"
+    units="microseconds" expires_after="2027-05-10">
+  <owner>hiroshige@chromium.org</owner>
+  <owner>taiyo@chromium.org</owner>
+  <owner>chrome-prerendering@google.com</owner>
+  <summary>
+    Records the time taken by `PrePrefetchService::Create()` on the UI thread
+    (i.e. creating `PrePrefetchServiceImpl`, including its `URLLoaderFactory`
+    and pre-calculated headers, and also `PrefetchService` when the
+    `PrePrefetchServiceCreatesPrefetchService` feature is enabled). Recorded
+    once per `PrePrefetchService::Create()` call, which is used e.g. during
+    `android_webview::AwBrowserContext` construction. Used to evaluate the
+    impact of creating `PrefetchService` in `PrePrefetchService::Create()`.
+
+    Only recorded on clients with high-resolution clocks.
   </summary>
 </histogram>
 

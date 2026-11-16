@@ -5,6 +5,7 @@
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -51,6 +52,7 @@
 
 #if BUILDFLAG(IS_WIN)
 #include "content/browser/renderer_host/input/stylus_handwriting_controller_win.h"
+#include "ui/events/win/stylus_handwriting_properties_win.h"
 #endif  // BUILDFLAG(IS_WIN)
 
 namespace content {
@@ -264,10 +266,6 @@ bool RenderWidgetHostViewChildFrame::IsSurfaceAvailableForCopy() {
 
 void RenderWidgetHostViewChildFrame::ShowWithVisibility(
     PageVisibilityState /*page_visibility*/) {
-  if (frame_connector_) {
-    frame_connector_->SetKeepSurfaceAlive(true);
-  }
-
   if (!host()->IsHidden()) {
     return;
   }
@@ -286,10 +284,6 @@ void RenderWidgetHostViewChildFrame::Show() {
 }
 
 void RenderWidgetHostViewChildFrame::Hide() {
-  if (frame_connector_) {
-    frame_connector_->SetKeepSurfaceAlive(false);
-  }
-
   if (host()->IsHidden()) {
     return;
   }
@@ -515,21 +509,26 @@ bool RenderWidgetHostViewChildFrame::ShouldInitiateStylusWriting() {
               : RenderWidgetHostViewBase::ShouldInitiateStylusWriting();
 }
 
-std::optional<gfx::Vector2dF>
-RenderWidgetHostViewChildFrame::GetStylusHandwritingPixelsPerInch() {
+std::optional<ui::StylusHandwritingPropertiesWin>
+RenderWidgetHostViewChildFrame::TakeStylusHandwritingProperties(
+    uint32_t touch_start_event_id) {
   auto* root = GetRootView();
-  return root ? root->GetStylusHandwritingPixelsPerInch() : std::nullopt;
+  return root ? root->TakeStylusHandwritingProperties(touch_start_event_id)
+              : std::nullopt;
 }
 
-void RenderWidgetHostViewChildFrame::OnStartStylusWriting() {
+void RenderWidgetHostViewChildFrame::OnStartStylusWriting(
+    const std::optional<input::StylusWritingProperties>& properties) {
   auto* root = GetRootView();
   if (!root) {
     return;
   }
   root->StartStylusWritingFromChildHostView(
-      this, base::BindRepeating(
-                &RenderWidgetHostViewChildFrame::OnFocusHandwritingTarget,
-                weak_factory_.GetWeakPtr()));
+      this,
+      base::BindRepeating(
+          &RenderWidgetHostViewChildFrame::OnFocusHandwritingTarget,
+          weak_factory_.GetWeakPtr()),
+      properties);
 }
 
 void RenderWidgetHostViewChildFrame::OnEditElementFocusedForStylusWriting(
@@ -1025,6 +1024,12 @@ bool RenderWidgetHostViewChildFrame::TransformPointToCoordSpaceForView(
 gfx::PointF RenderWidgetHostViewChildFrame::TransformRootPointToViewCoordSpace(
     const gfx::PointF& point) {
   return input_helper_->TransformRootPointToViewCoordSpace(point);
+}
+
+std::optional<gfx::PointF>
+RenderWidgetHostViewChildFrame::TryTransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return input_helper_->TryTransformRootPointToViewCoordSpace(point);
 }
 
 bool RenderWidgetHostViewChildFrame::IsRenderWidgetHostViewChildFrame() const {

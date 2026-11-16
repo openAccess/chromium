@@ -29,9 +29,9 @@ import org.chromium.base.supplier.SettableNullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.hub.HubColorMixer.ColorBlendProgress;
 import org.chromium.chrome.browser.hub.HubPaneHostView.PaneViewProvider;
-import org.chromium.chrome.browser.hub.swipe.HubPaneSwipeAnimationConfig;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
@@ -81,6 +81,8 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
     private final PaneBackStackHandler mPaneBackStackHandler;
     private final NullableObservableSupplier<Tab> mCurrentTabSupplier;
     private @Nullable EdgeToEdgePadAdjuster mEdgeToEdgePadAdjuster;
+    // The pane a swipe is previewing. It goes back to WARM when the swipe ends, unless focused.
+    private @Nullable @PaneId Integer mPreviewPaneId;
 
     /**
      * Creates the {@link HubCoordinator}.
@@ -118,7 +120,9 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         Context context = containerView.getContext();
         mBackPressStateChangeCallback = (ignored) -> updateHandleBackPressSupplier();
         mPaneManager = paneManager;
-        mShouldAnimateSearchBox = HubPaneSwipeAnimationConfig.shouldAnimateSearchBox();
+        mShouldAnimateSearchBox =
+                ChromeFeatureList.sEnableSwipeToSwitchPane.isEnabled()
+                        && ChromeFeatureList.sSwipeToSwitchPaneAnimateSearchBox.getValue();
         mFocusedPaneHandleBackPressSupplier =
                 paneManager
                         .getFocusedPaneSupplier()
@@ -231,6 +235,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
     /** Removes the hub from the layout tree and cleans up resources. */
     @SuppressWarnings("NullAway")
     public void destroy() {
+        endPreview();
         mContainerView.removeView(mMainHubParent);
 
         mFocusedPaneHandleBackPressSupplier.removeObserver(
@@ -324,11 +329,16 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
     @Override
     public @Nullable View prepareAndGetAdjacentPaneView(boolean isSwipeLeft) {
         Pane nextPane = getAdjacentPane(isSwipeLeft);
-        if (nextPane != null) {
-            nextPane.notifyLoadHint(LoadHint.WARM);
-            return nextPane.getRootView();
-        }
-        return null;
+        if (nextPane == null) return null;
+
+        @PaneId int nextPaneId = nextPane.getPaneId();
+        // A new swipe can start while the last one is settling, so end that preview first.
+        if (mPreviewPaneId != null && mPreviewPaneId != nextPaneId) endPreview();
+        mPreviewPaneId = nextPaneId;
+        // This drops any hint still queued for the pane, which would otherwise end the preview
+        // mid-swipe.
+        mPaneManager.notifyLoadHint(nextPaneId, LoadHint.PREVIEW);
+        return nextPane.getRootView();
     }
 
     @Override
@@ -338,6 +348,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
 
         Pane nextPane = getAdjacentPane(isSwipeLeft);
         if (nextPane == null) {
+            endPreview();
             mPaneTransitionProgressSupplier.set(null);
             return;
         }
@@ -351,6 +362,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
         }
 
         mPaneManager.focusPane(nextPane.getPaneId());
+        endPreview();
         // End the transition only after the focus change so the toolbar settles on the new pane's
         // search box state without animating it.
         mPaneTransitionProgressSupplier.set(null);
@@ -358,10 +370,7 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
 
     @Override
     public void onSwipeSwitchCancel(boolean isSwipeLeft) {
-        Pane nextPane = getAdjacentPane(isSwipeLeft);
-        if (nextPane != null) {
-            nextPane.notifyLoadHint(LoadHint.WARM);
-        }
+        endPreview();
         mHubToolbarCoordinator.setBlockTabSelectionCallback(false);
         mSwipeAnimationProgressSupplier.set(null);
         mPaneTransitionProgressSupplier.set(null);
@@ -492,6 +501,18 @@ public class HubCoordinator implements PaneHubController, BackPressHandler, Pane
             }
         }
         return INVALID_PANE_SWITCHER_INDEX;
+    }
+
+    /** Sends {@link LoadHint#WARM} to the pane a swipe previewed, unless the swipe focused it. */
+    private void endPreview() {
+        if (mPreviewPaneId == null) return;
+
+        @PaneId int paneId = mPreviewPaneId;
+        mPreviewPaneId = null;
+        Pane focusedPane = getFocusedPane();
+        if (focusedPane != null && focusedPane.getPaneId() == paneId) return;
+
+        mPaneManager.notifyLoadHint(paneId, LoadHint.WARM);
     }
 
     private @Nullable Pane getFocusedPane() {

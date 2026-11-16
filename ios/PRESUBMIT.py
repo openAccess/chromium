@@ -8,6 +8,7 @@ for more details about the presubmit API built into depot_tools.
 """
 
 import os
+import re
 import subprocess
 import xml.etree.ElementTree as ElementTree
 
@@ -801,6 +802,110 @@ def _CheckLargeImagesets(input_api, output_api):
     return [output_api.PresubmitError(warning_message, items=errors)]
 
 
+def _IsDocumentationSvg(svg_abs_path):
+    """Returns whether the SVG at `svg_abs_path` is a documentation diagram.
+
+    An SVG is treated as a documentation diagram only if there is positive
+    evidence that docs use it: either a PNG render with the same name already
+    exists next to it, or a Markdown file in its directory or the parent
+    directory references it by file name. SVGs that are app assets have
+    neither, so they are never flagged.
+    """
+    if os.path.isfile(svg_abs_path[: -len('.svg')] + '.png'):
+        return True
+
+    svg_dir = os.path.dirname(svg_abs_path)
+    reference_regex = re.compile(
+        r'(?<![\w.-])' + re.escape(os.path.basename(svg_abs_path)) + r'\b'
+    )
+    for doc_dir in (svg_dir, os.path.dirname(svg_dir)):
+        try:
+            names = os.listdir(doc_dir)
+        except OSError:
+            continue
+        for name in names:
+            if not name.lower().endswith('.md'):
+                continue
+            try:
+                with open(
+                    os.path.join(doc_dir, name),
+                    encoding='utf-8',
+                    errors='ignore',
+                ) as md_file:
+                    if reference_regex.search(md_file.read()):
+                        return True
+            except OSError:
+                continue
+    return False
+
+
+def _CheckSvgHasUpdatedPng(input_api, output_api):
+    """Checks that changed documentation SVGs have their PNG render updated.
+
+    Gitiles only renders PNG, JPEG, and GIF images inline in Markdown, so
+    diagrams in docs are committed as an editable SVG source plus a PNG render
+    with the same name in the same directory. This check catches a
+    documentation SVG that is added or modified without its PNG render also
+    being added or modified.
+
+    Only SVGs identified by `_IsDocumentationSvg` are checked. SVGs inside
+    Apple asset catalogs (`.xcassets`) and `ios/third_party/` are always
+    exempt, so app assets are never affected.
+    """
+    changed_files = {
+        f.LocalPath().replace('\\', '/'): f
+        for f in input_api.AffectedFiles(include_deletes=False)
+    }
+
+    stale_svgs = []
+    for svg_path in sorted(changed_files):
+        if not svg_path.lower().endswith('.svg'):
+            continue
+        if '.xcassets/' in svg_path or svg_path.startswith('ios/third_party/'):
+            continue
+        png_path = svg_path[: -len('.svg')] + '.png'
+        if png_path in changed_files:
+            continue
+        if not _IsDocumentationSvg(changed_files[svg_path].AbsoluteLocalPath()):
+            continue
+        stale_svgs.append((svg_path, png_path))
+
+    if not stale_svgs:
+        return []
+
+    commands = [
+        '  rsvg-convert --background-color=white %s | '
+        'magick - -strip -depth 8 %s' % (svg_path, png_path)
+        for svg_path, png_path in stale_svgs
+    ]
+    error_message = (
+        '\n'.join(
+            [
+                'SVG file(s) changed without a matching change to the PNG of '
+                'the same name in the same directory. Gitiles cannot render '
+                'SVGs in Markdown, so docs reference the PNG render and link '
+                'to the SVG as its source. Regenerate the PNG(s) by running '
+                'these commands from the src/ directory:',
+                '',
+            ]
+            + commands
+            + [
+                '',
+                'rsvg-convert is required because ImageMagick\'s built-in SVG '
+                'renderer drops arrowheads and dash patterns. Install it with '
+                '`sudo apt install librsvg2-bin` (Linux) or '
+                '`brew install librsvg` (macOS). The PNG is rendered at the '
+                'SVG\'s native size because Gitiles has no image sizing '
+                'syntax. Reference it from Markdown as '
+                '`![Alt text](diagram.png)` followed by '
+                '`[SVG source](diagram.svg)`.',
+            ]
+        )
+        + '\n'
+    )
+    return [output_api.PresubmitError(error_message)]
+
+
 def _ImportEarlGreyHeaderUtil(input_api):
     """Imports the shared `earl_grey_header_util` module."""
     try:
@@ -852,11 +957,34 @@ def _CheckEarlGreyHeaderDocstrings(input_api, output_api):
     and return values (for non-void methods).
     """
     eg_util = _ImportEarlGreyHeaderUtil(input_api)
+    from pathlib import Path
+
+    mcp_domains_path = Path(
+        input_api.os_path.join(
+            input_api.PresubmitLocalPath(),
+            'testing',
+            'earl_grey_mcp',
+            'mcp_domains.yaml',
+        )
+    )
+    if (
+        not mcp_domains_path.is_file()
+        and hasattr(input_api, 'change')
+        and hasattr(input_api.change, 'RepositoryRoot')
+    ):
+        mcp_domains_path = (
+            Path(input_api.change.RepositoryRoot())
+            / 'ios'
+            / 'testing'
+            / 'earl_grey_mcp'
+            / 'mcp_domains.yaml'
+        )
+    domain_rules = eg_util.load_domain_rules(mcp_domains_path)
 
     errors = []
     for filename in input_api.AffectedFiles(include_deletes=False):
         local_path = filename.LocalPath()
-        if not eg_util.is_earlgrey_header(local_path):
+        if not eg_util.is_earlgrey_header(local_path, rules=domain_rules):
             continue
 
         changed_lines = {line_num for line_num, _ in filename.ChangedContents()}
@@ -958,6 +1086,7 @@ def CheckChange(input_api, output_api):
     results.extend(_CheckNoFlakyUnitTest(input_api, output_api))
     results.extend(_CheckUsageOfSystemColors(input_api, output_api))
     results.extend(_CheckLargeImagesets(input_api, output_api))
+    results.extend(_CheckSvgHasUpdatedPng(input_api, output_api))
     results.extend(_CheckEarlGreyHeaderDocstrings(input_api, output_api))
     results.extend(input_api.canned_checks.RunRuff(input_api, output_api))
     results.extend(

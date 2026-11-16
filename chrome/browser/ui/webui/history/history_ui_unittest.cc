@@ -14,7 +14,6 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "base/android/device_info.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
-#include "ui/android/window_android.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/webui/history/browsing_history_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
@@ -157,21 +156,6 @@ TEST_F(HistoryUITest, OpenClearBrowsingDataWithNullNativeWindowDoesNotCrash) {
       ->OpenClearBrowsingDataDialog();
 }
 
-TEST_F(HistoryUITest, OpenClearBrowsingDataWithNativeWindowDoesNotCrash) {
-  std::unique_ptr<ui::WindowAndroid::ScopedWindowAndroidForTesting> window =
-      ui::WindowAndroid::CreateForTesting();
-  window->get()->AddChild(web_contents_->GetNativeView());
-  ASSERT_EQ(web_contents_->GetTopLevelNativeWindow(), window->get());
-
-  auto history_ui = std::make_unique<HistoryUI>(web_ui());
-  mojo::Remote<history::mojom::PageHandler> handler_remote;
-  history_ui->BindInterface(handler_remote.BindNewPipeAndPassReceiver());
-  ASSERT_NE(history_ui->GetBrowsingHistoryHandlerForTesting(), nullptr);
-
-  history_ui->GetBrowsingHistoryHandlerForTesting()
-      ->OpenClearBrowsingDataDialog();
-}
-
 TEST_F(HistoryUITest, WebUIConfigEnabledOnlyWhenFeatureEnabled) {
   HistoryUIConfig config;
   {
@@ -185,6 +169,8 @@ TEST_F(HistoryUITest, WebUIConfigEnabledOnlyWhenFeatureEnabled) {
 
     base::android::device_info::set_is_desktop_for_testing(true);
     EXPECT_TRUE(config.IsWebUIEnabled(profile()));
+    EXPECT_FALSE(config.IsWebUIEnabled(
+        profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true)));
   }
   {
     base::test::ScopedFeatureList feature_list;

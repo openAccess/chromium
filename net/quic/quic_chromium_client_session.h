@@ -231,7 +231,9 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     // Starts a request to create a stream.  If OK is returned, then
     // |stream_| will be updated with the newly created stream.  If
     // ERR_IO_PENDING is returned, then when the request is eventuallly
-    // complete |callback| will be called.
+    // complete |callback| will be called. Returns (or completes with)
+    // `ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED` if the session received an
+    // HTTP/3 GOAWAY before the stream could be created.
     int RequestStream(bool requires_confirmation,
                       CompletionOnceCallback callback,
                       const NetworkTrafficAnnotationTag& traffic_annotation);
@@ -294,10 +296,16 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     }
 
     MultiplexedSessionCreationInitiator session_creation_initiator() const {
-      return session_ ? session_->session_creation_initiator()
-                      : MultiplexedSessionCreationInitiator::kUnknown;
+      return session_creation_initiator_;
     }
     bool WasEverUsed() const;
+    // Returns true if the session received a valid HTTP/3 GOAWAY frame. Remains
+    // valid after the session is closed.
+    bool Http3GoAwayReceived() const;
+
+    // Returns true if the underlying session was ever used to create a stream.
+    // Remains valid after the session is closed.
+    bool WasEverUsedToCreateStreams() const;
 
     // Retrieves any DNS aliases for the given session key from the map stored
     // in `session_pool_`. Includes all known aliases, e.g. from A, AAAA, or
@@ -356,6 +364,8 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
                          bool quic_connection_migration_successful,
                          LoadTimingInfo::ConnectTiming connect_timing,
                          bool was_ever_used,
+                         bool was_ever_used_to_create_streams,
+                         bool http3_goaway_received,
                          const ConnectionMigrationInformation& migration_info);
 
     // Called by |request| to create a stream.
@@ -401,7 +411,15 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     // The last known set of migration information
     ConnectionMigrationInformation last_migration_information_;
 
+    // How the underlying session was created. Saved at construction so that it
+    // remains available after the session is closed.
+    const MultiplexedSessionCreationInitiator session_creation_initiator_;
+
     bool was_ever_used_ = false;
+    bool was_ever_used_to_create_streams_ = false;
+    // Cached value of the session's `http3_goaway_received()`, set when the
+    // session is closed. Only read once `session_` is null.
+    bool was_http3_goaway_received_ = false;
   };
 
   // A helper class used to manage a request to create a stream.
@@ -468,7 +486,7 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     std::unique_ptr<QuicChromiumClientStream::Handle> stream_;
     // For tracking how much time pending stream requests wait.
     base::TimeTicks pending_start_time_;
-    State next_state_;
+    State next_state_ = STATE_NONE;
 
     const NetworkTrafficAnnotationTag traffic_annotation_;
 
@@ -683,11 +701,24 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // including cases where the stream creation failed.
   bool was_ever_used_to_create_streams() const;
 
+  // Returns true if a valid HTTP/3 GOAWAY frame was received from the peer.
+  // Unlike `goaway_received()`, this is not set by malformed GOAWAY frames that
+  // close the connection.
+  bool http3_goaway_received() const { return http3_goaway_received_; }
+
   // Returns true if this side closed the connection with
-  // QUIC_CONNECTION_CANCELLED, e.g. because the session attempt that owned it
-  // was cancelled. Unlike error(), this is already set while the pool is
-  // notified that the session is going away.
+  // QUIC_CONNECTION_CANCELLED or cancelled it for proactive IP pooling. Unlike
+  // error(), this is already set while the pool is notified that the session is
+  // going away.
   bool WasClosedByLocalCancellation() const;
+
+  // Returns true if unconfirmed-handshake failure histograms should be skipped
+  // because the owning session attempt was cancelled for proactive IP pooling.
+  bool ShouldSkipUnconfirmedHandshakeMetrics() const;
+
+  void MarkClosedByProactiveIpPooling() {
+    closed_by_proactive_ip_pooling_ = true;
+  }
 
   const QuicConnectionReuseDetails& quic_connection_reuse_details() const {
     return quic_connection_reuse_details_;
@@ -1014,6 +1045,14 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
     return received_connection_options_;
   }
 
+  void set_fallback_ipv4_peer_address(
+      const quic::QuicSocketAddress& ipv4_peer_address);
+
+  const std::optional<quic::QuicSocketAddress>& fallback_ipv4_peer_address()
+      const {
+    return fallback_ipv4_peer_address_;
+  }
+
  protected:
   // quic::QuicSession methods:
   bool ShouldCreateIncomingStream(quic::QuicStreamId id) override;
@@ -1062,12 +1101,30 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
       bool close_session_on_error,
       MigrationCallback migration_callback);
 
+  // Returns whether a migration attempt whose socket configuration failed with
+  // `rv` at `error_step` should fall back to `fallback_ipv4_peer_address_`.
+  // For candidate errors (an IPv6 network migration failing to connect with
+  // ERR_ADDRESS_UNREACHABLE), this also records
+  // Net.Quic.Migration.Attempt.V6ToV4Fallback.CanFallback, so it must be
+  // called at most once per failed attempt.
+  bool CanFallbackToIpv4OnConnectError(
+      const QuicMigrationAttemptContext& context,
+      int rv,
+      QuicSocketConfigStep error_step) const;
+
   // Creates a new socket, packet reader, and packet writer, and wraps them in a
   // `QuicMigrationAttemptContext` for a new migration attempt.
   std::unique_ptr<QuicMigrationAttemptContext> CreateMigrationAttemptContext(
       QuicMigrationAttemptCause cause,
       handles::NetworkHandle target_network,
       const quic::QuicSocketAddress& target_peer_address);
+
+  // Creates a new socket, packet reader, and packet writer, and wraps them in a
+  // `QuicMigrationAttemptContext` that consumes `ipv6_context` for an
+  // IPv6-to-IPv4 fallback attempt.
+  std::unique_ptr<QuicMigrationAttemptContext> CreateV6ToV4FallbackContext(
+      std::unique_ptr<QuicMigrationAttemptContext> ipv6_context,
+      const quic::QuicSocketAddress& fallback_ipv4_peer_address);
 
   // Probe on <network, peer_address>.
   // If <network, peer_addres> is identical to the current path, the probe
@@ -1288,11 +1345,14 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // True when the session is going away, and streams may no longer be created
   // on this session. Existing stream will continue to be processed.
   bool going_away_ = false;
+  // True when a valid HTTP/3 GOAWAY frame has been received from the peer.
+  bool http3_goaway_received_ = false;
   // Connection close source
   quic::ConnectionCloseSource source_ = quic::ConnectionCloseSource::FROM_SELF;
   // Connection close error. Set together with `source_`, before the pool is
   // notified, whereas quic::QuicSession::error() is set only afterwards.
   quic::QuicErrorCode connection_close_error_ = quic::QUIC_NO_ERROR;
+  bool closed_by_proactive_ip_pooling_ = false;
   // True when the session receives a go away from server due to port migration.
   bool port_migration_detected_ = false;
   bool quic_connection_migration_attempted_ = false;
@@ -1377,10 +1437,6 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
   // Must be declared after `session_key_`, as its initialization depends on it.
   const EchMode ech_mode_;
 
-  // The list of TLS Trust Anchor IDs, each in binary representation, advertised
-  // by the server in DNS.
-  std::vector<std::vector<uint8_t>> trust_anchor_ids_;
-
   const bool allow_server_preferred_address_;
 
   const MultiplexedSessionCreationInitiator session_creation_initiator_;
@@ -1397,6 +1453,13 @@ class NET_EXPORT_PRIVATE QuicChromiumClientSession
 
   bool crypto_handshake_complete_ = false;
 
+  // Alternative IPv4 peer address learned from DNS resolution at connection
+  // time. Used as a fallback target if an IPv6 connection needs to migrate
+  // to an IPv4-only network.
+  // TODO(crbug.com/580868331): Consider updating or clearing this address if
+  // the session migrates to a Server Preferred Address.
+  std::optional<quic::QuicSocketAddress> fallback_ipv4_peer_address_;
+
   base::WeakPtrFactory<QuicChromiumClientSession> weak_factory_{this};
 };
 
@@ -1406,6 +1469,15 @@ namespace features {
 // when there is an ongoing migration with probing.
 NET_EXPORT BASE_DECLARE_FEATURE(
     kQuicMigrationIgnoreDisconnectSignalDuringProbing);
+
+// When enabled, QuicChromiumClientSession registers and unregisters QUIC
+// connection close payloads with the Android system service.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicRegisterConnectionClosePayload);
+
+// When enabled, requests bound to a QUIC session that receives an HTTP/3
+// GOAWAY before a stream is created fail with
+// `ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED` instead of `ERR_CONNECTION_CLOSED`.
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicRetryPreStreamRequestsOnHttp3GoAway);
 
 }  // namespace features
 

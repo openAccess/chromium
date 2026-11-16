@@ -27,9 +27,6 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
                AutofillManager::LifecycleState),
               (override));
 
-  MOCK_METHOD(void, OnBeforeLanguageDetermined, (AutofillManager&), (override));
-  MOCK_METHOD(void, OnAfterLanguageDetermined, (AutofillManager&), (override));
-
   MOCK_METHOD(void,
               OnBeforeFormsSeen,
               (AutofillManager&,
@@ -155,6 +152,15 @@ class MockAutofillManagerObserver : public AutofillManager::Observer {
        (const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&),
        (const FillingPayload&)),
       (override));
+
+  MOCK_METHOD(void,
+              OnFillOrPreviewFormSentToRenderer,
+              (AutofillManager&,
+               FormGlobalId,
+               FieldGlobalId,
+               mojom::ActionPersistence,
+               (const base::flat_set<FieldGlobalId>&)),
+              (override));
 
   MOCK_METHOD(void,
               OnBeforeFormSubmitted,

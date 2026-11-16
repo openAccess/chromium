@@ -32,7 +32,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_MEDIASTREAM_MEDIA_STREAM_SOURCE_H_
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 
@@ -188,8 +187,6 @@ class PLATFORM_EXPORT MediaStreamSource final
   std::optional<bool> noise_supression_;
   std::optional<bool> voice_isolation_;
 };
-
-typedef HeapVector<Member<MediaStreamSource>> MediaStreamSourceVector;
 
 }  // namespace blink
 

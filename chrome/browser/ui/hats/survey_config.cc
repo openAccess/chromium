@@ -356,6 +356,18 @@ std::vector<hats::SurveyConfig> GetAllSurveyConfigs() {
       kHatsSurveyTriggerWallpaperSearch);
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  // Default Browser survey.
+  // LINT.IfChange(DefaultBrowserHatsPsdFields)
+  survey_configs.emplace_back(
+      &features::kHappinessTrackingSurveysForDesktopDefaultBrowser,
+      kHatsSurveyTriggerDefaultBrowser,
+      /*presupplied_trigger_id=*/std::nullopt,
+      /*product_specific_bits_data_fields=*/std::vector<std::string>{},
+      /*product_specific_string_data_fields=*/
+      std::vector<std::string>{"Prompt surface", "Setter type",
+                               "Dismiss count"});
+  // LINT.ThenChange(//chrome/browser/default_browser/default_browser_manager.cc:DefaultBrowserHatsPsdFields)
+
   // Scheduled Restart survey.
   // LINT.IfChange(ScheduledRestartHatsPsdFields)
   survey_configs.emplace_back(
@@ -879,14 +891,20 @@ std::vector<hats::SurveyConfig> GetAllSurveyConfigs() {
       &::autofill::features::
           kAutofillPersonalizationAndTrustOneTimePasswordSurvey,
       kHatsSurveyTriggerAutofillPersonalizationAndTrustOneTimePasswordFilled,
-      /*presupplied_trigger_id=*/std::nullopt,
+      /*presupplied_trigger_id=*/
+      ::autofill::features::
+          kAutofillPersonalizationAndTrustOneTimePasswordSurveyFilledTriggerId
+              .Get(),
       /*product_specific_bits_data_fields=*/std::vector<std::string>{},
       autofill_personalization_and_trust_product_specific_data);
   survey_configs.emplace_back(
       &::autofill::features::
           kAutofillPersonalizationAndTrustOneTimePasswordSurvey,
       kHatsSurveyTriggerAutofillPersonalizationAndTrustOneTimePasswordDismissed,
-      /*presupplied_trigger_id=*/std::nullopt,
+      /*presupplied_trigger_id=*/
+      ::autofill::features::
+          kAutofillPersonalizationAndTrustOneTimePasswordSurveyDismissedTriggerId
+              .Get(),
       /*product_specific_bits_data_fields=*/std::vector<std::string>{},
       /*product_specific_string_data_fields=*/
       with_client_context_psd_fields({
@@ -924,18 +942,45 @@ std::vector<hats::SurveyConfig> GetAllSurveyConfigs() {
           // Number of results that were found for the last query.
           "Query results count",
       }));
+  const std::vector<std::string>
+      autofill_personalization_and_trust_fedcm_product_specific_data{
+          // Whether the FedCM request was triggered using active or
+          // passive mode.
+          "FedCM UI mode",
+          // Whether the FedCM interaction was a sign-in or sign-up.
+          "FedCM interaction type",
+          // Number of accounts offered to the user. Due to privacy
+          // constraints, counts are only accurately recorded until 5 ("5+"
+          // for higher values).
+          "Number of accounts shown",
+          // eTLD+1 of the origin of the primary main frame where the survey
+          // was triggered.
+          "Origin of the website (eTLD+1)",
+      };
   survey_configs.emplace_back(
       &::autofill::features::kAutofillPersonalizationAndTrustFedCmSurvey,
       kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAccepted,
-      /*presupplied_trigger_id=*/std::nullopt,
+      /*presupplied_trigger_id=*/
+      ::autofill::features::
+          kAutofillPersonalizationAndTrustFedCmSurveyAcceptedTriggerId.Get(),
       /*product_specific_bits_data_fields=*/std::vector<std::string>{},
-      /*product_specific_string_data_fields=*/std::vector<std::string>{});
+      autofill_personalization_and_trust_fedcm_product_specific_data);
+  survey_configs.emplace_back(
+      &::autofill::features::kAutofillPersonalizationAndTrustFedCmSurvey,
+      kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmAutoReauthn,
+      /*presupplied_trigger_id=*/
+      ::autofill::features::
+          kAutofillPersonalizationAndTrustFedCmSurveyAutoReauthnTriggerId.Get(),
+      /*product_specific_bits_data_fields=*/std::vector<std::string>{},
+      autofill_personalization_and_trust_fedcm_product_specific_data);
   survey_configs.emplace_back(
       &::autofill::features::kAutofillPersonalizationAndTrustFedCmSurvey,
       kHatsSurveyTriggerAutofillPersonalizationAndTrustFedCmDismissed,
-      /*presupplied_trigger_id=*/std::nullopt,
+      /*presupplied_trigger_id=*/
+      ::autofill::features::
+          kAutofillPersonalizationAndTrustFedCmSurveyDismissedTriggerId.Get(),
       /*product_specific_bits_data_fields=*/std::vector<std::string>{},
-      /*product_specific_string_data_fields=*/std::vector<std::string>{});
+      autofill_personalization_and_trust_fedcm_product_specific_data);
 
   survey_configs.emplace_back(
       &omnibox_feature_configs::HappinessTrackingSurveyForOmniboxOnFocusZps::

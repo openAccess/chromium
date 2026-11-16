@@ -24,6 +24,7 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/service/glic_activity_manager.h"
 #include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
+#include "chrome/browser/glic/service/glic_activity_manager_impl.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
@@ -39,6 +40,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/controls/button/button.h"
@@ -98,7 +100,7 @@ class TestGlicSplitButtonDelegate : public glic::GlicSplitButtonDelegate {
           base::BindRepeating(
               &GlicActivityListBubbleController::OnBubbleDestroyed,
               controller_->GetWeakPtr()));
-      bubble_->Show(anchor_view_);
+      bubble_->Show(views::BubbleAnchor(anchor_view_));
     }
   }
 
@@ -641,22 +643,27 @@ TEST_F(GlicActivityListBubbleControllerActivityHubTest,
        CreateRowViewModels_ActorTasks) {
   auto* fake_actor_service = static_cast<actor::ActorKeyedServiceFake*>(
       actor::ActorKeyedService::Get(profile_));
-  auto* activity_manager = &mock_glic_keyed_service_->activity_manager();
+  auto* activity_manager = &mock_glic_keyed_service_->activity_manager_impl();
   ASSERT_TRUE(activity_manager);
 
   actor::TaskId id_1 = fake_actor_service->CreateTaskForTesting();
   fake_actor_service->PauseTaskForTesting(id_1, /*from_actor=*/true);
   activity_manager->OnTabAddedToTask(id_1);
 
-  actor::TaskId id_2 = fake_actor_service->CreateTaskForTesting();
+  actor::TaskId id_2 =
+      fake_actor_service->CreateExperimentalTriggeringTaskWithTitleForTesting(
+          "");
   activity_manager->OnTabAddedToTask(id_2);
 
   auto rows = controller_->CreateRowViewModels();
   ASSERT_EQ(2u, rows.size());
   EXPECT_EQ(id_1, rows[0].task_id);
+  EXPECT_EQ(u"Test Task", rows[0].title);
   EXPECT_TRUE(rows[0].needs_review);
   EXPECT_FALSE(rows[0].has_been_seen);
   EXPECT_EQ(id_2, rows[1].task_id);
+  EXPECT_EQ(l10n_util::GetStringUTF16(IDS_GLIC_ACTIVITY_UNTITLED_TASK),
+            rows[1].title);
   EXPECT_FALSE(rows[1].needs_review);
 
   // Clicking the row marks the activity as seen in GlicActivityManager.
@@ -672,7 +679,7 @@ TEST_F(GlicActivityListBubbleControllerActivityHubTest,
 
 TEST_F(GlicActivityListBubbleControllerActivityHubTest,
        OnActivityAlert_InterruptionLevels) {
-  auto* activity_manager = &mock_glic_keyed_service_->activity_manager();
+  auto* activity_manager = &mock_glic_keyed_service_->activity_manager_impl();
   ASSERT_TRUE(activity_manager);
 
   // Seed an in-progress conversation activity so there is a displayable row
@@ -719,9 +726,13 @@ TEST_F(GlicActivityListBubbleControllerActivityHubTest,
 
 TEST_F(GlicActivityListBubbleControllerActivityHubTest,
        CreateRowViewModels_ConversationActivities) {
-  auto* manager = &mock_glic_keyed_service_->activity_manager();
+  auto* manager = &mock_glic_keyed_service_->activity_manager_impl();
   ASSERT_TRUE(manager);
 
+  manager->OnConversationActivityStateChanged(
+      "conv_idle", {.state = GlicActivityState::kIdle,
+                    .title = "Background Chat",
+                    .is_currently_visible = true});
   manager->OnConversationActivityStateChanged(
       "conv_seen", {.state = GlicActivityState::kCompleted,
                     .title = "Seen Topic",
@@ -735,7 +746,7 @@ TEST_F(GlicActivityListBubbleControllerActivityHubTest,
       "conv_working", {.state = GlicActivityState::kInProgress, .title = ""});
 
   auto rows = controller_->CreateRowViewModels();
-  ASSERT_EQ(3u, rows.size());
+  ASSERT_EQ(4u, rows.size());
 
   // Priority 1: Unseen completed response.
   EXPECT_EQ("conv_test_123", rows[0].conversation_id);
@@ -745,23 +756,46 @@ TEST_F(GlicActivityListBubbleControllerActivityHubTest,
   EXPECT_FALSE(rows[0].has_been_seen);
   EXPECT_EQ(ui::kColorSysPrimary, rows[0].icon_and_subtitle_color);
 
-  // Priority 2: Conversation in progress (with default Gemini title fallback).
+  // Priority 2: Conversation in progress (with New chat placeholder fallback).
   EXPECT_EQ("conv_working", rows[1].conversation_id);
-  EXPECT_EQ(l10n_util::GetStringUTF16(IDS_GLIC_ACTIVITY_TITLE_GEMINI),
+  EXPECT_EQ(l10n_util::GetStringUTF16(IDS_GLIC_ACTIVITY_NEW_CHAT),
             rows[1].title);
   EXPECT_EQ(l10n_util::GetStringUTF16(IDS_GLIC_ACTIVITY_WORKING),
             rows[1].subtitle);
   EXPECT_FALSE(rows[1].has_been_seen);
 
-  // Priority 4: Seen completed conversation.
-  EXPECT_EQ("conv_seen", rows[2].conversation_id);
-  EXPECT_EQ(u"Seen Topic", rows[2].title);
+  // Priority 4: Idle and seen conversations (tie-broken by conversation ID).
+  EXPECT_EQ("conv_idle", rows[2].conversation_id);
+  EXPECT_EQ(u"Background Chat", rows[2].title);
   EXPECT_EQ(u"", rows[2].subtitle);
   EXPECT_TRUE(rows[2].has_been_seen);
   EXPECT_EQ(ui::kColorMenuIcon, rows[2].icon_and_subtitle_color);
 
-  // Clicking a conversation row marks it as seen and invokes GlicKeyedService.
-  EXPECT_CALL(*mock_glic_keyed_service_, Invoke(testing::_)).Times(1);
+  EXPECT_EQ("conv_seen", rows[3].conversation_id);
+  EXPECT_EQ(u"Seen Topic", rows[3].title);
+  EXPECT_EQ(u"", rows[3].subtitle);
+  EXPECT_TRUE(rows[3].has_been_seen);
+  EXPECT_EQ(ui::kColorMenuIcon, rows[3].icon_and_subtitle_color);
+
+  // Clicking a conversation row marks it as seen, activates the conversation's
+  // bound tab/window, and invokes `GlicKeyedService` with
+  // `mojom::InvocationSource::kActivityListBubble`.
+  EXPECT_CALL(mock_glic_keyed_service_->mock_coordinator(),
+              ActivateTabWithConversation("conv_test_123"));
+  EXPECT_CALL(*mock_glic_keyed_service_, Invoke(testing::_))
+      .WillOnce(
+          [this](GlicInvokeOptions options) -> base::WeakPtr<GlicInstance> {
+            EXPECT_EQ(options.GetInvocationSource(),
+                      mojom::InvocationSource::kActivityListBubble);
+            const auto* last_active_or_new =
+                std::get_if<LastActiveOrNew>(&options.target.surface);
+            EXPECT_NE(last_active_or_new, nullptr);
+            if (last_active_or_new) {
+              EXPECT_EQ(last_active_or_new->window,
+                        browser_window_interface_.get());
+            }
+            return nullptr;
+          });
   ASSERT_TRUE(rows[0].on_clicked);
   rows[0].on_clicked.Run();
 

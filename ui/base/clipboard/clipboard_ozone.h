@@ -11,6 +11,8 @@
 #include <string_view>
 #include <vector>
 
+#include "base/component_export.h"
+#include "base/containers/span.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_metrics.h"
@@ -21,15 +23,17 @@ namespace ui {
 // Clipboard implementation for Ozone-based ports. It delegates the platform
 // specifics to the PlatformClipboard instance provided by the Ozone platform.
 // Currently, used on Linux Desktop, i.e: X11 and Wayland platforms.
-class ClipboardOzone : public Clipboard {
+class COMPONENT_EXPORT(UI_BASE_CLIPBOARD) ClipboardOzone : public Clipboard {
  public:
   ClipboardOzone(const ClipboardOzone&) = delete;
   ClipboardOzone& operator=(const ClipboardOzone&) = delete;
 
  private:
   friend class Clipboard;
+  friend class ClipboardOzoneTest;
 
   ClipboardOzone();
+  explicit ClipboardOzone(PlatformClipboard* platform_clipboard);
   ~ClipboardOzone() override;
 
   // Clipboard overrides:
@@ -78,13 +82,18 @@ class ClipboardOzone : public Clipboard {
                      ReadFilenamesCallback callback) const override;
   void ReadURL(const std::optional<DataTransferEndpoint>& data_dst,
                ReadUrlCallback callback) const override;
+  void ReadURLs(const std::optional<DataTransferEndpoint>& data_dst,
+                ReadUrlsCallback callback) const override;
   void ReadData(const ClipboardFormatType& format,
                 const std::optional<DataTransferEndpoint>& data_dst,
                 ReadDataCallback callback) const override;
 
   bool IsSelectionBufferAvailable() const override;
   void WritePortableTextRepresentation(ClipboardBuffer buffer,
-                                       const ObjectMap& objects);
+                                       const ObjectMap& objects,
+                                       PrivacyTypes privacy_types,
+                                       std::string_view fallback_text);
+  void WritePrivacyMetadata(PrivacyTypes privacy_types);
   void WritePortableAndPlatformRepresentations(
       ClipboardBuffer buffer,
       const ObjectMap& objects,
@@ -98,7 +107,7 @@ class ClipboardOzone : public Clipboard {
   void WriteSvg(std::string_view markup) override;
   void WriteRTF(std::string_view rtf) override;
   void WriteFilenames(std::vector<ui::FileInfo> filenames) override;
-  void WriteURL(const ClipboardUrlInfo& url_info) override;
+  void WriteURLs(base::span<const ClipboardUrlInfo> url_infos) override;
   void WriteWebSmartPaste() override;
   void WriteBitmap(const SkBitmap& bitmap) override;
   void WriteData(const ClipboardFormatType& format,

@@ -48,6 +48,8 @@ source_set("link_capturing") {
     sources += [
       "chromeos_apps_intent_picker_delegate.cc",
       "chromeos_apps_intent_picker_delegate.h",
+      "chromeos_link_capturing_user_choice.cc",
+      "chromeos_link_capturing_user_choice.h",
       "chromeos_reimpl_navigation_capturing_throttle.cc",
       "chromeos_reimpl_navigation_capturing_throttle.h",
       "metrics/intent_handling_metrics.cc",
@@ -93,6 +95,7 @@ source_set("test_support") {
     ":link_capturing",
     "//base/test:test_support",
     "//chrome/browser:test_support",
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/browser/web_applications",
     "//chrome/browser/web_applications:features",
     "//chrome/common:chrome_features",

@@ -19,6 +19,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 
 import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.base.test.util.Criteria.checkThat;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
@@ -44,13 +45,11 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.ChromeActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.locale.LocaleManager;
 import org.chromium.chrome.browser.locale.LocaleManagerDelegate;
@@ -70,7 +69,6 @@ import org.chromium.content_public.common.ContentSwitches;
 import org.chromium.ui.base.ActivityKeyboardVisibilityDelegate;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.DeviceInput;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.util.Map;
 import java.util.Set;
@@ -78,7 +76,6 @@ import java.util.Set;
 /** Instrumentation tests for the LocationBar component. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
@@ -293,7 +290,7 @@ public class LocationBarTest {
                     mUrlBar.requestFocus();
                 });
 
-        ViewUtils.waitForVisibleView(withId(R.id.mic_button));
+        waitForView(withId(R.id.mic_button));
 
         onView(withId(R.id.mic_button))
                 .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
@@ -338,7 +335,7 @@ public class LocationBarTest {
                     mUrlBar.requestFocus();
                 });
 
-        ViewUtils.waitForVisibleView(withId(R.id.mic_button));
+        waitForView(withId(R.id.mic_button));
         onView(withId(R.id.lens_camera_button)).check(matches(not(isDisplayed())));
         onView(withId(R.id.delete_button)).check(matches(not(isDisplayed())));
         assertLocationBarButtonsAre(R.id.mic_button);
@@ -376,7 +373,7 @@ public class LocationBarTest {
                     mUrlBar.requestFocus();
                 });
 
-        ViewUtils.waitForVisibleView(withId(R.id.lens_camera_button));
+        waitForView(withId(R.id.lens_camera_button));
         onView(withId(R.id.lens_camera_button)).check(matches(isDisplayed()));
         onView(withId(R.id.delete_button)).check(matches(not(isDisplayed())));
         assertLocationBarButtonsAre(R.id.lens_camera_button, R.id.mic_button);
@@ -399,60 +396,27 @@ public class LocationBarTest {
 
     @Test
     @MediumTest
-    @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
+    @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscDisabled_DesktopDisabled() {
+    public void testFocusLogic_buttonVisibilityTablet_DesktopDisabled() {
         OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
         DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
         DeviceInput.setSupportsPrecisionPointerForTesting(false);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ false, /* profileDiscEnabled= */ false);
+        testFocusLogic_buttonVisibilityTablet(/* expectDesktopMode= */ false);
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.PROFILE_DISC_ON_ALL_PAGES,
-        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON
-    })
+    @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscEnabled_DesktopDisabled() {
-        OmniboxCapabilities.setHasDesktopExperienceForTesting(false);
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(false);
-        DeviceInput.setSupportsPrecisionPointerForTesting(false);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ false, /* profileDiscEnabled= */ true);
-    }
-
-    @Test
-    @MediumTest
-    @DisableFeatures(SigninFeatures.PROFILE_DISC_ON_ALL_PAGES)
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscDisabled_DesktopEnabled() {
+    public void testFocusLogic_buttonVisibilityTablet_DesktopEnabled() {
         OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
         DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
         DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ true, /* profileDiscEnabled= */ false);
+        testFocusLogic_buttonVisibilityTablet(/* expectDesktopMode= */ true);
     }
 
-    @Test
-    @MediumTest
-    @EnableFeatures({
-        SigninFeatures.PROFILE_DISC_ON_ALL_PAGES,
-        SigninFeatures.SIGNIN_LEVEL_UP_BUTTON
-    })
-    @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    public void testFocusLogic_buttonVisibilityTablet_ProfileDiscEnabled_DesktopEnabled() {
-        OmniboxCapabilities.setHasDesktopExperienceForTesting(true);
-        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
-        DeviceInput.setSupportsPrecisionPointerForTesting(true);
-        testFocusLogic_buttonVisibilityTablet(
-                /* expectDesktopMode= */ true, /* profileDiscEnabled= */ true);
-    }
-
-    private void testFocusLogic_buttonVisibilityTablet(
-            boolean expectDesktopMode, boolean profileDiscEnabled) {
+    private void testFocusLogic_buttonVisibilityTablet(boolean expectDesktopMode) {
         OmniboxCapabilities.setIsDesktopPlatformForTesting(expectDesktopMode);
         OmniboxCapabilities.setHasDesktopExperienceForTesting(expectDesktopMode);
         startActivityNormally();
@@ -484,8 +448,8 @@ public class LocationBarTest {
         } else {
             onView(withId(R.id.mic_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
-            // With profileDiscEnabled a Signin button appears with priority over the lens button.
-            onView(withId(profileDiscEnabled ? R.id.signin_button : R.id.lens_camera_button))
+            // A Signin button appears with priority over the lens button.
+            onView(withId(R.id.signin_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.VISIBLE)));
             onView(withId(R.id.delete_button))
                     .check(matches(withEffectiveVisibility(ViewMatchers.Visibility.GONE)));
@@ -522,7 +486,7 @@ public class LocationBarTest {
     @MediumTest
     public void testFocusLogic_keyboardVisibility() {
         startActivityNormally();
-        assertFalse(mKeyboardDelegate.isKeyboardShowing(mUrlBar));
+        assertFalse(mKeyboardDelegate.isKeyboardObscuring(mUrlBar));
 
         mOmnibox.requestFocus();
         mOmnibox.waitAnimationsComplete();

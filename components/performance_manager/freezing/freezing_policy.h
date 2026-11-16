@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PERFORMANCE_MANAGER_FREEZING_FREEZING_POLICY_H_
 #define COMPONENTS_PERFORMANCE_MANAGER_FREEZING_FREEZING_POLICY_H_
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -21,6 +22,7 @@
 #include "base/rand_util.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "build/build_config.h"
 #include "components/performance_manager/freezing/freezer.h"
 #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
 #include "components/performance_manager/public/freezing/cannot_freeze_reason.h"
@@ -34,6 +36,12 @@
 #include "components/performance_manager/public/resource_attribution/queries.h"
 #include "content/public/browser/browsing_instance_id.h"
 #include "url/origin.h"
+
+#if BUILDFLAG(IS_WIN)
+namespace base {
+struct SystemMemoryInfo;
+}  // namespace base
+#endif
 
 namespace performance_manager {
 
@@ -72,12 +80,6 @@ class FreezingPolicy : public PageNodeObserver,
   using FreezingTypeSet = base::
       EnumSet<FreezingType, FreezingType::kVoting, FreezingType::kInfiniteTabs>;
 
-  enum class InfiniteTabFreezingStatus {
-    kInactive,
-    kActiveWithPeriodicUnfreezing,
-    kActiveWithoutPeriodicUnfreezing,
-  };
-
   explicit FreezingPolicy(
       std::unique_ptr<freezing::Discarder> discarder,
       std::unique_ptr<freezing::OptOutChecker> opt_out_checker = nullptr);
@@ -93,8 +95,28 @@ class FreezingPolicy : public PageNodeObserver,
   bool IsPeriodicUnfreezeTimerRunningForTesting(
       const PageNode* page_node) const;
 
-  // Updates the infinite-tab freezing status for testing.
-  void SetInfiniteTabFreezingStatusForTesting(InfiniteTabFreezingStatus status);
+  // Updates infinite-tab freezing state from a sampled available physical
+  // memory percentage (`[0, 100]`).
+  void UpdateStateFromAvailableMemoryPercentForTesting(
+      int available_memory_percent);
+
+  void StopMemoryCheckTimerForTesting() {
+#if BUILDFLAG(IS_WIN)
+    memory_check_timer_disabled_for_testing_ = true;
+#endif
+    memory_check_timer_.Stop();
+  }
+
+  bool IsMemoryCheckTimerRunningForTesting() const {
+    return memory_check_timer_.IsRunning();
+  }
+
+#if BUILDFLAG(IS_WIN)
+  bool IsInfiniteTabFreezingActiveForTesting() const {
+    return infinite_tab_freezing_status_ !=
+           InfiniteTabFreezingStatus::kInactive;
+  }
+#endif
 
   // Invoked freezing on battery saver is enabled or disabled.
   void ToggleFreezingOnBatterySaverMode(bool is_enabled);
@@ -115,9 +137,25 @@ class FreezingPolicy : public PageNodeObserver,
   static freezing::CannotFreezeReasonSet CannotFreezeReasonsForType(
       FreezingPolicy::FreezingType type);
 
+ protected:
+  // Returns the Windows OS build number, or 0 on non-Windows platforms. Virtual
+  // for testing.
+  virtual uint32_t GetWindowsBuildVersion() const;
+
+#if BUILDFLAG(IS_WIN)
+  // Samples system memory. Virtual for testing.
+  virtual bool GetSystemMemoryInfo(base::SystemMemoryInfo* info);
+#endif
+
  private:
   FRIEND_TEST_ALL_PREFIXES(FreezingPolicyBatterySaverTest,
                            RecordFreezingEligibilityUKMForPageStatic);
+
+  enum class InfiniteTabFreezingStatus {
+    kInactive,
+    kActiveWithPeriodicUnfreezing,
+    kActiveWithoutPeriodicUnfreezing,
+  };
 
   class CanFreezePerTypeTracker;
 
@@ -308,9 +346,22 @@ class FreezingPolicy : public PageNodeObserver,
   // eliminate randomness.
   virtual base::LiveTicks GenerateRandomPeriodicUnfreezePhase() const;
 
-  // Called when the memory pressure state of the system is updated. Triggers a
-  // policy-wide re-evaluation of page freezing.
-  void CheckMemoryPressureForFreezing();
+  // Returns true if `total_physical_memory` and the Windows OS build match the
+  // criteria for using the low-RAM enter and exit memory thresholds.
+  bool ShouldUseLowRamThresholds(base::ByteSize total_physical_memory) const;
+
+  void UpdateMemoryCheckTimer(bool has_pages);
+
+  // Periodically invoked by `memory_check_timer_` to sample available physical
+  // memory and update infinite-tab freezing state.
+  void CheckAvailableMemory();
+
+  // Computes the new `InfiniteTabFreezingStatus` from
+  // `available_memory_percent` (`[0, 100]`) and `total_physical_memory`, and
+  // updates policy state.
+  void UpdateStateFromAvailableMemoryPercent(
+      int available_memory_percent,
+      base::ByteSize total_physical_memory);
 
   // Updates the cached infinite-tab freezing status and reconciles policy
   // state.
@@ -363,6 +414,9 @@ class FreezingPolicy : public PageNodeObserver,
 
   // Timer to periodically check system memory.
   base::RepeatingTimer memory_check_timer_;
+#if BUILDFLAG(IS_WIN)
+  bool memory_check_timer_disabled_for_testing_ = false;
+#endif
 
   // Current status of infinite-tabs freezing.
   InfiniteTabFreezingStatus infinite_tab_freezing_status_;

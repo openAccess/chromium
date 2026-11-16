@@ -46,6 +46,9 @@ public interface PdfCoordinatorInterface {
     /** Called after pdf download complete. */
     void onDownloadComplete(String pdfFilePath, String pdfFileName);
 
+    /** Called when the pdf download fails. */
+    void onDownloadFailed();
+
     /** Show pdf specific find in page UI. */
     boolean findInPage();
 
@@ -60,6 +63,9 @@ public interface PdfCoordinatorInterface {
 
     /** Returns whether the PDF document is currently loaded. */
     boolean isPdfLoaded();
+
+    /** Returns whether the PDF document has a filepath ready to load once its view attaches. */
+    boolean hasPendingLoad();
 
     /**
      * Updates the URL associated with the PDF page.

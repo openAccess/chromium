@@ -10,7 +10,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -26,6 +25,7 @@
 #include "cc/layers/layer_impl.h"
 #include "cc/layers/layer_list_iterator.h"
 #include "cc/metrics/event_metrics.h"
+#include "cc/paint/deferred_value_map.h"
 #include "cc/resources/ui_resource_client.h"
 #include "cc/trees/browser_controls_params.h"
 #include "cc/trees/layer_tree_host.h"
@@ -379,6 +379,19 @@ class CC_EXPORT LayerTreeImpl {
   SkColor4f background_color() const { return background_color_; }
   void set_background_color(SkColor4f color) { background_color_ = color; }
 
+  const DeferredValueMap& deferred_values() const {
+    DCHECK(!IsRecycleTree());
+    return deferred_values_;
+  }
+  DeferredValueMap& deferred_values_mutable() {
+    DCHECK(IsSyncTree());
+    return deferred_values_;
+  }
+  void SetDeferredValues(const DeferredValueMap& values) {
+    DCHECK(!IsRecycleTree());
+    deferred_values_.CopyFrom(values);
+  }
+
   gfx::OverlayTransform display_transform_hint() const {
     return display_transform_hint_;
   }
@@ -535,6 +548,15 @@ class CC_EXPORT LayerTreeImpl {
   void set_ui_resource_request_queue(UIResourceRequestQueue queue);
 
   const RenderSurfaceList& GetRenderSurfaceList() const;
+  // Returns the render surface list computed by the most recent
+  // UpdateDrawProperties(), even if draw properties have since been marked
+  // dirty. LayerTreeHostImpl uses this after PrepareToDraw(), while the list
+  // still describes the frame being drawn but draw properties can already be
+  // dirty (e.g. from HUD updates, view transition requests or copy requests).
+  // Prefer GetRenderSurfaceList() everywhere else.
+  const RenderSurfaceList& GetLastComputedRenderSurfaceList() const {
+    return render_surface_list_;
+  }
   RenderSurfaceImpl* GetRenderSurface(int effect_id);
   const RenderSurfaceImpl* GetRenderSurface(int effect_id) const;
   const Region& UnoccludedScreenSpaceRegion() const;
@@ -928,6 +950,7 @@ class CC_EXPORT LayerTreeImpl {
   raw_ptr<HeadsUpDisplayLayerImpl> hud_layer_;
   PropertyTrees property_trees_;
   SkColor4f background_color_;
+  DeferredValueMap deferred_values_;
 
   ViewportPropertyIds viewport_property_ids_;
 
@@ -1002,8 +1025,6 @@ class CC_EXPORT LayerTreeImpl {
   // support of mask layers.
 
   OwnedLayerImplList layer_list_;
-  // Maps from layer id to layer.
-  // LayerImplMap layer_id_map_;
 
   struct ScrollbarLayerIds {
     int horizontal = Layer::INVALID_ID;

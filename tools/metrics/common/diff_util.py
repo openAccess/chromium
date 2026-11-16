@@ -6,8 +6,6 @@
 user-managed files are correct.
 """
 
-from __future__ import print_function
-
 import difflib
 import logging
 import os
@@ -42,8 +40,7 @@ def PromptUserToAcceptDiff(old_text, new_text, prompt):
   )
   temp = tempfile.NamedTemporaryFile(suffix='.html', delete=False)
   try:
-    html_diff = html_diff.encode()
-    temp.write(html_diff)
+    temp.write(html_diff.encode())
     temp.close()  # Close the file so the browser process can access it.
     webbrowser.open('file://' + temp.name)
     print(prompt)

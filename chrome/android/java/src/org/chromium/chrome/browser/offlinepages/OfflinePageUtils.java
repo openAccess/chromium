@@ -39,9 +39,9 @@ import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.Snackbar
 import org.chromium.chrome.browser.util.ChromeFileProvider;
 import org.chromium.components.bookmarks.BookmarkId;
 import org.chromium.components.browser_ui.share.ShareParams;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.offline_items_collection.LaunchLocation;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.net.NetworkChangeNotifier;
@@ -405,6 +405,7 @@ public class OfflinePageUtils {
      *
      * @param offlinePageBridge Bridge to native code for offline pages use.
      * @param offlinePage Page to check for shareability.
+     * @param uri The URI of the offline page to be shared.
      * @return true if this page can be shared.
      */
     public static boolean isOfflinePageShareable(
@@ -610,7 +611,8 @@ public class OfflinePageUtils {
     }
 
     /**
-     * @return True if an offline preview is being shown.
+     * Returns whether an offline preview is being shown.
+     *
      * @param tab The current tab.
      */
     public static boolean isShowingOfflinePreview(Tab tab) {
@@ -703,6 +705,7 @@ public class OfflinePageUtils {
     /**
      * Reloads specified webContents, which should allow to open an online version of the page.
      *
+     * @param webContents The WebContents to be reloaded.
      * @param loadUrlDelegate The delegate to load a page (e.g., WebContents, Tab).
      */
     public static void reload(WebContents webContents, OfflinePageLoadUrlDelegate loadUrlDelegate) {
@@ -715,9 +718,9 @@ public class OfflinePageUtils {
         OfflinePageItem offlinePage = getOfflinePage(webContents);
         if (OfflinePageUtils.isShowingTrustedOfflinePage(webContents) || offlinePage == null) {
             // TODO(crbug.com/40663204): dedupe the
-            // DomDistillerUrlUtils#getOriginalUrlFromDistillerUrl() calls.
+            // WebDistillerUrlUtils#getOriginalUrlFromDistillerUrl() calls.
             String distilledUrl =
-                    DomDistillerUrlUtils.getOriginalUrlFromDistillerUrl(webContents.getVisibleUrl())
+                    WebDistillerUrlUtils.getOriginalUrlFromDistillerUrl(webContents.getVisibleUrl())
                             .getSpec();
             // If current page is an offline page, reload it with custom behavior defined in extra
             // header respected.
@@ -744,16 +747,6 @@ public class OfflinePageUtils {
         RecentTabTracker(TabModelSelector selector) {
             super(selector);
             mTabModelSelector = selector;
-        }
-
-        @Override
-        public void willCloseTab(Tab tab, boolean didCloseAlone) {
-            Profile profile = mTabModelSelector.getModel(tab.isIncognito()).getProfile();
-            OfflinePageBridge bridge = OfflinePageBridge.getForProfile(profile);
-            if (bridge == null) return;
-
-            WebContents webContents = tab.getWebContents();
-            if (webContents != null) bridge.willCloseTab(webContents);
         }
 
         @Override

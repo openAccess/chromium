@@ -163,14 +163,13 @@ EventListenerMap::EventListenerMap(Delegate* delegate) : delegate_(delegate) {}
 
 EventListenerMap::~EventListenerMap() = default;
 
-const EventListenerMap::ListenerList& EventListenerMap::GetEventListenersByName(
+EventListenerMap::ListenerSpan EventListenerMap::GetEventListenersByName(
     const std::string& event_name) const {
   auto it = listeners_.find(event_name);
   if (it != listeners_.end()) {
     return it->second;
   }
-  static const base::NoDestructor<ListenerList> empty_list;
-  return *empty_list;
+  return {};
 }
 
 bool EventListenerMap::AddListener(std::unique_ptr<EventListener> listener) {
@@ -482,6 +481,34 @@ void EventListenerMap::LoadFilteredLazyListeners(
           filter.Clone()));
     }
   }
+}
+
+void EventListenerMap::ReplaceLazyServiceWorkerListeners(
+    content::BrowserContext* browser_context,
+    const ExtensionId& extension_id,
+    const std::set<std::string>& event_names,
+    const base::DictValue& filtered) {
+  // Remove lazy service worker listeners for `extension_id` that are no longer
+  // in `event_names` (if unfiltered) or `filtered` (if filtered).
+  RemoveListenersIf([&](const EventListener& listener) {
+    if (listener.extension_id() != extension_id ||
+        !listener.is_for_service_worker() || !listener.IsLazy()) {
+      return false;
+    }
+    const base::DictValue* filter = listener.filter();
+    if (!filter) {
+      return !event_names.contains(listener.event_name());
+    }
+    const base::ListValue* filters = filtered.FindList(listener.event_name());
+    return !filters || !filters->contains(*filter);
+  });
+
+  // `Load*LazyListeners()` calls `AddListener()`, which skips listeners that
+  // are already present.
+  LoadUnfilteredLazyListeners(browser_context, extension_id,
+                              /*is_for_service_worker=*/true, event_names);
+  LoadFilteredLazyListeners(browser_context, extension_id,
+                            /*is_for_service_worker=*/true, filtered);
 }
 
 std::set<const EventListener*> EventListenerMap::GetEventListeners(

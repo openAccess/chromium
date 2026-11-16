@@ -4,10 +4,10 @@
 
 #include "chrome/browser/ui/actions/chrome_actions.h"
 
-#include "base/feature_list.h"
-#include "base/test/scoped_feature_list.h"
+#include <cstddef>
+
 #include "chrome/browser/ui/actions/chrome_action_id.h"
-#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/actions/command_id_to_action_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/actions.h"
@@ -33,48 +33,26 @@ TEST_F(ChromeActionsTest, InitializeActionIdStringMappingTest) {
   EXPECT_THAT(actual_action_id, testing::Optional(kActionSidePanelShowFeed));
 }
 
-TEST_F(ChromeActionsTest, UseActionsForBrowserCommandsEnabledByDefault) {
-  EXPECT_TRUE(
-      base::FeatureList::IsEnabled(features::kUseActionsForBrowserCommands));
-  EXPECT_TRUE(features::ShouldUseActionsForBrowserCommands());
+#define MAP_ACTION_E1(action) 0 +
+#define MAP_ACTION_E2(action, idc) 1 +
+#define MAP_ACTION_E3(action, idc, scope) 1 +
+#define MAP_ACTION_E4(action, idc, val, scope) 1 +
+
+#define GET_MAP_ACTION_E(_1, _2, _3, _4, macro_name, ...) macro_name
+#define E(...)                                                               \
+  GET_MAP_ACTION_E(__VA_ARGS__, MAP_ACTION_E4, MAP_ACTION_E3, MAP_ACTION_E2, \
+                   MAP_ACTION_E1)(__VA_ARGS__)
+
+TEST_F(ChromeActionsTest, NoDuplicateCommandIds) {
+  constexpr size_t kExpectedMapSize =
+      (CHROME_ACTION_IDS SIDE_PANEL_ACTION_IDS TOOLBAR_PINNABLE_ACTION_IDS
+           SUBMENU_ACTION_IDS 0);
+  EXPECT_EQ(chrome::GetCommandIdToActionIdMappings().size(), kExpectedMapSize);
 }
 
-TEST_F(ChromeActionsTest, ShouldUseActionsForBrowserCommands) {
-  // Both explicitly disabled.
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/{features::kUseActionsForBrowserCommands,
-                               features::kAppMenuGlowUp});
-    EXPECT_FALSE(features::ShouldUseActionsForBrowserCommands());
-  }
-
-  // Only kUseActionsForBrowserCommands enabled.
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeatures(
-        /*enabled_features=*/{features::kUseActionsForBrowserCommands},
-        /*disabled_features=*/{features::kAppMenuGlowUp});
-    EXPECT_TRUE(features::ShouldUseActionsForBrowserCommands());
-  }
-
-  // Only kAppMenuGlowUp enabled.
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeatures(
-        /*enabled_features=*/{features::kAppMenuGlowUp},
-        /*disabled_features=*/{features::kUseActionsForBrowserCommands});
-    EXPECT_TRUE(features::ShouldUseActionsForBrowserCommands());
-  }
-
-  // Both enabled.
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeatures(
-        /*enabled_features=*/{features::kUseActionsForBrowserCommands,
-                              features::kAppMenuGlowUp},
-        /*disabled_features=*/{});
-    EXPECT_TRUE(features::ShouldUseActionsForBrowserCommands());
-  }
-}
+#undef E
+#undef GET_MAP_ACTION_E
+#undef MAP_ACTION_E1
+#undef MAP_ACTION_E2
+#undef MAP_ACTION_E3
+#undef MAP_ACTION_E4

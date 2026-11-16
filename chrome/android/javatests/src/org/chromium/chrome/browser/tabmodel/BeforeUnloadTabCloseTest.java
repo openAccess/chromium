@@ -24,7 +24,6 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.Features.DisableFeatures;
@@ -32,7 +31,6 @@ import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -64,7 +62,6 @@ import java.util.concurrent.TimeoutException;
  * {@code WebContents} is torn down.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures({ChromeFeatureList.ANDROID_BEFORE_UNLOAD_SUPPORT})
 @Batch(Batch.PER_CLASS)
 public class BeforeUnloadTabCloseTest {
@@ -163,19 +160,14 @@ public class BeforeUnloadTabCloseTest {
         assertTabOpen(kept);
     }
 
-    // Graceful shutdown is enabled in the unload-time handler tests, as on desktop Android builds, so
-    // that teardown runs the handlers rather than racing the renderer's shutdown.
-
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.TAB_ANDROID_GRACEFUL_SHUTDOWN})
     public void testCloseTab_PageHideHandlerOnly_NoDispatchAndHandlerRuns() throws Exception {
         closeTabWithOnlyHandlerAndWaitForBeacon("window", "pagehide");
     }
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.TAB_ANDROID_GRACEFUL_SHUTDOWN})
     // The unload Permissions-Policy deprecation would stop the handler from being registered.
     @DisableFeatures({"DeprecateUnload"})
     public void testCloseTab_UnloadHandlerOnly_NoDispatchAndHandlerRuns() throws Exception {
@@ -184,7 +176,6 @@ public class BeforeUnloadTabCloseTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({ChromeFeatureList.TAB_ANDROID_GRACEFUL_SHUTDOWN})
     public void testCloseTab_VisibilityChangeHandlerOnly_NoDispatchAndHandlerRuns()
             throws Exception {
         closeTabWithOnlyHandlerAndWaitForBeacon("document", "visibilitychange");

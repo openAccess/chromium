@@ -469,15 +469,13 @@ void ChromeClientImpl::SetOverscrollBehavior(
       overscroll_behavior);
 }
 
-bool ChromeClientImpl::ShouldReportDetailedMessageForSourceAndSeverity(
+bool ChromeClientImpl::ShouldReportDetailedMessageForSource(
     LocalFrame& local_frame,
-    mojom::blink::ConsoleMessageLevel log_level,
     const String& url) {
   WebLocalFrameImpl* webframe =
       WebLocalFrameImpl::FromFrame(local_frame.LocalFrameRoot());
   return webframe && webframe->Client() &&
-         webframe->Client()->ShouldReportDetailedMessageForSourceAndSeverity(
-             log_level, url);
+         webframe->Client()->ShouldReportDetailedMessageForSource(url);
 }
 
 void ChromeClientImpl::AddMessageToConsole(LocalFrame* local_frame,
@@ -819,6 +817,13 @@ ColorChooser* ChromeClientImpl::OpenColorChooser(
 #endif
   }
   controller->OpenUI();
+  if (RuntimeEnabledFeatures::PagePopupEnabled() &&
+      !controller->IsPickerVisible()) {
+    // This can happen if the web view is closing (for example, showPicker()
+    // called during pagehide) or if synchronous script moved the owner
+    // element into another Page or an inactive document during popup opening.
+    return nullptr;
+  }
   return controller;
 }
 
@@ -831,8 +836,16 @@ DateTimeChooser* ChromeClientImpl::OpenDateTimeChooser(
   // picker.
 #if !BUILDFLAG(IS_ANDROID)
   if (RuntimeEnabledFeatures::InputMultipleFieldsUIEnabled()) {
-    return MakeGarbageCollected<DateTimeChooserImpl>(frame, picker_client,
-                                                     parameters);
+    auto* chooser = MakeGarbageCollected<DateTimeChooserImpl>(
+        frame, picker_client, parameters);
+    if (!chooser->IsPickerVisible()) {
+      // This can happen if the web view is closing (for example, showPicker()
+      // called during pagehide) or if synchronous script moved the owner
+      // element into another Page or an inactive document during popup
+      // opening.
+      return nullptr;
+    }
+    return chooser;
   }
 #endif
 

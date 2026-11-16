@@ -627,9 +627,13 @@ ConvertEpListForIntrospection(base::span<const OrtEpDevice* const> ep_devices) {
 
     auto [keys, values] = GetKeyValueSpans(ort_api, ep_metadata);
     for (auto [key, value] : std::views::zip(keys, values)) {
-      if (std::string_view(key) == "version") {
+      const std::string_view key_view(key);
+      if (key_view == kOrtEpDevice_EpMetadataKey_Version) {
         ep_details->version = value;
-        break;
+      } else if (key_view == kOrtEpDevice_EpMetadataKey_OSDriverVersion) {
+        ep_details->driver_version = value;
+      } else if (key_view == kOrtEpDevice_EpMetadataKey_LibraryPath) {
+        ep_details->library_path = value;
       }
     }
     ep_details->first_selected = false;
@@ -1231,11 +1235,7 @@ EpWorkarounds Environment::GetEpWorkarounds(
       SelectEpDevices(registered_ep_devices, device_type);
   for (const auto* ep_device : selected_ep_devices) {
     CHECK(ep_device);
-    std::string_view ep_name = ort_api->EpDevice_EpName(ep_device);
-    const auto iter = kKnownEPs.find(ep_name);
-    if (iter != kKnownEPs.end()) {
-      workarounds |= iter->second.workarounds;
-    }
+    workarounds |= GetEpWorkaroundsForEp(ort_api->EpDevice_EpName(ep_device));
   }
   return workarounds;
 }

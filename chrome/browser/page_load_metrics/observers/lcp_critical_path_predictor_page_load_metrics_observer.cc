@@ -798,24 +798,14 @@ void LcpCriticalPathPredictorPageLoadMetricsObserver::AppendFetchedFontUrl(
     lcpp_data_inputs_.emplace();
   }
   ++lcpp_data_inputs_->font_url_count;
-  if (hit) {
-    ++lcpp_data_inputs_->font_url_hit_count;
-  }
 
-  if (commit_url_ && IsSameSite(font_url, *commit_url_)) {
-    ++lcpp_data_inputs_->same_site_font_url_count;
-  } else {
-    ++lcpp_data_inputs_->cross_site_font_url_count;
-    if (!blink::features::kLCPPCrossSiteFontPredictionAllowed.Get()) {
-      return;
-    }
+  if (!(commit_url_ && IsSameSite(font_url, *commit_url_)) &&
+      !blink::features::kLCPPCrossSiteFontPredictionAllowed.Get()) {
+    return;
   }
   if (lcpp_data_inputs_->font_urls.size() >=
       GetLCPPFontURLPredictorMaxUrlCountPerOrigin()) {
     return;
-  }
-  if (hit) {
-    ++lcpp_data_inputs_->font_url_reenter_count;
   }
   lcpp_data_inputs_->font_urls.push_back(font_url);
 }

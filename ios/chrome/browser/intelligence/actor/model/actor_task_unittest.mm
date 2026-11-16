@@ -34,6 +34,7 @@
 #import "ios/chrome/browser/intelligence/actor/test/fake_actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/profile_context_resolver.h"
 #import "ios/chrome/browser/intelligence/actor/util/actor_test_utils.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
@@ -322,16 +323,20 @@ class ActorTaskTest : public PlatformTest {
     profile_ = TestProfileIOS::Builder().Build();
     journal_ = std::make_unique<AggregatedJournal>();
     tool_factory_ = std::make_unique<ActorToolFactory>(profile_.get());
+    profile_context_resolver_ =
+        std::make_unique<ProfileContextResolver>(profile_.get());
 
     task_ = std::make_unique<ActorTask>(
         ActorTaskId(1), "Test Task", TestSource(),
         /*allow_incognito_web_states=*/false, journal_.get(),
-        tool_factory_.get(), BrowserListFactory::GetForProfile(profile_.get()),
+        tool_factory_.get(), profile_context_resolver_.get(),
+        BrowserListFactory::GetForProfile(profile_.get()),
         /*policy_checker=*/nullptr, base::DoNothing());
   }
 
   void TearDown() override {
     task_.reset();
+    profile_context_resolver_.reset();
     tool_factory_.reset();
     journal_.reset();
     profile_.reset();
@@ -391,6 +396,7 @@ class ActorTaskTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
   std::unique_ptr<AggregatedJournal> journal_;
   std::unique_ptr<ActorToolFactory> tool_factory_;
+  std::unique_ptr<ProfileContextResolver> profile_context_resolver_;
   std::unique_ptr<ActorTask> task_;
 };
 
@@ -1190,8 +1196,8 @@ TEST_F(ActorTaskTest, StopSetsControlStateToInactive) {
 }
 
 // Test that adding a controlled `WebState` with `ActorTabHelper` sets control
-// state to kActorControlled, and destroying the task resets the state without
-// removing the helper.
+// state to `kActorControlled` (including while in `kInit`), and destroying the
+// task resets the state without removing the helper.
 TEST_F(ActorTaskTest, ActorTabHelperControlState) {
   auto web_state = std::make_unique<web::FakeWebState>();
   ActorTabHelper::CreateForWebState(web_state.get());
@@ -1199,8 +1205,12 @@ TEST_F(ActorTaskTest, ActorTabHelperControlState) {
   ASSERT_NE(helper, nullptr);
   EXPECT_EQ(helper->GetControlState(), actor::ActorControlState::kInactive);
 
-  SetTaskState(ActorTaskState::kActing);
+  ASSERT_EQ(task_->GetState(), ActorTaskState::kInit);
   AddControlledWebState(web_state->GetWeakPtr());
+  EXPECT_EQ(helper->GetControlState(),
+            actor::ActorControlState::kActorControlled);
+
+  SetTaskState(ActorTaskState::kActing);
   EXPECT_EQ(helper->GetControlState(),
             actor::ActorControlState::kActorControlled);
 
@@ -1321,12 +1331,12 @@ TEST_F(ActorTaskTest, KeepRenderProcessAliveFollowsControlState) {
   EXPECT_FALSE(web_state1->keep_render_process_alive());
   EXPECT_FALSE(web_state2->keep_render_process_alive());
 
-  // Add `web_state1` while the task is in `kInit`. The control state is
-  // `kInactive`, so keep-alive is not applied yet.
+  // Add `web_state1` while the task is in `kInit`. `kInit` is a controlling
+  // state, so keep-alive is immediately applied.
   AddControlledWebState(web_state1->GetWeakPtr());
-  EXPECT_FALSE(web_state1->keep_render_process_alive());
+  EXPECT_TRUE(web_state1->keep_render_process_alive());
 
-  // Transition to `kActing`: the tab becomes actor-controlled and keep-alive.
+  // Transition to `kActing`: keep-alive remains applied.
   SetTaskState(ActorTaskState::kActing);
   EXPECT_TRUE(web_state1->keep_render_process_alive());
 
@@ -1356,6 +1366,7 @@ TEST_F(ActorTaskTest, KeepRenderProcessAliveFollowsControlState) {
   auto scoped_task = std::make_unique<ActorTask>(
       ActorTaskId(42), "Scoped Task", TestSource(),
       /*allow_incognito_web_states=*/false, journal_.get(), tool_factory_.get(),
+      profile_context_resolver_.get(),
       BrowserListFactory::GetForProfile(profile_.get()),
       /*policy_checker=*/nullptr, base::DoNothing());
   scoped_task->Act({}, "update", base::DoNothing());
@@ -1550,6 +1561,7 @@ TEST_F(ActorTaskBackgroundingTest, DestructorFinalizesBackgroundTask) {
   auto task = std::make_unique<ActorTask>(
       ActorTaskId(1), "Test Task", TestSource(),
       /*allow_incognito_web_states=*/false, journal_.get(), tool_factory_.get(),
+      profile_context_resolver_.get(),
       BrowserListFactory::GetForProfile(profile_.get()),
       /*policy_checker=*/nullptr, base::DoNothing());
   task->background_worker()->SetContext(context);
@@ -1694,6 +1706,7 @@ TEST_F(ActorTaskTest,
   auto task = std::make_unique<ActorTask>(
       ActorTaskId(1), "Test Task", TestSource(),
       /*allow_incognito_web_states=*/false, journal_.get(), tool_factory_.get(),
+      profile_context_resolver_.get(),
       BrowserListFactory::GetForProfile(profile_.get()),
       /*policy_checker=*/nullptr, base::DoNothing());
 
@@ -2317,6 +2330,7 @@ TEST_F(ActorTaskTest, TtcTaskSourceKeepsTabHelperInactive) {
       ActorTaskId(42), "TTC Task",
       TaskSourceInfo(TaskSourceInfo::Client::kTtc, /*id=*/std::nullopt),
       /*allow_incognito_web_states=*/false, journal_.get(), tool_factory_.get(),
+      profile_context_resolver_.get(),
       BrowserListFactory::GetForProfile(profile_.get()),
       /*policy_checker=*/nullptr, base::DoNothing());
 
@@ -2339,4 +2353,132 @@ TEST_F(ActorTaskTest, TtcTaskSourceKeepsTabHelperInactive) {
   EXPECT_EQ(ActorControlState::kInactive, tab_helper->GetControlState());
 }
 
+// Tests that `ConfirmNavigationToOrigin` invokes the registered callback
+// synchronously and posts the decision reply asynchronously.
+TEST_F(ActorTaskTest, ConfirmNavigationToOrigin_ForwardsRequestAndDecision) {
+  bool callback_invoked = false;
+  std::optional<url::Origin> received_origin;
+
+  task_->SetNavigationConfirmationCallback(base::BindLambdaForTesting(
+      [&](const url::Origin& origin,
+          NavigationConfirmationDecisionCallback decision_callback) {
+        callback_invoked = true;
+        received_origin = origin;
+        std::move(decision_callback).Run(true);
+      }));
+
+  const url::Origin target_origin =
+      url::Origin::Create(GURL("https://www.airline.com"));
+  base::test::TestFuture<bool> decision_future;
+  task_->ConfirmNavigationToOrigin(target_origin,
+                                   decision_future.GetCallback());
+
+  // The outbound request runs synchronously, while the decision reply is posted
+  // so it never re-enters the caller on the same stack frame
+  EXPECT_TRUE(callback_invoked);
+  EXPECT_FALSE(decision_future.IsReady());
+
+  EXPECT_TRUE(decision_future.Get());
+  ASSERT_TRUE(received_origin.has_value());
+  EXPECT_EQ(target_origin, *received_origin);
+}
+
+// Tests that `ConfirmNavigationToOrigin` fails closed synchronously when
+// `SetNavigationConfirmationCallback` is not called.
+TEST_F(ActorTaskTest, ConfirmNavigationToOrigin_WithoutCallback_FailsClosed) {
+  const url::Origin target_origin =
+      url::Origin::Create(GURL("https://www.airline.com"));
+
+  base::test::TestFuture<bool> no_callback_future;
+  task_->ConfirmNavigationToOrigin(target_origin,
+                                   no_callback_future.GetCallback());
+  EXPECT_TRUE(no_callback_future.IsReady());
+  EXPECT_FALSE(no_callback_future.Get());
+}
+
+// Tests that `ConfirmNavigationToOrigin` fails closed synchronously without
+// invoking the callback when the task is stopped.
+TEST_F(ActorTaskTest, ConfirmNavigationToOrigin_AfterStop_FailsClosed) {
+  const url::Origin target_origin =
+      url::Origin::Create(GURL("https://www.airline.com"));
+
+  bool callback_invoked = false;
+  task_->SetNavigationConfirmationCallback(base::BindLambdaForTesting(
+      [&](const url::Origin& origin,
+          NavigationConfirmationDecisionCallback decision_callback) {
+        callback_invoked = true;
+        std::move(decision_callback).Run(true);
+      }));
+
+  task_->Stop(ActorTaskStoppedReason::kStoppedByUser);
+  base::test::TestFuture<bool> stopped_future;
+  task_->ConfirmNavigationToOrigin(target_origin, stopped_future.GetCallback());
+
+  EXPECT_TRUE(stopped_future.IsReady());
+  EXPECT_FALSE(stopped_future.Get());
+  EXPECT_FALSE(callback_invoked);
+}
+
+// Tests that `ConfirmNavigationToOrigin` fails closed when the task is stopped
+// while the confirmation request is in flight, even if the external callback
+// later resolves with `true`.
+TEST_F(ActorTaskTest, ConfirmNavigationToOrigin_StopWhileInFlight_FailsClosed) {
+  const url::Origin target_origin =
+      url::Origin::Create(GURL("https://www.airline.com"));
+
+  base::test::TestFuture<NavigationConfirmationDecisionCallback>
+      in_flight_future;
+  task_->SetNavigationConfirmationCallback(base::BindLambdaForTesting(
+      [&](const url::Origin& origin,
+          NavigationConfirmationDecisionCallback decision_callback) {
+        in_flight_future.SetValue(std::move(decision_callback));
+      }));
+
+  base::test::TestFuture<bool> decision_future;
+  task_->ConfirmNavigationToOrigin(target_origin,
+                                   decision_future.GetCallback());
+
+  // Wait until the outbound request has been delivered and is in flight.
+  NavigationConfirmationDecisionCallback in_flight_callback =
+      in_flight_future.Take();
+  EXPECT_FALSE(decision_future.IsReady());
+
+  // Stop the task while the confirmation request is still in flight, then
+  // resolve the in-flight callback with `true`.
+  task_->Stop(ActorTaskStoppedReason::kStoppedByUser);
+  std::move(in_flight_callback).Run(/*permission_granted=*/true);
+
+  EXPECT_FALSE(decision_future.Get());
+}
+
+// Tests that `ConfirmNavigationToOrigin` fails closed when the callback is
+// cleared via `SetNavigationConfirmationCallback({})` while a request is in
+// flight, even if the previous callback later resolves with `true`.
+TEST_F(ActorTaskTest,
+       ConfirmNavigationToOrigin_ClearCallbackWhileInFlight_FailsClosed) {
+  const url::Origin target_origin =
+      url::Origin::Create(GURL("https://www.airline.com"));
+  base::test::TestFuture<NavigationConfirmationDecisionCallback>
+      in_flight_future;
+  task_->SetNavigationConfirmationCallback(base::BindLambdaForTesting(
+      [&](const url::Origin& origin,
+          NavigationConfirmationDecisionCallback decision_callback) {
+        in_flight_future.SetValue(std::move(decision_callback));
+      }));
+
+  base::test::TestFuture<bool> decision_future;
+  task_->ConfirmNavigationToOrigin(target_origin,
+                                   decision_future.GetCallback());
+
+  NavigationConfirmationDecisionCallback in_flight_callback =
+      in_flight_future.Take();
+  EXPECT_FALSE(decision_future.IsReady());
+
+  // Clear the callback while the confirmation request is in flight, then
+  // resolve the in-flight callback with `true`.
+  task_->SetNavigationConfirmationCallback({});
+  std::move(in_flight_callback).Run(/*permission_granted=*/true);
+
+  EXPECT_FALSE(decision_future.Get());
+}
 }  // namespace actor

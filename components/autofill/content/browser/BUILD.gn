@@ -4,10 +4,6 @@
 
 import("//third_party/protobuf/proto_library.gni")
 
-proto_library("autofill_shared_storage_proto") {
-  sources = [ "autofill_shared_storage.proto" ]
-}
-
 static_library("browser") {
   sources = [
     "autofill_log_router_factory.cc",
@@ -24,8 +20,6 @@ static_library("browser") {
     "content_identity_credential_delegate.h",
     "integrators/actor/autofill_annotations_provider_impl.cc",
     "integrators/actor/autofill_annotations_provider_impl.h",
-    "integrators/custom_form_controls/custom_form_control_script_index.cc",
-    "integrators/custom_form_controls/custom_form_control_script_index.h",
     "integrators/custom_form_controls/custom_form_control_script_runner.cc",
     "integrators/custom_form_controls/custom_form_control_script_runner.h",
     "integrators/email_verifier/email_verifier_delegate.cc",
@@ -48,14 +42,12 @@ static_library("browser") {
     "//components/autofill/core/common",
     "//components/keyed_service/content",
     "//components/optimization_guide/content/browser",
-    "//components/services/storage",
     "//content/public/common",
     "//mojo/public/cpp/bindings",
     "//skia",
     "//third_party/abseil-cpp:absl",
   ]
   deps = [
-    ":autofill_shared_storage_proto",
     "//base:i18n",
     "//components/autofill/core/browser/integrators/password_manager",
     "//components/credential_management:browser",
@@ -76,7 +68,6 @@ static_library("browser") {
     "//services/device/public/mojom",
     "//services/service_manager/public/cpp",
     "//sql",
-    "//third_party/re2",
     "//ui/base",
     "//ui/display",
     "//ui/gfx",
@@ -102,6 +93,8 @@ source_set("test_support") {
     "content_autofill_driver_factory_test_api.cc",
     "content_autofill_driver_factory_test_api.h",
     "content_autofill_driver_test_api.h",
+    "integrators/custom_form_controls/mock_custom_form_control_agent.cc",
+    "integrators/custom_form_controls/mock_custom_form_control_agent.h",
     "test_autofill_client_injector.cc",
     "test_autofill_client_injector.h",
     "test_autofill_driver_injector.cc",
@@ -125,6 +118,7 @@ source_set("test_support") {
     "//components/credential_management:browser",
     "//content/public/browser",
     "//content/test:test_support",
+    "//testing/gmock",
   ]
 
   deps = [
@@ -141,7 +135,7 @@ source_set("unit_tests") {
     "content_autofill_driver_unittest.cc",
     "content_identity_credential_delegate_unittest.cc",
     "integrators/actor/autofill_annotations_provider_impl_unittest.cc",
-    "integrators/custom_form_controls/custom_form_control_script_index_unittest.cc",
+    "integrators/custom_form_controls/custom_form_control_script_runner_test_api.h",
     "integrators/custom_form_controls/custom_form_control_script_runner_unittest.cc",
     "integrators/email_verifier/email_verifier_delegate_unittest.cc",
     "suggestions/identity_credential_suggestion_generator_unittest.cc",
@@ -163,10 +157,12 @@ source_set("unit_tests") {
     "//content/public/common",
     "//content/test:test_support",
     "//mojo/public/cpp/system",
+    "//mojo/public/cpp/test_support:test_utils",
     "//net:test_support",
     "//services/service_manager/public/cpp",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/gfx:test_support",
   ]
 }
 

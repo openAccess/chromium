@@ -25,6 +25,11 @@ class WebState;
 // A single class covers the authentication, authorization and other error
 // pages: the template picks the icon, strings and button from the
 // `error_category` parameter, and only the button action differs.
+//
+// Records `enterprise_net::SecureGatewayErrorPageEvent`s, both for all the
+// error categories and for the category of the page: `kShown` when the page is
+// created, then one outcome, going back, continuing, leaving the page without
+// using its button, or being destroyed without having been displayed.
 class EnterpriseProxyBlockingPage
     : public security_interstitials::IOSSecurityInterstitialPage {
  public:
@@ -46,6 +51,7 @@ class EnterpriseProxyBlockingPage
   std::string GetHtmlContents() const override;
   void HandleCommand(
       security_interstitials::SecurityInterstitialCommand command) override;
+  void ShowInfobar() override;
 
  protected:
   // security_interstitials::IOSSecurityInterstitialPage:
@@ -62,6 +68,9 @@ class EnterpriseProxyBlockingPage
       std::unique_ptr<security_interstitials::IOSBlockingPageControllerClient>
           client);
 
+  // Records `outcome`, unless an outcome of the page was already recorded.
+  void RecordOutcome(enterprise_net::SecureGatewayErrorPageEvent outcome);
+
   // Category of the error, which decides the page variation.
   const enterprise_net::EnterpriseProxyErrorData::ErrorCategory category_;
   // Template parameters of the page. Kept rather than computed on demand since
@@ -71,6 +80,14 @@ class EnterpriseProxyBlockingPage
   // non-owning pointer to it, so it must not be reset or replaced.
   const std::unique_ptr<security_interstitials::IOSBlockingPageControllerClient>
       client_;
+  // Whether the outcome of the page was recorded. Only the first one is, since
+  // the navigation started by "Go back" also leaves the page, and repeated taps
+  // on "Continue" count once. Without an outcome, the destructor records
+  // leaving the page without using its button.
+  bool outcome_recorded_ = false;
+  // Whether the page was displayed, i.e. its navigation committed. Without an
+  // outcome, the destructor records the page as not displayed otherwise.
+  bool displayed_ = false;
 };
 
 #endif  // IOS_CHROME_BROWSER_ENTERPRISE_PROXY_MODEL_ENTERPRISE_PROXY_BLOCKING_PAGE_H_

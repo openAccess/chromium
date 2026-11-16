@@ -26,7 +26,12 @@ static constexpr std::array kSupportedCommands = {
 #if BUILDFLAG(IS_WIN)
     glic::LocalHotkeyManager::Command::kTitleBarContextMenu,
 #endif
+// TODO(crbug.com/584521961): Support on Android once ChromeActivity no longer
+// evaluates unhandled accelerators twice per KeyEvent.
+#if !BUILDFLAG(IS_ANDROID)
     glic::LocalHotkeyManager::Command::kPrint,
+    glic::LocalHotkeyManager::Command::kFind,
+#endif
 };
 
 }  // namespace
@@ -89,8 +94,12 @@ bool PanelFocusDependentHotkeyManager::AcceleratorPressed(
       panel_->ShowTitleBarContextMenuAt(gfx::Point());
       return true;
 #endif  //  BUILDFLAG(IS_WIN)
+#if !BUILDFLAG(IS_ANDROID)
     case LocalHotkeyManager::Command::kPrint:
       return panel_->Print();
+    case LocalHotkeyManager::Command::kFind:
+      return panel_->Find();
+#endif  // !BUILDFLAG(IS_ANDROID)
 
     default:
       NOTREACHED() << "no handling implemented for "

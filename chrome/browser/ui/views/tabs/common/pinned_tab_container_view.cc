@@ -60,7 +60,7 @@ PinnedTabContainerView::PinnedTabContainerView(
               ? TabCollectionAnimatingLayoutManager::AnimationAxis::kHorizontal
               : TabCollectionAnimatingLayoutManager::AnimationAxis::
                     kHorizontalWrappingVertically,
-          /*animate_host_size=*/false))) {
+          /*animate_host_size=*/true))) {
   collection_node->set_remove_child_from_node(base::BindRepeating(
       &TabCollectionAnimatingLayoutManager::AnimateAndDestroyChildView,
       base::Unretained(base::to_address(layout_manager_))));
@@ -284,9 +284,9 @@ views::ScrollView* PinnedTabContainerView::GetScrollViewForContainer() const {
       const_cast<PinnedTabContainerView*>(this));
 }
 
-void PinnedTabContainerView::UpdateTargetLayoutForDrag(
+void PinnedTabContainerView::SnapViewsToTargetLayout(
     const std::vector<const views::View*>& views_to_snap) {
-  layout_manager_->ResetViewsToTargetLayout(views_to_snap);
+  layout_manager_->SnapViewsToTargetLayout(views_to_snap);
 }
 
 const views::ProposedLayout& PinnedTabContainerView::GetLayoutForDrag() const {

@@ -19,7 +19,9 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/process/process_metrics.h"
 #include "base/strings/stringprintf.h"
+#include "base/system/sys_info.h"
 #include "base/timer/timer.h"
+#include "build/build_config.h"
 #include "components/performance_manager/graph/page_node_impl.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/freezing/cannot_freeze_reason.h"
@@ -39,7 +41,7 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN)
-#include "components/memory_pressure/threshold_memory_pressure_evaluator.h"
+#include "base/win/windows_version.h"
 #endif
 
 namespace performance_manager {
@@ -51,6 +53,8 @@ using freezing::CannotFreezeReasonSet;
 using resource_attribution::OriginInBrowsingInstanceContext;
 
 constexpr base::TimeDelta kCPUMeasurementInterval = base::Minutes(1);
+constexpr base::ByteSize kLowRamMaxPhysicalMemory = base::GiB(8);
+constexpr uint32_t kWin1125H2BuildVersion = 26200;
 
 bool HasCannotFreezeReasonForType(
     const CannotFreezeReasonSet& cannot_freeze_reasons,
@@ -267,17 +271,6 @@ FreezingPolicy::FreezingPolicy(
     resource_usage_query_observation_.Observe(&resource_usage_query_.value());
     resource_usage_query_->Start(kCPUMeasurementInterval);
   }
-#if BUILDFLAG(IS_WIN)
-  if (base::FeatureList::IsEnabled(
-          features::kInfiniteTabsFreezingOnMemoryPressure) ||
-      base::FeatureList::IsEnabled(
-          features::kDisablePeriodicUnfreezeOnCriticalMemoryPressure)) {
-    memory_check_timer_.Start(
-        FROM_HERE,
-        features::kInfiniteTabsFreezingOnMemoryPressureInterval.Get(), this,
-        &FreezingPolicy::CheckMemoryPressureForFreezing);
-  }
-#endif
 }
 
 FreezingPolicy::~FreezingPolicy() = default;
@@ -287,12 +280,10 @@ bool FreezingPolicy::IsPeriodicUnfreezeTimerRunningForTesting(
   return GetFreezingState(page_node).periodic_unfreeze_timer.IsRunning();
 }
 
-void FreezingPolicy::SetInfiniteTabFreezingStatusForTesting(
-    InfiniteTabFreezingStatus status) {
-#if BUILDFLAG(IS_WIN)
-  memory_check_timer_.Stop();
-#endif
-  SetInfiniteTabFreezingStatus(status);
+void FreezingPolicy::UpdateStateFromAvailableMemoryPercentForTesting(
+    int available_memory_percent) {
+  UpdateStateFromAvailableMemoryPercent(
+      available_memory_percent, base::SysInfo::AmountOfTotalPhysicalMemory());
 }
 
 void FreezingPolicy::ToggleFreezingOnBatterySaverMode(bool is_enabled) {
@@ -578,9 +569,11 @@ void FreezingPolicy::OnPassedToGraph(Graph* graph) {
     opt_out_checker_->SetOptOutPolicyChangedCallback(base::BindRepeating(
         &FreezingPolicy::OnOptOutPolicyChanged, weak_factory_.GetWeakPtr()));
   }
+  UpdateMemoryCheckTimer(!graph->GetAllPageNodes().empty());
 }
 
 void FreezingPolicy::OnTakenFromGraph(Graph* graph) {
+  UpdateMemoryCheckTimer(/*has_pages=*/false);
   graph->GetNodeDataDescriberRegistry()->UnregisterDescriber(this);
   graph->RemoveFrameNodeObserver(this);
   graph->RemovePageNodeObserver(this);
@@ -628,9 +621,15 @@ void FreezingPolicy::OnPageNodeAdded(const PageNode* page_node) {
   // No need to update the frozen state, because the page doesn't have frames
   // yet and thus doesn't belong to any browsing instance.
   CHECK(page_node->GetMainFrameNodes().empty());
+  UpdateMemoryCheckTimer(/*has_pages=*/true);
 }
 
 void FreezingPolicy::OnBeforePageNodeRemoved(const PageNode* page_node) {
+  // The departing page is still in the graph during this notification.
+  if (page_node->GetGraph()->GetAllPageNodes().size() == 1) {
+    UpdateMemoryCheckTimer(/*has_pages=*/false);
+  }
+
   if (page_node->GetType() == PageType::kTab) {
     if (page_node->IsVisible()) {
       CHECK_GT(num_visible_tabs_, 0);
@@ -1467,47 +1466,125 @@ base::LiveTicks FreezingPolicy::GenerateRandomPeriodicUnfreezePhase() const {
                     .InMilliseconds()));
 }
 
-void FreezingPolicy::CheckMemoryPressureForFreezing() {
+uint32_t FreezingPolicy::GetWindowsBuildVersion() const {
+#if BUILDFLAG(IS_WIN)
+  // TODO(crbug.com/466015017): Switch to `base::win::GetVersion() >=
+  // base::win::Version::WIN11_25H2` once `WIN11_25H2` is added to
+  // `base::win::Version`.
+  return base::win::OSInfo::GetInstance()->version_number().build;
+#else
+  return 0;
+#endif
+}
+
+#if BUILDFLAG(IS_WIN)
+bool FreezingPolicy::GetSystemMemoryInfo(base::SystemMemoryInfo* info) {
+  return base::GetSystemMemoryInfo(info);
+}
+#endif
+
+bool FreezingPolicy::ShouldUseLowRamThresholds(
+    base::ByteSize total_physical_memory) const {
+  if (!total_physical_memory.is_positive() ||
+      total_physical_memory > kLowRamMaxPhysicalMemory) {
+    return false;
+  }
+  if (features::
+          kInfiniteTabsFreezingOnMemoryPressureLowRamRequireWin1125H2OrLater
+              .Get() &&
+      GetWindowsBuildVersion() < kWin1125H2BuildVersion) {
+    return false;
+  }
+  return true;
+}
+
+void FreezingPolicy::UpdateMemoryCheckTimer(bool has_pages) {
+#if BUILDFLAG(IS_WIN)
+  if (memory_check_timer_disabled_for_testing_) {
+    return;
+  }
+  if (!has_pages) {
+    memory_check_timer_.Stop();
+    return;
+  }
+  if (memory_check_timer_.IsRunning() ||
+      !(base::FeatureList::IsEnabled(
+            features::kInfiniteTabsFreezingOnMemoryPressure) ||
+        base::FeatureList::IsEnabled(
+            features::kDisablePeriodicUnfreezeOnCriticalMemoryPressure))) {
+    return;
+  }
+
+  // Refresh before a new page acquires frames and freezing eligibility.
+  CheckAvailableMemory();
+  memory_check_timer_.Start(
+      FROM_HERE, features::kInfiniteTabsFreezingOnMemoryPressureInterval.Get(),
+      this, &FreezingPolicy::CheckAvailableMemory);
+#endif  // BUILDFLAG(IS_WIN)
+}
+
+void FreezingPolicy::CheckAvailableMemory() {
 #if BUILDFLAG(IS_WIN)
   base::SystemMemoryInfo info;
-  if (!base::GetSystemMemoryInfo(&info)) {
+  if (!GetSystemMemoryInfo(&info)) {
     // Cannot get system memory info, do nothing.
     return;
   }
 
-  // The moderate pressure threshold value is lifted from the default logic in
-  // SystemMemoryPressureEvaluator. It was determined experimentally to ensure
-  // sufficient responsiveness of the memory pressure subsystem with minimal
-  // overhead.
-  const int kPressureThresholdPercent =
-      features::kInfiniteTabsFreezingOnMemoryPressurePercent.Get();
-
   base::ByteSize total = info.total;
-  base::ByteSize avail = info.avail_phys;
-
-  int available_percent = 0;
-  if (total.is_positive()) {
-    available_percent =
-        static_cast<int>(avail.InBytesF() / total.InBytesF() * 100.0);
+  if (!total.is_positive()) {
+    return;
   }
 
-  const bool is_active =
-      base::FeatureList::IsEnabled(features::kInfiniteTabsFreezing) ||
-      (base::FeatureList::IsEnabled(
-           features::kInfiniteTabsFreezingOnMemoryPressure) &&
-       (available_percent < kPressureThresholdPercent ||
-        avail <= memory_pressure::ThresholdMemoryPressureEvaluator::
-                     kDefaultWinCriticalThreshold));
+  base::ByteSize avail = info.avail_phys;
+  const int available_percent =
+      static_cast<int>(avail.InBytesF() / total.InBytesF() * 100.0);
+
+  UpdateStateFromAvailableMemoryPercent(available_percent, total);
+
+#endif  // BUILDFLAG(IS_WIN)
+}
+
+void FreezingPolicy::UpdateStateFromAvailableMemoryPercent(
+    int available_memory_percent,
+    base::ByteSize total_physical_memory) {
+  bool is_active =
+      base::FeatureList::IsEnabled(features::kInfiniteTabsFreezing);
+  if (!is_active && base::FeatureList::IsEnabled(
+                        features::kInfiniteTabsFreezingOnMemoryPressure)) {
+    const bool use_low_ram = ShouldUseLowRamThresholds(total_physical_memory);
+    const int enter_threshold_percent =
+        use_low_ram
+            ? features::
+                  kInfiniteTabsFreezingOnMemoryPressureLowRamEnterAvailableMemoryPercent
+                      .Get()
+            : features::
+                  kInfiniteTabsFreezingOnMemoryPressureEnterAvailableMemoryPercent
+                      .Get();
+    const int raw_exit_threshold_percent =
+        use_low_ram
+            ? features::
+                  kInfiniteTabsFreezingOnMemoryPressureLowRamExitAvailableMemoryPercent
+                      .Get()
+            : features::
+                  kInfiniteTabsFreezingOnMemoryPressureExitAvailableMemoryPercent
+                      .Get();
+    const int exit_threshold_percent =
+        std::max(enter_threshold_percent, raw_exit_threshold_percent);
+    const bool was_active =
+        infinite_tab_freezing_status_ != InfiniteTabFreezingStatus::kInactive;
+    const int active_threshold_percent =
+        was_active ? exit_threshold_percent : enter_threshold_percent;
+    is_active = available_memory_percent < active_threshold_percent;
+  }
 
   InfiniteTabFreezingStatus new_status = InfiniteTabFreezingStatus::kInactive;
   if (is_active) {
-    // TODO(b/466015017): Standardize memory pressure handling and remove this
-    // direct dependency on //components/memory_pressure once the experiment
-    // concludes.
+    const int critical_threshold_percent =
+        features::kDisablePeriodicUnfreezeOnCriticalMemoryPressurePercent.Get();
     if (base::FeatureList::IsEnabled(
             features::kDisablePeriodicUnfreezeOnCriticalMemoryPressure) &&
-        avail <= memory_pressure::ThresholdMemoryPressureEvaluator::
-                     kDefaultWinCriticalThreshold) {
+        available_memory_percent < critical_threshold_percent) {
       new_status = InfiniteTabFreezingStatus::kActiveWithoutPeriodicUnfreezing;
     } else {
       new_status = InfiniteTabFreezingStatus::kActiveWithPeriodicUnfreezing;
@@ -1515,8 +1592,6 @@ void FreezingPolicy::CheckMemoryPressureForFreezing() {
   }
 
   SetInfiniteTabFreezingStatus(new_status);
-
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 void FreezingPolicy::SetInfiniteTabFreezingStatus(

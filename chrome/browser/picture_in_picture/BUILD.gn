@@ -183,6 +183,10 @@ source_set("impl") {
     sources += [ "auto_picture_in_picture_window_occlusion_helper_stub.cc" ]
   }
 
+  if (use_aura) {
+    deps += [ "//ui/aura" ]
+  }
+
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
@@ -238,6 +242,9 @@ source_set("unit_tests") {
       "//components/unified_consent",
       "//ui/events:test_support",
     ]
+    if (use_ozone) {
+      deps += [ "//ui/ozone" ]
+    }
   } else {
     sources +=
         [ "auto_picture_in_picture_tab_model_observer_helper_unittest.cc" ]
@@ -245,6 +252,13 @@ source_set("unit_tests") {
       "//chrome/browser/android:tabs_public",
       "//chrome/browser/ui/android/tab_model",
       "//chrome/browser/ui/android/tab_model:test_support",
+    ]
+  }
+
+  if (is_chromeos) {
+    deps += [
+      "//ui/aura",
+      "//ui/wm",
     ]
   }
 }
@@ -292,8 +306,13 @@ if (!is_android) {
       "//chrome/browser/ui/views/picture_in_picture",
       "//chrome/browser/ui/views/tabs/tab",
       "//chrome/browser/ui/web_applications",
+      "//chrome/browser/ui/web_applications:test_support",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_path_utils",
+      "//chrome/test/base:chrome_test_scoped_utils",
+      "//chrome/test/base:chrome_test_utils",
       "//components/content_settings/core/browser",
       "//components/enterprise/isolated_mode",
       "//components/javascript_dialogs",
@@ -317,6 +336,7 @@ if (!is_android) {
       "//ui/display",
       "//ui/events:test_support",
       "//ui/gfx/codec",
+      "//ui/shell_dialogs:test_support",
       "//ui/views:test_support",
       "//url",
     ]
@@ -332,6 +352,8 @@ if (!is_android) {
 
     if (is_chromeos) {
       deps += [
+        "//ash",
+        "//ash/constants",
         "//chromeos/ui/base",
         "//ui/aura",
       ]
@@ -383,6 +405,21 @@ if (!is_android) {
         "//ui/display",
       ]
     }
+
+    if (!is_chromeos) {
+      deps += [
+        "//chrome/test/base:chrome_test_path_utils",
+        "//chrome/test/base:chrome_test_utils",
+      ]
+    }
+
+    if (is_win) {
+      sources += [ "document_pip_system_menu_interactive_uitest.cc" ]
+      deps += [
+        "//chrome/browser/ui/views/frame:picture_in_picture_browser_frame_view",
+        "//ui/views",
+      ]
+    }
   }
 
   source_set("test_support_ui") {
@@ -399,6 +436,7 @@ if (!is_android) {
     deps = [
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/test/base:chrome_test_path_utils",
       "//content/public/browser",
       "//content/test:test_support",
     ]

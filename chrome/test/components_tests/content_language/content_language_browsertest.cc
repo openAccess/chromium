@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/feature_list.h"
+#include "base/i18n/language_tag_list_helper.h"
 #include "base/metrics/histogram_base.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/strings/strcat.h"
@@ -88,13 +89,7 @@ void RetryForHistogramUntilCountReached(
 // https://httpwg.org/specs/rfc7231.html#header.content-language
 class RecordLanguagesMetricsBrowserTest : public InProcessBrowserTest {
  public:
-  RecordLanguagesMetricsBrowserTest() {
-    // TODO(crbug.com/334954143) This tests is used to verify the metrics before
-    // we launch ReduceAcceptLanguage. Fix the tests when turning on the reduce
-    // accept-language feature.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {network::features::kReduceAcceptLanguage});
-  }
+  RecordLanguagesMetricsBrowserTest() = default;
 
   static constexpr const char kOriginUrl[] = "https://127.0.0.1:44444";
   static constexpr const char kLanguageHistogramName[] =
@@ -184,7 +179,8 @@ class RecordLanguagesMetricsBrowserTest : public InProcessBrowserTest {
     std::unique_ptr<language::LanguagePrefs> language_prefs =
         std::make_unique<language::LanguagePrefs>(
             browser()->GetProfile()->GetPrefs());
-    language_prefs->SetUserSelectedLanguagesList(accept_languages);
+    language_prefs->SetUserSelectedLanguagesList(
+        base::i18n::GetLanguageTagListFromStringList(accept_languages));
   }
 
  private:
@@ -278,7 +274,6 @@ class RecordLanguagesMetricsBrowserTest : public InProcessBrowserTest {
   std::set<GURL> expected_request_urls_;
   RecordLanguageMetricTestOptions test_options_;
   std::unique_ptr<language::LanguagePrefs> language_prefs_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 constexpr const char RecordLanguagesMetricsBrowserTest::kOriginUrl[];

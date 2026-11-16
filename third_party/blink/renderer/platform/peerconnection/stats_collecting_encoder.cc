@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -154,6 +153,13 @@ int32_t StatsCollectingEncoder::Encode(
 
 void StatsCollectingEncoder::SetRates(const RateControlParameters& parameters) {
   encoder_->SetRates(parameters);
+}
+
+void StatsCollectingEncoder::SetComplexity(
+    std::span<const webrtc::VideoCodecComplexity>  // nocheck
+        complexity_by_spatial_layer,
+    ComplexityControlMode complexity_control_mode) {
+  encoder_->SetComplexity(complexity_by_spatial_layer, complexity_control_mode);
 }
 
 void StatsCollectingEncoder::OnPacketLossRateUpdate(float packet_loss_rate) {

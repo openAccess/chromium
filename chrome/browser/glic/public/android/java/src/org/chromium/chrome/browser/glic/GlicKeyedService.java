@@ -46,6 +46,7 @@ public interface GlicKeyedService {
         GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_PAGE,
         GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION,
         GlicInvocationSource.ACTOR_TOOL,
+        GlicInvocationSource.ACTIVITY_LIST_BUBBLE,
         GlicInvocationSource.MAX_VALUE,
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -61,8 +62,9 @@ public interface GlicKeyedService {
         int WEB_CONTENTS_CONTEXT_MENU_PAGE = 47;
         int WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION = 48;
         int ACTOR_TOOL = 49;
+        int ACTIVITY_LIST_BUBBLE = 50;
         // Must match the largest mojom value, since MAX_VALUE + 1 bounds Glic.EntryPoint.Click.
-        int MAX_VALUE = 49;
+        int MAX_VALUE = 50;
     }
 
     // LINT.ThenChange(//chrome/common/glic_enums.mojom:InvocationSource)
@@ -84,16 +86,6 @@ public interface GlicKeyedService {
     // TODO(b/543136256): Consider consolidating these invoke variants into a single method that
     // takes an InvokeOptions param, so the public API scales as more options are added. The JNI
     // layer can keep multiple functions to avoid struct-conversion overhead.
-    /**
-     * Invokes the Glic service with auto-submit prompt.
-     *
-     * @param tab The {@link Tab} to target.
-     * @param text The text prompt to submit.
-     * @param invocationSource How the UI was triggered.
-     * @return true if the service was successfully invoked.
-     */
-    boolean invokeWithAutoSubmit(Tab tab, String text, @GlicInvocationSource int invocationSource);
-
     /**
      * Invokes the Glic service with a prompt prepopulated in the input box.
      *
@@ -279,21 +271,6 @@ public interface GlicKeyedService {
      * @param enabled true to enable experimental triggering.
      */
     void setExperimentalTriggeringEnabled(boolean enabled);
-
-    /**
-     * Checks if the Glic toolbar button is currently active/pinned.
-     *
-     * @param profile The current profile.
-     * @return true if the Glic toolbar button is active.
-     */
-    boolean isGlicShortcutActive(Profile profile);
-
-    /**
-     * Checks if the bottom bar is enabled.
-     *
-     * @return true if the bottom bar is enabled.
-     */
-    boolean isBottomBarEnabled();
 
     /**
      * Shares (pins) the given tabs with a Glic conversation, invoked from the tab strip context

@@ -6,13 +6,16 @@
 
 #include <utility>
 
-#include "base/base64.h"
+#include "base/functional/bind.h"
 #include "base/no_destructor.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/run_until.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
 #include "chrome/browser/enterprise/net/enterprise_proxy_error_service_factory.h"
 #include "chrome/browser/enterprise/net/enterprise_proxy_service_factory.h"
+#include "chrome/browser/enterprise/net/test/test_auth_helper.h"
+#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -20,12 +23,13 @@
 #include "components/enterprise/net/core/enterprise_proxy_error_service.h"
 #include "components/enterprise/net/core/enterprise_proxy_service.h"
 #include "components/policy/policy_constants.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/oauth_consumer_id.h"
+#include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "content/public/browser/browser_thread.h"
 #include "net/base/host_port_pair.h"
 #include "net/dns/mock_host_resolver.h"
-#include "net/http/http_status_code.h"
 
 namespace enterprise::test {
 
@@ -66,47 +70,60 @@ constexpr char kPvdConfigJsonTemplate[] = R"({
   ]
 })";
 
-const std::vector<std::string>& GetTestCertHostnames() {
+const std::vector<std::string>& GetPvdCertHostnames() {
   static const base::NoDestructor<std::vector<std::string>> kHostnames({
       kTestPvdDomain,
+      kUnauthenticatedPvdDomain,
+      kSecondaryPvdDomain,
+      kSeparateSiteHost,
+  });
+  return *kHostnames;
+}
+
+const std::vector<std::string>& GetOriginCertHostnames() {
+  static const base::NoDestructor<std::vector<std::string>> kHostnames({
       kDestinationHost,
+      kDestinationSubdomainHost,
+      kSecondaryDestinationHost,
+      kSeparateSiteHost,
       kUnmatchedHost,
-      "domain1.example.com",
-      "domain2.example.com",
-      "domain.example2.com",
   });
   return *kHostnames;
 }
 
 }  // namespace
 
+// -----------------------------------------------------------------------------
+// EnterpriseProxyBrowserTestBase
+// -----------------------------------------------------------------------------
+
 EnterpriseProxyBrowserTestBase::EnterpriseProxyBrowserTestBase(
     const ManagementContext& context)
-    : is_platform_managed_(context.is_platform_managed) {
+    : is_platform_managed_(context.is_platform_managed),
+      auth_helper_(TestAuthHelper::Create()) {
   scoped_feature_list_.InitWithFeatures(
       /*enabled_features=*/{enterprise_net::kEnableDynamicRouteFetching,
                             enterprise_net::kEnterpriseProxyErrorHandling},
       /*disabled_features=*/{});
   management_context_mixin_ =
       ManagementContextMixin::Create(&mixin_host_, this, context);
+
+  pvd_server_.SetCertHostnames(GetPvdCertHostnames());
+  pvd_server_.RegisterRequestHandler(
+      base::BindRepeating(&EnterpriseProxyBrowserTestBase::HandlePvdRequest,
+                          base::Unretained(this)));
+
+  origin_server_.SetCertHostnames(GetOriginCertHostnames());
+  origin_server_.RegisterRequestHandler(
+      base::BindRepeating(&EnterpriseProxyBrowserTestBase::HandleOriginRequest,
+                          base::Unretained(this)));
 }
 
 EnterpriseProxyBrowserTestBase::~EnterpriseProxyBrowserTestBase() = default;
 
 void EnterpriseProxyBrowserTestBase::SetUpInProcessBrowserTestFixture() {
   MixinBasedPlatformBrowserTest::SetUpInProcessBrowserTestFixture();
-  create_services_subscription_ =
-      BrowserContextDependencyManager::GetInstance()
-          ->RegisterCreateServicesCallbackForTesting(
-              base::BindRepeating(&EnterpriseProxyBrowserTestBase::
-                                      OnWillCreateBrowserContextServices,
-                                  base::Unretained(this)));
-}
-
-void EnterpriseProxyBrowserTestBase::OnWillCreateBrowserContextServices(
-    content::BrowserContext* context) {
-  IdentityTestEnvironmentProfileAdaptor::
-      SetIdentityTestEnvironmentFactoriesOnBrowserContext(context);
+  auth_helper_->SetUpInProcessBrowserTestFixture(kExpectedAccessToken);
 }
 
 void EnterpriseProxyBrowserTestBase::SetUpOnMainThread() {
@@ -114,49 +131,73 @@ void EnterpriseProxyBrowserTestBase::SetUpOnMainThread() {
   host_resolver()->AddRule("*", "127.0.0.1");
 
   Profile* profile = chrome_test_utils::GetProfile(this);
-  identity_test_env_adaptor_ =
-      std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile);
-  AccountInfo account_info =
-      identity_test_env_adaptor_->identity_test_env()
-          ->MakePrimaryAccountAvailable("user@managed.com",
-                                        signin::ConsentLevel::kSignin);
-  identity_test_env_adaptor_->identity_test_env()
-      ->SimulateSuccessfulFetchOfAccountInfo(
-          account_info.GetAccountId(), account_info.GetEmail(),
-          account_info.GetGaiaId(),
-          /*hosted_domain=*/"managed.com", "Full Name", "Given Name", "en-US",
-          /*picture_url=*/"");
-  identity_test_env_adaptor_->identity_test_env()
-      ->SetAutomaticIssueOfAccessTokens(true);
+  ASSERT_TRUE(profile);
+  auth_helper_->SetUpOnMainThread(profile);
 
-  https_server_.SetCertHostnames(GetTestCertHostnames());
-  https_server_.RegisterAuthHandler(
-      base::BindRepeating(&EnterpriseProxyBrowserTestBase::HandleAuthRequest,
-                          base::Unretained(this)));
-  https_server_.RegisterRequestHandler(
-      base::BindRepeating(&EnterpriseProxyBrowserTestBase::HandlePvdRequest,
-                          base::Unretained(this)));
-  https_server_.RegisterRequestHandler(
-      base::BindRepeating(&EnterpriseProxyBrowserTestBase::HandleWebPageRequest,
-                          base::Unretained(this)));
+  ASSERT_TRUE(pvd_server_.InitializeAndListen());
+  ASSERT_TRUE(origin_server_.InitializeAndListen());
 
-  ASSERT_TRUE(https_server_.InitializeAndListen());
-  https_server_.EnableConnectProxy(std::vector<net::HostPortPair>{
-      net::HostPortPair(kDestinationHost, https_server_.port()),
-      net::HostPortPair("domain.example2.com", https_server_.port()),
-  });
-  https_server_.StartAcceptingConnections();
+  default_proxy_server_ = CreateProxyServer(kDefaultProxyHost);
+  ASSERT_TRUE(default_proxy_server_);
+
+  pvd_server_.StartAcceptingConnections();
+  origin_server_.StartAcceptingConnections();
 
   scoped_extra_domains_ =
       std::make_unique<enterprise_net::ScopedExtraAllowedDomainsForTesting>(
-          std::vector<std::string>{"example.com", "example2.com", "127.0.0.1",
-                                   "localhost"});
+          std::vector<std::string>{"example.com", "separate-site.com",
+                                   "127.0.0.1", "localhost"});
+
+  SignInPrimaryAccount();
 }
 
 void EnterpriseProxyBrowserTestBase::TearDownOnMainThread() {
   scoped_extra_domains_.reset();
-  identity_test_env_adaptor_.reset();
+  default_proxy_server_.reset();
+  EXPECT_TRUE(origin_server_.ShutdownAndWaitUntilComplete());
+  EXPECT_TRUE(pvd_server_.ShutdownAndWaitUntilComplete());
+  auth_helper_->TearDownOnMainThread();
   MixinBasedPlatformBrowserTest::TearDownOnMainThread();
+}
+
+signin::IdentityManager* EnterpriseProxyBrowserTestBase::GetIdentityManager() {
+  Profile* profile = chrome_test_utils::GetProfile(this);
+  return profile ? IdentityManagerFactory::GetForProfile(profile) : nullptr;
+}
+
+void EnterpriseProxyBrowserTestBase::SignInPrimaryAccount(
+    const std::string& email,
+    const std::string& hosted_domain) {
+  Profile* profile = chrome_test_utils::GetProfile(this);
+  ASSERT_TRUE(profile);
+  // Pre-accept profile management so `ProfileManagementDisclaimerService` does
+  // not asynchronously launch the modal `chrome://managed-user-profile-notice`
+  // dialog in the background during routing/error browsertests.
+  enterprise_util::SetUserAcceptedAccountManagement(profile,
+                                                    !hosted_domain.empty());
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  ASSERT_TRUE(identity_manager);
+  auth_helper_->SignInPrimaryAccount(identity_manager, email, hosted_domain,
+                                     current_access_token_);
+}
+
+void EnterpriseProxyBrowserTestBase::InvalidatePrimaryAccountCredentials() {
+  signin::IdentityManager* identity_manager = GetIdentityManager();
+  ASSERT_TRUE(identity_manager);
+  signin::DisableAccessTokenFetchRetries(identity_manager);
+
+  CoreAccountInfo primary =
+      identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+  ASSERT_FALSE(primary.IsEmpty());
+  identity_manager->RemoveAccessTokenFromCache(
+      primary.account_id, signin::OAuthConsumerId::kSecureGatewayService,
+      current_access_token_);
+  auth_helper_->SimulateInvalidCredentials(primary.gaia);
+}
+
+size_t EnterpriseProxyBrowserTestBase::GetTokenFetchRequestCount() const {
+  return auth_helper_->GetTokenFetchRequestCount();
 }
 
 void EnterpriseProxyBrowserTestBase::SetUserProxyProvisioningDomains(
@@ -195,11 +236,11 @@ base::DictValue EnterpriseProxyBrowserTestBase::CreateDomainPolicyEntry(
     base::ListValue extra_headers) {
   base::DictValue entry;
   entry.Set("pvd_id",
-            net::HostPortPair(domain_id, https_server_.port()).ToString());
+            net::HostPortPair(domain_id, pvd_server_.port()).ToString());
   if (use_oauth) {
     base::DictValue auth_config;
     auth_config.Set("type", "profile_bearer_token");
-    auth_config.Set("scope", "cloud_secure_gateway");
+    auth_config.Set("scope", kAuthScope);
     entry.Set("auth_config", std::move(auth_config));
   }
   if (!extra_headers.empty()) {
@@ -256,48 +297,70 @@ void EnterpriseProxyBrowserTestBase::WaitForDynamicRoutesReady() {
   }
 }
 
+GURL EnterpriseProxyBrowserTestBase::GetOriginURL(std::string_view host,
+                                                  std::string_view path) const {
+  return origin_server_.GetURL(host, path);
+}
+
+GURL EnterpriseProxyBrowserTestBase::GetPvdURL(std::string_view host,
+                                               std::string_view path) const {
+  return pvd_server_.GetURL(host, path);
+}
+
+std::vector<net::HostPortPair>
+EnterpriseProxyBrowserTestBase::GetAllProxiedDestinations() const {
+  std::vector<net::HostPortPair> destinations;
+  for (const std::string& host : GetOriginCertHostnames()) {
+    destinations.emplace_back(host, origin_server_.port());
+  }
+  return destinations;
+}
+
+std::unique_ptr<TestConnectProxy>
+EnterpriseProxyBrowserTestBase::CreateProxyServer(std::string hostname) {
+  auto proxy = std::make_unique<TestConnectProxy>(
+      std::move(hostname), GetAllProxiedDestinations(), kAuthScope);
+  if (!proxy->Start()) {
+    return nullptr;
+  }
+  return proxy;
+}
+
 void EnterpriseProxyBrowserTestBase::SetPvdResponseOverride(
     net::HttpStatusCode code,
     const std::string& content,
     const std::string& content_type) {
+  base::AutoLock auto_lock(server_lock_);
   pvd_response_override_code_ = code;
   pvd_response_override_content_ = content;
   pvd_response_override_content_type_ = content_type;
 }
 
 void EnterpriseProxyBrowserTestBase::SetRequireProxyAuth(bool require_auth) {
-  require_proxy_auth_ = require_auth;
+  ASSERT_TRUE(default_proxy_server_);
+  default_proxy_server_->SetRequireAuth(require_auth);
 }
 
 void EnterpriseProxyBrowserTestBase::SetProxyChallengeRealm(
     const std::string& realm) {
-  proxy_challenge_realm_ = realm;
+  ASSERT_TRUE(default_proxy_server_);
+  default_proxy_server_->SetChallengeRealm(realm);
 }
 
-std::unique_ptr<net::test_server::HttpResponse>
-EnterpriseProxyBrowserTestBase::HandleAuthRequest(
-    const net::test_server::HttpRequest& request) {
-  if (request.method == net::test_server::METHOD_CONNECT) {
-    was_proxy_accessed_ = true;
-    if (require_proxy_auth_) {
-      auto auth_it = request.headers.find("Proxy-Authorization");
-      if (auth_it == request.headers.end()) {
-        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-        response->set_code(
-            net::HttpStatusCode::HTTP_PROXY_AUTHENTICATION_REQUIRED);
-        response->AddCustomHeader(
-            "Proxy-Authenticate",
-            base::StringPrintf("Basic realm=\"%s\"",
-                               proxy_challenge_realm_.c_str()));
-        response->set_content("Proxy Authentication Required");
-        response->set_content_type("text/plain");
-        return response;
-      }
-      was_auth_header_received_ = true;
-      last_received_auth_header_ = auth_it->second;
-    }
-  }
-  return nullptr;
+net::test_server::HttpRequest::HeaderMap
+EnterpriseProxyBrowserTestBase::last_pvd_request_headers() const {
+  base::AutoLock auto_lock(server_lock_);
+  return last_pvd_request_headers_;
+}
+
+size_t EnterpriseProxyBrowserTestBase::pvd_request_count() const {
+  base::AutoLock auto_lock(server_lock_);
+  return pvd_request_count_;
+}
+
+size_t EnterpriseProxyBrowserTestBase::origin_request_count() const {
+  base::AutoLock auto_lock(server_lock_);
+  return origin_request_count_;
 }
 
 std::unique_ptr<net::test_server::HttpResponse>
@@ -308,39 +371,54 @@ EnterpriseProxyBrowserTestBase::HandlePvdRequest(
     return nullptr;
   }
 
-  last_pvd_request_headers_ = request.headers;
+  std::string domain(url.HostNoBrackets());
+  if (auto host_it = request.headers.find("Host");
+      host_it != request.headers.end()) {
+    const GURL host_url(base::StrCat({"https://", host_it->second}));
+    if (host_url.is_valid() && !host_url.host().empty()) {
+      domain = host_url.HostNoBrackets();
+    }
+  }
+  const std::string default_proxy_host_port =
+      default_proxy_server_ ? default_proxy_server_->host_port_pair().ToString()
+                            : std::string();
 
-  if (pvd_response_override_code_.has_value()) {
-    auto response = std::make_unique<net::test_server::BasicHttpResponse>();
-    response->set_code(*pvd_response_override_code_);
-    response->set_content(pvd_response_override_content_);
-    response->set_content_type(pvd_response_override_content_type_);
-    return response;
+  {
+    base::AutoLock auto_lock(server_lock_);
+    ++pvd_request_count_;
+    last_pvd_request_headers_ = request.headers;
+
+    if (pvd_response_override_code_.has_value()) {
+      auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+      response->set_code(*pvd_response_override_code_);
+      response->set_content(pvd_response_override_content_);
+      response->set_content_type(pvd_response_override_content_type_);
+      return response;
+    }
   }
 
   auto response = std::make_unique<net::test_server::BasicHttpResponse>();
   response->set_code(net::HttpStatusCode::HTTP_OK);
   response->set_content_type("application/json");
 
-  std::string_view domain = url.host();
-  if (domain == "domain1.example.com") {
-    // Second config also matches kDestinationHost, but does not require auth.
-    response->set_content(BuildValidPvdJson(
-        "domain1.example.com", https_server_.host_port_pair().ToString(),
-        {kDestinationHost}, /*require_auth=*/false));
-  } else if (domain == "domain2.example.com") {
-    // Third config matches domain2.
-    response->set_content(BuildValidPvdJson(
-        "domain2.example.com", https_server_.host_port_pair().ToString(),
-        {"domain2.example.com"}, /*require_auth=*/true));
-  } else if (domain == "domain.example2.com") {
-    response->set_content(BuildValidPvdJson(
-        "domain.example2.com", https_server_.host_port_pair().ToString(),
-        {"domain.example2.com"}, /*require_auth=*/true));
+  if (domain == kUnauthenticatedPvdDomain) {
+    // Matches `kDestinationHost`, but does not require proxy auth.
+    response->set_content(
+        BuildValidPvdJson(kUnauthenticatedPvdDomain, default_proxy_host_port,
+                          {kDestinationHost}, /*require_auth=*/false));
+  } else if (domain == kSecondaryPvdDomain) {
+    response->set_content(
+        BuildValidPvdJson(kSecondaryPvdDomain, default_proxy_host_port,
+                          {kSecondaryDestinationHost}, /*require_auth=*/true));
+  } else if (domain == kSeparateSiteHost) {
+    response->set_content(
+        BuildValidPvdJson(kSeparateSiteHost, default_proxy_host_port,
+                          {kSeparateSiteHost}, /*require_auth=*/true));
   } else {
-    // Default / kTestPvdDomain: matches kDestinationHost with auth.
+    // Default / `kTestPvdDomain`: matches `kDestinationHost` (and its
+    // subdomains) with proxy auth.
     response->set_content(BuildValidPvdJson(
-        kTestPvdDomain, https_server_.host_port_pair().ToString(),
+        kTestPvdDomain, default_proxy_host_port,
         {kDestinationHost, base::StringPrintf("*.%s", kDestinationHost)},
         /*require_auth=*/true));
   }
@@ -348,25 +426,36 @@ EnterpriseProxyBrowserTestBase::HandlePvdRequest(
 }
 
 std::unique_ptr<net::test_server::HttpResponse>
-EnterpriseProxyBrowserTestBase::HandleWebPageRequest(
+EnterpriseProxyBrowserTestBase::HandleOriginRequest(
     const net::test_server::HttpRequest& request) {
   const GURL url = request.GetURL();
   const std::string_view path = url.path();
 
   if (path == "/simple.html") {
+    {
+      base::AutoLock auto_lock(server_lock_);
+      ++origin_request_count_;
+    }
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(net::HttpStatusCode::HTTP_OK);
     response->set_content_type("text/html");
     response->set_content(
-        "<html><body>Proxied and Authenticated</body></html>");
+        "<html><head><link rel=\"icon\" href=\"data:,\"></head>"
+        "<body>Proxied and Authenticated</body></html>");
     return response;
   }
 
   if (path == "/direct.html") {
+    {
+      base::AutoLock auto_lock(server_lock_);
+      ++origin_request_count_;
+    }
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(net::HttpStatusCode::HTTP_OK);
     response->set_content_type("text/html");
-    response->set_content("<html><body>Direct Navigation</body></html>");
+    response->set_content(
+        "<html><head><link rel=\"icon\" href=\"data:,\"></head>"
+        "<body>Direct Navigation</body></html>");
     return response;
   }
 

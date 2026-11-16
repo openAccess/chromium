@@ -25,6 +25,8 @@
 #include "base/strings/string_util.h"
 #include "base/supports_user_data.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/tick_clock.h"
+#include "base/time/time.h"
 #include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -42,6 +44,8 @@
 #include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
+#include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_provider_spec.h"
@@ -84,6 +88,7 @@
 #include "net/base/url_util.h"
 #include "pdf/buildflags.h"
 #include "printing/buildflags/buildflags.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
@@ -300,9 +305,16 @@ void PrepareGlicGuestWebContents(content::WebContents& guest_contents,
                                  GlicWebContentsManager& contents_manager) {
   GlicGuestObserver::CreateForWebContents(guest_contents, contents_manager);
 
-  if (guest_contents.GetPrimaryMainFrame()) {
-    GlicProcessUserData::MarkProcess(
-        guest_contents.GetPrimaryMainFrame()->GetProcess());
+  content::RenderFrameHost* rfh = guest_contents.GetPrimaryMainFrame();
+  if (GlicKeyedService::IsNoWebviewEnabled(
+          guest_contents.GetBrowserContext())) {
+    if (rfh && rfh->GetProcess()->IsPrivileged()) {
+      GlicProcessUserData::MarkProcess(rfh->GetProcess());
+    }
+  } else {
+    if (rfh && rfh->GetProcess()->IsForGuestsOnly()) {
+      GlicProcessUserData::MarkProcess(rfh->GetProcess());
+    }
   }
 
   PrefsTabHelper::CreateForWebContents(&guest_contents);
@@ -869,7 +881,9 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
   state->hotkey = GetHotkeyString();
 #endif
 
-  state->enable_zero_state_suggestions = IsZeroStateSuggestionsEnabled();
+  // LINT.IfChange(GlicZeroStateSuggestionsEnabled)
+  state->enable_zero_state_suggestions = IsZeroStateSuggestionsEnabled(profile);
+  // LINT.ThenChange(//chrome/browser/glic/host/glic_web_client_handler.cc:GlicZeroStateSuggestionsEnabled)
   state->enable_cached_get_user_profile_info = base::FeatureList::IsEnabled(
       features::kGlicEnableCachedGetUserProfileInfo);
   state->enable_act_in_focused_tab =
@@ -953,7 +967,8 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
     state->host_capabilities.push_back(
         mojom::HostCapability::kAttemptOtpFilling);
   }
-  if (base::FeatureList::IsEnabled(features::kGlicDynamicChromeTools)) {
+  if (GetGlicProviderSpec(profile).SupportsFeature(
+          GlicFeature::kDynamicChromeTools)) {
     state->host_capabilities.push_back(mojom::HostCapability::kChromeTools);
   }
   if (base::FeatureList::IsEnabled(features::kSkillsWebViewV2Enabled)) {
@@ -970,7 +985,7 @@ void PopulateGlobalClientInitialState(mojom::WebClientInitialState* state,
         mojom::HostCapability::kGetModelQualityClientId);
   }
   state->enable_capture_region =
-      base::FeatureList::IsEnabled(features::kGlicCaptureRegion);
+      GetGlicProviderSpec(profile).SupportsFeature(GlicFeature::kCaptureRegion);
   state->can_act_on_web = false;
   if (base::FeatureList::IsEnabled(features::kGlicActor)) {
     state->can_act_on_web =
@@ -1130,6 +1145,25 @@ class GlicClipboardEligibilityMonitor : public ui::ClipboardObserver {
 
   bool HasPendingForTesting() const { return pending_eligibility_.has_value(); }
 
+  bool ShouldEmitBlockedPasteNotice(
+      const InstanceId& instance_id,
+      const ui::ClipboardSequenceNumberToken& seqno) {
+    static constexpr base::TimeDelta kPasteNoticeBurstWindow =
+        base::Milliseconds(500);
+    const base::TimeTicks now =
+        tick_clock_ ? tick_clock_->NowTicks() : base::TimeTicks::Now();
+    absl::erase_if(recent_blocked_paste_notices_, [&](const auto& entry) {
+      return now - entry.second >= kPasteNoticeBurstWindow;
+    });
+    auto [it, inserted] =
+        recent_blocked_paste_notices_.insert({{instance_id, seqno}, now});
+    return inserted;
+  }
+
+  void SetTickClockForTesting(const base::TickClock* clock) {
+    tick_clock_ = clock;
+  }
+
   void SetSeqnoForTesting(ui::ClipboardSequenceNumberToken seqno) {
     if (pending_eligibility_.has_value()) {
       SetEligibilityForSeqno(seqno, *pending_eligibility_);
@@ -1140,6 +1174,8 @@ class GlicClipboardEligibilityMonitor : public ui::ClipboardObserver {
     ClearPending();
     last_seqno_.reset();
     last_eligibility_.reset();
+    recent_blocked_paste_notices_.clear();
+    tick_clock_ = nullptr;
   }
 
  private:
@@ -1201,8 +1237,17 @@ class GlicClipboardEligibilityMonitor : public ui::ClipboardObserver {
   std::optional<ui::ClipboardSequenceNumberToken> pending_baseline_seqno_;
   std::optional<ui::ClipboardSequenceNumberToken> last_seqno_;
   std::optional<bool> last_eligibility_;
+  absl::flat_hash_map<std::pair<InstanceId, ui::ClipboardSequenceNumberToken>,
+                      base::TimeTicks>
+      recent_blocked_paste_notices_;
+  raw_ptr<const base::TickClock> tick_clock_ = nullptr;
 };
 
+namespace {
+
+// Evaluates the copy-time page context eligibility for `source`. Returns
+// `std::nullopt` if paste eligibility checks are disabled or `source` does not
+// correspond to a tab frame.
 std::optional<bool> GetClipboardCopyEligibility(
     const content::ClipboardEndpoint& source) {
   if (!base::FeatureList::IsEnabled(features::kGlicPasteEligibilityCheck) ||
@@ -1238,36 +1283,13 @@ std::optional<bool> GetClipboardCopyEligibility(
   return status == optimization_guide::PageContextEligibilityStatus::kEligible;
 }
 
-void StageClipboardCopyEligibility(std::optional<bool> is_eligible,
-                                   bool clear_at_end_of_task) {
-  GlicClipboardEligibilityMonitor::GetInstance()->StageCopyEligibility(
-      is_eligible, clear_at_end_of_task);
-}
-
-bool HasPendingClipboardCopyEligibilityForTesting() {
-  return GlicClipboardEligibilityMonitor::GetInstance()
-      ->HasPendingForTesting();  // IN-TEST
-}
-
+// Directly binds `is_eligible` to `seqno` and clears any pending staged copy
+// eligibility.
 void SetClipboardEligibilityForSeqno(ui::ClipboardSequenceNumberToken seqno,
                                      bool is_eligible) {
   GlicClipboardEligibilityMonitor::GetInstance()->SetEligibilityForSeqno(
       seqno, is_eligible);
 }
-
-void OnBeforeClipboardCopy(const content::ClipboardEndpoint& source) {
-  if (!base::FeatureList::IsEnabled(features::kGlicPasteEligibilityCheck) ||
-      !base::FeatureList::IsEnabled(features::kGlicWebPasteEligibilityCheck)) {
-    return;
-  }
-
-  // Stash (or clear, for non-tab/OS sources) the copy-time eligibility status
-  // in the global monitor so it binds to the resulting clipboard sequence
-  // number without leaking stale pending state across unrelated copies.
-  StageClipboardCopyEligibility(GetClipboardCopyEligibility(source));
-}
-
-namespace {
 
 class PendingClipboardCopyCleanup {
  public:
@@ -1311,7 +1333,7 @@ void ShowPasteBlockDialogIfNeeded(content::WebContents* web_contents) {
 }
 
 bool ShouldBlockPasteForRestrictedCopyImpl(
-    bool has_source_browser_context,
+    content::BrowserContext* source_browser_context,
     content::WebContents* destination_web_contents,
     const ui::ClipboardSequenceNumberToken& seqno) {
   if (!destination_web_contents || !IsGlicGuest(destination_web_contents) ||
@@ -1325,8 +1347,22 @@ bool ShouldBlockPasteForRestrictedCopyImpl(
       return true;
     case data_controls::CopyRestrictionLevel::kOngoingScan:
       return true;
-    case data_controls::CopyRestrictionLevel::kKeptInManagedChrome:
-      if (!has_source_browser_context) {
+    case data_controls::CopyRestrictionLevel::kKeptInManagedBrowser:
+      // The data can be pasted anywhere in the browser as long as the source
+      // `BrowserContext` that the policy was applied to is still alive, which
+      // keeps that policy applicable.
+      if (!source_browser_context) {
+        ShowPasteBlockDialogIfNeeded(destination_web_contents);
+        return true;
+      }
+      return false;
+    case data_controls::CopyRestrictionLevel::kKeptInManagedProfile:
+      // The data can only be pasted into the profile it was copied from, so
+      // the source `BrowserContext` must still be alive and be the one Glic
+      // runs in. Pasting into another profile's Glic is blocked, like pasting
+      // into another profile's tabs is.
+      if (source_browser_context !=
+          destination_web_contents->GetBrowserContext()) {
         ShowPasteBlockDialogIfNeeded(destination_web_contents);
         return true;
       }
@@ -1338,6 +1374,29 @@ bool ShouldBlockPasteForRestrictedCopyImpl(
 #endif  // BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
 
 }  // namespace
+
+void StageClipboardCopyEligibility(std::optional<bool> is_eligible,
+                                   bool clear_at_end_of_task) {
+  GlicClipboardEligibilityMonitor::GetInstance()->StageCopyEligibility(
+      is_eligible, clear_at_end_of_task);
+}
+
+bool HasPendingClipboardCopyEligibilityForTesting() {
+  return GlicClipboardEligibilityMonitor::GetInstance()
+      ->HasPendingForTesting();  // IN-TEST
+}
+
+void OnBeforeClipboardCopy(const content::ClipboardEndpoint& source) {
+  if (!base::FeatureList::IsEnabled(features::kGlicPasteEligibilityCheck) ||
+      !base::FeatureList::IsEnabled(features::kGlicWebPasteEligibilityCheck)) {
+    return;
+  }
+
+  // Stash (or clear, for non-tab/OS sources) the copy-time eligibility status
+  // in the global monitor so it binds to the resulting clipboard sequence
+  // number without leaking stale pending state across unrelated copies.
+  StageClipboardCopyEligibility(GetClipboardCopyEligibility(source));
+}
 
 content::ContentBrowserClient::IsClipboardCopyAllowedCallback
 WrapClipboardCopyAllowedCallback(
@@ -1411,14 +1470,17 @@ void ResetClipboardEligibilityMonitorForTesting() {
   GlicClipboardEligibilityMonitor::GetInstance()->ResetForTesting();  // IN-TEST
 }
 
+void SetBlockedPasteNoticeClockForTesting(const base::TickClock* clock) {
+  // IN-TEST
+  GlicClipboardEligibilityMonitor::GetInstance()->SetTickClockForTesting(clock);
+}
+
 bool IsClipboardPasteAllowed(const content::ClipboardEndpoint& source,
                              const content::ClipboardEndpoint& destination,
                              const ui::ClipboardMetadata& metadata) {
   if (!base::FeatureList::IsEnabled(features::kGlicPasteEligibilityCheck)) {
     return false;
   }
-
-  std::string_view source_suffix = source.web_contents() ? "Web" : "OS";
 
   if (!source.web_contents()) {
     // Allow pastes from external (OS) sources. We do not have sufficient
@@ -1436,11 +1498,40 @@ bool IsClipboardPasteAllowed(const content::ClipboardEndpoint& source,
     return true;
   }
 
-  if (source.browser_context() != destination.browser_context()) {
-    base::UmaHistogramEnumeration(
-        base::StrCat({"Glic.Paste.FailedEligibilityReason.", source_suffix}),
-        GlicPasteFailedEligibilityReason::kCrossProfile);
-    return false;
+  auto notify_and_fail =
+      [&](GlicPasteFailedEligibilityReason reason,
+          mojom::DataTransferActionsBlockedReason notice_reason) {
+        // Justification: Static clipboard paste eligibility hook without
+        // GlicInstance metrics context; preserves existing
+        // Glic.Paste.FailedEligibilityReason.Web histogram.
+        base::UmaHistogramEnumeration("Glic.Paste.FailedEligibilityReason.Web",
+                                      reason);
+        if (content::WebContents* dest_guest = destination.web_contents()) {
+          if (GlicKeyedService* service =
+                  GlicKeyedServiceFactory::GetGlicKeyedService(
+                      dest_guest->GetBrowserContext(),
+                      /*create=*/false)) {
+            if (GlicInstance* instance =
+                    service->instance_coordinator()
+                        .GetInstanceWithGlicWebContents(dest_guest)) {
+              if (GlicClipboardEligibilityMonitor::GetInstance()
+                      ->ShouldEmitBlockedPasteNotice(instance->id(),
+                                                     metadata.seqno)) {
+                instance->NotifyDataTransferActionsBlocked(
+                    mojom::DataTransferActionsBlockedNotice::New(
+                        mojom::DataTransferAction::kPaste, notice_reason));
+              }
+            }
+          }
+        }
+        return false;
+      };
+
+  if (!base::FeatureList::IsEnabled(features::kGlicCrossProfileTransfer) &&
+      source.browser_context() != destination.browser_context()) {
+    return notify_and_fail(
+        GlicPasteFailedEligibilityReason::kCrossProfile,
+        mojom::DataTransferActionsBlockedReason::kCrossProfile);
   }
 
 #if BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
@@ -1457,20 +1548,18 @@ bool IsClipboardPasteAllowed(const content::ClipboardEndpoint& source,
 
   if (was_eligible.has_value()) {
     if (!*was_eligible) {
-      base::UmaHistogramEnumeration(
-          base::StrCat({"Glic.Paste.FailedEligibilityReason.", source_suffix}),
-          GlicPasteFailedEligibilityReason::kPageContextIneligible);
-      return false;
+      return notify_and_fail(
+          GlicPasteFailedEligibilityReason::kPageContextIneligible,
+          mojom::DataTransferActionsBlockedReason::kIneligiblePageContext);
     }
     return true;
   }
 
   // If there's no matching sequence number, it means the copy was from
   // an unknown source (or the monitor missed it), so we fail the paste.
-  base::UmaHistogramEnumeration(
-      base::StrCat({"Glic.Paste.FailedEligibilityReason.", source_suffix}),
-      GlicPasteFailedEligibilityReason::kPageContextInvalidated);
-  return false;
+  return notify_and_fail(
+      GlicPasteFailedEligibilityReason::kPageContextInvalidated,
+      mojom::DataTransferActionsBlockedReason::kUnsupportedOrExpiredSource);
 }
 
 bool MaybeBlockPasteForRestrictedCopy(
@@ -1479,8 +1568,7 @@ bool MaybeBlockPasteForRestrictedCopy(
     const ui::ClipboardMetadata& metadata) {
 #if BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
   return ShouldBlockPasteForRestrictedCopyImpl(
-      /*has_source_browser_context=*/source.browser_context() != nullptr,
-      destination.web_contents(), metadata.seqno);
+      source.browser_context(), destination.web_contents(), metadata.seqno);
 #else
   return false;
 #endif  // BUILDFLAG(ENTERPRISE_DATA_CONTROLS)
@@ -1511,9 +1599,8 @@ WrapClipboardPasteAllowedCallback(
          std::optional<content::ClipboardPasteData> allowed_data) {
         if (allowed_data.has_value() &&
             ShouldBlockPasteForRestrictedCopyImpl(
-                /*has_source_browser_context=*/static_cast<bool>(
-                    source_browser_context),
-                destination_web_contents.get(), seqno)) {
+                source_browser_context.get(), destination_web_contents.get(),
+                seqno)) {
           std::move(inner_callback).Run(std::nullopt);
           return;
         }

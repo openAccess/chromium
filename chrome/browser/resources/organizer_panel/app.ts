@@ -8,6 +8,7 @@ import './organizer_list.js';
 import '/strings.m.js';
 
 import {assert} from '//resources/js/assert.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import {ColorChangeUpdater} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import type {CrToolbarSearchFieldElement} from 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
@@ -73,6 +74,11 @@ export class OrganizerPanelAppElement extends CrLitElement {
   private browserProxy_: BrowserProxy = browserProxyFactory.getInstance();
   private verticalTabsEnabledChangedListenerId_: number|null = null;
   private inTrayViewChangedListenerId_: number|null = null;
+  private hasRecordedSearch_: boolean = false;
+  private hasBeenHidden_: boolean = false;
+  // Generation identifier used to associate showUI() callbacks with the current
+  // show/hide cycle.
+  private loadGeneration_: number = 0;
   private onKeydown_: (e: KeyboardEvent) => void = (e: KeyboardEvent) => {
     if (e.key === 'Tab') {
       const path = e.composedPath();
@@ -89,7 +95,6 @@ export class OrganizerPanelAppElement extends CrLitElement {
         e.stopPropagation();
       } else if (
           !e.shiftKey && path.includes(this.$.searchField) &&
-          !this.$.searchField.isSearchFocused() &&
           this.$.list.focusFirstSection()) {
         e.preventDefault();
         e.stopPropagation();
@@ -106,9 +111,15 @@ export class OrganizerPanelAppElement extends CrLitElement {
   };
   private onVisibilityChange_: () => void = () => {
     if (document.visibilityState === 'hidden') {
+      this.hasBeenHidden_ = true;
+      this.loadGeneration_++;
       this.$.searchField.setValue('');
       this.searchQuery_ = '';
+      this.hasRecordedSearch_ = false;
       this.$.list.scrollTop = 0;
+    } else if (document.visibilityState === 'visible' && this.hasBeenHidden_) {
+      this.hasBeenHidden_ = false;
+      this.notifyShowUiWhenReady_(() => this.$.list.reloadSections());
     }
   };
 
@@ -147,12 +158,28 @@ export class OrganizerPanelAppElement extends CrLitElement {
     this.inTrayViewChangedListenerId_ = null;
   }
 
+  override firstUpdated(changedProperties: PropertyValues<this>) {
+    super.firstUpdated(changedProperties);
+    this.notifyShowUiWhenReady_(() => this.$.list.waitForSectionsLoaded());
+  }
+
   private getCloseButton_(): HTMLElement|null {
     const button = this.shadowRoot?.querySelector<HTMLElement>('#closeButton');
     if (!button || button.hidden || button.style.display === 'none') {
       return null;
     }
     return button;
+  }
+
+  private async notifyShowUiWhenReady_(waitForLoad: () => Promise<void>) {
+    const generation = ++this.loadGeneration_;
+    try {
+      await waitForLoad();
+    } finally {
+      if (generation === this.loadGeneration_ && this.isConnected) {
+        this.browserProxy_.handler.showUI();
+      }
+    }
   }
 
   protected onCloseButtonClick_() {
@@ -189,6 +216,10 @@ export class OrganizerPanelAppElement extends CrLitElement {
   }
 
   protected onSearchChanged_(e: CustomEvent<string>) {
+    if (!this.hasRecordedSearch_ && e.detail.length > 0) {
+      chrome.histograms.recordUserAction('OrganizerPanel.StartSearch');
+      this.hasRecordedSearch_ = true;
+    }
     this.searchQuery_ = e.detail;
   }
 

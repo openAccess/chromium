@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -21,6 +22,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
+#include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/task/bind_post_task.h"
@@ -226,17 +228,40 @@ void SendDeviceNotifierToAudioService(
   GetAudioService().BindDeviceNotifier(std::move(device_notifier_receiver));
 }
 
-void ReportVideoEnumerationStart() {
-  base::UmaHistogramBoolean(
-      "Media.MediaDevicesManager.VideoDeviceEnumeration.Start", true);
+std::string_view GetVideoEnumerationHistogramSuffix(
+    media::mojom::VideoCaptureDeviceEnumerationMode enumeration_mode) {
+  switch (enumeration_mode) {
+#if BUILDFLAG(IS_WIN)
+    case media::mojom::VideoCaptureDeviceEnumerationMode::kDevicesOnly:
+      return ".DevicesOnly";
+#endif
+    case media::mojom::VideoCaptureDeviceEnumerationMode::
+        kDevicesWithCapabilities:
+      return ".DevicesWithCapabilities";
+  }
+  NOTREACHED();
 }
 
-void ReportVideoEnumerationResult(DeviceEnumerationResult result_code,
-                                  bool has_devices) {
+void ReportVideoEnumerationStart(
+    media::mojom::VideoCaptureDeviceEnumerationMode enumeration_mode) {
+  base::UmaHistogramBoolean(
+      base::StrCat({"Media.MediaDevicesManager.VideoDeviceEnumeration.Start",
+                    GetVideoEnumerationHistogramSuffix(enumeration_mode)}),
+      true);
+}
+
+void ReportVideoEnumerationResult(
+    DeviceEnumerationResult result_code,
+    bool has_devices,
+    media::mojom::VideoCaptureDeviceEnumerationMode enumeration_mode) {
+  const std::string_view suffix =
+      GetVideoEnumerationHistogramSuffix(enumeration_mode);
   base::UmaHistogramEnumeration(
-      "Media.MediaDevicesManager.VideoDeviceEnumeration.Result", result_code);
+      base::StrCat(
+          {"Media.MediaDevicesManager.VideoDeviceEnumeration.Result", suffix}),
+      result_code);
   base::UmaHistogramEnumeration(
-      "Media.Video.InputDeviceEnumerationOutcome",
+      base::StrCat({"Media.Video.InputDeviceEnumerationOutcome", suffix}),
       media::GetDeviceEnumerationOutcome(
           result_code == DeviceEnumerationResult::kSuccess, has_devices));
 }
@@ -1145,20 +1170,23 @@ void MediaDevicesManager::OnPermissionsCheckDone(
     bool request_audio_input_capabilities,
     EnumerateDevicesCallback callback,
     const MediaDeviceSaltAndOrigin& salt_and_origin,
-    const MediaDevicesManager::BoolDeviceTypes& has_permissions) {
+    const MediaDevicesManager::DevicePermissionStates& permission_states) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M155);
+  const MediaDevicesManager::DevicePermissionState& audio_input_permission =
+      permission_states[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)];
+  const MediaDevicesManager::DevicePermissionState& video_input_permission =
+      permission_states[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)];
   SendLogMessage(base::StringPrintf(
-      "OnPermissionsCheckDone({request_id=%llu}, {has_audio_permission=%s}, "
-      "{has_video_permission=%s})",
-      request_id,
-      base::ToString(has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaAudioInput)]),
-      base::ToString(has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaVideoInput)])));
+      "OnPermissionsCheckDone({request_id=%llu}, "
+      "{has_audio_browser_permission=%s}, "
+      "{has_video_browser_permission=%s}, "
+      "{video_system_may_prompt=%s})",
+      request_id, base::ToString(audio_input_permission.has_browser_permission),
+      base::ToString(video_input_permission.has_browser_permission),
+      base::ToString(video_input_permission.system_may_prompt)));
 
   if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] &&
-      !has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaAudioInput)]) {
+      !audio_input_permission.has_browser_permission) {
     SendLogMessage(
         base::StringPrintf("OnPermissionsCheckDone({request_id=%llu}) => "
                            "[WARNING: Audio permission denied by user/browser]",
@@ -1166,8 +1194,7 @@ void MediaDevicesManager::OnPermissionsCheckDone(
   }
 
   if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
-      !has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaVideoInput)]) {
+      !video_input_permission.has_browser_permission) {
     SendLogMessage(
         base::StringPrintf("OnPermissionsCheckDone({request_id=%llu}) => "
                            "[WARNING: Video permission denied by user/browser]",
@@ -1192,7 +1219,9 @@ void MediaDevicesManager::OnPermissionsCheckDone(
       MediaDeviceType::kMediaAudioOutput)] =
       requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)];
 
-  if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)]) {
+  if (video_input_permission.has_browser_permission &&
+      request_video_input_capabilities &&
+      !video_input_permission.system_may_prompt) {
     SetVideoEnumerationModeToDevicesWithCapabilities();
   }
   EnumerateAndRankDevices(
@@ -1202,7 +1231,7 @@ void MediaDevicesManager::OnPermissionsCheckDone(
                      render_frame_host_id, requested_types,
                      request_video_input_capabilities,
                      request_audio_input_capabilities, std::move(callback),
-                     std::move(salt_and_origin), has_permissions),
+                     std::move(salt_and_origin), permission_states),
       request_id);
 }
 
@@ -1214,22 +1243,24 @@ void MediaDevicesManager::OnDevicesEnumeratedAndRanked(
     bool request_audio_input_capabilities,
     EnumerateDevicesCallback callback,
     const MediaDeviceSaltAndOrigin& salt_and_origin,
-    const MediaDevicesManager::BoolDeviceTypes& has_permissions,
+    const MediaDevicesManager::DevicePermissionStates& permission_states,
     const MediaDeviceEnumeration& enumeration) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M155);
-  SendLogMessage(
-      base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}, "
-                         "{has_audio_permission=%s}, "
-                         "{has_video_permission=%s})",
-                         request_id,
-                         base::ToString(has_permissions[static_cast<size_t>(
-                             MediaDeviceType::kMediaAudioInput)]),
-                         base::ToString(has_permissions[static_cast<size_t>(
-                             MediaDeviceType::kMediaVideoInput)])));
+  const MediaDevicesManager::DevicePermissionState& audio_input_permission =
+      permission_states[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)];
+  const MediaDevicesManager::DevicePermissionState& video_input_permission =
+      permission_states[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)];
+  SendLogMessage(base::StringPrintf(
+      "OnDevicesEnumeratedAndRanked({request_id=%llu}, "
+      "{has_audio_browser_permission=%s}, "
+      "{has_video_browser_permission=%s}, "
+      "{video_system_may_prompt=%s})",
+      request_id, base::ToString(audio_input_permission.has_browser_permission),
+      base::ToString(video_input_permission.has_browser_permission),
+      base::ToString(video_input_permission.system_may_prompt)));
 
   if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] &&
-      !has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaAudioInput)]) {
+      !audio_input_permission.has_browser_permission) {
     SendLogMessage(
         base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}) => "
                            "[WARNING: Audio permission denied by user/browser]",
@@ -1237,8 +1268,7 @@ void MediaDevicesManager::OnDevicesEnumeratedAndRanked(
   }
 
   if (requested_types[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
-      !has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaVideoInput)]) {
+      !video_input_permission.has_browser_permission) {
     SendLogMessage(
         base::StringPrintf("OnDevicesEnumeratedAndRanked({request_id=%llu}) => "
                            "[WARNING: Video permission denied by user/browser]",
@@ -1246,10 +1276,10 @@ void MediaDevicesManager::OnDevicesEnumeratedAndRanked(
   }
 
   const bool video_input_capabilities_requested =
-      has_permissions[static_cast<size_t>(MediaDeviceType::kMediaVideoInput)] &&
+      video_input_permission.has_browser_permission &&
       request_video_input_capabilities;
   const bool audio_input_capabilities_requested =
-      has_permissions[static_cast<size_t>(MediaDeviceType::kMediaAudioInput)] &&
+      audio_input_permission.has_browser_permission &&
       request_audio_input_capabilities;
 
   std::vector<blink::WebMediaDeviceInfoArray> translation(
@@ -1260,19 +1290,20 @@ void MediaDevicesManager::OnDevicesEnumeratedAndRanked(
       continue;
 
     for (const auto& device_info : enumeration[i]) {
-      if (!has_permissions[i] && !translation[i].empty()) {
+      if (!permission_states[i].has_browser_permission &&
+          !translation[i].empty()) {
         break;
       }
 
-      translation[i].push_back(TranslateMediaDeviceInfo(
-          has_permissions[i], salt_and_origin, device_info));
+      translation[i].push_back(
+          TranslateMediaDeviceInfo(permission_states[i].has_browser_permission,
+                                   salt_and_origin, device_info));
     }
   }
 
   // Expose devices authorized by selectAudioOutput.
   if (!audio_device_origin_map_.empty() &&
-      !has_permissions[static_cast<size_t>(
-          MediaDeviceType::kMediaAudioInput)] &&
+      !audio_input_permission.has_browser_permission &&
       translation[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)]
               .size() == 1 &&
       translation[static_cast<size_t>(MediaDeviceType::kMediaAudioOutput)][0]
@@ -1500,7 +1531,7 @@ void MediaDevicesManager::EnumerateSystemDevices(uint64_t request_id,
       break;
     case MediaDeviceType::kMediaVideoInput:
       ongoing_update_video_enumeration_mode_ = video_enumeration_mode_;
-      ReportVideoEnumerationStart();
+      ReportVideoEnumerationStart(video_enumeration_mode_);
       video_capture_manager_->EnumerateDevices(
           video_enumeration_mode_,
           base::BindOnce(&MediaDevicesManager::VideoInputDevicesEnumerated,
@@ -1537,7 +1568,9 @@ void MediaDevicesManager::VideoInputDevicesEnumerated(
     DeviceEnumerationResult result_code,
     const media::VideoCaptureDeviceDescriptors& descriptors) {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M155);
-  ReportVideoEnumerationResult(result_code, !descriptors.empty());
+  CHECK(ongoing_update_video_enumeration_mode_);
+  ReportVideoEnumerationResult(result_code, !descriptors.empty(),
+                               *ongoing_update_video_enumeration_mode_);
 
   if (result_code != DeviceEnumerationResult::kSuccess) {
     std::string log_message = base::StringPrintf(

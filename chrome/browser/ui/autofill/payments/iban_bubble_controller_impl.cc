@@ -16,7 +16,6 @@
 #include "chrome/browser/ui/autofill/payments/save_iban_ui.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
@@ -416,7 +415,10 @@ void IbanBubbleControllerImpl::OnBubbleClosed(
 
 IbanBubbleControllerImpl::IbanBubbleControllerImpl(
     content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionShowPaymentsBubbleOrPage,
+                           .should_manage_visibility = true}),
       content::WebContentsUserData<IbanBubbleControllerImpl>(*web_contents) {}
 
 IbanBubbleType IbanBubbleControllerImpl::GetIbanBubbleType() const {
@@ -451,17 +453,7 @@ IbanBubbleControllerImpl::GetConfirmationUiParams() const {
   return confirmation_ui_params_.value();
 }
 
-std::optional<PageActionIconType>
-IbanBubbleControllerImpl::GetPageActionIconType() {
-  return PageActionIconType::kSaveIban;
-}
-
 #if !BUILDFLAG(IS_ANDROID)
-std::optional<actions::ActionId>
-IbanBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionShowPaymentsBubbleOrPage;
-}
-
 std::optional<std::u16string>
 IbanBubbleControllerImpl::GetPageActionTooltipText() {
   return GetSavePaymentIconTooltipText();

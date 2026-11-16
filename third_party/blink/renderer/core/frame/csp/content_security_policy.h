@@ -155,6 +155,9 @@ class CORE_EXPORT ContentSecurityPolicyDelegate : public GarbageCollectedMixin {
   // See https://w3c.github.io/webappsec-csp/#create-violation-for-global.
   // These functions are used to create the violation object.
   virtual SourceLocation* GetSourceLocation() = 0;
+  virtual const ExecutionContext* GetExecutionContext() const {
+    return nullptr;
+  }
   virtual std::optional<uint16_t> GetStatusCode() = 0;
   // If the Delegate is not bound to a document, a null string should be
   // returned as the referrer.
@@ -179,6 +182,23 @@ class CORE_EXPORT ContentSecurityPolicyDelegate : public GarbageCollectedMixin {
   virtual void DidAddContentSecurityPolicies(
       Vector<network::mojom::blink::ContentSecurityPolicyPtr>) = 0;
   virtual bool ScriptSrcExtendedHashesEnabled() = 0;
+
+  // Reports the CSP violation on the outside context and returns true, if the
+  // violation is detected while fetching the module graph of a worker or
+  // worklet and the outside context can receive it. In this case, the worker
+  // or worklet context doesn't report the violation. Otherwise returns false.
+  // https://w3c.github.io/webappsec-csp/#create-violation-for-request
+  virtual bool ReportViolationOnOutsideSettingsIfNeeded(
+      CSPDirectiveName effective_type,
+      const String& console_message,
+      const KURL& blocked_url,
+      const Vector<String>& report_endpoints,
+      bool use_reporting_api,
+      const String& header,
+      network::mojom::ContentSecurityPolicyType header_type,
+      const SourceLocation* source_location) {
+    return false;
+  }
 };
 
 class CORE_EXPORT ContentSecurityPolicy final
@@ -259,7 +279,7 @@ class CORE_EXPORT ContentSecurityPolicy final
                                ExceptionStatus,
                                const String& script_content);
 
-  HashSet<HashAlgorithm> HashesToReport() const;
+  HashAlgorithmSet HashesToReport() const;
   void AddHashReportIfNeeded(
       LocalFrame* frame,
       const String& url,
@@ -383,6 +403,26 @@ class CORE_EXPORT ContentSecurityPolicy final
       const String& eval_hash = String(),
       const String& url_hash = String());
 
+  // Same as ReportViolation(), but also logs |console_message| to the console
+  // if the message is not empty.
+  void LogToConsoleAndReportViolation(
+      CSPDirectiveName effective_type,
+      const String& console_message,
+      const KURL& blocked_url,
+      const Vector<String>& report_endpoints,
+      bool use_reporting_api,
+      const String& header,
+      network::mojom::ContentSecurityPolicyType,
+      ContentSecurityPolicyViolationType,
+      SourceLocation* source_location,
+      LocalFrame* context_frame = nullptr,
+      Element* element = nullptr,
+      const String& source = g_empty_string,
+      const String& source_prefix = g_empty_string,
+      std::optional<base::UnguessableToken> issue_id = std::nullopt,
+      const String& eval_hash = String(),
+      const String& url_hash = String());
+
   // Strip a URL to make it safe to report it.
   static String StripURLForUseInReport(const SecurityOrigin* security_origin,
                                        const KURL& url,
@@ -486,6 +526,10 @@ class CORE_EXPORT ContentSecurityPolicy final
 
   void Count(WebFeature feature) const;
 
+  const ExecutionContext* GetExecutionContext() const {
+    return delegate_ ? delegate_->GetExecutionContext() : nullptr;
+  }
+
   // Start the mode to disallow any script executions for synthetic response.
   void DisallowScriptForSyntheticResponse() {
     disallow_script_for_synthetic_response_ = true;
@@ -559,7 +603,7 @@ class CORE_EXPORT ContentSecurityPolicy final
   // We put the hash functions used on the policy object so that we only need
   // to calculate digests using those hashing algorithms which show up in the
   // policy.
-  HashSet<IntegrityAlgorithm> hash_algorithms_used_;
+  IntegrityAlgorithmSet hash_algorithms_used_;
 
   // State flags used to configure the environment after parsing a policy.
   network::mojom::blink::WebSandboxFlags sandbox_mask_;

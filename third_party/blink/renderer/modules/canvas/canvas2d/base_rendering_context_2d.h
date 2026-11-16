@@ -6,10 +6,13 @@
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_CANVAS_CANVAS2D_BASE_RENDERING_CONTEXT_2D_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/byte_size.h"
+#include "base/cancelable_callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
@@ -17,6 +20,7 @@
 #include "cc/paint/paint_record.h"
 #include "components/viz/common/gpu/context_lost_observer.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
+#include "gpu/command_buffer/client/shared_image_pool.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_canvas_fill_rule.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_image_smoothing_quality.h"
@@ -27,6 +31,7 @@
 #include "third_party/blink/renderer/modules/canvas/canvas2d/canvas_rendering_context_2d_state.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_2d_color_params.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/flush_for_image_listener.h"
 #include "third_party/blink/renderer/platform/graphics/flush_reason.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
@@ -39,6 +44,7 @@
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/instrumentation/canvas_memory_dump_provider.h"
 #include "third_party/blink/renderer/platform/text/layout_locale.h"
+#include "third_party/blink/renderer/platform/text/text_direction.h"
 #include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -63,7 +69,6 @@ class Vector2d;
 
 namespace blink {
 
-class Canvas2DResourceProvider;
 class CanvasContextCreationAttributesCore;
 class CanvasImageProvider;
 class CanvasRenderingContext2DSettings;
@@ -90,6 +95,7 @@ enum class RasterMode;
 class MODULES_EXPORT BaseRenderingContext2D
     : public CanvasRenderingContext,
       public Canvas2DRecorderContext,
+      public CanvasResource::Client,
       public MemoryManagedPaintRecorder::Client,
       public FlushForImageObserver,
       public CanvasMemoryDumpClient,
@@ -182,7 +188,9 @@ class MODULES_EXPORT BaseRenderingContext2D
   virtual bool InitializeBacking() = 0;
   bool HasBacking() const;
   virtual bool IsBackingValid() const;
+  bool IsBackingAccelerated() const;
   virtual void ResetBacking();
+  bool IsSingleBuffered() const;
 
   std::optional<cc::PaintRecord> FlushCanvas(FlushReason) override = 0;
 
@@ -302,7 +310,8 @@ class MODULES_EXPORT BaseRenderingContext2D
 
   // Implementing methods from CanvasRenderingContext
   bool IsOpaque() const final {
-    return color_params_.GetAlphaType() == kOpaque_SkAlphaType;
+    return !isContextLost() && (IsBackingValid() || IsHibernating()) &&
+           color_params_.GetAlphaType() == kOpaque_SkAlphaType;
   }
   bool IsPaintable() const override;
   bool Is2DCanvasAccelerated() const override;
@@ -319,9 +328,14 @@ class MODULES_EXPORT BaseRenderingContext2D
     on_restore_failed_callback_for_testing_ = std::move(callback);
   }
   SkSurface* GetSoftwareSurfaceForTesting() const { return surface_.get(); }
-  Canvas2DResourceProvider* GetSharedImageProviderForTesting() const {
-    return GetSharedImageProvider();
+  // Returns the remembered `SkImage::uniqueID()` for the latest software
+  // snapshot, or `0u` if invalidated.
+  uint64_t GetSwSnapshotSkImageIdForTesting() const {
+    return sw_snapshot_sk_image_id_;
   }
+  int NumInflightResourcesForTesting() const;
+  bool HasUnusedResourcesForTesting() const;
+  bool UnusedResourcesReclaimTimerIsRunningForTesting() const;
 
   HeapTaskRunnerTimer<BaseRenderingContext2D>
       dispatch_context_lost_event_timer_;
@@ -387,11 +401,11 @@ class MODULES_EXPORT BaseRenderingContext2D
                                  bool clear_frame,
                                  FlushReason reason) {}
 
-  Canvas2DResourceProvider* GetSharedImageProvider() const;
-  void CreateSharedImageProvider(
-      RasterMode raster_mode,
-      gpu::SharedImageUsageSet shared_image_usage_flags);
-  void CreateSharedImageProviderForSoftwareCompositor();
+  bool HasSharedImagePool() const;
+  void SetResourceRecyclingEnabled(bool value);
+  void CreateSharedImagePool(RasterMode raster_mode,
+                             gpu::SharedImageUsageSet shared_image_usage_flags);
+  void CreateSharedImagePoolForSoftwareCompositor();
   void CreateSoftwareSurface();
   void RecordBackingHistograms();
   scoped_refptr<StaticBitmapImage> Snapshot();
@@ -399,19 +413,26 @@ class MODULES_EXPORT BaseRenderingContext2D
   bool context_restorable_{true};
 
  private:
+  scoped_refptr<ExportedCanvasResource> CreateExportedResource(
+      scoped_refptr<CanvasResource> resource);
+
   void UpdateRecordingLimits(bool is_graphite);
   virtual bool IsHibernating() const { return false; }
   virtual void EnableAccelerationIfPossible() {}
-  void DrawTextInternal(const String& text,
-                        double x,
-                        double y,
-                        CanvasRenderingContext2DState::PaintType paint_type,
-                        V8CanvasTextAlign::Enum align,
-                        V8CanvasTextBaseline::Enum baseline,
-                        unsigned run_start,
-                        unsigned run_end,
-                        double* max_width = nullptr,
-                        const Font* cluster_font = nullptr);
+  // When set, `direction_override` is used instead of the context direction,
+  // and the canvas unicode-bidi override is ignored.
+  void DrawTextInternal(
+      const String& text,
+      double x,
+      double y,
+      CanvasRenderingContext2DState::PaintType paint_type,
+      V8CanvasTextAlign::Enum align,
+      V8CanvasTextBaseline::Enum baseline,
+      unsigned run_start,
+      unsigned run_end,
+      double* max_width = nullptr,
+      const Font* cluster_font = nullptr,
+      std::optional<TextDirection> direction_override = std::nullopt);
 
   void PutByteArray(const SkPixmap& source,
                     const gfx::Rect& source_rect,
@@ -420,6 +441,10 @@ class MODULES_EXPORT BaseRenderingContext2D
   void WillUseCurrentFont() const;
 
   scoped_refptr<StaticBitmapImage> UnacceleratedSnapshot();
+
+  // CanvasResource::Client implementation.
+  void OnResourceRefReturned(scoped_refptr<CanvasResource> resource) override;
+  void OnDestroyResource() override { --num_inflight_resources_; }
 
   // CanvasMemoryDumpClient implementation.
   void OnMemoryDump(base::trace_event::ProcessMemoryDump*) override;
@@ -434,8 +459,11 @@ class MODULES_EXPORT BaseRenderingContext2D
   // BitmapGpuChannelLostObserver implementation.
   void OnGpuChannelLost() override;
 
-  void NotifyGpuContextLostTask(base::WeakPtr<Canvas2DResourceProvider>);
-
+  void ResetSharedImagePool();
+  void ClearUnusedResources();
+  scoped_refptr<CanvasResource> NewOrRecycledResource();
+  gpu::raster::RasterInterface* RasterInterface() const;
+  bool IsGpuContextLost() const;
   bool ShouldReplaceTargetBuffer();
   void EnsureResourceReadyForDraw();
   void EnsureWriteAccess();
@@ -450,15 +478,36 @@ class MODULES_EXPORT BaseRenderingContext2D
   GetAnimatedImageFrameIndexMap(uint32_t id) const;
   CanvasImageProvider* GetOrCreateCanvasImageProvider();
 
+  // The maximum number of in-flight resources waiting to be used for
+  // recycling.
+  static constexpr int kMaxRecycledCanvasResources = 3;
+
   Canvas2DColorParams color_params_;
-  std::unique_ptr<Canvas2DResourceProvider> shared_image_provider_;
+  // If this instance is single-buffered or `resource_recycling_enabled_` is
+  // false, `image_pool_` will not recycle resources.
+  std::unique_ptr<gpu::SharedImagePool<CanvasResource>> image_pool_;
+  scoped_refptr<CanvasResource> resource_;
+  bool is_accelerated_ = false;
+  bool resource_recycling_enabled_ = true;
+  int num_inflight_resources_ = 0;
+  int max_inflight_resources_ = 0;
   sk_sp<SkSurface> surface_;
   std::unique_ptr<CanvasImageProvider> canvas_image_provider_;
-  // Initialized on GPU-composited `shared_image_provider_` creation. Also
-  // lazily initialized when rasterizing to a software surface, as that
-  // surface may be called upon to rasterize a texture-backed resource, which
-  // must be bound to a GPU context for the current thread.
+  // Initialized on GPU-composited SharedImage backing creation and checked to
+  // determine whether that backing's GPU context is still live.
   base::WeakPtr<WebGraphicsContext3DProviderWrapper> context_provider_wrapper_;
+  // Lazily initialized when creating a software `canvas_image_provider_` while
+  // `context_provider_wrapper_` is null (either because the backing is not a
+  // GPU-composited SharedImage, or in the gap between GPU context destruction
+  // clearing `context_provider_wrapper_` and `ResetBacking()` tearing down a
+  // CPU-raster GPU-composited SharedImage backing), so that `this` can
+  // observe wrapper destruction (to reset `canvas_image_provider_`) and
+  // unregister itself on backing reset/destruction. Kept separate from
+  // `context_provider_wrapper_` so that acquiring a new wrapper for software
+  // `CanvasImageProvider` does not make a dead GPU-composited SharedImage
+  // backing appear valid.
+  base::WeakPtr<WebGraphicsContext3DProviderWrapper>
+      sw_image_provider_context_provider_wrapper_;
   base::WeakPtr<WebGraphicsSharedImageInterfaceProvider>
       shared_image_interface_provider_;
   // `raster_context_provider_` holds a reference on the shared
@@ -467,10 +516,12 @@ class MODULES_EXPORT BaseRenderingContext2D
   // notified after the shared `WebGraphicsContext3DProviderWrapper` instance is
   // recreated.
   scoped_refptr<viz::RasterContextProvider> raster_context_provider_;
+  base::CancelableOnceClosure notify_gpu_context_lost_task_;
+  bool notified_context_lost_ = false;
   cc::PaintImage::Id sw_snapshot_paint_image_id_ = cc::PaintImage::kInvalidId;
   cc::PaintImage::ContentId sw_snapshot_paint_image_content_id_ =
       cc::PaintImage::kInvalidContentId;
-  uint32_t sw_snapshot_sk_image_id_ = 0u;
+  uint64_t sw_snapshot_sk_image_id_ = 0u;
   cc::PaintImage::ContentId cached_content_id_ =
       cc::PaintImage::kInvalidContentId;
   scoped_refptr<StaticBitmapImage> cached_snapshot_;
@@ -489,6 +540,8 @@ class MODULES_EXPORT BaseRenderingContext2D
   base::RepeatingClosure on_restore_failed_callback_for_testing_;
   Vector<scoped_refptr<const cc::AnimatedImageFrameIndexMap>>
       animated_image_frame_index_maps_;
+  base::WeakPtrFactory<CanvasResource::Client>
+      resource_client_weak_ptr_factory_{this};
 };
 
 }  // namespace blink

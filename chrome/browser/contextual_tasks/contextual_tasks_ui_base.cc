@@ -47,6 +47,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/webui/sanitized_image/sanitized_image_source.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
@@ -62,23 +63,35 @@
 #include "components/omnibox/browser/aim_eligibility_service.h"
 #include "components/omnibox/common/composebox_features.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/primary_account_change_event.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "extensions/buildflags/buildflags.h"
+#include "google_apis/gaia/gaia_auth_consumer.h"
+#include "google_apis/gaia/gaia_auth_fetcher.h"
 #include "google_apis/gaia/gaia_auth_util.h"
+#include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/gaia_urls.h"
 #include "mojo/public/mojom/base/error.mojom.h"
 #include "net/base/url_util.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_change_dispatcher.h"
+#include "net/cookies/cookie_options.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "third_party/lens_server_proto/search_communication.pb.h"
 #include "ui/base/device_form_factor.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -124,6 +137,23 @@ constexpr char kMyActivityUrl[] = "https://myactivity.google.com/myactivity";
 constexpr std::string_view kProfileAvatarPathPrefix =
     "profile-avatar.png?gaia_id=";
 
+std::u16string GetSmartTabSharingMegaplusString() {
+  switch (contextual_tasks::kSmartTabSharingMegaplusStringOption.Get()) {
+    case contextual_tasks::SmartTabSharingMegaplusStringOption::kMegaplusV1:
+      return l10n_util::GetStringUTF16(
+          IDS_STS_MEGAPLUS_SHARE_RELEVANT_OPEN_TABS);
+    case contextual_tasks::SmartTabSharingMegaplusStringOption::kMegaplusV2:
+      return l10n_util::GetStringUTF16(
+          IDS_STS_MEGAPLUS_SHARE_RELEVANT_OPEN_TABS_V2);
+    case contextual_tasks::SmartTabSharingMegaplusStringOption::kMegaplusV3:
+      return l10n_util::GetStringUTF16(
+          IDS_STS_MEGAPLUS_SHARE_RELEVANT_OPEN_TABS_V3);
+    default:
+      return l10n_util::GetStringUTF16(
+          IDS_STS_MEGAPLUS_SHARE_RELEVANT_OPEN_TABS);
+  }
+}
+
 void OpenUrlWithDisposition(Profile* profile,
                             const GURL& url,
                             ui::mojom::WindowOpenDisposition disposition,
@@ -140,6 +170,54 @@ struct ProfileIndicatorInfo {
   std::string email;
   uint32_t signed_in_account_count = 0;
 };
+
+ProfileIndicatorInfo GetProfileIndicatorInfoFromAccounts(
+    const std::vector<gaia::ListedAccount>& accounts,
+    signin::IdentityManager* identity_manager,
+    const GURL& url,
+    bool use_listed_account_profile_info = false) {
+  size_t user_index = contextual_tasks::GetUserIndex(url).value_or(0);
+  if (user_index >= accounts.size()) {
+    return {};
+  }
+  const gaia::ListedAccount& account = accounts[user_index];
+  if (account.signed_out || !account.valid) {
+    return {};
+  }
+
+  AccountInfo extended_info =
+      identity_manager
+          ? identity_manager->FindExtendedAccountInfoByGaiaId(account.gaia_id)
+          : AccountInfo();
+  GURL avatar_url;
+  if (!extended_info.IsEmpty() && extended_info.GetAvatarImage().has_value()) {
+    avatar_url = GURL(
+        base::StrCat({chrome::kChromeUIContextualTasksURL,
+                      kProfileAvatarPathPrefix, account.gaia_id.ToString()}));
+  } else if (use_listed_account_profile_info &&
+             GURL(account.photo_url).SchemeIs(url::kHttpsScheme)) {
+    avatar_url =
+        GURL(base::StrCat({chrome::kChromeUIImageURL, "?", account.photo_url}));
+  } else {
+    avatar_url = GURL(profiles::GetPlaceholderAvatarIconUrl());
+  }
+
+  std::string full_name(extended_info.GetFullName().value_or(""));
+  if (full_name.empty() && use_listed_account_profile_info) {
+    full_name = account.display_name;
+  }
+
+  uint32_t signed_in_account_count = base::checked_cast<uint32_t>(
+      std::ranges::count_if(accounts, [](const gaia::ListedAccount& a) {
+        return !a.signed_out;
+      }));
+  return {
+      .avatar_url = std::move(avatar_url),
+      .full_name = std::move(full_name),
+      .email = account.email,
+      .signed_in_account_count = signed_in_account_count,
+  };
+}
 
 // Resolves the Google account information to show in the toolbar, if any. This
 // is only populated when the user is signed in to Google on the web but not
@@ -160,32 +238,8 @@ ProfileIndicatorInfo GetProfileIndicatorInfo(Profile* profile,
   if (!cookie_jar.AreAccountsFresh()) {
     return {};
   }
-  const std::vector<gaia::ListedAccount>& accounts =
-      cookie_jar.GetAllAccounts();
-  size_t user_index = contextual_tasks::GetUserIndex(url).value_or(0);
-  if (user_index >= accounts.size()) {
-    return {};
-  }
-  const gaia::ListedAccount& account = accounts[user_index];
-  if (account.signed_out || !account.valid) {
-    return {};
-  }
-
-  AccountInfo extended_info =
-      identity_manager->FindExtendedAccountInfoByGaiaId(account.gaia_id);
-  GURL avatar_url =
-      (!extended_info.IsEmpty() && extended_info.GetAvatarImage().has_value())
-          ? GURL(base::StrCat({chrome::kChromeUIContextualTasksURL,
-                               kProfileAvatarPathPrefix,
-                               account.gaia_id.ToString()}))
-          : GURL(profiles::GetPlaceholderAvatarIconUrl());
-  return {
-      .avatar_url = std::move(avatar_url),
-      .full_name = std::string(extended_info.GetFullName().value_or("")),
-      .email = account.email,
-      .signed_in_account_count = base::checked_cast<uint32_t>(
-          cookie_jar.GetPotentiallyInvalidSignedInAccounts().size()),
-  };
+  return GetProfileIndicatorInfoFromAccounts(cookie_jar.GetAllAccounts(),
+                                             identity_manager, url);
 }
 
 GURL GetProfileAvatarUrl(Profile* profile, const GURL& url) {
@@ -278,46 +332,187 @@ bool HasActiveAimResults(const GURL& url) {
 }  // namespace
 
 class ContextualTasksUIBase::CookieJarObserver
-    : public signin::IdentityManager::Observer {
+    : public signin::IdentityManager::Observer,
+      public network::mojom::CookieChangeListener,
+      public GaiaAuthConsumer {
  public:
-  CookieJarObserver(ContextualTasksUIBase& owner,
-                    signin::IdentityManager* identity_manager)
-      : owner_(owner) {
-    observation_.Observe(identity_manager);
+  CookieJarObserver(ContextualTasksUIBase& owner, Profile* profile)
+      : owner_(owner), profile_(profile) {
+    if (auto* identity_manager =
+            IdentityManagerFactory::GetForProfile(profile_)) {
+      observation_.Observe(identity_manager);
+    } else if (profile_ && profile_->IsOffTheRecord() &&
+               contextual_tasks::
+                   IsContextualTasksSidePanelRearchitectureEnabled()) {
+      if (content::StoragePartition* partition =
+              profile_->GetDefaultStoragePartition()) {
+        partition->GetCookieManagerForBrowserProcess()->AddCookieChangeListener(
+            GaiaUrls::GetInstance()->secure_google_url(), std::nullopt,
+            cookie_listener_receiver_.BindNewPipeAndPassRemote());
+      }
+      FetchOffTheRecordAccounts();
+    }
   }
   CookieJarObserver(const CookieJarObserver&) = delete;
   CookieJarObserver& operator=(const CookieJarObserver&) = delete;
   ~CookieJarObserver() override = default;
 
+  std::optional<ProfileIndicatorInfo> GetOffTheRecordProfileIndicatorInfo(
+      const GURL& url) const {
+    if (!profile_ || !profile_->IsOffTheRecord() ||
+        IdentityManagerFactory::GetForProfile(profile_)) {
+      return std::nullopt;
+    }
+    if (!otr_accounts_fresh_) {
+      return ProfileIndicatorInfo{};
+    }
+    return GetProfileIndicatorInfoFromAccounts(
+        otr_accounts_,
+        /*identity_manager=*/nullptr, url,
+        /*use_listed_account_profile_info=*/true);
+  }
+
   // signin::IdentityManager::Observer:
+  void OnPrimaryAccountChanged(
+      const signin::PrimaryAccountChangeEvent& event_details) override {
+    owner_->UpdateProfileIndicator();
+  }
   void OnAccountsInCookieUpdated(
       const signin::AccountsInCookieJarInfo& accounts_in_cookie_jar_info,
       const GoogleServiceAuthError& error) override {
     owner_->UpdateProfileIndicator();
+  }
+  void OnExtendedAccountInfoUpdated(const AccountInfo& info) override {
+    MaybeUpdateProfileIndicatorForAccount(info);
+  }
+  void OnExtendedAccountInfoRemoved(const AccountInfo& info) override {
+    MaybeUpdateProfileIndicatorForAccount(info);
   }
   void OnIdentityManagerShutdown(
       signin::IdentityManager* identity_manager) override {
     observation_.Reset();
   }
 
+  // network::mojom::CookieChangeListener:
+  void OnCookieChange(const net::CookieChangeInfo& change) override {
+    if (GaiaConstants::kGaiaSigninCookieName != change.cookie.Name() &&
+        change.cause != net::CookieChangeCause::EXPLICIT) {
+      return;
+    }
+    otr_accounts_fresh_ = false;
+    FetchOffTheRecordAccounts();
+  }
+
+  // GaiaAuthConsumer:
+  void OnListAccountsSuccess(const std::string& data) override {
+    gaia_auth_fetcher_.reset();
+    if (!gaia::ParseBinaryListAccountsData(data, &otr_accounts_)) {
+      otr_accounts_fresh_ = false;
+      owner_->UpdateProfileIndicator();
+      return;
+    }
+    otr_accounts_fresh_ = true;
+    owner_->UpdateProfileIndicator();
+  }
+
+  void OnListAccountsFailure(const GoogleServiceAuthError& error) override {
+    gaia_auth_fetcher_.reset();
+    otr_accounts_fresh_ = false;
+    owner_->UpdateProfileIndicator();
+  }
+
  private:
+  void MaybeUpdateProfileIndicatorForAccount(const AccountInfo& info) {
+    signin::IdentityManager* identity_manager = observation_.GetSource();
+    if (!identity_manager ||
+        identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+      return;
+    }
+    signin::AccountsInCookieJarInfo cookie_jar =
+        identity_manager->GetAccountsInCookieJar();
+    if (cookie_jar.AreAccountsFresh() &&
+        std::ranges::contains(cookie_jar.GetAllAccounts(), info.GetGaiaId(),
+                              &gaia::ListedAccount::gaia_id)) {
+      owner_->UpdateProfileIndicator();
+    }
+  }
+
+  void FetchOffTheRecordAccounts() {
+    gaia_auth_fetcher_.reset();
+    weak_ptr_factory_.InvalidateWeakPtrs();
+    if (!profile_ || !profile_->GetDefaultStoragePartition()) {
+      return;
+    }
+    network::mojom::CookieManager* cookie_manager =
+        profile_->GetDefaultStoragePartition()
+            ->GetCookieManagerForBrowserProcess();
+    if (!cookie_manager) {
+      return;
+    }
+    cookie_manager->GetCookieList(
+        GaiaUrls::GetInstance()->secure_google_url(),
+        net::CookieOptions::MakeAllInclusive(),
+        net::CookiePartitionKeyCollection(),
+        base::BindOnce(&CookieJarObserver::OnOffTheRecordCookiesForListAccounts,
+                       weak_ptr_factory_.GetWeakPtr()));
+  }
+
+  void OnOffTheRecordCookiesForListAccounts(
+      const net::CookieAccessResultList& cookies,
+      const net::CookieAccessResultList& /*excluded_cookies*/) {
+    const bool has_gaia_signin_cookie = std::ranges::any_of(
+        cookies, [](const net::CookieWithAccessResult& cookie_with_result) {
+          return cookie_with_result.cookie.Name() ==
+                 GaiaConstants::kGaiaSigninCookieName;
+        });
+    if (!has_gaia_signin_cookie) {
+      otr_accounts_.clear();
+      otr_accounts_fresh_ = true;
+      owner_->UpdateProfileIndicator();
+      return;
+    }
+    if (!profile_) {
+      return;
+    }
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+        profile_->GetURLLoaderFactory();
+    if (!url_loader_factory && profile_->GetDefaultStoragePartition()) {
+      url_loader_factory = profile_->GetDefaultStoragePartition()
+                               ->GetURLLoaderFactoryForBrowserProcess();
+    }
+    if (!url_loader_factory) {
+      return;
+    }
+    // TODO(crbug.com/582864907): Audit the `gaia_auth_list_accounts` traffic
+    // annotation and `BrowserSignin: 0` policy description for web-cookie-only
+    // and Off-The-Record callers.
+    gaia_auth_fetcher_ = std::make_unique<GaiaAuthFetcher>(
+        this, gaia::GaiaSource(gaia::GaiaSource::kChrome, "&mo=1"),
+        std::move(url_loader_factory));
+    gaia_auth_fetcher_->StartListAccounts();
+  }
+
   const raw_ref<ContextualTasksUIBase> owner_;
+  const raw_ptr<Profile> profile_;
   base::ScopedObservation<signin::IdentityManager,
                           signin::IdentityManager::Observer>
       observation_{this};
+  mojo::Receiver<network::mojom::CookieChangeListener>
+      cookie_listener_receiver_{this};
+  std::unique_ptr<GaiaAuthFetcher> gaia_auth_fetcher_;
+  std::vector<gaia::ListedAccount> otr_accounts_;
+  bool otr_accounts_fresh_ = false;
+  base::WeakPtrFactory<CookieJarObserver> weak_ptr_factory_{this};
 };
 
 ContextualTasksUIBase::ContextualTasksUIBase(content::WebUI* web_ui)
     : ui::MojoWebUIController(web_ui,
                               /*enable_chrome_send=*/true,
                               /*enable_chrome_histograms=*/true) {
-  if (auto* identity_manager =
-          IdentityManagerFactory::GetForProfile(GetProfile())) {
-    cookie_jar_observer_ =
-        std::make_unique<CookieJarObserver>(*this, identity_manager);
-  }
-
   Profile* profile = GetProfile();
+  if (profile) {
+    cookie_jar_observer_ = std::make_unique<CookieJarObserver>(*this, profile);
+  }
   is_contextual_tasks_eligible_on_init_ =
       contextual_tasks::EntryPointEligibilityManager::IsEligible(profile);
 #if !BUILDFLAG(IS_ANDROID)
@@ -459,6 +654,8 @@ content::WebUIDataSource* ContextualTasksUIBase::RegisterWebUIDataSource(
   source->AddResourcePaths(kContextualTasksExtensionResources);
 #endif
 
+  content::URLDataSource::Add(profile,
+                              std::make_unique<SanitizedImageSource>(profile));
 #if !BUILDFLAG(IS_ANDROID)
   content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
   source->AddResourcePaths(kWebuiToolbarSharedResources);
@@ -499,6 +696,7 @@ base::DictValue ContextualTasksUIBase::GetContextualTasksLoadTimeData(
       {"googleAccount", IDS_CONTEXTUAL_TASKS_AVATAR_TOOLTIP_HEADER},
       {"help", IDS_CONTEXTUAL_TASKS_MENU_HELP},
       {"learnMore", IDS_LEARN_MORE},
+      {"logoButtonTooltip", IDS_TOOLTIP_LOCATION_ICON},
       {"moreOptionsTooltip",
        IDS_CONTEXTUAL_TASKS_SIDE_PANEL_MORE_OPTIONS_TOOL_TIP},
       {"myActivity", IDS_CONTEXTUAL_TASKS_MENU_MY_ACTIVITY},
@@ -510,7 +708,13 @@ base::DictValue ContextualTasksUIBase::GetContextualTasksLoadTimeData(
       {"protectedErrorPageTopLine",
        IDS_SIDE_PANEL_LENS_OVERLAY_PROTECTED_PAGE_ERROR_FIRST_LINE},
       {"reopenTab", IDS_CONTEXTUAL_TASKS_REOPEN_TABS_BUTTON_TEXT},
+      {"sidePanelPinned", IDS_SIDE_PANEL_PINNED},
+      {"sidePanelUnpinned", IDS_SIDE_PANEL_UNPINNED},
       {"sourcesMenuTitle", IDS_CONTEXTUAL_TASKS_SOURCES_MENU_TITLE},
+      {"stsMegaplusAutomaticallyAddTabsHeader",
+       IDS_STS_MEGAPLUS_AUTOMATICALLY_ADD_TABS_HEADER},
+      {"stsMegaplusManuallyAddTabsHeader",
+       IDS_STS_MEGAPLUS_MANUALLY_ADD_TABS_HEADER},
       {"threadHistoryTooltip",
        IDS_CONTEXTUAL_TASKS_SIDE_PANEL_HISTORY_TOOL_TIP},
       {"title", IDS_CONTEXTUAL_TASKS_AI_MODE_TITLE},
@@ -520,6 +724,8 @@ base::DictValue ContextualTasksUIBase::GetContextualTasksLoadTimeData(
   for (const auto& str : kLocalizedStrings) {
     dict.Set(str.name, l10n_util::GetStringUTF16(str.id));
   }
+  dict.Set("stsMegaplusShareRelevantOpenTabs",
+           GetSmartTabSharingMegaplusString());
 
   dict.Set("webuiRoundedIconsAttribute",
            features::IsWebUIRoundedIconsEnabled() ? "webui-rounded-icons" : "");
@@ -564,7 +770,7 @@ base::DictValue ContextualTasksUIBase::GetContextualTasksLoadTimeData(
       aim_eligibility_service && aim_eligibility_service->IsAimEligible();
   dict.Set("isAimEligible", is_aim_eligible);
 
-  dict.Set("darkMode", contextual_tasks::ShouldUseDarkMode(profile));
+  dict.Set("darkMode", contextual_tasks::ShouldUseDarkModeForProfile(profile));
   dict.Set("isAiPage", false);
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(profile);
@@ -709,7 +915,8 @@ void ContextualTasksUIBase::OpenUrlInNewTabFromPanelUi(const GURL& url) {
   }
   if (BrowserWindowInterface* browser = GetBrowser()) {
     OpenUrlWithDisposition(GetProfile(), url,
-                           WindowOpenDisposition::kNewForegroundTab, browser);
+                           ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+                           browser);
   }
 }
 
@@ -912,6 +1119,17 @@ void ContextualTasksUIBase::CreateNewThread() {
                  : ui_service->GetDefaultAiPageUrl();
   url = ui_service->AddRequiredSidePanelUrlChanges(url, target_contents);
 
+  // Keep the entry point attribution of the current thread, matching the
+  // legacy WebUI new thread handler.
+  const GURL& current_url = target_contents->GetLastCommittedURL();
+  for (const char* key : {"source", "aep"}) {
+    std::string value;
+    if (net::GetValueForKeyInQuery(current_url, key, &value) &&
+        !value.empty()) {
+      url = net::AppendOrReplaceQueryParameter(url, key, value);
+    }
+  }
+
   content::NavigationController::LoadURLParams params(url);
   params.transition_type = ui::PAGE_TRANSITION_AUTO_TOPLEVEL;
   target_contents->GetController().LoadURLWithParams(params);
@@ -1010,7 +1228,7 @@ void ContextualTasksUIBase::MaybeTriggerPinningPromo() {
     return;
   }
 
-  // Anchored to `kContextualTasksEphemeralToolbarButtonElementId`,
+  // Anchored to `kPinnedToolbarActionShowSidePanelContextualTasksElementId`,
   // so it only shows if the ephemeral button is visible.
   BrowserWindowInterface* browser_window = GetBrowser();
   if (!browser_window) {
@@ -1261,7 +1479,17 @@ void ContextualTasksUIBase::UpdateProfileIndicator() {
 
 void ContextualTasksUIBase::UpdateProfileIndicator(const GURL& url) {
   if (auto* toolbar_page = GetToolbarPageRemote()) {
-    ProfileIndicatorInfo info = GetProfileIndicatorInfo(GetProfile(), url);
+    ProfileIndicatorInfo info;
+    if (cookie_jar_observer_) {
+      if (std::optional<ProfileIndicatorInfo> otr_info =
+              cookie_jar_observer_->GetOffTheRecordProfileIndicatorInfo(url)) {
+        info = std::move(*otr_info);
+      } else {
+        info = GetProfileIndicatorInfo(GetProfile(), url);
+      }
+    } else {
+      info = GetProfileIndicatorInfo(GetProfile(), url);
+    }
     toolbar_page->SetProfileAvatarUrl(info.avatar_url);
     toolbar_page->SetAccountInfo(info.full_name, info.email);
     toolbar_page->SetSignedInAccountCount(info.signed_in_account_count);

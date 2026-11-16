@@ -14,16 +14,20 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
 import android.app.Notification;
+import android.content.Intent;
+import android.os.Build;
 import android.os.Looper;
 
 import androidx.core.app.ServiceCompat;
@@ -32,14 +36,18 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLooper;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
@@ -49,19 +57,31 @@ import org.chromium.chrome.browser.actor.ActorTaskState;
 import org.chromium.chrome.browser.actor.ActorTaskTimeoutManager;
 import org.chromium.chrome.browser.actor.ActorTaskTimeoutParameters;
 import org.chromium.chrome.browser.actor.StoppedReason;
+import org.chromium.chrome.browser.actor.notifications.ActorBroadcastReceiver;
 import org.chromium.chrome.browser.actor.notifications.ActorNotificationFactory;
 import org.chromium.chrome.browser.actor.notifications.ActorNotificationService;
+import org.chromium.chrome.browser.actor.ui.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxyFactory;
+import org.chromium.components.browser_ui.notifications.MockNotificationManagerProxy;
+import org.chromium.components.browser_ui.notifications.NotificationMetadata;
+import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 
 import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /** Unit tests for {@link ActorForegroundServiceManager}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @EnableFeatures(ChromeFeatureList.ANDROID_ACTOR_TASK_TIMEOUT)
 public class ActorForegroundServiceManagerTest {
+    private static final int OPT_IN_NOTIFICATION_ID =
+            ActorNotificationFactory.OPT_IN_NOTIFICATION_ID;
+    private static final Set<Integer> TASK_TAB_IDS = Set.of(10);
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private ActorKeyedService mKeyedService;
@@ -70,7 +90,9 @@ public class ActorForegroundServiceManagerTest {
     @Mock private ActorTask mTask;
     @Mock private Profile mProfile;
     @Mock private Notification mNotification;
+    @Mock private Runnable mCancelCallback;
 
+    private MockNotificationManagerProxy mMockNotificationManager;
     private ActorForegroundServiceManager mManager;
 
     private static class TestActorForegroundServiceManager extends ActorForegroundServiceManager {
@@ -86,6 +108,8 @@ public class ActorForegroundServiceManagerTest {
         ActorKeyedServiceFactory.setForTesting(mKeyedService);
         ProfileManager.resetForTesting();
         ActorForegroundServiceManager.setWaitTimeForTesting(0);
+        mMockNotificationManager = spy(new MockNotificationManagerProxy());
+        BaseNotificationManagerProxyFactory.setInstanceForTesting(mMockNotificationManager);
 
         mManager = new TestActorForegroundServiceManager();
         mManager.setNotificationServiceForTesting(mNotificationService);
@@ -101,8 +125,34 @@ public class ActorForegroundServiceManagerTest {
         when(mKeyedService.getCurrentActiveTask()).thenReturn(mTask);
         when(mNotificationService.getForegroundNotification(any(), anyBoolean(), anyBoolean()))
                 .thenReturn(mNotification);
+        when(mNotificationService.postUnpinnedOptInNotification(anyBoolean(), anyBoolean()))
+                .thenAnswer(
+                        invocation -> {
+                            boolean isSilent = invocation.getArgument(0);
+                            boolean cancelPinned = invocation.getArgument(1);
+                            NotificationWrapper wrapper =
+                                    ActorNotificationFactory.buildOptInNotification(
+                                            /* isPinned= */ false, isSilent);
+                            mMockNotificationManager.notify(wrapper);
+                            if (cancelPinned) {
+                                mMockNotificationManager.cancel(
+                                        ActorNotificationFactory.OPT_IN_NOTIFICATION_ID);
+                            }
+                            return wrapper;
+                        });
+        doAnswer(
+                        invocation -> {
+                            mMockNotificationManager.cancel(
+                                    ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                                    ActorNotificationFactory.OPT_IN_NOTIFICATION_ID);
+                            return null;
+                        })
+                .when(mNotificationService)
+                .cancelUnpinnedOptInNotification();
 
         when(mProfile.isOffTheRecord()).thenReturn(false);
+        when(mServiceController.createTrustedPendingActorTaskNewTabIntent())
+                .thenReturn(new Intent());
 
         // Setup default startAndBind behavior to simulate connection
         doAnswer(
@@ -141,9 +191,7 @@ public class ActorForegroundServiceManagerTest {
         // Process the post in startAndBindService
         ShadowLooper.idleMainLooper();
 
-        verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        anyInt(), eq(mNotification), anyInt(), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(anyInt(), eq(mNotification));
     }
 
     @Test
@@ -200,8 +248,7 @@ public class ActorForegroundServiceManagerTest {
 
         // Verify that startOrUpdateForegroundService was called to update the notification
         verify(mServiceController, atLeastOnce())
-                .startOrUpdateForegroundService(
-                        anyInt(), eq(mNotification), anyInt(), anyBoolean());
+                .startOrUpdateForegroundService(anyInt(), eq(mNotification));
     }
 
     @Test
@@ -228,8 +275,7 @@ public class ActorForegroundServiceManagerTest {
         ShadowLooper.idleMainLooper();
 
         // First call should trigger startOrUpdateForegroundService
-        verify(mServiceController)
-                .startOrUpdateForegroundService(eq(1), eq(mNotification), anyInt(), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
 
         clearInvocations(mServiceController);
         when(mServiceController.isConnected()).thenReturn(true);
@@ -237,8 +283,7 @@ public class ActorForegroundServiceManagerTest {
         // Second call with same notification should NOT trigger startOrUpdateForegroundService
         mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
         ShadowLooper.idleMainLooper();
-        verify(mServiceController, never())
-                .startOrUpdateForegroundService(anyInt(), any(), anyInt(), anyBoolean());
+        verify(mServiceController, never()).startOrUpdateForegroundService(anyInt(), any());
     }
 
     @Test
@@ -264,8 +309,7 @@ public class ActorForegroundServiceManagerTest {
         mManager.maybeStopServiceNow();
 
         verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        eq(activeTaskId), eq(notification2), eq(demotedTaskId), eq(true));
+                .startOrUpdateForegroundService(eq(activeTaskId), eq(notification2));
         assertTrue(
                 "Service should remain bound while another task is active.",
                 mManager.isServiceBoundForTesting());
@@ -300,8 +344,7 @@ public class ActorForegroundServiceManagerTest {
         mManager.maybeStopServiceNow();
 
         verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        eq(pendingTaskId), eq(notification2), eq(demotedTaskId), eq(true));
+                .startOrUpdateForegroundService(eq(pendingTaskId), eq(notification2));
         assertTrue(
                 "Service should remain bound until the last notification is demoted.",
                 mManager.isServiceBoundForTesting());
@@ -328,8 +371,7 @@ public class ActorForegroundServiceManagerTest {
         ShadowLooper.idleMainLooper();
 
         verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        eq(activeTaskId), eq(notification2), eq(completedTaskId), eq(true));
+                .startOrUpdateForegroundService(eq(activeTaskId), eq(notification2));
         verify(mNotificationService).repostNotification(completedTaskId, /* isWarning= */ false);
     }
 
@@ -363,8 +405,7 @@ public class ActorForegroundServiceManagerTest {
         // Initial state
         mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
         ShadowLooper.idleMainLooper();
-        verify(mServiceController)
-                .startOrUpdateForegroundService(eq(1), eq(mNotification), anyInt(), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
 
         // Update to another task
         reset(mServiceController);
@@ -381,8 +422,7 @@ public class ActorForegroundServiceManagerTest {
         ShadowLooper.idleMainLooper();
 
         // Should update to task 2's notification
-        verify(mServiceController)
-                .startOrUpdateForegroundService(eq(2), eq(notification2), eq(1), eq(true));
+        verify(mServiceController).startOrUpdateForegroundService(eq(2), eq(notification2));
     }
 
     @Test
@@ -393,8 +433,7 @@ public class ActorForegroundServiceManagerTest {
         mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
         ShadowLooper.idleMainLooper();
 
-        verify(mServiceController)
-                .startOrUpdateForegroundService(eq(1), eq(mNotification), anyInt(), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
 
         clearInvocations(mServiceController);
         when(mServiceController.isConnected()).thenReturn(true);
@@ -404,8 +443,53 @@ public class ActorForegroundServiceManagerTest {
         ShadowLooper.idleMainLooper();
 
         // Should skip updating foreground service when notification state doesn't change.
-        verify(mServiceController, never())
-                .startOrUpdateForegroundService(anyInt(), any(), anyInt(), anyBoolean());
+        verify(mServiceController, never()).startOrUpdateForegroundService(anyInt(), any());
+    }
+
+    @Test
+    public void testOnTaskStateChanged_TaskTabVisible_UpdatesAndPinsSilently() {
+        setTaskTabVisible(true);
+
+        mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
+        ShadowLooper.idleMainLooper();
+
+        verify(mNotificationService)
+                .updateNotificationForTask(
+                        eq(1), eq(ActorTaskState.ACTING), /* isSilent= */ eq(true), anyBoolean());
+        verify(mNotificationService)
+                .getForegroundNotification(eq(mTask), /* isSilent= */ eq(true), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
+    }
+
+    @Test
+    public void testOnTaskStateChanged_TaskTabNotVisible_UpdatesAndPinsLoudly() {
+        setTaskTabVisible(false);
+
+        mManager.onTaskStateChanged(1, ActorTaskState.WAITING_ON_USER);
+        ShadowLooper.idleMainLooper();
+
+        verify(mNotificationService)
+                .updateNotificationForTask(
+                        eq(1),
+                        eq(ActorTaskState.WAITING_ON_USER),
+                        /* isSilent= */ eq(false),
+                        anyBoolean());
+        verify(mNotificationService)
+                .getForegroundNotification(eq(mTask), /* isSilent= */ eq(false), anyBoolean());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
+    }
+
+    @Test
+    public void testTaskCompleted_TaskTabVisible_RequestsSilentCachedNotificationForPin() {
+        setTaskTabVisible(true);
+        mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
+        ShadowLooper.idleMainLooper();
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
+
+        mManager.onTaskStateChanged(1, ActorTaskState.FINISHED);
+
+        verify(mNotificationService)
+                .getCachedNotification(eq(1), /* isSilent= */ eq(true), anyBoolean());
     }
 
     @Test
@@ -732,6 +816,7 @@ public class ActorForegroundServiceManagerTest {
     }
 
     @Test
+    @DisableFeatures(ChromeFeatureList.ACTOR_SILENCE_NOTIFICATIONS_AFTER_FIRST_WORKING)
     public void testOnPendingTaskCountChanged_StartsServiceWithPlaceholderNotification() {
         mManager.setKeyedServiceForTesting(mKeyedService);
         when(mKeyedService.getActiveTasksCount()).thenReturn(0);
@@ -745,12 +830,19 @@ public class ActorForegroundServiceManagerTest {
         assertTrue(mManager.hasPendingTasks());
         assertTrue("Service should be bound on pending task.", mManager.isServiceBoundForTesting());
         verify(mServiceController).startAndBindService(any());
-        verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        any(),
-                        anyInt(),
-                        anyBoolean());
+        assertFalse(isSilent(getPinnedPlaceholderNotification()));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ACTOR_SILENCE_NOTIFICATIONS_AFTER_FIRST_WORKING)
+    public void testOnPendingTaskCountChanged_SilenceAfterFirstWorking_PinsSilentPlaceholder() {
+        mManager.setKeyedServiceForTesting(mKeyedService);
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+
+        mManager.onPendingTaskCountChanged(1);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(isSilent(getPinnedPlaceholderNotification()));
     }
 
     @Test
@@ -758,12 +850,10 @@ public class ActorForegroundServiceManagerTest {
         mManager.setKeyedServiceForTesting(mKeyedService);
         when(mKeyedService.getActiveTasksCount()).thenReturn(0);
 
-        // 1. Pending task starts service
         mManager.onPendingTaskCountChanged(1);
         ShadowLooper.idleMainLooper();
         assertTrue(mManager.isServiceBoundForTesting());
 
-        // 2. Task transitions to active (pending -> 0, active -> 1)
         when(mKeyedService.getActiveTasksCount()).thenReturn(1);
         when(mTask.isCompleted()).thenReturn(false);
         mManager.onPendingTaskCountChanged(0);
@@ -771,12 +861,7 @@ public class ActorForegroundServiceManagerTest {
         ShadowLooper.idleMainLooper();
 
         assertTrue(mManager.isServiceBoundForTesting());
-        verify(mServiceController)
-                .startOrUpdateForegroundService(
-                        eq(1),
-                        eq(mNotification),
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        eq(true));
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
         verify(mNotificationService, never())
                 .onNotificationUnpinned(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID);
     }
@@ -852,10 +937,7 @@ public class ActorForegroundServiceManagerTest {
 
         verify(mServiceController, times(1))
                 .startOrUpdateForegroundService(
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        any(),
-                        anyInt(),
-                        anyBoolean());
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID), any());
 
         // Incrementing pending count while placeholder is already pinned should not re-trigger
         // startOrUpdateForegroundService for the placeholder notification.
@@ -864,10 +946,7 @@ public class ActorForegroundServiceManagerTest {
 
         verify(mServiceController, times(1))
                 .startOrUpdateForegroundService(
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        any(),
-                        anyInt(),
-                        anyBoolean());
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID), any());
     }
 
     @Test
@@ -889,10 +968,7 @@ public class ActorForegroundServiceManagerTest {
         // is removed with the foreground state and reposted.
         verify(mServiceController)
                 .startOrUpdateForegroundService(
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        any(),
-                        eq(taskId),
-                        eq(true));
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID), any());
         verify(mNotificationService).repostNotification(taskId, /* isWarning= */ false);
     }
 
@@ -910,10 +986,7 @@ public class ActorForegroundServiceManagerTest {
                 mManager.isServiceBoundForTesting());
         verify(mServiceController)
                 .startOrUpdateForegroundService(
-                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
-                        any(),
-                        anyInt(),
-                        anyBoolean());
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID), any());
 
         // The manager has no timeout of its own. The service stays bound for the whole window
         // that ActorKeyedService waits for the FCM message.
@@ -935,5 +1008,510 @@ public class ActorForegroundServiceManagerTest {
                 mManager.isServiceBoundForTesting());
         verify(mServiceController).stopActorForegroundService(ServiceCompat.STOP_FOREGROUND_REMOVE);
         verify(mServiceController).unbindService();
+    }
+
+    @Test
+    public void testPinAndUnpinOptInNotification_StartsAndStopsService() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        mManager.pinOptInNotification(/* cancelCallback= */ null);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        verify(mServiceController).startAndBindService(any());
+        ArgumentCaptor<Notification> notificationCaptor =
+                ArgumentCaptor.forClass(Notification.class);
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), notificationCaptor.capture());
+        assertEquals(
+                ContextUtils.getApplicationContext()
+                        .getString(R.string.glic_experimental_opt_in_notification_title),
+                notificationCaptor.getValue().extras.getString(Notification.EXTRA_TITLE));
+        verify(mNotificationService, never()).onNotificationPinned(OPT_IN_NOTIFICATION_ID);
+
+        mManager.unpinOptInNotification();
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController).stopActorForegroundService(ServiceCompat.STOP_FOREGROUND_REMOVE);
+        verify(mServiceController).unbindService();
+        verify(mNotificationService, never()).onNotificationUnpinned(OPT_IN_NOTIFICATION_ID);
+        verify(mNotificationService, never())
+                .repostNotification(eq(OPT_IN_NOTIFICATION_ID), anyBoolean());
+    }
+
+    @Test
+    public void
+            testOptInNotificationReplacedByActiveTask_RepostsUnpinnedAndRepinsWhenTaskCompletes() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+
+        when(mKeyedService.getActiveTasksCount()).thenReturn(1);
+        mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
+        verify(mNotificationService, never()).onNotificationUnpinned(OPT_IN_NOTIFICATION_ID);
+        verify(mNotificationService, never())
+                .repostNotification(eq(OPT_IN_NOTIFICATION_ID), anyBoolean());
+        verify(mMockNotificationManager).cancel(ActorNotificationFactory.OPT_IN_NOTIFICATION_ID);
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+        assertEquals(OPT_IN_NOTIFICATION_ID, mMockNotificationManager.getNotifications().get(0).id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                mMockNotificationManager.getNotifications().get(0).tag);
+        ArgumentCaptor<NotificationWrapper> unpinnedCaptor =
+                ArgumentCaptor.forClass(NotificationWrapper.class);
+        verify(mMockNotificationManager).notify(unpinnedCaptor.capture());
+        assertTrue(unpinnedCaptor.getValue().isSilent());
+
+        clearInvocations(mServiceController);
+        when(mTask.isCompleted()).thenReturn(true);
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        when(mNotificationService.hasPendingDemotions()).thenReturn(false);
+        mManager.onTaskStateChanged(1, ActorTaskState.FINISHED);
+        ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS);
+
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+        verify(mMockNotificationManager)
+                .cancel(
+                        eq(ActorNotificationService.UNPINNED_NOTIFICATION_TAG),
+                        eq(OPT_IN_NOTIFICATION_ID));
+        verify(mServiceController, never()).stopActorForegroundService(anyInt());
+        verify(mServiceController, never()).unbindService();
+
+        mManager.unpinOptInNotification();
+        ShadowLooper.idleMainLooper();
+        assertFalse(mManager.isServiceBoundForTesting());
+        verify(mServiceController).stopActorForegroundService(ServiceCompat.STOP_FOREGROUND_REMOVE);
+        verify(mServiceController).unbindService();
+    }
+
+    @Test
+    public void testUnpinOptInNotificationWithPendingDemotion_ReplacesPinAndKillsOptIn() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+
+        mManager.pinOptInNotification(/* cancelCallback= */ null);
+        ShadowLooper.idleMainLooper();
+
+        clearInvocations(mServiceController);
+        when(mNotificationService.hasPendingDemotions()).thenReturn(true);
+        when(mNotificationService.getPendingDemotionTaskIds()).thenReturn(Collections.singleton(1));
+        when(mNotificationService.getCachedNotification(eq(1), anyBoolean(), anyBoolean()))
+                .thenReturn(mNotification);
+
+        mManager.unpinOptInNotification();
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.isServiceBoundForTesting());
+        verify(mServiceController).startOrUpdateForegroundService(eq(1), eq(mNotification));
+        verify(mNotificationService, never()).onNotificationUnpinned(OPT_IN_NOTIFICATION_ID);
+        verify(mNotificationService, never())
+                .repostNotification(eq(OPT_IN_NOTIFICATION_ID), anyBoolean());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.S)
+    public void testPinOptInNotification_AllowsStartForegroundWhenBackgrounded() {
+        ActorForegroundServiceManager realManager = new ActorForegroundServiceManager();
+        try {
+            realManager.setNotificationServiceForTesting(mNotificationService);
+            realManager.setKeyedServiceForTesting(mKeyedService);
+            when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+
+            assertFalse(realManager.canStartForeground());
+
+            realManager.pinOptInNotification(/* cancelCallback= */ null);
+            assertTrue(realManager.isServiceBoundForTesting());
+            assertTrue(realManager.canStartForeground());
+
+            ShadowLooper.idleMainLooper();
+
+            verify(mServiceController)
+                    .startOrUpdateForegroundService(
+                            eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+
+            realManager.unpinOptInNotification();
+            ShadowLooper.idleMainLooper();
+
+            assertFalse(realManager.canStartForeground());
+            assertFalse(realManager.isServiceBoundForTesting());
+        } finally {
+            realManager.shutDown();
+        }
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.S)
+    public void testStartAndBindService_ThrowsIllegalStateException_ResetsBoundState() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        doThrow(new IllegalStateException("ForegroundServiceStartNotAllowedException"))
+                .when(mServiceController)
+                .startAndBindService(any());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        verify(mCancelCallback, times(1)).run();
+        verify(mServiceController, never()).startOrUpdateForegroundService(anyInt(), any());
+    }
+
+    @Test
+    @Config(sdk = Build.VERSION_CODES.S)
+    public void
+            testStartOrUpdateForegroundService_ThrowsIllegalStateException_CancelsOptInAndStopsService() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        doThrow(new IllegalStateException("ForegroundServiceStartNotAllowedException"))
+                .when(mServiceController)
+                .startOrUpdateForegroundService(eq(OPT_IN_NOTIFICATION_ID), any());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        verify(mCancelCallback, times(1)).run();
+    }
+
+    @Test
+    public void testShutDown_WithActiveOptInNotification_CancelsOptInNotification() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+
+        mManager.shutDown();
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mCancelCallback, times(1)).run();
+    }
+
+    @Test
+    public void testProfileDestroyed_WithActiveOptInNotification_CancelsOptInNotification() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+
+        mManager.setKeyedServiceForTesting(null);
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mCancelCallback, times(1)).run();
+    }
+
+    @Test
+    public void
+            testOnServiceDestroyed_WithActiveOptInNotification_CancelsWithoutReentrantServiceStop() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        clearInvocations(mServiceController);
+
+        mManager.onServiceDestroyed();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mCancelCallback, times(1)).run();
+        verify(mServiceController, never()).stopActorForegroundService(anyInt());
+        verify(mServiceController, never()).unbindService();
+    }
+
+    @Test
+    public void testCancelOptInNotification_DismissesStopsServiceAndRunsCallback() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+
+        mManager.cancelOptInNotification();
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController).stopActorForegroundService(ServiceCompat.STOP_FOREGROUND_REMOVE);
+        verify(mServiceController).unbindService();
+        verify(mCancelCallback, times(1)).run();
+    }
+
+    @Test
+    public void testActorBroadcastReceiver_ActionCancelWithoutTaskId_CancelsOptInNotification() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+
+        Intent cancelIntent =
+                new Intent(ContextUtils.getApplicationContext(), ActorBroadcastReceiver.class)
+                        .setAction(NotificationConstants.ACTION_ACTOR_CANCEL);
+        new ActorBroadcastReceiver().onReceive(ContextUtils.getApplicationContext(), cancelIntent);
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertFalse(mManager.isServiceBoundForTesting());
+        verify(mCancelCallback, times(1)).run();
+
+        ActorForegroundServiceManager.resetInstanceForTesting();
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0, /* notificationTag= */ null, OPT_IN_NOTIFICATION_ID)));
+        mMockNotificationManager.notify(
+                new NotificationWrapper(
+                        mNotification,
+                        new NotificationMetadata(
+                                0,
+                                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                                OPT_IN_NOTIFICATION_ID)));
+        assertEquals(2, mMockNotificationManager.getNotifications().size());
+
+        new ActorBroadcastReceiver().onReceive(ContextUtils.getApplicationContext(), cancelIntent);
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+    }
+
+    @Test
+    public void
+            testPinOptInNotification_PreemptedByActiveTaskBeforePinning_PostsUnpinnedAndRepinsAfterTask() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        when(mNotificationService.hasPendingDemotions()).thenReturn(true);
+        when(mNotificationService.getPendingDemotionTaskIds()).thenReturn(Collections.singleton(1));
+        when(mNotificationService.getCachedNotification(eq(1), anyBoolean(), anyBoolean()))
+                .thenReturn(mNotification);
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+        assertEquals(OPT_IN_NOTIFICATION_ID, mMockNotificationManager.getNotifications().get(0).id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                mMockNotificationManager.getNotifications().get(0).tag);
+
+        when(mNotificationService.hasPendingDemotions()).thenReturn(false);
+        when(mNotificationService.getPendingDemotionTaskIds()).thenReturn(Collections.emptySet());
+        when(mKeyedService.getActiveTasksCount()).thenReturn(1);
+        mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+
+        clearInvocations(mServiceController);
+        when(mTask.isCompleted()).thenReturn(true);
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mManager.onTaskStateChanged(1, ActorTaskState.FINISHED);
+        ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS);
+
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+    }
+
+    @Test
+    public void
+            testPinOptInNotification_WhenTaskAlreadyActive_PostsUnpinnedNotificationWithoutCancelling() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(1);
+        mManager.onTaskStateChanged(1, ActorTaskState.ACTING);
+        ShadowLooper.idleMainLooper();
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+        assertEquals(OPT_IN_NOTIFICATION_ID, mMockNotificationManager.getNotifications().get(0).id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                mMockNotificationManager.getNotifications().get(0).tag);
+
+        mManager.cancelOptInNotification();
+        ShadowLooper.idleMainLooper();
+
+        assertFalse(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mCancelCallback, times(1)).run();
+    }
+
+    @Test
+    public void testPinOptInNotification_WhenPendingTaskHoldsService_PostsUnpinnedNotification() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+        mManager.onPendingTaskCountChanged(1);
+        ShadowLooper.idleMainLooper();
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+        assertEquals(OPT_IN_NOTIFICATION_ID, mMockNotificationManager.getNotifications().get(0).id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                mMockNotificationManager.getNotifications().get(0).tag);
+
+        clearInvocations(mServiceController);
+        mManager.onPendingTaskCountChanged(0);
+        ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS);
+
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+        verify(mMockNotificationManager)
+                .cancel(
+                        eq(ActorNotificationService.UNPINNED_NOTIFICATION_TAG),
+                        eq(OPT_IN_NOTIFICATION_ID));
+    }
+
+    @Test
+    public void testOptInNotificationReplacedByPendingTask_RepostsUnpinnedAndRepinsWhenCleared() {
+        when(mKeyedService.getActiveTasksCount()).thenReturn(0);
+
+        mManager.pinOptInNotification(mCancelCallback);
+        ShadowLooper.idleMainLooper();
+        assertTrue(mManager.hasOptInNotification());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+
+        mManager.onPendingTaskCountChanged(1);
+        ShadowLooper.idleMainLooper();
+
+        assertTrue(mManager.hasOptInNotification());
+        verify(mCancelCallback, never()).run();
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
+                        any(Notification.class));
+        verify(mMockNotificationManager).cancel(ActorNotificationFactory.OPT_IN_NOTIFICATION_ID);
+        assertEquals(1, mMockNotificationManager.getNotifications().size());
+        assertEquals(OPT_IN_NOTIFICATION_ID, mMockNotificationManager.getNotifications().get(0).id);
+        assertEquals(
+                ActorNotificationService.UNPINNED_NOTIFICATION_TAG,
+                mMockNotificationManager.getNotifications().get(0).tag);
+        ArgumentCaptor<NotificationWrapper> unpinnedCaptor =
+                ArgumentCaptor.forClass(NotificationWrapper.class);
+        verify(mMockNotificationManager).notify(unpinnedCaptor.capture());
+        assertTrue(unpinnedCaptor.getValue().isSilent());
+
+        clearInvocations(mServiceController);
+        mManager.onPendingTaskCountChanged(0);
+        ShadowLooper.idleMainLooper(30, TimeUnit.SECONDS);
+
+        assertTrue(mManager.hasOptInNotification());
+        assertTrue(mManager.isServiceBoundForTesting());
+        assertEquals(0, mMockNotificationManager.getNotifications().size());
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(OPT_IN_NOTIFICATION_ID), any(Notification.class));
+        verify(mMockNotificationManager)
+                .cancel(
+                        eq(ActorNotificationService.UNPINNED_NOTIFICATION_TAG),
+                        eq(OPT_IN_NOTIFICATION_ID));
+        verify(mServiceController, never()).stopActorForegroundService(anyInt());
+        verify(mServiceController, never()).unbindService();
+
+        mManager.unpinOptInNotification();
+        ShadowLooper.idleMainLooper();
+        assertFalse(mManager.isServiceBoundForTesting());
+        verify(mServiceController).stopActorForegroundService(ServiceCompat.STOP_FOREGROUND_REMOVE);
+        verify(mServiceController).unbindService();
+    }
+
+    private void setTaskTabVisible(boolean visible) {
+        when(mNotificationService.getTask(1)).thenReturn(mTask);
+        when(mTask.getTabs()).thenReturn(TASK_TAB_IDS);
+        when(mServiceController.isActivityVisibleForTabs(TASK_TAB_IDS)).thenReturn(visible);
+    }
+
+    private Notification getPinnedPlaceholderNotification() {
+        ArgumentCaptor<Notification> notificationCaptor =
+                ArgumentCaptor.forClass(Notification.class);
+        verify(mServiceController)
+                .startOrUpdateForegroundService(
+                        eq(ActorNotificationFactory.TASK_STARTS_SOON_NOTIFICATION_ID),
+                        notificationCaptor.capture());
+        return notificationCaptor.getValue();
+    }
+
+    // NotificationCompat implements setSilent() on a non-summary notification through the
+    // summary-only group alert behavior.
+    private static boolean isSilent(Notification notification) {
+        return notification.getGroupAlertBehavior() == Notification.GROUP_ALERT_SUMMARY;
     }
 }

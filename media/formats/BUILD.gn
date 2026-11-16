@@ -42,6 +42,7 @@ source_set("formats") {
     "//media/filters",
     "//media/muxers",
     "//media/muxers:unit_tests",
+    "//media/video:openh264rs_video_encoder",
   ]
 
   sources = [
@@ -503,4 +504,21 @@ test("ac3_util_fuzzer") {
     "//media",
     "//third_party/fuzztest:fuzztest_gtest_main",
   ]
+}
+
+if (enable_dav2d_decoder) {
+  test("mp4_av2_box_fuzzer") {
+    sources = [ "mp4/mp4_av2_box_fuzzer.cc" ]
+    fuzztests = [
+      "Mp4Av2BoxFuzzTest.ParseOutOfBandConfig",
+      "Mp4Av2BoxFuzzTest.ParseInBandConfig",
+      "Mp4Av2BoxFuzzTest.ParseVideoSampleEntry",
+    ]
+    deps = [
+      "//base",
+      "//media",
+      "//testing/gtest",
+      "//third_party/fuzztest:fuzztest_gtest_main",
+    ]
+  }
 }

@@ -16,6 +16,7 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_view_util.h"
+#include "crypto/keypair.h"
 #include "crypto/openssl_util.h"
 #include "crypto/sha2.h"
 #include "net/base/features.h"
@@ -256,7 +257,6 @@ ChromeRootStoreData::CreateFromRootStoreProto(
         std::move(chrome_root_store_data_anchor.value()));
   }
 
-  std::vector<ChromeRootStoreData::Anchor> additional_certs;
   for (const auto& anchor : proto.additional_certs()) {
     std::optional<ChromeRootStoreData::Anchor> chrome_root_store_data_anchor =
         CreateChromeRootStoreDataAnchor(anchor);
@@ -402,7 +402,6 @@ TrustStoreChrome::TrustStoreChrome(
     const ChromeRootStoreMtcMetadata* mtc_metadata,
     ConstraintOverrideMap override_constraints)
     : override_constraints_(std::move(override_constraints)) {
-
   for (const auto& anchor : root_store_data.trust_anchors()) {
     if (anchor.crs_root_id || !anchor.constraints.empty()) {
       TrustStoreChrome::AnchorExtraData trust_store_anchor_data;
@@ -449,23 +448,13 @@ TrustStoreChrome::TrustStoreChrome(
         }
       }
 
-      std::shared_ptr<const bssl::MTCAnchor> bssl_mtc_anchor;
-      switch (issuer.spec_version) {
-        case chrome_root_store::SPEC_VERSION_DRAFT05:
-          bssl_mtc_anchor = std::make_shared<const bssl::MTCAnchor>(
+      // Unknown and unsupported spec versions are filtered out in
+      // ParseAndFilterSigner, so we don't need to cleanly handle them here.
+      CHECK_EQ(issuer.spec_version, chrome_root_store::SPEC_VERSION_DRAFT07);
+      std::shared_ptr<const bssl::MTCAnchor> bssl_mtc_anchor =
+          bssl::MTCAnchor::CreatePlants07(
               issuer.base_id, issuer.signature_algorithm,
               bssl::UpRef(issuer.key.get()), std::move(trusted_subtrees));
-          break;
-        case chrome_root_store::SPEC_VERSION_DRAFT07:
-          bssl_mtc_anchor = bssl::MTCAnchor::CreatePlants07(
-              issuer.base_id, issuer.signature_algorithm,
-              bssl::UpRef(issuer.key.get()), std::move(trusted_subtrees));
-          break;
-        default:
-          // Unknown spec versions are filtered out in ParseAndFilterSigner, so
-          // we don't need to cleanly handle it here.
-          NOTREACHED();
-      }
       if (!bssl_mtc_anchor ||
           !trust_store_.AddMTCTrustAnchor(std::move(bssl_mtc_anchor))) {
         // TODO(crbug.com/452986180): ignoring an invalid issuer at this point
@@ -613,16 +602,19 @@ std::shared_ptr<const bssl::MTCAnchor> TrustStoreChrome::GetTrustedMTCIssuerOf(
 }
 
 bool TrustStoreChrome::Contains(const bssl::ParsedCertificate* cert) const {
+  if (cert->mtc_ca_info()) {
+    // MTC CAs are trusted if and only if they have `mtc_anchor_extra_data_`.
+    // TODO(crbug.com/575507260): Match MTC CA certificates by DER, like other
+    // certificates.
+    return GetMTCAnchorData(cert->mtc_ca_info()->ca_id);
+  }
   return trust_store_.Contains(cert);
 }
 
-bool TrustStoreChrome::ContainsMTCAnchor(const bssl::MTCAnchor* anchor) const {
-  return trust_store_.ContainsMTCAnchor(anchor);
-}
-
 std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForMTC(
-    const bssl::MTCAnchor* mtc_anchor) const {
-  const MtcAnchorExtraData* anchor_data = GetMTCAnchorData(mtc_anchor->ca_id());
+    const bssl::ParsedCertificate* mtc_ca_cert) const {
+  const MtcAnchorExtraData* anchor_data =
+      GetMTCAnchorData(mtc_ca_cert->mtc_ca_info()->ca_id);
   if (!anchor_data) {
     return {};
   }
@@ -642,19 +634,18 @@ std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForClassicalCert(
 
 std::optional<int32_t> TrustStoreChrome::GetCrsRootIdForCert(
     const bssl::CertPathBuilderResultPath* path) const {
-  if (std::shared_ptr<const bssl::MTCAnchor> mtc_anchor =
-          path->trust_anchor.MTCAnchor();
-      mtc_anchor) {
-    return GetCrsRootIdForMTC(mtc_anchor.get());
-  } else {
-    return GetCrsRootIdForClassicalCert(path->certs.back().get());
+  const bssl::ParsedCertificate* root = path->certs.back().get();
+  if (root->mtc_ca_info()) {
+    return GetCrsRootIdForMTC(root);
   }
+  return GetCrsRootIdForClassicalCert(root);
 }
 
 base::span<const ChromeRootCertConstraints>
 TrustStoreChrome::GetConstraintsForMTC(
-    const bssl::MTCAnchor* mtc_anchor) const {
-  const MtcAnchorExtraData* anchor_data = GetMTCAnchorData(mtc_anchor->ca_id());
+    const bssl::ParsedCertificate* mtc_ca_cert) const {
+  const MtcAnchorExtraData* anchor_data =
+      GetMTCAnchorData(mtc_ca_cert->mtc_ca_info()->ca_id);
   if (!anchor_data) {
     return {};
   }
@@ -686,13 +677,11 @@ TrustStoreChrome::GetConstraintsForClassicalCert(
 base::span<const ChromeRootCertConstraints>
 TrustStoreChrome::GetConstraintsForCert(
     const bssl::CertPathBuilderResultPath* path) const {
-  if (std::shared_ptr<const bssl::MTCAnchor> mtc_anchor =
-          path->trust_anchor.MTCAnchor();
-      mtc_anchor) {
-    return GetConstraintsForMTC(mtc_anchor.get());
-  } else {
-    return GetConstraintsForClassicalCert(path->certs.back().get());
+  const bssl::ParsedCertificate* root = path->certs.back().get();
+  if (root->mtc_ca_info()) {
+    return GetConstraintsForMTC(root);
   }
+  return GetConstraintsForClassicalCert(root);
 }
 
 const TrustStoreChrome::AnchorExtraData* TrustStoreChrome::GetAnchorData(
@@ -847,7 +836,7 @@ constexpr base::TimeDelta kMaxSignerSetAge = base::Days(70);
 bool TrustStoreChrome::IsMtcCosignerPolicySatisfied(
     const bssl::ParsedCertificate& target_cert,
     base::Time current_time,
-    const bssl::MTCAnchor* mtc_anchor,
+    const bssl::ParsedCertificate& mtc_ca_cert,
     base::span<const std::vector<uint8_t>> valid_additional_cosigners,
     const NetLogWithSource& net_log) const {
   absl::flat_hash_map<std::vector<uint8_t>, std::string> cosigner_status;
@@ -885,7 +874,7 @@ bool TrustStoreChrome::IsMtcCosignerPolicySatisfied(
   }
 
   const TrustStoreChrome::MtcAnchorExtraData* mtc_anchor_data =
-      GetMTCAnchorData(mtc_anchor->ca_id());
+      GetMTCAnchorData(mtc_ca_cert.mtc_ca_info()->ca_id);
   if (!mtc_anchor_data) {
     NetLogCosignerPolicyResult(false, "CA data missing",
                                valid_additional_cosigners, cosigner_status,
@@ -1079,24 +1068,21 @@ bool ParseAndFilterSigner(const chrome_root_store::Signer& signer_proto,
   }
 
   switch (signer_proto.spec_version()) {
-    case chrome_root_store::SPEC_VERSION_DRAFT05:
     case chrome_root_store::SPEC_VERSION_DRAFT07:
       signer.spec_version = signer_proto.spec_version();
       break;
+
+    // Ignore issuers with unknown or unsupported versions, or from before
+    // versions were added to the proto. They are not considered parsing
+    // failures.
+    case chrome_root_store::SPEC_VERSION_DRAFT05:
     case chrome_root_store::SPEC_VERSION_UNSET:
-      // TODO(crbug.com/452986180): The signer_set.textproto doesn't have spec
-      // version on existing issuers, so consider any issuer without a version
-      // as plants-05. Remove this after the proto has been updated with
-      // versions on all issuers.
-      signer.spec_version = chrome_root_store::SPEC_VERSION_DRAFT05;
-      break;
     default:
       if (signer.type == chrome_root_store::SIGNER_TYPE_ISSUER) {
-        // An unknown spec version causes an issuer to be ignored, but is not
-        // considered a parsing failure. Spec version is not required on
-        // mirrors.
+        // Spec version is not required on mirrors.
         return true;
       }
+      break;
   }
 
   std::optional<bssl::SignatureAlgorithm> sigalg =
@@ -1311,11 +1297,12 @@ Signer Signer::CreateForTesting(chrome_root_store::SignerType type,
   signer.operator_history.emplace_back(
       x509_util::RelativeOidToString(base_id),
       base::Time::FromSecondsSinceUnixEpoch(1));
-  // Signer will be returned with a fake key, which is good enough for most
-  // tests since the key isn't parsed until doing a signature verification.
-  // Tests that actually need to test signature verification can set the key
-  // field on the returned object to their chosen key.
-  signer.key = x509_util::CreateCryptoBuffer(std::string_view("fake key"));
+  // Signer will be returned with a well-formed key that tests do not have the
+  // private key for, which is good enough for most tests. Tests that actually
+  // need to test signature verification can set the key field on the returned
+  // object to their chosen key.
+  signer.key = x509_util::CreateCryptoBuffer(
+      crypto::keypair::PrivateKey::GenerateMldsa44().ToSubjectPublicKeyInfo());
   signer.type = type;
   signer.realm = chrome_root_store::REALM_PUBLICLY_TRUSTED;
   signer.signature_algorithm = bssl::SignatureAlgorithm::kMldsa44;

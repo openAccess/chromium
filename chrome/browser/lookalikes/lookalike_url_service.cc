@@ -13,7 +13,7 @@
 #include "base/metrics/field_trial_params.h"
 #include "base/time/default_clock.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/safe_browsing/user_interaction_observer.h"
+#include "chrome/browser/safe_browsing/interstitials/user_interaction_observer.h"
 #include "chrome/common/channel_info.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/lookalikes/core/lookalike_url_util.h"
@@ -53,9 +53,10 @@ std::vector<DomainInfo> UpdateEngagedSitesOnWorkerThread(
   new_engaged_sites.reserve(details.size());
   for (const site_engagement::mojom::SiteEngagementDetails& detail : details) {
     CHECK(detail.origin.SchemeIsHTTPOrHTTPS(), base::NotFatalUntil::M161);
-    CHECK(site_engagement::SiteEngagementService::IsEngagementAtLeast(
-              detail.total_score, blink::mojom::EngagementLevel::MEDIUM),
-          base::NotFatalUntil::M161);
+    // TODO(crbug.com/585788739): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(site_engagement::SiteEngagementService::IsEngagementAtLeast(
+        detail.total_score, blink::mojom::EngagementLevel::MEDIUM));
     const DomainInfo domain_info = lookalikes::GetDomainInfo(detail.origin);
     if (domain_info.domain_and_registry.empty()) {
       continue;
@@ -66,11 +67,13 @@ std::vector<DomainInfo> UpdateEngagedSitesOnWorkerThread(
   return new_engaged_sites;
 }
 
-// Gets the eTLD+1 of the provided hostname, including private registries (e.g.
-// foo.blogspot.com returns blogspot.com.
-std::string GetETLDPlusOneWithPrivateRegistries(const std::string& hostname) {
+// Gets the eTLD+1 of the effective hostname of `url` (unwrapping `blob:` and
+// `filesystem:` URLs), including private registries (e.g. foo.blogspot.com
+// returns blogspot.com).
+std::string GetETLDPlusOneWithPrivateRegistries(const GURL& url) {
   return net::registry_controlled_domains::GetDomainAndRegistry(
-      hostname, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+      lookalikes::GetUrlForLookalikeChecks(url).GetHost(),
+      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
 }
 
 }  // namespace
@@ -145,7 +148,8 @@ void LookalikeUrlService::SetClockForTesting(base::Clock* clock) {
 
 bool LookalikeUrlService::NeedsEngagedSitesForCheck(const GURL& url) const {
   return !ShouldStopCheckingBeforeEngagedSites(
-      url, /*stop_checking_on_allowlist_or_ignore=*/true, /*result=*/nullptr);
+      lookalikes::GetUrlForLookalikeChecks(url),
+      /*stop_checking_on_allowlist_or_ignore=*/true, /*result=*/nullptr);
 }
 
 bool LookalikeUrlService::ShouldStopCheckingBeforeEngagedSites(
@@ -193,9 +197,10 @@ bool LookalikeUrlService::ShouldStopCheckingBeforeEngagedSites(
 
 LookalikeUrlService::LookalikeUrlCheckResult
 LookalikeUrlService::CheckUrlForLookalikes(
-    const GURL& url,
+    const GURL& raw_url,
     const std::vector<DomainInfo>& engaged_sites,
     bool stop_checking_on_allowlist_or_ignore) const {
+  const GURL url = lookalikes::GetUrlForLookalikeChecks(raw_url);
   LookalikeUrlCheckResult result;
 
   if (ShouldStopCheckingBeforeEngagedSites(
@@ -265,9 +270,10 @@ LookalikeUrlService::CheckUrlForLookalikes(
 }
 
 void LookalikeUrlService::CheckSafetyTipStatus(
-    const GURL& url,
+    const GURL& raw_url,
     content::WebContents* web_contents,
     SafetyTipCheckCallback callback) {
+  const GURL url = lookalikes::GetUrlForLookalikeChecks(raw_url);
   CHECK(url.SchemeIsHTTPOrHTTPS(), base::NotFatalUntil::M161);
   if (EngagedSitesNeedUpdating()) {
     ForceUpdateEngagedSites(base::BindOnce(
@@ -321,18 +327,23 @@ void LookalikeUrlService::CheckSafetyTipStatusWithEngagedSites(
 }
 
 bool LookalikeUrlService::IsIgnored(const GURL& url) const {
-  return warning_dismissed_etld1s_.count(
-             GetETLDPlusOneWithPrivateRegistries(url.GetHost())) > 0;
+  const std::string etld_plus_one = GetETLDPlusOneWithPrivateRegistries(url);
+  return !etld_plus_one.empty() &&
+         warning_dismissed_etld1s_.contains(etld_plus_one);
 }
 
 void LookalikeUrlService::SetUserIgnore(const GURL& url) {
-  warning_dismissed_etld1s_.insert(
-      GetETLDPlusOneWithPrivateRegistries(url.GetHost()));
+  const std::string etld_plus_one = GetETLDPlusOneWithPrivateRegistries(url);
+  if (!etld_plus_one.empty()) {
+    warning_dismissed_etld1s_.insert(etld_plus_one);
+  }
 }
 
 void LookalikeUrlService::OnUIDisabledFirstVisit(const GURL& url) {
-  warning_dismissed_etld1s_.insert(
-      GetETLDPlusOneWithPrivateRegistries(url.GetHost()));
+  const std::string etld_plus_one = GetETLDPlusOneWithPrivateRegistries(url);
+  if (!etld_plus_one.empty()) {
+    warning_dismissed_etld1s_.insert(etld_plus_one);
+  }
 }
 
 void LookalikeUrlService::ResetWarningDismissedETLDPlusOnesForTesting() {

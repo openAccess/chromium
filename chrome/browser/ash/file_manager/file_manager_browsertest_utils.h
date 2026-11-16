@@ -79,8 +79,6 @@ struct TestCase {
 
   TestCase& EnableFilesPolicyNewUX();
 
-  TestCase& EnableDriveTrash();
-
   TestCase& EnableArcVm();
 
   TestCase& EnableFileTransferConnector();
@@ -91,11 +89,7 @@ struct TestCase {
 
   TestCase& BypassRequiresJustification();
 
-  TestCase& EnableSearchV2();
-
   TestCase& EnableLocalImageSearch();
-
-  TestCase& EnableOsFeedback();
 
   TestCase& DisableGoogleOneOfferFilesBanner();
 

@@ -39,6 +39,7 @@ import org.robolectric.Robolectric;
 import org.robolectric.android.controller.ActivityController;
 
 import org.chromium.base.CallbackUtils;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.UnownedUserDataHost;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -47,6 +48,7 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.DeferredStartupHandler;
@@ -58,13 +60,16 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.gesturenav.BackActionDelegate.ActionType;
+import org.chromium.chrome.browser.history.IncognitoHistoryDisclaimerCoordinator;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ActivityResultWithNativeObserver;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
 import org.chromium.chrome.browser.multiwindow.MultiWindowModeStateDispatcher;
 import org.chromium.chrome.browser.omaha.UpdateMenuItemHelper;
 import org.chromium.chrome.browser.omaha.inline.InAppUpdateController;
+import org.chromium.chrome.browser.omaha.inline.InAppUpdateRestartScheduler;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.reader_mode.ReaderModeBottomSheetManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabAssociatedApp;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -72,8 +77,11 @@ import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTa
 import org.chromium.chrome.browser.ui.RootUiCoordinator;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuBlocker;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuDelegate;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarHostManager;
 import org.chromium.chrome.browser.ui.edge_to_edge.TopInsetProvider;
 import org.chromium.chrome.browser.ui.system.StatusBarColorController.StatusBarColorProvider;
+import org.chromium.components.browser_ui.adaptive_ui.AdaptiveUiController;
 import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController;
 import org.chromium.components.browser_ui.widget.loading.LoadingFullscreenCoordinator;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
@@ -86,6 +94,7 @@ import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
 import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -149,8 +158,23 @@ public class TabbedRootUiCoordinatorUnitTest {
         TrackerFactory.setTrackerForTests(mTracker);
 
         mProfileSupplier.set(mCurrentProfile);
-        mCoordinator = createCoordinator();
+        mCoordinator = createCoordinator(/* bottomBarHostManager= */ null);
         mCoordinator.setScrimManagerForTesting(mScrimManager);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_DESKTOP_WEB_UI_HISTORY)
+    public void testIncognitoHistoryDisclaimerCoordinator_lifecycleAndDesktopGate() {
+        DeviceInfo.setIsDesktopForTesting(false);
+        mCoordinator.maybeInitIncognitoHistoryDisclaimerCoordinator();
+        assertNull(IncognitoHistoryDisclaimerCoordinator.getForWindowForTesting(mWindowAndroid));
+
+        DeviceInfo.setIsDesktopForTesting(true);
+        mCoordinator.maybeInitIncognitoHistoryDisclaimerCoordinator();
+        assertNotNull(IncognitoHistoryDisclaimerCoordinator.getForWindowForTesting(mWindowAndroid));
+
+        mCoordinator.onDestroy();
+        assertNull(IncognitoHistoryDisclaimerCoordinator.getForWindowForTesting(mWindowAndroid));
     }
 
     /**
@@ -219,6 +243,9 @@ public class TabbedRootUiCoordinatorUnitTest {
     @EnableFeatures(ChromeFeatureList.IN_APP_UPDATE_FLOW)
     public void
             testInAppUpdate_initObserversAndScheduleDeferredStartup_registersObserversAndAddsDeferredTask() {
+        InAppUpdateRestartScheduler mockScheduler = mock(InAppUpdateRestartScheduler.class);
+        InAppUpdateRestartScheduler.setInstanceForTesting(mockScheduler);
+
         mCoordinator.scheduleInAppUpdateDeferredStartup();
 
         assertNotNull(mCoordinator.getActivityResultObserverForTesting());
@@ -226,7 +253,11 @@ public class TabbedRootUiCoordinatorUnitTest {
         verify(mActivityLifecycleDispatcher)
                 .register(mCoordinator.getActivityResultObserverForTesting());
         verify(mActivityLifecycleDispatcher).register(mCoordinator.getResumeObserverForTesting());
-        verify(mDeferredStartupHandler).addDeferredTask(any());
+        verify(mDeferredStartupHandler).addDeferredTask(mRunnableCaptor.capture());
+
+        // Deferred task execution starts scheduler.
+        mRunnableCaptor.getValue().run();
+        verify(mockScheduler).start();
 
         // Verify idempotency: a second call does not queue another deferred task.
         clearInvocations(mDeferredStartupHandler);
@@ -387,7 +418,28 @@ public class TabbedRootUiCoordinatorUnitTest {
                 ActionType.CLOSE_TAB, mCoordinator.getBackActionTypeForNonNavigableTab(linkTab));
     }
 
-    private TabbedRootUiCoordinator createCoordinator() {
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_ADAPTIVE_UI_TRANSITIONS)
+    public void testAdaptiveUiController_attachedWhileAlive() {
+        when(mWindowAndroid.getContext()).thenReturn(new WeakReference<>(mActivity));
+        mCoordinator.onPreInflationStartup();
+        assertNotNull(AdaptiveUiController.from(mWindowAndroid));
+
+        mCoordinator.onDestroy();
+        assertNull(AdaptiveUiController.from(mWindowAndroid));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_ADAPTIVE_UI_TRANSITIONS)
+    public void testAdaptiveUiController_absentWhenFlagDisabled() {
+        mCoordinator.onPreInflationStartup();
+        assertNull(AdaptiveUiController.from(mWindowAndroid));
+
+        mCoordinator.onDestroy();
+    }
+
+    private TabbedRootUiCoordinator createCoordinator(
+            @Nullable BottomBarHostManager bottomBarHostManager) {
         return new TabbedRootUiCoordinator(
                 mActivity,
                 /* onOmniboxFocusChangedListener= */ null,
@@ -422,6 +474,7 @@ public class TabbedRootUiCoordinatorUnitTest {
                 /* edgeToEdgeSupplier= */ ObservableSuppliers.createMonotonic(),
                 mTopInsetProvider,
                 /* systemBarColorHelperSupplier= */ new OneshotSupplierImpl<>(),
+                /* topScalpColorHelperSupplier= */ new OneshotSupplierImpl<>(),
                 ActivityType.TABBED,
                 /* isInOverviewModeSupplier= */ () -> false,
                 mAppMenuDelegate,
@@ -441,11 +494,33 @@ public class TabbedRootUiCoordinatorUnitTest {
                 /* bookmarkManagerOpenerSupplier= */ ObservableSuppliers.alwaysNull(),
                 /* xrSpaceModeObservableSupplier= */ ObservableSuppliers.alwaysFalse(),
                 /* inactivityTrackerSupplier= */ new OneshotSupplierImpl<>(),
-                /* bottomBarHostManager= */ null,
+                bottomBarHostManager,
                 mVerticalTabsActionDelegate,
                 /* urlBarVisibleSupplier= */ () -> false,
                 /* onTabLayoutAvailable= */ CallbackUtils.emptyRunnable(),
                 mIsWarmOnResume::get);
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+    public void testActionRegistry_nullHostManager_settingEnabled_noRegistry() {
+        BottomBarConfigUtils.setBottomBarUserEnabled(true);
+        mCoordinator = createCoordinator(/* bottomBarHostManager= */ null);
+
+        assertNull(mCoordinator.getActionRegistryForTesting());
+    }
+
+    @Test
+    public void testInitReaderModeBottomSheetManager_usesTopUiThemeColorProvider() {
+        mCoordinator.onPreInflationStartup();
+
+        ReaderModeBottomSheetManager readerModeBottomSheetManager =
+                mCoordinator.initReaderModeBottomSheetManagerForTesting();
+
+        assertNotNull(readerModeBottomSheetManager);
+        assertSame(
+                mCoordinator.getTopUiThemeColorProvider(),
+                readerModeBottomSheetManager.getThemeColorProviderForTesting());
     }
 
     private AtomicInteger attachLoadingStub() {

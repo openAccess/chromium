@@ -4,12 +4,14 @@
 
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_user_installed_manager.h"
 
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/types/expected.h"
 #include "chrome/browser/web_applications/isolated_web_apps/commands/install_isolated_web_app_command.h"
 #include "chrome/browser/web_applications/isolated_web_apps/install/isolated_web_app_install_source.h"
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
+#include "chrome/browser/web_applications/isolated_web_apps/iwa_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_command_scheduler.h"
 #include "chrome/browser/web_applications/web_app_filter.h"
@@ -20,9 +22,23 @@
 
 namespace web_app {
 
+DEFINE_USER_DATA(IsolatedWebAppUserInstalledManager);
+
+// static
+IsolatedWebAppUserInstalledManager& IsolatedWebAppUserInstalledManager::From(
+    WebAppProvider& provider) {
+  return CHECK_DEREF(Get(provider.unowned_user_data_host()));
+}
+
+// static
+const IsolatedWebAppUserInstalledManager&
+IsolatedWebAppUserInstalledManager::From(const WebAppProvider& provider) {
+  return CHECK_DEREF(Get(provider.unowned_user_data_host()));
+}
+
 IsolatedWebAppUserInstalledManager::IsolatedWebAppUserInstalledManager(
-    Profile& profile)
-    : profile_(profile) {}
+    ui::UnownedUserDataHost& host)
+    : scoped_data_holder_(host, *this) {}
 
 IsolatedWebAppUserInstalledManager::~IsolatedWebAppUserInstalledManager() =
     default;
@@ -55,10 +71,11 @@ void IsolatedWebAppUserInstalledManager::Install(
     return;
   }
 
-  provider_->scheduler().InstallIsolatedWebApp(
-      url_info, source, expected_version,
-      /*optional_keep_alive=*/nullptr,
-      /*optional_profile_keep_alive=*/nullptr, std::move(callback));
+  IwaCommandScheduler::From(*provider_)
+      .InstallIsolatedWebApp(url_info, source, expected_version,
+                             /*optional_keep_alive=*/nullptr,
+                             /*optional_profile_keep_alive=*/nullptr,
+                             std::move(callback));
 }
 
 void IsolatedWebAppUserInstalledManager::OnRuntimeDataChanged() {

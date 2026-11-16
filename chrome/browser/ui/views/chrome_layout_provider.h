@@ -252,8 +252,17 @@ enum ChromeDistanceMetric {
   DISTANCE_ACTION_APP_MENU_CONTAINER_VERTICAL_PADDING,
   // Top margin added below a notification header in the App Menu.
   DISTANCE_ACTION_APP_MENU_NOTIFICATION_MARGIN,
+  // Vertical spacing between the primary and secondary title in a two-line
+  // Action App Menu item row.
+  DISTANCE_ACTION_APP_MENU_SECONDARY_TITLE_VERTICAL_SPACING,
   // Maximum width for the Action App Menu.
   DISTANCE_ACTION_APP_MENU_MAX_WIDTH,
+  // Maximum width for Action App Menu submenus containing user/web content
+  // (e.g., page titles, bookmark labels, tab group names).
+  DISTANCE_ACTION_APP_MENU_DYNAMIC_SUBMENU_MAX_WIDTH,
+  // Maximum width for Action App Menu submenus nested within submenus
+  // containing user/web content (e.g., bookmark folders, saved tab groups).
+  DISTANCE_ACTION_APP_MENU_NESTED_DYNAMIC_SUBMENU_MAX_WIDTH,
 };
 
 enum ChromeShapeContextTokens : views::ShapeContextToken {

@@ -34,6 +34,7 @@ namespace blink {
 
 class CascadeInterpolations;
 class CascadeResolver;
+class CSSPrivateBindings;
 class CSSMathFunctionValue;
 class CSSParserContext;
 class CSSParserTokenStream;
@@ -321,6 +322,7 @@ class CORE_EXPORT StyleCascade {
 
     bool Append(StringView str,
                 bool is_attr_tainted,
+                bool is_animation_tainted,
                 wtf_size_t byte_limit = std::numeric_limits<wtf_size_t>::max());
     bool Append(CSSVariableData* data,
                 bool is_attr_tainted,
@@ -597,6 +599,12 @@ class CORE_EXPORT StyleCascade {
                      const CSSParserContext&,
                      FunctionContext*,
                      TokenSequence&);
+  bool ResolveIdentInto(CSSParserTokenStream&,
+                        const TreeScope*,
+                        CascadeResolver&,
+                        const CSSParserContext&,
+                        FunctionContext*,
+                        TokenSequence&);
 
   // Returns whatever var(`property_name`) would return (and triggers the same
   // side-effects). Useful for evaluating the left hand side of e.g.
@@ -817,6 +825,7 @@ class CORE_EXPORT StyleCascade {
   const TreeScope* GetTreeScope(CascadePriority) const;
   const MixinParameterBindings* GetMixinParameterBindings(
       CascadePriority) const;
+  const CSSPrivateBindings* GetCSSPrivateBindings(CascadePriority) const;
   const CSSProperty& ResolveSurrogate(const CSSProperty& surrogate);
 
   void CountUse(WebFeature);
@@ -826,6 +835,7 @@ class CORE_EXPORT StyleCascade {
   MatchResult match_result_;
   CascadeInterpolations interpolations_;
   CascadeMap map_;
+  const CSSPrivateBindings* current_css_private_bindings_ = nullptr;
   // When a declaration is applied to ComputedStyle, the we mark it as
   // already_applied in the CascadeMap. This makes it possible to avoid applying
   // the same declaration twice during a single call to Apply:

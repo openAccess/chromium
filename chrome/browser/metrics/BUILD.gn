@@ -231,6 +231,10 @@ source_set("metrics") {
     public += [ "chrome_metrics_service_crash_reporter.h" ]
   }
 
+  if (is_posix) {
+    public += [ "client_id_backup_correctness_fix_field_trial.h" ]
+  }
+
   if (enable_extensions_core) {
     public += [ "extensions_metrics_provider.h" ]
   }
@@ -293,6 +297,7 @@ source_set("impl") {
     "//chrome/browser/resource_coordinator:mojo_bindings",
     "//chrome/browser/resource_coordinator:utils",
     "//chrome/browser/safe_browsing",
+    "//chrome/browser/search",
     "//chrome/browser/site_isolation",
     "//chrome/browser/skills",
     "//chrome/browser/subscription_eligibility",
@@ -308,6 +313,7 @@ source_set("impl") {
     "//chrome/browser/upgrade_detector",
     "//components/crash/core/app",
     "//components/metrics:component_metrics",
+    "//components/metrics:system_profile_user_stream",
     "//components/metrics/demographics",
     "//components/metrics/private_metrics",
     "//components/metrics/private_metrics:dwa_recorder",
@@ -346,6 +352,7 @@ source_set("impl") {
     deps += [
       "//chrome/browser/android/metrics:jni_headers",
       "//chrome/browser/notifications:jni_headers",
+      "//chrome/browser/prefs/android:jni_cc",
       "//chrome/browser/ui/browser_window",
     ]
     if (current_cpu == "arm") {
@@ -521,6 +528,10 @@ source_set("impl") {
     sources += [ "chrome_metrics_service_crash_reporter.cc" ]
   }
 
+  if (is_posix) {
+    sources += [ "client_id_backup_correctness_fix_field_trial.cc" ]
+  }
+
   if (enable_extensions_core) {
     sources += [ "extensions_metrics_provider.cc" ]
     deps += [ "//chrome/browser/extensions" ]
@@ -584,6 +595,7 @@ source_set("unit_tests") {
     "//chrome/test/base:chrome_render_view_host_test_harness",
     "//chrome/test/base:testing_browser_process",
     "//components/component_updater:test_support",
+    "//components/crash/core/app",
     "//components/metrics:test_support",
     "//components/metrics/private_metrics:dwa_recorder",
     "//components/performance_manager/test_support",
@@ -720,6 +732,11 @@ source_set("unit_tests") {
     sources += [ "family_link_user_metrics_provider_unittest.cc" ]
   }
 
+  if (is_posix) {
+    sources += [ "client_id_backup_correctness_fix_field_trial_unittest.cc" ]
+    deps += [ "//components/variations:test_support" ]
+  }
+
   if (enable_extensions_core) {
     sources += [ "extensions_metrics_provider_unittest.cc" ]
     deps += [
@@ -782,9 +799,16 @@ source_set("platform_browser_tests") {
 
   if (is_android) {
     deps += [
+      "//chrome/browser",
+      "//chrome/browser/flags:flags_android",
       "//chrome/browser/optimization_guide",
+      "//chrome/browser/tab_list",
       "//chrome/browser/ui/android/tab_model:test_support",
+      "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/browser_window:create_browser_window",
       "//chrome/test/base:android_ui_test_utils",
+      "//components/tabs:public",
+      "//ui/base",
     ]
   }
 
@@ -809,7 +833,6 @@ if (!is_android) {
       "metrics_service_browsertest.cc",
       "metrics_service_user_demographics_browsertest.cc",
       "process_memory_metrics_emitter_browsertest.cc",
-      "puma_browsertest.cc",
       "structured_metrics_service_browsertest.cc",
       "ukm_background_recorder_browsertest.cc",
       "ukm_browsertest.cc",
@@ -839,10 +862,12 @@ if (!is_android) {
       "//components/metrics/private_metrics:dwa_recorder",
       "//components/metrics/private_metrics:private_metrics_features",
       "//components/metrics/structured",
+      "//components/policy:cloud_policy_proto_generated_compile",
       "//components/policy:generated",
       "//components/policy/core/browser",
       "//components/policy/core/common",
       "//components/policy/core/common:test_support",
+      "//components/webui/chrome_urls",
       "//content/test:browsertest_support",
       "//content/test:test_support",
       "//extensions/buildflags",
@@ -898,7 +923,6 @@ if (is_android) {
       "android/background_upload_task_browsertest.cc",
       "dwa_browsertest.cc",
       "metrics_service_user_demographics_browsertest.cc",
-      "puma_browsertest.cc",
       "ukm_browsertest.cc",
     ]
 

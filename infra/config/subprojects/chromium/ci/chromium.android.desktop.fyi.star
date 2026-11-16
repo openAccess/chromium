@@ -16,6 +16,12 @@ load("//lib/siso.star", "siso")
 ci.defaults.set(
     executable = ci_constants.DEFAULT_EXECUTABLE,
     builder_group = "chromium.android.desktop.fyi",
+    builder_config_settings = builder_config.ci_settings(
+        retry_failed_shards = True,
+        # Android emulator tasks often flake during emulator start-up, which
+        # leads to the whole shard being marked as invalid.
+        retry_invalid_shards = True,
+    ),
     pool = ci_constants.DEFAULT_POOL,
     os = os.LINUX_DEFAULT,
     contact_team_email = "clank-engprod@google.com",
@@ -80,6 +86,7 @@ ci.builder(
         mixins = [
             "15-desktop-x64-emulator",
             "emulator-8-cores",
+            "force-desktop-android",
         ],
         per_test_modifications = {
             "android_browsertests": targets.mixin(
@@ -178,6 +185,9 @@ ci.builder(
                 ),
             ),
             "chrome_public_test_apk_desktop": targets.mixin(
+                args = [
+                    "--annotation=Restriction=Desktop,Restriction=DesktopFreeform,Restriction=TabletOrDesktop,ImportantFormFactors=Desktop,ImportantFormFactors=DesktopFreeform,ImportantFormFactors=TabletOrDesktop",
+                ],
                 swarming = targets.swarming(
                     shards = 4,
                 ),
@@ -189,7 +199,11 @@ ci.builder(
             ),
             "media_unittests": targets.mixin(
                 args = [
-                    "--gtest_filter=-AAC/AACAudioEncoderTest.FullCycleEncodeDecode*",
+                    # crbug.com/391490503: AACAudioEncoderTest.FullCycleEncodeDecode*
+                    # TODO(crbug.com/558813685): Re-enable PaintCanvasVideoRendererWithGLTest.*
+                    # once emulator is updated past 37.1.11 with the Gfxstream
+                    # VK_EXT_host_image_copy fix.
+                    "--gtest_filter=-AAC/AACAudioEncoderTest.FullCycleEncodeDecode*:PaintCanvasVideoRendererWithGLTest.*",
                 ],
             ),
             "unit_tests": targets.mixin(

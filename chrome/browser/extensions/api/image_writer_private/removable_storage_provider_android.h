@@ -8,13 +8,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/extensions/api/image_writer_private/removable_storage_provider.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/device/public/mojom/usb_device.mojom-forward.h"
@@ -56,6 +59,12 @@ inline constexpr uint8_t kScsiSenseKeyUnitAttention = 0x06;
 // PROCESS OF BECOMING READY" (0x04 / 0x01).
 inline constexpr uint8_t kScsiAscLogicalUnitNotReady = 0x04;
 inline constexpr uint8_t kScsiAscqBecomingReady = 0x01;
+// USB Mass Storage Bulk-Only Transport 1.0 class-specific request (§3.1) and
+// Command Status Wrapper `bCSWStatus` values (§5.2, Table 5.3).
+inline constexpr uint8_t kBotBulkOnlyMassStorageResetRequest = 0xFF;
+inline constexpr uint8_t kCswStatusCommandPassed = 0;
+inline constexpr uint8_t kCswStatusCommandFailed = 1;
+inline constexpr uint8_t kCswStatusPhaseError = 2;
 
 struct CommandStatusWrapper {
   uint32_t signature = 0;
@@ -68,6 +77,7 @@ struct UsbMassStorageEndpoints {
   uint8_t interface_number = 0;
   uint8_t endpoint_in = 0;
   uint8_t endpoint_out = 0;
+  uint32_t max_packet_size = 0;
 };
 
 struct ParsedDeviceId {
@@ -106,21 +116,54 @@ std::optional<ParsedDeviceId> ParseUsbDeviceId(
 std::optional<UsbMassStorageEndpoints> ExtractMassStorageEndpoints(
     const device::mojom::UsbDeviceInfo& info);
 
+// Caches positive SCSI-probed capacities (in bytes) keyed by attached USB
+// device `guid` (which `device::UsbDevice` assigns as a fresh v4 UUID per
+// physical connection) and coalesces concurrent enumeration requests on the UI
+// thread. Owned by `ChromeBrowserMainPartsAndroid` (matching ChromeOS
+// `ash::disks::DiskMountManager`) so periodic `listRemovableStorageDevices`
+// polls do not repeatedly open the USB device and detach `usb-storage`.
+class AndroidUsbStorageProvider {
+ public:
+  static AndroidUsbStorageProvider* GetInstance();
+
+  AndroidUsbStorageProvider();
+  AndroidUsbStorageProvider(base::FilePath sys_block_dir,
+                            base::FilePath dev_block_dir,
+                            base::FilePath dev_dir);
+  AndroidUsbStorageProvider(const AndroidUsbStorageProvider&) = delete;
+  AndroidUsbStorageProvider& operator=(const AndroidUsbStorageProvider&) =
+      delete;
+  ~AndroidUsbStorageProvider();
+
+  void GetAllDevices(
+      mojo::PendingRemote<device::mojom::UsbDeviceManager> usb_manager,
+      RemovableStorageProvider::DeviceListReadyCallback callback);
+
+ private:
+  class Enumerator;
+
+  void OnEnumerationFinished(scoped_refptr<StorageDeviceList> device_list);
+
+  const base::FilePath sys_block_dir_;
+  const base::FilePath dev_block_dir_;
+  const base::FilePath dev_dir_;
+  // Maps attached USB device `guid` to its positive SCSI-probed capacity in
+  // bytes.
+  base::flat_map<std::string, double> capacity_by_guid_;
+  std::vector<RemovableStorageProvider::DeviceListReadyCallback>
+      pending_callbacks_;
+  // Declared after `capacity_by_guid_` so `active_enumerator_` (which holds a
+  // `raw_ref` to `capacity_by_guid_`) is destroyed first.
+  std::unique_ptr<Enumerator> active_enumerator_;
+  base::WeakPtrFactory<AndroidUsbStorageProvider> weak_factory_{this};
+};
+
 // Initiates asynchronous USB and `/sys/block` removable storage enumeration on
-// Android using the DeviceService `UsbDeviceManager` and default `/sys/block`,
-// `/dev/block`, and `/dev` directories. Must be called on
+// Android using `AndroidUsbStorageProvider::GetInstance()` and the
+// DeviceService `UsbDeviceManager`. Must be called on
 // `content::BrowserThread::UI`; posts blocking `/sys/block` file I/O to a
 // background `base::ThreadPool` task.
 void GetAllDevicesOnAndroid(
-    RemovableStorageProvider::DeviceListReadyCallback callback);
-
-// Test entry point accepting a caller-provided `usb_manager` remote and root
-// directory paths (`sys_block_dir`, `dev_block_dir`, `dev_dir`).
-void GetAllDevicesOnAndroidForTesting(
-    mojo::PendingRemote<device::mojom::UsbDeviceManager> usb_manager,
-    base::FilePath sys_block_dir,
-    base::FilePath dev_block_dir,
-    base::FilePath dev_dir,
     RemovableStorageProvider::DeviceListReadyCallback callback);
 
 }  // namespace extensions::image_writer

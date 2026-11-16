@@ -14,7 +14,6 @@
 #include <vector>
 
 #include "base/byte_size.h"
-#include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/supports_user_data.h"
@@ -820,16 +819,14 @@ class NET_EXPORT URLRequest : public base::SupportsUserData {
     return traffic_annotation_;
   }
 
-  const std::optional<base::flat_set<SourceStreamType>>& accepted_stream_types()
-      const {
+  std::optional<SourceStreamTypeSet> accepted_stream_types() const {
     return accepted_stream_types_;
   }
 
-  void set_accepted_stream_types(
-      const std::optional<base::flat_set<SourceStreamType>>& types) {
+  void set_accepted_stream_types(std::optional<SourceStreamTypeSet> types) {
     if (types) {
-      DCHECK(!types->contains(SourceStreamType::kNone));
-      DCHECK(!types->contains(SourceStreamType::kUnknown));
+      DCHECK(!types->Has(SourceStreamType::kNone));
+      DCHECK(!types->Has(SourceStreamType::kUnknown));
     }
     accepted_stream_types_ = types;
   }
@@ -1131,8 +1128,8 @@ class NET_EXPORT URLRequest : public base::SupportsUserData {
   // The cookie partition key for the request. Partitioned cookies should be set
   // using this key and only partitioned cookies with this partition key should
   // be sent. The cookie partition key is nullopt if cookie partitioning is not
-  // enabled, if the NIK has no top-frame site, or the NIK has a non-general
-  // NetworkIsolationPartition.
+  // enabled, if the NIK has no top-frame site, or if the NIK has a
+  // NetworkIsolationPartition that disallows cookies.
   //
   // Unpartitioned cookies are unaffected by this field.
   std::optional<CookiePartitionKey> cookie_partition_key_ = std::nullopt;
@@ -1263,7 +1260,7 @@ class NET_EXPORT URLRequest : public base::SupportsUserData {
   // If not null, the network service will not advertise any stream types
   // (via Accept-Encoding) that are not listed. Also, it will not attempt
   // decoding any non-listed stream types.
-  std::optional<base::flat_set<net::SourceStreamType>> accepted_stream_types_;
+  std::optional<SourceStreamTypeSet> accepted_stream_types_;
 
   const NetworkTrafficAnnotationTag traffic_annotation_;
 

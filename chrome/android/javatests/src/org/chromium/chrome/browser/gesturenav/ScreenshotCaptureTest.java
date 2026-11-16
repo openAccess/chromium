@@ -18,7 +18,6 @@ import androidx.test.filters.MediumTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -41,7 +40,6 @@ import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.fullscreen.BrowserControlsManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenManagerTestUtils;
 import org.chromium.chrome.browser.homepage.HomepageTestRule;
@@ -64,11 +62,12 @@ import org.chromium.ui.test.util.RenderTestRule;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 /** Test that the screenshot was successfully taken when navigating as expected. */
 @RunWith(ParameterizedRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "hide-scrollbars"})
+@CommandLineFlags.Add("hide-scrollbars")
 @DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 @DoNotBatch(reason = "Affect nav settings")
 @DisableIf.Build(supported_abis_includes = "x86", message = "https://crbug.com/337886037")
@@ -102,6 +101,10 @@ public class ScreenshotCaptureTest {
                             + "</body>"
                             + "</html>");
 
+    // Screenshot readback after navigating to chrome://gpu can take 5-6s on device, exceeding
+    // CallbackHelper's default 5s timeout.
+    private static final long SCREENSHOT_READ_BACK_TIMEOUT_SECONDS = 15;
+
     private EmbeddedTestServer mTestServer;
     private Bitmap mCapturedBitmap;
     private ScreenshotCaptureTestHelper mScreenshotCaptureTestHelper;
@@ -115,11 +118,6 @@ public class ScreenshotCaptureTest {
     @BeforeClass
     public static void setUpBeforeActivityLaunched() {
         ChromeNightModeTestUtils.setUpNightModeBeforeChromeActivityLaunched();
-    }
-
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ChromeNightModeTestUtils.tearDownNightModeAfterChromeActivityDestroyed();
     }
 
     @Before
@@ -260,7 +258,10 @@ public class ScreenshotCaptureTest {
 
         mActivityTestRule.loadUrl(UrlConstants.GPU_URL);
 
-        callbackHelper.waitForOnly();
+        callbackHelper.waitForOnly(
+                "Timed out waiting for NTP screenshot readback.",
+                SCREENSHOT_READ_BACK_TIMEOUT_SECONDS,
+                TimeUnit.SECONDS);
         mRenderTestRule.compareForResult(mCapturedBitmap, "navigate_away_from_ntp_to_webui_page");
     }
 

@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -41,6 +42,7 @@
 #include "content/browser/renderer_host/render_widget_host_view_aura.h"
 #include "content/browser/web_contents/aura/gesture_nav_simple.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/child_process_host.h"
 #include "content/public/browser/content_browser_client.h"
@@ -137,59 +139,6 @@ RenderWidgetHostViewAura* ToRenderWidgetHostViewAura(
         base::NotFatalUntil::M158);
   return static_cast<RenderWidgetHostViewAura*>(view);
 }
-
-// Listens to all mouse drag events during a drag and drop and sends them to
-// the renderer.
-class WebDragSourceAura : public content::WebContentsObserver,
-                          public aura::WindowObserver {
- public:
-  WebDragSourceAura(aura::Window* window, WebContentsImpl* contents)
-      : WebContentsObserver(contents), window_(window) {
-    window_->AddObserver(this);
-  }
-
-  ~WebDragSourceAura() override {
-    if (window_)
-      window_->RemoveObserver(this);
-  }
-
-  WebDragSourceAura(const WebDragSourceAura&) = delete;
-  WebDragSourceAura& operator=(const WebDragSourceAura&) = delete;
-
-  // content::WebContentsObserver
-  void PrimaryMainFrameRenderProcessGone(
-      base::TerminationStatus status) override {
-    CancelDrag();
-  }
-
-  void WebContentsDestroyed() override { CancelDrag(); }
-
-  // aura::WindowObserver:
-  void OnWindowDestroying(aura::Window* window) override {
-    window_->RemoveObserver(this);
-    window_ = nullptr;
-  }
-
-  aura::Window* window() const { return window_; }
-
- private:
-  void CancelDrag() {
-    if (!window_)
-      return;
-
-    // Cancel the drag if it is still in progress.
-    aura::client::DragDropClient* dnd_client =
-        aura::client::GetDragDropClient(window_->GetRootWindow());
-
-    window_->RemoveObserver(this);
-    window_ = nullptr;
-
-    if (dnd_client && dnd_client->IsDragDropInProgress())
-      dnd_client->DragCancel();
-  }
-
-  raw_ptr<aura::Window> window_;
-};
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
 // Fill out the OSExchangeData with a file contents, synthesizing a name if
@@ -382,8 +331,7 @@ aura::Window* GetHostWindow(aura::Window* window) {
 // Returns whether drag-and-drop data from or to `web_contents` is
 // off-the-record.
 bool IsOffTheRecordForDragAndDrop(WebContents& web_contents) {
-  return GetUserBrowserContext(*web_contents.GetPrimaryMainFrame())
-      ->IsOffTheRecord();
+  return GetUserBrowserContext(web_contents)->IsOffTheRecord();
 }
 
 }  // namespace
@@ -450,6 +398,7 @@ WebContentsViewAura::OnPerformingDropContext::OnPerformingDropContext(
     RenderWidgetHostImpl* target_rwh,
     std::unique_ptr<DropData> drop_data,
     DropMetadata drop_metadata,
+    uint64_t drag_session_id,
     std::unique_ptr<ui::OSExchangeData> data,
     base::ScopedClosureRunner drop_exit_cleanup,
     std::optional<gfx::PointF> transformed_pt,
@@ -457,6 +406,7 @@ WebContentsViewAura::OnPerformingDropContext::OnPerformingDropContext(
     : target_rwh(target_rwh->GetWeakPtr()),
       drop_data(std::move(drop_data)),
       drop_metadata(drop_metadata),
+      drag_session_id(drag_session_id),
       data(std::move(data)),
       drop_exit_cleanup(std::move(drop_exit_cleanup)),
       transformed_pt(std::move(transformed_pt)),
@@ -696,12 +646,7 @@ void WebContentsViewAura::InstallCreateHookForTests(
 WebContentsViewAura::WebContentsViewAura(
     WebContentsImpl* web_contents,
     std::unique_ptr<WebContentsViewDelegate> delegate)
-    : web_contents_(web_contents),
-      delegate_(std::move(delegate)),
-      drag_dest_delegate_(nullptr),
-      current_rvh_for_drag_(ChildProcessId(), IPC::mojom::kRoutingIdNone),
-      drag_in_progress_(false),
-      init_rwhv_with_null_parent_for_testing_(false) {}
+    : web_contents_(web_contents), delegate_(std::move(delegate)) {}
 
 WebContentsViewAura::~WebContentsViewAura() {
   if (!window_)
@@ -838,8 +783,10 @@ void WebContentsViewAura::PrepareDropData(
 
 void WebContentsViewAura::EndDrag(
     base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
-    DragOperation op) {
+    DragOperation op,
+    bool drag_started) {
   drag_security_info_.OnDragEnded();
+  drag_drop_client_owner_.reset();
 
   if (!web_contents_)
     return;
@@ -847,44 +794,60 @@ void WebContentsViewAura::EndDrag(
   // It is OK for source_rwh to be null.
   RenderWidgetHost* source_rwh = source_rwh_weak_ptr.get();
 
-  aura::Window* window = GetContentNativeView();
-  CHECK(window);
+  std::optional<gfx::PointF> client_loc;
+  std::optional<gfx::PointF> screen_loc;
+  if (drag_started) {
+    aura::Window* window = GetContentNativeView();
+    CHECK(window);
 
-  gfx::PointF screen_loc =
-      gfx::PointF(display::Screen::Get()->GetCursorScreenPoint());
-  gfx::PointF client_loc = screen_loc;
-  aura::client::ScreenPositionClient* screen_position_client =
-      aura::client::GetScreenPositionClient(window->GetRootWindow());
-  if (screen_position_client)
-    screen_position_client->ConvertPointFromScreen(window, &client_loc);
+    screen_loc = gfx::PointF(display::Screen::Get()->GetCursorScreenPoint());
+    gfx::PointF client_point = *screen_loc;
+    aura::client::ScreenPositionClient* screen_position_client =
+        aura::client::GetScreenPositionClient(window->GetRootWindow());
+    if (screen_position_client) {
+      screen_position_client->ConvertPointFromScreen(window, &client_point);
+    }
 
-  // |client_loc| is in the root coordinate space, for non-root
-  // RenderWidgetHosts it needs to be transformed.
-  gfx::PointF transformed_point = client_loc;
-  if (source_rwh && web_contents_->GetRenderWidgetHostView() &&
-      source_rwh->GetView() != web_contents_->GetRenderWidgetHostView()) {
-    static_cast<RenderWidgetHostViewBase*>(
-        web_contents_->GetRenderWidgetHostView())
-        ->TransformPointToCoordSpaceForView(
-            client_loc,
-            static_cast<RenderWidgetHostViewBase*>(source_rwh->GetView()),
-            &transformed_point);
+    // `client_point` is in the root coordinate space, for non-root
+    // RenderWidgetHosts it needs to be transformed.
+    client_loc = client_point;
+    if (source_rwh && web_contents_->GetRenderWidgetHostView() &&
+        source_rwh->GetView() != web_contents_->GetRenderWidgetHostView()) {
+      static_cast<RenderWidgetHostViewBase*>(
+          web_contents_->GetRenderWidgetHostView())
+          ->TransformPointToCoordSpaceForView(
+              client_point,
+              static_cast<RenderWidgetHostViewBase*>(source_rwh->GetView()),
+              &*client_loc);
+    }
+
+    if (op != DragOperation::kNone) {
+      // TODO(crbug.com/467379870): Implement in non-aura platforms.
+      base::UmaHistogramEnumeration(
+          "Event.DragDrop.Surface",
+          (dropped_in_this_web_contents_
+               ? DragAndDropSurface::kDragBrowserDropSamePage
+               : DragAndDropSurface::kDragBrowserDropOutOfPage));
+    }
   }
 
-  if (op != DragOperation::kNone) {
-    // TODO(crbug.com/467379870): Implement in non-aura platforms.
-    base::UmaHistogramEnumeration(
-        "Event.DragDrop.Surface",
-        (dropped_in_this_web_contents_
-             ? DragAndDropSurface::kDragBrowserDropSamePage
-             : DragAndDropSurface::kDragBrowserDropOutOfPage));
-  }
-
-  web_contents_->DragSourceEndedAt(transformed_point.x(), transformed_point.y(),
-                                   screen_loc.x(), screen_loc.y(), op,
-                                   source_rwh);
+  web_contents_->DragSourceEndedAt(client_loc, screen_loc, op, source_rwh);
 
   web_contents_->SystemDragEnded(source_rwh);
+}
+
+void WebContentsViewAura::EndDragAfterNativeLoop(
+    base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
+    DragOperation op) {
+  if (!drag_in_progress_) {
+    EndDrag(std::move(source_rwh_weak_ptr), op, /*drag_started=*/true);
+    return;
+  }
+
+  end_drag_runner_.ReplaceClosure(base::BindOnce(
+      &WebContentsViewAura::EndDrag, weak_ptr_factory_.GetWeakPtr(),
+      std::move(source_rwh_weak_ptr), op, /*drag_started=*/true));
+  end_drag_runner_session_id_ = drag_session_id_;
 }
 
 void WebContentsViewAura::InstallOverscrollControllerDelegate(
@@ -1080,9 +1043,8 @@ RenderWidgetHostViewBase* WebContentsViewAura::CreateViewForWidget(
       g_create_render_widget_host_view
           ? g_create_render_widget_host_view(render_widget_host)
           : new RenderWidgetHostViewAura(render_widget_host);
-  // InitAsChild() can run a nested message loop (e.g. UpdateLegacyWin() and
-  // SetInputScope() on Windows) in which the view is destroyed, e.g. if the
-  // renderer goes away.
+  // InitAsChild() may synchronously destroy `view` via native window, focus, or
+  // input-method callbacks (see content/browser/SECURITY.md).
   base::WeakPtr<RenderWidgetHostViewBase> weak_view = view->GetWeakPtr();
   view->InitAsChild(GetRenderWidgetHostViewParent());
   if (!weak_view) {
@@ -1149,6 +1111,19 @@ WebContentsViewAura::GetBackForwardTransitionAnimationManager() {
 }
 
 void WebContentsViewAura::DestroyBackForwardTransitionAnimationManager() {}
+
+void WebContentsViewAura::CancelDrag() {
+  // If there is no ongoing drag initiated by this view, early exit.
+  if (!drag_security_info_.did_initiate() || !drag_drop_client_owner_) {
+    return;
+  }
+
+  aura::client::DragDropClient* dnd_client =
+      aura::client::GetDragDropClient(drag_drop_client_owner_.get());
+  if (dnd_client && dnd_client->IsDragDropInProgress()) {
+    dnd_client->DragCancel();
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // WebContentsViewAura, RenderViewHostDelegateView implementation:
@@ -1243,7 +1218,8 @@ void WebContentsViewAura::StartDragging(
   aura::Window* root_window = GetNativeView()->GetRootWindow();
   RenderWidgetHostImpl* const source_rwh =
       static_cast<RenderWidgetHostImpl*>(source_rfh.GetRenderWidgetHost());
-  // Disallow reentrant drag which could be an attempt to exploit drag state.
+  // Disallow reentrant drag initiation which could be an attempt to exploit
+  // drag state.
   if (drag_security_info_.did_initiate()) {
     return;
   }
@@ -1271,6 +1247,7 @@ void WebContentsViewAura::StartDragging(
   }
 
   drag_security_info_.OnDragInitiated(source_rwh, drop_data);
+  drag_drop_client_owner_ = root_window->GetWeakPtrAsWindow();
 
   ui::TouchSelectionController* selection_controller = GetSelectionController();
   if (selection_controller)
@@ -1293,8 +1270,8 @@ void WebContentsViewAura::StartDragging(
 
   // TODO(crbug.com/40825138): The param `drag_obj_rect` is unused.
 
-  std::unique_ptr<WebDragSourceAura> drag_source(
-      new WebDragSourceAura(GetNativeView(), web_contents_));
+  base::WeakPtr<aura::Window> weak_window =
+      GetNativeView()->GetWeakPtrAsWindow();
 
   // We need to enable recursive tasks on the message loop so we can get
   // updates while in the system DoDragDrop loop.
@@ -1316,7 +1293,8 @@ void WebContentsViewAura::StartDragging(
       std::optional<gfx::Point> touch_location =
           env->ConsumeTouchForDrag(content_native_view);
       if (!touch_location) {
-        EndDrag(std::move(source_rwh_weak_ptr), result_op);
+        EndDrag(std::move(source_rwh_weak_ptr), result_op,
+                /*drag_started=*/false);
         return;
       }
       trusted_location = *touch_location;
@@ -1328,7 +1306,8 @@ void WebContentsViewAura::StartDragging(
       // check.
       if (event_info.source == ui::mojom::DragEventSource::kMouse &&
           !env->ConsumeLeftMousePressForDrag(content_native_view)) {
-        EndDrag(std::move(source_rwh_weak_ptr), result_op);
+        EndDrag(std::move(source_rwh_weak_ptr), result_op,
+                /*drag_started=*/false);
         return;
       }
       trusted_location = env->last_mouse_location();
@@ -1337,7 +1316,8 @@ void WebContentsViewAura::StartDragging(
     // visible.
     if (!content_native_view->GetBoundsInScreen().Contains(trusted_location) ||
         !content_native_view->IsVisible()) {
-      EndDrag(std::move(source_rwh_weak_ptr), result_op);
+      EndDrag(std::move(source_rwh_weak_ptr), result_op,
+              /*drag_started=*/false);
       return;
     }
     base::CurrentThread::ScopedAllowApplicationTasksInNativeNestedLoop allow;
@@ -1351,9 +1331,9 @@ void WebContentsViewAura::StartDragging(
 
   // Bail out immediately if the contents view window is gone. Note that it is
   // not safe to access any class members in this case since |this| may already
-  // be destroyed. The local variable |drag_source| will still be valid though,
+  // be destroyed. The local variable `weak_window` will still be valid though,
   // so we can use it to determine if the window is gone.
-  if (!drag_source->window()) {
+  if (!weak_window) {
     // Note that in this case, we don't need to call SystemDragEnded() since the
     // renderer is going away.
     return;
@@ -1362,16 +1342,7 @@ void WebContentsViewAura::StartDragging(
   // |this| should still be alive at this point.
   CHECK(weak_this);
 
-  // If drag is still in progress that means we haven't received drop targeting
-  // callback yet. So we have to make sure to delay calling EndDrag until drop
-  // is done.
-  if (!drag_in_progress_) {
-    EndDrag(std::move(source_rwh_weak_ptr), result_op);
-  } else {
-    end_drag_runner_.ReplaceClosure(
-        base::BindOnce(&WebContentsViewAura::EndDrag, std::move(weak_this),
-                       std::move(source_rwh_weak_ptr), result_op));
-  }
+  EndDragAfterNativeLoop(std::move(source_rwh_weak_ptr), result_op);
 }
 
 void WebContentsViewAura::UpdateDragOperation(
@@ -1525,10 +1496,15 @@ void WebContentsViewAura::OnMouseEvent(ui::MouseEvent* event) {
 // WebContentsViewAura, aura::client::DragDropDelegate implementation:
 
 void WebContentsViewAura::DragEnteredCallback(
+    uint64_t drag_session_id,
     DropMetadata drop_metadata,
     std::unique_ptr<DropData> drop_data,
     base::WeakPtr<RenderWidgetHostViewBase> target,
     std::optional<gfx::PointF> transformed_pt) {
+  if (base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) &&
+      drag_session_id != drag_session_id_) {
+    return;
+  }
   drag_in_progress_ = true;
   dropped_in_this_web_contents_ = false;
   if (!target) {
@@ -1587,10 +1563,10 @@ void WebContentsViewAura::DragEnteredCallback(
 }
 
 void WebContentsViewAura::OnDragEntered(const ui::DropTargetEvent& event) {
+  ++drag_session_id_;
   if (web_contents_->ShouldIgnoreInputEvents()) {
     return;
   }
-
 
   std::unique_ptr<DropData> drop_data = std::make_unique<DropData>();
   // Calling this here as event.data might become invalid inside the callback.
@@ -1606,22 +1582,21 @@ void WebContentsViewAura::OnDragEntered(const ui::DropTargetEvent& event) {
       web_contents_->GetRenderViewHost()->GetWidget()->GetView(),
       event.location_f(),
       base::BindOnce(&WebContentsViewAura::DragEnteredCallback,
-                     weak_ptr_factory_.GetWeakPtr(), drop_metadata,
-                     std::move(drop_data)));
+                     weak_ptr_factory_.GetWeakPtr(), drag_session_id_,
+                     drop_metadata, std::move(drop_data)));
 }
 
 void WebContentsViewAura::DragUpdatedCallback(
+    uint64_t drag_session_id,
     DropMetadata drop_metadata,
     std::unique_ptr<DropData> drop_data,
     base::WeakPtr<RenderWidgetHostViewBase> target,
     std::optional<gfx::PointF> transformed_pt) {
-  // If drag is not in progress it means drag has already finished and we get
-  // this callback after that already. This happens for example when drag leaves
-  // out window and we get the exit signal while still waiting for this
-  // targeting callback to be called for the previous drag update signal. In
-  // this case we just ignore this operation.
-  if (!drag_in_progress_)
+  if ((base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) &&
+       drag_session_id != drag_session_id_) ||
+      !drag_in_progress_) {
     return;
+  }
   if (!target) {
     return;
   }
@@ -1656,8 +1631,8 @@ void WebContentsViewAura::DragUpdatedCallback(
       current_rwh_for_drag_->DragTargetDragLeave(transformed_leave_point,
                                                  screen_pt);
     }
-    DragEnteredCallback(drop_metadata, std::move(drop_data), target,
-                        transformed_pt);
+    DragEnteredCallback(drag_session_id, drop_metadata, std::move(drop_data),
+                        target, transformed_pt);
   }
 
   if (!current_drag_data_) {
@@ -1698,8 +1673,8 @@ aura::client::DragUpdateInfo WebContentsViewAura::OnDragUpdated(
       web_contents_->GetRenderViewHost()->GetWidget()->GetView(),
       event.location_f(),
       base::BindOnce(&WebContentsViewAura::DragUpdatedCallback,
-                     weak_ptr_factory_.GetWeakPtr(), drop_metadata,
-                     std::move(drop_data)));
+                     weak_ptr_factory_.GetWeakPtr(), drag_session_id_,
+                     drop_metadata, std::move(drop_data)));
 
   drag_info.drag_operation =
       static_cast<int>(current_drag_data_ ? current_drag_data_->operation
@@ -1711,6 +1686,7 @@ void WebContentsViewAura::OnDragExited() {
   if (web_contents_->ShouldIgnoreInputEvents()) {
     // Don't compute the results of exiting, but clean up the flag to avoid
     // hanging the renderer process. See crbug.com/434130454.
+    ++drag_session_id_;
     drag_in_progress_ = false;
     return;
   }
@@ -1718,6 +1694,7 @@ void WebContentsViewAura::OnDragExited() {
 }
 
 void WebContentsViewAura::CompleteDragExit() {
+  ++drag_session_id_;
   drag_in_progress_ = false;
 
   web_contents_->PreHandleDragExit();
@@ -1739,7 +1716,18 @@ void WebContentsViewAura::CompleteDragExit() {
   current_drag_data_.reset();
 }
 
-void WebContentsViewAura::OnDropExit() {
+void WebContentsViewAura::OnDropExit(uint64_t drag_session_id) {
+  if (base::FeatureList::IsEnabled(features::kAuraDragDropSessionId)) {
+    if (drag_session_id == drag_session_id_) {
+      ++drag_session_id_;
+      drag_in_progress_ = false;
+    }
+    if (end_drag_runner_session_id_ == drag_session_id) {
+      end_drag_runner_session_id_.reset();
+      auto end_drag_runner = std::move(end_drag_runner_);
+    }
+    return;
+  }
   drag_in_progress_ = false;
   auto end_drag_runner = std::move(end_drag_runner_);
 }
@@ -1793,13 +1781,20 @@ void WebContentsViewAura::OnDropExit() {
 // drag_security_info_.IsValidDragTarget() for details.
 void WebContentsViewAura::PerformDropCallback(
     DropMetadata drop_metadata,
+    uint64_t drag_session_id,
     std::unique_ptr<ui::OSExchangeData> data,
     base::WeakPtr<RenderWidgetHostViewBase> target,
     std::optional<gfx::PointF> transformed_pt) {
   // Exit callback to make sure |drag_in_progress_| is flipped on exit and
   // |end_drag_runner_| is run after OnGotVirtualFilesAsTempFiles finishes.
-  base::ScopedClosureRunner drop_exit_cleanup(base::BindOnce(
-      &WebContentsViewAura::OnDropExit, weak_ptr_factory_.GetWeakPtr()));
+  base::ScopedClosureRunner drop_exit_cleanup(
+      base::BindOnce(&WebContentsViewAura::OnDropExit,
+                     weak_ptr_factory_.GetWeakPtr(), drag_session_id));
+
+  if (base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) &&
+      drag_session_id != drag_session_id_) {
+    return;
+  }
 
   if (!target) {
     return;
@@ -1820,8 +1815,8 @@ void WebContentsViewAura::PerformDropCallback(
 
     std::unique_ptr<DropData> drop_data = std::make_unique<DropData>();
     PrepareDropData(drop_data.get(), *data.get());
-    DragEnteredCallback(drop_metadata, std::move(drop_data), target,
-                        transformed_pt);
+    DragEnteredCallback(drag_session_id, drop_metadata, std::move(drop_data),
+                        target, transformed_pt);
   }
 
   // `current_drag_data_` is set in DragEnteredCallback() when the user begins
@@ -1833,8 +1828,8 @@ void WebContentsViewAura::PerformDropCallback(
   }
 
   OnPerformingDropContext drop_context(
-      target_rwh, std::move(current_drag_data_), drop_metadata, std::move(data),
-      std::move(drop_exit_cleanup), transformed_pt, screen_pt);
+      target_rwh, std::move(current_drag_data_), drop_metadata, drag_session_id,
+      std::move(data), std::move(drop_exit_cleanup), transformed_pt, screen_pt);
 
 #if BUILDFLAG(IS_WIN)
   if (ShouldIncludeVirtualFiles(*drop_context.drop_data) &&
@@ -1895,7 +1890,10 @@ void WebContentsViewAura::GotModifiedDropDataFromDelegate(
     }
 
     // The drop not being continued requires this to cleanup the drag data.
-    CompleteDragExit();
+    if (!base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) ||
+        drop_context.drag_session_id == drag_session_id_) {
+      CompleteDragExit();
+    }
 
     return;
   }
@@ -1908,12 +1906,15 @@ aura::client::DragDropDelegate::DropCallback
 WebContentsViewAura::GetDropCallback(const ui::DropTargetEvent& event) {
   if (web_contents_->ShouldIgnoreInputEvents())
     return base::DoNothing();
-  base::ScopedClosureRunner drag_exit(base::BindOnce(
-      &WebContentsViewAura::CompleteDragExit, weak_ptr_factory_.GetWeakPtr()));
+  const uint64_t drag_session_id = drag_session_id_;
+  base::ScopedClosureRunner drop_cancel_cleanup(
+      base::BindOnce(&WebContentsViewAura::OnDropCancelled,
+                     weak_ptr_factory_.GetWeakPtr(), drag_session_id));
   DropMetadata drop_metadata(event);
   return base::BindOnce(&WebContentsViewAura::PerformDropOrExitDrag,
-                        weak_ptr_factory_.GetWeakPtr(), std::move(drag_exit),
-                        drop_metadata);
+                        weak_ptr_factory_.GetWeakPtr(),
+                        std::move(drop_cancel_cleanup), drop_metadata,
+                        drag_session_id);
 }
 
 void WebContentsViewAura::CompleteDrop(OnPerformingDropContext drop_context) {
@@ -1932,7 +1933,9 @@ void WebContentsViewAura::CompleteDrop(OnPerformingDropContext drop_context) {
   drop_context.target_rwh.get()->DragTargetDrop(
       *drop_context.drop_data, drop_context.transformed_pt.value(),
       drop_context.screen_pt, key_modifiers, base::DoNothing());
-  if (drag_dest_delegate_) {
+  if (drag_dest_delegate_ &&
+      (!base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) ||
+       drop_context.drag_session_id == drag_session_id_)) {
     drag_dest_delegate_->OnDrop();
   }
 
@@ -1946,11 +1949,18 @@ void WebContentsViewAura::CompleteDrop(OnPerformingDropContext drop_context) {
 }
 
 void WebContentsViewAura::PerformDropOrExitDrag(
-    base::ScopedClosureRunner exit_drag,
+    base::ScopedClosureRunner drop_cancel_cleanup,
     DropMetadata drop_metadata,
+    uint64_t drag_session_id,
     std::unique_ptr<ui::OSExchangeData> data,
     ui::mojom::DragOperation& output_drag_op,
     std::unique_ptr<ui::LayerTreeOwner> drag_image_layer_owner) {
+  if (base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) &&
+      drag_session_id != drag_session_id_) {
+    output_drag_op = ui::mojom::DragOperation::kNone;
+    return;
+  }
+
   // Set output_drag_op before calling on `web_contents_` below because it
   // is possible for the drop to end and the member `current_drag_data_` to be
   // reset.
@@ -1962,8 +1972,21 @@ void WebContentsViewAura::PerformDropOrExitDrag(
       drop_metadata.localized_location,
       base::BindOnce(&WebContentsViewAura::PerformDropCallback,
                      weak_ptr_factory_.GetWeakPtr(), drop_metadata,
-                     std::move(data)));
-  exit_drag.ReplaceClosure(base::DoNothing());
+                     drag_session_id, std::move(data)));
+  drop_cancel_cleanup.ReplaceClosure(base::DoNothing());
+}
+
+void WebContentsViewAura::OnDropCancelled(uint64_t drag_session_id) {
+  base::ScopedClosureRunner drop_exit_cleanup;
+  if (base::FeatureList::IsEnabled(features::kAuraDragDropSessionId)) {
+    drop_exit_cleanup.ReplaceClosure(
+        base::BindOnce(&WebContentsViewAura::OnDropExit,
+                       weak_ptr_factory_.GetWeakPtr(), drag_session_id));
+    if (drag_session_id != drag_session_id_) {
+      return;
+    }
+  }
+  CompleteDragExit();
 }
 
 void WebContentsViewAura::RegisterDropCallbackForTesting(
@@ -1989,9 +2012,12 @@ void WebContentsViewAura::OnGotVirtualFilesAsTempFiles(
     // Security check--don't allow the drop if a navigation occurred since the
     // drop was initiated or the render widget host has changed or it is not a
     // valid target.
-    if (!drop_observer->drop_allowed() ||
-        !(target_rwh && target_rwh == current_rwh_for_drag_.get() &&
-          drag_security_info_.IsValidDragTarget(target_rwh))) {
+    const bool is_current_session =
+        !base::FeatureList::IsEnabled(features::kAuraDragDropSessionId) ||
+        drop_context.drag_session_id == drag_session_id_;
+    if (!drop_observer->drop_allowed() || !target_rwh ||
+        !drag_security_info_.IsValidDragTarget(target_rwh) ||
+        (is_current_session && target_rwh != current_rwh_for_drag_.get())) {
       // Signal test code that the drop is disallowed.
       if (!drop_callback_for_testing_.is_null()) {
         std::move(drop_callback_for_testing_)
@@ -2001,7 +2027,9 @@ void WebContentsViewAura::OnGotVirtualFilesAsTempFiles(
                  drop_observer->drop_allowed());
       }
 
-      CompleteDragExit();
+      if (is_current_session) {
+        CompleteDragExit();
+      }
       return;
     }
 

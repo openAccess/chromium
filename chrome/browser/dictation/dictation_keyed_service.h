@@ -24,13 +24,21 @@
 #include "chrome/browser/dictation/target.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "services/device/public/mojom/wake_lock_provider.mojom-forward.h"
 
+class GURL;
 class Profile;
 
 namespace content {
 class BrowserContext;
 struct GlobalDOMNodeId;
 }
+
+namespace optimization_guide {
+class OptimizationGuideDecider;
+enum class PageContextEligibilityStatus;
+}  // namespace optimization_guide
 
 namespace tabs {
 class TabInterface;
@@ -62,6 +70,8 @@ class DictationKeyedService : public KeyedService,
       SessionController& controller) const override;
   std::unique_ptr<SessionUi> CreateUi(
       SessionController& controller) const override;
+  void BindWakeLockProvider(
+      mojo::PendingReceiver<device::mojom::WakeLockProvider> receiver) override;
   // Destroys the session. Only called by
   // `SessionController::EndSessionSynchronously()`, once it is `kEnded`.
   void EndSession() override;
@@ -99,6 +109,10 @@ class DictationKeyedService : public KeyedService,
 
   bool ShouldShowContextMenuItem() const;
 
+  // Returns true if the Dictation settings page should be shown (requires the
+  // feature to be enabled/ready and FRE completed).
+  bool ShouldShowSettingsPage() const;
+
   // Handles the context menu item click.
   void ContextMenuHandler(const TargetDetails& target_details);
 
@@ -119,6 +133,16 @@ class DictationKeyedService : public KeyedService,
   void UpdateAudioLevel(float audio_level);
 
   bool IsEnabledAndReady() const;
+
+  // Checks the Optimization Guide's cached DICTATION_ELIGIBLE hint for `url`.
+  // Returns `kEligible` if the hint is present and its DictationMetadata marks
+  // the page eligible, `kUnknown` if the hint is not yet in the cache (e.g. a
+  // navigation fetch is still in flight), or `kNotEligible` if the Optimization
+  // Guide is unavailable, the hint is absent, or the metadata is missing or
+  // marks the page ineligible. WebUI URLs are always treated as `kEligible`
+  // since Optimization Guide does not fetch hints for them.
+  optimization_guide::PageContextEligibilityStatus CheckOptimizationGuideHint(
+      const GURL& url) const;
 
   HotkeyManager* hotkey_manager_for_testing() { return hotkey_manager_.get(); }
 
@@ -157,6 +181,10 @@ class DictationKeyedService : public KeyedService,
   // `kEnded` like any other session end.
   void EndActiveSession();
 
+  bool HasCompletedOnboarding() const;
+  bool IsDisabledByPolicy() const;
+  void MaybeRegisterOptimizationTypes();
+
   // Forwards session state changes to `hotkey_manager_`, and notifies
   // `session_ended_callbacks_` when the session ends.
   void OnSessionStateChanged(dictation::SessionState state);
@@ -175,6 +203,10 @@ class DictationKeyedService : public KeyedService,
                       DictationSessionEntryPoint entry_point);
 
   raw_ptr<Profile> profile_;
+
+  // Null if the Optimization Guide is not available for `profile_`.
+  raw_ptr<optimization_guide::OptimizationGuideDecider>
+      optimization_guide_decider_;
 
   PrefChangeRegistrar pref_change_registrar_;
 

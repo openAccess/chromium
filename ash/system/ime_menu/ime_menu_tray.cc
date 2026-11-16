@@ -5,7 +5,6 @@
 #include "ash/system/ime_menu/ime_menu_tray.h"
 
 #include <memory>
-#include <utility>
 
 #include "ash/accessibility/a11y_feature_type.h"
 #include "ash/accessibility/accessibility_controller.h"
@@ -392,7 +391,7 @@ ImeMenuTray::ImeMenuTray(Shelf* shelf)
                                   weak_ptr_factory_.GetWeakPtr()));
 
   // Only the label exists at construction; the globe icon is created later.
-  CreateLabel();
+  ShowLabel();
   UpdateTrayImageOrLabelColor(/*is_image=*/false);
 
   SystemTrayNotifier* tray_notifier = Shell::Get()->system_tray_notifier();
@@ -498,10 +497,8 @@ void ImeMenuTray::HandleLocaleChange() {
         l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
   }
 
-  if (label_) {
-    label_->SetCustomTooltipText(
-        l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
-  }
+  label_->SetCustomTooltipText(
+      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
 }
 
 void ImeMenuTray::HideBubbleWithView(const TrayBubbleView* bubble_view) {
@@ -624,13 +621,13 @@ void ImeMenuTray::UpdateTrayLabel() {
   // For ARC IMEs, we use the globe icon instead of the short name of the active
   // IME.
   if (extension_ime_util::IsArcIME(current_ime.id)) {
-    CreateImageView();
+    ShowImageView();
     UpdateTrayImageOrLabelColor(/*is_image=*/true);
     return;
   }
 
   // Updates the tray label based on the current input method.
-  CreateLabel();
+  ShowLabel();
   UpdateTrayImageOrLabelColor(/*is_image=*/false);
 
   if (current_ime.third_party) {
@@ -640,39 +637,33 @@ void ImeMenuTray::UpdateTrayLabel() {
   }
 }
 
-void ImeMenuTray::CreateLabel() {
-  // Do nothing if label_ is already created.
-  if (label_) {
-    return;
-  }
-  // Remove image_view_ at first if it's created.
+void ImeMenuTray::ShowLabel() {
   if (image_view_) {
-    tray_container()->RemoveChildViewT(std::exchange(image_view_, nullptr));
+    image_view_->SetVisible(false);
   }
-  label_ = tray_container()->AddChildView(std::make_unique<ImeMenuLabel>());
-  label_->SetPaintToLayer();
-  label_->layer()->SetFillsBoundsOpaquely(false);
-  SetupLabelForTray(label_);
-  label_->SetElideBehavior(gfx::TRUNCATE);
-  label_->SetCustomTooltipText(
-      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
+  if (!label_) {
+    label_ = tray_container()->AddChildView(std::make_unique<ImeMenuLabel>());
+    label_->SetPaintToLayer();
+    label_->layer()->SetFillsBoundsOpaquely(false);
+    SetupLabelForTray(label_);
+    label_->SetElideBehavior(gfx::TRUNCATE);
+    label_->SetCustomTooltipText(
+        l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
+  }
+  label_->SetVisible(true);
 }
 
-void ImeMenuTray::CreateImageView() {
-  // Do nothing if image_view_ is already created.
-  if (image_view_) {
-    return;
+void ImeMenuTray::ShowImageView() {
+  label_->SetVisible(false);
+  if (!image_view_) {
+    image_view_ =
+        tray_container()->AddChildView(std::make_unique<ImeMenuImageView>());
+    image_view_->SetPaintToLayer();
+    image_view_->layer()->SetFillsBoundsOpaquely(false);
+    image_view_->SetTooltipText(
+        l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
   }
-  // Remove label_ at first if it's created.
-  if (label_) {
-    tray_container()->RemoveChildViewT(std::exchange(label_, nullptr));
-  }
-  image_view_ =
-      tray_container()->AddChildView(std::make_unique<ImeMenuImageView>());
-  image_view_->SetPaintToLayer();
-  image_view_->layer()->SetFillsBoundsOpaquely(false);
-  image_view_->SetTooltipText(
-      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_IME));
+  image_view_->SetVisible(true);
 }
 
 void ImeMenuTray::UpdateTrayImageOrLabelColor(bool is_image) {

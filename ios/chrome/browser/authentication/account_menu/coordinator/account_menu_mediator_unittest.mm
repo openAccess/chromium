@@ -10,6 +10,7 @@
 #import "base/test/task_environment.h"
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_pref_names.h"
+#import "components/subscription_eligibility/ai_subscription_tier_names.h"
 #import "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #import "components/sync/test/test_sync_service.h"
 #import "components/test/ios/test_utils.h"
@@ -367,6 +368,31 @@ TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITier) {
   }
 }
 
+// Tests that primaryAccountAITier is 0 for a tier excluded by
+// `kAiSubscriptionTierOverrides`.
+TEST_F(AccountMenuMediatorTest, TestPrimaryAccountAITierExcluded) {
+  OCMStub([consumer_mock_ updatePrimaryAccount]);
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeaturesAndParameters(
+      {{kAiSubscriptionAvatarRingIOS, {}},
+       {subscription_eligibility::kAiSubscriptionTierOverrides,
+        {{subscription_eligibility::kAiTierOverrides.name,
+          R"({"excluded_tiers": [2]})"}}}},
+      {});
+  subscription_eligibility::ResetAiTierOverridesForTesting();
+
+  profile_->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 2);
+  EXPECT_EQ([mediator_ primaryAccountAITier], 0);
+
+  profile_->GetPrefs()->SetInteger(
+      subscription_eligibility::prefs::kAiSubscriptionTier, 1);
+  EXPECT_EQ([mediator_ primaryAccountAITier], 1);
+
+  scoped_feature_list.Reset();
+  subscription_eligibility::ResetAiTierOverridesForTesting();
+}
+
 // Tests the result of TestError when there is no error.
 TEST_F(AccountMenuMediatorTest, TestNoError) {
   EXPECT_THAT([mediator_ accountErrorUIInfo], IsNull());
@@ -417,10 +443,11 @@ TEST_F(AccountMenuMediatorTest, TestAccountTapedSignoutFailed) {
         return mediator_ == value;
       }]]);
   OCMExpect([authentication_flow_mock_ startSignIn]);
-  auto gaiaId2 = kSecondaryIdentity.gaiaId;
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
   // Simulate a double tap. The second tap should be ignored.
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
   VerifyMock();
 
   OCMExpect([consumer_mock_ switchingStopped]);
@@ -463,10 +490,11 @@ TEST_F(AccountMenuMediatorTest, TestAccountTapedSignInFailed) {
       }]]);
   // Simulate account switching.
   OCMExpect([authentication_flow_mock_ startSignIn]);
-  auto gaiaId2 = kSecondaryIdentity.gaiaId;
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
   // Simulate a double tap. The second tap should be ignored.
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
 
   // Expect that the consumer unlocks the UI.
   OCMExpect([consumer_mock_ switchingStopped]);
@@ -507,10 +535,11 @@ TEST_F(AccountMenuMediatorTest, TestAccountTapedWithSuccessfulSwitch) {
         return mediator_ == value;
       }]]);
   OCMExpect([authentication_flow_mock_ startSignIn]);
-  auto gaiaId2 = kSecondaryIdentity.gaiaId;
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
   // Simulate a double tap. The second tap should be ignored.
-  [mediator_ accountTappedWithGaiaID:&gaiaId2 targetRect:target];
+  [mediator_ accountTappedWithGaiaID:kSecondaryIdentity.gaiaId
+                          targetRect:target];
   VerifyMock();
   OCMExpect([delegate_mock_
       mediatorWantsToBeDismissed:mediator_

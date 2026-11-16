@@ -12,7 +12,6 @@
 #include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/not_fatal_until.h"
 #include "base/rand_util.h"
 #include "base/strings/to_string.h"
@@ -215,7 +214,11 @@ bool CookieSettings::IsCookieAccessible(
 //    and both have the Chrome extensions scheme.
 bool CookieSettings::ShouldAlwaysAllowCookies(
     const GURL& url,
-    const GURL& first_party_url) const {
+    const GURL& first_party_url,
+    net::CookieSettingOverrides overrides) const {
+  if (overrides.Has(net::CookieSettingOverride::kForceAllowCookies)) {
+    return true;
+  }
   if (url.SchemeIsCryptographic()) {
     if (secure_origin_cookies_allowed_schemes_.contains(
             first_party_url.scheme())) {
@@ -333,10 +336,6 @@ ContentSetting CookieSettings::GetContentSetting(
     const GURL& secondary_url,
     ContentSettingsType content_type,
     content_settings::SettingInfo* info) const {
-  SCOPED_UMA_HISTOGRAM_TIMER_MICROS_SUBSAMPLED(
-      "ContentSettings.GetContentSetting.Network.Duration",
-      base::ShouldRecordSubsampledMetric(0.001));
-
   for (const auto& index : GetHostIndexedContentSettings(content_type)) {
     const content_settings::RuleEntry* result =
         index.Find(primary_url, secondary_url);
@@ -437,8 +436,9 @@ void CookieSettings::AugmentInclusionStatus(
 
 bool CookieSettings::ShouldAlwaysAllowCookiesForTesting(
     const GURL& url,
-    const GURL& first_party_url) const {
-  return ShouldAlwaysAllowCookies(url, first_party_url);
+    const GURL& first_party_url,
+    net::CookieSettingOverrides overrides) const {
+  return ShouldAlwaysAllowCookies(url, first_party_url, overrides);
 }
 
 void CookieSettings::set_secure_origin_cookies_allowed_origins(

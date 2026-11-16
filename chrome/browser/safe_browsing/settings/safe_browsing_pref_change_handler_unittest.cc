@@ -13,12 +13,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/test_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
-#include "chrome/browser/ui/toasts/toast_controller.h"
+#include "chrome/browser/ui/toasts/test/mock_toast_controller.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
 #include "components/sync/test/test_sync_service.h"
@@ -40,12 +39,6 @@ class MockTailoredSecurityService : public TailoredSecurityService {
               GetURLLoaderFactory,
               (),
               (override));
-};
-
-class MockToastController : public ToastController {
- public:
-  MockToastController() : ToastController(nullptr, nullptr) {}
-  MOCK_METHOD(bool, MaybeShowToast, (ToastParams params), (override));
 };
 
 class SafeBrowsingPrefChangeHandlerTest : public testing::Test {
@@ -125,11 +118,7 @@ class SafeBrowsingPrefChangeHandlerTest : public testing::Test {
   }
 
   void SetSignedIn() {
-    signin::ConsentLevel consent_level =
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? signin::ConsentLevel::kSignin
-            : signin::ConsentLevel::kSync;
-    sync_service()->SetSignedIn(consent_level);
+    sync_service()->SetSignedIn(signin::ConsentLevel::kSignin);
   }
 
   content::BrowserTaskEnvironment task_environment_;

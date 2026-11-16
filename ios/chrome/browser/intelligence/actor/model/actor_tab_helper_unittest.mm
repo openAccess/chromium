@@ -4,8 +4,13 @@
 
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
 
+#import <UIKit/UIKit.h>
+
 #import <memory>
+#import <optional>
 #import <sstream>
+#import <string>
+#import <string_view>
 
 #import "base/memory/raw_ptr.h"
 #import "base/scoped_observation.h"
@@ -16,6 +21,7 @@
 #import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/intelligence/actor/util/actor_test_utils.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/web/public/test/fakes/fake_navigation_manager.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
@@ -23,10 +29,23 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/page_transition_types.h"
+#import "url/gurl.h"
 
 namespace {
 
 using actor::ActorControlState;
+
+constexpr char kHttpPopupUrl[] = "http://example.test/popup";
+constexpr char kHttpsPopupUrl[] = "https://example.test/popup";
+constexpr char kSecondHttpsPopupUrl[] = "https://example.test/other";
+constexpr char kEmptyUrl[] = "";
+constexpr char kInvalidNonEmptyUrl[] = "http://";
+constexpr char kAboutBlankUrl[] = "about:blank";
+constexpr char kAboutSrcdocUrl[] = "about:srcdoc";
+constexpr char kJavaScriptVoidUrl[] = "javascript:void(0)";
+constexpr char kChromeVersionUrl[] = "chrome://version";
+constexpr char kFileTestUrl[] = "file:///tmp/test.html";
 
 class FakeActorTabHelperObserver : public ActorTabHelperObserver {
  public:
@@ -76,8 +95,8 @@ class FakeLegacyActorTabHelperObserver : public ActorTabHelperObserver {
   bool last_actuating_value_ = false;
 };
 
-// A FakeWebState subclass that records the last value passed to
-// `SetKeepRenderProcessAlive`, which the base fake ignores.
+// A `FakeWebState` subclass that records `SetKeepRenderProcessAlive` and
+// `IsBeingDestroyed` state for `ActorTabHelperTest`.
 class KeepAliveFakeWebState : public web::FakeWebState {
  public:
   void SetKeepRenderProcessAlive(bool keep_alive) override {
@@ -85,8 +104,14 @@ class KeepAliveFakeWebState : public web::FakeWebState {
   }
   bool keep_render_process_alive() const { return keep_render_process_alive_; }
 
+  bool IsBeingDestroyed() const override { return is_being_destroyed_; }
+  void SetIsBeingDestroyed(bool is_being_destroyed) {
+    is_being_destroyed_ = is_being_destroyed;
+  }
+
  private:
   bool keep_render_process_alive_ = false;
+  bool is_being_destroyed_ = false;
 };
 
 class ActorTabHelperTest : public PlatformTest {
@@ -102,6 +127,11 @@ class ActorTabHelperTest : public PlatformTest {
   void SetUp() override;
   void TearDown() override;
 
+  web::FakeNavigationManager* navigation_manager() {
+    return static_cast<web::FakeNavigationManager*>(
+        web_state_->GetNavigationManager());
+  }
+
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<KeepAliveFakeWebState> web_state_;
   raw_ptr<ActorTabHelper> tab_helper_ = nullptr;
@@ -110,6 +140,8 @@ class ActorTabHelperTest : public PlatformTest {
 void ActorTabHelperTest::SetUp() {
   PlatformTest::SetUp();
   web_state_ = std::make_unique<KeepAliveFakeWebState>();
+  web_state_->SetNavigationManager(
+      std::make_unique<web::FakeNavigationManager>());
   ActorTabHelper::CreateForWebState(web_state_.get());
   tab_helper_ = ActorTabHelper::FromWebState(web_state_.get());
 }
@@ -117,6 +149,7 @@ void ActorTabHelperTest::SetUp() {
 void ActorTabHelperTest::TearDown() {
   tab_helper_ = nullptr;
   if (web_state_) {
+    web_state_->SetView(nil);
     web_state_->SetWebViewProxy(nil);
   }
   PlatformTest::TearDown();
@@ -398,30 +431,84 @@ TEST_F(ActorTabHelperTest, WebStateDestroyedBeforeReapplyTaskRuns) {
 }
 
 // Tests that setting control state updates `shouldSuppressInputViews` on the
-// web view proxy when `ActorDisablesInputDuringActuation()` is enabled.
+// web view proxy, and calls `endEditing:YES` on the web state's view before
+// lifting suppression when actuation ends.
 TEST_F(ActorTabHelperTest,
        SetControlStateSuppressesInputViewsWhenFeatureEnabled) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitAndEnableFeature(kActorTools);
 
-  id mock_web_view_proxy = OCMStrictProtocolMock(@protocol(CRWWebViewProxy));
+  UIView* mock_view = OCMStrictClassMock([UIView class]);
+  web_state_->SetView(mock_view);
+
+  id<CRWWebViewProxy> mock_web_view_proxy =
+      OCMStrictProtocolMock(@protocol(CRWWebViewProxy));
   web_state_->SetWebViewProxy(mock_web_view_proxy);
 
   OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:YES]);
   tab_helper_->SetControlState(ActorControlState::kActorControlled);
-  EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
 
   // Duplicate call should be a no-op and not re-trigger the proxy setter.
   tab_helper_->SetControlState(ActorControlState::kActorControlled);
-  EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
 
+  __block bool end_editing_called = false;
+  __block bool end_editing_called_before_unsuppressing = false;
+  OCMExpect([mock_view endEditing:YES]).andDo(^(NSInvocation* /*invocation*/) {
+    end_editing_called = true;
+  });
+  OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:NO])
+      .andDo(^(NSInvocation* /*invocation*/) {
+        end_editing_called_before_unsuppressing = end_editing_called;
+      });
+  tab_helper_->SetControlState(ActorControlState::kInactive);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_TRUE(end_editing_called_before_unsuppressing);
+}
+
+// Tests that leaving `kActorControlled` skips `endEditing:` when the `WebState`
+// is unrealized or already being destroyed, while still resetting
+// `shouldSuppressInputViews` on the proxy.
+TEST_F(ActorTabHelperTest,
+       SetControlStateSkipsEndEditingWhenUnrealizedOrBeingDestroyed) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kActorTools);
+
+  UIView* mock_view = OCMStrictClassMock([UIView class]);
+  web_state_->SetView(mock_view);
+
+  id<CRWWebViewProxy> mock_web_view_proxy =
+      OCMStrictProtocolMock(@protocol(CRWWebViewProxy));
+  web_state_->SetWebViewProxy(mock_web_view_proxy);
+
+  // Unrealized `WebState`: should not call `endEditing:` on the view.
+  web_state_->SetIsRealized(false);
+  OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:YES]);
+  tab_helper_->SetControlState(ActorControlState::kActorControlled);
   OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:NO]);
   tab_helper_->SetControlState(ActorControlState::kInactive);
-  EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
+
+  // Realized `WebState` mid-destruction (e.g., `ActorTask::WebStateDestroyed`
+  // running before `ActorTabHelper::WebStateDestroyed`): should not call
+  // `endEditing:` on the view.
+  web_state_->SetIsRealized(true);
+  OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:YES]);
+  tab_helper_->SetControlState(ActorControlState::kActorControlled);
+  web_state_->SetIsBeingDestroyed(true);
+  OCMExpect([mock_web_view_proxy setShouldSuppressInputViews:NO]);
+  tab_helper_->SetControlState(ActorControlState::kInactive);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
 }
 
 // Tests that setting control state does not update `shouldSuppressInputViews`
-// on the web view proxy when `kActorToolsDisableInputDuringActuationParam` is
+// or call `endEditing:` when `kActorToolsDisableInputDuringActuationParam` is
 // disabled.
 TEST_F(ActorTabHelperTest,
        SetControlStateDoesNotSuppressInputViewsWhenFeatureDisabled) {
@@ -429,14 +516,20 @@ TEST_F(ActorTabHelperTest,
   scoped_feature_list.InitAndEnableFeatureWithParameters(
       kActorTools, {{kActorToolsDisableInputDuringActuationParam, "false"}});
 
-  id mock_web_view_proxy = OCMStrictProtocolMock(@protocol(CRWWebViewProxy));
+  UIView* mock_view = OCMStrictClassMock([UIView class]);
+  web_state_->SetView(mock_view);
+
+  id<CRWWebViewProxy> mock_web_view_proxy =
+      OCMStrictProtocolMock(@protocol(CRWWebViewProxy));
   web_state_->SetWebViewProxy(mock_web_view_proxy);
 
   tab_helper_->SetControlState(ActorControlState::kActorControlled);
-  EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
 
   tab_helper_->SetControlState(ActorControlState::kInactive);
-  EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_web_view_proxy);
+  EXPECT_OCMOCK_VERIFY((id)mock_view);
 }
 
 // Tests that destroying `ActorTabHelper` while in `kActorControlled` resets
@@ -502,4 +595,78 @@ TEST_F(ActorTabHelperTest, SetControlStateIgnoresActorControlForTtcTaskSource) {
   EXPECT_FALSE(observer.on_control_state_changed_called_);
   EXPECT_OCMOCK_VERIFY(mock_web_view_proxy);
 }
+
+// Tests that `MaybeHandleNewTabRequest` ignores requests while `kInactive`,
+// intercepts and redirects valid HTTP(S) URLs while `kActorControlled`, and
+// stops intercepting once the tab returns to `kInactive`.
+TEST_F(ActorTabHelperTest, MaybeHandleNewTabRequestFollowsControlState) {
+  EXPECT_FALSE(tab_helper_->MaybeHandleNewTabRequest(GURL(kHttpsPopupUrl)));
+  EXPECT_FALSE(navigation_manager()->LoadURLWithParamsWasCalled());
+
+  tab_helper_->SetControlState(ActorControlState::kActorControlled);
+  EXPECT_TRUE(tab_helper_->MaybeHandleNewTabRequest(GURL(kHttpsPopupUrl)));
+  ASSERT_TRUE(navigation_manager()->LoadURLWithParamsWasCalled());
+  EXPECT_EQ(GURL(kHttpsPopupUrl),
+            navigation_manager()->GetLastLoadURLWithParams()->url);
+
+  tab_helper_->SetControlState(ActorControlState::kInactive);
+  EXPECT_FALSE(
+      tab_helper_->MaybeHandleNewTabRequest(GURL(kSecondHttpsPopupUrl)));
+  EXPECT_EQ(GURL(kHttpsPopupUrl),
+            navigation_manager()->GetLastLoadURLWithParams()->url);
+}
+
+struct NewTabUrlTestCase {
+  std::string_view test_name;
+  std::string_view url_spec;
+  bool expect_in_place_load;
+};
+
+class ActorTabHelperNewTabUrlTest
+    : public ActorTabHelperTest,
+      public testing::WithParamInterface<NewTabUrlTestCase> {};
+
+// Tests that `MaybeHandleNewTabRequest` redirects valid HTTP(S) URLs into a
+// renderer-initiated same-tab link navigation with an unset referrer, while
+// suppressing empty, invalid, and non-HTTP(S) URLs without overwriting the
+// opener `WebState`.
+TEST_P(ActorTabHelperNewTabUrlTest, HandlesNewTabRequestWhenActorControlled) {
+  tab_helper_->SetControlState(ActorControlState::kActorControlled);
+
+  const GURL target_url(GetParam().url_spec);
+  EXPECT_TRUE(tab_helper_->MaybeHandleNewTabRequest(target_url));
+
+  if (!GetParam().expect_in_place_load) {
+    EXPECT_FALSE(navigation_manager()->LoadURLWithParamsWasCalled());
+    return;
+  }
+
+  ASSERT_TRUE(navigation_manager()->LoadURLWithParamsWasCalled());
+  std::optional<web::NavigationManager::WebLoadParams> load_params =
+      navigation_manager()->GetLastLoadURLWithParams();
+  ASSERT_TRUE(load_params.has_value());
+  EXPECT_EQ(target_url, load_params->url);
+  EXPECT_TRUE(load_params->referrer.url.is_empty());
+  EXPECT_TRUE(ui::PageTransitionCoreTypeIs(load_params->transition_type,
+                                           ui::PAGE_TRANSITION_LINK));
+  EXPECT_TRUE(load_params->is_renderer_initiated);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ActorTabHelperNewTabUrlTest,
+    testing::Values(NewTabUrlTestCase{"Http", kHttpPopupUrl, true},
+                    NewTabUrlTestCase{"Https", kHttpsPopupUrl, true},
+                    NewTabUrlTestCase{"Empty", kEmptyUrl, false},
+                    NewTabUrlTestCase{"InvalidNonEmpty", kInvalidNonEmptyUrl,
+                                      false},
+                    NewTabUrlTestCase{"AboutBlank", kAboutBlankUrl, false},
+                    NewTabUrlTestCase{"AboutSrcdoc", kAboutSrcdocUrl, false},
+                    NewTabUrlTestCase{"JavaScript", kJavaScriptVoidUrl, false},
+                    NewTabUrlTestCase{"ChromeWebUI", kChromeVersionUrl, false},
+                    NewTabUrlTestCase{"File", kFileTestUrl, false}),
+    [](const testing::TestParamInfo<NewTabUrlTestCase>& info) {
+      return std::string(info.param.test_name);
+    });
+
 }  // namespace

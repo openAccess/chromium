@@ -1205,7 +1205,9 @@ void AXPlatformNodeBase::ComputeAttributes(PlatformAttributeList* attributes) {
     case ax::mojom::NameFrom::kContents:
       is_explicit_name = false;
       from = "contents";
-      CHECK(!GetName().empty(), base::NotFatalUntil::M163);
+      // TODO(crbug.com/583288593): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
+      DCHECK(!GetName().empty());
       break;
     case ax::mojom::NameFrom::kCssAltText:
       from = "CSS alt text";
@@ -1636,7 +1638,6 @@ void AXPlatformNodeBase::UpdateComputedHypertext() const {
   // the character index of each embedded object character to the id of the
   // child object it points to.
   AXLegacyHypertext::OffsetToIndex::container_type indices;
-  std::u16string hypertext;
   for (AXPlatformNodeChildIterator child_iter = AXPlatformNodeChildrenBegin(),
                                    child_end = AXPlatformNodeChildrenEnd();
        child_iter != child_end; ++child_iter) {
@@ -1956,8 +1957,9 @@ AXPlatformNodeBase::AXPosition AXPlatformNodeBase::HypertextOffsetToEndpoint(
     int hypertext_offset) const {
   CHECK_GE(hypertext_offset, 0, base::NotFatalUntil::M163);
   // The offset can be equal to the length when it is past the end.
-  CHECK_LE(hypertext_offset, static_cast<int>(GetHypertext().size()),
-           base::NotFatalUntil::M163);
+  // TODO(crbug.com/584816032): CHECK-exclusion: Convert to a CHECK once we
+  // are confident it won't be triggered.
+  DCHECK_LE(hypertext_offset, static_cast<int>(GetHypertext().size()));
 
   if (IsLeaf()) {
     if (IsText()) {
@@ -2700,8 +2702,6 @@ void AXPlatformNodeBase::SanitizeTextAttributeValue(const std::string& input,
 bool AXPlatformNodeBase::IsDescribedByTooltip() const {
   base::span<const int32_t> description_ids =
       GetIntListAttribute(ax::mojom::IntListAttribute::kDescribedbyIds);
-
-  std::string description_from;
 
   for (int id : description_ids) {
     AXPlatformNodeBase* description_object =

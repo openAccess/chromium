@@ -6,11 +6,13 @@
 #include <memory>
 #include <type_traits>
 
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/free_deleter.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/numerics/safe_conversions.h"
 #include "ui/events/devices/x11/device_data_manager_x11.h"
+#include "ui/events/devices/x11/device_list_cache_x11.h"
 #include "ui/events/devices/x11/touch_factory_x11.h"
 #include "ui/events/event_utils.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
@@ -18,7 +20,6 @@
 #include "ui/events/platform/x11/x11_hotplug_event_handler.h"
 #include "ui/events/x/events_x_utils.h"
 #include "ui/events/x/x11_event_translation.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/extension_manager.h"
 #include "ui/gfx/x/future.h"
@@ -106,13 +107,6 @@ x11::Time ExtractTimeFromXEvent(const x11::Event& xev) {
   return x11::Time::CurrentTime;
 }
 
-void UpdateDeviceList() {
-  auto* connection = x11::Connection::Get();
-  DeviceListCacheX11::GetInstance()->UpdateDeviceList(connection);
-  TouchFactory::GetInstance()->UpdateDeviceList(connection);
-  DeviceDataManagerX11::GetInstance()->UpdateDeviceList(connection);
-}
-
 std::optional<gfx::Point> GetRootCursorLocationFromEvent(
     const x11::Event& event) {
   auto* device = event.As<x11::Input::DeviceEvent>();
@@ -152,7 +146,7 @@ X11EventSource::X11EventSource(x11::Connection* connection)
     : watcher_(std::make_unique<X11EventWatcherImpl>(this)),
       connection_(connection),
       dummy_initialized_(false) {
-  DCHECK(connection_);
+  CHECK(connection_, base::NotFatalUntil::M163);
   connection_->AddEventObserver(this);
 
   DeviceDataManagerX11::CreateInstance();
@@ -182,7 +176,7 @@ X11EventSource* X11EventSource::GetInstance() {
 // X11EventSource, public
 
 x11::Time X11EventSource::GetCurrentServerTime() {
-  DCHECK(connection_);
+  CHECK(connection_, base::NotFatalUntil::M163);
 
   if (!dummy_initialized_) {
     // Create a new Window and Atom that will be used for the property change.
@@ -194,7 +188,7 @@ x11::Time X11EventSource::GetCurrentServerTime() {
         .height = 1,
         .override_redirect = x11::Bool32(true),
     });
-    dummy_atom_ = x11::GetAtom("CHROMIUM_TIMESTAMP");
+    dummy_atom_ = connection_->GetAtom("CHROMIUM_TIMESTAMP");
     dummy_window_events_ = connection_->ScopedSelectEvent(
         dummy_window_, x11::EventMask::PropertyChange);
     dummy_initialized_ = true;
@@ -265,14 +259,20 @@ void X11EventSource::OnEvent(const x11::Event& x11_event) {
     if (device->reason == x11::Input::ChangeReason::DeviceChange) {
       should_update_device_list = true;
     } else if (device->reason == x11::Input::ChangeReason::SlaveSwitch) {
-      ui::DeviceDataManagerX11::GetInstance()->InvalidateScrollClasses(
-          device->sourceid);
+      ui::DeviceDataManagerX11::GetInstance()->UpdateScrollClassValuators(
+          device->sourceid, device->classes);
     }
   }
 
   if (should_update_device_list) {
-    UpdateDeviceList();
-    hotplug_event_handler_->OnHotplugEvent();
+    base::OnceClosure callback;
+    if (!pending_device_list_update_) {
+      pending_device_list_update_ = true;
+      callback = base::BindOnce(&X11EventSource::OnDeviceListUpdated,
+                                weak_ptr_factory_.GetWeakPtr());
+    }
+    DeviceListCacheX11::GetInstance()->UpdateDeviceList(connection_,
+                                                        std::move(callback));
   }
 
   auto* crossing = x11_event.As<x11::Input::CrossingEvent>();
@@ -307,6 +307,15 @@ void X11EventSource::OnDispatcherListChanged() {
   if (!hotplug_event_handler_) {
     hotplug_event_handler_ = std::make_unique<X11HotplugEventHandler>();
     // Force the initial device query to have an update list of active devices.
+    hotplug_event_handler_->OnHotplugEvent();
+  }
+}
+
+void X11EventSource::OnDeviceListUpdated() {
+  pending_device_list_update_ = false;
+  TouchFactory::GetInstance()->UpdateDeviceList(connection_);
+  DeviceDataManagerX11::GetInstance()->UpdateDeviceList(connection_);
+  if (hotplug_event_handler_) {
     hotplug_event_handler_->OnHotplugEvent();
   }
 }

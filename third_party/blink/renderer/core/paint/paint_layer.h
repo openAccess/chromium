@@ -224,7 +224,7 @@ class CORE_EXPORT PaintLayer : public GarbageCollected<PaintLayer>,
 
   bool HasVisibleContent() const {
     DCHECK(!needs_descendant_dependent_flags_update_);
-    return has_visible_content_;
+    return has_visible_content_ && !is_hidden_due_to_layout_;
   }
 
   bool HasVisibleSelfPaintingDescendant() const {
@@ -342,6 +342,8 @@ class CORE_EXPORT PaintLayer : public GarbageCollected<PaintLayer>,
     return is_under_svg_hidden_container_;
   }
 
+  void SetIsHiddenDueToLayout(bool value) { is_hidden_due_to_layout_ = value; }
+
   bool PaintsWithFilters() const;
 
   // Maps "forward" to determine which pixels in a destination rect are
@@ -448,6 +450,14 @@ class CORE_EXPORT PaintLayer : public GarbageCollected<PaintLayer>,
   PaintLayer* EnclosingSelfPaintingLayer();
 
   void DidUpdateScrollsOverflow();
+
+  // Excludes this caption subtree from normal painting for Picture-in-Picture
+  // without removing it from layout. Caption painting can opt in with
+  // kPaintingPictureInPictureCaptions.
+  bool IsExcludedForPictureInPictureCaptions() const {
+    return is_excluded_for_picture_in_picture_captions_;
+  }
+  void SetIsExcludedForPictureInPictureCaptions(bool);
 
   bool SelfNeedsRepaint() const { return self_needs_repaint_; }
   // Whether any descendant in paint order (not including descendants across
@@ -719,6 +729,8 @@ class CORE_EXPORT PaintLayer : public GarbageCollected<PaintLayer>,
   // overflow-only concept.
   unsigned is_self_painting_layer_ : 1;
 
+  unsigned is_excluded_for_picture_in_picture_captions_ : 1 = false;
+
   const unsigned is_root_layer_ : 1;
 
   unsigned has_visible_content_ : 1;
@@ -773,6 +785,8 @@ class CORE_EXPORT PaintLayer : public GarbageCollected<PaintLayer>,
   // True if the current subtree is underneath a LayoutSVGHiddenContainer
   // ancestor.
   unsigned is_under_svg_hidden_container_ : 1;
+
+  unsigned is_hidden_due_to_layout_ : 1 = false;
 
   unsigned has_self_painting_layer_descendant_ : 1;
 

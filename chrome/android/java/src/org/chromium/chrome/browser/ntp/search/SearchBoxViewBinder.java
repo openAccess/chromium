@@ -53,11 +53,17 @@ class SearchBoxViewBinder
         } else if (SearchBoxProperties.LENS_VISIBILITY == propertyKey) {
             view.mLensButton.setVisibility(
                     model.get(SearchBoxProperties.LENS_VISIBILITY) ? View.VISIBLE : View.GONE);
+        } else if (SearchBoxProperties.PLUS_BUTTON_ALPHA == propertyKey) {
+            view.mPlusButton.setAlpha(model.get(SearchBoxProperties.PLUS_BUTTON_ALPHA));
         } else if (SearchBoxProperties.PLUS_BUTTON_CLICK_CALLBACK == propertyKey) {
             view.setPlusButtonClickListener(
                     model.get(SearchBoxProperties.PLUS_BUTTON_CLICK_CALLBACK));
         } else if (SearchBoxProperties.PLUS_BUTTON_ROTATION == propertyKey) {
             view.mPlusButton.setRotation(model.get(SearchBoxProperties.PLUS_BUTTON_ROTATION));
+        } else if (SearchBoxProperties.PLUS_BUTTON_SCALE == propertyKey) {
+            float scale = model.get(SearchBoxProperties.PLUS_BUTTON_SCALE);
+            view.mPlusButton.setScaleX(scale);
+            view.mPlusButton.setScaleY(scale);
         } else if (SearchBoxProperties.PLUS_BUTTON_TINT == propertyKey) {
             ImageViewCompat.setImageTintList(
                     view.mPlusButton, model.get(SearchBoxProperties.PLUS_BUTTON_TINT));

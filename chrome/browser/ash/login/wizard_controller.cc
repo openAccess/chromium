@@ -155,8 +155,6 @@
 #include "chrome/browser/ash/system/timezone_resolver_manager.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/enterprise/util/affiliation.h"
-#include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/metrics/cros_pre_choice_metrics_manager.h"
 #include "chrome/browser/metrics/metrics_reporting_state.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
@@ -273,6 +271,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/known_user.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "components/version_info/version_info.h"
@@ -406,6 +405,24 @@ std::string SetupTypeToString(WizardContext::AuthChangeFlow flow_type) {
 bool IsInitialSetup(const WizardContext& wizard_context) {
   return wizard_context.knowledge_factor_setup.auth_setup_flow ==
          WizardContext::AuthChangeFlow::kInitialSetup;
+}
+
+// Whether the device is enrolled or the signed-in user is managed.
+bool IsDeviceOrUserManaged() {
+  if (InstallAttributes::Get()->IsEnterpriseManaged()) {
+    return true;
+  }
+  // Before login there is no user, so only the device counts. The user's
+  // policy status is known by post-login OOBE.
+  const user_manager::UserManager* user_manager =
+      user_manager::UserManager::Get();
+  for (const user_manager::User* user :
+       {user_manager->GetActiveUser(), user_manager->GetPrimaryUser()}) {
+    if (user && user->is_managed().value_or(false)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void InvalidateTokenAndRequestSignout(const WizardContext& wizard_context) {
@@ -1443,9 +1460,7 @@ void WizardController::ShowOsTrialScreen() {
 
 void WizardController::ShowConsolidatedConsentScreen() {
   // Disable PreChoice metrics if the user is affiliated or managed.
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  CHECK(profile);
-  if (enterprise_util::IsBrowserManaged(profile)) {
+  if (IsDeviceOrUserManaged()) {
     if (metrics::CrOSPreChoiceMetricsManager::Get()) {
       metrics::CrOSPreChoiceMetricsManager::Get()->Disable();
     }
@@ -1759,6 +1774,7 @@ void WizardController::OnSamlConfirmPasswordScreenExit(
                SamlConfirmPasswordScreen::GetResultString(result));
   switch (result) {
     case SamlConfirmPasswordScreen::Result::kSuccess:
+    case SamlConfirmPasswordScreen::Result::kNotApplicable:
       switch (wizard_context_->knowledge_factor_setup.auth_setup_flow) {
         case WizardContext::AuthChangeFlow::kInitialSetup:
           // `user_context` is only set on the wizard context for pre-cryptohome
@@ -1796,10 +1812,6 @@ void WizardController::OnSamlConfirmPasswordScreenExit(
       ShowSignInFatalErrorScreen(
           SignInFatalErrorScreen::Error::kScrapedPasswordVerificationFailure,
           base::DictValue());
-      break;
-    case ash::SamlConfirmPasswordScreen::Result::kNotApplicable:
-      // Continue initial setup by showing other auth factors flows.
-      ShowPinSetupScreenAsMainFactor();
       break;
   }
 }
@@ -2670,8 +2682,19 @@ void WizardController::OnPasswordSelectionScreenExit(
     // TODO(b/291808449): add an edge case for Enterprise users
     // without GAIA/SAML password.
     case PasswordSelectionScreen::Result::NOT_APPLICABLE:
-      ShowFingerprintSetupScreen();
-      return;
+      switch (wizard_context_->knowledge_factor_setup.auth_setup_flow) {
+        case WizardContext::AuthChangeFlow::kInitialSetup:
+        case WizardContext::AuthChangeFlow::kReauthentication:
+          ShowFingerprintSetupScreen();
+          return;
+        case WizardContext::AuthChangeFlow::kRecovery:
+          if (ash::features::IsRecoveryFlowReorderEnabled()) {
+            ObtainContextAndFinalizeAuth();
+            return;
+          }
+          ObtainContextAndLoginAuthenticated();
+          return;
+      }
     case PasswordSelectionScreen::Result::BACK: {
       // The back button is only shown for going back to main PIN setup.
       CHECK_EQ(wizard_context_->knowledge_factor_setup.pin_setup_mode,
@@ -3076,7 +3099,7 @@ void WizardController::OnGeminiIntroScreenExit(
                GeminiIntroScreen::GetResultString(result));
 
   if (result == GeminiIntroScreen::Result::kBack) {
-    CHECK(!AiIntroScreen::ShouldBeSkipped());
+    CHECK(!AiIntroScreen::ShouldBeSkipped(wizard_context_->onboarding_user));
     ShowAiIntroScreen();
     return;
   }
@@ -4093,9 +4116,7 @@ void WizardController::MaybeEnablePreChoiceMetrics() {
   }
   // Enable pre-choice metrics if this device is in oobe and is the first
   // user.
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  CHECK(profile);
-  if (enterprise_util::IsBrowserManaged(profile)) {
+  if (IsDeviceOrUserManaged()) {
     VLOG(1) << "Device enrolled. Do not enable pre choice metrics.";
     return;
   }

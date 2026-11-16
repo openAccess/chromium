@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/functional/callback_helpers.h"
 #include "base/test/scoped_feature_list.h"
 #include "cc/base/features.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
@@ -237,14 +238,13 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
               CreateCompositorFrameSink_(viz::FrameSinkId(kClientId, kSinkId)));
   platform->RunUntilIdle();
 
-  auto canvas_resource = CanvasResourceSharedImage::CreateForTesting(
+  auto resource = CanvasResource::CreateForTesting(
       GetSize(), viz::SinglePlaneFormat::kBGRA_8888, kPremul_SkAlphaType,
       gfx::ColorSpace::CreateSRGB(), gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
-      /*is_software=*/true,
-      /*is_accelerated=*/false, /*provider=*/nullptr,
+      /*is_software=*/true, /*client=*/nullptr,
       /*context_provider_wrapper=*/nullptr, shared_image_interface_provider());
 
-  EXPECT_TRUE(!!canvas_resource);
+  EXPECT_TRUE(!!resource);
 
   const bool context_alpha = GetParam().context_alpha;
 
@@ -282,7 +282,7 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
                           gfx::Size(kWidth, kHeight)),
                       gfx::RectF(0.0f, 0.0f, 1.0f, 1.0f));
 
-            // CanvasResourceSharedImage::CreateSoftware() creates a resource
+            // CanvasResource::CreateForTesting() creates a resource
             // whose origin is top-left.
             EXPECT_EQ(frame->resource_list.front().GetOrigin(),
                       kTopLeft_GrSurfaceOrigin);
@@ -291,8 +291,11 @@ TEST_P(CanvasResourceDispatcherTest, DispatchFrame) {
           }));
 
   const gfx::Rect damage_rect(kDamageWidth, kDamageHeight);
-  auto exported_resource =
-      base::MakeRefCounted<ExportedCanvasResource>(std::move(canvas_resource));
+  auto exported_resource = base::MakeRefCounted<ExportedCanvasResource>(
+      resource->GetSharedImage(), resource->sync_token(),
+      viz::TransferableResource::ResourceSource::kCanvas, gfx::HDRMetadata(),
+      nullptr, false, base::NullCallback(), base::NullCallback(),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/false);
   dispatcher()->DispatchFrame(std::move(exported_resource), damage_rect,
                               !context_alpha /* is_opaque */);
   platform->RunUntilIdle();
@@ -460,13 +463,13 @@ TEST_F(CanvasResourceDispatcherTest,
       mock_embedded_frame_sink_provider.CreateScopedOverrideMojoInterface(
           &embedded_frame_sink_provider_receiver);
 
-  auto* context = MakeGarbageCollected<MockContextLifecycleNotifier>();
+  ScopedMockContextLifecycleNotifier context;
   auto* client = MakeGarbageCollected<MockBeginFrameProviderClient>();
   BeginFrameProviderParams params;
   params.parent_frame_sink_id = viz::FrameSinkId(kClientId, kSinkId);
   params.frame_sink_id = viz::FrameSinkId(kClientId, kSinkId + 1);
-  auto* provider =
-      MakeGarbageCollected<BeginFrameProvider>(params, client, context);
+  auto* provider = MakeGarbageCollected<BeginFrameProvider>(params, client,
+                                                            context.Notifier());
 
   provider->RequestBeginFrame();
   embedded_frame_sink_provider_receiver.FlushForTesting();

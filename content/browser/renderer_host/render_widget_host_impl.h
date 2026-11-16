@@ -35,6 +35,7 @@
 #include "cc/mojom/render_frame_metadata.mojom.h"
 #include "components/input/event_with_latency_info.h"
 #include "components/input/input_disposition_handler.h"
+#include "components/input/input_router_client.h"
 #include "components/input/input_router_impl.h"
 #include "components/input/render_input_router.h"
 #include "components/input/render_input_router_client.h"
@@ -75,6 +76,7 @@
 #include "ui/base/ime/text_input_mode.h"
 #include "ui/base/ime/text_input_type.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/latency/latency_info.h"
 #include "url/origin.h"
@@ -255,10 +257,12 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   void SetExternallySourcedComposition(
       const std::u16string& text,
       const std::vector<ui::ImeTextSpan>& ime_text_spans,
+      const gfx::Range& replacement_range,
       const GlobalDOMNodeId& target_dom_node_id,
-      base::OnceClosure on_complete) override;
+      base::OnceCallback<void(const gfx::Range&)> on_complete) override;
   void CommitExternallySourcedComposition(
       const std::u16string& text,
+      const gfx::Range& replacement_range,
       const GlobalDOMNodeId& target_dom_node_id,
       base::OnceClosure on_complete) override;
   void PasteIntoNode(const std::u16string& text,
@@ -339,8 +343,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
                       const gfx::PointF& screen_point,
                       int key_modifiers,
                       base::OnceClosure callback) override;
-  void DragSourceEndedAt(const gfx::PointF& client_pt,
-                         const gfx::PointF& screen_pt,
+  void DragSourceEndedAt(const std::optional<gfx::PointF>& client_pt,
+                         const std::optional<gfx::PointF>& screen_pt,
                          ui::mojom::DragOperation operation,
                          base::OnceClosure callback) override;
   void DragSourceSystemDragEnded() override;
@@ -878,7 +882,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
       const gfx::Range& range,
       const std::optional<std::vector<gfx::Rect>>& character_bounds) override;
   void OnImeCancelComposition() override;
-  void OnStartStylusWriting() override;
+  void OnStartStylusWriting(
+      const std::optional<input::StylusWritingProperties>& properties) override;
   void OnUnconfirmedTapConvertedToTap() override;
   void UpdateElementFocusForStylusWriting(
 #if BUILDFLAG(IS_WIN)
@@ -1243,7 +1248,8 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // IPC message handlers
   void OnClose();
   void OnUpdateScreenRectsAck();
-  void OnUpdateDragOperation(DragOperationCallback callback,
+  void OnUpdateDragOperation(uint64_t drag_target_session_id,
+                             DragOperationCallback callback,
                              ui::mojom::DragOperation current_op,
                              bool document_is_handling_drag);
 
@@ -1378,6 +1384,26 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   // selected input events, and also sets a timer that allows a renderer to
   // "claim" the expected activation notification within a limited time
   // (`kUserActivationVerificationTimeout`).
+  //
+  // This deliberately tracks the earliest event in a touch sequence (to be
+  // precise, touch start instead of touch end as per the user activation spec)
+  // to support long-press and also a legacy notification call from a
+  // gesture-tap-down handler. This would cause a false notification rejection
+  // after a very-long press lasting beyond
+  // `kUserActivationVerificationTimeout`, which is a corner case we can ignore.
+  //
+  // Because of the above, we need to call this even for the events that are not
+  // dispatched to the renderer. The browser may not dispatch the earliest event
+  // in the sequence as an optimization (e.g. because there is no event
+  // listener), but a notification call from a latter event could still be
+  // expected.
+  //
+  // TODO(https://crbug.com/40091540): WebContentsImpl has a "parallel" user
+  // activation tracker through HandleUserInteractionForInputEvent which is
+  // primarily used for OS clipboard messages. We need to consolidate that
+  // tracker into RenderWidgetHostImpl. Not sure why gesture scroll begin events
+  // are included there, this is incompatible with the web exposed user
+  // activation state here.
   void AddExpectedUserActivationNotification(const blink::WebInputEvent& event);
 
   // Clears `expected_user_activation_notifications_`. This is called after
@@ -1725,6 +1751,10 @@ class CONTENT_EXPORT RenderWidgetHostImpl
   mojo::Receiver<blink::mojom::FrameWidgetHost> frame_widget_host_receiver_{
       this};
   mojo::AssociatedRemote<blink::mojom::FrameWidget> blink_frame_widget_;
+
+  // Identifies the current renderer drag-target session. Enter starts a new
+  // session, while leave and drop invalidate pending enter/over replies.
+  uint64_t drag_target_session_id_ = 0;
 
   // If this is initialized with a popup this member will be valid and
   // manages the lifecycle of the popup in blink.

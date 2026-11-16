@@ -321,9 +321,6 @@ BASE_FEATURE(kBorealisScaleClientByDPI, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kBorealisZinkGlDriver, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Allows UserDataAuth client to use fingerprint auth factor.
-BASE_FEATURE(kFingerprintAuthFactor, base::FEATURE_DISABLED_BY_DEFAULT);
-
 const base::FeatureParam<BorealisZinkGlDriverParam>::Option
     borealis_zink_gl_driver_options[] = {
         {BorealisZinkGlDriverParam::kZinkEnableRecommended,
@@ -525,9 +522,6 @@ BASE_FEATURE(kEnableOAuthIpp, base::FEATURE_DISABLED_BY_DEFAULT);
 // Enables RFC8925 (prefer IPv6-only on an IPv6-only-capable network).
 BASE_FEATURE(kEnableRFC8925, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enable the DNS proxy service running in root network namespace for ChromeOS.
-BASE_FEATURE(kEnableRootNsDnsProxy, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // If enabled, touchscreen mapping experience is visible in settings.
 BASE_FEATURE(kEnableTouchscreenMappingExperience,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -664,9 +658,6 @@ BASE_FEATURE(kFilesMaterializedViews, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enable background cleanup for old files in Trash.
 BASE_FEATURE(kFilesTrashAutoCleanup, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enable files app trash for Drive.
-BASE_FEATURE(kFilesTrashDrive, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Fix manual ip address persistence on managed device with 2 ethernet ports.
 BASE_FEATURE(kFixStaticIpForTwoManagedEthPorts,
@@ -1016,33 +1007,11 @@ BASE_FEATURE(kLobsterAlwaysShowDisclaimerForTesting,
 // Enables lobster dogfood.
 BASE_FEATURE(kLobsterDogfood, base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Enables lobster dragging support.
-BASE_FEATURE(kLobsterDraggingSupport, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables lobster feedback form.
-BASE_FEATURE(kLobsterFeedback, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables lobster feedback form.
-BASE_FEATURE(kLobsterFileNamingImprovement, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Enables lobster restriction based on the current active IME.
 BASE_FEATURE(kLobsterDisabledByInvalidIME, base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Controls lobster availability on managed accounts.
-BASE_FEATURE(kLobsterForManagedUsers, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables lobster i18n response.
-BASE_FEATURE(kLobsterI18n, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enables lobster entry point in quick insert zero state.
-BASE_FEATURE(kLobsterQuickInsertZeroState, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Enables lobster right click menu entry point.
 BASE_FEATURE(kLobsterRightClickMenu, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enabling this flag allows Lobster to receive and use the rewritten queries
-// returned from the server.
-BASE_FEATURE(kLobsterUseRewrittenQuery, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables / Disables the lobster feature from the feature management module.
 BASE_FEATURE(kFeatureManagementLobster, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1118,10 +1087,6 @@ const base::FeatureParam<base::TimeDelta> kEcheScanningCycleOffTime{
 // Enables a limit on the number of notifications that can show.
 BASE_FEATURE(kNotificationLimit, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Extracts controller logic from child views of `NotificationCenterView` to
-// place it in a new `NotificationCenterController` class.
-BASE_FEATURE(kNotificationCenterController, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enabled notification expansion animation.
 BASE_FEATURE(kNotificationExpansionAnimation,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1155,12 +1120,6 @@ BASE_FEATURE(kOsSyncAccessibilitySettingsBatch3,
 // Whether the OneDrive upload flow should immediately prompt the user to
 // re-authenticate without first showing a notification.
 BASE_FEATURE(kOneDriveUploadImmediateReauth, base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Whether the new UI for pinned notifications will be enabled.
-// go/ongoing-ui
-// TODO(crbug.com/563193206): Remove once c/b/device_notifications is cleaned
-// up.
-BASE_FEATURE(kOngoingProcesses, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // If enabled, CHOOBE Screen will be shown during the new user onboarding flow.
 BASE_FEATURE(kOobeChoobe, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1327,6 +1286,13 @@ BASE_FEATURE(kOrcaSupportDemoMode, base::FEATURE_ENABLED_BY_DEFAULT);
 // if jelly-colors is also enabled.
 BASE_FEATURE(kParentAccessJelly, base::FEATURE_DISABLED_BY_DEFAULT);
 
+// During online re-authentication, routes users whose PinWeaver-backed
+// password auth factor is locked out (too many wrong attempts) to cryptohome
+// recovery if they have a recovery factor, instead of failing with a generic
+// error until the lockout expires. See b/578979328.
+BASE_FEATURE(kPasswordLockoutRecoveryRouting,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Limits the items on the shelf to the ones associated with windows the
 // currently active desk.
 BASE_FEATURE(kPerDeskShelf, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -1343,6 +1309,10 @@ BASE_FEATURE(kPhoneHubMonochromeNotificationIcons,
 
 BASE_FEATURE(kPhoneHubShortQuickActionPodsTitles,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enables toggling the PiP "auto layout" mode (e.g. snap to the display edge)
+// via a pin button on PiP windows.
+BASE_FEATURE(kPipAutoLayoutToggle, base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables or disables the preference of using constant frame rate for camera
 // when streaming.
@@ -1384,12 +1354,6 @@ BASE_FEATURE(kQuickDim, base::FEATURE_ENABLED_BY_DEFAULT);
 // Note, that this feature is set from session manager via
 // command-line flag.
 BASE_FEATURE(kQuickUnlockFingerprint, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// TODO(crbug.com/1104164) - Remove this once most
-// users have their preferences backfilled.
-// Controls whether the PIN auto submit backfill operation should be performed.
-BASE_FEATURE(kQuickUnlockPinAutosubmitBackfill,
-             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Enables reordering of screens in the recovery flow.
 BASE_FEATURE(kRecoveryFlowReorder, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1510,10 +1474,6 @@ BASE_FEATURE(kShowLiveCaptionInVideoConferenceTray,
 BASE_FEATURE(kShowSharingUserInLauncherContinueSection,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Use a single CA cert for the EAP network if CA cert was selected, no
-// fallback.
-BASE_FEATURE(kSingleCaCertVerificationPhase2, base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Controls enabling/disabling the Sunfish feature.
 BASE_FEATURE(kSunfishFeature, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -1585,10 +1545,13 @@ BASE_FEATURE(kTilingWindowResize, base::FEATURE_DISABLED_BY_DEFAULT);
 // Use the Android staging SM-DS server when fetching pending eSIM profiles.
 BASE_FEATURE(kUseAndroidStagingSmds, base::FEATURE_DISABLED_BY_DEFAULT);
 
-// This feature toggles which dhcpcd version is used for IPv4 provisioning.
-// If it is enabled, dhcpcd10 will be used, otherwise the legacy dhcpcd7 will be
-// used. Note that IPv6 (DHCPv6-PD) always uses dhcpcd10.
-BASE_FEATURE(kUseDHCPCD10, base::FEATURE_ENABLED_BY_DEFAULT);
+// Use direct XKB layout for Thai Kedmanee input method.
+BASE_FEATURE(kUseDirectXkbLayoutForThaiKedmaneeInputMethod,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Use direct XKB layout for Thai TIS 820-2531 input method.
+BASE_FEATURE(kUseDirectXkbLayoutForThaiTisInputMethod,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Use the AnnotatedAccountId for mapping between User and BrowserContext
 // (a.k.a. browser's Profile).
@@ -1641,18 +1604,9 @@ BASE_FEATURE(kVcResizeThumbnail, base::FEATURE_ENABLED_BY_DEFAULT);
 // This is only used as a way to disable portrait relighting.
 BASE_FEATURE(kVcPortraitRelight, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enables or disables alternative inference backends for running ChromeOS video
-// conferencing portrait relighing models.
-BASE_FEATURE(kVcRelightingInferenceBackend, base::FEATURE_DISABLED_BY_DEFAULT);
-
 // Enable or disable the fake effects for ChromeOS video conferencing controls
 // UI. Only meaningful in the emulator.
 BASE_FEATURE(kVcControlsUiFakeEffects, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// Enables or disables alternative inference backends for running ChromeOS video
-// conferencing segmentation models.
-BASE_FEATURE(kVcSegmentationInferenceBackend,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Enables or disables alternative segmentation models for ChromeOS video
 // conferencing blur or relighting.
@@ -2173,10 +2127,6 @@ bool IsFilesLocalImageSearchEnabled() {
   return base::FeatureList::IsEnabled(kFilesLocalImageSearch);
 }
 
-bool IsFingerprintAuthFactorEnabled() {
-  return base::FeatureList::IsEnabled(kFingerprintAuthFactor);
-}
-
 bool IsFixStaticIpForTwoManagedEthPortsEnabled() {
   return base::FeatureList::IsEnabled(kFixStaticIpForTwoManagedEthPorts);
 }
@@ -2376,20 +2326,8 @@ bool IsLobsterDisabledByInvalidIME() {
   return base::FeatureList::IsEnabled(kLobsterDisabledByInvalidIME);
 }
 
-bool IsLobsterUseRewrittenQuery() {
-  return base::FeatureList::IsEnabled(kLobsterUseRewrittenQuery);
-}
-
-bool IsLobsterI18nEnabled() {
-  return base::FeatureList::IsEnabled(kLobsterI18n);
-}
-
 bool IsLobsterAlwaysShowDisclaimerForTesting() {
   return base::FeatureList::IsEnabled(kLobsterAlwaysShowDisclaimerForTesting);
-}
-
-bool IsLobsterEnabledForManagedUsers() {
-  return base::FeatureList::IsEnabled(kLobsterForManagedUsers);
 }
 
 bool IsLoginScreenProxyClientCertAuthEnabled() {
@@ -2420,10 +2358,6 @@ bool IsOAuthIppEnabled() {
   return base::FeatureList::IsEnabled(kEnableOAuthIpp);
 }
 
-bool IsNotificationCenterControllerEnabled() {
-  return true;
-}
-
 bool IsNotificationExpansionAnimationEnabled() {
   return base::FeatureList::IsEnabled(kNotificationExpansionAnimation);
 }
@@ -2434,12 +2368,6 @@ bool IsNotificationsInContextMenuEnabled() {
 
 bool IsNssDbClientCertsRollbackEnabled() {
   return base::FeatureList::IsEnabled(kEnableNssDbClientCertsRollback);
-}
-
-// TODO(crbug.com/563193206): Remove once c/b/device_notifications is cleaned
-// up.
-bool AreOngoingProcessesEnabled() {
-  return base::FeatureList::IsEnabled(kOngoingProcesses);
 }
 
 bool IsModifierSplitEnabled() {
@@ -2523,8 +2451,16 @@ bool IsParentAccessJellyEnabled() {
   return base::FeatureList::IsEnabled(kParentAccessJelly);
 }
 
+bool IsPasswordLockoutRecoveryRoutingEnabled() {
+  return base::FeatureList::IsEnabled(kPasswordLockoutRecoveryRouting);
+}
+
 bool IsPerDeskShelfEnabled() {
   return base::FeatureList::IsEnabled(kPerDeskShelf);
+}
+
+bool IsPipAutoLayoutToggleEnabled() {
+  return base::FeatureList::IsEnabled(kPipAutoLayoutToggle);
 }
 
 bool IsPhoneHubMonochromeNotificationIconsEnabled() {
@@ -2541,10 +2477,6 @@ bool IsPhoneHubCallNotificationEnabled() {
 
 bool IsPhoneHubShortQuickActionPodsTitlesEnabled() {
   return base::FeatureList::IsEnabled(kPhoneHubShortQuickActionPodsTitles);
-}
-
-bool IsPinAutosubmitBackfillFeatureEnabled() {
-  return base::FeatureList::IsEnabled(kQuickUnlockPinAutosubmitBackfill);
 }
 
 bool IsProjectorAppDebugMode() {

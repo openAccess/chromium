@@ -9,7 +9,6 @@ import static org.hamcrest.Matchers.is;
 import static org.chromium.base.test.transit.Condition.whether;
 
 import android.app.Instrumentation;
-import android.text.TextUtils;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -17,9 +16,9 @@ import androidx.annotation.Nullable;
 import org.junit.Assert;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.Token;
 import org.chromium.base.TriState;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
-import org.chromium.base.test.transit.CallbackCondition;
 import org.chromium.base.test.transit.Condition;
 import org.chromium.base.test.transit.SimpleConditions;
 import org.chromium.base.test.transit.Triggers;
@@ -31,10 +30,10 @@ import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.ntp.IncognitoNewTabPage;
 import org.chromium.chrome.browser.ntp.NewTabPage;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabWebContentsObserver;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
@@ -43,6 +42,7 @@ import org.chromium.chrome.browser.url_constants.UrlOverrideUtils;
 import org.chromium.chrome.test.transit.page.NativePageCondition;
 import org.chromium.chrome.test.transit.page.PageHitTestDataCondition;
 import org.chromium.chrome.test.transit.page.PageInteractableOrHiddenCondition;
+import org.chromium.chrome.test.transit.page.PageLoadStoppedCondition;
 import org.chromium.chrome.test.transit.page.PageLoadedCondition;
 import org.chromium.chrome.test.transit.page.PageUrlCondition;
 import org.chromium.chrome.test.transit.tabmodel.TabAddedCondition;
@@ -66,43 +66,6 @@ public class ChromeTabUtils {
      * TextureView is also ready.
      */
     private static final float CONSIDERED_READY_LOAD_PERCENTAGE = 1;
-
-    /**
-     * Fulfilled when the Tab calls onLoadStopped() for the expected URL (or any URL if null) after
-     * monitoring starts, so that the state from before a load trigger isn't mistaken for the new
-     * load. Unlike PageLoadCallbackCondition, this also covers same-document and failed loads.
-     */
-    private static class TabLoadStoppedCondition extends CallbackCondition implements TabObserver {
-        private final Tab mTab;
-        private final @Nullable String mExpectedUrl;
-
-        TabLoadStoppedCondition(Tab tab, @Nullable String expectedUrl) {
-            super(
-                    expectedUrl == null ? "onLoadStopped" : "onLoadStopped for " + expectedUrl,
-                    /* numCallsExpected= */ 1);
-            mTab = tab;
-            mExpectedUrl = expectedUrl;
-        }
-
-        @Override
-        public void onLoadStopped(Tab tab, boolean toDifferentDocument) {
-            if (mExpectedUrl == null || TextUtils.equals(tab.getUrl().getSpec(), mExpectedUrl)) {
-                notifyCalled();
-            }
-        }
-
-        @Override
-        public void onStartMonitoring() {
-            super.onStartMonitoring();
-            ThreadUtils.runOnUiThreadBlocking(() -> mTab.addObserver(this));
-        }
-
-        @Override
-        public void onStopMonitoring() {
-            super.onStopMonitoring();
-            ThreadUtils.runOnUiThreadBlocking(() -> mTab.removeObserver(this));
-        }
-    }
 
     public static Tab getActivityTab(ChromeActivity activity) {
         return ThreadUtils.runOnUiThreadBlocking(() -> activity.getActivityTab());
@@ -187,9 +150,10 @@ public class ChromeTabUtils {
      * @param secondsToWait The number of seconds to wait for the page to be loaded.
      * @deprecated Prefer Station transitions. From a Station, use {@code
      *     loadWebPageProgrammatically()} or {@code runTo(trigger).arriveAt(WebPageStation...)}.
-     *     From a test without a Station, use {@code runTo(trigger).hopOnTo(activity,
-     *     WebPageStation/CctPageStation...)}. Kept for callers that cannot hop on, such as
-     *     ChromeActivityTestRule, newTabFromMenu and webapps.
+     *     From a test without a Station, use {@code WebPageStation.waitForWebPage()} or {@code
+     *     WebPageStation.waitForWebPageLoad()}, or {@code BasePageStation.waitForPage()} or {@code
+     *     BasePageStation.waitForPageLoad()} with another builder, e.g. for CCTs. Kept for callers
+     *     that cannot hop on, such as ChromeActivityTestRule, newTabFromMenu and webapps.
      */
     @Deprecated
     public static void waitForTabPageLoaded(
@@ -204,7 +168,7 @@ public class ChromeTabUtils {
         if (url != null) conditions.add(new PageUrlCondition(is(url), () -> tab));
         // With a trigger, also wait for the load it starts to stop, so the state from before the
         // trigger isn't mistaken for it. Without one, the load may already be complete.
-        if (loadTrigger != null) conditions.add(new TabLoadStoppedCondition(tab, url));
+        if (loadTrigger != null) conditions.add(new PageLoadStoppedCondition(tab, url));
         TripBuilder trip = loadTrigger == null ? Triggers.noopTo() : Triggers.runTo(loadTrigger);
         trip.withTimeout(TimeUnit.SECONDS.toMillis(secondsToWait))
                 .waitFor(conditions.toArray(new Condition[0]));
@@ -215,7 +179,10 @@ public class ChromeTabUtils {
      * have completed.
      *
      * @param tab The tab to wait for interactability on.
+     * @deprecated Page Stations (e.g. {@code WebPageStation}, {@code CctPageStation}) wait for the
+     *     same Conditions when entered. Hop on to or travel to one instead.
      */
+    @Deprecated
     public static void waitForInteractable(final Tab tab) {
         Assert.assertFalse(ThreadUtils.runningOnUiThread());
 
@@ -224,32 +191,6 @@ public class ChromeTabUtils {
                 .waitFor(
                         new PageInteractableOrHiddenCondition(() -> tab),
                         new PageHitTestDataCondition(() -> tab));
-    }
-
-    /**
-     * Switch to the given TabIndex in the current tabModel.
-     *
-     * @deprecated From a page Station, use {@code CtaPageStation#selectTabFast()} instead.
-     */
-    @Deprecated
-    public static void switchTabInCurrentTabModel(
-            final ChromeActivity activity, final int tabIndex) {
-        // Selecting a tab before tabs are restored (e.g. after Activity recreation) does nothing.
-        TabModelSelector selector = activity.getTabModelSelector();
-        Triggers.noopTo()
-                .waitFor(
-                        SimpleConditions.uiThreadCondition(
-                                "Tab state initialized",
-                                () -> whether(selector.isTabStateInitialized())));
-        TabModel tabModel = ThreadUtils.runOnUiThreadBlocking(activity::getCurrentTabModel);
-        // Already selected, nothing to do.
-        if (ThreadUtils.runOnUiThreadBlocking(tabModel::index) == tabIndex) return;
-        TabSelectedCondition tabSelected =
-                new TabSelectedCondition(/* numTabsBeingSelected= */ 1, () -> tabModel);
-        Triggers.runOnUiThreadTo(() -> TabModelUtils.setIndex(tabModel, tabIndex))
-                .waitFor(tabSelected);
-        Tab expected = ThreadUtils.runOnUiThreadBlocking(() -> tabModel.getTabAt(tabIndex));
-        Assert.assertEquals(expected, tabSelected.get());
     }
 
     /**
@@ -425,19 +366,28 @@ public class ChromeTabUtils {
     /**
      * Groups together two tabs.
      *
-     * @param tab1 First tab to group.
-     * @param tab2 Second tab to group.\
+     * @param sourceTab Source tab (or group) to merge.
+     * @param destinationTab Destination tab to merge into.
+     * @deprecated Use {@code Journeys#mergeTabsToGroupProgrammatically()} with a Station instead.
      */
-    public static void mergeTabsToGroup(Tab tab1, Tab tab2) {
+    @Deprecated
+    public static void mergeTabsToGroup(Tab sourceTab, Tab destinationTab) {
         Assert.assertTrue(ThreadUtils.runningOnUiThread());
 
         // Verify that the two tabs do not belong with different models.
-        Assert.assertEquals(tab1.isIncognito(), tab2.isIncognito());
-        final TabModelSelector selector = getTabModelSelector(tab1.getWindowAndroid());
-        final TabModel tabModel = selector.getModel(tab1.isIncognito());
+        Assert.assertEquals(sourceTab.isIncognito(), destinationTab.isIncognito());
+        final TabModelSelector selector = getTabModelSelector(sourceTab.getWindowAndroid());
+        final TabModel tabModel = selector.getModel(sourceTab.isIncognito());
 
-        tabModel.mergeTabsToGroup(tab1.getId(), tab2.getId());
-        Assert.assertEquals(tab1.getTabGroupId(), tab2.getTabGroupId());
+        Token sourceTabGroupId = sourceTab.getTabGroupId();
+        List<Tab> tabsToMerge =
+                sourceTabGroupId != null
+                        ? tabModel.getTabsInGroup(sourceTabGroupId)
+                        : List.of(sourceTab);
+        tabModel.mergeListOfTabsToGroup(
+                tabsToMerge, destinationTab, TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
+        Assert.assertNotNull(destinationTab.getTabGroupId());
+        Assert.assertEquals(sourceTab.getTabGroupId(), destinationTab.getTabGroupId());
     }
 
     /**

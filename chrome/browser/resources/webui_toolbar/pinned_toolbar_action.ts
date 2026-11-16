@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// <if expr="_google_chrome">
-import './internal/icons.js';
-// </if>
-
 import './toolbar_chip_button.js';
 import '/shared/icon_from_table.js';
 
@@ -15,7 +11,7 @@ import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {getContextMenuPosition, getContextMenuSourceType} from '/shared/toolbar_button.js';
 import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
-import {ContextMenuType, DownloadProgressRingStatus, PinnedToolbarAction} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {ContextMenuType, DownloadProgressRingStatus, PinnedToolbarAction, PinnedToolbarActionEngagedIndicatorStyle} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import type {PinnedToolbarActionState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
@@ -31,12 +27,14 @@ const initialState: PinnedToolbarActionState = {
   highlighted: false,
   enabled: true,
   activated: false,
+  engagedIndicatorStyle: PinnedToolbarActionEngagedIndicatorStyle.kUnderline,
   tooltip: '',
   accessibilityText: '',
   elementId: null,
   icon: {handleId: 0n},
   progressRing: null,
   badgeNumber: null,
+  iconSizeDelta: 0,
 };
 
 const PinnedToolbarActionElementBase = OverflowableToolbarActionMixin(
@@ -160,6 +158,32 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
         DownloadProgressRingStatus.kDormant;
   }
 
+  protected showUnderlineIndicator_(): boolean {
+    return this.state.activated &&
+        this.state.engagedIndicatorStyle ===
+        PinnedToolbarActionEngagedIndicatorStyle.kUnderline;
+  }
+
+  protected showCircleHighlight_(): boolean {
+    return this.state.activated &&
+        this.state.engagedIndicatorStyle ===
+        PinnedToolbarActionEngagedIndicatorStyle.kCircleHighlight &&
+        !this.state.highlighted && !this.trackedHighlighted;
+  }
+
+  /**
+   * Returns the inline style that shrinks the icon by the action's icon size
+   * delta, matching native PinnedActionToolbarButton::GetIconSize(), or
+   * undefined if the icon should be drawn at the default size.
+   */
+  protected getIconStyle_(): string|undefined {
+    if (!this.state.iconSizeDelta) {
+      return undefined;
+    }
+    return `--pinned-toolbar-action-icon-size-delta: ${
+        this.state.iconSizeDelta}px;`;
+  }
+
   private getContextMenuType_(): ContextMenuType {
     switch (this.state.action) {
       case PinnedToolbarAction.kNewIncognitoWindow:
@@ -222,6 +246,8 @@ export class PinnedToolbarActionElement extends PinnedToolbarActionElementBase {
         return ContextMenuType.kPinnedActionShowAiOverlayDialog;
       case PinnedToolbarAction.kTtcToolbar:
         return ContextMenuType.kPinnedActionTtcToolbar;
+      case PinnedToolbarAction.kGlicSmartSelectionToolbar:
+        return ContextMenuType.kPinnedActionGlicSmartSelection;
       case PinnedToolbarAction.kSidePanelShowHistory:
         return ContextMenuType.kPinnedActionSidePanelShowHistory;
       case PinnedToolbarAction.kShowChromeLabs:

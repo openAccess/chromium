@@ -5,8 +5,11 @@
 #ifndef CHROME_BROWSER_UI_PASSWORDS_BUBBLE_CONTROLLERS_SAVE_UPDATE_BUBBLE_CONTROLLER_H_
 #define CHROME_BROWSER_UI_PASSWORDS_BUBBLE_CONTROLLERS_SAVE_UPDATE_BUBBLE_CONTROLLER_H_
 
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/passwords/bubble_controllers/common_saved_account_manager_bubble_controller.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 
 namespace base {
 class Clock;
@@ -60,13 +63,15 @@ class SaveUpdateBubbleController
   // Returns the domain to be used as a subhead if the title requires it.
   std::optional<std::u16string> GetDomainForSubhead() const;
 
-  // Returns true if the trusted vault error should be fixed in order to save
-  // credentials.
-  bool IsSavingBlockedByTrustedVaultError() const;
+  // Returns the recoverable password store error that currently blocks saving
+  // credentials, or `std::nullopt` if saving is not blocked by a recoverable
+  // error.
+  std::optional<password_manager::ActionableError>
+  GetRecoverableErrorBlockingSaving() const;
 
-  // Starts the UI flow for fixing the trusted vault error and saves credentials
-  // after the error is fixed.
-  void OnTrustedVaultUnlockClicked();
+  // Starts the UI flow for resolving the error blocking password saving and
+  // schedules saving the credentials once the error is resolved.
+  void OnErrorResolutionClicked();
 
 #if defined(UNIT_TEST)
   void set_clock(base::Clock* clock) { clock_ = clock; }

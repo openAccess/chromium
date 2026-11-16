@@ -483,7 +483,8 @@ class CORE_EXPORT LocalFrame final
   String SelectedTextForClipboard() const;
   void TextSelectionChanged(const String& selection_text,
                             uint32_t offset,
-                            const gfx::Range& range) const;
+                            const gfx::Range& range,
+                            bool has_selection) const;
 
   PositionWithAffinityTemplate<EditingAlgorithm<NodeTraversal>>
   PositionForPoint(const PhysicalOffset& frame_point);
@@ -1026,6 +1027,12 @@ class CORE_EXPORT LocalFrame final
 #if BUILDFLAG(IS_ANDROID)
   void PerformFullContentSpellCheck();
 #endif  // BUILDFLAG(IS_ANDROID)
+
+  void SetWantErrorMessageStackTrace();
+  bool WantErrorMessageStackTrace() const {
+    return want_error_message_stack_trace_;
+  }
+
  private:
   friend class FrameNavigationDisabler;
   // LocalFrameMojoHandler is a part of LocalFrame.
@@ -1291,6 +1298,10 @@ class CORE_EXPORT LocalFrame final
   // CPU (wall) time spent executing ad scripts in this frame that has not yet
   // been reported via DidChangeCpuTiming.
   base::TimeDelta unreported_ad_task_time_;
+
+  // True if the frame host wants stack traces on JavaScript console messages of
+  // kError severity.
+  bool want_error_message_stack_trace_ = false;
 };
 
 inline FrameLoader& LocalFrame::Loader() const {

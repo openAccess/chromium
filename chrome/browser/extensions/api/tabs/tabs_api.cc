@@ -28,6 +28,7 @@
 #include "chrome/browser/extensions/open_tab_helper.h"
 #include "chrome/browser/extensions/tab_helper.h"
 #include "chrome/browser/extensions/window_controller.h"
+#include "chrome/browser/extensions/window_controller_list.h"
 #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom-forward.h"
@@ -36,7 +37,6 @@
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/translate/translate_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/incognito_allowed_url.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
@@ -56,9 +56,11 @@
 #include "components/translate/core/browser/language_state.h"
 #include "components/translate/core/common/language_detection_details.h"
 #include "components/zoom/zoom_controller.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/web_contents.h"
 #include "extensions/browser/api/constants.h"
 #include "extensions/browser/extension_user_activation_service.h"
 #include "extensions/browser/extension_zoom_request_client.h"
@@ -86,7 +88,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/waap/initial_webui_window_metrics_manager.h"
-#include "chrome/browser/ui/waap/waap_utils.h"
+#include "chrome/browser/ui/waap/waap_utils.h"  // nogncheck
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/webapps/isolated_web_apps/scheme.h"
@@ -390,7 +392,8 @@ api::tabs::Tab CreateTabObjectHelper(content::WebContents* contents,
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 // Notifies the safe browsing telemetry service of a relevant extension action.
-void NotifyExtensionTelemetry(Profile* profile,
+void NotifyExtensionTelemetry(content::BrowserContext* caller,
+                              content::BrowserContext* target,
                               const Extension* extension,
                               safe_browsing::TabsApiInfo::ApiMethod api_method,
                               const std::string& current_url,
@@ -402,7 +405,7 @@ void NotifyExtensionTelemetry(Profile* profile,
   }
 
   auto* extension_telemetry_service =
-      safe_browsing::ExtensionTelemetryService::Get(profile);
+      safe_browsing::ExtensionTelemetryService::GetForSignal(caller, target);
 
   if (!extension_telemetry_service || !extension_telemetry_service->enabled()) {
     return;
@@ -608,71 +611,78 @@ ExtensionFunction::ResponseAction TabsQueryFunction::Run() {
   BrowserWindowInterface* last_active_browser =
       browser_window_util::GetLastActiveBrowserWithProfile(
           *profile, include_incognito_information());
+  WindowController* last_active_window =
+      last_active_browser
+          ? BrowserExtensionWindowController::From(last_active_browser)
+          : nullptr;
 
-  // Note that the current browser is allowed to be null: you can still query
+  // Note that the current window is allowed to be null: you can still query
   // the tabs in this case.
-  BrowserWindowInterface* current_browser = nullptr;
-  WindowController* current_window_controller =
+  WindowController* current_window =
       ChromeExtensionFunctionDetails(this).GetCurrentWindowController();
-  if (current_window_controller) {
-    current_browser = current_window_controller->GetBrowserWindowInterface();
-    // Note: current_browser may still be null.
-  }
 
   base::ListValue result =
-      BuildTabList(current_browser, last_active_browser, url_patterns,
+      BuildTabList(current_window, last_active_window, url_patterns,
                    window_type, window_id, index);
 
   return RespondNow(WithArguments(std::move(result)));
 }
 
 base::ListValue TabsQueryFunction::BuildTabList(
-    BrowserWindowInterface* current_browser,
-    BrowserWindowInterface* last_active_browser,
+    WindowController* current_window,
+    WindowController* last_active_window,
     const URLPatternSet& url_patterns,
     const std::string& window_type,
     int window_id,
     int tab_index) {
   base::ListValue result;
-  // Historically, we queried browsers in creation order. Maintain that behavior
+  std::optional<std::u16string> title_pattern;
+  if (query_info_.title && !query_info_.title->empty()) {
+    title_pattern = base::UTF8ToUTF16(*query_info_.title);
+  }
+  // Historically, we queried windows in creation order. Maintain that behavior
   // (for now).
-  std::vector<BrowserWindowInterface*> all_browsers =
-      GetAllBrowserWindowInterfaces();
-  for (auto* browser : all_browsers) {
-    if (!MatchesWindow(browser, current_browser, last_active_browser,
+  for (WindowController* window_controller :
+       *WindowControllerList::GetInstance()) {
+    if (!MatchesWindow(window_controller, current_window, last_active_window,
                        window_type, window_id)) {
       continue;
     }
 
-    TabListInterface* tab_list = TabListInterface::From(browser);
-    for (int i = 0; i < tab_list->GetTabCount(); ++i) {
+    BrowserWindowInterface* browser =
+        window_controller->GetBrowserWindowInterface();
+    TabListInterface* tab_list =
+        browser ? TabListInterface::From(browser) : nullptr;
+    const int tab_count = window_controller->GetTabCount();
+    for (int i = 0; i < tab_count; ++i) {
       if (tab_index > -1 && i != tab_index) {
         continue;
       }
 
-      ::tabs::TabInterface* tab = tab_list->GetTab(i);
-      CHECK(tab);
-
-      if (!MatchesTab(tab, url_patterns)) {
+      content::WebContents* web_contents =
+          window_controller->GetWebContentsAt(i);
+      std::optional<ExtensionTabUtil::ScrubTabBehavior> scrub_tab_behavior =
+          MatchesTab(web_contents, url_patterns, title_pattern);
+      if (!scrub_tab_behavior) {
         continue;
       }
 
-      result.Append(CreateTabObjectHelper(tab->GetContents(), extension(),
-                                          source_context_type(), browser, i)
+      result.Append(ExtensionTabUtil::CreateTabObject(web_contents,
+                                                      *scrub_tab_behavior,
+                                                      extension(), tab_list, i)
                         .ToValue());
     }
   }
   return result;
 }
 
-bool TabsQueryFunction::MatchesWindow(
-    BrowserWindowInterface* candidate_browser,
-    BrowserWindowInterface* current_browser,
-    BrowserWindowInterface* last_active_browser,
-    const std::string& target_window_type,
-    int target_window_id) {
+bool TabsQueryFunction::MatchesWindow(WindowController* candidate_window,
+                                      WindowController* current_window,
+                                      WindowController* last_active_window,
+                                      const std::string& target_window_type,
+                                      int target_window_id) {
   // First, check if the profile matches.
-  Profile* candidate_profile = candidate_browser->GetProfile();
+  Profile* candidate_profile = candidate_window->profile();
   Profile* profile = Profile::FromBrowserContext(browser_context());
   if (!profile->IsSameOrParent(candidate_profile)) {
     return false;
@@ -681,96 +691,105 @@ bool TabsQueryFunction::MatchesWindow(
     return false;
   }
 
-  if (!candidate_browser->GetWindow()) {
+  if (!candidate_window->IsVisibleToTabsAPIForExtension(
+          extension(), /*include_dev_tools_windows=*/false)) {
     return false;
   }
 
-  WindowController* window_controller =
-      BrowserExtensionWindowController::From(candidate_browser);
-  // Some browser candidates don't have window controllers.
-  // https://crbug.com/501003339
-  if (!window_controller) {
-    return false;
-  }
-  if (!window_controller->IsVisibleToTabsAPIForExtension(
-          extension(), /*include_dev_tools_windows=*/false)) {
-    return false;
+  if (BrowserWindowInterface* browser =
+          candidate_window->GetBrowserWindowInterface()) {
+    // On Android the tab list can be gone while the window is still
+    // enumerable (crbug.com/578132340).
+    if (!browser->GetWindow() || browser->IsDeleteScheduled() ||
+        !TabListInterface::From(browser)) {
+      return false;
+    }
   }
 
   // Note: `target_window_id` may be -1 or -2, which indicate unknown and
   // current windows.
   if (target_window_id >= 0 &&
-      target_window_id != ExtensionTabUtil::GetWindowId(candidate_browser)) {
+      target_window_id != candidate_window->GetWindowId()) {
     return false;
   }
 
   if (target_window_id == extension_misc::kCurrentWindowId &&
-      candidate_browser != current_browser) {
+      candidate_window != current_window) {
     return false;
   }
 
   if (!MatchesBool(query_info_.current_window,
-                   candidate_browser == current_browser)) {
+                   candidate_window == current_window)) {
     return false;
   }
 
   if (!MatchesBool(query_info_.last_focused_window,
-                   candidate_browser == last_active_browser)) {
+                   candidate_window == last_active_window)) {
     return false;
   }
 
   if (!target_window_type.empty() &&
-      target_window_type != window_controller->GetWindowTypeText()) {
+      target_window_type != candidate_window->GetWindowTypeText()) {
     return false;
   }
 
   return true;
 }
 
-bool TabsQueryFunction::MatchesTab(::tabs::TabInterface* candidate_tab,
-                                   const URLPatternSet& target_url_patterns) {
-  content::WebContents* web_contents = candidate_tab->GetContents();
-
+std::optional<ExtensionTabUtil::ScrubTabBehavior> TabsQueryFunction::MatchesTab(
+    content::WebContents* web_contents,
+    const URLPatternSet& target_url_patterns,
+    const std::optional<std::u16string>& title_pattern) {
   if (!web_contents) {
-    return false;
+    return std::nullopt;
   }
 
-  if (!MatchesBool(query_info_.highlighted, candidate_tab->IsSelected())) {
-    return false;
+  // Standalone windows (e.g. Document PiP) host a single active/highlighted
+  // WebContents with no TabInterface; they cannot be pinned, grouped, or split.
+  ::tabs::TabInterface* candidate_tab =
+      ::tabs::TabInterface::MaybeGetFromContents(web_contents);
+
+  if (!MatchesBool(query_info_.highlighted,
+                   candidate_tab ? candidate_tab->IsSelected() : true)) {
+    return std::nullopt;
   }
 
-  if (!MatchesBool(query_info_.active, candidate_tab->IsActivated())) {
-    return false;
+  if (!MatchesBool(query_info_.active,
+                   candidate_tab ? candidate_tab->IsActivated() : true)) {
+    return std::nullopt;
   }
 
-  if (!MatchesBool(query_info_.pinned, candidate_tab->IsPinned())) {
-    return false;
+  if (!MatchesBool(query_info_.pinned,
+                   candidate_tab && candidate_tab->IsPinned())) {
+    return std::nullopt;
   }
 
   if (query_info_.group_id.has_value()) {
-    std::optional<tab_groups::TabGroupId> group = candidate_tab->GetGroup();
+    std::optional<tab_groups::TabGroupId> group =
+        candidate_tab ? candidate_tab->GetGroup() : std::nullopt;
     if (query_info_.group_id.value() == -1) {
       if (group.has_value()) {
-        return false;
+        return std::nullopt;
       }
     } else if (!group.has_value()) {
-      return false;
+      return std::nullopt;
     } else if (ExtensionTabUtil::GetGroupId(group.value()) !=
                query_info_.group_id.value()) {
-      return false;
+      return std::nullopt;
     }
   }
 
   if (query_info_.split_view_id.has_value()) {
-    std::optional<split_tabs::SplitTabId> split = candidate_tab->GetSplit();
+    std::optional<split_tabs::SplitTabId> split =
+        candidate_tab ? candidate_tab->GetSplit() : std::nullopt;
     if (query_info_.split_view_id.value() == -1) {
       if (split.has_value()) {
-        return false;
+        return std::nullopt;
       }
     } else if (!split.has_value() ||
                ExtensionTabUtil::GetSplitId(split.value()) !=
                    query_info_.split_view_id.value()) {
-      return false;
+      return std::nullopt;
     }
   }
 
@@ -778,10 +797,12 @@ bool TabsQueryFunction::MatchesTab(::tabs::TabInterface* candidate_tab,
   const bool is_audible =
       audible_helper && audible_helper->WasRecentlyAudible();
   if (!MatchesBool(query_info_.audible, is_audible)) {
-    return false;
+    return std::nullopt;
   }
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
+  // Standalone WebContents lack TabLifecycleUnitExternal; treat them as
+  // unfrozen, undiscarded, and auto-discardable to match CreateTabObject().
   auto* tab_lifecycle_unit_external =
       resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
           web_contents);
@@ -789,69 +810,79 @@ bool TabsQueryFunction::MatchesTab(::tabs::TabInterface* candidate_tab,
   // TODO(https://crbug.com/505306735): Add support (or appropriately handle)
   // tab freezing, discarding, and auto-discarding on desktop android.
   if (!MatchesBool(query_info_.frozen,
-                   tab_lifecycle_unit_external->GetTabState() ==
-                       ::mojom::LifecycleUnitState::FROZEN)) {
-    return false;
+                   tab_lifecycle_unit_external &&
+                       tab_lifecycle_unit_external->GetTabState() ==
+                           ::mojom::LifecycleUnitState::FROZEN)) {
+    return std::nullopt;
   }
 
   if (!MatchesBool(query_info_.discarded,
-                   tab_lifecycle_unit_external->GetTabState() ==
-                       ::mojom::LifecycleUnitState::DISCARDED)) {
-    return false;
+                   tab_lifecycle_unit_external &&
+                       tab_lifecycle_unit_external->GetTabState() ==
+                           ::mojom::LifecycleUnitState::DISCARDED)) {
+    return std::nullopt;
   }
 
   if (!MatchesBool(query_info_.auto_discardable,
-                   tab_lifecycle_unit_external->IsAutoDiscardable())) {
-    return false;
+                   !tab_lifecycle_unit_external ||
+                       tab_lifecycle_unit_external->IsAutoDiscardable())) {
+    return std::nullopt;
   }
 #endif
 
   if (!MatchesBool(query_info_.muted, web_contents->IsAudioMuted())) {
-    return false;
+    return std::nullopt;
   }
 
   // "title" and "url" properties are considered privileged data and can
   // only be checked if the extension has access to the tab's data.
   // Otherwise, this tab is considered not matched.
-  ExtensionTabUtil::ScrubTabBehavior scrub_tab_behavior =
-      ExtensionTabUtil::GetScrubTabBehavior(extension(), source_context_type(),
-                                            web_contents);
-  if (query_info_.title && !query_info_.title->empty()) {
+  std::optional<ExtensionTabUtil::ScrubTabBehavior> scrub_tab_behavior;
+  if (title_pattern.has_value() || !target_url_patterns.is_empty()) {
+    scrub_tab_behavior = ExtensionTabUtil::GetScrubTabBehavior(
+        extension(), source_context_type(), web_contents);
+  }
+  if (title_pattern.has_value()) {
     bool matches_title =
-        scrub_tab_behavior.committed_info != ExtensionTabUtil::kScrubTabFully &&
-        base::MatchPattern(web_contents->GetTitle(),
-                           base::UTF8ToUTF16(*query_info_.title));
+        scrub_tab_behavior->committed_info !=
+            ExtensionTabUtil::kScrubTabFully &&
+        base::MatchPattern(web_contents->GetTitle(), *title_pattern);
     if (!matches_title) {
-      return false;
+      return std::nullopt;
     }
   }
 
   if (!target_url_patterns.is_empty()) {
     bool matches_committed =
-        scrub_tab_behavior.committed_info != ExtensionTabUtil::kScrubTabFully &&
+        scrub_tab_behavior->committed_info !=
+            ExtensionTabUtil::kScrubTabFully &&
         target_url_patterns.MatchesURL(web_contents->GetLastCommittedURL());
 
     content::NavigationEntry* pending_entry =
         web_contents->GetController().GetPendingEntry();
     bool matches_pending =
         pending_entry &&
-        scrub_tab_behavior.pending_info != ExtensionTabUtil::kScrubTabFully &&
+        scrub_tab_behavior->pending_info != ExtensionTabUtil::kScrubTabFully &&
         target_url_patterns.MatchesURL(pending_entry->GetVirtualURL());
 
     // Note: It's okay to indicate the tab matched even if it only has access
     // to one of [pending, committed]. The tab will be scrubbed appropriately
     // when it's returned below.
     if (!matches_committed && !matches_pending) {
-      return false;
+      return std::nullopt;
     }
   }
 
   if (query_info_.status != tabs::TabStatus::kNone &&
       query_info_.status != ExtensionTabUtil::GetLoadingStatus(web_contents)) {
-    return false;
+    return std::nullopt;
   }
 
-  return true;
+  if (!scrub_tab_behavior.has_value()) {
+    return ExtensionTabUtil::GetScrubTabBehavior(
+        extension(), source_context_type(), web_contents);
+  }
+  return scrub_tab_behavior;
 }
 
 TabsCreateFunction::TabsCreateFunction() = default;
@@ -1160,7 +1191,7 @@ void TabsCreateFunction::OpenTabInBrowser(BrowserWindowInterface& browser,
 #endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-  NotifyExtensionTelemetry(Profile::FromBrowserContext(browser_context()),
+  NotifyExtensionTelemetry(browser_context(), new_contents->GetBrowserContext(),
                            extension(), safe_browsing::TabsApiInfo::CREATE,
                            /*current_url=*/std::string(),
                            original_url_.value_or(std::string()),
@@ -1533,15 +1564,9 @@ ExtensionFunction::ResponseAction TabsUpdateFunction::Run() {
       return RespondNow(Error(std::move(error)));
     }
 
-#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
-    if (extension()) {
-      enterprise_connectors::ExtensionActorTracker::SetActiveActor(
-          original_contents, extension_id(), static_function_name());
-    }
-#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
-
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-    NotifyExtensionTelemetry(Profile::FromBrowserContext(browser_context()),
+    NotifyExtensionTelemetry(browser_context(),
+                             original_contents->GetBrowserContext(),
                              extension(), safe_browsing::TabsApiInfo::UPDATE,
                              current_url, updated_url, js_callstack());
 #endif
@@ -1748,6 +1773,13 @@ bool TabsUpdateFunction::UpdateURL(content::WebContents* web_contents,
   // will stay in the omnibox - see https://crbug.com/40693812.
   load_params.transition_type = ui::PAGE_TRANSITION_FROM_API;
 
+#if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+  if (extension()) {
+    enterprise_connectors::ExtensionActorTracker::SetActiveActor(
+        web_contents, extension_id(), static_function_name());
+  }
+#endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+
   base::WeakPtr<content::NavigationHandle> navigation_handle =
       web_contents->GetController().LoadURLWithParams(load_params);
   // Navigation can fail for any number of reasons at the content layer.
@@ -1843,6 +1875,11 @@ bool TabsMoveFunction::MoveTab(int tab_id,
 
   if (DevToolsWindow::IsDevToolsWindow(contents)) {
     *error = tabs_constants::kNotAllowedForDevToolsError;
+    return false;
+  }
+
+  if (PictureInPictureWindowManager::IsChildWebContents(contents)) {
+    *error = tabs_constants::kNotAllowedForPictureInPictureError;
     return false;
   }
 
@@ -2107,7 +2144,7 @@ bool TabsRemoveFunction::RemoveTab(int tab_id, std::string* error) {
   std::string current_url = contents->GetVisibleURL().is_valid()
                                 ? contents->GetVisibleURL().spec()
                                 : std::string();
-  NotifyExtensionTelemetry(Profile::FromBrowserContext(browser_context()),
+  NotifyExtensionTelemetry(browser_context(), contents->GetBrowserContext(),
                            extension(), safe_browsing::TabsApiInfo::REMOVE,
                            current_url,
                            /*new_url=*/std::string(), js_callstack());
@@ -2226,6 +2263,11 @@ ExtensionFunction::ResponseAction TabsGroupFunction::Run() {
 
     if (DevToolsWindow::IsDevToolsWindow(web_contents)) {
       return RespondNow(Error(tabs_constants::kNotAllowedForDevToolsError));
+    }
+
+    if (PictureInPictureWindowManager::IsChildWebContents(web_contents)) {
+      return RespondNow(
+          Error(tabs_constants::kNotAllowedForPictureInPictureError));
     }
   }
 
@@ -2687,7 +2729,7 @@ ExtensionFunction::ResponseAction TabsCaptureVisibleTabFunction::Run() {
                                 ? contents->GetLastCommittedURL().spec()
                                 : std::string();
   NotifyExtensionTelemetry(
-      Profile::FromBrowserContext(browser_context()), extension(),
+      browser_context(), contents->GetBrowserContext(), extension(),
       safe_browsing::TabsApiInfo::CAPTURE_VISIBLE_TAB, current_url,
       /*new_url=*/std::string(), js_callstack());
 #endif

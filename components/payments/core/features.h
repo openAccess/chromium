@@ -85,6 +85,11 @@ BASE_DECLARE_FEATURE(kPaymentRequestRejectTooSmallWindows);
 // the URL load.
 BASE_DECLARE_FEATURE(kPaymentHandlerDialogUseInitiatorInUrlLoad);
 
+// Used to control whether the Payment Handler dialog uses the invoking frame's
+// security origin (instead of the top-level `WebContents` URL) as
+// `initiator_origin` during the URL load.
+BASE_DECLARE_FEATURE(kPaymentHandlerDialogUseFrameOriginAsInitiator);
+
 // Used to control whether to support HTML head <meta name="theme-color"> in
 // Payment Handler dialog headers.
 BASE_DECLARE_FEATURE(kPaymentHandlerHtmlHeadThemeColor);
@@ -110,11 +115,6 @@ BASE_DECLARE_FEATURE(kThreeDSecureTelemetry);
 
 // Used to control whether 3D-Secure telemetry is collected on iOS.
 BASE_DECLARE_FEATURE(kThreeDSecureTelemetryForIos);
-
-// Used to control whether modal dialogs triggered from a web-based payment
-// handler are parented to the Payment Request dialog widget native view
-// instead of the browser tab.
-BASE_DECLARE_FEATURE(kPaymentHandlerModalDialogHost);
 
 // Used to enforce Local Network Access (LNA) for payment requests by setting
 // the client security state on the resource request.

@@ -2,21 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
 import 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
 
 import {RichImageSuggestBatchLoadStatus} from 'chrome://resources/cr_components/composebox/common.js';
+import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
 import type {ComposeboxDropdownElement} from 'chrome://resources/cr_components/composebox/composebox_dropdown.js';
-import {createAutocompleteMatch} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
-import {createAutocompleteResultForTesting} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
+import {createAutocompleteMatch} from 'chrome://resources/cr_components/search/autocomplete_match_utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {RenderType, SideType} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, RenderType, SideType} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {SecondaryTextPlacement, SuggestStyle} from 'chrome://resources/mojo/components/omnibox/browser/suggest_template_info.mojom-webui.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
+import {createAutocompleteResult, createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
+import {TestMock} from 'chrome://webui-test/test_mock.js';
 import {microtasksFinished} from 'chrome://webui-test/test_util.js';
+
+import {installMock} from './composebox_test_utils.js';
 
 suite('ComposeboxDropdown', () => {
   let dropdown: ComposeboxDropdownElement;
@@ -25,6 +29,13 @@ suite('ComposeboxDropdown', () => {
   setup(async () => {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     loadTimeData.overrideValues({composeboxSource: 'NewTabPage'});
+    const searchboxHandler = TestMock.fromClass(SearchboxPageHandlerRemote);
+    installMock(
+        PageHandlerRemote,
+        mock => ComposeboxProxyImpl.setInstance(new ComposeboxProxyImpl(
+            mock as unknown as PageHandlerRemote,
+            searchboxHandler as unknown as SearchboxPageHandlerRemote,
+            new SearchboxPageCallbackRouter())));
     metrics = fakeMetricsPrivate();
     dropdown = document.createElement('cr-composebox-dropdown');
     document.body.appendChild(dropdown);
@@ -33,7 +44,7 @@ suite('ComposeboxDropdown', () => {
 
   test('flat fallback list when rich image suggestions disabled', async () => {
     dropdown.richImageSuggestionsEnabled = false;
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       matches: [
         createAutocompleteMatch({
           suggestTemplate: createSuggestTemplateInfo({primaryText: 'match 1'}),
@@ -58,7 +69,7 @@ suite('ComposeboxDropdown', () => {
 
   test('renders groups and headers when flag enabled', async () => {
     dropdown.richImageSuggestionsEnabled = true;
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       sequenceId: 7,
       suggestionGroupsMap: {
         100: {
@@ -128,7 +139,7 @@ suite('ComposeboxDropdown', () => {
 
   test('header mousedown prevents default', async () => {
     dropdown.richImageSuggestionsEnabled = true;
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       suggestionGroupsMap: {
         100: {
           header: 'Header Title',
@@ -155,7 +166,7 @@ suite('ComposeboxDropdown', () => {
 
   test('selection navigation works across groups', async () => {
     dropdown.richImageSuggestionsEnabled = true;
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       suggestionGroupsMap: {
         100: {
           header: 'Group 1',
@@ -198,7 +209,7 @@ suite('ComposeboxDropdown', () => {
       'scrolls selected match into view when selectedMatchIndex changes',
       async () => {
         dropdown.richImageSuggestionsEnabled = true;
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           suggestionGroupsMap: {
             101: {
               header: 'Create with AI',
@@ -274,7 +285,7 @@ suite('ComposeboxDropdown', () => {
       async () => {
         const parentContainer = appendDropdownToHeightCappedParent();
         dropdown.richImageSuggestionsEnabled = false;
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           matches: createTwoLineMatches(5),
         });
         await microtasksFinished();
@@ -302,7 +313,7 @@ suite('ComposeboxDropdown', () => {
       async () => {
         const parentContainer = appendDropdownToHeightCappedParent();
         dropdown.richImageSuggestionsEnabled = true;
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           suggestionGroupsMap: {
             100: {
               header: 'Recent searches',
@@ -356,7 +367,7 @@ suite('ComposeboxDropdown', () => {
       // Hidden rich image matches (e.g. beyond maxSuggestions) should not
       // trigger the ghost loader when no visible rich image matches exist.
       dropdown.maxSuggestions = 1;
-      dropdown.result = createAutocompleteResultForTesting({
+      dropdown.result = createAutocompleteResult({
         matches: [
           createAutocompleteMatch({
             suggestTemplate:
@@ -377,7 +388,7 @@ suite('ComposeboxDropdown', () => {
 
       // Showing rich image matches starts batch preloading.
       dropdown.maxSuggestions = null;
-      dropdown.result = createAutocompleteResultForTesting({
+      dropdown.result = createAutocompleteResult({
         matches: [
           createAutocompleteMatch({
             suggestTemplate: createSuggestTemplateInfo({
@@ -441,7 +452,7 @@ suite('ComposeboxDropdown', () => {
 
       // Subsequent result updates with already-loaded image URLs do not
       // re-trigger the ghost loader and record CACHED.
-      dropdown.result = createAutocompleteResultForTesting({
+      dropdown.result = createAutocompleteResult({
         matches: [
           createAutocompleteMatch({
             suggestTemplate: createSuggestTemplateInfo({
@@ -472,7 +483,7 @@ suite('ComposeboxDropdown', () => {
       // If an image fails to load (onerror), the batch still finishes loading,
       // but the failed URL is not cached as loaded so a subsequent update
       // retries preloading it.
-      dropdown.result = createAutocompleteResultForTesting({
+      dropdown.result = createAutocompleteResult({
         matches: [
           createAutocompleteMatch({
             suggestTemplate: createSuggestTemplateInfo({
@@ -497,7 +508,7 @@ suite('ComposeboxDropdown', () => {
       assertEquals(2, metrics.count(batchLoadLatencyMetric));
       assertEquals(3, metrics.count(shownMetric, 1));
 
-      dropdown.result = createAutocompleteResultForTesting({
+      dropdown.result = createAutocompleteResult({
         matches: [
           createAutocompleteMatch({
             suggestTemplate: createSuggestTemplateInfo({
@@ -526,7 +537,7 @@ suite('ComposeboxDropdown', () => {
                             return id;
                           }) as typeof window.setTimeout;
       try {
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           matches: [
             createAutocompleteMatch({
               suggestTemplate: createSuggestTemplateInfo({
@@ -574,7 +585,7 @@ suite('ComposeboxDropdown', () => {
       'getFirstVisibleIndex and getLastVisibleIndex for zero state',
       async () => {
         dropdown.richImageSuggestionsEnabled = true;
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           input: '',
           matches: [
             createAutocompleteMatch({
@@ -596,7 +607,7 @@ suite('ComposeboxDropdown', () => {
   test(
       'getFirstVisibleIndex hides verbatim for typed suggestions', async () => {
         dropdown.richImageSuggestionsEnabled = true;
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           input: 'test',
           matches: [
             createAutocompleteMatch({
@@ -624,7 +635,7 @@ suite('ComposeboxDropdown', () => {
     await microtasksFinished();
     assertEquals(-1, dropdown.getFirstVisibleIndex());
 
-    dropdown.result = createAutocompleteResultForTesting({
+    dropdown.result = createAutocompleteResult({
       matches: [],
     });
     await microtasksFinished();
@@ -634,7 +645,7 @@ suite('ComposeboxDropdown', () => {
   test(
       'unselectOnTabExit unselects when navigating outside bounds',
       async () => {
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           input: '',
           matches: [
             createAutocompleteMatch({supportsDeletion: false}),
@@ -662,7 +673,7 @@ suite('ComposeboxDropdown', () => {
 
         // When matches support deletion, Tab/Shift-Tab accounts for the inner
         // remove button focus state.
-        dropdown.result = createAutocompleteResultForTesting({
+        dropdown.result = createAutocompleteResult({
           input: '',
           matches: [
             createAutocompleteMatch({supportsDeletion: true}),

@@ -2868,6 +2868,44 @@ TEST_F(ContextualSearchSessionHandleTest,
   EXPECT_FALSE(attached[1].uploaded);
 }
 
+TEST_F(ContextualSearchSessionHandleTest,
+       StartTabContextUploadFlow_StartsFileUploadBeforeNotifyingSubscribers) {
+  base::MockCallback<ContextualSearchSessionHandle::TabContextSubscriber>
+      callback;
+  auto subscription = handle_->SubscribeTabContext(callback.Get());
+
+  base::UnguessableToken implicit_token = handle_->CreateContextToken();
+  {
+    testing::InSequence seq;
+    EXPECT_CALL(*mock_controller_ptr_,
+                StartFileUploadFlow(implicit_token, _, _));
+    EXPECT_CALL(callback, Run(_));
+  }
+
+  handle_->StartTabContextUploadFlow(
+      implicit_token, MakeTabInputData(20, /*is_implicit_upload=*/true),
+      std::nullopt);
+}
+
+TEST_F(ContextualSearchSessionHandleTest,
+       StartTabContextUploadFlow_HandleDestroyedDuringStartFileUploadFlow) {
+  base::MockCallback<ContextualSearchSessionHandle::TabContextSubscriber>
+      callback;
+  auto subscription = handle_->SubscribeTabContext(callback.Get());
+  EXPECT_CALL(callback, Run(_)).Times(0);
+
+  base::UnguessableToken token = handle_->CreateContextToken();
+  EXPECT_CALL(*mock_controller_ptr_, StartFileUploadFlow(token, _, _))
+      .WillOnce([&](const base::UnguessableToken&,
+                    std::unique_ptr<lens::ContextualInputData>,
+                    std::optional<lens::ImageEncodingOptions>) {
+        mock_controller_ptr_ = nullptr;
+        handle_.reset();
+      });
+
+  handle_->StartTabContextUploadFlow(token, MakeTabInputData(20), std::nullopt);
+}
+
 // Tests that `DeleteFile` removes all tokens and the attached tab entry for a
 // tab when `kContextManagementInComposebox` and
 // `kContextManagementInComposeboxEnableTabDeselection` are enabled.

@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/canvas/unique_font_selector.h"
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
+#include "third_party/blink/renderer/modules/canvas/canvas2d/base_rendering_context_2d.h"
 #include "third_party/blink/renderer/modules/canvas/htmlcanvas/html_canvas_element_module.h"
 #include "third_party/blink/renderer/modules/canvas/imagebitmap/image_bitmap_rendering_context.h"
 #include "third_party/blink/renderer/modules/canvas/offscreencanvas2d/offscreen_canvas_rendering_context_2d.h"
@@ -85,6 +86,7 @@ class OffscreenCanvasTest : public ::testing::Test,
   void TearDown() override;
 
   OffscreenCanvas& offscreen_canvas() const { return *offscreen_canvas_; }
+  BaseRenderingContext2D* Context() const { return context_.Get(); }
   CanvasResourceDispatcher* Dispatcher() const {
     return offscreen_canvas_->GetOrCreateResourceDispatcher();
   }
@@ -268,17 +270,19 @@ TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
               CreateCompositorFrameSink_(viz::FrameSinkId(kClientId, kSinkId)));
   offscreen_canvas().DidDraw();
   platform->RunUntilIdle();
+  // `PushFrame()` below bypasses `GetResourceForPushFrame()`, so initialize
+  // the 2D backing explicitly just as a real draw/frame flush would.
+  ASSERT_TRUE(Context()->InitializeBacking());
 
   const bool context_alpha = GetParam().alpha;
 
-  auto canvas_resource = CanvasResourceSharedImage::CreateForTesting(
+  auto resource = CanvasResource::CreateForTesting(
       offscreen_canvas().Size(), viz::SinglePlaneFormat::kBGRA_8888,
       kPremul_SkAlphaType, gfx::ColorSpace::CreateSRGB(),
       gpu::SHARED_IMAGE_USAGE_CPU_WRITE_ONLY,
-      /*is_software=*/true,
-      /*is_accelerated=*/false, /*provider=*/nullptr,
+      /*is_software=*/true, /*client=*/nullptr,
       /*context_provider_wrapper=*/nullptr, shared_image_interface_provider());
-  EXPECT_TRUE(!!canvas_resource);
+  EXPECT_TRUE(!!resource);
 
   EXPECT_CALL(mock_embedded_frame_sink_provider.mock_compositor_frame_sink(),
               SubmitCompositorFrame_(_))
@@ -297,8 +301,11 @@ TEST_P(OffscreenCanvasTest, CompositorFrameOpacity) {
                       context_alpha);
           }));
 
-  offscreen_canvas().PushFrame(
-      base::MakeRefCounted<ExportedCanvasResource>(std::move(canvas_resource)));
+  offscreen_canvas().PushFrame(base::MakeRefCounted<ExportedCanvasResource>(
+      resource->GetSharedImage(), resource->sync_token(),
+      viz::TransferableResource::ResourceSource::kCanvas, gfx::HDRMetadata(),
+      nullptr, false, base::NullCallback(), base::NullCallback(),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/false));
   platform->RunUntilIdle();
 }
 

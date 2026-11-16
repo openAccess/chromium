@@ -52,6 +52,8 @@ interface PageElementTypes {
   locationMismatchHelpButton: HTMLButtonElement;
   ineligibleAccountHelpButton: HTMLButtonElement;
   ineligibleAccountPanel: HTMLElement;
+  relaunchRequiredPanel: HTMLElement;
+  relaunchButton: HTMLButtonElement;
 }
 
 const $: PageElementTypes = new Proxy({}, {
@@ -62,7 +64,7 @@ const $: PageElementTypes = new Proxy({}, {
 
 type PanelId = 'loadingPanel'|'guestPanel'|'offlinePanel'|'errorPanel'|
     'unavailablePanel'|'ineligibleAccountPanel'|'disabledByAdminPanel'|
-    'signInPanel'|'locationMismatchPanel';
+    'signInPanel'|'locationMismatchPanel'|'relaunchRequiredPanel';
 
 interface StateDescriptor {
   onEnter?: () => void;
@@ -129,10 +131,16 @@ export class GlicAppController implements WebviewDelegate {
 
   private profileReadyState: ProfileReadyState|undefined = undefined;
   private profileReadyInitialState = Promise.withResolvers<void>();
+  // Whether the instance that adopted this page was created while a provider
+  // change was pending. Fixed for the page's lifetime, and takes priority over
+  // the profile ready state.
+  private hasPendingProviderChange = false;
 
   // Loading stage, affects metrics only.
   private loadingStage: LoadingStage = LoadingStage.NOT_LOADING;
   private loadingStageStartTimestampMs?: DOMHighResTimeStamp;
+
+  private maxWaitTimeMs = kMaxWaitTimeMs;
 
   private panelStateKind: PanelStateKind = PanelStateKind.kHidden;
 
@@ -144,8 +152,11 @@ export class GlicAppController implements WebviewDelegate {
   private showingSecurityInterstitial = false;
 
   state: WebUiState|undefined;
-  private clientLoadFailed: boolean|undefined;
-  private loadWaiters: Array<(result: {failed: boolean}) => void> = [];
+  // Last value reported to `pageHandler.onClientLoadFailed()`: `undefined`
+  // before the first `setState()` call, or `null` when not in a failed state.
+  private lastReportedLoadFailedReason: ClientLoadErrorReason|null|undefined;
+  private readonly loadWaiters:
+      Array<(result: {errorReason: ClientLoadErrorReason|null}) => void> = [];
 
   // When entering loading state, this represents the earliest timestamp at
   // which the UI can transition to the ready state. This ensures that the
@@ -206,6 +217,9 @@ export class GlicAppController implements WebviewDelegate {
     });
     $.signInButton.addEventListener('click', () => {
       this.signIn();
+    });
+    $.relaunchButton.addEventListener('click', () => {
+      this.browserProxy.pageHandler.relaunchForProviderChange();
     });
     $.showError.addEventListener('click', () => {
       this.showPanel('guestPanel');
@@ -339,10 +353,24 @@ export class GlicAppController implements WebviewDelegate {
           }
         }
         break;
+      case GuestPageType.kOffline:
+        this.setErrorState(
+            WebUiErrorReason.LOAD_ERROR, ClientLoadErrorReason.kOffline);
+        break;
       case GuestPageType.kLoadError:
         this.setErrorState(
             WebUiErrorReason.LOAD_ERROR,
             ClientLoadErrorReason.kGuestLoadFailed);
+        break;
+      case GuestPageType.kHttpClientError:
+        this.setErrorState(
+            WebUiErrorReason.LOAD_ERROR,
+            ClientLoadErrorReason.kGuestHttpClientError);
+        break;
+      case GuestPageType.kHttpServerError:
+        this.setErrorState(
+            WebUiErrorReason.LOAD_ERROR,
+            ClientLoadErrorReason.kGuestHttpServerError);
         break;
       case GuestPageType.kOriginBlocked:
         this.setErrorState(
@@ -392,12 +420,19 @@ export class GlicAppController implements WebviewDelegate {
     }
     this.clientLoadErrorReported = false;
     this.maybeReportClientLoadError();
-    const failed = this.hasClientLoadFailed(this.state);
-    if (this.clientLoadFailed !== failed) {
-      this.clientLoadFailed = failed;
-      this.browserProxy.pageHandler.onClientLoadFailed(failed);
+    const failedReason = this.currentClientLoadErrorReason();
+    if (this.lastReportedLoadFailedReason !== failedReason) {
+      this.lastReportedLoadFailedReason = failedReason;
+      this.browserProxy.pageHandler.onClientLoadFailed(failedReason);
     }
     this.maybeResolveLoadWaiters();
+  }
+
+  private currentClientLoadErrorReason(): ClientLoadErrorReason|null {
+    if (this.state === undefined || !this.hasClientLoadFailed(this.state)) {
+      return null;
+    }
+    return this.clientLoadErrorReason ?? ClientLoadErrorReason.kUnknown;
   }
 
   // Whether `state` is one the client cannot leave without being reloaded.
@@ -427,6 +462,7 @@ export class GlicAppController implements WebviewDelegate {
       case WebUiState.kDisabledByAdmin:
       case WebUiState.kLocationMismatch:
       case WebUiState.kIneligibleAccount:
+      case WebUiState.kPendingProviderChangeGeminiToGeic:
         return true;
       default:
         assertNotReachedCase(state);
@@ -467,12 +503,12 @@ export class GlicAppController implements WebviewDelegate {
       return;
     }
     const loaded = this.isClientLoaded();
-    const failed = this.hasClientLoadFailed(this.state);
-    if (!loaded && !failed) {
+    const errorReason = this.currentClientLoadErrorReason();
+    if (!loaded && errorReason === null) {
       return;
     }
     for (const resolve of this.loadWaiters.splice(0)) {
-      resolve({failed});
+      resolve({errorReason});
     }
   }
 
@@ -592,6 +628,17 @@ export class GlicAppController implements WebviewDelegate {
             () => {
               this.destroyWebview();
               this.showPanel('locationMismatchPanel');
+            },
+      },
+    ],
+    [
+      WebUiState.kPendingProviderChangeGeminiToGeic,
+      {
+        clientLoadErrorReason: ClientLoadErrorReason.kPendingProviderChange,
+        onEnter:
+            () => {
+              this.destroyWebview();
+              this.showPanel('relaunchRequiredPanel');
             },
       },
     ],
@@ -723,6 +770,11 @@ export class GlicAppController implements WebviewDelegate {
     }
     this.trackLoadingStageEnd();
 
+    if (this.hasPendingProviderChange) {
+      this.setState(WebUiState.kPendingProviderChangeGeminiToGeic);
+      return;
+    }
+
     const readyState = this.profileReadyState;
     assert(readyState !== undefined);
     switch (readyState) {
@@ -853,7 +905,7 @@ export class GlicAppController implements WebviewDelegate {
 
   private startClientLoadTimeout(): void {
     // The web client is not yet ready, so wait for the remainder of
-    // `kMaxWaitTimeMs`. Switch to error state at that time unless interrupted
+    // `maxWaitTimeMs`. Switch to error state at that time unless interrupted
     // by `webClientReady`.
     this.loadingTimer = setTimeout(() => {
       console.warn('Exceeded timeout waiting for client to load');
@@ -867,7 +919,22 @@ export class GlicAppController implements WebviewDelegate {
             LoadingStage.MAX_VALUE + 1);
       }
       this.trackLoadingStageEnd();
-    }, Math.max(0, kMaxWaitTimeMs - kMinHoldLoadingTimeMs));
+    }, Math.max(0, this.maxWaitTimeMs - kMinHoldLoadingTimeMs));
+  }
+
+  expireClientLoadTimeoutForTesting(): void {
+    assert(
+        this.state === WebUiState.kBeginLoad ||
+        this.state === WebUiState.kShowLoading ||
+        this.state === WebUiState.kFinishLoading ||
+        this.state === WebUiState.kGuestLoaded);
+    this.maxWaitTimeMs = 0;
+    if ((this.state === WebUiState.kFinishLoading ||
+         this.state === WebUiState.kGuestLoaded) &&
+        this.loadingTimer !== undefined) {
+      this.cancelTimeout();
+      this.startClientLoadTimeout();
+    }
   }
 
   // Show one webUI panel and hide the others. The widget is resized to fit the
@@ -936,7 +1003,7 @@ export class GlicAppController implements WebviewDelegate {
             WebUiErrorReason.TIMEOUT_WARMED,
             ClientLoadErrorReason.kWarmedTimeout);
       }
-    }, kMaxWaitTimeMs);
+    }, this.maxWaitTimeMs);
   }
 
   webClientStateChanged(state: WebClientState): void {
@@ -1007,6 +1074,13 @@ export class GlicAppController implements WebviewDelegate {
     this.browserProxy.pageHandler.signInAndClosePanel();
   }
 
+  // Called when this page is adopted by an instance that was created while a
+  // provider change was pending.
+  showPendingProviderChange(): void {
+    this.hasPendingProviderChange = true;
+    this.setState(WebUiState.kPendingProviderChangeGeminiToGeic);
+  }
+
   clientReadyStateChanged(ready: boolean): void {
     if (!ready) {
       return;
@@ -1066,13 +1140,16 @@ export class GlicAppController implements WebviewDelegate {
   intentToShow() {
     if (this.stateDescriptor()?.reloadOnOpen) {
       this.reload();
-    } else if (this.clientLoadFailed) {
-      this.browserProxy.pageHandler.onClientLoadFailed(true);
+    } else if (this.lastReportedLoadFailedReason != null) {
+      this.browserProxy.pageHandler.onClientLoadFailed(
+          this.lastReportedLoadFailedReason);
     }
   }
 
-  waitForLoad(): Promise<{failed: boolean}> {
-    const {promise, resolve} = Promise.withResolvers<{failed: boolean}>();
+  waitForLoad(): Promise<{errorReason: ClientLoadErrorReason | null}> {
+    const {promise, resolve} = Promise.withResolvers<{
+      errorReason: ClientLoadErrorReason | null,
+    }>();
     this.loadWaiters.push(resolve);
     this.maybeResolveLoadWaiters();
     return promise;
@@ -1088,34 +1165,38 @@ export class GlicAppController implements WebviewDelegate {
     if (initialCall) {
       // The initial state is handled in `beginLoad()`.
       this.profileReadyInitialState.resolve();
-    } else {
-      switch (this.profileReadyState) {
-        case ProfileReadyState.kUnknownError:
-        case ProfileReadyState.kIneligible:
-          this.setState(WebUiState.kUnavailable);
-          break;
-        case ProfileReadyState.kIneligibleAccount:
-          this.setState(WebUiState.kIneligibleAccount);
-          break;
-        case ProfileReadyState.kLocationMismatch:
-          this.setState(WebUiState.kLocationMismatch);
-          break;
-        case ProfileReadyState.kDisabledByAdmin:
-          $.disabledByAdminPanel.classList.toggle(
-              'show-disabled-by-admin-link', false);
-          this.setState(WebUiState.kDisabledByAdmin);
-          break;
-        case ProfileReadyState.kSignInRequired:
-          this.setState(WebUiState.kSignIn);
-          break;
-        case ProfileReadyState.kReady:
-          if (this.stateDescriptor()?.reloadOnOpen) {
-            this.setState(WebUiState.kBeginLoad);
-          }
-          break;
-        default:
-          assertNotReachedCase(this.profileReadyState);
-      }
+      return;
+    }
+    // The relaunch panel takes priority over the profile ready state.
+    if (this.hasPendingProviderChange) {
+      return;
+    }
+    switch (this.profileReadyState) {
+      case ProfileReadyState.kUnknownError:
+      case ProfileReadyState.kIneligible:
+        this.setState(WebUiState.kUnavailable);
+        break;
+      case ProfileReadyState.kIneligibleAccount:
+        this.setState(WebUiState.kIneligibleAccount);
+        break;
+      case ProfileReadyState.kLocationMismatch:
+        this.setState(WebUiState.kLocationMismatch);
+        break;
+      case ProfileReadyState.kDisabledByAdmin:
+        $.disabledByAdminPanel.classList.toggle(
+            'show-disabled-by-admin-link', false);
+        this.setState(WebUiState.kDisabledByAdmin);
+        break;
+      case ProfileReadyState.kSignInRequired:
+        this.setState(WebUiState.kSignIn);
+        break;
+      case ProfileReadyState.kReady:
+        if (this.stateDescriptor()?.reloadOnOpen) {
+          this.setState(WebUiState.kBeginLoad);
+        }
+        break;
+      default:
+        assertNotReachedCase(this.profileReadyState);
     }
   }
 

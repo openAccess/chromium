@@ -12,6 +12,7 @@
 #include "base/run_loop.h"
 #include "base/supports_user_data.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_path_override.h"
 #include "build/build_config.h"
 #include "chrome/browser/ai/ai_manager.h"
 #include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
@@ -62,6 +63,7 @@ class AITestUtils {
     }
 
     const std::vector<std::string> responses() const { return responses_; }
+    const std::vector<std::string>& thoughts() const { return thoughts_; }
     const std::vector<std::string> responses_without_last() const {
       EXPECT_TRUE(responses_.size() > 1);
       EXPECT_EQ(responses_.back(), "");
@@ -79,6 +81,7 @@ class AITestUtils {
     void OnError(blink::mojom::ModelStreamingResponseStatus status,
                  blink::mojom::QuotaErrorInfoPtr quota_error_info) override;
     void OnStreaming(const std::string& text) override;
+    void OnStreamingThought(const std::string& text) override;
     void OnCompletion(
         blink::mojom::ModelExecutionContextInfoPtr context_info) override;
     void OnToolCalls(
@@ -88,6 +91,7 @@ class AITestUtils {
     std::optional<blink::mojom::ModelStreamingResponseStatus> error_status_;
     blink::mojom::QuotaErrorInfoPtr quota_error_info_;
     std::vector<std::string> responses_;
+    std::vector<std::string> thoughts_;
     std::vector<blink::mojom::ToolCallPtr> tool_calls_;
     uint64_t current_tokens_ = 0;
     base::RunLoop run_loop_;
@@ -144,6 +148,14 @@ class AITestUtils {
 #endif
 
     std::unique_ptr<AIManager> ai_manager_;
+
+   private:
+    // When the "On-device AI" setting or the
+    // GenAILocalFoundationalModelSettings policy disallows the model, the
+    // Semantic Embedder launcher deletes the AI embeddings component's files
+    // under DIR_COMPONENT_USER, which unit tests otherwise resolve to the
+    // real user data directory.
+    base::ScopedPathOverride component_user_dir_override_;
   };
 
   // Converts string language codes to AILanguageCode mojo struct.

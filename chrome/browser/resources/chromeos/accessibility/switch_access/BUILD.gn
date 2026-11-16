@@ -4,8 +4,8 @@
 
 import(
     "//chrome/browser/resources/chromeos/accessibility/tools/run_jsbundler.gni")
-import("//chrome/common/features.gni")
 import("//chrome/test/base/ash/js2gtest.gni")
+import("//extensions/buildflags/buildflags.gni")
 import("//testing/test.gni")
 import("//tools/typescript/ts_library.gni")
 import("//ui/webui/resources/tools/bundle_js.gni")
@@ -193,12 +193,13 @@ test_includes = [
 # The test base classes generate C++ code with these deps.
 test_deps = [
   "//ash",
+  "//ash/constants",
   "//ash/keyboard/ui",
   "//base",
   "//chrome/browser/ash/accessibility",
   "//chrome/browser/ash/system_web_apps",
-  "//chrome/common",
   "//chrome/test/base:cros_extension_js_browser_test",
+  "//extensions/common",
 ]
 
 js2gtest("switch_access_mv3_extjs_tests") {

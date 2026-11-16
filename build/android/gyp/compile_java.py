@@ -376,6 +376,19 @@ def _CreateGlobFilter(exclude_globs, include_globs):
     return func
 
 
+# .compliment.jar is only used as a D8 desugaring classpath input, which does
+# not need dummy library R classes. Excluding them keeps .compliment.jar
+# identical when javac skips _rjava_srcjar_deps (resolving R.class from
+# Turbine's header jar instead).
+_R_CLASS_GLOBS = ('*/R.class', '*/R$*.class')
+
+
+def _CreateFilteredJarFilter(filter_func):
+    return lambda p: (
+        not filter_func(p) and not build_utils.MatchesGlob(p, _R_CLASS_GLOBS)
+    )
+
+
 class _MetadataParser:
     def __init__(self, chromium_code, filter_func):
         self._chromium_code = chromium_code
@@ -687,7 +700,7 @@ def _RunCompiler(
                     options.filtered_jar,
                     classes_dir,
                     extra_classes_jar=options.kotlin_jar_path,
-                    filter_func=lambda p: not filter_func(p),
+                    filter_func=_CreateFilteredJarFilter(filter_func),
                 )
 
         # Remove input srcjars that confuse Android Studio:
@@ -877,7 +890,7 @@ def main(
         # LINT.ThenChange(
         #     //build/android/gyp/compile_kt.py,
         #     //build/android/gyp/turbine.py,
-        #     //components/cronet/gn2bp/templates/Android.extras.bp.template
+        #     //components/cronet/gn2bp/gen_android_bp.py
         # )
         # Chromium only allows UTF8 source files.  Being explicit avoids
         # javac pulling a default encoding from the user's environment.

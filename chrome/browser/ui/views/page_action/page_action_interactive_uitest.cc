@@ -11,6 +11,7 @@
 #include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -18,7 +19,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_enums.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -34,6 +34,7 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/lens/lens_features.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/test/browser_test.h"
@@ -57,6 +58,19 @@ constexpr size_t kReducedSpaceTextLength = 500;
 
 void EnsurePageActionEnabled(BrowserWindowInterface* browser,
                              actions::ActionId action_id) {
+  if (action_id == kActionShowTranslate) {
+    // Prevent asynchronous language determination (e.g. from the initial
+    // about:blank load) from triggering TabStateChanged() and disabling
+    // kActionShowTranslate mid-test.
+    if (auto* web_contents =
+            browser->GetTabStripModel()->GetActiveWebContents()) {
+      if (auto* translate_client =
+              ChromeTranslateClient::FromWebContents(web_contents)) {
+        translate_client->translate_driver()->RemoveLanguageDetectionObserver(
+            translate_client);
+      }
+    }
+  }
   auto* action = actions::ActionManager::Get().FindAction(
       action_id, BrowserActions::From(browser)->root_action_item());
   CHECK(action);
@@ -142,10 +156,8 @@ class PageActionUiTestBase {
   virtual BrowserWindowInterface* GetBrowser() const = 0;
 
   page_actions::PageActionController* page_action_controller() const {
-    return GetBrowser()
-        ->GetActiveTabInterface()
-        ->GetTabFeatures()
-        ->page_action_controller();
+    return page_actions::PageActionController::From(
+        GetBrowser()->GetActiveTabInterface());
   }
 
   LocationBar* location_bar() const {

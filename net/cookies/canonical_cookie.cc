@@ -339,13 +339,6 @@ std::unique_ptr<CanonicalCookie> CanonicalCookie::Create(
   bool collect_metrics =
       base::ShouldRecordSubsampledMetric(kHistogramSampleProbability);
 
-  if (collect_metrics) {
-    // We record this metric before checking validity because the presence of an
-    // HTAB will invalidate the ParsedCookie.
-    base::UmaHistogramBoolean("Cookie.NameOrValueHtab.Subsampled",
-                              parsed_cookie.HasInternalHtab());
-  }
-
   if (!parsed_cookie.IsValid()) {
     DVLOG(net::cookie_util::kVlogSetCookies)
         << "WARNING: Couldn't parse cookie";
@@ -530,13 +523,6 @@ std::unique_ptr<CanonicalCookie> CanonicalCookie::Create(
   }
 
   if (collect_metrics) {
-    // These metrics capture whether or not a cookie has a Non-ASCII character
-    // in it, except if kDisallowNonAsciiCookies is enabled.
-    base::UmaHistogramBoolean("Cookie.HasNonASCII.Name.Subsampled",
-                              !base::IsStringASCII(parsed_cookie.Name()));
-    base::UmaHistogramBoolean("Cookie.HasNonASCII.Value.Subsampled",
-                              !base::IsStringASCII(parsed_cookie.Value()));
-
     // Check for "__" prefixed names, excluding the cookie prefixes.
     bool name_prefixed_with_underscores =
         (prefix == CookiePrefix::kNone) &&

@@ -37,6 +37,7 @@
 #include "base/check_op.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/not_fatal_until.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/default_clock.h"
 #include "base/time/time.h"
@@ -160,11 +161,11 @@ PerformanceEntry::EntryType kDroppableEntryTypes[] = {
     PerformanceEntry::kEvent,
     PerformanceEntry::kLayoutShift,
     PerformanceEntry::kLargestContentfulPaint,
-    PerformanceEntry::kPaint,
     PerformanceEntry::kBackForwardCacheRestoration,
     PerformanceEntry::kSoftNavigation,
     PerformanceEntry::kInteractionContentfulPaint,
     PerformanceEntry::kScroll,
+    PerformanceEntry::kContainer,
 };
 
 void SwapEntries(PerformanceEntryVector& entries,
@@ -265,11 +266,6 @@ constexpr size_t kDefaultLongTaskBufferSize = 200;
 constexpr size_t kDefaultLongAnimationFrameBufferSize = 200;
 constexpr size_t kDefaultBackForwardCacheRestorationBufferSize = 200;
 constexpr size_t kDefaultSoftNavigationBufferSize = 50;
-// Paint timing entries is more than twice as much as the soft navigation buffer
-// size, as there can be 2 paint entries for each soft navigation, plus 2
-// entries for the initial navigation.
-constexpr size_t kDefaultPaintEntriesBufferSize =
-    kDefaultSoftNavigationBufferSize * 2 + 2;
 
 Performance::Performance(
     base::TimeTicks time_origin,
@@ -375,9 +371,12 @@ PerformanceEntryVector Performance::GetEntriesForCurrentFrame(
     InsertEntryIntoSortedBuffer(entries, *navigation_timing_);
   }
 
-  if (paint_entries_timing_.size()) {
-    entries = MergePerformanceEntryVectors(entries, paint_entries_timing_,
-                                           maybe_name);
+  if (first_paint_timing_ && CheckName(first_paint_timing_, maybe_name)) {
+    InsertEntryIntoSortedBuffer(entries, *first_paint_timing_);
+  }
+  if (first_contentful_paint_timing_ &&
+      CheckName(first_contentful_paint_timing_, maybe_name)) {
+    InsertEntryIntoSortedBuffer(entries, *first_contentful_paint_timing_);
   }
 
   entries = MergePerformanceEntryVectors(
@@ -528,7 +527,15 @@ PerformanceEntryVector Performance::getEntriesByTypeInternal(
     case PerformanceEntry::kPaint: {
       UseCounter::Count(GetExecutionContext(),
                         WebFeature::kPaintTimingRequested);
-      entries = &paint_entries_timing_;
+      // TODO(crbug.com/576982828): Ensure FP and FCP presentation callbacks
+      // cannot produce FP.startTime > FCP.startTime, so that returning FP
+      // before FCP preserves startTime order.
+      if (first_paint_timing_) {
+        entries_storage.push_back(first_paint_timing_);
+      }
+      if (first_contentful_paint_timing_) {
+        entries_storage.push_back(first_contentful_paint_timing_);
+      }
       break;
     }
 
@@ -885,14 +892,18 @@ PerformanceMark* Performance::mark(ScriptState* script_state,
                                    const AtomicString& mark_name,
                                    PerformanceMarkOptions* mark_options,
                                    ExceptionState& exception_state) {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_loaded,
-                                  ("mark_fully_loaded"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_fully_visible,
-                                  ("mark_fully_visible"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_interactive,
-                                  ("mark_interactive"));
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(const AtomicString, mark_feature_usage,
-                                  ("mark_feature_usage"));
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(
+      const AtomicString, mark_fully_loaded,
+      (AtomicString::FromLiteral<"mark_fully_loaded">()));
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(
+      const AtomicString, mark_fully_visible,
+      (AtomicString::FromLiteral<"mark_fully_visible">()));
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(
+      const AtomicString, mark_interactive,
+      (AtomicString::FromLiteral<"mark_interactive">()));
+  DEFINE_THREAD_SAFE_STATIC_LOCAL(
+      const AtomicString, mark_feature_usage,
+      (AtomicString::FromLiteral<"mark_feature_usage">()));
   DEFINE_THREAD_SAFE_STATIC_LOCAL(
       const AtomicString, mark_parser_blocking,
       (blink::features::kHTMLParserYieldEventNameForPause.Get().c_str()));
@@ -1251,6 +1262,7 @@ void Performance::NotifyObserversOfEntry(PerformanceEntry& entry) const {
 
 void Performance::NotifyObserversOfContainerEntry(
     PerformanceEntry& entry) const {
+  CHECK(entry.IsReadyForReporting());
   bool observer_found = false;
   CHECK(entry.EntryTypeEnum() == PerformanceEntry::kContainer);
   for (auto& observer : observers_) {
@@ -1379,13 +1391,15 @@ void Performance::AddPaintTiming(PerformancePaintTiming::PaintType type,
   PerformancePaintTiming* entry = MakeGarbageCollected<PerformancePaintTiming>(
       type, paint_timing_info, DynamicTo<LocalDOMWindow>(GetExecutionContext()),
       NavigationId().web_exposed_id);
-  DCHECK((type == PerformancePaintTiming::PaintType::kFirstPaint) ||
-         (type == PerformancePaintTiming::PaintType::kFirstContentfulPaint));
-
-  if (paint_entries_timing_.size() < kDefaultPaintEntriesBufferSize) {
-    InsertEntryIntoSortedBuffer(paint_entries_timing_, *entry);
-  } else {
-    ++(dropped_entries_count_map_.find(PerformanceEntry::kPaint)->value);
+  switch (type) {
+    case PerformancePaintTiming::PaintType::kFirstPaint:
+      CHECK(!first_paint_timing_, base::NotFatalUntil::M162);
+      first_paint_timing_ = entry;
+      break;
+    case PerformancePaintTiming::PaintType::kFirstContentfulPaint:
+      CHECK(!first_contentful_paint_timing_, base::NotFatalUntil::M162);
+      first_contentful_paint_timing_ = entry;
+      break;
   }
   NotifyObserversOfEntry(*entry);
 }
@@ -1439,7 +1453,8 @@ void Performance::Trace(Visitor* visitor) const {
   visitor->Trace(long_animation_frame_buffer_);
   visitor->Trace(navigation_timing_);
   visitor->Trace(user_timing_);
-  visitor->Trace(paint_entries_timing_);
+  visitor->Trace(first_paint_timing_);
+  visitor->Trace(first_contentful_paint_timing_);
   visitor->Trace(first_input_timing_);
   visitor->Trace(observers_);
   visitor->Trace(active_observers_);
@@ -1550,10 +1565,12 @@ void Performance::ResetTimeOriginForTesting(base::TimeTicks time_origin) {
 }
 
 void Performance::ClearForWindowReuse() {
-  paint_entries_timing_.clear();
+  first_paint_timing_ = nullptr;
+  first_contentful_paint_timing_ = nullptr;
   largest_contentful_paint_buffer_.clear();
   first_input_timing_ = nullptr;
   navigation_timing_ = nullptr;
+  scroll_timing_buffer_.clear();
 }
 
 void Performance::OnDeclarativePerformanceObserverHostDisconnected() {

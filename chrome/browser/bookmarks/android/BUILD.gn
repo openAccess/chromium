@@ -34,9 +34,9 @@ source_set("impl") {
     "//chrome/browser/reading_list",
     "//chrome/browser/signin",
     "//chrome/browser/undo",
-    "//components/dom_distiller/core",
     "//components/query_parser",
     "//components/undo",
+    "//components/web_distiller/core",
   ]
 }
 
@@ -119,7 +119,6 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/bookmarks/ImprovedBookmarkSaveFlowView.java",
     "java/src/org/chromium/chrome/browser/bookmarks/ImprovedBookmarkSaveFlowViewBinder.java",
     "java/src/org/chromium/chrome/browser/bookmarks/PendingRunnable.java",
-    "java/src/org/chromium/chrome/browser/bookmarks/PowerBookmarkMetrics.java",
     "java/src/org/chromium/chrome/browser/bookmarks/PowerBookmarkUtils.java",
     "java/src/org/chromium/chrome/browser/bookmarks/ReadingListSectionHeader.java",
     "java/src/org/chromium/chrome/browser/bookmarks/ScopedBookmarkModelObservation.java",
@@ -136,6 +135,7 @@ android_library("java") {
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarContextMenuDelegate.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarContextMenuMediator.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarContextMenuMetrics.java",
+    "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarControllerFeature.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarCoordinator.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarIphController.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarItemsLayoutManager.java",
@@ -193,11 +193,13 @@ android_library("java") {
     "//chrome/browser/ui/android/toolbar:adaptive_features_java",
     "//chrome/browser/ui/android/toolbar:java",
     "//chrome/browser/ui/android/toolbar:optional_button_java",
+    "//chrome/browser/ui/browser_window/public/android:java",
     "//chrome/browser/ui/messages/android:java",
     "//chrome/browser/ui/side_ui/public:java",
     "//chrome/browser/url_constants/android:java",
     "//chrome/browser/user_education:java",
     "//components/bookmarks/common/android:bookmarks_java",
+    "//components/browser_apis/ui_controllers/bookmark_bar:mojom_java",
     "//components/browser_ui/bottomsheet/android:java",
     "//components/browser_ui/device_lock/android:java",
     "//components/browser_ui/modaldialog/android:java",
@@ -219,6 +221,7 @@ android_library("java") {
     "//components/sync/android:sync_java",
     "//components/user_prefs/android:java",
     "//content/public/android:content_full_java",
+    "//mojo/public/java:bindings_java",
     "//third_party/android_deps:com_google_code_findbugs_jsr305_java",
     "//third_party/android_deps:guava_android_java",
     "//third_party/android_deps:material_design_java",
@@ -235,6 +238,7 @@ android_library("java") {
     "//ui/accessibility:keyboard_focus_java",
     "//ui/android:ui_java",
     "//ui/edge_to_edge:java",
+    "//ui/events/mojom:mojom_java",
     "//url:url_java",
   ]
   srcjar_deps = [
@@ -247,8 +251,10 @@ android_library("java") {
 generate_jni("jni_headers") {
   sources = [
     "java/src/org/chromium/chrome/browser/bookmarks/BookmarkBridge.java",
+    "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarControllerFeature.java",
     "java/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarSceneLayer.java",
   ]
+  deps = [ "//chrome/browser/ui/browser_window/public/android:jni" ]
 }
 
 java_cpp_enum("java_enum_srcjar") {
@@ -300,6 +306,7 @@ robolectric_library("junit") {
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarButtonTest.java",
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarContextMenuMediatorTest.java",
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarContextMenuMetricsTest.java",
+    "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarControllerFeatureTest.java",
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarCoordinatorTest.java",
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarIphControllerTest.java",
     "junit/src/org/chromium/chrome/browser/bookmarks/bar/BookmarkBarItemsLayoutManagerTest.java",
@@ -318,10 +325,13 @@ robolectric_library("junit") {
     "//chrome/browser/hub:pane_base_java",
     "//chrome/browser/ui/android/signin:java",
     "//chrome/browser/ui/android/toolbar:optional_button_java",
+    "//chrome/browser/ui/browser_window/public/android:java",
     "//components/browser_ui/device_lock/android:java",
     "//components/browser_ui/widget/android:java",
     "//third_party/androidx:androidx_recyclerview_recyclerview_java",
+    "//third_party/jni_zero:jni_zero_java",
     "//ui/android:ui_java_test_support",
+    "//ui/events/mojom:mojom_java",
   ]
 }
 

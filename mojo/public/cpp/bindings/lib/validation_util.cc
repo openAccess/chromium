@@ -8,6 +8,7 @@
 
 #include <ranges>
 
+#include "base/compiler_specific.h"
 #include "base/strings/stringprintf.h"
 #include "mojo/public/cpp/bindings/lib/array_internal.h"
 #include "mojo/public/cpp/bindings/lib/map_data_internal.h"
@@ -71,22 +72,6 @@ bool ValidatePointerNonNullableImpl(const uint64_t* offset,
                                     int field_index,
                                     ValidationContext* validation_context) {
   return CheckPointerNonNullable(offset, field_index, validation_context);
-}
-
-NOINLINE bool ValidateInlinedUnionNonNullableImpl(
-    const void* data,
-    int field_index,
-    ValidationContext* validation_context) {
-  // A serialized union starts with a 4-byte `size` field (`4-byte size +
-  // 4-byte tag + 8-byte payload`), where `size == 0` encodes a null union
-  // (matching generated `Union_Data::is_null()`).
-  if (*static_cast<const uint32_t*>(data) != 0) [[likely]] {
-    return true;
-  }
-  ReportNonNullableValidationError(validation_context,
-                                   VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
-                                   field_index);
-  return false;
 }
 
 const ArrayHeader* ValidateArrayHeaderAndClaimMemory(
@@ -308,7 +293,9 @@ bool ValidateMapImpl(const void* data,
                                     validate_values_func)) {
     return false;
   }
-  if (object->keys.Get()->size() != object->values.Get()->size()) {
+  // SAFETY: Validated above.
+  if (UNSAFE_BUFFERS(object->keys.Get())->size() !=
+      UNSAFE_BUFFERS(object->values.Get())->size()) {
     ReportValidationError(validation_context,
                           VALIDATION_ERROR_DIFFERENT_SIZED_ARRAYS_IN_MAP);
     return false;
@@ -321,9 +308,10 @@ NOINLINE bool ValidateContainerImpl(
     ValidationContext* validation_context,
     const ContainerValidateParams* validate_params,
     ValidateContainerFunc* validate_func) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         validate_func(DecodePointer(offset), validation_context,
-                       validate_params);
+         validate_func(UNSAFE_BUFFERS(DecodePointer(offset)),
+                       validation_context, validate_params);
 }
 
 NOINLINE bool ValidateNonNullContainerImpl(
@@ -341,9 +329,10 @@ NOINLINE bool ValidateByteArrayContainer(
     const uint64_t* offset,
     ValidationContext* validation_context,
     const ContainerValidateParams* validate_params) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidatePrimitiveOrEnumArray(DecodePointer(offset), validation_context,
-                                      validate_params, 1);
+         ValidatePrimitiveOrEnumArray(UNSAFE_BUFFERS(DecodePointer(offset)),
+                                      validation_context, validate_params, 1);
 }
 
 NOINLINE bool ValidateNonNullByteArrayContainer(
@@ -361,9 +350,11 @@ NOINLINE bool ValidatePrimitiveOrEnumArrayContainer(
     ValidationContext* validation_context,
     const ContainerValidateParams* validate_params,
     uint32_t element_size) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidatePrimitiveOrEnumArray(DecodePointer(offset), validation_context,
-                                      validate_params, element_size);
+         ValidatePrimitiveOrEnumArray(UNSAFE_BUFFERS(DecodePointer(offset)),
+                                      validation_context, validate_params,
+                                      element_size);
 }
 
 NOINLINE bool ValidateNonNullPrimitiveOrEnumArrayContainer(
@@ -381,9 +372,10 @@ bool ValidateBoolArrayContainer(
     const uint64_t* offset,
     ValidationContext* validation_context,
     const ContainerValidateParams* validate_params) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidateBoolArray(DecodePointer(offset), validation_context,
-                           validate_params);
+         ValidateBoolArray(UNSAFE_BUFFERS(DecodePointer(offset)),
+                           validation_context, validate_params);
 }
 
 bool ValidateNonNullBoolArrayContainer(
@@ -401,9 +393,11 @@ NOINLINE bool ValidateStructArrayContainer(
     ValidationContext* validation_context,
     const ContainerValidateParams* validate_params,
     ValidateStructFunc* validate_func) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidateStructArray(DecodePointer(offset), validation_context,
-                             validate_params, validate_func);
+         ValidateStructArray(UNSAFE_BUFFERS(DecodePointer(offset)),
+                             validation_context, validate_params,
+                             validate_func);
 }
 
 NOINLINE bool ValidateNonNullStructArrayContainer(
@@ -421,9 +415,10 @@ bool ValidateUnionArrayContainer(const uint64_t* offset,
                                  ValidationContext* validation_context,
                                  const ContainerValidateParams* validate_params,
                                  ValidateUnionFunc* validate_func) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidateUnionArray(DecodePointer(offset), validation_context,
-                            validate_params, validate_func);
+         ValidateUnionArray(UNSAFE_BUFFERS(DecodePointer(offset)),
+                            validation_context, validate_params, validate_func);
 }
 
 NOINLINE bool ValidateNonNullUnionArrayContainer(
@@ -443,10 +438,11 @@ NOINLINE bool ValidateMapContainer(
     const ContainerValidateParams* validate_params,
     ValidateContainerFunc* validate_keys_func,
     ValidateContainerFunc* validate_values_func) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         ValidateMapImpl(DecodePointer(offset), validation_context,
-                         validate_params, validate_keys_func,
-                         validate_values_func);
+         ValidateMapImpl(UNSAFE_BUFFERS(DecodePointer(offset)),
+                         validation_context, validate_params,
+                         validate_keys_func, validate_values_func);
 }
 
 NOINLINE bool ValidateNonNullMapContainer(
@@ -465,8 +461,10 @@ NOINLINE bool ValidateStructImpl(const uint64_t* offset,
                                  ValidationContext* validation_context,
                                  ValidateStructFunc* validate_func) {
   ValidationContext::ScopedDepthTracker depth_tracker(validation_context);
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         validate_func(DecodePointer(offset), validation_context);
+         validate_func(UNSAFE_BUFFERS(DecodePointer(offset)),
+                       validation_context);
 }
 
 NOINLINE bool ValidateNonNullStructImpl(const uint64_t* offset,
@@ -488,11 +486,30 @@ NOINLINE bool ValidateInlinedUnionImpl(const void* data,
   return validate_func(data, validation_context, true);
 }
 
+NOINLINE bool ValidateNonNullInlinedUnionImpl(
+    const void* data,
+    ValidationContext* validation_context,
+    int field_index,
+    ValidateUnionFunc* validate_func) {
+  // A serialized union starts with a 4-byte `size` field (`4-byte size +
+  // 4-byte tag + 8-byte payload`), where `size == 0` encodes a null union
+  // (matching generated `Union_Data::is_null()`).
+  if (*static_cast<const uint32_t*>(data) == 0) [[unlikely]] {
+    ReportNonNullableValidationError(validation_context,
+                                     VALIDATION_ERROR_UNEXPECTED_NULL_POINTER,
+                                     field_index);
+    return false;
+  }
+  return ValidateInlinedUnionImpl(data, validation_context, validate_func);
+}
+
 bool ValidateNonInlinedUnionImpl(const uint64_t* offset,
                                  ValidationContext* validation_context,
                                  ValidateUnionFunc* validate_func) {
+  // SAFETY: The decoded pointer is bounds-checked before it is dereferenced.
   return ValidateParamsOffset(offset, validation_context) &&
-         validate_func(DecodePointer(offset), validation_context, false);
+         validate_func(UNSAFE_BUFFERS(DecodePointer(offset)),
+                       validation_context, false);
 }
 
 NOINLINE bool ValidateNonNullNonInlinedUnionImpl(
@@ -534,7 +551,7 @@ bool ValidateStructHeaderAndClaimMemory(const void* data,
   return true;
 }
 
-bool ValidateStructHeaderAndVersionSizeAndClaimMemory(
+NOINLINE bool ValidateStructHeaderAndVersionSizeAndClaimMemory(
     const void* data,
     base::span<const StructVersionSize> version_sizes,
     ValidationContext* validation_context) {
@@ -566,7 +583,7 @@ bool ValidateStructHeaderAndVersionSizeAndClaimMemory(
   return true;
 }
 
-bool ValidateUnversionedStructHeaderAndSizeAndClaimMemory(
+NOINLINE bool ValidateUnversionedStructHeaderAndSizeAndClaimMemory(
     const void* data,
     size_t v0_size,
     ValidationContext* validation_context) {
@@ -586,7 +603,7 @@ bool ValidateUnversionedStructHeaderAndSizeAndClaimMemory(
   return true;
 }
 
-bool ValidateNonInlinedUnionHeaderAndClaimMemory(
+NOINLINE bool ValidateNonInlinedUnionHeaderAndClaimMemory(
     const void* data,
     ValidationContext* validation_context) {
   if (!IsAligned(data)) {
@@ -658,6 +675,51 @@ bool IsHandleOrInterfaceValid(const Handle_Data& input) {
   return input.is_valid();
 }
 
+NOINLINE bool ValidateHandleOrInterface(const AssociatedInterface_Data& input,
+                                        ValidationContext* validation_context) {
+  if (validation_context->ClaimAssociatedEndpointHandle(input.handle)) {
+    return true;
+  }
+
+  ReportValidationError(validation_context,
+                        VALIDATION_ERROR_ILLEGAL_INTERFACE_ID);
+  return false;
+}
+
+NOINLINE bool ValidateHandleOrInterface(
+    const AssociatedEndpointHandle_Data& input,
+    ValidationContext* validation_context) {
+  if (validation_context->ClaimAssociatedEndpointHandle(input)) {
+    return true;
+  }
+
+  ReportValidationError(validation_context,
+                        VALIDATION_ERROR_ILLEGAL_INTERFACE_ID);
+  return false;
+}
+
+NOINLINE bool ValidateHandleOrInterface(const Interface_Data& input,
+                                        ValidationContext* validation_context) {
+  if (validation_context->ClaimHandle(input.handle)) {
+    return true;
+  }
+
+  ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_HANDLE);
+  return false;
+}
+
+NOINLINE bool ValidateHandleOrInterface(const Handle_Data& input,
+                                        ValidationContext* validation_context) {
+  if (validation_context->ClaimHandle(input)) {
+    return true;
+  }
+
+  ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_HANDLE);
+  return false;
+}
+
+namespace {
+
 bool ValidateHandleOrInterfaceNonNullable(
     const AssociatedInterface_Data& input,
     int field_index,
@@ -714,50 +776,6 @@ bool ValidateHandleOrInterfaceNonNullable(
   return false;
 }
 
-bool ValidateHandleOrInterface(const AssociatedInterface_Data& input,
-                               ValidationContext* validation_context) {
-  if (validation_context->ClaimAssociatedEndpointHandle(input.handle)) {
-    return true;
-  }
-
-  ReportValidationError(validation_context,
-                        VALIDATION_ERROR_ILLEGAL_INTERFACE_ID);
-  return false;
-}
-
-bool ValidateHandleOrInterface(const AssociatedEndpointHandle_Data& input,
-                               ValidationContext* validation_context) {
-  if (validation_context->ClaimAssociatedEndpointHandle(input)) {
-    return true;
-  }
-
-  ReportValidationError(validation_context,
-                        VALIDATION_ERROR_ILLEGAL_INTERFACE_ID);
-  return false;
-}
-
-bool ValidateHandleOrInterface(const Interface_Data& input,
-                               ValidationContext* validation_context) {
-  if (validation_context->ClaimHandle(input.handle)) {
-    return true;
-  }
-
-  ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_HANDLE);
-  return false;
-}
-
-bool ValidateHandleOrInterface(const Handle_Data& input,
-                               ValidationContext* validation_context) {
-  if (validation_context->ClaimHandle(input)) {
-    return true;
-  }
-
-  ReportValidationError(validation_context, VALIDATION_ERROR_ILLEGAL_HANDLE);
-  return false;
-}
-
-namespace {
-
 template <typename T>
 bool ValidateNonNullHandleOrInterfaceImpl(const T& input,
                                           ValidationContext* validation_context,
@@ -769,14 +787,15 @@ bool ValidateNonNullHandleOrInterfaceImpl(const T& input,
 
 }  // namespace
 
-bool ValidateNonNullHandleOrInterface(const AssociatedInterface_Data& input,
-                                      ValidationContext* validation_context,
-                                      int field_index) {
+NOINLINE bool ValidateNonNullHandleOrInterface(
+    const AssociatedInterface_Data& input,
+    ValidationContext* validation_context,
+    int field_index) {
   return ValidateNonNullHandleOrInterfaceImpl(input, validation_context,
                                               field_index);
 }
 
-bool ValidateNonNullHandleOrInterface(
+NOINLINE bool ValidateNonNullHandleOrInterface(
     const AssociatedEndpointHandle_Data& input,
     ValidationContext* validation_context,
     int field_index) {
@@ -784,16 +803,18 @@ bool ValidateNonNullHandleOrInterface(
                                               field_index);
 }
 
-bool ValidateNonNullHandleOrInterface(const Interface_Data& input,
-                                      ValidationContext* validation_context,
-                                      int field_index) {
+NOINLINE bool ValidateNonNullHandleOrInterface(
+    const Interface_Data& input,
+    ValidationContext* validation_context,
+    int field_index) {
   return ValidateNonNullHandleOrInterfaceImpl(input, validation_context,
                                               field_index);
 }
 
-bool ValidateNonNullHandleOrInterface(const Handle_Data& input,
-                                      ValidationContext* validation_context,
-                                      int field_index) {
+NOINLINE bool ValidateNonNullHandleOrInterface(
+    const Handle_Data& input,
+    ValidationContext* validation_context,
+    int field_index) {
   return ValidateNonNullHandleOrInterfaceImpl(input, validation_context,
                                               field_index);
 }

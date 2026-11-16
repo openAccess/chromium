@@ -690,7 +690,6 @@ TEST_F(CookieHelperTest, CannedGetCookieCount) {
   // The request URL used for all cookies that are added to the |helper|.
   GURL request1_url("http://static.google.com/foo/res1.html");
   GURL request2_url("http://static.google.com/bar/res2.html");
-  std::string cookie_domain(".www.google.com");
 
   auto helper = base::MakeRefCounted<CannedCookieHelper>(storage_partition(),
                                                          base::NullCallback());
@@ -760,7 +759,7 @@ TEST_F(CookieHelperTest, CannedGetCookieCount) {
                       {{*cookie5}}});
   EXPECT_EQ(4U, helper->GetCookieCount());
 
-  // Host-only and domain cookies are treated as seperate items. This means that
+  // Host-only and domain cookies are treated as separate items. This means that
   // the following two cookie-strings are stored as two separate cookies, even
   // though they have the same name and are send with the same request:
   //   "A=1;

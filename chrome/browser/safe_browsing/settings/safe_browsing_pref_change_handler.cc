@@ -12,7 +12,6 @@
 #include "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -83,26 +82,20 @@ void SafeBrowsingPrefChangeHandler::
 
   syncer::SyncService* sync_service =
       SyncServiceFactory::GetForProfile(profile_);
-  if (sync_service) {
-    const bool is_sync_enabled =
-        syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-            ? sync_service->GetUserSettings()->GetSelectedTypes().Has(
-                  syncer::UserSelectableType::kPreferences)
-            : sync_service->IsSyncFeatureEnabled();
-    if (is_sync_enabled) {
-      base::Time tailored_security_update_time = profile_->GetPrefs()->GetTime(
-          prefs::kAccountTailoredSecurityUpdateTimestamp);
-      if (tailored_security_update_time.is_null()) {
-        // The TailoredSecurityService has never run. Suppress this
-        // toast, which is reacting to stale data. When a user enables ESB
-        // through the Tailored Security flow, the
-        // `kEnhancedProtectionEnabledViaTailoredSecurity` pref is set to true.
-        // This allows us to distinguish between changes made by Tailored
-        // Security and changes that are synced from other devices. But if the
-        // update time is null, this means the Tailored Security service hasn't
-        // run yet.
-        return;
-      }
+  if (sync_service && sync_service->GetUserSettings()->GetSelectedTypes().Has(
+                          syncer::UserSelectableType::kPreferences)) {
+    base::Time tailored_security_update_time = profile_->GetPrefs()->GetTime(
+        prefs::kAccountTailoredSecurityUpdateTimestamp);
+    if (tailored_security_update_time.is_null()) {
+      // The TailoredSecurityService has never run. Suppress this
+      // toast, which is reacting to stale data. When a user enables ESB
+      // through the Tailored Security flow, the
+      // `kEnhancedProtectionEnabledViaTailoredSecurity` pref is set to true.
+      // This allows us to distinguish between changes made by Tailored
+      // Security and changes that are synced from other devices. But if the
+      // update time is null, this means the Tailored Security service hasn't
+      // run yet.
+      return;
     }
   }
 
@@ -195,21 +188,17 @@ void SafeBrowsingPrefChangeHandler::
     // This path is safe from JNI-induced deadlocks because it is only called
     // when the tab list is stable (e.g., during startup or from the retry
     // timer), and not synchronously during tab addition callbacks.
-    for (const TabModel* tab_model : TabModelList::models()) {
-      if (tab_model->GetProfile() != profile_) {
-        continue;
-      }
-      int tab_count = tab_model->GetTabCount();
-      for (int i = 0; i < tab_count; i++) {
-        target_web_contents = tab_model->GetWebContentsAt(i);
-        if (target_web_contents) {
-          break;
-        }
-      }
-      if (target_web_contents) {
-        break;
-      }
-    }
+    TabModelList::ForEach(
+        profile_, [&target_web_contents](TabModel* tab_model) {
+          int tab_count = tab_model->GetTabCount();
+          for (int i = 0; i < tab_count; ++i) {
+            target_web_contents = tab_model->GetWebContentsAt(i);
+            if (target_web_contents) {
+              return false;
+            }
+          }
+          return true;
+        });
   }
 
   if (!target_web_contents) {
@@ -300,13 +289,13 @@ void SafeBrowsingPrefChangeHandler::OnTabModelAdded(TabModel* tab_model) {
   if (observed_tab_model_) {
     return;
   }
-  if (TabModelList::models().empty()) {
-    return;
-  }
   AddTabModelObserver();
 }
 
 void SafeBrowsingPrefChangeHandler::OnTabModelRemoved(TabModel* tab_model) {
+  if (observed_tab_model_ != tab_model) {
+    return;
+  }
   RemoveTabModelObserver();
 }
 
@@ -319,7 +308,7 @@ void SafeBrowsingPrefChangeHandler::AddTabModelListObserver() {
   if (observing_tab_model_list_) {
     return;
   }
-  TabModelList::AddObserver(this);
+  TabModelList::AddObserver(this, profile_);
   observing_tab_model_list_ = true;
 }
 
@@ -327,21 +316,21 @@ void SafeBrowsingPrefChangeHandler::AddTabModelObserver() {
   if (observed_tab_model_) {
     return;
   }
-  for (TabModel* tab_model : TabModelList::models()) {
-    if (tab_model->GetProfile() != profile_) {
-      continue;
-    }
+  TabModelList::ForEach(profile_, [this](TabModel* tab_model) {
     tab_model->AddObserver(this);
     // Saving the tab_model so we can stop observing the tab model after a
     // tabmodel is added.
     observed_tab_model_ = tab_model;
-    return;
-  }
+    return false;
+  });
 }
 
 void SafeBrowsingPrefChangeHandler::RemoveTabModelListObserver() {
+  if (!observing_tab_model_list_) {
+    return;
+  }
   observing_tab_model_list_ = false;
-  TabModelList::RemoveObserver(this);
+  TabModelList::RemoveObserver(this, profile_);
 }
 
 void SafeBrowsingPrefChangeHandler::RemoveTabModelObserver() {

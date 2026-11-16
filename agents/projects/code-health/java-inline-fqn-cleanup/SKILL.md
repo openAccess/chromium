@@ -19,39 +19,37 @@ clean-up of these inline qualifiers in Chromium's first-party Java files.
 **Goal:** Clean up inline fully qualified names (FQNs) in first-party Java files
 and replace them with standard imports.
 
-## Relevant Resources & Style Guides
-
-- [Chromium Java Style Guide - Imports](https://chromium.googlesource.com/chromium/src/+/main/styleguide/java/java.md#imports)
-- **Implementation Patterns:** [patterns.md](references/patterns.md)
-- **Discovery Script:** [find_candidates.py](scripts/find_candidates.py)
-- **Automated Review Protocol:**
-  [automated_review.md](references/automated_review.md)
-
 ## Workflow
 
-> [!IMPORTANT] **Execution Protocol:** Execute all steps sequentially one by
-> one. Do not skip any step. Do not use `edit-code` or `grep`. Use `rg`
-> (ripgrep) for searches.
+> [!IMPORTANT] **Execution Protocol:** Execute all steps continuously in one
+> autonomous run, without skipping steps or pausing between files or steps. Stop
+> only at explicit `ask_question` gates or documented interactive stops. Use
+> `rg` (ripgrep) for searches.
 
 ### Step 1: Workspace Preparation
 
-Follow the workspace preparation steps in
-[workspace_preparation.md](../hub/references/workspace_preparation.md) to ensure
-a clean and updated environment.
+Run the workspace preparation script:
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_workspace.py --stash
+```
+
+- If the script outputs `(stashed local changes)`, inform the user.
+- If the script exits non-zero, stop and report the error instead of continuing
+  on a dirty or diverged tree.
 
 ### Step 2: Discovery & Batch Selection
 
 Follow the
 [Discovery & Batch Selection](../hub/references/discovery_and_batch_selection.md)
-workflow. When presenting the batch, include the **Imports Found** and **Banned
-FQNs** details.
+workflow, passing `--json` so each file's `valid` and `banned` FQN lists are
+included and untruncated when reporting the batch.
 
 ### Step 3: Refactoring & Implementation
 
-**CRITICAL RULE:** Standard file editing tools (like `replace_file_content` or
-`multi_replace_file_content`) must be used to apply the cleanups directly to the
-Java files. **DO NOT** create, write, or execute any custom python or bash
-scripts to perform the text replacements.
+**CRITICAL RULE:** Standard file editing tools must be used to apply the
+cleanups directly to the Java files. **DO NOT** create, write, or execute any
+custom python or bash scripts to perform the text replacements.
 
 - **References:** Refer to [patterns.md](references/patterns.md) for concrete
   examples and exceptions (e.g., handling java.lang.\* and Local R classes)
@@ -60,16 +58,18 @@ scripts to perform the text replacements.
 Process the candidates by handling them **one file at a time**, and applying
 modifications inside each file **one FQN at a time** (rather than refactoring
 all files or FQNs at once). This ensures stability and allows for precise
-verification. For each file in the batch, apply the following cleanup rules:
+verification. Process all files and FQNs sequentially within the same run,
+without pausing for user confirmation between edits, then proceed directly to
+Step 4. For each file in the batch, apply the following cleanup rules:
 
 1. **Avoid Name Collisions & Shadowing:** Check if the simple class name of the
    FQN is already imported, defined, or implicitly resolved in that file (e.g.,
    via wildcard imports, implicit package-private classes, or other imported
    annotations with the same name). If there is a collision or shadowing risk,
    **do not modify the line** (the FQN must remain inline).
-2. **Banned FQNs:** If the discovery script outputted a `Banned FQNs` list,
-   completely ignore those specific FQNs. They are either raw package paths or
-   invalid classes, and attempting to import them will break the build.
+2. **Banned FQNs:** If the discovery JSON lists any FQNs in a file's `banned`
+   list, completely ignore those specific FQNs. They are either raw package
+   paths or invalid classes, and attempting to import them will break the build.
 3. **First-Party Code Only:** Do not modify any files in `third_party/` or
    auto-generated directories.
 4. **Import Strategy for Static Members:** When cleaning up inline FQNs for
@@ -101,14 +101,15 @@ verification. For each file in the batch, apply the following cleanup rules:
    - Replace the inline FQN with its simple class name.
    - Add the corresponding `import` statement at the top of the file.
 
-### Step 4: Validation
+### Step 4: Formatting & Automated Review
 
-1. **Code Formatting:** Execute `git cl format` to format the modified source
-   code and organize imports. Address any errors that are reported.
-2. **Mandatory Final Review:** Follow the
-   [Automated Review Protocol](references/automated_review.md) to delegate a
-   final review of the patch to the `generalist` sub-agent. Proceed to the
-   Verification phase only after the review returns `PASS`.
+1. **Format & Lint:** Run
+   `python3 agents/projects/code-health/hub/scripts/format_and_lint.py` (must
+   exit 0).
+2. **Automated Review:** Follow
+   [Automated Review](../hub/references/automated_review.md), passing
+   [review_rules.md](references/review_rules.md) as
+   `<SKILL_SPECIFIC_CLEANUP_RULES>`.
 
 ### Step 5: Verification
 
@@ -116,15 +117,37 @@ Follow the [Verification](../hub/references/verification.md) workflow.
 
 ### Step 6: Submission
 
-Invoke the [Submission](../hub/references/submission.md) workflow. Pass the
-following context variables to the workflow:
+#### 1. Prepare Commit Message
 
-- **Skill Name:** `java-inline-fqn-cleanup`
-- **Branch Name:** `cleanup-fqns-[component-name]`
-- **Commit Hashtag:** `Code Health`
-- **Cleanup Title:** `Clean up inline FQNs in [Component/Directory]`
-- **Cleanup Description:**
-  `Remove inline fully qualified class names and replace them with standard imports in the [Component/Directory] directory.`
-- **Parent Bug:** `528570333`
-- **Cleaned Component:** The parent directory of the batch.
-- **File Count:** Number of files cleaned up.
+Ensure the full `[Code Health][LSC] <Title>` subject is at most 72 characters
+(use a short component name or shorten the title if needed), and generate
+`../commit`:
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill java-inline-fqn-cleanup \
+  --title "Clean up inline FQNs in <Component>" \
+  --description - \
+  --out-commit ../commit <<'EOF'
+Remove inline fully qualified class names and replace them with standard
+imports in <Component/Directory>.
+EOF
+```
+
+#### 2. Validate Commit File
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill java-inline-fqn-cleanup \
+  --validate ../commit
+```
+
+If validation fails, fix the commit title or description and re-run Steps 1–2
+until validation exits 0.
+
+#### 3. Submit CL
+
+Invoke the [Submission](../hub/references/submission.md) workflow, passing:
+
+- **Branch Name:** `cleanup-fqns-<component-name>`
+- **Commit File:** `../commit`

@@ -14,7 +14,9 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
+#include "build/build_config.h"
 #include "components/input/event_with_latency_info.h"
+#include "components/input/input_router_client.h"
 #include "components/input/render_input_router.h"
 #include "components/viz/common/hit_test/aggregated_hit_test_region.h"
 #include "components/viz/common/hit_test/hit_test_data_provider.h"
@@ -55,6 +57,11 @@ class RenderWidgetHostViewInputObserver;
 class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
     : public StylusInterface {
  public:
+#if BUILDFLAG(IS_WIN)
+  std::optional<ui::StylusHandwritingPropertiesWin>
+  TakeStylusHandwritingProperties(uint32_t touch_start_event_id) override;
+#endif
+
   virtual base::WeakPtr<RenderWidgetHostViewInput> GetInputWeakPtr() = 0;
 
   virtual void PinForInputDispatch() {}
@@ -136,6 +143,12 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   // Converts a point in the root view's coordinate space to the coordinate
   // space of whichever view is used to call this method.
   virtual gfx::PointF TransformRootPointToViewCoordSpace(
+      const gfx::PointF& point);
+
+  // Converts a point in the root view's coordinate space to the coordinate
+  // space of whichever view is used to call this method, returning
+  // `std::nullopt` if the transformation fails.
+  virtual std::optional<gfx::PointF> TryTransformRootPointToViewCoordSpace(
       const gfx::PointF& point);
 
   // Transform a point that is in the coordinate space of a Surface that is
@@ -252,7 +265,8 @@ class COMPONENT_EXPORT(INPUT) RenderWidgetHostViewInput
   virtual int GetMouseWheelMinimumGranularity() const;
 
   // Initiate stylus handwriting.
-  virtual void OnStartStylusWriting() {}
+  virtual void OnStartStylusWriting(
+      const std::optional<StylusWritingProperties>& properties) {}
 
   // This is called after the renderer attempts to focus content eligible for
   // handwriting via mojom::blink::FrameWidget::OnStartStylusWriting. If content

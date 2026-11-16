@@ -66,6 +66,7 @@
 #include "third_party/blink/public/common/loader/javascript_framework_detection.h"
 #include "third_party/blink/public/common/loader/loading_behavior_flag.h"
 #include "third_party/blink/public/common/metrics/accept_language_and_content_language_usage.h"
+#include "third_party/blink/public/common/navigation/commit_url.h"
 #include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/public/mojom/commit_result/commit_result.mojom-blink.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
@@ -73,6 +74,7 @@
 #include "third_party/blink/public/mojom/loader/same_document_navigation_type.mojom-shared.h"
 #include "third_party/blink/public/mojom/origin_trials/origin_trial_feature.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/page.mojom-blink.h"
+#include "third_party/blink/public/mojom/security_context/insecure_request_policy.mojom-blink.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_fetch_handler_bypass_option.mojom-blink.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_fetch_handler_type.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
@@ -95,6 +97,7 @@
 #include "third_party/blink/renderer/core/dom/visited_link_state.h"
 #include "third_party/blink/renderer/core/dom/weak_identifier_map.h"
 #include "third_party/blink/renderer/core/execution_context/agent.h"
+#include "third_party/blink/renderer/core/execution_context/security_context.h"
 #include "third_party/blink/renderer/core/execution_context/security_context_init.h"
 #include "third_party/blink/renderer/core/execution_context/window_agent.h"
 #include "third_party/blink/renderer/core/execution_context/window_agent_factory.h"
@@ -247,6 +250,16 @@ std::vector<WebString> CopyForceEnabledOriginTrials(
   return base::ToVector(force_enabled_origin_trials, ToWebString);
 }
 
+HeapVector<Member<HistoryItem>> CopyWebHistoryItems(
+    const std::vector<WebHistoryItem>& items) {
+  HeapVector<Member<HistoryItem>> result;
+  result.ReserveInitialCapacity(base::checked_cast<wtf_size_t>(items.size()));
+  for (const auto& item : items) {
+    result.push_back(static_cast<HistoryItem*>(item));
+  }
+  return result;
+}
+
 bool IsPagePopupRunningInWebTest(LocalFrame* frame) {
   return frame && frame->GetPage()->GetChromeClient().IsPopup() &&
          WebTestSupport::IsRunningWebTest();
@@ -343,6 +356,25 @@ ConvertPermissionStatusHashMapToFlatMap(
     flat_map.try_emplace(it.key, it.value);
   }
   return flat_map;
+}
+
+// Returns true if any ancestor of `frame` is not potentially trustworthy,
+// stopping at secure-context roots. This mirrors
+// `LocalDOMWindow::HasInsecureContextInAncestors()`, which can't be used while
+// computing the origin of a new document because its window isn't set up yet.
+bool HasInsecureContextInAncestors(const LocalFrame& frame) {
+  for (const Frame* parent = frame.Tree().Parent(); parent;
+       parent = parent->Tree().Parent()) {
+    if (parent->GetSecurityContext()->IsSecureContextRoot()) {
+      return false;
+    }
+    if (!parent->GetSecurityContext()
+             ->GetSecurityOrigin()
+             ->IsPotentiallyTrustworthy()) {
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace
@@ -443,10 +475,8 @@ struct SameSizeAsDocumentLoader
   AgentClusterKey agent_cluster_key;
   bool is_cross_site_cross_browsing_context_group;
   bool should_have_sticky_user_activation;
-  std::vector<WebHistoryItem> navigation_api_back_entries
-      ALLOW_DISCOURAGED_TYPE("For same size");
-  std::vector<WebHistoryItem> navigation_api_forward_entries
-      ALLOW_DISCOURAGED_TYPE("For same size");
+  HeapVector<Member<HistoryItem>> navigation_api_back_entries;
+  HeapVector<Member<HistoryItem>> navigation_api_forward_entries;
   Member<HistoryItem> navigation_api_previous_entry;
   std::unique_ptr<CodeCacheHost> code_cache_host;
   mojo::PendingRemote<mojom::blink::CodeCacheHost>
@@ -622,8 +652,10 @@ DocumentLoader::DocumentLoader(
           params_->is_cross_site_cross_browsing_context_group),
       should_have_sticky_user_activation_(
           params_->should_have_sticky_user_activation),
-      navigation_api_back_entries_(params_->navigation_api_back_entries),
-      navigation_api_forward_entries_(params_->navigation_api_forward_entries),
+      navigation_api_back_entries_(
+          CopyWebHistoryItems(params_->navigation_api_back_entries)),
+      navigation_api_forward_entries_(
+          CopyWebHistoryItems(params_->navigation_api_forward_entries)),
       navigation_api_previous_entry_(params_->navigation_api_previous_entry),
       extra_data_(std::move(extra_data)),
       navigation_delivery_type_(params_->navigation_delivery_type),
@@ -887,6 +919,8 @@ void DocumentLoader::Trace(Visitor* visitor) const {
   visitor->Trace(document_load_timing_);
   visitor->Trace(prefetched_signed_exchange_manager_);
   visitor->Trace(use_counter_);
+  visitor->Trace(navigation_api_back_entries_);
+  visitor->Trace(navigation_api_forward_entries_);
   visitor->Trace(navigation_api_previous_entry_);
 }
 
@@ -953,8 +987,6 @@ void DocumentLoader::DispatchLcppFontPreloads(
                                      frame_->GetDocument(), mode, viewport,
                                      nullptr /* alternate_resource_info */,
                                      nullptr /* recursive_prefetch_token */);
-  base::UmaHistogramCounts1000("Blink.LCPP.PreloadedFontCount",
-                               lcpp->fetched_fonts().size());
 }
 
 void DocumentLoader::DidChangePerformanceTiming() {
@@ -1199,7 +1231,6 @@ void DocumentLoader::UpdateForSameDocumentNavigation(
     }
 
     caused_by_ad = ad_tracker->IsAdScriptInStack(
-        AdTracker::StackType::kTopOnly,
         /*ignore_monkey_patch=*/monkey_patchable_api);
   }
 
@@ -1281,7 +1312,12 @@ const KURL& DocumentLoader::UrlForHistory() const {
 void DocumentLoader::DidOpenDocumentInputStream(const KURL& url) {
   url_ = url;
   // Let the browser know that we have done a document.open().
-  GetLocalFrameClient().DispatchDidOpenDocumentInputStream(url_);
+  DCHECK(frame_);
+  KURL filtered_url = url_;
+  if (!IsValidCommitUrl(GURL(filtered_url))) {
+    filtered_url = KURL(kBlockedURL);
+  }
+  frame_->GetLocalFrameHostRemote().DidOpenDocumentInputStream(filtered_url);
 }
 
 void DocumentLoader::SetHistoryItemStateForCommit(
@@ -2316,7 +2352,19 @@ void DocumentLoader::DidInstallNewDocument(Document* document) {
   // also when parsing origin trials delivered in meta tags).
   frame_->DomWindow()->GetOriginTrialContext()->InitializePendingFeatures();
 
-  frame_->DomWindow()->BindContentSecurityPolicy();
+  if (IsJavaScriptURLOrXSLTCommitOrDiscard()) {
+    // Rebinding CSP after document.open() may add the current host locally.
+    // A renderer-side replacement must preserve the browser's existing set.
+    SecurityContext& security_context =
+        frame_->DomWindow()->GetSecurityContext();
+    const Vector<unsigned> previous_insecure_navigations =
+        SecurityContext::SerializeInsecureNavigationSet(
+            security_context.InsecureNavigationsToUpgrade());
+    frame_->DomWindow()->BindContentSecurityPolicy();
+    security_context.SetInsecureNavigationsSet(previous_insecure_navigations);
+  } else {
+    frame_->DomWindow()->BindContentSecurityPolicy();
+  }
 
   if (history_item_ && IsBackForwardOrRestore(load_type_)) {
     document->SetStateForNewControls(history_item_->GetDocumentState());
@@ -2544,27 +2592,21 @@ scoped_refptr<SecurityOrigin> DocumentLoader::CalculateOrigin(
     // use `origin_to_commit_`, which is already opaque.
     scoped_refptr<SecurityOrigin> sandbox_origin;
 
-    if (base::FeatureList::IsEnabled(
-            blink::features::kUseSandboxTokenForOriginDerivation)) {
-      if (origin_to_commit_) {
-        sandbox_origin = origin_to_commit_;
-      } else {
-        // The token is only set for the initial empty document of sandboxed
-        // frames/windows, so verify we're in that state.
-        CHECK(GetFrameLoader().IsOnInitialEmptyDocument());
-        CHECK(url_.IsAboutBlankUrl() || url_.IsEmpty());
-        // Create a new opaque origin using the provided nonce token for
-        // sandboxed frames that require specific origin generation.
-        auto sandbox_origin_token = std::move(sandbox_origin_token_);
-        CHECK(sandbox_origin_token);
-        sandbox_origin =
-            SandboxedOpaqueSecurityOriginCreator::CreateOriginForSandboxedFrame(
-                base::PassKey<DocumentLoader>(), *sandbox_origin_token,
-                origin.get());
-      }
+    if (origin_to_commit_) {
+      sandbox_origin = origin_to_commit_;
     } else {
-      sandbox_origin = origin_to_commit_ ? origin_to_commit_
-                                         : origin->DeriveNewOpaqueOrigin();
+      // The token is only set for the initial empty document of sandboxed
+      // frames/windows, so verify we're in that state.
+      CHECK(GetFrameLoader().IsOnInitialEmptyDocument());
+      CHECK(url_.IsAboutBlankUrl() || url_.IsEmpty());
+      // Create a new opaque origin using the provided nonce token for
+      // sandboxed frames that require specific origin generation.
+      auto sandbox_origin_token = std::move(sandbox_origin_token_);
+      CHECK(sandbox_origin_token);
+      sandbox_origin =
+          SandboxedOpaqueSecurityOriginCreator::CreateOriginForSandboxedFrame(
+              base::PassKey<DocumentLoader>(), *sandbox_origin_token,
+              origin.get());
     }
 
     CHECK(sandbox_origin->IsOpaque());
@@ -2582,8 +2624,8 @@ scoped_refptr<SecurityOrigin> DocumentLoader::CalculateOrigin(
       // We should only have a sandboxed, srcdoc frame without an owner
       // document if isolated-sandboxed-iframes is enabled. Only cases that
       // would normally inherit the origin need to be handled here, and a
-      // sandboxed about:blank document won't be moved out of process. Also,
-      // data: urls don't get secure contexts, so needn't be considered here.
+      // sandboxed about:blank document won't be moved out of process. data:
+      // URLs are handled separately below.
       CHECK(owner_document ||
             base::FeatureList::IsEnabled(features::kIsolateSandboxedIframes));
 
@@ -2647,6 +2689,28 @@ scoped_refptr<SecurityOrigin> DocumentLoader::CalculateOrigin(
   if (origin->IsOpaque()) {
     KURL url = url_.IsEmpty() ? BlankUrl() : url_;
     if (SecurityOrigin::Create(url)->IsPotentiallyTrustworthy()) {
+      origin->SetOpaqueOriginIsPotentiallyTrustworthy(true);
+    } else if (url.ProtocolIsData() && frame_->Tree().Parent() &&
+               !HasInsecureContextInAncestors(*frame_) &&
+               RuntimeEnabledFeatures::DataUrlSubframeSecureContextEnabled()) {
+      // data: URLs are "potentially trustworthy URLs" [1], but their origin is
+      // opaque. Per the HTML Standard's "secure context" algorithm [2], a data:
+      // document is a secure context iff its top-level document is one (and
+      // the top-level document is not itself a data: document).
+      //
+      // Only flag the origin when the ancestors are secure, since the flag is
+      // observable beyond this document: documents that alias this
+      // SecurityOrigin (e.g. the initial about:blank of a popup opened by this
+      // document, which has no ancestors to walk) must only be secure if this
+      // document is. This also lets same-process descendants walk past this
+      // document in `HasInsecureContextInAncestors()`.
+      //
+      // Frames without a parent (including fenced frame roots) are top-level,
+      // and must stay non-secure.
+      //
+      // [1]:
+      // https://w3c.github.io/webappsec-secure-contexts/#potentially-trustworthy-url
+      // [2]: https://html.spec.whatwg.org/C/#secure-context
       origin->SetOpaqueOriginIsPotentiallyTrustworthy(true);
     }
   }
@@ -2816,6 +2880,9 @@ void DocumentLoader::InitializeWindow(Document* owner_document) {
 
   ContentSecurityPolicy* csp = CreateCSP();
 
+  auto previous_insecure_request_policy =
+      mojom::blink::InsecureRequestPolicy::kLeaveInsecureRequestsAlone;
+  Vector<unsigned> previous_insecure_navigations;
   scoped_refptr<SecurityOrigin> security_origin;
   if (frame_->IsProvisional()) {
     // Provisional frames shouldn't be doing anything other than act as a
@@ -2824,6 +2891,14 @@ void DocumentLoader::InitializeWindow(Document* owner_document) {
     // frame. For some reason, doing so breaks some random devtools tests.
     security_origin = SecurityOrigin::CreateUniqueOpaque();
   } else if (IsJavaScriptURLOrXSLTCommitOrDiscard()) {
+    const SecurityContext& previous_security_context =
+        frame_->DomWindow()->GetSecurityContext();
+    previous_insecure_request_policy =
+        previous_security_context.GetInsecureRequestPolicy();
+    previous_insecure_navigations =
+        SecurityContext::SerializeInsecureNavigationSet(
+            previous_security_context.InsecureNavigationsToUpgrade());
+
     // For javascript: URL, XSLT commits and discarded documents which don't go
     // through the browser process and reuses the same DocumentLoader, reuse the
     // previous origin.
@@ -3020,20 +3095,28 @@ void DocumentLoader::InitializeWindow(Document* owner_document) {
   OriginTrialContext::AddTokensFromHeader(
       frame_->DomWindow(), response_.HttpHeaderField(http_names::kOriginTrial));
 
-  Frame* parent_or_opener = frame_->Tree().Parent();
-  // Only the initial empty document inherits insecure request state from an
-  // opener. Later navigations must use the new document's own policy.
-  if (!parent_or_opener && commit_reason_ == CommitReason::kInitialization) {
-    parent_or_opener = frame_->Opener();
-  }
-  if (parent_or_opener) {
-    const SecurityContext* parent_or_opener_context =
-        parent_or_opener->GetSecurityContext();
-    security_context.SetInsecureRequestPolicy(
-        parent_or_opener_context->GetInsecureRequestPolicy());
-    for (auto to_upgrade :
-         parent_or_opener_context->InsecureNavigationsToUpgrade()) {
-      security_context.AddInsecureNavigationUpgrade(to_upgrade);
+  if (IsJavaScriptURLOrXSLTCommitOrDiscard()) {
+    // Document replacements notify the browser without resetting its insecure
+    // request state. Preserve the previous window's state instead of inheriting
+    // from a parent or opener.
+    security_context.SetInsecureRequestPolicy(previous_insecure_request_policy);
+    security_context.SetInsecureNavigationsSet(previous_insecure_navigations);
+  } else {
+    Frame* parent_or_opener = frame_->Tree().Parent();
+    // Only the initial empty document inherits insecure request state from an
+    // opener. Later navigations must use the new document's own policy.
+    if (!parent_or_opener && commit_reason_ == CommitReason::kInitialization) {
+      parent_or_opener = frame_->Opener();
+    }
+    if (parent_or_opener) {
+      const SecurityContext* parent_or_opener_context =
+          parent_or_opener->GetSecurityContext();
+      security_context.SetInsecureRequestPolicy(
+          parent_or_opener_context->GetInsecureRequestPolicy());
+      for (auto to_upgrade :
+           parent_or_opener_context->InsecureNavigationsToUpgrade()) {
+        security_context.AddInsecureNavigationUpgrade(to_upgrade);
+      }
     }
   }
 
@@ -3325,7 +3408,7 @@ void DocumentLoader::CommitNavigation() {
     // to retain the state from which it was initialized.
     navigation_api_back_entries_.clear();
     navigation_api_forward_entries_.clear();
-    navigation_api_previous_entry_ = WebHistoryItem();
+    navigation_api_previous_entry_ = nullptr;
   }
 
   if (commit_reason_ == CommitReason::kXSLT)

@@ -14,6 +14,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.never;
@@ -63,6 +64,7 @@ import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.actor.ui.ActorUiTabController;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
 import org.chromium.chrome.browser.bookmarks.TabBookmarker;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
@@ -92,15 +94,16 @@ import org.chromium.chrome.browser.tab_ui.TabContentManager;
 import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.TabSwitcherCustomViewManager;
 import org.chromium.chrome.browser.tab_ui.TabThumbnailView;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
 import org.chromium.chrome.browser.tasks.tab_management.TabGridDialogMediator.DialogController;
 import org.chromium.chrome.browser.ui.edge_to_edge.EdgeToEdgeController;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager.ParentOverrideSlot;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModel;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
@@ -165,6 +168,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
     @Mock private TabListGroupMenuCoordinator mTabListGroupMenuCoordinator;
     @Mock private PriceWelcomeMessageController mPriceWelcomeMessageController;
     @Mock private MultiInstanceOrchestrator mMultiInstanceOrchestrator;
+    @Mock private TabWindowManager mTabWindowManager;
 
     private final SettableNonNullObservableSupplier<Boolean> mHubSearchBoxVisibilitySupplier =
             ObservableSuppliers.createNonNull(false);
@@ -220,6 +224,7 @@ public class TabSwitcherPaneCoordinatorUnitTest {
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(true);
         PriceTrackingFeatures.setIsSignedInAndSyncEnabledForTesting(true);
         GlicEnabling.setEnabledForTesting(false);
+        ActorUiTabController.setActorUiSupportedForTesting(false);
 
         mTabModel = spy(new MockTabModel(mProfile, null));
         when(mTabModel.isTabStateInitialized()).thenReturn(true);
@@ -280,7 +285,8 @@ public class TabSwitcherPaneCoordinatorUnitTest {
                         mUndoBarThrottle,
                         mOverlayViewSupplier::set,
                         /* tabSwitcherDragHandler= */ null,
-                        mHubSearchBoxVisibilitySupplier);
+                        mHubSearchBoxVisibilitySupplier,
+                        mTabWindowManager);
         watcher.assertExpected();
         mOverlayViewManager = new SingleChildViewManager(overlayView, mOverlayViewSupplier);
 
@@ -332,6 +338,41 @@ public class TabSwitcherPaneCoordinatorUnitTest {
         mCoordinator.resetWithListOfTabs(List.of(tab0, tab1));
     }
 
+    @Test
+    public void testResetWithListOfTabs_updatesMessages() {
+        clearInvocations(mMessageManager);
+
+        mCoordinator.resetWithListOfTabs(null);
+
+        verify(mMessageManager).beforeReset();
+        verify(mMessageManager).afterReset(0);
+    }
+
+    @Test
+    public void testShowPreviewTabs_showsTabs() {
+        MockTab tab = MockTab.createAndInitialize(/* id= */ 1, mProfile);
+        mTabModel.addTab(
+                tab,
+                /* index= */ 0,
+                TabLaunchType.FROM_CHROME_UI,
+                TabCreationState.LIVE_IN_FOREGROUND);
+
+        mCoordinator.showPreviewTabs(List.of(tab));
+
+        TabListRecyclerView recyclerView = mActivity.findViewById(R.id.tab_list_recycler_view);
+        assertEquals(1, recyclerView.getAdapter().getItemCount());
+    }
+
+    @Test
+    public void testShowPreviewTabs_leavesMessagesAlone() {
+        clearInvocations(mMessageManager);
+
+        mCoordinator.showPreviewTabs(null);
+
+        verify(mMessageManager, never()).beforeReset();
+        verify(mMessageManager, never()).afterReset(anyInt());
+    }
+
     @After
     public void tearDown() {
         mCoordinator.destroy();
@@ -365,6 +406,24 @@ public class TabSwitcherPaneCoordinatorUnitTest {
     @Test
     @EnableFeatures(ChromeFeatureList.ANDROID_TAB_UI_REFACTOR)
     public void testSetInitialScrollIndexOffset() {
+        setUpTwoTabsAndSelectSecond(/* stubRelatedTabs= */ false);
+
+        mCoordinator.setInitialScrollIndexOffset();
+
+        assertEquals(
+                1,
+                mCoordinator
+                        .getContainerViewModelForTesting()
+                        .get(INITIAL_SCROLL_INDEX)
+                        .intValue());
+    }
+
+    @Test
+    @EnableFeatures({
+        ChromeFeatureList.ANDROID_TAB_UI_REFACTOR,
+        ChromeFeatureList.TAB_UI_DATA_VIRTUALIZATION
+    })
+    public void testSetInitialScrollIndexOffset_WithDataProvider() {
         setUpTwoTabsAndSelectSecond(/* stubRelatedTabs= */ false);
 
         mCoordinator.setInitialScrollIndexOffset();
@@ -676,5 +735,53 @@ public class TabSwitcherPaneCoordinatorUnitTest {
 
         isTabletOrLandscape = containerViewModel.get(IS_TABLET_OR_LANDSCAPE);
         assertFalse(isTabletOrLandscape);
+    }
+
+    @Test
+    public void testGetTabGridDialogAnimationSourceView_UnknownGroup_ReturnsNull() {
+        Token unknownGroupId = new Token(123L, 456L);
+        doReturn(Collections.emptyList()).when(mTabModel).getTabsInGroup(unknownGroupId);
+
+        assertNull(mCoordinator.getTabGridDialogAnimationSourceView(unknownGroupId));
+    }
+
+    @Test
+    public void testGetTabGridDialogAnimationSourceView_NoViewHolder_ReturnsNull() {
+        // The recycler view has not been laid out, so no view holder exists for the card.
+        setUpTabInGroup(new Token(1L, 2L));
+
+        assertNull(mCoordinator.getTabGridDialogAnimationSourceView(new Token(1L, 2L)));
+    }
+
+    @Test
+    public void testGetTabGridDialogAnimationSourceView_ViewHolderExists_ReturnsView() {
+        mIsVisibleSupplier.set(true);
+        Token tabGroupId = new Token(1L, 2L);
+        setUpTabInGroup(tabGroupId);
+
+        TabListRecyclerView recyclerView = mActivity.findViewById(R.id.tab_list_recycler_view);
+        // Manually size the view so that the children get added this is to work around robolectric
+        // view testing limitations.
+        recyclerView.measure(0, 0);
+        recyclerView.layout(0, 0, 100, 1000);
+        assertEquals(1, recyclerView.getChildCount());
+        assertNotNull(mCoordinator.getTabGridDialogAnimationSourceView(tabGroupId));
+
+        mIsVisibleSupplier.set(false);
+    }
+
+    private void setUpTabInGroup(Token tabGroupId) {
+        MockTab tab = MockTab.createAndInitialize(/* id= */ 1, mProfile);
+        tab.setIsInitialized(true);
+        mTabModel.addTab(
+                tab,
+                /* index= */ 0,
+                TabLaunchType.FROM_CHROME_UI,
+                TabCreationState.LIVE_IN_FOREGROUND);
+        tab.setTabGroupId(tabGroupId);
+        doReturn(true).when(mTabModel).isTabInTabGroup(tab);
+        doReturn(List.of(tab)).when(mTabModel).getTabsInGroup(tabGroupId);
+        doReturn(List.of(tab)).when(mTabModel).getRelatedTabList(1);
+        mCoordinator.resetWithListOfTabs(List.of(tab));
     }
 }

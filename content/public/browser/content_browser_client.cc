@@ -393,10 +393,6 @@ bool ContentBrowserClient::OverridesAudioManager() {
   return false;
 }
 
-bool ContentBrowserClient::EnforceSystemAudioEchoCancellation() {
-  return false;
-}
-
 std::vector<url::Origin>
 ContentBrowserClient::GetOriginsRequiringDedicatedProcess() {
   return std::vector<url::Origin>();
@@ -797,6 +793,12 @@ device::GeolocationSystemPermissionManager*
 ContentBrowserClient::GetGeolocationSystemPermissionManager() {
   return nullptr;
 }
+
+#if BUILDFLAG(IS_WIN)
+bool ContentBrowserClient::SystemMayPromptForVideoCapture() {
+  return false;
+}
+#endif
 
 #if BUILDFLAG(IS_ANDROID)
 bool ContentBrowserClient::ShouldUseGmsCoreGeolocationProvider() {
@@ -1608,8 +1610,8 @@ ContentBrowserClient::MaybeOverrideSourceURLForClipboardAccess(
 }
 
 BrowserContext* ContentBrowserClient::GetUserBrowserContext(
-    RenderFrameHost& render_frame_host) {
-  return render_frame_host.GetBrowserContext();
+    WebContents& web_contents) {
+  return web_contents.GetBrowserContext();
 }
 
 bool ContentBrowserClient::IsClipboardPasteAllowed(
@@ -2088,10 +2090,6 @@ std::optional<std::vector<std::u16string>>
 ContentBrowserClient::GetClipboardTypesIfPolicyApplied(
     const ui::ClipboardSequenceNumberToken& seqno) {
   return std::nullopt;
-}
-
-bool ContentBrowserClient::UsePrefetchPrerenderIntegration() {
-  return false;
 }
 
 #if !BUILDFLAG(IS_ANDROID)

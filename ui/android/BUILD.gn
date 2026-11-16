@@ -697,7 +697,6 @@ java_group("ui_full_java") {
 robolectric_library("ui_junit_test_support") {
   sources = [
     "junit/src/org/chromium/ui/resources/dynamics/DynamicResourceTestUtils.java",
-    "junit/src/org/chromium/ui/shadows/ShadowAnimatedStateListDrawable.java",
     "junit/src/org/chromium/ui/shadows/ShadowAppCompatResources.java",
   ]
   deps = [
@@ -971,6 +970,7 @@ test("ui_android_unittests") {
     "//ui/gfx",
     "//ui/gfx:test_support",
     "//ui/gfx/geometry",
+    "//ui/native_theme",
     "//ui/resources:ui_test_pak",
   ]
 

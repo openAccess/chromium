@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_AUTOFILL_PAYMENTS_OMNIBOX_AUTOFILL_BUBBLE_CONTROLLER_H_
 #define CHROME_BROWSER_UI_AUTOFILL_PAYMENTS_OMNIBOX_AUTOFILL_BUBBLE_CONTROLLER_H_
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -12,14 +13,6 @@
 #include "components/autofill/core/browser/suggestions/suggestion.h"
 #include "components/autofill/core/browser/ui/autofill_suggestion_delegate.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
-
-namespace actions {
-class ActionItem;
-}
-
-namespace content {
-class WebContents;
-}
 
 namespace tabs {
 class TabInterface;
@@ -38,8 +31,7 @@ class OmniboxAutofillBubbleController : public AutofillBubbleControllerBase {
  public:
   DECLARE_USER_DATA(OmniboxAutofillBubbleController);
 
-  explicit OmniboxAutofillBubbleController(tabs::TabInterface& tab_interface,
-                                           content::WebContents* web_contents);
+  explicit OmniboxAutofillBubbleController(tabs::TabInterface* tab_interface);
   OmniboxAutofillBubbleController(const OmniboxAutofillBubbleController&) =
       delete;
   OmniboxAutofillBubbleController& operator=(
@@ -85,12 +77,13 @@ class OmniboxAutofillBubbleController : public AutofillBubbleControllerBase {
   void DoShowBubble() override;
 
  private:
-  actions::ActionItem* GetActionItem();
-
-  const raw_ref<tabs::TabInterface> tab_interface_;
+  void WillDiscardContents(tabs::TabInterface* tab,
+                           content::WebContents* old_contents,
+                           content::WebContents* new_contents);
 
   ui::ScopedUnownedUserData<OmniboxAutofillBubbleController>
       scoped_unowned_user_data_;
+  base::CallbackListSubscription will_discard_contents_subscription_;
 
   const raw_ref<PaymentsDataManager> payments_data_manager_;
 

@@ -33,6 +33,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/frame/viewport_intersection_state.mojom.h"
+#include "ui/base/interaction/anchored_dialog_registry.h"
 #include "ui/base/interaction/element_events.h"
 #include "ui/base/interaction/element_highlighter.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -80,6 +81,13 @@ class TestTrackedElementManager
       tracked_element::mojom::TrackedElementIdentifierPtr id,
       bool highlighted) override {
     highlight_events_.emplace_back(id->native_identifier, highlighted);
+  }
+
+  void OnElementAnchoredDialogChanged(
+      tracked_element::mojom::TrackedElementIdentifierPtr id,
+      bool has_anchored_dialog) override {
+    anchored_dialog_events_.emplace_back(id->native_identifier,
+                                         has_anchored_dialog);
   }
 
   void ClickElement(tracked_element::mojom::TrackedElementIdentifierPtr id,
@@ -134,6 +142,10 @@ class TestTrackedElementManager
     return std::move(highlight_events_);
   }
 
+  std::vector<std::pair<std::string, bool>> TakeAnchoredDialogEvents() {
+    return std::move(anchored_dialog_events_);
+  }
+
   std::vector<std::string> TakeInteractionEvents() {
     return std::move(interaction_events_);
   }
@@ -141,7 +153,29 @@ class TestTrackedElementManager
  private:
   mojo::Receiver<tracked_element::mojom::TrackedElementManager> receiver_{this};
   std::vector<std::pair<std::string, bool>> highlight_events_;
+  std::vector<std::pair<std::string, bool>> anchored_dialog_events_;
   std::vector<std::string> interaction_events_;
+};
+
+// Records how focus traversal enters it.
+class TestAnchoredDialog : public AnchoredDialogRegistry::FocusTarget {
+ public:
+  TestAnchoredDialog() = default;
+  ~TestAnchoredDialog() override = default;
+
+  void set_can_focus(bool can_focus) { can_focus_ = can_focus; }
+
+  // AnchoredDialogRegistry::FocusTarget:
+  bool FocusFromAnchor(bool reverse) override {
+    focus_calls_.push_back(reverse);
+    return can_focus_;
+  }
+
+  std::vector<bool> TakeFocusCalls() { return std::move(focus_calls_); }
+
+ private:
+  bool can_focus_ = true;
+  std::vector<bool> focus_calls_;
 };
 
 }  // namespace
@@ -511,6 +545,138 @@ TEST_F(TrackedElementHandlerTest, Highlight) {
                   std::pair(kTestElementIdentifier2.GetName(), false)));
 }
 
+TEST_F(TrackedElementHandlerTest, AnchoredDialogState) {
+  mojo::Remote<tracked_element::mojom::TrackedElementManager> manager_remote;
+  TestTrackedElementManager manager(
+      manager_remote.BindNewPipeAndPassReceiver());
+  handler_remote()->SetManager(manager_remote.Unbind());
+  handler_remote()->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  tracked_element_handler_remote_.FlushForTesting();
+
+  auto* const element =
+      ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+          kTestElementIdentifier1);
+  ASSERT_TRUE(element);
+
+  // The WebUI is told when the first dialog is anchored and when the last one
+  // goes away.
+  TestAnchoredDialog dialog1;
+  TestAnchoredDialog dialog2;
+  auto registration1 =
+      AnchoredDialogRegistry::GetInstance()->Register(element, dialog1);
+  ASSERT_TRUE(registration1);
+  auto registration2 =
+      AnchoredDialogRegistry::GetInstance()->Register(element, dialog2);
+  ASSERT_TRUE(registration2);
+  handler_->FlushManagerRemoteForTesting();
+  EXPECT_THAT(
+      manager.TakeAnchoredDialogEvents(),
+      testing::ElementsAre(std::pair(kTestElementIdentifier1.GetName(), true)));
+
+  registration1.reset();
+  handler_->FlushManagerRemoteForTesting();
+  EXPECT_THAT(manager.TakeAnchoredDialogEvents(), testing::IsEmpty());
+
+  registration2.reset();
+  handler_->FlushManagerRemoteForTesting();
+  EXPECT_THAT(manager.TakeAnchoredDialogEvents(),
+              testing::ElementsAre(
+                  std::pair(kTestElementIdentifier1.GetName(), false)));
+}
+
+TEST_F(TrackedElementHandlerTest, FocusAnchoredDialog) {
+  handler_remote()->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  tracked_element_handler_remote_.FlushForTesting();
+  auto* const element =
+      ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+          kTestElementIdentifier1);
+  ASSERT_TRUE(element);
+
+  auto focus_anchored_dialog = [&](bool reverse) {
+    base::test::TestFuture<bool> success;
+    handler_remote()->FocusAnchoredDialog(
+        MakeId(kTestElementIdentifier1, kTestSecondaryId1), reverse,
+        success.GetCallback());
+    return success.Get();
+  };
+
+  // Nothing to focus yet.
+  EXPECT_FALSE(focus_anchored_dialog(/*reverse=*/false));
+
+  // The most recently anchored dialog is entered.
+  TestAnchoredDialog dialog1;
+  TestAnchoredDialog dialog2;
+  auto registration1 =
+      AnchoredDialogRegistry::GetInstance()->Register(element, dialog1);
+  auto registration2 =
+      AnchoredDialogRegistry::GetInstance()->Register(element, dialog2);
+  EXPECT_TRUE(focus_anchored_dialog(/*reverse=*/false));
+  EXPECT_THAT(dialog1.TakeFocusCalls(), testing::IsEmpty());
+  EXPECT_THAT(dialog2.TakeFocusCalls(), testing::ElementsAre(false));
+
+  registration2.reset();
+  EXPECT_TRUE(focus_anchored_dialog(/*reverse=*/true));
+  EXPECT_THAT(dialog1.TakeFocusCalls(), testing::ElementsAre(true));
+
+  // Failure to move focus is reported.
+  dialog1.set_can_focus(false);
+  EXPECT_FALSE(focus_anchored_dialog(/*reverse=*/false));
+  EXPECT_THAT(dialog1.TakeFocusCalls(), testing::ElementsAre(false));
+  dialog1.set_can_focus(true);
+
+  // Focus isn't moved while the WebUI doesn't have keyboard focus.
+  handler_->SetHasKeyboardFocusForTesting(false);
+  EXPECT_FALSE(focus_anchored_dialog(/*reverse=*/false));
+  EXPECT_THAT(dialog1.TakeFocusCalls(), testing::IsEmpty());
+  handler_->SetHasKeyboardFocusForTesting(std::nullopt);
+
+  // An element that doesn't exist (any more) has no dialog to focus.
+  base::test::TestFuture<bool> unknown_element;
+  handler_remote()->FocusAnchoredDialog(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId2), /*reverse=*/false,
+      unknown_element.GetCallback());
+  EXPECT_FALSE(unknown_element.Get());
+  EXPECT_THAT(dialog1.TakeFocusCalls(), testing::IsEmpty());
+
+  registration1.reset();
+  EXPECT_FALSE(focus_anchored_dialog(/*reverse=*/false));
+}
+
+TEST_F(TrackedElementHandlerTest, AnchoredDialogOutlivesElement) {
+  handler_remote()->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  tracked_element_handler_remote_.FlushForTesting();
+  auto* const element =
+      ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+          kTestElementIdentifier1);
+  ASSERT_TRUE(element);
+
+  TestAnchoredDialog dialog;
+  auto registration =
+      AnchoredDialogRegistry::GetInstance()->Register(element, dialog);
+  ASSERT_TRUE(registration);
+
+  // Hiding the element destroys it, which takes the dialog out of its focus
+  // order.
+  handler_remote()->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), false, gfx::RectF());
+  tracked_element_handler_remote_.FlushForTesting();
+  ASSERT_FALSE(ui::ElementTracker::GetElementTracker()->GetElementInAnyContext(
+      kTestElementIdentifier1));
+
+  base::test::TestFuture<bool> success;
+  handler_remote()->FocusAnchoredDialog(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), /*reverse=*/false,
+      success.GetCallback());
+  EXPECT_FALSE(success.Get());
+  EXPECT_THAT(dialog.TakeFocusCalls(), testing::IsEmpty());
+
+  // Releasing the registration afterwards is safe.
+  registration.reset();
+}
+
 TEST_F(TrackedElementHandlerTest, Interaction) {
   mojo::Remote<tracked_element::mojom::TrackedElementManager> manager_remote;
   TestTrackedElementManager manager(
@@ -584,6 +750,62 @@ TEST_F(TrackedElementHandlerTest,
 
   // Show WebContents.
   handler()->OnVisibilityChanged(content::Visibility::VISIBLE);
+  EXPECT_TRUE(tracker->IsElementVisible(kTestElementIdentifier1, context));
+}
+
+TEST_F(TrackedElementHandlerTest, SubframeOcclusionChangesElementVisibility) {
+  content::RenderFrameHostTester::For(main_rfh())
+      ->InitializeRenderFrameIfNeeded();
+
+  content::RenderFrameHost* const subframe_rfh =
+      content::RenderFrameHostTester::For(main_rfh())->AppendChild("subframe");
+  ASSERT_TRUE(subframe_rfh);
+
+  mojo::Remote<tracked_element::mojom::TrackedElementHandler> remote;
+  const ui::ElementContext context =
+      ui::ElementContext::CreateFakeContextForTesting(web_contents());
+  auto test_handler = std::make_unique<TrackedElementHandler>(
+      web_contents(), remote.BindNewPipeAndPassReceiver(), context,
+      std::vector<ui::ElementIdentifier>{kTestElementIdentifier1},
+      subframe_rfh);
+
+  remote->TrackedElementVisibilityChanged(
+      MakeId(kTestElementIdentifier1, kTestSecondaryId1), true, kElementBounds);
+  remote.FlushForTesting();
+
+  auto* const tracker = ui::ElementTracker::GetElementTracker();
+  EXPECT_TRUE(tracker->IsElementVisible(kTestElementIdentifier1, context));
+
+  // Mark subframe as possibly occluded by a parent-frame overlay.
+  blink::mojom::ViewportIntersectionState occluded_state;
+  occluded_state.viewport_intersection = gfx::Rect(0, 0, 100, 100);
+  occluded_state.occlusion_state =
+      blink::mojom::FrameOcclusionState::kPossiblyOccluded;
+  test_handler->OnRemoteSubframeViewportIntersectionStateChanged(
+      subframe_rfh, occluded_state);
+  EXPECT_FALSE(tracker->IsElementVisible(kTestElementIdentifier1, context));
+
+  // Unocclude subframe.
+  blink::mojom::ViewportIntersectionState unoccluded_state;
+  unoccluded_state.viewport_intersection = gfx::Rect(0, 0, 100, 100);
+  unoccluded_state.occlusion_state =
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded;
+  test_handler->OnRemoteSubframeViewportIntersectionStateChanged(
+      subframe_rfh, unoccluded_state);
+  EXPECT_TRUE(tracker->IsElementVisible(kTestElementIdentifier1, context));
+
+  // Mark subframe as hidden for media playback.
+  blink::mojom::ViewportIntersectionState hidden_state;
+  hidden_state.viewport_intersection = gfx::Rect(0, 0, 100, 100);
+  hidden_state.occlusion_state =
+      blink::mojom::FrameOcclusionState::kGuaranteedNotOccluded;
+  hidden_state.is_hidden_for_media_playback = true;
+  test_handler->OnRemoteSubframeViewportIntersectionStateChanged(subframe_rfh,
+                                                                 hidden_state);
+  EXPECT_FALSE(tracker->IsElementVisible(kTestElementIdentifier1, context));
+
+  // Deleted subframe should clear occlusion.
+  test_handler->RenderFrameDeleted(subframe_rfh);
   EXPECT_TRUE(tracker->IsElementVisible(kTestElementIdentifier1, context));
 }
 

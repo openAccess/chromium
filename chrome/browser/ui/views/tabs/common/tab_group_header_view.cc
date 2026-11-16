@@ -291,6 +291,8 @@ TabGroupHeaderView::TabGroupHeaderView(
   views::HighlightPathGenerator::Install(
       this, std::make_unique<views::RoundRectHighlightPathGenerator>(
                 gfx::Insets(kFocusRingInset), GetCornerRadius()));
+
+  set_context_menu_controller(this);
 }
 
 TabGroupHeaderView::~TabGroupHeaderView() = default;
@@ -398,7 +400,7 @@ bool TabGroupHeaderView::OnMousePressed(const ui::MouseEvent& event) {
   }
 
   // Hide the group hovercard if it is currently showing.
-  delegate_->HideHoverCard(TabSlotController::HoverCardUpdateType::kEvent);
+  delegate_->HideHoverCard(HoverCardUpdateType::kEvent);
 
   // Potentially start the drag for the mouse press.
   // Follow-up mouse-movement events will update the drag controller and
@@ -430,7 +432,7 @@ void TabGroupHeaderView::OnMouseReleased(const ui::MouseEvent& event) {
 }
 
 void TabGroupHeaderView::OnGestureEvent(ui::GestureEvent* event) {
-  delegate_->HideHoverCard(TabSlotController::HoverCardUpdateType::kEvent);
+  delegate_->HideHoverCard(HoverCardUpdateType::kEvent);
 
   switch (event->type()) {
     case ui::EventType::kGestureTapDown:
@@ -478,7 +480,7 @@ void TabGroupHeaderView::OnMouseMoved(const ui::MouseEvent& event) {
 }
 
 void TabGroupHeaderView::OnMouseEntered(const ui::MouseEvent& event) {
-  delegate_->UpdateHoverCard(TabSlotController::HoverCardUpdateType::kHover);
+  delegate_->UpdateHoverCard(HoverCardUpdateType::kHover);
   UpdateEditorBubbleButtonVisibility();
 }
 
@@ -494,19 +496,19 @@ void TabGroupHeaderView::OnMouseExited(const ui::MouseEvent& event) {
 #endif
   );
   if (delegate_->IsGroupFocused()) {
-    delegate_->HideHoverCard(TabSlotController::HoverCardUpdateType::kHover);
+    delegate_->HideHoverCard(HoverCardUpdateType::kHover);
   }
 }
 
 void TabGroupHeaderView::OnFocus() {
   UpdateEditorBubbleButtonVisibility();
-  delegate_->UpdateHoverCard(TabSlotController::HoverCardUpdateType::kFocus);
+  delegate_->UpdateHoverCard(HoverCardUpdateType::kFocus);
 }
 
 void TabGroupHeaderView::OnBlur() {
   UpdateEditorBubbleButtonVisibility();
   if (!delegate_->IsFocusInTabStrip() || delegate_->IsUnfocusButtonFocused()) {
-    delegate_->HideHoverCard(TabSlotController::HoverCardUpdateType::kFocus);
+    delegate_->HideHoverCard(HoverCardUpdateType::kFocus);
   }
 }
 
@@ -652,18 +654,18 @@ void TabGroupHeaderView::OnTabCountChanged() {
   }
 }
 
-void TabGroupHeaderView::SetFocusAnimationProgress(
-    std::optional<float> progress,
-    float content_opacity) {
-  if (focus_animation_progress_ == progress &&
-      focus_content_opacity_ == content_opacity) {
+void TabGroupHeaderView::SetFocusAnimationState(
+    const TabGroupFocusAnimationState& state) {
+  if (focus_animation_state_ == state) {
     return;
   }
-  const bool opacity_changed = focus_content_opacity_ != content_opacity;
-  focus_animation_progress_ = progress;
-  focus_content_opacity_ = content_opacity;
+  const bool colors_changed =
+      focus_animation_state_.content_opacity != state.content_opacity ||
+      focus_animation_state_.blend_color_id != state.blend_color_id ||
+      focus_animation_state_.color_blend != state.color_blend;
+  focus_animation_state_ = state;
   SetInteriorMargin(GetHeaderInsets());
-  if (opacity_changed) {
+  if (colors_changed) {
     UpdateColors();
   } else {
     UpdateBackground();
@@ -688,7 +690,7 @@ void TabGroupHeaderView::UpdateAttentionState(bool needs_attention) {
   if (tab_group_visual_data_.is_collapsed() && needs_attention_) {
     attention_indicator_->SetVisible(true);
     attention_indicator_->SetImage(ui::ImageModel::FromVectorIcon(
-        kDefaultTouchFaviconMaskCustomIcon, GetForegroundColor(),
+        kDefaultTouchFaviconMaskCustomIcon, GetContentForegroundColor(),
         kAttentionIndicatorWidth));
   } else {
     attention_indicator_->SetVisible(false);
@@ -722,18 +724,27 @@ SkColor TabGroupHeaderView::GetBackgroundColor() const {
   }
   const bool frame_active = GetWidget() && GetWidget()->ShouldPaintAsActive();
   if (IsEphemeralGroup()) {
-    const SkColor normal_bg = GetColorProvider()->GetColor(
-        frame_active ? ui::kColorSysOnHeaderDivider
-                     : ui::kColorSysOnHeaderDividerInactive);
+    const SkColor bg_color = GetColorProvider()->GetColor(
+        frame_active ? kColorTabGroupEphemeralHeaderBackgroundFrameActive
+                     : kColorTabGroupEphemeralHeaderBackgroundFrameInactive);
     if (editor_bubble_tracker_.is_open()) {
       const SkColor press_ink =
           GetColorProvider()->GetColor(ui::kColorSysStateHoverOnSubtle);
-      return color_utils::GetResultingPaintColor(press_ink, normal_bg);
+      return color_utils::GetResultingPaintColor(press_ink, bg_color);
     }
-    return normal_bg;
+    return bg_color;
   }
-  return GetColorProvider()->GetColor(
+  SkColor bg_color = GetColorProvider()->GetColor(
       GetTabGroupTabStripColorId(tab_group_visual_data_.color(), frame_active));
+  if (focus_animation_state_.blend_color_id.has_value() &&
+      focus_animation_state_.color_blend > 0.0f) {
+    const SkColor target_bg_color =
+        GetColorProvider()->GetColor(GetTabGroupTabStripColorId(
+            *focus_animation_state_.blend_color_id, frame_active));
+    bg_color = color_utils::AlphaBlend(target_bg_color, bg_color,
+                                       focus_animation_state_.color_blend);
+  }
+  return bg_color;
 }
 
 SkColor TabGroupHeaderView::GetForegroundColor() const {
@@ -742,17 +753,23 @@ SkColor TabGroupHeaderView::GetForegroundColor() const {
   }
   if (IsEphemeralGroup()) {
     const bool frame_active = GetWidget() && GetWidget()->ShouldPaintAsActive();
-    const SkColor fg_color = GetColorProvider()->GetColor(
-        frame_active ? ui::kColorSysOnSurfacePrimary
-                     : ui::kColorSysOnSurfacePrimaryInactive);
-    if (focus_content_opacity_ >= 1.0f) {
-      return fg_color;
-    }
-    return SkColorSetA(fg_color,
-                       base::ClampRound<U8CPU>(SkColorGetA(fg_color) *
-                                               focus_content_opacity_));
+    return GetColorProvider()->GetColor(
+        frame_active ? kColorTabGroupEphemeralHeaderForegroundFrameActive
+                     : kColorTabGroupEphemeralHeaderForegroundFrameInactive);
   }
   return color_utils::GetColorWithMaxContrast(GetBackgroundColor());
+}
+
+SkColor TabGroupHeaderView::GetContentForegroundColor() const {
+  const SkColor fg_color = GetForegroundColor();
+  const float content_opacity = focus_animation_state_.content_opacity;
+  if (content_opacity >= 1.0f ||
+      (!IsEphemeralGroup() &&
+       !focus_animation_state_.blend_color_id.has_value())) {
+    return fg_color;
+  }
+  return SkColorSetA(fg_color, base::ClampRound<U8CPU>(SkColorGetA(fg_color) *
+                                                       content_opacity));
 }
 
 void TabGroupHeaderView::UpdateColors() {
@@ -760,9 +777,10 @@ void TabGroupHeaderView::UpdateColors() {
     return;
   }
   const SkColor foreground_color = GetForegroundColor();
+  const SkColor content_color = GetContentForegroundColor();
 
   // Update label.
-  group_header_label_->SetEnabledColor(foreground_color);
+  group_header_label_->SetEnabledColor(content_color);
 
   // Update save tab group related items, the sync icon and attention
   // indicator.
@@ -771,12 +789,12 @@ void TabGroupHeaderView::UpdateColors() {
     sync_icon_->SetImage(ui::ImageModel::FromVectorIcon(
         features::IsRoundedIconsEnabled() ? kGroupCustomIcon
                                           : kPeopleGroupOldIcon,
-        foreground_color, kIconSize));
+        content_color, kIconSize));
   }
   if (tab_group_visual_data_.is_collapsed() && needs_attention_) {
     attention_indicator_->SetVisible(true);
     attention_indicator_->SetImage(ui::ImageModel::FromVectorIcon(
-        kDefaultTouchFaviconMaskCustomIcon, foreground_color,
+        kDefaultTouchFaviconMaskCustomIcon, content_color,
         kAttentionIndicatorWidth));
   } else {
     attention_indicator_->SetVisible(false);
@@ -784,7 +802,9 @@ void TabGroupHeaderView::UpdateColors() {
 
   // Update editor bubble button.
   if (editor_bubble_button_) {
-    UpdateEditorButtonColors(editor_bubble_button_, foreground_color);
+    UpdateEditorButtonColors(editor_bubble_button_, IsEphemeralGroup()
+                                                        ? content_color
+                                                        : foreground_color);
     UpdateEditorBubbleButtonVisibility();
   }
 
@@ -799,7 +819,7 @@ void TabGroupHeaderView::UpdateColors() {
         : features::IsRoundedIconsEnabled()
             ? vector_icons::kKeyboardArrowUpIcon
             : kKeyboardArrowUpChromeRefreshOldIcon,
-        foreground_color, kIconSize));
+        content_color, kIconSize));
   }
 
   UpdateBackground();
@@ -813,7 +833,7 @@ void TabGroupHeaderView::UpdateBackground() {
       GetBackgroundColor(),
       TabGroupStyle::GetHeaderCornerRadii(
           orientation_, delegate_->ShouldUseFocusedHeaderStyle(),
-          focus_animation_progress_)));
+          focus_animation_state_.progress)));
 }
 
 void TabGroupHeaderView::UpdateEditorBubbleButtonVisibility(
@@ -919,8 +939,8 @@ gfx::Insets TabGroupHeaderView::GetHeaderInsets() const {
   // Ephemeral headers keep their focused insets and collapse in width instead
   // (see the group layouts), so only persistent headers interpolate.
   if (orientation_ == TabStripOrientation::kHorizontal &&
-      focus_animation_progress_.has_value() && !IsEphemeralGroup()) {
-    const float p = *focus_animation_progress_;
+      focus_animation_state_.progress.has_value() && !IsEphemeralGroup()) {
+    const float p = *focus_animation_state_.progress;
     const gfx::Insets unfocused = ApplyTitleVisualCenteringOffset(
         gfx::Insets::VH(0, GetHorizontalInset()));
     const gfx::Insets focused = ApplyTitleVisualCenteringOffset(
@@ -933,7 +953,13 @@ gfx::Insets TabGroupHeaderView::GetHeaderInsets() const {
         gfx::Tween::LinearIntValueBetween(p, unfocused.right(),
                                           focused.right()));
   }
-  return GetTargetHeaderInsets();
+  gfx::Insets insets = GetTargetHeaderInsets();
+  if (orientation_ == TabStripOrientation::kVertical &&
+      focus_animation_state_.content_horizontal_offset != 0) {
+    insets.set_left(std::max(
+        0, insets.left() + focus_animation_state_.content_horizontal_offset));
+  }
+  return insets;
 }
 
 bool TabGroupHeaderView::IsEphemeralGroup() const {

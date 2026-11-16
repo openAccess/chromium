@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/feature_list.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/collaboration/messaging/messaging_backend_service_factory.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
@@ -10,6 +11,7 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -19,6 +21,7 @@
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_everything_menu.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_tabs_menu_model.h"
 #include "chrome/browser/ui/views/data_sharing/data_sharing_bubble_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_header_view.h"
 #include "chrome/browser/ui/views/tabs/groups/recent_activity_bubble_dialog_view.h"
 #include "chrome/browser/ui/views/tabs/tab_group_header.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
@@ -68,7 +71,7 @@ class SharedTabGroupInteractiveUiTest
     TabStripInteractiveTestMixin<InteractiveBrowserTest>::SetUpOnMainThread();
     TabGroupSyncServiceInitializedObserver initialized_observer(
         TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile()));
-    initialized_observer.Wait();
+    ASSERT_TRUE(initialized_observer.Wait());
   }
 
   MultiStep ShowBookmarksBar() {
@@ -93,12 +96,15 @@ class SharedTabGroupInteractiveUiTest
         kBrowserViewElementId, name,
         base::BindRepeating(
             [](tab_groups::TabGroupId group_id, const views::View* view) {
-              const TabGroupHeader* header =
-                  views::AsViewClass<TabGroupHeader>(view);
-              if (!header) {
-                return false;
+              if (const TabGroupHeader* header =
+                      views::AsViewClass<TabGroupHeader>(view)) {
+                return header->group().value() == group_id;
               }
-              return header->group().value() == group_id;
+              if (const TabGroupHeaderView* header =
+                      views::AsViewClass<TabGroupHeaderView>(view)) {
+                return header->group() == group_id;
+              }
+              return false;
             },
             group_id)));
   }
@@ -264,6 +270,11 @@ IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
 // Take a screenshot of the shared tab group in the TabStrip.
 IN_PROC_BROWSER_TEST_F(SharedTabGroupInteractiveUiTest,
                        SharedTabGroupInTabStrip) {
+  if (base::FeatureList::IsEnabled(tabs::kTabStripUnification)) {
+    // TODO(crbug.com/585315854): Re-enable for TabStripUnification.
+    GTEST_SKIP() << "Skipping for kTabStripUnification";
+  }
+
   const char kTabGroupHeaderToScreenshot[] = "Tab group header to hover";
 
   TabGroupId group_id = CreateNewTabGroup();

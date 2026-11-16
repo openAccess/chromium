@@ -209,12 +209,12 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
     // Handler so MockMediaRouter will respond to requests to create a route.
     // Will construct a RouteRequestResult based on the set result code and
     // then call the handler's callback.
-    ON_CALL(*media_router(), CreateRouteInternal(_, _, _, _, _, _))
+    ON_CALL(*media_router(), CreateRoute(_, _, _, _, _, _))
         .WillByDefault([this](const MediaSource::Id& source_id,
                               const MediaSink::Id& sink_id,
                               const url::Origin& origin,
                               content::WebContents* web_contents,
-                              MediaRouteResponseCallback& callback,
+                              MediaRouteResponseCallback callback,
                               base::TimeDelta timeout) {
           // This indicates the test did not properly set the expected result
           EXPECT_NE(mojom::RouteRequestResultCode::UNKNOWN_ERROR, result_code_);
@@ -397,10 +397,10 @@ class MediaRouteStarterTest : public ChromeRenderViewHostTestHarness {
         base::BindOnce(&MediaRouteStarterTest::HandleMediaRouteResponse,
                        base::Unretained(this)));
 
-    EXPECT_CALL(*media_router(),
-                CreateRouteInternal(params->source_id, params->request->sink_id,
-                                    params->origin, web_contents(), _,
-                                    params->timeout));
+    EXPECT_CALL(
+        *media_router(),
+        CreateRoute(params->source_id, params->request->sink_id, params->origin,
+                    web_contents(), _, params->timeout));
 
     media_route_starter()->StartRoute(std::move(params));
   }
@@ -726,6 +726,25 @@ TEST_F(MediaRouteStarterTest, CreateRouteParameters_StartPresentationContext) {
   // This is to deal with the error callback in the d'tor that's not part of
   // this test. See the Dtor_* tests below where this case is actually
   // validated.
+  EXPECT_CALL(*this, RequestError(_));
+}
+
+TEST_F(MediaRouteStarterTest,
+       CreateRouteParameters_StartPresentationContext_RemotePlayback) {
+  auto start_presentation_context = CreateStartPresentationContext(
+      CreatePresentationRequest(kRemotePlaybackUrl, kStartOriginUrl));
+
+  CreateStarter(MediaRouterUIParameters(kDefaultModes, web_contents(),
+                                        std::move(start_presentation_context)));
+
+  UpdateSinks({cast_sink().sink()}, std::vector<url::Origin>());
+
+  auto params = media_route_starter()->CreateRouteParameters(
+      cast_sink().id(), MediaCastMode::REMOTE_PLAYBACK);
+  ASSERT_TRUE(params);
+  EXPECT_EQ(MediaCastMode::REMOTE_PLAYBACK, params->cast_mode);
+  EXPECT_EQ(url::Origin::Create(GURL(kStartOriginUrl)), params->origin);
+
   EXPECT_CALL(*this, RequestError(_));
 }
 

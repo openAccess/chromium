@@ -198,7 +198,7 @@ class WaylandInputMethodContextV1Client : public ZwpTextInputV1Client {
   }
 
   void OnDeleteSurroundingText(int32_t index, uint32_t length) override {
-    context_->OnDeleteSurroundingText(index, length);
+    context_->OnDeleteSurroundingTextRelativeToCursor(index, length);
   }
 
   void OnKeysym(uint32_t key,
@@ -235,8 +235,13 @@ class WaylandInputmethodContextV3Client : public ZwpTextInputV3Client {
     context_->OnCommitString(text);
   }
 
-  void OnDeleteSurroundingText(int32_t index, uint32_t length) override {
-    context_->OnDeleteSurroundingText(index, length);
+  void OnDeleteSurroundingText(uint32_t before_length,
+                               uint32_t after_length) override {
+    context_->OnDeleteSurroundingTextAroundCursor(before_length, after_length);
+  }
+
+  void OnInputEventsApplied() override {
+    context_->SendPredictedSurroundingText();
   }
 
  private:
@@ -496,14 +501,31 @@ void WaylandInputMethodContext::SetSurroundingText(
     return;
   }
 
-  size_t utf16_offset = text_range.GetMin();
-  surrounding_text_tracker_.Update(text, utf16_offset, selection_range);
+  surrounding_text_tracker_.Update(text, text_range.GetMin(), selection_range);
+  SendSurroundingText(text, text_range, composition_range, selection_range);
+}
 
+void WaylandInputMethodContext::SendPredictedSurroundingText() {
+  const auto& [surrounding_text, utf16_offset, selection, composition] =
+      surrounding_text_tracker_.predicted_state();
+  SendSurroundingText(
+      surrounding_text,
+      gfx::Range(utf16_offset, utf16_offset + surrounding_text.length()),
+      composition.is_empty() ? gfx::Range::InvalidRange() : composition,
+      selection);
+}
+
+void WaylandInputMethodContext::SendSurroundingText(
+    const std::u16string& text,
+    const gfx::Range& text_range,
+    const gfx::Range& composition_range,
+    const gfx::Range& selection_range) {
   if (!text_input_v3_ && !text_input_v1_) {
     return;
   }
 
   // Convert into UTF8 unit.
+  size_t utf16_offset = text_range.GetMin();
   std::vector<size_t> offsets_for_adjustment = {
       selection_range.start() - utf16_offset,
       selection_range.end() - utf16_offset};
@@ -749,24 +771,68 @@ void WaylandInputMethodContext::OnCursorPosition(int32_t index,
   surrounding_text_tracker_.OnSetEditableSelectionRange(new_selection_range);
 }
 
-void WaylandInputMethodContext::OnDeleteSurroundingText(int32_t index,
-                                                        uint32_t length) {
-  const auto& [surrounding_text, utf16_offset, selection, unsused_composition] =
+void WaylandInputMethodContext::OnDeleteSurroundingTextAroundCursor(
+    uint32_t before_length,
+    uint32_t after_length) {
+  const auto& [surrounding_text, utf16_offset, selection, composition] =
       surrounding_text_tracker_.predicted_state();
   CHECK(selection.IsValid(), base::NotFatalUntil::M163);
 
-  // TODO(crbug.com/40189286): Currently data sent from delete surrounding text
-  // from exo is broken. Currently this broken behavior is supported to prevent
-  // visible regressions, but should be fixed in the future, specifically the
-  // compatibility with non-exo wayland compositors.
-  std::vector<size_t> offsets_for_adjustment = {
-      surrounding_text_offset_ + index,
-      surrounding_text_offset_ + index + length,
-  };
+  // The preedit text is removed before the deletion, so delete around it if
+  // present. The lengths exclude the selection.
+  const gfx::Range& range = composition.is_empty() ? selection : composition;
+  std::vector<size_t> offsets = {range.GetMin() - utf16_offset,
+                                 range.GetMax() - utf16_offset};
+  const std::string text_utf8 =
+      base::UTF16ToUTF8AndAdjustOffsets(surrounding_text, &offsets);
+  if (std::ranges::contains(offsets, std::u16string::npos)) {
+    LOG(ERROR) << "The selection range for surrounding text is invalid.";
+    return;
+  }
+
+  // Clamp the deletion to the surrounding text.
+  DeleteSurroundingTextInRange(
+      offsets[0] - std::min<size_t>(before_length, offsets[0]),
+      std::min<size_t>(offsets[1] + after_length, text_utf8.size()));
+}
+
+void WaylandInputMethodContext::OnDeleteSurroundingTextRelativeToCursor(
+    int32_t index,
+    uint32_t length) {
+  const auto& [surrounding_text, utf16_offset, selection, unused_composition] =
+      surrounding_text_tracker_.predicted_state();
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
+
+  // Convert the cursor, which is the end of the selection, to UTF-8 bytes.
+  std::vector<size_t> cursor = {selection.end() - utf16_offset};
+  const std::string text_utf8 =
+      base::UTF16ToUTF8AndAdjustOffsets(surrounding_text, &cursor);
+  if (cursor[0] == std::u16string::npos) {
+    LOG(ERROR) << "The cursor position is invalid.";
+    return;
+  }
+
+  const int64_t start = static_cast<int64_t>(cursor[0]) + index;
+  const int64_t end = start + length;
+  if (start < 0 || end > static_cast<int64_t>(text_utf8.size())) {
+    LOG(ERROR) << "The deletion range is outside of the surrounding text.";
+    return;
+  }
+  DeleteSurroundingTextInRange(static_cast<size_t>(start),
+                               static_cast<size_t>(end));
+}
+
+void WaylandInputMethodContext::DeleteSurroundingTextInRange(size_t start,
+                                                             size_t end) {
+  const auto& [surrounding_text, utf16_offset, selection, unused_composition] =
+      surrounding_text_tracker_.predicted_state();
+  CHECK(selection.IsValid(), base::NotFatalUntil::M163);
+
+  std::vector<size_t> offsets_for_adjustment = {start, end};
   base::UTF8ToUTF16AndAdjustOffsets(base::UTF16ToUTF8(surrounding_text),
                                     &offsets_for_adjustment);
   if (std::ranges::contains(offsets_for_adjustment, std::u16string::npos)) {
-    LOG(DFATAL) << "The selection range for surrounding text is invalid.";
+    LOG(ERROR) << "The selection range for surrounding text is invalid.";
     return;
   }
 
@@ -774,12 +840,10 @@ void WaylandInputMethodContext::OnDeleteSurroundingText(int32_t index,
       selection.GetMax() > offsets_for_adjustment[1] + utf16_offset) {
     // The range is started after the selection, or ended before the selection,
     // which is not supported.
-    LOG(DFATAL) << "The deletion range needs to cover whole selection range.";
+    LOG(ERROR) << "The deletion range needs to cover whole selection range.";
     return;
   }
 
-  // Move by offset calculated in SetSurroundingText to adjust to the original
-  // text place.
   size_t before = selection.GetMin() - offsets_for_adjustment[0] - utf16_offset;
   size_t after = offsets_for_adjustment[1] + utf16_offset - selection.GetMax();
 

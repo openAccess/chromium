@@ -17,6 +17,7 @@
 #include "components/autofill/core/browser/actor/actor_autofill_manager.h"
 #include "components/autofill/core/browser/actor/actor_form_filling_service_impl.h"
 #include "components/autofill/core/browser/actor/actor_key_metrics_recorder.h"
+#include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/foundations/test_autofill_client.h"
 #include "components/autofill/core/browser/foundations/test_autofill_driver.h"
 #include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
@@ -102,6 +103,7 @@ class TestBrowserAutofillManagerWithTestCCAM
       mojom::ActionPersistence action_persistence,
       const FormGlobalId& form_id,
       const FieldGlobalId& field_id,
+      FillingProduct filling_product,
       const FillingPayload& filling_payload,
       AutofillTriggerSource trigger_source,
       bool require_user_confirmation,
@@ -165,6 +167,16 @@ class ActorTestBase : public testing::Test,
   }
   ActorFormFillingServiceImpl& service() { return *service_; }
   ::actor::AggregatedJournal& journal() { return journal_; }
+
+  // Calls `service().FillForm()` and runs the post-fill bookkeeping of the
+  // resulting fills.
+  void FillForm(int form_index, ActorFormFillingSelection selection);
+
+  // Completes the pending credit card fetch with `card` (see
+  // `TestCreditCardAccessManager::RunCreditCardFetchedCallback()`) and runs the
+  // post-fill bookkeeping of the resulting fill. Returns false if no fetch is
+  // pending.
+  [[nodiscard]] bool CompleteCreditCardFetch(const CreditCard& card);
 
   // This is intended to be initialized by derived classes. It needs to be
   // defined before the `task_environment_` to ensure a correct destruction

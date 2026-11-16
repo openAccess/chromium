@@ -4,6 +4,7 @@
 
 #include "skia/ext/rgba_to_yuva.h"
 
+#include <algorithm>
 #include <array>
 
 #include "base/check_op.h"
@@ -18,8 +19,10 @@
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkColorFilter.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
+#include "third_party/skia/include/core/SkMatrix.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkRect.h"
+#include "third_party/skia/include/core/SkShader.h"
 #include "third_party/skia/include/effects/SkColorMatrix.h"
 
 namespace skia {
@@ -46,7 +49,7 @@ void ApplyColorMatrix(SkPixmap& pm, const std::array<float, 20>& m) {
 
 // Read the specified row `y` to `dst_pixmap`. This is slow and should only be
 // used in tests or in extreme edge cases.
-void ReadYUVRow(const std::vector<SkPixmap>& src_pixmaps,
+void ReadYUVRow(base::span<const SkPixmap> src_pixmaps,
                 const SkYUVAInfo& src_yuva_info,
                 const size_t src_bit_depth,
                 size_t y,
@@ -140,6 +143,9 @@ void ReadYUVRow(const std::vector<SkPixmap>& src_pixmaps,
       case SkYUVAInfo::PlaneConfig::kUYVA:
         src_yuva = {planes[0].fG, planes[0].fR, planes[0].fB, planes[0].fA};
         break;
+#if defined(SK_ENABLE_YUVA_PACKED_422)
+      case SkYUVAInfo::PlaneConfig::kYUYV:
+#endif
       case SkYUVAInfo::PlaneConfig::kUnknown:
         NOTREACHED();
     }
@@ -255,6 +261,9 @@ void BlitRGBAToYUVA(SkImage* src_image,
     case SkYUVAInfo::PlaneConfig::kUYVA:
       permutation_matrices[0] = UYVA;
       break;
+#if defined(SK_ENABLE_YUVA_PACKED_422)
+    case SkYUVAInfo::PlaneConfig::kYUYV:
+#endif
     case SkYUVAInfo::PlaneConfig::kUnknown:
       NOTREACHED();
   }
@@ -267,7 +276,7 @@ void BlitRGBAToYUVA(SkImage* src_image,
     // individual planes (which have R and RG pixel formats), ensure that
     // those pixel values are unpremultiplied.
     if (dst_yuva_info.hasAlpha() && dst_yuva_info.numPlanes() > 1 &&
-        !src_image->isOpaque()) {
+        src_image && !src_image->isOpaque()) {
       CHECK_EQ(dst_surfaces[plane]->imageInfo().alphaType(),
                kUnpremul_SkAlphaType);
     }
@@ -292,33 +301,44 @@ void BlitRGBAToYUVA(SkImage* src_image,
     paint.setColorFilter(filter);
 
     auto [ssHoriz, ssVert] = dst_yuva_info.planeSubsamplingFactors(plane);
-    const SkRect plane_dst_rect = SkRect::MakeXYWH(
-        dst_rect.x() / ssHoriz, dst_rect.y() / ssVert,
-        dst_rect.width() / ssHoriz, dst_rect.height() / ssVert);
 
-    if (!src_image) {
-      paint.setColor(SK_ColorBLACK);
-      plane_canvas->drawRect(plane_dst_rect, paint);
-    } else {
-      if (clear_destination && dst_image_rect != dst_rect) {
+    SkAutoCanvasRestore acr(plane_canvas, /*doSave=*/true);
+    if (dst_image_rect != dst_rect) {
+      if (clear_destination) {
         // If we were told to clear the destination prior to blitting and we
         // know the blit won't populate the entire destination image, issue the
         // draw call that fills the destination with black and takes into
         // account the color conversion needed.
         SkPaint clear_paint(paint);
         clear_paint.setColor(SK_ColorBLACK);
-
         plane_canvas->drawPaint(clear_paint);
       }
 
-      SkCanvas::SrcRectConstraint constraint =
-          SkCanvas::kFast_SrcRectConstraint;
-      if (src_rect != SkRect::Make(src_image->bounds())) {
-        constraint = SkCanvas::kStrict_SrcRectConstraint;
-      }
-      plane_canvas->drawImageRect(src_image, src_rect, plane_dst_rect,
-                                  sampling_options, &paint, constraint);
+      const SkIRect plane_clip =
+          SkRect::MakeLTRB(dst_rect.left() / ssHoriz, dst_rect.top() / ssVert,
+                           dst_rect.right() / ssHoriz,
+                           dst_rect.bottom() / ssVert)
+              .roundOut();
+      plane_canvas->clipIRect(plane_clip);
     }
+
+    plane_canvas->scale(1.f / ssHoriz, 1.f / ssVert);
+
+    if (!src_image) {
+      paint.setColor(SK_ColorBLACK);
+    } else {
+      plane_canvas->concat(SkMatrix::RectToRectOrIdentity(src_rect, dst_rect));
+      sk_sp<SkShader> shader = src_image->makeShader(sampling_options);
+      if (src_rect != SkRect::Make(src_image->bounds())) {
+        const SkRect clamp_rect =
+            src_rect.makeInset(std::min(0.5f, src_rect.width() * 0.5f),
+                               std::min(0.5f, src_rect.height() * 0.5f));
+        shader = SkShaders::CoordClamp(std::move(shader), clamp_rect);
+      }
+      paint.setShader(std::move(shader));
+    }
+
+    plane_canvas->drawPaint(paint);
   }
 }
 
@@ -355,31 +375,25 @@ void ConvertRGBAToYUVA(SkPixmap src_pm,
                  base::span<SkSurface* const>(dst_surface_ptrs), dst_yuva_info);
 }
 
-void ConvertYUVAToRGBA(const SkYUVAInfo& src_yuva_info,
+void ConvertYUVAToRGBA(const SkYUVAPixmaps& src,
                        size_t src_bit_depth,
-                       const std::vector<SkPixmap>& src_pixmaps,
                        const SkPixmap& dst_pixmap) {
-  DCHECK(src_pixmaps[0].dimensions() == dst_pixmap.dimensions());
-  const auto src_color_space = src_pixmaps[0].refColorSpace();
+  CHECK(src.isValid());
+  const SkYUVAInfo& src_yuva_info = src.yuvaInfo();
+  DCHECK(src.plane(0).dimensions() == dst_pixmap.dimensions());
+  const auto src_color_space = src.plane(0).refColorSpace();
   const size_t w = static_cast<size_t>(dst_pixmap.width());
   const size_t h = static_cast<size_t>(dst_pixmap.height());
 
-  // Just use ReadPixels for RGBA inputs.
-  if (!src_yuva_info.isValid()) {
-    CHECK_EQ(src_pixmaps.size(), 1u);
-    CHECK(src_pixmaps[0].readPixels(dst_pixmap));
-    return;
-  }
-
-  // Make sure we have the expected number of planes and dimensions of planes,
-  // and that all planes have the same color space.
-  CHECK_EQ(src_pixmaps.size(), static_cast<size_t>(src_yuva_info.numPlanes()));
+  // Make sure we have the expected dimensions of planes, and that all planes
+  // have the same color space.
+  const auto planes =
+      base::span(src.planes()).first(static_cast<size_t>(src.numPlanes()));
   std::array<SkISize, SkYUVAInfo::kMaxPlanes> plane_dimensions;
   src_yuva_info.planeDimensions(plane_dimensions.data());
-  for (size_t p = 0; p < src_pixmaps.size(); ++p) {
-    CHECK(src_pixmaps[p].dimensions() == plane_dimensions[p]);
-    CHECK(SkColorSpace::Equals(src_pixmaps[p].colorSpace(),
-                               src_color_space.get()));
+  for (size_t p = 0; p < planes.size(); ++p) {
+    CHECK(planes[p].dimensions() == plane_dimensions[p]);
+    CHECK(SkColorSpace::Equals(planes[p].colorSpace(), src_color_space.get()));
   }
 
   // Compute the YUV to RGB matrix, if needed.
@@ -403,7 +417,7 @@ void ConvertYUVAToRGBA(const SkYUVAInfo& src_yuva_info,
     CHECK(dst_pixmap.extractSubset(&dst_row, dst_row_rect));
 
     // Read and resample `src_pixmaps` into `src_row`.
-    ReadYUVRow(src_pixmaps, src_yuva_info, src_bit_depth, y, src_row);
+    ReadYUVRow(planes, src_yuva_info, src_bit_depth, y, src_row);
 
     // Perform YUV to RGB conversion.
     if (use_src_yuv_to_rgb_matrix) {

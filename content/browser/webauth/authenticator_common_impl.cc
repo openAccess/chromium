@@ -54,6 +54,7 @@
 #include "content/browser/webauth/authenticator_impl.h"
 #include "content/browser/webauth/authenticator_request_outcome_enums.h"
 #include "content/browser/webauth/client_data_json.h"
+#include "content/browser/webauth/is_uvpaa.h"
 #include "content/browser/webauth/virtual_authenticator.h"
 #include "content/browser/webauth/virtual_authenticator_manager_impl.h"
 #include "content/browser/webauth/virtual_fido_discovery_factory.h"
@@ -121,10 +122,6 @@
 #include "device/fido/win/webauthn_api.h"
 #endif
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN)
-#include "content/browser/webauth/is_uvpaa.h"
-#endif
-
 namespace content {
 
 // RequestExtension is a type of extension in a WebAuthn request that might
@@ -164,6 +161,23 @@ namespace {
 
 const char kImmediateTimeoutWhileWaitingForUi[] =
     "WebAuthentication.GetAssertion.Immediate.TimeoutWhileWaitingForUi";
+
+// Experimental magic timeout value that lets a relying party opt into
+// launching the Ambient UI in chip-only mode (without automatically opening
+// the bubble).
+constexpr base::TimeDelta kAmbientChipOnlyTimeout = base::Milliseconds(31415);
+
+// Enum for the WebAuthentication.Ambient.RequestedCredentialTypes histogram.
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class AmbientRequestedCredentialTypes {
+  // LINT.IfChange(AmbientRequestedCredentialTypes)
+  kPasskeysOnly = 0,
+  kPasswordsOnly = 1,
+  kPasskeysAndPasswords = 2,
+  kMaxValue = kPasskeysAndPasswords,
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:AmbientRequestedCredentialTypes)
+};
 
 WebAuthenticationDelegate* GetWebAuthenticationDelegate() {
   return GetContentClient()->browser()->GetWebAuthenticationDelegate();
@@ -1561,6 +1575,12 @@ void AuthenticatorCommonImpl::GetCredential(
     blink::mojom::GetCredentialOptionsPtr options,
     blink::mojom::PaymentOptionsPtr payment_options,
     GetCredentialCallback callback) {
+  if (options->mediation == Mediation::AMBIENT &&
+      !base::FeatureList::IsEnabled(device::kWebAuthnAmbientSignin)) {
+    // If the kill switch is active, fall back to standard conditional mediation
+    // so that sites using conditional UI with login forms are not broken.
+    options->mediation = Mediation::CONDITIONAL;
+  }
   if (options->mediation == Mediation::CONDITIONAL) {
     base::RecordAction(
         base::UserMetricsAction("WebAuthn.GetAssertion.Conditional.Start"));
@@ -1571,6 +1591,19 @@ void AuthenticatorCommonImpl::GetCredential(
   }
   blink::mojom::PublicKeyCredentialRequestOptions* public_key_options =
       options->public_key.get();
+  if (options->mediation == Mediation::AMBIENT &&
+      (public_key_options || options->password)) {
+    AmbientRequestedCredentialTypes requested_types;
+    if (public_key_options && options->password) {
+      requested_types = AmbientRequestedCredentialTypes::kPasskeysAndPasswords;
+    } else if (public_key_options) {
+      requested_types = AmbientRequestedCredentialTypes::kPasskeysOnly;
+    } else {
+      requested_types = AmbientRequestedCredentialTypes::kPasswordsOnly;
+    }
+    base::UmaHistogramEnumeration(
+        "WebAuthentication.Ambient.RequestedCredentialTypes", requested_types);
+  }
   callback = base::BindOnce(
       &AuthenticatorCommonImpl::GetMetricsWrappedGetCredentialCallback,
       weak_factory_.GetWeakPtr(), std::move(callback));
@@ -2022,6 +2055,10 @@ void AuthenticatorCommonImpl::ContinueGetAssertionAfterRpIdCheck(
     ui_presentation = UIPresentation::kModalImmediate;
   } else if (options->mediation == Mediation::AMBIENT) {
     ui_presentation = UIPresentation::kAmbient;
+    if (base::FeatureList::IsEnabled(device::kWebAuthnAmbientChipOnlyTimeout) &&
+        public_key_options->timeout == kAmbientChipOnlyTimeout) {
+      req_state_->request_delegate->SetAmbientChipOnly(true);
+    }
   }
   req_state_->request_delegate->SetUIPresentation(ui_presentation);
 
@@ -2313,14 +2350,8 @@ void AuthenticatorCommonImpl::ContinueIsUvpaaAfterOverrideCheck(
               return available;
             }).Then(std::move(callback));
 
-#if BUILDFLAG(IS_MAC)
   IsUVPlatformAuthenticatorAvailable(GetBrowserContext(),
                                      std::move(uma_decorated_callback));
-#elif BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS)
-  IsUVPlatformAuthenticatorAvailable(std::move(uma_decorated_callback));
-#else
-  std::move(uma_decorated_callback).Run(false);
-#endif
 }
 
 void AuthenticatorCommonImpl::IsConditionalMediationAvailable(

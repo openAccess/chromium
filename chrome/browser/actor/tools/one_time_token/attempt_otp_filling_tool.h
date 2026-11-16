@@ -28,6 +28,10 @@
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 
+namespace base {
+class TimeTicks;
+}
+
 namespace actor {
 
 class ActorSurface;
@@ -64,6 +68,7 @@ class AttemptOtpFillingTool : public Tool {
  private:
   void OnUserDataProcessingConsentFetched(
       ToolCallback callback,
+      base::TimeTicks start_time,
       bool gmail_otp_filling_enabled,
       bool within_cool_off_period,
       std::optional<one_time_tokens::UserDataProcessingConsentStates>
@@ -85,6 +90,8 @@ class AttemptOtpFillingTool : public Tool {
   void LogJournalEvent(std::string_view event_name,
                        std::vector<mojom::JournalDetailsPtr> journal_details);
 
+  void RecordEvent(AttemptOtpFillingToolEvent event);
+
   ActorSurfaceHandle actor_surface_handle_;
   std::vector<PageTarget> trigger_fields_;
   std::vector<autofill::FieldGlobalId> trigger_field_ids_;
@@ -99,6 +106,12 @@ class AttemptOtpFillingTool : public Tool {
   // cancellation during it. If set when the tool is destroyed, it is recorded
   // as the stage at which the tool was cancelled.
   std::optional<AttemptOtpFillingToolEvent> pending_cancellation_event_;
+
+  // Tracks the user's Gmail OTP opt-in state to select the
+  // `ToolInvocation.{OptInState}` patterned histogram suffix. It remains
+  // `std::nullopt` for mock OTP runs or before `Validate()` checks the
+  // opt-in pref.
+  std::optional<AttemptOtpFillingOptInState> opt_in_state_;
 
   base::WeakPtrFactory<AttemptOtpFillingTool> weak_factory_{this};
 };

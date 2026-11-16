@@ -18,18 +18,21 @@
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "build/config/linux/dbus/buildflags.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/gcm/gcm_profile_service_factory.h"
+#include "chrome/browser/gcm/instance_id/instance_id_profile_service_factory.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/permissions/permission_manager_factory.h"
 #include "chrome/browser/push_messaging/push_messaging_app_identifier.h"
 #include "chrome/browser/push_messaging/push_messaging_service_factory.h"
 #include "chrome/browser/push_messaging/push_messaging_service_impl.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -38,11 +41,16 @@
 #include "components/gcm_driver/fake_gcm_client_factory.h"
 #include "components/gcm_driver/fake_gcm_profile_service.h"
 #include "components/gcm_driver/gcm_profile_service.h"
+#include "components/gcm_driver/instance_id/instance_id.h"
+#include "components/gcm_driver/instance_id/instance_id_driver.h"
+#include "components/gcm_driver/instance_id/instance_id_profile_service.h"
 #include "components/history/core/browser/history_database_params.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/test/test_history_database.h"
 #include "components/permissions/permission_manager.h"
 #include "components/permissions/permission_uma_util.h"
+#include "components/push_messaging/app_identifier.h"
+#include "components/push_messaging/app_identifier_test_support.h"
 #include "components/push_messaging/push_messaging_features.h"
 #include "components/push_messaging/push_messaging_utils.h"
 #include "components/variations/scoped_variations_ids_provider.h"
@@ -102,6 +110,11 @@ constexpr char kTestEncodedP256Key[] =
     "BFVSaqVujqpHlzYQwWY8HmW_oXvuSMnGu78CGFNyHQx7qeMRtwNSIdNxkBOowc_tIPcf0X_ydr"
     "YBINg1pdk8Q_0";
 
+constexpr char kStoredInstanceIDCountHistogram[] =
+    "Notifications.PushMessaging.StoredSubscriptionCount.InstanceID";
+constexpr char kStoredLegacyCountHistogram[] =
+    "Notifications.PushMessaging.StoredSubscriptionCount.Legacy";
+
 // Implementation of the TestingProfile that provides the Push Messaging Service
 // and the Permission Manager, both of which are required for the tests.
 class PushMessagingTestingProfile : public TestingProfile {
@@ -137,7 +150,9 @@ std::unique_ptr<KeyedService> BuildTestHistoryService(
 
 }  // namespace
 
-class PushMessagingServiceTest : public ::testing::Test {
+class PushMessagingServiceTest
+    : public ::testing::Test,
+      public push_messaging::AppIdentifierTestSupport {
  public:
   PushMessagingServiceTest() = default;
   ~PushMessagingServiceTest() override = default;
@@ -212,6 +227,25 @@ class PushMessagingServiceTest : public ::testing::Test {
     *payload_out = std::move(payload);
   }
 
+  void IncreasePushSubscriptionCount(PushMessagingServiceImpl* push_service,
+                                     int add,
+                                     bool is_pending) {
+    push_service->IncreasePushSubscriptionCount(add, is_pending);
+  }
+
+  void SetDispatchedMessageStatusForTesting(
+      PushMessagingServiceImpl* push_service,
+      blink::mojom::PushEventStatus status) {
+    push_service->SetMessageDispatchedCallbackForTesting(
+        base::BindLambdaForTesting(
+            [status](const std::string& app_id, const GURL& dispatched_origin,
+                     int64_t service_worker_registration_id,
+                     std::optional<std::string> payload,
+                     PushMessagingServiceImpl::PushEventCallback callback) {
+              std::move(callback).Run(status);
+            }));
+  }
+
   class TestPushSubscription {
    public:
     std::string subscription_id_;
@@ -273,8 +307,126 @@ class PushMessagingServiceTest : public ::testing::Test {
     }
   }
 
+  // Stores two InstanceID subscriptions and one legacy subscription in the
+  // prefs of `profile`.
+  void PersistTestSubscriptions(Profile* profile) {
+    PushMessagingAppIdentifier::PersistToPrefs(
+        push_messaging::AppIdentifier::Generate(GURL(kTestOrigin),
+                                                kTestServiceWorkerId),
+        profile);
+    PushMessagingAppIdentifier::PersistToPrefs(
+        push_messaging::AppIdentifier::Generate(GURL("https://example2.com"),
+                                                kTestServiceWorkerId),
+        profile);
+    PushMessagingAppIdentifier::PersistToPrefs(
+        LegacyGenerateForTesting(GURL("https://legacy.example.com"),
+                                 kTestServiceWorkerId),
+        profile);
+  }
+
+  // Gets the encryption keys that are stored for `app_id` with an empty
+  // authorized entity, like the keys of legacy (non-InstanceID) subscriptions.
+  // Creates new keys if there are none.
+  void GetLegacyEncryptionInfo(const std::string& app_id,
+                               std::string* out_p256dh,
+                               std::string* out_auth_secret) {
+    base::RunLoop run_loop;
+    instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile())
+        ->driver()
+        ->GetInstanceID(app_id)
+        ->GetEncryptionInfo(
+            /*authorized_entity=*/std::string(),
+            base::BindLambdaForTesting(
+                [&](std::string p256dh, std::string auth_secret) {
+                  *out_p256dh = std::move(p256dh);
+                  *out_auth_secret = std::move(auth_secret);
+                  run_loop.Quit();
+                }));
+    run_loop.Run();
+  }
+
+  // Stores a subscription with a legacy (non-InstanceID) app_id for
+  // `kTestServiceWorkerId`. The app_id also has an InstanceID token: old
+  // versions of Chrome made such subscriptions when a site subscribed again
+  // after the migration to InstanceID, because the subscribe path reuses the
+  // stored app_id. The keys are stored with an empty authorized entity, like
+  // for all legacy subscriptions.
+  push_messaging::AppIdentifier SeedLegacySubscription(
+      PushMessagingServiceImpl* push_service,
+      const GURL& origin,
+      std::string* out_subscription_id,
+      std::string* out_p256dh,
+      std::string* out_auth_secret) {
+    push_messaging::AppIdentifier app_identifier =
+        LegacyGenerateForTesting(origin, kTestServiceWorkerId);
+    const std::string& app_id = app_identifier.app_id();
+    EXPECT_FALSE(push_messaging::AppIdentifier::UseInstanceID(app_id));
+
+    base::RunLoop run_loop;
+    instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile())
+        ->driver()
+        ->GetInstanceID(app_id)
+        ->GetToken(std::string(kTestSenderId), instance_id::kGCMScope,
+                   /*time_to_live=*/base::TimeDelta(), /*flags=*/{},
+                   base::BindLambdaForTesting(
+                       [&](const std::string& token,
+                           instance_id::InstanceID::Result result) {
+                         EXPECT_EQ(instance_id::InstanceID::SUCCESS, result);
+                         *out_subscription_id = token;
+                         run_loop.Quit();
+                       }));
+    run_loop.Run();
+
+    GetLegacyEncryptionInfo(app_id, out_p256dh, out_auth_secret);
+
+    PushMessagingAppIdentifier::PersistToPrefs(app_identifier, profile());
+    // DidUnsubscribe() decreases the count, so it must include this entry.
+    IncreasePushSubscriptionCount(push_service, 1, /*is_pending=*/false);
+    return app_identifier;
+  }
+
+  // Expects that the legacy subscription for `app_id` is deleted: the prefs
+  // entry, the legacy keys (`old_p256dh`), and the InstanceID token
+  // (`old_subscription_id`).
+  void ExpectLegacySubscriptionDeleted(const std::string& app_id,
+                                       const std::string& old_subscription_id,
+                                       const std::string& old_p256dh) {
+    EXPECT_TRUE(
+        PushMessagingAppIdentifier::FindByAppId(profile(), app_id).is_null());
+
+    // The legacy keys were removed, so new keys are created.
+    std::string new_p256dh, new_auth_secret;
+    GetLegacyEncryptionInfo(app_id, &new_p256dh, &new_auth_secret);
+    EXPECT_NE(old_p256dh, new_p256dh);
+
+    // DeleteID() deleted the InstanceID token, so a new token is created.
+    std::string new_subscription_id;
+    base::RunLoop run_loop;
+    instance_id::InstanceIDProfileServiceFactory::GetForProfile(profile())
+        ->driver()
+        ->GetInstanceID(app_id)
+        ->GetToken(std::string(kTestSenderId), instance_id::kGCMScope,
+                   /*time_to_live=*/base::TimeDelta(), /*flags=*/{},
+                   base::BindLambdaForTesting(
+                       [&](const std::string& token,
+                           instance_id::InstanceID::Result result) {
+                         EXPECT_EQ(instance_id::InstanceID::SUCCESS, result);
+                         new_subscription_id = token;
+                         run_loop.Quit();
+                       }));
+    run_loop.Run();
+    EXPECT_NE(old_subscription_id, new_subscription_id);
+  }
+
  protected:
   PushMessagingTestingProfile* profile() { return profile_.get(); }
+
+  // Returns the fake GCM profile service that SetUp() installs for
+  // `profile()`.
+  gcm::FakeGCMProfileService* GetFakeGCMProfileService() {
+    return static_cast<gcm::FakeGCMProfileService*>(
+        gcm::GCMProfileServiceFactory::GetForProfile(profile()));
+  }
 
   content::BrowserTaskEnvironment& task_environment() {
     return task_environment_;
@@ -405,9 +557,7 @@ TEST_F(PushMessagingServiceTest, MAYBE_PayloadEncryptionTest) {
       &PushMessagingServiceTest::DidDispatchMessage, base::Unretained(this),
       &app_id, &dispatched_origin, &service_worker_registration_id, &payload));
 
-  gcm::FakeGCMProfileService* fake_profile_service =
-      static_cast<gcm::FakeGCMProfileService*>(
-          gcm::GCMProfileServiceFactory::GetForProfile(profile()));
+  gcm::FakeGCMProfileService* fake_profile_service = GetFakeGCMProfileService();
 
   fake_profile_service->DispatchMessage(app_identifier.app_id(), message);
 
@@ -470,9 +620,7 @@ TEST_F(PushMessagingServiceTest, ProfileDestructionTest) {
       TestingBrowserProcess::GetGlobal());
   ASSERT_TRUE(testing_profile_manager->SetUp());
 
-  gcm::FakeGCMProfileService* fake_profile_service =
-      static_cast<gcm::FakeGCMProfileService*>(
-          gcm::GCMProfileServiceFactory::GetForProfile(profile()));
+  gcm::FakeGCMProfileService* fake_profile_service = GetFakeGCMProfileService();
 
   fake_profile_service->DispatchMessage(app_identifier.app_id(), message);
 
@@ -557,6 +705,293 @@ TEST_F(PushMessagingServiceTest, MAYBE_RemoveExpiredSubscriptions) {
       PushMessagingAppIdentifier::FindByAppId(profile(),
                                               app_identifier.app_id());
   EXPECT_TRUE(deleted_identifier.is_null());
+}
+
+// Guards that GetSubscriptionInfo() for a legacy (non-InstanceID) app_id is
+// valid and returns the keys that are stored with an empty authorized entity.
+// The app server already has these keys. On Android, this is the only test of
+// this path.
+TEST_F(PushMessagingServiceTest, GetSubscriptionInfoForLegacySubscription) {
+  PushMessagingServiceImpl* push_service = profile()->GetPushMessagingService();
+  ASSERT_TRUE(push_service);
+
+  const GURL origin(kTestOrigin);
+  std::string subscription_id, legacy_p256dh, legacy_auth_secret;
+  SeedLegacySubscription(push_service, origin, &subscription_id, &legacy_p256dh,
+                         &legacy_auth_secret);
+
+  bool is_valid = false;
+  GURL endpoint;
+  std::vector<uint8_t> p256dh, auth;
+  base::RunLoop run_loop;
+  push_service->GetSubscriptionInfo(
+      origin, kTestServiceWorkerId, std::string(kTestSenderId), subscription_id,
+      base::BindLambdaForTesting(
+          [&](bool out_is_valid, bool out_user_visible_only,
+              const GURL& out_endpoint,
+              const std::optional<base::Time>& out_expiration_time,
+              const std::vector<uint8_t>& out_p256dh,
+              const std::vector<uint8_t>& out_auth) {
+            is_valid = out_is_valid;
+            endpoint = out_endpoint;
+            p256dh = out_p256dh;
+            auth = out_auth;
+            run_loop.Quit();
+          }));
+  run_loop.Run();
+
+  EXPECT_TRUE(is_valid);
+  EXPECT_TRUE(endpoint.is_valid());
+  EXPECT_EQ(std::vector<uint8_t>(legacy_p256dh.begin(), legacy_p256dh.end()),
+            p256dh);
+  EXPECT_EQ(std::vector<uint8_t>(legacy_auth_secret.begin(),
+                                 legacy_auth_secret.end()),
+            auth);
+}
+
+// Unsubscribing a legacy (non-InstanceID) subscription deletes the InstanceID
+// and the legacy keys. It must not use the deprecated GCMDriver unregister
+// methods: on Android, FakeGCMProfileService does not support
+// GCMDriver::UnregisterWithSenderId() and hits a NOTREACHED().
+TEST_F(PushMessagingServiceTest, UnsubscribeLegacySubscription) {
+  PushMessagingServiceImpl* push_service = profile()->GetPushMessagingService();
+  ASSERT_TRUE(push_service);
+
+  const GURL origin(kTestOrigin);
+  std::string subscription_id, legacy_p256dh, legacy_auth_secret;
+  push_messaging::AppIdentifier app_identifier =
+      SeedLegacySubscription(push_service, origin, &subscription_id,
+                             &legacy_p256dh, &legacy_auth_secret);
+
+  std::optional<blink::mojom::PushUnregistrationStatus> status;
+  base::RunLoop run_loop;
+  push_service->SetUnsubscribeCallbackForTesting(run_loop.QuitClosure());
+  push_service->Unsubscribe(
+      blink::mojom::PushUnregistrationReason::JAVASCRIPT_API, origin,
+      kTestServiceWorkerId,
+      base::BindLambdaForTesting(
+          [&](blink::mojom::PushUnregistrationStatus result) {
+            status = result;
+          }));
+  run_loop.Run();
+
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(blink::mojom::PushUnregistrationStatus::SUCCESS_UNREGISTERED,
+            *status);
+  ExpectLegacySubscriptionDeleted(app_identifier.app_id(), subscription_id,
+                                  legacy_p256dh);
+}
+
+// Revoking the permission unsubscribes a legacy (non-InstanceID) subscription
+// through UnexpectedUnsubscribe(). This path does not use the sender ID.
+// Unsubscribe deletes the InstanceID and the legacy keys, also on Android,
+// where the browser tests do not run.
+TEST_F(PushMessagingServiceTest,
+       UnsubscribeLegacySubscriptionOnPermissionRevocation) {
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl* push_service = profile()->GetPushMessagingService();
+  ASSERT_TRUE(push_service);
+
+  const GURL origin(kTestOrigin);
+  SetPermission(origin, CONTENT_SETTING_ALLOW);
+  std::string subscription_id, legacy_p256dh, legacy_auth_secret;
+  push_messaging::AppIdentifier app_identifier =
+      SeedLegacySubscription(push_service, origin, &subscription_id,
+                             &legacy_p256dh, &legacy_auth_secret);
+
+  // The callback runs after DeleteID() and RemoveInstanceID().
+  base::RunLoop run_loop;
+  push_service->SetUnsubscribeCallbackForTesting(run_loop.QuitClosure());
+  SetPermission(origin, CONTENT_SETTING_DEFAULT);
+  run_loop.Run();
+
+  histograms.ExpectUniqueSample(
+      "PushMessaging.UnregistrationReason",
+      static_cast<int>(
+          blink::mojom::PushUnregistrationReason::PERMISSION_REVOKED),
+      1);
+  ExpectLegacySubscriptionDeleted(app_identifier.app_id(), subscription_id,
+                                  legacy_p256dh);
+}
+
+TEST_F(PushMessagingServiceTest, StoredSubscriptionCountsIgnoreOffTheRecord) {
+  // The OTR profile reads the prefs of its parent profile. This makes sure
+  // that the profile type, not empty prefs, stops the recording.
+  PersistTestSubscriptions(profile());
+  Profile* otr_profile =
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_TRUE(otr_profile);
+  ASSERT_EQ(3u, PushMessagingAppIdentifier::GetCount(otr_profile));
+
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl::InitializeForProfile(otr_profile);
+  histograms.ExpectTotalCount(kStoredInstanceIDCountHistogram, 0);
+  histograms.ExpectTotalCount(kStoredLegacyCountHistogram, 0);
+}
+
+TEST_F(PushMessagingServiceTest, StoredSubscriptionCountsIgnoreGuestProfile) {
+  TestingProfileManager testing_profile_manager(
+      TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(testing_profile_manager.SetUp());
+  TestingProfile* guest_profile = testing_profile_manager.CreateGuestProfile();
+  ASSERT_TRUE(guest_profile);
+  ASSERT_TRUE(guest_profile->IsGuestSession());
+  Profile* guest_otr_profile =
+      guest_profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_TRUE(guest_otr_profile);
+
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl::InitializeForProfile(guest_profile);
+  PushMessagingServiceImpl::InitializeForProfile(guest_otr_profile);
+  histograms.ExpectTotalCount(kStoredInstanceIDCountHistogram, 0);
+  histograms.ExpectTotalCount(kStoredLegacyCountHistogram, 0);
+}
+
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+TEST_F(PushMessagingServiceTest, StoredSubscriptionCountsIgnoreSystemProfile) {
+  auto testing_profile_manager = std::make_unique<TestingProfileManager>(
+      TestingBrowserProcess::GetGlobal());
+  ASSERT_TRUE(testing_profile_manager->SetUp());
+  TestingProfile* system_profile =
+      testing_profile_manager->CreateSystemProfile();
+  ASSERT_TRUE(system_profile);
+  ASSERT_TRUE(system_profile->IsSystemProfile());
+
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl::InitializeForProfile(system_profile);
+  histograms.ExpectTotalCount(kStoredInstanceIDCountHistogram, 0);
+  histograms.ExpectTotalCount(kStoredLegacyCountHistogram, 0);
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+
+TEST_F(PushMessagingServiceTest, StoredSubscriptionCountsRecordZero) {
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl::InitializeForProfile(profile());
+  histograms.ExpectUniqueSample(kStoredInstanceIDCountHistogram, 0, 1);
+  histograms.ExpectUniqueSample(kStoredLegacyCountHistogram, 0, 1);
+}
+
+TEST_F(PushMessagingServiceTest, StoredSubscriptionCountsBySubscriptionType) {
+  PersistTestSubscriptions(profile());
+
+  base::HistogramTester histograms;
+  PushMessagingServiceImpl::InitializeForProfile(profile());
+  histograms.ExpectUniqueSample(kStoredInstanceIDCountHistogram, 2, 1);
+  histograms.ExpectUniqueSample(kStoredLegacyCountHistogram, 1, 1);
+}
+
+TEST_F(PushMessagingServiceTest, RecordsDeliveryStatusBySubscriptionType) {
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitch(
+      switches::kAllowSilentPush);
+
+  PushMessagingServiceImpl* push_service = profile()->GetPushMessagingService();
+  ASSERT_TRUE(push_service);
+
+  const GURL origin(kTestOrigin);
+  const GURL legacy_origin("https://legacy.example.com/");
+  SetPermission(origin, CONTENT_SETTING_ALLOW);
+  SetPermission(legacy_origin, CONTENT_SETTING_ALLOW);
+
+  Subscribe(push_service, origin);
+  push_messaging::AppIdentifier instance_id_identifier =
+      PushMessagingAppIdentifier::FindByServiceWorker(profile(), origin,
+                                                      kTestServiceWorkerId);
+  ASSERT_FALSE(instance_id_identifier.is_null());
+
+  push_messaging::AppIdentifier legacy_identifier =
+      LegacyGenerateForTesting(legacy_origin, kTestServiceWorkerId);
+  PushMessagingAppIdentifier::PersistToPrefs(legacy_identifier, profile());
+  IncreasePushSubscriptionCount(push_service, 1, /*is_pending=*/false);
+
+  SetDispatchedMessageStatusForTesting(push_service,
+                                       blink::mojom::PushEventStatus::SUCCESS);
+
+  gcm::FakeGCMProfileService* fake_profile_service = GetFakeGCMProfileService();
+  gcm::IncomingMessage message;
+  message.sender_id = kTestSenderId;
+  message.raw_data = kTestPayload;
+  message.decrypted = true;
+
+  base::HistogramTester histograms;
+
+  {
+    base::RunLoop run_loop;
+    push_service->SetMessageCallbackForTesting(run_loop.QuitClosure());
+    fake_profile_service->DispatchMessage(instance_id_identifier.app_id(),
+                                          message);
+    run_loop.Run();
+  }
+  histograms.ExpectUniqueSample(
+      "Notifications.PushMessaging.DeliveryStatus.InstanceID",
+      blink::mojom::PushEventStatus::SUCCESS, 1);
+  histograms.ExpectTotalCount(
+      "Notifications.PushMessaging.DeliveryStatus.Legacy", 0);
+
+  {
+    base::RunLoop run_loop;
+    push_service->SetMessageCallbackForTesting(run_loop.QuitClosure());
+    fake_profile_service->DispatchMessage(legacy_identifier.app_id(), message);
+    run_loop.Run();
+  }
+  histograms.ExpectUniqueSample(
+      "Notifications.PushMessaging.DeliveryStatus.Legacy",
+      blink::mojom::PushEventStatus::SUCCESS, 1);
+  // The unpatterned histogram records every delivery once.
+  histograms.ExpectUniqueSample("PushMessaging.DeliveryStatus",
+                                blink::mojom::PushEventStatus::SUCCESS, 2);
+}
+
+TEST_F(PushMessagingServiceTest,
+       RecordsUnknownAppIdDeliveryStatusBySubscriptionType) {
+  PushMessagingServiceImpl* push_service = profile()->GetPushMessagingService();
+  ASSERT_TRUE(push_service);
+  // Register the service as the GCM app handler for push app_ids.
+  IncreasePushSubscriptionCount(push_service, 1, /*is_pending=*/false);
+
+  gcm::FakeGCMProfileService* fake_profile_service = GetFakeGCMProfileService();
+  gcm::IncomingMessage message;
+  message.raw_data = kTestPayload;
+  message.decrypted = true;
+
+  const GURL unknown_origin("https://unsubscribed.example.com/");
+  base::HistogramTester histograms;
+
+  {
+    push_messaging::AppIdentifier unknown_legacy =
+        LegacyGenerateForTesting(unknown_origin, kTestServiceWorkerId);
+    base::RunLoop unsubscribe_loop;
+    push_service->SetUnsubscribeCallbackForTesting(
+        unsubscribe_loop.QuitClosure());
+    fake_profile_service->DispatchMessage(unknown_legacy.app_id(), message);
+    unsubscribe_loop.Run();
+  }
+  histograms.ExpectUniqueSample(
+      "Notifications.PushMessaging.DeliveryStatus.Legacy",
+      blink::mojom::PushEventStatus::UNKNOWN_APP_ID, 1);
+  histograms.ExpectTotalCount(
+      "Notifications.PushMessaging.DeliveryStatus.InstanceID", 0);
+
+  {
+    push_messaging::AppIdentifier unknown_instance_id =
+        push_messaging::AppIdentifier::Generate(unknown_origin,
+                                                kTestServiceWorkerId);
+    base::RunLoop unsubscribe_loop;
+    push_service->SetUnsubscribeCallbackForTesting(
+        unsubscribe_loop.QuitClosure());
+    fake_profile_service->DispatchMessage(unknown_instance_id.app_id(),
+                                          message);
+    unsubscribe_loop.Run();
+  }
+  histograms.ExpectUniqueSample(
+      "Notifications.PushMessaging.DeliveryStatus.InstanceID",
+      blink::mojom::PushEventStatus::UNKNOWN_APP_ID, 1);
+  histograms.ExpectUniqueSample(
+      "Notifications.PushMessaging.DeliveryStatus.Legacy",
+      blink::mojom::PushEventStatus::UNKNOWN_APP_ID, 1);
+  histograms.ExpectUniqueSample("PushMessaging.DeliveryStatus",
+                                blink::mojom::PushEventStatus::UNKNOWN_APP_ID,
+                                2);
 }
 
 // Tests that extensions are permitted to pass userVisibleOnly true or false

@@ -26,6 +26,7 @@ import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.View.OnLayoutChangeListener;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 import android.widget.FrameLayout;
@@ -71,6 +72,7 @@ import org.chromium.chrome.browser.toolbar.top.CaptureReadinessResult.TopToolbar
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
+import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.widget.ClipDrawableProgressBar.DrawingInfo;
 import org.chromium.components.browser_ui.widget.TouchEventObserver;
 import org.chromium.components.browser_ui.widget.ViewResourceCoordinatorLayout;
@@ -94,7 +96,7 @@ import java.util.function.Supplier;
 /** Layout for the browser controls (omnibox, menu, tab strip, etc..). */
 @NullMarked
 public class ToolbarControlContainer extends OptimizedFrameLayout
-        implements ControlContainer, Observer, DesktopWindowStateManager.AppHeaderObserver {
+        implements ControlContainer, Observer, AppHeaderObserver {
     private static final String TAG = "ToolbarCtrlContainer";
     private static final double SAMPLE_STALE_CAPTURE_PROBABILITY = 0.01;
 
@@ -165,6 +167,8 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
     private int mTopMarginNarrowWidth;
     private int mLastVerticalTabsTopMargin;
     private @Nullable TopControlsStacker mTopControlsStacker;
+    private @Nullable OnLayoutChangeListener mTopMarginLayoutChangeListener;
+    private @Nullable Integer mPendingTopMargin;
 
     /**
      * Constructs a new control container.
@@ -317,6 +321,49 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
     public void setCompositorBackgroundInitialized() {
         mIsCompositorInitialized = true;
         updateBackgroundColor();
+        if (mPendingTopMargin != null) {
+            setTopMargin(mPendingTopMargin);
+        }
+    }
+
+    @Override
+    public void setTopMargin(int topMargin) {
+        // https://crbug.com/40736668: Wait until the temporary startup background is cleared so
+        // that the height won't be measured by the background image.
+        if (hasTempStartupBackground()) {
+            mPendingTopMargin = topMargin;
+            if (mTopMarginLayoutChangeListener == null) {
+                mTopMarginLayoutChangeListener =
+                        (view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
+                            if (!hasTempStartupBackground() && mPendingTopMargin != null) {
+                                setTopMargin(mPendingTopMargin);
+                            }
+                        };
+                addOnLayoutChangeListener(mTopMarginLayoutChangeListener);
+            }
+            return;
+        }
+
+        clearPendingTopMargin();
+        MarginLayoutParams layoutParams = (MarginLayoutParams) getLayoutParams();
+        if (layoutParams == null || layoutParams.topMargin == topMargin) {
+            return;
+        }
+
+        layoutParams.topMargin = topMargin;
+        setLayoutParams(layoutParams);
+    }
+
+    private boolean hasTempStartupBackground() {
+        return !mIsCompositorInitialized && getBackground() != null;
+    }
+
+    private void clearPendingTopMargin() {
+        mPendingTopMargin = null;
+        if (mTopMarginLayoutChangeListener != null) {
+            removeOnLayoutChangeListener(mTopMarginLayoutChangeListener);
+            mTopMarginLayoutChangeListener = null;
+        }
     }
 
     @Override
@@ -421,6 +468,7 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
 
         mVerticalTabsContainerWidthSupplier.removeObserver(mVerticalTabsWidthObserver);
         mVerticalTabsContainerWidthSupplier = ObservableSuppliers.createNonNull(0);
+        clearPendingTopMargin();
     }
 
     @Override
@@ -653,6 +701,7 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
     /**
      * @param toolbar The toolbar contained inside this control container. Should be called after
      *     inflation is complete.
+     * @param toolbarView The toolbar's {@link ViewGroup}.
      * @param isIncognito Whether the toolbar should be initialized with incognito colors.
      * @param constraintsSupplier Used to access current constraints of the browser controls.
      * @param tabSupplier Used to access the current tab state.
@@ -661,6 +710,8 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
      *     captures are stale and not able to be taken.
      * @param layoutStateProviderSupplier Used to check the current layout type.
      * @param fullscreenManager Used to check whether in fullscreen.
+     * @param toolbarDataProvider The provider for toolbar data.
+     * @param desktopWindowStateManager The {@link DesktopWindowStateManager} instance.
      * @param topControlsStacker Used to access top controls state.
      */
     @Initializer
@@ -916,6 +967,7 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
          * @param controlContainerIsVisibleSupplier Whether the toolbar is visible.
          * @param layoutStateProviderSupplier Used to check the current layout type.
          * @param fullscreenManager Used to check whether in fullscreen.
+         * @param toolbarDataProvider The provider for toolbar data.
          * @param topControlsStacker Used to access top controls state.
          */
         @Initializer
@@ -1041,10 +1093,12 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
         }
 
         /**
-         * @return Whether a dirty check for invalidation makes sense at this time.
-         *     <p>False if either the toolbar is not dirty, or the toolbar is dirty but a capture
-         *     isn't required at this moment (see {@link TopToolbarBlockCaptureReason})
-         *     <p>True if the toolbar is dirty and a new capture is needed.
+         * Returns whether a dirty check for invalidation makes sense at this time.
+         *
+         * <p>False if either the toolbar is not dirty, or the toolbar is dirty but a capture isn't
+         * required at this moment (see {@link TopToolbarBlockCaptureReason}).
+         *
+         * <p>True if the toolbar is dirty and a new capture is needed.
          */
         private boolean checkCaptureReadinessResult() {
             CaptureReadinessResult isReadyResult =
@@ -1339,9 +1393,7 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
                 : BelowToolbarTouchArea.NOT_APPLICABLE;
     }
 
-    /**
-     * @return Whether or not the toolbar container is fully visible on screen.
-     */
+    /** Returns whether or not the toolbar container is fully visible on screen. */
     private boolean isToolbarContainerFullyVisible() {
         return mToolbarContainer.getVisibility() == VISIBLE;
     }
@@ -1357,8 +1409,8 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
     }
 
     /**
-     * @return The height of the screenshot of the toolbar (may include the tabstrip on large form
-     *     factors.)
+     * Returns the height of the screenshot of the toolbar (may include the tabstrip on large form
+     * factors.)
      */
     public int getToolbarCaptureHeight() {
         return mToolbarCaptureSize.height();
@@ -1391,7 +1443,7 @@ public class ToolbarControlContainer extends OptimizedFrameLayout
             if (isOnTabStrip(e1)) return false;
             if (mToolbar != null && mToolbar.shouldIgnoreSwipeGesture()) return false;
             if (KeyboardVisibilityDelegate.getInstance()
-                    .isKeyboardShowing(ToolbarControlContainer.this)) {
+                    .isKeyboardObscuring(ToolbarControlContainer.this)) {
                 return false;
             }
             return true;

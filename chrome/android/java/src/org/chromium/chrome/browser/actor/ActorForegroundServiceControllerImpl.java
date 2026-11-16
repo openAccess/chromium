@@ -83,13 +83,6 @@ public class ActorForegroundServiceControllerImpl implements ActorForegroundServ
             };
 
     @Override
-    public void startService(String glicTriggerMessageId) {
-        ensureBackgroundActuationManagerCreated();
-        Context context = ContextUtils.getApplicationContext();
-        ActorForegroundServiceImpl.startActorForegroundService(context);
-    }
-
-    @Override
     public void startAndBindService(Runnable onConnected) {
         ensureBackgroundActuationManagerCreated();
         mOnConnectedRunnable = onConnected;
@@ -114,10 +107,7 @@ public class ActorForegroundServiceControllerImpl implements ActorForegroundServ
 
     @Override
     public void startOrUpdateForegroundService(
-            int newNotificationId,
-            Notification newNotification,
-            int oldNotificationId,
-            boolean killOldNotification) {
+            int newNotificationId, Notification newNotification) {
         if (mBoundService == null) {
             if (BuildConfig.ENABLE_ASSERTS) {
                 Log.i(TAG, "Cannot update foreground service: not connected.");
@@ -125,8 +115,7 @@ public class ActorForegroundServiceControllerImpl implements ActorForegroundServ
             return;
         }
         ensureBackgroundActuationManagerCreated();
-        mBoundService.startOrUpdateForegroundService(
-                newNotificationId, newNotification, oldNotificationId, killOldNotification);
+        mBoundService.startOrUpdateForegroundService(newNotificationId, newNotification);
     }
 
     @Override
@@ -221,6 +210,16 @@ public class ActorForegroundServiceControllerImpl implements ActorForegroundServ
         }
         intent.putExtra(NotificationConstants.EXTRA_ACTOR_TASK_ID, task.getId());
         intent.putExtra(NotificationConstants.EXTRA_ACTOR_TASK_STATE, task.getState());
+        return intent;
+    }
+
+    @Override
+    public Intent createTrustedPendingActorTaskNewTabIntent() {
+        Context context = ContextUtils.getApplicationContext();
+        Intent intent =
+                IntentHandler.createTrustedOpenNewTabIntent(context, /* incognito= */ false);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        intent.putExtra(GlicIntentConstants.EXTRA_GLIC_PENDING_ACTOR_TASK, true);
         return intent;
     }
 

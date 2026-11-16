@@ -104,17 +104,16 @@ void LockProcessIfNeeded(ChildProcessId process_id,
   if (url && site_instance->RequiresDedicatedProcess() &&
       site_instance->GetSiteInfo().ShouldLockProcessToSite(isolation_context)) {
     policy->LockProcess(
-        isolation_context, process_id,
-        ProcessLock::FromSiteInfo(site_instance->GetSiteInfo()));
+        process_id, ProcessLock::FromSiteInfo(site_instance->GetSiteInfo()));
   } else if (policy->GetProcessLock(process_id).is_invalid()) {
     policy->LockProcess(
-        isolation_context, process_id,
-        ProcessLock::CreateAllowAnySite(
-            StoragePartitionConfig::CreateDefault(browser_context),
-            site_instance->GetWebExposedIsolationInfo(),
-            /*cross_origin_isolation_key=*/std::nullopt,
-            browser_context->UniqueToken()));
+        process_id, ProcessLock::CreateAllowAnySite(
+                        StoragePartitionConfig::CreateDefault(browser_context),
+                        site_instance->GetWebExposedIsolationInfo(),
+                        /*cross_origin_isolation_key=*/std::nullopt,
+                        browser_context->UniqueToken()));
   }
+  policy->IncludeIsolationContext(process_id.value(), isolation_context);
 }
 
 }  // namespace
@@ -1290,6 +1289,43 @@ TEST_P(ChildProcessSecurityPolicyTest, FilePermissions) {
   p->Remove(process_id);
 }
 
+TEST_P(ChildProcessSecurityPolicyTest, GetReadFileGrantPath) {
+  const base::FilePath home(TEST_PATH("/home"));
+  const base::FilePath joe(TEST_PATH("/home/joe"));
+  const base::FilePath bob(TEST_PATH("/home/bob"));
+  ChildProcessSecurityPolicyImpl* p =
+      ChildProcessSecurityPolicyImpl::GetInstance();
+  auto process = std::make_unique<MockRenderProcessHost>(browser_context());
+  const ChildProcessId process_id = process->GetID();
+  LockProcessIfNeeded(process_id, browser_context());
+
+  EXPECT_EQ(base::FilePath(), p->GetReadFileGrantPath(process_id, joe));
+
+  p->GrantReadFile(process_id, home);
+  p->GrantReadFile(process_id, joe);
+  // The nearest grant wins.
+  EXPECT_EQ(joe, p->GetReadFileGrantPath(process_id, joe));
+  EXPECT_EQ(joe, p->GetReadFileGrantPath(
+                     process_id, base::FilePath(TEST_PATH("/home/joe/a"))));
+  EXPECT_EQ(home, p->GetReadFileGrantPath(
+                      process_id, base::FilePath(TEST_PATH("/home/bob/a"))));
+  EXPECT_EQ(base::FilePath(),
+            p->GetReadFileGrantPath(process_id,
+                                    base::FilePath(TEST_PATH("/etc/passwd"))));
+  EXPECT_EQ(base::FilePath(),
+            p->GetReadFileGrantPath(
+                process_id, base::FilePath(TEST_PATH("/home/../etc/passwd"))));
+
+  // A nearer grant without read permission shadows the broader one, as in
+  // CanReadFile().
+  GrantPermissionsForFile(p, process_id, bob, base::File::FLAG_CREATE);
+  EXPECT_FALSE(p->CanReadFile(process_id, bob));
+  EXPECT_EQ(base::FilePath(), p->GetReadFileGrantPath(process_id, bob));
+
+  process.reset();
+  EXPECT_EQ(base::FilePath(), p->GetReadFileGrantPath(process_id, joe));
+}
+
 TEST_P(ChildProcessSecurityPolicyTest, CanServiceWebUIBindings) {
   ChildProcessSecurityPolicyImpl* p =
       ChildProcessSecurityPolicyImpl::GetInstance();
@@ -1983,8 +2019,9 @@ TEST_P(ChildProcessSecurityPolicyTest, SandboxedProcessEnforcements) {
                                          /*is_fenced=*/false,
                                          /*is_fixed_storage_partition=*/false);
   process.SetProcessLock(
-      sandboxed_instance->GetIsolationContext(),
       ProcessLock::FromSiteInfo(sandboxed_instance->GetSiteInfo()));
+  p->IncludeIsolationContext(renderer_id,
+                             sandboxed_instance->GetIsolationContext());
 
   auto foo_origin = url::Origin::Create(GURL("https://foo.com"));
   auto opaque_foo_origin = foo_origin.DeriveNewOpaqueOrigin();
@@ -2107,8 +2144,8 @@ TEST_P(ChildProcessSecurityPolicyTest, PdfProcessEnforcements) {
                                          /*is_fenced=*/false,
                                          /*is_fixed_storage_partition=*/false);
   process.SetProcessLock(
-      pdf_instance->GetIsolationContext(),
       ProcessLock::FromSiteInfo(pdf_instance->GetSiteInfo()));
+  p->IncludeIsolationContext(renderer_id, pdf_instance->GetIsolationContext());
 
   auto foo_origin = url::Origin::Create(GURL("https://foo.com"));
   auto bar_origin = url::Origin::Create(GURL("https://bar.com"));
@@ -2159,8 +2196,9 @@ TEST_P(ChildProcessSecurityPolicyTest, PdfProcessSandboxedFileSystem) {
                                          /*is_fenced=*/false,
                                          /*is_fixed_storage_partition=*/false);
   process.SetProcessLock(
-      pdf_instance->GetIsolationContext(),
       ProcessLock::FromSiteInfo(pdf_instance->GetSiteInfo()));
+  p->IncludeIsolationContext(process.GetDeprecatedID(),
+                             pdf_instance->GetIsolationContext());
 
   auto foo_origin = url::Origin::Create(GURL("https://foo.com"));
   p->AddCommittedOrigin(process.GetDeprecatedID(), foo_origin);
@@ -3574,6 +3612,27 @@ TEST_P(ChildProcessSecurityPolicyTest,
   p->ClearIsolatedOriginsForTesting();
 }
 
+TEST_P(ChildProcessSecurityPolicyTest,
+       LockProcessDoesNotRegisterBrowsingInstance) {
+  TestBrowserContext context;
+  MockRenderProcessHost process(&context);
+  auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+  scoped_refptr<SiteInstanceImpl> site_instance =
+      SiteInstanceImpl::Create(&context);
+
+  policy->LockProcess(
+      process.GetID(),
+      ProcessLock::CreateAllowAnySite(
+          StoragePartitionConfig::CreateDefault(&context),
+          WebExposedIsolationInfo::CreateNonIsolated(),
+          /*cross_origin_isolation_key=*/std::nullopt, context.UniqueToken()));
+  EXPECT_EQ(0u, policy->BrowsingInstanceIdCountForTesting(process.GetID()));
+
+  policy->IncludeIsolationContext(process.GetDeprecatedID(),
+                                  site_instance->GetIsolationContext());
+  EXPECT_EQ(1u, policy->BrowsingInstanceIdCountForTesting(process.GetID()));
+}
+
 // This test verifies that CanAccessDataForOrigin returns true for a process id
 // even if all BrowsingInstanceIDs for that process have been deleted, so long
 // as the request matches the process' lock. This test sets an origin-keyed
@@ -3603,8 +3662,10 @@ TEST_P(ChildProcessSecurityPolicyTest, NoBrowsingInstanceIDs_OriginKeyed) {
             /*is_fenced=*/false,
             /*is_fixed_storage_partition=*/false);
 
-    p->LockProcess(foo_instance->GetIsolationContext(), process_id,
+    p->LockProcess(process_id,
                    ProcessLock::FromSiteInfo(foo_instance->GetSiteInfo()));
+    p->IncludeIsolationContext(renderer_id,
+                               foo_instance->GetIsolationContext());
     p->AddCommittedOrigin(renderer_id, foo);
 
     EXPECT_TRUE(p->GetProcessLock(process_id).IsLockedToSite());
@@ -3665,8 +3726,10 @@ TEST_P(ChildProcessSecurityPolicyTest_NoOriginKeyedProcessesByDefault,
             /*is_guest=*/false,
             /*is_fenced=*/false,
             /*is_fixed_storage_partition=*/false);
-    p->LockProcess(foo_instance->GetIsolationContext(), process_id,
+    p->LockProcess(process_id,
                    ProcessLock::FromSiteInfo(foo_instance->GetSiteInfo()));
+    p->IncludeIsolationContext(renderer_id,
+                               foo_instance->GetIsolationContext());
     p->AddCommittedOrigin(renderer_id, sub_foo_origin);
 
     EXPECT_TRUE(p->GetProcessLock(process_id).IsLockedToSite());
@@ -3736,16 +3799,16 @@ TEST_P(ChildProcessSecurityPolicyTest, NoBrowsingInstanceIDs_UnlockedProcess) {
   {
     scoped_refptr<SiteInstanceImpl> foo_instance =
         SiteInstanceImpl::CreateForTesting(&context, foo_url);
-    // Lock the process with an "allow_any_site" lock, using `foo_instance`'s
-    // BrowsingInstance rather than a fixed BrowsingInstanceId. This is
-    // important when this test is run with other tests, as then the
-    // BrowsingInstanceId will not be 1 in general.
-    p->LockProcess(foo_instance->GetIsolationContext(), process_id,
+    // Register `foo_instance`'s BrowsingInstance rather than a fixed ID.
+    // Its ID will not necessarily be 1 when this runs with other tests.
+    p->LockProcess(process_id,
                    ProcessLock::CreateAllowAnySite(
                        StoragePartitionConfig::CreateDefault(&context),
                        WebExposedIsolationInfo::CreateNonIsolated(),
                        /*cross_origin_isolation_key=*/std::nullopt,
                        context.UniqueToken()));
+    p->IncludeIsolationContext(process.GetDeprecatedID(),
+                               foo_instance->GetIsolationContext());
 
     EXPECT_TRUE(foo_instance->HasSite());
     if (ShouldUseDefaultSiteInstanceGroup()) {
@@ -3792,11 +3855,13 @@ TEST_P(ChildProcessSecurityPolicyTest, CannotLockUsedProcessToSite) {
 
   // Start by putting foo.com into an allows-any-site process.
   p->LockProcess(
-      foo_instance->GetIsolationContext(), process_id,
+      process_id,
       ProcessLock::CreateAllowAnySite(
           StoragePartitionConfig::CreateDefault(&context),
           WebExposedIsolationInfo::CreateNonIsolated(),
           /*cross_origin_isolation_key=*/std::nullopt, context.UniqueToken()));
+  p->IncludeIsolationContext(process.GetDeprecatedID(),
+                             foo_instance->GetIsolationContext());
   EXPECT_TRUE(p->GetProcessLock(process_id).AllowsAnySite());
   EXPECT_FALSE(p->GetProcessLock(process_id).IsLockedToSite());
 
@@ -3819,7 +3884,7 @@ TEST_P(ChildProcessSecurityPolicyTest, CannotLockUsedProcessToSite) {
 #endif
   EXPECT_CHECK_DEATH_WITH(
       {
-        p->LockProcess(bar_instance->GetIsolationContext(), process_id,
+        p->LockProcess(process_id,
                        ProcessLock::FromSiteInfo(bar_instance->GetSiteInfo()));
       },
       IsRustProcessStateEnabled()
@@ -3840,16 +3905,20 @@ TEST_P(ChildProcessSecurityPolicyTest, LockToSiteMarksProcessAsUsed) {
 
   // An allows-any-site lock does not mark the process as used.
   p->LockProcess(
-      foo_instance->GetIsolationContext(), process_id,
+      process_id,
       ProcessLock::CreateAllowAnySite(
           StoragePartitionConfig::CreateDefault(&context),
           WebExposedIsolationInfo::CreateNonIsolated(),
           /*cross_origin_isolation_key=*/std::nullopt, context.UniqueToken()));
+  p->IncludeIsolationContext(process.GetDeprecatedID(),
+                             foo_instance->GetIsolationContext());
   EXPECT_TRUE(p->GetProcessLock(process_id).is_unused());
 
   // A lock to a site marks the process as used.
-  p->LockProcess(foo_instance->GetIsolationContext(), process_id,
+  p->LockProcess(process_id,
                  ProcessLock::FromSiteInfo(foo_instance->GetSiteInfo()));
+  p->IncludeIsolationContext(process.GetDeprecatedID(),
+                             foo_instance->GetIsolationContext());
   EXPECT_TRUE(p->GetProcessLock(process_id).IsLockedToSite());
   EXPECT_FALSE(p->GetProcessLock(process_id).is_unused());
 
@@ -3874,8 +3943,10 @@ TEST_P(ChildProcessSecurityPolicyTest, GetProcessLockAfterProcessRemoval) {
   // Lock process to foo.com.
   auto process = std::make_unique<MockRenderProcessHost>(&context);
   const ChildProcessId process_id = process->GetID();
-  p->LockProcess(foo_instance->GetIsolationContext(), process_id,
+  p->LockProcess(process_id,
                  ProcessLock::FromSiteInfo(foo_instance->GetSiteInfo()));
+  p->IncludeIsolationContext(process->GetDeprecatedID(),
+                             foo_instance->GetIsolationContext());
   EXPECT_TRUE(p->GetProcessLock(process_id).IsLockedToSite());
   EXPECT_FALSE(p->GetProcessLock(process_id).AllowsAnySite());
 
@@ -4137,7 +4208,14 @@ TEST_P(ChildProcessSecurityPolicyTest,
 
 // Tests that processes are only allowed to commit and access data for content
 // in their own shard (see BrowserContext::SetSitesForEmbedderShard()).
-TEST_P(ChildProcessSecurityPolicyTest, Shards) {
+// TODO(crbug.com/585637933): Fails on Android when run in a batch after
+// other tests; passes when retried alone.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_Shards DISABLED_Shards
+#else
+#define MAYBE_Shards Shards
+#endif
+TEST_P(ChildProcessSecurityPolicyTest, MAYBE_Shards) {
   // TODO(crbug.com/576113096): Support shards in the Rust ProcessState.
   if (IsRustProcessStateEnabled()) {
     GTEST_SKIP() << "Shards are not supported by the Rust ProcessState yet.";

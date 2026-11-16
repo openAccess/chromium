@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/strings/string_number_conversions.h"
+#include "base/time/time.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager.h"
 #include "components/autofill/core/browser/data_manager/addresses/address_data_manager_test_api.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
@@ -138,7 +139,7 @@ void AutofillMetricsBaseTest::InitAutofillClient() {
 void AutofillMetricsBaseTest::SetUpHelper() {
   // Advance the mock clock to a fixed, arbitrary, somewhat recent date.
   base::Time year2020;
-  ASSERT_TRUE(base::Time::FromString("01/01/20", &year2020));
+  ASSERT_TRUE(base::Time::FromUTCString("01/01/20", &year2020));
   task_environment_.FastForwardBy(year2020 - base::Time::Now());
 
   std::unique_ptr<ValuablesTable> valuables_table =
@@ -287,6 +288,7 @@ void AutofillMetricsBaseTest::OnDidGetRealPan(
           ? payments::PaymentsAutofillClient::PaymentsRpcCardType::kVirtualCard
           : payments::PaymentsAutofillClient::PaymentsRpcCardType::kServerCard;
   full_card_request->OnDidGetRealPan(result, response.with_real_pan(real_pan));
+  test_api(autofill_manager()).RunPendingPostFillTasks();
 }
 
 void AutofillMetricsBaseTest::OnDidGetRealPanWithNonHttpOkResponse() {

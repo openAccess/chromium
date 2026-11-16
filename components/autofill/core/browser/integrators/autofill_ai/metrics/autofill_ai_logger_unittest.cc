@@ -535,7 +535,7 @@ TEST_P(AutofillAiFunnelMetricsTest, SuggestionAfterReadiness) {
   {  // The user triggered suggestions.
     manager().OnFormSeen(*form);
     manager().OnAutofillAiSuggestionsShown(
-        *form, *form->field(0), {GetSuggestion(entity)},
+        *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
         /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
     base::HistogramTester histogram_tester;
     SubmitOrAbandonForm(*form);
@@ -552,7 +552,7 @@ TEST_P(AutofillAiFunnelMetricsTest, FillAfterSuggestion) {
   auto set_up_funnel = [&] {
     manager().OnFormSeen(*form);
     manager().OnAutofillAiSuggestionsShown(
-        *form, *form->field(0), {GetSuggestion(entity)},
+        *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
         /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   };
   {  // The user didn't fill suggestions.
@@ -582,7 +582,7 @@ TEST_P(AutofillAiFunnelMetricsTest, CorrectionAfterFill) {
   auto set_up_funnel = [&] {
     manager().OnFormSeen(*form);
     manager().OnAutofillAiSuggestionsShown(
-        *form, *form->field(0), {GetSuggestion(entity)},
+        *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
         /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
     manager().OnDidFillSuggestion(entity, *form, *form->field(0),
                                   {form->field(0)},
@@ -709,7 +709,7 @@ TEST_P(AutofillAiKeyMetricsTest, FillingAssistance) {
   }
   {
     manager().OnAutofillAiSuggestionsShown(
-        *form, *form->field(0), {GetSuggestion(entity)},
+        *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
         /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
     manager().OnDidFillSuggestion(entity, *form, *form->field(0),
                                   /*filled_fields=*/{},
@@ -727,7 +727,7 @@ TEST_P(AutofillAiKeyMetricsTest, FillingAcceptance) {
   AddOrUpdateEntityInstance(entity);
   manager().OnFormSeen(*form);
   manager().OnAutofillAiSuggestionsShown(
-      *form, *form->field(0), {GetSuggestion(entity)},
+      *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   {
     base::HistogramTester histogram_tester;
@@ -752,7 +752,7 @@ TEST_P(AutofillAiKeyMetricsTest, FillingCorrectness) {
   AddOrUpdateEntityInstance(entity);
   manager().OnFormSeen(*form);
   manager().OnAutofillAiSuggestionsShown(
-      *form, *form->field(0), {GetSuggestion(entity)},
+      *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   manager().OnDidFillSuggestion(entity, *form, *form->field(0),
                                 /*filled_fields=*/{form->field(0)},
@@ -779,7 +779,7 @@ TEST_P(AutofillAiKeyMetricsTest, FillingCorrectnessMergeConstraints) {
   AddOrUpdateEntityInstance(entity);
   manager().OnFormSeen(*form);
   manager().OnAutofillAiSuggestionsShown(
-      *form, *form->field(0), {GetSuggestion(entity)},
+      *form, *form->field(0), {GetSuggestion(entity)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   manager().OnDidFillSuggestion(
       entity, *form, *form->field(0),
@@ -847,11 +847,11 @@ TEST_F(BaseAutofillAiTest, KeyMetrics_MixedForm) {
   // Assistance should be true for both.
   manager().OnAutofillAiSuggestionsShown(
       *mixed_form, *mixed_form->fields().front(),
-      {GetSuggestion(vehicle_entity)},
+      {GetSuggestion(vehicle_entity)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   manager().OnAutofillAiSuggestionsShown(
       *mixed_form, *mixed_form->fields().back(),
-      {GetSuggestion(drivers_license_entity)},
+      {GetSuggestion(drivers_license_entity)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
 
   // Acceptance should be true for both.
@@ -926,6 +926,7 @@ TEST_F(BaseAutofillAiTest, KeyMetrics_PerRecordType) {
   manager().OnAutofillAiSuggestionsShown(
       *form, *form->field(0),
       {GetSuggestion(local_entity), GetSuggestion(ambient_entity)},
+      /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
   manager().OnDidFillSuggestion(ambient_entity, *form, *form->field(0),
                                 /*filled_fields=*/{form->field(0)},
@@ -987,6 +988,292 @@ TEST_F(BaseAutofillAiTest, KeyMetrics_PerRecordType) {
       0);
 }
 
+class AutofillAiAffiliatedKeyMetricsTest
+    : public BaseAutofillAiTest,
+      public testing::WithParamInterface<
+          std::tuple<EntityType, EntityInstance::RecordType>> {
+ public:
+  AutofillAiAffiliatedKeyMetricsTest() {
+    autofill_client().set_last_committed_primary_main_frame_url(
+        GURL("https://affiliated.com/checkout"));
+  }
+
+  EntityType entity_type() const { return std::get<0>(GetParam()); }
+  EntityInstance::RecordType record_type() const {
+    return std::get<1>(GetParam());
+  }
+  EntityInstance::RecordType other_record_type() const {
+    return record_type() == EntityInstance::RecordType::kServerWallet
+               ? EntityInstance::RecordType::kPersonalContext
+               : EntityInstance::RecordType::kServerWallet;
+  }
+
+  std::unique_ptr<FormStructure> CreateForm() {
+    return BaseAutofillAiTest::CreateForm(entity_type());
+  }
+
+  EntityInstance CreateShoppingEntity(const char16_t* domain,
+                                      const char16_t* id_or_tracking,
+                                      EntityInstance::RecordType rec_type) {
+    switch (entity_type().name()) {
+      case EntityTypeName::kOrder:
+        return test::GetOrderEntityInstanceWithRandomGuid(
+            {.id = id_or_tracking,
+             .merchant_domain = domain,
+             .record_type = rec_type});
+      case EntityTypeName::kShipment:
+        return test::GetShipmentEntityInstanceWithRandomGuid(
+            {.tracking_number = id_or_tracking,
+             .carrier_domain = domain,
+             .record_type = rec_type});
+      case EntityTypeName::kPassport:
+      case EntityTypeName::kDriversLicense:
+      case EntityTypeName::kVehicle:
+      case EntityTypeName::kNationalIdCard:
+      case EntityTypeName::kKnownTravelerNumber:
+      case EntityTypeName::kRedressNumber:
+      case EntityTypeName::kFlightReservation:
+        NOTREACHED();
+    }
+    NOTREACHED();
+  }
+
+  std::string GetHistogramName(
+      std::string_view key_metric_name,
+      std::optional<EntityInstance::RecordType> rec_type = std::nullopt) const {
+    return base::StrCat(
+        {"Autofill.Ai.KeyMetrics.", key_metric_name, ".",
+         EntityTypeToMetricsString(entity_type()),
+         rec_type
+             ? base::StrCat({".", EntityRecordTypeToMetricsString(*rec_type)})
+             : "",
+         ".Affiliated"});
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    AutofillAiTest,
+    AutofillAiAffiliatedKeyMetricsTest,
+    testing::Combine(
+        testing::Values(EntityType(EntityTypeName::kOrder),
+                        EntityType(EntityTypeName::kShipment)),
+        testing::ValuesIn(DenseSet<EntityInstance::RecordType>::all())));
+
+TEST_P(AutofillAiAffiliatedKeyMetricsTest, FillingReadiness) {
+  std::unique_ptr<FormStructure> form = CreateForm();
+  {
+    manager().OnFormSeen(*form);
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingReadiness"), 0,
+                                        1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", record_type()), 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", other_record_type()), 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        base::StrCat({GetHistogramName("FillingReadiness"), ".Profile1"}), 0,
+        1);
+  }
+  {
+    AddOrUpdateEntityInstance(CreateShoppingEntity(
+        u"non-affiliated.com", u"ID_NON_AFF", record_type()));
+    manager().OnFormSeen(*form);
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingReadiness"), 0,
+                                        1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", record_type()), 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", other_record_type()), 0, 1);
+  }
+  {
+    AddOrUpdateEntityInstance(
+        CreateShoppingEntity(u"affiliated.com", u"ID_AFF", record_type()));
+    manager().OnFormSeen(*form);
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingReadiness"), 1,
+                                        1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", record_type()), 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingReadiness", other_record_type()), 0, 1);
+  }
+}
+
+TEST_P(AutofillAiAffiliatedKeyMetricsTest, FillingAssistance) {
+  std::unique_ptr<FormStructure> form = CreateForm();
+  EntityInstance non_affiliated =
+      CreateShoppingEntity(u"non-affiliated.com", u"ID_NON_AFF", record_type());
+  EntityInstance affiliated =
+      CreateShoppingEntity(u"affiliated.com", u"ID_AFF", record_type());
+  AddOrUpdateEntityInstance(non_affiliated);
+  AddOrUpdateEntityInstance(affiliated);
+  manager().OnFormSeen(*form);
+  {
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingAssistance"),
+                                        0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", record_type()), 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", other_record_type()), 0, 1);
+  }
+  {
+    manager().OnDidFillSuggestion(non_affiliated, *form, *form->field(0),
+                                  /*filled_fields=*/{form->field(0)},
+                                  /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingAssistance"),
+                                        0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", record_type()), 0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", other_record_type()), 0, 1);
+  }
+  {
+    manager().OnDidFillSuggestion(affiliated, *form, *form->field(0),
+                                  /*filled_fields=*/{form->field(0)},
+                                  /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingAssistance"),
+                                        1, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", record_type()), 1, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAssistance", other_record_type()), 0, 1);
+  }
+}
+
+TEST_P(AutofillAiAffiliatedKeyMetricsTest, FillingAcceptance) {
+  std::unique_ptr<FormStructure> form = CreateForm();
+  EntityInstance non_affiliated =
+      CreateShoppingEntity(u"non-affiliated.com", u"ID_NON_AFF", record_type());
+  EntityInstance affiliated =
+      CreateShoppingEntity(u"affiliated.com", u"ID_AFF", record_type());
+  AddOrUpdateEntityInstance(non_affiliated);
+  AddOrUpdateEntityInstance(affiliated);
+  manager().OnFormSeen(*form);
+  {
+    manager().OnAutofillAiSuggestionsShown(
+        *form, *form->field(0), {GetSuggestion(non_affiliated)},
+        /*metadata=*/{}, /*ukm_source_id=*/{},
+        /*update_suggestions_callback=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectTotalCount(GetHistogramName("FillingAcceptance"), 0);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingAcceptance", record_type()), 0);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingAcceptance", other_record_type()), 0);
+  }
+  {
+    manager().OnAutofillAiSuggestionsShown(
+        *form, *form->field(0), {GetSuggestion(affiliated)}, /*metadata=*/{},
+        /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
+    manager().OnDidFillSuggestion(non_affiliated, *form, *form->field(0),
+                                  /*filled_fields=*/{form->field(0)},
+                                  /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingAcceptance"),
+                                        0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAcceptance", record_type()), 0, 1);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingAcceptance", other_record_type()), 0);
+  }
+  {
+    manager().OnDidFillSuggestion(affiliated, *form, *form->field(0),
+                                  /*filled_fields=*/{form->field(0)},
+                                  /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingAcceptance"),
+                                        1, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingAcceptance", record_type()), 1, 1);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingAcceptance", other_record_type()), 0);
+  }
+}
+
+TEST_P(AutofillAiAffiliatedKeyMetricsTest, FillingCorrectness) {
+  std::unique_ptr<FormStructure> form = CreateForm();
+  EntityInstance non_affiliated =
+      CreateShoppingEntity(u"non-affiliated.com", u"ID_NON_AFF", record_type());
+  EntityInstance affiliated =
+      CreateShoppingEntity(u"affiliated.com", u"ID_AFF", record_type());
+  AddOrUpdateEntityInstance(non_affiliated);
+  AddOrUpdateEntityInstance(affiliated);
+  manager().OnFormSeen(*form);
+  {
+    manager().OnDidFillSuggestion(non_affiliated, *form, *form->field(1),
+                                  /*filled_fields=*/{form->field(1)},
+                                  /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectTotalCount(GetHistogramName("FillingCorrectness"),
+                                      0);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingCorrectness", record_type()), 0);
+  }
+  {
+    manager().OnDidFillSuggestion(affiliated, *form, *form->field(0),
+                                  /*filled_fields=*/{form->field(0)},
+                                  /*ukm_source_id=*/{});
+    // Editing a field filled by a non-affiliated entity should not affect
+    // affiliated correctness.
+    manager().OnEditedAutofilledField(*form, *form->field(1),
+                                      /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingCorrectness"),
+                                        1, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingCorrectness", record_type()), 1, 1);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingCorrectness", other_record_type()), 0);
+  }
+  {
+    manager().OnEditedAutofilledField(*form, *form->field(0),
+                                      /*ukm_source_id=*/{});
+    base::HistogramTester histogram_tester;
+    manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+    histogram_tester.ExpectUniqueSample(GetHistogramName("FillingCorrectness"),
+                                        0, 1);
+    histogram_tester.ExpectUniqueSample(
+        GetHistogramName("FillingCorrectness", record_type()), 0, 1);
+    histogram_tester.ExpectTotalCount(
+        GetHistogramName("FillingCorrectness", other_record_type()), 0);
+  }
+}
+
+TEST_F(BaseAutofillAiTest, NonShoppingFormDoesNotEmitAffiliatedKeyMetrics) {
+  std::unique_ptr<FormStructure> form = CreatePassportForm();
+  EntityInstance passport = test::GetPassportEntityInstance();
+  AddOrUpdateEntityInstance(passport);
+  manager().OnFormSeen(*form);
+  manager().OnAutofillAiSuggestionsShown(
+      *form, *form->field(0), {GetSuggestion(passport)}, /*metadata=*/{},
+      /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
+  manager().OnDidFillSuggestion(passport, *form, *form->field(0),
+                                /*filled_fields=*/{form->field(0)},
+                                /*ukm_source_id=*/{});
+
+  base::HistogramTester histogram_tester;
+  manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+  for (const auto& [name, count] :
+       histogram_tester.GetTotalCountsForPrefix("Autofill.Ai.KeyMetrics.")) {
+    EXPECT_FALSE(name.ends_with(".Affiliated")) << name;
+  }
+}
+
 class AutofillAiPersonalContextSuppressionTest : public BaseAutofillAiTest {
  public:
   AutofillAiPersonalContextSuppressionTest() {
@@ -1043,6 +1330,7 @@ class AutofillAiPersonalContextSuppressionTest : public BaseAutofillAiTest {
         *form, *form->field(0),
         {GetSuggestion(passport1), GetSuggestion(passport2),
          GetSuggestion(drivers_license)},
+        /*metadata=*/{},
         /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
     entity_metadata_manager_->SuppressEntity(passport1);
     return form;
@@ -1105,11 +1393,44 @@ TEST_F(AutofillAiPersonalContextSuppressionTest, NoneShown) {
   AddOrUpdateEntityInstance(passport);
   manager().OnFormSeen(*form);
   manager().OnAutofillAiSuggestionsShown(
-      *form, *form->field(0), {GetSuggestion(passport)},
+      *form, *form->field(0), {GetSuggestion(passport)}, /*metadata=*/{},
       /*ukm_source_id=*/{}, /*update_suggestions_callback=*/{});
 
   base::HistogramTester histogram_tester;
   manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+  histogram_tester.ExpectTotalCount(
+      "Autofill.Ai.Suppression.Passport.PersonalContext", 0);
+  histogram_tester.ExpectTotalCount("Autofill.Ai.Suppression.PersonalContext",
+                                    0);
+}
+
+// Tests that non-filling suggestions carrying `Suggestion::AutofillAiPayload`
+// (such as source attribution or entity removal items) are not treated as shown
+// filling suggestions.
+TEST_F(AutofillAiPersonalContextSuppressionTest,
+       NonFillingSuggestionsWithPayloadIgnored) {
+  std::unique_ptr<FormStructure> form = CreatePassportForm();
+  EntityInstance passport =
+      test::MaskEntityInstance(test::GetPassportEntityInstanceWithRandomGuid(
+          {.record_type = EntityInstance::RecordType::kPersonalContext}));
+  AddOrUpdateEntityInstance(passport);
+  manager().OnFormSeen(*form);
+
+  Suggestion source_attribution(SuggestionType::kAutofillAiSourceAttribution);
+  source_attribution.payload = Suggestion::AutofillAiPayload(passport.guid());
+  Suggestion remove_entity(SuggestionType::kRemoveAutofillAi);
+  remove_entity.payload = Suggestion::AutofillAiPayload(passport.guid());
+
+  manager().OnAutofillAiSuggestionsShown(*form, *form->field(0),
+                                         {source_attribution, remove_entity},
+                                         /*metadata=*/{.multi_index = {0}},
+                                         /*ukm_source_id=*/{},
+                                         /*update_suggestions_callback=*/{});
+
+  base::HistogramTester histogram_tester;
+  manager().OnFormSubmitted(*form, /*ukm_source_id=*/{});
+  histogram_tester.ExpectTotalCount(
+      "Autofill.Ai.KeyMetrics.FillingAcceptance.Passport.PersonalContext", 0);
   histogram_tester.ExpectTotalCount(
       "Autofill.Ai.Suppression.Passport.PersonalContext", 0);
   histogram_tester.ExpectTotalCount("Autofill.Ai.Suppression.PersonalContext",

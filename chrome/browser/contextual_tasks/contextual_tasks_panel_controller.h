@@ -63,7 +63,8 @@ class ContextualTasksPanelController {
     kAskGoogle = 4,
     kEphemeralToolbarButton = 5,
     kPermanentToolbarButton = 6,
-    kMaxValue = kPermanentToolbarButton,
+    kAbaOnRamp = 7,
+    kMaxValue = kAbaOnRamp,
   };
 
   // Whether clicking the permanently pinned toolbar button to open the side
@@ -148,16 +149,14 @@ class ContextualTasksPanelController {
   // or was closed and can be reopened to resume those results.
   virtual bool HasResults() const = 0;
 
+  // Returns true if the active tab's side panel has unsubmitted input in AIM
+  // zero state (e.g. text in the input plate, an added tab, or a Lens crop),
+  // whether the side panel is currently open or was closed. Together with
+  // `HasResults()`, this indicates a session the user can resume.
+  virtual bool HasUnsubmittedInput() const = 0;
+
   // Returns the entry source of the currently active panel.
   virtual EntrySource GetActiveEntrySource() const = 0;
-
-  // Returns true if the currently active panel's open session reopened a
-  // previously collapsed panel for an existing thread via the permanently
-  // pinned or ephemeral toolbar button (rather than opening fresh from an
-  // entry point or switching threads via thread history). Used to tag queries
-  // submitted after reopening the panel from the toolbar so they can be
-  // distinguished server-side.
-  virtual bool IsActiveSessionReopenedViaToolbarButton() const = 0;
 
   // Returns true if the onboarding or Ask Google tooltip bubble is visible.
   virtual bool IsOnboardingTooltipVisible() const;
@@ -181,6 +180,8 @@ class ContextualTasksPanelController {
   // Called when a user clicks a link inside the panel. Also counts as an AI
   // interaction.
   virtual void OnLinkClicked() = 0;
+  // Called when the user submits a query from the panel's composebox.
+  virtual void OnQuerySubmitted() = 0;
 
   // Sets a task to be used once the side panel opens. Used to open a specific
   // task without associating a web contents (which would inherently get added

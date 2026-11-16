@@ -23,6 +23,7 @@
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/service/glic_activity_manager.h"
 #include "chrome/browser/glic/public/service/legacy_glic_activity_manager.h"
+#include "chrome/browser/glic/service/glic_activity_manager_impl.h"
 #include "chrome/browser/glic/test_support/glic_test_environment.h"
 #include "chrome/browser/glic/test_support/mock_glic_keyed_service.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
@@ -40,6 +41,7 @@
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
+#include "ui/views/bubble/bubble_anchor.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/controls/button/button.h"
@@ -181,7 +183,7 @@ class GlicActivityListBubbleTest : public ChromeViewsTestBase {
                                 base::Unretained(this)));
 
     bubble_ = std::make_unique<GlicActivityListBubble>(std::move(rows));
-    bubble_->Show(anchor_widget_->GetContentsView());
+    bubble_->Show(views::BubbleAnchor(anchor_widget_->GetContentsView()));
     return bubble_->widget();
   }
 
@@ -484,7 +486,7 @@ class GlicActivityListBubbleActivityHubTest
 
 TEST_F(GlicActivityListBubbleActivityHubTest,
        ActivityHubEnabled_HeterogeneousActivitiesInBubble) {
-  auto* activity_manager = &mock_glic_service_->activity_manager();
+  auto* activity_manager = &mock_glic_service_->activity_manager_impl();
   ASSERT_TRUE(activity_manager);
   activity_manager->OnConversationActivityStateChanged(
       "conv-1", {.state = glic::GlicActivityState::kCompleted,
@@ -494,7 +496,7 @@ TEST_F(GlicActivityListBubbleActivityHubTest,
 
   bubble_ = std::make_unique<GlicActivityListBubble>(
       controller_->CreateRowViewModels());
-  bubble_->Show(anchor_widget_->GetContentsView());
+  bubble_->Show(views::BubbleAnchor(anchor_widget_->GetContentsView()));
   views::Widget* actor_task_list_bubble = bubble_->widget();
   ASSERT_TRUE(actor_task_list_bubble);
 

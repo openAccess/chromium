@@ -247,33 +247,21 @@ void ReaderModeTabHelper::PageLoaded(
   }
 }
 
-void ReaderModeTabHelper::DidStartNavigation(
-    web::WebState* web_state,
-    web::NavigationContext* navigation_context) {
-  if (navigation_context->IsSameDocument()) {
-    return;
-  }
-  // A new navigation is started while the Reader Mode heuristic trigger is
-  // running on the previous navigation. Stop the trigger to attach the new
-  // navigation.
-  eligibility_decider_.ResetDecision(navigation_context->GetUrl());
-  distillation_already_failed_ = false;
-}
-
 void ReaderModeTabHelper::DidFinishNavigation(
     web::WebState* web_state,
     web::NavigationContext* navigation_context) {
   // PageLoaded may not be called for fragment navigations or
   // pushState/replaceState. Do not reset eligibility state pre-emptively.
-  if (navigation_context->IsSameDocument()) {
+  // Also ignore uncommitted navigations since the active document did not
+  // change.
+  if (!navigation_context->HasCommitted() ||
+      navigation_context->IsSameDocument()) {
     return;
   }
 
-  if (!navigation_context->IsSameDocument() ||
-      navigation_context->HasUserGesture()) {
-    DeactivateReader(ReaderModeDeactivationReason::kNavigationDeactivated);
-  }
-
+  eligibility_decider_.ResetDecision(navigation_context->GetUrl());
+  DeactivateReader(ReaderModeDeactivationReason::kNavigationDeactivated);
+  distillation_already_failed_ = false;
   eligibility_decider_.SetLastCommittedUrl(web_state->GetLastCommittedURL());
 }
 
@@ -455,14 +443,17 @@ void ReaderModeTabHelper::CreateReaderModeContent(
     content_tab_helper->AttachSupportedTabHelpers(web_state_.get());
   }
 
+  // Prepare the scroll anchor before any translation changes are reverted so
+  // that the anchor element and progress match the layout currently visible to
+  // the user.
   web::WebFramesManager* web_frames_manager =
       ReaderModeScrollAnchorJavaScriptFeature::GetInstance()
           ->GetWebFramesManager(web_state_);
   if (web_frames_manager) {
     web::WebFrame* main_frame = web_frames_manager->GetMainWebFrame();
     if (main_frame) {
-      ReaderModeScrollAnchorJavaScriptFeature::GetInstance()->FindScrollAnchor(
-          main_frame);
+      ReaderModeScrollAnchorJavaScriptFeature::GetInstance()
+          ->PrepareScrollAnchor(main_frame);
     }
   }
 
@@ -477,7 +468,7 @@ void ReaderModeTabHelper::CreateReaderModeContent(
     // If Reading Mode distillation has not completed by the expected timeout,
     // remove the blur overlay to avoid blocking the app UI.
     reader_mode_blur_timer_.Start(
-        FROM_HERE, base::Seconds(0),
+        FROM_HERE, ReaderModeDistillationTimeout(),
         base::BindOnce(&ReaderModeTabHelper::HideBlurOverlay,
                        weak_ptr_factory_.GetWeakPtr()));
   } else {
@@ -628,6 +619,19 @@ void ReaderModeTabHelper::CompleteDistillation(
       GenerateTranslationState(translate_client, web_state_.get());
   if (source_translation_state_.is_page_translated) {
     translate_client->GetTranslateManager()->RevertTranslation();
+  }
+
+  // Find the scroll anchor after any translation changes have been reverted so
+  // that the anchor text matches the distilled content.
+  web::WebFramesManager* web_frames_manager =
+      ReaderModeScrollAnchorJavaScriptFeature::GetInstance()
+          ->GetWebFramesManager(web_state_);
+  if (web_frames_manager) {
+    web::WebFrame* main_frame = web_frames_manager->GetMainWebFrame();
+    if (main_frame) {
+      ReaderModeScrollAnchorJavaScriptFeature::GetInstance()->FindScrollAnchor(
+          main_frame);
+    }
   }
 
   std::unique_ptr<ReaderModeDistillerPage> distiller_page =

@@ -8,8 +8,11 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/files/file_util.h"
 #include "base/functional/function_ref.h"
 #include "base/json/values_util.h"
+#include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/power_monitor_test.h"
@@ -32,9 +35,12 @@
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
 #include "components/prefs/testing_pref_service.h"
+#include "mojo/public/cpp/bindings/remote.h"
 #include "services/on_device_model/public/cpp/test_support/fake_service.h"
+#include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 #include "services/preferences/public/cpp/dictionary_value_update.h"
 #include "services/preferences/public/cpp/scoped_pref_update.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace optimization_guide {
@@ -174,6 +180,13 @@ class ManifestAssetManagerTest : public testing::Test {
     model_broker_client_.reset();
     manifest_broker_state_.reset();
     component_state_.SimulateRestart();
+  }
+
+  base::WeakPtr<ModelClient> WaitForClient(mojom::OnDeviceFeature feature) {
+    base::test::TestFuture<base::WeakPtr<ModelClient>> future;
+    model_broker_client_->GetSubscriber(feature).WaitForClient(
+        future.GetCallback());
+    return future.Get();
   }
 
  protected:
@@ -1091,7 +1104,8 @@ TEST_F(ManifestAssetManagerTest,
           kOnDeviceAiAutoRemoveUnusedModelsEnabled,
       false);
 
-  DummyAsset compose_asset = DummyAsset::For("compose");
+  DummyAsset compose_asset =
+      DummyAsset::For("compose").WithAssetId("gemma4_component");
   DummyAsset test_asset = DummyAsset::For("test");
   usage_tracker_.RaisePriority(compose_asset.use_case,
                                UsageTracker::Priority::kUserBlocking);
@@ -1110,12 +1124,12 @@ TEST_F(ManifestAssetManagerTest,
   task_environment_.FastForwardBy(base::Days(31));
 
   base::HistogramTester histogram_tester;
-  manifest_broker_state_->UninstallCapability(compose_asset.asset_id);
+  manifest_broker_state_->UninstallCapability(OnDeviceBaseModel::kGemma4);
 
   EXPECT_TRUE(component_state_.WaitForUninstall(compose_asset.public_key));
   EXPECT_FALSE(component_state_.WasUninstallRequested(test_asset.public_key));
   histogram_tester.ExpectUniqueSample(
-      "OptimizationGuide.ModelExecution.OnDeviceModelUninstallReason.Unknown",
+      "OptimizationGuide.ModelExecution.OnDeviceModelUninstallReason.Gemma4",
       Manifest::UninstallReason::kUserRequested, 1);
 }
 
@@ -1708,6 +1722,324 @@ TEST_F(ManifestAssetManagerTest,
   // After the 1-second delay elapses, the component uninstall is executed.
   task_environment_.FastForwardBy(base::Seconds(1));
   EXPECT_TRUE(component_state_.WaitForUninstall(asset.public_key));
+}
+
+TEST_F(ManifestAssetManagerTest, GetInstalledModelsReflectsComponentStates) {
+  DummyAsset ready_asset =
+      DummyAsset::For("compose").WithAssetId("gemma4_component");
+  DummyAsset unknown_ready_asset = DummyAsset::For("summarize");
+  DummyAsset registered_asset =
+      DummyAsset::For("test").WithAssetId("nano_v3_gpu_component");
+  DummyAsset downloading_asset =
+      DummyAsset::For("prompt_api").WithAssetId("nano_v3_cpu_component");
+
+  usage_tracker_.RaisePriority(ready_asset.use_case,
+                               UsageTracker::Priority::kUserBlocking);
+  usage_tracker_.RaisePriority(unknown_ready_asset.use_case,
+                               UsageTracker::Priority::kUserBlocking);
+  usage_tracker_.RaisePriority(registered_asset.use_case,
+                               UsageTracker::Priority::kBestEffort);
+  usage_tracker_.RaisePriority(downloading_asset.use_case,
+                               UsageTracker::Priority::kUserBlocking);
+
+  MakeAssetInstallable(ready_asset);
+  MakeAssetInstallable(unknown_ready_asset);
+  UpdateManifest(DummyManifest()
+                     .Add(ready_asset)
+                     .Add(unknown_ready_asset)
+                     .Add(registered_asset)
+                     .Add(downloading_asset));
+  Startup();
+
+  EXPECT_TRUE(
+      component_state_.WaitForRegistration(ready_asset.ToInstallTarget()));
+  EXPECT_TRUE(component_state_.WaitForRegistration(
+      unknown_ready_asset.ToInstallTarget()));
+  EXPECT_TRUE(
+      component_state_.WaitForRegistration(registered_asset.ToInstallTarget()));
+  EXPECT_TRUE(component_state_.WaitForRegistration(
+      downloading_asset.ToInstallTarget()));
+
+  auto get_installed_models = [&]() {
+    base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+        future;
+    manifest_broker_state_->GetInstalledModels(future.GetCallback());
+    return future.Take();
+  };
+
+  // Only `ready_asset` is returned; `unknown_ready_asset` (OnDeviceBaseModel::
+  // kUnknown), `registered_asset`, and `downloading_asset` are excluded.
+  {
+    auto models = get_installed_models();
+    ASSERT_EQ(models.size(), 1u);
+    EXPECT_EQ(models[0].base_model, OnDeviceBaseModel::kGemma4);
+    EXPECT_GT(models[0].size_bytes, 0u);
+  }
+
+  // Advance past the 10s disk space freshness window so kUninstalling is
+  // deferred; `ready_asset` is still immediately excluded as kUninstall.
+  task_environment_.FastForwardBy(base::Seconds(11));
+  manifest_broker_state_->UninstallCapability(OnDeviceBaseModel::kGemma4);
+  EXPECT_TRUE(get_installed_models().empty());
+}
+
+TEST_F(ManifestAssetManagerTest, GetInstalledModelsEmptyOnUninstallManifest) {
+  DummyAsset asset = DummyAsset::For("compose").WithAssetId("gemma4_component");
+  usage_tracker_.RaisePriority(asset.use_case,
+                               UsageTracker::Priority::kUserBlocking);
+  MakeAssetsInstallable(DummyManifest().Add(asset));
+  Startup();
+
+  EXPECT_TRUE(component_state_.WaitForRegistration(asset.ToInstallTarget()));
+
+  {
+    base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+        future;
+    manifest_broker_state_->GetInstalledModels(future.GetCallback());
+    ASSERT_EQ(future.Get().size(), 1u);
+    EXPECT_EQ(future.Get()[0].base_model, OnDeviceBaseModel::kGemma4);
+  }
+
+  // Turning off the user setting activates an uninstall manifest with no
+  // recipes.
+  local_state_.local_state().SetBoolean(
+      model_execution::prefs::localstate::kOnDeviceAiUserSettingsEnabled,
+      false);
+
+  base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+      future;
+  manifest_broker_state_->GetInstalledModels(future.GetCallback());
+  EXPECT_TRUE(future.Get().empty());
+}
+
+TEST_F(ManifestAssetManagerTest,
+       GetInstalledModelsDedupesRecipesAndExcludesAdaptations) {
+  DummyAsset base_asset =
+      DummyAsset::For("base").WithAssetId("gemma4_component");
+  DummyAsset ready_adapt_asset =
+      DummyAsset::For("compose").WithVersion("12345");
+
+  MakeAssetInstallable(base_asset);
+  component_state_.UpdateModelAdaptation(
+      ready_adapt_asset.public_key,
+      std::make_unique<FakeAdaptationAsset>(FakeAdaptationAsset::Content{
+          .weight = 42,
+      }));
+
+  // Build a manifest where two base model recipes share `base_asset` and an
+  // adaptation targets one of those recipes.
+  ManifestBuilder builder;
+  builder.Add(base_asset.asset_id,
+              OnDemandComponent(base_asset.public_key, base_asset.version));
+  builder.Add(ready_adapt_asset.asset_id,
+              OnDemandComponent(ready_adapt_asset.public_key,
+                                ready_adapt_asset.version));
+
+  builder.Add("base_recipe_1",
+              BaseModelRecipe(
+                  FileReference(base_asset.asset_id, "weights.bin"),
+                  BaseModelRecipeArgs(
+                      proto::BaseModelRecipe::BACKEND_TYPE_GPU,
+                      proto::BaseModelRecipe::PERFORMANCE_HINT_HIGHEST_QUALITY,
+                      {}, 100)));
+  builder.Add("base_recipe_2",
+              BaseModelRecipe(
+                  FileReference(base_asset.asset_id, "weights.bin"),
+                  BaseModelRecipeArgs(
+                      proto::BaseModelRecipe::BACKEND_TYPE_GPU,
+                      proto::BaseModelRecipe::PERFORMANCE_HINT_FASTEST_INFERENCE,
+                      {}, 100)));
+
+  builder.Add("ready_adapt_recipe",
+              AdaptationRecipe("base_recipe_2",
+                               FileReference(ready_adapt_asset.asset_id,
+                                             "adaptation_weights.bin")));
+
+  builder.Add("base_1_solution",
+              SolutionRecipe("base_recipe_1",
+                             FileReference("manifest", "config.pb")));
+  builder.Add("ready_adapt_solution",
+              SolutionRecipe("ready_adapt_recipe",
+                             FileReference("manifest", "config.pb")));
+
+  builder.Add(DeviceUseCase{DeviceCategory::kGpuHighTier, "prompt_api"},
+              "base_1_solution");
+  builder.Add(DeviceUseCase{DeviceCategory::kGpuHighTier, "compose"},
+              "ready_adapt_solution");
+
+  auto manifest_component =
+      std::make_unique<ManifestComponentDirectory>(builder.Build());
+  manifest_component->Add("config.pb", proto::SolutionConfig());
+  component_state_.UpdateManifest(std::move(manifest_component));
+
+  usage_tracker_.RaisePriority("prompt_api",
+                               UsageTracker::Priority::kUserBlocking);
+  usage_tracker_.RaisePriority("compose",
+                               UsageTracker::Priority::kUserBlocking);
+
+  Startup();
+  EXPECT_TRUE(
+      component_state_.WaitForRegistration(base_asset.ToInstallTarget()));
+  EXPECT_TRUE(component_state_.WaitForRegistration(
+      ready_adapt_asset.ToInstallTarget()));
+
+  base::test::TestFuture<std::vector<OnDeviceModelControl::InstalledModel>>
+      future;
+  manifest_broker_state_->GetInstalledModels(future.GetCallback());
+  std::vector<OnDeviceModelControl::InstalledModel> models = future.Take();
+
+  ASSERT_EQ(models.size(), 1u);
+  EXPECT_EQ(models[0].base_model, OnDeviceBaseModel::kGemma4);
+  EXPECT_GT(models[0].size_bytes, 0u);
+}
+
+class TestModelControlObserver : public OnDeviceModelControl::Observer {
+ public:
+  // OnDeviceModelControl::Observer:
+  void OnModelInstalled(OnDeviceBaseModel base_model) override {
+    installed_events_.push_back(base_model);
+  }
+  void OnModelUninstalled(OnDeviceBaseModel base_model) override {
+    uninstalled_events_.push_back(base_model);
+  }
+
+  std::vector<OnDeviceBaseModel> installed_events_;
+  std::vector<OnDeviceBaseModel> uninstalled_events_;
+};
+
+TEST_F(ManifestAssetManagerTest, ModelInstallStateAndObserverEvents) {
+  using ModelInstallState = OnDeviceModelControl::ModelInstallState;
+
+  DummyAsset gemma4 =
+      DummyAsset::For("compose").WithAssetId("gemma4_component");
+  usage_tracker_.RaisePriority(gemma4.use_case,
+                               UsageTracker::Priority::kUserBlocking);
+  UpdateManifest(DummyManifest().Add(gemma4));
+
+  // Restart or uninstall mid-download keeps `kNeverInstalled` silently.
+  Startup();
+  EXPECT_TRUE(component_state_.WaitForRegistration(gemma4.ToInstallTarget()));
+  SimulateShutdown();
+  Startup();
+  EXPECT_TRUE(component_state_.WaitForRegistration(gemma4.ToInstallTarget()));
+  EXPECT_EQ(
+      ModelInstallState::kNeverInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+
+  TestModelControlObserver observer;
+  base::ScopedObservation<OnDeviceModelControl, OnDeviceModelControl::Observer>
+      observation(&observer);
+  observation.Observe(manifest_broker_state_.get());
+
+  manifest_broker_state_->UninstallCapability(OnDeviceBaseModel::kGemma4);
+  EXPECT_TRUE(component_state_.WaitForUninstall(gemma4.public_key));
+  task_environment_.RunUntilIdle();
+  EXPECT_EQ(
+      ModelInstallState::kNeverInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  EXPECT_THAT(observer.uninstalled_events_, testing::IsEmpty());
+
+  // Completing a fresh download records `kInstalled` and notifies observers.
+  manifest_broker_state_->SetUseCaseRequested(gemma4.use_case, true);
+  MakeAssetInstallable(gemma4);
+  base::WeakPtr<ModelClient> client =
+      WaitForClient(mojom::OnDeviceFeature::kCompose);
+  ASSERT_TRUE(client);
+  EXPECT_EQ(
+      ModelInstallState::kInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  EXPECT_THAT(observer.installed_events_,
+              testing::ElementsAre(OnDeviceBaseModel::kGemma4));
+
+  // Version updates of an installed model do not fire `OnModelInstalled()`.
+  observer.installed_events_.clear();
+  DummyAsset gemma4_v2 = DummyAsset::For("compose")
+                             .WithAssetId("gemma4_component")
+                             .WithVersion("2.0.0.0");
+  MakeAssetsInstallable(DummyManifest().Add(gemma4_v2));
+  EXPECT_TRUE(
+      component_state_.WaitForRegistration(gemma4_v2.ToInstallTarget()));
+  ASSERT_TRUE(base::test::RunUntil([&]() { return !client; }));
+  ASSERT_TRUE(WaitForClient(mojom::OnDeviceFeature::kCompose));
+  EXPECT_EQ(
+      ModelInstallState::kInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  EXPECT_THAT(observer.installed_events_, testing::IsEmpty());
+
+  // Active entries missing `install_state` infer `kInstalled` silently.
+  observation.Reset();
+  local_state_.local_state().SetDict(
+      model_execution::prefs::localstate::kManifestAssetLedger,
+      base::DictValue().Set(gemma4_v2.public_key,
+                            base::DictValue()
+                                .Set("asset_id", gemma4_v2.asset_id)
+                                .Set("requested_version", gemma4_v2.version)));
+  EXPECT_EQ(
+      ModelInstallState::kInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  SimulateShutdown();
+  Startup();
+  observation.Observe(manifest_broker_state_.get());
+  ASSERT_TRUE(WaitForClient(mojom::OnDeviceFeature::kCompose));
+  EXPECT_EQ(
+      ModelInstallState::kInstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  EXPECT_THAT(observer.installed_events_, testing::IsEmpty());
+
+  // Retiring an installed model records `kUninstalled` and notifies once.
+  UpdateManifest(DummyManifest());
+  EXPECT_TRUE(component_state_.WaitForUninstall(gemma4_v2.public_key));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return !observer.uninstalled_events_.empty(); }));
+  EXPECT_EQ(
+      ModelInstallState::kUninstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+  EXPECT_THAT(observer.uninstalled_events_,
+              testing::ElementsAre(OnDeviceBaseModel::kGemma4));
+  observation.Reset();
+  SimulateShutdown();
+  Startup();
+  EXPECT_EQ(
+      ModelInstallState::kUninstalled,
+      manifest_broker_state_->GetModelInstallState(OnDeviceBaseModel::kGemma4));
+}
+
+TEST_F(ManifestAssetManagerTest, ModelInstallStateFromExistingPrefs) {
+  using ModelInstallState = OnDeviceModelControl::ModelInstallState;
+  TestingPrefServiceSimple prefs;
+  model_execution::prefs::RegisterLocalStatePrefs(prefs.registry());
+  prefs.SetDict(
+      model_execution::prefs::localstate::kManifestAssetLedger,
+      base::DictValue()
+          .Set("nano_key", base::DictValue()
+                               .Set("asset_id", "nano_v3_gpu_component")
+                               .Set("requested_version", "1.0"))
+          .Set("retired_key",
+               base::DictValue()
+                   .Set("asset_id", "nano_v3_cpu_component")
+                   .Set("requested_version", "")
+                   .Set("install_state",
+                        static_cast<int>(ModelInstallState::kUninstalled)))
+          .Set("uninstalling_key",
+               base::DictValue()
+                   .Set("asset_id", "gemma4_component")
+                   .Set("requested_version", "uninstalling"))
+          .Set("adapt_key", base::DictValue()
+                                .Set("asset_id", "compose_adaptation_component")
+                                .Set("requested_version", "1.0")));
+
+  EXPECT_EQ(ModelInstallState::kInstalled,
+            ManifestAssetManager::GetModelInstallState(
+                prefs, OnDeviceBaseModel::kV3NanoGpu));
+  EXPECT_EQ(ModelInstallState::kUninstalled,
+            ManifestAssetManager::GetModelInstallState(
+                prefs, OnDeviceBaseModel::kV3NanoCpu));
+  EXPECT_EQ(ModelInstallState::kNeverInstalled,
+            ManifestAssetManager::GetModelInstallState(
+                prefs, OnDeviceBaseModel::kGemma4));
+  EXPECT_EQ(ModelInstallState::kNeverInstalled,
+            ManifestAssetManager::GetModelInstallState(
+                prefs, OnDeviceBaseModel::kUnknown));
 }
 
 }  // namespace

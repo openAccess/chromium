@@ -150,6 +150,7 @@ suite('ProfilePickerMainViewTest', function() {
       assertEquals(
           avatarElement.classList.contains('with-avatar-ring'),
           expectedProfile.hasAvatarRing);
+      assertFalse(avatarElement.draggable);
     }
   }
 
@@ -514,6 +515,10 @@ suite('ProfilePickerProfilesReorderingTest', function() {
     document.body.appendChild(mainViewElement);
   });
 
+  teardown(function() {
+    document.documentElement.dir = 'ltr';
+  });
+
   // Sets up the profile picker with the reorder functionality and creates
   // profiles.
   async function setupProfileReorderingTest(numberOfProfiles: number) {
@@ -713,16 +718,23 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       assertTrue(cards[cycle.dragIndex]!.matches(':focus-within'));
 
       // - Perform the Drag Start.
+      let itemsCleared = false;
       const dragStartEvent = new DragEvent('dragstart');
       Object.defineProperty(dragStartEvent, 'dataTransfer', {
         value: {
           effectAllowed: 'uninitialized',
+          items: {
+            clear: () => {
+              itemsCleared = true;
+            },
+          },
           setDragImage: () => {},
         },
       });
       cards[cycle.dragIndex]!.dispatchEvent(dragStartEvent);
       assertTrue(cards[cycle.dragIndex]!.classList.contains('dragging'));
       assertEquals(dragStartEvent.dataTransfer!.effectAllowed, 'move');
+      assertTrue(itemsCleared);
       assertFalse(cards[cycle.dragIndex]!.matches(':focus-within'));
 
       // - Perform the list of Drag Enter events with position checks.
@@ -745,6 +757,13 @@ suite('ProfilePickerProfilesReorderingTest', function() {
       assertProfileNamesOrder(
           mainViewElement.getProfileListForTesting(),
           cycle.expectedEndProfileOrder, `Cycle ${c} end order check`);
+
+      if (c < dragData.dragEventCycles.length - 1) {
+        webUIListenerCallback(
+            'profiles-list-changed',
+            [...mainViewElement.getProfileListForTesting()]);
+        await microtasksFinished();
+      }
     }
   }
 
@@ -1022,12 +1041,158 @@ suite('ProfilePickerProfilesReorderingTest', function() {
     });
   });
 
-  function getMenuMoveButtons(card: ProfileCardElement): {
+  function assertAllCardsClean(cards: ProfileCardElement[]) {
+    for (const card of cards) {
+      assertFalse(card.classList.contains('dragging'));
+      assertFalse(card.classList.contains('shifting'));
+      assertFalse(card.classList.contains('shifted'));
+      assertEquals('', card.style.opacity);
+      assertEquals('', card.style.transform);
+      assertEquals('', card.style.transition);
+      assertEquals('', card.style.zIndex);
+    }
+  }
+
+  test('ProfileReorder_DragBlockedWhileOrderUpdateInFlight', async function() {
+    await setupProfileReorderingTest(5);
+    mainViewElement.setDraggingTransitionDurationForTesting(300);
+    const initialProfiles = generateProfilesList(5);
+    webUIListenerCallback('profiles-list-changed', [...initialProfiles]);
+    await microtasksFinished();
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    assertEquals(5, cards.length);
+
+    // Cycle 1: Drag card 0 -> card 3 and drop mid-transition.
+    cards[0]!.dispatchEvent(new DragEvent('dragstart'));
+    cards[3]!.dispatchEvent(new DragEvent('dragenter'));
+    assertTrue(cards[0]!.classList.contains('dragging'));
+    assertEquals('0.001', cards[0]!.style.opacity);
+    cards[0]!.dispatchEvent(new DragEvent('dragend'));
+
+    let args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [0, 3, ProfileOrderUpdateType.DRAG_AND_DROP]);
+    browserProxy.resetResolver('updateProfileOrder');
+
+    // Cycle 2: Immediately attempt a second drag before C++ replies with
+    // 'profiles-list-changed'. The drag start must be prevented cleanly as
+    // a no-op without throwing or leaving the card invisible.
+    const blockedDragStart = new DragEvent('dragstart', {cancelable: true});
+    cards[4]!.dispatchEvent(blockedDragStart);
+    assertTrue(blockedDragStart.defaultPrevented);
+    assertFalse(cards[4]!.classList.contains('dragging'));
+    assertEquals('', cards[4]!.style.opacity);
+
+    cards[1]!.dispatchEvent(new DragEvent('dragenter'));
+    await microtasksFinished();
+
+    // Async C++ 'profiles-list-changed' from Cycle 1 arrives.
+    const cycle1BackendProfiles: ProfileState[] = [
+      initialProfiles[1]!,
+      initialProfiles[2]!,
+      initialProfiles[3]!,
+      initialProfiles[0]!,
+      initialProfiles[4]!,
+    ];
+    webUIListenerCallback('profiles-list-changed', cycle1BackendProfiles);
+    await microtasksFinished();
+
+    // Releasing the blocked drag must be a safe no-op (no assertion error).
+    cards[4]!.dispatchEvent(new DragEvent('dragend'));
+    assertAllCardsClean(cards);
+    assertEquals(0, browserProxy.getCallCount('updateProfileOrder'));
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile2', 'profile3', 'profile0', 'profile4'],
+        'Order preserved after blocked mid-update drag');
+
+    // Cycle 3: Now that 'profiles-list-changed' has arrived, dragging works
+    // normally again.
+    cards[4]!.dispatchEvent(new DragEvent('dragstart'));
+    cards[1]!.dispatchEvent(new DragEvent('dragenter'));
+    assertTrue(cards[4]!.classList.contains('dragging'));
+    assertEquals('0.001', cards[4]!.style.opacity);
+    cards[4]!.dispatchEvent(new DragEvent('dragend'));
+    assertAllCardsClean(cards);
+
+    args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [4, 1, ProfileOrderUpdateType.DRAG_AND_DROP]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile4', 'profile2', 'profile3', 'profile0'],
+        'Order updated after subsequent drag');
+  });
+
+  test('ProfileReorder_NoOpDragDoesNotBlockSubsequentDrag', async function() {
+    await setupProfileReorderingTest(3);
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    assertEquals(3, cards.length);
+
+    // Drag card 1 onto card 2, then back onto card 2 (resetting to slot 1).
+    cards[1]!.dispatchEvent(new DragEvent('dragstart'));
+    cards[2]!.dispatchEvent(new DragEvent('dragenter'));
+    cards[2]!.dispatchEvent(new DragEvent('dragenter'));
+    cards[1]!.dispatchEvent(new DragEvent('dragend'));
+    assertAllCardsClean(cards);
+    assertEquals(0, browserProxy.getCallCount('updateProfileOrder'));
+
+    // Because no order update was sent to C++, a subsequent drag can start
+    // immediately without waiting for 'profiles-list-changed'.
+    cards[0]!.dispatchEvent(new DragEvent('dragstart'));
+    cards[2]!.dispatchEvent(new DragEvent('dragenter'));
+    cards[0]!.dispatchEvent(new DragEvent('dragend'));
+    assertAllCardsClean(cards);
+
+    const args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [0, 2, ProfileOrderUpdateType.DRAG_AND_DROP]);
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile2', 'profile0'], 'Order updated after no-op drag');
+  });
+
+  test('ProfileReorder_MidDragUpdateCancelsCleanly', async function() {
+    await setupProfileReorderingTest(3);
+    mainViewElement.setDraggingTransitionDurationForTesting(300);
+    const initialProfiles = generateProfilesList(3);
+    webUIListenerCallback('profiles-list-changed', [...initialProfiles]);
+    await microtasksFinished();
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    assertEquals(3, cards.length);
+
+    cards[2]!.dispatchEvent(new DragEvent('dragstart'));
+    cards[0]!.dispatchEvent(new DragEvent('dragenter'));
+    assertTrue(cards[2]!.classList.contains('dragging'));
+    assertEquals('0.001', cards[2]!.style.opacity);
+
+    // An external 'profiles-list-changed' (e.g. avatar update) arriving
+    // mid-drag resets the active drag cleanly instead of leaving the card
+    // invisible or throwing on dragend.
+    webUIListenerCallback('profiles-list-changed', [...initialProfiles]);
+    await microtasksFinished();
+    assertAllCardsClean(cards);
+
+    cards[2]!.dispatchEvent(new DragEvent('dragend'));
+    assertAllCardsClean(cards);
+    assertEquals(0, browserProxy.getCallCount('updateProfileOrder'));
+  });
+
+  function getMenuButtons(card: ProfileCardElement): {
+    moreActionsButton: HTMLElement,
     moveLeftButton: HTMLButtonElement|null,
     moveRightButton: HTMLButtonElement|null,
   } {
     const menu = card.shadowRoot.querySelector('profile-card-menu')!;
     return {
+      moreActionsButton: menu.$.moreActionsButton,
       moveLeftButton:
           menu.shadowRoot.querySelector<HTMLButtonElement>('#moveLeftButton'),
       moveRightButton:
@@ -1040,7 +1205,7 @@ suite('ProfilePickerProfilesReorderingTest', function() {
 
     const card = mainViewElement.shadowRoot.querySelector<ProfileCardElement>(
         'profile-card')!;
-    const {moveLeftButton, moveRightButton} = getMenuMoveButtons(card);
+    const {moveLeftButton, moveRightButton} = getMenuButtons(card);
     assertFalse(!!moveLeftButton);
     assertFalse(!!moveRightButton);
   });
@@ -1058,16 +1223,20 @@ suite('ProfilePickerProfilesReorderingTest', function() {
 
     // Check available move options on all 3 cards: extremities only have one
     // move direction, while middle cards have both.
-    assertFalse(!!getMenuMoveButtons(cards[0]!).moveLeftButton);
-    assertTrue(!!getMenuMoveButtons(cards[0]!).moveRightButton);
-    assertTrue(!!getMenuMoveButtons(cards[1]!).moveLeftButton);
-    assertTrue(!!getMenuMoveButtons(cards[1]!).moveRightButton);
-    assertTrue(!!getMenuMoveButtons(cards[2]!).moveLeftButton);
-    assertFalse(!!getMenuMoveButtons(cards[2]!).moveRightButton);
+    assertFalse(!!getMenuButtons(cards[0]!).moveLeftButton);
+    assertTrue(!!getMenuButtons(cards[0]!).moveRightButton);
+    assertTrue(!!getMenuButtons(cards[1]!).moveLeftButton);
+    assertTrue(!!getMenuButtons(cards[1]!).moveRightButton);
+    assertTrue(!!getMenuButtons(cards[2]!).moveLeftButton);
+    assertFalse(!!getMenuButtons(cards[2]!).moveRightButton);
 
     // Move first profile right: [profile0, profile1, profile2] ->
     // [profile1, profile0, profile2].
-    getMenuMoveButtons(cards[0]!).moveRightButton!.click();
+    getMenuButtons(cards[0]!).moreActionsButton.focus();
+    assertTrue(cards[0]!.matches(':focus-within'));
+    getMenuButtons(cards[0]!).moreActionsButton.click();
+    getMenuButtons(cards[0]!).moveRightButton!.click();
+    assertFalse(cards[0]!.matches(':focus-within'));
     let args = await browserProxy.whenCalled('updateProfileOrder');
     assertDeepEquals(args, [0, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
     await microtasksFinished();
@@ -1079,7 +1248,11 @@ suite('ProfilePickerProfilesReorderingTest', function() {
     // Move middle profile right: [profile1, profile0, profile2] ->
     // [profile1, profile2, profile0].
     browserProxy.resetResolver('updateProfileOrder');
-    getMenuMoveButtons(cards[1]!).moveRightButton!.click();
+    getMenuButtons(cards[1]!).moreActionsButton.focus();
+    assertTrue(cards[1]!.matches(':focus-within'));
+    getMenuButtons(cards[1]!).moreActionsButton.click();
+    getMenuButtons(cards[1]!).moveRightButton!.click();
+    assertFalse(cards[1]!.matches(':focus-within'));
     args = await browserProxy.whenCalled('updateProfileOrder');
     assertDeepEquals(args, [1, 2, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
     await microtasksFinished();
@@ -1091,7 +1264,11 @@ suite('ProfilePickerProfilesReorderingTest', function() {
     // Move last profile left: [profile1, profile2, profile0] ->
     // [profile1, profile0, profile2].
     browserProxy.resetResolver('updateProfileOrder');
-    getMenuMoveButtons(cards[2]!).moveLeftButton!.click();
+    getMenuButtons(cards[2]!).moreActionsButton.focus();
+    assertTrue(cards[2]!.matches(':focus-within'));
+    getMenuButtons(cards[2]!).moreActionsButton.click();
+    getMenuButtons(cards[2]!).moveLeftButton!.click();
+    assertFalse(cards[2]!.matches(':focus-within'));
     args = await browserProxy.whenCalled('updateProfileOrder');
     assertDeepEquals(args, [2, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
     await microtasksFinished();
@@ -1099,6 +1276,77 @@ suite('ProfilePickerProfilesReorderingTest', function() {
         mainViewElement.getProfileListForTesting(),
         ['profile1', 'profile0', 'profile2'],
         'Order after moving last profile left');
+  });
+
+  test('ProfileReorder_ContextMenuMoveMultipleProfiles_RTL', async function() {
+    document.documentElement.dir = 'rtl';
+    await setupProfileReorderingTest(3);
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile0', 'profile1', 'profile2'], 'Initial order check');
+
+    const cards = Array.from(
+        mainViewElement.shadowRoot.querySelectorAll<ProfileCardElement>(
+            'profile-card'));
+    assertEquals(cards.length, 3);
+    assertTrue(
+        cards[0]!.getBoundingClientRect().left >
+        cards[1]!.getBoundingClientRect().left);
+
+    // In RTL, cards[0] is visually rightmost and cards[2] is visually leftmost.
+    assertTrue(!!getMenuButtons(cards[0]!).moveLeftButton);
+    assertFalse(!!getMenuButtons(cards[0]!).moveRightButton);
+    assertTrue(!!getMenuButtons(cards[1]!).moveLeftButton);
+    assertTrue(!!getMenuButtons(cards[1]!).moveRightButton);
+    assertFalse(!!getMenuButtons(cards[2]!).moveLeftButton);
+    assertTrue(!!getMenuButtons(cards[2]!).moveRightButton);
+
+    // Move first (rightmost) profile visually left: [profile0, profile1,
+    // profile2] -> [profile1, profile0, profile2].
+    getMenuButtons(cards[0]!).moreActionsButton.focus();
+    assertTrue(cards[0]!.matches(':focus-within'));
+    getMenuButtons(cards[0]!).moreActionsButton.click();
+    getMenuButtons(cards[0]!).moveLeftButton!.click();
+    assertFalse(cards[0]!.matches(':focus-within'));
+    let args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [0, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile0', 'profile2'],
+        'Order after moving first profile visually left in RTL');
+
+    // Move middle profile visually left: [profile1, profile0, profile2] ->
+    // [profile1, profile2, profile0].
+    browserProxy.resetResolver('updateProfileOrder');
+    getMenuButtons(cards[1]!).moreActionsButton.focus();
+    assertTrue(cards[1]!.matches(':focus-within'));
+    getMenuButtons(cards[1]!).moreActionsButton.click();
+    getMenuButtons(cards[1]!).moveLeftButton!.click();
+    assertFalse(cards[1]!.matches(':focus-within'));
+    args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [1, 2, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile2', 'profile0'],
+        'Order after moving middle profile visually left in RTL');
+
+    // Move last (leftmost) profile visually right: [profile1, profile2,
+    // profile0] -> [profile1, profile0, profile2].
+    browserProxy.resetResolver('updateProfileOrder');
+    getMenuButtons(cards[2]!).moreActionsButton.focus();
+    assertTrue(cards[2]!.matches(':focus-within'));
+    getMenuButtons(cards[2]!).moreActionsButton.click();
+    getMenuButtons(cards[2]!).moveRightButton!.click();
+    assertFalse(cards[2]!.matches(':focus-within'));
+    args = await browserProxy.whenCalled('updateProfileOrder');
+    assertDeepEquals(args, [2, 1, ProfileOrderUpdateType.CONTEXT_MENU_BUTTON]);
+    await microtasksFinished();
+    assertProfileNamesOrder(
+        mainViewElement.getProfileListForTesting(),
+        ['profile1', 'profile0', 'profile2'],
+        'Order after moving last profile visually right in RTL');
   });
 
   test('ProfileReorder_ScrollOnDragNearEdges', async function() {

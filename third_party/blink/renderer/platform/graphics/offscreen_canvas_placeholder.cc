@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/graphics/offscreen_canvas_placeholder.h"
 
+#include "base/no_destructor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
@@ -20,8 +21,8 @@ namespace {
 typedef HashMap<int, OffscreenCanvasPlaceholder*> PlaceholderIdMap;
 
 PlaceholderIdMap& placeholderRegistry() {
-  DEFINE_STATIC_LOCAL(PlaceholderIdMap, s_placeholder_registry, ());
-  return s_placeholder_registry;
+  static base::NoDestructor<PlaceholderIdMap> s_placeholder_registry;
+  return *s_placeholder_registry;
 }
 
 void UpdatePlaceholderClient(
@@ -44,7 +45,7 @@ void OffscreenCanvasPlaceholder::Client::UpdatePlaceholderImage(
     base::WeakPtr<OffscreenCanvasPlaceholder::Client> client,
     scoped_refptr<base::SingleThreadTaskRunner> task_runner,
     DOMNodeId placeholder_canvas_id,
-    scoped_refptr<blink::ExportedCanvasResource>&& canvas_resource) {
+    scoped_refptr<blink::ExportedCanvasResource> canvas_resource) {
   DCHECK(IsMainThread());
 
   OffscreenCanvasPlaceholder* placeholder_canvas =
@@ -73,7 +74,7 @@ void OffscreenCanvasPlaceholder::Client::DispatchFrame(
 }
 
 void OffscreenCanvasPlaceholder::Client::PostImageToPlaceholder(
-    scoped_refptr<ExportedCanvasResource>&& canvas_resource) {
+    scoped_refptr<ExportedCanvasResource> canvas_resource) {
   CHECK(placeholder_task_runner_);
   PostCrossThreadTask(
       *placeholder_task_runner_, FROM_HERE,
@@ -144,7 +145,7 @@ OffscreenCanvasPlaceholder::~OffscreenCanvasPlaceholder() {
 }
 
 void OffscreenCanvasPlaceholder::SetOffscreenCanvasResource(
-    scoped_refptr<ExportedCanvasResource>&& new_frame) {
+    scoped_refptr<ExportedCanvasResource> new_frame) {
   DCHECK(IsOffscreenCanvasRegistered());
   DCHECK(new_frame);
 

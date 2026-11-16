@@ -1011,12 +1011,6 @@ void HistoryBackend::AddPage(const HistoryAddPageArgs& request) {
   // the final URL.
   DCHECK(request.redirects.empty() || request.redirects.back() == request.url);
 
-  // If the user is adding older history, we need to make sure our times
-  // are correct.
-  if (request.time < first_recorded_time_) {
-    first_recorded_time_ = request.time;
-  }
-
   ui::PageTransition request_transition = request.transition;
   const bool is_keyword_generated = ui::PageTransitionCoreTypeIs(
       request_transition, ui::PAGE_TRANSITION_KEYWORD_GENERATED);
@@ -1376,9 +1370,6 @@ void HistoryBackend::InitImpl(
   // Open the long-running transaction.
   BeginSingletonTransaction();
 
-  // Get the first item in our database.
-  db_->GetStartDate(&first_recorded_time_);
-
   // Start expiring old stuff.
   expirer_.StartExpiringOldStuff(base::Days(kExpireDaysThreshold));
 }
@@ -1391,8 +1382,6 @@ void HistoryBackend::CloseAllDatabases() {
   if (db_) {
     CommitSingletonTransactionIfItExists();
     db_.reset();
-    // Forget the first recorded time since the database is closed.
-    first_recorded_time_ = base::Time();
   }
   favicon_backend_.reset();
 }
@@ -1527,10 +1516,6 @@ std::pair<URLID, VisitID> HistoryBackend::AddPageVisit(
   visit_info.source = visit_source;
   visit_info.visit_id = db_->AddVisit(&visit_info);
 
-  if (visit_info.visit_time < first_recorded_time_) {
-    first_recorded_time_ = visit_info.visit_time;
-  }
-
   if (visit_info.visit_id) {
     // Broadcast a notification of the visit.
     NotifyURLVisited(VisitedURLInfo(
@@ -1590,10 +1575,6 @@ void HistoryBackend::AddPagesWithDetails(const URLRows& urls,
       if (!db_->AddVisit(&visit_info)) {
         DLOG(ERROR) << "AddPagesWithDetails: Adding visit failed: " << i->url();
         return;
-      }
-
-      if (visit_info.visit_time < first_recorded_time_) {
-        first_recorded_time_ = visit_info.visit_time;
       }
     }
   }
@@ -2910,10 +2891,7 @@ void HistoryBackend::QueryHistoryBasic(const QueryOptions& options,
                                matching_results.size());
 
   result->SetURLResults(std::move(matching_results));
-
-  if (!has_more_results && options.begin_time <= first_recorded_time_) {
-    result->set_reached_beginning(true);
-  }
+  result->set_has_more_results(has_more_results);
 }
 
 std::vector<URLResult> HistoryBackend::QueryHistoryBasicBatched(
@@ -3046,6 +3024,8 @@ std::vector<URLResult> HistoryBackend::QueryHistoryBasicLegacy(
 void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
                                       const QueryOptions& options,
                                       QueryResults* result) {
+  base::ElapsedTimer timer;
+
   URLRows text_matches;
   if (text_query.empty()) {
     // Host-only search.
@@ -3057,14 +3037,10 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
                         query_parser::MatchingAlgorithm::DEFAULT));
 
     if (!options.hostname_suffix.empty()) {
-      const bool use_improved_matching = base::FeatureList::IsEnabled(
-          kBrowsingHistoryImprovedHostnameSuffixMatching);
       const std::string hostname_suffix =
-          use_improved_matching ? base::ToLowerASCII(options.hostname_suffix)
-                                : options.hostname_suffix;
+          base::ToLowerASCII(options.hostname_suffix);
       std::erase_if(text_matches, [&](const URLRow& row) {
-        return use_improved_matching ? !row.url().DomainIs(hostname_suffix)
-                                     : (row.url().GetHost() != hostname_suffix);
+        return !row.url().DomainIs(hostname_suffix);
       });
     }
   }
@@ -3127,11 +3103,11 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
       url_result.set_content_annotations(std::move(annot_it->second));
     }
   }
-  result->SetURLResults(std::move(matching_visits));
 
-  if (!has_more_results && options.begin_time <= first_recorded_time_) {
-    result->set_reached_beginning(true);
-  }
+  base::UmaHistogramTimes("History.QueryHistoryText.Duration", timer.Elapsed());
+
+  result->SetURLResults(std::move(matching_visits));
+  result->set_has_more_results(has_more_results);
 }
 
 URLRows HistoryBackend::GetMatchesForHost(const std::string& hostname_suffix) {
@@ -3140,16 +3116,9 @@ URLRows HistoryBackend::GetMatchesForHost(const std::string& hostname_suffix) {
 
   if (db_ && db_->InitURLEnumeratorForEverything(&iter)) {
     URLRow row;
-    const bool improved_suffix_matching = base::FeatureList::IsEnabled(
-        kBrowsingHistoryImprovedHostnameSuffixMatching);
-    const std::string target_host = improved_suffix_matching
-                                        ? base::ToLowerASCII(hostname_suffix)
-                                        : hostname_suffix;
+    const std::string target_host = base::ToLowerASCII(hostname_suffix);
     while (iter.GetNextURL(&row)) {
-      const bool matches_host = improved_suffix_matching
-                                    ? row.url().DomainIs(target_host)
-                                    : (row.url().GetHost() == target_host);
-      if (row.url().is_valid() && matches_host) {
+      if (row.url().is_valid() && row.url().DomainIs(target_host)) {
         results.push_back(std::move(row));
       }
     }
@@ -3726,7 +3695,6 @@ void HistoryBackend::DeleteURLs(const std::vector<GURL>& urls) {
 
   expirer_.DeleteURLs(urls, base::Time::Max());
 
-  db_->GetStartDate(&first_recorded_time_);
   // Force a commit, if the user is deleting something for privacy reasons, we
   // want to get it on disk ASAP.
   Commit();
@@ -3741,7 +3709,6 @@ void HistoryBackend::DeleteURL(const GURL& url) {
 
   expirer_.DeleteURL(url, base::Time::Max());
 
-  db_->GetStartDate(&first_recorded_time_);
   // Force a commit, if the user is deleting something for privacy reasons, we
   // want to get it on disk ASAP.
   Commit();
@@ -3758,7 +3725,6 @@ void HistoryBackend::DeleteURLsUntil(
   for (const auto& pair : urls_and_timestamps) {
     expirer_.DeleteURL(pair.first, pair.second);
   }
-  db_->GetStartDate(&first_recorded_time_);
   // Force a commit, if the user is deleting something for privacy reasons, we
   // want to get it on disk ASAP.
   Commit();
@@ -3787,10 +3753,6 @@ void HistoryBackend::ExpireHistoryBetween(
     // Force a commit, if the user is deleting something for privacy reasons,
     // we want to get it on disk ASAP.
     Commit();
-  }
-
-  if (begin_time <= first_recorded_time_) {
-    db_->GetStartDate(&first_recorded_time_);
   }
 }
 
@@ -3840,33 +3802,16 @@ void HistoryBackend::ExpireHistoryForTimes(const std::set<base::Time>& times,
   DCHECK(!times_to_expire.empty());
   expirer_.ExpireHistoryForTimes(times_to_expire);
   Commit();
-
-  DCHECK_GE(times_to_expire.back(), first_recorded_time_);
-  // Update `first_recorded_time_` if we expired it.
-  if (times_to_expire.back() == first_recorded_time_) {
-    db_->GetStartDate(&first_recorded_time_);
-  }
 }
 
 void HistoryBackend::ExpireHistory(
     const std::vector<ExpireHistoryArgs>& expire_list) {
   if (db_) {
-    bool update_first_recorded_time = false;
-
     for (const auto& expire : expire_list) {
       expirer_.ExpireHistoryBetween(expire.urls, expire.restrict_app_id,
                                     expire.begin_time, expire.end_time, true);
-
-      if (expire.begin_time < first_recorded_time_) {
-        update_first_recorded_time = true;
-      }
     }
     Commit();
-
-    // Update `first_recorded_time_` if any deletion might have affected it.
-    if (update_first_recorded_time) {
-      db_->GetStartDate(&first_recorded_time_);
-    }
   }
 }
 
@@ -4103,8 +4048,6 @@ void HistoryBackend::DeleteAllHistory() {
   }
   kept_url_rows.clear();
 
-  db_->GetStartDate(&first_recorded_time_);
-
   tracker_.Clear();
 
   // Send out the notification that history is cleared. The in-memory database
@@ -4158,7 +4101,6 @@ bool HistoryBackend::ClearAllMainHistory(const URLRows& kept_urls) {
   CommitSingletonTransactionIfItExists();
   db_->Vacuum();
   BeginSingletonTransaction();
-  db_->GetStartDate(&first_recorded_time_);
 
   return true;
 }

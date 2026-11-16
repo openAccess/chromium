@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/platform/image-decoders/jxl/jxl_image_decoder.h"
 
-#include <cstdint>
 #include <limits>
 
 #include "base/check_op.h"
@@ -12,6 +11,7 @@
 #include "base/containers/span_rust.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
@@ -80,8 +80,9 @@ String JXLImageDecoder::FilenameExtension() const {
 }
 
 const AtomicString& JXLImageDecoder::MimeType() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, jxl_mime_type, ("image/jxl"));
-  return jxl_mime_type;
+  static const base::NoDestructor<AtomicString> jxl_mime_type(
+      AtomicString::FromLiteral<"image/jxl">());
+  return *jxl_mime_type;
 }
 
 bool JXLImageDecoder::ImageIsHighBitDepth() {

@@ -29,9 +29,8 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.customtabs.CustomTabLauncherImpl;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.settings.SettingsCustomTabLauncherImpl;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.sync.SyncSettingsUtils;
 import org.chromium.components.sync.SyncService;
@@ -74,9 +73,7 @@ public class PassphraseDialogFragment extends DialogFragment {
     private Profile getProfile() {
         Profile profile = getDelegate().getProfile();
         assert profile != null : "Attempting to use PassphraseDialogFragment with a null profile";
-        // TODO(crbug/327687076): Remove the following profile fallback assuming no asserts are
-        //                        triggered for the above profile assert.
-        return profile == null ? ProfileManager.getLastUsedRegularProfile() : profile;
+        return profile;
     }
 
     @Initializer
@@ -168,7 +165,7 @@ public class PassphraseDialogFragment extends DialogFragment {
                             @Override
                             public void onClick(View view) {
                                 SyncSettingsUtils.openSyncDashboard(
-                                        getContext(), new SettingsCustomTabLauncherImpl());
+                                        getContext(), new CustomTabLauncherImpl());
                             }
                         }));
     }

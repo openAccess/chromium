@@ -538,7 +538,6 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, KillProcessZerosAudioStreams) {
                                 shell()->web_contents()->GetPrimaryMainFrame(),
                                 run_loop.QuitClosure());
 
-    std::string result;
     EXPECT_EQ("OK", EvalJs(shell(), "StartOscillator();"))
         << "Failed to execute javascript.";
     run_loop.Run();
@@ -607,7 +606,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndExpectSuccess({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(1, rph->get_media_stream_count_for_testing());
@@ -622,7 +620,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndStop({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(0, rph->get_media_stream_count_for_testing());
@@ -646,7 +643,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(shell(), "getUserMediaAndExpectSuccess({video: true});"))
       << "Failed to execute javascript.";
   EXPECT_EQ(1, rph->get_media_stream_count_for_testing());
@@ -689,7 +685,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(
       shell(), "getUserMediaAndExpectSuccess({video: false, audio: true});"))
       << "Failed to execute javascript.";
@@ -706,7 +701,6 @@ IN_PROC_BROWSER_TEST_F(CaptureStreamRenderProcessHostTest,
       shell(), embedded_test_server()->GetURL("/media/getusermedia.html")));
   RenderProcessHostImpl* rph = static_cast<RenderProcessHostImpl*>(
       shell()->web_contents()->GetPrimaryMainFrame()->GetProcess());
-  std::string result;
   EXPECT_TRUE(ExecJs(
       shell(), "getUserMediaAndExpectSuccess({video: false, audio: true});"))
       << "Failed to execute javascript.";
@@ -3122,7 +3116,6 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest,
   process_b->Cleanup();
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 // Asserts RenderProcessHosts are configured to reflect the embedder's policy
 // defined by `ContentBrowserClient::IsTopChromeWebUIURL()`.
 IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, ForTopChromeWebUIAppliedToHosts) {
@@ -3175,7 +3168,6 @@ IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, ForTopChromeWebUIAppliedToHosts) {
                      base::Unretained(&done)));
   ASSERT_TRUE(done.TimedWait(TestTimeouts::action_timeout()));
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 IN_PROC_BROWSER_TEST_P(RenderProcessHostTest, RendererCheckIsTest) {
   ASSERT_TRUE(embedded_test_server()->Start());
@@ -3229,5 +3221,63 @@ IN_PROC_BROWSER_TEST_F(DiscardFrameBrowserTest,
   shell2->web_contents()->Discard(base::NullCallback());
   watcher.Wait();
   EXPECT_FALSE(process->IsInitializedAndNotDead());
+}
+
+IN_PROC_BROWSER_TEST_F(RenderProcessHostTestBase, StartupTimings) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  GURL test_url = embedded_test_server()->GetURL("/simple_page.html");
+  EXPECT_TRUE(NavigateToURL(shell(), test_url));
+  RenderProcessHost* rph =
+      shell()->web_contents()->GetPrimaryMainFrame()->GetProcess();
+  if (!rph->IsReady()) {
+    RenderProcessHostWatcher ready_watcher(
+        rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY);
+    ASSERT_TRUE(ready_watcher.Wait());
+  }
+
+  const RenderProcessHost::StartupTimings& timings = rph->GetStartupTimings();
+  ASSERT_FALSE(timings.init_start.is_null());
+  ASSERT_FALSE(timings.launch_begin.is_null());
+  ASSERT_FALSE(timings.launch_complete.is_null());
+  ASSERT_FALSE(rph->GetProcessLaunchedTime().is_null());
+
+  EXPECT_LE(timings.init_start, timings.launch_begin);
+  EXPECT_LE(timings.launch_begin, timings.launch_complete);
+  EXPECT_LE(timings.launch_complete, rph->GetProcessLaunchedTime());
+
+  if (!RenderProcessHost::run_renderer_in_process()) {
+    const base::TimeTicks first_launched_time = rph->GetProcessLaunchedTime();
+
+    RenderProcessHostWatcher exit_watcher(
+        rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_EXIT);
+    ASSERT_TRUE(rph->Shutdown(0));
+    exit_watcher.Wait();
+    ASSERT_FALSE(rph->IsInitializedAndNotDead());
+
+    ASSERT_TRUE(rph->Init());
+    EXPECT_TRUE(rph->GetProcessLaunchedTime().is_null());
+    const RenderProcessHost::StartupTimings& pending_timings =
+        rph->GetStartupTimings();
+    EXPECT_FALSE(pending_timings.init_start.is_null());
+    EXPECT_GE(pending_timings.init_start, first_launched_time);
+    EXPECT_TRUE(pending_timings.launch_begin.is_null());
+    EXPECT_TRUE(pending_timings.launch_complete.is_null());
+
+    if (!rph->IsReady()) {
+      RenderProcessHostWatcher respawn_ready_watcher(
+          rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY);
+      ASSERT_TRUE(respawn_ready_watcher.Wait());
+    }
+
+    const RenderProcessHost::StartupTimings& respawn_timings =
+        rph->GetStartupTimings();
+    ASSERT_FALSE(respawn_timings.launch_begin.is_null());
+    ASSERT_FALSE(respawn_timings.launch_complete.is_null());
+    ASSERT_FALSE(rph->GetProcessLaunchedTime().is_null());
+    EXPECT_LE(respawn_timings.init_start, respawn_timings.launch_begin);
+    EXPECT_LE(respawn_timings.launch_begin, respawn_timings.launch_complete);
+    EXPECT_LE(respawn_timings.launch_complete, rph->GetProcessLaunchedTime());
+  }
 }
 }  // namespace content

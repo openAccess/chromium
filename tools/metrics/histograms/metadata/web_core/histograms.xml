@@ -91,7 +91,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="WebCore.Editing.SpellCheckUserActionLimitation.{Source}.{Action}"
-    enum="Boolean" expires_after="2027-01-10">
+    enum="Boolean" expires_after="2027-07-01">
   <owner>arichiv@chromium.org</owner>
   <owner>katabolism-finch@google.com</owner>
   <summary>
@@ -108,15 +108,6 @@ chromium-metrics-reviews@google.com.
     <variant name="Enablement"/>
     <variant name="Selection"/>
   </token>
-</histogram>
-
-<histogram name="WebCore.FindInPage.TaskDuration" units="ms"
-    expires_after="2023-05-07">
-  <owner>rakina@chromium.org</owner>
-  <summary>
-    Records how long one find-in-page task took from invocation start to end.
-    Emitted when a find-in-page task finished running.
-  </summary>
 </histogram>
 
 <histogram name="WebCore.IndexedDB.BackingStore.Action" enum="IDBAction"
@@ -348,22 +339,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="WebCore.Scripts.InlineStreamerWaitTime" units="microseconds"
-    expires_after="2025-02-10">
-  <owner>cduvall@chromium.org</owner>
-  <owner>leszeks@chromium.org</owner>
-  <summary>
-    Records the time the main thread is blocked while waiting for an inline
-    script to finish compiling on a background thread. Recorded for each inline
-    script that is compiled on a background thread.
-
-    This histogram only records metrics on machines with high-resolution clocks.
-
-    Warning: This histogram was expired from 2023-11-12 to 2024-06-11. Data may
-    be missing.
-  </summary>
-</histogram>
-
 <histogram name="WebCore.Scripts.Other.NotStreamingReason"
     enum="NotStreamingReason" expires_after="2024-09-18">
   <owner>leszeks@chromium.org</owner>
@@ -399,13 +374,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="WebCore.Scripts.ParsingBlocking.StartedStreaming"
-    enum="BooleanStreamed" expires_after="2023-06-01">
-  <owner>leszeks@chromium.org</owner>
-  <owner>v8-runtime@google.com</owner>
-  <summary>Whether a parsing blocking script was streamed or not.</summary>
-</histogram>
-
 <histogram name="WebCore.Scripts.V8CodeCacheMetadata.Get"
     enum="V8CodeCacheGetMetadataType" expires_after="2025-10-12">
   <owner>marja@chromium.org</owner>
@@ -413,17 +381,6 @@ chromium-metrics-reviews@google.com.
   <summary>
     What type of cache metadata we retrieved for a script. Recorded when we are
     about to compile a script.
-  </summary>
-</histogram>
-
-<histogram name="WebCore.Scripts.V8CodeCacheMetadata.Set"
-    enum="V8CodeCacheSetMetadataType" expires_after="2025-03-30">
-  <owner>marja@chromium.org</owner>
-  <owner>v8-runtime@google.com</owner>
-  <summary>
-    What type of cache metadata we set for a script. If we set multiple metadata
-    types for the same script, multiple samples are recorded. Recorded when we
-    set the metadata.
   </summary>
 </histogram>
 

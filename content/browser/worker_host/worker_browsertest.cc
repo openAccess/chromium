@@ -35,6 +35,7 @@
 #include "content/public/browser/client_certificate_delegate.h"
 #include "content/public/browser/dedicated_worker_service.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/prerender_host_id.h"
 #include "content/public/browser/shared_worker_service.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
@@ -46,6 +47,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "content/public/test/url_loader_interceptor.h"
@@ -53,6 +55,7 @@
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_content_browser_client.h"
 #include "content/test/content_browser_test_utils_internal.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/features.h"
 #include "net/base/filename_util.h"
 #include "net/base/schemeful_site.h"
@@ -579,6 +582,67 @@ IN_PROC_BROWSER_TEST_F(WorkerTest, DedicatedWorkerBlockedForPdfProcess) {
       worker.postMessage('ping');
     })
   )"));
+}
+
+class WorkerPrerenderBrowserTest : public WorkerTest {
+ public:
+  WorkerPrerenderBrowserTest()
+      : prerender_helper_(
+            base::BindRepeating(&WorkerPrerenderBrowserTest::web_contents,
+                                base::Unretained(this))) {}
+  WorkerPrerenderBrowserTest(const WorkerPrerenderBrowserTest&) = delete;
+  WorkerPrerenderBrowserTest& operator=(const WorkerPrerenderBrowserTest&) =
+      delete;
+  ~WorkerPrerenderBrowserTest() override = default;
+
+  void SetUp() override {
+    prerender_helper_.RegisterServerRequestMonitor(ssl_server());
+    WorkerTest::SetUp();
+  }
+
+  WebContents* web_contents() { return shell()->web_contents(); }
+
+ protected:
+  test::PrerenderTestHelper prerender_helper_;
+};
+
+// `blink.mojom.DedicatedWorkerHostFactory` is deferred during prerendering via
+// `MojoBinderPolicy::kDefer`, so creating a dedicated worker in a prerendered
+// page does not hit `IsInactiveAndDisallowActivation()` or cancel prerendering.
+// Verify that activation succeeds and the worker runs once activated.
+IN_PROC_BROWSER_TEST_F(WorkerPrerenderBrowserTest,
+                       DedicatedWorkerCreatedDuringPrerendering) {
+  const GURL initial_url = ssl_server()->GetURL("a.test", "/empty.html");
+  const GURL prerender_url = ssl_server()->GetURL("a.test", "/title1.html");
+
+  ASSERT_TRUE(NavigateToURL(shell(), initial_url));
+
+  PrerenderHostId host_id = prerender_helper_.AddPrerender(prerender_url);
+  ASSERT_TRUE(host_id);
+  RenderFrameHost* prerender_rfh =
+      prerender_helper_.GetPrerenderedMainFrameHost(host_id);
+  ASSERT_TRUE(prerender_rfh);
+
+  test::PrerenderHostObserver host_observer(*web_contents(), host_id);
+
+  // Create a dedicated worker while prerendering. The `BrowserInterfaceBroker`
+  // request for `DedicatedWorkerHostFactory` is deferred until activation.
+  ASSERT_TRUE(ExecJs(prerender_rfh, R"(
+    window.worker = new Worker('/workers/worker_common.js');
+    window.workerReply = new Promise(resolve => {
+      window.worker.onmessage = e => resolve(e.data);
+    });
+    window.worker.postMessage('ping');
+  )"));
+  static_cast<RenderFrameHostImpl*>(prerender_rfh)
+      ->browser_interface_broker_receiver_for_testing()
+      .FlushForTesting();
+  ASSERT_EQ(prerender_helper_.GetHostForUrl(prerender_url), host_id);
+
+  prerender_helper_.NavigatePrimaryPage(prerender_url);
+  EXPECT_TRUE(host_observer.was_activated());
+  EXPECT_EQ(web_contents()->GetPrimaryMainFrame(), prerender_rfh);
+  EXPECT_EQ("pong", EvalJs(prerender_rfh, "window.workerReply"));
 }
 
 // A WebContents created with `disallow_shared_workers` must not be able to
@@ -1544,6 +1608,7 @@ IN_PROC_BROWSER_TEST_F(
   )"));
   const std::string expected_cookies = base::JoinString(
       {kSameSiteNoneCookie, kCrossSitePartitionedCookie}, "; ");
+  EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/worker.js"));
   EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/empty.js"));
   EXPECT_EQ(expected_cookies, GetReceivedCookie("/workers/empty.html"));
 }
@@ -1802,8 +1867,18 @@ IN_PROC_BROWSER_TEST_P(CrossOriginWorkerScriptTest,
   EXPECT_FALSE(monitor.GetRequestInfo(worker_url));
 }
 
+// TODO(crbug.com/581125012): Flaky on Android because
+// URLLoaderMonitor::GetCompletionStatus() is queried without waiting for the
+// aborted initial redirect request's OnComplete IPC on the IO thread.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode \
+  DISABLED_CrossOriginRedirectFailsFetchWithSameOriginMode
+#else
+#define MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode \
+  CrossOriginRedirectFailsFetchWithSameOriginMode
+#endif
 IN_PROC_BROWSER_TEST_P(CrossOriginWorkerScriptTest,
-                       CrossOriginRedirectFailsFetchWithSameOriginMode) {
+                       MAYBE_CrossOriginRedirectFailsFetchWithSameOriginMode) {
   const GURL page_url = ssl_server()->GetURL("a.test", "/title1.html");
   const GURL redirect_target =
       ssl_server()->GetURL("b.test", "/workers/post_ready.js");

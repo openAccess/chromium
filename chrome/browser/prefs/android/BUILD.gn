@@ -16,7 +16,6 @@ android_library("java") {
       [ "java/src/org/chromium/chrome/browser/prefs/LocalStatePrefs.java" ]
   deps = [
     "//base:resetters_java",
-    "//base:tasks_java",
     "//build/android:build_java",
     "//components/prefs/android:java",
     "//third_party/androidx:androidx_annotation_annotation_java",
@@ -25,10 +24,14 @@ android_library("java") {
 }
 
 static_library("jni_cc") {
-  sources = [ "local_state_prefs_android.cc" ]
+  sources = [
+    "local_state_prefs_android.cc",
+    "local_state_prefs_android.h",
+  ]
   deps = [
     ":jni_headers",
     "//chrome/browser:browser_process",
+    "//chrome/browser/metrics",
     "//components/prefs",
   ]
 }

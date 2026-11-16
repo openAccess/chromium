@@ -282,8 +282,9 @@ FrameTreeNode* FrameTree::FindByID(FrameTreeNodeId frame_tree_node_id) {
 }
 
 FrameTreeNode* FrameTree::FindByRoutingID(int process_id, int routing_id) {
-  RenderFrameHostImpl* render_frame_host =
-      RenderFrameHostImpl::FromID(process_id, routing_id);
+  // TODO(crbug.com/379869738): Remove FromUnsafeValue().
+  RenderFrameHostImpl* render_frame_host = RenderFrameHostImpl::FromID(
+      ChildProcessId::FromUnsafeValue(process_id), routing_id);
   if (render_frame_host) {
     FrameTreeNode* result = render_frame_host->frame_tree_node();
     if (this == &result->frame_tree())
@@ -779,6 +780,7 @@ void FrameTree::SetFocusedFrame(FrameTreeNode* node,
       ->current_frame_host()
       ->GetOutermostMainFrameOrEmbedder()
       ->UpdateAXTreeData();
+  delegate_->DidChangeFocusedFrame();
 }
 
 scoped_refptr<RenderViewHostImpl> FrameTree::CreateRenderViewHost(
@@ -1068,9 +1070,6 @@ void FrameTree::Init(SiteInstanceImpl* main_frame_site_instance,
                      RenderFrameHostImpl* opener_for_origin,
                      const blink::FramePolicy& frame_policy,
                      const base::UnguessableToken& devtools_frame_token) {
-  // blink::FrameTree::SetName always keeps |unique_name| empty in case of a
-  // main frame - let's do the same thing here.
-  std::string unique_name;
   root_.render_manager()->InitRoot(main_frame_site_instance,
                                    renderer_initiated_creation, frame_policy,
                                    main_frame_name, devtools_frame_token);

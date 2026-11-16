@@ -18,12 +18,6 @@
 
 namespace net {
 
-// Minimum buffer size required when calling ReadMultiple(). On platforms
-// supporting kernel-coalesced superpackets (e.g. UDP GRO), superpackets can be
-// up to 64KB (64 * 1024 bytes). Callers must provide a buffer of at least this
-// size to prevent packet truncation.
-inline constexpr size_t kMinimumReadMultipleBufferSize = 64 * 1024;
-
 struct NET_EXPORT_PRIVATE DatagramMetadata {
   // The start offset of this datagram's data within the buffer passed to the
   // read API (e.g., ReadMultiple).
@@ -110,9 +104,6 @@ class NET_EXPORT_PRIVATE DatagramClientSocket : public DatagramSocket,
   // - If the read proceeds asynchronously, it returns `ERR_IO_PENDING`. The
   //   `callback` will be invoked later with the final result (either
   //   `DatagramsMetadata` or an error code other than `ERR_IO_PENDING`).
-  //
-  // NOTE: `buf_len` MUST be at least `kMinimumReadMultipleBufferSize` (64 *
-  // 1024 bytes). See `UDPSocketPosix::ReadMultiple` for details.
   virtual base::expected<DatagramsMetadata, Error> ReadMultiple(
       IOBuffer* buf,
       size_t buf_len,
@@ -148,6 +139,18 @@ class NET_EXPORT_PRIVATE DatagramClientSocket : public DatagramSocket,
   // Unregister the underlying socket and its associated UDP payload that were
   // previously registered by RegisterQuicConnectionClosePayload
   virtual void UnregisterQuicConnectionClosePayload() {}
+
+  // Allows the socket to connect via emulated connect if supported. Setting
+  // AllowEmulatedConnect(true) will do nothing when not implemented or when the
+  // feature is disabled. When socket emulation is enabled, the local address is
+  // determined on a per-datagram basis. As a result, GetLocalAddress() cannot
+  // be called before a datagram has been received, and will reflect the local
+  // address of the most recent datagram received. If the route to the
+  // destination changes while the socket is open then the value of
+  // GetLocalAddress() will change after the next datagram arrives.
+  // Must be called before Connect(), ConnectUsingNetwork() or
+  // ConnectUsingDefaultNetwork().
+  virtual void AllowEmulatedConnect(bool allow) {}
 };
 
 }  // namespace net

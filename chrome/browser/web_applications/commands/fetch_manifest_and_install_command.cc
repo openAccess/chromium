@@ -133,16 +133,6 @@ static bool& ShouldBypassVisibilityChecks() {
   return g_bypass_visibility_checking;
 }
 
-// Fallback to using `kMinimumScreenshotSizeInPx` if there are no sizes
-// specified in the manifest for the screenshots, or if the size has been set to
-// `any`, which gets parsed as (0, 0).
-int ComputeIdealScreenshotSize(const blink::Manifest::Screenshot& screenshot) {
-  return screenshot.image.sizes.empty() || screenshot.image.sizes[0].IsEmpty()
-             ? webapps::kMinimumScreenshotSizeInPx
-             : std::max(screenshot.image.sizes[0].width(),
-                        screenshot.image.sizes[0].height());
-}
-
 bool IsValidScreenshotForDownload(
     const blink::Manifest::Screenshot& screenshot) {
   return screenshot.form_factor ==
@@ -805,13 +795,12 @@ void FetchManifestAndInstallCommand::StartPreloadingScreenshots() {
       break;
     }
 
-    // Since narrow screenshots are filtered out, this is guaranteed to return
-    // either the minimum screen shot size, or the width of the screenshot,
-    // provided the manifest has it declared extensively.
-    int ideal_size = ComputeIdealScreenshotSize(screenshot);
-    gfx::Size size_to_use = (ideal_size == webapps::kMinimumScreenshotSizeInPx)
-                                ? gfx::Size(ideal_size, ideal_size)
-                                : screenshot.image.sizes[0];
+    int ideal_size =
+        webapps::InstallableEvaluator::ComputeIdealScreenshotSize(screenshot);
+    gfx::Size size_to_use =
+        (screenshot.image.sizes.empty() || screenshot.image.sizes[0].IsEmpty())
+            ? gfx::Size(ideal_size, ideal_size)
+            : screenshot.image.sizes[0];
     screenshot_sizes_.push_back(size_to_use);
 
     // Suppress console warnings by the `ManifestIconDownloader` if installation

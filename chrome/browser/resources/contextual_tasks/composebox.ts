@@ -9,7 +9,8 @@ import '//resources/cr_components/localized_link/localized_link.js';
 import {GlifAnimationState} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import {LensOverlayDismissalSource} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
-import {ComposeboxProxyImpl, createAutocompleteMatch} from '//resources/cr_components/composebox/composebox_proxy.js';
+import {ComposeboxProxyImpl} from '//resources/cr_components/composebox/composebox_proxy.js';
+import {createAutocompleteMatch} from '//resources/cr_components/search/autocomplete_match_utils.js';
 import {GlowAnimationState, VoiceSearchState} from '//resources/cr_components/search/constants.js';
 import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {assert} from '//resources/js/assert.js';
@@ -112,9 +113,6 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
         type: Boolean,
         reflect: true,
       },
-      showContextMenu_: {
-        type: Boolean,
-      },
       voiceSearchCoherenceEnabled_: {
         type: Boolean,
         reflect: true,
@@ -183,8 +181,6 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   protected accessor composeboxHeight_: number = 0;
   protected accessor composeboxDropdownHeight_: number = 0;
   protected accessor isComposeboxFocused_: boolean = false;
-  protected accessor showContextMenu_: boolean =
-      loadTimeData.getBoolean('composeboxShowContextMenu');
   protected accessor voiceSearchCoherenceEnabled_: boolean =
       loadTimeData.getBoolean(
           'voiceSearchCoherenceCobrowsingComposeboxEnabled');
@@ -195,7 +191,7 @@ export class ContextualTasksComposeboxElement extends I18nMixinLit
   protected accessor enableFileHint_: boolean =
       loadTimeData.getBoolean('enableFileHint');
   protected accessor lensButtonDisabled_: boolean = false;
-  protected searchboxHandler_: SearchboxPageHandlerRemote;
+  private searchboxHandler_: SearchboxPageHandlerRemote;
   private eventTracker_: EventTracker = new EventTracker();
   private pageHandler_: PageHandlerRemote;
   private searchboxCallbackRouter_: SearchboxPageCallbackRouter;

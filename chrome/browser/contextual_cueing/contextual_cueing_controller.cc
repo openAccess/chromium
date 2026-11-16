@@ -43,7 +43,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/channel_info.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/contextual_cueing/contextual_cueing_enums.h"
@@ -484,6 +483,15 @@ void ContextualCueingController::ObserveTabList() {
 }
 
 void ContextualCueingController::EvaluateCues() {
+  EvaluateCuesImpl(/*only_type=*/std::nullopt);
+}
+
+void ContextualCueingController::EvaluateCueForTarget(CueTargetType type) {
+  EvaluateCuesImpl(type);
+}
+
+void ContextualCueingController::EvaluateCuesImpl(
+    std::optional<CueTargetType> only_type) {
   if (!base::FeatureList::IsEnabled(kContextualCueingV2MultiSource)) {
     return;
   }
@@ -536,6 +544,9 @@ void ContextualCueingController::EvaluateCues() {
   // Collect non-backed-off targets that support this intrusiveness level.
   std::vector<CueTargetType> candidates;
   for (const auto& [type, target] : cue_targets_) {
+    if (only_type && type != *only_type) {
+      continue;
+    }
     if (!target->IsEligible()) {
       CUEING_LOG(base::StringPrintf("target %s not eligible", GetName(type)));
       continue;
@@ -704,6 +715,9 @@ void ContextualCueingController::OnContentGenerated(
   if (!target) {
     return;
   }
+  if (IsAllowedToShowCue() != ContextualCueingDecision::kUnspecified) {
+    return;
+  }
   ShowCue(type, intrusiveness, *target, *cue, {});
 }
 
@@ -762,7 +776,8 @@ void ContextualCueingController::InitiateModelExecutionRequest(
     options.duplicate_policy = history::QueryOptions::REMOVE_ALL_DUPLICATES;
     options.policy_for_404_visits = history::VisitQuery404sPolicy::kExclude404s;
     // Only include visits originating from the local device (stored with an
-    // empty `originator_cache_guid`).
+    // empty `originator_cache_guid`) that are known to sync.
+    options.restrict_to_synced_urls = true;
     options.client_ids = {""};
     // Buffer the query limit to account for deduplication against the active
     // tab, background tabs, and duplicate URL visits.
@@ -1125,11 +1140,12 @@ ContextualCueingDecision ContextualCueingController::IsAllowedToShowCue() {
 
 #if !BUILDFLAG(IS_ANDROID)
   if (page_actions::PageActionController* page_action_controller =
-          tab_->GetTabFeatures()->page_action_controller()) {
-    if (page_action_controller->GetActiveAnchoredMessage().has_value()) {
+          page_actions::PageActionController::From(tab_)) {
+    if (page_action_controller->GetActiveAnchoredMessage().has_value() ||
+        active_cue_data_.has_value()) {
       CUEING_LOG(
-          "Not attempting to show/generate cue because another anchored "
-          "message is currently showing.");
+          "Not attempting to show/generate cue because another contextual cue "
+          "or anchored message is currently showing.");
       RecordContextualCueingDecision(
           ContextualCueingDecision::kAnchoredMessageAlreadyShowing);
       return ContextualCueingDecision::kAnchoredMessageAlreadyShowing;
@@ -1235,7 +1251,7 @@ void ContextualCueingController::ShowCue(
                            action_data, cue_id);
 
   page_actions::PageActionController* page_action_controller =
-      tab_->GetTabFeatures()->page_action_controller();
+      page_actions::PageActionController::From(tab_);
   if (!page_action_controller) {
     CUEING_LOG("Not attempting to show cue: no page action controller.");
     RecordContextualCueingDecision(ContextualCueingDecision::kNoActiveTab);
@@ -1291,7 +1307,7 @@ void ContextualCueingController::ShowCue(
   // that a loud anchored message is being shown rather than a quiet chip.
   if (intrusiveness == CueIntrusiveness::kLoud) {
     current_anchored_message_priority_ =
-        page_actions::PageActionPriorityCategory::kContextualCue;
+        page_actions::PageActionPriorityCategory::kProactiveSuggestion;
   }
 
   // Show() must be called before ShowAnchoredMessage() because the page action
@@ -1302,7 +1318,8 @@ void ContextualCueingController::ShowCue(
   if (intrusiveness == CueIntrusiveness::kLoud) {
     page_action_controller->ShowAnchoredMessage(
         kActionAnchoredContextualCue,
-        {.priority = page_actions::PageActionPriorityCategory::kContextualCue});
+        {.priority =
+             page_actions::PageActionPriorityCategory::kProactiveSuggestion});
   }
 
   CUEING_LOG(base::StringPrintf(
@@ -1521,7 +1538,7 @@ void ContextualCueingController::OnCueClicked(
     // Re-show the anchored message to allow for the user to see the tab
     // sharing UI before invoking the cue target's click action
     if (page_actions::PageActionController* page_action_controller =
-            tab_->GetTabFeatures()->page_action_controller()) {
+            page_actions::PageActionController::From(tab_)) {
       current_anchored_message_priority_ =
           page_actions::PageActionPriorityCategory::kUserInteraction;
       page_action_controller->ShowAnchoredMessage(
@@ -1583,6 +1600,9 @@ void ContextualCueingController::OnCueInteraction(
 
   switch (interaction_type) {
     case ContextualCueingInteraction::kCueDismissed:
+      if (CueTarget* target = GetTarget(cue_type)) {
+        target->OnDismissed();
+      }
       contextual_cueing_service_->OnCueDismissed(
           cue_type, ShouldRecordUcbStats(cue_type));
       MaybeLaunchDismissHatsSurvey(cue_type, cuj);
@@ -1593,6 +1613,9 @@ void ContextualCueingController::OnCueInteraction(
       }
       break;
     case ContextualCueingInteraction::kCueSuggestionsSettings:
+      if (CueTarget* target = GetTarget(cue_type)) {
+        target->OnSuggestionsSettingsOpened();
+      }
 #if !BUILDFLAG(IS_ANDROID)
       chrome::ShowSettingsSubPageForProfile(tab_->GetProfile(),
                                             chrome::kSuggestionsSubPage);
@@ -1668,7 +1691,7 @@ void ContextualCueingController::HideCue() {
   tab_list_observation_.Reset();
   current_anchored_message_priority_ = std::nullopt;
   page_actions::PageActionController* page_action_controller =
-      tab_->GetTabFeatures()->page_action_controller();
+      page_actions::PageActionController::From(tab_);
   if (!page_action_controller) {
     return;
   }
@@ -1683,7 +1706,7 @@ void ContextualCueingController::HideCue() {
 void ContextualCueingController::HideAnchoredMessage() {
 #if !BUILDFLAG(IS_ANDROID)
   if (page_actions::PageActionController* page_action_controller =
-          tab_->GetTabFeatures()->page_action_controller()) {
+          page_actions::PageActionController::From(tab_)) {
     page_action_controller->HideAnchoredMessage(kActionAnchoredContextualCue);
   }
 #endif

@@ -38,8 +38,9 @@ ActorSurfaceRegistry::ActorSurfaceRegistry(
 
 ActorSurfaceRegistry::~ActorSurfaceRegistry() = default;
 
-ActorSurface* ActorSurfaceRegistry::Get(ActorSurfaceHandle handle) const {
-  return GetImpl(handle);
+ActorSurface* ActorSurfaceRegistry::Get(
+    ActorSurfaceHandle actor_surface_handle) const {
+  return GetImpl(actor_surface_handle);
 }
 
 ActorSurface* ActorSurfaceRegistry::GetForTab(tabs::TabHandle tab) const {
@@ -50,7 +51,7 @@ ActorSurface* ActorSurfaceRegistry::GetForTab(tabs::TabHandle tab) const {
 ActorSurface* ActorSurfaceRegistry::GetForHeadless(
     const content::WebContents* contents) const {
   CHECK(contents);
-  for (const auto& [handle, surface] : owned_surfaces_) {
+  for (const auto& [actor_surface_handle, surface] : owned_surfaces_) {
     if (surface->IsTab()) {
       continue;
     }
@@ -71,53 +72,62 @@ void ActorSurfaceRegistry::OnTabCreated(tabs::TabInterface& tab) {
   }
   if (content::WebContents* contents = tab.GetContents()) {
     if (ActorSurface* headless = GetForHeadless(contents)) {
-      const ActorSurfaceHandle handle = headless->GetHandle();
-      GetImpl(handle)->SetTab(tab_handle);
+      const ActorSurfaceHandle actor_surface_handle = headless->GetHandle();
+      GetImpl(actor_surface_handle)->SetTab(tab_handle);
       CHECK(!tab_to_surface_.contains(tab_handle));
-      tab_to_surface_[tab_handle] = handle;
+      tab_to_surface_[tab_handle] = actor_surface_handle;
       return;
     }
   }
   // The only place a surface handle may reuse a tab's raw value; removed with
   // kUseTabHandleAsSurfaceHandle. Nothing may rely on the two being equal.
-  ActorSurfaceHandle handle =
+  ActorSurfaceHandle actor_surface_handle =
       base::FeatureList::IsEnabled(kUseTabHandleAsSurfaceHandle)
           ? ActorSurfaceHandle(tab_handle.raw_value())
           : ActorSurfaceHandle::NextHandle();
-  CHECK(!owned_surfaces_.contains(handle));
+  CHECK(!owned_surfaces_.contains(actor_surface_handle));
   CHECK(!tab_to_surface_.contains(tab_handle));
   owned_surfaces_.emplace(
-      handle, std::make_unique<ActorSurfaceImpl>(handle, tab_handle));
-  tab_to_surface_[tab_handle] = handle;
+      actor_surface_handle,
+      std::make_unique<ActorSurfaceImpl>(actor_surface_handle, tab_handle));
+  tab_to_surface_[tab_handle] = actor_surface_handle;
 }
 
 void ActorSurfaceRegistry::OnTabWillBeDestroyed(tabs::TabHandle tab) {
   auto it = tab_to_surface_.find(tab);
-  if (it != tab_to_surface_.end()) {
-    DestroySurface(it->second);
+  if (it == tab_to_surface_.end()) {
+    return;
   }
+  const ActorSurfaceHandle actor_surface_handle = it->second;
+  tab_to_surface_.erase(it);
+  owned_surfaces_.erase(actor_surface_handle);
 }
 
-ActorSurface* ActorSurfaceRegistry::CreateHeadlessWebContents() {
-  return CreateForHeadless(headless_manager_->Create());
+ActorSurface* ActorSurfaceRegistry::CreateHeadlessWebContents(
+    base::PassKey<ActorKeyedService> pass_key) {
+  return CreateForHeadless(headless_manager_->Create(), pass_key);
 }
 
 ActorSurface* ActorSurfaceRegistry::CreateForHeadless(
-    content::WebContents* contents) {
+    content::WebContents* contents,
+    base::PassKey<ActorKeyedService>) {
   CHECK(contents);
+  CHECK(headless_manager_->Contains(contents));
   CHECK_EQ(contents->GetBrowserContext(), headless_manager_->browser_context());
   if (ActorSurface* existing = GetForHeadless(contents)) {
     return existing;
   }
-  ActorSurfaceHandle handle = ActorSurfaceHandle::NextHandle();
-  CHECK(!owned_surfaces_.contains(handle));
-  owned_surfaces_.emplace(handle,
-                          std::make_unique<ActorSurfaceImpl>(handle, contents));
-  return Get(handle);
+  ActorSurfaceHandle actor_surface_handle = ActorSurfaceHandle::NextHandle();
+  CHECK(!owned_surfaces_.contains(actor_surface_handle));
+  owned_surfaces_.emplace(
+      actor_surface_handle,
+      std::make_unique<ActorSurfaceImpl>(actor_surface_handle, contents));
+  return Get(actor_surface_handle);
 }
 
-void ActorSurfaceRegistry::OnSurfacePromoted(ActorSurfaceHandle handle) {
-  ActorSurfaceImpl* surface = GetImpl(handle);
+void ActorSurfaceRegistry::OnSurfacePromoted(
+    ActorSurfaceHandle actor_surface_handle) {
+  ActorSurfaceImpl* surface = GetImpl(actor_surface_handle);
   CHECK(surface);
 
   // Promotion parents the surface's existing WebContents into a tab.
@@ -132,11 +142,12 @@ void ActorSurfaceRegistry::OnSurfacePromoted(ActorSurfaceHandle handle) {
 
   surface->SetTab(tab->GetHandle());
   CHECK(!tab_to_surface_.contains(tab->GetHandle()));
-  tab_to_surface_[tab->GetHandle()] = handle;
+  tab_to_surface_[tab->GetHandle()] = actor_surface_handle;
 }
 
-void ActorSurfaceRegistry::OnSurfaceWillBeDemoted(ActorSurfaceHandle handle) {
-  ActorSurfaceImpl* surface = GetImpl(handle);
+void ActorSurfaceRegistry::OnSurfaceWillBeDemoted(
+    ActorSurfaceHandle actor_surface_handle) {
+  ActorSurfaceImpl* surface = GetImpl(actor_surface_handle);
   CHECK(surface);
   CHECK(surface->IsTab());
   CHECK(!GetForHeadless(surface->GetWebContents()));
@@ -146,25 +157,26 @@ void ActorSurfaceRegistry::OnSurfaceWillBeDemoted(ActorSurfaceHandle handle) {
   surface->SetHeadless();
 }
 
-void ActorSurfaceRegistry::DestroySurface(ActorSurfaceHandle handle) {
-  ActorSurfaceImpl* surface = GetImpl(handle);
+void ActorSurfaceRegistry::DestroyHeadlessActorSurface(
+    ActorSurfaceHandle actor_surface_handle,
+    base::PassKey<ActorKeyedService>) {
+  ActorSurfaceImpl* surface = GetImpl(actor_surface_handle);
   if (!surface) {
     return;
   }
-  if (std::optional<tabs::TabHandle> tab = surface->GetTabHandle()) {
-    tab_to_surface_.erase(*tab);
-    owned_surfaces_.erase(handle);
-  } else {
-    content::WebContents* contents = surface->GetWebContents();
-    owned_surfaces_.erase(handle);
-    headless_manager_->Destroy(contents);
-  }
+  CHECK(!surface->IsTab());
+  content::WebContents* contents = surface->GetWebContents();
+  // Destroy the surface before its WebContents, so it never outlives it.
+  owned_surfaces_.erase(actor_surface_handle);
+  headless_manager_->Destroy(contents);
 }
 
 void ActorSurfaceRegistry::OnHeadlessContentsWillBeDestroyed(
     content::WebContents* contents) {
-  // Intentionally empty: the registry drops headless surfaces in
-  // DestroySurface() before asking the manager to destroy the WebContents.
+  // Headless WebContents are only destroyed through
+  // DestroyHeadlessActorSurface(), which drops the surface first. A headless
+  // page can't close itself.
+  CHECK(!GetForHeadless(contents));
 }
 
 base::WeakPtr<ActorSurfaceRegistry> ActorSurfaceRegistry::GetWeakPtr() {
@@ -172,8 +184,8 @@ base::WeakPtr<ActorSurfaceRegistry> ActorSurfaceRegistry::GetWeakPtr() {
 }
 
 ActorSurfaceImpl* ActorSurfaceRegistry::GetImpl(
-    ActorSurfaceHandle handle) const {
-  auto it = owned_surfaces_.find(handle);
+    ActorSurfaceHandle actor_surface_handle) const {
+  auto it = owned_surfaces_.find(actor_surface_handle);
   return it == owned_surfaces_.end() ? nullptr : it->second.get();
 }
 

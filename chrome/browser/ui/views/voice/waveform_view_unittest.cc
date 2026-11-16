@@ -6,11 +6,14 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 
 #include "base/time/time.h"
 #include "chrome/test/views/chrome_views_test_base.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gfx/animation/infinite_animation.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/views/widget/widget.h"
 
 namespace voice {
 
@@ -92,33 +95,30 @@ TEST_F(WaveformViewTest, AudioLevelMath) {
   EXPECT_FLOAT_EQ(height_max, kMaxBarHeight);
 }
 
-TEST_F(WaveformViewTest, DoesNotCollapseWhenIdleByDefault) {
+TEST_F(WaveformViewTest, DoesNotCollapseWhenIdle) {
   auto waveform_view = CreateFullSizeWaveformView();
   ASSERT_EQ(waveform_view->mode(), WaveformMode::kIdle);
   EXPECT_GT(waveform_view->GetPreferredSize().width(), 0);
   EXPECT_GT(waveform_view->GetPreferredSize().height(), 0);
 }
 
-TEST_F(WaveformViewTest, CollapsesOnlyWhenIdleIfRequested) {
-  auto waveform_view = CreateFullSizeWaveformView();
-  waveform_view->SetCollapseWhenIdle(true);
+TEST_F(WaveformViewTest, AnimatesOnlyWhenLiveOrProcessing) {
+  auto waveform = CreateFullSizeWaveformView();
+  waveform->SetMode(WaveformMode::kLive);
+  EXPECT_FALSE(waveform->animation_->is_animating());
 
-  EXPECT_EQ(waveform_view->mode(), WaveformMode::kIdle);
-  EXPECT_EQ(waveform_view->GetPreferredSize(), gfx::Size(0, 0));
-
-  for (WaveformMode mode : {WaveformMode::kWaiting, WaveformMode::kLive,
-                            WaveformMode::kProcessing}) {
-    waveform_view->SetMode(mode);
-    EXPECT_GT(waveform_view->GetPreferredSize().width(), 0);
-    EXPECT_GT(waveform_view->GetPreferredSize().height(), 0);
-  }
+  std::unique_ptr<views::Widget> widget =
+      CreateTestWidget(views::Widget::InitParams::CLIENT_OWNS_WIDGET);
+  WaveformView* const waveform_view =
+      widget->SetContentsView(std::move(waveform));
+  EXPECT_TRUE(waveform_view->animation_->is_animating());
 
   waveform_view->SetMode(WaveformMode::kIdle);
-  EXPECT_EQ(waveform_view->GetPreferredSize(), gfx::Size(0, 0));
-
-  waveform_view->SetCollapseWhenIdle(false);
-  EXPECT_GT(waveform_view->GetPreferredSize().width(), 0);
-  EXPECT_GT(waveform_view->GetPreferredSize().height(), 0);
+  EXPECT_FALSE(waveform_view->animation_->is_animating());
+  waveform_view->SetMode(WaveformMode::kProcessing);
+  EXPECT_TRUE(waveform_view->animation_->is_animating());
+  waveform_view->SetMode(WaveformMode::kWaiting);
+  EXPECT_FALSE(waveform_view->animation_->is_animating());
 }
 
 }  // namespace voice

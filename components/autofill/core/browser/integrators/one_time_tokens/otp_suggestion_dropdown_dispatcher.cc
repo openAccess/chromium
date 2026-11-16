@@ -36,9 +36,7 @@ bool OtpSuggestionDropdownDispatcher::TriggerProactive(
     return false;
   }
 
-  if (const FieldRecord* record =
-          base::FindOrNull(records_by_field_, target.field);
-      record && IsSuppressedByDeduplication(*record, candidate.identity)) {
+  if (IsSuppressedByDeduplication(target.field, candidate.identity)) {
     return false;
   }
 
@@ -57,12 +55,7 @@ bool OtpSuggestionDropdownDispatcher::TriggerProactive(
     return false;
   }
 
-  FieldRecord& record = records_by_field_[target.field];
-  record.last_offered_identity = candidate.identity;
-  if (record.pending_trigger.has_value() &&
-      IsSuppressedByDeduplication(record, record.pending_trigger->second)) {
-    record.pending_trigger.reset();
-  }
+  RecordShown(target.field, candidate.identity);
   return true;
 }
 
@@ -95,6 +88,13 @@ bool OtpSuggestionDropdownDispatcher::HasPendingTrigger(
   return record && record->pending_trigger.has_value();
 }
 
+bool OtpSuggestionDropdownDispatcher::IsSuppressedByDeduplication(
+    FieldGlobalId field,
+    const OtpTokenIdentity& identity) const {
+  const FieldRecord* record = base::FindOrNull(records_by_field_, field);
+  return record && IsSuppressedByDeduplication(*record, identity);
+}
+
 void OtpSuggestionDropdownDispatcher::RecordShown(
     FieldGlobalId field,
     const OtpTokenIdentity& identity) {
@@ -124,8 +124,7 @@ bool OtpSuggestionDropdownDispatcher::IsSuppressedByDeduplication(
     const FieldRecord& record,
     const OtpTokenIdentity& identity) const {
   return record.last_offered_identity.has_value() &&
-         (record.last_offered_identity->value == identity.value ||
-          !identity.IsStrictlyNewerThan(*record.last_offered_identity));
+         !identity.IsStrictlyNewerThan(*record.last_offered_identity);
 }
 
 }  // namespace autofill

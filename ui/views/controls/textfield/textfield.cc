@@ -2021,19 +2021,20 @@ bool Textfield::ChangeTextDirectionAndLayoutAlignment(
 }
 
 void Textfield::ExtendSelectionAndDelete(size_t before, size_t after) {
-  gfx::Range range = GetRenderText()->selection();
+  // The selection may be reversed, so extend from its lower and upper bounds.
+  const gfx::Range selection = GetRenderText()->selection();
   // Discard out-of-bound operations.
   // TODO(crbug.com/40852753): this is a temporary fix to prevent the
   // checked_cast failure in gfx::Range. There does not seem to be any
   // observable bad behaviors before checked_cast was added. However, range
   // clipping or dropping should be the last resort because a checkfail
   // indicates that we run into bad states somewhere earlier on the stack.
-  if (range.start() < before) {
+  if (selection.GetMin() < before) {
     return;
   }
 
-  range.set_start(range.start() - before);
-  range.set_end(range.end() + after);
+  const gfx::Range range(selection.GetMin() - before,
+                         selection.GetMax() + after);
   gfx::Range text_range;
   if (GetTextRange(&text_range) && text_range.Contains(range)) {
     DeleteRange(range);
@@ -2147,8 +2148,9 @@ bool Textfield::IsTextEditCommandEnabled(ui::TextEditCommand command) const {
 }
 
 void Textfield::SetTextEditCommandForNextKeyEvent(ui::TextEditCommand command) {
-  CHECK_EQ(ui::TextEditCommand::INVALID_COMMAND, scheduled_text_edit_command_,
-           base::NotFatalUntil::M163);
+  // TODO(crbug.com/582403114): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(ui::TextEditCommand::INVALID_COMMAND, scheduled_text_edit_command_);
   scheduled_text_edit_command_ = command;
 }
 
@@ -3095,7 +3097,9 @@ void Textfield::OnAfterUserAction() {
   if (controller_) {
     controller_->OnAfterUserAction(this);
   }
-  CHECK(performing_user_action_, base::NotFatalUntil::M163);
+  // TODO(crbug.com/582279332): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(performing_user_action_);
   performing_user_action_ = false;
 }
 

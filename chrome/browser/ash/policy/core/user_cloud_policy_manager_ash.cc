@@ -39,7 +39,6 @@
 #include "chrome/browser/invalidation/profile_invalidation_provider_factory.h"
 #include "chrome/browser/policy/cloud/user_fm_registration_token_uploader_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_content_client.h"
 #include "components/enterprise/browser/reporting/real_time_report_controller.h"
 #include "components/enterprise/browser/reporting/report_generator.h"
 #include "components/enterprise/browser/reporting/report_scheduler.h"
@@ -496,10 +495,9 @@ void UserCloudPolicyManagerAsh::OnUserProfileLoaded(
 
 void UserCloudPolicyManagerAsh::OnStoreLoaded(
     CloudPolicyStore* cloud_policy_store) {
-  CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
-
   if (cloud_policy_store == extension_install_store()) {
     // Extension Install policies do not affect affiliation.
+    CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
     return;
   }
 
@@ -527,6 +525,13 @@ void UserCloudPolicyManagerAsh::OnStoreLoaded(
 
   user_manager::UserManager::Get()->SetUserPolicyStatus(account_id_, is_managed,
                                                         is_affiliated);
+
+  // Publish the policy only now that the User carries its policy status. The
+  // first publish completes the profile's PolicyService and with it the
+  // profile prefs, and in some login flows the rest of the profile
+  // initialization then runs synchronously from here, so code in it that
+  // reads user_manager::User::is_managed() must already see the loaded state.
+  CloudPolicyManager::OnStoreLoaded(cloud_policy_store);
 }
 
 void UserCloudPolicyManagerAsh::SetPolicyRequired(bool policy_required) {

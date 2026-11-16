@@ -267,25 +267,6 @@ bool TitleMatchesMnemonic(MenuItemView* menu, char16_t key) {
   return !lower_title.empty() && lower_title[0] == key;
 }
 
-// Returns the first descendant of |view| that is hot tracked.
-Button* GetFirstHotTrackedView(View* view) {
-  if (!view) {
-    return nullptr;
-  }
-  Button* button = Button::AsButton(view);
-  if (button && button->IsHotTracked()) {
-    return button;
-  }
-
-  for (View* child : view->children()) {
-    Button* hot_view = GetFirstHotTrackedView(child);
-    if (hot_view) {
-      return hot_view;
-    }
-  }
-  return nullptr;
-}
-
 // Returns the enclosing MenuItemView that contains `item`'s anchor view, if
 // any.
 MenuItemView* GetAnchorViewContainerMenuItem(MenuItemView* item) {
@@ -1136,8 +1117,9 @@ bool MenuController::OnMousePressed(SubmenuView* source,
   ScopedDeletionGuard guard(AsWeakPtr());
   // We should either have no current_mouse_event_target_, or should have a
   // pressed state stored.
-  CHECK(!current_mouse_event_target_ || current_mouse_pressed_state_,
-        base::NotFatalUntil::M163);
+  // TODO(crbug.com/583622246): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!current_mouse_event_target_ || current_mouse_pressed_state_);
 
 #if BUILDFLAG(IS_MAC)
   // Mac: If the app is inactive, the first click activates the app and keys a
@@ -1365,9 +1347,7 @@ void MenuController::OnMouseReleased(SubmenuView* source,
       part.menu->GetDelegate()->ExecuteCommand(command, event.flags());
       return;
     }
-    if ((!part.menu->NonIconChildViewsCount() ||
-         part.menu->GetTriggerActionWithNonIconChildViews()) &&
-        part.menu->GetDelegate()->IsTriggerableEvent(part.menu, event)) {
+    if (CanPointerReleaseActivate(part.menu, event)) {
       Accept(part.menu, event.flags());
       return;
     }
@@ -1519,8 +1499,7 @@ void MenuController::OnGestureEvent(SubmenuView* source,
               command, *event)) {
         item_selected_by_touch_ = true;
         part.menu->GetDelegate()->ExecuteCommand(command, 0);
-      } else if (part.menu->GetDelegate()->IsTriggerableEvent(part.menu,
-                                                              *event)) {
+      } else if (CanPointerReleaseActivate(part.menu, *event)) {
         item_selected_by_touch_ = true;
         Accept(part.menu, event->flags());
       }
@@ -1770,13 +1749,17 @@ void MenuController::OnDragExitedScrollButton(SubmenuView* source) {
 }
 
 void MenuController::OnDragDropWillStart() {
-  CHECK(!drag_in_progress_, base::NotFatalUntil::M163);
+  // TODO(crbug.com/582716084): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!drag_in_progress_);
   drag_in_progress_ = true;
 }
 
 void MenuController::OnDragDropCompleted(bool should_close) {
   ScopedDeletionGuard guard(AsWeakPtr());
-  CHECK(drag_in_progress_, base::NotFatalUntil::M163);
+  // TODO(crbug.com/585718788): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(drag_in_progress_);
   drag_in_progress_ = false;
   // During a drag, mouse events are processed directly by the widget, and not
   // sent to the MenuController. At drag completion, reset pressed state and
@@ -2237,7 +2220,9 @@ void MenuController::SetSelectionOnPointerDown(SubmenuView* source,
     return;
   }
 
-  CHECK(!active_mouse_view_tracker_->view(), base::NotFatalUntil::M163);
+  // TODO(crbug.com/580576043): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!active_mouse_view_tracker_->view());
 
   MenuPart part = GetMenuPart(source, event->location());
   if (part.is_scroll() || part.type == MenuPartType::kScrollBar) {
@@ -2525,7 +2510,7 @@ bool MenuController::OnKeyPressed(const ui::KeyEvent& event) {
 }
 
 void MenuController::ShowContextMenu() {
-  Button* hot_view = GetFirstHotTrackedView(pending_state_.item);
+  Button* hot_view = GetHotTrackedButtonIn(pending_state_.item);
   if (hot_view) {
     hot_view->ShowContextMenu(hot_view->GetKeyboardContextMenuLocation(),
                               ui::mojom::MenuSourceType::kKeyboard);
@@ -2646,7 +2631,7 @@ MenuController::~MenuController() {
 
 bool MenuController::SendAcceleratorToHotTrackedView(int event_flags) {
   ScopedDeletionGuard guard(AsWeakPtr());
-  Button* hot_view = GetFirstHotTrackedView(pending_state_.item);
+  Button* hot_view = GetHotTrackedButtonIn(pending_state_.item);
   if (!hot_view) {
     return false;
   }
@@ -2676,6 +2661,23 @@ void MenuController::UpdateInitialLocation(const gfx::Rect& anchor_bounds,
 
   // Calculate the bounds of the monitor we'll show menus on. Do this once to
   // avoid repeated system queries for the info.
+  if (ShouldIgnoreScreenBoundsForMenus()) {
+    // On platforms without global screen coordinates (such as Ozone/Wayland),
+    // `anchor_bounds` is in parent-local coordinates, so
+    // `GetDisplayNearestPoint` can match the wrong display and the display's
+    // work area may have a non-zero offset origin. Query the display from
+    // `owner_` and shift the work area origin to (0, 0).
+    const display::Display display =
+        (owner_ && owner_->GetNativeWindow())
+            ? display::Screen::Get()->GetDisplayNearestWindow(
+                  owner_->GetNativeWindow())
+            : display::Screen::Get()->GetDisplayNearestPoint(
+                  anchor_bounds.origin());
+    pending_state_.monitor_bounds = display.work_area();
+    pending_state_.monitor_bounds.set_origin(gfx::Point(0, 0));
+    return;
+  }
+
   const display::Display display =
       display::Screen::Get()->GetDisplayNearestPoint(anchor_bounds.origin());
   pending_state_.monitor_bounds = display.work_area();
@@ -3182,7 +3184,9 @@ void MenuController::MenuChildrenChanged(MenuItemView* item) {
   ScopedDeletionGuard guard(AsWeakPtr());
   CHECK(item, base::NotFatalUntil::M163);
   // Menu shouldn't be updated during drag operation.
-  CHECK(!active_mouse_view_tracker_->view(), base::NotFatalUntil::M163);
+  // TODO(crbug.com/583338733): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!active_mouse_view_tracker_->view());
 
   // If needed, refresh the AX index assignments.
   if (item->GetProperty(kOrderedMenuChildren)) {
@@ -3717,6 +3721,14 @@ size_t MenuController::MenuDepth(MenuItemView* item) {
   return item ? (MenuDepth(item->GetParentMenuItem()) + 1) : size_t{0};
 }
 
+// static
+bool MenuController::CanPointerReleaseActivate(MenuItemView* item,
+                                               const ui::Event& event) {
+  return (!item->NonIconChildViewsCount() ||
+          item->GetTriggerActionWithNonIconChildViews()) &&
+         item->GetDelegate()->IsTriggerableEvent(item, event);
+}
+
 void MenuController::IncrementSelection(
     SelectionIncrementDirectionType direction) {
   ScopedDeletionGuard guard(AsWeakPtr());
@@ -3740,8 +3752,7 @@ void MenuController::IncrementSelection(
 
   if (!item->children().empty()) {
     View* current_hot_view = nullptr;
-    if (Button* button = GetFirstHotTrackedView(item)) {
-      CHECK_EQ(hot_button_, button, base::NotFatalUntil::M163);
+    if (Button* button = GetHotTrackedButtonIn(item)) {
       current_hot_view = button;
     } else if (Textfield* focused_textfield = GetFocusedTextfield();
                focused_textfield && item->Contains(focused_textfield)) {
@@ -3861,7 +3872,7 @@ MenuItemView* MenuController::FindInitialSelectableMenuItem(
 void MenuController::OpenSubmenuChangeSelectionIfCan() {
   ScopedDeletionGuard guard(AsWeakPtr());
   MenuItemView* item = pending_state_.item;
-  if (Button* hot_view = GetFirstHotTrackedView(item)) {
+  if (Button* hot_view = GetHotTrackedButtonIn(item)) {
     if (MenuItemView* button_submenu = hot_view->GetProperty(kSubmenuItemKey)) {
       item = button_submenu;
     }
@@ -4551,6 +4562,16 @@ void MenuController::SetHotTrackedButton(Button* new_hot_button) {
       }
     }
   }
+}
+
+Button* MenuController::GetHotTrackedButtonIn(const MenuItemView* item) const {
+  // `hot_button_` is not cleared when the button is disabled or hidden, which
+  // resets its state out of STATE_HOVERED (`IsHotTracked()`).
+  if (!item || !hot_button_ || !hot_button_->IsHotTracked() ||
+      !item->Contains(hot_button_)) {
+    return nullptr;
+  }
+  return hot_button_.get();
 }
 
 bool MenuController::ShouldContinuePrefixSelection() const {

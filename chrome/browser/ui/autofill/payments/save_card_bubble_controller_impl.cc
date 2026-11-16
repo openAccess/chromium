@@ -30,12 +30,12 @@
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
+#include "components/autofill/core/browser/metrics/payments/cardholder_name_update_flow_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics.h"
 #include "components/autofill/core/browser/metrics/payments/credit_card_save_metrics_desktop.h"
 #include "components/autofill/core/browser/metrics/payments/manage_cards_prompt_metrics.h"
@@ -89,7 +89,10 @@ static bool g_ignore_window_activation_for_testing = false;
 
 SaveCardBubbleControllerImpl::SaveCardBubbleControllerImpl(
     content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionShowPaymentsBubbleOrPage,
+                           .should_manage_visibility = true}),
       content::WebContentsUserData<SaveCardBubbleControllerImpl>(*web_contents),
       payments_data_manager_(PersonalDataManagerFactory::GetForBrowserContext(
                                  web_contents->GetBrowserContext())
@@ -169,7 +172,18 @@ void SaveCardBubbleControllerImpl::OfferUploadSave(
   }
 
   // Don't show the bubble if it's already visible or cannot be shown.
-  if (bubble_view() || !MaySetUpBubble() || !GetAutofillBubbleHandler()) {
+  if (!GetAutofillBubbleHandler()) {
+    return;
+  }
+  if (bubble_view() || !MaySetUpBubble()) {
+    if (options.card_save_type == payments::PaymentsAutofillClient::
+                                      CardSaveType::kCardholderNameUpdateOnly) {
+      autofill_metrics::LogCardholderNameUpdateFlowPromptOffer(
+          bubble_view() ? autofill_metrics::SaveCardPromptOffer::
+                              kNotShownAnotherPromptShowing
+                        : autofill_metrics::SaveCardPromptOffer::
+                              kNotShownAnotherPromptQueued);
+    }
     return;
   }
 
@@ -277,14 +291,6 @@ void SaveCardBubbleControllerImpl::ShowConfirmationBubbleView(
   // Show upload confirmation bubble.
   CheckPreconditionsBeforeShowing();
   QueueOrShowBubble();
-
-  // Auto close confirmation bubble when card saved is successful.
-  if (card_saved) {
-    auto_close_confirmation_timer_.Start(
-        FROM_HERE, kAutoCloseConfirmationBubbleWaitSec,
-        base::BindOnce(&SaveCardBubbleControllerImpl::HideSaveCardBubble,
-                       weak_ptr_factory_.GetWeakPtr()));
-  }
 }
 
 base::OnceClosure SaveCardBubbleControllerImpl::
@@ -543,8 +549,15 @@ void SaveCardBubbleControllerImpl::OnSaveButton(
       base::TrimWhitespace(
           user_provided_card_details.cardholder_name, base::TRIM_ALL,
           &user_provided_card_details_with_trimmed_name.cardholder_name);
-      // TODO(crbug.com/564568880): Log prompt result and loading view metrics
-      // for the cardholder name fix flow.
+      // Log the prompt result now because the bubble isn't closed right after
+      // `OnSaveButton()` for upload saves.
+      if (!is_reshow_) {
+        autofill_metrics::LogCardholderNameUpdateFlowPromptResult(
+            PaymentsUiClosedReason::kAccepted);
+      }
+      autofill_metrics::LogCardholderNameUpdateFlowCardholderNameWasEdited(
+          user_provided_card_details_with_trimmed_name.cardholder_name !=
+          card_.GetRawInfo(CREDIT_CARD_NAME_FULL));
       current_bubble_type_ = PaymentsBubbleType::kUploadInProgress;
       std::move(upload_save_card_prompt_callback_)
           .Run(payments::PaymentsAutofillClient::SaveCardOfferUserDecision::
@@ -609,6 +622,12 @@ void SaveCardBubbleControllerImpl::ShowPaymentsSettingsPage() {
 }
 
 void SaveCardBubbleControllerImpl::OnBubbleDiscarded() {
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadCardholderNameUpdate &&
+      !was_bubble_shown_) {
+    autofill_metrics::LogCardholderNameUpdateFlowPromptOffer(
+        autofill_metrics::SaveCardPromptOffer::kNotShownQueuedButNeverShown);
+    return;
+  }
   LogBubbleCloseMetrics(was_bubble_shown_
                             ? PaymentsUiClosedReason::kNotInteracted
                             : PaymentsUiClosedReason::kUnknown);
@@ -643,6 +662,13 @@ void SaveCardBubbleControllerImpl::LogBubbleCloseMetrics(
           !payments_data_manager_->GetCreditCards().empty());
       break;
     case PaymentsBubbleType::kUploadInProgress:
+      if (options_.card_save_type ==
+          payments::PaymentsAutofillClient::CardSaveType::
+              kCardholderNameUpdateOnly) {
+        // TODO(crbug.com/564568880): Log loading view metrics for the
+        // cardholder name update flow.
+        break;
+      }
       autofill_metrics::LogCreditCardUploadLoadingViewResultMetric(
           legacy_metric);
       break;
@@ -658,8 +684,10 @@ void SaveCardBubbleControllerImpl::LogBubbleCloseMetrics(
           legacy_metric, confirmation_ui_params_->is_success);
       break;
     case PaymentsBubbleType::kUploadCardholderNameUpdate:
-      // TODO(crbug.com/564568880): Log prompt result metrics for the cardholder
-      // name fix flow.
+      if (!is_reshow_) {
+        autofill_metrics::LogCardholderNameUpdateFlowPromptResult(
+            closed_reason);
+      }
       break;
     case PaymentsBubbleType::kInactive:
     case PaymentsBubbleType::kManageCards:
@@ -825,38 +853,12 @@ SaveCardBubbleControllerImpl::IgnoreWindowActivationForTesting() {
   return base::AutoReset<bool>(&g_ignore_window_activation_for_testing, true);
 }
 
-void SaveCardBubbleControllerImpl::OnVisibilityChanged(
-    content::Visibility visibility) {
-  if (IsBubbleManagerEnabled()) {
-    // BubbleManager will handle the effects of tab changes.
-    return;
-  }
-
-  if (visibility == content::Visibility::VISIBLE &&
-      (was_url_opened_ ||
-       current_bubble_type_ == PaymentsBubbleType::kUploadComplete)) {
-    ReshowBubble(/*is_user_gesture=*/false);
-  } else if (visibility == content::Visibility::HIDDEN) {
-    HideBubble(/*initiated_by_bubble_manager=*/false);
-  }
-}
-
 bool SaveCardBubbleControllerImpl::ShouldReshowOnTabVisible() const {
   return was_url_opened_ ||
          current_bubble_type_ == PaymentsBubbleType::kUploadComplete;
 }
 
-std::optional<PageActionIconType>
-SaveCardBubbleControllerImpl::GetPageActionIconType() {
-  return PageActionIconType::kSaveCard;
-}
-
 #if !BUILDFLAG(IS_ANDROID)
-std::optional<actions::ActionId>
-SaveCardBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionShowPaymentsBubbleOrPage;
-}
-
 std::optional<std::u16string>
 SaveCardBubbleControllerImpl::GetPageActionTooltipText() {
   return GetSavePaymentIconTooltipText();
@@ -873,6 +875,13 @@ void SaveCardBubbleControllerImpl::DoShowBubble() {
   if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
     SetBubbleView(*autofill_bubble_handler->ShowSaveCardConfirmationBubble(
         web_contents(), this));
+    // Auto close confirmation bubble when card saved is successful.
+    if (confirmation_ui_params_->is_success) {
+      auto_close_confirmation_timer_.Start(
+          FROM_HERE, kAutoCloseConfirmationBubbleWaitSec,
+          base::BindOnce(&SaveCardBubbleControllerImpl::HideSaveCardBubble,
+                         weak_ptr_factory_.GetWeakPtr()));
+    }
   } else {
     SetBubbleView(*autofill_bubble_handler->ShowSaveCreditCardBubble(
         web_contents(), this, is_triggered_by_user_gesture_));
@@ -922,8 +931,10 @@ void SaveCardBubbleControllerImpl::DoShowBubble() {
           /*is_shown=*/true, confirmation_ui_params_->is_success);
       break;
     case PaymentsBubbleType::kUploadCardholderNameUpdate:
-      // TODO(crbug.com/564568880): Log prompt offer metrics for the cardholder
-      // name fix flow.
+      if (!is_reshow_) {
+        autofill_metrics::LogCardholderNameUpdateFlowPromptOffer(
+            autofill_metrics::SaveCardPromptOffer::kShown);
+      }
       break;
     case PaymentsBubbleType::kUploadInProgress:
       break;
@@ -933,12 +944,13 @@ void SaveCardBubbleControllerImpl::DoShowBubble() {
 }
 
 bool SaveCardBubbleControllerImpl::CanBeReshown() const {
-  if (was_url_opened_ &&
-      current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
-    return true;
+  if (current_bubble_type_ == PaymentsBubbleType::kInactive) {
+    return false;
   }
-  return current_bubble_type_ != PaymentsBubbleType::kUploadComplete &&
-         current_bubble_type_ != PaymentsBubbleType::kInactive;
+  if (current_bubble_type_ == PaymentsBubbleType::kUploadComplete) {
+    return !IsShowingBubble() || was_url_opened_;
+  }
+  return true;
 }
 
 BubbleType SaveCardBubbleControllerImpl::GetBubbleType() const {
@@ -1013,8 +1025,8 @@ void SaveCardBubbleControllerImpl::ShowIconOnly() {
           is_upload_save_, is_reshow_);
       break;
     case PaymentsBubbleType::kUploadCardholderNameUpdate:
-      // TODO(crbug.com/564568880): Log prompt offer metrics for the cardholder
-      // name fix flow.
+      // The cardholder name update prompt is always shown, so it's never
+      // offered as an icon only.
       break;
     case PaymentsBubbleType::kUploadInProgress:
     case PaymentsBubbleType::kUploadComplete:

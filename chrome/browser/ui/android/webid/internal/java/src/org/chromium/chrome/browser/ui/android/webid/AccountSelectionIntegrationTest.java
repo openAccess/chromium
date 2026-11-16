@@ -34,12 +34,14 @@ import androidx.test.filters.MediumTest;
 import androidx.test.runner.lifecycle.Stage;
 
 import org.hamcrest.Matchers;
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
@@ -64,7 +66,9 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetControllerProvider;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.bottomsheet.TestBottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.UserCriticalFeature;
 import org.chromium.content.webid.IdentityRequestDialogDismissReason;
 
 import java.util.Arrays;
@@ -74,7 +78,8 @@ import java.util.List;
 /**
  * Integration tests for the Account Selection component check that the calls to the Account
  * Selection API end up rendering a View. This class is parameterized to run all tests for each RP
- * mode.
+ * mode, and for active mode with {@code FedCmPermissionUiWithContainer} or {@code FedCmIdpLinks}
+ * enabled.
  */
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
@@ -84,19 +89,39 @@ public class AccountSelectionIntegrationTest extends AccountSelectionIntegration
     @ParameterAnnotations.ClassParameter
     private static final List<ParameterSet> sClassParams =
             Arrays.asList(
-                    new ParameterSet().value(RpMode.PASSIVE).name("passive"),
-                    new ParameterSet().value(RpMode.ACTIVE).name("active"));
+                    new ParameterSet().value(RpMode.PASSIVE, false, false).name("passive"),
+                    new ParameterSet().value(RpMode.ACTIVE, false, false).name("active"),
+                    new ParameterSet()
+                            .value(RpMode.ACTIVE, true, false)
+                            .name("activeWithContainer"),
+                    new ParameterSet()
+                            .value(RpMode.ACTIVE, false, true)
+                            .name("activeWithIdpLinks"));
 
     private final @BottomSheetController.SheetState int mExpectedSheetState;
+    private final boolean mPermissionUiWithContainer;
+    private final boolean mIdpLinks;
 
     @Mock AccountSelectionComponent.Delegate mCustomTabMockBridge;
 
-    public AccountSelectionIntegrationTest(@RpMode.EnumType int rpMode) {
+    public AccountSelectionIntegrationTest(
+            @RpMode.EnumType int rpMode, boolean permissionUiWithContainer, boolean idpLinks) {
         mRpMode = rpMode;
+        mPermissionUiWithContainer = permissionUiWithContainer;
+        mIdpLinks = idpLinks;
         mExpectedSheetState =
                 rpMode == RpMode.ACTIVE
                         ? BottomSheetController.SheetState.HALF
                         : BottomSheetController.SheetState.FULL;
+    }
+
+    @Before
+    @Override
+    public void setUp() throws InterruptedException {
+        FeatureOverrides.overrideFlag(
+                ChromeFeatureList.FED_CM_PERMISSION_UI_WITH_CONTAINER, mPermissionUiWithContainer);
+        FeatureOverrides.overrideFlag(ChromeFeatureList.FED_CM_IDP_LINKS, mIdpLinks);
+        super.setUp();
     }
 
     @Test
@@ -161,12 +186,31 @@ public class AccountSelectionIntegrationTest extends AccountSelectionIntegration
 
         View contentView = mBottomSheetController.getCurrentSheetContent().getContentView();
         assertNotNull(contentView);
+        if (mRpMode == RpMode.ACTIVE) {
+            // Active mode only shows the disclosure text on the request permission dialog, which
+            // the continue button opens.
+            runOnUiThreadBlocking(
+                    () -> {
+                        // Do not let test inputs be ignored.
+                        mAccountSelection.getMediator().setComponentShowTime(-1000);
+                        contentView
+                                .findViewById(R.id.account_selection_continue_btn)
+                                .performClick();
+                    });
+        }
         TextView consent = contentView.findViewById(R.id.user_data_sharing_consent);
         if (consent == null) {
             throw new NoMatchingViewException.Builder()
                     .includeViewHierarchy(true)
                     .withRootView(contentView)
                     .build();
+        }
+        // `FedCmIdpLinks` also enables the container, and only it shows the identity provider's
+        // links row.
+        View container = contentView.findViewById(R.id.user_data_sharing_consent_container);
+        assertEquals(mPermissionUiWithContainer || mIdpLinks, container != null);
+        if (container != null) {
+            assertEquals(mIdpLinks, container.findViewById(R.id.idp_links_row).isShown());
         }
         assertTrue(consent.getText() instanceof Spanned);
         Spanned spannedString = (Spanned) consent.getText();
@@ -215,6 +259,13 @@ public class AccountSelectionIntegrationTest extends AccountSelectionIntegration
                                             BottomSheetContent.ContentPriority.HIGH,
                                             /* hasCustomLifecycle= */ false,
                                             highPriorityBottomSheetContentView);
+                            content.setSheetType(
+                                    new BottomSheetType.Builder()
+                                            .setUserInitiated(mRpMode != RpMode.PASSIVE)
+                                            .setModal(mRpMode != RpMode.PASSIVE)
+                                            .setUserCritical(
+                                                    UserCriticalFeature.FEDERATED_ACCOUNT_SELECTION)
+                                            .build());
                             mBottomSheetController.requestShowContent(content, false);
                             return content;
                         });

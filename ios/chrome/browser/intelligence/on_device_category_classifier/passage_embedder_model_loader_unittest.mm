@@ -6,6 +6,7 @@
 
 #import <optional>
 #import <utility>
+#import <vector>
 
 #import "base/files/file.h"
 #import "base/files/file_util.h"
@@ -99,7 +100,7 @@ TEST_F(PassageEmbedderModelLoaderTest, NotifyEmbedderMetadataAndReset) {
   TestEmbedderMetadataObserver observer;
   loader.AddObserver(&observer);
 
-  passage_embeddings::EmbedderMetadata metadata(123, 768, 0.5);
+  passage_embeddings::EmbedderMetadata metadata(123, 768, 512, 0.5);
   loader.NotifyEmbedderMetadata(metadata);
 
   EXPECT_TRUE(loader.IsModelLoaded());
@@ -107,6 +108,7 @@ TEST_F(PassageEmbedderModelLoaderTest, NotifyEmbedderMetadataAndReset) {
   ASSERT_TRUE(observer.last_metadata_.has_value());
   EXPECT_EQ(123, observer.last_metadata_->model_version);
   EXPECT_EQ(768u, observer.last_metadata_->output_size);
+  EXPECT_EQ(512u, observer.last_metadata_->input_window_size);
   EXPECT_EQ(0.5, observer.last_metadata_->search_score_threshold);
 
   loader.ResetMetadata();
@@ -132,6 +134,33 @@ TEST_F(PassageEmbedderModelLoaderTest, OnModelUpdatedUnloaded) {
       std::nullopt);
 
   EXPECT_TRUE(unloaded_called);
+}
+
+// Tests that unloaded callback runs when `ModelInfo` has a non-positive
+// version.
+TEST_F(PassageEmbedderModelLoaderTest, OnModelUpdatedNonPositiveVersion) {
+  int unloaded_count = 0;
+  PassageEmbedderModelLoader loader(
+      &model_provider_,
+      base::BindRepeating(
+          [](base::File, base::File, uint32_t, int64_t, size_t) {}),
+      base::BindLambdaForTesting([&]() { ++unloaded_count; }));
+
+  auto* model_observer =
+      static_cast<optimization_guide::OptimizationTargetModelObserver*>(
+          &loader);
+
+  optimization_guide::ModelInfo model_info{.version = 0};
+  model_observer->OnModelUpdated(
+      optimization_guide::proto::OPTIMIZATION_TARGET_PASSAGE_EMBEDDER,
+      model_info);
+  EXPECT_EQ(1, unloaded_count);
+
+  model_info.version = -1;
+  model_observer->OnModelUpdated(
+      optimization_guide::proto::OPTIMIZATION_TARGET_PASSAGE_EMBEDDER,
+      model_info);
+  EXPECT_EQ(2, unloaded_count);
 }
 
 // Tests that unloaded callback runs when model files do not exist.

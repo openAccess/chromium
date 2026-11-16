@@ -33,10 +33,6 @@
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 
-#if BUILDFLAG(ENABLE_PDF_INK2)
-#include "ui/gfx/geometry/size.h"
-#endif
-
 namespace gfx {
 class Point;
 }  // namespace gfx
@@ -128,6 +124,10 @@ class PDFiumPage {
 
   // Get a unicode character from the page.
   uint32_t GetCharUnicode(int char_index);
+
+  // Returns whether the char at `char_index` is a line break that PDFium
+  // inserted between lines, i.e. a generated '\r' or '\n'.
+  bool IsSynthesizedNewline(int char_index);
 
   // Get the bounds of a character in page pixels.
   gfx::RectF GetCharBounds(int char_index);
@@ -310,10 +310,6 @@ class PDFiumPage {
   // Generates a page thumbnail accommodating a specific `device_pixel_ratio`.
   Thumbnail GenerateThumbnail(float device_pixel_ratio);
 
-#if BUILDFLAG(ENABLE_PDF_INK2)
-  gfx::Size GetThumbnailSize(float device_pixel_ratio);
-#endif
-
   uint32_t index() const { return index_; }
 
   const gfx::Rect& rect() const { return rect_; }
@@ -482,7 +478,7 @@ class PDFiumPage {
   void GenerateAndSendThumbnail(float device_pixel_ratio,
                                 SendThumbnailCallback send_callback);
 
-  raw_ptr<PDFiumEngine> engine_;
+  raw_ptr<PDFiumEngine> const engine_;
   ScopedFPDFPage page_;
   ScopedFPDFTextPage text_page_;
   uint32_t index_;
@@ -517,6 +513,7 @@ class PDFiumPage {
   std::set<int> page_object_text_run_breaks_;
   base::OnceClosure thumbnail_callback_;
   bool available_ = false;
+  bool is_unloading_ = false;
 
 #if BUILDFLAG(ENABLE_SCREEN_AI_SERVICE)
   // Indicates whether Searchify added text to this page or not. Note that if

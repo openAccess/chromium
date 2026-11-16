@@ -49,6 +49,7 @@
 #include "base/trace_event/process_memory_dump.h"
 #include "build/build_config.h"
 #include "cc/layers/texture_layer.h"
+#include "cc/trees/layer_tree_host.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "components/viz/common/resources/shared_image_format_utils.h"
 #include "components/viz/common/resources/transferable_resource.h"
@@ -417,8 +418,9 @@ void DrawingBuffer::SetIsInHiddenPage(bool hidden) {
 }
 
 bool DrawingBuffer::RequiresAlphaChannelToBePreserved() {
-  return client_->DrawingBufferClientIsBoundForDraw() &&
-         DefaultBufferRequiresAlphaChannelToBePreserved();
+  return client_ && !destruction_in_progress_ &&
+         DefaultBufferRequiresAlphaChannelToBePreserved() &&
+         client_->DrawingBufferClientIsBoundForDraw();
 }
 
 bool DrawingBuffer::DefaultBufferRequiresAlphaChannelToBePreserved() {
@@ -871,7 +873,9 @@ DrawingBuffer::ExportLowLatencyCanvasResource() {
   return base::MakeRefCounted<ExportedCanvasResource>(
       back_color_buffer_->shared_image, sync_token,
       viz::TransferableResource::ResourceSource::kDrawingBuffer, hdr_metadata_,
-      viz::ReleaseCallback(), context_provider_->GetWeakPtr());
+      context_provider_->GetWeakPtr(), /*accelerated_raster=*/true,
+      /*wait_sync_token=*/base::NullCallback(), viz::ReleaseCallback(),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/true);
 }
 
 scoped_refptr<StaticBitmapImage> DrawingBuffer::ExportLowLatencyBitmap() {
@@ -915,7 +919,9 @@ scoped_refptr<ExportedCanvasResource> DrawingBuffer::ExportCanvasResource() {
   return base::MakeRefCounted<ExportedCanvasResource>(
       client_si, sync_token,
       viz::TransferableResource::ResourceSource::kDrawingBuffer, hdr_metadata_,
-      std::move(out_release_callback), context_provider_->GetWeakPtr());
+      context_provider_->GetWeakPtr(), /*accelerated_raster=*/true,
+      /*wait_sync_token=*/base::NullCallback(), std::move(out_release_callback),
+      /*use_legacy_external_canvas_resource_bitmap_path=*/true);
 }
 
 DrawingBuffer::ColorBuffer::ColorBuffer(
@@ -1394,6 +1400,9 @@ void DrawingBuffer::OnMemoryDump(
 }
 
 cc::Layer* DrawingBuffer::CcLayer() {
+  if (destruction_in_progress_) {
+    return nullptr;
+  }
   if (!layer_) {
     layer_ = cc::TextureLayer::Create(this);
     if (client_) {
@@ -1411,8 +1420,14 @@ cc::Layer* DrawingBuffer::CcLayer() {
 }
 
 void DrawingBuffer::ClearCcLayer() {
-  if (layer_)
-    layer_->ClearTexture();
+  if (layer_) {
+    if (auto* host = layer_->layer_tree_host();
+        host && host->in_will_commit()) {
+      host->ScheduleLayerForPostCommitDisposal(layer_);
+    }
+    layer_->ClearClient();
+    layer_ = nullptr;
+  }
 
   gl_->Flush();
 }
@@ -1420,6 +1435,7 @@ void DrawingBuffer::ClearCcLayer() {
 void DrawingBuffer::BeginDestruction() {
   DCHECK(!destruction_in_progress_);
   destruction_in_progress_ = true;
+  client_ = nullptr;
 
   ClearCcLayer();
   if (color_buffer_pool_) {
@@ -1456,8 +1472,6 @@ void DrawingBuffer::BeginDestruction() {
   depth_stencil_buffer_ = 0;
   multisample_fbo_ = 0;
   fbo_ = 0;
-
-  client_ = nullptr;
 }
 
 bool DrawingBuffer::ReallocateDefaultFramebuffer(const gfx::Size& size,
@@ -1689,20 +1703,10 @@ bool DrawingBuffer::ResizeFramebufferInternal(GLenum requested_format,
   switch (requested_format_) {
     case GL_RGB8:
       color_buffer_format_ = viz::SinglePlaneFormat::kRGBX_8888;
-      // The following workarounds are used in order of importance; the
-      // first is a correctness issue, the second a major performance
-      // issue, and the third a minor performance issue.
-      if (ContextProvider()->GetGpuFeatureInfo().IsWorkaroundEnabled(
-              gpu::DISABLE_GL_RGB_FORMAT)) {
-        // This configuration will
-        //  - allow invalid CopyTexImage to RGBA targets
-        //  - fail valid FramebufferBlit from RGB targets
-        // https://crbug.com/776269
-        color_buffer_format_ = viz::SinglePlaneFormat::kRGBA_8888;
-      } else if (WantExplicitResolve() &&
-                 ContextProvider()->GetGpuFeatureInfo().IsWorkaroundEnabled(
-                     gpu::DISABLE_WEBGL_RGB_MULTISAMPLING_USAGE)) {
-        // This configuration avoids the above issues because
+      if (WantExplicitResolve() &&
+          ContextProvider()->GetGpuFeatureInfo().IsWorkaroundEnabled(
+              gpu::DISABLE_WEBGL_RGB_MULTISAMPLING_USAGE)) {
+        // This configuration avoids the following issues:
         //  - CopyTexImage is invalid from multisample renderbuffers
         //  - FramebufferBlit is invalid to multisample renderbuffers
         color_buffer_format_ = viz::SinglePlaneFormat::kRGBA_8888;
@@ -1919,13 +1923,16 @@ void DrawingBuffer::ReallocateDepthStencilRenderbuffer(const gfx::Size& size) {
 void DrawingBuffer::RestoreFramebufferBindings() {
   // Can be called with ScopedDrawingBufferBinder on the stack after
   // context loss. Null checking client_ is insufficient.
-  if (destruction_in_progress_) {
+  if (!client_ || destruction_in_progress_) {
     return;
   }
   client_->DrawingBufferClientRestoreFramebufferBinding();
 }
 
 void DrawingBuffer::RestoreAllState() {
+  if (!client_ || destruction_in_progress_) {
+    return;
+  }
   client_->DrawingBufferClientRestoreScissorTest();
   client_->DrawingBufferClientRestoreMaskAndClearValues();
   client_->DrawingBufferClientRestorePixelPackParameters();
@@ -2435,7 +2442,7 @@ DrawingBuffer::ScopedStateRestorer::ScopedStateRestorer(
   drawing_buffer_->state_restorer_ = this;
 
   Client* client = drawing_buffer_->client_;
-  if (!client) {
+  if (!client || drawing_buffer_->destruction_in_progress_) {
     return;
   }
   client->DrawingBufferClientInterruptPixelLocalStorage();

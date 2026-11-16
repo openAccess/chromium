@@ -123,6 +123,7 @@ CSSValue* CSSValue::Create(const Length& value, float zoom) {
     case Length::kMaxContent:
     case Length::kStretch:
     case Length::kFitContent:
+    case Length::kShrinkContent:
     case Length::kContent:
       return CSSIdentifierValue::Create(value);
     case Length::kPercent:
@@ -1245,8 +1246,6 @@ bool CSSValue::HasRandomFunctions() const {
       return To<cssvalue::CSSContrastColorValue>(this)->HasRandomFunctions();
     case kPaletteMixClass:
       return To<cssvalue::CSSPaletteMixValue>(this)->HasRandomFunctions();
-    case kCustomIdentClass:
-      return To<CSSCustomIdentValue>(this)->HasRandomFunctions();
     case kValueListClass:
     case kAxisClass:
     case kFunctionClass:
@@ -1375,6 +1374,7 @@ bool CSSValue::HasRandomFunctions() const {
     case kNumericLiteralClass:
     case kSymbolsClass:
     case kIdentifierClass:
+    case kCustomIdentClass:
       return false;
   }
   NOTREACHED();

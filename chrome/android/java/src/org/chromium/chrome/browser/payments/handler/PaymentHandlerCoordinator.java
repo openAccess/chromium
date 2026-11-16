@@ -15,6 +15,7 @@ import org.chromium.build.annotations.RequiresNonNull;
 import org.chromium.chrome.browser.content.WebContentsFactory;
 import org.chromium.chrome.browser.payments.handler.toolbar.PaymentHandlerToolbarCoordinator;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -77,12 +78,16 @@ public class PaymentHandlerCoordinator {
      * @param paymentRequestWebContents The WebContents of the merchant's frame.
      * @param url The url of the payment handler app, i.e., that of
      *     "PaymentRequestEvent.openWindow(url)".
+     * @param initiatorOrigin The security origin of the frame that invoked PaymentRequest.
      * @param uiObserver The {@link PaymentHandlerUiObserver} that observes this Payment Handler UI.
      * @return The WebContents of the payment handler that's just opened when the showing is
      *     successful; null if failed. When null is returned, caller should also call hide().
      */
     public @Nullable WebContents show(
-            WebContents paymentRequestWebContents, GURL url, PaymentHandlerUiObserver uiObserver) {
+            WebContents paymentRequestWebContents,
+            GURL url,
+            Origin initiatorOrigin,
+            PaymentHandlerUiObserver uiObserver) {
         assert mHider == null : "Already showing payment-handler UI";
         assert paymentRequestWebContents != null;
         WindowAndroid windowAndroid = paymentRequestWebContents.getTopLevelNativeWindow();
@@ -90,7 +95,15 @@ public class PaymentHandlerCoordinator {
         Activity activity = windowAndroid.getActivity().get();
         if (activity == null) return null;
         Profile profile = Profile.fromWebContents(paymentRequestWebContents);
-        if (profile == null) return null;
+        // onProfileDestroyed() may already have fired, so the observer below would never run.
+        if (profile == null || profile.shutdownStarted()) return null;
+
+        BottomSheetController bottomSheetController =
+                BottomSheetControllerProvider.from(windowAndroid);
+        Tab currentTab = TabModelSelectorSupplier.getCurrentTabFrom(windowAndroid);
+        if (bottomSheetController == null || currentTab == null) {
+            return null;
+        }
 
         mInputProtector.markShowTime();
         mPaymentHandlerWebContents =
@@ -101,7 +114,8 @@ public class PaymentHandlerCoordinator {
         PaymentHandlerNavigationThrottle.markPaymentHandlerWebContents(mPaymentHandlerWebContents);
         ContentView webContentView =
                 ContentView.createContentView(activity, mPaymentHandlerWebContents);
-        initializeWebContents(windowAndroid, webContentView, paymentRequestWebContents, url);
+        initializeWebContents(
+                windowAndroid, webContentView, paymentRequestWebContents, initiatorOrigin, url);
 
         mToolbarCoordinator =
                 new PaymentHandlerToolbarCoordinator(
@@ -114,13 +128,6 @@ public class PaymentHandlerCoordinator {
                             assumeNonNull(modalDialogManager);
                             return modalDialogManager;
                         });
-
-        BottomSheetController bottomSheetController =
-                BottomSheetControllerProvider.from(windowAndroid);
-        Tab currentTab = TabModelSelectorSupplier.getCurrentTabFrom(windowAndroid);
-        if (bottomSheetController == null || currentTab == null) {
-            return null;
-        }
 
         PropertyModel model = new PropertyModel.Builder(PaymentHandlerProperties.ALL_KEYS).build();
 
@@ -163,8 +170,21 @@ public class PaymentHandlerCoordinator {
         assert mToolbarCoordinator.getToolbarHeightPx() == view.getToolbarHeightPx();
         PropertyModelChangeProcessor changeProcessor =
                 PropertyModelChangeProcessor.create(model, view, PaymentHandlerViewBinder::bind);
+        // TODO(crbug.com/584179079): Add an instrumentation test for the profile being
+        // destroyed while the payment handler UI is showing.
+        ProfileManager.Observer profileObserver =
+                new ProfileManager.Observer() {
+                    @Override
+                    public void onProfileAdded(Profile p) {}
+
+                    @Override
+                    public void onProfileDestroyed(Profile destroyedProfile) {
+                        if (destroyedProfile == profile) hide();
+                    }
+                };
         mHider =
                 () -> {
+                    ProfileManager.removeObserver(profileObserver);
                     changeProcessor.destroy();
                     bottomSheetController.removeObserver(mediator);
                     bottomSheetController.hideContent(/* content= */ view, /* animate= */ true);
@@ -176,6 +196,7 @@ public class PaymentHandlerCoordinator {
                     assumeNonNull(mPaymentHandlerWebContents);
                     mPaymentHandlerWebContents.destroy();
                 };
+        ProfileManager.addObserver(profileObserver);
         boolean hasFrameworkCloseButton = bottomSheetController.willShowFrameworkCloseButton(view);
         mToolbarCoordinator.setCloseButtonVisibility(!hasFrameworkCloseButton);
 
@@ -190,6 +211,7 @@ public class PaymentHandlerCoordinator {
             WindowAndroid windowAndroid,
             ContentView webContentView,
             WebContents paymentRequestWebContents,
+            Origin initiatorOrigin,
             GURL url) {
         mPaymentHandlerWebContents.setDelegates(
                 VersionInfo.getProductVersion(),
@@ -209,7 +231,11 @@ public class PaymentHandlerCoordinator {
         if (PaymentFeatureList.isEnabled(
                 PaymentFeatureList.PAYMENT_HANDLER_DIALOG_USE_INITIATOR_IN_URL_LOAD)) {
             params.setInitiatorOrigin(
-                    Origin.create(paymentRequestWebContents.getLastCommittedUrl()));
+                    PaymentFeatureList.isEnabled(
+                                    PaymentFeatureList
+                                            .PAYMENT_HANDLER_DIALOG_USE_FRAME_ORIGIN_AS_INITIATOR)
+                            ? initiatorOrigin
+                            : Origin.create(paymentRequestWebContents.getLastCommittedUrl()));
         }
         mPaymentHandlerWebContents.getNavigationController().loadUrl(params);
     }
@@ -226,9 +252,9 @@ public class PaymentHandlerCoordinator {
 
     /** Hides the payment-handler UI. */
     public void hide() {
-        if (mHider == null) return;
-        mHider.run();
+        Runnable hider = mHider;
         mHider = null;
+        if (hider != null) hider.run();
     }
 
     public void clickSecurityIconForTest() {

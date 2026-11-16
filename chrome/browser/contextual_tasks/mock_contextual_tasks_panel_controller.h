@@ -70,12 +70,9 @@ class MockContextualTasksPanelController
   MOCK_METHOD(bool, IsPanelOpenForContextualTask, (), (const, override));
   MOCK_METHOD(bool, IsShowingResults, (), (const, override));
   MOCK_METHOD(bool, HasResults, (), (const, override));
+  MOCK_METHOD(bool, HasUnsubmittedInput, (), (const, override));
   MOCK_METHOD(ContextualTasksPanelController::EntrySource,
               GetActiveEntrySource,
-              (),
-              (const, override));
-  MOCK_METHOD(bool,
-              IsActiveSessionReopenedViaToolbarButton,
               (),
               (const, override));
   MOCK_METHOD(bool, IsOnboardingTooltipVisible, (), (const, override));
@@ -91,6 +88,7 @@ class MockContextualTasksPanelController
               (override));
   MOCK_METHOD(void, OnAiInteraction, (), (override));
   MOCK_METHOD(void, OnLinkClicked, (), (override));
+  MOCK_METHOD(void, OnQuerySubmitted, (), (override));
   MOCK_METHOD(void,
               SetPendingTaskForTab,
               (tabs::TabInterface*, const base::Uuid&),

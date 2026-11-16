@@ -36,7 +36,6 @@ build_webui("build") {
     "images/default_browser_bg_right_light.svg",
     "images/default_browser_frame.svg",
     "images/default_browser_frame_dark.svg",
-    "images/refresh_showcase_illustration_chromium.png",
     "intro.html",
     "intro_refresh.html",
     "welcome/welcome.html",
@@ -58,27 +57,27 @@ build_webui("build") {
 
     if (!is_chrome_branded) {
       static_files += [
+        "images/refresh_showcase_illustration_chromium.png",
         "images/security.svg",
         "images/security_old.svg",
       ]
     }
 
     ts_files += [
-      "finish_or_continue/app.html.ts",
-      "finish_or_continue/app.ts",
-      "finish_or_continue/match_media_proxy.ts",
-      "sign_in_celebration/app.html.ts",
-      "sign_in_celebration/app.ts",
-      "sign_in_celebration/sign_in_celebration_browser_proxy.ts",
       "default_browser/app.html.ts",
       "default_browser/app.ts",
       "default_browser/app_refresh.html.ts",
       "default_browser/app_refresh.ts",
+      "finish_or_continue/app.html.ts",
+      "finish_or_continue/app.ts",
       "intro_app.html.ts",
       "intro_app.ts",
-      "sign_in_promo_browser_proxy.ts",
+      "match_media_proxy.ts",
+      "sign_in_celebration/app.html.ts",
+      "sign_in_celebration/app.ts",
       "sign_in_promo.html.ts",
       "sign_in_promo.ts",
+      "sign_in_promo_browser_proxy.ts",
       "sign_in_promo_refresh.html.ts",
       "sign_in_promo_refresh.ts",
       "welcome/app.html.ts",

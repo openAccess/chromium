@@ -314,7 +314,7 @@ IN_PROC_BROWSER_TEST_P(WebAppLaunchUseCounterBrowserTest,
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
   ui_test_utils::BrowserCreatedObserver browser_observer;
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
   BrowserWindowInterface* app_browser = browser_observer.Wait();
   test::WaitForLoadCompleteAndMaybeManifestSeen(
       *app_browser->GetTabStripModel()->GetActiveWebContents());
@@ -350,7 +350,7 @@ IN_PROC_BROWSER_TEST_P(WebAppLaunchUseCounterBrowserTest,
       "/banners/no_manifest_test_page.html");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
   content::FetchHistogramsFromChildProcesses();
 
   EXPECT_EQ(0, web_feature_histogram_tester.GetCount(
@@ -438,7 +438,7 @@ IN_PROC_BROWSER_TEST_P(WebAppWebDXManifestBrowserTest, UsageMeasured) {
       embedded_https_test_server().GetURL("/banners/manifest_test_page.html");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
@@ -451,7 +451,7 @@ IN_PROC_BROWSER_TEST_P(WebAppWebDXManifestBrowserTest, DefaultNotMeasured) {
       "/banners/no_manifest_test_page.html");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
@@ -464,7 +464,7 @@ IN_PROC_BROWSER_TEST_P(WebAppWebDXManifestBrowserTest, InvalidNotMeasured) {
       "/banners/invalid_manifest_test_page.html");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
@@ -504,12 +504,13 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ThemeColor) {
       embedded_https_test_server().GetURL("/web_apps/no_manifest.html");
   {
     const SkColor theme_color = SkColorSetA(SK_ColorBLUE, 0xF0);
-    blink::mojom::Manifest manifest;
-    manifest.manifest_url = GURL(kExampleManifestURL);
-    manifest.start_url = start_url;
-    manifest.id = GenerateManifestIdFromStartUrlOnly(start_url).value();
-    manifest.scope = manifest.start_url.GetWithoutFilename();
-    manifest.theme_color = theme_color;
+    blink::Manifest manifest =
+        blink::Manifest::Builder(
+            start_url, GenerateManifestIdFromStartUrlOnly(start_url).value(),
+            start_url.GetWithoutFilename())
+            .SetManifestUrl(GURL(kExampleManifestURL))
+            .SetThemeColor(theme_color)
+            .BuildChecked();
     std::unique_ptr<WebAppInstallInfo> web_app_info =
         test::GetInstallInfoForCurrentManifest(
             browser()->GetTabStripModel()->GetActiveWebContents()->GetWeakPtr(),
@@ -545,12 +546,14 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ThemeColor) {
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, BackgroundColor) {
-  blink::mojom::Manifest manifest;
-  manifest.manifest_url = GURL(kExampleManifestURL);
-  manifest.start_url = GURL(kExampleURL);
-  manifest.id = GenerateManifestIdFromStartUrlOnly(manifest.start_url).value();
-  manifest.scope = GURL(kExampleURL);
-  manifest.background_color = SkColorSetA(SK_ColorBLUE, 0xF0);
+  const GURL start_url(kExampleURL);
+  blink::Manifest manifest =
+      blink::Manifest::Builder(
+          start_url, GenerateManifestIdFromStartUrlOnly(start_url).value(),
+          start_url)
+          .SetManifestUrl(GURL(kExampleManifestURL))
+          .SetBackgroundColor(SkColorSetA(SK_ColorBLUE, 0xF0))
+          .BuildChecked();
   std::unique_ptr<WebAppInstallInfo> web_app_info =
       test::GetInstallInfoForCurrentManifest(
           browser()->GetTabStripModel()->GetActiveWebContents()->GetWeakPtr(),
@@ -1488,7 +1491,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, CopyURL) {
 // incognito.
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, PopOutDisabledInIncognito) {
   const GURL app_url = GetSecureAppURL();
-  const webapps::AppId app_id = InstallPWA(app_url);
+  InstallPWA(app_url);
 
   BrowserWindowInterface* const incognito_browser =
       OpenURLOffTheRecord(profile(), app_url);
@@ -1992,7 +1995,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest,
 // pages in an app's scope.
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ReparentWebAppForSecureActiveTab) {
   const GURL app_url = GetSecureAppURL();
-  const webapps::AppId app_id = InstallPWA(app_url);
+  InstallPWA(app_url);
 
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), app_url));
   content::WebContents* tab_contents =
@@ -2649,7 +2652,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, SubframeRedirectsToWebApp) {
 
   // Set up a web app which covers app.com URLs.
   GURL app_url = embedded_test_server()->GetURL("app.com", "/title1.html");
-  const webapps::AppId app_id = InstallPWA(app_url);
+  InstallPWA(app_url);
 
   // Navigate a regular tab to a page with a subframe.
   const GURL url = embedded_test_server()->GetURL("foo.com", "/iframe.html");
@@ -2780,7 +2783,9 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, WebAppInternalsPage) {
                                    GURL("chrome://web-app-internals"));
 }
 
-IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, BrowserDisplayNotInstallable) {
+// TODO(crbug.com/583956316): Re-enable this flaky test.
+IN_PROC_BROWSER_TEST_P(WebAppBrowserTest,
+                       DISABLED_BrowserDisplayNotInstallable) {
   GURL url = embedded_https_test_server().GetURL(
       "/banners/"
       "manifest_test_page.html?manifest=manifest_display_browser.json");
@@ -2833,7 +2838,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestShareTarget) {
   test::WaitForLoadCompleteAndMaybeManifestSeen(
       *browser()->tab_strip_model()->GetActiveWebContents());
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount(
@@ -2848,7 +2853,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestShortcut) {
       "manifest_test_page.html?manifest=manifest_with_shortcuts.json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount("Blink.UseCounter.WebDXFeatures",
@@ -2857,54 +2862,29 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestShortcut) {
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithUseCounterFields) {
-  constexpr char kUseCounterHistogram[] = "Blink.UseCounter.Features";
-
-  base::HistogramTester histogram_tester;
+  WebFeatureHistogramTester web_feature_histogram_tester;
   GURL test_url = embedded_https_test_server().GetURL(
       "/banners/"
       "manifest_test_page.html?manifest=manifest_with_use_counter_fields.json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
-  content::FetchHistogramsFromChildProcesses();
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestStartUrl,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestIdField,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestDisplay,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestIcons, 1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram,
-      blink::mojom::WebFeature::kWebAppManifestScreenshots, 1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestScope, 1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestLockScreen,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestNoteTaking,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram,
-      blink::mojom::WebFeature::kWebAppManifestPrefer_Related_Applications, 1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestThemeColor,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram,
-      blink::mojom::WebFeature::kWebAppManifestBackgroundColor, 1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram, blink::mojom::WebFeature::kWebAppManifestVersion,
-      1);
-  histogram_tester.ExpectBucketCount(
-      kUseCounterHistogram,
-      blink::mojom::WebFeature::kWebAppManifestRelated_Applications, 1);
+  web_feature_histogram_tester.ExpectCounts({
+      {blink::mojom::WebFeature::kWebAppManifestStartUrl, 1},
+      {blink::mojom::WebFeature::kWebAppManifestIdField, 1},
+      {blink::mojom::WebFeature::kWebAppManifestDisplay, 1},
+      {blink::mojom::WebFeature::kWebAppManifestIcons, 1},
+      {blink::mojom::WebFeature::kWebAppManifestScreenshots, 1},
+      {blink::mojom::WebFeature::kWebAppManifestScope, 1},
+      {blink::mojom::WebFeature::kWebAppManifestLockScreen, 1},
+      {blink::mojom::WebFeature::kWebAppManifestNoteTaking, 1},
+      {blink::mojom::WebFeature::kWebAppManifestPrefer_Related_Applications, 1},
+      {blink::mojom::WebFeature::kWebAppManifestThemeColor, 1},
+      {blink::mojom::WebFeature::kWebAppManifestBackgroundColor, 1},
+      {blink::mojom::WebFeature::kWebAppManifestVersion, 1},
+      {blink::mojom::WebFeature::kWebAppManifestRelated_Applications, 1},
+  });
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithNoUseCounterFields) {
@@ -2915,7 +2895,7 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithNoUseCounterFields) {
       "json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
+  test::InstallPwaForCurrentUrl(browser());
 
   content::FetchHistogramsFromChildProcesses();
   histogram_tester.ExpectBucketCount(
@@ -2937,13 +2917,11 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayBrowser) {
       "json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
-  content::FetchHistogramsFromChildProcesses();
+  test::InstallPwaForCurrentUrl(browser());
 
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplay));
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplayBrowser));
+  web_feature_histogram_tester.ExpectCounts(
+      {{blink::mojom::WebFeature::kWebAppManifestDisplay, 1},
+       {blink::mojom::WebFeature::kWebAppManifestDisplayBrowser, 1}});
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayMinimalUI) {
@@ -2954,13 +2932,11 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayMinimalUI) {
       "json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
-  content::FetchHistogramsFromChildProcesses();
+  test::InstallPwaForCurrentUrl(browser());
 
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplay));
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplayMinimalUI));
+  web_feature_histogram_tester.ExpectCounts(
+      {{blink::mojom::WebFeature::kWebAppManifestDisplay, 1},
+       {blink::mojom::WebFeature::kWebAppManifestDisplayMinimalUI, 1}});
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayFullscreen) {
@@ -2971,13 +2947,11 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayFullscreen) {
       "json");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
-  content::FetchHistogramsFromChildProcesses();
+  test::InstallPwaForCurrentUrl(browser());
 
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplay));
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplayFullscreen));
+  web_feature_histogram_tester.ExpectCounts(
+      {{blink::mojom::WebFeature::kWebAppManifestDisplay, 1},
+       {blink::mojom::WebFeature::kWebAppManifestDisplayFullscreen, 1}});
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayStandalone) {
@@ -2987,13 +2961,11 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest, ManifestWithDisplayStandalone) {
       "manifest_test_page.html?");
   NavigateViaLinkClickToURLAndWait(browser(), test_url);
 
-  const webapps::AppId app_id = test::InstallPwaForCurrentUrl(browser());
-  content::FetchHistogramsFromChildProcesses();
+  test::InstallPwaForCurrentUrl(browser());
 
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplay));
-  EXPECT_EQ(1, web_feature_histogram_tester.GetCount(
-                   blink::mojom::WebFeature::kWebAppManifestDisplayStandalone));
+  web_feature_histogram_tester.ExpectCounts(
+      {{blink::mojom::WebFeature::kWebAppManifestDisplay, 1},
+       {blink::mojom::WebFeature::kWebAppManifestDisplayStandalone, 1}});
 }
 
 IN_PROC_BROWSER_TEST_P(WebAppBrowserTest_Unframed, Unframed) {
@@ -3158,7 +3130,6 @@ IN_PROC_BROWSER_TEST_P(WebAppBrowserTest_FileHandler, FileAssociation) {
       ShellUtil::GetFileHandlerProgIdsForAppId(prog_id);
   base::flat_map<std::wstring, std::wstring> reg_key_prog_id_map;
 
-  std::vector<std::wstring> file_ext_reg_keys;
   base::win::RegKey key;
   for (const auto& file_handler_prog_id : file_handler_prog_ids) {
     const std::vector<std::wstring> file_extensions =

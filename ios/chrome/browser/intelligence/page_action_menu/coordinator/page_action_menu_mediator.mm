@@ -17,6 +17,7 @@
 #import "components/translate/core/browser/translate_download_manager.h"
 #import "components/translate/core/browser/translate_manager.h"
 #import "components/translate/core/browser/translate_prefs.h"
+#import "components/url_formatter/elide_url.h"
 #import "ios/chrome/browser/infobars/model/infobar_ios.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
 #import "ios/chrome/browser/infobars/model/infobar_type.h"
@@ -198,7 +199,9 @@ IOSPermissionSetting IOSPermissionSettingForPageActionMenuPermissionSetting(
 
 - (PageActionMenuContentEntryPoint*)geminiEntryPoint {
   if (_webState && _webState->GetBrowserState()->IsOffTheRecord()) {
-    return [[PageActionMenuContentEntryPoint alloc] initWithEnabled:NO];
+    return [[PageActionMenuContentEntryPoint alloc]
+        initWithEnabled:NO
+             footerItem:[ContentEntryPointUnavailabilityItem geminiIncognito]];
   }
 
   if (!_geminiService || !_geminiTabHelper) {
@@ -366,7 +369,9 @@ IOSPermissionSetting IOSPermissionSettingForPageActionMenuPermissionSetting(
     return nil;
   }
   GURL url = _webState->GetLastCommittedURL();
-  return base::SysUTF8ToNSString(url.GetHost());
+  return base::SysUTF16ToNSString(
+      url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
+          url));
 }
 
 - (void)updatePermission:(BOOL)granted

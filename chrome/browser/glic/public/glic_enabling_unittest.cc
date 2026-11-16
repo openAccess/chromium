@@ -27,6 +27,7 @@
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/browser_process.h"
@@ -41,13 +42,17 @@
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/host/glic_features.mojom-features.h"
 #include "chrome/browser/glic/host/glic_features.mojom.h"
+#include "chrome/browser/glic/host/glic_provider_change_relaunch.h"
 #include "chrome/browser/glic/public/features.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_fre_store.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_provider_change.h"
 #include "chrome/browser/glic/public/glic_provider_latch.h"
 #include "chrome/browser/glic/public/glic_provider_spec.h"
+#include "chrome/browser/glic/public/provider_features.h"
+#include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/test_support/glic_test_util.h"
 #include "chrome/browser/global_features.h"
 #include "chrome/browser/prefs/browser_prefs.h"
@@ -75,6 +80,7 @@
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/skills/features.h"
 #include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "components/variations/service/test_variations_service.h"
@@ -82,6 +88,7 @@
 #include "components/variations/variations_switches.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_task_environment.h"
+#include "pdf/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -480,6 +487,87 @@ TEST_F(GlicEnablingTest, CountryMinorFilteringIndependentOfAdultFiltering) {
   EXPECT_FALSE(TestDelegate::GetCountryEnablementForMinorAccounts("ca", "ca"));
 }
 
+TEST_F(GlicEnablingTest, WebActuationDisclosureCountryVariant) {
+  {
+    base::test::ScopedFeatureList features;
+    features.InitAndDisableFeature(
+        features::kGlicWebActuationDisclosureCountryVariant);
+    delegate_.SetBothCountryCodes("gb");
+    EXPECT_FALSE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+  }
+  {
+    // Default list (gb, au, nz).
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeature(
+        features::kGlicWebActuationDisclosureCountryVariant);
+    delegate_.SetBothCountryCodes("gb");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetBothCountryCodes("AU");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetBothCountryCodes("nz");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetBothCountryCodes("us");
+    EXPECT_FALSE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+  }
+  {
+    // List from the Finch param.
+    base::test::ScopedFeatureList features;
+    features.InitAndEnableFeatureWithParameters(
+        features::kGlicWebActuationDisclosureCountryVariant,
+        {{"enabled_countries", "ie"}});
+    delegate_.SetBothCountryCodes("ie");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetBothCountryCodes("gb");
+    EXPECT_FALSE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+  }
+}
+
+TEST_F(GlicEnablingTest, WebActuationDisclosureCountryVariant_SessionCountry) {
+  {
+    base::test::ScopedFeatureList features;
+    features.InitWithFeatures(
+        {features::kGlicWebActuationDisclosureCountryVariant,
+         features::kGlicUseSessionCountryForFiltering},
+        {});
+    // Session country takes precedence over the permanent country.
+    delegate_.SetPermanentCountryCode("us");
+    delegate_.SetSessionCountryCode("gb");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetPermanentCountryCode("gb");
+    delegate_.SetSessionCountryCode("us");
+    EXPECT_FALSE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    // Falls back to the permanent country when the session country is unknown.
+    delegate_.SetPermanentCountryCode("gb");
+    delegate_.SetSessionCountryCode("");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+  }
+  {
+    // Only the permanent country is used when session filtering is disabled.
+    base::test::ScopedFeatureList features;
+    features.InitWithFeatures(
+        {features::kGlicWebActuationDisclosureCountryVariant},
+        {features::kGlicUseSessionCountryForFiltering});
+    delegate_.SetPermanentCountryCode("us");
+    delegate_.SetSessionCountryCode("gb");
+    EXPECT_FALSE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+    delegate_.SetPermanentCountryCode("gb");
+    delegate_.SetSessionCountryCode("us");
+    EXPECT_TRUE(
+        CreateGlobalEnabling().ShouldUseWebActuationDisclosureCountryVariant());
+  }
+}
+
 base::flat_set<std::string> SplitCountryList(std::string_view country_list) {
   return base::flat_set<std::string>(base::SplitString(
       country_list, ", ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY));
@@ -743,6 +831,32 @@ class GlicEnablingProfileEligibilityTest : public testing::Test {
 
 TEST_F(GlicEnablingProfileEligibilityTest, Eligible) {
   EXPECT_TRUE(GlicEnabling::IsProfileEligible(profile()));
+}
+
+// Consumer Gemini supports contextual cueing and zero state suggestions, so
+// they follow their flags.
+TEST_F(GlicEnablingProfileEligibilityTest,
+       ContextualCueingAndZeroStateSuggestionsFollowFlags) {
+  EXPECT_TRUE(GetGlicProviderSpec(profile()).SupportsFeature(
+      GlicFeature::kContextualCueing));
+  EXPECT_TRUE(GetGlicProviderSpec(profile()).SupportsFeature(
+      GlicFeature::kZeroStateSuggestions));
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{kContextualCueing, kGlicZeroStateSuggestions},
+        /*disabled_features=*/{});
+    EXPECT_TRUE(IsContextualCueingEnabled(profile()));
+    EXPECT_TRUE(IsZeroStateSuggestionsEnabled(profile()));
+  }
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{},
+        /*disabled_features=*/{kContextualCueing, kGlicZeroStateSuggestions});
+    EXPECT_FALSE(IsContextualCueingEnabled(profile()));
+    EXPECT_FALSE(IsZeroStateSuggestionsEnabled(profile()));
+  }
 }
 
 TEST_F(GlicEnablingProfileEligibilityTest, WasPreviouslyNotAllowedTest) {
@@ -1102,8 +1216,17 @@ TEST_F(GlicEnablingAnchorEntryPointTestBase, FeatureFlagDisablesAnchoring) {
               testing::IsEmpty());
 }
 
+// TODO(crbug.com/585643966): Fails in batched runs on Android (leaked
+// global state makes the profile ineligible).
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_AnchoredButtonForIneligibleAccount \
+  DISABLED_AnchoredButtonForIneligibleAccount
+#else
+#define MAYBE_AnchoredButtonForIneligibleAccount \
+  AnchoredButtonForIneligibleAccount
+#endif
 TEST_F(GlicEnablingAnchorEntryPointTestBase,
-       AnchoredButtonForIneligibleAccount) {
+       MAYBE_AnchoredButtonForIneligibleAccount) {
   profile()->GetPrefs()->SetInteger(
       glic::prefs::kGlicCompletedFre,
       static_cast<int>(glic::prefs::FreStatus::kCompleted));
@@ -1243,8 +1366,17 @@ TEST_F(GlicEnablingAnchorEntryPointTestBase,
       GlicEnabling::EnablementForProfile(profile()).ShouldShowGlicButton());
 }
 
+// TODO(crbug.com/585643966): Fails in batched runs on Android (leaked
+// global state makes the profile ineligible).
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored \
+  DISABLED_PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored
+#else
+#define MAYBE_PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored \
+  PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored
+#endif
 TEST_F(GlicEnablingAnchorEntryPointTestBase,
-       PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored) {
+       MAYBE_PrimaryAccountNotCapable_ReturnsIneligibleAccountWhenAnchored) {
   profile()->GetPrefs()->SetInteger(
       glic::prefs::kGlicCompletedFre,
       std::to_underlying(glic::prefs::FreStatus::kCompleted));
@@ -1376,7 +1508,7 @@ class GlicEnablingGatedFeatureTest
       public testing::WithParamInterface<GatedFeatureParams> {
  public:
   void SetUpFeature(const base::Feature& feature,
-                    const base::FeatureParam<bool>& onboarding_param) {
+                    std::string_view onboarding_param_name) {
     GlicEnablingProfileReadyStateTestBase::SetUp();
     if (IsSkipped()) {
       return;
@@ -1393,7 +1525,7 @@ class GlicEnablingGatedFeatureTest
     if (GetParam().is_feature_enabled) {
       enabled_features.push_back(
           {feature,
-           {{onboarding_param.name,
+           {{std::string(onboarding_param_name),
              GetParam().is_onboarding_param_enabled ? "true" : "false"}}});
     } else {
       disabled_features.push_back(feature);
@@ -1422,7 +1554,7 @@ class GlicEnablingAutoOpenForPdfTest : public GlicEnablingGatedFeatureTest {
   void SetUp() override {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(switches::kTestType);
     SetUpFeature(features::kAutoOpenGlicForPdf,
-                 features::kAutoOpenGlicForPdfWithOnboarding);
+                 features::kAutoOpenGlicForPdfWithOnboardingParam);
   }
 };
 
@@ -1601,6 +1733,93 @@ TEST_F(GlicEnablingProfileEligibilityTest,
       ->SetManagedPref(prefs::kGlicExperimentalTriggeringEnabled,
                        std::make_unique<base::Value>(false));
   EXPECT_FALSE(enabling.IsExperimentalTriggeringUserControlled());
+}
+
+TEST_F(GlicEnablingProfileEligibilityTest,
+       GetExperimentalTriggeringNotReadyReason_UnavailableGates) {
+  base::test::ScopedFeatureList base_features;
+  base_features.InitWithFeatures(
+      /*enabled_features=*/{features::kGlicActor, features::kGlicRollout},
+      /*disabled_features=*/{features::kGlicShowForSignedOut,
+                             features::kGlicActorPolicyControlExemption});
+
+  auto& enabling = glic::GlicKeyedService::Get(profile())->enabling();
+  profile()->GetPrefs()->SetInteger(
+      prefs::kGlicSparkPolicySettings,
+      std::to_underlying(prefs::GlicSparkPolicyState::kEnabled));
+
+  // Signed-out profile is not Glic-enabled, so `kGlicNotEnabled` takes
+  // precedence over downstream actor policy checks.
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+    EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+              ExperimentalTriggeringNotReadyReason::kGlicNotEnabled);
+  }
+
+  auto* identity_test_env = identity_test_env_adaptor_->identity_test_env();
+  identity_test_env->MakePrimaryAccountAvailable("test@example.com",
+                                                 signin::ConsentLevel::kSignin);
+  SetGlicCapability(profile(), true);
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kGlicExperimentalTriggering);
+    EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+              ExperimentalTriggeringNotReadyReason::kFeatureDisabled);
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+    policy::ScopedManagementServiceOverrideForTesting browser_management(
+        policy::ManagementServiceFactory::GetForProfile(profile()),
+        policy::EnterpriseManagementAuthority::CLOUD);
+    profile()->GetPrefs()->SetInteger(
+        prefs::kGlicSparkPolicySettings,
+        std::to_underlying(prefs::GlicSparkPolicyState::kDisabled));
+    EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+              ExperimentalTriggeringNotReadyReason::kDisabledBySparkPolicy);
+    profile()->GetPrefs()->SetInteger(
+        prefs::kGlicSparkPolicySettings,
+        std::to_underlying(prefs::GlicSparkPolicyState::kEnabled));
+    EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+              ExperimentalTriggeringNotReadyReason::kCannotActOnWeb);
+  }
+}
+
+TEST_F(GlicEnablingProfileEligibilityTest,
+       GetExperimentalTriggeringNotReadyReason_OptInAndReady) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{features::kGlicExperimentalTriggering,
+                            features::kGlicActor,
+                            features::kGlicActorPolicyControlExemption,
+                            features::kGlicRollout},
+      /*disabled_features=*/{});
+
+  auto* identity_test_env = identity_test_env_adaptor_->identity_test_env();
+  identity_test_env->MakePrimaryAccountAvailable("test@example.com",
+                                                 signin::ConsentLevel::kSignin);
+  SetGlicCapability(profile(), true);
+  profile()->GetPrefs()->SetInteger(
+      prefs::kGlicSparkPolicySettings,
+      std::to_underlying(prefs::GlicSparkPolicyState::kEnabled));
+
+  auto& enabling = glic::GlicKeyedService::Get(profile())->enabling();
+  EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+            ExperimentalTriggeringNotReadyReason::kMissingGlicOptIn);
+  enabling.SetCompletedFre(prefs::FreStatus::kCompleted);
+  EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+            ExperimentalTriggeringNotReadyReason::kMissingActuationOptIn);
+  enabling.SetUserEnabledActuationOnWeb(true);
+  EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+            ExperimentalTriggeringNotReadyReason::kMissingExperimentalOptIn);
+  enabling.SetExperimentalTriggeringEnabled(true);
+  EXPECT_EQ(enabling.GetExperimentalTriggeringNotReadyReason(),
+            ExperimentalTriggeringNotReadyReason::kNone);
+  EXPECT_EQ(enabling.GetExperimentalTriggeringVersion(),
+            GlicEnabling::kExperimentalTriggeringProtocolVersion);
 }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -3375,8 +3594,16 @@ class GlicEnablingAnchorEntryPointCountryTest
   std::unique_ptr<variations::TestVariationsService> variations_service_;
 };
 
+// TODO(crbug.com/585643966): Fails in batched runs on Android (leaked
+// global state makes the profile ineligible).
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_AnchoredButtonForCountryDisabled \
+  DISABLED_AnchoredButtonForCountryDisabled
+#else
+#define MAYBE_AnchoredButtonForCountryDisabled AnchoredButtonForCountryDisabled
+#endif
 TEST_F(GlicEnablingAnchorEntryPointCountryTest,
-       AnchoredButtonForCountryDisabled) {
+       MAYBE_AnchoredButtonForCountryDisabled) {
   profile()->GetPrefs()->SetInteger(
       glic::prefs::kGlicCompletedFre,
       static_cast<int>(glic::prefs::FreStatus::kCompleted));
@@ -3414,8 +3641,17 @@ TEST_F(GlicEnablingAnchorEntryPointCountryTest,
               base::BucketsAre(base::Bucket(Reason::kCountryDisabled, 1)))));
 }
 
+// TODO(crbug.com/585643966): Fails in batched runs on Android (leaked
+// global state makes the profile ineligible).
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_AnchoredButtonForMultipleIneligibilityReasons \
+  DISABLED_AnchoredButtonForMultipleIneligibilityReasons
+#else
+#define MAYBE_AnchoredButtonForMultipleIneligibilityReasons \
+  AnchoredButtonForMultipleIneligibilityReasons
+#endif
 TEST_F(GlicEnablingAnchorEntryPointCountryTest,
-       AnchoredButtonForMultipleIneligibilityReasons) {
+       MAYBE_AnchoredButtonForMultipleIneligibilityReasons) {
   profile()->GetPrefs()->SetInteger(
       glic::prefs::kGlicCompletedFre,
       static_cast<int>(glic::prefs::FreStatus::kCompleted));
@@ -4123,6 +4359,48 @@ TEST_F(GlicEnablingGeicPolicyGlicDisabledTest,
             GlicProviderChange::kGeicToGemini);
 }
 
+// The relaunch button can't restart Chrome unless a provider change is pending.
+TEST_F(GlicEnablingGeicPolicyTest,
+       RelaunchForProviderChange_DoesNothingWithoutPendingChange) {
+  base::test::ScopedFeatureList feature_list(
+      features::kGeicProviderChangePrompt);
+  ASSERT_EQ(GlicEnabling::GetPendingProviderChange(profile()),
+            GlicProviderChange::kNone);
+  base::UserActionTester user_action_tester;
+  int restart_count = 0;
+  auto restart_override = SetRestartCallbackForTesting(
+      base::BindLambdaForTesting([&] { ++restart_count; }));
+
+  MaybeRelaunchForProviderChange(profile());
+
+  EXPECT_EQ(restart_count, 0);
+  EXPECT_EQ(
+      user_action_tester.GetActionCount("Glic.ProviderChange.RelaunchClicked"),
+      0);
+}
+
+TEST_F(GlicEnablingGeicPolicyTest,
+       RelaunchForProviderChange_RestartsWithPendingChange) {
+  base::test::ScopedFeatureList feature_list(
+      features::kGeicProviderChangePrompt);
+  static_cast<sync_preferences::TestingPrefServiceSyncable*>(
+      profile()->GetPrefs())
+      ->RemoveManagedPref(prefs::kGlicGeminiEnterpriseUrl);
+  ASSERT_EQ(GlicEnabling::GetPendingProviderChange(profile()),
+            GlicProviderChange::kGeicToGemini);
+  base::UserActionTester user_action_tester;
+  int restart_count = 0;
+  auto restart_override = SetRestartCallbackForTesting(
+      base::BindLambdaForTesting([&] { ++restart_count; }));
+
+  MaybeRelaunchForProviderChange(profile());
+
+  EXPECT_EQ(restart_count, 1);
+  EXPECT_EQ(
+      user_action_tester.GetActionCount("Glic.ProviderChange.RelaunchClicked"),
+      1);
+}
+
 // Like `GlicEnablingGeicPolicyTest`, but with the `enabled` param of
 // `features::kGeic` set to false when the profile is created.
 class GlicEnablingGeicPolicyEnabledParamFalseTest
@@ -4215,6 +4493,100 @@ TEST_F(GlicEnablingGeicPolicyTest,
             mojom::ProfileReadyState::kReady);
 }
 
+// Consumer-only entry points stay off for an enabled Gemini Enterprise
+// profile, even with their features enabled.
+TEST_F(GlicEnablingGeicPolicyTest, ConsumerOnlyEntryPointsDisabledForGeic) {
+  std::vector<base::test::FeatureRef> enabled_features = {
+      features::kAutoOpenGlicForPdf,
+      features::kGlicSelectionPrompt,
+      features::kGlicCaptureRegion,
+      features::kGlicExperimentalTriggering,
+      features::kGlicTextSelectionContextMenu,
+#if BUILDFLAG(ENABLE_PDF)
+      features::kPdfGlicSummarize,
+#endif
+  };
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(enabled_features, /*disabled_features=*/{});
+  ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
+  // Complete the GEiC FRE so only the provider keeps PDF auto-open off.
+  geic::CompleteFre(profile());
+  ASSERT_TRUE(GlicEnabling::HasConsentedForProfile(profile()));
+
+  EXPECT_FALSE(GlicEnabling::IsPdfSummarizeEnabled(profile()));
+  EXPECT_FALSE(GlicEnabling::IsAutoOpenForPdfEnabled(profile()));
+  EXPECT_FALSE(GlicEnabling::IsInlineCueEnabledForProfile(profile()));
+  EXPECT_FALSE(GlicEnabling::IsTextSelectionContextMenuEnabled(profile()));
+  EXPECT_FALSE(GetGlicProviderSpec(profile()).SupportsFeature(
+      GlicFeature::kCaptureRegion));
+
+  GlicKeyedService* service = GlicKeyedService::Get(profile());
+  ASSERT_TRUE(service);
+  EXPECT_EQ(service->enabling().GetExperimentalTriggeringState(),
+            syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable);
+  EXPECT_FALSE(service->enabling().ShouldShowExperimentalTriggeringToggle());
+}
+
+// Text selection context menu entry point stays off for Gemini Enterprise,
+// even when enabled by feature flags.
+TEST_F(GlicEnablingGeicPolicyTest, TextSelectionContextMenuDisabledForGeic) {
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicTextSelectionContextMenu},
+        /*disabled_features=*/{features::kGlicContextMenu});
+    ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
+
+    EXPECT_FALSE(GlicEnabling::IsTextSelectionContextMenuEnabled(profile()));
+    // With kGlicContextMenu disabled, text selection context menu does not
+    // enable the item for GEiC.
+    EXPECT_FALSE(
+        GlicEnabling::IsContextualMenuItemEnabled(profile(), u"selected text"));
+  }
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitWithFeatures(
+        /*enabled_features=*/{features::kGlicTextSelectionContextMenu,
+                              features::kGlicContextMenu},
+        /*disabled_features=*/{});
+    ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
+
+    // Even with kGlicContextMenu enabled, the text selection specific entry
+    // point stays disabled for GEiC.
+    EXPECT_FALSE(GlicEnabling::IsTextSelectionContextMenuEnabled(profile()));
+    // The general context menu item respects kGlicContextMenu.
+    EXPECT_TRUE(
+        GlicEnabling::IsContextualMenuItemEnabled(profile(), u"selected text"));
+    EXPECT_TRUE(GlicEnabling::IsContextualMenuItemEnabled(profile(), u""));
+    EXPECT_TRUE(GlicEnabling::IsContextualMenuItemEnabled(profile(), u"   "));
+  }
+}
+
+// Contextual cueing and zero state suggestions stay off for a Gemini Enterprise
+// profile and its incognito profile, even with their features enabled. This
+// also keeps GlicInstanceImpl from warming zero state suggestions, which would
+// send page content to the consumer model.
+TEST_F(GlicEnablingGeicPolicyTest,
+       ContextualCueingAndZeroStateSuggestionsDisabledForGeic) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      /*enabled_features=*/{kContextualCueing, kGlicZeroStateSuggestions},
+      /*disabled_features=*/{});
+  ASSERT_TRUE(GlicEnabling::IsEnabledForProfile(profile()));
+
+  EXPECT_FALSE(GetGlicProviderSpec(profile()).SupportsFeature(
+      GlicFeature::kContextualCueing));
+  EXPECT_FALSE(GetGlicProviderSpec(profile()).SupportsFeature(
+      GlicFeature::kZeroStateSuggestions));
+  EXPECT_FALSE(IsContextualCueingEnabled(profile()));
+  EXPECT_FALSE(IsZeroStateSuggestionsEnabled(profile()));
+
+  Profile* incognito =
+      profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  EXPECT_FALSE(IsContextualCueingEnabled(incognito));
+  EXPECT_FALSE(IsZeroStateSuggestionsEnabled(incognito));
+}
+
 TEST_F(GlicEnablingGeicPolicyTest, Provider_LatchedAtCreation) {
   // Removing the policy after the profile was created does not change the
   // provider or the latched guest URL for the rest of the session.
@@ -4252,13 +4624,13 @@ TEST_F(GlicEnablingGeicPolicyTest, GeicEnabledWithoutConsumerAccountChecks) {
                   ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
                   .IsEmpty());
 
+  // Consent comes from the GEiC FRE, not the consumer FRE.
+  // `GeicFreControlsConsentInEnablement` covers consent in more detail.
+  geic::CompleteFre(profile());
+
   GlicEnabling::ProfileEnablement enablement =
       GlicEnabling::EnablementForProfile(profile());
   EXPECT_TRUE(enablement.IsEnabled());
-  // This is true only because `features::kGeicFre` is disabled (the default),
-  // so `GeminiEnterpriseGlicFreStore` reports the FRE as `kCompleted` (see
-  // glic_fre_store_impl.cc). `GeicFreControlsConsentInEnablement` covers
-  // consent with the GEiC FRE enabled.
   EXPECT_TRUE(enablement.IsEnabledAndConsented());
   EXPECT_TRUE(enablement.ShouldShowGlicButton());
   EXPECT_TRUE(enablement.ShouldShowSettingsPage());
@@ -4468,6 +4840,27 @@ TEST_F(GlicEnablingGeicPolicyCountryCheckTest,
 
   EXPECT_FALSE(GlicEnabling::IsEnabledForFirstRunProfile(profile(), "us", "us",
                                                          account_info));
+}
+
+// Gemini Enterprise doesn't support Chrome Skills.
+TEST_F(GlicEnablingGeicPolicyTest, GeicDoesNotSupportSkills) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {::features::kSkillsEnabled, ::features::kSkillsWebViewV2Enabled}, {});
+  ASSERT_EQ(GlicProviderLatch::GetProvider(*profile()),
+            GlicProvider::kGeminiEnterprise);
+  EXPECT_FALSE(
+      GetGlicProviderSpec(profile()).SupportsFeature(GlicFeature::kSkills));
+}
+
+// Consumer Gemini supports Chrome Skills.
+TEST_F(GlicEnablingGeicPolicyFeatureDisabledTest, ConsumerSupportsSkills) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {::features::kSkillsEnabled, ::features::kSkillsWebViewV2Enabled}, {});
+  ASSERT_EQ(GlicProviderLatch::GetProvider(*profile()), GlicProvider::kGemini);
+  EXPECT_TRUE(
+      GetGlicProviderSpec(profile()).SupportsFeature(GlicFeature::kSkills));
 }
 
 // Gemini Enterprise skips the server-side user status check, so it doesn't

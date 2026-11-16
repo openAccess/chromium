@@ -51,6 +51,26 @@ chromium-metrics-reviews@google.com.
 
 <!--LINT.ThenChange(//cc/scheduler/commit_earlyout_reason.h:CommitEarlyOutReason) -->
 
+<!--LINT.IfChange(CALayerBackdropResult) -->
+
+<enum name="CALayerBackdropResult">
+  <int value="0" label="Success"/>
+  <int value="1" label="Quad bounds empty after clipping"/>
+  <int value="2" label="Feature Disabled"/>
+  <int value="3" label="Post-process filter not supported"/>
+  <int value="4" label="Unsupported scale"/>
+  <int value="5" label="Unsupported blur amount"/>
+  <int value="6" label="Unsupported combination of filters for blur"/>
+  <int value="7" label="Unsupported saturation amount"/>
+  <int value="8" label="Unsupported brightness amount"/>
+  <int value="9" label="Unsupported contrast amount"/>
+  <int value="10" label="Unsupported background filter type"/>
+  <int value="11" label="Unsupported transform matrix"/>
+  <int value="12" label="Unsupported partial clip of rrect boundary"/>
+</enum>
+
+<!--LINT.ThenChange(//components/viz/service/display/ca_layer_overlay.cc:CALayerBackdropResult) -->
+
 <enum name="CALayerResult">
   <int value="0" label="Success"/>
   <int value="1" label="Unknown failure"/>
@@ -97,32 +117,6 @@ chromium-metrics-reviews@google.com.
   <int value="1" label="Opacity"/>
   <int value="2" label="Filter"/>
   <int value="3" label="Backdrop Filter"/>
-</enum>
-
-<enum name="RenderPassDamage">
-  <int value="0" label="Output rect">
-    Clipping at the root does not make the damage smaller than the output rect.
-  </int>
-  <int value="1" label="Clipped by root">
-    Clipping at the root will clip the render pass and make it smaller than
-    output rect.
-  </int>
-  <int value="2" label="Force full output rect">
-    Full output rect damage was forced for this render pass.
-  </int>
-</enum>
-
-<enum name="RenderPassDrawRectAssign">
-  <int value="0" label="New Output rect">
-    Initializing a drawn rect with an output rect for the first time.
-  </int>
-  <int value="1" label="Reassignment">
-    Reassigning a different output rect to an existing non empty drawn rect.
-  </int>
-  <int value="2" label="No Assignment">No changes to drawn rect.</int>
-  <int value="3" label="Full Damage">
-    Assignment to drawn rect is equal to the damage.
-  </int>
 </enum>
 
 <enum name="SlimBeginFrameResult">

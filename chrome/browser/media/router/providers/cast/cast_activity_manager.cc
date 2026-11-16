@@ -890,7 +890,6 @@ void CastActivityManager::HandleLaunchSessionResponse(
 
   mojom::RoutePresentationConnectionPtr presentation_connection;
   const std::string& client_id = cast_source.client_id();
-  std::string app_id = ChooseAppId(cast_source, params.sink);
   const auto channel_id = sink.cast_data().cast_channel_id;
   const auto destination_id = session->destination_id();
   auto media_source = MediaSource(cast_source.source_id());
@@ -928,7 +927,6 @@ void CastActivityManager::HandleLaunchSessionResponse(
     // Request media status from the receiver.
     base::DictValue request;
     request.Set("type", cast_util::EnumToString<
-                            cast_channel::V2MessageType,
                             cast_channel::V2MessageType::kMediaGetStatus>());
     message_handler_->SendMediaRequest(channel_id, request, client_id,
                                        destination_id);

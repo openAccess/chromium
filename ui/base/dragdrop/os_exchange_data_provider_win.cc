@@ -262,7 +262,7 @@ HRESULT FormatEtcEnumerator::Next(ULONG count,
                                   ULONG* elements_fetched) {
   // MSDN says |elements_fetched| is allowed to be NULL if count is 1.
   if (!elements_fetched)
-    DCHECK_EQ(count, 1ul);
+    CHECK_EQ(count, 1ul, base::NotFatalUntil::M163);
 
   // This method copies count elements into |elements_array|.
   ULONG index = 0;
@@ -389,11 +389,16 @@ std::optional<url::Origin> OSExchangeDataProviderWin::GetRendererTaintedOrigin()
   if (FAILED(source_object_->GetData(&format_etc, &medium))) {
     return std::nullopt;
   }
-  base::win::ScopedHGlobal<char*> data(medium.hGlobal);
-  if (data.size() == 0) {
-    return url::Origin();
+  url::Origin origin;
+  {
+    base::win::ScopedHGlobal<char*> data(medium.hGlobal);
+    if (data.size() > 0) {
+      origin =
+          url::Origin::Create(GURL(std::string_view(data.data(), data.size())));
+    }
   }
-  return url::Origin::Create(GURL(std::string_view(data.data(), data.size())));
+  ReleaseStgMedium(&medium);
+  return origin;
 }
 
 void OSExchangeDataProviderWin::MarkAsFromPrivileged() {
@@ -806,13 +811,13 @@ std::vector<ClipboardUrlInfo> OSExchangeDataProviderWin::GetURLs(
   if (clipboard_util::GetUrlInfos(
           source_object_.Get(), url_infos,
           policy == FilenameToURLPolicy::CONVERT_FILENAMES)) {
-    DCHECK(!url_infos.empty());
+    CHECK(!url_infos.empty(), base::NotFatalUntil::M163);
     return url_infos;
   }
 
   if (std::optional<GURL> plaintext_url = GetPlainTextURL();
       plaintext_url.has_value()) {
-    DCHECK(plaintext_url->is_valid());
+    CHECK(plaintext_url->is_valid(), base::NotFatalUntil::M163);
     GURL url = std::move(plaintext_url).value();
     std::u16string title =
         net::GetSuggestedFilename(url, "", "", "", "", std::string());
@@ -877,12 +882,16 @@ std::optional<base::Pickle> OSExchangeDataProviderWin::GetPickledData(
   STGMEDIUM medium;
   FORMATETC format_etc = format.ToFormatEtc();
   if (SUCCEEDED(source_object_->GetData(&format_etc, &medium))) {
+    std::optional<base::Pickle> pickle;
     if (medium.tymed & TYMED_HGLOBAL) {
       base::win::ScopedHGlobal<char*> c_data(medium.hGlobal);
+      // TODO(crbug.com/582806614): CHECK-exclusion: Convert to a CHECK once we
+      // are confident it won't be triggered.
       DCHECK_GT(c_data.size(), 0u);
-      return base::Pickle::WithData(base::as_bytes(base::span(c_data)));
+      pickle = base::Pickle::WithData(base::as_bytes(base::span(c_data)));
     }
     ReleaseStgMedium(&medium);
+    return pickle;
   }
   return std::nullopt;
 }
@@ -968,6 +977,8 @@ void OSExchangeDataProviderWin::SetDownloadFileInfo(
 void OSExchangeDataProviderWin::SetDragImage(
     const gfx::ImageSkia& image_skia,
     const gfx::Vector2d& cursor_offset) {
+  // TODO(crbug.com/582462746): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!image_skia.size().IsEmpty());
 
   // InitializeFromBitmap() doesn't expect an alpha channel and is confused
@@ -1299,6 +1310,8 @@ HRESULT DataObjectImpl::SetData(
   // lifetime issues, perform a deep copy of `medium`.
   STGMEDIUM local_medium =
       should_release ? *medium : DuplicateMedium(format_etc->cfFormat, *medium);
+  // TODO(crbug.com/582495563): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_EQ(local_medium.tymed, format_etc->tymed);
   auto info = StoredDataInfo::TakeStorageMedium(*format_etc, local_medium);
 
@@ -1534,7 +1547,7 @@ void PopulateFileDescriptorName(FILEDESCRIPTORW& dsc,
 }
 
 STGMEDIUM CreateStorageForFileDescriptor(const base::FilePath& path) {
-  DCHECK(!path.empty());
+  CHECK(!path.empty(), base::NotFatalUntil::M163);
   HANDLE hdata = GlobalAlloc(GPTR, sizeof(FILEGROUPDESCRIPTORW));
   base::win::ScopedHGlobal<FILEGROUPDESCRIPTORW*> locked_mem(hdata);
 

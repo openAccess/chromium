@@ -11,7 +11,10 @@
 #include <array>
 
 #include "base/compiler_specific.h"
+#include "base/i18n/icubridge/default_icu_locale.h"
+#include "base/i18n/language_tag.h"
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "third_party/blink/renderer/platform/language.h"
 #include "third_party/blink/renderer/platform/text/hyphenation.h"
@@ -40,9 +43,9 @@ IgnoringCaseHashSet CreateMacrolanguageChineseLanguageTags() {
 }
 
 const IgnoringCaseHashSet& MacrolanguageChineseLanguageTags() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(IgnoringCaseHashSet, tags,
-                                  (CreateMacrolanguageChineseLanguageTags()));
-  return tags;
+  static base::NoDestructor<IgnoringCaseHashSet> tags(
+      CreateMacrolanguageChineseLanguageTags());
+  return *tags;
 }
 
 bool ComputeIsMacrolanguageChinese(const String& value) {
@@ -65,8 +68,8 @@ struct PerThreadData {
 };
 
 PerThreadData& GetPerThreadData() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<PerThreadData>, data, ());
-  return *data;
+  static base::NoDestructor<ThreadSpecific<PerThreadData>> data;
+  return **data;
 }
 
 // Expect returned buffer size is 1 to match QuotesData type
@@ -317,9 +320,8 @@ const LayoutLocale& LayoutLocale::GetSystem() {
   if (!data.system_locale) [[unlikely]] {
     // Platforms such as Windows can give more information than the default
     // locale, such as "en-JP" for English speakers in Japan.
-    String name = icu::Locale::getDefault().getName();
-    data.system_locale =
-        LayoutLocale::Get(AtomicString(name.Replace('_', '-')));
+    data.system_locale = LayoutLocale::Get(
+        AtomicString::FromUtf8(base::i18n::GetDefaultIcuLocale().tag_string()));
   }
   return *data.system_locale;
 }

@@ -7,31 +7,35 @@
 
 #import <Foundation/Foundation.h>
 
+#import "ios/chrome/browser/intelligence/actor/coordinator/actor_task_data_source.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_task_updates_observer.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
-#import "ios/chrome/browser/intelligence/actor/public/actuation_worklog_data_source.h"
 
 namespace actor {
 class ActorService;
 }  // namespace actor
 
 // Keeps the worklog of a Gemini actor task, built from `ActorService` updates
-// plus Gemini-specific steps.
-@interface GeminiActorTaskStore
-    : NSObject <ActorTaskUpdatesObserver, ActuationWorklogDataSource>
+// plus Gemini-specific steps, and handles the task's interventions.
+@interface GeminiActorTaskStore : NSObject <ActorTaskInterventionDelegate,
+                                            ActorTaskUpdatesObserver,
+                                            ActorTaskActionHandler,
+                                            ActorTaskDataSource>
 
 // ID of the observed task.
 @property(nonatomic, readonly) actor::ActorTaskId taskID;
 
-// Designated initializer. Starts observing `taskID` updates on `actorService`;
-// the worklog stays empty if they can't be observed.
+// Designated initializer. Starts observing `taskID` updates on `actorService`
+// and handling its interventions; the worklog stays empty if they can't be
+// observed.
 - (instancetype)initWithTaskID:(actor::ActorTaskId)taskID
                   actorService:(actor::ActorService*)actorService
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
-// Stops observing the task.
+// Stops observing the task and handling its interventions.
 - (void)disconnect;
 
 @end

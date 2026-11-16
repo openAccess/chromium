@@ -114,7 +114,8 @@ class ActorTask : public base::SupportsUserData {
   const TaskSourceInfo& source_info() const { return source_info_; }
 
   // Used for late registration/backfilling of the source-defined ID (e.g. Glic
-  // conversation ID) when it is not yet known at task creation time.
+  // conversation ID or TTC session ID) when it is not yet known at task
+  // creation time.
   void SetSourceId(std::string id) {
     CHECK(!id.empty(), base::NotFatalUntil::M161);
     CHECK(!source_info_.id.has_value() || source_info_.id == id,
@@ -128,6 +129,8 @@ class ActorTask : public base::SupportsUserData {
       const {
     return initial_invocation_source_;
   }
+
+  bool IsExperimentalTriggering() const;
 
   const std::string& title() const { return title_; }
   base::WeakPtr<ActorTaskDelegate> delegate() const { return delegate_; }
@@ -277,7 +280,8 @@ class ActorTask : public base::SupportsUserData {
   // Add/remove the given surface to the set of pages this task is operating
   // over and notify the UI if this is a new page for the task. Added pages
   // will enter actuation mode and be kept as visible. If `stop_task_on_detach`
-  // is true, then the task will be stopped when the page's tab is detached.
+  // is true, then the task will be stopped when the page goes away: its tab is
+  // closed, or its headless page is destroyed.
   using AddTabCallback = base::OnceCallback<void(mojom::ActionResultPtr)>;
   void AddActorSurface(ActorSurfaceHandle actor_surface_handle,
                        bool stop_task_on_detach,
@@ -357,10 +361,19 @@ class ActorTask : public base::SupportsUserData {
     return additional_tab_observations_;
   }
 
+  // Method to be called when a surface this task acts on or observes is about
+  // to go away: its tab is closing (ActorTabStripTrackerDesktop) or the
+  // headless surface is being destroyed (ActorKeyedService). Stops the task if
+  // the surface was added with `stop_task_on_detach`.
   void OnActorSurfaceWillDetach(ActorSurfaceHandle actor_surface_handle);
 
   const std::string& step_progress() const { return step_progress_; }
   void SetStepProgress(std::string step_progress);
+  // Sends UiEventDispatcher::ActRequested, which tells ActorUiStateManager
+  // that a client requested an act. Call this before validating the request,
+  // so that requests that fail before Act() also reach ActorUiStateManager.
+  // This method does not change the task state.
+  void OnActRequested();
 
  private:
   class ActorControlledTabState : public content::WebContentsObserver {

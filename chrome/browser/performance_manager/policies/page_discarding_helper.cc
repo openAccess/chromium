@@ -161,7 +161,7 @@ PageDiscardingHelper::DiscardMultiplePagesImpl(
 
   DiscardEligibilityPolicy* eligiblity_policy =
       DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
-  DCHECK(eligiblity_policy);
+  CHECK(eligiblity_policy, base::NotFatalUntil::M163);
 
   std::vector<PageNodeSortProxy> candidates;
   for (const PageNode* page_node : GetOwningGraph()->GetAllPageNodes()) {
@@ -180,9 +180,11 @@ PageDiscardingHelper::DiscardMultiplePagesImpl(
         !discard_protected_tabs) {
       continue;
     }
+    auto [is_visible, last_visibility_change_time] =
+        page_node->GetVisibilityState();
     candidates.emplace_back(page_node->GetWeakPtr(), can_discard_result,
-                            page_node->IsVisible(), page_node->IsFocused(),
-                            page_node->GetLastVisibilityChangeTime());
+                            is_visible, page_node->IsFocused(),
+                            last_visibility_change_time);
   }
 
   // Sorts with descending importance.
@@ -300,7 +302,7 @@ bool PageDiscardingHelper::ImmediatelyDiscardMultiplePages(
     bool ignore_recent_visibility) {
   DiscardEligibilityPolicy* eligibility_policy =
       DiscardEligibilityPolicy::GetFromGraph(GetOwningGraph());
-  DCHECK(eligibility_policy);
+  CHECK(eligibility_policy, base::NotFatalUntil::M163);
   return ImmediatelyDiscardMultiplePages(
       page_nodes, discard_reason, ignore_recent_visibility, eligibility_policy);
 }

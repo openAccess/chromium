@@ -45,7 +45,6 @@
 #import "components/signin/internal/identity_manager/fake_profile_oauth2_token_service.h"
 #import "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
 #import "components/signin/internal/identity_manager/profile_oauth2_token_service_delegate.h"
-#import "components/sync/test/fake_server_sync_invalidation_sender.h"
 #import "components/sync_device_info/device_info_sync_service.h"
 #import "ios/chrome/browser/aim/model/mock_ios_chrome_aim_eligibility_service.h"
 #import "ios/chrome/browser/composebox/model/mock_ios_contextual_search_service.h"
@@ -62,6 +61,7 @@
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/public/snackbar/snackbar_constants.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
@@ -75,6 +75,7 @@
 #import "ios/chrome/common/ui/reauthentication/fake_reauthentication_module.h"
 #import "ios/chrome/test/app/chrome_test_util.h"
 #import "ios/chrome/test/app/signin_test_util.h"
+#import "ios/chrome/test/earl_grey/duo_simulator_util.h"
 #import "ios/chrome/test/earl_grey/test_switches.h"
 #import "ios/chrome/test/providers/signin/fake_trusted_vault_client_backend.h"
 #import "ios/public/provider/chrome/browser/lens/lens_api.h"
@@ -244,6 +245,13 @@ void LoadMinimalAppUI(UIWindow* window) {
   [window makeKeyAndVisible];
 }
 
+bool IsWindowSceneOnDuoCoverDisplay(UIWindowScene* scene) {
+  // Unlike the internal provider, the Chromium provider always allows window
+  // scene activation. Report when `scene` is on the cover display of a closed
+  // iPhone Duo so that tests disallow activation like on the device.
+  return IsDuoDevice() && IsDuoCoverDisplaySize(scene.screen.bounds.size);
+}
+
 policy::ConfigurationPolicyProvider* GetOverriddenPlatformPolicyProvider() {
   if (base::CommandLine::ForCurrentProcess()->HasSwitch(
           "com.apple.configuration.managed")) {
@@ -296,7 +304,7 @@ std::unique_ptr<TrustedVaultClientBackend> CreateTrustedVaultClientBackend() {
 }
 
 std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 
   if (!command_line->HasSwitch(test_switches::kEnableFakeTabGroupSyncService)) {
@@ -312,8 +320,7 @@ std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
   std::unique_ptr<tab_groups::TabGroupSyncService> sync_service =
       tab_groups::test::CreateTabGroupSyncService(
           std::move(model), DataTypeStoreServiceFactory::GetForProfile(profile),
-          profile->GetPrefs(), device_info_tracker, opt_guide,
-          identity_manager);
+          profile.GetPrefs(), device_info_tracker, opt_guide, identity_manager);
 
   BrowserList* browser_list = BrowserListFactory::GetForProfile(profile);
 
@@ -332,7 +339,7 @@ std::unique_ptr<tab_groups::TabGroupSyncService> CreateTabGroupSyncService(
 }
 
 std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (!command_line->HasSwitch(test_switches::kMockShoppingService)) {
     return nullptr;
@@ -364,21 +371,19 @@ std::unique_ptr<commerce::ShoppingService> CreateShoppingService(
 }
 
 std::unique_ptr<gcm::GCMProfileService> CreateGCMProfileService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   scoped_refptr<base::SequencedTaskRunner> blocking_task_runner(
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
            base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}));
   auto fake_gcm_driver =
       std::make_unique<instance_id::FakeGCMDriverForInstanceID>(
-          profile->GetStatePath().Append(FILE_PATH_LITERAL("gcm_test_store")),
+          profile.GetStatePath().Append(FILE_PATH_LITERAL("gcm_test_store")),
           blocking_task_runner);
-  fake_gcm_driver->WaitForAppIdBeforeConnection(
-      fake_server::FakeServerSyncInvalidationSender::kSyncInvalidationsAppId);
   return std::make_unique<FakeGCMProfileService>(std::move(fake_gcm_driver));
 }
 
-std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS* profile) {
+std::unique_ptr<ExtensionService> CreateExtensionService(ProfileIOS& profile) {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
   if (!command_line->HasSwitch(test_switches::kEnableFakeExtensionService)) {
     return nullptr;
@@ -536,13 +541,13 @@ UIImage* GetPHPickerViewControllerImage() {
 }
 
 std::unique_ptr<AimEligibilityService> CreateAimEligibilityService(
-    ProfileIOS* profile) {
+    ProfileIOS& profile) {
   return MockIOSChromeAimEligibilityService::CreateTestingProfileService(
       profile);
 }
 
 std::unique_ptr<contextual_search::ContextualSearchService>
-CreateContextualSearchService(ProfileIOS* profile) {
+CreateContextualSearchService(ProfileIOS& profile) {
   return MockIOSContextualSearchService::CreateTestingProfileService(profile);
 }
 

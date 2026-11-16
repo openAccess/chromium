@@ -10,6 +10,7 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/selection/selection_context.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/glic_enums.mojom.h"
@@ -52,7 +53,7 @@ void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
     std::u16string_view trimmed_selection =
         base::TrimWhitespace(selection_text, base::TRIM_ALL);
     bool is_page_eligible = false;
-    if (base::FeatureList::IsEnabled(features::kGlicTextSelectionContextMenu) &&
+    if (glic::GlicEnabling::IsTextSelectionContextMenuEnabled(profile) &&
         !trimmed_selection.empty()) {
 #if !BUILDFLAG(IS_ANDROID)
       tabs::PageContextEligibilityHelper* helper =
@@ -73,15 +74,17 @@ void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
             : mojom::InvocationSource::kWebContentsContextMenuTextSelection);
 
     if (is_page_eligible) {
+      const auto selection_params =
+          glic::GetGlicProviderSpec(profile)
+              .GetTextSelectionContextMenuFeatureParams();
       options.additional_context = glic::AdditionalTabContext(
           CreateTextSelectionContext(tab->GetContents(),
                                      std::u16string(trimmed_selection),
                                      SelectionTextLength::kFull),
           rfh_id, glic::PolicyCheck::kClipboard);
-      options.fre_override =
-          features::kGlicTextSelectionContextMenuMessageFirstFre.Get()
-              ? glic::mojom::FreOverride::kTrustFirstInline
-              : glic::mojom::FreOverride::kTrustFirstClick;
+      options.fre_override = selection_params.message_first_fre
+                                 ? glic::mojom::FreOverride::kTrustFirstInline
+                                 : glic::mojom::FreOverride::kTrustFirstClick;
 
 #if !BUILDFLAG(IS_ANDROID)
       if (auto* observer = GlicSelectionObserver::From(tab)) {
@@ -90,7 +93,7 @@ void GlicContextMenuInvocationHelper::HandleContextualMenuClick(
       }
 #endif
 
-      if (features::kGlicTextSelectionContextMenuAutoSubmit.Get()) {
+      if (selection_params.auto_submit) {
         // The selection itself is sent as additional context, so the prompt
         // only provides the accompanying user message.
         options.prompts.push_back(l10n_util::GetStringUTF8(
@@ -129,56 +132,63 @@ void GlicContextMenuInvocationHelper::HandleSmartSuggestionClick(
 #if !BUILDFLAG(IS_ANDROID)
   content::WebContents* web_contents =
       content::WebContents::FromRenderFrameHost(&frame);
+  if (web_contents) {
+    web_contents = web_contents->GetResponsibleWebContents();
+  }
   if (!web_contents ||
       !GlicEnabling::IsEnabledForProfile(
           Profile::FromBrowserContext(web_contents->GetBrowserContext()))) {
     return;
   }
-  tabs::PageContextEligibilityHelper* helper =
-      tabs::PageContextEligibilityHelper::From(
-          tabs::TabInterface::MaybeGetFromContents(web_contents));
-  if (!helper ||
-      helper->IsPageContextEligible() !=
-          optimization_guide::PageContextEligibilityStatus::kEligible) {
-    return;
-  }
+  // `ShowWithSelection()` checks page context eligibility.
   auto* controller =
       SelectionOverlayController::FromTabWebContents(web_contents);
   if (!controller) {
     return;
   }
 
-  // A text selection takes precedence over an image.
-  // Selections in editable fields are ignored.
+  // A text selection takes precedence over an image or element.
+  // Selections in password fields are ignored.
   gfx::Rect selection_bounds;
   auto interaction_options = selection::InteractionOptions::New();
   ::selection::EntryPoint entry_point =
       ::selection::EntryPoint::kContextMenuPage;
-  if (!params.is_editable &&
-      !base::TrimWhitespace(params.selection_text, base::TRIM_ALL).empty()) {
+  const bool is_password_field =
+      params.form_control_type == blink::mojom::FormControlType::kInputPassword;
+  std::u16string_view trimmed_selection =
+      base::TrimWhitespace(params.selection_text, base::TRIM_ALL);
+  if (!is_password_field && !trimmed_selection.empty()) {
     entry_point = ::selection::EntryPoint::kContextMenuText;
+    if (auto* observer = GlicSelectionObserver::From(
+            tabs::TabInterface::MaybeGetFromContents(web_contents))) {
+      observer->UpdateSelectionStateFromSmartSuggestionContextMenu(
+          std::u16string(trimmed_selection));
+    }
     selection_bounds =
         web_contents->GetTextSelectionBounds(&frame).value_or(gfx::Rect());
     if (!selection_bounds.IsEmpty()) {
       interaction_options->hide_handles = true;
-      interaction_options->disable_multi_select = true;
       interaction_options->skip_intro_animation = true;
     }
-  } else if (params.media_type ==
-                 blink::mojom::ContextMenuDataMediaType::kImage &&
-             params.has_image_contents) {
-    entry_point = ::selection::EntryPoint::kContextMenuImage;
-    if (content::RenderWidgetHostView* view = frame.GetView()) {
-      gfx::Rect view_bounds = view->GetViewBounds();
-      selection_bounds = params.image_bounds;
-      selection_bounds.Intersect(gfx::Rect(view_bounds.size()));
-      selection_bounds.Offset(view_bounds.OffsetFromOrigin());
-      selection_bounds.Intersect(web_contents->GetViewBounds());
+  } else {
+    const bool is_image =
+        params.media_type == blink::mojom::ContextMenuDataMediaType::kImage;
+    if (is_image && params.has_image_contents) {
+      entry_point = ::selection::EntryPoint::kContextMenuImage;
     }
-    if (!selection_bounds.IsEmpty()) {
-      interaction_options->hide_handles = false;
-      interaction_options->disable_multi_select = true;
-      interaction_options->skip_intro_animation = true;
+    const bool is_broken_image = is_image && !params.has_image_contents;
+    if (!is_broken_image && !params.node_bounds.IsEmpty()) {
+      if (content::RenderWidgetHostView* view = frame.GetView()) {
+        gfx::Rect view_bounds = view->GetViewBounds();
+        selection_bounds = params.node_bounds;
+        selection_bounds.Intersect(gfx::Rect(view_bounds.size()));
+        selection_bounds.Offset(view_bounds.OffsetFromOrigin());
+        selection_bounds.Intersect(web_contents->GetViewBounds());
+      }
+      if (!selection_bounds.IsEmpty()) {
+        interaction_options->hide_handles = false;
+        interaction_options->skip_intro_animation = true;
+      }
     }
   }
   controller->ShowWithSelection(&frame, selection_bounds,

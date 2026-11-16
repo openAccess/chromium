@@ -139,7 +139,9 @@ public class TabBuilder {
 
     /**
      * Sets a pre-initialization action to run.
-     * @param action {@link Callback} object to invoke before {@link #initialize()}.
+     *
+     * @param action {@link Callback} object to invoke before {@link TabImpl#initialize} during
+     *     {@link #build()}.
      * @return {@link TabBuilder} creating the Tab.
      */
     public TabBuilder setPreInitializeAction(Callback<Tab> action) {
@@ -254,8 +256,8 @@ public class TabBuilder {
 
     /**
      * Creates a TabBuilder for a new, "frozen" tab from a saved state. This can be used for
-     * background tabs restored on cold start that should be loaded when switched to. initialize()
-     * needs to be called afterwards to complete the second level initialization.
+     * background tabs restored on cold start that should be loaded when switched to. {@link
+     * #build()} needs to be called afterwards to complete initialization.
      *
      * @param profile The Profile associated with the Tab.
      */
@@ -268,8 +270,8 @@ public class TabBuilder {
 
     /**
      * Creates a TabBuilder for a new tab to be loaded lazily. This can be used for tabs opened in
-     * the background that should be loaded when switched to. initialize() needs to be called
-     * afterwards to complete the second level initialization.
+     * the background that should be loaded when switched to. {@link #build()} needs to be called
+     * afterwards to complete initialization.
      *
      * @param profile The Profile associated with the Tab.
      * @param loadUrlParams Params specifying the conditions for loading url.
@@ -284,8 +286,8 @@ public class TabBuilder {
     }
 
     /**
-     * Creates a TabBuilder for a tab from a web contents with no renderer. initialize() needs to be
-     * called afterwards to complete the second level initialization.
+     * Creates a TabBuilder for a tab from a web contents with no renderer. {@link #build()} needs
+     * to be called afterwards to complete initialization.
      *
      * @param profile The Profile associated with the Tab.
      */
@@ -294,8 +296,8 @@ public class TabBuilder {
     }
 
     /**
-     * Creates a TabBuilder for a fresh tab. initialize() needs to be called afterwards to complete
-     * the second level initialization.
+     * Creates a TabBuilder for a fresh tab. {@link #build()} needs to be called afterwards to
+     * complete initialization.
      *
      * @param profile The Profile associated with the Tab.
      * @param initiallyHidden true iff the tab being created is initially in background
@@ -311,7 +313,9 @@ public class TabBuilder {
     /**
      * Creates an instance of a {@link Tab} that is fully detached from any activity.
      *
-     * <p>Also performs general tab initialization as well as detached specifics.
+     * <p>Also performs general tab initialization as well as detached specifics. The tab is given a
+     * placeholder {@link WindowAndroid}, which is destroyed when the tab is attached to another
+     * window or destroyed.
      *
      * @param context The context to use.
      * @param delegateFactory The {@link TabDelegateFactory} to use in the tab.
@@ -351,6 +355,28 @@ public class TabBuilder {
         // Detach the tab from the current activity.
         webContents.setTopLevelNativeWindow(null);
         tab.updateAttachment(null, null);
+
+        // The tab owns the placeholder window until it moves to another window or is destroyed.
+        // Detaching (e.g. when reparenting starts) keeps the placeholder, in case reparenting fails
+        // and the tab goes back to it.
+        tab.addObserver(
+                new TabObserver() {
+                    @Override
+                    public void onActivityAttachmentChanged(
+                            Tab observedTab, @Nullable WindowAndroid newWindow) {
+                        if (newWindow != null && newWindow != window) destroyWindow(observedTab);
+                    }
+
+                    @Override
+                    public void onDestroyed(Tab observedTab) {
+                        destroyWindow(observedTab);
+                    }
+
+                    private void destroyWindow(Tab observedTab) {
+                        observedTab.removeObserver(this);
+                        window.destroy();
+                    }
+                });
 
         return tab;
     }

@@ -276,7 +276,7 @@
       field_template: "primitive",
       // See the definition of the PseudoId enum for details. This field_size
       // must be updated when public IDs are added or removed.
-      field_size: 26,
+      field_size: 25,
       default_value: "kPseudoIdNone",
       type_name: "unsigned",
       reset_on_new_style: true,
@@ -586,6 +586,18 @@
       computed_style_custom_functions: ["getter", "setter"],
       // Highlight Pseudos may use var() references but those must be resolved
       // against the originating element.
+      highlight_style_comes_from_originating_element: true,
+    },
+    {
+      name: "InheritedPrivateVariables",
+      inherited: true,
+      semi_independent_variable: true,
+      field_template: "external",
+      type_name: "StyleInheritedVariables",
+      include_paths: ["third_party/blink/renderer/core/style/style_inherited_variables.h"],
+      default_value: "StyleInheritedVariables()",
+      field_group: "inherited",
+      computed_style_custom_functions: [],
       highlight_style_comes_from_originating_element: true,
     },
     {
@@ -1326,6 +1338,14 @@
     },
     {
       name: "HasSizeContainmentForViewTransitionScope",
+      field_template: "primitive",
+      type_name: "bool",
+      field_group: "*",
+      default_value: "false",
+      invalidate: ["layout"],
+    },
+    {
+      name: "HasLayoutContainmentForOverscrollContainer",
       field_template: "primitive",
       type_name: "bool",
       field_group: "*",

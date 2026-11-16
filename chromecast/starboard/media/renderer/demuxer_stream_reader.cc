@@ -4,8 +4,11 @@
 
 #include "chromecast/starboard/media/renderer/demuxer_stream_reader.h"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/containers/span.h"
@@ -56,8 +59,7 @@ bool IsResamplingNecessary(const ::media::AudioDecoderConfig& audio_config) {
   return (audio_config.codec() == ::media::AudioCodec::kPCM &&
           audio_config.sample_format() !=
               ::media::SampleFormat::kSampleFormatS16) ||
-         audio_config.codec() == ::media::AudioCodec::kPCM_S16BE ||
-         audio_config.codec() == ::media::AudioCodec::kPCM_S24BE;
+         audio_config.codec() == ::media::AudioCodec::kPCM_S16BE;
 }
 
 // Updates the VideoResolution metric. If `client` is not null, it will be
@@ -250,15 +252,48 @@ void DemuxerStreamReader::OnReadBuffer(
     return;
   }
 
+  if (buffer->empty() || !DrmInfoWrapper::VerifySubsamplesMatchSize(*buffer)) {
+    LOG(ERROR) << "Invalid DecoderBuffer size or DRM subsample mapping.";
+    client_->OnError(::media::PIPELINE_ERROR_DECODE);
+    return;
+  }
+
   if (type == StarboardMediaType::kStarboardMediaTypeAudio) {
+    if (audio_sample_info_ &&
+        audio_sample_info_->codec ==
+            StarboardAudioCodec::kStarboardAudioCodecPcm) {
+      if (buffer->decrypt_config() != nullptr) {
+        LOG(ERROR) << "Encrypted PCM audio buffers are not supported.";
+        client_->OnError(::media::PIPELINE_ERROR_DECODE);
+        return;
+      }
+      if (!IsValidPcmBufferSize(
+              StarboardPcmSampleFormat::kStarboardPcmSampleFormatS16,
+              chromium_audio_config_.sample_format(),
+              chromium_audio_config_.channels(), buffer->size())) {
+        LOG(ERROR) << "Invalid PCM audio buffer size: " << buffer->size();
+        client_->OnError(::media::PIPELINE_ERROR_DECODE);
+        return;
+      }
+    }
     buffer = convert_audio_fn_.Run(std::move(buffer));
   }
 
   // StarboardSampleInfo::buffer_size is an int, so reject anything that does
   // not fit rather than silently truncating the value.
-  if (!base::IsValueInRangeForNumericType<int>(buffer->size())) {
+  if (buffer->empty() ||
+      !base::IsValueInRangeForNumericType<int>(buffer->size())) {
     LOG(ERROR) << "DecoderBuffer size (" << buffer->size()
-               << ") exceeds the maximum supported sample size.";
+               << ") is invalid for Starboard sample info.";
+    client_->OnError(::media::PIPELINE_ERROR_DECODE);
+    return;
+  }
+
+  // drm_info must not be deleted until after sample_info is passed to
+  // starboard.
+  DrmInfoWrapper drm_info = DrmInfoWrapper::Create(*buffer);
+  if (!drm_info.VerifySubsamplesMatchSize(buffer->size())) {
+    LOG(ERROR) << "DRM subsample sizes do not match buffer size.";
     client_->OnError(::media::PIPELINE_ERROR_DECODE);
     return;
   }
@@ -269,6 +304,7 @@ void DemuxerStreamReader::OnReadBuffer(
   sample_info.buffer_size = static_cast<int>(buffer->size());
   sample_info.timestamp = buffer->timestamp().InMicroseconds();
   sample_info.side_data = base::span<const StarboardSampleSideData>();
+  sample_info.drm_info = drm_info.GetDrmSampleInfo();
 
   if (type == StarboardMediaType::kStarboardMediaTypeAudio) {
     DCHECK(audio_sample_info_);
@@ -286,11 +322,6 @@ void DemuxerStreamReader::OnReadBuffer(
                     sample_info.video_sample_info.frame_height));
     }
   }
-
-  // drm_info must not be deleted until after sample_info is passed to
-  // starboard.
-  DrmInfoWrapper drm_info = DrmInfoWrapper::Create(*buffer);
-  sample_info.drm_info = drm_info.GetDrmSampleInfo();
 
   // For encrypted buffers, we should not push data to starboard util the
   // buffer's DRM key is available to the CDM. To accomplish this, we check with
@@ -341,20 +372,39 @@ void DemuxerStreamReader::WaitForKey(DrmInfoWrapper drm_info,
   CHECK(!token_to_drm_key_cb_.contains(token))
       << "Got duplicate DRM key token: " << token;
 
-  // Bind the buffer to a closure that will be run when the DRM key is
-  // available.
-  base::OnceClosure handle_buffer_closure =
-      base::BindOnce(handle_buffer_cb_, seek_ticket, std::move(sample_info),
-                     std::move(buffer));
+  // If this is an audio sample with extra_data, keep a copy of the extra_data
+  // alive alongside the callback so that audio_specific_config remains valid
+  // even if chromium_audio_config_ is updated while waiting for the DRM key.
+  std::vector<uint8_t> audio_specific_config;
+  if (sample_info.type == StarboardMediaType::kStarboardMediaTypeAudio &&
+      !chromium_audio_config_.extra_data().empty()) {
+    audio_specific_config = chromium_audio_config_.extra_data();
+    sample_info.audio_sample_info.audio_specific_config_size =
+        audio_specific_config.size();
+    sample_info.audio_sample_info.audio_specific_config =
+        audio_specific_config.data();
+  }
 
-  // Bind the DrmInfoWrapper as well, so that it outlives handle_buffer_closure.
+  // Bind the DrmInfoWrapper and audio_specific_config as well, so that they
+  // outlive handle_buffer_cb_.
   token_to_drm_key_cb_[token] = base::BindOnce(
-      [](base::OnceClosure cb, DrmInfoWrapper drm_info) {
-        // drm_info must outlive this call. Otherwise, the pointers in the
-        // sample_info could point to bad memory.
-        std::move(cb).Run();
+      [](HandleBufferCb handle_buffer_cb, int seek_ticket,
+         StarboardSampleInfo sample_info, scoped_refptr<DecoderBuffer> buffer,
+         DrmInfoWrapper drm_info, std::vector<uint8_t> audio_specific_config) {
+        // drm_info and audio_specific_config must outlive this call. Otherwise,
+        // the pointers in the sample_info could point to bad memory.
+        if (sample_info.type == StarboardMediaType::kStarboardMediaTypeAudio &&
+            !audio_specific_config.empty()) {
+          sample_info.audio_sample_info.audio_specific_config_size =
+              audio_specific_config.size();
+          sample_info.audio_sample_info.audio_specific_config =
+              audio_specific_config.data();
+        }
+        handle_buffer_cb.Run(seek_ticket, std::move(sample_info),
+                             std::move(buffer));
       },
-      std::move(handle_buffer_closure), std::move(drm_info));
+      handle_buffer_cb_, seek_ticket, std::move(sample_info), std::move(buffer),
+      std::move(drm_info), std::move(audio_specific_config));
 
   client_->OnWaiting(::media::WaitingReason::kNoDecryptionKey);
 }
@@ -373,12 +423,13 @@ bool DemuxerStreamReader::UpdateAudioConfig() {
   CHECK(task_runner_->RunsTasksInCurrentSequence());
 
   CHECK(audio_stream_);
-  chromium_audio_config_ = audio_stream_->audio_decoder_config();
+  ::media::AudioDecoderConfig audio_config =
+      audio_stream_->audio_decoder_config();
   LOG(INFO) << "Audio config changed to "
-            << chromium_audio_config_.AsHumanReadableString();
+            << audio_config.AsHumanReadableString();
 
   std::optional<StarboardAudioSampleInfo> new_sample_info =
-      ToStarboardAudioSampleInfo(chromium_audio_config_);
+      ToStarboardAudioSampleInfo(audio_config);
 
   if (!new_sample_info) {
     LOG(ERROR) << "Audio config could not be converted to a starboard config.";
@@ -393,6 +444,11 @@ bool DemuxerStreamReader::UpdateAudioConfig() {
     return false;
   }
 
+  chromium_audio_config_ = std::move(audio_config);
+  new_sample_info->audio_specific_config_size =
+      chromium_audio_config_.extra_data().size();
+  new_sample_info->audio_specific_config =
+      chromium_audio_config_.extra_data().data();
   audio_sample_info_ = std::move(new_sample_info);
   if (IsResamplingNecessary(chromium_audio_config_)) {
     convert_audio_fn_ = base::BindRepeating(

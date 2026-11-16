@@ -40,6 +40,7 @@
 #include "components/page_image_service/image_service_handler.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -137,11 +138,17 @@ content::WebUIDataSource* CreateAndAddHistoryUIHTMLSource(Profile* profile) {
   source->AddLocalizedStrings(kHistorySyncStrings);
 #endif  // !BUILDFLAG(IS_CHROMEOS)
 
+  source->AddBoolean("isBrowsingHistoryCollapsibleDayCardsEnabled",
+                     base::FeatureList::IsEnabled(
+                         history::kBrowsingHistoryCollapsibleDayCards));
   source->AddBoolean(
       "isBrowsingHistoryFilterByActorEnabled",
       base::FeatureList::IsEnabled(history::kBrowsingHistoryFilterByActor));
   source->AddBoolean("isBrowsingHistoryFilterByDeviceEnabled",
                      history::IsBrowsingHistoryFilterByDeviceEnabled());
+  source->AddBoolean(
+      "isBrowsingHistoryFilterByDomainEnabled",
+      base::FeatureList::IsEnabled(history::kBrowsingHistoryFilterByDomain));
   source->AddBoolean(
       "isBrowsingHistoryFilterByTimePeriodEnabled",
       base::FeatureList::IsEnabled(history::kBrowsingHistoryFilterByTime));
@@ -181,6 +188,12 @@ HistoryUIConfig::CreateWebUIController(content::WebUI* web_ui,
 
 #if BUILDFLAG(IS_ANDROID)
 bool HistoryUIConfig::IsWebUIEnabled(content::BrowserContext* browser_context) {
+  // History isn't recorded in Incognito, and HistoryUI doesn't support
+  // off-the-record profiles. Tab.loadUrl() shows a disclaimer popup instead;
+  // this covers navigations that don't go through it.
+  if (browser_context->IsOffTheRecord()) {
+    return false;
+  }
   // LINT.IfChange(AndroidDesktopWebUiHistory)
   return base::android::device_info::is_desktop() &&
          base::FeatureList::IsEnabled(

@@ -4,10 +4,14 @@
 
 #import "ios/chrome/browser/webauthn/model/ios_chrome_passkey_client.h"
 
+#import <utility>
+
 #import "base/apple/foundation_util.h"
 #import "base/containers/span.h"
+#import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
+#import "base/strings/sys_string_conversions.h"
 #import "components/metrics/metrics_pref_names.h"
 #import "components/metrics/metrics_reporting_choice_service.h"
 #import "components/password_manager/core/browser/password_manager_client.h"
@@ -18,6 +22,7 @@
 #import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/account_info.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "components/sync/protocol/webauthn_credential_specifics.pb.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_user_settings.h"
 #import "components/webauthn/core/browser/device_authorization/device_authorization_service.h"
@@ -31,8 +36,6 @@
 #import "ios/chrome/browser/device_reauth/model/reauthentication_service_factory.h"
 #import "ios/chrome/browser/passwords/model/password_tab_helper.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/chrome/browser/shared/model/browser/browser_list.h"
-#import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -45,8 +48,29 @@
 #import "ui/base/l10n/l10n_util.h"
 
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
-#import "ios/chrome/browser/credential_provider/model/credential_provider_browser_agent.h"
+#import "ios/chrome/browser/credential_provider/model/ios_credential_provider_infobar_delegate.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list.h"
+#import "ios/chrome/browser/shared/model/browser/browser_list_factory.h"
+#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #endif
+
+namespace {
+
+// Returns the signed-in primary account info for `profile`, or an empty
+// `CoreAccountInfo` if unavailable.
+CoreAccountInfo GetPrimaryAccountInfo(ProfileIOS* profile) {
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  if (!identity_manager) {
+    return CoreAccountInfo();
+  }
+  return identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+}
+
+}  // namespace
 
 // Helper class to act as a delegate for the PasskeyKeychainProviderBridge.
 @interface IOSChromePasskeyClientBridgeDelegate
@@ -189,9 +213,7 @@ void IOSChromePasskeyClient::FetchTrustedVaultKeys(
 
   [delegate setUserVerificationStatus:user_verification_status];
 
-  CoreAccountInfo account =
-      IdentityManagerFactory::GetForProfile(profile_)->GetPrimaryAccountInfo(
-          signin::ConsentLevel::kSignin);
+  CoreAccountInfo account = GetPrimaryAccountInfo(profile_);
 
   auto completion_block = base::CallbackToBlock(base::BindOnce(
       [](id<IOSPasskeyClientCommands> handler,
@@ -222,8 +244,51 @@ void IOSChromePasskeyClient::FetchDeviceAuthorizationKeys(
     return;
   }
 
-  // TODO(crbug.com/405036154): Show the ReAuth UI if ReAuth is required.
-  service->GetOrFetchKeys(std::move(callback));
+  // TODO(crbug.com/586442316): Explore showing a spinner while fetching keys.
+  service->GetOrFetchKeys(
+      base::BindOnce(&IOSChromePasskeyClient::OnDeviceAuthorizationKeysFetched,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback)));
+}
+
+void IOSChromePasskeyClient::OnDeviceAuthorizationKeysFetched(
+    webauthn::FetchDeviceAuthKeysCallback callback,
+    webauthn::DeviceAuthFetchResult result) {
+  if (result.status() !=
+      webauthn::DeviceAuthFetchResult::Status::kReAuthRequired) {
+    std::move(callback).Run(std::move(result));
+    return;
+  }
+
+  const webauthn::DeviceAuthorizationReAuthParams* reauth_params =
+      result.reauth_params();
+  if (!command_handler_ || !reauth_params || reauth_params->plt().empty()) {
+    std::move(callback).Run(webauthn::DeviceAuthFetchResult());
+    return;
+  }
+
+  NSString* packaged_lookup_token =
+      base::SysUTF8ToNSString(reauth_params->plt());
+  EmbeddedReAuthCallback reauth_callback =
+      base::BindOnce(&IOSChromePasskeyClient::OnEmbeddedReAuthCompleted,
+                     weak_ptr_factory_.GetWeakPtr(), std::move(callback));
+  [command_handler_
+      showPasskeyEmbeddedReAuthWithPackagedLookupToken:packaged_lookup_token
+                                              callback:std::move(
+                                                           reauth_callback)];
+}
+
+void IOSChromePasskeyClient::OnEmbeddedReAuthCompleted(
+    webauthn::FetchDeviceAuthKeysCallback callback,
+    std::string reauth_proof_token) {
+  webauthn::DeviceAuthorizationService* service =
+      IOSDeviceAuthorizationServiceFactory::GetForProfile(profile_);
+  if (!service || reauth_proof_token.empty()) {
+    std::move(callback).Run(webauthn::DeviceAuthFetchResult());
+    return;
+  }
+
+  service->FetchKeysWithReAuthToken(std::move(reauth_proof_token),
+                                    std::move(callback));
 }
 
 void IOSChromePasskeyClient::ShowSuggestionBottomSheet(
@@ -244,17 +309,32 @@ void IOSChromePasskeyClient::ShowInterstitial(InterstitialCallback callback) {
   [command_handler_ showPasskeyIncognitoInterstitial:std::move(callback)];
 }
 
-void IOSChromePasskeyClient::AllowPasskeyCreationInfobar(bool allowed) {
+void IOSChromePasskeyClient::ShowPasskeyCreationInfobar(
+    const sync_pb::WebauthnCredentialSpecifics& passkey) {
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
-  if (!web_state_) {
+  // `web_state_` may have been destroyed while async passkey creation was in
+  // flight, or backgrounded before completion.
+  if (!web_state_ || !web_state_->IsVisible()) {
     return;
   }
 
-  BrowserList* browserList = BrowserListFactory::GetForProfile(profile_);
-  for (Browser* browser :
-       browserList->BrowsersOfType(BrowserList::BrowserType::kAll)) {
-    if (auto* agent = CredentialProviderBrowserAgent::FromBrowser(browser)) {
-      agent->SetInfobarAllowed(allowed);
+  // The primary account may have signed out while key fetching was in flight.
+  CoreAccountInfo account = GetPrimaryAccountInfo(profile_);
+  if (account.email.empty()) {
+    return;
+  }
+
+  BrowserList* browser_list = BrowserListFactory::GetForProfile(profile_);
+  for (Browser* browser : browser_list->BrowsersOfType(
+           BrowserList::BrowserType::kRegularAndIncognito)) {
+    if (browser->GetWebStateList()->GetIndexOfWebState(web_state_.get()) !=
+        WebStateList::kInvalidIndex) {
+      id<SettingsCommands> settings_handler =
+          HandlerForProtocol(browser->GetCommandDispatcher(), SettingsCommands);
+      IOSCredentialProviderInfoBarDelegate::DisplayForWebState(
+          web_state_.get(), std::move(account.email), passkey,
+          settings_handler);
+      return;
     }
   }
 #endif  // BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)

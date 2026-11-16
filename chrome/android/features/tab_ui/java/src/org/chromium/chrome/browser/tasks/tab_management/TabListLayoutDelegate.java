@@ -307,9 +307,7 @@ abstract class TabListLayoutDelegate implements TabGroupObserver, TabObserver {
                 || mMediator.getCurrentTabModelChecked().getTabById(updatedTab.getId()) == null) {
             return;
         }
-        model.set(
-                TabProperties.TITLE,
-                mMediator.getLatestTitleForTabOrGroup(updatedTab, model, /* useDefault= */ true));
+        updateTabTitleAndDescriptions(updatedTab, model);
     }
 
     @Override
@@ -330,6 +328,13 @@ abstract class TabListLayoutDelegate implements TabGroupObserver, TabObserver {
     public void onCrash(Tab tab) {
         if (!mMediator.isTrackingTabs()) return;
         updateLoadingState(tab, false);
+    }
+
+    @Override
+    public void onDestroyed(Tab tab) {
+        // Destroyed tabs must not stay observed (e.g. a closed tab that is still part of a group
+        // card).
+        mMediator.removeObserversForTab(tab);
     }
 
     /**
@@ -353,7 +358,8 @@ abstract class TabListLayoutDelegate implements TabGroupObserver, TabObserver {
     }
 
     /**
-     * Updates the thumbnail and favicon for a tab or its representing card when its URL changes.
+     * Updates the title, accessibility descriptions, thumbnail, and favicon for a tab or its
+     * representing card when its URL changes.
      *
      * @param updatedTab The {@link Tab} whose URL changed.
      */
@@ -368,8 +374,17 @@ abstract class TabListLayoutDelegate implements TabGroupObserver, TabObserver {
         PropertyModel model = getModelFromTabId(updatedTab.getId());
         if (model == null) return;
 
+        updateTabTitleAndDescriptions(updatedTab, model);
         mMediator.updateThumbnailFetcher(model, updatedTab.getId());
         mMediator.updateFaviconForTab(model, updatedTab, null, null);
+    }
+
+    private void updateTabTitleAndDescriptions(Tab updatedTab, PropertyModel model) {
+        model.set(
+                TabProperties.TITLE,
+                mMediator.getLatestTitleForTabOrGroup(updatedTab, model, /* useDefault= */ true));
+        mMediator.updateDescriptionString(model);
+        mMediator.updateActionButtonDescriptionString(updatedTab, model);
     }
 
     /**
@@ -399,6 +414,8 @@ abstract class TabListLayoutDelegate implements TabGroupObserver, TabObserver {
     @Override
     public void onTabPinnedStateChanged(Tab tab, boolean isPinned) {
         if (!mMediator.isTrackingTabs()) return;
+        // The data provider sends PIN_STATE for this; see TabListMediator.updatePinState.
+        if (mMediator.hasDataProvider()) return;
 
         int index = getIndexFromTabId(tab.getId());
         if (index == TabModel.INVALID_TAB_INDEX) return;

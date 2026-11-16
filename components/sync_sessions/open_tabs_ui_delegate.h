@@ -21,12 +21,29 @@ namespace sync_sessions {
 
 class OpenTabsUIDelegate {
  public:
-  // Builds a list of all foreign sessions, ordered from most recent to least
-  // recent. Caller does NOT own SyncedSession objects.
+  // Controls which foreign sessions are returned by `GetAllForeignSessions()`.
+  enum class ForeignSessionFilter {
+    // Includes only visible foreign sessions that have at least one window
+    // with a syncable tab URL (`SyncSessionsClient::ShouldSyncURL()`, which
+    // excludes `chrome://` and New Tab Page URLs), and excludes sessions hidden
+    // via `SessionSyncPrefs` when `kDeviceTabVisibilitySettings` is enabled.
+    kPresentable,
+    // Includes all tracked foreign sessions with a non-empty session name
+    // (maps to `SyncedSessionTracker::NAMED`), including sessions with zero
+    // open tabs, sessions with only non-syncable tabs (e.g., `chrome://` or
+    // New Tab Page URLs), and sessions hidden via `SessionSyncPrefs`. Sessions
+    // with an empty session name are excluded because they represent
+    // incomplete/orphan entries that have only received tab specifics without
+    // a `SessionHeader` entity.
+    kAll,
+  };
+
+  // Builds a list of foreign sessions matching `filter`, ordered from most
+  // recent to least recent. Caller does NOT own `SyncedSession` objects.
   // Returns true if foreign sessions were found, false otherwise.
   virtual bool GetAllForeignSessions(
-      std::vector<raw_ptr<const SyncedSession, VectorExperimental>>*
-          sessions) = 0;
+      std::vector<raw_ptr<const SyncedSession, VectorExperimental>>* sessions,
+      ForeignSessionFilter filter) = 0;
 
   // Returns the timestamp of each foreign session, keyed by its session tag.
   virtual base::flat_map<std::string, base::Time>

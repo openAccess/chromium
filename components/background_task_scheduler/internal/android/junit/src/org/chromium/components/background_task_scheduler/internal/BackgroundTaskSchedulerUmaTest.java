@@ -113,9 +113,9 @@ public class BackgroundTaskSchedulerUmaTest {
                 BackgroundTaskSchedulerUma.BACKGROUND_TASK_FEED_REFRESH,
                 BackgroundTaskSchedulerUma.toUmaEnumValueFromTaskId(TaskIds.FEED_REFRESH_JOB_ID));
         assertEquals(
-                BackgroundTaskSchedulerUma.BACKGROUND_TASK_COMPONENT_UPDATE,
+                BackgroundTaskSchedulerUma.BACKGROUND_TASK_DEPRECATED_COMPONENT_UPDATE,
                 BackgroundTaskSchedulerUma.toUmaEnumValueFromTaskId(
-                        TaskIds.COMPONENT_UPDATE_JOB_ID));
+                        TaskIds.DEPRECATED_COMPONENT_UPDATE_JOB_ID));
         assertEquals(
                 BackgroundTaskSchedulerUma.BACKGROUND_TASK_ONE_SHOT_SYNC_WAKE_UP,
                 BackgroundTaskSchedulerUma.toUmaEnumValueFromTaskId(
@@ -173,7 +173,11 @@ public class BackgroundTaskSchedulerUmaTest {
                 BackgroundTaskSchedulerUma.BACKGROUND_STRUCTURED_METRICS_UPLOAD,
                 BackgroundTaskSchedulerUma.toUmaEnumValueFromTaskId(
                         TaskIds.STRUCTURED_METRICS_UPLOAD_JOB_ID));
-        assertEquals(BackgroundTaskSchedulerUma.BACKGROUND_TASK_COUNT, 40);
+        assertEquals(
+                BackgroundTaskSchedulerUma.BACKGROUND_IN_APP_UPDATE_RESTART,
+                BackgroundTaskSchedulerUma.toUmaEnumValueFromTaskId(
+                        TaskIds.IN_APP_UPDATE_RESTART_JOB_ID));
+        assertEquals(BackgroundTaskSchedulerUma.BACKGROUND_TASK_COUNT, 41);
     }
 
     @Test

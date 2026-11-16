@@ -90,10 +90,10 @@ class CORE_EXPORT OffscreenCanvas final
   void updateElementGeometry(const V8UnionElementOrElementImage*,
                              const UpdateElementGeometryOptions*,
                              ExceptionState&);
-  void clearElementGeometry(const V8UnionElementOrElementImage*);
+  void clearElementGeometry(const V8UnionElementOrElementImage*,
+                            ExceptionState&);
 
   void SetSize(gfx::Size);
-  void RecordTransfer();
 
   static OffscreenCanvas* FromPlaceholderId(ExecutionContext* context,
                                             DOMNodeId canvas_id);
@@ -178,7 +178,7 @@ class CORE_EXPORT OffscreenCanvas final
   };
 
   bool PushFrameIfNeeded();
-  bool PushFrame(scoped_refptr<ExportedCanvasResource>&& frame);
+  bool PushFrame(scoped_refptr<ExportedCanvasResource> frame);
   void DidDraw(const gfx::Rect&) override;
   using CanvasRenderingContextHost::DidDraw;
   bool ShouldAccelerate2dContext() const override;

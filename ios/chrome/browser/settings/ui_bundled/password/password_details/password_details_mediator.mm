@@ -10,6 +10,7 @@
 #import <vector>
 
 #import "base/containers/flat_set.h"
+#import "base/containers/span.h"
 #import "base/memory/raw_ptr.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/time/time.h"
@@ -70,7 +71,9 @@ bool MatchesRealmUsernamePasswordAndCreationTime(
          base::SysNSStringToUTF16(credentialDetails.password) ==
              credential.password &&
          base::SysNSStringToUTF16(credentialDetails.userDisplayName) ==
-             credential.user_display_name &&
+             (credential.IsPasskey()
+                  ? credential.passkey_info->user_display_name
+                  : std::u16string()) &&
          credentialDetails.creationTime == credential.creation_time;
 }
 
@@ -96,17 +99,17 @@ bool CanDisplayCredentialAsCompromised(DetailsContext details_context) {
 bool ShouldDisplayCredentialAsCompromised(
     DetailsContext details_context,
     const CredentialUIEntry& credential,
-    std::vector<password_manager::CredentialUIEntry> insecure_credentials) {
+    base::span<const CredentialUIEntry> insecure_credentials) {
   if (!CanDisplayCredentialAsCompromised(details_context)) {
     return false;
   }
 
-  for (const auto& insecure_credential : insecure_credentials) {
-    if (credential == insecure_credential) {
-      return IsCredentialUnmutedCompromised(insecure_credential);
-    }
-  }
-  return false;
+  auto it = std::ranges::find_if(
+      insecure_credentials, [&credential](const CredentialUIEntry& entry) {
+        return password_manager::AreCredentialsEquivalent(credential, entry);
+      });
+  return it != insecure_credentials.end() &&
+         IsCredentialUnmutedCompromised(*it);
 }
 
 // Whether displaying a credential as muted is supported in the current context.
@@ -130,41 +133,42 @@ bool CanDisplayCredentialAsMuted(DetailsContext details_context) {
 bool ShouldDisplayCredentialAsMuted(
     DetailsContext details_context,
     const CredentialUIEntry& credential,
-    std::vector<password_manager::CredentialUIEntry> insecure_credentials) {
+    base::span<const CredentialUIEntry> insecure_credentials) {
   if (!CanDisplayCredentialAsMuted(details_context)) {
     return false;
   }
 
-  for (const auto& insecure_credential : insecure_credentials) {
-    if (credential == insecure_credential) {
-      return insecure_credential.IsMuted();
-    }
-  }
-  return false;
+  auto it = std::ranges::find_if(
+      insecure_credentials, [&credential](const CredentialUIEntry& entry) {
+        return password_manager::AreCredentialsEquivalent(credential, entry);
+      });
+  return it != insecure_credentials.end() && it->IsMuted();
 }
 
-// Returns true if the credential matches the other arguments.
-bool AreMatchingCredentials(const CredentialUIEntry& credential,
-                            CredentialDetails* credential_details,
-                            NSString* old_username,
-                            NSString* old_user_display_name) {
-  return
-      [credential_details.signonRealm
-          isEqualToString:base::SysUTF8ToNSString(
-                              credential.GetFirstSignonRealm())] &&
-      [old_username
-          isEqualToString:base::SysUTF16ToNSString(credential.username)] &&
-      [old_user_display_name isEqualToString:base::SysUTF16ToNSString(
-                                                 credential.user_display_name)];
+// Returns true if `credential` is a passkey matching the other arguments.
+bool IsMatchingPasskey(const CredentialUIEntry& credential,
+                       CredentialDetails* credential_details,
+                       NSString* old_username,
+                       NSString* old_user_display_name) {
+  return credential.IsPasskey() &&
+         [credential_details.signonRealm
+             isEqualToString:base::SysUTF8ToNSString(
+                                 credential.GetFirstSignonRealm())] &&
+         [old_username
+             isEqualToString:base::SysUTF16ToNSString(credential.username)] &&
+         [old_user_display_name
+             isEqualToString:base::SysUTF16ToNSString(
+                                 credential.passkey_info->user_display_name)];
 }
 
-// Returns true if the credential matches the other arguments.
-bool AreMatchingCredentials(const CredentialUIEntry& credential,
-                            CredentialDetails* credential_details,
-                            NSString* old_username,
-                            NSString* old_password,
-                            NSString* old_note) {
-  return [credential_details.signonRealm
+// Returns true if `credential` is a password matching the other arguments.
+bool IsMatchingPassword(const CredentialUIEntry& credential,
+                        CredentialDetails* credential_details,
+                        NSString* old_username,
+                        NSString* old_password,
+                        NSString* old_note) {
+  return !credential.IsPasskey() &&
+         [credential_details.signonRealm
              isEqualToString:base::SysUTF8ToNSString(
                                  credential.GetFirstSignonRealm())] &&
          [old_username
@@ -396,8 +400,8 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
     it = std::ranges::find_if(
         _credentials, [credentialDetails, oldUsername, oldUserDisplayName](
                           const CredentialUIEntry& credential) {
-          return AreMatchingCredentials(credential, credentialDetails,
-                                        oldUsername, oldUserDisplayName);
+          return IsMatchingPasskey(credential, credentialDetails, oldUsername,
+                                   oldUserDisplayName);
         });
 
     // There should be no reason not to find the credential in the vector of
@@ -405,16 +409,17 @@ bool AreMatchingCredentials(const CredentialUIEntry& credential,
     DCHECK(it != _credentials.end());
 
     originalCredential = *it;
+    CHECK(originalCredential.IsPasskey());
     updatedCredential = originalCredential;
     updatedCredential.username = SysNSStringToUTF16(credentialDetails.username);
-    updatedCredential.user_display_name =
+    updatedCredential.passkey_info->user_display_name =
         SysNSStringToUTF16(credentialDetails.userDisplayName);
   } else if ([credentialDetails.password length] != 0) {
     it = std::ranges::find_if(
         _credentials, [credentialDetails, oldUsername, oldPassword,
                        oldNote](const CredentialUIEntry& credential) {
-          return AreMatchingCredentials(credential, credentialDetails,
-                                        oldUsername, oldPassword, oldNote);
+          return IsMatchingPassword(credential, credentialDetails, oldUsername,
+                                    oldPassword, oldNote);
         });
 
     // There should be no reason not to find the credential in the vector of

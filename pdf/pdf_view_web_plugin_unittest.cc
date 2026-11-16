@@ -2203,6 +2203,32 @@ TEST_F(PdfViewWebPluginTest, FindAndHighlightTextFragmentsNotFound) {
               base::ListValue().Append("hello-,world").Append("world,-hello")));
 }
 
+TEST_F(PdfViewWebPluginTest, HighlightSearchTerms) {
+  EXPECT_CALL(*engine_ptr_,
+              FindAndHighlightSearchTerms(ElementsAre("term1", "term2")))
+      .WillOnce(Return(true));
+  EXPECT_CALL(*engine_ptr_, ScrollToFirstSearchResult(2u));
+
+  plugin_->OnMessage(
+      base::DictValue()
+          .Set("type", "highlightSearchTerms")
+          .Set("searchTerms",
+               base::ListValue().Append("term1").Append("term2"))
+          .Set("startPageIndex", 2));
+}
+
+TEST_F(PdfViewWebPluginTest, HighlightSearchTermsNotFound) {
+  EXPECT_CALL(*engine_ptr_,
+              FindAndHighlightSearchTerms(ElementsAre("term1")))
+      .WillOnce(Return(false));
+  EXPECT_CALL(*engine_ptr_, ScrollToFirstSearchResult).Times(0);
+
+  plugin_->OnMessage(base::DictValue()
+                         .Set("type", "highlightSearchTerms")
+                         .Set("searchTerms", base::ListValue().Append("term1"))
+                         .Set("startPageIndex", 0));
+}
+
 class PdfViewWebPluginWithDocInfoTest
     : public PdfViewWebPluginTest,
       public testing::WithParamInterface<bool> {
@@ -3453,8 +3479,6 @@ class PdfViewWebPluginInkTest
             Return(gfx::Rect(/*x=*/0, /*y=*/0, /*width=*/100, /*height=*/50)));
     ON_CALL(*engine_ptr_, GetPageSizeInPoints)
         .WillByDefault(Return(gfx::SizeF(75.0f, 37.5f)));
-    ON_CALL(*engine_ptr_, GetThumbnailSize)
-        .WillByDefault(Return(gfx::Size(50, 25)));
     ON_CALL(*engine_ptr_, IsPageVisible).WillByDefault(Return(true));
 
     // Draw some trivial strokes.
@@ -3475,20 +3499,6 @@ class PdfViewWebPluginInkTest
         Thumbnail(page_size, /*device_pixel_ratio=*/1));
   }
 
-  // Helper method to test PageIndexFromPoint() and VisiblePageIndexFromPoint().
-  // If `expected_visible`, then VisiblePageIndexFromPoint() should have a page
-  // index of `expected_page_index`, otherwise -1.
-  void TestPageIndexFromPoint(const gfx::PointF& point,
-                              int expected_page_index,
-                              bool expected_visible) {
-    PdfInkModuleClient* ink_module_client =
-        plugin_->ink_module_client_for_testing();
-    EXPECT_EQ(expected_page_index,
-              ink_module_client->PageIndexFromPoint(point));
-    EXPECT_EQ(expected_visible ? expected_page_index : -1,
-              ink_module_client->VisiblePageIndexFromPoint(point));
-  }
-
   void TestInProgressDraw(
       base::FilePath::StringViewType expected_filename,
       const blink::WebInputEvent& down_event,
@@ -3503,8 +3513,6 @@ class PdfViewWebPluginInkTest
         .WillByDefault(Return(kScreenRect));
     ON_CALL(*engine_ptr_, GetPageSizeInPoints)
         .WillByDefault(Return(kPageSizeInPoints));
-    ON_CALL(*engine_ptr_, GetThumbnailSize)
-        .WillByDefault(Return(gfx::Size(50, 50)));
     ON_CALL(*engine_ptr_, IsPageVisible).WillByDefault(Return(true));
 
     UpdatePluginGeometry(/*device_scale=*/1.0f, kScreenRect);
@@ -3777,13 +3785,6 @@ TEST_P(PdfViewWebPluginInkTest, GetSelectionRectMap) {
               ElementsAre(Pair(0, ElementsAre(kRect))));
 }
 
-TEST_P(PdfViewWebPluginInkTest, GetThumbnailSize) {
-  SetUpWithTrivialInkStrokes();
-  EXPECT_EQ(gfx::Size(50, 25),
-            plugin_->ink_module_client_for_testing()->GetThumbnailSize(
-                /*page_index=*/0));
-}
-
 TEST_P(PdfViewWebPluginInkTest, GetZoom) {
   // Demonstrate that default zoom is identity.
   EXPECT_EQ(1.0f, plugin_->ink_module_client_for_testing()->GetZoom());
@@ -3856,7 +3857,7 @@ TEST_P(PdfViewWebPluginInkTest, AddUpdateDiscardStroke) {
                                                           kStrokeId);
 }
 
-TEST_P(PdfViewWebPluginInkTest, PageIndexFromPoint) {
+TEST_P(PdfViewWebPluginInkTest, VisiblePageIndexFromPoint) {
   ON_CALL(*engine_ptr_, GetPageContentsRect)
       .WillByDefault([](int page_index) -> gfx::Rect {
         // Uniform 80x180 page sizes, with a `kVerticalEmptySpace` gap above
@@ -3894,36 +3895,43 @@ TEST_P(PdfViewWebPluginInkTest, PageIndexFromPoint) {
         return page_index >= 0 && page_index <= 1;
       });
 
-  TestPageIndexFromPoint(kScreenTopLeftCorner, -1, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0TopLeftCorner, 0, /*expected_visible=*/true);
-  TestPageIndexFromPoint(kPage0OutsideTopLeftCorner, -1,
-                         /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0BottomRightCorner, 0, true);
-  TestPageIndexFromPoint(kPage0OutsideBottomRightCorner, -1,
-                         /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0Page1Gap, -1, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage1Top, 1, /*expected_visible=*/true);
-  TestPageIndexFromPoint(kPage12Middle, 12, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage12Bottom, 12, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPageBelowLast, -1, /*expected_visible=*/false);
+  PdfInkModuleClient* ink_module_client =
+      plugin_->ink_module_client_for_testing();
+  EXPECT_EQ(-1,
+            ink_module_client->VisiblePageIndexFromPoint(kScreenTopLeftCorner));
+  EXPECT_EQ(0,
+            ink_module_client->VisiblePageIndexFromPoint(kPage0TopLeftCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(
+                    kPage0OutsideTopLeftCorner));
+  EXPECT_EQ(
+      0, ink_module_client->VisiblePageIndexFromPoint(kPage0BottomRightCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(
+                    kPage0OutsideBottomRightCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPage0Page1Gap));
+  EXPECT_EQ(1, ink_module_client->VisiblePageIndexFromPoint(kPage1Top));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPage12Middle));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPage12Bottom));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPageBelowLast));
 
   // Change the visible page to the last page.
   ON_CALL(*engine_ptr_, IsPageVisible)
       .WillByDefault([](int page_index) -> bool { return page_index == 12; });
 
-  TestPageIndexFromPoint(kScreenTopLeftCorner, -1, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0TopLeftCorner, 0, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0OutsideTopLeftCorner, -1,
-                         /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0BottomRightCorner, 0,
-                         /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0OutsideBottomRightCorner, -1,
-                         /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage0Page1Gap, -1, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage1Top, 1, /*expected_visible=*/false);
-  TestPageIndexFromPoint(kPage12Middle, 12, /*expected_visible=*/true);
-  TestPageIndexFromPoint(kPage12Bottom, 12, /*expected_visible=*/true);
-  TestPageIndexFromPoint(kPageBelowLast, -1, /*expected_visible=*/false);
+  EXPECT_EQ(-1,
+            ink_module_client->VisiblePageIndexFromPoint(kScreenTopLeftCorner));
+  EXPECT_EQ(-1,
+            ink_module_client->VisiblePageIndexFromPoint(kPage0TopLeftCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(
+                    kPage0OutsideTopLeftCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(
+                    kPage0BottomRightCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(
+                    kPage0OutsideBottomRightCorner));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPage0Page1Gap));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPage1Top));
+  EXPECT_EQ(12, ink_module_client->VisiblePageIndexFromPoint(kPage12Middle));
+  EXPECT_EQ(12, ink_module_client->VisiblePageIndexFromPoint(kPage12Bottom));
+  EXPECT_EQ(-1, ink_module_client->VisiblePageIndexFromPoint(kPageBelowLast));
 }
 
 TEST_P(PdfViewWebPluginInkTest, IsSelectableTextOrLinkArea) {
@@ -4192,8 +4200,6 @@ TEST_P(PdfViewWebPluginInkTextHighlightTest,
       });
   ON_CALL(*engine_ptr_, GetPageSizeInPoints)
       .WillByDefault(Return(gfx::SizeF(100.0f, 50.0f)));
-  ON_CALL(*engine_ptr_, GetThumbnailSize)
-      .WillByDefault(Return(gfx::Size(50, 25)));
   ON_CALL(*engine_ptr_, IsPageVisible).WillByDefault(Return(true));
 
   // Enter annotation mode and select the highlighter.

@@ -22,8 +22,6 @@ include_rules = [
   "+chrome/browser/extensions/launch_util.h",
   "+chrome/browser/profiles",
   "+chrome/browser/ui/ash",
-  "+chrome/common/chrome_constants.h",
-  "+chrome/common/chrome_paths.h",
   "+chrome/test/base",
 
   # Dependencies outside of //chrome:
@@ -51,6 +49,7 @@ specific_include_rules = {
     "+chrome/browser/ui/browser_window/public/profile_browser_collection.h",
     "+chrome/browser/web_applications/test",
     "+chrome/browser/web_applications/web_app_install_info.h",
+    "+chrome/common/chrome_paths.h",
   ],
   "app_service_app_item_browsertest\\.cc": [
     "+ash/app_list/app_list_controller_impl.h",
@@ -98,5 +97,8 @@ specific_include_rules = {
   "app_list_test_util\\.cc": [
     "+chrome/browser/web_applications/externally_managed_app_manager.h",
     "+chrome/browser/web_applications/test",
+  ],
+  "chrome_app_list_model_updater_browsertest\\.cc": [
+    "+chrome/common/chrome_constants.h",
   ],
 }

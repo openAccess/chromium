@@ -6,10 +6,7 @@
 
 #include <utility>
 
-#include "base/check_is_test.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/task/common/task_annotator.h"
 #include "base/types/optional_ref.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -29,19 +26,19 @@ ResolveHostClientImpl::ResolveHostClientImpl(
     const net::NetworkAnonymizationKey& network_anonymization_key,
     base::optional_ref<const base::UnguessableToken> network_restrictions_id,
     ResolveHostCallback callback,
-    network::mojom::NetworkContext* network_context)
+    network::mojom::NetworkContext* network_context,
+    net::RequestPriority initial_priority)
     : callback_(std::move(callback)) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M159);
 
   network::mojom::ResolveHostParametersPtr parameters =
       network::mojom::ResolveHostParameters::New();
-  parameters->initial_priority = net::RequestPriority::IDLE;
+  parameters->initial_priority = initial_priority;
   parameters->is_speculative = true;
   parameters->purpose =
       network::mojom::ResolveHostParameters::Purpose::kPreconnect;
   parameters->network_restrictions_id =
       network_restrictions_id.CopyAsOptional();
-  resolve_host_start_time_ = base::TimeTicks::Now();
   // Intentionally using a SchemeHostPort. Resolving http:// scheme host will
   // fail when a HTTPS resource record exists due to DNS-based scheme upgrade
   // functionality.
@@ -61,28 +58,6 @@ void ResolveHostClientImpl::OnComplete(
     const net::ResolveErrorInfo& resolve_error_info,
     const net::AddressList& resolved_addresses,
     const net::HostResolverEndpointResults& alternative_endpoints) {
-  UMA_HISTOGRAM_TIMES("Navigation.Preconnect.ResolveHostLatency",
-                      base::TimeTicks::Now() - resolve_host_start_time_);
-
-  auto* task = base::TaskAnnotator::CurrentTaskForThread();
-  if (!task) {
-    // The `task` can be null in base::ScopedMockTimeMessageLoopTaskRunner scope
-    // in test.
-    CHECK_IS_TEST();
-  }
-  // As this method is executed as a callback from a Mojo call, it should be
-  // executed via RunTask() and thus have a non-delayed PendingTask associated
-  // with it.
-  CHECK(!task || task->delayed_run_time.is_null(), base::NotFatalUntil::M159);
-
-  // The task will have a null |queue_time| if run synchronously (this happens
-  // in unit tests, for example).
-  base::TimeTicks queue_time = (task && !task->queue_time.is_null())
-                                   ? task->queue_time
-                                   : base::TimeTicks::Now();
-  UMA_HISTOGRAM_TIMES("Navigation.Preconnect.ResolveHostCallbackQueueingTime",
-                      base::TimeTicks::Now() - queue_time);
-
   std::move(callback_).Run(result == net::OK);
 }
 

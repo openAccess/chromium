@@ -135,6 +135,7 @@ class ResourceFetcherTestBase : public testing::Test {
   }
 
   void TearDown() override {
+    context_lifecycle_notifier_.Reset();
     // ThreadState::CollectAllGarbageForTesting() must be called before
     // resetting `scoped_memory_cache_`. This ensures that any garbage objects
     // (like `ResourceFetcher` which clears preloads in its pre-finalizer) are
@@ -227,13 +228,13 @@ class ResourceFetcherTestBase : public testing::Test {
   ResourceFetcher* CreateFetcher(
       const TestResourceFetcherProperties& properties,
       FetchContext* context) {
-    return MakeGarbageCollected<ResourceFetcher>(ResourceFetcherInit(
-        properties.MakeDetachable(), context, CreateTaskRunner(),
-        CreateTaskRunner(),
-        MakeGarbageCollected<TestLoaderFactory>(
-            platform_->GetURLLoaderMockFactory()),
-        MakeGarbageCollected<MockContextLifecycleNotifier>(),
-        nullptr /* back_forward_cache_loader_helper */));
+    return MakeGarbageCollected<ResourceFetcher>(
+        ResourceFetcherInit(properties.MakeDetachable(), context,
+                            CreateTaskRunner(), CreateTaskRunner(),
+                            MakeGarbageCollected<TestLoaderFactory>(
+                                platform_->GetURLLoaderMockFactory()),
+                            context_lifecycle_notifier_.Notifier(),
+                            nullptr /* back_forward_cache_loader_helper */));
   }
 
   ResourceFetcher* CreateFetcher(
@@ -259,6 +260,7 @@ class ResourceFetcherTestBase : public testing::Test {
   base::test::TaskEnvironment task_environment_;
   ScopedTestingPlatformSupport<FetchTestingPlatformSupport> platform_;
   std::unique_ptr<ScopedMemoryCacheForTesting> scoped_memory_cache_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 class ResourceFetcherTest : public ResourceFetcherTestBase,
@@ -577,13 +579,16 @@ class RequestSameResourceOnComplete
     : public GarbageCollected<RequestSameResourceOnComplete>,
       public RawResourceClient {
  public:
-  RequestSameResourceOnComplete(URLLoaderMockFactory* mock_factory,
-                                FetchParameters& params,
-                                ResourceFetcher* fetcher)
+  RequestSameResourceOnComplete(
+      URLLoaderMockFactory* mock_factory,
+      FetchParameters& params,
+      ResourceFetcher* fetcher,
+      ContextLifecycleNotifier* context_lifecycle_notifier)
       : mock_factory_(mock_factory),
         source_origin_(fetcher->GetProperties()
                            .GetFetchClientSettingsObject()
-                           .GetSecurityOrigin()) {
+                           .GetSecurityOrigin()),
+        context_lifecycle_notifier_(context_lifecycle_notifier) {
     MockResource::Fetch(params, fetcher, this);
   }
 
@@ -597,7 +602,7 @@ class RequestSameResourceOnComplete
         base::MakeRefCounted<scheduler::FakeTaskRunner>(),
         base::MakeRefCounted<scheduler::FakeTaskRunner>(),
         MakeGarbageCollected<TestLoaderFactory>(mock_factory_),
-        MakeGarbageCollected<MockContextLifecycleNotifier>(),
+        context_lifecycle_notifier_,
         nullptr /* back_forward_cache_loader_helper */));
     ResourceRequest resource_request2(GetResource()->Url());
     resource_request2.SetCacheMode(mojom::FetchCacheMode::kValidateCache);
@@ -611,6 +616,7 @@ class RequestSameResourceOnComplete
   bool NotifyFinishedCalled() const { return notify_finished_called_; }
 
   void Trace(Visitor* visitor) const override {
+    visitor->Trace(context_lifecycle_notifier_);
     RawResourceClient::Trace(visitor);
   }
 
@@ -620,6 +626,7 @@ class RequestSameResourceOnComplete
   raw_ptr<URLLoaderMockFactory> mock_factory_;
   bool notify_finished_called_ = false;
   scoped_refptr<const SecurityOrigin> source_origin_;
+  Member<ContextLifecycleNotifier> context_lifecycle_notifier_;
 };
 
 TEST_P(ResourceFetcherTest, DISABLED_RevalidateWhileFinishingLoading) {
@@ -643,9 +650,11 @@ TEST_P(ResourceFetcherTest, DISABLED_RevalidateWhileFinishingLoading) {
                               AtomicString("no-cache"));
   FetchParameters fetch_params1 =
       FetchParameters::CreateForTest(std::move(request1));
+  ScopedMockContextLifecycleNotifier notifier2;
   Persistent<RequestSameResourceOnComplete> client =
       MakeGarbageCollected<RequestSameResourceOnComplete>(
-          platform_->GetURLLoaderMockFactory(), fetch_params1, fetcher1);
+          platform_->GetURLLoaderMockFactory(), fetch_params1, fetcher1,
+          notifier2.Notifier());
   platform_->GetURLLoaderMockFactory()->ServeAsynchronousRequests();
   EXPECT_TRUE(client->NotifyFinishedCalled());
 }
@@ -771,7 +780,7 @@ class ScopedMockRedirectRequester {
         properties->MakeDetachable(), context_, task_runner_,
         base::MakeRefCounted<scheduler::FakeTaskRunner>(),
         MakeGarbageCollected<TestLoaderFactory>(mock_factory_),
-        MakeGarbageCollected<MockContextLifecycleNotifier>(),
+        context_lifecycle_notifier_.Notifier(),
         nullptr /* back_forward_cache_loader_helper */));
     ResourceRequest resource_request(url);
     resource_request.SetRequestContext(
@@ -786,6 +795,7 @@ class ScopedMockRedirectRequester {
   URLLoaderMockFactory* mock_factory_;
   MockFetchContext* context_;
   const scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+  ScopedMockContextLifecycleNotifier context_lifecycle_notifier_;
 };
 
 TEST_P(ResourceFetcherTest, SynchronousRequest) {
@@ -1714,7 +1724,7 @@ TEST_P(ResourceFetcherTest, Detach) {
                           CreateTaskRunner(), CreateTaskRunner(),
                           MakeGarbageCollected<TestLoaderFactory>(
                               platform_->GetURLLoaderMockFactory()),
-                          MakeGarbageCollected<MockContextLifecycleNotifier>(),
+                          context_lifecycle_notifier_.Notifier(),
                           nullptr /* back_forward_cache_loader_helper */));
 
   EXPECT_EQ(&properties, &fetcher->GetProperties());
@@ -2820,6 +2830,136 @@ TEST_P(ResourceFetcherTest, IsolatedWorldResourceWithIsolatedWorldCsp) {
   EXPECT_FALSE(resource->GetResourceRequest().GetSkipServiceWorker());
   EXPECT_EQ(resource->Options().TargetWorld(), isolated_world);
   EXPECT_EQ(resource->Options().WorldForCsp(), isolated_world);
+}
+
+namespace {
+
+class TestImageResource final : public Resource {
+ public:
+  TestImageResource(const ResourceRequest& request,
+                    const ResourceLoaderOptions& options,
+                    base::OnceClosure on_update_resource_info)
+      : Resource(request, ResourceType::kImage, options),
+        on_update_resource_info_(std::move(on_update_resource_info)) {}
+
+  void SetAboveSpeculativeDecodeSizeThreshold(bool value) {
+    above_threshold_ = value;
+  }
+
+  bool IsAboveSpeculativeDecodeSizeThreshold() const override {
+    return above_threshold_;
+  }
+
+  void UpdateResourceInfoFromObservers() override {
+    if (on_update_resource_info_) {
+      std::move(on_update_resource_info_).Run();
+    }
+  }
+
+ private:
+  bool above_threshold_ = false;
+  base::OnceClosure on_update_resource_info_;
+};
+
+class TestImageResourceFactory final : public NonTextResourceFactory {
+ public:
+  explicit TestImageResourceFactory(
+      base::OnceClosure on_update_resource_info = base::NullCallback())
+      : NonTextResourceFactory(ResourceType::kImage),
+        on_update_resource_info_(std::move(on_update_resource_info)) {}
+
+  Resource* Create(const ResourceRequest& request,
+                   const ResourceLoaderOptions& options) const override {
+    return MakeGarbageCollected<TestImageResource>(
+        request, options, std::move(on_update_resource_info_));
+  }
+
+ private:
+  mutable base::OnceClosure on_update_resource_info_;
+};
+
+}  // namespace
+
+// Regression test for crbug.com/576850257.
+TEST_P(ResourceFetcherTest, UpdateImagePrioritiesWithAdditionalRequests) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(features::kSpeculativeImageDecodes);
+
+  scoped_refptr<const SecurityOrigin> source_origin =
+      SecurityOrigin::CreateUniqueOpaque();
+  auto* fetcher = CreateFetcher(
+      *MakeGarbageCollected<TestResourceFetcherProperties>(source_origin));
+
+  auto fetch_pending_image = [&](const KURL& url,
+                                 base::OnceClosure on_update_info) {
+    RegisterMockedURLLoad(url);
+    ResourceRequest request(url);
+    request.SetRequestContext(mojom::blink::RequestContextType::IMAGE);
+    FetchParameters params = FetchParameters::CreateForTest(std::move(request));
+    return fetcher->RequestResource(
+        params, TestImageResourceFactory(std::move(on_update_info)), nullptr);
+  };
+
+  auto fetch_cached_image = [&](const KURL& url,
+                                base::OnceClosure on_update_info) {
+    ResourceRequest request(url);
+    request.SetRequestorOrigin(source_origin);
+    request.SetRequestContext(mojom::blink::RequestContextType::IMAGE);
+    auto* cached = MakeGarbageCollected<TestImageResource>(
+        request, ResourceLoaderOptions(/*world_for_csp=*/nullptr),
+        std::move(on_update_info));
+    ResourceResponse response(url);
+    response.SetHttpStatusCode(200);
+    response.SetHttpHeaderField(http_names::kCacheControl,
+                                AtomicString("max-age=3600"));
+    cached->ResponseReceived(response);
+    cached->FinishForTest();
+    cached->SetAboveSpeculativeDecodeSizeThreshold(true);
+    AddResourceToMemoryCache(cached);
+    FetchParameters params = FetchParameters::CreateForTest(std::move(request));
+    return fetcher->RequestResource(params, TestImageResourceFactory(),
+                                    nullptr);
+  };
+
+  // Both callbacks below insert 128 entries into the set that is being
+  // iterated. With DCHECKs on, any insertion during the iteration is caught by
+  // the `HashTable` iterator's modification check. Without DCHECKs, the count
+  // is chosen so that the set grows and rehashes during the iteration; the old
+  // backing store is then freed, which ASan reports as use-after-poison. Keep
+  // the count large enough if the number of entries set up before the
+  // iteration changes.
+
+  // Trigger additional cached image requests when updating candidate images.
+  int cached_update_count = 0;
+  KURL initial_cached_url("http://127.0.0.1:8000/cached_initial.png");
+  fetch_cached_image(
+      initial_cached_url, base::BindLambdaForTesting([&]() {
+        ++cached_update_count;
+        for (int i = 0; i < 128; ++i) {
+          KURL extra_url(StrCat({"http://127.0.0.1:8000/cached_extra_",
+                                 String::Number(i), ".png"}));
+          fetch_cached_image(extra_url, base::NullCallback());
+        }
+      }));
+
+  // Trigger additional pending image requests when updating not-loaded images.
+  int pending_update_count = 0;
+  KURL initial_pending_url("http://127.0.0.1:8000/pending_initial.png");
+  Resource* pending_resource = fetch_pending_image(
+      initial_pending_url, base::BindLambdaForTesting([&]() {
+        ++pending_update_count;
+        for (int i = 0; i < 128; ++i) {
+          KURL extra_url(StrCat({"http://127.0.0.1:8000/pending_extra_",
+                                 String::Number(i), ".png"}));
+          fetch_pending_image(extra_url, base::NullCallback());
+        }
+      }));
+  ASSERT_TRUE(pending_resource);
+  EXPECT_TRUE(pending_resource->IsLoading());
+
+  fetcher->UpdateImagePrioritiesAndSpeculativeDecodes();
+  EXPECT_EQ(cached_update_count, 1);
+  EXPECT_EQ(pending_update_count, 1);
 }
 
 }  // namespace blink

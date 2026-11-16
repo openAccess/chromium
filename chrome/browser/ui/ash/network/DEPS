@@ -17,7 +17,6 @@ include_rules = [
   "+chrome/browser/ui/dialogs/browser_dialogs.h",
   "+chrome/browser/ui/webui/ash/cellular_setup",
   "+chrome/browser/ui/webui/ash/floating_workspace",
-  "+chrome/grit",
 
   "+ui/message_center/message_center.h",
 ]
@@ -37,6 +36,7 @@ specific_include_rules = {
     "+chrome/browser/ui/navigator/browser_navigator_params.h",
   ],
   ".*_unittest\\.cc": [
+    "+chrome/browser/ash/login/test/chrome_user_session_test_environment_delegate.h",
     "+chrome/browser/ash/login/users",
   ],
 }

@@ -34,7 +34,6 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.educational_tip.cards.HistorySyncPromoCoordinator;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -162,7 +161,6 @@ public class EducationalTipModuleMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
     public void testShowSetupList_EnhancedSafeBrowsingPromo() {
         // Test showing enhance safe browsing promo card.
         testShowModuleImpl(
@@ -173,7 +171,6 @@ public class EducationalTipModuleMediatorUnitTest {
     }
 
     @Test
-    @EnableFeatures({ChromeFeatureList.ANDROID_SETUP_LIST})
     public void testShowSetupList_AddressBarPlacementPromo() {
         // Test showing address bar placement promo card.
         testShowModuleImpl(
@@ -389,22 +386,6 @@ public class EducationalTipModuleMediatorUnitTest {
 
         // verify it triggers a profile check as part of updateModule().
         verify(mActionDelegate).getProfileSupplier();
-    }
-
-    @Test
-    public void testBottomSheetObserver_DefaultBrowser_SkipsOnInteractionComplete() {
-        mEducationalTipModuleMediator.setModuleTypeForTesting(ModuleType.DEFAULT_BROWSER_PROMO);
-        verify(mBottomSheetController).addObserver(mBottomSheetObserverCaptor.capture());
-
-        // Simulate sheet dismissal with interaction complete (clicked button).
-        mBottomSheetObserverCaptor
-                .getValue()
-                .onSheetStateChanged(
-                        BottomSheetController.SheetState.HIDDEN,
-                        BottomSheetController.StateChangeReason.INTERACTION_COMPLETE);
-
-        // verify updateModule was NOT called (profile supplier never accessed).
-        verify(mActionDelegate, never()).getProfileSupplier();
     }
 
     private void testShowModuleImpl(

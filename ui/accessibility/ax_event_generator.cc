@@ -119,7 +119,7 @@ bool AXEventGenerator::EventParams::operator<(const EventParams& rhs) const {
 AXEventGenerator::TargetedEvent::TargetedEvent(AXNodeID node_id,
                                                const EventParams& event_params)
     : node_id(node_id), event_params(event_params) {
-  DCHECK_NE(node_id, kInvalidAXNodeID);
+  CHECK_NE(node_id, kInvalidAXNodeID, base::NotFatalUntil::M163);
 }
 
 AXEventGenerator::TargetedEvent::~TargetedEvent() = default;
@@ -173,7 +173,7 @@ AXEventGenerator::Iterator AXEventGenerator::Iterator::operator++(int) {
 }
 
 AXEventGenerator::TargetedEvent AXEventGenerator::Iterator::operator*() const {
-  DCHECK(map_iter_ != map_end_iter_);
+  CHECK(map_iter_ != map_end_iter_, base::NotFatalUntil::M163);
   CHECK(set_iter_ != map_iter_->second.end());
   return AXEventGenerator::TargetedEvent(map_iter_->first, *set_iter_);
 }
@@ -218,7 +218,8 @@ AXEventGenerator::~AXEventGenerator() = default;
 
 void AXEventGenerator::SetTree(AXTree* new_tree) {
   if (tree_) {
-    DCHECK(tree_event_observation_.IsObservingSource(tree_.get()));
+    CHECK(tree_event_observation_.IsObservingSource(tree_.get()),
+          base::NotFatalUntil::M163);
     tree_event_observation_.Reset();
   }
   tree_ = new_tree;
@@ -268,7 +269,7 @@ void AXEventGenerator::ClearEvents() {
 }
 
 void AXEventGenerator::AddEvent(AXNode* node, AXEventGenerator::Event event) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
 
   if (node->GetRole() == ax::mojom::Role::kInlineTextBox)
     return;
@@ -324,7 +325,7 @@ void AXEventGenerator::OnIgnoredWillChange(
 void AXEventGenerator::OnNodeDataChanged(AXTree* tree,
                                          const AXNodeData& old_node_data,
                                          const AXNodeData& new_node_data) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   AXNode* node = tree_->GetFromId(new_node_data.id);
   if (!node)
     return;
@@ -387,7 +388,7 @@ void AXEventGenerator::OnRoleChanged(AXTree* tree,
                                      AXNode* node,
                                      ax::mojom::Role old_role,
                                      ax::mojom::Role new_role) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   CHECK(!IsRoleFinal(new_role) && !IsRoleFinal(old_role));
 
   AddEvent(node, ui::IsAlert(new_role) ? Event::ALERT : Event::ROLE_CHANGED);
@@ -396,7 +397,7 @@ void AXEventGenerator::OnRoleChanged(AXTree* tree,
 void AXEventGenerator::OnIgnoredChanged(AXTree* tree,
                                         AXNode* node,
                                         bool is_ignored_new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   AXNode* unignored_parent = node->GetUnignoredParent();
   DUMP_WILL_BE_CHECK(unignored_parent)
@@ -459,7 +460,7 @@ void AXEventGenerator::OnStateChanged(AXTree* tree,
                                       AXNode* node,
                                       ax::mojom::State state,
                                       bool new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   DCHECK_NE(state, ax::mojom::State::kIgnored)
       << "The ignored state should be handled in "
          "`AXEventGenerator::OnIgnoredChanged` and not in this method.";
@@ -509,7 +510,7 @@ void AXEventGenerator::OnStringAttributeChanged(AXTree* tree,
                                                 ax::mojom::StringAttribute attr,
                                                 const std::string& old_value,
                                                 const std::string& new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   switch (attr) {
     case ax::mojom::StringAttribute::kAccessKey:
@@ -613,7 +614,7 @@ void AXEventGenerator::OnIntAttributeChanged(AXTree* tree,
                                              ax::mojom::IntAttribute attr,
                                              int32_t old_value,
                                              int32_t new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   switch (attr) {
     case ax::mojom::IntAttribute::kActivedescendantId:
@@ -726,7 +727,7 @@ void AXEventGenerator::OnFloatAttributeChanged(AXTree* tree,
                                                ax::mojom::FloatAttribute attr,
                                                float old_value,
                                                float new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   switch (attr) {
     case ax::mojom::FloatAttribute::kMaxValueForRange:
@@ -766,7 +767,7 @@ void AXEventGenerator::OnBoolAttributeChanged(AXTree* tree,
                                               AXNode* node,
                                               ax::mojom::BoolAttribute attr,
                                               bool new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   switch (attr) {
     case ax::mojom::BoolAttribute::kBusy:
@@ -801,7 +802,7 @@ void AXEventGenerator::OnIntListAttributeChanged(
     ax::mojom::IntListAttribute attr,
     const std::vector<int32_t>& old_value,
     const std::vector<int32_t>& new_value) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 
   switch (attr) {
     case ax::mojom::IntListAttribute::kControlsIds:
@@ -931,8 +932,8 @@ void AXEventGenerator::OnIntListAttributeChanged(
 void AXEventGenerator::OnTreeDataChanged(AXTree* tree,
                                          const AXTreeData& old_tree_data,
                                          const AXTreeData& new_tree_data) {
-  DCHECK_EQ(tree_, tree);
-  DCHECK(tree->root());
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
+  CHECK(tree->root(), base::NotFatalUntil::M163);
 
   if (new_tree_data.title != old_tree_data.title)
     AddEvent(tree->root(), Event::DOCUMENT_TITLE_CHANGED);
@@ -942,9 +943,13 @@ void AXEventGenerator::OnTreeDataChanged(AXTree* tree,
           old_tree_data.sel_anchor_object_id ||
       new_tree_data.sel_anchor_offset != old_tree_data.sel_anchor_offset ||
       new_tree_data.sel_anchor_affinity != old_tree_data.sel_anchor_affinity ||
+      new_tree_data.sel_anchor_offset_type !=
+          old_tree_data.sel_anchor_offset_type ||
       new_tree_data.sel_focus_object_id != old_tree_data.sel_focus_object_id ||
       new_tree_data.sel_focus_offset != old_tree_data.sel_focus_offset ||
-      new_tree_data.sel_focus_affinity != old_tree_data.sel_focus_affinity) {
+      new_tree_data.sel_focus_affinity != old_tree_data.sel_focus_affinity ||
+      new_tree_data.sel_focus_offset_type !=
+          old_tree_data.sel_focus_offset_type) {
     AddEvent(tree->root(), Event::DOCUMENT_SELECTION_CHANGED);
 
     // A special event is also fired internally for selection changes in text
@@ -965,17 +970,17 @@ void AXEventGenerator::OnTreeDataChanged(AXTree* tree,
 }
 
 void AXEventGenerator::OnSubtreeWillBeDeleted(AXTree* tree, AXNode* node) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   FireValueInTextFieldChangedEventIfNecessary(tree, node);
   FireLiveRegionEvents(node, /* removal */ true);
 }
 
 void AXEventGenerator::OnNodeWillBeReparented(AXTree* tree, AXNode* node) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
 }
 
 void AXEventGenerator::OnSubtreeWillBeReparented(AXTree* tree, AXNode* node) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   // Capture the current live region root ID so we can detect subtrees that
   // are moved within the same live region and not announce them.
   if (node->data().IsStructuralElementContainedInActiveLiveRegion()) {
@@ -990,17 +995,17 @@ void AXEventGenerator::OnSubtreeWillBeReparented(AXTree* tree, AXNode* node) {
 }
 
 void AXEventGenerator::OnNodeDeleted(AXTree* tree, AXNodeID node_id) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   tree_events_.erase(node_id);
 }
 
 void AXEventGenerator::OnNodeReparented(AXTree* tree, AXNode* node) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   AddEvent(node, Event::PARENT_CHANGED);
 }
 
 void AXEventGenerator::OnNodeCreated(AXTree* tree, AXNode* node) {
-  DCHECK_EQ(tree_, tree);
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
   // Note: now that AXEventGenerator is part of AXTreeManager, this is being
   // called before BrowserAccessibilityManager::OnNodeCreated() is called,
   // where things used to be the other way around. That means that the new
@@ -1041,11 +1046,11 @@ void AXEventGenerator::OnAtomicUpdateFinished(
     AXTree* tree,
     bool root_changed,
     const std::vector<Change>& changes) {
-  DCHECK_EQ(tree_, tree);
-  DCHECK(tree->root());
+  CHECK_EQ(tree_, tree, base::NotFatalUntil::M163);
+  CHECK(tree->root(), base::NotFatalUntil::M163);
 
   for (const auto& change : changes) {
-    DCHECK(change.node);
+    CHECK(change.node, base::NotFatalUntil::M163);
 
     if (change.type == SUBTREE_CREATED) {
       AddEvent(change.node, Event::SUBTREE_CREATED);
@@ -1061,12 +1066,10 @@ void AXEventGenerator::OnAtomicUpdateFinished(
       continue;
     }
 
-    // This catches menus inserted already visible; menus shown later are
-    // handled when their ignored state changes.
-    if (!root_changed && change.node->GetRole() == ax::mojom::Role::kMenu &&
-        !change.node->IsIgnored()) {
-      AddEvent(change.node, Event::MENU_POPUP_START);
-    }
+    // Do not fire MENU_POPUP_START merely because a menu is created. Repeated
+    // attempts have caused screen readers to enter menu mode while focus
+    // remains elsewhere, breaking web app navigation. See crbug.com/1305443,
+    // crbug.com/1327427, crbug.com/1327443, and crbug.com/549903216.
 
     if (change.node->GetBoolAttribute(ax::mojom::BoolAttribute::kSelected) &&
         (change.type == SUBTREE_CREATED || change.type == NODE_CREATED)) {
@@ -1256,7 +1259,7 @@ void AXEventGenerator::TrimEventsDueToAncestorIgnoredChanged(
     AXNode* node,
     std::map<AXNode*, IgnoredChangedStatesBitset>&
         ancestor_ignored_changed_map) {
-  DCHECK(node);
+  CHECK(node, base::NotFatalUntil::M163);
 
   // Recursively compute and cache ancestor ignored changed results in
   // |ancestor_ignored_changed_map|, if |node|'s ancestors have become ignored
@@ -1355,7 +1358,7 @@ void AXEventGenerator::PostprocessEvents() {
 
     // TODO(http://crbug.com/2279799): remove all of the cases that could
     // add a null node to |tree_events|.
-    DCHECK(node);
+    CHECK(node, base::NotFatalUntil::M163);
     if (!node)
       continue;
 

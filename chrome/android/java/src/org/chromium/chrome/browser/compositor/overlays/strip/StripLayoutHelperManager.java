@@ -28,11 +28,14 @@ import android.view.animation.Interpolator;
 import androidx.annotation.ColorInt;
 import androidx.annotation.VisibleForTesting;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.Callback;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.Log;
 import org.chromium.base.MathUtils;
 import org.chromium.base.TimeUtils;
+import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
@@ -101,6 +104,9 @@ import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabObserver;
 import org.chromium.chrome.browser.tabstrip.StripVisibilityState;
 import org.chromium.chrome.browser.tabstrip.TabStripSceneLayerHolder;
+import org.chromium.chrome.browser.tabwindow.TabWindowManager;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupHoverCardPresenter;
+import org.chromium.chrome.browser.tasks.tab_management.TabGroupHoverCardView;
 import org.chromium.chrome.browser.tasks.tab_management.TabGroupListBottomSheetCoordinator;
 import org.chromium.chrome.browser.tasks.tab_management.TabHoverCardView;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
@@ -252,11 +258,12 @@ public class StripLayoutHelperManager
     // Non-null only when the WebUI new tab button is enabled.
     private @Nullable NtbWebUiCoordinator mNtbWebUiCoordinator;
     private final ViewStub mTabHoverCardViewStub;
+    private final ViewStub mTabGroupHoverCardViewStub;
     private float mLastVisibleViewportOffsetY;
     private @Nullable OmniboxStub mOmniboxStub;
     private final Callback<String> mUrlTextChangeListener =
             (ignored) -> {
-                getActiveStripLayoutHelper().clearTabHoverState();
+                getActiveStripLayoutHelper().clearHoverState();
             };
     private float mSceneLayerYOffset;
     private float mSceneLayerVisibleHeight; // Used during height transition.
@@ -327,6 +334,7 @@ public class StripLayoutHelperManager
 
         @Override
         public void click(float x, float y, int buttons, int modifiers) {
+            // Keep getClickedViewForTesting() in sync.
             if (DragDropGlobalState.hasValue()) {
                 return;
             }
@@ -367,9 +375,12 @@ public class StripLayoutHelperManager
                 return;
             }
 
-            // Inflate the hover card ViewStub if not already inflated.
+            // Inflate the hover card ViewStubs if not already inflated.
             if (mTabHoverCardViewStub.getParent() != null) {
                 mTabHoverCardViewStub.inflate();
+            }
+            if (mTabGroupHoverCardViewStub.getParent() != null) {
+                mTabGroupHoverCardViewStub.inflate();
             }
 
             // Run whichever coordinator is losing hover before the one gaining hover so that
@@ -474,6 +485,7 @@ public class StripLayoutHelperManager
      *     tab drag and drop.
      * @param controlContainerView View passed to {@link TabStripDragHandler} for drag and drop.
      * @param tabHoverCardViewStub The ViewStub representing the strip tab hover card.
+     * @param tabGroupHoverCardViewStub The ViewStub representing the strip tab group hover card.
      * @param tabContentManagerSupplier Supplier of the manager providing tab thumbnail snapshots.
      * @param browserControlsStateProvider BrowserControlsStateProvider for drag drop.
      * @param windowAndroid The {@link WindowAndroid} instance to access Activity.
@@ -499,6 +511,7 @@ public class StripLayoutHelperManager
      *     registering menu or keyboard action handlers.
      * @param activityCreationUptimeMs The {@link SystemClock#uptimeMillis()} timestamp when the
      *     hosting activity was created, or 0 if unavailable.
+     * @param tabWindowManagerSupplier Supplier for the {@link TabWindowManager}.
      */
     // TODO(crbug.com/484116872): Suppressing to observe SharedPreferences, which is discouraged;
     // should use another messaging channel instead.
@@ -515,6 +528,7 @@ public class StripLayoutHelperManager
             DragAndDropDelegate dragDropDelegate,
             View controlContainerView,
             ViewStub tabHoverCardViewStub,
+            ViewStub tabGroupHoverCardViewStub,
             MonotonicObservableSupplier<TabContentManager> tabContentManagerSupplier,
             BrowserControlsStateProvider browserControlsStateProvider,
             ActivityWindowAndroid windowAndroid,
@@ -538,7 +552,8 @@ public class StripLayoutHelperManager
             TabObscuringHandler tabObscuringHandler,
             @Nullable BooleanSupplier canActivateTabLayoutToggleMenuSupplier,
             MenuOrKeyboardActionController menuOrKeyboardActionController,
-            long activityCreationUptimeMs) {
+            long activityCreationUptimeMs,
+            Supplier<TabWindowManager> tabWindowManagerSupplier) {
         mContext = context;
         mWindowAndroid = windowAndroid;
         Resources res = context.getResources();
@@ -668,6 +683,7 @@ public class StripLayoutHelperManager
                         this::updateHelperEndMargins);
 
         mTabHoverCardViewStub = tabHoverCardViewStub;
+        mTabGroupHoverCardViewStub = tabGroupHoverCardViewStub;
 
         if (MultiWindowUtils.isMultiInstanceApi31Enabled()) {
             mTabStripDragHandler =
@@ -682,7 +698,8 @@ public class StripLayoutHelperManager
                             dragDropDelegate,
                             browserControlsStateProvider,
                             () -> windowAndroid.getActivity().get(),
-                            toolbarManager.getTabStripHeightSupplier());
+                            toolbarManager.getTabStripHeightSupplier(),
+                            tabWindowManagerSupplier);
 
             backPressManager.addHandler(
                     mTabStripDragHandler, BackPressHandler.Type.CANCEL_TAB_STRIP_DRAG);
@@ -787,6 +804,14 @@ public class StripLayoutHelperManager
                             assumeNonNull(mTabModelSelector), tabContentManagerSupplier);
                     mNormalHelper.setTabHoverCardView(hoverCardView);
                     mIncognitoHelper.setTabHoverCardView(hoverCardView);
+                });
+        tabGroupHoverCardViewStub.setOnInflateListener(
+                (viewStub, view) -> {
+                    var hoverCardView = (TabGroupHoverCardView) view;
+                    var hoverCardPresenter =
+                            new TabGroupHoverCardPresenter(assumeNonNull(mTabModelSelector));
+                    mNormalHelper.setTabGroupHoverCardView(hoverCardView, hoverCardPresenter);
+                    mIncognitoHelper.setTabGroupHoverCardView(hoverCardView, hoverCardPresenter);
                 });
 
         if (tabModelStartupInfoSupplier != null) {
@@ -961,23 +986,26 @@ public class StripLayoutHelperManager
     @Override
     public SceneOverlayLayer getUpdatedSceneOverlayTree(
             RectF viewport, RectF visibleViewport, ResourceManager resourceManager) {
-        assert mTabStripTreeProvider != null;
-        mResourceManager = resourceManager;
+        try (TraceEvent e =
+                TraceEvent.scoped("StripLayoutHelperManager.getUpdatedSceneOverlayTree")) {
+            assert mTabStripTreeProvider != null;
+            mResourceManager = resourceManager;
 
-        pushAndUpdateStrip(mSceneLayerYOffset, mSceneLayerVisibleHeight);
-        return mTabStripTreeProvider;
+            pushAndUpdateStrip(mSceneLayerYOffset, mSceneLayerVisibleHeight);
+            return mTabStripTreeProvider;
+        }
     }
 
     private void pushAndUpdateStrip(float yOffsetDp, float visibleHeightDp) {
         if (mResourceManager == null) return;
 
-        Tab selectedTab =
+        Tab activeTab =
                 mTabModelSelector == null
                         ? null
                         : mTabModelSelector
                                 .getCurrentModel()
                                 .getTabAt(mTabModelSelector.getCurrentModel().index());
-        int selectedTabId = selectedTab == null ? TabModel.INVALID_TAB_INDEX : selectedTab.getId();
+        int activeTabId = activeTab == null ? TabModel.INVALID_TAB_INDEX : activeTab.getId();
 
         // When tab strip is hiding, animation will trigger the toolbar moving up and tab strip
         // fade-out in place. We use the visible height to decide the transition progress then
@@ -998,7 +1026,7 @@ public class StripLayoutHelperManager
                 getActiveStripLayoutHelper().getStripLayoutTabsToRender(),
                 getActiveStripLayoutHelper().getStripLayoutGroupTitlesToRender(),
                 yOffsetDp,
-                selectedTabId,
+                activeTabId,
                 getStripTransitionScrimColor(),
                 mStripTransitionScrimOpacity,
                 getActiveStripLayoutHelper().getLeftPaddingToDraw(),
@@ -1016,7 +1044,7 @@ public class StripLayoutHelperManager
         // TabModelSelectorImpl#onNativeLibraryReady before #setTabModelSelector is called.
         assert tabModel.getProfile() != null;
         mNtbWebUiCoordinator =
-                new NtbWebUiCoordinator(
+                NtbWebUiCoordinator.create(
                         mWindowAndroid,
                         tabModel,
                         (ControlContainer) mControlContainer,
@@ -1050,10 +1078,10 @@ public class StripLayoutHelperManager
 
     /**
      * Returns the pointer to the native TabStripNtbWebUiHost if the WebUI new tab button is in use,
-     * or 0 otherwise.
+     * or null otherwise.
      */
-    public long getNtbWebUiNativePtr() {
-        return mNtbWebUiCoordinator == null ? 0 : mNtbWebUiCoordinator.getNativePtr();
+    public @Nullable JniPtr<NtbWebUiCoordinator.NativeTabStripNtbWebUiHost> getNtbWebUiNativePtr() {
+        return mNtbWebUiCoordinator == null ? null : mNtbWebUiCoordinator.getNativePtr();
     }
 
     @Override
@@ -1384,6 +1412,22 @@ public class StripLayoutHelperManager
         return mTrailingButtonsCoordinator.getModelSelectorButton();
     }
 
+    /**
+     * Returns the view that a touch click at ({@code x}, {@code y}) would reach, without clicking,
+     * or null if the click would reach nothing or a trailing button other than the model selector.
+     * Same order as TabStripEventHandler#click(), so tests can check that a target is clickable
+     * before simulating a click.
+     */
+    public @Nullable StripLayoutView getClickedViewForTesting(float x, float y) {
+        if (DragDropGlobalState.hasValue()) return null;
+        TintedCompositorButton modelSelectorButton = getModelSelectorButton();
+        if (modelSelectorButton != null && modelSelectorButton.checkClickedOrHovered(x, y)) {
+            return modelSelectorButton;
+        }
+        if (mTrailingButtonsCoordinator.checkClickedOrHovered(x, y)) return null;
+        return getActiveStripLayoutHelper().getClickedViewForTesting(x, y);
+    }
+
     @Override
     public void updateObscured(boolean obscureTabContent, boolean obscureToolbar) {
         if (mTabStripObscured == obscureToolbar) return;
@@ -1590,6 +1634,13 @@ public class StripLayoutHelperManager
         // overlap with the rest of the tab strip initialization.
         maybeCreateNtbWebUiCoordinator();
 
+        if (getNtbWebUiNativePtr() == null) {
+            // The current model (and its Profile) is already initialized by
+            // TabModelSelectorImpl#onNativeLibraryReady before #setTabModelSelector is called.
+            mTabStripTreeProvider.setProfile(
+                    assertNonNull(mTabModelSelector.getCurrentModel().getProfile()));
+        }
+
         updateTitleCacheForInit();
 
         if (mTabModelSelector.isTabStateInitialized()) {
@@ -1630,11 +1681,6 @@ public class StripLayoutHelperManager
                     /** Returns the actual current time of the app in ms. */
                     public long time() {
                         return SystemClock.uptimeMillis();
-                    }
-
-                    @Override
-                    public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                        getStripLayoutHelper(tab.isIncognitoBranded()).willCloseTab(tab);
                     }
 
                     @Override
@@ -1679,12 +1725,6 @@ public class StripLayoutHelperManager
                     public void onFinishingTabClosure(
                             Tab tab, @TabClosingSource int closingSource) {
                         getStripLayoutHelper(tab.isIncognitoBranded()).tabClosed(tab);
-                        mTrailingButtonsCoordinator.updateTrailingButtons();
-                    }
-
-                    @Override
-                    public void willCloseAllTabs(boolean incognito) {
-                        getStripLayoutHelper(incognito).willCloseAllTabs();
                         mTrailingButtonsCoordinator.updateTrailingButtons();
                     }
 

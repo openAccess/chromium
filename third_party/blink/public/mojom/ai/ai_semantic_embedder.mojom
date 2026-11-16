@@ -4,7 +4,15 @@
 
 module blink.mojom;
 
+import "mojo/public/mojom/base/time.mojom";
 import "third_party/blink/public/mojom/ai/ai_common.mojom";
+
+// One embedding space this browser serves. See SemanticEmbedderSpaceInfo.
+struct AISemanticEmbedderSpaceInfo {
+  string embedding_space;
+  // When the browser may stop serving this space; null if not scheduled.
+  mojo_base.mojom.Time? shutdown_date;
+};
 
 // The task type for the AISemanticEmbedder.
 // These task types allow the underlying model to optimize the generated
@@ -22,6 +30,13 @@ enum AISemanticEmbedderTaskType {
   kRetrievalDocument,
 };
 
+// Options for AIManager's CanCreateSemanticEmbedder() and
+// CreateSemanticEmbedder().
+struct AISemanticEmbedderCreateOptions {
+  // The requested embedding space, e.g. "embeddinggemma-300m".
+  string embedding_space;
+};
+
 // Options for the Embed method.
 struct AISemanticEmbedderEmbedOptions {
   AISemanticEmbedderTaskType? task_type;
@@ -33,6 +48,12 @@ struct ContentEmbedding {
 
 struct SemanticEmbedderResult {
   array<ContentEmbedding> embeddings;
+};
+
+// Facts about a created embedder that the page reads synchronously.
+struct AISemanticEmbedderInfo {
+  // The model metadata's input_window_size, including control tokens.
+  uint32 max_input_tokens;
 };
 
 // A semantic embedder.

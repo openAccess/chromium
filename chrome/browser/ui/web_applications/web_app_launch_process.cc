@@ -53,6 +53,62 @@ namespace web_app {
 
 namespace {
 
+bool IsUserInitiatedLaunchSource(apps::LaunchSource source) {
+  switch (source) {
+    // User-initiated sources.
+    case apps::LaunchSource::kFromAppListGrid:
+    case apps::LaunchSource::kFromAppListGridContextMenu:
+    case apps::LaunchSource::kFromAppListQuery:
+    case apps::LaunchSource::kFromAppListQueryContextMenu:
+    case apps::LaunchSource::kFromAppListRecommendation:
+    case apps::LaunchSource::kFromParentalControls:
+    case apps::LaunchSource::kFromShelf:
+    case apps::LaunchSource::kFromFileManager:
+    case apps::LaunchSource::kFromLink:
+    case apps::LaunchSource::kFromOmnibox:
+    case apps::LaunchSource::kFromKeyboard:
+    case apps::LaunchSource::kFromMenu:
+    case apps::LaunchSource::kFromInstalledNotification:
+    case apps::LaunchSource::kFromSharesheet:
+    case apps::LaunchSource::kFromReleaseNotesNotification:
+    case apps::LaunchSource::kFromSmartTextContextMenu:
+    case apps::LaunchSource::kFromDiscoverTabNotification:
+    case apps::LaunchSource::kFromNewTabPage:
+    case apps::LaunchSource::kFromIntentUrl:
+    case apps::LaunchSource::kFromProtocolHandler:
+    case apps::LaunchSource::kFromUrlHandler:
+    case apps::LaunchSource::kFromLockScreen:
+    case apps::LaunchSource::kFromAppHomePage:
+    case apps::LaunchSource::kFromProfileMenu:
+    case apps::LaunchSource::kFromSysTrayCalendar:
+    case apps::LaunchSource::kFromInstaller:
+    case apps::LaunchSource::kFromWebInstallApi:
+      return true;
+
+    // Programmatic / system sources.
+    case apps::LaunchSource::kFromOsLogin:
+    case apps::LaunchSource::kFromCommandLine:
+    case apps::LaunchSource::kFromSparky:
+    case apps::LaunchSource::kFromFirstRun:
+    case apps::LaunchSource::kFromWelcomeTour:
+    case apps::LaunchSource::kFromFocusMode:
+    case apps::LaunchSource::kUnknown:
+    case apps::LaunchSource::kFromChromeInternal:
+    case apps::LaunchSource::kFromOtherApp:
+    case apps::LaunchSource::kFromTest:
+    case apps::LaunchSource::kFromArc:
+    case apps::LaunchSource::kFromFullRestore:
+    case apps::LaunchSource::kFromManagementApi:
+    case apps::LaunchSource::kFromKiosk:
+    case apps::LaunchSource::kFromBackgroundMode:
+    case apps::LaunchSource::kFromReparenting:
+    case apps::LaunchSource::kFromNavigationCapturing:
+    case apps::LaunchSource::kFromMigration:
+      return false;
+  }
+  NOTREACHED();
+}
+
 // Returns the most recently activated tabbed (TYPE_NORMAL) browser for
 // `profile`, filtered by `display_id` when it is not kInvalidDisplayId.
 // Browsers scheduled for deletion are excluded.
@@ -173,8 +229,11 @@ content::WebContents* WebAppLaunchProcess::Run() {
 
   auto web_app_scope = registrar_->GetEffectiveScope(params_->app_id);
   CHECK(web_app_scope);
+  // File handling action URLs (`launch_url`) must be within the app's primary
+  // scope rather than `scope_extensions`.
   LaunchUrlInScopeResult in_scope_result =
-      web_app_scope->GetScopeScore(launch_url) > 0
+      web_app_scope->GetScopeScore(
+          launch_url, {.exclude_scope_extensions = is_file_handling}) > 0
           ? LaunchUrlInScopeResult::kInScope
           : LaunchUrlInScopeResult::kNotInScope;
 #if BUILDFLAG(IS_CHROMEOS)
@@ -226,9 +285,11 @@ content::WebContents* WebAppLaunchProcess::Run() {
   // During install, shortcut urls are required to be in-scope. But some users &
   // admins create custom shortcuts to launch weirdly configured apps with
   // out-of-scope but same-origin urls. So specifically also allow same-origin
-  // urls to be launched here, even if they are not in scope.
+  // urls to be launched here, even if they are not in scope, except for file
+  // handling launches whose action URL must be in the primary scope.
   if (in_scope_result == LaunchUrlInScopeResult::kNotInScope &&
-      !url::IsSameOriginWith(launch_url, web_app_scope->scope())) {
+      (is_file_handling ||
+       !url::IsSameOriginWith(launch_url, web_app_scope->scope()))) {
     launch_url = registrar_->GetAppStartUrl(params_->app_id);
     // If this was a file handler launch, then it would be unexpected that a
     // file handle exists if we are resetting the URL. Thus, reset to only a
@@ -309,6 +370,8 @@ content::WebContents* WebAppLaunchProcess::Run() {
       // current page is now being used for this app launch.
       existing_tab->Stop();
       launch_params.set_started_new_navigation(false);
+      launch_params.set_user_initiated(
+          IsUserInitiatedLaunchSource(params_->launch_source));
       WebAppLaunchNavigationHandleUserData::DispatchLaunchParams(
           existing_tab, std::move(launch_params), params_->container,
           params_->launch_source);

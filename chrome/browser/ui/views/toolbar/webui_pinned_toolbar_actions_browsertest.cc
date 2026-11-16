@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/functional/bind.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/raw_ref.h"
 #include "base/run_loop.h"
@@ -22,8 +23,11 @@
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/ttc/core/features.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/actions/chrome_action_properties.h"
+#include "chrome/browser/ui/ai_overlay_dialog/ai_overlay_dialog_controller.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -34,6 +38,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/download_button.h"
+#include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/views/toolbar/webui_pinned_toolbar_actions_test_base.h"
 #include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
@@ -49,6 +54,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/scoped_accessibility_mode_override.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/ax_node_id_forward.h"
@@ -57,6 +63,8 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/color/color_provider.h"
+#include "ui/gfx/geometry/size.h"
+#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/accessibility/ax_update_notifier.h"
 #include "ui/views/accessibility/ax_update_observer.h"
@@ -294,7 +302,7 @@ IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsBrowserTest,
       kActionShowPasswordsBubbleOrPage,
       toolbar_ui_api::mojom::PinnedToolbarAction::kShowPasswordsBubbleOrPage);
   EXPECT_EQ(features::IsRoundedIconsEnabled()
-                ? "webui-toolbar:password_manager"
+                ? "webui-toolbar-shared:password_manager"
                 : "webui-toolbar:password_manager_old",
             EvalJsOnPinnedAction(toolbar_ui_api::mojom::PinnedToolbarAction::
                                      kShowPasswordsBubbleOrPage,
@@ -609,6 +617,128 @@ IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsBrowserTest,
                   BrowserActions::From(browser())->root_action_item())
       ->SetProperty(kActionItemUnderlineIndicatorKey, false);
   verify_activated(false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsBrowserTest,
+                       CircleHighlightEngagedIndicatorRendering) {
+  actions::ActionId action_id = kActionPrint;
+  toolbar_ui_api::mojom::PinnedToolbarAction mojom_action =
+      toolbar_ui_api::mojom::PinnedToolbarAction::kPrint;
+
+  PinAction(action_id, mojom_action);
+
+  auto verify_circle_highlight = [&](bool expected) {
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return EvalJsOnPinnedAction(
+                 mojom_action,
+                 base::StringPrintf(
+                     "const indicator = "
+                     "actionEl.shadowRoot.querySelector('.status-indicator'); "
+                     "return !btn.hasAttribute('is-activated') && "
+                     "btn.hasAttribute('has-circle-highlight') === %s && "
+                     "!!indicator && !indicator.checkVisibility();",
+                     expected ? "true" : "false"))
+          .ExtractBool();
+    }));
+  };
+
+  // Initially not highlighted.
+  verify_circle_highlight(false);
+
+  actions::ActionItem* const action_item =
+      actions::ActionManager::Get().FindAction(
+          action_id, BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(action_item);
+
+  const auto* color_provider =
+      BrowserView::GetBrowserViewForBrowser(browser())->GetColorProvider();
+  const SkColor highlight_color =
+      color_provider->GetColor(kColorAvatarButtonHighlightDefault);
+  ASSERT_EQ(SK_AlphaOPAQUE, SkColorGetA(highlight_color));
+  const std::string expected_highlight_rgb = base::StringPrintf(
+      "rgb(%d, %d, %d)", SkColorGetR(highlight_color),
+      SkColorGetG(highlight_color), SkColorGetB(highlight_color));
+
+  // Configure circle highlight engaged indicator style and activate the action.
+  action_item->SetProperty(kActionItemEngagedIndicatorStyleKey,
+                           ActionItemEngagedIndicatorStyle::kCircleHighlight);
+  action_item->SetProperty(kActionItemUnderlineIndicatorKey, true);
+  verify_circle_highlight(true);
+  EXPECT_EQ(
+      expected_highlight_rgb,
+      EvalJsOnPinnedAction(
+          mojom_action,
+          "return innerBtn ? getComputedStyle(innerBtn).backgroundColor : "
+          "'(null)';"));
+
+  // While the action is highlighted (e.g. side panel open), the circle
+  // highlight background is suppressed.
+  WebUIToolbarWebView* webui_toolbar_view = GetWebUIToolbarWebView(browser());
+  webui_toolbar_view->GetPinnedToolbarActions()->UpdateActionState(action_id,
+                                                                   true);
+  verify_circle_highlight(false);
+
+  webui_toolbar_view->GetPinnedToolbarActions()->UpdateActionState(action_id,
+                                                                   false);
+  verify_circle_highlight(true);
+
+  // Deactivating the action removes the circle highlight.
+  action_item->SetProperty(kActionItemUnderlineIndicatorKey, false);
+  verify_circle_highlight(false);
+}
+
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsBrowserTest, IconSizeDelta) {
+  actions::ActionId action_id = kActionPrint;
+  toolbar_ui_api::mojom::PinnedToolbarAction mojom_action =
+      toolbar_ui_api::mojom::PinnedToolbarAction::kPrint;
+
+  PinAction(action_id, mojom_action);
+
+  actions::ActionItem* const action_item =
+      actions::ActionManager::Get().FindAction(
+          action_id, BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(action_item);
+
+  // Returns the rendered width (in px) of the action's icon, or -1 if the
+  // icon isn't rendered.
+  auto get_icon_width = [&]() {
+    return EvalJsOnPinnedAction(
+               mojom_action,
+               "const icon = btn?.querySelector('icon-from-table'); "
+               "return icon ? icon.getBoundingClientRect().width : -1;")
+        .ExtractDouble();
+  };
+
+  // Waits until the WebUI state reflects `expected_delta` and the icon is
+  // rendered at `expected_width`.
+  auto verify_icon_size = [&](int expected_delta, double expected_width) {
+    ASSERT_TRUE(base::test::RunUntil([&]() {
+      return EvalJsOnPinnedAction(mojom_action,
+                                  "return actionEl.state.iconSizeDelta;")
+                     .ExtractInt() == expected_delta &&
+             get_icon_width() == expected_width;
+    }));
+  };
+
+  // The delta defaults to zero, and the icon is drawn at the default size.
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return EvalJsOnPinnedAction(mojom_action,
+                                "return actionEl.state.iconSizeDelta;")
+                   .ExtractInt() == 0 &&
+           get_icon_width() > 0;
+  }));
+  const double default_icon_width = get_icon_width();
+
+  // Setting the property propagates to the WebUI state and shrinks the icon.
+  constexpr int kIconSizeDelta = -2;
+  action_item->SetProperty(chrome::kActionItemIconSizeDeltaKey, kIconSizeDelta);
+  verify_icon_size(kIconSizeDelta, default_icon_width + kIconSizeDelta);
+
+  // Clearing the property restores the default.
+  action_item->SetProperty(chrome::kActionItemIconSizeDeltaKey, 0);
+  verify_icon_size(0, default_icon_width);
+
+  UnpinAction(action_id, mojom_action);
 }
 
 IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsBrowserTest,
@@ -1242,6 +1372,74 @@ IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsAiOverlayBrowserTest,
             toolbar_ui_api::mojom::PinnedToolbarAction::kShowAiOverlayDialog);
 }
 
+// Showing the overlay swaps the action's icon to a pause icon, and closing it
+// swaps it back to the mic icon. Both must be reflected in the pinned button.
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsAiOverlayBrowserTest,
+                       ShowAndCloseOverlay) {
+  constexpr auto kMojomAction =
+      toolbar_ui_api::mojom::PinnedToolbarAction::kShowAiOverlayDialog;
+  auto* controller = ttc::AiOverlayDialogController::From(browser());
+  ASSERT_TRUE(controller);
+  ASSERT_TRUE(WaitForPinnedActionVisible(kMojomAction));
+
+  controller->ShowOverlay();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJsOnPinnedAction(kMojomAction, "return iconName || '(null)'") ==
+           "webui-toolbar:pause_filled";
+  }));
+
+  controller->CloseOverlay();
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJsOnPinnedAction(kMojomAction, "return iconName || '(null)'") ==
+           "webui-toolbar:mic_filled";
+  }));
+}
+
+// Showing the overlay pops out the action even when it isn't pinned, and
+// closing the overlay hides it again.
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsAiOverlayBrowserTest,
+                       ShowOverlayWhileUnpinned) {
+  constexpr auto kMojomAction =
+      toolbar_ui_api::mojom::PinnedToolbarAction::kShowAiOverlayDialog;
+  auto* controller = ttc::AiOverlayDialogController::From(browser());
+  ASSERT_TRUE(controller);
+  UnpinAction(kActionShowAiOverlayDialog, kMojomAction);
+
+  controller->ShowOverlay();
+  EXPECT_TRUE(WaitForPinnedActionVisible(kMojomAction));
+
+  controller->CloseOverlay();
+  EXPECT_TRUE(WaitForPinnedActionHidden(kMojomAction));
+}
+
+// While the overlay reports audio energy, the action's icon is a generated
+// (non-vector) image. The pinned button must accept it.
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsAiOverlayBrowserTest,
+                       GeneratedImageIcon) {
+  constexpr auto kMojomAction =
+      toolbar_ui_api::mojom::PinnedToolbarAction::kShowAiOverlayDialog;
+  actions::ActionItem* action_item = actions::ActionManager::Get().FindAction(
+      kActionShowAiOverlayDialog,
+      BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(action_item);
+  ASSERT_TRUE(WaitForPinnedActionVisible(kMojomAction));
+
+  action_item->SetImage(ui::ImageModel::FromImageGenerator(
+      base::BindRepeating([](const ui::ColorProvider* color_provider) {
+        return gfx::CreateVectorIcon(vector_icons::kMicFilledIcon, 16,
+                                     SK_ColorBLACK);
+      }),
+      gfx::Size(16, 16)));
+
+  // Non-vector images are rasterized into a data URL rather than mapped to a
+  // named icon.
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    return EvalJsOnPinnedAction(kMojomAction, "return iconName || '(null)'") ==
+           "(null)";
+  }));
+  EXPECT_TRUE(IsPinnedActionVisible(kMojomAction));
+}
+
 class WebUIPinnedToolbarActionsByDateHistoryBrowserTest
     : public WebUIPinnedToolbarActionsBrowserTest {
  public:
@@ -1281,7 +1479,9 @@ IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsTtcBrowserTest,
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   expected_icon = "internal-icons:audio_spark";
 #else
-  expected_icon = "webui-toolbar:mic_filled";
+  expected_icon = features::IsRoundedIconsEnabled()
+                      ? "webui-toolbar:mic_filled"
+                      : "webui-toolbar-shared:mic";
 #endif
 
   EXPECT_TRUE(base::test::RunUntil([&]() {
@@ -1295,4 +1495,36 @@ IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsTtcBrowserTest,
               toolbar_ui_api::mojom::PinnedToolbarAction::kTtcToolbar);
   PinAction(kActionTtcToolbar,
             toolbar_ui_api::mojom::PinnedToolbarAction::kTtcToolbar);
+}
+
+class WebUIPinnedToolbarActionsSmartSelectionBrowserTest
+    : public WebUIPinnedToolbarActionsBrowserTest {
+ public:
+  WebUIPinnedToolbarActionsSmartSelectionBrowserTest() {
+    feature_list_.InitWithFeatures({features::kGlicSmartSelectionToolbarButton,
+                                    features::kGlicSelectionOverlayPromptBox},
+                                   {});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(WebUIPinnedToolbarActionsSmartSelectionBrowserTest,
+                       AutoPinnedOnStartup) {
+  EXPECT_TRUE(model_->Contains(kActionGlicSmartSelectionToolbar));
+
+  EXPECT_TRUE(base::test::RunUntil([this]() {
+    return EvalJsOnPinnedAction(toolbar_ui_api::mojom::PinnedToolbarAction::
+                                    kGlicSmartSelectionToolbar,
+                                "return iconName || '';")
+               .ExtractString() == "webui-toolbar:crop_auto";
+  }));
+
+  UnpinAction(
+      kActionGlicSmartSelectionToolbar,
+      toolbar_ui_api::mojom::PinnedToolbarAction::kGlicSmartSelectionToolbar);
+  PinAction(
+      kActionGlicSmartSelectionToolbar,
+      toolbar_ui_api::mojom::PinnedToolbarAction::kGlicSmartSelectionToolbar);
 }

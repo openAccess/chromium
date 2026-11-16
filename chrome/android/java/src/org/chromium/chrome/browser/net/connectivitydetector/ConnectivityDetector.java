@@ -18,7 +18,6 @@ import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
-import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.AsyncTask;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -37,8 +36,8 @@ import java.net.URL;
 /**
  * Class that detects the network connectivity. We will get the connectivity info from Android
  * connection manager if available, as in Marshmallow and above. Otherwise, we will do http probes
- * to verify that a well-known URL returns an expected result. If the result can't be validated,
- * we will retry with exponential backoff.
+ * to verify that a well-known URL returns an expected result. If the result can't be validated, we
+ * will retry with exponential backoff.
  */
 @NullMarked
 public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTypeObserver {
@@ -72,8 +71,6 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
         // The network is connected to Internet and validated. If the connected network imposes
         // capitive portal, the user has already signed into it.
         int VALIDATED = 4;
-        // Count.
-        int RESULT_COUNT = 5;
     }
 
     // Denotes how the connectivity check is done.
@@ -124,6 +121,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
     public interface Observer {
         /**
          * Called when the network connection state changes.
+         *
          * @param connectionState Current connection state.
          */
         void onConnectionStateChanged(@ConnectionState int connectionState);
@@ -161,7 +159,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
                 NetworkCapabilities capabilities =
                         connectivityManager.getNetworkCapabilities(network);
                 if (capabilities == null) continue;
-                Log.i(TAG, "Reported by system: " + capabilities);
+                Log.i(TAG, "Reported by system: %s", capabilities);
                 if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
                         && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                         && capabilities.hasCapability(
@@ -194,6 +192,44 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
     private static final int CONNECTIVITY_CHECK_INITIAL_DELAY_MS = 5000;
     private static final int CONNECTIVITY_CHECK_MAX_DELAY_MS = 2 * 60 * 1000;
 
+    private static final NetworkTrafficAnnotationTag TRAFFIC_ANNOTATION =
+            NetworkTrafficAnnotationTag.createComplete(
+                    "android_connectivity_detector",
+                    """
+                    semantics {
+                      sender: "Android Connectivity Detector"
+                      description:
+                        "Checks whether the device has validated Internet connectivity or is "
+                        "behind a captive portal when Android's ConnectivityManager cannot "
+                        "provide the connection state. Sends an HTTP GET probe to a well-known "
+                        "Google URL that returns HTTP 204 (No Content) to update Chrome's "
+                        "offline status indicator."
+                      trigger:
+                        "Triggered on browser startup or when the network connection type "
+                        "changes while a network connection is active, if the Android system "
+                        "cannot report the connectivity state."
+                      data: "None."
+                      destination: GOOGLE_OWNED_SERVICE
+                      internal {
+                        contacts {
+                          email: "offline-dev@chromium.org"
+                        }
+                      }
+                      user_data {
+                        type: NONE
+                      }
+                      last_reviewed: "2026-11-05"
+                    }
+                    policy {
+                      cookies_allowed: NO
+                      setting: "This feature cannot be disabled in settings."
+                      policy_exception_justification:
+                        "Not implemented. This is a lightweight connectivity check with no "
+                        "user-identifiable data, used only to determine whether the browser "
+                        "should display an offline status indicator when the OS cannot."
+                    }\
+                    """);
+
     private static @Nullable Delegate sDelegateForTesting;
     private static String sDefaultProbeUrl = DEFAULT_PROBE_URL;
     private static String sFallbackProbeUrl = FALLBACK_PROBE_URL;
@@ -204,9 +240,6 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
     private @Nullable Observer mObserver;
 
     private final Delegate mDelegate;
-
-    // Name of the client used for recording histograms.
-    private final String mClientName;
 
     private @ConnectionType int mConnectionType = ConnectionType.CONNECTION_UNKNOWN;
     private @ConnectionState int mConnectionState = ConnectionState.NONE;
@@ -219,9 +252,8 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
     private final Handler mHandler;
     private @Nullable Runnable mRunnable;
 
-    public ConnectivityDetector(Observer observer, String clientName) {
+    public ConnectivityDetector(Observer observer) {
         mObserver = observer;
-        mClientName = clientName;
         mDelegate = sDelegateForTesting != null ? sDelegateForTesting : new DelegateImpl();
         mHandler = new Handler();
         NetworkChangeNotifier.addConnectionTypeObserver(this);
@@ -249,7 +281,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
         // underlying network monitor, i.e., changing from not validated to validated.
         boolean hasConnectionTypeChange = mConnectionType != connectionType;
         mConnectionType = connectionType;
-        Log.i(TAG, "onConnectionTypeChanged " + mConnectionType);
+        Log.i(TAG, "onConnectionTypeChanged %d", mConnectionType);
 
         // If not connected at all, no further check is needed.
         if (mConnectionType == ConnectionType.CONNECTION_NONE) {
@@ -322,19 +354,15 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
                     (result) -> {
                         Log.i(
                                 TAG,
-                                "sendHttpProbe returned with result="
-                                        + result
-                                        + " and mConnectivityCheckingStage="
-                                        + mConnectivityCheckingStage);
+                                "sendHttpProbe returned with result=%s"
+                                        + " and mConnectivityCheckingStage=%d",
+                                result,
+                                mConnectivityCheckingStage);
 
                         // If we just lose the connection, bail out.
                         if (mConnectionType == ConnectionType.CONNECTION_NONE) return;
 
                         updateConnectionStatePerProbeResult(result);
-                        RecordHistogram.recordEnumeratedHistogram(
-                                "ConnectivityDetector.ConnectionState." + mClientName,
-                                mConnectionState,
-                                ConnectionState.RESULT_COUNT);
                         processConnectivityCheckResult();
                     });
         }
@@ -344,10 +372,10 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
         // If the connection is validated, we're done.
         Log.i(
                 TAG,
-                "processConnectivityCheckResult mConnectionState="
-                        + mConnectionState
-                        + " mConnectivityCheckingStage="
-                        + mConnectivityCheckingStage);
+                "processConnectivityCheckResult mConnectionState=%d"
+                        + " mConnectivityCheckingStage=%d",
+                mConnectionState,
+                mConnectivityCheckingStage);
         if (mConnectionState == ConnectionState.VALIDATED) {
             stopConnectivityCheck();
             return;
@@ -373,10 +401,10 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
     }
 
     /**
-     * Fetch a URL from a well-known server using Android system network stack.
-     * Check asynchronously whether the device is currently connected to the Internet using the
-     * Android system network stack. |callback| will be invoked with the boolean result to
-     * denote if the connectivity is validated.
+     * Fetch a URL from a well-known server using Android system network stack. Check asynchronously
+     * whether the device is currently connected to the Internet using the Android system network
+     * stack. |callback| will be invoked with the boolean result to denote if the connectivity is
+     * validated.
      */
     private void sendHttpProbe(
             final boolean useDefaultUrl, final int timeoutMs, final Callback<Integer> callback) {
@@ -386,13 +414,11 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
             protected Integer doInBackground() {
                 HttpURLConnection urlConnection = null;
                 try {
-                    Log.i(TAG, "Sending HTTP Probe now to url:" + urlString);
+                    Log.i(TAG, "Sending HTTP Probe now to url:%s", urlString);
                     URL url = new URL(urlString);
                     urlConnection =
                             (HttpURLConnection)
-                                    ChromiumNetworkAdapter.openConnection(
-                                            url,
-                                            NetworkTrafficAnnotationTag.MISSING_TRAFFIC_ANNOTATION);
+                                    ChromiumNetworkAdapter.openConnection(url, TRAFFIC_ANNOTATION);
                     urlConnection.setInstanceFollowRedirects(false);
                     urlConnection.setRequestMethod(sProbeMethod);
                     urlConnection.setConnectTimeout(timeoutMs);
@@ -407,14 +433,11 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
 
                     Log.i(
                             TAG,
-                            "Probe "
-                                    + urlString
-                                    + " time="
-                                    + (responseTimestamp - requestTimestamp)
-                                    + "ms ret="
-                                    + responseCode
-                                    + " headers="
-                                    + urlConnection.getHeaderFields());
+                            "Probe %s time=%dms ret=%d headers=%s",
+                            urlString,
+                            responseTimestamp - requestTimestamp,
+                            responseCode,
+                            urlConnection.getHeaderFields());
 
                     if (responseCode == HttpURLConnection.HTTP_NO_CONTENT) {
                         return ProbeResult.VALIDATED_WITH_NO_CONTENT;
@@ -435,7 +458,8 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
                         }
                     }
                 } catch (IOException e) {
-                    Log.i(TAG, "Probe " + urlString + " failed w/ exception " + e);
+                    // Pass e.toString() rather than e to avoid logging a stack trace.
+                    Log.i(TAG, "Probe %s failed w/ exception %s", urlString, e.toString());
                     // Most likely the exception is thrown due to host name not resolved or socket
                     // timeout.
                     return ProbeResult.NO_INTERNET;
@@ -469,13 +493,13 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
         if (mConnectivityCheckDelayMs >= CONNECTIVITY_CHECK_MAX_DELAY_MS) {
             // Prevent overflow of the delay value.
             mConnectivityCheckDelayMs = CONNECTIVITY_CHECK_MAX_DELAY_MS;
-            Log.i(TAG, "No more retry after exceeding " + CONNECTIVITY_CHECK_MAX_DELAY_MS + "ms");
+            Log.i(TAG, "No more retry after exceeding %dms", CONNECTIVITY_CHECK_MAX_DELAY_MS);
             if (mConnectionState == ConnectionState.NONE) {
                 setConnectionState(ConnectionState.NO_INTERNET);
             }
             return;
         }
-        Log.i(TAG, "Retry after " + mConnectivityCheckDelayMs + "ms");
+        Log.i(TAG, "Retry after %dms", mConnectivityCheckDelayMs);
 
         mRunnable = this::performConnectivityCheck;
         mHandler.postDelayed(mRunnable, mConnectivityCheckDelayMs);
@@ -483,7 +507,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
 
     private void updateConnectionStatePerProbeResult(@ProbeResult int result) {
         @ConnectionState int newConnectionState = mConnectionState;
-        Log.i(TAG, "updateConnectionStatePerProbeResult result=" + result);
+        Log.i(TAG, "updateConnectionStatePerProbeResult result=%d", result);
         switch (result) {
             case ProbeResult.VALIDATED_WITH_NO_CONTENT:
             case ProbeResult.VALIDATED_WITH_OK_BUT_ZERO_CONTENT_LENGTH:
@@ -506,7 +530,7 @@ public class ConnectivityDetector implements NetworkChangeNotifier.ConnectionTyp
 
     @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public void setConnectionState(@ConnectionState int connectionState) {
-        Log.i(TAG, "setConnectionState connectionState=" + connectionState);
+        Log.i(TAG, "setConnectionState connectionState=%d", connectionState);
         if (mConnectionState == connectionState) return;
         mConnectionState = connectionState;
         if (mObserver != null) mObserver.onConnectionStateChanged(mConnectionState);

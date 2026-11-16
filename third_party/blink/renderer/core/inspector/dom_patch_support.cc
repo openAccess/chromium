@@ -219,7 +219,14 @@ bool DOMPatchSupport::InnerPatchNode(Digest* old_digest,
 
     // FIXME: Create a function in Element for copying properties.
     // cloneDataFromElement() is close but not enough for this case.
-    for (auto& attribute : new_element->AttributesWithoutUpdate()) {
+    //
+    // SetAttribute() may run script (e.g. custom element reactions), which
+    // could mutate the attribute storage of |new_element| and invalidate an
+    // AttributeCollection (a non-owning span) iterating over it. Take an
+    // owning copy of the attributes first.
+    const AttributeVector new_attributes(
+        new_element->AttributesWithoutUpdate());
+    for (const Attribute& attribute : new_attributes) {
       if (!dom_editor_->SetAttribute(old_element,
                                      attribute.GetName().ToString(),
                                      attribute.Value(), exception_state))
@@ -447,7 +454,7 @@ DOMPatchSupport::Digest* DOMPatchSupport::CreateDigest(
     Node* node,
     UnusedNodesMap* unused_nodes_map) {
   Digest* digest = MakeGarbageCollected<Digest>(node);
-  Digestor digestor(kHashAlgorithmSha256);
+  Digestor digestor(HashAlgorithm::kSha256);
   DigestValue digest_result;
 
   Node::NodeType node_type = node->getNodeType();
@@ -466,7 +473,7 @@ DOMPatchSupport::Digest* DOMPatchSupport::CreateDigest(
 
     AttributeCollection attributes = element->AttributesWithoutUpdate();
     if (!attributes.IsEmpty()) {
-      Digestor attrs_digestor(kHashAlgorithmSha256);
+      Digestor attrs_digestor(HashAlgorithm::kSha256);
       for (auto& attribute : attributes) {
         attrs_digestor.UpdateUtf8(attribute.GetName().ToString());
         attrs_digestor.UpdateUtf8(attribute.Value().GetString());

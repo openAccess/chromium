@@ -88,7 +88,7 @@ String DateTimeStringBuilder::ZeroPadString(const String& string,
   for (wtf_size_t i = string.length(); i < width; ++i)
     zero_padded_string_builder.Append('0');
   zero_padded_string_builder.Append(string);
-  return zero_padded_string_builder.ToString();
+  return zero_padded_string_builder.ReleaseString();
 }
 
 void DateTimeStringBuilder::AppendNumber(int number, size_t width) {
@@ -183,7 +183,7 @@ void DateTimeStringBuilder::VisitLiteral(const String& text) {
 }
 
 String DateTimeStringBuilder::ToString() {
-  return builder_.ToString();
+  return builder_.ReleaseString();
 }
 
 Locale& Locale::DefaultLocale() {
@@ -289,7 +289,7 @@ void Locale::SetLocaleData(const Vector<String, kDecimalSymbolsSize>& symbols,
   builder.Append(positive_suffix_);
   builder.Append(negative_prefix_);
   builder.Append(negative_suffix_);
-  acceptable_number_characters_ = builder.ToString();
+  acceptable_number_characters_ = builder.ReleaseString();
 
   // Check if we can use single character filtering. We can if all symbols are
   // 1 character and there's no suffix. Since plus sign is optional, allow
@@ -329,7 +329,7 @@ String Locale::ConvertToLocalizedNumber(const String& input) {
 
   builder.Append(is_negative ? negative_suffix_ : positive_suffix_);
 
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 bool Locale::DetectSignAndGetDigitRange(const String& input,
@@ -443,7 +443,7 @@ String Locale::StripInvalidNumberCharacters(const String& input,
       builder.Append(ch);
     }
   }
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 String Locale::LocalizedDecimalSeparator() {

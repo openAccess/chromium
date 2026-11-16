@@ -165,23 +165,9 @@ static bool ConsumeVariableReference(CSSParserTokenStream& stream,
                                      const CSSParserContext& context) {
   CSSParserTokenStream::BlockGuard guard(stream);
   stream.ConsumeWhitespace();
-  if (stream.Peek().GetType() == kIdentToken) {
-    if (!CSSVariableParser::IsValidVariableName(
-            stream.ConsumeIncludingWhitespace())) {
-      return false;
-    }
-  } else if (stream.Peek().GetType() == kFunctionToken &&
-             RuntimeEnabledFeatures::CSSIdentFunctionEnabled()) {
-    if (!css_parsing_utils::ConsumeIdentFunction(stream, context)) {
-      // It's a bit wasteful to create a CSSCustomIdentValue just to discard it,
-      // but with the new "argument grammar" parsing approach described in
-      // Issue 11500 we will eventually end up accepting any
-      // <declaration-value>, so it should not be for long.
-      //
-      // https://github.com/w3c/csswg-drafts/issues/11500
-      return false;
-    }
-  } else {
+  if (stream.Peek().GetType() != kIdentToken ||
+      !CSSVariableParser::IsValidVariableName(
+          stream.ConsumeIncludingWhitespace())) {
     return false;
   }
   if (stream.AtEnd()) {
@@ -353,6 +339,39 @@ static bool ConsumeInternalAutoBase(CSSParserTokenStream& stream,
                             /*stop_type=*/kCommaToken, features, context)) {
     return false;
   }
+  return stream.AtEnd();
+}
+
+// ident() = ident( <ident-arg>+ )
+// Argument grammar:
+// <ident-args> = ident( <declaration-value> )
+// https://drafts.csswg.org/css-values-5/#ident
+static bool ConsumeIdent(CSSParserTokenStream& stream,
+                         VariableDataFeatures& features,
+                         const CSSParserContext& context) {
+  CSSParserTokenStream::BlockGuard guard(stream);
+  stream.ConsumeWhitespace();
+  if (stream.AtEnd()) {
+    return false;
+  }
+  if (stream.Peek().GetType() == kLeftBraceToken) {
+    // https://drafts.csswg.org/css-values-5/#component-function-commas
+    CSSParserTokenStream::BlockGuard brace_guard(stream);
+    stream.ConsumeWhitespace();
+    if (stream.AtEnd()) {
+      return false;
+    }
+    if (!ConsumeUnparsedValue(stream, /*restricted_value=*/false,
+                              /*stop_type=*/kEOFToken, features, context) ||
+        !stream.AtEnd()) {
+      return false;
+    }
+  } else if (!ConsumeUnparsedValue(stream, /*restricted_value=*/true,
+                                   /*stop_type=*/kCommaToken, features,
+                                   context)) {
+    return false;
+  }
+  stream.ConsumeWhitespace();
   return stream.AtEnd();
 }
 
@@ -636,6 +655,19 @@ static bool ConsumeUnparsedValue(CSSParserTokenStream& stream,
           }
           if (!error) {
             context.Count(WebDXFeature::kIf);
+          }
+          features |= static_cast<VariableDataFeatures>(
+              VariableDataFeature::kHasReferences);
+          if (value_end_offset) {
+            *value_end_offset = stream.Offset();
+          }
+          continue;
+        case CSSValueID::kIdent:
+          if (!RuntimeEnabledFeatures::CSSIdentFunctionEnabled()) {
+            break;
+          }
+          if (!ConsumeIdent(stream, features, context)) {
+            error = true;
           }
           features |= static_cast<VariableDataFeatures>(
               VariableDataFeature::kHasReferences);

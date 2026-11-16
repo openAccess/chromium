@@ -65,7 +65,7 @@ import {PasswordManagerImpl} from './password_manager_proxy.js';
 import {getCss} from './passwords_importer.css.js';
 import {getHtml} from './passwords_importer.html.js';
 import {Page, Router} from './router.js';
-import {UserUtilMixinLit} from './user_utils_mixin_lit.js';
+import {TrustedVaultUnlockDialogSource, UserUtilMixin} from './user_utils_mixin.js';
 
 export interface PasswordsImporterElement {
   $: {
@@ -116,8 +116,7 @@ export enum DialogState {
   CONFLICTS,
 }
 
-const PasswordsImporterElementBase =
-    UserUtilMixinLit(I18nMixinLit(CrLitElement));
+const PasswordsImporterElementBase = UserUtilMixin(I18nMixinLit(CrLitElement));
 
 export class PasswordsImporterElement extends PasswordsImporterElementBase {
   static get is() {
@@ -198,7 +197,7 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
           this.selectFileHelper_();
         }
       }, 200);
-    });
+    }, TrustedVaultUnlockDialogSource.IMPORT);
   }
 
   protected isState_(state: DialogState): boolean {
@@ -229,7 +228,7 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
       if (this.isAccountStoreUser && this.isState_(DialogState.NO_DIALOG)) {
         this.dialogState_ = DialogState.STORE_PICKER;
       }
-    });
+    }, TrustedVaultUnlockDialogSource.IMPORT);
   }
 
   private closeDialog_() {
@@ -301,7 +300,7 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
   protected onSelectFileClick_() {
     this.executeIfTrustedVaultUnlocked(() => {
       this.selectFileHelper_();
-    });
+    }, TrustedVaultUnlockDialogSource.IMPORT);
   }
 
   private async continueImportHelper_(selectedIds: number[]) {
@@ -448,13 +447,6 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
       default:
         assertNotReached();
     }
-  }
-
-  private getSuccessTipHtml_(): TrustedHTML {
-    assert(this.results_);
-    return this.i18nAdvanced(
-        'importPasswordsSuccessTip',
-        {attrs: ['class'], substitutions: [this.results_.fileName]});
   }
 
   protected getCheckboxLabelHtml_(): TrustedHTML {

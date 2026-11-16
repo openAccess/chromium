@@ -5,8 +5,11 @@
 #ifndef CHROME_BROWSER_UI_TABS_OTHER_DEVICE_TABS_SUB_MENU_MODEL_H_
 #define CHROME_BROWSER_UI_TABS_OTHER_DEVICE_TABS_SUB_MENU_MODEL_H_
 
+#include <memory>
 #include <string>
+#include <vector>
 
+#include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -44,6 +47,9 @@ class OtherDeviceTabsSubMenuModel : public ui::SimpleMenuModel,
   // Populates the menu for the current state of `browser_`'s profile.
   void Build();
 
+  // Rebuilds the menu and notifies the delegate when foreign sessions change.
+  void OnForeignSessionUpdated();
+
   void OpenTab(const std::string& session_tag,
                SessionID tab_id,
                int event_flags);
@@ -59,6 +65,12 @@ class OtherDeviceTabsSubMenuModel : public ui::SimpleMenuModel,
 
   int next_menu_id_;
 
+  // Flyouts listing the tabs of a device that don't fit inline.
+  std::vector<std::unique_ptr<ui::SimpleMenuModel>> more_tabs_sub_menus_;
+
+  base::CallbackListSubscription foreign_session_updated_subscription_;
+
+  // Invalidated on every rebuild so stale favicon callbacks are dropped.
   base::WeakPtrFactory<OtherDeviceTabsSubMenuModel> favicon_weak_ptr_factory_{
       this};
 };

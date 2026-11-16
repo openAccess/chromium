@@ -261,8 +261,7 @@ public abstract class BrowserServicesIntentDataProvider {
     }
 
     /**
-     * @return The URL that should be used from this intent. Must be called only after native has
-     *     loaded.
+     * @return The URL that should be used from this intent.
      */
     public abstract @Nullable String getUrlToLoad();
 
@@ -865,10 +864,8 @@ public abstract class BrowserServicesIntentDataProvider {
     public void maybeAddAdditionalContentExtrasToOutboundIntent(
             Supplier<@Nullable Tab> tabProvider, Intent outboundIntent, int viewId) {}
 
-    /**
-     * @return Whether the CCT tab switcher is enabled.
-     */
-    public boolean isCctTabSwitcherEnabled() {
+    /** Returns Whether Tabbed CCT is enabled. */
+    public boolean isTabbedCctEnabled() {
         return false;
     }
 

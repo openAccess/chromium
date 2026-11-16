@@ -2,20 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <Foundation/Foundation.h>
+#import "chrome/browser/ui/cocoa/applescript/browsercrapplication+applescript.h"
 
-#include <map>
+#include <Foundation/Foundation.h>
 
 #import "base/apple/foundation_util.h"
 #include "base/notimplemented.h"
 #import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
-#include "chrome/browser/ui/browser_window/public/desktop_browser_window_capabilities.h"
 #import "chrome/browser/ui/cocoa/applescript/bookmark_folder_applescript.h"
-#import "chrome/browser/ui/cocoa/applescript/browsercrapplication+applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/constants_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/error_applescript.h"
 #import "chrome/browser/ui/cocoa/applescript/window_applescript.h"
@@ -26,53 +22,26 @@ using bookmarks::BookmarkModel;
 
 @implementation BrowserCrApplication (AppleScriptAdditions)
 
-- (NSArray*)appleScriptWindows {
-  std::map<NSWindow*, BrowserWindowInterface*> browsers;
-  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-      [&](BrowserWindowInterface* browser) {
-        if (browser->capabilities()->IsAttemptingToCloseBrowser()) {
-          return true;
-        }
-
-        browsers.emplace(
-            browser->GetWindow()->GetNativeWindow().GetNativeNSWindow(),
-            browser);
-        return true;
-      });
-
-  NSMutableArray* result = [NSMutableArray array];
-  for (NSWindow* window in NSApp.orderedWindows) {
-    const auto& browser_it = browsers.find(window);
-    if (browser_it == browsers.end()) {
-      continue;
-    }
-
-    WindowAppleScript* aWindow =
-        [[WindowAppleScript alloc] initWithBrowser:browser_it->second];
-    [aWindow setContainer:self property:AppleScript::kWindowsProperty];
-    [result addObject:aWindow];
-  }
-
-  return result;
+- (NSArray<WindowAppleScript*>*)appleScriptWindows {
+  return AppleScript::GetWindows();
 }
 
 - (void)insertInAppleScriptWindows:(WindowAppleScript*)aWindow {
-  // This method gets called when a new window is created so
-  // the container and property are set here.
-  [aWindow setContainer:self property:AppleScript::kWindowsProperty];
+  // AppleScript has already created the window object, so no work needs to be
+  // done.
 }
 
 - (void)insertInAppleScriptWindows:(WindowAppleScript*)aWindow
                            atIndex:(int)index {
-  // This method gets called when a new window is created so
-  // the container and property are set here.
-  [aWindow setContainer:self property:AppleScript::kWindowsProperty];
-  // Note: AppleScript is 1-based.
-  index--;
-  aWindow.orderedIndex = @(index);
+  // AppleScript has already created the window object, so move it to the
+  // correct index. Note that while AppleScript is 1-based, this call is
+  // scripting KVC, so that offset has already been handled and the index passed
+  // in is 0-based.
+  AppleScript::InsertWindowAtIndex(aWindow, index);
 }
 
 - (void)removeFromAppleScriptWindowsAtIndex:(int)index {
+  // Closing a window is executed as a command; is this ever actually called?
   [self.appleScriptWindows[index] handlesCloseScriptCommand:nil];
 }
 
@@ -124,19 +93,6 @@ using bookmarks::BookmarkModel;
 
 - (NSArray<BookmarkFolderAppleScript*>*)bookmarkFolders {
   return @[ self.otherBookmarks, self.bookmarksBar ];
-}
-
-- (void)insertInBookmarksFolders:(BookmarkFolderAppleScript*)aBookmarkFolder {
-  NOTIMPLEMENTED();
-}
-
-- (void)insertInBookmarksFolders:(BookmarkFolderAppleScript*)aBookmarkFolder
-                         atIndex:(int)index {
-  NOTIMPLEMENTED();
-}
-
-- (void)removeFromBookmarksFoldersAtIndex:(int)index {
-  NOTIMPLEMENTED();
 }
 
 @end

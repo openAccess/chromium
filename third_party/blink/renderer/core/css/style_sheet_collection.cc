@@ -40,6 +40,7 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -206,12 +207,18 @@ void StyleSheetCollection::PrepareUpdateActiveStyleSheets() {
 void StyleSheetCollection::UpdateMixins(
     const MediaQueryEvaluator& medium,
     HeapHashSet<Member<TreeScope>>& scopes_with_changed_mixins) {
+  if (!RuntimeEnabledFeatures::CSSMixinsEnabled()) {
+    return;
+  }
   TRACE_EVENT0("blink,blink_style", "StyleSheetCollection::updateMixins");
   MixinMap new_mixins;
   HeapHashMap<Member<StyleSheetContents>, uint64_t> new_mixin_cache_revisions;
   bool mixin_cache_revision_changed = false;
   for (auto& [css_sheet, rule_set] : pending_active_style_sheets_) {
     StyleSheetContents* contents = css_sheet->Contents();
+    if (!contents->HasMixinRules()) {
+      continue;
+    }
     const uint64_t revision = contents->MixinCacheRevision();
     auto old_revision = mixin_cache_revisions_.find(contents);
     mixin_cache_revision_changed |=

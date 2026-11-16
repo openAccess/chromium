@@ -30,6 +30,7 @@ class MockMediaSession : public MediaSession {
               OnPlayerPaused,
               (MediaSessionPlayerObserver * observer, int player_id),
               (override));
+  MOCK_METHOD(void, RebuildAndNotifyMediaPositionChanged, (), (override));
 
   MOCK_METHOD(void,
               DidReceiveAction,
@@ -87,6 +88,7 @@ class MockMediaSession : public MediaSession {
                GetMediaImageBitmapCallback callback),
               (override));
   MOCK_METHOD(void, ReportAutoPictureInPictureInfoChanged, (), (override));
+  MOCK_METHOD(void, RebuildAndNotifyMetadataChanged, (), (override));
   MOCK_METHOD(void, SeekTo, (base::TimeDelta seek_time), (override));
   MOCK_METHOD(void, ScrubTo, (base::TimeDelta seek_time), (override));
   MOCK_METHOD(void, EnterPictureInPicture, (), (override));

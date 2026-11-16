@@ -10,9 +10,7 @@
 #include "base/check_is_test.h"
 #include "base/time/default_tick_clock.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_surface_tab_helper.h"
-#include "chrome/browser/actor/actor_tab_data.h"
 #include "chrome/browser/actor/android/ui/actor_ui_tab_controller_android.h"
 #include "chrome/browser/android/media_state_observer.h"
 #include "chrome/browser/android/oom_intervention/oom_intervention_tab_helper.h"
@@ -32,7 +30,6 @@
 #include "chrome/browser/content_settings/request_desktop_site_web_contents_observer_android.h"
 #include "chrome/browser/content_settings/sound_content_setting_observer.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_tab_visit_tracker.h"
-#include "chrome/browser/enterprise/data_protection/data_protection_features.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/enterprise/net/enterprise_proxy_error_service_factory.h"
 #include "chrome/browser/enterprise/net/enterprise_proxy_tab_helper_delegate.h"
@@ -80,7 +77,6 @@
 #include "chrome/browser/page_info/page_info_features.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
-#include "chrome/browser/payments/web_payments_observer.h"
 #include "chrome/browser/permissions/one_time_permissions_tracker_helper.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_helper.h"
 #include "chrome/browser/plugins/plugin_observer_android.h"
@@ -89,6 +85,7 @@
 #include "chrome/browser/preloading/new_tab_page_preload/new_tab_page_preload_pipeline_manager.h"
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/no_state_prefetch_manager_factory.h"
 #include "chrome/browser/preloading/prefetch/no_state_prefetch/no_state_prefetch_tab_helper.h"
+#include "chrome/browser/preloading/prerender/prewarm_tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/resource_coordinator/tab_helper.h"
@@ -148,7 +145,6 @@
 #include "components/download/content/factory/navigation_monitor_factory.h"
 #include "components/download/content/public/download_navigation_observer.h"
 #include "components/enterprise/browser/reporting/reporting_features.h"
-#include "components/enterprise/data_protection/features.h"
 #include "components/enterprise/net/content/enterprise_proxy_tab_helper.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/history/content/browser/web_contents_top_sites_observer.h"
@@ -161,6 +157,7 @@
 #include "components/page_content_annotations/content/annotate_page_content_request.h"
 #include "components/page_content_annotations/content/page_content_annotations_web_contents_observer.h"
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
+#include "components/payments/content/web_payments_observer.h"
 #include "components/payments/core/features.h"
 #include "components/performance_manager/embedder/performance_manager_registry.h"
 #include "components/performance_manager/public/performance_manager.h"
@@ -210,15 +207,15 @@
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 #include "chrome/browser/enterprise/connectors/referrer_cache_utils.h"
 #include "chrome/browser/safe_browsing/chrome_safe_browsing_tab_observer_delegate.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/password_protection/chrome_password_reuse_detection_manager_client.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_service.h"
 #include "chrome/browser/safe_browsing/tailored_security/tailored_security_service_factory.h"
 #include "chrome/browser/safe_browsing/tailored_security/tailored_security_url_observer.h"
-#include "chrome/browser/safe_browsing/trigger_creator.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer.h"
+#include "chrome/browser/safe_browsing/triggers/trigger_creator.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer.h"
 #include "components/safe_browsing/content/browser/safe_browsing_tab_observer.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
 #include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/core/common/features.h"
 #endif
@@ -233,21 +230,6 @@ std::optional<int64_t> GetPageContentAnnotationsTabId(
     return tab->GetAndroidId();
   }
   return std::nullopt;
-}
-
-// The data protection controller drives all per-navigation enterprise data
-// protection work on Android: screenshot restrictions and tab title reporting
-// for URL filtering events. It is only useful for managed profiles, and only
-// when at least one of the features it powers is enabled.
-bool ShouldCreateDataProtectionController(Profile* profile) {
-  if (!enterprise_util::IsBrowserManaged(profile)) {
-    return false;
-  }
-  return base::FeatureList::IsEnabled(
-             enterprise_data_protection::
-                 kEnableAndroidEnterpriseScreenshotProtection) ||
-         base::FeatureList::IsEnabled(
-             enterprise_data_protection::kEnterpriseTabTitleReporting);
 }
 
 }  // namespace
@@ -320,6 +302,8 @@ TabFeatures::TabFeatures(content::WebContents* web_contents, Profile* profile) {
       GetUserDataFactory().CreateInstance<NewTabPagePreloadPipelineManager>(
           *tab, *tab, web_contents);
 
+  prewarm_tab_helper_ = PrewarmTabHelper::MaybeCreate(*tab, web_contents);
+
   if (base::FeatureList::IsEnabled(
           security_interstitials::features::kHttpsFirstDialogUi)) {
     ask_before_http_dialog_controller_ =
@@ -363,19 +347,15 @@ TabFeatures::TabFeatures(content::WebContents* web_contents, Profile* profile) {
   }
 
   if (base::FeatureList::IsEnabled(features::kGlicActor)) {
-    actor_tab_data_ =
-        GetUserDataFactory().CreateInstance<actor::ActorTabData>(*tab, tab);
     actor_surface_tab_helper_ =
         GetUserDataFactory().CreateInstance<actor::ActorSurfaceTabHelper>(*tab,
                                                                           *tab);
   }
 
-  auto* actor_service = actor::ActorKeyedService::Get(profile);
-  if (glic::GlicEnabling::IsProfileEligible(profile) && actor_service) {
+  if (actor::ui::ActorUiTabControllerAndroid::ShouldCreateForProfile(profile)) {
     actor_ui_tab_controller_ =
         GetUserDataFactory()
-            .CreateInstance<actor::ui::ActorUiTabControllerAndroid>(
-                *tab, *tab, actor_service);
+            .CreateInstance<actor::ui::ActorUiTabControllerAndroid>(*tab, *tab);
   }
 
   if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasksContext)) {
@@ -389,9 +369,15 @@ TabFeatures::TabFeatures(content::WebContents* web_contents, Profile* profile) {
       GetUserDataFactory().CreateInstance<lens::TabContextualizationController>(
           *tab, tab);
 
-  if (ShouldCreateDataProtectionController(profile)) {
-    data_protection_tab_controller_ = std::make_unique<
-        enterprise_data_protection::DataProtectionNavigationController>(tab);
+  // The data protection controller drives all per-navigation enterprise data
+  // protection work on Android: screenshot restrictions and tab title reporting
+  // for URL filtering events. It is only useful for managed profiles.
+  if (enterprise_util::IsBrowserManaged(profile)) {
+    data_protection_tab_controller_ =
+        GetUserDataFactory()
+            .CreateInstance<
+                enterprise_data_protection::DataProtectionNavigationController>(
+                *tab, tab);
   }
 
   enterprise_proxy_tab_helper_ =
@@ -433,10 +419,8 @@ TabFeatures::TabFeatures(content::WebContents* web_contents, Profile* profile) {
 
   contextual_cueing_helper_ = glic::ContextualCueingHelper::MaybeCreate(tab);
 
-  if (base::FeatureList::IsEnabled(features::kGlicMarketingAutoOpen)) {
-    glic_marketing_page_tab_helper_ =
-        std::make_unique<glic::GlicMarketingPageTabHelper>(web_contents);
-  }
+  glic_marketing_page_tab_helper_ =
+      glic::GlicMarketingPageTabHelper::MaybeCreate(web_contents);
   if (glic::GlicEnabling::IsProfileEligible(profile) &&
       base::FeatureList::IsEnabled(features::kGlicWarmOnGeminiWeb)) {
     glic_gemini_web_warming_observer_ =

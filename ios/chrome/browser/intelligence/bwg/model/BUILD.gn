@@ -2,6 +2,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+source_set("custom_ui") {
+  sources = [
+    "gemini_block_data_types.h",
+    "gemini_custom_ui_delegate.h",
+    "gemini_custom_ui_handler.h",
+    "gemini_custom_ui_handler.mm",
+    "gemini_custom_ui_view_provider.h",
+  ]
+  deps = [ "//base" ]
+  frameworks = [ "UIKit.framework" ]
+}
+
 source_set("model") {
   sources = [
     "bwg_link_opening_delegate.h",
@@ -29,7 +41,7 @@ source_set("model") {
     "gemini_session_delegate.h",
     "gemini_session_handler.h",
     "gemini_session_handler.mm",
-    "gemini_shared_tabs_delegate.h",
+    "gemini_shared_tabs_manager.h",
     "gemini_suggestion_delegate.h",
     "gemini_suggestion_handler.h",
     "gemini_suggestion_handler.mm",
@@ -89,6 +101,8 @@ source_set("browser_agent") {
     "gemini_browser_agent.mm",
     "gemini_browser_agent_observer_bridge.h",
     "gemini_browser_agent_observer_bridge.mm",
+    "gemini_shared_tabs_manager_impl.h",
+    "gemini_shared_tabs_manager_impl.mm",
   ]
   deps = [
     ":config",
@@ -102,7 +116,6 @@ source_set("browser_agent") {
     ":tab_helper",
     ":utils",
     "//base",
-    "//components/favicon/ios",
     "//components/feature_engagement/public",
     "//components/keyed_service/core",
     "//components/optimization_guide/proto:optimization_guide_proto",
@@ -125,8 +138,6 @@ source_set("browser_agent") {
     "//ios/chrome/browser/intelligence/bwg/utils:prefs",
     "//ios/chrome/browser/intelligence/features",
     "//ios/chrome/browser/intelligence/persist_tab_context/model",
-    "//ios/chrome/browser/intelligence/proto_wrappers",
-    "//ios/chrome/browser/intelligence/proto_wrappers:utils",
     "//ios/chrome/browser/omnibox/model/omnibox_focus",
     "//ios/chrome/browser/shared/coordinator/layout_guide",
     "//ios/chrome/browser/shared/coordinator/scene:scene_state_header",
@@ -152,7 +163,7 @@ source_set("browser_agent") {
     "//ios/chrome/browser/url_loading/model",
     "//ios/chrome/common/app_group",
     "//ios/public/provider/chrome/browser/bwg:gemini_api",
-    "//ui/gfx",
+    "//ios/web/public",
   ]
 }
 
@@ -196,6 +207,7 @@ source_set("tab_helper") {
     "//ios/chrome/browser/shared/public/features",
     "//ios/chrome/browser/shared/ui/symbols",
     "//ios/public/provider/chrome/browser/bwg:gemini_api",
+    "//ios/public/provider/chrome/browser/intelligence/proto_wrappers:proto_wrappers_api",
     "//ios/web/public",
     "//mojo/public/cpp/bindings",
   ]
@@ -293,6 +305,7 @@ source_set("gateway_manager") {
     "gemini_gateway_manager.mm",
   ]
   deps = [
+    ":custom_ui",
     ":model",
     "//base",
     "//components/feature_engagement/public",
@@ -352,12 +365,15 @@ source_set("utils") {
 source_set("test_support") {
   testonly = true
   sources = [
+    "fake_gemini_block_data_types.h",
+    "fake_gemini_block_data_types.mm",
     "fake_gemini_capabilities_manager.h",
     "fake_gemini_capabilities_manager.mm",
     "fake_gemini_service.h",
     "fake_gemini_service.mm",
   ]
   public_deps = [
+    ":custom_ui",
     ":gemini_capabilities_manager",
     ":gemini_service",
     "//ios/chrome/browser/intelligence/bwg/metrics",
@@ -373,6 +389,7 @@ source_set("unit_tests") {
     "gemini_capabilities_manager_factory_unittest.mm",
     "gemini_capabilities_manager_unittest.mm",
     "gemini_configuration_unittest.mm",
+    "gemini_custom_ui_handler_unittest.mm",
     "gemini_gateway_manager_unittest.mm",
     "gemini_link_opening_handler_unittest.mm",
     "gemini_page_context_unittest.mm",
@@ -381,6 +398,7 @@ source_set("unit_tests") {
     "gemini_service_factory_unittest.mm",
     "gemini_service_impl_unittest.mm",
     "gemini_session_handler_unittest.mm",
+    "gemini_shared_tabs_manager_impl_unittest.mm",
     "gemini_startup_configuration_unittest.mm",
     "gemini_suggestion_handler_unittest.mm",
     "gemini_tab_helper_unittest.mm",
@@ -475,6 +493,7 @@ source_set("unit_tests") {
     "//ios/chrome/common/app_group",
     "//ios/chrome/test:test_support",
     "//ios/chrome/test/app:test_support",
+    "//ios/chrome/test/providers/intelligence/proto_wrappers",
     "//ios/public/provider/chrome/browser/bwg:gemini_api",
     "//ios/web/find_in_page",
     "//ios/web/public/js_messaging",

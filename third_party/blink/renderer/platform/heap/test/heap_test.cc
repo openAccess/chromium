@@ -32,6 +32,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
@@ -98,22 +99,23 @@ class IntWrapper : public GarbageCollected<IntWrapper> {
 };
 std::atomic_int IntWrapper::destructor_calls_{0};
 
-struct IntWrapperHashTraits : GenericHashTraits<IntWrapper> {
-  static uint32_t GetHash(const IntWrapper& key) {
-    return HashInt(static_cast<uint32_t>(key.Value()));
+struct IntWrapperHashTraits : GenericHashTraits<Member<IntWrapper>> {
+  static uint32_t GetHash(const Member<IntWrapper>& key) {
+    return HashInt(static_cast<uint32_t>(key->Value()));
   }
 };
 
 static_assert(IsTraceableV<IntWrapper>,
               "IsTraceable<> template failed to recognize trace method.");
-static_assert(IsTraceableV<HeapVector<IntWrapper>>,
-              "HeapVector<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapDeque<IntWrapper>>,
-              "HeapDeque<IntWrapper> must be traceable.");
-static_assert(IsTraceableV<HeapHashSet<IntWrapper, IntWrapperHashTraits>>,
-              "HeapHashSet<IntWrapper> must be traceable.");
+static_assert(IsTraceableV<HeapVector<Member<IntWrapper>>>,
+              "HeapVector<Member<IntWrapper>> must be traceable.");
+static_assert(IsTraceableV<HeapDeque<Member<IntWrapper>>>,
+              "HeapDeque<Member<IntWrapper>> must be traceable.");
+static_assert(
+    IsTraceableV<HeapHashSet<Member<IntWrapper>, IntWrapperHashTraits>>,
+    "HeapHashSet<Member<IntWrapper>> must be traceable.");
 static_assert(IsTraceableV<HeapHashMap<int, Member<IntWrapper>>>,
-              "HeapHashMap<int, IntWrapper> must be traceable.");
+              "HeapHashMap<int, Member<IntWrapper>> must be traceable.");
 
 }  // namespace
 
@@ -2989,9 +2991,9 @@ class ThreadedClearOnShutdownTester : public ThreadedTesterBase {
   static HeapObjectSet& GetHeapObjectSet();
 
   static IntWrapper& ThreadSpecificIntWrapper() {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<IntWrapper>>,
-                                    int_wrapper, ());
-    Persistent<IntWrapper>& handle = *int_wrapper;
+    static base::NoDestructor<ThreadSpecific<Persistent<IntWrapper>>>
+        int_wrapper;
+    Persistent<IntWrapper>& handle = **int_wrapper;
     if (!handle) {
       handle = MakeGarbageCollected<IntWrapper>(42);
       LEAK_SANITIZER_IGNORE_OBJECT(&handle);
@@ -3028,9 +3030,9 @@ class ThreadedClearOnShutdownTester::HeapObject final
 
 ThreadedClearOnShutdownTester::WeakHeapObjectSet&
 ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<WeakHeapObjectSet>>,
-                                  singleton, ());
-  Persistent<WeakHeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<WeakHeapObjectSet>>>
+      singleton;
+  Persistent<WeakHeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<WeakHeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);
@@ -3040,9 +3042,9 @@ ThreadedClearOnShutdownTester::GetWeakHeapObjectSet() {
 
 ThreadedClearOnShutdownTester::HeapObjectSet&
 ThreadedClearOnShutdownTester::GetHeapObjectSet() {
-  DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Persistent<HeapObjectSet>>,
-                                  singleton, ());
-  Persistent<HeapObjectSet>& singleton_persistent = *singleton;
+  static base::NoDestructor<ThreadSpecific<Persistent<HeapObjectSet>>>
+      singleton;
+  Persistent<HeapObjectSet>& singleton_persistent = **singleton;
   if (!singleton_persistent) {
     singleton_persistent = MakeGarbageCollected<HeapObjectSet>();
     LEAK_SANITIZER_IGNORE_OBJECT(&singleton_persistent);

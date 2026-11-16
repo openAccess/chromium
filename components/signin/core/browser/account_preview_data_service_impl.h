@@ -62,6 +62,20 @@ class AccountPreviewDataServiceImpl : public AccountPreviewDataService,
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:AccountPreviewFetchTriggerCause)
 
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(AsyncPreferredAccountResult)
+  enum class AsyncPreferredAccountResult {
+    kCached = 0,
+    kFetchedWithResult = 1,
+    kFetchedWithoutResult = 2,
+    kTimeout = 3,
+    kCancelled = 4,
+    kMaxValue = kCancelled,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:AccountPreviewAsyncPreferredAccountResult)
+
   AccountPreviewDataServiceImpl(
       SigninClient* signin_client,
       IdentityManager* identity_manager,
@@ -148,7 +162,7 @@ class AccountPreviewDataServiceImpl : public AccountPreviewDataService,
   void RecordAccountsUsedForLastFetch();
   void OnAllFetchesCompleted(bool should_reset_periodic_timer);
   void OnAllAccountsFetchCanceled();
-  void FinalizeAllAccountsFetch();
+  void FinalizeAllAccountsFetch(bool fetch_completed);
   void OnSigninAllowedPrefChanged();
   void CreateAndStartRepeatingTimer();
   void ResetTimer();
@@ -245,7 +259,8 @@ class AccountPreviewDataServiceImpl : public AccountPreviewDataService,
   void OnPendingPreferredAccountRequestTimedOut(
       PendingPreferredAccountRequest* request);
   void ResolvePendingPreferredAccountRequests(
-      std::optional<AccountPreviewPreference> preference);
+      std::optional<AccountPreviewPreference> preference,
+      AsyncPreferredAccountResult result);
   // Requests originating from `GetPreferredAccountForSigninAsync()` that
   // wait for the preferred account computation to complete.
   std::vector<std::unique_ptr<PendingPreferredAccountRequest>>

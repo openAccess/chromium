@@ -75,6 +75,8 @@ static_library("test_support") {
   sources = [
     "fake_open_tabs_ui_delegate.cc",
     "fake_open_tabs_ui_delegate.h",
+    "fake_session_sync_service.cc",
+    "fake_session_sync_service.h",
     "mock_open_tabs_ui_delegate.cc",
     "mock_open_tabs_ui_delegate.h",
     "mock_session_sync_service.cc",
@@ -109,6 +111,7 @@ source_set("unit_tests") {
     "open_tabs_ui_delegate_impl_unittest.cc",
     "session_store_unittest.cc",
     "session_sync_bridge_unittest.cc",
+    "session_sync_prefs_unittest.cc",
     "sessions_global_id_mapper_unittest.cc",
     "synced_session_tracker_unittest.cc",
     "synced_session_unittest.cc",

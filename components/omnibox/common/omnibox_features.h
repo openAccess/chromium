@@ -7,6 +7,8 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 
 namespace omnibox {
 
@@ -127,6 +129,28 @@ BASE_DECLARE_FEATURE(kOmniboxFullWebUIDestroyWidgetOnHide);
 BASE_DECLARE_FEATURE(kOmniboxAimDestroyWidgetOnHide);
 BASE_DECLARE_FEATURE(kOmniboxWebUIDestroyWidgetOnHide);
 BASE_DECLARE_FEATURE(kOmniboxWebUIPopupShareAcrossWindows);
+// When true, memory pressure destroys the shared popups that are idle, so
+// the popup renderer process can exit while no popup is in use. On by default
+// on ChromeOS, where most devices have little memory.
+inline constexpr base::FeatureParam<bool>
+    kOmniboxWebUIPopupShareDropIdleOnMemoryPressure{
+        &kOmniboxWebUIPopupShareAcrossWindows, "drop_idle_on_memory_pressure",
+        BUILDFLAG(IS_CHROMEOS)};
+// When true, idle shared popups are destroyed from moderate memory pressure
+// on, not only under critical pressure.
+inline constexpr base::FeatureParam<bool>
+    kOmniboxWebUIPopupShareDropIdleOnModeratePressure{
+        &kOmniboxWebUIPopupShareAcrossWindows, "drop_idle_on_moderate_pressure",
+        false};
+// How long the idle classic or full popup of the browser window that was
+// activated last must have been hidden before memory pressure may drop it.
+// ChromeOS frees it after a minute; elsewhere it's kept, since the user is
+// likely to open it again.
+inline constexpr base::FeatureParam<base::TimeDelta>
+    kOmniboxWebUIPopupShareActiveWindowPopupIdleTimeout{
+        &kOmniboxWebUIPopupShareAcrossWindows,
+        "active_window_popup_idle_timeout",
+        BUILDFLAG(IS_CHROMEOS) ? base::Seconds(60) : base::TimeDelta::Max()};
 BASE_DECLARE_FEATURE(kOmniboxAimPopupRequireEligibility);
 BASE_DECLARE_FEATURE(kWebUISearchboxWithoutModelController);
 
@@ -293,6 +317,7 @@ extern const base::FeatureParam<bool>
     kVoiceSearchCoherenceSearchboxWithLiveTranscription;
 extern const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxAutoEndpoint;
 extern const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxHelperText;
+extern const base::FeatureParam<bool> kVoiceSearchCoherenceRealboxKeepLegacyUi;
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_DECLARE_FEATURE(kDiagnostics);
@@ -310,6 +335,14 @@ BASE_DECLARE_FEATURE(kOmniboxAndroidIntranetRedirect);
 // If enabled, the Omnibox, New Tab Page and toolbar mic buttons delegate voice
 // capture and transcription to the Android Google App Voice Plate.
 BASE_DECLARE_FEATURE(kOmniboxVoicePlateIntent);
+// If enabled, Omnibox suggestion icons are rasterized from the native
+// gfx::VectorIcon definitions (shared with desktop) instead of being sourced
+// from Android XML drawables.
+BASE_DECLARE_FEATURE(kOmniboxNativeVectorIcons);
+// If enabled, the AI Mode button in the desktop omnibox is stateful: it stays
+// visible in AI Mode, and turns into a send button once there is something to
+// submit.
+BASE_DECLARE_FEATURE(kOmniboxStatefulAiModeButton);
 #endif  // BUILDFLAG(IS_ANDROID)
 
 // If enabled, X-Geo headers are sent for all search navigations on all

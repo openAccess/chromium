@@ -30,7 +30,6 @@
 #include "chrome/browser/content_settings/page_specific_content_settings_delegate.h"
 #include "chrome/browser/custom_handlers/protocol_handler_registry_factory.h"
 #include "chrome/browser/download/download_request_limiter.h"
-#include "chrome/browser/infobars/infobar_features.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/media/webrtc/permission_bubble_media_access_handler.h"
 #include "chrome/browser/permissions/permission_actions_history_factory.h"
@@ -38,7 +37,6 @@
 #include "chrome/browser/permissions/quiet_notification_permission_ui_config.h"
 #include "chrome/browser/permissions/system/system_permission_settings.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/collected_cookies_infobar_delegate.h"
 #include "chrome/browser/ui/content_settings/content_setting_bubble_model_delegate.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/url_identity.h"
@@ -56,7 +54,6 @@
 #include "components/content_settings/core/common/content_settings_types.h"
 #include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
-#include "components/infobars/content/content_infobar_manager.h"
 #include "components/permissions/constants.h"
 #include "components/permissions/features.h"
 #include "components/permissions/permission_decision_auto_blocker.h"
@@ -101,7 +98,10 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "base/mac/mac_util.h"
+#include "chrome/browser/apps/app_shim/app_shim_manager_mac.h"
 #include "chrome/browser/permissions/system/system_media_capture_permissions_mac.h"
+#include "chrome/browser/web_applications/os_integration/mac/app_shim_registry.h"
+#include "chrome/browser/web_applications/web_app_tab_helper.h"
 #endif
 
 using base::UserMetricsAction;
@@ -915,14 +915,7 @@ void ContentSettingCookiesBubbleModel::CommitChanges() {
   // On some plattforms e.g. MacOS X it is possible to close a tab while the
   // cookies settings bubble is open. This resets the web contents to NULL.
   if (settings_changed()) {
-    if (infobars::IsInfoBarMigrated(
-            infobars::InfoBarDelegate::COLLECTED_COOKIES_INFOBAR_DELEGATE)) {
-      PageSpecificSiteDataDialogController::ShowCollectedCookiesInfoBar(
-          web_contents());
-    } else {
-      CollectedCookiesInfoBarDelegate::Create(
-          infobars::ContentInfoBarManager::FromWebContents(web_contents()));
-    }
+    PageSpecificSiteDataDialogController::ShowInfoBar(web_contents());
   }
   ContentSettingSingleRadioGroup::CommitChanges();
 }
@@ -1502,6 +1495,21 @@ ContentSettingNotificationsBubbleModel::ContentSettingNotificationsBubbleModel(
                                       ContentSettingsType::NOTIFICATIONS) {
   base::RecordAction(
       base::UserMetricsAction("ContentSettings.NotificationsDialog.Shown"));
+  if (std::optional<webapps::AppId> app_id =
+          web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
+              web_contents())) {
+    if (apps::AppShimManager* app_shim_manager = apps::AppShimManager::Get()) {
+      app_shim_manager->SynchronizeNotificationPermissionStatus(*app_id);
+    }
+    // `SynchronizeNotificationPermissionStatus()` is asynchronous, so this
+    // reads the status cached in `AppShimRegistry` prior to that sync. If macOS
+    // permission was already decided outside Chrome, clicking "Allow" will just
+    // cause the app shim to report the updated status without showing a prompt.
+    should_request_system_permission_ =
+        AppShimRegistry::Get()->GetNotificationPermissionStatusForApp(
+            *app_id) ==
+        AppShimRegistry::NotificationPermissionStatus::kNotDetermined;
+  }
   set_title(l10n_util::GetStringUTF16(IDS_NOTIFICATIONS_TURNED_OFF_IN_MACOS));
   AddListItem(ContentSettingBubbleModel::ListItem(
       &(features::IsRoundedIconsEnabled()
@@ -1511,8 +1519,19 @@ ContentSettingNotificationsBubbleModel::ContentSettingNotificationsBubbleModel(
       l10n_util::GetStringUTF16(IDS_TURNED_OFF), /*has_link=*/false,
       /*has_blocked_badge=*/false, 0));
   set_manage_text_style(ContentSettingBubbleModel::ManageTextStyle::kNone);
-  set_done_button_text(l10n_util::GetStringUTF16(IDS_OPEN_SETTINGS_LINK));
-  set_cancel_button_text(l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW));
+  set_done_button_text(l10n_util::GetStringUTF16(
+      should_request_system_permission_ ? IDS_PERMISSION_ALLOW
+                                        : IDS_OPEN_SETTINGS_LINK));
+  // Omit the "Don't allow" button when the Chrome NOTIFICATIONS setting cannot
+  // be modified by the user (e.g. force-allowed by policy). Keep
+  // `is_user_modifiable` true so `ContentSettingBubbleContents` does not
+  // relabel the primary "Allow" / "System settings" button to "Got it".
+  if (GetSettingManagedByUser(GetPage().GetMainDocument().GetLastCommittedURL(),
+                              ContentSettingsType::NOTIFICATIONS, GetProfile(),
+                              nullptr)) {
+    set_cancel_button_text(
+        l10n_util::GetStringUTF16(IDS_PERMISSION_DONT_ALLOW));
+  }
 }
 
 ContentSettingNotificationsBubbleModel::
@@ -1522,6 +1541,33 @@ ContentSettingNotificationsBubbleModel::
 }
 
 void ContentSettingNotificationsBubbleModel::OnDoneButtonClicked() {
+  if (!web_contents()) {
+    return;
+  }
+
+  if (should_request_system_permission_) {
+    base::RecordAction(base::UserMetricsAction(
+        "ContentSettings.NotificationsDialog.AllowClicked"));
+    if (std::optional<webapps::AppId> app_id =
+            web_app::WebAppTabHelper::GetAppIdForNotificationAttribution(
+                web_contents());
+        app_id.has_value()) {
+      if (apps::AppShimManager* app_shim_manager =
+              apps::AppShimManager::Get()) {
+        app_shim_manager->ShowNotificationPermissionRequest(
+            *app_id,
+            base::BindOnce([](mac_notifications::mojom::RequestPermissionResult
+                                  result) {
+              base::UmaHistogramEnumeration(
+                  "Notifications.Permissions.AppShim.OSPermissionRequestResult."
+                  "FromNotificationsBubble",
+                  result);
+            }));
+      }
+    }
+    return;
+  }
+
   base::RecordAction(base::UserMetricsAction(
       "ContentSettings.NotificationsDialog.OpenSystemSettingsClicked"));
   system_permission_settings::OpenSystemSettings(

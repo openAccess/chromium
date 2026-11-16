@@ -27,7 +27,7 @@ source_set("interactive_ui_tests") {
   deps = [
     ":test_support",
     "//ash",
-    "//chrome/app:generated_resources_grit",
+    "//ash/strings",
     "//chrome/test/base/ash/interactive:test_support",
     "//chrome/test/base/ash/interactive/network:test_support",
     "//chrome/test/base/ash/interactive/settings:test_support",
@@ -35,6 +35,7 @@ source_set("interactive_ui_tests") {
     "//chromeos/ash/components/dbus/shill",
     "//chromeos/ash/components/network",
     "//chromeos/ash/components/network:test_support",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//chromeos/components/onc:test_support",
     "//chromeos/strings:strings_grit",
     "//content/test:test_support",

@@ -80,7 +80,7 @@ class CONTENT_EXPORT WebContentsViewAura
  private:
   // Just the metadata from DropTargetEvent that's safe and cheap to copy to
   // help locate drop events in the callback.
-  struct DropMetadata {
+  struct CONTENT_EXPORT DropMetadata {
     explicit DropMetadata(const ui::DropTargetEvent& event);
 
     // Location local to WebContentsViewAura.
@@ -107,6 +107,7 @@ class CONTENT_EXPORT WebContentsViewAura
     OnPerformingDropContext(RenderWidgetHostImpl* target_rwh,
                             std::unique_ptr<DropData> drop_data,
                             DropMetadata drop_metadata,
+                            uint64_t drag_session_id,
                             std::unique_ptr<ui::OSExchangeData> data,
                             base::ScopedClosureRunner drop_exit_cleanup,
                             std::optional<gfx::PointF> transformed_pt,
@@ -120,6 +121,7 @@ class CONTENT_EXPORT WebContentsViewAura
     base::WeakPtr<RenderWidgetHostImpl> target_rwh;
     std::unique_ptr<DropData> drop_data;
     DropMetadata drop_metadata;
+    uint64_t drag_session_id;
     std::unique_ptr<ui::OSExchangeData> data;
     base::ScopedClosureRunner drop_exit_cleanup;
     std::optional<gfx::PointF> transformed_pt;
@@ -149,7 +151,7 @@ class CONTENT_EXPORT WebContentsViewAura
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragDropVirtualFilesOriginateFromRenderer);
   FRIEND_TEST_ALL_PREFIXES(
-      WebContentsViewAuraTest,
+      WebContentsViewAuraSessionIdTest,
       DragDropVirtualFilesNavigationObservedAcrossOverlappingDrops);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            DragDropVirtualFiles_DestroyDuringExtraction);
@@ -215,6 +217,24 @@ class CONTENT_EXPORT WebContentsViewAura
                            EndDragIsCalledAfterAsyncDrop);
   FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
                            StartDraggingMouseReleasedEndsDrag);
+  FRIEND_TEST_ALL_PREFIXES(
+      WebContentsViewAuraTest,
+      StartDraggingTouchNotPressedEndsDragWithoutCoordinates);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraTest,
+                           StartDraggingHiddenViewEndsDragWithoutCoordinates);
+  FRIEND_TEST_ALL_PREFIXES(
+      WebContentsViewAuraTest,
+      StartDraggingOutsideBoundsEndsDragWithoutCoordinates);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraSessionIdTest,
+                           DragEnterCallbackAfterExitEndsSourceDrag);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraSessionIdTest,
+                           DragTargetingCallbacksFromPreviousDragAreIgnored);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraSessionIdTest,
+                           RendererDragReplyFromPreviousSessionIsIgnored);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraSessionIdTest,
+                           OldDropCompletionDoesNotEndNewDrag);
+  FRIEND_TEST_ALL_PREFIXES(WebContentsViewAuraSessionIdTest,
+                           OldDropTargetingReplyDoesNotEndNewDrag);
 
   class WindowObserver;
 
@@ -227,7 +247,12 @@ class CONTENT_EXPORT WebContentsViewAura
                                                 const DropData& drop_data);
 
   virtual void EndDrag(base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
-                       ui::mojom::DragOperation op);
+                       ui::mojom::DragOperation op,
+                       bool drag_started);
+
+  void EndDragAfterNativeLoop(
+      base::WeakPtr<RenderWidgetHostImpl> source_rwh_weak_ptr,
+      ui::mojom::DragOperation op);
 
   void InstallOverscrollControllerDelegate(RenderWidgetHostViewAura* view);
 
@@ -279,6 +304,7 @@ class CONTENT_EXPORT WebContentsViewAura
   BackForwardTransitionAnimationManager*
   GetBackForwardTransitionAnimationManager() override;
   void DestroyBackForwardTransitionAnimationManager() override;
+  void CancelDrag() override;
 
   // Overridden from RenderViewHostDelegateView:
   void ShowContextMenu(RenderFrameHost& render_frame_host,
@@ -348,15 +374,18 @@ class CONTENT_EXPORT WebContentsViewAura
   aura::client::DragDropDelegate::DropCallback GetDropCallback(
       const ui::DropTargetEvent& event) override;
 
-  void DragEnteredCallback(DropMetadata flags,
+  void DragEnteredCallback(uint64_t drag_session_id,
+                           DropMetadata drop_metadata,
                            std::unique_ptr<DropData> drop_data,
                            base::WeakPtr<RenderWidgetHostViewBase> target,
                            std::optional<gfx::PointF> transformed_pt);
-  void DragUpdatedCallback(DropMetadata drop_metadata,
+  void DragUpdatedCallback(uint64_t drag_session_id,
+                           DropMetadata drop_metadata,
                            std::unique_ptr<DropData> drop_data,
                            base::WeakPtr<RenderWidgetHostViewBase> target,
                            std::optional<gfx::PointF> transformed_pt);
   void PerformDropCallback(DropMetadata drop_metadata,
+                           uint64_t drag_session_id,
                            std::unique_ptr<ui::OSExchangeData> data,
                            base::WeakPtr<RenderWidgetHostViewBase> target,
                            std::optional<gfx::PointF> transformed_pt);
@@ -377,15 +406,21 @@ class CONTENT_EXPORT WebContentsViewAura
   // Performs drop if it's run. Otherwise, it exits the drag. Returned by
   // GetDropCallback.
   void PerformDropOrExitDrag(
-      base::ScopedClosureRunner exit_drag,
+      base::ScopedClosureRunner drop_cancel_cleanup,
       DropMetadata drop_metadata,
+      uint64_t drag_session_id,
       std::unique_ptr<ui::OSExchangeData> data,
       ui::mojom::DragOperation& output_drag_op,
       std::unique_ptr<ui::LayerTreeOwner> drag_image_layer_owner);
 
-  // Run when drop callback completes to ensure |drag_in_progess_| is
-  // flipped to false before EndDrag runs.
-  void OnDropExit();
+  // Cleans up an unperformed deferred drop. With session tracking enabled,
+  // leaves newer drag state intact and runs only the owning session's pending
+  // source completion.
+  void OnDropCancelled(uint64_t drag_session_id);
+
+  // Completes cleanup for the matching drag session. Stale cleanup does not
+  // clear a newer drag's state.
+  void OnDropExit(uint64_t drag_session_id);
 
   // For unit testing, registers a callback for when a drop operation
   // completes.
@@ -424,6 +459,11 @@ class CONTENT_EXPORT WebContentsViewAura
   // done to send dragend event in EndDrag function.
   base::ScopedClosureRunner end_drag_runner_;
 
+  // Identifies the session that owns `end_drag_runner_`. A source drag may
+  // remain pending after a newer target drag starts, so stale drop cleanup runs
+  // only its matching runner without clearing the newer drag's state.
+  std::optional<uint64_t> end_drag_runner_session_id_;
+
   std::unique_ptr<aura::Window> window_;
 
   std::unique_ptr<WindowObserver> window_observer_;
@@ -439,7 +479,7 @@ class CONTENT_EXPORT WebContentsViewAura
   // like a change in the RWH.  This member is null when no drop is happening.
   std::unique_ptr<DropData> current_drag_data_;
 
-  raw_ptr<WebDragDestDelegate> drag_dest_delegate_;
+  raw_ptr<WebDragDestDelegate> drag_dest_delegate_ = nullptr;
 
   // We keep track of the RenderWidgetHost we're dragging over. If it changes
   // during a drag, we need to re-send the DragEnter message.
@@ -449,22 +489,29 @@ class CONTENT_EXPORT WebContentsViewAura
   // avoid sending the drag exited message after leaving the current view.
   GlobalRoutingID current_rvh_for_drag_;
 
-  // Holds the security info for the current drag.
+  // For drags INITIATED by this view: The security info for the drag, and if
+  // the drag is ongoing, a weak pointer to the aura::Window whose
+  // DragDropClient is being used to effect the drag.
   WebContentsViewDragSecurityInfo drag_security_info_;
+  base::WeakPtr<aura::Window> drag_drop_client_owner_;
 
   // Responsible for handling gesture-nav UI.
   std::unique_ptr<GestureNavSimple> gesture_nav_simple_;
 
-  // This is true when the drag is in process from the perspective of this
-  // class. It means it gets true when drag enters and gets reset when either
-  // drop happens or drag exits.
-  bool drag_in_progress_;
+  // For INCOMING drags: Set iff the drag is in process from the perspective of
+  // this class (i.e. set when drag enters, reset when either a drop happens or
+  // the drag exits).
+  bool drag_in_progress_ = false;
+
+  // Identifies the current drag lifecycle. Asynchronous callbacks capture this
+  // value and ignore results from an earlier drag.
+  uint64_t drag_session_id_ = 0;
 
   // Used to determine which enum value to fire for the "Event.DragDrop.Surface"
   // histogram.
   bool dropped_in_this_web_contents_ = false;
 
-  bool init_rwhv_with_null_parent_for_testing_;
+  bool init_rwhv_with_null_parent_for_testing_ = false;
 
   // Non-null when the WebContents is being captured for video.
   std::unique_ptr<aura::WindowTreeHost::VideoCaptureLock> video_capture_lock_;

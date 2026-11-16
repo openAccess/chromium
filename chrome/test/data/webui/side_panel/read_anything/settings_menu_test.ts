@@ -4,17 +4,16 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {KEYBOARD_NAV_CLASS, LINE_FOCUS_FEATURE_NAME, MENU_SHOW_DELAY_MS, SUBMENU_SHOW_DELAY_MS, userEducationProxyFactory} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {KEYBOARD_NAV_CLASS, MENU_SHOW_DELAY_MS, SUBMENU_SHOW_DELAY_MS} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import type {SettingsMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {ReadAnythingSettingsAction, SettingsOption, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {loadTimeData} from 'chrome-untrusted://resources/js/load_time_data.js';
-import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {keyDownOn} from 'chrome-untrusted://webui-test/keyboard_mock_interactions.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
-import {TestUserEducationMixedTrustHandler} from 'chrome-untrusted://webui-test/test_user_education_mixed_trust_handler.js';
 import {eventToPromise, microtasksFinished, whenAttributeIs} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {setupTestEnvironment} from './common.js';
+import {getItemsInMenu, setupTestEnvironment} from './common.js';
 import type {TestContentBrowserProxy} from './test_content_browser_proxy.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 import type {TestVisualBrowserProxy} from './test_visual_browser_proxy.js';
@@ -23,14 +22,11 @@ suite('SettingsMenuElement', () => {
   let settingsMenu: SettingsMenuElement;
   let contentBrowserProxy: TestContentBrowserProxy;
   let metrics: TestMetricsBrowserProxy;
-  let userEducationHandler: TestUserEducationMixedTrustHandler;
   let visualBrowserProxy: TestVisualBrowserProxy;
 
   function queryLinksToggle(): HTMLButtonElement|null {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
-    return menuItems.find(item => item.id === SettingsOption.LINKS) || null;
+    const items = getItemsInMenu(settingsMenu.$.lazyMenu);
+    return items.find(item => item.id === SettingsOption.LINKS) || null;
   }
 
   // Feature flags are read when the menu is built, so tests that flip a flag
@@ -53,8 +49,6 @@ suite('SettingsMenuElement', () => {
     contentBrowserProxy = result.contentBrowserProxy;
     metrics = result.metrics;
     visualBrowserProxy = result.visualBrowserProxy;
-    userEducationHandler = new TestUserEducationMixedTrustHandler();
-    userEducationProxyFactory.setInstance({handler: userEducationHandler});
     await createSettingsMenu();
   });
 
@@ -92,9 +86,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('open settings submenu event is fired when menu item is clicked', () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row');
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
 
     let submenuEvents = 0;
     settingsMenu.addEventListener(
@@ -112,8 +104,7 @@ suite('SettingsMenuElement', () => {
       () => {
         const actionMenu = settingsMenu.$.lazyMenu.get();
         actionMenu.classList.remove(KEYBOARD_NAV_CLASS);
-        const menuItems =
-            actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row');
+        const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
 
         let submenuEvents = 0;
         settingsMenu.addEventListener(
@@ -134,8 +125,7 @@ suite('SettingsMenuElement', () => {
   test('pointerenter is ignored while in keyboard-nav mode', () => {
     const actionMenu = settingsMenu.$.lazyMenu.get();
     assertTrue(actionMenu.classList.contains(KEYBOARD_NAV_CLASS));
-    const menuItems =
-        actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row');
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem = menuItems[0]!;
 
     let submenuEvents = 0;
@@ -157,9 +147,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.isImmersiveMode = true;
     await microtasksFinished();
 
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const ids = menuItems.map(item => item.id);
     assertTrue(ids.includes(SettingsOption.APPEARANCE));
     assertFalse(ids.includes(SettingsOption.COLOR));
@@ -167,9 +155,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('links event is fired when links item is clicked', async () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem = menuItems.find(item => item.id === SettingsOption.LINKS);
     assertTrue(!!targetItem);
 
@@ -179,9 +165,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('images event is fired when images item is clicked', async () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem =
         menuItems.find(item => item.id === SettingsOption.IMAGES);
     assertTrue(!!targetItem);
@@ -195,9 +179,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.isImmersiveMode = true;
     await microtasksFinished();
 
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem =
         menuItems.find(item => item.id === SettingsOption.PINNED_TO_TOOLBAR);
     assertTrue(!!targetItem);
@@ -209,9 +191,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('images toggle is disabled when speech is active', async () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem =
         menuItems.find(item => item.id === SettingsOption.IMAGES);
     assertTrue(!!targetItem);
@@ -231,9 +211,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('links toggle is disabled when speech is active', async () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem = menuItems.find(item => item.id === SettingsOption.LINKS);
     assertTrue(!!targetItem);
 
@@ -264,8 +242,7 @@ suite('SettingsMenuElement', () => {
   test('mouse leave clears open timer', () => {
     const actionMenu = settingsMenu.$.lazyMenu.get();
     actionMenu.classList.remove(KEYBOARD_NAV_CLASS);
-    const menuItems =
-        actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row');
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem = menuItems[0];
     assertTrue(!!targetItem);
 
@@ -298,9 +275,7 @@ suite('SettingsMenuElement', () => {
   test(
       'pressing escape or back horizontal arrow fires close submenu event',
       async () => {
-        const actionMenu = settingsMenu.$.lazyMenu.get();
-        const menuItems =
-            Array.from(actionMenu.querySelectorAll<HTMLElement>('.menu-row'));
+        const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
         const targetItem =
             menuItems.find(item => item.id === SettingsOption.FONT);
         assertTrue(!!targetItem);
@@ -323,8 +298,7 @@ suite('SettingsMenuElement', () => {
       async () => {
         const actionMenu = settingsMenu.$.lazyMenu.get();
         actionMenu.classList.remove(KEYBOARD_NAV_CLASS);
-        const menuItems =
-            Array.from(actionMenu.querySelectorAll<HTMLElement>('.menu-row'));
+        const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
         const fontItem =
             menuItems.find(item => item.id === SettingsOption.FONT);
         const colorItem =
@@ -383,8 +357,7 @@ suite('SettingsMenuElement', () => {
   test('closing the menu prevents open timer to be fired', () => {
     const actionMenu = settingsMenu.$.lazyMenu.get();
     actionMenu.classList.remove(KEYBOARD_NAV_CLASS);
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const targetItem =
         menuItems.find(item => item.id === SettingsOption.LINE_SPACING);
     assertTrue(!!targetItem);
@@ -481,9 +454,7 @@ suite('SettingsMenuElement', () => {
 
 
   test('menu items have correct aria-haspopup attribute', () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
 
     // The font menu item should have aria-haspopup="menu"
     const fontItem = menuItems.find(item => item.id === SettingsOption.FONT);
@@ -497,9 +468,7 @@ suite('SettingsMenuElement', () => {
   });
 
   test('menu items have correct aria-expanded attribute', async () => {
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    let menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    let menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
 
     // Submenu toggles should have aria-expanded false by default.
     let fontItem = menuItems.find(item => item.id === SettingsOption.FONT);
@@ -519,8 +488,7 @@ suite('SettingsMenuElement', () => {
     await whenAttributeIs(fontItem, 'aria-expanded', 'true');
     await microtasksFinished();
 
-    menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     fontItem = menuItems.find(item => item.id === SettingsOption.FONT)!;
     // The font item should now be expanded.
     assertEquals('true', fontItem.getAttribute('aria-expanded'));
@@ -541,9 +509,7 @@ suite('SettingsMenuElement', () => {
     assertTrue(!!linksPrevious);
     assertEquals('HR', linksPrevious.tagName);
 
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const imagesToggle =
         menuItems.find(item => item.id === SettingsOption.IMAGES);
     assertTrue(!!imagesToggle);
@@ -567,9 +533,7 @@ suite('SettingsMenuElement', () => {
         settingsMenu.remove();
         await createSettingsMenu();
 
-        let actionMenu = settingsMenu.$.lazyMenu.get();
-        let menuItems = Array.from(
-            actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+        let menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
 
         assertTrue(
             !!menuItems.find(item => item.id === SettingsOption.APPEARANCE));
@@ -579,9 +543,7 @@ suite('SettingsMenuElement', () => {
         settingsMenu.remove();
         await createSettingsMenu();
 
-        actionMenu = settingsMenu.$.lazyMenu.get();
-        menuItems = Array.from(
-            actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+        menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
         assertTrue(
             !menuItems.find(item => item.id === SettingsOption.APPEARANCE));
         assertTrue(!!menuItems.find(item => item.id === SettingsOption.COLOR));
@@ -592,9 +554,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.remove();
     await createSettingsMenu();
 
-    let actionMenu = settingsMenu.$.lazyMenu.get();
-    let menuItems = Array.from(
-        actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    let menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     let lineFocusItem =
         menuItems.find(item => item.id === SettingsOption.LINE_FOCUS);
     assertTrue(!!lineFocusItem);
@@ -612,9 +572,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.remove();
     await createSettingsMenu();
 
-    actionMenu = settingsMenu.$.lazyMenu.get();
-    menuItems = Array.from(
-        actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     lineFocusItem =
         menuItems.find(item => item.id === SettingsOption.LINE_FOCUS);
     assertTrue(!!lineFocusItem);
@@ -638,8 +596,7 @@ suite('SettingsMenuElement', () => {
     await createSettingsMenu();
 
     const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const translateItem = menuItems.find(
         item => item.id === SettingsOption.TRANSLATION_REQUESTED);
     assertTrue(!!translateItem);
@@ -656,9 +613,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.remove();
     await createSettingsMenu();
 
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const fontItem = menuItems.find(item => item.id === SettingsOption.FONT);
     const translateItem = menuItems.find(
         item => item.id === SettingsOption.TRANSLATION_REQUESTED);
@@ -687,8 +642,7 @@ suite('SettingsMenuElement', () => {
     await createSettingsMenu();
 
     const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const feedbackItem =
         menuItems.find(item => item.id === SettingsOption.SEND_FEEDBACK);
     assertTrue(!!feedbackItem);
@@ -708,9 +662,7 @@ suite('SettingsMenuElement', () => {
     settingsMenu.remove();
     await createSettingsMenu();
 
-    const actionMenu = settingsMenu.$.lazyMenu.get();
-    const menuItems =
-        Array.from(actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+    const menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
     const appearanceItem =
         menuItems.find(item => item.id === SettingsOption.APPEARANCE);
     const feedbackItem =
@@ -741,9 +693,7 @@ suite('SettingsMenuElement', () => {
         settingsMenu.remove();
         await createSettingsMenu();
 
-        let actionMenu = settingsMenu.$.lazyMenu.get();
-        let menuItems = Array.from(
-            actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+        let menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
         assertFalse(
             menuItems.some(item => item.id === SettingsOption.SEND_FEEDBACK));
 
@@ -751,58 +701,31 @@ suite('SettingsMenuElement', () => {
         settingsMenu.remove();
         await createSettingsMenu();
 
-        actionMenu = settingsMenu.$.lazyMenu.get();
-        menuItems = Array.from(
-            actionMenu.querySelectorAll<HTMLButtonElement>('.menu-row'));
+        menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
         assertFalse(
             menuItems.some(item => item.id === SettingsOption.SEND_FEEDBACK));
       });
 
   test(
-      'line focus item shows new badge when showLineFocusNewBadge is true',
+      'send feedback action does not show when canShowFeedback is false',
       async () => {
-        settingsMenu.showLineFocusNewBadge = true;
-        await microtasksFinished();
+        contentBrowserProxy.sendFeedbackEnabled = true;
+        loadTimeData.overrideValues({canShowFeedback: false});
+        settingsMenu.remove();
+        await createSettingsMenu();
 
-        const actionMenu = settingsMenu.$.lazyMenu.get();
-        const lineFocusItem = actionMenu.querySelector<HTMLButtonElement>(
-            `#${SettingsOption.LINE_FOCUS}`);
-        assertTrue(!!lineFocusItem);
+        let menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
+        assertFalse(
+            menuItems.some(item => item.id === SettingsOption.SEND_FEEDBACK));
 
-        const badge = lineFocusItem.querySelector('new-badge');
-        assertTrue(!!badge);
+        visualBrowserProxy.readAnythingImprovedUiEnabled = true;
+        settingsMenu.remove();
+        await createSettingsMenu();
+
+        menuItems = getItemsInMenu(settingsMenu.$.lazyMenu);
+        assertFalse(
+            menuItems.some(item => item.id === SettingsOption.SEND_FEEDBACK));
+
+        loadTimeData.overrideValues({canShowFeedback: true});
       });
-
-  test(
-      'line focus item hides new badge when showLineFocusNewBadge is false',
-      async () => {
-        settingsMenu.showLineFocusNewBadge = false;
-        await microtasksFinished();
-
-        const actionMenu = settingsMenu.$.lazyMenu.get();
-        const lineFocusItem = actionMenu.querySelector<HTMLButtonElement>(
-            `#${SettingsOption.LINE_FOCUS}`);
-        assertTrue(!!lineFocusItem);
-
-        const badge = lineFocusItem.querySelector('new-badge');
-        assertFalse(!!badge);
-      });
-
-  test('requests line focus new badge on open', async () => {
-    settingsMenu.close();
-    await microtasksFinished();
-    userEducationHandler.setNewBadgeResponse(LINE_FOCUS_FEATURE_NAME, true);
-    // Since setup creates a menu, clear out the number of requests.
-    userEducationHandler.reset();
-    const anchor = document.createElement('div');
-    document.body.appendChild(anchor);
-    assertEquals(0, userEducationHandler.getCallCount('maybeShowNewBadgeFor'));
-    settingsMenu.open(anchor);
-    await microtasksFinished();
-    assertEquals(1, userEducationHandler.getCallCount('maybeShowNewBadgeFor'));
-    assertDeepEquals(
-        [LINE_FOCUS_FEATURE_NAME],
-        userEducationHandler.getArgs('maybeShowNewBadgeFor'));
-    assertTrue(settingsMenu.showLineFocusNewBadge);
-  });
 });

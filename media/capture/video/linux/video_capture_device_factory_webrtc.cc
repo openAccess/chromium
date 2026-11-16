@@ -4,7 +4,10 @@
 
 #include "media/capture/video/linux/video_capture_device_factory_webrtc.h"
 
+#include <utility>
+
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "media/capture/capture_switches.h"
 #include "media/capture/video/linux/video_capture_device_webrtc.h"
@@ -96,29 +99,84 @@ void VideoCaptureDeviceFactoryWebRtc::FinishGetDevicesInfo() {
     }
   }
 
-  origin_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(std::move(callback_), devices_info));
+  for (auto& callback : std::exchange(callbacks_, {})) {
+    origin_task_runner_->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), devices_info));
+  }
 }
 
 void VideoCaptureDeviceFactoryWebRtc::GetDevicesInfo(
     GetDevicesInfoCallback callback) {
   DCHECK(thread_checker_.CalledOnValidThread());
   origin_task_runner_ = base::SingleThreadTaskRunner::GetCurrentDefault();
-  callback_ = std::move(callback);
+  const bool init_in_flight = !callbacks_.empty();
+  callbacks_.push_back(std::move(callback));
+  if (init_in_flight) {
+    return;
+  }
+
+  if (portal_retry_ == PortalRetry::kPending) {
+    portal_retry_ = PortalRetry::kUsed;
+    status_ = webrtc::VideoCaptureOptions::Status::UNINITIALIZED;
+  }
 
   if (status_ != webrtc::VideoCaptureOptions::Status::UNINITIALIZED) {
     FinishGetDevicesInfo();
     return;
   }
 
+  InitializeOptions();
+}
+
+void VideoCaptureDeviceFactoryWebRtc::InitializeOptions() {
   options_ = std::make_unique<webrtc::VideoCaptureOptions>();
-#if defined(WEBRTC_USE_PIPEWIRE)
   if (base::FeatureList::IsEnabled(features::kWebRtcPipeWireCamera)) {
     options_->set_allow_pipewire(true);
-  }
+#if BUILDFLAG(USE_DBUS)
+    OpenCameraPortal(
+        base::BindOnce(&VideoCaptureDeviceFactoryWebRtc::OnCameraPortalResult,
+                       weak_ptr_factory_.GetWeakPtr()));
+    return;
 #endif
+  }
+  InitOptions(webrtc::kInvalidPipeWireFd);
+}
+
+void VideoCaptureDeviceFactoryWebRtc::InitOptions(int pipewire_fd) {
+  options_->set_pipewire_fd(pipewire_fd);
   options_->Init(this);
 }
+
+#if BUILDFLAG(USE_DBUS)
+void VideoCaptureDeviceFactoryWebRtc::OpenCameraPortal(
+    dbus_xdg::CameraPortalCallback callback) {
+  camera_portal_ = std::make_unique<dbus_xdg::CameraPortal>();
+  camera_portal_->OpenPipeWireRemote(std::move(callback));
+}
+
+void VideoCaptureDeviceFactoryWebRtc::OnCameraPortalResult(
+    dbus_xdg::CameraPortalResult result) {
+  // The PipeWire fd stays valid without the D-Bus connection.
+  camera_portal_.reset();
+
+  if (result.has_value()) {
+    InitOptions(result->release());
+    return;
+  }
+  if (result.error() == dbus_xdg::CameraPortalError::kDenied) {
+    // The denial may come from GNOME Shell refusing the dialog while no window
+    // is focused, so allow one retry (see IsPortalRetryPending()).
+    if (portal_retry_ == PortalRetry::kUnused) {
+      portal_retry_ = PortalRetry::kPending;
+    }
+    OnInitialized(webrtc::VideoCaptureOptions::Status::DENIED);
+    return;
+  }
+  // The dedicated connection couldn't be used (e.g. in Flatpak or Snap, or
+  // without a matching .desktop file), so let WebRTC open the portal itself.
+  InitOptions(webrtc::kInvalidPipeWireFd);
+}
+#endif  // BUILDFLAG(USE_DBUS)
 
 void VideoCaptureDeviceFactoryWebRtc::OnInitialized(
     webrtc::VideoCaptureOptions::Status status) {
@@ -131,7 +189,10 @@ void VideoCaptureDeviceFactoryWebRtc::OnInitialized(
 }
 
 bool VideoCaptureDeviceFactoryWebRtc::IsAvailable() {
-  return status_ != webrtc::VideoCaptureOptions::Status::UNAVAILABLE;
+  // DENIED and ERROR mean that the Camera portal denied access, is missing or
+  // failed. V4L2 may still be able to open the cameras then.
+  return status_ == webrtc::VideoCaptureOptions::Status::UNINITIALIZED ||
+         status_ == webrtc::VideoCaptureOptions::Status::SUCCESS;
 }
 
 webrtc::VideoType

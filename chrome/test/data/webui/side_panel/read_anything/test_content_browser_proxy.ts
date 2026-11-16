@@ -26,8 +26,11 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   endNodeId: number = -1;
   endOffset: number = -1;
   hasValidSelectionVal: boolean = true;
+  transientUserActivation: boolean = true;
+  focused: boolean = true;
   readabilityEnabled: boolean = true;
   contentTranslated: boolean = false;
+  translationState: number = 0;
   translatePdfEnabled: boolean = false;
   sendFeedbackEnabled: boolean = false;
   textContentMap: {[key: number]: string} = {2: 'some text content'};
@@ -65,8 +68,11 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
       'getEndNodeId',
       'getEndOffset',
       'hasValidSelection',
+      'hasTransientUserActivation',
+      'hasFocus',
       'isReadabilityEnabled',
       'isContentTranslated',
+      'getTranslationState',
       'isTranslatePdfEnabled',
       'isReadAnythingSendFeedbackEnabled',
       'getActiveDistillationMethod',
@@ -135,6 +141,16 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
     return this.hasValidSelectionVal;
   }
 
+  hasTransientUserActivation(): boolean {
+    this.methodCalled('hasTransientUserActivation');
+    return this.transientUserActivation;
+  }
+
+  hasFocus(): boolean {
+    this.methodCalled('hasFocus');
+    return this.focused;
+  }
+
   isReadabilityEnabled(): boolean {
     this.methodCalled('isReadabilityEnabled');
     return this.readabilityEnabled;
@@ -143,6 +159,11 @@ export class TestContentBrowserProxy extends TestBrowserProxy implements
   isContentTranslated(): boolean {
     this.methodCalled('isContentTranslated');
     return this.contentTranslated;
+  }
+
+  getTranslationState(): number {
+    this.methodCalled('getTranslationState');
+    return this.translationState;
   }
 
   isTranslatePdfEnabled(): boolean {

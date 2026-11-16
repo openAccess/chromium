@@ -6,6 +6,8 @@
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/tracing/trace_event_analyzer.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/element.h"
@@ -17,6 +19,8 @@
 #include "third_party/blink/renderer/core/paint/timing/paint_timing_test_base.h"
 #include "third_party/blink/renderer/core/paint/timing/text_paint_timing_detector.h"
 #include "third_party/blink/renderer/core/scroll/scroll_types.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_request.h"
+#include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/persistent.h"
@@ -648,6 +652,137 @@ TEST_P(PaintTimingOutOfOrderPresentationTimeTest, CallbackOrder) {
   VerifyAndClearExpectations();
 }
 
+TEST_P(PaintTimingOutOfOrderPresentationTimeTest,
+       FirstContentfulPaintPresentedBeforeFirstPaint) {
+  DetachMockClient();
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*GetDocument().domWindow());
+
+  // Frame 1: Render a non-contentful first paint (background color only).
+  SetMainFrameBodyContent(R"HTML(
+    <div style="width: 100px; height: 100px; background-color: red;"></div>
+  )HTML");
+  SimulateRendering();
+
+  // Frame 2: Append and render contentful text.
+  AppendDivElementToBody("Text");
+  SimulateRendering();
+
+  // Set presentation times for frame 1 and frame 2.
+  SetPresentationTime();
+  SetPresentationTime();
+
+  // Invoke frame 2's presentation callback before frame 1's.
+  InvokeLastPresentationCallback();
+
+  // Frame 1's first-paint has not been flushed yet (with
+  // kPaintTimingWaitForPresentationFrameIndex disabled, frame 2 already flushed
+  // first-contentful-paint; with it enabled, frame 2 waits for frame 1). In
+  // either case, FirstPaintTiming() should be null and must not crash.
+  EXPECT_EQ(performance->FirstPaintTiming(), nullptr);
+  if (IsWaitForPresentationFrameIndexEnabled()) {
+    EXPECT_THAT(performance->getEntriesByType(performance_entry_names::kPaint),
+                IsEmpty());
+  } else {
+    PerformanceEntryVector paint_entries =
+        performance->getEntriesByType(performance_entry_names::kPaint);
+    ASSERT_EQ(paint_entries.size(), 1u);
+    EXPECT_EQ(paint_entries[0]->name(),
+              performance_entry_names::kFirstContentfulPaint);
+  }
+
+  // Invoke frame 1's presentation callback.
+  InvokeLastPresentationCallback();
+
+  ASSERT_NE(performance->FirstPaintTiming(), nullptr);
+  EXPECT_EQ(performance->FirstPaintTiming()->name(),
+            performance_entry_names::kFirstPaint);
+
+  PerformanceEntryVector paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 2u);
+  EXPECT_EQ(paint_entries[0]->name(), performance_entry_names::kFirstPaint);
+  EXPECT_EQ(paint_entries[1]->name(),
+            performance_entry_names::kFirstContentfulPaint);
+}
+
+class PaintTimingSimTest : public SimTest {
+ public:
+  PaintTimingSimTest()
+      : SimTest(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
+    feature_list_.InitAndDisableFeature(
+        kPaintTimingWaitForPresentationFrameIndex);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// End-to-end SimTest without MockPaintTimingCallbackManager:
+// Frame 1 paints a non-contentful element and swaps (raster=true), so its
+// presentation callback is queued in LayerTreeView awaiting Viz presentation
+// feedback (NotifyDidPresentCompositorFrame).
+// Frame 2 paints contentful text and commits without swapping (raster=false,
+// triggering BreakSwapPromises(SWAP_FAILS)), so
+// ReportTimeSwapPromise::DidNotSwap immediately runs Frame 2's
+// first-contentful-paint callback before Frame 1's first-paint callback.
+TEST_F(PaintTimingSimTest,
+       FirstContentfulPaintSwapFailureBeforeFirstPaintPresented) {
+  SimRequest main_resource("https://example.com/test.html", "text/html");
+  LoadURL("https://example.com/test.html");
+  main_resource.Complete(R"HTML(
+    <!DOCTYPE html>
+    <div style="width: 100px; height: 100px; background-color: red;"></div>
+  )HTML");
+
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*GetDocument().domWindow());
+
+  // Frame 1: Paints non-contentful background div in the viewport and swaps.
+  // Its presentation callback waits in LayerTreeView for
+  // NotifyDidPresentCompositorFrame.
+  task_environment().FastForwardBy(base::Milliseconds(16));
+  Compositor().BeginFrame(/*time_delta_in_seconds=*/0.016, /*raster=*/true);
+  task_environment().FastForwardBy(base::Milliseconds(16));
+  EXPECT_EQ(performance->FirstPaintTiming(), nullptr);
+  EXPECT_THAT(performance->getEntriesByType(performance_entry_names::kPaint),
+              IsEmpty());
+
+  // Frame 2: Append contentful text and commit without drawing (raster=false),
+  // which breaks Frame 2's SwapPromise with SWAP_FAILS and immediately runs
+  // Frame 2's presentation callback while Frame 1's callback is still waiting
+  // in LayerTreeView for Viz presentation feedback.
+  Element* div = GetDocument().CreateRawElement(html_names::kDivTag);
+  div->AppendChild(GetDocument().createTextNode("Text"));
+  GetDocument().body()->AppendChild(div);
+
+  task_environment().FastForwardBy(base::Milliseconds(16));
+  Compositor().BeginFrame(/*time_delta_in_seconds=*/0.016, /*raster=*/false);
+  task_environment().FastForwardBy(base::Milliseconds(16));
+
+  // Frame 2's first-contentful-paint is now reported, while Frame 1's
+  // first-paint is still waiting for Viz presentation feedback.
+  PerformanceEntryVector paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 1u);
+  EXPECT_EQ(paint_entries[0]->name(),
+            performance_entry_names::kFirstContentfulPaint);
+  EXPECT_EQ(performance->FirstPaintTiming(), nullptr);
+
+  // Now Viz reports presentation feedback for Frame 1 with a later timestamp.
+  task_environment().FastForwardBy(base::Milliseconds(16));
+  viz::FrameTimingDetails timing_details;
+  timing_details.presentation_feedback = gfx::PresentationFeedback(
+      base::TimeTicks::Now(), base::Milliseconds(16), 0);
+  GetWebFrameWidget().LastCreatedFrameSink()->NotifyDidPresentCompositorFrame(
+      1, timing_details);
+  task_environment().FastForwardBy(base::Milliseconds(16));
+
+  ASSERT_NE(performance->FirstPaintTiming(), nullptr);
+  EXPECT_EQ(performance->FirstPaintTiming()->name(),
+            performance_entry_names::kFirstPaint);
+}
+
 TEST_P(PaintTimingOutOfOrderPresentationTimeTest, TestInOrderHistogram) {
   // Histograms are only logged with the feature enabled.
   if (!IsWaitForPresentationFrameIndexEnabled()) {
@@ -1124,6 +1259,124 @@ TEST_F(PaintTimingTest, ClearPaintTimingOnWindowReuse) {
                     performance_entry_names::kLargestContentfulPaint)
                 .size(),
             1u);
+}
+
+TEST_F(PaintTimingTest, PaintTimingTraceEventPreservesMicrosecondPrecision) {
+  DetachMockClient();
+  base::test::TracingEnvironment tracing_environment;
+  trace_analyzer::Start("loading");
+
+  // 517320488 us is a timestamp where double round-tripping through seconds
+  // ((517320488 / 1e6) * 1e6) truncates to 517320487 us.
+  constexpr int64_t kPresentationUs = 517320488;
+  const base::TimeTicks presentation_time =
+      base::TimeTicks() + base::Microseconds(kPresentationUs);
+
+  SetMainFrameBodyContent("<div>Contentful text</div>");
+  SimulateRendering();
+  GetMockPaintTimingCallbackManager()->OnAnimationFramePresented(
+      presentation_time);
+  GetMockPaintTimingCallbackManager()->InvokeCallbacksForNextAnimationFrame();
+
+  auto analyzer = trace_analyzer::Stop();
+  for (const char* name : {"firstPaint", "firstContentfulPaint",
+                           "largestContentfulPaint::Candidate"}) {
+    SCOPED_TRACE(name);
+    trace_analyzer::TraceEventVector events;
+    analyzer->FindEvents(trace_analyzer::Query::EventNameIs(name), &events);
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_DOUBLE_EQ(events[0]->timestamp, kPresentationUs);
+  }
+}
+
+TEST_F(PaintTimingTest, PaintEventMilestonesAcrossFrames) {
+  DetachMockClient();
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*GetDocument().domWindow());
+
+  // Frame 1: Render a non-contentful first paint (background color only).
+  SetMainFrameBodyContent(R"HTML(
+    <div style="width: 100px; height: 100px; background-color: red;"></div>
+  )HTML");
+  SimulateRendering();
+  EXPECT_FALSE(GetPaintTiming().FirstPaintRendered().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstPaintForMetrics().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstContentfulPaint().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstImagePaint().is_null());
+
+  SimulatePresentationTime();
+  const base::TimeTicks fp_presentation =
+      GetPaintTiming().FirstPaintForMetrics();
+  EXPECT_FALSE(fp_presentation.is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstContentfulPaint().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstImagePaint().is_null());
+  PerformanceEntryVector paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 1u);
+  EXPECT_EQ(paint_entries[0]->name(), performance_entry_names::kFirstPaint);
+
+  // Frame 2: Append contentful text. Only kFirstContentfulPaint should be
+  // queued and reported; kFirstPaint must not be re-reported.
+  Element* text_div = GetDocument().CreateRawElement(html_names::kDivTag);
+  To<HTMLElement>(text_div)->setInnerText("Contentful text");
+  GetDocument().body()->AppendChild(text_div);
+  SimulateRenderingAndPresentationTime();
+  const base::TimeTicks fcp_presentation =
+      GetPaintTiming().FirstContentfulPaint();
+  EXPECT_EQ(GetPaintTiming().FirstPaintForMetrics(), fp_presentation);
+  EXPECT_GT(fcp_presentation, fp_presentation);
+  EXPECT_TRUE(GetPaintTiming().FirstImagePaint().is_null());
+  paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 2u);
+  EXPECT_EQ(paint_entries[0]->name(), performance_entry_names::kFirstPaint);
+  EXPECT_EQ(paint_entries[1]->name(),
+            performance_entry_names::kFirstContentfulPaint);
+
+  // Frame 3: Append a loaded image. Only kFirstImagePaint should be queued and
+  // reported; existing FP/FCP timestamps and PerformancePaintTiming entries
+  // must remain unchanged.
+  Element* img = GetDocument().CreateRawElement(html_names::kImgTag);
+  img->setAttribute(html_names::kIdAttr, AtomicString("img"));
+  GetDocument().body()->AppendChild(img);
+  SetImageContent("img", 50, 50);
+  SimulateRenderingAndPresentationTime();
+  EXPECT_EQ(GetPaintTiming().FirstPaintForMetrics(), fp_presentation);
+  EXPECT_EQ(GetPaintTiming().FirstContentfulPaint(), fcp_presentation);
+  EXPECT_GT(GetPaintTiming().FirstImagePaint(), fcp_presentation);
+  EXPECT_EQ(
+      performance->getEntriesByType(performance_entry_names::kPaint).size(),
+      2u);
+}
+
+TEST_F(PaintTimingTest, FirstImagePaintReportsAllPaintEventsInSingleFrame) {
+  DetachMockClient();
+  WindowPerformance* performance =
+      DOMWindowPerformance::performance(*GetDocument().domWindow());
+
+  SetMainFrameBodyContent(R"HTML(
+    <img id="target" width="100" height="100" />
+  )HTML");
+  SetImageContent("target", 100, 100);
+
+  SimulateRendering();
+  EXPECT_TRUE(GetPaintTiming().FirstPaintForMetrics().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstContentfulPaint().is_null());
+  EXPECT_TRUE(GetPaintTiming().FirstImagePaint().is_null());
+
+  SimulatePresentationTime();
+  const base::TimeTicks fp_presentation =
+      GetPaintTiming().FirstPaintForMetrics();
+  EXPECT_FALSE(fp_presentation.is_null());
+  EXPECT_EQ(GetPaintTiming().FirstContentfulPaint(), fp_presentation);
+  EXPECT_EQ(GetPaintTiming().FirstImagePaint(), fp_presentation);
+
+  PerformanceEntryVector paint_entries =
+      performance->getEntriesByType(performance_entry_names::kPaint);
+  ASSERT_EQ(paint_entries.size(), 2u);
+  EXPECT_EQ(paint_entries[0]->name(), performance_entry_names::kFirstPaint);
+  EXPECT_EQ(paint_entries[1]->name(),
+            performance_entry_names::kFirstContentfulPaint);
 }
 
 }  // namespace blink

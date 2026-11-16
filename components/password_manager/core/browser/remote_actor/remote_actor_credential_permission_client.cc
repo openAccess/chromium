@@ -18,9 +18,10 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
 #include "components/password_manager/core/browser/password_manager_metrics_util.h"
+#include "components/password_manager/core/browser/remote_actor/remote_actor_config.h"
 #include "components/password_manager/core/browser/remote_actor/remote_actor_request_helper.h"
 #include "components/password_manager/core/browser/remote_actor/remote_actor_switches.h"
-#include "components/password_manager/core/common/remote_actor/remote_actor_features.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_credential_sharing_policy.h"
 #include "components/signin/public/base/oauth_consumer_id.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -34,8 +35,6 @@ namespace {
 constexpr char kAgenticPermissionServiceUrlBase[] =
     "https://agenticpermission.pa.googleapis.com/";
 
-// TODO(crbug.com/537160937): Consider if any other policy should be
-// considered for this feature.
 constexpr net::NetworkTrafficAnnotationTag kRemotePermissionTrafficAnnotation =
     net::DefineNetworkTrafficAnnotation("remote_actor_permission_service",
                                         R"(
@@ -65,23 +64,23 @@ constexpr net::NetworkTrafficAnnotationTag kRemotePermissionTrafficAnnotation =
             email: "anki-team@google.com"
           }
         }
-        last_reviewed: "2026-08-27"
+        last_reviewed: "2026-11-05"
       }
       policy {
         cookies_allowed: NO
         setting:
           "This feature does not have a Chrome setting. It is enabled when the "
-          "user consents to password sharing on Gemini Web and explicitly "
-          "selects a password to share."
+          "user consents to password sharing on Gemini Web or Google Search "
+          "and explicitly selects a password to share."
         chrome_policy {
           GeminiSparkSettings {
             GeminiSparkSettings: 1
           }
+          AIModeSettings {
+            AIModeSettings: 1
+          }
         }
       })");
-
-// Namespace ID for Spark conversations.
-constexpr int kSparkConversationIdNamespace = 30;
 
 std::string CreateGrantPasswordRequestBody(
     const RemoteActorCredentialPermissionClient::PasswordPermission& permission,
@@ -153,15 +152,21 @@ void RemoteActorCredentialPermissionClient::GrantPasswordPermission(
     const PasswordPermission& permission,
     GrantPasswordPermissionCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  const std::string oauth_client_id =
-      !permission.actor_oauth_client_id.empty()
-          ? permission.actor_oauth_client_id
-          : features::kRemoteActorOAuthClientId.Get();
-  const int task_namespace_id =
-      permission.task_namespace_id.value_or(kSparkConversationIdNamespace);
+  std::string oauth_client_id = permission.actor_oauth_client_id;
+  std::optional<int> task_namespace_id = permission.task_namespace_id;
+  if (oauth_client_id.empty() || !task_namespace_id.has_value()) {
+    RemoteActorConfig default_config =
+        GetRemoteActorConfig(RemoteActorType::kGemini);
+    if (oauth_client_id.empty()) {
+      oauth_client_id = std::move(default_config.oauth_client_id);
+    }
+    if (!task_namespace_id.has_value()) {
+      task_namespace_id = default_config.task_namespace_id;
+    }
+  }
   url::Origin origin = url::Origin::Create(GURL(permission.web_origin));
   if (permission.task_id.empty() || oauth_client_id.empty() ||
-      task_namespace_id <= 0 || origin.opaque()) {
+      *task_namespace_id <= 0 || origin.opaque()) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), false));
     return;
@@ -170,7 +175,7 @@ void RemoteActorCredentialPermissionClient::GrantPasswordPermission(
   GURL url(base::StrCat(
       {GetEndpointUrlBase(), "v1/permissions:update?allow_missing=true"}));
   std::string post_data = CreateGrantPasswordRequestBody(
-      permission, oauth_client_id, task_namespace_id);
+      permission, oauth_client_id, *task_namespace_id);
 
   StartRequest(std::make_unique<RemoteActorRequest>(
       identity_manager_, url, "POST", post_data,

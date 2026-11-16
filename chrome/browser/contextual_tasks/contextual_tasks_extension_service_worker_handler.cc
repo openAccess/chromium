@@ -46,6 +46,8 @@ const char* GetSearchToClientMessageName(
       return "OpenLinkInSidePanelMode";
     case lens::SearchToClientMessage::kOnPageChanged:
       return "OnPageChanged";
+    case lens::SearchToClientMessage::kOnInputPlateStateChanged:
+      return "OnInputPlateStateChanged";
     case lens::SearchToClientMessage::EVENT_MESSAGE_NOT_SET:
       return "UnknownSearchToClientMessage";
   }
@@ -67,6 +69,8 @@ const char* GetClientToSearchMessageName(
       return "OnContextStateChanged";
     case lens::ClientToSearchMessage::kOpenThreadsView:
       return "OpenThreadsView";
+    case lens::ClientToSearchMessage::kOnReopenedViaToolbarButton:
+      return "OnReopenedViaToolbarButton";
     case lens::ClientToSearchMessage::EVENT_MESSAGE_NOT_SET:
       return "UnknownClientToSearchMessage";
   }

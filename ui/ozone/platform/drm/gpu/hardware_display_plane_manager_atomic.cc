@@ -15,11 +15,13 @@
 
 #include "base/compiler_specific.h"
 #include "base/containers/flat_set.h"
+#include "base/feature_list.h"
 #include "base/files/platform_file.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/trace_event/trace_event.h"
+#include "ui/display/display_features.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/gpu_fence_handle.h"
 #include "ui/ozone/platform/drm/common/drm_util.h"
@@ -471,9 +473,9 @@ bool HardwareDisplayPlaneManagerAtomic::DisableOverlayPlanes(
       HardwareDisplayPlaneAtomic* atomic_plane =
           static_cast<HardwareDisplayPlaneAtomic*>(plane);
       atomic_plane->AssignPlaneProps(
-          nullptr, 0, 0, gfx::Rect(), gfx::Rect(), gfx::Rect(),
-          gfx::OVERLAY_TRANSFORM_NONE, gfx::ColorSpace(),
-          base::kInvalidPlatformFile, DRM_FORMAT_INVALID, false);
+          0, 0, gfx::Rect(), gfx::Rect(), gfx::OVERLAY_TRANSFORM_NONE,
+          gfx::ColorSpace(), base::kInvalidPlatformFile, DRM_FORMAT_INVALID,
+          false);
       atomic_plane->SetPlaneProps(atomic_property_set.get());
     }
     ret = drm_->CommitProperties(atomic_property_set.get(),
@@ -525,9 +527,9 @@ bool HardwareDisplayPlaneManagerAtomic::SetPlaneData(
   }
 
   if (!atomic_plane->AssignPlaneProps(
-          drm_, crtc_id, framebuffer_id, crtc_rect, src_rect,
-          overlay.damage_rect, overlay.plane_transform, overlay.color_space,
-          fence_fd, overlay.buffer->framebuffer_pixel_format(),
+          crtc_id, framebuffer_id, crtc_rect, src_rect, overlay.plane_transform,
+          overlay.color_space, fence_fd,
+          overlay.buffer->framebuffer_pixel_format(),
           overlay.buffer->is_original_buffer())) {
     return false;
   }

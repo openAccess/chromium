@@ -324,6 +324,18 @@ TEST_F(ComputedStyleTest, ViewTransitionScopeUsedContainment) {
   }
 }
 
+TEST_F(ComputedStyleTest, OverscrollContainerForcedLayoutContainment) {
+  const ComputedStyle* initial_style = InitialComputedStyle();
+  EXPECT_FALSE(initial_style->ContainsLayout());
+
+  ComputedStyleBuilder builder(*initial_style);
+  builder.SetHasLayoutContainmentForOverscrollContainer(true);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  EXPECT_EQ(style->Contain(), kContainsNone);
+  EXPECT_TRUE(style->ContainsLayout());
+}
+
 TEST_F(ComputedStyleTest, IsStackingContextWithoutContainmentAfterClone) {
   ComputedStyleBuilder builder1 = CreateComputedStyleBuilder();
   builder1.SetForcesStackingContext(true);
@@ -1212,6 +1224,26 @@ TEST_F(ComputedStyleTest, InheritedVariableNames) {
   EXPECT_EQ(2u, style->GetVariableNames().size());
   EXPECT_TRUE(style->GetVariableNames().Contains("--a"));
   EXPECT_TRUE(style->GetVariableNames().Contains("--b"));
+}
+
+TEST_F(ComputedStyleTest, PrivateVariablesNotEnumerated) {
+  const AtomicString name = PropertyRegistry::AllocatePrivatePropertyName();
+  CSSVariableData* data = css_test_helpers::CreateVariableData("green");
+  const CSSValue* value = CSSIdentifierValue::Create(CSSValueID::kGreen);
+  ComputedStyleBuilder builder = CreateComputedStyleBuilder();
+  builder.SetVariableData(name, data, /*is_inherited_property=*/true);
+  builder.SetVariableValue(name, value, /*is_inherited_property=*/true);
+  builder.SetVariableData(AtomicString("--public"), data,
+                          /*is_inherited_property=*/true);
+  const ComputedStyle* style = builder.TakeStyle();
+
+  EXPECT_EQ(data, style->GetVariableData(name));
+  EXPECT_EQ(value, style->InheritedPrivateVariables().GetValue(name).value_or(
+                       nullptr));
+  EXPECT_FALSE(style->InheritedVariables().GetData(name).has_value());
+  EXPECT_FALSE(style->InheritedVariables().GetValue(name).has_value());
+  ASSERT_EQ(1u, style->GetVariableNamesCount());
+  EXPECT_EQ(AtomicString("--public"), style->GetVariableNames()[0]);
 }
 
 TEST_F(ComputedStyleTest, NonInheritedVariableNames) {

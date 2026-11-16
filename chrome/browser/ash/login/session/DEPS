@@ -33,7 +33,6 @@ include_rules = [
   "+chrome/browser/ash/floating_workspace",
   "+chrome/browser/ash/guest_os",
   "+chrome/browser/ash/hats",
-  "+chrome/browser/ash/logging",
   "+chrome/browser/ash/login",
   "+chrome/browser/ash/net",
   "+chrome/browser/ash/phonehub",
@@ -61,7 +60,6 @@ include_rules = [
   "+chrome/browser/ui/ash",
   "+chrome/browser/ui/startup",
   "+chrome/browser/ui/webui/ash",
-  "+chrome/common/logging_chrome.h",
 ]
 
 specific_include_rules = {

@@ -30,7 +30,7 @@
 #include "ui/events/event_switches.h"
 #include "ui/events/keycodes/keyboard_code_conversion_x.h"
 #include "ui/gfx/geometry/point3_f.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/future.h"
 
 // Constants for checking if a data type lies in the range of CMT/Touch data
@@ -185,6 +185,21 @@ bool DeviceDataManagerX11::IsXInput2Available() const {
 }
 
 void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
+  const XDeviceList& dev_list =
+      ui::DeviceListCacheX11::GetInstance()->GetXDeviceList(connection);
+  if (!IsXInput2Available()) {
+    UpdateDeviceListFromLists(connection, dev_list, {});
+    return;
+  }
+  UpdateDeviceListFromLists(
+      connection, dev_list,
+      ui::DeviceListCacheX11::GetInstance()->GetXI2DeviceList(connection));
+}
+
+void DeviceDataManagerX11::UpdateDeviceListFromLists(
+    x11::Connection* connection,
+    const XDeviceList& dev_list,
+    const XIDeviceList& info_list) {
   cmt_devices_.clear();
   touchpads_.clear();
   stylus_.clear();
@@ -195,24 +210,44 @@ void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
   scroll_data_.clear();
   last_seen_valuator_.clear();
 
-  // Find all the touchpad devices.
-  const XDeviceList& dev_list =
-      ui::DeviceListCacheX11::GetInstance()->GetXDeviceList(connection);
-  x11::Atom xi_touchpad = x11::GetAtom("TOUCHPAD");
+  // Classify devices from XInput 1 device type atoms. Touchpads (on evdev),
+  // touchscreens, and tablet pucks/pads (on libinput/wacom) may expose an
+  // "Abs Pressure" valuator without being pens, while styluses without pressure
+  // or tilt axes only expose "Abs X" and "Abs Y" valuators alongside a
+  // stylus/eraser/tablet device type.
+  x11::Atom xi_touchpad = connection->GetAtom("TOUCHPAD");
+  x11::Atom xi_touchscreen = connection->GetAtom("TOUCHSCREEN");
+  x11::Atom xi_stylus = connection->GetAtom("STYLUS");
+  x11::Atom xi_eraser = connection->GetAtom("ERASER");
+  x11::Atom xi_tablet = connection->GetAtom("TABLET");
+  x11::Atom xi_cursor = connection->GetAtom("CURSOR");
+  x11::Atom xi_pad = connection->GetAtom("PAD");
+  base::flat_set<x11::Input::DeviceId> xi_stylus_devices;
+  base::flat_set<x11::Input::DeviceId> non_stylus_devices;
   for (const auto& device : dev_list) {
-    if (device.device_type == xi_touchpad)
-      touchpads_.insert(static_cast<x11::Input::DeviceId>(device.device_id));
+    const auto device_id = static_cast<x11::Input::DeviceId>(device.device_id);
+    if (device.device_type == xi_touchpad) {
+      touchpads_.insert(device_id);
+      non_stylus_devices.insert(device_id);
+    } else if (device.device_type == xi_touchscreen ||
+               device.device_type == xi_cursor ||
+               device.device_type == xi_pad) {
+      non_stylus_devices.insert(device_id);
+    } else if (device.device_type == xi_stylus ||
+               device.device_type == xi_eraser ||
+               device.device_type == xi_tablet) {
+      xi_stylus_devices.insert(device_id);
+    }
   }
 
-  if (!IsXInput2Available())
+  if (info_list.empty()) {
     return;
+  }
 
   // Update the structs with new valuator information
-  const XIDeviceList& info_list =
-      ui::DeviceListCacheX11::GetInstance()->GetXI2DeviceList(connection);
   base::flat_map<x11::Atom, DataType> atom_to_data_type;
   for (const auto& map_entry : kAtomNameToDataType) {
-    atom_to_data_type[x11::GetAtom(map_entry.name)] = map_entry.type;
+    atom_to_data_type[connection->GetAtom(map_entry.name)] = map_entry.type;
   }
 
   for (const auto& info : info_list) {
@@ -225,16 +260,20 @@ void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
       continue;
     }
 
-    bool possible_stylus = false;
+    const auto deviceid = info.deviceid;
+    bool possible_stylus = xi_stylus_devices.contains(deviceid);
+    bool not_stylus = non_stylus_devices.contains(deviceid);
     bool possible_cmt = false;
     bool not_cmt = false;
-    const auto deviceid = info.deviceid;
 
     for (const auto& device_class : info.classes) {
-      if (device_class.valuator.has_value())
+      if (device_class.valuator.has_value()) {
         ++valuator_count_[deviceid];
-      else if (device_class.scroll.has_value())
+      } else if (device_class.scroll.has_value()) {
         not_cmt = true;
+      } else if (device_class.touch.has_value()) {
+        not_stylus = true;
+      }
     }
 
     // Skip devices that don't use any valuator
@@ -249,17 +288,23 @@ void DeviceDataManagerX11::UpdateDeviceList(x11::Connection* connection) {
       if (device_class.valuator.has_value()) {
         auto dt = UpdateValuatorClassDevice(*device_class.valuator,
                                             atom_to_data_type, deviceid);
-        if (IsStylusDataType(dt))
+        // Do not treat "Abs X" / "Abs Y" alone as stylus indicators, since
+        // absolute mice (remote desktop, VMs, XWayland pointers) expose them.
+        if (IsStylusDataType(dt) && dt != DT_STYLUS_POSITION_X &&
+            dt != DT_STYLUS_POSITION_Y) {
           possible_stylus = true;
+        }
         if (IsCMTDataType(dt))
           possible_cmt = true;
       } else if (device_class.scroll.has_value()) {
         UpdateScrollClassDevice(*device_class.scroll, deviceid);
       }
     }
+    UpdateScrollClassValuators(deviceid, info.classes);
 
-    if (possible_stylus)
+    if (possible_stylus && !not_stylus) {
       stylus_.insert(deviceid);
+    }
 
     if (possible_cmt && !not_cmt)
       cmt_devices_.insert(deviceid);
@@ -577,14 +622,56 @@ void DeviceDataManagerX11::GetScrollClassOffsets(const x11::Event& x11_event,
 void DeviceDataManagerX11::InvalidateScrollClasses(
     x11::Input::DeviceId device_id) {
   if (device_id == kAllDevices) {
+    if (scroll_data_.empty()) {
+      return;
+    }
     for (auto& i : scroll_data_) {
       i.second.horizontal.seen = false;
       i.second.vertical.seen = false;
     }
   } else {
-    if (ScrollInfo* info = base::FindOrNull(scroll_data_, device_id)) {
-      info->horizontal.seen = false;
-      info->vertical.seen = false;
+    ScrollInfo* info = base::FindOrNull(scroll_data_, device_id);
+    if (!info) {
+      return;
+    }
+    info->horizontal.seen = false;
+    info->vertical.seen = false;
+  }
+
+  if (!IsXInput2Available()) {
+    return;
+  }
+
+  const auto query_id =
+      device_id == kAllDevices ? x11::Input::DeviceId::All : device_id;
+  if (auto reply =
+          x11::Connection::Get()->xinput().XIQueryDevice(query_id).Sync()) {
+    for (const auto& info : reply->infos) {
+      UpdateScrollClassValuators(info.deviceid, info.classes);
+    }
+  }
+}
+
+void DeviceDataManagerX11::UpdateScrollClassValuators(
+    x11::Input::DeviceId device_id,
+    const std::vector<x11::Input::DeviceClass>& classes) {
+  ScrollInfo* info = base::FindOrNull(scroll_data_, device_id);
+  if (!info) {
+    return;
+  }
+  info->horizontal.seen = false;
+  info->vertical.seen = false;
+  for (const auto& device_class : classes) {
+    if (!device_class.valuator.has_value()) {
+      continue;
+    }
+    const auto& valuator = *device_class.valuator;
+    if (valuator.number == info->vertical.number) {
+      info->vertical.position = Fp3232ToDouble(valuator.value);
+      info->vertical.seen = true;
+    } else if (valuator.number == info->horizontal.number) {
+      info->horizontal.position = Fp3232ToDouble(valuator.value);
+      info->horizontal.seen = true;
     }
   }
 }
@@ -709,7 +796,10 @@ void DeviceDataManagerX11::SetDeviceListForTest(
   valuator_count_.clear();
   valuator_lookup_.clear();
   data_type_lookup_.clear();
+  scroll_data_.clear();
   last_seen_valuator_.clear();
+  stylus_.clear();
+  touchpads_.clear();
 
   for (auto deviceid : touchscreen) {
     InitializeValuatorsForTest(static_cast<x11::Input::DeviceId>(deviceid),

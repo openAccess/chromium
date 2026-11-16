@@ -576,8 +576,9 @@ void ProxyMain::BeginMainFrame(
   // there are some scenarios where the post lifecycle steps are run above, via
   // WillBeginImplCommit.
   layer_tree_host_->DidBeginMainFrame();
-  if (blocking)
+  if (blocking) {
     layer_tree_host_->CommitComplete(source_frame_number, commit_timestamps);
+  }
   layer_tree_host_->RecordEndOfFrameMetrics(
       begin_main_frame_start_time,
       begin_main_frame_state->active_sequence_trackers);
@@ -714,6 +715,11 @@ void ProxyMain::SetShouldWarmUp() {
   ImplThreadTaskRunner()->PostTask(
       FROM_HERE, base::BindOnce(&ProxyImpl::SetShouldWarmUpOnImpl,
                                 base::Unretained(proxy_impl_.get())));
+}
+
+void ProxyMain::NotifyOutOfBandFrame() {
+  DCHECK(IsMainThread());
+  proxy_impl_->NotifyOutOfBandFrameOnMain();
 }
 
 void ProxyMain::SetNeedsAnimate(BeginMainFrameReason reason, bool urgent) {

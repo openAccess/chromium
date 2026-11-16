@@ -140,11 +140,6 @@ chromium-metrics-reviews@google.com.
   <variant name="Regular"/>
 </variants>
 
-<variants name="SiteRelation">
-  <variant name="CrossSite"/>
-  <variant name="SameSite"/>
-</variants>
-
 <variants name="TracedMethod">
   <variant name="AgentSchedulingGroup.CreateFrame"
       summary="AgentSchedulingGroup::CreateFrame()"/>
@@ -248,7 +243,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="BackForwardCache.AllSites.HistoryNavigationOutcome.BlocklistedFeature"
-    enum="WebSchedulerTrackedFeature" expires_after="2027-03-07">
+    enum="WebSchedulerTrackedFeature" expires_after="2027-05-09">
   <owner>fergal@chromium.org</owner>
   <owner>bfcache-dev@chromium.org</owner>
   <summary>
@@ -302,7 +297,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="BackForwardCache.AllSites.HistoryNavigationOutcome.NotRestoredReason"
-    enum="BackForwardCacheNotRestoredReason" expires_after="2027-03-07">
+    enum="BackForwardCacheNotRestoredReason" expires_after="2027-05-09">
   <owner>fergal@chromium.org</owner>
   <owner>bfcache-dev@chromium.org</owner>
   <summary>
@@ -412,21 +407,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram
-    name="BackForwardCache.Experimental.UnexpectedIPCMessagePostedToCachedFrame.TimeUntilIPCReceived"
-    units="ms" expires_after="2024-07-07">
-  <owner>fergal@chromium.org</owner>
-  <owner>bfcache-dev@chromium.org</owner>
-  <summary>
-    Duration between start of page being stored in the back-forward cache and
-    when the unexpected IPC call is received by a frame while in the cache.
-
-    Recorded when an IPC task is posted to frames that have already been stored
-    in the back-forward cache, after a 15 second delay to account for completion
-    of all freezing-related operations.
-  </summary>
-</histogram>
-
 <histogram name="BackForwardCache.History.EntryMatch"
     enum="BackForwardCacheEntryMatchResult" expires_after="2027-04-11">
   <owner>annasato@chromium.org</owner>
@@ -478,7 +458,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="BackForwardCache.HistoryNavigationOutcome.BlocklistedFeature"
-    enum="WebSchedulerTrackedFeature" expires_after="2027-03-07">
+    enum="WebSchedulerTrackedFeature" expires_after="2027-05-09">
   <owner>fergal@chromium.org</owner>
   <owner>bfcache-dev@chromium.org</owner>
   <summary>
@@ -514,7 +494,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="BackForwardCache.HistoryNavigationOutcome.DisabledForRenderFrameHostReason2"
     enum="BackForwardCacheDisabledForRenderFrameHostReason2"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>fergal@chromium.org</owner>
   <owner>bfcache-dev@chromium.org</owner>
   <summary>
@@ -564,33 +544,6 @@ chromium-metrics-reviews@google.com.
     This is recorded when back-forward cache is enabled for this navigation
     (back-forward cache feature is enabled and the domain is in the scope of the
     experiment).
-  </summary>
-</histogram>
-
-<histogram
-    name="BackForwardCache.HistoryNavigationOutcome.RelatedActiveContents.Count2"
-    units="count" expires_after="2024-09-01">
-  <owner>rakina@chromium.org</owner>
-  <owner>bfcache-dev@chromium.org</owner>
-  <summary>
-    When navigating back to a page in the session history and the
-    BackForwardCache wasn't used because of other active WebContents objects in
-    the BrowsingInstance, this records the number of other active pages/related
-    active contents using the same BrowsingInstance.
-  </summary>
-</histogram>
-
-<histogram
-    name="BackForwardCache.HistoryNavigationOutcome.RelatedActiveContents.IsPotentiallySyncAccessible2"
-    enum="RelatedActiveContentsSyncAccessInfo" expires_after="2024-09-01">
-  <owner>rakina@chromium.org</owner>
-  <owner>bfcache-dev@chromium.org</owner>
-  <summary>
-    When navigating back to a page in the session history and the
-    BackForwardCache wasn't used because of other active WebContents objects in
-    the BrowsingInstance, this Records whether the page was potentially
-    synchronously accessible by other pages/related active contents using the
-    same BrowsingInstance, at the time the page was navigated away from.
   </summary>
 </histogram>
 
@@ -652,21 +605,6 @@ chromium-metrics-reviews@google.com.
     &quot;PageSeen&quot; will be recorded; if the page is egligible to be stored
     in the back forward cache, &quot;PageStored&quot; will be recorded.
   </summary>
-</histogram>
-
-<histogram name="BackForwardCache.ProcessReuse.{SiteRelation}" units="count"
-    expires_after="2024-09-01">
-  <owner>rakina@chromium.org</owner>
-  <owner>bfcache-dev@chromium.org</owner>
-  <summary>
-    Whether a back/forward cached page shares the same process as the page that
-    we're navigating to (i.e. whether the new active page reuses the process of
-    the back/forward cached page).
-
-    Recorded when navigating away from a page, after the navigation commits and
-    we're about to put the previous page into the back/forward cache.
-  </summary>
-  <token key="SiteRelation" variants="SiteRelation"/>
 </histogram>
 
 <histogram name="BackForwardCache.Pruning.NumberOfBackForwardCacheEntries"
@@ -783,16 +721,6 @@ chromium-metrics-reviews@google.com.
     AndroidSpareRendererNavigationThrottle::WillStartRequest is called. The UMA
     will only be sent if the Android spare renderer feature and the navigation
     throttle for the Android spare renderer are enabled.
-  </summary>
-</histogram>
-
-<histogram name="Navigation.AnonymousIframeIsSandboxed" enum="Boolean"
-    expires_after="2023-10-01">
-  <owner>arthursonzogni@chromium.org</owner>
-  <owner>chrome-security-owp-team@google.com</owner>
-  <summary>
-    Record whether iframe with the anonymous attribute contains sandboxed
-    document or not.
   </summary>
 </histogram>
 
@@ -930,26 +858,10 @@ chromium-metrics-reviews@google.com.
   <owner>xiaochenzh@chromium.org</owner>
   <owner>shivanisha@chromium.org</owner>
   <summary>
-    For navigation requests with FLEDGE or SharedStorage generated urn:uuid,
-    record whether it is rendered in a fenced frame or iframe. Recorded when
-    navigation requests begin (i.e. during
-    NavigationRequest::BeginNavigation()).
+    For navigation requests with browser-mapped urn:uuid, record whether it is
+    rendered in a fenced frame or iframe. Recorded when navigation requests
+    begin (i.e. during NavigationRequest::BeginNavigation()).
   </summary>
-</histogram>
-
-<histogram name="Navigation.CodeCacheTime.{CodeCacheType}" units="ms"
-    expires_after="2023-06-15">
-  <owner>cduvall@chromium.org</owner>
-  <owner>jam@chromium.org</owner>
-  <summary>
-    Measures how long it takes to fetch from the code cache. Logged every time
-    the code cache is fetched for the navigation body or a resource.
-  </summary>
-  <token key="CodeCacheType">
-    <variant name="MainFrame"/>
-    <variant name="Resource"/>
-    <variant name="Subframe"/>
-  </token>
 </histogram>
 
 <histogram
@@ -1371,21 +1283,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Navigation.GestureTransition.ScreenshotCacheSize" units="MB"
-    expires_after="2026-12-20">
-  <owner>acondor@google.com</owner>
-  <owner>liuwilliam@google.com</owner>
-  <owner>baranerf@google.com</owner>
-  <owner>chrome-seamless-core@google.com</owner>
-  <improvement direction="LOWER_IS_BETTER"/>
-  <summary>
-    The amount of memory usage by the screenshots captured for predictive back.
-    Recorded at Poisson sampled time intervals continuously, regardless of user
-    gesture, with a mean of 5 minutes on Android and 30 minutes on other
-    platforms.
-  </summary>
-</histogram>
-
 <histogram name="Navigation.GestureTransition.{Scenario}"
     enum="NavigationRequestSchemeType" expires_after="M140">
   <owner>lazzzis@google.com</owner>
@@ -1407,7 +1304,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Navigation.GetFrameHostForNavigation" units="ms"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>rakina@chromium.org</owner>
   <owner>chrome-security-architecture@google.com</owner>
   <summary>
@@ -1595,16 +1492,6 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
-<histogram name="Navigation.IsSameBrowsingInstance"
-    enum="NavigationIsSameBrowsingInstance" expires_after="2025-05-04">
-  <owner>arthursonzogni@chromium.org</owner>
-  <owner>clamy@chromium.org</owner>
-  <owner>nasko@chromium.org</owner>
-  <summary>
-    Whether a main frame navigation led to a change of BrowsingInstance or not.
-  </summary>
-</histogram>
-
 <histogram name="Navigation.IsSameSiteInstance{NavigationFrameType}"
     enum="NavigationIsSameSiteInstance" expires_after="2027-01-24">
   <owner>arthursonzogni@chromium.org</owner>
@@ -1772,7 +1659,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Navigation.MainFrameProfileType2" enum="BrowserProfileType"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>dullweber@chromium.org</owner>
   <owner>chrome-privacy-core@google.com</owner>
   <summary>
@@ -2027,46 +1914,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram
-    name="Navigation.PendingCommit.BlockedCommitCount.{RegularOrMHTMLType}"
-    units="count" expires_after="2023-12-31">
-  <owner>dcheng@chromium.org</owner>
-  <owner>rakina@chromium.org</owner>
-  <summary>
-    Records how many attempts to assign a final RenderFrameHost for a navigation
-    were blocked due to a pre-existing speculative RenderFrameHost being in the
-    kPendingCommit state. Collected when the navigation commits in
-    DidCommitNavigation().
-  </summary>
-  <token key="RegularOrMHTMLType" variants="RegularOrMHTMLType"/>
-</histogram>
-
-<histogram name="Navigation.PendingCommit.BlockedCount.{RegularOrMHTMLType}"
-    units="count" expires_after="2023-12-31">
-  <owner>dcheng@chromium.org</owner>
-  <owner>rakina@chromium.org</owner>
-  <summary>
-    Records how many attempts to assign RenderFrameHost (initial or final) for a
-    navigation were blocked due to a pre-existing speculative RenderFrameHost
-    being in the kPendingCommit state. Collected when the navigation commits in
-    DidCommitNavigation().
-  </summary>
-  <token key="RegularOrMHTMLType" variants="RegularOrMHTMLType"/>
-</histogram>
-
-<histogram
-    name="Navigation.PendingCommit.DidBlockGetFrameHostForNavigation.{RegularOrMHTMLType}"
-    enum="Boolean" expires_after="2023-12-31">
-  <owner>dcheng@chromium.org</owner>
-  <owner>rakina@chromium.org</owner>
-  <summary>
-    Records whether any calls to `GetFrameHostForNavigation()` that failed due
-    to a pre-existing speculative RenderFrameHost being in the kPendingCommit
-    state. Collected when the navigation commits in DidCommitNavigation().
-  </summary>
-  <token key="RegularOrMHTMLType" variants="RegularOrMHTMLType"/>
-</histogram>
-
 <histogram name="Navigation.PendingCommit.Duration.{RegularOrMHTMLType}"
     units="ms" expires_after="2026-03-15">
   <owner>dcheng@chromium.org</owner>
@@ -2078,46 +1925,6 @@ chromium-metrics-reviews@google.com.
     navigation commits in DidCommitNavigation().
   </summary>
   <token key="RegularOrMHTMLType" variants="RegularOrMHTMLType"/>
-</histogram>
-
-<histogram name="Navigation.Preconnect.PreresolveJobQueueingTime" units="ms"
-    expires_after="2023-08-08">
-  <owner>alexilin@chromium.org</owner>
-  <owner>blundell@chromium.org</owner>
-  <owner>lizeb@chromium.org</owner>
-  <owner>pasko@chromium.org</owner>
-  <summary>
-    Measures the amount of time that a requested preresolve job spends queueing
-    before being executed (e.g., due to a max # of preconnects being in flight).
-    Recorded for each presolve job.
-  </summary>
-</histogram>
-
-<histogram name="Navigation.Preconnect.ResolveHostCallbackQueueingTime"
-    units="ms" expires_after="2023-06-04">
-  <owner>alexilin@chromium.org</owner>
-  <owner>blundell@chromium.org</owner>
-  <owner>lizeb@chromium.org</owner>
-  <owner>pasko@chromium.org</owner>
-  <summary>
-    Measures the amount of time that the task corresponding to the completion
-    callback for a host resolution performed as part of navigation preconnect
-    spent being queued before executing. Recorded for each host resolution.
-  </summary>
-</histogram>
-
-<histogram name="Navigation.Preconnect.ResolveHostLatency" units="ms"
-    expires_after="2023-06-04">
-  <owner>alexilin@chromium.org</owner>
-  <owner>lizeb@chromium.org</owner>
-  <owner>pasko@chromium.org</owner>
-  <summary>
-    Measures the duration from initiation to completion for a host resolution
-    performed as part of navigation preconnect. Recorded for each host
-    resolution. Note: Does not capture any delay spent queuing *before*
-    initiating the host resolution (e.g., due to a max # of preconnects being in
-    flight).
-  </summary>
 </histogram>
 
 <histogram
@@ -2158,7 +1965,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Navigation.Prerender.NoVarySearchCommitDeferTime.{NVSTriggerType}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>lingqi@chromium.org</owner>
   <owner>chrome-prerendering@google.com</owner>
   <summary>
@@ -2275,8 +2082,8 @@ chromium-metrics-reviews@google.com.
   <owner>creis@chromium.org</owner>
   <owner>site-isolation-dev@chromium.org</owner>
   <summary>
-    Recorded when RenderFrameImpl::IsValidCommitUrl detects a navigation URL
-    that would be blocked by RenderProcessHostImpl::FilterURL and rewrites it to
+    Recorded when blink::IsValidCommitUrl detects a navigation URL that would be
+    blocked by RenderProcessHostImpl::FilterURL and rewrites it to
     about:blank#blocked. See also BrowserRenderProcessHost.BlockedByFilterURL
     for cases caught by the browser process, and https://crbug.com/40066983.
   </summary>
@@ -2311,7 +2118,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Navigation.Renderer.Timeline.{DurationFromTo}.Duration"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>alexmos@chromium.org</owner>
   <owner>creis@chromium.org</owner>
   <summary>
@@ -2454,18 +2261,6 @@ chromium-metrics-reviews@google.com.
   <token key="FrameType" variants="FrameTypes"/>
 </histogram>
 
-<histogram name="Navigation.RendererDidNavigateTime.{FrameType}" units="ms"
-    expires_after="2023-07-28">
-  <owner>cduvall@chromium.org</owner>
-  <owner>jam@chromium.org</owner>
-  <summary>
-    Measures time it takes to call
-    NavigationControllerImpl::RendererDidNavigate. Recorded for each navigation
-    that is not a same document navigation.
-  </summary>
-  <token key="FrameType" variants="FrameTypes"/>
-</histogram>
-
 <histogram
     name="Navigation.RendererRunLoopStartToFirstCommitNavigation2.{FrameType}"
     units="ms" expires_after="2027-04-01">
@@ -2583,17 +2378,6 @@ chromium-metrics-reviews@google.com.
     and tracks whether the navigation is eligible for screenshotting for
     navigation transitions
   </summary>
-</histogram>
-
-<histogram name="Navigation.SendCommitNavigationTime.{FrameType}" units="ms"
-    expires_after="2023-08-15">
-  <owner>cduvall@chromium.org</owner>
-  <owner>jam@chromium.org</owner>
-  <summary>
-    Measures the time RenderFrameHostImpl::SendCommitNavigation takes to run.
-    Recorded every time the method executes.
-  </summary>
-  <token key="FrameType" variants="FrameTypes"/>
 </histogram>
 
 <histogram name="Navigation.StartAdjustment.AllFrames"
@@ -2752,7 +2536,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Navigation.StartToCommit{NavigationProcessType}{NavigationFrameType}{NavigationTypeTiming}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>nasko@chromium.org</owner>
   <owner>csharrison@chromium.org</owner>
   <improvement direction="LOWER_IS_BETTER"/>
@@ -3426,25 +3210,6 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram
-    name="Navigation.{InitiatorType}.WastedSpeculativeRFH.ProcessDiffers"
-    enum="Boolean" expires_after="2025-03-01">
-  <owner>rakina@chromium.org</owner>
-  <owner>chrome-security-architecture@google.com</owner>
-  <summary>
-    For {InitiatorType} navigations that result in wasting a speculative RFH
-    that's previously created for the navigation (i.e. when the
-    WastedSpeculativeRFHCase metric records kWasted_NowUseCurrentRFH or
-    kWasted_NowUseNewSpeculativeRFH), records whether the renderer process for
-    the wasted speculative RFH and the new RFH differ.
-
-    Recorded on RenderFrameHostManager::GetFrameHostNavigation(), for
-    {InitiatorType} navigations that picked a RenderFrameHost that is different
-    from a speculative RFH previously created for the navigation.
-  </summary>
-  <token key="InitiatorType" variants="InitiatorType"/>
-</histogram>
-
-<histogram
     name="Navigation.{InitiatorType}.WastedSpeculativeRFH.ReplacementRFHCreatedNewProcess"
     enum="Boolean" expires_after="2027-04-11">
   <owner>rakina@chromium.org</owner>
@@ -3584,6 +3349,30 @@ chromium-metrics-reviews@google.com.
     preconnect attempt from the timing when preconnect-emitting event has been
     issued. This is recorded when receiving the preconnect-emitting event and
     when the delay has been calculated.
+  </summary>
+</histogram>
+
+<histogram
+    name="NavigationPredictor.SearchEnginePreconnector.PrewarmDictionary.Event"
+    enum="SearchEnginePrewarmDictionaryEvent" expires_after="2027-09-01">
+  <owner>suzukikeita@google.com</owner>
+  <owner>chrome-loading@google.com</owner>
+  <summary>
+    Records events during the Prewarm Shared Brotli Dictionary lifecycle on
+    Default Search Engine Preconnect in SearchEngineDictionaryPrewarmer (via
+    SearchEnginePreconnector), including initial prewarming, timer refreshes,
+    fallback timer expirations, socket-driven closures, Mojo disconnections, and
+    prewarmer destruction while a handle is still pinned.
+
+    Note that when prewarming is initiated, SearchEngineDictionaryPrewarmer
+    speculatively requests and pins a dictionary handle in NetworkContext before
+    knowing whether a matching dictionary actually exists on disk. Therefore,
+    kPrewarmed is recorded regardless of whether a dictionary is found.
+
+    Prewarming and its associated metrics are only emitted when the
+    kSearchEnginePrewarmDictionaryOnPreconnect feature is enabled. The emitted
+    closure event types depend on the SearchEnginePrewarmDictionaryCleanupMode
+    feature parameter (events_only, timer_only, or hybrid).
   </summary>
 </histogram>
 
@@ -3784,7 +3573,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Navigation{Initiator}.DuplicateNavIsUnderThreshold2{DuplicateNavTargetScope}"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>rakina@chromium.org</owner>
   <owner>chrome-navigation@google.com</owner>
   <summary>
@@ -3817,7 +3606,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Navigation{Initiator}.DuplicateNavStartTimeDiff2{DuplicateNavTargetScope}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>rakina@chromium.org</owner>
   <owner>bfcache-dev@chromium.org</owner>
   <summary>
@@ -3835,7 +3624,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Navigation{Initiator}.IsDuplicateWithoutThresholdCheck2{DuplicateNavTargetScope}"
-    enum="Boolean" expires_after="2027-03-07">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>rakina@chromium.org</owner>
   <owner>chrome-navigation@google.com</owner>
   <summary>
@@ -3971,7 +3760,7 @@ chromium-metrics-reviews@google.com.
 <histogram
     name="Prerender.Experimental.CrossOriginRedirectionProtocolChange{PreloadingTriggerType}"
     enum="PrerenderCrossOriginRedirectionProtocolChange"
-    expires_after="2027-03-07">
+    expires_after="2027-05-09">
   <owner>lingqi@chromium.org</owner>
   <owner>nhiroki@chromium.org</owner>
   <owner>src/content/browser/preloading/prerender/OWNERS</owner>
@@ -4085,7 +3874,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="Prerender.Experimental.PrerenderCrossOriginRedirectionMismatch{PreloadingTriggerType}"
-    enum="PrerenderCrossOriginRedirectionMismatch" expires_after="2027-03-07">
+    enum="PrerenderCrossOriginRedirectionMismatch" expires_after="2027-05-09">
   <owner>lingqi@chromium.org</owner>
   <owner>nhiroki@chromium.org</owner>
   <owner>src/content/browser/preloading/prerender/OWNERS</owner>
@@ -4286,7 +4075,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="Prerender.{PrerenderSource}FinalStatus"
-    enum="PrerenderFinalStatus" expires_after="2027-03-07">
+    enum="PrerenderFinalStatus" expires_after="2027-05-09">
   <owner>ryansturm@chromium.org</owner>
   <owner>tbansal@chromium.org</owner>
   <summary>

@@ -54,16 +54,10 @@ namespace media {
 namespace {
 
 bool IsCatapLoopbackAudioEnabledForDevice(const std::string& device_id) {
-  // TODO(https://crbug.com/425902990): Remove check of
-  // `kLoopbackWithMuteDeviceIdCast` once CatapAudioInputStream is launched
-  // for both Cast and getDisplayMedia.
   if (!IsMacCatapSystemLoopbackCaptureSupported()) {
     return false;
   }
 
-  if (device_id == AudioDeviceDescription::kLoopbackWithMuteDeviceIdCast) {
-    return base::FeatureList::IsEnabled(kMacCatapLoopbackAudioForCast);
-  }
   if (device_id == AudioDeviceDescription::kLoopbackAllDevicesId) {
     return base::FeatureList::IsEnabled(kSystemLoopbackAsAecReference);
   }
@@ -460,8 +454,7 @@ class AudioManagerMac::AudioPowerObserver : public base::PowerSuspendObserver {
  public:
   AudioPowerObserver()
       : is_suspending_(false),
-        is_monitoring_(base::PowerMonitor::GetInstance()->IsInitialized()),
-        num_resume_notifications_(0) {
+        is_monitoring_(base::PowerMonitor::GetInstance()->IsInitialized()) {
     // The PowerMonitor requires significant setup (a CFRunLoop and preallocated
     // IO ports) so it's not available under unit tests.  See the OSX impl of
     // base::PowerMonitorDeviceSource for more details.
@@ -482,23 +475,11 @@ class AudioManagerMac::AudioPowerObserver : public base::PowerSuspendObserver {
     base::PowerMonitor::GetInstance()->RemovePowerSuspendObserver(this);
   }
 
-  bool IsSuspending() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return is_suspending_;
-  }
-
-  size_t num_resume_notifications() const { return num_resume_notifications_; }
-
   bool ShouldDeferStreamStart() const {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     // Start() should be deferred if the system is in the middle of a suspend or
     // has recently started the process of resuming.
     return is_suspending_ || base::TimeTicks::Now() < earliest_start_time_;
-  }
-
-  bool IsOnBatteryPower() const {
-    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-    return base::PowerMonitor::GetInstance()->IsOnBatteryPower();
   }
 
  private:
@@ -511,7 +492,6 @@ class AudioManagerMac::AudioPowerObserver : public base::PowerSuspendObserver {
   void OnResume() override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DVLOG(1) << "AudioPowerObserver::" << __FUNCTION__;
-    ++num_resume_notifications_;
     is_suspending_ = false;
     earliest_start_time_ =
         base::TimeTicks::Now() +
@@ -522,7 +502,6 @@ class AudioManagerMac::AudioPowerObserver : public base::PowerSuspendObserver {
   const bool is_monitoring_;
   base::TimeTicks earliest_start_time_ GUARDED_BY_CONTEXT(sequence_checker_);
   SEQUENCE_CHECKER(sequence_checker_);
-  size_t num_resume_notifications_;
 };
 
 AudioManagerMac::AudioManagerMac(std::unique_ptr<AudioThread> audio_thread,
@@ -1051,11 +1030,6 @@ int AudioManagerMac::ChooseBufferSize(bool is_input, int sample_rate) {
                                      GetMinAudioBufferSizeMacOS(sample_rate));
 }
 
-bool AudioManagerMac::IsSuspending() const {
-  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-  return power_observer_->IsSuspending();
-}
-
 bool AudioManagerMac::ShouldDeferStreamStart() const {
   DCHECK(GetTaskRunner()->BelongsToCurrentThread());
   return power_observer_->ShouldDeferStreamStart();
@@ -1091,16 +1065,6 @@ double AudioManagerMac::GetMaxInputVolume(AudioDeviceID device_id) {
 
   // Volume control is not available for the audio stream.
   return 0.0;
-}
-
-bool AudioManagerMac::IsOnBatteryPower() const {
-  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-  return power_observer_->IsOnBatteryPower();
-}
-
-size_t AudioManagerMac::GetNumberOfResumeNotifications() const {
-  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
-  return power_observer_->num_resume_notifications();
 }
 
 OSStatus AudioManagerMac::MaybeChangeBufferSize(AudioDeviceID device_id,

@@ -2,6 +2,7 @@
 
 # TODO(crbug.com/40946218): currently fail with use_blink due to spinning up on
 # an unexpected thread.
+-AutofillAcrossIframesTest.FillMultiFrameForm_SingleField
 -AutofillAcrossIframesTest.NoChildFrames
 -AutofillAcrossIframesTest.WithChildFrames
 -AutofillAcrossIframesTest.Resolve
@@ -10,38 +11,22 @@
 
 # TODO(crbug.com/40945935): Test currently fails on iOS blink.
 -AutofillAgentTest.OnFormDataFilledTestWithFrameMessagingUsingRendererIDs
+-AutofillAgentTest.CheckIfSuggestionsAvailable_FormExtractionFailed
+-AutofillAgentTest.CheckIfSuggestionsAvailable_MultipleFormsExtracted
+-AutofillAgentTest.CheckIfSuggestionsAvailable_NoFormExtracted
 -AutofillAgentTest.CheckIfSuggestionsAvailable_NonUserInitiatedActivity
+-AutofillAgentTest.CheckIfSuggestionsAvailable_PriorInFlightQueryPreserved
 -AutofillAgentTest.DriverFillSpecificFormField
 -AutofillAgentTest.DriverFillSpecificFormField_ReplaceSelectionForAtMemory
--AutofillAgentTest.DriverPreviewSpecificFormField
 -AutofillAgentTest.FillSpecificFormField
 -AutofillAgentTest.ScrollFieldIntoView
--AutofillAgentTest.showAutofillPopup_EmptyIconInCreditCardSuggestion
--AutofillAgentTest.showAutofillPopup_PreferCustomIconForCreditCardSuggestions
--AutofillAgentTest.showAutofillPopup_ShowVirtualCards
--AutofillAgentTest.FillSpecificFormField_UpdateWithResults_WhenFailure
 -AutofillAgentTest.FillSpecificFormField_UpdateWithResults_WhenSuccess
 
 # TODO(crbug.com/339492594): The below tests have been failing since
 # https://crrev.com/c/5496051. It looks like it's missing a
 # content::BrowserTaskEnvironment member in your fixture.
 -AutofillAgentTest.DidSelectSuggestion_AutocompleteEntry
--AutofillAgentTest.FillData_UnknowFieldIdInResults
 -AutofillAgentTest.FillData_UpdateWithResults
-
-# TODO(crbug.com/332933545): Test currently fails on iOS Blink.
--LanguageDetectionJavascriptTest.DetectLanguageWithNoTranslateMeta
--LanguageDetectionJavascriptTest.DetectLanguageWithoutNoTranslateMeta
--LanguageDetectionJavascriptTest.ExtractWhitespace
--LanguageDetectionJavascriptTest.HtmlLang
--LanguageDetectionJavascriptTest.LanguageDetectionTextCapturedResponseBody
--LanguageDetectionJavascriptTest.LongTextContent
--LanguageDetectionJavascriptTest.RetrieveBufferedTextContent
-
-# TODO(crbug.com/332939159): Test currently fails on iOS Blink.
--PageContentAnnotationsModelManagerTest.CalledTwice
--PageContentAnnotationsModelManagerTest.NotifyWhenModelAvailable_VisibilityOnly
--PageContentAnnotationsModelManagerTest.PageVisibility
 
 # TODO(crbug.com/40945936): Test currently fails on iOS blink. And,
 # https://crrev.com/c/5854580 changed some test type to value-parameterized
@@ -97,19 +82,24 @@
 -All/FormMutationTest.RemovedAndAddedFormsRegistered_WithDroppedMessages/1
 -All/FormMutationTest.RemovedAndAddedFormsRegistered/0
 -All/FormMutationTest.RemovedAndAddedFormsRegistered/1
+-All/FormMutationTest.RemoveFormRegisteredDuringDelayWithGarbageCollection/0
+-All/FormMutationTest.RemoveFormRegisteredDuringDelayWithGarbageCollection/1
+-All/FormMutationTest.RemoveUnreferencedElementsWithGarbageCollection/0
+-All/FormMutationTest.RemoveUnreferencedElementsWithGarbageCollection/1
 -All/FormMutationTest.RemoveFormlessFields/0
 -All/FormMutationTest.RemoveFormlessFields/1
 -All/FormMutationTest.RemoveFormlessPasswordFields/0
 -All/FormMutationTest.RemoveFormlessPasswordFields/1
+-All/FormMutationTest.RemoveFormRegisteredDuringDelayWithGarbageCollection/0
+-All/FormMutationTest.RemoveFormRegisteredDuringDelayWithGarbageCollection/1
 -All/FormMutationTest.RemoveMultipleForms/0
 -All/FormMutationTest.RemoveMultipleForms/1
 -All/FormMutationTest.RemoveMultipleFormsAndFormlessFields/0
 -All/FormMutationTest.RemoveMultipleFormsAndFormlessFields/1
 -All/FormMutationTest.RemoveNonPasswordForm/0
 -All/FormMutationTest.RemoveNonPasswordForm/1
-
-# TODO(crbug.com/40945942): Test currently fails on iOS blink.
--FormJsTest.GetIframeElements
+-All/FormMutationTest.RemoveUnreferencedElementsWithGarbageCollection/0
+-All/FormMutationTest.RemoveUnreferencedElementsWithGarbageCollection/1
 
 # TODO(crbug.com/40945946): Test currently fails on iOS blink.
 -PasswordFormHelperTest.FindPasswordFormsInView
@@ -136,10 +126,6 @@
 # TODO(crbug.com/40281649): Test currently fails on iOS blink.
 -SharedPasswordControllerTest.FillField
 -SharedPasswordControllerTest.ScrollAndCheckViewAreaVisible
-
-# TODO(crbug.com/40945948): Test currently fails on iOS blink.
--SecurityStateUtilsTest.GetMaliciousContentStatus
--SecurityStateUtilsTest.GetSecurityLevelForWebStateMaliciousContent
 
 # TODO(crbug.com/40945963): Test currently fails on iOS blink.
 -UkmUrlRecorderTest.Basic
@@ -171,10 +157,6 @@
 # https://crrev.com/c/5682403.
 -AutofillAcrossIframesTest.FrameDoubleRegistration_Notify
 -AutofillAcrossIframesTest.FrameDoubleRegistration_Unregister
--AutofillAgentTestFrameInitializationOrderFrames.BothFramesAvailableThenPageLoaded
--AutofillAgentTestFrameInitializationOrderFrames.MainFrameAvailableThenPageLoadedThenIframeAvailable
--AutofillAgentTestFrameInitializationOrderFrames.PageLoadedThenIframeThenMainFrame
--AutofillAgentTestFrameInitializationOrderFrames.PageLoadedThenMainFrameThenIframe
 
 # TODO(crbug.com/364348914): These tests have been failing since
 # https://crrev.com/c/5774002.
@@ -214,18 +196,6 @@
 # introduced in https://crrev.com/c/7269665 relies on that function, it is
 # skipped on iOS.
 -PageSpecificContentSettingsTestWithApproximateLocation.GeolocationWithOptions
-
-# TODO(crbug.com/482088890): These tests have been failing since
-# https://crrev.com/c/7543054.
--LocalStorageImplTest.Basic/LevelDB
--LocalStorageImplTest.Basic/SQLite
--LocalStorageImplTest.OpeningWrappersPurgesInactiveWrappers/LevelDB
--LocalStorageImplTest.OpeningWrappersPurgesInactiveWrappers/SQLite
--LocalStorageImplTest.WrapperOutlivesMojoConnection/SQLite
-
-# TODO(crbug.com/491157764): The test has been failing since
-# https://crrev.com/c/7585353.
--SecurePaymentConfirmationServiceTest.GetSecurePaymentConfirmationCapabilities_BrowserBoundKeyHardwareSupported
 
 # TODO(crbug.com/514423251): Autofill and form-related JavaScript tests crash
 # on iOS Blink.
@@ -268,15 +238,10 @@
 
 # TODO(crbug.com/514423253): Miscellaneous components_unittests failures on iOS
 # Blink.
--CountryInfoTest.SetCodeReadName
--CountryInfoTest.SetNameReadName
 -CountryNamesForLocaleTest.EmptyCountryCodeForInvalidLocale
--DeviceEventLogTest.TestTimeFormat
 -FieldLogUkmMetricTest/LogFocusedComplexFormAtFormRemoveTest.TestEmittedUKM/ablation_study
 -FieldLogUkmMetricTest/LogFocusedComplexFormAtFormRemoveTest.TestEmittedUKM/ablation_study_in_dry_run_mode
 -PrivateAiNetworkDriverIOSTest.CreateNetworkContext
--UmaPageLoadMetricsObserverTest.TestTracingDomContentLoadedEventStart
--UmaPageLoadMetricsObserverTest.TestTracingLoadEventStart
 
 # TODO(crbug.com/538332325): PasskeyTabHelperTest have been failing on iOS blink
 # port. Some of the tests were added by https://crrev.com/c/7868131.

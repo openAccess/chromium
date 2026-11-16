@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
+#include "chrome/browser/ui/recently_audible_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views_context.h"
@@ -48,6 +49,7 @@
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/display/screen.h"
@@ -55,6 +57,7 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/views/context_menu_controller.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
@@ -67,12 +70,23 @@
 #include "chrome/browser/picture_in_picture/picture_in_picture_widget_fade_animator.h"
 #endif
 
+#if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_features.h"
+#include "ash/public/cpp/window_properties.h"
+#include "chrome/browser/chromeos/policy/dlp/dlp_content_tab_helper.h"
+#include "ui/aura/window.h"
+#endif
+
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_native_widget_mac.h"
 #endif
 
 #if BUILDFLAG(IS_LINUX)
 #include "chrome/browser/ui/views/picture_in_picture/document_pip_native_widget_aura_linux.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include "chrome/browser/ui/views/picture_in_picture/document_pip_native_widget_win.h"
 #endif
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -142,6 +156,31 @@ WEB_CONTENTS_USER_DATA_KEY_IMPL(DocumentPipHostBackPointer);
 }  // namespace
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(DocumentPipHost);
+
+// Suppresses the title bar context menu with a controller that shows nothing.
+// On Linux, WindowEventFilterLinux::OnClickedCaption() checks for it before
+// showing the window manager's menu. On Windows, when !UsesNativeSystemMenu(),
+// HWNDMessageHandler does not capture the mouse on WM_NCRBUTTONDOWN.
+// Widget::OnMouseEvent() captures it only if the NonClientView handles the
+// press, which a ContextMenuController makes it do. Without capture, the
+// release arrives as WM_NCRBUTTONUP rather than the WM_RBUTTONUP that
+// HWNDMessageHandler handles for the custom menu, and reaches DefWindowProc().
+class DocumentPipHost::NoOpContextMenuController
+    : public views::ContextMenuController {
+ public:
+  NoOpContextMenuController() = default;
+  NoOpContextMenuController(const NoOpContextMenuController&) = delete;
+  NoOpContextMenuController& operator=(const NoOpContextMenuController&) =
+      delete;
+  ~NoOpContextMenuController() override = default;
+
+ private:
+  // views::ContextMenuController:
+  void ShowContextMenuForViewImpl(
+      views::View* source,
+      const gfx::Point& point,
+      ui::mojom::MenuSourceType source_type) override {}
+};
 
 class DocumentPipHost::ExclusiveAccessContextImpl
     : public ExclusiveAccessContext,
@@ -259,7 +298,8 @@ class DocumentPipHost::ExclusiveAccessContextImpl
 
 DocumentPipHost::DocumentPipHost(content::WebContents* opener_web_contents)
     : content::WebContentsUserData<DocumentPipHost>(*opener_web_contents),
-      content::WebContentsObserver(opener_web_contents) {}
+      content::WebContentsObserver(opener_web_contents),
+      context_menu_controller_(std::make_unique<NoOpContextMenuController>()) {}
 
 DocumentPipHost::~DocumentPipHost() {
   ClosePipWindow();
@@ -315,6 +355,8 @@ void DocumentPipHost::CreateAndShowPipWindow(
 
 #if BUILDFLAG(IS_LINUX)
   widget_ = CreateDocumentPipWidgetLinux(this, params);
+#elif BUILDFLAG(IS_WIN)
+  widget_ = CreateDocumentPipWidgetWin(params);
 #else
   widget_ = std::make_unique<views::Widget>();
 #endif
@@ -326,6 +368,23 @@ void DocumentPipHost::CreateAndShowPipWindow(
   params.native_widget = new DocumentPipNativeWidgetMac(widget_.get());
 #endif
   widget_->Init(std::move(params));
+
+  widget_->non_client_view()->set_context_menu_controller(
+      context_menu_controller_.get());
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Let ash manage the Document PiP window in the same way as the video PiP
+  // window. The auto layout is off by default for Document PiP, so the window
+  // stays where it is placed.
+  if (ash::features::IsPipAutoLayoutToggleEnabled()) {
+    aura::Window* window = widget_->GetNativeWindow();
+    window->SetProperty(ash::kPipParamsKey,
+                        ash::PipParams{.auto_layout = false,
+                                       .activatable = true,
+                                       .double_tap_to_resize = false});
+    window->SetProperty(ash::kWindowPipTypeKey, true);
+  }
+#endif
 
   widget_observation_.Observe(widget_.get());
   if (auto* contents_view = widget_delegate_->GetDocumentPipContentsView()) {
@@ -373,6 +432,8 @@ void DocumentPipHost::CreateAndShowPipWindow(
 #endif
 
   restore_focus_on_activation_ = true;
+  PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowShown(
+      this);
 #if !BUILDFLAG(IS_WIN)
   // Resizable Windows PiP widgets cannot be translucent.
   fade_animator_ = std::make_unique<PictureInPictureWidgetFadeAnimator>();
@@ -838,6 +899,12 @@ void DocumentPipHost::CreateChildWebContentsHelpers(
   zoom::ZoomController::CreateForWebContents(child_web_contents);
 #endif
 
+  RecentlyAudibleHelper::CreateForWebContents(child_web_contents);
+
+#if BUILDFLAG(IS_CHROMEOS)
+  policy::DlpContentTabHelper::MaybeCreateForWebContents(child_web_contents);
+#endif
+
   // Create PageSpecificContentSettings so media grants from the PiP document
   // are recorded on the child and mirrored onto the opener via the PiP
   // synced-settings path (MaybeGetSyncedSettingsForPictureInPicture). Without
@@ -897,6 +964,8 @@ void DocumentPipHost::PrepareForWidgetDestruction() {
     return;
   }
 
+  PictureInPictureWindowManager::GetInstance()->OnPictureInPictureWindowHidden(
+      this);
   widget_observation_.Reset();
   contents_view_observation_.Reset();
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -1186,6 +1255,13 @@ void DocumentPipHost::OnWidgetBoundsChanged(views::Widget* widget,
     exclusive_access_context_->RepositionBubble();
   }
   NotifyPositionRequiresUpdate();
+}
+
+void DocumentPipHost::OnWidgetVisibilityChanged(views::Widget* widget,
+                                                bool visible) {
+  if (visible) {
+    EnforceTucking();
+  }
 }
 
 void DocumentPipHost::OnWidgetDestroying(views::Widget* widget) {

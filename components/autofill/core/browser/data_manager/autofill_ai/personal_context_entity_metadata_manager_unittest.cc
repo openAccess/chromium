@@ -9,7 +9,9 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/gtest_util.h"
 #include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
@@ -28,6 +30,12 @@ namespace {
 using testing::NiceMock;
 using testing::Return;
 using testing::ReturnRef;
+
+EntityInstance CreateMaskedPersonalContextPassport(
+    test::PassportEntityOptions options = {}) {
+  options.record_type = EntityInstance::RecordType::kPersonalContext;
+  return test::MaskEntityInstance(test::GetPassportEntityInstance(options));
+}
 
 class MockPersonalContextEntityMetadataManagerObserver
     : public PersonalContextEntityMetadataManager::Observer {
@@ -278,9 +286,9 @@ TEST_F(PersonalContextEntityMetadataManagerTest, GetSyncControllerDelegate) {
   manager().GetSyncControllerDelegate();
 }
 
-// Tests that ClearSuppressions with a full time range removes all suppressed
+// Tests that ClearEntries with a full time range removes all suppressed
 // entities and notifies observers.
-TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions) {
+TEST_F(PersonalContextEntityMetadataManagerTest, ClearEntries) {
   EntityInstance passport = test::GetPassportEntityInstance();
   EntityInstance vehicle = test::GetVehicleEntityInstance();
   ASSERT_TRUE(manager().SuppressEntity(passport));
@@ -290,15 +298,15 @@ TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions) {
   manager().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnEntitySuppressionsChanged()).Times(1);
-  EXPECT_TRUE(manager().ClearSuppressions(base::Time(), base::Time::Max()));
+  EXPECT_TRUE(manager().ClearEntries(base::Time(), base::Time::Max()));
 
   EXPECT_FALSE(manager().IsSuppressed(passport));
   EXPECT_FALSE(manager().IsSuppressed(vehicle));
 }
 
-// Tests that ClearSuppressions only removes suppressed entities created within
+// Tests that ClearEntries only removes suppressed entities created within
 // [delete_begin, delete_end].
-TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions_TimeRange) {
+TEST_F(PersonalContextEntityMetadataManagerTest, ClearEntries_TimeRange) {
   EntityInstance passport = test::GetPassportEntityInstance();
   EntityInstance vehicle = test::GetVehicleEntityInstance();
   ASSERT_TRUE(manager().SuppressEntity(passport));
@@ -311,7 +319,7 @@ TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions_TimeRange) {
   manager().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnEntitySuppressionsChanged());
-  EXPECT_TRUE(manager().ClearSuppressions(delete_begin, base::Time::Max()));
+  EXPECT_TRUE(manager().ClearEntries(delete_begin, base::Time::Max()));
 
   EXPECT_TRUE(manager().IsSuppressed(passport));
   EXPECT_FALSE(manager().IsSuppressed(vehicle));
@@ -320,35 +328,34 @@ TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions_TimeRange) {
   EXPECT_TRUE(manager().UndoInSessionSuppressedEntity(passport.guid()));
 }
 
-// Tests that ClearSuppressions returns false and does not notify observers
+// Tests that ClearEntries returns false and does not notify observers
 // when nothing is suppressed.
-TEST_F(PersonalContextEntityMetadataManagerTest, ClearSuppressions_Empty) {
+TEST_F(PersonalContextEntityMetadataManagerTest, ClearEntries_Empty) {
   MockPersonalContextEntityMetadataManagerObserver observer;
   manager().AddObserver(&observer);
 
   EXPECT_CALL(observer, OnEntitySuppressionsChanged()).Times(0);
-  EXPECT_FALSE(manager().ClearSuppressions(base::Time(), base::Time::Max()));
+  EXPECT_FALSE(manager().ClearEntries(base::Time(), base::Time::Max()));
 }
 
-// Tests that CountSuppressionsCreatedBetween counts the suppressions created
+// Tests that CountEntriesCreatedBetween counts the suppressions created
 // within the given inclusive time range.
-TEST_F(PersonalContextEntityMetadataManagerTest,
-       CountSuppressionsCreatedBetween) {
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(base::Time(),
-                                                      base::Time::Max()),
-            0u);
+TEST_F(PersonalContextEntityMetadataManagerTest, CountEntriesCreatedBetween) {
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      0u);
 
   const base::Time suppression_time = base::Time::Now();
   ASSERT_TRUE(manager().SuppressEntity(test::GetPassportEntityInstance()));
 
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(base::Time(),
-                                                      base::Time::Max()),
-            1u);
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      1u);
   // Both bounds are inclusive.
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(suppression_time,
-                                                      suppression_time),
-            1u);
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(suppression_time, suppression_time),
+      1u);
+  EXPECT_EQ(manager().CountEntriesCreatedBetween(
                 base::Time(), suppression_time - base::Seconds(1)),
             0u);
 
@@ -356,17 +363,17 @@ TEST_F(PersonalContextEntityMetadataManagerTest,
   // suppressing it records two entries.
   task_environment().FastForwardBy(base::Hours(2));
   ASSERT_TRUE(manager().SuppressEntity(test::GetVehicleEntityInstance()));
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(base::Time(),
-                                                      base::Time::Max()),
-            3u);
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      3u);
+  EXPECT_EQ(manager().CountEntriesCreatedBetween(
                 base::Time::Now() - base::Hours(1), base::Time::Max()),
             2u);
 
-  ASSERT_TRUE(manager().ClearSuppressions(base::Time(), base::Time::Max()));
-  EXPECT_EQ(manager().CountSuppressionsCreatedBetween(base::Time(),
-                                                      base::Time::Max()),
-            0u);
+  ASSERT_TRUE(manager().ClearEntries(base::Time(), base::Time::Max()));
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      0u);
 }
 
 // Tests that all operations fail gracefully if the sync bridge never loads,
@@ -385,19 +392,134 @@ TEST_F(PersonalContextEntityMetadataManagerTest, BridgeNotLoaded) {
   PersonalContextEntityMetadataManager manager(std::move(bridge));
 
   MockPersonalContextEntityMetadataManagerObserver observer;
-  manager.AddObserver(&observer);
+  base::ScopedObservation<PersonalContextEntityMetadataManager,
+                          PersonalContextEntityMetadataManager::Observer>
+      observation{&observer};
+  observation.Observe(&manager);
   EXPECT_CALL(observer, OnEntitySuppressionsChanged()).Times(0);
 
-  EntityInstance passport = test::GetPassportEntityInstance();
+  EntityInstance passport = CreateMaskedPersonalContextPassport();
   EXPECT_FALSE(manager.SuppressEntity(passport));
   EXPECT_FALSE(manager.IsSuppressed(passport));
+  EXPECT_FALSE(manager.ConfirmEntity(passport));
+  EXPECT_FALSE(manager.IsConfirmed(passport));
   EXPECT_FALSE(manager.UndoInSessionSuppressedEntity(passport.guid()));
-  EXPECT_FALSE(manager.ClearSuppressions(base::Time(), base::Time::Max()));
-  EXPECT_EQ(
-      manager.CountSuppressionsCreatedBetween(base::Time(), base::Time::Max()),
-      0u);
+  EXPECT_FALSE(manager.ClearEntries(base::Time(), base::Time::Max()));
+  EXPECT_EQ(manager.CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+            0u);
+}
 
-  manager.RemoveObserver(&observer);
+// Tests that a new masked personal context entity instance is initially not
+// confirmed.
+TEST_F(PersonalContextEntityMetadataManagerTest, InitiallyNotConfirmed) {
+  EntityInstance passport = CreateMaskedPersonalContextPassport();
+
+  EXPECT_FALSE(manager().IsConfirmed(passport));
+}
+
+// Tests that confirming a masked personal context entity instance marks it as
+// confirmed without notifying suppression observers.
+TEST_F(PersonalContextEntityMetadataManagerTest,
+       ConfirmEntityMarksAsConfirmed) {
+  MockPersonalContextEntityMetadataManagerObserver observer;
+  base::ScopedObservation<PersonalContextEntityMetadataManager,
+                          PersonalContextEntityMetadataManager::Observer>
+      observation{&observer};
+  observation.Observe(&manager());
+  EXPECT_CALL(observer, OnEntitySuppressionsChanged()).Times(0);
+
+  EntityInstance passport = CreateMaskedPersonalContextPassport();
+  EXPECT_TRUE(manager().ConfirmEntity(passport));
+  EXPECT_TRUE(manager().IsConfirmed(passport));
+}
+
+// Tests that re-confirming an already confirmed entity returns false.
+TEST_F(PersonalContextEntityMetadataManagerTest, DuplicateConfirmReturnsFalse) {
+  EntityInstance passport = CreateMaskedPersonalContextPassport();
+  ASSERT_TRUE(manager().ConfirmEntity(passport));
+
+  EXPECT_FALSE(manager().ConfirmEntity(passport));
+}
+
+// Tests that confirming an entity does not confirm another entity when any
+// attribute differs (even if merge constraints match).
+TEST_F(PersonalContextEntityMetadataManagerTest,
+       NotConfirmedIfAnyAttributeDiffers) {
+  EntityInstance passport1 =
+      CreateMaskedPersonalContextPassport(test::PassportEntityOptions{
+          .name = u"Alice", .number = u"LR1234567", .country = u"US"});
+  EntityInstance passport2 =
+      CreateMaskedPersonalContextPassport(test::PassportEntityOptions{
+          .name = u"Bob", .number = u"LR1234567", .country = u"US"});
+  ASSERT_TRUE(manager().ConfirmEntity(passport1));
+
+  EXPECT_TRUE(manager().IsConfirmed(passport1));
+  EXPECT_FALSE(manager().IsConfirmed(passport2));
+}
+
+// Tests that passing an unmasked, non-masked, or non-personal-context entity to
+// `ConfirmEntity()` or `IsConfirmed()` triggers a `CHECK`.
+TEST_F(PersonalContextEntityMetadataManagerTest,
+       ConfirmAndIsConfirmedRequireMaskedPersonalContextEntity) {
+  EntityInstance unmasked_personal_context_passport =
+      test::GetPassportEntityInstance(test::PassportEntityOptions{
+          .record_type = EntityInstance::RecordType::kPersonalContext});
+  EntityInstance masked_wallet_passport = test::MaskEntityInstance(
+      test::GetPassportEntityInstance(test::PassportEntityOptions{
+          .record_type = EntityInstance::RecordType::kServerWallet}));
+  EntityInstance non_masked_personal_context_vehicle =
+      test::GetVehicleEntityInstance(test::VehicleOptions{
+          .record_type = EntityInstance::RecordType::kPersonalContext});
+
+  EXPECT_CHECK_DEATH(
+      manager().ConfirmEntity(unmasked_personal_context_passport));
+  EXPECT_CHECK_DEATH(manager().IsConfirmed(unmasked_personal_context_passport));
+  EXPECT_CHECK_DEATH(manager().ConfirmEntity(masked_wallet_passport));
+  EXPECT_CHECK_DEATH(manager().IsConfirmed(masked_wallet_passport));
+  EXPECT_CHECK_DEATH(
+      manager().ConfirmEntity(non_masked_personal_context_vehicle));
+  EXPECT_CHECK_DEATH(
+      manager().IsConfirmed(non_masked_personal_context_vehicle));
+}
+
+// Tests that ClearEntries and CountEntriesCreatedBetween also cover confirmed
+// entities without notifying suppression observers when no suppressions were
+// removed.
+TEST_F(PersonalContextEntityMetadataManagerTest,
+       ClearAndCountIncludeConfirmedEntities) {
+  EntityInstance passport = CreateMaskedPersonalContextPassport();
+  ASSERT_TRUE(manager().ConfirmEntity(passport));
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      1u);
+
+  MockPersonalContextEntityMetadataManagerObserver observer;
+  base::ScopedObservation<PersonalContextEntityMetadataManager,
+                          PersonalContextEntityMetadataManager::Observer>
+      observation{&observer};
+  observation.Observe(&manager());
+  EXPECT_CALL(observer, OnEntitySuppressionsChanged()).Times(0);
+
+  EXPECT_TRUE(manager().ClearEntries(base::Time(), base::Time::Max()));
+  EXPECT_FALSE(manager().IsConfirmed(passport));
+  EXPECT_EQ(
+      manager().CountEntriesCreatedBetween(base::Time(), base::Time::Max()),
+      0u);
+}
+
+// Tests that a masked personal context entity whose attributes are all empty or
+// whitespace-only cannot be confirmed.
+TEST_F(PersonalContextEntityMetadataManagerTest,
+       EmptyOrWhitespaceOnlyEntityCannotBeConfirmed) {
+  EntityInstance passport = CreateMaskedPersonalContextPassport(
+      test::PassportEntityOptions{.name = u"",
+                                  .number = u"   ",
+                                  .country = nullptr,
+                                  .expiry_date = nullptr,
+                                  .issue_date = nullptr});
+
+  EXPECT_FALSE(manager().ConfirmEntity(passport));
+  EXPECT_FALSE(manager().IsConfirmed(passport));
 }
 
 }  // namespace

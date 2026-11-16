@@ -17,6 +17,7 @@
 #include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
@@ -91,7 +92,7 @@
 namespace crostini {
 
 namespace {
-const auto kStartVmTimeout = base::Seconds(300);
+constexpr base::TimeDelta kStartVmTimeout = base::Seconds(300);
 const auto kBaguetteVmReadyWaitTimeout = base::Seconds(40);
 const auto kBaguetteVmReadyPollInterval = base::Seconds(4);
 
@@ -369,31 +370,32 @@ class CrostiniManager::CrostiniRestarter
   base::TimeTicks stage_start_;
 
   // TODO(crbug/1153210): Better numbers for timeouts once we have data.
-  const std::map<mojom::InstallerState, base::TimeDelta> stage_timeouts_ = {
-      {mojom::InstallerState::kStart, base::Minutes(2)},
-      {mojom::InstallerState::kInstallImageLoader,
-       base::Hours(6)},  // May need to download DLC or component
-      {mojom::InstallerState::kCreateDiskImage, base::Minutes(5)},
-      {mojom::InstallerState::kStartTerminaVm, kStartVmTimeout},
-      {mojom::InstallerState::kStartLxd, base::Minutes(5)},
-      // While CreateContainer may need to download a file, we get progress
-      // messages that reset the countdown.
-      {mojom::InstallerState::kCreateContainer, base::Minutes(5)},
-      {mojom::InstallerState::kSetupContainer, base::Minutes(5)},
-      // StartContainer sends heartbeat messages on a 30-second interval, but
-      // there's a bit of work that's not covered by heartbeat messages so to be
-      // safe set a 8 minute timeout.
-      {mojom::InstallerState::kStartContainer, base::Minutes(8)},
-      // Configuration may be slow, making timeout 2 hours at first because some
-      // playbooks are gigantic (e.g. Chromium playbook).
-      {mojom::InstallerState::kConfigureContainer, base::Hours(2)},
-  };
+  static constexpr auto kStageTimeouts =
+      base::MakeFixedFlatMap<mojom::InstallerState, base::TimeDelta>({
+          {mojom::InstallerState::kStart, base::Minutes(2)},
+          {mojom::InstallerState::kInstallImageLoader,
+           base::Hours(6)},  // May need to download DLC or component
+          {mojom::InstallerState::kCreateDiskImage, base::Minutes(5)},
+          {mojom::InstallerState::kStartTerminaVm, kStartVmTimeout},
+          {mojom::InstallerState::kStartLxd, base::Minutes(5)},
+          // While CreateContainer may need to download a file, we get progress
+          // messages that reset the countdown.
+          {mojom::InstallerState::kCreateContainer, base::Minutes(5)},
+          {mojom::InstallerState::kSetupContainer, base::Minutes(5)},
+          // StartContainer sends heartbeat messages on a 30-second interval,
+          // but there's a bit of work that's not covered by heartbeat messages
+          // so to be safe set a 8 minute timeout.
+          {mojom::InstallerState::kStartContainer, base::Minutes(8)},
+          // Configuration may be slow, making timeout 2 hours at first because
+          // some playbooks are gigantic (e.g. Chromium playbook).
+          {mojom::InstallerState::kConfigureContainer, base::Hours(2)},
+      });
 
   // Use shorter timeouts for some states if Crostini is already installed.
-  const std::map<mojom::InstallerState, base::TimeDelta>
-      stage_timeouts_already_installed_ = {
+  static constexpr auto kStageTimeoutsAlreadyInstalled =
+      base::MakeFixedFlatMap<mojom::InstallerState, base::TimeDelta>({
           {mojom::InstallerState::kInstallImageLoader, base::Minutes(5)},
-      };
+      });
 
   raw_ptr<Profile> profile_;
   // This isn't accessed after the CrostiniManager is destroyed and we need a
@@ -652,13 +654,13 @@ void CrostiniManager::CrostiniRestarter::StartStage(
   this->stage_ = stage;
   stage_start_ = base::TimeTicks::Now();
 
-  CHECK(stage_timeouts_.find(stage) != stage_timeouts_.end(),
-        base::NotFatalUntil::M160);
-  auto delay = stage_timeouts_.at(stage);
+  auto timeout_it = kStageTimeouts.find(stage);
+  CHECK(timeout_it != kStageTimeouts.end(), base::NotFatalUntil::M160);
+  base::TimeDelta delay = timeout_it->second;
 
   if (requests_[0].options.restart_source != RestartSource::kInstaller) {
-    auto already_installed_it = stage_timeouts_already_installed_.find(stage);
-    if (already_installed_it != stage_timeouts_already_installed_.end()) {
+    auto already_installed_it = kStageTimeoutsAlreadyInstalled.find(stage);
+    if (already_installed_it != kStageTimeoutsAlreadyInstalled.end()) {
       delay = already_installed_it->second;
     }
   }
@@ -2030,6 +2032,7 @@ void CrostiniManager::ExportDiskImage(guest_os::GuestId vm_id,
   if (disk_image_callbacks_.find(vm_id) != disk_image_callbacks_.end()) {
     LOG(ERROR) << "Disk image operation currently running for " << vm_id;
     std::move(callback).Run(CrostiniResult::DISK_IMAGE_FAILED);
+    return;
   }
   disk_image_callbacks_.emplace(vm_id, std::move(callback));
 
@@ -2123,6 +2126,7 @@ void CrostiniManager::ImportDiskImage(guest_os::GuestId vm_id,
   if (disk_image_callbacks_.find(vm_id) != disk_image_callbacks_.end()) {
     LOG(ERROR) << "Disk image operation currently running for " << vm_id;
     std::move(callback).Run(CrostiniResult::DISK_IMAGE_FAILED);
+    return;
   }
   disk_image_callbacks_.emplace(vm_id, std::move(callback));
 
@@ -2243,7 +2247,7 @@ void CrostiniManager::OnDiskImageProgress(
     default:
       call_original_callback = true;
       result = CrostiniResult::DISK_IMAGE_FAILED;
-      LOG(ERROR) << "Failed during disk image export: " << signal.status()
+      LOG(ERROR) << "Failed during disk image operation: " << signal.status()
                  << ", " << signal.failure_reason();
   }
 
@@ -2263,7 +2267,9 @@ void CrostiniManager::OnDiskImageProgress(
   if (call_original_callback) {
     auto it = disk_image_callbacks_.find(uuid_it->second);
     if (it == disk_image_callbacks_.end()) {
-      LOG(ERROR) << "No export callbacks for " << uuid_it->second;
+      LOG(ERROR) << "No disk image callback for " << uuid_it->second;
+      disk_image_uuid_to_guest_id_.erase(uuid_it);
+      return;
     }
     std::move(it->second).Run(result);
     // The callback and its uuid mapping are done now, remove
@@ -3670,7 +3676,7 @@ void CrostiniManager::OnCancelDiskImageOp(
     std::optional<vm_tools::concierge::SuccessFailureResponse> response) {
   auto it = disk_image_callbacks_.find(key);
   if (it == disk_image_callbacks_.end()) {
-    LOG(ERROR) << "No export callback for " << key;
+    LOG(ERROR) << "No disk image callback for " << key;
     return;
   }
 
@@ -3686,7 +3692,7 @@ void CrostiniManager::OnCancelDiskImageOp(
 
   auto cb_it = disk_image_callbacks_.find(key);
   if (cb_it == disk_image_callbacks_.end()) {
-    LOG(ERROR) << "No export callback for " << key;
+    LOG(ERROR) << "No disk image callback for " << key;
     return;
   }
 

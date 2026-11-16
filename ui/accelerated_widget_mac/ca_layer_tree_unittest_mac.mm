@@ -57,6 +57,7 @@ struct CALayerProperties {
   bool allow_solid_color_layers = true;
   std::vector<ui::CABackdropFilter> backdrop_filters;
   std::optional<gfx::RRectF> backdrop_filter_bounds;
+  std::optional<gfx::RectF> backdrop_filter_clip;
 };
 
 base::apple::ScopedCFTypeRef<CVPixelBufferRef> CreateCVPixelBuffer(
@@ -82,7 +83,8 @@ bool ScheduleCALayer(ui::CARendererLayerTree* tree,
       properties->contents_rect, properties->rect, properties->background_color,
       properties->edge_aa_mask, properties->opacity, properties->filter,
       gfx::HDRMetadata(), properties->protected_video_type, false,
-      properties->backdrop_filters, properties->backdrop_filter_bounds));
+      properties->backdrop_filters, properties->backdrop_filter_bounds,
+      properties->backdrop_filter_clip));
 }
 
 void UpdateCALayerTree(std::unique_ptr<ui::CARendererLayerTree>& ca_layer_tree,
@@ -1218,7 +1220,7 @@ TEST_F(CALayerTreeTest, BackdropFilterBlur) {
   properties.rect = gfx::Rect(64, 64, 256, 256);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 20.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 20.0f});
   properties.backdrop_filter_bounds =
       gfx::RRectF(gfx::RectF(properties.rect), 16.0f);
 
@@ -1249,6 +1251,8 @@ TEST_F(CALayerTreeTest, BackdropFilterBlur) {
   EXPECT_DOUBLE_EQ(128.0, content_layer.bounds.size.width);
   EXPECT_DOUBLE_EQ(128.0, content_layer.bounds.size.height);
 
+  // Representable bounds use cornerRadius, not the CAShapeLayer fallback.
+  EXPECT_EQ(nil, backdrop_layer.mask);
   EXPECT_DOUBLE_EQ(8.0, backdrop_layer.cornerRadius);
 }
 
@@ -1257,7 +1261,7 @@ TEST_F(CALayerTreeTest, BackdropFilterRemoval) {
   properties.rect = gfx::Rect(64, 64, 256, 256);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 20.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 20.0f});
 
   std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
@@ -1279,7 +1283,7 @@ TEST_F(CALayerTreeTest, BackdropFilterRemoval) {
   // Re-add the backdrop filter; a new backdrop layer should be inserted
   // underneath the content layer.
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 20.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 20.0f});
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
   ASSERT_EQ(2u, [[transform_layer sublayers] count]);
   EXPECT_TRUE([[transform_layer sublayers][0]
@@ -1297,7 +1301,7 @@ TEST_F(CALayerTreeTest, BackdropFilterSiblingZOrder) {
   middle_backdrop.rect = gfx::Rect(32, 32, 128, 128);
   middle_backdrop.background_color = SkColors::kTransparent;
   middle_backdrop.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 16.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 16.0f});
 
   CALayerProperties front_sibling;
   front_sibling.rect = gfx::Rect(64, 64, 64, 64);
@@ -1337,7 +1341,7 @@ TEST_F(CALayerTreeTest, BackdropFilterBlurRadiusUpdate) {
   properties.rect = gfx::Rect(64, 64, 256, 256);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 50.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 50.0f});
   properties.backdrop_filter_bounds =
       gfx::RRectF(gfx::RectF(properties.rect), 16.0f);
 
@@ -1354,7 +1358,8 @@ TEST_F(CALayerTreeTest, BackdropFilterBlurRadiusUpdate) {
                              valueForKey:@"inputRadius"] doubleValue]);
 
   // Changing only the blur radius reuses both CALayers and updates the filter.
-  properties.backdrop_filters[0].blur_radius = 60.0f;
+  properties.backdrop_filters[0] =
+      ui::CABackdropBlurFilter{.blur_radius = 60.0f};
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
 
   ASSERT_EQ(2u, [[transform_layer sublayers] count]);
@@ -1372,7 +1377,7 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsPadding) {
   properties.rect = gfx::Rect(0, -1, 896, 576);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 40.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 40.0f});
   // The actual element border box is 880x560 with 24px corner radius.
   properties.backdrop_filter_bounds =
       gfx::RRectF(gfx::RectF(0, 0, 880, 560), 24.0f);
@@ -1396,7 +1401,53 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsPadding) {
   EXPECT_DOUBLE_EQ(440.0, backdrop_layer.bounds.size.width);
   EXPECT_DOUBLE_EQ(280.0, backdrop_layer.bounds.size.height);
 
+  // Representable bounds use cornerRadius, not the CAShapeLayer fallback.
+  EXPECT_EQ(nil, backdrop_layer.mask);
   EXPECT_DOUBLE_EQ(12.0, backdrop_layer.cornerRadius);
+}
+
+TEST_F(CALayerTreeTest, BackdropFilterBoundsAsymmetricCorners) {
+  CALayerProperties properties;
+  properties.rect = gfx::Rect(0, 0, 280, 160);
+  properties.scale_factor = 2.0f;
+  properties.backdrop_filters.push_back(
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
+  // Asymmetric corners: top-left 40, top-right 10, bottom-right 40,
+  // bottom-left 10.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(gfx::RectF(0, 0, 280, 160), 40.0f, 40.0f, 10.0f, 10.0f, 40.0f,
+                  40.0f, 10.0f, 10.0f);
+
+  std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  ASSERT_NE(nil, backdrop_layer.mask);
+  EXPECT_TRUE([backdrop_layer.mask isKindOfClass:[CAShapeLayer class]]);
+  CAShapeLayer* shape_mask = (CAShapeLayer*)backdrop_layer.mask;
+  EXPECT_NE(nil, shape_mask.path);
+  EXPECT_DOUBLE_EQ(0.0, backdrop_layer.cornerRadius);
+  EXPECT_DOUBLE_EQ(0.0, shape_mask.cornerRadius);
+  EXPECT_EQ(nil, shape_mask.backgroundColor);
+  EXPECT_NE(nil, shape_mask.fillColor);
+
+  // Transitioning from complex asymmetric corners to a uniform radius should
+  // remove the CAShapeLayer mask and switch to hardware cornerRadius.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(gfx::RectF(0, 0, 280, 160), 20.0f);
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+  EXPECT_EQ(nil, backdrop_layer.mask);
+  EXPECT_DOUBLE_EQ(10.0, backdrop_layer.cornerRadius);
+
+  // Transitioning back from uniform radius to asymmetric corners should
+  // reattach a CAShapeLayer mask and reset hardware cornerRadius/maskedCorners.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(gfx::RectF(0, 0, 280, 160), 40.0f, 40.0f, 10.0f, 10.0f, 40.0f,
+                  40.0f, 10.0f, 10.0f);
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+  ASSERT_NE(nil, backdrop_layer.mask);
+  EXPECT_DOUBLE_EQ(0.0, backdrop_layer.cornerRadius);
+  EXPECT_EQ(0U, backdrop_layer.maskedCorners);
 }
 
 TEST_F(CALayerTreeTest, BackdropFilterBoundsPartialCorners) {
@@ -1404,7 +1455,7 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsPartialCorners) {
   properties.rect = gfx::Rect(0, 0, 280, 160);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 30.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
   // Top-left and top-right rounded (24px), bottom-right and bottom-left square
   // (0px). Should use hardware cornerRadius + maskedCorners.
   properties.backdrop_filter_bounds =
@@ -1415,6 +1466,8 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsPartialCorners) {
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
 
   CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  // Representable bounds use cornerRadius, not the CAShapeLayer fallback.
+  EXPECT_EQ(nil, backdrop_layer.mask);
   EXPECT_DOUBLE_EQ(12.0, backdrop_layer.cornerRadius);
   EXPECT_EQ(CACornerMask(kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner),
             backdrop_layer.maskedCorners);
@@ -1425,7 +1478,7 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsCircle) {
   properties.rect = gfx::Rect(0, 0, 160, 160);
   properties.scale_factor = 2.0f;
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 30.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
   // Circle: width 160, height 160, radius 80.
   // Circles have uniform X and Y radii (kSingle), so they clip natively via
   // cornerRadius.
@@ -1436,6 +1489,8 @@ TEST_F(CALayerTreeTest, BackdropFilterBoundsCircle) {
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
 
   CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  // Representable bounds use cornerRadius, not the CAShapeLayer fallback.
+  EXPECT_EQ(nil, backdrop_layer.mask);
   EXPECT_DOUBLE_EQ(40.0, backdrop_layer.cornerRadius);
 }
 
@@ -1447,7 +1502,7 @@ TEST_F(CALayerTreeTest, BackdropFilterTypeChange) {
   properties.io_surface =
       gfx::CreateIOSurface(gfx::Size(256, 256), viz::MultiPlaneFormat::kNV12);
   properties.backdrop_filters.push_back(
-      ui::CABackdropFilter{.blur_radius = 20.0f});
+      ui::CABackdropBlurFilter{.blur_radius = 20.0f});
 
   std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
   UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
@@ -1481,6 +1536,136 @@ TEST_F(CALayerTreeTest, BackdropFilterTypeChange) {
   EXPECT_EQ(nil, new_backdrop_layer.superlayer);
 }
 
+TEST_F(CALayerTreeTest, BackdropFilterBoundsOval) {
+  CALayerProperties properties;
+  properties.rect = gfx::Rect(0, 0, 200, 100);
+  properties.scale_factor = 2.0f;
+  properties.backdrop_filters.push_back(
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
+  // Non-circular oval: width 200, height 100 (rx != ry).
+  // This requires a CAShapeLayer mask since CoreAnimation cornerRadius only
+  // supports circular radii.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(SkRRect::MakeOval(SkRect::MakeXYWH(0, 0, 200, 100)));
+
+  std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  ASSERT_NE(nil, backdrop_layer.mask);
+  EXPECT_TRUE([backdrop_layer.mask isKindOfClass:[CAShapeLayer class]]);
+  CAShapeLayer* shape_mask = (CAShapeLayer*)backdrop_layer.mask;
+  EXPECT_NE(nil, shape_mask.path);
+  EXPECT_DOUBLE_EQ(100.0, backdrop_layer.mask.bounds.size.width);
+  EXPECT_DOUBLE_EQ(50.0, backdrop_layer.mask.bounds.size.height);
+  EXPECT_DOUBLE_EQ(0.0, backdrop_layer.cornerRadius);
+}
+
+TEST_F(CALayerTreeTest, BackdropFilterBoundsCircleClipped) {
+  CALayerProperties properties;
+  properties.rect = gfx::Rect(0, 0, 160, 160);
+  properties.scale_factor = 2.0f;
+  properties.backdrop_filters.push_back(
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
+  // Circle: width 160, height 160, radius 80.
+  // Circles have uniform X and Y radii (kSingle), so they would clip natively
+  // via cornerRadius if there were no clip.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(SkRRect::MakeOval(SkRect::MakeXYWH(0, 0, 160, 160)));
+  properties.backdrop_filter_clip = gfx::RectF(20, 20, 140, 140);
+
+  std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  // This now forces the use of a clipped path.
+  CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  ASSERT_NE(nil, backdrop_layer.mask);
+  EXPECT_TRUE([backdrop_layer.mask isKindOfClass:[CAShapeLayer class]]);
+  CAShapeLayer* shape_mask = (CAShapeLayer*)backdrop_layer.mask;
+  EXPECT_NE(nil, shape_mask.path);
+  EXPECT_DOUBLE_EQ(10.0, backdrop_layer.mask.bounds.origin.x);
+  EXPECT_DOUBLE_EQ(10.0, backdrop_layer.mask.bounds.origin.y);
+  EXPECT_DOUBLE_EQ(70.0, backdrop_layer.mask.bounds.size.width);
+  EXPECT_DOUBLE_EQ(70.0, backdrop_layer.mask.bounds.size.height);
+  EXPECT_DOUBLE_EQ(0.0, backdrop_layer.cornerRadius);
+}
+
+TEST_F(CALayerTreeTest, BackdropFilterBoundsOvalClipped) {
+  CALayerProperties properties;
+  properties.rect = gfx::Rect(0, 0, 200, 100);
+  properties.scale_factor = 2.0f;
+  properties.backdrop_filters.push_back(
+      ui::CABackdropBlurFilter{.blur_radius = 30.0f});
+  // Non-circular oval: width 200, height 100 (rx != ry).
+  // This requires a CAShapeLayer mask since CoreAnimation cornerRadius only
+  // supports circular radii.
+  properties.backdrop_filter_bounds =
+      gfx::RRectF(SkRRect::MakeOval(SkRect::MakeXYWH(0, 0, 200, 100)));
+  // Additionally, add a clip that cuts into the rrect.
+  properties.backdrop_filter_clip = gfx::RectF(20, 20, 180, 80);
+
+  std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  ASSERT_NE(nil, backdrop_layer.mask);
+  EXPECT_TRUE([backdrop_layer.mask isKindOfClass:[CAShapeLayer class]]);
+  CAShapeLayer* shape_mask = (CAShapeLayer*)backdrop_layer.mask;
+  EXPECT_NE(nil, shape_mask.path);
+  EXPECT_DOUBLE_EQ(10.0, backdrop_layer.mask.bounds.origin.x);
+  EXPECT_DOUBLE_EQ(10.0, backdrop_layer.mask.bounds.origin.y);
+  EXPECT_DOUBLE_EQ(90.0, backdrop_layer.mask.bounds.size.width);
+  EXPECT_DOUBLE_EQ(40.0, backdrop_layer.mask.bounds.size.height);
+  EXPECT_DOUBLE_EQ(0.0, backdrop_layer.cornerRadius);
+}
+
+TEST_F(CALayerTreeTest, BackdropFilterBlurAndColorMatrix) {
+  CALayerProperties properties;
+  properties.rect = gfx::Rect(0, 0, 256, 256);
+  properties.scale_factor = 2.0f;
+  properties.backdrop_filters.push_back(
+      ui::CABackdropBlurFilter{.blur_radius = 40.0f});
+  std::array<float, 20> matrix = {
+      1.2f, 0.0f, 0.0f, 0.0f, 0.1f,  //
+      0.0f, 1.3f, 0.0f, 0.0f, 0.0f,  //
+      0.0f, 0.0f, 1.4f, 0.0f, 0.0f,  //
+      0.0f, 0.0f, 0.0f, 1.0f, 0.0f   //
+  };
+  properties.backdrop_filters.push_back(
+      ui::CABackdropColorFilter{.color_matrix = matrix});
+
+  std::unique_ptr<ui::CARendererLayerTree> ca_layer_tree;
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  CALayer* backdrop_layer = [GetOnlyTransformLayer() sublayers][0];
+  ASSERT_EQ(2u, [[backdrop_layer filters] count]);
+  id blur_filter = [backdrop_layer filters][0];
+  EXPECT_DOUBLE_EQ(20.0,
+                   [[blur_filter valueForKey:@"inputRadius"] doubleValue]);
+
+  id color_matrix_filter = [backdrop_layer filters][1];
+  NSValue* matrix_value = [color_matrix_filter valueForKey:@"inputColorMatrix"];
+  ASSERT_NE(nil, matrix_value);
+  std::array<float, 20> actual_matrix = {};
+  [matrix_value getValue:&actual_matrix size:sizeof(actual_matrix)];
+  EXPECT_EQ(matrix, actual_matrix);
+
+  // Update to colorMatrix-only (zero blur radius) and verify layer reuse.
+  properties.backdrop_filters[0] =
+      ui::CABackdropBlurFilter{.blur_radius = 0.0f};
+  matrix[0] = 1.5f;
+  properties.backdrop_filters[1] =
+      ui::CABackdropColorFilter{.color_matrix = matrix};
+  UpdateCALayerTree(ca_layer_tree, &properties, superlayer_);
+
+  ASSERT_EQ(1u, [[backdrop_layer filters] count]);
+  id updated_filter = [backdrop_layer filters][0];
+  NSValue* updated_value = [updated_filter valueForKey:@"inputColorMatrix"];
+  ASSERT_NE(nil, updated_value);
+  [updated_value getValue:&actual_matrix size:sizeof(actual_matrix)];
+  EXPECT_FLOAT_EQ(1.5f, actual_matrix[0]);
+}
+
 TEST_F(CALayerTreeTest, CABackdropLayerSPIHelpers) {
   {
     base::test::ScopedFeatureList scoped_feature_list;
@@ -1492,6 +1677,8 @@ TEST_F(CALayerTreeTest, CABackdropLayerSPIHelpers) {
   EXPECT_TRUE(ui::CABackdropLayerSupported());
   EXPECT_NE(nil, ui::CreateCABackdropLayer());
   EXPECT_NE(nil, ui::CreateCABlurFilter(10.0));
+  std::array<float, 20> matrix = {};
+  EXPECT_NE(nil, ui::CreateCAColorMatrixFilter(matrix));
 }
 
 TEST(HDRCoperLayerTest, Formats) {

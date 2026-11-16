@@ -21,7 +21,6 @@
 #import "base/strings/utf_string_conversions.h"
 #import "components/account_settings/account_setting_service.h"
 #import "components/application_locale_storage/application_locale_storage.h"
-#import "components/autofill/core/browser/at_memory/at_memory_manager.h"
 #import "components/autofill/core/browser/autofill_server_prediction.h"
 #import "components/autofill/core/browser/crowdsourcing/votes_uploader.h"
 #import "components/autofill/core/browser/data_manager/autofill_ai/entity_data_manager.h"
@@ -46,6 +45,7 @@
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
 #import "components/autofill/ios/browser/autofill_util.h"
+#import "components/autofill/ios/common/features.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "components/optimization_guide/core/model_execution/remote_model_executor.h"
@@ -62,14 +62,13 @@
 #import "components/translate/core/browser/translate_manager.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "ios/chrome/browser/affiliations/model/ios_chrome_affiliation_service_factory.h"
-#import "ios/chrome/browser/autofill/atmemory/model/ios_at_memory_query_service_factory.h"
-#import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/autofill_ai/error_dialog/model/autofill_ai_error_dialog_context.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/save_entity_params.h"
 #import "ios/chrome/browser/autofill/model/address_normalizer_factory.h"
 #import "ios/chrome/browser/autofill/model/autocomplete_history_manager_factory.h"
 #import "ios/chrome/browser/autofill/model/autofill_ai_prefetch_failure_infobar_delegate_ios.h"
 #import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_infobar_delegate_ios.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/autofill_ai_util.h"
 #import "ios/chrome/browser/autofill/model/autofill_log_router_factory.h"
 #import "ios/chrome/browser/autofill/model/autofill_policy_service_factory.h"
@@ -229,8 +228,8 @@ base::WeakPtr<AutofillClient> ChromeAutofillClientIOS::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
 }
 
-const std::string& ChromeAutofillClientIOS::GetAppLocale() const {
-  return GetApplicationContext()->GetApplicationLocaleStorage()->Get();
+const base::i18n::LanguageTag& ChromeAutofillClientIOS::GetAppLocale() const {
+  return GetApplicationContext()->GetApplicationLocaleStorage()->GetTag();
 }
 
 version_info::Channel ChromeAutofillClientIOS::GetChannel() const {
@@ -382,22 +381,6 @@ AutofillAiModelExecutor* ChromeAutofillClientIOS::GetAutofillAiModelExecutor() {
 optimization_guide::RemoteModelExecutor*
 ChromeAutofillClientIOS::GetRemoteModelExecutor() {
   return OptimizationGuideServiceFactory::GetForProfile(profile_);
-}
-
-AtMemoryManager* ChromeAutofillClientIOS::GetAtMemoryManager() {
-  if (!IsAutofillAtMemorySearchUIEnabled(this)) {
-    return nullptr;
-  }
-  if (!at_memory_manager_) {
-    at_memory_manager_ = std::make_unique<AtMemoryManager>(
-        this, ios::HistoryServiceFactory::GetForProfile(profile_));
-  }
-  return at_memory_manager_.get();
-}
-
-autofill::AtMemoryQueryService*
-ChromeAutofillClientIOS::GetAtMemoryQueryService() {
-  return IOSAtMemoryQueryServiceFactory::GetForProfile(profile_);
 }
 
 PersonalContextEligibilityState
@@ -568,7 +551,8 @@ void ChromeAutofillClientIOS::ConfirmSaveAddressProfile(
   }
 
   auto delegate = std::make_unique<AutofillSaveUpdateAddressProfileDelegateIOS>(
-      profile, original_profile, GetUserEmail(), GetAppLocale(),
+      profile, original_profile, GetUserEmail(),
+      std::string(GetAppLocale().tag_string()),
       save_address_bubble_type == SaveAddressBubbleType::kMigrateToAccount,
       std::move(callback));
 
@@ -581,6 +565,24 @@ AutofillClient::SuggestionUiSessionId
 ChromeAutofillClientIOS::ShowAutofillSuggestions(
     const AutofillClient::PopupOpenArgs& open_args,
     base::WeakPtr<AutofillSuggestionDelegate> delegate) {
+  if (IsAutofillBAMSuggestionFlowEnabled()) {
+    const SuggestionUiSessionId session_id = suggestion_controller_.Show(
+        open_args.suggestions, open_args.trigger_source, delegate,
+        open_args.form_id, open_args.field_id);
+    // TODO(crbug.com/580915440): Forward suggestions to the keyboard accessory
+    // view through the bridge until `FormInputAccessoryMediator` observes
+    // `suggestion_controller_` directly.
+    if (suggestion_controller_.is_showing()) {
+      [bridge_ showAutofillPopup:suggestion_controller_.suggestions()
+              suggestionDelegate:delegate
+                          formId:open_args.form_id
+                         fieldId:open_args.field_id];
+    } else {
+      [bridge_ hideAutofillPopup];
+    }
+    return session_id;
+  }
+
   active_suggestion_delegate_ = std::move(delegate);
   current_session_id_ = session_id_generator_.GenerateNextId();
   current_suggestions_ = open_args.suggestions;
@@ -597,11 +599,17 @@ ChromeAutofillClientIOS::ShowAutofillSuggestions(
 
 std::optional<AutofillClient::SuggestionUiSessionId>
 ChromeAutofillClientIOS::GetSessionIdForCurrentAutofillSuggestions() const {
+  if (IsAutofillBAMSuggestionFlowEnabled()) {
+    return suggestion_controller_.GetUiSessionId();
+  }
   return current_session_id_;
 }
 
 base::span<const Suggestion> ChromeAutofillClientIOS::GetAutofillSuggestions()
     const {
+  if (IsAutofillBAMSuggestionFlowEnabled()) {
+    return suggestion_controller_.suggestions();
+  }
   return current_suggestions_;
 }
 
@@ -610,6 +618,26 @@ void ChromeAutofillClientIOS::UpdateAutofillSuggestions(
     FillingProduct main_filling_product,
     AutofillSuggestionTriggerSource trigger_source,
     AutofillSuggestionsIgnoreFocusLoss ignore_focus_loss) {
+  if (IsAutofillBAMSuggestionFlowEnabled()) {
+    if (!suggestion_controller_.is_showing()) {
+      return;
+    }
+    suggestion_controller_.UpdateSuggestions(suggestions, main_filling_product,
+                                             trigger_source);
+    // TODO(crbug.com/580915440): Forward updated suggestions to the keyboard
+    // accessory view through the bridge until `FormInputAccessoryMediator`
+    // observes `suggestion_controller_` directly.
+    if (suggestion_controller_.is_showing()) {
+      [bridge_ showAutofillPopup:suggestion_controller_.suggestions()
+              suggestionDelegate:suggestion_controller_.GetDelegate()
+                          formId:suggestion_controller_.form_id()
+                         fieldId:suggestion_controller_.field_id()];
+    } else {
+      [bridge_ hideAutofillPopup];
+    }
+    return;
+  }
+
   // Only update suggestions for a live session. Otherwise the popup was never
   // shown or was already hidden, in which case the cached delegate and
   // form/field IDs are stale.
@@ -633,8 +661,20 @@ void ChromeAutofillClientIOS::UpdateAutofillDataListValues(
 void ChromeAutofillClientIOS::HideSuggestions(
     SuggestionHidingReason reason,
     std::optional<FillingProduct> product) {
-  if (product == FillingProduct::kAtMemory) {
-    [at_memory_handler_ dismissAtMemory];
+  if (IsAutofillBAMSuggestionFlowEnabled()) {
+    // Only hide if `product` matches the showing suggestions.
+    if (product && product != suggestion_controller_.GetMainFillingProduct()) {
+      return;
+    }
+    suggestion_controller_.Hide(reason);
+    // TODO(crbug.com/580915440): Forward hide to the keyboard accessory view
+    // through the bridge until `FormInputAccessoryMediator` observes
+    // `suggestion_controller_` directly.
+    [bridge_ hideAutofillPopup];
+    if (reason == SuggestionHidingReason::kAcceptSuggestion) {
+      [form_input_accessory_commands_handler_
+          resetAutofillSuggestionsLoadingStates];
+    }
     return;
   }
 
@@ -1001,7 +1041,18 @@ void ChromeAutofillClientIOS::ShowAutofillAiSaveUpdateUI() {
   }
 
   SaveEntityParams params = delegate->ExtractParams();
-  [commands_handler_ showSaveEntityDialog:std::move(params)];
+
+  if (base::FeatureList::IsEnabled(kAutofillReshowSavePromptOnTabReturn)) {
+    AutofillBottomSheetTabHelper* bottom_sheet_tab_helper =
+        AutofillBottomSheetTabHelper::FromWebState(web_state());
+    CHECK(bottom_sheet_tab_helper);
+    auto model =
+        std::make_unique<AutofillAiSaveEntityPromptModel>(std::move(params));
+    bottom_sheet_tab_helper->ShowAutofillAiSaveEntityBottomSheet(
+        std::move(model));
+  } else {
+    [commands_handler_ showSaveEntityDialog:std::move(params)];
+  }
 }
 
 void ChromeAutofillClientIOS::OnActorTaskStateChange(bool is_actuating) {

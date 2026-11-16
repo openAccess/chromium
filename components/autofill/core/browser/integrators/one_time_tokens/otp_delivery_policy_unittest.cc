@@ -36,7 +36,6 @@ Input MakeAllowedInput(OneTimeTokenType source, Stage stage) {
       .frame_active = true,
       .has_non_otp_focus_anywhere = false,
       .any_otp_field_has_typed_input = false,
-      .typed_in_any_field_after_detection = false,
       .is_android = false,
       .is_otp_field_focused = true,
       .is_keyboard_visible = true,
@@ -128,7 +127,6 @@ TEST(OtpDeliveryPolicyDefaultsTest, OmittedFieldsFailClosed) {
                  .frame_active = true,
                  .has_non_otp_focus_anywhere = false,
                  .any_otp_field_has_typed_input = false,
-                 .typed_in_any_field_after_detection = false,
                  .phish_guard_verdict =
                      OneTimeTokensPhishGuardVerdict::kNotPhishing}));
 }
@@ -176,7 +174,6 @@ INSTANTIATE_TEST_SUITE_P(
                       .frame_active = true,
                       .has_non_otp_focus_anywhere = false,
                       .any_otp_field_has_typed_input = false,
-                      .typed_in_any_field_after_detection = false,
                       .is_android = false,
                       .is_otp_field_focused = false,
                       .is_keyboard_visible = false,
@@ -194,7 +191,6 @@ INSTANTIATE_TEST_SUITE_P(
                       .frame_active = true,
                       .has_non_otp_focus_anywhere = false,
                       .any_otp_field_has_typed_input = false,
-                      .typed_in_any_field_after_detection = false,
                       .is_android = false,
                       .is_otp_field_focused = false,
                       .is_keyboard_visible = false,
@@ -212,7 +208,6 @@ INSTANTIATE_TEST_SUITE_P(
                       .frame_active = true,
                       .has_non_otp_focus_anywhere = false,
                       .any_otp_field_has_typed_input = false,
-                      .typed_in_any_field_after_detection = false,
                       .is_android = true,
                       .is_otp_field_focused = true,
                       .is_keyboard_visible = true,
@@ -357,6 +352,16 @@ INSTANTIATE_TEST_SUITE_P(
             .expected = {.allowed = false,
                          .reason = SkipReason::kPhishingVerdict},
         },
+        PolicyTestCase{
+            .test_name = "PhishGuardTimeoutBlocksVerification",
+            .input = {.source = OneTimeTokenType::kSmsOtp,
+                      .stage = Stage::kVerification,
+                      .web_otp_used = false,
+                      .phish_guard_verdict =
+                          OneTimeTokensPhishGuardVerdict::kTimedOut},
+            .expected = {.allowed = false,
+                         .reason = SkipReason::kPhishGuardTimedOut},
+        },
 
         // --- Proactive-only UX preconditions (and verification-stage pass) ---
         PolicyTestCase{
@@ -447,29 +452,6 @@ INSTANTIATE_TEST_SUITE_P(
                   Input input = MakeAllowedInput(OneTimeTokenType::kGmail,
                                                  Stage::kVerification);
                   input.any_otp_field_has_typed_input = true;
-                  return input;
-                }(),
-            .expected = {.allowed = true, .reason = SkipReason::kNone},
-        },
-        PolicyTestCase{
-            .test_name = "ProactiveBlockedWhenTypedInAnyFieldAfterDetection",
-            .input =
-                [] {
-                  Input input = MakeAllowedInput(OneTimeTokenType::kGmail,
-                                                 Stage::kProactiveTrigger);
-                  input.typed_in_any_field_after_detection = true;
-                  return input;
-                }(),
-            .expected = {.allowed = false,
-                         .reason = SkipReason::kTypedInputPresent},
-        },
-        PolicyTestCase{
-            .test_name = "VerificationIgnoresTypedInAnyFieldAfterDetection",
-            .input =
-                [] {
-                  Input input = MakeAllowedInput(OneTimeTokenType::kGmail,
-                                                 Stage::kVerification);
-                  input.typed_in_any_field_after_detection = true;
                   return input;
                 }(),
             .expected = {.allowed = true, .reason = SkipReason::kNone},

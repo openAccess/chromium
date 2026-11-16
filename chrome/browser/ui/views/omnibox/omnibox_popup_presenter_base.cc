@@ -16,6 +16,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/strcat.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
@@ -94,10 +95,12 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(OmniboxPopupPresenterBase,
 OmniboxPopupPresenterBase::OmniboxPopupPresenterBase(
     LocationBar* location_bar,
     OmniboxPopupPresenterDelegate& presenter_delegate,
-    OmniboxController* controller)
+    OmniboxController* controller,
+    OmniboxPopupContentConfig config)
     : location_bar_(location_bar),
       presenter_delegate_(presenter_delegate),
-      controller_(controller) {
+      controller_(controller),
+      config_(config) {
   owned_omnibox_popup_webui_container_ =
       views::Builder<views::View>().SetUseDefaultFillLayout(true).Build();
 }
@@ -148,26 +151,26 @@ void OmniboxPopupPresenterBase::Show() {
   SynchronizePopupBounds();
 
   if (auto* content = GetWebUIContent()) {
+    // Also marks the WebContents visible (`WasShown()`) prior to
+    // `InsertVisualStateCallback()`, so that the callback is not dropped by
+    // the graphics pipeline.
     content->ShowUI();
 
-    // Call WasShown to mark the WebContents as visible so that a frame will
-    // eventually be produced that triggers the OnVisualStateReady callback.
-    // This must be called prior to `LogResultToContentReadyMetric`. If the
-    // WebContents is still technically hidden when the metric attempts to
-    // register its `InsertVisualStateCallback`, the graphics pipeline will
-    // immediately drop the callback, resulting in lost telemetry data.
-    content->GetWebContents()->WasShown();
-
     auto show_request_time = base::TimeTicks::Now();
-    auto timeout = ShouldDeferUntilVisualStateReady();
+    auto timeout = config_.defer_until_visual_state;
     base::TimeTicks result_ready_time =
         controller()->autocomplete_controller()->result().result_ready_time();
     is_deferred_ = timeout.has_value();
+    // The callback can run synchronously, either right away or when content
+    // drops it, e.g. while the RenderWidgetHost rebinds its interfaces for a
+    // navigation. Showing the WebContents from there re-enters the
+    // RenderWidgetHost in an inconsistent state, so always post it.
     content->GetWebContents()->GetPrimaryMainFrame()->InsertVisualStateCallback(
-        base::BindOnce(&OmniboxPopupPresenterBase::OnVisualStateReady,
-                       visual_state_weak_factory_.GetWeakPtr(),
-                       show_request_time, result_ready_time,
-                       /*from_fallback=*/false));
+        base::BindPostTaskToCurrentDefault(
+            base::BindOnce(&OmniboxPopupPresenterBase::OnVisualStateReady,
+                           visual_state_weak_factory_.GetWeakPtr(),
+                           show_request_time, result_ready_time,
+                           /*from_fallback=*/false)));
     if (is_deferred_) {
       // Add a backup timer in case the visual state callback is never called.
       // The visual state callback should always be called, but this fallback
@@ -310,6 +313,15 @@ void OmniboxPopupPresenterBase::OnWidgetPresented(
     base::UmaHistogramTimes(base::StrCat({GetPopupMetricPrefix(),
                                           ".ShowToPaint.Duration.FirstShow"}),
                             delta);
+    // Splits the first show in this window by whether the page was already
+    // loaded in another window.
+    if (pool_client_) {
+      base::UmaHistogramTimes(
+          base::StrCat(
+              {GetPopupMetricPrefix(), ".ShowToPaint.Duration.FirstShow.",
+               content_taken_from_other_window_ ? "Taken" : "Created"}),
+          delta);
+    }
   }
 }
 
@@ -332,17 +344,12 @@ void OmniboxPopupPresenterBase::Hide() {
     // If external code already hid the widget (e.g. ash on a user switch), then
     // we need to destroy the widget to prevent the external code from
     // re-showing the widget.
-    const bool hidden_externally = is_open_ && !widget_->IsVisible();
+    const bool was_open = is_open_;
+    const bool hidden_externally = was_open && !widget_->IsVisible();
     is_open_ = false;
     widget_->Hide();
     if (auto* content = GetWebUIContent()) {
-      if (base::FeatureList::IsEnabled(
-              omnibox::kOmniboxWebUIPopupMarkAsHidden)) {
-        if (content->GetWebContents()) {
-          content->GetWebContents()->WasHidden();
-        }
-      }
-      content->Clear();
+      content->HideUI();
     }
 
     // Discard the widget so the next show gets a brand new native window that
@@ -357,6 +364,10 @@ void OmniboxPopupPresenterBase::Hide() {
       base::AutoReset<bool> destroying(&is_destroying_widget_, true);
       ReleaseWidget();
     }
+
+    if (was_open && pool_client_) {
+      pool_client_->OnPopupHidden();
+    }
   }
 }
 
@@ -365,7 +376,7 @@ bool OmniboxPopupPresenterBase::IsShown() const {
 }
 
 void OmniboxPopupPresenterBase::OnContentHeightChanged(int content_height) {
-  if (ShouldDrawShadowInWebUI()) {
+  if (config_.draw_shadow_in_webui) {
     // The WebUI reserves the shadow margin inside its own document, so the
     // reported height includes it. Strip it back out so `content_height_`
     // keeps meaning "height of the popup content"; `SynchronizePopupBounds()`
@@ -477,10 +488,14 @@ OmniboxPopupPresenterBase::GetOrCreateWebUIContent(CreationReason reason) {
   if (pool_client_) {
     if (IsPrewarm(reason)) {
       if (pool_client_->HasSharedWebUIContent()) {
+        pool_client_->RecordContentSource(
+            OmniboxPopupWebUIPoolClient::ContentSource::kPrewarmSkipped);
         return nullptr;
       }
-    } else if (auto contents = pool_client_->TakeIdleWebUIContents()) {
-      return AdoptWebUIContents(std::move(contents));
+    } else if (auto* content = pool_client_->TakeAndAdoptIdleWebUIContents(
+                   OmniboxPopupWebUIPoolClient::ContentSource::
+                       kTakenOnDemand)) {
+      return content;
     }
   }
   // Covers `CreateWebUIContent()`, which creates the WebContents and starts
@@ -500,6 +515,10 @@ OmniboxPopupPresenterBase::GetOrCreateWebUIContent(CreationReason reason) {
     return nullptr;
   }
   SetWebUIContent(std::move(content));
+  content_taken_from_other_window_ = false;
+  if (pool_client_) {
+    pool_client_->OnWebUIContentCreated();
+  }
   return GetWebUIContent();
 }
 
@@ -516,13 +535,13 @@ OmniboxPopupPresenterBase::ReleaseWebUIContents() {
       content->ReleaseContentsWrapper();
   omnibox_popup_webui_content_ = nullptr;
   content->parent()->RemoveChildViewT(content);
+  OnWebUIContentsReleased();
   return contents;
 }
 
 bool OmniboxPopupPresenterBase::CanReleaseWebUIContents() {
   OmniboxPopupWebUIBaseContent* content = GetWebUIContent();
-  return content && !IsShown() && !is_open_ && !has_active_blockers() &&
-         !IsPermissionPromptPreventingClose() &&
+  return content && !IsShown() && !is_open_ && !IsClosePrevented() &&
          content->CanReleaseContentsWrapper();
 }
 
@@ -540,6 +559,8 @@ OmniboxPopupWebUIBaseContent* OmniboxPopupPresenterBase::AdoptWebUIContents(
       CreateWebUIContent(std::move(contents));
   CHECK(content);
   SetWebUIContent(std::move(content));
+  content_taken_from_other_window_ = true;
+  OnWebUIContentsAdopted();
   return GetWebUIContent();
 }
 
@@ -577,8 +598,10 @@ void OmniboxPopupPresenterBase::ApplyWebUIContentCreationStrategy(
   // Joins the profile's pool before prewarming, so that prewarming can see the
   // other windows' popups. `location_bar_` is null in unit tests.
   if (location_bar_) {
+    views::Widget* widget = presenter_delegate_->GetLocationBarWidget();
     pool_client_ = OmniboxPopupWebUIPoolClient::CreateIfSharingEnabled(
-        *this, location_bar_->GetProfile());
+        *this, location_bar_->GetProfile(),
+        widget ? widget->GetTopLevelWidget() : nullptr);
   }
   switch (strategy) {
     case WebUIContentCreationStrategy::kEager:
@@ -781,21 +804,12 @@ bool OmniboxPopupPresenterBase::ShouldShowLocationBarCutout() const {
   return false;
 }
 
-bool OmniboxPopupPresenterBase::ShouldDrawShadowInWebUI() const {
-  return false;
-}
-
 bool OmniboxPopupPresenterBase::CompletedFirstVisuallyNonEmptyPaint() {
   if (completed_first_visually_non_empty_paint_for_testing_.has_value()) {
     return *completed_first_visually_non_empty_paint_for_testing_;
   }
-  // The popup keeps its page across shows, so this stays true once the page
-  // first paints. Read the wrapped contents, since `GetWebContents()` creates
-  // new contents while the popup is hidden and its contents are detached.
   OmniboxPopupWebUIBaseContent* content = GetWebUIContent();
-  content::WebContents* web_contents =
-      content ? content->GetWrappedWebContents() : nullptr;
-  return web_contents && web_contents->CompletedFirstVisuallyNonEmptyPaint();
+  return content && content->CompletedFirstVisuallyNonEmptyPaint();
 }
 
 void OmniboxPopupPresenterBase::
@@ -882,7 +896,7 @@ void OmniboxPopupPresenterBase::PrimaryPageChanged(content::Page& page) {
     auto* webui_controller = wrapper ? wrapper->GetWebUIController() : nullptr;
 
     if (webui_controller) {
-      webui_controller->SetPresenterDelegate(this);
+      webui_controller->SetSearchboxHandlerDelegate(this);
     }
   }
 }
@@ -927,6 +941,10 @@ OmniboxController* OmniboxPopupPresenterBase::GetOmniboxController() {
   return controller();
 }
 
+const gfx::Size& OmniboxPopupPresenterBase::GetPopupMinimumSize() const {
+  return minimum_size_;
+}
+
 OmniboxPopupPresenterBase::ScopedDeactivationBlocker::ScopedDeactivationBlocker(
     base::WeakPtr<OmniboxPopupPresenterBase> presenter)
     : presenter_(std::move(presenter)) {
@@ -969,6 +987,11 @@ void OmniboxPopupPresenterBase::UnregisterBlocker() {
 }
 
 void OmniboxPopupPresenterBase::OnFileSelectionClosed() {}
+
+std::optional<OmniboxPopupHost::FocusStateToRestore>
+OmniboxPopupPresenterBase::TakeFocusStateToRestoreAfterModalDialog() {
+  return std::nullopt;
+}
 
 void OmniboxPopupPresenterBase::SetPermissionPromptShowing(bool showing) {
   is_prompt_showing_ = showing;
@@ -1026,4 +1049,19 @@ void OmniboxPopupPresenterBase::OnWidgetActivated() {
 
 bool OmniboxPopupPresenterBase::IsPermissionPromptPreventingClose() const {
   return is_prompt_showing_ || is_handling_prompt_dismissal_;
+}
+
+bool OmniboxPopupPresenterBase::IsClosePrevented() const {
+  return has_active_blockers() || IsPermissionPromptPreventingClose();
+}
+
+void OmniboxPopupPresenterBase::ResetContentHeightForTabSwitch() {
+  if (config_.height_workarounds) {
+    // Reset cached height to 1 on tab switch. This forces
+    // `OmniboxPopupFullPresenter::SynchronizePopupBounds` to fall back to
+    // `default_height` (the single location bar height) and drop
+    // elevation to 0, preventing a transient blank white dropdown box from
+    // painting while WebUI updates matches for the new tab.
+    OnContentHeightChanged(1);
+  }
 }

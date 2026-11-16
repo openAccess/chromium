@@ -26,7 +26,6 @@
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/signin/public/identity_manager/account_info.h"
-#include "components/sync/base/features.h"
 #include "components/trusted_vault/features.h"
 #include "components/trusted_vault/trusted_vault_client.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
@@ -317,12 +316,6 @@ class TrustedVaultEncryptionKeysTabHelperBrowserTest
     return prerender_helper_;
   }
 
-  signin::ConsentLevel GetConsentLevel() const {
-    return syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-               ? signin::ConsentLevel::kSignin
-               : signin::ConsentLevel::kSync;
-  }
-
   bool HasEncryptionKeysApi(content::RenderFrameHost* rfh) {
     auto* tab_helper =
         TrustedVaultEncryptionKeysTabHelper::FromWebContents(web_contents());
@@ -611,19 +604,6 @@ void ExecJsSetClientEncryptionKeysForMultipleSecurityDomains(
 // signed-in user with a Gaia-id: `kSyncGaiaId`.
 class TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator
     : public EnclaveAuthenticatorTestBase {
- public:
-  TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator() {
-    feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {// This flag is needed for enabling the logic of storing
-         // opportunistically retrieved passkey secrets.
-         device::kWebAuthnOpportunisticRetrieval,
-         // This flag is needed for enabling the logic of storing
-         // opportunistically retrieved passkey secrets.
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        /*disabled_features=*/{});
-  }
-
  protected:
   void SetUpCommandLine(base::CommandLine* command_line) override {
     // Override the sign-in URL so that it includes correct port from the test
@@ -647,7 +627,10 @@ class TrustedVaultEncryptionKeysTabHelperBrowserTestWithEnclaveAuthenticator
   }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  // This flag is needed for enabling the logic of storing
+  // opportunistically retrieved passkey secrets.
+  base::test::ScopedFeatureList feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 IN_PROC_BROWSER_TEST_F(
@@ -1221,6 +1204,94 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
               IsEmpty());
 }
 
+// Regression test for crbug.com/581913835: ensure that page-defined setters or
+// Proxy traps on `window.chrome` are not invoked synchronously during
+// `TrustedVaultEncryptionKeysExtension::Install()` (which could otherwise
+// detach the frame and destroy `TrustedVaultEncryptionKeysExtension` while
+// `Install()` is still on the stack).
+IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
+                       ShouldNotRunScriptDuringInstall) {
+  const GURL initial_url =
+      https_server()->GetURL("accounts.google.com", "/title1.html");
+  ASSERT_TRUE(content::NavigateToURL(web_contents(), initial_url));
+
+  constexpr std::string_view kScript = R"(
+    (async () => {
+      let setterCalls = 0;
+
+      async function runCase(makeHook) {
+        const target = document.createElement('iframe');
+        target.setAttribute('sandbox', 'allow-same-origin');
+        target.srcdoc =
+            '<iframe srcdoc="<iframe name=below></iframe>"></iframe>';
+        await new Promise(r => {
+          target.onload = r;
+          document.body.appendChild(target);
+        });
+
+        const child = window.open('', 'below').parent;
+        child.name = 'chrome';
+        Object.defineProperty(child, 'loadTimes', {
+          configurable: true,
+          set() {
+            const hook = makeHook(target);
+            Object.defineProperty(target.contentWindow, 'chrome', {
+              configurable: true,
+              value: hook,
+            });
+          },
+        });
+
+        // Trigger lazy main-world initialization of `target`.
+        void target.contentWindow;
+        target.remove();
+      }
+
+      // Case 1: Foreign-realm object with a `setSyncEncryptionKeys` setter.
+      await runCase((target) => {
+        const hook = {};
+        Object.defineProperty(hook, 'setSyncEncryptionKeys', {
+          configurable: true,
+          set() {
+            setterCalls++;
+            target.remove();
+          },
+        });
+        return hook;
+      });
+
+      // Case 2: Same-realm object with a `setSyncEncryptionKeys` setter.
+      await runCase((target) => {
+        const hook = new target.contentWindow.Object();
+        target.contentWindow.Object.defineProperty(
+            hook, 'setSyncEncryptionKeys', {
+              configurable: true,
+              set() {
+                setterCalls++;
+                target.remove();
+              },
+            });
+        return hook;
+      });
+
+      // Case 3: Same-realm Proxy with a `defineProperty` trap.
+      await runCase((target) => {
+        return new target.contentWindow.Proxy({}, {
+          defineProperty() {
+            setterCalls++;
+            target.remove();
+            return true;
+          },
+        });
+      });
+
+      return setterCalls;
+    })()
+  )";
+
+  EXPECT_EQ(0, content::EvalJs(web_contents(), kScript));
+}
+
 IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
                        ShouldPropagateUserActionTriggerForMetrics) {
   const GURL initial_url =
@@ -1290,7 +1361,7 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 #if !BUILDFLAG(IS_ANDROID)
   signin::MakePrimaryAccountAvailable(
       IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-      "testusername", GetConsentLevel());
+      "testusername", signin::ConsentLevel::kSignin);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   const GURL initial_url =
@@ -1342,7 +1413,7 @@ IN_PROC_BROWSER_TEST_F(TrustedVaultEncryptionKeysTabHelperBrowserTest,
 #if !BUILDFLAG(IS_ANDROID)
   signin::MakePrimaryAccountAvailable(
       IdentityManagerFactory::GetForProfile(browser()->GetProfile()),
-      "testusername", GetConsentLevel());
+      "testusername", signin::ConsentLevel::kSignin);
 #endif  // !BUILDFLAG(IS_ANDROID)
 
   base::HistogramTester histogram_tester;

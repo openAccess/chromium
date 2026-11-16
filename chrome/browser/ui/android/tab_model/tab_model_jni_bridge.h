@@ -26,6 +26,7 @@ class BrowserWindowInterface;
 class SessionID;
 class TabAndroid;
 class TabModelObserverJniBridge;
+class TabStripServiceFeature;
 
 namespace content {
 class WebContents;
@@ -43,7 +44,6 @@ class TabModelJniBridge : public TabModel {
                     std::optional<chrome::android::CustomTabProfileType>
                         custom_tab_profile_type,
                     TabModelType tab_model_type);
-  void Destroy();
 
   TabModelJniBridge(const TabModelJniBridge&) = delete;
   TabModelJniBridge& operator=(const TabModelJniBridge&) = delete;
@@ -141,6 +141,7 @@ class TabModelJniBridge : public TabModel {
   int GetIndexOfTab(tabs::TabHandle tab) override;
   void HighlightTabs(tabs::TabHandle tab_to_activate,
                      const std::set<tabs::TabHandle>& tabs) override;
+  std::vector<tabs::TabInterface*> GetHighlightedTabs() override;
   void MoveTab(tabs::TabHandle tab, int index) override;
   void CloseTab(tabs::TabHandle tab) override;
   std::vector<tabs::TabInterface*> GetAllTabs() override;
@@ -198,6 +199,7 @@ class TabModelJniBridge : public TabModel {
   // the constructor.
   std::unique_ptr<ui::ScopedUnownedUserData<TabListInterface>>
       scoped_unowned_user_data_;
+  std::unique_ptr<TabStripServiceFeature> tab_strip_service_feature_;
 
   // Whether restored background tabs have already been scheduled with
   // BackgroundTabLoadingPolicy. Duplicate calls to

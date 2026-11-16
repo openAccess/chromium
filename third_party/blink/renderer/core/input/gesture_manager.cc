@@ -297,7 +297,8 @@ WebInputEventResult GestureManager::HandleGestureTap(
   Element* tapped_element = current_hit_test.InnerPossiblyPseudoElement();
   LocalFrame::NotifyUserActivation(
       tapped_node ? tapped_node->GetDocument().GetFrame() : nullptr,
-      mojom::blink::UserActivationNotificationType::kInteraction);
+      mojom::blink::UserActivationNotificationType::kInteraction,
+      RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
 
   mouse_event_manager_->SetMouseDownElement(tapped_element);
 
@@ -562,7 +563,8 @@ WebInputEventResult GestureManager::HandleGestureLongPress(
 
   LocalFrame::NotifyUserActivation(
       inner_node ? inner_node->GetDocument().GetFrame() : nullptr,
-      mojom::blink::UserActivationNotificationType::kInteraction);
+      mojom::blink::UserActivationNotificationType::kInteraction,
+      RuntimeEnabledFeatures::TrustedUserActivationTriggersEnabled());
   return SendContextMenuEventForGesture(targeted_event);
 }
 
@@ -584,14 +586,18 @@ WebInputEventResult GestureManager::HandleGestureTwoFingerTap(
 }
 
 void GestureManager::HandleTouchDragEnd(
-    const WebMouseEvent& event,
+    const std::optional<WebMouseEvent>& event,
     ui::mojom::blink::DragOperation operation) {
   if (!drag_in_progress_) {
     return;
   }
   drag_in_progress_ = false;
   if (DragEndOpensContextMenu()) {
-    SendContextMenuEventTouchDragEnd(event, operation);
+    if (event) {
+      SendContextMenuEventTouchDragEnd(*event, operation);
+    } else {
+      ResetLongTapContextMenuStates();
+    }
   }
 }
 

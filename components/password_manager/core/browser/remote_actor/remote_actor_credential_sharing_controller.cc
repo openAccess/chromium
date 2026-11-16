@@ -16,7 +16,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
-#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -34,6 +33,7 @@
 #include "components/password_manager/core/browser/password_sync_util.h"
 #include "components/password_manager/core/browser/password_ui_utils.h"
 #include "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_service.h"
+#include "components/password_manager/core/browser/remote_actor/remote_actor_utils.h"
 #include "components/password_manager/core/browser/sync/password_proto_utils.h"
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_info.h"
@@ -74,38 +74,42 @@ RemoteActorCredentialSharingController::
   }
 }
 
-void RemoteActorCredentialSharingController::Start(std::string_view gaia_id,
-                                                   std::string_view domain,
-                                                   std::string_view task_id,
-                                                   ResultCallback callback) {
+void RemoteActorCredentialSharingController::Start(
+    std::string_view gaia_id,
+    std::string_view domain_or_origin,
+    std::string_view task_id,
+    ResultCallback callback) {
   CHECK(callback_.is_null());
   gaia_id_ = gaia_id;
-  origin_ = url::Origin::Create(GURL(base::StrCat({"https://", domain})));
   task_id_ = task_id;
   callback_ = std::move(callback);
 
-  if (!client_) {
-    LogRemoteActorCredentialSharingResult(
-        RemoteActorCredentialSharingResult::kOtherError);
+  std::optional<url::Origin> origin =
+      GetOriginFromDomainOrOrigin(domain_or_origin);
+  if (!client_ || !origin) {
+    LogResult(RemoteActorCredentialSharingResult::kOtherError);
     RespondWithError(RemoteActorCredentialSharingResult::kOtherError);
     return;
   }
+  origin_ = *std::move(origin);
 
   if (!VerifyUserIdentityAndSyncState(gaia_id)) {
-    LogRemoteActorCredentialSharingResult(
+    LogResult(
         RemoteActorCredentialSharingResult::kUserIdentityOrSyncStateInvalid);
     RespondWithError(
         RemoteActorCredentialSharingResult::kUserIdentityOrSyncStateInvalid);
     return;
   }
 
-  QueryPasswordStores(domain);
+  QueryPasswordStores();
 }
 
 void RemoteActorCredentialSharingController::SetActorParameters(
+    RemoteActorType actor_type,
     std::string_view actor_oauth_client_id,
     std::optional<int> task_namespace_id) {
   CHECK(!IsActive());
+  actor_type_ = actor_type;
   actor_oauth_client_id_ = actor_oauth_client_id;
   task_namespace_id_ = task_namespace_id;
 }
@@ -178,8 +182,7 @@ bool RemoteActorCredentialSharingController::VerifyUserIdentityAndSyncState(
   return true;
 }
 
-void RemoteActorCredentialSharingController::QueryPasswordStores(
-    std::string_view domain) {
+void RemoteActorCredentialSharingController::QueryPasswordStores() {
   const bool is_password_sync_active =
       sync_service_ &&
       sync_util::IsSyncFeatureActiveIncludingPasswords(sync_service_);
@@ -201,7 +204,7 @@ void RemoteActorCredentialSharingController::QueryPasswordStores(
   }
 
   if (stores.empty()) {
-    LogRemoteActorCredentialSharingResult(
+    LogResult(
         RemoteActorCredentialSharingResult::kNoSyncOrAccountStorage);
     RespondWithError(
         RemoteActorCredentialSharingResult::kNoSyncOrAccountStorage);
@@ -210,9 +213,9 @@ void RemoteActorCredentialSharingController::QueryPasswordStores(
 
   expected_callbacks_ = stores.size();
 
+  const GURL url = origin_.GetURL();
   PasswordFormDigest digest(PasswordForm::Scheme::kHtml,
-                            base::StrCat({"https://", domain, "/"}),
-                            GURL(base::StrCat({"https://", domain})));
+                            password_manager_util::GetSignonRealm(url), url);
 
   for (PasswordStoreInterface* store : stores) {
     store->GetLogins(digest, weak_ptr_factory_.GetWeakPtr());
@@ -225,7 +228,7 @@ void RemoteActorCredentialSharingController::OnAllLoginsRetrieved() {
   }
 
   if (credentials_.empty()) {
-    LogRemoteActorCredentialSharingResult(
+    LogResult(
         RemoteActorCredentialSharingResult::kNoPasswordsFound);
     std::move(callback_).Run(
         RemoteActorCredentialSharingResult::kNoPasswordsFound);
@@ -251,7 +254,7 @@ void RemoteActorCredentialSharingController::OnCredentialSelected(
   }
 
   if (!selected_form.has_value()) {
-    LogRemoteActorCredentialSharingResult(selected_form.error());
+    LogResult(selected_form.error());
     RespondWithError(selected_form.error());
     return;
   }
@@ -279,7 +282,7 @@ void RemoteActorCredentialSharingController::AuthenticateIfNeeded(
 
   if (reauth_required) {
     if (!authenticator) {
-      LogRemoteActorCredentialSharingResult(
+      LogResult(
           RemoteActorCredentialSharingResult::kAuthenticatorFailed);
       RespondWithError(
           RemoteActorCredentialSharingResult::kAuthenticatorFailed);
@@ -314,7 +317,7 @@ void RemoteActorCredentialSharingController::OnAuthenticationResult(
   }
 
   if (!success) {
-    LogRemoteActorCredentialSharingResult(
+    LogResult(
         RemoteActorCredentialSharingResult::kAuthenticatorFailed);
     RespondWithError(RemoteActorCredentialSharingResult::kAuthenticatorFailed);
     return;
@@ -330,7 +333,7 @@ void RemoteActorCredentialSharingController::ProceedWithCredential(
   }
 
   if (!sharing_service_) {
-    LogRemoteActorCredentialSharingResult(
+    LogResult(
         RemoteActorCredentialSharingResult::kSharingServiceUnavailable);
     RespondWithError(
         RemoteActorCredentialSharingResult::kSharingServiceUnavailable);
@@ -361,7 +364,7 @@ void RemoteActorCredentialSharingController::OnShareCompleted(bool success) {
   RemoteActorCredentialSharingResult result =
       success ? RemoteActorCredentialSharingResult::kSuccess
               : RemoteActorCredentialSharingResult::kSharingFailed;
-  LogRemoteActorCredentialSharingResult(result);
+  LogResult(result);
   RunResultCallback(result);
 }
 
@@ -376,6 +379,11 @@ void RemoteActorCredentialSharingController::RespondWithError(
 void RemoteActorCredentialSharingController::RunResultCallback(
     RemoteActorCredentialSharingResult result) {
   std::move(callback_).Run(result);
+}
+
+void RemoteActorCredentialSharingController::LogResult(
+    RemoteActorCredentialSharingResult result) const {
+  LogRemoteActorCredentialSharingResult(result, actor_type_);
 }
 
 }  // namespace password_manager

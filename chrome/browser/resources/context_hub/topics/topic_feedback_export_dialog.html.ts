@@ -8,7 +8,6 @@ import {EXPORT_WINDOW_DAYS} from './topic_feedback_export_dialog.js';
 import type {TopicFeedbackExportDialogElement} from './topic_feedback_export_dialog.js';
 
 export function getHtml(this: TopicFeedbackExportDialogElement) {
-  // clang-format off
   return html`<!--_html_template_start_-->
 <!-- Temporary Fishfood Feedback -->
 <!-- TODO(crbug.com/558572977): Use internationalized strings once GRD -->
@@ -16,6 +15,7 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
 <cr-dialog id="dialog" show-on-attach @close="${this.onDialogClose_}">
   <div slot="title">
     <div id="title">Send fishfood feedback</div>
+    <!-- lit-template-format-off -->
     <div id="subtitle">
       Download your ratings and recent browsing as a file, then upload it to
       the ${this.getFormUrl_() ? html`<a id="formLink"
@@ -23,6 +23,7 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
           @click="${this.onFormLinkClick_}">feedback form</a>` :
           html`feedback form`}.
     </div>
+    <!-- lit-template-format-on -->
   </div>
   <div slot="body">
     <section id="windowSection">
@@ -108,12 +109,35 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
 
     <section id="coverageSection">
       <h2>Your ratings</h2>
-      <div id="ratingStatus" ?complete="${this.areAllTopicsRated_()}">
-        <cr-icon icon="${this.areAllTopicsRated_() ?
-            'cr:check-circle' : 'cr:error'}" aria-hidden="true">
+      <div id="ratingStatus" ?complete="${this.areAllTopicsHandled_()}">
+        <cr-icon
+            icon="${
+                this.areAllTopicsHandled_() ? 'cr:check-circle' : 'cr:error'}"
+            aria-hidden="true">
         </cr-icon>
         <div id="ratingProgress">${this.getRatingProgressText_()}</div>
       </div>
+      ${this.getUnratedTopics_().length > 0 ? html`
+        <div class="secondary">
+          Check the topics you don't want to share. Visits that are only in
+          these topics are sent without their URL and title.
+        </div>
+        <ul id="unratedTopics">
+          ${this.getUnratedTopics_().map(topic => html`
+            <li>
+              <cr-checkbox class="leave-out-checkbox" data-id="${topic.id}"
+                  ?checked="${this.isTopicLeftOut_(topic)}"
+                  @checked-changed="${this.onLeaveOutCheckedChanged_}">
+                ${topic.title}
+              </cr-checkbox>
+            </li>
+          `)}
+        </ul>
+        <cr-button id="leaveOutAll" @click="${this.onLeaveOutAllClick_}"
+            ?disabled="${this.areAllTopicsHandled_()}">
+          Leave out all unrated
+        </cr-button>
+      ` : ''}
       ${this.getCoverageTopics_().length > 0 ? html`
         <div class="secondary">
           If you have time, also review these topics on their details page:
@@ -121,12 +145,16 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
         <ul id="coverageTopics">
           ${this.getCoverageTopics_().map(topic => html`
             <li ?done="${this.isCoverageTopicDone_(topic)}">
-              <cr-icon icon="${this.isCoverageTopicDone_(topic) ?
-                  'cr:check-circle' : 'cr:chevron-right'}"
+              <cr-icon
+                  icon="${this.isCoverageTopicDone_(topic) ?
+                      'cr:check-circle' :
+                      'cr:chevron-right'}"
                   aria-hidden="true">
               </cr-icon>
               <a href="#" data-id="${topic.id}"
-                  @click="${this.onCoverageTopicClick_}">${topic.title}</a>
+                  @click="${this.onCoverageTopicClick_}">
+                ${topic.title}
+              </a>
               ${this.isCoverageTopicDone_(topic) ? html`
                 <span class="secondary">Reviewed</span>
               ` : ''}
@@ -134,8 +162,8 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
           `)}
         </ul>
       ` : ''}
-      <cr-textarea id="missingTopics"
-          label="Missing topics (optional)" autogrow rows="2"
+      <cr-textarea id="missingTopics" label="Missing topics (optional)" autogrow
+          rows="2"
           placeholder="What did you browse that should have been a topic?"
           .value="${this.missingTopics_}"
           @value-changed="${this.onMissingTopicsValueChanged_}">
@@ -148,12 +176,14 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
         The file contains your topics, your ratings and comments, and the URLs,
         titles and times of the pages you visited in this window, except what
         you exclude above, plus your Chrome version and experiment state. Only
-        the Topics team can access it. It's deleted 18 months after upload; to
-        have it deleted sooner, contact the Topics team.
+        the Topics team can access it. The team uses it to evaluate and improve
+        Topics, including testing new versions. It's deleted 18 months after
+        upload; to have it deleted sooner, contact the Topics team.
       </p>
       <cr-checkbox id="acknowledge" ?checked="${this.acknowledged_}"
           @checked-changed="${this.onAcknowledgeCheckedChanged_}">
-        I understand what's shared
+        I understand what's shared and agree to it being used to evaluate
+        Topics
       </cr-checkbox>
     </section>
 
@@ -189,8 +219,7 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
     </cr-button>
     <cr-button id="download"
         class="${this.isFormNextStep_() ? 'cancel-button' : 'action-button'}"
-        ?disabled="${!this.canDownload_()}"
-        @click="${this.onDownloadClick_}">
+        ?disabled="${!this.canDownload_()}" @click="${this.onDownloadClick_}">
       ${this.isFormNextStep_() ? 'Download again' : 'Download JSON'}
     </cr-button>
     ${this.isFormNextStep_() ? html`
@@ -202,5 +231,4 @@ export function getHtml(this: TopicFeedbackExportDialogElement) {
   </div>
 </cr-dialog>
 <!--_html_template_end_-->`;
-  // clang-format on
 }

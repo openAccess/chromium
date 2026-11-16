@@ -11,9 +11,11 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
@@ -26,7 +28,10 @@
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/settings_api_helpers.h"
+#include "chrome/browser/image_fetcher/image_fetcher_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_key.h"
+#include "chrome/browser/resources_util.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/controlled_home_dialog_controller.h"
@@ -34,6 +39,12 @@
 #include "chrome/test/base/search_test_utils.h"
 #include "components/enterprise/isolated_mode/isolated_mode_features.h"
 #include "components/enterprise/isolated_mode/prefs.h"
+#include "components/image_fetcher/core/image_fetcher.h"
+#include "components/image_fetcher/core/image_fetcher_service.h"
+#include "components/image_fetcher/core/image_fetcher_types.h"
+#include "components/image_fetcher/core/mock_image_fetcher.h"
+#include "components/image_fetcher/core/request_metadata.h"
+#include "components/keyed_service/core/keyed_service.h"
 #include "components/policy/core/browser/browser_policy_connector.h"
 #include "components/policy/core/common/mock_configuration_policy_provider.h"
 #include "components/policy/core/common/policy_map.h"
@@ -42,21 +53,39 @@
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/search_engines_test_util.h"
 #include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data_util.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/tabs/public/tab_interface.h"
-#include "components/url_formatter/elide_url.h"
+#include "components/vector_icons/vector_icons.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_system.h"
 #include "extensions/browser/ui_util.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
 #include "extensions/test/test_extension_dir.h"
+#include "skia/ext/image_operations.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
+#include "ui/base/models/image_model.h"
+#include "ui/base/resource/resource_bundle.h"
+#include "ui/base/ui_base_features.h"
+#include "ui/color/color_id.h"
+#include "ui/gfx/color_palette.h"
+#include "ui/gfx/image/image.h"
+#include "ui/gfx/image/image_skia.h"  // IWYU pragma: keep
+#include "ui/gfx/image/image_skia_operations.h"
+#include "ui/gfx/image/image_unittest_util.h"
+#include "ui/gfx/paint_vector_icon.h"
 #include "url/gurl.h"
 
 namespace {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+using ::testing::_;
+
 constexpr char16_t kSearchOverrideExtensionName[] =
     u"Search Override Extension";
 
@@ -317,7 +346,7 @@ IN_PROC_BROWSER_TEST_P(SearchOverriddenParamsProvidersBrowserTest,
   ASSERT_TRUE(params);
   if (IsExplicitChoiceDialog()) {
     ASSERT_TRUE(params->content.previous_setting);
-    EXPECT_EQ(u"testfoo", params->content.previous_setting->text);
+    EXPECT_EQ(u"testname", params->content.previous_setting->text);
   } else {
     EXPECT_EQ("Did you mean to change your search provider?",
               base::UTF16ToUTF8(params->content.dialog_title));
@@ -888,6 +917,42 @@ IN_PROC_BROWSER_TEST_F(SettingsOverriddenParamsProvidersBrowserTest,
   EXPECT_EQ(u"Did you mean to change this page?", params->content.dialog_title);
 }
 
+// The chrome_settings_overrides API that allows extensions to override the
+// default search provider is only available on Windows and Mac.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+// Compares the images, ensuring that varying types are compared appropriately.
+bool IconsEqual(const ui::ImageModel& a, const ui::ImageModel& b) {
+  if (a.IsImage() && b.IsImage()) {
+    return gfx::test::AreImagesEqual(a.GetImage(), b.GetImage());
+  }
+  if (a.IsVectorIcon() && b.IsVectorIcon()) {
+    return a.GetVectorIcon() == b.GetVectorIcon();
+  }
+  return false;
+}
+
+// Mock ImageFetcherService used to verify that search engine favicons are
+// fetched as expected for the explicit-choice dialog.
+class MockImageFetcherService : public image_fetcher::ImageFetcherService {
+ public:
+  MockImageFetcherService() = default;
+  ~MockImageFetcherService() override = default;
+
+  testing::NiceMock<image_fetcher::MockImageFetcher>* mock_image_fetcher() {
+    return &mock_image_fetcher_;
+  }
+
+  // image_fetcher::ImageFetcherService:
+  image_fetcher::ImageFetcher* GetImageFetcher(
+      image_fetcher::ImageFetcherConfig config) override {
+    return &mock_image_fetcher_;
+  }
+
+ private:
+  testing::NiceMock<image_fetcher::MockImageFetcher> mock_image_fetcher_;
+};
+
 // Test class specific to the explicit-choice dialog variation.
 class ExtensionControllingSearchExplicitChoiceParamsBrowserTest
     : public SettingsOverriddenParamsProvidersBrowserTest {
@@ -895,6 +960,134 @@ class ExtensionControllingSearchExplicitChoiceParamsBrowserTest
   ExtensionControllingSearchExplicitChoiceParamsBrowserTest() {
     feature_list_.InitAndEnableFeature(
         extensions_features::kSearchEngineExplicitChoiceDialog);
+  }
+
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    SettingsOverriddenParamsProvidersBrowserTest::
+        SetUpBrowserContextKeyedServices(context);
+    Profile* profile = Profile::FromBrowserContext(context);
+    ImageFetcherServiceFactory::GetInstance()->SetTestingFactory(
+        profile->GetProfileKey(),
+        base::BindRepeating(
+            [](SimpleFactoryKey* key) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<MockImageFetcherService>();
+            }));
+  }
+
+  void SetUpOnMainThread() override {
+    SettingsOverriddenParamsProvidersBrowserTest::SetUpOnMainThread();
+    auto* service = static_cast<MockImageFetcherService*>(
+        ImageFetcherServiceFactory::GetForKey(profile()->GetProfileKey()));
+    ASSERT_TRUE(service);
+    EXPECT_CALL(*service->mock_image_fetcher(), FetchImageAndData_(_, _, _, _))
+        .WillRepeatedly([](const GURL&,
+                           image_fetcher::ImageDataFetcherCallback*,
+                           image_fetcher::ImageFetcherCallback* callback,
+                           image_fetcher::ImageFetcherParams) {
+          std::move(*callback).Run(gfx::Image(),
+                                   image_fetcher::RequestMetadata());
+        });
+  }
+
+  // Creates a distinct test icon on each call so tests can distinguish between
+  // multiple fetched icons.
+  gfx::Image CreateTestIcon() {
+    return gfx::Image(gfx::CreateVectorIcon(
+        vector_icons::kGlobeIcon, extension_misc::EXTENSION_ICON_SMALLISH,
+        gfx::kPlaceholderColor + next_icon_offset_++));
+  }
+
+  void ExpectNoIconFetch(const GURL& favicon_url) {
+    CHECK(!favicon_url.is_empty());
+    auto* service = static_cast<MockImageFetcherService*>(
+        ImageFetcherServiceFactory::GetForKey(profile()->GetProfileKey()));
+    ASSERT_TRUE(service);
+    EXPECT_CALL(*service->mock_image_fetcher(),
+                FetchImageAndData_(favicon_url, _, _, _))
+        .Times(0);
+  }
+
+  // Configures mock icon fetch expectations for the given search engine and
+  // returns the expected icon that should appear in the dialog setting.
+  ui::ImageModel SetUpExpectedEngineIcon(const GURL& favicon_url) {
+    CHECK(!favicon_url.is_empty());
+    gfx::Image expected_icon = CreateTestIcon();
+    auto* service = static_cast<MockImageFetcherService*>(
+        ImageFetcherServiceFactory::GetForKey(profile()->GetProfileKey()));
+    CHECK(service);
+    EXPECT_CALL(*service->mock_image_fetcher(),
+                FetchImageAndData_(favicon_url, _, _, _))
+        .WillOnce([expected_icon](const GURL&,
+                                  image_fetcher::ImageDataFetcherCallback*,
+                                  image_fetcher::ImageFetcherCallback* callback,
+                                  image_fetcher::ImageFetcherParams) {
+          std::move(*callback).Run(expected_icon,
+                                   image_fetcher::RequestMetadata());
+        });
+    return ui::ImageModel::FromImage(expected_icon);
+  }
+
+  ui::ImageModel SetUpExpectedEngineIcon(const TemplateURL& template_url) {
+    if (std::optional<ui::ImageModel> builtin_icon =
+            GetExpectedBuiltinIcon(template_url)) {
+      ExpectNoIconFetch(template_url.favicon_url());
+      return *builtin_icon;
+    }
+    return SetUpExpectedEngineIcon(template_url.favicon_url());
+  }
+
+  ui::ImageModel SetUpExpectedEngineIcon(
+      const TemplateURLPrepopulateData::PrepopulatedEngine& engine) {
+    std::unique_ptr<TemplateURLData> data =
+        TemplateURLDataFromPrepopulatedEngine(engine);
+    return SetUpExpectedEngineIcon(TemplateURL(*data));
+  }
+
+  // Returns the expected fallback globe icon used when no search engine
+  // favicon is available.
+  ui::ImageModel GetExpectedFallbackIcon() {
+    return ui::ImageModel::FromVectorIcon(
+        features::IsRoundedIconsEnabled() ? vector_icons::kGlobeIcon
+                                          : vector_icons::kGlobeOldIcon,
+        ui::kColorIcon, extension_misc::EXTENSION_ICON_SMALLISH);
+  }
+
+  // Loads and resizes the bundled icon resource for the given search engine, if
+  // one exists. Note that this intentionally mirrors the production resource
+  // lookup: mocking the resource bundle would still require duplicating the
+  // resource ID resolution here while adding significant mock setup and global
+  // state management, so reading the real bundled resource directly is simpler.
+  ui::ImageModel LoadExpectedBuiltinIcon(const std::string& image_resource_id) {
+    const int resource_id =
+        ResourcesUtil::GetThemeResourceId(image_resource_id);
+    CHECK_NE(resource_id, -1);
+    const gfx::ImageSkia* image_skia =
+        ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(resource_id);
+    CHECK(image_skia && !image_skia->isNull());
+    gfx::Size icon_size(extension_misc::EXTENSION_ICON_SMALLISH,
+                        extension_misc::EXTENSION_ICON_SMALLISH);
+    return ui::ImageModel::FromImageSkia(
+        gfx::ImageSkiaOperations::CreateResizedImage(
+            *image_skia, skia::ImageOperations::RESIZE_BEST, icon_size));
+  }
+
+  std::optional<ui::ImageModel> GetExpectedBuiltinIcon(
+      const TemplateURL& template_url) {
+    if (!template_url.GetBaseBuiltinResourceId().has_value()) {
+      return std::nullopt;
+    }
+    return LoadExpectedBuiltinIcon(template_url.GetBuiltinImageResourceId());
+  }
+
+  std::optional<ui::ImageModel> GetExpectedBuiltinIcon(
+      const TemplateURLPrepopulateData::PrepopulatedEngine& engine) {
+    std::optional<std::string> resource_id =
+        TemplateURL::GetBuiltinImageResourceId(engine);
+    if (!resource_id.has_value()) {
+      return std::nullopt;
+    }
+    return LoadExpectedBuiltinIcon(*resource_id);
   }
 
   // Returns the first non-Google prepopulated search engine from the
@@ -957,16 +1150,13 @@ class ExtensionControllingSearchExplicitChoiceParamsBrowserTest
  private:
   base::test::ScopedFeatureList feature_list_;
   std::vector<std::unique_ptr<extensions::TestExtensionDir>> test_dirs_;
+  unsigned int next_icon_offset_ = 0;
 };
 
-// The chrome_settings_overrides API that allows extensions to override the
-// default search provider is only available on Windows and Mac.
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-
+// Verify correctness of the search option-agnostic dialog strings.
 IN_PROC_BROWSER_TEST_F(
     ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
-    PrimarySearchIsExtensionWithoutPrepopulateID) {
-  base::HistogramTester histogram_tester;
+    StaticDialogStrings) {
   const extensions::Extension* extension = AddExtensionControllingSearch();
   ASSERT_TRUE(extension);
 
@@ -979,12 +1169,30 @@ IN_PROC_BROWSER_TEST_F(
       base::StrCat({u"The extension \"", kSearchOverrideExtensionName,
                     u"\" changed your settings"})));
 
+  ASSERT_TRUE(params->content.previous_setting.has_value());
+  EXPECT_EQ(u"Your previous choice",
+            params->content.previous_setting->description);
+
+  ASSERT_TRUE(params->content.new_setting.has_value());
+  EXPECT_EQ(u"Changed to this by extension",
+            params->content.new_setting->description);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
+    PrimarySearchIsExtensionNotInPrepopulatedList) {
+  base::HistogramTester histogram_tester;
+  const extensions::Extension* extension = AddExtensionControllingSearch();
+  ASSERT_TRUE(extension);
+
+  std::optional<ExtensionSettingsOverriddenDialog::Params> params =
+      GetSearchOverriddenParamsSync(web_contents());
+  ASSERT_TRUE(params);
+
   auto new_setting = params->content.new_setting;
   ASSERT_TRUE(new_setting.has_value());
-  EXPECT_TRUE(new_setting.value().image.IsVectorIcon());
+  EXPECT_TRUE(IconsEqual(GetExpectedFallbackIcon(), new_setting.value().image));
   EXPECT_EQ(u"example.com", new_setting.value().text);
-  EXPECT_TRUE(new_setting.value().favicon_url.is_empty());
-  EXPECT_EQ(u"Changed to this by extension", new_setting.value().description);
 
   // Ensure that a fully-populated dialog was logged.
   histogram_tester.ExpectUniqueSample(
@@ -994,10 +1202,9 @@ IN_PROC_BROWSER_TEST_F(
 
 IN_PROC_BROWSER_TEST_F(
     ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
-    PrimarySearchIsExtensionWithPrepopulateID) {
+    PrimarySearchIsExtensionInPrepopulatedList) {
   const TemplateURL* extension_turl = FindPrepopulatedTemplateURL();
-  const GURL expected_favicon_url = extension_turl->favicon_url();
-  EXPECT_FALSE(expected_favicon_url.is_empty());
+  EXPECT_FALSE(extension_turl->favicon_url().is_empty());
 
   // Use a name and favicon URL in the extension manifest that differ from the
   // prepopulated engine's values to verify that the dialog uses the
@@ -1005,13 +1212,15 @@ IN_PROC_BROWSER_TEST_F(
   constexpr char kManifestName[] = "PrimaryPrepopulatedExtension";
   const GURL manifest_favicon_url("https://example.com/manifest_favicon.ico");
   ASSERT_NE(kManifestName, base::UTF16ToUTF8(extension_turl->short_name()));
-  ASSERT_NE(manifest_favicon_url, expected_favicon_url);
+  ASSERT_NE(manifest_favicon_url, extension_turl->favicon_url());
 
   const extensions::Extension* extension = InstallCustomSearchExtension(
       kManifestName, base::UTF16ToUTF8(extension_turl->keyword()),
-      extension_turl->url(), extension_turl->prepopulate_id(),
+      extension_turl->url(), /*prepopulated_id=*/std::nullopt,
       manifest_favicon_url);
   ASSERT_TRUE(extension);
+
+  const ui::ImageModel expected_icon = SetUpExpectedEngineIcon(*extension_turl);
 
   std::optional<ExtensionSettingsOverriddenDialog::Params> params =
       GetSearchOverriddenParamsSync(web_contents());
@@ -1020,11 +1229,7 @@ IN_PROC_BROWSER_TEST_F(
   auto new_setting = params->content.new_setting;
   ASSERT_TRUE(new_setting.has_value());
   EXPECT_EQ(extension_turl->short_name(), new_setting.value().text);
-  EXPECT_EQ(expected_favicon_url, new_setting.value().favicon_url);
-  // TODO(http://crbug.com/562972276): Use a mock image fetcher to assert that
-  // the correct image was fetched.
-  EXPECT_FALSE(new_setting.value().image.IsEmpty());
-  EXPECT_EQ(u"Changed to this by extension", new_setting.value().description);
+  EXPECT_TRUE(IconsEqual(expected_icon, new_setting.value().image));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -1034,12 +1239,14 @@ IN_PROC_BROWSER_TEST_F(
   const TemplateURL* const default_provider =
       template_url_service->GetDefaultSearchProvider();
   ASSERT_TRUE(default_provider);
-  const GURL expected_favicon_url = default_provider->favicon_url();
-  EXPECT_FALSE(expected_favicon_url.is_empty());
+  EXPECT_FALSE(default_provider->favicon_url().is_empty());
 
   // Initially, default search is Google (non-extension, prepopulated).
   const extensions::Extension* extension = AddExtensionControllingSearch();
   ASSERT_TRUE(extension);
+
+  const ui::ImageModel expected_icon =
+      SetUpExpectedEngineIcon(*default_provider);
 
   std::optional<ExtensionSettingsOverriddenDialog::Params> params =
       GetSearchOverriddenParamsSync(web_contents());
@@ -1048,8 +1255,7 @@ IN_PROC_BROWSER_TEST_F(
   auto previous_setting = params->content.previous_setting;
   ASSERT_TRUE(previous_setting.has_value());
   EXPECT_EQ(u"Google", previous_setting.value().text);
-  EXPECT_EQ(expected_favicon_url, previous_setting.value().favicon_url);
-  EXPECT_EQ(u"Your previous choice", previous_setting.value().description);
+  EXPECT_TRUE(IconsEqual(expected_icon, previous_setting.value().image));
 }
 
 IN_PROC_BROWSER_TEST_F(
@@ -1060,6 +1266,7 @@ IN_PROC_BROWSER_TEST_F(
   std::unique_ptr<TemplateURLData> data =
       GenerateDummyTemplateURLData("custom");
   data->SetURL("https://customsearch.com/search?q={searchTerms}");
+  data->favicon_url = GURL("https://customsearch.com/favicon.ico");
   TemplateURL* custom_turl =
       template_url_service->Add(std::make_unique<TemplateURL>(*data));
   template_url_service->SetUserSelectedDefaultSearchProvider(custom_turl);
@@ -1067,30 +1274,40 @@ IN_PROC_BROWSER_TEST_F(
   const extensions::Extension* extension = AddExtensionControllingSearch();
   ASSERT_TRUE(extension);
 
+  const ui::ImageModel expected_icon = SetUpExpectedEngineIcon(*custom_turl);
+
   std::optional<ExtensionSettingsOverriddenDialog::Params> params =
       GetSearchOverriddenParamsSync(web_contents());
   ASSERT_TRUE(params);
 
   auto previous_setting = params->content.previous_setting;
   ASSERT_TRUE(previous_setting.has_value());
-  // For a non-prepopulated search engine, the vector icon should be used,
-  // and the text should be the formatted URL rather than the short name.
-  EXPECT_TRUE(previous_setting.value().image.IsVectorIcon());
-  EXPECT_EQ(u"customsearch.com", previous_setting.value().text);
-  EXPECT_TRUE(previous_setting.value().favicon_url.is_empty());
-  EXPECT_EQ(u"Your previous choice", previous_setting.value().description);
+  // For a non-extension custom search engine, the user's configured short name
+  // and fetched icon should be preserved.
+  EXPECT_EQ(custom_turl->short_name(), previous_setting.value().text);
+  EXPECT_TRUE(IconsEqual(expected_icon, previous_setting.value().image));
 }
 
 IN_PROC_BROWSER_TEST_F(
     ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
-    SecondarySearchIsExtensionWithPrepopulateID) {
+    SecondarySearchIsExtensionInPrepopulatedList) {
   const TemplateURL* extension_turl = FindPrepopulatedTemplateURL();
+  EXPECT_FALSE(extension_turl->favicon_url().is_empty());
 
-  // Install the first extension overriding search with prepopulated_id.
+  // Use a name and favicon URL in the extension manifest that differ from the
+  // prepopulated engine's values to verify that the dialog uses the
+  // authoritative prepopulated values rather than those from the manifest.
+  constexpr char kManifestName[] = "FirstPrepopulatedExtension";
+  const GURL manifest_favicon_url("https://example.com/manifest_favicon.ico");
+  ASSERT_NE(kManifestName, base::UTF16ToUTF8(extension_turl->short_name()));
+  ASSERT_NE(manifest_favicon_url, extension_turl->favicon_url());
+
+  // Install the first extension overriding search with a prepopulated search
+  // URL.
   const extensions::Extension* first_extension = InstallCustomSearchExtension(
-      "FirstPrepopulatedExtension",
-      base::UTF16ToUTF8(extension_turl->keyword()), extension_turl->url(),
-      extension_turl->prepopulate_id(), extension_turl->favicon_url());
+      kManifestName, base::UTF16ToUTF8(extension_turl->keyword()),
+      extension_turl->url(), /*prepopulated_id=*/std::nullopt,
+      manifest_favicon_url);
   ASSERT_TRUE(first_extension);
 
   // Install a second extension, which becomes the primary controlling
@@ -1099,28 +1316,21 @@ IN_PROC_BROWSER_TEST_F(
       AddExtensionControllingSearch();
   ASSERT_TRUE(second_extension);
 
+  const ui::ImageModel expected_icon = SetUpExpectedEngineIcon(*extension_turl);
+
   std::optional<ExtensionSettingsOverriddenDialog::Params> params =
       GetSearchOverriddenParamsSync(web_contents());
   ASSERT_TRUE(params);
 
   auto previous_setting = params->content.previous_setting;
   ASSERT_TRUE(previous_setting.has_value());
-  // TODO(crbug.com/562972276): GetSecondarySearchInfo() currently reconstructs
-  // `secondary_extension_search` without matching prepopulated engines, so
-  // `IsPrepopulated()` returns false and falls back to the formatted URL and
-  // vector icon. Update these expectations when the secondary-search fix lands.
-  EXPECT_EQ(
-      url_formatter::FormatUrlForDisplayOmitSchemePathAndTrivialSubdomains(
-          GURL(extension_turl->url())),
-      previous_setting.value().text);
-  EXPECT_TRUE(previous_setting.value().favicon_url.is_empty());
-  EXPECT_TRUE(previous_setting.value().image.IsVectorIcon());
-  EXPECT_EQ(u"Your previous choice", previous_setting.value().description);
+  EXPECT_EQ(extension_turl->short_name(), previous_setting.value().text);
+  EXPECT_TRUE(IconsEqual(expected_icon, previous_setting.value().image));
 }
 
 IN_PROC_BROWSER_TEST_F(
     ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
-    SecondarySearchIsExtensionWithoutPrepopulateID) {
+    SecondarySearchIsExtensionNotInPrepopulatedList) {
   // Install the first extension with a non-prepopulated search URL.
   const extensions::Extension* first_extension = InstallCustomSearchExtension(
       "FirstNonPrepopulatedExtension", "first_keyword",
@@ -1140,10 +1350,76 @@ IN_PROC_BROWSER_TEST_F(
 
   auto previous_setting = params->content.previous_setting;
   ASSERT_TRUE(previous_setting.has_value());
-  EXPECT_TRUE(previous_setting.value().image.IsVectorIcon());
+  EXPECT_TRUE(
+      IconsEqual(GetExpectedFallbackIcon(), previous_setting.value().image));
   EXPECT_EQ(u"first-override.com", previous_setting.value().text);
-  EXPECT_TRUE(previous_setting.value().favicon_url.is_empty());
-  EXPECT_EQ(u"Your previous choice", previous_setting.value().description);
 }
 
+IN_PROC_BROWSER_TEST_F(
+    ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
+    PrimaryAndSecondarySearchesFetchDistinctIcons) {
+  TemplateURLService* const template_url_service = GetTemplateURLService();
+  const TemplateURL* const secondary_turl =
+      template_url_service->GetDefaultSearchProvider();
+  ASSERT_TRUE(secondary_turl);
+
+  const TemplateURL* const primary_turl = FindPrepopulatedTemplateURL();
+  ASSERT_TRUE(primary_turl);
+
+  const extensions::Extension* extension = InstallCustomSearchExtension(
+      "PrimaryPrepopulatedExtension",
+      base::UTF16ToUTF8(primary_turl->keyword()), primary_turl->url(),
+      primary_turl->prepopulate_id(),
+      GURL("https://example.com/manifest_favicon.ico"));
+  ASSERT_TRUE(extension);
+
+  const ui::ImageModel expected_secondary_icon =
+      SetUpExpectedEngineIcon(*secondary_turl);
+  const ui::ImageModel expected_primary_icon =
+      SetUpExpectedEngineIcon(*primary_turl);
+  ASSERT_FALSE(IconsEqual(expected_secondary_icon, expected_primary_icon));
+
+  std::optional<ExtensionSettingsOverriddenDialog::Params> params =
+      GetSearchOverriddenParamsSync(web_contents());
+  ASSERT_TRUE(params);
+
+  auto previous_setting = params->content.previous_setting;
+  ASSERT_TRUE(previous_setting.has_value());
+  auto new_setting = params->content.new_setting;
+  ASSERT_TRUE(new_setting.has_value());
+
+  EXPECT_TRUE(IconsEqual(expected_secondary_icon, previous_setting->image));
+  EXPECT_TRUE(IconsEqual(expected_primary_icon, new_setting->image));
+  EXPECT_FALSE(IconsEqual(previous_setting->image, new_setting->image));
+}
+
+// Verifies that a prepopulated search engine without a built-in resource icon
+// (such as Baidu) falls back to fetching its favicon over the network.
+IN_PROC_BROWSER_TEST_F(
+    ExtensionControllingSearchExplicitChoiceParamsBrowserTest,
+    PrepopulatedEngineWithoutBuiltinResourceFallsBackToNetworkFetch) {
+  ASSERT_FALSE(
+      GetExpectedBuiltinIcon(TemplateURLPrepopulateData::baidu).has_value());
+  const GURL baidu_favicon_url(TemplateURLPrepopulateData::baidu.favicon_url);
+  EXPECT_FALSE(baidu_favicon_url.is_empty());
+
+  const extensions::Extension* baidu_extension = InstallCustomSearchExtension(
+      "BaiduOverrideExtension", "baidu_ext",
+      "https://www.baidu.com/s?wd={searchTerms}",
+      /*prepopulated_id=*/std::nullopt,
+      GURL("https://example.com/custom_baidu_favicon.ico"));
+  ASSERT_TRUE(baidu_extension);
+
+  const ui::ImageModel expected_baidu_icon =
+      SetUpExpectedEngineIcon(TemplateURLPrepopulateData::baidu);
+
+  std::optional<ExtensionSettingsOverriddenDialog::Params> params =
+      GetSearchOverriddenParamsSync(web_contents());
+  ASSERT_TRUE(params);
+
+  auto new_setting = params->content.new_setting;
+  ASSERT_TRUE(new_setting.has_value());
+  EXPECT_EQ(TemplateURLPrepopulateData::baidu.name, new_setting.value().text);
+  EXPECT_TRUE(IconsEqual(expected_baidu_icon, new_setting.value().image));
+}
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)

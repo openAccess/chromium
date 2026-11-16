@@ -23,6 +23,7 @@
 #include "chrome/browser/signin/dice_tab_helper.h"
 #include "chrome/browser/signin/logout_tab_helper.h"
 #include "chrome/browser/signin/signin_browser_test_base.h"
+#include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -88,7 +89,6 @@
 #include "chrome/browser/ui/webui/signin/cross_device_signin_qr_bubble_ui.h"
 #include "components/signin/core/browser/account_preview_data_service.h"
 #include "components/signin/core/browser/test_account_preview_data_service.h"
-#include "components/sync/base/features.h"
 #include "components/sync/protocol/sync_enums.pb.h"
 #include "google_apis/gaia/gaia_id.h"
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -978,6 +978,7 @@ IN_PROC_BROWSER_TEST_F(SigninViewControllerReauthSkipIdentifierBrowserTest,
 
   // First click on the profile menu reauth button, with a stale cookie jar.
   // The NTP tab is overwritten.
+  base::HistogramTester histogram_tester;
   signin_ui_util::ShowReauthForAccount(
       GetProfile(), email,
       signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
@@ -1021,6 +1022,25 @@ IN_PROC_BROWSER_TEST_F(SigninViewControllerReauthSkipIdentifierBrowserTest,
   ASSERT_TRUE(tab->GetController().GetPendingEntry());
   EXPECT_EQ(second_signin_url,
             tab->GetController().GetPendingEntry()->GetURL());
+
+  // The cookie jar check is recorded once for each signin page load.
+  constexpr char kHistogram[] = "Signin.Reauth.ProceedToChallengeResult2";
+  EXPECT_THAT(
+      histogram_tester.GetAllSamples(kHistogram),
+      base::BucketsAre(
+          base::Bucket(signin::ReauthProceedToChallengeResult::
+                           kAddSessionFallbackStaleCookies,
+                       1),
+          base::Bucket(
+              signin::ReauthProceedToChallengeResult::kProceedToChallenge, 1)));
+
+  // Third click, with the same signin URL: the signin tab is reused.
+  signin_ui_util::ShowReauthForAccount(
+      GetProfile(), email,
+      signin_metrics::AccessPoint::kProfileMenuPrimaryButton);
+  EXPECT_EQ(1, tab_strip->count());
+  EXPECT_EQ(tab, tab_strip->GetActiveWebContents());
+  histogram_tester.ExpectTotalCount(kHistogram, 2);
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -1581,9 +1601,7 @@ IN_PROC_BROWSER_TEST_F(SigninViewControllerBrowserTest,
       widget2->widget_delegate()->GetInitiallyFocusedView());
   ASSERT_TRUE(web_view2);
   std::string expected_default_subtitle = l10n_util::GetStringUTF8(
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS
-          : IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE);
+      IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE_WITH_BOOKMARKS);
   EXPECT_EQ(
       content::EvalJs(web_view2->GetWebContents(),
                       "document.querySelector('chrome-signin-app').shadowRoot."

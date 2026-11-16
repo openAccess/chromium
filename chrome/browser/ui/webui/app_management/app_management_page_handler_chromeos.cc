@@ -16,6 +16,7 @@
 #include "base/notimplemented.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
+#include "chrome/browser/apps/link_capturing/chromeos_link_capturing_user_choice.h"
 #include "chrome/browser/ash/app_list/arc/arc_app_utils.h"
 #include "chrome/browser/ash/apps/apk_web_app_service.h"
 #include "chrome/browser/browser_process.h"
@@ -130,7 +131,7 @@ class AppManagementPageHandlerChromeOs::IsolatedWebAppUpdateHandler
   IsolatedWebAppUpdateHandler(Profile& profile,
                               web_app::WebAppProvider& provider)
       : profile_(profile), provider_(provider) {
-    observation_.Observe(&provider.isolated_web_app_update_manager());
+    observation_.Observe(&web_app::IsolatedWebAppUpdateManager::From(provider));
   }
 
   ~IsolatedWebAppUpdateHandler() override {
@@ -158,7 +159,8 @@ class AppManagementPageHandlerChromeOs::IsolatedWebAppUpdateHandler
       return;
     }
 
-    if (!provider_->isolated_web_app_update_manager().DiscoverUpdate(app_id)) {
+    if (!web_app::IsolatedWebAppUpdateManager::From(*provider_)
+             .DiscoverUpdate(app_id)) {
       std::move(callback).Run(std::nullopt);
       return;
     }
@@ -313,7 +315,7 @@ class AppManagementPageHandlerChromeOs::IsolatedWebAppUpdateHandler
       return;
     }
 
-    if (!provider_->isolated_web_app_update_manager()
+    if (!web_app::IsolatedWebAppUpdateManager::From(*provider_)
              .MaybeDiscoverAndPrepareUpdate(app_id)) {
       CompleteApplyRequest(app_id, /*success=*/false);
     }
@@ -444,15 +446,14 @@ void AppManagementPageHandlerChromeOs::Uninstall(const std::string& app_id) {
 void AppManagementPageHandlerChromeOs::SetPreferredApp(
     const std::string& app_id,
     bool is_preferred_app) {
-  auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile());
-  bool is_preferred_app_for_supported_links =
-      proxy->PreferredAppsList().IsPreferredAppForSupportedLinks(app_id);
-
-  if (is_preferred_app && !is_preferred_app_for_supported_links) {
-    proxy->SetSupportedLinksPreference(app_id);
-  } else if (!is_preferred_app && is_preferred_app_for_supported_links) {
-    proxy->RemoveSupportedLinksPreference(app_id);
+  // `app_id` comes from the renderer. An empty ID matches no app.
+  if (app_id.empty()) {
+    return;
   }
+  // App Service applies the effective link capturing state on ChromeOS. The
+  // helper also records the explicit user choice on the affected web apps.
+  // See b/578641259.
+  apps::SetSupportedLinksPreferenceByUser(profile(), app_id, is_preferred_app);
 }
 
 void AppManagementPageHandlerChromeOs::GetOverlappingPreferredApps(

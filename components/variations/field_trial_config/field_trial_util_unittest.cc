@@ -94,7 +94,6 @@ TEST_F(FieldTrialUtilTest, AssociateParamsFromString) {
 }
 
 TEST_F(FieldTrialUtilTest, AssociateParamsFromStringWithSameTrial) {
-  const std::string kTrialName = "AssociateVariationParams";
   const std::string kVariationsString =
       "AssociateVariationParams.A:a/10/b/test,AssociateVariationParams.A:a/x";
   ASSERT_FALSE(AssociateParamsFromString(kVariationsString));
@@ -170,6 +169,7 @@ TEST_F(FieldTrialUtilTest,
        AssociateParamsFromFieldTrialConfigWithEachPlatform) {
   const Study::Platform all_platforms[] = {
       Study::PLATFORM_ANDROID,  // Comment to prevent clang format bin packing.
+      Study::PLATFORM_ANDROID_DESKTOP,
       Study::PLATFORM_ANDROID_WEBVIEW,
       Study::PLATFORM_CHROMEOS,
       Study::PLATFORM_FUCHSIA,
@@ -180,7 +180,8 @@ TEST_F(FieldTrialUtilTest,
   };
 
   // Break if platforms are added without updating |all_platforms|.
-  static_assert(std::size(all_platforms) == Study::Platform_ARRAYSIZE,
+  // Study::Platform has 2 reserved enum values (8 and 9).
+  static_assert(std::size(all_platforms) == Study::Platform_ARRAYSIZE - 2,
                 "|all_platforms| must include all platforms.");
 
   for (Study::Platform platform : all_platforms) {

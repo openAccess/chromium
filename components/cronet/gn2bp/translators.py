@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import List, Dict, Set, Union, Iterable  # noqa: F401
 
 import gn_utils
-import targets as gn2bp_targets  # noqa: F401
 import build.gn_helpers
 import components.cronet.tools.utils as cronet_utils
 import soong_ast
@@ -51,7 +50,10 @@ def _parse_pydeps(repo_path):
     Parses a .pydeps file, returning a list of paths relative to REPOSITORY_ROOT.
     '''
     repo_dir_path = os.path.dirname(repo_path)
-    with open(f"{REPOSITORY_ROOT}/{repo_path}", encoding='utf-8') as file:
+    full_path = os.path.join(REPOSITORY_ROOT, repo_path)
+    if not os.path.exists(full_path):
+        return []
+    with open(full_path, encoding='utf-8') as file:
         return [
             os.path.normpath(f"{repo_dir_path}/{line.strip()}")
             for line in file
@@ -817,8 +819,66 @@ def _create_extract_rust_files_target(bindgen_module, blueprint, context):
     return module
 
 
+def _get_bindgen_cpp_std(
+    gn: gn_utils.GnParser,
+    target: gn_utils.GnParser.Target,
+    context: translation_context.TranslationContext,
+) -> str:
+    """Derives the C++ standard for a C++-mode `rust_bindgen` target from GN.
+
+    GN's `gn desc` only emits `cflags` and `cflags_cc` for binary targets, not
+    `action` targets (so `rust_bindgen_generator` actions keep unexpanded
+    `{{cflags_cc}}` placeholders in `args`). Inspect the target's direct C++
+    dependencies (unwrapping `group`s without pulling in transitive deps like
+    `libc++` which may build with a newer standard), and fall back to GN's
+    default C++ standard (`context.default_cpp_std`) if none specifies one.
+    """
+    direct_deps = set()
+    stack = [
+        dep for arch in target.get_archs().values() for dep in arch.direct_deps
+    ]
+    visited = set()
+    while stack:
+        dep_name = stack.pop()
+        if dep_name in visited or dep_name not in gn.all_targets:
+            continue
+        visited.add(dep_name)
+        dep = gn.get_target(dep_name)
+        if dep.type == 'group':
+            for arch in dep.get_archs().values():
+                stack.extend(arch.direct_deps)
+        else:
+            direct_deps.add(dep_name)
+
+    cpp_std = None
+    cpp_std_source = None
+    for dep_name in sorted(direct_deps):
+        dep = gn.get_target(dep_name)
+        if not dep.is_linker_unit_type():
+            continue
+        dep_cpp_std = get_target_cpp_std(dep)
+        if dep_cpp_std:
+            assert cpp_std is None or cpp_std == dep_cpp_std, (
+                "Found conflicting C++ standards across direct dependencies "
+                f"of rust_bindgen target {target.name}: "
+                f"{cpp_std_source} ({cpp_std}) vs {dep_name} ({dep_cpp_std})"
+            )
+            cpp_std = dep_cpp_std
+            cpp_std_source = dep_name
+
+    if cpp_std is None:
+        cpp_std = context.default_cpp_std
+    if cpp_std is None:
+        raise ValueError(
+            "Unable to determine C++ standard for rust_bindgen target "
+            f"{target.name} from GN."
+        )
+    return cpp_std
+
+
 def create_bindgen_module(
     blueprint: soong_ast.Blueprint,
+    gn: gn_utils.GnParser,
     target,
     module_name: str,
     is_test_target: bool,
@@ -850,10 +910,10 @@ def create_bindgen_module(
     module.crate_name = module_name
 
     if "c++" in target.common.args:
-        # This is defined in the rust_bindgen templates where "C++" will
-        # be added to the args if `cpp` field is defined. Soong depends
-        # on `cpp_std` field to identify that this is a C++ header.
-        module.cpp_std = common.CPP_VERSION
+        # Defined in the rust_bindgen templates where "-x c++" is added to args
+        # when `cpp = true`. Soong's `rust_bindgen` does not inherit
+        # `cc_defaults` and relies on `cpp_std` to switch `.h` parsing to C++.
+        module.cpp_std = _get_bindgen_cpp_std(gn, target, context)
 
     module.source_stem = get_bindgen_source_stem(target.common.outputs)
 
@@ -863,11 +923,7 @@ def create_bindgen_module(
     module.bindgen_flags = get_bindgen_flags(target.common.args)
     # This ensures that any CC file that is being processed through the
     # rust_bindgen module is able to #include files relative to the root of the
-    # repository.
-    #
-    # Note: this module is not part of the generated build rules; it is expected
-    # to already be present in AOSP (currently, in Android.extras.bp). See
-    # https://r.android.com/3413202.
+    # repository. See https://r.android.com/3413202.
     module.header_libs = {
         f"{context.module_prefix}repository_root_include_dirs_anchor"
     }
@@ -1113,11 +1169,12 @@ def _get_cpp_std(cflags: List[str]) -> Union[str, None]:
     cpp_stds = [
         cflag.removeprefix('-std=')
         for cflag in cflags
-        if cflag.startswith('-std=')
+        if cflag.startswith(('-std=c++', '-std=gnu++'))
     ]
     if cpp_stds:
-        # There can be multiple cpp std in cflags list. Return the last one as this will
-        # override any previous version.
+        # There can be multiple C++ standards in cflags (e.g. a per-target
+        # override appended after the compiler default). Return the last one as
+        # it overrides any previous version.
         return cpp_stds[-1]
     return None
 
@@ -1537,6 +1594,26 @@ def create_jni_registration_modules(
     return [cc_genrule, header_genrule]
 
 
+def _configure_crubit_cpp_support_module(module):
+    """Turns `module` into Cronet's build of Crubit's C++ support library.
+
+    See `gn_utils.CRUBIT_CPP_SUPPORT_TARGET`: the module compiles the
+    `crubit_support_cc_srcs` filegroup from prebuilts/rust-toolchain with
+    Cronet's own cflags, `cc_defaults` and vendored libc++, instead of relying
+    on Android's prebuilt `libcrubit_support_cc` (built against Android's
+    libc++). The compile flags themselves come from the GN target, which
+    borrows them from Crubit's support `source_set`s.
+    """
+    module.comment = (
+        f"GN: {', '.join(sorted(gn_utils.CRUBIT_CPP_SUPPORT_ENTRY_POINTS))}\n"
+        "// Crubit's C++ support library, built from prebuilts/rust-toolchain's"
+        f"\n// `{gn_utils.CRUBIT_SUPPORT_CC_SRCS_FILEGROUP}` with Cronet's own "
+        "flags and libc++."
+    )
+    module.srcs.add(f":{gn_utils.CRUBIT_SUPPORT_CC_SRCS_FILEGROUP}")
+    module.header_libs.add(gn_utils.CRUBIT_SUPPORT_HEADERS_MODULE)
+
+
 def _create_initial_modules(
     blueprint,
     gn,
@@ -1608,15 +1685,16 @@ def _create_initial_modules(
             ),
         )
     elif target.type in ['static_library', 'source_set']:
-        modules = (
-            soong_ast.create_module(
-                'cc_library_static',
-                bp_module_name,
-                gn_target_name,
-                context,
-                is_test=is_test_target,
-            ),
+        module = soong_ast.create_module(
+            'cc_library_static',
+            bp_module_name,
+            gn_target_name,
+            context,
+            is_test=is_test_target,
         )
+        if gn_utils.is_crubit_cpp_support_target(gn_target_name):
+            _configure_crubit_cpp_support_module(module)
+        modules = (module,)
     elif target.type == 'shared_library':
         modules = (
             soong_ast.create_module(
@@ -1636,7 +1714,7 @@ def _create_initial_modules(
     elif target.type == "rust_bindgen":
         modules = (
             create_bindgen_module(
-                blueprint, target, bp_module_name, is_test_target, context
+                blueprint, gn, target, bp_module_name, is_test_target, context
             ),
         )
     elif target.type == 'action':
@@ -1707,6 +1785,12 @@ def _create_initial_modules(
         module.stem = f"lib{module.crate_name}"
         module.source_stem = target.source_stem
         module.source_subdir = target.source_subdir
+        # By default, Soong's `crubit_cpp_from_rust` pulls in Android's prebuilt
+        # `libcrubit_support_cc` through the Rust stdlib bindings. That library
+        # is built against Android's libc++, whereas Cronet vendors its own
+        # libc++, so opt out of it and link Cronet's own build of the support
+        # library instead (see `gn_utils.CRUBIT_CPP_SUPPORT_TARGET`).
+        module.no_linked_cc_support = True
         module.min_sdk_version = cronet_utils.MIN_SDK_VERSION_FOR_AOSP
         module.apex_available.add(common.tethering_apex)
         modules = (module,)
@@ -1718,29 +1802,34 @@ def _create_initial_modules(
     return modules
 
 
-def _extract_cc_global_properties(target):
+def get_target_cpp_std(target) -> Union[str, None]:
     cpp_std = None
-    version_script = None
-
-    # Check common
     if target.common.cflags:
         cpp_std = _get_cpp_std(target.common.cflags)
-    if target.common.ldflags:
-        _, version_script = _extract_version_script(target.common.ldflags)
-
-    # Check archs
     for arch in target.get_archs().values():
         arch_cpp_std = _get_cpp_std(arch.cflags)
         if arch_cpp_std:
-            # The -std= compiler option has a dedicated property in Android.bp, called cpp_std. That property
-            # can only be set at module top level; it cannot be set per-target. However in GN
-            # cflags are arch-specific, so we will find -std= when running on the
-            # arch-specific module. Hence we need to go back to the main module and set it there.
+            # The -std= compiler option has a dedicated property in Android.bp,
+            # called cpp_std. That property can only be set at module top level;
+            # it cannot be set per-target. However in GN cflags are
+            # arch-specific, so we will find -std= when running on the
+            # arch-specific module. Hence we need to go back to the main module
+            # and set it there.
             assert cpp_std is None or cpp_std == arch_cpp_std, (
                 f"Found different CPP version across different architectures!, target name: {target.name}, first cpp version: {cpp_std}, current cpp version: {arch_cpp_std}"
             )
             cpp_std = arch_cpp_std
+    return cpp_std
 
+
+def _extract_cc_global_properties(target):
+    cpp_std = get_target_cpp_std(target)
+    version_script = None
+
+    if target.common.ldflags:
+        _, version_script = _extract_version_script(target.common.ldflags)
+
+    for arch in target.get_archs().values():
         if arch.ldflags:
             _, arch_version_script = _extract_version_script(arch.ldflags)
             if arch_version_script:
@@ -2036,13 +2125,20 @@ def _resolve_dependencies(
                     # See https:/crbug.com/417429009.
                     pass
                 elif (
-                    module.type.startswith('crubit')
+                    module.type == 'crubit_cpp_from_rust'
                     and dep_module.type == 'cc_library_static'
                 ):
-                    # crubit_cpp_from_rust modules do not link C++ static
-                    # libraries directly; C++ dependencies are consumed by
-                    # downstream C++ targets.
-                    pass
+                    if gn_utils.is_crubit_cpp_support_target(
+                        dep_module.gn_target
+                    ):
+                        # Link Cronet's own build of Crubit's C++ support
+                        # library (see `_configure_crubit_cpp_support_module`).
+                        module_target.static_libs.add(dep_module.name)
+                    else:
+                        # Otherwise, crubit_cpp_from_rust modules do not link
+                        # C++ static libraries directly; C++ dependencies are
+                        # consumed by downstream C++ targets.
+                        pass
                 else:
                     raise Exception(
                         f"Cannot add {dep_module.name} ({dep_module.type}) to {module.name} ({module.type})"
@@ -2099,8 +2195,21 @@ def _resolve_dependencies(
                     "crubit_cpp_from_rust",
                 ]:
                     module_target.rustlibs.add(dep_module.name)
+                    for (
+                        alias_name,
+                        aliased_dep_name,
+                    ) in target.aliased_deps.items():
+                        if dep_module.gn_target == aliased_dep_name:
+                            module_target.aliases.add(
+                                f"{dep_module.crate_name}:{alias_name}"
+                            )
             elif dep_module.type == "rust_proc_macro":
                 module_target.proc_macros.add(dep_module.name)
+                for alias_name, aliased_dep_name in target.aliased_deps.items():
+                    if dep_module.gn_target == aliased_dep_name:
+                        module_target.aliases.add(
+                            f"{dep_module.crate_name}:{alias_name}"
+                        )
             elif dep_module.type == "aidl_interface":
                 # See https://cs.android.com/android/platform/superproject/main/+/main:system/tools/aidl/build/aidl_interface_backends.go
                 # for how those modules "-lang-source" is generated.
@@ -2274,6 +2383,27 @@ def create_modules_from_target(
     """
     bp_module_name = soong_ast.label_to_module_name(gn_target_name, context)
     target = gn.get_target(gn_target_name)
+
+    if target.type == "group":
+        group_deps = {
+            dep
+            for arch in target.arch.values()
+            for dep in arch.direct_deps
+            if dep not in translation_config.builtin_deps
+        }
+        return tuple(
+            dep_module
+            for dep_name in sorted(group_deps)
+            for dep_module in create_modules_from_target(
+                blueprint,
+                gn,
+                dep_name,
+                parent_gn_type,
+                is_test_target,
+                context,
+            )
+            if dep_module is not None
+        )
 
     # Append __java suffix to actions reachable from java_library. This is necessary
     # to differentiate them from cc actions.

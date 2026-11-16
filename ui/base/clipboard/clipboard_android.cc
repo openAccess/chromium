@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -146,7 +147,8 @@ class ClipboardMap {
   void Set(const ClipboardFormatType& format, std::string_view data);
   const std::vector<ui::FileInfo>& GetFilenames();
   void SetFilenames(std::vector<ui::FileInfo> filenames);
-  void CommitToAndroidClipboard(GURL data_source);
+  void CommitToAndroidClipboard(GURL data_source,
+                                bool data_source_off_the_record);
   void GetSource(Clipboard::GetSourceCallback callback);
   void Clear();
   std::vector<std::u16string> GetCustomTypes();
@@ -185,7 +187,8 @@ class ClipboardMap {
   bool HasCustomClipData(JNIEnv* env);
 
   std::map<ClipboardFormatType, std::string> map_ GUARDED_BY(lock_);
-  MapState map_state_;
+  bool data_source_off_the_record_ GUARDED_BY(lock_) = false;
+  MapState map_state_ = MapState::kOutOfDate;
   bool has_test_custom_data_ = false;
   std::optional<std::string> test_custom_data_;
   std::vector<ui::FileInfo> filenames_;
@@ -208,7 +211,7 @@ ClipboardMap& GetClipboardMap() {
   return *map;
 }
 
-ClipboardMap::ClipboardMap() : map_state_(MapState::kOutOfDate) {
+ClipboardMap::ClipboardMap() {
   clipboard_manager_.Reset(Java_Clipboard_getInstance(AttachCurrentThread()));
   CHECK(clipboard_manager_.obj(), base::NotFatalUntil::M163);
 }
@@ -393,7 +396,8 @@ void ClipboardMap::SetFilenames(std::vector<ui::FileInfo> filenames) {
   filenames_ = std::move(filenames);
 }
 
-void ClipboardMap::CommitToAndroidClipboard(GURL data_source) {
+void ClipboardMap::CommitToAndroidClipboard(GURL data_source,
+                                            bool data_source_off_the_record) {
   JNIEnv* env = AttachCurrentThread();
   base::AutoLock lock(lock_);
 
@@ -448,6 +452,7 @@ void ClipboardMap::CommitToAndroidClipboard(GURL data_source) {
       if (!Java_Clipboard_setClipboardText(env, clipboard_manager_,
                                            text_data)) {
         map_.clear();
+        data_source_off_the_record_ = false;
         map_state_ = MapState::kOutOfDate;
         ClearLastModifiedTime();
         return;
@@ -461,8 +466,10 @@ void ClipboardMap::CommitToAndroidClipboard(GURL data_source) {
 
   if (add_data_source) {
     map_[ClipboardFormatType::InternalSourceUrlType()] = data_source.spec();
+    data_source_off_the_record_ = data_source_off_the_record;
   } else {
     map_.erase(ClipboardFormatType::InternalSourceUrlType());
+    data_source_off_the_record_ = false;
   }
 
   map_state_ = MapState::kUpToDate;
@@ -471,21 +478,24 @@ void ClipboardMap::CommitToAndroidClipboard(GURL data_source) {
 }
 
 void ClipboardMap::GetSource(Clipboard::GetSourceCallback callback) {
-  base::AutoLock lock(lock_);
-
-  auto iter = map_.find(ClipboardFormatType::InternalSourceUrlType());
-  if (iter == map_.end()) {
-    std::move(callback).Run(std::nullopt);
-    return;
+  std::optional<DataTransferEndpoint> data_src;
+  {
+    base::AutoLock lock(lock_);
+    if (auto iter = map_.find(ClipboardFormatType::InternalSourceUrlType());
+        iter != map_.end()) {
+      data_src.emplace(GURL(iter->second),
+                       DataTransferEndpointOptions{
+                           .off_the_record = data_source_off_the_record_});
+    }
   }
-
-  std::move(callback).Run(DataTransferEndpoint(GURL(iter->second)));
+  std::move(callback).Run(std::move(data_src));
 }
 
 void ClipboardMap::Clear() {
   JNIEnv* env = AttachCurrentThread();
   base::AutoLock lock(lock_);
   map_.clear();
+  data_source_off_the_record_ = false;
   filenames_.clear();
   Java_Clipboard_clear(env, clipboard_manager_);
   map_state_ = MapState::kUpToDate;
@@ -954,11 +964,14 @@ void ClipboardAndroid::WritePortableAndPlatformRepresentations(
   }
 
   GURL data_source;
+  bool data_source_off_the_record = false;
   if (data_src && data_src->IsUrlType()) {
     data_source = *data_src->GetURL();
+    data_source_off_the_record = data_src->off_the_record();
   }
 
-  GetClipboardMap().CommitToAndroidClipboard(std::move(data_source));
+  GetClipboardMap().CommitToAndroidClipboard(std::move(data_source),
+                                             data_source_off_the_record);
   ClipboardMonitor::GetInstance()->NotifyClipboardDataChanged();
 }
 
@@ -986,7 +999,10 @@ void ClipboardAndroid::WriteFilenames(std::vector<ui::FileInfo> filenames) {
 
 // According to other platforms implementations, this really writes the
 // URL spec.
-void ClipboardAndroid::WriteURL(const ClipboardUrlInfo& url_info) {
+void ClipboardAndroid::WriteURLs(base::span<const ClipboardUrlInfo> url_infos) {
+  // TODO(crbug.com/563067141): Write all URLs. Only the first one is written
+  // for now.
+  const auto& url_info = url_infos.front();
   GetClipboardMap().Set(ClipboardFormatType::UrlType(), url_info.url.spec());
 }
 

@@ -12,8 +12,6 @@
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
-#include "base/scoped_observation.h"
-#include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
 #include "components/autofill/core/browser/payments/autofill_error_dialog_context.h"
 #include "components/autofill/core/browser/payments/iban_manager.h"
@@ -65,6 +63,7 @@ class OfferNotificationHandler;
 struct OfferNotificationOptions;
 class OtpUnmaskDelegate;
 enum class OtpUnmaskResult;
+class PaymentsDataManager;
 class SaveAndFillDialogControllerImpl;
 class SaveAndFillManager;
 class TouchToFillPaymentMethodDelegate;
@@ -83,15 +82,13 @@ class PaymentsChurnedUsersManager;
 class PaymentsChurnedUsersUiDelegate;
 class PaymentsWindowManager;
 class WalletReminderNoticeManager;
-class WalletReminderNoticeUiDelegate;
 
 // Chrome implementation of PaymentsAutofillClient. Base class shared by
 // ChromePaymentsAutofillClientDesktop and ChromePaymentsAutofillClientAndroid.
 // Owned by ChromeAutofillClient via `Create()`, and it observes the same
 // WebContents as its owning ChromeAutofillClient.
 class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
-                                     public content::WebContentsObserver,
-                                     public PaymentsDataManager::Observer {
+                                     public content::WebContentsObserver {
  public:
   // Creates a platform-specific ChromePaymentsAutofillClient instance for
   // `client`. Defined in the respective Desktop and Android implementations
@@ -212,7 +209,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
       const AutofillOfferData& offer,
       const OfferNotificationOptions& options) override;
   void DismissOfferNotification() override;
-  bool IsTabVisibleForOfferNotification() const override;
   bool ShowTouchToFillCreditCard(
       base::WeakPtr<TouchToFillPaymentMethodDelegate> delegate,
       base::span<const Suggestion> suggestions) override;
@@ -261,7 +257,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   bool IsTabModalPopup() const override;
   BnplStrategy* GetBnplStrategy() override;
   BnplUiDelegate* GetBnplUiDelegate() override;
-  WalletReminderNoticeUiDelegate* GetWalletReminderNoticeUiDelegate() override;
   WalletReminderNoticeManager* GetWalletReminderNoticeManager() override;
   PaymentsChurnedUsersUiDelegate* GetPaymentsChurnedUsersUiDelegate() override;
 #if !BUILDFLAG(IS_ANDROID)
@@ -324,14 +319,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   ContentAutofillClient* client() const { return &client_.get(); }
 
  private:
-  // content::WebContentsObserver:
-  void DidFinishNavigation(
-      content::NavigationHandle* navigation_handle) override;
-  void OnVisibilityChanged(content::Visibility visibility) override;
-
-  // PaymentsDataManager::Observer:
-  void OnPaymentsDataChanged() override;
-
   std::u16string GetAccountHolderName() const;
 
   const raw_ref<ContentAutofillClient> client_;
@@ -425,12 +412,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   // Lazily initialized: access only through `GetBnplUiDelegate()`.
   std::unique_ptr<BnplUiDelegate> bnpl_ui_delegate_;
 
-  // The WalletReminderNoticeUiDelegate used to handle the UI in the Wallet
-  // Reminder Notice flow. Lazily initialized: access only through
-  // `GetWalletReminderNoticeUiDelegate()`.
-  std::unique_ptr<WalletReminderNoticeUiDelegate>
-      wallet_reminder_notice_ui_delegate_;
-
   // The WalletReminderNoticeManager used to orchestrate the Wallet Reminder
   // Notice flow. Lazily initialized: access only through
   // `GetWalletReminderNoticeManager()`.
@@ -442,7 +423,7 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   std::unique_ptr<OmniboxAutofillDelegate> omnibox_autofill_delegate_;
 #endif
 
-  // Shows the offer notification on this tab. Nullptr if there is no
+  // Updates the offer notification on this tab. Nullptr if there is no
   // `AutofillOfferManager`, e.g. in off-the-record profiles.
   std::unique_ptr<OfferNotificationHandler> offer_notification_handler_;
 
@@ -452,9 +433,6 @@ class ChromePaymentsAutofillClient : public PaymentsAutofillClient,
   // uploading and filling) should be disabled for the given WebContents `this`
   // is owned by.
   bool autofill_payment_methods_supported_ = true;
-
-  base::ScopedObservation<PaymentsDataManager, PaymentsDataManager::Observer>
-      payments_data_manager_observation_{this};
 };
 
 }  // namespace payments

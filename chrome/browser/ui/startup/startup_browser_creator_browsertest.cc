@@ -181,7 +181,6 @@ using testing::Return;
 #if BUILDFLAG(SUPPORTS_OZONE_X11)
 #include "ui/aura/window.h"
 #include "ui/aura/window_tree_host.h"
-#include "ui/gfx/x/atom_cache.h"
 #include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/xproto.h"
 #include "ui/ozone/public/ozone_platform.h"
@@ -269,10 +268,11 @@ void ExpectNewWindowActivationToken(BrowserWindowInterface* browser,
     const auto xwindow = static_cast<x11::Window>(host->GetAcceleratedWidget());
     std::vector<char> token_bytes;
     x11::Atom property_type = x11::Atom::None;
-    ASSERT_TRUE(x11::Connection::Get()->GetArrayProperty(
-        xwindow, x11::GetAtom("_NET_STARTUP_ID"), &token_bytes,
+    auto* connection = x11::Connection::Get();
+    ASSERT_TRUE(connection->GetArrayProperty(
+        xwindow, connection->GetAtom("_NET_STARTUP_ID"), &token_bytes,
         &property_type));
-    EXPECT_EQ(property_type, x11::GetAtom("UTF8_STRING"));
+    EXPECT_EQ(property_type, connection->GetAtom("UTF8_STRING"));
     EXPECT_EQ(base::as_string_view(token_bytes), expected_token);
   }
 #endif
@@ -2306,16 +2306,14 @@ IN_PROC_BROWSER_TEST_F(StartupBrowserWithListAppsFeature,
       InstallPWAWithName(profile1, example_url1, app_name1);
   auto example_url2 = GURL("https://www.example_two.com");
   std::string app_name2 = "A Test Web App2";
-  webapps::AppId app_id2 =
-      InstallPWAWithName(profile1, example_url2, app_name2);
+  InstallPWAWithName(profile1, example_url2, app_name2);
   auto example_url3 = GURL("https://www.example_three.com");
   std::string app_name3 = "A Test Web App3";
   webapps::AppId app_id3 =
       InstallPWAWithName(&profile2, example_url3, app_name3);
   auto example_url4 = GURL("https://www.example_four.com");
   std::string app_name4 = "A Test Web App4";
-  webapps::AppId app_id4 =
-      InstallPWAWithName(&profile2, example_url4, app_name4);
+  InstallPWAWithName(&profile2, example_url4, app_name4);
 
   // Launch web apps for the two profiles.
   BrowserWindowInterface* app_browser1 =
@@ -2427,16 +2425,14 @@ IN_PROC_BROWSER_TEST_F(StartupBrowserWithListAppsFeature,
       InstallPWAWithName(profile1, example_url1, app_name1);
   auto example_url2 = GURL("https://www.example_two.com");
   std::string app_name2 = "A Test Web App2";
-  webapps::AppId app_id2 =
-      InstallPWAWithName(profile1, example_url2, app_name2);
+  InstallPWAWithName(profile1, example_url2, app_name2);
   auto example_url3 = GURL("https://www.example_three.com");
   std::string app_name3 = "A Test Web App3";
   webapps::AppId app_id3 =
       InstallPWAWithName(&profile2, example_url3, app_name3);
   auto example_url4 = GURL("https://www.example_four.com");
   std::string app_name4 = "A Test Web App4";
-  webapps::AppId app_id4 =
-      InstallPWAWithName(&profile2, example_url4, app_name4);
+  InstallPWAWithName(&profile2, example_url4, app_name4);
 
   // Launch web apps for the two profiles.
   BrowserWindowInterface* app_browser1 =
@@ -2923,6 +2919,24 @@ IN_PROC_BROWSER_TEST_P(StartupBrowserCreatorTestWithGuestParam,
 INSTANTIATE_TEST_SUITE_P(,
                          StartupBrowserCreatorTestWithGuestParam,
                          testing::Bool());
+
+// Tests that a `--guest` launch notification received while Chrome is already
+// running opens a Guest window without loading the Guest profile
+// synchronously on the UI thread, where blocking is disallowed.
+IN_PROC_BROWSER_TEST_F(StartupBrowserCreatorTest,
+                       ProcessCommandLineAlreadyRunningGuest) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  ASSERT_FALSE(
+      profile_manager->GetProfileByPath(ProfileManager::GetGuestProfilePath()));
+
+  base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
+  command_line.AppendSwitch(switches::kGuest);
+  ChromeBrowserMainParts::ProcessSingletonNotificationForTesting(command_line);
+
+  BrowserWindowInterface* guest_browser = ui_test_utils::WaitForBrowserToOpen();
+  ASSERT_TRUE(guest_browser);
+  EXPECT_TRUE(guest_browser->GetProfile()->IsGuestSession());
+}
 
 class StartupBrowserWithRealWebAppTest : public StartupBrowserCreatorTest {
  protected:

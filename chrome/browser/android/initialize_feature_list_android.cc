@@ -5,6 +5,7 @@
 #include "chrome/browser/android/initialize_feature_list_android.h"
 
 #include "base/allocator/partition_alloc_support.h"
+#include "base/android/background_thread_pool_field_trial.h"
 #include "base/profiler/thread_group_profiler.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "chrome/browser/metrics/chrome_feature_list_creator.h"
@@ -19,14 +20,15 @@
 
 namespace {
 
-bool did_init_feature_list_early = false;
+bool did_init_local_state_early = false;
+bool did_init_feature_list = false;
 
-}  // namespace
-
-namespace variations::android {
-
-static void JNI_InitializeFeatureList_InitializeFeatureList(JNIEnv* env) {
+void InitializeLocalStateEarly() {
+  CHECK(!did_init_local_state_early);
   chrome::RegisterPathProvider();
+  // Must run before ThreadPoolInstance::Create() and ReconfigureEarlyish()
+  // read the cached trial configuration.
+  base::android::BackgroundThreadPoolFieldTrial::Initialize();
   // The ThreadGroupProfiler client must be set before thread pool is created.
   base::ThreadGroupProfiler::SetClient(
       std::make_unique<ChromeThreadGroupProfilerClient>());
@@ -45,7 +47,33 @@ static void JNI_InitializeFeatureList_InitializeFeatureList(JNIEnv* env) {
       variations::VariationsIdsProvider::Mode::kUseSignedInState,
       std::make_unique<variations::VariationsNetworkClock>(
           chrome_feature_list_creator->network_time_tracker()));
-  chrome_feature_list_creator->CreateFeatureList();
+  chrome_feature_list_creator->CreatePrefService();
+  did_init_local_state_early = true;
+}
+
+}  // namespace
+
+namespace variations::android {
+
+static void JNI_InitializeFeatureList_InitializeLocalState() {
+  InitializeLocalStateEarly();
+}
+
+static void JNI_InitializeFeatureList_InitializeFeatureList() {
+  InitializeLocalStateEarly();
+  EnsureFeatureListInitialized();
+}
+
+bool DidInitLocalStateEarly() {
+  return did_init_local_state_early;
+}
+
+void EnsureFeatureListInitialized() {
+  CHECK(did_init_local_state_early);
+  if (did_init_feature_list) {
+    return;
+  }
+  ChromeFeatureListCreator::GetInstance()->CreateFeatureList();
 
   // Re-evaluate feature state now that FeatureList has been initialized, as
   // the task executor was created before FeatureList and could not access
@@ -62,11 +90,7 @@ static void JNI_InitializeFeatureList_InitializeFeatureList(JNIEnv* env) {
   base::allocator::PartitionAllocSupport::Get()->ReconfigureAfterTaskRunnerInit(
       "");
 
-  did_init_feature_list_early = true;
-}
-
-bool DidInitFeatureListEarly() {
-  return did_init_feature_list_early;
+  did_init_feature_list = true;
 }
 
 }  // namespace variations::android

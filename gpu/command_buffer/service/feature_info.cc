@@ -813,13 +813,6 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
     feature_flags_.native_vertex_array_object = true;
   }
 
-  // If we're using client_side_arrays we have to emulate
-  // vertex array objects since vertex array objects do not work
-  // with client side arrays.
-  if (workarounds_.use_client_side_arrays_for_stream_buffers) {
-    feature_flags_.native_vertex_array_object = false;
-  }
-
   if (gl_version_info_->is_es3 ||
       gfx::HasExtension(extensions, "GL_OES_element_index_uint")) {
     AddExtensionString("GL_OES_element_index_uint");
@@ -942,8 +935,7 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
   bool has_ext_texture_storage =
       gfx::HasExtension(extensions, "GL_EXT_texture_storage");
   bool has_texture_storage =
-      !workarounds_.disable_texture_storage &&
-      (has_ext_texture_storage || gl_version_info_->is_es3);
+      has_ext_texture_storage || gl_version_info_->is_es3;
 
   bool enable_texture_storage = has_texture_storage;
 
@@ -1411,6 +1403,14 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
 
     validators_.texture_internal_format_storage.AddValue(GL_R8_EXT);
     validators_.texture_internal_format_storage.AddValue(GL_RG8_EXT);
+    if (validators_.pixel_type.IsValid(GL_FLOAT)) {
+      validators_.texture_internal_format_storage.AddValue(GL_R32F_EXT);
+      validators_.texture_internal_format_storage.AddValue(GL_RG32F_EXT);
+    }
+    if (validators_.pixel_type.IsValid(GL_HALF_FLOAT_OES)) {
+      validators_.texture_internal_format_storage.AddValue(GL_R16F_EXT);
+      validators_.texture_internal_format_storage.AddValue(GL_RG16F_EXT);
+    }
   }
 
   const bool is_texture_norm16_supported_for_webgl2_or_es3 =
@@ -1438,7 +1438,6 @@ void FeatureInfo::InitializeFeatures(uint32_t complete_fbo_for_workarounds) {
     validators_.texture_internal_format.AddValue(GL_RG16_SNORM_EXT);
     validators_.texture_internal_format.AddValue(GL_RGB16_SNORM_EXT);
     validators_.texture_internal_format.AddValue(GL_RGBA16_SNORM_EXT);
-    validators_.texture_internal_format.AddValue(GL_RED_EXT);
 
     validators_.read_pixel_format.AddValue(GL_R16_EXT);
     validators_.read_pixel_format.AddValue(GL_RG16_EXT);
@@ -1959,8 +1958,6 @@ void FeatureInfo::InitializeFloatAndHalfFloatFeatures(
 }
 
 bool FeatureInfo::IsES3Capable() const {
-  if (workarounds_.disable_texture_storage)
-    return false;
   if (gl_version_info_)
     return gl_version_info_->IsAtLeastGLES(3, 0);
   return false;

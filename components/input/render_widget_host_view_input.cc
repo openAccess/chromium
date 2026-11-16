@@ -4,6 +4,8 @@
 
 #include "components/input/render_widget_host_view_input.h"
 
+#include <optional>
+
 #include "base/notreached.h"
 #include "components/input/render_widget_host_input_event_router.h"
 #include "ui/gfx/geometry/dip_util.h"
@@ -12,6 +14,14 @@ namespace input {
 
 RenderWidgetHostViewInput::RenderWidgetHostViewInput() = default;
 RenderWidgetHostViewInput::~RenderWidgetHostViewInput() = default;
+
+#if BUILDFLAG(IS_WIN)
+std::optional<ui::StylusHandwritingPropertiesWin>
+RenderWidgetHostViewInput::TakeStylusHandwritingProperties(
+    uint32_t touch_start_event_id) {
+  return std::nullopt;
+}
+#endif
 
 void RenderWidgetHostViewInput::NotifyObserversAboutShutdown() {
   // Note: RenderWidgetHostInputEventRouter is an observer, and uses the
@@ -53,6 +63,12 @@ gfx::PointF RenderWidgetHostViewInput::TransformPointToRootCoordSpaceF(
 }
 
 gfx::PointF RenderWidgetHostViewInput::TransformRootPointToViewCoordSpace(
+    const gfx::PointF& point) {
+  return point;
+}
+
+std::optional<gfx::PointF>
+RenderWidgetHostViewInput::TryTransformRootPointToViewCoordSpace(
     const gfx::PointF& point) {
   return point;
 }

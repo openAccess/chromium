@@ -12,6 +12,7 @@
 #include "ash/constants/chrome_url_constants.h"
 #include "ash/constants/url_constants.h"
 #include "ash/constants/web_app_id_constants.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/check_deref.h"
 #include "base/containers/span.h"
@@ -33,10 +34,10 @@
 #include "chrome/browser/ui/webui/settings/settings_secure_dns_handler.h"
 #include "chrome/browser/ui/webui/settings/shared_settings_localized_strings_provider.h"
 #include "chrome/grit/branded_strings.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
+#include "chromeos/ash/experiences/settings_ui/resources/grit/ash_settings_strings.h"
 #include "components/metrics/metrics_reporting_choice_service.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_ui_data_source.h"
@@ -414,10 +415,6 @@ void PrivacySection::AddLoadTimeData(content::WebUIDataSource* html_source) {
       {"enableLoggingDesc", IDS_OS_SETTINGS_ENABLE_LOGGING_TOGGLE_DESCRIPTION},
       {"enableContentProtectionAttestation",
        IDS_SETTINGS_ENABLE_CONTENT_PROTECTION_ATTESTATION},
-      {"enableSuggestedContent",
-       IDS_OS_SETTINGS_ENABLE_SUGGESTED_CONTENT_TITLE},
-      {"enableSuggestedContentDesc",
-       IDS_OS_SETTINGS_ENABLE_SUGGESTED_CONTENT_DESCRIPTION},
       {"peripheralDataAccessProtectionToggleTitle",
        IDS_OS_SETTINGS_DATA_ACCESS_PROTECTION_TOGGLE_TITLE},
       {"peripheralDataAccessProtectionToggleDescription",
@@ -642,9 +639,6 @@ void PrivacySection::AddLoadTimeData(content::WebUIDataSource* html_source) {
 
   html_source->AddString("smartPrivacyLearnMoreURL",
                          ash::external_urls::kSmartPrivacySettingsLearnMoreURL);
-
-  html_source->AddString("suggestedContentLearnMoreURL",
-                         ash::external_urls::kSuggestedContentLearnMoreURL);
 
   html_source->AddString(
       "syncAndGoogleServicesLearnMoreURL",

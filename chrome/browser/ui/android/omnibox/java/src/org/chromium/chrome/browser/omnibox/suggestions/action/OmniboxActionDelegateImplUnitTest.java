@@ -37,6 +37,7 @@ import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionDelegateImpl.BringTabToFrontCallback;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -70,7 +71,7 @@ public class OmniboxActionDelegateImplUnitTest {
     @Mock private Runnable mMockOpenPasswordSettings;
     @Mock private Runnable mMockOpenQuickDeleteDialog;
     @Mock private TabWindowManager mTabManager;
-    @Mock private OmniboxActionDelegateImpl.BringTabToFrontCallback mBringTabToFrontCallback;
+    @Mock private BringTabToFrontCallback mBringTabToFrontCallback;
     @Mock private SettingsNavigation mMockSettingsNavigation;
     @Mock private TabModel mTabModel;
     @Mock private TabModelSelector mTabModelSelector;
@@ -171,6 +172,14 @@ public class OmniboxActionDelegateImplUnitTest {
     public void openQuickDeleteDialog() {
         mDelegate.handleClearBrowsingData();
         verify(mMockOpenQuickDeleteDialog).run();
+    }
+
+    @Test
+    public void issueContextualSearchQuery_loadsUrlInCurrentTab() {
+        doReturn(true).when(mTab).isUserInteractable();
+        mDelegate.issueContextualSearchQuery(TEST_URL);
+        verify(mTab).loadUrl(mLoadParamsCaptor.capture());
+        assertEquals(TEST_URL.getSpec(), mLoadParamsCaptor.getValue().getUrl());
     }
 
     @Test

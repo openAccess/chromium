@@ -15,6 +15,7 @@
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/chrome_extension_function_details.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/common/extensions/api/tabs.h"
 #include "components/translate/core/browser/translate_driver.h"
 #include "components/zoom/zoom_controller.h"
@@ -52,6 +53,8 @@ class PrefRegistrySyncable;
 
 namespace extensions {
 
+class WindowController;
+
 // Converts a ZoomMode to its ZoomSettings representation.
 void ZoomModeToZoomSettings(zoom::ZoomController::ZoomMode zoom_mode,
                             api::tabs::ZoomSettings* zoom_settings);
@@ -86,21 +89,23 @@ class TabsQueryFunction : public ExtensionFunction {
   ~TabsQueryFunction() override = default;
 
   // Builds the list of tab objects to return.
-  base::ListValue BuildTabList(BrowserWindowInterface* current_browser,
-                               BrowserWindowInterface* last_active_browser,
+  base::ListValue BuildTabList(WindowController* current_window,
+                               WindowController* last_active_window,
                                const URLPatternSet& url_patterns,
                                const std::string& window_type,
                                int window_id,
                                int tab_index);
 
-  bool MatchesWindow(BrowserWindowInterface* candidate_browser,
-                     BrowserWindowInterface* current_browser,
-                     BrowserWindowInterface* last_active_browser,
+  bool MatchesWindow(WindowController* candidate_window,
+                     WindowController* current_window,
+                     WindowController* last_active_window,
                      const std::string& target_window_type,
                      int target_window_id);
 
-  bool MatchesTab(tabs::TabInterface* candidate_tab,
-                  const URLPatternSet& target_url_patterns);
+  std::optional<ExtensionTabUtil::ScrubTabBehavior> MatchesTab(
+      content::WebContents* web_contents,
+      const URLPatternSet& target_url_patterns,
+      const std::optional<std::u16string>& title_pattern);
 
   // The query parameters passed by the extension.
   api::tabs::Query::Params::QueryInfo query_info_;

@@ -17,6 +17,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.Shadows.shadowOf;
 
 import static org.chromium.chrome.browser.multiwindow.InstanceInfo.Type.CURRENT;
 import static org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType.ACTIVE;
@@ -26,6 +27,7 @@ import static org.chromium.ui.listmenu.ListMenuItemProperties.TITLE;
 import static org.chromium.ui.listmenu.ListMenuSubmenuItemProperties.SUBMENU_PROVIDER;
 
 import android.app.Activity;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
@@ -651,7 +653,7 @@ public class TabGroupContextMenuCoordinatorUnitTest {
         groupTitleEditText.setText(newTitle);
         KeyboardVisibilityDelegate.KeyboardVisibilityListener keyboardVisibilityListener =
                 mTabGroupContextMenuCoordinator.getKeyboardVisibilityListenerForTesting();
-        keyboardVisibilityListener.keyboardVisibilityChanged(false);
+        keyboardVisibilityListener.keyboardObscuringChanged(false);
 
         // Verify the group title is updated.
         verify(mTabModel).setTabGroupTitle(eq(TAB_GROUP_ID), eq(newTitle));
@@ -659,7 +661,7 @@ public class TabGroupContextMenuCoordinatorUnitTest {
         // Remove the custom title set by the user by clearing the edit box.
         newTitle = "";
         groupTitleEditText.setText(newTitle);
-        keyboardVisibilityListener.keyboardVisibilityChanged(false);
+        keyboardVisibilityListener.keyboardObscuringChanged(false);
 
         // Verify the previous title is deleted and is default to "N tabs"
         verify(mTabModel).deleteTabGroupTitle(TAB_GROUP_ID);
@@ -740,35 +742,35 @@ public class TabGroupContextMenuCoordinatorUnitTest {
         assertNotNull("KeyboardVisibilityListener should not be null", listener);
 
         // Clear all initialization/inflation tasks so the looper queue is completely empty.
-        ShadowLooper.getShadowMainLooper().runToEndOfTasks();
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks();
         assertTrue(
                 "Looper must be idle before simulating the keyboard event",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                shadowOf(Looper.getMainLooper()).isIdle());
 
         // Simulate the keyboard surfacing (isShowing = true).
-        listener.keyboardVisibilityChanged(true);
+        listener.keyboardObscuringChanged(true);
 
         // Check if a layout task was successfully scheduled on the looper.
         assertFalse(
                 "The keyboard visibility change must schedule a layout task, making the looper"
-                    + " non-idle",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                        + " non-idle",
+                shadowOf(Looper.getMainLooper()).isIdle());
 
         // Execute the posted layout task cleanly to finish the test cycle.
-        ShadowLooper.getShadowMainLooper().runToEndOfTasks();
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks();
 
         assertTrue(
                 "Menu should remain displayable after layout update",
                 mTabGroupContextMenuCoordinator.isMenuShowing());
 
         // Simulate the keyboard dismissing (isShowing = false).
-        listener.keyboardVisibilityChanged(false);
+        listener.keyboardObscuringChanged(false);
 
         // For vertical tabs, dismissing the keyboard should NOT schedule a layout task to
         // avoid jarring flip-flop jumping.
         assertTrue(
                 "The keyboard dismissal on vertical strip must not schedule a layout task",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                shadowOf(Looper.getMainLooper()).isIdle());
     }
 
     @Test
@@ -832,37 +834,37 @@ public class TabGroupContextMenuCoordinatorUnitTest {
         assertNotNull("KeyboardVisibilityListener should not be null", listener);
 
         // Clear all initialization/inflation tasks so the looper queue is completely empty.
-        ShadowLooper.getShadowMainLooper().runToEndOfTasks();
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks();
         assertTrue(
                 "Looper must be idle before simulating the keyboard event",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                shadowOf(Looper.getMainLooper()).isIdle());
 
         // Simulate the keyboard surfacing (isShowing = true).
-        listener.keyboardVisibilityChanged(true);
+        listener.keyboardObscuringChanged(true);
 
         // Check if a layout task was successfully scheduled on the looper.
         assertFalse(
                 "The keyboard visibility change must schedule a layout task, making the looper"
                         + " non-idle",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                shadowOf(Looper.getMainLooper()).isIdle());
 
         // Execute the posted layout task cleanly to finish the test cycle.
-        ShadowLooper.getShadowMainLooper().runToEndOfTasks();
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks();
 
         assertTrue(
                 "Menu should remain displayable after layout update",
                 mTabGroupContextMenuCoordinator.isMenuShowing());
 
         // Simulate the keyboard dismissing (isShowing = false) while menu remains open.
-        listener.keyboardVisibilityChanged(false);
+        listener.keyboardObscuringChanged(false);
 
         // For horizontal tabs, dismissing the keyboard must schedule a layout task to restore
         // menu height.
         assertFalse(
                 "The keyboard dismissal on horizontal strip must schedule a layout task",
-                ShadowLooper.getShadowMainLooper().isIdle());
+                shadowOf(Looper.getMainLooper()).isIdle());
 
-        ShadowLooper.getShadowMainLooper().runToEndOfTasks();
+        shadowOf(Looper.getMainLooper()).runToEndOfTasks();
         assertTrue(mTabGroupContextMenuCoordinator.isMenuShowing());
     }
 

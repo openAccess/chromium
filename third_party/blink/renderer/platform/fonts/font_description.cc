@@ -89,8 +89,8 @@ FontDescription::FontDescription(HashTableDeletedValueType)
 }
 
 FontDescription::FontDescription() {
-  fields_.orientation_ = static_cast<uint32_t>(FontOrientation::kHorizontal);
-  fields_.width_variant_ = kRegularWidth;
+  fields_.orientation_ = std::to_underlying(FontOrientation::kHorizontal);
+  fields_.width_variant_ = std::to_underlying(FontWidthVariant::kRegular);
   fields_.variant_caps_ = kCapsNormal;
   fields_.is_absolute_size_ = false;
   fields_.generic_family_ = kNoFamily;
@@ -100,8 +100,8 @@ FontDescription::FontDescription() {
   fields_.historical_ligatures_state_ = kNormalLigaturesState;
   fields_.contextual_ligatures_state_ = kNormalLigaturesState;
   fields_.keyword_size_ = 0;
-  fields_.font_smoothing_ = static_cast<uint32_t>(FontSmoothingMode::kAuto);
-  fields_.text_rendering_ = kAutoTextRendering;
+  fields_.font_smoothing_ = std::to_underlying(FontSmoothingMode::kAuto);
+  fields_.text_rendering_ = std::to_underlying(TextRenderingMode::kAuto);
   fields_.synthetic_bold_ = false;
   fields_.synthetic_italic_ = false;
   fields_.synthetic_oblique_ = false;
@@ -110,15 +110,15 @@ FontDescription::FontDescription() {
   fields_.variant_numeric_ = FontVariantNumeric().fields_as_unsigned_;
   fields_.variant_east_asian_ = 0;
   fields_.subpixel_ascent_descent_ = false;
-  fields_.font_optical_sizing_ = static_cast<uint32_t>(OpticalSizing::kAuto);
+  fields_.font_optical_sizing_ = std::to_underlying(OpticalSizing::kAuto);
   fields_.has_size_adjust_descriptor_ = false;
   fields_.hash_category_ = kHashRegularValue;
   fields_.font_synthesis_weight_ = kAutoFontSynthesisWeight;
   fields_.font_synthesis_style_ = kAutoFontSynthesisStyle;
   fields_.font_synthesis_small_caps_ = kAutoFontSynthesisSmallCaps;
   fields_.variant_position_ = kNormalVariantPosition;
-  fields_.variant_emoji_ = kNormalVariantEmoji;
-  fields_.text_spacing_trim_ = static_cast<uint32_t>(TextSpacingTrim::kInitial);
+  fields_.variant_emoji_ = std::to_underlying(FontVariantEmoji::kNormal);
+  fields_.text_spacing_trim_ = std::to_underlying(TextSpacingTrim::kInitial);
 }
 
 FontDescription::FontDescription(const FontDescription&) = default;
@@ -331,26 +331,28 @@ FontCacheKey FontDescription::CacheKey(
 }
 
 void FontDescription::UpdateTypesettingFeatures() {
-  fields_.typesetting_features_ = 0;
+  TypesettingFeatures features;
 
   switch (TextRendering()) {
-    case kAutoTextRendering:
+    case TextRenderingMode::kAuto:
       break;
-    case kOptimizeSpeed:
-      fields_.typesetting_features_ &= ~(blink::kKerning | kLigatures);
+    case TextRenderingMode::kOptimizeSpeed:
+      features.RemoveAll(
+          {TypesettingFeature::kKerning, TypesettingFeature::kLigatures});
       break;
-    case kGeometricPrecision:
-    case kOptimizeLegibility:
-      fields_.typesetting_features_ |= blink::kKerning | kLigatures;
+    case TextRenderingMode::kGeometricPrecision:
+    case TextRenderingMode::kOptimizeLegibility:
+      features.PutAll(
+          {TypesettingFeature::kKerning, TypesettingFeature::kLigatures});
       break;
   }
 
   switch (GetKerning()) {
     case FontDescription::kNoneKerning:
-      fields_.typesetting_features_ &= ~blink::kKerning;
+      features.Remove(TypesettingFeature::kKerning);
       break;
     case FontDescription::kNormalKerning:
-      fields_.typesetting_features_ |= blink::kKerning;
+      features.Put(TypesettingFeature::kKerning);
       break;
     case FontDescription::kAutoKerning:
       break;
@@ -363,10 +365,10 @@ void FontDescription::UpdateTypesettingFeatures() {
   if (letter_spacing_.IsZero()) {
     switch (CommonLigaturesState()) {
       case FontDescription::kDisabledLigaturesState:
-        fields_.typesetting_features_ &= ~blink::kLigatures;
+        features.Remove(TypesettingFeature::kLigatures);
         break;
       case FontDescription::kEnabledLigaturesState:
-        fields_.typesetting_features_ |= blink::kLigatures;
+        features.Put(TypesettingFeature::kLigatures);
         break;
       case FontDescription::kNormalLigaturesState:
         break;
@@ -376,12 +378,15 @@ void FontDescription::UpdateTypesettingFeatures() {
             FontDescription::kEnabledLigaturesState ||
         HistoricalLigaturesState() == FontDescription::kEnabledLigaturesState ||
         ContextualLigaturesState() == FontDescription::kEnabledLigaturesState) {
-      fields_.typesetting_features_ |= blink::kLigatures;
+      features.Put(TypesettingFeature::kLigatures);
     }
   }
 
-  if (VariantCaps() != kCapsNormal)
-    fields_.typesetting_features_ |= blink::kCaps;
+  if (VariantCaps() != kCapsNormal) {
+    features.Put(TypesettingFeature::kCaps);
+  }
+  fields_.typesetting_features_ =
+      static_cast<uint32_t>(features.ToEnumBitmask());
 }
 
 uint32_t FontDescription::StyleHashWithoutFamilyList() const {
@@ -437,7 +442,7 @@ uint32_t FontDescription::GetHash() const {
 }
 
 void FontDescription::SetOrientation(FontOrientation orientation) {
-  fields_.orientation_ = static_cast<uint32_t>(orientation);
+  fields_.orientation_ = std::to_underlying(orientation);
   UpdateSyntheticOblique();
 }
 
@@ -695,26 +700,6 @@ String FontDescription::ToString(FontVariantCaps variant) {
   return "Unknown";
 }
 
-String FontDescription::ToStringForIdl(FontVariantCaps variant) {
-  switch (variant) {
-    case FontVariantCaps::kCapsNormal:
-      return "normal";
-    case FontVariantCaps::kSmallCaps:
-      return "small-caps";
-    case FontVariantCaps::kAllSmallCaps:
-      return "all-small-caps";
-    case FontVariantCaps::kPetiteCaps:
-      return "petite-caps";
-    case FontVariantCaps::kAllPetiteCaps:
-      return "all-petite-caps";
-    case FontVariantCaps::kUnicase:
-      return "unicase";
-    case FontVariantCaps::kTitlingCaps:
-      return "titling-caps";
-  }
-  return "Unknown";
-}
-
 String FontDescription::ToString(FontSynthesisWeight font_synthesis_weight) {
   switch (font_synthesis_weight) {
     case FontSynthesisWeight::kAutoFontSynthesisWeight:
@@ -804,11 +789,9 @@ String FontDescription::ToString() const {
       (locale_ ? locale_->LocaleString() : g_empty_atom), specified_size_,
       computed_size_, adjusted_size_, size_adjust_.ToString(), LetterSpacing(),
       WordSpacing(), font_selection_request_.ToString(),
-      blink::ToString(
-          static_cast<TypesettingFeatures>(fields_.typesetting_features_)),
-      blink::ToString(Orientation()), blink::ToString(WidthVariant()),
-      FontDescription::ToString(VariantCaps()), IsAbsoluteSize(),
-      FontDescription::ToString(GenericFamily()),
+      blink::ToString(GetTypesettingFeatures()), blink::ToString(Orientation()),
+      blink::ToString(WidthVariant()), FontDescription::ToString(VariantCaps()),
+      IsAbsoluteSize(), FontDescription::ToString(GenericFamily()),
       FontDescription::ToString(Kerning()), GetVariantLigatures().ToString(),
       KeywordSize(), blink::ToString(FontSmoothing()),
       blink::ToString(TextRendering()), IsSyntheticBold(), IsSyntheticItalic(),

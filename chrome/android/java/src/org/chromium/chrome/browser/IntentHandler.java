@@ -65,6 +65,7 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.renderer_host.ChromeNavigationUiData;
 import org.chromium.chrome.browser.search_engines.TemplateUrlServiceFactory;
+import org.chromium.chrome.browser.share.link_to_text.LinkToTextHelper;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabIdManager;
@@ -207,9 +208,10 @@ public class IntentHandler {
             "android.support.browser.extra.referrer_policy";
 
     /**
-     * Extra specifying additional urls that should each be opened in a new tab. If
-     * EXTRA_OPEN_ADDITIONAL_URLS_IN_TAB_GROUP is present and true, these will be opened in a tab
-     * group.
+     * Extra specifying additional URLs that should each be opened in a new background tab
+     * immediately following the primary URL from the intent data, ordered as they should appear in
+     * the tab strip. If {@link #EXTRA_OPEN_ADDITIONAL_URLS_IN_TAB_GROUP} is present and true, these
+     * will be opened in a tab group with the primary tab.
      */
     public static final String EXTRA_ADDITIONAL_URLS =
             "org.chromium.chrome.browser.additional_urls";
@@ -2005,6 +2007,13 @@ public class IntentHandler {
             if (!TextUtils.isEmpty(scrollToTextFragment)) {
                 loadUrlParams.setInternalScrollToTextFragment(scrollToTextFragment);
             }
+        }
+
+        if (isIntentFromHandoff(intent)) {
+            String fragment = Uri.parse(url).getEncodedFragment();
+            RecordHistogram.recordBooleanHistogram(
+                    "Android.Handoff.ScrollPosition.ReceivedWithTextFragment",
+                    fragment != null && fragment.contains(LinkToTextHelper.TEXT_FRAGMENT_PREFIX));
         }
 
         String referrer = getReferrerUrlIncludingExtraHeaders(intent);

@@ -42,6 +42,7 @@
 #include "components/autofill/core/browser/metrics/payments/wallet_reminder_notice_metrics.h"
 #include "components/autofill/core/browser/network/autofill_ai/autofill_ai_personal_context_access_manager.h"
 #include "components/autofill/core/browser/network/autofill_ai/mock_autofill_ai_personal_context_access_manager.h"
+#include "components/autofill/core/browser/network/autofill_ai/mock_wallet_pass_access_manager.h"
 #include "components/autofill/core/browser/payments/test_payments_autofill_client.h"
 #include "components/autofill/core/browser/payments/wallet_reminder_notice_manager.h"
 #include "components/autofill/core/browser/proto/server.pb.h"
@@ -109,16 +110,16 @@ constexpr auto kAcceptBubble =
 constexpr auto kAcceptEdits =
     AutofillClient::AutofillAiBubbleResult::kEditAccepted;
 const AutofillClient::EntityImportUIContext kAcceptUIContext(
-    /*accepted_consent_string_id=*/123,
+    /*accepted_consent_string_ids=*/std::vector<int>{123, 456},
     /*accept_button_string_id=*/234);
 constexpr auto kDeclineBubble = AutofillClient::AutofillAiBubbleResult::kClosed;
 const AutofillClient::EntityImportUIContext kDeclineUIContext(
-    /*accepted_consent_string_id=*/123,
+    /*accepted_consent_string_ids=*/std::vector<int>{123},
     /*accept_button_string_id=*/345);
 constexpr auto kIgnoreBubble =
     AutofillClient::AutofillAiBubbleResult::kNotInteracted;
 const AutofillClient::EntityImportUIContext kIgnoreUIContext(
-    /*accepted_consent_string_id=*/123,
+    /*accepted_consent_string_ids=*/std::vector<int>{123},
     /*accept_button_string_id=*/std::nullopt);
 
 auto HasType(SuggestionType expected_type) {
@@ -181,6 +182,12 @@ class MockAutofillClient : public TestAutofillClient {
   MOCK_METHOD(void, CloseEntityImportBubble, (), (override));
   MOCK_METHOD(void, ShowAutofillAiLocalSaveNotification, (), (override));
   MOCK_METHOD(void, ShowAutofillAiPreFetchFailureNotification, (), (override));
+  MockWalletPassAccessManager* GetWalletPassAccessManager() override {
+    return &wallet_pass_access_manager_;
+  }
+
+ private:
+  NiceMock<MockWalletPassAccessManager> wallet_pass_access_manager_;
 };
 
 class MockWalletReminderNoticeManager
@@ -415,7 +422,8 @@ TEST_F(
 
   manager().OnAutofillAiSuggestionsShown(
       form_structure, *form_structure.field(0),
-      {Suggestion(SuggestionType::kAutofillAiPrivateInferenceNotice)}, {},
+      {Suggestion(SuggestionType::kAutofillAiPrivateInferenceNotice)},
+      /*metadata=*/{}, /*ukm_source_id=*/{},
       /*update_suggestions_callback=*/{});
 
   EXPECT_NE(autofill_client().GetPrefs()->GetTime(
@@ -423,13 +431,142 @@ TEST_F(
             base::Time());
 }
 
+// Tests that showing only a collapsed domain-fallback submenu parent item in
+// the root popup (without opening the sub-popup) does not record Autofill AI
+// filling suggestions as shown.
+TEST_F(AutofillAiManagerTest,
+       OnAutofillAiSuggestionsShown_FallbackSubPopupNotOpened) {
+  base::test::ScopedFeatureList feature_list{features::kAutofillAiOrder};
+  const EntityInstance order = test::GetOrderEntityInstance({
+      .id = u"ORD-123",
+      .merchant_domain = u"merchant.example",
+  });
+  edm().OnPrefetchContextComplete(pcontext_manager(),
+                                  std::vector<EntityInstance>{order});
+  autofill_client().set_last_committed_primary_main_frame_url(
+      GURL("https://other-site.example"));
+
+  FormData form = test::GetFormData(
+      {.fields = {{.role = ORDER_ID}}, .url = "https://other-site.example"});
+  FormStructure form_structure(form);
+  AddPredictionsToFormStructure(form_structure, {{ORDER_ID}});
+  manager().OnFormSeen(form_structure);
+
+  std::vector<Suggestion> root_suggestions =
+      manager().GetSuggestions(form_structure, form.fields()[0]);
+  ASSERT_FALSE(root_suggestions.empty());
+  ASSERT_EQ(root_suggestions[0].type, SuggestionType::kAutofillAiOtherOrders);
+  ASSERT_FALSE(root_suggestions[0].children.empty());
+
+  manager().OnAutofillAiSuggestionsShown(
+      form_structure, *form_structure.field(0), root_suggestions,
+      /*metadata=*/{}, /*ukm_source_id=*/{},
+      /*update_suggestions_callback=*/{});
+
+  base::HistogramTester histogram_tester;
+  manager().OnFormSubmitted(form_structure, /*ukm_source_id=*/{});
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.KeyMetrics.FillingAssistance.Order.PersonalContext", false,
+      1);
+  histogram_tester.ExpectTotalCount(
+      "Autofill.Ai.KeyMetrics.FillingAcceptance.Order.PersonalContext", 0);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.Funnel.Submitted.SuggestionAfterReadiness.Order."
+      "PersonalContext",
+      false, 1);
+}
+
+// Tests that opening a domain-fallback sub-popup marks the child
+// `kFillAutofillAi` suggestions as shown so `FillingAcceptance` is recorded as
+// false when the form is submitted without accepting a suggestion.
+TEST_F(AutofillAiManagerTest,
+       OnAutofillAiSuggestionsShown_FallbackSubPopupOpenedAndIgnored) {
+  base::test::ScopedFeatureList feature_list{features::kAutofillAiShipment};
+  const EntityInstance shipment = test::GetShipmentEntityInstance({
+      .tracking_number = u"TRK-999",
+      .carrier_domain = u"carrier.example",
+  });
+  edm().OnPrefetchContextComplete(pcontext_manager(),
+                                  std::vector<EntityInstance>{shipment});
+  autofill_client().set_last_committed_primary_main_frame_url(
+      GURL("https://other-site.example"));
+
+  FormData form =
+      test::GetFormData({.fields = {{.role = SHIPMENT_TRACKING_NUMBER}},
+                         .url = "https://other-site.example"});
+  FormStructure form_structure(form);
+  AddPredictionsToFormStructure(form_structure, {{SHIPMENT_TRACKING_NUMBER}});
+  manager().OnFormSeen(form_structure);
+
+  std::vector<Suggestion> root_suggestions =
+      manager().GetSuggestions(form_structure, form.fields()[0]);
+  ASSERT_FALSE(root_suggestions.empty());
+  ASSERT_EQ(root_suggestions[0].type,
+            SuggestionType::kAutofillAiOtherShipments);
+  ASSERT_FALSE(root_suggestions[0].children.empty());
+
+  manager().OnAutofillAiSuggestionsShown(
+      form_structure, *form_structure.field(0), root_suggestions,
+      /*metadata=*/{}, /*ukm_source_id=*/{},
+      /*update_suggestions_callback=*/{});
+  manager().OnAutofillAiSuggestionsShown(
+      form_structure, *form_structure.field(0), root_suggestions[0].children,
+      /*metadata=*/{.multi_index = {0}}, /*ukm_source_id=*/{},
+      /*update_suggestions_callback=*/{});
+
+  base::HistogramTester histogram_tester;
+  manager().OnFormSubmitted(form_structure, /*ukm_source_id=*/{});
+
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.KeyMetrics.FillingAssistance.Shipment.PersonalContext",
+      false, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.KeyMetrics.FillingAcceptance.Shipment.PersonalContext",
+      false, 1);
+}
+
+// Tests that opening a Personal Context attribution/remove submenu does not
+// record Autofill AI filling suggestions as shown.
+TEST_F(AutofillAiManagerTest,
+       OnAutofillAiSuggestionsShown_AttributionSubPopupIgnored) {
+  base::test::ScopedFeatureList feature_list{features::kAutofillAiOrder};
+  const EntityInstance order = test::GetOrderEntityInstance({
+      .id = u"ORD-123",
+      .merchant_domain = u"merchant.example",
+  });
+  edm().OnPrefetchContextComplete(pcontext_manager(),
+                                  std::vector<EntityInstance>{order});
+
+  FormData form = test::GetFormData(
+      {.fields = {{.role = ORDER_ID}}, .url = "https://other-site.example"});
+  FormStructure form_structure(form);
+  AddPredictionsToFormStructure(form_structure, {{ORDER_ID}});
+  manager().OnFormSeen(form_structure);
+
+  Suggestion source_attribution(SuggestionType::kAutofillAiSourceAttribution);
+  source_attribution.payload = Suggestion::AutofillAiPayload(order.guid());
+  Suggestion remove_entity(SuggestionType::kRemoveAutofillAi);
+  remove_entity.payload = Suggestion::AutofillAiPayload(order.guid());
+
+  manager().OnAutofillAiSuggestionsShown(
+      form_structure, *form_structure.field(0),
+      {source_attribution, remove_entity},
+      /*metadata=*/{.multi_index = {0}}, /*ukm_source_id=*/{},
+      /*update_suggestions_callback=*/{});
+
+  base::HistogramTester histogram_tester;
+  manager().OnFormSubmitted(form_structure, /*ukm_source_id=*/{});
+
+  histogram_tester.ExpectTotalCount(
+      "Autofill.Ai.KeyMetrics.FillingAcceptance.Order.PersonalContext", 0);
+  EXPECT_EQ(manager().GetRecentUserInteractionForHats(form.global_id()),
+            std::nullopt);
+}
+
 class AutofillAiManagerImportFormTest : public AutofillAiManagerTest {
  public:
-  AutofillAiManagerImportFormTest() {
-    autofill_client().set_wallet_pass_access_manager(
-        std::make_unique<NiceMock<MockWalletPassAccessManager>>());
-    edm().SetReauthAvailability(true);
-  }
+  AutofillAiManagerImportFormTest() { edm().SetReauthAvailability(true); }
 
   static constexpr char kDefaultUrl[] = "https://example.com";
   static constexpr char16_t kDefaultVehicleOwner[] = u"Jane Doe";
@@ -496,8 +633,7 @@ class AutofillAiManagerImportFormTest : public AutofillAiManagerTest {
   }
 
   MockWalletPassAccessManager& wallet_manager() {
-    return static_cast<MockWalletPassAccessManager&>(
-        *autofill_client().GetWalletPassAccessManager());
+    return *autofill_client().GetWalletPassAccessManager();
   }
 
   consent_auditor::FakeConsentAuditor& consent_auditor() {
@@ -987,6 +1123,22 @@ TEST_F(AutofillAiManagerImportFormTest,
       manager().OnFormSubmitted(*CreatePassportForm(), /*ukm_source_id=*/{}));
 }
 
+// Tests that the import prompt is not shown for a private pass when
+// `kAutofillRegionalizedPrivatePassesUxRefine` is enabled and the account
+// capability is `kUnknown`.
+TEST_F(AutofillAiManagerImportFormTest,
+       DoesNotShowPrivatePassPromptIfCapabilityUnknown) {
+  base::test::ScopedFeatureList feature_list{
+      features::kAutofillRegionalizedPrivatePassesUxRefine};
+  autofill_client().ResetAccountCapabilities();
+  autofill_client().SetCanUseModelExecutionFeatures(true);
+  autofill_client().SetSupportsWalletPrivatePassesInAutofill(true);
+
+  EXPECT_CALL(autofill_client(), ShowEntityImportBubble).Times(0);
+  EXPECT_FALSE(
+      manager().OnFormSubmitted(*CreatePassportForm(), /*ukm_source_id=*/{}));
+}
+
 // Tests that migration prompts are only shown three times per url and entity
 // type.
 TEST_F(AutofillAiManagerImportFormTest, StrikesForMigrationPromptsPerUrl) {
@@ -1441,7 +1593,8 @@ TEST_F(AutofillAiManagerImportFormTest, PassportSaveToWalletConsent) {
   EXPECT_EQ(session_id_consent_auditor, session_id_api_call);
   sync_pb::UserConsentTypes::WalletPrivatePassConsent expected_consent;
   expected_consent.mutable_description_grd_ids()->Add(
-      *kAcceptUIContext.accepted_consent_string_id);
+      kAcceptUIContext.accepted_consent_string_ids.begin(),
+      kAcceptUIContext.accepted_consent_string_ids.end());
   expected_consent.set_confirmation_grd_id(
       *kAcceptUIContext.accept_button_string_id);
   EXPECT_THAT(consent, base::test::EqualsProto(expected_consent));
@@ -2283,7 +2436,8 @@ class AutofillAiManagerWalletReminderNoticeTest
                                const FormStructure& form,
                                const AutofillField& field) {
     manager().OnAutofillAiSuggestionsShown(
-        form, field, /*shown_suggestions=*/{}, /*ukm_source_id=*/{},
+        form, field, /*shown_suggestions=*/{}, /*metadata=*/{},
+        /*ukm_source_id=*/{},
         /*update_suggestions_callback=*/{});
     manager().OnDidFillSuggestion(entity, form, field, /*filled_fields=*/{},
                                   /*ukm_source_id=*/{});
@@ -2755,7 +2909,7 @@ TEST_F(AutofillAiManagerTest, LoadedServerPredictionsToSuggestionsShownTiming) {
   // First time showing suggestions on page 1 logs the metric.
   manager().OnAutofillAiSuggestionsShown(
       form_structure, *form_structure.field(0), {passport_suggestion},
-      ukm_source_id_1, /*update_suggestions_callback=*/{});
+      /*metadata=*/{}, ukm_source_id_1, /*update_suggestions_callback=*/{});
   histogram_tester.ExpectTotalCount(
       "Autofill.Ai.TimingInterval.LoadedServerPredictionsToSuggestionsShown",
       1);
@@ -2763,7 +2917,7 @@ TEST_F(AutofillAiManagerTest, LoadedServerPredictionsToSuggestionsShownTiming) {
   // Second time showing suggestions on page 1 DOES NOT log.
   manager().OnAutofillAiSuggestionsShown(
       form_structure, *form_structure.field(0), {passport_suggestion},
-      ukm_source_id_1, /*update_suggestions_callback=*/{});
+      /*metadata=*/{}, ukm_source_id_1, /*update_suggestions_callback=*/{});
   histogram_tester.ExpectTotalCount(
       "Autofill.Ai.TimingInterval.LoadedServerPredictionsToSuggestionsShown",
       1);
@@ -2771,7 +2925,7 @@ TEST_F(AutofillAiManagerTest, LoadedServerPredictionsToSuggestionsShownTiming) {
   // Showing suggestions on page 2 LOGS again.
   manager().OnAutofillAiSuggestionsShown(
       form_structure, *form_structure.field(0), {passport_suggestion},
-      ukm_source_id_2, /*update_suggestions_callback=*/{});
+      /*metadata=*/{}, ukm_source_id_2, /*update_suggestions_callback=*/{});
   histogram_tester.ExpectTotalCount(
       "Autofill.Ai.TimingInterval.LoadedServerPredictionsToSuggestionsShown",
       2);
@@ -2906,7 +3060,7 @@ TEST_F(AutofillAiManagerTest, OnPrefetchContextComplete_RunCallback) {
 
   base::MockCallback<AutofillAiManager::UpdateSuggestionsCallback> callback;
   manager().OnAutofillAiSuggestionsShown(*form_structure, *field,
-                                         {fetching_suggestion},
+                                         {fetching_suggestion}, /*metadata=*/{},
                                          /*ukm_source_id=*/{}, callback.Get());
 
   EXPECT_CALL(callback, Run);
@@ -2933,7 +3087,7 @@ TEST_F(AutofillAiManagerTest, OnPrefetchContextComplete_NoFetchingSuggestion) {
 
   base::MockCallback<AutofillAiManager::UpdateSuggestionsCallback> callback;
   manager().OnAutofillAiSuggestionsShown(*form_structure, *field,
-                                         {other_suggestion},
+                                         {other_suggestion}, /*metadata=*/{},
                                          /*ukm_source_id=*/{}, callback.Get());
 
   EXPECT_CALL(callback, Run).Times(0);
@@ -2960,7 +3114,7 @@ TEST_F(AutofillAiManagerTest, OnPrefetchContextComplete_FormNotFound) {
 
   base::MockCallback<AutofillAiManager::UpdateSuggestionsCallback> callback;
   manager().OnAutofillAiSuggestionsShown(*form_structure, *field,
-                                         {fetching_suggestion},
+                                         {fetching_suggestion}, /*metadata=*/{},
                                          /*ukm_source_id=*/{}, callback.Get());
 
   DeleteAllAutofillDrivers();
@@ -2995,7 +3149,7 @@ TEST_F(AutofillAiManagerTest,
 
   base::MockCallback<AutofillAiManager::UpdateSuggestionsCallback> callback;
   manager().OnAutofillAiSuggestionsShown(*form_structure, *field,
-                                         {fetching_suggestion},
+                                         {fetching_suggestion}, /*metadata=*/{},
                                          /*ukm_source_id=*/{}, callback.Get());
 
   EXPECT_CALL(callback, Run);

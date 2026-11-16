@@ -45,11 +45,6 @@ void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
   config->g_w = size.width();
   config->g_h = size.height();
   config->g_pass = VPX_RC_ONE_PASS;
-  // TODO(joedow): Determine whether it is possible to support portrait mode.
-  // VP9 only supports breaking an image up into columns for parallel encoding,
-  // this means that a display in portrait mode cannot be broken up into as many
-  // columns as a display in landscape mode can so performance will be degraded.
-  config->g_threads = WebrtcVideoEncoder::GetEncoderThreadCount(config->g_w);
 
   // Start emitting packets immediately.
   config->g_lag_in_frames = 0;
@@ -75,6 +70,8 @@ void SetCommonCodecParameters(vpx_codec_enc_cfg_t* config,
 void SetVp8CodecParameters(vpx_codec_enc_cfg_t* config,
                            const webrtc::DesktopSize& size) {
   SetCommonCodecParameters(config, size);
+  config->g_threads =
+      WebrtcVideoEncoder::GetEncoderThreadCount(static_cast<int>(config->g_w));
 
 #if BUILDFLAG(IS_LINUX)
   // On Linux, using too many threads for VP8 encoding has been linked to high
@@ -87,6 +84,13 @@ void SetVp8CodecParameters(vpx_codec_enc_cfg_t* config,
   // and leave plenty of cores for the non-remoting workload.
   uint threshold = config->g_threads >= 16 ? 4U : 2U;
   config->g_threads = std::min(config->g_threads, threshold);
+#else
+  // Increasing thread count on VP8 does not necessarily lead to better
+  // performance and causes CBR overshoot and PSNR loss at 1080p, so keep
+  // sub-1440p widths capped at 4 threads.
+  if (config->g_w < 2560) {
+    config->g_threads = std::min(config->g_threads, 4U);
+  }
 #endif  // BUILDFLAG(IS_LINUX)
 
   // Value of 2 means using the real time profile. This is basically a
@@ -99,6 +103,15 @@ void SetVp9CodecParameters(vpx_codec_enc_cfg_t* config,
                            const webrtc::DesktopSize& size,
                            bool lossless_color) {
   SetCommonCodecParameters(config, size);
+
+  // Although libvpx only splits tiles into columns (clamping
+  // VP9E_SET_TILE_COLUMNS to the maximum supported for the frame width),
+  // SetVp9CodecOptions() enables row-based multi-threading (VP9E_SET_ROW_MT =
+  // 1), which parallelizes 64x64 superblock rows across worker threads within
+  // each column tile. Scaling the thread count by the larger dimension avoids
+  // starving portrait displays of worker threads.
+  config->g_threads = WebrtcVideoEncoder::GetEncoderThreadCount(
+      static_cast<int>(std::max(config->g_w, config->g_h)));
 
   // Configure VP9 for I420 or I444 source frames.
   config->g_profile =

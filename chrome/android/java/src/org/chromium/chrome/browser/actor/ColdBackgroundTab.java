@@ -11,7 +11,6 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tab.TabState;
-import org.chromium.chrome.browser.tab.WebContentsState;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 
@@ -57,7 +56,7 @@ public class ColdBackgroundTab implements BackgroundPoolTab {
 
     @Override
     public Tab attachTab(TabModel tabModel, int index, @Nullable TabState placeholderTabState) {
-        assert mTabState != null : "ColdBackgroundTab has already been attached or destroyed.";
+        assert mTabState != null : "ColdBackgroundTab has already been attached.";
         mPool.removeTabById(mTabId);
 
         Tab placeholderTab = tabModel.getTabById(mPlaceholderTabId);
@@ -66,15 +65,11 @@ public class ColdBackgroundTab implements BackgroundPoolTab {
             placeholderTab.destroy();
         }
 
-        if (placeholderTabState != null && placeholderTabState.contentsState != null) {
-            placeholderTabState.contentsState.destroy();
-            placeholderTabState.contentsState = null;
-        }
-
         TabState backgroundState = mTabState;
         mTabState = null;
 
         if (placeholderTabState != null) {
+            placeholderTabState.contentsState = null;
             transferPlaceholderMetadata(backgroundState, placeholderTabState);
         }
 
@@ -88,17 +83,5 @@ public class ColdBackgroundTab implements BackgroundPoolTab {
             targetState.tabGroupId = placeholderState.tabGroupId;
         }
         targetState.isPinned = placeholderState.isPinned;
-    }
-
-    @Override
-    public void destroy() {
-        if (mTabState != null) {
-            WebContentsState contentsState = mTabState.contentsState;
-            if (contentsState != null) {
-                contentsState.destroy();
-                mTabState.contentsState = null;
-            }
-            mTabState = null;
-        }
     }
 }

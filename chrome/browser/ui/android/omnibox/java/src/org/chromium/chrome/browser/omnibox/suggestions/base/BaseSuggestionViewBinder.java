@@ -29,6 +29,7 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties;
+import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.FormFactor;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.PositionalMode;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties.RoundSides;
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties.Action;
@@ -94,8 +95,9 @@ public abstract class BaseSuggestionViewBinder<T extends View>
             bindContent(model, view.contentView, propertyKey);
         } else if (SuggestionCommonProperties.DEVICE_FORM_FACTOR == propertyKey) {
             view.setActionChipsHorizontalFadingEdgeEnabled(
-                    model.get(SuggestionCommonProperties.DEVICE_FORM_FACTOR)
-                            == SuggestionCommonProperties.FormFactor.TABLET);
+                    model.get(SuggestionCommonProperties.DEVICE_FORM_FACTOR) == FormFactor.TABLET);
+        } else if (BaseSuggestionViewProperties.END_ICON == propertyKey) {
+            bindEndIcon(model, view);
         } else if (SuggestionCommonProperties.FUSEBOX_LAYOUT_MODE == propertyKey
                 || SuggestionCommonProperties.GROUP_SEPARATOR_TYPE == propertyKey
                 || SuggestionCommonProperties.HEADER_TITLE == propertyKey
@@ -264,6 +266,18 @@ public abstract class BaseSuggestionViewBinder<T extends View>
         }
     }
 
+    /** Binds the non-interactive icon at the end of the suggestion. */
+    private static <T extends View> void bindEndIcon(
+            PropertyModel model, BaseSuggestionView<T> view) {
+        OmniboxDrawableState icon = model.get(BaseSuggestionViewProperties.END_ICON);
+        // Nothing to hide if the icon was never created for this view.
+        if (icon == null && view.endIcon == null) return;
+
+        ImageView endIcon = view.ensureEndIcon();
+        endIcon.setVisibility(icon == null ? View.GONE : View.VISIBLE);
+        updateIcon(endIcon, icon, getResourceProvider(model).getPrimaryIconTintList());
+    }
+
     private void updateColorScheme(PropertyModel model, BaseSuggestionView<T> view) {
         OmniboxResourceProvider resourceProvider = getResourceProvider(model);
         maybeResetCachedFocusableDrawableState(model, view);
@@ -305,10 +319,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
 
         if (sds != null) {
             // Ensure the decoration icon size does not exceed the maximum edge size.
-            int edgeSize =
-                    sds.isLarge
-                            ? resourceProvider.getEdgeSizeLargeIcon()
-                            : resourceProvider.getEdgeSize();
+            int edgeSize = resourceProvider.getEdgeSize(sds.size);
             boolean isTall = sds.drawable.getIntrinsicHeight() > sds.drawable.getIntrinsicWidth();
             rciv.getLayoutParams().width = isTall ? ViewGroup.LayoutParams.WRAP_CONTENT : edgeSize;
             rciv.getLayoutParams().height = isTall ? edgeSize : ViewGroup.LayoutParams.WRAP_CONTENT;
@@ -323,9 +334,7 @@ public abstract class BaseSuggestionViewBinder<T extends View>
 
             rciv.setClipToOutline(sds.useRoundedCorners);
             baseView.decorationIconOutline.setRadius(
-                    sds.isLarge
-                            ? resourceProvider.getLargeIconRoundingRadius()
-                            : resourceProvider.getSmallIconRoundingRadius());
+                    resourceProvider.getIconRoundingRadius(sds.size));
         }
 
         rciv.setVisibility(sds == null ? View.GONE : View.VISIBLE);

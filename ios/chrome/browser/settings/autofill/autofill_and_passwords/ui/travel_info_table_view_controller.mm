@@ -73,6 +73,7 @@ enum class ItemType {
 - (instancetype)init {
   self = [super initWithStyle:ChromeTableViewStyle()];
   if (self) {
+    self.title = l10n_util::GetNSString(IDS_AUTOFILL_TRAVEL_TITLE);
     _travelInfoToggleEnabled = YES;
     _travelInfoToggleManaged = NO;
   }
@@ -82,7 +83,6 @@ enum class ItemType {
 - (void)viewDidLoad {
   [super viewDidLoad];
   self.tableView.allowsMultipleSelectionDuringEditing = YES;
-  self.title = l10n_util::GetNSString(IDS_AUTOFILL_TRAVEL_TITLE);
   [self updateUIForEditState];
   [self loadModel];
 }
@@ -301,7 +301,6 @@ enum class ItemType {
   _addButtonInToolbar.target = nil;
   _addButtonInToolbar.menu = [AutofillAIAddEntitiesMenuBuilder
       buildMenuWithTypes:_writableEntityTypes
-          profileEnabled:NO
          entitiesEnabled:_travelInfoEnabled && _travelInfoToggleEnabled &&
                          !_travelInfoToggleManaged
                 delegate:self];
@@ -311,10 +310,6 @@ enum class ItemType {
 }
 
 #pragma mark - AutofillAIAddEntitiesMenuDelegate
-
-- (void)didSelectAddAutofillProfile {
-  NOTREACHED();
-}
 
 - (void)didSelectAddEntityWithType:(autofill::EntityType)type {
   [self.mutator didSelectAddEntityWithType:type];
@@ -358,7 +353,7 @@ enum class ItemType {
   }
 
   NSString* deletionConfirmationString =
-      GetDeletionConfirmationStringWithEntities(false, std::u16string());
+      l10n_util::GetNSString(IDS_IOS_SETTINGS_AUTOFILL_DELETE_TITLE_LOCAL);
 
   UIAlertControllerStyle preferredStyle = UIAlertControllerStyleActionSheet;
   if (UIContentSizeCategoryIsAccessibilityCategory(

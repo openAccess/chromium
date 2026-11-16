@@ -10,9 +10,11 @@ export function getHtml(this: PinnedToolbarActionElement) {
   return html`<!--_html_template_start_-->
 <toolbar-chip-button id="button"
     class="${this.hasHelpBubble ? 'help-anchor-highlight' : ''}"
-    .disabled="${!this.state.enabled}"
+    .buttonTabIndex="${0}" .disabled="${!this.state.enabled}"
     ?is-menu-open="${this.state.highlighted || this.trackedHighlighted}"
-    ?is-activated="${this.state.activated}" .tooltip="${this.getTooltip_()}"
+    ?is-activated="${this.showUnderlineIndicator_()}"
+    ?has-circle-highlight="${this.showCircleHighlight_()}"
+    .tooltip="${this.getTooltip_()}"
     .ariaLabel="${this.state.accessibilityText || this.state.tooltip}"
     .ariaPressed="${
         this.state.highlighted || this.trackedHighlighted ? 'true' : 'false'}"
@@ -21,7 +23,8 @@ export function getHtml(this: PinnedToolbarActionElement) {
     @click="${this.onActionClick_}"
     @pointerdown="${this.highlightTracker.onPointerdown}"
     @contextmenu="${this.onContextmenu_}">
-  <icon-from-table slot="prefix-icon" .iconHandle="${this.state.icon}">
+  <icon-from-table slot="prefix-icon" .iconHandle="${this.state.icon}"
+      style="${this.getIconStyle_() ?? nothing}">
   </icon-from-table>
 </toolbar-chip-button>
 ${this.getProgressRingStatus_() ? html`
@@ -35,7 +38,8 @@ ${this.getProgressRingStatus_() ? html`
     </circle>
   </svg>
 ` : nothing}
-<div class="status-indicator" ?hidden="${!this.state.activated}"></div>
+<div class="status-indicator" ?hidden="${!this.showUnderlineIndicator_()}">
+</div>
 ${this.getBadgeText_() ? html`
   <div class="badge" aria-hidden="true" ?disabled="${!this.state.enabled}"
       ?dormant="${this.isDormant_()}" ?is-activated="${this.state.activated}">

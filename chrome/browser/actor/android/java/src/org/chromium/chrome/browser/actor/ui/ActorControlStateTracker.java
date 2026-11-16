@@ -17,6 +17,7 @@ import org.chromium.chrome.browser.actor.ActorTask;
 import org.chromium.chrome.browser.actor.ActorTaskId;
 import org.chromium.chrome.browser.actor.ActorTaskState;
 import org.chromium.chrome.browser.actor.ActorUtils;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.glic.GlicInstanceHelper;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -84,14 +85,11 @@ public class ActorControlStateTracker
                             mGlicInstanceHelper.removeObserver(ActorControlStateTracker.this);
                             mGlicInstanceHelper = null;
                         }
-                        if (tab != null && tab.isOffTheRecord()) {
-                            resetTaskState();
-                            updateState();
-                            return;
-                        }
-                        mGlicInstanceHelper = tab != null ? GlicInstanceHelper.from(tab) : null;
-                        if (mGlicInstanceHelper != null) {
-                            mGlicInstanceHelper.addObserver(ActorControlStateTracker.this);
+                        if (tab != null && !tab.isOffTheRecord()) {
+                            mGlicInstanceHelper = GlicInstanceHelper.from(tab);
+                            if (mGlicInstanceHelper != null) {
+                                mGlicInstanceHelper.addObserver(ActorControlStateTracker.this);
+                            }
                         }
                         onInstanceChanged();
                     }
@@ -114,25 +112,13 @@ public class ActorControlStateTracker
             mActorKeyedService.removeObserver(this);
             mActorKeyedService = null;
         }
-        boolean isProfileValid =
-                profile != null && profile.isNativeInitialized() && !profile.isOffTheRecord();
-        if (!isProfileValid) {
-            resetTaskState();
-            updateState();
-            return;
+        if (profile != null && profile.isNativeInitialized() && !profile.isOffTheRecord()) {
+            mActorKeyedService = ActorKeyedServiceFactory.getForProfile(profile);
+            if (mActorKeyedService != null) {
+                mActorKeyedService.addObserver(this);
+            }
         }
-
-        mActorKeyedService = ActorKeyedServiceFactory.getForProfile(profile);
-        if (mActorKeyedService != null) {
-            mActorKeyedService.addObserver(this);
-        }
-        resetTaskState();
-        ActorTask task = getActiveTaskAssociatedWithCurrentConversation();
-        if (task == null) {
-            updateState();
-        } else {
-            onTaskStateChanged(task.getId(), task.getState());
-        }
+        onInstanceChanged();
     }
 
     private void updateState() {
@@ -196,15 +182,24 @@ public class ActorControlStateTracker
         }
     }
 
+    @Override
+    public void onTaskStepProgressUpdated(@ActorTaskId int taskId, String stepProgress) {
+        if (!ChromeFeatureList.sActorStepProgressNotification.isEnabled()) {
+            return;
+        }
+        // A step arriving outside a running state must not re-run the WAITING auto-expand.
+        if (mTrackedTaskId == null
+                || mTrackedTaskId != taskId
+                || mLatestTaskState == null
+                || !ActorUtils.isRunningState(mLatestTaskState)) {
+            return;
+        }
+        updateState();
+    }
+
     /** Called when the GLIC instance changes. */
     @Override
     public void onInstanceChanged() {
-        if (mGlicInstanceHelper == null) {
-            resetTaskState();
-            updateState();
-            return;
-        }
-
         resetTaskState();
         ActorTask task = getActiveTaskAssociatedWithCurrentConversation();
         if (task == null) {

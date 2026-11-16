@@ -12,9 +12,9 @@
 #import "base/functional/bind.h"
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
+#import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
-#import "components/actor/core/task_source_info.h"
 #import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/core/common/autofill_features.h"
 #import "components/feature_engagement/public/feature_constants.h"
@@ -29,9 +29,12 @@
 #import "ios/chrome/browser/assistant/coordinator/assistant_container_commands.h"
 #import "ios/chrome/browser/assistant/ui/assistant_container_detent.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
-#import "ios/chrome/browser/intelligence/actor/public/actor_task_lifecycle_observer.h"
+#import "ios/chrome/browser/fullscreen/public/fullscreen_metrics.h"
+#import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_controller.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_types.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_view_data.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_actor_task_store.h"
+#import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_actor_task_store_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_delegate.h"
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_container_mediator_event_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
@@ -40,7 +43,7 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_gateway_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_page_context.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_session_handler.h"
-#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_delegate.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_manager.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_picker_handler.h"
 #import "ios/chrome/browser/intelligence/bwg/ui/gemini_container_consumer.h"
@@ -64,12 +67,16 @@
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/fullscreen_commands.h"
 #import "ios/chrome/browser/shared/public/commands/gemini_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
+#import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/public/snackbar/snackbar_message.h"
 #import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/identity_test_environment_browser_state_adaptor.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/public/provider/chrome/browser/bwg/bwg_gateway_protocol.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
@@ -82,21 +89,28 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/l10n/l10n_util.h"
 #import "url/gurl.h"
 
-@interface GeminiContainerMediator (Testing) <ActorTaskLifecycleObserver,
-                                              IdentityManagerObserving,
-                                              IncognitoStateObserver>
+@interface GeminiContainerMediator (Testing) <
+    GeminiActorTaskStoreManagerObserver,
+    IdentityManagerObserving,
+    IncognitoStateObserver>
 - (void)cancelPageContextGeneration;
 - (void)setActuationActive:(BOOL)actuationActive;
 - (GeminiConfiguration*)createGeminiConfigurationForActiveWebState:
     (GeminiStartupState*)startupState;
+- (void)propagatePageContext:(GeminiPageContext*)pageContext;
 @end
 
 namespace {
 
 // Task ID used for actuation lifecycle tests.
 constexpr actor::ActorTaskId kTaskId = actor::ActorTaskId(1);
+
+// Session and conversation IDs used in processing status tests.
+NSString* const kTestSessionID = @"session_id";
+NSString* const kTestConversationID = @"conversation_id";
 
 }  // namespace
 
@@ -135,31 +149,44 @@ constexpr actor::ActorTaskId kTaskId = actor::ActorTaskId(1);
 }
 @end
 
+// Fake zero-state consumer recording whether suggestions are hidden (i.e. set
+// to an empty array).
+@interface FakeGeminiZeroStateConsumer : NSObject <GeminiZeroStateConsumer>
+@property(nonatomic, assign, getter=isHidden) BOOL hidden;
+@end
+
+@implementation FakeGeminiZeroStateConsumer
+- (void)setZeroStateSuggestions:(NSArray<ZeroStateSuggestion*>*)suggestions {
+  _hidden = suggestions && suggestions.count == 0;
+}
+@end
+
 // Fake delegate recording actuation task notifications and the consumer's
 // actuation state at the time of each notification.
 @interface FakeGeminiContainerMediatorDelegate
     : NSObject <GeminiContainerMediatorDelegate>
 @property(nonatomic, weak) FakeGeminiContainerConsumer* consumer;
-@property(nonatomic, readonly) std::vector<actor::ActorTaskId> startedTaskIDs;
-@property(nonatomic, readonly) std::vector<actor::ActorTaskId> stoppedTaskIDs;
-@property(nonatomic, weak, readonly) id<ActuationWorklogDataSource>
-    startedDataSource;
+@property(nonatomic, readonly) BOOL taskStopped;
+@property(nonatomic, weak, readonly) id<ActorTaskDataSource> startedDataSource;
+@property(nonatomic, weak, readonly) id<ActorTaskActionHandler>
+    startedActionHandler;
 @property(nonatomic, readonly) BOOL actuationActiveOnStart;
 @property(nonatomic, readonly) BOOL actuationActiveOnStop;
 @end
 
 @implementation FakeGeminiContainerMediatorDelegate
 - (void)geminiContainerMediator:(GeminiContainerMediator*)mediator
-    didStartActuationTaskWithID:(actor::ActorTaskId)taskID
-                     dataSource:(id<ActuationWorklogDataSource>)dataSource {
-  _startedTaskIDs.push_back(taskID);
+    didStartActuationTaskWithDataSource:(id<ActorTaskDataSource>)dataSource
+                          actionHandler:
+                              (id<ActorTaskActionHandler>)actionHandler {
   _startedDataSource = dataSource;
+  _startedActionHandler = actionHandler;
   _actuationActiveOnStart = _consumer.isActuationActive;
 }
 
-- (void)geminiContainerMediator:(GeminiContainerMediator*)mediator
-     didStopActuationTaskWithID:(actor::ActorTaskId)taskID {
-  _stoppedTaskIDs.push_back(taskID);
+- (void)geminiContainerMediatorDidStopActuationTask:
+    (GeminiContainerMediator*)mediator {
+  _taskStopped = YES;
   _actuationActiveOnStop = _consumer.isActuationActive;
 }
 @end
@@ -275,8 +302,8 @@ class FakeGeminiContainerMediatorEventHandler
   bool force_dismiss_floaty_called_ = false;
 };
 
-// A test spy for `GeminiSharedTabsDelegate`.
-class FakeGeminiSharedTabsDelegate : public GeminiSharedTabsDelegate {
+// A test spy for `GeminiSharedTabsManager`.
+class FakeGeminiSharedTabsManager : public GeminiSharedTabsManager {
  public:
   NSArray<GeminiPageContext*>* GetInactiveSharedTabs() const override {
     return inactive_shared_tabs_;
@@ -340,6 +367,7 @@ class GeminiContainerMediatorTest : public PlatformTest {
 
     scene_state_ = [[SceneState alloc] init];
     browser_ = std::make_unique<TestBrowser>(profile_.get(), scene_state_);
+    TestFullscreenController::CreateForBrowser(browser_.get());
 
     CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
     mock_settings_handler_ = OCMProtocolMock(@protocol(SettingsCommands));
@@ -350,6 +378,8 @@ class GeminiContainerMediatorTest : public PlatformTest {
                              forProtocol:@protocol(GeminiCommands)];
     mock_container_handler_ =
         OCMProtocolMock(@protocol(AssistantContainerCommands));
+    mock_fullscreen_handler_ = OCMProtocolMock(@protocol(FullscreenCommands));
+    mock_snackbar_handler_ = OCMProtocolMock(@protocol(SnackbarCommands));
 
     startup_state_ = [[GeminiStartupState alloc]
         initWithEntryPoint:gemini::EntryPoint::OverflowMenu];
@@ -362,10 +392,14 @@ class GeminiContainerMediatorTest : public PlatformTest {
         authenticationService:AuthenticationServiceFactory::GetForProfile(
                                   profile_.get())
                  eventHandler:&delegate_
-           sharedTabsDelegate:&shared_tabs_delegate_
+            sharedTabsManager:&shared_tabs_manager_
         sessionMetricsManager:session_metrics_manager_];
     mediator_.containerHandler = mock_container_handler_;
+    mediator_.fullscreenHandler = mock_fullscreen_handler_;
+    mediator_.fullscreenController =
+        TestFullscreenController::FromBrowser(browser_.get());
     mediator_.geminiHandler = mock_gemini_handler_;
+    mediator_.snackbarHandler = mock_snackbar_handler_;
   }
 
   void TearDown() override {
@@ -403,12 +437,14 @@ class GeminiContainerMediatorTest : public PlatformTest {
   std::unique_ptr<TestBrowser> browser_;
   GeminiStartupState* startup_state_;
   FakeGeminiContainerMediatorEventHandler delegate_;
-  FakeGeminiSharedTabsDelegate shared_tabs_delegate_;
+  FakeGeminiSharedTabsManager shared_tabs_manager_;
   GeminiSessionMetricsManager* session_metrics_manager_;
   GeminiContainerMediator* mediator_;
   id mock_settings_handler_;
   id mock_gemini_handler_;
   id mock_container_handler_;
+  id mock_fullscreen_handler_;
+  id mock_snackbar_handler_;
 };
 
 // Tests that createGeminiConfigurationForActiveWebState returns nil when no
@@ -684,12 +720,61 @@ TEST_F(GeminiContainerMediatorTest,
   [mediator_
       didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
                   dormantReason:ios::provider::GeminiDormantReason::kUserStop
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
                       sessionID:@"session_id"
                  conversationID:@"conversation_id"];
   EXPECT_THAT(delegate_.last_processing_status_changed_,
               testing::Optional(ios::provider::GeminiClientMode::kDormant));
   EXPECT_THAT(delegate_.last_dormant_reason_changed_,
               testing::Optional(ios::provider::GeminiDormantReason::kUserStop));
+}
+
+// Tests that an immediate `kDormant` status in Live mode is forwarded to the
+// event handler even if `kDormant` was the last status before switching modes.
+TEST_F(GeminiContainerMediatorTest,
+       TestDidUpdateProcessingStatusDormantForwardedAfterModeSwitchToLive) {
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kFloaty];
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                  dormantReason:ios::provider::GeminiDormantReason::kUnknown
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:kTestSessionID
+                 conversationID:kTestConversationID];
+
+  delegate_.last_processing_status_changed_.reset();
+  delegate_.last_dormant_reason_changed_.reset();
+
+  // Switch to Live mode and immediately receive `kDormant` (e.g., Live startup
+  // failure before reaching `kListening`).
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kLive];
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                  dormantReason:ios::provider::GeminiDormantReason::kServerPause
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:kTestSessionID
+                 conversationID:kTestConversationID];
+
+  EXPECT_THAT(delegate_.last_processing_status_changed_,
+              testing::Optional(ios::provider::GeminiClientMode::kDormant));
+  EXPECT_THAT(
+      delegate_.last_dormant_reason_changed_,
+      testing::Optional(ios::provider::GeminiDormantReason::kServerPause));
+
+  // A subsequent `kDormant` in the same mode is deduplicated and ignored.
+  delegate_.last_processing_status_changed_.reset();
+  delegate_.last_dormant_reason_changed_.reset();
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                  dormantReason:ios::provider::GeminiDormantReason::kServerPause
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:kTestSessionID
+                 conversationID:kTestConversationID];
+  EXPECT_FALSE(delegate_.last_processing_status_changed_.has_value());
+  EXPECT_FALSE(delegate_.last_dormant_reason_changed_.has_value());
 }
 
 // Tests that the mediator handles a null delegate gracefully without crashing.
@@ -701,7 +786,7 @@ TEST_F(GeminiContainerMediatorTest, TestNullDelegate) {
           authenticationService:AuthenticationServiceFactory::GetForProfile(
                                     profile_.get())
                    eventHandler:nullptr
-             sharedTabsDelegate:nullptr
+              sharedTabsManager:nullptr
           sessionMetricsManager:session_metrics_manager_];
 
   // Verify that calling delegate methods does not crash when delegate is null.
@@ -806,10 +891,10 @@ TEST_F(GeminiContainerMediatorTest, TestConnectTriggersInitialUIState) {
 
     [mediator_mock connect];
 
-    EXPECT_EQ(1, shared_tabs_delegate_
+    EXPECT_EQ(1, shared_tabs_manager_
                      .update_shared_tabs_for_active_web_state_call_count_);
     EXPECT_EQ(active_web_state,
-              shared_tabs_delegate_.last_updated_active_web_state_);
+              shared_tabs_manager_.last_updated_active_web_state_);
     EXPECT_NE(nil, consumer.geminiViewController);
     EXPECT_TRUE(consumer.isZeroState);
     EXPECT_EQ(1, consumer.zeroStateChangeCount);
@@ -1177,10 +1262,10 @@ TEST_F(GeminiContainerMediatorTest,
   EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
 }
 
-// Tests that propagatePageContext queries sharedTabsDelegate and
+// Tests that `propagatePageContext:` queries `sharedTabsManager` and
 // updates the active attached tab context.
 TEST_F(GeminiContainerMediatorTest,
-       TestPropagatePageContextQueriesSharedTabsDelegate) {
+       TestPropagatePageContextQueriesSharedTabsManager) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       {kGeminiMultiTabContext, kPageActionMenu}, {});
@@ -1192,7 +1277,7 @@ TEST_F(GeminiContainerMediatorTest,
   web_state->SetContentsMimeType("text/html");
 
   GeminiPageContext* shared_context = [[GeminiPageContext alloc] init];
-  shared_tabs_delegate_.inactive_shared_tabs_ = @[ shared_context ];
+  shared_tabs_manager_.inactive_shared_tabs_ = @[ shared_context ];
   GeminiPageContext* active_context = [[GeminiPageContext alloc] init];
 
   [mediator_ propagatePageContext:active_context];
@@ -1201,9 +1286,9 @@ TEST_F(GeminiContainerMediatorTest,
             active_context.geminiPageContextAttachmentState);
   EXPECT_NE(ios::provider::GeminiPageContextComputationState::kBlocked,
             active_context.geminiPageContextComputationState);
-  EXPECT_EQ(1, shared_tabs_delegate_.save_active_page_context_call_count_);
+  EXPECT_EQ(1, shared_tabs_manager_.save_active_page_context_call_count_);
   EXPECT_EQ(active_context,
-            shared_tabs_delegate_.last_saved_active_page_context_);
+            shared_tabs_manager_.last_saved_active_page_context_);
 }
 
 // Tests that requestActivePageContextGeneration triggers page context
@@ -1323,35 +1408,17 @@ TEST_F(GeminiContainerMediatorTest, TestGeminiActuationTaskNotifiesDelegate) {
   delegate.consumer = consumer;
   mediator_.delegate = delegate;
 
-  const actor::TaskSourceInfo source(actor::TaskSourceInfo::Client::kGlic,
-                                     std::nullopt);
-  [mediator_ actorServiceDidStartTaskWithID:kTaskId sourceInfo:source];
-  EXPECT_EQ(std::vector<actor::ActorTaskId>{kTaskId}, delegate.startedTaskIDs);
-  EXPECT_TRUE(delegate.startedDataSource);
+  GeminiActorTaskStore* store =
+      [[GeminiActorTaskStore alloc] initWithTaskID:kTaskId
+                                      actorService:nullptr];
+  [mediator_ actorTaskStoreManager:nil didCreateStore:store];
+  EXPECT_EQ(delegate.startedDataSource, store);
+  EXPECT_EQ(delegate.startedActionHandler, store);
   EXPECT_TRUE(delegate.actuationActiveOnStart);
 
-  [mediator_ actorServiceDidStopTaskWithID:kTaskId
-                                sourceInfo:source
-                                finalState:actor::ActorTaskState::kFinished];
-  EXPECT_EQ(std::vector<actor::ActorTaskId>{kTaskId}, delegate.stoppedTaskIDs);
+  [mediator_ actorTaskStoreManager:nil didDisconnectStore:store];
+  EXPECT_TRUE(delegate.taskStopped);
   EXPECT_FALSE(delegate.actuationActiveOnStop);
-}
-
-// Tests that non-Gemini actuation tasks are not forwarded to the delegate.
-TEST_F(GeminiContainerMediatorTest, TestNonGeminiActuationTaskIgnored) {
-  FakeGeminiContainerMediatorDelegate* delegate =
-      [[FakeGeminiContainerMediatorDelegate alloc] init];
-  mediator_.delegate = delegate;
-
-  const actor::TaskSourceInfo source(actor::TaskSourceInfo::Client::kTtc,
-                                     std::nullopt);
-  [mediator_ actorServiceDidStartTaskWithID:kTaskId sourceInfo:source];
-  [mediator_ actorServiceDidStopTaskWithID:kTaskId
-                                sourceInfo:source
-                                finalState:actor::ActorTaskState::kFinished];
-
-  EXPECT_TRUE(delegate.startedTaskIDs.empty());
-  EXPECT_TRUE(delegate.stoppedTaskIDs.empty());
 }
 
 // Tests that the reported actuation height drives the medium detent height and
@@ -1393,7 +1460,7 @@ TEST_F(GeminiContainerMediatorTest, TestActuationMediumDetentHeight) {
 }
 
 // Test that switching the active `WebState` updates the page context via
-// `ios::provider::UpdateActivePageContext`, notifies `sharedTabsDelegate`, and
+// `ios::provider::UpdateActivePageContext`, notifies `sharedTabsManager`, and
 // transfers the `GeminiTabHelper` observer from the old `WebState` to the new
 // active `WebState` only while floaty is invoked.
 TEST_F(GeminiContainerMediatorTest,
@@ -1423,10 +1490,11 @@ TEST_F(GeminiContainerMediatorTest,
   browser_->GetWebStateList()->InsertWebState(
       std::move(second_web_state_owned),
       WebStateList::InsertionParams::Automatic().Activate(true));
-  EXPECT_EQ(1, shared_tabs_delegate_
-                   .update_shared_tabs_for_active_web_state_call_count_);
+  EXPECT_EQ(
+      1,
+      shared_tabs_manager_.update_shared_tabs_for_active_web_state_call_count_);
   EXPECT_EQ(second_web_state,
-            shared_tabs_delegate_.last_updated_active_web_state_);
+            shared_tabs_manager_.last_updated_active_web_state_);
   EXPECT_EQ(2, ios::provider::GetUpdateActivePageContextCallCount());
 
   // Updating the title on the inactive first `WebState` should not trigger
@@ -1529,14 +1597,14 @@ TEST_F(GeminiContainerMediatorTest,
   EXPECT_TRUE(first_wrapper.populateCalled);
   [first_wrapper completeWithEmptyPageContext];
   EXPECT_EQ(1, ios::provider::GetUpdateActivePageContextCallCount());
-  EXPECT_EQ(1, shared_tabs_delegate_.save_active_page_context_call_count_);
-  ASSERT_NE(nil, shared_tabs_delegate_.last_saved_active_page_context_);
+  EXPECT_EQ(1, shared_tabs_manager_.save_active_page_context_call_count_);
+  ASSERT_NE(nil, shared_tabs_manager_.last_saved_active_page_context_);
   EXPECT_EQ(ios::provider::GeminiPageContextComputationState::kSuccess,
-            shared_tabs_delegate_.last_saved_active_page_context_
+            shared_tabs_manager_.last_saved_active_page_context_
                 .geminiPageContextComputationState);
   EXPECT_NE(
       nullptr,
-      shared_tabs_delegate_.last_saved_active_page_context_.uniquePageContext);
+      shared_tabs_manager_.last_saved_active_page_context_.uniquePageContext);
 
   // Transitioning to `kThinking` does not update page context.
   [mediator_
@@ -1555,14 +1623,14 @@ TEST_F(GeminiContainerMediatorTest,
                  conversationID:@"conv"];
   EXPECT_EQ(first_wrapper, fake_page_context_wrapper_factory_.last_wrapper());
   EXPECT_EQ(2, ios::provider::GetUpdateActivePageContextCallCount());
-  EXPECT_EQ(2, shared_tabs_delegate_.save_active_page_context_call_count_);
-  ASSERT_NE(nil, shared_tabs_delegate_.last_saved_active_page_context_);
+  EXPECT_EQ(2, shared_tabs_manager_.save_active_page_context_call_count_);
+  ASSERT_NE(nil, shared_tabs_manager_.last_saved_active_page_context_);
   EXPECT_EQ(ios::provider::GeminiPageContextComputationState::kPending,
-            shared_tabs_delegate_.last_saved_active_page_context_
+            shared_tabs_manager_.last_saved_active_page_context_
                 .geminiPageContextComputationState);
   EXPECT_NE(
       nullptr,
-      shared_tabs_delegate_.last_saved_active_page_context_.uniquePageContext);
+      shared_tabs_manager_.last_saved_active_page_context_.uniquePageContext);
 }
 
 // Test that `assistantContainer:didChangeDetent:` requests full page context
@@ -1650,8 +1718,22 @@ TEST_F(GeminiContainerMediatorTest,
 
   AppendActiveWebState();
   [mediator_ connect];
-  EXPECT_EQ(2, fake_container_handler.setMediumDetentHeightCallCount);
+  EXPECT_EQ(1, fake_container_handler.setMediumDetentHeightCallCount);
   EXPECT_EQ(std::optional<NSInteger>(kExpectedMediumDetentHeight),
+            fake_container_handler.mediumDetentHeight);
+
+  // Changing page context or Nano Banana attachment in zero state updates
+  // `mediumDetentHeight` from the consumer's `contentHeight`.
+  consumer.contentHeight = 420.2;
+  [mediator_ inputPlateDidChangePageContextAttachment:YES];
+  EXPECT_EQ(2, fake_container_handler.setMediumDetentHeightCallCount);
+  EXPECT_EQ(std::optional<NSInteger>(421),
+            fake_container_handler.mediumDetentHeight);
+
+  consumer.contentHeight = 450.6;
+  [mediator_ inputPlateDidChangeNanoBananaAttachment:YES];
+  EXPECT_EQ(3, fake_container_handler.setMediumDetentHeightCallCount);
+  EXPECT_EQ(std::optional<NSInteger>(451),
             fake_container_handler.mediumDetentHeight);
 
   // Transitioning out of zero state resets `mediumDetentHeight` to
@@ -1660,7 +1742,15 @@ TEST_F(GeminiContainerMediatorTest,
       didUpdateProcessingStatus:ios::provider::GeminiClientMode::kResponding
                       sessionID:nil
                  conversationID:nil];
-  EXPECT_EQ(3, fake_container_handler.setMediumDetentHeightCallCount);
+  EXPECT_EQ(4, fake_container_handler.setMediumDetentHeightCallCount);
+  EXPECT_EQ(std::nullopt, fake_container_handler.mediumDetentHeight);
+
+  // Attachment changes when not in zero state do not update
+  // `mediumDetentHeight`.
+  consumer.contentHeight = 480.0;
+  [mediator_ inputPlateDidChangePageContextAttachment:NO];
+  [mediator_ inputPlateDidChangeNanoBananaAttachment:NO];
+  EXPECT_EQ(4, fake_container_handler.setMediumDetentHeightCallCount);
   EXPECT_EQ(std::nullopt, fake_container_handler.mediumDetentHeight);
 }
 
@@ -1693,6 +1783,9 @@ TEST_F(GeminiContainerMediatorTest,
   web::FakeWebState* web_state = AppendActiveWebState();
   web_state->SetCurrentURL(GURL("https://example.com"));
   web_state->SetVisibleURL(GURL("https://example.com"));
+  web_state->SetContentsMimeType("text/html");
+  web_state->WasShown();
+  web_state->SetLoading(true);
 
   [mediator_ connect];
   EXPECT_EQ(std::optional<NSInteger>(kInitialHeight),
@@ -1885,10 +1978,11 @@ TEST_F(GeminiContainerMediatorTest, TestUpdateWithStartupState) {
   [mediator_mock updateWithStartupState:startup_state];
 
   EXPECT_EQ(startup_state, mediator_.startupState);
-  EXPECT_EQ(1, shared_tabs_delegate_
-                   .update_shared_tabs_for_active_web_state_call_count_);
+  EXPECT_EQ(
+      1,
+      shared_tabs_manager_.update_shared_tabs_for_active_web_state_call_count_);
   EXPECT_EQ(active_web_state,
-            shared_tabs_delegate_.last_updated_active_web_state_);
+            shared_tabs_manager_.last_updated_active_web_state_);
   EXPECT_EQ(dummy_image, ios::provider::GetLastAttachedImage());
   EXPECT_EQ(1, ios::provider::GetUpdateActivePageContextCallCount());
   EXPECT_THAT(
@@ -2032,34 +2126,34 @@ TEST_F(GeminiContainerMediatorTest, TestLensOverlayDismissesContainer) {
 }
 
 // Tests that `GeminiViewStateDelegate` tab methods on `GeminiContainerMediator`
-// route tab attachment and multi-tab queries to `sharedTabsDelegate`.
+// route tab attachment and multi-tab queries to `sharedTabsManager`.
 TEST_F(GeminiContainerMediatorTest,
-       TestViewStateDelegateTabMethodsRouteToSharedTabsDelegate) {
+       TestViewStateDelegateTabMethodsRouteToSharedTabsManager) {
   [mediator_ didRequestToDetachTabWithID:@"123"];
-  EXPECT_NSEQ(@"123", shared_tabs_delegate_.last_detached_tab_id_);
+  EXPECT_NSEQ(@"123", shared_tabs_manager_.last_detached_tab_id_);
 
   [mediator_ didAttachTabWithID:@"456"];
-  EXPECT_NSEQ(@"456", shared_tabs_delegate_.last_local_attachment_tab_id_);
+  EXPECT_NSEQ(@"456", shared_tabs_manager_.last_local_attachment_tab_id_);
   EXPECT_EQ(ios::provider::GeminiPageContextAttachmentState::kAttached,
-            shared_tabs_delegate_.last_local_attachment_state_);
+            shared_tabs_manager_.last_local_attachment_state_);
 
   [mediator_ didDetachTabWithID:@"789"];
-  EXPECT_NSEQ(@"789", shared_tabs_delegate_.last_local_attachment_tab_id_);
+  EXPECT_NSEQ(@"789", shared_tabs_manager_.last_local_attachment_tab_id_);
   EXPECT_EQ(ios::provider::GeminiPageContextAttachmentState::kDetached,
-            shared_tabs_delegate_.last_local_attachment_state_);
+            shared_tabs_manager_.last_local_attachment_state_);
 
-  shared_tabs_delegate_.shared_tabs_count_ = 3u;
+  shared_tabs_manager_.shared_tabs_count_ = 3u;
   EXPECT_EQ(3u, [mediator_ attachedTabsCount]);
 
   GeminiPageContext* inactive_context = [[GeminiPageContext alloc] init];
-  shared_tabs_delegate_.inactive_shared_tabs_ = @[ inactive_context ];
+  shared_tabs_manager_.inactive_shared_tabs_ = @[ inactive_context ];
   EXPECT_TRUE([mediator_ isMultiTabUsed]);
 }
 
-// Tests that `sharedTabsDelegate` passed to `GeminiContainerMediator` is
+// Tests that `sharedTabsManager` passed to `GeminiContainerMediator` is
 // forwarded to `gatewayManager.tabPickerHandler`.
 TEST_F(GeminiContainerMediatorTest,
-       TestSharedTabsDelegateForwardedToTabPickerHandler) {
+       TestSharedTabsManagerForwardedToTabPickerHandler) {
   base::test::ScopedFeatureList scoped_feature_list;
   scoped_feature_list.InitWithFeatures(
       {kGeminiMultiTabContext, kPageActionMenu}, {});
@@ -2070,12 +2164,12 @@ TEST_F(GeminiContainerMediatorTest,
       authenticationService:AuthenticationServiceFactory::GetForProfile(
                                 profile_.get())
                eventHandler:&delegate_
-         sharedTabsDelegate:&shared_tabs_delegate_
+          sharedTabsManager:&shared_tabs_manager_
       sessionMetricsManager:session_metrics_manager_];
 
   EXPECT_EQ(
-      &shared_tabs_delegate_,
-      multi_tab_mediator.gatewayManager.tabPickerHandler.sharedTabsDelegate);
+      &shared_tabs_manager_,
+      multi_tab_mediator.gatewayManager.tabPickerHandler.sharedTabsManager);
   [multi_tab_mediator disconnect];
 }
 
@@ -2097,29 +2191,29 @@ TEST_F(GeminiContainerMediatorTest, TestOnPageContentPrefChanged) {
   EXPECT_TRUE(
       profile_->GetPrefs()->GetBoolean(prefs::kIOSBWGPageContentSetting));
   EXPECT_EQ(ios::provider::GeminiPageContextAttachmentState::kAttached,
-            shared_tabs_delegate_.last_saved_active_page_context_
+            shared_tabs_manager_.last_saved_active_page_context_
                 .geminiPageContextAttachmentState);
 
-  int call_count = shared_tabs_delegate_.save_active_page_context_call_count_;
+  int call_count = shared_tabs_manager_.save_active_page_context_call_count_;
 
   // Toggle page content preference to false.
   profile_->GetPrefs()->SetBoolean(prefs::kIOSBWGPageContentSetting, false);
 
-  EXPECT_GT(shared_tabs_delegate_.save_active_page_context_call_count_,
+  EXPECT_GT(shared_tabs_manager_.save_active_page_context_call_count_,
             call_count);
   EXPECT_EQ(ios::provider::GeminiPageContextAttachmentState::kUserDisabled,
-            shared_tabs_delegate_.last_saved_active_page_context_
+            shared_tabs_manager_.last_saved_active_page_context_
                 .geminiPageContextAttachmentState);
 
-  call_count = shared_tabs_delegate_.save_active_page_context_call_count_;
+  call_count = shared_tabs_manager_.save_active_page_context_call_count_;
 
   // Toggle page content preference back to true.
   profile_->GetPrefs()->SetBoolean(prefs::kIOSBWGPageContentSetting, true);
 
-  EXPECT_GT(shared_tabs_delegate_.save_active_page_context_call_count_,
+  EXPECT_GT(shared_tabs_manager_.save_active_page_context_call_count_,
             call_count);
   EXPECT_EQ(ios::provider::GeminiPageContextAttachmentState::kAttached,
-            shared_tabs_delegate_.last_saved_active_page_context_
+            shared_tabs_manager_.last_saved_active_page_context_
                 .geminiPageContextAttachmentState);
 }
 
@@ -2136,14 +2230,14 @@ TEST_F(GeminiContainerMediatorTest,
                       sessionID:@"test_session"
                  conversationID:@"test_convo"];
 
-  int call_count = shared_tabs_delegate_.save_active_page_context_call_count_;
+  int call_count = shared_tabs_manager_.save_active_page_context_call_count_;
 
   // Toggle page content preference to false.
   profile_->GetPrefs()->SetBoolean(prefs::kIOSBWGPageContentSetting, false);
 
   // Partial page context should not be updated while transcribing.
   EXPECT_EQ(call_count,
-            shared_tabs_delegate_.save_active_page_context_call_count_);
+            shared_tabs_manager_.save_active_page_context_call_count_);
 }
 
 // Tests that preference changes are not observed after mediator disconnects.
@@ -2152,12 +2246,294 @@ TEST_F(GeminiContainerMediatorTest, TestPrefChangesIgnoredAfterDisconnect) {
   [mediator_ connect];
   [mediator_ disconnect];
 
-  int call_count = shared_tabs_delegate_.save_active_page_context_call_count_;
+  int call_count = shared_tabs_manager_.save_active_page_context_call_count_;
 
   profile_->GetPrefs()->SetBoolean(prefs::kIOSBWGPageContentSetting, false);
 
   EXPECT_EQ(call_count,
-            shared_tabs_delegate_.save_active_page_context_call_count_);
+            shared_tabs_manager_.save_active_page_context_call_count_);
+}
+
+// Tests that `kInactivityTimeout` dormant reason exits fullscreen, switches the
+// provider to floaty mode, shows a snackbar, and updates container UI when the
+// mode switch completes.
+TEST_F(GeminiContainerMediatorTest,
+       TestLiveDormantHandling_InactivityTimeout_ShowsSnackbar) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration, kPageActionMenu,
+       kGeminiLive, kGeminiLiveDormantReasons, kFullscreenRefactoring},
+      {});
+
+  AppendActiveWebState();
+  ios::provider::SwitchToMode(ios::provider::GeminiViewMode::kLive,
+                              /*animated=*/false);
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kLive];
+
+  [[mock_gemini_handler_ reject] dismissGeminiFlowWithCompletion:[OCMArg any]];
+  OCMExpect([mock_fullscreen_handler_
+      exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                       animated:YES]);
+  NSString* expected_title =
+      l10n_util::GetNSString(IDS_IOS_GEMINI_LIVE_CONTINUE_SESSION_SNACKBAR);
+  OCMExpect([mock_snackbar_handler_
+      showSnackbarMessage:[OCMArg checkWithBlock:^BOOL(SnackbarMessage* msg) {
+        return [msg.title isEqualToString:expected_title];
+      }]]);
+
+  [mediator_ didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                         dormantReason:ios::provider::GeminiDormantReason::
+                                           kInactivityTimeout
+                                 error:nil
+                             errorCode:ios::provider::GeminiErrorCode::kNone
+                             sessionID:kTestSessionID
+                        conversationID:kTestConversationID];
+
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty,
+            ios::provider::GetCurrentMode());
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+
+  // Simulate the SDK notifying the delegate after `SwitchToMode` completes.
+  OCMExpect([mock_container_handler_
+      animateAssistantContainerToDetent:AssistantContainerDetent::kMedium]);
+  OCMExpect([mock_container_handler_ setAssistantContainerGrabberHidden:NO
+                                                               animated:YES]);
+
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kFloaty];
+
+  EXPECT_THAT(delegate_.last_mode_changed_,
+              testing::Optional(ios::provider::GeminiViewMode::kFloaty));
+  EXPECT_OCMOCK_VERIFY(mock_container_handler_);
+}
+
+// Tests that `kUserStop` dormant reason exits fullscreen and switches the
+// provider to floaty mode without showing a snackbar.
+TEST_F(GeminiContainerMediatorTest,
+       TestLiveDormantHandling_UserStop_DoesNotShowSnackbar) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration, kPageActionMenu,
+       kGeminiLive, kGeminiLiveDormantReasons, kFullscreenRefactoring},
+      {});
+
+  AppendActiveWebState();
+  ios::provider::SwitchToMode(ios::provider::GeminiViewMode::kLive,
+                              /*animated=*/false);
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kLive];
+
+  [[mock_gemini_handler_ reject] dismissGeminiFlowWithCompletion:[OCMArg any]];
+  OCMExpect([mock_fullscreen_handler_
+      exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                       animated:YES]);
+  [[mock_snackbar_handler_ reject] showSnackbarMessage:[OCMArg any]];
+
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kDormant
+                  dormantReason:ios::provider::GeminiDormantReason::kUserStop
+                          error:nil
+                      errorCode:ios::provider::GeminiErrorCode::kNone
+                      sessionID:kTestSessionID
+                 conversationID:kTestConversationID];
+
+  EXPECT_EQ(ios::provider::GeminiViewMode::kFloaty,
+            ios::provider::GetCurrentMode());
+  EXPECT_OCMOCK_VERIFY(mock_fullscreen_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_gemini_handler_);
+  EXPECT_OCMOCK_VERIFY(mock_snackbar_handler_);
+
+  // Simulate the SDK notifying the delegate after `SwitchToMode` completes.
+  OCMExpect([mock_container_handler_
+      animateAssistantContainerToDetent:AssistantContainerDetent::kMedium]);
+  OCMExpect([mock_container_handler_ setAssistantContainerGrabberHidden:NO
+                                                               animated:YES]);
+
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kFloaty];
+
+  EXPECT_THAT(delegate_.last_mode_changed_,
+              testing::Optional(ios::provider::GeminiViewMode::kFloaty));
+  EXPECT_OCMOCK_VERIFY(mock_container_handler_);
+}
+
+// Fixture for zero-state suggestions visibility tests, with an eligible active
+// page and a connected mediator.
+class GeminiContainerMediatorZeroStateTest
+    : public GeminiContainerMediatorTest {
+ protected:
+  void SetUp() override {
+    GeminiContainerMediatorTest::SetUp();
+    scoped_feature_list_.InitWithFeatures(
+        {kAssistantContainer, kIOSGeminiBottomSheetMigration,
+         kZeroStateSuggestions, kZeroStateSuggestionsCentralization},
+        {});
+
+    zero_state_consumer_ = [[FakeGeminiZeroStateConsumer alloc] init];
+    mediator_.zeroStateConsumer = zero_state_consumer_;
+    mediator_.startupState = startup_state_;
+
+    container_handler_ = [[FakeAssistantContainerCommandsHandler alloc] init];
+    mediator_.containerHandler = container_handler_;
+    container_consumer_ = [[FakeGeminiContainerConsumer alloc] init];
+    container_consumer_.contentHeight = kContentHeight;
+    mediator_.consumer = container_consumer_;
+
+    web_state_ = AppendActiveWebState();
+    web_state_->SetCurrentURL(GURL("https://example.com"));
+    web_state_->SetVisibleURL(GURL("https://example.com"));
+    web_state_->SetContentsMimeType("text/html");
+    web_state_->WasShown();
+    web_state_->SetLoading(true);
+
+    [mediator_ connect];
+  }
+
+  // Returns the Gemini tab ID of the active tab.
+  NSString* ActiveTabID() {
+    return base::SysUTF8ToNSString(
+        GeminiTabHelper::FromWebState(web_state_)->GetClientId());
+  }
+
+  static constexpr CGFloat kContentHeight = 240.0;
+
+  base::test::ScopedFeatureList scoped_feature_list_;
+  FakeGeminiZeroStateConsumer* zero_state_consumer_;
+  FakeAssistantContainerCommandsHandler* container_handler_;
+  FakeGeminiContainerConsumer* container_consumer_;
+  raw_ptr<web::FakeWebState> web_state_ = nullptr;
+};
+
+// Tests that detaching the active tab's page context hides zero-state
+// suggestions and resets the medium detent to its default, and that
+// re-attaching it fetches them again and sizes the detent to the content.
+TEST_F(GeminiContainerMediatorZeroStateTest,
+       TestSuggestionsHiddenWhenActiveTabDetachedAndRestoredOnAttach) {
+  ASSERT_FALSE(zero_state_consumer_.hidden);
+  ASSERT_EQ(std::optional<NSInteger>(kContentHeight),
+            container_handler_.mediumDetentHeight);
+
+  [mediator_ didDetachTabWithID:ActiveTabID()];
+  EXPECT_TRUE(zero_state_consumer_.hidden);
+  EXPECT_EQ(std::nullopt, container_handler_.mediumDetentHeight);
+
+  // Input plate changes while suggestions are hidden size the detent to the
+  // content again.
+  constexpr CGFloat kNanoBananaContentHeight = 300.0;
+  container_consumer_.contentHeight = kNanoBananaContentHeight;
+  [mediator_ inputPlateDidChangeNanoBananaAttachment:YES];
+  EXPECT_EQ(std::optional<NSInteger>(kNanoBananaContentHeight),
+            container_handler_.mediumDetentHeight);
+  container_consumer_.contentHeight = kContentHeight;
+
+  [mediator_ didAttachTabWithID:ActiveTabID()];
+  EXPECT_FALSE(zero_state_consumer_.hidden);
+  EXPECT_EQ(std::optional<NSInteger>(kContentHeight),
+            container_handler_.mediumDetentHeight);
+}
+
+// Tests that detaching a tab other than the active one doesn't hide zero-state
+// suggestions.
+TEST_F(GeminiContainerMediatorZeroStateTest,
+       TestSuggestionsShownWhenInactiveTabDetached) {
+  ASSERT_FALSE(zero_state_consumer_.hidden);
+
+  [mediator_ didDetachTabWithID:@"inactive_tab_id"];
+  EXPECT_FALSE(zero_state_consumer_.hidden);
+}
+
+// Tests that zero-state suggestions are hidden when the computed page context
+// turns out to be ineligible.
+TEST_F(GeminiContainerMediatorZeroStateTest,
+       TestSuggestionsHiddenWhenPageContextIneligible) {
+  ASSERT_FALSE(zero_state_consumer_.hidden);
+
+  GeminiPageContext* page_context = [[GeminiPageContext alloc] init];
+  page_context.geminiPageContextComputationState =
+      ios::provider::GeminiPageContextComputationState::kProtected;
+  [mediator_ propagatePageContext:page_context];
+  EXPECT_TRUE(zero_state_consumer_.hidden);
+}
+
+// Tests that zero-state suggestions are hidden when the user disabled page
+// content sharing.
+TEST_F(GeminiContainerMediatorZeroStateTest,
+       TestSuggestionsHiddenWhenPageContentSharingDisabled) {
+  ASSERT_FALSE(zero_state_consumer_.hidden);
+
+  profile_->GetPrefs()->SetBoolean(prefs::kIOSBWGPageContentSetting, false);
+  EXPECT_TRUE(zero_state_consumer_.hidden);
+}
+
+// Tests that transitioning from thinking (minimized) to responding (auto-expand
+// to medium detent) exits fullscreen when `kFullscreenRefactoring` is disabled.
+TEST_F(GeminiContainerMediatorTest,
+       TestThinkingToRespondingExitsFullscreenLegacy) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration},
+      {kFullscreenRefactoring});
+
+  TestFullscreenController* fullscreen_controller =
+      TestFullscreenController::FromBrowser(browser_.get());
+  ASSERT_TRUE(fullscreen_controller);
+
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kFloaty];
+
+  // Enter fullscreen while thinking (minimized detent).
+  fullscreen_controller->EnterFullscreen();
+  ASSERT_EQ(0.0, fullscreen_controller->GetProgress());
+
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:@"session"
+                 conversationID:@"conv"];
+  // Detent is minimized during thinking, so fullscreen remains active.
+  EXPECT_EQ(0.0, fullscreen_controller->GetProgress());
+
+  // Transitioning from thinking to responding auto-expands to medium detent,
+  // which should exit fullscreen.
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                      sessionID:@"session"
+                 conversationID:@"conv"];
+  EXPECT_EQ(1.0, fullscreen_controller->GetProgress());
+}
+
+// Tests that transitioning from thinking (minimized) to responding (auto-expand
+// to medium detent) dispatches `exitFullscreenWithTrigger:animated:` when
+// `kFullscreenRefactoring` is enabled.
+TEST_F(GeminiContainerMediatorTest,
+       TestThinkingToRespondingExitsFullscreenRefactored) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitWithFeatures(
+      {kAssistantContainer, kIOSGeminiBottomSheetMigration,
+       kFullscreenRefactoring},
+      {});
+
+  [mediator_ didSwitchToMode:ios::provider::GeminiViewMode::kFloaty];
+
+  id strict_fullscreen_handler =
+      OCMStrictProtocolMock(@protocol(FullscreenCommands));
+  mediator_.fullscreenHandler = strict_fullscreen_handler;
+
+  // Transitioning to thinking sets detent to minimized, so fullscreen should
+  // not exit.
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kThinking
+                      sessionID:@"session"
+                 conversationID:@"conv"];
+  EXPECT_OCMOCK_VERIFY(strict_fullscreen_handler);
+
+  // Transitioning to responding auto-expands to medium detent, which should
+  // exit fullscreen via `fullscreenHandler`.
+  OCMExpect([strict_fullscreen_handler
+      exitFullscreenWithTrigger:FullscreenModeTransitionTrigger::kForcedByCode
+                       animated:YES]);
+  [mediator_
+      didUpdateProcessingStatus:ios::provider::GeminiClientMode::kResponding
+                      sessionID:@"session"
+                 conversationID:@"conv"];
+  EXPECT_OCMOCK_VERIFY(strict_fullscreen_handler);
 }
 
 }  // namespace

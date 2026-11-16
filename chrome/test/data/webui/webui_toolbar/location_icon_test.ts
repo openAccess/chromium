@@ -2,14 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import 'chrome://webui-toolbar.top-chrome/lazy_load.js';
 
 import {isMac} from 'chrome://resources/js/platform.js';
+import {DragEventSource} from 'chrome://resources/mojo/ui/base/dragdrop/mojom/drag_drop_types.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 import {hasStyle, microtasksFinished} from 'chrome://webui-test/test_util.js';
-import {BrowserProxyImpl, IconTable, IconType, LhsChipIdentifier, PointerProxyImpl, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
-import type {IconFromTableElement, LocationIconElement, PointerProxy} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
+import {PointerProxyImpl} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import type {IconFromTableElement, LocationIconElement, PointerProxy} from 'chrome://webui-toolbar.top-chrome/lazy_load.js';
+import {BrowserProxyImpl, IconTable, IconType, LhsChipIdentifier, SecurityChipRole} from 'chrome://webui-toolbar.top-chrome/webui_toolbar.js';
 
 import {TestToolbarUiHandler} from './test_toolbar_browser_proxy.js';
 
@@ -356,6 +358,118 @@ suite('LocationIconTest', function() {
     container.dispatchEvent(
         new PointerEvent('auxclick', {button: 2, pointerType: 'mouse'}));
     assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+  });
+
+  async function setClickable(isClickable: boolean) {
+    locationIcon.state = {
+      icon: {handleId: 0n},
+      securityLevel: 0,
+      text: '',
+      tooltip: '',
+      isClickable,
+      isTextDangerous: false,
+      isVisible: true,
+      isContextMenuVisible: false,
+      accessibilityState: {
+        role: SecurityChipRole.kButton,
+        label: '',
+        description: '',
+      },
+    };
+    await microtasksFinished();
+  }
+
+  test('Dragging past the threshold notifies the browser', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 5, clientY: 0}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 40, clientY: 0}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+    assertDeepEquals(
+        [LhsChipIdentifier.kLocationIcon, DragEventSource.kMouse],
+        toolbarUiHandler.getArgs('onLhsChipDrag')[0]);
+  });
+
+  test('Dragging with touch reports a touch source', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 1,
+      button: 0,
+      pointerType: 'touch',
+      clientX: 0,
+      clientY: 0,
+    }));
+    container.dispatchEvent(new PointerEvent('pointermove', {
+      pointerId: 1,
+      pointerType: 'touch',
+      clientX: 20,
+      clientY: 0,
+    }));
+    assertDeepEquals(
+        [LhsChipIdentifier.kLocationIcon, DragEventSource.kTouch],
+        toolbarUiHandler.getArgs('onLhsChipDrag')[0]);
+  });
+
+  // Like native Views, pressing the icon does not take the focus away from the
+  // omnibox when the icon cannot be clicked, e.g. while the omnibox is being
+  // edited, so that the omnibox keeps its suggestions popup. Synthetic events
+  // do not move the focus, so this only checks that the default action of the
+  // press is prevented. LocationIcon_PressWhileEditing covers the focus.
+  test('Pressing an unclickable icon prevents the default', async function() {
+    await setClickable(false);
+    const mousedown = new MouseEvent(
+        'mousedown', {bubbles: true, cancelable: true, composed: true});
+    locationIcon.$.button.$.button.dispatchEvent(mousedown);
+    assertTrue(mousedown.defaultPrevented);
+  });
+
+  // Like native Views, which closes the omnibox suggestions popup on a drag of
+  // the icon even when there is nothing to drag, the browser is notified of
+  // the drag. A press alone is not reported, since it does nothing.
+  test('Dragging an unclickable icon notifies the browser', async function() {
+    await setClickable(false);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipMousePressed'));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+  });
+
+  // Only the pointer click that may follow a drag is suppressed. Keyboard
+  // activations, which have an empty pointerType and no preceding press, still
+  // open Page Info, like native Views.
+  test('Keyboard activation works after a drag', async function() {
+    await setClickable(true);
+    const container = locationIcon.$.button;
+
+    container.dispatchEvent(new PointerEvent(
+        'pointerdown', {pointerId: 1, button: 0, clientX: 0, clientY: 0}));
+    container.dispatchEvent(new PointerEvent(
+        'pointermove', {pointerId: 1, clientX: 20, clientY: 0}));
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipDrag'));
+    container.dispatchEvent(
+        new PointerEvent('lostpointercapture', {pointerId: 1}));
+    container.dispatchEvent(new PointerEvent('click', {pointerType: 'mouse'}));
+    assertEquals(0, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+
+    container.click();
+    assertEquals(1, toolbarUiHandler.getCallCount('onLhsChipClicked'));
+    assertFalse(
+        toolbarUiHandler.getArgs('onLhsChipClicked')[0].isMouseInteraction);
   });
 
   test('Ctrl+click', async function() {

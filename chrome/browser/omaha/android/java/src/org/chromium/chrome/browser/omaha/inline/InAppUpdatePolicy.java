@@ -4,8 +4,10 @@
 
 package org.chromium.chrome.browser.omaha.inline;
 
+import android.app.ActivityManager;
 import android.content.Context;
 
+import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.CommandLine;
@@ -22,6 +24,8 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.gms.ChromiumPlayServicesAvailability;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -29,8 +33,8 @@ import java.util.concurrent.TimeUnit;
  * those decisions depend on.
  *
  * <p>This class holds no Play Core state and shows no UI. It is the single place that reads the
- * feature flag, the device configuration and the persisted backoff timestamps, so that eligibility
- * can be reasoned about, and tested, without depending on Play Core.
+ * feature flag, the device configuration and the persisted state (backoff timestamps, downloaded
+ * flag), so that eligibility can be reasoned about, and tested, without depending on Play Core.
  *
  * <p>Three throttles are tracked independently, because they answer different questions:
  *
@@ -51,6 +55,22 @@ public final class InAppUpdatePolicy {
     /** Command line switch that bypasses every eligibility guard and every backoff. */
     public static final String FORCE_IN_APP_UPDATE = "force-in-app-update";
 
+    /**
+     * Strategy used to install a downloaded update. The two modes are mutually exclusive: the
+     * restart snackbar exists only because nothing else would install a staged update, so once the
+     * background restart is on, the snackbar is off. The app menu "Update Chrome" item remains the
+     * manual path in both modes.
+     */
+    @IntDef({RestartMode.SNACKBAR, RestartMode.BACKGROUND})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface RestartMode {
+        /** Default: show the restart snackbar and wait for the user to tap Restart. */
+        int SNACKBAR = 0;
+
+        /** Install silently from a background job after the user leaves Chrome; no snackbar. */
+        int BACKGROUND = 1;
+    }
+
     @VisibleForTesting
     static final String PREF_KEY_DISCOVERY_BACKOFF =
             ChromePreferenceKeys.IN_APP_UPDATE_DISCOVERY_BACKOFF_TIMESTAMP;
@@ -63,12 +83,43 @@ public final class InAppUpdatePolicy {
     static final String PREF_KEY_FAILURE_BACKOFF =
             ChromePreferenceKeys.IN_APP_UPDATE_FAILURE_BACKOFF_TIMESTAMP;
 
+    @VisibleForTesting
+    static final String PREF_KEY_DOWNLOADED = ChromePreferenceKeys.IN_APP_UPDATE_DOWNLOADED;
+
+    @VisibleForTesting
+    static final String PREF_KEY_RESTART_TASK_SCHEDULED =
+            ChromePreferenceKeys.IN_APP_UPDATE_RESTART_TASK_SCHEDULED;
+
     @VisibleForTesting static final String PARAM_DISCOVERY_BACKOFF_HOURS = "prompt_backoff_hours";
 
     @VisibleForTesting
     static final String PARAM_RESTART_BACKOFF_HOURS = "restart_prompt_backoff_hours";
 
     @VisibleForTesting static final String PARAM_FAILURE_BACKOFF_HOURS = "failure_backoff_hours";
+
+    @VisibleForTesting
+    static final String PARAM_DISCOVERY_MIN_STALENESS_DAYS = "prompt_min_staleness_days";
+
+    @VisibleForTesting
+    static final String PARAM_BACKGROUND_RESTART_DELAY_MINUTES = "background_restart_delay_minutes";
+
+    @VisibleForTesting
+    static final String PARAM_BACKGROUND_RESTART_WINDOW_MINUTES =
+            "background_restart_window_minutes";
+
+    /**
+     * Grace period after the user leaves Chrome before the background restart may run. Long enough
+     * that a short detour to another app does not cost the user a cold start, short enough to keep
+     * the patch gap small.
+     */
+    @VisibleForTesting static final int DEFAULT_BACKGROUND_RESTART_DELAY_MINUTES = 3;
+
+    /**
+     * Length of the window after the delay in which JobScheduler may run the task. When Chrome has
+     * no live process, JobScheduler tends to wait for the end of the window, so this bounds the
+     * latency in the dismiss-from-Recents case; it is kept short while still allowing batching.
+     */
+    @VisibleForTesting static final int DEFAULT_BACKGROUND_RESTART_WINDOW_MINUTES = 2;
 
     /** How long to wait before re-offering a download the user declined. */
     @VisibleForTesting static final int DEFAULT_DISCOVERY_BACKOFF_HOURS = 24;
@@ -82,7 +133,15 @@ public final class InAppUpdatePolicy {
      */
     @VisibleForTesting static final int DEFAULT_FAILURE_BACKOFF_HOURS = 6;
 
+    /**
+     * Minimum number of days an update must have been available before Chrome offers it. Zero keeps
+     * the prompt eligible as soon as Play reports an update, which preserves the behavior from
+     * before this threshold existed.
+     */
+    @VisibleForTesting static final int DEFAULT_DISCOVERY_MIN_STALENESS_DAYS = 0;
+
     private static @Nullable Boolean sIsOfficialBuildForTesting;
+    private static @Nullable Integer sProcessImportanceForTesting;
 
     private InAppUpdatePolicy() {}
 
@@ -90,6 +149,12 @@ public final class InAppUpdatePolicy {
     public static void setIsOfficialBuildForTesting(boolean isOfficial) {
         sIsOfficialBuildForTesting = isOfficial;
         ResettersForTesting.register(() -> sIsOfficialBuildForTesting = null);
+    }
+
+    /** Overrides the process memory importance reported to {@link #isForegroundServiceActive()}. */
+    static void setProcessImportanceForTesting(int importance) {
+        sProcessImportanceForTesting = importance;
+        ResettersForTesting.register(() -> sProcessImportanceForTesting = null);
     }
 
     /**
@@ -172,6 +237,47 @@ public final class InAppUpdatePolicy {
     }
 
     /**
+     * Returns whether an available update has been available long enough for Chrome to offer it.
+     *
+     * <p>Users with Play auto-update enabled usually receive an update within a few days, so
+     * prompting them adds friction without closing the patch gap. Requiring a minimum age keeps the
+     * discovery prompt focused on devices that would otherwise stay on the old version.
+     *
+     * <p>When the threshold is positive and Play does not report a staleness value, the prompt is
+     * skipped, because the update's age cannot be shown to meet the threshold. This only gates the
+     * automatic discovery prompt; the restart prompt and the app menu entry point are unaffected.
+     *
+     * @param stalenessDays Days since Play first reported the update to this device, as returned by
+     *     {@code AppUpdateInfo#clientVersionStalenessDays()}, or null if Play did not report it.
+     */
+    public static boolean isStalenessThresholdMet(@Nullable Integer stalenessDays) {
+        if (isForceUpdate()) {
+            return true;
+        }
+        int minStalenessDays =
+                ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
+                        ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                        PARAM_DISCOVERY_MIN_STALENESS_DAYS,
+                        DEFAULT_DISCOVERY_MIN_STALENESS_DAYS);
+        if (minStalenessDays <= 0) {
+            return true;
+        }
+        if (stalenessDays == null) {
+            Log.i(TAG, "Discovery prompt suppressed: update staleness unknown.");
+            return false;
+        }
+        if (stalenessDays < minStalenessDays) {
+            Log.i(
+                    TAG,
+                    "Discovery prompt suppressed: update available for %d of %d days.",
+                    stalenessDays,
+                    minStalenessDays);
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Records that the user declined to download an update, whether by dismissing the discovery
      * snackbar, cancelling Play's consent dialog, or cancelling an in-progress download.
      */
@@ -197,10 +303,104 @@ public final class InAppUpdatePolicy {
         ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_RESTART_BACKOFF);
     }
 
-    static void clearBackoffsForTesting() {
+    /**
+     * Returns the configured {@link RestartMode} from cached flags/params. Safe to call without
+     * native initialized (uses {@code CachedFlag} and {@code StringCachedFeatureParam}).
+     */
+    public static @RestartMode int getRestartMode() {
+        if (!ChromeFeatureList.sInAppUpdateFlow.isEnabled()) {
+            return RestartMode.SNACKBAR;
+        }
+        if ("background".equalsIgnoreCase(ChromeFeatureList.sInAppUpdateRestartMode.getValue())) {
+            return RestartMode.BACKGROUND;
+        }
+        return RestartMode.SNACKBAR;
+    }
+
+    /** Returns the delay in minutes before running the background restart task. */
+    public static int getBackgroundRestartDelayMinutes() {
+        // A misconfigured Finch value must not produce an invalid JobScheduler window.
+        int delay =
+                ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
+                        ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                        PARAM_BACKGROUND_RESTART_DELAY_MINUTES,
+                        DEFAULT_BACKGROUND_RESTART_DELAY_MINUTES);
+        return Math.max(0, delay);
+    }
+
+    /**
+     * Returns the length in minutes of the window, starting after the delay, in which the
+     * background restart task may run.
+     */
+    public static int getBackgroundRestartWindowMinutes() {
+        // A misconfigured Finch value must not produce an invalid JobScheduler window.
+        int window =
+                ChromeFeatureList.getFieldTrialParamByFeatureAsInt(
+                        ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                        PARAM_BACKGROUND_RESTART_WINDOW_MINUTES,
+                        DEFAULT_BACKGROUND_RESTART_WINDOW_MINUTES);
+        return Math.max(1, window);
+    }
+
+    /**
+     * Returns whether an in-app update is currently downloaded and staged on disk awaiting install.
+     */
+    public static boolean isUpdateDownloaded() {
+        return ChromeSharedPreferences.getInstance().readBoolean(PREF_KEY_DOWNLOADED, false);
+    }
+
+    /**
+     * Sets whether an in-app update is currently downloaded and staged on disk awaiting install.
+     */
+    public static void setUpdateDownloaded(boolean downloaded) {
+        ChromeSharedPreferences.getInstance().writeBoolean(PREF_KEY_DOWNLOADED, downloaded);
+    }
+
+    /** Returns whether a background restart task is currently scheduled. */
+    static boolean isRestartTaskScheduled() {
+        return ChromeSharedPreferences.getInstance()
+                .readBoolean(PREF_KEY_RESTART_TASK_SCHEDULED, false);
+    }
+
+    /** Sets whether a background restart task is currently scheduled. */
+    static void setRestartTaskScheduled(boolean scheduled) {
+        ChromeSharedPreferences.getInstance()
+                .writeBoolean(PREF_KEY_RESTART_TASK_SCHEDULED, scheduled);
+    }
+
+    /**
+     * Returns whether Chrome currently holds an active foreground service (or higher process
+     * importance such as a foreground activity).
+     *
+     * <p>Unlike {@link org.chromium.base.SysUtils#isProcessInBackground()}, which checks {@code >=
+     * IMPORTANCE_CACHED} and is therefore false while a {@code JobScheduler} task runs ({@code
+     * IMPORTANCE_PERCEPTIBLE}), this checks {@code <= IMPORTANCE_FOREGROUND_SERVICE}. Fails safe
+     * (returns {@code true}) if querying {@link ActivityManager} throws.
+     */
+    static boolean isForegroundServiceActive() {
+        int importance;
+        if (sProcessImportanceForTesting != null) {
+            importance = sProcessImportanceForTesting;
+        } else {
+            ActivityManager.RunningAppProcessInfo info =
+                    new ActivityManager.RunningAppProcessInfo();
+            try {
+                ActivityManager.getMyMemoryState(info);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "Failed to query process memory state", e);
+                return true;
+            }
+            importance = info.importance;
+        }
+        return importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE;
+    }
+
+    static void resetForTesting() {
         ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_DISCOVERY_BACKOFF);
         ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_RESTART_BACKOFF);
         ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_FAILURE_BACKOFF);
+        ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_DOWNLOADED);
+        ChromeSharedPreferences.getInstance().removeKey(PREF_KEY_RESTART_TASK_SCHEDULED);
     }
 
     private static boolean isBrandedOfficialBuild() {

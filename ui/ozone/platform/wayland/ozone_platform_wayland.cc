@@ -5,6 +5,7 @@
 #include "ui/ozone/platform/wayland/ozone_platform_wayland.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,6 +76,7 @@
 #if defined(WAYLAND_GBM)
 #include "ui/gfx/linux/drm_util_linux.h"
 #include "ui/gfx/linux/gbm_device.h"
+#include "ui/gl/gl_switches.h"
 #include "ui/ozone/platform/wayland/common/drm_render_node_path_finder.h"
 #endif
 
@@ -198,8 +200,9 @@ class OzonePlatformWayland : public OzonePlatform,
 #if defined(WAYLAND_GBM)
     // If there is no drm render node device available, native pixmaps are not
     // supported.
-    if (path_finder_.GetDrmRenderNodePath().empty())
+    if (!path_finder_ || path_finder_->GetDrmRenderNodePath().empty()) {
       return false;
+    }
 
     // When OzonePlatform instance is called from GPU process,
     // |supported_formats_| is empty. Supported shared image formats are sent
@@ -275,7 +278,7 @@ class OzonePlatformWayland : public OzonePlatform,
     base::ScopedFD drm_render_node_fd;
 #if defined(WAYLAND_GBM)
     DrmRenderNodeHandle drm_render_node;
-    base::FilePath drm_node_path = path_finder_.GetDrmRenderNodePath();
+    base::FilePath drm_node_path = GetDrmRenderNodePath();
     if (drm_node_path.empty() || !drm_render_node.Initialize(drm_node_path)) {
       LOG(WARNING) << "Failed to initialize drm render node handle.";
     } else {
@@ -328,9 +331,16 @@ class OzonePlatformWayland : public OzonePlatform,
   void InitializeGPU(const InitParams& args) override {
     base::FilePath drm_node_path;
 #if defined(WAYLAND_GBM)
-    drm_node_path = path_finder_.GetDrmRenderNodePath();
-    if (drm_node_path.empty())
-      LOG(WARNING) << "Failed to find drm render node path.";
+    // With GL disabled (e.g. the software compositing fallback), native
+    // pixmaps are not used, so don't probe the DRM devices. Probing can block
+    // in a broken driver and trip the GPU watchdog.
+    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            switches::kUseGL) != gl::kGLImplementationDisabledName) {
+      drm_node_path = GetDrmRenderNodePath();
+      if (drm_node_path.empty()) {
+        LOG(WARNING) << "Failed to find drm render node path.";
+      }
+    }
 #endif
     buffer_manager_ = std::make_unique<WaylandBufferManagerGpu>(drm_node_path);
     surface_factory_ = std::make_unique<WaylandSurfaceFactory>(
@@ -408,6 +418,10 @@ class OzonePlatformWayland : public OzonePlatform,
       properties.supports_single_pixel_buffer =
           ui::IsWaylandOverlayDelegationEnabled() &&
           connection_->buffer_manager_host()->SupportsSinglePixelBuffer();
+      properties.compositor_tone_maps_using_clli =
+          connection_->buffer_manager_host()->CompositorToneMapsUsingClli();
+      properties.compositor_tone_maps_using_mdcv =
+          connection_->buffer_manager_host()->CompositorToneMapsUsingMdcv();
       // Primary planes can be transluscent due to underlay strategy. As a
       // result Wayland server draws contents occluded by an accelerated widget.
       // To prevent this, an opaque background image is stacked below the
@@ -449,6 +463,10 @@ class OzonePlatformWayland : public OzonePlatform,
       properties.supports_single_pixel_buffer =
           ui::IsWaylandOverlayDelegationEnabled() &&
           buffer_manager_->supports_single_pixel_buffer();
+      properties.compositor_tone_maps_using_clli =
+          buffer_manager_->compositor_tone_maps_using_clli();
+      properties.compositor_tone_maps_using_mdcv =
+          buffer_manager_->compositor_tone_maps_using_mdcv();
       // See the comment above.
       properties.needs_background_image =
           buffer_manager_->supports_overlays() &&
@@ -535,6 +553,17 @@ class OzonePlatformWayland : public OzonePlatform,
   }
 
  private:
+#if defined(WAYLAND_GBM)
+  // Probes the DRM devices on first use, so it only happens in processes that
+  // need a drm render node.
+  base::FilePath GetDrmRenderNodePath() {
+    if (!path_finder_) {
+      path_finder_.emplace();
+    }
+    return path_finder_->GetDrmRenderNodePath();
+  }
+#endif
+
   // Keeps the old value of KeyEvent::IsSynthesizeKeyRepeatEnabled(), to
   // restore it on destruction.
   const bool old_synthesize_key_repeat_enabled_;
@@ -564,8 +593,8 @@ class OzonePlatformWayland : public OzonePlatform,
 
 #if defined(WAYLAND_GBM)
   // This is used both in the gpu and browser processes to find out if a drm
-  // render node is available.
-  DrmRenderNodePathFinder path_finder_;
+  // render node is available. Unset until GetDrmRenderNodePath() is called.
+  std::optional<DrmRenderNodePathFinder> path_finder_;
 #endif
 
   std::unique_ptr<LinuxUiDelegateWayland> linux_ui_delegate_;

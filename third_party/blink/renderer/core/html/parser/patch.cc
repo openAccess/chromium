@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/core/html/parser/html_document_parser.h"
 #include "third_party/blink/renderer/core/html/parser/text_resource_decoder.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/sanitizer/sanitizer.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/loader/fetch/fetch_parameters.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_fetcher.h"
@@ -61,27 +62,22 @@ class NodeRemovalScope {
 
 Patch* Patch::Prepare(ContainerNode* scope,
                       const AtomicString& marker_name,
-                      HTMLTemplateElement* template_element) {
-  if (!RuntimeEnabledFeatures::DocumentPatchingEnabled() ||
-      marker_name.IsNull()) {
+                      HTMLTemplateElement* template_element,
+                      StreamingSanitizer* parent_sanitizer,
+                      ParserContentPolicy content_policy) {
+  if (marker_name.IsNull()) {
     return nullptr;
   }
 
   while (auto* parent_template = DynamicTo<HTMLTemplateElement>(scope)) {
     if (auto* parent_patch = parent_template->GetPatch()) {
-      if (!parent_patch->is_buffered()) {
+      if (!parent_patch->IsExternal()) {
         scope = parent_patch->parent_;
         continue;
       }
     }
     scope = parent_template->InsertionTarget();
   }
-
-  const bool is_buffered =
-      template_element &&
-      (RuntimeEnabledFeatures::DeclarativeFragmentEnabled() &&
-       (template_element->FastHasAttribute(html_names::kBufferAttr) ||
-        template_element->FastHasAttribute(html_names::kIntegrityAttr)));
 
   ContainerNode* parent = nullptr;
   Node* start_marker = nullptr;
@@ -98,10 +94,14 @@ Patch* Patch::Prepare(ContainerNode* scope,
       scope = scope->GetDocument().documentElement();
     }
 
-    DEFINE_STATIC_LOCAL(AtomicString, kNamePseudoAttr, ("name"));
-    DEFINE_STATIC_LOCAL(AtomicString, kMarkerTarget, ("marker"));
-    DEFINE_STATIC_LOCAL(AtomicString, kStartTarget, ("start"));
-    DEFINE_STATIC_LOCAL(AtomicString, kEndTarget, ("end"));
+    DEFINE_STATIC_LOCAL(AtomicString, kNamePseudoAttr,
+                        (AtomicString::FromLiteral<"name">()));
+    DEFINE_STATIC_LOCAL(AtomicString, kMarkerTarget,
+                        (AtomicString::FromLiteral<"marker">()));
+    DEFINE_STATIC_LOCAL(AtomicString, kStartTarget,
+                        (AtomicString::FromLiteral<"start">()));
+    DEFINE_STATIC_LOCAL(AtomicString, kEndTarget,
+                        (AtomicString::FromLiteral<"end">()));
 
     for (Node& descendant : NodeTraversal::DescendantsOf(*scope)) {
       auto* processing_instruction =
@@ -163,8 +163,8 @@ Patch* Patch::Prepare(ContainerNode* scope,
   }
 
   return MakeGarbageCollected<Patch>(base::PassKey<Patch>(), parent,
-                                     start_marker, end_marker, is_buffered,
-                                     template_element);
+                                     start_marker, end_marker, template_element,
+                                     parent_sanitizer, content_policy);
 }
 
 void Patch::Apply(HTMLConstructionSite::InsertionLocation& location) {
@@ -190,38 +190,33 @@ Patch::Patch(base::PassKey<Patch> key,
              ContainerNode* parent,
              Node* start_marker,
              Node* end_marker,
-             bool is_buffered,
-             HTMLTemplateElement* template_element)
-    : parent_(parent),
-      start_marker_(start_marker),
-      end_marker_(end_marker),
-      is_buffered_(is_buffered) {
+             HTMLTemplateElement* template_element,
+             StreamingSanitizer* parent_sanitizer,
+             ParserContentPolicy content_policy)
+    : parent_(parent), start_marker_(start_marker), end_marker_(end_marker) {
   const AtomicString& src_attr =
       (template_element && RuntimeEnabledFeatures::DeclarativeFragmentEnabled())
           ? template_element->FastGetAttribute(html_names::kSrcAttr)
           : g_null_atom;
   if (!src_attr.empty()) {
-    loader_ = MakeGarbageCollected<ExternalPatchLoader>(this, template_element,
-                                                        src_attr);
+    StreamingSanitizer* sanitizer =
+        EqualIgnoringAsciiCase(
+            template_element->FastGetAttribute(html_names::kSanitizeAttr),
+            "unsafe")
+            ? parent_sanitizer
+            : StreamingSanitizer::SafeFor(parent_sanitizer);
+    // A safe sanitizer strips scripts anyway, so there is no need to mark them
+    // as parser-inserted. Never upgrade a policy that disallows scripting.
+    if (sanitizer && sanitizer->IsSafe() &&
+        ScriptingContentIsAllowed(content_policy)) {
+      content_policy = kAllowScriptingContent;
+    }
+    loader_ = MakeGarbageCollected<ExternalPatchLoader>(
+        this, template_element, src_attr, sanitizer, content_policy);
   }
 }
 
 void Patch::Finalize(HTMLTemplateElement* template_element) {
-  CHECK(RuntimeEnabledFeatures::DocumentPatchingEnabled());
-  if (is_buffered_) {
-    DocumentFragment* content = template_element->content();
-    CHECK(content);
-    CHECK(RuntimeEnabledFeatures::DeclarativeFragmentEnabled());
-    if (parent_) {
-      Node* next_child = end_marker_ && end_marker_->parentNode() == parent_
-                             ? end_marker_.Get()
-                             : nullptr;
-      // TODO(nrosenthal): add more tests to assert script execution behavior at
-      // this point.
-      parent_->InsertBefore(content, next_child);
-    }
-  }
-
   if (ContainerNode* start_parent = start_marker_->parentNode()) {
     start_parent->ParserRemoveChild(*start_marker_);
   }

@@ -9,7 +9,6 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/sync/test/integration/apps_helper.h"
@@ -69,12 +68,7 @@ class SingleClientWebAppsSyncTest
     : public WebAppsSyncTestBase,
       public testing::WithParamInterface<SyncTest::SetupSyncMode> {
  public:
-  SingleClientWebAppsSyncTest() : WebAppsSyncTestBase(SINGLE_CLIENT) {
-    if (GetSetupSyncMode() == SetupSyncMode::kSyncTransportOnly) {
-      scoped_feature_list_.InitAndEnableFeature(
-          syncer::kReplaceSyncPromosWithSignInPromos);
-    }
-  }
+  SingleClientWebAppsSyncTest() : WebAppsSyncTestBase(SINGLE_CLIENT) {}
   ~SingleClientWebAppsSyncTest() override = default;
 
   bool SetupClients() override {
@@ -130,9 +124,6 @@ class SingleClientWebAppsSyncTest
   WebAppRegistrar& registrar_unsafe() {
     return WebAppProvider::GetForTest(GetProfile(0))->registrar_unsafe();
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -178,6 +169,32 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest,
 
   EXPECT_EQ(registrar_unsafe().GetInstallState(app_id),
             GetExpectedInstallState());
+}
+
+// Regression test for crbug.com/579501200: older clients committed
+// `WebAppSpecifics` with an empty `name`. Install must succeed and fall back
+// to the canonicalized `start_url` instead of hitting the empty-title CHECK
+// in `SetWebAppManifestFields`.
+IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest,
+                       AppWithEmptyNameSyncInstalled) {
+  const GURL url("https://example.com/");
+  const std::string app_id =
+      GenerateAppId(/*manifest_id_path=*/std::nullopt, url);
+
+  sync_pb::EntitySpecifics entity_specifics;
+  entity_specifics.mutable_web_app()->set_start_url(url.spec());
+  entity_specifics.mutable_web_app()->clear_name();
+  fake_server_->InjectEntity(
+      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
+          /*non_unique_name=*/"", app_id, entity_specifics, kDefaultTime,
+          kDefaultTime));
+
+  ASSERT_TRUE(SetupSync());
+  AwaitWebAppQuiescence();
+
+  EXPECT_EQ(registrar_unsafe().GetInstallState(app_id),
+            GetExpectedInstallState());
+  EXPECT_EQ(registrar_unsafe().GetAppShortName(app_id), url.spec());
 }
 
 IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest,
@@ -580,9 +597,6 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest, NoStartUrl) {
 
   EXPECT_FALSE(registrar_unsafe().GetInstallState(app_id).has_value());
 
-  std::vector<sync_pb::SyncEntity> server_apps =
-      GetFakeServer()->GetSyncEntitiesByDataType(syncer::WEB_APPS);
-
   EXPECT_THAT(
       histogram_tester.GetAllSamples("WebApp.Sync.InvalidEntity"),
       base::BucketsAre(base::Bucket(StorageKeyParseResult::kNoStartUrl, 1)));
@@ -614,9 +628,6 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest, InvalidManifestId) {
 
   EXPECT_FALSE(registrar_unsafe().GetInstallState(app_id).has_value());
 
-  std::vector<sync_pb::SyncEntity> server_apps =
-      GetFakeServer()->GetSyncEntitiesByDataType(syncer::WEB_APPS);
-
   EXPECT_THAT(histogram_tester.GetAllSamples("WebApp.Sync.InvalidEntity"),
               base::BucketsAre(
                   base::Bucket(StorageKeyParseResult::kInvalidManifestId, 1)));
@@ -630,9 +641,9 @@ IN_PROC_BROWSER_TEST_P(SingleClientWebAppsSyncTest,
   ASSERT_TRUE(SetupClients());
   EXPECT_EQ(0, GetNumWebAppsInSync());
 
-  const std::string app_id = test::InstallDummyWebApp(
-      GetProfile(0), "app name", GURL("https://example.com/"),
-      webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON);
+  test::InstallDummyWebApp(GetProfile(0), "app name",
+                           GURL("https://example.com/"),
+                           webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON);
   ASSERT_TRUE(SetupSync());
   AwaitWebAppQuiescence();
 

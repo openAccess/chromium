@@ -7,6 +7,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/path_service.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
@@ -80,7 +81,7 @@ class FakeEmbedderMetadataProvider
   void NotifyObservers() {
     observer_list_.Notify(
         &passage_embeddings::EmbedderMetadataObserver::EmbedderMetadataUpdated,
-        passage_embeddings::EmbedderMetadata(1, 3));
+        passage_embeddings::EmbedderMetadata(1, 3, 512));
   }
 
  private:

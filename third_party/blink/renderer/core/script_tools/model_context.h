@@ -22,15 +22,18 @@
 #include "third_party/blink/renderer/core/script_tools/script_tool_types.h"
 #include "third_party/blink/renderer/platform/allow_discouraged_type.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_receiver.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_associated_remote.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
+#include "third_party/blink/renderer/platform/timer.h"
 #include "third_party/blink/renderer/platform/wtf/base_hash_traits.h"
 
 namespace blink {
 class AbortController;
 class Document;
 class Element;
+class ExceptionState;
 class ExecuteToolOptions;
 class SourceLocation;
 class ModelContextGetToolOptions;
@@ -183,6 +186,11 @@ class CORE_EXPORT ModelContext : public EventTarget,
       const ToolInvocationToken& invocation_id,
       bool& did_request_token);
 
+  // Marks this document's tools as not ready until `promise` settles.
+  void waitForToolsUntil(ScriptState* script_state,
+                         ScriptPromise<IDLAny> promise,
+                         ExceptionState& exception_state);
+
   std::optional<ScriptToolDeclaration> GetScriptToolDeclaration(
       const String& name) const;
 
@@ -230,6 +238,11 @@ class CORE_EXPORT ModelContext : public EventTarget,
                          const ScriptToolToken& tool_id,
                          const String& input_arguments,
                          ExecuteScriptToolCallback callback) override;
+  void ResumeScriptTool(const ToolInvocationToken& invocation_id,
+                        const ContinuationToken& token,
+                        const String& tool_name,
+                        const String& input_arguments,
+                        ResumeScriptToolCallback callback) override;
   void CancelScriptTool(const ToolInvocationToken& invocation_id) override;
 
   void DidFinishParsing();
@@ -265,6 +278,7 @@ class CORE_EXPORT ModelContext : public EventTarget,
  private:
   class ToolFunctionFinishedCallback;
   class ToolUnregisterAbortAlgorithm;
+  class WaitForToolsSettled;
 
   void ExecuteDeclarativeTool(DeclarativeWebMCPTool* tool,
                               ToolInvocationToken invocation_id,
@@ -274,10 +288,11 @@ class CORE_EXPORT ModelContext : public EventTarget,
                               ScriptToolExecutedCallback tool_executed_cb);
   bool ExecuteV8Tool(V8ToolExecuteCallback* tool_function,
                      ToolInvocationToken invocation_id,
-                     const ScriptToolToken& tool_id,
+                     std::optional<ScriptToolToken> tool_id,
                      const String& name,
                      const String& input_arguments,
                      AbortController* abort_controller,
+                     bool is_resumed,
                      ScriptToolExecutedCallback tool_executed_cb);
 
   void OnToolFailed(ScriptToolExecutedCallback callback,
@@ -288,29 +303,68 @@ class CORE_EXPORT ModelContext : public EventTarget,
       const ToolInvocationToken& invocation_id,
       base::expected<String, std::pair<ScriptValue, ScriptState*>> result);
 
+  void OnRequestContinuationTokenCompleted(
+      ScriptPromiseResolver<IDLString>* resolver,
+      const ToolInvocationToken& invocation_id,
+      const std::optional<ContinuationToken>& token);
+
+  void OnRedeemContinuationTokenCompleted(const ContinuationToken& token,
+                                          bool accepted);
+  void RunResumedScriptTool(V8ToolExecuteCallback* v8_tool_function,
+                            const ToolInvocationToken& invocation_id,
+                            const ContinuationToken& token,
+                            const String& tool_name,
+                            const String& input_arguments,
+                            ResumeScriptToolCallback callback);
+
   void MaybeRecordToolCount();
+
+  // Called when a promise passed to `waitForToolsUntil()` settles.
+  void OnWaitForToolsPromiseSettled();
+  void OnWaitForToolsWarningTimerFired(TimerBase*);
 
   HeapHashMap<ScriptToolToken, Member<ToolData>> tool_map_;
 
+  struct PendingResumption final : public GarbageCollected<PendingResumption> {
+    PendingResumption(V8ToolExecuteCallback* execute_callback,
+                      ScriptPromiseResolver<IDLUndefined>* resolver)
+        : execute_callback(execute_callback), resolver(resolver) {}
+
+    void Trace(Visitor* visitor) const;
+
+    Member<V8ToolExecuteCallback> execute_callback;
+    // Cleared once `OnRedeemContinuationTokenCompleted()` resolves the
+    // `resumeTool()` Promise. The browser always sends that reply before
+    // `ResumeScriptTool()`, which removes this entry.
+    Member<ScriptPromiseResolver<IDLUndefined>> resolver;
+  };
+  // Keyed by the token's canonical lowercase string; see
+  // `ContinuationTokenKey()`.
+  HeapHashMap<String, Member<PendingResumption>> pending_resumptions_;
+
   struct PendingExecution final : public GarbageCollected<PendingExecution> {
     PendingExecution(String tool_name,
-                     const ScriptToolToken& tool_id,
+                     std::optional<ScriptToolToken> tool_id,
                      ScriptToolExecutedCallback callback,
-                     AbortController* abort_controller)
+                     AbortController* abort_controller,
+                     bool is_resumed = false)
         : tool_name(std::move(tool_name)),
           tool_id(tool_id),
           callback(std::move(callback)),
-          abort_controller(abort_controller) {}
+          abort_controller(abort_controller),
+          is_resumed(is_resumed) {}
 
     void Trace(Visitor* visitor) const;
     String tool_name;
     // The tool being executed. Used to look the tool back up in `tool_map_`,
     // which `tool_name` cannot safely do, since the name may since have been
-    // taken by a different tool.
-    ScriptToolToken tool_id;
+    // taken by a different tool. Null for resumed continuation steps, which are
+    // not associated with a registered tool.
+    std::optional<ScriptToolToken> tool_id;
     ScriptToolExecutedCallback callback;
     // Created for every tool execution; never null.
     Member<AbortController> abort_controller;
+    bool is_resumed = false;
   };
   HeapHashMap<ToolInvocationToken, Member<PendingExecution>>
       pending_executions_;
@@ -330,6 +384,14 @@ class CORE_EXPORT ModelContext : public EventTarget,
   // true when there is a pending or completed task to record the number
   // of registered tools.
   bool will_record_tool_count_ = false;
+
+  // Number of `waitForToolsUntil()` promises that have not settled yet. This
+  // document's tools are ready while this is 0.
+  size_t unsettled_wait_for_tools_promises_ = 0;
+
+  // Fires a warning if a promise is keeping tools in not ready state for too
+  // long.
+  HeapTaskRunnerTimer<ModelContext> wait_for_tools_warning_timer_;
 };
 
 }  // namespace blink

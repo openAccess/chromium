@@ -136,6 +136,12 @@ class GeolocationHeaderService : public KeyedService {
   // Returns true if both the site-level and OS-level geolocation permissions
   // are granted for the given URL.
   bool IsAllowedByPermission(const GURL& url) const;
+
+  // Returns true if geolocation for the given URL is strictly blocked by an
+  // enterprise policy (e.g. DefaultGeolocationSetting or
+  // GeolocationBlockedForUrls).
+  bool IsBlockedByPolicy(const GURL& url) const;
+
   bool HasPrecisePermission(const GURL& url) const;
   bool HasDeviceLocationPermission(GeolocationAccuracy accuracy) const;
 
@@ -143,7 +149,8 @@ class GeolocationHeaderService : public KeyedService {
   bool EnsureGeolocationServiceConnection(const GURL& requesting_url,
                                           bool use_cache_only = false);
 
-  void OnLocationUpdate(device::mojom::GeopositionResultPtr result);
+  void OnLocationUpdate(bool requested_cached_location,
+                        device::mojom::GeopositionResultPtr result);
 
   PermissionSetting GetPermissionSetting(const GURL& url) const;
   std::optional<PermissionSetting> GetDSEPermissionSetting() const;
@@ -152,6 +159,7 @@ class GeolocationHeaderService : public KeyedService {
   raw_ptr<TemplateURLService> template_url_service_;
 
   mojo::Remote<device::mojom::GeolocationContext> geolocation_context_;
+  bool is_querying_cached_position_ = false;
   mojo::Remote<device::mojom::Geolocation> geolocation_;
   device::mojom::GeopositionPtr last_position_;
 

@@ -15,11 +15,11 @@
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-#include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_webui_base_content.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/ui/webui/omnibox_popup/omnibox_popup_ui.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_wrapper.h"
@@ -61,7 +61,7 @@ class OmniboxPopupPresenterMoveBrowserTest : public InProcessBrowserTest {
 
   static OmniboxPopupPresenterBase* GetPresenter(
       BrowserWindowInterface* browser) {
-    return GetLocationBar(browser)->GetOmniboxPopupView()->presenter();
+    return GetLocationBar(browser)->GetOmniboxPopupPresenterForTesting();
   }
 
   // Runs an omnibox query in `browser` whose synchronous matches open the
@@ -190,4 +190,79 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupPresenterMoveBrowserTest, MovesBack) {
   EXPECT_EQ(GetPopupContents(browser()), contents);
   EXPECT_TRUE(base::test::RunUntil(
       [&]() { return GetPageResultInput(contents) == "bar"; }));
+}
+
+// Tests moving the full WebUI popup's WebContents from one browser window's
+// presenter to another's.
+class OmniboxPopupFullPresenterMoveBrowserTest
+    : public OmniboxPopupPresenterMoveBrowserTest {
+ public:
+  OmniboxPopupFullPresenterMoveBrowserTest() {
+    full_feature_list_.InitAndEnableFeature(
+        omnibox::internal::kWebUIOmniboxFullPopup);
+  }
+
+ private:
+  base::test::ScopedFeatureList full_feature_list_;
+};
+
+// The full popup moves to the other window without loading a new page, and
+// the window that released it creates a new one when it next needs it.
+IN_PROC_BROWSER_TEST_F(OmniboxPopupFullPresenterMoveBrowserTest,
+                       MovesFullPopup) {
+  content::WebContents* contents = GetPopupContents(browser());
+  ASSERT_TRUE(contents);
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  BrowserWindowInterface* other_browser =
+      CreateBrowser(browser()->GetProfile());
+  // The full popup shows while the omnibox has focus, as in a new window.
+  GetPresenter(browser())->Hide();
+  GetPresenter(other_browser)->Hide();
+  // Drop the other window's own popup, which it creates with the window.
+  ASSERT_TRUE(GetPresenter(other_browser)->ReleaseWebUIContents());
+
+  MovePopup(browser(), other_browser);
+
+  EXPECT_FALSE(GetPresenter(browser())->GetWebUIContent());
+  EXPECT_EQ(GetPopupContents(other_browser), contents);
+
+  OmniboxPopupWebUIBaseContent* new_content =
+      GetPresenter(browser())->GetOrCreateWebUIContent(
+          OmniboxPopupPresenterBase::CreationReason::kShow);
+  ASSERT_TRUE(new_content);
+  EXPECT_NE(new_content->GetWrappedWebContents(), contents);
+}
+
+// Adopting a loaded full popup routes focus in the new window to WebUI, and
+// releasing it lets the old window's native omnibox take focus again.
+IN_PROC_BROWSER_TEST_F(OmniboxPopupFullPresenterMoveBrowserTest,
+                       MovingFullPopupMovesWebUIFocus) {
+  content::WebContents* contents = GetPopupContents(browser());
+  ASSERT_TRUE(contents);
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  OmniboxPopupUI* popup_ui =
+      contents->GetWebUI()->GetController()->GetAs<OmniboxPopupUI>();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return popup_ui->omnibox_handler() && popup_ui->popup_handler();
+  }));
+  BrowserWindowInterface* other_browser =
+      CreateBrowser(browser()->GetProfile());
+  GetPresenter(browser())->Hide();
+  GetPresenter(other_browser)->Hide();
+  ASSERT_TRUE(GetPresenter(other_browser)->ReleaseWebUIContents());
+  EXPECT_FALSE(GetLocationBar(other_browser)->IsFullWebUiOmniboxReady());
+  EXPECT_FALSE(GetLocationBar(other_browser)->IsFocusable());
+  EXPECT_TRUE(GetLocationBar(other_browser)->omnibox_view()->IsFocusable());
+
+  MovePopup(browser(), other_browser);
+
+  LocationBarView* other_location_bar = GetLocationBar(other_browser);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return other_location_bar->IsFullWebUiOmniboxReady(); }));
+  EXPECT_TRUE(other_location_bar->IsFocusable());
+  EXPECT_FALSE(other_location_bar->omnibox_view()->IsFocusable());
+  LocationBarView* location_bar = GetLocationBar(browser());
+  EXPECT_FALSE(location_bar->IsFullWebUiOmniboxReady());
+  EXPECT_FALSE(location_bar->IsFocusable());
+  EXPECT_TRUE(location_bar->omnibox_view()->IsFocusable());
 }

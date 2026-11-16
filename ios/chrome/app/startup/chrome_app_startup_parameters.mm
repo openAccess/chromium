@@ -12,11 +12,14 @@
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/password_manager/core/browser/manage_passwords_referrer.h"
+#import "components/password_manager/core/common/remote_actor/remote_actor_features.h"
 #import "ios/chrome/app/startup/app_group_command_payload.h"
 #import "ios/chrome/app/startup/app_startup_utils.h"
+#import "ios/chrome/app/startup/remote_actor_url_parser.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
 #import "ios/chrome/browser/google_one/shared/google_one_deep_link_util.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_constants.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/common/app_group/app_group_constants.h"
@@ -177,6 +180,10 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
     appStartupParameters.openedViaWidgetScheme = YES;
     return appStartupParameters;
     // LINT.ThenChange(//ios/chrome/app/task_request_for_widget_url_context.mm)
+  } else if ([self isRemoteActorURL:completeURL]) {
+    return [self startupParametersForRemoteActorWithAppID:appID
+                                              completeURL:completeURL
+                                     forceApplicationMode:forceApplicationMode];
     // LINT.IfChange
     // TODO(crbug.com/462018636): This code will be soon migrated to
     // task_request_for_xcallback_url_context.mm, so any change should be
@@ -345,6 +352,43 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
   }
 }
 
+// Returns `YES` if the URL matches the Remote Actor host.
++ (BOOL)isRemoteActorURL:(NSURL*)URL {
+  return [URL.host isEqualToString:kRemoteActorURLHost];
+}
+
+// Returns the startup parameters for a Remote Actor request. Returns `nil` if
+// the feature flag is disabled or if the payload or nonce query parameters are
+// missing.
++ (instancetype)startupParametersForRemoteActorWithAppID:(NSString*)appID
+                                             completeURL:(NSURL*)completeURL
+                                    forceApplicationMode:
+                                        (BOOL)forceApplicationMode {
+  if (!password_manager::features::
+          RemoteActorCredentialSharingGeminiEnabled()) {
+    return nil;
+  }
+
+  std::optional<RemoteActorRequest> request =
+      ExtractRemoteActorRequestFromURL(net::GURLWithNSURL(completeURL));
+  if (!request.has_value()) {
+    return nil;
+  }
+
+  ChromeAppStartupParameters* params = [[ChromeAppStartupParameters alloc]
+       initWithExternalURL:GURL()
+         declaredSourceApp:appID
+           secureSourceApp:nil
+               completeURL:completeURL
+           applicationMode:ApplicationModeForTabOpening::UNDETERMINED
+      forceApplicationMode:forceApplicationMode];
+  params.postOpeningAction =
+      TabOpeningPostOpeningAction::REMOTE_ACTOR_CREDENTIAL_SHARING;
+  params.remoteActorRequest = std::move(request);
+
+  return params;
+}
+
 // Returns true if the URL passed is an external action URL, defined by having
 // the `kExternalActionURLHost` as host.
 + (BOOL)isChromeExternalActionURL:(NSURL*)URL {
@@ -503,6 +547,7 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
   ExtensionAction action = ACTION_NO_ACTION;
   ChromeAppStartupParameters* params = nil;
 
+  // LINT.IfChange
   if ([command
           isEqualToString:base::SysUTF8ToNSString(
                               app_group::kChromeAppGroupVoiceSearchCommand)]) {
@@ -715,6 +760,7 @@ TabOpeningPostOpeningAction XCallbackPoaToPostOpeningAction(
     [params setPostOpeningAction:SEARCH_PASSWORDS];
     action = ACTION_NO_ACTION;
   }
+  // LINT.ThenChange(//ios/chrome/app/task_request_for_xcallback_url_context.mm)
 
   // LINT.IfChange
   // TODO(crbug.com/462018636): This code will be soon migrated to

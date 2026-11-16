@@ -15,7 +15,6 @@ import {WebUiListenerMixinLit} from '//resources/cr_elements/web_ui_listener_mix
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-import {browserProxyFactory as userEducationProxyFactory} from '//resources/mojo/components/user_education/webui/user_education.mojom-webui.js';
 
 import type {VisualBrowserProxy} from '../app/visual_browser_proxy.js';
 import {VisualBrowserProxyImpl} from '../app/visual_browser_proxy.js';
@@ -27,7 +26,6 @@ import {isActivationKey, isBackwardArrow, isForwardArrow, isVerticalArrow} from 
 import {ReadAnythingSettingsAction} from '../shared/metrics_browser_proxy.js';
 import {ReadAnythingLogger} from '../shared/read_anything_logger.js';
 
-import {LINE_FOCUS_FEATURE_NAME} from './line_focus_menu.js';
 import {SettingsItemType} from './menu_util.js';
 import type {SettingsItem} from './menu_util.js';
 import {getCss} from './settings_menu.css.js';
@@ -227,7 +225,7 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   accessor imagesEnabled: boolean = false;
 
   protected accessor options_: SettingsItem[] = [];
-  protected accessor currentOpenId_: string|null = null;
+  private accessor currentOpenId_: string|null = null;
 
   private interceptedEvents_: string[] =
       ['click', 'pointerdown', 'pointermove'];
@@ -304,7 +302,8 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       optionIDs.push(SettingsOption.PINNED_TO_TOOLBAR);
     }
 
-    if (this.contentBrowserProxy_.isReadAnythingSendFeedbackEnabled()) {
+    if (this.contentBrowserProxy_.isReadAnythingSendFeedbackEnabled() &&
+        loadTimeData.getBoolean('canShowFeedback')) {
       optionIDs.push(SettingsOption.SEND_FEEDBACK);
     }
 
@@ -328,7 +327,8 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
       optionIDs.push(SettingsOption.PINNED_TO_TOOLBAR);
     }
 
-    if (this.contentBrowserProxy_.isReadAnythingSendFeedbackEnabled()) {
+    if (this.contentBrowserProxy_.isReadAnythingSendFeedbackEnabled() &&
+        loadTimeData.getBoolean('canShowFeedback')) {
       optionIDs.push(SettingsOption.SEND_FEEDBACK);
     }
 
@@ -636,11 +636,6 @@ export class SettingsMenuElement extends SettingsMenuElementBase {
   }
 
   open(anchor: HTMLElement) {
-    userEducationProxyFactory.getInstance()
-        .handler.maybeShowNewBadgeFor(LINE_FOCUS_FEATURE_NAME)
-        .then(({shouldShow}) => {
-          this.showLineFocusNewBadge = shouldShow;
-        });
     const menu = this.$.lazyMenu.get();
     // Start in keyboard-nav mode so a stationary cursor resting where the menu
     // opens does not trigger hover behavior. This does not impact mouse users

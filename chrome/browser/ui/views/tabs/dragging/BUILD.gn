@@ -80,7 +80,7 @@ source_set("impl") {
     "//chrome/browser/ui/views/omnibox",
     "//chrome/browser/ui/views/tabs:tab",
     "//chrome/browser/ui/views/tabs:tab_strip",
-    "//chrome/browser/ui/waap:window_metrics_manager",
+    "//chrome/browser/ui/waap:window_creation",
     "//chrome/browser/ui/web_applications",
     "//chrome/browser/ui/web_applications:launch_utils",
     "//chrome/browser/ui/window_feature_controller",
@@ -127,7 +127,7 @@ if (!is_android) {
 
     public_deps = [
       "//base",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:interactive_test_utils",
       "//chrome/test/interaction",
       "//ui/base:test_support",
       "//ui/base/interaction:test_support",
@@ -176,6 +176,8 @@ if (!is_chromeos_device) {
     testonly = true
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
     sources = [
+      "tab_drag_controller_interactive_steps_mixin.cc",
+      "tab_drag_controller_interactive_steps_mixin.h",
       "tab_drag_controller_interactive_uitest.cc",
       "tab_drag_controller_interactive_uitest.h",
     ]
@@ -198,6 +200,7 @@ if (!is_chromeos_device) {
       "//chrome/browser/ui/views/omnibox",
       "//chrome/browser/ui/views/tabs:tab",
       "//chrome/browser/ui/views/tabs:tab_strip",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/common:constants",

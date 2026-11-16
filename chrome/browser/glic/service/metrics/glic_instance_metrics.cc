@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "base/check_deref.h"
 #include "base/functional/bind.h"
@@ -26,8 +27,10 @@
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_cui_tracker.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_fre_impression_cui_tracker.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/public/glic_response_completion_cui_tracker.h"
 #include "chrome/browser/glic/public/glic_submit_query_cui_tracker.h"
 #include "chrome/browser/glic/service/glic_instance_helper.h"
@@ -113,6 +116,7 @@ enum class GlicTurnSource {
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicTurnSource)
 
 void RecordSelectionOverlayMetrics(
+    bool is_capture_region_enabled,
     const std::vector<raw_ptr<tabs::TabInterface>>& pinned_tabs,
     const GlicMetricReporter& reporter) {
 // Selection Overlays are not currently implemented on Android.
@@ -132,7 +136,7 @@ void RecordSelectionOverlayMetrics(
       }
     }
   }
-  if (base::FeatureList::IsEnabled(features::kGlicCaptureRegion)) {
+  if (is_capture_region_enabled) {
     reporter.RecordExactLinear("Instance.InputSubmitted.SelectionCount",
                                selection_areas_count, 10);
   }
@@ -150,6 +154,7 @@ void RecordSelectionOverlayMetrics(
 // from structured.xml. Written as an exhaustive switch with no default so that
 // adding a ClientLoadErrorReason without adding the matching structured.xml
 // variant is a compile error rather than a silently mislabelled metric.
+// LINT.IfChange(ToStructuredReason)
 metrics::structured::events::v2::glic::GlicClientLoadErrorReason
 ToStructuredReason(ClientLoadErrorReason reason) {
   using Reason =
@@ -185,9 +190,41 @@ ToStructuredReason(ClientLoadErrorReason reason) {
       return Reason::GUEST_ORIGIN_BLOCKED;
     case ClientLoadErrorReason::kGuestApiNotAllowed:
       return Reason::GUEST_API_NOT_ALLOWED;
+    case ClientLoadErrorReason::kPendingProviderChange:
+      return Reason::PENDING_PROVIDER_CHANGE;
+    case ClientLoadErrorReason::kGuestHttpClientError:
+      return Reason::GUEST_HTTP_CLIENT_ERROR;
+    case ClientLoadErrorReason::kGuestHttpServerError:
+      return Reason::GUEST_HTTP_SERVER_ERROR;
+  }
+}
+// LINT.ThenChange(//chrome/browser/glic/glic_enums.h:ClientLoadErrorReason)
+
+// Translates GlicInstanceMetrics::FreDecision into the structured metrics
+// enum; exhaustive so a new decision without a structured.xml variant fails
+// to compile.
+metrics::structured::events::v2::glic::GlicFreDecision ToStructuredFreDecision(
+    GlicInstanceMetrics::FreDecision decision) {
+  using Decision = metrics::structured::events::v2::glic::GlicFreDecision;
+  using FreDecision = GlicInstanceMetrics::FreDecision;
+  switch (decision) {
+    case FreDecision::kAccepted:
+      return Decision::ACCEPTED;
+    case FreDecision::kNoThanks:
+      return Decision::NO_THANKS;
+    case FreDecision::kPanelClosed:
+      return Decision::PANEL_CLOSED;
+    case FreDecision::kInstanceDestroyed:
+      return Decision::INSTANCE_DESTROYED;
+    case FreDecision::kAcceptedElsewhere:
+      return Decision::ACCEPTED_ELSEWHERE;
   }
 }
 #endif
+
+std::string_view GetTurnModeSuffix(bool is_actor) {
+  return is_actor ? ".Actor" : ".Default";
+}
 
 }  // namespace
 
@@ -251,8 +288,19 @@ GlicInstanceMetrics::~GlicInstanceMetrics() {
   OnInstanceDestroyed();
 }
 
+bool GlicInstanceMetrics::CanRecordOptInImpression() const {
+  return native_fre_state_ == NativeFreState::kNone &&
+         !opt_in_impression_recorded_for_current_open_ &&
+         !GlicEnabling::HasConsentedForProfile(profile_) &&
+         base::FeatureList::IsEnabled(features::kGlicOptInImpressionMetrics);
+}
+
 void GlicInstanceMetrics::OnOptinImpression() {
-  if (!base::FeatureList::IsEnabled(features::kGlicOptInImpressionMetrics)) {
+  // Remembered for the FRE attempt even when the UMA impression is
+  // suppressed or disabled.
+  guest_reported_opt_in_impression_ = true;
+  if (!CanRecordOptInImpression()) {
+    MaybeRecordFreImpression();
     return;
   }
   is_opt_in_pending_ = true;
@@ -260,11 +308,14 @@ void GlicInstanceMetrics::OnOptinImpression() {
 }
 
 void GlicInstanceMetrics::MaybeRecordOptInImpression() {
-  if (!is_opt_in_pending_ ||
-      !base::FeatureList::IsEnabled(features::kGlicOptInImpressionMetrics) ||
-      !is_client_ready_ || !visibility_tracker_->state()) {
+  if (!CanRecordOptInImpression() || !is_opt_in_pending_ || !is_client_ready_ ||
+      !visibility_tracker_->state()) {
     return;
   }
+  RecordOptInImpression();
+}
+
+void GlicInstanceMetrics::RecordOptInImpression() {
   base::RecordAction(
       base::UserMetricsAction("Glic.Onboarding.OptInImpression"));
   // Not split: consumer FRE/opt-in only; GEiC FRE tracked in b/571507463.
@@ -279,6 +330,124 @@ void GlicInstanceMetrics::MaybeRecordOptInImpression() {
   is_opt_in_pending_ = false;
   opt_in_impression_recorded_for_current_open_ = true;
   LogEvent(GlicInstanceEvent::kOptInImpression);
+  MaybeRecordFreImpression();
+}
+
+void GlicInstanceMetrics::OnOnboardingCompleted() {
+  RecordFreDecision(FreDecision::kAccepted);
+}
+
+void GlicInstanceMetrics::OnOptinRejected() {
+  RecordFreDecision(FreDecision::kNoThanks);
+}
+
+void GlicInstanceMetrics::MaybeStartFreAttempt() {
+  if (fre_attempt_.has_value()) {
+    return;
+  }
+  fre_attempt_ = FreAttempt{
+      .invocation_id = active_invocation_id_,
+      .source = last_invocation_source_,
+      .start_time = base::TimeTicks::Now(),
+  };
+  // A warmed instance, or a guest kept across a close and reopen, has
+  // already reported the impression; record it for this attempt now.
+  MaybeRecordFreImpression();
+}
+
+void GlicInstanceMetrics::MaybeRecordFreImpression() {
+  if (!guest_reported_opt_in_impression_ || !is_client_ready_ ||
+      !visibility_tracker_->state()) {
+    return;
+  }
+  RecordFreImpression();
+}
+
+void GlicInstanceMetrics::RecordFreImpression() {
+  if (!fre_attempt_.has_value() || fre_attempt_->impression_recorded) {
+    return;
+  }
+  fre_attempt_->impression_recorded = true;
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+  metrics::structured::events::v2::glic::FreImpression event;
+  event.SetInvocationSource(static_cast<int>(fre_attempt_->source))
+      .SetElapsedMs(
+          (base::TimeTicks::Now() - fre_attempt_->start_time).InMilliseconds());
+  if (fre_attempt_->invocation_id.has_value()) {
+    event.SetInvocationId(*fre_attempt_->invocation_id);
+  }
+  metrics::structured::StructuredMetricsClient::Record(std::move(event));
+#endif
+}
+
+void GlicInstanceMetrics::RecordFreDecision(FreDecision decision) {
+  std::optional<FreAttempt> attempt = std::exchange(fre_attempt_, std::nullopt);
+  const bool user_decided =
+      decision == FreDecision::kAccepted || decision == FreDecision::kNoThanks;
+  if (!attempt.has_value() && !user_decided) {
+    return;
+  }
+  // A panel closed or an instance destroyed after the profile consented
+  // through another instance or surface is not a pending FRE being lost.
+  // Consent through this instance ended the attempt before getting here.
+  if (!user_decided && GlicEnabling::HasConsentedForProfile(profile_)) {
+    decision = FreDecision::kAcceptedElsewhere;
+  }
+#if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
+  metrics::structured::events::v2::glic::FreDecision event;
+  event.SetDecision(ToStructuredFreDecision(decision))
+      .SetInvocationSource(
+          static_cast<int>(attempt ? attempt->source : last_invocation_source_))
+      .SetImpressionRecorded(attempt && attempt->impression_recorded ? 1 : 0);
+  if (attempt.has_value()) {
+    event.SetElapsedMs(
+        (base::TimeTicks::Now() - attempt->start_time).InMilliseconds());
+    if (attempt->invocation_id.has_value()) {
+      event.SetInvocationId(*attempt->invocation_id);
+    }
+  }
+  metrics::structured::StructuredMetricsClient::Record(std::move(event));
+#endif
+}
+
+void GlicInstanceMetrics::OnTooltipImpression(
+    mojom::TooltipImpressionType impression) {
+  if (impression == mojom::TooltipImpressionType::kUnknown) {
+    return;
+  }
+  tooltip_shown_in_session_ = true;
+  tooltip_currently_visible_ = true;
+  last_tooltip_impression_time_ = base::TimeTicks::Now();
+  metric_reporter_.RecordEnumeration("Tooltip.MultiTab.Impression", impression);
+}
+
+void GlicInstanceMetrics::OnTooltipHidden() {
+  tooltip_currently_visible_ = false;
+}
+
+void GlicInstanceMetrics::OnTooltipMultiTabPromptSubmitted() {
+  tooltip_shown_in_session_ = false;
+  metric_reporter_.RecordBoolean("Tooltip.MultiTab.MultiTabPromptSubmitted",
+                                 true);
+}
+
+void GlicInstanceMetrics::RecordTooltipClosedMetrics() {
+  tooltip_shown_in_session_ = false;
+  if (last_tooltip_impression_time_.is_null()) {
+    return;
+  }
+
+  const bool closed_while_shown = tooltip_currently_visible_;
+  tooltip_currently_visible_ = false;
+  metric_reporter_.RecordBoolean("Tooltip.MultiTab.ClosedWhileShown",
+                                 closed_while_shown);
+
+  const bool within_10s =
+      base::TimeTicks::Now() - last_tooltip_impression_time_ <=
+      base::Seconds(10);
+  last_tooltip_impression_time_ = base::TimeTicks();
+  metric_reporter_.RecordBoolean("Tooltip.MultiTab.PanelCloseWithin10s",
+                                 within_10s);
 }
 
 void GlicInstanceMetrics::OnGlicScrollAttempt() {
@@ -327,7 +496,14 @@ void GlicInstanceMetrics::RecordTabPinningStatusEvent(
 }
 
 void GlicInstanceMetrics::OnInstanceDestroyed() {
+  FinalizePendingResponse(base::TimeTicks::Now());
+
   session_manager_.OnOwnerDestroyed();
+  RecordFreDecision(FreDecision::kInstanceDestroyed);
+
+  if (visibility_tracker_ && visibility_tracker_->state()) {
+    RecordTooltipClosedMetrics();
+  }
 
   base::RecordAction(base::UserMetricsAction("Glic.Instance.Destroyed"));
 
@@ -390,6 +566,7 @@ void GlicInstanceMetrics::OnActivationChanged(bool is_active) {
   is_active_ = is_active;
 
   if (is_active) {
+    MaybeResolvePendingResponse();
     // If this is not the first activation, log the time since the last one.
     if (!last_active_time_.is_null()) {
       base::TimeDelta time_since_last_active =
@@ -417,14 +594,18 @@ void GlicInstanceMetrics::OnVisibilityChanged(bool is_visible) {
   if (was_visible && !is_visible) {
     OnInstanceHidden();
   }
-  if (!was_visible && is_visible &&
-      guest_actionable_.frame_submitted_while_hidden &&
-      !actionable_invocation_state_.start_time.is_null()) {
-    // The guest's frame was ready while the panel was briefly hidden; it's on
-    // screen as soon as the panel is shown again.
-    RecordTimeToActionable(base::TimeTicks::Now());
+  if (!was_visible && is_visible) {
+    MaybeResolvePendingResponse();
+    if (guest_actionable_.frame_submitted_while_hidden &&
+        !actionable_invocation_state_.start_time.is_null()) {
+      // The guest's frame was ready while the panel was briefly hidden; it's on
+      // screen as soon as the panel is shown again.
+      guest_actionable_.frame_submitted_while_hidden = false;
+      RecordTimeToActionable(base::TimeTicks::Now());
+    }
   }
   MaybeRecordOptInImpression();
+  MaybeRecordFreImpression();
 }
 
 void GlicInstanceMetrics::OnBind() {
@@ -590,6 +771,7 @@ void GlicInstanceMetrics::OnFloatyClosed() {
         GlicInstanceMetricsError::kFloatyClosedWithoutOpen);
     return;
   }
+  RecordTooltipClosedMetrics();
   base::TimeDelta duration = base::TimeTicks::Now() - floaty_open_time_;
   metric_reporter_.RecordCustomTimes("Instance.Floaty.OpenDuration", duration,
                                      base::Milliseconds(1), base::Hours(1), 50);
@@ -637,6 +819,7 @@ void GlicInstanceMetrics::OnSidePanelClosed(
   MaybeRecordFirstSidePanelOpenMetrics(duration);
 
   if (reason != CloseReason::kTabSwitched) {
+    RecordTooltipClosedMetrics();
     std::erase(tabs_with_side_panel_, tab->GetHandle());
     if (tabs_with_side_panel_.empty() &&
         initial_invocation_source_ ==
@@ -692,6 +875,7 @@ void GlicInstanceMetrics::OnUnbindEmbedder(EmbedderKey key) {
     tabs::TabHandle tab_handle = tab.GetHandle();
     auto it = side_panel_open_times_.find(tab_handle);
     if (it != side_panel_open_times_.end()) {
+      RecordTooltipClosedMetrics();
       base::TimeDelta duration = base::TimeTicks::Now() - it->second;
       metric_reporter_.RecordCustomTimes("Instance.SidePanel.OpenDuration",
                                          duration, base::Milliseconds(1),
@@ -709,6 +893,7 @@ void GlicInstanceMetrics::OnUnbindEmbedder(EmbedderKey key) {
     }
   } else {
     if (!floaty_open_time_.is_null()) {
+      RecordTooltipClosedMetrics();
       base::TimeDelta duration = base::TimeTicks::Now() - floaty_open_time_;
       metric_reporter_.RecordCustomTimes("Instance.Floaty.OpenDuration",
                                          duration, base::Milliseconds(1),
@@ -805,11 +990,12 @@ void GlicInstanceMetrics::OnInstanceHidden() {
   base::RecordAction(base::UserMetricsAction("Glic.Instance.Hide"));
   LogEvent(GlicInstanceEvent::kInstanceHidden);
   MaybeRecordTimeToDismissWhileLoading();
+  fre_accept_to_actionable_start_time_ = base::TimeTicks();
   opt_in_impression_recorded_for_current_open_ = false;
   open_start_time_ = base::TimeTicks();
 }
 
-void GlicInstanceMetrics::OnClose() {
+void GlicInstanceMetrics::OnClose(bool is_active_embedder) {
   base::RecordAction(base::UserMetricsAction("Glic.Instance.Close"));
   LogEvent(GlicInstanceEvent::kClose);
   metric_reporter_.RecordEnumeration("PanelWebUiState.FinishState3",
@@ -819,7 +1005,11 @@ void GlicInstanceMetrics::OnClose() {
     base::UmaHistogramEnumeration("Glic.Fre.PanelWebUiState.FinishState",
                                   last_web_ui_state_);
   }
+  if (is_active_embedder) {
+    RecordFreDecision(FreDecision::kPanelClosed);
+  }
   MaybeRecordTimeToDismissWhileLoading();
+  CancelNativeFreWait();
   invocation_load_state_ = {};
   actionable_invocation_state_ = {};
   // A frame submitted during this invocation is stale for the next one.
@@ -838,6 +1028,125 @@ bool GlicInstanceMetrics::ResetShownState(EmbedderKey key) {
   return seen_embedders_.erase(ToSafeKey(key)) > 0;
 }
 
+bool GlicInstanceMetrics::IsVisible() const {
+  return visibility_tracker_ ? visibility_tracker_->state() : false;
+}
+
+void GlicInstanceMetrics::RecordTurnShowingOutcome(
+    bool is_actor,
+    GlicTurnShowingOutcome outcome) {
+  metric_reporter_.RecordEnumeration("Turn.ShowingOutcome", outcome);
+  metric_reporter_.RecordEnumeration(
+      base::StrCat({"Turn.ShowingOutcome", GetTurnModeSuffix(is_actor)}),
+      outcome);
+}
+
+void GlicInstanceMetrics::RecordCompletedWhileHiddenShown(
+    bool is_actor,
+    mojom::InvocationSource return_source,
+    base::TimeDelta time_to_show) {
+  std::string_view suffix = GetTurnModeSuffix(is_actor);
+  metric_reporter_.RecordEnumeration("Turn.CompletedWhileHidden.ReturnSource",
+                                     return_source);
+  metric_reporter_.RecordEnumeration(
+      base::StrCat({"Turn.CompletedWhileHidden.ReturnSource", suffix}),
+      return_source);
+  metric_reporter_.RecordCustomTimes("Turn.CompletedWhileHidden.TimeToShow",
+                                     time_to_show, base::Milliseconds(100),
+                                     base::Hours(24), 50);
+  metric_reporter_.RecordCustomTimes(
+      base::StrCat({"Turn.CompletedWhileHidden.TimeToShow", suffix}),
+      time_to_show, base::Milliseconds(100), base::Hours(24), 50);
+}
+
+void GlicInstanceMetrics::RecordCompletedWhileHiddenDestroyed(
+    bool is_actor,
+    base::TimeDelta time_until_destroyed) {
+  std::string_view suffix = GetTurnModeSuffix(is_actor);
+  metric_reporter_.RecordCustomTimes(
+      "Turn.CompletedWhileHidden.TimeUntilDestroyed", time_until_destroyed,
+      base::Milliseconds(100), base::Hours(24), 50);
+  metric_reporter_.RecordCustomTimes(
+      base::StrCat({"Turn.CompletedWhileHidden.TimeUntilDestroyed", suffix}),
+      time_until_destroyed, base::Milliseconds(100), base::Hours(24), 50);
+}
+
+void GlicInstanceMetrics::MaybeResolvePendingResponse() {
+  if (!pending_completed_response_) {
+    return;
+  }
+  if (!pending_completed_response_->was_showing && IsVisible()) {
+    PendingCompletedResponse pending =
+        *std::exchange(pending_completed_response_, std::nullopt);
+    mojom::InvocationSource return_source =
+        pending.return_source.value_or(last_invocation_source_);
+    RecordTurnShowingOutcome(pending.is_actor,
+                             GlicTurnShowingOutcome::kHiddenThenShowing);
+    RecordCompletedWhileHiddenShown(
+        pending.is_actor, return_source,
+        base::TimeTicks::Now() - pending.completion_time);
+  } else if (pending_completed_response_->was_showing && IsVisible() &&
+             is_active_) {
+    PendingCompletedResponse pending =
+        *std::exchange(pending_completed_response_, std::nullopt);
+    RecordTurnShowingOutcome(
+        pending.is_actor, GlicTurnShowingOutcome::kShowingInactiveThenActive);
+  }
+}
+
+void GlicInstanceMetrics::FinalizePendingResponse(base::TimeTicks now) {
+  std::optional<PendingCompletedResponse> pending =
+      std::exchange(pending_completed_response_, std::nullopt);
+  if (!pending) {
+    return;
+  }
+  if (pending->was_showing) {
+    RecordTurnShowingOutcome(
+        pending->is_actor, GlicTurnShowingOutcome::kShowingInactiveNeverActive);
+  } else {
+    RecordTurnShowingOutcome(pending->is_actor,
+                             GlicTurnShowingOutcome::kHiddenNeverShowing);
+    RecordCompletedWhileHiddenDestroyed(pending->is_actor,
+                                        now - pending->completion_time);
+  }
+}
+
+void GlicInstanceMetrics::UpdateNativeFreStateForShow(
+    const ShowOptions& options) {
+  if (GlicEnabling::HasConsentedForProfile(profile_)) {
+    if (native_fre_state_ == NativeFreState::kWaitingForAccept) {
+      native_fre_state_ = NativeFreState::kNone;
+    }
+  } else if (options.fre_override == mojom::FreOverride::kNativeFre) {
+    native_fre_state_ = NativeFreState::kWaitingForAccept;
+  } else if (options.invocation_source !=
+             mojom::InvocationSource::kReshowInactive) {
+    native_fre_state_ = NativeFreState::kNone;
+  }
+}
+
+void GlicInstanceMetrics::OnWillShow(const ShowOptions& options,
+                                     bool has_conversation_id) {
+  const glic::mojom::InvocationSource source = options.invocation_source;
+  UpdateNativeFreStateForShow(options);
+  if (!IsVisible() && pending_completed_response_ &&
+      !pending_completed_response_->was_showing) {
+    pending_completed_response_->return_source = source;
+  }
+
+  // Record when a hidden conversation becomes visible again, or when the user
+  // selects an existing conversation from the web client's Recent Chats menu
+  // (which may reuse an already-visible blank instance in-place in
+  // `GlicInstanceCoordinatorImpl::SwitchConversation()`).
+  bool is_resumption =
+      has_conversation_id &&
+      (!IsVisible() || source == mojom::InvocationSource::kConversationSwitch);
+
+  if (is_resumption) {
+    metric_reporter_.RecordEnumeration("Instance.ReturnSource", source);
+  }
+}
+
 void GlicInstanceMetrics::OnOpen(glic::mojom::InvocationSource source,
                                  const ShowOptions& options) {
   const base::TimeTicks now = base::TimeTicks::Now();
@@ -845,6 +1154,8 @@ void GlicInstanceMetrics::OnOpen(glic::mojom::InvocationSource source,
   open_start_time_ = now;
   was_client_ready_on_open_ = is_client_ready_;
   input_focused_for_current_open_ = false;
+  fre_accept_to_actionable_start_time_ = base::TimeTicks();
+  UpdateNativeFreStateForShow(options);
   if (!is_client_ready_) {
     if (invocation_load_state_.start_time.is_null()) {
       invocation_load_state_.start_time = now;
@@ -852,7 +1163,7 @@ void GlicInstanceMetrics::OnOpen(glic::mojom::InvocationSource source,
     }
     invocation_load_state_.embedder_type = embedder_type;
   }
-  if (IsWaitingForActionable()) {
+  if (!guest_actionable_.recorded) {
     if (actionable_invocation_state_.start_time.is_null()) {
       actionable_invocation_state_.start_time = now;
     }
@@ -879,12 +1190,23 @@ void GlicInstanceMetrics::OnOpen(glic::mojom::InvocationSource source,
   // 2. Log Events
   LogEvent(GlicInstanceEvent::kOpen);
   if (!GlicEnabling::HasConsentedForProfile(profile_)) {
+    MaybeStartFreAttempt();
     auto fre_tracker = std::make_unique<GlicFreImpressionCuiTracker>();
     if (opt_in_impression_recorded_for_current_open_) {
       fre_tracker->OnEvent(GlicInstanceEvent::kOptInImpression);
-      opt_in_impression_recorded_for_current_open_ = false;
     } else {
       cui_trackers_.push_back(std::move(fre_tracker));
+    }
+    if (native_fre_state_ == NativeFreState::kWaitingForAccept) {
+      if (base::FeatureList::IsEnabled(features::kGlicOptInImpressionMetrics) &&
+          !opt_in_impression_recorded_for_current_open_) {
+        RecordOptInImpression();
+      }
+      // The native FRE card is the consent screen for this attempt; it is on
+      // screen as soon as the panel opens, before the web client is ready.
+      RecordFreImpression();
+      RecordPanelPresentationTime(now);
+      RecordTimeToActionable(now);
     }
   }
 
@@ -924,7 +1246,11 @@ void GlicInstanceMetrics::OnToggle(glic::mojom::InvocationSource source,
   LogEvent(GlicInstanceEvent::kToggle);
 }
 
-void GlicInstanceMetrics::OnBoundTabDestroyed() {
+void GlicInstanceMetrics::OnBoundTabDestroyed(tabs::TabInterface* tab,
+                                              bool is_active_embedder) {
+  if (is_active_embedder && side_panel_open_times_.contains(tab->GetHandle())) {
+    RecordTooltipClosedMetrics();
+  }
   base::RecordAction(
       base::UserMetricsAction("Glic.Instance.BoundTabDestroyed"));
   LogEvent(GlicInstanceEvent::kBoundTabDestroyed);
@@ -981,6 +1307,7 @@ void GlicInstanceMetrics::SetActiveInvocationId(
 }
 
 void GlicInstanceMetrics::OnClientLoadError(ClientLoadErrorReason reason) {
+  CancelNativeFreWait();
 #if BUILDFLAG(STRUCTURED_METRICS_ENABLED)
   metrics::structured::events::v2::glic::ClientLoadError event;
   event.SetReason(ToStructuredReason(reason));
@@ -1125,6 +1452,11 @@ void GlicInstanceMetrics::OnWebUiStateChanged(mojom::WebUiState state) {
           "Glic.Instance.WebUiStateChanged.GuestLoaded"));
       LogEvent(GlicInstanceEvent::kWebUiStateGuestLoaded);
       break;
+    case mojom::WebUiState::kPendingProviderChangeGeminiToGeic:
+      base::RecordAction(base::UserMetricsAction(
+          "Glic.Instance.WebUiStateChanged.PendingProviderChangeGeminiToGeic"));
+      LogEvent(GlicInstanceEvent::kWebUiStatePendingProviderChangeGeminiToGeic);
+      break;
   }
 }
 
@@ -1133,13 +1465,18 @@ void GlicInstanceMetrics::OnClientReady() {
   client_ready_time_ = base::TimeTicks::Now();
   input_focused_after_client_ready_ = false;
   MaybeRecordOptInImpression();
+  MaybeRecordFreImpression();
   LogEvent(GlicInstanceEvent::kClientReady);
+  RecordPanelPresentationTime(client_ready_time_);
+}
 
+void GlicInstanceMetrics::RecordPanelPresentationTime(
+    base::TimeTicks end_time) {
   if (invocation_load_state_.start_time.is_null()) {
     return;
   }
   base::TimeDelta presentation_time =
-      base::TimeTicks::Now() - invocation_load_state_.start_time;
+      end_time - invocation_load_state_.start_time;
   if (invocation_load_state_.embedder_type != EmbedderType::kUnknown) {
     bool is_visible =
         visibility_tracker_ ? visibility_tracker_->state() : false;
@@ -1152,6 +1489,43 @@ void GlicInstanceMetrics::OnClientReady() {
                                        50);
   }
   invocation_load_state_ = {};
+}
+
+void GlicInstanceMetrics::OnWebClientCleared() {
+  tooltip_currently_visible_ = false;
+  last_tooltip_impression_time_ = base::TimeTicks();
+  tooltip_shown_in_session_ = false;
+}
+
+void GlicInstanceMetrics::OnNativeFreAccepted() {
+  if (native_fre_state_ == NativeFreState::kAccepted) {
+    return;
+  }
+  is_opt_in_pending_ = false;
+  native_fre_state_ = NativeFreState::kAccepted;
+  if (IsVisible() && !GlicEnabling::HasConsentedForProfile(profile_) &&
+      GetGlicProviderSpec(profile_).RequiresGeminiAccountEligibility()) {
+    fre_accept_to_actionable_start_time_ = base::TimeTicks::Now();
+  }
+  if (guest_actionable_.guest_frame_submitted) {
+    MaybeRecordAcceptToChatActionable(base::TimeTicks::Now());
+  }
+}
+
+void GlicInstanceMetrics::OnWebFreAccepted() {
+  if (native_fre_state_ != NativeFreState::kNone ||
+      guest_actionable_.recorded || guest_actionable_.guest_frame_submitted ||
+      !fre_accept_to_actionable_start_time_.is_null() || !IsVisible() ||
+      GlicEnabling::HasConsentedForProfile(profile_) ||
+      !GetGlicProviderSpec(profile_).RequiresGeminiAccountEligibility()) {
+    return;
+  }
+  fre_accept_to_actionable_start_time_ = base::TimeTicks::Now();
+}
+
+void GlicInstanceMetrics::CancelNativeFreWait() {
+  native_fre_state_ = NativeFreState::kNone;
+  fre_accept_to_actionable_start_time_ = base::TimeTicks();
 }
 
 void GlicInstanceMetrics::OnGuestActionableMarkObserved(
@@ -1174,9 +1548,9 @@ void GlicInstanceMetrics::OnGuestActionableMarkObserved(
 }
 
 void GlicInstanceMetrics::OnGuestFrameSubmitted() {
-  const bool is_visible =
-      visibility_tracker_ ? visibility_tracker_->state() : false;
-  if (is_visible) {
+  guest_actionable_.guest_frame_submitted = true;
+  if (IsVisible()) {
+    MaybeRecordAcceptToChatActionable(base::TimeTicks::Now());
     RecordTimeToActionable(base::TimeTicks::Now());
   } else if (!actionable_invocation_state_.start_time.is_null()) {
     // `InsertVisualStateCallback` is requested while the guest is mounted and
@@ -1189,11 +1563,19 @@ void GlicInstanceMetrics::OnGuestFrameSubmitted() {
 }
 
 void GlicInstanceMetrics::OnGuestReset() {
+  const bool keep_recorded =
+      guest_actionable_.recorded &&
+      native_fre_state_ == NativeFreState::kWaitingForAccept;
   guest_actionable_ = {};
+  guest_actionable_.recorded = keep_recorded;
+  guest_reported_opt_in_impression_ = false;
 }
 
 bool GlicInstanceMetrics::IsWaitingForActionable() const {
-  return !guest_actionable_.recorded;
+  return !guest_actionable_.recorded ||
+         (!guest_actionable_.guest_frame_submitted &&
+          (native_fre_state_ == NativeFreState::kWaitingForAccept ||
+           !fre_accept_to_actionable_start_time_.is_null()));
 }
 
 void GlicInstanceMetrics::RecordTimeToActionable(base::TimeTicks end_time) {
@@ -1219,6 +1601,19 @@ void GlicInstanceMetrics::RecordTimeToActionable(base::TimeTicks end_time) {
                                        50);
   }
   actionable_invocation_state_ = {};
+}
+
+void GlicInstanceMetrics::MaybeRecordAcceptToChatActionable(
+    base::TimeTicks now) {
+  if (!fre_accept_to_actionable_start_time_.is_null() &&
+      native_fre_state_ != NativeFreState::kWaitingForAccept && IsVisible()) {
+    // Justification: Cross-arm post-FRE metric; provider has not been selected
+    // yet.
+    base::UmaHistogramCustomTimes("Glic.Fre.AcceptToChatActionable",
+                                  now - fre_accept_to_actionable_start_time_,
+                                  base::Milliseconds(1), base::Seconds(60), 50);
+    fre_accept_to_actionable_start_time_ = base::TimeTicks();
+  }
 }
 
 void GlicInstanceMetrics::LogEvent(GlicInstanceEvent event) {
@@ -1298,8 +1693,14 @@ void GlicInstanceMetrics::OnUserInputSubmitted(mojom::WebClientMode mode,
   metric_reporter_.RecordEnumeration("Turn.PromptType", prompt_type);
 
   if (sharing_manager_) {
-    RecordSelectionOverlayMetrics(sharing_manager_->GetPinnedTabs(),
-                                  metric_reporter_);
+    const std::vector<raw_ptr<tabs::TabInterface>> pinned_tabs =
+        sharing_manager_->GetPinnedTabs();
+    RecordSelectionOverlayMetrics(GetGlicProviderSpec(profile_).SupportsFeature(
+                                      GlicFeature::kCaptureRegion),
+                                  pinned_tabs, metric_reporter_);
+    if (tooltip_shown_in_session_ && pinned_tabs.size() >= 2) {
+      OnTooltipMultiTabPromptSubmitted();
+    }
   }
 
   // Reset turn data and start populating it for the new turn being started.
@@ -1350,7 +1751,7 @@ void GlicInstanceMetrics::OnResponseStarted() {
     return;
   }
 
-  if (!visibility_tracker_->state()) {
+  if (!IsVisible() && !is_response_for_actuation) {
     metric_reporter_.RecordEnumeration(
         "Instance.Metrics.Error",
         GlicInstanceMetricsError::kResponseStartWhileHidingOrHidden);
@@ -1446,6 +1847,22 @@ void GlicInstanceMetrics::OnResponseStopped(mojom::ResponseStopCause cause) {
           latency);
     }
     RecordResponseLatencyByAttachedTabCount(latency);
+
+    if (cause == mojom::ResponseStopCause::kUnknown) {
+      FinalizePendingResponse(now);
+      const bool is_actor = !turn_.action_result_submitted_time_.is_null();
+      const bool is_showing = IsVisible();
+      if (is_showing && is_active_) {
+        RecordTurnShowingOutcome(is_actor,
+                                 GlicTurnShowingOutcome::kShowingAndActive);
+      } else {
+        pending_completed_response_ = PendingCompletedResponse{
+            .completion_time = now,
+            .is_actor = is_actor,
+            .was_showing = is_showing,
+        };
+      }
+    }
   }
 
   GlicTurnSource turn_source;
@@ -1584,6 +2001,9 @@ void GlicInstanceMetrics::OnInputFocused() {
 
 void GlicInstanceMetrics::OnActionSubmitted(bool is_retry) {
   turn_.action_result_submitted_time_ = base::TimeTicks::Now();
+  // In a multi-step actor loop, submitting an action result means the previous
+  // response was an intermediate step rather than a final unshown response.
+  pending_completed_response_.reset();
   metric_reporter_.RecordBoolean("Turn.Actuation.IsRetry", is_retry);
 }
 
@@ -1605,6 +2025,7 @@ void GlicInstanceMetrics::OnSessionStarted() {
 }
 
 void GlicInstanceMetrics::OnSessionFinished() {
+  tooltip_shown_in_session_ = false;
   if (base::FeatureList::IsEnabled(features::kGlicScrollTo)) {
     metric_reporter_.RecordCounts100("ScrollTo.SessionCount",
                                      scroll_attempt_count_);

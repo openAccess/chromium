@@ -49,11 +49,13 @@ constexpr auto kAtomsToCache = std::to_array<const char* const>({
     "CHROMIUM_TIMESTAMP",
     "CLIPBOARD",
     "CLIPBOARD_MANAGER",
+    "CURSOR",
     "Content Protection",
     "Desired",
     "Device Node",
     "Device Product ID",
     "EDID",
+    "ERASER",
     "Enabled",
     "FAKE_SELECTION",
     "Full aspect",
@@ -62,11 +64,14 @@ constexpr auto kAtomsToCache = std::to_array<const char* const>({
     "LOCK",
     "MOUSE",
     "MULTIPLE",
+    "PAD",
     "Rel Horiz Wheel",
     "Rel Vert Wheel",
     "SAVE_TARGETS",
     "SELECTION_STRING",
     "STRING",
+    "STYLUS",
+    "TABLET",
     "TARGET1",
     "TARGET2",
     "TARGETS",
@@ -179,16 +184,13 @@ constexpr auto kAtomsToCache = std::to_array<const char* const>({
     "text/rtf",
     "text/uri-list",
     "text/x-moz-url",
+    "x-kde-passwordManagerHint",
     "xwayland-keyboard",
     "xwayland-pointer",
     "xwayland-touch",
 });
 
 }  // namespace
-
-Atom GetAtom(const char* name) {
-  return Connection::Get()->GetAtom(name);
-}
 
 AtomCache::AtomCache(Connection* connection) : connection_(connection) {
   std::vector<Future<InternAtomReply>> requests;
@@ -226,8 +228,8 @@ Atom AtomCache::GetAtom(const char* name) {
           connection_->InternAtom(InternAtomRequest{.name = name}).Sync()) {
     atom = response->atom;
     CHECK_GT(atom, x11::Atom::kLastPredefinedAtom)
-        << " Use x11::Atom::" << name << " instead of x11::GetAtom(\"" << name
-        << "\")";
+        << " Use x11::Atom::" << name << " instead of Connection::GetAtom(\""
+        << name << "\")";
 
     auto owned_name = std::make_unique<std::string>(name);
 

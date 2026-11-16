@@ -12,8 +12,10 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_group_focus_animation_state.h"
 #include "chrome/browser/ui/views/tabs/groups/tab_group_editor_bubble_tracker.h"
 #include "chrome/browser/ui/views/tabs/hovercard/hover_card_anchor_target.h"
+#include "chrome/browser/ui/views/tabs/hovercard/hover_card_update_type.h"
 #include "chrome/browser/ui/views/tabs/hovercard/tab_hover_card_controller.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_types.h"
 #include "components/tab_groups/tab_group_id.h"
@@ -60,8 +62,8 @@ class TabGroupHeaderView : public views::FlexLayoutView,
     virtual void CancelHeaderDrag() = 0;
     virtual const TabGroup& GetTabGroup() const = 0;
     virtual const tabs::TabGroupData& GetTabGroupData() const = 0;
-    virtual void UpdateHoverCard(int update_type) const = 0;
-    virtual void HideHoverCard(int update_type) const = 0;
+    virtual void UpdateHoverCard(HoverCardUpdateType update_type) const = 0;
+    virtual void HideHoverCard(HoverCardUpdateType update_type) const = 0;
     virtual bool IsFocusInTabStrip() = 0;
     virtual std::unique_ptr<ExpandOnHoverLock> AcquireExpandOnHoverLock() = 0;
     virtual std::unique_ptr<TabHoverCardController::ScopedHideHoverCardLock>
@@ -129,21 +131,20 @@ class TabGroupHeaderView : public views::FlexLayoutView,
   void OnDataChanged(const tabs::TabGroupData& tab_group_data);
   void OnTabCountChanged();
 
-  // Sets the focus transition progress, from 0.0 (unfocused appearance) to
-  // 1.0 (focused appearance), which drives the chip's corner radii and
-  // horizontal insets, and `content_opacity` in [0, 1], which scales the
-  // foreground alpha for ephemeral headers. `nullopt` restores the resting
-  // appearance for the delegate's current focused state.
-  void SetFocusAnimationProgress(std::optional<float> progress,
-                                 float content_opacity = 1.0f);
+  void SetFocusAnimationState(const TabGroupFocusAnimationState& state);
 
   tab_groups::TabGroupId group() const;
+
+  bool is_collapsed_for_testing() const {
+    return tab_group_visual_data_.is_collapsed();
+  }
 
   views::LabelButton* editor_bubble_button() { return editor_bubble_button_; }
   views::ImageView* collapse_icon_for_testing() { return collapse_icon_; }
   views::ImageView* attention_indicator_for_testing() {
     return attention_indicator_;
   }
+  views::ImageView* sync_icon_for_testing() { return sync_icon_; }
   views::Label* title_label_for_testing() { return group_header_label_; }
   TabGroupEditorBubbleTracker* editor_bubble_tracker_for_testing() {
     return &editor_bubble_tracker_;
@@ -170,6 +171,7 @@ class TabGroupHeaderView : public views::FlexLayoutView,
 
   SkColor GetBackgroundColor() const;
   SkColor GetForegroundColor() const;
+  SkColor GetContentForegroundColor() const;
   void UpdateColors();
 
   const raw_ref<Delegate> delegate_;
@@ -177,8 +179,7 @@ class TabGroupHeaderView : public views::FlexLayoutView,
   tab_groups::TabGroupVisualData tab_group_visual_data_;
   bool needs_attention_ = false;
   bool is_shared_ = false;
-  std::optional<float> focus_animation_progress_;
-  float focus_content_opacity_ = 1.0f;
+  TabGroupFocusAnimationState focus_animation_state_;
 
   // The sync icon that is displayed in the tab group header of saved groups in
   // the tabstrip.

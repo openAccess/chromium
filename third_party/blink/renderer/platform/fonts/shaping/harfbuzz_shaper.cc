@@ -44,6 +44,7 @@
 #include "base/check_op.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "build/build_config.h"
@@ -51,6 +52,7 @@
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/font_fallback_iterator.h"
 #include "third_party/blink/renderer/platform/fonts/font_fallback_priority.h"
+#include "third_party/blink/renderer/platform/fonts/font_global_context.h"
 #include "third_party/blink/renderer/platform/fonts/font_variant_emoji.h"
 #include "third_party/blink/renderer/platform/fonts/opentype/open_type_caps_support.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/case_mapping_harfbuzz_buffer_filler.h"
@@ -126,8 +128,8 @@ class PooledHarfBuzzBuffer {
   using Pool = Vector<hb::unique_ptr<hb_buffer_t>, kInlineCapacity>;
 
   static Pool& GetPool() {
-    DEFINE_THREAD_SAFE_STATIC_LOCAL(ThreadSpecific<Pool>, pool, ());
-    return *pool;
+    static base::NoDestructor<ThreadSpecific<Pool>> pool;
+    return **pool;
   }
 
   hb::unique_ptr<hb_buffer_t> buffer_;
@@ -179,7 +181,7 @@ void CheckShapeResultRange(const ShapeResult* result,
   log.Append(", result=");
   result->ToString(&log);
 
-  NOTREACHED() << log.ToString();
+  NOTREACHED() << StringView(log);
 }
 #endif
 
@@ -189,10 +191,10 @@ FontFallbackPriority ApplyFontVariantEmojiOnFallbackPriority(
   // font-variant-emoji property should not override emoji variation selectors,
   // see https://www.w3.org/TR/css-fonts-4/#font-variant-emoji-prop.
   if (!HasVsFallbackPriority(curr_font_fallback_priority)) {
-    if (font_variant_emoji == kEmojiVariantEmoji) {
+    if (font_variant_emoji == FontVariantEmoji::kEmoji) {
       return FontFallbackPriority::kEmojiEmoji;
     }
-    if (font_variant_emoji == kTextVariantEmoji) {
+    if (font_variant_emoji == FontVariantEmoji::kText) {
       return FontFallbackPriority::kText;
     }
   }
@@ -933,6 +935,10 @@ void HarfBuzzShaper::ShapeSegment(
           font_description.VariantEmoji());
   bool incremental_font_transfer_enabled =
       RuntimeEnabledFeatures::IncrementalFontTransferEnabled();
+  // Pre-fetch the non-private use range set if this is only 8-bit text
+  // so we can potentially, efficiently, skip unicode range checking.
+  const UnicodeRangeSet* non_private_use_range_set =
+      text_.Is8Bit() ? FontGlobalContext::GetNonPrivateUseRangeSet() : nullptr;
   while (!range_data->reshape_queue.empty()) {
     ReshapeQueueItem current_queue_item = range_data->reshape_queue.TakeFirst();
 
@@ -946,7 +952,7 @@ void HarfBuzzShaper::ShapeSegment(
         DCHECK_EQ(fallback_stage, kLastWithVs);
         fallback_iterator.Reset();
         fallback_stage = kIntermediateIgnoreVs;
-        variation_selector_mode = kIgnoreVariationSelector;
+        variation_selector_mode = VariationSelectorMode::kIgnore;
       }
 
       if (!CollectFallbackHintChars(range_data->reshape_queue,
@@ -1059,10 +1065,20 @@ void HarfBuzzShaper::ShapeSegment(
           font_features);
     }
 
+    const UnicodeRangeSet* range_set =
+        current_font_data_for_range_set->Ranges();
+    // If the range set for the current font is the non-private-use range set,
+    // but we are using 8-bit text, we know it cannot have violating code
+    // points, so we can skip passing the range set along.
+    //
+    // We only initialized `non_private_use_range_set` if this is 8-bit text, so
+    // don't need to check that portion here again.
+    if (range_set == non_private_use_range_set) {
+      range_set = nullptr;
+    }
     if (!ShapeRange(range_data->buffer.Get(), range_data->font_features,
-                    adjusted_font, current_font_data_for_range_set->Ranges(),
-                    segment.script, direction, language,
-                    font_description.SpecifiedSize(),
+                    adjusted_font, range_set, segment.script, direction,
+                    language, font_description.SpecifiedSize(),
                     variation_selector_mode)) {
       DLOG(ERROR) << "Shaping range failed.";
     }
@@ -1076,8 +1092,7 @@ void HarfBuzzShaper::ShapeSegment(
         result->AddUnsafeToBreak(han_kerning.UnsafeToBreakBefore());
         han_kerning.ClearUnsafeToBreakBefore();
       }
-      if (!range_data->reshape_queue.empty() &&
-          RuntimeEnabledFeatures::TextSpacingTrimFallbackEnabled()) {
+      if (!range_data->reshape_queue.empty()) {
         han_kerning.PrepareFallback(text_);
       }
     }
@@ -1098,6 +1113,9 @@ ShapeResult* HarfBuzzShaper::Shape(const Font* font,
   const wtf_size_t length = end - start;
   ShapeResult* result =
       MakeGarbageCollected<ShapeResult>(start, length, direction);
+  if (!length) {
+    return result;
+  }
   RangeContext range_data(font, direction, start, end);
   if (text_.Is8Bit()) {
     // 8-bit text is guaranteed to be horizontal latin-1.
@@ -1151,6 +1169,9 @@ ShapeResult* HarfBuzzShaper::Shape(
   const wtf_size_t length = end - start;
   ShapeResult* result =
       MakeGarbageCollected<ShapeResult>(start, length, direction);
+  if (!length) {
+    return result;
+  }
   RangeContext range_data(font, direction, start, end, options);
   for (const RunSegmenter::RunSegmenterRange& segmented_range : ranges) {
     DCHECK_GE(segmented_range.end, segmented_range.start);
@@ -1180,6 +1201,9 @@ ShapeResult* HarfBuzzShaper::Shape(
   const wtf_size_t length = end - start;
   ShapeResult* result =
       MakeGarbageCollected<ShapeResult>(start, length, direction);
+  if (!length) {
+    return result;
+  }
   RangeContext range_data(font, direction, start, end, options);
   ShapeSegment(&range_data, pre_segmented, result);
 
@@ -1200,6 +1224,9 @@ void HarfBuzzShaper::GetGlyphData(const SimpleFontData& font_data,
                                   bool is_horizontal,
                                   TextDirection direction,
                                   GlyphDataList& glyphs) {
+  if (text_.empty()) {
+    return;
+  }
   PooledHarfBuzzBuffer pooled_hb_buffer;
   hb_buffer_t* hb_buffer = pooled_hb_buffer.Get();
   hb_buffer_set_language(hb_buffer, locale.HarfbuzzLanguage());

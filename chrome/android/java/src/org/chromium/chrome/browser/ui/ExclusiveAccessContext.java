@@ -7,6 +7,10 @@ package org.chromium.chrome.browser.ui;
 import android.app.Activity;
 
 import org.jni_zero.CalledByNative;
+import org.jni_zero.JniPtr;
+import org.jni_zero.JniRawPtr;
+import org.jni_zero.JniType;
+import org.jni_zero.JniTypeToken;
 import org.jni_zero.NativeMethods;
 
 import org.chromium.base.Log;
@@ -31,13 +35,17 @@ import org.chromium.ui.base.WindowAndroid;
  */
 @NullMarked
 public class ExclusiveAccessContext implements Destroyable {
+    @JniType("::ExclusiveAccessContextAndroid")
+    interface NativeExclusiveAccessContextAndroid extends JniTypeToken {}
+
     private static final String TAG = "ExclusiveAccessCtx";
 
     private final WindowAndroid mWindowAndroid;
     private final FullscreenManager mFullscreenManager;
     final ActivityTabProvider.ActivityTabTabObserver mActiveTabObserver;
     @Nullable private Tab mActiveTab;
-    private long mNativeExclusiveAccessContextAndroid;
+    private @Nullable JniRawPtr<NativeExclusiveAccessContextAndroid>
+            mNativeExclusiveAccessContextAndroid;
     private long mLastTouchTime;
 
     /**
@@ -50,8 +58,8 @@ public class ExclusiveAccessContext implements Destroyable {
     private static final long TOUCH_EVENT_THROTTLE_MS = 60000; // 1 minute
 
     @CalledByNative
-    public static ExclusiveAccessContext create(
-            long nativeExclusiveAccessContextAndroid,
+    static ExclusiveAccessContext create(
+            JniRawPtr<NativeExclusiveAccessContextAndroid> nativeExclusiveAccessContextAndroid,
             WindowAndroid windowAndroid,
             FullscreenManager fullscreenManager,
             ActivityTabProvider activityTabProvider) {
@@ -62,8 +70,8 @@ public class ExclusiveAccessContext implements Destroyable {
                 activityTabProvider);
     }
 
-    public ExclusiveAccessContext(
-            long nativeExclusiveAccessContextAndroid,
+    ExclusiveAccessContext(
+            JniRawPtr<NativeExclusiveAccessContextAndroid> nativeExclusiveAccessContextAndroid,
             WindowAndroid windowAndroid,
             FullscreenManager fullscreenManager,
             ActivityTabProvider activityTabProvider) {
@@ -87,7 +95,7 @@ public class ExclusiveAccessContext implements Destroyable {
                         // Notify native of user input to reset the exclusive access bubble snooze
                         // timer. This mirrors desktop behavior where any interaction re-snoozes
                         // the security notice.
-                        if (mNativeExclusiveAccessContextAndroid != 0) {
+                        if (mNativeExclusiveAccessContextAndroid != null) {
                             long currentTime = TimeUtils.uptimeMillis();
                             if (mLastTouchTime == 0
                                     || currentTime - mLastTouchTime >= TOUCH_EVENT_THROTTLE_MS) {
@@ -101,16 +109,14 @@ public class ExclusiveAccessContext implements Destroyable {
                 };
     }
 
-    /**
-     * @return The Activity associated with this window, or null if unavailable.
-     */
+    /** Returns the Activity associated with this window, or null if unavailable. */
     public @Nullable Activity getActivity() {
         return mWindowAndroid.getActivity().get();
     }
 
     /**
-     * @return The SnackbarManager attached to this activity's window, or null if it has not been
-     *     attached yet.
+     * Returns the SnackbarManager attached to this activity's window, or null if it has not been
+     * attached yet.
      */
     public @Nullable SnackbarManager getSnackbarManager() {
         return SnackbarManagerProvider.from(mWindowAndroid);
@@ -119,9 +125,10 @@ public class ExclusiveAccessContext implements Destroyable {
     @Override
     @CalledByNative
     public void destroy() {
-        // Explicitly null the native pointer to prevent any stray callbacks from attempting to
-        // use it after the native object has been destroyed.
-        mNativeExclusiveAccessContextAndroid = 0;
+        if (mNativeExclusiveAccessContextAndroid != null) {
+            mNativeExclusiveAccessContextAndroid.release();
+            mNativeExclusiveAccessContextAndroid = null;
+        }
         mActiveTabObserver.destroy();
     }
 
@@ -159,6 +166,10 @@ public class ExclusiveAccessContext implements Destroyable {
     public void exitFullscreenModeForTab() {
         if (mActiveTab != null) {
             mFullscreenManager.onExitFullscreen(mActiveTab);
+        } else {
+            // In browser fullscreen, the user may exit fullscreen while no active tab is present
+            // (e.g. in the tab switcher or after closing tabs).
+            mFullscreenManager.exitPersistentFullscreenMode();
         }
     }
 
@@ -169,6 +180,6 @@ public class ExclusiveAccessContext implements Destroyable {
 
     @NativeMethods
     interface Natives {
-        void onExclusiveAccessUserInput(long nativeExclusiveAccessContextAndroid);
+        void onExclusiveAccessUserInput(JniPtr<NativeExclusiveAccessContextAndroid> self);
     }
 }

@@ -49,6 +49,12 @@ class ActorKeyedServiceAdapter : public ActuationDelegate,
   void StopTask(TaskId task_id,
                 const proto::StopTaskRequest& request,
                 StopTaskCallback callback) override;
+  void PauseTask(TaskId task_id,
+                 const proto::PauseTaskRequest& request,
+                 PauseTaskCallback callback) override;
+  void ResumeTask(TaskId task_id,
+                  const proto::ResumeTaskRequest& request,
+                  ResumeTaskCallback callback) override;
   void Act(TaskId task_id,
            const proto::PerformActionsRequest& request,
            ActCallback callback) override;
@@ -92,6 +98,9 @@ class ActorKeyedServiceAdapter : public ActuationDelegate,
       TaskId task_id,
       const proto::PerformActionsRequest& request);
   static proto::PerformActionsResponse BuildPerformActionsResponse(
+      optimization_guide::proto::ActionsResult result,
+      const proto::ObservationConfig* observation_config);
+  static proto::ResumeTaskResponse BuildResumeTaskResponse(
       optimization_guide::proto::ActionsResult result,
       const proto::ObservationConfig* observation_config);
 

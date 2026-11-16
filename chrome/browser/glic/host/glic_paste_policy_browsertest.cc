@@ -18,6 +18,7 @@
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client_factory.h"
@@ -26,7 +27,12 @@
 #include "chrome/browser/enterprise/data_controls/desktop_data_controls_dialog_test_helper.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_clipboard_utils.h"
 #include "chrome/browser/enterprise/data_protection/paste_allowed_request.h"
+#include "chrome/browser/glic/host/glic_web_client_access.h"
+#include "chrome/browser/glic/host/glic_web_client_manager.h"
+#include "chrome/browser/glic/host/glic_web_client_responsiveness_monitor.h"
+#include "chrome/browser/glic/host/glic_webui.mojom.h"
 #include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/glic/host/host.h"
 #include "chrome/browser/glic/test_support/glic_api_test.h"
 #include "chrome/browser/glic/test_support/glic_browser_test.h"
 #include "chrome/browser/glic/test_support/scoped_page_context_eligibility.h"
@@ -178,6 +184,7 @@ class ControllableClipboardAnalysisDelegate
 class GlicPastePolicyBrowserTest : public GlicBrowserTest {
  public:
   GlicPastePolicyBrowserTest() {
+    SetGlicPagePath("/glic/test_client/index.html");
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
     cloud_scan_feature_list_.InitAndEnableFeature(
         enterprise_connectors::kContentAnalysisClipboardCopy);
@@ -296,6 +303,30 @@ class GlicPastePolicyBrowserTest : public GlicBrowserTest {
         GetOnlyGlicInstance()->host().web_client_contents();
     EXPECT_TRUE(glic_guest != nullptr && IsGlicGuest(glic_guest));
     return glic_guest;
+  }
+
+  void InstallBlockedNoticesRecorder(content::WebContents* glic_guest) {
+    ASSERT_TRUE(content::ExecJs(glic_guest, R"(
+      (async () => {
+        window.__capturedBlockedNotices = [];
+        await window.client.getInitialized();
+        window.client.browser.getDataTransferActionsBlockedNotices().subscribe(
+            notice => window.__capturedBlockedNotices.push(notice));
+      })()
+    )"));
+  }
+
+  base::ListValue GetCapturedBlockedNotices(content::WebContents* glic_guest) {
+    return content::EvalJs(glic_guest, "window.__capturedBlockedNotices")
+        .TakeValue()
+        .TakeList();
+  }
+
+  bool WaitForBlockedNoticeCount(content::WebContents* glic_guest,
+                                 size_t expected_count) {
+    return base::test::RunUntil([&]() {
+      return GetCapturedBlockedNotices(glic_guest).size() == expected_count;
+    });
   }
 
  private:
@@ -755,7 +786,7 @@ IN_PROC_BROWSER_TEST_F(
   content::WebContents* source_contents = source_tab->GetContents();
 
   // Real copy writes OS replacement text while caching original text under
-  // CopyRestrictionLevel::kKeptInManagedChrome.
+  // CopyRestrictionLevel::kKeptInManagedBrowser.
   CopyTextViaContentBrowserClient(source_contents->GetPrimaryMainFrame(),
                                   u"corp internal secret");
   const std::u16string os_clipboard_text = ReadCurrentClipboardText();
@@ -766,7 +797,7 @@ IN_PROC_BROWSER_TEST_F(
           ui::ClipboardBuffer::kCopyPaste);
   ASSERT_EQ(data_controls::GetLastReplacedClipboardData().seqno, copy_seqno);
   ASSERT_EQ(data_controls::GetLastReplacedClipboardData().restriction_level,
-            data_controls::CopyRestrictionLevel::kKeptInManagedChrome);
+            data_controls::CopyRestrictionLevel::kKeptInManagedBrowser);
 
   // Switch back to `glic_tab` and open Glic while `source_tab` remains open in
   // the background, so closing `source_tab` later does not background
@@ -808,7 +839,7 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_EQ(source_endpoint.web_contents(), nullptr);
   ASSERT_EQ(source_endpoint.browser_context(), nullptr);
 
-  // Closed-source-tab paste with CopyRestrictionLevel::kKeptInManagedChrome
+  // Closed-source-tab paste with CopyRestrictionLevel::kKeptInManagedBrowser
   // blocks in ChromeContentBrowserClient::IsClipboardPasteAllowedByPolicy and
   // shows kClipboardPasteBlock instead of leaking the replacement warning
   // string into Glic.
@@ -966,7 +997,7 @@ IN_PROC_BROWSER_TEST_F(
             ui::ClipboardBuffer::kCopyPaste);
     ASSERT_EQ(data_controls::GetLastReplacedClipboardData().seqno, copy_seqno);
     ASSERT_EQ(data_controls::GetLastReplacedClipboardData().restriction_level,
-              data_controls::CopyRestrictionLevel::kKeptInManagedChrome);
+              data_controls::CopyRestrictionLevel::kKeptInManagedBrowser);
 
     content::ClipboardEndpoint source = content::CreateClipboardEndpoint(
         *source_contents->GetPrimaryMainFrame());
@@ -1031,12 +1062,132 @@ IN_PROC_BROWSER_TEST_F(
   }
 }
 
+// A copy kept in managed Chrome by a profile-level Data Controls rule is only
+// restored in the Glic of the profile it was copied from. With
+// kGlicCrossProfileTransfer, Glic takes pastes from other browser contexts (an
+// Incognito tab here), which are outside of the profile the copy was kept in,
+// so such a paste blocks with kClipboardPasteBlock instead of handing Glic the
+// replacement warning string.
+IN_PROC_BROWSER_TEST_F(GlicPastePolicyBrowserTest,
+                       KeptInManagedProfileCopyBlocksPasteFromOtherProfile) {
+  data_controls::SetDataControls(GetProfile()->GetPrefs(), {R"({
+        "sources": {
+          "urls": ["*"]
+        },
+        "destinations": {
+          "os_clipboard": true
+        },
+        "restrictions": [
+          {"class": "CLIPBOARD", "level": "BLOCK"}
+        ]
+      })"},
+                                 /*machine_scope=*/false);
+
+  const GURL eligible_url =
+      embedded_test_server()->GetURL("eligible.example.com", "/title1.html");
+  tabs::TabInterface* active_tab = GetTabListInterface()->GetActiveTab();
+  content::WebContents* source_contents = active_tab->GetContents();
+  ASSERT_TRUE(content::NavigateToURL(source_contents, eligible_url));
+
+  ASSERT_OK(OpenGlicForActiveTab());
+  content::WebContents* glic_guest = GetReadyGuest();
+  ASSERT_TRUE(glic_guest);
+  content::ClipboardEndpoint destination = MakeGuestDestination(glic_guest);
+
+  // Copies kept in the profile are restored in its own Glic.
+  {
+    CopyTextViaContentBrowserClient(source_contents->GetPrimaryMainFrame(),
+                                    u"kept in profile secret");
+    const std::u16string replacement = ReadCurrentClipboardText();
+    ASSERT_NE(replacement, u"kept in profile secret");
+    const ui::ClipboardSequenceNumberToken copy_seqno =
+        ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+            ui::ClipboardBuffer::kCopyPaste);
+    ASSERT_EQ(data_controls::GetLastReplacedClipboardData().seqno, copy_seqno);
+    ASSERT_EQ(data_controls::GetLastReplacedClipboardData().restriction_level,
+              data_controls::CopyRestrictionLevel::kKeptInManagedProfile);
+
+    content::ClipboardPasteData paste_data;
+    paste_data.text = replacement;
+    base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+    content::GetContentClientForTesting()
+        ->browser()
+        ->IsClipboardPasteAllowedByPolicy(
+            content::CreateClipboardEndpoint(
+                *source_contents->GetPrimaryMainFrame()),
+            destination,
+            {.size = replacement.size() * sizeof(char16_t),
+             .format_type = ui::ClipboardFormatType::PlainTextType(),
+             .seqno = copy_seqno},
+            std::move(paste_data), future.GetCallback());
+    std::optional<content::ClipboardPasteData> restored = future.Get();
+    ASSERT_TRUE(restored.has_value());
+    EXPECT_EQ(restored->text, u"kept in profile secret");
+  }
+
+  // Copies kept in another browser context are blocked, even though its page
+  // context is eligible and the source tab is still open.
+  enterprise_data_protection::PasteAllowedRequest::CleanupRequestsForTesting();
+  BrowserWindowInterface* incognito_browser =
+      InProcessBrowserTest::CreateIncognitoBrowser();
+  content::WebContents* incognito_contents =
+      incognito_browser->tab_strip_model()->GetActiveTab()->GetContents();
+  ASSERT_TRUE(content::NavigateToURL(incognito_contents, eligible_url));
+  {
+    glic::StageClipboardCopyEligibility(true);
+    CopyTextViaContentBrowserClient(incognito_contents->GetPrimaryMainFrame(),
+                                    u"kept in incognito secret");
+    const std::u16string replacement = ReadCurrentClipboardText();
+    ASSERT_NE(replacement, u"kept in incognito secret");
+    const ui::ClipboardSequenceNumberToken copy_seqno =
+        ui::Clipboard::GetForCurrentThread()->GetSequenceNumber(
+            ui::ClipboardBuffer::kCopyPaste);
+    ASSERT_EQ(data_controls::GetLastReplacedClipboardData().seqno, copy_seqno);
+    ASSERT_EQ(data_controls::GetLastReplacedClipboardData().restriction_level,
+              data_controls::CopyRestrictionLevel::kKeptInManagedProfile);
+
+    data_controls::DesktopDataControlsDialogTestHelper block_dialog(
+        data_controls::DataControlsDialog::Type::kClipboardPasteBlock);
+    content::ClipboardPasteData paste_data;
+    paste_data.text = replacement;
+    base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+    content::GetContentClientForTesting()
+        ->browser()
+        ->IsClipboardPasteAllowedByPolicy(
+            content::CreateClipboardEndpoint(
+                *incognito_contents->GetPrimaryMainFrame()),
+            destination,
+            {.size = replacement.size() * sizeof(char16_t),
+             .format_type = ui::ClipboardFormatType::PlainTextType(),
+             .seqno = copy_seqno},
+            std::move(paste_data), future.GetCallback());
+
+    block_dialog.WaitForDialogToInitialize();
+    EXPECT_EQ(future.Get(), std::nullopt);
+    block_dialog.CloseDialogWithoutBypass();
+    block_dialog.WaitForDialogToClose();
+  }
+}
+
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
-IN_PROC_BROWSER_TEST_F(
-    GlicPastePolicyBrowserTest,
-    IncognitoPasteShortCircuitsBeforeDataControlsWarnAndCloudScan) {
+IN_PROC_BROWSER_TEST_F(GlicPastePolicyBrowserTest,
+                       IncognitoPasteAppliesDataControlsWarn) {
   policy::MockCloudPolicyClient* cloud_policy_client = SetupRealtimeReporting();
-  EXPECT_CALL(*cloud_policy_client, UploadSecurityEvent).Times(0);
+  std::vector<chrome::cros::reporting::proto::EventResult> reported_results;
+  EXPECT_CALL(*cloud_policy_client, UploadSecurityEvent)
+      .WillRepeatedly(
+          [&](bool include_device_info,
+              ::chrome::cros::reporting::proto::UploadEventsRequest request,
+              policy::CloudPolicyClient::ResultCallback callback) {
+            for (const auto& event : request.events()) {
+              if (event.has_sensitive_data_event()) {
+                reported_results.push_back(
+                    event.sensitive_data_event().event_result());
+              }
+            }
+            std::move(callback).Run(
+                policy::CloudPolicyClient::Result(policy::DM_STATUS_SUCCESS));
+          });
 
   enterprise_connectors::test::SetAnalysisConnector(
       GetProfile()->GetPrefs(), enterprise_connectors::BULK_DATA_ENTRY,
@@ -1107,13 +1258,22 @@ IN_PROC_BROWSER_TEST_F(
                                         std::move(paste_data),
                                         future.GetCallback());
 
+  // The cross-profile paste is no longer blocked by Glic, so the Incognito
+  // Data Controls WARN rule applies. Cancelling the warning blocks the paste
+  // before any cloud scan runs.
+  dialog_helper.WaitForDialogToInitialize();
+  dialog_helper.CloseDialogWithoutBypass();
+  dialog_helper.WaitForDialogToClose();
   EXPECT_EQ(future.Get(), std::nullopt);
-  EXPECT_EQ(dialog_helper.dialog(), nullptr);
-  histogram_tester.ExpectUniqueSample("Glic.Paste.FailedEligibilityReason.Web",
-                                      2 /* kCrossProfile */, 1);
+  histogram_tester.ExpectTotalCount("Glic.Paste.FailedEligibilityReason.Web",
+                                    0);
   EXPECT_EQ(enterprise_connectors::test::FakeContentAnalysisDelegate::
                 GetTotalAnalysisRequestsCount(),
             0);
+  EXPECT_EQ(reported_results,
+            (std::vector<chrome::cros::reporting::proto::EventResult>{
+                chrome::cros::reporting::proto::EVENT_RESULT_WARNED,
+            }));
 }
 
 IN_PROC_BROWSER_TEST_F(GlicPastePolicyBrowserTest,
@@ -1551,6 +1711,234 @@ IN_PROC_BROWSER_TEST_F(
   block_dialog.WaitForDialogToClose();
 }
 #endif  // BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
+
+IN_PROC_BROWSER_TEST_F(GlicPastePolicyBrowserTest,
+                       EnterpriseModalSuppressesBlockedNotice) {
+  const GURL eligible_url =
+      embedded_test_server()->GetURL("eligible.example.com", "/title1.html");
+  tabs::TabInterface* active_tab = GetTabListInterface()->GetActiveTab();
+  ASSERT_TRUE(content::NavigateToURL(active_tab->GetContents(), eligible_url));
+
+  ASSERT_OK(OpenGlicForActiveTab());
+  content::WebContents* eligible_contents = active_tab->GetContents();
+  content::WebContents* glic_guest = GetReadyGuest();
+  ASSERT_TRUE(glic_guest);
+  InstallBlockedNoticesRecorder(glic_guest);
+
+  content::ClipboardEndpoint eligible_source =
+      content::ClipboardEndpoint::ForFrame(
+          ui::DataTransferEndpoint(eligible_url),
+          base::BindLambdaForTesting([eligible_contents] {
+            return eligible_contents->GetBrowserContext();
+          }),
+          *eligible_contents->GetPrimaryMainFrame());
+  content::ClipboardEndpoint destination = MakeGuestDestination(glic_guest);
+
+  // 1. On an eligible same-profile tab, Enterprise DataControlsRules BLOCK and
+  // cancelled WARN show DesktopDataControlsDialog, return std::nullopt, and do
+  // NOT emit a duplicate Glic DataTransferActionsBlockedNotice.
+  data_controls::SetDataControls(GetProfile()->GetPrefs(), {R"({
+    "name": "Block eligible tab paste into Glic",
+    "sources": { "urls": ["eligible.example.com"] },
+    "destinations": { "gemini_in_chrome": true },
+    "restrictions": [
+      { "class": "CLIPBOARD", "level": "BLOCK" }
+    ]
+  })"});
+
+  {
+    glic::OnBeforeClipboardCopy(eligible_source);
+    ui::ClipboardMetadata block_metadata = {
+        .size = 6,
+        .format_type = ui::ClipboardFormatType::PlainTextType(),
+    };
+    glic::SetClipboardEligibilitySeqnoForTesting(block_metadata.seqno);
+    data_controls::DesktopDataControlsDialogTestHelper block_dialog(
+        data_controls::DataControlsDialog::Type::kClipboardPasteBlock);
+    content::ClipboardPasteData paste_data;
+    paste_data.text = u"secret";
+    base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+    content::GetContentClientForTesting()
+        ->browser()
+        ->IsClipboardPasteAllowedByPolicy(eligible_source, destination,
+                                          block_metadata, std::move(paste_data),
+                                          future.GetCallback());
+    block_dialog.WaitForDialogToInitialize();
+    EXPECT_EQ(future.Get(), std::nullopt);
+    block_dialog.CloseDialogWithoutBypass();
+    block_dialog.WaitForDialogToClose();
+  }
+  EXPECT_TRUE(GetCapturedBlockedNotices(glic_guest).empty());
+
+  data_controls::SetDataControls(GetProfile()->GetPrefs(), {R"({
+    "name": "Warn eligible tab paste into Glic",
+    "sources": { "urls": ["eligible.example.com"] },
+    "destinations": { "gemini_in_chrome": true },
+    "restrictions": [
+      { "class": "CLIPBOARD", "level": "WARN" }
+    ]
+  })"});
+
+  {
+    glic::OnBeforeClipboardCopy(eligible_source);
+    ui::ClipboardMetadata cancel_metadata = {
+        .size = 6,
+        .format_type = ui::ClipboardFormatType::PlainTextType(),
+    };
+    glic::SetClipboardEligibilitySeqnoForTesting(cancel_metadata.seqno);
+    data_controls::DesktopDataControlsDialogTestHelper warn_cancel_dialog(
+        data_controls::DataControlsDialog::Type::kClipboardPasteWarn);
+    content::ClipboardPasteData paste_data;
+    paste_data.text = u"secret";
+    base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+    content::GetContentClientForTesting()
+        ->browser()
+        ->IsClipboardPasteAllowedByPolicy(
+            eligible_source, destination, cancel_metadata,
+            std::move(paste_data), future.GetCallback());
+    warn_cancel_dialog.WaitForDialogToInitialize();
+    warn_cancel_dialog.CloseDialogWithoutBypass();
+    warn_cancel_dialog.WaitForDialogToClose();
+    EXPECT_EQ(future.Get(), std::nullopt);
+  }
+  EXPECT_TRUE(GetCapturedBlockedNotices(glic_guest).empty());
+
+  // 2. On an Incognito tab, with kGlicCrossProfileTransfer enabled by default,
+  // DataControlsRules WARN targeting sources.incognito ->
+  // destinations.gemini_in_chrome shows DesktopDataControlsDialog and does NOT
+  // emit a duplicate Glic DataTransferActionsBlockedNotice when cancelled.
+  data_controls::SetDataControls(GetProfile()->GetPrefs(), {R"({
+    "name": "Warn incognito paste into Glic",
+    "sources": { "incognito": true },
+    "destinations": { "gemini_in_chrome": true },
+    "restrictions": [
+      { "class": "CLIPBOARD", "level": "WARN" }
+    ]
+  })"});
+
+  BrowserWindowInterface* incognito_browser =
+      InProcessBrowserTest::CreateIncognitoBrowser();
+  content::WebContents* incognito_contents =
+      incognito_browser->tab_strip_model()->GetActiveTab()->GetContents();
+  ASSERT_TRUE(content::NavigateToURL(incognito_contents, eligible_url));
+
+  content::ClipboardEndpoint incognito_source =
+      content::ClipboardEndpoint::ForFrame(
+          ui::DataTransferEndpoint(eligible_url, {.off_the_record = true}),
+          base::BindLambdaForTesting([incognito_contents] {
+            return incognito_contents->GetBrowserContext();
+          }),
+          *incognito_contents->GetPrimaryMainFrame());
+  glic::OnBeforeClipboardCopy(incognito_source);
+  ui::ClipboardMetadata incognito_metadata = {
+      .size = 6,
+      .format_type = ui::ClipboardFormatType::PlainTextType(),
+  };
+  glic::SetClipboardEligibilitySeqnoForTesting(incognito_metadata.seqno);
+
+  data_controls::DesktopDataControlsDialogTestHelper warn_dialog(
+      data_controls::DataControlsDialog::Type::kClipboardPasteWarn);
+  content::ClipboardPasteData paste_data;
+  paste_data.text = u"secret";
+  base::test::TestFuture<std::optional<content::ClipboardPasteData>> future;
+  content::GetContentClientForTesting()
+      ->browser()
+      ->IsClipboardPasteAllowedByPolicy(
+          incognito_source, destination, incognito_metadata,
+          std::move(paste_data), future.GetCallback());
+
+  warn_dialog.WaitForDialogToInitialize();
+  warn_dialog.CloseDialogWithoutBypass();
+  warn_dialog.WaitForDialogToClose();
+  EXPECT_EQ(future.Get(), std::nullopt);
+  EXPECT_TRUE(GetCapturedBlockedNotices(glic_guest).empty());
+}
+
+IN_PROC_BROWSER_TEST_F(GlicPastePolicyBrowserTest,
+                       WarnPasteDialogSuppressesUnresponsiveCheck) {
+  data_controls::SetDataControls(GetProfile()->GetPrefs(), {R"({
+        "name": "warn_eligible_tab_to_glic",
+        "rule_id": "456",
+        "sources": {
+          "urls": ["eligible.example.com"]
+        },
+        "destinations": {
+          "gemini_in_chrome": true
+        },
+        "restrictions": [
+          {"class": "CLIPBOARD", "level": "WARN"}
+        ]
+      })"});
+
+  const GURL url =
+      embedded_test_server()->GetURL("eligible.example.com", "/title1.html");
+  tabs::TabInterface* active_tab = GetTabListInterface()->GetActiveTab();
+  ASSERT_TRUE(content::NavigateToURL(active_tab->GetContents(), url));
+
+  ASSERT_OK(OpenGlicForActiveTab());
+  content::WebContents* source_contents = active_tab->GetContents();
+  content::WebContents* glic_guest = GetReadyGuest();
+  ASSERT_TRUE(glic_guest);
+
+  ASSERT_TRUE(content::ExecJs(source_contents, R"js(
+    const el = document.createElement('textarea');
+    el.value = 'warned secret';
+    document.body.appendChild(el);
+    el.focus();
+    el.select();
+  )js"));
+  source_contents->Copy();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return ReadCurrentClipboardText() == u"warned secret"; }));
+
+  if (content::WebContents* outer_contents =
+          glic_guest->GetOuterWebContents()) {
+    outer_contents->Focus();
+    ASSERT_TRUE(content::ExecJs(outer_contents, R"js(
+      const webview = document.getElementById('guestFrame');
+      if (webview) {
+        webview.focus();
+        webview.shadowRoot?.querySelector('iframe')?.focus();
+      }
+    )js"));
+  } else {
+    glic_guest->Focus();
+  }
+  ASSERT_TRUE(content::ExecJs(glic_guest, R"js(
+    const target = document.createElement('textarea');
+    target.id = 'glic-paste-target';
+    document.body.appendChild(target);
+    target.focus();
+  )js"));
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return glic_guest->GetFocusedFrame() == glic_guest->GetPrimaryMainFrame();
+  }));
+
+  data_controls::DesktopDataControlsDialogTestHelper warn_dialog(
+      data_controls::DataControlsDialog::Type::kClipboardPasteWarn);
+  glic_guest->Paste();
+  warn_dialog.WaitForDialogToInitialize();
+
+  Host& host = GetOnlyGlicInstance()->host();
+  GlicWebClientResponsivenessMonitor* monitor =
+      host.GetWebClientManagerForTesting()
+          ->web_client_access()
+          ->responsiveness_monitor_for_testing();
+  ASSERT_TRUE(monitor);
+  monitor->OnCheckResponsiveTimeoutForTesting();
+  EXPECT_TRUE(monitor->is_responsive());
+  ASSERT_EQ(host.web_client_state(), mojom::WebClientState::kResponsive);
+
+  warn_dialog.BypassWarning();
+  warn_dialog.WaitForDialogToClose();
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return content::EvalJs(glic_guest,
+                           "document.getElementById('glic-paste-target').value")
+               .ExtractString() == "warned secret";
+  }));
+  EXPECT_EQ(host.web_client_state(), mojom::WebClientState::kResponsive);
+}
 
 }  // namespace
 }  // namespace glic

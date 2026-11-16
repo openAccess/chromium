@@ -107,15 +107,17 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
           std::vector<ScopedHandle>* handles,
           size_t estimated_payload_size = 0);
 
-  // Constructor for the common case of unknown `payload_size`, unspecified
-  // `payload_interface_id_count`, and no `handles` vector.
+  // Constructs a serialized Message and pre-allocates its initial parameter
+  // struct at `sizeof(MessageHeaderV3)` initialized to `payload_header`.
   Message(uint32_t name,
           uint32_t flags,
           MojoCreateMessageFlags create_message_flags,
-          size_t estimated_payload_size);
+          size_t estimated_payload_size,
+          internal::StructHeader payload_header);
 
-  // Same as above, but the with default MojoCreateMessageFlags.
-  Message(uint32_t name, uint32_t flags, size_t estimated_payload_size);
+  // Same as above, with default `MojoCreateMessageFlags` and no payload size
+  // estimate.
+  Message(uint32_t name, uint32_t flags, internal::StructHeader payload_header);
 
   // Constructs a new Message object from an existing message handle. Used
   // exclusively for serializing an existing unserialized message.
@@ -374,7 +376,11 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) Message {
   ScopedMessageHandle handle_;
 
   // A Buffer which may be used to allocate blocks of data within the message
-  // payload for reading or writing.
+  // payload for reading or writing. For serialized messages, this points to
+  // storage owned by `handle_`. For unserialized messages, this points to the
+  // dummy header inside the `UnserializedMessageContext` attached to `handle_`.
+  // In either case, `payload_buffer_` must be reset before `handle_` or its
+  // attached context is destroyed.
   internal::Buffer payload_buffer_;
 
   std::vector<ScopedHandle> handles_;
@@ -413,6 +419,8 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageFilter {
   // invoked if the receiver is closed during a dispatch of a message.
   virtual void DidDispatchOrReject(Message* message, bool accepted) = 0;
 };
+
+using MessageValidatorFunc = bool (*)(Message*);
 
 class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) MessageReceiver {
  public:
@@ -453,18 +461,9 @@ class MessageReceiverWithResponderStatus : public MessageReceiver {
       std::unique_ptr<internal::ResponderThunk> responder) = 0;
 };
 
-class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter
-    : public MessageReceiver {
+class COMPONENT_EXPORT(MOJO_CPP_BINDINGS_BASE) PassThroughFilter {
  public:
-  PassThroughFilter();
-
-  PassThroughFilter(const PassThroughFilter&) = delete;
-  PassThroughFilter& operator=(const PassThroughFilter&) = delete;
-
-  ~PassThroughFilter() override;
-
-  // MessageReceiver:
-  bool Accept(Message* message) override;
+  static bool Accept(Message* message);
 };
 
 // Reports the currently dispatching Message as bad. Note that this is only

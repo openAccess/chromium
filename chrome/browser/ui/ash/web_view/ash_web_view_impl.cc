@@ -7,9 +7,9 @@
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/window_properties.h"
 #include "base/task/sequenced_task_runner.h"
-#include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/new_window/chrome_new_window_client.h"
+#include "components/webrtc/media_capture_dispatcher.h"
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/media_session.h"
@@ -107,7 +107,10 @@ const base::UnguessableToken& AshWebViewImpl::GetMediaSessionRequestId() {
 }
 
 void AshWebViewImpl::AddedToWidget() {
-  UpdateMinimizeOnBackProperty();
+  // Don't minimize the window on back gestures.
+  if (aura::Window* window = GetWidget()->GetNativeWindow()) {
+    window->SetProperty(ash::kMinimizeOnBackKey, false);
+  }
   AshWebView::AddedToWidget();
 
   // Apply rounded corners. This can't be done earlier since it
@@ -202,8 +205,8 @@ void AshWebViewImpl::RequestMediaAccessPermission(
         std::unique_ptr<content::MediaStreamUI>());
     return;
   }
-  MediaCaptureDevicesDispatcher::GetInstance()->ProcessMediaAccessRequest(
-      web_contents, request, std::move(callback), /*extension=*/nullptr);
+  webrtc::MediaCaptureDispatcher::GetInstance()->ProcessMediaAccessRequest(
+      web_contents, request, std::move(callback));
 }
 
 bool AshWebViewImpl::CheckMediaAccessPermission(
@@ -213,7 +216,7 @@ bool AshWebViewImpl::CheckMediaAccessPermission(
   if (!params_.can_record_media) {
     return false;
   }
-  return MediaCaptureDevicesDispatcher::GetInstance()
+  return webrtc::MediaCaptureDispatcher::GetInstance()
       ->CheckMediaAccessPermission(render_frame_host, security_origin, type);
 }
 
@@ -355,19 +358,8 @@ void AshWebViewImpl::UpdateCanGoBack() {
 
   can_go_back_ = can_go_back;
 
-  UpdateMinimizeOnBackProperty();
-
   for (auto& observer : observers_) {
     observer.DidChangeCanGoBack(can_go_back_);
-  }
-}
-
-void AshWebViewImpl::UpdateMinimizeOnBackProperty() {
-  const bool minimize_on_back = params_.minimize_on_back_key && !can_go_back_;
-  views::Widget* widget = GetWidget();
-  if (widget) {
-    widget->GetNativeWindow()->SetProperty(ash::kMinimizeOnBackKey,
-                                           minimize_on_back);
   }
 }
 

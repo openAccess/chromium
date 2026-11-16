@@ -156,8 +156,6 @@ void PictureInPictureWindowManager::EnterPictureInPictureWithController(
     // Don't exit picture-in-picture synchronously since exiting in the middle
     // of opening leaves us in a bad state.
     ExitPictureInPictureSoon();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kNewWindowClosed);
   }
 
   MaybeRecordPictureInPictureChanged(true);
@@ -167,12 +165,28 @@ void PictureInPictureWindowManager::EnterPictureInPictureWithController(
 void PictureInPictureWindowManager::EnterDocumentPictureInPicture(
     content::WebContents* parent_web_contents,
     content::WebContents* child_web_contents) {
+  // A Document Picture-in-Picture child WebContents cannot open another
+  // Document Picture-in-Picture window. Reject the request before closing the
+  // existing window, which would close `parent_web_contents` itself.
+  if (!parent_web_contents || !child_web_contents ||
+      GetChildWebContents() == parent_web_contents) {
+    return;
+  }
+
   // If there was already a controller, close the existing window before
   // creating the next one. This needs to happen before creating the new
   // controller so that its precondition (no child_web_contents_) remains
   // valid.
-  if (pip_window_controller_)
+  if (pip_window_controller_) {
+    base::WeakPtr<content::WebContents> weak_parent =
+        parent_web_contents->GetWeakPtr();
+    base::WeakPtr<content::WebContents> weak_child =
+        child_web_contents->GetWeakPtr();
     CloseWindowInternal();
+    if (!weak_parent || !weak_child) {
+      return;
+    }
+  }
 
   // Start observing the parent web contents.
   document_web_contents_observer_ =
@@ -647,14 +661,13 @@ void PictureInPictureWindowManager::CreateWindowInternal(
     // Don't exit picture-in-picture synchronously since exiting in the middle
     // of opening leaves us in a bad state.
     ExitPictureInPictureSoon();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kNewWindowClosed);
   }
 #endif  // !BUILDFLAG(IS_ANDROID)
 }
 
 void PictureInPictureWindowManager::CloseWindowInternal() {
   video_web_contents_observer_.reset();
+  document_web_contents_observer_.reset();
 
 #if !BUILDFLAG(IS_ANDROID)
   // Close the standalone Document PiP window, if one is open. The host itself
@@ -726,6 +739,9 @@ void PictureInPictureWindowManager::EnterStandaloneDocumentPictureInPicture(
   // and computing bounds with `pip_window_controller_` already set matches the
   // established ordering.
   EnterDocumentPictureInPicture(parent_web_contents, child_web_contents.get());
+  if (GetChildWebContents() != child_web_contents.get()) {
+    return;
+  }
 
   // Compute the initial outer window bounds on the opener's display so the
   // window opens on the same monitor as the opener, positioned inside that
@@ -841,8 +857,6 @@ void PictureInPictureWindowManager::OnScopedDisallowPictureInPictureCreated(
   number_of_existing_scoped_disallow_picture_in_pictures_++;
   if (pip_window_controller_) {
     ExitPictureInPicture();
-    RecordPictureInPictureDisallowed(
-        PictureInPictureDisallowedType::kExistingWindowClosed);
   }
 }
 
@@ -949,11 +963,6 @@ void PictureInPictureWindowManager::
         "Media.DocumentPictureInPicture.RequestedSizeToScreenRatio",
         recorded_percent);
   }
-}
-
-void PictureInPictureWindowManager::RecordPictureInPictureDisallowed(
-    PictureInPictureDisallowedType type) {
-  base::UmaHistogramEnumeration("Media.PictureInPicture.Disallowed", type);
 }
 
 void PictureInPictureWindowManager::RecordPictureInPictureTucked(

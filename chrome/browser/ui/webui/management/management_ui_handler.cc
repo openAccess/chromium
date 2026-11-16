@@ -496,10 +496,8 @@ base::DictValue ManagementUIHandler::GetThreatProtectionInfo(Profile* profile) {
     const char* title;
     const char* permission;
   } analysis_connector_permissions[] = {
-#if !BUILDFLAG(IS_ANDROID)
       {enterprise_connectors::FILE_ATTACHED, kManagementOnFileAttachedEvent,
        kManagementOnFileAttachedVisibleData},
-#endif
       {enterprise_connectors::FILE_DOWNLOADED, kManagementOnFileDownloadedEvent,
        kManagementOnFileDownloadedVisibleData},
 #if !BUILDFLAG(IS_ANDROID)
@@ -556,6 +554,11 @@ base::DictValue ManagementUIHandler::GetThreatProtectionInfo(Profile* profile) {
   }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+  if (enterprise_net::IsSecureGatewayEnabled(profile->GetPrefs())) {
+    AddThreatProtectionPermission(kManagementOnSecureGatewayEvent,
+                                  kManagementOnSecureGatewayVisibleData, &info);
+  }
+
   const std::string enterprise_manager =
       connectors_service->GetManagementDomain();
 
@@ -568,8 +571,6 @@ base::DictValue ManagementUIHandler::GetThreatProtectionInfo(Profile* profile) {
                        IDS_MANAGEMENT_THREAT_PROTECTION_DESCRIPTION_BY,
                        base::UTF8ToUTF16(enterprise_manager)));
   result.Set("info", std::move(info));
-  result.Set("showSecureGatewayDisclosure",
-             enterprise_net::IsSecureGatewayEnabled(profile->GetPrefs()));
   return result;
 }
 

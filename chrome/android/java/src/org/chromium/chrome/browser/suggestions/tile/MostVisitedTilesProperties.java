@@ -25,8 +25,18 @@ public final class MostVisitedTilesProperties {
     public static final PropertyModel.WritableObjectPropertyKey<Integer> HORIZONTAL_EDGE_PADDINGS =
             new WritableObjectPropertyKey<>(true);
 
+    /**
+     * Whether the MVT container wraps its tiles (so the entire container can be centered) instead
+     * of filling its offered width.
+     */
+    public static final PropertyModel.WritableBooleanPropertyKey CONTAINER_WRAPS_TILES =
+            new PropertyModel.WritableBooleanPropertyKey();
+
     public static final PropertyKey[] ALL_KEYS =
             new PropertyKey[] {
-                IS_VISIBLE, HORIZONTAL_INTERVAL_PADDINGS, HORIZONTAL_EDGE_PADDINGS,
+                IS_VISIBLE,
+                HORIZONTAL_INTERVAL_PADDINGS,
+                HORIZONTAL_EDGE_PADDINGS,
+                CONTAINER_WRAPS_TILES,
             };
 }

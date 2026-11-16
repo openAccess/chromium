@@ -69,6 +69,10 @@ AX_BASE_EXPORT bool IsAccessibilityHandleOccludingViewsEnabled();
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityLabeledBy);
 AX_BASE_EXPORT bool IsAccessibilityLabeledByEnabled();
 
+// When enabled, uses new Android API className mappings for roles.
+AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityMapToNewClassNames);
+AX_BASE_EXPORT bool IsAccessibilityMapToNewClassNamesEnabled();
+
 // Expose the accessibility tree for views via an AXTree of AXNodes.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kAccessibilityTreeForViews);
 AX_BASE_EXPORT bool IsAccessibilityTreeForViewsEnabled();
@@ -324,10 +328,6 @@ AX_BASE_EXPORT bool IsReadAnythingTranslateEntryPointEnabled();
 // Enable improved UI layouts and controls in Read Anything.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kReadAnythingImprovedUi);
 AX_BASE_EXPORT bool IsReadAnythingImprovedUiEnabled();
-
-// Enable the line focus feature for Read Anything.
-AX_BASE_EXPORT BASE_DECLARE_FEATURE(kReadAnythingLineFocus);
-AX_BASE_EXPORT bool IsReadAnythingLineFocusEnabled();
 
 // Enable HaTS survey for Reading Mode.
 AX_BASE_EXPORT BASE_DECLARE_FEATURE(kHatsReadingModeSurvey);

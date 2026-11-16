@@ -1,10 +1,10 @@
-// Copyright 2022 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import type {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {dedupingMixin} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import type {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {dedupingMixin} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 type Constructor<T> = new (...args: any[]) => T;
 
@@ -12,18 +12,16 @@ type Constructor<T> = new (...args: any[]) => T;
  * This mixin bundles functionality required to show a password to the user.
  */
 export const ShowPasswordMixin = dedupingMixin(
-    <T extends Constructor<PolymerElement>>(superClass: T): T&
+    <T extends Constructor<CrLitElement>>(superClass: T): T&
     Constructor<ShowPasswordMixinInterface> => {
-      class ShowPasswordMixin extends superClass {
+      class ShowPasswordMixin extends superClass implements
+          ShowPasswordMixinInterface {
         static get properties() {
           return {
-            isPasswordVisible: {
-              type: Boolean,
-              value: false,
-            },
+            isPasswordVisible: {type: Boolean},
           };
         }
-        declare isPasswordVisible: boolean;
+        accessor isPasswordVisible: boolean = false;
 
         getPasswordInputType() {
           return this.isPasswordVisible ? 'text' : 'password';

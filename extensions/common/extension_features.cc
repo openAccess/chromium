@@ -31,6 +31,8 @@ BASE_FEATURE(kApiOdfsConfigPrivate, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiContextualTasksPrivate, base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kApiContextualTasksPrivateAba, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kApiGlicPrivate, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kApiEnterpriseReportingPrivateOnDataMaskingRulesTriggered,
@@ -105,6 +107,9 @@ BASE_FEATURE(kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist,
 
 // For historical reasons, this includes some APIs. Please don't add more.
 
+BASE_FEATURE(kAvoidCloneMutableExtensionFunctionArgs,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kExtensionInstallSiteAccessOptions,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -135,7 +140,7 @@ BASE_FEATURE(kExtensionAutoRejectIncognitoConnectability,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionAsyncListenerRegistration,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionDebuggerStrictPolicyRestrictions,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -168,6 +173,9 @@ BASE_FEATURE_PARAM(size_t,
                    &kExtensionsBackgroundCompilation,
                    "max_script_size",
                    0);
+
+BASE_FEATURE(kExtensionOpenTabSetInitiatorOrigin,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionProtocolHandlers, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -259,6 +267,9 @@ BASE_FEATURE(kExtensionBrowserNamespaceOnWebPages,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kExtensionContentVerificationUsesExtensionRoot,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kExtensionContentVerificationReportsMissingManifest,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnableShouldShowPromotion, base::FEATURE_DISABLED_BY_DEFAULT);

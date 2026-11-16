@@ -549,12 +549,13 @@ public class BrowserControlsManager implements ActivityStateListener, BrowserCon
             mTopControlsHeight = topControlsHeight;
             mTopControlsMinHeight = topControlsMinHeight;
 
-            if (!canAnimateNativeBrowserControls()) {
-                if (shouldAnimateBrowserControlsHeightChanges()) {
+            if (shouldAnimateBrowserControlsHeightChanges()) {
+                // The renderer animates the change when it can; otherwise animate here.
+                if (!canAnimateNativeBrowserControls()) {
                     runBrowserDrivenTopControlsHeightChangeAnimation(oldTopHeight, oldTopMinHeight);
-                } else {
-                    showAndroidControls(false);
                 }
+            } else if (!canAnimateNativeBrowserControls() || canSnapToNewHeight()) {
+                showAndroidControls(false);
             }
 
             // Signal that the animation started even if canAnimateNativeBrowserControls() returns
@@ -928,9 +929,10 @@ public class BrowserControlsManager implements ActivityStateListener, BrowserCon
             int topContentOffset,
             int topControlsMinHeightOffset,
             int bottomControlsMinHeightOffset) {
-        // This min/max logic is here to handle changes in the browser controls height. For example,
-        // if we change either height to 0, the offsets of the controls should also be 0. This works
-        // assuming we get an event from the renderer after the browser control heights change.
+        // Live renderer offsets are already bounded by the browser's control heights in
+        // RenderWidgetHostViewAndroid. This path is also reached with a tab's last-known offsets
+        // (e.g. when switching back to it), which may predate a change to the control heights,
+        // so bound them again here: a height of 0 must yield offsets of 0.
         int rendererTopControlOffset = Math.max(topControlsOffset, -getTopControlsHeight());
         int rendererBottomControlOffset = Math.min(bottomControlsOffset, getBottomControlsHeight());
 
@@ -1491,6 +1493,17 @@ public class BrowserControlsManager implements ActivityStateListener, BrowserCon
 
     private static float interpolate(float progress, float oldValue, float newValue) {
         return oldValue + progress * (newValue - oldValue);
+    }
+
+    /** Top controls are fully shown; the renderer last reported no scroll offset for them. */
+    private boolean areTopControlsFullyShown() {
+        return mRendererTopControlOffset == 0;
+    }
+
+    /** An instant height change can be applied directly when the controls are fully shown. */
+    private boolean canSnapToNewHeight() {
+        return ChromeFeatureList.sBrowserControlsSnapOnHeightChange.isEnabled()
+                && areTopControlsFullyShown();
     }
 
     private boolean canAnimateNativeBrowserControls() {

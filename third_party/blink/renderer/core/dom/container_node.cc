@@ -185,7 +185,7 @@ static inline bool CollectChildrenAndRemoveFromOldParent(
 }
 
 void ContainerNode::ParserTakeAllChildrenFrom(ContainerNode& old_parent) {
-  HeapVector<Member<Node>> children;
+  NodeVector children;
   for (Node* child = old_parent.firstChild(); child;
        child = child->nextSibling()) {
     children.push_back(child);
@@ -1528,7 +1528,10 @@ PhysicalRect ContainerNode::BoundingBox() const {
 }
 
 HTMLCollection* ContainerNode::children() {
-  return EnsureCachedCollection<HTMLCollection>(kNodeChildren);
+  if (NodeListsNodeData* node_lists = NodeLists()) {
+    return node_lists->EnsureChildren(*this);
+  }
+  return EnsureNodeLists().EnsureChildren(*this);
 }
 
 Element* ContainerNode::firstElementChild() {

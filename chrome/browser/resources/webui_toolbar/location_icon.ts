@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 import '/shared/icon_from_table.js';
+import './icons.js';
 import '//resources/cr_elements/cr_icon/cr_icon.js';
 import './toolbar_chip_button.js';
 
@@ -213,14 +214,34 @@ export class LocationIconElement extends LocationIconElementBase {
     }, duration);
   }
 
+  protected onMousedown_(e: MouseEvent) {
+    // Like native Views, pressing an unclickable icon, e.g. while the omnibox
+    // is being edited, does not take the focus away from the omnibox, which
+    // would close its suggestions popup.
+    if (!this.clickable) {
+      e.preventDefault();
+    }
+  }
+
   protected onPointerdown_(e: PointerEvent) {
     if (this.activePointerId_ !== null) {
       return;
     }
 
+    // An unclickable icon ignores presses, but still reports drags, like
+    // native Views, which closes the omnibox suggestions popup on a drag of
+    // the icon even when there is nothing to drag.
+    if (!this.clickable) {
+      if (e.button === 0) {
+        this.isDragging_ = false;
+        this.startDragTracking_(e);
+      }
+      return;
+    }
+
     // Only handle primary (left), auxiliary (middle), and secondary (right)
     // clicks.
-    if (!this.clickable || ![0, 1, 2].includes(e.button)) {
+    if (![0, 1, 2].includes(e.button)) {
       return;
     }
 
@@ -233,32 +254,36 @@ export class LocationIconElement extends LocationIconElementBase {
         LhsChipIdentifier.kLocationIcon, isMiddleClick);
 
     // `isDragging_` intentionally outlives pointerup so onClick_() can suppress
-    // the click that may follow a drag; it is only cleared on the next press.
+    // the pointer click that may follow a drag; it is only cleared on the next
+    // press.
     // Reset it for every accepted press, not just left, so a right-click right
     // after a drag still opens Page Info, as in native views.
     this.isDragging_ = false;
 
     if (e.button === 0) {
-      this.dragStartX_ = e.clientX;
-      this.dragStartY_ = e.clientY;
-      this.activePointerId_ = e.pointerId;
-
-      PointerProxyImpl.getInstance().setPointerCapture(
-          this.$.button, e.pointerId);
-
-      this.eventTracker_.add(
-          this.$.button, 'pointermove',
-          (e: PointerEvent) => this.onContainerPointerMove_(e));
-      this.eventTracker_.add(
-          this.$.button, 'pointerup',
-          (e: PointerEvent) => this.onContainerPointerUp_(e));
-      this.eventTracker_.add(
-          this.$.button, 'pointercancel',
-          () => this.onContainerPointerCancel_());
-      this.eventTracker_.add(
-          this.$.button, 'lostpointercapture',
-          () => this.onContainerLostPointerCapture_());
+      this.startDragTracking_(e);
     }
+  }
+
+  private startDragTracking_(e: PointerEvent) {
+    this.dragStartX_ = e.clientX;
+    this.dragStartY_ = e.clientY;
+    this.activePointerId_ = e.pointerId;
+
+    PointerProxyImpl.getInstance().setPointerCapture(
+        this.$.button, e.pointerId);
+
+    this.eventTracker_.add(
+        this.$.button, 'pointermove',
+        (e: PointerEvent) => this.onContainerPointerMove_(e));
+    this.eventTracker_.add(
+        this.$.button, 'pointerup',
+        (e: PointerEvent) => this.onContainerPointerUp_(e));
+    this.eventTracker_.add(
+        this.$.button, 'pointercancel', () => this.onContainerPointerCancel_());
+    this.eventTracker_.add(
+        this.$.button, 'lostpointercapture',
+        () => this.onContainerLostPointerCapture_());
   }
 
   protected onContainerPointerMove_(e: PointerEvent) {
@@ -309,16 +334,19 @@ export class LocationIconElement extends LocationIconElementBase {
   }
 
   protected onClick_(e: PointerEvent) {
-    if (this.clickable && !this.isDragging_) {
-      TrackedElementManager.getInstance().notifyElementActivated(this);
-      // Note: 'click' and 'auxclick' events are dispatched using PointerEvents.
-      // Keyboard clicks (Enter/Space) also dispatch PointerEvents, but they
-      // have an empty pointerType (""). We only want to suppress true pointer
-      // interactions (mouse, touch, pen).
-      BrowserProxyImpl.getInstance().toolbarUIHandler.onLhsChipClicked(
-          LhsChipIdentifier.kLocationIcon, e.pointerType !== '',
-          /*state_token=*/ 0);
+    // Note: 'click' and 'auxclick' events are dispatched using PointerEvents.
+    // Keyboard clicks (Enter/Space) have an empty pointerType ("") and no
+    // preceding press, so they are not suppressed after a drag. Pointer clicks,
+    // including those simulated by assistive technology, follow a pointerdown
+    // that clears `isDragging_`, so only the click that may follow a drag is
+    // suppressed.
+    const isPointerClick = e.pointerType !== '';
+    if (!this.clickable || (this.isDragging_ && isPointerClick)) {
+      return;
     }
+    TrackedElementManager.getInstance().notifyElementActivated(this);
+    BrowserProxyImpl.getInstance().toolbarUIHandler.onLhsChipClicked(
+        LhsChipIdentifier.kLocationIcon, isPointerClick, /*state_token=*/ 0);
   }
 
   protected onAuxclick_(e: PointerEvent) {

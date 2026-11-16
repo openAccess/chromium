@@ -6,8 +6,10 @@
 
 #include <algorithm>
 
+#include "base/feature_list.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -20,6 +22,7 @@
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/table_layout.h"
+#include "url/origin.h"
 
 namespace webid {
 namespace {
@@ -79,12 +82,18 @@ content::WebContents* FedCmModalDialogView::ShowPopupWindow(
   content::OpenURLParams params =
       content::OpenURLParams::CreateBrowserInitiated(
           url, disposition, ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-  base::WeakPtr<FedCmModalDialogView> weak_this =
-      weak_ptr_factory_.GetWeakPtr();
-  content::WebContents* popup_window = delegate->OpenURLFromTab(
-      source_window_, params, /*navigation_handle_callback=*/{});
-
-  if (!weak_this) {
+  // The URL comes from the identity provider, so the navigation must not look
+  // as if the user typed it (`SameSite=Strict` cookies,
+  // `Sec-Fetch-Site: none`). An opaque initiator matches the spec, which
+  // navigates a fresh top-level traversable, and Android's Custom Tabs.
+  if (base::FeatureList::IsEnabled(features::kFedCmOpaqueInitiatorOrigin)) {
+    params.initiator_origin = url::Origin();
+  }
+  content::WebContents* popup_window = nullptr;
+  if (!RunAndCheckAlive([&]() {
+        popup_window = delegate->OpenURLFromTab(
+            source_window_, params, /*navigation_handle_callback=*/{});
+      })) {
     return nullptr;
   }
 
@@ -93,15 +102,19 @@ content::WebContents* FedCmModalDialogView::ShowPopupWindow(
     return nullptr;
   }
 
+  // Observe the pop-up before resizing and focusing it, so that
+  // `popup_window_` is cleared if the pop-up is destroyed meanwhile. In that
+  // case, the observer gets `OnPopupWindowDestroyed()`, which may delete `this`
+  // and, if closing the pop-up cancels the flow, dismisses the flow.
+  Observe(popup_window_);
+
   // When `is_fullscreen` is true, the content will be automatically activated
   // because we requested a `NEW_FOREGROUND_TAB` disposition.
   if (!is_fullscreen) {
-    ResizeAndFocusPopupWindow();
-    if (!weak_this) {
+    if (!RunAndCheckAlive([&]() { ResizeAndFocusPopupWindow(); })) {
       return nullptr;
     }
   }
-  Observe(popup_window_);
 
   return popup_window_;
 }
@@ -129,6 +142,9 @@ void FedCmModalDialogView::ClosePopupWindow() {
   content::WebContents* popup = popup_window_;
   popup_window_ = nullptr;
   popup->Close();
+  // `this` may be deleted now: closing the pop-up can destroy the
+  // `FedCmAccountSelectionView` that owns this object. Do not access members
+  // after this point.
 
   UMA_HISTOGRAM_ENUMERATION(
       "Blink.FedCm.IdpSigninStatus.ClosePopupWindowReason",
@@ -143,8 +159,16 @@ void FedCmModalDialogView::ResizeAndFocusPopupWindow() {
   if (custom_y_position_) {
     popup_window_bounds.set_y(*custom_y_position_);
   }
-  popup_window_->GetDelegate()->SetContentsBounds(popup_window_,
-                                                  popup_window_bounds);
+  if (!RunAndCheckAlive([&]() {
+        popup_window_->GetDelegate()->SetContentsBounds(popup_window_,
+                                                        popup_window_bounds);
+      })) {
+    return;
+  }
+  // Resizing may have closed the pop-up.
+  if (!popup_window_) {
+    return;
+  }
   popup_window_->GetDelegate()->ActivateContents(popup_window_);
 }
 
@@ -202,6 +226,14 @@ void FedCmModalDialogView::ResetObserver() {
 
 FedCmModalDialogView::Observer* FedCmModalDialogView::GetObserverForTesting() {
   return observer_;
+}
+
+bool FedCmModalDialogView::RunAndCheckAlive(
+    base::FunctionRef<void()> callback) {
+  base::WeakPtr<FedCmModalDialogView> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+  callback();
+  return weak_this != nullptr;
 }
 
 }  // namespace webid

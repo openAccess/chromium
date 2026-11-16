@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+@class ActorFormSuggestion;
+
 // Supported layout styles for the actuation worklog item.
 enum class ActuationWorklogItemStyle {
   // Simple style with a dot indicator on the left and a title.
@@ -163,19 +165,29 @@ enum class ActuationInterventionType {
   kColumn,
 };
 
+// Identifiers of the actions of an `ActuationInterventionData`.
+enum class InterventionActionIdentifier : NSInteger {
+  // Continue the current task.
+  kContinue,
+  // "Allow this suggestion" action.
+  kAllow,
+  // "Manually enter" or "Manual sign in" action.
+  kManuallyEnter,
+};
+
 // View data object describing an action of an `ActuationInterventionData`.
 @interface ActuationInterventionAction : NSObject
 
-// Caller-defined identifier, passed back when the action is triggered.
-@property(nonatomic, assign, readonly) NSInteger identifier;
+// Identifier passed back when the action is triggered.
+@property(nonatomic, assign, readonly) InterventionActionIdentifier identifier;
 
 // Title of the button triggering the action.
 @property(nonatomic, copy, readonly) NSString* title;
 
-// TODO(crbug.com/573145076): Add an optional `icon` for `columnItem`.
+// TODO(crbug.com/573964938): Add an optional `icon` for `columnItem`.
 
 // Designated initializer.
-- (instancetype)initWithIdentifier:(NSInteger)identifier
+- (instancetype)initWithIdentifier:(InterventionActionIdentifier)identifier
                              title:(NSString*)title NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -253,59 +265,64 @@ enum class ActuationInterventionType {
 
 @end
 
-// Visual style of an `ActuationHeaderItem`.
-typedef NS_ENUM(NSInteger, ActuationHeaderItemStyle) {
-  // Icon-only button. `title` is used as the accessibility label.
-  ActuationHeaderItemStyleIcon,
-  // Prominent text-only capsule button displaying `title`.
-  ActuationHeaderItemStyleCallToAction,
-};
+// View data object describing an entry of the actuation worklog. The same
+// instance is kept across states, so views can find what changed by pointer.
+@interface ActuationWorklogEntry : NSObject
 
-// View data object describing a button in the actuation header. The button will
-// trigger `action` or presents `menu` on tap; exactly one of them is non-nil.
-@interface ActuationHeaderItem : NSObject
+// Item displayed for the entry.
+@property(nonatomic, strong, readonly) ActuationWorklogItem* item;
 
-// Visual style of the button, determined by the factory used.
-@property(nonatomic, assign, readonly) ActuationHeaderItemStyle style;
+// Chip of the tool executed for the entry, if any.
+@property(nonatomic, strong, readonly) ActuationWorklogChip* chip;
 
-// Icon displayed in the button. Nil for
-// `ActuationHeaderItemStyleCallToAction` items.
-@property(nonatomic, strong, readonly) UIImage* icon;
-
-// Title of the item. Displayed as the button text for
-// `ActuationHeaderItemStyleCallToAction` items, otherwise used as the
-// accessibility label of the icon-only button.
-@property(nonatomic, copy, readonly) NSString* title;
-
-// Optional accessibility identifier of the button.
-@property(nonatomic, copy, readonly) NSString* accessibilityIdentifier;
-
-// Action triggered on tap. Nil when `menu` is set.
-@property(nonatomic, strong, readonly) UIAction* action;
-
-// Menu presented on tap. Nil when `action` is set.
-@property(nonatomic, strong, readonly) UIMenu* menu;
-
-// Creates an `ActuationHeaderItemStyleIcon` item triggering `action` on tap.
-+ (instancetype)itemWithIcon:(UIImage*)icon
-                       title:(NSString*)title
-     accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                      action:(UIAction*)action;
-
-// Creates an `ActuationHeaderItemStyleIcon` item presenting `menu` on tap.
-+ (instancetype)itemWithIcon:(UIImage*)icon
-                       title:(NSString*)title
-     accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                        menu:(UIMenu*)menu;
-
-// Creates an `ActuationHeaderItemStyleCallToAction` item displaying `title`
-// and triggering `action` on tap.
-+ (instancetype)callToActionWithTitle:(NSString*)title
-              accessibilityIdentifier:(NSString*)accessibilityIdentifier
-                               action:(UIAction*)action;
+// Designated initializer.
+- (instancetype)initWithItem:(ActuationWorklogItem*)item
+                        chip:(ActuationWorklogChip*)chip
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
-+ (instancetype)new NS_UNAVAILABLE;
+
+@end
+
+// Immutable snapshot of the actuation worklog of a task, built once and
+// rendered by every UI observing the task.
+@interface ActuationWorklogState : NSObject
+
+// Whether actuation is actively executing.
+@property(nonatomic, assign, readonly, getter=isActuationActive)
+    BOOL actuationActive;
+
+// Header content to display in each display mode.
+@property(nonatomic, strong, readonly)
+    ActuationHeaderContentVariants* headerContent;
+
+// Entries of the worklog, in display order.
+@property(nonatomic, copy, readonly) NSArray<ActuationWorklogEntry*>* entries;
+
+// Pending intervention, if any.
+@property(nonatomic, strong, readonly) ActuationInterventionData* intervention;
+
+// Suggestions selectable for `suggestionsEntry`, if any.
+// TODO(crbug.com/584701116): Replace `ActorFormSuggestion` with a UI-layer
+// view data type so this header doesn't depend on `actor/tools/model/`.
+@property(nonatomic, copy, readonly) NSArray<ActorFormSuggestion*>* suggestions;
+
+// Entry for which `suggestions` are selectable. `nil` if `suggestions` is.
+@property(nonatomic, strong, readonly) ActuationWorklogEntry* suggestionsEntry;
+
+// Designated initializer. `headerContent` and `entries` must be set.
+// `suggestions` and `suggestionsEntry` must both be `nil` or both be set, and
+// `suggestions` must not be empty.
+- (instancetype)
+    initWithActuationActive:(BOOL)actuationActive
+              headerContent:(ActuationHeaderContentVariants*)headerContent
+                    entries:(NSArray<ActuationWorklogEntry*>*)entries
+               intervention:(ActuationInterventionData*)intervention
+                suggestions:(NSArray<ActorFormSuggestion*>*)suggestions
+           suggestionsEntry:(ActuationWorklogEntry*)suggestionsEntry
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
 
 @end
 

@@ -44,7 +44,6 @@ class DataTypeState_Invalidation;
 
 namespace syncer {
 
-class AttachmentUploader;
 enum class AttachmentUploadError;
 class CommitQueue;
 
@@ -123,6 +122,7 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   void ConnectSync(std::unique_ptr<CommitQueue> worker) override;
   void DisconnectSync() override;
   void GetLocalChanges(size_t max_entries,
+                       size_t max_target_specifics_bytes,
                        GetLocalChangesCallback callback) override;
   void OnCommitCompleted(
       const sync_pb::DataTypeState& type_state,
@@ -159,11 +159,6 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   bool IsTrackingEntityForTest(const std::string& storage_key) const;
 
   bool IsModelReadyToSyncForTest() const;
-
-  // TODO(crbug.com/568634932): Pass `AttachmentUploader` via
-  // `DataTypeActivationRequest`.
-  void SetAttachmentUploaderForTest(
-      std::unique_ptr<AttachmentUploader> attachment_uploader);
 
   // Records a local entity creation or update that includes a new or modified
   // attachment at `attachment_file_path` to be uploaded before commit.
@@ -255,7 +250,9 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
                         std::unique_ptr<DataBatch> data_batch);
 
   // Prepares Commit requests and passes them to the GetLocalChanges callback.
-  void CommitLocalChanges(size_t max_entries, GetLocalChangesCallback callback);
+  void CommitLocalChanges(size_t max_entries,
+                          size_t max_target_specifics_bytes,
+                          GetLocalChangesCallback callback);
 
   // Nudges worker if there are any local entities to be committed.
   void NudgeForCommitIfNeeded();
@@ -315,10 +312,6 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
                std::unique_ptr<EntityData> data,
                base::optional_ref<const base::FilePath> attachment_file_path,
                MetadataChangeList* metadata_change_list);
-
-  // Starts or resumes attachment uploads for all tracked entities that have a
-  // pending attachment upload.
-  void StartOrResumePendingAttachmentUploads();
 
   // Starts or resumes the attachment upload for `entity`.
   void StartOrResumeAttachmentUpload(ProcessorEntity& entity);
@@ -385,9 +378,6 @@ class ClientTagBasedDataTypeProcessor : public DataTypeProcessor,
   // proxy object to the actual CommitQueue implementation (aka the worker),
   // which lives on the sync sequence.
   std::unique_ptr<CommitQueue> worker_;
-
-  // Optional uploader used to coordinate blob attachment uploads.
-  std::unique_ptr<AttachmentUploader> attachment_uploader_;
 
   //////////////////
   // Entity state //

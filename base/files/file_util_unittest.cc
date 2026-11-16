@@ -131,7 +131,7 @@ FilePath MakeShortFilePath(const FilePath& input) {
 }
 #endif  // BUILDFLAG(IS_WIN)
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Provide a simple way to change the permissions bits on |path| in tests.
 // ASSERT failures will return, but not stop the test.  Caller should wrap
 // calls to this function in ASSERT_NO_FATAL_FAILURE().
@@ -147,7 +147,7 @@ void ChangePosixFilePermissions(const FilePath& path,
   mode &= ~mode_bits_to_clear;
   ASSERT_TRUE(SetPosixFilePermissions(path, mode));
 }
-#endif  // BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 // Fuchsia doesn't support file permissions.
 #if !BUILDFLAG(IS_FUCHSIA)
@@ -3540,13 +3540,6 @@ TEST_F(FileUtilTest, CreateNewTempDirectoryPrefixTest) {
       CreateNewTempDirectory(FILE_PATH_LITERAL("test_dir_prefix"), &temp_dir));
   EXPECT_TRUE(PathExists(temp_dir));
 
-  const FilePath::StringType matcher =
-#if BUILDFLAG(IS_WIN)
-      FILE_PATH_LITERAL("test_dir_prefix*");
-#else   // BUILDFLAG(IS_WIN)
-      FILE_PATH_LITERAL("*.test_dir_prefix.*");
-#endif  // BUILDFLAG(IS_WIN)
-
   EXPECT_THAT(temp_dir.value(),
               ::testing::HasSubstr(FILE_PATH_LITERAL("test_dir_prefix")));
   EXPECT_TRUE(DeleteFile(temp_dir));
@@ -3968,27 +3961,49 @@ TEST_F(FileUtilTest, ReadFileToBytes) {
   const std::vector<uint8_t> kTestData = {'0', '1', '2', '3'};
 
   FilePath file_path =
-      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("ReadFileToStringTest"));
+      temp_dir_.GetPath().Append(FILE_PATH_LITERAL("ReadFileToBytesTest"));
   FilePath file_path_dangerous =
       temp_dir_.GetPath()
           .Append(FILE_PATH_LITERAL(".."))
           .Append(temp_dir_.GetPath().BaseName())
-          .Append(FILE_PATH_LITERAL("ReadFileToStringTest"));
+          .Append(FILE_PATH_LITERAL("ReadFileToBytesTest"));
 
   // Create test file.
   ASSERT_TRUE(WriteFile(file_path, kTestData));
 
   std::optional<std::vector<uint8_t>> bytes = ReadFileToBytes(file_path);
   ASSERT_TRUE(bytes.has_value());
-  EXPECT_EQ(kTestData, bytes);
+  EXPECT_EQ(kTestData, bytes.value());
+
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 0).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 2).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 3).has_value());
+
+  bytes = ReadFileToBytesWithMaxSize(file_path, 4);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_EQ(kTestData, bytes.value());
+
+  bytes = ReadFileToBytesWithMaxSize(file_path, 6);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_EQ(kTestData, bytes.value());
 
   // Write empty file.
   ASSERT_TRUE(WriteFile(file_path, ""));
   bytes = ReadFileToBytes(file_path);
   ASSERT_TRUE(bytes.has_value());
-  EXPECT_TRUE(bytes->empty());
+  EXPECT_TRUE(bytes.value().empty());
 
-  ASSERT_FALSE(ReadFileToBytes(file_path_dangerous));
+  bytes = ReadFileToBytesWithMaxSize(file_path, 0);
+  ASSERT_TRUE(bytes.has_value());
+  EXPECT_TRUE(bytes.value().empty());
+
+  EXPECT_FALSE(ReadFileToBytes(file_path_dangerous).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path_dangerous, 6).has_value());
+
+  // Delete test file.
+  EXPECT_TRUE(DeleteFile(file_path));
+  EXPECT_FALSE(ReadFileToBytes(file_path).has_value());
+  EXPECT_FALSE(ReadFileToBytesWithMaxSize(file_path, 6).has_value());
 }
 
 TEST_F(FileUtilTest, ReadFileToString) {
@@ -4638,7 +4653,7 @@ TEST_F(FileUtilTest, SetCloseOnExec) {
 
 #endif
 
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 // Testing VerifyPathControlledByAdmin() is hard, because there is no
 // way a test can make a file owned by root, or change file paths
@@ -4906,7 +4921,7 @@ TEST_F(VerifyPathControlledByUserTest, WriteBitChecks) {
   EXPECT_TRUE(VerifyPathControlledByUser(sub_dir_, text_file_, uid_, ok_gids_));
 }
 
-#endif  // BUILDFLAG(IS_MAC)
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(IS_ANDROID)
 TEST_F(FileUtilTest, ValidContentUriTest) {

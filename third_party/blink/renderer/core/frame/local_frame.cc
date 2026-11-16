@@ -31,7 +31,6 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -99,6 +98,7 @@
 #include "third_party/blink/renderer/core/ad_tracker/ad_tracker.h"
 #include "third_party/blink/renderer/core/ad_tracker/extension_script_tracker.h"
 #include "third_party/blink/renderer/core/ad_tracker/script_initiation_monitor.h"
+#include "third_party/blink/renderer/core/clipboard/data_transfer.h"
 #include "third_party/blink/renderer/core/clipboard/system_clipboard.h"
 #include "third_party/blink/renderer/core/content_capture/content_capture_manager.h"
 #include "third_party/blink/renderer/core/core_export.h"
@@ -210,6 +210,7 @@
 #include "third_party/blink/renderer/core/messaging/message_port.h"
 #include "third_party/blink/renderer/core/page/chrome_client.h"
 #include "third_party/blink/renderer/core/page/drag_controller.h"
+#include "third_party/blink/renderer/core/page/drag_image.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
@@ -234,6 +235,7 @@
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scoped_paint_chunk_properties.h"
+#include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
@@ -256,11 +258,13 @@
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "third_party/skia/include/core/SkImage.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
+#include "v8/include/v8-isolate.h"
 
 #if BUILDFLAG(IS_MAC)
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
@@ -495,6 +499,17 @@ void LocalFrame::CreateView(const gfx::Size& viewport_size,
   if (is_local_root) {
     frame_view->SetParentVisible(true);
   }
+
+  bool subtree_throttled = false;
+  if (Frame* parent = Tree().Parent()) {
+    if (FrameView* parent_view = parent->View()) {
+      subtree_throttled = parent_view->CanThrottleRenderingForPropagation();
+    }
+  }
+  frame_view->UpdateRenderThrottlingStatus(
+      /*hidden_for_throttling=*/false, subtree_throttled,
+      /*display_locked=*/Owner() && Owner()->IsDisplayLocked(),
+      /*recurse=*/false);
 
   AttachViewToOwner();
 
@@ -1956,8 +1971,10 @@ String LocalFrame::SelectedTextForClipboard() const {
 
 void LocalFrame::TextSelectionChanged(const String& selection_text,
                                       uint32_t offset,
-                                      const gfx::Range& range) const {
-  GetLocalFrameHostRemote().TextSelectionChanged(selection_text, offset, range);
+                                      const gfx::Range& range,
+                                      bool has_selection) const {
+  GetLocalFrameHostRemote().TextSelectionChanged(selection_text, offset, range,
+                                                 has_selection);
 }
 
 PositionWithAffinity LocalFrame::PositionForPoint(
@@ -2908,8 +2925,7 @@ void LocalFrame::SetAdEvidence(const FrameAdEvidence& ad_evidence) {
 }
 
 bool LocalFrame::IsAdScriptInStack() const {
-  return ad_tracker_ &&
-         ad_tracker_->IsAdScriptInStack(AdTracker::StackType::kTopOnly);
+  return ad_tracker_ && ad_tracker_->IsAdScriptInStack();
 }
 
 bool LocalFrame::IsFrameCreatedByAdScript() const {
@@ -3888,6 +3904,18 @@ void LocalFrame::AddInspectorIssue(AuditsIssue info) {
 
 void LocalFrame::CopyImageAtViewportPoint(const gfx::Point& viewport_point) {
   HitTestResult result = HitTestResultForVisualViewportPos(viewport_point);
+  Element* svg_root = StandaloneSVGRootForImageActions(result);
+  if (svg_root && result.AbsoluteImageURL().IsEmpty() &&
+      !IsA<HTMLCanvasElement>(result.InnerNodeOrImageMapImage())) {
+    if (std::unique_ptr<DragImage> image = DataTransfer::NodeImageForClipboard(
+            *svg_root->GetDocument().GetFrame(), *svg_root)) {
+      WriteImageToClipboard(*GetSystemClipboard(),
+                            UnacceleratedStaticBitmapImage::Create(
+                                SkImages::RasterFromBitmap(image->Bitmap())),
+                            GetDocument()->Url(), GetDocument()->title());
+    }
+    return;
+  }
   if (!IsA<HTMLCanvasElement>(result.InnerNodeOrImageMapImage()) &&
       result.AbsoluteImageURL().IsEmpty()) {
     // There isn't actually an image at these coordinates.  Might be because
@@ -4596,5 +4624,10 @@ void LocalFrame::PerformFullContentSpellCheck() {
       container_node);
 }
 #endif  // BUILDFLAG(IS_ANDROID)
+
+void LocalFrame::SetWantErrorMessageStackTrace() {
+  want_error_message_stack_trace_ = true;
+  ToIsolate(this)->SetCaptureStackTraceForUncaughtExceptions(true);
+}
 
 }  // namespace blink

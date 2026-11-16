@@ -72,7 +72,6 @@ class HttpAuthCacheStatus;
 class IntentPickerTabHelper;
 class IntentPickerViewPageActionController;
 class JsOptimizationsPageActionController;
-class LensOverlayController;
 class LensOverlayHomeworkPageActionController;
 class LensSearchController;
 class ManagePasswordsPageActionController;
@@ -147,7 +146,6 @@ class WalletReminderNoticePageActionController;
 
 namespace actor {
 class ActorSurfaceTabHelper;
-class ActorTabData;
 }  // namespace actor
 
 namespace actor::ui {
@@ -232,7 +230,6 @@ class GlicCueTabState;
 class GlicGeminiWebWarmingObserver;
 class GlicInstanceHelper;
 class GlicMarketingPageTabHelper;
-class GlicPromotionSourceNavigationObserver;
 class GlicTabIndicatorHelper;
 class GlicSidePanelCoordinator;
 class GlicSelectionObserver;
@@ -419,7 +416,6 @@ class TabInterface;
 //
 // Do not add more public accessors. Instead use the UnownedUserData design
 // pattern, see ui/base/unowned_user_data/README.md.
-// TODO(crbug.com/481268779): Remove existing public accessors.
 class TabFeatures {
  public:
   TabFeatures();
@@ -428,37 +424,12 @@ class TabFeatures {
   TabFeatures(const TabFeatures&) = delete;
   TabFeatures& operator=(const TabFeatures&) = delete;
 
-  enterprise_data_protection::DataProtectionNavigationController*
-  data_protection_controller() {
-    return data_protection_tab_controller_.get();
-  }
-
   // Note: Temporary until there is a more uniform way to swap out features for
   // testing.
   customize_chrome::SidePanelController*
   SetCustomizeChromeSidePanelControllerForTesting(
       std::unique_ptr<customize_chrome::SidePanelController>
           customize_chrome_side_panel_controller);
-
-  tab_groups::SavedTabGroupWebContentsListener*
-  saved_tab_group_web_contents_listener() const {
-    return saved_tab_group_web_contents_listener_.get();
-  }
-
-  TabDialogManager* tab_dialog_manager() { return tab_dialog_manager_.get(); }
-
-  page_actions::PageActionController* page_action_controller() {
-    return page_action_controller_.get();
-  }
-
-  LensOverlayController* lens_overlay_controller();
-  const LensOverlayController* lens_overlay_controller() const;
-
-#if !BUILDFLAG(IS_ANDROID)
-  record_replay::RecordReplayClient* record_replay_client() {
-    return record_replay_client_.get();
-  }
-#endif
 
   TabUIHelper* SetTabUIHelperForTesting(
       std::unique_ptr<TabUIHelper> tab_ui_helper);
@@ -489,6 +460,8 @@ class TabFeatures {
   void WillDiscardContents(tabs::TabInterface* tab,
                            content::WebContents* old_contents,
                            content::WebContents* new_contents);
+
+  std::unique_ptr<TabUIHelper> tab_ui_helper_;
 
   std::unique_ptr<permissions::PermissionIndicatorsTabData>
       permission_indicators_tab_data_;
@@ -638,8 +611,6 @@ class TabFeatures {
   std::unique_ptr<glic::GlicPageFeaturesManager> glic_page_features_manager_;
   std::unique_ptr<glic::GlicMarketingPageTabHelper>
       glic_marketing_page_tab_helper_;
-  std::unique_ptr<glic::GlicPromotionSourceNavigationObserver>
-      glic_promotion_source_navigation_observer_;
   std::unique_ptr<glic::GlicGeminiWebWarmingObserver>
       glic_gemini_web_warming_observer_;
 
@@ -700,8 +671,6 @@ class TabFeatures {
   std::unique_ptr<contextual_cueing::ContextualCueingWebContentsObserver>
       contextual_cueing_web_contents_observer_;
 
-  std::unique_ptr<TabUIHelper> tab_ui_helper_;
-
   std::unique_ptr<QwacWebContentsObserver> qwac_web_contents_observer_;
 
   std::unique_ptr<actor::ui::ActorUiTabControllerInterface>
@@ -747,7 +716,6 @@ class TabFeatures {
   std::unique_ptr<AskBeforeHttpDialogController>
       ask_before_http_dialog_controller_;
 
-  std::unique_ptr<actor::ActorTabData> actor_tab_data_;
   std::unique_ptr<actor::ActorSurfaceTabHelper> actor_surface_tab_helper_;
 
 #if !BUILDFLAG(IS_ANDROID)

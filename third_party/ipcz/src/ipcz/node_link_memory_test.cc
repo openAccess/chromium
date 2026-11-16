@@ -21,7 +21,10 @@
 #include "ipcz/node_name.h"
 #include "ipcz/parcel.h"
 #include "reference_drivers/sync_reference_driver.h"
+#include "test/mock_driver.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/base/macros.h"
 #include "util/ref_counted.h"
 
 namespace ipcz {
@@ -68,6 +71,48 @@ class NodeLinkMemoryTest : public testing::Test {
     return links;
   }
 
+  // Creates inactive links between node_a() and `node_c`, registered with both
+  // nodes, and returns node_a()'s link followed by `node_c`'s link.
+  std::pair<Ref<NodeLink>, Ref<NodeLink>> CreateInactiveLinks(
+      const Ref<Node>& node_c) {
+    auto transports = DriverTransport::CreatePair(GetTestDriver());
+    DriverMemoryWithMapping buffer =
+        NodeLinkMemory::AllocateMemory(GetTestDriver());
+    Ref<NodeLink> link_a = NodeLink::CreateInactive(
+        node_a(), LinkSide::kA, node_a()->GetAssignedName(),
+        kOtherTestNonBrokerName, Node::Type::kNormal, 0, Features{},
+        transports.first,
+        NodeLinkMemory::Create(node_a(), LinkSide::kA, Features{},
+                               std::move(buffer.mapping)));
+    Ref<NodeLink> link_c = NodeLink::CreateInactive(
+        node_c, LinkSide::kB, kOtherTestNonBrokerName,
+        node_a()->GetAssignedName(), Node::Type::kBroker, 0, Features{},
+        transports.second,
+        NodeLinkMemory::Create(node_c, LinkSide::kB, Features{},
+                               buffer.memory.Map()));
+    node_a()->AddConnection(kOtherTestNonBrokerName, {.link = link_a});
+    node_c->AddConnection(node_a()->GetAssignedName(),
+                          {.link = link_c, .broker = link_c});
+    return {std::move(link_a), std::move(link_c)};
+  }
+
+  // Connects node_a() to a new non-broker node using `flags` as its memory
+  // flags. The new node is closed on TearDown(). Returns node_a()'s link
+  // followed by the new node's. Call at most once per test.
+  std::pair<Ref<NodeLink>, Ref<NodeLink>> ConnectNodeWithMemoryFlags(
+      IpczMemoryFlags flags) {
+    ABSL_ASSERT(!node_with_memory_flags_);
+    // Node copies its options, so they need not outlive this call.
+    const IpczCreateNodeOptions options = {
+        .size = sizeof(options),
+        .memory_flags = flags,
+    };
+    node_with_memory_flags_ =
+        MakeRefCounted<Node>(Node::Type::kNormal, GetTestDriver(), &options);
+    return ConnectNodes(node_a(), node_with_memory_flags_,
+                        kOtherTestNonBrokerName);
+  }
+
   static void AddBlocksToMemory(NodeLinkMemory& memory, size_t block_size) {
     constexpr size_t kNumBlocks = 32;
     auto mapping = DriverMemory(GetTestDriver(), block_size * kNumBlocks).Map();
@@ -93,6 +138,46 @@ class NodeLinkMemoryTest : public testing::Test {
     return allocated;
   }
 
+  // Expects every block of `block_size` bytes in `memory` to be allocable
+  // before an allocation fails, followed by `num_expansions` capacity
+  // expansions of one new buffer each and no more. With the synchronous driver,
+  // each expansion completes within the failed allocation which triggers it.
+  static void ExpectParcelExpansions(NodeLinkMemory& memory,
+                                     size_t block_size,
+                                     size_t num_expansions) {
+    SCOPED_TRACE(testing::Message() << "block_size=" << block_size);
+    // Read the initial block count before draining, which may expand it.
+    const size_t initial_blocks = memory.TotalBlockCountForTesting(block_size);
+    EXPECT_EQ(initial_blocks, DrainFragments(memory, block_size).size());
+    const size_t blocks_per_expansion =
+        NodeLinkMemory::NewBufferBlockCountForTesting(block_size);
+    for (size_t i = 0; i < num_expansions; ++i) {
+      EXPECT_EQ(blocks_per_expansion, DrainFragments(memory, block_size).size())
+          << "expansion " << i;
+    }
+    EXPECT_TRUE(memory.AllocateFragment(block_size).is_null());
+  }
+
+  // Exhausts the 64-byte capacity of `memory` with RouterLinkStates, then
+  // expects the next one to come from a new buffer: RouterLinkState allocation
+  // may expand capacity under any parcel capacity policy.
+  static void ExpectRouterLinkStateCapacityExpands(NodeLinkMemory& memory) {
+    // Keep each state alive so that its block stays allocated.
+    std::vector<FragmentRef<RouterLinkState>> states;
+    for (;;) {
+      FragmentRef<RouterLinkState> state = memory.TryAllocateRouterLinkState();
+      if (state.is_null()) {
+        break;
+      }
+      states.push_back(std::move(state));
+    }
+
+    const FragmentRef<RouterLinkState> state =
+        memory.TryAllocateRouterLinkState();
+    ASSERT_FALSE(state.is_null());
+    EXPECT_NE(NodeLinkMemory::kPrimaryBufferId, state.fragment().buffer_id());
+  }
+
   void SetUp() override {
     // Brokers assign their own names, no need to assign one to `node_a_`.
     auto links = ConnectNodes(node_a_, node_b_, kTestNonBrokerName);
@@ -101,6 +186,9 @@ class NodeLinkMemoryTest : public testing::Test {
   }
 
   void TearDown() override {
+    if (node_with_memory_flags_) {
+      node_with_memory_flags_->Close();
+    }
     node_b_->Close();
     node_a_->Close();
   }
@@ -112,6 +200,9 @@ class NodeLinkMemoryTest : public testing::Test {
       MakeRefCounted<Node>(Node::Type::kNormal, GetTestDriver())};
   Ref<NodeLink> link_a_;
   Ref<NodeLink> link_b_;
+
+  // Set by ConnectNodeWithMemoryFlags().
+  Ref<Node> node_with_memory_flags_;
 };
 
 TEST_F(NodeLinkMemoryTest, BasicAllocAndFree) {
@@ -220,36 +311,29 @@ TEST_F(NodeLinkMemoryTest, ExpandCapacity) {
 TEST_F(NodeLinkMemoryTest, PreActivationCapacityExpansion) {
   const Ref<Node> node_c{
       MakeRefCounted<Node>(Node::Type::kNormal, GetTestDriver())};
-  auto transports = DriverTransport::CreatePair(GetTestDriver());
-  DriverMemoryWithMapping buffer =
-      NodeLinkMemory::AllocateMemory(GetTestDriver());
-  Ref<NodeLink> link_a = NodeLink::CreateInactive(
-      node_a(), LinkSide::kA, node_a()->GetAssignedName(),
-      kOtherTestNonBrokerName, Node::Type::kNormal, 0, Features{},
-      transports.first,
-      NodeLinkMemory::Create(node_a(), LinkSide::kA, Features{},
-                             std::move(buffer.mapping)));
-  Ref<NodeLink> link_c = NodeLink::CreateInactive(
-      node_c, LinkSide::kB, kOtherTestNonBrokerName,
-      node_a()->GetAssignedName(), Node::Type::kBroker, 0, Features{},
-      transports.second,
-      NodeLinkMemory::Create(node_c, LinkSide::kB, Features{},
-                             buffer.memory.Map()));
-  node_a()->AddConnection(kOtherTestNonBrokerName, {.link = link_a});
-  node_c->AddConnection(node_a()->GetAssignedName(),
-                        {.link = link_c, .broker = link_c});
+  auto [link_a, link_c] = CreateInactiveLinks(node_c);
 
   // Drain all 64-byte blocks in PrimaryBuffer and request an 8 KB fragment
   // (which has no pre-allocated capacity in PrimaryBuffer) before the links are
   // activated.
-  EXPECT_EQ(1483u, DrainFragments(link_a->memory(), 64).size());
+  const size_t num_blocks = link_a->memory().TotalBlockCountForTesting(64);
+  EXPECT_EQ(num_blocks, DrainFragments(link_a->memory(), 64).size());
   EXPECT_TRUE(link_a->memory().AllocateFragment(64).is_null());
   EXPECT_TRUE(link_a->memory().AllocateFragment(8192).is_null());
+
+  // A RouterLinkState requested now joins the pending 64-byte request.
+  FragmentRef<RouterLinkState> state;
+  link_a->memory().AllocateRouterLinkState(
+      [&state](FragmentRef<RouterLinkState> new_state) {
+        state = std::move(new_state);
+      });
+  EXPECT_TRUE(state.is_null());
 
   // Activating the links must fulfill all pending pre-activation capacity
   // requests via SetNodeLink().
   link_a->Activate();
   link_c->Activate();
+  EXPECT_TRUE(state.is_addressable());
 
   Fragment fragment_64 = link_a->memory().AllocateFragment(64);
   ASSERT_TRUE(fragment_64.is_addressable());
@@ -261,6 +345,75 @@ TEST_F(NodeLinkMemoryTest, PreActivationCapacityExpansion) {
   EXPECT_EQ(8192u, fragment_8k.size());
   EXPECT_NE(NodeLinkMemory::kPrimaryBufferId, fragment_8k.buffer_id());
   EXPECT_TRUE(link_c->memory().FreeFragment(fragment_8k));
+
+  // Activation added exactly one buffer of 1023 usable 64-byte blocks, one of
+  // which `state` holds.
+  EXPECT_EQ(1022u, DrainFragments(link_a->memory(), 64).size());
+
+  node_c->Close();
+}
+
+// Parcel allocation failures for a block size that already has a capacity
+// request in flight join that request rather than starting a new one. Without
+// this coalescing, each of the three failures below would add its own 8 KB
+// buffer, for 21 new blocks instead of 7.
+TEST_F(NodeLinkMemoryTest, InFlightParcelRequestsCoalesce) {
+  const Ref<Node> node_c{
+      MakeRefCounted<Node>(Node::Type::kNormal, GetTestDriver())};
+  auto [link_a, link_c] = CreateInactiveLinks(node_c);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // Node C delegates shared memory allocation to node A. While only node C's
+  // end of the link is active, its requests to node A remain in flight.
+  node_c->SetAllocationDelegate(link_c);
+  link_c->Activate();
+
+  // Repeated parcel allocation failures while a request is in flight do not
+  // start new requests.
+  for (int i = 0; i < 3; ++i) {
+    EXPECT_TRUE(memory.AllocateFragment(8192).is_null());
+  }
+
+  // Activating node A's end completes the single in-flight request, adding one
+  // new 8 KB buffer (7 usable blocks).
+  link_a->Activate();
+  EXPECT_EQ(7u, DrainFragments(memory, 8192).size());
+
+  node_c->Close();
+}
+
+TEST_F(NodeLinkMemoryTest, FailedParcelCapacityRequestIsRetryable) {
+  // Fail the first shared memory allocation and forward the rest to the
+  // reference driver, so node A can still map node C's buffers.
+  testing::StrictMock<test::MockDriver> driver;
+  EXPECT_CALL(driver, Close).WillRepeatedly([](auto... args) {
+    return GetTestDriver().Close(args...);
+  });
+  EXPECT_CALL(driver, Serialize).WillRepeatedly([](auto... args) {
+    return GetTestDriver().Serialize(args...);
+  });
+  EXPECT_CALL(driver, MapSharedMemory).WillRepeatedly([](auto... args) {
+    return GetTestDriver().MapSharedMemory(args...);
+  });
+  EXPECT_CALL(driver, AllocateSharedMemory)
+      .WillOnce(testing::Return(IPCZ_RESULT_RESOURCE_EXHAUSTED))
+      .WillRepeatedly([](auto... args) {
+        return GetTestDriver().AllocateSharedMemory(args...);
+      });
+  const Ref<Node> node_c{
+      MakeRefCounted<Node>(Node::Type::kNormal, test::GetMockDriver())};
+  auto [link_a, link_c] =
+      ConnectNodes(node_a(), node_c, kOtherTestNonBrokerName);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // The failed 8 KB allocation requests new capacity, but the driver rejects
+  // the shared memory allocation.
+  EXPECT_TRUE(memory.AllocateFragment(8192).is_null());
+
+  // The failed request does not block new requests, so the next failed
+  // allocation requests capacity again and succeeds.
+  EXPECT_TRUE(memory.AllocateFragment(8192).is_null());
+  EXPECT_EQ(7u, DrainFragments(memory, 8192).size());
 
   node_c->Close();
 }
@@ -370,6 +523,109 @@ TEST_F(NodeLinkMemoryTest, ParcelDataAllocation) {
 
   EXPECT_FALSE(parcels.empty());
   node_c->Close();
+}
+
+// In the tests below, block sizes go from largest to smallest, because
+// BufferPool serves a block size with no capacity of its own from the next
+// larger size, which must already be exhausted.
+
+TEST_F(NodeLinkMemoryTest, FixedParcelCapacity) {
+  auto [link_a, link_c] =
+      ConnectNodeWithMemoryFlags(IPCZ_MEMORY_FIXED_PARCEL_CAPACITY);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // Parcel data never expands capacity, but RouterLinkStates still do.
+  ExpectParcelExpansions(memory, 8192, 0);
+  ExpectParcelExpansions(memory, 64, 0);
+  ExpectRouterLinkStateCapacityExpands(memory);
+}
+
+TEST_F(NodeLinkMemoryTest, NoParcelCapacity) {
+  auto [link_a, link_c] =
+      ConnectNodeWithMemoryFlags(IPCZ_MEMORY_NO_PARCEL_CAPACITY);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // Parcel data never uses shared memory, even though PrimaryBuffer has free
+  // blocks of the needed sizes.
+  Parcel parcel;
+  parcel.AllocateData(32, /*allow_partial=*/false, &memory);
+  EXPECT_FALSE(parcel.has_data_fragment());
+  EXPECT_TRUE(memory.AllocateFragment(64).is_null());
+  EXPECT_TRUE(memory.AllocateFragmentBestEffort(4096).is_null());
+
+  // RouterLinkStates still use and expand 64-byte capacity, which parcel data
+  // still cannot use.
+  ExpectRouterLinkStateCapacityExpands(memory);
+  Parcel parcel_after_expansion;
+  parcel_after_expansion.AllocateData(32, /*allow_partial=*/false, &memory);
+  EXPECT_FALSE(parcel_after_expansion.has_data_fragment());
+}
+
+TEST_F(NodeLinkMemoryTest, ExpandParcelCapacityOnce) {
+  auto [link_a, link_c] =
+      ConnectNodeWithMemoryFlags(IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // Block sizes up to 32 KB expand once, and only while the link's capacity for
+  // them is below what one new buffer adds. So 64-byte blocks never expand:
+  // PrimaryBuffer alone already has more of them than one new buffer adds.
+  ASSERT_GT(memory.TotalBlockCountForTesting(64),
+            NodeLinkMemory::NewBufferBlockCountForTesting(64));
+  ExpectParcelExpansions(memory, 64 * 1024, 0);
+  ExpectParcelExpansions(memory, 32 * 1024, 1);
+  ExpectParcelExpansions(memory, 16 * 1024, 1);
+  ExpectParcelExpansions(memory, 8 * 1024, 1);
+  ExpectParcelExpansions(memory, 4096, 1);
+  ExpectParcelExpansions(memory, 2048, 1);
+  ExpectParcelExpansions(memory, 1024, 1);
+  ExpectParcelExpansions(memory, 512, 1);
+  ExpectParcelExpansions(memory, 256, 1);
+  ExpectParcelExpansions(memory, 128, 1);
+  ExpectParcelExpansions(memory, 64, 0);
+  ExpectRouterLinkStateCapacityExpands(memory);
+}
+
+TEST_F(NodeLinkMemoryTest, ExpandParcelCapacityOnceCountsRemoteExpansion) {
+  auto [link_a, link_c] =
+      ConnectNodeWithMemoryFlags(IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE);
+
+  // Node A uses the default policy, so draining the 256-byte blocks in
+  // PrimaryBuffer from its side adds a buffer of 256-byte blocks to the link's
+  // shared pool.
+  const size_t num_blocks = link_a->memory().TotalBlockCountForTesting(256);
+  EXPECT_EQ(num_blocks, DrainFragments(link_a->memory(), 256).size());
+
+  // Node C can allocate from the buffer added by node A, but since the link's
+  // pool already has a dynamic buffer for 256-byte blocks, it never adds one.
+  EXPECT_EQ(NodeLinkMemory::NewBufferBlockCountForTesting(256),
+            DrainFragments(link_c->memory(), 256).size());
+  EXPECT_TRUE(link_c->memory().AllocateFragment(256).is_null());
+}
+
+TEST_F(NodeLinkMemoryTest, RestrictedDynamicParcelCapacity) {
+  auto [link_a, link_c] = ConnectNodeWithMemoryFlags(
+      IPCZ_MEMORY_RESTRICTED_DYNAMIC_PARCEL_CAPACITY);
+  NodeLinkMemory& memory = link_c->memory();
+
+  // Block sizes expand as long as their usable capacity stays within 512 KB.
+  // Block sizes above 64 KB therefore never expand, because a single new buffer
+  // for them already exceeds 512 KB.
+  ASSERT_GT(
+      128 * 1024 * NodeLinkMemory::NewBufferBlockCountForTesting(128 * 1024),
+      512u * 1024);
+  ExpectParcelExpansions(memory, 128 * 1024, 0);
+  ExpectParcelExpansions(memory, 64 * 1024, 1);
+  ExpectParcelExpansions(memory, 32 * 1024, 2);
+  ExpectParcelExpansions(memory, 16 * 1024, 4);
+  ExpectParcelExpansions(memory, 8 * 1024, 9);
+  ExpectParcelExpansions(memory, 4096, 8);
+  ExpectParcelExpansions(memory, 2048, 8);
+  ExpectParcelExpansions(memory, 1024, 8);
+  ExpectParcelExpansions(memory, 512, 8);
+  ExpectParcelExpansions(memory, 256, 8);
+  ExpectParcelExpansions(memory, 128, 8);
+  ExpectParcelExpansions(memory, 64, 6);
+  ExpectRouterLinkStateCapacityExpands(memory);
 }
 
 struct TestObject : public RefCountedFragment {

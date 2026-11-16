@@ -7,7 +7,6 @@ package org.chromium.chrome.browser.customtabs;
 import static androidx.browser.customtabs.CustomTabsIntent.CLOSE_BUTTON_POSITION_DEFAULT;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
-import static org.chromium.chrome.browser.app.tab_activity_glue.PopupCreatorImpl.EXTRA_REQUESTED_WINDOW_FEATURES;
 import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.BUNDLE_ENTER_ANIMATION_RESOURCE;
 import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.BUNDLE_EXIT_ANIMATION_RESOURCE;
 import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.BUNDLE_PACKAGE_NAME;
@@ -15,12 +14,9 @@ import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider
 import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.getClientPackageNameFromSessionOrCallingActivity;
 import static org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider.isTrustedCustomTab;
 
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
-import android.os.Bundle;
-import android.util.Pair;
 
 import androidx.browser.customtabs.CustomTabsIntent;
 
@@ -41,9 +37,6 @@ import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.chrome.browser.util.WindowFeatures;
 import org.chromium.components.browser_ui.widget.TintedDrawable;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
  * A model class that parses the incoming intent for incognito Custom Tabs specific customization
  * data.
@@ -58,10 +51,6 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
     private final CustomTabIntentDataHolder mDataHolder;
     private final ColorProvider mColorProvider;
     private final Drawable mCloseButtonIcon;
-    private final boolean mShowShareItem;
-    private final List<Pair<String, PendingIntent>> mMenuEntries = new ArrayList<>();
-
-    private final @Nullable String mUrlToLoad;
 
     /** Constructs a {@link IncognitoCustomTabIntentDataProvider}. */
     public IncognitoCustomTabIntentDataProvider(Intent intent, Context context, int colorScheme) {
@@ -76,7 +65,6 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
             @Nullable CustomTabIntentDataHolder dataHolder) {
         assert intent != null;
         mIntent = intent;
-        mUrlToLoad = IntentHandler.getUrlFromIntent(intent);
 
         if (dataHolder != null) {
             mDataHolder = dataHolder;
@@ -107,6 +95,19 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
             int uiType = getUiType(intent);
             builder.setUiType(uiType);
             builder.setIsCloseButtonEnabled(true);
+            builder.setDefaultShareMenuItem(
+                    IntentUtils.safeGetBooleanExtra(
+                            intent, CustomTabsIntent.EXTRA_DEFAULT_SHARE_MENU_ITEM, false));
+            builder.setUrlToLoad(IntentHandler.getUrlFromIntent(intent));
+            builder.setRequestedWindowFeatures(
+                    CustomTabIntentDataProvider.extractRequestedWindowFeatures(intent, uiType));
+            if (IntentUtils.safeHasExtra(intent, IntentHandler.EXTRA_INCOGNITO_CCT_CALLER_ID)) {
+                builder.setIncognitoCctCallerId(
+                        IntentUtils.safeGetIntExtra(
+                                intent,
+                                IntentHandler.EXTRA_INCOGNITO_CCT_CALLER_ID,
+                                IncognitoCctCallerId.OTHER_CHROME_FEATURES));
+            }
 
             mDataHolder = builder.build();
         }
@@ -115,9 +116,6 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
         mColorProvider = new IncognitoCustomTabColorProvider(context);
         assert mDataHolder.mCloseButtonIcon == null;
         mCloseButtonIcon = TintedDrawable.constructTintedDrawable(context, R.drawable.btn_close);
-        mShowShareItem =
-                IntentUtils.safeGetBooleanExtra(
-                        intent, CustomTabsIntent.EXTRA_DEFAULT_SHARE_MENU_ITEM, false);
 
         logFeatureUsage(intent);
     }
@@ -165,14 +163,15 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
             featureUsage.log(CustomTabsFeature.EXTRA_EXIT_ANIMATION_BUNDLE);
         }
         featureUsage.log(CustomTabsFeature.EXTRA_OPEN_NEW_INCOGNITO_TAB);
-        if (mMenuEntries != null) featureUsage.log(CustomTabsFeature.EXTRA_MENU_ITEMS);
         if (getClientPackageName() != null) featureUsage.log(CustomTabsFeature.CTF_PACKAGE_NAME);
         if (IntentUtils.safeHasExtra(intent, IntentHandler.EXTRA_CALLING_ACTIVITY_PACKAGE)) {
             featureUsage.log(CustomTabsFeature.EXTRA_CALLING_ACTIVITY_PACKAGE);
         }
         if (isPartialHeightCustomTab()) featureUsage.log(CustomTabsFeature.CTF_PARTIAL);
         if (mDataHolder.mIsOpenedByChrome) featureUsage.log(CustomTabsFeature.CTF_SENT_BY_CHROME);
-        if (mShowShareItem) featureUsage.log(CustomTabsFeature.EXTRA_DEFAULT_SHARE_MENU_ITEM);
+        if (mDataHolder.mDefaultShareMenuItem) {
+            featureUsage.log(CustomTabsFeature.EXTRA_DEFAULT_SHARE_MENU_ITEM);
+        }
         if (mDataHolder.mTitleVisibilityState != CustomTabsIntent.NO_TITLE) {
             featureUsage.log(CustomTabsFeature.EXTRA_TITLE_VISIBILITY_STATE);
         }
@@ -186,17 +185,16 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
 
     @Override
     public @IncognitoCctCallerId int getFeatureIdForMetricsCollection() {
-        if (isIntentFromChrome(mIntent)) {
-            assert mIntent.hasExtra(IntentHandler.EXTRA_INCOGNITO_CCT_CALLER_ID)
+        if (mDataHolder.mIsOpenedByChrome) {
+            assert mDataHolder.mIncognitoCctCallerId != null
                     : "Intent coming from Chrome features should add the extra "
                             + "IntentHandler.EXTRA_INCOGNITO_CCT_CALLER_ID.";
 
             @IncognitoCctCallerId
             int incognitoCctChromeClientId =
-                    IntentUtils.safeGetIntExtra(
-                            mIntent,
-                            IntentHandler.EXTRA_INCOGNITO_CCT_CALLER_ID,
-                            IncognitoCctCallerId.OTHER_CHROME_FEATURES);
+                    mDataHolder.mIncognitoCctCallerId != null
+                            ? mDataHolder.mIncognitoCctCallerId
+                            : IncognitoCctCallerId.OTHER_CHROME_FEATURES;
 
             boolean isValidEntry =
                     (incognitoCctChromeClientId > IncognitoCctCallerId.OTHER_CHROME_FEATURES
@@ -281,7 +279,7 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
 
     @Override
     public @Nullable String getUrlToLoad() {
-        return mUrlToLoad;
+        return mDataHolder.mUrlToLoad;
     }
 
     @Override
@@ -302,7 +300,7 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
 
     @Override
     public boolean shouldShowShareMenuItem() {
-        return mShowShareItem;
+        return mDataHolder.mDefaultShareMenuItem;
     }
 
     @Override
@@ -339,15 +337,6 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
     }
 
     @Override
-    public List<String> getMenuTitles() {
-        ArrayList<String> list = new ArrayList<>();
-        for (Pair<String, PendingIntent> pair : mMenuEntries) {
-            list.add(pair.first);
-        }
-        return list;
-    }
-
-    @Override
     public boolean isCloseButtonEnabled() {
         return mDataHolder.mIsCloseButtonEnabled;
     }
@@ -357,12 +346,9 @@ public class IncognitoCustomTabIntentDataProvider extends BrowserServicesIntentD
         if (getUiType() != CustomTabsUiType.POPUP) {
             return null;
         }
-        final Bundle bundle =
-                IntentUtils.safeGetBundleExtra(getIntent(), EXTRA_REQUESTED_WINDOW_FEATURES);
-        if (bundle == null) {
-            return new WindowFeatures();
-        }
-        return new WindowFeatures(bundle);
+        return mDataHolder.mRequestedWindowFeatures != null
+                ? mDataHolder.mRequestedWindowFeatures
+                : new WindowFeatures();
     }
 
     @Override

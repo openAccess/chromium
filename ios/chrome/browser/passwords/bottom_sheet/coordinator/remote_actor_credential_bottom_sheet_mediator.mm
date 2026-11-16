@@ -4,23 +4,52 @@
 
 #import "ios/chrome/browser/passwords/bottom_sheet/coordinator/remote_actor_credential_bottom_sheet_mediator.h"
 
+#import <UIKit/UIKit.h>
+
 #import <memory>
+#import <optional>
 #import <utility>
 #import <vector>
 
 #import "base/check.h"
+#import "base/check_op.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback.h"
 #import "base/memory/raw_ptr.h"
+#import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
+#import "base/timer/timer.h"
+#import "base/types/expected.h"
+#import "components/autofill/core/browser/suggestions/suggestion.h"
+#import "components/autofill/core/browser/suggestions/suggestion_type.h"
+#import "components/autofill/ios/browser/form_suggestion.h"
 #import "components/password_manager/core/browser/password_form.h"
+#import "components/password_manager/core/browser/password_ui_utils.h"
 #import "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_controller.h"
 #import "components/password_manager/core/browser/remote_actor/remote_actor_credential_sharing_result.h"
+#import "components/password_manager/core/browser/remote_actor/remote_actor_utils.h"
+#import "ios/chrome/browser/favicon/model/favicon_loader.h"
+#import "ios/chrome/browser/passwords/bottom_sheet/ui/remote_actor_credential_bottom_sheet_consumer.h"
 #import "ios/chrome/browser/passwords/model/remote_actor/proto/remote_actor_password_upload_request.pb.h"
 #import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_credential_sharing_delegate_bridge.h"
+#import "ios/chrome/browser/passwords/password_suggestion/ui/password_suggestion_utils.h"
+#import "ios/chrome/common/ui/favicon/favicon_constants.h"
+#import "url/gurl.h"
 #import "url/origin.h"
 
 namespace {
 
 using password_manager::RemoteActorCredentialSharingResult;
+
+// Time to wait before finishing the flow in the success confirmation state.
+// Matches the autofill save bottom sheets.
+constexpr base::TimeDelta kConfirmationDismissDelay = base::Seconds(1.5);
+
+// Time to wait before finishing the flow in the success confirmation state when
+// VoiceOver is running. Longer than `kConfirmationDismissDelay` to give
+// VoiceOver enough time to read the announcement.
+constexpr base::TimeDelta kConfirmationDismissDelayIfVoiceOverRunning =
+    base::Seconds(5);
 
 }  // namespace
 
@@ -47,14 +76,29 @@ using password_manager::RemoteActorCredentialSharingResult;
   std::unique_ptr<password_manager::RemoteActorCredentialSharingController>
       _controller;
 
-  // Stored password forms matching the requested domain.
+  // Pending callback to return the chosen credential or error to the
+  // controller.
+  RemoteActorCredentialSelectionCallback _credentialSelectedCallback;
+
+  // Stored password forms matching `_origin`.
   std::vector<std::unique_ptr<password_manager::PasswordForm>> _credentials;
+
+  // Origin for which credentials are being selected.
+  url::Origin _origin;
 
   // `FaviconLoader` used to load the favicon.
   raw_ptr<FaviconLoader> _faviconLoader;
 
   // Remote actor request forwarded to the sharing controller on start.
   remote_actor::proto::RemoteActorPasswordUploadRequest _request;
+
+  // Whether the controller found no saved passwords for the request. The
+  // result is held back until the user leaves the bottom sheet.
+  BOOL _noPasswordsFound;
+
+  // Timer delaying the end of a successful flow so the confirmation checkmark
+  // is visible before the bottom sheet is dismissed.
+  base::OneShotTimer _confirmationTimer;
 }
 
 - (instancetype)
@@ -106,6 +150,16 @@ using password_manager::RemoteActorCredentialSharingResult;
 }
 
 - (void)disconnect {
+  if (_confirmationTimer.IsRunning()) {
+    [self finishWithSuccess];
+  }
+
+  if (_credentialSelectedCallback) {
+    std::move(_credentialSelectedCallback)
+        .Run(base::unexpected(
+            RemoteActorCredentialSharingResult::kUserCancelledDialog));
+  }
+
   _controller.reset();
   _delegateBridge.reset();
   _identityManager = nullptr;
@@ -114,10 +168,23 @@ using password_manager::RemoteActorCredentialSharingResult;
   _accountPasswordStore = nullptr;
   _sharingService = nullptr;
   _passwordManagerClient = nullptr;
+  _consumer = nil;
   _delegate = nil;
   _faviconLoader = nullptr;
   _credentials.clear();
+  _origin = url::Origin();
   _request.Clear();
+}
+
+#pragma mark - Properties
+
+- (void)setConsumer:(id<RemoteActorCredentialBottomSheetConsumer>)consumer {
+  if (_consumer == consumer) {
+    return;
+  }
+  _consumer = consumer;
+  [_consumer setDomain:[self shownDomain]];
+  [self pushStateToConsumer];
 }
 
 #pragma mark - RemoteActorCredentialSharingDelegate
@@ -130,19 +197,142 @@ using password_manager::RemoteActorCredentialSharingResult;
                                   callback:
                                       (RemoteActorCredentialSelectionCallback)
                                           callback {
-  // TODO(crbug.com/579011876): Pass `credentials` to the consumer and resolve
-  // `callback` from the mutator once the UI is added.
+  // The controller resolves the flow itself when no credentials are found.
+  CHECK(!credentials.empty());
+  _origin = origin;
+  _credentialSelectedCallback = std::move(callback);
   _credentials = std::move(credentials);
-  [self.delegate mediatorDidRequestPresentation:self];
+  [self pushStateToConsumer];
+}
+
+#pragma mark - RemoteActorCredentialBottomSheetMutator
+
+- (void)didSelectCredentialAtIndex:(NSInteger)index {
+  if (!_credentialSelectedCallback) {
+    return;
+  }
+  CHECK_GE(index, 0);
+  CHECK_LT(static_cast<size_t>(index), _credentials.size());
+  [_consumer setLoading:YES];
+  std::move(_credentialSelectedCallback).Run(*_credentials[index]);
+}
+
+- (void)didCancel {
+  if (_credentialSelectedCallback) {
+    // The controller reports the final result through `handleSharingResult:`.
+    std::move(_credentialSelectedCallback)
+        .Run(base::unexpected(
+            RemoteActorCredentialSharingResult::kUserCancelledDialog));
+    return;
+  }
+  // Dismissing the sheet while the confirmation is shown is reported as a
+  // cancellation.
+  _confirmationTimer.Stop();
+  // Leaving the no saved passwords sheet reports why the flow couldn't
+  // continue rather than a user cancellation.
+  RemoteActorCredentialSharingResult result =
+      _noPasswordsFound
+          ? RemoteActorCredentialSharingResult::kNoPasswordsFound
+          : RemoteActorCredentialSharingResult::kUserCancelledDialog;
+  [self.delegate mediator:self didFinishWithResult:result];
 }
 
 #pragma mark - Private
 
+// Returns the requested domain formatted for display, or an empty string if the
+// request does not hold a valid origin (the controller then rejects the
+// request). `GetShownOrigin()` is needed to handle look-alike domains.
+- (NSString*)shownDomain {
+  std::optional<url::Origin> origin =
+      password_manager::GetOriginFromDomainOrOrigin(_request.domain());
+  if (!origin) {
+    return @"";
+  }
+  return base::SysUTF8ToNSString(password_manager::GetShownOrigin(*origin));
+}
+
+// Pushes the suggestions and favicon to `_consumer`. The consumer may be set
+// before the credentials arrive asynchronously, so this is a no-op until both
+// are available.
+- (void)pushStateToConsumer {
+  if (!_consumer || _credentials.empty()) {
+    return;
+  }
+  NSMutableArray<FormSuggestion*>* suggestions =
+      [NSMutableArray arrayWithCapacity:_credentials.size()];
+  for (const auto& credential : _credentials) {
+    [suggestions
+        addObject:
+            [FormSuggestion
+                suggestionWithValue:base::SysUTF16ToNSString(
+                                        credential->username_value)
+                 displayDescription:nil
+                               icon:nil
+                               type:autofill::SuggestionType::kPasswordEntry
+                            payload:autofill::Suggestion::Payload()
+                     requiresReauth:YES]];
+  }
+  [_consumer setSuggestions:suggestions];
+  [self fetchFavicon];
+}
+
 // Handles the final sharing `result` from the controller.
 - (void)handleSharingResult:(RemoteActorCredentialSharingResult)result {
+  // Keeps the sheet open so the user learns why the remote actor can't sign
+  // in, until they go back to it. Nothing was shared, so there is no loading
+  // state to end.
+  if (result == RemoteActorCredentialSharingResult::kNoPasswordsFound) {
+    _noPasswordsFound = YES;
+    [_consumer showNoSavedPasswords];
+    return;
+  }
+  // The checkmark replaces the spinner, which also ends the loading state.
+  if (result == RemoteActorCredentialSharingResult::kSuccess) {
+    [self showConfirmation];
+    return;
+  }
+  [_consumer setLoading:NO];
+  [self.delegate mediator:self didFinishWithResult:result];
+}
+
+// Shows the success checkmark and finishes the flow once it has been visible
+// long enough.
+- (void)showConfirmation {
+  [_consumer showConfirmationState];
+
+  __weak __typeof(self) weakSelf = self;
+  _confirmationTimer.Start(FROM_HERE,
+                           UIAccessibilityIsVoiceOverRunning()
+                               ? kConfirmationDismissDelayIfVoiceOverRunning
+                               : kConfirmationDismissDelay,
+                           base::BindOnce(^{
+                             [weakSelf finishWithSuccess];
+                           }));
+}
+
+// Notifies the delegate that the credential was shared successfully.
+- (void)finishWithSuccess {
+  _confirmationTimer.Stop();
   [self.delegate mediator:self
-      didFinishWithSuccess:(result ==
-                            RemoteActorCredentialSharingResult::kSuccess)];
+      didFinishWithResult:RemoteActorCredentialSharingResult::kSuccess];
+}
+
+// Fetches the favicon for `_origin` and forwards the attributes to the
+// consumer.
+- (void)fetchFavicon {
+  GURL faviconURL = _origin.GetURL();
+  if (!_faviconLoader || !faviconURL.is_valid()) {
+    [_consumer setFaviconAttributes:GetDefaultGlobeFaviconAttributes()];
+    return;
+  }
+
+  __weak id<RemoteActorCredentialBottomSheetConsumer> weakConsumer = _consumer;
+  _faviconLoader->FaviconForPageUrl(
+      faviconURL, kDesiredMediumFaviconSizePt, kMinFaviconSizePt,
+      /*fallback_to_google_server=*/false,
+      ^(FaviconAttributes* attributes, bool cached) {
+        [weakConsumer setFaviconAttributes:attributes];
+      });
 }
 
 @end

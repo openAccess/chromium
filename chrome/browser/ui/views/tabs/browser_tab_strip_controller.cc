@@ -27,7 +27,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
@@ -423,18 +422,18 @@ void BrowserTabStripController::ShowContextMenuForTab(
     Tab* tab,
     const gfx::Point& p,
     ui::mojom::MenuSourceType source_type) {
-  std::optional<int> tab_index = tabstrip_->GetModelIndexOf(tab);
-  if (!tab_index.has_value()) {
+  const tabs::TabHandle handle = tab->tab_handle();
+  if (tab->closing() ||
+      model_->GetIndexOfTab(handle) == TabStripModel::kNoTab) {
     return;
   }
 
-  context_menu_controller_ = std::make_unique<TabContextMenuController>(
-      model_->GetTabAtIndex(tab_index.value())->GetHandle(), this);
+  context_menu_controller_ =
+      std::make_unique<TabContextMenuController>(handle, this);
 
   auto model = std::make_unique<TabMenuModel>(
       context_menu_controller_.get(),
-      TabMenuModelDelegate::From(GetBrowserWindowInterface()), model_,
-      tab_index.value());
+      TabMenuModelDelegate::From(GetBrowserWindowInterface()), model_, handle);
 
   TabMenuModel* model_ptr = model.get();
   context_menu_controller_->LoadModel(std::move(model), model_ptr);
@@ -596,7 +595,7 @@ void BrowserTabStripController::OnTabStripModelChanged(
       }
       AddTabs(tabs_to_add);
       for (const auto& contents : change.GetInsert()->contents) {
-        UpdateTabFocusFreezing(contents.index);
+        UpdateTabFocusFreezing(contents.tab->GetHandle());
       }
       break;
     }
@@ -630,19 +629,6 @@ void BrowserTabStripController::OnTabStripModelChanged(
     return;
   }
 
-  if (!base::FeatureList::IsEnabled(
-          tabs::kSessionRestoreShowThrobberOnVisible) &&
-      selection.active_tab_changed()) {
-    // It's possible for `new_contents` to be null when the final tab in a tab
-    // strip is closed.
-    content::WebContents* const new_contents = selection.new_contents;
-    tabs::TabInterface* const new_tab_interface = selection.new_tab;
-    std::optional<size_t> index = selection.new_model.active();
-    if (new_contents && new_tab_interface && index.has_value()) {
-      TabUIHelper::From(new_tab_interface)->SetWasActiveAtLeastOnce();
-    }
-  }
-
   if (selection.selection_changed()) {
     tabstrip_->SetSelection(selection.new_model);
   }
@@ -652,9 +638,10 @@ void BrowserTabStripController::OnTabWillBeAdded() {
   tabstrip_->EndDrag(EndDragReason::kModelAddedTab);
 }
 
-void BrowserTabStripController::OnTabWillBeRemoved(tabs::TabInterface* tab,
-                                                   int index) {
-  tabstrip_->OnTabWillBeRemoved(tab->GetContents(), index);
+void BrowserTabStripController::OnTabWillBeRemoved(tabs::TabHandle tab) {
+  if (tabs::TabInterface* tab_interface = tab.Get()) {
+    tabstrip_->OnTabWillBeRemoved(tab_interface->GetContents());
+  }
 }
 
 void BrowserTabStripController::OnTabGroupChanged(
@@ -725,19 +712,19 @@ void BrowserTabStripController::OnTabGroupChanged(
   }
 }
 
-void BrowserTabStripController::OnTabPinnedStateChanged(tabs::TabInterface* tab,
-                                                        int model_index) {
-  tabstrip_->OnTabPinnedStateChanged(model_index, tab->IsPinned());
-  UpdateTabFocusFreezing(model_index);
+void BrowserTabStripController::OnTabPinnedStateChanged(tabs::TabHandle tab) {
+  if (tabs::TabInterface* tab_interface = tab.Get()) {
+    tabstrip_->OnTabPinnedStateChanged(tab, tab_interface->IsPinned());
+  }
+  UpdateTabFocusFreezing(tab);
 }
 
 void BrowserTabStripController::TabGroupedStateChanged(
     TabStripModel* tab_strip_model,
     std::optional<tab_groups::TabGroupId> old_group,
     std::optional<tab_groups::TabGroupId> new_group,
-    tabs::TabInterface* tab,
-    int index) {
-  tabstrip_->AddTabToGroup(new_group, index);
+    tabs::TabHandle tab) {
+  tabstrip_->AddTabToGroup(new_group, tab);
 
   if (old_group.has_value()) {
     tabstrip_->OnGroupContentsChanged(old_group.value());
@@ -747,20 +734,24 @@ void BrowserTabStripController::TabGroupedStateChanged(
     tabstrip_->OnGroupContentsChanged(new_group.value());
   }
 
-  UpdateTabFocusFreezing(index);
+  UpdateTabFocusFreezing(tab);
 }
 
 void BrowserTabStripController::OnSplitTabChanged(
     const SplitTabChange& change) {
-  if (change.type == SplitTabChange::Type::kAdded) {
-    std::vector<int> split_indices;
-    std::transform(
-        change.GetAddedChange()->tabs().begin(),
-        change.GetAddedChange()->tabs().end(),
-        std::back_inserter(split_indices),
-        [](const std::pair<tabs::TabInterface*, int>& p) { return p.second; });
+  auto to_handles =
+      [](const std::vector<std::pair<tabs::TabInterface*, int>>& tabs) {
+        std::vector<tabs::TabHandle> handles;
+        handles.reserve(tabs.size());
+        for (const auto& [tab, index] : tabs) {
+          handles.push_back(tab->GetHandle());
+        }
+        return handles;
+      };
 
-    tabstrip_->OnSplitCreated(split_indices, change.split_id);
+  if (change.type == SplitTabChange::Type::kAdded) {
+    tabstrip_->OnSplitCreated(to_handles(change.GetAddedChange()->tabs()),
+                              change.split_id);
 
     // Stop animating if we are updating an active split.
     if (change.GetAddedChange()->reason() ==
@@ -768,14 +759,7 @@ void BrowserTabStripController::OnSplitTabChanged(
       tabstrip_->StopAnimating();
     }
   } else if (change.type == SplitTabChange::Type::kRemoved) {
-    std::vector<int> split_indices;
-    std::transform(
-        change.GetRemovedChange()->tabs().begin(),
-        change.GetRemovedChange()->tabs().end(),
-        std::back_inserter(split_indices),
-        [](const std::pair<tabs::TabInterface*, int>& p) { return p.second; });
-
-    tabstrip_->OnSplitRemoved(split_indices);
+    tabstrip_->OnSplitRemoved(to_handles(change.GetRemovedChange()->tabs()));
 
     // Stop animating if we are updating an active split.
     if (change.GetRemovedChange()->reason() ==
@@ -783,13 +767,8 @@ void BrowserTabStripController::OnSplitTabChanged(
       tabstrip_->StopAnimating();
     }
   } else if (change.type == SplitTabChange::Type::kContentsChanged) {
-    std::vector<int> split_indices;
-    std::transform(
-        change.GetContentsChange()->new_tabs().begin(),
-        change.GetContentsChange()->new_tabs().end(),
-        std::back_inserter(split_indices),
-        [](const std::pair<tabs::TabInterface*, int>& p) { return p.second; });
-    tabstrip_->OnSplitContentsChanged(split_indices);
+    tabstrip_->OnSplitContentsChanged(
+        to_handles(change.GetContentsChange()->new_tabs()));
     tabstrip_->StopAnimating();
   }
 }
@@ -838,20 +817,26 @@ void BrowserTabStripController::UpdateFocusModeTheme(
   }
 }
 
-void BrowserTabStripController::UpdateTabFocusFreezing(int model_index) {
+void BrowserTabStripController::UpdateTabFocusFreezing(
+    tabs::TabHandle tab_handle) {
   if (!features::IsTabGroupsFocusFreezingEnabled()) {
     return;
   }
-  if (!tabstrip_ || !model_->ContainsIndex(model_index)) {
+  tabs::TabInterface* tab_interface = tab_handle.Get();
+  if (!tabstrip_ || !tab_interface ||
+      model_->GetIndexOfTab(tab_handle) == TabStripModel::kNoTab) {
     return;
   }
-  Tab* tab = tabstrip_->tab_at(model_index);
+  Tab* tab = tabstrip_->GetTabForHandle(tab_handle);
+  if (!tab) {
+    return;
+  }
   const std::optional<tab_groups::TabGroupId> focused_group =
       model_->GetFocusedGroup();
   if (focused_group.has_value() && !tab->data().pinned &&
       tab->group() != focused_group.value()) {
     tab->CreateFreezingVote(FreezingVoteReason::kFocusedGroup,
-                            model_->GetWebContentsAt(model_index));
+                            tab_interface->GetContents());
   } else {
     tab->ReleaseFreezingVote(FreezingVoteReason::kFocusedGroup);
   }
@@ -861,8 +846,8 @@ void BrowserTabStripController::UpdateAllTabsFocusFreezing() {
   if (!features::IsTabGroupsFocusFreezingEnabled() || !tabstrip_) {
     return;
   }
-  for (int i = 0; i < tabstrip_->GetTabCount(); ++i) {
-    UpdateTabFocusFreezing(i);
+  for (tabs::TabInterface* tab : *model_) {
+    UpdateTabFocusFreezing(tab->GetHandle());
   }
 }
 
@@ -890,8 +875,8 @@ bool BrowserTabStripController::IsContextMenuCommandChecked(
 bool BrowserTabStripController::IsContextMenuCommandEnabled(
     tabs::TabInterface* tab,
     TabStripModel::ContextMenuCommand command_id) {
-  return model_->IsContextMenuCommandEnabled(model_->GetIndexOfTab(tab),
-                                             command_id);
+  return tab &&
+         model_->IsContextMenuCommandEnabled(tab->GetHandle(), command_id);
 }
 
 bool BrowserTabStripController::IsContextMenuCommandAlerted(
@@ -903,7 +888,10 @@ void BrowserTabStripController::ExecuteContextMenuCommand(
     tabs::TabInterface* tab,
     TabStripModel::ContextMenuCommand command_id,
     int event_flags) {
-  model_->ExecuteContextMenuCommand(model_->GetIndexOfTab(tab), command_id);
+  if (!tab) {
+    return;
+  }
+  model_->ExecuteContextMenuCommand(tab->GetHandle(), command_id);
 }
 
 bool BrowserTabStripController::GetContextMenuAccelerator(

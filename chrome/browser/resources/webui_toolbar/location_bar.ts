@@ -15,87 +15,17 @@ import {CrLitElement, nothing} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {PressHandler} from '/shared/toolbar_button.js';
 import type {OverflowMenuItem} from '/shared/toolbar_ui_api.mojom-webui.js';
-import {PageActionId, PermissionAction, PermissionChipTheme, PermissionPromptStyle, SecurityChipRole} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
-import type {LocationBarState, PermissionChipState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import {PageActionId} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
+import type {LocationBarState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import type {ToolbarAppElement} from './app.js';
-import {BrowserProxyImpl} from './browser_proxy.js';
+import {BrowserProxyImpl, createDefaultLocationBarState} from './browser_proxy.js';
 import type {BrowserProxy} from './browser_proxy.js';
 import {getCss} from './location_bar.css.js';
 import {getHtml} from './location_bar.html.js';
 import type {PageActionIconsElement} from './page_action_icons.js';
 import type {ReadonlyOmniboxElement} from './readonly_omnibox.js';
 import type {ResponsiveControl} from './responsive_control.js';
-
-function createDefaultPermissionChipState(): PermissionChipState {
-  return {
-    isVisible: false,
-    iconName: '',
-    message: '',
-    tooltip: '',
-    theme: PermissionChipTheme.kUnspecified,
-    userDecision: PermissionAction.kUnspecified,
-    shouldShowBlockedIcon: false,
-    promptStyle: PermissionPromptStyle.kUnspecified,
-    isFullyCollapsed: false,
-    accessibilityName: '',
-    stateToken: 0,
-  };
-}
-
-// Returns a new default LocationBarState, used before the first state is
-// received from the browser. Returns a fresh object on every call so callers
-// never share nested objects/arrays.
-export function createDefaultLocationBarState(): LocationBarState {
-  return {
-    omniboxViewState: {
-      browserVersion: 0,
-      uiVersion: 0,
-      formattedFullUrl: '',
-      textPieces: [],
-      placeholder: null,
-      inlineAutocompletion: '',
-      additionalText: '',
-      a11yFriendlySuggestionText: '',
-      selection: null,
-      textIsUrl: false,
-      userInputInProgress: false,
-      hasTemporaryText: false,
-    },
-    locationBarFlags: {
-      userInputInProgress: false,
-      popupOpen: false,
-      forceAimButtonFocusRing: false,
-      isVirtualKeyboardVisible: false,
-    },
-    selectedKeyword: null,
-    lhsChipsState: {
-      securityChip: {
-        icon: {handleId: 0n},
-        securityLevel: 0,
-        text: '',
-        tooltip: '',
-        accessibilityState: {
-          role: SecurityChipRole.kButton,
-          label: '',
-          description: '',
-        },
-        isClickable: false,
-        isTextDangerous: false,
-        isVisible: true,
-        isContextMenuVisible: false,
-      },
-      activityIndicators: [],
-      permissionDashboard: {
-        indicatorChip: createDefaultPermissionChipState(),
-        requestChip: createDefaultPermissionChipState(),
-        isDividerVisible: false,
-      },
-    },
-    contentSettingImageStates: [],
-    pageActionStates: [],
-  };
-}
 
 export interface LocationBarElement {
   $: {
@@ -106,19 +36,31 @@ export interface LocationBarElement {
 
 export class LocationBarElement extends CrLitElement implements
     ResponsiveControl {
-  // The smallest allowed width of the location bar.
-  //
-  // TODO(crbug.com/474060468): This is a placeholder value. We need to do a
-  // proper calculation.
-  static readonly LOCATION_BAR_MIN_WIDTH = 330;
+  // The smallest allowed width of the location bar. Going below this value
+  // would not leave enough room for basic indicators, e.g. permissions
+  // request chips. This must be below the C++ browser-side value returned by
+  // WebUILocationBar::MinimumSize() to allow all controls to be force shown
+  // after the window has been adjusted to its minimum width.
+  static readonly LOCATION_BAR_MIN_WIDTH = 120;
   // The preferred width of the location bar. It will, based on priority order,
   // try to assume this width when ResponsiveControls are all being sized. At
   // the end of that process, expandUpToPreferredWidth() will be invoked, and it
-  // will claim any extra available width.
-  //
-  // TODO(crbug.com/474060468): This is a placeholder value. We need to do a
-  // proper calculation.
-  static readonly LOCATION_BAR_PREFERRED_WIDTH = 400;
+  // will claim any extra available width. These values match the preferred
+  // width of LocationBarView on each platform, and must match
+  // WebUILocationBar::PreferredSize() in
+  // chrome/browser/ui/views/location_bar/webui_location_bar.cc.
+  // <if expr="is_win">
+  static readonly LOCATION_BAR_PREFERRED_WIDTH = 258;
+  // </if>
+  // <if expr="is_macosx">
+  static readonly LOCATION_BAR_PREFERRED_WIDTH = 292;
+  // </if>
+  // <if expr="is_linux">
+  static readonly LOCATION_BAR_PREFERRED_WIDTH = 358;
+  // </if>
+  // <if expr="is_chromeos">
+  static readonly LOCATION_BAR_PREFERRED_WIDTH = 284;
+  // </if>
 
   static get is() {
     return 'location-bar';

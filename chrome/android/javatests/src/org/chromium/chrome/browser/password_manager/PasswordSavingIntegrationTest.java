@@ -27,12 +27,10 @@ import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Matchers;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.page.WebPageStation;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
@@ -56,7 +54,7 @@ import java.util.concurrent.TimeoutException;
 /** Integration test for the whole saving/updating password workflow. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, "show-autofill-signatures"})
+@CommandLineFlags.Add("show-autofill-signatures")
 public class PasswordSavingIntegrationTest {
     @Rule(order = 0)
     public SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
@@ -128,16 +126,15 @@ public class PasswordSavingIntegrationTest {
     @DisabledTest(message = "https://crbug.com/371014579")
     // TODO(crbug.com/40927881): Add integration tests for automotive save password flow.
     public void testSavingNewPassword() throws InterruptedException, TimeoutException {
-        mActivityTestRule.loadUrl(mActivityTestRule.getTestServer().getURL(SIGNIN_FORM_URL));
+        WebPageStation formPage =
+                mStartingPage.loadWebPageProgrammatically(
+                        mActivityTestRule.getTestServer().getURL(SIGNIN_FORM_URL));
 
         enterInputIntoTextField(mWebContents, USERNAME_FIELD_ID, USERNAME_TEXT);
         enterInputIntoTextField(mWebContents, PASSWORD_NODE_ID, PASSWORD_TEXT);
         waitForPmParserAnnotation(mWebContents, PASSWORD_NODE_ID);
 
-        DOMUtils.clickNodeWithJavaScript(mWebContents, SUBMIT_BUTTON_ID);
-        ChromeTabUtils.waitForTabPageLoaded(
-                mActivityTestRule.getActivity().getActivityTab(),
-                mActivityTestRule.getTestServer().getURL(DONE_URL));
+        submitForm(formPage, SUBMIT_BUTTON_ID);
         waitForMessageShown();
 
         clickSaveUpdateButtonOnMessage();
@@ -173,8 +170,9 @@ public class PasswordSavingIntegrationTest {
                     mPasswordStoreBridge.insertPasswordCredential(testCredential);
                 });
 
-        mActivityTestRule.loadUrl(
-                mActivityTestRule.getTestServer().getURL(CHANGE_PASSWORD_FORM_URL));
+        WebPageStation formPage =
+                mStartingPage.loadWebPageProgrammatically(
+                        mActivityTestRule.getTestServer().getURL(CHANGE_PASSWORD_FORM_URL));
 
         // Wait for autofill to parse the form and label the password field.
         waitForPmParserAnnotation(mWebContents, OLD_PASSWORD_NODE_ID);
@@ -211,10 +209,7 @@ public class PasswordSavingIntegrationTest {
         enterInputIntoTextField(mWebContents, NEW_PASSWORD_REPEAT_NODE_ID, NEW_PASSWORD_TEXT);
 
         // Submit the form and wait for the success page to load.
-        DOMUtils.clickNodeWithJavaScript(mWebContents, CHANGE_PASSWORD_BUTTON_ID);
-        ChromeTabUtils.waitForTabPageLoaded(
-                mActivityTestRule.getActivity().getActivityTab(),
-                mActivityTestRule.getTestServer().getURL(DONE_URL));
+        submitForm(formPage, CHANGE_PASSWORD_BUTTON_ID);
 
         // Wait for the update message to show and confirm the update.
         waitForMessageShown();
@@ -230,6 +225,16 @@ public class PasswordSavingIntegrationTest {
                     Criteria.checkThat(credentials[0].getUsername(), is(USERNAME_TEXT));
                     Criteria.checkThat(credentials[0].getPassword(), is(NEW_PASSWORD_TEXT));
                 });
+    }
+
+    /** Submits the form on |formPage| by clicking |buttonId| and waits for the done page. */
+    private WebPageStation submitForm(WebPageStation formPage, String buttonId) {
+        String doneUrl = mActivityTestRule.getTestServer().getURL(DONE_URL);
+        return formPage.runTo(() -> DOMUtils.clickNodeWithJavaScript(mWebContents, buttonId))
+                .arriveAt(
+                        WebPageStation.newBuilder()
+                                .initForLoadingUrlOnSameTab(doneUrl, formPage)
+                                .build());
     }
 
     private void clickSaveUpdateButtonOnMessage() {

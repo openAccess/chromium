@@ -9,15 +9,20 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/password_manager/password_change/features.h"
-#include "chrome/browser/password_manager/password_change_delegate_mock.h"
+#include "chrome/browser/ui/passwords/manage_passwords_ui_controller.h"
+#include "chrome/browser/ui/passwords/password_change_ui_delegate_mock.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/password_manager/core/browser/features/password_features.h"
+#include "components/password_manager/core/browser/password_string.h"
+#include "components/password_manager/core/common/password_manager_ui.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "net/dns/mock_host_resolver.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -85,6 +90,7 @@ class PasswordChangeUIControllerBrowserTest : public InProcessBrowserTest {
   }
 
   void SetUpOnMainThread() override {
+    host_resolver()->AddRule("*", "127.0.0.1");
     tabs::TabInterface* tab_interface = browser()->GetActiveTabInterface();
     ASSERT_TRUE(tab_interface);
     ui_controller_ =
@@ -96,7 +102,7 @@ class PasswordChangeUIControllerBrowserTest : public InProcessBrowserTest {
     ui_controller_ = nullptr;
   }
 
-  void UpdateState(PasswordChangeDelegate::State state) {
+  void UpdateState(PasswordChangeUIDelegate::State state) {
     ui_controller_->UpdateState(state);
   }
 
@@ -122,7 +128,7 @@ class PasswordChangeUIControllerBrowserTest : public InProcessBrowserTest {
 
  protected:
   base::HistogramTester histogram_tester_;
-  PasswordChangeDelegateMock delegate_;
+  PasswordChangeUIDelegateMock delegate_;
   std::unique_ptr<PasswordChangeUIController> ui_controller_;
 
  private:
@@ -131,7 +137,7 @@ class PasswordChangeUIControllerBrowserTest : public InProcessBrowserTest {
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        OfferingPasswordChangeDialogAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kOfferingPasswordChange);
+  UpdateState(PasswordChangeUIDelegate::State::kOfferingPasswordChange);
 
   EXPECT_EQ(GetDialogDelegate()->GetWindowTitle(),
             l10n_util::GetStringUTF16(
@@ -152,13 +158,13 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        OfferingPasswordChangeDialogCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kOfferingPasswordChange);
+  UpdateState(PasswordChangeUIDelegate::State::kOfferingPasswordChange);
 
   EXPECT_EQ(GetDialogDelegate()->GetWindowTitle(),
             l10n_util::GetStringUTF16(
                 IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_LEAK_DIALOG_TITLE));
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnPasswordChangeDeclined);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -173,7 +179,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PrivacyNoticeDialogAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   EXPECT_EQ(GetDialogDelegate()->GetWindowTitle(),
             l10n_util::GetStringUTF16(
@@ -195,12 +201,12 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PrivacyNoticeDialogCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   EXPECT_EQ(GetDialogDelegate()->GetWindowTitle(),
             l10n_util::GetStringUTF16(
                 IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_LEAK_DIALOG_TITLE));
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnPasswordChangeDeclined);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -215,10 +221,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PasswordFormNotFoundDialogAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kChangePasswordFormNotFound);
+  UpdateState(PasswordChangeUIDelegate::State::kChangePasswordFormNotFound);
 
   EXPECT_CALL(delegate_, OpenPasswordChangeTab);
-  EXPECT_CALL(delegate_, Stop);
   GetDialogDelegate()->AcceptDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -229,9 +234,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PasswordFormNotFoundDialogCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kChangePasswordFormNotFound);
+  UpdateState(PasswordChangeUIDelegate::State::kChangePasswordFormNotFound);
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnUiDismissed);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -242,10 +247,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        ErrorDialogAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kPasswordChangeFailed);
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordChangeFailed);
 
   EXPECT_CALL(delegate_, OpenPasswordChangeTab);
-  EXPECT_CALL(delegate_, Stop);
   GetDialogDelegate()->AcceptDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -256,9 +260,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        ErrorDialogCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kPasswordChangeFailed);
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordChangeFailed);
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnUiDismissed);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -269,10 +273,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        OtpDetectedDialogAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kOtpDetected);
+  UpdateState(PasswordChangeUIDelegate::State::kOtpDetected);
 
   EXPECT_CALL(delegate_, OpenPasswordChangeTab);
-  EXPECT_CALL(delegate_, Stop);
   GetDialogDelegate()->AcceptDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -283,9 +286,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        OtpDetectedDialogCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kOtpDetected);
+  UpdateState(PasswordChangeUIDelegate::State::kOtpDetected);
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnUiDismissed);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -296,7 +299,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        CheckingSignInToastShown) {
-  UpdateState(PasswordChangeDelegate::State::kWaitingForChangePasswordForm);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForChangePasswordForm);
   histogram_tester_.ExpectUniqueSample(
       "PasswordManager.PasswordChange.CheckingSignInToast",
       PasswordChangeToastEvent::kShown,
@@ -305,7 +308,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        ChangingPasswordToastShown) {
-  UpdateState(PasswordChangeDelegate::State::kChangingPassword);
+  UpdateState(PasswordChangeUIDelegate::State::kChangingPassword);
   histogram_tester_.ExpectUniqueSample(
       "PasswordManager.PasswordChange.ChangingPasswordToast",
       PasswordChangeToastEvent::kShown,
@@ -314,7 +317,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        CheckingSignInToastShownAndCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kWaitingForChangePasswordForm);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForChangePasswordForm);
 
   EXPECT_CALL(delegate_, CancelPasswordChangeFlow);
   views::test::ButtonTestApi clicker(GetToastCloseButton());
@@ -328,7 +331,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        ChangingPasswordToastShownAndCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kChangingPassword);
+  UpdateState(PasswordChangeUIDelegate::State::kChangingPassword);
 
   EXPECT_CALL(delegate_, CancelPasswordChangeFlow);
   views::test::ButtonTestApi clicker(GetToastCloseButton());
@@ -342,7 +345,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        WaitingForSignInToastShownAndCancelled) {
-  UpdateState(PasswordChangeDelegate::State::kLoginFormDetected);
+  UpdateState(PasswordChangeUIDelegate::State::kLoginFormDetected);
 
   EXPECT_CALL(delegate_, CancelPasswordChangeFlow);
   views::test::ButtonTestApi clicker(GetToastCloseButton());
@@ -356,7 +359,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        WaitingForSignInToastClickedContinue) {
-  UpdateState(PasswordChangeDelegate::State::kLoginFormDetected);
+  UpdateState(PasswordChangeUIDelegate::State::kLoginFormDetected);
 
   EXPECT_CALL(delegate_, RetryLoginCheck);
   views::test::ButtonTestApi clicker(GetToastActionButton());
@@ -370,10 +373,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PasswordChangeCanceledToastShownAndAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kCanceled);
+  UpdateState(PasswordChangeUIDelegate::State::kCanceled);
 
   EXPECT_CALL(delegate_, OpenPasswordChangeTab);
-  EXPECT_CALL(delegate_, Stop);
   views::test::ButtonTestApi clicker(GetToastActionButton());
   clicker.NotifyClick(ui::test::TestEvent());
 
@@ -386,9 +388,9 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        PasswordChangeCanceledToastShownAndClosed) {
-  UpdateState(PasswordChangeDelegate::State::kCanceled);
+  UpdateState(PasswordChangeUIDelegate::State::kCanceled);
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnUiDismissed);
   views::test::ButtonTestApi clicker(GetToastCloseButton());
   clicker.NotifyClick(ui::test::TestEvent());
 
@@ -399,32 +401,100 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
-                       PasswordChangeSuccessfilToastShownAndAccepted) {
-  UpdateState(PasswordChangeDelegate::State::kPasswordSuccessfullyChanged);
+                       PasswordChangeSuccessfulToastShownAndAccepted) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("example.com", "/empty.html")));
 
-  EXPECT_CALL(delegate_, OpenPasswordDetails);
-  EXPECT_CALL(delegate_, Stop);
+  const GURL change_password_url("https://example.com/change-password");
+  const std::u16string username = u"user@example.com";
+  const std::u16string new_password = u"NewSecurePassword123";
+  EXPECT_CALL(delegate_, GetChangePasswordUrl)
+      .WillOnce(testing::ReturnRef(change_password_url));
+  EXPECT_CALL(delegate_, GetUsername).WillOnce(testing::ReturnRef(username));
+  EXPECT_CALL(delegate_, GetGeneratedPassword)
+      .WillOnce(testing::Return(
+          password_manager::PasswordString(std::u16string(new_password))));
+  EXPECT_CALL(delegate_, OnUiDismissed);
+
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordSuccessfullyChanged);
+
+  views::test::ButtonTestApi clicker(GetToastActionButton());
+  clicker.NotifyClick(ui::test::TestEvent());
+
+  auto* passwords_ui_controller = ManagePasswordsUIController::FromWebContents(
+      browser()->tab_strip_model()->GetActiveWebContents());
+  EXPECT_EQ(passwords_ui_controller->GetState(),
+            password_manager::ui::PASSWORD_CHANGE_STATE);
+  EXPECT_EQ(passwords_ui_controller->PasswordChangeUsername(), username);
+  EXPECT_EQ(passwords_ui_controller->PasswordChangeNewPassword(), new_password);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    PasswordChangeUIControllerBrowserTest,
+    PasswordChangeSuccessfulToastShownAndAccepted_CrossDomainNavigatesToSettings) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("other.com", "/empty.html")));
+
+  const GURL change_password_url("https://example.com/change-password");
+  EXPECT_CALL(delegate_, GetChangePasswordUrl)
+      .WillOnce(testing::ReturnRef(change_password_url));
+  EXPECT_CALL(delegate_, GetDisplayOrigin)
+      .WillOnce(testing::Return(u"example.com"));
+  EXPECT_CALL(delegate_, OnUiDismissed);
+
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordSuccessfullyChanged);
+
+  ui_test_utils::TabAddedWaiter tab_waiter(browser());
+  views::test::ButtonTestApi clicker(GetToastActionButton());
+  clicker.NotifyClick(ui::test::TestEvent());
+  tab_waiter.Wait();
+
+  EXPECT_EQ(
+      browser()->tab_strip_model()->GetActiveWebContents()->GetVisibleURL(),
+      GURL("chrome://password-manager/passwords/example.com"));
+}
+
+class PasswordChangeUIControllerWithShowTabOnSuccessBrowserTest
+    : public PasswordChangeUIControllerBrowserTest {
+ public:
+  PasswordChangeUIControllerWithShowTabOnSuccessBrowserTest() {
+    feature_list_.InitAndEnableFeature(
+        password_manager::features::kShowTabWithPasswordChangeOnSuccess);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    PasswordChangeUIControllerWithShowTabOnSuccessBrowserTest,
+    PasswordChangeSuccessfulToastShownAndAccepted) {
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordSuccessfullyChanged);
+
+  EXPECT_CALL(delegate_, OpenPasswordChangeTab);
   views::test::ButtonTestApi clicker(GetToastActionButton());
   clicker.NotifyClick(ui::test::TestEvent());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
-                       PasswordChangeSuccessfilToastShownAndCanceled) {
-  UpdateState(PasswordChangeDelegate::State::kPasswordSuccessfullyChanged);
+                       PasswordChangeSuccessfulToastShownAndCanceled) {
+  UpdateState(PasswordChangeUIDelegate::State::kPasswordSuccessfullyChanged);
 
-  EXPECT_CALL(delegate_, Stop);
+  EXPECT_CALL(delegate_, OnUiDismissed);
   views::test::ButtonTestApi clicker(GetToastCloseButton());
   clicker.NotifyClick(ui::test::TestEvent());
 }
 
 IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
                        ToastDisappearsWhenDialogIsShown) {
-  UpdateState(PasswordChangeDelegate::State::kWaitingForChangePasswordForm);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForChangePasswordForm);
 
   EXPECT_TRUE(ui_controller()->toast_view());
   EXPECT_FALSE(ui_controller()->dialog_widget());
 
-  UpdateState(PasswordChangeDelegate::State::kChangePasswordFormNotFound);
+  UpdateState(PasswordChangeUIDelegate::State::kChangePasswordFormNotFound);
 
   EXPECT_FALSE(ui_controller()->toast_view());
   EXPECT_TRUE(ui_controller()->dialog_widget());
@@ -444,7 +514,7 @@ IN_PROC_BROWSER_TEST_F(PasswordChangeUIControllerBrowserTest,
       web_contents, "document.getElementById('test_input').focus();"));
 
   // Show the toast.
-  UpdateState(PasswordChangeDelegate::State::kChangingPassword);
+  UpdateState(PasswordChangeUIDelegate::State::kChangingPassword);
 
   // Verify that the input field is still the active element.
   EXPECT_EQ(
@@ -483,7 +553,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   EXPECT_EQ(
       GetDialogDelegate()->GetWindowTitle(),
@@ -535,7 +605,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   EXPECT_EQ(
       GetDialogDelegate()->GetWindowTitle(),
@@ -551,7 +621,6 @@ IN_PROC_BROWSER_TEST_F(
           IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_MANAGE_IN_SETTINGS)));
 
   EXPECT_CALL(delegate_, OnPasswordChangeDeclined);
-  EXPECT_CALL(delegate_, Stop);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -574,7 +643,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kOfferingPasswordChange);
+  UpdateState(PasswordChangeUIDelegate::State::kOfferingPasswordChange);
 
   EXPECT_EQ(
       GetDialogDelegate()->GetWindowTitle(),
@@ -624,7 +693,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kOfferingPasswordChange);
+  UpdateState(PasswordChangeUIDelegate::State::kOfferingPasswordChange);
 
   EXPECT_EQ(
       GetDialogDelegate()->GetWindowTitle(),
@@ -640,7 +709,6 @@ IN_PROC_BROWSER_TEST_F(
           IDS_PASSWORD_MANAGER_UI_PASSWORD_CHANGE_MANAGE_IN_SETTINGS)));
 
   EXPECT_CALL(delegate_, OnPasswordChangeDeclined);
-  EXPECT_CALL(delegate_, Stop);
   GetDialogDelegate()->CancelDialog();
 
   histogram_tester_.ExpectUniqueSample(
@@ -666,7 +734,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   std::vector<views::StyledLabel*> styled_labels;
   FindStyledLabels(ui_controller_->dialog_widget()->GetContentsView(),
@@ -697,7 +765,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kWaitingForAgreement);
+  UpdateState(PasswordChangeUIDelegate::State::kWaitingForAgreement);
 
   views::BubbleFrameView* frame_view =
       GetDialogDelegate()->AsBubbleDialogDelegate()->GetBubbleFrameView();
@@ -718,7 +786,7 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_CALL(delegate_, GetDisplayOrigin)
       .WillRepeatedly(testing::Return(u"example.com"));
 
-  UpdateState(PasswordChangeDelegate::State::kOfferingPasswordChange);
+  UpdateState(PasswordChangeUIDelegate::State::kOfferingPasswordChange);
 
   views::BubbleFrameView* frame_view =
       GetDialogDelegate()->AsBubbleDialogDelegate()->GetBubbleFrameView();

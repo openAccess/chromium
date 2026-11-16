@@ -63,16 +63,34 @@ class TipsService : public KeyedService, public base::SupportsUserData {
   // Registers a modular feature implementation with the service.
   void RegisterFeature(std::unique_ptr<TipsFeature> feature);
 
-  // Queries database signals for all registered features via the segmentation
-  // platform and determines the best eligible tip to display.
+  // Queries database signals for all registered features whose tip has not
+  // been shown yet via the segmentation platform and determines the best
+  // eligible tip to display. Returns `std::nullopt` without querying if every
+  // registered tip has already been shown.
   // `custom_signals` provides any dynamic or runtime signals (signals that can
   // only be retrieved in Java, e.g. from JNI/UI) that are merged into the
   // signals map evaluated by each feature's `IsEligible` implementation.
   virtual void DetermineBestTip(std::map<std::string, float> custom_signals,
                                 OnBestTipChosen callback);
 
+  // Returns whether any registered tip has not been shown yet. Each tip is
+  // shown at most once, so once this returns false there is nothing left to
+  // schedule.
+  virtual bool HasRemainingTips() const;
+
  private:
+  // Returns whether the tip for `feature` has already been shown.
+  bool HasBeenShown(const TipsFeature& feature) const;
+
+  // Returns the registered features whose tip has not been shown yet. Each tip
+  // is shown at most once, so features that have been shown are skipped
+  // entirely: their signals are not queried and they are not evaluated.
+  std::vector<raw_ptr<TipsFeature>> GetFeaturesNotYetShown() const;
+
+  // `features` are the features whose signals were queried, in the order their
+  // signals were added to the query.
   void OnFeaturesProcessed(
+      std::vector<raw_ptr<TipsFeature>> features,
       std::map<std::string, float> custom_signals,
       OnBestTipChosen callback,
       ResultStatus status,

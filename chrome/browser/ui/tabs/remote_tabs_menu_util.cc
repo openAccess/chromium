@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/tabs/remote_tabs_menu_util.h"
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "build/build_config.h"
@@ -19,6 +20,8 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/favicon/core/history_ui_favicon_request_handler.h"
 #include "components/favicon_base/favicon_types.h"
+#include "components/history/core/common/pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_types.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/sync/base/features.h"
@@ -61,40 +64,75 @@ void OnRemoteTabFaviconAvailable(
 
 bool ShouldShowTabsFromOtherDevices(Profile* profile) {
 #if !BUILDFLAG(IS_CHROMEOS)
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    syncer::SyncService* sync_service =
-        SyncServiceFactory::GetForProfile(profile);
-    if (!sync_service) {
-      return false;
-    }
+  syncer::SyncService* sync_service =
+      SyncServiceFactory::GetForProfile(profile);
+  if (!sync_service) {
+    return false;
+  }
 
-    if (!signin_util::IsSyncingUserSelectableTypesAllowedByPolicy(
-            sync_service, {syncer::UserSelectableType::kTabs})) {
-      // Tabs from other devices should not be offered if syncing tabs is
-      // disabled by policy.
-      return false;
-    }
+  if (!signin_util::IsSyncingUserSelectableTypesAllowedByPolicy(
+          sync_service, {syncer::UserSelectableType::kTabs})) {
+    // Tabs from other devices should not be offered if syncing tabs is
+    // disabled by policy.
+    return false;
+  }
 
-    signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(profile);
-    switch (signin_util::GetSignedInState(identity_manager)) {
-      case signin_util::SignedInState::kSignedIn:
-      case signin_util::SignedInState::kSignInPending:
-        if (signin_util::HasExplicitlyDisabledHistorySync(sync_service,
-                                                          identity_manager)) {
-          // Tabs from other devices should not be offered if syncing tabs is
-          // explicitly disabled by the user.
-          return false;
-        }
-        break;
-      case signin_util::SignedInState::kSignedOut:
-      case signin_util::SignedInState::kWebOnlySignedIn:
-      case signin_util::SignedInState::kSyncing:
-      case signin_util::SignedInState::kSyncPaused:
-        break;
-    }
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  switch (signin_util::GetSignedInState(identity_manager)) {
+    case signin_util::SignedInState::kSignedIn:
+    case signin_util::SignedInState::kSignInPending:
+      if (signin_util::HasExplicitlyDisabledHistorySync(sync_service,
+                                                        identity_manager)) {
+        // Tabs from other devices should not be offered if syncing tabs is
+        // explicitly disabled by the user.
+        return false;
+      }
+      break;
+    case signin_util::SignedInState::kSignedOut:
+    case signin_util::SignedInState::kWebOnlySignedIn:
+    case signin_util::SignedInState::kSyncing:
+    case signin_util::SignedInState::kSyncPaused:
+      break;
   }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
+  return true;
+}
+
+bool ShouldShowOtherDeviceTabsMenuItem(Profile* profile) {
+  // Off-the-record profiles do not sync tabs.
+  if (!profile || profile->IsOffTheRecord() ||
+      !base::FeatureList::IsEnabled(syncer::kCrossDeviceTabsInAppMenu)) {
+    return false;
+  }
+
+  // Cross-device tabs are part of browsing history.
+  if (profile->GetPrefs()->GetBoolean(prefs::kSavingBrowserHistoryDisabled)) {
+    return false;
+  }
+
+  switch (signin_util::GetSignedInState(
+      IdentityManagerFactory::GetForProfile(profile))) {
+    case signin_util::SignedInState::kSignedOut:
+    case signin_util::SignedInState::kWebOnlySignedIn:
+    case signin_util::SignedInState::kSignInPending:
+    case signin_util::SignedInState::kSyncPaused:
+      // Hide when no primary account is signed in to Chrome, sign-in is
+      // pending, or sync is paused.
+      return false;
+    case signin_util::SignedInState::kSignedIn:
+    case signin_util::SignedInState::kSyncing:
+      break;
+  }
+
+  // Respect enterprise policies disabling sync or tabs/history sync.
+  if (!signin_util::IsSyncingUserSelectableTypesAllowedByPolicy(
+          SyncServiceFactory::GetForProfile(profile),
+          {syncer::UserSelectableType::kTabs,
+           syncer::UserSelectableType::kHistory})) {
+    return false;
+  }
+
   return true;
 }
 

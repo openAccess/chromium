@@ -53,6 +53,7 @@
 #endif
 
 #if BUILDFLAG(IS_LINUX)
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/views/views_features.h"
 #endif
@@ -181,6 +182,8 @@ void BrowserWidget::InitBrowserWidget() {
       SessionServiceBrowserHelper::From(browser)->platform_session_data();
 #endif
 
+  // The saved window bounds of a window that is shown maximized.
+  std::optional<gfx::Rect> saved_maximized_window_bounds;
   if (browser_native_widget_->ShouldRestorePreviousBrowserWidgetState()) {
     if (browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL ||
         browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS ||
@@ -193,6 +196,9 @@ void BrowserWidget::InitBrowserWidget() {
       // repositioned to the saved bounds in Widget::SetInitialBounds.
       chrome::GetSavedWindowBoundsAndShowState(browser, &params.bounds,
                                                &params.show_state);
+      if (params.show_state == ui::mojom::WindowShowState::kMaximized) {
+        saved_maximized_window_bounds = params.bounds;
+      }
 
       params.workspace = BrowserInitState::From(browser)->initial_workspace();
       if (browser_native_widget_->ShouldUseInitialVisibleOnAllWorkspaces()) {
@@ -227,6 +233,21 @@ void BrowserWidget::InitBrowserWidget() {
 #endif
 
   Init(std::move(params));
+
+  // A window that is shown maximized is mapped with the bounds passed to
+  // Init(), and the window manager restores it to these bounds. The saved
+  // bounds exclude the invisible frame insets, so convert them to widget
+  // bounds now that the insets are known. Widget::SetInitialBounds() does not
+  // set the bounds of a window that is shown maximized.
+  if (saved_maximized_window_bounds &&
+      !saved_maximized_window_bounds->IsEmpty()) {
+    const gfx::Insets insets = GetInvisibleFrameInsets(/*restored=*/true);
+    if (!insets.IsEmpty()) {
+      gfx::Rect widget_bounds = *saved_maximized_window_bounds;
+      widget_bounds.Inset(-insets);
+      SetBounds(widget_bounds);
+    }
+  }
 
 #if BUILDFLAG(IS_LINUX)
   if (!base::FeatureList::IsEnabled(
@@ -473,6 +494,12 @@ ui::MenuModel* BrowserWidget::GetSystemMenuModel() {
   return menu_model_builder_->menu_model();
 }
 
+gfx::Insets BrowserWidget::GetInvisibleFrameInsets(bool restored) const {
+  return browser_native_widget_
+             ? browser_native_widget_->GetInvisibleFrameInsets(restored)
+             : gfx::Insets();
+}
+
 void BrowserWidget::SetTabDragKind(TabDragKind tab_drag_kind) {
   if (tab_drag_kind_ == tab_drag_kind) {
     return;
@@ -564,8 +591,8 @@ void BrowserWidget::SelectNativeTheme() {
   // display_override so the web contents can blend with the overlay by using
   // the developer-provided theme color for a better experience. Context:
   // https://crbug.com/40771982.
-  const auto* linux_ui_theme =
-      ui::LinuxUiTheme::GetForProfile(browser_view_->GetProfile());
+  const auto* linux_ui_theme = ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(
+      browser_view_->GetProfile());
   SetNativeTheme(linux_ui_theme &&
                          !browser_view_->AppUsesWindowControlsOverlay()
                      ? linux_ui_theme->GetNativeTheme()

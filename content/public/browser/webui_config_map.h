@@ -7,6 +7,8 @@
 
 #include <map>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <vector>
 
 #include "content/common/content_export.h"
@@ -58,9 +60,27 @@ class CONTENT_EXPORT WebUIConfigMap {
   // enabled. (WebUIs can be disabled based on the profile or feature flags.)
   WebUIConfig* GetConfig(BrowserContext* browser_context, const GURL& url);
 
-  // Removes and returns the WebUIConfig with |url|. Returns nullptr if
-  // there is no WebUIConfig with |url|.
+  // Returns `WebUIConfig::process_lock_host()` of the WebUIConfig registered
+  // for `url`'s origin, or `std::nullopt` if there is none or it does not
+  // specify one.
+  //
+  // Unlike `GetConfig()`, this does not evaluate `IsWebUIEnabled()` or
+  // `ShouldHandleURL()`, as process model decisions must be
+  // BrowserContext-independent.
+  std::optional<std::string_view> GetProcessLockHost(const GURL& url) const;
+
+  // Removes and returns the WebUIConfig with `url`. Returns nullptr if
+  // there is no WebUIConfig with `url`.
+  //
+  // CHECKs that the removed WebUIConfig has no `process_lock_host()`. The
+  // process lock of a WebUI URL is derived from its registered WebUIConfig, so
+  // removing such a config while the browser is running would change the
+  // process lock of URLs that existing processes may already be locked to.
   std::unique_ptr<WebUIConfig> RemoveConfig(const GURL& url);
+
+  // Same as `RemoveConfig()`, but also allows removing a WebUIConfig that has a
+  // `process_lock_host()`. Tests should prefer `ScopedWebUIConfigRegistration`.
+  std::unique_ptr<WebUIConfig> RemoveConfigForTesting(const GURL& url);
 
   // Gets a list of the origin (host + scheme) and enabled/disabled status of
   // all currently registered WebUIConfigs. If |browser_context| is null,
@@ -70,6 +90,11 @@ class CONTENT_EXPORT WebUIConfigMap {
 
  private:
   void AddWebUIConfigImpl(std::unique_ptr<WebUIConfig> config);
+  std::unique_ptr<WebUIConfig> RemoveConfigImpl(const GURL& url);
+
+  // Returns the WebUIConfig registered for `url`'s origin without evaluating
+  // `IsWebUIEnabled()` or `ShouldHandleURL()`, or nullptr if there is none.
+  WebUIConfig* GetRegisteredConfig(const GURL& url) const;
 
   using WebUIConfigMapImpl =
       std::map<url::Origin, std::unique_ptr<WebUIConfig>>;

@@ -126,7 +126,9 @@ ImageResource* CreateResourceForTransparentPlaceholderImage(
       GetDataForTransparentPlaceholderImageIndex(index);
   CHECK(data->size());
 
-  scoped_refptr<Image> image = BitmapImage::Create();
+  scoped_refptr<Image> image =
+      BitmapImage::Create(/*observer=*/nullptr, /*is_multipart=*/false,
+                          /*is_cors_same_origin=*/true);
   image->SetData(data, true);
   auto* image_content = ImageResourceContent::CreateLoaded(image);
   auto* resource =
@@ -437,6 +439,12 @@ scoped_refptr<const SharedBuffer> ImageResource::ResourceBuffer() const {
   return GetContent()->ResourceBuffer();
 }
 
+bool ImageResource::HasResourceBuffer() const {
+  // Avoids ResourceBuffer(), which can unpark and copy the encoded image.
+  return Data() ||
+         (GetContent()->HasImage() && GetContent()->GetImage()->HasData());
+}
+
 void ImageResource::AppendData(
     std::variant<SegmentedBuffer, base::span<const char>> data) {
   // We don't have a BackgroundResponseProcessor for ImageResources. So this
@@ -639,8 +647,7 @@ void ImageResource::UpdateResourceInfoFromObservers() {
   GetContent()->UpdateResourceInfoFromObservers();
 }
 
-std::pair<std::optional<ResourcePriority>, std::optional<ResourcePriority>>
-ImageResource::PriorityFromObservers() const {
+std::optional<ResourcePriority> ImageResource::PriorityFromObservers() const {
   return GetContent()->PriorityFromObservers();
 }
 

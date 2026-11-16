@@ -459,28 +459,6 @@ typedef NS_ENUM(NSInteger, DragEntrySide) {
   [self updateSuggestedActionsSection];
 }
 
-// TODO(crbug.com/427543764): Rename this method now that it checks for
-// something different.
-- (BOOL)isSelectedCellVisible {
-  // The collection view's selected item may not have updated yet, so use the
-  // selected index.
-  NSUInteger selectedIndex = self.selectedIndex;
-  if (selectedIndex == NSNotFound) {
-    return NO;
-  }
-  NSIndexPath* selectedIndexPath = [self indexPathForTabIndex:selectedIndex];
-
-  GridItemIdentifier* gridItem =
-      [self.diffableDataSource itemIdentifierForIndexPath:selectedIndexPath];
-
-  UICollectionViewCell* collectionViewCell =
-      [self.collectionView cellForItemAtIndexPath:selectedIndexPath];
-
-  return [self.collectionView.indexPathsForVisibleItems
-             containsObject:selectedIndexPath] &&
-         gridItem.type == GridItemType::kTab && collectionViewCell;
-}
-
 - (void)setContentInsets:(UIEdgeInsets)contentInsets {
   // Set the vertical insets on the collection view…
   self.collectionView.contentInset =
@@ -496,7 +474,6 @@ typedef NS_ENUM(NSInteger, DragEntrySide) {
   _contentInsets = contentInsets;
 }
 
-
 - (TabGridTransitionLayout*)transitionLayout {
   return [TabGridTransitionLayout
       layoutWithActiveCell:self.transitionItemForActiveCell
@@ -506,24 +483,43 @@ typedef NS_ENUM(NSInteger, DragEntrySide) {
 - (TabGridTransitionItem*)transitionItemForActiveCell {
   [self.collectionView layoutIfNeeded];
 
+  const NSUInteger selectedIndex = self.selectedIndex;
+  if (selectedIndex == NSNotFound) {
+    return nil;
+  }
+
   NSIndexPath* selectedItemIndexPath =
-      [self indexPathForTabIndex:self.selectedIndex];
+      [self indexPathForTabIndex:selectedIndex];
   if (![self.collectionView.indexPathsForVisibleItems
           containsObject:selectedItemIndexPath]) {
     return nil;
   }
+
   UICollectionViewCell* collectionViewCell =
       [self.collectionView cellForItemAtIndexPath:selectedItemIndexPath];
   if ([collectionViewCell isKindOfClass:[GroupGridCell class]]) {
-    // TODO(crbug.com/40942154): Handle once the annimations are available for
+    // TODO(crbug.com/40942154): Handle once the animations are available for
     // group cells.
     return nil;
   }
 
+  // `indexPathsForVisibleItems` can include an item near the viewport edge
+  // while `cellForItemAtIndexPath:` still returns nil.
   GridCell* cell = ObjCCastStrict<GridCell>(collectionViewCell);
+  if (!cell) {
+    return nil;
+  }
+
+  // `snapshotFrame` can be empty if the grid has zero bounds or the cell's
+  // subviews have not laid out at a non-zero size yet; passing an empty frame
+  // to `GridToTabAnimation` divides by zero (`CALayerInvalidGeometry`).
+  const CGRect snapshotFrame = [cell snapshotFrame];
+  if (CGRectIsEmpty(snapshotFrame)) {
+    return nil;
+  }
 
   return [TabGridTransitionItem itemWithSnapshot:cell.snapshot
-                                   originalFrame:[cell snapshotFrame]];
+                                   originalFrame:snapshotFrame];
 }
 
 - (void)contentWillAppearAnimated:(BOOL)animated {

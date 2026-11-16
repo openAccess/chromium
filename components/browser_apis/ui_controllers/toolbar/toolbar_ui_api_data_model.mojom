@@ -61,6 +61,7 @@ enum ContextMenuType {
   kPinnedActionSidePanelShowComments,
   kPinnedActionShowAiOverlayDialog,
   kPinnedActionTtcToolbar,
+  kPinnedActionGlicSmartSelection,
   kPinnedActionSidePanelShowHistory,
   kPinnedActionShowChromeLabs,
   kPinnedActionSidePanelShowGlic,
@@ -323,6 +324,26 @@ struct GlicButtonState {
   // available. This string is for display only and must not be
   // programmatically parsed.
   string? nudge_label;
+  // Whether the Glic button is joined with the actor task icon as a split
+  // button (collapsed to icon-only with a flattened trailing edge).
+  bool is_split = false;
+};
+
+// State of the Glic actor task icon (the autobrowse task indicator) in the
+// toolbar. It is only shown next to the Glic button, forming a split button.
+struct GlicActorTaskIconState {
+  // Whether the icon should be shown (i.e. an actor task is active).
+  bool should_show = false;
+  // Nudge text to display next to the icon when a nudge is active, if
+  // available. This string is for display only and must not be
+  // programmatically parsed.
+  string? nudge_label;
+  // Tooltip and accessible name for the icon. This string is for display only
+  // and must not be programmatically parsed.
+  string tooltip;
+  // Whether the icon is in its pressed state (i.e. while the actor task list
+  // bubble is showing).
+  bool is_pressed = false;
 };
 
 // The type of icon state for the app menu. These values drive the visual
@@ -741,6 +762,7 @@ enum PinnedToolbarAction {
   kSidePanelShowComments,
   kShowAiOverlayDialog,
   kTtcToolbar,
+  kGlicSmartSelectionToolbar,
   kSidePanelShowHistory,
   kShowChromeLabs,
   kSidePanelShowGlic,
@@ -774,6 +796,19 @@ struct DownloadProgressRingState {
   uint8? progress_percentage;
 };
 
+// Visual style used to indicate that a pinned toolbar action button is engaged
+// (`activated`). Mirrors `ActionItemEngagedIndicatorStyle` in
+// //chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h.
+enum PinnedToolbarActionEngagedIndicatorStyle {
+  // Colors the button icon with `--color-toolbar-action-item-engaged` and shows
+  // an underline status indicator below the icon.
+  kUnderline,
+  // Shows a circular background highlight
+  // (`--color-avatar-button-highlight-default`) behind the button when not
+  // highlighted (`is-menu-open`).
+  kCircleHighlight,
+};
+
 // The state of a pinned toolbar action button that should be displayed.
 struct PinnedToolbarActionState {
   // The action to invoke upon click of this button.
@@ -787,6 +822,12 @@ struct PinnedToolbarActionState {
 
   // Should this button appear activated?
   bool activated;
+
+  // Visual style used to indicate that the action is engaged when `activated`
+  // is true. Mirrors `kActionItemEngagedIndicatorStyleKey` and
+  // `PinnedActionToolbarButton::SetEngagedIndicatorStyle()`.
+  PinnedToolbarActionEngagedIndicatorStyle engaged_indicator_style =
+      PinnedToolbarActionEngagedIndicatorStyle.kUnderline;
 
   // Tooltip text to display on hover.
   mojo_base.mojom.String16 tooltip;
@@ -807,6 +848,12 @@ struct PinnedToolbarActionState {
   // The number to show in the badge drawn over the icon, if any. Null if this
   // action has no badge.
   int32? badge_number;
+
+  // Delta (in dp) applied to the default toolbar button icon size when
+  // rendering `icon`. Always non-positive. Mirrors
+  // `chrome::kActionItemIconSizeDeltaKey` and
+  // PinnedActionToolbarButton::GetIconSize().
+  int32 icon_size_delta = 0;
 };
 
 struct LocationBarState {
@@ -869,6 +916,8 @@ enum PermissionAction {
 
 struct PermissionChipState {
   bool is_visible;
+  // The chip's icon as an iconset id (e.g.
+  // "webui-toolbar-shared:content_paste"), or empty for no icon.
   string icon_name;
   mojo_base.mojom.String16 message;
   mojo_base.mojom.String16 tooltip;
@@ -976,6 +1025,9 @@ struct ToolbarState {
 
   // State of the Glic button in the toolbar.
   GlicButtonState glic_button_state;
+
+  // State of the Glic actor task icon in the toolbar.
+  GlicActorTaskIconState glic_actor_task_icon_state;
 
   // True while toolbar button icons should use the inactive color because the
   // browser window is inactive. Only ever true on platforms where

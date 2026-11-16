@@ -15,7 +15,7 @@ import {AudioBrowserProxyImpl} from './audio_browser_proxy.js';
 import type {SpeechBrowserProxy} from './speech_browser_proxy.js';
 import {SpeechBrowserProxyImpl} from './speech_browser_proxy.js';
 import {getFilteredVoiceList} from './tts_voice_filtering.js';
-import {areVoicesEqual, AVAILABLE_GOOGLE_TTS_LOCALES, convertLangOrLocaleForVoicePackManager, convertLangOrLocaleToExactVoicePackLocale, convertLangToAnAvailableLangIfPresent, createInitialListOfEnabledLanguages, doesLanguageHaveNaturalVoices, EXTENSION_RESPONSE_TIMEOUT_MS, getNaturalVoiceOrDefault, getVoicePackConvertedLangIfExists, hasNaturalIdentifier, isVoicePackStatusError, isVoicePackStatusSuccess, mojoVoicePackStatusToVoicePackStatusEnum, VoiceClientSideStatusCode, VoicePackServerStatusErrorCode, VoicePackServerStatusSuccessCode} from './voice_language_conversions.js';
+import {areVoicesEqual, AVAILABLE_GOOGLE_TTS_LOCALES, convertLangOrLocaleForVoicePackManager, convertLangOrLocaleToExactVoicePackLocale, convertLangToAnAvailableLangIfPresent, createInitialListOfEnabledLanguages, EXTENSION_RESPONSE_TIMEOUT_MS, getNaturalVoiceOrDefault, getVoicePackConvertedLangIfExists, hasNaturalIdentifier, isLanguageLocallyAvailable, isVoicePackStatusError, isVoicePackStatusSuccess, mojoVoicePackStatusToVoicePackStatusEnum, VoiceClientSideStatusCode, VoicePackServerStatusErrorCode, VoicePackServerStatusSuccessCode} from './voice_language_conversions.js';
 import type {VoicePackStatus} from './voice_language_conversions.js';
 import {VoiceLanguageModel} from './voice_language_model.js';
 import {VoiceNotificationManager} from './voice_notification_manager.js';
@@ -265,18 +265,24 @@ export class VoiceLanguageController {
       return;
     }
 
-    // Prevent re-selection of active voice or pending language.
-    const currentVoice = this.getCurrentVoice();
+    this.refreshAvailableVoices_();
+    const availableVoices = this.getAvailableVoicesForLang_(lowerTarget);
+    const isLocallyAvailable =
+        isLanguageLocallyAvailable(lowerTarget, availableVoices);
 
-    if (currentVoice && currentVoice.lang.toLowerCase() === lowerTarget) {
+    // Prevent re-selection if the target language is already enabled, active,
+    // and its voice pack is locally available. Checking isLangEnabled ensures
+    // auto-selected voices not yet enabled in prefs still go through
+    // activation, and checking isLocallyAvailable ensures we still request a
+    // voice pack download when only a system voice is present.
+    const currentVoice = this.getCurrentVoice();
+    if (this.isLangEnabled(lowerTarget) && currentVoice &&
+        currentVoice.lang.toLowerCase() === lowerTarget && isLocallyAvailable) {
       return;
     }
 
-    this.refreshAvailableVoices_();
-    const availableVoices = this.getAvailableVoicesForLang_(lowerTarget);
-
     // Activate language if locally available.
-    if (availableVoices.length > 0) {
+    if (isLocallyAvailable) {
       this.model_.setPendingTargetLanguage(null);
       this.activateSingleLanguage_(lowerTarget, availableVoices);
       return;
@@ -302,9 +308,7 @@ export class VoiceLanguageController {
           isVoicePackStatusSuccess(serverStatus) &&
           serverStatus.code === VoicePackServerStatusSuccessCode.INSTALLING;
       if (!isInstalling) {
-        // Installation failed, trigger fallback.
-        this.model_.setPendingTargetLanguage(null);
-        this.fallbackToCurrentOrDefaultVoice_();
+        this.onLanguageInstallFailed_(lowerTarget);
       }
     }
   }
@@ -331,9 +335,19 @@ export class VoiceLanguageController {
 
   private activatePendingLanguageIfAvailable_(pendingLang: string): void {
     const targetVoices = this.getAvailableVoicesForLang_(pendingLang);
-    if (targetVoices.length > 0) {
+    if (isLanguageLocallyAvailable(pendingLang, targetVoices)) {
       this.activateSingleLanguage_(pendingLang, targetVoices);
       this.model_.setPendingTargetLanguage(null);
+    }
+  }
+
+  private onLanguageInstallFailed_(targetLang: string): void {
+    this.model_.setPendingTargetLanguage(null);
+    const availableVoices = this.getAvailableVoicesForLang_(targetLang);
+    if (availableVoices.length > 0) {
+      this.activateSingleLanguage_(targetLang, availableVoices);
+    } else {
+      this.fallbackToCurrentOrDefaultVoice_();
     }
   }
 
@@ -375,19 +389,23 @@ export class VoiceLanguageController {
     if (!currentVoice || !this.isVoiceAvailable(currentVoice)) {
       const defaultVoice = this.getDefaultVoice_();
       if (defaultVoice) {
-        this.setUserPreferredVoice(defaultVoice);
+        this.model_.setIsVoiceUserSelected(false);
+        this.setCurrentVoice_(defaultVoice);
       }
     }
     this.anchorToActiveVoice_();
   }
 
   setUserPreferredVoice(selectedVoice: SpeechSynthesisVoice): void {
+    this.model_.setIsVoiceUserSelected(true);
+    this.model_.setCurrentLanguage(selectedVoice.lang.toLowerCase());
     this.setCurrentVoice_(selectedVoice);
     this.audioBrowserProxy_.onVoiceChange(
         selectedVoice.name, selectedVoice.lang);
   }
 
   onPageLanguageChanged() {
+    this.model_.setIsVoiceUserSelected(false);
     const lang = this.audioBrowserProxy_.getBaseLanguageForSpeech();
     this.model_.setCurrentLanguage(lang);
 
@@ -428,7 +446,18 @@ export class VoiceLanguageController {
     }
   }
 
+  private hasAvailableUserSelectedVoice_(): boolean {
+    const currentVoice = this.getCurrentVoice();
+    return this.model_.isVoiceUserSelected() && !!currentVoice &&
+        this.isVoiceAvailable(currentVoice);
+  }
+
   private setUserPreferredVoiceFromPrefs_(): void {
+    if (this.hasAvailableUserSelectedVoice_()) {
+      this.enableLang(this.getCurrentVoice()!.lang);
+      return;
+    }
+
     const storedVoiceName = this.audioBrowserProxy_.getStoredVoice();
     if (!storedVoiceName) {
       this.setCurrentVoice_(this.getDefaultVoice_());
@@ -454,7 +483,7 @@ export class VoiceLanguageController {
 
     const naturalVoicesForLang = this.getAvailableVoices().filter(
         voice => hasNaturalIdentifier(voice) &&
-            voice.lang.startsWith(this.getCurrentLanguage()));
+            voice.lang.toLowerCase().startsWith(this.getCurrentLanguage()));
     if (!naturalVoicesForLang.length || !naturalVoicesForLang[0]) {
       return;
     }
@@ -470,6 +499,7 @@ export class VoiceLanguageController {
     }
     const currentVoice = this.getCurrentVoice();
     if (currentVoice && !this.isVoiceAvailable(currentVoice)) {
+      this.model_.setIsVoiceUserSelected(false);
       this.setCurrentVoice_(this.getDefaultVoice_());
     }
   }
@@ -484,6 +514,7 @@ export class VoiceLanguageController {
   }
 
   onLanguageUnavailableError(): void {
+    this.model_.setIsVoiceUserSelected(false);
     const possibleNewLanguage = convertLangToAnAvailableLangIfPresent(
         this.getCurrentLanguage(), this.getAvailableLangs(),
         /* allowCurrentLanguageIfExists */ false);
@@ -498,6 +529,7 @@ export class VoiceLanguageController {
   // the previously unavailable voice as an extra measure. This method should
   // only be called when speech synthesis returns an error.
   onVoiceUnavailableError(): void {
+    this.model_.setIsVoiceUserSelected(false);
     const currentVoice = this.getCurrentVoice();
     const newVoice = this.getDefaultVoice_();
 
@@ -512,7 +544,7 @@ export class VoiceLanguageController {
     const baseLang = this.getCurrentLanguage();
     this.refreshAvailableVoices_();
     const voicesForLanguage = this.getAvailableVoices().filter(
-        voice => voice.lang.startsWith(baseLang));
+        voice => voice.lang.toLowerCase().startsWith(baseLang));
 
     // TODO: crbug.com/40927698 - It's possible we can get stuck in an infinite
     // loop of jumping back and forth between two or more invalid voices, if
@@ -546,7 +578,8 @@ export class VoiceLanguageController {
 
     let disableLang = false;
     // <if expr="is_chromeos">
-    disableLang =
+    disableLang = this.visualBrowserProxy_.isReadAnythingImprovedUiEnabled() ?
+        availableVoicesForLang.length === 0 :
         !availableVoicesForLang.some(voice => hasGoogleIdentifier(voice));
     // </if>
     // <if expr="not is_chromeos">
@@ -614,8 +647,10 @@ export class VoiceLanguageController {
     // We need to make sure the languages we choose correspond to voices, so
     // refresh the list of voices and available langs
     this.refreshAvailableVoices_();
-    this.model_.setCurrentLanguage(
-        this.audioBrowserProxy_.getBaseLanguageForSpeech());
+    if (!this.hasAvailableUserSelectedVoice_()) {
+      this.model_.setCurrentLanguage(
+          this.audioBrowserProxy_.getBaseLanguageForSpeech());
+    }
     const storedLanguagesPref =
         this.audioBrowserProxy_.getLanguagesEnabledInPref();
     const langOfDefaultVoice = this.getDefaultVoice_()?.lang;
@@ -624,7 +659,7 @@ export class VoiceLanguageController {
     // voice to ensure we have the right voices available, and prior to updating
     // the preferences so we can check against what's available and enabled.
     const langs = createInitialListOfEnabledLanguages(
-        this.audioBrowserProxy_.getBaseLanguageForSpeech(), storedLanguagesPref,
+        this.getCurrentLanguage(), storedLanguagesPref,
         this.getAvailableLangs(), langOfDefaultVoice);
     langs.forEach((l: string) => this.enableLang(l));
 
@@ -729,8 +764,7 @@ export class VoiceLanguageController {
           this.triggerInstall_(lang);
           break;
         case VoicePackServerStatusSuccessCode.INSTALLING:
-          // Do nothing- we mark our local state as installing when we send the
-          // request. Locally, we may time out a slow request and mark it as
+          // Do nothing. Locally, we may time out a slow request and mark it as
           // errored, and we don't want to overwrite that state here.
           break;
         case VoicePackServerStatusSuccessCode.INSTALLED:
@@ -756,17 +790,11 @@ export class VoiceLanguageController {
             this.autoSwitchVoice_(lang);
           }
 
-          // Some languages may require a download from the tts engine
-          // but may not have associated natural voices.
-          const languageHasNaturalVoices = doesLanguageHaveNaturalVoices(lang);
-
           // Even though the voice may be installed on disk, it still may not be
           // available to the speechSynthesis API. Check whether to mark the
           // voice as AVAILABLE or INSTALLED_AND_UNAVAILABLE
-          const voicesForLanguageAreAvailable = this.getAvailableVoices().some(
-              voice =>
-                  ((hasNaturalIdentifier(voice) || !languageHasNaturalVoices) &&
-                   getVoicePackConvertedLangIfExists(voice.lang) === lang));
+          const voicesForLanguageAreAvailable = isLanguageLocallyAvailable(
+              lang, this.getAvailableVoicesForLang_(lang));
 
           // If natural voices are currently available for the language or the
           // language does not support natural voices, set the status to
@@ -787,9 +815,7 @@ export class VoiceLanguageController {
         if (pendingLang &&
             (pendingLang === lang ||
              getVoicePackConvertedLangIfExists(pendingLang) === lang)) {
-          // Clear pending target and anchor to fallback voice.
-          this.model_.setPendingTargetLanguage(null);
-          this.fallbackToCurrentOrDefaultVoice_();
+          this.onLanguageInstallFailed_(pendingLang);
         }
       } else {
         this.autoSwitchVoice_(lang);
@@ -980,6 +1006,10 @@ export class VoiceLanguageController {
   }
 
   private currentVoiceIsUserChosen_(): boolean {
+    if (this.hasAvailableUserSelectedVoice_()) {
+      return true;
+    }
+
     const storedVoiceName = this.audioBrowserProxy_.getStoredVoice();
 
     // getCurrentVoice() is not necessarily chosen by the user, it is just
@@ -996,7 +1026,8 @@ export class VoiceLanguageController {
     this.refreshAvailableVoices_();
     const allPossibleVoices = this.getAvailableVoices();
     const voicesForLanguage = allPossibleVoices.filter(
-        voice => voice.lang.startsWith(this.getCurrentLanguage()));
+        voice =>
+            voice.lang.toLowerCase().startsWith(this.getCurrentLanguage()));
 
     if (!voicesForLanguage.length) {
       // Stay with the current voice if no voices are available for this

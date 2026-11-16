@@ -1573,6 +1573,31 @@ class AndroidAutofillProviderWithCredManTest
                                                         field.global_id());
   }
 
+  void StartSessionOnField(const FormData& form, const FormFieldData& field) {
+    android_autofill_manager().OnAskForValuesToFillTest(form,
+                                                        field.global_id());
+  }
+
+  base::RepeatingCallback<void(bool)> TriggerLongPressCredMan() {
+    base::RepeatingCallback<void(bool)> completed_callback;
+    EXPECT_CALL(cred_man_delegate(), SetRequestCompletionCallback)
+        .WillOnce(SaveArg<0>(&completed_callback));
+    EXPECT_CALL(
+        cred_man_delegate(),
+        TriggerCredManUi(
+            Eq(webauthn::WebAuthnCredManDelegate::RequestPasswords(false))));
+    test_api(autofill_provider()).OnTriggerPasskeyRequest();
+    Mock::VerifyAndClearExpectations(&cred_man_delegate());
+    return completed_callback;
+  }
+
+  void DismissCredManSheet(base::RepeatingCallback<void(bool)> callback,
+                           bool success = false) {
+    EXPECT_CALL(cred_man_delegate(), SetRequestCompletionCallback);
+    callback.Run(success);
+    Mock::VerifyAndClearExpectations(&cred_man_delegate());
+  }
+
   webauthn::MockWebAuthnCredManDelegate& cred_man_delegate() {
     return *static_cast<webauthn::MockWebAuthnCredManDelegate*>(
         web_authn_delegate_factory()->GetRequestDelegate(main_frame()));
@@ -1660,6 +1685,7 @@ TEST_F(AndroidAutofillProviderWithCredManTest,
 
 TEST_F(AndroidAutofillProviderWithCredManTest,
        LogConditionalPasskeysFlowPasskeysAvailableOnLongPress) {
+  base::HistogramTester histogram_tester;
   ON_CALL(cred_man_delegate(), HasPasskeys())
       .WillByDefault(
           Return(webauthn::WebAuthnCredManDelegate::State::kNoPasskeys));
@@ -1668,11 +1694,18 @@ TEST_F(AndroidAutofillProviderWithCredManTest,
   FocusFormField(webauthn_email_field());
   EXPECT_FALSE(keyboard_suppressor().is_suppressing());
 
-  // Simulate the long-press suggestion was accepted.
-  EXPECT_CALL(cred_man_delegate(),
-              TriggerCredManUi(Eq(
-                  webauthn::WebAuthnCredManDelegate::RequestPasswords(false))));
-  test_api(autofill_provider()).OnTriggerPasskeyRequest();
+  // Trigger CredMan via long-press, then dismiss and verify callback cleanup,
+  // no unexpected focus notification, and histogram emission.
+  base::RepeatingCallback<void(bool)> completed_callback =
+      TriggerLongPressCredMan();
+  ASSERT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  EXPECT_CALL(provider_bridge(), OnFocusChanged).Times(0);
+  DismissCredManSheet(completed_callback);
+  EXPECT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.ConditionalPasskeysFlow.PasskeysState",
+      webauthn::WebAuthnCredManDelegate::State::kNoPasskeys, 1);
 }
 
 TEST_F(AndroidAutofillProviderWithCredManTest,
@@ -1701,6 +1734,9 @@ TEST_F(AndroidAutofillProviderWithCredManTest, NoCredManWithoutAnnotation) {
   FocusFormField(non_webauthn_password_field());
 
   EXPECT_FALSE(keyboard_suppressor().is_suppressing());
+
+  test_api(autofill_provider()).OnTriggerPasskeyRequest();
+  EXPECT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
 }
 
 TEST_F(AndroidAutofillProviderWithCredManTest, SkipsCredManCallBeforeReady) {
@@ -1710,6 +1746,56 @@ TEST_F(AndroidAutofillProviderWithCredManTest, SkipsCredManCallBeforeReady) {
 
   EXPECT_CALL(cred_man_delegate(), TriggerCredManUi).Times(0);
   FocusFormField(webauthn_email_field());
+}
+
+TEST_F(AndroidAutofillProviderWithCredManTest,
+       SkipsLongPressCredManCallBeforeReady) {
+  ON_CALL(cred_man_delegate(), HasPasskeys())
+      .WillByDefault(
+          Return(webauthn::WebAuthnCredManDelegate::State::kNotReady));
+  StartSessionOnField(test_form(), webauthn_email_field());
+
+  EXPECT_CALL(cred_man_delegate(), SetRequestCompletionCallback).Times(0);
+  EXPECT_CALL(cred_man_delegate(), TriggerCredManUi).Times(0);
+  test_api(autofill_provider()).OnTriggerPasskeyRequest();
+  EXPECT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
+}
+
+TEST_F(AndroidAutofillProviderWithCredManTest,
+       IgnoresRepeatedLongPressWhileCredManShowing) {
+  StartSessionOnField(test_form(), webauthn_email_field());
+  TriggerLongPressCredMan();
+  ASSERT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  EXPECT_CALL(cred_man_delegate(), SetRequestCompletionCallback).Times(0);
+  EXPECT_CALL(cred_man_delegate(), TriggerCredManUi).Times(0);
+  test_api(autofill_provider()).OnTriggerPasskeyRequest();
+  EXPECT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+  Mock::VerifyAndClearExpectations(&cred_man_delegate());
+}
+
+TEST_F(AndroidAutofillProviderWithCredManTest,
+       LongPressReopensClosedCredManSheet) {
+  base::RepeatingCallback<void(bool)> initial_callback;
+  EXPECT_CALL(cred_man_delegate(), SetRequestCompletionCallback)
+      .WillOnce(SaveArg<0>(&initial_callback));
+  EXPECT_CALL(cred_man_delegate(), TriggerCredManUi);
+  FocusFormField(webauthn_email_field());
+  Mock::VerifyAndClearExpectations(&cred_man_delegate());
+  ASSERT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  // Dismissing transitions to `kClosed`; focusing again does not auto-reopen.
+  DismissCredManSheet(initial_callback);
+  FocusFormField(webauthn_email_field());
+  ASSERT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  // Long-press reopens the closed sheet (`kClosed -> kIsShowing`).
+  base::RepeatingCallback<void(bool)> reopen_callback =
+      TriggerLongPressCredMan();
+  EXPECT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  DismissCredManSheet(reopen_callback);
+  EXPECT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
 }
 
 TEST_F(AndroidAutofillProviderWithCredManTest, OfferLongPressOption) {
@@ -1807,6 +1893,30 @@ class AndroidAutofillProviderWithCredManMultiFrameTest
     return sub_frame_test_form().fields()[0];
   }
 
+  FormData CreateMultiFrameForm() {
+    const url::Origin foo_origin = url::Origin::Create(GURL("https://foo.com"));
+    const url::Origin bar_origin = url::Origin::Create(GURL("https://bar.com"));
+    FormData form = test::GetFormData({
+        .fields = {{
+                       .host_frame = LocalFrameToken(
+                           main_frame()->GetFrameToken().value()),
+                       .autocomplete_attribute = "username webauthn",
+                       .origin = foo_origin,
+                   },
+                   {
+                       .host_frame =
+                           LocalFrameToken(sub_frame_->GetFrameToken().value()),
+                       .autocomplete_attribute = "webauthn",
+                       .origin = bar_origin,
+                   }},
+        .url = "https://foo.com/form.html",
+        .main_frame_origin = foo_origin,
+    });
+    android_autofill_manager().OnFormsSeen({form}, /*removed_forms=*/{},
+                                           AutofillManagerTestApi::pass_key());
+    return form;
+  }
+
  protected:
   raw_ptr<content::RenderFrameHost> sub_frame_ = nullptr;
   raw_ptr<webauthn::MockWebAuthnCredManDelegate> sub_frame_mock_delegate_ =
@@ -1826,19 +1936,84 @@ TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
   FocusSubFrameFormField(sub_frame_webauthn_email_field());
 }
 
-// Tests that when CredMan is triggered for a field in an unrelated form
-// (different from the active session's form), the session origin is preserved
-// rather than overwritten with the unrelated form's origin. (see
-// crbug.com/523714535, crbug.com/518084475).
+// Tests that when a subframe is showing the CredMan sheet and the main frame
+// navigates away (e.g., placing the subframe into BFCache), the CredMan sheet
+// status and completion callback are reset.
 TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
-       CredManTriggerForUnrelatedFormPreservesSessionOrigin) {
+       MainFrameNavigationResetsSubFrameCredManSheet) {
+  EXPECT_CALL(*sub_frame_mock_delegate_, TriggerCredManUi);
+  FocusSubFrameFormField(sub_frame_webauthn_email_field());
+  ASSERT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+  Mock::VerifyAndClearExpectations(sub_frame_mock_delegate_);
+
+  EXPECT_CALL(*sub_frame_mock_delegate_, SetRequestCompletionCallback);
+  sub_frame_mock_delegate_ = nullptr;
+  sub_frame_ = nullptr;
+  NavigateAndCommitFrame(main_frame(), GURL("https://other.com/"));
+
+  EXPECT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
+}
+
+// Tests that when CredMan is triggered for a same-origin field in an unrelated
+// form (different from the active session's form), the active session is
+// preserved without cancelling it or overwriting its focused field.
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       CredManTriggerForUnrelatedSameOriginFormPreservesSession) {
+  const url::Origin foo_origin = url::Origin::Create(GURL("https://foo.com"));
+  FormData other_form =
+      CreateFormDataForFrame(CreateTestLoginForm(), main_frame_token());
+  test_api(other_form).field(0).set_origin(foo_origin);
+  test_api(other_form).field(1).set_origin(foo_origin);
+  const FormFieldData& other_field = other_form.fields()[0];
+
+  android_autofill_manager().OnFormsSeen({other_form, test_form()}, {},
+                                         AutofillManagerTestApi::pass_key());
+
+  // 1. Start session on `other_form` (origin https://foo.com).
+  android_autofill_manager().OnFocusOnFormField(
+      other_form, other_field.global_id(), AutofillManagerTestApi::pass_key());
+  android_autofill_manager().OnAskForValuesToFillTest(other_form,
+                                                      other_field.global_id());
+  ASSERT_NE(test_api(autofill_provider()).form(), nullptr);
+  ASSERT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            other_field.global_id());
+  ASSERT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_origin);
+
+  // 2. Focus `webauthn_email_field()` on the unrelated same-origin
+  // `test_form()`, triggering CredMan. The existing session must not be
+  // cancelled and must retain `other_field` as its current field.
+  EXPECT_CALL(cred_man_delegate(), TriggerCredManUi);
+  EXPECT_CALL(provider_bridge(), CancelSession).Times(0);
+  EXPECT_CALL(provider_bridge(), StartAutofillSession).Times(0);
+
+  android_autofill_manager().OnFocusOnFormField(
+      test_form(), webauthn_email_field().global_id(),
+      AutofillManagerTestApi::pass_key());
+  EXPECT_NE(test_api(autofill_provider()).form(), nullptr);
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            other_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_origin);
+
+  // Paired `OnAskForValuesToFill()` returns early while CredMan is showing.
+  android_autofill_manager().OnAskForValuesToFillTest(
+      test_form(), webauthn_email_field().global_id());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+  EXPECT_NE(test_api(autofill_provider()).form(), nullptr);
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            other_field.global_id());
+}
+
+// Tests that when CredMan is triggered for a cross-origin field in an unrelated
+// form (different from the active session's form), the active session is
+// cancelled rather than overwritten with the unrelated form's origin
+// (see crbug.com/523714535, crbug.com/518084475, crbug.com/581907790).
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       CredManTriggerForUnrelatedCrossOriginFormCancelsSession) {
   // 1. Start session on main frame (origin https://foo.com).
   android_autofill_manager().OnFormsSeen({test_form()}, {},
                                          AutofillManagerTestApi::pass_key());
-  // Focus main frame field to start session and set origin to foo.com.
-  test_api(autofill_provider())
-      .StartNewSession(&android_autofill_manager(), test_form(),
-                       non_webauthn_password_field());
   android_autofill_manager().OnFocusOnFormField(
       test_form(), non_webauthn_password_field().global_id(),
       AutofillManagerTestApi::pass_key());
@@ -1848,32 +2023,124 @@ TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
             url::Origin::Create(GURL("https://foo.com")));
 
   // 2. Focus subframe field (origin https://bar.com) on an unrelated form,
-  // which triggers CredMan. Expect CredMan to be triggered on subframe.
+  // which triggers CredMan. Expect CredMan to be triggered on subframe and the
+  // active foo.com session to be cancelled.
   EXPECT_CALL(*sub_frame_mock_delegate_, TriggerCredManUi);
+  EXPECT_CALL(provider_bridge(), CancelSession);
+  EXPECT_CALL(provider_bridge(), StartAutofillSession).Times(0);
 
-  // Simulate Focus FIRST (which should NOT update origin to bar.com because the
-  // field does not belong to the active session form).
   android_autofill_manager().OnFocusOnFormField(
       sub_frame_test_form(), sub_frame_webauthn_email_field().global_id(),
       AutofillManagerTestApi::pass_key());
-  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
-            url::Origin::Create(GURL("https://foo.com")));
+  EXPECT_EQ(test_api(autofill_provider()).form(), nullptr);
+  EXPECT_TRUE(
+      test_api(autofill_provider()).last_focused_field_origin().opaque());
 
-  // Simulate AskForValuesToFill() SECOND (which returns early because CredMan
-  // is showing) and verify origin is STILL foo.com (not overwritten by
-  // bar.com).
+  // Simulate `OnAskForValuesToFill()` second (which returns early because
+  // CredMan is showing) and verify no session or origin is set to bar.com while
+  // CredMan is active.
   android_autofill_manager().OnAskForValuesToFillTest(
       sub_frame_test_form(), sub_frame_webauthn_email_field().global_id());
-  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
-            url::Origin::Create(GURL("https://foo.com")));
+  EXPECT_EQ(test_api(autofill_provider()).form(), nullptr);
+  EXPECT_TRUE(
+      test_api(autofill_provider()).last_focused_field_origin().opaque());
 }
 
-// Tests that when CredMan is triggered for a field that belongs to the active
-// session's form (even in a different frame of a multi-frame form), the current
-// field's origin is proactively updated to that field's origin.
-// (see crbug.com/518084475).
+// Tests that when CredMan is triggered for a same-origin field that belongs to
+// the active session's form (even in a different same-origin frame), the
+// current field is proactively updated without cancelling the session, and
+// dismissing CredMan notifies Java of the focus change.
 TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
-       CredManTriggerForSessionFormFieldUpdatesOrigin) {
+       CredManTriggerForSameOriginSessionFormFieldUpdatesCurrentField) {
+  const url::Origin foo_origin = url::Origin::Create(GURL("https://foo.com"));
+
+  content::RenderFrameHost* same_origin_sub_frame =
+      content::RenderFrameHostTester::For(main_frame())
+          ->AppendChild(std::string("same_origin_child"));
+  same_origin_sub_frame = NavigateAndCommitFrame(same_origin_sub_frame,
+                                                 GURL("https://foo.com/sub"));
+  auto same_origin_mock_delegate =
+      std::make_unique<NiceMock<webauthn::MockWebAuthnCredManDelegate>>();
+  auto* same_origin_delegate = same_origin_mock_delegate.get();
+  ON_CALL(*same_origin_delegate, HasPasskeys())
+      .WillByDefault(
+          Return(webauthn::WebAuthnCredManDelegate::State::kHasPasskeys));
+  webauthn::test_api(web_authn_delegate_factory())
+      .EmplaceDelegateForFrame(same_origin_sub_frame,
+                               std::move(same_origin_mock_delegate));
+
+  FormData multi_frame_form = test::GetFormData({
+      .fields = {{
+                     .host_frame =
+                         LocalFrameToken(main_frame()->GetFrameToken().value()),
+                     .origin = foo_origin,
+                 },
+                 {
+                     .host_frame = LocalFrameToken(
+                         same_origin_sub_frame->GetFrameToken().value()),
+                     .autocomplete_attribute = "webauthn",
+                     .origin = foo_origin,
+                 }},
+      .url = "https://foo.com/form.html",
+      .main_frame_origin = foo_origin,
+  });
+
+  const FormFieldData& first_field = multi_frame_form.fields()[0];
+  const FormFieldData& second_field = multi_frame_form.fields()[1];
+
+  android_autofill_manager().OnFormsSeen({multi_frame_form}, {},
+                                         AutofillManagerTestApi::pass_key());
+
+  // 1. Start session on `first_field` (origin https://foo.com).
+  android_autofill_manager().OnFocusOnFormField(
+      multi_frame_form, first_field.global_id(),
+      AutofillManagerTestApi::pass_key());
+  android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
+                                                      first_field.global_id());
+  ASSERT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            first_field.global_id());
+  ASSERT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_origin);
+
+  // 2. Focus `second_field` (same origin https://foo.com) in the same form,
+  // triggering CredMan.
+  base::RepeatingCallback<void(bool)> completed_callback;
+  EXPECT_CALL(*same_origin_delegate, SetRequestCompletionCallback)
+      .WillOnce(SaveArg<0>(&completed_callback));
+  EXPECT_CALL(*same_origin_delegate, TriggerCredManUi);
+  EXPECT_CALL(provider_bridge(), CancelSession).Times(0);
+
+  android_autofill_manager().OnFocusOnFormField(
+      multi_frame_form, second_field.global_id(),
+      AutofillManagerTestApi::pass_key());
+  Mock::VerifyAndClearExpectations(same_origin_delegate);
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            second_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_origin);
+
+  // Paired `OnAskForValuesToFill()` returns early while CredMan is showing.
+  android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
+                                                      second_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            second_field.global_id());
+
+  // 3. Dismissing CredMan completes the deferred focus change on the existing
+  // session.
+  EXPECT_CALL(provider_bridge(),
+              OnFocusChanged(Optional(EqualsFieldInfo(/*index=*/1))));
+  completed_callback.Run(/*success=*/false);
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+}
+
+// Tests that when CredMan is triggered for a cross-origin field in the active
+// session's flattened form, the previous origin's session is cancelled rather
+// than having its origin rewritten in place, preventing datasets from the
+// previous origin's session from being re-anchored and filled under the new
+// origin (crbug.com/581907790).
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       CredManTriggerForCrossOriginSessionFormFieldCancelsSession) {
   const url::Origin foo_origin = url::Origin::Create(GURL("https://foo.com"));
   const url::Origin bar_origin = url::Origin::Create(GURL("https://bar.com"));
 
@@ -1899,35 +2166,101 @@ TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
   android_autofill_manager().OnFormsSeen({multi_frame_form}, {},
                                          AutofillManagerTestApi::pass_key());
 
-  // 1. Start session on foo_field (origin https://foo.com).
-  test_api(autofill_provider())
-      .StartNewSession(&android_autofill_manager(), multi_frame_form,
-                       foo_field);
+  // 1. Start session on `foo_field` (origin https://foo.com).
+  EXPECT_CALL(provider_bridge(),
+              StartAutofillSession(EqualsFormData(multi_frame_form),
+                                   EqualsFieldInfo(/*index=*/0),
+                                   /*has_server_predictions=*/false));
   android_autofill_manager().OnFocusOnFormField(
       multi_frame_form, foo_field.global_id(),
       AutofillManagerTestApi::pass_key());
   android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
                                                       foo_field.global_id());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
   ASSERT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
             foo_origin);
 
-  // 2. Focus bar_field (origin https://bar.com) which is part of the SAME form
-  // and triggers CredMan.
+  // 2. Focus `bar_field` (origin https://bar.com) in the same flattened form,
+  // triggering CredMan. This must cancel the foo.com session without starting a
+  // competing Autofill session while CredMan is opening.
+  base::RepeatingCallback<void(bool)> completed_callback;
+  EXPECT_CALL(*sub_frame_mock_delegate_, SetRequestCompletionCallback)
+      .WillOnce(SaveArg<0>(&completed_callback));
   EXPECT_CALL(*sub_frame_mock_delegate_, TriggerCredManUi);
+  EXPECT_CALL(provider_bridge(), CancelSession);
+  EXPECT_CALL(provider_bridge(), StartAutofillSession).Times(0);
 
-  // Simulate Focus FIRST (which should proactively update origin to bar.com).
   android_autofill_manager().OnFocusOnFormField(
       multi_frame_form, bar_field.global_id(),
       AutofillManagerTestApi::pass_key());
-  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
-            bar_origin);
+  Mock::VerifyAndClearExpectations(sub_frame_mock_delegate_);
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+  EXPECT_EQ(test_api(autofill_provider()).form(), nullptr);
+  EXPECT_TRUE(
+      test_api(autofill_provider()).last_focused_field_origin().opaque());
 
-  // Simulate AskForValuesToFill() SECOND (which returns early because CredMan
-  // is showing) and verify origin is STILL bar.com.
+  // Paired `OnAskForValuesToFill()` while CredMan is showing is ignored.
+  android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
+                                                      bar_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).form(), nullptr);
+
+  // 3. Dismissing CredMan and programmatically re-focusing `bar_field` without
+  // user activation must not re-anchor any session on `bar_field`.
+  EXPECT_CALL(provider_bridge(), OnFocusChanged).Times(0);
+  EXPECT_CALL(provider_bridge(), StartAutofillSession).Times(0);
+  completed_callback.Run(/*success=*/false);
+  android_autofill_manager().OnFocusOnFormField(
+      multi_frame_form, bar_field.global_id(),
+      AutofillManagerTestApi::pass_key());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+
+  // 4. A subsequent `OnAskForValuesToFill()` on `bar_field` starts a fresh
+  // session scoped to `bar_origin`.
+  EXPECT_CALL(provider_bridge(),
+              StartAutofillSession(EqualsFormData(multi_frame_form),
+                                   EqualsFieldInfo(/*index=*/1),
+                                   /*has_server_predictions=*/false));
   android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
                                                       bar_field.global_id());
   EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
             bar_origin);
+}
+
+// Tests that a cross-origin `OnFocusOnFormField()` on a linked multi-origin
+// form (without CredMan) does not notify Java of a focus change on the
+// previous origin's session.
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       CrossOriginFocusOnLinkedFormDoesNotChangeSessionFocus) {
+  const url::Origin foo_origin = url::Origin::Create(GURL("https://foo.com"));
+  const url::Origin bar_origin = url::Origin::Create(GURL("https://bar.com"));
+
+  FormData multi_frame_form = test::GetFormData({
+      .fields = {{
+                     .host_frame =
+                         LocalFrameToken(main_frame()->GetFrameToken().value()),
+                     .origin = foo_origin,
+                 },
+                 {
+                     .host_frame =
+                         LocalFrameToken(sub_frame_->GetFrameToken().value()),
+                     .origin = bar_origin,
+                 }},
+      .url = "https://foo.com/form.html",
+      .main_frame_origin = foo_origin,
+  });
+
+  android_autofill_manager().OnFormsSeen({multi_frame_form}, {},
+                                         AutofillManagerTestApi::pass_key());
+  android_autofill_manager().OnAskForValuesToFillTest(
+      multi_frame_form, multi_frame_form.fields()[0].global_id());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+
+  EXPECT_CALL(provider_bridge(), OnFocusChanged).Times(0);
+  android_autofill_manager().OnFocusOnFormField(
+      multi_frame_form, multi_frame_form.fields()[1].global_id(),
+      AutofillManagerTestApi::pass_key());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_origin);
 }
 
 // Tests that a compromised renderer cannot spoof the session origin by sending
@@ -2026,6 +2359,78 @@ TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
   EXPECT_TRUE(
       test_api(autofill_provider()).last_focused_field_origin().opaque());
   EXPECT_EQ(test_api(autofill_provider()).form(), nullptr);
+}
+
+// Tests that while a long-press CredMan sheet (`OnTriggerPasskeyRequest`) is
+// showing, cross-origin form events and subframe navigations are ignored and
+// preserve the session origin.
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       LongPressCredManBlocksCrossOriginUpdates) {
+  base::test::ScopedFeatureList scoped_feature_list{
+      features::kAndroidAutofillFieldsUpdatedOnSelect};
+  FormData multi_frame_form = CreateMultiFrameForm();
+  const FormFieldData& foo_field = multi_frame_form.fields()[0];
+  const FormFieldData& bar_field = multi_frame_form.fields()[1];
+
+  StartSessionOnField(multi_frame_form, foo_field);
+  TriggerLongPressCredMan();
+  ASSERT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+
+  EXPECT_CALL(provider_bridge(), StartAutofillSession).Times(0);
+  EXPECT_CALL(provider_bridge(), OnFocusChanged).Times(0);
+  EXPECT_CALL(provider_bridge(), OnFormFieldDidChange).Times(0);
+  EXPECT_CALL(provider_bridge(), OnFormSubmitted).Times(0);
+  EXPECT_CALL(*sub_frame_mock_delegate_, TriggerCredManUi).Times(0);
+
+  android_autofill_manager().OnAskForValuesToFillTest(multi_frame_form,
+                                                      bar_field.global_id());
+  android_autofill_manager().OnFocusOnFormField(
+      multi_frame_form, bar_field.global_id(),
+      AutofillManagerTestApi::pass_key());
+  autofill_provider().OnSelectControlSelectionChanged(
+      &android_autofill_manager(), multi_frame_form, bar_field);
+  autofill_provider().OnSelectControlSelectionChanged(
+      &android_autofill_manager(), sub_frame_test_form(),
+      sub_frame_webauthn_email_field());
+  android_autofill_manager().OnFormSubmitted(
+      multi_frame_form, mojom::SubmissionSource::FORM_SUBMISSION,
+      AutofillManagerTestApi::pass_key());
+  sub_frame_mock_delegate_ = nullptr;
+  sub_frame_ = NavigateAndCommitFrame(sub_frame_.ExtractAsDangling(),
+                                      GURL("https://bar.com/other.html"));
+
+  EXPECT_TRUE(test_api(autofill_provider()).is_credman_sheet_showing());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            foo_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            foo_field.origin());
+  Mock::VerifyAndClearExpectations(&provider_bridge());
+}
+
+// Tests that dismissing a long-press CredMan sheet restores normal cross-origin
+// session startup.
+TEST_F(AndroidAutofillProviderWithCredManMultiFrameTest,
+       LongPressCredManDismissalRestoresCrossOriginUpdates) {
+  FormData multi_frame_form = CreateMultiFrameForm();
+  const FormFieldData& foo_field = multi_frame_form.fields()[0];
+  const FormFieldData& bar_field = multi_frame_form.fields()[1];
+
+  StartSessionOnField(multi_frame_form, foo_field);
+  base::RepeatingCallback<void(bool)> completed_callback =
+      TriggerLongPressCredMan();
+  DismissCredManSheet(completed_callback);
+  ASSERT_FALSE(test_api(autofill_provider()).is_credman_sheet_showing());
+
+  EXPECT_CALL(provider_bridge(),
+              StartAutofillSession(EqualsFormData(multi_frame_form),
+                                   EqualsFieldInfo(/*index=*/1),
+                                   /*has_server_predictions=*/false));
+  StartSessionOnField(multi_frame_form, bar_field);
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_id(),
+            bar_field.global_id());
+  EXPECT_EQ(test_api(autofill_provider()).last_focused_field_origin(),
+            bar_field.origin());
 }
 
 class AndroidAutofillProviderCredManSpoofSheetStatusTest
@@ -2864,7 +3269,7 @@ TEST_F(AndroidAutofillProviderTestHidingLogic,
 // *main frame* hides the popup.
 TEST_F(AndroidAutofillProviderTestHidingLogic,
        HideInSubFrameOnMainFrameNavigation) {
-  AskForValuesToFill(main_frame());
+  AskForValuesToFill(sub_frame_);
   EXPECT_CALL(provider_bridge(), HideDatalistPopup).Times(AtLeast(1));
   NavigateAndCommitFrame(main_frame(), GURL("https://bar.com/"));
 }
@@ -2998,11 +3403,11 @@ class AndroidAutofillManagerSecurityPolicyTypesTest
   const FormData& form() const { return form_; }
   const url::Origin& main_origin() const { return main_origin_; }
   const url::Origin& iframe_origin() const { return iframe_origin_; }
-
- private:
   TestAndroidAutofillManager& manager() {
     return *autofill_manager_injector_[main_rfh()];
   }
+
+ private:
   MockContentAutofillDriver& driver() {
     return *autofill_driver_injector_[main_rfh()];
   }
@@ -3119,6 +3524,167 @@ TEST_F(AndroidAutofillManagerSecurityPolicyTypesTest,
               Contains(Pair(field_id(kName), UNKNOWN_TYPE)));
   histogram_tester.ExpectTotalCount(kCrossOriginMainFrameValidationHistogram,
                                     0);
+}
+
+// Tests that a cross-origin fill from a frame without credit card fields leaves
+// all field types as UNKNOWN_TYPE, even when the main frame declares
+// `autocomplete="cc-name"` and `autocomplete="cc-number"`.
+TEST_F(AndroidAutofillManagerSecurityPolicyTypesTest,
+       NonCardIframeLeavesUnknownTypes) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAndroidAutofillFillNonSensitiveCardFieldsInMainFrame);
+  base::HistogramTester histogram_tester;
+  const url::Origin login_origin =
+      url::Origin::Create(GURL("https://login.test"));
+
+  FormData mixed_form;
+  mixed_form.set_renderer_id(test::MakeFormRendererId());
+  mixed_form.set_url(GURL("https://merchant.test/page.html"));
+  mixed_form.set_main_frame_origin(main_origin());
+  mixed_form.set_fields(
+      {CreateTestFormField("Name", "ccname", "", FormControlType::kInputText,
+                           "cc-name"),
+       CreateTestFormField("Card", "ccnum", "", FormControlType::kInputText,
+                           "cc-number"),
+       CreateTestFormField("Username", "user", "", FormControlType::kInputText,
+                           "username"),
+       CreateTestFormField("Password", "pass", "",
+                           FormControlType::kInputPassword,
+                           "current-password")});
+  mixed_form = CreateFormDataForFrame(
+      std::move(mixed_form),
+      LocalFrameToken(main_rfh()->GetFrameToken().value()));
+  test_api(mixed_form).field(0).set_origin(main_origin());
+  test_api(mixed_form).field(1).set_origin(main_origin());
+  test_api(mixed_form).field(2).set_origin(login_origin);
+  test_api(mixed_form).field(3).set_origin(login_origin);
+  manager().OnFormsSeen({mixed_form}, /*removed_forms=*/{},
+                        AutofillManagerTestApi::pass_key());
+
+  FormData filled_form = mixed_form;
+  for (int i : {0, 2, 3}) {
+    test_api(filled_form)
+        .field(i)
+        .set_is_autofilled_according_to_renderer(true);
+  }
+  test_api(filled_form).field(0).set_value(u"SecretPassphrase");
+  test_api(filled_form).field(2).set_value(u"JaneDoe");
+  test_api(filled_form).field(3).set_value(u"SecretPassphrase");
+
+  EXPECT_THAT(ApplyFillAndGetTypes(filled_form, login_origin),
+              UnorderedElementsAre(
+                  Pair(mixed_form.fields()[0].global_id(), UNKNOWN_TYPE),
+                  Pair(mixed_form.fields()[2].global_id(), UNKNOWN_TYPE),
+                  Pair(mixed_form.fields()[3].global_id(), UNKNOWN_TYPE)));
+  histogram_tester.ExpectTotalCount(kCrossOriginMainFrameValidationHistogram,
+                                    0);
+}
+
+// Tests that a cross-origin fill leaves all field types as UNKNOWN_TYPE if
+// main-frame fields made Autofill classify a field of the triggering frame as a
+// card number, but the fill doesn't put a valid card number into it.
+TEST_F(AndroidAutofillManagerSecurityPolicyTypesTest,
+       MisclassifiedIframeFieldWithoutCardNumberLeavesUnknownTypes) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAndroidAutofillFillNonSensitiveCardFieldsInMainFrame);
+  base::HistogramTester histogram_tester;
+  const url::Origin login_origin =
+      url::Origin::Create(GURL("https://login.test"));
+
+  FormData mixed_form;
+  mixed_form.set_renderer_id(test::MakeFormRendererId());
+  mixed_form.set_url(GURL("https://merchant.test/page.html"));
+  mixed_form.set_main_frame_origin(main_origin());
+  mixed_form.set_fields({CreateTestFormField("Name on card", "ccname", "",
+                                             FormControlType::kInputText),
+                         CreateTestFormField("Acct #", "acct_number", "",
+                                             FormControlType::kInputText),
+                         CreateTestFormField("Expiration date", "exp", "",
+                                             FormControlType::kInputText)});
+  mixed_form = CreateFormDataForFrame(
+      std::move(mixed_form),
+      LocalFrameToken(main_rfh()->GetFrameToken().value()));
+  test_api(mixed_form).field(0).set_origin(main_origin());
+  test_api(mixed_form).field(1).set_origin(login_origin);
+  test_api(mixed_form).field(2).set_origin(main_origin());
+  manager().OnFormsSeen({mixed_form}, /*removed_forms=*/{},
+                        AutofillManagerTestApi::pass_key());
+  // The main frame's cardholder name and expiration date fields make the login
+  // frame's username field look like a card number field.
+  const FormStructure* form_structure =
+      manager().FindCachedFormById(mixed_form.global_id());
+  ASSERT_TRUE(form_structure);
+  ASSERT_EQ(form_structure->field(1)->Type().GetCreditCardType(),
+            CREDIT_CARD_NUMBER);
+
+  FormData filled_form = mixed_form;
+  for (int i : {0, 1}) {
+    test_api(filled_form)
+        .field(i)
+        .set_is_autofilled_according_to_renderer(true);
+    test_api(filled_form).field(i).set_value(u"JaneDoe");
+  }
+
+  EXPECT_THAT(ApplyFillAndGetTypes(filled_form, login_origin),
+              UnorderedElementsAre(
+                  Pair(mixed_form.fields()[0].global_id(), UNKNOWN_TYPE),
+                  Pair(mixed_form.fields()[1].global_id(), UNKNOWN_TYPE)));
+  histogram_tester.ExpectTotalCount(kCrossOriginMainFrameValidationHistogram,
+                                    0);
+}
+
+// Tests that a main-frame password control with `autocomplete="cc-name"` stays
+// UNKNOWN_TYPE, while a payment iframe CVC masked with `kInputPassword` still
+// allows non-password main-frame card fields to receive their predicted types.
+TEST_F(AndroidAutofillManagerSecurityPolicyTypesTest,
+       MainFramePasswordControlGetsUnknownTypeWhileMaskedIframeCvcWorks) {
+  base::test::ScopedFeatureList feature_list(
+      features::kAndroidAutofillFillNonSensitiveCardFieldsInMainFrame);
+  base::HistogramTester histogram_tester;
+
+  FormData card_form;
+  card_form.set_renderer_id(test::MakeFormRendererId());
+  card_form.set_url(GURL("https://merchant.test/checkout.html"));
+  card_form.set_main_frame_origin(main_origin());
+  card_form.set_fields(
+      {CreateTestFormField("Name on card", "name", "",
+                           FormControlType::kInputPassword, "cc-name"),
+       CreateTestFormField("Card number", "number", "",
+                           FormControlType::kInputText, "cc-number"),
+       CreateTestFormField("Expiration month", "month", "",
+                           FormControlType::kInputText, "cc-exp-month"),
+       CreateTestFormField("Expiration year", "year", "",
+                           FormControlType::kInputText, "cc-exp-year"),
+       CreateTestFormField("CVC", "cvc", "", FormControlType::kInputPassword,
+                           "cc-csc")});
+  card_form = CreateFormDataForFrame(
+      std::move(card_form),
+      LocalFrameToken(main_rfh()->GetFrameToken().value()));
+  for (int i : {kName, kMonth, kYear}) {
+    test_api(card_form).field(i).set_origin(main_origin());
+  }
+  for (int i : {kNumber, kCvc}) {
+    test_api(card_form).field(i).set_origin(iframe_origin());
+  }
+  manager().OnFormsSeen({card_form}, /*removed_forms=*/{},
+                        AutofillManagerTestApi::pass_key());
+
+  FormData filled_form = card_form;
+  FillAllFields(filled_form, /*name=*/u"SecretPassphrase");
+
+  EXPECT_THAT(
+      ApplyFillAndGetTypes(filled_form, iframe_origin()),
+      UnorderedElementsAre(
+          Pair(card_form.fields()[kName].global_id(), UNKNOWN_TYPE),
+          Pair(card_form.fields()[kNumber].global_id(), UNKNOWN_TYPE),
+          Pair(card_form.fields()[kMonth].global_id(), CREDIT_CARD_EXP_MONTH),
+          Pair(card_form.fields()[kYear].global_id(),
+               AnyOf(CREDIT_CARD_EXP_2_DIGIT_YEAR,
+                     CREDIT_CARD_EXP_4_DIGIT_YEAR)),
+          Pair(card_form.fields()[kCvc].global_id(), UNKNOWN_TYPE)));
+  histogram_tester.ExpectUniqueSample(
+      kCrossOriginMainFrameValidationHistogram,
+      MainFrameCreditCardFieldValidationResult::kAllowed, 2);
 }
 
 }  // namespace

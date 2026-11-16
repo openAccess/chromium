@@ -85,6 +85,19 @@ uint32_t TranslatePriority(gfx::OverlayPriorityHint priority_hint) {
   return priority;
 }
 
+// Returns `color_space`, or Rec709 if it is invalid and the content is video.
+gfx::ColorSpace GetColorSpaceWithVideoDefault(
+    const gfx::ColorSpace& color_space,
+    bool contains_video) {
+  if (color_space.IsValid() || !contains_video) {
+    return color_space;
+  }
+  // Not all video content contains colorspace information.
+  // In this case, default to Rec709.
+  // Maybe use Rec601 for SD video if it becomes an issue.
+  return gfx::ColorSpace::CreateREC709();
+}
+
 }  // namespace
 
 WaylandSurface::WaylandSurface(WaylandConnection* connection,
@@ -511,7 +524,11 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
         case WaylandBufferHandle::SyncMethod::kSyncobj:
           // We need to try setting explicit sync first so that we don't attach
           // the buffer if there is a failure when setting explicit sync.
-          if (!SetExplicitSync().has_value()) {
+          if (std::optional<bool> explicit_sync = SetExplicitSync();
+              explicit_sync.has_value()) {
+            pending_state_.buffer->set_attached_with_explicit_sync(
+                *explicit_sync);
+          } else {
             // There was a failure while trying to set explicit sync. So we need
             // to early-out and discard this frame and show the previous frame.
             AttachBuffer(nullptr);
@@ -655,6 +672,20 @@ std::optional<bool> WaylandSurface::ApplyPendingState() {
                       .size());
     gfx::Size new_size_dip = gfx::ScaleToFlooredSize(
         old_size_px, 1.f / pending_state_.buffer_scale_float);
+    // When ui_scale != 1.0, rounding UI DIP bounds up to an integer can make
+    // `buffer_size_px` 1-2px larger than the window's Wayland DIP surface size
+    // even at integer `buffer_scale_float`. Clamp `new_size_dip` to the
+    // latched Wayland surface size so the committed root surface does not
+    // exceed the configured Wayland geometry.
+    const auto& latched_state = root_window_->latched_state();
+    if (!old_size_px.IsEmpty() && latched_state.ui_scale != 1.0f) {
+      const gfx::Size max_size_dip =
+          gfx::ToRoundedSize(wl::ApplyWaylandTransform(
+              gfx::SizeF(
+                  root_window_->GetSurfaceSizeInWaylandDIP(latched_state)),
+              wl::ToWaylandTransform(pending_state_.buffer_transform)));
+      new_size_dip.SetToMin(max_size_dip);
+    }
     gfx::Size new_size_px = gfx::ScaleToRoundedSize(
         new_size_dip, pending_state_.buffer_scale_float);
     if (new_size_px != old_size_px) {
@@ -929,15 +960,28 @@ void WaylandSurface::RemoveEnteredOutput(uint32_t output_id) {
 
 void WaylandSurface::SetImageDescription(const gfx::ColorSpace& color_space,
                                          const gfx::HDRMetadata& hdr_metadata) {
-  if (color_space.IsValid() || !pending_state_.contains_video) {
-    pending_state_.color_space = color_space;
-  } else {
-    // Not all video content contains colorspace information.
-    // In this case, default to Rec709.
-    // Maybe use Rec601 for SD video if it becomes an issue.
-    pending_state_.color_space = gfx::ColorSpace::CreateREC709();
-  }
+  pending_state_.color_space =
+      GetColorSpaceWithVideoDefault(color_space, pending_state_.contains_video);
   pending_state_.hdr_metadata = hdr_metadata;
+}
+
+bool WaylandSurface::EnsureImageDescription(
+    const gfx::ColorSpace& color_space,
+    const gfx::HDRMetadata& hdr_metadata,
+    bool contains_video,
+    base::OnceClosure on_ready) {
+  if (!wp_color_management_surface_) {
+    return true;
+  }
+  const gfx::ColorSpace surface_color_space =
+      GetColorSpaceWithVideoDefault(color_space, contains_video);
+  // ApplyPendingState() only sets the image description when it changes.
+  if (surface_color_space == state_.color_space &&
+      hdr_metadata == state_.hdr_metadata) {
+    return true;
+  }
+  return wp_color_management_surface_->EnsureImageDescription(
+      surface_color_space, hdr_metadata, std::move(on_ready));
 }
 
 }  // namespace ui

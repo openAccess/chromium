@@ -34,6 +34,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/css/cascade_layer.h"
 #include "third_party/blink/renderer/core/css/cascade_layered.h"
+#include "third_party/blink/renderer/core/css/css_private_bindings.h"
 #include "third_party/blink/renderer/core/css/media_query_evaluator.h"
 #include "third_party/blink/renderer/core/css/resolver/media_query_result.h"
 #include "third_party/blink/renderer/core/css/robin_hood_map.h"
@@ -69,7 +70,9 @@ enum AddRuleFlag {
 };
 
 class CSSSelector;
+class CSSPrivateBindings;
 class MediaQueryEvaluator;
+class PropertyRegistry;
 class StyleSheetContents;
 
 // This is a wrapper around a StyleRule, pointing to one of the N complex
@@ -364,14 +367,28 @@ class CORE_EXPORT RuleSet final : public GarbageCollected<RuleSet> {
     Member<StyleRuleMixin> mixin;
     Member<StyleRuleApplyMixin> invoking_apply_rule;
     Member<MixinParameterBindings> mixin_parameter_bindings;
+    // The @private names in scope where the @apply is. Rules from the @apply's
+    // @contents block are added in this scope instead of the mixin's.
+    Member<const CSSPrivateBindings> outer_private_scope;
+    // Maps the hygienic name of each @private variable declared in the mixin
+    // to the one it has for this @apply.
+    PrivateNameMap mixin_to_local_hygienic_names;
+    // True while adding the @apply's @contents block. It is written outside
+    // of the mixin.
+    bool is_in_contents = false;
 
     void Trace(Visitor* visitor) const {
       visitor->Trace(mixin);
       visitor->Trace(invoking_apply_rule);
       visitor->Trace(mixin_parameter_bindings);
+      visitor->Trace(outer_private_scope);
     }
   };
   using ApplyMixinsStack = HeapVector<ApplyingMixin, 4>;
+
+  // Returns the mixin whose body contains the rules being added, or null if
+  // they were written outside of any mixin.
+  static const ApplyingMixin* MixinBeingApplied(const ApplyMixinsStack& stack);
 
   void ApplyMixin(StyleRule* parent_rule,
                   StyleRuleApplyMixin* apply_mixin_rule,
@@ -417,6 +434,10 @@ class CORE_EXPORT RuleSet final : public GarbageCollected<RuleSet> {
       HeapVector<RuleData>* dst);
 
   const RuleFeatureSet& Features() const { return features_; }
+
+  // The @private names in scope for the given rule, or null if none.
+  const CSSPrivateBindings* GetCSSPrivateBindings(const StyleRule&) const;
+  bool HasCSSPrivateBindings() const { return !private_bindings_.empty(); }
 
   base::span<const RuleData> IdRules(const AtomicString& key) const {
     return id_rules_.Find(key);
@@ -663,14 +684,13 @@ class CORE_EXPORT RuleSet final : public GarbageCollected<RuleSet> {
                      CascadeLayer*,
                      const StyleScope*,
                      ApplyMixinsStack& apply_mixins_stack);
-  void FlattenMixinLocals(
+  // Returns the current private scope extended with the @private names
+  // declared in `rules`.
+  const CSSPrivateBindings* PrivateScopeForRules(
+      base::span<const Member<StyleRuleBase>> rules) const;
+  const CSSPrivateBindings* PrivateScopeForMixinRules(
       base::span<const Member<StyleRuleBase>> rules,
-      const MediaQueryEvaluator& medium,
-      const ContainerQuerySet* container_queries,
-      HeapHashMap<String, Member<CSSVariableData>>& locals,
-      HeapHashMap<String, HeapVector<MixinParameterBindings::CQDependentValue>>&
-          cq_dependent_locals);
-
+      const ApplyingMixin& applying_mixin) const;
   // Determines whether or not CSSSelector::is_covered_by_bucketing_ should
   // be computed during calls to FindBestBucketAndAdd.
   enum class BucketCoverage {
@@ -789,6 +809,14 @@ class CORE_EXPORT RuleSet final : public GarbageCollected<RuleSet> {
   // Navigation state (and thus route matching state) when this RuleSet was
   // built.
   Member<NavigationState> navigation_state_;
+  // The @private registry of the stylesheet whose rules are being added, and
+  // the @private names in scope at the rule being added.
+  Member<const PropertyRegistry> private_property_registry_;
+  Member<const CSSPrivateBindings> private_scope_;
+  // Rules with @private names in scope. Kept here rather than on StyleRule,
+  // so that rules not using @private pay nothing.
+  HeapHashMap<Member<const StyleRule>, Member<const CSSPrivateBindings>>
+      private_bindings_;
 
   // Whether there is a ruleset bucket for rules with a selector on
   // the style attribute (which is rare, but allowed). If so, the caller

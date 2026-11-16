@@ -252,7 +252,7 @@ export class PowerBookmarksListElement extends CrLitElement implements
 
   accessor activeFolderPath: BookmarksTreeNode[] = [];
   protected accessor activeSortIndex: number = 0;
-  protected accessor sortOrder: SortOrder = 0;
+  private accessor sortOrder: SortOrder = 0;
   accessor contextMenuBookmark: BookmarksTreeNode|undefined;
   accessor editing: boolean = false;
   accessor hasSomeActiveFilter: boolean = false;
@@ -276,11 +276,11 @@ export class PowerBookmarksListElement extends CrLitElement implements
   // into view, or an empty string if no transition is active.
   protected accessor displayListA_: DisplayItem[] = [];
   protected accessor displayListB_: DisplayItem[] = [];
-  protected accessor activeList_: string = 'a';
-  protected accessor transitioningList_: string = '';
+  private accessor activeList_: string = 'a';
+  private accessor transitioningList_: string = '';
   protected accessor imageUrls_: {[key: string]: string} = {};
-  protected accessor selectedBookmarks: {[key: string]: boolean} = {};
-  protected accessor hasLoadedData_: boolean = false;
+  accessor selectedBookmarks: {[key: string]: boolean} = {};
+  private accessor hasLoadedData_: boolean = false;
   protected accessor canDrag_: boolean = true;
   protected accessor hasActiveDrag_: boolean = false;
   protected accessor sectionVisibility_: ListSectionVisibility = {};
@@ -289,10 +289,10 @@ export class PowerBookmarksListElement extends CrLitElement implements
   protected accessor scrollTarget_: HTMLElement = document.documentElement;
   protected accessor shoppingCollectionFolderId_: string = '';
   protected accessor updatedElementIds_: string[] = [];
-  protected accessor firstSecondaryIndexA_: number = -1;
-  protected accessor firstSecondaryIndexB_: number = -1;
-  protected accessor activeFolderA_: BookmarksTreeNode|undefined = undefined;
-  protected accessor activeFolderB_: BookmarksTreeNode|undefined = undefined;
+  private accessor firstSecondaryIndexA_: number = -1;
+  private accessor firstSecondaryIndexB_: number = -1;
+  private accessor activeFolderA_: BookmarksTreeNode|undefined = undefined;
+  private accessor activeFolderB_: BookmarksTreeNode|undefined = undefined;
   private boundOnAnimationEnd_ = this.onAnimationEnd_.bind(this);
 
   constructor() {
@@ -402,8 +402,21 @@ export class PowerBookmarksListElement extends CrLitElement implements
 
   onBookmarkChanged(id: string) {
     const bookmark = this.bookmarksService_.findBookmarkWithId(id)!;
-     this.updatedElementIds_ = [bookmark.id];
-    if (this.bookmarkShouldShow_(bookmark) ||
+    this.updatedElementIds_ = [bookmark.id];
+    let activeFolderChanged = false;
+    const nextActiveFolderPath = this.activeFolderPath.map(folder => {
+      const updated = this.bookmarksService_.findBookmarkWithId(folder.id);
+      if (updated && updated !== folder) {
+        activeFolderChanged = true;
+        return updated;
+      }
+      return folder;
+    });
+    if (activeFolderChanged) {
+      this.activeFolderPath = nextActiveFolderPath;
+      this.dispatchActiveFolderPathChanged_();
+    }
+    if (activeFolderChanged || this.bookmarkShouldShow_(bookmark) ||
         this.bookmarkIsShowing_(bookmark)) {
       this.updateDisplayList_();
     }
@@ -596,8 +609,8 @@ export class PowerBookmarksListElement extends CrLitElement implements
       return this.bookmarksService_.bookmarkMatchesSearchQueryAndLabels(
           bookmark, this.labels, this.searchQuery);
     }
-    return this.visibleParent_(
-        this.bookmarksService_.findBookmarkWithId(bookmark.parentId)!);
+    const parent = this.bookmarksService_.findBookmarkWithId(bookmark.parentId);
+    return !!parent && this.visibleParent_(parent);
   }
 
   getActiveFolder(): BookmarksTreeNode|undefined {

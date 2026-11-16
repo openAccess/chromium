@@ -335,7 +335,7 @@ void SharedWorkerServiceImpl::ConnectToWorker(
     }
     if (base::FeatureList::IsEnabled(
             blink::features::kPermissionsPolicyForSharedWorkers)) {
-      if (host->instance().permissions_policy() != info->permissions_policy) {
+      if (host->instance().allow_parameter() != info->permissions_policy) {
         ScriptLoadFailed(
             std::move(client),
             "Failed to connect an existing shared worker because the allow "
@@ -388,7 +388,8 @@ void SharedWorkerServiceImpl::ConnectToWorker(
       info->permissions_policy);
   host = CreateWorker(
       *render_frame_host, instance, std::move(info->content_security_policies),
-      std::move(info->outside_fetch_client_settings_object), partition_domain,
+      std::move(info->outside_fetch_client_settings_object),
+      std::move(info->outside_settings_reporter), partition_domain,
       message_port, std::move(blob_url_loader_factory), storage_key_override);
   if (!host) {
     ScriptLoadFailed(std::move(client), /*error_message=*/"");
@@ -474,6 +475,8 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
         content_security_policies,
     blink::mojom::FetchClientSettingsObjectPtr
         outside_fetch_client_settings_object,
+    mojo::PendingRemote<blink::mojom::OutsideContextCSPViolationReporter>
+        outside_settings_reporter,
     const std::string& storage_domain,
     const blink::MessagePortChannel& message_port,
     scoped_refptr<network::SharedURLLoaderFactory> blob_url_loader_factory,
@@ -523,6 +526,14 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
     return nullptr;
   }
 
+  // Workers created via `StorageAccessHandle.SharedWorker()` pass a
+  // `storage_key_override`, and their requests are eligible to use the
+  // storage-access grant.
+  net::StorageAccessApiStatus storage_access_api_status =
+      storage_key_override.has_value()
+          ? net::StorageAccessApiStatus::kAccessViaAPI
+          : net::StorageAccessApiStatus::kNone;
+
   // Create the host. We need to do this even before starting the worker,
   // because we are about to bounce to the IO thread. If another ConnectToWorker
   // request arrives in the meantime, it finds and reuses the host instead of
@@ -531,7 +542,7 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
       worker_hosts_.insert(std::make_unique<SharedWorkerHost>(
           this, instance, std::move(site_instance),
           std::move(content_security_policies),
-          creator.policy_container_host()->Clone()));
+          creator.policy_container_host()->Clone(), storage_access_api_status));
   CHECK(insertion_result.second, base::NotFatalUntil::M160);
   SharedWorkerHost* host = insertion_result.first->get();
   shared_worker_hosts_[host->token()] = host;
@@ -570,11 +581,6 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
   auto cloned_outside_fetch_client_settings_object =
       outside_fetch_client_settings_object.Clone();
 
-  net::StorageAccessApiStatus storage_access_api_status =
-      storage_key_override.has_value()
-          ? net::StorageAccessApiStatus::kAccessViaAPI
-          : net::StorageAccessApiStatus::kNone;
-
   // TODO(mmenke): The site-for-cookies and NetworkAnonymizationKey arguments
   // leak data across NetworkIsolationKeys and allow same-site cookies to be
   // sent in cross-site contexts. Fix this. Also, we should probably use
@@ -602,7 +608,8 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
           : host->instance().creator_storage_key().ToNetSiteForCookies(),
       host->instance().creator_storage_key().origin(),
       host->instance().worker_storage_key(),
-      host->instance().worker_storage_key().ToPartialNetIsolationInfo(),
+      host->ComputeIsolationInfoForNetworkRequest(
+          /*is_websocket_request=*/false),
       creator.BuildClientSecurityStateForWorkers(), credentials_mode,
       std::move(outside_fetch_client_settings_object),
       network::mojom::RequestDestination::kSharedWorker, file_url_support,
@@ -615,7 +622,8 @@ SharedWorkerHost* SharedWorkerServiceImpl::CreateWorker(
       creator.GetNetworkRestrictionsID(), host->creator_policies().Clone(),
       base::BindOnce(&SharedWorkerServiceImpl::StartWorker,
                      weak_factory_.GetWeakPtr(), weak_host, message_port,
-                     std::move(cloned_outside_fetch_client_settings_object)));
+                     std::move(cloned_outside_fetch_client_settings_object),
+                     std::move(outside_settings_reporter)));
 
   // Ensures that WorkerScriptFetcher::CreateAndStart() doesn't synchronously
   // destroy the SharedWorkerHost.
@@ -629,6 +637,8 @@ void SharedWorkerServiceImpl::StartWorker(
     const blink::MessagePortChannel& message_port,
     blink::mojom::FetchClientSettingsObjectPtr
         outside_fetch_client_settings_object,
+    mojo::PendingRemote<blink::mojom::OutsideContextCSPViolationReporter>
+        outside_settings_reporter,
     std::optional<WorkerScriptFetcherResult> result) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
@@ -684,6 +694,7 @@ void SharedWorkerServiceImpl::StartWorker(
   const GURL final_response_url = result->final_response_url;
   host->Start(std::move(factory),
               std::move(outside_fetch_client_settings_object),
+              std::move(outside_settings_reporter),
               GetContentClient()->browser(), std::move(*result));
   for (Observer& observer : observers_) {
     observer.OnFinalResponseURLDetermined(host->token(), final_response_url);

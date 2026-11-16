@@ -20,7 +20,6 @@
 #include "ipcz/parcel_wrapper.h"
 #include "ipcz/router.h"
 #include "util/ref_counted.h"
-#include "util/unsafe_buffers.h"
 
 class IpczAPIImpl : public IpczAPI {
  public:
@@ -135,6 +134,12 @@ IpczResult IpczAPIImpl::CreateNode(const IpczDriver* driver,
   }
 
   if (options && options->size < sizeof(IpczCreateNodeOptions)) {
+    return IPCZ_RESULT_INVALID_ARGUMENT;
+  }
+
+  if (options &&
+      !ipcz::NodeLinkMemory::GetParcelCapacityPolicy(options->memory_flags)) {
+    // More than one parcel capacity policy flag is set.
     return IPCZ_RESULT_INVALID_ARGUMENT;
   }
 

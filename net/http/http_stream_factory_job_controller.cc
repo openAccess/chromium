@@ -4,6 +4,7 @@
 
 #include "net/http/http_stream_factory_job_controller.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 
@@ -23,8 +24,8 @@
 #include "net/base/proxy_chain.h"
 #include "net/base/proxy_delegate.h"
 #include "net/base/proxy_string_util.h"
+#include "net/base/scheduler/task_runner.h"
 #include "net/base/session_usage.h"
-#include "net/base/task/task_runner.h"
 #include "net/base/url_util.h"
 #include "net/http/alternate_protocol_usage.h"
 #include "net/http/alternative_service.h"
@@ -241,6 +242,10 @@ void HttpStreamFactory::JobController::Preconnect(int num_streams,
   stream_type_ = HttpStreamRequest::HTTP_STREAM;
   num_streams_ = num_streams;
   preconnect_callback_ = std::move(callback);
+  if (management_config_.has_value() &&
+      management_config_->keep_alive_config.has_value()) {
+    priority_ = management_config_->keep_alive_config->preconnect_priority;
+  }
 
   RunLoop(OK);
   // `this` may be deleted at this point.
@@ -528,7 +533,7 @@ void HttpStreamFactory::JobController::OnCertificateError(
     BindJob(job);
   }
 
-  delegate_->OnCertificateError(status, ssl_info);
+  delegate_->OnCertificateError(status, ssl_info, job->proxy_info());
 }
 
 void HttpStreamFactory::JobController::OnNeedsClientAuth(
@@ -549,7 +554,7 @@ void HttpStreamFactory::JobController::OnNeedsClientAuth(
     BindJob(job);
   }
 
-  delegate_->OnNeedsClientAuth(cert_info);
+  delegate_->OnNeedsClientAuth(cert_info, job->proxy_info());
 }
 
 void HttpStreamFactory::JobController::OnNeedsProxyAuth(
@@ -632,6 +637,7 @@ void HttpStreamFactory::JobController::ResumeMainJobLater(
     const base::TimeDelta& delay) {
   net_log_.AddEventWithInt64Params(NetLogEventType::HTTP_STREAM_JOB_DELAYED,
                                    "delay", delay.InMilliseconds());
+  main_job_resume_time_ = base::TimeTicks::Now() + delay;
   resume_main_job_callback_.Reset(
       base::BindOnce(&HttpStreamFactory::JobController::ResumeMainJob,
                      ptr_factory_.GetWeakPtr()));
@@ -707,14 +713,52 @@ void HttpStreamFactory::JobController::OnConnectionInitialized(Job* job,
     // actual connection initiation error (resume immediately if FastFail is
     // enabled, or if DNS has no QUIC endpoint for `job`).
     base::TimeDelta delay = main_job_wait_time_;
-    if ((job == alternative_job_.get() || job == dns_alpn_h3_job_.get()) &&
-        rv != ERR_IO_PENDING &&
-        (features::kAsyncDnsQuicJobFastFail.Get() ||
-         rv == ERR_DNS_NO_MATCHING_SUPPORTED_ALPN)) {
-      delay = base::TimeDelta();
+    if (IsQuicJobGatingMainJob(job) && rv != ERR_IO_PENDING) {
+      // The QUIC job's first failure is reported here, not by
+      // OnQuicAttemptFailed(). Ignore its later attempt failures, so that both
+      // FastFail arms handle and record the same population.
+      quic_job_initialization_failed_ = true;
+      if (features::kAsyncDnsQuicJobFastFail.Get() ||
+          rv == ERR_DNS_NO_MATCHING_SUPPORTED_ALPN) {
+        delay = base::TimeDelta();
+      }
     }
     return MaybeResumeMainJob(job, delay);
   }
+}
+
+void HttpStreamFactory::JobController::OnQuicAttemptFailed(Job* job, int rv) {
+  if (!IsQuicJobGatingMainJob(job) || quic_job_initialization_failed_) {
+    return;
+  }
+  // Return early if the main job is not actively waiting for its delay timer.
+  if (!main_job_ || main_job_is_blocked_ || main_job_is_resumed_ ||
+      main_job_wait_time_.is_zero()) {
+    return;
+  }
+
+  net_log_.AddEventWithNetErrorCode(
+      NetLogEventType::HTTP_STREAM_JOB_CONTROLLER_QUIC_ATTEMPT_FAILED, rv);
+
+  // Recorded regardless of FastFail so that the arms can be compared, and only
+  // for the first such failure because the main job keeps waiting without
+  // FastFail. Not recorded once another job is bound, since the request no
+  // longer waits for the main job.
+  if (!main_job_wait_remaining_recorded_ && !IsJobOrphaned(job)) {
+    main_job_wait_remaining_recorded_ = true;
+    // The main job reaches STATE_WAIT synchronously in Job::Start(), before
+    // any attempt failure can be reported, and stays there until resumed.
+    CHECK(main_job_->is_waiting());
+    base::UmaHistogramTimes(
+        "Net.HttpJob.MainJobWaitRemainingOnQuicAttemptFailure",
+        std::max(base::TimeDelta(),
+                 main_job_resume_time_ - base::TimeTicks::Now()));
+  }
+
+  if (!features::kAsyncDnsQuicJobFastFail.Get()) {
+    return;
+  }
+  MaybeResumeMainJob(job, base::TimeDelta());
 }
 
 bool HttpStreamFactory::JobController::ShouldWait(Job* job) {
@@ -935,10 +979,13 @@ int HttpStreamFactory::JobController::DoCreateJobs() {
           request_info_.network_anonymization_key);
 
   if (is_preconnect_) {
-    // Due to how the socket pools handle priorities and idle sockets, only IDLE
-    // priority currently makes sense for preconnects. The priority for
-    // preconnects is currently ignored (see RequestSocketsForPool()), but could
-    // be used at some point for proxy resolution or something.
+    // `priority_` defaults to `IDLE` for preconnects so they yield to normal
+    // traffic unless overridden via
+    // `ConnectionKeepAliveConfig::preconnect_priority`. `priority_` applies to
+    // proxy resolution and QUIC preconnect jobs (`PRECONNECT_DNS_ALPN_H3` and
+    // Alt-Svc `PRECONNECT`), whereas TCP socket pool `RequestSockets()` and
+    // `HttpStreamPool::Preconnect()` (`kHappyEyeballsV3`) still use `IDLE` due
+    // to how socket pools account for idle preconnect sockets.
     // Note: When `dns_alpn_h3_job_enabled` is true, we create a
     // PRECONNECT_DNS_ALPN_H3 job. If no matching HTTPS DNS ALPN records are
     // received, the PRECONNECT_DNS_ALPN_H3 job will fail with
@@ -946,7 +993,7 @@ int HttpStreamFactory::JobController::DoCreateJobs() {
     // be started in OnPreconnectsComplete().
     std::unique_ptr<Job> preconnect_job = job_factory_->CreateJob(
         this, dns_alpn_h3_job_enabled ? PRECONNECT_DNS_ALPN_H3 : PRECONNECT,
-        session_, request_info_, IDLE, proxy_info_, allowed_bad_certs_,
+        session_, request_info_, priority_, proxy_info_, allowed_bad_certs_,
         destination, is_websocket_, enable_ip_based_pooling_for_h2_,
         net_log_.net_log(), NextProto::kProtoUnknown,
         quic::ParsedQuicVersion::Unsupported(), management_config_);
@@ -962,7 +1009,7 @@ int HttpStreamFactory::JobController::DoCreateJobs() {
       ConvertWsToHttp(alternative_destination);
 
       main_job_ = job_factory_->CreateJob(
-          this, PRECONNECT, session_, request_info_, IDLE, proxy_info_,
+          this, PRECONNECT, session_, request_info_, priority_, proxy_info_,
           allowed_bad_certs_, std::move(alternative_destination), is_websocket_,
           enable_ip_based_pooling_for_h2_, session_->net_log(),
           advertised_alt_svc_.info.protocol(), quic_version,
@@ -972,7 +1019,7 @@ int HttpStreamFactory::JobController::DoCreateJobs() {
 
       if (dns_alpn_h3_job_enabled) {
         preconnect_backup_job_ = job_factory_->CreateJob(
-            this, PRECONNECT, session_, request_info_, IDLE, proxy_info_,
+            this, PRECONNECT, session_, request_info_, priority_, proxy_info_,
             allowed_bad_certs_, std::move(destination), is_websocket_,
             enable_ip_based_pooling_for_h2_, net_log_.net_log(),
             NextProto::kProtoUnknown, quic::ParsedQuicVersion::Unsupported(),
@@ -1542,6 +1589,12 @@ bool HttpStreamFactory::JobController::IsJobOrphaned(Job* job) const {
   return !request_ || (job_bound_ && bound_job_ != job);
 }
 
+bool HttpStreamFactory::JobController::IsQuicJobGatingMainJob(
+    const Job* job) const {
+  return job && (job == alternative_job_.get() ||
+                 (job == dns_alpn_h3_job_.get() && !alternative_job_));
+}
+
 AlternateProtocolUsage
 HttpStreamFactory::JobController::CalculateAlternateProtocolUsage(
     Job* job) const {
@@ -1609,8 +1662,11 @@ int HttpStreamFactory::JobController::ReconsiderProxyAfterError(Job* job,
   // cancels |resume_main_job_callback_| so there won't be any delayed
   // ResumeMainJob() left in the task queue.
   resume_main_job_callback_.Cancel();
+  main_job_resume_time_ = base::TimeTicks();
   main_job_is_resumed_ = false;
   main_job_is_blocked_ = false;
+  quic_job_initialization_failed_ = false;
+  main_job_wait_remaining_recorded_ = false;
 
   next_state_ = STATE_RESOLVE_PROXY_COMPLETE;
   return OK;

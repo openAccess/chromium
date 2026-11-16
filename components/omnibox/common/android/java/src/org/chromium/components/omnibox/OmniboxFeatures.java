@@ -123,7 +123,7 @@ public class OmniboxFeatures {
                     FeatureState.ENABLED_IN_TEST);
 
     public static final CachedFlag sEarlyInflation =
-            newFlag(OmniboxFeatureList.OMNIBOX_EARLY_INFLATION, FeatureState.DISABLED_IN_PROD);
+            newFlag(OmniboxFeatureList.OMNIBOX_EARLY_INFLATION, FeatureState.ENABLED_IN_TEST);
 
     public static final CachedFlag sOmniboxAimImageDownscaling =
             newFlag(OmniboxFeatureList.OMNIBOX_AIM_IMAGE_DOWNSCALING, FeatureState.ENABLED_IN_PROD);
@@ -311,6 +311,22 @@ public class OmniboxFeatures {
     public static final CachedFlag sOmniboxVoicePlateIntent =
             newFlag(OmniboxFeatureList.OMNIBOX_VOICE_PLATE_INTENT, FeatureState.ENABLED_IN_TEST);
 
+    /**
+     * Sources Omnibox suggestion icons from native vector icon definitions (rasterized SkPaths,
+     * shared with desktop) instead of Android XML drawables.
+     */
+    private static final CachedFlag sOmniboxNativeVectorIcons =
+            newFlag(OmniboxFeatureList.OMNIBOX_NATIVE_VECTOR_ICONS, FeatureState.DISABLED_IN_PROD);
+
+    /**
+     * Makes the AI Mode button in the desktop omnibox stateful: it stays visible in AI Mode, and
+     * turns into a send button once there is text or an attachment to submit.
+     */
+    public static final CachedFlag sOmniboxStatefulAiModeButton =
+            newFlag(
+                    OmniboxFeatureList.OMNIBOX_STATEFUL_AI_MODE_BUTTON,
+                    FeatureState.DISABLED_IN_PROD);
+
     public static final IntCachedFeatureParam sTouchDownTriggerMaxPrefetchesPerSession =
             newIntParam(
                     sTouchDownTriggerForPrefetch,
@@ -458,6 +474,14 @@ public class OmniboxFeatures {
      */
     public static boolean isPostFrameAutocompleteStartEnabled() {
         return sOmniboxPostFrameAutocompleteStart.isEnabled();
+    }
+
+    /**
+     * Returns whether suggestion icons should be sourced from native vector icon definitions
+     * (rasterized SkPaths) rather than Android XML drawables.
+     */
+    public static boolean isNativeVectorIconsEnabled() {
+        return sOmniboxNativeVectorIcons.isEnabled();
     }
 
     /**

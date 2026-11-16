@@ -4,6 +4,9 @@
 
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
 
+#import <optional>
+#import <utility>
+
 #import "base/check.h"
 #import "base/feature_list.h"
 #import "base/functional/callback_helpers.h"
@@ -13,8 +16,11 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/task/thread_pool.h"
 #import "base/time/time.h"
 #import "base/trace_event/trace_event.h"
+#import "base/types/expected.h"
+#import "base/types/expected_macros.h"
 #import "components/breadcrumbs/core/breadcrumbs_status.h"
 #import "components/data_sharing/public/data_sharing_utils.h"
 #import "components/feature_engagement/public/event_constants.h"
@@ -31,6 +37,7 @@
 #import "components/version_info/version_info.h"
 #import "components/web_resource/web_resource_pref_names.h"
 #import "google_apis/gaia/gaia_id.h"
+#import "ios/chrome/app/actor_request.h"
 #import "ios/chrome/app/app_startup_parameters.h"
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/startup_information.h"
@@ -90,6 +97,10 @@
 #import "ios/chrome/browser/menu/public/menu_histograms.h"
 #import "ios/chrome/browser/metrics/model/tab_usage_recorder_browser_agent.h"
 #import "ios/chrome/browser/ntp/model/new_tab_page_tab_helper.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/proto/remote_actor_password_upload_request.pb.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_callback_util.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_payload_parser.h"
+#import "ios/chrome/browser/passwords/model/remote_actor/remote_actor_precondition_checker.h"
 #import "ios/chrome/browser/picture_in_picture/model/picture_in_picture_scene_agent.h"
 #import "ios/chrome/browser/policy/model/browser_management_service.h"
 #import "ios/chrome/browser/policy/model/browser_management_service_factory.h"
@@ -307,6 +318,13 @@ GeminiAppSwitcherAccountStatus GetAppSwitcherAccountStatus(
   return GeminiAppSwitcherAccountStatus::kBothSignedOut;
 }
 
+// Decrypts `payload` and `nonce` on a background sequence.
+base::expected<remote_actor::proto::RemoteActorPasswordUploadRequest,
+               RemoteActorParsingError>
+DecryptRemoteActorPayload(std::string payload, std::string nonce) {
+  return ParseRemoteActorPayload(payload, nonce);
+}
+
 }  // namespace
 
 // If `params` is for a Dino game URL, update transition type to allow opening.
@@ -349,6 +367,9 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   // This is used to ensure that the image search is only triggered when the BVC
   // is active.
   NSData* _imageSearchData;
+  // A property to track a pending Remote Actor credential sharing request
+  // across tab switcher dismissal.
+  std::optional<RemoteActorRequest> _remoteActorRequest;
   BOOL _handleExternalIntentsInProgress;
 }
 
@@ -462,8 +483,7 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
         agentFromScene:self.sceneState] logUserEnteredAppViaFirstPartyScheme];
   }
 
-  Browser* mainBrowser =
-      self.sceneState.browserProviderInterface.mainBrowserProvider.browser;
+  Browser* mainBrowser = self.sceneState.browserProviderInterface.mainBrowser;
   if (!mainBrowser) {
     return;
   }
@@ -718,6 +738,10 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
       return ^{
         [weakSelf startGeminiFlowForAppSwitcherIntent];
       };
+    case REMOTE_ACTOR_CREDENTIAL_SHARING:
+      return ^{
+        [weakSelf handleRemoteActorCredentialSharing];
+      };
     default:
       return nil;
   }
@@ -967,7 +991,13 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   WrangledBrowser* targetInterface = targetMode == ApplicationMode::NORMAL
                                          ? self.mainInterface
                                          : self.incognitoInterface;
-  _imageSearchData = [self.startupParameters imageSearchData];
+  AppStartupParameters* startupParameters = self.startupParameters;
+  _imageSearchData = [startupParameters imageSearchData];
+  if (startupParameters && startupParameters.remoteActorRequest) {
+    _remoteActorRequest = startupParameters.remoteActorRequest;
+  } else {
+    _remoteActorRequest.reset();
+  }
   ProceduralBlock startupCompletion =
       [self completionBlockForTriggeringAction:[self.startupParameters
                                                        postOpeningAction]];
@@ -1559,20 +1589,16 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   _mainCoordinator.tabGridDelegate = self;
   _mainCoordinator.sceneURLLoadingService = _sceneURLLoadingService.get();
 
-  BrowserCommandEndpoints commandEndpoints = {
-      .sceneEndpoint = _mainCoordinator,
-      .settingsEndpoint = _mainCoordinator,
-      .geminiEndpoint = _mainCoordinator,
-      .sceneSignInEndpoint = _mainCoordinator.sceneSignInEndpoint,
-  };
   self.browserLifecycleManager =
       [[BrowserLifecycleManager alloc] initWithProfile:profile
-                                            sceneState:sceneState
-                                      commandEndpoints:commandEndpoints];
+                                            sceneState:sceneState];
+
+  // The SceneCoordinator must handle the scene-level commands before the
+  // BrowserCoordinators are started, as they resolve their handlers on start.
+  [_mainCoordinator connectBrowsersFromProvider:self.browserLifecycleManager];
 
   // Create and start the BVC.
   [self.browserLifecycleManager createMainCoordinatorAndInterface];
-  [_mainCoordinator setBrowsersFromProvider:self.browserLifecycleManager];
 
   [self addAgents];
 
@@ -2482,6 +2508,8 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
 
   BOOL dismissGemini = YES;
   if (targetMode != ApplicationModeForTabOpening::INCOGNITO) {
+    // TODO(crbug.com/493816082): Avoid reading `self.startupParameters` when
+    // `kEnableNewStartupFlow` is enabled.
     TabOpeningPostOpeningAction postOpeningAction =
         self.startupParameters.postOpeningAction;
     if (postOpeningAction == START_GEMINI_AI_SUMMARIZATION ||
@@ -2696,6 +2724,8 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   id<SystemIdentity> identity =
       authService ? authService->GetPrimaryIdentity() : nil;
   NSString* activeHashedGaiaID = identity ? identity.hashedGaiaID : nil;
+  // TODO(crbug.com/493816082): Pass `appSwitcherHashedUserID` without relying
+  // on `self.startupParameters` when `kEnableNewStartupFlow` is enabled.
   NSString* targetHashedGaiaID = self.startupParameters.appSwitcherHashedUserID;
   GeminiAppSwitcherAccountStatus accountStatus =
       GetAppSwitcherAccountStatus(targetHashedGaiaID, activeHashedGaiaID);
@@ -2711,6 +2741,83 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
                         baseViewController:self.activeViewController
                   showSnackbarOnCompletion:YES
                                 completion:nil];
+}
+
+// Consumes and returns the pending Remote Actor request if one is available.
+- (std::optional<RemoteActorRequest>)consumePendingRemoteActorRequest {
+  if (_remoteActorRequest) {
+    return std::exchange(_remoteActorRequest, std::nullopt);
+  }
+  AppStartupParameters* startupParameters = self.startupParameters;
+  if (startupParameters && startupParameters.remoteActorRequest) {
+    return startupParameters.remoteActorRequest;
+  }
+  return std::nullopt;
+}
+
+// Handles a Remote Actor credential sharing request from an external app.
+- (void)handleRemoteActorCredentialSharing {
+  ASSIGN_OR_RETURN(RemoteActorRequest remoteActorRequest,
+                   [self consumePendingRemoteActorRequest], [] {});
+
+  if (remoteActorRequest.request.has_value()) {
+    [self processDecryptedRemoteActorRequest:*remoteActorRequest.request];
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
+      base::BindOnce(&DecryptRemoteActorPayload,
+                     std::move(remoteActorRequest.payload),
+                     std::move(remoteActorRequest.nonce)),
+      base::BindOnce(
+          [](SceneController* controller,
+             base::expected<
+                 remote_actor::proto::RemoteActorPasswordUploadRequest,
+                 RemoteActorParsingError> result) {
+            [controller handleParsedRemoteActorPayload:std::move(result)];
+          },
+          weakSelf));
+}
+
+// Handles the result of background decryption for a Remote Actor request.
+- (void)handleParsedRemoteActorPayload:
+    (base::expected<remote_actor::proto::RemoteActorPasswordUploadRequest,
+                    RemoteActorParsingError>)result {
+  if (!self.currentInterface.browser || !result.has_value()) {
+    return;
+  }
+  [self processDecryptedRemoteActorRequest:*result];
+}
+
+// Validates preconditions and presents the Remote Actor credential bottom sheet
+// for a decrypted `request`.
+- (void)processDecryptedRemoteActorRequest:
+    (const remote_actor::proto::RemoteActorPasswordUploadRequest&)request {
+  base::expected<void, RemoteActorPreconditionError> preconditionResult =
+      CheckRemoteActorPreconditions(self.currentInterface.profile,
+                                    request.gaia_id());
+  if (!preconditionResult.has_value()) {
+    RemoteActorPreconditionCallbackParams callbackParams =
+        GetPreconditionFailureCallbackParams(preconditionResult.error());
+    OpenGeminiCallbackURL(request.task_id(), callbackParams.status,
+                          callbackParams.reason, base::DoNothing());
+    return;
+  }
+
+  CommandDispatcher* dispatcher =
+      self.currentInterface.browser
+          ? self.currentInterface.browser->GetCommandDispatcher()
+          : nil;
+  if (![dispatcher dispatchingForProtocol:@protocol(SceneCommands)]) {
+    OpenGeminiCallbackURL(request.task_id(), RemoteActorCallbackStatus::kFailed,
+                          RemoteActorCallbackReason::kUploadFailed,
+                          base::DoNothing());
+    return;
+  }
+  [HandlerForProtocol(dispatcher, SceneCommands)
+      showRemoteActorCredentialBottomSheetWithRequest:request];
 }
 
 // Returns the condition to check in order to show the `IncognitoIntertitial`
@@ -2950,9 +3057,9 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
   Browser* incognitoBrowser =
       _browserLifecycleManager.incognitoInterface.browser;
 
-  // Clear the Incognito Browser and notify the TabGrid that its otrBrowser
-  // will be destroyed.
-  self.mainCoordinator.incognitoBrowser = nil;
+  // Disconnect the SceneCoordinator from the incognito `Browser`, which also
+  // notifies the TabGrid that its otrBrowser will be destroyed.
+  [self.mainCoordinator disconnectIncognitoBrowser];
 
   if (breadcrumbs::IsEnabled(GetApplicationContext()->GetLocalState())) {
     BreadcrumbManagerBrowserAgent::FromBrowser(incognitoBrowser)
@@ -2969,10 +3076,16 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
     return;
   }
 
-  [_browserLifecycleManager incognitoProfileCreated];
+  [_browserLifecycleManager createIncognitoBrowser];
+  Browser* incognitoBrowser = _browserLifecycleManager.incognitoBrowser;
 
-  Browser* incognitoBrowser =
-      _browserLifecycleManager.incognitoInterface.browser;
+  // The scene-level command handlers must be registered on the new incognito
+  // `Browser` before its `BrowserCoordinator` is started, as it resolves them
+  // when starting.
+  [self.mainCoordinator connectIncognitoBrowser:incognitoBrowser];
+
+  [_browserLifecycleManager createIncognitoInterface];
+
   _incognitoWebStateObserver->Observe(incognitoBrowser->GetWebStateList());
 
   // There should be a new URL loading browser agent for the incognito browser,
@@ -2983,9 +3096,10 @@ UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params) {
     [self activateBVCAndMakeCurrentBVCPrimary];
   }
 
-  // Always set the new otr Browser for the tablet or grid switcher.
-  // Notify the TabGrid with the new Incognito Browser.
-  self.mainCoordinator.incognitoBrowser = incognitoBrowser;
+  // Always propagate the new incognito `Browser` to the tablet or grid
+  // switcher. This must happen after its `BrowserCoordinator` is started, as
+  // some UI components depend on it.
+  [self.mainCoordinator propagateIncognitoBrowser];
 }
 
 #pragma mark - iPad Popover Appearance Propagation

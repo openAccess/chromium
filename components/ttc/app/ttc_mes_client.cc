@@ -23,9 +23,11 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/time/time.h"
+#include "base/types/expected.h"
 #include "components/actor/core/journal_details_builder.h"
 #include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/optimization_guide_model_execution_error.h"
+#include "components/optimization_guide/proto/features/wire/tool_declaration.pb.h"
 #include "components/ttc/app/public/conversation.h"
 #include "components/ttc/app/public/debug_sink.h"
 #include "components/ttc/app/public/server_journal_event.h"
@@ -130,6 +132,12 @@ base::Time ToTime(const optimization_guide::proto::Timestamp& proto_timestamp) {
          base::Nanoseconds(proto_timestamp.nanos());
 }
 
+base::TimeDelta ToTimeDelta(
+    const optimization_guide::proto::Duration& proto_duration) {
+  return base::Seconds(proto_duration.seconds()) +
+         base::Nanoseconds(proto_duration.nanos());
+}
+
 ServerJournalEvent ToServerJournalEvent(
     const optimization_guide::proto::JournalEvent& proto_event) {
   ServerJournalEvent event;
@@ -178,6 +186,28 @@ std::optional<UserTurnStateUpdate> ToUserTurnStateUpdate(
     default:
       return std::nullopt;
   }
+}
+
+// Converts `tool_call` into a `ToolRequest`, or returns the error to answer it
+// with if it can't be converted.
+base::expected<ToolRequest, ToolResponse> ToToolRequest(
+    const optimization_guide::proto::ToolCall& tool_call) {
+  ToolRequest tool_request;
+  tool_request.call_id = tool_call.call_id();
+  tool_request.name = tool_call.name();
+  if (!tool_call.arguments_json().empty()) {
+    std::optional<base::DictValue> args_dict = base::JSONReader::ReadDict(
+        tool_call.arguments_json(), base::JSON_PARSE_RFC);
+    if (!args_dict) {
+      LOG(ERROR) << "Failed to parse tool call arguments as JSON: "
+                 << tool_call.arguments_json();
+      return base::unexpected(
+          ToolResponse::Error(actor::mojom::ActionResultCode::kArgumentsInvalid,
+                              "Invalid JSON provided for tool arguments"));
+    }
+    tool_request.arguments = std::move(*args_dict);
+  }
+  return tool_request;
 }
 
 }  // namespace
@@ -387,8 +417,14 @@ void TtcMesClient::HandleServerFrame(
     }
   }
 
+  // TODO(b/576271717): A frame holds exactly one of these, so turn these `if`s
+  // into a `switch` on `frame.frame_case()`.
   if (frame.has_tool_call()) {
     HandleToolCall(frame.tool_call());
+  }
+
+  if (frame.has_tool_call_batch()) {
+    HandleToolCallBatch(frame.tool_call_batch());
   }
 
   if (frame.has_server_error()) {
@@ -419,13 +455,14 @@ void TtcMesClient::SendToolSetUpdate(const std::vector<ToolDefinition>& tools) {
   auto* update = frame.mutable_toolset_update();
   for (const ToolDefinition& tool_def : tools) {
     auto* proto_tool = update->add_active_tools();
-    proto_tool->set_name(tool_def.name);
-    proto_tool->set_description(tool_def.description);
+    auto* decl = proto_tool->mutable_tool_declaration();
+    decl->set_name(tool_def.name);
+    decl->set_description(tool_def.description);
     if (!tool_def.parameters_json_schema.empty()) {
       std::optional<std::string> params_json =
           base::WriteJson(tool_def.parameters_json_schema);
       CHECK(params_json);
-      proto_tool->set_parameters_json_schema(std::move(*params_json));
+      decl->set_parameters_json_schema(std::move(*params_json));
     }
     proto_tool->set_behavior(ToProtoBehavior(tool_def.behavior));
     proto_tool->set_verbalization(ToProtoVerbalization(tool_def.verbalization));
@@ -438,28 +475,55 @@ void TtcMesClient::HandleToolCall(
   if (!observer_) {
     return;
   }
-  ToolRequest tool_request;
-  tool_request.call_id = tool_call.call_id();
-  tool_request.name = tool_call.name();
-  if (!tool_call.arguments_json().empty()) {
-    std::optional<base::DictValue> args_dict = base::JSONReader::ReadDict(
-        tool_call.arguments_json(), base::JSON_PARSE_RFC);
-    if (!args_dict) {
-      LOG(ERROR) << "Failed to parse tool call arguments as JSON: "
-                 << tool_call.arguments_json();
+  base::expected<ToolRequest, ToolResponse> tool_request =
+      ToToolRequest(tool_call);
+  if (!tool_request.has_value()) {
+    OnToolExecutionComplete(tool_call.call_id(), tool_call.name(),
+                            std::move(tool_request).error());
+    return;
+  }
+  observer_->OnToolCall(std::move(tool_request).value(),
+                        MakeToolResponseCallback(tool_call));
+}
+
+void TtcMesClient::HandleToolCallBatch(
+    const optimization_guide::proto::ToolCallBatch& batch) {
+  if (!observer_) {
+    return;
+  }
+  // A call that can't be converted fails the batch like any other failure:
+  // the calls after it aren't passed on, but are answered with an error.
+  std::vector<PendingToolCall> tool_calls;
+  bool aborted = false;
+  for (const auto& tool_call : batch.tool_calls()) {
+    if (aborted) {
       OnToolExecutionComplete(
           tool_call.call_id(), tool_call.name(),
-          ToolResponse::Error(actor::mojom::ActionResultCode::kArgumentsInvalid,
-                              "Invalid JSON provided for tool arguments"));
-      return;
+          ToolResponse::Error(
+              actor::mojom::ActionResultCode::kActionsCancelled));
+      continue;
     }
-    tool_request.arguments = std::move(*args_dict);
+    base::expected<ToolRequest, ToolResponse> tool_request =
+        ToToolRequest(tool_call);
+    if (!tool_request.has_value()) {
+      OnToolExecutionComplete(tool_call.call_id(), tool_call.name(),
+                              std::move(tool_request).error());
+      aborted = true;
+      continue;
+    }
+    tool_calls.emplace_back(std::move(tool_request).value(),
+                            MakeToolResponseCallback(tool_call));
   }
+  if (!tool_calls.empty()) {
+    observer_->OnToolCallBatch(std::move(tool_calls));
+  }
+}
 
-  auto callback = base::BindOnce(&TtcMesClient::OnToolExecutionComplete,
-                                 weak_factory_.GetWeakPtr(),
-                                 tool_call.call_id(), tool_call.name());
-  observer_->OnToolCall(std::move(tool_request), std::move(callback));
+ToolResponseCallback TtcMesClient::MakeToolResponseCallback(
+    const optimization_guide::proto::ToolCall& tool_call) {
+  return base::BindOnce(&TtcMesClient::OnToolExecutionComplete,
+                        weak_factory_.GetWeakPtr(), tool_call.call_id(),
+                        tool_call.name());
 }
 
 void TtcMesClient::OnToolExecutionComplete(const std::string& call_id,
@@ -471,6 +535,12 @@ void TtcMesClient::OnToolExecutionComplete(const std::string& call_id,
   auto* tool_response = frame.mutable_tool_response();
   tool_response->set_call_id(call_id);
   tool_response->set_name(tool_name);
+  if (const std::optional<VisualContent>& image = response.visual_content()) {
+    auto* visual_content = tool_response->mutable_visual_content();
+    visual_content->set_image_data(image->image_data.data(),
+                                   image->image_data.size());
+    visual_content->set_mime_type(image->mime_type);
+  }
   std::optional<std::string> json =
       base::WriteJson(ToResponseDict(std::move(response)));
   CHECK(json);
@@ -513,12 +583,22 @@ void TtcMesClient::SendContextUpdate(
   SendFrame(frame);
 }
 
-void TtcMesClient::ReportPlaybackStatus(int64_t last_played_sequence_number) {
+void TtcMesClient::ReportPlaybackStatus(base::TimeDelta playback_progress,
+                                        bool playback_complete,
+                                        int64_t generation_id) {
+  CHECK(!playback_progress.is_negative());
   optimization_guide::proto::TtcClientFrame frame;
   frame.set_client_timestamp_ms(
       base::Time::Now().InMillisecondsSinceUnixEpoch());
-  frame.mutable_playback_status()->set_last_played_sequence_number(
-      last_played_sequence_number);
+  auto* status = frame.mutable_playback_status();
+  auto* duration = status->mutable_playback_progress();
+  const int64_t seconds = playback_progress.InSeconds();
+  const int64_t nanos =
+      (playback_progress - base::Seconds(seconds)).InNanoseconds();
+  duration->set_seconds(seconds);
+  duration->set_nanos(static_cast<int32_t>(nanos));
+  status->set_playback_complete(playback_complete);
+  status->set_generation_id(generation_id);
   SendFrame(frame);
 }
 
@@ -583,7 +663,7 @@ void TtcMesClient::ReportClientFrameToDebugSink(
     case Frame::kToolsetUpdate: {
       DebugSink::ToolsetUpdate update;
       for (const auto& tool : frame.toolset_update().active_tools()) {
-        update.tool_names.push_back(tool.name());
+        update.tool_names.push_back(tool.tool_declaration().name());
       }
       debug_sink_->OnClientFrame(std::move(update));
       break;
@@ -592,14 +672,20 @@ void TtcMesClient::ReportClientFrameToDebugSink(
       debug_sink_->OnClientFrame(DebugSink::ToolCallResponse{
           .call_id = frame.tool_response().call_id(),
           .response_json = frame.tool_response().response_json(),
+          .image_mime_type = frame.tool_response().visual_content().mime_type(),
+          .image_bytes =
+              frame.tool_response().visual_content().image_data().size(),
       });
       break;
-    case Frame::kPlaybackStatus:
+    case Frame::kPlaybackStatus: {
+      const auto& status = frame.playback_status();
       debug_sink_->OnClientFrame(DebugSink::PlaybackStatus{
-          .last_played_sequence_number =
-              frame.playback_status().last_played_sequence_number(),
+          .playback_progress = ToTimeDelta(status.playback_progress()),
+          .playback_complete = status.playback_complete(),
+          .generation_id = status.generation_id(),
       });
       break;
+    }
     case Frame::kCloseRequest:
       debug_sink_->OnClientFrame(
           DebugSink::CloseRequest{.reason = frame.close_request().reason()});
@@ -659,6 +745,15 @@ void TtcMesClient::ReportServerFrameToDebugSink(
       });
       break;
     }
+    case Frame::kToolCallBatch:
+      for (const auto& tool_call : frame.tool_call_batch().tool_calls()) {
+        debug_sink_->OnServerFrame(DebugSink::ToolCall{
+            .call_id = tool_call.call_id(),
+            .name = tool_call.name(),
+            .arguments_json = tool_call.arguments_json(),
+        });
+      }
+      break;
     case Frame::kServerError:
       debug_sink_->OnServerFrame(DebugSink::ServerError{
           .code = EnumToString(frame.server_error().error_code(),
@@ -743,11 +838,12 @@ void TtcMesClient::LogClientFrame(
       const auto& update = frame.toolset_update();
       for (int i = 0; i < update.active_tools_size(); ++i) {
         const auto& tool = update.active_tools(i);
+        const auto& decl = tool.tool_declaration();
         const std::string prefix = base::StringPrintf("active_tools[%d].", i);
-        details.Add(base::StrCat({prefix, "name"}), tool.name())
-            .Add(base::StrCat({prefix, "description"}), tool.description())
+        details.Add(base::StrCat({prefix, "name"}), decl.name())
+            .Add(base::StrCat({prefix, "description"}), decl.description())
             .Add(base::StrCat({prefix, "parameters_json_schema"}),
-                 tool.parameters_json_schema())
+                 decl.parameters_json_schema())
             .Add(base::StrCat({prefix, "behavior"}),
                  EnumToString(tool.behavior(),
                               &optimization_guide::proto::
@@ -773,11 +869,16 @@ void TtcMesClient::LogClientFrame(
       }
       break;
     }
-    case optimization_guide::proto::TtcClientFrame::kPlaybackStatus:
+    case optimization_guide::proto::TtcClientFrame::kPlaybackStatus: {
       event_name = "PlaybackStatus";
-      details.Add("last_played_sequence_number",
-                  frame.playback_status().last_played_sequence_number());
+      const auto& status = frame.playback_status();
+      details
+          .Add("playback_progress_ms",
+               ToTimeDelta(status.playback_progress()).InMilliseconds())
+          .Add("playback_complete", status.playback_complete())
+          .Add("generation_id", status.generation_id());
       break;
+    }
     case optimization_guide::proto::TtcClientFrame::kCloseRequest:
       event_name = "CloseSessionRequest";
       details.Add("reason", frame.close_request().reason());
@@ -830,6 +931,24 @@ void TtcMesClient::LogServerFrame(
           .Add("call_id", call.call_id())
           .Add("arguments_json", call.arguments_json());
       break;
+    }
+    case optimization_guide::proto::TtcServerFrame::kToolCallBatch: {
+      // Each call is logged as its own event, tagged with its position in the
+      // batch.
+      const auto& calls = frame.tool_call_batch().tool_calls();
+      for (int i = 0; i < calls.size(); ++i) {
+        Log("ToolCall",
+            actor::JournalDetailsBuilder()
+                .Add("server_timestamp_ms", frame.server_timestamp_ms())
+                .Add("name", calls[i].name())
+                .Add("call_id", calls[i].call_id())
+                .Add("arguments_json", calls[i].arguments_json())
+                .Add("batch_index", i)
+                .Add("batch_size", calls.size())
+                .Build(),
+            SessionJournal::Track::kMesClientRecv);
+      }
+      return;
     }
     case optimization_guide::proto::TtcServerFrame::kGoAway:
       event_name = "GoAway";
@@ -912,6 +1031,13 @@ void TtcMesClient::Close() {
 
 bool TtcMesClient::is_transport_connected() const {
   return is_transport_connected_;
+}
+
+std::optional<std::string> TtcMesClient::GetSessionId() const {
+  if (session_id_.empty()) {
+    return std::nullopt;
+  }
+  return session_id_;
 }
 
 }  // namespace ttc

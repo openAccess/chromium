@@ -27,6 +27,7 @@
 #include "ash/system/usb_peripheral/usb_peripheral_notification_controller.h"
 #include "ash/webui/camera_app_ui/document_scanner_installer.h"
 #include "ash/wm/coral/coral_controller.h"
+#include "base/check.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
@@ -111,7 +112,6 @@
 #include "chrome/browser/ash/dbus/vm/vm_permission_service_provider.h"
 #include "chrome/browser/ash/dbus/vm/vm_sk_forwarding_service_provider.h"
 #include "chrome/browser/ash/dbus/vm/vm_wl_service_provider.h"
-#include "chrome/browser/ash/diagnostics/diagnostics_browser_delegate_impl.h"
 #include "chrome/browser/ash/events/event_rewriter_delegate_impl.h"
 #include "chrome/browser/ash/events/shortcut_mapping_pref_service.h"
 #include "chrome/browser/ash/extensions/default_app_order.h"
@@ -122,7 +122,6 @@
 #include "chrome/browser/ash/input_method/input_method_configuration.h"
 #include "chrome/browser/ash/lobster/lobster_client_factory_impl.h"
 #include "chrome/browser/ash/locale/startup_settings_cache.h"
-#include "chrome/browser/ash/logging/logging.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #include "chrome/browser/ash/login/helper.h"
 #include "chrome/browser/ash/login/lock/screen_locker.h"
@@ -209,7 +208,6 @@
 #include "chrome/browser/ui/ash/session/session_controller_client_impl.h"
 #include "chrome/browser/ui/webui/ash/config/ash_web_ui_config_manager.h"
 #include "chrome/browser/ui/webui/ash/emoji/emoji_ui.h"
-#include "chrome/common/logging_chrome.h"
 #include "chromeos/ash/components/attestation/attestation_features.h"
 #include "chromeos/ash/components/audio/audio_devices_pref_handler_impl.h"
 #include "chromeos/ash/components/audio/cras_audio_handler.h"
@@ -238,6 +236,7 @@
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/language_preferences/language_preferences.h"
 #include "chromeos/ash/components/local_search_service/public/cpp/local_search_service_proxy_factory.h"
+#include "chromeos/ash/components/logging/log_redirect.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/ash/components/login/session/session_termination_manager.h"
@@ -1255,6 +1254,15 @@ void ChromeBrowserMainPartsAsh::PreProfileInit() {
   ash_web_ui_config_manager_ = std::make_unique<AshWebUIConfigManager>(
       g_browser_process->local_state(),
       g_browser_process->GetFeatures()->application_locale_storage(),
+      // TODO(crbug.com/558489113): Revisit callback usage once lifetime is
+      // resolved.
+      base::BindRepeating([]() {
+        metrics::MetricsService* metrics_service =
+            g_browser_process->metrics_service();
+        CHECK(metrics_service);
+        return metrics_service;
+      }),
+      g_browser_process->variations_service(),
       g_browser_process->platform_part()->browser_policy_connector_ash(),
       g_browser_process->shared_url_loader_factory());
 }
@@ -1391,6 +1399,10 @@ void ChromeBrowserMainPartsAsh::PostProfileInit(Profile* profile,
         std::make_unique<parent_access::ParentAccessService>(
             g_browser_process->local_state());
 
+    // Enable Chrome OS USB detection before ChromeSessionManager::Initialize
+    // so it observes the primary user session start.
+    cros_usb_detector_ = std::make_unique<CrosUsbDetector>();
+
     g_browser_process->platform_part()->chrome_session_manager()->Initialize(
         g_browser_process->metrics_service(),
         g_browser_process->GetFeatures()->application_locale_storage(),
@@ -1451,26 +1463,24 @@ void ChromeBrowserMainPartsAsh::PostProfileInit(Profile* profile,
                        shill::kEnableRFC8925Property));
 
     ash::ShillManagerClient::Get()->SetProperty(
-        shill::kUseLegacyDHCPCDProperty,
-        // The shill property UseLegacyDHCPCD is currently enabled by default.
-        // However, for the Finch study that aims to migrate to dhcpcd10, we
-        // need a Chrome flag that is disabled by default. That is why we use an
-        // opposite flag UseDHCPCD10 in Chrome and flip it here.
-        base::Value(!base::FeatureList::IsEnabled(features::kUseDHCPCD10)),
-        base::DoNothing(),
+        shill::kUseLegacyDHCPCDProperty, base::Value(false), base::DoNothing(),
         base::BindOnce(ShillSetPropertyErrorCallback,
                        shill::kUseLegacyDHCPCDProperty));
 
+    // TODO(b/585059642): Remove setting
+    // kEnableSingleCACertVerificationPhase1Property once shill no longer uses
+    // it.
     ash::ShillManagerClient::Get()->SetProperty(
         shill::kEnableSingleCACertVerificationPhase1Property, base::Value(true),
         base::DoNothing(),
         base::BindOnce(ShillSetPropertyErrorCallback,
                        shill::kEnableSingleCACertVerificationPhase1Property));
 
+    // TODO(b/585059642): Remove setting
+    // kEnableSingleCACertVerificationPhase2Property once shill no longer uses
+    // it.
     ash::ShillManagerClient::Get()->SetProperty(
-        shill::kEnableSingleCACertVerificationPhase2Property,
-        base::Value(base::FeatureList::IsEnabled(
-            features::kSingleCaCertVerificationPhase2)),
+        shill::kEnableSingleCACertVerificationPhase2Property, base::Value(true),
         base::DoNothing(),
         base::BindOnce(ShillSetPropertyErrorCallback,
                        shill::kEnableSingleCACertVerificationPhase2Property));
@@ -1581,13 +1591,6 @@ void ChromeBrowserMainPartsAsh::PostBrowserStart() {
   auto_screen_brightness_controller_ =
       std::make_unique<power::auto_screen_brightness::Controller>();
 
-  // Enable Chrome OS USB detection.
-  cros_usb_detector_ = std::make_unique<CrosUsbDetector>();
-  content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-      ->PostTask(FROM_HERE,
-                 base::BindOnce(&CrosUsbDetector::ConnectToDeviceManager,
-                                base::Unretained(cros_usb_detector_.get())));
-
   // USB detection for ash notifications.
   ash_usb_detector_ = std::make_unique<AshUsbDetector>();
   content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
@@ -1619,11 +1622,9 @@ void ChromeBrowserMainPartsAsh::PostBrowserStart() {
   dark_resume_controller_ = std::make_unique<system::DarkResumeController>(
       std::move(wake_lock_provider));
 
-  // DiagnosticsBrowserDelegate has to be initialized after ProfilerHelper and
-  // UserManager. Initializing in PostProfileInit to ensure Profile data is
-  // available and shell has been initialized.
-  diagnostics::DiagnosticsLogController::Initialize(
-      std::make_unique<diagnostics::DiagnosticsBrowserDelegateImpl>());
+  // The log controller reads the active user's directory off the UserManager,
+  // so it has to be initialized after it, and after the shell.
+  diagnostics::DiagnosticsLogController::Initialize();
 
   if (features::IsVideoConferenceEnabled()) {
     auto* vc_manager = ash::VideoConferenceManagerAsh::Get();

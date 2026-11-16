@@ -352,6 +352,7 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   // - `body`: The optional request payload.
   // - `queryParams`: An optional dictionary of URL query parameters. Keys are
   //   strings, and values can be either a string or an array of strings.
+  // - `headers`: An optional dictionary of HTTP request headers.
   //
   // Successful Response:
   // The callback will be invoked with a dictionary containing:
@@ -365,7 +366,8 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
   //
   // Possible error scenarios:
   // 1. Service not found: `{"error": "Service not found"}`
-  // 2. Disallowed path or method: `{"error": "Disallowed path or method"}`
+  // 2. Disallowed path, method, or header:
+  //    `{"error": "Disallowed path, method, or header"}`
   // 3. Pre-request validation failed: `{"error": "Request validation
   // failed"}`
   // 4. Token fetch failure: `{"error": "Token fetch error", "detail":
@@ -453,7 +455,6 @@ class DevToolsUIBindings : public DevToolsEmbedderMessageDispatcher::Delegate,
       base::TimeDelta delay,
       std::variant<network::ResourceRequest, std::string>
           resource_request_or_error,
-      base::TimeTicks start_time,
       const base::Value* response);
   void OnAidaRequest(const GURL& url,
                      const std::string& response_histogram_name,

@@ -28,7 +28,6 @@
 #include "chrome/browser/apps/link_capturing/link_capturing_feature_test_support.h"
 #include "chrome/browser/web_applications/commands/run_on_os_login_command.h"
 #include "chrome/browser/web_applications/commands/web_app_uninstall_command.h"
-#include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_url_info.h"
 #include "chrome/browser/web_applications/model/display_override.h"
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
@@ -56,7 +55,6 @@
 #include "components/webapps/common/web_app_id.h"
 #include "components/webapps/isolated_web_apps/scheme.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
-#include "content/public/browser/storage_partition_config.h"
 #include "content/public/common/content_features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -660,8 +658,6 @@ TEST_F(WebAppRegistrarTest, CanFindAppWithUrlInScope) {
       GenerateAppId(/*manifest_id=*/std::nullopt, app2_scope);
   const webapps::AppId app3_id =
       GenerateAppId(/*manifest_id=*/std::nullopt, app3_scope);
-  const webapps::AppId app4_id =
-      GenerateAppId(/*manifest_id=*/std::nullopt, app3_scope);
 
   auto app1 = test::CreateWebApp(app1_scope);
   RegisterAppUnsafe(std::move(app1));
@@ -1038,68 +1034,6 @@ TEST_F(WebAppRegistrarTest, CountUserInstalledAppsDiy) {
   EXPECT_EQ(1, registrar().CountUserInstalledDiyApps());
 }
 
-TEST_F(WebAppRegistrarTest, GetAllIsolatedWebAppStoragePartitionConfigs) {
-  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
-  StartWebAppProvider();
-
-  constexpr char kIwaHostname[] =
-      "berugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic";
-  constexpr char kExpectedIwaStoragePartitionDomain[] =
-      "i1kr80qqyjuuVC4UFPN7ovBngVoA2HbXGtTXtmQn6/H4=";
-  GURL start_url(base::StrCat({webapps::kIsolatedAppScheme,
-                               url::kStandardSchemeSeparator, kIwaHostname}));
-  auto isolated_web_app = test::CreateWebApp(start_url);
-  const webapps::AppId app_id = isolated_web_app->app_id();
-  isolated_web_app->SetIsolationData(
-      IsolationData::Builder(
-          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
-          *IwaVersion::Create("1.0.0"))
-          .Build());
-  RegisterAppUnsafe(std::move(isolated_web_app));
-
-  std::vector<content::StoragePartitionConfig> storage_partition_configs =
-      registrar().GetIsolatedWebAppStoragePartitionConfigs(app_id);
-
-  auto expected_config = content::StoragePartitionConfig::Create(
-      profile(), kExpectedIwaStoragePartitionDomain,
-      /*partition_name=*/"", /*in_memory=*/false);
-  ASSERT_EQ(1UL, storage_partition_configs.size());
-  EXPECT_EQ(expected_config, storage_partition_configs[0]);
-}
-
-TEST_F(WebAppRegistrarTest, SaveAndGetInMemoryControlledFramePartitionConfig) {
-  base::test::ScopedFeatureList scoped_feature_list(features::kIsolatedWebApps);
-  StartWebAppProvider();
-
-  constexpr char kIwaHostname[] =
-      "berugqztij5biqquuk3mfwpsaibuegaqcitgfchwuosuofdjabzqaaic";
-  constexpr char kExpectedIwaStoragePartitionDomain[] =
-      "i1kr80qqyjuuVC4UFPN7ovBngVoA2HbXGtTXtmQn6/H4=";
-  GURL start_url(base::StrCat({webapps::kIsolatedAppScheme,
-                               url::kStandardSchemeSeparator, kIwaHostname}));
-  auto isolated_web_app = test::CreateWebApp(start_url);
-  const webapps::AppId app_id = isolated_web_app->app_id();
-  auto url_info = IsolatedWebAppUrlInfo::Create(start_url);
-  ASSERT_TRUE(url_info.has_value());
-
-  isolated_web_app->SetIsolationData(
-      IsolationData::Builder(
-          IwaStorageOwnedBundle{"random_name", /*dev_mode=*/false},
-          *IwaVersion::Create("1.0.0"))
-          .Build());
-  RegisterAppUnsafe(std::move(isolated_web_app));
-
-  auto output_config =
-      registrar().SaveAndGetInMemoryControlledFramePartitionConfig(
-          url_info.value(), "partition_1");
-
-  auto expected_config_cf_1 = content::StoragePartitionConfig::Create(
-      profile(), kExpectedIwaStoragePartitionDomain,
-      /*partition_name=*/"partition_1", /*in_memory=*/true);
-
-  EXPECT_EQ(expected_config_cf_1, output_config);
-}
-
 TEST_F(WebAppRegistrarTest,
        AppsFromSyncAndPendingInstallationExcludedFromGetAppIds) {
   PopulateRegistryWithApps("https://example.com/path/", 20);
@@ -1364,7 +1298,6 @@ TEST_F(WebAppRegistrarTest, AppsDoNotOverlapIfNestedScope) {
       proto::NAVIGATION_CAPTURING_PREFERENCE_CAPTURE);
 
   const webapps::AppId app_id1 = web_app1->app_id();
-  const webapps::AppId app_id2 = web_app2->app_id();
   RegisterAppUnsafe(std::move(web_app1));
   RegisterAppUnsafe(std::move(web_app2));
 
@@ -1558,7 +1491,6 @@ TEST_F(WebAppRegistrarTest, InnerAndOuterScopeIntentPicker) {
   auto no_match_scope_app =
       test::CreateWebApp(GURL("https://def.com/"), WebAppManagement::kSync);
   no_match_scope_app->SetName("App_No_Match");
-  const webapps::AppId no_match_scope_app_id = no_match_scope_app->app_id();
   RegisterAppUnsafe(std::move(no_match_scope_app));
 
   // This should not be considered since this app is not set to open in a new
@@ -1568,7 +1500,6 @@ TEST_F(WebAppRegistrarTest, InnerAndOuterScopeIntentPicker) {
       GURL("https://abc.com/inner/"));
   browser_mode_app->SetName("App_Browser");
   browser_mode_app->SetUserDisplayMode(mojom::UserDisplayMode::kBrowser);
-  const webapps::AppId browser_mode_app_id = browser_mode_app->app_id();
   RegisterAppUnsafe(std::move(browser_mode_app));
 
   EXPECT_THAT(registrar().GetAllAppsControllingUrl(document_url),

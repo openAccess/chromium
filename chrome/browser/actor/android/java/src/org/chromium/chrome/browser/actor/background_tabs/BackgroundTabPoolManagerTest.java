@@ -152,7 +152,6 @@ public class BackgroundTabPoolManagerTest {
                         pool,
                         tab,
                         PLACEHOLDER_ID,
-                        /* taskId= */ null,
                         /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX));
         assertFalse(pool.isEmpty());
 
@@ -174,7 +173,6 @@ public class BackgroundTabPoolManagerTest {
                         pool1,
                         tab,
                         PLACEHOLDER_ID,
-                        /* taskId= */ null,
                         /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX));
         // Destroy the pool directly so tab state remains persisted in cache
         pool1.destroy();
@@ -195,7 +193,7 @@ public class BackgroundTabPoolManagerTest {
                                 ChromePreferenceKeys.BACKGROUND_TAB_POOL_LAST_PROFILE_TOKEN, null));
 
         // When cache is cleared, pool is emptied and destroyed, and token is cleared
-        pool2.clearAll();
+        pool2.removeTabById(TAB_ID_1);
         ShadowLooper.idleMainLooper();
         assertNull(BackgroundTabPoolManager.getPoolForTesting(mProfile));
         assertNull(
@@ -216,7 +214,6 @@ public class BackgroundTabPoolManagerTest {
                         pool,
                         tab,
                         PLACEHOLDER_ID,
-                        /* taskId= */ null,
                         /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX));
         BackgroundTabPoolManager.release(pool);
         assertNotNull(BackgroundTabPoolManager.getPoolForTesting(mProfile));
@@ -238,29 +235,6 @@ public class BackgroundTabPoolManagerTest {
         assertEquals(1, BackgroundTabPoolManager.getLeaseCountForTesting(mProfile));
         assertNotNull(BackgroundTabPoolManager.getPoolForTesting(mProfile));
         assertSame(pool1, BackgroundTabPoolManager.getPoolForTesting(mProfile));
-    }
-
-    @Test
-    public void testDestroyOnProfileTeardown() {
-        BackgroundTabPool pool = BackgroundTabPoolManager.acquire(mProfile);
-        assertNotNull(pool);
-        assertEquals(1, BackgroundTabPoolManager.getLeaseCountForTesting(mProfile));
-
-        BackgroundTabPoolManager.resetForTesting();
-        assertNull(BackgroundTabPoolManager.getPoolForTesting(mProfile));
-        assertEquals(0, BackgroundTabPoolManager.getLeaseCountForTesting(mProfile));
-    }
-
-    @Test
-    public void testSetPoolForTesting() {
-        BackgroundTabPool mockPool = mock(BackgroundTabPool.class);
-        BackgroundTabPoolManager.setPoolForTesting(mockPool);
-
-        BackgroundTabPool acquired = BackgroundTabPoolManager.acquire(mProfile);
-        assertSame(mockPool, acquired);
-
-        BackgroundTabPoolManager.release(mockPool);
-        assertSame(mockPool, BackgroundTabPoolManager.acquire(mProfile));
     }
 
     @Test(expected = AssertionError.class)
@@ -291,7 +265,6 @@ public class BackgroundTabPoolManagerTest {
                         pool,
                         tab,
                         PLACEHOLDER_ID,
-                        /* taskId= */ null,
                         /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX));
         BackgroundTabPoolManager.release(pool);
 

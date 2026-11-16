@@ -288,14 +288,14 @@ Vector<AtomicString> ProcessingInstruction::getAttributeNames() {
 void ProcessingInstruction::UpdateDataFromAttributes() {
   StringBuilder builder;
   const wtf_size_t size = attributes_.size();
-  const auto type = GetSerializationType(GetDocument());
   for (wtf_size_t i = 0; i < size; ++i) {
     if (i) {
       builder.Append(" ");
     }
     builder.Append(attributes_[i].key);
     builder.Append("=\"");
-    MarkupFormatter::AppendAttributeValue(attributes_[i].value, type, builder);
+    MarkupFormatter::AppendCharactersReplacingEntities(
+        attributes_[i].value, kEntityMaskInPiAttributeValue, builder);
     builder.Append("\"");
   }
   SetDataFromAttributeChange(builder.ReleaseString());
@@ -314,12 +314,18 @@ bool ProcessingInstruction::CheckStyleSheet(String& href, String& charset) {
 
   ProcessAttributesIfNeeded();
 
-  DEFINE_STATIC_LOCAL(AtomicString, kType, ("type"));
-  DEFINE_STATIC_LOCAL(AtomicString, kHref, ("href"));
-  DEFINE_STATIC_LOCAL(AtomicString, kCharset, ("charset"));
-  DEFINE_STATIC_LOCAL(AtomicString, kAlternate, ("alternate"));
-  DEFINE_STATIC_LOCAL(AtomicString, kTitle, ("title"));
-  DEFINE_STATIC_LOCAL(AtomicString, kMedia, ("media"));
+  DEFINE_STATIC_LOCAL(AtomicString, kType,
+                      (AtomicString::FromLiteral<"type">()));
+  DEFINE_STATIC_LOCAL(AtomicString, kHref,
+                      (AtomicString::FromLiteral<"href">()));
+  DEFINE_STATIC_LOCAL(AtomicString, kCharset,
+                      (AtomicString::FromLiteral<"charset">()));
+  DEFINE_STATIC_LOCAL(AtomicString, kAlternate,
+                      (AtomicString::FromLiteral<"alternate">()));
+  DEFINE_STATIC_LOCAL(AtomicString, kTitle,
+                      (AtomicString::FromLiteral<"title">()));
+  DEFINE_STATIC_LOCAL(AtomicString, kMedia,
+                      (AtomicString::FromLiteral<"media">()));
 
   AtomicString type = GetAttributeValue(kType, g_empty_atom);
 

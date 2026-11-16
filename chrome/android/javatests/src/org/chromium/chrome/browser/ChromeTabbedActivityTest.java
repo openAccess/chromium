@@ -69,6 +69,7 @@ import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.incognito.IncognitoWindowNightModeStateProvider;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceManager.PersistedInstanceType;
 import org.chromium.chrome.browser.multiwindow.MultiInstanceOrchestratorFactory;
+import org.chromium.chrome.browser.multiwindow.MultiWindowTestHelper;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.browser.night_mode.NightModeStateProvider;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
@@ -93,7 +94,6 @@ import org.chromium.chrome.browser.url_constants.UrlOverrideUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.tab_group_sync.LocalTabGroupId;
 import org.chromium.components.tab_group_sync.SavedTabGroup;
@@ -1367,9 +1367,7 @@ public class ChromeTabbedActivityTest {
         intent.setClass(mActivity, ChromeTabbedActivity.class);
 
         final ChromeTabbedActivity activity2 =
-                ApplicationTestUtils.waitForActivityWithClass(
-                        ChromeTabbedActivity.class,
-                        Stage.RESUMED,
+                MultiWindowTestHelper.waitForNewChromeTabbedActivity(
                         () -> mActivity.getApplicationContext().startActivity(intent));
 
         MultiWindowUtils.getInstance().setIsInMultiWindowModeForTesting(true);
@@ -1568,8 +1566,6 @@ public class ChromeTabbedActivityTest {
                         });
 
         mActivityTestRule.loadUrl(ntpUrl);
-        Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> mActivity.getActivityTab());
-        ChromeTabUtils.waitForTabPageLoaded(tab, ntpUrl);
     }
 
     @Test

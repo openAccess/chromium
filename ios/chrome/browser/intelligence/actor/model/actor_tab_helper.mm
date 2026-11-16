@@ -4,6 +4,8 @@
 
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
 
+#import <UIKit/UIKit.h>
+
 #import <utility>
 
 #import "base/functional/bind.h"
@@ -14,8 +16,11 @@
 #import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper_observer.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
+#import "ios/web/public/navigation/navigation_manager.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
 #import "ios/web/public/web_state.h"
+#import "ui/base/page_transition_types.h"
+#import "url/gurl.h"
 
 namespace {
 
@@ -81,9 +86,14 @@ void ActorTabHelper::SetControlState(
       control_state == actor::ActorControlState::kActorControlled;
   if (previous_active != new_active && web_state_ &&
       ActorDisablesInputDuringActuation()) {
+    if (!new_active && web_state_->IsRealized() &&
+        !web_state_->IsBeingDestroyed()) {
+      // Resign first responder before lifting suppression so the keyboard stays
+      // hidden until a new user gesture.
+      [web_state_->GetView() endEditing:YES];
+    }
     // Suppress the software keyboard and input accessory views while actuating
-    // to prevent viewport shifts and keyboard occlusion, and restore them when
-    // actuation ends.
+    // to prevent viewport shifts and keyboard occlusion.
     web_state_->GetWebViewProxy().shouldSuppressInputViews = new_active;
   }
 
@@ -110,6 +120,29 @@ actor::ActorControlState ActorTabHelper::GetControlState() const {
 
 bool ActorTabHelper::IsActuating() const {
   return control_state_ == actor::ActorControlState::kActorControlled;
+}
+
+bool ActorTabHelper::MaybeHandleNewTabRequest(const GURL& url) {
+  // `web_state_` is cleared in `WebStateDestroyed()` before user-data teardown.
+  if (!web_state_ ||
+      control_state_ != actor::ActorControlState::kActorControlled) {
+    return false;
+  }
+
+  // Restrict in-place redirects to valid HTTP(S) URLs so empty, `about:`,
+  // `javascript:`, `file:`, and `chrome:` URLs cannot overwrite the opener
+  // document or instantiate WebUI. Leave `referrer` unset (matching
+  // Desktop/Android `CreateCustomWebContents`) so `rel="noreferrer"` is not
+  // leaked; cross-origin gating still runs in `ActorWebStatePolicyDecider`.
+  // Note: `WebStateDelegate::CreateNewWebState` does not expose `WKFrameInfo`
+  // sandbox flags.
+  if (url.is_valid() && url.SchemeIsHTTPOrHTTPS()) {
+    web::NavigationManager::WebLoadParams load_params(url);
+    load_params.transition_type = ui::PAGE_TRANSITION_LINK;
+    load_params.is_renderer_initiated = true;
+    web_state_->GetNavigationManager()->LoadURLWithParams(load_params);
+  }
+  return true;
 }
 
 base::CallbackListSubscription ActorTabHelper::AddControlStateChangedCallback(

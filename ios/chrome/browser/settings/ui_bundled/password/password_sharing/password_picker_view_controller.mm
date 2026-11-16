@@ -29,16 +29,17 @@ typedef NS_ENUM(NSInteger, ItemType) {
   ItemTypeCredential = kItemTypeEnumZero,
 };
 
-// Orders passwords before passkeys. For the same type of credentials defaults
-// to the existing comparator.
+// Orders passwords before passkeys. For the same type of credentials orders by
+// `CreateCredentialSortKey()`.
 bool CompareCredentialsByType(const password_manager::CredentialUIEntry& lhs,
                               const password_manager::CredentialUIEntry& rhs) {
-  bool is_lhs_passkey = !lhs.passkey_credential_id.empty();
-  bool is_rhs_passkey = !rhs.passkey_credential_id.empty();
+  bool is_lhs_passkey = lhs.IsPasskey();
+  bool is_rhs_passkey = rhs.IsPasskey();
   if (is_lhs_passkey != is_rhs_passkey) {
     return is_lhs_passkey < is_rhs_passkey;
   }
-  return lhs < rhs;
+  return password_manager::CreateCredentialSortKey(lhs) <
+         password_manager::CreateCredentialSortKey(rhs);
 }
 
 }  // namespace
@@ -129,7 +130,7 @@ bool CompareCredentialsByType(const password_manager::CredentialUIEntry& lhs,
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  BOOL isPassword = _credentials[indexPath.row].passkey_credential_id.empty();
+  bool isPasskey = _credentials[indexPath.row].IsPasskey();
 
   TableViewItem* item = [self.tableViewModel itemAtIndexPath:indexPath];
   TableViewURLItem* URLItem =
@@ -150,7 +151,7 @@ bool CompareCredentialsByType(const password_manager::CredentialUIEntry& lhs,
                      cellForRowAtIndexPath:indexPath];
 
   cell.selectionStyle = UITableViewCellSelectionStyleNone;
-  cell.userInteractionEnabled = isPassword;
+  cell.userInteractionEnabled = !isPasskey;
   cell.textLabel.numberOfLines = 1;
   cell.detailTextLabel.numberOfLines = 1;
   if (indexPath.row == tableView.indexPathForSelectedRow.row) {
@@ -158,7 +159,7 @@ bool CompareCredentialsByType(const password_manager::CredentialUIEntry& lhs,
   } else {
     cell.accessoryType = UITableViewCellAccessoryNone;
   }
-  if (!isPassword) {
+  if (isPasskey) {
     cell.contentView.alpha = kBackgroundDisabledAlpha;
   }
 
@@ -186,7 +187,7 @@ bool CompareCredentialsByType(const password_manager::CredentialUIEntry& lhs,
       [[TableViewURLItem alloc] initWithType:ItemTypeCredential];
   item.title = base::SysUTF16ToNSString(credential.username);
   item.URL = [[CrURL alloc] initWithGURL:GURL(credential.GetURL())];
-  if (!credential.passkey_credential_id.empty()) {
+  if (credential.IsPasskey()) {
     item.detailText = l10n_util::GetNSString(
         IDS_IOS_PASSWORD_SHARING_PASSWORD_PICKER_PASSKEY_INFO);
   }

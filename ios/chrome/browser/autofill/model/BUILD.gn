@@ -12,6 +12,8 @@ source_set("model") {
     "autofill_ai_prefetch_failure_infobar_delegate_ios.mm",
     "autofill_ai_save_entity_infobar_delegate_ios.h",
     "autofill_ai_save_entity_infobar_delegate_ios.mm",
+    "autofill_ai_save_entity_prompt_model.h",
+    "autofill_ai_save_entity_prompt_model.mm",
     "autofill_ai_util.h",
     "autofill_ai_util.mm",
     "autofill_image_fetcher_factory.h",
@@ -77,7 +79,6 @@ source_set("model") {
     "//components/wallet/core/browser",
     "//ios/chrome/app/strings",
     "//ios/chrome/browser/account_settings/model",
-    "//ios/chrome/browser/autofill/atmemory/public",
     "//ios/chrome/browser/autofill/autofill_ai/public",
     "//ios/chrome/browser/autofill/resources",
     "//ios/chrome/browser/history/model",
@@ -146,7 +147,6 @@ source_set("autofill_agent_delegate") {
   deps = [
     "//base",
     "//components/autofill/ios/browser",
-    "//ios/chrome/browser/autofill/atmemory/public",
     "//ios/chrome/browser/shared/public/commands",
   ]
 }
@@ -235,6 +235,7 @@ source_set("unit_tests") {
 
   sources = [
     "autofill_ai_save_entity_infobar_delegate_ios_unittest.mm",
+    "autofill_ai_save_entity_prompt_model_unittest.mm",
     "autofill_controller_js_unittest.mm",
     "autofill_controller_unittest.mm",
     "autofill_image_fetcher_impl_unittest.mm",
@@ -265,6 +266,7 @@ source_set("unit_tests") {
     "//components/autofill/ios/browser:test_support",
     "//components/autofill/ios/browser:util",
     "//components/autofill/ios/common",
+    "//components/autofill/ios/common:autofill_optimization_features",
     "//components/autofill/ios/form_util",
     "//components/autofill/ios/form_util:autofill_form_features",
     "//components/autofill/ios/form_util:autofill_form_features_ts",

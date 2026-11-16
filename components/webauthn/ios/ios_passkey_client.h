@@ -5,15 +5,20 @@
 #ifndef COMPONENTS_WEBAUTHN_IOS_IOS_PASSKEY_CLIENT_H_
 #define COMPONENTS_WEBAUTHN_IOS_IOS_PASSKEY_CLIENT_H_
 
-#include <cstdint>
+#import <cstdint>
 #import <optional>
-#include <string>
+#import <string>
 
+#import "base/functional/callback_forward.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/webauthn/core/browser/device_authorization/device_authorization_types.h"
 #import "components/webauthn/ios/passkey_types.h"
 
 @protocol IOSPasskeyClientCommands;
+
+namespace sync_pb {
+class WebauthnCredentialSpecifics;
+}  // namespace sync_pb
 
 namespace webauthn {
 
@@ -44,6 +49,9 @@ class IOSPasskeyClient {
   };
 
   using InterstitialCallback = base::OnceCallback<void(bool)>;
+  // Invoked with the ReAuth proof token on success, or an empty string on
+  // failure or cancellation.
+  using EmbeddedReAuthCallback = base::OnceCallback<void(std::string)>;
 
   virtual ~IOSPasskeyClient() = default;
 
@@ -74,10 +82,9 @@ class IOSPasskeyClient {
   // the session. Executes the callback with the user's decision.
   virtual void ShowInterstitial(InterstitialCallback callback) = 0;
 
-  // Sets whether showing the passkey creation infobar is allowed. Should be
-  // enabled before passkey creation happens within the passkey model and
-  // disabled after passkey creation is completed.
-  virtual void AllowPasskeyCreationInfobar(bool allowed) = 0;
+  // Displays a confirmation infobar for the newly created `passkey`.
+  virtual void ShowPasskeyCreationInfobar(
+      const sync_pb::WebauthnCredentialSpecifics& passkey) = 0;
 
   // Cancels the passkey request matching the given `request_info`.
   virtual void CancelPasskeyRequest(RequestInfo request_info) = 0;

@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.tabmodel;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -61,10 +60,7 @@ import java.util.List;
 
 /** Tests for moving tabs between windows. These APIs are only available on desktop android. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.DISABLE_STARTUP_PROMOS
-})
+@CommandLineFlags.Add(ChromeSwitches.DISABLE_STARTUP_PROMOS)
 @DoNotBatch(reason = "Multi-instance tests do not work with batching.")
 @MinAndroidSdkLevel(Build.VERSION_CODES.S)
 @Restriction(DeviceFormFactor.DESKTOP)
@@ -221,12 +217,6 @@ public class TabModelMultiWindowTest {
     private ChromeTabbedActivity createNewWindow(Context context) {
         ChromeTabbedActivity activity =
                 MultiWindowTestHelper.createNewChromeTabbedActivity(context);
-        CriteriaHelper.pollUiThread(
-                () ->
-                        Criteria.checkThat(
-                                "Activity tab should be non-null.",
-                                activity.getActivityTab(),
-                                notNullValue()));
         Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> activity.getActivityTab());
         ChromeTabUtils.loadUrlOnUiThread(tab, UrlConstants.GOOGLE_URL);
         return activity;

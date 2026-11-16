@@ -11,6 +11,14 @@
 
 #import "components/actor/public/mojom/actor_types.mojom.h"
 
+// Serializes a Protobuf message to `NSData`.
+template <typename ProtoMessage>
+NSData* SerializeProtoToNSData(const ProtoMessage& message) {
+  std::string serialized;
+  message.SerializeToString(&serialized);
+  return [NSData dataWithBytes:serialized.data() length:serialized.size()];
+}
+
 // Reasons why Gemini yields control back to the user.
 enum class GeminiYieldReason {
   // Unknown or unrecognized reason.
@@ -62,27 +70,20 @@ enum class GeminiYieldReason {
 // Yield instruction, or nil if this request is for executing actions.
 @property(nonatomic, readonly, strong) GeminiYieldAction* yieldAction;
 
-// Origins pre-approved by the server for main-frame navigation during this
-// turn (`SecurityMetadata.added_writable_mainframe_origins`), or nil if none.
-@property(nonatomic, readonly, copy)
-    NSArray<NSString*>* addedWritableMainframeOrigins;
+// Optional origins pre-approved by the server for main-frame navigation during
+// this turn (`SecurityMetadata.added_writable_mainframe_origins`), or nil if
+// none.
+@property(nonatomic, copy) NSArray<NSString*>* addedWritableMainframeOrigins;
 
-// Initializes an actuation request with action protos, task update, yield
-// action, and optional server-approved writable mainframe origins.
+// Initializes an actuation request with action protos, task update, and yield
+// action.
 // `actionProtos` and `yieldAction` are mutually exclusive; this is
 // enforced in `GeminiActuationHandler
 // dispatchActuationRequest:forTaskID:completionBlock:`.
 - (instancetype)initWithActionProtos:(NSArray<NSData*>*)actionProtos
                           taskUpdate:(NSString*)taskUpdate
                          yieldAction:(GeminiYieldAction*)yieldAction
-       addedWritableMainframeOrigins:
-           (NSArray<NSString*>*)addedWritableMainframeOrigins
     NS_DESIGNATED_INITIALIZER;
-
-// Convenience initializer kept temporarily during cross-repo migration.
-- (instancetype)initWithActionProtos:(NSArray<NSData*>*)actionProtos
-                          taskUpdate:(NSString*)taskUpdate
-                         yieldAction:(GeminiYieldAction*)yieldAction;
 
 - (instancetype)init NS_UNAVAILABLE;
 

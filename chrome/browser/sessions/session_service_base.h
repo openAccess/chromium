@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -62,6 +63,8 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
  public:
   enum class SessionServiceType { kAppRestore, kSessionRestore };
 
+  // Every kWritesPerReset commands triggers recreating the file.
+  static constexpr int kWritesPerReset = 250;
   SessionServiceBase(const SessionServiceBase&) = delete;
   SessionServiceBase& operator=(const SessionServiceBase&) = delete;
 
@@ -289,6 +292,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
 
   virtual void DidScheduleCommand() {}
 
+  // Returns true if a full rewrite now would lose tabs restore still needs.
+  virtual bool HasPendingTabCloses() const;
+
   // Returns true if changes to tabs in the specified window should be tracked.
   bool ShouldTrackChangesToWindow(SessionID window_id) const;
 
@@ -344,6 +350,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   // written.
   IdToRange tab_to_available_range_;
 
+  // Tabs one step past their rebuild-time range bound.
+  base::flat_set<SessionID> tabs_past_rebuild_bound_;
+
   // Force session commands to be rebuild before next save event.
   bool rebuild_on_next_save_ = false;
 
@@ -354,6 +363,9 @@ class SessionServiceBase : public sessions::CommandStorageManagerDelegate,
   // Set of windows we're tracking changes to. This is only browsers that
   // return true from |ShouldRestoreWindowOfType|.
   WindowsTracking windows_tracking_;
+
+  // Closed windows can't fire: TabInserted ignores untracked windows.
+  base::flat_set<SessionID> windows_empty_at_last_rebuild_;
 
   bool is_saving_enabled_ = true;
 

@@ -183,6 +183,8 @@ void ChildProcessLauncher::SetProcessPriority(
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 void ChildProcessLauncher::Notify(ChildProcessLauncherHelper::Process process,
+                                  base::TimeTicks launch_begin_time,
+                                  base::TimeTicks launch_complete_time,
 #if BUILDFLAG(IS_WIN)
                                   DWORD last_error,
 #endif
@@ -197,7 +199,8 @@ void ChildProcessLauncher::Notify(ChildProcessLauncherHelper::Process process,
   process_ = std::move(process);
 
   if (process_.process.IsValid()) {
-    process_start_time_ = base::TimeTicks::Now();
+    launch_begin_time_ = launch_begin_time;
+    launch_complete_time_ = launch_complete_time;
 
 #if BUILDFLAG(IS_MAC)
     // On mac, the task port is required to change the priority of the child
@@ -260,13 +263,17 @@ void ChildProcessLauncher::SetProcessPriorityImpl(
 #endif
 
 bool ChildProcessLauncher::IsStarting() {
-  CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  // TODO(crbug.com/581809102): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_CURRENTLY_ON(BrowserThread::UI);
   return starting_;
 }
 
 const base::Process& ChildProcessLauncher::GetProcess() const {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(!starting_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/582211833): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!starting_);
   return process_.process;
 }
 

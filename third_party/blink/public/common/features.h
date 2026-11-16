@@ -526,6 +526,11 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kFontAccessCheckFrameIsActive);
 // fonts use more of the MemoryCache strong reference budget.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kFontResourceDecodedMemoryAccounting);
 
+// When enabled, `Resource::size()` stops counting encoded data released by
+// `Resource::ClearData()`, so resources use less of the `MemoryCache` strong
+// reference budget.
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kResourceEncodedMemoryAccounting);
+
 // Block partial responses (206, 416) for requests without a Range header.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kBlockPartialResponseWithoutRange);
 
@@ -585,10 +590,6 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t,
 // Allocator::FreeVectorBacking(). When disabled, the backing store is left to
 // be reclaimed by garbage collection.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kHeapVectorPromptlyFree);
-
-// If enabled, a fix for image loading prioritization based on visibility is
-// applied. See https://crbug.com/1369823.
-BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kImageLoadingPrioritizationFix);
 
 // If enabled, allows the browser to render new content in place of an image.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kImageReplacement);
@@ -1356,8 +1357,6 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(int,
 
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kUseAncestorRenderFrameForWorker);
 
-BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kUseSandboxTokenForOriginDerivation);
-
 // Whether first-party to third-party different-bucket same-origin post messages
 // are blocked.
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
@@ -1621,6 +1620,17 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kSetIntervalWithoutClamp);
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
     kSetSelectionForAccessibilityHandlingInputEvent);
 
+// Enables single-allocation SIMD UTF-8 decoding in TextCodecUtf8::Decode via
+// simdutf.
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kSimdutfTextCodecUtf8Decode);
+
+// When enabled, RemoteFrame::DidStopLoading() skips sending a redundant
+// RemoteFrameHost::CheckCompleted() IPC when the parent in the current renderer
+// process is also a RemoteFrame, walking ancestors in-process instead to notify
+// the nearest LocalFrame ancestor if one exists.
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
+    kSkipRedundantRemoteFrameCheckCompleted);
+
 // Parameters for blink::features::kSkipTouchEventFilter.
 // Which event types will be always forwarded is controlled by the "type"
 // FeatureParam, which can be either "discrete" (default) or "all".
@@ -1658,6 +1668,9 @@ BLINK_COMMON_EXPORT extern const base::FeatureParam<bool>
     kSpeculativeServiceWorkerWarmUpOnPointerover;
 BLINK_COMMON_EXPORT extern const base::FeatureParam<bool>
     kSpeculativeServiceWorkerWarmUpOnPointerdown;
+
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
+    kServiceWorkerRaceNetworkRequestAbortedErrorMessage);
 
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(
     kServiceWorkerRaceNetworkRequestFallbackOnDisconnect);
@@ -1700,6 +1713,14 @@ BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kServiceWorkerSyntheticResponseBypassSubresource);
+
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kServiceWorkerSyntheticResponseRefreshHeaderOnMismatch);
+
+BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kServiceWorkerSyntheticResponseCaptureInterceptedHeaders);
 
 BLINK_COMMON_EXPORT BASE_DECLARE_FEATURE(kBoostRenderProcessForLoading);
 

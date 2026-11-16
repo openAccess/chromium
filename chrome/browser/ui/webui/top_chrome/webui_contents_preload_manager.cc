@@ -19,6 +19,8 @@
 #include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/browser_process.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/page_load_metrics/page_load_metrics_initialize.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/task_manager/web_contents_tags.h"
@@ -35,6 +37,7 @@
 #include "chrome/browser/ui/webui/top_chrome/profile_preload_candidate_selector.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_config.h"
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_webui_user_profile.h"
 #include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_state.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -433,6 +436,10 @@ void WebUIContentsPreloadManager::MaybePreloadForBrowserContextLater(
     return;
   }
 
+  if (!ShouldPreloadForBrowserContext(browser_context)) {
+    return;
+  }
+
   pending_preload_ = std::make_unique<PendingPreload>(
       this, Profile::FromBrowserContext(browser_context),
       busy_web_contents_to_watch, preload_reason, deadline);
@@ -459,7 +466,8 @@ void WebUIContentsPreloadManager::SetPreloadedContents(
 
 RequestResult WebUIContentsPreloadManager::Request(
     const GURL& webui_url,
-    content::BrowserContext* browser_context) {
+    content::BrowserContext* browser_context,
+    Profile* user_profile) {
   const base::TimeTicks request_time = base::TimeTicks::Now();
   std::unique_ptr<content::WebContents> web_contents_ret;
   WebUIPreloadResult preload_result = preloaded_web_contents_
@@ -483,7 +491,8 @@ RequestResult WebUIContentsPreloadManager::Request(
     web_contents_ret = std::move(preloaded_web_contents_);
     SetPreloadedContents(nullptr);
   } else {
-    web_contents_ret = CreateNewContents(browser_context, webui_url);
+    web_contents_ret =
+        CreateNewContents(browser_context, webui_url, user_profile);
   }
 
   // Navigate to path if the request URL has a different path.
@@ -566,17 +575,27 @@ void WebUIContentsPreloadManager::ReenableNavigationForTesting() {
 std::unique_ptr<content::WebContents>
 WebUIContentsPreloadManager::CreateNewContents(
     content::BrowserContext* browser_context,
-    GURL url) {
+    GURL url,
+    Profile* user_profile) {
   std::unique_ptr<content::WebContents> web_contents =
       content::WebContents::Create(
           GetWebContentsCreateParams(url, browser_context));
 
+  // In TopChromeWebUIProfile, which is shared by the windows of all profiles,
+  // set the user profile first, since the helpers below and the WebUI
+  // controller created by the navigation use it.
+  if (Profile::FromBrowserContext(browser_context)->IsTopChromeWebUIProfile()) {
+    CHECK(user_profile);
+    webui::SetUserProfile(web_contents.get(), user_profile);
+  }
+
   views::WebContentsSetBackgroundColor::CreateForWebContentsWithColor(
       web_contents.get(), SK_ColorTRANSPARENT);
 
-  // Link to the last active browser to get the theme color provider during
-  // preload.
-  if (views::Widget* widget = GetLastActiveBrowserWidget(browser_context)) {
+  // Link to the last active browser of the user profile to get the theme color
+  // provider during preload.
+  if (views::Widget* widget = GetLastActiveBrowserWidget(
+          webui::GetUserProfile(web_contents.get()))) {
     web_contents->SetColorProviderSource(widget);
   }
 
@@ -615,7 +634,9 @@ bool WebUIContentsPreloadManager::ShouldPreloadForBrowserContext(
     return false;
   }
 
-  if (browser_context->ShutdownStarted()) {
+  if (browser_context->ShutdownStarted() || !g_browser_process ||
+      g_browser_process->IsShuttingDown() ||
+      browser_shutdown::HasShutdownStarted()) {
     return false;
   }
 

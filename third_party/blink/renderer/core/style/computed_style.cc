@@ -41,6 +41,7 @@
 #include "third_party/blink/renderer/core/animation/css/css_transition_data.h"
 #include "third_party/blink/renderer/core/css/css_paint_value.h"
 #include "third_party/blink/renderer/core/css/css_primitive_value.h"
+#include "third_party/blink/renderer/core/css/css_private_bindings.h"
 #include "third_party/blink/renderer/core/css/css_property_equality.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/properties/computed_style_utils.h"
@@ -971,18 +972,10 @@ bool ComputedStyle::DiffNeedsFullLayout(const Document& document,
     return true;
   }
 
-  if (field_diff & kGapDecorations) {
-    bool column_rule_style_changed_from_none =
-        ColumnRuleStyle() ==
-            ComputedStyleInitialValues::InitialColumnRuleStyle() &&
-        other.ColumnRuleStyle() !=
-            ComputedStyleInitialValues::InitialColumnRuleStyle();
-    bool row_rule_style_changed_from_none =
-        RowRuleStyle() == ComputedStyleInitialValues::InitialRowRuleStyle() &&
-        other.RowRuleStyle() !=
-            ComputedStyleInitialValues::InitialRowRuleStyle();
-    if (column_rule_style_changed_from_none ||
-        row_rule_style_changed_from_none) {
+  if ((field_diff & (kGapDecorations | kCurrentcolor)) &&
+      other.MaybeHasGapDecorations()) {
+    if ((!HasColumnRule() && other.HasColumnRule()) ||
+        (!HasRowRule() && other.HasRowRule())) {
       return true;
     }
   }
@@ -2220,7 +2213,7 @@ TextDecorationLine ComputedStyle::TextDecorationsInEffect() const {
 
 AppliedTextDecorationVector* ComputedStyle::EnsureAppliedTextDecorationsCache()
     const {
-  DCHECK(IsDecoratingBox());
+  DCHECK(IsDecoratingBoxIncludingPrecomputedHover());
 
   if (!cached_data_ || !cached_data_->applied_text_decorations_) {
     AppliedTextDecorationVector* decorations =
@@ -2231,6 +2224,9 @@ AppliedTextDecorationVector* ComputedStyle::EnsureAppliedTextDecorationsCache()
       decorations->ReserveInitialCapacity(base_decorations->size() + 1u);
       *decorations = *base_decorations;
     }
+    // TODO(crbug.com/571157138): If only the precomputed :hover style adds the
+    // decoration, give it the lines of that style, transparent until the box
+    // is hovered.
     decorations->emplace_back(
         GetTextDecorationLine(), TextDecorationStyle(),
         VisitedDependentColor(GetCSSPropertyTextDecorationColor()),
@@ -2251,7 +2247,7 @@ const AppliedTextDecorationVector& ComputedStyle::AppliedTextDecorations()
     return *empty;
   }
 
-  if (!IsDecoratingBox()) {
+  if (!IsDecoratingBoxIncludingPrecomputedHover()) {
     const auto* base_decorations = BaseTextDecorationData();
     DCHECK(base_decorations);
     DCHECK_GE(base_decorations->size(), 1u);
@@ -2267,6 +2263,7 @@ static bool HasInitialVariables(const StyleInitialData* initial_data) {
 
 bool ComputedStyle::HasVariables() const {
   return !InheritedVariables().IsEmpty() ||
+         !InheritedPrivateVariables().IsEmpty() ||
          !NonInheritedVariables().IsEmpty() ||
          HasInitialVariables(InitialData());
 }
@@ -2339,6 +2336,10 @@ CSSVariableData* GetVariableDataInternal(const T& style_or_builder,
             style_or_builder.InheritedVariablesInternal().GetData(name)) {
       return *data;
     }
+    if (auto data =
+            style_or_builder.InheritedPrivateVariables().GetData(name)) {
+      return *data;
+    }
   }
   if (!inherited_hint.value_or(false)) {
     if (auto data =
@@ -2359,6 +2360,10 @@ const CSSValue* GetVariableValue(
     std::optional<bool> inherited_hint = std::nullopt) {
   if (inherited_hint.value_or(true)) {
     if (auto data = style_or_builder.InheritedVariables().GetValue(name)) {
+      return *data;
+    }
+    if (auto data =
+            style_or_builder.InheritedPrivateVariables().GetValue(name)) {
       return *data;
     }
   }
@@ -3146,9 +3151,14 @@ void ComputedStyleBuilder::PropagateIndependentInheritedProperties(
     const ComputedStyle& parent_style) {
   ComputedStyleBuilderBase::PropagateIndependentInheritedProperties(
       parent_style);
-  if (!HasVariableReference() && !HasVariableDeclaration() &&
-      InheritedVariablesInternal() != parent_style.InheritedVariables()) {
-    SetInheritedVariablesInternal(parent_style.InheritedVariablesInternal());
+  if (!HasVariableReference() && !HasVariableDeclaration()) {
+    if (InheritedVariablesInternal() != parent_style.InheritedVariables()) {
+      SetInheritedVariablesInternal(parent_style.InheritedVariablesInternal());
+    }
+    if (InheritedPrivateVariables() !=
+        parent_style.InheritedPrivateVariables()) {
+      SetInheritedPrivateVariables(parent_style.InheritedPrivateVariables());
+    }
   }
 }
 
@@ -3309,6 +3319,11 @@ void ComputedStyleBuilder::SetUsedColorScheme(
   bool has_light =
       flags & static_cast<ColorSchemeFlags>(ColorSchemeFlag::kLight);
   bool has_only = flags & static_cast<ColorSchemeFlags>(ColorSchemeFlag::kOnly);
+  // The 'only' keyword forbids the UA from overriding the color scheme chosen
+  // by the element, which includes forced darkening.
+  bool only_opts_out =
+      has_only &&
+      RuntimeEnabledFeatures::ForceDarkRespectsColorSchemeOnlyEnabled();
   bool dark_scheme =
       // Dark scheme because the preferred scheme is dark and color-scheme
       // contains dark.
@@ -3321,7 +3336,7 @@ void ComputedStyleBuilder::SetUsedColorScheme(
       // Typically, forced darkening should be used with a dark preferred
       // color-scheme. This is to support the FORCE_DARK_ONLY behavior from
       // WebView where this combination is passed to the renderer.
-      (force_dark && !prefers_dark);
+      (force_dark && !prefers_dark && !only_opts_out);
 
   SetDarkColorScheme(dark_scheme);
 
@@ -3335,7 +3350,7 @@ void ComputedStyleBuilder::SetUsedColorScheme(
       // preferred color-scheme. This is to support the FORCE_DARK_ONLY
       // behavior from WebView where this combination is passed to the
       // renderer.
-      (force_dark && !prefers_dark);
+      (force_dark && !prefers_dark && !only_opts_out);
 
   SetColorSchemeForced(forced_scheme);
 
@@ -3357,6 +3372,32 @@ CSSVariableData* ComputedStyleBuilder::GetVariableData(
     const AtomicString& name,
     bool is_inherited_property) const {
   return blink::GetVariableDataInternal(*this, name, is_inherited_property);
+}
+
+// TODO(crbug.com/579829752): Add non-inherited private storage and route writes
+// by is_inherited_property when private @property registrations are supported.
+void ComputedStyleBuilder::SetVariableData(const AtomicString& name,
+                                           CSSVariableData* value,
+                                           bool is_inherited_property) {
+  if (CSSPrivateBindings::IsPrivateName(name)) {
+    MutableInheritedPrivateVariablesInternal().SetData(name, value);
+  } else if (is_inherited_property) {
+    MutableInheritedVariables().SetData(name, value);
+  } else {
+    MutableNonInheritedVariables().SetData(name, value);
+  }
+}
+
+void ComputedStyleBuilder::SetVariableValue(const AtomicString& name,
+                                            const CSSValue* value,
+                                            bool is_inherited_property) {
+  if (CSSPrivateBindings::IsPrivateName(name)) {
+    MutableInheritedPrivateVariablesInternal().SetValue(name, value);
+  } else if (is_inherited_property) {
+    MutableInheritedVariables().SetValue(name, value);
+  } else {
+    MutableNonInheritedVariables().SetValue(name, value);
+  }
 }
 
 STATIC_ASSERT_ENUM(cc::OverscrollBehavior::Type::kAuto,

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/fixed_flat_map.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_conversions.h"
 #include "components/contextual_search/contextual_search_types.h"
@@ -18,6 +19,7 @@
 #include "components/lens/lens_overlay_mime_type.h"
 #include "components/omnibox/common/composebox_features.h"
 #include "components/omnibox/common/input_state.h"
+#include "third_party/omnibox_proto/tool_config.pb.h"
 #include "third_party/omnibox_proto/url_param.pb.h"
 
 namespace contextual_search {
@@ -84,27 +86,47 @@ SrpEligibleAttachments EligibleAttachmentsForMode(SrpInputMode mode) {
       return {.single_image = true};
     case SrpInputMode::kMultiImage:
       return {.single_image = true, .multi_image = true};
-    case SrpInputMode::kAnyCombination:
-      return {
-          .single_image = true, .multi_image = true, .any_combination = true};
+    case SrpInputMode::kAnyCombinationImagesFiles:
+      return {.single_image = true, .multi_image = true, .files = true};
+    case SrpInputMode::kAnyCombinationImagesFilesTabs:
+      return {.single_image = true,
+              .multi_image = true,
+              .files = true,
+              .tabs = true};
+    case SrpInputMode::kAnyCombinationImagesFilesDrive:
+      return {.single_image = true,
+              .multi_image = true,
+              .files = true,
+              .drive = true};
+    case SrpInputMode::kAnyCombinationAllTypes:
+      return {.single_image = true,
+              .multi_image = true,
+              .files = true,
+              .tabs = true,
+              .drive = true};
   }
   NOTREACHED();
 }
 
 std::optional<SrpInputMode> ParseSrpInputMode(std::string_view name) {
-  if (name == "none") {
-    return SrpInputMode::kNone;
+  static constexpr auto kModes =
+      base::MakeFixedFlatMap<std::string_view, SrpInputMode>({
+          {"none", SrpInputMode::kNone},
+          {"single_image", SrpInputMode::kSingleImage},
+          {"multi_image", SrpInputMode::kMultiImage},
+          {"any_combination_images_files",
+           SrpInputMode::kAnyCombinationImagesFiles},
+          {"any_combination_images_files_tabs",
+           SrpInputMode::kAnyCombinationImagesFilesTabs},
+          {"any_combination_images_files_drive",
+           SrpInputMode::kAnyCombinationImagesFilesDrive},
+          {"any_combination_all_types", SrpInputMode::kAnyCombinationAllTypes},
+      });
+  auto it = kModes.find(name);
+  if (it == kModes.end()) {
+    return std::nullopt;
   }
-  if (name == "single_image") {
-    return SrpInputMode::kSingleImage;
-  }
-  if (name == "multi_image") {
-    return SrpInputMode::kMultiImage;
-  }
-  if (name == "any_combination") {
-    return SrpInputMode::kAnyCombination;
-  }
-  return std::nullopt;
+  return it->second;
 }
 
 SrpInputMode SrpInputModeFromFeatureParams() {
@@ -119,6 +141,7 @@ AttachmentCounts CountAttachments(const std::vector<FileInfo>& file_infos,
     if (file_info.is_superceded) {
       continue;
     }
+    // LINT.IfChange(CountAttachments)
     if (file_info.tab_url.has_value()) {
       ++counts.tabs;
     } else if (file_info.input_data &&
@@ -127,8 +150,11 @@ AttachmentCounts CountAttachments(const std::vector<FileInfo>& file_infos,
     } else if (file_info.mime_type == lens::MimeType::kImage) {
       ++counts.images;
     } else {
+      // Anything else counts as a file. If a kind needs an exception to SRP,
+      // give it its own count in `AttachmentCounts`.
       ++counts.files;
     }
+    // LINT.ThenChange(//components/contextual_search/input_state_model.cc:GetCurrentInputTypes)
   }
   counts.tabs += base::checked_cast<int>(pending_tab_count);
   return counts;
@@ -136,16 +162,22 @@ AttachmentCounts CountAttachments(const std::vector<FileInfo>& file_infos,
 
 bool AttachmentsCanGoToSrp(const AttachmentCounts& attachments,
                            const SrpEligibleAttachments& eligible) {
-  if (attachments.tabs > 0 || attachments.drive > 0) {
+  // Unpacks every kind, so adding one to `AttachmentCounts` breaks the build
+  // until it's handled here.
+  const auto [images, files, tabs, drive] = attachments;
+  if (tabs > 0 && !eligible.tabs) {
     return false;
   }
-  if (attachments.images == 0 && attachments.files == 0) {
+  if (drive > 0 && !eligible.drive) {
+    return false;
+  }
+  if (images == 0 && files == 0) {
     return true;
   }
-  if (attachments.files > 0) {
-    return eligible.any_combination;
+  if (files > 0) {
+    return eligible.files;
   }
-  if (attachments.images > 1) {
+  if (images > 1) {
     return eligible.multi_image;
   }
   return eligible.single_image;
@@ -191,9 +223,11 @@ FulfillmentDecision ComputeFulfillment(const omnibox::InputState& state,
       std::ranges::contains(state.allowed_models, state.active_model)
           ? state.active_model
           : state.GetDefaultModel();
-  if (const omnibox::ModelConfig* model_config =
-          FindModelConfig(state, decision.model)) {
-    MergeParams(params, model_config->aim_url_params());
+  if (!tool_config || !tool_config->disable_active_model_selection()) {
+    if (const omnibox::ModelConfig* model_config =
+            FindModelConfig(state, decision.model)) {
+      MergeParams(params, model_config->aim_url_params());
+    }
   }
   // AIM needs `udm=50`, or `nem` instead of `udm`.
   if (params.contains(kNemKey)) {

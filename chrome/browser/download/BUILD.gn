@@ -534,7 +534,13 @@ source_set("unit_tests") {
       "android/download_controller_unittest.cc",
       "android/download_manager_service_unittest.cc",
     ]
-    deps += [ "//chrome/browser/download/android:jni_headers" ]
+    deps += [
+      "//chrome/browser/android:profile_key_startup_accessor",
+      "//chrome/browser/download/android:jni_headers",
+      "//chrome/browser/ui/android/tab_model",
+      "//chrome/browser/ui/android/tab_model:test_support",
+      "//ui/android",
+    ]
   } else {
     sources += [
       "download_commands_unittest.cc",
@@ -556,6 +562,7 @@ source_set("unit_tests") {
       "//chrome/browser/apps/app_service",
       "//chrome/browser/apps/app_service:test_support",
       "//chrome/browser/ash/policy/dlp",
+      "//chrome/browser/ash/policy/skyvault",
       "//chrome/browser/chromeos/policy/dlp",
       "//chrome/browser/chromeos/policy/dlp/test:test_support",
       "//chromeos/ash/components/disks:test_support",
@@ -586,8 +593,10 @@ if (!is_android) {
       "//chrome/browser/ui:browser_tabstrip",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui:chrome_pages",
+      "//chrome/browser/ui/web_applications/test:test_support_ui",
       "//chrome/browser/web_applications:web_applications_test_support",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_path_utils",
       "//components/enterprise/isolated_mode:test_support",
       "//components/history/content/browser",
       "//components/infobars/content",

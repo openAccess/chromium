@@ -11,7 +11,8 @@
 namespace wm {
 
 // Indicates an elevation should be chosen based on the window. This is used
-// by wm::ShadowController, but is not a valid elevation to pass to wm::Shadow.
+// by wm::DecorationController, but is not a valid elevation to pass to
+// wm::Shadow.
 constexpr int kShadowElevationDefault = -1;
 
 // Different types of drop shadows that can be drawn under a window by the
@@ -49,6 +50,11 @@ int GetShadowElevationConvertDefault(const aura::Window* window);
 // window. A null value is interpreted as using the default.
 COMPONENT_EXPORT(UI_WM)
 extern const aura::WindowProperty<int>* const kShadowElevationKey;
+
+// A property key indicating whether a highlight border should be displayed
+// around the window.
+COMPONENT_EXPORT(UI_WM)
+extern const aura::WindowProperty<bool>* const kWindowHasHighlightBorderKey;
 
 }  // namespace wm
 

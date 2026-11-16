@@ -198,7 +198,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="CustomTabs.CloseCause" enum="CustomTabsCloseCause"
-    expires_after="2026-11-29">
+    expires_after="2027-11-29">
   <owner>jinsukkim@chromium.org</owner>
   <owner>twellington@chromium.org</owner>
   <owner>cct-team@google.com</owner>
@@ -405,17 +405,6 @@ chromium-metrics-reviews@google.com.
     Emitted when the the user clicks the minimize button and we request to be
     put in picture-in-picture from the framework. Records true if it was
     successful; false if there was an exception thrown. Android only.
-  </summary>
-</histogram>
-
-<histogram name="CustomTabs.MinimizedFeatureAvailability"
-    enum="CustomTabsMinimizedFeatureAvailability" expires_after="2025-08-24">
-  <owner>sinansahin@google.com</owner>
-  <owner>chrome-connective-tissue@google.com</owner>
-  <summary>
-    Minimized Custom Tab feature availability. Recorded during startup in
-    #onFinishNativeInitialization() when the availability is first checked to
-    initialize the feature. Android only.
   </summary>
 </histogram>
 
@@ -718,7 +707,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="CustomTabs.Startup.TimeToFirstContentfulPaint.{suffix}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>mthiesse@chromium.org</owner>
   <owner>chrome-connective-tissue@google.com</owner>
   <summary>

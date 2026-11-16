@@ -541,6 +541,8 @@ if (_is_default_toolchain) {
       "//chrome/browser/ui/android/bars_common:java",
       "//chrome/browser/ui/android/bottombar:java",
       "//chrome/browser/ui/android/bricks:bricks_page_java",
+      "//chrome/browser/ui/android/browser_instant_controller:factory_java",
+      "//chrome/browser/ui/android/browser_instant_controller:java",
       "//chrome/browser/ui/android/cars:java",
       "//chrome/browser/ui/android/default_browser_promo:java",
       "//chrome/browser/ui/android/desktop_site:java",
@@ -628,6 +630,7 @@ if (_is_default_toolchain) {
       "//components/bookmarks/common/android:bookmarks_java",
       "//components/browser_ui/accessibility/android:lib_java",
       "//components/browser_ui/accessibility/android:page_zoom_utils_java",
+      "//components/browser_ui/adaptive_ui/android:java",
       "//components/browser_ui/banners/android:java",
       "//components/browser_ui/bottomsheet/android:factory_java",
       "//components/browser_ui/bottomsheet/android:java",
@@ -657,20 +660,17 @@ if (_is_default_toolchain) {
       "//components/collaboration/public:java",
       "//components/commerce/core:proto_java",
       "//components/commerce/core/android:core_java",
-      "//components/component_updater/android:background_task_update_scheduler_java",
       "//components/content_capture/android:java",
       "//components/content_relationship_verification/android:java",
       "//components/content_settings/android:content_settings_enums_java",
       "//components/content_settings/android:java",
       "//components/contextual_search:components_contextual_search_java",
       "//components/crash/android:java",
+      "//components/critical_actions/core/browser:critical_actions_enums_java",
       "//components/data_sharing/public:public_java",
       "//components/device_reauth:device_reauth_java_enums",
       "//components/device_signals/core/browser/android:java",
       "//components/digital_goods/mojom:mojom_java",
-      "//components/dom_distiller/content/browser/android:dom_distiller_content_java",
-      "//components/dom_distiller/core/android:dom_distiller_core_java",
-      "//components/dom_distiller/core/mojom:mojom_java",
       "//components/download/internal/background_service:internal_java",
       "//components/download/internal/common:internal_java",
       "//components/download/network:network_java",
@@ -775,6 +775,9 @@ if (_is_default_toolchain) {
       "//components/variations:variations_java",
       "//components/variations/android:variations_java",
       "//components/viz/service:service_java",
+      "//components/web_distiller/content/browser/android:web_distiller_content_java",
+      "//components/web_distiller/core/android:web_distiller_core_java",
+      "//components/web_distiller/core/mojom:mojom_java",
       "//components/webapk/android/libs/client:java",
       "//components/webapk/android/libs/common:java",
       "//components/webapps/browser/android:java",
@@ -872,13 +875,14 @@ if (_is_default_toolchain) {
       "//chrome/browser/enterprise/platform_auth:entra_auth_enum_javagen",
       "//chrome/browser/media/webrtc:java_enums",
       "//chrome/browser/notifications/scheduler/public:jni_enums",
-      "//components/dom_distiller/core:distiller_type_java",
+      "//components/history/core/browser:time_period_option_id_java",
       "//components/ntp_tiles:ntp_tiles_enums_java",
       "//components/offline_pages/core:offline_page_model_enums_java",
       "//components/sharing_message:sharing_dialog_type_generated_enum",
       "//components/sharing_message:sharing_send_message_result_generated_enum",
       "//components/supervised_user/core/browser:supervised_user_utils_enum_javagen",
       "//components/touch_to_search/core/browser:quick_action_category_enum_javagen",
+      "//components/web_distiller/core:distiller_type_java",
     ]
 
     # From java_sources.gni.
@@ -1050,6 +1054,15 @@ if (_is_default_toolchain) {
         "//chrome/browser/ui/android/extensions/windowing/stub:java",
       ]
     }
+
+    if (enable_webui_ntp) {
+      deps += [
+        "//chrome/browser/ui/android/browser_instant_controller/internal:java",
+      ]
+    } else {
+      deps +=
+          [ "//chrome/browser/ui/android/browser_instant_controller/stub:java" ]
+    }
   }
 
   action_with_pydeps("chrome_android_java_google_api_keys_srcjar") {
@@ -1068,6 +1081,7 @@ if (_is_default_toolchain) {
       "//chrome/browser/android/policy/policy_auditor.cc",
       "//chrome/browser/android/tab_storage_packager_android.h",
       "//chrome/browser/android/webapk/webapk_installer.h",
+      "//chrome/browser/first_run/android/first_run_prefs.h",
       "//chrome/browser/long_screenshots/long_screenshots_tab_service.h",
       "//chrome/browser/metrics/metrics_reporting_state.h",
       "//chrome/browser/notifications/notification_handler.h",
@@ -1417,6 +1431,8 @@ if (_is_default_toolchain) {
       ":chrome_app_java_resources",
       "//base:base_java",
       "//base:base_java_test_support",
+      "//base:tristate_java",
+      "//base/test:public_transit_java",
       "//build/android:build_java",
       "//cc:cc_java",
       "//chrome/android:chrome_java",
@@ -1457,7 +1473,6 @@ if (_is_default_toolchain) {
     testonly = true
 
     deps = [
-      "javatests:chrome_unit_test_java_org.chromium.chrome.browser.actor",
       "javatests:chrome_unit_test_java_org.chromium.chrome.browser.compositor",
       "javatests:chrome_unit_test_java_org.chromium.chrome.browser.contextmenu",
       "javatests:chrome_unit_test_java_org.chromium.chrome.browser.customtabs",
@@ -1537,7 +1552,6 @@ if (_is_default_toolchain) {
       "//chrome/browser/actor/android:javatests",
       "//chrome/browser/android/browserservices/verification:javatests",
       "//chrome/browser/android/httpclient:javatests",
-      "//chrome/browser/android/metrics:ukm_javatests",
       "//chrome/browser/android/screenshot_protection:javatests",
       "//chrome/browser/auxiliary_search:javatests",
       "//chrome/browser/bookmarks/android:javatests",
@@ -1829,7 +1843,6 @@ if (_is_default_toolchain) {
   java_group("chrome_public_non_pak_assets") {
     deps = [
       "//chrome/android/webapk/libs/runtime_library:runtime_library_assets",
-      "//components/privacy_sandbox/privacy_sandbox_attestations/preload:privacy_sandbox_attestations_assets",
     ]
   }
 
@@ -1856,6 +1869,61 @@ if (_is_default_toolchain) {
     # chrome_public_apk_template_resources.
     deps = [ ":chrome_public_apk_template_resources" ]
     variables = [ "manifest_package=$chrome_public_test_manifest_package" ]
+  }
+
+  # Packages Chrome's locale .pak files as assets. Each .pak is stored in a
+  # directory that bundletool recognizes as being language-targeted, so that
+  # bundles put them into language splits without needing to rewrite paths.
+  # The same paths are used for APKs so that they can be found in the same way.
+  #
+  # Variables:
+  #   locales: List of Chromium locales to package.
+  #   paks_dir: Directory containing locales/${locale}.pak files.
+  template("chrome_locale_pak_assets") {
+    android_assets(target_name) {
+      forward_variables_from(invoker,
+                             [
+                               "deps",
+                               "testonly",
+                             ])
+      disable_compression = true
+      treat_as_locale_paks = true
+      renaming_sources = []
+      renaming_destinations = []
+
+      foreach(_locale, invoker.locales) {
+        _locale_parts = []
+        _locale_parts = string_split(_locale, "-")
+        _lang = _locale_parts[0]
+
+        # LINT.IfChange(SplitLanguageForAndroid)
+        if (_lang == "he") {
+          _lang = "iw"
+        } else if (_lang == "yi") {
+          _lang = "ji"
+        } else if (_lang == "id") {
+          _lang = "in"
+        } else if (_lang == "fil") {
+          _lang = "tl"
+        }
+
+        # LINT.ThenChange(//ui/android/java/src/org/chromium/ui/base/LocalizationUtils.java:SplitLanguageForAndroid)
+        foreach(_gender_suffix, gender_suffixes) {
+          _pak_name = "${_locale}${_gender_suffix}.pak"
+          if (_pak_name == "en-US.pak") {
+            # Not language-targeted so that it is always stored in the base
+            # split. This ensures there is a .pak file to use when installed on
+            # a device with an unsupported system locale. Gendered variants
+            # remain in the "en" split to keep the base split small.
+            _dest_dir = "fallback-locales"
+          } else {
+            _dest_dir = "locales#lang_${_lang}"
+          }
+          renaming_sources += [ "${invoker.paks_dir}/locales/${_pak_name}" ]
+          renaming_destinations += [ "${_dest_dir}/${_pak_name}" ]
+        }
+      }
+    }
   }
 
   # This template instantiates targets responsible for generating pak
@@ -1907,19 +1975,9 @@ if (_is_default_toolchain) {
       }
     }
 
-    android_assets("${_variant}_locale_pak_assets") {
-      disable_compression = true
-      renaming_sources = []
-      renaming_destinations = []
-
-      foreach(_locale, platform_pak_locales) {
-        foreach(_gender_suffix, gender_suffixes) {
-          renaming_sources += [ "$target_gen_dir/${_variant}_paks/locales/${_locale}${_gender_suffix}.pak" ]
-          renaming_destinations += [ "locales/${_locale}${_gender_suffix}.pak" ]
-        }
-      }
-      treat_as_locale_paks = true
-
+    chrome_locale_pak_assets("${_variant}_locale_pak_assets") {
+      locales = platform_pak_locales
+      paks_dir = "$target_gen_dir/${_variant}_paks"
       deps = [ ":${_variant}_paks" ]
     }
 
@@ -1955,20 +2013,10 @@ if (_is_default_toolchain) {
   # Trimmed locale .pak set for test APKs (e.g. chrome_public_test_apk and
   # android_browsertests). Reuses outputs from :chrome_apk_paks rather than
   # packaging all shipping Chrome locale .pak files (~53 MB uncompressed).
-  android_assets("chrome_test_apk_locale_pak_assets") {
+  chrome_locale_pak_assets("chrome_test_apk_locale_pak_assets") {
     testonly = true
-    disable_compression = true
-    renaming_sources = []
-    renaming_destinations = []
-
-    foreach(_locale, chrome_test_apk_locales) {
-      foreach(_gender_suffix, gender_suffixes) {
-        renaming_sources += [ "$target_gen_dir/chrome_apk_paks/locales/${_locale}${_gender_suffix}.pak" ]
-        renaming_destinations += [ "locales/${_locale}${_gender_suffix}.pak" ]
-      }
-    }
-    treat_as_locale_paks = true
-
+    locales = chrome_test_apk_locales
+    paks_dir = "$target_gen_dir/chrome_apk_paks"
     deps = [ ":chrome_apk_paks" ]
   }
 
@@ -1998,7 +2046,6 @@ if (_is_default_toolchain) {
     deps = [
       ":browser_java_test_support",
       ":chrome_test_util_java",
-      "//chrome/browser/android/metrics:ukm_java_test_support",
       "//chrome/browser/password_manager/android:test_support_java",
       "//chrome/browser/subresource_filter:subresource_filter_java_test_support",
       "//chrome/browser/supervised_user:test_support_java",
@@ -2235,6 +2282,7 @@ if (_is_default_toolchain) {
       "//chrome/browser/language/android:base_module_java",
       "//chrome/browser/policy/android:util_java",
       "//chrome/browser/preferences:java",
+      "//chrome/browser/prefs/android:java",
       "//chrome/browser/ui/android/pdf:pdf_provider_java",
       "//chrome/browser/util:java",
       "//chrome/browser/version:java",
@@ -2244,6 +2292,7 @@ if (_is_default_toolchain) {
       "//components/minidump_uploader:minidump_uploader_java",
       "//components/module_installer/android:module_installer_java",
       "//components/policy/android:policy_java",
+      "//components/variations:variations_java",
       "//components/variations/android:variations_java",
       "//third_party/android_deps:material_design_java",
       "//third_party/android_deps:playcore_java",
@@ -2537,14 +2586,16 @@ if (_is_default_toolchain) {
     # test intentionally does not set <instrumentation android:targetPackage> to
     # the bundle under test.)
     "--enable-breakpad-dump",
-
-    # FRE is too flakey on some old devices https://crbug.com/40817673
-    "--disable-fre",
   ]
 
   instrumentation_test_runner("chrome_public_smoke_test") {
     apk_under_test = ":chrome_public_apk"
     android_test_apk = ":chrome_smoke_test_apk"
+    extra_args =
+        _common_smoke_test_args + [
+          # FRE is too flakey on some old devices https://crbug.com/40817673
+          "--disable-fre",
+        ]
     additional_apks = [ "//net/android:net_test_support_apk" ]
     if (!is_java_debug) {
       proguard_mapping_path = "$root_build_dir/apks/ChromePublic.apk.mapping"
@@ -2555,7 +2606,12 @@ if (_is_default_toolchain) {
     apk_under_test = "//chrome/android:chrome_public_bundle_apks"
 
     android_test_apk = ":chrome_smoke_test_apk"
-    extra_args = _common_smoke_test_args
+
+    # Omitting --disable-fre and passing --variations-server-url (pointing at an
+    # unreachable localhost port so it fails fast) exercises FRE +
+    # VariationsSeedFetcher + early-LocalState-only startup.
+    extra_args = _common_smoke_test_args +
+                 [ "--variations-server-url=http://127.0.0.1:4/seed" ]
     additional_apks = [ "//net/android:net_test_support_apk" ]
     if (!is_java_debug) {
       proguard_mapping_path = "$root_build_dir/apks/ChromePublic.aab.mapping"
@@ -2832,6 +2888,7 @@ if (_is_default_toolchain) {
       "java/src/org/chromium/chrome/browser/device_dialog/SerialChooserDialog.java",
       "java/src/org/chromium/chrome/browser/device_dialog/UsbChooserDialog.java",
       "java/src/org/chromium/chrome/browser/devtools/DevToolsActivity.java",
+      "java/src/org/chromium/chrome/browser/devtools/DevToolsBrowserContextTabModel.java",
       "java/src/org/chromium/chrome/browser/download/DownloadController.java",
       "java/src/org/chromium/chrome/browser/download/DownloadItem.java",
       "java/src/org/chromium/chrome/browser/download/DownloadManagerService.java",
@@ -2845,7 +2902,6 @@ if (_is_default_toolchain) {
       "java/src/org/chromium/chrome/browser/enterprise/PlatformAuthEntraTokensReader.java",
       "java/src/org/chromium/chrome/browser/feedback/ConnectivityChecker.java",
       "java/src/org/chromium/chrome/browser/feedback/ScreenshotTask.java",
-      "java/src/org/chromium/chrome/browser/firstrun/FirstRunUtils.java",
       "java/src/org/chromium/chrome/browser/flags/BadFlagsSnackbarManager.java",
       "java/src/org/chromium/chrome/browser/gesturenav/OverscrollSceneLayer.java",
       "java/src/org/chromium/chrome/browser/history/BrowsingHistoryBridge.java",
@@ -3086,7 +3142,6 @@ if (_is_default_toolchain) {
       ":browser_test_support",
       ":chrome_test_util",
       "//base/test:test_support",
-      "//chrome/browser/android/metrics:ukm_utils_for_test",
       "//chrome/browser/glic/test_support",
       "//chrome/browser/password_manager/android:test_support",
       "//chrome/browser/subresource_filter:android_test_support",

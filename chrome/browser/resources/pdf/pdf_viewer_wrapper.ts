@@ -27,8 +27,9 @@ export {PluginController} from './controller.js';
 export type {SaveMessage} from './controller.js';
 // <if expr="enable_pdf_ink2">
 export {PluginControllerEventType} from './controller.js';
-export type {AnnotationBrushMessage} from './controller.js';
+export type {AnnotationBrushMessage, ContinueSignatureStrokeMessage, FinishSignatureStrokeMessage, StartSignatureStrokeMessage} from './controller.js';
 export {HIGHLIGHTER_COLORS, InkAnnotationBrushMixin, PEN_COLORS} from './elements/ink_annotation_brush_mixin.js';
+export {SIGNATURE_COLORS} from './elements/ink_annotation_signature_mixin.js';
 export {InkAnnotationTextMixin, TEXT_COLORS, TEXT_SIZES} from './elements/ink_annotation_text_mixin.js';
 export {InkBrushSelectorElement} from './elements/ink_brush_selector.js';
 export {InkColorSelectorElement} from './elements/ink_color_selector.js';
@@ -36,6 +37,7 @@ export {InkSizeSelectorElement, HIGHLIGHTER_SIZES, PEN_SIZES} from './elements/i
 export {InkTextAnnotationsElement} from './elements/ink_text_annotations.js';
 export {InkTextBoxElement, TextBoxState} from './elements/ink_text_box.js';
 export {SelectableIconButtonElement} from './elements/selectable_icon_button.js';
+export {SignatureSelectorElement} from './elements/signature_selector.js';
 export {TextAlignmentSelectorElement} from './elements/text_alignment_selector.js';
 export {TextStylesSelectorElement} from './elements/text_styles_selector.js';
 // </if>

@@ -21,6 +21,7 @@
 #include "chrome/browser/ash/app_list/search/app_search_data_source.h"
 #include "chrome/browser/ash/app_list/search/app_search_provider.h"
 #include "chrome/browser/ash/app_list/search/app_zero_state_provider.h"
+#include "chrome/browser/ash/app_list/search/chrome_search_result.h"
 #include "chrome/browser/ash/app_list/search/search_provider.h"
 #include "chrome/browser/ash/app_list/search/test/test_search_controller.h"
 #include "chrome/browser/ash/app_list/test/test_app_list_controller_delegate.h"
@@ -86,6 +87,7 @@ std::string AppSearchProviderTestBase::RunZeroStateSearch() {
 
 void AppSearchProviderTestBase::ClearSearch() {
   search_controller_->ClearSearch();
+  data_source_->SweepIconCache();
 }
 
 std::string AppSearchProviderTestBase::GetSortedResultsString() {
@@ -106,13 +108,6 @@ std::string AppSearchProviderTestBase::GetSortedResultsString() {
     result_str += base::UTF16ToUTF8(result->title());
   }
   return result_str;
-}
-
-std::vector<ChromeSearchResult*> AppSearchProviderTestBase::GetLastResults() {
-  std::vector<ChromeSearchResult*> sorted_results;
-  for (const auto& result : search_controller_->last_results())
-    sorted_results.emplace_back(result.get());
-  return sorted_results;
 }
 
 std::string AppSearchProviderTestBase::AddArcApp(const std::string& name,
@@ -163,6 +158,7 @@ void AppSearchProviderTestBase::AddExtension(const std::string& id,
 
 void AppSearchProviderTestBase::CallViewClosing() {
   app_search_->StopZeroState();
+  data_source_->SweepIconCache();
 }
 
 void AppSearchProviderTestBase::WaitTimeUpdated() {

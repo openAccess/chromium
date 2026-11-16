@@ -180,6 +180,10 @@ class ContextualTasksExtensionHandler
   void OpenPopupSelection(
       uint32_t result_sequence_id,
       searchbox::mojom::OmniboxPopupSelectionPtr selection,
+      searchbox::mojom::ActionModifiersPtr modifiers) override;
+  void OpenPopupSelectionWithDisposition(
+      uint32_t result_sequence_id,
+      searchbox::mojom::OmniboxPopupSelectionPtr selection,
       ui::mojom::WindowOpenDisposition disposition) override;
   void OnNavigationLikely(
       uint8_t line,
@@ -238,6 +242,7 @@ class ContextualTasksExtensionHandler
   void CaptureRegionScreenshot(
       CaptureRegionScreenshotCallback callback) override;
   void DismissFre(searchbox::mojom::FreStage stage) override {}
+  void RecordFreImpression(searchbox::mojom::FreStage stage) override {}
   void ShowHotkeyDropdown(const gfx::Rect& anchor_bounds,
                           ShowHotkeyDropdownCallback callback) override;
   void OpenHotkeySettings() override {}

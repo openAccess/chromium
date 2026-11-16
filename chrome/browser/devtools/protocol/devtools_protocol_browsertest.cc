@@ -11,8 +11,8 @@
 #include "base/check_deref.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
-#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/scoped_memory_pressure_level_override.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
 #include "base/strings/string_split.h"
@@ -36,10 +36,10 @@
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/protocol/devtools_protocol_test_support.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
-#include "chrome/browser/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations_mixin.h"
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service.h"
 #include "chrome/browser/private_verification_tokens/private_verification_tokens_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/common/chrome_paths.h"
@@ -47,6 +47,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/chrome_test_utils.h"
+#include "chrome/test/base/search_test_utils.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/custom_handlers/protocol_handler_registry.h"
@@ -54,8 +55,10 @@
 #include "components/infobars/core/infobar.h"
 #include "components/infobars/core/infobar_delegate.h"
 #include "components/optimization_guide/proto/features/common_quality_data.pb.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_token.h"
+#include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
+#include "components/search_engines/template_url_service.h"
 #include "components/services/app_service/public/cpp/app_launch_params.h"
 #include "content/public/browser/btm_redirect.h"
 #include "content/public/browser/btm_service.h"
@@ -598,8 +601,8 @@ IN_PROC_BROWSER_TEST_F(DevToolsProtocolTest, MAYBE_AutoAttachToUnloadedTab) {
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           tab_waiter.Wait());
 
-  base::MemoryPressureListenerRegistry::SimulatePressureNotification(
-      base::MEMORY_PRESSURE_LEVEL_CRITICAL);
+  base::ScopedMemoryPressureLevelOverride memory_pressure_level_override;
+  memory_pressure_level_override.SetLevel(base::MEMORY_PRESSURE_LEVEL_CRITICAL);
 
   keep_alive.reset();
   profile_keep_alive.reset();
@@ -931,8 +934,16 @@ IN_PROC_BROWSER_TEST_F(
   TabModel* context_model = TabModelList::GetTabModelForTabAndroid(context_tab);
   ASSERT_TRUE(context_model);
   ASSERT_EQ(1, context_model->GetTabCount());
-  ASSERT_EQ(context_model, TabModelList::models().back());
-  const size_t model_count = TabModelList::models().size();
+  ASSERT_TRUE(TabModelList::Contains(context_model));
+  auto count_models = [] {
+    size_t count = 0;
+    TabModelList::ForEachAll([&count](TabModel* /*model*/) {
+      ++count;
+      return true;
+    });
+    return count;
+  };
+  const size_t model_count = count_models();
 
   OwningTestTabModel later_model_a(context_profile);
   OwningTestTabModel later_model_b(context_profile);
@@ -957,6 +968,7 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_EQ(2, later_model_a.GetTabCount());
   ASSERT_EQ(2, later_model_b.GetTabCount());
 
+  context_model = nullptr;
   params = base::DictValue();
   params.Set("browserContextId", context_id);
   ASSERT_TRUE(
@@ -965,7 +977,9 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(0, later_model_a.GetTabCount());
   EXPECT_EQ(0, later_model_b.GetTabCount());
   EXPECT_FALSE(agent_host->GetWebContents());
-  EXPECT_EQ(model_count + 1, TabModelList::models().size());
+  EXPECT_TRUE(TabModelList::Contains(&later_model_a));
+  EXPECT_TRUE(TabModelList::Contains(&later_model_b));
+  EXPECT_EQ(model_count + 1, count_models());
 
   result = SendCommandSync("Target.getBrowserContexts");
   ASSERT_TRUE(result);
@@ -2405,49 +2419,6 @@ IN_PROC_BROWSER_TEST_F(PrerenderDataSaverProtocolTest,
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-class PrivacySandboxAttestationsOverrideTest
-    : public InProcessBrowserTestMixinHostSupport<DevToolsProtocolTest> {
- public:
-  PrivacySandboxAttestationsOverrideTest() = default;
-
- private:
-  privacy_sandbox::PrivacySandboxAttestationsMixin
-      privacy_sandbox_attestations_mixin_{&mixin_host_};
-};
-
-IN_PROC_BROWSER_TEST_F(PrivacySandboxAttestationsOverrideTest,
-                       PrivacySandboxEnrollmentOverride) {
-  Attach();
-
-  base::DictValue btm_params;
-  const std::string attestation_url = "https://google.com";
-  btm_params.Set("url", attestation_url);
-
-  SendCommand("Browser.addPrivacySandboxEnrollmentOverride",
-              std::move(btm_params));
-
-  EXPECT_TRUE(
-      privacy_sandbox::PrivacySandboxAttestations::GetInstance()->IsOverridden(
-          net::SchemefulSite(GURL(attestation_url))));
-}
-
-IN_PROC_BROWSER_TEST_F(PrivacySandboxAttestationsOverrideTest,
-                       PrivacySandboxEnrollmentOverrideInvalidUrl) {
-  Attach();
-
-  base::DictValue btm_params;
-  const std::string attestation_url = "this is a bad url";
-  btm_params.Set("url", attestation_url);
-
-  SendCommand("Browser.addPrivacySandboxEnrollmentOverride",
-              std::move(btm_params));
-
-  EXPECT_TRUE(error());
-  EXPECT_FALSE(
-      privacy_sandbox::PrivacySandboxAttestations::GetInstance()->IsOverridden(
-          net::SchemefulSite(GURL(attestation_url))));
-}
-
 class DevToolsProtocolTest_PrivateVerificationTokens
     : public DevToolsProtocolTest {
  public:
@@ -2461,6 +2432,20 @@ class DevToolsProtocolTest_PrivateVerificationTokens
     pvt_service_ = PrivateVerificationTokensServiceFactory::GetForProfile(
         browser()->GetProfile());
     ASSERT_NE(pvt_service_, nullptr);
+
+    TemplateURLService* template_url_service =
+        TemplateURLServiceFactory::GetForProfile(browser()->GetProfile());
+    search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service);
+
+    TemplateURLData data;
+    data.SetShortName(u"Test DSE");
+    data.SetKeyword(u"testdse");
+    data.SetURL("https://issuer.example.com/search?q={searchTerms}");
+    TemplateURL* template_url =
+        template_url_service->Add(std::make_unique<TemplateURL>(data));
+    ASSERT_TRUE(template_url);
+    template_url_service->SetUserSelectedDefaultSearchProvider(template_url);
+
     if (!pvt_service_->is_initialized()) {
       base::test::TestFuture<void> init_future;
       class Waiter : public PrivateVerificationTokensService::Observer {

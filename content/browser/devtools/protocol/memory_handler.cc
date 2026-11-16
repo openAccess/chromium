@@ -7,7 +7,6 @@
 #include <cinttypes>
 
 #include "base/functional/bind.h"
-#include "base/memory/memory_pressure_listener.h"
 #include "base/profiler/module_cache.h"
 #include "base/sampling_heap_profiler/sampling_heap_profiler.h"
 #include "base/strings/stringprintf.h"
@@ -103,7 +102,7 @@ Response MemoryHandler::SimulatePressureNotification(
   }
 
   // Simulate memory pressure notification in the browser process.
-  base::MemoryPressureListener::SimulatePressureNotification(parsed_level);
+  base::MemoryPressureSource::SimulatePressureNotification(parsed_level);
   return Response::Success();
 }
 
@@ -198,6 +197,7 @@ MemoryHandler::GetDOMCounters(const blink::mojom::LeakDetectionResult& result) {
   auto counters =
       std::make_unique<protocol::Array<protocol::Memory::DOMCounter>>();
 
+// LINT.IfChange(GetDOMCounters)
 #define ADD_COUNTER(name)                                       \
   counters->emplace_back(protocol::Memory::DOMCounter::Create() \
                              .SetName(#name)                    \
@@ -210,12 +210,14 @@ MemoryHandler::GetDOMCounters(const blink::mojom::LeakDetectionResult& result) {
   ADD_COUNTER(live_resources)
   ADD_COUNTER(live_context_lifecycle_state_observers)
   ADD_COUNTER(live_frames)
+  ADD_COUNTER(live_web_frames)
   ADD_COUNTER(live_v8_per_context_data)
   ADD_COUNTER(worker_global_scopes)
   ADD_COUNTER(live_ua_css_resources)
   ADD_COUNTER(live_resource_fetchers)
 
 #undef ADD_COUNTER
+  // LINT.ThenChange(//third_party/blink/public/mojom/leak_detector/leak_detector.mojom:LeakDetectionResult)
 
   return counters;
 }

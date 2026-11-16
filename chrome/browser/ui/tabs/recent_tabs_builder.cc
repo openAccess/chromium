@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/notreached.h"
@@ -60,6 +61,11 @@ namespace {
 
 constexpr int kMaxLocalEntries = 8;
 constexpr size_t kMaxSessionsToShow = 8;
+// Tab caps per device in the "Other device tabs" menu depending on the number
+// of remote devices.
+constexpr size_t kMaxInlineTabsSingleDevice = 10;
+constexpr size_t kMaxInlineTabsFewDevices = 5;
+constexpr size_t kMaxInlineTabsManyDevices = 3;
 
 using TabIterator =
     std::vector<std::unique_ptr<sessions::tab_restore::Tab>>::const_iterator;
@@ -104,8 +110,7 @@ RecentTabItem BuildTabItem(const sessions::tab_restore::Tab& tab,
   item.set_icon(favicon::GetDefaultFaviconModel());
   item.set_is_local(true);
 
-  if (show_group_minor_icon && tab.group_visual_data.has_value() &&
-      !tab.is_group_ephemeral) {
+  if (show_group_minor_icon && tab.group_visual_data.has_value()) {
     const ui::ColorId color_id =
         GetTabGroupContextMenuColorId(tab.group_visual_data.value().color());
     constexpr int kIconSize = 12;
@@ -503,14 +508,16 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
 
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  if (!open_tabs || !open_tabs->GetAllForeignSessions(&sessions)) {
+  if (!open_tabs || !open_tabs->GetAllForeignSessions(
+                        &sessions, sync_sessions::OpenTabsUIDelegate::
+                                       ForeignSessionFilter::kPresentable)) {
     if (open_tabs) {
       RecentTabItem no_tabs(
           RecentTabItem::Type::kCommand,
           l10n_util::GetStringUTF16(IDS_RECENT_TABS_NO_DEVICE_TABS));
       no_tabs.set_enabled(false);
       items.push_back(std::move(no_tabs));
-    } else if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
+    } else {
       RecentTabItem see_tabs(
           RecentTabItem::Type::kCommand,
           l10n_util::GetStringUTF16(IDS_RECENT_TABS_SEE_DEVICE_TABS));
@@ -520,16 +527,6 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
                                             : kSyncRefreshOldIcon,
           ui::kColorMenuIcon, gfx::kFaviconSize));
       items.push_back(std::move(see_tabs));
-    } else {
-      RecentTabItem login_tabs(
-          RecentTabItem::Type::kCommand,
-          l10n_util::GetStringUTF16(IDS_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
-      login_tabs.set_action_id(kActionRecentTabsLoginForDeviceTabs);
-      login_tabs.set_icon(ui::ImageModel::FromVectorIcon(
-          features::IsRoundedIconsEnabled() ? vector_icons::kSyncIcon
-                                            : kSyncRefreshOldIcon,
-          ui::kColorMenuIcon, gfx::kFaviconSize));
-      items.push_back(std::move(login_tabs));
     }
     return items;
   }
@@ -564,9 +561,9 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildRemoteEntries(
 std::vector<RecentTabItem> RecentTabsBuilder::BuildOtherDeviceTabs(
     Profile* profile) {
   std::vector<RecentTabItem> items;
-  if (!profile || profile->IsOffTheRecord() ||
-      profile->GetPrefs()->GetBoolean(prefs::kSavingBrowserHistoryDisabled) ||
-      !remote_tabs_menu_util::ShouldShowTabsFromOtherDevices(profile)) {
+  // Re-check eligibility in case profile state changed after menu creation, or
+  // when called outside the app menu.
+  if (!remote_tabs_menu_util::ShouldShowOtherDeviceTabsMenuItem(profile)) {
     return items;
   }
 
@@ -575,29 +572,54 @@ std::vector<RecentTabItem> RecentTabsBuilder::BuildOtherDeviceTabs(
   sync_sessions::OpenTabsUIDelegate* open_tabs =
       session_sync_service ? session_sync_service->GetOpenTabsUIDelegate()
                            : nullptr;
-  // TODO(crbug.com/498232959): Replace with the new API returning all devices
-  // the user has.
   std::vector<raw_ptr<const sync_sessions::SyncedSession, VectorExperimental>>
       sessions;
-  if (!open_tabs || !open_tabs->GetAllForeignSessions(&sessions)) {
+  if (!open_tabs ||
+      !open_tabs->GetAllForeignSessions(
+          &sessions,
+          sync_sessions::OpenTabsUIDelegate::ForeignSessionFilter::kAll)) {
     return items;
   }
 
   // `sessions` is already ordered by recency.
+  // The more devices are listed, the fewer tabs each shows inline.
+  const size_t max_inline_tabs =
+      sessions.size() == 1 ? kMaxInlineTabsSingleDevice
+                           : (sessions.size() <= 3 ? kMaxInlineTabsFewDevices
+                                                   : kMaxInlineTabsManyDevices);
   for (const sync_sessions::SyncedSession* session : sessions) {
     const std::string& session_tag = session->GetSessionTag();
-    std::vector<const sessions::SessionTab*> tabs;
-    if (!open_tabs->GetForeignSessionTabs(session_tag, &tabs) || tabs.empty()) {
-      continue;
-    }
     if (!items.empty()) {
       items.emplace_back(RecentTabItem::Type::kDivider, u"");
     }
+    std::vector<const sessions::SessionTab*> tabs;
+    if (!open_tabs->GetForeignSessionTabs(session_tag, &tabs) || tabs.empty()) {
+      items.emplace_back(RecentTabItem::Type::kHeader,
+                         l10n_util::GetStringFUTF16(
+                             IDS_OTHER_DEVICE_TABS_NO_OPEN_TABS,
+                             base::UTF8ToUTF16(session->GetSessionName())));
+      continue;
+    }
     items.emplace_back(RecentTabItem::Type::kHeader,
                        base::UTF8ToUTF16(session->GetSessionName()));
-    for (const sessions::SessionTab* tab : tabs) {
+    const auto [inline_tabs, more_tabs] =
+        base::span(tabs).split_at(std::min(tabs.size(), max_inline_tabs));
+    for (const sessions::SessionTab* tab : inline_tabs) {
       items.push_back(BuildForeignTabItem(session_tag, *tab));
     }
+    if (more_tabs.empty()) {
+      continue;
+    }
+    RecentTabItem more_tabs_item(
+        RecentTabItem::Type::kMoreTabs,
+        l10n_util::GetPluralStringFUTF16(IDS_OTHER_DEVICE_TABS_SEE_MORE_TABS,
+                                         static_cast<int>(more_tabs.size())));
+    more_tabs_item.set_icon(remote_tabs_menu_util::GetDeviceFormFactorIcon(
+        session->GetDeviceFormFactor()));
+    for (const sessions::SessionTab* tab : more_tabs) {
+      more_tabs_item.add_child(BuildForeignTabItem(session_tag, *tab));
+    }
+    items.push_back(std::move(more_tabs_item));
   }
   return items;
 }

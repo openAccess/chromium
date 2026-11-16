@@ -8,7 +8,6 @@
 
 #include "ash/quick_pair/common/device.h"
 #include "ash/quick_pair/common/protocol.h"
-#include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/string_number_conversions.h"
@@ -40,7 +39,7 @@ class DeviceAddressMapTest : public AshTestBase {
     device_ = base::MakeRefCounted<Device>(kTestModelId, "address",
                                            Protocol::kFastPairInitial);
 
-    device_address_map_ = std::make_unique<DeviceAddressMap>();
+    device_address_map_ = std::make_unique<DeviceAddressMap>(local_state());
   }
 
  protected:
@@ -76,9 +75,8 @@ TEST_F(DeviceAddressMapTest, PersistRecordsForDeviceValid) {
   EXPECT_TRUE(device_address_map_->PersistRecordsForDevice(device_));
 
   // Validate that the ID records are persisted to prefs.
-  PrefService* local_state = Shell::Get()->local_state();
   const base::DictValue& device_address_map_dict =
-      local_state->GetDict(DeviceAddressMap::kDeviceAddressMapPref);
+      local_state()->GetDict(DeviceAddressMap::kDeviceAddressMapPref);
   const std::string* model_id =
       device_address_map_dict.FindString(kTestClassicAddress);
   EXPECT_TRUE(model_id);
@@ -116,9 +114,8 @@ TEST_F(DeviceAddressMapTest, EvictMacAddressRecordValid) {
   EXPECT_TRUE(device_address_map_->EvictMacAddressRecord(kTestClassicAddress));
 
   // Validate that the ID records are evicted from prefs.
-  PrefService* local_state = Shell::Get()->local_state();
   const base::DictValue& device_address_map_dict =
-      local_state->GetDict(DeviceAddressMap::kDeviceAddressMapPref);
+      local_state()->GetDict(DeviceAddressMap::kDeviceAddressMapPref);
   const std::string* model_id =
       device_address_map_dict.FindString(kTestClassicAddress);
   EXPECT_FALSE(model_id);
@@ -244,11 +241,33 @@ TEST_F(DeviceAddressMapTest, LoadPersistedIdRecordFromPrefs) {
 
   // A new/restarted DeviceAddressMap instance should load persisted ID records
   // from prefs.
-  DeviceAddressMap new_device_address_map = DeviceAddressMap();
+  DeviceAddressMap new_device_address_map(local_state());
   std::optional<const std::string> model_id =
       new_device_address_map.GetModelIdForMacAddress(kTestClassicAddress);
   EXPECT_TRUE(model_id);
   EXPECT_EQ(model_id.value(), kTestModelId);
+}
+
+TEST_F(DeviceAddressMapTest, LookupAndPersistMissDoNotInsertEmptyRecords) {
+  EXPECT_FALSE(device_address_map_->GetModelIdForMacAddress("unknown_1"));
+  EXPECT_FALSE(device_address_map_->GetModelIdForMacAddress("unknown_2"));
+
+  device_->set_classic_address("unknown_3");
+  EXPECT_FALSE(device_address_map_->PersistRecordsForDevice(device_));
+
+  EXPECT_EQ(device_address_map_->SizeForTesting(), 0u);
+}
+
+TEST_F(DeviceAddressMapTest, EvictMacAddressRecordRemovesInMemoryEntry) {
+  device_->set_classic_address(kTestClassicAddress);
+  EXPECT_TRUE(device_address_map_->SaveModelIdForDevice(device_));
+  EXPECT_TRUE(device_address_map_->PersistRecordsForDevice(device_));
+  EXPECT_EQ(device_address_map_->SizeForTesting(), 1u);
+
+  EXPECT_TRUE(device_address_map_->EvictMacAddressRecord(kTestClassicAddress));
+  EXPECT_EQ(device_address_map_->SizeForTesting(), 0u);
+  EXPECT_FALSE(
+      device_address_map_->GetModelIdForMacAddress(kTestClassicAddress));
 }
 
 }  // namespace ash::quick_pair

@@ -4,27 +4,23 @@
 
 #include "base/memory_coordinator/memory_consumer_android.h"
 
+#include <cstdint>
 #include <string>
 
-#include "base/android/jni_string.h"
+#include "base/android/jni_string.h"  // IWYU pragma: keep
 #include "base/android/library_loader/library_loader_hooks.h"
 #include "base/memory_coordinator/memory_limit.h"
 #include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "base/memory_coordinator_jni/MemoryConsumerRegistration_jni.h"
-#include "base/memory_coordinator_jni/MemoryConsumerTraits_jni.h"
 
 namespace base::android {
 
 namespace {
 
 // LINT.IfChange(TraitsFromJava)
-base::MemoryConsumerTraits TraitsFromJava(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& j_traits) {
-  const int packed = Java_MemoryConsumerTraits_getPackedTraits(env, j_traits);
-
+base::MemoryConsumerTraits TraitsFromJava(int32_t packed) {
   const auto consumer_type =
       static_cast<base::MemoryConsumerTraits::ConsumerType>(packed & 0x1);
   const auto estimated_memory_usage =
@@ -99,10 +95,6 @@ MemoryConsumerAndroid::MemoryConsumerAndroid(
 
 MemoryConsumerAndroid::~MemoryConsumerAndroid() = default;
 
-void MemoryConsumerAndroid::Destroy() {
-  delete this;
-}
-
 void MemoryConsumerAndroid::NotifyInitialLimitIfNonDefault() {
   if (memory_limit() != base::MemoryLimit::Default()) {
     OnUpdateMemoryLimit();
@@ -124,18 +116,18 @@ bool MemoryConsumerAndroid::IsPassive() const {
   return is_passive_;
 }
 
-static int64_t JNI_MemoryConsumerRegistration_Register(
+static jni_zero::JniUniquePtr<MemoryConsumerAndroid>
+JNI_MemoryConsumerRegistration_Register(
     JNIEnv* env,
-    const jni_zero::JavaRef<jstring>& j_consumer_name,
-    const jni_zero::JavaRef<jobject>& j_traits,
+    const std::string& consumer_name,
+    int32_t packed_traits,
     const jni_zero::JavaRef<jobject>& j_consumer) {
-  std::string consumer_name =
-      base::android::ConvertJavaStringToUTF8(env, j_consumer_name);
   base::MemoryConsumerTraits traits =
-      base::android::TraitsFromJava(env, j_traits);
-  auto* native_peer = new base::android::MemoryConsumerAndroid(
+      base::android::TraitsFromJava(packed_traits);
+  auto native_peer = jni_zero::MakeUnique<base::android::MemoryConsumerAndroid>(
       env, j_consumer, consumer_name, traits);
-  return reinterpret_cast<intptr_t>(native_peer);
+  native_peer->NotifyInitialLimitIfNonDefault();
+  return native_peer;
 }
 
 void FlushPendingMemoryConsumerRegistrations() {
@@ -157,4 +149,3 @@ void OnMemoryConsumerRegistryDestroyed() {
 }  // namespace base::android
 
 DEFINE_JNI(MemoryConsumerRegistration)
-DEFINE_JNI(MemoryConsumerTraits)

@@ -5,6 +5,7 @@
 #include "components/browser_apis/tab_strip/tab_strip_service_impl.h"
 
 #include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
@@ -55,8 +56,8 @@ TEST_F(TabStripServiceImplTest, CreateNewTab) {
   // One tab should have been created. Now we assert its shape.
   ASSERT_EQ(1ul, tab_strip_->GetTabs().size());
   auto created = tab_strip_->GetTabs().at(0);
-  ASSERT_EQ(base::NumberToString(created.raw_value()), result.value()->id.Id());
-  ASSERT_EQ(NodeId::Type::kContent, result.value()->id.Type());
+  ASSERT_EQ(base::NumberToString(created.raw_value()), result.value().id.Id());
+  ASSERT_EQ(NodeId::Type::kContent, result.value().id.Type());
 }
 
 TEST_F(TabStripServiceImplTest, GetTabs) {
@@ -71,9 +72,9 @@ TEST_F(TabStripServiceImplTest, GetTabs) {
   ASSERT_TRUE(tab_strip->data->is_tab_strip());
   ASSERT_EQ(1u, tab_strip->children.size());
   ASSERT_TRUE(tab_strip->children[0]->data->is_tab());
-  ASSERT_EQ("888", tab_strip->children[0]->data->get_tab()->id.Id());
+  ASSERT_EQ("888", tab_strip->children[0]->data->get_tab().id.Id());
   ASSERT_EQ(NodeId::Type::kContent,
-            tab_strip->children[0]->data->get_tab()->id.Type());
+            tab_strip->children[0]->data->get_tab().id.Type());
 }
 
 TEST_F(TabStripServiceImplTest, GetTab) {
@@ -83,8 +84,8 @@ TEST_F(TabStripServiceImplTest, GetTab) {
   auto result = service_->GetTab(tab_id);
 
   ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(result.value()->id.Id(), "666");
-  ASSERT_EQ(result.value()->id.Type(), NodeId::Type::kContent);
+  ASSERT_EQ(result.value().id.Id(), "666");
+  ASSERT_EQ(result.value().id.Type(), NodeId::Type::kContent);
 }
 
 TEST_F(TabStripServiceImplTest, GetTab_NotFound) {
@@ -352,8 +353,8 @@ TEST_F(TabStripServiceImplTest, UpdateTabGroup) {
 
 TEST_F(TabStripServiceImplTest, Update_Unimplemented) {
   tabs_api::NodeId tab_id(NodeId::Type::kContent, "123");
-  mojom::TabPtr tab_mojom = mojom::Tab::New();
-  tab_mojom->id = tab_id;
+  Tab tab_mojom;
+  tab_mojom.id = tab_id;
 
   auto data = mojom::Data::NewTab(std::move(tab_mojom));
   auto result = service_->Update(std::move(data), std::nullopt);
@@ -393,6 +394,40 @@ TEST_F(TabStripServiceImplTest, UpdateTabGroupPartial) {
   ASSERT_EQ(u"super duper group", updated_visuals->title());
   ASSERT_EQ(tab_groups::TabGroupColorId::kGrey, updated_visuals->color());
   ASSERT_FALSE(updated_visuals->is_collapsed());
+}
+
+TEST_F(TabStripServiceImplTest, NotifiesObserversOnServiceDestroyed) {
+  class ScopedServiceObserver : public observation::TabStripApiBatchedObserver {
+   public:
+    explicit ScopedServiceObserver(TabStripService* service) {
+      observation_.Observe(service);
+    }
+
+    void OnTabEvents(const std::vector<mojom::TabsEventPtr>& events) override {}
+
+    void OnTabStripServiceDestroyed() override {
+      destroyed_called_ = true;
+      observation_.Reset();
+    }
+
+    bool destroyed_called() const { return destroyed_called_; }
+    bool is_observing() const { return observation_.IsObserving(); }
+
+   private:
+    bool destroyed_called_ = false;
+    base::ScopedObservation<TabStripService,
+                            observation::TabStripApiBatchedObserver>
+        observation_{this};
+  };
+
+  ScopedServiceObserver observer(service_.get());
+  ASSERT_TRUE(observer.is_observing());
+  EXPECT_FALSE(observer.destroyed_called());
+
+  service_.reset();
+
+  EXPECT_TRUE(observer.destroyed_called());
+  EXPECT_FALSE(observer.is_observing());
 }
 
 }  // namespace

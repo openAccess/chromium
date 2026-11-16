@@ -6,7 +6,7 @@ package org.chromium.chrome.browser.webid;
 
 import org.chromium.base.Promise;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.build.annotations.Nullable;
+import org.chromium.content_public.browser.webid.DigitalIdentityUiWarningLevel;
 import org.chromium.ui.base.WindowAndroid;
 
 @NullMarked
@@ -23,15 +23,14 @@ public class IdentityCredentialsDelegate {
         }
     }
 
-    public @Nullable Promise<String> get(String origin, String request) {
-        // TODO(crbug.com/40257092): implement this.
-        return null;
-    }
-
-    public Promise<DigitalCredential> get(WindowAndroid window, String origin, String request) {
+    public Promise<DigitalCredential> get(
+            WindowAndroid window,
+            String origin,
+            String request,
+            @DigitalIdentityUiWarningLevel int warningLevel) {
         DigitalCredentialsPresentationDelegate presentationDelegate =
                 new DigitalCredentialsPresentationDelegate();
-        return presentationDelegate.get(window, origin, request);
+        return presentationDelegate.get(window, origin, request, warningLevel);
     }
 
     public Promise<DigitalCredential> create(WindowAndroid window, String origin, String request) {

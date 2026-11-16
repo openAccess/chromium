@@ -53,7 +53,10 @@ source_set("infobars") {
   }
 
   if (!is_android) {
-    deps += [ "//chrome/browser/ui/tabs:tab_strip" ]
+    deps += [
+      "//chrome/browser/ui/tabs:tab_strip",
+      "//chrome/browser/ui/webui:webui_util",
+    ]
   }
 
   if (toolkit_views) {
@@ -94,16 +97,21 @@ source_set("unit_tests") {
   ]
 
   if (!is_android) {
-    sources += [ "browser_infobar_manager_unittest.cc" ]
+    sources += [
+      "browser_infobar_manager_unittest.cc",
+      "infobar_features_unittest.cc",
+    ]
 
     deps += [
       "//base/test:test_support",
+      "//chrome/browser:global_features",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/browser_window/test:test_support",
       "//chrome/browser/ui/tabs:tab_model",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/tabs:test_support",
       "//chrome/browser/ui/views:layout_provider",
+      "//chrome/browser/ui/webui:webui_util",
       "//chrome/common:constants",
       "//chrome/test:test_support",
       "//chrome/test/base:testing_browser_process",
@@ -114,6 +122,7 @@ source_set("unit_tests") {
       "//components/vector_icons",
       "//content/test:test_support",
       "//testing/gmock",
+      "//ui/base/unowned_user_data",
       "//ui/gfx",
     ]
   }
@@ -140,7 +149,6 @@ if (!is_android) {
       "//chrome/browser/devtools",
       "//chrome/browser/infobars:test_support",
       "//chrome/browser/ui:browser_tabstrip",
-      "//chrome/browser/ui:collected_cookies_infobar_delegate",
       "//chrome/browser/ui:ui_features",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/omnibox",
@@ -153,6 +161,7 @@ if (!is_android) {
       "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/common:constants",
       "//chrome/test:test_support",
+      "//chrome/test/base:chrome_test_path_utils",
       "//components/infobars/content",
       "//components/infobars/core",
       "//components/prefs",

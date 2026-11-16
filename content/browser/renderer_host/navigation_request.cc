@@ -40,6 +40,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
+#include "base/task/deferred_sequenced_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
@@ -140,8 +141,6 @@
 #include "content/public/browser/network_service_util.h"
 #include "content/public/browser/origin_trials_controller_delegate.h"
 #include "content/public/browser/peak_gpu_memory_tracker_factory.h"
-#include "content/public/browser/reduce_accept_language_controller_delegate.h"
-#include "content/public/browser/reduce_accept_language_utils.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/runtime_feature_state/runtime_feature_state_document_data.h"
 #include "content/public/browser/security_principal.h"
@@ -201,6 +200,7 @@
 #include "services/network/public/cpp/url_loader_completion_status.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/connection_change_observer_client.mojom.h"
+#include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/link_header.mojom.h"
@@ -232,6 +232,7 @@
 #include "third_party/blink/public/common/security/address_space_feature.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
+#include "third_party/blink/public/mojom/devtools/console_message.mojom.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/blink/public/mojom/loader/mixed_content.mojom.h"
@@ -415,7 +416,7 @@ void AddAdditionalRequestHeaders(
       render_view_host->GetDelegate()->GetRendererPrefs(render_view_host);
   UpdateAdditionalHeadersForBrowserInitiatedRequest(
       headers, browser_context, is_reload, render_prefs,
-      /*is_for_worker_script*=*/false);
+      BrowserInitiatedRequestSource::kNavigation);
 
   // Tack an 'Upgrade-Insecure-Requests' header to outgoing navigational
   // requests, as described in
@@ -602,16 +603,6 @@ void RecordReadyToCommitMetrics(
   bool is_main_frame = !new_rfh->GetParent();
   bool is_same_process = old_rfh->GetProcess()->GetDeprecatedID() ==
                          new_rfh->GetProcess()->GetDeprecatedID();
-
-  // Navigation.IsSameBrowsingInstance
-  if (is_main_frame) {
-    bool is_same_browsing_instance =
-        old_rfh->GetSiteInstance()->IsRelatedSiteInstance(
-            new_rfh->GetSiteInstance());
-
-    UMA_HISTOGRAM_BOOLEAN("Navigation.IsSameBrowsingInstance",
-                          is_same_browsing_instance);
-  }
 
   // Navigation.IsSameSiteInstance
   {
@@ -1963,6 +1954,10 @@ NavigationRequest::NavigationRequest(
         blink::kFencedFrameForcedSandboxFlags;
   }
 
+  if (common_params_->url.IsAboutSrcdoc()) {
+    commit_params_->srcdoc_value = frame_tree_node_->srcdoc_value();
+  }
+
   if (from_begin_navigation_) {
     // This is needed to commit data: and about: URLs in the same SiteInstance
     // as the initiator frame. Note that this may not necessarily match the
@@ -2149,21 +2144,6 @@ NavigationRequest::NavigationRequest(
           frame_tree_node_, commit_params_->frame_policy.container_policy,
           common_params_->url);
       headers.MergeFrom(client_hints_headers);
-    }
-
-    // Add reduced accept language header.
-    if (auto reduce_accept_lang_utils =
-            ReduceAcceptLanguageUtils::Create(browser_context);
-        reduce_accept_lang_utils && !devtools_accept_language_override_) {
-      // Add the Accept-Language header with the reduce accept language value.
-      // Chromium network stack won't overwrite the value if Accept-Language
-      // header was already added in the request header.
-      net::HttpRequestHeaders accept_language_headers;
-      reduce_accept_lang_utils.value()
-          .AddNavigationRequestAcceptLanguageHeaders(
-              url::Origin::Create(common_params_->url), frame_tree_node_,
-              &accept_language_headers);
-      headers.MergeFrom(accept_language_headers);
     }
 
     headers.AddHeadersFromString(begin_params_->headers);
@@ -2465,6 +2445,9 @@ NavigationRequest::~NavigationRequest() {
 
   if (IsNavigationStarted()) {
     GetDelegate()->DidFinishNavigation(this);
+    if (subresource_loader_proxy_task_runner_) {
+      subresource_loader_proxy_task_runner_->Start();
+    }
     ProcessOriginAgentClusterEndResult();
     if (IsInMainFrame()) {
       MaybeRecordTraceEventsAndHistograms();
@@ -2512,6 +2495,9 @@ NavigationRequest::~NavigationRequest() {
     }
   } else {
     GetDelegate()->DidCancelNavigationBeforeStart(this);
+    if (subresource_loader_proxy_task_runner_) {
+      subresource_loader_proxy_task_runner_->Start();
+    }
   }
 
   if (!navigation_start_to_commit_ended_) {
@@ -3266,10 +3252,6 @@ void NavigationRequest::
             &NavigationRequest::
                 SelectFrameHostForCrossDocumentNavigationWithNoUrlLoader,
             weak_factory_.GetWeakPtr());
-        frame_tree_node_->render_manager()
-            ->speculative_frame_host()
-            ->RecordMetricsForBlockedGetFrameHostAttempt(
-                /* commit_attempt=*/true);
         return;
     }
   }
@@ -3488,6 +3470,10 @@ void NavigationRequest::StartNavigation() {
   }
 
   navigation_visible_to_embedder_ = true;
+  if (navigation_ui_data_) {
+    navigation_ui_data_->PopulateFromNavigationHandle(*this);
+  }
+
 #if BUILDFLAG(IS_ANDROID)
   // Once the navigation has started, fill in the details in the Java side
   // navigation handle.
@@ -3557,6 +3543,10 @@ void NavigationRequest::ResetForCrossDocumentRestart() {
                     common_params_->url.spec(), "Net Error Code",
                     net_error_);  // Navigation StartToCommit
     navigation_start_to_commit_ended_ = true;
+  }
+  if (subresource_loader_proxy_task_runner_) {
+    subresource_loader_proxy_task_runner_->Start();
+    subresource_loader_proxy_task_runner_.reset();
   }
 
   // Reset the state of the NavigationRequest, and the navigation_handle_id.
@@ -4946,6 +4936,16 @@ UrlInfo NavigationRequest::GetUrlInfo() {
     // about:blank and about:srcdoc inherit the origin per spec
     // (https://html.spec.whatwg.org/multipage/document-sequences.html#determining-the-origin).
     url_info_init.WithOrigin(*GetInitiatorOrigin());
+    // about:blank also takes the unique-instance isolation of the initiator's
+    // SiteInstance. Without it, about:blank can be placed in a process that is
+    // not allowed to commit the inherited origin.
+    if (source_site_instance_) {
+      const EmbedderIsolationInfo& source_info =
+          source_site_instance_->GetSiteInfo().embedder_isolation_info();
+      if (source_info.is_unique_instance()) {
+        url_info_init.WithEmbedderIsolationInfo(source_info);
+      }
+    }
   } else {
     // Overriding the origin for a URL is dangerous and only allowed in very
     // narrow cases which are handled explicitly above.  Please think very
@@ -5623,10 +5623,6 @@ void NavigationRequest::SelectFrameHostForOnResponseStarted(
               weak_factory_.GetWeakPtr(),
               std::move(url_loader_client_endpoints), is_download,
               std::move(subresource_loader_params));
-          frame_tree_node_->render_manager()
-              ->speculative_frame_host()
-              ->RecordMetricsForBlockedGetFrameHostAttempt(
-                  /* commit_attempt=*/true);
           return;
       }
     }
@@ -6160,10 +6156,6 @@ void NavigationRequest::SelectFrameHostForOnRequestFailedInternal(
             &NavigationRequest::SelectFrameHostForOnRequestFailedInternal,
             weak_factory_.GetWeakPtr(), exists_in_cache, skip_throttles,
             error_page_content);
-        frame_tree_node_->render_manager()
-            ->speculative_frame_host()
-            ->RecordMetricsForBlockedGetFrameHostAttempt(
-                /* commit_attempt=*/true);
         return;
     }
   }
@@ -6350,7 +6342,7 @@ void NavigationRequest::OnStartChecksComplete(
   // for this frame. PDF content frames run in a restricted PDF renderer process
   // that must not receive service worker capabilities for the hosting origin.
   bool can_create_service_worker =
-      !IsPdf() && (frame_tree_node_->pending_frame_policy().sandbox_flags &
+      !IsPdf() && (commit_params_->frame_policy.sandbox_flags &
                    network::mojom::WebSandboxFlags::kOrigin) !=
                       network::mojom::WebSandboxFlags::kOrigin;
   if (can_create_service_worker) {
@@ -6838,19 +6830,6 @@ void NavigationRequest::OnRedirectChecksComplete(
     }
   }
 
-  // Add reduced accept language header to the current request.
-  // If devtools has overridden the Accept-Language header, skip reduce
-  // Accept-Language header.
-  if (auto reduce_accept_lang_utils =
-          ReduceAcceptLanguageUtils::Create(browser_context);
-      reduce_accept_lang_utils && !devtools_accept_language_override_) {
-    net::HttpRequestHeaders accept_language_headers;
-    reduce_accept_lang_utils.value().AddNavigationRequestAcceptLanguageHeaders(
-        url::Origin::Create(common_params_->url), frame_tree_node_,
-        &accept_language_headers);
-    headers_update_params.modified_headers.MergeFrom(accept_language_headers);
-  }
-
   loader_->FollowRedirect(std::move(headers_update_params));
 }
 
@@ -7184,7 +7163,7 @@ void NavigationRequest::InheritServiceWorkerControllerFromParentIfNeeded() {
   // PDF content frame or has an opaque sandboxed origin. PDF content frames run
   // in a restricted PDF renderer process that must not receive service worker
   // capabilities for the hosting origin.
-  if (IsPdf() || (frame_tree_node_->pending_frame_policy().sandbox_flags &
+  if (IsPdf() || (commit_params_->frame_policy.sandbox_flags &
                   network::mojom::WebSandboxFlags::kOrigin) ==
                      network::mojom::WebSandboxFlags::kOrigin) {
     return;
@@ -8762,16 +8741,35 @@ NavigationRequest::CheckCSPEmbeddedEnforcement() {
   base::UmaHistogramEnumeration(
       "Navigation.CSPEmbeddedEnforcement.Outcome",
       NavigationCSPEmbeddedEnforcementOutcome::kBlock);
-  AddDeferredConsoleMessage(
-      blink::mojom::ConsoleMessageLevel::kError,
-      base::StringPrintf(
-          "Refused to display '%s' in a frame. The embedder requires it to "
-          "enforce the following Content Security Policy: '%s'. However, the "
-          "frame neither accepts that policy using the Allow-CSP-From header "
-          "nor delivers a Content Security Policy which is at least as strong "
-          "as that one.",
-          sanitized_blocked_url.c_str(),
-          required_csp_->header->header_value.c_str()));
+  if (base::FeatureList::IsEnabled(
+          network::features::kCSPEmbeddedEnforcementTrustedTypes) &&
+      required_csp_->trusted_types) {
+    AddDeferredConsoleMessage(
+        blink::mojom::ConsoleMessageLevel::kError,
+        base::StringPrintf(
+            "Refused to display '%s' in a frame. The embedder requires the "
+            "following Content Security Policy: '%s'. The frame neither "
+            "accepts "
+            "that policy using the Allow-CSP-From header nor passes the "
+            "browser's embedded policy checks. For 'trusted-types', these "
+            "checks "
+            "require an exact match of normalized configurations; even a more "
+            "restrictive configuration can be rejected.",
+            sanitized_blocked_url.c_str(),
+            required_csp_->header->header_value.c_str()));
+  } else {
+    AddDeferredConsoleMessage(
+        blink::mojom::ConsoleMessageLevel::kError,
+        base::StringPrintf(
+            "Refused to display '%s' in a frame. The embedder requires it to "
+            "enforce the following Content Security Policy: '%s'. However, the "
+            "frame neither accepts that policy using the Allow-CSP-From header "
+            "nor delivers a Content Security Policy which is at least as "
+            "strong "
+            "as that one.",
+            sanitized_blocked_url.c_str(),
+            required_csp_->header->header_value.c_str()));
+  }
 
   return CSPEmbeddedEnforcementResult::BLOCK_RESPONSE;
 }
@@ -9894,24 +9892,6 @@ void NavigationRequest::DidCommitNavigation(
         is_for_mhtml ? "Navigation.PendingCommit.Duration.MHTML"
                      : "Navigation.PendingCommit.Duration.Regular",
         base::TimeTicks::Now() - pending_commit_metrics_.start_time);
-    const bool did_block_get_frame_host_for_navigation =
-        pending_commit_metrics_.blocked_count > 0;
-    base::UmaHistogramBoolean(
-        is_for_mhtml
-            ? "Navigation.PendingCommit.DidBlockGetFrameHostForNavigation.MHTML"
-            : "Navigation.PendingCommit.DidBlockGetFrameHostForNavigation."
-              "Regular",
-        did_block_get_frame_host_for_navigation);
-    if (did_block_get_frame_host_for_navigation) {
-      base::UmaHistogramCounts100(
-          is_for_mhtml ? "Navigation.PendingCommit.BlockedCount.MHTML"
-                       : "Navigation.PendingCommit.BlockedCount.Regular",
-          pending_commit_metrics_.blocked_count);
-      base::UmaHistogramCounts100(
-          is_for_mhtml ? "Navigation.PendingCommit.BlockedCommitCount.MHTML"
-                       : "Navigation.PendingCommit.BlockedCommitCount.Regular",
-          pending_commit_metrics_.blocked_commit_count);
-    }
   }
   if (ignored_duplicate_navigation_count_ > 0) {
     base::UmaHistogramCounts100(
@@ -10157,6 +10137,16 @@ void NavigationRequest::SetFetchLaterLoaderFactoryContextForTesting(
   CHECK(fetch_later_loader_factory_context_);
 }
 
+scoped_refptr<base::DeferredSequencedTaskRunner>
+NavigationRequest::GetOrCreateSubresourceLoaderProxyTaskRunner() {
+  if (!subresource_loader_proxy_task_runner_) {
+    subresource_loader_proxy_task_runner_ =
+        base::MakeRefCounted<base::DeferredSequencedTaskRunner>(
+            GetUIThreadTaskRunner({BrowserTaskType::kSubresourceLoaderProxy}));
+  }
+  return subresource_loader_proxy_task_runner_;
+}
+
 void NavigationRequest::ReadyToCommitNavigation(bool is_error) {
   TRACE_EVENT("navigation", "NavigationRequest::ReadyToCommitNavigation",
               perfetto::Flow::FromPointer(this));
@@ -10263,7 +10253,11 @@ void NavigationRequest::ReadyToCommitNavigation(bool is_error) {
   }
 
 #if !BUILDFLAG(IS_ANDROID)
-  if (IsIsolatedContext(GetRenderFrameHost()->GetProcess()) ||
+  // Documents with an opaque origin (e.g. sandboxed iframes that weren't moved
+  // to their own process) can share an isolated process, but are not isolated
+  // contexts. See `blink::LocalDOMWindow::IsIsolatedContext()`.
+  if ((IsIsolatedContext(GetRenderFrameHost()->GetProcess()) &&
+       origin_to_commit && !origin_to_commit->opaque()) ||
       (origin_to_commit &&
        GetContentClient()->browser()->GetDirectSocketsDelegate() &&
        GetContentClient()
@@ -12997,15 +12991,6 @@ bool NavigationRequest::ShouldQueueDueToExistingPendingCommitRFH() const {
     return speculative_rfh->HasPendingCommitForCrossDocumentNavigation();
   }
   return false;
-}
-
-void NavigationRequest::RecordMetricsForBlockedGetFrameHostAttempt(
-    bool commit_attempt) {
-  CHECK(!pending_commit_metrics_.start_time.is_null());
-  ++pending_commit_metrics_.blocked_count;
-  if (commit_attempt) {
-    ++pending_commit_metrics_.blocked_commit_count;
-  }
 }
 
 void NavigationRequest::PostResumeCommitTask() {

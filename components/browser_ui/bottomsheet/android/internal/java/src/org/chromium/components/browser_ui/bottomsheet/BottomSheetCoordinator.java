@@ -15,6 +15,7 @@ import android.graphics.Rect;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.MeasureSpec;
+import android.view.View.OnLayoutChangeListener;
 import android.view.ViewGroup;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.view.Window;
@@ -44,6 +45,7 @@ import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.animation.CancelAwareAnimatorListener;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.insets.InsetObserver.WindowInsetObserver;
 import org.chromium.ui.insets.InsetObserver.WindowInsetsAnimationListener;
 import org.chromium.ui.interpolators.Interpolators;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -95,6 +97,9 @@ class BottomSheetCoordinator
     /** The model managing presentation properties of the bottom sheet. */
     private final PropertyModel mModel;
 
+    private @Nullable WindowInsetObserver mWindowInsetObserver;
+    private final Rect mPreviousVisibleViewportRect = new Rect();
+
     /** The view that contains the sheet. */
     private ViewGroup mSheetContainer;
 
@@ -141,8 +146,14 @@ class BottomSheetCoordinator
     /** Observer for inset changes. */
     private InsetObserver mInsetObserver;
 
+    private @Nullable WindowInsetsAnimationListener mWindowInsetsAnimationListener;
+    private @Nullable OnLayoutChangeListener mContainerLayoutChangeListener;
+
     /** The last recorded app header height, in px. */
     private int mAppHeaderHeight;
+
+    /** The last recorded top inset, in px. */
+    private @Px int mTopInset;
 
     private @ColorInt int mSheetBgColor;
     private boolean mIsRelayingOutContainer;
@@ -197,6 +208,20 @@ class BottomSheetCoordinator
     /** Called when the activity containing the {@link BottomSheetCoordinator} is destroyed. */
     void destroy() {
         mIsDestroyed = true;
+        if (mInsetObserver != null) {
+            if (mWindowInsetObserver != null) {
+                mInsetObserver.removeObserver(mWindowInsetObserver);
+                mWindowInsetObserver = null;
+            }
+        }
+        if (mWindowInsetsAnimationListener != null) {
+            mInsetObserver.removeWindowInsetsAnimationListener(mWindowInsetsAnimationListener);
+            mWindowInsetsAnimationListener = null;
+        }
+        if (mContainerLayoutChangeListener != null) {
+            mSheetContainer.removeOnLayoutChangeListener(mContainerLayoutChangeListener);
+            mContainerLayoutChangeListener = null;
+        }
         mMediator.destroy();
         endAnimations();
     }
@@ -265,11 +290,12 @@ class BottomSheetCoordinator
         sizeAndPositionSheetInParent();
 
         // Listen to height changes on the root.
-        mSheetContainer.addOnLayoutChangeListener(
+        mContainerLayoutChangeListener =
                 (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
-                        onContainerLayoutChange(left, top, right, bottom, keyboardDelegate));
+                        onContainerLayoutChange(left, top, right, bottom, keyboardDelegate);
+        mSheetContainer.addOnLayoutChangeListener(mContainerLayoutChangeListener);
 
-        mInsetObserver.addWindowInsetsAnimationListener(
+        mWindowInsetsAnimationListener =
                 new WindowInsetsAnimationListener() {
                     @Override
                     public void onPrepare(WindowInsetsAnimationCompat animation) {
@@ -295,7 +321,18 @@ class BottomSheetCoordinator
                         onInsetChanged();
                         mMediator.notifyInsetAnimationEnd();
                     }
-                });
+                };
+        mInsetObserver.addWindowInsetsAnimationListener(mWindowInsetsAnimationListener);
+        mWindowInsetObserver =
+                new WindowInsetObserver() {
+                    @Override
+                    public void onInsetChanged() {
+                        BottomSheetCoordinator.this.onInsetChanged();
+                    }
+                };
+        mInsetObserver.addObserver(mWindowInsetObserver);
+        updateViewport();
+        mPreviousVisibleViewportRect.set(mMediator.getVisibleViewportRect());
 
         // Listen to height changes on the toolbar.
         mMediator.setToolbarSizeChangedCallback(
@@ -309,8 +346,19 @@ class BottomSheetCoordinator
     }
 
     private void onInsetChanged() {
+        if (getCurrentSheetContent() == null) {
+            return;
+        }
         invalidateContentDesiredHeight();
         updateContentContainerHeight();
+        if (isSheetOpen()) {
+            mMediator.setSheetTranslationY(
+                    mMediator.calculateSheetTranslationY(
+                            mCurrentOffsetPx, getOffsetFromBrowserControls()));
+        }
+        if (!mView.isLayoutRequested()) {
+            mPreviousVisibleViewportRect.set(mMediator.getVisibleViewportRect());
+        }
     }
 
     @VisibleForTesting
@@ -372,10 +420,14 @@ class BottomSheetCoordinator
 
     private boolean updateViewportAndBottomInset(@Px int previousHeight) {
         updateViewport();
+        Rect visibleViewportRect = mMediator.getVisibleViewportRect();
+        boolean viewportChanged = !mPreviousVisibleViewportRect.equals(visibleViewportRect);
+        mPreviousVisibleViewportRect.set(visibleViewportRect);
         @Px int e2eBottomInset = getEdgeToEdgeBottomInset();
         boolean insetOrHeightChanged =
                 previousHeight != mMediator.getSheetContainerHeight()
-                        || mPreviousBottomInset != e2eBottomInset;
+                        || mPreviousBottomInset != e2eBottomInset
+                        || viewportChanged;
         mPreviousBottomInset = e2eBottomInset;
         if (insetOrHeightChanged) {
             invalidateContentDesiredHeight();
@@ -1282,6 +1334,7 @@ class BottomSheetCoordinator
         updateContentContainerHeight();
         // Update the color before notify the observers, as some might read the sheet bg color.
         updateBackgroundColor();
+        mPreviousVisibleViewportRect.set(mMediator.getVisibleViewportRect());
         mMediator.notifySheetContentChanged(content);
     }
 
@@ -1387,7 +1440,7 @@ class BottomSheetCoordinator
     void onAppHeaderHeightChanged(int appHeaderHeight) {
         assert mSheetContainer != null : "Sheet container should not be null.";
         var params = (MarginLayoutParams) mSheetContainer.getLayoutParams();
-        if (params.topMargin != mAppHeaderHeight) {
+        if (params.topMargin != Math.max(mAppHeaderHeight, mTopInset)) {
             // Log to track cases where the top margin was updated by some other source.
             Log.i(
                     TAG,
@@ -1396,11 +1449,31 @@ class BottomSheetCoordinator
                             + ", previous app header height="
                             + mAppHeaderHeight
                             + ", new app header height="
-                            + appHeaderHeight);
+                            + appHeaderHeight
+                            + ", top inset="
+                            + mTopInset);
         }
         mAppHeaderHeight = appHeaderHeight;
-        if (appHeaderHeight != params.topMargin) {
-            params.topMargin = appHeaderHeight;
+        updateSheetContainerTopMargin();
+    }
+
+    /**
+     * Updates the sheet container's top margin to avoid drawing the sheet into the status bar when
+     * drawing edge-to-edge on top.
+     *
+     * @param topInset The top inset in px.
+     */
+    void onTopInsetChanged(@Px int topInset) {
+        mTopInset = topInset;
+        updateSheetContainerTopMargin();
+    }
+
+    private void updateSheetContainerTopMargin() {
+        assert mSheetContainer != null : "Sheet container should not be null.";
+        var params = (MarginLayoutParams) mSheetContainer.getLayoutParams();
+        int targetTopMargin = Math.max(mAppHeaderHeight, mTopInset);
+        if (targetTopMargin != params.topMargin) {
+            params.topMargin = targetTopMargin;
             mSheetContainer.setLayoutParams(params);
         }
     }
@@ -1492,7 +1565,7 @@ class BottomSheetCoordinator
     }
 
     Rect getVisibleViewportRectForTesting() {
-        return mMediator.getVisibleViewportRectForTesting();
+        return mMediator.getVisibleViewportRect();
     }
 
     /** Ends settle animations until none is left, including ones started while ending another. */
@@ -1540,5 +1613,29 @@ class BottomSheetCoordinator
         MarginLayoutParams layoutParams = (MarginLayoutParams) mSheetContainer.getLayoutParams();
         layoutParams.bottomMargin = bottomMargin;
         mSheetContainer.setLayoutParams(layoutParams);
+    }
+
+    /**
+     * Returns the projected height of the sheet's content container in pixels for the current
+     * target IME state, or 0 if no sheet content is currently shown in HALF or FULL state.
+     *
+     * @return The projected content container height in pixels, or 0 if unavailable.
+     */
+    public @Px int getProjectedContentHeightForIme() {
+        if (mWindow == null) {
+            return 0;
+        }
+
+        View decorView = mWindow.getDecorView();
+        @Px int decorHeight = decorView.getHeight();
+        if (decorHeight <= 0) return 0;
+
+        WindowInsetsCompat insets = mInsetObserver.getLastRawWindowInsets();
+        @Px
+        int topInset =
+                insets != null ? insets.getInsets(WindowInsetsCompat.Type.statusBars()).top : 0;
+
+        return mMediator.getProjectedContentHeightForIme(
+                insets, decorHeight, topInset, mAppHeaderHeight, getHandlebarHeight());
     }
 }

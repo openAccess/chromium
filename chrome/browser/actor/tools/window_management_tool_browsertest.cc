@@ -3,12 +3,12 @@
 // found in the LICENSE file.
 
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_surface.h"
 #include "chrome/browser/actor/actor_surface_handle.h"
-#include "chrome/browser/actor/actor_surface_registry.h"
 #include "chrome/browser/actor/actor_test_util.h"
 #include "chrome/browser/actor/tools/tool_request.h"
 #include "chrome/browser/actor/tools/tools_test_util.h"
@@ -30,6 +30,7 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include "base/command_line.h"
+#include "chrome/common/chrome_features.h"
 #include "ui/display/display_switches.h"
 #else
 #include "chrome/test/base/ui_test_utils.h"
@@ -47,7 +48,20 @@ namespace {
 
 class ActorWindowManagementToolBrowserTest : public ActorToolsTest {
  public:
-  ActorWindowManagementToolBrowserTest() = default;
+  ActorWindowManagementToolBrowserTest() {
+#if BUILDFLAG(IS_ANDROID)
+    // With this feature, a tab that goes fullscreen also asks the OS to make
+    // its window fullscreen, which on Android desktop takes the window out of
+    // the desktop. If the tab leaves fullscreen right away, as it does in
+    // these tests, the window can be left there (crbug.com/585678116), and a
+    // test that ends that way leaves the device's desktop deactivated: windows
+    // that later tests open then never become active (crbug.com/585643190).
+    // These tests are about the tool, not the OS, so keep fullscreen inside
+    // the window.
+    in_window_fullscreen_.InitAndDisableFeature(
+        features::kDisplayEdgeToEdgeFullscreen);
+#endif
+  }
   ~ActorWindowManagementToolBrowserTest() override = default;
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -131,6 +145,9 @@ class ActorWindowManagementToolBrowserTest : public ActorToolsTest {
 
   // Opens a second window with one tab and waits for it to become active.
   BrowserWindowInterface* OpenSecondWindow();
+
+ private:
+  base::test::ScopedFeatureList in_window_fullscreen_;
 };
 
 class NewWindowObserver : public BrowserCollectionObserver {
@@ -208,8 +225,15 @@ IN_PROC_BROWSER_TEST_F(ActorWindowManagementToolBrowserTest,
 // the acting set is empty.
 // TODO(crbug.com/420669167): This can be updated to add multiple tabs once
 // multi-tab is supported.
+// TODO(crbug.com/585154798): Flaky/failing on Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_CreateWindowAddsOnlyOneActingTab \
+  DISABLED_CreateWindowAddsOnlyOneActingTab
+#else
+#define MAYBE_CreateWindowAddsOnlyOneActingTab CreateWindowAddsOnlyOneActingTab
+#endif
 IN_PROC_BROWSER_TEST_F(ActorWindowManagementToolBrowserTest,
-                       CreateWindowAddsOnlyOneActingTab) {
+                       MAYBE_CreateWindowAddsOnlyOneActingTab) {
   tabs::TabInterface* first_new_window_tab = nullptr;
 
   // Create a new window and so its tab is added to the acting set.
@@ -246,8 +270,9 @@ IN_PROC_BROWSER_TEST_F(ActorWindowManagementToolBrowserTest,
 // multiple surfaces is supported.
 IN_PROC_BROWSER_TEST_F(ActorWindowManagementToolBrowserTest,
                        CreateWindowDoesNotAddTabWhenHeadlessSurfaceActing) {
-  ActorSurface* headless_surface =
-      actor_keyed_service().GetSurfaceRegistry().CreateHeadlessWebContents();
+  ScopedHeadlessActorSurface headless =
+      actor_keyed_service().CreateHeadlessActorSurface();
+  ActorSurface* headless_surface = headless.actor_surface_handle().Get();
   ASSERT_TRUE(headless_surface);
   const ActorSurfaceHandle headless_handle = headless_surface->GetHandle();
 

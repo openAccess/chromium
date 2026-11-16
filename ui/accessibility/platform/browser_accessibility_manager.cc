@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <map>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <utility>
 
@@ -34,23 +35,6 @@
 #include "ui/base/buildflags.h"
 
 namespace ui {
-
-namespace {
-
-bool CanFireGeneratedEventOnTarget(AXEventGenerator::Event event_type,
-                                   BrowserAccessibility* event_target) {
-  if (event_target->CanFireEvents()) {
-    return true;
-  }
-
-  // MENU_POPUP_END can be fired as a menu changes to ignored. Keep that close
-  // event even though the target can no longer fire normal events.
-  return event_type == AXEventGenerator::Event::MENU_POPUP_END &&
-         event_target->GetRole() == ax::mojom::Role::kMenu &&
-         event_target->node()->IsIgnored();
-}
-
-}  // namespace
 
 AXTreeUpdate MakeAXTreeUpdateForTesting(
     const AXNodeData& node1,
@@ -346,7 +330,7 @@ BrowserAccessibility* BrowserAccessibilityManager::GetBrowserAccessibilityRoot()
 
 BrowserAccessibility* BrowserAccessibilityManager::GetFromAXNode(
     const AXNode* node) const {
-  // TODO(benjamin.beaudry): Consider moving `GetFromId` to
+  // TODO(crbug.com/581462583): Consider moving `GetFromId` to
   // `AXPlatformTreeManager`.
   if (!node)
     return nullptr;
@@ -660,8 +644,7 @@ bool BrowserAccessibilityManager::OnAccessibilityEvents(
       if (!event_target) {
         continue;  // Drop the event if RetargetForEvents() returns nullptr.
       }
-      if (!CanFireGeneratedEventOnTarget(targeted_event.event_params->event,
-                                         event_target)) {
+      if (!event_target->CanFireEvents()) {
         continue;
       }
 
@@ -715,8 +698,7 @@ bool BrowserAccessibilityManager::OnAccessibilityEvents(
         event_target, RetargetEventType::RetargetEventTypeGenerated);
     if (!event_target)
       continue;  // Drop the event if RetargetForEvents() returns nullptr.
-    if (!CanFireGeneratedEventOnTarget(targeted_event.event_params->event,
-                                       event_target)) {
+    if (!event_target->CanFireEvents()) {
       continue;
     }
 
@@ -1359,6 +1341,23 @@ void BrowserAccessibilityManager::SetValue(const BrowserAccessibility& node,
   AXPlatform::GetInstance().OnActionFromAssistiveTech();
 }
 
+namespace {
+
+// Converts the kind of an `AXPosition` to the offset type sent to the renderer
+// in `AXActionData`. Null positions have no offset type.
+std::optional<ax::mojom::OffsetType> ToOffsetType(AXPositionKind kind) {
+  switch (kind) {
+    case AXPositionKind::NULL_POSITION:
+      return std::nullopt;
+    case AXPositionKind::TREE_POSITION:
+      return ax::mojom::OffsetType::kChild;
+    case AXPositionKind::TEXT_POSITION:
+      return ax::mojom::OffsetType::kText;
+  }
+}
+
+}  // namespace
+
 void BrowserAccessibilityManager::SetSelection(
     const AXActionData& action_data) {
   if (!delegate_)
@@ -1372,17 +1371,19 @@ void BrowserAccessibilityManager::SetSelection(
   if (!delegate_ || range.IsNull())
     return;
 
-  // TODO(crbug.com/527726308): Add position types and affinity to AXActionData
-  // and pass them to blink to avoid ambiguity.
+  // TODO(crbug.com/527726308): Add affinity to AXActionData and pass it to
+  // blink to avoid ambiguity.
   AXActionData action_data;
   action_data.anchor_node_id = range.anchor()->anchor_id();
   action_data.anchor_offset = range.anchor()->IsTextPosition()
                                   ? range.anchor()->text_offset()
                                   : range.anchor()->child_index();
+  action_data.anchor_offset_type = ToOffsetType(range.anchor()->kind());
   action_data.focus_node_id = range.focus()->anchor_id();
   action_data.focus_offset = range.focus()->IsTextPosition()
                                  ? range.focus()->text_offset()
                                  : range.focus()->child_index();
+  action_data.focus_offset_type = ToOffsetType(range.focus()->kind());
   action_data.action = ax::mojom::Action::kSetSelection;
   delegate_->AccessibilityPerformAction(action_data);
   AXPlatform::GetInstance().OnActionFromAssistiveTech();
@@ -2052,7 +2053,9 @@ bool BrowserAccessibilityManager::IsRootFrameManager() const {
     BrowserAccessibilityManager* parent_manager =
         BrowserAccessibilityManager::FromID(GetParentTreeID());
     CHECK(parent_manager, base::NotFatalUntil::M163);
-    CHECK(!parent_manager->IsWebContentSource(), base::NotFatalUntil::M163);
+    // TODO(crbug.com/585393827): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(!parent_manager->IsWebContentSource());
   }
   return is_root_tree;
 }

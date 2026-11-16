@@ -174,8 +174,7 @@ void LayoutInline::StyleDidChange(
       SetNeedsCollectInlines();
     }
   }
-  if (RuntimeEnabledFeatures::AnnotationSpaceOnStartEnabled() &&
-      IsInlineRubyText()) {
+  if (IsInlineRubyText()) {
     View()->SetContainsAnnotations();
   }
 
@@ -782,6 +781,20 @@ PhysicalRect LayoutInline::VisualOverflowRect() const {
   }
   // TODO(rendering-core): Add in Text Decoration overflow rect.
   return overflow_rect;
+}
+
+void LayoutInline::RecalcVisualOverflow() {
+  NOT_DESTROYED();
+  // |PaintLayer| calls this function when |HasSelfPaintingLayer|.
+  DCHECK(IsInLayoutNGInlineFormattingContext());
+  DCHECK(HasSelfPaintingLayer());
+  InlineCursor cursor;
+  InlinePaintContext inline_context;
+  for (cursor.MoveTo(*this); cursor; cursor.MoveToNextForSameLayoutObject()) {
+    InlinePaintContext::ScopedInlineBoxAncestors scoped_items(cursor,
+                                                              &inline_context);
+    cursor.Current().RecalcInkOverflow(cursor, &inline_context);
+  }
 }
 
 bool LayoutInline::MapToVisualRectInAncestorSpaceInternal(

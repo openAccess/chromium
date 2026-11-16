@@ -14,8 +14,7 @@
 #include "chrome/browser/password_manager/password_change_delegate.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
-#include "components/password_manager/core/browser/password_change_service_interface.h"
-#include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_change/password_change_service_interface.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/password_manager/password_change/password_change_from_checkup_delegate.h"
@@ -32,6 +31,7 @@ class AffiliationService;
 }
 
 class OptimizationGuideKeyedService;
+class PasswordChangeDelegateImpl;
 
 namespace content {
 class WebContents;
@@ -73,8 +73,7 @@ enum class PasswordChangeAvailability {
 
 class ChromePasswordChangeService
     : public KeyedService,
-      public password_manager::PasswordChangeServiceInterface,
-      public PasswordChangeDelegate::Observer {
+      public password_manager::PasswordChangeServiceInterface {
  public:
   // Callback which allows to open a new tab for password change. Useful for
   // testing UI interactions in browser tests.
@@ -119,7 +118,7 @@ class ChromePasswordChangeService
   // PasswordChangeServiceInterface implementation.
   bool IsPasswordChangeAvailable() const override;
   bool IsPasswordChangeSupported(
-      const password_manager::PasswordForm& form,
+      const password_manager::LeakedPasswordDetails& details,
       bool is_non_password_login_detected) const override;
   void RecordLoginAttemptQuality(
       password_manager::LogInWithChangedPasswordOutcome login_outcome,
@@ -127,17 +126,14 @@ class ChromePasswordChangeService
 
   // Add overridden change password URL.
   void AddChangePasswordUrlOverride(const GURL& url) override;
+  password_manager::PasswordChangeCredentialsProvider*
+  GetCredentialsProviderForActorSurface(int32_t actor_surface_id) override;
 
   // Checks if user has interacted with the feature and only then general
   // availability.
   bool UserIsActivePasswordChangeUser() const;
 
  private:
-  // PasswordChangeDelegate::Observer impl.
-  void OnPasswordChangeStopped(PasswordChangeDelegate* delegate) override;
-  void OnLoginCheckFailedWithServerError(
-      PasswordChangeDelegate* delegate) override;
-
   // KeyedService impl.
   void Shutdown() override;
 
@@ -147,8 +143,11 @@ class ChromePasswordChangeService
   bool HasChangePasswordUrlOverride() const;
   GURL GetChangePasswordURLOverride(const GURL& url) const;
   PasswordChangeAvailability GetPerSiteAvailability(
-      const password_manager::PasswordForm& form,
+      const password_manager::LeakedPasswordDetails& details,
       bool is_non_password_login_detected = false) const;
+
+  // Destroys `delegate` once its flow is stopped.
+  void OnPasswordChangeStopped(base::WeakPtr<PasswordChangeDelegate> delegate);
 #endif
 
   const raw_ptr<PrefService> pref_service_;
@@ -158,18 +157,13 @@ class ChromePasswordChangeService
       settings_service_;
   std::unique_ptr<password_manager::PasswordFeatureManager> feature_manager_;
 
-  struct PasswordChangeData {
-    std::unique_ptr<PasswordChangeDelegate> delegate;
-    base::WeakPtr<content::WebContents> originator;
-    password_manager::LeakedPasswordDetails details;
-  };
-
-  std::vector<PasswordChangeData> password_change_data_;
-
   // The router for logs. Maybe be null in tests.
   const raw_ptr<autofill::LogRouter> log_router_;
 
 #if !BUILDFLAG(IS_ANDROID)
+  std::vector<std::unique_ptr<PasswordChangeDelegateImpl>>
+      password_change_delegates_;
+
   std::vector<std::unique_ptr<PasswordChangeFromCheckupDelegate>>
       password_change_from_checkup_delegates_;
 #endif

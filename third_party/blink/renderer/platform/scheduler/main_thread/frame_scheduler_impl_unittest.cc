@@ -13,7 +13,6 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
-#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial_param_associator.h"
 #include "base/metrics/field_trial_params.h"
@@ -609,7 +608,6 @@ class FrameSchedulerImplTest : public testing::Test {
         {GetUnreportedTaskTime()});
   }
 
-  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
   base::test::ScopedFeatureList feature_list_;
   TaskEnvironmentWithMockMainThreadScheduler task_environment_;
   Persistent<AgentGroupScheduler> agent_group_scheduler_;
@@ -1474,14 +1472,6 @@ TEST_F(FrameSchedulerImplTest, LogIpcsPostedToFramesInBackForwardCache) {
           "BackForwardCache.Experimental."
           "UnexpectedIPCMessagePostedToCachedFrame.MethodHash"),
       testing::UnorderedElementsAre(base::Bucket(1, 1), base::Bucket(2, 1)));
-
-  // TimeUntilIPCReceived should have values in the 300000 bucket corresponding
-  // with the hour delay in task_environment_.FastForwardBy.
-  EXPECT_THAT(
-      histogram_tester.GetAllSamples(
-          "BackForwardCache.Experimental."
-          "UnexpectedIPCMessagePostedToCachedFrame.TimeUntilIPCReceived"),
-      testing::UnorderedElementsAre(base::Bucket(300000, 2)));
 }
 
 TEST_F(FrameSchedulerImplTest,

@@ -34,6 +34,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/sessions/session_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -225,8 +226,8 @@ BrowserLiveTabContext::GetExtraDataForWindow() const {
 
   if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
     if (std::optional<tab_groups::TabGroupId> focused_group =
-            tab_strip_model_->GetFocusedGroup();
-        focused_group.has_value() && !IsEphemeralTabGroup(*focused_group)) {
+            session_tab_group_utils::GetPersistableFocusedGroup(
+                *tab_strip_model_)) {
       data[tabs::TabStripModelSelectionState::kFocusedTabGroupIdKey] =
           focused_group->ToString();
     }
@@ -375,10 +376,11 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
   // normal tab instead. See crbug.com/368139715.
   std::optional<tab_groups::TabGroupId> group_id =
       tab_strip_model_->SupportsTabGroups() ? tab.group : std::nullopt;
-  if (tab.is_group_ephemeral && group_id.has_value() &&
-      (!tab_strip_model_->group_model() ||
-       !tab_strip_model_->group_model()->ContainsTabGroup(group_id.value()))) {
-    group_id = std::nullopt;
+  if (!group_id.has_value() && tab.ephemeral_group.has_value() &&
+      tab_strip_model_->SupportsTabGroups() &&
+      tab_strip_model_->group_model() &&
+      tab_strip_model_->group_model()->ContainsTabGroup(*tab.ephemeral_group)) {
+    group_id = tab.ephemeral_group;
   }
   std::optional<base::Uuid> saved_group_id = tab.saved_group_id;
   content::WebContents* web_contents = nullptr;
@@ -399,7 +401,7 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
         tab.extra_data,
         /*from_session_restore=*/false, /*is_active_browser=*/std::nullopt);
 
-    if (group_id.has_value() && !IsEphemeralTabGroup(group_id.value()) &&
+    if (tab.group.has_value() && group_id.has_value() &&
         !tab_group_service->GetGroup(group_id.value()).has_value()) {
       // It's possible a tab's group was deleted or was unsaved before this tab
       // was restored. In that case, if the local group didn't become saved add

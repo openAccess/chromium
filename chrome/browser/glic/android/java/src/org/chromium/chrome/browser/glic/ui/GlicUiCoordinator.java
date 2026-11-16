@@ -7,10 +7,10 @@ package org.chromium.chrome.browser.glic.ui;
 import android.app.Activity;
 import android.view.ViewStub;
 
+import org.chromium.base.UnownedUserDataKey;
 import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.NonNullObservableSupplier;
-import org.chromium.base.supplier.NullableObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorTaskHelper;
@@ -20,23 +20,24 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsVisibilityMan
 import org.chromium.chrome.browser.layouts.LayoutManager;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObscuringHandler;
-import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetManager;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandlerRegistry;
+import org.chromium.ui.base.WindowAndroid;
 
 /**
  * Coordinator for Glic UI. It owns and manages Glic-related UI components, currently including
- * ActorControlCoordinator, ActorOverlayCoordinator, ActorTaskHelper, and
- * ActorExternalTriggerSnackbarController.
+ * ActorOverlayCoordinator, ActorTaskHelper, and ActorExternalTriggerSnackbarController.
  */
 @NullMarked
 public class GlicUiCoordinator implements Destroyable {
 
+    private static final UnownedUserDataKey<GlicUiCoordinator> KEY = new UnownedUserDataKey<>();
+
     private final Activity mActivity;
+    private final WindowAndroid mWindowAndroid;
     private final ActorOverlayCoordinator mActorOverlayCoordinator;
     private final ActorTaskHelper mActorTaskHelper;
     private final ActorExternalTriggerSnackbarController mExternalTriggerSnackbarController;
@@ -45,9 +46,8 @@ public class GlicUiCoordinator implements Destroyable {
      * Constructs a new {@link GlicUiCoordinator}.
      *
      * @param activity The {@link Activity} hosting the UI.
-     * @param tabBottomSheetManager The {@link TabBottomSheetManager} for managing bottom sheets.
+     * @param windowAndroid The {@link WindowAndroid} for the current window.
      * @param profileSupplier Supplier for the current {@link Profile}.
-     * @param activityTabProvider Supplier for the active {@link Tab}.
      * @param tabModelSelectorSupplier Supplier for the {@link TabModelSelector}.
      * @param browserControlsVisibilityManager Manager for browser controls visibility.
      * @param tabObscuringHandler Handler for obscuring tabs.
@@ -61,9 +61,8 @@ public class GlicUiCoordinator implements Destroyable {
      */
     public GlicUiCoordinator(
             Activity activity,
-            @Nullable TabBottomSheetManager tabBottomSheetManager,
+            WindowAndroid windowAndroid,
             MonotonicObservableSupplier<Profile> profileSupplier,
-            NullableObservableSupplier<Tab> activityTabProvider,
             MonotonicObservableSupplier<TabModelSelector> tabModelSelectorSupplier,
             BrowserControlsVisibilityManager browserControlsVisibilityManager,
             TabObscuringHandler tabObscuringHandler,
@@ -75,6 +74,7 @@ public class GlicUiCoordinator implements Destroyable {
             NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier,
             @Nullable SideUiStateProvider sideUiStateProvider) {
         mActivity = activity;
+        mWindowAndroid = windowAndroid;
 
         mActorOverlayCoordinator =
                 new ActorOverlayCoordinator(
@@ -99,19 +99,39 @@ public class GlicUiCoordinator implements Destroyable {
         mExternalTriggerSnackbarController =
                 new ActorExternalTriggerSnackbarController(
                         mActivity, snackbarManager, profileSupplier, activityLifecycleDispatcher);
+
+        KEY.attachToHost(mWindowAndroid.getUnownedUserDataHost(), this);
+    }
+
+    /** Returns the {@link GlicUiCoordinator} associated with the given {@link WindowAndroid}. */
+    static @Nullable GlicUiCoordinator from(@Nullable WindowAndroid windowAndroid) {
+        if (windowAndroid == null) return null;
+        return KEY.retrieveDataFromHost(windowAndroid.getUnownedUserDataHost());
     }
 
     @Override
     public void destroy() {
+        KEY.detachFromHost(mWindowAndroid.getUnownedUserDataHost());
         mExternalTriggerSnackbarController.destroy();
         mActorOverlayCoordinator.destroy();
-        mActorTaskHelper.onDestroy();
         mActorTaskHelper.destroy();
     }
 
-    /** Notifies the snackbar controller that a pending actor task trigger was received. */
+    /**
+     * Notifies the snackbar controller that a pending actor task trigger was received (either from
+     * an external-trigger fallback intent or when showing/accepting the experimental opt-in
+     * dialog).
+     */
     public void onPendingActorTaskTrigger() {
         mExternalTriggerSnackbarController.onPendingActorTaskTrigger();
+    }
+
+    /**
+     * Notifies the snackbar controller that a pending actor task trigger failed before task
+     * creation (e.g., when the experimental opt-in dialog is declined or dismissed).
+     */
+    public void onPendingActorTaskFailed() {
+        mExternalTriggerSnackbarController.onPendingActorTaskFailed();
     }
 
     /** Exposes the {@link ActorOverlayCoordinator} for testing. */

@@ -135,6 +135,12 @@ export class SkillsWebview implements SkillsPageV2Interface {
     }
     this.webview = getRequiredElement<chrome.webviewTag.WebView>('webview');
 
+    if (loadTimeData.valueExists('isSkillsSupported') &&
+        !loadTimeData.getBoolean('isSkillsSupported')) {
+      this.showError(ErrorType.SKILLS_UNSUPPORTED);
+      return;
+    }
+
     if (loadTimeData.valueExists('isSkillsEnabled') &&
         !loadTimeData.getBoolean('isSkillsEnabled')) {
       this.showError(ErrorType.SKILLS_DISABLED);
@@ -190,7 +196,8 @@ export class SkillsWebview implements SkillsPageV2Interface {
         this.hideLoading();
         this.recordTotalInitLatencyMetric();
       },
-      onSendPrompt: (prompt: string) => this.handler.sendPrompt(prompt),
+      onSendPrompt: (prompt: string, newConversation: boolean) =>
+          this.handler.sendPrompt(prompt, newConversation),
       onCloseDialogAndOpenEditor: (data: PendingEditorData) =>
           this.handler.closeDialog(data),
       onGetProvidedSkill: async (skillId: string) => {

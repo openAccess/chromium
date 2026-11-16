@@ -220,8 +220,8 @@ TabGroupHeader::TabGroupHeader(TabSlotController& tab_slot_controller,
 
 TabGroupHeader::~TabGroupHeader() {
   if (tab_slot_controller_->HoverCardIsShowing(this)) {
-    tab_slot_controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kTabRemoved);
+    tab_slot_controller_->UpdateHoverCard(nullptr,
+                                          HoverCardUpdateType::kTabRemoved);
   }
 }
 
@@ -313,8 +313,7 @@ bool TabGroupHeader::OnMousePressed(const ui::MouseEvent& event) {
     return false;
   }
 
-  tab_slot_controller_->UpdateHoverCard(
-      nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+  tab_slot_controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
 
   // Allow a right click from touch to drag, which corresponds to a long click.
   if (event.IsOnlyLeftMouseButton() ||
@@ -369,14 +368,12 @@ void TabGroupHeader::OnMouseExited(const ui::MouseEvent& event) {
   is_title_chip_hovered_ = false;
   if (unfocus_chip_->GetVisible() &&
       GetMirroredXInView(event.x()) < title_chip_->x()) {
-    tab_slot_controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kHover);
+    tab_slot_controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kHover);
   }
 }
 
 void TabGroupHeader::OnGestureEvent(ui::GestureEvent* event) {
-  tab_slot_controller_->UpdateHoverCard(
-      nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+  tab_slot_controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kEvent);
   switch (event->type()) {
     case ui::EventType::kGestureTap:
       if (tab_slot_controller_->GetFocusedGroup() != group()) {
@@ -442,6 +439,9 @@ gfx::Rect TabGroupHeader::GetAnchorBoundsInScreen() const {
 }
 
 void TabGroupHeader::ExitFocusMode() {
+  base::RecordAction(base::UserMetricsAction(
+      is_ephemeral_ ? "TabGroups_TabGroupHeader_UnfocusNonGroupTabsButton"
+                    : "TabGroups_TabGroupHeader_UnfocusGroupButton"));
   tab_slot_controller_->ExitFocusMode(
       TabGroupFocusExitReason::kHeaderUnfocusButton);
 }
@@ -523,14 +523,12 @@ void TabGroupHeader::ShowContextMenuForViewImpl(
 }
 
 void TabGroupHeader::OnViewFocused(views::View* observed_view) {
-  tab_slot_controller_->UpdateHoverCard(
-      this, TabSlotController::HoverCardUpdateType::kFocus);
+  tab_slot_controller_->UpdateHoverCard(this, HoverCardUpdateType::kFocus);
 }
 
 void TabGroupHeader::OnViewBlurred(views::View* observed_view) {
   if (!tab_slot_controller_->IsFocusInTabStrip() || unfocus_chip_->HasFocus()) {
-    tab_slot_controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kFocus);
+    tab_slot_controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kFocus);
   }
 }
 
@@ -564,8 +562,8 @@ void TabGroupHeader::VisualsChanged() {
       const bool frame_active =
           GetWidget() && GetWidget()->ShouldPaintAsActive();
       const SkColor normal_bg = GetColorProvider()->GetColor(
-          frame_active ? ui::kColorSysOnHeaderDivider
-                       : ui::kColorSysOnHeaderDividerInactive);
+          frame_active ? kColorTabGroupEphemeralHeaderBackgroundFrameActive
+                       : kColorTabGroupEphemeralHeaderBackgroundFrameInactive);
       if (editor_bubble_tracker_.is_open()) {
         const SkColor press_ink =
             GetColorProvider()->GetColor(ui::kColorSysStateHoverOnSubtle);
@@ -714,8 +712,8 @@ void TabGroupHeader::UpdateTitleView() {
       const bool frame_active =
           GetWidget() && GetWidget()->ShouldPaintAsActive();
       title_->SetEnabledColor(GetColorProvider()->GetColor(
-          frame_active ? ui::kColorSysOnSurfacePrimary
-                       : ui::kColorSysOnSurfacePrimaryInactive));
+          frame_active ? kColorTabGroupEphemeralHeaderForegroundFrameActive
+                       : kColorTabGroupEphemeralHeaderForegroundFrameInactive));
     } else {
       title_->SetEnabledColor(color_utils::GetColorWithMaxContrast(color_));
     }
@@ -960,8 +958,7 @@ void TabGroupHeader::MaybeUpdateHoverStatus(const ui::MouseEvent& event) {
   if (unfocus_chip_->GetVisible() &&
       GetMirroredXInView(event.x()) < title_chip_->x()) {
     is_title_chip_hovered_ = false;
-    tab_slot_controller_->UpdateHoverCard(
-        nullptr, TabSlotController::HoverCardUpdateType::kHover);
+    tab_slot_controller_->UpdateHoverCard(nullptr, HoverCardUpdateType::kHover);
     return;
   }
 
@@ -969,8 +966,7 @@ void TabGroupHeader::MaybeUpdateHoverStatus(const ui::MouseEvent& event) {
     return;
   }
   is_title_chip_hovered_ = true;
-  tab_slot_controller_->UpdateHoverCard(
-      this, TabSlotController::HoverCardUpdateType::kHover);
+  tab_slot_controller_->UpdateHoverCard(this, HoverCardUpdateType::kHover);
 }
 
 BEGIN_METADATA(TabGroupHeader)

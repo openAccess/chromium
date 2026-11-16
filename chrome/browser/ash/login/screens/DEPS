@@ -35,20 +35,17 @@ include_rules = [
   "+chrome/browser/ash/tpm",
   "+chrome/browser/browser_process.h",
   "+chrome/browser/browser_process_platform_part_ash.h",
-  "+chrome/browser/enterprise/util",
+  "+chrome/browser/enterprise/browser_management/management_identity.h",
   "+chrome/browser/metrics",
-  "+chrome/browser/policy",
+  "+chrome/browser/policy/profile_policy_connector.h",
   "+chrome/browser/profiles",
   "+chrome/browser/sync",
   "+chrome/browser/ui/ash/keyboard",
   "+chrome/browser/ui/ash/login",
   "+chrome/browser/ui/ash/system",
   "+chrome/browser/ui/chrome_pages.h",
-  "+chrome/browser/enterprise/browser_management/management_identity.h",
   "+chrome/browser/ui/webui/ash",
   "+chrome/browser/ui/webui/signin/ash",
-  "+chrome/common/url_constants.h",
-  "+chrome/common/webui_url_constants.h",
   "+chrome/grit",
 ]
 
@@ -69,5 +66,8 @@ specific_include_rules = {
   # through the //chrome-side factory.
   "consolidated_consent_screen_browsertest\\.cc": [
     "+chrome/browser/consent_auditor",
+  ],
+  "edu_coexistence_login_browsertest\\.cc": [
+    "+chrome/common/webui_url_constants.h",
   ],
 }

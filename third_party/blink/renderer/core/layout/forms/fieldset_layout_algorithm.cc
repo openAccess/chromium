@@ -144,7 +144,9 @@ const LayoutResult* FieldsetLayoutAlgorithm::Layout() {
 #endif
   }
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  DCHECK_EQ(oof_status, LayoutResult::kSuccess);
 
   const auto& style = Style();
   if (style.LogicalHeight().MayHavePercentDependence() ||
@@ -319,7 +321,7 @@ void FieldsetLayoutAlgorithm::LayoutLegend(BlockNode& legend) {
 
   LogicalOffset legend_offset = {legend_inline_start, block_offset};
 
-  container_builder_.AddResult(*result, legend_offset);
+  container_builder_.AddResult(*result, legend_offset, legend_margins);
 }
 
 BreakStatus FieldsetLayoutAlgorithm::LayoutFieldsetContent(
@@ -407,7 +409,7 @@ BreakStatus FieldsetLayoutAlgorithm::LayoutFieldsetContent(
   if (break_status == BreakStatus::kContinue) {
     DCHECK_EQ(result->Status(), LayoutResult::kSuccess);
     LogicalOffset offset(Borders().inline_start, intrinsic_block_size_);
-    container_builder_.AddResult(*result, offset);
+    container_builder_.AddResult(*result, offset, /*margins=*/BoxStrut());
 
     const auto& fragment =
         To<PhysicalBoxFragment>(result->GetPhysicalFragment());

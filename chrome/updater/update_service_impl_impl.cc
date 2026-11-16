@@ -31,6 +31,7 @@
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
+#include "base/rand_util.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -794,15 +795,13 @@ void UpdateServiceImplImpl::RegisterApp(
                                         enterprise_companion::kCompanionAppId);
   config_->GetUpdaterPersistedData()->RegisterApp(request);
   if (send_event) {
-    update_client::CrxComponent install_data;
-    install_data.ap = request.ap;
-    install_data.app_id = request.app_id;
-    install_data.brand = request.brand_code;
-    install_data.lang = request.lang.value_or("");
-    install_data.requires_network_encryption = false;
-    install_data.version = base::Version(request.version);
     update_client_->SendPing(
-        install_data,
+        {.app_id = request.app_id,
+         .version = base::Version(request.version),
+         .ap = request.ap,
+         .brand = request.brand_code,
+         .lang = request.lang.value_or(""),
+         .requires_network_encryption = false},
         {.event_type = update_client::protocol_request::kEventInstall,
          .result = update_client::protocol_request::kEventResultSuccess},
         base::BindOnce([](update_client::Error error) {
@@ -1163,11 +1162,17 @@ void UpdateServiceImplImpl::UpdateAll(
   VLOG(1) << __func__;
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  auto app_ids = config_->GetUpdaterPersistedData()->GetAppIds();
+  std::vector<std::string> app_ids =
+      config_->GetUpdaterPersistedData()->GetAppIds();
 
   CHECK(std::ranges::contains(
       app_ids, base::ToLowerASCII(kUpdaterAppId),
       static_cast<std::string (*)(std::string_view)>(&base::ToLowerASCII)));
+
+  // Apps are checked and installed in this order, so randomize it to keep an
+  // app that fails, hangs, or runs out of time from always delaying the apps
+  // after it.
+  base::RandomShuffle(app_ids.begin(), app_ids.end());
 
   constexpr Priority kPriority = Priority::kBackground;
 
@@ -1606,18 +1611,16 @@ void UpdateServiceImplImpl::RunInstallerImpl(
               // Send an install ping. In some environments the ping cannot be
               // sent, so do not wait for it to be sent before calling back
               // the client.
-              update_client::CrxComponent install_data;
-              install_data.ap = ap;
-              install_data.app_id = app_id;
-              install_data.lang = language;
-              install_data.brand = brand;
-              install_data.requires_network_encryption = false;
-              install_data.install_source = install_source.empty()
-                                                ? kInstallSourceOffline
-                                                : install_source;
-              install_data.version = installer_version;
               update_client->SendPing(
-                  install_data,
+                  {.app_id = app_id,
+                   .version = installer_version,
+                   .ap = ap,
+                   .brand = brand,
+                   .lang = language,
+                   .requires_network_encryption = false,
+                   .install_source = install_source.empty()
+                                         ? kInstallSourceOffline
+                                         : install_source},
                   {.event_type = update_client::protocol_request::kEventInstall,
                    .result =
                        result.result.category ==

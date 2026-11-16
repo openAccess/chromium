@@ -129,21 +129,6 @@ chromium-metrics-reviews@google.com.
   <int value="5" label="Prefill request not sent - not enough time."/>
 </enum>
 
-<!--  LINT.IfChange(AtMemoryFailedToOpenReason) -->
-
-<enum name="AtMemoryFailedToOpenReason">
-  <int value="0" label="Opened: all prerequisites were met"/>
-  <int value="1" label="No browser or no web state list"/>
-  <int value="2" label="No active web state"/>
-  <int value="3" label="No autofill client"/>
-  <int value="4" label="No AtMemory manager"/>
-  <int value="5" label="No autofill manager for the primary main frame"/>
-  <int value="6" label="No focused field"/>
-  <int value="7" label="The AtMemory UI is already open"/>
-</enum>
-
-<!-- LINT.ThenChange(//ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h:AtMemoryFailedToOpenReason) -->
-
 <!--  LINT.IfChange(AttemptFormFillingToolEvent) -->
 
 <enum name="AttemptFormFillingToolEvent">
@@ -726,6 +711,17 @@ Called by update_autofill_enums.py.-->
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiUpsertDetailsCacheStatus) -->
 
+<!-- LINT.IfChange(AutofillAiVerificationDecision) -->
+
+<enum name="AutofillAiVerificationDecision">
+  <int value="0" label="Hide (undo field filling, suppress entity)"/>
+  <int value="1" label="Dismiss (keep field filling)"/>
+  <int value="2" label="Confirm (keep field filling)"/>
+  <int value="3" label="Undo (undo field filling)"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/foundations/autofill_client.h:AutofillAiVerificationDecision) -->
+
 <!-- LINT.IfChange(AutofillAiWalletManagementUrlSyncStatus) -->
 
 <enum name="AutofillAiWalletManagementUrlSyncStatus">
@@ -748,7 +744,7 @@ Called by update_autofill_enums.py.-->
   <int value="6" label="Entity not saved"/>
 </enum>
 
-<!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiWalletNoticeFunnelEvents) -->
+<!-- LINT.ThenChange(/components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h:AutofillAiWalletNoticeFunnelEvents, /chrome/browser/resources/settings/metrics_browser_proxy.ts:AutofillAiWalletNoticeFunnelEvents) -->
 
 <enum name="AutofillAlternativeNameFieldValueCharacterSet">
   <int value="0" label="Katakana"/>
@@ -3335,6 +3331,16 @@ Called by update_autofill_enums.py.-->
   <int value="4" label="Editor closed without changes"/>
 </enum>
 
+<!-- LINT.IfChange(AutofillPaymentsRpcResultMetric) -->
+
+<enum name="AutofillPaymentsRpcResultMetric">
+  <int value="0" label="Success"/>
+  <int value="1" label="Failure"/>
+  <int value="2" label="Timeout"/>
+</enum>
+
+<!-- LINT.ThenChange(/components/autofill/core/browser/metrics/payments/payments_rpc_metrics.h:PaymentsRpcResultMetric) -->
+
 <enum name="AutofillPhoneImportValidity">
   <int value="0" label="None: No phone number in import"/>
   <int value="1" label="Valid: Phone number was imported"/>
@@ -4329,6 +4335,11 @@ Called by update_autofill_enums.py.-->
   <int value="2" label="Not shown, required delay has not passed"/>
   <int value="3" label="Not shown, CVC missing for possible card update"/>
   <int value="4" label="Not shown, CVC missing for UnionPay upload"/>
+  <int value="5" label="Not shown, another prompt is showing"/>
+  <int value="6"
+      label="Not shown, another prompt is queued or the prompt can't be shown
+             in the tab"/>
+  <int value="7" label="Not shown, queued but discarded before showing"/>
 </enum>
 
 <!-- TODO(crbug.com/430588721): Clean up use of AutofillSavePaymentMethodPromptResultEnum once refactored save card metrics have rolled out. -->
@@ -5870,6 +5881,8 @@ Called by update_autofill_enums.py.-->
 
 <!-- LINT.ThenChange(/components/one_time_tokens/android/backend/common/java/src/org/chromium/components/one_time_tokens/backend/OneTimeTokensBackendErrorCode.java) -->
 
+<!-- LINT.IfChange(OneTimeTokensPhishGuardVerdict) -->
+
 <enum name="OneTimeTokensPhishGuardVerdict">
   <summary>
     The verdict of a PhishGuard check before offering to autofill one-time
@@ -5878,7 +5891,10 @@ Called by update_autofill_enums.py.-->
   <int value="0" label="Unknown"/>
   <int value="1" label="Phishing"/>
   <int value="2" label="Not Phishing"/>
+  <int value="3" label="Timed Out"/>
 </enum>
+
+<!-- LINT.ThenChange(//components/autofill/core/browser/integrators/one_time_tokens/otp_types.h:OneTimeTokensPhishGuardVerdict) -->
 
 <!-- LINT.IfChange(OneTimeTokensTickleArrival) -->
 
@@ -5993,6 +6009,7 @@ Called by update_autofill_enums.py.-->
   <int value="9" label="Find and Fill with Gemini settings disabled"/>
   <int value="10" label="Not G1 subscriber or Android premium device"/>
   <int value="11" label="Eligible"/>
+  <int value="12" label="Unsupported Glic provider"/>
 </enum>
 
 <!-- LINT.ThenChange(//components/personal_context/core/personal_context_types.h:PersonalContextNonEligibilityReason) -->
@@ -6126,16 +6143,6 @@ Called by update_autofill_enums.py.-->
 </enum>
 
 <!-- LINT.ThenChange(/components/autofill/core/browser/metrics/payments/save_and_fill_metrics.h:SaveAndFillFunnelSucceededStage) -->
-
-<!-- LINT.IfChange(SaveAndFillPaymentsRequestResult) -->
-
-<enum name="SaveAndFillPaymentsRequestResult">
-  <int value="0" label="Success"/>
-  <int value="1" label="Failure"/>
-  <int value="2" label="Timeout"/>
-</enum>
-
-<!-- LINT.ThenChange(/components/autofill/core/browser/metrics/payments/save_and_fill_metrics.h:SaveAndFillPaymentsRequestResult) -->
 
 <!-- LINT.IfChange(SaveAndFillSuggestionEvent) -->
 
@@ -6462,6 +6469,7 @@ Called by update_autofill_enums.py.-->
   <int value="3" label="Identity docs"/>
   <int value="4" label="Travel"/>
   <int value="5" label="Shopping"/>
+  <int value="6" label="Offers and loyalty cards"/>
 </enum>
 
 <!-- LINT.ThenChange(/chrome/browser/resources/settings/metrics_browser_proxy.ts:YourSavedInfoDataCategory, /chrome/android/java/src/org/chromium/chrome/browser/autofill/settings/AutofillAndPasswordsFragment.java:YourSavedInfoDataCategory, /ios/chrome/browser/settings/autofill/autofill_and_passwords/coordinator/autofill_and_passwords_coordinator.mm:YourSavedInfoDataCategory) -->

@@ -13,6 +13,7 @@
 #include "base/time/time.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
+#include "components/one_time_tokens/core/browser/sms_otp_service.h"
 #include "url/origin.h"
 
 namespace autofill {
@@ -75,6 +76,11 @@ bool OtpTokenIdentity::IsStrictlyNewerThan(
   return on_device_arrival > other.on_device_arrival;
 }
 
+base::TimeDelta OtpTokenIdentity::CacheDuration() const {
+  return sender.has_value() ? kGmailOtpCacheDuration
+                            : one_time_tokens::kCacheDurationForOldTokens;
+}
+
 OtpCandidate::OtpCandidate(one_time_tokens::OneTimeToken token,
                            url::Origin verified_origin,
                            LocalFrameToken verified_frame)
@@ -108,6 +114,8 @@ std::string_view OneTimeTokensPhishGuardVerdictToStringView(
       return "kPhishing";
     case OneTimeTokensPhishGuardVerdict::kNotPhishing:
       return "kNotPhishing";
+    case OneTimeTokensPhishGuardVerdict::kTimedOut:
+      return "kTimedOut";
   }
   NOTREACHED();
 }

@@ -19,6 +19,7 @@
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/gmock_expected_support.h"
@@ -42,6 +43,7 @@
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
+#include "chrome/browser/glic/public/service/glic_activity_manager.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
 #include "chrome/browser/glic/service/glic_ui_embedder.h"
@@ -761,6 +763,10 @@ class GlicBrowserTestMixin : public T {
   GlicInstanceCoordinatorImpl& coordinator() {
     return static_cast<GlicInstanceCoordinatorImpl&>(
         service()->instance_coordinator());
+  }
+
+  GlicActivityManager& activity_manager() {
+    return service()->activity_manager();
   }
 
   // Opens a new tab with the given URL and wait for load to complete.

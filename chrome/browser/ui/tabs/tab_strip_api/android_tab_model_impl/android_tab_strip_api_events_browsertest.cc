@@ -5,6 +5,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/gtest_util.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_model_event_bridge.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_api_injector.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_model_adapter.h"
 #include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/testing/utils.h"
@@ -215,8 +216,8 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest,
   EXPECT_THAT(
       client.received,
       ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
-        return change->data->id == NodeId::FromTabHandle(handle0) &&
-               change->data->is_active;
+        return change->data.id == NodeId::FromTabHandle(handle0) &&
+               change->data.is_active;
       })));
 }
 
@@ -235,7 +236,7 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest, EndToEndEvents) {
   auto result = service_->CreateTabAt(std::nullopt, std::nullopt);
   ASSERT_TRUE(result.has_value());
   auto tab1 = std::move(result.value());
-  auto id1 = tab1->id;
+  auto id1 = tab1.id;
 
   // We expect 3 events: tab created, deselect handle0, select tab1.
   // On Android, the JNI notification split between selection and activation
@@ -252,20 +253,20 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest, EndToEndEvents) {
               ::testing::Contains(
                   TabsCreated([&](const mojom::OnTabsCreatedEventPtr& event) {
                     return event->tabs.size() == 1u &&
-                           event->tabs[0]->tab->id == id1 &&
+                           event->tabs[0]->tab.id == id1 &&
                            event->tabs[0]->position.index() == 1u;
                   })));
   EXPECT_THAT(
       client.received,
       ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
-        return change->data->id == id0 && !change->data->is_active &&
-               !change->data->is_selected;
+        return change->data.id == id0 && !change->data.is_active &&
+               !change->data.is_selected;
       })));
   EXPECT_THAT(
       client.received,
       ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
-        return change->data->id == id1 && change->data->is_active &&
-               change->data->is_selected;
+        return change->data.id == id1 && change->data.is_active &&
+               change->data.is_selected;
       })));
 
   client.received.clear();
@@ -286,14 +287,14 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest, EndToEndEvents) {
   EXPECT_THAT(
       client.received,
       ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
-        return change->data->id == id0 && change->data->is_active &&
-               change->data->is_selected;
+        return change->data.id == id0 && change->data.is_active &&
+               change->data.is_selected;
       })));
   EXPECT_THAT(
       client.received,
       ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
-        return change->data->id == id1 && !change->data->is_active &&
-               !change->data->is_selected;
+        return change->data.id == id1 && !change->data.is_active &&
+               !change->data.is_selected;
       })));
 
   client.received.clear();
@@ -332,6 +333,73 @@ IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest, EndToEndEvents) {
               NodesClosed([&](const mojom::OnNodesClosedEventPtr& event) {
                 return event->node_ids.size() == 1 && event->node_ids[0] == id1;
               }));
+}
+
+IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest,
+                       EmptyTabModelAndAddTab) {
+  ASSERT_EQ(1, model_->GetTabCount());
+  model_->CloseTab(model_->GetTab(0)->GetHandle());
+  ASSERT_EQ(0, model_->GetTabCount());
+  ASSERT_EQ(nullptr, model_->GetActiveTab());
+
+  // Constructing a new injector + service when the TabModel has 0 tabs
+  // (active_tab == nullptr) should succeed and emit events when tabs are added.
+  auto empty_injector = std::make_unique<AndroidTabStripApiInjector>(
+      model_, TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE);
+  auto empty_service =
+      std::make_unique<TabStripServiceImpl>(std::move(empty_injector));
+
+  TestTabStripClient client;
+  empty_service->AddObserver(&client);
+  absl::Cleanup cleanup = [&] {
+    empty_service->RemoveObserver(&client);
+    empty_service.reset();
+  };
+
+  GURL url("http://why.hello.there");
+  model_->OpenTab(url, 0);
+  ASSERT_EQ(1, model_->GetTabCount());
+  const NodeId new_id = NodeId::FromTabHandle(model_->GetTab(0)->GetHandle());
+
+  EXPECT_THAT(client.received,
+              ::testing::Contains(
+                  TabsCreated([&](const mojom::OnTabsCreatedEventPtr& event) {
+                    return event->tabs.size() == 1u &&
+                           event->tabs[0]->tab.id == new_id;
+                  })));
+  EXPECT_THAT(
+      client.received,
+      ::testing::Contains(TabChanged([&](const mojom::TabChangePtr& change) {
+        return change->data.id == new_id && change->data.is_active;
+      })));
+}
+
+IN_PROC_BROWSER_TEST_F(AndroidTabStripApiEventsBrowserTest,
+                       OnTabModelDestroyedDetachesCleanly) {
+  auto injector = std::make_unique<AndroidTabStripApiInjector>(
+      model_, TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE);
+  auto local_service =
+      std::make_unique<TabStripServiceImpl>(std::move(injector));
+
+  TestTabStripClient client;
+  local_service->AddObserver(&client);
+
+  // Obtain a separate bridge to simulate TabModel firing OnTabModelDestroyed
+  // prior to ~AndroidTabModelEventBridge() during TabCollectionTabModelImpl
+  // teardown.
+  auto standalone_injector = std::make_unique<AndroidTabStripApiInjector>(
+      model_, TabModel::TabLaunchType::FROM_TAB_LIST_INTERFACE);
+  auto& bridge = static_cast<AndroidTabModelEventBridge&>(
+      standalone_injector->event_bridge());
+  bridge.OnTabModelDestroyed(*model_);
+
+  // Subsequent mutations on `model_` must not crash the detached bridge, and
+  // destroying `standalone_injector` afterwards must not double-unregister.
+  model_->DuplicateTab(model_->GetTab(0)->GetHandle());
+  standalone_injector.reset();
+
+  local_service->RemoveObserver(&client);
+  local_service.reset();
 }
 
 }  // namespace tabs_api

@@ -2,7 +2,7 @@ Name: ds_store
 Short Name: ds_store
 URL: https://github.com/dmgbuild/ds_store
 Version: N/A
-Revision: a17319ceaac6c6c6d6b6ec47b9dc97d099555f06
+Revision: e94c714c6d1cd25e17eae5597e405eec5ba184b9
 Update Mechanism: Autoroll
 License: MIT
 License File: src/LICENSE
@@ -14,4 +14,5 @@ A Python library for manipulating macOS .DS_Store files. Used to generate the
 assets distributed in Chrome DMG installers.
 
 Local Modifications:
-None
+Added ds_store.dist-info/METADATA stub so importlib.metadata.version() succeeds
+when imported directly from the source checkout via sys.path.

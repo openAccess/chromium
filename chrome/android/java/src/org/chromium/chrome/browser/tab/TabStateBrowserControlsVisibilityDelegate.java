@@ -30,15 +30,17 @@ import org.chromium.chrome.browser.device.DeviceClassManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.util.ChromeAccessibilityUtil;
 import org.chromium.components.browser_ui.util.BrowserControlsVisibilityDelegate;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.security_state.SecurityStateModel;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.browser.ImeAdapter;
 import org.chromium.content_public.browser.ImeEventObserver;
 import org.chromium.content_public.browser.NavigationHandle;
 import org.chromium.content_public.browser.WebContents;
+import org.chromium.ui.base.PageTransition;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.url.GURL;
+import org.chromium.url.Origin;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -53,6 +55,7 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
         implements ImeEventObserver {
     private static final String TAG = "BrowserControls";
     protected static final int MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD = 1;
+    private static final int MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD = 2;
 
     /** The maximum amount of time to wait for a page to load before entering fullscreen. */
     private static final long MAX_FULLSCREEN_LOAD_DELAY_MS = 3000;
@@ -97,8 +100,25 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
     // There shouldn't be very many outstanding navigations at once so an ArraySet should be fine.
     private final Set<Long> mOutstandingNavigations = new ArraySet<>();
 
-    // Outstanding navigations that skipped the load lock (ClankOmniboxSameOriginMinimization).
+    // Outstanding navigations that skipped the load lock (ClankOmniboxMinimization). They take the
+    // lock if they do not finish within the slow-load fallback delay, or if the tab is hidden.
+    // Always a subset of mOutstandingNavigations.
     private final Set<Long> mKeepHiddenNavigationIds = new ArraySet<>();
+
+    @SuppressLint("HandlerLeak")
+    private final Handler mHandler =
+            new Handler() {
+                @Override
+                public void handleMessage(Message msg) {
+                    if (msg == null) return;
+                    if (msg.what == MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD) {
+                        if (!mIsFullscreenWaitingForLoad) return;
+                        updateWaitingForLoad(false);
+                    } else if (msg.what == MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD) {
+                        lockKeptHiddenNavigations();
+                    }
+                }
+            };
 
     /**
      * Basic constructor.
@@ -109,19 +129,6 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
         mTab = (TabImpl) tab;
         mTab.addObserver(
                 new TabObserver() {
-                    @SuppressLint("HandlerLeak")
-                    private final Handler mHandler =
-                            new Handler() {
-                                @Override
-                                public void handleMessage(Message msg) {
-                                    if (msg == null) return;
-                                    if (msg.what == MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD) {
-                                        if (!mIsFullscreenWaitingForLoad) return;
-                                        updateWaitingForLoad(false);
-                                    }
-                                }
-                            };
-
                     @Override
                     public void onContentChanged(Tab tab) {
                         onWebContentsUpdated(tab.getWebContents());
@@ -138,13 +145,20 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
 
                         mHandler.removeMessages(MSG_ID_ENABLE_FULLSCREEN_AFTER_LOAD);
 
-                        if (shouldKeepControlsHiddenOnStart(navigation)) {
+                        int fallbackShowAfterMs =
+                                BrowserControlsUtils.getSameOriginOmniboxFallbackShowAfterMs();
+                        if (shouldKeepControlsHiddenOnStart(navigation, fallbackShowAfterMs)) {
                             // Keep any existing lock: another navigation may commit cross-origin.
-                            // TODO(crbug.com/579544014): Schedule the slow-load reveal.
                             mKeepHiddenNavigationIds.add(navigation.getNavigationId());
+                            // Keep the deadline of the first kept-hidden navigation while any
+                            // kept-hidden navigation is in flight.
+                            if (!mHandler.hasMessages(MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD)) {
+                                mHandler.sendEmptyMessageDelayed(
+                                        MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD, fallbackShowAfterMs);
+                            }
                             return;
                         }
-                        boolean safe = DomDistillerUrlUtils.isDistilledPage(navigation.getUrl());
+                        boolean safe = WebDistillerUrlUtils.isDistilledPage(navigation.getUrl());
                         updateWaitingForLoad(!safe);
                     }
 
@@ -177,8 +191,8 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
                         // locked when the tab is shown again, otherwise hiding and showing the tab
                         // lets a page scroll the real URL away before the navigation commits. The
                         // lock is released as usual once the outstanding navigations finish.
-                        // TODO(crbug.com/579544014): Lock navigations in mKeepHiddenNavigationIds,
-                        // and clear the set in onWebContentsUpdated() to drop stale IDs.
+                        // Navigations that skipped the lock take it now.
+                        lockKeptHiddenNavigations();
                         if (!mOutstandingNavigations.isEmpty()) return;
                         updateWaitingForLoad(false);
                     }
@@ -289,13 +303,53 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
         return enableHidingBrowserControls;
     }
 
-    /** Returns whether a navigation can skip the load lock (ClankOmniboxSameOriginMinimization). */
-    private boolean shouldKeepControlsHiddenOnStart(NavigationHandle navigation) {
-        // TODO(crbug.com/579544759): Filter by navigation type.
-        return ChromeFeatureList.sClankOmniboxSameOriginMinimization.isEnabled()
+    /**
+     * Returns whether a navigation can skip the load lock (ClankOmniboxMinimization Exp A). A
+     * fallback delay of 0 ms or less shows the controls at once, so the navigation takes the lock.
+     *
+     * @param fallbackShowAfterMs The slow-load fallback delay, which is 0 if Exp A is off.
+     */
+    private boolean shouldKeepControlsHiddenOnStart(
+            NavigationHandle navigation, int fallbackShowAfterMs) {
+        return fallbackShowAfterMs > 0
                 && canKeepOmniboxHiddenInTab()
                 && areBrowserControlsOffScreen()
-                && isSameOriginHttpOrHttpsNavigation(navigation);
+                && isSameOriginHttpOrHttpsNavigation(navigation)
+                && isEligibleNavigationType(navigation);
+    }
+
+    /**
+     * Returns whether the type of a navigation lets the Omnibox stay hidden. These navigations are
+     * eligible: back and forward from the browser UI, and navigations that the page itself starts
+     * in its own origin. All other navigations keep the load lock.
+     *
+     * <p>A same-origin iframe or another same-origin window also passes, because Java has no
+     * initiator-frame signal.
+     */
+    private static boolean isEligibleNavigationType(NavigationHandle navigation) {
+        // Session restore also sets isHistory().
+        if (navigation.isRestore()) return false;
+        // Browser-initiated: only UI back/forward, which includes BFCache restores. Browser
+        // reloads (toolbar, pull-to-refresh) are not history, so they keep the lock.
+        if (!navigation.isRendererInitiated()) return navigation.isHistory();
+        // Renderer-initiated history: the initiator origin comes from the history entry, so the
+        // frame that called history.back() (main frame or iframe) is unknown. Keep the lock.
+        if (navigation.isHistory()) return false;
+        // Defense in depth: renderer-initiated FROM_API loads today have a null, opaque, or
+        // extension initiator, so isInitiatedBySameOrigin() also locks them.
+        if ((navigation.pageTransition() & PageTransition.FROM_API) != 0) return false;
+        // Only the page's own origin. Cross-origin, sandboxed, and data: iframes, and loads with an
+        // opaque initiator (Tab Group Sync, web sign-in redirect) keep the lock. A
+        // location.reload() call from the page passes, because a cross-origin frame cannot reload
+        // the top frame.
+        return isInitiatedBySameOrigin(navigation);
+    }
+
+    /** Returns whether the initiator origin of a navigation is the origin of its URL. */
+    private static boolean isInitiatedBySameOrigin(NavigationHandle navigation) {
+        Origin initiator = navigation.getInitiatorOrigin();
+        if (initiator == null) return false;
+        return initiator.equals(Origin.create(navigation.getUrl()));
     }
 
     private boolean isSameOriginHttpOrHttpsNavigation(NavigationHandle navigation) {
@@ -331,13 +385,22 @@ public class TabStateBrowserControlsVisibilityDelegate extends BrowserControlsVi
 
     private void onKeptHiddenNavigationFinished(NavigationHandle navigation) {
         if (!mKeepHiddenNavigationIds.remove(navigation.getNavigationId())) return;
+        if (mKeepHiddenNavigationIds.isEmpty()) {
+            mHandler.removeMessages(MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD);
+        }
         // TODO(crbug.com/579544758): Re-check the origin and error state at commit.
-        // TODO(crbug.com/579544014): Cancel the slow-load reveal.
     }
 
-    /**
-     * @return The constraints that determine the visibility of the browser controls.
-     */
+    /** Takes the load lock that the kept-hidden navigations skipped. */
+    private void lockKeptHiddenNavigations() {
+        if (mKeepHiddenNavigationIds.isEmpty()) return;
+        mHandler.removeMessages(MSG_ID_SHOW_CONTROLS_ON_SLOW_LOAD);
+        mKeepHiddenNavigationIds.clear();
+        // Released getLoadDelayMs() after the last outstanding navigation finishes.
+        updateWaitingForLoad(true);
+    }
+
+    /** Returns the constraints that determine the visibility of the browser controls. */
     protected @BrowserControlsState int calculateVisibilityConstraints() {
         return enableHidingBrowserControls()
                 ? BrowserControlsState.BOTH

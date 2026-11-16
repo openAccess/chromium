@@ -92,6 +92,7 @@ class BaseTabStripRegionView : public TabStripRegionView {
 
   // Views::View:
   void Layout(PassKey) override;
+  views::View* GetDefaultFocusableChild() override;
 
   void DisableTabStripEditingForTesting() override;
   gfx::Rect GetLinkDropBoundsForTesting(
@@ -144,6 +145,8 @@ class BaseTabStripRegionView : public TabStripRegionView {
   }
 
  private:
+  class TabStripObserverBridge;
+
   views::View* SetTabStripView(std::unique_ptr<views::View> view);
   void ClearTabStripView(views::View* view);
 
@@ -181,6 +184,9 @@ class BaseTabStripRegionView : public TabStripRegionView {
       on_active_tab_changed_subscription_;
 
   std::optional<base::TimeTicks> new_tab_button_pressed_start_time_;
+
+  raw_ptr<TabStripObserver> tab_strip_observer_ = nullptr;
+  std::unique_ptr<TabStripObserverBridge> tab_strip_observer_bridge_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BASE_TAB_STRIP_REGION_VIEW_H_

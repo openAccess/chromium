@@ -64,13 +64,11 @@ class CORE_EXPORT LayoutVideo final : public LayoutMedia {
 
   void NaturalSizeChanged() override;
 
-  OverflowClipAxes ComputeOverflowClipAxes() const final {
-    NOT_DESTROYED();
-    return RespectsCSSOverflow() ? LayoutMedia::ComputeOverflowClipAxes()
-                                 : kOverflowClipBothAxis;
-  }
-
  private:
+  bool RespectsCSSOverflow() const final {
+    NOT_DESTROYED();
+    return true;
+  }
   void UpdateAfterLayout() final;
   void UpdateFromElement() final;
   void InvalidateCompositing();

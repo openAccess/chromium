@@ -9,23 +9,20 @@ import type {OrganizerListSectionHeaderElement} from './organizer_list_section_h
 export function getHtml(this: OrganizerListSectionHeaderElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
-<cr-expand-button id="expandButton" no-hover ?expanded="${this.expanded}"
-    ?disabled="${this.disabled}" @expanded-changed="${this.onExpandedChanged_}"
+<cr-expand-button id="expandButton" role="heading" aria-level="2" no-hover
+    ?expanded="${this.expanded}" ?disabled="${this.disabled}"
+    @expanded-changed="${this.onExpandedChanged_}"
     @keydown="${this.onExpandButtonKeydown_}" expand-title="$i18n{expand}"
-    collapse-title="$i18n{collapse}" aria-label="${this.title}">
-  <div id="headerContent">
-    <span id="headerTitle">${this.title}</span>
-    <!-- TODO(crbug.com/579998073): Find a way to avoid nesting under
-         aria-hidden -->
-    <cr-icon-button id="menuButton" iron-icon="cr:more-vert"
-        aria-label="$i18n{options}" title="$i18n{options}" tabindex="-1"
-        @focus="${this.onMenuButtonFocus_}" @blur="${this.onMenuButtonBlur_}"
-        @click="${this.onMenuButtonClick_}"
-        @keydown="${this.onMenuButtonKeydown_}">
-    </cr-icon-button>
-  </div>
+    collapse-title="$i18n{collapse}" aria-label="${this.title}"
+    .ariaDescription="${this.getExpandButtonAriaDescription_()}">
+  <span id="headerTitle">${this.title}</span>
 </cr-expand-button>
+<cr-icon-button id="menuButton" iron-icon="cr:more-vert"
+    aria-label="${this.getMenuAriaLabel_()}" title="$i18n{options}"
+    @click="${this.onMenuButtonClick_}" @keydown="${this.onMenuButtonKeydown_}">
+</cr-icon-button>
 <cr-action-menu id="menu" auto-close-on-focusout
+    accessibility-label="${this.getMenuAriaLabel_()}"
     @open-changed="${this.onMenuOpenChanged_}">
   <button id="showSomeButton" class="dropdown-item" role="menuitemradio"
       aria-checked="${!this.showAll}" @click="${this.onShowSomeClick_}">

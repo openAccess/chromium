@@ -6,11 +6,15 @@
 #define CHROME_BROWSER_PICTURE_IN_PICTURE_AUTO_PICTURE_IN_PICTURE_TAB_MODEL_OBSERVER_HELPER_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_multi_source_observation.h"
+#include "base/scoped_observation.h"
 #include "chrome/browser/picture_in_picture/auto_picture_in_picture_tab_observer_helper_base.h"
+#include "chrome/browser/profiles/profile_observer.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list_observer.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_observer.h"
 
+class Profile;
 class TabModel;
 class TabAndroid;
 
@@ -23,6 +27,7 @@ class WebContents;
 // or inactive.
 class AutoPictureInPictureTabModelObserverHelper final
     : public AutoPictureInPictureTabObserverHelperBase,
+      public ProfileObserver,
       public TabModelObserver,
       public TabModelListObserver {
  public:
@@ -44,13 +49,15 @@ class AutoPictureInPictureTabModelObserverHelper final
   content::WebContents* GetActiveWebContents() const override;
   bool IsTabActivated() override;
 
+  // ProfileObserver:
+  void OnProfileWillBeDestroyed(Profile* profile) override;
+
   // TabModelObserver:
   void DidSelectTab(TabAndroid* tab) override;
   void TabRemoved(TabAndroid* tab) override;
   void WillCloseTabs(const std::vector<TabAndroid*>& tabs,
                      bool is_all_tabs,
                      bool allow_undo) override;
-  void WillCloseTab(TabAndroid* tab) override;
 
   // TabModelListObserver:
   void OnTabModelAdded(TabModel* model) override;
@@ -68,6 +75,9 @@ class AutoPictureInPictureTabModelObserverHelper final
   raw_ptr<TabModel> observed_tab_model_ = nullptr;
   bool is_tab_activated_ = false;
   bool is_observing_ = false;
+  base::ScopedObservation<Profile, ProfileObserver> profile_observation_{this};
+  base::ScopedMultiSourceObservation<TabModel, TabModelObserver>
+      tab_model_observations_{this};
 };
 
 #endif  // CHROME_BROWSER_PICTURE_IN_PICTURE_AUTO_PICTURE_IN_PICTURE_TAB_MODEL_OBSERVER_HELPER_H_

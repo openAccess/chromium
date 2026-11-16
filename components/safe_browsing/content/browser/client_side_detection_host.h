@@ -16,17 +16,19 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/safe_browsing/content/browser/url_checker/async_check_tracker.h"
 #include "components/safe_browsing/content/common/safe_browsing.mojom.h"
-#include "components/safe_browsing/core/browser/client_side_detection_host_base.h"
-#include "components/safe_browsing/core/browser/credit_card_form_event.h"
-#include "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
+#include "components/safe_browsing/core/browser/client_side_detection/client_side_detection_host_base.h"
+#include "components/safe_browsing/core/browser/client_side_detection/credit_card_form_event.h"
+#include "components/safe_browsing/core/browser/client_side_detection/intelligent_scan_delegate/intelligent_scan_delegate.h"
 #include "components/safe_browsing/core/common/visual_utils.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
@@ -34,7 +36,7 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "components/safe_browsing/core/browser/referring_app_info.h"  // nogncheck
+#include "components/safe_browsing/core/browser/referring_app_info/referring_app_info.h"  // nogncheck
 #endif
 
 class PrefService;
@@ -76,6 +78,7 @@ class ClientSideDetectionHost
   bool IsErrorDocument() override;
   std::optional<double> GetSiteEngagementScore(const GURL& url) const override;
   void GetInnerText(HostInnerTextCallback callback) override;
+  std::string GetPageTitle() const override;
   void MaybeStartImageEmbedding(
       std::unique_ptr<ClientPhishingRequest> verdict,
       std::optional<bool> did_match_high_confidence_allowlist,
@@ -118,6 +121,52 @@ class ClientSideDetectionHost
   // Callback for when preclassification is started.
   using PreclassificationStarted =
       base::RepeatingCallback<void(ClientSideDetectionType)>;
+
+  // Outcome of a browser-side page capture
+  // (`kClientSideDetectionCopyFromSurface`). These values are persisted to
+  // logs. Entries should not be renumbered and numeric values should never be
+  // reused.
+  //
+  // LINT.IfChange(BrowserCaptureResult)
+  enum class BrowserCaptureResult {
+    kSuccess = 0,
+    // The WebContents has no RenderWidgetHostView.
+    kViewMissing = 1,
+    // The view is visible but has no compositing surface to copy.
+    kSurfaceUnavailable = 2,
+    // `CopyFromSurface()` reported an error (see
+    // SBClientPhishing.BrowserCaptureCopyFromSurfaceError).
+    kCopyFailed = 3,
+    // `CopyFromSurface()` succeeded but produced an empty bitmap.
+    kEmptyBitmap = 4,
+    // `CopyFromSurface()` did not run its callback within the timeout.
+    kTimedOut = 5,
+    // A newer capture request replaced this one before it completed.
+    kSuperseded = 6,
+    kMaxValue = kSuperseded,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/sb_client/enums.xml:SBClientPhishingBrowserCaptureResult)
+
+  // Wraps the `RenderWidgetHostView` calls used by the browser-side page
+  // capture so that tests can fake them: the test view never has a compositing
+  // surface.
+  class VisualCapturer {
+   public:
+    using CopyCallback =
+        base::OnceCallback<void(const content::CopyFromSurfaceResult&)>;
+
+    virtual ~VisualCapturer() = default;
+
+    // Whether `web_contents` has a view whose surface can be copied right now.
+    virtual bool IsSurfaceAvailableForCopy(content::WebContents* web_contents);
+
+    // Copies the view's surface, scaled to the view's size in
+    // Device-Independent Pixels (DIPs), and runs `callback` on the calling
+    // sequence.
+    virtual void CopyFromSurface(content::WebContents* web_contents,
+                                 base::TimeDelta timeout,
+                                 CopyCallback callback);
+  };
 
   // Delegate which allows to provide embedder specific implementations.
   class Delegate {
@@ -193,6 +242,10 @@ class ClientSideDetectionHost
   void DidFirstVisuallyNonEmptyPaint() override;
   void OnFirstContentfulPaintInPrimaryMainFrame(
       base::TimeTicks presentation_time) override;
+  void DocumentOnLoadCompletedInPrimaryMainFrame() override;
+  void OnVisibilityChanged(content::Visibility visibility) override;
+  void PrimaryMainFrameRenderProcessGone(
+      base::TerminationStatus status) override;
 
   // permissions::PermissionRequestManager::Observer methods:
   void OnPromptAdded() override;
@@ -224,6 +277,10 @@ class ClientSideDetectionHost
     preclassification_started_cb_for_testing_ = callback;
   }
 
+  // Replaces the `RenderWidgetHostView` wrapper used by the browser-side page
+  // capture.
+  void SetVisualCapturerForTesting(std::unique_ptr<VisualCapturer> capturer);
+
  protected:
   explicit ClientSideDetectionHost(
       content::WebContents* tab,
@@ -249,6 +306,7 @@ class ClientSideDetectionHost
   friend class ClientSideDetectionHostClipboardDataTest;
   friend class ClientSideDetectionHostGeminiAntiscamProtectionTest;
   friend class ClientSideDetectionHostPriorityTest;
+  friend class ClientSideDetectionHostKeyboardLockUniformImageDelayTest;
   friend class ClientSideDetectionHostPrerenderBrowserTest;
   friend class ClientSideDetectionHostPrerenderBrowserTest_Screenshot;
   class ShouldClassifyUrlRequest;
@@ -365,9 +423,14 @@ class ClientSideDetectionHost
 
   // ClientSideDetectionHostBase overrides:
   void CancelPendingRequests() override;
-  // Browser-side capture is not implemented for content platforms yet; runs
-  // `callback` with an empty image.
+  // Captures the primary page via `RenderWidgetHostView::CopyFromSurface()`
+  // once the document has loaded and the WebContents is visible; see
+  // `RequestCapture()`. Runs `callback` with an empty image on failure.
   void CaptureScreenshot(ScreenshotCallback callback) override;
+  // Reports a browser-side classification that stopped before the classifier
+  // ran through `PhishingDetectionDone()`, like the renderer does.
+  void OnVisualClassificationEarlyReturn(
+      VisualClassificationEarlyReturnReason reason) override;
   // Determines visual features extraction capabilities.
   // `can_extract_visual_features_result` will be used to handle visual features
   // in ClientPhishingRequest after.
@@ -405,6 +468,7 @@ class ClientSideDetectionHost
       std::optional<bool> did_match_high_confidence_allowlist,
       bool is_invalid_ip,
       std::string inner_text,
+      base::TimeTicks capture_start_time,
       const content::CopyFromSurfaceResult& result);
 
   // Called when the captured screenshot has been encoded into PNG bytes on a
@@ -436,6 +500,99 @@ class ClientSideDetectionHost
   // browser process instead of the renderer (crbug.com/454896977).
   void RecordSurfaceAvailabilityForCopy(
       ClientSideDetectionType request_type) const;
+
+  // --- Browser-side classification (kClientSideDetectionCopyFromSurface) ----
+
+  // A classification request that is captured and scored in the browser
+  // process instead of being sent to the renderer.
+  struct BrowserClassificationRequest {
+    GURL url;
+    ClientSideDetectionType request_type =
+        ClientSideDetectionType::CLIENT_SIDE_DETECTION_TYPE_UNSPECIFIED;
+    bool is_sample_ping = false;
+    std::optional<bool> did_match_high_confidence_allowlist;
+    bool is_invalid_ip = false;
+    base::TimeTicks start_time;
+  };
+
+  // Browser-side counterpart of the renderer's `StartPhishingDetection()`:
+  // applies the renderer's gates (scorer ready, not a session history
+  // navigation, http(s) URL, GET document), reporting failures through
+  // `PhishingDetectionDone()`, then captures the page and hands the image to
+  // `StartVisualClassification()`. A request still in flight is answered with
+  // CANCELLED first, as the renderer does.
+  void StartBrowserSideClassification(
+      ClientSideDetectionType request_type,
+      bool is_sample_ping,
+      std::optional<bool> did_match_high_confidence_allowlist,
+      bool is_invalid_ip);
+  void OnClassificationCaptureDone(const gfx::Image& image);
+  // If a browser-side classification (or its capture) is in flight, cancels it
+  // and reports `CLASSIFICATION_CANCELLED` while keeping CSD marked as running
+  // for the incoming request.
+  void CancelPendingBrowserSideClassification();
+  // Answers `browser_classification_` with `result` (a failure) through
+  // `PhishingDetectionDone()` and clears it.
+  void FinishBrowserSideClassification(PhishingDetectorResult result);
+
+  // Why a capture was requested; only used to pair captures with the request
+  // they belong to.
+  enum class CapturePurpose { kClassification, kImageEmbedding };
+
+  enum class CaptureStage {
+    // Waiting for DocumentOnLoadCompletedInPrimaryMainFrame().
+    kWaitingForLoad,
+    // Waiting for OnVisibilityChanged(VISIBLE).
+    kWaitingForVisibility,
+    // Waiting for the `CopyFromSurface()` result or the watchdog.
+    kCopying,
+  };
+
+  // The page capture in progress.
+  struct PendingCapture {
+    PendingCapture(int capture_id,
+                   CapturePurpose purpose,
+                   ScreenshotCallback callback);
+    PendingCapture(const PendingCapture&) = delete;
+    PendingCapture& operator=(const PendingCapture&) = delete;
+    ~PendingCapture();
+
+    int capture_id;
+    CapturePurpose purpose;
+    ScreenshotCallback callback;
+    CaptureStage stage = CaptureStage::kWaitingForLoad;
+    ClientSideDetectionType request_type =
+        ClientSideDetectionType::CLIENT_SIDE_DETECTION_TYPE_UNSPECIFIED;
+    base::TimeTicks requested_at;
+    base::TimeTicks copy_started_at;
+    base::OneShotTimer watchdog_timer;
+  };
+
+  // Starts the capture pipeline. Runs `callback` with the captured image, or
+  // an empty image on failure. Only one capture is outstanding at a time; a
+  // new request supersedes the previous one. The pipeline waits for the
+  // primary document to finish loading, waits for the WebContents to become
+  // visible, and then copies the surface with `kCsdCopyFromSurfaceTimeout`
+  // (plus a browser-side watchdog).
+  void RequestCapture(CapturePurpose purpose, ScreenshotCallback callback);
+  // Runs `callback` with an empty image for a superseded image-embedding
+  // capture while keeping `is_csd_running()` set if the newer request is still
+  // active.
+  void RunSupersededCaptureCallback(ScreenshotCallback callback);
+  // Copies the surface if the tab is visible, or parks in
+  // `kWaitingForVisibility` until OnVisibilityChanged(VISIBLE).
+  void ScheduleSurfaceCopy();
+  void MaybeCopySurface();
+  void OnCopyFromSurfaceDone(int capture_id,
+                             const content::CopyFromSurfaceResult& result);
+  void OnCopyFromSurfaceTimeout();
+  // Completes the pending capture, recording `result`, and runs its callback
+  // with `image` (empty unless `result` is kSuccess).
+  void FinishCapture(BrowserCaptureResult result, const gfx::Image& image);
+  void RecordCaptureResult(const PendingCapture& capture,
+                           BrowserCaptureResult result) const;
+  // Drops the pending capture, if any, without running its callback.
+  void DropPendingCapture();
 
   // Note: This method has the same name as the one in the base class but
   // different parameter types (Mojo types). It converts them and calls the
@@ -564,6 +721,20 @@ class ClientSideDetectionHost
   // The high resolution screenshot of the current tab. Should only be populated
   // when a user reports a site as unsafe.
   std::optional<SkBitmap> screenshot_;
+
+  // State of the browser-side classification request currently being captured
+  // or scored (`kClientSideDetectionCopyFromSurface`). Cleared when the request
+  // is answered before the classifier runs or cancelled; otherwise it goes
+  // stale once the base class reports the result, which `is_classifying()`
+  // reflects.
+  std::optional<BrowserClassificationRequest> browser_classification_;
+
+  // The page capture in progress, if any.
+  std::optional<PendingCapture> pending_capture_;
+  // Identifies `pending_capture_` so that stale posted tasks and copy results
+  // can be told apart from the current capture's.
+  int next_capture_id_ = 0;
+  std::unique_ptr<VisualCapturer> visual_capturer_;
 
   base::WeakPtrFactory<ClientSideDetectionHost> weak_factory_{this};
 };

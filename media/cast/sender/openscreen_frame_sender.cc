@@ -158,12 +158,17 @@ base::TimeDelta OpenscreenFrameSender::GetInFlightMediaDuration() const {
   base::TimeDelta duration = client_->GetEncoderBacklogDuration();
 
   // If we have sent at least one frame, then include the duration currently
-  // in flight (as recorded by the Open Screen sender).
+  // in flight (as recorded by the Open Screen sender), capping per-frame
+  // duration so static screen gaps between in-flight frames do not inflate
+  // the backlog.
   if (!last_enqueued_frame_id_.is_null()) {
     const RtpTimeTicks newest_timestamp =
         GetRecordedRtpTimestamp(last_enqueued_frame_id_);
-    duration +=
-        ToTimeDelta(sender_->GetInFlightMediaDuration(newest_timestamp));
+    const base::TimeDelta max_in_flight_duration =
+        GetUnacknowledgedFrameCount() * base::Seconds(1.0 / max_frame_rate_);
+    duration += std::min(
+        ToTimeDelta(sender_->GetInFlightMediaDuration(newest_timestamp)),
+        max_in_flight_duration);
   }
   return duration;
 }
@@ -222,12 +227,6 @@ CastStreamingFrameDropReason OpenscreenFrameSender::EnqueueFrame(
 
   CHECK_GE(encoded_frame->frame_id, last_enqueued_frame_id_)
       << "enqueued frames out of order.";
-
-  if (!is_audio_) {
-    // Used by chrome/browser/media/cast_mirroring_performance_browsertest.cc
-    TRACE_EVENT_INSTANT("cast_perf_test", "VideoFrameEncoded", "rtp_timestamp",
-                        encoded_frame->rtp_timestamp.lower_32_bits());
-  }
 
   if (send_target_playout_delay_) {
     encoded_frame->new_playout_delay = target_playout_delay_;

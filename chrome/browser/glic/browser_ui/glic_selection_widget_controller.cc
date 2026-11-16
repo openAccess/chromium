@@ -20,6 +20,7 @@
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/selection/inline_cue_blocklist_utils.h"
 #include "chrome/browser/glic/selection/selection_context.h"
@@ -113,11 +114,12 @@ void InvokeGlicFromSelectionAffordance(
       CreateTextSelectionContext(&web_contents, selected_text,
                                  SelectionTextLength::kElided),
       content::GlobalRenderFrameHostId(), PolicyCheck::kNone);
-  if (features::kGlicSelectionAutoSendPrompt.Get()) {
-    std::string cta = features::kGlicSelectionPromptCta.Get();
+  const GlicSelectionInlineCueFeatureParams params =
+      GetGlicProviderSpec(profile).GetSelectionInlineCueFeatureParams();
+  if (params.auto_send_prompt) {
     std::string prompt =
         l10n_util::GetStringUTF8(IDS_GLIC_SELECTION_AUTO_SEND_PROMPT_TELL_ME);
-    if (cta == features::kGlicSelectionPromptCtaExplain) {
+    if (params.cta == GlicSelectionInlineCueFeatureParams::kCtaExplain) {
       prompt =
           l10n_util::GetStringUTF8(IDS_GLIC_SELECTION_AUTO_SEND_PROMPT_EXPLAIN);
     }
@@ -158,14 +160,27 @@ void GlicSelectionWidgetController::OnAskGemini() {
     return;
   }
   if (base::FeatureList::IsEnabled(features::kGlicSelectionSmallChip)) {
-    Dismiss(DismissReason::kActionTaken);
     ShowSelectionOverlay();
+    Dismiss(DismissReason::kActionTaken);
     return;
   }
   Dismiss(DismissReason::kActionTaken);
   InvokeGlicFromSelectionAffordance(
       delegate_->GetSelectedText(), *web_contents(),
       InvokeWithAutoSubmitPasskeyProvider::GetPassKey());
+}
+
+void GlicSelectionWidgetController::OnHovered() {
+  if (!base::FeatureList::IsEnabled(features::kGlicSelectionSmallChip) ||
+      ShouldPanelStartSession()) {
+    return;
+  }
+  if (auto* controller =
+          SelectionOverlayController::FromTabWebContents(web_contents())) {
+    // Same options as `ShowSelectionOverlay()` uses for the session.
+    controller->MaybePrewarmOverlay(selection::InteractionOptions::New(
+        /*hide_handles=*/true, /*skip_intro_animation=*/true));
+  }
 }
 
 void GlicSelectionWidgetController::OnCopy() {
@@ -216,6 +231,9 @@ gfx::Rect GlicSelectionWidgetController::GetContainerBounds() {
 
 void GlicSelectionWidgetController::Dismiss(DismissReason reason) {
   if (widget_delegate_) {
+    if (reason != DismissReason::kActionTaken) {
+      CancelOverlayPrewarm();
+    }
     if (!dismissal_recorded_ && reason != DismissReason::kActionTaken) {
       bool is_post_fre = false;
       if (web_contents()) {
@@ -279,7 +297,8 @@ GlicSelectionWidgetController::ShowResult GlicSelectionWidgetController::Show(
         CountWords(selected_text));
 
     widget_delegate_ = std::make_unique<GlicSelectionWidgetDelegate>(
-        *this, *bounds, std::u16string(selected_text));
+        *this, *bounds, std::u16string(selected_text),
+        GetGlicProviderSpec(profile).GetSelectionInlineCueFeatureParams());
     widget_delegate_->set_parent_window(platform_util::GetViewForWindow(
         web_contents()->GetTopLevelNativeWindow()));
     dismissal_recorded_ = false;
@@ -291,6 +310,7 @@ GlicSelectionWidgetController::ShowResult GlicSelectionWidgetController::Show(
 
 void GlicSelectionWidgetController::Close() {
   if (widget_delegate_) {
+    CancelOverlayPrewarm();
     widget_delegate_->CloseWidget();
   }
 }
@@ -312,6 +332,22 @@ void GlicSelectionWidgetController::OnContentSettingChanged(
   }
 }
 
+bool GlicSelectionWidgetController::ShouldPanelStartSession() const {
+  if (!web_contents() || !glic_keyed_service_) {
+    return false;
+  }
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(web_contents());
+  return tab && GlicSidePanelCoordinator::IsShowing(tab);
+}
+
+void GlicSelectionWidgetController::CancelOverlayPrewarm() {
+  if (auto* controller =
+          SelectionOverlayController::FromTabWebContents(web_contents())) {
+    controller->CancelPrewarm();
+  }
+}
+
 void GlicSelectionWidgetController::ShowSelectionOverlay() {
   auto* tab_interface =
       tabs::TabInterface::MaybeGetFromContents(web_contents());
@@ -325,8 +361,7 @@ void GlicSelectionWidgetController::ShowSelectionOverlay() {
   }
 
   // When the side panel is open, let the web client start the capture session.
-  if (glic_keyed_service_ &&
-      GlicSidePanelCoordinator::IsShowing(tab_interface) &&
+  if (ShouldPanelStartSession() &&
       controller->state() == OverlayBaseController::State::kOff) {
     GlicInvokeOptions options(
         Target(*tab_interface),
@@ -342,8 +377,7 @@ void GlicSelectionWidgetController::ShowSelectionOverlay() {
     controller->ShowWithSelection(
         delegate_->GetSelectedFrame(), *bounds,
         selection::InteractionOptions::New(
-            /*hide_handles=*/true, /*disable_multi_select=*/true,
-            /*skip_intro_animation=*/true),
+            /*hide_handles=*/true, /*skip_intro_animation=*/true),
         ::selection::EntryPoint::kInlineCue);
   } else {
     controller->Show(/*options=*/nullptr, ::selection::EntryPoint::kInlineCue);

@@ -3315,6 +3315,13 @@ const ComputedStyle& CSSAnimations::CalculateBeforeChangeStyle(
     }
   }
 
+  // With no transitions to sample, the before-change style is the base style.
+  // Avoid resolving a copy of it.
+  if (interpolations_map.empty()) {
+    state.before_change_style = base_style;
+    return *base_style;
+  }
+
   state.before_change_style =
       state.animating_element.GetDocument()
           .GetStyleResolver()
@@ -3331,6 +3338,7 @@ HeapVector<Member<Element>> CollectAncestorsToEnsure(Element& element,
   Element* ancestor = &element;
   do {
     ancestor = LayoutTreeBuilderTraversal::ParentElement(*ancestor);
+    CHECK(ancestor);
     ancestors.push_back(ancestor);
   } while (ancestor != root);
   return ancestors;
@@ -3462,7 +3470,11 @@ const ComputedStyle& CSSAnimations::CalculateAfterChangeStyle(
   return state.base_style;
 }
 
-void CSSAnimations::Cancel() {
+void CSSAnimations::Cancel(const Document& document) {
+  const StyleEngine& style_engine = document.GetStyleEngine();
+  CHECK(!style_engine.InApplyAnimatedStyle());
+  CHECK(!style_engine.InApplyAnimationUpdate());
+
   for (const auto& running_animation : running_animations_) {
     running_animation->animation->cancel();
     running_animation->animation->Update(kTimingUpdateOnDemand);

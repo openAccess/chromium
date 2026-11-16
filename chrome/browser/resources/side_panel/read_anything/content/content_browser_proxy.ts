@@ -71,8 +71,11 @@ export interface ContentBrowserProxy {
   getDistillationTypeScreen2x(): number;
 
   hasValidSelection(): boolean;
+  hasTransientUserActivation(): boolean;
+  hasFocus(): boolean;
   isReadabilityEnabled(): boolean;
   isContentTranslated(): boolean;
+  getTranslationState(): number;
   isTranslatePdfEnabled(): boolean;
   isReadAnythingSendFeedbackEnabled(): boolean;
   isGoogleDocs(): boolean;
@@ -183,12 +186,24 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
     return chrome.readingMode.hasValidSelection;
   }
 
+  hasTransientUserActivation(): boolean {
+    return navigator.userActivation.isActive;
+  }
+
+  hasFocus(): boolean {
+    return document.hasFocus();
+  }
+
   isReadabilityEnabled(): boolean {
     return chrome.readingMode.isReadabilityEnabled;
   }
 
   isContentTranslated(): boolean {
     return chrome.readingMode.isContentTranslated;
+  }
+
+  getTranslationState(): number {
+    return chrome.readingMode.translationState;
   }
 
   isTranslatePdfEnabled(): boolean {

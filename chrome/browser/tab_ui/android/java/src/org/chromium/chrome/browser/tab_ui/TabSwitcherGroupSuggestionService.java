@@ -169,11 +169,6 @@ public class TabSwitcherGroupSuggestionService {
                 }
 
                 @Override
-                public void willCloseTab(Tab tab, boolean didCloseAlone) {
-                    clearSuggestions();
-                }
-
-                @Override
                 public void willCloseTabs(
                         List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                     clearSuggestions();
@@ -253,6 +248,11 @@ public class TabSwitcherGroupSuggestionService {
 
     public void destroy() {
         mCurrentTabModelSupplier.removeObserver(mOnTabModelChanged);
+        TabModel tabModel = mCurrentTabModelSupplier.get();
+        if (tabModel != null) {
+            tabModel.removeObserver(mTabModelObserver);
+            tabModel.removeTabGroupObserver(mTabGroupObserver);
+        }
         mSuggestionLifecycleObserverHandler.onSuggestionIgnored();
     }
 

@@ -9,6 +9,7 @@
 #include "base/compiler_specific.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "build/build_config.h"
@@ -86,6 +87,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
@@ -890,8 +892,8 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, NavigateOnTabSwitchLostTest) {
   EXPECT_EQ(2, browser()->GetTabStripModel()->count());
 }
 
-// This test verifies that SWITCH_TO_TAB will switch to a tab even if the scheme
-// mismatches, as long as the rest of the URL does.
+// This test verifies that `kSwitchToTab` will switch to a tab even if the
+// scheme mismatches, as long as the rest of the URL does.
 IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, SchemeMismatchTabSwitchTest) {
   GURL navigate_url("https://www.chromium.org/");
   GURL search_url("http://www.chromium.org/");
@@ -1514,9 +1516,9 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
                         ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.disposition = ui::mojom::WindowOpenDisposition::kOffTheRecord;
   {
-    content::CreateAndLoadWebContentsObserver observer;
+    ui_test_utils::AllBrowserTabAddedWaiter observer(1);
     Navigate(&params);
-    observer.Wait();
+    content::WaitForLoadStopWithoutSuccessCheck(observer.Wait());
   }
 
   EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
@@ -1670,9 +1672,9 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   EXPECT_EQ(1, browser()->GetTabStripModel()->count());
 
   {
-    content::CreateAndLoadWebContentsObserver observer;
+    ui_test_utils::AllBrowserTabAddedWaiter observer(1);
     ShowSettings(browser());
-    observer.Wait();
+    content::WaitForLoadStopWithoutSuccessCheck(observer.Wait());
   }
   EXPECT_EQ(2, browser()->GetTabStripModel()->count());
   EXPECT_EQ(GetSettingsURL(),
@@ -1790,10 +1792,10 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
     observer.Wait();
   }
   {
-    content::CreateAndLoadWebContentsObserver observer;
+    ui_test_utils::AllBrowserTabAddedWaiter observer(1);
     chrome::AddSelectedTabWithURL(browser(), GetGoogleURL(),
                                   ui::PAGE_TRANSITION_LINK);
-    observer.Wait();
+    content::WaitForLoadStopWithoutSuccessCheck(observer.Wait());
   }
 
   // This load should simply cause a tab switch.
@@ -1813,10 +1815,10 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
     observer.Wait();
   }
   {
-    content::CreateAndLoadWebContentsObserver observer;
+    ui_test_utils::AllBrowserTabAddedWaiter observer(1);
     chrome::AddSelectedTabWithURL(browser(), GetGoogleURL(),
                                   ui::PAGE_TRANSITION_LINK);
-    observer.Wait();
+    content::WaitForLoadStopWithoutSuccessCheck(observer.Wait());
   }
   BrowserWindowInterface* app_browser =
       CreateBrowserForApp("TestApp", browser()->GetProfile());
@@ -1837,10 +1839,10 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
 #endif
 IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest, MAYBE_CloseSingletonTab) {
   for (int i = 0; i < 2; ++i) {
-    content::CreateAndLoadWebContentsObserver observer;
+    ui_test_utils::AllBrowserTabAddedWaiter observer(1);
     chrome::AddSelectedTabWithURL(browser(), GetGoogleURL(),
                                   ui::PAGE_TRANSITION_TYPED);
-    observer.Wait();
+    content::WaitForLoadStopWithoutSuccessCheck(observer.Wait());
   }
 
   browser()->GetTabStripModel()->ActivateTabAt(
@@ -2213,6 +2215,47 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   EXPECT_EQ(params.browser, nullptr);
 }
 
+IN_PROC_BROWSER_TEST_P(
+    BrowserNavigatorPictureInPictureTest,
+    Disposition_PictureInPicture_CantFromPipChildInNormalBrowser) {
+  auto pip_options = blink::mojom::PictureInPictureWindowOptions::New();
+  WebContents::CreateParams web_contents_params(browser()->GetProfile());
+  web_contents_params.picture_in_picture_options = *pip_options;
+
+  ASSERT_TRUE(embedded_test_server()->Start());
+  WebContents* tab = browser()->GetTabStripModel()->GetActiveWebContents();
+  const GURL url = embedded_test_server()->GetURL("/simple.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  // Create `pip_child` and navigate it to a supported URL before setting its
+  // PiP options or entering Document PiP (since
+  // `DocumentPictureInPictureNavigationThrottle` cancels cross-document
+  // navigations on any WebContents with `GetPictureInPictureOptions()`). This
+  // simulates a compromised renderer spoofing a supported URL via
+  // same-document replaceState on an active Document PiP child.
+  std::unique_ptr<WebContents> owned_pip_child =
+      WebContents::Create(WebContents::CreateParams(browser()->GetProfile()));
+  WebContents* pip_child = owned_pip_child.get();
+  ASSERT_TRUE(content::NavigateToURL(pip_child, url));
+
+  auto* manager = PictureInPictureWindowManager::GetInstance();
+  manager->EnterDocumentPictureInPicture(tab, pip_child);
+  ASSERT_EQ(pip_child, manager->GetChildWebContents());
+  ASSERT_TRUE(PictureInPictureWindowManager::IsChildWebContents(pip_child));
+
+  // Attempt to open another Document PiP window with `browser()` (a TYPE_NORMAL
+  // window) as `params.browser` and `pip_child` as `params.source_contents`.
+  NavigateParams second_params = MakeNavigateParams(browser());
+  second_params.disposition = WindowOpenDisposition::kNewPictureInPicture;
+  second_params.source_contents = pip_child;
+  second_params.contents_to_insert = WebContents::Create(web_contents_params);
+  EXPECT_EQ(nullptr, Navigate(&second_params));
+  EXPECT_EQ(nullptr, second_params.browser);
+  EXPECT_EQ(pip_child, manager->GetChildWebContents());
+
+  manager->ExitPictureInPicture();
+}
+
 IN_PROC_BROWSER_TEST_F(
     BrowserNavigatorTest,
     Disposition_PictureInPicture_CantWithoutASourceContents) {
@@ -2359,6 +2402,7 @@ IN_PROC_BROWSER_TEST_P(BrowserNavigatorPictureInPictureTest,
 
   auto* manager = PictureInPictureWindowManager::GetInstance();
   EXPECT_EQ(nullptr, params.contents_to_insert);
+  EXPECT_EQ(child, params.navigated_or_inserted_contents);
   EXPECT_EQ(tab, manager->GetWebContents());
   ASSERT_EQ(child, manager->GetChildWebContents());
   EXPECT_TRUE(PictureInPictureWindowManager::IsChildWebContents(child));
@@ -2727,6 +2771,11 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
                   blink::WebInputEvent::Modifiers::kAltKey;
 #endif
 
+  // The renderer drops input while it defers commits or main frame updates
+  // (e.g. paint holding until first contentful paint). Wait for a frame to be
+  // submitted so the click below is not dropped.
+  content::WaitForCopyableViewInWebContents(old_contents);
+
   content::WebContentsAddedObserver new_contents_observer;
   content::SimulateMouseClickAt(old_contents, modifiers,
                                 blink::WebMouseEvent::Button::kLeft, center);
@@ -2756,7 +2805,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   WebContents* old_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
   NavigateParams params(MakeNavigateParams());
-  params.disposition = WindowOpenDisposition::kNewSplitView;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewSplitView;
   params.user_gesture = false;
   Navigate(&params);
 
@@ -2771,7 +2820,8 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
   ASSERT_TRUE(new_tab);
   EXPECT_FALSE(old_tab->IsSplit());
   EXPECT_FALSE(new_tab->IsSplit());
-  EXPECT_EQ(WindowOpenDisposition::kNewForegroundTab, params.disposition);
+  EXPECT_EQ(ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+            params.disposition);
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
@@ -2784,7 +2834,8 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
 
   WebContents* returned_contents = old_contents->GetDelegate()->AddNewContents(
       old_contents, std::move(new_contents), GetGoogleURL(),
-      WindowOpenDisposition::kNewSplitView, blink::mojom::WindowFeatures(),
+      ui::mojom::WindowOpenDisposition::kNewSplitView,
+      blink::mojom::WindowFeatures(),
       /*user_gesture=*/false,
       /*was_blocked=*/nullptr);
 
@@ -2843,7 +2894,7 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTest,
 
   content::OpenURLParams open_params =
       content::OpenURLParams::CreateBrowserInitiated(
-          GetGoogleURL(), WindowOpenDisposition::kNewSplitView,
+          GetGoogleURL(), ui::mojom::WindowOpenDisposition::kNewSplitView,
           ui::PAGE_TRANSITION_LINK);
   open_params.user_gesture = false;
   WebContents* returned_contents = source_contents->OpenURL(open_params, {});
@@ -2872,7 +2923,7 @@ IN_PROC_BROWSER_TEST_F(
 
   content::OpenURLParams open_params =
       content::OpenURLParams::CreateBrowserInitiated(
-          GetGoogleURL(), WindowOpenDisposition::kNewSplitView,
+          GetGoogleURL(), ui::mojom::WindowOpenDisposition::kNewSplitView,
           ui::PAGE_TRANSITION_LINK);
   open_params.user_gesture = false;
   WebContents* returned_contents = source_contents->OpenURL(open_params, {});
@@ -2889,12 +2940,13 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_EQ(1u, blocked_requests.size());
 
   // Simulate user unblocking the popup.
-  popup_blocker->ShowBlockedPopup(blocked_requests.begin()->first,
-                                  WindowOpenDisposition::kCurrentTab);
+  popup_blocker->ShowBlockedPopup(
+      blocked_requests.begin()->first,
+      ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Since there was no user gesture, the disposition was normalized to
-  // NEW_FOREGROUND_TAB before being blocked. Unblocking the popup opens a third
-  // tab rather than navigating the partner pane.
+  // `kNewForegroundTab` before being blocked. Unblocking the popup opens a
+  // third tab rather than navigating the partner pane.
   EXPECT_EQ(3, browser()->GetTabStripModel()->count());
   EXPECT_EQ(GURL(url::kAboutBlankURL), other_contents->GetVisibleURL());
   EXPECT_EQ(
@@ -2925,13 +2977,13 @@ IN_PROC_BROWSER_TEST_F(
 
   content::OpenURLParams open_params =
       content::OpenURLParams::CreateBrowserInitiated(
-          GetGoogleURL(), WindowOpenDisposition::kNewSplitView,
+          GetGoogleURL(), ui::mojom::WindowOpenDisposition::kNewSplitView,
           ui::PAGE_TRANSITION_LINK);
   open_params.user_gesture = false;
   WebContents* returned_contents = source_contents->OpenURL(open_params, {});
 
   // Since there is no user gesture, the disposition is normalized to
-  // NEW_FOREGROUND_TAB. The partner pane in the split tab should not be
+  // `kNewForegroundTab`. The partner pane in the split tab should not be
   // navigated; instead, a new foreground tab should be opened.
   EXPECT_NE(nullptr, returned_contents);
   EXPECT_NE(source_contents, returned_contents);
@@ -3078,6 +3130,129 @@ IN_PROC_BROWSER_TEST_F(BrowserNavigatorTestAlwaysOnTop,
     ASSERT_TRUE(new_contents);
     EXPECT_EQ(true, content::EvalJs(new_contents, "window.alwaysOnTopPopup"));
   }
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorTestAlwaysOnTop,
+                       AlwaysOnTopUseCounters) {
+  base::HistogramTester histogram_tester;
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL opener_url(embedded_test_server()->GetURL("/title1.html"));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), opener_url));
+
+  content::WebContents* active_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  EXPECT_EQ(false, content::EvalJs(active_contents, "window.alwaysOnTopPopup"));
+
+  ui_test_utils::BrowserCreatedObserver observer;
+  EXPECT_TRUE(content::ExecJs(
+      active_contents,
+      "window.open('about:blank', 'popup1', 'alwaysontop=true')"));
+  ASSERT_TRUE(observer.Wait());
+
+  // Navigate away to flush UseCounters from the opener page.
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  histogram_tester.ExpectBucketCount(
+      "Blink.UseCounter.Features",
+      blink::mojom::WebFeature::kWindowAlwaysOnTopPopup, 1);
+  histogram_tester.ExpectBucketCount(
+      "Blink.UseCounter.Features",
+      blink::mojom::WebFeature::kWindowOpenAlwaysOnTop, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNavigatorTestAlwaysOnTop,
+                       AlwaysOnTopPopupMoveAndResizeRestrictions) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL opener_url(embedded_test_server()->GetURL("/title1.html"));
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), opener_url));
+
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
+      ->SetContentSettingDefaultScope(opener_url, opener_url,
+                                      ContentSettingsType::WINDOW_MANAGEMENT,
+                                      CONTENT_SETTING_ALLOW);
+
+  ui_test_utils::BrowserCreatedObserver observer;
+  ASSERT_TRUE(
+      content::ExecJs(browser()->tab_strip_model()->GetActiveWebContents(),
+                      "window.open('about:blank', 'popup', "
+                      "'alwaysontop=true,width=300,height=200');"));
+  BrowserWindowInterface* popup_browser = observer.Wait();
+  ASSERT_TRUE(popup_browser);
+  ASSERT_EQ(popup_browser->GetType(),
+            BrowserWindowInterface::Type::TYPE_FLOATING);
+
+  content::WebContents* popup_contents =
+      popup_browser->GetActiveTabInterface()->GetContents();
+  ASSERT_TRUE(popup_contents);
+  ASSERT_EQ(true, content::EvalJs(popup_contents, "window.alwaysOnTopPopup",
+                                  content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  // 1. moveTo() and moveBy() must be disabled both without and with user
+  // activation.
+  const gfx::Point initial_origin =
+      popup_browser->GetWindow()->GetBounds().origin();
+  const int target_x = initial_origin.x() > 100 ? 40 : 140;
+  const int target_y = initial_origin.y() > 100 ? 40 : 140;
+  EXPECT_TRUE(content::ExecJs(
+      popup_contents,
+      content::JsReplace("window.moveTo($1, $2); window.moveBy(25, 25);",
+                         target_x, target_y),
+      content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  EXPECT_EQ(initial_origin, popup_browser->GetWindow()->GetBounds().origin());
+
+  EXPECT_TRUE(content::ExecJs(
+      popup_contents,
+      content::JsReplace("window.moveTo($1, $2); window.moveBy(25, 25);",
+                         target_x, target_y)));
+  EXPECT_EQ(initial_origin, popup_browser->GetWindow()->GetBounds().origin());
+
+  // 2. resizeTo() and resizeBy() require and consume transient user activation.
+  const int initial_outer_width =
+      content::EvalJs(popup_contents, "window.outerWidth",
+                      content::EXECUTE_SCRIPT_NO_USER_GESTURE)
+          .ExtractInt();
+  // The window manager may apply a resize in several steps (e.g. on Wayland),
+  // so the first 'resize' event can report an intermediate outerWidth. Wait
+  // for the final width instead.
+  ASSERT_TRUE(content::ExecJs(popup_contents, R"(
+    window.waitForOuterWidth = width => new Promise(resolve => {
+      const check = () => {
+        if (window.outerWidth === width) {
+          resolve(width);
+        } else {
+          setTimeout(check, 10);
+        }
+      };
+      check();
+    });
+  )",
+                              content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  EXPECT_EQ(initial_outer_width + 40,
+            content::EvalJs(
+                popup_contents,
+                content::JsReplace("window.resizeTo($1, window.outerHeight);"
+                                   "navigator.userActivation.isActive ? -1 : "
+                                   "    waitForOuterWidth($1);",
+                                   initial_outer_width + 40)));
+  EXPECT_EQ(
+      "NotAllowedError",
+      content::EvalJs(
+          popup_contents,
+          "try { window.resizeTo(360, 260); 'ok'; } catch (e) { e.name; }",
+          content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+
+  EXPECT_EQ(initial_outer_width + 60,
+            content::EvalJs(
+                popup_contents,
+                content::JsReplace("window.resizeBy(20, 0);"
+                                   "navigator.userActivation.isActive ? -1 : "
+                                   "    waitForOuterWidth($1);",
+                                   initial_outer_width + 60)));
+  EXPECT_EQ("NotAllowedError",
+            content::EvalJs(
+                popup_contents,
+                "try { window.resizeBy(10, 10); 'ok'; } catch (e) { e.name; }",
+                content::EXECUTE_SCRIPT_NO_USER_GESTURE));
 }
 
 }  // namespace

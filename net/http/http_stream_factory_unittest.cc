@@ -327,13 +327,16 @@ class StreamRequester : public HttpStreamRequest::Delegate {
     error_status_ = status;
   }
 
-  void OnCertificateError(int status, const SSLInfo& ssl_info) override {}
+  void OnCertificateError(int status,
+                          const SSLInfo& ssl_info,
+                          const ProxyInfo& used_proxy_info) override {}
 
   void OnNeedsProxyAuth(const HttpResponseInfo& proxy_response,
                         const ProxyInfo& used_proxy_info,
                         HttpAuthController* auth_controller) override {}
 
-  void OnNeedsClientAuth(SSLCertRequestInfo* cert_info) override {}
+  void OnNeedsClientAuth(SSLCertRequestInfo* cert_info,
+                         const ProxyInfo& used_proxy_info) override {}
 
   void OnQuicBroken() override {}
 
@@ -813,6 +816,35 @@ TEST_P(HttpStreamFactoryTest, PreconnectUnsafePort) {
     DoPreconnect();
     EXPECT_EQ(-1, transport_conn_pool->last_num_streams());
   }
+}
+
+// Verify that preconnects through a proxy on an unsafe port are cancelled
+// before they reach the SocketPool.
+TEST_P(HttpStreamFactoryTest, PreconnectProxyUnsafePort) {
+  ASSERT_FALSE(IsPortAllowedForScheme(6667, "http"));
+
+  SpdySessionDependencies session_deps(
+      ConfiguredProxyResolutionService::CreateFixedForTest(
+          "http_proxy:6667", TRAFFIC_ANNOTATION_FOR_TESTS));
+  std::unique_ptr<HttpNetworkSession> session(
+      SpdySessionDependencies::SpdyCreateSession(&session_deps));
+  HttpNetworkSessionPeer peer(session.get());
+  ProxyChain proxy_chain(ProxyServer::SCHEME_HTTP,
+                         HostPortPair("http_proxy", 6667));
+  CommonConnectJobParams common_connect_job_params =
+      session->CreateCommonConnectJobParams();
+  auto http_proxy_pool =
+      std::make_unique<CapturePreconnectsTransportSocketPool>(
+          &common_connect_job_params);
+  auto* http_proxy_pool_ptr = http_proxy_pool.get();
+  auto mock_pool_manager = std::make_unique<MockClientSocketPoolManager>();
+  mock_pool_manager->SetSocketPool(proxy_chain, std::move(http_proxy_pool));
+  peer.SetClientSocketPoolManager(std::move(mock_pool_manager));
+
+  PreconnectHelperForURL(1, GURL("http://www.google.com"),
+                         NetworkAnonymizationKey(), SecureDnsPolicy::kAllow,
+                         session.get());
+  EXPECT_EQ(-1, http_proxy_pool_ptr->last_num_streams());
 }
 
 // Verify that preconnects to invalid GURLs do nothing, and do not CHECK.

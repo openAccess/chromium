@@ -51,7 +51,11 @@ bool IsWinDeviceEnumerationWithoutActivationEnabled() {
 
 namespace features {
 
+#if BUILDFLAG(IS_WIN)
+BASE_FEATURE(kExcludePipFromScreenCapture, base::FEATURE_ENABLED_BY_DEFAULT);
+#else
 BASE_FEATURE(kExcludePipFromScreenCapture, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
 
 #if defined(WEBRTC_USE_PIPEWIRE)
 // Controls whether the PipeWire support for cameras is enabled on the
@@ -66,7 +70,7 @@ BASE_FEATURE(kMediaFoundationCameraUsageMonitoring,
 
 // Avoids activating capture devices when only the device list is required.
 BASE_FEATURE(kWinDeviceEnumerationWithoutActivation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace features

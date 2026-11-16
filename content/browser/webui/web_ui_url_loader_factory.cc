@@ -203,7 +203,6 @@ void StartURLLoader(
       range_or_error.has_value() ? std::make_optional(range_or_error.value())
                                  : std::nullopt;
 
-  std::string path = URLDataSource::URLToRequestPath(request.url);
   std::string origin_header =
       request.headers.GetHeader(net::HttpRequestHeaders::kOrigin)
           .value_or(std::string());
@@ -270,7 +269,8 @@ class WebUIURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
       FrameTreeNode* ftn,
       const std::string& scheme,
       base::flat_set<std::string> allowed_hosts,
-      std::optional<url::Origin> request_initiator_origin_lock) {
+      std::optional<url::Origin> request_initiator_origin_lock,
+      scoped_refptr<base::SequencedTaskRunner> receiver_task_runner = nullptr) {
     mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
 
     // The WebUIURLLoaderFactory will delete itself when there are no more
@@ -280,7 +280,8 @@ class WebUIURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
         ftn->current_frame_host()->GetBrowserContext(),
         ftn->frame_tree_node_id(), scheme, std::move(allowed_hosts),
         std::move(request_initiator_origin_lock),
-        pending_remote.InitWithNewPipeAndPassReceiver());
+        pending_remote.InitWithNewPipeAndPassReceiver(),
+        std::move(receiver_task_runner));
     return pending_remote;
   }
 
@@ -293,7 +294,8 @@ class WebUIURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
     base::MakeSelfDeleting<WebUIURLLoaderFactory>(
         browser_context, FrameTreeNodeId(), scheme, std::move(allowed_hosts),
         request_initiator_origin_lock,
-        pending_remote.InitWithNewPipeAndPassReceiver());
+        pending_remote.InitWithNewPipeAndPassReceiver(),
+        /*receiver_task_runner=*/nullptr);
     return pending_remote;
   }
 
@@ -304,8 +306,11 @@ class WebUIURLLoaderFactory : public network::SelfDeletingURLLoaderFactory {
       base::flat_set<std::string> allowed_hosts,
       std::optional<url::Origin> request_initiator_origin_lock,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      scoped_refptr<base::SequencedTaskRunner> receiver_task_runner,
       base::SelfDeletingPassKey key)
-      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver), key),
+      : network::SelfDeletingURLLoaderFactory(std::move(factory_receiver),
+                                              key,
+                                              std::move(receiver_task_runner)),
         browser_context_(browser_context->GetWeakPtr()),
         frame_tree_node_id_(frame_tree_node_id),
         scheme_(scheme),
@@ -439,10 +444,11 @@ CreateWebUIURLLoaderFactoryWithoutOriginLock(
     WebUIURLLoaderFactoryPasskey::PassKey pass_key,
     RenderFrameHost* render_frame_host,
     const std::string& scheme,
-    base::flat_set<std::string> allowed_hosts) {
+    base::flat_set<std::string> allowed_hosts,
+    scoped_refptr<base::SequencedTaskRunner> receiver_task_runner) {
   return WebUIURLLoaderFactory::CreateForFrame(
       FrameTreeNode::From(render_frame_host), scheme, std::move(allowed_hosts),
-      std::nullopt);
+      std::nullopt, std::move(receiver_task_runner));
 }
 
 }  // namespace content

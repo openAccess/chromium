@@ -8,6 +8,7 @@ from __future__ import print_function
 import argparse
 import collections
 import filecmp
+import itertools
 import json
 import multiprocessing
 import os
@@ -50,7 +51,7 @@ def GetParser():
   )
 
   subparsers = parser.add_subparsers(
-    required=True, metavar='{update,update-timing,deschedule,validate}'
+    required=True, metavar='{update,update-timing,coverage,deschedule,validate}'
   )
 
   parser_update = subparsers.add_parser('update', help='Update the shard maps.')
@@ -95,6 +96,31 @@ def GetParser():
     'a story was removed from the benchmark.)',
   )
   parser_update_timing.set_defaults(func=_UpdateTimingDataCommand)
+
+  parser_coverage = subparsers.add_parser(
+    'coverage',
+    help=(
+      'Report, for every scheduled benchmark, whether the duration used to '
+      'shard it is measured, estimated or missing.'
+    ),
+  )
+  _AddBuilderPlatformSelectionArgs(parser_coverage)
+  parser_coverage.add_argument(
+    '--use-existing-timing-data',
+    '-o',
+    action='store_true',
+    help=(
+      'Report on the checked-in timing data in '
+      '//tools/perf/core/shard_maps/timing_data/ instead of fetching fresh '
+      'data from BigQuery into a temporary directory.'
+    ),
+    default=False,
+  )
+  parser_coverage.add_argument(
+    '--json-output',
+    help='Also write the full report as JSON to this path.',
+  )
+  parser_coverage.set_defaults(func=_CoverageCommand)
 
   parser_deschedule = subparsers.add_parser(
     'deschedule',
@@ -147,18 +173,118 @@ def _DumpJson(data, output_path):
     output_file.write('\n')
 
 
+TIMING_SOURCE_MEASURED = 'measured'
+TIMING_SOURCE_ESTIMATE = 'estimate'
+# Number of days of results used for timing data, for all benchmark types. Long
+# enough that low-cadence testers, or testers that were down for a few days,
+# still have measured data.
+TIMING_NUM_LAST_DAYS = 14
+# Minimum number of measured runs (within TIMING_NUM_LAST_DAYS) before an
+# executable or Crossbench duration replaces its estimated_runtime.
+MIN_MEASURED_RUNS = 10
+
+
+def MergeTimingData(builder, story_timing_data, run_total_timing_data):
+  """Builds the timing data used to shard |builder|'s benchmarks.
+
+  Telemetry stories are reported to ResultDB as '<benchmark>/<story>' and keep
+  their measured average duration from |story_timing_data|.
+
+  Executables and Crossbench benchmarks are reported under their bare name
+  (e.g. 'dawn_perf_tests'), so their measured per-run durations are taken from
+  |run_total_timing_data| and renamed to the keys the sharding map generator
+  looks up: '<executable>/_gtest_' and '<crossbench>/<story>'. Executables
+  without measured data fall back to their estimated_runtime. Crossbench
+  benchmarks without measured data are left out, so the sharding map generator
+  falls back to their estimated_runtime. A measurement needs a non-zero
+  duration and at least MIN_MEASURED_RUNS runs to be used.
+
+  An executable's estimated_runtime covers its whole run: executables run once
+  per shard (their repeat count is not passed to them), so the estimate is not
+  scaled by repeat.
+
+  Every entry records whether its duration was measured or estimated, and
+  measured executable and Crossbench entries record their number of runs.
+
+  Args:
+    builder: the bot_platforms._PerfPlatform to generate timing data for.
+    story_timing_data: list of {'name', 'duration'} dicts with the average
+      duration of each test ID (retrieve_story_timing.
+      FetchAverageStoryTimingData).
+    run_total_timing_data: list of {'name', 'duration', 'num_runs'} dicts with
+      the average per-run total duration of each test ID (retrieve_story_timing.
+      FetchAverageTestRunTotalData).
+
+  Returns:
+    A list of {'name', 'duration', 'source'} dicts, plus 'num_runs' on
+    measured executable and Crossbench entries.
+  """
+  executables = {e.name: e for e in builder.executables}
+  crossbench_stories = {c.name: c.stories for c in builder.crossbench}
+  non_telemetry_names = set(executables) | set(crossbench_stories)
+
+  merged = []
+  for entry in story_timing_data:
+    if entry['name'] in non_telemetry_names:
+      continue
+    merged.append(dict(entry, source=TIMING_SOURCE_MEASURED))
+
+  # Zero or missing durations (e.g. results that don't report a duration) and
+  # measurements from too few runs are not used.
+  run_totals = {}
+  for entry in run_total_timing_data:
+    if entry['name'] not in non_telemetry_names:
+      continue
+    duration = float(entry.get('duration') or 0)
+    num_runs = int(entry.get('num_runs') or 0)
+    if duration > 0 and num_runs >= MIN_MEASURED_RUNS:
+      run_totals[entry['name']] = (duration, num_runs)
+
+  for name in sorted(executables):
+    entry = {'name': name + '/' + bot_platforms.GTEST_STORY_NAME}
+    if name in run_totals:
+      duration, num_runs = run_totals[name]
+      entry.update(source=TIMING_SOURCE_MEASURED, num_runs=num_runs)
+    else:
+      duration = float(executables[name].estimated_runtime)
+      entry.update(source=TIMING_SOURCE_ESTIMATE)
+    entry['duration'] = str(duration)
+    merged.append(entry)
+
+  for name in sorted(crossbench_stories):
+    if name not in run_totals:
+      continue
+    duration, num_runs = run_totals[name]
+    stories = crossbench_stories[name]
+    if not stories:
+      continue
+    # One Crossbench result covers all of its stories, so split the measured
+    # duration evenly between them.
+    story_duration = duration / len(stories)
+    for story in stories:
+      merged.append(
+        {
+          'duration': str(story_duration),
+          'name': name + '/' + story,
+          'source': TIMING_SOURCE_MEASURED,
+          'num_runs': num_runs,
+        }
+      )
+  return merged
+
+
 def _LoadTimingData(args):
   builder, timing_file_path = args
-  data = retrieve_story_timing.FetchAverageStoryTimingData(
-    configurations=[builder.name], num_last_days=5
+  story_timing_data = retrieve_story_timing.FetchAverageStoryTimingData(
+    configurations=[builder.name], num_last_days=TIMING_NUM_LAST_DAYS
   )
-  for executable in builder.executables:
-    data.append(
-      {
-        'duration': str(float(executable.estimated_runtime)),
-        'name': executable.name + '/' + bot_platforms.GTEST_STORY_NAME,
-      }
+  run_total_timing_data = []
+  if builder.executables or builder.crossbench:
+    run_total_timing_data = retrieve_story_timing.FetchAverageTestRunTotalData(
+      configurations=[builder.name],
+      num_last_days=TIMING_NUM_LAST_DAYS,
     )
+  data = MergeTimingData(builder, story_timing_data, run_total_timing_data)
   _DumpJson(data, timing_file_path)
   print('Finished retrieving story timing data for %s' % repr(builder.name))
 
@@ -223,6 +349,179 @@ def _UpdateTimingDataCommand(args):
     _FilterTimingData(builder)
 
 
+COVERAGE_MEASURED = 'measured'
+COVERAGE_PARTIAL = 'partial'
+COVERAGE_ESTIMATE = 'estimate'
+COVERAGE_MISSING = 'missing'
+
+
+def BuildCoverageReport(builder, timing_data):
+  """Reports where the duration of each of |builder|'s benchmarks comes from.
+
+  Args:
+    builder: the bot_platforms._PerfPlatform to report on.
+    timing_data: the builder's timing data, as written by _LoadTimingData.
+
+  Returns:
+    A list of dicts, one per scheduled benchmark, with keys 'builder',
+    'benchmark', 'type' ('telemetry', 'executable' or 'crossbench'),
+    'coverage' (one of COVERAGE_*), 'measured_stories', 'total_stories' and
+    'num_runs' (None when unknown).
+  """
+  timing_by_name = {
+    entry['name']: entry for entry in timing_data if entry.get('duration')
+  }
+
+  def _Row(benchmark, benchmark_type, coverage, measured, total, num_runs):
+    return {
+      'builder': builder.name,
+      'benchmark': benchmark,
+      'type': benchmark_type,
+      'coverage': coverage,
+      'measured_stories': measured,
+      'total_stories': total,
+      'num_runs': num_runs,
+    }
+
+  rows = []
+  for config in sorted(builder.benchmark_configs, key=lambda c: c.name):
+    stories = config.stories
+    measured = sum(
+      1 for story in stories if config.name + '/' + story in timing_by_name
+    )
+    if stories and measured == len(stories):
+      coverage = COVERAGE_MEASURED
+    elif measured:
+      coverage = COVERAGE_PARTIAL
+    else:
+      coverage = COVERAGE_MISSING
+    rows.append(
+      _Row(config.name, 'telemetry', coverage, measured, len(stories), None)
+    )
+
+  for executable in sorted(builder.executables, key=lambda e: e.name):
+    entry = timing_by_name.get(
+      executable.name + '/' + bot_platforms.GTEST_STORY_NAME, {}
+    )
+    # Entries without a source predate source tagging, when executables always
+    # used their estimated_runtime.
+    is_measured = entry.get('source') == TIMING_SOURCE_MEASURED
+    rows.append(
+      _Row(
+        executable.name,
+        'executable',
+        COVERAGE_MEASURED if is_measured else COVERAGE_ESTIMATE,
+        1 if is_measured else 0,
+        1,
+        entry.get('num_runs'),
+      )
+    )
+
+  for crossbench in sorted(builder.crossbench, key=lambda c: c.name):
+    entries = [
+      timing_by_name[crossbench.name + '/' + story]
+      for story in crossbench.stories
+      if crossbench.name + '/' + story in timing_by_name
+    ]
+    is_measured = bool(entries) and len(entries) == len(crossbench.stories)
+    rows.append(
+      _Row(
+        crossbench.name,
+        'crossbench',
+        COVERAGE_MEASURED if is_measured else COVERAGE_ESTIMATE,
+        len(entries),
+        len(crossbench.stories),
+        entries[0].get('num_runs') if entries else None,
+      )
+    )
+  return rows
+
+
+def _PrintCoverageReport(rows):
+  by_builder = collections.OrderedDict()
+  for row in rows:
+    by_builder.setdefault(row['builder'], []).append(row)
+
+  for builder_name, builder_rows in by_builder.items():
+    num_measured = sum(
+      1 for r in builder_rows if r['coverage'] == COVERAGE_MEASURED
+    )
+    print(
+      '%s: %d/%d benchmarks measured'
+      % (builder_name, num_measured, len(builder_rows))
+    )
+    for row in builder_rows:
+      if row['coverage'] == COVERAGE_MEASURED:
+        continue
+      print(
+        '  %-10s %-11s %s (%d/%d stories measured)'
+        % (
+          row['coverage'],
+          row['type'],
+          row['benchmark'],
+          row['measured_stories'],
+          row['total_stories'],
+        )
+      )
+
+  print()
+  for benchmark_type in ('telemetry', 'executable', 'crossbench'):
+    type_rows = [r for r in rows if r['type'] == benchmark_type]
+    if not type_rows:
+      continue
+    num_measured = sum(
+      1 for r in type_rows if r['coverage'] == COVERAGE_MEASURED
+    )
+    print(
+      'Total %s: %d/%d measured (%.1f%%)'
+      % (
+        benchmark_type,
+        num_measured,
+        len(type_rows),
+        100.0 * num_measured / len(type_rows),
+      )
+    )
+  num_measured = sum(1 for r in rows if r['coverage'] == COVERAGE_MEASURED)
+  if rows:
+    print(
+      'Total: %d/%d measured (%.1f%%)'
+      % (num_measured, len(rows), 100.0 * num_measured / len(rows))
+    )
+
+
+def _CoverageCommand(args):
+  builders = sorted(
+    _GetBuilderPlatforms(args.builders, args.waterfall), key=lambda b: b.name
+  )
+  temp_dir = None
+  try:
+    if args.use_existing_timing_data:
+      timing_paths = {b.name: b.timing_file_path for b in builders}
+    else:
+      temp_dir = tempfile.mkdtemp()
+      timing_paths = {
+        b.name: os.path.join(temp_dir, os.path.basename(b.timing_file_path))
+        for b in builders
+      }
+      _UpdateTimingData(builders, timing_paths)
+
+    rows = []
+    for builder in builders:
+      timing_data = []
+      if os.path.exists(timing_paths[builder.name]):
+        with open(timing_paths[builder.name]) as f:
+          timing_data = json.load(f)
+      rows.extend(BuildCoverageReport(builder, timing_data))
+  finally:
+    if temp_dir:
+      shutil.rmtree(temp_dir)
+
+  _PrintCoverageReport(rows)
+  if args.json_output:
+    _DumpJson(rows, args.json_output)
+  return 0
+
+
 def _FilterTimingData(builder, output_path=None):
   output_path = output_path or builder.timing_file_path
   with open(builder.timing_file_path) as f:
@@ -236,22 +535,34 @@ def _FilterTimingData(builder, output_path=None):
   executable_story_names = [
     e.name + '/' + bot_platforms.GTEST_STORY_NAME for e in builder.executables
   ]
+  crossbench_story_names = [
+    c.name + '/' + story for c in builder.crossbench for story in c.stories
+  ]
   timing_dataset = [
     point
     for point in timing_dataset
     if (
       str(point['name']) in story_full_names
       or str(point['name']) in executable_story_names
+      or str(point['name']) in crossbench_story_names
     )
   ]
   _DumpJson(timing_dataset, output_path)
 
 
-def _UpdateTimingData(builders):
+def _UpdateTimingData(builders, timing_paths=None):
+  """Fetches timing data for |builders|.
+
+  Args:
+    builders: the bot_platforms._PerfPlatform objects to fetch data for.
+    timing_paths: optional dict of builder name to output path. Defaults to
+      each builder's checked-in timing file.
+  """
   print('Updating shards timing data. May take a while...')
+  timing_paths = timing_paths or {}
   load_timing_args = []
   for b in builders:
-    load_timing_args.append((b, b.timing_file_path))
+    load_timing_args.append((b, timing_paths.get(b.name, b.timing_file_path)))
   p = multiprocessing.Pool(len(load_timing_args))
   # Use map_async to work around python bug. See crbug.com/1026004.
   p.map_async(_LoadTimingData, load_timing_args).get(12 * 60 * 60)
@@ -385,6 +696,35 @@ def _ValidateShardMaps(args):
         f'`{__file__} deschedule` to deschedule the benchmark '
         'from the shard map.'
       )
+    if platform.crossbench:
+      cb_by_name = {c.name: c for c in platform.crossbench}
+      with open(platform.shards_map_file_path, encoding='utf-8') as f:
+        shard_map = json.load(f)
+      for shard, benchmarks_in_shard in shard_map.items():
+        if 'extra_infos' in shard:
+          continue
+        for cb_name, cb_entry in benchmarks_in_shard.get(
+          'crossbench', {}
+        ).items():
+          if cb_name in cb_by_name:
+            expected_args = list(cb_by_name[cb_name].flags)
+            actual_args = cb_entry.get('arguments', [])
+            if expected_args != actual_args:
+              expected_arg, actual_arg = next(
+                (e, a)
+                for e, a in itertools.zip_longest(expected_args, actual_args)
+                if e != a
+              )
+              errors.append(
+                f'Crossbench {cb_name} arguments in '
+                f'{platform.shards_map_file_path} do not match '
+                'bot_platforms.py. First difference:\n'
+                f'  expected: {expected_arg}\n'
+                f'  actual:   {actual_arg}\n'
+                'Please run chrome/browser/ui/webui/webui_toolbar/scripts/'
+                'generate_chrome_flags.py (for browser_startup.crossbench) '
+                f'or `{__file__} update` to regenerate the shard map.'
+              )
 
   for error in errors:
     print('*', error, '\n', file=sys.stderr)

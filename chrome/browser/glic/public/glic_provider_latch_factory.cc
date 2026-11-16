@@ -114,6 +114,8 @@ GlicProviderLatchFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   GURL geic_guest_url = geic::ResolveGeicGuestUrl(context);
   GeicProviderInitOptions geic_options;
+  geic_options.can_switch_between_gemini_providers =
+      geic::CanSwitchBetweenGeminiProvidersInSettings(context);
   GlicProvider provider;
   if (geic::ShouldLatchToGeminiEnterprise(context, geic_guest_url)) {
     provider = GlicProvider::kGeminiEnterprise;

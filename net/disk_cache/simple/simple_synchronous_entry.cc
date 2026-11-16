@@ -615,21 +615,6 @@ int SimpleSynchronousEntry::TruncateEntryFiles(
   return deleted_well ? net::OK : net::ERR_FAILED;
 }
 
-// static
-int SimpleSynchronousEntry::DeleteEntrySetFiles(
-    const std::vector<uint64_t>* key_hashes,
-    const FilePath& path,
-    std::unique_ptr<UnboundBackendFileOperations> unbound_file_operations) {
-  auto file_operations = unbound_file_operations->Bind(
-      base::SequencedTaskRunner::GetCurrentDefault());
-  const size_t did_delete_count = std::ranges::count_if(
-      *key_hashes, [&path, &file_operations](const uint64_t& key_hash) {
-        return SimpleSynchronousEntry::DeleteFilesForEntryHash(
-            path, key_hash, file_operations.get());
-      });
-  return (did_delete_count == key_hashes->size()) ? net::OK : net::ERR_FAILED;
-}
-
 void SimpleSynchronousEntry::ReadData(const ReadRequest& in_entry_op,
                                       SimpleEntryStat* entry_stat,
                                       net::IOBuffer* out_buf,
@@ -2026,6 +2011,21 @@ bool SimpleSynchronousEntry::ScanSparseFile(CacheFile* sparse_file,
 
   if (header.version != kSimpleSparseEntryVersion) {
     DLOG(WARNING) << "Sparse file unreadable version.";
+    return false;
+  }
+
+  size_t expected_header_size = GetHeaderSize(header.key_length);
+  if (expected_header_size > static_cast<size_t>(sparse_file->GetLength())) {
+    return false;
+  }
+
+  std::vector<char> key_data(header.key_length);
+  if (!sparse_file->ReadAndCheck(sizeof(header),
+                                 base::as_writable_byte_span(key_data))) {
+    return false;
+  }
+
+  if (key_.has_value() && *key_ != base::as_string_view(key_data)) {
     return false;
   }
 

@@ -6,6 +6,11 @@ package org.chromium.chrome.browser.ntp;
 
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeNtpUrl;
 
@@ -18,13 +23,24 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.preloading.AndroidPrerenderManager;
+import org.chromium.chrome.browser.preloading.AndroidPrerenderManagerJni;
+import org.chromium.chrome.browser.preloading.PreloadingFeatureMap;
 import org.chromium.chrome.browser.suggestions.tile.Tile;
 import org.chromium.chrome.browser.suggestions.tile.TileVisualType;
+import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
@@ -39,7 +55,6 @@ import org.chromium.url.GURL;
 /** Tests for events around the loading of a New Tab Page. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 // Tests the Java native NTP, which is not used on desktop (it uses the WebUI NTP).
 @Restriction(DeviceFormFactor.PHONE_OR_TABLET)
 public class NewTabPageLoadTest {
@@ -47,7 +62,10 @@ public class NewTabPageLoadTest {
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     @Rule public SuggestionsDependenciesRule mSuggestionDeps = new SuggestionsDependenciesRule();
+
+    @Mock private AndroidPrerenderManager.Natives mPrerenderManagerJniMock;
 
     private AutoVerifyingMostVisitedSites mMostVisitedSites;
 
@@ -69,6 +87,35 @@ public class NewTabPageLoadTest {
                 .loadPageProgrammatically(
                         getOriginalNativeNtpUrl(), RegularNewTabPageStation.newBuilder());
         assertTrue(mMostVisitedSites.pageImpressionRecorded);
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures({
+        PreloadingFeatureMap.PREWARM,
+        PreloadingFeatureMap.PREWARM_PAGE_LOAD_AND_TAB_SWITCH_AFTER_PAINT_TRIGGER
+    })
+    @DisableFeatures(PreloadingFeatureMap.PREWARM_ZERO_SUGGEST_TRIGGER)
+    public void testPrewarmTriggeredOnLoadAndTabSwitch() {
+        AndroidPrerenderManagerJni.setInstanceForTesting(mPrerenderManagerJniMock);
+
+        RegularNewTabPageStation ntpStation =
+                mActivityTestRule
+                        .startOnBlankPage()
+                        .loadPageProgrammatically(
+                                getOriginalNativeNtpUrl(), RegularNewTabPageStation.newBuilder());
+        Tab tab = ntpStation.getTab();
+        verify(mPrerenderManagerJniMock, timeout(CriteriaHelper.DEFAULT_MAX_TIME_TO_POLL))
+                .startPrewarm(tab.getWebContents());
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    clearInvocations(mPrerenderManagerJniMock);
+                    tab.hide(TabHidingType.CHANGED_TABS);
+                    verify(mPrerenderManagerJniMock, never()).startPrewarm(any());
+                    tab.show(TabSelectionType.FROM_USER);
+                    verify(mPrerenderManagerJniMock).startPrewarm(tab.getWebContents());
+                });
     }
 
     private static class AutoVerifyingMostVisitedSites extends FakeMostVisitedSites {

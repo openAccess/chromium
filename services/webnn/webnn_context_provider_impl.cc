@@ -5,6 +5,7 @@
 #include "services/webnn/webnn_context_provider_impl.h"
 
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/byte_size.h"
@@ -28,6 +29,7 @@
 #include "services/webnn/public/cpp/webnn_trace.h"
 #include "services/webnn/public/mojom/features.mojom.h"
 #include "services/webnn/public/mojom/webnn_context_provider.mojom.h"
+#include "services/webnn/public/mojom/webnn_device.mojom.h"
 #include "services/webnn/public/mojom/webnn_error.mojom.h"
 #include "services/webnn/public/mojom/webnn_service_introspection.mojom-forward.h"
 #include "services/webnn/webnn_context_impl.h"
@@ -74,6 +76,18 @@
 namespace webnn {
 
 namespace {
+
+// Uses the same strings as `WebNNExecutionProviderDetails::hardware_type`.
+std::string_view DeviceToIntrospectionString(mojom::Device device) {
+  switch (device) {
+    case mojom::Device::kCpu:
+      return "CPU";
+    case mojom::Device::kGpu:
+      return "GPU";
+    case mojom::Device::kNpu:
+      return "NPU";
+  }
+}
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(WEBNN_USE_LITERT)
 // Whether to use mojo data pipe for transferring tensor data between processes.
@@ -141,10 +155,9 @@ void RecordDeviceType(const mojom::Device device) {
 // Returns true if the request described by `options` should be served by the
 // renderer-process (in-process) TFLite/LiteRT backend instead of the
 // GPU-process backend. For `kGpu` device requests, the GPU process attempts
-// execution first using the LiteRT WebGPU accelerator
-// (`libLiteRtWebGpuAccelerator`, which is preloaded during
-// `PreSandboxWebNNInitialization()`). If no GPU accelerator is available or if
-// the request is for `kCpu` / `kNpu`, it falls back to the renderer-process
+// execution first using the LiteRT WebGPU accelerator unless
+// `kWebNNLiteRTGpuInRenderer` is enabled. If no GPU accelerator is available or
+// if the request is for `kCpu` / `kNpu`, it falls back to the renderer-process
 // (in-process) TFLite/LiteRT backend.
 bool ShouldUseInProcessTflite(const mojom::CreateContextOptions& options) {
   if (options.device == mojom::Device::kGpu &&
@@ -283,6 +296,8 @@ WebNNContextProviderImpl::PopulateContextsDetailsForIntrospection() {
     auto details = mojom::WebNNContextIntrospectionDetails::New();
     details->context_id = context_impl->tracing_id();
     details->context_backend = context_impl->GetBackendName();
+    details->requested_device_type =
+        DeviceToIntrospectionString(context_impl->options().device);
     details->execution_providers = context_impl->GetExecutionProvidersInfo();
     contexts_details.push_back(std::move(details));
   }
@@ -628,8 +643,7 @@ void WebNNContextProviderImpl::FallbackToTFLite(
 
 #if BUILDFLAG(WEBNN_USE_LITERT)
   // Attempt to create a LiteRT GPU context (`ContextImplLiteRt`) in the GPU
-  // process using the WebGPU accelerator preloaded prior to sandbox lockdown
-  // (`PreSandboxWebNNInitialization()`). If context creation fails or is not
+  // process using the WebGPU accelerator. If context creation fails or is not
   // supported, returning `kNotSupportedError` from `OnCreateWebNNContextImpl`
   // lets the renderer's `ML::createContext` fallback path create the in-process
   // LiteRT context instead.
@@ -747,8 +761,11 @@ void WebNNContextProviderImpl::OnOrtEnvCreated(
         scoped_trace.AddStep("RequestWebNNCompilerContext");
 
         // Compute the context properties so the compiler context can be
-        // requested before the dispatch context is created.
-        const EpWorkarounds ep_workarounds = env->GetEpWorkarounds(device_type);
+        // requested before the dispatch context is created. The workarounds
+        // must come from the compile target rather than the EPs the online
+        // path would select, and match `DispatchContextImplOrt::Create()`.
+        const EpWorkarounds ep_workarounds =
+            GetEpWorkaroundsForEp(selected_device->ep_name);
         ContextProperties properties =
             ort::ContextImplOrt::GetContextProperties(
                 ep_workarounds.resample2d_limit_to_nchw);

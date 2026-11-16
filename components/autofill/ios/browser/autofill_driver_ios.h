@@ -106,6 +106,7 @@ class AutofillDriverIOS final : public AutofillDriver,
   bool IsPolicyControlledFeatureAutofillEnabled() const override;
   bool IsPolicyControlledFeatureManualTextEnabled() const override;
   bool CanShowAutofillUi() const override;
+  bool DocumentUsedWebOtp() const override;
   base::flat_set<FieldGlobalId> ApplyFormAction(
       mojom::FormActionType action_type,
       mojom::ActionPersistence action_persistence,
@@ -168,6 +169,7 @@ class AutofillDriverIOS final : public AutofillDriver,
       mojom::AutofillSuggestionAvailability suggestion_availability) override;
   std::optional<net::IsolationInfo> GetIsolationInfo() override;
   void ScrollFieldIntoView(FieldGlobalId field_id) override;
+  void LoadCustomFormControlScript(const std::string& script) override;
 
   bool is_processed() const { return processed_; }
   void set_processed(bool processed) { processed_ = processed; }
@@ -239,7 +241,7 @@ class AutofillDriverIOS final : public AutofillDriver,
 
     // Renderer id of the last interacted formless field or `FieldRendererId()`
     // if the last interaction was not with a single formless field.
-    // TODO: crbug.com/40266699 - Convert to FieldGlobalId.
+    // TODO(crbug.com/585077444): Convert to FieldGlobalId.
     FieldRendererId formless_field;
   };
 

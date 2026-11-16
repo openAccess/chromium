@@ -518,7 +518,6 @@ IN_PROC_BROWSER_TEST_F(BrowserTest, NoTitleFileUrl) {
   GURL prefix_url = chrome_test_utils::GetTestUrl(
       base::FilePath(base::FilePath::kCurrentDirectory),
       base::FilePath(kTitle1File));
-  std::u16string tab_title;
   std::u16string test_title;
   for (const auto& c : cases) {
     SCOPED_TRACE(c.message);
@@ -3663,6 +3662,11 @@ IN_PROC_BROWSER_TEST_F(BrowserTest, MAYBE_SetBackgroundColorForNewTab) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), GURL("data:text/html,<body style='background-color:red;'>")));
+  content::WebContents* contents1 = tab_strip_model->GetActiveWebContents();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return contents1->GetPrimaryMainFrame()->GetView()->GetBackgroundColor() ==
+           SK_ColorRED;
+  }));
 
   // Add a second tab in the background.
   chrome::AddTabAt(browser(), GURL(), -1, /*foreground=*/false);

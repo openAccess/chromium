@@ -3,7 +3,6 @@
 // found in the LICENSE file.
 
 #include <memory>
-#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -32,9 +31,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/context_menu_interceptor.h"
-#include "extensions/browser/guest_view/mime_handler_view/mime_handler_view_guest.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "pdf/pdf_features.h"
 #include "printing/backend/print_backend.h"
 #include "printing/backend/test_print_backend.h"
 #include "printing/buildflags/buildflags.h"
@@ -63,10 +60,8 @@
 namespace {
 
 struct PDFExtensionPrintingTestPassToString {
-  std::string operator()(
-      const ::testing::TestParamInfo<std::tuple<bool, bool>>& i) const {
-    return std::string(std::get<1>(i.param) ? "OOPIF_" : "GUESTVIEW_") +
-           std::string(std::get<0>(i.param) ? "SERVICE" : "BROWSER");
+  std::string operator()(const ::testing::TestParamInfo<bool>& i) const {
+    return i.param ? "SERVICE" : "BROWSER";
   }
 };
 
@@ -93,13 +88,11 @@ void OnWillCreateBrowserContextServices(content::BrowserContext* context) {
 }  // namespace
 
 using ::content::WebContents;
-using ::extensions::MimeHandlerViewGuest;
 using ::pdf_extension_test_util::SetInputFocusOnPlugin;
 
-class PDFExtensionPrintingTest
-    : public PDFExtensionTestBase,
-      public printing::PrintJob::Observer,
-      public testing::WithParamInterface<std::tuple<bool, bool>> {
+class PDFExtensionPrintingTest : public PDFExtensionTestBase,
+                                 public printing::PrintJob::Observer,
+                                 public testing::WithParamInterface<bool> {
  public:
   PDFExtensionPrintingTest() = default;
   ~PDFExtensionPrintingTest() override = default;
@@ -160,7 +153,6 @@ class PDFExtensionPrintingTest
     printing::PrintingContext::SetPrintingContextFactoryForTest(nullptr);
     printing::PrintBackend::SetPrintBackendForTesting(nullptr);
   }
-  bool UseOopif() const override { return std::get<1>(GetParam()); }
   std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
       const override {
     std::vector<base::test::FeatureRefAndParams> enabled =
@@ -223,7 +215,7 @@ class PDFExtensionPrintingTest
   }
 
  private:
-  bool UseService() const { return std::get<0>(GetParam()); }
+  bool UseService() const { return GetParam(); }
 
   void OnCreatedPrintJob(printing::PrintJob* print_job) {
     EXPECT_FALSE(observing_print_job_);
@@ -283,8 +275,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
       LoadPdfGetExtensionHost(embedded_test_server()->GetURL("/pdf/test.pdf"));
   ASSERT_TRUE(extension_host);
 
-  content::WebContents* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
   // Makes sure that the correct frame invoked the context menu.
   content::ContextMenuInterceptor menu_interceptor(extension_host);
@@ -293,7 +285,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
   ContextMenuNotificationObserver context_menu_observer(IDC_PRINT);
 
   printing::TestPrintPreviewObserver print_observer(/*wait_for_loaded=*/false);
-  SimulateMouseClickAt(extension_host, embedder_web_contents,
+  SimulateMouseClickAt(extension_host, web_contents,
                        blink::WebInputEvent::kNoModifiers,
                        blink::WebMouseEvent::Button::kRight, {1, 1});
   print_observer.WaitUntilPreviewIsReady();
@@ -307,8 +299,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
           embedded_test_server()->GetURL("/pdf/pdf_embed.html"));
   ASSERT_TRUE(extension_host);
 
-  content::WebContents* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
   // Makes sure that the correct frame invoked the context menu.
   content::ContextMenuInterceptor menu_interceptor(extension_host);
@@ -317,7 +309,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
   ContextMenuNotificationObserver context_menu_observer(IDC_PRINT);
 
   printing::TestPrintPreviewObserver print_observer(/*wait_for_loaded=*/false);
-  SimulateMouseClickAt(extension_host, embedder_web_contents,
+  SimulateMouseClickAt(extension_host, web_contents,
                        blink::WebInputEvent::kNoModifiers,
                        blink::WebMouseEvent::Button::kRight, {1, 1});
   print_observer.WaitUntilPreviewIsReady();
@@ -334,8 +326,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
       pdf_extension_test_util::GetOnlyPdfPluginFrame(GetActiveWebContents());
   ASSERT_TRUE(plugin_frame);
 
-  content::WebContents* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
   // Makes sure that the correct frame invoked the context menu.
   content::ContextMenuInterceptor menu_interceptor(plugin_frame);
@@ -344,7 +336,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
   ContextMenuNotificationObserver context_menu_observer(IDC_PRINT);
 
   printing::TestPrintPreviewObserver print_observer(/*wait_for_loaded=*/false);
-  SetInputFocusOnPlugin(extension_host, embedder_web_contents);
+  SetInputFocusOnPlugin(extension_host, web_contents);
   plugin_frame->GetRenderWidgetHost()->ShowContextMenuAtPoint(
       {1, 1}, ui::mojom::MenuSourceType::kMouse);
   print_observer.WaitUntilPreviewIsReady();
@@ -363,8 +355,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
       pdf_extension_test_util::GetOnlyPdfPluginFrame(GetActiveWebContents());
   ASSERT_TRUE(plugin_frame);
 
-  content::WebContents* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
   // Makes sure that the correct frame invoked the context menu.
   content::ContextMenuInterceptor menu_interceptor(plugin_frame);
@@ -373,7 +365,7 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest,
   ContextMenuNotificationObserver context_menu_observer(IDC_PRINT);
 
   printing::TestPrintPreviewObserver print_observer(/*wait_for_loaded=*/false);
-  SetInputFocusOnPlugin(extension_host, embedder_web_contents);
+  SetInputFocusOnPlugin(extension_host, web_contents);
   plugin_frame->GetRenderWidgetHost()->ShowContextMenuAtPoint(
       {1, 1}, ui::mojom::MenuSourceType::kMouse);
   print_observer.WaitUntilPreviewIsReady();
@@ -398,13 +390,11 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionPrintingTest, PrintButton) {
 
 INSTANTIATE_TEST_SUITE_P(All,
                          PDFExtensionPrintingTest,
-                         testing::Combine(
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
-                             testing::Bool(),
+                         testing::Bool(),
 #else
-                             testing::Values(false),
+                         testing::Values(false),
 #endif
-                             testing::Bool()),
                          PDFExtensionPrintingTestPassToString());
 
 class PDFExtensionBasicPrintingTest : public PDFExtensionPrintingTest {
@@ -437,8 +427,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionBasicPrintingTest,
       pdf_extension_test_util::GetOnlyPdfPluginFrame(GetActiveWebContents());
   ASSERT_TRUE(plugin_frame);
 
-  content::WebContents* embedder_web_contents = GetEmbedderWebContents();
-  ASSERT_TRUE(embedder_web_contents);
+  content::WebContents* web_contents = GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
 
   // Makes sure that the correct frame invoked the context menu.
   content::ContextMenuInterceptor menu_interceptor(plugin_frame);
@@ -447,8 +437,8 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionBasicPrintingTest,
   ContextMenuNotificationObserver context_menu_observer(IDC_PRINT);
 
   SetupPrintViewManagerForJobMonitoring(plugin_frame);
-  SetInputFocusOnPlugin(extension_host, embedder_web_contents);
-  SimulateMouseClickAt(plugin_frame, embedder_web_contents,
+  SetInputFocusOnPlugin(extension_host, web_contents);
+  SimulateMouseClickAt(plugin_frame, web_contents,
                        blink::WebInputEvent::kNoModifiers,
                        blink::WebMouseEvent::Button::kRight, {1, 1});
   menu_interceptor.Wait();
@@ -457,5 +447,5 @@ IN_PROC_BROWSER_TEST_P(PDFExtensionBasicPrintingTest,
 
 INSTANTIATE_TEST_SUITE_P(All,
                          PDFExtensionBasicPrintingTest,
-                         testing::Combine(testing::Bool(), testing::Bool()),
+                         testing::Bool(),
                          PDFExtensionPrintingTestPassToString());

@@ -51,6 +51,10 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, AppMenuButton) {
   RunTest("webui_toolbar/app_menu_button_test.js", "mocha.run();");
 }
 
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, AvatarButton) {
+  RunTest("webui_toolbar/avatar_button_test.js", "mocha.run();");
+}
+
 IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, BackForwardButton) {
   RunTest("webui_toolbar/back_forward_button_test.js", "mocha.run();");
 }
@@ -140,6 +144,10 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarApp) {
   RunTest("webui_toolbar/toolbar_app_test.js", "mocha.run();");
 }
 
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, ToolbarAppLazyLoad) {
+  RunTest("webui_toolbar/toolbar_app_lazy_load_test.js", "mocha.run();");
+}
+
 IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, IPH) {
   RunTest("webui_toolbar/iph_test.js", "mocha.run();");
 }
@@ -159,4 +167,8 @@ IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, PerformanceInterventionButton) {
 
 IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, GlicButton) {
   RunTest("webui_toolbar/glic_button_test.js", "mocha.run();");
+}
+
+IN_PROC_BROWSER_TEST_F(WebUiToolbarJsTest, GlicActorTaskIcon) {
+  RunTest("webui_toolbar/glic_actor_task_icon_test.js", "mocha.run();");
 }

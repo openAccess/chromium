@@ -65,34 +65,14 @@ void ScriptAncestryTracker::WillExecuteScript(
     return;
   }
 
-  // We're executing a script's top-level. This is our first time seeing the
-  // script id for the given url.
   // Note: V8 occasionally reports the document's URL instead of an empty string
   // for inline scripts or evals. We check for both to accurately identify them
   // as inline, ensuring they are assigned a synthetic ID and correctly linked
   // to their initiating parent in the compilation graph.
   bool is_inline_script =
       script_url.empty() || script_url == execution_context.Url().GetString();
-  String url =
-      is_inline_script ? GenerateFakeUrlFromScriptId(script_id) : script_url;
-
-  std::optional<V8ScriptId> marked_script_id = GetMarkedScriptInStack(
-      StackType::kTopOnly, stack_trace,
-      /*ignore_monkey_patch=*/MonkeyPatchableApi::kNodeAppendChild);
-
-  // Since this is our first time running the script, this is the first we've
-  // seen of its script id. Record the id so that we can refer to the script
-  // by id rather than string.
-  if (!GetScriptMetadata(script_id)) {
-    v8_inspector::V8DebuggerId debugger_id =
-        GetDebuggerIdForCurrentContext(execution_context.GetIsolate());
-    script_metadata_.insert(
-        script_id,
-        ScriptMetadata{debugger_id, marked_script_id.value_or(V8ScriptId()),
-                       url});
-  }
-
-  OnScriptRegistered(execution_context, script_id, url, marked_script_id);
+  RegisterScriptWithUrl(execution_context, script_id, script_url,
+                        is_inline_script, stack_trace);
 
   MaybeSetBottomMostScript(execution_context, script_id);
 }
@@ -103,7 +83,7 @@ void ScriptAncestryTracker::DidExecuteScript(V8ScriptId script_id) {
   MaybeResetBottomMostScript();
 
   if (running_sync_tasks_ == 0) {
-    monkey_patch_calls_in_scope_.clear();
+    monkey_patch_calls_in_scope_.Clear();
   }
 }
 
@@ -118,11 +98,28 @@ void ScriptAncestryTracker::DidRegisterDynamicScript(
     marked_script_id = async_script_stack_.back();
   } else {
     marked_script_id = GetMarkedScriptInStack(
-        StackType::kTopOnly, stack_trace,
+        stack_trace,
         /*ignore_monkey_patch=*/MonkeyPatchableApi::kNodeAppendChild);
   }
 
   RegisterScript(script_id, marked_script_id);
+}
+
+void ScriptAncestryTracker::DidCompileModuleScript(
+    ExecutionContext& execution_context,
+    V8ScriptId script_id,
+    const String& script_url,
+    bool is_inline,
+    probe::AsyncTaskContext* task_context,
+    LazyStackTrace& stack_trace) {
+  if (script_id.value() <= 0) {
+    return;
+  }
+  RegisterScriptWithUrl(execution_context, script_id, script_url, is_inline,
+                        stack_trace);
+  if (task_context && IsMarkedScript(script_id)) {
+    task_context->SetMarkedScript(GetTrackerType(), script_id);
+  }
 }
 
 void ScriptAncestryTracker::WillCallFunction(
@@ -151,7 +148,7 @@ void ScriptAncestryTracker::DidCallFunction(V8ScriptId script_id,
   MaybeResetBottomMostScript();
 
   if (running_sync_tasks_ == 0) {
-    monkey_patch_calls_in_scope_.clear();
+    monkey_patch_calls_in_scope_.Clear();
   }
 }
 
@@ -159,23 +156,28 @@ void ScriptAncestryTracker::DidCreateAsyncTask(
     probe::AsyncTaskContext* task_context,
     LazyStackTrace& stack_trace) {
   DCHECK(task_context);
-  v8::Isolate* isolate = GetIsolate();
-  if (isolate && !isolate->GetCurrentContext().IsEmpty()) {
-    v8::HandleScope handle_scope(isolate);
-    // TODO(jkarlin): Restrict the kNodeAppendChild monkeypatch exception
-    // specifically to script element creation tasks (e.g., PendingScript) by
-    // passing the async task name/type to DidCreateAsyncTask.
-    // Note: We do this check separately from GetMarkedScriptInStack because we
-    // don't want to count it against the 1-call-per-sync-stack budget in case
-    // downstream callers want to call GetMarkedScriptInStack.
-    if (WasApiCalledByNonAttributedScript(
-            isolate, MonkeyPatchableApi::kNodeAppendChild, stack_trace)) {
-      return;
+  if (script_metadata_.empty() && !HasMarkedFrames()) {
+    return;
+  }
+
+  if (!script_metadata_.empty()) {
+    v8::Isolate* isolate = GetIsolate();
+    if (isolate && !isolate->GetCurrentContext().IsEmpty()) {
+      // TODO(jkarlin): Restrict the kNodeAppendChild monkeypatch exception
+      // specifically to script element creation tasks (e.g., PendingScript) by
+      // passing the async task name/type to DidCreateAsyncTask.
+      // Note: We do this check separately from GetMarkedScriptInStack because
+      // we don't want to count it against the 1-call-per-sync-stack budget in
+      // case downstream callers want to call GetMarkedScriptInStack.
+      if (WasApiCalledByNonAttributedScript(
+              isolate, MonkeyPatchableApi::kNodeAppendChild, stack_trace)) {
+        return;
+      }
     }
   }
 
   if (std::optional<V8ScriptId> script_id =
-          GetMarkedScriptInStack(StackType::kTopOnly, stack_trace)) {
+          GetMarkedScriptInStack(stack_trace)) {
     task_context->SetMarkedScript(GetTrackerType(), *script_id);
   }
 }
@@ -215,7 +217,7 @@ void ScriptAncestryTracker::DidCreateFrame(LocalFrame* frame,
   // script state across process boundaries without explicit browser-side IPC
   // propagation.
   std::optional<V8ScriptId> marked_script_id = GetMarkedScriptInStack(
-      StackType::kTopOnly, stack_trace,
+      stack_trace,
       /*ignore_monkey_patch=*/MonkeyPatchableApi::kNodeAppendChild);
   if (!marked_script_id.has_value()) {
     return;
@@ -266,14 +268,11 @@ bool ScriptAncestryTracker::IsMarkedExecutionContext(
 }
 
 std::optional<V8ScriptId> ScriptAncestryTracker::GetMarkedScriptInStack(
-    StackType stack_type,
     LazyStackTrace& stack_trace,
     MonkeyPatchableApi ignore_monkey_patch) {
   // If the currently executing context is within a frame created by a marked
   // script (or marked frame), classify the stack as marked and return the
-  // creating script's id. Note: Execution context inside a marked frame
-  // intentionally takes precedence over `kBottomOnly` bottom-of-stack checks,
-  // matching existing ad frame semantics.
+  // creating script's id.
   if (HasMarkedFrames()) {
     if (v8::Isolate* isolate = GetIsolate()) {
       v8::HandleScope handle_scope(isolate);
@@ -293,19 +292,6 @@ std::optional<V8ScriptId> ScriptAncestryTracker::GetMarkedScriptInStack(
         }
       }
     }
-  }
-
-  if (stack_type == StackType::kBottomOnly) {
-    if (bottom_most_script_.has_value() &&
-        IsMarkedScript(*bottom_most_script_)) {
-      return *bottom_most_script_;
-    }
-    for (auto& script : async_script_stack_) {
-      if (script.has_value() && IsMarkedScript(*script)) {
-        return *script;
-      }
-    }
-    return std::nullopt;
   }
 
   if (script_metadata_.empty()) {
@@ -397,9 +383,8 @@ void ScriptAncestryTracker::Shutdown() {
   marked_frames_.clear();
   script_metadata_.clear();
   async_script_stack_.clear();
-  bottom_most_script_.reset();
   bottom_most_script_depth_ = 0;
-  monkey_patch_calls_in_scope_.clear();
+  monkey_patch_calls_in_scope_.Clear();
   if (monitor_) {
     monitor_->RemoveObserver(this);
     monitor_ = nullptr;
@@ -422,16 +407,41 @@ void ScriptAncestryTracker::RegisterScript(
 
   v8::Isolate* isolate = GetIsolate();
   v8::HandleScope handle_scope(isolate);
-  v8_inspector::V8DebuggerId debugger_id =
-      GetDebuggerIdForCurrentContext(isolate);
-
-  script_metadata_.insert(
-      script_id,
-      ScriptMetadata{debugger_id, marked_script_id.value_or(V8ScriptId()),
-                     script_name});
-
   OnScriptRegistered(CHECK_DEREF(CurrentExecutionContext(isolate)), script_id,
                      script_name, marked_script_id);
+
+  if (IsMarkedScript(script_id) && !GetScriptMetadata(script_id)) {
+    v8_inspector::V8DebuggerId debugger_id =
+        GetDebuggerIdForCurrentContext(isolate);
+    script_metadata_.insert(script_id,
+                            ScriptMetadata{debugger_id, script_name});
+  }
+}
+
+void ScriptAncestryTracker::RegisterScriptWithUrl(
+    ExecutionContext& execution_context,
+    V8ScriptId script_id,
+    const String& script_url,
+    bool is_inline_script,
+    LazyStackTrace& stack_trace) {
+  if (script_id.value() <= 0) {
+    return;
+  }
+
+  String url =
+      is_inline_script ? GenerateFakeUrlFromScriptId(script_id) : script_url;
+
+  std::optional<V8ScriptId> marked_script_id = GetMarkedScriptInStack(
+      stack_trace,
+      /*ignore_monkey_patch=*/MonkeyPatchableApi::kNodeAppendChild);
+
+  OnScriptRegistered(execution_context, script_id, url, marked_script_id);
+
+  if (IsMarkedScript(script_id) && !GetScriptMetadata(script_id)) {
+    v8_inspector::V8DebuggerId debugger_id =
+        GetDebuggerIdForCurrentContext(execution_context.GetIsolate());
+    script_metadata_.insert(script_id, ScriptMetadata{debugger_id, url});
+  }
 }
 
 const ScriptAncestryTracker::ScriptMetadata*
@@ -448,10 +458,10 @@ bool ScriptAncestryTracker::IsFirstMonkeyPatchCall(MonkeyPatchableApi api) {
   if (running_sync_tasks_ == 0) {
     return true;
   }
-  if (monkey_patch_calls_in_scope_.Contains(api)) {
+  if (monkey_patch_calls_in_scope_.Has(api)) {
     return false;
   }
-  monkey_patch_calls_in_scope_.insert(api);
+  monkey_patch_calls_in_scope_.Put(api);
   return true;
 }
 
@@ -484,18 +494,17 @@ ScriptAncestryTracker::FindMonkeyPatchCaller(
 void ScriptAncestryTracker::MaybeSetBottomMostScript(
     ExecutionContext& execution_context,
     V8ScriptId script_id) {
-  if (!bottom_most_script_.has_value() && IsMarkedScript(script_id)) {
-    bottom_most_script_ = script_id;
+  DCHECK_GT(running_sync_tasks_, 0);
+  if (bottom_most_script_depth_ == 0 && IsMarkedScript(script_id)) {
     bottom_most_script_depth_ = running_sync_tasks_;
     OnBottomMostScriptStarted(execution_context);
   }
 }
 
 void ScriptAncestryTracker::MaybeResetBottomMostScript() {
-  if (bottom_most_script_.has_value() &&
+  if (bottom_most_script_depth_ > 0 &&
       running_sync_tasks_ < bottom_most_script_depth_) {
     OnBottomMostScriptFinished();
-    bottom_most_script_.reset();
     bottom_most_script_depth_ = 0;
   }
 }
@@ -503,7 +512,7 @@ void ScriptAncestryTracker::MaybeResetBottomMostScript() {
 bool ScriptAncestryTracker::WasApiCalledByNonAttributedScript(
     v8::Isolate* isolate,
     MonkeyPatchableApi api,
-    LazyStackTrace& /*stack_trace*/) const {
+    LazyStackTrace& stack_trace) const {
   MonkeyPatchableApiFunctionInfo api_info =
       GetMonkeyPatchableApiFunctionInfo(isolate, api);
   if (!api_info.is_monkey_patched) {
@@ -515,7 +524,6 @@ bool ScriptAncestryTracker::WasApiCalledByNonAttributedScript(
     return false;
   }
 
-  LazyStackTrace stack_trace(isolate);
   auto stack = stack_trace.GetStack(5);
 
   MonkeyPatchCallerResult result =

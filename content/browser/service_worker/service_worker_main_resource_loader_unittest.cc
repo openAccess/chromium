@@ -5,6 +5,7 @@
 #include "content/browser/service_worker/service_worker_main_resource_loader.h"
 
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "base/base64.h"
@@ -15,14 +16,17 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/services/storage/public/mojom/cache_storage_control.mojom.h"
 #include "content/browser/loader/navigation_loader_interceptor.h"
 #include "content/browser/loader/response_head_update_params.h"
+#include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
 #include "content/browser/service_worker/fake_embedded_worker_instance_client.h"
 #include "content/browser/service_worker/fake_service_worker.h"
@@ -32,6 +36,7 @@
 #include "content/browser/service_worker/service_worker_context_wrapper_test_api.h"
 #include "content/browser/service_worker/service_worker_fetch_dispatcher.h"
 #include "content/browser/service_worker/service_worker_registration.h"
+#include "content/browser/service_worker/service_worker_synthetic_response_manager.h"
 #include "content/browser/service_worker/service_worker_test_utils.h"
 #include "content/browser/service_worker/service_worker_version.h"
 #include "content/browser/storage_partition_impl.h"
@@ -143,6 +148,10 @@ blink::mojom::FetchAPIResponsePtr OkResponse(
   response->response_source = response_source;
   response->response_time = response_time;
   response->cache_storage_cache_name = cache_storage_cache_name;
+  if (response_source == network::mojom::FetchResponseSource::kCacheStorage) {
+    std::ignore = response->cache_storage_side_data_writer
+                      .InitWithNewPipeAndPassReceiver();
+  }
   response->blob = std::move(blob_body);
   if (response->blob) {
     response->headers.emplace("Content-Length",
@@ -170,10 +179,14 @@ blink::mojom::FetchAPIResponsePtr RedirectResponse(
 }
 
 blink::mojom::FetchAPIResponsePtr HeadersResponse(
-    const base::flat_map<std::string, std::string>& headers) {
-  auto response = blink::mojom::FetchAPIResponse::New();
-  response->status_code = 200;
-  response->status_text = "OK";
+    const base::flat_map<std::string, std::string>& headers,
+    network::mojom::FetchResponseSource response_source =
+        network::mojom::FetchResponseSource::kUnspecified,
+    base::Time response_time = base::Time(),
+    std::string cache_storage_cache_name = std::string()) {
+  auto response =
+      OkResponse(/*blob_body=*/nullptr, response_source, response_time,
+                 std::move(cache_storage_cache_name));
   response->headers.insert(headers.begin(), headers.end());
   return response;
 }
@@ -422,8 +435,10 @@ class FetchEventServiceWorker : public FakeServiceWorker {
             .Run(blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
       case ResponseMode::kHeaders:
-        response_callback->OnResponse(HeadersResponse(headers_),
-                                      std::move(timing), /*errors=*/nullptr);
+        response_callback->OnResponse(
+            HeadersResponse(headers_, response_source_, response_time_,
+                            cache_storage_cache_name_),
+            std::move(timing), /*errors=*/nullptr);
         std::move(finish_callback)
             .Run(blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
@@ -937,6 +952,60 @@ class ServiceWorkerMainResourceLoaderTest : public testing::Test {
     return version->HasWorkInBrowser();
   }
 
+  // Starts a cache-storage-served worker script request whose
+  // ServiceWorkerClient lives in a MockRenderProcessHost locked to
+  // https://example.com. When `sandboxed_process` is true, the process is
+  // locked as a sandboxed-frame process, so
+  // ChildProcessSecurityPolicyImpl::CanAccessDataForOrigin() denies it access
+  // to the origin's data.
+  void StartWorkerRequestFromProcess(bool sandboxed_process) {
+    service_worker_->SetResponseSource(
+        network::mojom::FetchResponseSource::kCacheStorage);
+    service_worker_->RespondWithHeaders({});
+
+    auto request = CreateRequest();
+    request->destination = network::mojom::RequestDestination::kWorker;
+
+    worker_process_ =
+        std::make_unique<MockRenderProcessHost>(helper_->browser_context());
+    worker_process_->Init();
+    const GURL kOriginUrl("https://example.com");
+    IsolationContext isolation_context(
+        BrowsingInstanceId(1), helper_->browser_context(),
+        /*is_guest=*/false,
+        /*is_fenced=*/false,
+        OriginAgentClusterIsolationState::CreateNonIsolatedByDefault());
+    auto* policy = ChildProcessSecurityPolicyImpl::GetInstance();
+    policy->LockProcess(
+        worker_process_->GetID(),
+        ProcessLock::Create(
+            isolation_context,
+            UrlInfo(UrlInfoInit(kOriginUrl)
+                        .WithSandbox(sandboxed_process)
+                        .WithStoragePartitionConfig(
+                            StoragePartitionConfig::CreateDefault(
+                                helper_->browser_context())))));
+    policy->AddCommittedOrigin(worker_process_->GetID().GetUnsafeValue(),
+                               url::Origin::Create(kOriginUrl));
+
+    const blink::DedicatedWorkerToken worker_token;
+    service_worker_client_ = std::make_unique<ScopedServiceWorkerClient>(
+        helper_->context()
+            ->service_worker_client_owner()
+            .CreateServiceWorkerClientForWorker(
+                worker_process_->GetID(),
+                ServiceWorkerClientInfo(worker_token)));
+    service_worker_client()->UpdateUrls(
+        request->url, url::Origin::Create(request->url),
+        blink::StorageKey::CreateFirstParty(url::Origin::Create(request->url)));
+    service_worker_client()->AddMatchingRegistration(registration_.get());
+    service_worker_client()->SetControllerRegistration(
+        registration_, /*notify_controllerchange=*/false);
+
+    StartRequest(std::move(request));
+    client_.RunUntilComplete();
+  }
+
  protected:
   ServiceWorkerClient* service_worker_client() const {
     return service_worker_client_->get();
@@ -968,6 +1037,7 @@ class ServiceWorkerMainResourceLoaderTest : public testing::Test {
   std::unique_ptr<ServiceWorkerMainResourceLoader> loader_;
   mojo::Remote<network::mojom::URLLoader> loader_remote_;
   std::unique_ptr<ScopedServiceWorkerClient> service_worker_client_;
+  std::unique_ptr<MockRenderProcessHost> worker_process_;
 
   bool did_call_fallback_callback_ = false;
   base::OnceClosure quit_closure_for_fallback_callback_;
@@ -2288,15 +2358,37 @@ TEST_F(ServiceWorkerMainResourceLoaderTest,
       "ServiceWorker.StaticRouter.MainResource.ValidResponse", false, 1);
 }
 
-TEST_F(ServiceWorkerMainResourceLoaderTest, SearchPrefetchHitInSyntheticResponse) {
+TEST_F(ServiceWorkerMainResourceLoaderTest,
+       SearchPrefetchHitInSyntheticResponse) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
       blink::features::kServiceWorkerSyntheticResponse,
       {{"bypass_subresource", "true"}});
 
+  SetupStoragePartition();
+  registry().WaitForRegistrationsInitializedForTest();
+
   MockSearchPrefetchContentBrowserClient mock_browser_client;
   ContentBrowserClient* old_browser_client =
       SetBrowserClientForTesting(&mock_browser_client);
+  base::ScopedClosureRunner restore_client(base::BindLambdaForTesting(
+      [&]() { SetBrowserClientForTesting(old_browser_client); }));
+
+  const GURL kSyntheticUrl("https://synthetic.example.com/page");
+  base::RunLoop loop;
+  registry().FindRegistrationForClientUrl(
+      ServiceWorkerRegistry::Purpose::kNavigation, kSyntheticUrl,
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(kSyntheticUrl)),
+      base::BindLambdaForTesting(
+          [&](blink::ServiceWorkerStatusCode status,
+              scoped_refptr<ServiceWorkerRegistration> found) {
+            ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk, status);
+            registration_ = std::move(found);
+            version_ = registration_->active_version();
+            loop.Quit();
+          }));
+  loop.Run();
+  ASSERT_TRUE(version_);
 
   bool handler_called = false;
   mock_browser_client.set_handler(base::BindLambdaForTesting(
@@ -2307,6 +2399,7 @@ TEST_F(ServiceWorkerMainResourceLoaderTest, SearchPrefetchHitInSyntheticResponse
       }));
 
   std::unique_ptr<network::ResourceRequest> request = CreateRequest();
+  request->url = kSyntheticUrl;
   SetUpTestWebContentsAndNavigation(request->url);
   request->is_outermost_main_frame = true;
 
@@ -2316,8 +2409,81 @@ TEST_F(ServiceWorkerMainResourceLoaderTest, SearchPrefetchHitInSyntheticResponse
   EXPECT_EQ(service_worker_client()->fetch_handler_bypass_option(),
             blink::mojom::ServiceWorkerFetchHandlerBypassOption::
                 kSyntheticResponse);
+}
 
-  SetBrowserClientForTesting(old_browser_client);
+// Verifies that a real (non-synthetic) service worker version bypasses
+// `MaybeStartSyntheticNetworkRequest()` before embedder preload interception or
+// dry-run handling, dispatching fetch events and evaluating static router
+// network rules without marking responses as synthetic (crbug.com/582423396).
+TEST_F(ServiceWorkerMainResourceLoaderTest,
+       RealServiceWorkerIgnoresSyntheticResponse) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      blink::features::kServiceWorkerSyntheticResponse);
+  ServiceWorkerSyntheticResponseManager::SetDryRunMode(true);
+
+  SetupStoragePartition();
+
+  MockSearchPrefetchContentBrowserClient mock_browser_client;
+  ContentBrowserClient* old_browser_client =
+      SetBrowserClientForTesting(&mock_browser_client);
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([&]() {
+    ServiceWorkerSyntheticResponseManager::SetDryRunMode(false);
+    SetBrowserClientForTesting(old_browser_client);
+  }));
+
+  bool preload_handler_called = false;
+  mock_browser_client.set_handler(base::BindLambdaForTesting(
+      [&](const network::ResourceRequest& resource_request,
+          mojo::PendingReceiver<network::mojom::URLLoader> url_loader_receiver,
+          mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+        preload_handler_called = true;
+      }));
+
+  // 1. Outermost main-frame navigation dispatches to the real worker's fetch
+  // handler without invoking the synthetic preload interceptor or caching a
+  // synthetic response head.
+  std::unique_ptr<network::ResourceRequest> first_request = CreateRequest();
+  SetUpTestWebContentsAndNavigation(first_request->url);
+  first_request->is_outermost_main_frame = true;
+  StartRequest(std::move(first_request));
+  client_.RunUntilComplete();
+
+  EXPECT_FALSE(preload_handler_called);
+  EXPECT_EQ(net::OK, client_.completion_status().error_code);
+  EXPECT_TRUE(client_.response_head()->was_fetched_via_service_worker);
+  EXPECT_FALSE(client_.response_head()->from_synthetic_response);
+  EXPECT_FALSE(version_->GetResponseHeadForSyntheticResponse());
+  histogram_tester.ExpectUniqueSample(kHistogramMainResourceFetchEvent,
+                                      blink::ServiceWorkerStatusCode::kOk, 1);
+
+  // 2. With a static router `kNetwork` rule in dry-run mode, fallback proceeds
+  // through the static router with `is_synthetic_response_dry_run_mode` unset.
+  SetupStaticRoutingRules(
+      network::mojom::ServiceWorkerRouterSourceType::kNetwork);
+  loader_remote_.reset();
+  network::TestURLLoaderClient second_client;
+  std::unique_ptr<network::ResourceRequest> second_request = CreateRequest();
+  second_request->is_outermost_main_frame = true;
+  loader_ = std::make_unique<ServiceWorkerMainResourceLoader>(
+      base::BindOnce(&ServiceWorkerMainResourceLoaderTest::Fallback,
+                     base::Unretained(this)),
+      /*fetch_event_client_id=*/"", service_worker_client()->AsWeakPtr(),
+      /*find_registration_start_time=*/base::TimeTicks::Now());
+  loader_->StartRequest(loader_remote_.BindNewPipeAndPassReceiver(),
+                        /*request_id=*/0, /*options=*/0, *second_request,
+                        second_client.CreateRemote(),
+                        net::MutableNetworkTrafficAnnotationTag());
+  RunUntilFallbackCallback();
+
+  EXPECT_TRUE(did_call_fallback_callback_);
+  EXPECT_FALSE(response_head_update_params_.is_synthetic_response_dry_run_mode);
+  EXPECT_FALSE(preload_handler_called);
+  histogram_tester.ExpectTotalCount(
+      "ServiceWorker.SyntheticResponse.Eligibility", 0);
+  histogram_tester.ExpectTotalCount(
+      "ServiceWorker.SyntheticResponse.HasSearchPrefetchCache", 0);
 }
 
 // Tests that when the Service Worker fetch handler responds faster than the
@@ -2493,9 +2659,15 @@ TEST_P(ServiceWorkerMainResourceLoaderTimingAllowTest, CheckTimingAllowPassed) {
   response->response_type = test_case.response_type;
   response->timing_allow_passed = test_case.response_timing_allow_passed;
   if (test_case.timing_allow_origin) {
-    response->parsed_headers = network::mojom::ParsedHeaders::New();
-    response->parsed_headers->timing_allow_origin =
-        network::ParseTimingAllowOrigin(*test_case.timing_allow_origin);
+    if (test_case.response_type == network::mojom::FetchResponseType::kCors) {
+      response->headers.insert(
+          {"Timing-Allow-Origin", *test_case.timing_allow_origin});
+      response->parsed_headers = network::mojom::ParsedHeaders::New();
+    } else {
+      response->parsed_headers = network::mojom::ParsedHeaders::New();
+      response->parsed_headers->timing_allow_origin =
+          network::ParseTimingAllowOrigin(*test_case.timing_allow_origin);
+    }
   }
 
   service_worker_->FinishRespondWithCustomResponse(std::move(response));
@@ -2638,5 +2810,173 @@ TEST_F(ServiceWorkerMainResourceLoaderTest, SRIMessageSignatureRejected) {
               testing::Optional(network::mojom::BlockedByResponseReason::
                                     kSRIMessageSignatureMismatch));
 }
+
+TEST_F(ServiceWorkerMainResourceLoaderTest,
+       SideDataWriterNotForwardedToUntrustedWorkerProcess) {
+  StartWorkerRequestFromProcess(/*sandboxed_process=*/true);
+  EXPECT_EQ(net::OK, client_.completion_status().error_code);
+  ASSERT_TRUE(client_.response_head());
+  EXPECT_FALSE(
+      client_.response_head()->cache_storage_side_data_writer.is_valid());
+}
+
+TEST_F(ServiceWorkerMainResourceLoaderTest,
+       SideDataWriterForwardedToTrustedWorkerProcess) {
+  StartWorkerRequestFromProcess(/*sandboxed_process=*/false);
+  EXPECT_EQ(net::OK, client_.completion_status().error_code);
+  ASSERT_TRUE(client_.response_head());
+  EXPECT_TRUE(
+      client_.response_head()->cache_storage_side_data_writer.is_valid());
+}
+
+class ServiceWorkerMainResourceLoaderInterceptedHeaderTest
+    : public ServiceWorkerMainResourceLoaderTest,
+      public testing::WithParamInterface<bool> {};
+
+// Verifies that embedder-intercepted navigations forward response streams
+// transparently while storing synthetic response headers on `version_` only
+// when `capture_intercepted_headers` is enabled, and clearing stale cached
+// headers on non-opt-in responses or redirects.
+TEST_P(ServiceWorkerMainResourceLoaderInterceptedHeaderTest,
+       CapturesResponseHeadersOnlyWhenEnabled) {
+  const bool capture_enabled = GetParam();
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      blink::features::kServiceWorkerSyntheticResponse,
+      {{"bypass_subresource", "true"},
+       {blink::features::
+            kServiceWorkerSyntheticResponseCaptureInterceptedHeaders.name,
+        capture_enabled ? "true" : "false"}});
+
+  const base::TimeTicks kPrefetchRequestStart =
+      base::TimeTicks::Now() - base::Milliseconds(42);
+  auto make_head = [&](bool opt_in) {
+    auto head = network::mojom::URLResponseHead::New();
+    head->was_in_prefetch_cache = true;
+    head->load_timing.request_start = kPrefetchRequestStart;
+    head->headers =
+        base::MakeRefCounted<net::HttpResponseHeaders>("HTTP/1.1 200 OK");
+    if (opt_in) {
+      head->headers->AddHeader("Service-Worker-Synthetic-Response", "?1");
+    }
+    head->headers->AddHeader("Content-Security-Policy", "default-src 'self'");
+    return head;
+  };
+
+  SetupStoragePartition();
+  registry().WaitForRegistrationsInitializedForTest();
+
+  MockSearchPrefetchContentBrowserClient mock_browser_client;
+  ContentBrowserClient* old_browser_client =
+      SetBrowserClientForTesting(&mock_browser_client);
+  base::ScopedClosureRunner restore_browser_client(base::BindOnce(
+      base::IgnoreResult(&SetBrowserClientForTesting), old_browser_client));
+
+  const GURL kSyntheticUrl("https://synthetic.example.com/page");
+  base::RunLoop loop;
+  registry().FindRegistrationForClientUrl(
+      ServiceWorkerRegistry::Purpose::kNavigation, kSyntheticUrl,
+      blink::StorageKey::CreateFirstParty(url::Origin::Create(kSyntheticUrl)),
+      base::BindLambdaForTesting(
+          [&](blink::ServiceWorkerStatusCode status,
+              scoped_refptr<ServiceWorkerRegistration> found) {
+            ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk, status);
+            registration_ = std::move(found);
+            version_ = registration_->active_version();
+            loop.Quit();
+          }));
+  loop.Run();
+  ASSERT_TRUE(version_);
+  ASSERT_FALSE(version_->GetResponseHeadForSyntheticResponse());
+
+  mojo::PendingReceiver<network::mojom::URLLoader> keep_alive_loader_receiver;
+  mock_browser_client.set_handler(base::BindLambdaForTesting(
+      [&](const network::ResourceRequest& resource_request,
+          mojo::PendingReceiver<network::mojom::URLLoader> url_loader_receiver,
+          mojo::PendingRemote<network::mojom::URLLoaderClient> client) {
+        keep_alive_loader_receiver = std::move(url_loader_receiver);
+        mojo::Remote<network::mojom::URLLoaderClient> remote_client(
+            std::move(client));
+
+        mojo::ScopedDataPipeProducerHandle producer;
+        mojo::ScopedDataPipeConsumerHandle consumer;
+        ASSERT_EQ(MOJO_RESULT_OK, mojo::CreateDataPipe(/*options=*/nullptr,
+                                                       producer, consumer));
+        ASSERT_TRUE(mojo::BlockingCopyFromString("intercepted-body", producer));
+        producer.reset();
+
+        remote_client->OnReceiveResponse(make_head(/*opt_in=*/true),
+                                         std::move(consumer), std::nullopt);
+        remote_client->OnTransferSizeUpdated(128);
+        network::URLLoaderCompletionStatus status(net::OK);
+        status.encoded_data_length = base::ByteSize(256);
+        remote_client->OnComplete(status);
+      }));
+
+  std::unique_ptr<network::ResourceRequest> request = CreateRequest();
+  request->url = kSyntheticUrl;
+  SetUpTestWebContentsAndNavigation(request->url);
+  request->is_outermost_main_frame = true;
+
+  StartRequest(std::move(request));
+  client_.RunUntilComplete();
+
+  EXPECT_EQ(net::OK, client_.completion_status().error_code);
+  EXPECT_EQ(base::ByteSize(256),
+            client_.completion_status().encoded_data_length);
+  EXPECT_EQ(128, client_.body_transfer_size());
+  EXPECT_TRUE(client_.response_head()->was_in_prefetch_cache);
+  EXPECT_EQ(kPrefetchRequestStart,
+            client_.response_head()->load_timing.request_start);
+  std::string received_body;
+  ASSERT_TRUE(client_.response_body().is_valid());
+  EXPECT_TRUE(mojo::BlockingCopyToString(client_.response_body_release(),
+                                         &received_body));
+  EXPECT_EQ("intercepted-body", received_body);
+  const auto& stored_head = version_->GetResponseHeadForSyntheticResponse();
+  if (capture_enabled) {
+    ASSERT_TRUE(stored_head);
+    ASSERT_TRUE(stored_head->headers);
+    EXPECT_TRUE(stored_head->headers->HasHeaderValue("Content-Security-Policy",
+                                                     "default-src 'self'"));
+
+    // Verify observer edge cases: non-opt-in clearing, redirect clearing, and
+    // downstream disconnect propagation.
+    {
+      network::TestURLLoaderClient downstream;
+      mojo::Remote<network::mojom::URLLoaderClient> wrapped(
+          ServiceWorkerSyntheticResponseManager::
+              MaybeWrapClientToStoreResponseHeaders(version_,
+                                                    downstream.CreateRemote()));
+      wrapped->OnReceiveResponse(make_head(/*opt_in=*/false), {}, std::nullopt);
+      downstream.RunUntilResponseReceived();
+      EXPECT_FALSE(version_->GetResponseHeadForSyntheticResponse());
+    }
+    version_->SetResponseHeadForSyntheticResponse(make_head(/*opt_in=*/true));
+    {
+      network::TestURLLoaderClient downstream;
+      mojo::Remote<network::mojom::URLLoaderClient> wrapped(
+          ServiceWorkerSyntheticResponseManager::
+              MaybeWrapClientToStoreResponseHeaders(version_,
+                                                    downstream.CreateRemote()));
+      net::RedirectInfo redirect_info;
+      redirect_info.status_code = 302;
+      redirect_info.new_url = GURL("https://example.com/next");
+      wrapped->OnReceiveRedirect(redirect_info, make_head(/*opt_in=*/true));
+      downstream.RunUntilRedirectReceived();
+      EXPECT_FALSE(version_->GetResponseHeadForSyntheticResponse());
+
+      downstream.Unbind();
+      EXPECT_TRUE(
+          base::test::RunUntil([&]() { return !wrapped.is_connected(); }));
+    }
+  } else {
+    EXPECT_FALSE(stored_head);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         ServiceWorkerMainResourceLoaderInterceptedHeaderTest,
+                         testing::Bool());
 }  // namespace service_worker_main_resource_loader_unittest
 }  // namespace content

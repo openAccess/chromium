@@ -16,6 +16,7 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/types/expected_macros.h"
+#include "third_party/microsoft_dxheaders/src/include/experimental-composition/experimental-dcomp.h"
 #include "ui/gfx/color_space_win.h"
 #include "ui/gfx/geometry/axis_transform2d.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -72,20 +73,6 @@ gfx::ColorSpace GetOutputColorSpace(const gfx::ColorSpace& input_color_space,
 
 bool IsProtectedVideo(gfx::ProtectedVideoType protected_video_type) {
   return protected_video_type != gfx::ProtectedVideoType::kClear;
-}
-
-const char* ProtectedVideoTypeToString(gfx::ProtectedVideoType type) {
-  switch (type) {
-    case gfx::ProtectedVideoType::kClear:
-      return "Clear";
-    case gfx::ProtectedVideoType::kSoftwareProtected:
-      if (DirectCompositionOverlaysSupported())
-        return "SoftwareProtected.HasOverlaySupport";
-      else
-        return "SoftwareProtected.NoOverlaySupport";
-    case gfx::ProtectedVideoType::kHardwareProtected:
-      return "HardwareProtected";
-  }
 }
 
 base::win::ScopedHandle CreateDCompSurfaceHandle() {
@@ -1415,7 +1402,15 @@ base::expected<void, CommitError> SwapChainPresenter::PresentDCOMPSurface(
   }
 
   pending_dcomp_surface_rect_in_window_ = mapped_rect;
-  content_size_ = mapped_rect.size();
+
+  if (layer_tree_->dcomp_device7()) {
+    // Report the quad size so that the DCLayerTree's content-to-quad transform
+    // is identity so the video will not be doubly scaled when placed in a
+    // `IDCompositionSurfaceBrush` below.
+    content_size_ = params.quad_rect.size();
+  } else {
+    content_size_ = mapped_rect.size();
+  }
 
   // If |dcomp_surface_proxy| size is {1, 1}, the texture was initialized
   // without knowledge of output size; reset |content_| so it's not added to the
@@ -1445,7 +1440,16 @@ base::expected<void, CommitError> SwapChainPresenter::PresentDCOMPSurface(
           CommitError::Reason::kPresentToSwapChainCreateSurfaceFromHandle, hr});
     }
 
-    content_ = dcomp_surface.Get();
+    if (auto* dcomp_device7 = layer_tree_->dcomp_device7()) {
+      // A DComp surface brush scales its contents to its container. This lets
+      // us avoid jank when the internal MF swap chain asynchronously resizes.
+      Microsoft::WRL::ComPtr<IDCompositionSurfaceBrush> surface_brush;
+      CHECK_EQ(S_OK, dcomp_device7->CreateSurfaceBrush(&surface_brush));
+      CHECK_EQ(S_OK, surface_brush->SetSurface(dcomp_surface.Get()));
+      content_ = std::move(surface_brush);
+    } else {
+      content_ = dcomp_surface.Get();
+    }
     // Don't take ownership of handle as the DCOMPSurfaceProxy instance owns it.
     dcomp_surface_handle_ = surface_handle;
   }
@@ -1748,7 +1752,8 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   desc.SampleDesc.Count = 1;
   desc.BufferCount = swap_chain_buffer_count_;
   desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  desc.Scaling = DXGI_SCALING_STRETCH;
+  desc.Scaling = ShouldUseDirectCompositionBrushes() ? DXGI_SCALING_NONE
+                                                     : DXGI_SCALING_STRETCH;
   desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   desc.Flags =
       DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO;
@@ -1766,10 +1771,6 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
   }
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
 
-  const std::string kSwapChainCreationResultByVideoTypeUmaPrefix =
-      "GPU.DirectComposition.SwapChainCreationResult3.";
-  const std::string protected_video_type_string =
-      ProtectedVideoTypeToString(protected_video_type);
   Microsoft::WRL::ComPtr<IDXGISwapChain3> swap_chain;
 
   if (use_yuv_swap_chain) {
@@ -1780,10 +1781,6 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
         d3d11_device_.Get(), swap_chain_handle.Get(), &desc, nullptr,
         &swap_chain1);
     failed_to_create_yuv_swapchain_ = FAILED(hr);
-
-    base::UmaHistogramSparse(kSwapChainCreationResultByVideoTypeUmaPrefix +
-                                 protected_video_type_string,
-                             hr);
 
     if (failed_to_create_yuv_swapchain_) {
       DLOG(ERROR) << "Failed to create "
@@ -1824,10 +1821,6 @@ base::expected<void, CommitError> SwapChainPresenter::ReallocateSwapChain(
     hr = media_factory->CreateSwapChainForCompositionSurfaceHandle(
         d3d11_device_.Get(), swap_chain_handle.Get(), &desc, nullptr,
         &swap_chain1);
-
-    base::UmaHistogramSparse(kSwapChainCreationResultByVideoTypeUmaPrefix +
-                                 protected_video_type_string,
-                             hr);
 
     if (FAILED(hr)) {
       // Disable overlay support so dc_layer_overlay will stop sending down

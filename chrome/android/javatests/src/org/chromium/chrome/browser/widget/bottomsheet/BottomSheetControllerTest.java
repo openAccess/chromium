@@ -29,23 +29,22 @@ import org.chromium.base.MathUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Matchers;
 import org.chromium.base.test.util.RequiresRestart;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
-import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
@@ -60,8 +59,10 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent.HeightM
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.SheetState;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetFeatureMap;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetTestSupport;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetType;
 import org.chromium.components.browser_ui.bottomsheet.TestBottomSheetContent;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.scrim.ScrimManager;
@@ -69,7 +70,6 @@ import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.KeyboardVisibilityDelegate;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.ViewUtils;
-import org.chromium.url.GURL;
 
 import java.util.concurrent.TimeoutException;
 
@@ -79,7 +79,6 @@ import java.util.concurrent.TimeoutException;
  * created by the activity that are used by different experiments.
  */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
 @Restriction(DeviceFormFactor.PHONE) // TODO(mdjones): Remove this (crbug.com/40574069).
 @Batch(Batch.PER_CLASS)
 public class BottomSheetControllerTest {
@@ -123,6 +122,8 @@ public class BottomSheetControllerTest {
                     mHighPriorityContent =
                             new TestBottomSheetContent(
                                     mActivity, BottomSheetContent.ContentPriority.HIGH, false);
+                    mHighPriorityContent.setSheetType(
+                            new BottomSheetType.Builder().setUserInitiated(true).build());
 
                     mBackInterceptingContent =
                             new TestBottomSheetContent(
@@ -174,7 +175,7 @@ public class BottomSheetControllerTest {
         ThreadUtils.runOnUiThreadBlocking(
                 () ->
                         assertFalse(
-                                keyboardDelegate.isKeyboardShowing(
+                                keyboardDelegate.isKeyboardObscuring(
                                         mActivity.getTabsViewForTesting())));
         BottomSheetTestSupport.waitForContentChange(mSheetController, mLowPriorityContent);
         BottomSheetTestSupport.waitForState(mSheetController, SheetState.PEEK);
@@ -324,6 +325,7 @@ public class BottomSheetControllerTest {
     @Test
     @SmallTest
     @Feature({"BottomSheetController"})
+    @DisableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
     public void testSheetPriorityInExpandedState() {
         requestContentInSheet(mLowPriorityContent, true);
         expandSheet();
@@ -336,6 +338,32 @@ public class BottomSheetControllerTest {
         ThreadUtils.runOnUiThreadBlocking(() -> mSheetController.collapseSheet(false));
 
         BottomSheetTestSupport.waitForContentChange(mSheetController, mHighPriorityContent);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"BottomSheetController"})
+    @EnableFeatures(BottomSheetFeatureMap.BOTTOM_SHEET_TYPES)
+    public void testSheetTypesInExpandedState() {
+        requestContentInSheet(mLowPriorityContent, true);
+        expandSheet();
+
+        // A passive non-modal sheet cannot supersede an open modal sheet and is queued instead.
+        mPeekableContent.setHasCustomScrimLifecycle(true);
+        mPeekableContent.setSheetType(new BottomSheetType.Builder().setModal(false).build());
+        requestContentInSheet(mPeekableContent, false);
+        assertEquals(
+                "The bottom sheet should keep showing the modal content.",
+                mLowPriorityContent,
+                mSheetController.getCurrentSheetContent());
+
+        // A user-initiated sheet immediately supersedes an expanded passive sheet under
+        // BottomSheetTypes without waiting for collapse.
+        requestContentInSheet(mHighPriorityContent, true);
+        assertEquals(
+                "The user-initiated content should supersede the expanded passive sheet.",
+                mHighPriorityContent,
+                mSheetController.getCurrentSheetContent());
     }
 
     @Test
@@ -639,7 +667,7 @@ public class BottomSheetControllerTest {
 
     @Test
     @MediumTest
-    public void testCustomLifecycleContent() throws TimeoutException {
+    public void testCustomLifecycleContent() {
         requestContentInSheet(mHighPriorityContent, true);
         requestContentInSheet(mLowPriorityContent, false);
 
@@ -651,22 +679,8 @@ public class BottomSheetControllerTest {
         requestContentInSheet(customLifecycleContent, false);
         assertEquals(mHighPriorityContent, mSheetController.getCurrentSheetContent());
 
-        // Change URL and wait for PageLoadStarted event.
-        CallbackHelper pageLoadStartedHelper = new CallbackHelper();
-        Tab tab = mActivityTestRule.getActivityTab();
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    tab.addObserver(
-                            new TabObserver() {
-                                @Override
-                                public void onPageLoadStarted(Tab tab, GURL url) {
-                                    pageLoadStartedHelper.notifyCalled();
-                                }
-                            });
-                });
-        int currentCallCount = pageLoadStartedHelper.getCallCount();
-        ChromeTabUtils.loadUrlOnUiThread(tab, "about:blank");
-        pageLoadStartedHelper.waitForCallback(currentCallCount, 1);
+        // Change URL. Starting the page load clears the requests without a custom lifecycle.
+        mPage = mPage.loadAboutBlank();
 
         ThreadUtils.runOnUiThreadBlocking(mTestSupport::endAllAnimations);
         assertEquals(customLifecycleContent, mSheetController.getCurrentSheetContent());
@@ -705,6 +719,7 @@ public class BottomSheetControllerTest {
                                 new TestBottomSheetContent(
                                         mActivity, BottomSheetContent.ContentPriority.LOW, true));
         customScrimContent.setHasCustomScrimLifecycle(true);
+        customScrimContent.setSheetType(new BottomSheetType.Builder().setModal(false).build());
         requestContentInSheet(customScrimContent, true);
 
         expandSheet();
@@ -960,6 +975,7 @@ public class BottomSheetControllerTest {
     @Feature({"BottomSheetController"})
     public void testHandleBackPress_withCustomScrimLifecycle() {
         mPeekableContent.setHasCustomScrimLifecycle(true);
+        mPeekableContent.setSheetType(new BottomSheetType.Builder().setModal(false).build());
         requestContentInSheet(mPeekableContent, true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -1015,8 +1031,14 @@ public class BottomSheetControllerTest {
     @Test
     @MediumTest
     public void testReplaceLowPriorityContentWhileOpen() {
+        // Configure incoming content with a non-user-initiated, non-modal sheet type so that
+        // under BottomSheetTypes it can only supersede mLowPriorityContent when
+        // mLowPriorityContent is suppressible (setCanBeSuppressed(true)).
+        mHighPriorityContent.setSheetType(new BottomSheetType.Builder().setModal(false).build());
         // Allow the content to be replaced without first closing the sheet.
         mLowPriorityContent.setCanBeSuppressed(true);
+        mLowPriorityContent.setSheetType(
+                new BottomSheetType.Builder().setSuppressible(true).build());
         requestContentInSheet(mLowPriorityContent, true);
 
         ThreadUtils.runOnUiThreadBlocking(

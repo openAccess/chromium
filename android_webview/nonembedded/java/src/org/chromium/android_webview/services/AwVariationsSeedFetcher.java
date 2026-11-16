@@ -32,6 +32,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.base.version_info.Channel;
 import org.chromium.base.version_info.VersionConstants;
 import org.chromium.components.background_task_scheduler.TaskIds;
+import org.chromium.components.variations.VariationsSwitches;
 import org.chromium.components.variations.firstrun.VariationsSeedFetcher;
 import org.chromium.components.variations.firstrun.VariationsSeedFetcher.SeedFetchInfo;
 import org.chromium.components.variations.firstrun.VariationsSeedFetcher.SeedInfo;
@@ -221,12 +222,12 @@ public class AwVariationsSeedFetcher extends JobService {
 
     /**
      * There are two types of calls made to this scheduler - SafeMode and regular seed fetches.
-     * Normal seed fetches are made via bound IPC through {@link VariationsSeedServer}.
-     * SafeMode seed fetches are made through {@link NonEmbeddedFastVariationsSeedSafeModeAction}.
+     * Normal seed fetches are made via bound IPC through {@link VariationsSeedServer}. SafeMode
+     * seed fetches are made through {@link NonEmbeddedFastVariationsSeedSafeModeAction}.
      *
-     * @param fastVariationsSeed Indicates whether the request is for a SafeMode seed fetch,
-     * which requires a higher priority and less restricted seed fetch job, or a regular seed fetch
-     * job.
+     * @param requireFastMode Indicates whether the request is for a SafeMode seed fetch, which
+     *     requires a higher priority and less restricted seed fetch job, or a regular seed fetch
+     *     job.
      */
     public static void scheduleIfNeeded(boolean requireFastMode) {
         JobScheduler scheduler = getScheduler();
@@ -393,6 +394,10 @@ public class AwVariationsSeedFetcher extends JobService {
             RecordHistogram.recordBooleanHistogram(
                     SEED_REQUEST_HAS_RESTRICT_PARAM_HISTOGRAM_NAME, !restrictMode.isEmpty());
 
+            String corpus =
+                    CommandLine.getInstance()
+                            .getSwitchValue(VariationsSwitches.VARIATIONS_SEED_CORPUS);
+
             final VariationsSeedFetcher.SeedFetchParameters params =
                     VariationsSeedFetcher.SeedFetchParameters.Builder.newBuilder()
                             .setPlatform(VariationsSeedFetcher.VariationsPlatform.ANDROID_WEBVIEW)
@@ -400,6 +405,7 @@ public class AwVariationsSeedFetcher extends JobService {
                             .setMilestone(milestone)
                             .setChannel(getChannelStr())
                             .setIsFastFetchMode(fastMode)
+                            .setCorpus(corpus)
                             .build();
             SeedFetchInfo fetchInfo = downloader.downloadContent(params, info);
 

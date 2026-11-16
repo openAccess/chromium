@@ -38,7 +38,6 @@ import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.media.MediaCapturePickerDelegate;
 import org.chromium.chrome.browser.media.MediaCapturePickerManager;
 import org.chromium.chrome.browser.media.PictureInPicture;
@@ -70,11 +69,10 @@ import java.util.concurrent.TimeoutException;
 /** Tests for {@link TabAlert} and {@link MediaState}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
     MediaSwitches.AUTOPLAY_NO_GESTURE_REQUIRED_POLICY,
     ContentSwitches.USE_FAKE_DEVICE_FOR_MEDIA_STREAM,
     "enable-experimental-web-platform-features",
-    "enable-features=UserMediaScreenCapturing,AndroidMediaPicker",
+    "enable-features=UserMediaScreenCapturing,AndroidMediaPicker"
 })
 @Batch(Batch.PER_CLASS)
 public class TabAlertIndicatorTest {
@@ -257,6 +255,7 @@ public class TabAlertIndicatorTest {
     @SmallTest
     // Web Picture-in-Picture requires Android 11+.
     @DisableIf.Build(sdk_is_less_than = Build.VERSION_CODES.R)
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/583907929
     // PiP is not supported for automotive.
     @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO)
     public void testAlertStatePipPlaying() throws TimeoutException {
@@ -277,6 +276,7 @@ public class TabAlertIndicatorTest {
 
     @Test
     @SmallTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/583907929
     public void testAlertStatePriority() throws TimeoutException {
         // MUTED
         setMuteState(true);
@@ -614,6 +614,7 @@ public class TabAlertIndicatorTest {
         // ActivityTabWebContentsDelegateAndroid#isPictureInPictureEnabled.
         // TODO(crbug.com/568761242): Remove the SDK check once the minimum SDK is Android R+.
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-                && PictureInPicture.isEnabled(mActivityTestRule.getActivity());
+                && ThreadUtils.runOnUiThreadBlocking(
+                        () -> PictureInPicture.isEnabled(mActivityTestRule.getActivity()));
     }
 }

@@ -55,6 +55,7 @@
 #include "chrome/browser/webauthn/fake_password_credential_fetcher.h"
 #include "chrome/browser/webauthn/passkey_model_factory.h"
 #include "chrome/browser/webauthn/test_util.h"
+#include "chrome/browser/webauthn/webauthn_metrics_util.h"
 #include "chrome/browser/webauthn/webauthn_pref_names.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -68,6 +69,7 @@
 #include "components/permissions/test/permission_request_observer.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/protocol/webauthn_credential_specifics.pb.h"
+#include "components/ukm/test_ukm_recorder.h"
 #include "components/webauthn/core/browser/passkey_change_quota_tracker.h"
 #include "components/webauthn/core/browser/test_passkey_model.h"
 #include "content/public/browser/authenticator_request_client_delegate.h"
@@ -94,6 +96,7 @@
 #include "extensions/common/extension_builder.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
@@ -1285,6 +1288,7 @@ class WebAuthnAmbientUITest : public WebAuthnBrowserTest {
 
 // Tests that the ambient UI permission request is shown and can be accepted.
 IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUISingleCredential) {
+  base::HistogramTester histograms;
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   content::DOMMessageQueue message_queue(web_contents);
@@ -1321,6 +1325,22 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUISingleCredential) {
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
   EXPECT_EQ(result, "\"webauthn: OK\"");
+
+  histograms.ExpectUniqueSample(
+      "WebAuthentication.Ambient.RequestedCredentialTypes", 0 /*PasskeysOnly*/,
+      1);
+  histograms.ExpectUniqueSample("WebAuthentication.Ambient.DisplayOutcome",
+                                0 /*Shown*/, 1);
+  histograms.ExpectUniqueSample("WebAuthentication.Ambient.InitialUiMode",
+                                0 /*Bubble*/, 1);
+  histograms.ExpectUniqueSample(
+      "WebAuthentication.Ambient.BubbleCredentialCount", 1, 1);
+  histograms.ExpectUniqueSample(
+      "WebAuthentication.Ambient.BubbleResolution.InitiallyShown",
+      0 /*CredentialSelected*/, 1);
+  histograms.ExpectUniqueSample(
+      "WebAuthentication.Ambient.CredentialSelectionMethod",
+      0 /*SignInButtonClicked*/, 1);
 }
 
 // Tests that closing the ambient UI bubble keeps the request pending and the
@@ -1355,6 +1375,64 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIClosingBubbleKeepsChip) {
   EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
 
   // Clicking the chip reopens the bubble, which can still be accepted.
+  chip_controller->chip()->ExecuteForTesting();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return chip_controller->IsBubbleShowing(); }));
+  permission_request_manager->Accept(std::monostate());
+
+  std::string result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&result));
+  EXPECT_EQ(result, "\"webauthn: OK\"");
+}
+
+// Tests that passing the experimental magic timeout value (31415 ms) launches
+// the Ambient UI in chip-only mode without automatically opening the bubble.
+IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest,
+                       AmbientUIMagicTimeoutStartsChipOnly) {
+  static constexpr char kChipOnlyGetRequest[] = R"((() => {
+    navigator.credentials.get({
+      uiMode: 'passive',
+      mediation: 'conditional',
+      publicKey: {
+        challenge: new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]),
+        timeout: 31415,
+        userVerification: 'discouraged',
+        allowCredentials: [],
+      }}).then(c => window.domAutomationController.send('webauthn: OK'),
+               e => window.domAutomationController.send('error ' + e));
+    })())";
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
+
+  content::ExecuteScriptAsync(web_contents, kChipOnlyGetRequest);
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
+
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  ASSERT_FALSE(permission_request_manager->Requests().empty());
+  auto* ambient_request =
+      static_cast<ambient_signin::AmbientLoginPermissionRequest*>(
+          permission_request_manager->Requests().front().get());
+  EXPECT_FALSE(ambient_request->ShouldBubbleStartOpen());
+
+  ChipController* chip_controller =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetLocationBar()
+          ->GetChipController();
+  ASSERT_NE(chip_controller, nullptr);
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+  // `ChipController` opens the bubble in `OnExpandAnimationEnded()`, so wait
+  // for the expand animation to finish before verifying the bubble did not
+  // open.
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return !chip_controller->IsAnimating(); }));
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+
+  // Clicking the chip opens the bubble.
   chip_controller->chip()->ExecuteForTesting();
   ASSERT_TRUE(base::test::RunUntil(
       [&]() { return chip_controller->IsBubbleShowing(); }));
@@ -1487,6 +1565,73 @@ IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest, AmbientUIPasswordDeduplication) {
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
   EXPECT_EQ(result, "\"webauthn: OK\"");
+}
+
+IN_PROC_BROWSER_TEST_F(WebAuthnAmbientUITest,
+                       AmbientUISubframeEmitsMainFrameUkm) {
+  using UkmEntry = ukm::builders::WebAuthn_AmbientSignIn;
+  ukm::TestAutoSetUkmRecorder ukm_recorder;
+
+  const GURL main_frame_url =
+      https_server_.GetURL("www.example.com", "/title2.html");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), main_frame_url));
+
+  virtual_device_factory_->mutable_state()->InjectResidentKey(
+      std::vector<uint8_t>{1, 2, 3, 4}, "sub.example.com",
+      std::vector<uint8_t>{5, 6, 7, 8}, "flandre", "Flandre Scarlet");
+
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  const GURL subframe_url =
+      https_server_.GetURL("sub.example.com", "/title1.html");
+
+  ASSERT_TRUE(content::ExecJs(
+      web_contents,
+      content::JsReplace(
+          "const f = document.createElement('iframe');"
+          "f.allow = 'publickey-credentials-get';"
+          "f.src = $1;"
+          "new Promise(r => { f.onload = r; document.body.appendChild(f); });",
+          subframe_url)));
+
+  content::RenderFrameHost* subframe =
+      content::ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
+  ASSERT_NE(subframe, nullptr);
+  ASSERT_EQ(subframe->GetLastCommittedURL(), subframe_url);
+
+  content::DOMMessageQueue message_queue(web_contents);
+  permissions::PermissionRequestObserver permission_observer(web_contents);
+
+  content::ExecuteScriptAsync(subframe, kAmbientUIGetRequest);
+  permission_observer.Wait();
+  ASSERT_TRUE(permission_observer.request_shown());
+
+  permissions::PermissionRequestManager* permission_request_manager =
+      permissions::PermissionRequestManager::FromWebContents(web_contents);
+  permission_request_manager->Accept(std::monostate());
+
+  std::string result;
+  ASSERT_TRUE(message_queue.WaitForMessage(&result));
+  EXPECT_EQ(result, "\"webauthn: OK\"");
+
+  const auto entries = ukm_recorder.GetEntriesByName(UkmEntry::kEntryName);
+  ASSERT_EQ(entries.size(), 3u);
+  for (const ukm::mojom::UkmEntry* entry : entries) {
+    ukm_recorder.ExpectEntrySourceHasUrl(entry, main_frame_url);
+  }
+  EXPECT_THAT(ukm_recorder.GetMetricsEntryValues(UkmEntry::kEntryName,
+                                                 UkmEntry::kDisplayOutcomeName),
+              testing::ElementsAre(static_cast<int64_t>(
+                  webauthn::metrics::AmbientUkmDisplayOutcome::kShown)));
+  EXPECT_THAT(ukm_recorder.GetMetricsEntryValues(UkmEntry::kEntryName,
+                                                 UkmEntry::kInitialUiModeName),
+              testing::ElementsAre(static_cast<int64_t>(
+                  webauthn::metrics::AmbientInitialUiMode::kBubble)));
+  EXPECT_THAT(ukm_recorder.GetMetricsEntryValues(UkmEntry::kEntryName,
+                                                 UkmEntry::kBubbleOutcomeName),
+              testing::ElementsAre(static_cast<int64_t>(
+                  webauthn::metrics::AmbientUkmBubbleOutcome::
+                      kSelectedDefaultInUnexpandedBubble)));
 }
 
 class WebAuthnImmediateGetTest : public WebAuthnBrowserTest {

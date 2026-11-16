@@ -7,8 +7,10 @@
 #include "base/memory/weak_ptr.h"
 #include "base/trace_event/trace_event.h"
 #include "net/base/completion_once_callback.h"
+#include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
 #include "net/base/network_handle.h"
+#include "net/base/port_util.h"
 #include "net/base/request_priority.h"
 #include "net/base/trace_constants.h"
 #include "net/log/net_log_with_source.h"
@@ -107,6 +109,18 @@ void QuicSessionPool::ProxyJob::PopulateNetErrorDetails(
   }
 }
 
+void QuicSessionPool::ProxyJob::OnSessionActivatedForIp(
+    const IPEndPoint& peer_address) {
+  // Proxied QUIC jobs tunnel through a proxy and do not pool by destination IP.
+}
+
+std::vector<IPEndPoint> QuicSessionPool::ProxyJob::GetResolvedIpEndpoints()
+    const {
+  // Proxied QUIC jobs tunnel through a proxy and do not resolve destination IPs
+  // locally.
+  return {};
+}
+
 int QuicSessionPool::ProxyJob::DoLoop(int rv) {
   do {
     IoState state = io_state_;
@@ -166,6 +180,11 @@ int QuicSessionPool::ProxyJob::DoCreateProxySession() {
       NetLogEventType::QUIC_SESSION_POOL_PROXY_JOB_CREATE_PROXY_SESSION,
       "destination", destination.Serialize());
 
+  // Defense-in-depth check of proxy ports for direct ProxyJob callers.
+  if (!IsProxyChainPortAllowed(session_key.proxy_chain())) {
+    return ERR_PROXY_CONNECTION_FAILED;
+  }
+
   // Select the default QUIC version for the session to the proxy, since there
   // is no DNS or Alt-Svc information to use.
   quic::ParsedQuicVersion quic_version = SupportedQuicVersionForProxying();
@@ -223,6 +242,12 @@ int QuicSessionPool::ProxyJob::DoCreateProxyStream() {
 
 int QuicSessionPool::ProxyJob::DoCreateProxyStreamComplete(int rv) {
   if (rv != 0) {
+    // Tunnel setup does not retry `ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED`, and
+    // proxy fallback does not recognize it, so report it as a closed
+    // connection.
+    if (rv == ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED) {
+      return ERR_CONNECTION_CLOSED;
+    }
     return rv;
   }
   proxy_stream_ = proxy_session_->ReleaseStream();

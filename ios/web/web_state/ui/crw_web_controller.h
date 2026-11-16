@@ -7,6 +7,8 @@
 
 #import <UIKit/UIKit.h>
 
+#import <optional>
+
 #import "base/values.h"
 #import "ios/web/web_state/ui/crw_touch_tracking_recognizer.h"
 #import "ios/web/web_state/ui/crw_web_view_navigation_proxy.h"
@@ -196,10 +198,11 @@ class WebStateImpl;
 - (void)takeSnapshotWithRect:(CGRect)rect
                   completion:(void (^)(UIImage* snapshot))completion;
 
-// Creates PDF representation of the web page and invokes the `completion` with
-// the NSData of the PDF or nil if a PDF couldn't be generated.
-- (void)createFullPagePDFWithCompletion:
-    (void (^)(NSData* PDFDocumentData))completion;
+// Creates a PDF representation of `documentRect` (or the entire web page when
+// `std::nullopt`) and invokes `completion` with the NSData of the PDF, or `nil`
+// if a PDF couldn't be generated.
+- (void)createPDFWithDocumentRect:(std::optional<CGRect>)documentRect
+                       completion:(void (^)(NSData* PDFDocumentData))completion;
 
 // Tries to dismiss the presented states of the media (fullscreen or Picture in
 // Picture).
@@ -273,6 +276,12 @@ class WebStateImpl;
 
 // Returns the under page background color.
 - (UIColor*)underPageBackgroundColor;
+
+// Sets the zoom size (as a percentage, e.g. 150 for 150%) on the
+// contained web view, if supported. Returns whether the zoom was set. This
+// could be false if setting zoom state is not supported by the current
+// `web::provider::SetZoomForWebView()`.
+- (BOOL)setZoomSize:(int)size;
 
 #pragma mark Fullscreen Message Handlers
 

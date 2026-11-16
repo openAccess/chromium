@@ -22,6 +22,7 @@ import android.view.FocusFinder;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.ext.junit.rules.ActivityScenarioRule;
@@ -56,6 +57,7 @@ import org.chromium.chrome.browser.page_image_service.ImageServiceBridge;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridgeJni;
 import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManager;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
@@ -299,6 +301,7 @@ public class BookmarkManagerCoordinatorTest {
     }
 
     @Test
+    @Config(qualifiers = "w600dp-h1200dp")
     public void testBuildEmptyStateView() {
         int parentWidth = 500;
         int parentHeight = 1000;
@@ -306,16 +309,42 @@ public class BookmarkManagerCoordinatorTest {
         int paddingBottom = 80;
         int targetHeight = parentHeight - topOffset - paddingBottom;
 
-        FrameLayout parent = new FrameLayout(mActivity);
-        parent.setPadding(0, 0, 0, paddingBottom);
-        parent.layout(0, 0, parentWidth, parentHeight);
+        FrameLayout windowRoot = new FrameLayout(mActivity);
+        mActivity.setContentView(windowRoot);
+
+        LinearLayout parent = new LinearLayout(mActivity);
+        parent.setOrientation(LinearLayout.VERTICAL);
+        parent.setPadding(/* left= */ 0, /* top= */ 0, /* right= */ 0, paddingBottom);
+        windowRoot.addView(parent, new FrameLayout.LayoutParams(parentWidth, parentHeight));
+
+        View headerView = new View(mActivity);
+        parent.addView(headerView, new LinearLayout.LayoutParams(parentWidth, topOffset));
 
         View emptyStateView = mCoordinator.buildEmptyStateView(parent);
         assertNotNull(emptyStateView);
-        emptyStateView.layout(0, topOffset, parentWidth, parentHeight - paddingBottom);
+        parent.addView(emptyStateView);
         ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
-
         assertEquals(targetHeight, emptyStateView.getLayoutParams().height);
+
+        int shrunkParentHeight = 400;
+        int shrunkTargetHeight = shrunkParentHeight - topOffset - paddingBottom;
+        parent.setLayoutParams(new FrameLayout.LayoutParams(parentWidth, shrunkParentHeight));
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertEquals(shrunkTargetHeight, emptyStateView.getLayoutParams().height);
+
+        parent.setLayoutParams(new FrameLayout.LayoutParams(parentWidth, parentHeight));
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertEquals(targetHeight, emptyStateView.getLayoutParams().height);
+
+        // Detaching unregisters the parent listener; re-attaching re-registers and syncs height.
+        parent.removeView(emptyStateView);
+        parent.setLayoutParams(new FrameLayout.LayoutParams(parentWidth, shrunkParentHeight));
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertEquals(targetHeight, emptyStateView.getLayoutParams().height);
+
+        parent.addView(emptyStateView);
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        assertEquals(shrunkTargetHeight, emptyStateView.getLayoutParams().height);
     }
 
     @Test
@@ -733,9 +762,13 @@ public class BookmarkManagerCoordinatorTest {
         verify(mImageServiceBridgeJni).init(mProfile);
         verify(mImageServiceBridgeJni, never()).init(mOtrProfile);
 
+        BookmarkId bookmarkId = new BookmarkId(/* id= */ 1, BookmarkType.NORMAL);
+        otrCoordinator.openBookmark(bookmarkId);
+        verify(mBookmarkOpener).openBookmarkInCurrentTab(bookmarkId, /* incognito= */ true);
+
         // Simulate OTR profile native destruction while the coordinator remains open.
         doReturn(null).when(mOtrProfile).getOriginalProfile();
-        BookmarkId bookmarkId = new BookmarkId(/* id= */ 1, BookmarkType.NORMAL);
+        ProfileManager.onProfileDestroyed(mOtrProfile);
         otrCoordinator
                 .getBookmarkDelegateForTesting()
                 .getSelectionDelegate()
@@ -744,7 +777,7 @@ public class BookmarkManagerCoordinatorTest {
         verify(mIncognitoUtilsJni, never()).getIncognitoModeEnabled(mOtrProfile);
 
         otrCoordinator.openBookmark(bookmarkId);
-        verify(mBookmarkOpener).openBookmarkInCurrentTab(bookmarkId, /* incognito= */ true);
+        verify(mBookmarkOpener).openBookmarkInCurrentTab(bookmarkId, /* incognito= */ false);
 
         otrCoordinator.onDestroyed();
     }

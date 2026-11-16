@@ -29,7 +29,6 @@
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/platform_browser_test.h"
 #include "components/language_detection/content/common/language_detection.mojom.h"
@@ -177,14 +176,9 @@ class LanguageDetectionModelServiceBrowserTest : public PlatformBrowserTest {
  public:
   LanguageDetectionModelServiceBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
         {optimization_guide::features::kOptimizationHints,
          blink::features::kLanguageDetectionAPI},
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove the two omnibox features below.
-        /*disabled_features=*/
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+        {});
   }
 
   void SetUp() override {
@@ -244,8 +238,6 @@ class LanguageDetectionModelServiceBrowserTest : public PlatformBrowserTest {
  private:
   std::unique_ptr<net::test_server::HttpResponse> RequestHandler(
       const net::test_server::HttpRequest& request) {
-    std::string path_value;
-
     // This script is render blocking in the HTML, but is intentionally slow.
     // This provides important time between commit and first layout for model
     // requests to make it to the renderer, reducing flakes.
@@ -271,13 +263,7 @@ class LanguageDetectionModelServiceWithoutOptimizationGuideBrowserTest
  public:
   LanguageDetectionModelServiceWithoutOptimizationGuideBrowserTest() {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove the two omnibox features below.
-        /*disabled_features=*/
-        {optimization_guide::features::kOptimizationHints,
-         omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup});
+        {}, {optimization_guide::features::kOptimizationHints});
   }
 
   ~LanguageDetectionModelServiceWithoutOptimizationGuideBrowserTest() override =

@@ -42,6 +42,10 @@
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/color/color_id.h"
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "components/signin/public/base/signin_switches.h"
+#endif
+
 namespace send_tab_to_self {
 
 namespace {
@@ -122,7 +126,6 @@ bool IsSubmenuEnabledForEntryPoint(ShareEntryPoint entry_point) {
     case ShareEntryPoint::kToolbarIcon:
     case ShareEntryPoint::kOmniboxMenu:
     case ShareEntryPoint::kShareSheet:
-    case ShareEntryPoint::kGesture:
     case ShareEntryPoint::kShareSheetDirectShare:
       return false;
   }
@@ -144,7 +147,8 @@ bool ShouldShowSubmenu(ShareEntryPoint entry_point,
     case EntryPointDisplayReason::kInformNoTargetDevice:
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
       return base::FeatureList::IsEnabled(kSendTabToSelfSubmenuSigninPromos) &&
-             base::FeatureList::IsEnabled(kSendTabToSelfNoTargetDeviceQrCode);
+             base::FeatureList::IsEnabled(
+                 switches::kCrossDeviceSigninFromDesktopFollowup);
 #else
       return false;
 #endif

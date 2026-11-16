@@ -12,6 +12,7 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.widget.ListView;
 
+import androidx.annotation.IdRes;
 import androidx.test.filters.LargeTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -31,9 +32,9 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.CriteriaNotSatisfiedException;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
@@ -44,7 +45,6 @@ import org.chromium.base.test.util.UrlUtils;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.PowerBookmarkUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.animation.CompositorAnimationHandler;
 import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.sync.FakeSyncServiceImpl;
@@ -56,9 +56,10 @@ import org.chromium.chrome.browser.ui.appmenu.AppMenuTestSupport;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.PageLoadStoppedCondition;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.site_settings.WebsitePreferenceBridge;
 import org.chromium.components.content_settings.ContentSettingsType;
@@ -68,12 +69,11 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 
 import java.io.IOException;
-import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicReference;
 
 /** Tests tabbed mode app menu popup. */
 @Batch(Batch.PER_CLASS)
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 // Prevents the sync UI from exposing an error due to outdated GmsCore
 // (UserActionableError.NEEDS_UPM_BACKEND_UPGRADE).
 @Restriction(GmsCoreVersionRestriction.RESTRICTION_TYPE_VERSION_GE_24W15)
@@ -102,6 +102,7 @@ public class TabbedAppMenuTest {
                     .build();
 
     private AppMenuHandler mAppMenuHandler;
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
@@ -112,7 +113,7 @@ public class TabbedAppMenuTest {
 
         CompositorAnimationHandler.setTestingMode(true);
 
-        mActivityTestRule.startOnUrl(TEST_URL);
+        mPage = mActivityTestRule.startOnUrl(TEST_URL);
 
         AppMenuTestSupport.overrideOnOptionItemSelectedListener(
                 mActivityTestRule.getAppMenuCoordinator(), CallbackUtils.emptyCallback());
@@ -251,39 +252,23 @@ public class TabbedAppMenuTest {
                 tab.getWebContents().getNavigationController().getUseDesktopUserAgent();
         Assert.assertFalse("Default to request mobile site.", isRequestDesktopSite);
 
-        int requestDesktopSiteIndex =
-                AppMenuTestSupport.findIndexOfMenuItemById(
-                        mActivityTestRule.getAppMenuCoordinator(), R.id.request_desktop_site_id);
-        Assert.assertNotEquals("No request desktop site row found.", -1, requestDesktopSiteIndex);
-
-        Callable<Boolean> isVisible =
-                () -> {
-                    int visibleStart = getListView().getFirstVisiblePosition();
-                    int visibleEnd = visibleStart + getListView().getChildCount() - 1;
-                    return requestDesktopSiteIndex >= visibleStart
-                            && requestDesktopSiteIndex <= visibleEnd;
-                };
-        CriteriaHelper.pollUiThread(() -> getListView().getChildAt(0) != null);
-        if (!ThreadUtils.runOnUiThreadBlocking(isVisible)) {
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> getListView().smoothScrollToPosition(requestDesktopSiteIndex));
-            CriteriaHelper.pollUiThread(isVisible);
-        }
         mRenderTestRule.render(
-                getListView()
-                        .getChildAt(
-                                requestDesktopSiteIndex - getListView().getFirstVisiblePosition()),
-                "request_desktop_site_uncheck");
+                getMenuItemView(R.id.request_desktop_site_id), "request_desktop_site_uncheck");
 
         ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    WebsitePreferenceBridge.setCategoryEnabled(
-                            ProfileManager.getLastUsedRegularProfile(),
-                            ContentSettingsType.REQUEST_DESKTOP_SITE,
-                            true);
-                    tab.reload();
-                });
-        ChromeTabUtils.waitForTabPageLoaded(tab, TEST_URL);
+                () ->
+                        WebsitePreferenceBridge.setCategoryEnabled(
+                                ProfileManager.getLastUsedRegularProfile(),
+                                ContentSettingsType.REQUEST_DESKTOP_SITE,
+                                true));
+        mPage =
+                mPage.runOnUiThreadTo(tab::reload)
+                        .withPossiblyAlreadyFulfilled()
+                        .waitForAnd(new PageLoadStoppedCondition(tab, /* expectedUrl= */ null))
+                        .arriveAt(
+                                WebPageStation.newBuilder()
+                                        .initForLoadingUrlOnSameTab(TEST_URL, mPage)
+                                        .build());
         isRequestDesktopSite =
                 tab.getWebContents().getNavigationController().getUseDesktopUserAgent();
         Assert.assertTrue("Should request desktop site.", isRequestDesktopSite);
@@ -292,24 +277,15 @@ public class TabbedAppMenuTest {
         showAppMenuAndAssertMenuShown();
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
 
-        CriteriaHelper.pollUiThread(() -> getListView().getChildAt(0) != null);
-        if (!ThreadUtils.runOnUiThreadBlocking(isVisible)) {
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> getListView().smoothScrollToPosition(requestDesktopSiteIndex));
-            CriteriaHelper.pollUiThread(isVisible);
-        }
         mRenderTestRule.render(
-                getListView()
-                        .getChildAt(
-                                requestDesktopSiteIndex - getListView().getFirstVisiblePosition()),
-                "request_mobile_site_check");
+                getMenuItemView(R.id.request_desktop_site_id), "request_mobile_site_check");
     }
 
     @Test
     @LargeTest
     @Feature({"Browser", "Main", "RenderTest"})
     public void testSettingsMenuItem_NoBadgeShownForNotSignedInUsers() throws IOException {
-        View view = getSettingsMenuItemView();
+        View view = getMenuItemView(R.id.preferences_id);
         Assert.assertNull(view.findViewById(R.id.menu_item_text).getContentDescription());
         mRenderTestRule.render(view, "settings_menu_item_not_signed_in_user");
     }
@@ -335,7 +311,7 @@ public class TabbedAppMenuTest {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
         showAppMenuAndAssertMenuShown();
-        View view = getSettingsMenuItemView();
+        View view = getMenuItemView(R.id.preferences_id);
         assertEquals(
                 "Content description should mention an error.",
                 view.findViewById(R.id.menu_item_text).getContentDescription(),
@@ -353,7 +329,7 @@ public class TabbedAppMenuTest {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
 
         showAppMenuAndAssertMenuShown();
-        View view = getSettingsMenuItemView();
+        View view = getMenuItemView(R.id.preferences_id);
         Assert.assertNull(view.findViewById(R.id.menu_item_text).getContentDescription());
         mRenderTestRule.render(view, "settings_menu_item_signed_in_user_no_error");
     }
@@ -439,33 +415,35 @@ public class TabbedAppMenuTest {
         return AppMenuTestSupport.getListView(mActivityTestRule.getAppMenuCoordinator());
     }
 
-    private View getSettingsMenuItemView() {
-        int position =
-                AppMenuTestSupport.findIndexOfMenuItemById(
-                        mActivityTestRule.getAppMenuCoordinator(), R.id.preferences_id);
-        Assert.assertTrue("No settings menu item found.", position != -1);
-
+    private View getMenuItemView(@IdRes int itemId) {
         CriteriaHelper.pollUiThread(() -> getListView().getChildAt(0) != null);
 
-        Callable<Boolean> isVisible =
+        AtomicReference<View> targetView = new AtomicReference<>();
+        CriteriaHelper.pollUiThread(
                 () -> {
-                    int visibleStart = getListView().getFirstVisiblePosition();
-                    int visibleEnd = visibleStart + getListView().getChildCount() - 1;
-                    return position >= visibleStart && position <= visibleEnd;
-                };
+                    int position =
+                            AppMenuTestSupport.findIndexOfMenuItemById(
+                                    mActivityTestRule.getAppMenuCoordinator(), itemId);
+                    Criteria.checkThat("No menu item found.", position, Matchers.not(-1));
 
-        if (!ThreadUtils.runOnUiThreadBlocking(isVisible)) {
-            ThreadUtils.runOnUiThreadBlocking(() -> getListView().setSelection(position));
-            CriteriaHelper.pollUiThread(isVisible);
-        }
+                    ListView listView = getListView();
+                    int visibleStart = listView.getFirstVisiblePosition();
+                    int visibleEnd = visibleStart + listView.getChildCount() - 1;
+                    if (position < visibleStart || position > visibleEnd) {
+                        listView.setSelection(position);
+                        throw new CriteriaNotSatisfiedException(
+                                "Scrolling to menu item at position " + position);
+                    }
 
-        View view =
-                ThreadUtils.runOnUiThreadBlocking(
-                        () -> {
-                            return getListView()
-                                    .getChildAt(position - getListView().getFirstVisiblePosition());
-                        });
-        Assert.assertNotNull("No settings menu item view found.", view);
-        return view;
+                    View view = listView.getChildAt(position - visibleStart);
+                    Criteria.checkThat("Menu item view is null.", view, Matchers.notNullValue());
+                    Criteria.checkThat(
+                            "Menu item view is not laid out.",
+                            view.getWidth() > 0 && view.getHeight() > 0,
+                            Matchers.is(true));
+                    targetView.set(view);
+                });
+
+        return targetView.get();
     }
 }

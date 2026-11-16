@@ -8,9 +8,11 @@
 #include "third_party/blink/renderer/platform/fonts/font_cache.h"
 #include "third_party/blink/renderer/platform/fonts/font_description.h"
 #include "third_party/blink/renderer/platform/fonts/font_fallback_list.h"
+#include "third_party/blink/renderer/platform/fonts/font_global_context.h"
 #include "third_party/blink/renderer/platform/fonts/segmented_font_data.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/harfbuzz_face.h"
 #include "third_party/blink/renderer/platform/fonts/simple_font_data.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -26,6 +28,7 @@ void FontFallbackIterator::Reset() {
   current_font_data_index_ = 0;
   segmented_face_index_ = 0;
   fallback_stage_ = kFontGroupFonts;
+  previously_asked_for_priority_hint_.clear();
   previously_asked_for_hint_.clear();
   unique_font_data_for_range_sets_returned_.clear();
   first_candidate_ = nullptr;
@@ -105,8 +108,10 @@ bool FontFallbackIterator::NeedsHintList() const {
   if (fallback_stage_ != kFontGroupFonts)
     return false;
 
-  const FontData* font_data = font_fallback_list_->FontDataAt(
-      font_description_, current_font_data_index_);
+  const FontData* font_data =
+      font_fallback_list_
+          ->FontDataAt(font_description_, current_font_data_index_)
+          .font_data.Get();
 
   if (!font_data)
     return false;
@@ -119,18 +124,33 @@ FontDataForRangeSet* FontFallbackIterator::Next(const HintCharList& hint_list) {
     return MakeGarbageCollected<FontDataForRangeSet>();
 
   if (fallback_stage_ == kFallbackPriorityFonts) {
-    // Only try one fallback priority font,
-    // then proceed to regular system fallback.
-    fallback_stage_ = kSystemFonts;
-    FontDataForRangeSet* fallback_priority_font_range =
-        MakeGarbageCollected<FontDataForRangeSet>(
-            FallbackPriorityFont(hint_list[0]));
-    if (fallback_priority_font_range->HasFontData())
-      return UniqueOrNext(std::move(fallback_priority_font_range), hint_list);
-    return Next(hint_list);
+    if (RuntimeEnabledFeatures::FontFallbackMultiplePriorityFontsEnabled()) {
+      // Platforms such as Android split color emoji coverage across multiple
+      // `und-Zsye` fonts (e.g. NotoColorEmoji.ttf and NotoColorEmojiFlags.ttf).
+      // Keep `kFallbackPriorityFonts` active so each distinct unshaped hint
+      // character tries priority fallback before regular system fallback.
+      if (const SimpleFontData* priority_font =
+              UniqueFallbackPriorityFontForHintList(hint_list)) {
+        return UniqueOrNext(
+            MakeGarbageCollected<FontDataForRangeSet>(priority_font),
+            hint_list);
+      }
+    } else {
+      // Only try one fallback priority font,
+      // then proceed to regular system fallback.
+      fallback_stage_ = kSystemFonts;
+      FontDataForRangeSet* fallback_priority_font_range =
+          MakeGarbageCollected<FontDataForRangeSet>(
+              FallbackPriorityFont(hint_list[0]));
+      if (fallback_priority_font_range->HasFontData()) {
+        return UniqueOrNext(std::move(fallback_priority_font_range), hint_list);
+      }
+      return Next(hint_list);
+    }
   }
 
-  if (fallback_stage_ == kSystemFonts) {
+  if (fallback_stage_ == kSystemFonts ||
+      fallback_stage_ == kFallbackPriorityFonts) {
     // We've reached pref + system fallback.
     const SimpleFontData* system_font = UniqueSystemFontForHintList(hint_list);
     if (system_font) {
@@ -162,8 +182,10 @@ FontDataForRangeSet* FontFallbackIterator::Next(const HintCharList& hint_list) {
 
   DCHECK(fallback_stage_ == kFontGroupFonts ||
          fallback_stage_ == kSegmentedFace);
-  const FontData* font_data = font_fallback_list_->FontDataAt(
-      font_description_, current_font_data_index_);
+  FontFallbackList::FontDataEntry font_data_entry =
+      font_fallback_list_->FontDataAt(font_description_,
+                                      current_font_data_index_);
+  const FontData* font_data = font_data_entry.font_data.Get();
 
   if (!font_data) {
     // If there is no fontData coming from the fallback list, it means
@@ -183,11 +205,21 @@ FontDataForRangeSet* FontFallbackIterator::Next(const HintCharList& hint_list) {
     if (!font_data->IsLoading()) {
       SimpleFontData* non_segmented =
           const_cast<SimpleFontData*>(To<SimpleFontData>(font_data));
+
+      // Generic families and last resort fonts may not be matched to PUA
+      // codepoints.
+      // https://www.w3.org/TR/css-fonts-4/#char-handling-issues
+      const UnicodeRangeSet* range_set =
+          font_data_entry.is_generic_family_or_last_resort
+              ? FontGlobalContext::GetNonPrivateUseRangeSet()
+              : nullptr;
+
       // The fontData object that we have here is tracked in m_fontList of
       // FontFallbackList and gets released in the font cache when the
       // FontFallbackList is destroyed.
       return UniqueOrNext(
-          MakeGarbageCollected<FontDataForRangeSet>(non_segmented), hint_list);
+          MakeGarbageCollected<FontDataForRangeSet>(non_segmented, range_set),
+          hint_list);
     }
     return Next(hint_list);
   }
@@ -233,6 +265,21 @@ const SimpleFontData* FontFallbackIterator::FallbackPriorityFont(UChar32 hint) {
       font_fallback_priority_);
 
   return font_data;
+}
+
+const SimpleFontData*
+FontFallbackIterator::UniqueFallbackPriorityFontForHintList(
+    const HintCharList& hint_list) {
+  if (hint_list.empty()) {
+    return nullptr;
+  }
+
+  const UChar32 hint = hint_list[0];
+  if (!hint || previously_asked_for_priority_hint_.Contains(hint)) {
+    return nullptr;
+  }
+  previously_asked_for_priority_hint_.insert(hint);
+  return FallbackPriorityFont(hint);
 }
 
 // static
@@ -286,6 +333,8 @@ bool FontFallbackIterator::operator==(const FontFallbackIterator& other) const {
          current_font_data_index_ == other.current_font_data_index_ &&
          segmented_face_index_ == other.segmented_face_index_ &&
          font_description_ == other.font_description_ &&
+         previously_asked_for_priority_hint_ ==
+             other.previously_asked_for_priority_hint_ &&
          previously_asked_for_hint_ == other.previously_asked_for_hint_ &&
          unique_font_data_for_range_sets_returned_ ==
              other.unique_font_data_for_range_sets_returned_ &&

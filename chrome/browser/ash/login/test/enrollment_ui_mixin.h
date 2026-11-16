@@ -21,24 +21,14 @@ namespace ui {
 extern const char kEnrollmentStepSignin[];
 extern const char kEnrollmentStepWorking[];
 extern const char kEnrollmentStepTPMChecking[];
-extern const char kEnrollmentStepLicenses[];
 extern const char kEnrollmentStepDeviceAttributes[];
 extern const char kEnrollmentStepSuccess[];
-extern const char kEnrollmentStepADJoin[];
 extern const char kEnrollmentStepError[];
 extern const char kEnrollmentStepKioskEnrollment[];
-extern const char kEnrollmentStepDeviceAttributesError[];
-extern const char kEnrollmentStepADJoinError[];
 
 }  // namespace ui
 
 namespace values {
-
-// SelectEnrollmentLicense(...) constants.
-
-extern const char kLicenseTypePerpetual[];
-extern const char kLicenseTypeKiosk[];
-extern const char kLicenseTypeAnnual[];
 
 // SubmitDeviceAttributes common values.
 
@@ -75,12 +65,6 @@ class EnrollmentUIMixin : public InProcessBrowserTestMixin {
   void LeaveSuccessScreen();
 
   void ConfirmKioskEnrollment();
-
-  // Selects enrollment license.
-  void SelectEnrollmentLicense(const std::string& license_type);
-
-  // Proceeds with selected license.
-  void UseSelectedLicense();
 
   void SetExitHandler();
   // Runs loop until the enrollment screen reports exit. It will return the

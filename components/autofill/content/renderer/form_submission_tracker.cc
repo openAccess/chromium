@@ -290,8 +290,9 @@ void FormSubmissionTracker::FormControlDidChangeImpl(
   WebFormControlElement element =
       form_util::GetFormControlByRendererId(element_id);
   // This function may be called asynchronously, so a navigation may have
-  // happened. Since this event isn't submission-related.
-  if (!form_util::IsOwnedByFrame(element, unsafe_render_frame())) {
+  // happened. Since this event isn't submission-related, we can ignore it.
+  if (WebDocument document = GetDocument();
+      !document || !element || document != element.GetDocument()) {
     return;
   }
   WebFormElement form = element.GetOwningFormForAutofill();
@@ -410,7 +411,8 @@ void FormSubmissionTracker::WillSubmitForm(const WebFormElement& form) {
   // form submission event. If we didn't, we would send |form| to an
   // AutofillAgent and then to a ContentAutofillDriver etc. which haven't seen
   // this form before. See crbug.com/1240247#c13 for details.
-  if (!form_util::IsOwnedByFrame(form, unsafe_render_frame())) {
+  if (WebDocument document = GetDocument();
+      !document || !form || document != form.GetDocument()) {
     return;
   }
   FireFormSubmission(mojom::SubmissionSource::FORM_SUBMISSION, form);
@@ -629,15 +631,12 @@ std::optional<FormData> FormSubmissionTracker::GetSubmittedForm(
     return cached_form;
   }
 
-  WebDocument document = GetDocument();
-  std::optional<FormData> extracted_form = form_util::ExtractFormData(
-      document,
+  std::optional<FormData> extracted_form = autofill_agent_->ExtractFormData(
+      GetDocument(),
       submitted_form_element.has_value()
           ? form_util::GetFormRendererId(*submitted_form_element)
           : last_interacted_.form_id,
-      autofill_agent_->field_data_manager(),
-      autofill_agent_->GetCallTimerState(kGetSubmittedForm),
-      autofill_agent_->button_titles_cache());
+      kGetSubmittedForm);
 
   // - Return null if there was no interaction so far and no `form_element` is
   //   provided.
@@ -679,11 +678,9 @@ void FormSubmissionTracker::UpdateLastInteractedElement(
   // We use the element's `document`, not the current frame's document, because
   // `element_id` may refer to an element that is not in the current frame's
   // document.
-  last_interacted_.saved_state = form_util::ExtractFormData(
-      document, last_interacted_.form_id, autofill_agent_->field_data_manager(),
-      autofill_agent_->GetCallTimerState(
-          CallTimerState::CallSite::kUpdateLastInteractedElement),
-      autofill_agent_->button_titles_cache());
+  last_interacted_.saved_state = autofill_agent_->ExtractFormData(
+      document, last_interacted_.form_id,
+      CallTimerState::CallSite::kUpdateLastInteractedElement);
 }
 
 void FormSubmissionTracker::ResetLastInteractedElements() {

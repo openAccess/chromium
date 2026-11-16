@@ -340,17 +340,20 @@ public final class DeviceInfo {
      * Overrides the value returned by {@link #getDeviceName()} in unit tests so tests can simulate
      * custom or unset device names without modifying global system settings.
      *
-     * @param deviceName The test device name override to return from {@link #getDeviceName()}.
+     * @param deviceName The test device name override to return from {@link #getDeviceName()}, or
+     *     {@code null} to clear the override.
+     * @return The previous test override value, or {@code null} if none was set.
      */
     @CalledByNativeForTesting
-    public static void setDeviceNameForTesting(@JniType("std::string") String deviceName) {
+    public static @JniType("std::optional<std::string>") @Nullable String setDeviceNameForTesting(
+            @JniType("std::optional<std::string>") @Nullable String deviceName) {
         String prev = sDeviceNameForTesting;
         sDeviceNameForTesting = deviceName;
         ResettersForTesting.register(() -> sDeviceNameForTesting = prev);
+        return prev;
     }
 
     /** Clears the test override set by {@link #setDeviceNameForTesting(String)}. */
-    @CalledByNativeForTesting
     public static void resetDeviceNameForTesting() {
         sDeviceNameForTesting = null;
     }
@@ -522,8 +525,8 @@ public final class DeviceInfo {
     }
 
     /**
-     * @return CPU architecture name, see "arch:" in:
-     *     https://chromium.googlesource.com/chromium/src.git/+/master/docs/updater/protocol_3_1.md
+     * Returns CPU architecture name, see "arch:" in:
+     * https://chromium.googlesource.com/chromium/src.git/+/master/docs/updater/protocol_3_1.md
      */
     public static String getArch() {
         boolean is64Bit = Process.is64Bit();
@@ -535,9 +538,7 @@ public final class DeviceInfo {
         return "";
     }
 
-    /**
-     * @return The device's screen width in density-independent pixels (dp).
-     */
+    /** Returns the device's screen width in density-independent pixels (dp). */
     private static int getDeviceWidthInDp() {
         DisplayMetrics displayMetrics =
                 ContextUtils.getApplicationContext().getResources().getDisplayMetrics();

@@ -65,7 +65,7 @@ def __step_config(ctx, step_config):
         # See also https://chromium.googlesource.com/chromium/src/build/+/HEAD/android/docs/java_toolchain.md
         {
             "name": "android/write_build_config",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/write_build_config.py",
+            "command_prefix": platform.python_bin + " obj/build/android/write_build_config.pyz",
             "handler": "android_write_build_config" if remote_run else None,
             "remote": remote_run,
             "restat_content": True,
@@ -82,7 +82,7 @@ def __step_config(ctx, step_config):
         },
         {
             "name": "android/turbine",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/turbine.py",
+            "command_prefix": platform.python_bin + " obj/build/android/turbine.pyz",
             "handler": "android_turbine",
             # TODO: crbug.com/396220357 - fix gn to remove unnecessary deps
             "exclude_input_patterns": [
@@ -155,7 +155,7 @@ def __step_config(ctx, step_config):
         },
         {
             "name": "android/errorprone",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/errorprone.py",
+            "command_prefix": platform.python_bin + " obj/build/android/errorprone.pyz",
             "handler": "android_compile_java",
             "exclude_input_patterns": [
                 "*.a",
@@ -176,7 +176,7 @@ def __step_config(ctx, step_config):
         },
         {
             "name": "android/compile_kt",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/compile_kt.py",
+            "command_prefix": platform.python_bin + " obj/build/android/compile_kt.pyz",
             "handler": "android_compile_java",
             "exclude_input_patterns": [
                 "*.a",
@@ -201,7 +201,7 @@ def __step_config(ctx, step_config):
         },
         {
             "name": "android/dex",
-            "command_prefix": platform.python_bin + " ../../build/android/gyp/dex.py",
+            "command_prefix": platform.python_bin + " obj/build/android/dex.pyz",
             "handler": "android_dex",
             "exclude_input_patterns": [
                 "*.a",

@@ -116,7 +116,6 @@
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
-#import "ios/public/provider/chrome/browser/text_zoom/text_zoom_api.h"
 #import "ios/public/provider/chrome/browser/user_feedback/user_feedback_api.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
@@ -133,6 +132,7 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util.h"
+#import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/gfx/image/image.h"
 
 using sync_preferences::PrefServiceMockFactory;
@@ -206,9 +206,8 @@ class OverflowMenuMediatorTest : public PlatformTest {
                               ios::BookmarkModelFactory::GetDefaultFactory());
     builder.AddTestingFactory(
         IOSChromeProfilePasswordStoreFactory::GetInstance(),
-        base::BindOnce(
-            &password_manager::BuildPasswordStoreInterface<
-                ProfileIOS, password_manager::MockPasswordStoreInterface>));
+        base::BindOnce(&password_manager::BuildPasswordStoreInterface<
+                       password_manager::MockPasswordStoreInterface>));
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
@@ -587,11 +586,7 @@ TEST_F(OverflowMenuMediatorTest, TestMenuItemsCount) {
   CreateMediator(/*incognito=*/NO);
   mediator_.model = model_;
 
-  NSUInteger number_of_action_items = 7;
-
-  if (ios::provider::IsTextZoomEnabled()) {
-    number_of_action_items++;
-  }
+  NSUInteger number_of_action_items = 8;
 
   if (send_tab_to_self::AreIOSTabRemindersEnabled() && !mediator_.incognito) {
     number_of_action_items++;
@@ -995,12 +990,8 @@ TEST_F(OverflowMenuMediatorTest, TestFamilyLinkInfoShown) {
   ASSERT_TRUE(HasFamilyLinkInfoItem());
 }
 
-// Tests that the identity button is not shown when user is signed out even
-// if the IdentityAwareness feature is enabled.
+// Tests that the identity button is not shown when user is signed out.
 TEST_F(OverflowMenuMediatorTest, TestIdentityButtonHiddenWhenSignedOut) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kIdentityAwareness);
-
   // Setup the mediator.
   CreateMediator(/*incognito=*/NO);
   mediator_.authenticationService =
@@ -1012,11 +1003,8 @@ TEST_F(OverflowMenuMediatorTest, TestIdentityButtonHiddenWhenSignedOut) {
 }
 
 // Tests that the identity button is shown in its own group when user is signed
-// out and the IdentityAwareness feature is enabled.
+// in.
 TEST_F(OverflowMenuMediatorTest, TestIdentityButtonVisibleWhenSignedIn) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kIdentityAwareness);
-
   // Sign in user.
   const FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
   fake_system_identity_manager()->AddIdentity(identity);
@@ -1048,9 +1036,6 @@ TEST_F(OverflowMenuMediatorTest, TestIdentityButtonVisibleWhenSignedIn) {
 // Tests that the identity button is hidden in incognito mode even when signed
 // in.
 TEST_F(OverflowMenuMediatorTest, TestIdentityButtonHiddenInIncognitoMode) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kIdentityAwareness);
-
   // Sign in user.
   const FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
   fake_system_identity_manager()->AddIdentity(identity);
@@ -1063,16 +1048,15 @@ TEST_F(OverflowMenuMediatorTest, TestIdentityButtonHiddenInIncognitoMode) {
       AuthenticationServiceFactory::GetForProfile(personal_profile_);
   mediator_.model = model_;
 
-  // Check the identity item is not present.
+  // Check the identity item and action are not present.
   EXPECT_FALSE(HasItem(kToolsMenuIdentityId, /*enabled=*/YES));
+  EXPECT_EQ(
+      nil, [mediator_ actionForActionType:overflow_menu::ActionType::Identity]);
 }
 
 // Tests that the identity button is hidden when sign-in is disabled, even when
-// the user is signed in and the IdentityAwareness feature is enabled.
+// the user is signed in.
 TEST_F(OverflowMenuMediatorTest, TestIdentityButtonHiddenWhenSigninDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(kIdentityAwareness);
-
   // Sign in user.
   const FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
   fake_system_identity_manager()->AddIdentity(identity);
@@ -1843,16 +1827,14 @@ TEST_F(OverflowMenuMediatorTest,
   [mockGeminiHandler verify];
 }
 
-// Test that the identity action displays the AI tier ring when the user is
-// signed in, eligible for AI subscription, and has no account error, and
-// updates when the tier or sync error state changes.
+// Test that the identity action displays the AI tier ring and Google
+// membership accessibility label when the user is signed in, eligible for AI
+// subscription, and has no account error, and updates when the tier or sync
+// error state changes.
 TEST_F(OverflowMenuMediatorTest,
        TestIdentityActionShowsAITierRingWhenEligibleAndNoError) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      /*enabled_features=*/{kIdentityAwareness,
-                            kAiSubscriptionAvatarRingFollowupIOS},
-      /*disabled_features=*/{});
+  base::test::ScopedFeatureList scoped_feature_list(
+      kAiSubscriptionAvatarRingFollowupIOS);
 
   personal_profile_->GetPrefs()->SetInteger(
       subscription_eligibility::prefs::kAiSubscriptionTier, 1);
@@ -1873,24 +1855,38 @@ TEST_F(OverflowMenuMediatorTest,
   OverflowMenuAction* identity_action = GetAction(kToolsMenuIdentityId);
   ASSERT_NE(nil, identity_action);
   EXPECT_TRUE(identity_action.showsAITierRing);
+  const FakeSystemIdentity* identity = [FakeSystemIdentity fakeIdentity1];
+  NSString* expected_label = l10n_util::GetNSStringF(
+      IDS_IOS_ACCOUNT_TABLE_VIEW_ITEM_WITH_NAME_AND_EMAIL_GOOGLE_MEMBERSHIP,
+      base::SysNSStringToUTF16(identity.userFullName),
+      base::SysNSStringToUTF16(identity.userEmail));
+  EXPECT_NSEQ(expected_label, identity_action.customAccessibilityLabel);
 
-  // Updating the AI subscription tier to 0 should remove the ring.
+  // Updating the AI subscription tier to 0 should remove the ring and custom
+  // accessibility label.
   personal_profile_->GetPrefs()->SetInteger(
       subscription_eligibility::prefs::kAiSubscriptionTier, 0);
   EXPECT_FALSE(identity_action.showsAITierRing);
+  EXPECT_NSEQ(nil, identity_action.customAccessibilityLabel);
 
-  // Updating the AI subscription tier back to 1 should restore the ring.
+  // Updating the AI subscription tier back to 1 should restore the ring and
+  // custom accessibility label.
   personal_profile_->GetPrefs()->SetInteger(
       subscription_eligibility::prefs::kAiSubscriptionTier, 1);
   EXPECT_TRUE(identity_action.showsAITierRing);
+  EXPECT_NSEQ(expected_label, identity_action.customAccessibilityLabel);
 
-  // Introducing a sync error should remove the ring.
+  // Introducing a sync error should remove the ring and custom accessibility
+  // label.
   sync_service->SetPersistentAuthError();
   sync_service->FireStateChanged();
   EXPECT_FALSE(identity_action.showsAITierRing);
+  EXPECT_NSEQ(nil, identity_action.customAccessibilityLabel);
 
-  // Resolving the sync error should restore the ring.
+  // Resolving the sync error should restore the ring and custom accessibility
+  // label.
   sync_service->ClearAuthError();
   sync_service->FireStateChanged();
   EXPECT_TRUE(identity_action.showsAITierRing);
+  EXPECT_NSEQ(expected_label, identity_action.customAccessibilityLabel);
 }

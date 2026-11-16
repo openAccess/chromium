@@ -80,13 +80,6 @@ namespace {
 #define ASSIGN_OPTIONAL_OR_RETURN_VOID(lhs, rexpr) \
   ASSIGN_OR_RETURN(lhs, rexpr, [] { return; });
 
-// Registers a fuzz test for all three device types (CPU, GPU, NPU).
-// The variadic args carry the .WithDomains()/.WithSeeds() chain.
-#define WEBNN_FUZZ_TEST_F(func, ...)  \
-  FUZZ_TEST_F(CPU, func) __VA_ARGS__; \
-  FUZZ_TEST_F(GPU, func) __VA_ARGS__; \
-  FUZZ_TEST_F(NPU, func) __VA_ARGS__
-
 template <typename T>
 std::vector<uint8_t> CreateBufferAs(size_t buffer_size, int64_t fill_value) {
   std::vector<uint8_t> buffer(buffer_size, 0);
@@ -2570,6 +2563,28 @@ std::optional<Pool2dDescriptors> SetUpPool2dDescriptors(
       OperandDescriptor::Create(context_properties, params.data_type,
                                 input_dims, ""));
 
+  // Keep strides, dilations and windows within the padded input size by
+  // wrapping larger values around. Sizes that already fit don't change.
+  auto wrap = [](uint32_t size, uint64_t max_size) {
+    return static_cast<uint32_t>((size - 1) % max_size + 1);
+  };
+  const uint64_t padded_h = uint64_t{params.input_height} +
+                            params.padding.beginning.height +
+                            params.padding.ending.height;
+  const uint64_t padded_w = uint64_t{params.input_width} +
+                            params.padding.beginning.width +
+                            params.padding.ending.width;
+  params.strides.height = wrap(params.strides.height, padded_h);
+  params.strides.width = wrap(params.strides.width, padded_w);
+  params.dilations.height = wrap(params.dilations.height, padded_h);
+  params.dilations.width = wrap(params.dilations.width, padded_w);
+  const uint64_t max_win_h = (padded_h - 1) / params.dilations.height + 1;
+  const uint64_t max_win_w = (padded_w - 1) / params.dilations.width + 1;
+  params.window_dimensions.height =
+      wrap(params.window_dimensions.height, max_win_h);
+  params.window_dimensions.width =
+      wrap(params.window_dimensions.width, max_win_w);
+
   Pool2dAttributes attr;
   attr.window_dimensions = params.window_dimensions;
   attr.padding = params.padding;
@@ -3192,6 +3207,13 @@ void WebNNGraphImplFuzzerBase::SetUp() {
     }
     context_properties_ =
         create_context_result->get_success()->context_properties;
+#if defined(ARCH_CPU_32_BITS)
+    // On 32-bit builds, limit each tensor to 128 MiB so fuzz runs don't run out
+    // of memory.
+    constexpr uint64_t kMaxTensorBytes = 128 * 1024 * 1024;
+    context_properties_.tensor_byte_length_limit =
+        std::min(context_properties_.tensor_byte_length_limit, kMaxTensorBytes);
+#endif  // defined(ARCH_CPU_32_BITS)
     static bool logged_backend = false;
     if (!logged_backend) {
       logged_backend = true;
@@ -3199,7 +3221,7 @@ void WebNNGraphImplFuzzerBase::SetUp() {
                                          .GetWebNNTestEnvironment()
                                          .GetContextBackendNames()) {
         LOG(ERROR) << "[WebNN Fuzzer] Created WebNN context with backend: "
-                  << backend_name;
+                   << backend_name;
       }
     }
   } else {
@@ -3212,12 +3234,7 @@ void WebNNGraphImplFuzzerBase::TearDown() {
   // Give WebNNContext a chance to run disconnect.
   compiler_context_.reset();
   context_.reset();
-  GetGlobalFuzzEnvironment()
-      .GetWebNNTestEnvironment()
-      .WaitForAllContextsToBeDestroyed();
-
-  provider_remote_.reset();
-  GetGlobalFuzzEnvironment().GetWebNNTestEnvironment().TearDown();
+  GetGlobalFuzzEnvironment().GetWebNNTestEnvironment().RunUntilIdle();
 }
 
 mojo::Remote<mojom::WebNNGraphBuilder>
@@ -3330,6 +3347,7 @@ class WebNNGraphImplFuzzerImpl
                  uint8_t seed_for_zero_point);
   void DQGemmQ(GemmParams gemm_params,
                QuantizationParams quantization_params,
+               uint32_t b_channel_axis,
                uint8_t seed_for_data);
   void DQLeakyReluQ(LeakyReluParams leaky_relu_params,
                     OperandDataType quantized_type,
@@ -3395,8 +3413,10 @@ class CPU : public WebNNGraphImplFuzzerImpl<
 class GPU : public WebNNGraphImplFuzzerImpl<
                 WebNNGraphImplFuzzerDevice<mojom::Device::kGpu>> {};
 
+#if !BUILDFLAG(IS_LINUX)
 class NPU : public WebNNGraphImplFuzzerImpl<
                 WebNNGraphImplFuzzerDevice<mojom::Device::kNpu>> {};
+#endif  // !BUILDFLAG(IS_LINUX)
 
 template <typename BaseFixture>
 void WebNNGraphImplFuzzerImpl<BaseFixture>::Activation(ActivationParams params,
@@ -5489,7 +5509,6 @@ void WebNNGraphImplFuzzerImpl<BaseFixture>::ScatterElements(
       this->BindNewGraphBuilderRemote();
   GraphInfoBuilder builder(remote);
 
-
   base::flat_map<std::string, base::span<const uint8_t>> named_inputs;
   std::vector<std::vector<uint8_t>> data_buffers;
   OperandId input_id = BuildInputOrConstant(builder, params.is_input_constant,
@@ -6500,6 +6519,7 @@ template <typename BaseFixture>
 void WebNNGraphImplFuzzerImpl<BaseFixture>::DQGemmQ(
     GemmParams gemm_params,
     QuantizationParams quantization_params,
+    uint32_t b_channel_axis,
     uint8_t seed_for_data) {
   // A(input) and output use per-tensor quantization, B(weights) and C(bias)
   // use per-channel or per-tensor quantization.
@@ -6511,7 +6531,7 @@ void WebNNGraphImplFuzzerImpl<BaseFixture>::DQGemmQ(
       auto gemm_descs,
       SetUpGemmDescriptors(this->context_properties(), gemm_params));
 
-  const uint32_t b_channel_axis = gemm_params.b_transpose ? 0u : 1u;
+  b_channel_axis = b_channel_axis % 2u;
 
   mojo::Remote<mojom::WebNNGraphBuilder> remote =
       this->BindNewGraphBuilderRemote();
@@ -7260,6 +7280,23 @@ void WebNNGraphImplFuzzerImpl<BaseFixture>::DQTransposeQ(
 
   GetGlobalFuzzEnvironment().GetWebNNTestEnvironment().RunUntilIdle();
 }
+
+// Fuzz tests. WEBNN_FUZZ_TEST_F(Name, ...) registers CPU.Name, GPU.Name and
+// NPU.Name, all with the same .WithDomains() and .WithSeeds() settings. NPU is
+// skipped on Linux because WebNN has no NPU accelerator implemented there and
+// ClusterFuzz has no Linux machines with NPUs.
+// When you add or remove a test below, update `fuzztests` in BUILD.gn to match.
+// LINT.IfChange(npu_fuzztests)
+#if BUILDFLAG(IS_LINUX)
+#define WEBNN_FUZZ_TEST_F(func, ...)  \
+  FUZZ_TEST_F(CPU, func) __VA_ARGS__; \
+  FUZZ_TEST_F(GPU, func) __VA_ARGS__
+#else
+#define WEBNN_FUZZ_TEST_F(func, ...)  \
+  FUZZ_TEST_F(CPU, func) __VA_ARGS__; \
+  FUZZ_TEST_F(GPU, func) __VA_ARGS__; \
+  FUZZ_TEST_F(NPU, func) __VA_ARGS__
+#endif  // BUILDFLAG(IS_LINUX)
 
 // gelu, hardSwish, relu, sigmoid, softplus, softsign and tanh are all
 // activations with no extra options, so they share a single fuzzer that
@@ -8149,6 +8186,7 @@ WEBNN_FUZZ_TEST_F(
     DQGemmQ,
     .WithDomains(AnyGemmParams(),
                  AnyQuantizationParams(),
+                 /*b_channel_axis=*/fuzztest::InRange<uint32_t>(0, 1),
                  fuzztest::Arbitrary<uint8_t>())
         .WithSeeds({{GemmParams{OperandDataType::kFloat32,
                                 /*m=*/3,
@@ -8168,6 +8206,7 @@ WEBNN_FUZZ_TEST_F(
                          QuantizationKind::kPerChannel,
                          // This is unused for per channel quantization.
                          /*channel_block_size=*/1},
+                     /*b_channel_axis=*/0,
                      /*seed_for_data=*/3}}));
 
 WEBNN_FUZZ_TEST_F(
@@ -8406,5 +8445,6 @@ WEBNN_FUZZ_TEST_F(
                      /*seed_for_input=*/2,
                      /*seed_for_scale=*/0.25f,
                      /*seed_for_zero_point=*/0}}));
+// LINT.ThenChange(//services/webnn/BUILD.gn:npu_fuzztests)
 
 }  // namespace webnn::test

@@ -54,13 +54,6 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isEnabledAndConsentForProfile(profile);
     }
 
-    /** Returns true if the user was previously determined to be ineligible for Glic. */
-    public static boolean wasPreviouslyNotAllowed(@Nullable Profile profile) {
-        if (profile == null) return false;
-        if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
-        return GlicEnablingJni.get().wasPreviouslyNotAllowed(profile);
-    }
-
     /** Returns true if the Glic settings page should be shown for the given profile. */
     public static boolean shouldShowSettingsPage(@Nullable Profile profile) {
         if (profile == null) return false;
@@ -83,6 +76,14 @@ public class GlicEnabling {
         if (profile == null) return false;
         if (sIsEnabledForTesting != null) return sIsEnabledForTesting;
         return GlicEnablingJni.get().shouldShowExperimentalTriggeringToggle(profile);
+    }
+
+    /**
+     * Returns true if Auto Browse settings should show the country variant of the "things to
+     * consider" disclosure.
+     */
+    public static boolean shouldUseWebActuationDisclosureCountryVariant() {
+        return GlicEnablingJni.get().shouldUseWebActuationDisclosureCountryVariant();
     }
 
     /** Returns true if Glic is ready to be used for the given profile. */
@@ -141,6 +142,13 @@ public class GlicEnabling {
         return GlicEnablingJni.get().isProfileManaged(profile);
     }
 
+    /** Returns true if the primary account for the profile is an enterprise account. */
+    public static boolean isEnterpriseAccount(@Nullable Profile profile) {
+        if (profile == null) return false;
+        if (sIsEnabledForTesting != null) return false;
+        return GlicEnablingJni.get().isEnterpriseAccount(profile);
+    }
+
     /**
      * Returns true if explicit experimental opt-in is required for the given profile.
      *
@@ -161,8 +169,6 @@ public class GlicEnabling {
 
         boolean isEnabledAndConsentForProfile(@JniType("Profile*") Profile profile);
 
-        boolean wasPreviouslyNotAllowed(@JniType("Profile*") Profile profile);
-
         boolean shouldShowSettingsPage(@JniType("Profile*") Profile profile);
 
         boolean shouldShowWebActuationToggle(@JniType("Profile*") Profile profile);
@@ -173,7 +179,11 @@ public class GlicEnabling {
 
         boolean isDisabledByPolicy(@JniType("Profile*") Profile profile);
 
+        boolean shouldUseWebActuationDisclosureCountryVariant();
+
         boolean isProfileManaged(@JniType("Profile*") Profile profile);
+
+        boolean isEnterpriseAccount(@JniType("Profile*") Profile profile);
 
         boolean experimentalOptInIsNeeded(@JniType("Profile*") Profile profile);
 

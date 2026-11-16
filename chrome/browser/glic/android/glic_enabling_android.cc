@@ -40,9 +40,6 @@ bool JNI_GlicEnabling_IsEnabledAndConsentForProfile(JNIEnv* env,
                                                     Profile* profile) {
   return GlicEnabling::IsEnabledAndConsentForProfile(profile);
 }
-bool JNI_GlicEnabling_WasPreviouslyNotAllowed(JNIEnv* env, Profile* profile) {
-  return GlicEnabling::WasPreviouslyNotAllowed(profile);
-}
 bool JNI_GlicEnabling_ShouldShowSettingsPage(JNIEnv* env, Profile* profile) {
   return GlicEnabling::ShouldShowSettingsPage(profile);
 }
@@ -69,10 +66,19 @@ bool JNI_GlicEnabling_IsDisabledByPolicy(JNIEnv* env, Profile* profile) {
   return GlicEnabling::EnablementForProfile(profile).DisallowedByAdmin();
 }
 
+bool JNI_GlicEnabling_ShouldUseWebActuationDisclosureCountryVariant(
+    JNIEnv* env) {
+  return GlicEnabling::ShouldUseWebActuationDisclosureCountryVariant();
+}
+
 bool JNI_GlicEnabling_IsProfileManaged(JNIEnv* env, Profile* profile) {
   policy::ManagementService* management_service =
       policy::ManagementServiceFactory::GetForProfile(profile);
   return management_service && management_service->IsManaged();
+}
+
+bool JNI_GlicEnabling_IsEnterpriseAccount(JNIEnv* env, Profile* profile) {
+  return GlicEnabling::IsEnterpriseAccount(profile);
 }
 
 void JNI_GlicEnabling_SetBypassEnablementChecksForTesting(JNIEnv* env,

@@ -247,7 +247,7 @@ class VIZ_SERVICE_EXPORT SurfaceAggregator : public SurfaceObserver {
                            const gfx::Rect& damage_from_parent,
                            PrewalkResult& result);
 
-  void CopyUndrawnSurfaces(PrewalkResult* prewalk);
+  void CopyUndrawnSurfaces(base::flat_set<SurfaceId> undrawn_surfaces);
   void CopyPasses(ResolvedFrameData& resolved_frame);
   void AddRootReadbackPass();
   void AddDisplayTransformPass();
@@ -330,6 +330,11 @@ class VIZ_SERVICE_EXPORT SurfaceAggregator : public SurfaceObserver {
 
   void SetRenderPassDamageRect(AggregatedRenderPass* copy_pass,
                                ResolvedPassData& resolved_pass);
+
+  // Deduplicates render passes in `dest_pass_list_` when a surface is embedded
+  // multiple times, keeping the first occurrence of each pass and unioning
+  // damage from duplicates.
+  void RemoveDuplicateRenderPasses();
 
   // Collects the TrackedElementRects from the given frame metadata and
   // transforms their bounds to the coordinate space of the root render pass.

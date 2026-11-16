@@ -43,6 +43,8 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
+#include "chrome/browser/ui/tabs/tab_strip_api/android_tab_model_impl/android_tab_strip_api_injector.h"
+#include "chrome/browser/ui/tabs/tab_strip_api/tab_strip_service_feature.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -136,10 +138,6 @@ TabModelJniBridge::TabModelJniBridge(
   }
 }
 
-void TabModelJniBridge::Destroy() {
-  delete this;
-}
-
 void TabModelJniBridge::AssociateWithBrowserWindow(
     int64_t native_android_browser_window) {
   BrowserWindowInterface* android_browser_window =
@@ -149,11 +147,16 @@ void TabModelJniBridge::AssociateWithBrowserWindow(
   scoped_unowned_user_data_ =
       std::make_unique<ui::ScopedUnownedUserData<TabListInterface>>(
           android_browser_window->GetUnownedUserDataHost(), *this);
+  auto injector = std::make_unique<tabs_api::AndroidTabStripApiInjector>(
+      this, TabLaunchType::FROM_CHROME_UI);
+  tab_strip_service_feature_ = std::make_unique<TabStripServiceFeature>(
+      std::move(injector), android_browser_window->GetUnownedUserDataHost());
   SetSessionId(android_browser_window->GetSessionID());
 }
 
 void TabModelJniBridge::DissociateWithBrowserWindow() {
   CHECK(scoped_unowned_user_data_ != nullptr);
+  tab_strip_service_feature_.reset();
   scoped_unowned_user_data_.reset();
   SetSessionId(SessionID::InvalidValue());
 }
@@ -693,6 +696,21 @@ void TabModelJniBridge::HighlightTabs(tabs::TabHandle tab_to_activate,
                                        tabs_to_highlight);
 }
 
+std::vector<tabs::TabInterface*> TabModelJniBridge::GetHighlightedTabs() {
+  JNIEnv* env = AttachCurrentThread();
+  ScopedJavaLocalRef<jobject> jobj = java_object_.get(env);
+  std::vector<TabAndroid*> tab_androids =
+      Java_TabModelJniBridge_getHighlightedTabs(env, jobj);
+
+  std::vector<tabs::TabInterface*> tabs;
+  tabs.reserve(tab_androids.size());
+  for (TabAndroid* tab_android : tab_androids) {
+    CHECK(tab_android);
+    tabs.push_back(tab_android);
+  }
+  return tabs;
+}
+
 void TabModelJniBridge::MoveTab(tabs::TabHandle tab, int index) {
   TabAndroid* tab_android = TabAndroid::FromTabHandle(tab);
   if (!tab_android) {
@@ -994,11 +1012,12 @@ TabModel* TabModelJniBridge::FromJavaObject(const JavaRef<jobject>& obj) {
   if (!obj) {
     return nullptr;
   }
-  return reinterpret_cast<TabModel*>(
-      Java_TabModelJniBridge_getNativePtr(AttachCurrentThread(), obj));
+  return Java_TabModelJniBridge_getNativePtr(AttachCurrentThread(), obj);
 }
 
 TabModelJniBridge::~TabModelJniBridge() {
+  tab_strip_service_feature_.reset();
+
   // We need to explicitly do this here (instead of e.g. in the
   // TabModelObserverJniBridge dtor) because otherwise, callers might call back
   // into a partially-destructed TabModel.
@@ -1013,7 +1032,7 @@ TabModelJniBridge::~TabModelJniBridge() {
   }
 }
 
-static int64_t JNI_TabModelJniBridge_Init(
+static jni_zero::JniUniquePtr<TabModelJniBridge> JNI_TabModelJniBridge_Init(
     JNIEnv* env,
     const JavaRef<jobject>& obj,
     Profile* profile,
@@ -1026,11 +1045,10 @@ static int64_t JNI_TabModelJniBridge_Init(
                 static_cast<chrome::android::CustomTabProfileType>(
                     j_custom_tab_profile_type.value()))
           : std::nullopt;
-  TabModel* tab_model = new TabModelJniBridge(
+  return jni_zero::MakeUnique<TabModelJniBridge>(
       env, obj, profile, static_cast<ActivityType>(j_activity_type),
       custom_tab_profile_type,
       static_cast<TabModel::TabModelType>(j_tab_model_type));
-  return reinterpret_cast<intptr_t>(tab_model);
 }
 
 DEFINE_JNI(TabModelJniBridge)

@@ -63,8 +63,8 @@ public interface TabModelSelector {
     /**
      * Convenience function to get the current tab id on the current model.
      *
-     * @return Id of the current tab or {@link Tab#INVALID_TAB_ID} if no tab is selected or the
-     *     model is not initialized.
+     * @return Id of the current tab or {@link Tab#INVALID_TAB_ID} if no tab is active or the model
+     *     is not initialized.
      */
     int getCurrentTabId();
 
@@ -98,13 +98,15 @@ public interface TabModelSelector {
     boolean isIncognitoSelected();
 
     /**
-     * @return If the current {@link TabModel} is Incognito branded.
+     * Returns whether the current {@link TabModel} is Incognito branded.
+     *
      * @see Profile#isIncognitoBranded()
      */
     boolean isIncognitoBrandedModelSelected();
 
     /**
-     * @return If the current {@link TabModel} is off the record.
+     * Returns whether the current {@link TabModel} is off the record.
+     *
      * @see Profile#isOffTheRecord()
      */
     boolean isOffTheRecordModelSelected();
@@ -171,9 +173,7 @@ public interface TabModelSelector {
      */
     void commitAllTabClosures();
 
-    /**
-     * @return Whether the tab state for this {@link TabModelSelector} has been initialized.
-     */
+    /** Returns whether the tab state for this {@link TabModelSelector} has been initialized. */
     boolean isTabStateInitialized();
 
     /**

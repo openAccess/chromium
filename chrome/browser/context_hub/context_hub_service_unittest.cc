@@ -4,13 +4,17 @@
 
 #include "chrome/browser/context_hub/context_hub_service.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -35,6 +39,7 @@
 #include "chrome/browser/context_hub/features.h"
 #include "chrome/browser/context_hub/memory_bank/database_memory_bank.h"
 #include "chrome/browser/context_hub/memory_bank/in_memory_memory_bank.h"
+#include "chrome/browser/context_hub/memory_bank/memory_bank_entry.h"
 #include "chrome/browser/context_hub/prefs.h"
 #include "chrome/browser/context_hub/storage/context_hub_backend.h"
 #include "chrome/browser/context_hub/storage/context_hub_backend_impl.h"
@@ -47,6 +52,7 @@
 #include "components/image_fetcher/core/request_metadata.h"
 #include "components/optimization_guide/core/model_execution/test/mock_remote_model_executor.h"
 #include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
+#include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/features/context_hub.pb.h"
 #include "components/page_content_annotations/content/mock_page_content_services.h"
 #include "components/page_content_annotations/core/page_content_extraction_types.h"
@@ -76,6 +82,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
+#include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
@@ -132,6 +139,10 @@ class MockServiceObserver : public ContextHubService::Observer {
               OnMemoryBankEntriesDeleted,
               (const std::vector<int64_t>&),
               (override));
+  MOCK_METHOD(void,
+              OnAutoTabGroupsPreferencesChanged,
+              (const std::string&),
+              (override));
 };
 
 class MockPageContentExtractionService
@@ -148,6 +159,78 @@ class MockPageContentExtractionService
                bool),
               (override));
 };
+
+optimization_guide::OptimizationGuideModelExecutionResult
+WrapContextHubResponse(
+    const optimization_guide::proto::ContextHubResponse& response) {
+  return optimization_guide::OptimizationGuideModelExecutionResult(
+      base::ok(optimization_guide::AnyWrapProto(response)),
+      /*execution_info=*/nullptr);
+}
+
+optimization_guide::proto::ContextHubResponse CreateTodoResponse(
+    std::string_view todo_title,
+    optimization_guide::proto::BrowserBasedTodosResponse::GroupType
+        group_type) {
+  optimization_guide::proto::ContextHubResponse response;
+  optimization_guide::proto::BrowserBasedTodosResponse* todo_response =
+      response.mutable_browser_based_todos_response();
+  todo_response->set_todo_title(todo_title);
+  todo_response->set_group_type(group_type);
+  return response;
+}
+
+optimization_guide::proto::ContextHubResponse CreateChatResponse(
+    std::string_view text_response,
+    base::span<const int32_t> cited_entry_indices = {}) {
+  optimization_guide::proto::ContextHubResponse response;
+  optimization_guide::proto::MemoryBankChatResponse* chat_response =
+      response.mutable_memory_bank_chat_response();
+  chat_response->set_text_response(text_response);
+  chat_response->mutable_cited_entry_indices()->Add(cited_entry_indices.begin(),
+                                                    cited_entry_indices.end());
+  return response;
+}
+
+optimization_guide::proto::TabGroupMinimal CreateMinimalTabGroup(
+    std::string_view label,
+    base::span<const int64_t> tab_ids) {
+  optimization_guide::proto::TabGroupMinimal group;
+  group.set_label(label);
+  group.mutable_tab_ids()->Add(tab_ids.begin(), tab_ids.end());
+  return group;
+}
+
+optimization_guide::proto::ContextHubResponse CreateSingleGroupResponse(
+    std::string_view label,
+    base::span<const int64_t> tab_ids) {
+  optimization_guide::proto::ContextHubResponse response;
+  *response.mutable_group_response()->add_minimal_tab_groups() =
+      CreateMinimalTabGroup(label, tab_ids);
+  return response;
+}
+
+const optimization_guide::proto::ContextHubRequest* AsContextHubRequest(
+    const google::protobuf::MessageLite& metadata) {
+  EXPECT_EQ(metadata.GetTypeName(),
+            optimization_guide::proto::ContextHubRequest::default_instance()
+                .GetTypeName());
+  if (metadata.GetTypeName() !=
+      optimization_guide::proto::ContextHubRequest::default_instance()
+          .GetTypeName()) {
+    return nullptr;
+  }
+  return static_cast<const optimization_guide::proto::ContextHubRequest*>(
+      &metadata);
+}
+
+void PostModelExecutionResult(
+    optimization_guide::OptimizationGuideModelExecutionResultCallback callback,
+    optimization_guide::OptimizationGuideModelExecutionResult result) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(std::move(callback), std::move(result),
+                                /*log_entry=*/nullptr));
+}
 
 class ContextHubServiceTest : public testing::Test {
  public:
@@ -179,20 +262,17 @@ class ContextHubServiceTest : public testing::Test {
 
     ON_CALL(mock_remote_model_executor_, ExecuteModel)
         .WillByDefault(
-            [this](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-              base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                  FROM_HERE,
-                  base::BindOnce(
-                      std::move(callback),
-                      CreateContextHubResponseResult(
-                          "Todo title",
-                          optimization_guide::proto::BrowserBasedTodosResponse::
-                              GROUP_TYPE_READING_LIST),
-                      nullptr));
+            [](optimization_guide::ModelBasedCapabilityKey,
+               const google::protobuf::MessageLite&,
+               const optimization_guide::ModelExecutionOptions&,
+               optimization_guide::OptimizationGuideModelExecutionResultCallback
+                   callback) {
+              PostModelExecutionResult(
+                  std::move(callback),
+                  WrapContextHubResponse(CreateTodoResponse(
+                      "Todo title",
+                      optimization_guide::proto::BrowserBasedTodosResponse::
+                          GROUP_TYPE_READING_LIST)));
             });
   }
   ~ContextHubServiceTest() override = default;
@@ -241,22 +321,66 @@ class ContextHubServiceTest : public testing::Test {
     return web_contents;
   }
 
-  optimization_guide::OptimizationGuideModelExecutionResult
-  CreateContextHubResponseResult(
-      const std::string& todo_title,
-      optimization_guide::proto::BrowserBasedTodosResponse::GroupType
-          group_type) {
-    optimization_guide::proto::ContextHubResponse response;
-    auto* todo_proto = response.mutable_browser_based_todos_response();
-    todo_proto->set_todo_title(todo_title);
-    todo_proto->set_group_type(group_type);
+  // Sets an expectation for a single `kContextHub` model execution call,
+  // verifies the request proto type, optionally copies the request into
+  // `captured_request` (which must outlive the `ExecuteModel()` call if
+  // non-null), and posts `result` asynchronously to match real network
+  // completion and avoid synchronous re-entrancy in batch queues.
+  void ExpectModelExecution(
+      optimization_guide::OptimizationGuideModelExecutionResult result,
+      optimization_guide::proto::ContextHubRequest* captured_request =
+          nullptr) {
+    EXPECT_CALL(
+        mock_remote_model_executor_,
+        ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub,
+                     _, _, _))
+        .WillOnce([result = std::move(result), captured_request](
+                      optimization_guide::ModelBasedCapabilityKey,
+                      const google::protobuf::MessageLite& metadata,
+                      const optimization_guide::ModelExecutionOptions&,
+                      optimization_guide::
+                          OptimizationGuideModelExecutionResultCallback
+                              callback) mutable {
+          const auto* request = AsContextHubRequest(metadata);
+          if (captured_request && request) {
+            *captured_request = *request;
+          }
+          PostModelExecutionResult(std::move(callback), std::move(result));
+        })
+        .RetiresOnSaturation();
+  }
 
-    optimization_guide::proto::Any any_response;
-    any_response.set_type_url(
-        "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-    response.SerializeToString(any_response.mutable_value());
-    return optimization_guide::OptimizationGuideModelExecutionResult(
-        base::ok(std::move(any_response)), nullptr);
+  void ExpectModelExecution(
+      const optimization_guide::proto::ContextHubResponse& response,
+      optimization_guide::proto::ContextHubRequest* captured_request =
+          nullptr) {
+    ExpectModelExecution(WrapContextHubResponse(response), captured_request);
+  }
+
+  // Simulates a model execution response whose `proto::Any` payload is empty
+  // and fails response parsing.
+  void ExpectEmptyModelExecutionResult() {
+    ExpectModelExecution(
+        optimization_guide::OptimizationGuideModelExecutionResult());
+  }
+
+  void ExpectModelExecutionError(
+      optimization_guide::OptimizationGuideModelExecutionError::
+          ModelExecutionError error) {
+    ExpectModelExecution(
+        optimization_guide::OptimizationGuideModelExecutionResult(
+            base::unexpected(
+                optimization_guide::OptimizationGuideModelExecutionError::
+                    FromModelExecutionError(error)),
+            /*execution_info=*/nullptr));
+  }
+
+  // Creates a 1x solid-color image of `width` x `height` pixels.
+  static gfx::Image CreateTestImage(int width, int height, SkColor color) {
+    SkBitmap bitmap;
+    bitmap.allocN32Pixels(width, height);
+    bitmap.eraseColor(color);
+    return gfx::Image::CreateFrom1xBitmap(bitmap);
   }
 
   // Builds a TopicFeedback for `topic_id` with every field populated.
@@ -1114,32 +1238,12 @@ TEST_F(ContextHubServiceTest,
   auto web_contents = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/item"), "Item Details");
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            const auto& request = static_cast<
-                const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-            EXPECT_GT(request.entry_items(0).tab().last_active_timestamp_ms(),
-                      0);
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Todo title",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_UNFINISHED),
-                    nullptr));
-          });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(
+      CreateTodoResponse("Todo title",
+                         optimization_guide::proto::BrowserBasedTodosResponse::
+                             GROUP_TYPE_UNFINISHED),
+      &captured_request);
 
   MockServiceObserver observer;
   base::ScopedObservation<ContextHubService, ContextHubService::Observer>
@@ -1157,6 +1261,9 @@ TEST_F(ContextHubServiceTest,
   service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
                                  future.GetCallback());
   EXPECT_TRUE(future.Get());
+  ASSERT_EQ(captured_request.entry_items_size(), 1);
+  EXPECT_GT(captured_request.entry_items(0).tab().last_active_timestamp_ms(),
+            0);
   EXPECT_EQ(service_.GetThirdPartyGenerationMetadata().last_generation_time,
             base::Time::Now());
   EXPECT_FALSE(service_.GetThirdPartyGenerationMetadata().has_error);
@@ -1184,38 +1291,20 @@ TEST_F(ContextHubServiceTest,
   task_environment_.FastForwardBy(base::Seconds(5));
   web_contents->WasHidden();
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            const auto& request = static_cast<
-                const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-            EXPECT_EQ(
-                request.entry_items(0).tab().last_foreground_duration_ms(),
-                5000);
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Todo title",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_UNFINISHED),
-                    nullptr));
-          });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(
+      CreateTodoResponse("Todo title",
+                         optimization_guide::proto::BrowserBasedTodosResponse::
+                             GROUP_TYPE_UNFINISHED),
+      &captured_request);
 
   base::test::TestFuture<bool> future;
   service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
                                  future.GetCallback());
   EXPECT_TRUE(future.Get());
+  ASSERT_EQ(captured_request.entry_items_size(), 1);
+  EXPECT_EQ(captured_request.entry_items(0).tab().last_foreground_duration_ms(),
+            5000);
 }
 
 TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_MissingPageContentSkipped) {
@@ -1270,27 +1359,9 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_SkipsTabsAlreadyInCache) {
                   testing::Ref(web_contents1->GetPrimaryPage()), _, _))
       .Times(0);
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Todo for tab 2",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_UNFINISHED),
-                    nullptr));
-          });
+  ExpectModelExecution(CreateTodoResponse(
+      "Todo for tab 2", optimization_guide::proto::BrowserBasedTodosResponse::
+                            GROUP_TYPE_UNFINISHED));
 
   base::test::TestFuture<bool> future;
   service_.GenerateTabBasedTodos(
@@ -1322,26 +1393,25 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_QueuesRequestsOverLimit) {
                    _, _))
       .Times(kNumTabs)
       .WillRepeatedly(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            const auto& request = static_cast<
-                const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-            int64_t tab_id = request.entry_items(0).tab().tab_id();
+          [](optimization_guide::ModelBasedCapabilityKey,
+             const google::protobuf::MessageLite& request_metadata,
+             const optimization_guide::ModelExecutionOptions&,
+             optimization_guide::OptimizationGuideModelExecutionResultCallback
+                 callback) {
+            int64_t tab_id = 0;
+            if (const auto* request = AsContextHubRequest(request_metadata)) {
+              EXPECT_EQ(request->entry_items_size(), 1);
+              if (request->entry_items_size() == 1) {
+                tab_id = request->entry_items(0).tab().tab_id();
+              }
+            }
 
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Todo for tab " + base::NumberToString(tab_id),
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_READING_LIST),
-                    nullptr));
+            PostModelExecutionResult(
+                std::move(callback),
+                WrapContextHubResponse(CreateTodoResponse(
+                    "Todo for tab " + base::NumberToString(tab_id),
+                    optimization_guide::proto::BrowserBasedTodosResponse::
+                        GROUP_TYPE_READING_LIST)));
           });
 
   base::test::TestFuture<bool> future;
@@ -1358,28 +1428,10 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_SkipsInvalidGroupType) {
   auto web_contents1 = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/tab1"), "Tab 1");
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            // GROUP_TYPE_UNSPECIFIED -> kNoMatch, should NOT be saved.
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Todo title",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_UNSPECIFIED),
-                    nullptr));
-          });
+  // GROUP_TYPE_UNSPECIFIED -> kNoMatch, should NOT be saved.
+  ExpectModelExecution(CreateTodoResponse(
+      "Todo title", optimization_guide::proto::BrowserBasedTodosResponse::
+                        GROUP_TYPE_UNSPECIFIED));
 
   base::test::TestFuture<bool> future;
   service_.GenerateTabBasedTodos({web_contents1->GetWeakPtr()},
@@ -1396,27 +1448,9 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_ShoppingCartGroupType) {
   auto web_contents = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/cart"), "Shopping Cart");
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "Cart items",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_SHOPPING_CART),
-                    nullptr));
-          });
+  ExpectModelExecution(CreateTodoResponse(
+      "Cart items", optimization_guide::proto::BrowserBasedTodosResponse::
+                        GROUP_TYPE_SHOPPING_CART));
 
   base::test::TestFuture<bool> future;
   service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
@@ -1437,27 +1471,9 @@ TEST_F(ContextHubServiceTest, GenerateTabBasedTodos_EmptyTitleSkipped) {
   auto web_contents = CreateEligibleTabWithMockExtraction(
       GURL("https://example.com/tab"), "Tab");
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [this](
-              optimization_guide::ModelBasedCapabilityKey feature,
-              const google::protobuf::MessageLite& request_metadata,
-              const optimization_guide::ModelExecutionOptions& options,
-              optimization_guide::OptimizationGuideModelExecutionResultCallback
-                  callback) {
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    CreateContextHubResponseResult(
-                        "",
-                        optimization_guide::proto::BrowserBasedTodosResponse::
-                            GROUP_TYPE_NUDGE_TO_CLOSE),
-                    nullptr));
-          });
+  ExpectModelExecution(CreateTodoResponse(
+      "", optimization_guide::proto::BrowserBasedTodosResponse::
+              GROUP_TYPE_NUDGE_TO_CLOSE));
 
   base::test::TestFuture<bool> future;
   service_.GenerateTabBasedTodos({web_contents->GetWeakPtr()},
@@ -1956,6 +1972,14 @@ class ContextHubServiceEmbeddingsTest : public ContextHubServiceTest {
     }
   }
 
+  static MemoryBankEntry MakeImageEntry(
+      std::string tab_title = "",
+      const GURL& image_url = GURL("https://example.com/photo.png")) {
+    return MemoryBankEntry(MemoryBankType::kImage, GURL("https://example.com"),
+                           std::move(tab_title), /*selected_text=*/std::nullopt,
+                           image_url);
+  }
+
   // Saves `entry` and returns its ID.
   int64_t SaveEntry(
       MemoryBankEntry entry,
@@ -2042,14 +2066,14 @@ TEST_F(ContextHubServiceEmbeddingsTest,
   // Receiving valid metadata backfills the missing embeddings.
   database_service_->EmbedderMetadataUpdated(
       passage_embeddings::EmbedderMetadata(
-          passage_embeddings::kEmbeddingsModelVersion, 3));
+          passage_embeddings::kEmbeddingsModelVersion, 3, 512));
   ASSERT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
 
   // Updating to a new model version wipes previous embeddings and recomputes
   // them.
   database_service_->EmbedderMetadataUpdated(
       passage_embeddings::EmbedderMetadata(
-          passage_embeddings::kEmbeddingsModelVersion + 1, 3));
+          passage_embeddings::kEmbeddingsModelVersion + 1, 3, 512));
   EXPECT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
 }
 
@@ -2098,7 +2122,185 @@ TEST_F(ContextHubServiceEmbeddingsTest,
 
   EXPECT_FALSE(store_embeddings_future_.IsReady());
 }
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SaveImage_StoresMetadataPassageEmbedding) {
+  CreateDatabaseService();
+  EXPECT_CALL(mock_embedder_,
+              ComputePassagesEmbeddings(
+                  _, ElementsAre("Page Title My note Recipes food ramen"), _));
+
+  MemoryBankEntry entry = MakeImageEntry("  Page Title  ");
+  entry.note = "  My note\n";
+  entry.collection = " Recipes ";
+  entry.tags = {" food ", "   ", "ramen"};
+  const int64_t id = SaveEntry(std::move(entry));
+
+  EXPECT_EQ(std::make_tuple(id, size_t{1}), store_embeddings_future_.Take());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SaveImage_EmptyTitleAndAnnotations_DoesNotStoreEmbedding) {
+  CreateDatabaseService();
+  EXPECT_CALL(mock_embedder_, ComputePassagesEmbeddings).Times(0);
+
+  MemoryBankEntry entry = MakeImageEntry("   ");
+  entry.note = " \t ";
+  entry.tags = {"  "};
+  SaveEntry(std::move(entry));
+
+  EXPECT_FALSE(store_embeddings_future_.IsReady());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       UpdateImageAnnotations_RecomputesEmbedding) {
+  CreateDatabaseService();
+  EXPECT_CALL(mock_embedder_,
+              ComputePassagesEmbeddings(_, ElementsAre("Page Title"), _));
+  const int64_t id = SaveEntry(MakeImageEntry("Page Title"));
+  EXPECT_EQ(std::make_tuple(id, size_t{1}), store_embeddings_future_.Take());
+
+  EXPECT_CALL(
+      mock_embedder_,
+      ComputePassagesEmbeddings(
+          _,
+          ElementsAre("Page Title System overview Design diagram architecture"),
+          _));
+  base::test::TestFuture<bool> update_future;
+  database_service_->UpdateMemoryBankEntryAnnotations(
+      id, /*tags=*/{"diagram", "architecture"}, /*note=*/"System overview",
+      /*collection=*/"Design", update_future.GetCallback());
+  ASSERT_TRUE(update_future.Get());
+
+  EXPECT_EQ(std::make_tuple(id, size_t{1}), store_embeddings_future_.Take());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       UpdateImageAnnotations_ClearedToEmpty_DropsInFlightEmbeddingJob) {
+  CreateDatabaseService();
+  EXPECT_CALL(mock_embedder_,
+              ComputePassagesEmbeddings(_, ElementsAre("Initial note"), _))
+      .WillOnce(mock_embedder_.HoldJob());
+  MemoryBankEntry entry = MakeImageEntry();
+  entry.note = "Initial note";
+  const int64_t id = SaveEntry(std::move(entry));
+
+  // Start an annotation update with non-empty text, then immediately clear all
+  // annotations so the resulting empty passage drops the in-flight embedding
+  // job without starting an intermediate embedding job.
+  EXPECT_CALL(mock_embedder_, ComputePassagesEmbeddings).Times(0);
+  base::test::TestFuture<bool> first_update_future;
+  database_service_->UpdateMemoryBankEntryAnnotations(
+      id, /*tags=*/{"tag"}, /*note=*/"Updated note",
+      /*collection=*/std::nullopt, first_update_future.GetCallback());
+  base::test::TestFuture<bool> clear_update_future;
+  database_service_->UpdateMemoryBankEntryAnnotations(
+      id, /*tags=*/{}, /*note=*/std::nullopt, /*collection=*/std::nullopt,
+      clear_update_future.GetCallback());
+  ASSERT_TRUE(first_update_future.Get());
+  ASSERT_TRUE(clear_update_future.Get());
+
+  // Ensure the second `GetMemoryBankEntriesByIds()` callback has run by
+  // executing another backend round-trip.
+  base::test::TestFuture<std::vector<MemoryBankEntry>> entries_future;
+  database_service_->GetEntriesByIds({id}, entries_future.GetCallback());
+  ASSERT_EQ(entries_future.Take().size(), 1u);
+
+  mock_embedder_.CompleteHeldJob(
+      passage_embeddings::ComputeEmbeddingsStatus::kSuccess);
+  EXPECT_FALSE(store_embeddings_future_.IsReady());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SearchMemoryBankEntries_ReturnsMatchingEntry) {
+  CreateDatabaseService();
+  const int64_t id = SaveEntry(MemoryBankEntry(
+      MemoryBankType::kTextSelection, GURL("https://example.com"), "Title",
+      "The highlighted text"));
+  ASSERT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
+
+  // The test embedder maps every passage to the same embedding, so the query
+  // scores 1.0 against the stored entry.
+  base::test::TestFuture<std::vector<MemoryBankEntry>> search_future;
+  database_service_->SearchMemoryBankEntries("highlighted",
+                                             search_future.GetCallback());
+  EXPECT_THAT(search_future.Get(),
+              ElementsAre(Field(&MemoryBankEntry::id, id)));
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SearchMemoryBankEntries_ScoreThresholdFiltersResults) {
+  // Similarity scores never exceed 1.0, so this threshold filters everything.
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kMemoryBanks, {{"MemoryBankSearchScoreThreshold", "1.1"}});
+  CreateDatabaseService();
+  const int64_t id = SaveEntry(MemoryBankEntry(
+      MemoryBankType::kTextSelection, GURL("https://example.com"), "Title",
+      "The highlighted text"));
+  ASSERT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> search_future;
+  database_service_->SearchMemoryBankEntries("highlighted",
+                                             search_future.GetCallback());
+  EXPECT_THAT(search_future.Get(), IsEmpty());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SearchMemoryBankEntries_ReturnsNothingWithoutEmbedderMetadata) {
+  CreateDatabaseService(/*with_embedder_metadata=*/false);
+  SaveEntry(MemoryBankEntry(MemoryBankType::kTextSelection,
+                            GURL("https://example.com"), "Title",
+                            "The highlighted text"));
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> search_future;
+  database_service_->SearchMemoryBankEntries("highlighted",
+                                             search_future.GetCallback());
+  EXPECT_THAT(search_future.Get(), IsEmpty());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SearchMemoryBankEntries_BlankQueryReturnsNothing) {
+  CreateDatabaseService();
+  const int64_t id = SaveEntry(MemoryBankEntry(
+      MemoryBankType::kTextSelection, GURL("https://example.com"), "Title",
+      "The highlighted text"));
+  ASSERT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> search_future;
+  database_service_->SearchMemoryBankEntries("  ", search_future.GetCallback());
+  EXPECT_THAT(search_future.Get(), IsEmpty());
+}
+
+TEST_F(ContextHubServiceEmbeddingsTest,
+       SearchMemoryBankEntries_NewerQuerySupersedesPrevious) {
+  CreateDatabaseService();
+  const int64_t id = SaveEntry(MemoryBankEntry(
+      MemoryBankType::kTextSelection, GURL("https://example.com"), "Title",
+      "The highlighted text"));
+  ASSERT_EQ(std::make_tuple(id, size_t{3}), store_embeddings_future_.Take());
+
+  // Start a second search before the first query's embedding is computed.
+  base::test::TestFuture<std::vector<MemoryBankEntry>> first_search_future;
+  base::test::TestFuture<std::vector<MemoryBankEntry>> second_search_future;
+  database_service_->SearchMemoryBankEntries("high",
+                                             first_search_future.GetCallback());
+  database_service_->SearchMemoryBankEntries(
+      "highlighted", second_search_future.GetCallback());
+
+  EXPECT_THAT(first_search_future.Get(), IsEmpty());
+  EXPECT_THAT(second_search_future.Get(),
+              ElementsAre(Field(&MemoryBankEntry::id, id)));
+}
 #endif
+
+TEST_F(ContextHubServiceTest,
+       SearchMemoryBankEntries_ReturnsNothingWithoutBackend) {
+  // `service_` has neither a database backend nor an embedder.
+  base::test::TestFuture<std::vector<MemoryBankEntry>> search_future;
+  service_.SearchMemoryBankEntries("highlighted", search_future.GetCallback());
+  EXPECT_THAT(search_future.Get(), IsEmpty());
+}
 
 TEST_F(ContextHubServiceTest,
        SaveMemoryBankEntry_TabNotFoundFallbackWhenSyncFlagEnabled) {
@@ -2188,41 +2390,15 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithTabs) {
       {4, "Tab 4", GURL("https://example4.com")},
       {5, "Tab 5", GURL("https://example5.com")}};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        optimization_guide::proto::ContextHubResponse response;
-        optimization_guide::proto::GroupResponse* group_response =
-            response.mutable_group_response();
-        group_response->set_text_response("Grouped tabs into 2 groups.");
-        optimization_guide::proto::TabGroupMinimal* group1 =
-            group_response->add_minimal_tab_groups();
-        group1->set_label("Group 1");
-        group1->add_tab_ids(1);
-        group1->add_tab_ids(2);
-
-        optimization_guide::proto::TabGroupMinimal* group2 =
-            group_response->add_minimal_tab_groups();
-        group2->set_label("Group 2");
-        group2->add_tab_ids(3);
-        group2->add_tab_ids(4);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubResponse response;
+  optimization_guide::proto::GroupResponse* group_response =
+      response.mutable_group_response();
+  group_response->set_text_response("Grouped tabs into 2 groups.");
+  *group_response->add_minimal_tab_groups() =
+      CreateMinimalTabGroup("Group 1", {1, 2});
+  *group_response->add_minimal_tab_groups() =
+      CreateMinimalTabGroup("Group 2", {3, 4});
+  ExpectModelExecution(response);
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -2284,51 +2460,9 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithConfirmedGroupsPayload) {
       {3, "Tab 3", GURL("https://example3.com")},
       {4, "Tab 4", GURL("https://example4.com")}};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([confirmed_guid =
-                     confirmed_group.saved_guid().AsLowercaseString()](
-                    optimization_guide::ModelBasedCapabilityKey feature,
-                    const google::protobuf::MessageLite& request_metadata,
-                    const optimization_guide::ModelExecutionOptions& options,
-                    optimization_guide::
-                        OptimizationGuideModelExecutionResultCallback
-                            callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        EXPECT_EQ(request.user_command(), "regroup");
-        EXPECT_EQ(request.entry_items_size(), 4);
-        ASSERT_EQ(request.pre_existing_tab_groups_size(), 1);
-        EXPECT_EQ(request.pre_existing_tab_groups(0).label(),
-                  "Confirmed Group");
-        EXPECT_EQ(request.pre_existing_tab_groups(0).group_id(),
-                  confirmed_guid);
-        ASSERT_EQ(request.pre_existing_tab_groups(0).tab_ids_size(), 2);
-        EXPECT_EQ(request.pre_existing_tab_groups(0).tab_ids(0), 1);
-        EXPECT_EQ(request.pre_existing_tab_groups(0).tab_ids(1), 2);
-
-        optimization_guide::proto::ContextHubResponse response;
-        optimization_guide::proto::GroupResponse* group_response =
-            response.mutable_group_response();
-        optimization_guide::proto::TabGroupMinimal* group1 =
-            group_response->add_minimal_tab_groups();
-        group1->set_label("Regrouped");
-        group1->add_tab_ids(1);
-        group1->add_tab_ids(3);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateSingleGroupResponse("Regrouped", {1, 3}),
+                       &captured_request);
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -2337,6 +2471,17 @@ TEST_F(ContextHubServiceTest, GroupTabs_WithConfirmedGroupsPayload) {
                      future.GetCallback<std::vector<TabGroupEntry>,
                                         std::vector<TabData>, std::string>());
   auto [groups, ungrouped, text_response] = future.Take();
+
+  EXPECT_EQ(captured_request.user_command(), "regroup");
+  EXPECT_EQ(captured_request.entry_items_size(), 4);
+  ASSERT_EQ(captured_request.pre_existing_tab_groups_size(), 1);
+  EXPECT_EQ(captured_request.pre_existing_tab_groups(0).label(),
+            "Confirmed Group");
+  EXPECT_EQ(captured_request.pre_existing_tab_groups(0).group_id(),
+            confirmed_group.saved_guid().AsLowercaseString());
+  ASSERT_EQ(captured_request.pre_existing_tab_groups(0).tab_ids_size(), 2);
+  EXPECT_EQ(captured_request.pre_existing_tab_groups(0).tab_ids(0), 1);
+  EXPECT_EQ(captured_request.pre_existing_tab_groups(0).tab_ids(1), 2);
 
   ASSERT_EQ(groups.size(), 1u);
   EXPECT_EQ(groups[0].label, "Regrouped");
@@ -2354,23 +2499,7 @@ TEST_F(ContextHubServiceTest, GroupTabs_MESError) {
       {1, "Tab 1", GURL("https://example1.com")},
       {2, "Tab 2", GURL("https://example2.com")}};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [](optimization_guide::ModelBasedCapabilityKey feature,
-             const google::protobuf::MessageLite& request_metadata,
-             const optimization_guide::ModelExecutionOptions& options,
-             optimization_guide::OptimizationGuideModelExecutionResultCallback
-                 callback) {
-            base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-                FROM_HERE,
-                base::BindOnce(
-                    std::move(callback),
-                    optimization_guide::OptimizationGuideModelExecutionResult(),
-                    nullptr));
-          });
+  ExpectEmptyModelExecutionResult();
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -2386,25 +2515,9 @@ TEST_F(ContextHubServiceTest, GroupTabs_MESError) {
   EXPECT_EQ(ungrouped_tabs[1].id, 2);
   EXPECT_TRUE(text_response.empty());
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [](optimization_guide::ModelBasedCapabilityKey feature,
-             const google::protobuf::MessageLite& request_metadata,
-             const optimization_guide::ModelExecutionOptions& options,
-             optimization_guide::OptimizationGuideModelExecutionResultCallback
-                 callback) {
-            auto throttled_error = optimization_guide::
-                OptimizationGuideModelExecutionError::FromModelExecutionError(
-                    optimization_guide::OptimizationGuideModelExecutionError::
-                        ModelExecutionError::kRequestThrottled);
-            std::move(callback).Run(
-                optimization_guide::OptimizationGuideModelExecutionResult(
-                    base::unexpected(throttled_error), nullptr),
-                nullptr);
-          });
+  ExpectModelExecutionError(
+      optimization_guide::OptimizationGuideModelExecutionError::
+          ModelExecutionError::kRequestThrottled);
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -2551,39 +2664,532 @@ TEST_F(ContextHubServiceTest, ChatHistory_Clear) {
   EXPECT_TRUE(service_.GetTabGroupChatHistory().empty());
 }
 
+TEST_F(ContextHubServiceTest, AutoTabGroupsPreferences_DefaultsWhenUnset) {
+  EXPECT_FALSE(profile_.GetPrefs()->HasPrefPath(
+      prefs::kContextHubAutoTabGroupsPreferences));
+  const std::string effective = service_.GetEffectiveAutoTabGroupsPreferences();
+  EXPECT_FALSE(effective.empty());
+  EXPECT_NE(effective.find("Group tabs by task"), std::string::npos);
+}
+
+TEST_F(ContextHubServiceTest, AutoTabGroupsPreferences_SetTrimsAndNotifies) {
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(
+                            "- Keep shopping tabs together."));
+
+  EXPECT_TRUE(service_.SetAutoTabGroupsPreferences(
+      "  - Keep shopping tabs together.\n\n"));
+  EXPECT_EQ(profile_.GetPrefs()->GetString(
+                prefs::kContextHubAutoTabGroupsPreferences),
+            "- Keep shopping tabs together.");
+  EXPECT_EQ(service_.GetEffectiveAutoTabGroupsPreferences(),
+            "- Keep shopping tabs together.");
+}
+
+TEST_F(ContextHubServiceTest,
+       AutoTabGroupsPreferences_SetEmptyResetsToDefault) {
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences("first"));
+
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+  // Observers always receive the effective text, i.e. the defaults again.
+  std::string notified;
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(_))
+      .WillOnce([&notified](const std::string& text) { notified = text; });
+
+  EXPECT_TRUE(service_.SetAutoTabGroupsPreferences("   "));
+  EXPECT_FALSE(profile_.GetPrefs()->HasPrefPath(
+      prefs::kContextHubAutoTabGroupsPreferences));
+  EXPECT_EQ(notified, service_.GetEffectiveAutoTabGroupsPreferences());
+}
+
+TEST_F(ContextHubServiceTest, AutoTabGroupsPreferences_RejectsOverByteCap) {
+  PrefService* prefs = profile_.GetPrefs();
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(_)).Times(0);
+
+  // Exactly at the cap is accepted; one byte over is rejected.
+  const std::string at_cap(
+      ContextHubService::kMaxAutoTabGroupsPreferencesLength, 'a');
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(at_cap));
+  EXPECT_TRUE(service_.SetAutoTabGroupsPreferences(at_cap));
+
+  EXPECT_FALSE(service_.SetAutoTabGroupsPreferences(at_cap + "b"));
+  EXPECT_EQ(prefs->GetString(prefs::kContextHubAutoTabGroupsPreferences),
+            at_cap);
+
+  // The cap is measured in bytes, not characters: 2000 three-byte characters
+  // are 6000 bytes.
+  std::string multibyte;
+  for (int i = 0; i < 2000; ++i) {
+    multibyte += "\u65E5";  // 日 (3 bytes in UTF-8)
+  }
+  EXPECT_FALSE(service_.SetAutoTabGroupsPreferences(multibyte));
+  EXPECT_EQ(prefs->GetString(prefs::kContextHubAutoTabGroupsPreferences),
+            at_cap);
+}
+
+TEST_F(ContextHubServiceTest, AutoTabGroupsPreferences_SavedInProfilePref) {
+  PrefService* prefs = profile_.GetPrefs();
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences("  - Group by project.  "));
+  EXPECT_EQ(prefs->GetString(prefs::kContextHubAutoTabGroupsPreferences),
+            "- Group by project.");
+
+  // A reset removes the user value rather than storing an empty string.
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences(""));
+  EXPECT_FALSE(prefs->HasPrefPath(prefs::kContextHubAutoTabGroupsPreferences));
+}
+
+TEST_F(ContextHubServiceTest, AutoTabGroupsPreferences_ReadFromProfilePref) {
+  profile_.GetPrefs()->SetString(prefs::kContextHubAutoTabGroupsPreferences,
+                                 "- Keep work and personal apart.");
+  // No asynchronous load: the stored document is available immediately.
+  EXPECT_EQ(service_.GetEffectiveAutoTabGroupsPreferences(),
+            "- Keep work and personal apart.");
+}
+
+TEST_F(ContextHubServiceTest,
+       AutoTabGroupsPreferences_ClearedWhenFeatureDisabled) {
+  profile_.GetPrefs()->SetString(prefs::kContextHubAutoTabGroupsPreferences,
+                                 "- Left over from the experiment.");
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      browser::context_hub::mojom::kAutoTabGroups);
+
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service_, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      /*embedder=*/nullptr, /*embedder_metadata_provider=*/nullptr,
+      std::make_unique<InMemoryMemoryBank>(),
+      /*tab_group_store=*/nullptr,
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+  EXPECT_FALSE(profile_.GetPrefs()->HasPrefPath(
+      prefs::kContextHubAutoTabGroupsPreferences));
+  EXPECT_FALSE(service.SetAutoTabGroupsPreferences("- Should not be stored."));
+  EXPECT_FALSE(profile_.GetPrefs()->HasPrefPath(
+      prefs::kContextHubAutoTabGroupsPreferences));
+}
+
+// The built-in defaults are display-only: they are never written to the pref,
+// and a stored document is handed back verbatim by a freshly constructed
+// service. A later release that ships different defaults therefore cannot
+// overwrite what the user (or refinement) saved.
+TEST_F(ContextHubServiceTest,
+       AutoTabGroupsPreferences_StoredDocumentIsIndependentOfDefaults) {
+  PrefService* prefs = profile_.GetPrefs();
+  // Reading the effective document does not persist the defaults.
+  const std::string defaults = service_.GetEffectiveAutoTabGroupsPreferences();
+  ASSERT_FALSE(defaults.empty());
+  EXPECT_FALSE(prefs->HasPrefPath(prefs::kContextHubAutoTabGroupsPreferences));
+
+  constexpr char kStored[] = "- Keep groups to at most 5 tabs.";
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences(kStored));
+  EXPECT_NE(kStored, defaults);
+
+  // Simulate a restart: a new service instance (whose defaults may differ from
+  // the ones in effect when the document was saved) must neither rewrite the
+  // pref nor fall back to the defaults.
+  ContextHubService service(
+      &profile_, identity_test_environment_.identity_manager(),
+      &mock_personal_context_service_, &mock_remote_model_executor_,
+      &fake_tab_group_sync_service_, &mock_page_content_extraction_service_,
+      /*embedder=*/nullptr, /*embedder_metadata_provider=*/nullptr,
+      std::make_unique<InMemoryMemoryBank>(),
+      /*tab_group_store=*/nullptr,
+      /*context_hub_backend=*/nullptr,
+      std::make_unique<InMemoryAutoTodosStore>());
+  EXPECT_EQ(prefs->GetString(prefs::kContextHubAutoTabGroupsPreferences),
+            kStored);
+  EXPECT_EQ(service.GetEffectiveAutoTabGroupsPreferences(), kStored);
+}
+
+TEST_F(ContextHubServiceTest, GroupTabs_SendsRawUserCommandOnly) {
+  ASSERT_TRUE(
+      service_.SetAutoTabGroupsPreferences("- Keep shopping tabs together."));
+
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateSingleGroupResponse("Work", {1, 2}),
+                       &captured_request);
+
+  std::vector<TabData> input_tabs = {
+      {1, "Tab 1", GURL("https://example1.com")},
+      {2, "Tab 2", GURL("https://example2.com")}};
+  base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
+                         std::string>
+      future;
+  service_.GroupTabs(std::move(input_tabs), "  regroup  ",
+                     future.GetCallback<std::vector<TabGroupEntry>,
+                                        std::vector<TabData>, std::string>());
+  ASSERT_TRUE(future.Wait());
+
+  // Preferences never leak into the command; they travel in their own field.
+  EXPECT_EQ(captured_request.user_command(), "regroup");
+  EXPECT_EQ(captured_request.auto_tab_groups_preferences(),
+            "- Keep shopping tabs together.");
+  const std::vector<optimization_guide::proto::ChatHistoryTurn> history =
+      service_.GetTabGroupChatHistory();
+  ASSERT_FALSE(history.empty());
+  EXPECT_EQ(history[0].message_content(), "regroup");
+}
+
+TEST_F(ContextHubServiceTest, GroupTabs_SendsPreferencesOnlyWhenStored) {
+  // Nothing stored: the defaults are shown to the user but never sent.
+  optimization_guide::proto::ContextHubRequest first_request;
+  ExpectModelExecution(CreateSingleGroupResponse("Work", {1, 2}),
+                       &first_request);
+  base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
+                         std::string>
+      first;
+  service_.GroupTabs({{1, "Tab 1", GURL("https://example1.com")},
+                      {2, "Tab 2", GURL("https://example2.com")}},
+                     "",
+                     first.GetCallback<std::vector<TabGroupEntry>,
+                                       std::vector<TabData>, std::string>());
+  ASSERT_TRUE(first.Wait());
+  EXPECT_FALSE(first_request.has_auto_tab_groups_preferences());
+
+  ASSERT_TRUE(
+      service_.SetAutoTabGroupsPreferences("- Keep groups to at most 5 tabs."));
+
+  optimization_guide::proto::ContextHubRequest second_request;
+  ExpectModelExecution(CreateSingleGroupResponse("Work", {1, 2}),
+                       &second_request);
+  base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
+                         std::string>
+      second;
+  service_.GroupTabs({{1, "Tab 1", GURL("https://example1.com")},
+                      {2, "Tab 2", GURL("https://example2.com")}},
+                     "",
+                     second.GetCallback<std::vector<TabGroupEntry>,
+                                        std::vector<TabData>, std::string>());
+  ASSERT_TRUE(second.Wait());
+  EXPECT_EQ(second_request.auto_tab_groups_preferences(),
+            "- Keep groups to at most 5 tabs.");
+}
+
+// Fixture helpers for the refinement tests: run one session (default
+// grouping, then an optional follow-up prompt) so that suggestions exist and
+// the chat history reflects it.
+class ContextHubServiceRefinementTest : public ContextHubServiceTest {
+ protected:
+  static optimization_guide::proto::ContextHubResponse RefinementResponse(
+      std::string_view preferences) {
+    optimization_guide::proto::ContextHubResponse response;
+    response.mutable_auto_tab_groups_preference_refinement_response()
+        ->set_preferences(preferences);
+    return response;
+  }
+
+  // The stored document; empty when the defaults apply.
+  std::string StoredPreferences() {
+    return profile_.GetPrefs()->GetString(
+        prefs::kContextHubAutoTabGroupsPreferences);
+  }
+
+  void RunSession(const std::string& follow_up_prompt,
+                  std::string_view assistant_text_response = "") {
+    optimization_guide::proto::ContextHubResponse response =
+        CreateSingleGroupResponse("Work", {1, 2});
+    if (!assistant_text_response.empty()) {
+      response.mutable_group_response()->set_text_response(
+          assistant_text_response);
+    }
+    ExpectModelExecution(response, &grouping_request_);
+    base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
+                           std::string>
+        future;
+    service_.GroupTabs({{1, "Tab 1", GURL("https://example1.com")},
+                        {2, "Tab 2", GURL("https://example2.com")}},
+                       follow_up_prompt,
+                       future.GetCallback<std::vector<TabGroupEntry>,
+                                          std::vector<TabData>, std::string>());
+    ASSERT_TRUE(future.Wait());
+  }
+
+  void ExpectRefinementResult(
+      optimization_guide::OptimizationGuideModelExecutionResult result,
+      optimization_guide::proto::ContextHubRequest* captured = nullptr) {
+    refinement_done_.Clear();
+    await_refinement_ = true;
+    EXPECT_CALL(
+        mock_remote_model_executor_,
+        ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub,
+                     _, _, _))
+        .WillOnce([this, result = std::move(result), captured](
+                      optimization_guide::ModelBasedCapabilityKey,
+                      const google::protobuf::MessageLite& metadata,
+                      const optimization_guide::ModelExecutionOptions&,
+                      optimization_guide::
+                          OptimizationGuideModelExecutionResultCallback
+                              callback) mutable {
+          const optimization_guide::proto::ContextHubRequest* request =
+              AsContextHubRequest(metadata);
+          if (captured && request) {
+            *captured = *request;
+          }
+          base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+              FROM_HERE, base::BindOnce(std::move(callback), std::move(result),
+                                        /*log_entry=*/nullptr)
+                             .Then(refinement_done_.GetCallback()));
+        })
+        .RetiresOnSaturation();
+  }
+
+  void ExpectRefinement(
+      optimization_guide::proto::ContextHubRequest* captured,
+      const optimization_guide::proto::ContextHubResponse& response) {
+    ExpectRefinementResult(WrapContextHubResponse(response), captured);
+  }
+
+  void CapturePendingRefinement(
+      optimization_guide::OptimizationGuideModelExecutionResultCallback*
+          pending) {
+    await_refinement_ = false;
+    EXPECT_CALL(
+        mock_remote_model_executor_,
+        ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub,
+                     _, _, _))
+        .WillOnce(
+            [pending](optimization_guide::ModelBasedCapabilityKey,
+                      const google::protobuf::MessageLite&,
+                      const optimization_guide::ModelExecutionOptions&,
+                      optimization_guide::
+                          OptimizationGuideModelExecutionResultCallback cb) {
+              *pending = std::move(cb);
+            })
+        .RetiresOnSaturation();
+  }
+
+  bool ConfirmAllTabGroups() {
+    base::test::TestFuture<bool, std::vector<base::Uuid>> future;
+    service_.ConfirmAllTabGroups(future.GetCallback());
+    const bool ok = std::get<0>(future.Take());
+    if (await_refinement_) {
+      await_refinement_ = false;
+      EXPECT_TRUE(refinement_done_.Wait());
+    }
+    return ok;
+  }
+
+  // The GROUPING request of the most recent `RunSession()`; not asserted on.
+  optimization_guide::proto::ContextHubRequest grouping_request_;
+  base::test::TestFuture<void> refinement_done_;
+  bool await_refinement_ = false;
+};
+
+TEST_F(ContextHubServiceRefinementTest, CreateGroups_RefinesAndStores) {
+  RunSession("keep work and personal separate");
+  ASSERT_EQ(service_.GetTabGroupChatHistory().size(), 1u);
+
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(
+                            "- Keep work and personal tabs apart."));
+
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(
+      &request, RefinementResponse("  - Keep work and personal tabs apart.\n"));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+
+  EXPECT_EQ(request.request_type(),
+            optimization_guide::proto::
+                CONTEXT_HUB_REQUEST_TYPE_AUTO_TAB_GROUPS_PREFERENCE_REFINEMENT);
+  ASSERT_EQ(request.chat_history_size(), 1);
+  EXPECT_EQ(request.chat_history(0).message_content(),
+            "keep work and personal separate");
+  // The whole effective document goes in: nothing was stored, so the
+  // defaults.
+  EXPECT_NE(request.auto_tab_groups_preferences().find("Group tabs by task"),
+            std::string::npos);
+  EXPECT_EQ(request.entry_items_size(), 0);
+
+  EXPECT_EQ(StoredPreferences(), "- Keep work and personal tabs apart.");
+  // Creating groups ended the session.
+  EXPECT_TRUE(service_.GetTabGroupChatHistory().empty());
+}
+
+TEST_F(ContextHubServiceRefinementTest,
+       CreateGroups_RefinesExistingStoredPreferences) {
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences("- Existing."));
+  RunSession("also keep shopping tabs together");
+
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(
+      &request,
+      RefinementResponse("- Existing.\n- Keep shopping tabs together."));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+
+  EXPECT_EQ(request.auto_tab_groups_preferences(), "- Existing.");
+  EXPECT_EQ(StoredPreferences(), "- Existing.\n- Keep shopping tabs together.");
+}
+
+TEST_F(ContextHubServiceRefinementTest,
+       CreateGroups_PreservesMultiTurnChatHistoryOrder) {
+  RunSession(/*follow_up_prompt=*/"",
+             /*assistant_text_response=*/"Grouped into Work.");
+  RunSession(/*follow_up_prompt=*/"split personal out",
+             /*assistant_text_response=*/"Split Personal from Work.");
+
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(&request,
+                   RefinementResponse("- Keep work and personal apart."));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+
+  ASSERT_EQ(request.chat_history_size(), 3);
+  EXPECT_EQ(request.chat_history(0).role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT);
+  EXPECT_EQ(request.chat_history(0).message_content(), "Grouped into Work.");
+  EXPECT_EQ(request.chat_history(1).role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_USER);
+  EXPECT_EQ(request.chat_history(1).message_content(), "split personal out");
+  EXPECT_EQ(request.chat_history(2).role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT);
+  EXPECT_EQ(request.chat_history(2).message_content(),
+            "Split Personal from Work.");
+}
+
+TEST_F(ContextHubServiceRefinementTest, CreateGroups_NoPromptNoRefinement) {
+  RunSession("");
+  // Only the assistant's turn (if any) is in the history: nothing to learn.
+  EXPECT_CALL(mock_remote_model_executor_, ExecuteModel(_, _, _, _)).Times(0);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_TRUE(service_.GetTabGroupChatHistory().empty());
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, CreateGroups_NoGroupsEndsSession) {
+  service_.AddTabGroupChatHistoryTurn(
+      optimization_guide::proto::ChatHistoryTurn::ROLE_USER, "hello");
+  EXPECT_CALL(mock_remote_model_executor_, ExecuteModel(_, _, _, _)).Times(0);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  // No group was created, so there is no acceptance to learn from, but
+  // "Create groups" still ends the session.
+  EXPECT_TRUE(service_.GetTabGroupChatHistory().empty());
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_UnchangedResultIsIgnored) {
+  RunSession("put these two together");
+  MockServiceObserver observer;
+  base::ScopedObservation<ContextHubService, ContextHubService::Observer>
+      observation(&observer);
+  observation.Observe(&service_);
+  EXPECT_CALL(observer, OnAutoTabGroupsPreferencesChanged(_)).Times(0);
+
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(
+      &request,
+      RefinementResponse(service_.GetEffectiveAutoTabGroupsPreferences()));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_EmptyResultIsDropped) {
+  RunSession("never more than 5 tabs");
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(&request, RefinementResponse("   "));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_OverCapResultIsDropped) {
+  RunSession("never more than 5 tabs");
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(
+      &request,
+      RefinementResponse(std::string(
+          ContextHubService::kMaxAutoTabGroupsPreferencesLength + 1, 'a')));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_StaleResultIsDropped) {
+  RunSession("group by project");
+
+  // Hold the refinement callback so the user can save in the meantime.
+  optimization_guide::OptimizationGuideModelExecutionResultCallback pending;
+  CapturePendingRefinement(&pending);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  ASSERT_TRUE(pending);
+
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences("- My own words."));
+
+  std::move(pending).Run(
+      WrapContextHubResponse(RefinementResponse("- Group by project.")),
+      nullptr);
+
+  EXPECT_EQ(StoredPreferences(), "- My own words.");
+}
+
+TEST_F(ContextHubServiceRefinementTest,
+       Refinement_StaleResultOnResetIsDropped) {
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences("- Initial custom prefs."));
+  RunSession("group by project");
+
+  optimization_guide::OptimizationGuideModelExecutionResultCallback pending;
+  CapturePendingRefinement(&pending);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  ASSERT_TRUE(pending);
+
+  // Resetting to defaults while refinement is in flight also invalidates the
+  // pending result.
+  ASSERT_TRUE(service_.SetAutoTabGroupsPreferences(""));
+
+  std::move(pending).Run(
+      WrapContextHubResponse(RefinementResponse("- Group by project.")),
+      nullptr);
+
+  EXPECT_EQ(StoredPreferences(), "");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_ErrorIsDroppedSilently) {
+  RunSession("group by project");
+  ExpectRefinementResult(
+      optimization_guide::OptimizationGuideModelExecutionResult());
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_EQ(StoredPreferences(), "");
+
+  // No retry, but the in-flight guard was released: the next session refines
+  // again.
+  RunSession("group by project");
+  optimization_guide::proto::ContextHubRequest request;
+  ExpectRefinement(&request, RefinementResponse("- Group by project."));
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  EXPECT_EQ(StoredPreferences(), "- Group by project.");
+}
+
+TEST_F(ContextHubServiceRefinementTest, Refinement_SingleInFlight) {
+  RunSession("group by project");
+  optimization_guide::OptimizationGuideModelExecutionResultCallback pending;
+  CapturePendingRefinement(&pending);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+  ASSERT_TRUE(pending);
+
+  // A second session that ends while the first refinement is pending makes
+  // no second call.
+  RunSession("and keep shopping apart");
+  EXPECT_CALL(mock_remote_model_executor_, ExecuteModel(_, _, _, _)).Times(0);
+  ASSERT_TRUE(ConfirmAllTabGroups());
+}
+
 TEST_F(ContextHubServiceTest, DeleteAllTabGroups) {
   std::vector<TabData> input_tabs = {
       {1, "Tab 1", GURL("https://example1.com")},
       {2, "Tab 2", GURL("https://example2.com")}};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        optimization_guide::proto::ContextHubResponse response;
-        optimization_guide::proto::GroupResponse* group_response =
-            response.mutable_group_response();
-        optimization_guide::proto::TabGroupMinimal* group1 =
-            group_response->add_minimal_tab_groups();
-        group1->set_label("Group 1");
-        group1->add_tab_ids(1);
-        group1->add_tab_ids(2);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  ExpectModelExecution(CreateSingleGroupResponse("Group 1", {1, 2}));
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>
@@ -2831,55 +3437,12 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Success) {
       "previous answer",
       {{.title = entries[0].tab_title, .url = entries[0].url}});
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        EXPECT_EQ(request.request_type(),
-                  optimization_guide::proto::
-                      CONTEXT_HUB_REQUEST_TYPE_MEMORY_BANK_CHAT);
-        EXPECT_EQ(request.user_command(), "summarize these");
-        ASSERT_EQ(request.entry_items_size(), 2);
-
-        EXPECT_TRUE(request.entry_items(0).has_memory_bank_entry());
-        EXPECT_TRUE(request.entry_items(1).has_memory_bank_entry());
-
-        ASSERT_EQ(request.chat_history_size(), 2);
-        EXPECT_EQ(request.chat_history(0).role(),
-                  optimization_guide::proto::ChatHistoryTurn::ROLE_USER);
-        EXPECT_EQ(request.chat_history(0).message_content(), "previous prompt");
-        EXPECT_EQ(request.chat_history(1).role(),
-                  optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT);
-        EXPECT_EQ(request.chat_history(1).message_content(), "previous answer");
-
-        optimization_guide::proto::ContextHubResponse response;
-        auto* chat_response = response.mutable_memory_bank_chat_response();
-        chat_response->set_text_response("This is the LLM summary.");
-        // Include valid, duplicate, negative, and out-of-bounds indices.
-        chat_response->add_cited_entry_indices(1);
-        chat_response->add_cited_entry_indices(0);
-        chat_response->add_cited_entry_indices(1);
-        chat_response->add_cited_entry_indices(-1);
-        chat_response->add_cited_entry_indices(5);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  // Include valid, duplicate, negative, and out-of-bounds indices.
+  ExpectModelExecution(
+      CreateChatResponse("This is the LLM summary.",
+                         /*cited_entry_indices=*/{1, 0, 1, -1, 5}),
+      &captured_request);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -2888,6 +3451,24 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Success) {
                                  /*save_to_history=*/true,
                                  future.GetCallback());
   auto [response_text, citations] = future.Take();
+
+  EXPECT_EQ(
+      captured_request.request_type(),
+      optimization_guide::proto::CONTEXT_HUB_REQUEST_TYPE_MEMORY_BANK_CHAT);
+  EXPECT_EQ(captured_request.user_command(), "summarize these");
+  ASSERT_EQ(captured_request.entry_items_size(), 2);
+  EXPECT_TRUE(captured_request.entry_items(0).has_memory_bank_entry());
+  EXPECT_TRUE(captured_request.entry_items(1).has_memory_bank_entry());
+  ASSERT_EQ(captured_request.chat_history_size(), 2);
+  EXPECT_EQ(captured_request.chat_history(0).role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_USER);
+  EXPECT_EQ(captured_request.chat_history(0).message_content(),
+            "previous prompt");
+  EXPECT_EQ(captured_request.chat_history(1).role(),
+            optimization_guide::proto::ChatHistoryTurn::ROLE_ASSISTANT);
+  EXPECT_EQ(captured_request.chat_history(1).message_content(),
+            "previous answer");
+
   ASSERT_TRUE(response_text.has_value());
   EXPECT_EQ(*response_text, "This is the LLM summary.");
   ASSERT_EQ(citations.size(), 2u);
@@ -2938,36 +3519,11 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_NoSaveToHistory) {
 
   std::vector<int64_t> ids = {entries[0].id};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        EXPECT_EQ(request.chat_history_size(), 0);
-
-        optimization_guide::proto::ContextHubResponse response;
-        auto* chat_response = response.mutable_memory_bank_chat_response();
-        chat_response->set_text_response(
-            "This is the LLM summary without history.");
-        chat_response->add_cited_entry_indices(0);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(
+      CreateChatResponse("This is the LLM summary without history.",
+                         /*cited_entry_indices=*/{0}),
+      &captured_request);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -2976,6 +3532,7 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_NoSaveToHistory) {
                                  /*save_to_history=*/false,
                                  future.GetCallback());
   auto [response_text, citations] = future.Take();
+  EXPECT_EQ(captured_request.chat_history_size(), 0);
   ASSERT_TRUE(response_text.has_value());
   EXPECT_EQ(*response_text, "This is the LLM summary without history.");
   ASSERT_EQ(citations.size(), 1u);
@@ -3038,10 +3595,7 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_WithImageEntry) {
   std::vector<int64_t> ids = {entries[0].id, entries[1].id, entries[2].id,
                               entries[3].id, entries[4].id};
 
-  SkBitmap bitmap;
-  bitmap.allocN32Pixels(2, 2);
-  bitmap.eraseColor(SK_ColorBLUE);
-  gfx::Image test_image = gfx::Image::CreateFrom1xBitmap(bitmap);
+  gfx::Image test_image = CreateTestImage(2, 2, SK_ColorBLUE);
   scoped_refptr<base::RefCountedMemory> expected_png =
       test_image.As1xPNGBytes();
   ASSERT_TRUE(expected_png);
@@ -3068,70 +3622,11 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_WithImageEntry) {
                 .Run(test_image, image_fetcher::RequestMetadata());
           });
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([&expected_png](
-                    optimization_guide::ModelBasedCapabilityKey feature,
-                    const google::protobuf::MessageLite& request_metadata,
-                    const optimization_guide::ModelExecutionOptions& options,
-                    optimization_guide::
-                        OptimizationGuideModelExecutionResultCallback
-                            callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        ASSERT_EQ(request.entry_items_size(), 5);
-
-        size_t fetched_image_entry_count = 0;
-        size_t unfetched_image_entry_count = 0;
-        size_t tab_entry_count = 0;
-        for (const optimization_guide::proto::EntryItem& item :
-             request.entry_items()) {
-          ASSERT_TRUE(item.has_memory_bank_entry());
-          const optimization_guide::proto::MemoryBankEntry& mb_entry =
-              item.memory_bank_entry();
-          if (mb_entry.type() ==
-              optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE) {
-            if (mb_entry.has_image_bytes()) {
-              ++fetched_image_entry_count;
-              EXPECT_EQ(mb_entry.image_bytes(),
-                        base::as_string_view(*expected_png));
-            } else {
-              ++unfetched_image_entry_count;
-            }
-          } else if (mb_entry.type() ==
-                     optimization_guide::proto::MEMORY_BANK_TYPE_TAB) {
-            ++tab_entry_count;
-            EXPECT_FALSE(mb_entry.has_image_bytes());
-          }
-        }
-        EXPECT_EQ(fetched_image_entry_count, 3u);
-        EXPECT_EQ(unfetched_image_entry_count, 1u);
-        EXPECT_EQ(tab_entry_count, 1u);
-
-        optimization_guide::proto::ContextHubResponse response;
-        optimization_guide::proto::MemoryBankChatResponse* chat_response =
-            response.mutable_memory_bank_chat_response();
-        chat_response->set_text_response("The diagram shows blue pixels.");
-        chat_response->add_cited_entry_indices(0);
-        chat_response->add_cited_entry_indices(1);
-        chat_response->add_cited_entry_indices(1);
-        chat_response->add_cited_entry_indices(2);
-        chat_response->add_cited_entry_indices(3);
-        chat_response->add_cited_entry_indices(4);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(
+      CreateChatResponse("The diagram shows blue pixels.",
+                         /*cited_entry_indices=*/{0, 1, 1, 2, 3, 4}),
+      &captured_request);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -3140,6 +3635,33 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_WithImageEntry) {
                                  /*save_to_history=*/true,
                                  future.GetCallback());
   auto [response_text, citations] = future.Take();
+
+  ASSERT_EQ(captured_request.entry_items_size(), 5);
+  size_t fetched_image_entry_count = 0;
+  size_t unfetched_image_entry_count = 0;
+  size_t tab_entry_count = 0;
+  for (const optimization_guide::proto::EntryItem& item :
+       captured_request.entry_items()) {
+    ASSERT_TRUE(item.has_memory_bank_entry());
+    const optimization_guide::proto::MemoryBankEntry& mb_entry =
+        item.memory_bank_entry();
+    if (mb_entry.type() == optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE) {
+      if (mb_entry.has_image_bytes()) {
+        ++fetched_image_entry_count;
+        EXPECT_EQ(mb_entry.image_bytes(), base::as_string_view(*expected_png));
+      } else {
+        ++unfetched_image_entry_count;
+      }
+    } else if (mb_entry.type() ==
+               optimization_guide::proto::MEMORY_BANK_TYPE_TAB) {
+      ++tab_entry_count;
+      EXPECT_FALSE(mb_entry.has_image_bytes());
+    }
+  }
+  EXPECT_EQ(fetched_image_entry_count, 3u);
+  EXPECT_EQ(unfetched_image_entry_count, 1u);
+  EXPECT_EQ(tab_entry_count, 1u);
+
   ASSERT_TRUE(response_text.has_value());
   EXPECT_EQ(*response_text, "The diagram shows blue pixels.");
   ASSERT_EQ(citations.size(), 4u);
@@ -3202,10 +3724,7 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_LimitsAttachedImages) {
 
   std::vector<int64_t> ids = {entries[0].id, entries[1].id, entries[2].id};
 
-  SkBitmap bitmap;
-  bitmap.allocN32Pixels(2, 2);
-  bitmap.eraseColor(SK_ColorBLUE);
-  gfx::Image test_image = gfx::Image::CreateFrom1xBitmap(bitmap);
+  gfx::Image test_image = CreateTestImage(2, 2, SK_ColorBLUE);
 
   // Only the first two image entries are fetched. The strict mock fails the
   // test if the image of the third entry is fetched.
@@ -3221,43 +3740,9 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_LimitsAttachedImages) {
             });
   }
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        // The image entry beyond the limit is still sent, without image bytes.
-        ASSERT_EQ(request.entry_items_size(), 3);
-        EXPECT_TRUE(
-            request.entry_items(0).memory_bank_entry().has_image_bytes());
-        EXPECT_TRUE(
-            request.entry_items(1).memory_bank_entry().has_image_bytes());
-        EXPECT_EQ(request.entry_items(2).memory_bank_entry().type(),
-                  optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE);
-        EXPECT_FALSE(
-            request.entry_items(2).memory_bank_entry().has_image_bytes());
-
-        optimization_guide::proto::ContextHubResponse response;
-        response.mutable_memory_bank_chat_response()->set_text_response(
-            "Compared the images.");
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateChatResponse("Compared the images."),
+                       &captured_request);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -3268,6 +3753,168 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_LimitsAttachedImages) {
   auto [response_text, citations] = future.Take();
   ASSERT_TRUE(response_text.has_value());
   EXPECT_EQ(*response_text, "Compared the images.");
+
+  // The image entry beyond the limit is still sent, without image bytes.
+  ASSERT_EQ(captured_request.entry_items_size(), 3);
+  EXPECT_TRUE(
+      captured_request.entry_items(0).memory_bank_entry().has_image_bytes());
+  EXPECT_TRUE(
+      captured_request.entry_items(1).memory_bank_entry().has_image_bytes());
+  EXPECT_EQ(captured_request.entry_items(2).memory_bank_entry().type(),
+            optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE);
+  EXPECT_FALSE(
+      captured_request.entry_items(2).memory_bank_entry().has_image_bytes());
+}
+
+TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_DownscalesLargeImages) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      features::kMemoryBanks,
+      {{features::kMaxMemoryBankChatImageDimension.name, "4"}});
+
+  auto mock_image_fetcher =
+      std::make_unique<testing::StrictMock<image_fetcher::MockImageFetcher>>();
+  image_fetcher::MockImageFetcher* raw_image_fetcher = mock_image_fetcher.get();
+  service_.SetImageFetcherForTesting(std::move(mock_image_fetcher));
+
+  const GURL large_page_url("https://example.com/large");
+  const GURL tall_page_url("https://example.com/tall");
+  const GURL small_page_url("https://example.com/small");
+  const GURL large_image_url("https://example.com/large.png");
+  const GURL tall_image_url("https://example.com/tall.png");
+  const GURL small_image_url("https://example.com/small.png");
+  for (const auto& [page_url, image_url] :
+       {std::make_pair(large_page_url, large_image_url),
+        std::make_pair(tall_page_url, tall_image_url),
+        std::make_pair(small_page_url, small_image_url)}) {
+    base::test::TestFuture<bool> save_image_future;
+    service_.SaveMemoryBankEntry(
+        MemoryBankEntry(MemoryBankType::kImage, page_url, "Image Page",
+                        /*selected_text=*/std::nullopt, image_url),
+        save_image_future.GetCallback());
+    EXPECT_TRUE(save_image_future.Get());
+  }
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> entries_future;
+  service_.GetAllEntries(entries_future.GetCallback());
+  std::vector<MemoryBankEntry> entries = entries_future.Take();
+  ASSERT_EQ(entries.size(), 3u);
+
+  std::vector<int64_t> ids = {entries[0].id, entries[1].id, entries[2].id};
+
+  gfx::Image large_image = CreateTestImage(8, 2, SK_ColorBLUE);
+  gfx::Image tall_image = CreateTestImage(1, 16, SK_ColorGREEN);
+  gfx::Image small_image = CreateTestImage(2, 2, SK_ColorRED);
+
+  for (const auto& [image_url, image] :
+       {std::make_pair(large_image_url, large_image),
+        std::make_pair(tall_image_url, tall_image),
+        std::make_pair(small_image_url, small_image)}) {
+    EXPECT_CALL(*raw_image_fetcher, FetchImageAndData_(image_url, _, _, _))
+        .WillOnce([image](const GURL&, image_fetcher::ImageDataFetcherCallback*,
+                          image_fetcher::ImageFetcherCallback* image_callback,
+                          image_fetcher::ImageFetcherParams) {
+          std::move(*image_callback)
+              .Run(image, image_fetcher::RequestMetadata());
+        });
+  }
+
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateChatResponse("Described the images."),
+                       &captured_request);
+
+  base::test::TestFuture<std::optional<std::string>,
+                         std::vector<MemoryBankChatCitation>>
+      future;
+  service_.ExecuteMemoryBankChat(ids, "describe the images",
+                                 /*save_to_history=*/false,
+                                 future.GetCallback());
+  auto [response_text, citations] = future.Take();
+  ASSERT_TRUE(response_text.has_value());
+  EXPECT_EQ(*response_text, "Described the images.");
+
+  ASSERT_EQ(captured_request.entry_items_size(), 3);
+  base::flat_map<GURL, std::pair<int, int>> decoded_dimensions_by_url;
+  for (const optimization_guide::proto::EntryItem& item :
+       captured_request.entry_items()) {
+    const optimization_guide::proto::MemoryBankEntry& mb_entry =
+        item.memory_bank_entry();
+    ASSERT_TRUE(mb_entry.has_image_bytes());
+    SkBitmap decoded =
+        gfx::PNGCodec::Decode(base::as_byte_span(mb_entry.image_bytes()));
+    ASSERT_FALSE(decoded.isNull());
+    decoded_dimensions_by_url.emplace(
+        GURL(mb_entry.url()),
+        std::make_pair(decoded.width(), decoded.height()));
+  }
+  EXPECT_THAT(
+      decoded_dimensions_by_url,
+      UnorderedElementsAre(
+          // Downscaled to fit within 4x4, preserving the 4:1 aspect ratio.
+          FieldsAre(large_page_url, FieldsAre(4, 1)),
+          // Portrait image with an extreme aspect ratio is clamped to >= 1px.
+          FieldsAre(tall_page_url, FieldsAre(1, 4)),
+          // Images within the limit keep their original size.
+          FieldsAre(small_page_url, FieldsAre(2, 2))));
+}
+
+TEST_F(ContextHubServiceTest,
+       ExecuteMemoryBankChat_NonPositiveMaxDimensionDisablesDownscaling) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeatureWithParameters(
+      features::kMemoryBanks,
+      {{features::kMaxMemoryBankChatImageDimension.name, "0"}});
+
+  auto mock_image_fetcher =
+      std::make_unique<testing::StrictMock<image_fetcher::MockImageFetcher>>();
+  image_fetcher::MockImageFetcher* raw_image_fetcher = mock_image_fetcher.get();
+  service_.SetImageFetcherForTesting(std::move(mock_image_fetcher));
+
+  const GURL image_url("https://example.com/large.png");
+  base::test::TestFuture<bool> save_image_future;
+  service_.SaveMemoryBankEntry(
+      MemoryBankEntry(MemoryBankType::kImage, GURL("https://example.com/large"),
+                      "Image Page", /*selected_text=*/std::nullopt, image_url),
+      save_image_future.GetCallback());
+  ASSERT_TRUE(save_image_future.Get());
+
+  base::test::TestFuture<std::vector<MemoryBankEntry>> entries_future;
+  service_.GetAllEntries(entries_future.GetCallback());
+  std::vector<MemoryBankEntry> entries = entries_future.Take();
+  ASSERT_EQ(entries.size(), 1u);
+
+  gfx::Image image = CreateTestImage(8, 2, SK_ColorBLUE);
+
+  EXPECT_CALL(*raw_image_fetcher, FetchImageAndData_(image_url, _, _, _))
+      .WillOnce([image](const GURL&, image_fetcher::ImageDataFetcherCallback*,
+                        image_fetcher::ImageFetcherCallback* image_callback,
+                        image_fetcher::ImageFetcherParams) {
+        std::move(*image_callback).Run(image, image_fetcher::RequestMetadata());
+      });
+
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateChatResponse("Described the image."),
+                       &captured_request);
+
+  base::test::TestFuture<std::optional<std::string>,
+                         std::vector<MemoryBankChatCitation>>
+      future;
+  std::vector<int64_t> ids = {entries[0].id};
+  service_.ExecuteMemoryBankChat(ids, "describe the image",
+                                 /*save_to_history=*/false,
+                                 future.GetCallback());
+  auto [response_text, citations] = future.Take();
+  ASSERT_TRUE(response_text.has_value());
+
+  ASSERT_EQ(captured_request.entry_items_size(), 1);
+  const optimization_guide::proto::MemoryBankEntry& mb_entry =
+      captured_request.entry_items(0).memory_bank_entry();
+  ASSERT_TRUE(mb_entry.has_image_bytes());
+  SkBitmap decoded =
+      gfx::PNGCodec::Decode(base::as_byte_span(mb_entry.image_bytes()));
+  ASSERT_FALSE(decoded.isNull());
+  EXPECT_EQ(decoded.width(), 8);
+  EXPECT_EQ(decoded.height(), 2);
 }
 
 TEST_F(ContextHubServiceTest,
@@ -3302,39 +3949,9 @@ TEST_F(ContextHubServiceTest,
             .Run(gfx::Image(), image_fetcher::RequestMetadata());
       });
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        const auto& request =
-            static_cast<const optimization_guide::proto::ContextHubRequest&>(
-                request_metadata);
-        ASSERT_EQ(request.entry_items_size(), 1);
-        const optimization_guide::proto::MemoryBankEntry& mb_entry =
-            request.entry_items(0).memory_bank_entry();
-        EXPECT_EQ(mb_entry.type(),
-                  optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE);
-        EXPECT_FALSE(mb_entry.has_image_bytes());
-
-        optimization_guide::proto::ContextHubResponse response;
-        response.mutable_memory_bank_chat_response()->set_text_response(
-            "Fallback response using metadata.");
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  optimization_guide::proto::ContextHubRequest captured_request;
+  ExpectModelExecution(CreateChatResponse("Fallback response using metadata."),
+                       &captured_request);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -3346,23 +3963,16 @@ TEST_F(ContextHubServiceTest,
   ASSERT_TRUE(response_text.has_value());
   EXPECT_EQ(*response_text, "Fallback response using metadata.");
   EXPECT_TRUE(citations.empty());
+
+  ASSERT_EQ(captured_request.entry_items_size(), 1);
+  const optimization_guide::proto::MemoryBankEntry& mb_entry =
+      captured_request.entry_items(0).memory_bank_entry();
+  EXPECT_EQ(mb_entry.type(), optimization_guide::proto::MEMORY_BANK_TYPE_IMAGE);
+  EXPECT_FALSE(mb_entry.has_image_bytes());
 }
 
 TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Error) {
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [](optimization_guide::ModelBasedCapabilityKey feature,
-             const google::protobuf::MessageLite& request_metadata,
-             const optimization_guide::ModelExecutionOptions& options,
-             optimization_guide::OptimizationGuideModelExecutionResultCallback
-                 callback) {
-            std::move(callback).Run(
-                optimization_guide::OptimizationGuideModelExecutionResult(),
-                nullptr);
-          });
+  ExpectEmptyModelExecutionResult();
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -3375,25 +3985,9 @@ TEST_F(ContextHubServiceTest, ExecuteMemoryBankChat_Error) {
   EXPECT_TRUE(citations.empty());
   EXPECT_TRUE(service_.GetMemoryBankChatHistory().empty());
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce(
-          [](optimization_guide::ModelBasedCapabilityKey feature,
-             const google::protobuf::MessageLite& request_metadata,
-             const optimization_guide::ModelExecutionOptions& options,
-             optimization_guide::OptimizationGuideModelExecutionResultCallback
-                 callback) {
-            auto throttled_error = optimization_guide::
-                OptimizationGuideModelExecutionError::FromModelExecutionError(
-                    optimization_guide::OptimizationGuideModelExecutionError::
-                        ModelExecutionError::kRequestThrottled);
-            std::move(callback).Run(
-                optimization_guide::OptimizationGuideModelExecutionResult(
-                    base::unexpected(throttled_error), nullptr),
-                nullptr);
-          });
+  ExpectModelExecutionError(
+      optimization_guide::OptimizationGuideModelExecutionError::
+          ModelExecutionError::kRequestThrottled);
 
   base::test::TestFuture<std::optional<std::string>,
                          std::vector<MemoryBankChatCitation>>
@@ -3834,34 +4428,7 @@ TEST_F(ContextHubServiceTest, ConfirmAllTabGroups_Success) {
       {1, "Tab 1", GURL("https://example1.com")},
       {2, "Tab 2", GURL("https://example2.com")}};
 
-  EXPECT_CALL(
-      mock_remote_model_executor_,
-      ExecuteModel(optimization_guide::ModelBasedCapabilityKey::kContextHub, _,
-                   _, _))
-      .WillOnce([](optimization_guide::ModelBasedCapabilityKey feature,
-                   const google::protobuf::MessageLite& request_metadata,
-                   const optimization_guide::ModelExecutionOptions& options,
-                   optimization_guide::
-                       OptimizationGuideModelExecutionResultCallback callback) {
-        optimization_guide::proto::ContextHubResponse response;
-        optimization_guide::proto::GroupResponse* group_response =
-            response.mutable_group_response();
-        optimization_guide::proto::TabGroupMinimal* group1 =
-            group_response->add_minimal_tab_groups();
-        group1->set_label("Unconfirmed Group");
-        group1->add_tab_ids(1);
-        group1->add_tab_ids(2);
-
-        optimization_guide::proto::Any any_response;
-        any_response.set_type_url(
-            "type.googleapis.com/optimization_guide.proto.ContextHubResponse");
-        response.SerializeToString(any_response.mutable_value());
-
-        std::move(callback).Run(
-            optimization_guide::OptimizationGuideModelExecutionResult(
-                base::ok(std::move(any_response)), nullptr),
-            nullptr);
-      });
+  ExpectModelExecution(CreateSingleGroupResponse("Unconfirmed Group", {1, 2}));
 
   base::test::TestFuture<std::vector<TabGroupEntry>, std::vector<TabData>,
                          std::string>

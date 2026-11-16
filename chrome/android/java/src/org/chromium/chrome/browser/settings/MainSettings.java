@@ -13,6 +13,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Parcelable;
@@ -21,6 +22,7 @@ import android.view.View;
 
 import androidx.lifecycle.Lifecycle;
 import androidx.preference.Preference;
+import androidx.preference.PreferenceCategory;
 import androidx.recyclerview.widget.RecyclerView.LayoutManager;
 
 import org.chromium.base.CallbackController;
@@ -72,9 +74,10 @@ import org.chromium.chrome.browser.ui.signin.SignOutCoordinator;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.settings.ChromeBasePreference;
 import org.chromium.components.browser_ui.settings.ManagedPreferenceDelegate;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
+import org.chromium.components.browser_ui.widget.containment.SectionIdProvider;
 import org.chromium.components.search_engines.TemplateUrl;
 import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.signin.AccountManagerFacade;
@@ -104,7 +107,8 @@ public class MainSettings extends ChromeBaseSettingsFragment
                 SyncService.SyncStateChangedListener,
                 SigninManager.SignInStateObserver,
                 HomepageManager.HomepageStateListener,
-                SettingsCustomTabLauncher.SettingsCustomTabLauncherClient {
+                SectionIdProvider,
+                CustomTabLauncher.CustomTabLauncherClient {
     private final CallbackController mCallbackController = new CallbackController();
     public static final String PREF_SEARCH_HEADER = "settings_search_header";
     public static final String PREF_SETTINGS_PROMO_CARD = "settings_promo_card";
@@ -127,6 +131,10 @@ public class MainSettings extends ChromeBaseSettingsFragment
     public static final String PREF_DEFAULT_BROWSER = "default_browser";
     public static final String PREF_GLIC = "glic";
     public static final String PREF_ON_STARTUP = "on_startup";
+    static final String PREF_ACCESSIBILITY = "accessibility";
+    static final String PREF_CONTENT_SETTINGS = "content_settings";
+    static final String PREF_LANGUAGES = "languages";
+    static final String PREF_ABOUT_CHROME = "about_chrome";
 
     // Tag for Fragment backstack entry loading the search results into the display fragment.
     // Popping the entry means we are transitioning from result -> search state.
@@ -139,6 +147,9 @@ public class MainSettings extends ChromeBaseSettingsFragment
 
     private final Map<String, Preference> mAllPreferences = new HashMap<>();
 
+    /** Section of each row once headers are removed (SettingsIaReorganization only). */
+    private final Map<String, String> mSectionIdByKey = new HashMap<>();
+
     private ManagedPreferenceDelegate mManagedPreferenceDelegate;
     private MonotonicObservableSupplier<ModalDialogManager> mModalDialogManagerSupplier;
     // TODO(crbug.com/354927682): This should be removed when the snackbar issue is addressed.
@@ -147,7 +158,7 @@ public class MainSettings extends ChromeBaseSettingsFragment
     private boolean mShouldShowSnackbar;
     private final SettableMonotonicObservableSupplier<String> mPageTitle =
             ObservableSuppliers.createMonotonic();
-    private SettingsCustomTabLauncher mSettingsCustomTabLauncher;
+    private CustomTabLauncher mCustomTabLauncher;
 
     private @Nullable MultiColumnSettings mMultiColumnSettings;
     private @Nullable SelectionDecoration mSelectionDecoration;
@@ -370,8 +381,8 @@ public class MainSettings extends ChromeBaseSettingsFragment
     }
 
     @Override
-    public void setCustomTabLauncher(SettingsCustomTabLauncher customTabLauncher) {
-        mSettingsCustomTabLauncher = customTabLauncher;
+    public void setCustomTabLauncher(CustomTabLauncher customTabLauncher) {
+        mCustomTabLauncher = customTabLauncher;
     }
 
     @Initializer
@@ -402,12 +413,9 @@ public class MainSettings extends ChromeBaseSettingsFragment
         }
         AccountManagerFacade accountManagerFacade = AccountManagerFacadeProvider.getInstance();
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)) {
-            SettingsPromoCardPreference settingsPromoCardPreference =
-                    findPreference(PREF_SETTINGS_PROMO_CARD);
-            settingsPromoCardPreference.initialize(
-                    TrackerFactory.getTrackerForProfile(getProfile()));
-        }
+        SettingsPromoCardPreference settingsPromoCardPreference =
+                findPreference(PREF_SETTINGS_PROMO_CARD);
+        settingsPromoCardPreference.initialize(TrackerFactory.getTrackerForProfile(getProfile()));
 
         OneshotSupplierImpl<BottomSheetSigninAndHistorySyncCoordinator> signinCoordinatorSupplier =
                 new OneshotSupplierImpl<>();
@@ -479,16 +487,17 @@ public class MainSettings extends ChromeBaseSettingsFragment
         }
 
         if (!shouldShowSafetyHubPref()) {
-            getPreferenceScreen().removePreference(findPreference(PREF_SAFETY_HUB));
+            removePreferenceIfPresent(PREF_SAFETY_HUB);
         } else {
-            findPreference(PREF_SAFETY_HUB)
-                    .setOnPreferenceClickListener(
-                            preference -> {
-                                SafetyHubMetricUtils.recordExternalInteractions(
-                                        SafetyHubMetricUtils.ExternalInteractions
-                                                .OPEN_FROM_SETTINGS_PAGE);
-                                return false;
-                            });
+            // Set on the cached row, which isn't on the screen when the arm nests it in privacy.
+            Preference safetyHub = mAllPreferences.get(PREF_SAFETY_HUB);
+            assumeNonNull(safetyHub);
+            safetyHub.setOnPreferenceClickListener(
+                    preference -> {
+                        SafetyHubMetricUtils.recordExternalInteractions(
+                                SafetyHubMetricUtils.ExternalInteractions.OPEN_FROM_SETTINGS_PAGE);
+                        return false;
+                    });
         }
         maybeAddSearchHeaderPreference();
     }
@@ -546,6 +555,58 @@ public class MainSettings extends ChromeBaseSettingsFragment
         for (int index = 0; index < preferenceCount; index++) {
             Preference preference = getPreferenceScreen().getPreference(index);
             mAllPreferences.put(preference.getKey(), preference);
+        }
+        if (ChromeFeatureList.isEnabled(ChromeFeatureList.SETTINGS_IA_REORGANIZATION)) {
+            groupPreferences();
+            applyRowIcons();
+        }
+    }
+
+    /**
+     * Drops the category headers, orders the rows by the {@link SettingsIaArmHelper} layout and
+     * records each row's group. Containment then splits cards where the group changes. Rows the arm
+     * nests in privacy and security are removed. The promo card stays on top, outside the groups.
+     * The search header is added after this runs.
+     */
+    private void groupPreferences() {
+        for (Preference preference : mAllPreferences.values()) {
+            String key = preference.getKey();
+            if (key != null && preference instanceof PreferenceCategory) {
+                removePreferenceIfPresent(key);
+            }
+        }
+        for (String key : SettingsIaArmHelper.getRowsNestedInPrivacy()) {
+            removePreferenceIfPresent(key);
+        }
+
+        // Groups start right after the promo card, which stays at the top.
+        Preference promoCard = mAllPreferences.get(PREF_SETTINGS_PROMO_CARD);
+        assert promoCard != null;
+        int order = promoCard.getOrder() + 1;
+        for (SettingsIaArmHelper.Group group : SettingsIaArmHelper.getGroups()) {
+            for (String key : group.keys) {
+                Preference preference = mAllPreferences.get(key);
+                if (preference == null) continue;
+                preference.setOrder(order++);
+                mSectionIdByKey.put(key, group.id);
+            }
+        }
+    }
+
+    @Override
+    public @Nullable String getSectionId(Preference preference) {
+        return mSectionIdByKey.get(preference.getKey());
+    }
+
+    /**
+     * Gives each top-level row a colored, circular icon. Rows without an icon mapping in {@link
+     * SettingsIconFactory} (e.g. sign in, Google services) keep their own.
+     */
+    private void applyRowIcons() {
+        Context context = getContext();
+        for (Map.Entry<String, Preference> entry : mAllPreferences.entrySet()) {
+            Drawable icon = SettingsIconFactory.createForKey(context, entry.getKey());
+            if (icon != null) entry.getValue().setIcon(icon);
         }
     }
 
@@ -627,11 +688,9 @@ public class MainSettings extends ChromeBaseSettingsFragment
             return;
         }
 
-        if (ChromeFeatureList.isEnabled(ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2)) {
-            SettingsPromoCardPreference promoCardPreference =
-                    (SettingsPromoCardPreference) addPreferenceIfAbsent(PREF_SETTINGS_PROMO_CARD);
-            promoCardPreference.updatePreferences();
-        }
+        SettingsPromoCardPreference promoCardPreference =
+                (SettingsPromoCardPreference) addPreferenceIfAbsent(PREF_SETTINGS_PROMO_CARD);
+        promoCardPreference.updatePreferences();
 
         if (shouldShowSignInPref(getProfile())) {
             addPreferenceIfAbsent(PREF_SIGN_IN);
@@ -745,11 +804,10 @@ public class MainSettings extends ChromeBaseSettingsFragment
                         && getArguments().containsKey(PasswordExportLauncher.START_PASSWORDS_EXPORT)
                         && getArguments().getBoolean(PasswordExportLauncher.START_PASSWORDS_EXPORT);
         if (startPasswordsExportFlow) {
-            assert mSettingsCustomTabLauncher != null
-                    : "The CSV download flow dialog requires a non-null"
-                            + " SettingsCustomTabLauncher.";
+            assert mCustomTabLauncher != null
+                    : "The CSV download flow dialog requires a non-null CustomTabLauncher.";
             PasswordManagerHelper.getForProfile(getProfile())
-                    .launchDownloadPasswordsCsvFlow(getContext(), mSettingsCustomTabLauncher);
+                    .launchDownloadPasswordsCsvFlow(getContext(), mCustomTabLauncher);
             getArguments().putBoolean(PasswordExportLauncher.START_PASSWORDS_EXPORT, false);
         }
     }
@@ -758,6 +816,11 @@ public class MainSettings extends ChromeBaseSettingsFragment
      * From search results, open a preference that is not handled via {@code android:fragment}
      * specified in the xml resource, therefore needs manual processing.
      *
+     * @param context The context used to launch the target activity.
+     * @param profile The profile for which settings are shown.
+     * @param key The key of the chosen preference.
+     * @param extras Additional arguments for the chosen preference.
+     * @param modalDialogManager The manager for showing modal dialogs.
      * @param shownInTab Whether settings is being shown in a browser tab.
      * @return Whether the flow should proceed and update the fragment state. For some preferences
      *     that open an external activity, the state should remain as is.
@@ -974,6 +1037,9 @@ public class MainSettings extends ChromeBaseSettingsFragment
                 public void updateDynamicPreferences(
                         Context context, SettingsIndexData indexData, Profile profile) {
                     indexData.removeEntry(getUniqueId(PREF_SETTINGS_PROMO_CARD));
+                    if (ChromeFeatureList.isEnabled(ChromeFeatureList.SETTINGS_IA_REORGANIZATION)) {
+                        SettingsIaArmHelper.updateSearchIndex(context, indexData, this);
+                    }
                     if (!shouldShowAddressBarPref(context)) {
                         indexData.removeEntry(getUniqueId(PREF_ADDRESS_BAR));
                     }

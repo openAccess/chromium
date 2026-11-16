@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -17,6 +18,7 @@
 #include "build/build_config.h"
 #include "crypto/crypto_buildflags.h"
 #include "net/base/net_export.h"
+#include "net/base/request_priority.h"
 #include "net/disk_cache/buildflags.h"
 #include "net/net_buildflags.h"
 
@@ -80,6 +82,11 @@ NET_EXPORT extern const base::FeatureParam<bool>
 // addresses, rather than failing the entire DnsTask and falling back to the
 // system resolver.
 NET_EXPORT BASE_DECLARE_FEATURE(kDnsTaskAllowPartialAddressResults);
+
+// If enabled, DoH (`AttemptMode::kHttp`) transactions query multi-label
+// hostnames (`ndots > 0`) directly as-is without applying `DnsConfig::search`
+// suffixes or `DnsConfig::ndots > 1` ordering.
+NET_EXPORT BASE_DECLARE_FEATURE(kDnsHttpsDontAppendToMultiLabelName);
 
 // Enables querying HTTPS DNS records that will affect results from HostResolver
 // and may be used to affect connection behavior. Whether or not those results
@@ -165,6 +172,20 @@ NET_EXPORT BASE_DECLARE_FEATURE(kEnableIntermediateDnsResults);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kEnableIntermediateDnsResultsSortTransactionsIndividually);
+
+// When the last request detaches from a HostResolverManager::Job while its
+// DnsTask has already received some results and is only waiting for
+// already-started transactions, keeps the Job running (up to
+// `kKeepHostResolverJobAliveForCacheTimeout`) so that the final results are
+// stored in the HostCache. Also enabled by
+// `kAsyncDnsQuicJobKeepHostResolverJobAliveForCache`, so disabling this feature
+// alone doesn't disable the keep-alive while `kAsyncDnsQuicJob` is enabled.
+// `kKeepHostResolverJobAliveForCacheTimeout` returns its default while this
+// feature is disabled, including when only `kAsyncDnsQuicJob` enables the
+// keep-alive.
+NET_EXPORT BASE_DECLARE_FEATURE(kKeepHostResolverJobAliveForCache);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                                      kKeepHostResolverJobAliveForCacheTimeout);
 
 // Feature to control the Happy Eyeballs slow timer (IPv6 fallback time).
 NET_EXPORT BASE_DECLARE_FEATURE(kAdjustIPv6FallbackTime);
@@ -322,6 +343,29 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kFallbackInLowPowerMode);
 // Enables Connection Keep-Alive feature for Http2
 NET_EXPORT BASE_DECLARE_FEATURE(kConnectionKeepAliveForHttp2);
 
+// Configures the client-side initial RTT for QUIC preconnect sessions when no
+// cached or 2G/3G RTT estimate is available, reducing the initial handshake
+// Probe Timeout (PTO) delay (`3 * initial_rtt`).
+NET_EXPORT BASE_DECLARE_FEATURE(kQuicPreconnectInitialRtt);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(base::TimeDelta,
+                                      kQuicPreconnectInitialRttParam);
+// Returns `kQuicPreconnectInitialRttParam` when `kQuicPreconnectInitialRtt` is
+// enabled and the configured duration is positive and finite; otherwise returns
+// `std::nullopt`.
+NET_EXPORT std::optional<base::TimeDelta> GetQuicPreconnectInitialRtt();
+
+// Controls initial priority overrides for preconnect requests and priority
+// promotion when a higher-priority request attaches to an active QUIC job.
+NET_EXPORT BASE_DECLARE_FEATURE(kPreconnectPriorityBoost);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(RequestPriority,
+                                      kPreconnectInitialPriority);
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool,
+                                      kPromoteActiveQuicJobPriorityOnAttach);
+// Returns `kPreconnectInitialPriority` when `kPreconnectPriorityBoost` is
+// enabled and the configured priority is higher than `RequestPriority::IDLE`;
+// otherwise returns `std::nullopt`.
+NET_EXPORT std::optional<RequestPriority> GetPreconnectInitialPriority();
+
 // When enabled, the time threshold for Lax-allow-unsafe cookies will be lowered
 // from 2 minutes to 10 seconds. This time threshold refers to the age cutoff
 // for which cookies that default into SameSite=Lax, which are newer than the
@@ -446,6 +490,15 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kAsyncDnsQuicJobFastFail);
 NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
     bool,
     kAsyncDnsQuicJobSortTransactionsIndividually);
+// Whether to keep HostResolverManager::Jobs alive to cache DNS results, as
+// `kKeepHostResolverJobAliveForCache` does, when `kAsyncDnsQuicJob` is enabled.
+// AsyncDnsJob often cancels its request while DNS responses are in flight.
+// This is a param rather than a requirement to also enable
+// `kKeepHostResolverJobAliveForCache` so that other studies can control that
+// feature independently.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(
+    bool,
+    kAsyncDnsQuicJobKeepHostResolverJobAliveForCache);
 
 // Makes the QUIC slow timer delay configurable.
 // How long to wait before starting a second connection attempt
@@ -472,6 +525,10 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kMaxReportBodySizeKB);
 // false. This is needed as a workaround to set this value to true on Android
 // but not on WebView (until crbug.com/1430082 has been fixed).
 NET_EXPORT BASE_DECLARE_FEATURE(kMigrateSessionsOnNetworkChangeV2);
+
+// Enables falling back to the initial DNS-resolved IPv4 address when a QUIC
+// session connected over IPv6 attempts to migrate to an IPv4-only network.
+NET_EXPORT BASE_DECLARE_FEATURE(kEnableQuicV6ToV4Migration);
 
 // Enables binding of cookies to the port that originally set them by default.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnablePortBoundCookies);
@@ -624,6 +681,10 @@ NET_EXPORT BASE_DECLARE_FEATURE(kNoVarySearchIgnoreUnrecognizedKeys);
 // Enables enforcement of One-RFC6962 policy for Certificate Transparency. When
 // disabled, Chrome does not distinguish between SCTs based on log type.
 NET_EXPORT BASE_DECLARE_FEATURE(kEnforceOneRfc6962CtPolicy);
+
+// When enabled, CRLSet stores blocked serials in a compact representation
+// instead of std::vector<std::vector<uint8_t>> per issuer.
+NET_EXPORT BASE_DECLARE_FEATURE(kCRLSetCompactSerials);
 
 // Finch experiment to select a disk cache backend.
 enum class DiskCacheBackend {
@@ -809,11 +870,9 @@ NET_EXPORT BASE_DECLARE_FEATURE(kTLSTrustAnchorIDs);
 // Controls whether TLS Trust Anchor IDs that are not for MTCs are sent.
 NET_EXPORT BASE_DECLARE_FEATURE(kNonMtcTrustAnchorIDs);
 
-#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 // Enables support for Merkle Tree Certificates. `kTLSTrustAnchorIDs` must also
 // be enabled for this to be useful.
 NET_EXPORT BASE_DECLARE_FEATURE(kVerifyMTCs);
-#endif
 
 // Indicates if the client is participating in TCP socket pool limit
 // randomization. The params below define the bounds for the probability.
@@ -907,9 +966,6 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(size_t, kQuicMaxPacketSize);
 
 // If enabled, QuicChromiumPacketReader will use ReadMultiple API.
 NET_EXPORT BASE_DECLARE_FEATURE(kQuicUseReadMultiple);
-
-// If enabled, UDPSocketPosix will enable UDP Generic Receive Offload (UDP_GRO).
-NET_EXPORT BASE_DECLARE_FEATURE(kEnableUdpGro);
 
 // When enabled, races QUIC connection attempts for the specified hostnames
 // even when there is no available ALPN information.
@@ -1124,7 +1180,52 @@ NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kCookieProcessBoundEncryptHttpOnly);
 // Enables the Rust implementation of the HTTP chunked decoder, called via FFI.
 NET_EXPORT BASE_DECLARE_FEATURE(kHttpChunkedDecoderInRust);
 
+// Enables checking all resolved IP endpoints (and preserving DNS aliases) for
+// post-handshake cross-origin IP pooling in QUIC and HTTP/2 when concurrent
+// connection attempts complete.
+NET_EXPORT BASE_DECLARE_FEATURE(kPostHandshakeIpPoolingAllEndpoints);
+
+// Enables proactively pooling and cancelling in-flight HTTP/2 and QUIC
+// connection attempts when a concurrent session activates on one of their
+// resolved IP endpoints.
+NET_EXPORT BASE_DECLARE_FEATURE(kProactiveIpPoolingForInFlightJobs);
+
+// When enabled, UDP sockets skip calling connect() at the OS level for
+// performance reasons (especially on Android). Setting this feature breaks any
+// IPv4 or IPv6 connectivity checks that rely on the return value or errno of
+// connect(), so the functionality is only enabled by an explicit opt-in by the
+// socket creator.
+NET_EXPORT BASE_DECLARE_FEATURE(kPosixUdpEmulatedConnect);
+
+// Use connect emulation for DNS.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kPosixUdpEmulatedConnectForDns);
+
+// Use connect emulation for QUIC.
+NET_EXPORT BASE_DECLARE_FEATURE_PARAM(bool, kPosixUdpEmulatedConnectForQuic);
+
+// When enabled, clears all broken and recently-broken alternative services
+// when the default network changes, even if
+// `retry_on_alternate_network_before_handshake` is not enabled.
+NET_EXPORT BASE_DECLARE_FEATURE(
+    kClearBrokenAlternativeServicesOnDefaultNetworkChange);
+
+// Decode brotli with the Rust `brotli-decompressor` crate instead of the C
+// library in //third_party/brotli. This covers the `br` content encoding (also
+// with a shared dictionary) and TLS certificate compression.
+NET_EXPORT BASE_DECLARE_FEATURE(kRustBrotliInNet);
+
+// If enabled, proxy server ports are checked against
+// `IsPortAllowedForScheme()`.
+// TODO(crbug.com/574902296): Remove the `base::Feature` once it has been
+// verified safe.
+NET_EXPORT BASE_DECLARE_FEATURE(kRestrictProxyPorts);
+
+// If enabled, statusless (`HTTP/0.9` / `ICY`) responses are rejected for
+// non-tunneled HTTP proxy requests.
+// TODO(crbug.com/574902296): Remove the `base::Feature` once it has been
+// verified safe.
+NET_EXPORT BASE_DECLARE_FEATURE(kRejectHttp09FromHttpProxy);
+
 }  // namespace net::features
 
 #endif  // NET_BASE_FEATURES_H_
-

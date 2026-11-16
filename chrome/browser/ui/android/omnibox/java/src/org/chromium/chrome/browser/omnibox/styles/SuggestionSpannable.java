@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.omnibox.styles;
 
+import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.TextUtils;
@@ -14,8 +15,18 @@ import android.text.style.StyleSpan;
 import android.text.style.TextAppearanceSpan;
 import android.text.style.UpdateAppearance;
 
+import androidx.annotation.ColorInt;
+
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
+import org.chromium.components.omnibox.AutocompleteMatch.MatchClassification;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString;
+import org.chromium.components.omnibox.FormattedStringProto.FormattedString.FormattedStringFragment;
+import org.chromium.components.omnibox.FormattedStringProtoIntDef.ColorType;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * SpannableString that supplies .equals method for content comparison. This code assumes the use of
@@ -28,6 +39,103 @@ import org.chromium.build.annotations.Nullable;
 public class SuggestionSpannable extends SpannableString {
     public SuggestionSpannable(CharSequence text) {
         super(text);
+    }
+
+    /**
+     * Applies text color to this spannable string, using {@code dimColor} for regions with {@link
+     * MatchClassificationStyle#DIM} and {@code defaultColor} for all other regions.
+     *
+     * @param classifications Classifications describing how to format text.
+     * @param defaultColor Default text color for non-dimmed regions.
+     * @param dimColor Dimmed text color for regions with {@link MatchClassificationStyle#DIM}.
+     */
+    public void applyTextColor(
+            @Nullable List<MatchClassification> classifications,
+            @ColorInt int defaultColor,
+            @ColorInt int dimColor) {
+        if (TextUtils.isEmpty(this)) return;
+
+        // Combine adjacent classifications that resolve to the same color into a single
+        // ColorSpan. Classifications are ordered by offset, and consecutive entries may
+        // differ only in non-color styles (e.g., MATCH).
+        int length = length();
+        int currentStart = 0;
+        @ColorInt int currentColor = defaultColor;
+
+        if (classifications != null) {
+            for (int i = 0; i < classifications.size(); i++) {
+                MatchClassification classification = classifications.get(i);
+                int offset = classification.offset;
+                if (offset >= length) break;
+
+                @ColorInt
+                int color =
+                        ((classification.style & MatchClassificationStyle.DIM)
+                                        == MatchClassificationStyle.DIM)
+                                ? dimColor
+                                : defaultColor;
+
+                if (color != currentColor) {
+                    if (offset > currentStart) {
+                        setSpan(
+                                new ForegroundColorSpan(currentColor),
+                                currentStart,
+                                offset,
+                                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+                        currentStart = offset;
+                    }
+                    currentColor = color;
+                }
+            }
+        }
+
+        // Apply the span for the final remaining segment up to the end of the text.
+        setSpan(
+                new ForegroundColorSpan(currentColor),
+                currentStart,
+                length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+    }
+
+    /**
+     * Applies the colors of the fragments in {@code formattedString} to this text. Does nothing if
+     * the two texts differ, since dedupe and other changes to the match don't update the
+     * SuggestTemplateInfo. Fragments without a color keep the color this text already has.
+     *
+     * @param formattedString The server's FormattedString for this text.
+     * @param resourceProvider Provides the text colors for the server's color types.
+     */
+    public void applyFormattedStringColors(
+            FormattedString formattedString, OmniboxResourceProvider resourceProvider) {
+        int fragmentsCount = formattedString.getFragmentsCount();
+        if (fragmentsCount == 0 || !TextUtils.equals(this, formattedString.getText())) return;
+        // Fragments without a start index can't be placed in the text.
+        List<FormattedStringFragment> fragments = new ArrayList<>(fragmentsCount);
+        for (FormattedStringFragment fragment : formattedString.getFragmentsList()) {
+            if (fragment.hasStartIndex()) fragments.add(fragment);
+        }
+        for (int i = 0; i < fragments.size(); i++) {
+            FormattedStringFragment fragment = fragments.get(i);
+            // Each fragment runs until the next one starts or the text ends, whichever comes first.
+            int start = fragment.getStartIndex();
+            int nextStart =
+                    i + 1 < fragments.size() ? fragments.get(i + 1).getStartIndex() : length();
+            int end = Math.min(nextStart, length());
+            if (start < 0 || start >= end) {
+                continue;
+            }
+            if (fragment.hasColor()) {
+                @ColorType int colorType = fragment.getColor().getNumber();
+                if (colorType != ColorType.COLOR_UNKNOWN) {
+                    setSpan(
+                            new ForegroundColorSpan(
+                                    resourceProvider.colorTypeToSuggestionTextColor(colorType)),
+                            start,
+                            end,
+                            Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                }
+            }
+        }
     }
 
     /**

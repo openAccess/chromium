@@ -92,6 +92,11 @@ class BrowserAutofillManagerTestApi : public AutofillManagerTestApi {
 
   FormFiller& form_filler() { return *manager_->form_filler_; }
 
+  // See `FormFillerTestApi::RunPendingPostFillTasks()`.
+  void RunPendingPostFillTasks() {
+    test_api(form_filler()).RunPendingPostFillTasks();
+  }
+
   void set_form_filler(std::unique_ptr<FormFiller> form_filler) {
     manager_->form_filler_ = std::move(form_filler);
   }
@@ -104,6 +109,8 @@ class BrowserAutofillManagerTestApi : public AutofillManagerTestApi {
         form, CHECK_DEREF(form_structure), field, CHECK_DEREF(autofill_field),
         mojom::AutofillSuggestionTriggerSource::kFormControlElementClicked);
   }
+
+  OtpManager* otp_manager() { return manager_->otp_manager_.get(); }
 
   OtpManager* set_otp_manager(std::unique_ptr<OtpManager> otp_manager) {
     manager_->otp_manager_ = std::move(otp_manager);

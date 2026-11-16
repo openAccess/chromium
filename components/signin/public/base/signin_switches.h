@@ -267,6 +267,13 @@ BASE_DECLARE_FEATURE(kCrossDeviceSigninFromDesktopFollowup);
 // the What's New page.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 extern const base::FeatureParam<bool> kCrossDeviceSigninFromDesktopWhatsNew;
+
+// Kill switch for recording the cross-device sign-in promo eligibility
+// (`Signin.CrossDeviceSigninPromo.ShouldShowResult.*`) even when the entry
+// point is disabled by its feature flags. Enabled by default; disabling it
+// removes that logging and leaves the promo behavior unchanged.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kCrossDeviceSigninPromoEligibilityLogging);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -303,14 +310,6 @@ BASE_DECLARE_FEATURE(kDiceLinkedAccounts);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kDisableFirstRunAnimationsForTesting);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
-#if BUILDFLAG(IS_IOS)
-// Feature flag controlling whether Chrome should avoid adding SID/LSID cookies
-// in gaia auth fetcher requests.
-// Only used on iOS 27+.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kDontIncludeSIDUnsecureCookiesInGaiaAuthFetcher);
-#endif
 
 // Enables fetching and storing preview data for signed-in accounts.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
@@ -421,8 +420,8 @@ BASE_DECLARE_FEATURE_PARAM(
 // `kEnableAccountPreviewData` is not enabled.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kEnableAccountPreviewSwitchingAccount);
-// When true, skips cooldowns and throttling limits for the account switching
-// promo. Used for manual and automated testing.
+// When true, skips cooldowns and per-account-pair throttling limits for the
+// account switching promo. Used for manual testing only.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(bool,
                            kEnableAccountPreviewSwitchingAccountSkipCooldown);
@@ -485,8 +484,6 @@ enum class RefreshTokenBindingUpgradeType {
   kDarkLaunch,
   kLiveLaunch,
 };
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE_PARAM(bool, kOamlCookieUpgradeEnabled);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE_PARAM(RefreshTokenBindingUpgradeType,
                            kRefreshTokenBindingUpgradeType);
@@ -684,16 +681,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kFirstRunDesktopRevampSurvey);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-// This feature controls whether Gemini step can be shown in the feature
-// showcase. This feature is no-op if IsFirstRunDesktopRevamp() equals false.
-//
-// Note: This flag can be bypassed via the command line switch
-// --force-fre-feature-showcase-steps (which should be used only for testing).
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kFirstRunFeatureShowcaseGeminiStep);
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
 #if BUILDFLAG(IS_ANDROID)
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kForceHistoryOptInScreen);
@@ -841,13 +828,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kProfileCreationDeclineSigninCTAExperiment);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_ANDROID)
-// Shows the Signin Button Profile Disc in the toolbar on all pages, rather than
-// solely the NTP. See crbug.com/495820974.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kProfileDiscOnAllPages);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kProfilesReordering);
 
@@ -862,6 +842,13 @@ BASE_DECLARE_FEATURE(kReauthSkipIdentifierPage);
 // pending-state re-authentication (`ptc=1`) and split fallback metrics.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kReauthSkipIdentifierPageFollowup);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+// Kill switch for recording and migrating the primary account last sign-in
+// timestamp in `SigninPrefs`.
+COMPONENT_EXPORT(SIGNIN_SWITCHES)
+BASE_DECLARE_FEATURE(kRecordChromeLastSigninTime);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -980,11 +967,6 @@ COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kSupportErrorsInProfilePicker);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_ANDROID)
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kSupportForcedSigninPolicy);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 // Enables signin interception for web sign-in in popup windows.
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
@@ -1014,13 +996,6 @@ BASE_DECLARE_FEATURE(kSyncEnableBookmarksInTransportMode);
 COMPONENT_EXPORT(SIGNIN_SWITCHES)
 BASE_DECLARE_FEATURE(kUndoChromeOsUseConsentLevelSignin);
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-// Unifies the logic to wait for cookies after sign-in for Desktop Android
-// Extensions.
-COMPONENT_EXPORT(SIGNIN_SWITCHES)
-BASE_DECLARE_FEATURE(kUnifyWaitForCookies);
-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
 
 #if BUILDFLAG(IS_IOS)
 // Feature flag to use the AccountInfoFetcherIos.

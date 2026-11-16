@@ -19,6 +19,7 @@ class SelfKeepAliveCreationKey final {
 
   template <typename V8SessionObjectType>
   friend class AIContextObserver;
+  friend class AudioContext;
   friend class BlobFileReaderClient;
   friend class BodyStreamBuffer;
   friend class CachedResponseFileReaderLoaderClient;
@@ -32,7 +33,6 @@ class SelfKeepAliveCreationKey final {
   friend class MojoWatcher;
   friend class PausableScriptExecutor;
   friend class Responder;
-  friend class RTCDataChannel;
   friend class SetMediaKeysHandler;
   friend class ThreadedMessagingProxyBase;
 };

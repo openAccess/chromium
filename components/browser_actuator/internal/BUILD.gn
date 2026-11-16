@@ -18,18 +18,44 @@ source_set("internal") {
   deps = [ "//base" ]
 }
 
+source_set("transport_handler") {
+  visibility = [
+    ":*",
+    "//chrome/browser/browser_actuator:*",
+    "//components/browser_actuator/*",
+  ]
+
+  sources = [
+    "task_ingress_transport_handler.cc",
+    "task_ingress_transport_handler.h",
+    "task_ingress_transport_handler_factory.cc",
+    "task_ingress_transport_handler_factory.h",
+  ]
+
+  deps = [
+    "//base",
+    "//components/browser_actuator/internal/proto:task_ingress_proto",
+    "//components/stream_transport/public",
+  ]
+}
+
 source_set("unit_tests") {
   testonly = true
 
-  sources = [ "browser_actuator_service_impl_unittest.cc" ]
+  sources = [
+    "browser_actuator_service_impl_unittest.cc",
+    "task_ingress_transport_handler_unittest.cc",
+  ]
 
   deps = [
     ":internal",
+    ":transport_handler",
     "//base",
-    "//components/browser_actuator/internal/transport:unit_tests",
-    "//components/browser_actuator/internal/transport/oauth:unit_tests",
-    "//components/browser_actuator/internal/transport/proto_stream_client:unit_tests",
-    "//components/browser_actuator/internal/transport/upstream_message_client:unit_tests",
+    "//base/test:test_support",
+    "//components/browser_actuator/internal/proto:task_ingress_proto",
+    "//components/stream_transport/public",
+    "//components/stream_transport/public:payload_type_mapping",
+    "//testing/gmock",
     "//testing/gtest",
   ]
 

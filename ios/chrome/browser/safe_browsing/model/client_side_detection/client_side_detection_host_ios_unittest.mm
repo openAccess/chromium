@@ -19,11 +19,12 @@
 #import "base/test/scoped_feature_list.h"
 #import "base/test/simple_test_tick_clock.h"
 #import "base/test/test_future.h"
+#import "base/time/time.h"
 #import "base/values.h"
 #import "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#import "components/safe_browsing/core/browser/client_side_detection/intelligent_scan_delegate/intelligent_scan_delegate.h"
 #import "components/safe_browsing/core/browser/db/test_database_manager.h"
-#import "components/safe_browsing/core/browser/intelligent_scan_delegate.h"
 #import "components/safe_browsing/core/browser/verdict_cache_manager.h"
 #import "components/safe_browsing/core/common/client_side_detection_enums.h"
 #import "components/safe_browsing/core/common/features.h"
@@ -407,6 +408,11 @@ class ClientSideDetectionHostIOSTest : public PlatformTest {
   const std::optional<std::string>& intelligent_scan_tab_screenshot(
       ClientSideDetectionHostIOS* host) {
     return host->intelligent_scan_tab_screenshot_;
+  }
+
+  const std::optional<MultimodalScreenshotCaptureStatus>&
+  intelligent_scan_screenshot_capture_status(ClientSideDetectionHostIOS* host) {
+    return host->intelligent_scan_screenshot_capture_status_;
   }
 
   std::optional<bool> did_match_high_confidence_allowlist(
@@ -3701,10 +3707,74 @@ TEST_F(ClientSideDetectionHostIOSTest,
   EXPECT_TRUE(classification_image(host.get()).IsEmpty());
 }
 
-// Tests that MaybeStartImageEmbedding skips image embedding when the
-// classification snapshot image is empty.
+// Tests that MaybeStartImageEmbedding requests a new snapshot when the
+// classification snapshot image is empty (e.g. classification was skipped for
+// a non-page-load trigger), and that a failed snapshot is reported as kFailed
+// while the ping still proceeds.
 TEST_F(ClientSideDetectionHostIOSTest,
-       MaybeStartImageEmbeddingSkipsWhenClassificationImageIsEmpty) {
+       MaybeStartImageEmbeddingRecapturesWhenClassificationImageIsEmpty) {
+  safe_browsing::SetSafeBrowsingState(
+      profile_->GetPrefs(),
+      safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
+  // Flipping the pref refreshes (here: clears) the service's scorer.
+  mock_service_.SetScorerForTesting(std::make_unique<safe_browsing::Scorer>());
+
+  EXPECT_CALL(mock_service_, HasImageEmbeddingModel())
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(mock_service_, IsModelMetadataImageEmbeddingVersionMatching())
+      .WillRepeatedly(testing::Return(true));
+
+  // Create SnapshotTabHelper but don't set a delegate or view, so the snapshot
+  // fails.
+  SnapshotTabHelper::CreateForWebState(&web_state_);
+
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost();
+  set_last_request_type(host.get(),
+                        safe_browsing::ClientSideDetectionType::TRIGGER_MODELS);
+  // classification_image_ is empty by default.
+
+  auto mock_embedder = std::make_unique<MockPhishingImageEmbedder>();
+  EXPECT_CALL(*mock_embedder,
+              BeginImageEmbedding(testing::_, testing::_, testing::_))
+      .Times(0);
+  set_image_embedder(host.get(), std::move(mock_embedder));
+
+  auto verdict = std::make_unique<safe_browsing::ClientPhishingRequest>();
+  verdict->set_url(kExampleUrl);
+  verdict->set_client_side_detection_type(
+      safe_browsing::ClientSideDetectionType::TRIGGER_MODELS);
+
+  EXPECT_CALL(mock_service_, SendClientReportPhishingRequest(
+                                 testing::_, testing::_, testing::_))
+      .Times(1);
+
+  MaybeStartImageEmbedding(
+      host.get(), std::move(verdict),
+      /*did_match_high_confidence_allowlist=*/false,
+      /*is_invalid_ip=*/false,
+      safe_browsing::PhishingDetectorResult::CLASSIFICATION_SKIPPED);
+  // The snapshot failure is reported asynchronously.
+  task_environment_.RunUntilIdle();
+
+  ExpectClientSideDetectionEvent(
+      ClientSideDetectionEvent::kImageEmbeddingBegin,
+      safe_browsing::ClientSideDetectionType::TRIGGER_MODELS);
+  ExpectClientSideDetectionEvent(
+      ClientSideDetectionEvent::kImageEmbeddingComplete,
+      safe_browsing::ClientSideDetectionType::TRIGGER_MODELS);
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.PhishingImageEmbeddingResult",
+      safe_browsing::ClientSideDetectionHostBase::ImageEmbeddingResult::kFailed,
+      1);
+  EXPECT_TRUE(classification_image(host.get()).IsEmpty());
+}
+
+// Tests that MaybeStartImageEmbedding does not request a snapshot when the
+// classification snapshot image is empty but no Scorer is available to run the
+// embedder; the ping still proceeds.
+TEST_F(ClientSideDetectionHostIOSTest,
+       MaybeStartImageEmbeddingWithoutScorerSkipsSnapshot) {
+  mock_service_.SetScorerForTesting(/*scorer=*/nullptr);
   safe_browsing::SetSafeBrowsingState(
       profile_->GetPrefs(),
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
@@ -3738,8 +3808,14 @@ TEST_F(ClientSideDetectionHostIOSTest,
       host.get(), std::move(verdict),
       /*did_match_high_confidence_allowlist=*/false,
       /*is_invalid_ip=*/false,
-      safe_browsing::PhishingDetectorResult::CLASSIFICATION_SUCCESS);
+      safe_browsing::PhishingDetectorResult::CLASSIFICATION_SKIPPED);
+  task_environment_.RunUntilIdle();
 
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.PhishingImageEmbeddingResult",
+      safe_browsing::ClientSideDetectionHostBase::ImageEmbeddingResult::
+          kImageEmbedderNotReady,
+      1);
   EXPECT_TRUE(classification_image(host.get()).IsEmpty());
 }
 
@@ -3940,6 +4016,10 @@ TEST_F(ClientSideDetectionHostIOSTest,
 // `web_state` is null.
 TEST_F(ClientSideDetectionHostIOSTest,
        GetInnerTextNullWebStateReturnsEmptyString) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kClientSideDetectionServerModelMultimodal);
+
   std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost();
   host->WebStateDestroyed(&web_state_);
 
@@ -3947,6 +4027,12 @@ TEST_F(ClientSideDetectionHostIOSTest,
   host->GetInnerText(future.GetCallback());
 
   EXPECT_EQ(future.Get(), "");
+  EXPECT_FALSE(
+      intelligent_scan_screenshot_capture_status(host.get()).has_value());
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot", 0);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot", 0);
 }
 
 // Tests that `CancelPendingRequests` cancels pending inner text extraction so
@@ -3967,6 +4053,10 @@ TEST_F(ClientSideDetectionHostIOSTest,
                         kTestInnerText);
 
   EXPECT_FALSE(future.IsReady());
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot", 0);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot", 0);
 }
 
 // Test that swapping the `Scorer` on the service drops the raw `Scorer`
@@ -4264,10 +4354,16 @@ TEST_F(ClientSideDetectionHostIOSTest,
   EXPECT_FALSE(
       fake_page_context_wrapper_factory_.last_wrapper().shouldGetSnapshot);
 
+  task_environment_.FastForwardBy(base::Milliseconds(35));
   CompleteWithInnerText(fake_page_context_wrapper_factory_.last_wrapper(),
                         kTestInnerText);
   EXPECT_EQ(future.Get(), kTestInnerText);
   EXPECT_FALSE(intelligent_scan_tab_screenshot(host.get()).has_value());
+  histogram_tester_.ExpectUniqueTimeSample(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot",
+      base::Milliseconds(35), 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot", 0);
 }
 
 // Tests that an intelligent scan captures and passes the decoded PNG screenshot
@@ -4325,6 +4421,7 @@ TEST_F(ClientSideDetectionHostIOSTest,
   EXPECT_TRUE(
       fake_page_context_wrapper_factory_.last_wrapper().shouldGetSnapshot);
 
+  task_environment_.FastForwardBy(base::Milliseconds(120));
   std::string encoded_screenshot = base::Base64Encode(kTestScreenshotPngBytes);
   CompleteWithInnerTextAndTabScreenshot(
       fake_page_context_wrapper_factory_.last_wrapper(), std::string(100, 'a'),
@@ -4334,6 +4431,19 @@ TEST_F(ClientSideDetectionHostIOSTest,
       host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
   EXPECT_EQ(*host->last_intelligent_scan_tab_screenshot_for_testing(),
             kTestScreenshotPngBytes);
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kSuccess, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize",
+      std::string(kTestScreenshotPngBytes).size(), 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureLatency", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot",
+      base::Milliseconds(120), 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot", 0);
 }
 
 // Tests that an intelligent scan does not request or pass a screenshot when
@@ -4391,6 +4501,7 @@ TEST_F(ClientSideDetectionHostIOSTest,
   EXPECT_FALSE(
       fake_page_context_wrapper_factory_.last_wrapper().shouldGetSnapshot);
 
+  task_environment_.FastForwardBy(base::Milliseconds(45));
   std::string encoded_screenshot = base::Base64Encode(kTestScreenshotPngBytes);
   CompleteWithInnerTextAndTabScreenshot(
       fake_page_context_wrapper_factory_.last_wrapper(), std::string(100, 'a'),
@@ -4398,6 +4509,15 @@ TEST_F(ClientSideDetectionHostIOSTest,
 
   EXPECT_FALSE(
       host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus", 0);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot",
+      base::Milliseconds(45), 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot", 0);
 }
 
 // Tests that when `kClientSideDetectionServerModelMultimodal` is enabled, an
@@ -4497,6 +4617,115 @@ TEST_F(ClientSideDetectionHostIOSTest,
 
   EXPECT_FALSE(
       host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kBase64DecodeFailed, 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+}
+
+// Tests that when `PageContextWrapper` returns inner text without a snapshot
+// when `kClientSideDetectionServerModelMultimodal` is enabled,
+// `kSnapshotMissing` is recorded.
+TEST_F(ClientSideDetectionHostIOSTest,
+       IntelligentScanMissingSnapshotRecordsStatus) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kClientSideDetectionServerModelMultimodal);
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, true);
+
+  MockIntelligentScanDelegate mock_delegate;
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost(&mock_delegate);
+
+  EXPECT_CALL(mock_service_, ClassifyPhishingThroughThresholds(testing::_))
+      .WillOnce([](safe_browsing::ClientPhishingRequest* verdict) {
+        verdict->set_is_phishing(false);
+        verdict->set_client_side_detection_type(
+            safe_browsing::ClientSideDetectionType::FORCE_REQUEST);
+      });
+
+  EXPECT_CALL(mock_delegate, ShouldRequestIntelligentScan(testing::_))
+      .WillOnce(testing::Return(true));
+  EXPECT_CALL(mock_delegate, GetIntelligentScanModelType(true))
+      .WillOnce(testing::Return(
+          safe_browsing::IntelligentScanDelegate::ModelType::kServerSide));
+  EXPECT_CALL(mock_delegate, StartIntelligentScan(testing::_, testing::_,
+                                                  testing::_, testing::_))
+      .WillOnce(
+          [](std::string rendered_texts, std::string url,
+             std::optional<std::string> tab_screenshot,
+             safe_browsing::IntelligentScanDelegate::IntelligentScanDoneCallback
+                 callback) {
+            EXPECT_FALSE(tab_screenshot.has_value());
+            return base::UnguessableToken::Create();
+          });
+
+  host->OnVisualClassificationDoneForTesting(GURL(kPhishingUrl), {0.1, 0.2});
+
+  ASSERT_NE(fake_page_context_wrapper_factory_.last_wrapper(), nil);
+  CompleteWithInnerText(fake_page_context_wrapper_factory_.last_wrapper(),
+                        std::string(100, 'a'));
+
+  EXPECT_FALSE(
+      host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kSnapshotMissing, 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+}
+
+// Tests that when `PageContextWrapper` fails with an error when
+// `kClientSideDetectionServerModelMultimodal` is enabled, `kPageContextFailed`
+// is recorded.
+TEST_F(ClientSideDetectionHostIOSTest,
+       IntelligentScanPageContextFailureRecordsStatus) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kClientSideDetectionServerModelMultimodal);
+  profile_->GetPrefs()->SetBoolean(prefs::kSafeBrowsingEnhanced, true);
+
+  MockIntelligentScanDelegate mock_delegate;
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost(&mock_delegate);
+
+  EXPECT_CALL(mock_service_, ClassifyPhishingThroughThresholds(testing::_))
+      .WillOnce([](safe_browsing::ClientPhishingRequest* verdict) {
+        verdict->set_is_phishing(false);
+        verdict->set_client_side_detection_type(
+            safe_browsing::ClientSideDetectionType::FORCE_REQUEST);
+      });
+
+  EXPECT_CALL(mock_delegate, ShouldRequestIntelligentScan(testing::_))
+      .WillOnce(testing::Return(true));
+  EXPECT_CALL(mock_delegate, GetIntelligentScanModelType(true))
+      .WillOnce(testing::Return(
+          safe_browsing::IntelligentScanDelegate::ModelType::kServerSide));
+  EXPECT_CALL(mock_delegate, StartIntelligentScan(testing::_, testing::_,
+                                                  testing::_, testing::_))
+      .Times(0);
+  EXPECT_CALL(mock_service_, SendClientReportPhishingRequest(
+                                 testing::_, testing::_, testing::_))
+      .Times(1);
+
+  host->OnVisualClassificationDoneForTesting(GURL(kPhishingUrl), {0.1, 0.2});
+
+  ASSERT_NE(fake_page_context_wrapper_factory_.last_wrapper(), nil);
+  task_environment_.FastForwardBy(base::Milliseconds(80));
+  [fake_page_context_wrapper_factory_.last_wrapper()
+      completeWithError:PageContextWrapperError::kScreenshotError];
+
+  EXPECT_FALSE(
+      host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kPageContextFailed, 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+  histogram_tester_.ExpectUniqueTimeSample(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithScreenshot",
+      base::Milliseconds(80), 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.iOS.PageContextCaptureLatency.WithoutScreenshot", 0);
 }
 
 // Tests that `CancelPendingRequests` clears any extracted tab screenshot.
@@ -4515,9 +4744,114 @@ TEST_F(ClientSideDetectionHostIOSTest,
       fake_page_context_wrapper_factory_.last_wrapper(), kTestInnerText,
       base::Base64Encode(kTestScreenshotPngBytes));
   ASSERT_TRUE(intelligent_scan_tab_screenshot(host.get()).has_value());
+  ASSERT_TRUE(
+      intelligent_scan_screenshot_capture_status(host.get()).has_value());
 
   host->CancelPendingRequests();
   EXPECT_FALSE(intelligent_scan_tab_screenshot(host.get()).has_value());
+  EXPECT_FALSE(
+      intelligent_scan_screenshot_capture_status(host.get()).has_value());
+}
+
+// Tests that `MaybeCaptureScreenshotAndStartIntelligentScan` records
+// `kWebStateUnavailable` when `web_state_` is null and
+// `kClientSideDetectionServerModelMultimodal` is enabled.
+TEST_F(ClientSideDetectionHostIOSTest,
+       IntelligentScanNullWebStateRecordsStatus) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kClientSideDetectionServerModelMultimodal);
+
+  MockIntelligentScanDelegate mock_delegate;
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost(&mock_delegate);
+  host->WebStateDestroyed(&web_state_);
+
+  EXPECT_CALL(mock_delegate, StartIntelligentScan(testing::_, testing::_,
+                                                  testing::_, testing::_))
+      .WillOnce(
+          [](std::string rendered_texts, std::string url,
+             std::optional<std::string> tab_screenshot,
+             safe_browsing::IntelligentScanDelegate::IntelligentScanDoneCallback
+                 callback) {
+            EXPECT_FALSE(tab_screenshot.has_value());
+            return base::UnguessableToken::Create();
+          });
+
+  auto verdict = std::make_unique<safe_browsing::ClientPhishingRequest>();
+  verdict->set_url(GURL(kPhishingUrl).spec());
+  verdict->set_client_side_detection_type(
+      safe_browsing::ClientSideDetectionType::FORCE_REQUEST);
+  host->MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::move(verdict), /*did_match_high_confidence_allowlist=*/false,
+      /*is_invalid_ip=*/false, std::string(100, 'a'));
+
+  EXPECT_FALSE(
+      host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kWebStateUnavailable, 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+}
+
+// Tests that `MaybeCaptureScreenshotAndStartIntelligentScan` falls back to
+// recording `kSnapshotMissing` when invoked without a cached screenshot status
+// while `kClientSideDetectionServerModelMultimodal` is enabled.
+TEST_F(ClientSideDetectionHostIOSTest,
+       IntelligentScanUnsetScreenshotStatusRecordsSnapshotMissing) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      safe_browsing::kClientSideDetectionServerModelMultimodal);
+
+  MockIntelligentScanDelegate mock_delegate;
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost(&mock_delegate);
+
+  EXPECT_CALL(mock_delegate, StartIntelligentScan(testing::_, testing::_,
+                                                  testing::_, testing::_))
+      .WillOnce(
+          [](std::string rendered_texts, std::string url,
+             std::optional<std::string> tab_screenshot,
+             safe_browsing::IntelligentScanDelegate::IntelligentScanDoneCallback
+                 callback) {
+            EXPECT_FALSE(tab_screenshot.has_value());
+            return base::UnguessableToken::Create();
+          });
+
+  auto verdict = std::make_unique<safe_browsing::ClientPhishingRequest>();
+  verdict->set_url(GURL(kPhishingUrl).spec());
+  verdict->set_client_side_detection_type(
+      safe_browsing::ClientSideDetectionType::FORCE_REQUEST);
+  host->MaybeCaptureScreenshotAndStartIntelligentScan(
+      std::move(verdict), /*did_match_high_confidence_allowlist=*/false,
+      /*is_invalid_ip=*/false, std::string(100, 'a'));
+
+  EXPECT_FALSE(
+      host->last_intelligent_scan_tab_screenshot_for_testing().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureStatus",
+      MultimodalScreenshotCaptureStatus::kSnapshotMissing, 1);
+  histogram_tester_.ExpectTotalCount(
+      "SBClientPhishing.Multimodal.ScreenshotCaptureSize", 0);
+}
+
+TEST_F(ClientSideDetectionHostIOSTest,
+       GetPageTitleReturnsExplicitTitleAndOmitsSynthesizedUrl) {
+  web::FakeNavigationManager* nav_manager =
+      static_cast<web::FakeNavigationManager*>(
+          web_state_.GetNavigationManager());
+  auto item = web::NavigationItem::Create();
+  item->SetURL(GURL(kExampleUrl));
+  nav_manager->SetLastCommittedItem(item.get());
+
+  std::unique_ptr<ClientSideDetectionHostIOS> host = CreateHost();
+  // `NavigationItem::GetTitleForDisplay()` synthesizes a fallback display title
+  // from the URL when no explicit title is set, whereas `GetPageTitle()` must
+  // return "".
+  EXPECT_FALSE(item->GetTitleForDisplay().empty());
+  EXPECT_EQ("", host->GetPageTitle());
+
+  item->SetTitle(u"Test Title");
+  EXPECT_EQ("Test Title", host->GetPageTitle());
 }
 
 }  // namespace safe_browsing

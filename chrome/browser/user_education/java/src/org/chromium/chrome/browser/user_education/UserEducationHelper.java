@@ -20,7 +20,6 @@ import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter.HighlightParams;
@@ -163,13 +162,7 @@ public class UserEducationHelper {
         mTextBubble = null;
         final boolean shouldTrigger;
         if (BLUE_BUBBLE_COOLDOWN_FEATURES.contains(featureName)) {
-            boolean isCooldownEnabled =
-                    ChromeFeatureList.sUserEducationBlueBubbleCooldownGroup.isEnabled();
-            FeatureProperties featureProperties =
-                    new FeatureProperties(
-                            UiFormat.BLUE_BUBBLE,
-                            /* isBlockedByCooldownGroup= */ isCooldownEnabled,
-                            /* blocksCooldownGroup= */ isCooldownEnabled);
+            FeatureProperties featureProperties = new FeatureProperties(UiFormat.BLUE_BUBBLE);
             shouldTrigger = tracker.shouldTriggerHelpUi(featureName, featureProperties);
         } else {
             shouldTrigger = tracker.shouldTriggerHelpUi(featureName);

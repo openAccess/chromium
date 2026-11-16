@@ -182,6 +182,11 @@ String SVGElement::title() const {
 template <typename T>
 static void ForSelfAndInstances(SVGElement* element, T callback) {
   callback(element);
+  // Animations cloned into the <use> shadow tree apply their results to the
+  // instance elements directly.
+  if (RuntimeEnabledFeatures::SvgUseInstanceAnimationsEnabled()) {
+    return;
+  }
   for (SVGElement* instance : element->InstancesForElement())
     callback(instance);
 }
@@ -962,9 +967,13 @@ void SVGElement::MarkForLayoutAndParentResourceInvalidation(
 }
 
 void SVGElement::NotifyResourceClients() const {
+  SVGTreeScopeResources* scope_resources =
+      GetTreeScope().ExistingSVGTreeScopedResources();
+  if (!scope_resources) {
+    return;
+  }
   LocalSVGResource* resource =
-      GetTreeScope().EnsureSVGTreeScopedResources().ExistingResourceForId(
-          GetIdAttribute());
+      scope_resources->ExistingResourceForId(GetIdAttribute());
   if (!resource || resource->Target(SVGResource::Usage::kElement) != this) {
     return;
   }
@@ -975,8 +984,11 @@ void SVGElement::InvalidateStyleAttribute(
     bool only_changed_independent_properties) {
   Element::InvalidateStyleAttribute(only_changed_independent_properties);
   if (!InstancesForElement().empty()) {
-    SynchronizeAttributeInShadowInstances(html_names::kStyleAttr,
-                                          getAttribute(html_names::kStyleAttr));
+    // construct a new AtomicString (reference-counting its internals) rather
+    // than pass a reference to the element's attribute storage that might not
+    // live long enough.
+    AtomicString style_value = getAttribute(html_names::kStyleAttr);
+    SynchronizeAttributeInShadowInstances(html_names::kStyleAttr, style_value);
   }
 }
 
@@ -1225,7 +1237,12 @@ SMILTimeContainer* SVGElement::GetTimeContainer() const {
 
 void SVGElement::SynchronizeAttributeInShadowInstances(
     const QualifiedName& name,
-    const AtomicString& value) {
+    AtomicString value) {
+  // `value` is passed by value because it may be a reference to an attribute
+  // in this element's attribute vector (e.g. from InvalidateStyleAttribute()).
+  // Setting attributes on shadow instances can trigger script or mutations
+  // that reallocate this element's attributes. Hold our own reference for the
+  // duration of the loop.
   if (RuntimeEnabledFeatures::SvgInstanceSyncOptimizationEnabled() &&
       !MayHaveInstances()) {
     return;

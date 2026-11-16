@@ -381,12 +381,16 @@ base::File::Error FileSystemOperationImpl::SyncGetPlatformPath(
     const FileSystemURL& url,
     base::FilePath* platform_path) {
   CheckOperationType(OperationType::kGetLocalPath);
-  if (!file_system_context()->IsSandboxFileSystem(url.type()))
+  CHECK(platform_path);
+  *platform_path = base::FilePath();
+  if (!file_system_context()->IsSandboxFileSystem(url.type()) ||
+      file_system_context()->is_incognito()) {
     return base::File::FILE_ERROR_INVALID_OPERATION;
+  }
   FileSystemFileUtil* file_util =
       file_system_context()->sandbox_delegate()->sync_file_util();
-  file_util->GetLocalFilePath(operation_context_.get(), url, platform_path);
-  return base::File::FILE_OK;
+  return file_util->GetLocalFilePath(operation_context_.get(), url,
+                                     platform_path);
 }
 
 FileSystemOperationImpl::FileSystemOperationImpl(
@@ -427,7 +431,7 @@ void FileSystemOperationImpl::GetBucketSpaceRemainingAndRunTask(
 
   DCHECK(quota_manager_proxy);
   quota_manager_proxy->GetBucketSpaceRemaining(
-      bucket, base::SequencedTaskRunner::GetCurrentDefault(),
+      bucket,
       base::BindOnce(&FileSystemOperationImpl::DidGetBucketSpaceRemaining,
                      weak_ptr_, std::move(task), std::move(error_callback)));
 }

@@ -60,7 +60,6 @@
 #include "content/shell/browser/shell.h"
 #include "content/shell/browser/shell_download_manager_delegate.h"
 #include "content/test/content_browser_test_utils_internal.h"
-#include "content/test/mock_reduce_accept_language_controller_delegate.h"
 #include "media/media_buildflags.h"
 #include "net/base/features.h"
 #include "net/cert/cert_verify_result.h"
@@ -271,16 +270,6 @@ class SignedExchangeRequestHandlerBrowserTestBase
     partition->GetSubresourceProxyingURLLoaderService()
         ->prefetch_url_loader_service_context_for_testing()
         .SetAcceptLanguages(langs);
-    // Set the Accept-Language for delegate in order to get correct
-    // Accept-Language in navigation requests instead of always using the
-    // default shell Accept-Language.
-    MockReduceAcceptLanguageControllerDelegate* delegate =
-        static_cast<MockReduceAcceptLanguageControllerDelegate*>(
-            shell()
-                ->web_contents()
-                ->GetBrowserContext()
-                ->GetReduceAcceptLanguageControllerDelegate());
-    delegate->SetUserAcceptLanguages(langs);
   }
 
   std::unique_ptr<InactiveRenderFrameHostDeletionObserver>
@@ -1070,15 +1059,8 @@ IN_PROC_BROWSER_TEST_P(SignedExchangeRequestHandlerBrowserTest,
   EXPECT_EQ(title, title_watcher.WaitAndGetTitle());
 }
 
-// TODO(crbug.com/40890897): Re-enable this test when de-flaked.
-#if BUILDFLAG(IS_FUCHSIA)
-#define MAYBE_NotControlledByDistributorsSW \
-  DISABLED_NotControlledByDistributorsSW
-#else
-#define MAYBE_NotControlledByDistributorsSW NotControlledByDistributorsSW
-#endif
 IN_PROC_BROWSER_TEST_P(SignedExchangeRequestHandlerBrowserTest,
-                       MAYBE_NotControlledByDistributorsSW) {
+                       NotControlledByDistributorsSW) {
   // SW-scope: http://127.0.0.1:PORT/sxg/
   // SXG physical URL: http://127.0.0.1:PORT/sxg/test.example.org_test.sxg
   // SXG logical URL: https://test.example.org/test/
@@ -1416,9 +1398,6 @@ IN_PROC_BROWSER_TEST_F(SignedExchangeAcceptHeaderBrowserTest, ServiceWorker) {
   NavigateAndWaitForTitle(https_server_.GetURL("/sxg/service-worker.html"),
                           "Done");
 
-  const std::string frame_accept = FrameAcceptHeaderValue(
-      /*allow_sxg_responses=*/false,
-      shell()->web_contents()->GetBrowserContext());
   const std::string frame_accept_with_sxg = FrameAcceptHeaderValue(
       /*allow_sxg_responses=*/true,
       shell()->web_contents()->GetBrowserContext());

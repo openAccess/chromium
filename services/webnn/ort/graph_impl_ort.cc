@@ -5,9 +5,11 @@
 #include "services/webnn/ort/graph_impl_ort.h"
 
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notimplemented.h"
@@ -309,10 +311,11 @@ GraphImplOrt::CreateAndBuildOnBackgroundThread(
   SCOPED_UMA_HISTOGRAM_TIMER("WebNN.ORT.TimingMs.Compilation");
 
   scoped_trace.AddStep("Create model info");
-  std::unique_ptr<ModelEditor::ModelInfo> model_info =
+  ASSIGN_OR_RETURN(
+      std::unique_ptr<ModelEditor::ModelInfo> model_info,
       GraphBuilderOrt::CreateAndBuild(
           *graph_info, std::move(context_properties), std::move(ep_workarounds),
-          std::move(constant_operands));
+          std::move(constant_operands)));
 
   scoped_trace.AddStep("Create session from model");
   ScopedOrtSession session;
@@ -358,7 +361,7 @@ GraphImplOrt::CreateSessionFromCompiledGraph(
     WebNNContextImpl& context,
     scoped_refptr<SessionOptions> session_options,
     scoped_refptr<Environment> env,
-    mojo_base::BigBuffer compiled_model_data,
+    base::span<const uint8_t> model_bytes,
     base::flat_map<std::string, std::string>
         operand_input_name_to_onnx_input_name,
     base::flat_map<std::string, std::string>
@@ -366,7 +369,7 @@ GraphImplOrt::CreateSessionFromCompiledGraph(
   ScopedOrtSession session;
   const OrtApi* ort_api = PlatformFunctions::GetInstance()->ort_api();
   ScopedOrtStatus status = CALL_ORT_FUNC(ort_api->CreateSessionFromArray(
-      env->get(), compiled_model_data.data(), compiled_model_data.size(),
+      env->get(), model_bytes.data(), model_bytes.size(),
       session_options->get(), ScopedOrtSession::Receiver(session).get()));
   if (status.is_valid()) {
     return base::unexpected(LoadCompiledGraphError{

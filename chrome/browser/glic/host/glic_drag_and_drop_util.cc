@@ -14,8 +14,10 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/no_destructor.h"
 #include "base/unguessable_token.h"
+#include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_keyed_service_factory.h"
@@ -183,6 +185,24 @@ void TriggerDragDropInvoke(content::WebContents* target_web_contents,
   service->Invoke(std::move(invoke_options));
 }
 
+void NotifyDropBlocked(content::WebContents* target_web_contents,
+                       mojom::DataTransferActionsBlockedReason reason) {
+  Profile* profile =
+      Profile::FromBrowserContext(target_web_contents->GetBrowserContext());
+  GlicKeyedService* service =
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile, /*create=*/false);
+  if (!service) {
+    return;
+  }
+  if (GlicInstance* target_instance =
+          service->instance_coordinator().GetInstanceWithGlicWebContents(
+              target_web_contents)) {
+    target_instance->NotifyDataTransferActionsBlocked(
+        mojom::DataTransferActionsBlockedNotice::New(
+            mojom::DataTransferAction::kDrop, reason));
+  }
+}
+
 // Restores drag-and-drop metadata (original source URL and file extensions)
 // that operating systems frequently strip during drag-and-drop actions. Needed
 // because OS pasteboards / clipboards are lossy channels (often stripping
@@ -242,6 +262,11 @@ GlicDragAndDropContentType GetDragAndDropContentType(
 }  // namespace
 
 bool IsChromeWebDrag(const content::DropData& drop_data) {
+  // Keyed solely on Blink's `drag_id` (even when `file_contents` is empty) so
+  // Chrome web drags that also carry `filenames`/`file_system_files` and pass
+  // `GlicView::CanDragEnter` are still intercepted by `HandleOnPerformingDrop`,
+  // stripped from the DOM drop, and rejected as `kUnsupportedContentType` in
+  // `StartDragAndDropInvoke`.
   return drop_data.drag_id.has_value();
 }
 
@@ -281,10 +306,15 @@ void GlicWebDragObserver::DidStartDrag(content::RenderFrameHost* source_rfh,
     return;
   }
 
-  content::BrowserContext* browser_context = source_rfh->GetBrowserContext();
-  Profile* profile = Profile::FromBrowserContext(browser_context);
+  content::BrowserContext* source_browser_context =
+      source_rfh->GetBrowserContext();
+  Profile* source_profile = Profile::FromBrowserContext(source_browser_context);
   bool is_eligible = false;
-  if (GlicEnabling::IsProfileEligible(profile)) {
+  // With cross-profile transfer enabled, the source profile doesn't need to be
+  // Glic-eligible (e.g. Incognito); only the page's context eligibility
+  // matters.
+  if (base::FeatureList::IsEnabled(features::kGlicCrossProfileTransfer) ||
+      GlicEnabling::IsProfileEligible(source_profile)) {
     auto* helper = tabs::PageContextEligibilityHelper::From(&tab());
     if (!helper) {
       return;
@@ -298,7 +328,7 @@ void GlicWebDragObserver::DidStartDrag(content::RenderFrameHost* source_rfh,
   GlicDragEligibilityMonitor::GetInstance()->RecordDragStart(DragSourceInfo{
       .drag_id = *drop_data.drag_id,
       .is_eligible = is_eligible,
-      .source_browser_context = browser_context->GetWeakPtr(),
+      .source_browser_context = source_browser_context->GetWeakPtr(),
       .source_rfh_token = source_rfh->GetGlobalFrameToken(),
       .source_tab_handle = tab().GetHandle(),
   });
@@ -357,14 +387,20 @@ void StartDragAndDropInvoke(content::WebContents* target_web_contents,
     reporter.RecordEnumeration(
         "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kUnknownDragSource);
+    NotifyDropBlocked(
+        target_web_contents,
+        mojom::DataTransferActionsBlockedReason::kUnsupportedOrExpiredSource);
     return;
   }
 
-  if (info->source_browser_context.get() !=
-      target_web_contents->GetBrowserContext()) {
+  if (!base::FeatureList::IsEnabled(features::kGlicCrossProfileTransfer) &&
+      info->source_browser_context.get() !=
+          target_web_contents->GetBrowserContext()) {
     reporter.RecordEnumeration(
         "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kCrossProfileDragBlocked);
+    NotifyDropBlocked(target_web_contents,
+                      mojom::DataTransferActionsBlockedReason::kCrossProfile);
     return;
   }
 
@@ -372,8 +408,9 @@ void StartDragAndDropInvoke(content::WebContents* target_web_contents,
     reporter.RecordEnumeration(
         "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kPageContextIneligible);
-    // TODO(b/552675444): Implement error signaling through Invoke for the
-    // purpose of showing these toasts in the web client.
+    NotifyDropBlocked(
+        target_web_contents,
+        mojom::DataTransferActionsBlockedReason::kIneligiblePageContext);
     return;
   }
 
@@ -388,6 +425,9 @@ void StartDragAndDropInvoke(content::WebContents* target_web_contents,
     reporter.RecordEnumeration(
         "DragAndDrop.ValidationResult2",
         GlicDragAndDropValidationResult::kSourceFrameDestroyed);
+    NotifyDropBlocked(
+        target_web_contents,
+        mojom::DataTransferActionsBlockedReason::kUnsupportedOrExpiredSource);
     return;
   }
 

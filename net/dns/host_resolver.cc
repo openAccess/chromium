@@ -30,7 +30,7 @@
 #include "net/base/host_port_pair.h"
 #include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
-#include "net/base/task/task_runner.h"
+#include "net/base/scheduler/task_runner.h"
 #include "net/dns/context_host_resolver.h"
 #include "net/dns/dns_alias_utility.h"
 #include "net/dns/dns_client.h"
@@ -155,6 +155,25 @@ class FailingServiceEndpointRequestImpl
   }
 
   void ChangeRequestPriority(RequestPriority priority) override {}
+
+ private:
+  const int error_;
+};
+
+// Similar to FailingRequestImpl, but for MdnsListener.
+class FailingMdnsListenerImpl : public HostResolver::MdnsListener {
+ public:
+  explicit FailingMdnsListenerImpl(int error) : error_(error) {}
+
+  FailingMdnsListenerImpl(const FailingMdnsListenerImpl&) = delete;
+  FailingMdnsListenerImpl& operator=(const FailingMdnsListenerImpl&) = delete;
+
+  ~FailingMdnsListenerImpl() override = default;
+
+  int Start(Delegate* delegate) override {
+    DCHECK(delegate);
+    return error_;
+  }
 
  private:
   const int error_;
@@ -536,10 +555,20 @@ HostResolver::CreateStandaloneNetworkBoundResolver(
   if (!is_builtin_resolver_supported) {
     manager_options.insecure_dns_mode = InsecureDnsMode::kDisabled;
   }
-  return std::make_unique<ContextHostResolver>(
-      HostResolverManager::CreateNetworkBoundHostResolverManager(
-          manager_options, target_network, net_log),
-      std::move(resolve_context));
+  std::unique_ptr<HostResolver> resolver =
+      std::make_unique<ContextHostResolver>(
+          HostResolverManager::CreateNetworkBoundHostResolverManager(
+              manager_options, target_network, net_log),
+          std::move(resolve_context));
+
+  if (!host_mapping_rules.empty()) {
+    auto remapped_resolver =
+        std::make_unique<MappedHostResolver>(std::move(resolver));
+    remapped_resolver->SetRulesFromString(host_mapping_rules);
+    resolver = std::move(remapped_resolver);
+  }
+
+  return resolver;
 #else   // !BUILDFLAG(IS_ANDROID)
   NOTIMPLEMENTED();
   return nullptr;
@@ -642,6 +671,12 @@ HostResolver::CreateFailingProbeRequest(int error) {
 std::unique_ptr<HostResolver::ServiceEndpointRequest>
 HostResolver::CreateFailingServiceEndpointRequest(int error) {
   return std::make_unique<FailingServiceEndpointRequestImpl>(error);
+}
+
+// static
+std::unique_ptr<HostResolver::MdnsListener>
+HostResolver::CreateFailingMdnsListener(int error) {
+  return std::make_unique<FailingMdnsListenerImpl>(error);
 }
 
 }  // namespace net

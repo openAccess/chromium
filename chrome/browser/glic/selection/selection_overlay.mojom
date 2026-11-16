@@ -30,8 +30,6 @@ struct SelectedRegion {
 struct InteractionOptions {
   // When true, hide the handles and fix the region.
   bool hide_handles = false;
-  // When true, the user can't add more regions unless Ctrl or Cmd is held.
-  bool disable_multi_select = false;
   // When true, the overlay opens directly in the post-selection state.
   bool skip_intro_animation = false;
 };
@@ -107,7 +105,7 @@ interface SelectionOverlayPageHandler {
 
   // The user submits a prompt (e.g. from the input box). This prompt will be
   // sent to the Glic side panel to be submitted to gemini.google.com and
-  // processed server-side.
+  // processed server-side. Only valid after `PageContextReceived()`.
   SubmitPrompt(string prompt);
 
   // Requests suggested actions from the browser for the current selection.
@@ -151,4 +149,8 @@ interface SelectionOverlayPage {
   // before the screenshot is sent, and again whenever that changes during the
   // session.
   SetSidePanelOpen(bool open);
+
+  // Called once per session when the page content is in. Until then the
+  // overlay must not submit a prompt.
+  PageContextReceived();
 };

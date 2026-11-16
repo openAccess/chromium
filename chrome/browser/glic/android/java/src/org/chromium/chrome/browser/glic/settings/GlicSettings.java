@@ -17,6 +17,7 @@ import android.text.style.ForegroundColorSpan;
 import android.view.View;
 import android.widget.TextView;
 
+import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.content.ContextCompat;
 import androidx.preference.Preference;
@@ -46,17 +47,20 @@ import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
+import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.search.ChromeBaseSearchIndexProvider;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
 import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarPrefs;
+import org.chromium.chrome.browser.toolbar.adaptive.settings.AdaptiveToolbarSettingsFragment;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarActionEligibility;
 import org.chromium.chrome.browser.ui.bottombar.BottomBarConfigUtils;
 import org.chromium.components.browser_ui.settings.ChromeExpandableSwitchPreference;
 import org.chromium.components.browser_ui.settings.ChromeSwitchPreference;
-import org.chromium.components.browser_ui.settings.SettingsCustomTabLauncher;
 import org.chromium.components.browser_ui.settings.SettingsFragment;
+import org.chromium.components.browser_ui.settings.SettingsNavigation;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.search.SettingsIndexData;
+import org.chromium.components.browser_ui.util.CustomTabLauncher;
 import org.chromium.components.browser_ui.widget.containment.ContainerStyle;
 import org.chromium.components.browser_ui.widget.containment.ContainmentItemDecoration;
 import org.chromium.components.browser_ui.widget.highlight.ViewHighlighter;
@@ -124,7 +128,6 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
     private @Nullable ChromeSwitchPreference mLauncherEnabledPref;
     private @Nullable Preference mLauncherHotkeyPref;
     private @Nullable Preference mNavigationShortcutPref;
-    private @Nullable PrefService mLocalPrefs;
     private GlicKeyedService.@Nullable UserEnabledActuationOnWebObserver
             mUserEnabledActuationOnWebObserver;
     private GlicKeyedService.@Nullable ExperimentalTriggeringObserver
@@ -156,9 +159,7 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
     private void scrollAndHighlightPreference(String key) {
         RecyclerView listView = getListView();
         if (listView == null) return;
-        RecyclerView.Adapter adapter = listView.getAdapter();
-        if (!(adapter instanceof PreferencePositionCallback)) return;
-        PreferencePositionCallback callback = (PreferencePositionCallback) adapter;
+        if (!(listView.getAdapter() instanceof PreferencePositionCallback callback)) return;
         int position = callback.getPreferenceAdapterPosition(key);
         if (position == RecyclerView.NO_POSITION) return;
         scrollToPreference(key);
@@ -177,9 +178,8 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         params.setNumPulses(1);
         // Copy rounded corners from ContainmentItemDecoration if present.
         for (int i = 0; i < listView.getItemDecorationCount(); i++) {
-            RecyclerView.ItemDecoration decoration = listView.getItemDecorationAt(i);
-            if (decoration instanceof ContainmentItemDecoration) {
-                ContainmentItemDecoration containmentDec = (ContainmentItemDecoration) decoration;
+            if (listView.getItemDecorationAt(i)
+                    instanceof ContainmentItemDecoration containmentDec) {
                 ContainerStyle style = containmentDec.getContainerStyle(position);
                 if (style != null) {
                     params.setTopCornerRadius((int) style.getTopRadius());
@@ -196,7 +196,7 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         SettingsUtils.addPreferencesFromResource(this, R.xml.glic_settings);
         mPageTitle.set(getString(R.string.glic_setting_label));
 
-        SettingsCustomTabLauncher customTabLauncher = getCustomTabLauncher();
+        CustomTabLauncher customTabLauncher = getCustomTabLauncher();
 
         PrefService prefService = UserPrefs.get(getProfile());
         mPrefChangeRegistrar = new PrefChangeRegistrar(prefService);
@@ -219,7 +219,13 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         // TODO(crbug.com/503082430): Change to tab strip visibility check once toolbar Glic
         // supported on LFF
         boolean isSidePanelFormFactor = GlicUtils.isSidePanelFormFactor(context);
-        if (isBottomBarEnabled) {
+        if (shouldShowGeminiShortcutPreference(context)) {
+            buttonTogglePref.setVisible(false);
+            bottomBarButtonTogglePref.setVisible(false);
+            updateGeminiShortcutPreference(buttonPref);
+            // TODO(crbug.com/582747594): Remove this path once move_toolbar_settings_to_appearance
+            // launches; AppearanceSettingsFragment owns the bottom bar Gemini switch then.
+        } else if (isBottomBarEnabled) {
             updateBottomBarButtonPreference(
                     bottomBarButtonTogglePref,
                     buttonTogglePref,
@@ -263,10 +269,9 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         mLauncherEnabledPref = findPreference(PREF_LAUNCHER_ENABLED);
         mLauncherHotkeyPref = findPreference(PREF_LAUNCHER_HOTKEY);
         mNavigationShortcutPref = findPreference(PREF_NAVIGATION_SHORTCUT);
-        mLocalPrefs = LocalStatePrefs.get();
 
-        if (mLocalPrefs != null && KeyboardUtils.isHardKeyboardConnected(context)) {
-            final PrefService localPrefs = mLocalPrefs;
+        if (KeyboardUtils.isHardKeyboardConnected(context)) {
+            PrefService localPrefs = LocalStatePrefs.get();
             boolean enabled = localPrefs.getBoolean(GlicPrefNames.GLIC_LAUNCHER_ENABLED);
             if (mLauncherEnabledPref != null) {
                 mLauncherEnabledPref.setChecked(enabled);
@@ -468,8 +473,8 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
                 Preference pref = findPreference(key);
                 if (pref != null) {
                     pref.setEnabled(false);
-                    if (pref instanceof TwoStatePreference) {
-                        ((TwoStatePreference) pref).setChecked(false);
+                    if (pref instanceof TwoStatePreference twoStatePref) {
+                        twoStatePref.setChecked(false);
                     }
                 }
             }
@@ -507,7 +512,10 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         Preference buttonPref = findPreference(PREFERENCE_BUTTON);
 
         Context context = getContext();
-        if (BottomBarConfigUtils.isBottomBarEnabled(context)) {
+        if (shouldShowGeminiShortcutPreference(context)) {
+            // The bottom bar and toolbar shortcut can change on other settings pages.
+            if (buttonPref != null) updateGeminiShortcutPreference(buttonPref);
+        } else if (BottomBarConfigUtils.isBottomBarEnabled(context)) {
             // Refresh preference UI state. Listener was already attached in onCreatePreferences.
             updateBottomBarButtonPreference(
                     bottomBarButtonTogglePref,
@@ -586,7 +594,41 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         }
         preference.setTitle(titleId);
         preference.setSummary(summaryId);
+        updateButtonSearchIndexEntry(titleId, summaryId);
+    }
 
+    private void updateGeminiShortcutPreference(Preference preference) {
+        Context context = getContext();
+        boolean isBottomBarEnabled = BottomBarConfigUtils.isBottomBarEnabled(context);
+        if (isBottomBarEnabled
+                && !BottomBarActionEligibility.shouldShowBottomBarGlicSetting(getProfile())) {
+            preference.setVisible(false);
+            return;
+        }
+
+        int summaryId = getGeminiShortcutSummaryRes(context, getProfile());
+        preference.setVisible(true);
+        preference.setTitle(R.string.settings_show_gemini_shortcut_title);
+        preference.setSummary(summaryId);
+        if (isBottomBarEnabled) {
+            preference.setFragment(null);
+            preference.setOnPreferenceClickListener(
+                    pref -> {
+                        SettingsNavigationFactory.createSettingsNavigation()
+                                .startSettings(
+                                        getContext(),
+                                        SettingsNavigation.SettingsFragment.APPEARANCE,
+                                        /* addToBackStack= */ true);
+                        return true;
+                    });
+        } else {
+            preference.setFragment(AdaptiveToolbarSettingsFragment.class.getName());
+            preference.setOnPreferenceClickListener(null);
+        }
+        updateButtonSearchIndexEntry(R.string.settings_show_gemini_shortcut_title, summaryId);
+    }
+
+    private void updateButtonSearchIndexEntry(@StringRes int titleId, @StringRes int summaryId) {
         var indexData = SettingsIndexData.getInstance();
         if (indexData != null) {
             String className = GlicSettings.class.getName();
@@ -596,6 +638,31 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
                 indexData.setRefreshResult(true);
             }
         }
+    }
+
+    /**
+     * Returns whether the Gemini toolbar button row should summarize where the Gemini shortcut is
+     * shown and link to the page that controls it, instead of hosting the bottom bar toggle.
+     */
+    private static boolean shouldShowGeminiShortcutPreference(Context context) {
+        if (!BottomBarConfigUtils.shouldMoveToolbarSettingsToAppearance(context)) return false;
+        return BottomBarConfigUtils.isBottomBarEnabled(context)
+                || !GlicUtils.isSidePanelFormFactor(context);
+    }
+
+    /** Returns the summary describing where the Gemini shortcut is shown, if anywhere. */
+    private static @StringRes int getGeminiShortcutSummaryRes(Context context, Profile profile) {
+        if (GlicEnabling.isDisabledByPolicy(profile)) return R.string.text_off;
+        if (BottomBarConfigUtils.isBottomBarEnabled(context)) {
+            return BottomBarConfigUtils.isGlicButtonEnabled()
+                    ? R.string.settings_show_gemini_shortcut_in_toolbar
+                    : R.string.text_off;
+        }
+        return AdaptiveToolbarPrefs.isCustomizationPreferenceEnabled()
+                        && AdaptiveToolbarPrefs.getCustomizationSetting()
+                                == AdaptiveToolbarButtonVariant.GLIC
+                ? R.string.settings_show_gemini_shortcut_in_address_bar
+                : R.string.text_off;
     }
 
     @Override
@@ -756,8 +823,12 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
         if (consider2 != null && consider2.getMovementMethod() == null) {
             ChromeExpandableSwitchPreference autoBrowsePref =
                     assertNonNull(findPreference(PERMISSION_AUTO_BROWSE));
-            String text =
-                    getString(R.string.settings_glic_permissions_web_actuation_toggle_consider_2);
+            int stringId =
+                    GlicEnabling.shouldUseWebActuationDisclosureCountryVariant()
+                            ? R.string
+                                    .settings_glic_permissions_web_actuation_toggle_consider_2_country_variant
+                            : R.string.settings_glic_permissions_web_actuation_toggle_consider_2;
+            String text = getString(stringId);
             consider2.setText(
                     SpanApplier.applySpans(
                             text,
@@ -824,7 +895,7 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
 
     private SpanApplier.SpanInfo createSpanInfo(
             String openTag, String url, ChromeExpandableSwitchPreference pref) {
-        SettingsCustomTabLauncher customTabLauncher = getCustomTabLauncher();
+        CustomTabLauncher customTabLauncher = getCustomTabLauncher();
         int color;
         if (GlicEnabling.isDisabledByPolicy(getProfile())) {
             color = pref.getDisabledColor();
@@ -886,9 +957,29 @@ public class GlicSettings extends ChromeBaseSettingsFragment {
                 public void updateDynamicPreferences(
                         Context context, SettingsIndexData indexData, Profile profile) {
                     String prefFrag = GlicSettings.class.getName();
-                    // TODO(crbug.com/503082430): Change to tab strip visibility check once toolbar
-                    // Glic supported on LFF
-                    if (GlicUtils.isSidePanelFormFactor(context)) {
+                    if (shouldShowGeminiShortcutPreference(context)) {
+                        indexData.removeEntryForKey(prefFrag, PREFERENCE_BUTTON_TOGGLE);
+                        indexData.removeEntryForKey(prefFrag, PREFERENCE_BOTTOM_BAR_BUTTON_TOGGLE);
+                        if (!GlicUtils.isSidePanelFormFactor(context)) {
+                            indexData.removeEntryForKey(prefFrag, PREF_NAVIGATION_SHORTCUT);
+                        }
+                        if (BottomBarConfigUtils.isBottomBarEnabled(context)
+                                && !BottomBarActionEligibility.shouldShowBottomBarGlicSetting(
+                                        profile)) {
+                            indexData.removeEntryForKey(prefFrag, PREFERENCE_BUTTON);
+                        } else {
+                            indexData.updateEntryForKey(
+                                    prefFrag,
+                                    PREFERENCE_BUTTON,
+                                    R.string.settings_show_gemini_shortcut_title);
+                            indexData.updateEntrySummaryForKey(
+                                    prefFrag,
+                                    PREFERENCE_BUTTON,
+                                    getGeminiShortcutSummaryRes(context, profile));
+                        }
+                        // TODO(crbug.com/503082430): Change to tab strip visibility check once
+                        // toolbar Glic supported on LFF
+                    } else if (GlicUtils.isSidePanelFormFactor(context)) {
                         indexData.removeEntryForKey(prefFrag, PREFERENCE_BUTTON);
                     } else {
                         indexData.removeEntryForKey(prefFrag, PREFERENCE_BUTTON_TOGGLE);

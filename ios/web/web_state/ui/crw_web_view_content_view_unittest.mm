@@ -4,6 +4,7 @@
 
 #import "ios/web/web_state/ui/crw_web_view_content_view.h"
 
+#import "base/test/task_environment.h"
 #import "ios/web/common/crw_viewport_controller.h"
 #import "ios/web/web_state/crw_web_view.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -19,7 +20,10 @@
 
 namespace {
 
-using CRWWebViewContentViewTest = PlatformTest;
+class CRWWebViewContentViewTest : public PlatformTest {
+ protected:
+  base::test::TaskEnvironment task_environment_;
+};
 
 // Tests the ContentInset method when shouldUseViewContentInset is set to YES.
 TEST_F(CRWWebViewContentViewTest, ContentInsetWithInsetForPadding) {
@@ -387,6 +391,66 @@ TEST_F(CRWWebViewContentViewTest, ViewportInsetsDeduplicatedWhenUnchanged) {
   EXPECT_EQ(1, insetCallCount);
 }
 
+// Tests that a bounds size change with unchanged viewport insets (e.g. iPad
+// rotation) re-notifies `viewportInsetsDidChangeWithMinInset:maxInset:` on
+// layout without re-applying the insets to the underlying web view.
+TEST_F(CRWWebViewContentViewTest,
+       ViewportInsetsDidChangeNotifiedWhenBoundsSizeChanges) {
+  const CGRect kPortraitFrame = CGRectMake(0, 0, 800, 1000);
+  const CGRect kLandscapeFrame = CGRectMake(0, 0, 1000, 800);
+  const UIEdgeInsets kMinInset = UIEdgeInsetsMake(20, 0, 0, 0);
+  const UIEdgeInsets kMaxInset = UIEdgeInsetsMake(70, 0, 50, 0);
+
+  CRWWebView* webView = [[CRWWebView alloc] initWithFrame:kPortraitFrame];
+  webView.autoresizingMask =
+      UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+  UIScrollView* scrollView = [[UIScrollView alloc] init];
+  [webView addSubview:scrollView];
+  id mockWebView = OCMPartialMock(webView);
+
+  CRWWebViewContentView* contentView = [[CRWWebViewContentView alloc]
+      initWithWebView:webView
+           scrollView:scrollView
+      fullscreenState:CrFullscreenState::kNotInFullScreen];
+  contentView.webViewResizingType = WebViewResizingType::kContentInset;
+
+  UIWindow* window = [[UIWindow alloc] init];
+  [window addSubview:contentView];
+  contentView.frame = kPortraitFrame;
+  [contentView layoutIfNeeded];
+
+  id mockContentView = OCMPartialMock(contentView);
+  __block int insetCallCount = 0;
+  [[[[mockWebView stub] andDo:^(NSInvocation* invocation) {
+    insetCallCount++;
+  }] andForwardToRealObject] setMinimumViewportInset:kMinInset
+                                maximumViewportInset:kMaxInset];
+  __block int notifyCallCount = 0;
+  __block CGSize notifiedBoundsSize = CGSizeZero;
+  __weak CRWWebViewContentView* weakContentView = contentView;
+  [[[mockContentView stub] andDo:^(NSInvocation* invocation) {
+    notifyCallCount++;
+    notifiedBoundsSize = weakContentView.bounds.size;
+  }] viewportInsetsDidChangeWithMinInset:kMinInset maxInset:kMaxInset];
+
+  [mockContentView setMinimumViewportInset:kMinInset
+                      maximumViewportInset:kMaxInset];
+  EXPECT_EQ(1, insetCallCount);
+  EXPECT_EQ(1, notifyCallCount);
+  EXPECT_TRUE(CGSizeEqualToSize(kPortraitFrame.size, notifiedBoundsSize));
+
+  // A layout pass without a bounds size change should not re-notify.
+  [contentView setNeedsLayout];
+  [contentView layoutIfNeeded];
+  EXPECT_EQ(1, notifyCallCount);
+
+  contentView.frame = kLandscapeFrame;
+  [contentView layoutIfNeeded];
+  EXPECT_EQ(1, insetCallCount);
+  EXPECT_EQ(2, notifyCallCount);
+  EXPECT_TRUE(CGSizeEqualToSize(kLandscapeFrame.size, notifiedBoundsSize));
+}
+
 // Tests that `safeAreaInsetsDidChange` re-applies viewport insets and scroll
 // view `contentInset` when safe area insets are propagated after initial setup.
 TEST_F(CRWWebViewContentViewTest,
@@ -532,6 +596,42 @@ TEST_F(CRWWebViewContentViewTest,
   EXPECT_TRUE(CGRectEqualToRect(kExpectedFrame, webView.frame));
   EXPECT_TRUE(UIEdgeInsetsEqualToEdgeInsets(kExpectedSafeAreaContentInset,
                                             scrollView.contentInset));
+}
+
+// Tests that `accessibilityElements` exposes `webView` and `accessibilityFrame`
+// lazily computes the inset visible area in screen coordinates.
+TEST_F(CRWWebViewContentViewTest, AccessibilityFrameReflectsVisibleArea) {
+  const CGRect kBounds = CGRectMake(0, 0, 800, 600);
+  UIWindow* window = [[UIWindow alloc] initWithFrame:kBounds];
+  CRWWebView* webView = [[CRWWebView alloc] initWithFrame:kBounds];
+  UIScrollView* scrollView = [[UIScrollView alloc] init];
+  [webView addSubview:scrollView];
+  CRWWebViewContentView* contentView = [[CRWWebViewContentView alloc]
+      initWithWebView:webView
+           scrollView:scrollView
+      fullscreenState:CrFullscreenState::kNotInFullScreen];
+  contentView.frame = kBounds;
+  [window addSubview:contentView];
+
+  EXPECT_TRUE([@[ webView ] isEqualToArray:contentView.accessibilityElements]);
+
+  // Positive `contentInset` shrinks the visible area.
+  scrollView.contentInset = UIEdgeInsetsMake(94, 0, 44, 0);
+  EXPECT_TRUE(CGRectEqualToRect(UIAccessibilityConvertFrameToScreenCoordinates(
+                                    CGRectMake(0, 94, 800, 462), contentView),
+                                contentView.accessibilityFrame));
+
+  // Offset `webView.frame` with negative top `contentInset` (e.g. PDF mode).
+  webView.frame = CGRectMake(0, 100, 800, 500);
+  scrollView.contentInset = UIEdgeInsetsMake(-30, 0, 50, 0);
+  EXPECT_TRUE(CGRectEqualToRect(UIAccessibilityConvertFrameToScreenCoordinates(
+                                    CGRectMake(0, 70, 800, 480), contentView),
+                                contentView.accessibilityFrame));
+
+  // Empty `webView.frame` with non-zero insets yields `CGRectZero`.
+  webView.frame = CGRectZero;
+  scrollView.contentInset = UIEdgeInsetsMake(94, 0, 44, 0);
+  EXPECT_TRUE(CGRectEqualToRect(CGRectZero, contentView.accessibilityFrame));
 }
 
 }  // namespace

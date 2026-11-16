@@ -462,9 +462,9 @@ void WebNNGraphImplBackendTest::SetUpBase() {
       base::FeatureList::IsEnabled(mojom::features::kWebNNCoreML)) {
     EXPECT_THAT(webnn_test_environment_.GetContextBackendNames(),
                 testing::ElementsAre("CoreML"));
-    EXPECT_EQ(compiler_context_.is_bound(),
-              base::FeatureList::IsEnabled(
-                  mojom::features::kWebNNCompilerProcess));
+    EXPECT_EQ(
+        compiler_context_.is_bound(),
+        base::FeatureList::IsEnabled(mojom::features::kWebNNCompilerProcess));
   }
 #endif
 }
@@ -473,10 +473,7 @@ void WebNNGraphImplBackendTest::TearDown() {
   // Give WebNNContext a chance to run disconnect.
   compiler_context_.reset();
   webnn_context_.reset();
-  webnn_test_environment_.WaitForAllContextsToBeDestroyed();
-
-  provider_remote_.reset();
-  webnn_test_environment_.TearDown();
+  webnn_test_environment_.RunUntilIdle();
 }
 
 mojo::Remote<mojom::WebNNGraphBuilder>
@@ -3880,7 +3877,7 @@ TEST_P(WebNNGraphImplBackendTest, DestroyContextDuringBuild) {
   // Destroy the context and wait for any pending tasks to complete.
   compiler_context().reset();
   context().reset();
-  webnn_test_environment_.WaitForAllContextsToBeDestroyed();
+  webnn_test_environment_.RunUntilIdle();
 }
 
 // A tensor the renderer never writes must read as zeros, so a renderer cannot

@@ -50,6 +50,7 @@ class CC_EXPORT BrowserControlsOffsetManager
   std::pair<float, float> BottomControlsShownRatioRange() override;
   bool HasAnimation() override;
   void OnBrowserControlsParamsChanged(bool animate_changes) override;
+  void SetAnimation(const BrowserControlsAnimationParams& params) override;
   void ScrollBegin() override;
   gfx::Vector2dF ScrollBy(const gfx::Vector2dF& pending_delta,
                           bool is_inertial) override;
@@ -60,9 +61,12 @@ class CC_EXPORT BrowserControlsOffsetManager
   void ResetAnimations() override;
 
   bool IsAnimatingToShowControls() const {
-    return top_controls_animation_.IsInitialized() &&
-           top_controls_animation_.direction() ==
-               BrowserControlsAnimation::Direction::kShowingControls;
+    return (top_controls_animation_.IsInitialized() &&
+            top_controls_animation_.direction() ==
+                BrowserControlsAnimation::Direction::kShowingControls) ||
+           (bottom_controls_animation_.IsInitialized() &&
+            bottom_controls_animation_.direction() ==
+                BrowserControlsAnimation::Direction::kShowingControls);
   }
 
   const BrowserControlsSnapAnimationController& snap_controller_for_testing()
@@ -93,6 +97,21 @@ class CC_EXPORT BrowserControlsOffsetManager
   // controls have already hidden once during the current scroll sequence.
   void ApplySnapHint(std::optional<BrowserControlsSnapHint> hint);
 
+  struct ActiveControls {
+    float height;
+    float shown_ratio;
+    float min_shown_ratio;
+    float baseline_content_offset;
+  };
+
+  // Returns whether scroll and animation calculations should be based on the
+  // top controls rather than the bottom controls. Priority order:
+  // 1. Scrollable top controls (`TopControlsHeight() > TopControlsMinHeight()`)
+  // 2. Scrollable bottom controls
+  //    (`BottomControlsHeight() > BottomControlsMinHeight()`)
+  // 3. Non-zero top controls (`TopControlsHeight() > 0.f`)
+  bool ShouldBaseOnTopControls() const;
+  ActiveControls GetActiveControls() const;
   void StartAnimationIfNecessary();
   void ResetBaseline();
   float OldTopControlsMinShownRatio();
@@ -133,10 +152,10 @@ class CC_EXPORT BrowserControlsOffsetManager
   bool top_min_height_change_in_progress_;
   bool bottom_min_height_change_in_progress_;
 
-  // Minimum and maximum values |top_controls_min_height_offset_| can take
+  // Minimum and maximum values TopControlsMinHeightOffset() can take
   // during the current min-height change animation.
   std::optional<std::pair<float, float>> top_min_height_offset_animation_range_;
-  // Minimum and maximum values |bottom_controls_min_height_offset_| can take
+  // Minimum and maximum values BottomControlsMinHeightOffset() can take
   // during the current min-height change animation.
   std::optional<std::pair<float, float>>
       bottom_min_height_offset_animation_range_;

@@ -201,6 +201,10 @@ trusted_vault_pb::SecurityDomainMember CreateSecurityDomainMember(
           [&member](const ICloudKeychain&) {
             member.set_member_type(trusted_vault_pb::SecurityDomainMember::
                                        MEMBER_TYPE_ICLOUD_KEYCHAIN);
+          },
+          [&member](const GaiaPassword&) {
+            member.set_member_type(trusted_vault_pb::SecurityDomainMember::
+                                       MEMBER_TYPE_GAIA_PASSWORD);
           }},
       authentication_factor_type_and_registration_params);
   return member;
@@ -578,6 +582,9 @@ GetURLFetchReasonForUMAForJoinSecurityDomainsRequest(
           },
           [](const ICloudKeychain&) {
             return TrustedVaultURLFetchReasonForUMA::kRegisterICloudKeychain;
+          },
+          [](const GaiaPassword&) {
+            return TrustedVaultURLFetchReasonForUMA::kRegisterGaiaPassword;
           }},
       authentication_factor_type_and_registration_params);
 }
@@ -637,7 +644,7 @@ void ProcessDownloadGaiaPasswordPublicKeyResponse(
       response.current_gaia_password_encryption_key_data().public_key();
   if (key_str.empty()) {
     std::move(callback).Run(
-        TrustedVaultDownloadPasswordPublicKeyStatus::kOtherError,
+        TrustedVaultDownloadPasswordPublicKeyStatus::kNoPublicKey,
         std::vector<uint8_t>());
     return;
   }

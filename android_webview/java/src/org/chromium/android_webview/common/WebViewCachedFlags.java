@@ -149,8 +149,7 @@ public class WebViewCachedFlags {
                     Map.entry(
                             AwFeatures.WEBVIEW_PROFILE_STORE_NOT_TRIGGER_STARTUP,
                             DefaultState.DISABLED),
-                    Map.entry(
-                            AwFeatures.WEBVIEW_USE_WVLES_FOR_LAYERED_STUDY, DefaultState.DISABLED),
+                    Map.entry(AwFeatures.WEBVIEW_USE_WVLES_FOR_LAYERED_STUDY, DefaultState.ENABLED),
                     Map.entry(
                             AwFeatures.WEBVIEW_COOKIE_MANAGER_SIMPLER_URL_FIXUPS,
                             DefaultState.DISABLED),
@@ -159,7 +158,9 @@ public class WebViewCachedFlags {
                             DefaultState.DISABLED),
                     Map.entry(AwFeatures.WEBVIEW_CROSS_ORIGIN_ALLOWLIST_API, DefaultState.ENABLED),
                     Map.entry(AwFeatures.WEBVIEW_INIT_IN_CONSTRUCTOR, DefaultState.DISABLED),
-                    Map.entry(AwFeatures.WEBVIEW_RELAX_DATA_DIR_LOCKING, DefaultState.DISABLED));
+                    Map.entry(AwFeatures.WEBVIEW_RELAX_DATA_DIR_LOCKING, DefaultState.DISABLED),
+                    Map.entry(
+                            AwFeatures.WEBVIEW_WEB_GRAPHICS_SWITCH_ENABLED, DefaultState.ENABLED));
 
     private static final Map<String, String> PARAM_DEFINITIONS = Map.of();
 
@@ -215,9 +216,7 @@ public class WebViewCachedFlags {
         }
     }
 
-    /**
-     * @return the singleton instance of this class.
-     */
+    /** Returns the singleton instance of this class. */
     public static WebViewCachedFlags get() {
         synchronized (sLock) {
             if (sInstance == null) {

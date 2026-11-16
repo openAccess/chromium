@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/notimplemented.h"
@@ -41,6 +42,8 @@
 #include "chrome/browser/ui/views/location_bar/webui_content_setting_image_control.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_aim_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_full_presenter.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_popup_host.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_full_webui.h"
@@ -92,6 +95,10 @@
 #endif
 
 namespace {
+
+// How long `in_popup_state_transition_` stays set after a popup state change.
+constinit base::TimeDelta g_popup_state_transition_duration =
+    base::Milliseconds(100);
 
 toolbar_ui_api::mojom::SecurityLevel GetMojoSecurityLevel(
     security_state::SecurityLevel security_level) {
@@ -155,14 +162,26 @@ void WebUILocationBar::Init(WebUIToolbarControlDelegate* delegate) {
       /*update_propagator=*/*this);
 
   if (using_full_popup_) {
-    omnibox_popup_view_ = std::make_unique<OmniboxPopupViewFullWebUI>(
+    auto presenter = std::make_unique<OmniboxPopupFullPresenter>(
+        /*location_bar=*/this, /*presenter_delegate=*/*this,
+        omnibox_controller_.get());
+    omnibox_popup_presenter_ = presenter.get();
+    auto popup_view = std::make_unique<OmniboxPopupViewFullWebUI>(
         /*omnibox_view=*/omnibox_view_.get(),
         /*controller=*/omnibox_controller_.get(), /*location_bar=*/this,
-        /*presenter_delegate=*/*this);
+        std::move(presenter));
+    popup_view->set_presenter(omnibox_popup_presenter_);
+    omnibox_popup_view_ = std::move(popup_view);
   } else {
-    omnibox_popup_view_ = std::make_unique<OmniboxPopupViewWebUI>(
+    auto presenter = std::make_unique<OmniboxPopupPresenter>(
+        /*location_bar=*/this, /*presenter_delegate=*/*this,
+        omnibox_controller_.get());
+    omnibox_popup_presenter_ = presenter.get();
+    auto popup_view = std::make_unique<OmniboxPopupViewWebUI>(
         /*omnibox_view=*/omnibox_view_.get(), omnibox_controller_.get(),
-        /*location_bar=*/this, /*presenter_delegate=*/*this);
+        /*location_bar=*/this, std::move(presenter));
+    popup_view->set_presenter(omnibox_popup_presenter_);
+    omnibox_popup_view_ = std::move(popup_view);
   }
 
   // This location bar implementation isn't used with web apps or devtools
@@ -260,9 +279,33 @@ void WebUILocationBar::PropagateFocusRequest(
 }
 
 void WebUILocationBar::OpenOmniboxIfFullPopup(bool query_zps) {
-  if (using_full_popup_ && !in_popup_state_transition_) {
-    omnibox_popup_view_->OnFocus(query_zps, /*select_all=*/false,
-                                 /*show_full_url=*/false);
+  if (!using_full_popup_) {
+    return;
+  }
+  // `in_popup_state_transition_` debounces popup show/hide races for a short
+  // time after the popup state changes. Handing focus back to a popup that is
+  // already open for a focused omnibox doesn't change the popup state, so it
+  // is not such a race. Dropping it would leave the omnibox focused but the
+  // popup inactive, e.g. when the browser window takes activation (restoring
+  // focus to the toolbar) right after the popup opened.
+  const bool popup_open_for_focused_omnibox =
+      omnibox_controller_ && omnibox_controller_->edit_model()->has_focus() &&
+      omnibox_controller_->popup_state_manager()->popup_state() ==
+          OmniboxPopupState::kFull;
+  if (in_popup_state_transition_ && !popup_open_for_focused_omnibox) {
+    return;
+  }
+  omnibox_popup_view_->OnFocus(query_zps, /*select_all=*/false,
+                               /*show_full_url=*/false);
+}
+
+void WebUILocationBar::OnOmniboxFocusChanged(bool focused) {
+  // Focus state affects whether AI mode button is visible or not.
+  RefreshAiModePageAction();
+
+  // Lets a popup that creates its content on demand start loading it.
+  if (focused && omnibox_popup_view_ && omnibox_popup_view_->popup_host()) {
+    omnibox_popup_view_->popup_host()->OnOmniboxFocused();
   }
 }
 
@@ -300,15 +343,7 @@ void WebUILocationBar::SetFocusWithin(bool focused) {
     return;
   }
   focus_within_ = focused;
-
-  // Focus state affects whether AI mode button is visible or not.
-  RefreshAiModePageAction();
-
-  // Lets a popup that creates its content on demand start loading it.
-  if (focused && omnibox_popup_view_ && omnibox_popup_view_->presenter()) {
-    omnibox_popup_view_->presenter()->OnOmniboxFocused();
-  }
-
+  OnOmniboxFocusChanged(focused);
   NotifyFocusChanged();
 }
 
@@ -448,7 +483,7 @@ bool WebUILocationBar::ShouldCloseOmniboxPopup(ui::MouseEvent* event) {
 
   // The outer view may be null while the popup is hidden and its widget has
   // been released, in which case the event can't have targeted the popup.
-  auto* const outer_view = omnibox_popup_view_->presenter()->GetOuterView();
+  auto* const outer_view = omnibox_popup_presenter_->GetOuterView();
   if (outer_view && outer_view->Contains(view)) {
     return false;
   }
@@ -610,13 +645,30 @@ gfx::Rect WebUILocationBar::BoundsInScreen() const {
 }
 
 gfx::Size WebUILocationBar::MinimumSize() const {
-  // TODO(crbug.com/474060468): Proper calculation.
-  return gfx::Size(300, 34);
+  // This matches how LocationBarView calculates it. This value must be greater
+  // than TypeScript's `LocationBarElement.LOCATION_BAR_MIN_WIDTH` so that we
+  // can still force some controls to be not overflowed even when the browser
+  // window is shrunk to its minimum width.
+  return gfx::Size(PreferredSize().width() / 2, 34);
 }
 
 gfx::Size WebUILocationBar::PreferredSize() const {
-  // TODO(crbug.com/474060468): Proper calculation.
-  return gfx::Size(400, 34);
+  // These values match the preferred width of the Views LocationBarView on each
+  // platform, and must match TypeScript's
+  // `LocationBarElement.LOCATION_BAR_PREFERRED_WIDTH` in
+  // chrome/browser/resources/webui_toolbar/location_bar.ts.
+#if BUILDFLAG(IS_WIN)
+  constexpr int kPreferredWidth = 258;
+#elif BUILDFLAG(IS_MAC)
+  constexpr int kPreferredWidth = 292;
+#elif BUILDFLAG(IS_LINUX)
+  constexpr int kPreferredWidth = 358;
+#elif BUILDFLAG(IS_CHROMEOS)
+  constexpr int kPreferredWidth = 284;
+#else
+#error "Unsupported platform"
+#endif
+  return gfx::Size(kPreferredWidth, 34);
 }
 
 void WebUILocationBar::Update(content::WebContents* contents) {
@@ -886,13 +938,9 @@ void WebUILocationBar::ShowPageInfoBubble() {
     return;
   }
 
-  ui::TrackedElement* anchor_element =
-      !ShouldChipOverrideLocationIcon()
-          ? BrowserElements::From(browser_)->GetElement(kLocationIconElementId)
-          : nullptr;
-  if (!anchor_element) {
-    anchor_element = GetAnchorOrNull();
-  }
+  // Anchor to the whole location bar, like `LocationBarView`. The location
+  // icon is only highlighted.
+  ui::TrackedElement* location_bar_element = GetAnchorOrNull();
 
   base::OnceClosure initialized_callback =
       GetPageInfoDialogCreatedCallbackForTesting()                   // IN-TEST
@@ -901,8 +949,9 @@ void WebUILocationBar::ShowPageInfoBubble() {
 
   std::unique_ptr<PageInfoBubbleSpecification> specification =
       PageInfoBubbleSpecification::Builder(
-          anchor_element ? views::BubbleAnchor(anchor_element)
-                         : views::BubbleAnchor(toolbar_delegate_->GetView()),
+          location_bar_element
+              ? views::BubbleAnchor(location_bar_element)
+              : views::BubbleAnchor(toolbar_delegate_->GetView()),
           toolbar_delegate_->GetView()->GetWidget()->GetNativeWindow(),
           contents, entry->GetVirtualURL())
           .AddInitializedCallback(std::move(initialized_callback))
@@ -958,6 +1007,20 @@ void WebUILocationBar::HandleFocusRequestForFullPopup(
       static_cast<OmniboxPopupViewFullWebUI*>(omnibox_popup_view_.get())
           ->is_focused();
 
+  if (omnibox_popup_view_->IsPopupHandlerReady()) {
+    const bool is_search =
+        target == toolbar_ui_api::mojom::FocusRequestTarget::kSearch;
+    omnibox_popup_view_->OnFocus(
+        /*query_zps=*/is_user_initiated && !is_search,
+        /*select_all=*/is_user_initiated || !omnibox_already_focused,
+        /*show_full_url=*/target == toolbar_ui_api::mojom::FocusRequestTarget::
+                                        kLocationBarUserInitiated);
+    if (is_search) {
+      omnibox_popup_view_->FocusSearchWithDefaultSearchEngineKeywordMode();
+    }
+    return;
+  }
+
   if (is_user_initiated) {
     // TODO(crbug.com/546101626): this seems to fail sometimes because of
     // incorrectly set user_input_in_progress() bit.
@@ -979,12 +1042,14 @@ void WebUILocationBar::HandleFocusRequestForFullPopup(
 
   omnibox_popup_view_->OnFocus(is_user_initiated, /*select_all=*/false,
                                /*show_full_url=*/false);
+}
 
-  // TODO(crbug.com/546101626): This is a bit off; there is risk of races
-  // (but that's true overall), and sometimes this side doesn't know about
-  // unelide results.
-  omnibox_popup_view_->SyncNativeStateToWebUI(is_user_initiated,
-                                              /*show_full_url=*/false);
+// static
+base::AutoReset<base::TimeDelta>
+WebUILocationBar::SetPopupStateTransitionDurationForTesting(
+    base::TimeDelta duration) {
+  return base::AutoReset<base::TimeDelta>(&g_popup_state_transition_duration,
+                                          duration);
 }
 
 void WebUILocationBar::SetSuppressionThresholdForTesting(
@@ -1049,6 +1114,13 @@ void WebUILocationBar::OnLhsChipDrag(
     ui::mojom::DragEventSource source) {
   if (identifier != toolbar_ui_api::mojom::LhsChipIdentifier::kLocationIcon) {
     return;
+  }
+
+  // Like LocationBarView::OnLocationIconDragged(), close the popup, so that it
+  // does not cover the drop target, even if there is nothing to drag.
+  if (auto* popup_closer = omnibox::OmniboxPopupCloser::From(browser_.get())) {
+    popup_closer->CloseWithReason(
+        omnibox::PopupCloseReason::kLocationIconDragged);
   }
 
   content::WebContents* web_contents = GetWebContents();
@@ -1173,7 +1245,7 @@ void WebUILocationBar::OnPopupStateChanged(OmniboxPopupState old_state,
       FROM_HERE,
       base::BindOnce(&WebUILocationBar::ClearInPopupStateTransition,
                      weak_ptr_factory_.GetWeakPtr()),
-      base::Milliseconds(100));
+      g_popup_state_transition_duration);
 
   if (browser_ && base::FeatureList::IsEnabled(
                       features::kGlicHandoffButtonHideWhenOmniboxPopupOpened)) {
@@ -1205,8 +1277,8 @@ void WebUILocationBar::OnPopupStateChanged(OmniboxPopupState old_state,
       }
       break;
     case OmniboxPopupState::kFull:
-      if (omnibox_popup_view_->presenter()) {
-        omnibox_popup_view_->presenter()->Hide();
+      if (omnibox_popup_view_->popup_host()) {
+        omnibox_popup_view_->popup_host()->Hide();
       }
       break;
     case OmniboxPopupState::kAim:
@@ -1225,8 +1297,8 @@ void WebUILocationBar::OnPopupStateChanged(OmniboxPopupState old_state,
       // updating the popup state.
       break;
     case OmniboxPopupState::kFull:
-      if (omnibox_popup_view_->presenter()) {
-        omnibox_popup_view_->presenter()->Show();
+      if (omnibox_popup_view_->popup_host()) {
+        omnibox_popup_view_->popup_host()->Show();
       }
       break;
     case OmniboxPopupState::kAim:
@@ -1323,17 +1395,17 @@ void WebUILocationBar::ClearInPopupStateTransition() {
 // which ensures the omnibox knows as soon as possible and ignores focus-loss
 // events during the whole time that the embedded permission prompt is showing.
 void WebUILocationBar::SetPermissionPromptShowing(bool showing) {
-  OmniboxPopupPresenterBase* presenter = nullptr;
-  // Get Omnibox popup presenter for AIM or normal omnibox, depending
-  // on which is showing.
+  OmniboxPopupHost* popup_host = nullptr;
+  // Get Omnibox popup host for AIM or normal omnibox, depending on which is
+  // showing.
   if (omnibox_popup_aim_presenter_ && omnibox_popup_aim_presenter_->IsShown()) {
-    presenter = omnibox_popup_aim_presenter_.get();
-  } else if (GetOmniboxPopupView() && GetOmniboxPopupView()->presenter() &&
-             GetOmniboxPopupView()->presenter()->IsShown()) {
-    presenter = GetOmniboxPopupView()->presenter();
+    popup_host = omnibox_popup_aim_presenter_.get();
+  } else if (GetOmniboxPopupView() && GetOmniboxPopupView()->popup_host() &&
+             GetOmniboxPopupView()->popup_host()->IsShown()) {
+    popup_host = GetOmniboxPopupView()->popup_host();
   }
-  if (presenter) {
-    presenter->SetPermissionPromptShowing(showing);
+  if (popup_host) {
+    popup_host->SetPermissionPromptShowing(showing);
   }
 }
 

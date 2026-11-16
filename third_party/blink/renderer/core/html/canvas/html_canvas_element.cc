@@ -228,6 +228,25 @@ class DisabledAccelerationCounterSupplement final
   bool acceleration_disabled_ = false;
 };
 
+bool CanvasMatches(
+    HTMLCanvasElement& canvas,
+    const V8UnionElementOrElementImage* element_or_element_image) {
+  if (element_or_element_image->IsElement()) {
+    return element_or_element_image->GetAsElement()->CanvasForDrawing() ==
+           &canvas;
+  } else if (element_or_element_image->IsElementImage()) {
+    auto* element_image = element_or_element_image->GetAsElementImage();
+    if (element_image->GetCanvasNodeId() != canvas.GetDomNodeId()) {
+      return false;
+    }
+    if (Element* element = DynamicTo<Element>(
+            DOMNodeIds::NodeForId(element_image->GetNodeId()))) {
+      return element->CanvasForDrawing() == &canvas;
+    }
+  }
+  return false;
+}
+
 // static
 const char DisabledAccelerationCounterSupplement::kSupplementName[] =
     "DisabledAccelerationCounterSupplement";
@@ -607,12 +626,6 @@ CanvasRenderingContext* HTMLCanvasElement::GetCanvasRenderingContextInternal(
   if (!IsRenderingContext2D())
     SetNeedsCompositingUpdate();
 
-  is_opaque_ = IsOpaque();
-  if (cc_layer_) {
-    cc_layer_->SetContentsOpaque(is_opaque_);
-    cc_layer_->SetBlendBackgroundColor(!is_opaque_);
-  }
-
   return context_.Get();
 }
 
@@ -727,6 +740,7 @@ void HTMLCanvasElement::PostFinalizeFrame(FlushReason reason) {
       dirty_rect_.Intersect(src_rect);
       frame_dispatcher_->DispatchFrame(std::move(exported_resource),
                                        dirty_rect_, IsOpaque());
+      NotifyOutOfBandFrame();
       dirty_rect_ = gfx::Rect();
     }
   }
@@ -1074,23 +1088,11 @@ void HTMLCanvasElement::updateElementGeometry(
     const V8UnionElementOrElementImage* element_or_element_image,
     const UpdateElementGeometryOptions* options,
     ExceptionState& exception_state) {
-  Element* element = nullptr;
-  if (element_or_element_image->IsElement()) {
-    element = element_or_element_image->GetAsElement();
-  } else if (element_or_element_image->IsElementImage()) {
-    element = DynamicTo<Element>(DOMNodeIds::NodeForId(
-        element_or_element_image->GetAsElementImage()->GetNodeId()));
-    if (!element) {
-      exception_state.ThrowDOMException(
-          DOMExceptionCode::kInvalidStateError,
-          "Could not find live Element associated with the given "
-          "ElementImage.");
-      return;
-    }
-  }
-
-  if (!VerifyDrawElementImageEligibility(element, "updateElementGeometry",
-                                         exception_state)) {
+  if (!CanvasMatches(*this, element_or_element_image)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "updateElementGeometry can only be called on an element's nearest "
+        "ancestor <canvas>.");
     return;
   }
 
@@ -1123,12 +1125,27 @@ void HTMLCanvasElement::updateElementGeometry(
     }
   }
 
-  UpdateDrawnElementGeometry(*element, transform_ptr, clip_ptr,
-                             !options->preserveHitTestOrder());
+  if (element_or_element_image->IsElement()) {
+    UpdateDrawnElementGeometry(*element_or_element_image->GetAsElement(),
+                               transform_ptr, clip_ptr,
+                               !options->preserveHitTestOrder());
+  } else if (element_or_element_image->IsElementImage()) {
+    UpdateDrawnElementGeometry(*element_or_element_image->GetAsElementImage(),
+                               transform_ptr, clip_ptr,
+                               !options->preserveHitTestOrder());
+  }
 }
 
 void HTMLCanvasElement::clearElementGeometry(
-    const V8UnionElementOrElementImage* element_or_element_image) {
+    const V8UnionElementOrElementImage* element_or_element_image,
+    ExceptionState& exception_state) {
+  if (!CanvasMatches(*this, element_or_element_image)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "clearElementGeometry can only be called on an element's nearest "
+        "ancestor <canvas>.");
+    return;
+  }
   if (element_or_element_image->IsElement()) {
     ClearDrawnElementGeometry(*element_or_element_image->GetAsElement());
   } else if (element_or_element_image->IsElementImage()) {
@@ -1148,6 +1165,16 @@ bool HTMLCanvasElement::PaintsIntoCanvasBuffer() const {
     return false;
 
   return true;
+}
+
+void HTMLCanvasElement::NotifyOutOfBandFrame() {
+  cc::Layer* cc_layer = ContentsCcLayer();
+  if (!cc_layer) {
+    return;
+  }
+  if (cc::LayerTreeHost* host = cc_layer->layer_tree_host()) {
+    host->NotifyOutOfBandFrame();
+  }
 }
 
 void HTMLCanvasElement::NotifyListenersCanvasChanged() {
@@ -1298,6 +1325,7 @@ void HTMLCanvasElement::Paint(GraphicsContext& context,
         OffscreenCanvasFrame()->Bitmap()->MakeUnaccelerated();
     if (!image_for_printing)
       return;
+    image_for_printing->SetOriginClean(OriginClean());
     context.DrawImage(*image_for_printing, Image::kSyncDecode,
                       ImageAutoDarkMode::Disabled(), ReportPaintTiming::kReport,
                       gfx::RectF(ToPixelSnappedRect(r)));
@@ -1336,11 +1364,15 @@ void HTMLCanvasElement::PaintInternal(GraphicsContext& context,
         RenderingContext()->GetLastRecording();
     if (last_recording.has_value() &&
         filter_quality_ != cc::PaintFlags::FilterQuality::kNone) {
+      cc::PaintRecord record = *last_recording;
+      if (!OriginClean()) {
+        record.SetIsReadBackDisallowed();
+      }
       context.Canvas()->save();
       context.Canvas()->translate(r.X(), r.Y());
       context.Canvas()->scale(r.Width() / Size().width(),
                               r.Height() / Size().height());
-      context.Canvas()->drawPicture(*last_recording);
+      context.Canvas()->drawPicture(std::move(record));
       context.Canvas()->restore();
       UMA_HISTOGRAM_BOOLEAN("Blink.Canvas.2DPrintingAsVector", true);
       return;
@@ -1361,6 +1393,7 @@ void HTMLCanvasElement::PaintInternal(GraphicsContext& context,
 
     // GraphicsContext cannot handle gpu resource serialization.
     snapshot = snapshot->MakeUnaccelerated();
+    snapshot->SetOriginClean(OriginClean());
     DCHECK(!snapshot->IsTextureBacked());
     context.DrawImage(*snapshot, Image::kSyncDecode,
                       ImageAutoDarkMode::Disabled(), ReportPaintTiming::kReport,
@@ -1530,7 +1563,6 @@ void HTMLCanvasElement::toBlob(V8BlobCallback* callback,
     return;
   }
 
-  base::TimeTicks start_time = base::TimeTicks::Now();
   double quality = kUndefinedQualityValue;
   if (!quality_argument.IsEmpty()) {
     v8::Local<v8::Value> v8_value = quality_argument.V8Value();
@@ -1548,7 +1580,7 @@ void HTMLCanvasElement::toBlob(V8BlobCallback* callback,
     options->setType(ImageEncoderUtils::MimeTypeName(encoding_mime_type));
     async_creator = MakeGarbageCollected<CanvasAsyncBlobCreator>(
         image_bitmap, options,
-        CanvasAsyncBlobCreator::kHTMLCanvasToBlobCallback, callback, start_time,
+        CanvasAsyncBlobCreator::kHTMLCanvasToBlobCallback, callback,
         GetExecutionContext());
   }
 
@@ -1607,6 +1639,17 @@ bool HTMLCanvasElement::OriginClean() const {
     return OffscreenCanvasFrame()->OriginClean();
   }
   return origin_clean_;
+}
+
+void HTMLCanvasElement::SetOriginTainted() {
+  const bool was_origin_clean = OriginClean();
+  origin_clean_ = false;
+  // Notify the accessibility manager only on the clean-to-tainted transition so
+  // repeated draws on an already-tainted canvas do not re-dirty the AX tree on
+  // every frame.
+  if (was_origin_clean && accessibility_manager_) {
+    accessibility_manager_->OnOriginTainted();
+  }
 }
 
 bool HTMLCanvasElement::ShouldAccelerate2dContext() const {
@@ -1761,8 +1804,9 @@ cc::TextureLayer* HTMLCanvasElement::GetOrCreateCcLayerForCanvas2DIfNeeded() {
     InitializeLayerWithCSSProperties(cc_layer_.get());
     cc_layer_->SetIsDrawable(true);
     cc_layer_->SetHitTestable(true);
-    cc_layer_->SetContentsOpaque(is_opaque_);
-    cc_layer_->SetBlendBackgroundColor(!is_opaque_);
+    const bool is_opaque = context_->IsOpaque();
+    cc_layer_->SetContentsOpaque(is_opaque);
+    cc_layer_->SetBlendBackgroundColor(!is_opaque);
   }
   return cc_layer_.get();
 }
@@ -2056,18 +2100,31 @@ ScriptPromise<ImageBitmap> HTMLCanvasElement::CreateImageBitmap(
 }
 
 void HTMLCanvasElement::SetOffscreenCanvasResource(
-    scoped_refptr<ExportedCanvasResource>&& image) {
+    scoped_refptr<ExportedCanvasResource> image) {
+  const bool was_origin_clean = OriginClean();
   OffscreenCanvasPlaceholder::SetOffscreenCanvasResource(std::move(image));
   SetSize(OffscreenCanvasFrame()->Size());
+  NotifyOutOfBandFrame();
   NotifyListenersCanvasChanged();
 
-  if (accessibility_manager_ &&
-      accessibility_manager_->ShouldCaptureRenderedText()) {
-    accessibility_manager_->UpdateAnnotation();
+  if (accessibility_manager_) {
+    // OffscreenCanvas taint state is carried per-frame on the exported resource
+    // without calling HTMLCanvasElement::SetOriginTainted(), so notify the
+    // manager whenever an incoming frame transitions the placeholder to
+    // tainted.
+    if (was_origin_clean && !OriginClean()) {
+      accessibility_manager_->OnOriginTainted();
+    }
+    if (accessibility_manager_->ShouldCaptureRenderedText()) {
+      accessibility_manager_->UpdateAnnotation();
+    }
   }
 }
 
 bool HTMLCanvasElement::IsOpaque() const {
+  if (!IsPaintable() || ContextHasOpenLayers(context_)) {
+    return false;
+  }
   return RenderingContext() && RenderingContext()->IsOpaque();
 }
 

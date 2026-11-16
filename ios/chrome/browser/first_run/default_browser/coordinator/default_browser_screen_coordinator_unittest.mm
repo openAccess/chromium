@@ -9,9 +9,11 @@
 #import <utility>
 #import <vector>
 
+#import "base/apple/foundation_util.h"
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
 #import "base/metrics/field_trial.h"
+#import "base/metrics/field_trial_params.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/run_until.h"
 #import "base/test/scoped_command_line.h"
@@ -41,12 +43,16 @@
 #import "ios/chrome/browser/signin/model/fake_system_identity_manager.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/test_sync_service_utils.h"
+#import "ios/chrome/grit/ios_branded_strings.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/chrome/test/providers/switcher_info/test_switcher_info.h"
 #import "ios/public/provider/chrome/browser/switcher_info/switcher_info_api.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
+#import "ui/base/device_form_factor.h"
+#import "ui/base/l10n/l10n_util.h"
 
 // Test implementation of `FirstRunScreenDelegate`.
 @interface DefaultBrowserFirstRunScreenTestDelegate
@@ -132,16 +138,35 @@ class DefaultBrowserScreenCoordinatorTest : public PlatformTest {
     }
   }
 
-  // Enables `variation` of `kAndroidSwitcherDefaultBrowserPromoInFRE` and
-  // disables the animated promo.
+  // Returns the parameter string corresponding to `arm`.
+  const char* ArmParamValue(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREArm arm) {
+    switch (arm) {
+      case first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::
+          kGoogleEcosystem:
+        return first_run::
+            kAndroidSwitcherDefaultBrowserPromoInFREArmGoogleEcosystem;
+      case first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::kHybrid:
+        return first_run::kAndroidSwitcherDefaultBrowserPromoInFREArmHybrid;
+    }
+  }
+
+  // Enables `variation` (and optional `arm`) of
+  // `kAndroidSwitcherDefaultBrowserPromoInFRE` and disables the animated promo.
   void EnableVariation(
-      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType
-          variation) {
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType variation,
+      std::optional<first_run::AndroidSwitcherDefaultBrowserPromoInFREArm> arm =
+          std::nullopt) {
+    base::FieldTrialParams params = {
+        {first_run::kAndroidSwitcherDefaultBrowserPromoInFREParam,
+         VariationParamValue(variation)}};
+    if (arm.has_value()) {
+      params[first_run::kAndroidSwitcherDefaultBrowserPromoInFREArmParam] =
+          ArmParamValue(*arm);
+    }
     scoped_feature_list_.InitWithFeaturesAndParameters(
         /*enabled_features=*/
-        {{first_run::kAndroidSwitcherDefaultBrowserPromoInFRE,
-          {{first_run::kAndroidSwitcherDefaultBrowserPromoInFREParam,
-            VariationParamValue(variation)}}}},
+        {{first_run::kAndroidSwitcherDefaultBrowserPromoInFRE, params}},
         /*disabled_features=*/{first_run::kAnimatedDefaultBrowserPromoInFRE});
   }
 
@@ -171,6 +196,41 @@ class DefaultBrowserScreenCoordinatorTest : public PlatformTest {
         initWithBaseNavigationController:navigation_controller_
                                  browser:browser_.get()
                                 delegate:delegate_];
+  }
+
+  // Verifies that the top view controller is an Android Switcher promo
+  // configured with `expected_title` and the switcher subtitle.
+  void ExpectAndroidSwitcherCopy(NSString* expected_title) {
+    UIViewController* presented_view_controller =
+        navigation_controller_.topViewController;
+    ASSERT_TRUE([presented_view_controller
+        isMemberOfClass:[DefaultBrowserAndroidSwitcherScreenViewController
+                            class]]);
+    DefaultBrowserAndroidSwitcherScreenViewController*
+        switcher_view_controller = base::apple::ObjCCastStrict<
+            DefaultBrowserAndroidSwitcherScreenViewController>(
+            presented_view_controller);
+    [switcher_view_controller loadViewIfNeeded];
+    EXPECT_NSEQ(
+        switcher_view_controller.view.accessibilityIdentifier,
+        first_run::
+            kFirstRunDefaultBrowserAndroidSwitcherScreenAccessibilityIdentifier);
+    EXPECT_NSEQ(switcher_view_controller.titleText, expected_title);
+    EXPECT_NSEQ(
+        switcher_view_controller.subtitleText,
+        l10n_util::GetNSString(
+            IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_SUBTITLE));
+  }
+
+  // Verifies that the top view controller is an Android Switcher promo
+  // configured with the Google Ecosystem copy.
+  void ExpectGoogleEcosystemCopy() {
+    const bool uses_tablet =
+        ui::GetDeviceFormFactor() == ui::DEVICE_FORM_FACTOR_TABLET;
+    ExpectAndroidSwitcherCopy(l10n_util::GetNSString(
+        uses_tablet
+            ? IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE_IPAD
+            : IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE));
   }
 
   // Verifies the recorded segmentation result and latency histograms.
@@ -286,19 +346,49 @@ TEST_F(DefaultBrowserScreenCoordinatorTest,
 
   [coordinator_ start];
 
-  UIViewController* presented_view_controller =
-      navigation_controller_.topViewController;
-  ASSERT_TRUE([presented_view_controller
-      isMemberOfClass:[DefaultBrowserAndroidSwitcherScreenViewController
-                          class]]);
-  [presented_view_controller loadViewIfNeeded];
-  EXPECT_NSEQ(
-      presented_view_controller.view.accessibilityIdentifier,
-      first_run::
-          kFirstRunDefaultBrowserAndroidSwitcherScreenAccessibilityIdentifier);
+  ExpectGoogleEcosystemCopy();
   ExpectSignalMetrics(
       first_run::DefaultBrowserPromoSegmentationResult::kAndroidSwitcher,
       /*is_success=*/true);
+}
+
+// Tests that explicitly selecting the Google Ecosystem arm parameter configures
+// the Google Ecosystem title and switcher subtitle.
+TEST_F(DefaultBrowserScreenCoordinatorTest,
+       PresentsGoogleEcosystemArmCopyWhenSelected) {
+  EnableVariation(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+          kSegmentationSignal,
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::kGoogleEcosystem);
+  ConfigureSegmentationLabels(std::vector<std::string>{
+      segmentation_platform::DeviceSwitcherModel::kAndroidPhoneLabel});
+  SignIn();
+
+  [coordinator_ start];
+
+  EXPECT_EQ(
+      first_run::GetAndroidSwitcherDefaultBrowserPromoInFREArm(),
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::kGoogleEcosystem);
+  ExpectGoogleEcosystemCopy();
+}
+
+// Tests that explicitly selecting the Hybrid arm parameter configures the
+// Hybrid title and switcher subtitle.
+TEST_F(DefaultBrowserScreenCoordinatorTest, PresentsHybridArmCopyWhenSelected) {
+  EnableVariation(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+          kSegmentationSignal,
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::kHybrid);
+  ConfigureSegmentationLabels(std::vector<std::string>{
+      segmentation_platform::DeviceSwitcherModel::kAndroidPhoneLabel});
+  SignIn();
+
+  [coordinator_ start];
+
+  EXPECT_EQ(first_run::GetAndroidSwitcherDefaultBrowserPromoInFREArm(),
+            first_run::AndroidSwitcherDefaultBrowserPromoInFREArm::kHybrid);
+  ExpectAndroidSwitcherCopy(l10n_util::GetNSString(
+      IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_HYBRID_TITLE));
 }
 
 // Tests that enabling `kAndroidSwitcherDefaultBrowserPromoInFRE` without
@@ -410,7 +500,8 @@ TEST_F(DefaultBrowserScreenCoordinatorTest,
 }
 
 // Tests that when the forced device switcher flag is set to `AndroidPhone`, the
-// Android Switcher promo is presented without recording segmentation metrics.
+// Android Switcher promo is presented and `kAndroidSwitcher` with success
+// latency is recorded.
 TEST_F(DefaultBrowserScreenCoordinatorTest,
        PresentsAndroidSwitcherPromoWhenForcedDeviceSwitcherFlagSet) {
   EnableVariation(
@@ -427,8 +518,33 @@ TEST_F(DefaultBrowserScreenCoordinatorTest,
   EXPECT_TRUE([navigation_controller_.topViewController
       isMemberOfClass:[DefaultBrowserAndroidSwitcherScreenViewController
                           class]]);
-  histogram_tester_.ExpectTotalCount(
-      first_run::kDefaultBrowserPromoSegmentationResultHistogram, 0);
+  ExpectSignalMetrics(
+      first_run::DefaultBrowserPromoSegmentationResult::kAndroidSwitcher,
+      /*is_success=*/true);
+}
+
+// Tests that when the forced device switcher flag is set to a non-Android
+// segment, the standard promo is presented and `kNotAndroidSwitcher` with
+// success latency is recorded.
+TEST_F(
+    DefaultBrowserScreenCoordinatorTest,
+    PresentsStandardPromoWhenForcedDeviceSwitcherFlagSetToNonAndroidSegment) {
+  EnableVariation(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+          kSegmentationSignal);
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      "force-device-switcher-experience",
+      segmentation_platform::DeviceSwitcherModel::kDesktopLabel);
+  SignIn();
+
+  [coordinator_ start];
+
+  EXPECT_TRUE([navigation_controller_.topViewController
+      isMemberOfClass:[DefaultBrowserScreenViewController class]]);
+  ExpectSignalMetrics(
+      first_run::DefaultBrowserPromoSegmentationResult::kNotAndroidSwitcher,
+      /*is_success=*/true);
 }
 
 // Tests that the animated Default Browser promo takes precedence when both the
@@ -701,6 +817,60 @@ TEST_F(DefaultBrowserScreenCoordinatorTest,
   EXPECT_EQ(navigation_controller_.topViewController, nil);
   histogram_tester_.ExpectTotalCount(
       first_run::kDefaultBrowserPromoSegmentationResultHistogram, 0);
+}
+
+// Tests that when the switcher info signal variation is enabled and the forced
+// device switcher flag is set to `AndroidPhone`, the Android Switcher promo is
+// presented and `kAndroidSwitcher` with success latency is recorded even if the
+// provider returns `std::nullopt`.
+TEST_F(
+    DefaultBrowserScreenCoordinatorTest,
+    PresentsAndroidSwitcherPromoWhenForcedDeviceSwitcherFlagSetInSwitcherInfo) {
+  EnableVariation(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+          kSwitcherInfoSignal);
+  ios::provider::test::SetSwitcherInfoResult(std::nullopt);
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      "force-device-switcher-experience",
+      segmentation_platform::DeviceSwitcherModel::kAndroidPhoneLabel);
+  AddIdentityOnDevice();
+
+  [coordinator_ start];
+
+  EXPECT_TRUE([navigation_controller_.topViewController
+      isMemberOfClass:[DefaultBrowserAndroidSwitcherScreenViewController
+                          class]]);
+  ExpectSignalMetrics(
+      first_run::DefaultBrowserPromoSegmentationResult::kAndroidSwitcher,
+      /*is_success=*/true);
+}
+
+// Tests that when the switcher info signal variation is enabled and the forced
+// device switcher flag is set to a non-Android segment, the standard promo is
+// presented and `kNotAndroidSwitcher` with success latency is recorded.
+TEST_F(
+    DefaultBrowserScreenCoordinatorTest,
+    PresentsStandardPromoWhenForcedNonAndroidDeviceSwitcherFlagSetInSwitcherInfo) {
+  EnableVariation(
+      first_run::AndroidSwitcherDefaultBrowserPromoInFREVariationType::
+          kSwitcherInfoSignal);
+  ios::provider::test::SetSwitcherInfoResult(ios::provider::SwitcherInfoResult{
+      .switcher_status = ios::provider::SwitcherStatus::kSwitcher,
+      .is_chrome_user = true});
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      "force-device-switcher-experience",
+      segmentation_platform::DeviceSwitcherModel::kDesktopLabel);
+  AddIdentityOnDevice();
+
+  [coordinator_ start];
+
+  EXPECT_TRUE([navigation_controller_.topViewController
+      isMemberOfClass:[DefaultBrowserScreenViewController class]]);
+  ExpectSignalMetrics(
+      first_run::DefaultBrowserPromoSegmentationResult::kNotAndroidSwitcher,
+      /*is_success=*/true);
 }
 
 }  // namespace

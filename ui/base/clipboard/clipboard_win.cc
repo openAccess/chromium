@@ -1085,7 +1085,10 @@ void ClipboardWin::WriteFilenames(std::vector<ui::FileInfo> filenames) {
   WriteToClipboard(ClipboardFormatType::CFHDropType(), storage.hGlobal);
 }
 
-void ClipboardWin::WriteURL(const ClipboardUrlInfo& url_info) {
+void ClipboardWin::WriteURLs(base::span<const ClipboardUrlInfo> url_infos) {
+  // TODO(crbug.com/563067141): Write all URLs. Only the first one is written
+  // for now.
+  const auto& url_info = url_infos.front();
   // On Windows, CFSTR_INETURLW is expected to only contain the URL & not the
   // title separated by a newline.
   // https://docs.microsoft.com/en-us/windows/win32/shell/clipboard#cfstr_ineturl.
@@ -1403,9 +1406,10 @@ void ClipboardWin::WriteToClipboard(ClipboardFormatType format, HANDLE handle) {
   UINT cf_format = format.ToFormatEtc().cfFormat;
   CHECK_NE(clipboard_owner_->hwnd(), nullptr, base::NotFatalUntil::M163);
   if (handle && !::SetClipboardData(cf_format, handle)) {
-    CHECK_NE(GetLastError(),
-             static_cast<unsigned long>(ERROR_CLIPBOARD_NOT_OPEN),
-             base::NotFatalUntil::M163);
+    // TODO(crbug.com/583027040): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK_NE(GetLastError(),
+              static_cast<unsigned long>(ERROR_CLIPBOARD_NOT_OPEN));
     ::GlobalFree(handle);
   }
 }

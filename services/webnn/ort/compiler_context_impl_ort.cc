@@ -34,11 +34,6 @@ base::unexpected<mojom::ErrorPtr> BuildGraphError() {
                                             "Failed to build graph."));
 }
 
-EpWorkarounds GetEpWorkaroundsForEp(std::string_view ep_name) {
-  const auto iter = kKnownEPs.find(ep_name);
-  return iter != kKnownEPs.end() ? iter->second.workarounds : EpWorkarounds();
-}
-
 }  // namespace
 
 struct CompilerContextImplOrt::CompilationResult {
@@ -128,10 +123,11 @@ CompilerContextImplOrt::CompileOnBackgroundThread(
     base::flat_map<OperandId, std::unique_ptr<WebNNConstantOperand>>
         constant_operands) {
   // Step 1: Build the ORT model from GraphInfo.
-  std::unique_ptr<ModelEditor::ModelInfo> model_info =
+  ASSIGN_OR_RETURN(
+      std::unique_ptr<ModelEditor::ModelInfo> model_info,
       GraphBuilderOrt::CreateAndBuild(
           *graph_info, std::move(context_properties), std::move(ep_workarounds),
-          std::move(constant_operands));
+          std::move(constant_operands)));
 
   // Step 2: Compile the model using ORT Compile API.
   const OrtApi* ort_api = PlatformFunctions::GetInstance()->ort_api();

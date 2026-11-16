@@ -22,7 +22,7 @@ import type {BigBuffer} from '//resources/mojo/mojo/public/mojom/base/big_buffer
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from '//resources/mojo/url/mojom/url.mojom-webui.js';
 
-import {ComposeboxFile, ComposeboxFileValidationError, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, FILE_VALIDATION_ERRORS_MAP, getFileMimeType, getLoadTimeBoolean, isContextUploadStatusTerminal, isValidTabId, ProcessFilesError, recordBoolean, recordContextAdditionMethod, recordContextualElementClickedMetric, recordEnumerationValue, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordRichImageSuggestClicked, recordSingleTabMenuItemAction, recordToolModeSelection, recordToolModeShown, recordUserAction, SingleTabMenuItemAction, SingleTabType, SubmitButtonIconType, TabSuggestionsState, VoiceSearchAction} from './common.js';
+import {ComposeboxFile, ComposeboxFileValidationError, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, FILE_VALIDATION_ERRORS_MAP, getFileMimeType, getLoadTimeBoolean, getLoadTimeInteger, isContextUploadStatusTerminal, isHeifImage, isValidTabId, mapUploadErrorToProcessFilesError, ProcessFilesError, recordBoolean, recordContextAdditionMethod, recordContextualElementClickedMetric, recordEnumerationValue, recordInputTypeShown, recordModelModeSelection, recordModelModeShown, recordRichImageSuggestClicked, recordSingleTabMenuItemAction, recordToolModeSelection, recordToolModeShown, recordUserAction, SingleTabMenuItemAction, SingleTabType, SubmitButtonIconType, TabSuggestionsState, VoiceSearchAction} from './common.js';
 import type {BrowserFileUpload, ComposeboxFuseboxActionRequest, ComposeboxState, ContextualUpload, DriveUpload, TabUpload} from './common.js';
 import type {PageHandlerRemote} from './composebox.mojom-webui.js';
 import {AimButtonMode} from './composebox_aim_button.js';
@@ -98,7 +98,6 @@ export const ComposeboxEmbedderMixin =
               reflect: true,
               type: Boolean,
             },
-            shouldShowGhostFiles: {type: Boolean},
             showMenuOnClick: {type: Boolean},
             submitButtonIconType: {type: String},
             isCanvasQuerySubmitted: {type: Boolean},
@@ -240,7 +239,6 @@ export const ComposeboxEmbedderMixin =
             getLoadTimeBoolean('composeboxShowContextMenuDescription', false);
         accessor showContextMenuDescription: boolean =
             this.contextMenuDescriptionEnabled;
-        accessor shouldShowGhostFiles: boolean = false;
         accessor showMenuOnClick: boolean = true;
         accessor isCanvasQuerySubmitted: boolean = false;
         accessor recentTabId: number|null = null;
@@ -255,8 +253,9 @@ export const ComposeboxEmbedderMixin =
             loadTimeData.getBoolean('tabFaviconChipsToCoinsEnabled');
         accessor energyEffectEnabled: boolean = false;
         accessor energyEffectAnimationEnabled: boolean = false;
-        accessor willFulfillInAim: boolean =
-            !getLoadTimeBoolean('dynamicAimFulfillmentEnabled', false);
+        dynamicAimFulfillmentEnabled: boolean =
+            getLoadTimeBoolean('dynamicAimFulfillmentEnabled', false);
+        accessor willFulfillInAim: boolean = !this.dynamicAimFulfillmentEnabled;
 
         browserTabContextAdded: boolean = false;
         pendingAutomaticActiveTabUrl: string = '';
@@ -270,6 +269,10 @@ export const ComposeboxEmbedderMixin =
         maxFileCount: number =
             loadTimeData.getInteger('composeboxFileMaxCount');
         maxFileSize: number = loadTimeData.getInteger('composeboxFileMaxSize');
+        maxImageFileSize: number =
+            getLoadTimeInteger('composeboxImageMaxSize', 20 * 1024 * 1024);
+        limitAllImages: boolean =
+            getLoadTimeBoolean('composeboxLimitAllImages', true);
         attachmentFileTypes: string[] =
             loadTimeData.getString('composeboxAttachmentFileTypes').split(',');
         imageFileTypes: string[] =
@@ -679,29 +682,28 @@ export const ComposeboxEmbedderMixin =
               changedProperties as Map<PropertyKey, unknown>;
           if (changedPrivateProperties.has('selectedMatchIndex')) {
             if (this.selectedMatch &&
-                this.shouldPreviewMatchInInput_(this.selectedMatch)) {
+                this.shouldPreviewMatchInInput_(
+                    this.selectedMatch, this.selectedMatchIndex)) {
               // Update the input.
               if (this.input !== this.selectedMatch.fillIntoEdit) {
                 this.getInputElement().resetHeight();
                 this.input = this.selectedMatch.fillIntoEdit;
               }
-            } else if (!this.lastQueriedInput) {
-              // This is for cases when focus leaves the matches/input or a
-              // match that is not previewed is selected in zero-state.
+            } else if (!this.selectedMatch && !this.lastQueriedInput) {
+              // This is for cases when focus leaves the matches/input in
+              // zero-state.
               // If there was already text in the input do not clear it.
               // Only clear input when not empty, otherwise this impacts
               // suggestions getting fetched for zero state.
               if (this.input) {
                 this.clearInput();
               }
-            } else {
-              // For typed queries reset the input back to typed value when
-              // focus leaves the match or a match that is not previewed is
-              // selected.
-              if (this.input !== this.lastQueriedInput) {
-                this.getInputElement().resetHeight();
-                this.input = this.lastQueriedInput;
-              }
+            } else if (this.input !== this.lastQueriedInput) {
+              // Reset the input back to the last queried value (which is ''
+              // in zero-state) when focus leaves the match or a match that is
+              // not previewed is selected.
+              this.getInputElement().resetHeight();
+              this.input = this.lastQueriedInput;
             }
           }
           if (changedPrivateProperties.has('attachedContext')) {
@@ -936,17 +938,6 @@ export const ComposeboxEmbedderMixin =
 
           const allowedTypes = this.inputState.allowedInputTypes;
           this.attachedContext.forEach((file, uuid) => {
-            // Ghost files are placeholders created from an upload status
-            // update before the frontend learned what the context actually is.
-            // Their `inputType` is a placeholder value, so they must not be
-            // evaluated against the allowed input types; doing so would delete
-            // context that is still being attached and tear down its
-            // browser-side upload. They are re-evaluated once hydrated.
-            // TODO(b/537852029): Remove once ghost files carry a real input
-            // type.
-            if (file.isGhost) {
-              return;
-            }
             if (!allowedTypes.includes(file.inputType)) {
               this.deleteFile(uuid);
             }
@@ -994,7 +985,8 @@ export const ComposeboxEmbedderMixin =
             // change (and therefore `selectedMatch` does not get updated since
             // `onSelectedMatchIndexChanged_` is not called).
             this.selectedMatch = this.result.matches[this.selectedMatchIndex]!;
-            if (this.shouldPreviewMatchInInput_(this.selectedMatch)) {
+            if (this.shouldPreviewMatchInInput_(
+                    this.selectedMatch, this.selectedMatchIndex)) {
               this.input = this.selectedMatch.fillIntoEdit;
             }
           } else {
@@ -1029,9 +1021,12 @@ export const ComposeboxEmbedderMixin =
         // Ideally, the ACController is not sending multiple responses for a
         // single query, especially when the matches is empty. Remove this logic
         // once a long term fix is found.
+        // Note: Carry-over is skipped in tool mode because tool mode does not
+        // support typed suggestions right now. If tool mode ever supports typed
+        // suggestions, `this.inToolMode` must be removed below.
         maybeCarryOverPreviousMatches(result: AutocompleteResult) {
           if (!this.composeboxNoFlickerSuggestionsFix ||
-              !this.showTypedSuggest ||
+              !this.showTypedSuggest || this.inToolMode ||
               this.haveReceivedSynchronousAutocompleteResponse) {
             return;
           }
@@ -1045,8 +1040,15 @@ export const ComposeboxEmbedderMixin =
           // response.
           if (this.result && this.result.matches.length > 0 &&
               result.matches.length <= 1) {
-            result.matches.push(...this.result.matches.filter(
-                match => match.type !== 'search-what-you-typed'));
+            const carriedOverMatches = this.result.matches.filter(
+                match => match.type !== 'search-what-you-typed');
+            if (carriedOverMatches.length > 0) {
+              result.matches.push(...carriedOverMatches);
+              result.suggestionGroupsMap = {
+                ...this.result.suggestionGroupsMap,
+                ...result.suggestionGroupsMap,
+              };
+            }
           }
         }
 
@@ -1054,26 +1056,16 @@ export const ComposeboxEmbedderMixin =
             token: UnguessableToken, status: ContextUploadStatus,
             errorType: ContextUploadErrorType|null) {
           // Statuses arrive on the page pipe, which is not ordered with the
-          // `addTabContext` response. A ghost placeholder created for an
-          // unknown token (see `updateFileStatus()`) is not the real
-          // attachment yet, so a terminal status landing on it must still be
-          // recorded; otherwise `addTabContextHandleCallback()` replaces the
-          // ghost with an in-flight attachment that never completes.
+          // `addTabContext` response or `addSearchContext` attachment handoff.
           const existing = this.attachedContext.get(token);
-          if ((!existing || existing.isGhost) &&
-              isContextUploadStatusTerminal(status)) {
-            this.earlyTerminalUploads.set(token, status);
+          if (!existing) {
+            if (isContextUploadStatusTerminal(status) ||
+                !this.earlyTerminalUploads.has(token)) {
+              this.earlyTerminalUploads.set(token, status);
+            }
+            return;
           }
-          // `kProcessing` means the delayed-tab snapshot is in memory. If the
-          // token is not mapped yet, park it for the `addTabContext()` reply.
-          if (this.shouldWaitForDelayedTabContext() &&
-              this.pendingDelayedTabRequests_.size > 0 &&
-              (!existing || existing.isGhost) &&
-              status === ContextUploadStatus.kProcessing &&
-              !this.earlyTerminalUploads.has(token)) {
-            this.earlyTerminalUploads.set(token, status);
-          }
-          if (existing?.delayUpload && !isContextUploadStatusTerminal(status)) {
+          if (existing.delayUpload && !isContextUploadStatusTerminal(status)) {
             if (status === ContextUploadStatus.kProcessing) {
               // Nothing is uploading before submit, so the snapshot being
               // ready is the terminal state for a delayed tab here.
@@ -1597,7 +1589,6 @@ export const ComposeboxEmbedderMixin =
           // activity, so hide it as soon as the user starts typing.
           const showActivityLink = !this.input && this.result &&
               this.showDropdown && this.result.showAimActivityLink;
-          this.fire('show-suggestion-activity-link', showActivityLink);
           return !!showActivityLink;
         }
 
@@ -1654,20 +1645,14 @@ export const ComposeboxEmbedderMixin =
             // mapped into `attachedContext`. Consume it here; note the
             // `delete()` must run even when the status is unused, so that it
             // is not left behind for a later tab that reuses the token.
-            const existingStatus =
-                this.attachedContext.get(token)?.status ?? null;
-            const earlyStatus = this.earlyTerminalUploads.get(token) ??
-                (existingStatus !== null &&
-                         isContextUploadStatusTerminal(existingStatus) ?
-                     existingStatus :
-                     null);
+            const cachedStatus = this.earlyTerminalUploads.get(token) ?? null;
             this.earlyTerminalUploads.delete(token);
+            const earlyStatus = cachedStatus !== null &&
+                    isContextUploadStatusTerminal(cachedStatus) ?
+                cachedStatus :
+                null;
             if (earlyStatus !== null &&
                 earlyStatus !== ContextUploadStatus.kUploadSuccessful) {
-              if (this.attachedContext.has(token)) {
-                this.attachedContext.delete(token);
-                this.attachedContext = new Map([...this.attachedContext]);
-              }
               return null;
             }
             // A tab shows as in flight while its upload runs, or, for a
@@ -1904,10 +1889,11 @@ export const ComposeboxEmbedderMixin =
             this.handleToolClick(mode, /*allowToggleOff=*/ false);
           }
 
-          if (!!this.inputState && model === ModelMode.kUnspecified &&
-              this.inputState.allowedModels.length > 0) {
-            model = this.inputState.allowedModels[0]!;
+          if (model === ModelMode.kUnspecified) {
+            model = this.getDefaultModel_(state.enterAimMode);
           }
+          // With dynamic AIM fulfillment, a model enters AI Mode and no model
+          // leaves it, including AI Mode left over from an outside-click close.
           this.getSearchboxHandler().setActiveModelMode(
               model, /*isSetByAim=*/ false);
           this.updateInputPlaceholder();
@@ -2320,11 +2306,12 @@ export const ComposeboxEmbedderMixin =
                   this.i18n('composeboxFileUploadInvalidEmptySize');
               break;
             case ProcessFilesError.FILE_TOO_LARGE:
+            case ProcessFilesError.IMAGE_TOO_LARGE:
               metric = ComposeboxFileValidationError.FILE_SIZE_TOO_LARGE;
-              const unitMiB = 1024 * 1024;
               this.errorMessage = this.i18n(
                   'composeboxFileUploadInvalidTooLarge',
-                  Math.floor(this.maxFileSize / unitMiB));
+                  this.getMaxFileSizeMiB_(
+                      error === ProcessFilesError.IMAGE_TOO_LARGE));
               break;
             case ProcessFilesError.INVALID_TYPE:
               this.errorMessage = this.i18n('composeFileTypesAllowedError');
@@ -2407,17 +2394,28 @@ export const ComposeboxEmbedderMixin =
           this.hasCachedSubmittedTabsThisTurn = false;
         }
 
+        // Returns the default model if one should be selected: always without
+        // dynamic AIM fulfillment, otherwise only to enter AI Mode (e.g. from
+        // the AI Mode button).
+        private getDefaultModel_(enterAimMode: boolean = false): ModelMode {
+          if ((!this.dynamicAimFulfillmentEnabled || enterAimMode) &&
+              this.inputState && this.inputState.allowedModels.length > 0) {
+            return this.inputState.allowedModels[0]!;
+          }
+          return ModelMode.kUnspecified;
+        }
+
+        // Re-applies the active model, or selects the default if one should be
+        // auto-selected (not with dynamic AIM fulfillment).
         setDefaultModel() {
-          if (this.inputState?.activeModel &&
-              (this.inputState.activeModel as ModelMode) !==
-                  ModelMode.kUnspecified) {
+          const model = (this.inputState?.activeModel &&
+                         (this.inputState.activeModel as ModelMode) !==
+                             ModelMode.kUnspecified) ?
+              this.inputState.activeModel :
+              this.getDefaultModel_();
+          if (model !== ModelMode.kUnspecified) {
             this.getSearchboxHandler().setActiveModelMode(
-                this.inputState.activeModel, /*isSetByAim=*/ false);
-          } else if (
-              this.inputState?.allowedModels &&
-              this.inputState.allowedModels.length > 0) {
-            this.getSearchboxHandler().setActiveModelMode(
-                this.inputState.allowedModels[0]!, /*isSetByAim=*/ false);
+                model, /*isSetByAim=*/ false);
           }
         }
 
@@ -2442,10 +2440,14 @@ export const ComposeboxEmbedderMixin =
          */
         closeComposebox(afterSubmit: boolean = false) {
           this.resetDelayedTabContextRequests_();
-          this.resetModes();
-          this.getSearchboxHandler().clearFiles(
-              /*shouldBlockAutoSuggestedTabs=*/ false);
-          this.resetToolsAndModels();
+          if (!afterSubmit) {
+            this.resetModes();
+            this.getSearchboxHandler().clearFiles(
+                /*shouldBlockAutoSuggestedTabs=*/ false);
+            // With dynamic AIM fulfillment, clearing the model (after the
+            // files) leaves AI Mode.
+            this.resetToolsAndModels();
+          }
           this.suggestInventory = null;
           // <if expr="not is_android">
           if (this.smartTabSharingVisible && !afterSubmit && !this.submitting) {
@@ -2529,9 +2531,16 @@ export const ComposeboxEmbedderMixin =
           }
         }
 
-        // kHint matches only set the placeholder when accepted, and rich image
-        // matches are not text queries, so neither replaces the user's input.
-        private shouldPreviewMatchInInput_(match: AutocompleteMatch): boolean {
+        // The default match at index 0 represents the user's current input
+        // rather than a suggestion preview (its `fillIntoEdit` collapses
+        // whitespace, which would strip trailing spaces). `kHint` matches only
+        // set the placeholder when accepted, and rich image matches are not
+        // text queries, so none of these replace the user's input.
+        private shouldPreviewMatchInInput_(
+            match: AutocompleteMatch, matchIndex: number): boolean {
+          if (matchIndex === 0 && match.allowedToBeDefaultMatch) {
+            return false;
+          }
           if (this.richImageSuggestionsEnabled &&
               match.suggestTemplate.style === SuggestStyle.kRichImage) {
             return false;
@@ -2900,6 +2909,40 @@ export const ComposeboxEmbedderMixin =
           }
         }
 
+        private getMaxFileSizeMiB_(useImageLimit: boolean): number {
+          const unitMiB = 1024 * 1024;
+          const maxBytes = useImageLimit ?
+              Math.min(this.maxFileSize, this.maxImageFileSize) :
+              this.maxFileSize;
+          return Math.floor(maxBytes / unitMiB);
+        }
+
+        shouldUseImageFileSizeLimit(
+            inputType: InputType, fileType: string): boolean {
+          if (this.maxImageFileSize <= 0) {
+            return false;
+          }
+          const isHeif = isHeifImage({type: fileType});
+          const isImage = inputType === InputType.kLensImage ||
+              fileType.toLowerCase().startsWith('image/');
+          return this.limitAllImages ? isImage : isHeif;
+        }
+
+        getProcessFilesErrorForUploadError(
+            errorType: ContextUploadErrorType,
+            file: {name: string, type: string}): ProcessFilesError {
+          const processFilesError =
+              mapUploadErrorToProcessFilesError(errorType);
+          if (processFilesError === ProcessFilesError.FILE_TOO_LARGE) {
+            const mimeType = getFileMimeType(file);
+            if (this.shouldUseImageFileSizeLimit(
+                    this.getInputType(mimeType), mimeType)) {
+              return ProcessFilesError.IMAGE_TOO_LARGE;
+            }
+          }
+          return processFilesError;
+        }
+
         // LINT.IfChange(getValidationError)
         getValidationError(
             inputType: InputType, fileType: string, fileSize: number,
@@ -2915,9 +2958,17 @@ export const ComposeboxEmbedderMixin =
             }
           }
 
-          if (fileSize === 0 || fileSize > this.maxFileSize) {
-            return fileSize === 0 ? ProcessFilesError.FILE_EMPTY :
-                                    ProcessFilesError.FILE_TOO_LARGE;
+          if (fileSize === 0) {
+            return ProcessFilesError.FILE_EMPTY;
+          }
+          const useImageLimit =
+              this.shouldUseImageFileSizeLimit(inputType, fileType);
+          const maxFileSize = useImageLimit ?
+              Math.min(this.maxFileSize, this.maxImageFileSize) :
+              this.maxFileSize;
+          if (fileSize > maxFileSize) {
+            return useImageLimit ? ProcessFilesError.IMAGE_TOO_LARGE :
+                                   ProcessFilesError.FILE_TOO_LARGE;
           }
 
           if (!this.isFileAllowed(fileType)) {
@@ -3014,8 +3065,8 @@ export const ComposeboxEmbedderMixin =
         }
 
         getErrorMessageForUploadStatus(
-            status: ContextUploadStatus,
-            errorType: ContextUploadErrorType|null): string|null {
+            status: ContextUploadStatus, errorType: ContextUploadErrorType|null,
+            file?: ComposeboxFile|null): string|null {
           if (!isContextUploadStatusTerminal(status) ||
               status === ContextUploadStatus.kUploadSuccessful ||
               status === ContextUploadStatus.kUploadReplaced) {
@@ -3027,6 +3078,15 @@ export const ComposeboxEmbedderMixin =
                                     FILE_VALIDATION_ERRORS_MAP.get(errorType) :
                                     undefined) ??
                   'composeboxFileUploadValidationFailed';
+              if (errorKey === 'composeboxFileUploadInvalidTooLarge') {
+                const mimeType = file ? getFileMimeType(file) : '';
+                const inputType =
+                    file ? file.inputType : this.getInputType(mimeType);
+                const useImageLimit = !!file &&
+                    this.shouldUseImageFileSizeLimit(inputType, mimeType);
+                return this.i18n(
+                    errorKey, this.getMaxFileSizeMiB_(useImageLimit));
+              }
               return this.i18n(errorKey);
             }
             case ContextUploadStatus.kUploadFailed:
@@ -3046,7 +3106,7 @@ export const ComposeboxEmbedderMixin =
           let file = this.attachedContext.get(token) ?? null;
           if (file) {
             errorMessage =
-                this.getErrorMessageForUploadStatus(status, errorType);
+                this.getErrorMessageForUploadStatus(status, errorType, file);
             if (isContextUploadStatusTerminal(status) &&
                 status !== ContextUploadStatus.kUploadSuccessful) {
               if (file.objectUrl && file.objectUrl.startsWith('blob:')) {
@@ -3076,36 +3136,6 @@ export const ComposeboxEmbedderMixin =
               this.attachedContext.set(token, file);
               this.attachedContext = new Map([...this.attachedContext]);
             }
-          } else if (
-              this.shouldShowGhostFiles &&
-              (!isContextUploadStatusTerminal(status) ||
-               status === ContextUploadStatus.kUploadSuccessful)) {
-            // File is unknown but its status is known. Show this if
-            // ghost/unknown files in frontend are allowed to be in
-            // carousel.
-            file = {
-              uuid: token,
-              name: '',
-              objectUrl: null,
-              dataUrl: null,
-              type: '',
-              inputType: InputType.kLensFile,
-              // Override non-terminal statuses with kUploadStarted so the tab
-              // spinner is shown, while preserving kUploadSuccessful if the
-              // upload already completed before addTabContext resolved.
-              status: status === ContextUploadStatus.kUploadSuccessful ?
-                  ContextUploadStatus.kUploadSuccessful :
-                  ContextUploadStatus.kUploadStarted,
-              url: null,
-              tabId: null,
-              isDeletable: true,
-              iconName: null,
-              supportsUnimodal: true,
-              isGhost: true,
-            };
-            // Update pending uploads in 'composebox.ts' to disable
-            // submit button.
-            this.onFileContextAdded(file);
           }
           return {file, errorMessage};
         }
@@ -3137,7 +3167,7 @@ export const ComposeboxEmbedderMixin =
             while (this.pendingTabSuggestionNeedsRefresh_) {
               this.pendingTabSuggestionNeedsRefresh_ = false;
               const {tabs} = await this.getSearchboxHandler().getRecentTabs();
-              this.recentTabId = tabs[0]?.tabId ?? null;
+              this.recentTabId = tabs.find(t => t.recentTab)?.tabId ?? null;
 
               const openTabsMap = new Map(tabs.map(t => [t.tabId, t]));
 
@@ -3464,7 +3494,6 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   composeboxSkillsEnabled: boolean;
   contextMenuDescriptionEnabled: boolean;
   showContextMenuDescription: boolean;
-  shouldShowGhostFiles: boolean;
   showMenuOnClick: boolean;
   isCanvasQuerySubmitted: boolean;
   browserTabContextAdded: boolean;
@@ -3474,6 +3503,8 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   composeboxSource: string;
   maxFileCount: number;
   maxFileSize: number;
+  maxImageFileSize: number;
+  limitAllImages: boolean;
   recentTabId: number|null;
   attachmentFileTypes: string[];
   imageFileTypes: string[];
@@ -3539,6 +3570,7 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   voiceSearchCoherenceEnabled: boolean;
   energyEffectEnabled: boolean;
   energyEffectAnimationEnabled: boolean;
+  dynamicAimFulfillmentEnabled: boolean;
   willFulfillInAim: boolean;
   updateComplete: Promise<boolean>;
   pendingAutomaticActiveTabUrl: string;
@@ -3662,6 +3694,11 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   clearAllInputs(
       querySubmitted: boolean, shouldBlockAutoSuggestedTabs: boolean): void;
   handleProcessFilesError(error: ProcessFilesError): void;
+  shouldUseImageFileSizeLimit(inputType: InputType, fileType: string): boolean;
+  getProcessFilesErrorForUploadError(errorType: ContextUploadErrorType, file: {
+    name: string,
+    type: string,
+  }): ProcessFilesError;
   getValidationError(
       inputType: InputType, fileType: string, fileSize: number,
       totalCount: number, currentTypeCount: number): ProcessFilesError;
@@ -3696,6 +3733,9 @@ export interface ComposeboxEmbedderMixinInterface extends I18nMixinLitInterface,
   addDroppedFiles(files: FileList|null): void;
   addDriveUploads(driveUploads: DriveUpload[], error?: DriveUploadError): void;
   processFiles(files: FileList|null): void;
+  getErrorMessageForUploadStatus(
+      status: ContextUploadStatus,
+      errorType: ContextUploadErrorType|null): string|null;
   updateFileStatus(
       token: UnguessableToken, status: ContextUploadStatus,
       errorType: ContextUploadErrorType|

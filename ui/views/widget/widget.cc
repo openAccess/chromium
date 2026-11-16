@@ -332,7 +332,6 @@ Widget::~Widget() {
   CHECK(widget_destroying_handled_);
   CHECK(native_widget_destroyed_);
 
-  RemoveObserver(&root_view_->GetViewAccessibility());
   // Destroy RootView after the native widget, so in case the WidgetDelegate is
   // a View in the RootView hierarchy it gets destroyed as a WidgetDelegate
   // first.
@@ -681,11 +680,6 @@ void Widget::InitAccessibility() {
   // send accessible event notifications. From that point on, any view that is
   // connected to the RootView will be able to send accessible events.
   root_view_->GetViewAccessibility().SetRootViewIsReadyToNotifyEvents();
-
-  // We need to add the RootView's ViewAccessibility as an observer of the
-  // widget, so that when the widget is closed, the accessible data is set
-  // accordingly.
-  AddObserver(&root_view_->GetViewAccessibility());
 
   ax_mode_observation_.Observe(&ui::AXPlatform::GetInstance());
 
@@ -1052,6 +1046,9 @@ void Widget::CloseWithReason(ClosedReason closed_reason) {
   ax_mode_observation_.Reset();
 
   ScopedCallStackLock on_stack(this);
+  if (root_view_) {
+    root_view_->GetViewAccessibility().OnWidgetClosed(this);
+  }
   observers_.Notify(&WidgetObserver::OnWidgetClosing, this);
 
   internal::AnyWidgetObserverSingleton::GetInstance()->OnAnyWidgetClosing(this);
@@ -1083,6 +1080,9 @@ void Widget::CloseNow() {
 
   {
     ScopedCallStackLock on_stack(this);
+    if (root_view_) {
+      root_view_->GetViewAccessibility().OnWidgetClosed(this);
+    }
     observers_.Notify(&WidgetObserver::OnWidgetClosing, this);
     internal::AnyWidgetObserverSingleton::GetInstance()->OnAnyWidgetClosing(
         this);
@@ -2448,11 +2448,24 @@ void Widget::OnScrollEvent(ui::ScrollEvent* event) {
   ui::ScrollEvent event_copy(*event);
   SendEventToSink(&event_copy);
 
+  // `ui::ScrollEvent` also represents fling events (`kScrollFlingStart` and
+  // `kScrollFlingCancel`), which should not be converted into mouse wheel
+  // events.
+  if (event_copy.type() != ui::EventType::kScroll) {
+    return;
+  }
+
   // Convert unhandled ui::EventType::kScroll events into
-  // ui::EventType::kMousewheel events.
-  if (!event_copy.handled() && event_copy.type() == ui::EventType::kScroll) {
-    ui::MouseWheelEvent wheel(*event);
-    OnMouseEvent(&wheel);
+  // ui::EventType::kMousewheel events, and report whether either one was
+  // handled so that callers do not convert the event again.
+  if (event_copy.handled()) {
+    event->SetHandled();
+    return;
+  }
+  ui::MouseWheelEvent wheel(*event);
+  OnMouseEvent(&wheel);
+  if (wheel.handled()) {
+    event->SetHandled();
   }
 }
 
@@ -3076,6 +3089,9 @@ void Widget::HandleWidgetDestroyed() {
 
   ax_mode_observation_.Reset();
 
+  if (root_view_) {
+    root_view_->GetViewAccessibility().OnWidgetClosed(this);
+  }
   observers_.Notify(&WidgetObserver::OnWidgetDestroyed, this);
 
   native_widget_destroyed_ = true;

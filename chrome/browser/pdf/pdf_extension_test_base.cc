@@ -123,10 +123,11 @@ testing::AssertionResult PDFExtensionTestBase::LoadPdfInNewTab(
 }
 
 testing::AssertionResult PDFExtensionTestBase::LoadPdfInFirstChild(
-    const GURL& url) {
+    const GURL& url,
+    const pdf_extension_test_util::EnsurePDFHasLoadedOptions& options) {
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
   return EnsurePDFHasLoadedInFirstChildWithValidFrameTree(
-      GetActiveWebContents());
+      GetActiveWebContents(), options);
 }
 
 testing::AssertionResult PDFExtensionTestBase::LoadPdfAllowMultipleFrames(
@@ -199,7 +200,7 @@ void PDFExtensionTestBase::TestGetSelectedTextReply(
   // If there's a flush message received but not a getSelectedText message, then
   // the message didn't come through.
   EXPECT_EQ(expect_success,
-            content::EvalJs(GetEmbedderWebContents()->GetPrimaryMainFrame(),
+            content::EvalJs(GetActiveWebContents()->GetPrimaryMainFrame(),
                             kGetSelectedTextReplyScript));
 }
 
@@ -209,18 +210,6 @@ WebContents* PDFExtensionTestBase::GetActiveWebContents() {
 
 void PDFExtensionTestBase::ResetFeatureList() {
   feature_list_.Reset();
-}
-
-content::WebContents* PDFExtensionTestBase::GetEmbedderWebContents() {
-  content::WebContents* contents = GetActiveWebContents();
-
-  // OOPIF PDF viewer only has a single `WebContents`.
-  if (UseOopif()) {
-    return contents;
-  }
-
-  MimeHandlerViewGuest* guest = GetOnlyMimeHandlerView(contents);
-  return guest ? guest->embedder_web_contents() : nullptr;
 }
 
 TestGuestViewManager* PDFExtensionTestBase::GetGuestViewManager() {
@@ -296,11 +285,13 @@ PDFExtensionTestBase::EnsureFullPagePDFHasLoadedWithValidFrameTree(
 
 testing::AssertionResult
 PDFExtensionTestBase::EnsurePDFHasLoadedInFirstChildWithValidFrameTree(
-    content::WebContents* contents) {
+    content::WebContents* contents,
+    const pdf_extension_test_util::EnsurePDFHasLoadedOptions& options) {
   testing::AssertionResult result =
       UseOopif() ? GetTestMimeHandlerStreamManager(contents)
-                       ->WaitUntilPdfLoadedInFirstChild()
-                 : pdf_extension_test_util::EnsurePDFHasLoaded(contents);
+                       ->WaitUntilPdfLoadedInFirstChild(options)
+                 : pdf_extension_test_util::EnsurePDFHasLoadedWithOptions(
+                       contents, options);
 
   ValidateFrameTree(contents);
 
@@ -323,7 +314,7 @@ void PDFExtensionTestBase::SimulateMouseClickAt(
 }
 
 bool PDFExtensionTestBase::UseOopif() const {
-  return false;
+  return true;
 }
 
 // This is intentionally empty.

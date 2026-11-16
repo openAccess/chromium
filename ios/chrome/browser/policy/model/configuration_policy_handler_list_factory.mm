@@ -52,6 +52,7 @@
 #import "components/policy/core/browser/url_list/url_scheme_list_policy_handler.h"
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/policy/policy_constants.h"
+#import "components/proxy_config/proxy_config_pref_names.h"
 #import "components/safe_browsing/core/common/safe_browsing_policy_handler.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/search_engines/enterprise/default_search_policy_handler.h"
@@ -64,6 +65,7 @@
 #import "components/variations/pref_names.h"
 #import "components/variations/service/variations_service.h"
 #import "ios/chrome/browser/policy/model/browser_signin_policy_handler.h"
+#import "ios/chrome/browser/policy/model/gemini_spark_settings_policy_handler.h"
 #import "ios/chrome/browser/policy/model/new_tab_page_location_policy_handler.h"
 #import "ios/chrome/browser/policy/model/restrict_accounts_policy_handler.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
@@ -91,6 +93,9 @@ constexpr auto kSimplePolicyMap = std::to_array<PolicyToPreferenceMapEntry>({
   { policy::key::kChromeVariations,
     variations::prefs::kVariationsRestrictionsByPolicy,
     base::Value::Type::INTEGER },
+  { policy::key::kVariationsRestrictParameter,
+    variations::prefs::kVariationsRestrictParameter,
+    base::Value::Type::STRING },
   { policy::key::kCredentialProviderPromoEnabled,
     prefs::kIosCredentialProviderPromoPolicyEnabled,
     base::Value::Type::BOOLEAN },
@@ -207,6 +212,12 @@ constexpr auto kSimplePolicyMap = std::to_array<PolicyToPreferenceMapEntry>({
     base::Value::Type::INTEGER },
   { policy::key::kIsolatedModeSettings,
     enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+    base::Value::Type::INTEGER },
+  { policy::key::kEnableProxyOverrideRulesForAllUsers,
+    proxy_config::prefs::kEnableProxyOverrideRulesForAllUsers,
+    base::Value::Type::INTEGER },
+  { policy::key::kSafeSitesFilterBehavior,
+    policy::policy_prefs::kSafeSitesFilterBehavior,
     base::Value::Type::INTEGER },
 });
 // clang-format on
@@ -472,6 +483,8 @@ std::unique_ptr<policy::ConfigurationPolicyHandlerList> BuildPolicyHandlerList(
   handlers->AddHandler(std::make_unique<policy::URLSchemeListPolicyHandler>(
       policy::key::kGeminiActOnWebBlockedForURLs,
       prefs::kGeminiActOnWebBlockedForURLs));
+
+  handlers->AddHandler(std::make_unique<GeminiSparkSettingsPolicyHandler>());
 
   return handlers;
 }

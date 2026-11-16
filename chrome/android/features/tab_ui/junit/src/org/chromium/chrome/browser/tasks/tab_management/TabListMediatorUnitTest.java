@@ -16,7 +16,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
@@ -164,6 +166,7 @@ import org.chromium.chrome.browser.tab_ui.TabListMode;
 import org.chromium.chrome.browser.tab_ui.ThumbnailFetcher;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider;
 import org.chromium.chrome.browser.tab_ui.ThumbnailProvider.MultiThumbnailMetadata;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
@@ -190,17 +193,20 @@ import org.chromium.chrome.browser.tasks.tab_management.TabListModel.CardPropert
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.TabActionState;
 import org.chromium.chrome.browser.tasks.tab_management.TabProperties.UiType;
 import org.chromium.chrome.browser.tasks.tab_management.TabSwitcherMessageManager.MessageType;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.FlatTabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.GroupedTabListDataProvider;
 import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabGroupItem;
 import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabItem;
 import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataObserver;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataObserver.PayloadType;
 import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListDataProvider;
+import org.chromium.chrome.browser.tasks.tab_management.data_provider.TabListItem;
 import org.chromium.chrome.browser.tasks.tab_management.labels.TabCardLabelData;
 import org.chromium.chrome.browser.tasks.tab_management.labels.TabCardLabelType;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabItemHoverController.TabHoverListener;
 import org.chromium.chrome.browser.tasks.tab_management.vertical_tabs.VerticalTabListProperties.RailCollapseState;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarExplicitTrigger;
 import org.chromium.components.browser_ui.util.motion.MotionEventInfo;
 import org.chromium.components.browser_ui.util.motion.MotionEventTestUtils;
 import org.chromium.components.browser_ui.widget.ActionConfirmationResult;
@@ -227,7 +233,9 @@ import org.chromium.components.tab_group_sync.TabGroupSyncService;
 import org.chromium.components.tab_groups.TabGroupColorId;
 import org.chromium.components.tab_groups.TabGroupColorPickerUtils;
 import org.chromium.components.tabs.TabAlert;
+import org.chromium.content_public.browser.NavigationController;
 import org.chromium.content_public.browser.NavigationHandle;
+import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.ListObservable.ListObserver;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
@@ -413,7 +421,9 @@ public class TabListMediatorUnitTest {
     @Mock View mItemView4;
     @Mock View mTabView;
     @Mock TabGroupColorViewProvider mTabGroupColorViewProvider;
+    @Mock NavigationController mNavigationController;
     @Mock NavigationHandle mNavigationHandle;
+    @Mock WebContents mWebContents;
     @Mock PropertyModel mPropertyModel;
     @Mock ThumbnailFetcher mThumbnailFetcher1;
     @Mock ThumbnailFetcher mThumbnailFetcher2;
@@ -442,6 +452,7 @@ public class TabListMediatorUnitTest {
     private final SettableMonotonicObservableSupplier<TabModel> mCurrentTabModelSupplier =
             ObservableSuppliers.createMonotonic();
 
+    private TabListDataObserver mDataObserver;
     private Tab mTab1;
     private Tab mTab2;
     private TabListMediator mMediator;
@@ -653,6 +664,7 @@ public class TabListMediatorUnitTest {
         TemplateUrlServiceFactory.setInstanceForTesting(mTemplateUrlService);
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(false);
         GlicEnabling.setEnabledForTesting(false);
+        ActorUiTabController.setActorUiSupportedForTesting(false);
         mTabListConfig = null;
 
         setUpTabListMediator(TabListMediatorType.TAB_SWITCHER, TabListMode.GRID);
@@ -695,12 +707,21 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void updatesTitle_WithoutStoredTitle_Tab() {
-        assertThat(mModelList.get(0).model.get(TabProperties.TITLE), equalTo(TAB1_TITLE));
+        PropertyModel model = mModelList.get(0).model;
+        assertThat(model.get(TabProperties.TITLE), equalTo(TAB1_TITLE));
+        var oldActionButtonResolver =
+                model.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER);
 
         when(mTab1.getTitle()).thenReturn(NEW_TITLE);
         mTabObserverCaptor.getValue().onTitleUpdated(mTab1);
 
-        assertThat(mModelList.get(0).model.get(TabProperties.TITLE), equalTo(NEW_TITLE));
+        assertThat(model.get(TabProperties.TITLE), equalTo(NEW_TITLE));
+        assertNotEquals(
+                oldActionButtonResolver,
+                model.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER));
+        assertEquals(
+                mContext.getString(R.string.accessibility_tabstrip_btn_close_tab, NEW_TITLE),
+                model.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER).resolve(mContext));
     }
 
     @Test
@@ -3063,6 +3084,28 @@ public class TabListMediatorUnitTest {
     }
 
     @Test
+    public void getLatestTitleForTabOrGroup_emptyTitle_initialNavigation() {
+        when(mTab1.getTitle()).thenReturn("");
+        when(mTab1.getWebContents()).thenReturn(mWebContents);
+        when(mWebContents.getNavigationController()).thenReturn(mNavigationController);
+
+        when(mNavigationController.isInitialNavigation()).thenReturn(true);
+        assertEquals(
+                "", mMediator.getLatestTitleForTabOrGroup(mTab1, null, /* useDefault= */ true));
+
+        when(mNavigationController.isInitialNavigation()).thenReturn(false);
+        assertEquals(
+                TAB1_URL.getSpec(),
+                mMediator.getLatestTitleForTabOrGroup(mTab1, null, /* useDefault= */ true));
+
+        when(mNavigationController.isInitialNavigation()).thenReturn(true);
+        when(mWebContents.isDestroyed()).thenReturn(true);
+        assertEquals(
+                TAB1_URL.getSpec(),
+                mMediator.getLatestTitleForTabOrGroup(mTab1, null, /* useDefault= */ true));
+    }
+
+    @Test
     public void getLatestTitle_FlatLayout_Dialog() {
         setUpTabListMediator(TabListMediatorType.TAB_GRID_DIALOG, TabListMode.GRID);
         createTabGroup(Collections.singletonList(mTab1), TAB_GROUP_ID);
@@ -3335,8 +3378,39 @@ public class TabListMediatorUnitTest {
         model1.set(TabProperties.FAVICON_FETCHER, null);
         mTabObserverCaptor.getValue().onUrlUpdated(mTab1);
 
+        assertEquals(TAB1_TITLE, model1.get(TabProperties.TITLE));
         assertNotEquals(oldThumbnailFetcher, model1.get(TabProperties.THUMBNAIL_FETCHER));
         assertNotNull(model1.get(TabProperties.FAVICON_FETCHER));
+    }
+
+    @Test
+    public void urlUpdated_forSingleTab_EmptyTitleInitialNavigation_GroupedLayout() {
+        when(mTab1.getTitle()).thenReturn("");
+        when(mTab1.getWebContents()).thenReturn(mWebContents);
+        when(mWebContents.getNavigationController()).thenReturn(mNavigationController);
+        when(mNavigationController.isInitialNavigation()).thenReturn(true);
+        mMediator.resetWithListOfTabs(List.of(mTab1, mTab2), null, false);
+
+        PropertyModel model1 = mModelList.get(POSITION1).model;
+        assertEquals("", model1.get(TabProperties.TITLE));
+        var oldActionButtonResolver =
+                model1.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER);
+        assertEquals(
+                mContext.getString(R.string.accessibility_tabstrip_btn_close_tab, ""),
+                oldActionButtonResolver.resolve(mContext));
+
+        when(mNavigationController.isInitialNavigation()).thenReturn(false);
+        when(mTab1.getUrl()).thenReturn(new GURL(NEW_URL));
+        mTabObserverCaptor.getValue().onUrlUpdated(mTab1);
+
+        assertEquals(NEW_URL, model1.get(TabProperties.TITLE));
+        assertNotEquals(
+                oldActionButtonResolver,
+                model1.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER));
+        assertEquals(
+                mContext.getString(R.string.accessibility_tabstrip_btn_close_tab, NEW_URL),
+                model1.get(TabProperties.ACTION_BUTTON_DESCRIPTION_TEXT_RESOLVER)
+                        .resolve(mContext));
     }
 
     @Test
@@ -5936,6 +6010,18 @@ public class TabListMediatorUnitTest {
     }
 
     @Test
+    public void testUnsetShrinkCloseAnimation_DidClose_StandaloneTab() {
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mModelList.get(0).model.set(TabProperties.USE_SHRINK_CLOSE_ANIMATION, true);
+
+        var callback = mMediator.getOnMaybeTabClosedCallback(TAB1_ID);
+
+        callback.onResult(true);
+        assertFalse(mModelList.get(0).model.get(TabProperties.USE_SHRINK_CLOSE_ANIMATION));
+    }
+
+    @Test
     public void testUnsetShrinkCloseAnimation_DidClose_FlatLayout_NoOp() {
         setUpTabListMediator(TabListMediatorType.TAB_GRID_DIALOG, TabListMode.GRID);
         Tab newTab = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
@@ -7732,20 +7818,49 @@ public class TabListMediatorUnitTest {
         assertNull(mMediator.getModelFromTabId(99999));
     }
 
+    @Test
+    public void testGetIndexFromTabGroupId_GroupCardPresent() {
+        initAndAssertAllProperties();
+        PropertyModel groupCardModel = mModelList.get(1).model;
+        groupCardModel.set(CARD_TYPE, TAB_GROUP);
+        groupCardModel.set(TabProperties.TAB_GROUP_HEADER_ID, TAB_GROUP_ID);
+
+        assertEquals(1, mMediator.getIndexFromTabGroupId(TAB_GROUP_ID));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.ANDROID_TAB_UI_REFACTOR)
+    public void testGetIndexFromTabGroupId_FallsBackToFirstTabInGroup() {
+        initAndAssertAllProperties();
+        // No group card exists, but the group's first tab is shown as a representative tab card.
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(mTab2));
+
+        assertEquals(1, mMediator.getIndexFromTabGroupId(TAB_GROUP_ID));
+    }
+
+    @Test
+    public void testGetIndexFromTabGroupId_NotFound() {
+        initAndAssertAllProperties();
+
+        assertEquals(
+                TabModel.INVALID_TAB_INDEX,
+                mMediator.getIndexFromTabGroupId(new Token(12345L, 6789L)));
+    }
+
     // TabListDataProvider consumer tests.
 
     @Test
     public void testDataProvider_Destroy_RemovesObserver() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
 
         mMediator.destroy();
 
-        verify(mTabListDataProvider).removeObserver(mTabListDataObserverCaptor.getValue());
+        verify(mTabListDataProvider).removeObserver(mDataObserver);
     }
 
     @Test
     public void testDataProvider_ResetWithTabs_RequestsDataResetAndSkipsTabModelObserver() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
 
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
@@ -7758,12 +7873,10 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_ResetWithNullTabs_StopsProviderAndClearsTabCards() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
         mModelList.add(0, new ListItem(UiType.PRICE_MESSAGE, createMessageCardModel()));
         assertEquals(3, mModelList.size());
         clearInvocations(mTabListDataProvider);
@@ -7781,7 +7894,7 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_PrepareHiding_StopsProviderOnce() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
 
@@ -7796,7 +7909,7 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_PrepareHiding_NotTracking_DoesNotStopProvider() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
 
         mMediator.prepareHiding();
 
@@ -7805,47 +7918,40 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_OnDataReset_NotTracking_Ignored() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
 
-        mTabListDataObserverCaptor.getValue().onDataReset(List.of(createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
 
         assertEquals(0, mModelList.size());
     }
 
     @Test
     public void testDataProvider_OnDataReset_BuildsTabCardsFromSnapshot() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB2_ID), createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB2_ID), createTabItem(TAB1_ID)));
 
-        assertEquals(2, mModelList.size());
-        assertEquals(TAB2_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
-        assertEquals(TAB1_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertTabIds(TAB2_ID, TAB1_ID);
     }
 
     @Test
     public void testDataProvider_OnDataReset_ReplacesPreviousTabCards() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB2_ID), createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB2_ID), createTabItem(TAB1_ID)));
 
         // A second snapshot replaces the previous tab cards rather than appending to them.
-        mTabListDataObserverCaptor.getValue().onDataReset(List.of(createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
 
-        assertEquals(1, mModelList.size());
-        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTabIds(TAB1_ID);
     }
 
     @Test
     public void testDataProvider_OnDataReset_BuildsTabGroupCardFromSnapshot() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         Tab newTab = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
         createTabGroup(List.of(mTab1, newTab), TAB_GROUP_ID);
         mMediator.resetWithListOfTabs(
@@ -7854,9 +7960,7 @@ public class TabListMediatorUnitTest {
         TabGroupItem groupItem =
                 new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(groupItem, createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(groupItem, createTabItem(TAB2_ID)));
 
         assertEquals(2, mModelList.size());
         PropertyModel groupModel = mModelList.get(0).model;
@@ -7867,14 +7971,12 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_OnDataReset_InsertsAfterLeadingMessageCard() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
         mModelList.add(0, new ListItem(UiType.PRICE_MESSAGE, createMessageCardModel()));
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
 
         assertEquals(3, mModelList.size());
         assertEquals(MESSAGE, mModelList.get(0).model.get(CARD_TYPE));
@@ -7884,16 +7986,14 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_OnDataReset_PreservesMessageCardOnReReset() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
         mModelList.add(0, new ListItem(UiType.PRICE_MESSAGE, createMessageCardModel()));
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
 
         // Re-resetting preserves the message card and keeps tabs after it.
-        mTabListDataObserverCaptor.getValue().onDataReset(List.of(createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB2_ID)));
 
         assertEquals(2, mModelList.size());
         assertEquals(MESSAGE, mModelList.get(0).model.get(CARD_TYPE));
@@ -7902,24 +8002,21 @@ public class TabListMediatorUnitTest {
 
     @Test
     public void testDataProvider_OnDataReset_IgnoresNullTab() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
         int missingTabId = 99999;
         when(mTabModel.getTabById(missingTabId)).thenReturn(null);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(missingTabId), createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(missingTabId), createTabItem(TAB1_ID)));
 
         // The tab missing from the TabModel is skipped.
-        assertEquals(1, mModelList.size());
-        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTabIds(TAB1_ID);
     }
 
     @Test
     public void testDataProvider_OnDataReset_IgnoresEmptyGroup() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         mMediator.resetWithListOfTabs(
                 List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
         Token emptyGroupId = Token.createRandom();
@@ -7927,18 +8024,15 @@ public class TabListMediatorUnitTest {
         TabGroupItem emptyGroupItem =
                 new TabGroupItem(emptyGroupId, /* isSelected= */ false, /* isCollapsed= */ true);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(emptyGroupItem, createTabItem(TAB1_ID)));
+        mDataObserver.onDataReset(List.of(emptyGroupItem, createTabItem(TAB1_ID)));
 
         // The group with no tabs in the TabModel is skipped.
-        assertEquals(1, mModelList.size());
-        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTabIds(TAB1_ID);
     }
 
     @Test
     public void testDataProvider_OnDataReset_HoistsTrackPricesOnTabsCheck() {
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
         List<Tab> tabs = List.of(mTab1, mTab2, tab3);
         mMediator.resetWithListOfTabs(tabs, /* tabGroupSyncIds= */ null, /* quickMode= */ false);
@@ -7952,13 +8046,8 @@ public class TabListMediatorUnitTest {
         when(tab3.isIncognito()).thenReturn(false);
         clearInvocations(mIdentityServicesProvider);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(
-                        List.of(
-                                createTabItem(TAB1_ID),
-                                createTabItem(TAB2_ID),
-                                createTabItem(TAB3_ID)));
+        mDataObserver.onDataReset(
+                List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID), createTabItem(TAB3_ID)));
 
         assertThat(mModelList.size(), equalTo(3));
         for (int i = 0; i < 3; i++) {
@@ -7975,7 +8064,7 @@ public class TabListMediatorUnitTest {
     @EnableFeatures(ChromeFeatureList.GLIC)
     public void testDataProvider_OnDataReset_SkipsRedundantActorUiUpdateInAddObservers() {
         GlicEnabling.setEnabledForTesting(true);
-        setUpProviderMediator();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
         ActorUiTabController controller1 = Mockito.mock(ActorUiTabController.class);
         ActorUiTabController controller2 = Mockito.mock(ActorUiTabController.class);
         mTab1.getUserDataHost().setUserData(ActorUiTabController.class, controller1);
@@ -8001,9 +8090,7 @@ public class TabListMediatorUnitTest {
         when(controller2.getUiTabState()).thenReturn(state2);
         clearInvocations(controller1, controller2);
 
-        mTabListDataObserverCaptor
-                .getValue()
-                .onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
 
         // Queried once per tab during model creation, but not again in addObserversForTab().
         verify(controller1, times(1)).getUiTabState();
@@ -8012,11 +8099,1193 @@ public class TabListMediatorUnitTest {
         assertEquals(state2, mModelList.get(1).model.get(TabProperties.ACTOR_UI_STATE));
     }
 
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_PreservesTabModels() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        List<TabListItem> items = List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID));
+        mDataObserver.onDataReset(items);
+        PropertyModel model1 = mModelList.get(0).model;
+        PropertyModel model2 = mModelList.get(1).model;
+
+        mDataObserver.onDataReset(items);
+
+        assertEquals(2, mModelList.size());
+        assertSame(model1, mModelList.get(0).model);
+        assertSame(model2, mModelList.get(1).model);
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_ChangedItems_RebuildsTabModels() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        PropertyModel model1 = mModelList.get(0).model;
+
+        mDataObserver.onDataReset(List.of(createTabItem(TAB2_ID), createTabItem(TAB1_ID)));
+
+        assertTabIds(TAB2_ID, TAB1_ID);
+        assertNotSame(model1, mModelList.get(0).model);
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_PreservesGroupModel() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab newTab = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        createTabGroup(List.of(mTab1, newTab), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, newTab), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true);
+        List<TabListItem> items = List.of(groupItem, createTabItem(TAB2_ID));
+        mDataObserver.onDataReset(items);
+        PropertyModel groupModel = mModelList.get(0).model;
+        PropertyModel tabModel = mModelList.get(1).model;
+
+        mDataObserver.onDataReset(items);
+
+        assertEquals(2, mModelList.size());
+        assertSame(groupModel, mModelList.get(0).model);
+        assertSame(tabModel, mModelList.get(1).model);
+        assertEquals(TAB_GROUP_ID, groupModel.get(TabProperties.TAB_GROUP_HEADER_ID));
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_SkipsMessageCards() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        mModelList.add(
+                /* position= */ 1, new ListItem(UiType.PRICE_MESSAGE, createMessageCardModel()));
+        PropertyModel model0 = mModelList.get(0).model;
+        PropertyModel messageModel = mModelList.get(1).model;
+        PropertyModel model2 = mModelList.get(2).model;
+
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+
+        assertEquals(3, mModelList.size());
+        assertSame(model0, mModelList.get(0).model);
+        assertSame(messageModel, mModelList.get(1).model);
+        assertSame(model2, mModelList.get(2).model);
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_UpdatesGroupTabIdWhenFirstTabChanges() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab newTab = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        createTabGroup(List.of(mTab1, newTab), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, newTab), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true);
+        List<TabListItem> items = List.of(groupItem);
+        mDataObserver.onDataReset(items);
+        PropertyModel groupModel = mModelList.get(0).model;
+        assertEquals(TAB1_ID, groupModel.get(TabProperties.TAB_ID));
+
+        // The group's first tab changes while the group itself stays the same.
+        createTabGroup(List.of(newTab, mTab1), TAB_GROUP_ID);
+        mDataObserver.onDataReset(items);
+
+        assertEquals(1, mModelList.size());
+        assertSame(groupModel, mModelList.get(0).model);
+        assertEquals(TAB3_ID, groupModel.get(TabProperties.TAB_ID));
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_NonQuickModeUpdatesSelectedThumbnail() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        List<TabListItem> items = List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID));
+        mDataObserver.onDataReset(items);
+        PropertyModel model = mModelList.get(0).model;
+        model.set(TabProperties.IS_SELECTED, true);
+        ThumbnailFetcher oldFetcher = model.get(TabProperties.THUMBNAIL_FETCHER);
+        assertNotNull(oldFetcher);
+
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(items);
+
+        assertSame(model, mModelList.get(0).model);
+        assertNotSame(oldFetcher, model.get(TabProperties.THUMBNAIL_FETCHER));
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_QuickModeConsumedByFirstDataReset() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        List<TabListItem> items = List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID));
+        mDataObserver.onDataReset(items);
+        PropertyModel model = mModelList.get(0).model;
+        model.set(TabProperties.IS_SELECTED, true);
+        ThumbnailFetcher oldFetcher = model.get(TabProperties.THUMBNAIL_FETCHER);
+        assertNotNull(oldFetcher);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ true);
+        mDataObserver.onDataReset(items);
+        assertSame(oldFetcher, model.get(TabProperties.THUMBNAIL_FETCHER));
+
+        // A provider-driven reset without a new resetWithListOfTabs must not reuse quick mode.
+        mDataObserver.onDataReset(items);
+
+        assertSame(model, mModelList.get(0).model);
+        assertNotSame(oldFetcher, model.get(TabProperties.THUMBNAIL_FETCHER));
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_UnchangedItems_ReattachesTabObserversAfterHiding() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        List<TabListItem> items = List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID));
+        mDataObserver.onDataReset(items);
+        PropertyModel model = mModelList.get(0).model;
+        verify(mTab1, times(1)).addObserver(mTabObserverCaptor.getValue());
+
+        mMediator.prepareHiding();
+        verify(mTab1, times(2)).removeObserver(mTabObserverCaptor.getValue());
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(items);
+
+        assertSame(model, mModelList.get(0).model);
+        verify(mTab1, times(2)).addObserver(mTabObserverCaptor.getValue());
+        verify(mTab2, times(2)).addObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnDataReset_NestedCollapsedGroup_SkipsMemberObservers() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, tab3, tab4), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+
+        mDataObserver.onDataReset(
+                List.of(
+                        createTabItem(TAB1_ID),
+                        new TabGroupItem(
+                                TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true)));
+
+        assertEquals(2, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+        verify(tab3, never()).addObserver(any());
+        verify(tab4, never()).addObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_NotTracking_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+
+        mDataObserver.onItemsInserted(List.of(createTabItem(TAB1_ID)), /* after= */ null);
+
+        assertEquals(0, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_AtStart_AttachesObserver() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+
+        mDataObserver.onItemsInserted(List.of(createTabItem(TAB2_ID)), /* after= */ null);
+
+        assertTabIds(TAB2_ID, TAB1_ID);
+        verify(mTab2).addObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_AfterTabItem_AttachesObserver() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+
+        mDataObserver.onItemsInserted(List.of(createTabItem(TAB3_ID)), createTabItem(TAB1_ID));
+
+        assertTabIds(TAB1_ID, TAB3_ID, TAB2_ID);
+        verify(tab3).addObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_AfterTabGroupItem_InsertsContiguously() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(mTab1), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3, tab4),
+                /* tabGroupSyncIds= */ null,
+                /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ false);
+        mDataObserver.onDataReset(List.of(groupItem, createTabItem(TAB2_ID)));
+
+        // Simulates expanding the group into its member tabs.
+        mDataObserver.onItemsInserted(
+                List.of(createTabItem(TAB3_ID), createTabItem(TAB4_ID)), groupItem);
+
+        assertEquals(4, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(0).model));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB4_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(3).model.get(TabProperties.TAB_ID));
+        verify(tab3).addObserver(mTabObserverCaptor.getValue());
+        verify(tab4).addObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_TabGroupItem_AttachesGroupMemberObservers() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, tab3, tab4), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+
+        mDataObserver.onItemsInserted(
+                List.of(
+                        new TabGroupItem(
+                                TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true)),
+                createTabItem(TAB1_ID));
+
+        assertEquals(2, mModelList.size());
+        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+        assertEquals(TAB_GROUP_ID, mModelList.get(1).model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        verify(tab3).addObserver(mTabObserverCaptor.getValue());
+        verify(tab4).addObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsInserted_TabGroupItem_NestedLayout_SkipsObservers() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, tab3, tab4), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+
+        mDataObserver.onItemsInserted(
+                List.of(
+                        new TabGroupItem(
+                                TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true)),
+                createTabItem(TAB1_ID));
+
+        assertEquals(2, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+        // The nested layout does not represent group children with group cards.
+        verify(tab3, never()).addObserver(any());
+        verify(tab4, never()).addObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_NotTracking_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mModelList.add(createTabListItem(TAB1_ID));
+        mModelList.add(createTabListItem(TAB2_ID));
+
+        mDataObserver.onItemsMoved(List.of(createTabItem(TAB1_ID)), createTabItem(TAB2_ID));
+
+        assertTabIds(TAB1_ID, TAB2_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_TabItem_MovesDown() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(
+                List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID), createTabItem(TAB3_ID)));
+
+        mDataObserver.onItemsMoved(List.of(createTabItem(TAB1_ID)), createTabItem(TAB3_ID));
+
+        assertTabIds(TAB2_ID, TAB3_ID, TAB1_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_TabItem_MovesUp() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(
+                List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID), createTabItem(TAB3_ID)));
+
+        mDataObserver.onItemsMoved(List.of(createTabItem(TAB3_ID)), /* after= */ null);
+
+        assertTabIds(TAB3_ID, TAB1_ID, TAB2_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_ToStart_AfterLeadingMessageCard() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mModelList.add(0, new ListItem(UiType.PRICE_MESSAGE, createMessageCardModel()));
+        mDataObserver.onDataReset(
+                List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID), createTabItem(TAB3_ID)));
+
+        mDataObserver.onItemsMoved(List.of(createTabItem(TAB3_ID)), /* after= */ null);
+
+        assertEquals(4, mModelList.size());
+        assertEquals(MESSAGE, mModelList.get(0).model.get(CARD_TYPE));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB1_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(3).model.get(TabProperties.TAB_ID));
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_MissingCard_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+
+        mDataObserver.onItemsMoved(List.of(createTabItem(TAB2_ID)), createTabItem(TAB1_ID));
+
+        assertTabIds(TAB1_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_TabGroupItem_MovesGroupCard() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3, tab4),
+                /* tabGroupSyncIds= */ null,
+                /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true);
+        mDataObserver.onDataReset(
+                List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID), groupItem));
+
+        mDataObserver.onItemsMoved(List.of(groupItem), /* after= */ null);
+
+        assertEquals(3, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(0).model));
+        assertEquals(TAB_GROUP_ID, mModelList.get(0).model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        assertEquals(TAB1_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+    }
+
+    @Test
+    public void testDataProvider_OnItemsMoved_NestedGroupWithChildren_StaysContiguous() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3, tab4),
+                /* tabGroupSyncIds= */ null,
+                /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ false);
+        mDataObserver.onDataReset(
+                List.of(
+                        groupItem,
+                        createTabItem(TAB3_ID),
+                        createTabItem(TAB4_ID),
+                        createTabItem(TAB1_ID),
+                        createTabItem(TAB2_ID)));
+        assertEquals(5, mModelList.size());
+
+        // Simulates moving an expanded group header and its children after TAB1.
+        mDataObserver.onItemsMoved(
+                List.of(groupItem, createTabItem(TAB3_ID), createTabItem(TAB4_ID)),
+                createTabItem(TAB1_ID));
+
+        assertEquals(5, mModelList.size());
+        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+        assertEquals(TAB_GROUP_ID, mModelList.get(1).model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        assertEquals(TAB3_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB4_ID, mModelList.get(3).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(4).model.get(TabProperties.TAB_ID));
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_NotTracking_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mModelList.add(createTabListItem(TAB1_ID));
+        clearInvocations(mTab1);
+
+        mDataObserver.onItemsRemoved(List.of(createTabItem(TAB1_ID)));
+
+        assertTabIds(TAB1_ID);
+        verify(mTab1, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_NotTracking_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        ListItem item = createTabListItem(TAB1_ID);
+        item.model.set(TabProperties.IS_SELECTED, false);
+        mModelList.add(item);
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withSelected(/* isSelected= */ true), PayloadType.SELECTION);
+
+        assertFalse(item.model.get(TabProperties.IS_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_TabItem_RemovesCardAndDetachesObserver() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        clearInvocations(mTab1, mTab2);
+
+        mDataObserver.onItemsRemoved(List.of(createTabItem(TAB1_ID)));
+
+        assertTabIds(TAB2_ID);
+        verify(mTab1).removeObserver(mTabObserverCaptor.getValue());
+        verify(mTab2, never()).removeObserver(any());
+    }
+
+    @Test
+    public void
+            testDataProvider_OnItemsRemoved_TabGroupItem_RemovesCardAndDetachesMemberObservers() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        Tab tab3 = mTabModel.getTabById(TAB3_ID);
+        Tab tab4 = mTabModel.getTabById(TAB4_ID);
+        clearInvocations(mTab1, tab3, tab4);
+
+        mDataObserver.onItemsRemoved(List.of(groupItem));
+
+        assertTabIds(TAB1_ID);
+        verify(tab3).removeObserver(mTabObserverCaptor.getValue());
+        verify(tab4).removeObserver(mTabObserverCaptor.getValue());
+        verify(mTab1, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_MissingCard_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        clearInvocations(mTab1, mTab2);
+
+        mDataObserver.onItemsRemoved(List.of(createTabItem(TAB2_ID)));
+
+        assertTabIds(TAB1_ID);
+        verify(mTab1, never()).removeObserver(any());
+        verify(mTab2, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_TabMergedIntoGroup_KeepsObserver() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        // Simulates mTab1 merging into an existing group that mTab2 represents.
+        when(mTabModel.isTabInTabGroup(mTab1)).thenReturn(true);
+        clearInvocations(mTab1);
+
+        mDataObserver.onItemsRemoved(List.of(createTabItem(TAB1_ID)));
+
+        assertTabIds(TAB2_ID);
+        // The group card still represents the tab, so it stays observed.
+        verify(mTab1, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_TabGoneFromModel_DetachesObserver() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        // The tab is gone from the TabModel, so it's found through the observer manager and
+        // detached even though it looks grouped.
+        when(mTabModel.getTabById(TAB1_ID)).thenReturn(null);
+        when(mTabModel.isTabInTabGroup(mTab1)).thenReturn(true);
+        clearInvocations(mTab1);
+
+        mDataObserver.onItemsRemoved(List.of(createTabItem(TAB1_ID)));
+
+        assertTabIds(TAB2_ID);
+        verify(mTab1).removeObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnItemsRemoved_ExpandedNestedGroup_RemovesAllCards() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2, tab3, tab4),
+                /* tabGroupSyncIds= */ null,
+                /* quickMode= */ false);
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ false);
+        mDataObserver.onDataReset(
+                List.of(
+                        groupItem,
+                        createTabItem(TAB3_ID),
+                        createTabItem(TAB4_ID),
+                        createTabItem(TAB1_ID),
+                        createTabItem(TAB2_ID)));
+        assertEquals(5, mModelList.size());
+        clearInvocations(tab3, tab4);
+
+        // An expanded group is removed as one run, header then its tabs.
+        mDataObserver.onItemsRemoved(
+                List.of(groupItem, createTabItem(TAB3_ID), createTabItem(TAB4_ID)));
+
+        assertTabIds(TAB1_ID, TAB2_ID);
+        assertEquals(2, mModelList.size());
+        verify(tab3).removeObserver(mTabObserverCaptor.getValue());
+        verify(tab4).removeObserver(mTabObserverCaptor.getValue());
+    }
+
+    @Test
+    public void testDataProvider_OnTabClosureUndone_RecordsUndoMetric() {
+        var userActionTester = new UserActionTester();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        closeTabFromCard(/* index= */ 0, mItemView1, TAB1_ID);
+
+        mDataObserver.onTabClosureUndone(TAB1_ID);
+
+        assertTrue(userActionTester.getActions().contains("GridTabSwitch.UndoCloseTab"));
+        userActionTester.tearDown();
+    }
+
+    @Test
+    public void testDataProvider_OnTabClosureCommitted_ClearsUndoTracking() {
+        var userActionTester = new UserActionTester();
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        closeTabFromCard(/* index= */ 0, mItemView1, TAB1_ID);
+
+        mDataObserver.onTabClosureCommitted(TAB1_ID);
+        mDataObserver.onTabClosureUndone(TAB1_ID);
+
+        assertFalse(userActionTester.getActions().contains("GridTabSwitch.UndoCloseTab"));
+        userActionTester.tearDown();
+    }
+
+    @Test
+    public void testDataProvider_OnTabDestroyed_DetachesObservers() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        clearInvocations(mTab1, mTab2);
+
+        mTabObserverCaptor.getValue().onDestroyed(mTab1);
+
+        verify(mTab1).removeObserver(mTabObserverCaptor.getValue());
+        verify(mTab2, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Title_UpdatesGroupCardTitle() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        mTabModel.setTabGroupTitle(TAB_GROUP_ID, CUSTOMIZED_DIALOG_TITLE1);
+        assertThat(
+                mModelList.get(1).model.get(TabProperties.TITLE),
+                not(equalTo(CUSTOMIZED_DIALOG_TITLE1)));
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.TITLE);
+
+        assertThat(
+                mModelList.get(1).model.get(TabProperties.TITLE),
+                equalTo(CUSTOMIZED_DIALOG_TITLE1));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Color_UpdatesGroupCardColor() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        when(mTabModel.getTabGroupColorWithFallback(TAB_GROUP_ID)).thenReturn(TabGroupColorId.BLUE);
+        assertThat(
+                mModelList.get(1).model.get(TabProperties.TAB_GROUP_CARD_COLOR),
+                not(equalTo(TabGroupColorId.BLUE)));
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.COLOR);
+
+        assertThat(
+                mModelList.get(1).model.get(TabProperties.TAB_GROUP_CARD_COLOR),
+                equalTo(TabGroupColorId.BLUE));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Collapsed_UpdatesGroupCardIsCollapsed() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.NESTED, /* isCollapsed= */ false);
+        assertFalse(mModelList.get(1).model.get(TabProperties.IS_COLLAPSED));
+        int sizeBeforeUpdate = mModelList.size();
+
+        mDataObserver.onItemUpdated(
+                groupItem.withCollapsed(/* isCollapsed= */ true), PayloadType.COLLAPSED);
+
+        assertTrue(mModelList.get(1).model.get(TabProperties.IS_COLLAPSED));
+        assertEquals(sizeBeforeUpdate, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_TabGroupOrder_RefreshesGroupThumbnail() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        ThumbnailFetcher oldFetcher = mModelList.get(1).model.get(TabProperties.THUMBNAIL_FETCHER);
+        assertNotNull(oldFetcher);
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.TAB_GROUP_ORDER);
+
+        ThumbnailFetcher newFetcher = mModelList.get(1).model.get(TabProperties.THUMBNAIL_FETCHER);
+        assertNotNull(newFetcher);
+        assertNotSame(oldFetcher, newFetcher);
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_TabGroupOrder_Nested_KeepsThumbnail() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.NESTED, /* isCollapsed= */ false);
+        PropertyModel groupModel = mModelList.get(1).model;
+        ThumbnailFetcher before = groupModel.get(TabProperties.THUMBNAIL_FETCHER);
+        assertNotNull(before);
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.TAB_GROUP_ORDER);
+
+        assertSame(before, groupModel.get(TabProperties.THUMBNAIL_FETCHER));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_GroupMembership_UpdatesGroupCardTitle() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        mTabModel.setTabGroupTitle(TAB_GROUP_ID, "");
+        Tab tab3 = mTabModel.getTabById(TAB3_ID);
+        Tab tab4 = mTabModel.getTabById(TAB4_ID);
+        assertThat(mModelList.get(1).model.get(TabProperties.TITLE), equalTo("2 tabs"));
+        // Simulates mTab2 joining the group.
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(tab3, tab4, mTab2));
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.GROUP_MEMBERSHIP);
+
+        assertThat(mModelList.get(1).model.get(TabProperties.TITLE), equalTo("3 tabs"));
+        assertEquals(2, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_GroupMembership_DetachesClosedMember() {
+        TabGroupItem groupItem =
+                setupGroupCardInProviderMediator(
+                        TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        Tab tab3 = mTabModel.getTabById(TAB3_ID);
+        Tab tab4 = mTabModel.getTabById(TAB4_ID);
+        // Simulates tab4 closing (pending undo): it keeps its group id but leaves the group's tabs.
+        when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(tab3));
+        clearInvocations(mTab1, tab3, tab4);
+
+        mDataObserver.onItemUpdated(groupItem, PayloadType.GROUP_MEMBERSHIP);
+
+        verify(tab4).removeObserver(mTabObserverCaptor.getValue());
+        verify(tab3, never()).removeObserver(any());
+        verify(mTab1, never()).removeObserver(any());
+        assertEquals(2, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_GroupMembership_TabItem_JoinsGroup() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        assertEquals(1, mModelList.size());
+        assertNull(mModelList.get(0).model.get(TabProperties.TAB_GROUP_ID));
+        // Simulates mTab1 joining a group whose children stay visible in the nested layout.
+        when(mTab1.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        when(mTabModel.getTabGroupColorWithFallback(TAB_GROUP_ID)).thenReturn(COLOR_2);
+
+        mDataObserver.onItemUpdated(createTabItem(TAB1_ID), PayloadType.GROUP_MEMBERSHIP);
+
+        PropertyModel model = mModelList.get(0).model;
+        assertEquals(TAB_GROUP_ID, model.get(TabProperties.TAB_GROUP_ID));
+        assertThat(model.get(TabProperties.TAB_GROUP_CARD_COLOR), equalTo(COLOR_2));
+        // The child stays a tab card rather than turning into a group header.
+        assertEquals(TAB, model.get(CARD_TYPE));
+        assertNull(model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        assertEquals(1, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_GroupMembership_TabItem_LeavesGroup() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        when(mTab1.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        when(mTabModel.getTabGroupColorWithFallback(TAB_GROUP_ID)).thenReturn(COLOR_2);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        assertEquals(1, mModelList.size());
+        assertEquals(TAB_GROUP_ID, mModelList.get(0).model.get(TabProperties.TAB_GROUP_ID));
+        // Simulates mTab1 moving out of the group.
+        when(mTab1.getTabGroupId()).thenReturn(null);
+
+        mDataObserver.onItemUpdated(createTabItem(TAB1_ID), PayloadType.GROUP_MEMBERSHIP);
+
+        PropertyModel model = mModelList.get(0).model;
+        assertNull(model.get(TabProperties.TAB_GROUP_ID));
+        assertNull(model.get(TabProperties.TAB_GROUP_CARD_COLOR));
+        assertEquals(TAB, model.get(CARD_TYPE));
+        assertEquals(1, mModelList.size());
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_TabItem_NoOp() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        ListItem first = mModelList.get(0);
+        ListItem second = mModelList.get(1);
+
+        mDataObserver.onItemUpdated(createTabItem(TAB1_ID), PayloadType.TITLE);
+
+        assertEquals(2, mModelList.size());
+        assertSame(first, mModelList.get(0));
+        assertSame(second, mModelList.get(1));
+        assertTabIds(TAB1_ID, TAB2_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Selection_MovesTabSelection() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        assertEquals(2, mModelList.size());
+        mModelList.get(0).model.set(TabProperties.IS_SELECTED, true);
+        mModelList.get(1).model.set(TabProperties.IS_SELECTED, false);
+
+        // Providers send the deselect before the select.
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withSelected(/* isSelected= */ false),
+                PayloadType.SELECTION);
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withSelected(/* isSelected= */ true), PayloadType.SELECTION);
+
+        assertFalse(mModelList.get(0).model.get(TabProperties.IS_SELECTED));
+        assertTrue(mModelList.get(1).model.get(TabProperties.IS_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Selection_SelectsGroupCard() {
+        setupGroupCardInProviderMediator(TabListLayoutType.GROUPED, /* isCollapsed= */ true);
+        PropertyModel groupCardModel = mModelList.get(1).model;
+        groupCardModel.set(TabProperties.IS_SELECTED, false);
+
+        mDataObserver.onItemUpdated(
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ true, /* isCollapsed= */ true),
+                PayloadType.SELECTION);
+
+        assertTrue(groupCardModel.get(TabProperties.IS_SELECTED));
+
+        mDataObserver.onItemUpdated(
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, /* isCollapsed= */ true),
+                PayloadType.SELECTION);
+
+        assertFalse(groupCardModel.get(TabProperties.IS_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_Selection_MissingCard_NoOp() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        PropertyModel model = mModelList.get(0).model;
+        model.set(TabProperties.IS_SELECTED, true);
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withSelected(/* isSelected= */ true), PayloadType.SELECTION);
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withSelected(/* isSelected= */ false),
+                PayloadType.SELECTION);
+
+        assertEquals(1, mModelList.size());
+        assertTrue(model.get(TabProperties.IS_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_PinState_UpdatesPinState() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        when(mTab1.getIsPinned()).thenReturn(false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        PropertyModel model = mModelList.get(0).model;
+        assertFalse(model.get(TabProperties.IS_PINNED));
+
+        when(mTab1.getIsPinned()).thenReturn(true);
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withPinned(/* isPinned= */ true), PayloadType.PIN_STATE);
+
+        assertTrue(model.get(TabProperties.IS_PINNED));
+        assertEquals(TabActionButtonType.PIN, model.get(TabProperties.TAB_ACTION_BUTTON_DATA).type);
+
+        when(mTab1.getIsPinned()).thenReturn(false);
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withPinned(/* isPinned= */ false), PayloadType.PIN_STATE);
+
+        assertFalse(model.get(TabProperties.IS_PINNED));
+        assertEquals(
+                TabActionButtonType.CLOSE, model.get(TabProperties.TAB_ACTION_BUTTON_DATA).type);
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withPinned(/* isPinned= */ true), PayloadType.PIN_STATE);
+
+        assertEquals(1, mModelList.size());
+        assertFalse(model.get(TabProperties.IS_PINNED));
+        assertEquals(
+                TabActionButtonType.CLOSE, model.get(TabProperties.TAB_ACTION_BUTTON_DATA).type);
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_PinState_Nested_ReinsertsCardAtSameIndex() {
+        setUpProviderMediator(TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        ListItem before = mModelList.get(1);
+        assertFalse(before.model.get(TabProperties.IS_PINNED));
+        mModelList.addObserver(mListObserver);
+
+        when(mTab2.getIsPinned()).thenReturn(true);
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withPinned(/* isPinned= */ true), PayloadType.PIN_STATE);
+
+        // The card is re-inserted so the adapter re-resolves its view type from IS_PINNED.
+        InOrder inOrder = Mockito.inOrder(mListObserver);
+        inOrder.verify(mListObserver).onItemRangeRemoved(eq(mModelList), eq(1), eq(1));
+        inOrder.verify(mListObserver).onItemRangeInserted(eq(mModelList), eq(1), eq(1));
+        assertEquals(2, mModelList.size());
+        assertSame(before, mModelList.get(1));
+        assertTrue(before.model.get(TabProperties.IS_PINNED));
+        assertTabIds(TAB1_ID, TAB2_ID);
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_MultiSelection_UpdatesIsMultiSelected() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ true);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        PropertyModel model = mModelList.get(0).model;
+        assertFalse(model.get(TabProperties.IS_MULTI_SELECTED));
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withMultiSelected(/* isMultiSelected= */ true),
+                PayloadType.MULTI_SELECTION);
+
+        assertTrue(model.get(TabProperties.IS_MULTI_SELECTED));
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withMultiSelected(/* isMultiSelected= */ false),
+                PayloadType.MULTI_SELECTION);
+
+        assertFalse(model.get(TabProperties.IS_MULTI_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_MultiSelection_MissingCard_NoOp() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ true);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        PropertyModel model = mModelList.get(0).model;
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB2_ID).withMultiSelected(/* isMultiSelected= */ true),
+                PayloadType.MULTI_SELECTION);
+
+        assertEquals(1, mModelList.size());
+        assertFalse(model.get(TabProperties.IS_MULTI_SELECTED));
+    }
+
+    @Test
+    public void testDataProvider_OnItemUpdated_MultiSelection_Disabled_NoOp() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        assertFalse(mTabListConfig.supportsModifierMultiSelect);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        PropertyModel model = mModelList.get(0).model;
+
+        mDataObserver.onItemUpdated(
+                createTabItem(TAB1_ID).withMultiSelected(/* isMultiSelected= */ true),
+                PayloadType.MULTI_SELECTION);
+
+        assertFalse(model.get(TabProperties.IS_MULTI_SELECTED));
+    }
+
+    @Test
+    public void testOnTabPinnedStateChanged_ProviderMode_Ignored() {
+        setUpProviderMediator(TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID), createTabItem(TAB2_ID)));
+        ListItem first = mModelList.get(0);
+        ListItem second = mModelList.get(1);
+        mModelList.addObserver(mListObserver);
+
+        // The provider owns pin updates, so the legacy tab observer must not touch the list.
+        when(mTab1.getIsPinned()).thenReturn(true);
+        mTabObserverCaptor.getValue().onTabPinnedStateChanged(mTab1, /* isPinned= */ true);
+
+        assertFalse(first.model.get(TabProperties.IS_PINNED));
+        assertSame(first, mModelList.get(0));
+        assertSame(second, mModelList.get(1));
+        assertTabIds(TAB1_ID, TAB2_ID);
+        verify(mListObserver, never()).onItemRangeRemoved(any(), anyInt(), anyInt());
+        verify(mListObserver, never()).onItemRangeInserted(any(), anyInt(), anyInt());
+    }
+
+    @Test
+    public void testOnTabDestroyed_LegacyMode_DetachesObservers() {
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, mTab2), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        clearInvocations(mTab1, mTab2);
+
+        mTabObserverCaptor.getValue().onDestroyed(mTab1);
+
+        verify(mTab1).removeObserver(mTabObserverCaptor.getValue());
+        verify(mTab2, never()).removeObserver(any());
+    }
+
+    @Test
+    public void testDataProvider_NestedEndToEnd_ExpandMoveCollapseAndModelSwitch() {
+        // Create every tab first, since prepareTab re-stubs mTabModel.getCount().
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab incognitoTab = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        List<Tab> tabs = new ArrayList<>(List.of(mTab1, mTab2, tab3));
+        stubTabModelWithTabs(mTabModel, tabs);
+        when(mTab1.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        when(mTab2.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        when(mTabModel.getTabGroupCollapsed(TAB_GROUP_ID)).thenReturn(true);
+
+        GroupedTabListDataProvider provider =
+                new GroupedTabListDataProvider(
+                        mCurrentTabModelSupplier, /* supportsGroupExpansion= */ true);
+        setUpMediatorWithProvider(
+                TabListLayoutType.NESTED, /* supportsModifierMultiSelect= */ true, provider);
+        mMediator.resetWithListOfTabs(
+                Collections.emptyList(), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        verify(mTabModel, atLeastOnce()).addTabGroupObserver(mTabGroupObserverCaptor.capture());
+        TabGroupObserver groupObserver = mTabGroupObserverCaptor.getValue();
+
+        // Collapsed group: [Group, TAB3].
+        assertEquals(2, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(0).model));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+
+        // Expand inserts the children after the header: [Group, TAB1, TAB2, TAB3].
+        when(mTabModel.getTabGroupCollapsed(TAB_GROUP_ID)).thenReturn(false);
+        groupObserver.didChangeTabGroupCollapsed(
+                TAB_GROUP_ID, /* isCollapsed= */ false, /* animate= */ false);
+        assertEquals(4, mModelList.size());
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(0).model));
+        assertEquals(TAB1_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(3).model.get(TabProperties.TAB_ID));
+
+        // Moving the group after TAB3 moves the header and children as one block:
+        // [TAB3, Group, TAB1, TAB2].
+        tabs.clear();
+        tabs.addAll(List.of(tab3, mTab1, mTab2));
+        groupObserver.onTabGroupMoved(
+                TAB_GROUP_ID, /* tabModelOldIndex= */ 0, /* tabModelNewIndex= */ 1);
+        assertEquals(4, mModelList.size());
+        assertEquals(TAB3_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+        assertEquals(TAB1_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(3).model.get(TabProperties.TAB_ID));
+
+        // Collapse removes the children: [TAB3, Group].
+        when(mTabModel.getTabGroupCollapsed(TAB_GROUP_ID)).thenReturn(true);
+        groupObserver.didChangeTabGroupCollapsed(
+                TAB_GROUP_ID, /* isCollapsed= */ true, /* animate= */ false);
+        assertEquals(2, mModelList.size());
+        assertEquals(TAB3_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertTrue(TabProperties.isTabGroupHeader(mModelList.get(1).model));
+
+        // Switching to the incognito model and resetting rebuilds from the new model.
+        stubTabModelWithTabs(mIncognitoTabModel, new ArrayList<>(List.of(incognitoTab)));
+        when(mIncognitoTabModel.index()).thenReturn(0);
+        mCurrentTabModelSupplier.set(mIncognitoTabModel);
+        mMediator.resetWithListOfTabs(
+                Collections.emptyList(), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        assertEquals(1, mModelList.size());
+        assertEquals(TAB4_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+
+        provider.destroy();
+    }
+
+    @Test
+    public void testDataProvider_GroupedEndToEnd_MergeUngroupAndDissolve() {
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        stubTabModelWithTabs(mTabModel, new ArrayList<>(List.of(mTab1, mTab2, tab3)));
+
+        GroupedTabListDataProvider provider =
+                new GroupedTabListDataProvider(
+                        mCurrentTabModelSupplier, /* supportsGroupExpansion= */ false);
+        setUpMediatorWithProvider(
+                TabListLayoutType.GROUPED, /* supportsModifierMultiSelect= */ false, provider);
+        mMediator.resetWithListOfTabs(
+                Collections.emptyList(), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        verify(mTabModel, atLeastOnce()).addTabGroupObserver(mTabGroupObserverCaptor.capture());
+        TabGroupObserver groupObserver = mTabGroupObserverCaptor.getValue();
+        assertEquals(3, mModelList.size());
+
+        // Merging TAB1 and TAB2 replaces both tab cards with one group card: [Group, TAB3].
+        when(mTab1.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        when(mTab2.getTabGroupId()).thenReturn(TAB_GROUP_ID);
+        groupObserver.didMergeTabToGroup(mTab1, /* isDestinationTab= */ true);
+        groupObserver.didMergeTabToGroup(mTab2, /* isDestinationTab= */ false);
+        assertEquals(2, mModelList.size());
+        assertEquals(TAB_GROUP_ID, mModelList.get(0).model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+
+        // Ungrouping TAB2 adds its tab card back after the group: [Group, TAB2, TAB3].
+        when(mTab2.getTabGroupId()).thenReturn(null);
+        groupObserver.didMoveTabOutOfGroup(mTab2, TAB_GROUP_ID);
+        assertEquals(3, mModelList.size());
+        assertEquals(TAB_GROUP_ID, mModelList.get(0).model.get(TabProperties.TAB_GROUP_HEADER_ID));
+        assertEquals(TAB2_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+
+        // Ungrouping the last tab dissolves the group: [TAB1, TAB2, TAB3].
+        when(mTab1.getTabGroupId()).thenReturn(null);
+        groupObserver.onTabGroupRemoving(TAB_GROUP_ID);
+        groupObserver.didMoveTabOutOfGroup(mTab1, TAB_GROUP_ID);
+        groupObserver.didRemoveTabGroup(TAB_GROUP_ID, DidRemoveTabGroupReason.UNGROUP);
+        assertEquals(3, mModelList.size());
+        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+
+        provider.destroy();
+    }
+
+    @Test
+    public void testDataProvider_FlatEndToEnd_AddPinMoveCloseUndoAndCommit() {
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        List<Tab> tabs = new ArrayList<>(List.of(mTab1, mTab2));
+        stubTabModelWithTabs(mTabModel, tabs);
+
+        FlatTabListDataProvider provider =
+                new FlatTabListDataProvider(mCurrentTabModelSupplier, /* filter= */ null);
+        setUpMediatorWithProvider(
+                TabListLayoutType.FLAT, /* supportsModifierMultiSelect= */ false, provider);
+        mMediator.resetWithListOfTabs(
+                Collections.emptyList(), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        verify(mTabModel, atLeastOnce()).addObserver(mTabModelObserverCaptor.capture());
+        TabModelObserver modelObserver = mTabModelObserverCaptor.getValue();
+        assertEquals(2, mModelList.size());
+
+        // Adding TAB3 at index 1: [TAB1, TAB3, TAB2].
+        tabs.add(1, tab3);
+        modelObserver.didAddTab(
+                tab3,
+                TabLaunchType.FROM_CHROME_UI,
+                TabCreationState.LIVE_IN_FOREGROUND,
+                /* markedForSelection= */ false);
+        assertEquals(3, mModelList.size());
+        assertEquals(TAB1_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB2_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+
+        // Pinning TAB2 moves it first, then changes its pin state: [TAB2, TAB1, TAB3].
+        when(mTab2.getIsPinned()).thenReturn(true);
+        tabs.remove(mTab2);
+        tabs.add(0, mTab2);
+        modelObserver.didMoveTab(mTab2, /* newIndex= */ 0, /* curIndex= */ 2);
+        modelObserver.didChangePinState(mTab2);
+        assertEquals(TAB2_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB1_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(2).model.get(TabProperties.TAB_ID));
+
+        // Closing TAB1 removes it and undo restores it in place.
+        tabs.remove(mTab1);
+        modelObserver.didRemoveTabForClosure(mTab1);
+        assertEquals(2, mModelList.size());
+        tabs.add(1, mTab1);
+        modelObserver.tabClosureUndone(mTab1);
+        assertEquals(3, mModelList.size());
+        assertEquals(TAB1_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+
+        // Closing again and committing leaves [TAB2, TAB3].
+        tabs.remove(mTab1);
+        modelObserver.didRemoveTabForClosure(mTab1);
+        modelObserver.tabClosureCommitted(mTab1);
+        assertEquals(2, mModelList.size());
+        assertEquals(TAB2_ID, mModelList.get(0).model.get(TabProperties.TAB_ID));
+        assertEquals(TAB3_ID, mModelList.get(1).model.get(TabProperties.TAB_ID));
+
+        provider.destroy();
+    }
+
     /**
      * Replaces {@link #mMediator} with one backed by {@link #mTabListDataProvider} and an empty
      * model list, so tests can drive the captured {@link TabListDataObserver} directly.
+     *
+     * @param layoutType The {@link TabListLayoutType} to use for the mediator.
+     * @param supportsModifierMultiSelect Whether the tab list config supports modifier
+     *     multi-select.
      */
-    private void setUpProviderMediator() {
+    private void setUpProviderMediator(
+            @TabListLayoutType int layoutType, boolean supportsModifierMultiSelect) {
+        setUpMediatorWithProvider(layoutType, supportsModifierMultiSelect, mTabListDataProvider);
+
+        verify(mTabListDataProvider).addObserver(mTabListDataObserverCaptor.capture());
+        mDataObserver = mTabListDataObserverCaptor.getValue();
+    }
+
+    /**
+     * Replaces {@link #mMediator} with one backed by {@code dataProvider} and an empty model list.
+     *
+     * @param layoutType The {@link TabListLayoutType} to use for the mediator.
+     * @param supportsModifierMultiSelect Whether the tab list config supports modifier
+     *     multi-select.
+     * @param dataProvider The {@link TabListDataProvider} backing the mediator.
+     */
+    private void setUpMediatorWithProvider(
+            @TabListLayoutType int layoutType,
+            boolean supportsModifierMultiSelect,
+            TabListDataProvider dataProvider) {
         mMediator.resetWithListOfTabs(
                 /* tabs= */ null, /* tabGroupSyncIds= */ null, /* quickMode= */ false);
         mMediator.destroy();
@@ -8024,11 +9293,12 @@ public class TabListMediatorUnitTest {
 
         mModelList = new TabListModel();
         mTabListConfig =
-                new TabListConfig.Builder(TabListLayoutType.GROUPED)
+                new TabListConfig.Builder(layoutType)
                         .setTabUiType(UiType.TAB)
                         .setSupportsTabGroups(/* supportsTabGroups= */ true)
                         .setSupportsMessageCards(/* supportsMessageCards= */ true)
-                        .setDataProvider(mTabListDataProvider)
+                        .setSupportsModifierMultiSelect(supportsModifierMultiSelect)
+                        .setDataProvider(dataProvider)
                         .build();
         mMediator =
                 new MediatorBuilder()
@@ -8037,8 +9307,97 @@ public class TabListMediatorUnitTest {
                         .build();
         mMediator.registerOrientationListener(mGridLayoutManager);
         mMediator.initWithNative(mProfile);
+    }
 
-        verify(mTabListDataProvider).addObserver(mTabListDataObserverCaptor.capture());
+    /**
+     * Stubs {@code model} so its tab and group queries read from {@code tabs}. Tests mutate {@code
+     * tabs} (order or group ids) to simulate {@link TabModel} changes seen by a real provider.
+     *
+     * @param model The {@link TabModel} spy to stub.
+     * @param tabs The live, ordered list of tabs in {@code model}.
+     */
+    private void stubTabModelWithTabs(TabModel model, List<Tab> tabs) {
+        when(model.getCount()).thenAnswer(inv -> tabs.size());
+        when(model.getTabAt(anyInt()))
+                .thenAnswer(
+                        inv -> {
+                            int index = inv.getArgument(0);
+                            return index >= 0 && index < tabs.size() ? tabs.get(index) : null;
+                        });
+        when(model.indexOf(any())).thenAnswer(inv -> tabs.indexOf(inv.getArgument(0)));
+        when(model.getTabById(anyInt()))
+                .thenAnswer(
+                        inv -> {
+                            int tabId = inv.getArgument(0);
+                            for (Tab tab : tabs) {
+                                if (tab.getId() == tabId) return tab;
+                            }
+                            return null;
+                        });
+        when(model.iterator()).thenAnswer(inv -> new ArrayList<>(tabs).iterator());
+        when(model.getTabsInGroup(any()))
+                .thenAnswer(
+                        inv -> {
+                            Token tabGroupId = inv.getArgument(0);
+                            List<Tab> result = new ArrayList<>();
+                            if (tabGroupId == null) return result;
+                            for (Tab tab : tabs) {
+                                if (tabGroupId.equals(tab.getTabGroupId()) && !tab.isClosing()) {
+                                    result.add(tab);
+                                }
+                            }
+                            return result;
+                        });
+        when(model.getTabCountForGroup(any()))
+                .thenAnswer(inv -> model.getTabsInGroup(inv.getArgument(0)).size());
+        when(model.containsTabGroup(any()))
+                .thenAnswer(inv -> !model.getTabsInGroup(inv.getArgument(0)).isEmpty());
+        when(model.isTabInTabGroup(any()))
+                .thenAnswer(inv -> ((Tab) inv.getArgument(0)).getTabGroupId() != null);
+        when(model.getRelatedTabList(anyInt()))
+                .thenAnswer(
+                        inv -> {
+                            Tab tab = model.getTabById(inv.getArgument(0));
+                            if (tab == null) return Collections.emptyList();
+                            Token tabGroupId = tab.getTabGroupId();
+                            return tabGroupId != null
+                                    ? model.getTabsInGroup(tabGroupId)
+                                    : Collections.singletonList(tab);
+                        });
+    }
+
+    /**
+     * Sets up a provider mediator holding {@code mTab1} followed by a group card for {@code
+     * TAB_GROUP_ID} containing two other tabs.
+     *
+     * @param layoutType The {@link TabListLayoutType} to use for the mediator.
+     * @param isCollapsed Whether the inserted group card is collapsed.
+     * @return The {@link TabGroupItem} that was inserted as the group card.
+     */
+    private TabGroupItem setupGroupCardInProviderMediator(
+            @TabListLayoutType int layoutType, boolean isCollapsed) {
+        setUpProviderMediator(layoutType, /* supportsModifierMultiSelect= */ false);
+        Tab tab3 = prepareTab(TAB3_ID, TAB3_TITLE, TAB3_URL);
+        Tab tab4 = prepareTab(TAB4_ID, TAB4_TITLE, TAB4_URL);
+        createTabGroup(List.of(tab3, tab4), TAB_GROUP_ID);
+        when(mTabModel.getTabGroupCollapsed(TAB_GROUP_ID)).thenReturn(isCollapsed);
+        mMediator.resetWithListOfTabs(
+                List.of(mTab1, tab3, tab4), /* tabGroupSyncIds= */ null, /* quickMode= */ false);
+        mDataObserver.onDataReset(List.of(createTabItem(TAB1_ID)));
+        TabGroupItem groupItem =
+                new TabGroupItem(TAB_GROUP_ID, /* isSelected= */ false, isCollapsed);
+        mDataObserver.onItemsInserted(List.of(groupItem), createTabItem(TAB1_ID));
+        assertEquals(2, mModelList.size());
+        return groupItem;
+    }
+
+    private void closeTabFromCard(int index, View itemView, int tabId) {
+        mModelList
+                .get(index)
+                .model
+                .get(TabProperties.TAB_ACTION_BUTTON_DATA)
+                .tabActionListener
+                .run(itemView, tabId, /* triggeringMotion= */ null);
     }
 
     private static TabItem createTabItem(int tabId) {
@@ -8047,6 +9406,23 @@ public class TabListMediatorUnitTest {
                 /* isSelected= */ false,
                 /* isPinned= */ false,
                 /* isMultiSelected= */ false);
+    }
+
+    private static ListItem createTabListItem(int tabId) {
+        return new ListItem(
+                UiType.TAB,
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_TAB_GRID)
+                        .with(CARD_TYPE, TAB)
+                        .with(TabProperties.TAB_ID, tabId)
+                        .build());
+    }
+
+    private void assertTabIds(Integer... expected) {
+        List<Integer> actual = new ArrayList<>();
+        for (ListItem item : mModelList) {
+            actual.add(item.model.get(TabProperties.TAB_ID));
+        }
+        assertEquals(List.of(expected), actual);
     }
 
     private static PropertyModel createMessageCardModel() {

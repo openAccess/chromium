@@ -24,7 +24,7 @@
 #include "chrome/browser/lookalikes/lookalike_url_blocking_page.h"
 #include "chrome/browser/lookalikes/lookalike_url_controller_client.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/test_safe_browsing_blocking_page_quiet.h"
+#include "chrome/browser/safe_browsing/interstitials/test_safe_browsing_blocking_page_quiet.h"
 #include "chrome/browser/ssl/chrome_security_blocking_page_factory.h"
 #include "chrome/browser/ssl/https_only_mode_controller_client.h"
 #include "chrome/browser/ssl/https_upgrades_util.h"
@@ -34,9 +34,9 @@
 #include "components/captive_portal/core/buildflags.h"
 #include "components/grit/dev_ui_components_resources.h"
 #include "components/lookalikes/core/lookalike_url_util.h"
-#include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
-#include "components/safe_browsing/content/browser/safe_browsing_blocking_page.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/content_unsafe_resource_util.h"
+#include "components/safe_browsing/content/browser/interstitials/safe_browsing_blocking_page.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/db/sb_protocol_manager_util.h"
 #include "components/security_interstitials/content/bad_clock_blocking_page.h"
@@ -361,8 +361,14 @@ CreateSafeBrowsingBlockingPage(content::WebContents* web_contents) {
 std::unique_ptr<EnterpriseBlockPage> CreateEnterpriseBlockPage(
     content::WebContents* web_contents) {
   const GURL kRequestUrl("https://enterprise-block.example.net");
+  safe_browsing::BaseUIManager* ui_manager = nullptr;
+#if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
+  if (g_browser_process->safe_browsing_service()) {
+    ui_manager = g_browser_process->safe_browsing_service()->ui_manager().get();
+  }
+#endif
   return std::make_unique<EnterpriseBlockPage>(
-      web_contents, kRequestUrl,
+      ui_manager, web_contents, kRequestUrl,
       safe_browsing::SafeBrowsingBlockingPage::UnsafeResourceList(),
       std::make_unique<EnterpriseBlockControllerClient>(web_contents,
                                                         kRequestUrl));

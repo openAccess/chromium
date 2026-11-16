@@ -10,6 +10,7 @@
 #include "base/strings/string_util.h"
 #include "base/test/protobuf_matchers.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/values.h"
 #include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
@@ -25,6 +26,8 @@
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/enterprise/connectors/core/reporting_constants.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/scoped_isolated_mode_override_for_testing.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
 #include "components/safe_browsing/core/common/features.h"
@@ -35,6 +38,8 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
+#include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/extensions_test.h"
 #include "extensions/common/api/declarative_net_request/test_utils.h"
 #include "extensions/common/extension_features.h"
@@ -150,6 +155,19 @@ class ExtensionTelemetryServiceBrowserTest
 
   bool IsEnterpriseExtensionStoreEmpty() {
     return telemetry_service()->enterprise_extension_store_.empty();
+  }
+
+  // Returns whether `service` holds enterprise signals from `extension_id`.
+  static bool HasEnterpriseSignals(
+      const ExtensionTelemetryService& service,
+      const extensions::ExtensionId& extension_id) {
+    return service.enterprise_extension_store_.contains(extension_id);
+  }
+
+  // Returns whether `service` holds ESB signals from `extension_id`.
+  static bool HasEsbSignals(const ExtensionTelemetryService& service,
+                            const extensions::ExtensionId& extension_id) {
+    return service.extension_store_.contains(extension_id);
   }
 
   using ExtensionInfo = ExtensionTelemetryReportRequest_ExtensionInfo;
@@ -1193,5 +1211,257 @@ IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceBrowserTest,
   }
   EXPECT_TRUE(found_script_injection_signal);
 }
+
+// Enables Milestone 2 so that `GetForSignal()` checks the target's profile
+// type, but without Isolated Mode replacing Incognito.
+class ExtensionTelemetryServiceIncognitoBrowserTest
+    : public ExtensionTelemetryServiceBrowserTest {
+ public:
+  ExtensionTelemetryServiceIncognitoBrowserTest() {
+    milestone2_feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2);
+  }
+
+ private:
+  base::test::ScopedFeatureList milestone2_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(ExtensionTelemetryServiceIncognitoBrowserTest,
+                       GetForSignalKeepsIncognitoSignalsInCaller) {
+  Profile* incognito_profile = CreateIncognitoBrowser()->GetProfile();
+  ASSERT_TRUE(incognito_profile->IsIncognitoProfile());
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(browser()->GetProfile(),
+                                                    incognito_profile),
+            telemetry_service());
+}
+
+class ExtensionTelemetryServiceIsolatedModeBrowserTest
+    : public ExtensionTelemetryServiceBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  ExtensionTelemetryServiceIsolatedModeBrowserTest() {
+    isolated_mode_feature_list_.InitWithFeatureState(
+        enterprise_isolated_mode::kEnterpriseIsolatedModeMilestone2,
+        IsMilestone2Enabled());
+  }
+
+  bool IsMilestone2Enabled() const { return GetParam(); }
+
+ protected:
+  // Loads a `spanning` mode extension, enabled in Isolated Mode. Its
+  // background only runs the scripts sent by the tests.
+  extensions::ExtensionId LoadSpanningExtension() {
+    static constexpr char kManifest[] =
+        R"({
+           "name": "Spanning Extension",
+           "version": "0.1",
+           "manifest_version": 3,
+           "background": { "service_worker": "background.js" },
+           "permissions": ["cookies", "tabs"],
+           "host_permissions": ["https://example.com/*"]
+         })";
+    spanning_extension_dir_.WriteManifest(kManifest);
+    spanning_extension_dir_.WriteFile(FILE_PATH_LITERAL("background.js"), "");
+    const extensions::Extension* extension = LoadExtension(
+        spanning_extension_dir_.UnpackedPath(), {.allow_in_incognito = true});
+    CHECK(extension);
+    return extension->id();
+  }
+
+  // Runs `call`, a promise-returning extension API call, in the extension's
+  // background and waits for it to finish.
+  void RunInExtensionBackground(const extensions::ExtensionId& extension_id,
+                                const std::string& call) {
+    EXPECT_EQ(extensions::BackgroundScriptExecutor::ExecuteScript(
+                  browser()->GetProfile(), extension_id,
+                  call + ".then(() => chrome.test.sendScriptResult('done'))" +
+                      ".catch(e => chrome.test.sendScriptResult(String(e)));",
+                  extensions::BackgroundScriptExecutor::ResultCapture::
+                      kSendScriptResult),
+              base::Value("done"));
+  }
+
+  // Navigates the tab with `tab_id` to `url` through chrome.tabs.update().
+  void UpdateTabFromExtension(const extensions::ExtensionId& extension_id,
+                              int tab_id,
+                              const GURL& url) {
+    RunInExtensionBackground(
+        extension_id,
+        content::JsReplace("chrome.tabs.update($1, {url: $2})", tab_id, url));
+  }
+
+  // Reads the cookie store with `store_id` through chrome.cookies.getAll().
+  void GetCookiesFromExtension(const extensions::ExtensionId& extension_id,
+                               const std::string& store_id) {
+    RunInExtensionBackground(
+        extension_id,
+        content::JsReplace("chrome.cookies.getAll({storeId: $1})", store_id));
+  }
+
+  // Reads a cookie from the cookie store with `store_id` through
+  // chrome.cookies.get().
+  void GetCookieFromExtension(const extensions::ExtensionId& extension_id,
+                              const std::string& store_id) {
+    RunInExtensionBackground(
+        extension_id,
+        content::JsReplace(
+            "chrome.cookies.get({url: $1, name: 'test', storeId: $2})",
+            "https://example.com/", store_id));
+  }
+
+ private:
+  base::test::ScopedFeatureList isolated_mode_feature_list_;
+  enterprise_isolated_mode::ScopedIsolatedModeOverrideForTesting
+      scoped_isolated_mode_;
+  extensions::TestExtensionDir spanning_extension_dir_;
+};
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       GetForSignal) {
+  Profile* regular_profile = browser()->GetProfile();
+  Profile* isolated_profile = CreateIncognitoBrowser()->GetProfile();
+  ASSERT_TRUE(isolated_profile->IsEnterpriseIsolatedModeProfile());
+  ExtensionTelemetryService* regular_service = telemetry_service();
+
+  // Signals not involving the Isolated Mode profile are unchanged.
+  EXPECT_EQ(
+      ExtensionTelemetryService::GetForSignal(regular_profile, regular_profile),
+      regular_service);
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                    /*target=*/nullptr),
+            regular_service);
+
+  if (!IsMilestone2Enabled()) {
+    // Signals resolve from the caller, as before.
+    EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                      isolated_profile),
+              regular_service);
+    EXPECT_EQ(ExtensionTelemetryService::GetForSignal(isolated_profile,
+                                                      /*target=*/nullptr),
+              nullptr);
+    return;
+  }
+
+  // The Isolated Mode profile has no service yet, so its signals are dropped
+  // rather than reported by the caller's service.
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(regular_profile,
+                                                    isolated_profile),
+            nullptr);
+  EXPECT_EQ(ExtensionTelemetryService::GetForSignal(isolated_profile,
+                                                    /*target=*/nullptr),
+            nullptr);
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningTabsSignalOnRegularTab) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+  const int regular_tab_id =
+      extensions::ExtensionTabUtil::GetTabId(web_contents(browser()));
+
+  UpdateTabFromExtension(extension_id, regular_tab_id,
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningTabsSignalOnIsolatedTab) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  ASSERT_TRUE(StartEmbeddedTestServer());
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+  BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
+  ASSERT_TRUE(
+      isolated_browser->GetProfile()->IsEnterpriseIsolatedModeProfile());
+  const int isolated_tab_id =
+      extensions::ExtensionTabUtil::GetTabId(web_contents(isolated_browser));
+
+  UpdateTabFromExtension(extension_id, isolated_tab_id,
+                         embedded_test_server()->GetURL("/title1.html"));
+
+  if (!IsMilestone2Enabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  // The signal is dropped: the Isolated Mode profile has no service yet.
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningCookiesSignalForRegularStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+
+  GetCookiesFromExtension(extension_id, /*store_id=*/"0");
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningCookiesSignalForIsolatedStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+  ASSERT_TRUE(CreateIncognitoBrowser()
+                  ->GetProfile()
+                  ->IsEnterpriseIsolatedModeProfile());
+
+  GetCookiesFromExtension(extension_id, /*store_id=*/"1");
+
+  if (!IsMilestone2Enabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  // The signal is dropped: the Isolated Mode profile has no service yet.
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       ReportsSpanningCookiesGetSignalForRegularStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+
+  GetCookieFromExtension(extension_id, /*store_id=*/"0");
+
+  EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+IN_PROC_BROWSER_TEST_P(ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                       RoutesSpanningCookiesGetSignalForIsolatedStore) {
+  SetSafeBrowsingState(prefs(), SafeBrowsingState::ENHANCED_PROTECTION);
+  const extensions::ExtensionId extension_id = LoadSpanningExtension();
+  ASSERT_TRUE(CreateIncognitoBrowser()
+                  ->GetProfile()
+                  ->IsEnterpriseIsolatedModeProfile());
+
+  GetCookieFromExtension(extension_id, /*store_id=*/"1");
+
+  if (!IsMilestone2Enabled()) {
+    // The signal goes to the caller's service, as before.
+    EXPECT_TRUE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+    EXPECT_TRUE(HasEsbSignals(*telemetry_service(), extension_id));
+    return;
+  }
+  // The signal is dropped: the Isolated Mode profile has no service yet.
+  EXPECT_FALSE(HasEnterpriseSignals(*telemetry_service(), extension_id));
+  EXPECT_FALSE(HasEsbSignals(*telemetry_service(), extension_id));
+}
+
+INSTANTIATE_TEST_SUITE_P(,
+                         ExtensionTelemetryServiceIsolatedModeBrowserTest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Milestone2Enabled"
+                                             : "Milestone2Disabled";
+                         });
 
 }  // namespace safe_browsing

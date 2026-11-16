@@ -12,18 +12,27 @@
 
 namespace webrtc {
 class DesktopRect;
+class DesktopSize;
 }  // namespace webrtc
 
 namespace remoting {
 
 int RoundToTwosMultiple(int x);
 
+// Scales `size` down proportionally, if necessary, to fit within `max_size`
+// while preserving aspect ratio. Returns an empty DesktopSize if either `size`
+// or `max_size` is empty.
+webrtc::DesktopSize ScaleSizeToFit(const webrtc::DesktopSize& size,
+                                   const webrtc::DesktopSize& max_size);
+
 // Align the sides of the rectangle to multiples of 2 (expanding outwards).
 webrtc::DesktopRect AlignRect(const webrtc::DesktopRect& rect);
 
-// Align the left and right sides of the rect using the required data alignment
-// of the CPU. This is useful when the rect is to be processed using CPU
-// intrinsics that require aligned data.
+// Widens the left and right X-coordinates of `rect` (in pixels, clipped to
+// `max_right`) to multiples of `GetSimdMemoryAlignment()`. Because 8-bit planar
+// YUV stores 1 byte per luma/I444 sample, aligning X-bounds by the CPU's SIMD
+// byte alignment ensures both destination plane byte offsets and row pixel
+// widths satisfy libyuv's full-vector SIMD kernel alignment requirements.
 webrtc::DesktopRect GetRowAlignedRect(const webrtc::DesktopRect rect,
                                       int max_right);
 

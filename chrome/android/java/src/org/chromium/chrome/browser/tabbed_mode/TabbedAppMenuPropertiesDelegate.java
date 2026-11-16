@@ -35,6 +35,7 @@ import org.chromium.chrome.browser.app.appmenu.AppMenuItemUtils;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.bookmarks.BookmarkImageFetcher;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.feed.FeedFeatures;
@@ -489,6 +490,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         // Lens Overlay
         if (shouldShowLensOverlayItem(currentTab)) modelList.add(buildLensOverlayItem(currentTab));
 
+        // Ask Google about this page
+        if (shouldShowAskGoogleItem(currentTab)) modelList.add(buildAskGoogleItem(currentTab));
+
         // Translate
         if (shouldShowTranslateMenuItem(currentTab)) {
             modelList.add(buildTranslateMenuItem(currentTab, shouldShowIconBeforeItem));
@@ -701,6 +705,9 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
 
         // Lens Overlay
         if (shouldShowLensOverlayItem(currentTab)) modelList.add(buildLensOverlayItem(currentTab));
+
+        // Ask Google about this page
+        if (shouldShowAskGoogleItem(currentTab)) modelList.add(buildAskGoogleItem(currentTab));
 
         // Translate
         if (shouldShowTranslateMenuItem(currentTab)) {
@@ -1560,6 +1567,26 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
         return new MVCListAdapter.ListItem(AppMenuHandler.AppMenuItemType.STANDARD, model);
     }
 
+    private boolean shouldShowAskGoogleItem(@Nullable Tab currentTab) {
+        return ContextualTasksUtils.shouldShowAskGoogleEntryPoint(
+                currentTab, ChromeFeatureList.sContextualTasksEntryPointsAppMenu);
+    }
+
+    private MVCListAdapter.ListItem buildAskGoogleItem(@Nullable Tab currentTab) {
+        assert shouldShowAskGoogleItem(currentTab);
+        PropertyModel model =
+                AppMenuItemUtils.buildModelForStandardMenuItem(
+                        mContext,
+                        getAppMenuItemTheme(),
+                        R.id.ask_google_about_page_menu_id,
+                        R.string.contextual_search_open_lens_action_label,
+                        shouldShowIconBeforeItem()
+                                ? R.drawable.ic_search_spark_24dp
+                                : Resources.ID_NULL,
+                        isMenuIconAtStart());
+        return new MVCListAdapter.ListItem(AppMenuHandler.AppMenuItemType.STANDARD, model);
+    }
+
     private boolean shouldShowDefaultBrowserPromo() {
         return DefaultBrowserPromoUtils.getInstance().shouldShowAppMenuItemEntryPoint()
                 && ChromeFeatureList.sDefaultBrowserPromoEntryPointShowAppMenu.getValue();
@@ -1649,9 +1676,10 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
             if (MultiWindowUtils.getInstanceCount(PersistedInstanceType.ACTIVE)
                     >= MultiWindowUtils.getMaxInstances()) return false;
 
-            // On phones, show the menu only when in split-screen, with a single instance
-            // running on the foreground.
+            // On phones, show the menu only when on the New Tab Page (NTP), or when in
+            // split-screen with a single instance running on the foreground.
             return isTabletSizeScreen()
+                    || isCurrentTabNtp()
                     || (!mMultiWindowModeStateDispatcher.isChromeRunningInAdjacentWindow()
                             && (mMultiWindowModeStateDispatcher.isInMultiWindowMode()
                                     || mMultiWindowModeStateDispatcher.isInMultiDisplayMode()));
@@ -1687,7 +1715,13 @@ public class TabbedAppMenuPropertiesDelegate extends AppMenuPropertiesDelegateIm
      */
     protected boolean shouldShowMoveToOtherWindow() {
         if (!isMultiInstanceEnabled() && shouldShowNewWindow()) return false;
+        if (isCurrentTabNtp()) return false;
         return mMultiWindowModeStateDispatcher.isMoveToOtherWindowSupported(mTabModelSelector);
+    }
+
+    private boolean isCurrentTabNtp() {
+        Tab currentTab = mActivityTabProvider.get();
+        return currentTab != null && UrlUtilities.isNtpUrl(currentTab.getUrl());
     }
 
     @VisibleForTesting

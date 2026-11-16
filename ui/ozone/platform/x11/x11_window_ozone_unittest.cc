@@ -21,7 +21,7 @@
 #include "ui/events/event.h"
 #include "ui/events/platform/x11/x11_event_source.h"
 #include "ui/events/test/events_test_utils_x11.h"
-#include "ui/gfx/x/atom_cache.h"
+#include "ui/gfx/x/connection.h"
 #include "ui/gfx/x/event.h"
 #include "ui/ozone/platform/x11/x11_window.h"
 #include "ui/ozone/platform/x11/x11_window_manager.h"
@@ -328,12 +328,13 @@ TEST_F(X11WindowOzoneTest, StartupIdProperty) {
   x11::Window xid = static_cast<x11::Window>(widget);
 
   // Read the _NET_STARTUP_ID property from the window.
+  auto* connection = x11::Connection::Get();
   scoped_refptr<base::RefCountedMemory> data;
   x11::Atom type;
-  ASSERT_TRUE(GetRawBytesOfProperty(xid, x11::GetAtom("_NET_STARTUP_ID"),
+  ASSERT_TRUE(GetRawBytesOfProperty(xid, connection->GetAtom("_NET_STARTUP_ID"),
                                     &data, &type));
 
-  EXPECT_EQ(type, x11::GetAtom("UTF8_STRING"));
+  EXPECT_EQ(type, connection->GetAtom("UTF8_STRING"));
   std::string value(reinterpret_cast<const char*>(data->data()), data->size());
   EXPECT_EQ(value, kStartupId);
 }
@@ -363,12 +364,13 @@ TEST_F(X11WindowOzoneTest, StartupIdPropertyFromInitProperties) {
   x11::Window xid = static_cast<x11::Window>(widget);
 
   // Read the _NET_STARTUP_ID property from the window.
+  auto* connection = x11::Connection::Get();
   scoped_refptr<base::RefCountedMemory> data;
   x11::Atom type;
-  ASSERT_TRUE(GetRawBytesOfProperty(xid, x11::GetAtom("_NET_STARTUP_ID"),
+  ASSERT_TRUE(GetRawBytesOfProperty(xid, connection->GetAtom("_NET_STARTUP_ID"),
                                     &data, &type));
 
-  EXPECT_EQ(type, x11::GetAtom("UTF8_STRING"));
+  EXPECT_EQ(type, connection->GetAtom("UTF8_STRING"));
   std::string value(reinterpret_cast<const char*>(data->data()), data->size());
   EXPECT_EQ(value, kStartupId);
 }
@@ -388,6 +390,29 @@ TEST_F(X11WindowOzoneTest, NotifyStartupCompletePreservesGeometryCache) {
   x11::Connection::Get()->Sync();
   x11::Connection::Get()->DispatchAll();
   EXPECT_EQ(window->GetBoundsInPixels(), kNewBounds);
+}
+
+// Verifies that _GTK_FRAME_EXTENTS is not set when the window manager can't
+// handle it (https://crbug.com/396808830).
+TEST_F(X11WindowOzoneTest, NoFrameExtentsWhenDecorationInsetsUnsupported) {
+  testing::NiceMock<MockPlatformWindowDelegate> delegate;
+  ON_CALL(delegate, CalculateInsetsInDIP(_))
+      .WillByDefault(testing::Return(gfx::Insets(4)));
+  gfx::AcceleratedWidget widget;
+  auto window = CreatePlatformWindow(&delegate, gfx::Rect(10, 20, 300, 400),
+                                     &widget, nullptr);
+  if (window->CanSetDecorationInsets()) {
+    GTEST_SKIP() << "The window manager supports _GTK_FRAME_EXTENTS.";
+  }
+
+  window->Show(/*inactive=*/false);
+  x11::Connection::Get()->Sync();
+
+  scoped_refptr<base::RefCountedMemory> data;
+  x11::Atom type;
+  EXPECT_FALSE(GetRawBytesOfProperty(
+      static_cast<x11::Window>(widget),
+      x11::Connection::Get()->GetAtom("_GTK_FRAME_EXTENTS"), &data, &type));
 }
 
 namespace {

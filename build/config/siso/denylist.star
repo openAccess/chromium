@@ -71,6 +71,11 @@ def __step_config(ctx, step_config):
         "third_party/dawn/webgpu-cts/scripts/gen_ts_dep_lists.py",
         "third_party/devtools-frontend/src/scripts/build/build_inspector_overlay.py",
         "third_party/devtools-frontend/src/scripts/build/typescript/generate_indexer_tsconfig.py",
+        # Dynamically reads files listed in JSON metadata files (expected_grd_files.json
+        # and remote_files.json generated via GN data_keys) without declaring them as
+        # action inputs (relying on depfiles instead), making it incompatible with RBE
+        # sandboxes on clean builds.
+        "third_party/devtools-frontend/src/scripts/build/zip_devtools_frontend.py",
         "third_party/inspector_protocol/check_protocol_compatibility.py",
         "third_party/inspector_protocol/code_generator.py",
         "third_party/libei/scanner.py",
@@ -84,7 +89,6 @@ def __step_config(ctx, step_config):
         "third_party/webgpu-cts/scripts/gen_ts_dep_lists.py",
         "third_party/webgpu-cts/scripts/run_regenerate_internal_cts_html.py",
         "tools/grit/grit_info.py",
-        "tools/grit/grit.py",
         "tools/licenses/licenses.py",
 
         # merge_xml.py relies on expand_owners.py, which
@@ -115,6 +119,17 @@ def __step_config(ctx, step_config):
         step_config["rules"].append({
             "name": py_file,
             "command_prefix": platform.python_bin + " ../../" + py_file,
+            "remote": False,
+        })
+
+    pyz_files = [
+        "obj/tools/grit/grit.pyz",
+    ]
+
+    for pyz_file in pyz_files:
+        step_config["rules"].append({
+            "name": pyz_file,
+            "command_prefix": platform.python_bin + " " + pyz_file,
             "remote": False,
         })
 

@@ -4,9 +4,11 @@
 
 package org.chromium.chrome.browser.omaha.inline;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.app.ActivityManager;
 import android.content.Context;
 
 import org.junit.After;
@@ -18,6 +20,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
 import org.chromium.base.FakeTimeTestRule;
+import org.chromium.base.FeatureOverrides;
 import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -44,19 +47,13 @@ public class InAppUpdatePolicyTest {
         mContext = ContextUtils.getApplicationContext();
         ChromiumPlayServicesAvailability.setIsAvailableForTesting(true);
         InAppUpdatePolicy.setIsOfficialBuildForTesting(true);
+        InAppUpdatePolicy.resetForTesting();
     }
 
     @After
     public void tearDown() {
-        clearPrefs();
+        InAppUpdatePolicy.resetForTesting();
         DeviceInfo.setIsAutomotiveForTesting(false);
-    }
-
-    private static void clearPrefs() {
-        ChromeSharedPreferences.getInstance()
-                .removeKey(InAppUpdatePolicy.PREF_KEY_DISCOVERY_BACKOFF);
-        ChromeSharedPreferences.getInstance().removeKey(InAppUpdatePolicy.PREF_KEY_FAILURE_BACKOFF);
-        ChromeSharedPreferences.getInstance().removeKey(InAppUpdatePolicy.PREF_KEY_RESTART_BACKOFF);
     }
 
     // Eligibility guards and short-circuiting.
@@ -170,7 +167,7 @@ public class InAppUpdatePolicyTest {
         mFakeTimeRule.advanceMillis(age);
         assertFalse(InAppUpdatePolicy.isDiscoveryPromptAllowed(mContext));
 
-        clearPrefs();
+        InAppUpdatePolicy.resetForTesting();
         InAppUpdatePolicy.recordDownloadFailed();
         mFakeTimeRule.advanceMillis(age);
         assertTrue(InAppUpdatePolicy.isDiscoveryPromptAllowed(mContext));
@@ -182,13 +179,13 @@ public class InAppUpdatePolicyTest {
         InAppUpdatePolicy.recordUpdateDeclined();
         assertFalse(InAppUpdatePolicy.isDiscoveryPromptAllowed(mContext));
         assertTrue(InAppUpdatePolicy.isRestartPromptAllowed(mContext));
-        clearPrefs();
+        InAppUpdatePolicy.resetForTesting();
 
         // Failing download blocks discovery prompt, but not restart prompt.
         InAppUpdatePolicy.recordDownloadFailed();
         assertFalse(InAppUpdatePolicy.isDiscoveryPromptAllowed(mContext));
         assertTrue(InAppUpdatePolicy.isRestartPromptAllowed(mContext));
-        clearPrefs();
+        InAppUpdatePolicy.resetForTesting();
 
         // Declining restart blocks restart prompt, but not discovery prompt.
         InAppUpdatePolicy.recordRestartDeclined();
@@ -301,5 +298,121 @@ public class InAppUpdatePolicyTest {
         // Exactly 8 hours: allowed (under default 24h it would still be blocked).
         mFakeTimeRule.advanceMillis(1);
         assertTrue(InAppUpdatePolicy.isRestartPromptAllowed(mContext));
+    }
+
+    // Discovery staleness threshold.
+
+    @Test
+    public void testStalenessThreshold_defaultAllowsAnyStaleness() {
+        // The default threshold of 0 keeps the prompt eligible as soon as Play reports an update,
+        // including when Play does not report staleness at all.
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(null));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(0));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(30));
+    }
+
+    @Test
+    @EnableFeatures(
+            ChromeFeatureList.IN_APP_UPDATE_FLOW
+                    + ":"
+                    + InAppUpdatePolicy.PARAM_DISCOVERY_MIN_STALENESS_DAYS
+                    + "/3")
+    public void testStalenessThreshold_customParam() {
+        assertFalse(InAppUpdatePolicy.isStalenessThresholdMet(0));
+        assertFalse(InAppUpdatePolicy.isStalenessThresholdMet(2));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(3));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(10));
+
+        // Without a staleness value the update cannot be shown to meet the threshold.
+        assertFalse(InAppUpdatePolicy.isStalenessThresholdMet(null));
+    }
+
+    @Test
+    @EnableFeatures(
+            ChromeFeatureList.IN_APP_UPDATE_FLOW
+                    + ":"
+                    + InAppUpdatePolicy.PARAM_DISCOVERY_MIN_STALENESS_DAYS
+                    + "/-1")
+    public void testStalenessThreshold_negativeParamTreatedAsDisabled() {
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(null));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(0));
+    }
+
+    @Test
+    @EnableFeatures(
+            ChromeFeatureList.IN_APP_UPDATE_FLOW
+                    + ":"
+                    + InAppUpdatePolicy.PARAM_DISCOVERY_MIN_STALENESS_DAYS
+                    + "/7")
+    @CommandLineFlags.Add({InAppUpdatePolicy.FORCE_IN_APP_UPDATE})
+    public void testStalenessThreshold_forceUpdateBypassesThreshold() {
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(null));
+        assertTrue(InAppUpdatePolicy.isStalenessThresholdMet(0));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.IN_APP_UPDATE_FLOW)
+    public void testRestartMode() {
+        assertEquals(InAppUpdatePolicy.RestartMode.SNACKBAR, InAppUpdatePolicy.getRestartMode());
+
+        ChromeFeatureList.sInAppUpdateRestartMode.setForTesting("background");
+        assertEquals(InAppUpdatePolicy.RestartMode.BACKGROUND, InAppUpdatePolicy.getRestartMode());
+
+        ChromeFeatureList.sInAppUpdateRestartMode.setForTesting("both");
+        assertEquals(InAppUpdatePolicy.RestartMode.SNACKBAR, InAppUpdatePolicy.getRestartMode());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.IN_APP_UPDATE_FLOW)
+    public void testRestartMode_featureDisabled_returnsSnackbarEvenWithParam() {
+        ChromeFeatureList.sInAppUpdateRestartMode.setForTesting("background");
+        assertEquals(InAppUpdatePolicy.RestartMode.SNACKBAR, InAppUpdatePolicy.getRestartMode());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.IN_APP_UPDATE_FLOW)
+    public void testBackgroundRestartDelayMinutes() {
+        assertEquals(3, InAppUpdatePolicy.getBackgroundRestartDelayMinutes());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                InAppUpdatePolicy.PARAM_BACKGROUND_RESTART_DELAY_MINUTES,
+                "15");
+        assertEquals(15, InAppUpdatePolicy.getBackgroundRestartDelayMinutes());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                InAppUpdatePolicy.PARAM_BACKGROUND_RESTART_DELAY_MINUTES,
+                "-5");
+        assertEquals(0, InAppUpdatePolicy.getBackgroundRestartDelayMinutes());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.IN_APP_UPDATE_FLOW)
+    public void testBackgroundRestartWindowMinutes() {
+        assertEquals(2, InAppUpdatePolicy.getBackgroundRestartWindowMinutes());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                InAppUpdatePolicy.PARAM_BACKGROUND_RESTART_WINDOW_MINUTES,
+                "4");
+        assertEquals(4, InAppUpdatePolicy.getBackgroundRestartWindowMinutes());
+
+        FeatureOverrides.overrideParam(
+                ChromeFeatureList.IN_APP_UPDATE_FLOW,
+                InAppUpdatePolicy.PARAM_BACKGROUND_RESTART_WINDOW_MINUTES,
+                "0");
+        assertEquals(1, InAppUpdatePolicy.getBackgroundRestartWindowMinutes());
+    }
+
+    @Test
+    public void testIsForegroundServiceActive_importanceThreshold() {
+        InAppUpdatePolicy.setProcessImportanceForTesting(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE);
+        assertTrue(InAppUpdatePolicy.isForegroundServiceActive());
+
+        InAppUpdatePolicy.setProcessImportanceForTesting(
+                ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE);
+        assertFalse(InAppUpdatePolicy.isForegroundServiceActive());
     }
 }

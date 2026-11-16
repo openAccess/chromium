@@ -127,10 +127,8 @@ BASE_DECLARE_FEATURE(kIOSProactivePasswordGenerationBottomSheet);
 // leak dialog.
 BASE_DECLARE_FEATURE(kMarkAllCredentialsAsLeaked);
 
-#if BUILDFLAG(IS_ANDROID)
 // Enables OTP phishing checks.
 BASE_DECLARE_FEATURE(kOtpPhishGuard);
-#endif  // BUILDFLAG(IS_ANDROID)
 
 // PasswordManagerClient::IsFillingEnabled returns `false` for opaque origins.
 // Intended as a kill-switch.
@@ -173,6 +171,10 @@ BASE_DECLARE_FEATURE(kPasswordManagerLogToTerminal);
 // readiness metrics.
 BASE_DECLARE_FEATURE(kPasswordManagerOnDeviceEncryptionMetricsReporter);
 
+// Killswitch for recording PasswordManager.OnDeviceEncryptionTimeToUnlock.*
+// metrics.
+BASE_DECLARE_FEATURE(kPasswordManagerOnDeviceEncryptionTimeToUnlockMetrics);
+
 // Performs additional security checks wrt. the triggering frame before adding
 // the "Select password" entry to the context menu.
 BASE_DECLARE_FEATURE(kPasswordManualFallbackSecurityChecks);
@@ -184,6 +186,11 @@ BASE_DECLARE_FEATURE(kPasswordManualFallbackSkipOpaqueOrigins);
 // When enabled, the user can resolve actionable errors in context during a
 // password save flow.
 BASE_DECLARE_FEATURE(kPasswordSaveInContextErrorResolution);
+#if BUILDFLAG(IS_ANDROID)
+inline constexpr int kMinGmsVersionForInFlowZuulRecovery = 263600000;
+extern const base::FeatureParam<int>
+    kPasswordSaveInContextErrorResolutionMinGmsVersion;
+#endif
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
     BUILDFLAG(IS_CHROMEOS)
@@ -229,11 +236,6 @@ BASE_DECLARE_FEATURE(kSkipUndecryptablePasswords);
 
 // Starts passwords resync when undecryptable passwords are detected.
 BASE_DECLARE_FEATURE(kTriggerPasswordResyncWhenUndecryptablePasswordsDetected);
-
-// Killswitch: When enabled, unifies the leak checkup dialog variations into a
-// single checkup dialog and removes the check for whether the credential was
-// saved on the current site.
-BASE_DECLARE_FEATURE(kUnifiedPasswordLeakDialog);
 
 // Controls rollout of storing `PasswordString` password values encrypted in
 // memory via `crypto::ProcessBoundU16String`. When disabled, `PasswordString`

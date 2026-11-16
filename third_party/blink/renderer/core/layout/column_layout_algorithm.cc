@@ -275,6 +275,11 @@ ColumnLayoutAlgorithm::ColumnLayoutAlgorithm(
 
 const LayoutResult* ColumnLayoutAlgorithm::Layout() {
   const LayoutResult* result = LayoutInternal();
+
+  if (result->Status() == LayoutResult::kDisableFragmentation) {
+    return RelayoutWithoutFragmentation<ColumnLayoutAlgorithm>();
+  }
+
   if ((relayout_mode_ & kRelayoutForFragmentedOof) ||
       GetConstraintSpace().HasBlockFragmentation()) {
     return result;
@@ -470,7 +475,11 @@ const LayoutResult* ColumnLayoutAlgorithm::LayoutInternal() {
     container_builder_.CollectUnfragmentedOofs();
   }
 
-  container_builder_.HandleOofsAndSpecialDescendants();
+  LayoutResult::EStatus oof_status =
+      container_builder_.HandleOofsAndSpecialDescendants();
+  if (oof_status != LayoutResult::kSuccess) {
+    return container_builder_.Abort(oof_status);
+  }
 
   if (gap_accumulator_) {
     const GapGeometry* gap_geometry = gap_accumulator_->BuildGapGeometry(
@@ -1383,7 +1392,8 @@ const LayoutResult* ColumnLayoutAlgorithm::LayoutLine(
   // Commit all column fragments to the fragment builder.
   for (const auto& result_with_offset : new_columns) {
     const PhysicalBoxFragment& column = result_with_offset.Fragment();
-    container_builder_.AddChild(column, result_with_offset.offset);
+    container_builder_.AddChild(column, result_with_offset.offset,
+                                /*margins=*/BoxStrut());
     PropagateBaselineFromChild(column, result_with_offset.offset.block_offset);
 
     // Create a ::column pseudo-element, and, if needed, also a
@@ -1531,7 +1541,7 @@ BreakStatus ColumnLayoutAlgorithm::LayoutSpanner(
   LogicalOffset offset(
       BorderScrollbarPadding().inline_start + margins.inline_start,
       block_offset);
-  container_builder_.AddResult(*result, offset);
+  container_builder_.AddResult(*result, offset, margins);
 
   // According to the spec, the first spanner that has a baseline contributes
   // with its baseline to the multicol container. This is in contrast to column

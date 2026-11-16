@@ -23,6 +23,7 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.IntentUtils;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.test.transit.Triggers;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -44,17 +45,42 @@ import org.chromium.chrome.browser.test.MockCertVerifierRuleAndroid;
 import org.chromium.chrome.test.ChromeActivityTestRule;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.webapps.AddToHomescreenCoordinator;
 import org.chromium.components.webapps.TwaInstaller;
 import org.chromium.components.webapps.WebappsUtils;
+import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
 import org.chromium.net.test.EmbeddedTestServerRule;
 
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Integration tests for Auto-Minted TWA installation via {@link TwaInstaller}. */
+/**
+ * Integration tests for Auto-Minted TWA installation via {@link TwaInstaller}.
+ *
+ * <p><b>Hermetic harness setup:</b> Because {@code WebAppManager} requires an Android 17+ system
+ * service and interactive OS install-confirmation UI ({@code InstallConfirmActivity}), this
+ * hermetic suite enables {@link ChromeFeatureList#ANDROID_AUTO_MINTED_TWA} and {@link
+ * WebappsUtils#setIsWebAppServiceEnabledForTesting}, intercepts {@link TwaInstaller} via {@link
+ * TwaInstaller#setInstallDelegateForTesting} before invoking {@code WebAppManager}, triggers
+ * installation from {@link ChromeTabbedActivity} via {@link AddToHomescreenCoordinator}, and
+ * simulates launching the installed TWA via {@link
+ * TrustedWebActivityTestUtil#createTrustedWebActivityIntentAndVerifiedSession} (routing through
+ * {@code ChromeLauncherActivity} and {@code LaunchIntentDispatcher} into {@link
+ * CustomTabActivity}).
+ *
+ * <p><b>Boundaries and limitations:</b> No real TWA APK is minted or installed by the OS, and the
+ * simulated launch originates from Chrome's own process and package ({@code
+ * context.getPackageName()}) rather than an OS-minted separate-UID client APK launcher activity
+ * while spoofing Digital Asset Links verification in memory. Consequently, caller and session
+ * checks run under Chrome's own UID rather than a separate app UID: this test verifies Chrome's
+ * browser-side install pipeline and standalone TWA UI state, not OS {@code WebAppManager} request
+ * execution (unit-tested with a mocked {@code WebAppManager} in {@code
+ * org.chromium.components.webapps.TwaInstallerTest}), cross-UID intent or URI permission security
+ * checks, or separate-package OS runtime permission isolation.
+ */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @DoNotBatch(reason = "Tests activity start behavior")
@@ -114,8 +140,10 @@ public class TwaInstallerIntegrationTest {
                 ChromeActivityTestRule.waitFor(ChromeTabbedActivity.class, STARTUP_TIMEOUT);
         ChromeActivityTestRule.waitForActivityCompletelyLoaded(tabbedActivity);
         Tab tab = ThreadUtils.runOnUiThreadBlocking(() -> tabbedActivity.getActivityTab());
-        ChromeTabUtils.loadUrlOnUiThread(tab, pageUrl);
-        ChromeTabUtils.waitForTabPageLoaded(tab, pageUrl);
+        WebPageStation.waitForWebPageLoad(
+                Triggers.runOnUiThreadTo(() -> tab.loadUrl(new LoadUrlParams(pageUrl))),
+                tab,
+                pageUrl);
 
         Intent twaIntent =
                 TrustedWebActivityTestUtil.createTrustedWebActivityIntentAndVerifiedSession(

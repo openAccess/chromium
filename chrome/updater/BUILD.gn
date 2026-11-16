@@ -104,7 +104,6 @@ if (is_win || is_mac || is_linux) {
       "activity_impl.h",
       "app/app_install.cc",
       "app/app_install.h",
-      "app/app_install_progress.cc",
       "app/app_install_progress.h",
       "app/app_patch_worker.cc",
       "app/app_patch_worker.h",
@@ -378,14 +377,10 @@ if (is_win || is_mac || is_linux) {
         "win/ui/ui_ctls.h",
         "win/ui/ui_util.cc",
         "win/ui/ui_util.h",
-        "win/ui/webbrowser.cc",
-        "win/ui/webbrowser.h",
         "win/ui/webview2_progress_wnd.cc",
         "win/ui/webview2_progress_wnd.h",
         "win/ui/webview2ui.cc",
         "win/ui/webview2ui.h",
-        "win/ui/webview_progress_wnd.cc",
-        "win/ui/webview_progress_wnd.h",
         "win/ui/window_impl.cc",
         "win/ui/window_impl.h",
       ]
@@ -446,11 +441,15 @@ if (is_win || is_mac || is_linux) {
         "linux/setup/linux_setup.cc",
         "linux/systemd_util.cc",
         "linux/systemd_util.h",
+        "net/network_fetcher_libcurl.cc",
+        "net/network_fetcher_libcurl.h",
         "net/network_fetcher_linux.cc",
         "setup_linux.cc",
         "update_service_internal_impl_qualifying_linux.cc",
         "usage_stats_permissions_linux.cc",
       ]
+
+      deps += [ "//net" ]
 
       libs = [
         "curl",
@@ -1108,6 +1107,7 @@ if (is_win || is_mac || is_linux) {
         "win/ui/resources",
         "//components/named_mojo_ipc_server",
         "//mojo/public/cpp/system",
+        "//ui/gfx/geometry",
       ]
 
       data_deps += [
@@ -1253,6 +1253,7 @@ if (is_win || is_mac || is_linux) {
         "//chrome/updater/mac:ksadmin_test",
         "//chrome/updater/mac:updater_bundle_test",
         "//chrome/updater/mac/client_lib/test_helpers/app_bundle:registration_test_app_bundle",
+        "//chrome/updater/test/quarantine_enabled_app",
       ]
 
       if (target_cpu == "arm64") {
@@ -1283,7 +1284,10 @@ if (is_win || is_mac || is_linux) {
     }
 
     if (is_linux) {
-      sources += [ "test/integration_tests_linux.cc" ]
+      sources += [
+        "net/network_fetcher_libcurl_unittest.cc",
+        "test/integration_tests_linux.cc",
+      ]
 
       data += [
         "//chrome/test/data/updater/updater_qualification_app.crx",
@@ -1299,10 +1303,15 @@ if (is_win || is_mac || is_linux) {
     if (is_posix) {
       sources += [
         "activity_impl_posix_unittest.cc",
+        "ipc/ipc_security_posix_unittest.cc",
         "util/posix_util_unittest.cc",
       ]
 
-      deps += [ "//chrome/updater/mojom" ]
+      deps += [
+        "//chrome/updater/mojom",
+        "//components/named_mojo_ipc_server",
+        "//mojo/public/c/system",
+      ]
     }
   }
 

@@ -11,14 +11,14 @@ export function getHtml(this: ManagedUserProfileNoticeAppRefreshElement) {
   return html`<!--_html_template_start_-->
 <div class="main-container">
   ${this.isState_(State.VALUE_PROPOSITION) ? html`
-    <managed-user-profile-notice-value-prop id="value-prop"
+    <managed-user-profile-notice-value-prop-refresh id="value-prop"
         title="${this.i18n('valuePropTitle')}"
         subtitle="${this.i18n('valuePropSubtitle')}"
         picture-url="${this.profileInfo_.pictureUrl}"
         email="${this.profileInfo_.email}"
         account-name="${this.profileInfo_.accountName}"
         ?show-enterprise-badge="${this.profileInfo_.showEnterpriseBadge}">
-    </managed-user-profile-notice-value-prop>
+    </managed-user-profile-notice-value-prop-refresh>
   ` : ''}
   ${this.isState_(State.DISCLOSURE) ? html`
     <managed-user-profile-notice-disclosure-refresh id="disclosure"
@@ -36,7 +36,7 @@ export function getHtml(this: ManagedUserProfileNoticeAppRefreshElement) {
     </managed-user-profile-notice-state-refresh>
   ` : ''}
   ${this.isState_(State.USER_DATA_HANDLING) ? html`
-    <managed-user-profile-notice-data-handling id="user-data-handling"
+    <managed-user-profile-notice-data-handling-refresh id="user-data-handling"
         title="${this.i18n('separateBrowsingDataTitle')}"
         separate-data-choice-title="${
             this.i18n('separateBrowsingDataChoiceTitle')}"
@@ -48,7 +48,7 @@ export function getHtml(this: ManagedUserProfileNoticeAppRefreshElement) {
         .selectedDataHandling="${this.selectedDataHandling_}"
         @selected-data-handling-changed="${
             this.onSelectedDataHandlingChanged_}">
-    </managed-user-profile-notice-data-handling>
+    </managed-user-profile-notice-data-handling-refresh>
   ` : ''}
   ${this.isState_(State.SIGNALS_DISCLAIMER) ? html`
     <signals-disclaimer-refresh id="signals-disclaimer"

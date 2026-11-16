@@ -68,9 +68,6 @@ struct Config {
   // Use the compact UI for proactive nudge.
   bool proactive_nudge_compact_ui = true;
 
-  // Whether or not the proactive nudge is shown at the cursor.
-  bool is_nudge_shown_at_cursor = true;
-
   // Used to randomly hide the nudge in order to reduce exposure, experimental
   // flag for triggering research experiments only. If param is greater than
   // `1`, always shows. If param is negative, never shows.
@@ -108,18 +105,6 @@ struct Config {
   // List of countries where the proactive nudge is enabled. The default value
   // is set in the constructor.
   base::flat_set<std::string> proactive_nudge_countries;
-
-  // Whether the nudge on selection should be enabled.
-  bool selection_nudge_enabled = false;
-
-  // Minimum selection length needed before showing the selection nudge.
-  unsigned int selection_nudge_length = 30;
-
-  // How long to wait to show the selection nudge.
-  base::TimeDelta selection_nudge_delay = base::Milliseconds(500);
-
-  // Whether the selection nudge can be shown more than once per focus.
-  bool selection_nudge_once_per_focus = false;
 
   // If true, nudge at most once per field per navigation. If false, at most
   // once per field per focus.

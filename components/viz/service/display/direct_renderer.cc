@@ -38,6 +38,7 @@
 #include "components/viz/service/debugger/viz_debugger.h"
 #include "components/viz/service/display/bsp_tree.h"
 #include "components/viz/service/display/bsp_walk_action.h"
+#include "components/viz/service/display/hdr_video_passthrough.h"
 #include "components/viz/service/display/output_surface.h"
 #include "components/viz/service/display/render_pass_alpha_type.h"
 #include "components/viz/service/display/skia_output_surface.h"
@@ -57,20 +58,28 @@ namespace viz {
 
 namespace {
 
-// Enum used for UMA histogram. These enum values must not be changed or
-// reused.
-enum class RenderPassDrawRectAssign {
-  // New assignment. The output was empty before this point.
-  kNewOutputRect = 0,
-  // Assignment to a drawn rect that already has been set. This is likely an
-  // expansion of the 'output_rect' of a render pass.
-  kReassign = 1,
-  //  Output rects match. No re-assignment was done.
-  kNoAssign = 2,
-  // Assigned 'output_rect' to drawn rect but it was full damage regardless.
-  kFullDamage = 3,
-  kMaxValue = kFullDamage,
-};
+#if BUILDFLAG(IS_WIN)
+// Heuristic to guess if a render pass is the root pass of a web contents
+// surface. We check if it's large enough and close to two edges of the window.
+bool IsLikelyWebPageContent(const AggregatedRenderPass& render_pass,
+                            const AggregatedRenderPass& root_render_pass) {
+  if (!render_pass.is_from_surface_root_pass) {
+    return false;
+  }
+
+  gfx::Rect root_rect = root_render_pass.output_rect;
+  gfx::Rect pass_rect = cc::MathUtil::MapEnclosingClippedRect(
+      render_pass.transform_to_root_target, render_pass.output_rect);
+  pass_rect.Intersect(root_rect);
+
+  if (root_rect.IsEmpty() ||
+      pass_rect.size().Area64() < root_rect.size().Area64() / 4) {
+    return false;
+  }
+
+  return true;
+}
+#endif
 
 }  // namespace
 
@@ -326,6 +335,9 @@ void DirectRenderer::DrawFrame(
         current_frame()->overlay_list,
         [](const auto& candidate) { return candidate.is_root_render_pass; });
 #endif
+#if BUILDFLAG(IS_OZONE)
+    MaybeEnableHdrVideoPassthrough(frame_color_space);
+#endif
     TRACE_EVENT_END("viz,benchmark", "num candidates",
                     current_frame()->overlay_list.size(), "root_damage_rect",
                     current_frame()->root_damage_rect.ToString());
@@ -459,6 +471,7 @@ void DirectRenderer::DrawFrame(
   // pointers.
   current_frame()->render_passes_in_draw_order = nullptr;
   current_frame()->root_render_pass = nullptr;
+  current_frame()->hdr_passthrough_quad = nullptr;
 
   render_passes_in_draw_order->clear();
   render_pass_bypass_quads_.clear();
@@ -826,26 +839,11 @@ void DirectRenderer::DrawRenderPass(const AggregatedRenderPass* render_pass) {
 
   if (!is_root_render_pass) {
     const gfx::Rect drawn_rect = GetRenderPassBackingDrawnRect(render_pass->id);
-    constexpr char kDrawnRectAssignmentType[] =
-        "Compositing.DirectRenderer.DrawnRectAssignmentType";
     if (drawn_rect != render_pass->output_rect) {
       CHECK_EQ(render_pass->output_rect, render_pass_scissor_in_draw_space);
       CHECK_EQ(surface_rect_in_draw_space, render_pass_scissor_in_draw_space);
       CHECK(!render_pass_is_clipped);
-      if (render_pass->output_rect == render_pass->damage_rect) {
-        UMA_HISTOGRAM_ENUMERATION(kDrawnRectAssignmentType,
-                                  RenderPassDrawRectAssign::kFullDamage);
-      } else {
-        UMA_HISTOGRAM_ENUMERATION(kDrawnRectAssignmentType,
-                                  drawn_rect.IsEmpty()
-                                      ? RenderPassDrawRectAssign::kNewOutputRect
-                                      : RenderPassDrawRectAssign::kReassign);
-      }
-
       SetRenderPassBackingDrawnRect(render_pass->id, render_pass->output_rect);
-    } else {
-      UMA_HISTOGRAM_ENUMERATION(kDrawnRectAssignmentType,
-                                RenderPassDrawRectAssign::kNoAssign);
     }
   }
 }
@@ -867,7 +865,12 @@ bool DirectRenderer::CanSkipRenderPass(
         !render_pass->copy_requests.empty()) {
       return false;
     }
-    return IsRenderPassResourceAllocated(render_pass->id);
+    // Reuse the backing only if the drawn rect matches the `output_rect`.
+    // This is similar to handling within ComputeScissorRectForRenderPass, and
+    // avoids awkward situations where `output_rect` is larger than
+    // drawn rect.
+    return GetRenderPassBackingDrawnRect(render_pass->id) ==
+           render_pass->output_rect;
   }
 
   return false;
@@ -889,8 +892,10 @@ DirectRenderer::CalculateRenderPassRequirements(
           output_surface_->capabilities().dc_support_level)) {
     // Windows also can support scanout backings for non-root passes to optimize
     // partially delegated compositing iff they will not be read in Viz.
-    requirements.is_scanout |= render_pass->is_from_surface_root_pass &&
-                               !render_pass->will_backing_be_read_by_viz;
+    requirements.is_scanout |=
+        IsLikelyWebPageContent(*render_pass,
+                               *current_frame()->root_render_pass) &&
+        !render_pass->will_backing_be_read_by_viz;
   }
 
   // When kBufferQueuePerRenderPass is enabled, all scanout passes use
@@ -933,6 +938,47 @@ DirectRenderer::CalculateRenderPassRequirements(
 
   return requirements;
 }
+
+#if BUILDFLAG(IS_OZONE)
+void DirectRenderer::MaybeEnableHdrVideoPassthrough(
+    const gfx::ColorSpace& frame_color_space) {
+  const DrawQuad* quad = nullptr;
+  auto primary_plane = std::ranges::find_if(
+      current_frame()->overlay_list,
+      [](const auto& candidate) { return candidate.is_root_render_pass; });
+  // The passthrough metadata always has MDCV and may have CLLI, so the system
+  // compositor must tone map using both.
+  const auto& capabilities = output_surface_->capabilities();
+  if (capabilities.compositor_tone_maps_using_clli &&
+      capabilities.compositor_tone_maps_using_mdcv &&
+      base::FeatureList::IsEnabled(features::kHdrVideoMetadataPassthrough) &&
+      primary_plane != current_frame()->overlay_list.end()) {
+    // Quads promoted to overlays have been removed from the root render pass
+    // at this point, so they are not considered.
+    quad = FindHdrVideoPassthroughQuad(
+        resource_provider_, *current_frame()->render_passes_in_draw_order,
+        frame_color_space, is_page_fullscreen_);
+  }
+
+  // The primary plane's buffers may hold content from previous frames, which
+  // was drawn with or without tone mapping. Redraw everything when switching
+  // so that the whole buffer is consistent with the primary plane's metadata.
+  if (!!quad != last_frame_used_hdr_passthrough_) {
+    current_frame()->root_damage_rect.Union(
+        current_frame()->root_render_pass->output_rect);
+  }
+  last_frame_used_hdr_passthrough_ = !!quad;
+  if (!quad) {
+    return;
+  }
+
+  current_frame()->hdr_passthrough_quad = quad;
+  primary_plane->hdr_metadata = ComputeHdrVideoPassthroughMetadata(
+      resource_provider_->GetColorSpace(quad->resource_id),
+      resource_provider_->GetHDRMetadata(quad->resource_id),
+      current_frame()->display_color_spaces.GetSDRMaxLuminanceNits());
+}
+#endif
 
 gfx::ColorSpace DirectRenderer::RenderPassColorSpace(
     const AggregatedRenderPass* render_pass) const {
@@ -1027,15 +1073,6 @@ gfx::Rect DirectRenderer::ComputeScissorRectForRenderPass(
         root_damage_rect.size().GetCheckedArea();
     if (display_area.IsValid() && root_damage_area.IsValid()) {
       DCHECK_GT(static_cast<int64_t>(display_area.ValueOrDie()), 0);
-      {
-        base::CheckedNumeric<int64_t> frame_buffer_damage_area =
-            frame_buffer_damage.size().GetCheckedArea();
-        int64_t percentage = ((frame_buffer_damage_area * 100ll) / display_area)
-                                 .ValueOrDefault(INT_MAX);
-        UMA_HISTOGRAM_PERCENTAGE(
-            "Compositing.DirectRenderer.PartialSwap.FrameBufferDamage",
-            percentage);
-      }
       {
         int64_t percentage =
             ((root_damage_area * 100ll) / display_area).ValueOrDie();

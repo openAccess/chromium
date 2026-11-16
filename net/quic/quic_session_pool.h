@@ -208,10 +208,18 @@ class NET_EXPORT_PRIVATE QuicSessionRequest {
   // `callback` will be run with ERR_IO_PENDING.
   bool WaitForQuicSessionCreation(CompletionOnceCallback callback);
 
+  // May be called after Request() returns ERR_IO_PENDING.
+  // `callback` runs at most once, with the error of a connection attempt that
+  // failed after the job delivered every host resolution and session creation
+  // notification it promised to this request, while the job keeps trying other
+  // endpoints. Only `QuicSessionPool::AsyncDnsJob` reports such failures.
+  void WaitForAttemptFailure(CompletionOnceCallback callback);
+
   // QuicSessionPool::Jobs may notify associated requests at two points in the
   // connection process before completion: host resolution and session creation.
   // The `Expect` methods below inform the request whether it should expect
-  // these notifications.
+  // these notifications. After both, a job may also report attempt failures
+  // through `OnAttemptFailure()`.
 
   // Tells QuicSessionRequest that `QuicSessionPool::Job` will call
   // `OnHostResolutionComplete()` in the future. Must be called before
@@ -236,6 +244,11 @@ class NET_EXPORT_PRIVATE QuicSessionRequest {
   // creation completes asynchronously after Request(), if
   // `ExpectQuicSessionCreation` was called.
   void OnQuicSessionCreationComplete(int rv);
+
+  // Called by the associated `QuicSessionPool::Job` when a connection attempt
+  // fails after all notifications above were delivered, and the job keeps
+  // trying other endpoints. See `WaitForAttemptFailure()`.
+  void OnAttemptFailure(int rv);
 
   void OnRequestComplete(int rv);
 
@@ -323,6 +336,9 @@ class NET_EXPORT_PRIVATE QuicSessionRequest {
 
   CompletionOnceCallback create_session_callback_;
 
+  // Callback passed to WaitForAttemptFailure().
+  CompletionOnceCallback attempt_failure_callback_;
+
   base::WeakPtrFactory<QuicSessionRequest> weak_factory_{this};
 };
 
@@ -334,6 +350,17 @@ class NET_EXPORT_PRIVATE QuicSessionPool
       public CertVerifier::Observer,
       public SSLConfigService::Observer {
  public:
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(QuicStartupLocalAddressCheck)
+  enum class StartupLocalAddressCheck {
+    kNoPersistedAddress = 0,
+    kMatch = 1,
+    kMismatch = 2,
+    kMaxValue = kMismatch,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:QuicStartupLocalAddressCheck)
+
   QuicSessionPool(
       NetLog* net_log,
       HostResolver* host_resolver,
@@ -784,6 +811,10 @@ class NET_EXPORT_PRIVATE QuicSessionPool
                        QuicChromiumClientSession* session,
                        base::flat_set<std::string> dns_aliases);
 
+  // Notifies active jobs that a session was activated for `peer_address` so
+  // matching in-flight jobs can pool to it and cancel redundant attempts.
+  void NotifyActiveJobsOfSessionActivation(const IPEndPoint& peer_address);
+
   // Go away all active sessions. May disable session's connectivity monitoring
   // based on the |reason|.
   void MarkAllActiveSessionsGoingAway(AllActiveSessionsGoingAwayReason reason);
@@ -897,6 +928,11 @@ class NET_EXPORT_PRIVATE QuicSessionPool
 
   void CheckQuicSessionKeyMismatch(const QuicSessionKey& session_key,
                                    url::SchemeHostPort destination) const;
+
+  // Updates `local_address_` from `socket`. For the first socket configured
+  // after startup, also checks whether QUIC worked on this local address in a
+  // previous session.
+  void CheckPersistedSupportsQuic(DatagramClientSocket* socket);
 
   // Whether QUIC is known to have ever worked on current network. This is true
   // when QUIC is expected to work in general, rather than whether QUIC was

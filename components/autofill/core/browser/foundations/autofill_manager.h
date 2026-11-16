@@ -124,9 +124,6 @@ class AutofillManager
                                                LifecycleState previous,
                                                LifecycleState new_state) {}
 
-    virtual void OnBeforeLanguageDetermined(AutofillManager& manager) {}
-    virtual void OnAfterLanguageDetermined(AutofillManager& manager) {}
-
     // Unlike other events, OnFormsSeen() determines both heuristic and server
     // types. OnAfterFormsSeen() is fired after the heuristic type detection is
     // complete (if it started at all). Whether the server types have been
@@ -243,16 +240,25 @@ class AutofillManager
     virtual void OnSuggestionsHidden(AutofillManager& manager,
                                      SuggestionHidingReason reason) {}
 
-    // Fired when an autofill of `filling_payload` is previewed or filled.
-    // This is not fired for single-field operations (see
+    // Fired when an autofill of `filling_payload` was previewed or filled from
+    // the browser's perspective: the values were sent to the renderer (see
+    // OnFillOrPreviewFormSentToRenderer()) and, for fills
+    // (`mojom::ActionPersistence::kFill`), the browser updated its cache and
+    // undo history. When OnFillOrPreviewForm() is fired, the renderer may not
+    // have previewed or filled the fields yet. In particular, for previews,
+    // OnFillOrPreviewForm() is fired synchronously right after the values were
+    // sent to the renderer; for fills, OnFillOrPreviewForm() may be fired in a
+    // later task.
+    // OnFillOrPreviewForm() is not fired for single-field operations (see
     // OnFillOrPreviewField()). `filled_field_ids` represents the IDs of the
-    // fields that were sent to the renderer to be filled: each corresponding
-    // `AutofillField` contains the field type information. `trigger_field_id`
-    // is the ID of the field that initiated/triggered the autofill action.
+    // fields that were sent to the renderer to be filled and are still cached:
+    // each corresponding `AutofillField` contains the field type information.
+    // `trigger_field_id` is the ID of the field that initiated/triggered the
+    // autofill action. For fills, OnFillOrPreviewForm() is not fired if the
+    // form or `trigger_field_id` is no longer cached when the post-fill
+    // bookkeeping runs.
     // TODO(crbug.com/40280003): Consider removing the event in favor of
     // OnAfterDidAutofillForm(), which is fired by the renderer.
-    // TODO(crbug.com/40227071): Consider removing `action_persistence` as the
-    // preview signal is only used for testing.
     virtual void OnFillOrPreviewForm(
         AutofillManager& manager,
         FormGlobalId form_id,
@@ -262,6 +268,29 @@ class AutofillManager
         const base::flat_map<FieldGlobalId, DenseSet<FieldFillingSkipReason>>&
             skip_reasons,
         const FillingPayload& filling_payload) {}
+
+    // Fired when the values of a form fill or preview have been sent to the
+    // renderer. `sent_field_ids` are the IDs of the fields whose values were
+    // sent. When OnFillOrPreviewFormSentToRenderer() is fired, the renderer may
+    // not have filled or previewed the fields yet, and may not fill or preview
+    // some of them at all (e.g., if a field was removed or changed in the
+    // meantime).
+    // OnFillOrPreviewFormSentToRenderer() is fired synchronously when the fill
+    // or preview is initiated: for fills, before the post-fill bookkeeping
+    // (cache update, undo history, OnFillOrPreviewForm()), which may run in a
+    // later task; for previews, right before OnFillOrPreviewForm(). Unlike
+    // OnAfterDidAutofillForm(), which the renderer fires after filling,
+    // OnFillOrPreviewFormSentToRenderer() is therefore ordered consistently
+    // with other browser-side events such as OnSuggestionsHidden(). Observers
+    // must not synchronously modify the form cache.
+    // TODO(crbug.com/40227071): Consider removing `action_persistence` as the
+    // preview signal is only used for testing.
+    virtual void OnFillOrPreviewFormSentToRenderer(
+        AutofillManager& manager,
+        FormGlobalId form_id,
+        FieldGlobalId trigger_field_id,
+        mojom::ActionPersistence action_persistence,
+        const base::flat_set<FieldGlobalId>& sent_field_ids) {}
 
     // Fired when a single field is previewed or filled.
     // This is not fired for multi-field form fills (which trigger
@@ -662,18 +691,10 @@ class AutofillManager
   std::unique_ptr<autofill_metrics::FormInteractionsUkmLogger>
   CreateFormInteractionsUkmLogger();
 
-  // If `kAutofillSynchronousAfterParsing` is disabled:
-  // Returns a callback that runs `callback` on the main thread after all
-  // ongoing async parsing operations have finished.
-  //
-  // If `kAutofillSynchronousAfterParsing` is enabled (default behavior):
-  // Just returns callback; enforces no asynchronicity.
-  //
-  // TODO(crbug.com/448144129): Remove once `kAutofillSynchronousAfterParsing`
-  // can be cleaned up.
-  template <typename... Args>
-  base::OnceCallback<void(Args...)> AfterParsingFinishesDeprecated(
-      base::OnceCallback<void(Args...)> callback);
+  // Loads the custom form control script for the current document if this is
+  // the primary main frame and a script has not yet been attempted to be loaded
+  // since the last `Reset()`.
+  void MaybeLoadCustomFormControlScript();
 
   // Provides driver-level context to the shared code of the component.
   // `*driver_` owns this object.
@@ -686,6 +707,10 @@ class AutofillManager
 
   // Our copy of the form data.
   std::map<FormGlobalId, std::unique_ptr<FormStructure>> form_structures_;
+
+  // Whether `OnFormsSeen()` has already attempted to load a custom form control
+  // script since the last `Reset()`.
+  bool attempted_loading_custom_form_control_script_ = false;
 
   // Observers that listen to updates of this instance.
   base::ObserverList<Observer> observers_;

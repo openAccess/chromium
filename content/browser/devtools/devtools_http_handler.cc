@@ -16,6 +16,7 @@
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/files/file_util.h"
+#include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_writer.h"
@@ -67,6 +68,10 @@
 
 #if BUILDFLAG(ENABLE_DEVTOOLS_FRONTEND)
 extern const int kCcompressedProtocolJSON;
+#endif
+
+#if BUILDFLAG(BUNDLE_CHROME_BIDI_MAPPER)
+#include "content/grit/content_resources.h"
 #endif
 
 namespace content {
@@ -312,7 +317,11 @@ void StartServerOnHandlerThread(
           output_directory.Append(kDevToolsActivePortFileName);
       std::string port_target_string = base::StringPrintf(
           "%d\n%s", ip_address->port(), browser_guid.c_str());
-      if (!base::WriteFile(path, port_target_string)) {
+      // Write to a temporary file and rename it over `path`. This replaces a
+      // symlink that another process planted at `path` instead of following
+      // it. base::WriteFile() follows symlinks on POSIX.
+      if (!base::ImportantFileWriter::WriteFileAtomically(path,
+                                                          port_target_string)) {
         PLOG(ERROR) << "Error writing DevTools active port to file " << path;
       }
     }
@@ -499,6 +508,15 @@ void ServerWrapper::OnHttpRequest(int connection_id,
                                   handler_, connection_id));
     return;
   }
+
+#if BUILDFLAG(BUNDLE_CHROME_BIDI_MAPPER)
+  if (info.path == "/bidi-mapper.js") {
+    GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&DevToolsHttpHandler::OnBidiResourceRequest,
+                                  handler_, connection_id));
+    return;
+  }
+#endif
 
   if (!base::StartsWith(info.path, "/devtools/",
                         base::CompareCase::SENSITIVE)) {
@@ -800,6 +818,15 @@ void DevToolsHttpHandler::OnDiscoveryPageRequest(int connection_id) {
                                 connection_id, response));
 }
 
+#if BUILDFLAG(BUNDLE_CHROME_BIDI_MAPPER)
+void DevToolsHttpHandler::OnBidiResourceRequest(int connection_id) {
+  std::string bidi_mapper_js =
+      GetContentClient()->GetDataResourceString(IDR_CHROME_BIDI_MAPPER_JS);
+  CHECK(!bidi_mapper_js.empty()) << "Could not load BiDi mapper";
+  Send200(connection_id, bidi_mapper_js, "text/javascript; charset=UTF-8");
+}
+#endif
+
 void DevToolsHttpHandler::OnFrontendResourceRequest(int connection_id,
                                                     std::string_view path) {
   if (mode_ ==
@@ -999,7 +1026,6 @@ void DevToolsHttpHandler::SendJson(int connection_id,
     base::JSONWriter::WriteWithOptions(
         *value, base::JSONWriter::OPTIONS_PRETTY_PRINT, &json_value);
   }
-  std::string json_message = base::WriteJson(message).value_or("");
 
   net::HttpServerResponseInfo response(status_code);
   response.AddHeader("Content-Security-Policy", "frame-ancestors 'none'");

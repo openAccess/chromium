@@ -7,6 +7,7 @@
 
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
+#include "build/build_config.h"
 
 namespace syncer {
 
@@ -33,11 +34,13 @@ BASE_DECLARE_FEATURE(kSyncContextualTask);
 // Enables syncing of Gemini threads across devices.
 BASE_DECLARE_FEATURE(kSyncGeminiThread);
 
-// Enables syncing of Encrypted Tab Context Containers across devices.
-BASE_DECLARE_FEATURE(kSyncEncryptedTabContextContainer);
+// Enables syncing of Encrypted Tab Context across devices.
+BASE_DECLARE_FEATURE(kSyncEncryptedTabContext);
 
+#if BUILDFLAG(IS_IOS)
 // Enables syncing of themes across iOS devices.
 BASE_DECLARE_FEATURE(kSyncThemesIos);
+#endif  // BUILDFLAG(IS_IOS)
 
 // Enables syncing of New Tab Page customization themes on Android.
 BASE_DECLARE_FEATURE(kNewTabPageCustomizationThemeSync);
@@ -52,7 +55,7 @@ BASE_DECLARE_FEATURE(kSyncNotebook);
 BASE_DECLARE_FEATURE(kSyncJourney);
 
 // Enables syncing entity suppression records for Autofill AI.
-BASE_DECLARE_FEATURE(kSyncAutofillEntitySuppression);
+BASE_DECLARE_FEATURE_WITH_COUNTRY_RESTRICTIONS(kSyncAutofillEntitySuppression);
 
 #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_IOS)
 // Flag that controls Uno fast-follow features which are:
@@ -62,8 +65,7 @@ BASE_DECLARE_FEATURE(kSyncAutofillEntitySuppression);
 // - Confirmation dialog when turning off “Allow Chrome sign-in”
 // - Promo for signed-in users with bookmarks toggle off
 // On desktop:
-// Adding history sync opt-in entry points, and other follow-ups to
-// `kReplaceSyncPromosWithSignInPromos`.
+// Adding history sync opt-in entry points, and other Uno phase 2 follow-ups.
 BASE_DECLARE_FEATURE(kUnoPhase2FollowUp);
 #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_IOS)
 
@@ -79,16 +81,9 @@ bool IsContactInfoDataTypeForCustomPassphraseUsersEnabled();
 
 BASE_DECLARE_FEATURE(kSyncEnableContactInfoDataTypeForDasherUsers);
 
-
-// Feature flag to replace all sync-related UI with sign-in ones.
-// Do not use this flag directly in production code. Use
-// `syncer::IsReplaceSyncPromosWithSignInPromosEnabled()` instead.
-BASE_DECLARE_FEATURE(kReplaceSyncPromosWithSignInPromos);
-
 // Returns true if replacing sync promos with sign-in promos is enabled.
-// Always true on desktop platforms (Linux, Mac, Windows), and controlled by
-// `kReplaceSyncPromosWithSignInPromos` on other platforms. Prefer using this
-// function over checking the feature flag directly.
+// Always returns true on all platforms.
+// TODO(crbug.com/40067025): Remove this function and clean up callers.
 bool IsReplaceSyncPromosWithSignInPromosEnabled();
 
 // AutofillAi is launched globally on desktop, but restricted to certain
@@ -203,6 +198,10 @@ BASE_DECLARE_FEATURE(kCrossDeviceTabsInAppMenu);
 
 // If enabled, tracks metrics about the user's storage of data on other devices.
 BASE_DECLARE_FEATURE(kSyncRecordDeviceStatisticsMetrics);
+
+// If enabled, adds random jitter to the scheduled time for recording device
+// statistics metrics.
+BASE_DECLARE_FEATURE(kSyncRecordDeviceStatisticsMetricsJitter);
 
 }  // namespace syncer
 

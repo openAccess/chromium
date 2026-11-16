@@ -206,6 +206,17 @@ EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_REQUEST_ATTACH)
 //   }
 EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_REQUEST_DETACH)
 
+// This event is logged while a HostResolverManager::Job is kept running without
+// requests after its last request was cancelled, so that the results of its
+// DnsTask can be cached.
+//
+// The END phase contains the following parameters:
+//
+//   {
+//     "result": <How the keep-alive ended, e.g. "Cached" or "CapExpired">,
+//   }
+EVENT_TYPE(HOST_RESOLVER_MANAGER_JOB_KEPT_ALIVE_FOR_CACHE)
+
 // The creation/completion of a HostResolverSystemTask to call getaddrinfo. The
 // BEGIN phase contains the following parameters:
 //
@@ -353,6 +364,13 @@ EVENT_TYPE(PAC_FILE_DECIDER_FALLING_BACK_TO_NEXT_PAC_SOURCE)
 
 // The start/end of a proxy resolve request.
 EVENT_TYPE(PROXY_RESOLUTION_SERVICE)
+
+// Links a configured proxy resolution request to its native backend lookup.
+// Parameters:
+//   {
+//     "source_dependency": <Source identifier of the system proxy lookup>
+//   }
+EVENT_TYPE(SYSTEM_PROXY_RESOLUTION)
 
 // The time while a request is waiting on InitProxyResolver to configure
 // against either WPAD or custom PAC URL. The specifics on this time
@@ -1606,6 +1624,15 @@ EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_PROXY_SERVER_RESOLVED)
 //   }
 EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_ALT_SVC_FOUND)
 
+// Logs that a connection attempt of the QUIC job that gates the main job failed
+// after the QUIC job reported its connection as in flight, while the main job
+// was still waiting. The main job is resumed without delay if the
+// AsyncDnsQuicJob FastFail param is enabled. The event parameters are:
+//   {
+//      "net_error": <Net error code of the failed attempt>,
+//   }
+EVENT_TYPE(HTTP_STREAM_JOB_CONTROLLER_QUIC_ATTEMPT_FAILED)
+
 // Logs that a WebSocket-over-HTTP/3 job was created to attempt reusing an
 // existing QUIC session with Extended CONNECT support.
 // The event parameters are:
@@ -2651,6 +2678,16 @@ EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_HOST_RESOLUTION_SIGNALED)
 //     "net_error": <Net error code the signal carried>,
 //   }
 EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_SESSION_CREATION_SIGNALED)
+
+// This event indicates that an AsyncDnsJob reported an attempt failure to its
+// requests. Such failures happen after the requests received every signal they
+// were promised, while the job keeps trying other candidates.
+//
+// The event parameters are:
+//   {
+//     "net_error": <Net error code of the most recent attempt failure>,
+//   }
+EVENT_TYPE(QUIC_SESSION_POOL_ASYNC_DNS_JOB_ATTEMPT_FAILURE_SIGNALED)
 
 // ------------------------------------------------------------------------
 // quic::QuicSession

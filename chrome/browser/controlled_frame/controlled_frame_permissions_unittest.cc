@@ -159,7 +159,6 @@ TEST_F(ControlledFramePermissionsTest, Verify) {
       case ContentSettingsType::REQUEST_DESKTOP_SITE:
       case ContentSettingsType::FEDERATED_IDENTITY_API:
       case ContentSettingsType::NOTIFICATION_INTERACTIONS:
-      case ContentSettingsType::REDUCED_ACCEPT_LANGUAGE:
       case ContentSettingsType::NOTIFICATION_PERMISSION_REVIEW:
       case ContentSettingsType::
           FEDERATED_IDENTITY_IDENTITY_PROVIDER_SIGNIN_STATUS:
@@ -197,6 +196,7 @@ TEST_F(ControlledFramePermissionsTest, Verify) {
       case ContentSettingsType::SUB_APPS_WITHOUT_PROMPTS:
       case ContentSettingsType::INLINE_CUE_MENU:
       case ContentSettingsType::SUSPICIOUS_SITE_WARNING_DATA:
+      case ContentSettingsType::WEBAUTHN_AMBIENT_SIGNIN_DATA:
         break;
 
       default:

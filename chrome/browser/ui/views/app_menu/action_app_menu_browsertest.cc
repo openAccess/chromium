@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/functional/callback_helpers.h"
+#include "base/i18n/number_formatting.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
@@ -22,17 +23,21 @@
 #include "build/build_config.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/recent_tabs_builder.h"
 #include "chrome/browser/ui/tabs/recent_tabs_builder_test_helper.h"
+#include "chrome/browser/ui/tabs/remote_tabs_menu_util.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/app_menu/app_menu_drag_and_drop_delegate.h"
 #include "chrome/browser/ui/views/app_menu/app_menu_search_bar_view.h"
 #include "chrome/browser/ui/views/app_menu/recent_tabs_dynamic_menu.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -45,12 +50,31 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
+#include "components/enterprise/isolated_mode/isolated_mode_features.h"
+#include "components/enterprise/isolated_mode/prefs.h"
+#include "components/history/core/common/pref_names.h"
+#include "components/prefs/pref_service.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "components/sync/base/client_tag_hash.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
+#include "components/sync/base/pref_names.h"
+#include "components/sync/engine/commit_and_get_updates_types.h"
 #include "components/sync/engine/data_type_activation_response.h"
 #include "components/sync/model/data_type_activation_request.h"
 #include "components/sync/model/data_type_controller_delegate.h"
+#include "components/sync/protocol/data_type_state.pb.h"
+#include "components/sync/protocol/entity_data.h"
+#include "components/sync/protocol/session_specifics.pb.h"
+#include "components/sync/protocol/sync_enums.pb.h"
 #include "components/sync/test/mock_commit_queue.h"
+#include "components/sync_device_info/device_info.h"
+#include "components/sync_sessions/open_tabs_ui_delegate.h"
+#include "components/sync_sessions/session_store.h"
 #include "components/sync_sessions/session_sync_service.h"
+#include "components/zoom/zoom_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -61,13 +85,19 @@
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/compositor/layer_tree_owner.h"
+#include "ui/events/event.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/color_palette.h"
+#include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/menu/submenu_view.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/test/widget_test_api.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/view_utils.h"
+
+using ::testing::ElementsAre;
 
 namespace {
 
@@ -132,6 +162,97 @@ std::vector<std::u16string> GetItemsDepthFirst(actions::BaseAction* item) {
   return items;
 }
 
+std::vector<std::u16string> GetSubmenuItemTitles(views::MenuItemView* parent) {
+  std::vector<std::u16string> titles;
+  for (views::MenuItemView* item : parent->GetSubmenu()->GetMenuItems()) {
+    titles.push_back(item->title());
+  }
+  return titles;
+}
+
+void SendSessionSpecifics(
+    syncer::DataTypeProcessor* sync_processor,
+    const std::vector<sync_pb::SessionSpecifics>& specifics_list,
+    base::Time timestamp,
+    int& next_response_version) {
+  syncer::UpdateResponseDataList updates;
+  for (const auto& specifics : specifics_list) {
+    syncer::EntityData entity;
+    *entity.specifics.mutable_session() = specifics;
+    entity.creation_time = timestamp;
+    entity.modification_time = timestamp;
+    entity.client_tag_hash = syncer::ClientTagHash::FromUnhashed(
+        syncer::SESSIONS, sync_sessions::SessionStore::GetClientTag(specifics));
+    entity.id = entity.client_tag_hash.value();
+
+    syncer::UpdateResponseData update;
+    update.entity = std::move(entity);
+    update.response_version = next_response_version++;
+    updates.push_back(std::move(update));
+  }
+
+  sync_pb::DataTypeState data_type_state;
+  data_type_state.set_initial_sync_state(
+      sync_pb::DataTypeState_InitialSyncState_INITIAL_SYNC_DONE);
+  sync_processor->OnUpdateReceived(data_type_state, std::move(updates),
+                                   /*gc_directive=*/std::nullopt);
+  base::RunLoop().RunUntilIdle();
+}
+
+void SendEmptyOrSingleTabSession(syncer::DataTypeProcessor* sync_processor,
+                                 const std::string& session_tag,
+                                 const std::string& session_name,
+                                 std::optional<std::string> tab_title,
+                                 base::Time timestamp,
+                                 int& next_response_version) {
+  sync_pb::SessionSpecifics header_specifics;
+  header_specifics.set_session_tag(session_tag);
+  sync_pb::SessionHeader* header = header_specifics.mutable_header();
+  header->set_device_type(sync_pb::SyncEnums_DeviceType_TYPE_CROS);
+  header->set_device_form_factor(
+      sync_pb::SyncEnums_DeviceFormFactor_DEVICE_FORM_FACTOR_DESKTOP);
+  header->set_client_name(session_name);
+
+  if (!tab_title.has_value()) {
+    SendSessionSpecifics(sync_processor, {header_specifics}, timestamp,
+                         next_response_version);
+    return;
+  }
+
+  sync_pb::SessionWindow* window = header->add_window();
+  window->set_window_id(1);
+  window->set_selected_tab_index(0);
+  window->set_browser_type(sync_pb::SyncEnums_BrowserType_TYPE_TABBED);
+  window->add_tab(2);
+
+  sync_pb::SessionSpecifics tab_specifics;
+  tab_specifics.set_session_tag(session_tag);
+  tab_specifics.set_tab_node_id(1);
+  sync_pb::SessionTab* tab = tab_specifics.mutable_tab();
+  tab->set_window_id(1);
+  tab->set_tab_id(2);
+  tab->set_current_navigation_index(0);
+  sync_pb::TabNavigation* navigation = tab->add_navigation();
+  navigation->set_virtual_url("https://example.com");
+  navigation->set_title(*tab_title);
+  navigation->set_page_transition(sync_pb::SyncEnums_PageTransition_TYPED);
+
+  SendSessionSpecifics(sync_processor, {tab_specifics, header_specifics},
+                       timestamp, next_response_version);
+}
+
+class MockAppMenuHost : public AppMenuDragAndDropDelegate::Host {
+ public:
+  MOCK_METHOD(void,
+              UpdateMenuItem,
+              (actions::BaseAction*,
+               actions::BaseAction*,
+               actions::BaseAction*),
+              (override));
+  MOCK_METHOD(void, RebuildSubmenu, (actions::ActionId), (override));
+  MOCK_METHOD(void, CloseMenu, (), (override));
+};
+
 }  // namespace
 
 class ActionAppMenuBrowserTest : public InProcessBrowserTest {
@@ -147,6 +268,15 @@ class ActionAppMenuBrowserTest : public InProcessBrowserTest {
                                                                 : browser())
         ->toolbar_button_provider()
         ->GetAppMenuControl();
+  }
+
+  void SignIn() {
+    signin::IdentityManager* identity_manager =
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile());
+    if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+      signin::MakePrimaryAccountAvailable(identity_manager, "test@gmail.com",
+                                          signin::ConsentLevel::kSignin);
+    }
   }
 
  private:
@@ -414,32 +544,115 @@ IN_PROC_BROWSER_TEST_P(ActionAppMenuSynonymSearchBrowserTest,
 INSTANTIATE_TEST_SUITE_P(
     All,
     ActionAppMenuSynonymSearchBrowserTest,
-    testing::Values(SynonymSearchCase{u"vault", kActionShowPasswordManager},
-                    SynonymSearchCase{u"wallet", kActionShowPaymentMethods},
-                    SynonymSearchCase{u"zip", kActionShowContactInfo}));
+    testing::Values(
+        SynonymSearchCase{u"vault", kActionShowPasswordManager},
+        SynonymSearchCase{u"wallet", kActionShowPaymentMethods},
+        SynonymSearchCase{u"zip", kActionShowContactInfo},
+        SynonymSearchCase{u"yesterday", kActionShowHistory},
+        SynonymSearchCase{u"star", kActionBookmarkThisTab},
+        SynonymSearchCase{u"locate", kActionFind},
+        SynonymSearchCase{u"adblock", kActionExtensionsSubmenuManageExtensions},
+        SynonymSearchCase{u"toolbar", kActionBookmarkBarSubmenuAlwaysShow},
+        SynonymSearchCase{u"open incognito window",
+                          kActionNewIncognitoWindow}));
 
 #if !BUILDFLAG(IS_CHROMEOS)
-// Profile-management actions are not shown in the app menu on ChromeOS.
-INSTANTIATE_TEST_SUITE_P(NonChromeOS,
-                         ActionAppMenuSynonymSearchBrowserTest,
-                         testing::Values(SynonymSearchCase{
-                             u"friend", kActionOpenGuestProfile}));
+// Profile-management and import actions are not shown in the app menu on
+// ChromeOS.
+INSTANTIATE_TEST_SUITE_P(
+    NonChromeOS,
+    ActionAppMenuSynonymSearchBrowserTest,
+    testing::Values(SynonymSearchCase{u"friend", kActionOpenGuestProfile},
+                    SynonymSearchCase{u"firefox", kActionImportSettings}));
 #endif
 
-class ActionAppMenuWithSearchQueryBrowserTest
-    : public ActionAppMenuBrowserTest {
+class ActionAppMenuIsolatedModeSynonymSearchBrowserTest
+    : public ActionAppMenuWithSearchBrowserTest {
  public:
-  ActionAppMenuWithSearchQueryBrowserTest() {
-    search_feature_list_.InitAndEnableFeatureWithParameters(
-        features::kChroMenuSearch, {{"query", "extensions"}});
+  ActionAppMenuIsolatedModeSynonymSearchBrowserTest() {
+    feature_list_.InitAndEnableFeature(
+        enterprise_isolated_mode::kEnableEnterpriseIsolatedMode);
   }
-  ~ActionAppMenuWithSearchQueryBrowserTest() override = default;
 
  private:
-  base::test::ScopedFeatureList search_feature_list_;
+  base::test::ScopedFeatureList feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(ActionAppMenuWithSearchQueryBrowserTest,
+IN_PROC_BROWSER_TEST_F(ActionAppMenuIsolatedModeSynonymSearchBrowserTest,
+                       SearchMatchesIsolatedWindowSynonym) {
+  browser()->GetProfile()->GetPrefs()->SetInteger(
+      enterprise_isolated_mode::kEnterpriseIsolatedModeSettings,
+      static_cast<int>(
+          enterprise_isolated_mode::IsolatedModeSetting::kEnabled));
+
+  BrowserWindowInterface* isolated_browser =
+      CreateBrowser(browser()->GetProfile());
+  ASSERT_TRUE(isolated_browser);
+
+  auto* root_action_item =
+      BrowserActions::From(isolated_browser)->root_action_item();
+  actions::ActionItem* isolated_action =
+      actions::ActionManager::Get().FindAction(kActionNewIsolatedWindow,
+                                               root_action_item);
+  ASSERT_NE(isolated_action, nullptr) << "Isolated window action not found!";
+
+  const auto& synonyms = isolated_action->GetSynonyms();
+  EXPECT_TRUE(std::find(synonyms.begin(), synonyms.end(),
+                        u"open incognito window") != synonyms.end());
+}
+
+// Activating a zoom in/out search result zooms the active tab, keeps the menu
+// open, and updates that row's secondary title with the new zoom level.
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithSearchBrowserTest,
+                       ZoomSearchResultZoomsAndShowsNewLevel) {
+  auto* const zoom_controller = zoom::ZoomController::FromWebContents(
+      browser()->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_TRUE(zoom_controller);
+  ASSERT_EQ(zoom_controller->GetZoomPercent(), 100);
+  // The breadcrumb is the zoom submenu's text, without its mnemonic marker.
+  const actions::ActionItem* const zoom_submenu =
+      actions::ActionManager::Get().FindAction(
+          kActionZoomSubmenu,
+          BrowserActions::From(browser())->root_action_item());
+  ASSERT_TRUE(zoom_submenu);
+  const auto zoom_row_secondary_title = [&](int percent) {
+    return l10n_util::GetStringFUTF16(
+        IDS_APP_MENU_SEARCH_SECONDARY_TEXT_WITH_VALUE,
+        std::u16string(zoom_submenu->GetText()), base::FormatPercent(percent));
+  };
+
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  action_menu->search_bar_for_testing()->SetText(u"Zoom");
+  views::MenuItemView* root = action_menu->root_menu_item_for_testing();
+  views::MenuItemView* zoom_in = root->GetMenuItemByID(kActionZoomPlus);
+  views::MenuItemView* zoom_out = root->GetMenuItemByID(kActionZoomMinus);
+  ASSERT_TRUE(zoom_in && zoom_out);
+  // The level is shown as soon as the results appear, before any zoom change.
+  EXPECT_EQ(zoom_in->secondary_title(), zoom_row_secondary_title(100));
+  EXPECT_EQ(zoom_out->secondary_title(), zoom_row_secondary_title(100));
+
+  // Activate the row as the user would with Enter.
+  views::MenuController* controller = zoom_in->GetMenuController();
+  ASSERT_TRUE(controller);
+  controller->SelectItemAndOpenSubmenu(zoom_in);
+  ui::KeyEvent enter(ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::EF_NONE);
+  controller->OnWillDispatchKeyEvent(&enter);
+
+  EXPECT_EQ(zoom_controller->GetZoomPercent(), 110);
+  EXPECT_TRUE(menu_control->IsMenuShowing());
+  ASSERT_EQ(root->GetMenuItemByID(kActionZoomPlus), zoom_in);
+  EXPECT_EQ(controller->GetSelectedMenuItem(), zoom_in);
+  EXPECT_EQ(zoom_in->secondary_title(), zoom_row_secondary_title(110));
+  EXPECT_EQ(zoom_out->secondary_title(), zoom_row_secondary_title(110));
+
+  menu_control->CloseMenu();
+}
+
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithSearchBrowserTest,
                        ShowActionAppMenuWithExtensionsSearchTwice) {
   AppMenuControl* menu_control = GetMenuControl();
   ASSERT_TRUE(menu_control);
@@ -447,29 +660,29 @@ IN_PROC_BROWSER_TEST_F(ActionAppMenuWithSearchQueryBrowserTest,
   EXPECT_FALSE(menu_control->IsMenuShowing());
   EXPECT_FALSE(menu_control->GetActionAppMenuForTesting());
 
-  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
-  EXPECT_TRUE(menu_control->IsMenuShowing());
-  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
-  ASSERT_TRUE(action_menu);
+  for (int i = 0; i < 2; ++i) {
+    SCOPED_TRACE(i);
+    menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+    ASSERT_TRUE(menu_control->IsMenuShowing());
+    ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+    ASSERT_TRUE(action_menu);
 
-  AppMenuSearchBarView* search_bar = action_menu->search_bar_for_testing();
-  ASSERT_TRUE(search_bar);
-  EXPECT_EQ(search_bar->GetText(), u"extensions");
+    AppMenuSearchBarView* search_bar = action_menu->search_bar_for_testing();
+    ASSERT_TRUE(search_bar);
+    EXPECT_TRUE(search_bar->GetText().empty());
+    views::MenuItemView* root = action_menu->root_menu_item_for_testing();
+    ASSERT_TRUE(root);
+    ASSERT_NE(root->GetMenuItemByID(kActionPrint), nullptr);
 
-  menu_control->CloseMenu();
-  EXPECT_FALSE(menu_control->IsMenuShowing());
+    search_bar->SetText(u"extensions");
 
-  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
-  EXPECT_TRUE(menu_control->IsMenuShowing());
-  action_menu = menu_control->GetActionAppMenuForTesting();
-  ASSERT_TRUE(action_menu);
+    EXPECT_NE(root->GetMenuItemByID(kActionExtensionsSubmenuManageExtensions),
+              nullptr);
+    EXPECT_EQ(root->GetMenuItemByID(kActionPrint), nullptr);
 
-  search_bar = action_menu->search_bar_for_testing();
-  ASSERT_TRUE(search_bar);
-  EXPECT_EQ(search_bar->GetText(), u"extensions");
-
-  menu_control->CloseMenu();
-  EXPECT_FALSE(menu_control->IsMenuShowing());
+    menu_control->CloseMenu();
+    EXPECT_FALSE(menu_control->IsMenuShowing());
+  }
 }
 
 class ActionAppMenuWithOtherDeviceTabsBrowserTest
@@ -480,6 +693,7 @@ class ActionAppMenuWithOtherDeviceTabsBrowserTest
   }
 
   std::unique_ptr<syncer::DataTypeProcessor> StartSessionSync() {
+    SignIn();
     sync_sessions::SessionSyncService* session_sync_service =
         SessionSyncServiceFactory::GetForProfile(browser()->GetProfile());
     syncer::DataTypeActivationRequest activation_request;
@@ -536,15 +750,15 @@ IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
   helper.AddTabWithInfo(1, 0, now - base::Minutes(20), u"Oldest");
   helper.ExportToSessionSync(sync_processor.get());
 
-  RecentTabsDynamicMenu dynamic_menu(browser());
+  testing::NiceMock<MockAppMenuHost> host;
+  RecentTabsDynamicMenu dynamic_menu(browser(), &host);
   std::unique_ptr<actions::ActionItem> root =
       actions::ActionItem::Builder().Build();
   dynamic_menu.BuildOtherDeviceTabsActions(root.get());
 
-  EXPECT_THAT(
-      GetItemsDepthFirst(root.get()),
-      testing::ElementsAre(GetSessionName(helper, 0), u"Newest", u"Older", u"",
-                           GetSessionName(helper, 1), u"Oldest"));
+  EXPECT_THAT(GetItemsDepthFirst(root.get()),
+              ElementsAre(GetSessionName(helper, 0), u"Newest", u"Older", u"",
+                          GetSessionName(helper, 1), u"Oldest"));
 
   const std::vector<RecentTabItem> items =
       RecentTabsBuilder::BuildOtherDeviceTabs(browser()->GetProfile());
@@ -655,7 +869,212 @@ IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
+                       OtherDeviceTabsSubmenuMoreTabsFlyout) {
+  std::unique_ptr<syncer::DataTypeProcessor> sync_processor =
+      StartSessionSync();
+
+  const base::Time now = base::Time::Now();
+  RecentTabsBuilderTestHelper helper;
+  helper.AddSession();
+  helper.AddWindow(0);
+  for (int i = 0; i < 12; ++i) {
+    helper.AddTabWithInfo(0, 0, now - base::Minutes(i),
+                          u"Tab " + base::NumberToString16(i));
+  }
+  helper.ExportToSessionSync(sync_processor.get());
+  const GURL expected_url =
+      RecentTabsBuilder::BuildOtherDeviceTabs(browser()->GetProfile())
+          .back()
+          .children()[1]
+          .url();
+
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  views::MenuItemView* other_device_tabs_item =
+      action_menu->root_menu_item_for_testing()->GetMenuItemByID(
+          kActionOtherDeviceTabsSubmenu);
+  ASSERT_TRUE(other_device_tabs_item);
+  action_menu->WillShowMenu(other_device_tabs_item);
+
+  // A single device shows 10 tabs inline and the other 2 in a flyout.
+  EXPECT_TRUE(FindMenuItemByTitle(other_device_tabs_item, u"Tab 9"));
+  EXPECT_FALSE(FindMenuItemByTitle(other_device_tabs_item, u"Tab 10"));
+  views::MenuItemView* flyout_item = FindMenuItemByTitle(
+      other_device_tabs_item,
+      l10n_util::GetPluralStringFUTF16(IDS_OTHER_DEVICE_TABS_SEE_MORE_TABS, 2));
+  ASSERT_TRUE(flyout_item);
+  EXPECT_EQ(remote_tabs_menu_util::GetDeviceFormFactorIcon(
+                syncer::DeviceInfo::FormFactor::kDesktop),
+            flyout_item->GetIcon());
+  ASSERT_TRUE(flyout_item->HasSubmenu());
+  EXPECT_EQ(2u, flyout_item->GetSubmenu()->GetMenuItems().size());
+  EXPECT_TRUE(FindMenuItemByTitle(flyout_item, u"Tab 10"));
+  views::MenuItemView* tab_item = FindMenuItemByTitle(flyout_item, u"Tab 11");
+  ASSERT_TRUE(tab_item);
+
+  const int initial_tab_count = browser()->GetTabStripModel()->count();
+  base::HistogramTester histogram_tester;
+  action_menu->ExecuteCommand(tab_item->GetCommand(), 0);
+  EXPECT_EQ(initial_tab_count + 1, browser()->GetTabStripModel()->count());
+  EXPECT_EQ(
+      expected_url,
+      browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
+  histogram_tester.ExpectBucketCount("WrenchMenu.MenuAction",
+                                     MENU_ACTION_OTHER_DEVICE_TAB, 1);
+
+  menu_control->CloseMenu();
+}
+
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
+                       OtherDeviceTabsSubmenuUpdatesWhenDevicesChange) {
+  std::unique_ptr<syncer::DataTypeProcessor> sync_processor =
+      StartSessionSync();
+
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+  // Activation changes close menus; ignore them since the test spins the loop
+  // while the menu is open.
+  views::DisableActivationChangeHandlingForTests();
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+
+  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  views::MenuItemView* root = action_menu->root_menu_item_for_testing();
+  ASSERT_TRUE(root);
+
+  views::MenuItemView* other_device_tabs_item =
+      root->GetMenuItemByID(kActionOtherDeviceTabsSubmenu);
+  ASSERT_TRUE(other_device_tabs_item);
+  other_device_tabs_item->GetMenuController()->SelectItemAndOpenSubmenu(
+      other_device_tabs_item);
+  ASSERT_TRUE(other_device_tabs_item->GetSubmenu()->IsShowing());
+
+  const base::Time now = base::Time::Now();
+  RecentTabsBuilderTestHelper helper;
+  helper.AddSession();
+  helper.AddWindow(0);
+  helper.AddTabWithInfo(0, 0, now - base::Minutes(10), u"Old");
+  helper.ExportToSessionSync(sync_processor.get());
+  ASSERT_TRUE(FindMenuItemByTitle(other_device_tabs_item, u"Old"));
+
+  helper.AddTabWithInfo(0, 0, now - base::Minutes(5), u"New");
+  helper.ExportToSessionSync(sync_processor.get());
+
+  EXPECT_THAT(GetSubmenuItemTitles(other_device_tabs_item),
+              ElementsAre(GetSessionName(helper, 0), u"New", u"Old"));
+
+  // Add a 0-tab device, open a tab on it, close its last tab, then delete it
+  // while the submenu remains open.
+  int next_response_version = 1;
+  const std::u16string empty_state_label = l10n_util::GetStringFUTF16(
+      IDS_OTHER_DEVICE_TABS_NO_OPEN_TABS, u"Empty Device");
+  SendEmptyOrSingleTabSession(sync_processor.get(), "empty_tag", "Empty Device",
+                              std::nullopt, now, next_response_version);
+  EXPECT_THAT(GetSubmenuItemTitles(other_device_tabs_item),
+              ElementsAre(empty_state_label, GetSessionName(helper, 0), u"New",
+                          u"Old"));
+
+  SendEmptyOrSingleTabSession(sync_processor.get(), "empty_tag", "Empty Device",
+                              "Empty Device Tab", now, next_response_version);
+  EXPECT_THAT(GetSubmenuItemTitles(other_device_tabs_item),
+              ElementsAre(u"Empty Device", u"Empty Device Tab",
+                          GetSessionName(helper, 0), u"New", u"Old"));
+
+  SendEmptyOrSingleTabSession(sync_processor.get(), "empty_tag", "Empty Device",
+                              std::nullopt, now, next_response_version);
+  EXPECT_THAT(GetSubmenuItemTitles(other_device_tabs_item),
+              ElementsAre(empty_state_label, GetSessionName(helper, 0), u"New",
+                          u"Old"));
+  views::MenuItemView* empty_item =
+      FindMenuItemByTitle(other_device_tabs_item, empty_state_label);
+  ASSERT_TRUE(empty_item);
+  EXPECT_EQ(views::MenuItemView::Type::kTitle, empty_item->GetType());
+  EXPECT_FALSE(empty_item->GetEnabled());
+
+  SessionSyncServiceFactory::GetForProfile(browser()->GetProfile())
+      ->GetOpenTabsUIDelegate()
+      ->DeleteForeignSession("empty_tag");
+  EXPECT_THAT(GetSubmenuItemTitles(other_device_tabs_item),
+              ElementsAre(GetSessionName(helper, 0), u"New", u"Old"));
+
+  views::MenuItemView* tab_item =
+      FindMenuItemByTitle(other_device_tabs_item, u"New");
+  ASSERT_TRUE(tab_item);
+  const std::vector<RecentTabItem> items =
+      RecentTabsBuilder::BuildOtherDeviceTabs(browser()->GetProfile());
+  ASSERT_EQ(3u, items.size());
+  const GURL expected_url = items[1].url();
+
+  const int initial_tab_count = browser()->GetTabStripModel()->count();
+  action_menu->ExecuteCommand(tab_item->GetCommand(), 0);
+  EXPECT_EQ(initial_tab_count + 1, browser()->GetTabStripModel()->count());
+  EXPECT_EQ(
+      expected_url,
+      browser()->GetTabStripModel()->GetActiveWebContents()->GetVisibleURL());
+
+  menu_control->CloseMenu();
+}
+
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
+                       OtherDeviceTabsSubmenuDeviceWithoutTabs) {
+  std::unique_ptr<syncer::DataTypeProcessor> sync_processor =
+      StartSessionSync();
+
+  const base::Time now = base::Time::Now();
+  RecentTabsBuilderTestHelper helper;
+  helper.AddSession();
+  helper.AddWindow(0);
+  helper.AddSession();
+  helper.AddWindow(1);
+  helper.AddTabWithInfo(1, 0, now - base::Minutes(5), u"Remote Tab");
+  helper.ExportToSessionSync(sync_processor.get());
+
+  const std::u16string empty_state_label = l10n_util::GetStringFUTF16(
+      IDS_OTHER_DEVICE_TABS_NO_OPEN_TABS, GetSessionName(helper, 0));
+
+  testing::NiceMock<MockAppMenuHost> host;
+  RecentTabsDynamicMenu dynamic_menu(browser(), &host);
+  std::unique_ptr<actions::ActionItem> action_root =
+      actions::ActionItem::Builder().Build();
+  dynamic_menu.BuildOtherDeviceTabsActions(action_root.get());
+  EXPECT_THAT(GetItemsDepthFirst(action_root.get()),
+              ElementsAre(empty_state_label, u"", GetSessionName(helper, 1),
+                          u"Remote Tab"));
+
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  views::MenuItemView* other_device_tabs_item =
+      action_menu->root_menu_item_for_testing()->GetMenuItemByID(
+          kActionOtherDeviceTabsSubmenu);
+  ASSERT_TRUE(other_device_tabs_item);
+  action_menu->WillShowMenu(other_device_tabs_item);
+
+  std::vector<std::u16string> titles;
+  for (views::MenuItemView* item :
+       other_device_tabs_item->GetSubmenu()->GetMenuItems()) {
+    titles.push_back(item->title());
+  }
+  EXPECT_THAT(titles, ElementsAre(empty_state_label, GetSessionName(helper, 1),
+                                  u"Remote Tab"));
+
+  views::MenuItemView* empty_state_item =
+      FindMenuItemByTitle(other_device_tabs_item, empty_state_label);
+  ASSERT_TRUE(empty_state_item);
+  EXPECT_EQ(views::MenuItemView::Type::kTitle, empty_state_item->GetType());
+  EXPECT_FALSE(empty_state_item->GetEnabled());
+
+  menu_control->CloseMenu();
+}
+
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
                        OtherDeviceTabsSubmenuIncognito) {
+  SignIn();
   AppMenuControl* menu_control = GetMenuControl(CreateIncognitoBrowser());
   ASSERT_TRUE(menu_control);
 
@@ -670,8 +1089,59 @@ IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
   menu_control->CloseMenu();
 }
 
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
+                       OtherDeviceTabsSubmenuHiddenWhenSignedOut) {
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  ActionAppMenu* action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  EXPECT_EQ(nullptr, action_menu->root_menu_item_for_testing()->GetMenuItemByID(
+                         kActionOtherDeviceTabsSubmenu));
+  menu_control->CloseMenu();
+
+  SignIn();
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  action_menu = menu_control->GetActionAppMenuForTesting();
+  ASSERT_TRUE(action_menu);
+  EXPECT_NE(nullptr, action_menu->root_menu_item_for_testing()->GetMenuItemByID(
+                         kActionOtherDeviceTabsSubmenu));
+  menu_control->CloseMenu();
+}
+
+IN_PROC_BROWSER_TEST_F(ActionAppMenuWithOtherDeviceTabsBrowserTest,
+                       OtherDeviceTabsSubmenuHiddenWhenNotEligible) {
+  SignIn();
+  AppMenuControl* menu_control = GetMenuControl();
+  ASSERT_TRUE(menu_control);
+
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  EXPECT_NE(nullptr, menu_control->GetActionAppMenuForTesting()
+                         ->root_menu_item_for_testing()
+                         ->GetMenuItemByID(kActionOtherDeviceTabsSubmenu));
+  menu_control->CloseMenu();
+
+  PrefService* pref_service = browser()->GetProfile()->GetPrefs();
+  pref_service->SetBoolean(prefs::kSavingBrowserHistoryDisabled, true);
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  EXPECT_EQ(nullptr, menu_control->GetActionAppMenuForTesting()
+                         ->root_menu_item_for_testing()
+                         ->GetMenuItemByID(kActionOtherDeviceTabsSubmenu));
+  menu_control->CloseMenu();
+
+  pref_service->SetBoolean(prefs::kSavingBrowserHistoryDisabled, false);
+  pref_service->SetBoolean(syncer::prefs::internal::kSyncManaged, true);
+  menu_control->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  EXPECT_EQ(nullptr, menu_control->GetActionAppMenuForTesting()
+                         ->root_menu_item_for_testing()
+                         ->GetMenuItemByID(kActionOtherDeviceTabsSubmenu));
+  menu_control->CloseMenu();
+}
+
 IN_PROC_BROWSER_TEST_F(ActionAppMenuWithoutOtherDeviceTabsBrowserTest,
                        OtherDeviceTabsSubmenuFlagOff) {
+  SignIn();
   AppMenuControl* menu_control = GetMenuControl();
   ASSERT_TRUE(menu_control);
 

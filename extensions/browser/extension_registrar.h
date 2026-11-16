@@ -408,6 +408,12 @@ class ExtensionRegistrar : public KeyedService,
   // about it.
   void ActivateExtension(const Extension* extension, bool is_newly_added);
 
+  // Notifies observers that the extension with `extension_id` was enabled, if
+  // re-adding it through `AddExtension()` left it in `enabled_extensions()`.
+  // Used when the extension is re-added after it was blocklisted or blocked,
+  // which doesn't go through `EnableExtension()`.
+  void TriggerOnEnabledIfReAddedAsEnabled(const ExtensionId& extension_id);
+
   // Triggers the unloaded notifications to deactivate an extension.
   void DeactivateExtension(const Extension* extension,
                            UnloadedExtensionReason reason);
@@ -492,6 +498,12 @@ class ExtensionRegistrar : public KeyedService,
   // Store the ids of reloading extensions. We use this to re-enable extensions
   // which were disabled for a reload.
   ExtensionIdSet reloading_extensions_;
+
+  // Store the ids of terminated extensions that are being reloaded. Unlike
+  // `reloading_extensions_`, these extensions aren't disabled for the reload,
+  // so this is how `AddExtension()` knows to notify observers that the
+  // extension was reloaded.
+  ExtensionIdSet reloading_terminated_extensions_;
 
   // Store the paths of extensions that failed to reload. We use this to retry
   // reload.

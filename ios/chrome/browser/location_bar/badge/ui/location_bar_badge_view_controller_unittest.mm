@@ -4,13 +4,19 @@
 
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_view_controller.h"
 
+#import "base/test/ios/wait_util.h"
 #import "base/test/scoped_feature_list.h"
 #import "ios/chrome/browser/contextual_panel/entrypoint/ui/contextual_panel_entrypoint_mutator.h"
+#import "ios/chrome/browser/contextual_panel/entrypoint/ui/contextual_panel_entrypoint_visibility_delegate.h"
 #import "ios/chrome/browser/contextual_panel/model/contextual_panel_item_configuration.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/location_bar/badge/model/badge_type.h"
 #import "ios/chrome/browser/location_bar/badge/model/location_bar_badge_configuration.h"
+#import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_item.h"
 #import "ios/chrome/browser/location_bar/badge/ui/location_bar_badge_mutator.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
@@ -21,8 +27,21 @@
 - (void)userTappedBadge;
 - (void)setLocationBarLabelCenteredBetweenContent:(BOOL)centered;
 - (void)dismissIPHAnimated:(BOOL)animated;
-- (void)didCollapseBadgeContainer;
+- (void)didCollapseBadgeContainer:(LocationBarBadgeType)badgeType;
 @end
+
+namespace {
+
+NSString* const kLocationBarBadgeOverflowIdentifier =
+    @"LocationBarBadgeOverflowIdentifier";
+NSString* const kLocationBarBadgeReaderModeIdentifier =
+    @"LocationBarBadgeReaderModeIdentifier";
+NSString* const kOverflowAccessibilityLabel = @"Overflow";
+NSString* const kOverflowLabelText = @"More";
+NSString* const kReaderAccessibilityLabel = @"Reader mode";
+NSString* const kReaderLabelText = @"Reader";
+
+}  // namespace
 
 // Test fixture for LocationBarBadgeViewController.
 class LocationBarBadgeViewControllerTest : public PlatformTest {
@@ -35,6 +54,22 @@ class LocationBarBadgeViewControllerTest : public PlatformTest {
         OCMProtocolMock(@protocol(ContextualPanelEntrypointMutator));
     view_controller_.contextualPanelEntryPointMutator =
         mock_contextual_panel_mutator_;
+  }
+
+  // Returns a Reader mode `LocationBarBadgeItem` with `icon` and
+  // `display_state`, using fixed label and accessibility values and no unread
+  // indicator.
+  LocationBarBadgeItem* CreateBadgeItem(
+      UIImage* icon,
+      LocationBarBadgeDisplayState display_state) {
+    return [[LocationBarBadgeItem alloc]
+              initWithBadgeType:LocationBarBadgeType::kReaderMode
+                      iconImage:icon
+                      labelText:kReaderLabelText
+        accessibilityIdentifier:kLocationBarBadgeReaderModeIdentifier
+             accessibilityLabel:kReaderAccessibilityLabel
+             hasUnreadIndicator:NO
+                   displayState:display_state];
   }
 
   LocationBarBadgeViewController* view_controller_;
@@ -52,7 +87,7 @@ TEST_F(LocationBarBadgeViewControllerTest,
   feature_list.InitWithFeatures(
       {kProactiveSuggestionsFramework, kPageActionMenu}, {});
 
-  [view_controller_ view];
+  [view_controller_ loadViewIfNeeded];
   ContextualPanelItemConfiguration configuration(
       ContextualPanelItemType::SamplePanelItem);
   configuration.entrypoint_symbol = SymbolChromeProduct;
@@ -61,28 +96,52 @@ TEST_F(LocationBarBadgeViewControllerTest,
   OCMExpect(
       [mock_contextual_panel_mutator_ didCompleteTransitionToSmallEntrypoint]);
 
-  [view_controller_ didCollapseBadgeContainer];
+  [view_controller_ didCollapseBadgeContainer:
+                        LocationBarBadgeType::kContextualPanelEntryPointSample];
 
   EXPECT_OCMOCK_VERIFY(mock_contextual_panel_mutator_);
 }
 
-// Tests that the badge shows and hides correctly.
+// Tests that the badge shows and hides correctly and notifies
+// `visibilityDelegate` before mutating `view.hidden`.
 TEST_F(LocationBarBadgeViewControllerTest, ShowAndHideBadge) {
-  [view_controller_ view];
+  [view_controller_ loadViewIfNeeded];
+
+  id mock_visibility_delegate =
+      OCMProtocolMock(@protocol(ContextualPanelEntrypointVisibilityDelegate));
+  view_controller_.visibilityDelegate = mock_visibility_delegate;
+
   LocationBarBadgeConfiguration* config = [[LocationBarBadgeConfiguration alloc]
        initWithBadgeType:LocationBarBadgeType::kReaderMode
       accessibilityLabel:@"Reader Mode"
               badgeImage:[[UIImage alloc] init]];
   [view_controller_ setBadgeConfig:config];
+
+  __block BOOL view_hidden_when_show_delegate_called = NO;
+  OCMExpect([mock_visibility_delegate setContextualPanelEntrypointHidden:NO])
+      .andDo(^(NSInvocation*) {
+        view_hidden_when_show_delegate_called = view_controller_.view.hidden;
+      });
+
   [view_controller_ showBadge];
+  EXPECT_TRUE(view_hidden_when_show_delegate_called);
   EXPECT_FALSE(view_controller_.view.hidden);
+
+  __block BOOL view_hidden_when_hide_delegate_called = YES;
+  OCMExpect([mock_visibility_delegate setContextualPanelEntrypointHidden:YES])
+      .andDo(^(NSInvocation*) {
+        view_hidden_when_hide_delegate_called = view_controller_.view.hidden;
+      });
+
   [view_controller_ hideBadge];
+  EXPECT_FALSE(view_hidden_when_hide_delegate_called);
   EXPECT_TRUE(view_controller_.view.hidden);
+  EXPECT_OCMOCK_VERIFY(mock_visibility_delegate);
 }
 
 // Tests that the mutator is called when the badge is tapped.
 TEST_F(LocationBarBadgeViewControllerTest, BadgeTapped) {
-  [view_controller_ view];
+  [view_controller_ loadViewIfNeeded];
   LocationBarBadgeConfiguration* config = [[LocationBarBadgeConfiguration alloc]
        initWithBadgeType:LocationBarBadgeType::kOverflow
       accessibilityLabel:@"Overflow"
@@ -96,7 +155,7 @@ TEST_F(LocationBarBadgeViewControllerTest, BadgeTapped) {
 // Tests that the mutator is called when the label is centered.
 TEST_F(LocationBarBadgeViewControllerTest,
        SetLocationBarLabelCenteredBetweenContent) {
-  [view_controller_ view];
+  [view_controller_ loadViewIfNeeded];
   OCMExpect([mock_mutator_ setLocationBarLabelCenteredBetweenContent:YES]);
   [view_controller_ setLocationBarLabelCenteredBetweenContent:YES];
   EXPECT_OCMOCK_VERIFY(mock_mutator_);
@@ -104,8 +163,230 @@ TEST_F(LocationBarBadgeViewControllerTest,
 
 // Tests that the mutator is called when the IPH is dismissed.
 TEST_F(LocationBarBadgeViewControllerTest, DismissIPHAnimated) {
-  [view_controller_ view];
+  [view_controller_ loadViewIfNeeded];
   OCMExpect([mock_mutator_ dismissIPHAnimated:YES]);
   [mock_mutator_ dismissIPHAnimated:YES];
   EXPECT_OCMOCK_VERIFY(mock_mutator_);
+}
+
+// Fake visibility delegate used because OCMock cannot box C++ `std::optional`
+// parameters passed by value.
+@interface LocationBarBadgeViewControllerFakeVisibilityDelegate
+    : NSObject <ContextualPanelEntrypointVisibilityDelegate>
+@property(nonatomic, assign) std::optional<ContextualPanelItemType> itemType;
+@property(nonatomic, assign) std::optional<ContextualPanelItemType>
+    itemTypeWhenHidden;
+@property(nonatomic, assign) BOOL didHideEntrypoint;
+@end
+
+@implementation LocationBarBadgeViewControllerFakeVisibilityDelegate
+- (void)setContextualPanelEntrypointHidden:(BOOL)hidden {
+  if (hidden) {
+    _didHideEntrypoint = YES;
+    _itemTypeWhenHidden = _itemType;
+  }
+}
+- (void)setContextualPanelItemType:
+    (std::optional<ContextualPanelItemType>)itemType {
+  _itemType = itemType;
+}
+- (void)setContextualPanelCurrentlyAnimating:(BOOL)animating {
+  // No-op.
+}
+- (void)setContextualPanelEntrypointState:
+    (ContextualPanelEntrypointState)state {
+  // No-op.
+}
+@end
+
+// Tests that `contextualPanelItemType` is cleared when hiding a badge or
+// setting a non-Contextual-Panel badge configuration.
+TEST_F(LocationBarBadgeViewControllerTest,
+       ClearsContextualPanelItemTypeForNonContextualPanelBadges) {
+  [view_controller_ loadViewIfNeeded];
+  LocationBarBadgeViewControllerFakeVisibilityDelegate* visibility_delegate =
+      [[LocationBarBadgeViewControllerFakeVisibilityDelegate alloc] init];
+  view_controller_.visibilityDelegate = visibility_delegate;
+
+  LocationBarBadgeConfiguration* reader_mode_config =
+      [[LocationBarBadgeConfiguration alloc]
+           initWithBadgeType:LocationBarBadgeType::kReaderMode
+          accessibilityLabel:@"Reader Mode"
+                  badgeImage:[[UIImage alloc] init]];
+  [view_controller_ setBadgeConfig:reader_mode_config];
+  [view_controller_
+      setContextualPanelItemType:ContextualPanelItemType::ReaderModeItem];
+  EXPECT_EQ(visibility_delegate.itemType,
+            ContextualPanelItemType::ReaderModeItem);
+
+  [view_controller_ hideBadge];
+  EXPECT_TRUE(visibility_delegate.didHideEntrypoint);
+  EXPECT_EQ(visibility_delegate.itemType, std::nullopt);
+  EXPECT_EQ(visibility_delegate.itemTypeWhenHidden, std::nullopt);
+
+  [view_controller_
+      setContextualPanelItemType:ContextualPanelItemType::ReaderModeItem];
+  ASSERT_EQ(visibility_delegate.itemType,
+            ContextualPanelItemType::ReaderModeItem);
+
+  LocationBarBadgeConfiguration* gemini_config =
+      [[LocationBarBadgeConfiguration alloc]
+           initWithBadgeType:LocationBarBadgeType::kGeminiContextualCueChip
+          accessibilityLabel:@"Ask Gemini"
+                  badgeImage:[[UIImage alloc] init]];
+  [view_controller_ setBadgeConfig:gemini_config];
+  EXPECT_EQ(visibility_delegate.itemType, std::nullopt);
+}
+
+// Tests `LocationBarBadgeItem` value equality and `setBadgeItems:` visibility,
+// accessibility attributes, display states, and deduplication.
+TEST_F(LocationBarBadgeViewControllerTest,
+       SetBadgeItemsUpdatesVisibilityAndState) {
+  base::test::ScopedFeatureList feature_list(kLocationBarBadgeMigration);
+  UIImage* icon = [[UIImage alloc] init];
+  LocationBarBadgeItem* expanded_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+  LocationBarBadgeItem* duplicate_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+  LocationBarBadgeItem* collapsed_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kCollapsed);
+  EXPECT_NSEQ(expanded_item, duplicate_item);
+  EXPECT_EQ(expanded_item.hash, duplicate_item.hash);
+  EXPECT_NSNE(expanded_item, collapsed_item);
+
+  OCMExpect([mock_mutator_ setLocationBarLabelCenteredBetweenContent:YES]);
+  [view_controller_ setBadgeItems:@[ expanded_item ]];
+  EXPECT_FALSE(view_controller_.view.hidden);
+  UIButton* button =
+      chrome_test_util::FindViewByClass<UIButton>(view_controller_.view);
+  EXPECT_NSEQ(button.accessibilityIdentifier,
+              kLocationBarBadgeReaderModeIdentifier);
+  EXPECT_NSEQ(button.accessibilityLabel, kReaderAccessibilityLabel);
+  EXPECT_NSEQ(chrome_test_util::FindLabelWithText(view_controller_.view,
+                                                  kReaderLabelText)
+                  .textColor,
+              [UIColor colorNamed:kTextPrimaryColor]);
+
+  // Passing an equal array is a deduplication no-op.
+  id<LocationBarBadgeMutator> strict_mutator =
+      OCMStrictProtocolMock(@protocol(LocationBarBadgeMutator));
+  view_controller_.mutator = strict_mutator;
+  [view_controller_ setBadgeItems:@[ duplicate_item ]];
+  view_controller_.mutator = mock_mutator_;
+
+  OCMExpect([mock_mutator_ setLocationBarLabelCenteredBetweenContent:NO]);
+  [view_controller_ setBadgeItems:@[ collapsed_item ]];
+  EXPECT_FALSE(view_controller_.view.hidden);
+
+  [view_controller_ setBadgeItems:@[]];
+  EXPECT_TRUE(view_controller_.view.hidden);
+  EXPECT_NSEQ(button.accessibilityIdentifier, nil);
+  EXPECT_OCMOCK_VERIFY(mock_mutator_);
+}
+
+// Tests that switching item types updates visual elements and button metadata.
+TEST_F(LocationBarBadgeViewControllerTest,
+       UpdatesButtonMetadataWhenSwitchingBadgeType) {
+  base::test::ScopedFeatureList feature_list(kLocationBarBadgeMigration);
+  UIImage* icon = [[UIImage alloc] init];
+  LocationBarBadgeItem* reader_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+  LocationBarBadgeItem* overflow_item = [[LocationBarBadgeItem alloc]
+            initWithBadgeType:LocationBarBadgeType::kOverflow
+                    iconImage:icon
+                    labelText:kOverflowLabelText
+      accessibilityIdentifier:kLocationBarBadgeOverflowIdentifier
+           accessibilityLabel:kOverflowAccessibilityLabel
+           hasUnreadIndicator:NO
+                 displayState:LocationBarBadgeDisplayState::kCollapsed];
+
+  [view_controller_ setBadgeItems:@[ reader_item ]];
+  EXPECT_FALSE(view_controller_.view.hidden);
+
+  [view_controller_ setBadgeItems:@[ overflow_item ]];
+  EXPECT_FALSE(view_controller_.view.hidden);
+  UIButton* button =
+      chrome_test_util::FindViewByClass<UIButton>(view_controller_.view);
+  EXPECT_NSEQ(button.accessibilityIdentifier,
+              kLocationBarBadgeOverflowIdentifier);
+  EXPECT_NSEQ(button.accessibilityLabel, kOverflowAccessibilityLabel);
+}
+
+// Tests that switching from an expanded item to another badge type reports the
+// collapse of the outgoing badge type, not the incoming one.
+TEST_F(LocationBarBadgeViewControllerTest,
+       ReportsOutgoingBadgeTypeOnCollapseWhenSwitchingBadgeType) {
+  base::test::ScopedFeatureList feature_list(kLocationBarBadgeMigration);
+  UIImage* icon = [[UIImage alloc] init];
+  LocationBarBadgeItem* reader_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+  LocationBarBadgeItem* overflow_item = [[LocationBarBadgeItem alloc]
+            initWithBadgeType:LocationBarBadgeType::kOverflow
+                    iconImage:icon
+                    labelText:kOverflowLabelText
+      accessibilityIdentifier:kLocationBarBadgeOverflowIdentifier
+           accessibilityLabel:kOverflowAccessibilityLabel
+           hasUnreadIndicator:NO
+                 displayState:LocationBarBadgeDisplayState::kCollapsed];
+  __block int collapse_count = 0;
+  __block LocationBarBadgeType collapsed_badge_type =
+      LocationBarBadgeType::kNone;
+  OCMStub([[mock_mutator_ ignoringNonObjectArgs]
+              handleBadgeContainerCollapse:LocationBarBadgeType::kNone])
+      .andDo(^(NSInvocation* invocation) {
+        ++collapse_count;
+        [invocation getArgument:&collapsed_badge_type atIndex:2];
+      });
+
+  [view_controller_ setBadgeItems:@[ reader_item ]];
+  [view_controller_ setBadgeItems:@[ overflow_item ]];
+
+  ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^bool {
+        return collapse_count > 0;
+      }));
+  EXPECT_EQ(collapse_count, 1);
+  EXPECT_EQ(collapsed_badge_type, LocationBarBadgeType::kReaderMode);
+}
+
+// Tests that a same-type update of a visible badge keeps the unified container
+// label color instead of resetting it to the primary text color.
+TEST_F(LocationBarBadgeViewControllerTest,
+       KeepsUnifiedContainerLabelColorOnSameTypeUpdate) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures({kLocationBarBadgeMigration, kPageActionMenu,
+                                 kProactiveSuggestionsFramework},
+                                {});
+  UIImage* icon = [[UIImage alloc] init];
+  LocationBarBadgeItem* expanded_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+  LocationBarBadgeItem* collapsed_item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kCollapsed);
+  UIColor* unified_label_color = [UIColor colorNamed:kSolidWhiteColor];
+
+  [view_controller_ setBadgeItems:@[ expanded_item ]];
+  UILabel* label = chrome_test_util::FindLabelWithText(view_controller_.view,
+                                                       kReaderLabelText);
+  EXPECT_NSEQ(label.textColor, unified_label_color);
+
+  [view_controller_ setBadgeItems:@[ collapsed_item ]];
+  EXPECT_NSEQ(label.textColor, unified_label_color);
+}
+
+// Tests that `setBadgeItems:` does not update the badge when badge items are
+// not supported.
+TEST_F(LocationBarBadgeViewControllerTest,
+       DoesNotUpdateItemsWhenMigrationFeatureDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(kLocationBarBadgeMigration);
+  [view_controller_ loadViewIfNeeded];
+  UIImage* icon = [[UIImage alloc] init];
+  LocationBarBadgeItem* item =
+      CreateBadgeItem(icon, LocationBarBadgeDisplayState::kExpanded);
+
+  [view_controller_ setBadgeItems:@[ item ]];
+  EXPECT_TRUE(view_controller_.view.hidden);
+  UIButton* button =
+      chrome_test_util::FindViewByClass<UIButton>(view_controller_.view);
+  EXPECT_NSEQ(button.accessibilityIdentifier, nil);
 }

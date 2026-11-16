@@ -14,9 +14,33 @@
 #import "ios/chrome/browser/shared/public/commands/location_bar_badge_commands.h"
 #import "ios/chrome/browser/shared/public/commands/omnibox_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/public/provider/chrome/browser/bwg/gemini_api.h"
 
 namespace gemini {
+
+std::optional<int> GetLiveDormantSnackbarMessageId(
+    ios::provider::GeminiDormantReason dormant_reason) {
+  if (!IsGeminiLiveDormantReasonsEnabled()) {
+    return IDS_IOS_GEMINI_LIVE_GENERAL_DORMANT_SNACKBAR;
+  }
+
+  switch (dormant_reason) {
+    case ios::provider::GeminiDormantReason::kInactivityTimeout:
+      return IDS_IOS_GEMINI_LIVE_CONTINUE_SESSION_SNACKBAR;
+    case ios::provider::GeminiDormantReason::kLongInteractionTimeout:
+    case ios::provider::GeminiDormantReason::kServerPause:
+      return IDS_IOS_GEMINI_LIVE_SERVER_PAUSE_SNACKBAR;
+    case ios::provider::GeminiDormantReason::kLowVolumeInBackground:
+    case ios::provider::GeminiDormantReason::kLowVolumeInForeground:
+    case ios::provider::GeminiDormantReason::kInterruptedByExternalAudio:
+    case ios::provider::GeminiDormantReason::kUserStop:
+    case ios::provider::GeminiDormantReason::kUserPause:
+      return std::nullopt;
+    default:
+      return IDS_IOS_GEMINI_LIVE_GENERAL_DORMANT_SNACKBAR;
+  }
+}
 
 void UpdateGeminiLiveIconVisibility(ProfileIOS* profile, bool in_live_mode) {
   if (!profile || !IsGeminiLiveEnabled()) {
@@ -48,8 +72,13 @@ void UpdateGeminiLiveIconVisibility(ProfileIOS* profile, bool in_live_mode) {
 
 bool IsGeminiLivePromptSubmitted(ios::provider::GeminiClientMode old_status,
                                  ios::provider::GeminiClientMode new_status) {
+  // Both Chat and Live modes transition to `kThinking` when processing a query,
+  // but `kListening` and `kTranscribing` only occur during Live voice input.
+  // Consider the current `kThinking` as an indication of live prompt only if it
+  // was proceeded with live specific status.
   return new_status == ios::provider::GeminiClientMode::kThinking &&
-         old_status != ios::provider::GeminiClientMode::kThinking;
+         (old_status == ios::provider::GeminiClientMode::kListening ||
+          old_status == ios::provider::GeminiClientMode::kTranscribing);
 }
 
 }  // namespace gemini

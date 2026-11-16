@@ -336,6 +336,7 @@ aggregate_vector_icons("chrome_vector_icons") {
     "tab_group_old.icon",
     "tab_group_sharing_old.icon",
     "tab_groups_sync_old.icon",
+    "tab_move.icon",
     "tab_old.icon",
     "tab_search_tab_strip_old.icon",
     "tab_usb_connected_old.icon",
@@ -376,7 +377,6 @@ aggregate_vector_icons("chrome_vector_icons") {
     "webauthn/apple_passwords_color_custom.icon",
     "webauthn/apple_passwords_custom.icon",
     "webauthn/camera_old.icon",
-    "webauthn/passkey_aoa_custom.icon",
     "webauthn/passkey_error_bluetooth_custom.icon",
     "webauthn/passkey_error_bluetooth_dark_custom.icon",
     "webauthn/passkey_error_custom.icon",
@@ -427,8 +427,8 @@ aggregate_vector_icons("chrome_vector_icons") {
 source_set("vector_icons") {
   sources = get_target_outputs(":chrome_vector_icons")
 
+  public_deps = [ ":chrome_vector_icons" ]
   deps = [
-    ":chrome_vector_icons",
     "//base",
     "//skia",
     "//ui/gfx",

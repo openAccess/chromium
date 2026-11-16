@@ -27,6 +27,7 @@
 
 #include <array>
 
+#include "base/no_destructor.h"
 #include "third_party/blink/renderer/platform/geometry/blend.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
@@ -44,6 +45,7 @@ namespace blink {
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_auto_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_stretch_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_fit_content_length);
+DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_shrink_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_max_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_min_content_length);
 DEFINE_GLOBAL(PLATFORM_EXPORT, Length, g_min_intrinsic_length);
@@ -54,6 +56,8 @@ void Length::Initialize() {
   new (base::NotNullTag::kNotNull, (void*)&g_stretch_length) Length(kStretch);
   new (base::NotNullTag::kNotNull, (void*)&g_fit_content_length)
       Length(kFitContent);
+  new (base::NotNullTag::kNotNull, (void*)&g_shrink_content_length)
+      Length(kShrinkContent);
   new (base::NotNullTag::kNotNull, (void*)&g_max_content_length)
       Length(kMaxContent);
   new (base::NotNullTag::kNotNull, (void*)&g_min_content_length)
@@ -149,8 +153,8 @@ class CalculationValueHandleMap {
 
 static CalculationValueHandleMap& CalcHandles() {
   CHECK(IsMainThread());
-  DEFINE_STATIC_LOCAL(CalculationValueHandleMap, handle_map, ());
-  return handle_map;
+  static base::NoDestructor<CalculationValueHandleMap> handle_map;
+  return *handle_map;
 }
 
 Length::Length(const CalculationValue* calc)
@@ -323,8 +327,8 @@ bool Length::HasContentOrIntrinsic() const {
     return GetCalculationValue().HasContentOrIntrinsicSize();
   }
   return GetType() == kMinContent || GetType() == kMaxContent ||
-         GetType() == kFitContent || GetType() == kMinIntrinsic ||
-         GetType() == kContent;
+         GetType() == kFitContent || GetType() == kShrinkContent ||
+         GetType() == kMinIntrinsic || GetType() == kContent;
 }
 
 bool Length::HasAutoOrContentOrIntrinsic() const {
@@ -387,8 +391,8 @@ String Length::ToString() const {
   builder.Append("Length(");
   static const auto kTypeNames = std::to_array<const char* const>(
       {"Auto", "Percent", "Fixed", "MinContent", "MaxContent", "MinIntrinsic",
-       "FillAvailable", "Stretch", "FitContent", "Calculated", "Flex",
-       "ExtendToZoom", "DeviceWidth", "DeviceHeight", "None", "Content"});
+       "Stretch", "FitContent", "ShrinkContent", "Calculated", "Flex", "None",
+       "Content", "OverlapJoin"});
   if (type_ < std::size(kTypeNames))
     builder.Append(kTypeNames[type_]);
   else
@@ -402,7 +406,7 @@ String Length::ToString() const {
   if (quirk_)
     builder.Append(", Quirk");
   builder.Append(")");
-  return builder.ToString();
+  return builder.ReleaseString();
 }
 
 uint32_t Length::GetHash() const {

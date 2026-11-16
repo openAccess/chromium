@@ -9,8 +9,11 @@
 #include "components/actor/core/task_id.h"
 
 namespace chrome::aix::autobrowse::proto {
+class PauseTaskRequest;
 class PerformActionsRequest;
 class PerformActionsResponse;
+class ResumeTaskRequest;
+class ResumeTaskResponse;
 class StartTaskRequest;
 class StartTaskResponse;
 class StopTaskRequest;
@@ -40,6 +43,17 @@ class ActuationDelegate {
   virtual void StopTask(TaskId task_id,
                         const proto::StopTaskRequest& request,
                         StopTaskCallback callback) = 0;
+
+  using PauseTaskCallback = base::OnceCallback<void(bool /*success*/)>;
+  virtual void PauseTask(TaskId task_id,
+                         const proto::PauseTaskRequest& request,
+                         PauseTaskCallback callback) = 0;
+
+  using ResumeTaskCallback =
+      base::OnceCallback<void(proto::ResumeTaskResponse)>;
+  virtual void ResumeTask(TaskId task_id,
+                          const proto::ResumeTaskRequest& request,
+                          ResumeTaskCallback callback) = 0;
 
   using ActCallback = base::OnceCallback<void(proto::PerformActionsResponse)>;
   virtual void Act(TaskId task_id,

@@ -30,10 +30,13 @@ build_webui("build") {
     "content_settings_icons.html.ts",
     "content_settings_icons.ts",
     "cr_lazy_iconset.ts",
+    "ensure_lazy_loaded.ts",
     "extension.html.ts",
     "extension.ts",
     "extensions.html.ts",
     "extensions.ts",
+    "glic_actor_task_icon.html.ts",
+    "glic_actor_task_icon.ts",
     "glic_button.html.ts",
     "glic_button.ts",
     "page_action_icon.html.ts",
@@ -43,6 +46,7 @@ build_webui("build") {
     "home_button.html.ts",
     "home_button.ts",
     "icons.ts",
+    "lazy_load.ts",
     "location_bar.ts",
     "location_bar.html.ts",
     "location_icon.ts",
@@ -71,6 +75,7 @@ build_webui("build") {
     "selected_keyword.html.ts",
     "split_tabs_button.html.ts",
     "split_tabs_button.ts",
+    "tab_focus_disabler.ts",
     "toolbar_action_mixin.ts",
     "toolbar_action_container_mixin.ts",
     "toolbar_chip_button.html.ts",
@@ -93,6 +98,7 @@ build_webui("build") {
     "content_settings_icons.css",
     "extension.css",
     "overflowable_action.css",
+    "glic_actor_task_icon.css",
     "glic_button.css",
     "page_action_icon.css",
     "page_action_icons.css",
@@ -116,7 +122,10 @@ build_webui("build") {
   generate_code_cache = enable_webui_generate_code_cache
   if (optimize) {
     optimize_webui_host = "webui-toolbar.top-chrome"
-    optimize_webui_in_files = [ "webui_toolbar.js" ]
+    optimize_webui_in_files = [
+      "webui_toolbar.js",
+      "lazy_load.js",
+    ]
     optimize_webui_external_paths = [
       "chrome://webui-toolbar.top-chrome|" +
           rebase_path(

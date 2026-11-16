@@ -134,6 +134,14 @@ public final class ChromePreferenceKeys {
     public static final String BOOKMARKS_SORT_ORDER = "Chrome.Bookmarks.BookmarkRowSortOrder";
     public static final String BOOKMARKS_VISUALS_PREF = "Chrome.Bookmarks.BookmarkRowDisplay";
 
+    /**
+     * Saved {@code BottomBarConfigUtils.DefaultPinState} for AndroidBottomBar experiment users
+     * (both their saved default_user_enabled value and whether they saw the onboarding flow).
+     * Stored in SharedPreferences because bottom bar visibility is read before native loads, and
+     * kept defaults must outlive Feature Engagement's 360-day storage window.
+     */
+    public static final String BOTTOM_BAR_DEFAULT_PIN_STATE = "Chrome.BottomBar.DefaultPinState";
+
     /** Whether the bottom bar is enabled by the user. Default value is true. */
     public static final String BOTTOM_BAR_ENABLED = "Chrome.BottomBar.Enabled";
 
@@ -510,6 +518,9 @@ public final class ChromePreferenceKeys {
     public static final String IN_APP_UPDATE_DISCOVERY_BACKOFF_TIMESTAMP =
             "Chrome.InAppUpdate.DiscoveryBackoffTimestamp";
 
+    /** Whether an in-app update has been downloaded and staged on disk. */
+    public static final String IN_APP_UPDATE_DOWNLOADED = "Chrome.InAppUpdate.Downloaded";
+
     /** Timestamp when an in-app update download last failed. */
     public static final String IN_APP_UPDATE_FAILURE_BACKOFF_TIMESTAMP =
             "Chrome.InAppUpdate.FailureBackoffTimestamp";
@@ -517,6 +528,10 @@ public final class ChromePreferenceKeys {
     /** Timestamp when the user last declined an in-app update restart prompt. */
     public static final String IN_APP_UPDATE_RESTART_BACKOFF_TIMESTAMP =
             "Chrome.InAppUpdate.RestartBackoffTimestamp";
+
+    /** Whether a background task is currently scheduled to install a downloaded in-app update. */
+    public static final String IN_APP_UPDATE_RESTART_TASK_SCHEDULED =
+            "Chrome.InAppUpdate.RestartTaskScheduled";
 
     /** Whether Google is set as Chrome's default search engine. Default value is false. */
     public static final String IS_CHROME_DEFAULT_SEARCH_ENGINE_GOOGLE =
@@ -805,6 +820,14 @@ public final class ChromePreferenceKeys {
 
     public static final String PROFILES_BOOT_TIMESTAMP =
             "com.google.android.apps.chrome.ChromeMobileApplication.BOOT_TIMESTAMP";
+
+    /**
+     * The base name of the profile that Chrome is expected to start with, written by native so that
+     * it can be read before native is initialized. It is only a hint, see
+     * ProfileManager#getLastUsedProfileBaseName().
+     */
+    public static final String PROFILES_LAST_USED_PROFILE_BASE_NAME =
+            "Chrome.Profiles.LastUsedProfileBaseName";
 
     /**
      * Key prefix for base promo component. Used in {@link
@@ -1200,6 +1223,7 @@ public final class ChromePreferenceKeys {
                 BLUETOOTH_NOTIFICATION_IDS,
                 BOOKMARKS_SORT_ORDER,
                 BOOKMARKS_VISUALS_PREF,
+                BOTTOM_BAR_DEFAULT_PIN_STATE,
                 BOTTOM_BAR_ENABLED,
                 BOTTOM_BAR_GLIC_BUTTON_ENABLED,
                 CLIPBOARD_SHARED_URI,
@@ -1281,8 +1305,10 @@ public final class ChromePreferenceKeys {
                 INCOGNITO_REAUTH_PROMO_CARD_ENABLED,
                 INCOGNITO_REAUTH_PROMO_SHOW_COUNT,
                 IN_APP_UPDATE_DISCOVERY_BACKOFF_TIMESTAMP,
+                IN_APP_UPDATE_DOWNLOADED,
                 IN_APP_UPDATE_FAILURE_BACKOFF_TIMESTAMP,
                 IN_APP_UPDATE_RESTART_BACKOFF_TIMESTAMP,
+                IN_APP_UPDATE_RESTART_TASK_SCHEDULED,
                 IS_CHROME_DEFAULT_SEARCH_ENGINE_GOOGLE,
                 IS_LAST_VISITED_TAB_SRP,
                 IS_DSE_GOOGLE,
@@ -1325,6 +1351,7 @@ public final class ChromePreferenceKeys {
                 PRIVACY_METRICS_REPORTING_PERMITTED_BY_USER,
                 PRIVACY_METRICS_REPORTING_PERMITTED_BY_POLICY,
                 PRIVACY_SHOULD_USE_METRICS_CHOICE_RESTRUCTURE,
+                PROFILES_LAST_USED_PROFILE_BASE_NAME,
                 PROMO_IS_DISMISSED.pattern(),
                 PROMO_TIMES_SEEN.pattern(),
                 PWA_RESTORE_APPS_AVAILABLE,

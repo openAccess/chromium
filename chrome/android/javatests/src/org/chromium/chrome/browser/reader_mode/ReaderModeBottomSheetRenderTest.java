@@ -15,7 +15,6 @@ import android.widget.FrameLayout;
 import androidx.annotation.ColorInt;
 import androidx.test.filters.MediumTest;
 
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -31,9 +30,7 @@ import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.theme.ThemeColorProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -41,9 +38,9 @@ import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.dom_distiller.mojom.Theme;
 import org.chromium.ui.test.util.NightModeTestUtils;
 import org.chromium.ui.test.util.RenderTestRule.Component;
+import org.chromium.web_distiller.mojom.Theme;
 
 import java.io.IOException;
 import java.util.List;
@@ -51,7 +48,6 @@ import java.util.List;
 /** Render tests for the Reader Mode bottom sheet. */
 @RunWith(ParameterizedRunner.class)
 @ParameterAnnotations.UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
 public class ReaderModeBottomSheetRenderTest {
     @Rule
@@ -101,7 +97,11 @@ public class ReaderModeBottomSheetRenderTest {
                             new FrameLayout.LayoutParams(
                                     ViewGroup.LayoutParams.MATCH_PARENT,
                                     ViewGroup.LayoutParams.WRAP_CONTENT);
-                    mActivityTestRule.getActivity().setContentView(mContentView, params);
+                    // Overlay the content instead of replacing it with setContentView(), which
+                    // would break the hub when the test rule closes the tabs during cleanup.
+                    ViewGroup activityContent =
+                            mActivityTestRule.getActivity().findViewById(android.R.id.content);
+                    activityContent.addView(mContentView, params);
                     mCoordinator =
                             new ReaderModeBottomSheetCoordinator(
                                     mActivityTestRule.getActivity(),
@@ -120,12 +120,6 @@ public class ReaderModeBottomSheetRenderTest {
                             .addThemeColorObserver(mThemeColorObserverCaptor.capture());
                     verify(mThemeColorProvider).addTintObserver(mTintObserverCaptor.capture());
                 });
-    }
-
-    @After
-    public void tearDown() {
-        // Since setUp() calls setContentView() on the Activity, the clean up causes an exception.
-        mActivityTestRule.skipWindowAndTabStateCleanup();
     }
 
     @Test

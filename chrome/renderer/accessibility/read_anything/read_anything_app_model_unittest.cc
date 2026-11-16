@@ -302,6 +302,67 @@ TEST_F(ReadAnythingAppModelTest, SetIsPdf_IsTrackedPerTree) {
   EXPECT_TRUE(model().IsPdf());
 }
 
+class ReadAnythingAppModelIsPdfFullyLoadedTest
+    : public ReadAnythingAppModelTest {
+ protected:
+  // Makes the active tree one with an embedding document root, and optionally
+  // a PDF root below it, whose tree data has the given `loaded` state.
+  void SetUpActiveTree(bool is_pdf, bool has_pdf_root, bool loaded) {
+    ui::AXTreeID tree_id = ui::AXTreeID::CreateNewAXTreeID();
+    ui::AXNodeData root;
+    root.id = 1;
+    root.role = ax::mojom::Role::kRootWebArea;
+    ui::AXNodeData embed;
+    embed.id = 2;
+    embed.role = ax::mojom::Role::kEmbeddedObject;
+    root.child_ids = {embed.id};
+    ui::AXTreeUpdate update;
+    test::SetUpdateTreeID(&update, tree_id);
+    update.tree_data.loaded = loaded;
+    update.root_id = root.id;
+    update.nodes = {root, embed};
+    if (has_pdf_root) {
+      ui::AXNodeData pdf_root;
+      pdf_root.id = 3;
+      pdf_root.role = ax::mojom::Role::kPdfRoot;
+      update.nodes[1].child_ids = {pdf_root.id};
+      update.nodes.push_back(std::move(pdf_root));
+    }
+    ApplyAccessibilityUpdates(tree_id, {std::move(update)});
+    model().SetActiveTreeId(tree_id);
+    model().SetIsPdf(is_pdf);
+  }
+};
+
+TEST_F(ReadAnythingAppModelIsPdfFullyLoadedTest, PdfLoaded_ReturnsTrue) {
+  SetUpActiveTree(/*is_pdf=*/true, /*has_pdf_root=*/true, /*loaded=*/true);
+  EXPECT_TRUE(model().IsPdfFullyLoaded());
+}
+
+TEST_F(ReadAnythingAppModelIsPdfFullyLoadedTest, PdfStillLoading_ReturnsFalse) {
+  SetUpActiveTree(/*is_pdf=*/true, /*has_pdf_root=*/true, /*loaded=*/false);
+  EXPECT_FALSE(model().IsPdfFullyLoaded());
+}
+
+TEST_F(ReadAnythingAppModelIsPdfFullyLoadedTest,
+       PdfRootNotYetInTree_ReturnsFalse) {
+  // The loaded state is the embedding document's until the PDF's root is in
+  // the tree.
+  SetUpActiveTree(/*is_pdf=*/true, /*has_pdf_root=*/false, /*loaded=*/true);
+  EXPECT_FALSE(model().IsPdfFullyLoaded());
+}
+
+TEST_F(ReadAnythingAppModelIsPdfFullyLoadedTest, NotPdf_ReturnsFalse) {
+  SetUpActiveTree(/*is_pdf=*/false, /*has_pdf_root=*/true, /*loaded=*/true);
+  EXPECT_FALSE(model().IsPdfFullyLoaded());
+}
+
+TEST_F(ReadAnythingAppModelIsPdfFullyLoadedTest, NoActiveTree_ReturnsFalse) {
+  model().SetActiveTreeId(ui::AXTreeID::CreateNewAXTreeID());
+  model().SetIsPdf(true);
+  EXPECT_FALSE(model().IsPdfFullyLoaded());
+}
+
 TEST_F(ReadAnythingAppModelTest, SetIsPdf_PreservesStateAcrossPendingUpdates) {
   ui::AXTreeID pdf_tree_id = ui::AXTreeID::CreateNewAXTreeID();
   ui::AXTreeID web_tree_id = ui::AXTreeID::CreateNewAXTreeID();
@@ -1785,14 +1846,14 @@ class ReadAnythingAppModelReadabilityTest : public ReadAnythingAppModelTest {
   static constexpr ui::AXNodeID kSidebarId = 3;
 
   // Creates a page with an article paragraph and a sidebar, then simulates
-  // distilling only the article paragraph with Readability and mapping its
-  // rendered text back to the AXTree.
+  // distilling only the article paragraph with Readability and storing the
+  // mapping of its rendered text to the AXTree.
   void SetUpMappedReadabilityContent() {
+    const std::u16string article_text = u"This is the article paragraph text.";
     ui::AXTreeUpdate update;
     test::SetUpdateTreeID(&update, tree_id_);
     ui::AXNodeData root = test::GenericContainerNode(1);
-    ui::AXNodeData article =
-        test::TextNode(kArticleId, u"This is the article paragraph text.");
+    ui::AXNodeData article = test::TextNode(kArticleId, article_text);
     ui::AXNodeData sidebar =
         test::TextNode(kSidebarId, u"Unrelated sidebar text.");
     root.child_ids = {article.id, sidebar.id};
@@ -1803,9 +1864,12 @@ class ReadAnythingAppModelReadabilityTest : public ReadAnythingAppModelTest {
     model().set_next_distillation_method(
         ReadAnythingAppModel::DistillationMethod::kReadability);
     model().set_readability_content_drawn(true);
-    model().set_should_map_rendered_text_to_tree_for_readability(true);
-    ASSERT_TRUE(model().MapRenderedTextToTree(
-        {u"Title", u"This is the article paragraph text."}));
+    // Block 0 is the title, which isn't on the page. Block 1 is the article.
+    model().SetTextToAXMap({{},
+                            {{.id = kArticleId,
+                              .start = 0,
+                              .end = static_cast<int>(article_text.size()),
+                              .ax_node_offset = 0}}});
     model().set_is_readability_mapping_in_progress(false);
   }
 
@@ -1828,11 +1892,30 @@ class ReadAnythingAppModelReadabilityTest : public ReadAnythingAppModelTest {
 
 TEST_F(ReadAnythingAppModelReadabilityTest,
        FallbackToScreen2x_ClearsReadabilityStateAndRequiresDistillation) {
+  ui::AXNodeData link = test::LinkNode(2, "https://www.google.com");
+  ui::AXNodeData root =
+      test::ContainerNode(1, ax::mojom::Role::kRootWebArea, {link.id});
+  ui::AXTreeUpdate update;
+  test::SetUpdateTreeID(&update, tree_id_);
+  update.root_id = root.id;
+  update.nodes = {root, link};
+  ApplyAccessibilityUpdates(tree_id_, {update});
+  model().SetActiveTreeId(tree_id_);
+
   model().set_next_distillation_method(
       ReadAnythingAppModel::DistillationMethod::kReadability);
   model().set_current_content_distillation_method(
       ReadAnythingAppModel::DistillationMethod::kReadability);
+  model().set_readability_title("Title");
+  model().set_readability_content_html("<p>Content</p>");
   model().set_requires_readability_distillation(true);
+  model().set_readability_content_drawn(true);
+  model().set_is_readability_mapping_in_progress(true);
+  model().set_should_extract_anchors_from_tree_for_readability(true);
+  ASSERT_TRUE(model().ProcessAXTreeAnchors());
+  ASSERT_FALSE(model().ax_tree_anchors().empty());
+  model().set_should_extract_anchors_from_tree_for_readability(true);
+  model().set_should_map_rendered_text_to_tree_for_readability(true);
   model().set_requires_distillation(false);
 
   model().FallbackToScreen2x();
@@ -1840,7 +1923,14 @@ TEST_F(ReadAnythingAppModelReadabilityTest,
   EXPECT_EQ(model().next_distillation_method(),
             ReadAnythingAppModel::DistillationMethod::kScreen2x);
   EXPECT_FALSE(model().is_readability_next_distillation_method());
+  EXPECT_TRUE(model().readability_title().empty());
+  EXPECT_TRUE(model().readability_content_html().empty());
   EXPECT_FALSE(model().requires_readability_distillation());
+  EXPECT_FALSE(model().readability_content_drawn());
+  EXPECT_FALSE(model().is_readability_mapping_in_progress());
+  EXPECT_FALSE(model().should_extract_anchors_from_tree_for_readability());
+  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
+  EXPECT_TRUE(model().ax_tree_anchors().empty());
   EXPECT_TRUE(model().requires_distillation());
   // The current content method is left untouched; callers decide whether to
   // update it.
@@ -2167,6 +2257,32 @@ TEST_F(ReadAnythingAppModelReadabilityTest,
   EXPECT_FALSE(model().is_empty());
 }
 
+TEST_F(ReadAnythingAppModelReadabilityTest,
+       SetTextToAXMap_ReplacesPreviouslyMappedNodes) {
+  SetUpMappedReadabilityContent();
+
+  // Map the block to the sidebar instead of the article.
+  model().SetTextToAXMap(
+      {{}, {{.id = kSidebarId, .start = 0, .end = 5, .ax_node_offset = 0}}});
+  SetSelection(kArticleId, 0, 4);
+
+  // The article is no longer part of the distilled content.
+  EXPECT_TRUE(model().PostProcessSelection());
+  EXPECT_EQ(model().side_panel_distillation_mode(),
+            ReadAnythingAppModel::SidePanelDistillationMode::kSelection);
+}
+
+TEST_F(ReadAnythingAppModelReadabilityTest,
+       ResetReadabilityState_ClearsTextToAXMap) {
+  SetUpMappedReadabilityContent();
+  ASSERT_FALSE(model().GetAXMapping(1).empty());
+
+  model().ResetReadabilityState();
+
+  EXPECT_TRUE(model().text_to_ax_map().empty());
+  EXPECT_TRUE(model().GetAXMapping(1).empty());
+}
+
 TEST_F(
     ReadAnythingAppModelReadabilityTest,
     ProcessNonGeneratedEvents_Readability_kLoadComplete_SetsRequiresDistillation) {
@@ -2449,972 +2565,6 @@ TEST_F(ReadAnythingAppModelTest,
   EXPECT_FALSE(model().requires_distillation());
 }
 
-TEST_F(ReadAnythingAppModelTest, MapRenderedTextToTree_ResetsMappingState) {
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::TextNode(1, u"block1")};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-
-  // Trigger the mapping with blocks matching the tree.
-  EXPECT_TRUE(model().MapRenderedTextToTree({u"block1", u"block2"}));
-
-  // Verify that the trigger flag was set to false.
-  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
-
-  // Verify that the internal mapping storage was initialized.
-  EXPECT_EQ(model().text_to_ax_map().size(), 2u);
-  EXPECT_FALSE(model().text_to_ax_map()[0].empty());
-  EXPECT_TRUE(model().text_to_ax_map()[1].empty());
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_DefersWhenTreeIncomplete) {
-  base::HistogramTester histograms;
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-
-  std::vector<std::u16string> blocks = {
-      u"Article Title - Header",
-      u"This is the full body paragraph of the distilled article content."};
-
-  // Initial tree only contains a short header (< 50% of distilled length).
-  ui::AXTreeUpdate short_header_update;
-  test::SetUpdateTreeID(&short_header_update, tree_id_);
-  short_header_update.root_id = 1;
-  short_header_update.nodes = {test::TextNode(1, u"Header")};
-  ApplyAccessibilityUpdates(tree_id_, {short_header_update});
-
-  EXPECT_FALSE(model().MapRenderedTextToTree(blocks));
-  EXPECT_TRUE(model().should_map_rendered_text_to_tree_for_readability());
-
-  // Tree has enough total characters (>= 50% of distilled length) due to
-  // non-article chrome, but mapped characters (6 / 87 = 6%) are still < 50%.
-  ui::AXTreeUpdate nav_update;
-  test::SetUpdateTreeID(&nav_update, tree_id_);
-  nav_update.root_id = 1;
-  nav_update.nodes = {test::TextNode(
-      1, u"Header and unrelated navigation links before body loads")};
-  ApplyAccessibilityUpdates(tree_id_, {nav_update});
-
-  EXPECT_FALSE(model().MapRenderedTextToTree(blocks));
-  EXPECT_TRUE(model().should_map_rendered_text_to_tree_for_readability());
-  EXPECT_TRUE(model().text_to_ax_map()[0].empty());
-  EXPECT_TRUE(model().text_to_ax_map()[1].empty());
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 0);
-
-  // Once the full tree arrives, mapping succeeds and resets the flag.
-  ui::AXTreeUpdate full_update;
-  test::SetUpdateTreeID(&full_update, tree_id_);
-  full_update.root_id = 1;
-  full_update.nodes = {test::TextNode(1, blocks[1])};
-  ApplyAccessibilityUpdates(tree_id_, {full_update});
-
-  EXPECT_TRUE(model().MapRenderedTextToTree(blocks));
-  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
-  EXPECT_FALSE(model().text_to_ax_map()[1].empty());
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 1);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_CompletesBelowThresholdWhenPageFinishedLoading) {
-  base::HistogramTester histograms;
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().set_page_finished_loading(true);
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::TextNode(1, u"Header")};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-
-  std::vector<std::u16string> blocks = {
-      u"Article Title - Header",
-      u"This is the full body paragraph of the distilled article content."};
-  EXPECT_TRUE(model().MapRenderedTextToTree(blocks));
-  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
-  histograms.ExpectUniqueSample(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 6, 1);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_CompletesBelowThresholdWhenTreeLoaded) {
-  base::HistogramTester histograms;
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.has_tree_data = true;
-  update.tree_data.loaded = true;
-  update.root_id = 1;
-  update.nodes = {test::TextNode(1, u"Header")};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-
-  std::vector<std::u16string> blocks = {
-      u"Article Title - Header",
-      u"This is the full body paragraph of the distilled article content."};
-  EXPECT_TRUE(model().MapRenderedTextToTree(blocks));
-  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
-  histograms.ExpectUniqueSample(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 6, 1);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_ResetsFlagsWhenEmptyTreeLoaded) {
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().set_is_readability_mapping_in_progress(true);
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1)};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-
-  // While still loading, an empty tree defers mapping without resetting flags.
-  EXPECT_FALSE(model().MapRenderedTextToTree({u"block1"}));
-  EXPECT_TRUE(model().should_map_rendered_text_to_tree_for_readability());
-  EXPECT_TRUE(model().is_readability_mapping_in_progress());
-
-  // Once loading completes, an empty tree resets both flags to avoid retrying.
-  model().set_page_finished_loading(true);
-  EXPECT_FALSE(model().MapRenderedTextToTree({u"block1"}));
-  EXPECT_FALSE(model().should_map_rendered_text_to_tree_for_readability());
-  EXPECT_FALSE(model().is_readability_mapping_in_progress());
-}
-
-TEST_F(ReadAnythingAppModelTest, MapRenderedTextToTree_RecordsMetrics) {
-  base::HistogramTester histograms;
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  // Setup a tree
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::TextNode(1, u"Hello World")};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().MapRenderedTextToTree({u"Hello World"});
-
-  histograms.ExpectUniqueSample(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 100, 1);
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.0_Total.ExecutionTime", 1);
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.1_Flattening."
-      "ExecutionTime",
-      1);
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.2_SuffixArray."
-      "ExecutionTime",
-      1);
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.3_InitialAnchors."
-      "ExecutionTime",
-      1);
-  histograms.ExpectTotalCount(
-      "Accessibility.ReadAnything.ReadabilityMapping.4_GapAlignment."
-      "ExecutionTime",
-      1);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_RecordsPartialSuccessRate) {
-  base::HistogramTester histograms;
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  // Setup a tree
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::TextNode(1, u"Mapped Text")};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-
-  // Provide two blocks: one that matches perfectly, and one that doesn't match
-  // at all. Both blocks are the same length (11 characters).
-  model().MapRenderedTextToTree({u"Mapped Text", u"Unmap Text!"});
-
-  histograms.ExpectUniqueSample(
-      "Accessibility.ReadAnything.ReadabilityMapping.SuccessRate", 50, 1);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_ClearsPreviousDataOnNewCall) {
-  // Setup a valid tree with text and flatten it to populate data.
-  ui::AXTreeUpdate update1;
-  test::SetUpdateTreeID(&update1, tree_id_);
-  update1.root_id = 1;
-  update1.nodes = {test::TextNode(1, u"Existing Text")};
-  ApplyAccessibilityUpdates(tree_id_, {std::move(update1)});
-  model().SetActiveTreeId(tree_id_);
-
-  // Execute the flattening logic via MapRenderedTextToTree
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree({u"Existing Text"});
-
-  // Verify flattened tree data has been populated.
-  ASSERT_EQ(model().global_ax_tree_text(), u"Existing Text");
-  ASSERT_EQ(model().flattened_ax_tree_nodes().size(), 1u);
-
-  // Setup a new "empty" tree.
-  ui::AXTreeID tree_id_2 = ui::AXTreeID::CreateNewAXTreeID();
-  ui::AXTreeUpdate update2;
-  test::SetUpdateTreeID(&update2, tree_id_2);
-  update2.root_id = 10;
-  update2.nodes = {
-      test::GenericContainerNode(10)};  // Root with no text content
-  ApplyAccessibilityUpdates(tree_id_2, {std::move(update2)});
-  model().SetActiveTreeId(tree_id_2);
-
-  // Execute the flattening logic via MapRenderedTextToTree
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree({});
-
-  // Verify that global_ax_tree_text_ and flattened_ax_tree_nodes_ were
-  // cleared.
-  EXPECT_TRUE(model().global_ax_tree_text().empty());
-  EXPECT_TRUE(model().flattened_ax_tree_nodes().empty());
-}
-
-TEST_F(ReadAnythingAppModelTest, MapRenderedTextToTree_OneBlockToManyNodes) {
-  // Setup AXTree: A single paragraph spanning 3 nodes (Text -> Link -> Text).
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  ui::AXNodeData root = test::GenericContainerNode(1);
-  ui::AXNodeData node2 = test::TextNode(2, u"This is ");
-  ui::AXNodeData node3 = test::LinkNode(3, "http://google.com");
-  ui::AXNodeData node5 = test::TextNode(5, u"a link");
-  node3.child_ids = {node5.id};
-  ui::AXNodeData node4 = test::TextNode(4, u" in a paragraph.");
-  root.child_ids = {node2.id, node3.id, node4.id};
-  update.root_id = root.id;
-  update.nodes = {root, node2, node3, node5, node4};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Mock the distilled Block.
-  std::vector<std::u16string> blocks = {u"This is a link in a paragraph."};
-
-  // Run mapping algorithm.
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Validate mapping was done correctly.
-
-  // Mapping of block is of correct size (3 nodes map to the block).
-  auto mapping = model().GetAXMapping(0);
-  ASSERT_EQ(mapping.size(), 3u);
-
-  // Segment 1: "This is " (Node 2)
-  EXPECT_EQ(mapping[0].id, 2);
-  EXPECT_EQ(mapping[0].start, 0);
-  EXPECT_EQ(mapping[0].end, 8);
-
-  // Segment 2: "a link" (Node 5 - the StaticText child of the Link)
-  EXPECT_EQ(mapping[1].id, 5);
-  EXPECT_EQ(mapping[1].start, 8);
-  EXPECT_EQ(mapping[1].end, 14);
-
-  // Segment 3: " in a paragraph." (Node 4)
-  EXPECT_EQ(mapping[2].id, 4);
-  EXPECT_EQ(mapping[2].start, 14);
-  EXPECT_EQ(mapping[2].end, 30);
-}
-
-TEST_F(ReadAnythingAppModelTest, MapRenderedTextToTree_UniquenessConstraints) {
-  // Setup AXTree: A single paragraph spanning 3 nodes (Duplicate  -> Unique  ->
-  // Duplicate).
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  ui::AXNodeData root = test::GenericContainerNode(1);
-  ui::AXNodeData node2 = test::TextNode(2, u"Twinword");
-  ui::AXNodeData node3 = test::TextNode(3, u"Unique");
-  ui::AXNodeData node4 = test::TextNode(4, u"Twinword");
-  root.child_ids = {node2.id, node3.id, node4.id};
-  update.root_id = root.id;
-  update.nodes = {root, node2, node3, node4};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // "Duplicate" is unique in blocks, but not AXTree (appears twice).
-  // "Unique" is unique in both.
-  // "Repeated" is unique in AXTree (it's not there), but not in blocks.
-  std::vector<std::u16string> blocks = {u"Twinword", u"Unique", u"Repeat",
-                                        u"Repeat"};
-
-  // Run mapping algorithm.
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  EXPECT_FALSE(model().GetAXMapping(0).empty());  // Duplicate in AXTree
-  EXPECT_FALSE(model().GetAXMapping(1).empty());  // Unique in both
-  EXPECT_TRUE(model().GetAXMapping(2).empty());   // Duplicate in blocks
-  EXPECT_TRUE(model().GetAXMapping(3).empty());   // Duplicate in blocks
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_ReadabilityTitle_AvoidsFalseMatch) {
-  // Setup AXTree: Body appears before title string to simulate same text as
-  // title being in the body.
-  std::u16string title = u"Synthesized Title";
-  std::u16string body = u"This is the actual body content.";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, body),
-                  test::TextNode(3, title)};
-  update.nodes[0].child_ids = {2, 3};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Add title first to simulate title text coming from metadata and not AXtree.
-  std::vector<std::u16string> blocks = {title, body};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Body (block 1) should map correctly to node 2.
-  EXPECT_FALSE(model().GetAXMapping(1).empty());
-  EXPECT_EQ(model().GetAXMapping(1)[0].id, 2);
-
-  // Title (block 0) should NOT map to node 3.
-  EXPECT_TRUE(model().GetAXMapping(0).empty());
-}
-
-TEST_F(ReadAnythingAppModelTest, MapRenderedTextToTree_PartialNodeMapping) {
-  // Setup AXTree: "Hello", " ", "World!" (Nodes 2, 3, 4)
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  ui::AXNodeData root = test::GenericContainerNode(1);
-  ui::AXNodeData n2 = test::TextNode(2, u"Hello");
-  ui::AXNodeData n3 = test::TextNode(3, u" ");
-  ui::AXNodeData n4 = test::TextNode(4, u"World!");
-  root.child_ids = {2, 3, 4};
-  update.root_id = 1;
-  update.nodes = {root, n2, n3, n4};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Mock a "llo Wor" block (maps to multiple nodes partially).
-  // Global Text: "Hello World!" (Indices 012345678901)
-  // Match range: [2, 9) -> "llo Wor"
-  std::vector<std::u16string> blocks = {u"llo Wor"};
-
-  // Run mapping algorithm.
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Validate mapping was done correctly.
-
-  // Mapping of block is of correct size (3 nodes map to the block).
-  auto mapping = model().GetAXMapping(0);
-  ASSERT_EQ(mapping.size(), 3u);
-
-  // Node 2 ("Hello") contains "llo"
-  EXPECT_EQ(mapping[0].id, 2);
-  EXPECT_EQ(mapping[0].ax_node_offset, 2);
-  EXPECT_EQ(mapping[0].start, 0);  // "llo" is at the start of our 7-char block
-  EXPECT_EQ(mapping[0].end, 3);
-
-  // Node 3 (" ") contains " "
-  EXPECT_EQ(mapping[1].id, 3);
-  EXPECT_EQ(mapping[1].start, 3);
-  EXPECT_EQ(mapping[1].end, 4);
-  EXPECT_EQ(mapping[1].ax_node_offset, 0);
-
-  // Node 4 ("World!") contains "Wor"
-  EXPECT_EQ(mapping[2].id, 4);
-  EXPECT_EQ(mapping[2].start, 4);
-  EXPECT_EQ(mapping[2].end, 7);  // End of our 7-char block
-  EXPECT_EQ(mapping[2].ax_node_offset, 0);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_NonBreakingSpaceWhitespaceNodes) {
-  // Setup AXTree where words are separated by whitespace-only "\u00A0" nodes:
-  // "Blood", "\u00A0", "is", "\u00A0", "vital." (Nodes 2, 3, 4, 5, 6)
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  ui::AXNodeData root = test::GenericContainerNode(1);
-  ui::AXNodeData n2 = test::TextNode(2, u"Blood");
-  ui::AXNodeData n3 = test::TextNode(3, u"\u00A0");
-  ui::AXNodeData n4 = test::TextNode(4, u"is");
-  ui::AXNodeData n5 = test::TextNode(5, u"\u00A0");
-  ui::AXNodeData n6 = test::TextNode(6, u"vital.");
-  root.child_ids = {2, 3, 4, 5, 6};
-  update.root_id = 1;
-  update.nodes = {root, n2, n3, n4, n5, n6};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // In Readability, inline whitespace separators are replaced with regular
-  // spaces (' '), producing "Blood is vital.".
-  std::vector<std::u16string> blocks = {u"Blood is vital."};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  EXPECT_TRUE(model().MapRenderedTextToTree(blocks));
-
-  // Verify the entire block (including short words and whitespace nodes) maps
-  // cleanly across all 5 AXNodes.
-  auto mapping = model().GetAXMapping(0);
-  ASSERT_EQ(mapping.size(), 5u);
-
-  EXPECT_EQ(mapping[0].id, 2);
-  EXPECT_EQ(mapping[0].start, 0);
-  EXPECT_EQ(mapping[0].end, 5);
-
-  EXPECT_EQ(mapping[1].id, 3);
-  EXPECT_EQ(mapping[1].start, 5);
-  EXPECT_EQ(mapping[1].end, 6);
-
-  EXPECT_EQ(mapping[2].id, 4);
-  EXPECT_EQ(mapping[2].start, 6);
-  EXPECT_EQ(mapping[2].end, 8);
-
-  EXPECT_EQ(mapping[3].id, 5);
-  EXPECT_EQ(mapping[3].start, 8);
-  EXPECT_EQ(mapping[3].end, 9);
-
-  EXPECT_EQ(mapping[4].id, 6);
-  EXPECT_EQ(mapping[4].start, 9);
-  EXPECT_EQ(mapping[4].end, 15);
-}
-
-TEST_F(ReadAnythingAppModelTest, FlattenAXTree_BuildsContiguousString) {
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-
-  // Create a tree structure:
-  //      1 (root)
-  //     / \
-  //    2   3 (container)
-  //         \
-  //          4 (text)
-
-  ui::AXNodeData node1 = test::GenericContainerNode(1);
-  node1.child_ids = {2, 3};
-  ui::AXNodeData node2 = test::TextNode(2, u"Hello");
-  ui::AXNodeData node3 = test::GenericContainerNode(3);
-  node3.child_ids = {4};
-  ui::AXNodeData node4 = test::TextNode(4, u" world!");
-  update.nodes = {std::move(node1), std::move(node2), std::move(node3),
-                  std::move(node4)};
-
-  // Process the tree update and set it as the model's active tree.
-  ApplyAccessibilityUpdates(tree_id_, {std::move(update)});
-  model().SetActiveTreeId(tree_id_);
-
-  // Execute the flattening logic via MapRenderedTextToTree
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree({});
-
-  // Verify the global string concatenation matches the expected string.
-  std::u16string expected_text = u"Hello world!";
-  EXPECT_EQ(model().global_ax_tree_text(), expected_text);
-
-  // Verify the mapping segments (metadata)
-  const auto& segments = model().flattened_ax_tree_nodes();
-  ASSERT_EQ(segments.size(), 2u);
-
-  // First segment: "Hello"
-  EXPECT_EQ(segments[0].id, 2);
-  EXPECT_EQ(segments[0].text, u"Hello");
-  EXPECT_EQ(segments[0].start_offset, 0u);
-
-  // Second segment: " world!"
-  EXPECT_EQ(segments[1].id, 4);
-  EXPECT_EQ(segments[1].text, u" world!");
-  EXPECT_EQ(segments[1].start_offset, 5u);  // Starts after "Hello"
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_LocalUniqueness) {
-  // Setup AXTree: [AnchorA] DuplicateString [AnchorB] DuplicateString
-  std::u16string dup = u"DuplicateString12345";
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {
-      test::GenericContainerNode(1), test::TextNode(2, u"AnchorA_________"),
-      test::TextNode(3, dup), test::TextNode(4, u"AnchorB_________"),
-      test::TextNode(5, dup)};
-  update.nodes[0].child_ids = {2, 3, 4, 5};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled blocks match the first occurrence.
-  // Phase 1 will map AnchorA and AnchorB (globally unique).
-  // Phase 2 should map the first "DuplicateString" because it's locally unique
-  // between AnchorA and AnchorB.
-  std::vector<std::u16string> blocks = {u"AnchorA_________", dup,
-                                        u"AnchorB_________"};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // AnchorA (Phase 1)
-  auto mapping0 = model().GetAXMapping(0);
-  ASSERT_EQ(mapping0.size(), 1u);
-  EXPECT_EQ(mapping0[0].id, 2);
-
-  // DuplicateString (Phase 2 - Local Uniqueness)
-  auto mapping1 = model().GetAXMapping(1);
-  ASSERT_EQ(mapping1.size(), 1u);
-  EXPECT_EQ(mapping1[0].id, 3);  // Should map to the first occurrence (Node 3)
-
-  // AnchorB (Phase 1)
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_EQ(mapping2.size(), 1u);
-  EXPECT_EQ(mapping2[0].id, 4);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_ShuffledBlockIgnored) {
-  // Setup AXTree: [A] [B] Gap [C]
-  std::u16string textA = u"AnchorA_________";
-  std::u16string textB = u"ShuffledB_______";
-  std::u16string textGap = u"GapContent______";
-  std::u16string textC = u"AnchorC_________";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, textA),
-                  test::TextNode(3, textB), test::TextNode(4, textGap),
-                  test::TextNode(5, textC)};
-  update.nodes[0].child_ids = {2, 3, 4, 5};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Setup Distilled blocks : A -> Gap -> C -> B (B is shuffled)
-  std::vector<std::u16string> blocks = {textA, textGap, textC, textB};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // A, C, and B are globally unique -> Mapped in Phase 1.
-  // B is shuffled -> Rejected by LIS, so it's NOT a major anchor.
-  // Gap between A and C in AXTree is [textB, textGap].
-  // GapSubstringAlignment searches this gap for textGap.
-
-  // Verify B remains mapped to its original position (Node 3) even though it
-  // was shuffled.
-  auto mappingB = model().GetAXMapping(3);
-  ASSERT_EQ(mappingB.size(), 1u);
-  EXPECT_EQ(mappingB[0].id, 3);
-
-  // Verify GapContent is mapped to Node 4, NOT Node 3.
-  auto mappingGap = model().GetAXMapping(1);
-  ASSERT_EQ(mappingGap.size(), 1u);
-  EXPECT_EQ(mappingGap[0].id, 4);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_ShuffledAXTextIgnored) {
-  // Scenario: short_block is a substring of long_block.
-  std::u16string short_block = u"short_block______";
-  std::u16string long_block = u"long_block___________";
-  long_block.replace(2, short_block.length(), short_block);
-
-  // Setup AXTree: [A] [short_block][__] [B] [long_block (containing
-  // short_block)]
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1),
-                  test::TextNode(2, u"BLOCK_A_________"),
-                  test::TextNode(3, short_block),
-                  test::TextNode(4, u"___"),
-                  test::TextNode(5, u"BLOCK_B_________"),
-                  test::TextNode(6, long_block)};
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled order: A -> Long(shuffled) -> Short -> B -> Short(repeated)
-  std::vector<std::u16string> blocks = {
-      u"BLOCK_A_________",
-      long_block,   // Block 1: Shuffled (Node 6)
-      short_block,  // Block 2: Gap 1 (maps to Node 3)
-      u"BLOCK_B_________",
-      short_block  // Block 4: Repeated, won't map in P2
-  };
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Phase 1 Mappings:
-  EXPECT_EQ(model().GetAXMapping(0)[0].id, 2);  // Block A
-  EXPECT_EQ(model().GetAXMapping(1)[0].id, 6);  // Long Shuffle (shuffled)
-  EXPECT_EQ(model().GetAXMapping(3)[0].id, 5);  // Block B
-
-  // GapSubstringAlignment phase Mapping:
-  // So Block 2 should map to Node 3(short_block) instead of long_block.
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_FALSE(mapping2.empty());
-  EXPECT_EQ(mapping2[0].id, 3);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_MultiBlockRecursion) {
-  // Setup AXTree: [Anchor1] [UniqueC] [UniqueD] [Anchor2]
-  std::u16string a1 = u"Anchor1_________";
-  std::u16string uc = u"UniqueC_________";
-  std::u16string ud = u"UniqueD_________";
-  std::u16string a2 = u"Anchor2_________";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, a1),
-                  test::TextNode(3, uc),         test::TextNode(4, ud),
-                  test::TextNode(5, a2),         test::TextNode(6, uc),
-                  test::TextNode(7, ud)};
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6, 7};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  std::vector<std::u16string> blocks = {a1, uc, ud, a2, uc, ud};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // All blocks should be mapped.
-  EXPECT_EQ(model().GetAXMapping(0)[0].id, 2);
-  EXPECT_EQ(model().GetAXMapping(1)[0].id, 3);
-  EXPECT_EQ(model().GetAXMapping(2)[0].id, 4);
-  EXPECT_EQ(model().GetAXMapping(3)[0].id, 5);
-  EXPECT_EQ(model().GetAXMapping(4)[0].id, 6);
-  EXPECT_EQ(model().GetAXMapping(5)[0].id, 7);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_SubBlockAnchoring) {
-  // Setup AXTree: [StartAnchor] "This is a very long and unique string that
-  // should be anchored." [EndAnchor]
-  std::u16string unique =
-      u"This is a very long and unique string that should be anchored.";
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {
-      test::GenericContainerNode(1), test::TextNode(2, u"StartAnchor_____"),
-      test::TextNode(3, unique), test::TextNode(4, u"EndAnchor_______")};
-  update.nodes[0].child_ids = {2, 3, 4};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled block has noise around the unique string.
-  std::vector<std::u16string> blocks = {
-      u"StartAnchor_____", u"NoisePrefix " + unique + u" NoisePostfix",
-      u"EndAnchor_______"};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  auto mapping = model().GetAXMapping(1);
-  // Should have found the unique substring within the noisy block.
-  ASSERT_FALSE(mapping.empty());
-  EXPECT_EQ(mapping[0].id, 3);
-  // Start offset in block should be length of "NoisePrefix " (12)
-  EXPECT_EQ(mapping[0].start, 12);
-  EXPECT_EQ(mapping[0].end, 12 + (int)unique.length());
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_MultiNodeToOneBlock) {
-  // Setup AXTree: [Target] [B] [Target]
-  std::u16string target = u"Fragmented_Text_Example_Target_";  // 30 chars
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {
-      test::GenericContainerNode(1), test::TextNode(2, u"AnchorA_________"),
-      // Target split across 3 nodes
-      test::TextNode(3, target.substr(0, 10)),
-      test::TextNode(4, target.substr(10, 10)),
-      test::TextNode(5, target.substr(20)),
-      test::TextNode(6, u"AnchorB_________"),
-      test::TextNode(7, target)  // Duplicate for Phase 1 skip.
-  };
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6, 7};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Scenario: A single distilled block is split across 3 AX nodes.
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(
-      {u"AnchorA_________ theme", target, u"AnchorB_________"});
-
-  // Verify 'target' (Block 1) maps to all 3 fragmented nodes (3, 4, 5).
-  auto mapping = model().GetAXMapping(1);
-  ASSERT_EQ(mapping.size(), 3u);
-  EXPECT_EQ(mapping[0].id, 3);
-  EXPECT_EQ(mapping[1].id, 4);
-  EXPECT_EQ(mapping[2].id, 5);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_MultiBlockToOneNode) {
-  // Setup AXTree: [A] full [B] full
-  std::u16string part1 = u"Part_One_Of_Single_Node_";
-  std::u16string part2 = u"Part_Two_Of_Single_Node_";
-  std::u16string full = part1 + part2;
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {
-      test::GenericContainerNode(1), test::TextNode(2, u"AnchorA_________"),
-      test::TextNode(3, full),  // Multiple blocks should map here
-      test::TextNode(4, u"AnchorB_________"),
-      test::TextNode(5, full)  // Duplicate for Phase 1 skip
-  };
-  update.nodes[0].child_ids = {2, 3, 4, 5};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled: [AnchorA] [part1] [part2] [AnchorB]
-  std::vector<std::u16string> blocks = {u"AnchorA_________", part1, part2,
-                                        u"AnchorB_________"};
-
-  // Scenario: Two distilled blocks map to a single AX node.
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Block 1 (part1) should map to first half of Node 3.
-  auto mapping1 = model().GetAXMapping(1);
-  ASSERT_EQ(mapping1.size(), 1u);
-  EXPECT_EQ(mapping1[0].id, 3);
-  EXPECT_EQ(mapping1[0].start, 0);
-  EXPECT_EQ(mapping1[0].end, 24);
-
-  // Block 2 (part2) should map to second half of Node 3.
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_EQ(mapping2.size(), 1u);
-  EXPECT_EQ(mapping2[0].id, 3);
-  EXPECT_EQ(mapping2[0].start, 0);  // Offset within the BLOCK is 0
-  EXPECT_EQ(mapping2[0].end, 24);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_AlignRelativeOrder_SequentialIntegrity) {
-  // Setup AXTree: [AnchorA] Duplicate Repeated [AnchorB]
-  std::u16string a1 = u"Anchor1_________";
-  std::u16string dup = u"RepeatedText";  // Length 12 (< 15)
-  std::u16string a2 = u"Anchor2_________";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, a1),
-                  test::TextNode(3, dup), test::TextNode(4, dup),
-                  test::TextNode(5, a2)};
-  update.nodes[0].child_ids = {2, 3, 4, 5};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled order matches AXTree order.
-  std::vector<std::u16string> blocks = {a1, dup, dup, a2};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Block 1 should map to node 3
-  auto mapping1 = model().GetAXMapping(1);
-  ASSERT_EQ(mapping1.size(), 1u);
-  EXPECT_EQ(mapping1[0].id, 3);
-
-  // Block 2 should map to node 4
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_EQ(mapping2.size(), 1u);
-  EXPECT_EQ(mapping2[0].id, 4);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_AlignRelativeOrder_ShrinkToFit) {
-  // Setup AXTree: [AnchorA] "Match." [AnchorB]
-  std::u16string a1 = u"Anchor1_________";
-  std::u16string dup = u"This is a match.";
-  std::u16string a2 = u"Anchor2_________";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, a1),
-                  test::TextNode(3, dup), test::TextNode(4, dup),
-                  test::TextNode(5, a2)};
-  update.nodes[0].child_ids = {2, 3, 4, 5};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Distilled text has different punctuation ("!" vs ".").
-  std::u16string distilled_text = u"This is a match!";
-  std::vector<std::u16string> blocks = {a1, distilled_text, distilled_text, a2};
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Block 1 should map to the portion of node 3 that matches.
-  auto mapping = model().GetAXMapping(1);
-  ASSERT_EQ(mapping.size(), 1u);
-  EXPECT_EQ(mapping[0].id, 3);
-  EXPECT_EQ(mapping[0].start, 0);
-  EXPECT_EQ(mapping[0].end, 15);
-}
-
-TEST_F(ReadAnythingAppModelTest,
-       MapRenderedTextToTree_GapSubstringAlignment_MinAnchorLengthBoundary) {
-  std::u16string a1 = u"Anchor1_________";
-  std::u16string a2 = u"Anchor2_________";
-
-  // In the gap between Anchor1 and Anchor2:
-  // - "RepeatedPrefix_" appears twice (nodes 3 and 4), so it is not locally
-  //   unique.
-  // - "XY" (length 2 < kMinAnchorLength) is locally unique in node 5, but too
-  //   short to anchor.
-  // - "ABC" (length 3 == kMinAnchorLength) is locally unique in node 6 and
-  //   should anchor.
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1),
-                  test::TextNode(2, a1),
-                  test::TextNode(3, u"RepeatedPrefix_1"),
-                  test::TextNode(4, u"RepeatedPrefix_2"),
-                  test::TextNode(5, u"XY"),
-                  test::TextNode(6, u"ABC"),
-                  test::TextNode(7, a2),
-                  test::TextNode(8, u"ABC")};
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6, 7, 8};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  std::vector<std::u16string> blocks = {
-      a1,
-      u"RepeatedPrefix_XY",
-      u"Noise_ABC_Noise",
-      a2,
-  };
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Block 1 ("RepeatedPrefix_XY") should ignore the 2-char locally unique "XY"
-  // and map the 15-char "RepeatedPrefix_" via AlignRelativeOrder to node 3.
-  auto mapping1 = model().GetAXMapping(1);
-  ASSERT_EQ(mapping1.size(), 1u);
-  EXPECT_EQ(mapping1[0].id, 3);
-  EXPECT_EQ(mapping1[0].start, 0);
-  EXPECT_EQ(mapping1[0].end, 15);
-
-  // Block 2 ("Noise_ABC_Noise") should anchor the 3-char "ABC" to node 6.
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_EQ(mapping2.size(), 1u);
-  EXPECT_EQ(mapping2[0].id, 6);
-  EXPECT_EQ(mapping2[0].start, 6);
-  EXPECT_EQ(mapping2[0].end, 9);
-}
-
-TEST_F(
-    ReadAnythingAppModelTest,
-    MapRenderedTextToTree_GapSubstringAlignment_MergedShuffledOccupiedRanges) {
-  std::u16string title = u"Title___________";
-  std::u16string a1 = u"Anchor1_________";
-  std::u16string shuffled1 = u"Shuffled1_Shared";
-  std::u16string shuffled2 = u"Part_Shuffled2";
-  std::u16string gap_target = u"SharedPart";
-  std::u16string a2 = u"Anchor2_________";
-
-  // In the AXTree, shuffled1 (node 4) and shuffled2 (node 5) are adjacent, so
-  // their boundary forms "SharedPart", while node 6 immediately follows node 5
-  // with an unoccupied "SharedPart".
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, title),
-                  test::TextNode(3, a1),         test::TextNode(4, shuffled1),
-                  test::TextNode(5, shuffled2),  test::TextNode(6, gap_target),
-                  test::TextNode(7, a2),         test::TextNode(8, gap_target)};
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6, 7, 8};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  // Place shuffled2 and shuffled1 (in reverse AX order) before a1 so their
-  // occupied ranges are recorded out of order before sorting and merging,
-  // while [a1, a2] is the unique longest increasing anchor subsequence.
-  std::vector<std::u16string> blocks = {
-      title, shuffled2, shuffled1, a1, gap_target, a2,
-  };
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // "SharedPart" (Block 4) must skip the occupied cross-boundary match in
-  // nodes 4+5 and map to the immediately adjacent unoccupied node 6.
-  auto mapping = model().GetAXMapping(4);
-  ASSERT_EQ(mapping.size(), 1u);
-  EXPECT_EQ(mapping[0].id, 6);
-  EXPECT_EQ(mapping[0].start, 0);
-  EXPECT_EQ(mapping[0].end, 10);
-}
-
-TEST_F(
-    ReadAnythingAppModelTest,
-    MapRenderedTextToTree_AlignRelativeOrder_BinarySearchAndMinLengthBoundary) {
-  std::u16string a1 = u"Anchor1_________________________________________";
-  std::u16string a2 = u"Anchor2_________________________________________";
-
-  // Duplicate nodes in the gap ensure no substring in the gap is locally
-  // unique, forcing AlignSubstring to fall back to AlignRelativeOrder.
-  std::u16string dup_mid = u"RepeatedMatch_";
-  std::u16string dup_five = u"Five5";
-  std::u16string dup_four = u"Four";
-
-  ui::AXTreeUpdate update;
-  test::SetUpdateTreeID(&update, tree_id_);
-  update.root_id = 1;
-  update.nodes = {test::GenericContainerNode(1), test::TextNode(2, a1),
-                  test::TextNode(3, dup_mid),    test::TextNode(4, dup_mid),
-                  test::TextNode(5, dup_five),   test::TextNode(6, dup_five),
-                  test::TextNode(7, dup_four),   test::TextNode(8, dup_four),
-                  test::TextNode(9, a2)};
-  update.nodes[0].child_ids = {2, 3, 4, 5, 6, 7, 8, 9};
-  ApplyAccessibilityUpdates(tree_id_, {update});
-  model().SetActiveTreeId(tree_id_);
-
-  std::vector<std::u16string> blocks = {
-      a1,
-      dup_mid + u"UnmatchedLongSuffix",
-      dup_five + u"UnmatchedTail",
-      dup_four + u"UnmatchedTail",
-      a2,
-  };
-
-  model().set_should_map_rendered_text_to_tree_for_readability(true);
-  model().MapRenderedTextToTree(blocks);
-
-  // Block 1 binary-searches down to the 14-char prefix in node 3.
-  auto mapping1 = model().GetAXMapping(1);
-  ASSERT_EQ(mapping1.size(), 1u);
-  EXPECT_EQ(mapping1[0].id, 3);
-  EXPECT_EQ(mapping1[0].start, 0);
-  EXPECT_EQ(mapping1[0].end, 14);
-
-  // Block 2 matches at the exact kMinSequentialMatchLength (5) boundary in
-  // node 5.
-  auto mapping2 = model().GetAXMapping(2);
-  ASSERT_EQ(mapping2.size(), 1u);
-  EXPECT_EQ(mapping2[0].id, 5);
-  EXPECT_EQ(mapping2[0].start, 0);
-  EXPECT_EQ(mapping2[0].end, 5);
-
-  // Block 3 only matches 4 chars (< kMinSequentialMatchLength) and must remain
-  // unmapped.
-  EXPECT_TRUE(model().GetAXMapping(3).empty());
-}
 TEST_F(ReadAnythingAppModelTest,
        GetOriginalPageMetrics_ReturnsTrueForHeadings) {
   // Create an AXTreeUpdate with headings.

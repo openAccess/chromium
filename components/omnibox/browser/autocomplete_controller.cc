@@ -605,6 +605,34 @@ AutocompleteController::~AutocompleteController() {
   // notifying observers or using `kClobbered` to clear provider caches and
   // state, since the observers and providers are being destroyed too.
   Stop(AutocompleteStopReason::kInteraction);
+  // Later providers in `providers_` (such as `CalculatorProvider` and
+  // `HistoryClusterProvider`) hold `raw_ptr`s to earlier providers (such as
+  // `SearchProvider`, `HistoryURLProvider`, and `HistoryQuickProvider`), so
+  // `providers_` must be destroyed in LIFO order. Because `providers_` is
+  // declared before the `*_provider_` raw_ptr members and `internal_result_` /
+  // `published_result_` (whose matches also hold `raw_ptr`s to providers),
+  // destroying `providers_` here before member destruction requires clearing
+  // those references first to avoid dangling `raw_ptr`s.
+  bookmark_provider_ = nullptr;
+  history_quick_provider_ = nullptr;
+  document_provider_ = nullptr;
+  history_url_provider_ = nullptr;
+  keyword_provider_ = nullptr;
+  unscoped_extension_provider_ = nullptr;
+  search_provider_ = nullptr;
+  zero_suggest_provider_ = nullptr;
+  on_device_head_provider_ = nullptr;
+  clipboard_provider_ = nullptr;
+  voice_suggest_provider_ = nullptr;
+  open_tab_provider_ = nullptr;
+  tab_group_provider_ = nullptr;
+  featured_search_provider_ = nullptr;
+  contextual_search_provider_ = nullptr;
+  internal_result_.Reset();
+  published_result_.Reset();
+  while (!providers_.empty()) {
+    providers_.pop_back();
+  }
 }
 
 void AutocompleteController::AddObserver(Observer* observer) {
@@ -1494,10 +1522,8 @@ void AutocompleteController::InitializeSyncProviders(int provider_types) {
   }
   if (provider_types &
       static_cast<int>(AutocompleteProvider::Type::kHistoryFuzzy)) {
-    auto history_fuzzy_provider =
-        base::MakeRefCounted<HistoryFuzzyProvider>(provider_client_.get());
-    history_fuzzy_provider_ = history_fuzzy_provider.get();
-    providers_.push_back(std::move(history_fuzzy_provider));
+    providers_.push_back(
+        base::MakeRefCounted<HistoryFuzzyProvider>(provider_client_.get()));
   }
   if (provider_types & static_cast<int>(AutocompleteProvider::Type::kOpenTab)) {
     auto open_tab_provider =
@@ -1608,9 +1634,14 @@ void AutocompleteController::UpdateResult(UpdateType update_type,
   MlRerank(old_result);
 
   // If the entrypoints aren't visible, then Lens is active and contextual
-  // suggestions shouldn't be shown.
+  // suggestions shouldn't be shown. This doesn't apply if the client can open
+  // the co-browse panel or fulfill contextual suggestions without Lens (e.g.
+  // on desktop Android), where the Lens entrypoints don't exist at all.
   const bool is_lens_active =
-      !autocomplete_provider_client()->AreLensEntrypointsVisible();
+      !autocomplete_provider_client()->AreLensEntrypointsVisible() &&
+      !autocomplete_provider_client()->CanOpenCoBrowsePanelWithoutLens() &&
+      !autocomplete_provider_client()
+           ->CanFulfillContextualSuggestionsWithoutLens();
   const bool can_show_contextual_suggestions = CanShowContextualSuggestions(
       autocomplete_provider_client()->IsPagePaywalled());
   const bool mia_enabled =
@@ -1846,12 +1877,23 @@ void AutocompleteController::AttachActions() {
   if (omnibox_feature_configs::ContextualSearch::Get()
           .contextual_zero_suggest_lens_fulfillment &&
       input_.IsZeroSuggest()) {
-    internal_result_.AttachContextualSearchFulfillmentActionToMatches();
+    if (provider_client_->CanFulfillContextualSuggestionsWithoutLens()) {
+      // Lens isn't used for fulfillment (e.g. desktop Android); every
+      // contextual suggestion issues a contextual AI Mode query instead.
+      internal_result_.AttachContextualSearchFulfillmentActionToMatches(
+          /*include_lens_search_matches=*/true);
+    } else {
+#if !BUILDFLAG(IS_ANDROID)
+      // Lens-fulfilled ContextualSearchFulfillmentAction is Desktop-only;
+      // Android only has the Lens Overlay entry point.
+      internal_result_.AttachContextualSearchFulfillmentActionToMatches();
+#endif
 
-    // This should intentionally override the fulfillment action if present.
-    if (omnibox_feature_configs::ContextualSearch::Get()
-            .suggestions_fulfilled_by_lens_supported) {
-      internal_result_.AttachContextualSearchOpenLensActionToMatches();
+      // This should intentionally override the fulfillment action if present.
+      if (omnibox_feature_configs::ContextualSearch::Get()
+              .suggestions_fulfilled_by_lens_supported) {
+        internal_result_.AttachContextualSearchOpenLensActionToMatches();
+      }
     }
 
   } else if (input_.in_keyword_mode()) {

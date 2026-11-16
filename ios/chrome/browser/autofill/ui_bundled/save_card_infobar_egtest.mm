@@ -39,6 +39,8 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "ui/base/l10n/l10n_util.h"
 #import "ui/base/l10n/l10n_util_mac.h"
+#import "url/gurl.h"
+#import "url/url_constants.h"
 
 namespace {
 
@@ -49,6 +51,13 @@ using base::test::ios::WaitUntilConditionOrTimeout;
 // URLs of the test pages.
 const char kCreditCardUploadForm[] =
     "/credit_card_upload_form_address_and_cc.html";
+
+// Timeout for the initial navigation away from the native New Tab Page. On a
+// freshly booted simulator, ExtensionKit must cold-launch WebKit's helper
+// processes before `<CRWWebView>` is added to the view hierarchy, which can
+// exceed both `kWaitForUIElementTimeout` (4s) and `kWaitForPageLoadTimeout`
+// (10s).
+constexpr base::TimeDelta kInitialPageLoadTimeout = base::Seconds(30);
 
 // Google Payments server requests and responses.
 NSString* const kURLGetUploadDetailsRequest =
@@ -282,6 +291,15 @@ void FillAndSubmitXframeCreditCardForm() {
 
 - (void)setUp {
   [super setUp];
+
+  // Navigate away from the native New Tab Page before signing in so the active
+  // tab attaches a visible `WKWebView`. Otherwise, no `WKWebView` is visible
+  // during `signinWithFakeIdentity:` (~4.5s), causing WebKit to suspend its
+  // `WebContent` process and idle-exit its `GPU` process; on iOS 27 Simulator
+  // VMs, relaunching the `GPU` process on the subsequent form load can stall
+  // for ~6.5-10.5s and time out `waitForFormToBeCachedInMainFrame`.
+  [ChromeEarlGrey loadURL:GURL(url::kAboutBlankURL)
+              withTimeout:kInitialPageLoadTimeout];
 
   [SigninEarlGrey
       signinWithFakeIdentity:[FakeSystemIdentity fakeIdentityWithMissingNames]];
@@ -600,7 +618,7 @@ void FillAndSubmitXframeCreditCardForm() {
 
 // Test upstream card upload is offered when submitting xframe credit card form
 // and Google Payments server is queried to request card upload.
-- (void)DISABLED_testOfferUpstream_FullData_PaymentsAccepts_Xframe {
+- (void)testOfferUpstream_FullData_PaymentsAccepts_Xframe {
   // Serve ios http files.
   net::test_server::RegisterDefaultHandlers(self.testServer);
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -992,7 +1010,7 @@ void FillAndSubmitXframeCreditCardForm() {
 }
 
 // Test saving credit card locally as fallback with a xframe credit card form.
-- (void)DISABLED_testUserData_LocalSave_UserAccepts_Xframe {
+- (void)testUserData_LocalSave_UserAccepts_Xframe {
   // Serve ios http files.
   net::test_server::RegisterDefaultHandlers(self.testServer);
   GREYAssertTrue(self.testServer->Start(), @"Server did not start.");
@@ -1049,9 +1067,7 @@ void FillAndSubmitXframeCreditCardForm() {
 // Ensures that submitting the form should query Google Payments; but the
 // fallback local save prompt should not appear if the maximum
 // StrikeDatabase strike limit is reached.
-// TODO(crbug.com/507579591): Improve StrikeDatabase test infra and re-enable
-//                            this test.
-- (void)DISABLED_testNotOfferLocalSave_MaxStrikesReached {
+- (void)testNotOfferLocalSave_MaxStrikesReached {
   // Incur the maximum number of strikes by showing and declining save
   // bottomsheet and infobar.
 
@@ -1404,10 +1420,9 @@ void FillAndSubmitXframeCreditCardForm() {
                   @"Credit card should have been saved.");
 }
 
-// TODO(crbug.com/440644620): Find a solution to page loading flakes.
 // Tests that the save card flow via the infobar still works correctly when the
 // badge is removed.
-- (void)FLAKY_testInfobarWithoutBadge {
+- (void)testInfobarWithoutBadge {
   // Ensure there are no saved credit cards.
   GREYAssertEqual(0U, [AutofillAppInterface localCreditCount],
                   @"There should be no saved credit card.");

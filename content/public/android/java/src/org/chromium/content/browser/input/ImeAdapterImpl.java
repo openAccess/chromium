@@ -198,6 +198,9 @@ public class ImeAdapterImpl
     private int mLastCompositionStart;
     private int mLastCompositionEnd;
     private boolean mRestartInputOnNextStateUpdate;
+    // True if a restartInput() was skipped while the keyboard was hidden, so the IME still has the
+    // EditorInfo of a previously focused field.
+    private boolean mPendingRestartInput;
     // Do not access directly, use getStylusWritingImeCallback() instead.
     private @Nullable StylusWritingImeCallback mStylusWritingImeCallback;
     private final SparseArray<OngoingGesture> mOngoingGestures = new SparseArray<>();
@@ -840,9 +843,17 @@ public class ImeAdapterImpl
                 }
             } else {
                 if (hide || alwaysHide) {
+                    // Don't restart input while hidden, since the IME may react to the new
+                    // EditorInfo (e.g. by switching keyboards). Restart before the next show.
+                    if (needsRestart
+                            && ContentFeatureMap.isEnabled(
+                                    ContentInternalFeatures
+                                            .ANDROID_RESTART_INPUT_AFTER_HIDDEN_STATE_UPDATE)) {
+                        mPendingRestartInput = true;
+                    }
                     hideKeyboard();
                 } else {
-                    if (needsRestart) restartInput();
+                    if (needsRestart || mPendingRestartInput) restartInput();
                     if (showIfNeeded && focusedNodeAllowsSoftKeyboard()) {
                         // There is no API for us to get notified of user's dismissal of keyboard.
                         // Therefore, we should try to show keyboard even when text input type
@@ -1272,6 +1283,7 @@ public class ImeAdapterImpl
     /** Restart input (finish composition and change EditorInfo, such as input type). */
     void restartInput() {
         if (!isValid()) return;
+        mPendingRestartInput = false;
         // This will eventually cause input method manager to call View#onCreateInputConnection().
         mInputMethodManagerWrapper.restartInput(getContainerView());
         if (mInputConnection != null) mInputConnection.onRestartInputOnUiThread();
@@ -1707,7 +1719,7 @@ public class ImeAdapterImpl
                             isEditable,
                             containerView,
                             coords.getDeviceScaleFactor(),
-                            coords.getContentOffsetYPixInt());
+                            coords.getContentOffsetTopPixInt());
         }
 
         // Request view system keeps focused element on screen.
@@ -1762,7 +1774,7 @@ public class ImeAdapterImpl
 
         int[] screenLocation = new int[2];
         getContainerView().getLocationOnScreen(screenLocation);
-        int contentOffsetY = mWebContents.getRenderCoordinates().getContentOffsetYPixInt();
+        int contentOffsetY = mWebContents.getRenderCoordinates().getContentOffsetTopPixInt();
         cursorPosition.offset(screenLocation[0], screenLocation[1] + contentOffsetY);
 
         Rect roundedBounds = new Rect();
@@ -1886,7 +1898,7 @@ public class ImeAdapterImpl
                                     (int)
                                             mWebContents
                                                     .getRenderCoordinates()
-                                                    .getContentOffsetYPix();
+                                                    .getContentOffsetTopPix();
                             gestureData.startRect.y -= contentOffsetY;
                             if (gestureData.endRect != null) {
                                 gestureData.endRect.y -= contentOffsetY;
@@ -1931,7 +1943,7 @@ public class ImeAdapterImpl
 
         // Scale bounds to device pixels in Android view coordinates.
         RenderCoordinatesImpl coords = mWebContents.getRenderCoordinates();
-        final int topOffset = coords.getContentOffsetYPixInt(); // Offset for Chrome address bar.
+        final int topOffset = coords.getContentOffsetTopPixInt(); // Offset for Chrome address bar.
         final float scale = coords.getDeviceScaleFactor();
         Rect bounds =
                 new Rect(

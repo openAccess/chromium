@@ -6,7 +6,9 @@
 
 #include <string>
 
+#include "base/feature_list.h"
 #include "base/values.h"
+#include "components/enterprise/net/core/features.h"
 #include "components/policy/core/browser/configuration_policy_handler.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/management/management_service.h"
@@ -19,17 +21,62 @@
 namespace enterprise_net {
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
-    BUILDFLAG(IS_ANDROID)
-bool IsDeviceManaged(const policy::PolicyMap& policies) {
-  // Note: On Android, `AndroidManagementStatusProvider` caches the EMM
+    BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
+namespace {
+
+bool IsAffiliationEnforcedOnPlatformManagedDevices() {
+  // Policy handlers can run before `base::FeatureList` is initialized while
+  // Local State is created at startup. Use the feature's default state in that
+  // case instead of accessing the feature early; profile-scoped policies are
+  // re-evaluated once `FeatureList` is initialized, and proxy override rules
+  // are also checked by `proxy_config::ProxyOverrideRulesAllowed()` before
+  // being applied.
+  if (!base::FeatureList::GetInstance()) {
+    return kEnforceProxyAffiliationOnPlatformManagedDevices.GetDefaultState() ==
+           base::FEATURE_ENABLED_BY_DEFAULT;
+  }
+  return base::FeatureList::IsEnabled(
+      kEnforceProxyAffiliationOnPlatformManagedDevices);
+}
+
+}  // namespace
+
+bool IsDevicePlatformManaged() {
+  // Note: On Windows and macOS, `DomainEnrollmentStatusProvider` is uncached
+  // (`RequiresCache() == false`) and queries domain enrollment synchronously,
+  // whereas `EnterpriseMDMManagementStatusProvider` (Windows and macOS) and
+  // `AzureActiveDirectory*StatusProvider` (Windows) read from `local_state` and
+  // refresh asynchronously on startup.
+  //
+  // On Android, `AndroidManagementStatusProvider` caches the EMM
   // management state in `local_state` (`kEnterpriseMDMManagementAndroid`) and
   // refreshes it asynchronously via JNI on startup. On the very first cold run
   // before the cache is populated, this may return false until the next policy
   // refresh or browser restart.
-  return !policies.GetDeviceAffiliationIds().empty() ||
-         policy::PlatformManagementService::GetInstance()
-                 ->GetManagementAuthorityTrustworthiness() >=
-             policy::ManagementAuthorityTrustworthiness::TRUSTED;
+  //
+  // On iOS, `DeviceManagementStatusProvider` is uncached (`RequiresCache() ==
+  // false`) and synchronously checks `NSUserDefaults` for
+  // `kPolicyLoaderIOSConfigurationKey` ("com.apple.configuration.managed"),
+  // returning `EnterpriseManagementAuthority::CLOUD`
+  // (`ManagementAuthorityTrustworthiness::TRUSTED`) when MDM AppConfig is
+  // present—so unlike Android, there is no cold-start `local_state` cache race.
+  // MDM policies loaded via `PolicyLoaderIOS` are set at
+  // `POLICY_SCOPE_MACHINE`, so MDM-managed devices without CBCM device
+  // affiliation IDs enforce affiliation on `POLICY_SCOPE_USER` cloud policies
+  // unless `EnableProxyOverrideRulesForAllUsers` is set to `1` at
+  // `POLICY_SCOPE_MACHINE` (via MDM or CBCM).
+  return policy::PlatformManagementService::GetInstance()
+             ->GetManagementAuthorityTrustworthiness() >=
+         policy::ManagementAuthorityTrustworthiness::TRUSTED;
+}
+
+bool IsDeviceManaged(const policy::PolicyMap& policies) {
+  if (!policies.GetDeviceAffiliationIds().empty()) {
+    return true;
+  }
+
+  return IsAffiliationEnforcedOnPlatformManagedDevices() &&
+         IsDevicePlatformManaged();
 }
 
 bool IsUnaffiliatedUserProxyPolicyAllowed(const policy::PolicyMap& policies) {
@@ -73,6 +120,6 @@ bool CheckUserAffiliatedProxyPolicy(const policy::PolicyMap& policies,
   return true;
 }
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) ||
-        // BUILDFLAG(IS_ANDROID)
+        // BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 
 }  // namespace enterprise_net

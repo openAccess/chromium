@@ -74,7 +74,7 @@
 #include "ui/views/widget/tooltip_manager.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/client_view.h"
-#include "ui/wm/core/shadow_controller.h"
+#include "ui/wm/core/decoration_controller.h"
 #include "ui/wm/core/shadow_types.h"
 #include "ui/wm/core/window_animations.h"
 #include "ui/wm/core/window_properties.h"
@@ -2142,9 +2142,9 @@ void ShellSurfaceBase::UpdateShadow() {
 
   // A window may not have a shadow object if the window was created in
   // maximized/fullscreen state.
-  ui::Decoration* shadow_decoration =
-      wm::ShadowController::GetShadowDecorationForWindow(window);
-  if (shadow_decoration && shadow_elevation != wm::kShadowElevationNone) {
+  ui::Decoration* decoration =
+      wm::DecorationController::GetDecorationForWindow(window);
+  if (decoration && shadow_elevation != wm::kShadowElevationNone) {
     gfx::Rect shadow_bounds = GetShadowBounds();
     gfx::Point origin = GetClientViewBounds().origin();
 
@@ -2169,15 +2169,23 @@ void ShellSurfaceBase::UpdateShadow() {
       }
     }
 
-    shadow_decoration->SetContentBounds(shadow_bounds);
+    decoration->SetContentBounds(shadow_bounds);
 
     // Surfaces that can't be activated are usually menus and tooltips. Use a
     // small style shadow for them.
     if (!CanActivate()) {
-      shadow_decoration->GetSourceAs<ui::decoration::Shadow>()->SetElevation(
-          wm::kShadowElevationMenuOrTooltip);
+      if (auto* shadow = wm::DecorationController::GetShadowForWindow(window)) {
+        shadow->SetElevation(wm::kShadowElevationMenuOrTooltip);
+      }
     }
 
+    UpdateShadowRoundedCorners();
+  } else if (wm::DecorationController::GetHighlightBorderForWindow(window)) {
+    if (!window->GetProperty(aura::client::kUseWindowBoundsForShadow)) {
+      decoration->SetContentBounds(shadow_bounds_.has_value()
+                                       ? GetShadowBounds()
+                                       : gfx::Rect(window->bounds().size()));
+    }
     UpdateShadowRoundedCorners();
   }
 
@@ -2210,10 +2218,10 @@ void ShellSurfaceBase::UpdateShadowRoundedCorners() {
   shadow_corners_radii_dp_ = pending_shadow_corners_radii_dp_;
 
   aura::Window* window = widget_->GetNativeWindow();
-  ui::Decoration* shadow_decoration =
-      wm::ShadowController::GetShadowDecorationForWindow(window);
+  ui::Decoration* decoration =
+      wm::DecorationController::GetDecorationForWindow(window);
 
-  if (!shadow_decoration) {
+  if (!decoration) {
     return;
   }
 
@@ -2232,7 +2240,7 @@ void ShellSurfaceBase::UpdateShadowRoundedCorners() {
   }
 
   // TODO(crbug.com/40256581): Support shadow with variable radius corners.
-  shadow_decoration->SetRoundedCorners(
+  decoration->SetRoundedCorners(
       gfx::RoundedCornersF(shadow_radii.upper_left()));
 }
 

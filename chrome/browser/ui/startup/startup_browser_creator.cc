@@ -100,6 +100,7 @@
 #include "printing/buildflags/buildflags.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_pref_names.h"
 #include "ash/constants/ash_switches.h"
 #include "chrome/browser/ash/app_mode/app_launch_utils.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
@@ -360,7 +361,7 @@ bool IsSilentLaunchEnabled(const base::CommandLine& command_line,
 
 #if BUILDFLAG(IS_CHROMEOS)
   return profile->GetPrefs()->GetBoolean(
-      prefs::kStartupBrowserWindowLaunchSuppressed);
+      ash::prefs::kStartupBrowserWindowLaunchSuppressed);
 #else
   return false;
 #endif  // BUILDFLAG(IS_CHROMEOS)
@@ -1605,6 +1606,24 @@ void StartupBrowserCreator::ProcessCommandLineWithProfile(
 }
 
 // static
+void StartupBrowserCreator::OnGuestProfileLoadedForAlreadyRunning(
+    const base::CommandLine& command_line,
+    const base::FilePath& cur_dir,
+    const StartupProfilePathInfo& profile_path_info,
+    Profile* guest_profile) {
+  if (!guest_profile) {
+    LOG(ERROR) << "Failed to load the Guest profile.";
+    return;
+  }
+  // Start over now that the Guest profile is loaded. Passing the Guest profile
+  // straight to `ProcessCommandLineWithProfile()` would not work:
+  // `profile_path_info` still points at the default profile, which may need
+  // loading, and the startup checks only accept a Guest profile when a Guest
+  // window is already open. The second pass finds the loaded Guest profile.
+  ProcessCommandLineAlreadyRunning(command_line, cur_dir, profile_path_info);
+}
+
+// static
 void StartupBrowserCreator::ProcessCommandLineAlreadyRunning(
     const base::CommandLine& command_line,
     const base::FilePath& cur_dir,
@@ -1613,9 +1632,24 @@ void StartupBrowserCreator::ProcessCommandLineAlreadyRunning(
     return;
   }
 
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+
+  // `GetPrivateProfileIfRequested()` opens the Guest profile synchronously
+  // when Guest mode is requested. Blocking is not allowed once the browser is
+  // running, so load the Guest profile asynchronously first if needed.
+  const base::FilePath guest_path = ProfileManager::GetGuestProfilePath();
+  if (profiles::IsGuestModeRequested(command_line,
+                                     g_browser_process->local_state(),
+                                     /*show_warning=*/false) &&
+      !profile_manager->GetProfileByPath(guest_path)) {
+    profile_manager->CreateProfileAsync(
+        guest_path, base::BindOnce(&OnGuestProfileLoadedForAlreadyRunning,
+                                   command_line, cur_dir, profile_path_info));
+    return;
+  }
+
   Profile* profile = nullptr;
   if (profile_path_info.mode == StartupProfileMode::kBrowserWindow) {
-    ProfileManager* profile_manager = g_browser_process->profile_manager();
     profile = profile_manager->GetProfileByPath(profile_path_info.path);
     // The profile isn't loaded yet and so needs to be loaded asynchronously.
     if (!profile) {

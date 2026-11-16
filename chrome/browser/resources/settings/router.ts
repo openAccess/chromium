@@ -30,6 +30,7 @@ export interface SettingsRoutes {
   CONTACT_INFO: Route;
   COOKIES: Route;
   DEFAULT_BROWSER: Route;
+  DEVICE_TAB_VISIBILITY: Route;
   DICTATION: Route;
   DOWNLOADS: Route;
   EDIT_DICTIONARY: Route;
@@ -43,6 +44,7 @@ export interface SettingsRoutes {
   INLINE_CUE_MENU: Route;
   LANGUAGES: Route;
   MANAGE_PROFILE: Route;
+  OFFERS_AND_LOYALTY_CARDS: Route;
   OFFER_WRITING_HELP: Route;
   // <if expr="_google_chrome">
   ON_DEVICE_AI: Route;
@@ -158,14 +160,14 @@ export class Route {
    * @param path Extends this route's path if it doesn't contain a
    *     leading slash.
    */
-  createChild(path: string, title?: string): Route {
+  createChild(path: string): Route {
     assert(path);
 
     // |path| extends this route's path if it doesn't have a leading slash.
     // If it does have a leading slash, it's just set as the new route's URL.
     const newUrl = path[0] === '/' ? path : `${this.path}/${path}`;
 
-    const route = new Route(newUrl, title);
+    const route = new Route(newUrl);
     route.parent = this;
     route.section = this.section;
     route.depth = this.depth + 1;
@@ -178,7 +180,8 @@ export class Route {
    * TODO(tommycli): Remove once we've obsoleted the concept of sections.
    */
   createSection(path: string, section: string, title?: string): Route {
-    const route = this.createChild(path, title);
+    const route = this.createChild(path);
+    route.title = title;
     route.section = section;
     return route;
   }
@@ -195,6 +198,15 @@ export class Route {
    * Returns true if this route matches or is an ancestor of the parameter.
    */
   contains(route: Route): boolean {
+    if (loadTimeData.getString('settingsRefresh2026') !== '' &&
+        this.path === '/') {
+      // With settingsRefresh2026, r.BASIC ('/') hosts the Home section while
+      // remaining the parent of all other Basic sections. Match by non-empty
+      // section instead of walking |route.parent| so sibling sections (e.g.
+      // Appearance, Privacy) and empty-section routes (e.g. Advanced, or Basic
+      // in Guest mode) are not treated as descendants of Home.
+      return this.section !== '' && this.section === route.section;
+    }
     for (let r: Route|null = route; r != null; r = r.parent) {
       if (this === r) {
         return true;

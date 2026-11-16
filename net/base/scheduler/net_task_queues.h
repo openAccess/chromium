@@ -10,14 +10,19 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/sequence_checker.h"
 #include "base/task/sequence_manager/task_queue.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/types/pass_key.h"
 #include "net/base/net_export.h"
 #include "net/base/request_priority.h"
 
-namespace base::sequence_manager {
+namespace base {
+struct PendingTask;
+namespace sequence_manager {
 class SequenceManager;
-}  // namespace base::sequence_manager
+}  // namespace sequence_manager
+}  // namespace base
 
 namespace net {
 
@@ -49,15 +54,18 @@ class NET_EXPORT NetTaskQueues {
   // This is typically the task runner for the DEFAULT priority.
   const scoped_refptr<base::SingleThreadTaskRunner>& GetDefaultTaskRunner()
       const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return GetTaskRunner(RequestPriority::DEFAULT_PRIORITY);
   }
   base::sequence_manager::TaskQueue* GetDefaultTaskQueue() const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return GetTaskQueue(RequestPriority::DEFAULT_PRIORITY);
   }
 
   // Returns the task runner for the specified `RequestPriority`.
   const scoped_refptr<base::SingleThreadTaskRunner>& GetTaskRunner(
       RequestPriority priority) const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return task_runners_[static_cast<size_t>(priority)];
   }
 
@@ -66,10 +74,18 @@ class NET_EXPORT NetTaskQueues {
   void SetOnTaskCompletedHandler(
       base::sequence_manager::TaskQueue::OnTaskCompletedHandler handler);
 
+  // Records trace counters and subsampled queue/queuing-time histograms
+  // when `NetworkTaskObserver` observes `pending_task` about to run on the
+  // queue for `priority`.
+  void OnWillProcessTask(base::PassKey<NetworkTaskObserver>,
+                         RequestPriority priority,
+                         const base::PendingTask& pending_task);
+
  private:
   // Helper to get the underlying `TaskQueue` for a given priority.
   base::sequence_manager::TaskQueue* GetTaskQueue(
       RequestPriority priority) const {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     return task_queues_[static_cast<size_t>(priority)].get();
   }
 
@@ -93,6 +109,8 @@ class NET_EXPORT NetTaskQueues {
   // `task_queues_[i]`.
   std::array<scoped_refptr<base::SingleThreadTaskRunner>, NUM_PRIORITIES>
       task_runners_;
+
+  SEQUENCE_CHECKER(sequence_checker_);
 };
 
 }  // namespace net

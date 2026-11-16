@@ -48,7 +48,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "components/variations/pref_names.h"
 #include "components/variations/proto/layer.pb.h"
 #include "components/variations/proto/study.pb.h"
@@ -83,10 +82,18 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/memory/raw_ptr.h"
+#include "base/test/test_future.h"
 #include "chrome/browser/android/tab_android.h"
+#include "chrome/browser/incognito/android/incognito_utils_android.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/android/tab_model/tab_model.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/test/base/android/android_ui_test_utils.h"
+#include "components/tabs/public/tab_interface.h"
+#include "ui/base/base_window.h"
 #else
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -163,6 +170,7 @@ VariationsSeed CreateTestSeedWithLimitedEntropyLayer(
   filter->add_platform(Study::PLATFORM_LINUX);
   filter->add_platform(Study::PLATFORM_CHROMEOS);
   filter->add_platform(Study::PLATFORM_ANDROID);
+  filter->add_platform(Study::PLATFORM_ANDROID_DESKTOP);
 
   Study some_study = base_study;
   some_study.set_name(kSomeStudyName);
@@ -187,12 +195,13 @@ VariationsSeed CreateTestSeedWithLimitedEntropyLayer(
 
 #if BUILDFLAG(IS_ANDROID)
 TabModel* FindTabModelForProfile(content::BrowserContext* context) {
-  for (TabModel* model : TabModelList::models()) {
-    if (model->GetProfile() == context) {
-      return model;
-    }
-  }
-  return nullptr;
+  TabModel* found = nullptr;
+  TabModelList::ForEach(Profile::FromBrowserContext(context),
+                        [&found](TabModel* model) {
+                          found = model;
+                          return false;
+                        });
+  return found;
 }
 
 void OpenUrlInNewTab(content::BrowserContext* context,
@@ -376,24 +385,43 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
 
   ~VariationsHttpHeadersBrowserTest() override = default;
 
+#if BUILDFLAG(IS_ANDROID)
+  void SetUpDefaultCommandLine(base::CommandLine* command_line) override {
+    PlatformBrowserTest::SetUpDefaultCommandLine(command_line);
+    // Disable the first-run experience (FRE) so launching a separate Incognito
+    // ChromeTabbedActivity window does not redirect to FirstRunActivity.
+    command_line->AppendSwitch("disable-fre");
+  }
+#endif
+
   // TODO(crbug.com/452922329): Share the helpers around Android Incognito in
   // more general helper library if it actually doesn't flake for a while.
   void CreateIncognitoTab() {
-    CHECK(!chrome_test_utils::GetProfile(this)->IsIncognitoProfile());
+    CHECK(!GetTestProfile()->IsIncognitoProfile());
     const GURL url("about:blank");
 
 #if BUILDFLAG(IS_ANDROID)
     Profile* otr_profile =
-        chrome_test_utils::GetProfile(this)->GetPrimaryOTRProfile(
-            /*create_if_needed=*/true);
-    OpenUrlInNewTab(otr_profile, GetWebContents(), url);
+        GetTestProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+    if (chrome::android::ShouldOpenIncognitoAsWindow()) {
+      BrowserWindowCreateParams create_params(
+          BrowserWindowInterface::Type::TYPE_NORMAL, *otr_profile,
+          /*from_user_gesture=*/false);
+      base::test::TestFuture<BrowserWindowInterface*> future;
+      CreateBrowserWindow(std::move(create_params), future.GetCallback());
+      android_incognito_window_ = future.Get();
+      ASSERT_NE(android_incognito_window_, nullptr);
+      ASSERT_TRUE(NavigateToURL(url));
+    } else {
+      OpenUrlInNewTab(otr_profile, GetWebContents(), url);
+    }
 #else
     BrowserWindowInterface* incognito =
-        CreateIncognitoBrowser(chrome_test_utils::GetProfile(this));
+        CreateIncognitoBrowser(GetTestProfile());
     SetBrowser(incognito);
     NavigateToURL(url);
 #endif
-    ASSERT_TRUE(chrome_test_utils::GetProfile(this)->IsIncognitoProfile());
+    ASSERT_TRUE(GetTestProfile()->IsIncognitoProfile());
   }
 
   bool NavigateToURL(const GURL& url) {
@@ -448,6 +476,15 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
             base::Unretained(this))));
 
     server()->StartAcceptingConnections();
+  }
+
+  void TearDownOnMainThread() override {
+#if BUILDFLAG(IS_ANDROID)
+    if (android_incognito_window_) {
+      android_incognito_window_.ExtractAsDangling()->GetWindow()->Close();
+    }
+#endif
+    PlatformBrowserTest::TearDownOnMainThread();
   }
 
   const net::EmbeddedTestServer* server() const { return &https_server_; }
@@ -547,7 +584,25 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
         .ExtractBool();
   }
 
+  Profile* GetTestProfile() {
+#if BUILDFLAG(IS_ANDROID)
+    if (android_incognito_window_) {
+      return android_incognito_window_->GetProfile();
+    }
+#endif
+    return chrome_test_utils::GetProfile(this);
+  }
+
   content::WebContents* GetWebContents() {
+#if BUILDFLAG(IS_ANDROID)
+    if (android_incognito_window_) {
+      auto* tab_list = TabListInterface::From(android_incognito_window_);
+      CHECK(tab_list);
+      tabs::TabInterface* active_tab = tab_list->GetActiveTab();
+      CHECK(active_tab);
+      return active_tab->GetContents();
+    }
+#endif
     return chrome_test_utils::GetActiveWebContents(this);
   }
 
@@ -659,6 +714,10 @@ class VariationsHttpHeadersBrowserTest : public PlatformBrowserTest {
 
   // Holds the subscription to ensure the callback remains active during setup.
   base::CallbackListSubscription create_services_subscription_;
+
+#if BUILDFLAG(IS_ANDROID)
+  raw_ptr<BrowserWindowInterface> android_incognito_window_ = nullptr;
+#endif
 
   SEQUENCE_CHECKER(sequence_checker_);
 };
@@ -890,7 +949,7 @@ IN_PROC_BROWSER_TEST_F(VariationsHttpHeadersBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(VariationsHttpHeadersBrowserTest, Incognito) {
   CreateIncognitoTab();
-  ASSERT_TRUE(chrome_test_utils::GetProfile(this)->IsIncognitoProfile());
+  ASSERT_TRUE(GetTestProfile()->IsIncognitoProfile());
   ASSERT_TRUE(NavigateToURL(GetGoogleUrl(server())));
 
   EXPECT_FALSE(HasReceivedHeader(GetGoogleUrl(server()), "X-Client-Data"));
@@ -911,10 +970,7 @@ IN_PROC_BROWSER_TEST_F(VariationsHttpHeadersBrowserTest, UserSignedIn) {
       chrome_test_utils::GetProfile(this));
 
   adaptor.identity_test_env()->MakePrimaryAccountAvailable(
-      "main_email@gmail.com",
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync);
+      "main_email@gmail.com", signin::ConsentLevel::kSignin);
 
   ASSERT_TRUE(NavigateToURL(GetGoogleUrl(server())));
 

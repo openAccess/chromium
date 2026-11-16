@@ -37,11 +37,6 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/dialogs/DownloadWarningBypassDialog.java:DownloadWarningBypassDialogEvent) -->
 
-<enum name="BooleanOpenFromDuplicates">
-  <int value="0" label="Created New file"/>
-  <int value="1" label="Opened existing duplicate"/>
-</enum>
-
 <enum name="BooleanOpenInline">
   <int value="0" label="Open in external app"/>
   <int value="1" label="Open inline"/>
@@ -73,11 +68,6 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(//chrome/browser/download/android/java/src/org/chromium/chrome/browser/download/dialogs/DangerousDownloadDialog.java:DangerousDownloadDialogEvent) -->
-
-<enum name="Download.DragInfo">
-  <int value="0" label="DRAG_STARTED"/>
-  <int value="1" label="DOWNLOAD_COMPLETE"/>
-</enum>
 
 <enum name="Download.Service.CompletionType">
   <int value="0" label="SUCCEED"/>
@@ -447,13 +437,6 @@ chromium-metrics-reviews@google.com.
   <int value="13" label="Multiple downloads dangerous"/>
 </enum>
 
-<enum name="DownloadInputStreamReadErrorType">
-  <int value="0" label="Invalid argument"/>
-  <int value="1" label="Out of range"/>
-  <int value="2" label="Busy"/>
-  <int value="3" label="Unknown"/>
-</enum>
-
 <enum name="DownloadInterstitialUIAction">
   <int value="0" label="Interstitial opened"/>
   <int value="1" label="Download completed"/>
@@ -619,35 +602,6 @@ chromium-metrics-reviews@google.com.
   <int value="3" label="DOWNLOADS_PAGE"/>
   <int value="4" label="DOWNLOAD_PROMPT"/>
   <int value="5" label="DOWNLOAD_NOTIFICATION"/>
-</enum>
-
-<enum name="IncognitoMessageEvent">
-  <int value="0" label="Download message shown"/>
-  <int value="1" label="Download message accepted"/>
-  <int value="2" label="Download message dismissed with gesture"/>
-  <int value="3" label="Download message dismissed with timer"/>
-  <int value="4" label="Download message dismissed with different reason"/>
-  <int value="5"
-      label="Download message not shown due to null message dispatcher"/>
-</enum>
-
-<enum name="InsecureDownloadSecurityStatus">
-  <int value="0" label="Secure download initiated by unknown source"/>
-  <int value="1" label="Insecure download initiated by unknown source"/>
-  <int value="2" label="Secure download initiated by secure source"/>
-  <int value="3" label="Insecure download initiated by secure source"/>
-  <int value="4" label="Secure download initiated by insecure source"/>
-  <int value="5" label="Insecure download initiated by insecure source"/>
-  <int value="6" label="Secure download initiated by inferred-secure source"/>
-  <int value="7" label="Insecure download initiated by inferred-secure source"/>
-  <int value="8" label="Secure download initiated by inferred-insecure source"/>
-  <int value="9"
-      label="Insecure download initiated by inferred-insecure source"/>
-  <int value="10" label="Download ignored as not relevant for blocking"/>
-  <int value="11"
-      label="Insecure download initiated by insecure non-unique source"/>
-  <int value="12"
-      label="Secure download initiated by insecure non-unique source"/>
 </enum>
 
 <enum name="MediaMetadataEvent">

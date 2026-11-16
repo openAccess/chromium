@@ -85,6 +85,7 @@
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/other_device_tabs_sub_menu_model.h"
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
+#include "chrome/browser/ui/tabs/remote_tabs_menu_util.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_metrics.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
@@ -118,13 +119,10 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/contextual_tasks/public/features.h"
-#include "components/dom_distiller/content/browser/distillable_page_utils.h"
-#include "components/dom_distiller/content/browser/uma_helper.h"
-#include "components/dom_distiller/core/dom_distiller_features.h"
-#include "components/dom_distiller/core/url_utils.h"
 #include "components/feature_engagement/public/event_constants.h"
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/lens/lens_features.h"
@@ -144,10 +142,13 @@
 #include "components/skills/features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/subscription_eligibility/ai_subscription_tier_names.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "components/vector_icons/vector_icons.h"
+#include "components/web_distiller/content/browser/distillable_page_utils.h"
+#include "components/web_distiller/content/browser/uma_helper.h"
+#include "components/web_distiller/core/url_utils.h"
+#include "components/web_distiller/core/web_distiller_features.h"
 #include "components/webapps/browser/banners/app_banner_manager.h"
 #include "components/webapps/browser/banners/install_banner_config.h"
 #include "components/webapps/browser/banners/installable_web_app_check_result.h"
@@ -224,6 +225,8 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kPasswordManagerMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kContactInfoMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kIdentityDocsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kTravelMenuItem);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel,
+                                      kOffersAndLoyaltyCardsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kShowLensOverlay);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel,
                                       kAskGoogleAboutThisPageItem);
@@ -541,9 +544,9 @@ ProfileSubMenuModel::ProfileSubMenuModel(
                   avatar_model, avatar_icon_size, /*has_padding=*/false,
                   /*has_background=*/false, *color_provider));
         } else if (GetAvatarAiDecoration(profile).show_decoration) {
-          // TODO(crbug.com/530147081): Clarify if the ring may show up for
-          // users with a placeholder icon. Signed in users should have always
-          // an account_info and thus they will never have a placeholder icon.
+          // The ring is only drawn around a fetched avatar image. Placeholder
+          // avatars keep the default vector icon (see above), and signed-out
+          // profiles have no AI subscription tier.
           avatar_image_model_ =
               ui::ImageModel::FromImageSkia(AddLinearGradientRingToAvatar(
                   avatar_model, *color_provider, avatar_icon_size));
@@ -782,6 +785,16 @@ PasswordsAndAutofillSubMenuModel::PasswordsAndAutofillSubMenuModel(
                                         : vector_icons::kTripOldIcon);
   SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_TRAVEL).value(),
                          AppMenuModel::kTravelMenuItem);
+  if (base::FeatureList::IsEnabled(
+          autofill::features::kAutofillEnableOffersAndLoyaltyCardsSettings)) {
+    AddItemWithStringIdAndVectorIcon(
+        this, IDC_SHOW_OFFERS_AND_LOYALTY_CARDS,
+        IDS_OFFERS_AND_LOYALTY_CARDS_SUBMENU_OPTION,
+        vector_icons::kLoyaltyProgramsIcon);
+    SetElementIdentifierAt(
+        GetIndexOfCommandId(IDC_SHOW_OFFERS_AND_LOYALTY_CARDS).value(),
+        AppMenuModel::kOffersAndLoyaltyCardsMenuItem);
+  }
 }
 
 class FindAndEditSubMenuModel : public ui::SimpleMenuModel {
@@ -1486,13 +1499,6 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
       }
       LogMenuAction(MENU_ACTION_RECENT_TAB);
       break;
-    case IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS:
-      if (!uma_action_recorded_) {
-        base::UmaHistogramMediumTimes(
-            "WrenchMenu.TimeToAction.LoginForDeviceTabs", delta);
-      }
-      LogMenuAction(MENU_ACTION_RECENT_TABS_LOGIN_FOR_DEVICE_TABS);
-      break;
     case IDC_RECENT_TABS_SEE_DEVICE_TABS:
       if (!uma_action_recorded_) {
         base::UmaHistogramMediumTimes("WrenchMenu.TimeToAction.SeeDeviceTabs",
@@ -1740,9 +1746,6 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
                                       delta);
       }
       LogMenuAction(MENU_ACTION_SHOW_DOWNLOADS);
-      base::UmaHistogramEnumeration(
-          "Download.OpenDownloadsFromMenu.PerProfileType",
-          profile_metrics::GetBrowserProfileType(browser_->GetProfile()));
       break;
     case IDC_OPTIONS:
       if (!uma_action_recorded_) {
@@ -1963,6 +1966,13 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
       }
       LogMenuAction(MENU_ACTION_SHOW_TRAVEL);
       break;
+    case IDC_SHOW_OFFERS_AND_LOYALTY_CARDS:
+      if (!uma_action_recorded_) {
+        base::UmaHistogramMediumTimes(
+            "WrenchMenu.TimeToAction.ShowOffersAndLoyaltyCards", delta);
+      }
+      LogMenuAction(MENU_ACTION_SHOW_OFFERS_AND_LOYALTY_CARDS);
+      break;
     case IDC_PERFORMANCE:
       if (!uma_action_recorded_) {
         base::UmaHistogramMediumTimes(
@@ -2076,7 +2086,10 @@ bool AppMenuModel::IsCommandIdEnabled(int command_id) const {
           browser_->GetProfile(),
           IncognitoModePrefs::IncognitoModeType::kStandard);
     case kOtherDeviceTabsMenuPlaceholder:
-      return base::FeatureList::IsEnabled(syncer::kCrossDeviceTabsInAppMenu);
+      // Gate dynamically as well since profile/sync state may change while
+      // the menu model is cached.
+      return remote_tabs_menu_util::ShouldShowOtherDeviceTabsMenuItem(
+          browser_->GetProfile());
     default:
       return chrome::IsCommandEnabled(browser_, command_id);
   }
@@ -2246,7 +2259,10 @@ void AppMenuModel::Build() {
         GetIndexOfCommandId(kRecentTabsMenuPlaceholder).value(),
         kHistoryMenuItem);
 
-    if (base::FeatureList::IsEnabled(syncer::kCrossDeviceTabsInAppMenu)) {
+    // Omit the entry at build time when ineligible so it is hidden rather than
+    // shown disabled.
+    if (remote_tabs_menu_util::ShouldShowOtherDeviceTabsMenuItem(
+            browser_->GetProfile())) {
       sub_menus_.push_back(std::make_unique<OtherDeviceTabsSubMenuModel>(
           browser_, base::BindRepeating(&AppMenuModel::LogMenuMetrics,
                                         base::Unretained(this))));

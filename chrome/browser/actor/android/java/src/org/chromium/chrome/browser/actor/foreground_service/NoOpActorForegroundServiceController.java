@@ -29,9 +29,6 @@ public class NoOpActorForegroundServiceController implements ActorForegroundServ
     private NoOpActorForegroundServiceController() {}
 
     @Override
-    public void startService(String glicTriggerMessageId) {}
-
-    @Override
     public void startAndBindService(Runnable onConnected) {}
 
     @Override
@@ -44,10 +41,7 @@ public class NoOpActorForegroundServiceController implements ActorForegroundServ
 
     @Override
     public void startOrUpdateForegroundService(
-            int newNotificationId,
-            Notification newNotification,
-            int oldNotificationId,
-            boolean killOldNotification) {}
+            int newNotificationId, Notification newNotification) {}
 
     @Override
     public void stopActorForegroundService(int flags) {}
@@ -58,6 +52,11 @@ public class NoOpActorForegroundServiceController implements ActorForegroundServ
     @Override
     public @Nullable Intent createTrustedBringTabToFrontIntent(ActorTask task) {
         return null;
+    }
+
+    @Override
+    public Intent createTrustedPendingActorTaskNewTabIntent() {
+        return new Intent();
     }
 
     @Override

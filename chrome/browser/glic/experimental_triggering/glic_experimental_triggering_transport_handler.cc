@@ -6,12 +6,14 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/uuid.h"
 #include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/glic/experimental_triggering/actor_log.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_converters.h"
@@ -19,9 +21,9 @@
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_metrics.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/profiles/profile.h"
-#include "components/browser_actuator/public/transport/common.h"
-#include "components/browser_actuator/public/transport/transport_session.h"
 #include "components/sharing_message/proto/glic_experimental_triggering.pb.h"
+#include "components/stream_transport/public/common.h"
+#include "components/stream_transport/public/transport_session.h"
 
 namespace glic {
 
@@ -29,19 +31,7 @@ namespace {
 
 bool IsTerminalResponse(const ExperimentalTriggeringResponse& response) {
   if (response.task_update.has_value()) {
-    switch (response.task_update->state) {
-      case TaskUpdate::State::kComplete:
-      case TaskUpdate::State::kStopped:
-      case TaskUpdate::State::kFailed:
-        return true;
-      case TaskUpdate::State::kUnknown:
-      case TaskUpdate::State::kStarting:
-      case TaskUpdate::State::kRunning:
-      case TaskUpdate::State::kPaused:
-      case TaskUpdate::State::kYield:
-      case TaskUpdate::State::kResumed:
-        return false;
-    }
+    return response.task_update->IsTerminal();
   }
   if (response.execute_actions_response.has_value()) {
     return true;
@@ -60,7 +50,7 @@ using GlicExperimentalTriggering =
 GlicExperimentalTriggeringTransportHandler::
     GlicExperimentalTriggeringTransportHandler(
         Profile* profile,
-        browser_actuator::transport::TransportSession* session,
+        stream_transport::TransportSession* session,
         base::WeakPtr<GlicExperimentalTriggeringCoordinator> coordinator)
     : TransportHandler(session),
       profile_(profile),
@@ -73,7 +63,7 @@ GlicExperimentalTriggeringTransportHandler::
     ~GlicExperimentalTriggeringTransportHandler() = default;
 
 void GlicExperimentalTriggeringTransportHandler::OnMessage(
-    browser_actuator::transport::PayloadType payload_type,
+    stream_transport::PayloadType payload_type,
     std::string_view serialized_payload) {
   GlicExperimentalTriggering triggering;
   if (!triggering.ParseFromString(serialized_payload)) {
@@ -90,6 +80,10 @@ void GlicExperimentalTriggeringTransportHandler::OnMessage(
   if (context_id.empty() && session()) {
     context_id = std::string(session()->GetSessionId());
   }
+  if (context_id.empty()) {
+    context_id = base::Uuid::GenerateRandomV4().AsLowercaseString();
+  }
+  triggering.set_context_id(context_id);
 
   if (!coordinator_) {
     actor::ActorKeyedService* actor_service =
@@ -117,17 +111,19 @@ void GlicExperimentalTriggeringTransportHandler::OnMessage(
     return;
   }
 
-  std::optional<ExperimentalTriggeringResponse> domain_response =
-      coordinator_->OnProtoMessage(
-          context_id, triggering, std::move(result_logger),
-          base::BindRepeating(
-              &GlicExperimentalTriggeringTransportHandler::SendResponse,
-              weak_ptr_factory_.GetWeakPtr()),
-          /*prepared_tab=*/nullptr);
-
-  if (domain_response.has_value()) {
-    SendResponse(std::move(*domain_response));
-  }
+  coordinator_->OnProtoMessage(
+      context_id, triggering, std::move(result_logger),
+      base::BindRepeating(
+          &GlicExperimentalTriggeringTransportHandler::SendResponse,
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindOnce(
+          [](base::WeakPtr<GlicExperimentalTriggeringTransportHandler> self,
+             std::optional<ExperimentalTriggeringResponse> response) {
+            if (self && response.has_value()) {
+              self->SendResponse(std::move(*response));
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void GlicExperimentalTriggeringTransportHandler::SendResponse(
@@ -146,8 +142,7 @@ void GlicExperimentalTriggeringTransportHandler::SendResponse(
   // reference, so passing the const reference is safe during this synchronous
   // call.
   auto send_result = SendUpstreamMessage(
-      browser_actuator::transport::PayloadType::kExperimentalTriggering,
-      triggering);
+      stream_transport::PayloadType::kExperimentalTriggering, triggering);
   if (!send_result.has_value()) {
     DLOG(ERROR) << "Failed to send experimental triggering response: "
                 << static_cast<int>(send_result.error());
@@ -176,20 +171,20 @@ GlicExperimentalTriggeringTransportHandlerFactory::
 GlicExperimentalTriggeringTransportHandlerFactory::
     ~GlicExperimentalTriggeringTransportHandlerFactory() = default;
 
-browser_actuator::transport::FactoryId
+stream_transport::FactoryId
 GlicExperimentalTriggeringTransportHandlerFactory::GetFactoryId() const {
-  return browser_actuator::transport::FactoryId::kExperimentalTriggering;
+  return stream_transport::FactoryId::kExperimentalTriggering;
 }
 
-std::vector<browser_actuator::transport::PayloadType>
+std::vector<stream_transport::PayloadType>
 GlicExperimentalTriggeringTransportHandlerFactory::GetSupportedPayloadTypes()
     const {
-  return {browser_actuator::transport::PayloadType::kExperimentalTriggering};
+  return {stream_transport::PayloadType::kExperimentalTriggering};
 }
 
-std::unique_ptr<browser_actuator::transport::TransportHandler>
+std::unique_ptr<stream_transport::TransportHandler>
 GlicExperimentalTriggeringTransportHandlerFactory::OnNewSession(
-    browser_actuator::transport::TransportSession* session) {
+    stream_transport::TransportSession* session) {
   return std::make_unique<GlicExperimentalTriggeringTransportHandler>(
       profile_, session, coordinator_ ? coordinator_->GetWeakPtr() : nullptr);
 }

@@ -143,6 +143,8 @@ std::set<HMONITOR>* GetHDRMonitors() {
 
 // Global direct composition device.
 IDCompositionDevice3* g_dcomp_device = nullptr;
+// Whether the direct composition device supports brushes.
+bool g_supports_dcomp_brushes = false;
 // Global d3d11 device used by direct composition.
 ID3D11Device* g_d3d11_device = nullptr;
 // Global d3d12 command queue created by Chromium's Dawn instance and used by
@@ -396,8 +398,6 @@ void UpdateOverlaySupport() {
   }
   base::UmaHistogramBoolean("GPU.DirectComposition.OverlaysSupported",
                             supports_overlays);
-  base::UmaHistogramBoolean("GPU.DirectComposition.HardwareOverlaysSupported",
-                            supports_hardware_overlays);
 
   // Update global caps.
   SetSupportsOverlays(supports_overlays);
@@ -770,6 +770,10 @@ void InitializeDirectComposition(
   g_dcomp_device = dcomp_device.Detach();
   DCHECK(g_dcomp_device);
 
+  Microsoft::WRL::ComPtr<EXPERIMENTAL_IDCompositionDevice7> dcomp_device7;
+  g_supports_dcomp_brushes =
+      SUCCEEDED(g_dcomp_device->QueryInterface(IID_PPV_ARGS(&dcomp_device7)));
+
   g_d3d11_device = d3d11_device.Detach();
 
   GetSolidColorPoolFactoryRef() =
@@ -824,6 +828,7 @@ void ShutdownDirectComposition() {
     }
     GetSolidColorPoolFactoryRef().Reset();
   }
+  g_supports_dcomp_brushes = false;
 }
 
 SolidColorPoolFactory GetDirectCompositionSolidColorPoolFactory() {
@@ -844,6 +849,11 @@ ID3D12CommandQueue* GetDirectCompositionD3D12CommandQueue() {
 
 bool DirectCompositionSupported() {
   return g_dcomp_device;
+}
+
+bool ShouldUseDirectCompositionBrushes() {
+  return g_supports_dcomp_brushes &&
+         base::FeatureList::IsEnabled(features::kDCompBrushes);
 }
 
 bool DirectCompositionOverlaysSupported() {

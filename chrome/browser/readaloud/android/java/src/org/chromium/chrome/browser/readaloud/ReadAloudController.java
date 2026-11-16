@@ -289,6 +289,18 @@ public class ReadAloudController
                     responseTimestamp);
       }
 
+        /** Returns a copy of this info with Overview marked unsupported; Classic is unchanged. */
+        ReadabilityInfo withOverviewUnsupported() {
+            return new ReadabilityInfo(
+                    ImmutableMap.of(
+                            PlaybackArgs.PlaybackMode.CLASSIC,
+                            getReadabilityResultForMode(PlaybackArgs.PlaybackMode.CLASSIC),
+                            PlaybackArgs.PlaybackMode.OVERVIEW,
+                            new ReadAloudReadabilityHooks.ReadabilityResult(
+                                    /* readable= */ false, /* supportsHighlighting= */ false)),
+                    mResponseTimestamp);
+        }
+
       boolean isReadable() {
             // For audio overviews, we don't account for the language in the
             // readability phase (we will check it during playback).
@@ -345,6 +357,8 @@ public class ReadAloudController
         // Value of dateModified tag or 0
         private final long mDateModified;
         private final PlaybackData mData;
+        // Word to resume from if the saved playback was a NativePlayback. Always null for legacy.
+        private final NativePlayback.@Nullable WordPosition mNativeWordPosition;
 
         /**
          * Constructor.
@@ -391,6 +405,15 @@ public class ReadAloudController
             } else {
                 mPlaying = data == null ? true : data.state() != PAUSED && data.state() != STOPPED;
             }
+
+            // Only capture from the current playback, not from state re-wrapped from another
+            // activity (see onTabSelected()).
+            boolean isCurrentPlaybackData = data != null && data == mCurrentPlaybackData;
+            if (isCurrentPlaybackData && mPlayback instanceof NativePlayback nativePlayback) {
+                mNativeWordPosition = nativePlayback.getCurrentWordPosition();
+            } else {
+                mNativeWordPosition = null;
+            }
         }
 
         Tab getTab() {
@@ -431,7 +454,16 @@ public class ReadAloudController
                                     mPlayerCoordinator.playbackReady(playback, PAUSED);
                                 }
 
+                                // Native only: mNativeWordPosition is always null for legacy.
+                                // The seek is queued before the text: distillation is async,
+                                // and the utility holds seeks received before the text.
                                 if (restorePlaybackPosition
+                                        && mNativeWordPosition != null
+                                        && playback instanceof NativePlayback nativePlayback) {
+                                    nativePlayback.resumeFromWord(mNativeWordPosition);
+                                }
+                                if (restorePlaybackPosition
+                                        && !(playback instanceof NativePlayback)
                                         && (mParagraphIndex != 0 || mOffsetNanos != 0)) {
                                     playback.seekToParagraph(
                                             mParagraphIndex, /* offsetNanos= */ mOffsetNanos);
@@ -832,18 +864,12 @@ public class ReadAloudController
                         }
 
                         @Override
-                        public void willCloseTab(Tab tab) {
-                            maybeStopPlayback(tab, ReasonForStoppingPlayback.TAB_CLOSED);
-                            // Make sure our translation observers are removed before tab's
-                            // WebContents is destroyed.
-                            removeTranslationObservers(tab);
-                        }
-
-                        @Override
                         public void willCloseTabs(
                                 List<Tab> tabs, boolean isAllTabs, boolean allowUndo) {
                             for (Tab tab : tabs) {
                                 maybeStopPlayback(tab, ReasonForStoppingPlayback.TAB_CLOSED);
+                                // Make sure our translation observers are removed before tab's
+                                // WebContents is destroyed.
                                 removeTranslationObservers(tab);
                             }
                         }
@@ -997,7 +1023,8 @@ public class ReadAloudController
     }
 
     @Nullable
-    private ReadabilityInfo getReadabilityInfoForTab(@Nullable Tab tab) {
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    ReadabilityInfo getReadabilityInfoForTab(@Nullable Tab tab) {
         if (isTabUnavailableForReadAloud(tab) || !isAvailable()) {
             return null;
         }
@@ -1008,16 +1035,20 @@ public class ReadAloudController
     /** Returns true if the web contents within current Tab is readable. */
     @Contract("null -> false")
     public boolean isReadable(@Nullable Tab tab) {
-        if (ReadAloudFeatures.isNativeEnabled()) {
-            // TODO: Verify tab language support or handle unsupported language playback gracefully
-            // under native mode.
-            ReadabilityInfo info = getReadabilityInfoForTab(tab);
-            return info != null && info.isReadable();
-        }
         if (isTabUnavailableForReadAloud(tab)) {
             return false;
         }
         Tab nonNullTab = assumeNonNull(tab);
+        if (ReadAloudFeatures.isNativeEnabled()) {
+            ReadabilityInfo info = getReadabilityInfoForTab(nonNullTab);
+            if (info == null || !info.isReadable()) {
+                return false;
+            }
+            // Hide entry points for languages with no available voices.
+            List<PlaybackVoice> voices =
+                    getVoicesForLanguage(getLanguageForNewPlayback(nonNullTab));
+            return voices != null && !voices.isEmpty();
+        }
         TabLanguageStatus tabLanguageStatus = isTabLanguageSupported(nonNullTab);
         if (tabLanguageStatus.mSupported) {
             ReadabilityInfo info = getReadabilityInfoForTab(nonNullTab);
@@ -1330,7 +1361,8 @@ public class ReadAloudController
 
         boolean isTranslated = isTranslated(tab);
         var voices = getVoicesForLanguage(playbackLanguage);
-        // TODO: Don't show entrypoints for unsupported languages
+        // Entry points are hidden for unsupported languages, but playback can still be requested
+        // through other paths (e.g. restoring playback), so fail gracefully here.
         if (voices == null || voices.isEmpty()) {
             onCreatePlaybackFailed(entrypoint);
             var promise = new Promise<Playback>();
@@ -2488,6 +2520,8 @@ public class ReadAloudController
                                     voicePitches[i],
                                     voiceTones[i]));
         }
+        // Supported languages may have changed, so entry points need to re-check readability.
+        notifyReadabilityMayHaveChanged();
     }
 
     // Called when the active word highlight boundary shifts in the text.
@@ -2516,11 +2550,55 @@ public class ReadAloudController
 
     // Called when an unrecoverable playback error occurs.
     void onPlaybackError(String errorMessage) {
-        Log.e(TAG, "onPlaybackError: errorMessage = %s", errorMessage);
+        if (maybeFallBackToClassicPlayback()) {
+            return;
+        }
         resetCurrentPlayback(ReasonForStoppingPlayback.UNKNOWN_REASON);
         if (mPlayerCoordinator != null) {
             mPlayerCoordinator.playbackFailed();
         }
+    }
+
+    /** Returns true if the current playback is a native playback in Overview (AI) mode. */
+    private boolean isNativeOverviewPlayback() {
+        return mPlayback instanceof NativePlayback nativePlayback
+                && nativePlayback.getMetadata().playbackMode() == PlaybackMode.OVERVIEW;
+    }
+
+    /**
+     * If the failed playback was a native Overview playback and Classic is readable, marks Overview
+     * as unsupported for the page and restarts playback in Classic, matching legacy Read Aloud.
+     *
+     * @return True if a Classic playback was started.
+     */
+    private boolean maybeFallBackToClassicPlayback() {
+        // Only a failed native Overview playback falls back; other errors are shown as-is.
+        if (!isNativeOverviewPlayback()) {
+            return false;
+        }
+
+        Tab tab = mActivePlaybackTabSupplier.get();
+        if (tab == null) {
+            return false;
+        }
+
+        ReadabilityInfo info = getReadabilityInfoForTab(tab);
+        if (info == null || !info.isReadable(PlaybackMode.CLASSIC)) {
+            return false;
+        }
+
+        // Mark Overview as unsupported for this page so the restarted playback uses Classic.
+        sReadabilityInfoMap.put(
+                urlToHash(stripUserData(tab.getUrl()).getSpec()), info.withOverviewUnsupported());
+        notifyReadabilityMayHaveChanged();
+
+        // Restart with the same page dateModified as the failed request, so the Classic request
+        // matches it without re-running extractDateModified() (an async page script).
+        // resetCurrentPlayback() clears mDateModified, so read it first.
+        long dateModified = mDateModified;
+        resetCurrentPlayback(ReasonForStoppingPlayback.PLAYBACK_MODE_CHANGE);
+        playTabWithDateModified(tab, dateModified, Entrypoint.RESTORED_PLAYBACK);
+        return true;
     }
 
     // Called when the playback state of a voice preview changes in settings.

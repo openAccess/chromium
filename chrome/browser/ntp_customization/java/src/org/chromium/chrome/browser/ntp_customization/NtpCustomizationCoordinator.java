@@ -40,6 +40,7 @@ import org.chromium.chrome.browser.ntp_customization.theme_sync.NtpThemeSyncHist
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.base.ViewUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyKey;
@@ -62,6 +63,7 @@ public class NtpCustomizationCoordinator {
     private final Context mContext;
     private final BottomSheetController mBottomSheetController;
     private final Supplier<@Nullable Profile> mProfileSupplier;
+    private final WindowAndroid mWindowAndroid;
     private final @Nullable ModuleRegistry mModuleRegistry;
     private final int mBottomSheetType;
     private final boolean mIsNtpCustomizationSyncEnabled;
@@ -79,8 +81,9 @@ public class NtpCustomizationCoordinator {
      * New Tab Page Customization bottom sheet type.
      *
      * <p>These values are persisted to logs. Entries should not be renumbered and numeric values
-     * should never be reused. See tools/metrics/histograms/enums.xml.
+     * should never be reused.
      */
+    // LINT.IfChange(BottomSheetType)
     @IntDef({
         BottomSheetType.MAIN,
         BottomSheetType.NTP_CARDS,
@@ -112,12 +115,15 @@ public class NtpCustomizationCoordinator {
         int NUM_ENTRIES = 12;
     }
 
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NtpCustomizationBottomSheetType)
+
     /**
      * New Tab Page Customization bottom sheet entry point.
      *
      * <p>These values are persisted to logs. Entries should not be renumbered and numeric values
-     * should never be reused. See tools/metrics/histograms/enums.xml.
+     * should never be reused.
      */
+    // LINT.IfChange(EntryPointType)
     @IntDef({EntryPointType.MAIN_MENU, EntryPointType.TOOL_BAR, EntryPointType.NEW_TAB_PAGE})
     @Retention(RetentionPolicy.SOURCE)
     public @interface EntryPointType {
@@ -126,6 +132,8 @@ public class NtpCustomizationCoordinator {
         int NEW_TAB_PAGE = 2;
         int NUM_ENTRIES = 3;
     }
+
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NtpCustomizationEntryPoint)
 
     /**
      * @param context The Context used for displaying the bottom sheet.
@@ -151,6 +159,7 @@ public class NtpCustomizationCoordinator {
         mBottomSheetController = bottomSheetController;
         mProfileSupplier = profileSupplier;
         mBottomSheetType = bottomSheetType;
+        mWindowAndroid = windowAndroid;
         mModuleRegistry = moduleRegistry;
 
         View contentView =
@@ -209,9 +218,7 @@ public class NtpCustomizationCoordinator {
             mMediator.registerClickListener(MVT, getOptionClickListener(MVT));
             mMediator.registerClickListener(NTP_CARDS, getOptionClickListener(NTP_CARDS));
             mMediator.registerClickListener(FEED, getOptionClickListener(FEED));
-            if (NtpCustomizationUtils.isNtpThemeCustomizationEnabled()) {
-                mMediator.registerClickListener(THEME, getOptionClickListener(THEME));
-            }
+            mMediator.registerClickListener(THEME, getOptionClickListener(THEME));
             mMediator.renderListContent();
         }
     }
@@ -247,7 +254,10 @@ public class NtpCustomizationCoordinator {
     }
 
     private void showMainBottomSheet() {
-        if (mIsNtpCustomizationSyncEnabled) {
+        if (mIsNtpCustomizationSyncEnabled
+                && NtpCustomizationUtils.isNtpThemeCustomizationEnabled(
+                        mWindowAndroid,
+                        DeviceFormFactor.isNonMultiDisplayContextOnTablet(mContext))) {
             if (mNtpThemeSyncHistoryCoordinator == null) {
                 mNtpThemeSyncHistoryCoordinator =
                         new NtpThemeSyncHistoryCoordinator(

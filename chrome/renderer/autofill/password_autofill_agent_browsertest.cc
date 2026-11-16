@@ -4,6 +4,7 @@
 
 #include "components/autofill/content/renderer/password_autofill_agent.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
 #include "services/service_manager/public/cpp/interface_provider.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest-param-test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
@@ -1702,6 +1704,21 @@ TEST_F(PasswordAutofillAgentTest, GestureRequiredTest) {
   CheckTextFieldsDOMState(kAliceUsername, true, kAlicePassword, true);
 }
 
+// Tests that a previewed suggestion is not committed into the DOM value on a
+// user gesture if the field was previously registered with the gatekeeper.
+TEST_F(PasswordAutofillAgentTest, GatekeeperDoesNotCommitPreviewedValue) {
+  SimulateOnFillPasswordForm(fill_data_);
+  CheckTextFieldsSuggestedState(kAliceUsername, true, kAlicePassword, true);
+
+  password_autofill_agent_->PreviewField(
+      form_util::GetFieldRendererId(username_element_), u"previewed_value");
+  ASSERT_TRUE(username_element_.IsPreviewed());
+
+  password_autofill_agent_->UserGestureObserved();
+  EXPECT_TRUE(username_element_.Value().IsEmpty());
+  EXPECT_EQ(password_element_.Value().Utf16(), kAlicePassword16);
+}
+
 // Verifies that a DOM-activated UI event will not cause an autofill.
 TEST_F(PasswordAutofillAgentTest, NoDOMActivationTest) {
   // Trigger the initial autocomplete.
@@ -2626,9 +2643,8 @@ TEST_F(PasswordAutofillAgentTest,
   base::RunLoop().RunUntilIdle();
 }
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-// Users in pending state are shown a suggestion to "verify it's you" even when
-// there are no passwords.
+// Users in signin pending state or with a locked Trusted Vault are shown a
+// promo suggestion even when there are no saved passwords.
 TEST_F(
     PasswordAutofillAgentTest,
     NoPopupOnPasswordFieldWithoutSuggestionsByDefaultWhenNotEligibleForPromo) {
@@ -2639,9 +2655,10 @@ TEST_F(
 
   EXPECT_CALL(fake_autofill_driver_,
               AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
-      .Times(1);
+      .Times(NumShowSuggestionsCalls());
 
   ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
 }
 
 TEST_F(PasswordAutofillAgentTest,
@@ -2652,11 +2669,25 @@ TEST_F(PasswordAutofillAgentTest,
   password_autofill_agent_->InformNoSavedCredentials(
       /*should_show_popup_without_passwords=*/true);
 
-  EXPECT_CALL(fake_autofill_driver_, AskForValuesToFill)
+  EXPECT_CALL(fake_autofill_driver_,
+              AskForValuesToFill(_, _, _, _, Optional(_)))
       .Times(NumShowSuggestionsCalls());
   ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
+  testing::Mock::VerifyAndClearExpectations(&fake_autofill_driver_);
+
+  // Navigating to a new document triggers `CleanupOnDocumentShutdown()`, which
+  // resets `should_show_popup_without_passwords_` back to false.
+  LoadHTML(kFormHTML);
+  UpdateUsernameAndPasswordElements();
+  ClearUsernameAndPasswordFieldValues();
+
+  EXPECT_CALL(fake_autofill_driver_,
+              AskForValuesToFill(_, _, _, _, Eq(std::nullopt)))
+      .Times(NumShowSuggestionsCalls());
+  ASSERT_TRUE(SimulateElementClick(kPasswordName));
+  base::RunLoop().RunUntilIdle();
 }
-#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 // Tests the autosuggestions that are given when the element is clicked.
 // Specifically, tests when the user clicks on the username element after page
@@ -4759,6 +4790,9 @@ TEST_F(PasswordAutofillAgentTest, RestoresAfterJavaScriptModification) {
 
   EXPECT_FALSE(called_password_forms_parsed_);
   EXPECT_FALSE(called_password_forms_rendered_);
+
+  password_autofill_agent_->UserGestureObserved();
+  CheckTextFieldsDOMState(kAliceUsername, true, kAlicePassword, true);
 }
 
 TEST_F(PasswordAutofillAgentTest, DoNotRestoreWhenFormStructureWasChanged) {
@@ -5502,6 +5536,58 @@ TEST_F(PasswordAutofillAgentTest, FillChangePasswordForm) {
     EXPECT_EQ(u"Pa$sw0rD", new_password.Value().Utf16());
     EXPECT_EQ(u"Pa$sw0rD", confirmation_password.Value().Utf16());
   }
+}
+
+// Tests that `FillChangePasswordForm` marks filled text fields as password
+// fields so that they are redacted for AI page content and screenshots.
+TEST_F(PasswordAutofillAgentTest, FillChangePasswordFormWithTextFields) {
+  static constexpr char kPasswordChangeFormWithTextFieldsHTML[] =
+      "<FORM name='ChangeWithUsernameForm' action='http://www.bidule.com'>"
+      "  <INPUT type='text' id='username'/>"
+      "  <INPUT type='text' id='password'/>"
+      "  <INPUT type='text' id='newpassword'/>"
+      "  <INPUT type='text' id='confirmpassword'/>"
+      "  <INPUT type='submit' value='Login'/>"
+      "</FORM>";
+
+  LoadHTML(kPasswordChangeFormWithTextFieldsHTML);
+  UpdateUrlForHTML(kPasswordChangeFormWithTextFieldsHTML);
+  base::RunLoop().RunUntilIdle();
+
+  WebInputElement password = GetInputElementByID("password"),
+                  new_password = GetInputElementByID("newpassword"),
+                  confirmation_password =
+                      GetInputElementByID("confirmpassword");
+  auto password_id = form_util::GetFieldRendererId(password),
+       new_password_id = form_util::GetFieldRendererId(new_password),
+       password_confirmation =
+           form_util::GetFieldRendererId(confirmation_password);
+
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            new_password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputText,
+            confirmation_password.FormControlTypeForAutofill());
+
+  base::MockCallback<base::OnceCallback<void(const std::optional<FormData>&)>>
+      mock_reply;
+  EXPECT_CALL(mock_reply, Run(testing::_));
+
+  password_autofill_agent_->FillChangePasswordForm(
+      password_id, new_password_id, password_confirmation, u"qwerty",
+      u"Pa$sw0rD", mock_reply.Get());
+
+  EXPECT_EQ(u"qwerty", password.Value().Utf16());
+  EXPECT_EQ(u"Pa$sw0rD", new_password.Value().Utf16());
+  EXPECT_EQ(u"Pa$sw0rD", confirmation_password.Value().Utf16());
+
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            new_password.FormControlTypeForAutofill());
+  EXPECT_EQ(blink::mojom::FormControlType::kInputPassword,
+            confirmation_password.FormControlTypeForAutofill());
 }
 
 // Tests that `FillChangePasswordForm` invokes callback with std::nullopt when

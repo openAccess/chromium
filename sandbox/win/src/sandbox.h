@@ -64,6 +64,8 @@ class [[clang::lto_visibility_public]] BrokerServices {
   // returns ALL_OK if successful. All other return values imply failure. If the
   // return is ERROR_GENERIC, you can call ::GetLastError() to get more
   // information.
+  // Initialization must finish before launch-sequence use, but need not run on
+  // that sequence.
   virtual ResultCode Init(std::unique_ptr<BrokerServicesDelegate> delegate) = 0;
 
   // May be called in place of Init in test code to add a tracker that validates
@@ -71,6 +73,11 @@ class [[clang::lto_visibility_public]] BrokerServices {
   virtual ResultCode InitForTesting(
       std::unique_ptr<BrokerServicesDelegate> delegate,
       std::unique_ptr<BrokerServicesTargetTracker> target_tracker) = 0;
+
+  // Stops accepting launches and cancels pending launch callbacks without
+  // waiting for process creation. Must run once on the SpawnTargetAsync()
+  // calling sequence before the broker is destroyed.
+  virtual void Shutdown() = 0;
 
   // Pre-creates an alternate desktop. Must be called before a non-default
   // desktop is used by any process.
@@ -84,12 +91,14 @@ class [[clang::lto_visibility_public]] BrokerServices {
 
   // Returns the interface pointer to a new, empty policy object. Use this
   // interface to specify the sandbox policy for new processes created by
-  // SpawnTargetAsync().
+  // SpawnTargetAsync(). Does not use the shared configuration cache and may
+  // run off the launch sequence.
   virtual std::unique_ptr<TargetPolicy> CreatePolicy() = 0;
 
   // Returns the interface pointer to a new, empty policy object. Use this
   // interface to specify the sandbox policy for new processes created by
   // SpawnTargetAsync().
+  // Nonempty tags must be created on the SpawnTargetAsync() calling sequence.
   //
   // The first time a specific value of `tag` is provided an empty policy will
   // be returned, and both TargetConfig and TargetPolicy methods should be
@@ -123,7 +132,13 @@ class [[clang::lto_visibility_public]] BrokerServices {
   //     process handle and PID just as if CreateProcess() had been called. The
   //     caller is responsible for closing the handles returned in this
   //     structure.
-  // Target creation happens on the thread pool.
+  // Target creation happens on the thread pool. Callbacks run on the calling
+  // sequence. Multiple launches may be in flight, and callbacks are not
+  // guaranteed to run in submission order.
+  // All calls must use the same sequence as tagged policy creation and
+  // Shutdown().
+  // Calls after Shutdown() fail with SBOX_ERROR_UNEXPECTED_CALL and
+  // ERROR_SHUTDOWN_IN_PROGRESS.
   virtual void SpawnTargetAsync(const base::CommandLine& command_line,
                                 std::unique_ptr<TargetPolicy> policy,
                                 SpawnTargetCallback result_callback) = 0;
@@ -265,15 +280,13 @@ struct [[clang::lto_visibility_public]] CreateTargetResult {
 class [[clang::lto_visibility_public]] BrokerServicesDelegate {
  public:
   // This method runs `task` on the thread pool, then runs `reply` on the
-  // calling sequence with the returned CreateTargetResult.
+  // calling sequence with the returned CreateTargetResult. The task must own
+  // its inputs and may outlive the broker; the reply is not guaranteed to run
+  // during shutdown.
   virtual void ParallelLaunchPostTaskAndReplyWithResult(
       const base::Location& from_here,
       base::OnceCallback<CreateTargetResult()> task,
-      base::OnceCallback<void(CreateTargetResult)> reply) = 0;
-  // Called before a target process is created. This will be called on the
-  // thread pool.
-  virtual void BeforeTargetProcessCreateOnCreationThread() = 0;
-
+      base::OnceCallback<void(CreateTargetResult)> reply);
   // Record error histograms when CreateThreadAction IPC failed to create a
   // thread in the target process.
   virtual void OnCreateThreadActionCreateFailure(DWORD last_error) = 0;

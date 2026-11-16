@@ -53,7 +53,6 @@ import org.chromium.base.FeatureOverrides;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.Tab;
@@ -741,6 +740,17 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
+    public void testToggleCollapseState_DelegatesToCollapseController() {
+        assertEquals(RailCollapseState.EXPANDED, mCoordinator.getRailCollapseStateForTesting());
+
+        mCoordinator.toggleCollapseState();
+        assertEquals(RailCollapseState.COLLAPSED, mCoordinator.getRailCollapseStateForTesting());
+
+        mCoordinator.toggleCollapseState();
+        assertEquals(RailCollapseState.EXPANDED, mCoordinator.getRailCollapseStateForTesting());
+    }
+
+    @Test
     public void testContainsKeyboardFocus() {
         assertFalse(mCoordinator.containsKeyboardFocus());
 
@@ -948,7 +958,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testExternalDragStarted_PausesSideUiAndDefersCollapseState() {
         ExternalDragObserver observer = captureExternalDragObserver();
 
@@ -963,7 +972,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testExternalDragEnded_ResumesSideUiThenAppliesCollapseStateOnPostedTask() {
         ExternalDragObserver observer = captureExternalDragObserver();
         observer.onExternalDragStarted();
@@ -984,7 +992,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testExternalDragEnded_NewDragBeforePostedTask_StaysFrozen() {
         ExternalDragObserver observer = captureExternalDragObserver();
         observer.onExternalDragStarted();
@@ -1008,7 +1015,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testExternalDragEnded_DestroyedBeforePostedTask_DoesNotResume() {
         ExternalDragObserver observer = captureExternalDragObserver();
         observer.onExternalDragStarted();
@@ -1023,7 +1029,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testDestroy_ClearsExternalDragObserverBeforeDestroyingList() {
         mCoordinator.destroy();
 
@@ -1033,7 +1038,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
     public void testOnPreSideUiSpecsChange_Frozen_NoTransition() {
         when(mMockSideUiCoordinator.areSideUiUpdatesPaused(SideUiId.VERTICAL_TABS))
                 .thenReturn(true);
@@ -1047,22 +1051,6 @@ public class VerticalTabsSideUiCoordinatorUnitTest {
                         newSpecs,
                         UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ false)));
         verify(mMockTabListCoordinator, never()).setInTransition(true);
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
-    public void testExternalDrag_FlagDisabled_DoesNothing() {
-        ExternalDragObserver observer = captureExternalDragObserver();
-
-        observer.onExternalDragStarted();
-        observer.onExternalDragEnded();
-        ShadowLooper.runUiThreadTasks();
-
-        verify(mMockSideUiCoordinator, never()).pauseSideUiUpdates(anyInt());
-        verify(mMockSideUiCoordinator, never()).resumeSideUiUpdates(anyInt());
-        // The collapse state is not deferred.
-        mCollapseController.setWindowWidthBoundary(WindowWidthBoundary.FORCED_COLLAPSED);
-        verify(mMockTabListCoordinator).setRailCollapseState(RailCollapseState.COLLAPSED);
     }
 
     private void enableManualResize() {

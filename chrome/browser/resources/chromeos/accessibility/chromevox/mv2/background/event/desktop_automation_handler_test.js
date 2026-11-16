@@ -10,26 +10,6 @@ GEN_INCLUDE(['../../testing/fake_objects.js']);
  * Test fixture for DesktopAutomationHandler.
  */
 ChromeVoxMV2DesktopAutomationHandlerTest = class extends ChromeVoxE2ETest {
-  // TODO(crbug.com/452061489): Fix tests for when WebUI Omnibox is enabled
-  // and then remove `testGenCppIncludes()` and `featureList()`.
-  /** @override */
-  testGenCppIncludes() {
-    super.testGenCppIncludes();
-    GEN(`
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-    `);
-  }
-
-  get featureList() {
-    return {
-      disabled: [
-        'features::kAccessibilityManifestV3ChromeVox',
-        'omnibox::internal::kWebUIOmniboxPopup',
-        'omnibox::internal::kWebUIOmniboxAimPopup',
-      ],
-    };
-  }
-
   /** @override */
   async setUpDeferred() {
     await super.setUpDeferred();
@@ -48,6 +28,31 @@ ChromeVoxMV2DesktopAutomationHandlerTest = class extends ChromeVoxE2ETest {
     return function() {
       EventGenerator.sendKeyPress(keyCode, modifiers);
     };
+  }
+
+  /** @override */
+  testGenCppIncludes() {
+    super.testGenCppIncludes();
+    GEN(`
+  #include "chrome/browser/ui/ui_features.h"
+  #include "extensions/browser/background_script_executor.h"
+      `);
+  }
+
+  /** @override */
+  testGenPreamble(testFixture, testFunction) {
+    super.testGenPreamble();
+    if (testFunction === 'TaskManagerTableView') {
+      GEN(`
+    extensions::BackgroundScriptExecutor::ExecuteScript(
+        GetProfile(), extension_misc::kChromeVoxExtensionId,
+        content::JsReplace("globalThis.isWebUIToolbarEnabled = $1; "
+                           "chrome.test.sendScriptResult(true);",
+                           features::IsWebUIToolbarEnabled()),
+        extensions::BackgroundScriptExecutor::ResultCapture::
+            kSendScriptResult);
+      `);
+    }
   }
 
 };
@@ -502,6 +507,13 @@ TEST_F(
     'ChromeVoxMV2DesktopAutomationHandlerTest', 'TaskManagerTableView',
     function() {
       const mockFeedback = this.createMockFeedback();
+      const allowedFirstRows = ['Tab: about:blank'];
+      if (globalThis.isWebUIToolbarEnabled) {
+        // The Task Manager sorts by CPU, so the WebUI toolbar can precede the
+        // tab in the user-facing pane.
+        allowedFirstRows.push('Tool: Toolbar');
+      }
+      let firstRow;
       this.runWithLoadedDesktop(desktop => {
         mockFeedback
             .call(() => {
@@ -518,13 +530,23 @@ TEST_F(
             })
             // The Task Manager Refresh has a TabbedPane UI which splits system
             // processes and user-facing processes (tabs & extensions), so
-            // expect that the first task is a Tab, not the Browser process.
-            .expectSpeech('Tab: about:blank', /row [0-9]+ column 1/)
+            // expect that the first task is a Tab (or the WebUI toolbar when
+            // enabled), not the Browser process.
+            .expectSpeech(
+                candidate => {
+                  if (!allowedFirstRows.includes(candidate.text)) {
+                    return false;
+                  }
+                  firstRow = candidate.text;
+                  return true;
+                },
+                /row [0-9]+ column 1/)
             .call(() => {
               EventGenerator.sendKeyPress(KeyCode.DOWN);
             })
             // Make sure it doesn't repeat the previous line!
-            .expectNextSpeechUtteranceIsNot('Tab: about:blank')
+            .expectNextSpeechUtteranceIsNot(
+                candidate => candidate.text === firstRow)
 
             .replay();
       });

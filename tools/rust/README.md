@@ -206,12 +206,10 @@ outputs of an earlier `tools/rust/build_rust.py` run:
 So run `tools/rust/build_rust.py` first.  Alternatively, pass
 `--build-crubit` to it and it will run `build_crubit.py` for you.
 
-Abseil and Protobuf are not taken from `//third_party`: `build_crubit.py`
-downloads and builds the versions that Crubit pins in its `MODULE.bazel`,
-using the hermetic CMake and Ninja that the toolchain build already provides.
-They are needed only for `rs_bindings_from_cc`.  If they break the toolchain
-build, set `ENABLE_BUILDING_RS_BINDINGS_FROM_CC = False` in `build_crubit.py`;
-then only `cc_bindings_from_rs` is built.
+Abseil is not taken from `//third_party`: `build_crubit.py` downloads and
+builds the version that Crubit pins in its `MODULE.bazel`, using the hermetic
+CMake and Ninja that the toolchain build already provides.  It is needed only
+for `rs_bindings_from_cc`.
 
 ### Building
 
@@ -221,7 +219,7 @@ $ tools/rust/build_crubit.py
 
 Useful flags:
 
-- `--out-dir=<dir>` caches the Abseil, Protobuf and Cargo build artifacts in
+- `--out-dir=<dir>` caches the Abseil and Cargo build artifacts in
   `<dir>` instead of a temporary directory, which makes repeated local runs
   much faster.
 - `--skip-checkout` keeps the Crubit checkout in
@@ -238,13 +236,11 @@ support library into `lib/third_party/crubit/`.
 
 ### Testing
 
-Crubit tests are under `//build/rust/tests/test_cpp_api_from_rust`.  They
-are part of `base_unittests` on every platform except ChromeOS and Fuchsia
-(see the `//build/rust/tests` dependency in `//base/BUILD.gn`).
+Crubit tests are under `//build/rust/tests/test_cpp_api_from_rust` (for
+`cc_bindings_from_rs`) and `//build/rust/tests/test_rust_api_from_cpp` (for
+`rs_bindings_from_cc`).  They are part of `base_unittests` on every platform
+except ChromeOS and Fuchsia (see the `//build/rust/tests` dependency in
+`//base/BUILD.gn`).
 
-These tests cover `cc_bindings_from_rs` only.  The `rs_bindings_from_cc`
-tests in `//build/rust/tests/test_rust_api_from_cpp` are built only when the
-`enable_rust_api_from_cpp` GN arg is `true` (it defaults to `false` for now -
-see `TODO(crbug.com/40226863)` in `//build/config/rust.gni`).  Until then, the
-only check on the bots is the smoke test in `build_crubit.py`: it runs each
-installed binary once (e.g. `rs_bindings_from_cc --version`).
+`build_crubit.py` also runs a smoke test: it runs each installed binary once
+(e.g. `rs_bindings_from_cc --version`).

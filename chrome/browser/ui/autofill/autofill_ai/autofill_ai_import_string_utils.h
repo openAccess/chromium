@@ -5,9 +5,12 @@
 #ifndef CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_AI_AUTOFILL_AI_IMPORT_STRING_UTILS_H_
 #define CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_AI_AUTOFILL_AI_IMPORT_STRING_UTILS_H_
 
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
+#include "ui/gfx/range/range.h"
 
 namespace autofill {
 
@@ -17,6 +20,27 @@ std::u16string GetPromptTitle(EntityTypeName type_name,
                               bool is_server_wallet);
 
 int GetPrimaryButtonTextId(bool is_save_prompt);
+
+// The notice shown in the save or update prompt of a Wallet entity.
+struct WalletImportPromptNotice {
+  // The formatted notice.
+  std::u16string text;
+  // The range of `text` that links to Google Wallet.
+  gfx::Range wallet_link_range;
+  // The text of the link to the Privacy Policy, if it is shown in a separate
+  // paragraph below the notice.
+  std::optional<std::u16string> privacy_policy_link_text;
+  // The IDs of all strings shown in the notice, including the Privacy Policy
+  // paragraph.
+  std::vector<int> string_ids;
+};
+
+// Returns the Wallet notice with ID `notice_id` for `account_email`.
+// `notice_id` must be one of the Wallet notices returned by
+// `AutofillAiImportDataController::GetNoticeStringId()`.
+WalletImportPromptNotice GetWalletImportPromptNotice(
+    int notice_id,
+    const std::u16string& account_email);
 
 }  // namespace autofill
 

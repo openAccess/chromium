@@ -254,7 +254,8 @@ void ElementTiming::QueuePerformanceEntriesForReportingIfNeeded(
     const String& image_url = url.ProtocolIsData()
                                   ? image_string.substr(0, kInlineImageMaxChars)
                                   : image_string;
-    DEFINE_STATIC_LOCAL(const AtomicString, kImagePaint, ("image-paint"));
+    DEFINE_STATIC_LOCAL(const AtomicString, kImagePaint,
+                        (AtomicString::FromLiteral<"image-paint">()));
     element_timings_.push_back(PerformanceElementTiming::Create(
         kImagePaint, image_url, intersection_rect,
         performance_->MonotonicTimeToDOMHighResTimeStamp(load_time),
@@ -264,7 +265,7 @@ void ElementTiming::QueuePerformanceEntriesForReportingIfNeeded(
   }
 
   if (EnsureContainerTiming()) {
-    container_timing_->MaybeQueuePaint(*element, intersection_rect);
+    container_timing_->OnElementPainted(*element, intersection_rect);
   }
 }
 
@@ -280,7 +281,8 @@ void ElementTiming::QueuePerformanceEntriesForReportingIfNeeded(
   CHECK(!element->IsInShadowTree());
 
   if (IsRegisteredForElementTiming(element)) {
-    DEFINE_STATIC_LOCAL(const AtomicString, kTextPaint, ("text-paint"));
+    DEFINE_STATIC_LOCAL(const AtomicString, kTextPaint,
+                        (AtomicString::FromLiteral<"text-paint">()));
     element_timings_.push_back(PerformanceElementTiming::Create(
         kTextPaint,
         /*url=*/g_empty_string, record.ElementTimingRect(),
@@ -291,7 +293,7 @@ void ElementTiming::QueuePerformanceEntriesForReportingIfNeeded(
   }
 
   if (EnsureContainerTiming()) {
-    container_timing_->MaybeQueuePaint(*element, record.ElementTimingRect());
+    container_timing_->OnElementPainted(*element, record.ElementTimingRect());
   }
 }
 
@@ -349,6 +351,13 @@ void ElementTiming::OnImageRemoved(const LayoutObject& layout_object,
                                    const MediaTiming* media_timing) {
   recorded_images_.erase(
       MediaRecordId::GenerateHash(&layout_object, media_timing));
+}
+
+void ElementTiming::OnInputOrScroll() {
+  // TODO(crbug.com/559075199): Make ContainerTiming a PaintTimingClient.
+  if (EnsureContainerTiming()) {
+    container_timing_->OnInputOrScroll();
+  }
 }
 
 bool ElementTiming::EnsureContainerTiming() {

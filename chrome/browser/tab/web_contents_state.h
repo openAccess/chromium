@@ -73,17 +73,23 @@ class WebContentsStateByteBuffer {
 // Stores state for a WebContents, including its navigation history.
 class WebContentsState {
  public:
+  // LINT.IfChange(WebContentsStateVersion)
+  static constexpr int kInvalidBufferVersion = -1;
+  static constexpr int kMinSupportedVersion = 2;
+  static constexpr int kCurrentVersion = 2;
+  // LINT.ThenChange(//chrome/browser/tab/java/src/org/chromium/chrome/browser/tab/WebContentsState.java:WebContentsStateVersion)
+
   using DeletionPredicate = base::RepeatingCallback<bool(
       const sessions::SerializedNavigationEntry& entry)>;
 
   static base::android::ScopedJavaLocalRef<jobject>
   GetContentsStateAsByteBuffer(JNIEnv* env, content::WebContents* web_contents);
 
-  // Serializes the WebContents navigation history directly into `output`.
-  // Returns true on success, or false if serialization was not possible
-  // (e.g. if `web_contents` is null or on the initial navigation entry).
-  static bool WriteContentsState(content::WebContents* web_contents,
-                                 std::string* output);
+  // Serializes the WebContents navigation history into a heap-allocated Pickle.
+  // Returns nullptr if serialization was not possible (e.g. if `web_contents`
+  // is null or on the initial navigation entry).
+  static std::unique_ptr<base::Pickle> WriteContentsStateAsPickle(
+      content::WebContents* web_contents);
 
   // Returns a new buffer without the navigations matching |predicate|.
   // Returns null if no deletions happened.

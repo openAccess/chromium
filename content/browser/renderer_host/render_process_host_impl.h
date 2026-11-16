@@ -317,6 +317,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   const base::TimeTicks& GetLastInitTime() override;
   base::Process::Priority GetPriority() const override;
   base::TimeTicks GetProcessLaunchedTime() const override;
+  const StartupTimings& GetStartupTimings() const override;
   std::string GetKeepAliveDurations() const override;
   size_t GetShutdownDelayRefCount() const override;
   int GetRenderFrameHostCount() const override;
@@ -347,8 +348,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
 
   bool HostHasNotBeenUsed() override;
   bool IsSpare() const override;
-  void SetProcessLock(const IsolationContext& isolation_context,
-                      const ProcessLock& process_lock) override;
+  void SetProcessLock(const ProcessLock& process_lock) override;
   ProcessLock GetProcessLock() const override;
   bool IsProcessLockedToSiteForTesting() override;
   void BindCacheStorage(
@@ -380,6 +380,7 @@ class CONTENT_EXPORT RenderProcessHostImpl
   void SetBatterySaverMode(bool battery_saver_mode_enabled) override;
   uint64_t GetPrivateMemoryFootprint() override;
   bool IsOnlyHostingPrerenderedFramesOrEmpty() override;
+  bool HasLoadingFrames() const override;
 
   void PauseSocketManagerForRenderFrameHost(
       const GlobalRenderFrameHostId& render_frame_host_id) override;
@@ -1507,8 +1508,15 @@ class CONTENT_EXPORT RenderProcessHostImpl
   // Records the last time we regarded the child process active.
   base::TimeTicks child_process_activity_time_;
 
-  // The time that this process was launched.
+  // The time that this process was launched. Reset in `Init()` and set in
+  // `OnProcessLaunched()`.
   base::TimeTicks process_launched_time_;
+
+  // Browser-side launch timestamps for this process. Reset in `Init()`, with
+  // the launch fields filled in `OnProcessLaunched()` (falling back to
+  // `process_launched_time_` when there is no `ChildProcessLauncher`, i.e. for
+  // the in-process renderer).
+  StartupTimings startup_timings_;
 
   // The time that a shutdown of the renderer process was requested.
   base::TimeTicks shutdown_start_time_;

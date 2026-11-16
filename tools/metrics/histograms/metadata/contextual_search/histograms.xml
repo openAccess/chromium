@@ -121,7 +121,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="ContextualSearch.AddedTabContextRecencyRanking.{ContextualSearchSource}"
-    units="rank" expires_after="2027-03-07">
+    units="rank" expires_after="2027-05-09">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>
@@ -268,7 +268,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="ContextualSearch.ContextMenuEntry.Clicked.{ContextualSearchSource}"
-    enum="BooleanOccurred" expires_after="2027-03-07">
+    enum="BooleanOccurred" expires_after="2027-05-09">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>
@@ -277,6 +277,24 @@ chromium-metrics-reviews@google.com.
     that a file was added, just simply that the entrypoint was clicked.
   </summary>
   <token key="ContextualSearchSource" variants="ContextualSearchSource"/>
+</histogram>
+
+<histogram name="ContextualSearch.Drive.ConsentKitLoadResult"
+    enum="ContextualSearchDriveConsentKitLoadResult" expires_after="2027-05-12">
+  <owner>adamyao@google.com</owner>
+  <owner>chrome-desktop-search@google.com</owner>
+  <summary>
+    How a ConsentKit load ended in the Drive picker on desktop. ConsentKit is
+    the Drive consent dialog. Recorded once per load, when it ends. A load
+    starts when the consent flow opens ConsentKit, or when the user clicks
+    &quot;Try again&quot; on the error screen. It ends when ConsentKit sends
+    UI_RENDERED_EVENT, or when the dialog stops waiting after 5 seconds and
+    shows the error screen. Any message from ConsentKit stops the wait, so a
+    timeout means ConsentKit sent nothing. In its postMessage mode, which is
+    ConsentKit's default for Chrome, UI_RENDERED_EVENT is its first message;
+    loads where ConsentKit replies without it aren't recorded. Neither are loads
+    cut short by closing the dialog.
+  </summary>
 </histogram>
 
 <histogram
@@ -496,7 +514,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="ContextualSearch.Query.FileCount.FunnelMetrics.{ContextualSearchFunnel}.{ContextualSearchSource}"
-    units="count" expires_after="2027-03-07">
+    units="count" expires_after="2027-05-09">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>
@@ -852,7 +870,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="ContextualSearch.Session.File.Browser.UploadSuccessCount.{ContextualSearchFileTypes}.{ContextualSearchSource}"
-    units="count" expires_after="2027-03-07">
+    units="count" expires_after="2027-05-09">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>
@@ -987,7 +1005,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="ContextualSearch.Session.QueryCount.{ContextualSearchSource}"
-    units="count" expires_after="2027-03-07">
+    units="count" expires_after="2027-05-09">
   <owner>hujasonx@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>
@@ -1354,7 +1372,7 @@ chromium-metrics-reviews@google.com.
 
 <histogram
     name="ContextualSearch.UserAction.SubmitVoiceQuery.{ContextualSearchSource}"
-    enum="Boolean" expires_after="2027-03-10">
+    enum="Boolean" expires_after="2027-05-09">
   <owner>niharm@google.com</owner>
   <owner>chrome-desktop-search@google.com</owner>
   <summary>

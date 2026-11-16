@@ -70,7 +70,8 @@ TEST(CredentialUIEntryTest, CredentialUIEntryFromFormRecoveryFlagOn) {
   CredentialUIEntry entry = CredentialUIEntry(form);
 
   unsigned long size = 1;
-  EXPECT_TRUE(entry.passkey_credential_id.empty());
+  EXPECT_FALSE(entry.IsPasskey());
+  EXPECT_FALSE(entry.passkey_info.has_value());
   EXPECT_EQ(entry.facets.size(), size);
   EXPECT_EQ(entry.facets[0].signon_realm, "https://g.com/");
   EXPECT_EQ(entry.stored_in.size(), size);
@@ -152,12 +153,18 @@ TEST(CredentialUIEntryTest, CredentialUIEntryFromPasskey) {
       PasskeyCredential::CredentialId(cred_id),
       PasskeyCredential::UserId(user_id),
       PasskeyCredential::Username(base::UTF16ToUTF8(kUsername)),
-      PasskeyCredential::DisplayName(base::UTF16ToUTF8(kDisplayName)));
+      PasskeyCredential::DisplayName(base::UTF16ToUTF8(kDisplayName)),
+      /*creation_time=*/std::nullopt,
+      /*last_used_time=*/std::nullopt,
+      /*hidden=*/true);
   CredentialUIEntry entry(passkey);
-  EXPECT_EQ(entry.passkey_credential_id, cred_id);
+  EXPECT_TRUE(entry.IsPasskey());
+  ASSERT_TRUE(entry.passkey_info.has_value());
+  EXPECT_EQ(entry.passkey_info->credential_id, cred_id);
   EXPECT_EQ(entry.username, kUsername);
-  EXPECT_EQ(entry.user_display_name, kDisplayName);
-  EXPECT_EQ(entry.rp_id, kRpId);
+  EXPECT_EQ(entry.passkey_info->user_display_name, kDisplayName);
+  EXPECT_TRUE(entry.passkey_info->hidden);
+  EXPECT_EQ(entry.passkey_info->rp_id, kRpId);
   ASSERT_EQ(entry.facets.size(), 1u);
   EXPECT_EQ(entry.facets.at(0).url, GURL("https://rpid.com/"));
   EXPECT_EQ(entry.facets.at(0).signon_realm, "https://rpid.com");
@@ -165,8 +172,6 @@ TEST(CredentialUIEntryTest, CredentialUIEntryFromPasskey) {
 }
 
 TEST(CredentialUIEntryTest, TestGetAffiliatedDomains) {
-  std::vector<PasswordForm> forms;
-
   PasswordForm android_form;
   android_form.signon_realm = kAndroidSignonRealm;
   android_form.app_display_name = "g3.com";
@@ -339,12 +344,80 @@ TEST(CredentialUIEntryTest, PasswordIsComparedOutsideSortKey) {
   EXPECT_EQ(CreateCredentialSortKey(credential1),
             CreateCredentialSortKey(credential2));
   EXPECT_NE(credential1, credential2);
-  EXPECT_FALSE(credential1 < credential2);
-  EXPECT_FALSE(credential2 < credential1);
+  EXPECT_FALSE(AreCredentialsEquivalent(credential1, credential2));
 
   credential1.blocked_by_user = true;
   credential2.blocked_by_user = true;
-  EXPECT_EQ(credential1, credential2);
+  EXPECT_NE(credential1, credential2);
+  EXPECT_TRUE(AreCredentialsEquivalent(credential1, credential2));
+}
+
+TEST(CredentialUIEntryTest, EqualityComparesAllFields) {
+  PasswordForm form;
+  form.signon_realm = "https://g.com/";
+  form.url = GURL(form.signon_realm);
+  form.username_value = u"user";
+  form.password_value = PasswordString(std::u16string(u"password"));
+  form.in_store = PasswordForm::Store::kProfileStore;
+
+  const CredentialUIEntry baseline(form);
+  EXPECT_EQ(baseline, CredentialUIEntry(form));
+
+  {
+    CredentialUIEntry different_note = baseline;
+    different_note.note = u"new note";
+    EXPECT_NE(baseline, different_note);
+  }
+  {
+    CredentialUIEntry different_store = baseline;
+    different_store.stored_in = {PasswordForm::Store::kAccountStore};
+    EXPECT_NE(baseline, different_store);
+  }
+  {
+    CredentialUIEntry different_issues = baseline;
+    different_issues.password_issues[InsecureType::kLeaked] =
+        InsecurityMetadata();
+    EXPECT_NE(baseline, different_issues);
+  }
+  {
+    CredentialUIEntry different_backup = baseline;
+    different_backup.backup_password = {
+        .value = u"backup", .creation_timestamp = base::Time::FromTimeT(10)};
+    EXPECT_NE(baseline, different_backup);
+  }
+  {
+    CredentialUIEntry different_facet = baseline;
+    different_facet.facets.push_back(baseline.facets[0]);
+    different_facet.facets.back().signon_realm = "https://m.g.com/";
+    EXPECT_NE(baseline, different_facet);
+  }
+  {
+    CredentialUIEntry different_creation_time = baseline;
+    different_creation_time.creation_time = base::Time::FromTimeT(100);
+    EXPECT_NE(baseline, different_creation_time);
+  }
+  {
+    CredentialUIEntry different_last_used_time = baseline;
+    different_last_used_time.last_used_time = base::Time::FromTimeT(200);
+    EXPECT_NE(baseline, different_last_used_time);
+  }
+  const CredentialUIEntry passkey_baseline(PasskeyCredential(
+      PasskeyCredential::Source::kAndroidPhone,
+      PasskeyCredential::RpId("g.com"),
+      PasskeyCredential::CredentialId({1, 2, 3, 4}),
+      PasskeyCredential::UserId(), PasskeyCredential::Username("user"),
+      PasskeyCredential::DisplayName("Display Name")));
+  EXPECT_NE(baseline, passkey_baseline);
+  {
+    CredentialUIEntry different_hidden = passkey_baseline;
+    different_hidden.passkey_info->hidden = true;
+    EXPECT_NE(passkey_baseline, different_hidden);
+  }
+  {
+    CredentialUIEntry different_rp_id = passkey_baseline;
+    different_rp_id.passkey_info->rp_id = "other.com";
+    EXPECT_NE(passkey_baseline, different_rp_id);
+  }
 }
 
 TEST(CredentialUIEntryTest, StructuredKeyAvoidsFieldBoundaryCollisions) {
@@ -393,7 +466,7 @@ TEST(CredentialUIEntryTest, PasskeyDifferentSortKeyForDifferentDisplayName) {
       PasskeyCredential::DisplayName("Display Name 1"));
   CredentialUIEntry passkey1(std::move(passkey_credential));
   CredentialUIEntry passkey2 = passkey1;
-  passkey2.user_display_name = u"Display Name 2";
+  passkey2.passkey_info->user_display_name = u"Display Name 2";
 
   EXPECT_NE(CreateCredentialSortKey(passkey1),
             CreateCredentialSortKey(passkey2));
@@ -451,6 +524,97 @@ TEST(CredentialUIEntryTest, CredentialUIEntryFromStoredCredentialsVector) {
   EXPECT_EQ(entry.stored_in.size(), 2u);
   EXPECT_TRUE(entry.stored_in.contains(PasswordForm::Store::kProfileStore));
   EXPECT_TRUE(entry.stored_in.contains(PasswordForm::Store::kAccountStore));
+}
+
+TEST(CredentialUIEntryTest,
+     CredentialUIEntryFromStoredCredentialsVectorDeduplicatesFacets) {
+  StoredCredential profile_cred;
+  profile_cred.app_display_name = "example.com";
+  profile_cred.signon_realm = "https://example.com/";
+  profile_cred.url = GURL(profile_cred.signon_realm);
+  profile_cred.username_value = u"user";
+  profile_cred.password_value = PasswordString(u"pass");
+  profile_cred.in_store = PasswordForm::Store::kProfileStore;
+
+  StoredCredential account_cred;
+  account_cred.app_display_name = "example.com";
+  account_cred.signon_realm = "https://example.com/";
+  account_cred.url = GURL(account_cred.signon_realm);
+  account_cred.username_value = u"user";
+  account_cred.password_value = PasswordString(u"pass");
+  account_cred.in_store = PasswordForm::Store::kAccountStore;
+
+  std::vector<StoredCredential> creds;
+  creds.push_back(std::move(profile_cred));
+  creds.push_back(std::move(account_cred));
+
+  CredentialUIEntry entry(creds);
+
+  EXPECT_EQ(entry.facets.size(), 1u);
+  EXPECT_EQ(entry.stored_in.size(), 2u);
+  EXPECT_TRUE(entry.stored_in.contains(PasswordForm::Store::kProfileStore));
+  EXPECT_TRUE(entry.stored_in.contains(PasswordForm::Store::kAccountStore));
+}
+
+TEST(CredentialUIEntryTest, AreCredentialsEquivalent) {
+  PasswordForm form;
+  form.signon_realm = "https://g.com/";
+  form.url = GURL(form.signon_realm);
+  form.username_value = u"user";
+  form.password_value = PasswordString(u"password");
+  form.in_store = PasswordForm::Store::kProfileStore;
+
+  CredentialUIEntry credential1(form);
+  CredentialUIEntry credential2(form);
+  credential2.note = u"updated note";
+  credential2.stored_in = {PasswordForm::Store::kAccountStore};
+  credential2.password_issues[InsecureType::kWeak] = InsecurityMetadata();
+  EXPECT_TRUE(AreCredentialsEquivalent(credential1, credential2));
+
+  {
+    CredentialUIEntry different_username = credential1;
+    different_username.username = u"other_user";
+    EXPECT_FALSE(AreCredentialsEquivalent(credential1, different_username));
+  }
+  {
+    CredentialUIEntry different_url = credential1;
+    different_url.facets[0].signon_realm = "https://other.com/";
+    different_url.facets[0].url = GURL("https://other.com/");
+    EXPECT_FALSE(AreCredentialsEquivalent(credential1, different_url));
+  }
+
+  credential2.password = PasswordString(u"other_password");
+  EXPECT_FALSE(AreCredentialsEquivalent(credential1, credential2));
+
+  credential1.blocked_by_user = true;
+  EXPECT_FALSE(AreCredentialsEquivalent(credential1, CredentialUIEntry(form)));
+
+  credential2.blocked_by_user = true;
+  EXPECT_TRUE(AreCredentialsEquivalent(credential1, credential2));
+
+  PasskeyCredential passkey(PasskeyCredential::Source::kAndroidPhone,
+                            PasskeyCredential::RpId("g.com"),
+                            PasskeyCredential::CredentialId({1, 2, 3, 4}),
+                            PasskeyCredential::UserId(),
+                            PasskeyCredential::Username("user"),
+                            PasskeyCredential::DisplayName("Display Name"));
+  CredentialUIEntry passkey1(passkey);
+  CredentialUIEntry passkey2(passkey);
+  passkey2.passkey_info->hidden = true;
+  passkey2.passkey_info->rp_id = "other.com";
+  passkey2.creation_time = base::Time::FromTimeT(42);
+  EXPECT_TRUE(AreCredentialsEquivalent(passkey1, passkey2));
+
+  {
+    CredentialUIEntry different_cred_id = passkey1;
+    different_cred_id.passkey_info->credential_id = {5, 6, 7, 8};
+    EXPECT_FALSE(AreCredentialsEquivalent(passkey1, different_cred_id));
+  }
+  {
+    CredentialUIEntry different_display_name = passkey1;
+    different_display_name.passkey_info->user_display_name = u"Other Name";
+    EXPECT_FALSE(AreCredentialsEquivalent(passkey1, different_display_name));
+  }
 }
 
 }  // namespace password_manager

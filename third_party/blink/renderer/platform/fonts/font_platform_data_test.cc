@@ -50,7 +50,8 @@ TEST_F(FontPlatformDataTest, AhemHasNoSpaceInLigaturesOrKerning) {
   Font* font = CreateTestFont(AtomicString("Ahem"),
                               test::PlatformTestDataPath("Ahem.woff"), 16);
   const FontPlatformData& platform_data = font->PrimaryFont()->PlatformData();
-  TypesettingFeatures features = kKerning | kLigatures;
+  TypesettingFeatures features = {TypesettingFeature::kKerning,
+                                  TypesettingFeature::kLigatures};
 
   EXPECT_FALSE(platform_data.HasSpaceInLigaturesOrKerning(features));
 }
@@ -60,7 +61,8 @@ TEST_F(FontPlatformDataTest, AhemSpaceLigatureHasSpaceInLigaturesOrKerning) {
       CreateTestFont(AtomicString("AhemSpaceLigature"),
                      test::PlatformTestDataPath("AhemSpaceLigature.woff"), 16);
   const FontPlatformData& platform_data = font->PrimaryFont()->PlatformData();
-  TypesettingFeatures features = kKerning | kLigatures;
+  TypesettingFeatures features = {TypesettingFeature::kKerning,
+                                  TypesettingFeature::kLigatures};
 
   EXPECT_TRUE(platform_data.HasSpaceInLigaturesOrKerning(features));
 }
@@ -70,7 +72,7 @@ TEST_F(FontPlatformDataTest, AhemSpaceLigatureHasNoSpaceWithoutFontFeatures) {
       CreateTestFont(AtomicString("AhemSpaceLigature"),
                      test::PlatformTestDataPath("AhemSpaceLigature.woff"), 16);
   const FontPlatformData& platform_data = font->PrimaryFont()->PlatformData();
-  TypesettingFeatures features = 0;
+  TypesettingFeatures features;
 
   EXPECT_FALSE(platform_data.HasSpaceInLigaturesOrKerning(features));
 }
@@ -92,7 +94,7 @@ TEST_F(FontPlatformDataTest, GeometricPrecision) {
     return MakeGarbageCollected<FontPlatformData>(
         typeface, name,
         /* text_size */ 10, /* synthetic_bold */ false,
-        /* synthetic_italic */ false, kGeometricPrecision,
+        /* synthetic_italic */ false, TextRenderingMode::kGeometricPrecision,
         ResolvedFontFeatures());
   };
 

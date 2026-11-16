@@ -140,6 +140,7 @@ GmailOtpOptInBubbleView::~GmailOtpOptInBubbleView() = default;
 
 void GmailOtpOptInBubbleView::Hide() {
   CloseBubble();
+  WindowClosing();
 }
 
 void GmailOtpOptInBubbleView::OnWidgetInitialized() {
@@ -174,6 +175,9 @@ void GmailOtpOptInBubbleView::WindowClosing() {
 void GmailOtpOptInBubbleView::OnLearnMoreLinkClicked() {
   if (!web_contents()) {
     return;
+  }
+  if (controller_) {
+    controller_->OnLearnMoreLinkClicked();
   }
   web_contents()->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(

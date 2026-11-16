@@ -10,10 +10,10 @@
 
 #include "base/memory/weak_ptr.h"
 #include "base/types/optional_ref.h"
-#include "chrome/browser/ui/autofill/autofill_ai/entity_attribute_update_details.h"
 #include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_manager.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
+#include "components/autofill/core/browser/ui/autofill_ai/entity_attribute_update_details.h"
 #include "content/public/browser/web_contents.h"
 
 class GURL;
@@ -79,9 +79,16 @@ class AutofillAiImportDataController {
   // Returns true if the 2026 branding feature is enabled and applicable.
   virtual bool IsBranding2026FeatureEnabled() const = 0;
 
+  // Returns `true` if the save/update dialog must show equally weighted
+  // buttons.
+  virtual bool MustShowEquallyWeightedButtons() const = 0;
+
   // Whether the user clicked the link the dialog subtitle which navigates them
   // to wallet.
   virtual void OnGoToWalletLinkClicked() = 0;
+
+  // Called when the user clicks the privacy policy link in the dialog subtitle.
+  virtual void OnPrivacyPolicyLinkClicked() = 0;
 
   // Returns details about the new/updated prompted entity. This is used by the
   // UI layer to give users details about what changes will be done if they

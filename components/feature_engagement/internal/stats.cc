@@ -122,8 +122,6 @@ void RecordShouldTriggerHelpUI(const base::Feature& feature,
     action_name.append(".");
     action_name.append(feature.name);
     base::RecordComputedAction(action_name);
-    base::UmaHistogramBoolean("InProductHelp.TextBubble.ShowSnooze",
-                              result.should_show_snooze);
   } else {
     LogTriggerHelpUIResult(name, TriggerHelpUIResult::FAILURE);
     std::string action_name =
@@ -185,18 +183,6 @@ void RecordUserDismiss() {
 
 void RecordUserSnoozeAction(Tracker::SnoozeAction snooze_action) {
   base::UmaHistogramEnumeration("InProductHelp.SnoozeAction", snooze_action);
-}
-
-void RecordDbUpdate(bool success, StoreType type) {
-  std::string histogram_name =
-      "InProductHelp.Db.Update." + ToDbHistogramSuffix(type);
-  base::UmaHistogramBoolean(histogram_name, success);
-}
-
-void RecordDbInitEvent(bool success, StoreType type) {
-  std::string histogram_name =
-      "InProductHelp.Db.Init." + ToDbHistogramSuffix(type);
-  base::UmaHistogramBoolean(histogram_name, success);
 }
 
 void RecordEventDbLoadEvent(bool success, const std::vector<Event>& events) {

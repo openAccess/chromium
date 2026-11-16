@@ -65,6 +65,7 @@
 #include "net/quic/mock_quic_context.h"
 #include "net/quic/mock_quic_data.h"
 #include "net/quic/quic_chromium_alarm_factory.h"
+#include "net/quic/quic_chromium_client_session_peer.h"
 #include "net/quic/quic_context.h"
 #include "net/quic/quic_http_stream.h"
 #include "net/quic/quic_http_utils.h"
@@ -96,6 +97,7 @@
 #include "net/third_party/quiche/src/quiche/quic/test_tools/crypto_test_utils.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/mock_clock.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/mock_random.h"
+#include "net/third_party/quiche/src/quiche/quic/test_tools/quic_session_peer.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_spdy_session_peer.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/quic_test_utils.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
@@ -180,7 +182,6 @@ std::string GenerateQuicAltSvcHeaderValue(
     std::string host,
     uint16_t port) {
   std::string value;
-  std::string version_string;
   bool first_version = true;
   for (const auto& version : versions) {
     if (first_version) {
@@ -1101,6 +1102,165 @@ class QuicNetworkTransactionTest
 
     // Compare.
     EXPECT_EQ(alt_svc_negotiated_alpn, supported_alpn);
+  }
+
+  // Verifies that a request bound to a pooled QUIC session is retried on a new
+  // connection with `ERR_QUIC_GOAWAY_REQUEST_CAN_BE_RETRIED` when an HTTP/3
+  // GOAWAY arrives during the `OnStreamReady` `PostTask` window (before
+  // `QuicHttpStream::InitializeStream()` creates the stream). If
+  // `coalesce_connection_close` is true, the GOAWAY arrives in the same packet
+  // as a CONNECTION_CLOSE, so the session is already closed when the stream is
+  // initialized.
+  void RunRetryOnHttp3GoAwayBeforeStreamInitializedTest(
+      bool coalesce_connection_close) {
+    base::HistogramTester histogram_tester;
+    MockQuicData mock_quic_data1(version_);
+    int write_packet_number1 = 1;
+    mock_quic_data1.AddWrite(
+        SYNCHRONOUS, ConstructInitialSettingsPacket(write_packet_number1++));
+    const quic::QuicStreamId stream_id1 =
+        GetNthClientInitiatedBidirectionalStreamId(0);
+    mock_quic_data1.AddWrite(SYNCHRONOUS,
+                             ConstructClientRequestHeadersPacket(
+                                 write_packet_number1++, stream_id1, true,
+                                 GetRequestHeaders("GET", "https", "/")));
+
+    int read_packet_number1 = 1;
+    mock_quic_data1.AddRead(
+        ASYNC, server_maker_.MakeInitialSettingsPacket(read_packet_number1++));
+    mock_quic_data1.AddRead(ASYNC, ConstructServerResponseHeadersPacket(
+                                       read_packet_number1++, stream_id1, false,
+                                       GetResponseHeaders("200")));
+    mock_quic_data1.AddWrite(
+        SYNCHRONOUS, ConstructClientAckPacket(write_packet_number1++, 2, 1));
+    static constexpr char kRespData1[] = "response on the first connection";
+    mock_quic_data1.AddRead(
+        ASYNC, ConstructServerDataPacket(read_packet_number1++, stream_id1,
+                                         true, ConstructDataFrame(kRespData1)));
+    mock_quic_data1.AddReadPause();
+
+    const quic::QuicStreamId stream_id2 =
+        GetNthClientInitiatedBidirectionalStreamId(1);
+    const std::string goaway_buffer =
+        quic::HttpEncoder::SerializeGoAwayFrame(quic::GoAwayFrame{stream_id2});
+    const quic::QuicStreamId control_stream_id =
+        quic::QuicUtils::GetFirstUnidirectionalStreamId(
+            version_.transport_version, quic::Perspective::IS_SERVER);
+    if (coalesce_connection_close) {
+      mock_quic_data1.AddRead(
+          ASYNC,
+          server_maker_.Packet(read_packet_number1++)
+              .AddStreamFrame(control_stream_id, false, goaway_buffer)
+              .AddConnectionCloseFrame(quic::QUIC_NO_ERROR, "Graceful shutdown")
+              .Build());
+    } else {
+      mock_quic_data1.AddRead(
+          ASYNC,
+          ConstructServerDataPacket(read_packet_number1++, control_stream_id,
+                                    false, goaway_buffer));
+      mock_quic_data1.AddWrite(
+          SYNCHRONOUS, ConstructClientAckPacket(write_packet_number1++, 4, 1));
+      mock_quic_data1.AddReadPause();
+      mock_quic_data1.AddRead(ASYNC, ERR_CONNECTION_CLOSED);
+    }
+    mock_quic_data1.AddSocketDataToFactory(&socket_factory_);
+
+    // The second request is retried on a new connection.
+    MockQuicData mock_quic_data2(version_);
+    QuicTestPacketMaker client_maker2(
+        version_,
+        quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+        context_.clock(), kDefaultServerHostName, quic::Perspective::IS_CLIENT,
+        /*client_priority_uses_incremental=*/true,
+        /*use_priority_header=*/true);
+    int write_packet_number2 = 1;
+    mock_quic_data2.AddWrite(
+        SYNCHRONOUS,
+        client_maker2.MakeInitialSettingsPacket(write_packet_number2++));
+    spdy::SpdyPriority priority =
+        ConvertRequestPriorityToQuicPriority(DEFAULT_PRIORITY);
+    mock_quic_data2.AddWrite(
+        SYNCHRONOUS, client_maker2.MakeRequestHeadersPacket(
+                         write_packet_number2++, stream_id1, true, priority,
+                         GetRequestHeaders("GET", "https", "/foo"), nullptr));
+
+    QuicTestPacketMaker server_maker2(
+        version_,
+        quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+        context_.clock(), kDefaultServerHostName, quic::Perspective::IS_SERVER,
+        /*client_priority_uses_incremental=*/false,
+        /*use_priority_header=*/false);
+    int read_packet_number2 = 1;
+    mock_quic_data2.AddRead(ASYNC, server_maker2.MakeResponseHeadersPacket(
+                                       read_packet_number2++, stream_id1, false,
+                                       GetResponseHeaders("200"), nullptr));
+    static constexpr char kRespData2[] = "response on the second connection";
+    mock_quic_data2.AddRead(
+        ASYNC,
+        server_maker2.Packet(read_packet_number2++)
+            .AddStreamFrame(stream_id1, true, ConstructDataFrame(kRespData2))
+            .Build());
+    mock_quic_data2.AddWrite(SYNCHRONOUS,
+                             client_maker2.Packet(write_packet_number2++)
+                                 .AddAckFrame(1, 2, 1)
+                                 .Build());
+    mock_quic_data2.AddReadPause();
+    mock_quic_data2.AddRead(ASYNC, ERR_CONNECTION_CLOSED);
+    mock_quic_data2.AddSocketDataToFactory(&socket_factory_);
+
+    AddHangingNonAlternateProtocolSocketData();
+    CreateSession();
+    AddQuicAlternateProtocolMapping(MockCryptoClientStream::CONFIRM_HANDSHAKE);
+
+    HttpNetworkTransaction trans1(DEFAULT_PRIORITY, session_.get());
+    TestCompletionCallback callback1;
+    ASSERT_THAT(
+        trans1.Start(&request_, callback1.callback(), net_log_with_source_),
+        IsError(ERR_IO_PENDING));
+    ASSERT_THAT(callback1.WaitForResult(), IsOk());
+    CheckResponseData(&trans1, kRespData1);
+
+    HttpRequestInfo request2;
+    request2.method = "GET";
+    request2.url =
+        GURL(base::StrCat({"https://", kDefaultServerHostName, "/foo"}));
+    request2.load_flags = 0;
+    request2.traffic_annotation =
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+    HttpNetworkTransaction trans2(DEFAULT_PRIORITY, session_.get());
+    TestCompletionCallback callback2;
+
+    // Synchronously bind `trans2` to the still-active pooled session (which
+    // queues `OnStreamReady` via `PostTask`), then synchronously deliver the
+    // GOAWAY packet via `Resume()` before that posted `OnStreamReady` task
+    // runs.
+    ASSERT_THAT(
+        trans2.Start(&request2, callback2.callback(), net_log_with_source_),
+        IsError(ERR_IO_PENDING));
+    mock_quic_data1.Resume();
+
+    ASSERT_THAT(callback2.WaitForResult(), IsOk());
+    CheckResponseData(&trans2, kRespData2);
+
+    // Recorded as
+    // `HttpNetworkTransaction::RetryReason::kQuicGoawayRequestCanBeRetried`
+    // (17).
+    histogram_tester.ExpectUniqueSample("Net.NetworkTransaction.RetryReason",
+                                        /*sample=*/17,
+                                        /*expected_bucket_count=*/1);
+    histogram_tester.ExpectTotalCount(
+        "Net.NetworkTransaction.RetryOnConnectionErrors", 0);
+
+    if (!coalesce_connection_close) {
+      mock_quic_data1.Resume();
+    }
+    mock_quic_data2.Resume();
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return mock_quic_data1.AllReadDataConsumed() &&
+             mock_quic_data2.AllReadDataConsumed();
+    }));
+    EXPECT_TRUE(mock_quic_data1.AllWriteDataConsumed());
+    EXPECT_TRUE(mock_quic_data2.AllWriteDataConsumed());
   }
 
   const quic::ParsedQuicVersion version_;
@@ -9815,6 +9975,283 @@ TEST_P(QuicNetworkTransactionTest, RetryOnHttp3GoAway) {
   EXPECT_TRUE(mock_quic_data1.AllReadDataConsumed());
   EXPECT_TRUE(mock_quic_data2.AllWriteDataConsumed());
   EXPECT_TRUE(mock_quic_data2.AllReadDataConsumed());
+}
+
+// Verifies that if a pooled QUIC session that was already used for a request
+// closes after a second request is bound to it, but before
+// `QuicHttpStream::InitializeStream()` creates a stream for that request, the
+// second request is retried on a new connection. Regression test for
+// https://crbug.com/584819136.
+TEST_P(QuicNetworkTransactionTest, RetryOnSessionClosedBeforeStreamCreated) {
+  base::HistogramTester histogram_tester;
+
+  MockQuicData mock_quic_data1(version_);
+  int write_packet_number1 = 1;
+  mock_quic_data1.AddWrite(
+      SYNCHRONOUS, ConstructInitialSettingsPacket(write_packet_number1++));
+  const quic::QuicStreamId stream_id1 =
+      GetNthClientInitiatedBidirectionalStreamId(0);
+  mock_quic_data1.AddWrite(SYNCHRONOUS,
+                           ConstructClientRequestHeadersPacket(
+                               write_packet_number1++, stream_id1, true,
+                               GetRequestHeaders("GET", "https", "/")));
+  int read_packet_number1 = 1;
+  mock_quic_data1.AddRead(ASYNC, ConstructServerResponseHeadersPacket(
+                                     read_packet_number1++, stream_id1, false,
+                                     GetResponseHeaders("200")));
+  static constexpr char kRespData1[] = "response on the first connection";
+  mock_quic_data1.AddRead(
+      ASYNC, ConstructServerDataPacket(read_packet_number1++, stream_id1, true,
+                                       ConstructDataFrame(kRespData1)));
+  mock_quic_data1.AddWrite(
+      SYNCHRONOUS, ConstructClientAckPacket(write_packet_number1++, 2, 1));
+  // Keep the session pooled until the second request has been bound to it.
+  mock_quic_data1.AddReadPause();
+  mock_quic_data1.AddRead(ASYNC, ERR_CONNECTION_CLOSED);
+  mock_quic_data1.AddSocketDataToFactory(&socket_factory_);
+
+  // Second request is retried on a new connection.
+  MockQuicData mock_quic_data2(version_);
+  QuicTestPacketMaker client_maker2(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kDefaultServerHostName, quic::Perspective::IS_CLIENT,
+      /*client_priority_uses_incremental=*/true, /*use_priority_header=*/true);
+  int write_packet_number2 = 1;
+  mock_quic_data2.AddWrite(SYNCHRONOUS, client_maker2.MakeInitialSettingsPacket(
+                                            write_packet_number2++));
+  spdy::SpdyPriority priority =
+      ConvertRequestPriorityToQuicPriority(DEFAULT_PRIORITY);
+  mock_quic_data2.AddWrite(
+      SYNCHRONOUS, client_maker2.MakeRequestHeadersPacket(
+                       write_packet_number2++, stream_id1, true, priority,
+                       GetRequestHeaders("GET", "https", "/foo"), nullptr));
+
+  QuicTestPacketMaker server_maker2(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kDefaultServerHostName, quic::Perspective::IS_SERVER,
+      /*client_priority_uses_incremental=*/false,
+      /*use_priority_header=*/false);
+  int read_packet_number2 = 1;
+  mock_quic_data2.AddRead(ASYNC, server_maker2.MakeResponseHeadersPacket(
+                                     read_packet_number2++, stream_id1, false,
+                                     GetResponseHeaders("200"), nullptr));
+  static constexpr char kRespData2[] = "response on the second connection";
+  mock_quic_data2.AddRead(
+      ASYNC,
+      server_maker2.Packet(read_packet_number2++)
+          .AddStreamFrame(stream_id1, true, ConstructDataFrame(kRespData2))
+          .Build());
+  mock_quic_data2.AddWrite(ASYNC, client_maker2.Packet(write_packet_number2++)
+                                      .AddAckFrame(1, 2, 1)
+                                      .Build());
+  mock_quic_data2.AddRead(ASYNC, ERR_IO_PENDING);  // No more data to read
+  mock_quic_data2.AddRead(ASYNC, 0);               // EOF
+  mock_quic_data2.AddSocketDataToFactory(&socket_factory_);
+
+  AddHangingNonAlternateProtocolSocketData();
+  AddHangingNonAlternateProtocolSocketData();
+  CreateSession();
+  AddQuicAlternateProtocolMapping(MockCryptoClientStream::CONFIRM_HANDSHAKE);
+
+  HttpNetworkTransaction trans1(DEFAULT_PRIORITY, session_.get());
+  TestCompletionCallback callback1;
+  ASSERT_THAT(
+      trans1.Start(&request_, callback1.callback(), net_log_with_source_),
+      IsError(ERR_IO_PENDING));
+  ASSERT_THAT(callback1.WaitForResult(), IsOk());
+  CheckResponseData(&trans1, kRespData1);
+  mock_quic_data1.GetSequencedSocketData()->RunUntilPaused();
+
+  HttpRequestInfo request2;
+  request2.method = "GET";
+  request2.url =
+      GURL(base::StrCat({"https://", kDefaultServerHostName, "/foo"}));
+  request2.load_flags = 0;
+  request2.traffic_annotation =
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  HttpNetworkTransaction trans2(DEFAULT_PRIORITY, session_.get());
+  TestCompletionCallback callback2;
+
+  // `trans2` is synchronously bound to the pooled session, and the stream is
+  // handed to it via a posted task. Close the session before that task runs.
+  ASSERT_THAT(
+      trans2.Start(&request2, callback2.callback(), net_log_with_source_),
+      IsError(ERR_IO_PENDING));
+  mock_quic_data1.Resume();
+
+  ASSERT_THAT(callback2.WaitForResult(), IsOk());
+  CheckResponseData(&trans2, kRespData2);
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.NetworkTransaction.RetryOnConnectionErrors", -ERR_CONNECTION_CLOSED,
+      1);
+
+  mock_quic_data2.Resume();
+  EXPECT_TRUE(mock_quic_data1.AllWriteDataConsumed());
+  EXPECT_TRUE(mock_quic_data1.AllReadDataConsumed());
+  EXPECT_TRUE(mock_quic_data2.AllWriteDataConsumed());
+  EXPECT_TRUE(mock_quic_data2.AllReadDataConsumed());
+}
+
+// Verifies that if a pooled QUIC session closes while a second request's
+// `QuicHttpStream::InitializeStream()` is `ERR_IO_PENDING` (queued in
+// `stream_requests_` due to `MAX_STREAMS`), `CloseAllHandles()` +
+// `CancelAllRequests()` fails `DoRequestStreamComplete()` with
+// `ERR_CONNECTION_CLOSED` and `HttpNetworkTransaction` retries on a new
+// connection. Regression test for https://crbug.com/584819136.
+TEST_P(QuicNetworkTransactionTest,
+       RetryOnSessionClosedWhileWaitingForMaxStreams) {
+  constexpr size_t kMaxStreams = 50;
+  base::HistogramTester histogram_tester;
+
+  MockQuicData mock_quic_data1(version_);
+  int write_packet_number1 = 1;
+  mock_quic_data1.AddWrite(
+      SYNCHRONOUS, ConstructInitialSettingsPacket(write_packet_number1++));
+  const quic::QuicStreamId stream_id1 =
+      GetNthClientInitiatedBidirectionalStreamId(0);
+  mock_quic_data1.AddWrite(SYNCHRONOUS,
+                           ConstructClientRequestHeadersPacket(
+                               write_packet_number1++, stream_id1, true,
+                               GetRequestHeaders("GET", "https", "/")));
+  int read_packet_number1 = 1;
+  mock_quic_data1.AddRead(
+      ASYNC, server_maker_.MakeInitialSettingsPacket(read_packet_number1++));
+  // Send response headers without `fin` so `stream_id1` stays open and counts
+  // against `MAX_STREAMS`.
+  mock_quic_data1.AddRead(ASYNC, ConstructServerResponseHeadersPacket(
+                                     read_packet_number1++, stream_id1, false,
+                                     GetResponseHeaders("200")));
+  mock_quic_data1.AddWrite(
+      SYNCHRONOUS, ConstructClientAckPacket(write_packet_number1++, 2, 1));
+  mock_quic_data1.AddWrite(SYNCHRONOUS,
+                           client_maker_->Packet(write_packet_number1++)
+                               .AddStreamsBlockedFrame(
+                                   /*control_frame_id=*/1,
+                                   /*stream_count=*/kMaxStreams,
+                                   /*unidirectional=*/false)
+                               .Build());
+  mock_quic_data1.AddReadPause();
+  mock_quic_data1.AddRead(ASYNC, ERR_CONNECTION_CLOSED);
+  mock_quic_data1.AddSocketDataToFactory(&socket_factory_);
+
+  // Second request is retried on a new connection.
+  MockQuicData mock_quic_data2(version_);
+  QuicTestPacketMaker client_maker2(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kDefaultServerHostName, quic::Perspective::IS_CLIENT,
+      /*client_priority_uses_incremental=*/true, /*use_priority_header=*/true);
+  int write_packet_number2 = 1;
+  mock_quic_data2.AddWrite(SYNCHRONOUS, client_maker2.MakeInitialSettingsPacket(
+                                            write_packet_number2++));
+  spdy::SpdyPriority priority =
+      ConvertRequestPriorityToQuicPriority(DEFAULT_PRIORITY);
+  mock_quic_data2.AddWrite(
+      SYNCHRONOUS, client_maker2.MakeRequestHeadersPacket(
+                       write_packet_number2++, stream_id1, true, priority,
+                       GetRequestHeaders("GET", "https", "/foo"), nullptr));
+
+  QuicTestPacketMaker server_maker2(
+      version_,
+      quic::QuicUtils::CreateRandomConnectionId(context_.random_generator()),
+      context_.clock(), kDefaultServerHostName, quic::Perspective::IS_SERVER,
+      /*client_priority_uses_incremental=*/false,
+      /*use_priority_header=*/false);
+  int read_packet_number2 = 1;
+  mock_quic_data2.AddRead(ASYNC, server_maker2.MakeResponseHeadersPacket(
+                                     read_packet_number2++, stream_id1, false,
+                                     GetResponseHeaders("200"), nullptr));
+  static constexpr char kRespData2[] = "response on the second connection";
+  mock_quic_data2.AddRead(
+      ASYNC,
+      server_maker2.Packet(read_packet_number2++)
+          .AddStreamFrame(stream_id1, true, ConstructDataFrame(kRespData2))
+          .Build());
+  mock_quic_data2.AddWrite(ASYNC, client_maker2.Packet(write_packet_number2++)
+                                      .AddAckFrame(1, 2, 1)
+                                      .Build());
+  mock_quic_data2.AddRead(ASYNC, ERR_IO_PENDING);  // No more data to read
+  mock_quic_data2.AddRead(ASYNC, 0);               // EOF
+  mock_quic_data2.AddSocketDataToFactory(&socket_factory_);
+
+  AddHangingNonAlternateProtocolSocketData();
+  AddHangingNonAlternateProtocolSocketData();
+  CreateSession();
+  AddQuicAlternateProtocolMapping(MockCryptoClientStream::CONFIRM_HANDSHAKE);
+
+  HttpNetworkTransaction trans1(DEFAULT_PRIORITY, session_.get());
+  TestCompletionCallback callback1;
+  ASSERT_THAT(
+      trans1.Start(&request_, callback1.callback(), net_log_with_source_),
+      IsError(ERR_IO_PENDING));
+  ASSERT_THAT(callback1.WaitForResult(), IsOk());
+
+  QuicChromiumClientSession* quic_session =
+      QuicSessionPoolPeer::GetActiveSession(
+          session_->quic_session_pool(),
+          quic::QuicServerId(kDefaultServerHostName, 443),
+          PRIVACY_MODE_DISABLED);
+  ASSERT_TRUE(quic_session);
+  ASSERT_EQ(quic::test::QuicSessionPeer::ietf_streamid_manager(quic_session)
+                ->max_outgoing_bidirectional_streams(),
+            kMaxStreams);
+  while (quic_session->GetNumActiveStreams() < kMaxStreams) {
+    ASSERT_TRUE(
+        QuicChromiumClientSessionPeer::CreateOutgoingStream(quic_session));
+  }
+
+  HttpRequestInfo request2;
+  request2.method = "GET";
+  request2.url =
+      GURL(base::StrCat({"https://", kDefaultServerHostName, "/foo"}));
+  request2.load_flags = 0;
+  request2.traffic_annotation =
+      net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS);
+  HttpNetworkTransaction trans2(DEFAULT_PRIORITY, session_.get());
+  TestCompletionCallback callback2;
+
+  ASSERT_THAT(
+      trans2.Start(&request2, callback2.callback(), net_log_with_source_),
+      IsError(ERR_IO_PENDING));
+  mock_quic_data1.GetSequencedSocketData()->RunUntilPaused();
+  ASSERT_EQ(histogram_tester.GetBucketCount(
+                "Net.QuicSession.NumPendingStreamRequests", 1),
+            1);
+
+  // Now close the session while `trans2`'s `InitializeStream()` is pending in
+  // `stream_requests_`.
+  mock_quic_data1.Resume();
+
+  ASSERT_THAT(callback2.WaitForResult(), IsOk());
+  CheckResponseData(&trans2, kRespData2);
+
+  histogram_tester.ExpectBucketCount(
+      "Net.QuicSession.AbortedPendingStreamRequests", 1, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.NetworkTransaction.RetryOnConnectionErrors", -ERR_CONNECTION_CLOSED,
+      1);
+
+  mock_quic_data2.Resume();
+  EXPECT_TRUE(mock_quic_data1.AllWriteDataConsumed());
+  EXPECT_TRUE(mock_quic_data1.AllReadDataConsumed());
+  EXPECT_TRUE(mock_quic_data2.AllWriteDataConsumed());
+  EXPECT_TRUE(mock_quic_data2.AllReadDataConsumed());
+}
+
+TEST_P(QuicNetworkTransactionTest, RetryOnHttp3GoAwayBeforeStreamInitialized) {
+  RunRetryOnHttp3GoAwayBeforeStreamInitializedTest(
+      /*coalesce_connection_close=*/false);
+}
+
+// Exercises the cached GOAWAY state on `QuicChromiumClientSession::Handle`
+// after the session closes.
+TEST_P(QuicNetworkTransactionTest,
+       RetryOnHttp3GoAwayAndConnectionCloseBeforeStreamInitialized) {
+  RunRetryOnHttp3GoAwayBeforeStreamInitializedTest(
+      /*coalesce_connection_close=*/true);
 }
 
 // This test verifies that HTTP/3 (QUIC) is immune to the

@@ -2666,9 +2666,10 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
   if (transition_behavior ==
       HidePopoverTransitionBehavior::kFireEventsAndWaitForTransitions) {
     // Fire the "closing" beforetoggle event.
-    auto* event = ToggleEvent::Create(
-        event_type_names::kBeforetoggle, Event::Cancelable::kNo,
-        /*old_state*/ keywords::kOpen, /*new_state*/ keywords::kClosed, invoker);
+    auto* event = ToggleEvent::Create(event_type_names::kBeforetoggle,
+                                      Event::Cancelable::kNo,
+                                      /*old_state*/ keywords::kOpen,
+                                      /*new_state*/ keywords::kClosed, invoker);
     if (invoker && RuntimeEnabledFeatures::ShadowRootReferenceTargetEnabled(
                        invoker->GetExecutionContext())) {
       event->SetComposed(true);
@@ -2721,8 +2722,12 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
       DCHECK_NE(upstream_invoker->GetInvokerData()->GetInterestState(),
                 InterestState::kNoInterest);
       // We're already closing this popover, so don't try to close it again.
+      // Hiding a popover can't be canceled, so neither can the resulting
+      // 'loseinterest' event.
       upstream_invoker->LoseInterestNow(
-          InterestLostCancelable::kCancelable,
+          RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()
+              ? InterestLostCancelable::kNotCancelable
+              : InterestLostCancelable::kCancelable,
           InterestLostPopoverBehavior::kDontClosePopovers);
     }
 
@@ -2792,7 +2797,7 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
   // 'loseinterest' event was not fired above (either because events are not
   // being fired, or because the invoker's `interestfor` relationship no longer
   // resolves), move the invoker to the no-interest state without firing
-  // events. If 'loseinterest' was fired and canceled, interest is maintained.
+  // events.
   if (InterestInvokerTargetData* target_data = GetInterestInvokerTargetData()) {
     if (Element* interest_invoker = target_data->interestInvoker();
         interest_invoker &&
@@ -2877,6 +2882,14 @@ PopoverHideResult HTMLElement::HidePopoverInternal(
       previously_focused_element->Focus(FocusParams(
           SelectionBehaviorOnFocus::kRestore, mojom::blink::FocusType::kScript,
           /*capabilities=*/nullptr, focus_options));
+      if (RuntimeEnabledFeatures::InterestForSpecAlignmentEnabled()) {
+        // If focus didn't actually move to the previously focused element
+        // (e.g. because it is hidden or inert), the suppression flag might not
+        // have been consumed. Reset it, so it doesn't suppress a later focus.
+        if (InvokerData* data = previously_focused_element->GetInvokerData()) {
+          data->SetSuppressNextFocusInterest(false);
+        }
+      }
     }
   }
 
@@ -3696,9 +3709,12 @@ CommandEventType HTMLElement::GetCommandEventType(
 }
 
 const AtomicString& HTMLElement::autocapitalize() const {
-  DEFINE_STATIC_LOCAL(const AtomicString, kCharacters, ("characters"));
-  DEFINE_STATIC_LOCAL(const AtomicString, kWords, ("words"));
-  DEFINE_STATIC_LOCAL(const AtomicString, kSentences, ("sentences"));
+  DEFINE_STATIC_LOCAL(const AtomicString, kCharacters,
+                      (AtomicString::FromLiteral<"characters">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, kWords,
+                      (AtomicString::FromLiteral<"words">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, kSentences,
+                      (AtomicString::FromLiteral<"sentences">()));
 
   const AtomicString& value = FastGetAttribute(html_names::kAutocapitalizeAttr);
   if (value.empty())
@@ -3894,8 +3910,10 @@ void HTMLElement::setTranslate(bool enable) {
 // default).
 // http://www.whatwg.org/specs/web-apps/current-work/multipage/common-dom-interfaces.html#limited-to-only-known-values
 static inline const AtomicString& ToValidDirValue(const AtomicString& value) {
-  DEFINE_STATIC_LOCAL(const AtomicString, ltr_value, ("ltr"));
-  DEFINE_STATIC_LOCAL(const AtomicString, rtl_value, ("rtl"));
+  DEFINE_STATIC_LOCAL(const AtomicString, ltr_value,
+                      (AtomicString::FromLiteral<"ltr">()));
+  DEFINE_STATIC_LOCAL(const AtomicString, rtl_value,
+                      (AtomicString::FromLiteral<"rtl">()));
 
   if (EqualIgnoringAsciiCase(value, ltr_value)) {
     return ltr_value;
@@ -4080,6 +4098,15 @@ void HTMLElement::RemovedFrom(ContainerNode& insertion_point) {
       IsUnboundedElementActive() &&
       !GetDocument().StatePreservingAtomicMoveInProgress()) {
     SetUnboundedElementActive(false, UnboundedEvents::kSuppress);
+  }
+
+  // Drop the container timing record when a container root is disconnected,
+  // including during atomic moves (moveBefore()).
+  if (was_in_document && FastHasAttribute(html_names::kContainertimingAttr) &&
+      RuntimeEnabledFeatures::ContainerTimingEnabled(GetExecutionContext())) {
+    if (auto* window = GetDocument().domWindow()) {
+      ContainerTiming::From(*window).OnContainerRootDisconnected(this);
+    }
   }
 
   Element::RemovedFrom(insertion_point);

@@ -49,9 +49,6 @@ include_rules = [
   "+chrome/browser/invalidation",
   "+chrome/browser/policy",
   "+chrome/browser/profiles",
-  "+chrome/common/chrome_constants.h",
-  "+chrome/common/chrome_content_client.h",
-  "+chrome/common/chrome_paths.h",
 ]
 
 specific_include_rules = {
@@ -88,6 +85,7 @@ specific_include_rules = {
     "+chrome/browser/ui/tabs",
     "+chrome/browser/ui/webui/ash/login",
     "+chrome/browser/ui/webui/certificates_handler.h",
+    "+chrome/common/chrome_paths.h",
     "+chrome/test/base",
   ],
   "browser_policy_connector_ash_unittest\\.cc": [
@@ -96,5 +94,9 @@ specific_include_rules = {
   ],
   ".*unittest\\.cc": [
     "+chrome/browser/global_features.h",
+    "+chrome/browser/media/webrtc/media_capture_devices_dispatcher.h",
+  ],
+  "user_cloud_policy_manager_ash_unittest\\.cc": [
+    "+chrome/common/chrome_constants.h",
   ],
 }

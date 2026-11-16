@@ -22,6 +22,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorForegroundServiceUmaHelper.ForegroundLifecycle;
 import org.chromium.chrome.browser.actor.ActorForegroundServiceUmaHelper.StopReason;
 import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceManager;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
 import org.chromium.components.browser_ui.notifications.ForegroundServiceUtils;
@@ -51,17 +52,9 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
      *
      * @param newNotificationId The ID for the new notification.
      * @param newNotification The notification to display.
-     * @param oldNotificationId Unused.
-     * @param killOldNotification Unused.
      */
     public void startOrUpdateForegroundService(
-            int newNotificationId,
-            Notification newNotification,
-            int oldNotificationId,
-            boolean killOldNotification) {
-        // TODO(crbug.com/578059672): Remove the unused oldNotificationId and killOldNotification
-        // parameters once the M158 merges are done.
-
+            int newNotificationId, Notification newNotification) {
         // Calling stopForeground() before a notification ID swap would reset the background start
         // allowance, making startForeground() throw while Chrome is backgrounded.
         if (!mIsForeground) {
@@ -120,6 +113,10 @@ public class ActorForegroundServiceImpl extends SplitCompatService.Impl {
             recordStopReason(StopReason.DESTROYED);
         }
 
+        ActorForegroundServiceManager fgsManager = ActorForegroundServiceManager.getInstance();
+        if (fgsManager != null) {
+            fgsManager.onServiceDestroyed();
+        }
         ActorForegroundServiceController.get().destroyBackgroundActuationManager();
 
         // TODO(ritkagup) : Notify observers so they can perform cleanup or pause active tasks.

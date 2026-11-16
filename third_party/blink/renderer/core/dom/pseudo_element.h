@@ -61,6 +61,8 @@ class CORE_EXPORT PseudoElement : public Element {
   void AttachLayoutTree(AttachContext&) override;
   bool LayoutObjectIsNeeded(const DisplayStyle&) const override;
   bool CanGeneratePseudoElement(PseudoId) const override;
+  static bool CanGeneratePseudoElement(PseudoId parent_pseudo_id,
+                                       PseudoId pseudo_id);
 
   // Returns true if the PseudoElement can generates child boxes based on the
   // CSS content property.
@@ -108,7 +110,6 @@ class CORE_EXPORT PseudoElement : public Element {
   virtual Node* InnerNodeForHitTesting();
 
   bool SupportsHitTesting() const;
-  static bool SupportsHitTesting(PseudoId pseudo_id);
 
   void AccessKeyAction(SimulatedClickCreationScope creation_scope) override;
 
@@ -149,8 +150,8 @@ class CORE_EXPORT PseudoElement : public Element {
     const ComputedStyle* original_style_{nullptr};
   };
 
-  PseudoId pseudo_id_;
   const AtomicString pseudo_argument_;
+  PseudoId pseudo_id_;
   bool is_generated_name_ = false;
 };
 

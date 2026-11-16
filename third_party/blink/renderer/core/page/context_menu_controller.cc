@@ -46,6 +46,7 @@
 #include "third_party/blink/public/web/web_text_check_client.h"
 #include "third_party/blink/renderer/core/annotation/annotation_agent_container_impl.h"
 #include "third_party/blink/renderer/core/annotation/annotation_agent_impl.h"
+#include "third_party/blink/renderer/core/clipboard/data_transfer.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
 #include "third_party/blink/renderer/core/dom/events/event_target.h"
@@ -280,13 +281,13 @@ Node* ContextMenuController::GetContextMenuNodeWithImageContents() {
             node, already_visited_nodes_for_context_menu_listener)) {
       outcome |=
           EnumToBitmask(ImageSelectionOutcome::kFoundContextMenuListener);
-      // Don't break because it allows us to log the failure reason only
-      // if an image node was otherwise available lower in the hit test.
+      // Don't break so we check whether an image node was available lower in
+      // the hit test.
     }
     if (top_hit_frame != node->GetDocument().GetFrame()) {
       outcome |= EnumToBitmask(ImageSelectionOutcome::kBlockedByCrossFrameNode);
-      // Don't break because it allows us to log the failure reason only
-      // if an image node was otherwise available lower in the hit test.
+      // Don't break so we check whether an image node was available lower in
+      // the hit test.
     }
 
     if (IsA<HTMLCanvasElement>(node) ||
@@ -296,7 +297,7 @@ Node* ContextMenuController::GetContextMenuNodeWithImageContents() {
       if (hit_test_depth == 1) {
         outcome |= EnumToBitmask(ImageSelectionOutcome::kImageFoundStandard);
         // The context menu listener check is only necessary when penetrating,
-        // so clear the bit so we don't want to log it if the image was on top.
+        // so clear the bit if the image was on top.
         outcome &=
             ~EnumToBitmask(ImageSelectionOutcome::kFoundContextMenuListener);
       } else {
@@ -311,25 +312,11 @@ Node* ContextMenuController::GetContextMenuNodeWithImageContents() {
             HitTestLocation::RectForPoint(
                 hit_test_result_.PointInInnerNodeFrame()))) {
       outcome |= EnumToBitmask(ImageSelectionOutcome::kBlockedByOpaqueNode);
-      // Don't break because it allows us to log the failure reason only
-      // if an image node was otherwise available lower in the hit test.
+      // Don't break so we check whether an image node was available lower in
+      // the hit test.
     }
   }
 
-  // Only log if we found an image node within the hit test.
-  if (found_image_node != nullptr) {
-    base::UmaHistogramCounts1000("Blink.ContextMenu.ImageSelection.Depth",
-                                 hit_test_depth);
-    for (uint32_t i = 0;
-         i <= static_cast<uint8_t>(ImageSelectionOutcome::kMaxValue); i++) {
-      unsigned val = 1 << i;
-      if (outcome & val) {
-        base::UmaHistogramEnumeration(
-            "Blink.ContextMenu.ImageSelection.Outcome",
-            ImageSelectionOutcome(i));
-      }
-    }
-  }
   // If there is anything preventing this image selection, return nullptr.
   uint32_t blocking_image_selection_mask =
       ~(EnumToBitmask(ImageSelectionOutcome::kImageFoundStandard) |
@@ -445,8 +432,8 @@ static gfx::Rect ComputeSelectionRect(LocalFrame* selected_frame) {
   return combined_rect;
 }
 
-static gfx::Rect ComputeImageBounds(Element* element,
-                                    LocalFrame* selected_frame) {
+static gfx::Rect ComputeNodeBounds(Element* element,
+                                   LocalFrame* selected_frame) {
   element->GetDocument().UpdateStyleAndLayoutForNode(
       element, DocumentUpdateReason::kContextMenu);
   gfx::Rect bounds = element->VisibleBoundsRespectingClipsInLocalRoot();
@@ -723,8 +710,9 @@ bool ContextMenuController::ShowContextMenu(
         // Add context menu commands that are supported by the plugin.
         // Only show rotate view options if focus is not in an editable text
         // area.
-        if (!plugin_can_edit_text && plugin->CanRotateView())
+        if (!plugin_can_edit_text && plugin->CanRotateView()) {
           data.media_flags |= ContextMenuData::kMediaCanRotate;
+        }
       }
     }
   } else {
@@ -732,9 +720,9 @@ bool ContextMenuController::ShowContextMenu(
     // does not override a topmost media element.
     // TODO(benwgold): Consider extending penetration to all media types.
     Node* potential_image_node = result.InnerNodeOrImageMapImage();
-    SCOPED_BLINK_UMA_HISTOGRAM_TIMER(
-        "Blink.ContextMenu.ImageSelection.ElapsedTime");
     potential_image_node = GetContextMenuNodeWithImageContents();
+
+    Element* svg_root = StandaloneSVGRootForImageActions(result);
 
     if (potential_image_node != nullptr &&
         IsA<HTMLCanvasElement>(potential_image_node)) {
@@ -756,13 +744,22 @@ bool ContextMenuController::ShowContextMenu(
       data.media_flags |= ContextMenuData::kMediaCanPrint;
       data.has_image_contents = HitTestResult::GetImage(potential_image_node);
       if (auto* element = DynamicTo<Element>(potential_image_node)) {
-        data.image_bounds = ComputeImageBounds(element, selected_frame);
+        data.node_bounds = ComputeNodeBounds(element, selected_frame);
       }
       if (auto* image_element =
               DynamicTo<HTMLImageElement>(potential_image_node)) {
         data.image_replacement_frame_token =
             image_element->ReplacementFrameToken();
       }
+    } else if (svg_root && !result.IsSelected(location) &&
+               DataTransfer::CanCreateNodeImageForClipboard(
+                   *svg_root->GetDocument().GetFrame(), *svg_root)) {
+      // A standalone SVG is an image document without an HTML image element.
+      data.src_url = GURL(selected_frame->GetDocument()->Url());
+      data.media_type = mojom::blink::ContextMenuDataMediaType::kImage;
+      data.media_flags |= ContextMenuData::kMediaCanPrint;
+      data.has_image_contents = true;
+      image_selection_cached_result_ = svg_root;
     }
   }
   // If it's not a link, an image, a media element, or an image/media link,
@@ -887,6 +884,19 @@ bool ContextMenuController::ShowContextMenu(
                  DynamicTo<MathMLAnchorElement>(result.URLElement())) {
     PopulateAnchorContextMenuData(mathml_anchor, html_names::kDownloadAttr,
                                   selected_frame, data);
+  }
+  if (data.node_bounds.IsEmpty()) {
+    if (Element* url_element = result.URLElement()) {
+      data.node_bounds = ComputeNodeBounds(url_element, selected_frame);
+    } else if (data.is_editable && result.InnerNode()) {
+      if (auto* form_control =
+              DynamicTo<HTMLFormControlElement>(result.InnerNode())) {
+        data.node_bounds = ComputeNodeBounds(form_control, selected_frame);
+      } else if (Element* editable_element =
+                     RootEditableElement(*result.InnerNode())) {
+        data.node_bounds = ComputeNodeBounds(editable_element, selected_frame);
+      }
+    }
   }
 
   data.selection_rect = ComputeSelectionRect(selected_frame);

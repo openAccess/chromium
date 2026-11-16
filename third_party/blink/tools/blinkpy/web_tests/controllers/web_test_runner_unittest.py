@@ -27,10 +27,13 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+import logging
 import mock
 import sys
+import threading
 import unittest
 
+from blinkpy.common import message_pool
 from blinkpy.common.host_mock import MockHost
 from blinkpy.common.system.system_host_mock import MockSystemHost
 from blinkpy.web_tests import run_web_tests
@@ -559,6 +562,34 @@ class SharderTests(unittest.TestCase):
         )
 
 
+class _ReentrancyCheckingStream(object):
+    """A log stream that writes under a non-reentrant lock, like typ's
+    captured output.
+
+    `write()` drops the last reference to `collect_during_write` while it holds
+    the lock, the way a garbage collection can finalize an object in the middle
+    of a write. A finalizer that writes to the same stream would deadlock on
+    the real lock, so this stream records the re-entry instead.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.collect_during_write = None
+        self.reentered = False
+
+    def write(self, _):
+        if not self._lock.acquire(blocking=False):
+            self.reentered = True
+            return
+        try:
+            self.collect_during_write = None
+        finally:
+            self._lock.release()
+
+    def flush(self):
+        pass
+
+
 class WorkerTests(unittest.TestCase):
     class DummyCaller(object):
         worker_number = 1
@@ -571,3 +602,51 @@ class WorkerTests(unittest.TestCase):
         worker = Worker(self.DummyCaller(), '/results', options, {})
         self.assertTrue(options.manifest_update)
         self.assertFalse(worker._options.manifest_update)
+
+    def _make_worker(self):
+        options = run_web_tests.parse_args(['--platform', 'test-mac-mac10.11'])[
+            0
+        ]
+        return Worker(self.DummyCaller(), '/results', options, {})
+
+    def test_collect_during_log_write_does_not_write_again(self):
+        logger = logging.getLogger(Worker.__module__)
+        self.addCleanup(logger.setLevel, logger.level)
+        logger.setLevel(logging.DEBUG)
+        stream = _ReentrancyCheckingStream()
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+
+        stream.collect_during_write = self._make_worker()
+        logger.debug('The worker is finalized during this write')
+        self.assertIsNone(stream.collect_during_write)
+        self.assertFalse(stream.reentered)
+
+    def test_pool_stops_driver_when_handle_raises(self):
+        driver = mock.Mock()
+
+        def start(worker):
+            worker._port = mock.Mock(**{'get_option.return_value': None})
+            worker._driver = driver
+
+        options = run_web_tests.parse_args(['--platform', 'test-mac-mac10.11'])[
+            0
+        ]
+        with (
+            mock.patch.object(Worker, 'start', start),
+            mock.patch.object(
+                Worker, 'handle', side_effect=RuntimeError('handle failed')
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, 'handle failed'):
+                with message_pool.get(
+                    mock.Mock(),
+                    lambda connection: Worker(
+                        connection, '/results', options, {}
+                    ),
+                    1,
+                    MockHost(),
+                ) as pool:
+                    pool.run([('test_list', 'shard', [], 0)])
+        driver.stop.assert_called_once_with()

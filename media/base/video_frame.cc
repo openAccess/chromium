@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -40,6 +41,7 @@
 #include "media/base/media_switches.h"
 #include "media/base/timestamp_constants.h"
 #include "media/base/video_util.h"
+#include "skia/ext/skia_utils_base.h"
 #include "third_party/skia/include/core/SkYUVAInfo.h"
 #include "third_party/skia/include/core/SkYUVAPixmaps.h"
 #include "ui/gfx/geometry/point.h"
@@ -177,6 +179,7 @@ gfx::Size VideoFrame::SampleSize(VideoPixelFormat format, size_t plane) {
         case PIXEL_FORMAT_BGRA:
         case PIXEL_FORMAT_RGBAF16:
         case PIXEL_FORMAT_Y410:
+        case PIXEL_FORMAT_Y210:
           break;
       }
   }
@@ -289,6 +292,7 @@ static std::optional<VideoFrameLayout> GetDefaultLayout(
     case PIXEL_FORMAT_ABGR:
     case PIXEL_FORMAT_XBGR:
     case PIXEL_FORMAT_Y410:
+    case PIXEL_FORMAT_Y210:
       planes = std::vector<ColorPlaneLayout>{ColorPlaneLayout(
           coded_size.width() * 4, 0, coded_size.GetArea() * 4)};
       break;
@@ -414,7 +418,8 @@ scoped_refptr<VideoFrame> VideoFrame::CreateFrameForNativeTexturesInternal(
       format != PIXEL_FORMAT_XB30 && format != PIXEL_FORMAT_P010LE &&
       format != PIXEL_FORMAT_P210LE && format != PIXEL_FORMAT_P410LE &&
       format != PIXEL_FORMAT_RGBAF16 && format != PIXEL_FORMAT_YV12 &&
-      format != PIXEL_FORMAT_BGRA && format != PIXEL_FORMAT_Y410) {
+      format != PIXEL_FORMAT_BGRA && format != PIXEL_FORMAT_Y410 &&
+      format != PIXEL_FORMAT_Y210) {
     DLOG(ERROR) << "Unsupported pixel format: "
                 << VideoPixelFormatToString(format);
     return nullptr;
@@ -1110,6 +1115,7 @@ int VideoFrame::BytesPerElement(VideoPixelFormat format, size_t plane) {
     case PIXEL_FORMAT_XR30:
     case PIXEL_FORMAT_XB30:
     case PIXEL_FORMAT_Y410:
+    case PIXEL_FORMAT_Y210:
       return 4;
     case PIXEL_FORMAT_RGB24:
       return 3;
@@ -1455,56 +1461,94 @@ uint8_t* VideoFrame::GetWritableVisibleData(size_t plane) {
   return GetWritableVisiblePlaneData(plane).data();
 }
 
-SkYUVAInfo VideoFrame::GetVisibleSkYUVAInfo() const {
-  const auto plane_config = SkYUVAPlaneConfigForFormat(format());
-  if (plane_config == SkYUVAInfo::PlaneConfig::kUnknown) {
+namespace {
+
+// Return an SkPixmap of `size` for the visible data of `plane` of `frame`.
+std::optional<SkPixmap> GetVisiblePlaneSkPixmap(
+    const VideoFrame& frame,
+    const VideoPixelFormatSkInfo& sk_info,
+    size_t plane,
+    const SkISize& size,
+    sk_sp<SkColorSpace> color_space) {
+  if (sk_info.plane_color_types[plane] == kUnknown_SkColorType) {
+    return std::nullopt;
+  }
+  auto pixmap = skia::MakeSkPixmap(
+      SkImageInfo::Make(size, sk_info.plane_color_types[plane],
+                        sk_info.plane_alpha_types[plane],
+                        std::move(color_space)),
+      frame.GetVisiblePlaneData(plane), frame.stride(plane));
+  if (!pixmap || !pixmap->addr()) {
+    return std::nullopt;
+  }
+  return pixmap;
+}
+
+}  // namespace
+
+SkYUVAPixmaps VideoFrame::GetVisibleSkYUVAPixmaps() const {
+  if (!HasDirectCpuAccess()) {
     return {};
   }
-  const auto subsampling = SkYUVASubsamplingForFormat(format());
-  if (subsampling == SkYUVAInfo::Subsampling::kUnknown) {
+  const auto sk_info = GetSkInfoForFormat(format());
+  if (sk_info.yuva_plane_config == SkYUVAInfo::PlaneConfig::kUnknown ||
+      sk_info.yuva_subsampling == SkYUVAInfo::Subsampling::kUnknown) {
     return {};
   }
   SkYUVColorSpace yuv_color_space = kRec601_Limited_SkYUVColorSpace;
-  if (!ColorSpace().ToSkYUVColorSpace(static_cast<int>(BitDepth()),
+  if (!ColorSpace().ToSkYUVColorSpace(static_cast<int>(sk_info.bit_depth),
                                       &yuv_color_space)) {
     // Guess that the matrix is SkYUVColorSpace is Rec601 rather than
     // failing. This matches the default behavior of the historical use
     // of libyuv.
-    DLOG(ERROR) << "Invalid or unspecified matrix, assuming Rec601.";
+    DVLOG(1) << "Invalid or unspecified matrix, assuming Rec601.";
     yuv_color_space = kRec601_Limited_SkYUVColorSpace;
   }
-  return SkYUVAInfo(
+  const SkYUVAInfo yuva_info(
       SkISize::Make(visible_rect_.width(), visible_rect_.height()),
-      plane_config, subsampling, yuv_color_space);
-}
-
-std::vector<SkPixmap> VideoFrame::GetVisiblePlanesSkPixmaps() const {
-  const auto yuva_info = GetVisibleSkYUVAInfo();
-  const auto color_space = ColorSpace().GetAsFullRangeRGB().ToSkColorSpace();
-  std::array<SkISize, kMaxPlanes> plane_dimensions = {
-      SkISize::Make(visible_rect_.width(), visible_rect_.height()),
-  };
-  if (yuva_info.isValid()) {
-    yuva_info.planeDimensions(plane_dimensions.data());
-    DCHECK_EQ(NumPlanes(format()), static_cast<size_t>(yuva_info.numPlanes()));
-  } else {
-    DCHECK_EQ(NumPlanes(format()), 1u);
+      sk_info.yuva_plane_config, sk_info.yuva_subsampling, yuv_color_space);
+  if (!yuva_info.isValid() ||
+      static_cast<size_t>(yuva_info.numPlanes()) != NumPlanes(format())) {
+    return {};
   }
 
-  std::vector<SkPixmap> planes(NumPlanes(format()));
-  for (size_t p = 0; p < planes.size(); ++p) {
-    const auto color_type = SkColorTypeForPlaneNoCheck(format(), p);
-    if (color_type == kUnknown_SkColorType) {
+  std::array<SkISize, SkYUVAInfo::kMaxPlanes> plane_sizes;
+  yuva_info.planeDimensions(plane_sizes.data());
+  const auto color_space = ColorSpace().GetAsFullRangeRGB().ToSkColorSpace();
+  std::array<SkPixmap, SkYUVAInfo::kMaxPlanes> planes;
+  for (int p = 0; p < yuva_info.numPlanes(); ++p) {
+    const auto plane =
+        GetVisiblePlaneSkPixmap(*this, sk_info, p, plane_sizes[p], color_space);
+    if (!plane) {
       return {};
     }
-    const auto alpha_type = SkColorTypeIsAlwaysOpaque(color_type)
-                                ? kOpaque_SkAlphaType
-                                : kUnpremul_SkAlphaType;
-    const SkImageInfo plane_info = SkImageInfo::Make(
-        plane_dimensions[p], color_type, alpha_type, color_space);
-    planes[p] = SkPixmap(plane_info, visible_data(p), stride(p));
+    planes[p] = *plane;
   }
-  return planes;
+  return SkYUVAPixmaps::FromExternalPixmaps(yuva_info, planes.data());
+}
+
+std::optional<SkPixmap> VideoFrame::GetVisibleRGBPlanePixmap() const {
+  const auto sk_info = GetSkInfoForFormat(format());
+  if (!HasDirectCpuAccess() || NumPlanes(format()) != 1 ||
+      sk_info.yuva_plane_config != SkYUVAInfo::PlaneConfig::kUnknown) {
+    return std::nullopt;
+  }
+  return GetVisiblePlaneSkPixmap(
+      *this, sk_info, Plane::kARGB,
+      SkISize::Make(visible_rect_.width(), visible_rect_.height()),
+      ColorSpace().GetAsFullRangeRGB().ToSkColorSpace());
+}
+
+SkYUVAPixmaps VideoFrame::GetWritableVisibleSkYUVAPixmaps() {
+  // Match GetWritableVisiblePlaneData().
+  CHECK_NE(storage_type_, STORAGE_SHMEM);
+  return std::as_const(*this).GetVisibleSkYUVAPixmaps();
+}
+
+std::optional<SkPixmap> VideoFrame::GetWritableVisibleRGBPlanePixmap() {
+  // Match GetWritableVisiblePlaneData().
+  CHECK_NE(storage_type_, STORAGE_SHMEM);
+  return std::as_const(*this).GetVisibleRGBPlanePixmap();
 }
 
 gpu::SyncToken VideoFrame::acquire_sync_token() const {

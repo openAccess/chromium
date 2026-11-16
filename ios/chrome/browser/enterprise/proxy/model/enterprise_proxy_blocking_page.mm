@@ -30,10 +30,12 @@
 namespace {
 
 using ErrorCategory = enterprise_net::EnterpriseProxyErrorData::ErrorCategory;
+using enterprise_net::RecordEnterpriseProxyErrorPageEvent;
+using enterprise_net::SecureGatewayErrorPageEvent;
 
-// Prefix of the interstitial histograms. Required by the metrics helper, even
-// though the page records no metrics yet.
-// TODO(crbug.com/568816402): Record the interstitial metrics.
+// Prefix of the security interstitial histograms. Required by the metrics
+// helper of the controller client, although the page records its own
+// histograms instead, as it isn't a security interstitial.
 constexpr std::string_view kMetricPrefix = "enterprise_proxy";
 
 // Template parameter of the URL to reload instead of loading from cache.
@@ -82,9 +84,23 @@ EnterpriseProxyBlockingPage::EnterpriseProxyBlockingPage(
       category_(error_data.error_category()),
       error_page_params_(std::move(error_page_params)),
       // Always move `client` after it's been passed to the base class.
-      client_(std::move(client)) {}
+      client_(std::move(client)) {
+  // Recorded on creation, right before the page is displayed. In the rare case
+  // where the navigation of the page doesn't commit, the page is destroyed
+  // without being displayed, which records it as not displayed.
+  RecordEnterpriseProxyErrorPageEvent(category_,
+                                      SecureGatewayErrorPageEvent::kShown);
+}
 
-EnterpriseProxyBlockingPage::~EnterpriseProxyBlockingPage() = default;
+EnterpriseProxyBlockingPage::~EnterpriseProxyBlockingPage() {
+  // A displayed page is destroyed once it is left: when a navigation away from
+  // it commits, e.g. a back navigation, an omnibox navigation or a reload, or
+  // when its tab is closed. Unlike `WasDismissed()`, which is called when a
+  // back or forward navigation starts, this doesn't count navigations that
+  // never commit.
+  RecordOutcome(displayed_ ? SecureGatewayErrorPageEvent::kDismissed
+                           : SecureGatewayErrorPageEvent::kNotDisplayed);
+}
 
 std::string EnterpriseProxyBlockingPage::GetHtmlContents() const {
   // Similar to `IOSSecurityInterstitialPage::GetHtmlContents()`, but with the
@@ -114,6 +130,7 @@ void EnterpriseProxyBlockingPage::HandleCommand(
     security_interstitials::SecurityInterstitialCommand command) {
   switch (command) {
     case security_interstitials::CMD_DONT_PROCEED:
+      RecordOutcome(SecureGatewayErrorPageEvent::kGoBack);
       // Closes the tab when there is no page to go back to.
       client_->GoBack();
       return;
@@ -122,6 +139,7 @@ void EnterpriseProxyBlockingPage::HandleCommand(
       if (category_ != ErrorCategory::kAuthentication) {
         return;
       }
+      RecordOutcome(SecureGatewayErrorPageEvent::kContinue);
       // The page is only shown for errors recorded through the tab helper.
       EnterpriseProxyTabHelper* tab_helper =
           EnterpriseProxyTabHelper::FromWebState(web_state());
@@ -139,7 +157,21 @@ bool EnterpriseProxyBlockingPage::ShouldCreateNewNavigation() const {
   return true;
 }
 
+void EnterpriseProxyBlockingPage::ShowInfobar() {
+  // The page has no infobar. `IOSBlockingPageTabHelper` calls this once the
+  // navigation of the page commits, which displays the page, and again after
+  // each later navigation that finishes while the page is displayed.
+  displayed_ = true;
+}
+
 void EnterpriseProxyBlockingPage::PopulateInterstitialStrings(
     base::DictValue& load_time_data) const {
   load_time_data.Merge(error_page_params_.Clone());
+}
+
+void EnterpriseProxyBlockingPage::RecordOutcome(
+    enterprise_net::SecureGatewayErrorPageEvent outcome) {
+  if (!std::exchange(outcome_recorded_, true)) {
+    RecordEnterpriseProxyErrorPageEvent(category_, outcome);
+  }
 }

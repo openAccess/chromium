@@ -5,6 +5,9 @@
 #include <string_view>
 
 #include "base/callback_list.h"
+#include "base/metrics/statistics_recorder.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -30,13 +33,17 @@
 #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_view.h"
 #include "chrome/browser/ui/views/tabs/organizer/organizer_tray_view.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
+#include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_manager_test_api.h"
+#include "chrome/browser/ui/webui/top_chrome/webui_contents_preload_state.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/hit_test.h"
 #include "ui/base/interaction/element_identifier.h"
@@ -113,16 +120,8 @@ std::vector<base::CallbackListSubscription> SubscribeToAnimations(
 
 class OrganizerPanelUiTest : public InteractiveBrowserTest {
  public:
-  explicit OrganizerPanelUiTest(bool use_segmentation_control = false) {
-    if (use_segmentation_control) {
-      scoped_feature_list_.InitAndEnableFeatureWithParameters(
-          organizer_panel::kOrganizerPanel,
-          {{organizer_panel::kOrganizerPanelUseSegmentationControl.name,
-            "true"}});
-    } else {
-      scoped_feature_list_.InitAndEnableFeature(
-          organizer_panel::kOrganizerPanel);
-    }
+  OrganizerPanelUiTest() {
+    scoped_feature_list_.InitAndEnableFeature(organizer_panel::kOrganizerPanel);
   }
 
   void SetUpOnMainThread() override {
@@ -245,14 +244,7 @@ class OrganizerPanelUiTest : public InteractiveBrowserTest {
   auto CloseOrganizerPanel() {
     auto steps =
         Steps(EnsurePresent(kOrganizerPanelElementId),
-              If(
-                  []() {
-                    return organizer_panel::
-                        IsOrganizerPanelSegmentationControlEnabled();
-                  },
-                  Then(PressButton(kVerticalTabStripTabStripButtonElementId)),
-                  Else(PressButton(kTabSearchButtonElementId))),
-              WaitForPanelClose());
+              PressButton(kTabSearchButtonElementId), WaitForPanelClose());
     AddDescriptionPrefix(steps, "CloseOrganizerPanel()");
     return steps;
   }
@@ -456,6 +448,84 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest, TrayClosesOnEscPressed) {
       WaitForPanelClose(), CheckControllerState(false));
 }
 
+namespace {
+
+constexpr char kOpenTabCountJs[] =
+    "el => "
+    "Array.from(el.shadowRoot.querySelectorAll('organizer-list-section'))"
+    ".find(s => s.delegate?.getId() === 'open-tabs')?.items.length ?? -1";
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
+                       RecordsTimeToShowOnDemandAndReshow) {
+  const DeepQuery kListQuery{"organizer-panel-app", "organizer-list"};
+  WebUIContentsPreloadManagerTestAPI preload_api;
+  base::HistogramTester histogram_tester;
+
+  {
+    base::StatisticsRecorder::HistogramWaiter waiter(
+        "Tabs.Organizer.TimeToShow");
+    RunTestSequence(
+        SetVerticalTabsEnabled(false),
+        Do([&]() { preload_api.SetPreloadedContents(nullptr); }),
+        OpenOrganizerPanel(), WaitForPanelLoad(),
+        CheckJsResultAt(kWebContentsId, kListQuery, kOpenTabCountJs, 1));
+    waiter.Wait();
+  }
+  histogram_tester.ExpectTotalCount("Tabs.Organizer.TimeToShow", 1);
+  histogram_tester.ExpectTotalCount(
+      "Tabs.Organizer.TimeToShow.PreloadedWebContents", 0);
+  histogram_tester.ExpectTotalCount(
+      "Tabs.Organizer.TimeToShow.ReshowingWebContents", 0);
+  EXPECT_EQ(
+      1, histogram_tester.GetTotalCountForPrefix("Tabs.Organizer.TimeToShow."));
+
+  {
+    base::StatisticsRecorder::HistogramWaiter waiter(
+        "Tabs.Organizer.TimeToShow.ReshowingWebContents");
+    RunTestSequence(CloseOrganizerPanel(),
+                    Do([this]() { AddBlankTabAndShow(browser()); }),
+                    OpenOrganizerPanel());
+    waiter.Wait();
+    RunTestSequence(
+        CheckJsResultAt(kWebContentsId, kListQuery, kOpenTabCountJs, 2));
+  }
+  histogram_tester.ExpectTotalCount("Tabs.Organizer.TimeToShow", 2);
+  histogram_tester.ExpectTotalCount(
+      "Tabs.Organizer.TimeToShow.ReshowingWebContents", 1);
+}
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest, RecordsTimeToShowPreloaded) {
+  const DeepQuery kListQuery{"organizer-panel-app", "organizer-list"};
+  RunTestSequence(SetVerticalTabsEnabled(false));
+
+  WebUIContentsPreloadManagerTestAPI preload_api;
+  preload_api.PreloadUrl(browser()->GetProfile(),
+                         GURL(chrome::kChromeUIOrganizerPanelURL));
+  content::WebContents* preloaded = preload_api.GetPreloadedWebContents();
+  ASSERT_TRUE(preloaded);
+  ASSERT_TRUE(content::WaitForLoadStop(preloaded));
+
+  auto* preload_state = WebUIContentsPreloadState::FromWebContents(preloaded);
+  ASSERT_TRUE(preload_state);
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return preload_state->ready_to_show; }));
+
+  AddBlankTabAndShow(browser());
+
+  base::HistogramTester histogram_tester;
+  base::StatisticsRecorder::HistogramWaiter waiter(
+      "Tabs.Organizer.TimeToShow.PreloadedWebContents");
+  RunTestSequence(
+      OpenOrganizerPanel(), WaitForPanelLoad(),
+      CheckJsResultAt(kWebContentsId, kListQuery, kOpenTabCountJs, 2));
+  waiter.Wait();
+  histogram_tester.ExpectTotalCount("Tabs.Organizer.TimeToShow", 1);
+  histogram_tester.ExpectTotalCount(
+      "Tabs.Organizer.TimeToShow.PreloadedWebContents", 1);
+}
+
 // Vertical tab strip with tray or embedded organizer panel.
 
 IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest, OpenClosePanelVerticalTabs) {
@@ -474,24 +544,6 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest, OpenClosePanelVerticalTabs) {
       CloseOrganizerPanel(), CheckControllerState(false));
 }
 
-class OrganizerPanelSegmentationControlUiTest : public OrganizerPanelUiTest {
- public:
-  OrganizerPanelSegmentationControlUiTest()
-      : OrganizerPanelUiTest(/*use_segmentation_control=*/true) {}
-};
-
-IN_PROC_BROWSER_TEST_F(OrganizerPanelSegmentationControlUiTest,
-                       OpenClosePanelVerticalTabs) {
-  RunTestSequence(
-      SetVerticalTabsEnabled(true), CheckControllerState(false),
-      OpenOrganizerPanel(), CheckControllerState(true),
-      ExpectPanelLocation(OrganizerPanelLocation::kVerticalTabStrip),
-      CheckPanelVisuals(tabs::VerticalTabStripStateController::From(browser())
-                            ->GetUncollapsedWidth(),
-                        /*should_have_rounded_corners=*/false),
-      WaitForPanelLoad(), CloseOrganizerPanel(), CheckControllerState(false));
-}
-
 IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
                        OpenClosePanelVerticalTabsUsingAccelerator) {
   ui::Accelerator tab_search_accelerator;
@@ -504,6 +556,31 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
       WaitForPanelOpen(),
       SendAccelerator(kBrowserViewElementId, tab_search_accelerator),
       WaitForPanelClose());
+}
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
+                       PanelClosesOnEscInVerticalTabsWhenFocused) {
+  RunTestSequence(
+      SetVerticalTabsEnabled(true), OpenOrganizerPanel(),
+      ExpectPanelLocation(OrganizerPanelLocation::kVerticalTabStrip),
+      CheckViewProperty(OrganizerPanelView::kWebViewElementId,
+                        &views::View::HasFocus, true),
+      SendAccelerator(kBrowserViewElementId,
+                      ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE)),
+      WaitForPanelClose(), CheckControllerState(false));
+}
+
+IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
+                       PanelDoesNotCloseOnEscInVerticalTabsWhenUnfocused) {
+  RunTestSequence(
+      SetVerticalTabsEnabled(true), OpenOrganizerPanel(),
+      ExpectPanelLocation(OrganizerPanelLocation::kVerticalTabStrip),
+      FocusElement(ContentsWebView::kContentsWebViewElementId),
+      CheckViewProperty(OrganizerPanelView::kWebViewElementId,
+                        &views::View::HasFocus, false),
+      SendAccelerator(kBrowserViewElementId,
+                      ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE)),
+      CheckControllerState(true), EnsurePresent(kOrganizerPanelElementId));
 }
 
 IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
@@ -605,6 +682,28 @@ IN_PROC_BROWSER_TEST_F(OrganizerPanelUiTest,
   RunTestSequence(
       SetVerticalTabsEnabled(true, /*expand_on_hover_enabled=*/true),
       MoveMouseTo(kOmniboxElementId), CollapseTabStrip(), ExpandOnHover(),
+      OpenOrganizerPanel(),
+      ExpectPanelLocation(OrganizerPanelLocation::kVerticalTabStrip),
+      CheckPanelVisuals(tabs::kVerticalTabStripDefaultUncollapsedWidth, false));
+}
+
+IN_PROC_BROWSER_TEST_F(
+    OrganizerPanelUiTest,
+    TabSearchButtonVisibleInExpandOnHoverWhenPreviouslyWider) {
+  RunTestSequence(
+      SetVerticalTabsEnabled(true, /*expand_on_hover_enabled=*/true),
+      ResizeVerticalTabsRegionToWidth(
+          tabs::kVerticalTabStripDefaultUncollapsedWidth + 100),
+      MoveMouseTo(kOmniboxElementId), CollapseTabStrip(), ExpandOnHover(),
+      WaitForShow(kTabSearchButtonElementId),
+      CheckView(kTabSearchButtonElementId,
+                [this](views::View* button) {
+                  auto* const top_container =
+                      BrowserElementsViews::From(browser())->GetView(
+                          kVerticalTabStripTopContainerElementId);
+                  return top_container->GetBoundsInScreen().Contains(
+                      button->GetBoundsInScreen());
+                }),
       OpenOrganizerPanel(),
       ExpectPanelLocation(OrganizerPanelLocation::kVerticalTabStrip),
       CheckPanelVisuals(tabs::kVerticalTabStripDefaultUncollapsedWidth, false));

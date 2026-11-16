@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_jni_bridge.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_observer.h"
 #include "components/tab_groups/tab_group_id.h"
+#include "third_party/jni_zero/jni_zero.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/android/chrome_jni_headers/TabModelObserverJniBridge_jni.h"
@@ -30,7 +31,7 @@ TabModelObserverJniBridge::TabModelObserverJniBridge(
   // Create the Java object. This immediately adds it as an observer on the
   // corresponding TabModel.
   java_object_.Reset(Java_TabModelObserverJniBridge_create(
-      env, reinterpret_cast<uintptr_t>(this), java_tab_model));
+      env, jni_zero::MakeRaw(this), java_tab_model));
 }
 
 TabModelObserverJniBridge::~TabModelObserverJniBridge() {
@@ -59,13 +60,6 @@ void TabModelObserverJniBridge::WillCloseTabs(
     for (auto& observer : interface_observers_) {
       observer.OnAllTabsAreClosing(*tab_model_);
     }
-  }
-}
-
-void TabModelObserverJniBridge::WillCloseTab(TabAndroid* tab) {
-  CHECK(tab);
-  for (auto& observer : model_observers_) {
-    observer.WillCloseTab(tab);
   }
 }
 
@@ -196,15 +190,6 @@ void TabModelObserverJniBridge::TabClosureCommitted(TabAndroid* tab) {
 void TabModelObserverJniBridge::AllTabsClosureCommitted() {
   for (auto& observer : model_observers_) {
     observer.AllTabsClosureCommitted();
-  }
-}
-
-void TabModelObserverJniBridge::AllTabsAreClosing() {
-  for (auto& observer : model_observers_) {
-    observer.AllTabsAreClosing();
-  }
-  for (auto& observer : interface_observers_) {
-    observer.OnAllTabsAreClosing(*tab_model_);
   }
 }
 

@@ -532,8 +532,6 @@ IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_GoBack2Forward2) {
 IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_DoReload) {
   // The first navigation should fail, and the second one should be the error
   // page.
-  std::string url =
-      embedded_test_server()->GetURL("mock.http", "/title2.html").spec();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetDnsErrorURL()));
   ExpectDisplayingErrorPage(browser(), net::ERR_NAME_NOT_RESOLVED);
 
@@ -570,8 +568,6 @@ IN_PROC_BROWSER_TEST_F(DNSErrorPageTest, DNSError_DoReload) {
 // traces indicate this may actually happen.  This test may hang on regression.
 IN_PROC_BROWSER_TEST_F(DNSErrorPageTest,
                        DNSError_DoReloadAfterSameDocumentNavigation) {
-  std::string url =
-      embedded_test_server()->GetURL("mock.http", "/title2.html").spec();
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetDnsErrorURL()));
   ExpectDisplayingErrorPage(browser(), net::ERR_NAME_NOT_RESOLVED);
 
@@ -1115,13 +1111,7 @@ class ErrorPageForIDNTest : public InProcessBrowserTest {
   static constexpr char kHostnameJsUtf8[] =
       "\xD0\xBF\xD1\x80\xD0\xB5\xD0\xB7\xD0\xB8\xD0\xB4\xD0\xB5\xD0\xBD\xD1\x82"
       "\x2E\xD1\x80\xD1\x84";
-  ErrorPageForIDNTest() {
-    // TODO(crbug.com/334954143) This test clears the AcceptLanguage Prefs which
-    // causes Accept-Language to not work correctly. Fix the tests when turning
-    // on the reduce accept-language feature.
-    scoped_feature_list_.InitWithFeatures(
-        {}, {network::features::kReduceAcceptLanguage});
-  }
+  ErrorPageForIDNTest() = default;
 
   // InProcessBrowserTest:
   void SetUpOnMainThread() override {
@@ -1129,9 +1119,6 @@ class ErrorPageForIDNTest : public InProcessBrowserTest {
     browser()->GetProfile()->GetPrefs()->SetString(
         language::prefs::kAcceptLanguages, std::string());
   }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Make sure error page shows correct unicode for IDN.

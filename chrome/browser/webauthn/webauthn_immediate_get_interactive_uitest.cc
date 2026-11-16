@@ -6,6 +6,7 @@
 
 #include "base/base64url.h"
 #include "base/rand_util.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/password_manager/factories/profile_password_store_factory.h"
@@ -31,6 +32,8 @@
 #include "content/public/test/browser_test_utils.h"
 #include "device/fido/public/features.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/view_utils.h"
@@ -194,17 +197,21 @@ class WebAuthnImmediateGetWithBootstrappedEnclaveTest
                   if (!views::IsViewClass<views::RadioButton>(view)) {
                     return false;
                   }
-                  const views::View* parent = view->parent();
-                  if (!parent) {
-                    return false;
-                  }
-                  // CombinedSelectorRowView sets its accessible name.
+                  // CombinedSelectorRadioButton sets its accessible name.
                   const std::u16string& name =
-                      parent->GetViewAccessibility().GetCachedName();
-                  return name.find(base::ASCIIToUTF16(username)) !=
-                         std::string::npos;
+                      view->GetViewAccessibility().GetCachedName();
+                  return name.contains(base::ASCIIToUTF16(username));
                 },
                 username)),
+        CheckView("SelectedPasskey",
+                  [](views::View* view) {
+                    ui::AXNodeData data;
+                    view->GetViewAccessibility().GetAccessibleNodeData(&data);
+                    return data.GetIntAttribute(
+                               ax::mojom::IntAttribute::kPosInSet) > 0 &&
+                           data.GetIntAttribute(
+                               ax::mojom::IntAttribute::kSetSize) > 0;
+                  }),
         PressButton("SelectedPasskey"));
   }
 };

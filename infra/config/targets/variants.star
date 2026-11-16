@@ -151,6 +151,7 @@ targets.variant(
     identifier = "Intel UHD 630 or 770",
     mixins = [
         "intel_uhd_630_or_770",
+        "win10",
     ],
 )
 
@@ -335,6 +336,20 @@ targets.variant(
 )
 
 targets.variant(
+    name = "SIM_IPAD_A16_27_3",
+    identifier = "iPad (A16) 27.3",
+    mixins = [
+        "ios_runtime_cache_27_3",
+    ],
+    args = [
+        "--platform",
+        "iPad (A16)",
+        "--version",
+        "27.3",
+    ],
+)
+
+targets.variant(
     name = "SIM_IPAD_PRO_7TH_GEN_18_5",
     identifier = "iPad Pro 13-inch (M4) 18.5",
     mixins = [
@@ -513,6 +528,20 @@ targets.variant(
 )
 
 targets.variant(
+    name = "SIM_IPHONE_16_27_3",
+    identifier = "iPhone 16 27.3",
+    mixins = [
+        "ios_runtime_cache_27_3",
+    ],
+    args = [
+        "--platform",
+        "iPhone 16",
+        "--version",
+        "27.3",
+    ],
+)
+
+targets.variant(
     name = "SIM_IPHONE_DUO_27_2",
     identifier = "iPhone Duo 27.2",
     mixins = [
@@ -523,6 +552,20 @@ targets.variant(
         "iPhone Duo",
         "--version",
         "27.2-iphone19-4",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPHONE_DUO_27_3",
+    identifier = "iPhone Duo 27.3",
+    mixins = [
+        "ios_runtime_cache_27_3",
+    ],
+    args = [
+        "--platform",
+        "iPhone Duo",
+        "--version",
+        "27.3",
     ],
 )
 
@@ -660,6 +703,20 @@ targets.variant(
 )
 
 targets.variant(
+    name = "SIM_IPHONE_SE_3RD_GEN_27_3",
+    identifier = "iPhone SE (3rd generation) 27.3",
+    mixins = [
+        "ios_runtime_cache_27_3",
+    ],
+    args = [
+        "--platform",
+        "iPhone SE (3rd generation)",
+        "--version",
+        "27.3",
+    ],
+)
+
+targets.variant(
     name = "WIN10_INTEL_UHD_630_STABLE",
     identifier = "8086:9bc5",
     mixins = [
@@ -673,5 +730,30 @@ targets.variant(
     identifier = "10de:2184",
     mixins = [
         "win10_nvidia_gtx_1660_stable",
+    ],
+)
+
+targets.variant(
+    name = "WIN_HIGH_PERF_AMD",
+    identifier = "AMD RX 5500 XT or RX 9070 XT",
+    mixins = [
+        "win_high_perf_amd_gpu",
+    ],
+)
+
+targets.variant(
+    name = "WIN_HIGH_PERF_NVIDIA",
+    identifier = "NVIDIA GTX 1660 or RTX 4070 or RTX 5070",
+    mixins = [
+        "win_high_perf_nvidia_gpu",
+    ],
+)
+
+targets.variant(
+    name = "WIN10_NVIDIA_GTX_1660",
+    identifier = "NVIDIA GeForce GTX 1660",
+    mixins = [
+        "nvidia_geforce_gtx_1660",
+        "win10",
     ],
 )

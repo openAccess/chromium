@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/feedback/show_feedback_page.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -51,6 +52,8 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"readAnythingTabTitle", IDS_READING_MODE_TITLE},
       {"notSelectableHeader", IDS_READING_MODE_NOT_SELECTABLE_HEADER},
       {"emptyStateHeader", IDS_READING_MODE_EMPTY_STATE_HEADER},
+      {"emptyStateTranslationHeader",
+       IDS_READING_MODE_EMPTY_STATE_TRANSLATION_HEADER},
       {"emptyStateSubheader", IDS_READING_MODE_EMPTY_STATE_SUBHEADER},
       {"readAnythingLoadingMessage", IDS_READ_ANYTHING_LOADING},
       {"lineSpacingTitle", IDS_READING_MODE_LINE_SPACING_COMBOBOX_LABEL},
@@ -131,6 +134,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"stopLabel", IDS_READING_MODE_STOP_SPEECH},
       {"playTooltip", IDS_READING_MODE_PLAY_TOOLTIP},
       {"previewTooltip", IDS_READING_MODE_PREVIEW_TOOLTIP},
+      {"previewVoiceLabel", IDS_READING_MODE_PREVIEW_VOICE_LABEL},
       {"pauseTooltip", IDS_READING_MODE_PAUSE_TOOLTIP},
       {"previousSentenceLabel", IDS_READING_MODE_NAVIGATE_PREVIOUS_SENTENCE},
       {"nextSentenceLabel", IDS_READING_MODE_NAVIGATE_NEXT_SENTENCE},
@@ -213,6 +217,22 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       {"linksLabel", IDS_READING_MODE_LINKS_LABEL},
       {"aiPlaybackTurnOn", IDS_READING_MODE_AI_PLAYBACK_TURN_ON},
       {"aiPlaybackTurnOff", IDS_READING_MODE_AI_PLAYBACK_TURN_OFF},
+      {"aiPlaybackFeedbackDialogTitle",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_DIALOG_TITLE},
+      {"aiPlaybackFeedbackDialogSubtitle",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_DIALOG_SUBTITLE},
+      {"aiPlaybackFeedbackSubmit",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_SUBMIT},
+      {"aiPlaybackFeedbackReasonNotFactuallyCorrect",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_NOT_FACTUALLY_CORRECT},
+      {"aiPlaybackFeedbackReasonBadVoice",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_BAD_VOICE},
+      {"aiPlaybackFeedbackReasonNotEngaging",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_NOT_ENGAGING},
+      {"aiPlaybackFeedbackReasonOffensive",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_OFFENSIVE},
+      {"aiPlaybackFeedbackReasonTechnicalIssue",
+       IDS_READING_MODE_AI_PLAYBACK_FEEDBACK_REASON_TECHNICAL_ISSUE},
       {"voiceLabel", IDS_READING_MODE_VOICE_LABEL},
       {"accentMenuLabel", IDS_READING_MODE_ACCENT_MENU_LABEL},
       {"accentMenuClose", IDS_READING_MODE_ACCENT_MENU_CLOSE},
@@ -276,6 +296,7 @@ ReadAnythingUntrustedUI::ReadAnythingUntrustedUI(content::WebUI* web_ui)
       "parse-html-subset polymer-html-literal "
       "polymer-template-event-attribute-policy;");
   raw_ptr<Profile> profile = Profile::FromWebUI(web_ui);
+  source->AddBoolean("canShowFeedback", chrome::CanShowFeedback(profile));
 
   // If the ThemeSource isn't added here, since Read Anything is
   // chrome-untrusted, it will be unable to load stylesheets until a new tab

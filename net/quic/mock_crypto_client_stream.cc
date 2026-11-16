@@ -9,6 +9,7 @@
 #include "net/quic/mock_decrypter.h"
 #include "net/quic/mock_encrypter.h"
 #include "net/quic/quic_chromium_client_session.h"
+#include "net/socket/socket_test_util.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_decrypter.h"
 #include "net/third_party/quiche/src/quiche/quic/core/crypto/quic_encrypter.h"
 #include "net/third_party/quiche/src/quiche/quic/core/http/quic_spdy_client_session_base.h"
@@ -93,16 +94,16 @@ void MockCryptoClientStream::OnHandshakeMessage(
 
 bool MockCryptoClientStream::CryptoConnect() {
   DCHECK(session()->version().IsIetfQuic());
+  const DatagramClientSocket* socket =
+      static_cast<QuicChromiumClientSession*>(session())->GetDefaultSocket();
   IPEndPoint local_ip;
-  static_cast<QuicChromiumClientSession*>(session())
-      ->GetDefaultSocket()
-      ->GetLocalAddress(&local_ip);
-  session()->connection()->SetSelfAddress(ToQuicSocketAddress(local_ip));
+  if (MockUDPClientSocket::GetLocalAddressIfAvailable(socket, &local_ip) ==
+      OK) {
+    session()->connection()->SetSelfAddress(ToQuicSocketAddress(local_ip));
+  }
 
   IPEndPoint peer_ip;
-  static_cast<QuicChromiumClientSession*>(session())
-      ->GetDefaultSocket()
-      ->GetPeerAddress(&peer_ip);
+  socket->GetPeerAddress(&peer_ip);
   quic::test::QuicConnectionPeer::SetEffectivePeerAddress(
       session()->connection(), ToQuicSocketAddress(peer_ip));
 
@@ -315,6 +316,14 @@ void MockCryptoClientStream::NotifySessionZeroRttComplete() {
   session()->OnNewEncryptionKeyAvailable(
       ENCRYPTION_ZERO_RTT,
       std::make_unique<TaggingEncrypter>(ENCRYPTION_ZERO_RTT));
+  // `OnNewEncryptionKeyAvailable()` may synchronously invoke the session's
+  // connect callback (e.g. `QuicSessionAttempt::DoConfirmConnection()`), which
+  // closes the connection if it is IP-pooled or superseded by an active
+  // session. Return early to avoid updating permanently cancelled alarms in
+  // `DiscardOldEncryptionKey()`.
+  if (!session()->connection()->connected()) {
+    return;
+  }
 
   session()->DiscardOldEncryptionKey(ENCRYPTION_INITIAL);
 }
@@ -358,8 +367,21 @@ void MockCryptoClientStream::NotifySessionOneRttKeyAvailable() {
         ENCRYPTION_FORWARD_SECURE,
         std::make_unique<TaggingEncrypter>(ENCRYPTION_FORWARD_SECURE));
   }
+  // Installing 1-RTT keys sends initial HTTP/3 data (e.g. SETTINGS), which may
+  // synchronously fail and close the connection.
+  if (!session()->connection()->connected()) {
+    return;
+  }
   SetConfigNegotiated();
   session()->OnTlsHandshakeComplete();
+  // `OnTlsHandshakeComplete()` runs the connect callback, which may
+  // synchronously close the connection (e.g. when IP-pooled in
+  // `QuicSessionAttempt::DoConfirmConnection()`). Return early to avoid
+  // updating permanently cancelled alarms when discarding keys or neutering
+  // handshake data.
+  if (!session()->connection()->connected()) {
+    return;
+  }
   session()->DiscardOldEncryptionKey(ENCRYPTION_INITIAL);
   session()->DiscardOldEncryptionKey(ENCRYPTION_ZERO_RTT);
   session()->NeuterHandshakeData();

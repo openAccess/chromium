@@ -24,7 +24,6 @@
 #include "base/check_deref.h"
 #include "base/containers/span.h"
 #include "base/environment.h"
-#include "base/feature_list.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -85,9 +84,6 @@
 #include "url/origin.h"
 
 namespace {
-
-// TODO(thomasanderson): Remove this feature flag in the future.
-BASE_FEATURE(kWebNotificationPortalFallback, base::FEATURE_ENABLED_BY_DEFAULT);
 
 // DBus name / path.
 const char kFreedesktopNotificationsName[] = "org.freedesktop.Notifications";
@@ -467,7 +463,10 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
     }
 
     // Prepare resource files.
-    gfx::Image icon(copy_notification->icon().Rasterize(nullptr));
+    // Vector icons (e.g. from ui::ImageModel::FromVectorIcon()) need a
+    // ColorProvider to resolve their color ids.
+    gfx::Image icon(copy_notification->icon().Rasterize(
+        ThemeServiceFactory::GetForProfile(profile)->GetColorProvider()));
     gfx::Image notification_icon = using_portal_
                                        ? ResizeImageToPortalMaxSize(icon)
                                        : ResizeImageToFdoMaxSize(icon);
@@ -495,7 +494,7 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
         base::BindOnce(
             &NotificationPlatformBridgeLinuxImpl::OnFilesWrittenForDisplay,
             weak_factory_.GetWeakPtr(), notification_type, profile_id,
-            is_incognito, std::move(copy_notification), data->dbus_id));
+            is_incognito, std::move(copy_notification)));
   }
 
   void Close(Profile* profile, const std::string& notification_id) override {
@@ -588,6 +587,15 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
     // first "Notify" message completes (for org.freedesktop.Notifications).
     uint32_t dbus_id = 0;
 
+    // Nonzero while a "Notify" call for this notification is awaiting its
+    // reply. Identifies that call, so a reply for a notification that was
+    // closed (and possibly shown again with the same ID) can be recognized.
+    uint64_t notify_request_id = 0;
+
+    // Whether an update arrived in `notification` and `files` while a "Notify"
+    // call was in flight. It is sent once the reply provides the ID to replace.
+    bool queued = false;
+
     // The ID used by org.freedesktop.portal.Notification.
     std::string portal_id;
 
@@ -597,7 +605,8 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
     const std::string profile_id;
     const bool is_incognito;
 
-    // Copy of notification for retry if AddNotification fails.
+    // Copy of notification for retry if AddNotification fails, or the latest
+    // queued update while a "Notify" call is in flight.
     std::unique_ptr<message_center::Notification> notification;
 
     // Index of button marked with im.reply-with-text, if any.
@@ -734,8 +743,7 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
 
   void InitPortal(ConnectionInitializationStatusCode fallback_reason) {
     CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
-    if (using_portal_ ||
-        !base::FeatureList::IsEnabled(kWebNotificationPortalFallback)) {
+    if (using_portal_) {
       OnConnectionInitializationFinished(fallback_reason);
       return;
     }
@@ -841,7 +849,6 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
       const std::string& profile_id,
       bool is_incognito,
       std::unique_ptr<message_center::Notification> notification,
-      uint32_t dbus_id,
       NotificationResources files) {
     CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
@@ -853,6 +860,7 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
       }
       return;
     }
+
     data->files = std::move(files);
 
     if (using_portal_) {
@@ -860,6 +868,25 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
                     std::move(notification), data);
       return;
     }
+
+    if (data->notify_request_id) {
+      // The ID to replace isn't known until the server replies to the
+      // in-flight "Notify" call. Sending now would create a second
+      // notification, so keep only the latest update until then.
+      data->notification = std::move(notification);
+      data->queued = true;
+      return;
+    }
+
+    SendNotify(data, std::move(notification));
+  }
+
+  // Makes the "Notify" call to D-Bus, replacing `data->dbus_id` if set.
+  void SendNotify(NotificationData* data,
+                  std::unique_ptr<message_center::Notification> notification) {
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+    CHECK(!data->notify_request_id);
+    CHECK(!data->queued);
 
     std::string app_name(l10n_util::GetStringUTF8(IDS_PRODUCT_NAME));
 
@@ -1030,14 +1057,16 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
                                  ? kExpireTimeoutDefault
                                  : kExpireTimeout;
 
+    data->notify_request_id = next_notify_request_id_++;
     dbus_utils::CallMethod<"susssasa{sv}i", "u">(
         notification_proxy_, kFreedesktopNotificationsName, kMethodNotify,
         base::BindOnce(&NotificationPlatformBridgeLinuxImpl::OnNotifyResponse,
-                       weak_factory_.GetWeakPtr(), notification->id(),
-                       profile_id, is_incognito),
-        std::move(app_name), dbus_id, std::move(app_icon), std::move(summary),
-        std::move(body_str), std::move(actions), std::move(hints),
-        expire_timeout);
+                       weak_factory_.GetWeakPtr(), data->notification_id,
+                       data->profile_id, data->is_incognito,
+                       data->notify_request_id),
+        std::move(app_name), data->dbus_id, std::move(app_icon),
+        std::move(summary), std::move(body_str), std::move(actions),
+        std::move(hints), expire_timeout);
   }
 
   void DisplayPortal(NotificationHandler::Type notification_type,
@@ -1268,17 +1297,34 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
   void OnNotifyResponse(const std::string& notification_id,
                         const std::string& profile_id,
                         bool is_incognito,
+                        uint64_t notify_request_id,
                         dbus_utils::CallMethodResult<uint32_t> result) {
     CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+    uint32_t dbus_id = 0;
+    if (result.has_value()) {
+      auto& [id] = result.value();
+      dbus_id = id;
+    }
     NotificationData* data =
         FindNotificationData(notification_id, profile_id, is_incognito);
-    if (!data) {
+    if (!data || data->notify_request_id != notify_request_id) {
+      // The notification was closed while the call was in flight (and may
+      // have been shown again with the same ID since). The server shows it
+      // anyway, so close it there too.
+      if (dbus_id && notification_proxy_) {
+        dbus_utils::CallMethod<"u", "">(
+            notification_proxy_, kFreedesktopNotificationsName,
+            kMethodCloseNotification,
+            base::BindOnce([](dbus_utils::CallMethodResult<>) {}), dbus_id);
+      }
       return;
     }
-    data->dbus_id = 0;
-    if (result.has_value()) {
-      auto& [dbus_id] = result.value();
-      data->dbus_id = dbus_id;
+    data->notify_request_id = 0;
+    data->dbus_id = dbus_id;
+    if (data->queued) {
+      data->queued = false;
+      SendNotify(data, std::move(data->notification));
+      return;
     }
     if (!data->dbus_id) {
       // There was some sort of error with creating the notification.
@@ -1300,7 +1346,9 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
               kMethodRemoveNotification,
               base::BindOnce([](dbus_utils::CallMethodResult<>) {}),
               data->portal_id);
-        } else {
+        } else if (data->dbus_id) {
+          // Without a server ID, the first "Notify" call is still in flight;
+          // OnNotifyResponse() closes the notification once it replies.
           dbus_utils::CallMethod<"u", "">(
               notification_proxy_, kFreedesktopNotificationsName,
               kMethodCloseNotification,
@@ -1426,12 +1474,17 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
           /*action_index=*/std::nullopt, /*by_user=*/std::nullopt,
           /*reply=*/std::nullopt, data->profile_id, data->is_incognito);
     } else if (action == kCloseButtonId) {
+      NotificationHandler::Type notification_type = data->notification_type;
+      GURL origin_url = data->origin_url;
+      std::string notification_id = data->notification_id;
+      std::string profile_id = data->profile_id;
+      bool is_incognito = data->is_incognito;
+
+      CloseImpl(profile_id, notification_id);
       ForwardNotificationOperation(
-          NotificationOperation::kClose, data->notification_type,
-          data->origin_url, data->notification_id,
-          /*action_index=*/std::nullopt, /*by_user=*/true,
-          /*reply=*/std::nullopt, data->profile_id, data->is_incognito);
-      CloseImpl(data->profile_id, data->notification_id);
+          NotificationOperation::kClose, notification_type, origin_url,
+          notification_id, /*action_index=*/std::nullopt, /*by_user=*/true,
+          /*reply=*/std::nullopt, profile_id, is_incognito);
     } else {
       size_t button_index;
       if (!base::StringToSizeT(action, &button_index)) {
@@ -1488,12 +1541,17 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
           /*action_index=*/std::nullopt, /*by_user=*/std::nullopt,
           /*reply=*/std::nullopt, data->profile_id, data->is_incognito);
     } else if (action == kCloseButtonId) {
+      NotificationHandler::Type notification_type = data->notification_type;
+      GURL origin_url = data->origin_url;
+      std::string notification_id = data->notification_id;
+      std::string profile_id = data->profile_id;
+      bool is_incognito = data->is_incognito;
+
+      CloseImpl(profile_id, notification_id);
       ForwardNotificationOperation(
-          NotificationOperation::kClose, data->notification_type,
-          data->origin_url, data->notification_id,
-          /*action_index=*/std::nullopt, /*by_user=*/true,
-          /*reply=*/std::nullopt, data->profile_id, data->is_incognito);
-      CloseImpl(data->profile_id, data->notification_id);
+          NotificationOperation::kClose, notification_type, origin_url,
+          notification_id, /*action_index=*/std::nullopt, /*by_user=*/true,
+          /*reply=*/std::nullopt, profile_id, is_incognito);
     } else {
       size_t id;
       if (!base::StringToSizeT(action, &id)) {
@@ -1544,13 +1602,19 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
       return;
     }
 
-    // TODO(peter): Can we support `by_user` appropriately here?
-    ForwardNotificationOperation(
-        NotificationOperation::kClose, data->notification_type,
-        data->origin_url, data->notification_id, std::nullopt, true,
-        std::nullopt, data->profile_id, data->is_incognito);
+    NotificationHandler::Type notification_type = data->notification_type;
+    GURL origin_url = data->origin_url;
+    std::string notification_id = data->notification_id;
+    std::string profile_id = data->profile_id;
+    bool is_incognito = data->is_incognito;
 
     notifications_.erase(data);
+
+    // TODO(peter): Can we support `by_user` appropriately here?
+    ForwardNotificationOperation(NotificationOperation::kClose,
+                                 notification_type, origin_url, notification_id,
+                                 std::nullopt, true, std::nullopt, profile_id,
+                                 is_incognito);
   }
 
   // Called once the connection has been set up (or not).
@@ -1638,6 +1702,9 @@ class NotificationPlatformBridgeLinuxImpl : public NotificationPlatformBridge {
   using UnorderedUniqueSet = std::unordered_map<T*, std::unique_ptr<T>>;
 
   UnorderedUniqueSet<NotificationData> notifications_;
+
+  // Identifies the next "Notify" call (see NotificationData).
+  uint64_t next_notify_request_id_ = 1;
 
   base::WeakPtrFactory<NotificationPlatformBridgeLinuxImpl> weak_factory_{this};
 };

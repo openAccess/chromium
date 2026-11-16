@@ -386,6 +386,7 @@ HttpNetworkTransaction::~HttpNetworkTransaction() {
 #if BUILDFLAG(ENABLE_REPORTING)
   // If no error or success report has been generated yet at this point, then
   // this network transaction was prematurely cancelled.
+  network_error_logging_report_deferred_ = false;
   GenerateNetworkErrorLoggingReport(ERR_ABORTED);
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 
@@ -882,6 +883,25 @@ void HttpNetworkTransaction::SetIsSharedDictionaryReadAllowedCallback(
   NOTREACHED();
 }
 
+void HttpNetworkTransaction::DeferNetworkErrorLoggingForBodyDecoding() {
+#if BUILDFLAG(ENABLE_REPORTING)
+  if (!network_error_logging_report_generated_) {
+    network_error_logging_report_deferred_ = true;
+  }
+#endif
+}
+
+void HttpNetworkTransaction::CompleteNetworkErrorLoggingForBodyDecoding(
+    int result) {
+#if BUILDFLAG(ENABLE_REPORTING)
+  if (!network_error_logging_report_deferred_) {
+    return;
+  }
+  network_error_logging_report_deferred_ = false;
+  GenerateNetworkErrorLoggingReport(result);
+#endif
+}
+
 void HttpNetworkTransaction::ResumeAfterConnected(int result) {
   DCHECK_EQ(next_state_, STATE_CONNECTED_CALLBACK_COMPLETE);
 
@@ -974,17 +994,29 @@ void HttpNetworkTransaction::OnStreamFailed(
   OnIOComplete(result);
 }
 
-void HttpNetworkTransaction::OnCertificateError(int result,
-                                                const SSLInfo& ssl_info) {
+void HttpNetworkTransaction::OnCertificateError(
+    int result,
+    const SSLInfo& ssl_info,
+    const ProxyInfo& used_proxy_info) {
   DCHECK_EQ(STATE_CREATE_STREAM_COMPLETE, next_state_);
   DCHECK_NE(OK, result);
   DCHECK(stream_request_.get());
   DCHECK(!stream_.get());
 
+  int rv = SetProxyInfo(used_proxy_info);
+  if (rv != OK) {
+    // Fail the request without exposing the certificate error.
+    SetProxyInfoInResponse(used_proxy_info, &response_);
+    OnIOComplete(rv);
+    return;
+  }
+
   response_.ssl_info = ssl_info;
   if (ssl_info.cert) {
     observed_bad_certs_.emplace_back(ssl_info.cert, ssl_info.cert_status);
   }
+
+  SetProxyInfoInResponse(used_proxy_info, &response_);
 
   // TODO(mbelshe):  For now, we're going to pass the error through, and that
   // will close the stream_request in all cases.  This means that we're always
@@ -1028,10 +1060,21 @@ void HttpNetworkTransaction::OnNeedsProxyAuth(
   DoCallback(OK);
 }
 
-void HttpNetworkTransaction::OnNeedsClientAuth(SSLCertRequestInfo* cert_info) {
+void HttpNetworkTransaction::OnNeedsClientAuth(
+    SSLCertRequestInfo* cert_info,
+    const ProxyInfo& used_proxy_info) {
   DCHECK_EQ(STATE_CREATE_STREAM_COMPLETE, next_state_);
 
+  int rv = SetProxyInfo(used_proxy_info);
+  if (rv != OK) {
+    // Fail the request without exposing the client certificate request.
+    SetProxyInfoInResponse(used_proxy_info, &response_);
+    OnIOComplete(rv);
+    return;
+  }
+
   response_.cert_request_info = cert_info;
+  SetProxyInfoInResponse(used_proxy_info, &response_);
   OnIOComplete(ERR_SSL_CLIENT_AUTH_CERT_NEEDED);
 }
 
@@ -2013,8 +2056,10 @@ void HttpNetworkTransaction::GenerateNetworkErrorLoggingReport(int rv) {
   DCHECK_NE(rv, ERR_IO_PENDING);
   DCHECK_LE(rv, 0);
 
-  if (network_error_logging_report_generated_)
+  if (network_error_logging_report_generated_ ||
+      network_error_logging_report_deferred_) {
     return;
+  }
   network_error_logging_report_generated_ = true;
 
   NetworkErrorLoggingService* service =
@@ -2417,6 +2462,7 @@ void HttpNetworkTransaction::ResetStateForAuthRestart() {
   terminal_state_ = TerminalState::kAborted;
 #if BUILDFLAG(ENABLE_REPORTING)
   network_error_logging_report_generated_ = false;
+  network_error_logging_report_deferred_ = false;
   start_timeticks_ = base::TimeTicks::Now();
 #endif  // BUILDFLAG(ENABLE_REPORTING)
 }

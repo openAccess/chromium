@@ -32,6 +32,9 @@ if (!is_android) {
       "memory_banks_shortcut.h",
     ]
 
+    public_deps =
+        [ "//chrome/browser/ui/webui/context_hub:mojo_bindings_shared" ]
+
     deps = [
       ":prefs",
       "//chrome/browser/ui:accelerator_utils_headers",
@@ -111,6 +114,7 @@ source_set("context_hub") {
     "//sql",
     "//ui/gfx",
     "//ui/gfx/codec",
+    "//ui/gfx/geometry",
   ]
 }
 
@@ -133,7 +137,9 @@ source_set("unit_tests") {
     "//chrome/test:test_support",
     "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/image_fetcher/core:test_support",
+    "//components/optimization_guide/core",
     "//components/optimization_guide/core:test_support",
+    "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/page_content_annotations/content",
     "//components/page_content_annotations/content:test_support",
     "//components/passage_embeddings/core:test_support",
@@ -149,6 +155,7 @@ source_set("unit_tests") {
     "//testing/gtest",
     "//ui/base/unowned_user_data",
     "//ui/gfx",
+    "//ui/gfx/codec",
   ]
 
   if (!is_android) {

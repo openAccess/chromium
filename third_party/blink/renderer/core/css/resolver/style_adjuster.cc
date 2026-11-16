@@ -119,23 +119,50 @@ bool IsOverflowClipOrVisible(EOverflow overflow) {
   return overflow == EOverflow::kClip || overflow == EOverflow::kVisible;
 }
 
+// True if |element| is the document's primary <body> element and its overflow
+// is propagated to the viewport rather than scrolling its own box (see
+// Document::ViewportDefiningElement()).
+template <typename BodyStyleType>
+bool BodyPropagatesOverflowToViewportInternal(
+    const BodyStyleType& body_style,
+    const ComputedStyle& document_element_style,
+    const Element* element) {
+  if (!element || element != element->GetDocument().FirstBodyElement()) {
+    return false;
+  }
+  Element* document_element = element->GetDocument().documentElement();
+  if (!document_element ||
+      !document_element_style.IsOverflowVisibleAlongBothAxes() ||
+      document_element_style.ShouldApplyAnyContainment(*document_element)) {
+    return false;
+  }
+  // Do not include `HasLayoutContainmentForOverscrollContainer()` when checking
+  // `body_style`'s containment:
+  // 1. For overscroll containers, that bit is computed by calling this function
+  //    in `AdjustComputedStyle()` (and when called from
+  //    `Element::RecalcOwnStyle()` after `<html>`'s style changes, `body_style`
+  //    still has the bit from `<html>`'s old style).
+  // 2. For non-overscroll containers, this function is still used for other
+  //    adjustments (such as `touch-action`) and that bit is not set.
+  unsigned body_effective_containment = ComputedStyle::EffectiveContainment(
+      body_style.Contain(), body_style.ContainerType(),
+      body_style.ContentVisibility(), body_style.SkipsContents(),
+      body_style.HasSizeContainmentForViewTransitionScope() &&
+          RuntimeEnabledFeatures::ScopedViewTransitionSizeContainmentEnabled(),
+      /*has_layout_containment_for_overscroll_container=*/false,
+      body_style.HasLayoutContainmentForViewTransitionScope());
+  return !ComputedStyle::ShouldApplyAnyContainment(
+      *element, body_style.GetDisplayStyle(), body_effective_containment);
+}
+
 TouchAction AdjustTouchActionForElement(TouchAction touch_action,
                                         const ComputedStyleBuilder& builder,
                                         const ComputedStyle& parent_style,
                                         Element* element) {
   Element* document_element = element->GetDocument().documentElement();
-  bool scrolls_overflow = builder.ScrollsOverflow();
-  if (IsA<HTMLBodyElement>(element) &&
-      element == element->GetDocument().FirstBodyElement()) {
-    // Body scrolls overflow if html root overflow is not visible or the
-    // propagation of overflow is stopped by containment.
-    if (parent_style.IsOverflowVisibleAlongBothAxes()) {
-      if (!parent_style.ShouldApplyAnyContainment(*document_element) &&
-          !builder.ShouldApplyAnyContainment(*element)) {
-        scrolls_overflow = false;
-      }
-    }
-  }
+  bool scrolls_overflow = builder.ScrollsOverflow() &&
+                          !StyleAdjuster::BodyPropagatesOverflowToViewport(
+                              builder, parent_style, element);
   bool is_child_document =
       element == document_element && element->GetDocument().LocalOwner();
   if (scrolls_overflow || is_child_document) {
@@ -367,7 +394,7 @@ static bool IsOutermostSVGElement(const Element* element) {
 }
 
 static bool IsAtMediaUAShadowBoundary(const Element* element) {
-  if (!element) {
+  if (!element || !element->IsInShadowTree()) {
     return false;
   }
   if (ContainerNode* parent = element->parentNode()) {
@@ -386,11 +413,11 @@ static bool IsAtMediaUAShadowBoundary(const Element* element) {
 // to manually stop text-decorations to apply to text inside media controls.
 static bool StopPropagateTextDecorations(const ComputedStyleBuilder& builder,
                                          const Element* element) {
-  return builder.IsAtomicInlineDisplayType() ||
+  return builder.IsAtomicInlineDisplayType() || builder.IsFloating() ||
+         builder.HasOutOfFlowPosition() ||
+         builder.Display() == EDisplay::kRubyText ||
          IsA<HTMLCanvasElement>(element) ||
-         IsAtMediaUAShadowBoundary(element) || builder.IsFloating() ||
-         builder.HasOutOfFlowPosition() || IsOutermostSVGElement(element) ||
-         builder.Display() == EDisplay::kRubyText;
+         IsAtMediaUAShadowBoundary(element) || IsOutermostSVGElement(element);
 }
 
 void StyleAdjuster::AdjustStyleForEditing(ComputedStyleBuilder& builder,
@@ -1069,8 +1096,9 @@ void StyleAdjuster::AdjustForForcedColorsMode(ComputedStyleBuilder& builder,
   //
   // [1] https://www.w3.org/TR/css-color-adjust-1/#forced-colors-properties
   FontVariantEmoji variant = builder.GetFontDescription().VariantEmoji();
-  if (variant == kNormalVariantEmoji || variant == kUnicodeVariantEmoji) {
-    builder.SetFontVariantEmoji(kTextVariantEmoji);
+  if (variant == FontVariantEmoji::kNormal ||
+      variant == FontVariantEmoji::kUnicode) {
+    builder.SetFontVariantEmoji(FontVariantEmoji::kText);
   }
   if (builder.InternalForcedColor().IsSystemColor()) {
     builder.SetInternalForcedColor(
@@ -1155,6 +1183,9 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
     // because the fullscreen.css doesn't apply any style to them.
     //
     // Similarly, overscroll areas must be out of flow positioned with a box.
+    // Note that overriding `position` like this isn't guaranteed to create an
+    // out-of-flow positioned box. If it's a BR element, for instance, that is
+    // not going to happen.
     if (is_in_top_layer || builder.StyleType() == kPseudoIdBackdrop ||
         (element && element->IsValidOverscrollArea())) {
       if (!builder.HasOutOfFlowPosition()) {
@@ -1346,6 +1377,12 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
     builder.SetSubtreeIsSticky(true);
   }
 
+  if (builder.InternalOverscrollContainer() !=
+          EInternalOverscrollContainer::kNone &&
+      !RuntimeEnabledFeatures::OverscrollAreasEnabled(
+          state.GetDocument().GetExecutionContext())) {
+    builder.SetInternalOverscrollContainer(EInternalOverscrollContainer::kNone);
+  }
   // If this node is an overscroll container, it marks the creation of an
   // overscroll container subtree for overscroll gestures and inertness.
   // Descendants will inherit this bit so they can quickly identify whether
@@ -1353,6 +1390,21 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
   if (builder.EffectiveOverscrollContainerType() !=
       EOverscrollContainerType::kNone) {
     builder.SetIsInOverscrollContainer(true);
+    // Force layout containment so the container contains its out-of-flow
+    // ::-internal-overscroll-area-parent children, except when the container is
+    // the document's primary <body> and is scrolled/moved by the root scroller
+    // (whose ::-internal-overscroll-area-parents are fixed to the viewport; see
+    // overscroll.css and LayoutObject::OverscrollAreasReparentView()). Note
+    // that a fixed-positioned <body> does not establish a fixed-position
+    // containing block on its own and is not moved by the root scroller, so it
+    // still needs layout containment here.
+    const bool is_root_scrolled_body =
+        builder.GetPosition() != EPosition::kFixed &&
+        BodyPropagatesOverflowToViewport(builder, parent_style, element);
+    builder.SetHasLayoutContainmentForOverscrollContainer(
+        !is_root_scrolled_body);
+  } else {
+    builder.SetHasLayoutContainmentForOverscrollContainer(false);
   }
 
   // If the inherited value of justify-items includes the 'legacy'
@@ -1395,6 +1447,22 @@ void StyleAdjuster::AdjustComputedStyle(StyleResolverState& state,
 
 bool StyleAdjuster::MayAdjustStyleForTheme(const ComputedStyle& style) {
   return style.HasAppearance();
+}
+
+bool StyleAdjuster::BodyPropagatesOverflowToViewport(
+    const ComputedStyle& body_style,
+    const ComputedStyle& document_element_style,
+    const Element* element) {
+  return BodyPropagatesOverflowToViewportInternal(
+      body_style, document_element_style, element);
+}
+
+bool StyleAdjuster::BodyPropagatesOverflowToViewport(
+    const ComputedStyleBuilder& body_style,
+    const ComputedStyle& document_element_style,
+    const Element* element) {
+  return BodyPropagatesOverflowToViewportInternal(
+      body_style, document_element_style, element);
 }
 
 void StyleAdjuster::RunUncacheableStyleAdjustment(
@@ -1576,23 +1644,25 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     return {ElementType::kIsNotElement};
   }
 
-  // Some UA shadow elements have special handling of background and
-  // text-overflow, as well as special slider container style.
-  // (It is possible that we could loosen this check a bit.)
-  if (!element.ShadowPseudoId().IsNull()) {
-    return {ElementType::kIsNotElement};
+  if (element.IsInShadowTree()) {
+    // Some UA shadow elements have special handling of background and
+    // text-overflow, as well as special slider container style.
+    // (It is possible that we could loosen this check a bit.)
+    if (!element.ShadowPseudoId().IsNull()) {
+      return {ElementType::kIsNotElement};
+    }
+
+    // UA media shadow boundaries have special rules around blockification
+    // and text decorations.
+    if (IsAtMediaUAShadowBoundary(&element)) {
+      return {ElementType::kIsNotElement};
+    }
   }
 
   // If the layout parent style inlinifies children, we need to do a tree walk
   // to find out if our (non-replaced) parent is a field set of media element
   // (see ShouldBeInlinified()).
   if (layout_parent_style.InlinifiesChildren()) {
-    return {ElementType::kIsNotElement};
-  }
-
-  // UA media shadow boundaries have special rules around blockification
-  // and text decorations.
-  if (IsAtMediaUAShadowBoundary(&element)) {
     return {ElementType::kIsNotElement};
   }
 
@@ -1609,8 +1679,10 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     return {ElementType::kIsNotElement};
   }
 
-  // Overscroll areas are forced to be out of flow positioned.
-  if (element.IsValidOverscrollArea()) {
+  // Overscroll areas are forced to be out of flow positioned, and overscroll
+  // containers depend on the OverscrollAreas runtime feature flag.
+  if (element.IsValidOverscrollArea() ||
+      element.FastHasAttribute(html_names::kOverscrollcontainerAttr)) {
     return {ElementType::kIsNotElement};
   }
 
@@ -1634,13 +1706,16 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
       return {ElementType::kIsNotElement};
 
     case ElementType::kHTMLBodyElement:
-      // The first <body> element is treated differently from the others,
-      // both for touch-action and for setting a ComputedStyle flag
-      // (forcing style invalidation).
-      if (element.GetDocument().FirstBodyElement() != element) {
-        return {ElementType::kIsNotElement};
-      }
-      return {element.GetElementType()};
+      // The primary <body> element's style adjustments (touch-action and
+      // overscroll container containment) depend on the documentElement's
+      // overflow and containment, which are non-inherited properties not
+      // checked by IsCacheCompatible(). If style adjustment were cached for the
+      // primary <body>, dynamic overflow/containment changes on <html> would
+      // hit <body>'s own cached entry in MatchedPropertiesCache and skip
+      // AdjustComputedStyle(). Since secondary <body> elements also cannot
+      // share style adjustment with the primary <body>, don't cache style
+      // adjustment for any <body> element.
+      return {ElementType::kIsNotElement};
 
     case ElementType::kHTMLImageElement:
       if (To<HTMLImageElement>(element).IsCollapsed()) {
@@ -1867,6 +1942,7 @@ StyleAdjuster::ElementTypeForCache StyleAdjuster::GetElementTypeCacheKey(
     case ElementType::kHTMLPictureElement:
     case ElementType::kHTMLPreElement:
     case ElementType::kHTMLQuoteElement:
+    case ElementType::kHTMLRangeGroupElement:
     case ElementType::kHTMLScriptElement:
     case ElementType::kHTMLSearchElement:
     case ElementType::kHTMLSelectedContentElement:

@@ -153,7 +153,6 @@ static_library("renderer") {
     "//components/continuous_search/renderer",
     "//components/country_codes",
     "//components/crx_file",
-    "//components/dom_distiller/content/renderer",
     "//components/facilitated_payments/content/renderer",
     "//components/facilitated_payments/core/features",
     "//components/feed:feature_list",
@@ -209,6 +208,7 @@ static_library("renderer") {
     "//components/wallet/content/renderer",
     "//components/wallet/core/common:features",
     "//components/web_cache/renderer",
+    "//components/web_distiller/content/renderer",
     "//components/webapps/renderer",
     "//content/public/child",
     "//content/public/common",
@@ -381,6 +381,8 @@ static_library("renderer") {
       "accessibility/read_anything/read_anything_readability_distiller.h",
       "accessibility/read_anything/read_anything_screen2x_distiller.cc",
       "accessibility/read_anything/read_anything_screen2x_distiller.h",
+      "accessibility/read_anything/read_anything_text_aligner.cc",
+      "accessibility/read_anything/read_anything_text_aligner.h",
       "media/chrome_speech_recognition_client.cc",
       "media/chrome_speech_recognition_client.h",
       "password_manager/remote_actor_credential_sharing_extension.cc",
@@ -472,28 +474,41 @@ if (!is_android) {
     deps = [
       ":renderer",
       "//base/test:test_support",
-      "//chrome/test:test_support_ui",
+      "//chrome/common",
+      "//chrome/common:non_code_constants",
+      "//chrome/common/read_anything:mojo_bindings",
       "//chrome/test/base:chrome_render_view_test",
       "//components/autofill/content/renderer",
       "//components/autofill/content/renderer:test_support",
+      "//components/autofill/core/common:test_support",
       "//components/commerce/content/renderer",
       "//components/commerce/core:commerce_constants",
       "//components/no_state_prefetch/renderer",
       "//components/optimization_guide/content/renderer",
+      "//components/resources:components_resources",
       "//components/safe_browsing/core/common/phishing_classifier",
       "//components/safe_browsing/core/common/proto:client_model_proto",
+      "//components/translate/content/common",
       "//components/translate/content/renderer",
+      "//components/translate/core/common",
+      "//components/variations",
       "//content/test:test_support",
       "//gin",
       "//services/strings",
       "//testing/gtest",
+
+      # tflite_config provides third_party/tflite/src/ include path, needed
+      # because :renderer headers transitively include tflite internal headers.
+      "//third_party/tflite",
     ]
 
     if (safe_browsing_mode == 1) {
-      sources += [ "safe_browsing/threat_dom_details_browsertest.cc" ]
+      sources +=
+          [ "safe_browsing/threat_details/threat_dom_details_browsertest.cc" ]
       deps += [
         "//components/safe_browsing/content/common:interfaces",
         "//components/safe_browsing/content/renderer",
+        "//components/safe_browsing/core/common:features",
       ]
 
       if (!is_mac) {
@@ -508,6 +523,7 @@ if (!is_android) {
           "//chrome/test/base:chrome_unit_test_suite",
           "//components/safe_browsing/content/renderer/phishing_classifier",
           "//components/safe_browsing/core/common/fbs:client_model",
+          "//net:test_support",
         ]
       }
     }
@@ -649,10 +665,12 @@ source_set("unit_tests") {
       "accessibility/read_anything/read_anything_app_controller_unittest.cc",
       "accessibility/read_anything/read_anything_app_model_unittest.cc",
       "accessibility/read_anything/read_anything_node_utils_unittest.cc",
+      "accessibility/read_anything/read_anything_text_aligner_unittest.cc",
       "media/webrtc_logging_agent_impl_unittest.cc",
       "searchbox/searchbox_unittest.cc",
     ]
     deps += [
+      "//chrome/common/read_anything:mojo_bindings_shared_cpp_sources",
       "//components/ukm:test_support",
       "//services/metrics/public/cpp:ukm_builders",
       "//services/strings",

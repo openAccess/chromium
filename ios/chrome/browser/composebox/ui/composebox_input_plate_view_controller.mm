@@ -222,6 +222,9 @@ UIImage* SendButtonImage(BOOL highlighted,
   UIButton* _canvasButton;
   /// The button to toggle deep search mode.
   UIButton* _deepSearchButton;
+  /// The button to toggle PTM mode.
+  UIButton* _ptmButton;
+  UIView* _ptmButtonXIndicator;
   /// The button to attach the current tab.
   UIButton* _askAboutThisPageButton;
   /// The glow effect around the input plate container.
@@ -296,6 +299,9 @@ UIImage* SendButtonImage(BOOL highlighted,
 
   // Whether to force disable sending.
   BOOL _disableSending;
+
+  // Whether a send is pending, i.e. held until attachments finish uploading.
+  BOOL _sendPending;
 }
 
 /// ComposeboxAnimationContext
@@ -333,6 +339,7 @@ UIImage* SendButtonImage(BOOL highlighted,
   _imageGenerationButton = [self createImageGenerationButton];
   _canvasButton = [self createCanvasButton];
   _deepSearchButton = [self createDeepSearchButton];
+  _ptmButton = [self createPTMButton];
   _askAboutThisPageButton = [self createAskAboutThisPageButton];
   _plusButtonContainer = [self createPlusButtonContainer];
   [self setupLargeContentViewer];
@@ -642,7 +649,7 @@ UIImage* SendButtonImage(BOOL highlighted,
 }
 
 - (void)updateSendButtonStateIfNeeded {
-  if (_disableSending) {
+  if (_disableSending || _sendPending) {
     [self enableSendButton:NO];
     return;
   }
@@ -661,7 +668,9 @@ UIImage* SendButtonImage(BOOL highlighted,
 
 - (void)enableSendButton:(BOOL)enableSending {
   _sendButton.enabled = enableSending;
-  _sendButton.alpha = enableSending ? 1 : kSendButtonDisabledOpacity;
+  // Keep the activity indicator of a pending send fully visible.
+  _sendButton.alpha =
+      (enableSending || _sendPending) ? 1 : kSendButtonDisabledOpacity;
   BOOL isCobrowse = _entrypoint == ComposeboxEntrypoint::kCobrowse;
   [self enableKeyboardSendButton:enableSending
       allowsReturnKeyWithEmptyText:!isCobrowse];
@@ -691,6 +700,7 @@ UIImage* SendButtonImage(BOOL highlighted,
   [self animateButton:_imageGenerationButton hidden:!(controls & kCreateImage)];
   [self animateButton:_canvasButton hidden:!(controls & kCanvas)];
   [self animateButton:_deepSearchButton hidden:!(controls & kDeepSearch)];
+  [self animateButton:_ptmButton hidden:!(controls & kPTM)];
   [self animateLeadingImageHidden:!(controls & kLeadingImage)];
 
   [self updateInputPlateStackViewPadding];
@@ -787,6 +797,7 @@ UIImage* SendButtonImage(BOOL highlighted,
 
   if (uiConfigChanged) {
     [self updateCreateImageTitle];
+    [self updatePTMButton:_ptmButton];
   }
 
   // Always update menu items as it's safer and code is simpler.
@@ -800,6 +811,15 @@ UIImage* SendButtonImage(BOOL highlighted,
 
 - (void)disableSending:(BOOL)disableSending {
   _disableSending = disableSending;
+  [self updateSendButtonStateIfNeeded];
+}
+
+- (void)setSendPending:(BOOL)sendPending {
+  if (_sendPending == sendPending) {
+    return;
+  }
+  _sendPending = sendPending;
+  [_sendButton setNeedsUpdateConfiguration];
   [self updateSendButtonStateIfNeeded];
 }
 
@@ -840,6 +860,14 @@ UIImage* SendButtonImage(BOOL highlighted,
   [self.delegate
       composeboxViewController:self
                     didTapTool:ComposeboxMode::kDeepSearch
+              activationSource:AiModeActivationSource::kDedicatedButton];
+}
+
+// Called when the PTM button in the input plate is tapped.
+- (void)ptmButtonTapped {
+  [self.delegate
+      composeboxViewController:self
+                    didTapTool:ComposeboxMode::kPTM
               activationSource:AiModeActivationSource::kDedicatedButton];
 }
 
@@ -1088,7 +1116,8 @@ UIImage* SendButtonImage(BOOL highlighted,
 
   if (_state.activeTool == ComposeboxMode::kAIM ||
       _state.activeTool == ComposeboxMode::kImageGeneration ||
-      _state.activeTool == ComposeboxMode::kCanvas) {
+      _state.activeTool == ComposeboxMode::kCanvas ||
+      _state.activeTool == ComposeboxMode::kPTM) {
     // When turning on, ensure the glow is started. The view's state machine
     // will prevent it from restarting if it's already active.
     [_glowEffectView startGlow];
@@ -1332,7 +1361,7 @@ UIImage* SendButtonImage(BOOL highlighted,
   _plusButton.largeContentTitle = _plusButton.accessibilityLabel;
   NSArray<UIButton*>* buttons = @[
     _plusButton, _aimButton, _imageGenerationButton, _canvasButton,
-    _deepSearchButton, _askAboutThisPageButton
+    _deepSearchButton, _ptmButton, _askAboutThisPageButton
   ];
   for (UIButton* button in buttons) {
     button.showsLargeContentViewer = YES;
@@ -1403,10 +1432,16 @@ UIImage* SendButtonImage(BOOL highlighted,
 
 /// Returns the send button.
 - (UIButton*)createSendButton {
+  __weak __typeof(self) weakSelf = self;
   UIButtonConfiguration* buttonConfig =
       [UIButtonConfiguration plainButtonConfiguration];
   buttonConfig.image = SendButtonImage(/*highlighted=*/NO, _theme, _entrypoint);
   buttonConfig.contentInsets = NSDirectionalEdgeInsetsZero;
+  // Match the activity indicator to the arrow it replaces.
+  buttonConfig.activityIndicatorColorTransformer = ^UIColor*(UIColor* color) {
+    return [[weakSelf currentTheme] sendButtonForegroundColorHighlighted:NO]
+               ?: color;
+  };
 
   UIButton* sendButton =
       [ExtendedTouchTargetButton buttonWithType:UIButtonTypeSystem];
@@ -1415,7 +1450,6 @@ UIImage* SendButtonImage(BOOL highlighted,
   sendButton.layer.cornerRadius = kSendButtonDimension / 2;
   sendButton.clipsToBounds = YES;
 
-  __weak __typeof(self) weakSelf = self;
   sendButton.configurationUpdateHandler = ^(UIButton* button) {
     [weakSelf sendButtonDidUpdateConfiguration];
   };
@@ -1442,8 +1476,12 @@ UIImage* SendButtonImage(BOOL highlighted,
 // Called when the configuration of the send button is updated.
 - (void)sendButtonDidUpdateConfiguration {
   UIButtonConfiguration* updatedConfig = _sendButton.configuration;
+  updatedConfig.showsActivityIndicator = _sendPending;
   BOOL isHighlighted = _sendButton.state == UIControlStateHighlighted;
-  updatedConfig.image = SendButtonImage(isHighlighted, _theme, _entrypoint);
+  // Remove the full-button arrow image while pending so the activity indicator
+  // uses its default size instead of scaling to the 36 pt symbol.
+  updatedConfig.image =
+      _sendPending ? nil : SendButtonImage(isHighlighted, _theme, _entrypoint);
   _sendButton.configuration = updatedConfig;
   CGFloat scale = isHighlighted ? 0.95 : 1.0;
   __weak UIButton* weakSendButton = _sendButton;
@@ -1535,8 +1573,8 @@ UIImage* SendButtonImage(BOOL highlighted,
   UIStackView* buttonsStackView =
       [[UIStackView alloc] initWithArrangedSubviews:@[
         _plusButtonContainer, _aimButton, _imageGenerationButton, _canvasButton,
-        _deepSearchButton, _askAboutThisPageButton, spacerView, _sendButton,
-        _micButton, _visualSearchButton
+        _deepSearchButton, _ptmButton, _askAboutThisPageButton, spacerView,
+        _sendButton, _micButton, _visualSearchButton
       ]];
   buttonsStackView.translatesAutoresizingMaskIntoConstraints = NO;
   [buttonsStackView setCustomSpacing:kShortcutsSpacing afterView:_micButton];
@@ -2013,6 +2051,77 @@ UIImage* SendButtonImage(BOOL highlighted,
   [self setupXMarkInButton:button];
 
   return button;
+}
+
+// Creates a new PTM button to be displayed in the input plate.
+- (UIButton*)createPTMButton {
+  UIButton* button = [UIButton buttonWithType:UIButtonTypeSystem];
+  button.configurationUpdateHandler =
+      [self configurationUpdateHandlerForModeIndicator];
+  button.translatesAutoresizingMaskIntoConstraints = NO;
+  button.accessibilityIdentifier = kComposeboxPTMButtonAccessibilityIdentifier;
+  [button addTarget:self
+                action:@selector(ptmButtonTapped)
+      forControlEvents:UIControlEventTouchUpInside];
+  button.layer.borderWidth = 0;
+
+  UIButtonConfiguration* config = [self modeIndicatorButtonConfigWithTitle:@""
+                                                                     image:nil];
+  config.preferredSymbolConfigurationForImage = [UIImageSymbolConfiguration
+      configurationWithPointSize:kAIMButtonSymbolPointSize
+                          weight:UIImageSymbolWeightMedium
+                           scale:UIImageSymbolScaleMedium];
+  config.background.backgroundColor =
+      [_theme toolButtonBackgroundColorWithActiveState:YES];
+  config.baseForegroundColor = [_theme toolButtonTextColorWithActiveState:YES];
+  button.tintColor = [_theme toolButtonTextColorWithActiveState:YES];
+  button.configuration = config;
+
+  [NSLayoutConstraint activateConstraints:@[
+    [button.widthAnchor
+        constraintGreaterThanOrEqualToConstant:kAIMButtonBaseWidth]
+  ]];
+
+  [button
+      setContentCompressionResistancePriority:UILayoutPriorityRequired
+                                      forAxis:UILayoutConstraintAxisHorizontal];
+
+  [self updatePTMButton:button];
+
+  return button;
+}
+
+// Updates `button` with the PTM title, icon, accessibility label, and close
+// indicator from the current UI configuration.
+- (void)updatePTMButton:(UIButton*)button {
+  if (!button) {
+    return;
+  }
+
+  UIButtonConfiguration* config = button.configuration;
+  NSString* title = [_state.uiConfig chipLabelForTool:ComposeboxMode::kPTM];
+  BOOL hasTitle = title.length > 0;
+  UIFont* font = [UIFont systemFontOfSize:kAIMButtonFontSize
+                                   weight:UIFontWeightMedium];
+  config.attributedTitle =
+      [[NSAttributedString alloc] initWithString:title
+                                      attributes:@{NSFontAttributeName : font}];
+  config.image = [_state.uiConfig iconForTool:ComposeboxMode::kPTM];
+  NSDirectionalEdgeInsets insets = kModeIndicatorButtonInsets;
+  if (hasTitle) {
+    insets.trailing += kXButtonWidthInButton;
+  }
+  config.contentInsets = insets;
+
+  button.configuration = config;
+  button.accessibilityLabel = [_state.uiConfig
+      removeToolAccessibilityLabelForTool:ComposeboxMode::kPTM];
+
+  [_ptmButtonXIndicator removeFromSuperview];
+  _ptmButtonXIndicator = nil;
+  if (hasTitle) {
+    _ptmButtonXIndicator = [self setupXMarkInButton:button];
+  }
 }
 
 // Creates an 'ask about this page' tab button to be displayed in the input

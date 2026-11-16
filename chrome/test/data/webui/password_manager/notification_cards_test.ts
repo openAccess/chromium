@@ -7,8 +7,7 @@ import 'chrome://password-manager/password_manager.js';
 import type {PasswordsSectionElement} from 'chrome://password-manager/password_manager.js';
 import {BatchUploadPasswordsEntryPoint, NotificationCardId, NotificationCardsProxyImpl, Page, PasswordManagerImpl, PrefsBrowserProxy, PrefService, Router, SyncBrowserProxyImpl, UrlParam} from 'chrome://password-manager/password_manager.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {isVisible} from 'chrome://webui-test/test_util.js';
+import {isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestNotificationCardsProxy} from './test_notification_cards_browser_proxy.js';
 import {TestPasswordManagerProxy} from './test_password_manager_proxy.js';
@@ -26,7 +25,7 @@ suite('PasswordsSectionTest', function() {
         document.createElement('passwords-section');
     document.body.appendChild(section);
     await passwordManager.whenCalled('getCredentialGroups');
-    await flushTasks();
+    await microtasksFinished();
 
     return section;
   }
@@ -44,7 +43,7 @@ suite('PasswordsSectionTest', function() {
     syncProxy = new TestSyncBrowserProxy();
     SyncBrowserProxyImpl.setInstance(syncProxy);
     Router.getInstance().updateRouterParams(new URLSearchParams());
-    return flushTasks();
+    return microtasksFinished();
   });
 
   test('notification card shown', async function() {
@@ -56,7 +55,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    let cardElement = section.shadowRoot!.querySelector('notification-card');
+    let cardElement = section.shadowRoot.querySelector('notification-card');
 
     // Verify notification card is shown.
     assertTrue(!!cardElement);
@@ -77,10 +76,10 @@ suite('PasswordsSectionTest', function() {
     assertEquals(
         notificationCardsProxy.card?.id,
         await notificationCardsProxy.whenCalled('recordNotificationDismissed'));
-    await flushTasks();
+    await microtasksFinished();
 
     // Verify that the notification card is hidden.
-    cardElement = section.shadowRoot!.querySelector('notification-card');
+    cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 
@@ -94,7 +93,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    let cardElement = section.shadowRoot!.querySelector('notification-card');
+    let cardElement = section.shadowRoot.querySelector('notification-card');
 
     // Verify notification card is shown.
     assertTrue(!!cardElement);
@@ -108,10 +107,10 @@ suite('PasswordsSectionTest', function() {
         'true',
         String(Router.getInstance().currentRoute.queryParameters.get(
             UrlParam.START_CHECK)));
-    await flushTasks();
+    await microtasksFinished();
 
     // Verify that the notification card is hidden.
-    cardElement = section.shadowRoot!.querySelector('notification-card');
+    cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 
@@ -125,7 +124,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    let cardElement = section.shadowRoot!.querySelector('notification-card');
+    let cardElement = section.shadowRoot.querySelector('notification-card');
 
     // Verify notification card is shown.
     assertTrue(!!cardElement);
@@ -135,10 +134,10 @@ suite('PasswordsSectionTest', function() {
     // started password checkup.
     cardElement.$.actionButton.click();
     await passwordManager.whenCalled('showAddShortcutDialog');
-    await flushTasks();
+    await microtasksFinished();
 
     // Verify that the notification card is hidden.
-    cardElement = section.shadowRoot!.querySelector('notification-card');
+    cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 
@@ -165,7 +164,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    const cardElement = section.shadowRoot!.querySelector('notification-card');
+    const cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 
@@ -188,7 +187,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    const cardElement = section.shadowRoot!.querySelector('notification-card');
+    const cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 
@@ -221,12 +220,12 @@ suite('PasswordsSectionTest', function() {
     passwordManager.setRequestCredentialsDetailsResponse([password]);
 
     const section = await createPasswordsSection();
-    const cardElement = section.shadowRoot!.querySelector('notification-card');
+    const cardElement = section.shadowRoot.querySelector('notification-card');
     assertTrue(!!cardElement);
     assertTrue(isVisible(cardElement.$.actionButton));
 
     cardElement.$.actionButton.click();
-    await flushTasks();
+    await microtasksFinished();
 
     const entryPoint = await syncProxy.whenCalled('openBatchUpload');
     assertEquals(BatchUploadPasswordsEntryPoint.PROMO_CARD, entryPoint);
@@ -243,7 +242,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    const cardElement = section.shadowRoot!.querySelector('notification-card');
+    const cardElement = section.shadowRoot.querySelector('notification-card');
 
     // Verify notification card and close button are shown.
     assertTrue(!!cardElement);
@@ -252,7 +251,7 @@ suite('PasswordsSectionTest', function() {
 
     cardElement.$.actionButton.click();
     await syncProxy.whenCalled('startPasskeyUnlockFlow');
-    await flushTasks();
+    await microtasksFinished();
   });
 
   test('account aware sign in promo card', async function() {
@@ -271,7 +270,7 @@ suite('PasswordsSectionTest', function() {
     };
 
     const section = await createPasswordsSection();
-    let cardElement = section.shadowRoot!.querySelector('notification-card');
+    let cardElement = section.shadowRoot.querySelector('notification-card');
 
     assertTrue(!!cardElement);
     assertTrue(isVisible(cardElement.$.actionButton));
@@ -289,9 +288,9 @@ suite('PasswordsSectionTest', function() {
 
     cardElement.$.actionButton.click();
     await notificationCardsProxy.whenCalled('signInFromNotificationCard');
-    await flushTasks();
+    await microtasksFinished();
 
-    cardElement = section.shadowRoot!.querySelector('notification-card');
+    cardElement = section.shadowRoot.querySelector('notification-card');
     assertFalse(!!cardElement);
   });
 });

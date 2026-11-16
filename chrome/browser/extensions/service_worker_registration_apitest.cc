@@ -259,7 +259,6 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerRegistrationApiTest,
   extension_dir.WriteManifest(kManifest);
   extension_dir.WriteFile(FILE_PATH_LITERAL("background.js"), kBackground);
 
-  base::HistogramTester histogram_tester;
   const Extension* extension = LoadExtension(
       extension_dir.UnpackedPath(), {.wait_for_registration_stored = true});
   ASSERT_TRUE(extension);
@@ -273,15 +272,6 @@ IN_PROC_BROWSER_TEST_F(ServiceWorkerRegistrationApiTest,
   EXPECT_EQ("0.1", stored_version.GetString());
   EXPECT_EQ(content::ServiceWorkerCapability::SERVICE_WORKER_NO_FETCH_HANDLER,
             GetServiceWorkerRegistrationState(*extension));
-
-  histogram_tester.ExpectTotalCount(
-      "Extensions.ServiceWorkerBackground.RegistrationTime",
-      /*expected_count=*/1);
-  // Confirm the time is a sane value (less than the maximum value).
-  histogram_tester.ExpectBucketCount(
-      "Extensions.ServiceWorkerBackground.RegistrationTime",
-      /*sample=*/base::Seconds(10).InMilliseconds(),
-      /*expected_count=*/0);
 }
 
 // Tests that updating an unpacked extension properly updates the extension's
@@ -651,6 +641,47 @@ IN_PROC_BROWSER_TEST_F(
   UninstallExtension(extension->id());
   EXPECT_EQ(content::ServiceWorkerCapability::NO_SERVICE_WORKER,
             GetServiceWorkerRegistrationState(*extension_ref));
+}
+
+// Tests that disabling an extension while its worker is starting doesn't break
+// the worker once the extension is re-enabled (crbug.com/531900625).
+IN_PROC_BROWSER_TEST_F(ServiceWorkerRegistrationApiTest,
+                       DisableExtensionWhileWorkerIsStarting) {
+  TestExtensionDir extension_dir;
+  extension_dir.WriteManifest(
+      R"({
+           "name": "Extension",
+           "manifest_version": 3,
+           "version": "0.1",
+           "background": {"service_worker": "background.js"}
+         })");
+  // Keep the worker starting until it's stopped.
+  extension_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
+                          R"(chrome.test.sendMessage('evaluating');
+                             while (true) {})");
+
+  ExtensionTestMessageListener evaluating_listener("evaluating");
+  ChromeTestExtensionLoader(profile()).LoadUnpackedExtensionAsync(
+      extension_dir.UnpackedPath(), base::DoNothing());
+  ASSERT_TRUE(evaluating_listener.WaitUntilSatisfied());
+  const ExtensionId id = evaluating_listener.extension_id_for_message();
+
+  {
+    TestServiceWorkerTaskQueueObserver observer;
+    DisableExtension(id);
+    observer.WaitForWorkerUnregistered(id);
+  }
+
+  // Unpacked extension files are read on demand, so the next worker uses this.
+  extension_dir.WriteFile(FILE_PATH_LITERAL("background.js"),
+                          R"(chrome.runtime.onInstalled.addListener(() => {});
+                             chrome.test.sendMessage('listener added');)");
+  base::HistogramTester histogram_tester;
+  ExtensionTestMessageListener listener_added("listener added");
+  EnableExtension(id);
+  ASSERT_TRUE(listener_added.WaitUntilSatisfied());
+  histogram_tester.ExpectTotalCount("Stability.BadMessageTerminated.Content",
+                                    0);
 }
 
 // Verifies that a service worker registration associated with an extension's

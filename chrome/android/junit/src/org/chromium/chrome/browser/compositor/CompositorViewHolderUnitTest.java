@@ -48,6 +48,8 @@ import android.view.View.OnDragListener;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.widget.FrameLayout;
 
+import androidx.core.view.WindowInsetsAnimationCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.test.core.app.ApplicationProvider;
 
 import org.jni_zero.JniUniquePtr;
@@ -138,10 +140,7 @@ import java.util.List;
 
 /** Unit tests for {@link CompositorViewHolder}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures({
-    ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION,
-    ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION_ON_AUTOMOTIVE
-})
+@DisableFeatures(ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION)
 public class CompositorViewHolderUnitTest {
     // Subclass needed to stub getWindowVisibleDisplayFrame(), set initial dimensions without
     // triggering onSizeChanged(), and forward post() to the main looper when detached.
@@ -218,6 +217,8 @@ public class CompositorViewHolderUnitTest {
     private static final int KEYBOARD_HEIGHT = 741;
     private static final int VIEWPORT_WIDTH = 1080;
     private static final int VIEWPORT_HEIGHT = 941;
+    private static final int TOP_CONTROLS_HEIGHT = 100;
+    private static final int NAVIGATION_BAR_HEIGHT = 63;
 
     private static final int SIDE_UI_START_WIDTH = 60;
     private static final int SIDE_UI_END_WIDTH = 70;
@@ -288,6 +289,12 @@ public class CompositorViewHolderUnitTest {
     @Mock private EventForwarder mEventForwarder;
 
     @Captor private ArgumentCaptor<TabObserver> mTabObserverCaptor;
+
+    @Captor
+    private ArgumentCaptor<InsetObserver.WindowInsetsAnimationListener>
+            mWindowInsetsAnimationListenerCaptor;
+
+    private WindowInsetsAnimationCompat mKeyboardAnimation;
 
     private final ActivityTabProvider mActivityTabProvider = new ActivityTabProvider();
     private Activity mActivity;
@@ -389,6 +396,7 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.setCompositorViewForTesting(mCompositorView);
         mCompositorViewHolder.setBrowserControlsManager(mBrowserControlsManager);
         mCompositorViewHolder.setApplicationViewportInsetSupplier(mViewportInsets);
+        mCompositorViewHolder.setInsetObserver(mInsetObserver);
         mCompositorViewHolder.onFinishNativeInitialization(
                 mTabModelSelector, null, ObservableSuppliers.alwaysZero());
         mCompositorViewHolder.setSideUiStateProviderSupplier(mSideUiStateProviderSupplier);
@@ -506,6 +514,9 @@ public class CompositorViewHolderUnitTest {
         assertTrue(
                 "Browser controls aren't fully hidden.",
                 BrowserControlsUtils.areBrowserControlsOffScreen(mBrowserControlsManager));
+        // Setting the height while the controls were shown already resized the view once; count
+        // resizes from the hidden state only.
+        clearInvocations(mCompositorViewJni);
 
         // Simulate the browser issuing a "show browser controls" signal to the renderer.
         mCompositorViewHolder.onWillShowBrowserControls(/* viewTransitionOptIn= */ false);
@@ -548,6 +559,9 @@ public class CompositorViewHolderUnitTest {
         assertTrue(
                 "Browser controls aren't fully hidden.",
                 BrowserControlsUtils.areBrowserControlsOffScreen(mBrowserControlsManager));
+        // Setting the height while the controls were shown already resized the view once; count
+        // resizes from the hidden state only.
+        clearInvocations(mCompositorViewJni);
 
         // Simulate the browser issuing a "show browser controls" signal to the renderer.
         mCompositorViewHolder.onWillShowBrowserControls(/* viewTransitionOptIn= */ false);
@@ -620,6 +634,9 @@ public class CompositorViewHolderUnitTest {
         assertTrue(
                 "Browser controls aren't fully hidden.",
                 BrowserControlsUtils.areBrowserControlsOffScreen(mBrowserControlsManager));
+        // Setting the height while the controls were shown already resized the view once; count
+        // resizes from the hidden state only.
+        clearInvocations(mCompositorViewJni);
 
         // Simulate the browser issuing a "show browser controls" signal to the renderer.
         mCompositorViewHolder.onWillShowBrowserControls(/* viewTransitionOptIn= */ false);
@@ -644,10 +661,7 @@ public class CompositorViewHolderUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION,
-        ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION_ON_AUTOMOTIVE
-    })
+    @EnableFeatures(ChromeFeatureList.FULLSCREEN_INSETS_API_MIGRATION)
     public void testHandleSystemUiVisibilityChangesWithUpdatedFullscreenApis() {
         when(mWindowAndroid.getActivity()).thenReturn(new WeakReference<>(mActivity));
 
@@ -805,7 +819,7 @@ public class CompositorViewHolderUnitTest {
         // taking up the bottom space.
         int adjustedHeight = VIEWPORT_HEIGHT - KEYBOARD_HEIGHT;
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(adjustedHeight);
@@ -828,7 +842,7 @@ public class CompositorViewHolderUnitTest {
         clearInvocations(mCompositorViewJni);
 
         // Hide the keyboard.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
@@ -850,14 +864,14 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
 
         // Establish the baseline viewport size before keyboard insets change.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
         mCompositorViewHolder.updateWebContentsSize(mTab);
         reset(mWebContents);
 
         // Keyboard show: inset is updated before layout applies the reduced view height.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
         mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
@@ -868,7 +882,7 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.updateWebContentsSize(mTab);
 
         // Keyboard hide: inset clears before layout restores the full view height.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(adjustedHeight);
         mKeyboardInsetSupplier.set(0);
@@ -895,7 +909,7 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
 
         // Establish the baseline viewport size before keyboard insets change.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
         mCompositorViewHolder.updateWebContentsSize(mTab);
@@ -903,7 +917,7 @@ public class CompositorViewHolderUnitTest {
 
         // Keyboard show: browser controls hide (simulating transient height increase) before
         // layout applies the reduced view height.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT + 100);
         mKeyboardInsetSupplier.set(0);
@@ -922,7 +936,7 @@ public class CompositorViewHolderUnitTest {
 
         // Keyboard hide: browser controls show (simulating transient height decrease) before
         // layout applies the restored view height.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(adjustedHeight - 100);
         mKeyboardInsetSupplier.set(0);
@@ -950,13 +964,14 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
 
         // Establish baseline before keyboard transition starts.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
         mCompositorViewHolder.updateWebContentsSize(mTab);
         reset(mWebContents);
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
 
         // Small keyboard inset step arrives before the view height update.
@@ -990,7 +1005,7 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
 
         // Establish baseline before keyboard transition.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setHeightForTesting(fullViewportHeight);
         mCompositorViewHolder.updateWebContentsSize(mTab);
@@ -998,7 +1013,8 @@ public class CompositorViewHolderUnitTest {
 
         // Layout race during dismiss: view height shrinks while the inset supplier still reads 0
         // and the IME animation is in progress.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(24);
         mCompositorViewHolder.setHeightForTesting(intermediateViewportHeight);
         mCompositorViewHolder.updateWebContentsSize(mTab);
@@ -1026,7 +1042,7 @@ public class CompositorViewHolderUnitTest {
 
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
         mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
@@ -1036,6 +1052,165 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.updateWebContentsSize(mTab);
 
         verify(mWebContents, atLeast(1)).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT + KEYBOARD_HEIGHT);
+    }
+
+    // WebContents sizing while the keyboard shows in the default RESIZES_VISUAL mode. The height is
+    // held while a keyboard insets animation runs and then computed from live values, which the
+    // renderer's browser controls state and the visual viewport depend on. See
+    // https://crbug.com/565837684.
+
+    @Test
+    public void testWebContentResizeForControlsWhileKeyboardShowing() {
+        startWithBrowserControls(/* bottomControlsHeight= */ 0);
+        startKeyboardAnimation();
+        showKeyboard(/* navigationBarHeight= */ 0);
+        endKeyboardAnimation();
+        clearInvocations(mWebContents, mCompositorViewJni);
+
+        // Once the keyboard has settled, the controls resize the WebContents right away, in step
+        // with the renderer being told whether they shrink it.
+        setBrowserControlsShown(false);
+        verify(mWebContents, atLeastOnce()).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+        verify(mWebContents, never())
+                .setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT);
+        verify(mCompositorViewJni).onControlsResizeViewChanged(any(), any(), eq(false));
+        clearInvocations(mWebContents, mCompositorViewJni);
+
+        setBrowserControlsShown(true);
+        verify(mWebContents, atLeastOnce())
+                .setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT);
+        verify(mWebContents, never()).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+        verify(mCompositorViewJni).onControlsResizeViewChanged(any(), any(), eq(true));
+    }
+
+    @Test
+    public void testWebContentResizeForControlsShowingWhileKeyboardShows() {
+        startWithBrowserControls(/* bottomControlsHeight= */ 0);
+        setBrowserControlsShown(false);
+        clearInvocations(mWebContents);
+
+        // Focusing an editable node shows the keyboard and locks the controls shown, so they come
+        // back while the keyboard is animating in. The last settled height is held meanwhile.
+        startKeyboardAnimation();
+        showKeyboard(/* navigationBarHeight= */ 0);
+        setBrowserControlsShown(true);
+        ArgumentCaptor<Integer> heightCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mWebContents, atLeastOnce()).setSize(eq(VIEWPORT_WIDTH), heightCaptor.capture());
+        for (int height : heightCaptor.getAllValues()) {
+            assertEquals(VIEWPORT_HEIGHT, height);
+        }
+        clearInvocations(mWebContents);
+
+        endKeyboardAnimation();
+        verify(mWebContents).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT);
+    }
+
+    @Test
+    public void testWebContentResizeAfterKeyboardSettles_edgeToEdge() {
+        // The bottom chin covers the navigation bar and scrolls away with the other controls.
+        startWithBrowserControls(NAVIGATION_BAR_HEIGHT);
+        setBrowserControlsShown(false);
+
+        // The chin hides while the keyboard is showing, and the focus lock brings the top controls
+        // back.
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
+        mBrowserControlsManager.setBottomControlsHeight(0, /* bottomControlsMinHeight= */ 0);
+        showKeyboard(NAVIGATION_BAR_HEIGHT);
+        setBrowserControlsShown(true);
+        clearInvocations(mWebContents);
+        endKeyboardAnimation();
+
+        // The visual viewport, which is the WebContents minus the keyboard inset, ends where the
+        // keyboard starts.
+        verify(mWebContents)
+                .setSize(
+                        VIEWPORT_WIDTH,
+                        VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT - NAVIGATION_BAR_HEIGHT);
+    }
+
+    @Test
+    public void testWebContentResizeAfterKeyboardSettles_bottomControlsHiddenByKeyboard() {
+        // A bottom toolbar and the chin.
+        final int bottomControlsHeight = 60 + NAVIGATION_BAR_HEIGHT;
+        startWithBrowserControls(bottomControlsHeight);
+        verify(mWebContents, atLeastOnce())
+                .setSize(
+                        VIEWPORT_WIDTH,
+                        VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT - bottomControlsHeight);
+
+        // The bottom controls hide while the keyboard is showing.
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
+        mBrowserControlsManager.setBottomControlsHeight(0, /* bottomControlsMinHeight= */ 0);
+        showKeyboard(NAVIGATION_BAR_HEIGHT);
+        clearInvocations(mWebContents);
+        endKeyboardAnimation();
+
+        // The WebContents takes the space the bottom controls left under the keyboard, so the
+        // visual viewport still ends where the keyboard starts.
+        verify(mWebContents)
+                .setSize(
+                        VIEWPORT_WIDTH,
+                        VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT - NAVIGATION_BAR_HEIGHT);
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.VIRTUAL_KEYBOARD_LIVE_HEIGHT_ONCE_SETTLED)
+    public void testWebContentResizeAfterKeyboardSettles_withKillSwitch_usesLegacySizing() {
+        // The keyboard animation listener is only added with the flag enabled.
+        verify(mInsetObserver, never()).addWindowInsetsAnimationListener(any());
+
+        startWithBrowserControls(/* bottomControlsHeight= */ 0);
+        setBrowserControlsShown(false);
+        showKeyboard(/* navigationBarHeight= */ 0);
+        setBrowserControlsShown(true);
+        clearInvocations(mWebContents);
+        mCompositorViewHolder.updateWebContentsSize(mTab);
+
+        // The legacy behavior keeps the height from before the keyboard showed.
+        verify(mWebContents).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT);
+    }
+
+    @Test
+    public void testWebContentResizeAfterKeyboardSettles_insetWithoutViewResizeIsNotApplied() {
+        startWithBrowserControls(/* bottomControlsHeight= */ 0);
+        clearInvocations(mWebContents);
+
+        // The keyboard inset arrives, but the keyboard doesn't shrink the view.
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
+        mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
+        mCompositorViewHolder.updateWebContentsSize(mTab);
+        endKeyboardAnimation();
+
+        // The WebContents isn't outset by the keyboard height to counter a resize that never
+        // happened.
+        verify(mWebContents, atLeastOnce())
+                .setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT);
+        verify(mWebContents, never())
+                .setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT + KEYBOARD_HEIGHT);
+    }
+
+    @Test
+    public void testWebContentResizeAfterKeyboardSettles_insetAfterViewResizeIsApplied() {
+        startWithBrowserControls(/* bottomControlsHeight= */ 0);
+
+        // Android layout shrinks the view before the keyboard inset arrives, so the inset is
+        // deferred, waiting for a resize that already happened.
+        startKeyboardAnimation();
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
+        mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT - KEYBOARD_HEIGHT);
+        mCompositorViewHolder.updateWebContentsSize(mTab);
+        mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
+        clearInvocations(mWebContents);
+        endKeyboardAnimation();
+
+        // Once the animation ends, the inset is applied, so the keyboard doesn't shrink the
+        // WebContents.
+        verify(mWebContents).setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT);
+        verify(mWebContents, never())
+                .setSize(VIEWPORT_WIDTH, VIEWPORT_HEIGHT - TOP_CONTROLS_HEIGHT - KEYBOARD_HEIGHT);
     }
 
     @Test
@@ -1049,7 +1224,7 @@ public class CompositorViewHolderUnitTest {
         mCompositorViewHolder.mWindowVisibleDisplayFrame =
                 new Rect(17, 23, 17 + VIEWPORT_WIDTH, 23 + VIEWPORT_HEIGHT);
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(adjustedHeight);
@@ -1078,7 +1253,7 @@ public class CompositorViewHolderUnitTest {
         // taking up the bottom space.
         int adjustedHeight = VIEWPORT_HEIGHT - KEYBOARD_HEIGHT;
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         // The CompositorViewHolder does not account for the keyboard since the keyboard inset has
@@ -1104,7 +1279,7 @@ public class CompositorViewHolderUnitTest {
         clearInvocations(mCompositorViewJni);
 
         // Hide the keyboard.
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
@@ -1123,7 +1298,7 @@ public class CompositorViewHolderUnitTest {
         reset(mWebContents);
 
         // Simulate the keyboard being hidden
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(0);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
@@ -1147,7 +1322,7 @@ public class CompositorViewHolderUnitTest {
         // simulates a reduced layout height from the keyboard taking up the bottom space.
         int adjustedHeight = VIEWPORT_HEIGHT - KEYBOARD_HEIGHT;
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
@@ -1171,7 +1346,7 @@ public class CompositorViewHolderUnitTest {
         // simulates a reduced layout height from the keyboard taking up the bottom space.
         int adjustedHeight = VIEWPORT_HEIGHT - KEYBOARD_HEIGHT;
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
         mCompositorViewHolder.setHeightForTesting(adjustedHeight);
@@ -1214,7 +1389,7 @@ public class CompositorViewHolderUnitTest {
         // simulates a reduced layout height from the keyboard taking up the bottom space.
         int adjustedHeight = VIEWPORT_HEIGHT - KEYBOARD_HEIGHT;
 
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(true);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
         when(mMockKeyboard.calculateTotalKeyboardHeight(any())).thenReturn(KEYBOARD_HEIGHT);
         mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
         mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
@@ -1271,7 +1446,7 @@ public class CompositorViewHolderUnitTest {
 
     @Test
     public void testOnInterceptHoverEvent() {
-        when(mMockKeyboard.isKeyboardShowing(any())).thenReturn(false);
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(false);
         when(mLayoutManager.onInterceptMotionEvent(
                         MOTION_ACTION_HOVER_ENTER, false, EventType.HOVER))
                 .thenReturn(true);
@@ -2316,5 +2491,60 @@ public class CompositorViewHolderUnitTest {
         assertEquals(SIDE_UI_END_WIDTH, layoutParams.rightMargin);
         assertEquals(0f, customView.getTranslationX(), /* delta= */ 0f);
         return customView;
+    }
+
+    // Helpers for the keyboard and browser controls tests ---
+
+    private void startWithBrowserControls(int bottomControlsHeight) {
+        mCompositorViewHolder.setWidthForTesting(VIEWPORT_WIDTH);
+        mCompositorViewHolder.setHeightForTesting(VIEWPORT_HEIGHT);
+        mBrowserControlsManager.setTopControlsHeight(
+                TOP_CONTROLS_HEIGHT, /* topControlsMinHeight= */ 0);
+        mBrowserControlsManager.setBottomControlsHeight(
+                bottomControlsHeight, /* bottomControlsMinHeight= */ 0);
+        setBrowserControlsShown(true);
+    }
+
+    private void setBrowserControlsShown(boolean shown) {
+        int bottomControlsHeight = mBrowserControlsManager.getBottomControlsHeight();
+        mBrowserControlsManager
+                .getTabControlsObserverForTesting()
+                .onBrowserControlsOffsetChanged(
+                        mTab,
+                        /* topControlsOffsetY= */ shown ? 0 : -TOP_CONTROLS_HEIGHT,
+                        /* bottomControlsOffsetY= */ shown ? 0 : bottomControlsHeight,
+                        /* contentOffsetY= */ shown ? TOP_CONTROLS_HEIGHT : 0,
+                        /* topControlsMinHeightOffsetY= */ 0,
+                        /* bottomControlsMinHeightOffsetY= */ 0);
+    }
+
+    /**
+     * Shows the keyboard, with the keyboard inset arriving before Android layout shrinks the view.
+     * When drawing edge-to-edge, the view is padded by the whole IME inset, which includes the
+     * navigation bar, while the keyboard inset doesn't include it.
+     */
+    private void showKeyboard(int navigationBarHeight) {
+        when(mMockKeyboard.isKeyboardObscuring(any())).thenReturn(true);
+        mKeyboardInsetSupplier.set(KEYBOARD_HEIGHT);
+        mCompositorViewHolder.setHeightForTesting(
+                VIEWPORT_HEIGHT - KEYBOARD_HEIGHT - navigationBarHeight);
+        mCompositorViewHolder.updateWebContentsSize(mTab);
+    }
+
+    /** Starts the insets animation that the keyboard shows or hides with. */
+    private void startKeyboardAnimation() {
+        mKeyboardAnimation =
+                new WindowInsetsAnimationCompat(WindowInsetsCompat.Type.ime(), null, 250);
+        getKeyboardAnimationListener().onPrepare(mKeyboardAnimation);
+    }
+
+    private void endKeyboardAnimation() {
+        getKeyboardAnimationListener().onEnd(mKeyboardAnimation);
+    }
+
+    private InsetObserver.WindowInsetsAnimationListener getKeyboardAnimationListener() {
+        verify(mInsetObserver)
+                .addWindowInsetsAnimationListener(mWindowInsetsAnimationListenerCaptor.capture());
+        return mWindowInsetsAnimationListenerCaptor.getValue();
     }
 }

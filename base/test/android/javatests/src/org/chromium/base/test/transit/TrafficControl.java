@@ -43,7 +43,7 @@ public class TrafficControl {
             // Happens when test is batched, but the Activity is not kept between tests; Public
             // Transit's Station/Facility state need to reflect that and start from a new
             // {@link EntryPointSentinelStation}.
-            station.finishForcibly();
+            station.setStateFinishedForcibly();
         }
         sActiveStations.clear();
     }
@@ -57,8 +57,11 @@ public class TrafficControl {
             assert exitedStation.getPhase() != Phase.ACTIVE
                     : "Previously active station was not ACTIVE";
         }
+        // Put the entered Station where the exited one was, so each window keeps its position:
+        // the first window stays first and new windows go to the end.
+        int index = exitedStations.isEmpty() ? -1 : sActiveStations.indexOf(exitedStations.get(0));
         sActiveStations.removeAll(exitedStations);
-        sActiveStations.addAll(enteredStations);
+        sActiveStations.addAll(index == -1 ? sActiveStations.size() : index, enteredStations);
     }
 
     /**
@@ -79,7 +82,7 @@ public class TrafficControl {
      */
     public static void hopOffPublicTransit() {
         for (Station<?> station : sActiveStations) {
-            station.finishForcibly();
+            station.setStateFinishedForcibly();
         }
         sActiveStations.clear();
         for (Runnable listener : sHopOffListeners) {

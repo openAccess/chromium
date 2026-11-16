@@ -254,6 +254,15 @@ chromium-metrics-reviews@google.com.
 
 <!-- LINT.ThenChange(//ios/chrome/browser/incognito_reauth/ui_bundled/incognito_reauth_constants.h:IncognitoLockSettingStartupState) -->
 
+<!-- LINT.IfChange(IOSActorActionTargetType) -->
+
+<enum name="IOSActorActionTargetType">
+  <int value="0" label="DOM node"/>
+  <int value="1" label="Coordinate"/>
+</enum>
+
+<!-- LINT.ThenChange(//ios/chrome/browser/intelligence/actor/tools/public/metrics.h:IOSActorActionTargetType) -->
+
 <!-- LINT.IfChange(IOSActorBackgroundTaskEndReason) -->
 
 <enum name="IOSActorBackgroundTaskEndReason">
@@ -1696,6 +1705,7 @@ chromium-metrics-reviews@google.com.
   <int value="0" label="Gemini - Enterprise Policies"/>
   <int value="1" label="Lens - Enterprise Policies"/>
   <int value="2" label="Lens - Non Google Search Engine"/>
+  <int value="3" label="Gemini - Incognito"/>
 </enum>
 
 <!-- LINT.ThenChange(/ios/chrome/browser/intelligence/page_action_menu/utils/ai_hub_metrics.h:IOSPageActionMenuFooterReason) -->
@@ -2364,6 +2374,18 @@ chromium-metrics-reviews@google.com.
 </enum>
 
 <!-- LINT.ThenChange(/ios/chrome/browser/content_suggestions/tips/model/tips_metrics.h:IOSTipsNTPCustomizationPromoAction) -->
+
+<!-- LINT.IfChange(IOSTipsNTPThemeActionableAction) -->
+
+<enum name="IOSTipsNTPThemeActionableAction">
+  <int value="0" label="Default theme selected"/>
+  <int value="1" label="Color theme selected"/>
+  <int value="2" label="Preset image selected"/>
+  <int value="3" label="Photo picker opened"/>
+  <int value="4" label="See More tapped"/>
+</enum>
+
+<!-- LINT.ThenChange(/ios/chrome/browser/content_suggestions/tips/model/tips_metrics.h:IOSTipsNTPThemeActionableAction) -->
 
 <!-- LINT.IfChange(TrustedVaultNotificationEvents) -->
 

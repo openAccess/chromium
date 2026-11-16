@@ -7,12 +7,15 @@
 #import <map>
 #import <optional>
 #import <string>
+#import <tuple>
 #import <utility>
 #import <vector>
 
 #import "base/base64.h"
 #import "base/check.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
 #import "base/memory/raw_ptr.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
@@ -59,7 +62,7 @@ NSString* const kConfirmationUserResponse =
 constexpr char kConfirmationTitle[] = "Input needed";
 
 // Label of the confirming button of confirmation prompts.
-// TODO(crbug.com/556739755): Localize the button text.
+// TODO(crbug.com/573515833): Localize the button text.
 constexpr char kConfirmationButtonText[] = "Continue";
 
 // Populates a TabObservation proto with data from a PageContext.
@@ -87,14 +90,6 @@ void PopulateTabObservationFromPageContext(
       hasContent ? optimization_guide::proto::TabObservation::TAB_OBSERVATION_OK
                  : optimization_guide::proto::TabObservation::
                        TAB_OBSERVATION_FETCH_ERROR);
-}
-
-// Serializes a Protobuf message to NSData.
-template <typename ProtoMessage>
-NSData* SerializeProtoToNSData(const ProtoMessage& message) {
-  std::string serialized;
-  message.SerializeToString(&serialized);
-  return [NSData dataWithBytes:serialized.data() length:serialized.size()];
 }
 
 // Returned when the task's actuated tab no longer exists.
@@ -381,6 +376,31 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
   return origins;
 }
 
+// Forwards a navigation confirmation request for `navigation_origin` to
+// `confirmation_block` and resolves `callback` with the decision.
+void ForwardNavigationConfirmation(
+    GeminiNavigationConfirmationBlock confirmation_block,
+    const url::Origin& navigation_origin,
+    actor::NavigationConfirmationDecisionCallback callback) {
+  if (navigation_origin.opaque()) {
+    std::move(callback).Run(false);
+    return;
+  }
+  NSString* origin_string =
+      base::SysUTF8ToNSString(navigation_origin.Serialize());
+  auto [on_invoke, on_drop] = base::SplitOnceCallback(std::move(callback));
+  __block actor::NavigationConfirmationDecisionCallback block_callback =
+      std::move(on_invoke);
+  __block base::ScopedClosureRunner fail_closed_runner(
+      base::BindOnce(std::move(on_drop), false));
+  confirmation_block(origin_string, ^(BOOL allowed) {
+    if (block_callback) {
+      std::ignore = fail_closed_runner.Release();
+      std::move(block_callback).Run(allowed);
+    }
+  });
+}
+
 }  // namespace
 
 @implementation GeminiActuationHandler {
@@ -420,6 +440,7 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
   if (_actorService) {
     _actorService->RemoveTaskUpdatesObserver(self);
     for (const auto& [taskID, _] : _taskToWebStateIDMap) {
+      _actorService->SetNavigationConfirmationCallback(taskID, {});
       _actorService->StopTask(taskID, actor::ActorTaskStoppedReason::kShutdown);
     }
     _actorService = nullptr;
@@ -489,7 +510,7 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
   const bool hasActions = request.actionProtos != nil;
   const bool hasYield = request.yieldAction != nil;
   if (hasActions == hasYield) {
-    // TODO(crbug.com/556739755): Add monitoring for invalid actuation requests.
+    // TODO(crbug.com/582694320): Add monitoring for invalid actuation requests.
     completionBlock([[GeminiActuationResponse alloc]
         initWithResultCode:actor::mojom::ActionResultCode::kArgumentsInvalid
               errorMessage:"Invalid actuation request: actionProtos and "
@@ -547,6 +568,18 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
 - (void)setTaskInterventionDelegate:(id<ActorTaskInterventionDelegate>)delegate
                           forTaskID:(actor::ActorTaskId)taskID {
   // TODO(crbug.com/496163970): Implement and test.
+}
+
+- (void)setNavigationConfirmationHandler:
+            (GeminiNavigationConfirmationBlock)handler
+                               forTaskID:(actor::ActorTaskId)taskID {
+  if (!_actorService || !_taskToWebStateIDMap.contains(taskID)) {
+    return;
+  }
+  actor::NavigationConfirmationCallback callback =
+      handler ? base::BindRepeating(&ForwardNavigationConfirmation, handler)
+              : actor::NavigationConfirmationCallback();
+  _actorService->SetNavigationConfirmationCallback(taskID, std::move(callback));
 }
 
 #pragma mark - ActorTaskUpdatesObserver
@@ -656,6 +689,7 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
                       reason:(actor::ActorTaskStoppedReason)reason
              completionBlock:
                  (void (^)(GeminiActuationResponse*))completionBlock {
+  _actorService->SetNavigationConfirmationCallback(taskID, {});
   _actorService->StopTask(taskID, reason);
   _taskToWebStateIDMap.erase(taskID);
   if (completionBlock) {
@@ -676,5 +710,4 @@ absl::flat_hash_set<url::Origin> ParseWritableMainframeOrigins(
   }
   return it->second;
 }
-
 @end

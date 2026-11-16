@@ -17,14 +17,34 @@
 
 AISemanticEmbedder::AISemanticEmbedder(
     AIContextBoundObjectSet& context_bound_object_set,
+    passage_embeddings::Embedder& embedder,
     mojo::PendingReceiver<blink::mojom::AISemanticEmbedder> receiver)
     : AIContextBoundObject(context_bound_object_set),
+      embedder_(embedder),
       receiver_(this, std::move(receiver)) {
   receiver_.set_disconnect_handler(base::BindOnce(
       &AIContextBoundObject::RemoveFromSet, base::Unretained(this)));
 }
 
 AISemanticEmbedder::~AISemanticEmbedder() = default;
+
+void AISemanticEmbedder::SetPriority(
+    on_device_model::mojom::Priority priority) {
+  const auto new_priority =
+      priority == on_device_model::mojom::Priority::kForeground
+          ? passage_embeddings::PassagePriority::kUserInitiated
+          : passage_embeddings::PassagePriority::kPassive;
+  if (priority_ == new_priority) {
+    return;
+  }
+  priority_ = new_priority;
+  for (auto& [request_id, job] : pending_jobs_) {
+    // A request cancelled by CancelEmbed() has no Job left.
+    if (job) {
+      job->Reprioritize(priority_);
+    }
+  }
+}
 
 void AISemanticEmbedder::Embed(
     uint64_t request_id,
@@ -84,9 +104,8 @@ void AISemanticEmbedder::Embed(
 
   pending_jobs_.emplace(
       request_id,
-      service_launcher->controller()->GetEmbedder()->ComputePassagesEmbeddings(
-          passage_embeddings::PassagePriority::kUserInitiated,
-          std::move(formatted_inputs),
+      embedder_->ComputePassagesEmbeddings(
+          priority_, std::move(formatted_inputs),
           base::BindPostTask(
               base::SequencedTaskRunner::GetCurrentDefault(),
               base::BindOnce(&AISemanticEmbedder::OnEmbedComplete,

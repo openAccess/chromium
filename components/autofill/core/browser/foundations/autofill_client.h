@@ -16,6 +16,7 @@
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
+#include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
@@ -57,6 +58,10 @@ namespace device_reauth {
 class DeviceAuthAvailabilityChecker;
 class DeviceAuthenticator;
 }  // namespace device_reauth
+
+namespace gfx {
+class Image;
+}  // namespace gfx
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -142,6 +147,7 @@ class AutofillSnackbarControllerImpl;
 #endif  // BUILDFLAG(IS_ANDROID)
 class AutofillSuggestionDelegate;
 enum class AutofillTriggerSource;
+class CustomFormControlScriptIndex;
 class IdentityCredentialDelegate;
 class EntityDataManager;
 class FieldClassificationModelHandler;
@@ -150,6 +156,7 @@ class FormDataImporter;
 class FormFieldData;
 enum class GmailOtpOptInResult;
 class LogManager;
+class OtpCoordinator;
 class OtpFieldDetector;
 class OtpMetricsTracker;
 class OtpPhishGuardDelegate;
@@ -283,6 +290,26 @@ class AutofillClient {
   };
   // LINT.ThenChange(//tools/metrics/histograms/metadata/blink/enums.xml:EvpPermissionUiStatus)
 
+  // Decisions that can be returned by the in-context SPII verification UI.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(AutofillAiVerificationDecision)
+  enum class AutofillAiVerificationDecision {
+    // The user asked to hide the entity; the fill is undone and the entity is
+    // suppressed.
+    kHide = 0,
+    // The UI was dismissed without an explicit action; the fill is kept.
+    kDismiss = 1,
+    // The user confirmed the filled values; the fill is kept.
+    kConfirm = 2,
+    // The user undid the fill without suppressing the entity.
+    kUndo = 3,
+    kMaxValue = kUndo,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillAiVerificationDecision)
+  using AutofillAiVerificationDecisionCallback =
+      base::OnceCallback<void(AutofillAiVerificationDecision)>;
+
   // Describes the types of Iph shown by Autofill and anchored to a field.
   enum class IphFeature {
     kAutofillAi,
@@ -333,9 +360,10 @@ class AutofillClient {
 
   // Details about the UI that was shown to the user in an entity import bubble.
   struct EntityImportUIContext {
-    // String ID of the consent displayed in the import bubble, if any.
-    // Populated only when the user accepts the prompt.
-    std::optional<int> accepted_consent_string_id;
+    // String IDs of all text of the consent displayed in the import bubble
+    // (e.g., the notice and the strings inserted into or displayed next to it),
+    // if any. Populated only when the user accepts the prompt.
+    std::vector<int> accepted_consent_string_ids;
     // The string ID of the button that the user clicked, in case the user
     // accepted the bubble.
     std::optional<int> accept_button_string_id;
@@ -390,7 +418,7 @@ class AutofillClient {
   virtual base::WeakPtr<AutofillClient> GetWeakPtr() = 0;
 
   // Returns the app locale, e.g., "en-US".
-  virtual const std::string& GetAppLocale() const = 0;
+  virtual const base::i18n::LanguageTag& GetAppLocale() const = 0;
 
   // Returns the channel for the installation. In branded builds, this will be
   // version_info::Channel::{STABLE,BETA,DEV,CANARY}. In unbranded builds, or
@@ -974,6 +1002,30 @@ class AutofillClient {
       const EntityInstance& entity,
       base::OnceClosure on_undo_clicked);
 
+  // Displays in-context source attribution verification for `entity` filled
+  // from `source_url`. `field_bounds` are the bounds of the filled field in the
+  // same coordinate space as `PopupOpenArgs::element_bounds` (not yet
+  // transformed to screen coordinates; embedders transform them like the
+  // suggestion popup does). Embedders invoke `decision_cb` when the user
+  // accepts, hides, or dismisses the verification UI.
+  //
+  // `entity` and `source_url` are only valid for the duration of the call -
+  // embedders copy what they need.
+  // `decision_cb` must be run at most once, may be run synchronously, and may
+  // be dropped without running (treated as no decision). Starting a new
+  // verification while a prior verification UI is active must dismiss the prior
+  // UI first (running its callback with `kDismiss` or dropping it) so at most
+  // one verification session is active per tab.
+  // The embedder owns dismissing its UI on navigation / tab close -
+  // //components does not hide it. `field_bounds` were captured when the
+  // suggestion was accepted and may be stale after an asynchronous reauth or
+  // fetch.
+  virtual void ShowAutofillAiAttributionVerification(
+      const EntityInstance& entity,
+      const GURL& source_url,
+      const gfx::RectF& field_bounds,
+      AutofillAiVerificationDecisionCallback decision_cb);
+
   // TODO(crbug.com/555673134): Rename *Popup and *Toast methods below to
   // platform-agnostic names (e.g., ShowEmailVerificationPrompt,
   // HideEmailVerificationPrompt, ShowEmailVerificationLoading,
@@ -982,12 +1034,14 @@ class AutofillClient {
 
   // Shows a yes/no prompt asking the user to confirm that they want to verify
   // their email. The prompt is anchored on the field at `element_bounds`.
-  // `issuer_origin` is the origin that issued the assertion.
+  // `issuer_origin` is the origin that issued the assertion. `issuer_logo` is
+  // the logo the issuer advertises, or empty if it has none.
   // `callback` is called with the permission UI status
   // (`EmailVerificationPermissionUiStatus`).
   virtual void ShowEmailVerificationPopup(
       const gfx::RectF& element_bounds,
       const url::Origin& issuer_origin,
+      const gfx::Image& issuer_logo,
       const std::u16string& email,
       base::OnceCallback<void(EmailVerificationPermissionUiStatus)> callback);
 
@@ -1024,6 +1078,10 @@ class AutofillClient {
   // May return null on platforms where OTPs are not supported.
   virtual OtpFieldDetector* GetOtpFieldDetector();
 
+  // Returns the tab-scoped `OtpCoordinator` when `kAutofillOtpCoordinator` is
+  // enabled, or null otherwise.
+  virtual OtpCoordinator* GetOtpCoordinator();
+
   // Returns the OtpMetricsTracker for the current tab. May return null on
   // platforms where it is not supported or when the feature is disabled.
   virtual OtpMetricsTracker* GetOtpMetricsTracker();
@@ -1045,11 +1103,6 @@ class AutofillClient {
   // May return null on platforms where no GmailOtpBackend is supported.
   virtual one_time_tokens::GmailOtpBackend* GetGmailOtpBackend() const;
 
-  // Returns true if the primary main frame's document used the WebOTP API. This
-  // exists only for the main frame because only the main frame has the
-  // permission to call the WeOTP API.
-  virtual bool DocumentUsedWebOTP();
-
   // Returns the helper for Password Manager integrations.
   virtual PasswordManagerAutofillHelperDelegate*
   GetPasswordManagerAutofillHelper();
@@ -1060,6 +1113,10 @@ class AutofillClient {
   // Returns whether the client uses platform-native autofill rather than
   // Chrome's built-in autofill UI/logic.
   virtual bool UsesPlatformAutofill() const = 0;
+
+  // Returns the process-wide `CustomFormControlScriptIndex`, if available.
+  virtual const CustomFormControlScriptIndex* GetCustomFormControlScriptIndex()
+      const;
 };
 
 }  // namespace autofill

@@ -86,14 +86,14 @@ enum class ProfileSignout {
   // User clicked on sign-out from the clear browsing data page.
   kUserClickedSignoutFromClearBrowsingDataPage = 21,
   // Profile Signout during reconciliation triggered by a Gaia cookie update.
-  kGaiaCookieUpdated = 22,
+  // Deprecated: kGaiaCookieUpdated = 22,
   // Profile Signout during reconciliation.
-  kAccountReconcilorReconcile = 23,
+  // Deprecated: kAccountReconcilorReconcile = 23,
   // Signin manager updates the unconsented primary account.
   kSigninManagerUpdateUPA = 24,
   // User cleared account cookies when there's no sync consent, which has caused
   // sign out.
-  kUserDeletedAccountCookies = 25,
+  // Deprecated: kUserDeletedAccountCookies = 25,
   // User tapped 'Undo' in a snackbar that is shown right after sign-in through
   // promo in bookmarks and reading list page. iOS only.
   kUserTappedUndoRightAfterSignIn = 26,
@@ -365,8 +365,8 @@ enum class AccessPoint : int {
   // snackbar. iOS only.
   kLevelUp = 107,
   // Triggered when the user taps the Undo action on the sign-out snackbar.
-  // The snackbar is displayed after the user signs out from the account menu,
-  // when IdentityAwareness is enabled. iOS only.
+  // The snackbar is displayed after the user signs out from the account menu.
+  // iOS only.
   kSignoutUndoSnackbar = 108,
   // Sign-in promo shown for the Composebox Drive context menu option.
   kComposeboxDriveContextMenuOptionBubble = 109,
@@ -386,10 +386,13 @@ enum class AccessPoint : int {
   kPasswordManagerCard = 114,
   // Triggered by an enterprise proxy authentication challenge. iOS only.
   kEnterpriseProxy = 115,
+  // Triggered from the "Sync history to see other device tabs" item in the
+  // "Other device tabs" app menu. Desktop only.
+  kOtherDeviceTabsMenu = 116,
   // Add values above this line with a corresponding label to the
   // "SigninAccessPoint" enum in
   // tools/metrics/histograms/metadata/signin/enums.xml.
-  kMaxValue = kEnterpriseProxy,  // This must be last.
+  kMaxValue = kOtherDeviceTabsMenu,  // This must be last.
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/signin/enums.xml)
 

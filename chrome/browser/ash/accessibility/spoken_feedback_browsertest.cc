@@ -35,11 +35,13 @@
 #include "ash/system/status_area_widget_test_helper.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/wm/desks/templates/saved_desk_util.h"
+#include "ash/wm/overview/overview_controller.h"
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -175,14 +177,6 @@ void LoggedInSpokenFeedbackTest::SendKeyPressWithControl(ui::KeyboardCode key) {
   ui::test::EmulateFullKeyPressReleaseSequence(
       event_generator_.get(), key, /*control=*/true, /*shift=*/false,
       /*alt=*/false, /*command=*/false);
-}
-
-void LoggedInSpokenFeedbackTest::SendKeyPressWithControlAndAlt(
-    ui::KeyboardCode key) {
-  ui::test::EmulateFullKeyPressReleaseSequence(event_generator_.get(), key,
-                                               /*control=*/true,
-                                               /*shift=*/false,
-                                               /*alt=*/true, /*command=*/false);
 }
 
 void LoggedInSpokenFeedbackTest::SendKeyPressWithControlAndShift(
@@ -970,8 +964,7 @@ IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, NavigateSpeechMenu) {
   sm()->Replay();
 }
 
-// TODO(https://crbug.com/1486666): Fix flakiness
-IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, DISABLED_OpenContextMenu) {
+IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, OpenContextMenu) {
   chromevox_test_utils()->EnableChromeVox();
   StablizeChromeVoxState();
   sm()->Call([this]() { SendKeyPressWithSearch(ui::VKEY_M); });
@@ -982,6 +975,7 @@ IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, DISABLED_OpenContextMenu) {
     NavigateToUrl(GURL(R"(data:text/html;charset=utf-8,
             <button autofocus>I'm a button</button>)"));
   });
+  sm()->ExpectSpeech("I'm a button");
   sm()->Call([this]() { SendKeyPressWithSearch(ui::VKEY_M); });
   sm()->ExpectSpeech("menu opened");
 
@@ -1488,25 +1482,22 @@ IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, NextGraphic) {
   sm()->Replay();
 }
 
-// TODO(crbug.com/40831399): Re-enable this test
-// Verify that enable chromeVox won't end overview.
-IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest,
-                       DISABLED_EnableChromeVoxOnOverviewMode) {
-  StablizeChromeVoxState();
-
-  sm()->Call([this]() {
-    (PerformAcceleratorAction(AcceleratorAction::kToggleOverview));
-  });
+// Verify that enabling ChromeVox won't end overview.
+IN_PROC_BROWSER_TEST_P(SpokenFeedbackTest, EnableChromeVoxOnOverviewMode) {
+  NavigateToUrl(
+      GURL("data:text/html;charset=utf-8,<button autofocus>Click me</button>"));
+  ASSERT_TRUE(PerformAcceleratorAction(AcceleratorAction::kToggleOverview));
 
   chromevox_test_utils()->EnableChromeVox();
-  // Wait for Chromevox to start while in Overview before `sm()->Call`, which
-  // pushes a callback when the last expected speech was seen.
-  sm()->ExpectSpeechPattern(", window");
 
-  sm()->Call([this]() { SendKeyPress(ui::VKEY_TAB); });
+  sm()->Call([this]() {
+    ASSERT_TRUE(OverviewController::Get()->InOverviewSession());
+    SendKeyPress(ui::VKEY_TAB);
+  });
   sm()->ExpectSpeechPattern(
-      "Chrom* - data:text slash html;charset equal utf-8, less than button "
+      "*data:text slash html;charset equal utf-8, less than button "
       "autofocus greater than Click me less than slash button greater than");
+  sm()->ExpectSpeechPattern("Press Ctrl plus W to close.");
 
   sm()->Replay();
 }

@@ -148,7 +148,9 @@ public class SearchBoxMediatorUnitTest {
 
     private void assertRestingUIState(String expectedHint) {
         assertFalse(mMediator.isHintAnimatorActiveForTesting());
+        assertEquals(1f, mPropertyModel.get(SearchBoxProperties.PLUS_BUTTON_ALPHA), 0.001f);
         assertEquals(0f, mPropertyModel.get(SearchBoxProperties.PLUS_BUTTON_ROTATION), 0.001f);
+        assertEquals(1f, mPropertyModel.get(SearchBoxProperties.PLUS_BUTTON_SCALE), 0.001f);
         assertEquals(1f, mPropertyModel.get(SearchBoxProperties.HINT_TEXT_ALPHA), 0.001f);
         assertEquals(expectedHint, mPropertyModel.get(SearchBoxProperties.SEARCH_BOX_HINT_TEXT));
         assertNotNull(mPropertyModel.get(SearchBoxProperties.PLUS_BUTTON_TINT));
@@ -729,8 +731,8 @@ public class SearchBoxMediatorUnitTest {
     @EnableFeatures(ChromeFeatureList.NTP_AURORA)
     public void testGetFakeSearchBoxTextStyle_auroraEnabled_applyTrue() {
         assertEquals(
-                R.style.TextAppearance_FakeSearchBoxTextNewStyle,
-                SearchBoxMediator.getFakeSearchBoxTextStyle(/* apply= */ true));
+                R.style.TextAppearance_FakeSearchBoxTextNewStyleDark,
+                mMediator.getFakeSearchBoxTextStyle(/* apply= */ true));
     }
 
     @Test
@@ -738,7 +740,7 @@ public class SearchBoxMediatorUnitTest {
     public void testGetFakeSearchBoxTextStyle_auroraEnabled_applyFalse() {
         assertEquals(
                 R.style.TextAppearance_FakeSearchBoxTextNewStyle,
-                SearchBoxMediator.getFakeSearchBoxTextStyle(/* apply= */ false));
+                mMediator.getFakeSearchBoxTextStyle(/* apply= */ false));
     }
 
     @Test
@@ -746,7 +748,7 @@ public class SearchBoxMediatorUnitTest {
     public void testGetFakeSearchBoxTextStyle_auroraDisabled_applyTrue() {
         assertEquals(
                 R.style.TextAppearance_FakeSearchBoxTextMediumDark,
-                SearchBoxMediator.getFakeSearchBoxTextStyle(/* apply= */ true));
+                mMediator.getFakeSearchBoxTextStyle(/* apply= */ true));
     }
 
     @Test
@@ -754,7 +756,7 @@ public class SearchBoxMediatorUnitTest {
     public void testGetFakeSearchBoxTextStyle_auroraDisabled_applyFalse() {
         assertEquals(
                 R.style.TextAppearance_FakeSearchBoxTextMedium,
-                SearchBoxMediator.getFakeSearchBoxTextStyle(/* apply= */ false));
+                mMediator.getFakeSearchBoxTextStyle(/* apply= */ false));
     }
 
     @Test

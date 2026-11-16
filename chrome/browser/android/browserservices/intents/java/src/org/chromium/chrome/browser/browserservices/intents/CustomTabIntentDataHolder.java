@@ -12,26 +12,35 @@ import android.net.Network;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.util.Pair;
 import android.widget.RemoteViews;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.Px;
 import androidx.browser.auth.AuthTabColorSchemeParams;
+import androidx.browser.customtabs.CustomContentAction;
 import androidx.browser.customtabs.CustomTabColorSchemeParams;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.browser.customtabs.CustomTabsIntent.ActivitySideSheetDecorationType;
+import androidx.browser.customtabs.CustomTabsIntent.ActivitySideSheetPosition;
 import androidx.browser.customtabs.CustomTabsIntent.ActivitySideSheetRoundedCornersPosition;
+import androidx.browser.customtabs.CustomTabsIntent.CloseButtonPosition;
 import androidx.browser.customtabs.CustomTabsIntent.OpenInBrowserState;
+import androidx.browser.customtabs.CustomTabsIntent.ShareState;
 import androidx.browser.trusted.TrustedWebActivityDisplayMode;
+import androidx.core.os.ParcelCompat;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TitleVisibility;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.TwaDisclosureUi;
 import org.chromium.chrome.browser.flags.ActivityType;
 import org.chromium.chrome.browser.flags.CustomTabProfileType;
+import org.chromium.chrome.browser.util.WindowFeatures;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -67,12 +76,12 @@ public class CustomTabIntentDataHolder implements Parcelable {
     public final boolean mIsCloseButtonEnabled;
     // Stored as a Bitmap rather than a Drawable because Drawable is not Parcelable.
     public final @Nullable Bitmap mCloseButtonIcon;
-    public final @Nullable RemoteViews mRemoteViews;
+    public @Nullable RemoteViews mRemoteViews;
     public final @ActivitySideSheetDecorationType int mSideSheetDecorationType;
     public final @ActivitySideSheetRoundedCornersPosition int mSideSheetRoundedCornersPosition;
-    public final int @Nullable [] mClickableViewIds;
-    public final @Nullable PendingIntent mRemoteViewsPendingIntent;
-    public final @Nullable PendingIntent mSecondaryToolbarSwipeUpPendingIntent;
+    public int @Nullable [] mClickableViewIds;
+    public @Nullable PendingIntent mRemoteViewsPendingIntent;
+    public @Nullable PendingIntent mSecondaryToolbarSwipeUpPendingIntent;
     public final @OpenInBrowserState int mOpenInBrowserState;
     public final @Nullable String mTranslateLanguage;
     public final @Nullable String mAutoTranslateLanguage;
@@ -81,8 +90,8 @@ public class CustomTabIntentDataHolder implements Parcelable {
     public final boolean mIsPartialCustomTabFixedHeight;
     public final boolean mContentScrollMayResizeTab;
     public final boolean mInteractWithBackground;
-    public final boolean mCctTabSwitcherEnabledForChromeExperiment;
-    public final boolean mCctTabSwitcherEnabledForEmbedderExperiment;
+    public final boolean mTabbedCctAllowedByEmbedder;
+    public final boolean mTabbedCctEnabledByEmbedder;
     public final @Nullable String mAuthRedirectScheme;
     public final @Nullable String mAuthRedirectHost;
     public final @Nullable String mAuthRedirectPath;
@@ -91,6 +100,22 @@ public class CustomTabIntentDataHolder implements Parcelable {
     public final AuthTabColorSchemeParams mLightAuthTabColorSchemeParams;
     public final AuthTabColorSchemeParams mDarkAuthTabColorSchemeParams;
     public final @ColorInt int mInitialBackgroundColor;
+    public final List<CustomButtonParams> mCustomButtonParams;
+    public final @ShareState int mShareState;
+    public final boolean mDefaultShareMenuItem;
+    public final boolean mOpenInBrowserButtonAllowed;
+    public final List<Pair<String, PendingIntent>> mMenuEntries;
+    public final @Nullable String mUrlToLoad;
+    public final @Nullable Integer mTranslucentBackgroundColor;
+    public final @Nullable String mClientPackageNameIdentitySharing;
+    public final @TwaDisclosureUi int mTwaDisclosureUi;
+    public final @CloseButtonPosition int mCloseButtonPosition;
+    public final boolean mShowSideSheetMaximizeButton;
+    public final @ActivitySideSheetPosition int mSideSheetPosition;
+    public final List<CustomContentAction> mCustomContentActions;
+    public final int mAndroidBrowserHelperVersion;
+    public final @Nullable WindowFeatures mRequestedWindowFeatures;
+    public final @Nullable Integer mIncognitoCctCallerId;
 
     private CustomTabIntentDataHolder(Builder builder) {
         mSessionHolder = builder.mSessionHolder;
@@ -133,10 +158,8 @@ public class CustomTabIntentDataHolder implements Parcelable {
         mIsPartialCustomTabFixedHeight = builder.mIsPartialCustomTabFixedHeight;
         mContentScrollMayResizeTab = builder.mContentScrollMayResizeTab;
         mInteractWithBackground = builder.mInteractWithBackground;
-        mCctTabSwitcherEnabledForChromeExperiment =
-                builder.mCctTabSwitcherEnabledForChromeExperiment;
-        mCctTabSwitcherEnabledForEmbedderExperiment =
-                builder.mCctTabSwitcherEnabledForEmbedderExperiment;
+        mTabbedCctAllowedByEmbedder = builder.mTabbedCctAllowedByEmbedder;
+        mTabbedCctEnabledByEmbedder = builder.mTabbedCctEnabledByEmbedder;
         mAuthRedirectScheme = builder.mAuthRedirectScheme;
         mAuthRedirectHost = builder.mAuthRedirectHost;
         mAuthRedirectPath = builder.mAuthRedirectPath;
@@ -145,6 +168,22 @@ public class CustomTabIntentDataHolder implements Parcelable {
         mLightAuthTabColorSchemeParams = builder.mLightAuthTabColorSchemeParams;
         mDarkAuthTabColorSchemeParams = builder.mDarkAuthTabColorSchemeParams;
         mInitialBackgroundColor = builder.mInitialBackgroundColor;
+        mCustomButtonParams = builder.mCustomButtonParams;
+        mShareState = builder.mShareState;
+        mDefaultShareMenuItem = builder.mDefaultShareMenuItem;
+        mOpenInBrowserButtonAllowed = builder.mOpenInBrowserButtonAllowed;
+        mMenuEntries = builder.mMenuEntries;
+        mUrlToLoad = builder.mUrlToLoad;
+        mTranslucentBackgroundColor = builder.mTranslucentBackgroundColor;
+        mClientPackageNameIdentitySharing = builder.mClientPackageNameIdentitySharing;
+        mTwaDisclosureUi = builder.mTwaDisclosureUi;
+        mCloseButtonPosition = builder.mCloseButtonPosition;
+        mShowSideSheetMaximizeButton = builder.mShowSideSheetMaximizeButton;
+        mSideSheetPosition = builder.mSideSheetPosition;
+        mCustomContentActions = builder.mCustomContentActions;
+        mAndroidBrowserHelperVersion = builder.mAndroidBrowserHelperVersion;
+        mRequestedWindowFeatures = builder.mRequestedWindowFeatures;
+        mIncognitoCctCallerId = builder.mIncognitoCctCallerId;
     }
 
     private CustomTabIntentDataHolder(Parcel in) {
@@ -189,8 +228,8 @@ public class CustomTabIntentDataHolder implements Parcelable {
         mIsPartialCustomTabFixedHeight = in.readBoolean();
         mContentScrollMayResizeTab = in.readBoolean();
         mInteractWithBackground = in.readBoolean();
-        mCctTabSwitcherEnabledForChromeExperiment = in.readBoolean();
-        mCctTabSwitcherEnabledForEmbedderExperiment = in.readBoolean();
+        mTabbedCctAllowedByEmbedder = in.readBoolean();
+        mTabbedCctEnabledByEmbedder = in.readBoolean();
         mAuthRedirectScheme = in.readString();
         mAuthRedirectHost = in.readString();
         mAuthRedirectPath = in.readString();
@@ -199,6 +238,26 @@ public class CustomTabIntentDataHolder implements Parcelable {
         mLightAuthTabColorSchemeParams = readAuthTabColorSchemeParams(in, classLoader);
         mDarkAuthTabColorSchemeParams = readAuthTabColorSchemeParams(in, classLoader);
         mInitialBackgroundColor = in.readInt();
+        mCustomButtonParams =
+                ParcelCompat.readParcelableList(
+                        in, new ArrayList<>(), classLoader, CustomButtonParams.class);
+        mShareState = in.readInt();
+        mDefaultShareMenuItem = in.readBoolean();
+        mOpenInBrowserButtonAllowed = in.readBoolean();
+        mMenuEntries = readMenuEntries(in);
+        mUrlToLoad = in.readString();
+        mTranslucentBackgroundColor = (Integer) in.readValue(classLoader);
+        mClientPackageNameIdentitySharing = in.readString();
+        mTwaDisclosureUi = in.readInt();
+        mCloseButtonPosition = in.readInt();
+        mShowSideSheetMaximizeButton = in.readBoolean();
+        mSideSheetPosition = in.readInt();
+        mCustomContentActions = readCustomContentActions(in);
+        mAndroidBrowserHelperVersion = in.readInt();
+        Bundle windowFeaturesBundle = in.readBundle(classLoader);
+        mRequestedWindowFeatures =
+                windowFeaturesBundle != null ? new WindowFeatures(windowFeaturesBundle) : null;
+        mIncognitoCctCallerId = (Integer) in.readValue(classLoader);
     }
 
     @Override
@@ -247,8 +306,8 @@ public class CustomTabIntentDataHolder implements Parcelable {
         dest.writeBoolean(mIsPartialCustomTabFixedHeight);
         dest.writeBoolean(mContentScrollMayResizeTab);
         dest.writeBoolean(mInteractWithBackground);
-        dest.writeBoolean(mCctTabSwitcherEnabledForChromeExperiment);
-        dest.writeBoolean(mCctTabSwitcherEnabledForEmbedderExperiment);
+        dest.writeBoolean(mTabbedCctAllowedByEmbedder);
+        dest.writeBoolean(mTabbedCctEnabledByEmbedder);
         dest.writeString(mAuthRedirectScheme);
         dest.writeString(mAuthRedirectHost);
         dest.writeString(mAuthRedirectPath);
@@ -257,6 +316,23 @@ public class CustomTabIntentDataHolder implements Parcelable {
         writeAuthTabColorSchemeParams(dest, mLightAuthTabColorSchemeParams);
         writeAuthTabColorSchemeParams(dest, mDarkAuthTabColorSchemeParams);
         dest.writeInt(mInitialBackgroundColor);
+        dest.writeParcelableList(mCustomButtonParams, flags);
+        dest.writeInt(mShareState);
+        dest.writeBoolean(mDefaultShareMenuItem);
+        dest.writeBoolean(mOpenInBrowserButtonAllowed);
+        writeMenuEntries(dest, mMenuEntries, flags);
+        dest.writeString(mUrlToLoad);
+        dest.writeValue(mTranslucentBackgroundColor);
+        dest.writeString(mClientPackageNameIdentitySharing);
+        dest.writeInt(mTwaDisclosureUi);
+        dest.writeInt(mCloseButtonPosition);
+        dest.writeBoolean(mShowSideSheetMaximizeButton);
+        dest.writeInt(mSideSheetPosition);
+        writeCustomContentActions(dest, mCustomContentActions, flags);
+        dest.writeInt(mAndroidBrowserHelperVersion);
+        dest.writeBundle(
+                mRequestedWindowFeatures != null ? mRequestedWindowFeatures.toBundle() : null);
+        dest.writeValue(mIncognitoCctCallerId);
     }
 
     @Override
@@ -311,6 +387,23 @@ public class CustomTabIntentDataHolder implements Parcelable {
         return colorScheme == CustomTabsIntent.COLOR_SCHEME_DARK
                 ? mDarkAuthTabColorSchemeParams
                 : mLightAuthTabColorSchemeParams;
+    }
+
+    /** Updates the bottom bar {@link RemoteViews} and its associated click handling parameters. */
+    public void updateRemoteViews(
+            @Nullable RemoteViews remoteViews,
+            int @Nullable [] clickableViewIds,
+            @Nullable PendingIntent pendingIntent) {
+        mRemoteViews = remoteViews;
+        mClickableViewIds = clickableViewIds;
+        mRemoteViewsPendingIntent = pendingIntent;
+    }
+
+    /**
+     * Updates the {@link PendingIntent} sent when the user swipes up from the secondary toolbar.
+     */
+    public void setSecondaryToolbarSwipeUpPendingIntent(@Nullable PendingIntent pendingIntent) {
+        mSecondaryToolbarSwipeUpPendingIntent = pendingIntent;
     }
 
     private static @Nullable TrustedWebActivityDisplayMode readTwaDisplayMode(
@@ -382,6 +475,60 @@ public class CustomTabIntentDataHolder implements Parcelable {
         return builder.build();
     }
 
+    private static void writeMenuEntries(
+            Parcel dest, List<Pair<String, PendingIntent>> entries, int flags) {
+        dest.writeInt(entries.size());
+        for (Pair<String, PendingIntent> entry : entries) {
+            dest.writeString(entry.first);
+            dest.writeTypedObject(entry.second, flags);
+        }
+    }
+
+    private static List<Pair<String, PendingIntent>> readMenuEntries(Parcel in) {
+        int size = in.readInt();
+        if (size <= 0) return List.of();
+        List<Pair<String, PendingIntent>> entries = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            String title = in.readString();
+            PendingIntent pendingIntent = in.readTypedObject(PendingIntent.CREATOR);
+            if (title == null || pendingIntent == null) continue;
+            entries.add(new Pair<>(title, pendingIntent));
+        }
+        return Collections.unmodifiableList(entries);
+    }
+
+    private static void writeCustomContentActions(
+            Parcel dest, List<CustomContentAction> actions, int flags) {
+        dest.writeInt(actions.size());
+        for (CustomContentAction action : actions) {
+            dest.writeInt(action.getId());
+            dest.writeString(action.getLabel());
+            dest.writeTypedObject(action.getPendingIntent(), flags);
+            dest.writeInt(action.getTargetType());
+        }
+    }
+
+    private static List<CustomContentAction> readCustomContentActions(Parcel in) {
+        int size = in.readInt();
+        if (size <= 0) return List.of();
+        List<CustomContentAction> actions = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) {
+            int id = in.readInt();
+            String label = in.readString();
+            PendingIntent pendingIntent = in.readTypedObject(PendingIntent.CREATOR);
+            int targetType = in.readInt();
+            if (label == null || pendingIntent == null) continue;
+            try {
+                actions.add(
+                        new CustomContentAction.Builder(id, label, pendingIntent, targetType)
+                                .build());
+            } catch (IllegalArgumentException e) {
+                // Skip invalid custom content actions.
+            }
+        }
+        return Collections.unmodifiableList(actions);
+    }
+
     public static final class Builder {
         private @Nullable SessionHolder mSessionHolder;
         private @Nullable String mClientPackageName;
@@ -423,8 +570,8 @@ public class CustomTabIntentDataHolder implements Parcelable {
         private boolean mIsPartialCustomTabFixedHeight;
         private boolean mContentScrollMayResizeTab;
         private boolean mInteractWithBackground;
-        private boolean mCctTabSwitcherEnabledForChromeExperiment;
-        private boolean mCctTabSwitcherEnabledForEmbedderExperiment;
+        private boolean mTabbedCctAllowedByEmbedder;
+        private boolean mTabbedCctEnabledByEmbedder;
         private @Nullable String mAuthRedirectScheme;
         private @Nullable String mAuthRedirectHost;
         private @Nullable String mAuthRedirectPath;
@@ -437,6 +584,24 @@ public class CustomTabIntentDataHolder implements Parcelable {
         private AuthTabColorSchemeParams mDarkAuthTabColorSchemeParams =
                 new AuthTabColorSchemeParams.Builder().build();
         private @ColorInt int mInitialBackgroundColor = Color.TRANSPARENT;
+        private List<CustomButtonParams> mCustomButtonParams = List.of();
+        private @ShareState int mShareState = CustomTabsIntent.SHARE_STATE_DEFAULT;
+        private boolean mDefaultShareMenuItem;
+        private boolean mOpenInBrowserButtonAllowed;
+        private List<Pair<String, PendingIntent>> mMenuEntries = List.of();
+        private @Nullable String mUrlToLoad;
+        private @Nullable Integer mTranslucentBackgroundColor;
+        private @Nullable String mClientPackageNameIdentitySharing;
+        private @TwaDisclosureUi int mTwaDisclosureUi = TwaDisclosureUi.DEFAULT;
+        private @CloseButtonPosition int mCloseButtonPosition =
+                CustomTabsIntent.CLOSE_BUTTON_POSITION_DEFAULT;
+        private boolean mShowSideSheetMaximizeButton;
+        private @ActivitySideSheetPosition int mSideSheetPosition =
+                CustomTabsIntent.ACTIVITY_SIDE_SHEET_POSITION_END;
+        private List<CustomContentAction> mCustomContentActions = List.of();
+        private int mAndroidBrowserHelperVersion;
+        private @Nullable WindowFeatures mRequestedWindowFeatures;
+        private @Nullable Integer mIncognitoCctCallerId;
 
         public Builder setSessionHolder(@Nullable SessionHolder sessionHolder) {
             mSessionHolder = sessionHolder;
@@ -643,16 +808,13 @@ public class CustomTabIntentDataHolder implements Parcelable {
             return this;
         }
 
-        public Builder setCctTabSwitcherEnabledForChromeExperiment(
-                boolean cctTabSwitcherEnabledForChromeExperiment) {
-            mCctTabSwitcherEnabledForChromeExperiment = cctTabSwitcherEnabledForChromeExperiment;
+        public Builder setTabbedCctAllowedByEmbedder(boolean tabbedCctAllowedByEmbedder) {
+            mTabbedCctAllowedByEmbedder = tabbedCctAllowedByEmbedder;
             return this;
         }
 
-        public Builder setCctTabSwitcherEnabledForEmbedderExperiment(
-                boolean cctTabSwitcherEnabledForEmbedderExperiment) {
-            mCctTabSwitcherEnabledForEmbedderExperiment =
-                    cctTabSwitcherEnabledForEmbedderExperiment;
+        public Builder setTabbedCctEnabledByEmbedder(boolean tabbedCctEnabledByEmbedder) {
+            mTabbedCctEnabledByEmbedder = tabbedCctEnabledByEmbedder;
             return this;
         }
 
@@ -696,6 +858,88 @@ public class CustomTabIntentDataHolder implements Parcelable {
 
         public Builder setInitialBackgroundColor(@ColorInt int initialBackgroundColor) {
             mInitialBackgroundColor = initialBackgroundColor;
+            return this;
+        }
+
+        public Builder setCustomButtonParams(List<CustomButtonParams> customButtonParams) {
+            mCustomButtonParams = customButtonParams;
+            return this;
+        }
+
+        public Builder setShareState(@ShareState int shareState) {
+            mShareState = shareState;
+            return this;
+        }
+
+        public Builder setDefaultShareMenuItem(boolean defaultShareMenuItem) {
+            mDefaultShareMenuItem = defaultShareMenuItem;
+            return this;
+        }
+
+        public Builder setOpenInBrowserButtonAllowed(boolean openInBrowserButtonAllowed) {
+            mOpenInBrowserButtonAllowed = openInBrowserButtonAllowed;
+            return this;
+        }
+
+        public Builder setMenuEntries(List<Pair<String, PendingIntent>> menuEntries) {
+            mMenuEntries = List.copyOf(menuEntries);
+            return this;
+        }
+
+        public Builder setUrlToLoad(@Nullable String urlToLoad) {
+            mUrlToLoad = urlToLoad;
+            return this;
+        }
+
+        public Builder setTranslucentBackgroundColor(@Nullable Integer translucentBackgroundColor) {
+            mTranslucentBackgroundColor = translucentBackgroundColor;
+            return this;
+        }
+
+        public Builder setClientPackageNameIdentitySharing(
+                @Nullable String clientPackageNameIdentitySharing) {
+            mClientPackageNameIdentitySharing = clientPackageNameIdentitySharing;
+            return this;
+        }
+
+        public Builder setTwaDisclosureUi(@TwaDisclosureUi int twaDisclosureUi) {
+            mTwaDisclosureUi = twaDisclosureUi;
+            return this;
+        }
+
+        public Builder setCloseButtonPosition(@CloseButtonPosition int closeButtonPosition) {
+            mCloseButtonPosition = closeButtonPosition;
+            return this;
+        }
+
+        public Builder setShowSideSheetMaximizeButton(boolean showSideSheetMaximizeButton) {
+            mShowSideSheetMaximizeButton = showSideSheetMaximizeButton;
+            return this;
+        }
+
+        public Builder setSideSheetPosition(@ActivitySideSheetPosition int sideSheetPosition) {
+            mSideSheetPosition = sideSheetPosition;
+            return this;
+        }
+
+        public Builder setCustomContentActions(List<CustomContentAction> customContentActions) {
+            mCustomContentActions = List.copyOf(customContentActions);
+            return this;
+        }
+
+        public Builder setAndroidBrowserHelperVersion(int androidBrowserHelperVersion) {
+            mAndroidBrowserHelperVersion = androidBrowserHelperVersion;
+            return this;
+        }
+
+        public Builder setRequestedWindowFeatures(
+                @Nullable WindowFeatures requestedWindowFeatures) {
+            mRequestedWindowFeatures = requestedWindowFeatures;
+            return this;
+        }
+
+        public Builder setIncognitoCctCallerId(@Nullable Integer incognitoCctCallerId) {
+            mIncognitoCctCallerId = incognitoCctCallerId;
             return this;
         }
 

@@ -8,7 +8,6 @@
 #include "chrome/browser/ui/autofill/autofill_bubble_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_controller_base.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
-#include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "components/autofill/core/browser/metrics/payments/virtual_card_enrollment_metrics.h"
 #include "components/autofill/core/browser/payments/virtual_card_enroll_metrics_logger.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_flow.h"
@@ -34,7 +33,11 @@ using PaymentsRpcResult = payments::PaymentsAutofillClient::PaymentsRpcResult;
 
 VirtualCardEnrollBubbleControllerImpl::VirtualCardEnrollBubbleControllerImpl(
     content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionVirtualCardEnroll,
+                           .should_manage_visibility = true,
+                           .should_sync_bubble_showing_state = true}),
       content::WebContentsUserData<VirtualCardEnrollBubbleControllerImpl>(
           *web_contents) {}
 
@@ -322,11 +325,6 @@ bool VirtualCardEnrollBubbleControllerImpl::ShouldReshowOnTabVisible() const {
 #if !BUILDFLAG(IS_ANDROID)
 bool VirtualCardEnrollBubbleControllerImpl::ShouldShowPageAction() {
   return IsIconVisible();
-}
-
-std::optional<actions::ActionId>
-VirtualCardEnrollBubbleControllerImpl::GetActionIdForPageAction() {
-  return kActionVirtualCardEnroll;
 }
 #endif  // !BUILDFLAG(IS_ANDROID)
 

@@ -7,6 +7,7 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <optional>
 #include <random>
 #include <ranges>
 #include <string_view>
@@ -70,6 +71,9 @@
 #include <fcntl.h>
 
 #include "base/files/file_descriptor_watcher_posix.h"
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+#include "base/test/launcher/test_launcher_fork_server.h"
+#endif
 #endif
 
 #if BUILDFLAG(IS_APPLE)
@@ -285,6 +289,9 @@ void KillSpawnedTestProcesses() {
   // Keep the lock until exiting the process to prevent further processes
   // from being spawned.
   AutoLock lock(*GetLiveProcessesLock());
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  NotifyTestLauncherForkServerShutdown();
+#endif
 
   fprintf(stdout, "Sending SIGTERM to %zu child processes... ",
           GetLiveProcesses()->size());
@@ -360,6 +367,38 @@ bool BotModeEnabled(const CommandLine* command_line) {
          env->HasVar("CHROMIUM_TEST_LAUNCHER_BOT_MODE");
 }
 
+#if BUILDFLAG(IS_LINUX)
+// Warns when tests run in parallel against a host X server instead of under
+// testing/xvfb.py (which exports XVFB_DISPLAY). Each X11 test process opens
+// several X connections, so many parallel jobs can exceed the host server's
+// client limit, and tests may also depend on window manager behavior that
+// differs from the openbox instance xvfb.py starts.
+void MaybeWarnAboutHostXServer(const CommandLine* command_line,
+                               size_t parallel_jobs) {
+  if (parallel_jobs <= 1 || BotModeEnabled(command_line)) {
+    return;
+  }
+  std::unique_ptr<Environment> env = Environment::Create();
+  if (!env->HasVar("DISPLAY") || env->HasVar("XVFB_DISPLAY")) {
+    return;
+  }
+  // Runs on Wayland (e.g. `testing/xvfb.py --use-weston`) don't use X.
+  const std::string platform =
+      command_line->GetSwitchValueASCII("ozone-platform");
+  if (!platform.empty() && platform != "x11") {
+    return;
+  }
+  fprintf(stderr,
+          "WARNING: Running %zu parallel jobs on DISPLAY without "
+          "testing/xvfb.py.\nTests that use X11 may fail by exhausting the "
+          "X server's client limit or\nby depending on window manager "
+          "behavior. Run tests with testing/xvfb.py, or\npass "
+          "--test-launcher-jobs to limit parallelism.\n",
+          parallel_jobs);
+  fflush(stderr);
+}
+#endif  // BUILDFLAG(IS_LINUX)
+
 // Returns command line command line after gtest-specific processing
 // and applying |wrapper|.
 CommandLine PrepareCommandLineForGTest(const CommandLine& command_line,
@@ -423,6 +462,17 @@ int LaunchChildTestProcessWithOptions(const CommandLine& command_line,
 #if BUILDFLAG(IS_POSIX)
   // Make sure an option we rely on is present - see LaunchChildGTestProcess.
   DCHECK(options.new_process_group);
+#endif
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  if (CanUseTestLauncherForkServer(command_line, num_tests, delegate)) {
+    if (std::optional<int> exit_code = LaunchChildTestProcessViaForkServer(
+            command_line, options, timeout_per_test, delegate, was_timeout,
+            GetLiveProcessesLock(), GetLiveProcesses());
+        exit_code.has_value()) {
+      return *exit_code;
+    }
+  }
 #endif
 
   LaunchOptions new_options(options);
@@ -1126,6 +1176,9 @@ TestLauncher::TestLauncher(TestLauncherDelegate* launcher_delegate,
       print_test_stdio_(AUTO) {}
 
 TestLauncher::~TestLauncher() {
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  StopTestLauncherForkServer();
+#endif
   if (base::ThreadPoolInstance::Get()) {
     // Clear the ThreadPoolInstance entirely to make it clear to final cleanup
     // phases that they are happening in a single-threaded phase. Assertions in
@@ -1203,6 +1256,10 @@ bool TestLauncher::Run(CommandLine* command_line) {
   }
 
   MaybeSaveSummaryAsJSON(std::vector<std::string>());
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+  StopTestLauncherForkServer();
+#endif
 
   return run_result;
 }
@@ -1668,6 +1725,9 @@ bool TestLauncher::Init(CommandLine* command_line) {
 
   fprintf(stdout, "Using %zu parallel jobs.\n", parallel_jobs_);
   fflush(stdout);
+#if BUILDFLAG(IS_LINUX)
+  MaybeWarnAboutHostXServer(command_line, parallel_jobs_);
+#endif
 
   CreateAndStartThreadPool(parallel_jobs_);
 

@@ -120,7 +120,6 @@
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/search/ntp_features.h"
 #include "components/signin/public/base/signin_buildflags.h"
-#include "components/sync/base/features.h"
 #include "components/user_education/common/user_education_features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -488,8 +487,7 @@ void PopulateChromeWebUIFrameBindersPartsDesktop(
       plural_string::mojom::PluralStringProvider, NewTabPageUI,
       ContextualTasksUI, OmniboxPopupUI, OmniboxEverywhereUI>(map);
 
-  if (base::FeatureList::IsEnabled(
-          omnibox::kComposeboxDriveContextMenuOption)) {
+  if (DrivePickerHostUIConfig::IsEnabled()) {
     RegisterWebUIControllerInterfaceBinder<
         drive_picker_host::mojom::DrivePickerHostHandler, DrivePickerHostUI>(
         map);
@@ -506,10 +504,8 @@ void PopulateChromeWebUIFrameBindersPartsDesktop(
       on_device_translation_internals::mojom::PageHandlerFactory,
       OnDeviceTranslationInternalsUI>(map);
 
-  if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-    RegisterWebUIControllerInterfaceBinder<
-        history_sync_optin::mojom::PageHandlerFactory, HistorySyncOptinUI>(map);
-  }
+  RegisterWebUIControllerInterfaceBinder<
+      history_sync_optin::mojom::PageHandlerFactory, HistorySyncOptinUI>(map);
   RegisterWebUIControllerInterfaceBinder<
       intro::mojom::SignInCelebrationPageHandlerFactory, IntroUI>(map);
   RegisterWebUIControllerInterfaceBinder<intro::mojom::IntroPageHandlerFactory,
@@ -598,8 +594,7 @@ void PopulateChromeWebUIFrameInterfaceBrokersTrustedPartsDesktop(
         .Add<help_bubble::mojom::HelpBubbleHandlerFactory>();
   }
 
-  if (base::FeatureList::IsEnabled(
-          omnibox::kComposeboxDriveContextMenuOption)) {
+  if (DrivePickerHostUIConfig::IsEnabled()) {
     registry.ForWebUI<DrivePickerHostUI>()
         .Add<drive_picker_host::mojom::DrivePickerHostHandler>();
   }
@@ -633,8 +628,7 @@ void PopulateChromeWebUIFrameInterfaceBrokersTrustedPartsDesktop(
     registry.ForWebUI<WebUIToolbarUI>()
         .Add<browser_controls_api::mojom::BrowserControlsService>()
         .Add<toolbar_ui_api::mojom::ToolbarUIService>()
-        .Add<help_bubble::mojom::HelpBubbleHandlerFactory>()
-        .Add<searchbox::mojom::PageHandlerFactory>();
+        .Add<help_bubble::mojom::HelpBubbleHandlerFactory>();
   }
 
   // TODO(crbug.com/452983498): Migrate all remaining
@@ -675,8 +669,7 @@ void PopulateChromeWebUIFrameInterfaceBrokersUntrustedPartsDesktop(
   registry.ForWebUI<glic::SelectionOverlayUntrustedUI>()
       .Add<glic::selection::SelectionOverlayPageHandlerFactory>();
 
-  if (base::FeatureList::IsEnabled(
-          omnibox::kComposeboxDriveContextMenuOption)) {
+  if (DrivePickerHostUIConfig::IsEnabled()) {
     registry.ForWebUI<DrivePickerUntrustedHostUI>()
         .Add<drive_picker_host_untrusted::mojom::PageHandlerFactory>();
   }

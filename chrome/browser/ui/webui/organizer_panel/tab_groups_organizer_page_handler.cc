@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_menu_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -237,6 +238,11 @@ void TabGroupsOrganizerPageHandler::OpenTabGroup(const std::string& id) {
           webui::GetBrowserWindowInterface(web_contents_);
       CHECK(browser);
 
+      if (auto* organizer_controller =
+              OrganizerPanelController::From(browser)) {
+        organizer_controller->SetCloseAction(
+            OrganizerPanelCloseAction::kOpenTabGroup);
+      }
       tab_groups::SavedTabGroupUtils::OpenSavedTabGroup(
           browser, group->saved_guid(),
           tab_groups::OpeningSource::kOpenedFromRevisitUi,
@@ -248,6 +254,14 @@ void TabGroupsOrganizerPageHandler::OpenTabGroup(const std::string& id) {
   std::optional<tab_groups::LocalTabGroupID> group_id =
       tab_groups::LocalTabGroupIDFromString(id);
   if (group_id && GetUnsavedTabGroup(*group_id)) {
+    if (BrowserWindowInterface* browser =
+            webui::GetBrowserWindowInterface(web_contents_)) {
+      if (auto* organizer_controller =
+              OrganizerPanelController::From(browser)) {
+        organizer_controller->SetCloseAction(
+            OrganizerPanelCloseAction::kOpenTabGroup);
+      }
+    }
     tab_groups::SavedTabGroupUtils::FocusFirstTabOrWindowInOpenGroup(*group_id);
   }
 }
@@ -319,6 +333,13 @@ void TabGroupsOrganizerPageHandler::ShowContextMenu(
       views::MenuRunner::CONTEXT_MENU | views::MenuRunner::IS_NESTED,
       base::BindRepeating(&TabGroupsOrganizerPageHandler::OnContextMenuClosed,
                           weak_ptr_factory_.GetWeakPtr()));
+  tab_groups::saved_tab_groups::metrics::RecordTabGroupContextMenuAccessed(
+      tab_groups::saved_tab_groups::metrics::SavedTabGroupOpenedSubmenuDesktop::
+          kOrganizerPanel);
+  if (auto* organizer_controller = OrganizerPanelController::From(browser)) {
+    organizer_controller->SetCloseAction(
+        OrganizerPanelCloseAction::kOpenTabGroupMenu);
+  }
   context_menu_runner_->RunMenuAt(widget, nullptr, screen_rect,
                                   views::MenuAnchorPosition::kTopLeft,
                                   ui::mojom::MenuSourceType::kNone);
@@ -334,6 +355,11 @@ void TabGroupsOrganizerPageHandler::CreateNewTabGroup() {
   base::RecordAction(
       base::UserMetricsAction("TabGroups_SavedTabGroups_"
                               "CreateNewGroupTriggeredFromOrganizerPanel"));
+  if (auto* organizer_controller = OrganizerPanelController::From(browser)) {
+    organizer_controller->SetCloseAction(
+        OrganizerPanelCloseAction::kCreateTabGroup);
+    organizer_controller->SetOrganizerVisible(false);
+  }
   chrome::BrowserCommandController::From(browser)->ExecuteCommand(
       IDC_CREATE_NEW_TAB_GROUP);
 }

@@ -57,12 +57,16 @@
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/tabs/public/tab_alert.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/test/back_forward_cache_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/views/controls/animated_image_view.h"
@@ -115,8 +119,7 @@ class ActorUiTabControllerTest : public BaseActorUiTabControllerTest {
   ActorUiTabControllerTest() {
     feature_list_.InitWithFeaturesAndParameters(
         {{features::kGlicActorUi,
-          {{features::kGlicActorUiTabIndicator.name, "true"}}},
-         {features::kGlicActorUiTabIndicatorSpinnerIgnoreReducedMotion, {}}},
+          {{features::kGlicActorUiTabIndicator.name, "true"}}}},
         {});
   }
   ~ActorUiTabControllerTest() override = default;
@@ -347,64 +350,6 @@ IN_PROC_BROWSER_TEST_F(ActorUiTabControllerDisabledTest,
   EXPECT_EQ(GetSpinner(), nullptr);
 }
 
-class ActorUiTabIndicatorSpinnerIgnoreReducedMotionDisabled
-    : public BaseActorUiTabControllerTest {
- public:
-  ActorUiTabIndicatorSpinnerIgnoreReducedMotionDisabled() {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{features::kGlicActorUi,
-          {{features::kGlicActorUiTabIndicator.name, "true"}}}},
-        {features::kGlicActorUiTabIndicatorSpinnerIgnoreReducedMotion});
-  }
-  ~ActorUiTabIndicatorSpinnerIgnoreReducedMotionDisabled() override = default;
-};
-
-IN_PROC_BROWSER_TEST_F(ActorUiTabIndicatorSpinnerIgnoreReducedMotionDisabled,
-                       TabIndicatorVisibleDuringActuation) {
-  Profile* const profile = browser()->GetProfile();
-  ActorUiStateManager* state_manager = ActorUiStateManager::Get(profile);
-  ASSERT_NE(state_manager, nullptr);
-  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
-  ASSERT_NE(tab, nullptr);
-  ActorUiTabControllerInterface* controller = ActorUiTabController::From(tab);
-  ASSERT_NE(controller, nullptr);
-
-  // Initially, the indicator should not be visible.
-  tabs::TabAlertController* const tab_alert_controller =
-      tabs::TabAlertController::From(tab);
-  EXPECT_FALSE(
-      tab_alert_controller->IsAlertActive(tabs::TabAlert::kActorAccessing));
-  EXPECT_EQ(GetSpinner(), nullptr);
-
-  // Start acting on the tab.
-  TestFuture<ActionResultPtr> result;
-  state_manager->OnUiEvent(
-      StartingToActOnTab(tab->GetHandle(), actor::TaskId(1)),
-      result.GetCallback());
-  ASSERT_TRUE(result.Wait());
-  actor::ExpectOkResult(result);
-
-  // The indicator should now be visible.
-  EXPECT_TRUE(
-      tab_alert_controller->IsAlertActive(tabs::TabAlert::kActorAccessing));
-  ASSERT_NE(GetSpinner(), nullptr);
-  EXPECT_EQ(GetSpinner()->state(), views::AnimatedImageView::State::kPlaying);
-  EXPECT_TRUE(GetSpinner()->GetVisible());
-  EXPECT_FALSE(GetSpinner()->bounds().IsEmpty());
-  EXPECT_FALSE(GetSpinner()
-                   ->animated_image()
-                   ->GetPlaybackConfig()
-                   ->ignore_reduced_motion);
-
-  // Stop acting on the tab.
-  state_manager->OnUiEvent(StoppedActingOnTab(tab->GetHandle()));
-
-  // The indicator should be hidden again.
-  EXPECT_FALSE(
-      tab_alert_controller->IsAlertActive(tabs::TabAlert::kActorAccessing));
-  EXPECT_EQ(GetSpinner()->state(), views::AnimatedImageView::State::kStopped);
-}
-
 class ActorUiTabControllerNavigationConfirmTest
     : public BaseActorUiTabControllerTest {
  public:
@@ -490,6 +435,31 @@ class ActorUiTabControllerNavigationConfirmTest
              nullptr;
     }));
     return controller->GetActiveNavigationConfirmDialogWidgetForTesting();
+  }
+
+  GURL FirstUrl() { return embedded_test_server()->GetURL("/title1.html"); }
+  GURL SecondUrl() { return embedded_test_server()->GetURL("/title2.html"); }
+
+  // Commits `FirstUrl()` and then `SecondUrl()` in `tab`.
+  [[nodiscard]] bool CommitTwoPages(tabs::TabInterface* tab) {
+    return content::NavigateToURL(tab->GetContents(), FirstUrl()) &&
+           content::NavigateToURL(tab->GetContents(), SecondUrl());
+  }
+
+  // Runs `command` (IDC_BACK or IDC_FORWARD) and waits for the leave
+  // confirmation. Returns null unless `observer` sees a BFCache restore.
+  views::Widget* ExecuteAndWaitForConfirmDialog(
+      int command,
+      ActorUiTabControllerInterface* controller,
+      content::DidStartNavigationObserver& observer) {
+    chrome::ExecuteCommand(browser(), command);
+    views::Widget* dialog = WaitForConfirmDialog(controller);
+    content::NavigationHandle* handle = observer.navigation_handle();
+    if (!handle || !handle->IsServedFromBackForwardCache()) {
+      ADD_FAILURE() << "The navigation is not a BFCache restore.";
+      return nullptr;
+    }
+    return dialog;
   }
 
   // Returns the Actor tab close confirmation shown by the browser's
@@ -758,6 +728,330 @@ IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
       actor::ActorTask::StoppedReason::kUserNavigatedAway, 1);
 }
 
+// A BFCache restore skips NavigationThrottles, so
+// ActorCommitDeferringCondition confirms the user Back before it commits.
+IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
+                       UserBackFromBackForwardCache_CancelKeepsTaskActive) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  ASSERT_TRUE(CommitTwoPages(tab));
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  views::Widget* dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer);
+  ASSERT_NE(dialog, nullptr);
+  dialog->widget_delegate()->AsDialogDelegate()->CancelDialog();
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return back_observer.navigation_handle() == nullptr; }));
+  EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), SecondUrl());
+  EXPECT_NE(actor_keyed_service()->GetTask(task_id), nullptr);
+
+  actor_keyed_service()->StopTask(
+      task_id, actor::ActorTask::StoppedReason::kStoppedByUser);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ActorUiTabControllerNavigationConfirmTest,
+    UserBackFromBackForwardCache_AcceptStopsTaskAndGoesBack) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  base::HistogramTester histogram_tester;
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  ASSERT_TRUE(CommitTwoPages(tab));
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  views::Widget* dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer);
+  ASSERT_NE(dialog, nullptr);
+  dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return back_observer.navigation_handle() == nullptr; }));
+  EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), FirstUrl());
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id), nullptr);
+  histogram_tester.ExpectUniqueSample(
+      "Actor.Task.StoppedReason",
+      actor::ActorTask::StoppedReason::kUserNavigatedAway, 1);
+}
+
+// A user Forward restored from BFCache is confirmed like Back.
+IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
+                       UserForwardFromBackForwardCache_CancelKeepsTaskActive) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  ASSERT_TRUE(CommitTwoPages(tab));
+  ASSERT_TRUE(content::HistoryGoBack(tab->GetContents()));
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+
+  content::DidStartNavigationObserver forward_observer(tab->GetContents());
+  views::Widget* dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_FORWARD, controller, forward_observer);
+  ASSERT_NE(dialog, nullptr);
+  dialog->widget_delegate()->AsDialogDelegate()->CancelDialog();
+
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return forward_observer.navigation_handle() == nullptr; }));
+  EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), FirstUrl());
+  EXPECT_NE(actor_keyed_service()->GetTask(task_id), nullptr);
+
+  actor_keyed_service()->StopTask(
+      task_id, actor::ActorTask::StoppedReason::kStoppedByUser);
+}
+
+// Closing the tab while a BFCache Back confirmation is open closes that dialog,
+// which cancels the restore, and shows the tab close confirmation instead.
+// Cancelling it keeps the tab, the page and the task.
+IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
+                       UserBackFromBackForwardCache_CloseTabWhileDialogOpen) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  TabStripModel* tab_strip = browser()->GetTabStripModel();
+  tabs::TabInterface* tab = tab_strip->GetActiveTab();
+  ASSERT_TRUE(CommitTwoPages(tab));
+  // Keep a second tab so closing the acting tab does not close the browser.
+  ASSERT_TRUE(AddTabAtIndex(1, FirstUrl(), ::ui::PAGE_TRANSITION_TYPED));
+  tab_strip->ActivateTabAt(tab_strip->GetIndexOfTab(tab));
+
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  actor::TaskId task_id = StartTaskOnTabs({tab}, /*stop_task_on_detach=*/true);
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  views::Widget* navigation_dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer);
+  ASSERT_NE(navigation_dialog, nullptr);
+
+  views::test::WidgetDestroyedWaiter navigation_dialog_destroyed(
+      navigation_dialog);
+  tab_strip->CloseWebContentsAt(tab_strip->GetIndexOfTab(tab),
+                                TabCloseTypes::CLOSE_USER_GESTURE);
+  navigation_dialog_destroyed.Wait();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return GetTabCloseConfirmDialog() != nullptr; }));
+
+  GetTabCloseConfirmDialog()
+      ->widget_delegate()
+      ->AsDialogDelegate()
+      ->CancelDialog();
+
+  EXPECT_EQ(tab_strip->count(), 2);
+  EXPECT_EQ(back_observer.navigation_handle(), nullptr);
+  EXPECT_FALSE(tab->GetContents()->IsLoading());
+  EXPECT_EQ(tab->GetContents()->GetController().GetPendingEntry(), nullptr);
+  EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), SecondUrl());
+  EXPECT_EQ(controller->GetActiveNavigationConfirmDialogWidgetForTesting(),
+            nullptr);
+  EXPECT_NE(actor_keyed_service()->GetTask(task_id), nullptr);
+
+  actor_keyed_service()->StopTask(
+      task_id, actor::ActorTask::StoppedReason::kStoppedByUser);
+}
+
+// As above, but accepting the tab close confirmation closes the tab and stops
+// the task as a user stop. The restore is already cancelled at that point.
+IN_PROC_BROWSER_TEST_F(
+    ActorUiTabControllerNavigationConfirmTest,
+    UserBackFromBackForwardCache_CloseTabWhileDialogOpen_Accept) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  base::HistogramTester histogram_tester;
+  TabStripModel* tab_strip = browser()->GetTabStripModel();
+  tabs::TabInterface* tab = tab_strip->GetActiveTab();
+  ASSERT_TRUE(CommitTwoPages(tab));
+  // Keep a second tab so closing the acting tab does not close the browser.
+  ASSERT_TRUE(AddTabAtIndex(1, FirstUrl(), ::ui::PAGE_TRANSITION_TYPED));
+  tab_strip->ActivateTabAt(tab_strip->GetIndexOfTab(tab));
+
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  actor::TaskId task_id = StartTaskOnTabs({tab}, /*stop_task_on_detach=*/true);
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  views::Widget* navigation_dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer);
+  ASSERT_NE(navigation_dialog, nullptr);
+
+  views::test::WidgetDestroyedWaiter navigation_dialog_destroyed(
+      navigation_dialog);
+  tab_strip->CloseWebContentsAt(tab_strip->GetIndexOfTab(tab),
+                                TabCloseTypes::CLOSE_USER_GESTURE);
+  navigation_dialog_destroyed.Wait();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return GetTabCloseConfirmDialog() != nullptr; }));
+
+  EXPECT_EQ(back_observer.navigation_handle(), nullptr);
+  EXPECT_EQ(tab_strip->count(), 2);
+  EXPECT_NE(actor_keyed_service()->GetTask(task_id), nullptr);
+
+  content::WebContentsDestroyedWatcher tab_destroyed(tab->GetContents());
+  GetTabCloseConfirmDialog()
+      ->widget_delegate()
+      ->AsDialogDelegate()
+      ->AcceptDialog();
+  tab_destroyed.Wait();
+
+  EXPECT_EQ(tab_strip->count(), 1);
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id), nullptr);
+  histogram_tester.ExpectUniqueSample(
+      "Actor.Task.StoppedReason",
+      actor::ActorTask::StoppedReason::kStoppedByUser, 1);
+}
+
+// If the task stops while a BFCache Back confirmation is open, closing the tab
+// shows no close confirmation. The tab is destroyed while the restore and its
+// confirmation are still pending.
+IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
+                       UserBackFromBackForwardCache_CloseTabAfterTaskStops) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  TabStripModel* tab_strip = browser()->GetTabStripModel();
+  tabs::TabInterface* tab = tab_strip->GetActiveTab();
+  ASSERT_TRUE(CommitTwoPages(tab));
+  // Keep a second tab so closing the acting tab does not close the browser.
+  ASSERT_TRUE(AddTabAtIndex(1, FirstUrl(), ::ui::PAGE_TRANSITION_TYPED));
+  tab_strip->ActivateTabAt(tab_strip->GetIndexOfTab(tab));
+
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  ASSERT_NE(ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer),
+            nullptr);
+
+  actor_keyed_service()->StopTask(
+      task_id, actor::ActorTask::StoppedReason::kStoppedByUser);
+  ASSERT_NE(controller->GetActiveNavigationConfirmDialogWidgetForTesting(),
+            nullptr);
+  ASSERT_NE(back_observer.navigation_handle(), nullptr);
+
+  content::WebContentsDestroyedWatcher tab_destroyed(tab->GetContents());
+  tab_strip->CloseWebContentsAt(tab_strip->GetIndexOfTab(tab),
+                                TabCloseTypes::CLOSE_USER_GESTURE);
+  tab_destroyed.Wait();
+
+  EXPECT_EQ(tab_strip->count(), 1);
+  EXPECT_EQ(GetTabCloseConfirmDialog(), nullptr);
+}
+
+// A user navigation that starts while a BFCache Back confirmation is open
+// replaces the restore. Closing the restore's dialog does not stop the new
+// navigation, and accepting the new navigation's dialog commits it.
+IN_PROC_BROWSER_TEST_F(
+    ActorUiTabControllerNavigationConfirmTest,
+    UserBackFromBackForwardCache_SupersededByUserNavigation) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  base::HistogramTester histogram_tester;
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  ASSERT_TRUE(CommitTwoPages(tab));
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+
+  content::DidStartNavigationObserver back_observer(tab->GetContents());
+  views::Widget* back_dialog =
+      ExecuteAndWaitForConfirmDialog(IDC_BACK, controller, back_observer);
+  ASSERT_NE(back_dialog, nullptr);
+
+  // The typed navigation takes over the frame, which destroys the deferred
+  // restore. ActorUiTabController::MaybeDeferNavigation() then closes the
+  // restore's dialog before it shows the dialog for the typed navigation.
+  const GURL third_url = embedded_test_server()->GetURL("/title3.html");
+  views::test::WidgetDestroyedWaiter back_dialog_destroyed(back_dialog);
+  NavigateViaUserUi(tab, third_url, OmniboxTransition());
+  back_dialog_destroyed.Wait();
+  EXPECT_EQ(back_observer.navigation_handle(), nullptr);
+
+  views::Widget* typed_dialog = WaitForConfirmDialog(controller);
+  ASSERT_NE(typed_dialog, nullptr);
+  typed_dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+
+  ASSERT_TRUE(content::WaitForLoadStop(tab->GetContents()));
+  EXPECT_EQ(tab->GetContents()->GetLastCommittedURL(), third_url);
+  EXPECT_EQ(actor_keyed_service()->GetTask(task_id), nullptr);
+  histogram_tester.ExpectUniqueSample(
+      "Actor.Task.StoppedReason",
+      actor::ActorTask::StoppedReason::kUserNavigatedAway, 1);
+}
+
+// A paused task is not active on its tab, so
+// ActorUiStateManager::MaybeDeferNavigation() shows no confirmation for a user
+// Back restored from BFCache. The restore commits and the task stays paused.
+IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
+                       UserBackFromBackForwardCache_PausedTaskShowsNoDialog) {
+  // This test relies on BFCache so don't run it if it's not available.
+  if (!content::BackForwardCache::IsBackForwardCacheFeatureEnabled()) {
+    GTEST_SKIP();
+  }
+
+  tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
+  ActorUiTabControllerInterface* controller =
+      ActorUiTabControllerInterface::From(tab);
+  ASSERT_NE(controller, nullptr);
+  ASSERT_TRUE(content::NavigateToURL(tab->GetContents(), FirstUrl()));
+  content::RenderFrameHostWrapper first_page(
+      tab->GetContents()->GetPrimaryMainFrame());
+  ASSERT_TRUE(content::NavigateToURL(tab->GetContents(), SecondUrl()));
+  actor::TaskId task_id = StartTaskOnTabs({tab});
+  actor::ActorTask* task = actor_keyed_service()->GetTask(task_id);
+  ASSERT_NE(task, nullptr);
+  task->Pause(/*from_actor=*/false);
+  ASSERT_EQ(task->GetState(), actor::ActorTask::State::kPausedByUser);
+
+  content::TestNavigationObserver back_observer(tab->GetContents());
+  chrome::ExecuteCommand(browser(), IDC_BACK);
+  back_observer.Wait();
+
+  // The first page's RenderFrameHost is back, so the page came from BFCache.
+  EXPECT_EQ(tab->GetContents()->GetPrimaryMainFrame(), first_page.get());
+  EXPECT_EQ(controller->GetActiveNavigationConfirmDialogWidgetForTesting(),
+            nullptr);
+  EXPECT_EQ(task->GetState(), actor::ActorTask::State::kPausedByUser);
+
+  actor_keyed_service()->StopTask(
+      task_id, actor::ActorTask::StoppedReason::kStoppedByUser);
+}
+
 IN_PROC_BROWSER_TEST_F(ActorUiTabControllerNavigationConfirmTest,
                        UserUiNavigation_DuplicateNavigationWhileDialogOpen) {
   tabs::TabInterface* tab = browser()->GetTabStripModel()->GetActiveTab();
@@ -951,8 +1245,10 @@ class ActorUiTabControllerNavigationConfirmLegacyContextualTasksTest
     : public ActorUiTabControllerNavigationConfirmTest {
  public:
   ActorUiTabControllerNavigationConfirmLegacyContextualTasksTest() {
-    contextual_tasks_feature_list_.InitAndEnableFeature(
-        contextual_tasks::kContextualTasks);
+    contextual_tasks_feature_list_.InitWithFeatures(
+        {contextual_tasks::kContextualTasks},
+        {contextual_tasks::kContextualTasksRearchitecture,
+         contextual_tasks::kContextualTasksSidePanelRearchitecture});
   }
 
   void SetUpInProcessBrowserTestFixture() override {

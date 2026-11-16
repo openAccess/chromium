@@ -603,6 +603,9 @@ ci.thin_tester(
                 ],
                 remove_mixins = "mac_26_vm_optional",
             ),
+            "chrome_wpt_tests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
             # TODO(crbug.com/436628295): test fails on VM
             "chromedriver_py_tests_headless_shell": targets.per_test_modification(
                 mixins = "mac_26_arm64",
@@ -637,6 +640,12 @@ ci.thin_tester(
                     shards = 2,
                 ),
             ),
+            "extensions_unittests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
+            "headless_browsertests": targets.mixin(
+                enable_rts_filtering = True,
+            ),
             # TODO(crbug.com/436628295): test fails on VM
             "headless_shell_wpt_tests": targets.per_test_modification(
                 mixins = "mac_26_arm64",
@@ -648,6 +657,7 @@ ci.thin_tester(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/mac.mac26-arm64-rel.interactive_ui_tests.filter",
                 ],
+                enable_rts_filtering = True,
                 swarming = targets.swarming(
                     shards = 16,
                 ),
@@ -662,6 +672,9 @@ ci.thin_tester(
             ),
             "telemetry_perf_unittests": targets.mixin(
                 ci_only = True,
+            ),
+            "updater_tests": targets.mixin(
+                enable_rts_filtering = True,
             ),
         },
     ),
@@ -1111,7 +1124,7 @@ ci.thin_tester(
                     "--disable-features=InitialWebUI,WebUIReloadButton,SkipIPCChannelPausingForNonGuests,WebUIInProcessResourceLoadingV2,InitialWebUISyncNavStartToCommit",
                 ],
                 swarming = targets.swarming(
-                    shards = 4,
+                    shards = 8,
                 ),
             ),
             "unit_tests": targets.mixin(

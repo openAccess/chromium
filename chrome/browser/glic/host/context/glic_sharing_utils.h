@@ -35,11 +35,19 @@ bool IsBrowserValidForSharingInProfile(
     Profile* profile);
 bool IsTabValidForPinningInProfile(tabs::TabInterface* tab, Profile* profile);
 
+// Returns whether binding a tab to a Glic instance should automatically pin
+// that tab based on default tab context feature flags and user preferences.
+bool ShouldPinOnBind(Profile* profile);
+
 // Returns true if `web_contents` can be shared, given its current state.
 // This becomes invalid when the committed URL changes.
 // Sharing may still fail for other reasons.
 bool IsTabValidForSharing(content::WebContents* web_contents);
 bool IsTabValidForSharing(tabs::TabInterface* tab);
+
+// Returns true if screenshot capture for `web_contents` is blocked by
+// enterprise screenshot protection or Data Controls policies.
+bool IsScreenshotBlockedByEnterprisePolicy(content::WebContents* web_contents);
 
 // Returns the most recently active tab from the given list of tabs.
 // The list of tabs must not be empty.

@@ -8,13 +8,14 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/schedule_enums.h"
 #include "ash/system/scheduled_feature/scheduled_feature.h"
+#include "base/check_deref.h"
 #include "base/metrics/histogram_functions.h"
 #include "chrome/browser/ash/login/screens/base_screen.h"
 #include "chrome/browser/ash/login/wizard_context.h"
 #include "chrome/browser/ash/login/wizard_controller.h"
-#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/webui/ash/login/theme_selection_screen_handler.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
 #include "ui/native_theme/native_theme.h"
 
 namespace ash {
@@ -25,20 +26,20 @@ constexpr const char kUserActionNext[] = "next";
 constexpr const char kUserActionSelect[] = "select";
 constexpr const char kUserActionReturn[] = "return";
 
-ThemeSelectionScreen::SelectedTheme GetSelectedTheme(Profile* profile) {
-  if (profile->GetPrefs()->GetInteger(prefs::kDarkModeScheduleType) ==
+ThemeSelectionScreen::SelectedTheme GetSelectedTheme(
+    const PrefService& pref_service) {
+  if (pref_service.GetInteger(prefs::kDarkModeScheduleType) ==
       static_cast<int>(ScheduleType::kSunsetToSunrise)) {
     return ThemeSelectionScreen::SelectedTheme::kAuto;
   }
 
-  if (profile->GetPrefs()->GetBoolean(prefs::kDarkModeEnabled)) {
+  if (pref_service.GetBoolean(prefs::kDarkModeEnabled)) {
     return ThemeSelectionScreen::SelectedTheme::kDark;
   }
   return ThemeSelectionScreen::SelectedTheme::kLight;
 }
 
-std::string GetSelectedThemeString(Profile* profile) {
-  ThemeSelectionScreen::SelectedTheme theme = GetSelectedTheme(profile);
+std::string GetSelectedThemeString(ThemeSelectionScreen::SelectedTheme theme) {
   switch (theme) {
     case ThemeSelectionScreen::SelectedTheme::kAuto:
       return ThemeSelectionScreenView::kAutoMode;
@@ -49,12 +50,12 @@ std::string GetSelectedThemeString(Profile* profile) {
   }
 }
 
-void RecordSelectedTheme(Profile* profile,
+void RecordSelectedTheme(ThemeSelectionScreen::SelectedTheme selected_theme,
                          ThemeSelectionScreen::SelectedTheme initial_theme) {
   base::UmaHistogramEnumeration("OOBE.ThemeSelectionScreen.SelectedTheme",
-                                GetSelectedTheme(profile));
+                                selected_theme);
   base::UmaHistogramBoolean("OOBE.CHOOBE.SettingChanged.Theme-selection",
-                            GetSelectedTheme(profile) != initial_theme);
+                            selected_theme != initial_theme);
 }
 
 bool ShouldShowChoobeReturnButton(ChoobeFlowController* controller) {
@@ -65,13 +66,13 @@ bool ShouldShowChoobeReturnButton(ChoobeFlowController* controller) {
       ThemeSelectionScreenView::kScreenId);
 }
 
-void ReportScreenCompletedToChoobe(ChoobeFlowController* controller) {
+void ReportScreenCompletedToChoobe(ChoobeFlowController* controller,
+                                   PrefService& pref_service) {
   if (!features::IsOobeChoobeEnabled() || !controller) {
     return;
   }
-  controller->OnScreenCompleted(
-      *ProfileManager::GetActiveUserProfile()->GetPrefs(),
-      ThemeSelectionScreenView::kScreenId);
+  controller->OnScreenCompleted(pref_service,
+                                ThemeSelectionScreenView::kScreenId);
 }
 
 }  // namespace
@@ -98,9 +99,9 @@ ThemeSelectionScreen::ThemeSelectionScreen(
 
 ThemeSelectionScreen::~ThemeSelectionScreen() = default;
 
-std::string ThemeSelectionScreen::RetrieveChoobeSubtitle() {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
-  ThemeSelectionScreen::SelectedTheme theme = GetSelectedTheme(profile);
+std::string ThemeSelectionScreen::RetrieveChoobeSubtitle(
+    const PrefService& pref_service) {
+  ThemeSelectionScreen::SelectedTheme theme = GetSelectedTheme(pref_service);
   switch (theme) {
     case ThemeSelectionScreen::SelectedTheme::kAuto:
       return "autoThemeLabel";
@@ -116,8 +117,8 @@ bool ThemeSelectionScreen::ShouldBeSkipped(const WizardContext& context) const {
     return true;
 
   const PrefService::Preference* pref =
-      ProfileManager::GetActiveUserProfile()->GetPrefs()->FindPreference(
-          prefs::kDarkModeScheduleType);
+      CHECK_DEREF(CHECK_DEREF(context.onboarding_user.get()).GetProfilePrefs())
+          .FindPreference(prefs::kDarkModeScheduleType);
   if (pref->IsManaged() || pref->IsRecommended()) {
     return true;
   }
@@ -146,11 +147,12 @@ void ThemeSelectionScreen::ShowImpl() {
   if (!view_)
     return;
 
-  initial_theme_ = GetSelectedTheme(ProfileManager::GetActiveUserProfile());
+  // The context is only set while the screen is shown, which it is here.
+  initial_theme_ = GetSelectedTheme(CHECK_DEREF(
+      CHECK_DEREF(context()->onboarding_user.get()).GetProfilePrefs()));
 
   base::DictValue data;
-  data.Set("selectedTheme",
-           GetSelectedThemeString(ProfileManager::GetActiveUserProfile()));
+  data.Set("selectedTheme", GetSelectedThemeString(initial_theme_));
   data.Set(
       "shouldShowReturn",
       ShouldShowChoobeReturnButton(
@@ -161,7 +163,9 @@ void ThemeSelectionScreen::ShowImpl() {
 void ThemeSelectionScreen::HideImpl() {}
 
 void ThemeSelectionScreen::OnUserAction(const base::ListValue& args) {
-  Profile* profile = ProfileManager::GetActiveUserProfile();
+  // The screen is up whenever a user action arrives, so the context is set.
+  PrefService& pref_service = CHECK_DEREF(
+      CHECK_DEREF(context()->onboarding_user.get()).GetProfilePrefs());
   const std::string& action_id = args[0].GetString();
 
   if (action_id == kUserActionSelect) {
@@ -169,25 +173,26 @@ void ThemeSelectionScreen::OnUserAction(const base::ListValue& args) {
         static_cast<SelectedTheme>(args[1].GetInt());
 
     if (selected_theme == SelectedTheme::kAuto) {
-      profile->GetPrefs()->SetInteger(
-          prefs::kDarkModeScheduleType,
-          static_cast<int>(ScheduleType::kSunsetToSunrise));
+      pref_service.SetInteger(prefs::kDarkModeScheduleType,
+                              static_cast<int>(ScheduleType::kSunsetToSunrise));
     } else {
-      profile->GetPrefs()->SetInteger(prefs::kDarkModeScheduleType,
-                                      static_cast<int>(ScheduleType::kNone));
-      profile->GetPrefs()->SetBoolean(prefs::kDarkModeEnabled,
-                                      selected_theme == SelectedTheme::kDark);
+      pref_service.SetInteger(prefs::kDarkModeScheduleType,
+                              static_cast<int>(ScheduleType::kNone));
+      pref_service.SetBoolean(prefs::kDarkModeEnabled,
+                              selected_theme == SelectedTheme::kDark);
     }
   } else if (action_id == kUserActionNext) {
-    RecordSelectedTheme(profile, initial_theme_);
+    RecordSelectedTheme(GetSelectedTheme(pref_service), initial_theme_);
     ReportScreenCompletedToChoobe(
-        WizardController::default_controller()->choobe_flow_controller());
+        WizardController::default_controller()->choobe_flow_controller(),
+        pref_service);
     exit_callback_.Run(Result::kProceed);
   } else if (action_id == kUserActionReturn) {
     context()->return_to_choobe_screen = true;
-    RecordSelectedTheme(profile, initial_theme_);
+    RecordSelectedTheme(GetSelectedTheme(pref_service), initial_theme_);
     ReportScreenCompletedToChoobe(
-        WizardController::default_controller()->choobe_flow_controller());
+        WizardController::default_controller()->choobe_flow_controller(),
+        pref_service);
     exit_callback_.Run(Result::kProceed);
     return;
   } else {
@@ -195,7 +200,10 @@ void ThemeSelectionScreen::OnUserAction(const base::ListValue& args) {
   }
 }
 
-ScreenSummary ThemeSelectionScreen::GetScreenSummary() {
+ScreenSummary ThemeSelectionScreen::GetScreenSummary(
+    const WizardContext& context) {
+  PrefService& pref_service =
+      CHECK_DEREF(CHECK_DEREF(context.onboarding_user.get()).GetProfilePrefs());
   ScreenSummary summary;
   summary.screen_id = ThemeSelectionScreenView::kScreenId;
   summary.icon_id = "oobe-40:theme-choobe";
@@ -206,7 +214,7 @@ ScreenSummary ThemeSelectionScreen::GetScreenSummary() {
   if (WizardController::default_controller()
           ->choobe_flow_controller()
           ->IsScreenCompleted(ThemeSelectionScreenView::kScreenId)) {
-    summary.subtitle_resource = RetrieveChoobeSubtitle();
+    summary.subtitle_resource = RetrieveChoobeSubtitle(pref_service);
   }
 
   return summary;

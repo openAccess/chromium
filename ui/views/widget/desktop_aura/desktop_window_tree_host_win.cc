@@ -33,6 +33,7 @@
 #include "ui/aura/client/cursor_client.h"
 #include "ui/aura/client/focus_client.h"
 #include "ui/aura/window_event_dispatcher.h"
+#include "ui/aura/window_targeter.h"
 #include "ui/base/class_property.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/platform_cursor.h"
@@ -381,16 +382,19 @@ void DesktopWindowTreeHostWin::Close() {
   // Do not generate synthesized events during shutdown.
   dispatcher()->Shutdown();
 
-  // Calling Hide() can detach the content window's layer, so store it
-  // beforehand so we can access it below.
-  auto* window_layer = content_window()->layer();
+  // Calling Hide() can detach (and, when animations have zero duration,
+  // synchronously destroy) the content window's layer, so hold a WeakPtr
+  // beforehand so we can safely check it below.
+  base::WeakPtr<ui::Layer> window_layer =
+      content_window()->layer()->AsWeakPtr();
 
   content_window()->Hide();
   // TODO(beng): Move this entire branch to DNWA so it can be shared with X11.
   if (should_animate_window_close_) {
     pending_close_ = true;
-    // Animation may not start for a number of reasons.
-    if (!window_layer->GetAnimator()->is_animating()) {
+    // Animation may not start for a number of reasons, or may have already
+    // completed synchronously during Hide().
+    if (!window_layer || !window_layer->GetAnimator()->is_animating()) {
       message_handler_->Close();
     }
     // else case, OnWindowHidingAnimationCompleted does the actual Close.
@@ -874,7 +878,9 @@ DesktopWindowTreeHostWin::GetBoundsInAcceleratedWidgetPixelCoordinates() {
   }
   const gfx::Vector2d offset = client_bounds.origin() - window_bounds.origin();
   CHECK_GE(offset.x(), 0, base::NotFatalUntil::M163);
-  CHECK_GE(offset.y(), 0, base::NotFatalUntil::M163);
+  // TODO(crbug.com/582099959): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_GE(offset.y(), 0);
   return gfx::Rect(gfx::Point() + offset, client_bounds.size());
 }
 
@@ -1083,6 +1089,21 @@ int DesktopWindowTreeHostWin::GetNonClientComponent(
   }
   gfx::Point dip_position =
       display::win::GetScreenWin()->ClientToDIPPoint(GetHWND(), point);
+  // A WindowTargeter on the content window can make points over the content
+  // window transparent so they fall through to the window beneath. Points
+  // outside the content window (e.g. on a native frame) are left to the normal
+  // non-client hit-testing.
+  if (aura::Window* content = desktop_native_widget_aura_->content_window();
+      content && content->targeter() &&
+      content->bounds().Contains(dip_position)) {
+    gfx::Rect hit_test_rect_mouse;
+    gfx::Rect hit_test_rect_touch;
+    if (!content->targeter()->GetHitTestRects(content, &hit_test_rect_mouse,
+                                              &hit_test_rect_touch) ||
+        !hit_test_rect_mouse.Contains(dip_position)) {
+      return HTTRANSPARENT;
+    }
+  }
   return native_widget_delegate_->GetNonClientComponent(dip_position);
 }
 

@@ -37,6 +37,7 @@
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_factory.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool_request.h"
 #import "ios/chrome/browser/intelligence/actor/tools/utils/logging_util.h"
+#import "ios/chrome/browser/intelligence/actor/tools/utils/profile_context_resolver.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_list.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -77,12 +78,13 @@ std::string ActorTaskStateToString(ActorTaskState state) {
 // Returns the control state corresponding to `task_state`.
 ActorControlState ControlStateForTaskState(ActorTaskState task_state) {
   switch (task_state) {
+    // TODO(crbug.com/580899072): Move `kInit` to
+    // `ActorControlState::kUserControlled` once implemented.
+    case ActorTaskState::kInit:
     case ActorTaskState::kActing:
     case ActorTaskState::kReflecting:
     case ActorTaskState::kWaitingOnUser:
       return ActorControlState::kActorControlled;
-    case ActorTaskState::kInit:
-      return ActorControlState::kInactive;
     // TODO(crbug.com/580899072): Add all states and remove the default case.
     default:
       return ActorControlState::kInactive;
@@ -142,6 +144,7 @@ ActorTask::ActorTask(ActorTaskId task_id,
                      bool allow_incognito_web_states,
                      AggregatedJournal* journal,
                      ActorToolFactory* tool_factory,
+                     const ProfileContextResolver* profile_context_resolver,
                      BrowserList* browser_list,
                      const ActorEnterprisePolicyCheckerIOS* policy_checker,
                      base::OnceClosure on_stopped)
@@ -152,10 +155,12 @@ ActorTask::ActorTask(ActorTaskId task_id,
       allow_incognito_web_states_(allow_incognito_web_states),
       journal_(journal),
       tool_factory_(tool_factory),
+      profile_context_resolver_(profile_context_resolver),
       policy_checker_(policy_checker),
       on_stopped_(std::move(on_stopped)) {
   CHECK(journal);
   CHECK(tool_factory);
+  CHECK(profile_context_resolver);
   CHECK(browser_list);
   CHECK(on_stopped_);
   // TODO(crbug.com/504704411): Allow incognito WebStates.
@@ -268,9 +273,7 @@ void ActorTask::AddControlledWebState(web::WebState* web_state) {
     if (engine_) {
       policy_deciders_[web_state->GetUniqueIdentifier()] =
           std::make_unique<ActorWebStatePolicyDecider>(
-              web_state,
-              tool_factory_->profile_context_resolver()
-                  .GetOriginGatingService(),
+              web_state, profile_context_resolver_->GetOriginGatingService(),
               engine_->GetOriginGatingCheckerId(), task_id_,
               base::BindRepeating(&ActorTask::OnNavigationBlocked,
                                   weak_ptr_factory_.GetWeakPtr()));
@@ -299,6 +302,7 @@ void ActorTask::Stop(ActorTaskStoppedReason stop_reason) {
   CancelOngoingActions(mojom::ActionResultCode::kTaskWentAway);
   policy_deciders_.clear();
   SetInterventionDelegate(nil);
+  navigation_confirmation_callback_.Reset();
   // TODO(crbug.com/576290373): Map `stop_reason` to the corresponding terminal
   // `ActorTaskState` (`kFinished`, `kFailed`, `kCancelled`) instead of
   // hardcoding `kCancelled`.
@@ -464,6 +468,11 @@ AggregatedJournal& ActorTask::GetJournal() const {
 ActorToolFactory& ActorTask::GetToolFactory() const {
   CHECK(tool_factory_);
   return *tool_factory_;
+}
+
+const ProfileContextResolver& ActorTask::profile_context_resolver() const {
+  CHECK(profile_context_resolver_);
+  return *profile_context_resolver_;
 }
 
 bool ActorTask::IsWindowIdValid(int32_t window_id) {
@@ -719,6 +728,34 @@ void ActorTask::OnNavigationBlocked(mojom::ActionResultCode code) {
     pending_act_->deferred_results->back() =
         ActionResult(ToolExecutionResult(code));
   }
+}
+
+void ActorTask::SetNavigationConfirmationCallback(
+    NavigationConfirmationCallback callback) {
+  navigation_confirmation_callback_ = std::move(callback);
+}
+
+void ActorTask::ConfirmNavigationToOrigin(
+    const url::Origin& navigation_origin,
+    NavigationConfirmationDecisionCallback callback) {
+  if (!navigation_confirmation_callback_ || IsCompleted()) {
+    std::move(callback).Run(false);
+    return;
+  }
+  NavigationConfirmationDecisionCallback guarded_callback = base::BindOnce(
+      [](base::WeakPtr<ActorTask> weak_self,
+         NavigationConfirmationDecisionCallback inner_callback,
+         bool permission_granted) {
+        std::move(inner_callback)
+            .Run(weak_self && weak_self->navigation_confirmation_callback_ &&
+                 !weak_self->IsCompleted() && permission_granted);
+      },
+      weak_ptr_factory_.GetWeakPtr(), std::move(callback));
+  // Posted so that a callback completing synchronously never re-enters the
+  // task.
+  navigation_confirmation_callback_.Run(
+      navigation_origin,
+      base::BindPostTaskToCurrentDefault(std::move(guarded_callback)));
 }
 
 #pragma mark - ActorTaskBackgroundWorker::TaskStateDelegate

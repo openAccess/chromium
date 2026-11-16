@@ -19,6 +19,12 @@
 #include "mojo/public/cpp/platform/platform_handle.h"
 #include "mojo/public/cpp/system/handle.h"
 
+#if defined(__OPTIMIZE_SIZE__)
+#define MOJO_NOINLINE_UNLESS_OPTIMIZE_SIZE
+#else
+#define MOJO_NOINLINE_UNLESS_OPTIMIZE_SIZE NOINLINE
+#endif
+
 namespace mojo {
 
 template <typename T>
@@ -88,12 +94,17 @@ inline void EncodePointer(const void* ptr, uint64_t* offset) {
   *offset = static_cast<uint64_t>(p_obj - p_slot);
 }
 
-// Note: This function doesn't validate the encoded pointer value.
-inline const void* DecodePointer(const uint64_t* offset) {
+// Doesn't validate the encoded pointer. Callers must ensure `*offset` is 0 or
+// points within the same buffer (e.g. locally encoded or validated message).
+UNSAFE_BUFFER_USAGE inline const void* DecodePointer(const uint64_t* offset) {
   if (!*offset) {
     return nullptr;
   }
-  return UNSAFE_TODO(reinterpret_cast<const char*>(offset) + *offset);
+  // SAFETY: Required from caller, enforced by UNSAFE_BUFFER_USAGE.
+  const void* ret =
+      UNSAFE_BUFFERS(reinterpret_cast<const char*>(offset) + *offset);
+  UNSAFE_ASSUME(ret != nullptr);
+  return ret;
 }
 
 #pragma pack(push, 1)
@@ -111,19 +122,20 @@ struct ArrayHeader {
 static_assert(sizeof(ArrayHeader) == 8, "Bad_sizeof(ArrayHeader)");
 
 template <typename T>
-class MessageFragment;
-
-template <typename T>
 struct Pointer {
   using BaseType = T;
 
   void Set(T* ptr) { EncodePointer(ptr, &offset); }
-  // Points at the memory claimed by `fragment`, or null if `fragment` is null.
-  // Defined in message_fragment.h.
-  void Set(MessageFragment<T>& fragment);
-  const T* Get() const { return static_cast<const T*>(DecodePointer(&offset)); }
-  T* Get() {
-    return static_cast<T*>(const_cast<void*>(DecodePointer(&offset)));
+
+  // Callers must uphold the requirements of `DecodePointer()`.
+  UNSAFE_BUFFER_USAGE const T* Get() const {
+    // SAFETY: Required from caller, enforced by UNSAFE_BUFFER_USAGE.
+    return static_cast<const T*>(UNSAFE_BUFFERS(DecodePointer(&offset)));
+  }
+  UNSAFE_BUFFER_USAGE T* Get() {
+    // SAFETY: Required from caller, enforced by UNSAFE_BUFFER_USAGE.
+    return static_cast<T*>(
+        const_cast<void*>(UNSAFE_BUFFERS(DecodePointer(&offset))));
   }
 
   bool is_null() const { return offset == 0; }

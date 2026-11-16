@@ -31,7 +31,7 @@ class CopyOrMoveHookDelegate;
 class FileSystemContext;
 class FileSystemURL;
 class FileWriterDelegate;
-class ShareableFileReference;
+class ScopedFile;
 
 // Operation type called by FileSystemOperationRunner.
 enum class OperationType {
@@ -128,21 +128,16 @@ class FileSystemOperation {
   // may want to download the file into a temporary snapshot file and then
   // return the metadata of the temporary file.
   //
-  // |file_ref| is used to manage the lifetime of the returned
-  // snapshot file.  It can be set to let the chromium backend take
-  // care of the life time of the snapshot file.  Otherwise (if the returned
-  // file does not require any handling) the implementation can just
-  // return nullptr.  In a more complex case, the implementation can manage
-  // the lifetime of the snapshot file on its own (e.g. by its cache system)
-  // but also can be notified via the reference when the file becomes no
-  // longer necessary in the javascript world.
-  // Please see the comment for ShareableFileReference for details.
+  // |temp_file| transfers ownership of the snapshot file to the caller.
+  // It can schedule deletion or callbacks when the snapshot is no longer
+  // needed. If the file needs no lifetime management, return an empty
+  // ScopedFile.
   //
   using SnapshotFileCallback =
       base::OnceCallback<void(base::File::Error result,
                               const base::File::Info& file_info,
                               const base::FilePath& platform_path,
-                              scoped_refptr<ShareableFileReference> file_ref)>;
+                              ScopedFile temp_file)>;
 
   // Used to specify how recursive operation delegate behaves for errors.
   // With ERROR_BEHAVIOR_ABORT, it stops following operation when it fails an
@@ -468,10 +463,10 @@ class FileSystemOperation {
                              CopyOrMoveOptionSet options,
                              StatusCallback callback) = 0;
 
-  // Synchronously gets the platform path for the given |url|.
-  // This may fail if the given |url|'s filesystem type is neither
-  // temporary nor persistent.
-  // In such a case, base::File::FILE_ERROR_INVALID_OPERATION will be
+  // Synchronously gets the platform path for the given `url`.
+  // This may fail if the given `url`'s filesystem type is neither
+  // temporary nor persistent, or if the context is in incognito mode.
+  // In such a case, `base::File::FILE_ERROR_INVALID_OPERATION` will be
   // returned.
   virtual base::File::Error SyncGetPlatformPath(
       const FileSystemURL& url,

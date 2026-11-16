@@ -114,6 +114,7 @@ crbug.com/1229701 [ Release Win ] http/tests/inspector-protocol/network/disable-
 crbug.com/1300409 http/tests/inspector-protocol/network/websocket/offline-no-send.js [ Slow ]
 crbug.com/1280873 http/tests/inspector-protocol/network/xhr-cors-preflight-redirect-failure.js [ Slow ]
 crbug.com/1280585 http/tests/inspector-protocol/network/xhr-post-replay-cors.js [ Slow ]
+crbug.com/496616821 virtual/socket-layer-network-throttling/http/tests/inspector-protocol/network/socket-layer-throttling/* [ Slow ]
 crbug.com/1280537 http/tests/inspector-protocol/network/blocked-cookie-same-site-lax-browser-navigate.js [ Slow ]
 crbug.com/1280537 [ Linux ] http/tests/inspector-protocol/network/blocked-cookie-same-site-lax-js-navigate.js [ Slow ]
 crbug.com/1280537 [ Release Win ] http/tests/inspector-protocol/network/blocked-cookie-same-site-lax-js-navigate.js [ Slow ]
@@ -864,8 +865,7 @@ crbug.com/390581529 external/wpt/fedcm/third-party-iframe/fedcm-third-party-ifra
 crbug.com/390581529 external/wpt/fedcm/third-party-iframe/fedcm-third-party-iframe.https.html [ Slow ]
 
 # Slow because it contains thousands of subtests
-crbug.com/1423483 [ Linux ] external/wpt/css/css-color/parsing/color-computed-hsl.html [ Slow ]
-crbug.com/1423483 [ Release Win ] external/wpt/css/css-color/parsing/color-computed-hsl.html [ Slow ]
+crbug.com/583503641 external/wpt/css/css-color/parsing/color-computed-hsl.html [ Slow ]
 
 # Slow because of too many cycles of waiting for layout and paint
 crbug.com/40283659 http/tests/misc/transforms-usecounter-3d-scene.html [ Slow ]

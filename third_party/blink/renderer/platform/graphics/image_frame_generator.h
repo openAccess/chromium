@@ -119,13 +119,6 @@ class PLATFORM_EXPORT ImageFrameGenerator final
       SkYUVAPixmapInfo* info);
 
  private:
-  // Used in UMA histogram, please do not remove or re-order entries.
-  enum class DecodeTimesType {
-    kRequestByAtLeastOneClient = 0,
-    kRequestByMoreThanOneClient = 1,
-    kMaxValue = kRequestByMoreThanOneClient,
-  };
-
   class ClientAutoLock {
     STACK_ALLOCATED();
 
@@ -147,6 +140,7 @@ class PLATFORM_EXPORT ImageFrameGenerator final
                       Vector<SkISize> supported_sizes);
 
   friend class ImageFrameGeneratorTest;
+  friend class ImageDecoderWrapperTest;
   friend class DeferredImageDecoderTest;
   // For testing. |factory| will overwrite the default ImageDecoder creation
   // logic if |factory->create()| returns non-zero.
@@ -155,10 +149,6 @@ class PLATFORM_EXPORT ImageFrameGenerator final
   }
 
   void SetHasAlpha(wtf_size_t index, bool has_alpha);
-
-  // Records in UMA whether an image has been decoded by a single client or
-  // by multiple clients (determined by `GeneratorClientId`).
-  void RecordWhetherMultiDecoded(cc::PaintImage::GeneratorClientId client_id);
 
   const SkISize full_size_;
   // Parameters used to create internal ImageDecoder objects.
@@ -189,10 +179,6 @@ class PLATFORM_EXPORT ImageFrameGenerator final
       lock_map_ GUARDED_BY(generator_lock_);
 
   std::unique_ptr<ImageDecoderFactory> image_decoder_factory_;
-
-  cc::PaintImage::GeneratorClientId last_client_id_
-      GUARDED_BY(generator_lock_) = cc::PaintImage::kDefaultGeneratorClientId;
-  bool has_logged_multi_clients_ GUARDED_BY(generator_lock_) = false;
 };
 
 }  // namespace blink

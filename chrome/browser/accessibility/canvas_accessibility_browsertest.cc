@@ -43,6 +43,38 @@ const ui::AXNodeData* FindFirstNodeWithRole(const ui::AXTreeUpdate& tree_update,
   return nullptr;
 }
 
+const ui::AXNodeData* FindNodeByHtmlId(const ui::AXTreeUpdate& tree_update,
+                                       const std::string& html_id) {
+  for (const auto& node : tree_update.nodes) {
+    if (node.GetStringAttribute(ax::mojom::StringAttribute::kHtmlId) ==
+        html_id) {
+      return &node;
+    }
+  }
+  return nullptr;
+}
+
+std::string GetCanvasAnnotation(content::WebContents* web_contents) {
+  ui::AXTreeUpdate tree_update =
+      content::GetAccessibilityTreeSnapshot(web_contents);
+  const ui::AXNodeData* canvas_node =
+      FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
+  if (!canvas_node) {
+    return std::string();
+  }
+  return canvas_node->GetStringAttribute(
+      ax::mojom::StringAttribute::kCanvasAnnotation);
+}
+
+std::string WaitForCanvasAnnotation(content::WebContents* web_contents) {
+  std::string annotation;
+  EXPECT_TRUE(base::test::RunUntil([&]() {
+    annotation = GetCanvasAnnotation(web_contents);
+    return !annotation.empty();
+  }));
+  return annotation;
+}
+
 class CanvasAccessibilityBrowserTest
     : public InProcessBrowserTest,
       public ::testing::WithParamInterface<CanvasAccessibilityTestParams> {
@@ -127,15 +159,7 @@ IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
     content::WaitForAccessibilityTreeToContainNodeWithName(web_contents,
                                                            "Hello Canvas");
   } else {
-    ui::AXTreeUpdate tree_update =
-        content::GetAccessibilityTreeSnapshot(web_contents);
-    const ui::AXNodeData* canvas_node =
-        FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-    if (canvas_node) {
-      std::string annotation = canvas_node->GetStringAttribute(
-          ax::mojom::StringAttribute::kCanvasAnnotation);
-      EXPECT_TRUE(annotation.empty());
-    }
+    EXPECT_TRUE(GetCanvasAnnotation(web_contents).empty());
   }
 }
 
@@ -161,32 +185,9 @@ IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest, BitmapCanvasAnnotation) {
                                IsOcrLibraryAvailable();
 
   if (expect_ocr_annotation) {
-    std::string annotation;
-    EXPECT_TRUE(base::test::RunUntil([&]() {
-      ui::AXTreeUpdate tree_update =
-          content::GetAccessibilityTreeSnapshot(web_contents);
-      const ui::AXNodeData* canvas_node =
-          FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-      if (canvas_node) {
-        annotation = canvas_node->GetStringAttribute(
-            ax::mojom::StringAttribute::kCanvasAnnotation);
-        if (!annotation.empty()) {
-          return true;
-        }
-      }
-      return false;
-    }));
-    EXPECT_EQ(annotation, "ABC\nDEF\nGHI\nJKL");
+    EXPECT_EQ(WaitForCanvasAnnotation(web_contents), "ABC\nDEF\nGHI\nJKL");
   } else {
-    ui::AXTreeUpdate tree_update =
-        content::GetAccessibilityTreeSnapshot(web_contents);
-    const ui::AXNodeData* canvas_node =
-        FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-    if (canvas_node) {
-      std::string annotation = canvas_node->GetStringAttribute(
-          ax::mojom::StringAttribute::kCanvasAnnotation);
-      EXPECT_TRUE(annotation.empty());
-    }
+    EXPECT_TRUE(GetCanvasAnnotation(web_contents).empty());
   }
 }
 
@@ -212,55 +213,19 @@ IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
                                 features::CanvasAccessibilityMode::kAdvanced) &&
                                IsOcrLibraryAvailable();
 
-  if (expect_ocr_annotation) {
-    std::string annotation;
-    EXPECT_TRUE(base::test::RunUntil([&]() {
-      ui::AXTreeUpdate tree_update =
-          content::GetAccessibilityTreeSnapshot(web_contents);
-      const ui::AXNodeData* canvas_node =
-          FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-      if (canvas_node) {
-        annotation = canvas_node->GetStringAttribute(
-            ax::mojom::StringAttribute::kCanvasAnnotation);
-        if (!annotation.empty()) {
-          return true;
-        }
-      }
-      return false;
-    }));
-    EXPECT_EQ(annotation, "ABC\nDEF\nGHI\nJKL");
-
-    content::TitleWatcher update_title_watcher(web_contents, u"updated");
-    ASSERT_TRUE(content::ExecJs(web_contents, "changeImage();"));
-    ASSERT_EQ(update_title_watcher.WaitAndGetTitle(), u"updated");
-
-    std::string updated_annotation;
-    EXPECT_TRUE(base::test::RunUntil([&]() {
-      ui::AXTreeUpdate tree_update =
-          content::GetAccessibilityTreeSnapshot(web_contents);
-      const ui::AXNodeData* canvas_node =
-          FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-      if (canvas_node) {
-        updated_annotation = canvas_node->GetStringAttribute(
-            ax::mojom::StringAttribute::kCanvasAnnotation);
-        if (updated_annotation == "A") {
-          return true;
-        }
-      }
-      return false;
-    }));
-    EXPECT_EQ(updated_annotation, "A");
-  } else {
-    ui::AXTreeUpdate tree_update =
-        content::GetAccessibilityTreeSnapshot(web_contents);
-    const ui::AXNodeData* canvas_node =
-        FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-    if (canvas_node) {
-      std::string annotation = canvas_node->GetStringAttribute(
-          ax::mojom::StringAttribute::kCanvasAnnotation);
-      EXPECT_TRUE(annotation.empty());
-    }
+  if (!expect_ocr_annotation) {
+    EXPECT_TRUE(GetCanvasAnnotation(web_contents).empty());
+    return;
   }
+
+  EXPECT_EQ(WaitForCanvasAnnotation(web_contents), "ABC\nDEF\nGHI\nJKL");
+
+  content::TitleWatcher update_title_watcher(web_contents, u"updated");
+  ASSERT_TRUE(content::ExecJs(web_contents, "changeImage();"));
+  ASSERT_EQ(update_title_watcher.WaitAndGetTitle(), u"updated");
+
+  EXPECT_TRUE(base::test::RunUntil(
+      [&]() { return GetCanvasAnnotation(web_contents) == "A"; }));
 }
 
 IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
@@ -286,32 +251,9 @@ IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
                                IsOcrLibraryAvailable();
 
   if (expect_ocr_annotation) {
-    std::string annotation;
-    EXPECT_TRUE(base::test::RunUntil([&]() {
-      ui::AXTreeUpdate tree_update =
-          content::GetAccessibilityTreeSnapshot(web_contents);
-      const ui::AXNodeData* canvas_node =
-          FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-      if (canvas_node) {
-        annotation = canvas_node->GetStringAttribute(
-            ax::mojom::StringAttribute::kCanvasAnnotation);
-        if (!annotation.empty()) {
-          return true;
-        }
-      }
-      return false;
-    }));
-    EXPECT_EQ(annotation, "ABC\nDEF\nGHI\nJKL");
+    EXPECT_EQ(WaitForCanvasAnnotation(web_contents), "ABC\nDEF\nGHI\nJKL");
   } else {
-    ui::AXTreeUpdate tree_update =
-        content::GetAccessibilityTreeSnapshot(web_contents);
-    const ui::AXNodeData* canvas_node =
-        FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-    if (canvas_node) {
-      std::string annotation = canvas_node->GetStringAttribute(
-          ax::mojom::StringAttribute::kCanvasAnnotation);
-      EXPECT_TRUE(annotation.empty());
-    }
+    EXPECT_TRUE(GetCanvasAnnotation(web_contents).empty());
   }
 }
 
@@ -338,31 +280,67 @@ IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
                                IsOcrLibraryAvailable();
 
   if (expect_ocr_annotation) {
-    std::string annotation;
-    EXPECT_TRUE(base::test::RunUntil([&]() {
+    EXPECT_EQ(WaitForCanvasAnnotation(web_contents), "ABC\nDEF\nGHI\nJKL");
+  } else {
+    EXPECT_TRUE(GetCanvasAnnotation(web_contents).empty());
+  }
+}
+
+IN_PROC_BROWSER_TEST_P(CanvasAccessibilityBrowserTest,
+                       BitmapCanvasAnnotation_CrossOrigin) {
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  ui::AXMode mode = ui::kAXModeComplete;
+  mode.set_mode(ui::AXMode::kScreenReader, true);
+  scoped_accessibility_mode_ =
+      std::make_unique<content::ScopedAccessibilityModeOverride>(web_contents,
+                                                                 mode);
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL(
+                     "a.com", "/accessibility/canvas_cross_origin.html")));
+
+  content::TitleWatcher title_watcher(web_contents, u"loaded");
+  ASSERT_EQ(title_watcher.WaitAndGetTitle(), u"loaded");
+
+  const bool expect_ocr_annotation =
+      (GetCanvasAccessibilityMode() ==
+       features::CanvasAccessibilityMode::kAdvanced) &&
+      IsOcrLibraryAvailable();
+
+  if (expect_ocr_annotation) {
+    // Wait for the same-origin sentinel canvas drawn after cross_origin_canvas
+    // to finish OCR, then verify cross_origin_canvas was not annotated.
+    std::string same_origin_annotation;
+    std::string cross_origin_annotation;
+    ASSERT_TRUE(base::test::RunUntil([&]() {
       ui::AXTreeUpdate tree_update =
           content::GetAccessibilityTreeSnapshot(web_contents);
-      const ui::AXNodeData* canvas_node =
-          FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-      if (canvas_node) {
-        annotation = canvas_node->GetStringAttribute(
-            ax::mojom::StringAttribute::kCanvasAnnotation);
-        if (!annotation.empty()) {
-          return true;
-        }
+      const ui::AXNodeData* same_node =
+          FindNodeByHtmlId(tree_update, "same_origin_canvas");
+      const ui::AXNodeData* cross_node =
+          FindNodeByHtmlId(tree_update, "cross_origin_canvas");
+      if (!same_node || !cross_node) {
+        return false;
       }
-      return false;
+      same_origin_annotation = same_node->GetStringAttribute(
+          ax::mojom::StringAttribute::kCanvasAnnotation);
+      cross_origin_annotation = cross_node->GetStringAttribute(
+          ax::mojom::StringAttribute::kCanvasAnnotation);
+      return !same_origin_annotation.empty();
     }));
-    EXPECT_EQ(annotation, "ABC\nDEF\nGHI\nJKL");
+    EXPECT_EQ(same_origin_annotation, "ABC\nDEF\nGHI\nJKL");
+    EXPECT_TRUE(cross_origin_annotation.empty());
   } else {
     ui::AXTreeUpdate tree_update =
         content::GetAccessibilityTreeSnapshot(web_contents);
-    const ui::AXNodeData* canvas_node =
-        FindFirstNodeWithRole(tree_update, ax::mojom::Role::kCanvas);
-    if (canvas_node) {
-      std::string annotation = canvas_node->GetStringAttribute(
-          ax::mojom::StringAttribute::kCanvasAnnotation);
-      EXPECT_TRUE(annotation.empty());
+    for (const char* id : {"cross_origin_canvas", "same_origin_canvas"}) {
+      if (const ui::AXNodeData* node = FindNodeByHtmlId(tree_update, id)) {
+        EXPECT_TRUE(node->GetStringAttribute(
+                            ax::mojom::StringAttribute::kCanvasAnnotation)
+                        .empty());
+      }
     }
   }
 }

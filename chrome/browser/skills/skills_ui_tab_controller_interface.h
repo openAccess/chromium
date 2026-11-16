@@ -13,6 +13,7 @@ namespace glic {
 struct Target;
 }
 
+#include "base/functional/callback_forward.h"
 #include "base/memory/weak_ptr.h"
 #include "components/skills/public/skill.mojom-forward.h"
 #include "components/skills/public/skills_metrics.h"
@@ -55,7 +56,18 @@ class SkillsUiTabControllerInterface {
                            bool auto_submit) = 0;
 
   // Sends a prompt to the side panel.
-  virtual void SendPrompt(std::string_view prompt) = 0;
+  virtual void SendPrompt(std::string_view prompt, bool new_conversation) = 0;
+
+  // Called when a skill is deleted to show a notification.
+  virtual void OnSkillDeleted(const std::string& skill_id) = 0;
+  virtual void OnSkillDeleted(const std::string& skill_id,
+                              base::OnceCallback<void(bool)> callback) = 0;
+
+  // Called when we want to update UI after a skill has been saved.
+  virtual void OnSkillSaved(const std::string& skill_id) = 0;
+  virtual void OnSkillSaved(const std::string& skill_id,
+                            const std::string& skill_name,
+                            const std::string& skill_icon) = 0;
 
  private:
   ::ui::ScopedUnownedUserData<SkillsUiTabControllerInterface>

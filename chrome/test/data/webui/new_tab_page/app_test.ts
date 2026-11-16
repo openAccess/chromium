@@ -24,7 +24,7 @@ import {getDeepActiveElement} from 'chrome://resources/js/util.js';
 import {SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, TabAttachmentSource} from 'chrome://resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertGT, assertNear, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
+import {createSuggestTemplateInfo, MockInputState} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -48,6 +48,11 @@ suite('NewTabPageAppTest', () => {
 
   suiteSetup(() => {
     Object.assign(window, {webkitSpeechRecognition: MockSpeechRecognition});
+    loadTimeData.overrideValues({
+      composeboxPersistentAimButton: false,
+      composeboxPersistentAimButtonWithX: false,
+      composeboxRealboxOutsideClick: false,
+    });
   });
   let app: AppElement;
   let customizeButtons: CustomizeButtonsElement;
@@ -875,7 +880,6 @@ suite('NewTabPageAppTest', () => {
   function modulesCommonTests(modulesElementTag: string) {
     test('modules loaded', async () => {
       // Arrange.
-      loadTimeData.overrideValues({navigationStartTime: 0.0});
       windowProxy.setResultFor('now', 123.0);
       const modules = $$(app, modulesElementTag)!;
       assertTrue(!!modules);
@@ -3342,6 +3346,78 @@ suite('NewTabPageAppTest', () => {
       assertTrue(app.canShowHelpBubble(CONTEXTUAL_ENTRYPOINT_ELEMENT_ID));
     });
 
+    test(
+        'closeComposebox owns backend resets and skips them after submit',
+        async () => {
+          const searchbox = $$<NtpSearchboxElement>(app, '#searchbox');
+          assertTrue(!!searchbox);
+
+          const resetMethods =
+              ['clearFiles', 'setActiveToolMode', 'setActiveModelMode'] as
+              const;
+          const callOrder: string[] = [];
+          const openWithActiveToolAndModel = async (text: string) => {
+            searchbox.dispatchEvent(new CustomEvent(
+                'open-composebox', {detail: {text, files: []}}));
+            await microtasksFinished();
+            const composebox =
+                app.shadowRoot.querySelector<NtpComposeboxElement>(
+                    '#composebox');
+            assertTrue(!!composebox);
+            composebox.onInputStateChanged(new MockInputState({
+              activeTool: ToolMode.kDeepSearch,
+              activeModel: ModelMode.kGeminiPro,
+            }));
+            await microtasksFinished();
+            callOrder.length = 0;
+            resetMethods.forEach(method => {
+              searchboxHandler.resetResolver(method);
+              searchboxHandler.setResultMapperFor(method, () => {
+                callOrder.push(method);
+              });
+            });
+            return composebox;
+          };
+
+          // Closing after a submit (e.g. a modifier-click that opens the
+          // results in a new tab) must leave the backend state alone, since
+          // the submitted query may still be using it.
+          let composebox = await openWithActiveToolAndModel('');
+          composebox.closeComposebox(/*afterSubmit=*/ true);
+          await microtasksFinished();
+
+          assertFalse(!!app.shadowRoot.querySelector('#composebox'));
+          assertDeepEquals([], callOrder);
+
+          // An explicit dismiss (Escape, cancel button, or the AI Mode exit
+          // button) resets the backend state exactly once, from
+          // closeComposebox() rather than again from the app's close handler.
+          composebox = await openWithActiveToolAndModel('draft');
+          composebox.closeComposebox(/*afterSubmit=*/ false);
+          await microtasksFinished();
+
+          assertFalse(!!app.shadowRoot.querySelector('#composebox'));
+          assertEquals('draft', searchbox.$.input.inputElement.value);
+          assertDeepEquals(
+              [
+                'setActiveToolMode',
+                'clearFiles',
+                'setActiveToolMode',
+                'setActiveModelMode',
+              ],
+              callOrder);
+          assertEquals(false, searchboxHandler.getArgs('clearFiles')[0]);
+          assertDeepEquals(
+              [
+                [ToolMode.kUnspecified, false],
+                [ToolMode.kUnspecified, false],
+              ],
+              searchboxHandler.getArgs('setActiveToolMode'));
+          assertDeepEquals(
+              [[ModelMode.kUnspecified, false]],
+              searchboxHandler.getArgs('setActiveModelMode'));
+        });
+
     suite('OutsideClick', () => {
       const BLOCKED_SELECTOR =
           '#rhsContent > :not(#logo):not(#searchboxContainer):not(#scrim)';
@@ -4177,14 +4253,43 @@ suite('NewTabPageAppTest', () => {
       // Like new_tab_page.html, so that the LHS and RHS span the window, which
       // position: fixed elements in the RHS rely on.
       document.body.style.margin = '0';
+      // So that LHS width changes apply immediately instead of transitioning.
+      document.documentElement.style.setProperty(
+          '--cr-animations-disabled', '1');
     });
 
     teardown(() => {
       document.body.style.margin = '';
+      document.documentElement.style.removeProperty('--cr-animations-disabled');
+      document.documentElement.dir = '';
     });
 
+    function appendSlottedBackgroundImage(): HTMLIFrameElement {
+      const backgroundImage = document.createElement('iframe');
+      backgroundImage.id = 'backgroundImage';
+      backgroundImage.slot = 'backgroundImage';
+      app.appendChild(backgroundImage);
+      return backgroundImage;
+    }
+
+    // Returns the subpixel fixed-viewport rect. Avoids window.innerWidth/Height
+    // (integer-rounded, exceeding LAYOUT_TOLERANCE_PX under fractional
+    // devicePixelRatio on Android) and #content (100vh = large viewport height,
+    // which includes Android's top browser controls unlike position: fixed).
+    function getViewportRect(): DOMRect {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position: fixed; inset: 0; pointer-events: none;';
+      document.body.appendChild(probe);
+      const rect = probe.getBoundingClientRect();
+      probe.remove();
+      return rect;
+    }
+
     async function setThreadsRailEnabled(enabled: boolean) {
-      loadTimeData.overrideValues({enableThreadsRail: enabled});
+      // In hybrid mode, the browser only enables the rail with an
+      // lhsRailConfig, which <cr-threads-rail> reads.
+      loadTimeData.overrideValues(
+          {enableThreadsRail: enabled, lhsRailConfig: {items: []}});
       await recreateApp();
     }
 
@@ -4378,6 +4483,173 @@ suite('NewTabPageAppTest', () => {
           rhsWrapper.getBoundingClientRect().width / 2,
           parseFloat(attributionStyle.maxWidth), LAYOUT_TOLERANCE_PX);
     });
+
+    test(
+        'background image fills the window when feature disabled', async () => {
+          await setThreadsRailEnabled(false);
+          const backgroundImage = appendSlottedBackgroundImage();
+          const container = $$<HTMLElement>(app, '#backgroundImageContainer');
+          assertTrue(!!container);
+
+          assertEquals(
+              $$(app, 'slot[name="backgroundImage"]'),
+              backgroundImage.assignedSlot);
+          const viewportRect = getViewportRect();
+          const containerRect = container.getBoundingClientRect();
+          assertNear(0, containerRect.left, LAYOUT_TOLERANCE_PX);
+          assertNear(0, containerRect.top, LAYOUT_TOLERANCE_PX);
+          assertNear(
+              viewportRect.width, containerRect.width, LAYOUT_TOLERANCE_PX);
+          assertNear(
+              viewportRect.height, containerRect.height, LAYOUT_TOLERANCE_PX);
+
+          const imageRect = backgroundImage.getBoundingClientRect();
+          assertNear(0, imageRect.left, LAYOUT_TOLERANCE_PX);
+          assertNear(0, imageRect.top, LAYOUT_TOLERANCE_PX);
+          assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+          assertNear(
+              viewportRect.height, imageRect.height, LAYOUT_TOLERANCE_PX);
+        });
+
+    test('background image fills the RHS when feature enabled', async () => {
+      await setThreadsRailEnabled(true);
+      const backgroundImage = appendSlottedBackgroundImage();
+      const container = $$<HTMLElement>(app, '#backgroundImageContainer');
+      assertTrue(!!container);
+      const rhsWrapper = $$<HTMLElement>(app, '#rhsWrapper');
+      assertTrue(!!rhsWrapper);
+      assertStyle(container, 'overflow', 'hidden');
+
+      const viewportRect = getViewportRect();
+      setLhsWidth(200);
+      let containerRect = container.getBoundingClientRect();
+      let imageRect = backgroundImage.getBoundingClientRect();
+      assertNear(200, containerRect.left, LAYOUT_TOLERANCE_PX);
+      assertNear(
+          rhsWrapper.getBoundingClientRect().width, containerRect.width,
+          LAYOUT_TOLERANCE_PX);
+      assertNear(
+          viewportRect.height, containerRect.height, LAYOUT_TOLERANCE_PX);
+      assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+      assertNear(100, imageRect.left, LAYOUT_TOLERANCE_PX);
+
+      setLhsWidth(64);
+      containerRect = container.getBoundingClientRect();
+      imageRect = backgroundImage.getBoundingClientRect();
+      assertNear(64, containerRect.left, LAYOUT_TOLERANCE_PX);
+      assertNear(
+          rhsWrapper.getBoundingClientRect().width, containerRect.width,
+          LAYOUT_TOLERANCE_PX);
+      assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+      assertNear(32, imageRect.left, LAYOUT_TOLERANCE_PX);
+    });
+
+    test(
+        'background image fills the RHS in RTL when feature enabled',
+        async () => {
+          document.documentElement.dir = 'rtl';
+          await setThreadsRailEnabled(true);
+          const backgroundImage = appendSlottedBackgroundImage();
+          const container = $$<HTMLElement>(app, '#backgroundImageContainer');
+          assertTrue(!!container);
+          const rhsWrapper = $$<HTMLElement>(app, '#rhsWrapper');
+          assertTrue(!!rhsWrapper);
+
+          const viewportRect = getViewportRect();
+          setLhsWidth(200);
+          const containerRect = container.getBoundingClientRect();
+          const imageRect = backgroundImage.getBoundingClientRect();
+          assertNear(0, containerRect.left, LAYOUT_TOLERANCE_PX);
+          assertNear(
+              rhsWrapper.getBoundingClientRect().width, containerRect.width,
+              LAYOUT_TOLERANCE_PX);
+          assertNear(
+              viewportRect.width - 200, containerRect.right,
+              LAYOUT_TOLERANCE_PX);
+          assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+          assertNear(-100, imageRect.left, LAYOUT_TOLERANCE_PX);
+        });
+
+    test(
+        'background image aligns to RHS edge for 3p theme positionX',
+        async () => {
+          await setThreadsRailEnabled(true);
+          const backgroundImage = appendSlottedBackgroundImage();
+          const viewportRect = getViewportRect();
+          setLhsWidth(200);
+
+          const theme = createTheme();
+          theme.backgroundImage = createBackgroundImage('https://img.png');
+          theme.backgroundImage.positionX = 'left';
+          callbackRouterRemote.setTheme(theme);
+          await callbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          let imageRect = backgroundImage.getBoundingClientRect();
+          assertNear(200, imageRect.left, LAYOUT_TOLERANCE_PX);
+          assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+
+          theme.backgroundImage.positionX = 'right';
+          callbackRouterRemote.setTheme(theme);
+          await callbackRouterRemote.$.flushForTesting();
+          await microtasksFinished();
+
+          imageRect = backgroundImage.getBoundingClientRect();
+          assertNear(viewportRect.right, imageRect.right, LAYOUT_TOLERANCE_PX);
+          assertNear(viewportRect.width, imageRect.width, LAYOUT_TOLERANCE_PX);
+        });
+
+    test(
+        'background image stays fixed when RHS scrolls horizontally',
+        async () => {
+          await setThreadsRailEnabled(true);
+          const backgroundImage = appendSlottedBackgroundImage();
+          const container = $$<HTMLElement>(app, '#backgroundImageContainer');
+          assertTrue(!!container);
+          await setRhsWrapperWidth(100);
+
+          const rhsWrapper = $$<HTMLElement>(app, '#rhsWrapper');
+          assertTrue(!!rhsWrapper);
+          const beforeContainerRect = container.getBoundingClientRect();
+          const beforeImageRect = backgroundImage.getBoundingClientRect();
+
+          rhsWrapper.scrollLeft = 10;
+          assertGT(rhsWrapper.scrollLeft, 0);
+
+          const afterContainerRect = container.getBoundingClientRect();
+          const afterImageRect = backgroundImage.getBoundingClientRect();
+          assertNear(
+              beforeContainerRect.left, afterContainerRect.left,
+              LAYOUT_TOLERANCE_PX);
+          assertNear(
+              beforeContainerRect.width, afterContainerRect.width,
+              LAYOUT_TOLERANCE_PX);
+          assertNear(
+              beforeImageRect.left, afterImageRect.left, LAYOUT_TOLERANCE_PX);
+          assertNear(
+              beforeImageRect.width, afterImageRect.width, LAYOUT_TOLERANCE_PX);
+        });
+
+    test(
+        'background image stays behind attribution when composebox opens',
+        async () => {
+          await setThreadsRailEnabled(true);
+          await showBackgroundImageAttribution();
+
+          const leftHandSide = $$(app, 'cr-left-hand-side');
+          assertTrue(!!leftHandSide);
+          leftHandSide.dispatchEvent(new CustomEvent('open-composebox'));
+          await microtasksFinished();
+
+          assertTrue(app.hasAttribute('show-composebox_'));
+          const container = $$(app, '#backgroundImageContainer');
+          const attribution = $$(app, '#backgroundImageAttribution');
+          assertTrue(!!container);
+          assertTrue(!!attribution);
+          assertTrue(
+              parseInt(getComputedStyle(container).zIndex, 10) <
+              parseInt(getComputedStyle(attribution).zIndex, 10));
+        });
 
     suite('Modules', () => {
       suiteSetup(() => {
@@ -4616,8 +4888,8 @@ suite('NewTabPageAppTest', () => {
                 'open-composebox', {detail: {text: '', files: []}}));
             await microtasksFinished();
 
-            const composebox = app.shadowRoot.querySelector<HTMLElement>(
-                'ntp-composebox, cr-composebox');
+            const composebox =
+                app.shadowRoot.querySelector<HTMLElement>('ntp-composebox');
             assertTrue(!!composebox);
             composebox.toggleAttribute('in-voice-search-mode', true);
             await microtasksFinished();
@@ -6006,8 +6278,7 @@ suite('NewTabPageAppTest', () => {
           }));
           await microtasksFinished();
 
-          const composebox =
-              app.shadowRoot.querySelector('ntp-composebox, cr-composebox');
+          const composebox = app.shadowRoot.querySelector('ntp-composebox');
           assertTrue(!!composebox);
           composebox.dispatchEvent(new CustomEvent(
               'voice-search-action',
@@ -6042,8 +6313,7 @@ suite('NewTabPageAppTest', () => {
           }));
           await microtasksFinished();
 
-          const composebox =
-              app.shadowRoot.querySelector('ntp-composebox, cr-composebox');
+          const composebox = app.shadowRoot.querySelector('ntp-composebox');
           assertTrue(!!composebox);
           composebox.dispatchEvent(new CustomEvent(
               'voice-search-action',
@@ -6112,7 +6382,7 @@ suite('NewTabPageAppReducedMotionTest', () => {
     windowProxy.setResultFor('waitForLazyRender', Promise.resolve());
     windowProxy.setResultFor('ensureLazyLoaded', Promise.resolve());
     windowProxy.setResultFor('createIframeSrc', '');
-    windowProxy.setResultFor('now', new Date());
+    windowProxy.setResultFor('now', 0);
     windowProxy.setResultFor('url', url);
     windowProxy.setResultFor('matchMedia', {
       matches: false,
@@ -6295,7 +6565,7 @@ suite('NewTabPageAppContextMenuAnimationTest', () => {
     windowProxy.setResultFor('waitForLazyRender', Promise.resolve());
     windowProxy.setResultFor('ensureLazyLoaded', Promise.resolve());
     windowProxy.setResultFor('createIframeSrc', '');
-    windowProxy.setResultFor('now', new Date());
+    windowProxy.setResultFor('now', 0);
     windowProxy.setResultFor('url', new URL(location.href));
     windowProxy.setResultFor('matchMedia', {
       matches: false,

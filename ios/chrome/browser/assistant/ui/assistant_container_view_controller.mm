@@ -18,6 +18,7 @@
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/browser_layout_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/state/scene_layout_state.h"
+#import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/chrome_overlay_window/chrome_overlay_container_view.h"
 #import "ios/chrome/browser/shared/ui/util/layout_constants.h"
@@ -62,12 +63,21 @@ inline LayoutStateAssistantPassKey PassKey() {
   return layout_state::AssistantContainerViewControllerPassKeyFactory::
       CreateKey();
 }
+
+// Returns the default poster block forwarding to
+// `UIAccessibilityPostNotification`.
+AccessibilityNotificationPoster DefaultAccessibilityNotificationPoster() {
+  return ^(UIAccessibilityNotifications notification, id argument) {
+    UIAccessibilityPostNotification(notification, argument);
+  };
+}
 }  // namespace
 
 @interface AssistantContainerViewController () <
     AssistantContainerAccessibilityManagerDelegate,
     BrowserLayoutStateObserver,
     SceneLayoutStateObserver,
+    TabGridStateObserving,
     UIGestureRecognizerDelegate>
 @end
 
@@ -102,6 +112,8 @@ inline LayoutStateAssistantPassKey PassKey() {
   BOOL _isDraggingContainer;
   // Whether the view has appeared.
   BOOL _hasAppeared;
+  // Whether the entry presentation animation has completed.
+  BOOL _hasCompletedPresentation;
 
   // Gesture recognizer for resizing the container.
   UIPanGestureRecognizer* _headerPanGesture;
@@ -137,6 +149,7 @@ inline LayoutStateAssistantPassKey PassKey() {
         AssistantContainerDetent::kLarge,
     };
     _largestUndimmedDetent = kDefaultLargestUndimmedDetent;
+    _accessibilityNotificationPoster = DefaultAccessibilityNotificationPoster();
   }
   return self;
 }
@@ -250,19 +263,6 @@ inline LayoutStateAssistantPassKey PassKey() {
 - (void)viewDidAppear:(BOOL)animated {
   [super viewDidAppear:animated];
   _hasAppeared = YES;
-
-  // Focus or announce the grabber button on entry.
-  if (_assistantContainerView.grabberButton && !_grabberHidden) {
-    if (self.announceArrivalOnly) {
-      NSString* message = l10n_util::GetNSString(
-          IDS_IOS_ASSISTANT_SHEET_GRABBER_ACCESSIBILITY_LABEL);
-      UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                      message);
-      return;
-    }
-    UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification,
-                                    _assistantContainerView.grabberButton);
-  }
 }
 
 #pragma mark - Public
@@ -350,6 +350,24 @@ inline LayoutStateAssistantPassKey PassKey() {
                                               passKey:PassKey()];
 }
 
+- (void)completePresentationAnimation {
+  _hasCompletedPresentation = YES;
+  // Focus or announce the grabber button once the presentation animation
+  // completes so that concurrent dismissals (e.g. the omnibox) do not reclaim
+  // VoiceOver focus.
+  if (_assistantContainerView.grabberButton && !_grabberHidden) {
+    if (self.announceArrivalOnly) {
+      NSString* message = l10n_util::GetNSString(
+          IDS_IOS_ASSISTANT_SHEET_GRABBER_ACCESSIBILITY_LABEL);
+      _accessibilityNotificationPoster(UIAccessibilityAnnouncementNotification,
+                                       message);
+      return;
+    }
+    _accessibilityNotificationPoster(UIAccessibilityScreenChangedNotification,
+                                     _assistantContainerView.grabberButton);
+  }
+}
+
 - (BOOL)isGrabberHidden {
   return _grabberHidden;
 }
@@ -389,6 +407,19 @@ inline LayoutStateAssistantPassKey PassKey() {
   [self
       updatePresentationContextForSupportedState:sceneLayoutState
                                                      .containedLayoutSupported];
+}
+
+- (void)setTabGridState:(TabGridState*)tabGridState {
+  if (_tabGridState == tabGridState) {
+    return;
+  }
+  [_tabGridState removeObserver:self];
+  _tabGridState = tabGridState;
+  [_tabGridState addObserver:self];
+  if (_heightConstraint &&
+      _presentationContext == AssistantPresentationContext::kSheet) {
+    [self updateContainerStylingForHeight:_heightConstraint.constant];
+  }
 }
 
 - (void)setPresentationContext:
@@ -511,6 +542,15 @@ inline LayoutStateAssistantPassKey PassKey() {
   UIView* parentView = self.view.superview;
   if (parentView) {
     [self layoutInParentView:parentView];
+  }
+}
+
+- (void)setAccessibilityNotificationPoster:
+    (AccessibilityNotificationPoster)accessibilityNotificationPoster {
+  if (accessibilityNotificationPoster) {
+    _accessibilityNotificationPoster = [accessibilityNotificationPoster copy];
+  } else {
+    _accessibilityNotificationPoster = DefaultAccessibilityNotificationPoster();
   }
 }
 
@@ -657,6 +697,7 @@ inline LayoutStateAssistantPassKey PassKey() {
          bottomCornerRadius:constraints.bottom_corner_radius];
   _dimmingView.alpha = constraints.background_dimming_alpha;
   _assistantContainerView.accessibilityViewIsModal =
+      !self.tabGridState.tabGridVisible ||
       constraints.background_dimming_alpha > 0.0;
 
   _bottomCornerRadius = constraints.bottom_corner_radius;
@@ -728,12 +769,12 @@ inline LayoutStateAssistantPassKey PassKey() {
         updateAccessibilityPropertiesWithCurrentDetent:newDetent
                                       availableDetents:self.detents];
 
-    if (!_grabberHidden) {
+    if (_hasCompletedPresentation && !_grabberHidden) {
       // Announce the new state without losing VoiceOver focus.
       NSString* valueString =
           _assistantContainerView.grabberButton.accessibilityValue;
-      UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
-                                      valueString);
+      _accessibilityNotificationPoster(UIAccessibilityAnnouncementNotification,
+                                       valueString);
     }
   }
 }
@@ -767,8 +808,8 @@ inline LayoutStateAssistantPassKey PassKey() {
   self.isAnimating = NO;
   if (_shouldRefocusGrabber && !_grabberHidden &&
       self.presentationContext == AssistantPresentationContext::kSheet) {
-    UIAccessibilityPostNotification(UIAccessibilityLayoutChangedNotification,
-                                    _assistantContainerView.grabberButton);
+    _accessibilityNotificationPoster(UIAccessibilityLayoutChangedNotification,
+                                     _assistantContainerView.grabberButton);
   }
   _shouldRefocusGrabber = NO;
 }
@@ -1251,6 +1292,22 @@ inline LayoutStateAssistantPassKey PassKey() {
   [self updateContainerStylingForHeight:_heightConstraint.constant];
 }
 
+#pragma mark - TabGridStateObserving
+
+- (void)willEnterTabGrid {
+  if (_heightConstraint &&
+      _presentationContext == AssistantPresentationContext::kSheet) {
+    [self updateContainerStylingForHeight:_heightConstraint.constant];
+  }
+}
+
+- (void)willExitTabGrid {
+  if (_heightConstraint &&
+      _presentationContext == AssistantPresentationContext::kSheet) {
+    [self updateContainerStylingForHeight:_heightConstraint.constant];
+  }
+}
+
 #pragma mark - Private
 
 // Configures the constraints for the panel layout.
@@ -1292,7 +1349,7 @@ inline LayoutStateAssistantPassKey PassKey() {
   _grabberHidden = YES;
   _dimmingView.hidden = YES;
   _assistantContainerView.grabberButton.hidden = _grabberHidden;
-  _assistantContainerView.accessibilityViewIsModal = NO;
+  _assistantContainerView.accessibilityViewIsModal = YES;
 }
 
 // Applies the constraints and view states for the current presentation context.

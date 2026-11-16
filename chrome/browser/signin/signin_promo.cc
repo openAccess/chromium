@@ -27,7 +27,6 @@
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/accounts_in_cookie_jar_info.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "device/bluetooth/bluetooth_adapter.h"
@@ -49,9 +48,6 @@ namespace {
 // Gaia "Proceed To Challenge" capability: skips the identifier page when the
 // account is known (via `Email`).
 constexpr char kProceedToChallengeQueryKey[] = "ptc";
-
-constexpr char kReauthProceedToChallengeResultHistogram[] =
-    "Signin.Reauth.ProceedToChallengeResult";
 
 }  // namespace
 
@@ -110,11 +106,9 @@ GURL GetChromeSyncURLForDice(ChromeSyncUrlArgs args) {
   switch (args.flow) {
     // Default behavior.
     case Flow::NONE:
-      if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-        // If History Sync Opt-in is enabled, use a customized sign-in screen
-        // that does NOT mention history sync benefits.
-        url = net::AppendQueryParameter(url, "flow", "history_opt_in");
-      }
+      // Use a customized sign-in screen that does NOT mention history sync
+      // benefits.
+      url = net::AppendQueryParameter(url, "flow", "history_opt_in");
       break;
     case Flow::PROMO:
       url = net::AppendQueryParameter(url, "flow", "promo");
@@ -134,14 +128,6 @@ GURL GetChromeSyncURLForDice(ChromeSyncUrlArgs args) {
                                       base::NumberToString(exp_branch));
     }
   }
-  static const char kMagiChromeHybridTransportSupportedHistogram[] =
-      "Signin.MagiChrome.HybridTransportSupported";
-  // Record hybrid transport signal histogram.
-  IsHybridTransportSupportedForQrCodeSignin(base::BindOnce(
-      [](bool can_start, scoped_refptr<device::BluetoothAdapter>) {
-        base::UmaHistogramBoolean(kMagiChromeHybridTransportSupportedHistogram,
-                                  can_start);
-      }));
 
   return url;
 }
@@ -182,11 +168,11 @@ GURL GetChromeReauthURL(ChromeReauthUrlArgs args) {
   return url;
 }
 
-bool CanReauthProceedToChallenge(
+std::optional<ReauthProceedToChallengeResult> GetReauthProceedToChallengeResult(
     const std::string& email,
     const AccountsInCookieJarInfo& accounts_in_cookie_jar) {
   if (email.empty()) {
-    return false;
+    return std::nullopt;
   }
 
   const auto has_matching_email = [&email](const gaia::ListedAccount& account) {
@@ -197,10 +183,7 @@ bool CanReauthProceedToChallenge(
   // session for `email`. Fall back to `/AddSession`, which always requires the
   // challenge.
   if (!accounts_in_cookie_jar.AreAccountsFresh()) {
-    base::UmaHistogramEnumeration(
-        kReauthProceedToChallengeResultHistogram,
-        ReauthProceedToChallengeResult::kAddSessionFallbackStaleCookies);
-    return false;
+    return ReauthProceedToChallengeResult::kAddSessionFallbackStaleCookies;
   }
 
   // If Gaia still has a valid session for `email`, `/AccountChooser` completes
@@ -209,20 +192,20 @@ bool CanReauthProceedToChallenge(
   // always requires the challenge.
   if (std::ranges::any_of(accounts_in_cookie_jar.GetValidSignedInAccounts(),
                           has_matching_email)) {
-    base::UmaHistogramEnumeration(
-        kReauthProceedToChallengeResultHistogram,
-        ReauthProceedToChallengeResult::kAddSessionFallbackValidSession);
-    return false;
+    return ReauthProceedToChallengeResult::kAddSessionFallbackValidSession;
   }
 
   const bool account_in_cookies = std::ranges::any_of(
       accounts_in_cookie_jar.GetAllAccounts(), has_matching_email);
-  base::UmaHistogramEnumeration(
-      kReauthProceedToChallengeResultHistogram,
-      account_in_cookies
-          ? ReauthProceedToChallengeResult::kProceedToChallenge
-          : ReauthProceedToChallengeResult::kAccountNotInCookies);
-  return true;
+  return account_in_cookies
+             ? ReauthProceedToChallengeResult::kProceedToChallenge
+             : ReauthProceedToChallengeResult::kAccountNotInCookies;
+}
+
+void RecordReauthProceedToChallengeResult(
+    ReauthProceedToChallengeResult result) {
+  base::UmaHistogramEnumeration("Signin.Reauth.ProceedToChallengeResult2",
+                                result);
 }
 
 GURL GetAddAccountURLForDice(const std::string& email,

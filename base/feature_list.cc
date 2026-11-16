@@ -255,6 +255,18 @@ class FeatureEntry {
     return entry;
   }
 
+  static FeatureEntry* Create(PersistentMemoryAllocator* allocator,
+                              uint32_t override_state,
+                              std::string_view feature_name,
+                              std::string_view trial_name) {
+    Pickle pickle;
+    pickle.WriteString(feature_name);
+    if (!trial_name.empty()) {
+      pickle.WriteString(trial_name);
+    }
+    return Create(allocator, override_state, pickle);
+  }
+
   FeatureEntry(const FeatureEntry&) = delete;
   FeatureEntry& operator=(const FeatureEntry&) = delete;
 
@@ -807,7 +819,7 @@ void FeatureList::RegisterFieldTrialOverride(const std::string& feature_name,
                                              FieldTrial* field_trial) {
   DCHECK(field_trial);
   DCHECK(!HasAssociatedFieldTrialByFeatureName(feature_name))
-      << "Feature " << feature_name << " is overriden multiple times in these "
+      << "Feature " << feature_name << " is overridden multiple times in these "
       << "trials: "
       << overrides_.find(feature_name)->second.field_trial->trial_name()
       << " and " << field_trial->trial_name() << ". "
@@ -831,14 +843,13 @@ void FeatureList::AddFeaturesToAllocator(PersistentMemoryAllocator* allocator) {
   DCHECK(initialized_);
 
   for (const auto& override : overrides_) {
-    Pickle pickle;
-    pickle.WriteString(override.first);
-    if (override.second.field_trial) {
-      pickle.WriteString(override.second.field_trial->trial_name());
-    }
-
+    const std::string_view feature_name = override.first;
+    const std::string_view trial_name =
+        override.second.field_trial
+            ? std::string_view(override.second.field_trial->trial_name())
+            : std::string_view();
     FeatureEntry* entry = FeatureEntry::Create(
-        allocator, override.second.overridden_state, pickle);
+        allocator, override.second.overridden_state, feature_name, trial_name);
     if (!entry) {
       return;
     }

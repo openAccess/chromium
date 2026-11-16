@@ -37,12 +37,15 @@
 #include "content/common/content_navigation_policy.h"
 #include "content/common/features.h"
 #include "content/common/frame.mojom.h"
+#include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/navigation_details.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/security_principal.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/bindings_policy.h"
+#include "content/public/common/content_client.h"
 #include "content/public/common/page_type.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/back_forward_cache_util.h"
@@ -50,6 +53,7 @@
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_navigation_ui_data.h"
 #include "content/public/test/test_utils.h"
 #include "content/test/navigation_simulator_impl.h"
@@ -4009,6 +4013,131 @@ TEST_F(NavigationControllerTest, PruneAllButLastCommittedForPendingNotInList) {
   EXPECT_EQ(url3, controller.GetEntryAtIndex(1)->GetURL());
 }
 
+namespace {
+
+// Matches AwContentBrowserClient, which commits main frame error pages in the
+// destination SiteInstance instead of an isolated error page process.
+class NoErrorPageIsolationBrowserClient : public TestContentBrowserClient {
+ public:
+  bool ShouldIsolateErrorPage(bool in_main_frame) override { return false; }
+};
+
+}  // namespace
+
+class NavigationControllerFailedHistoryNavigationTest
+    : public NavigationControllerTest {
+ protected:
+  // Commits three cross-site entries, then starts a back navigation to the
+  // second entry and fails its request. Returns the failed back navigation,
+  // which is ready to commit its error page.
+  std::unique_ptr<NavigationSimulator> StartFailedBackNavigation() {
+    DisableBackForwardCacheForTesting(
+        RenderViewHostImplTestHarness::web_contents(),
+        BackForwardCache::TEST_REQUIRES_NO_CACHING);
+    NavigationControllerImpl& controller = controller_impl();
+
+    NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                      GURL("https://a.com/"));
+    NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                      GURL("https://b.com/"));
+    NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                      GURL("https://c.com/"));
+    EXPECT_EQ(3, controller.GetEntryCount());
+
+    target_entry_id_ = controller.GetEntryAtIndex(1)->GetUniqueID();
+    target_site_instance_ = controller.GetEntryAtIndex(1)->site_instance();
+    last_committed_site_instance_ =
+        controller.GetLastCommittedEntry()->site_instance();
+    EXPECT_NE(target_site_instance_, last_committed_site_instance_);
+
+    auto back_navigation = NavigationSimulator::CreateHistoryNavigation(
+        -1, contents(), false /* is_renderer_initiated */);
+    back_navigation->Start();
+    EXPECT_EQ(1, controller.GetPendingEntryIndex());
+    EXPECT_EQ(target_entry_id_,
+              NavigationRequest::From(back_navigation->GetNavigationHandle())
+                  ->nav_entry_id());
+
+    back_navigation->Fail(net::ERR_CONNECTION_REFUSED);
+
+    // The failed request discards the pending entry, so the history list can
+    // be pruned (e.g. by WebView.clearHistory()) before the error page commits.
+    EXPECT_FALSE(controller.GetPendingEntry());
+    EXPECT_EQ(-1, controller.GetPendingEntryIndex());
+    EXPECT_TRUE(controller.CanPruneAllButLastCommitted());
+
+    // Without error page isolation, the error page commits in the history
+    // entry's SiteInstance, not in the last committed entry's SiteInstance.
+    error_page_site_instance_ =
+        back_navigation->GetFinalRenderFrameHost()->GetSiteInstance();
+    EXPECT_EQ(target_site_instance_, error_page_site_instance_);
+    EXPECT_NE(last_committed_site_instance_, error_page_site_instance_);
+    return back_navigation;
+  }
+
+  void TearDown() override {
+    // SiteInstances must be released before the task environment goes away.
+    target_site_instance_.reset();
+    last_committed_site_instance_.reset();
+    error_page_site_instance_.reset();
+    NavigationControllerTest::TearDown();
+  }
+
+  NoErrorPageIsolationBrowserClient browser_client_;
+  ScopedContentBrowserClientSetting browser_client_setting_{&browser_client_};
+  int target_entry_id_ = 0;
+  scoped_refptr<SiteInstance> target_site_instance_;
+  scoped_refptr<SiteInstance> last_committed_site_instance_;
+  scoped_refptr<SiteInstance> error_page_site_instance_;
+};
+
+// A failed back navigation whose entry is still in the history
+// list commits its error page into that entry.
+TEST_F(NavigationControllerFailedHistoryNavigationTest,
+       ErrorPageCommitsIntoExistingHistoryEntry) {
+  NavigationControllerImpl& controller = controller_impl();
+  std::unique_ptr<NavigationSimulator> back_navigation =
+      StartFailedBackNavigation();
+
+  back_navigation->CommitErrorPage();
+
+  EXPECT_EQ(3, controller.GetEntryCount());
+  EXPECT_EQ(1, controller.GetLastCommittedEntryIndex());
+  EXPECT_EQ(target_entry_id_,
+            controller.GetLastCommittedEntry()->GetUniqueID());
+  EXPECT_EQ(PAGE_TYPE_ERROR, controller.GetLastCommittedEntry()->GetPageType());
+  EXPECT_EQ(error_page_site_instance_,
+            controller.GetLastCommittedEntry()->site_instance());
+}
+
+// The error page must commit as a new entry, leaving the last committed entry
+// consistent with the committed RenderFrameHost.
+TEST_F(NavigationControllerFailedHistoryNavigationTest,
+       ErrorPageCommitsAfterTargetHistoryEntryIsPruned) {
+  NavigationControllerImpl& controller = controller_impl();
+  std::unique_ptr<NavigationSimulator> back_navigation =
+      StartFailedBackNavigation();
+
+  controller.PruneAllButLastCommitted();
+  ASSERT_EQ(1, controller.GetEntryCount());
+  ASSERT_EQ(-1, controller.GetEntryIndexWithUniqueID(target_entry_id_));
+  ASSERT_EQ(last_committed_site_instance_,
+            controller.GetLastCommittedEntry()->site_instance());
+
+  back_navigation->CommitErrorPage();
+
+  EXPECT_EQ(2, controller.GetEntryCount());
+  EXPECT_EQ(1, controller.GetLastCommittedEntryIndex());
+  EXPECT_EQ(GURL("https://c.com/"), controller.GetEntryAtIndex(0)->GetURL());
+  EXPECT_EQ(GURL("https://b.com/"),
+            controller.GetLastCommittedEntry()->GetURL());
+  EXPECT_NE(target_entry_id_,
+            controller.GetLastCommittedEntry()->GetUniqueID());
+  EXPECT_EQ(PAGE_TYPE_ERROR, controller.GetLastCommittedEntry()->GetPageType());
+  EXPECT_EQ(error_page_site_instance_,
+            controller.GetLastCommittedEntry()->site_instance());
+}
+
 // Test to ensure that when we do a history navigation back to the current
 // committed page (e.g., going forward to a slow-loading page, then pressing
 // the back button), we just stop the navigation to prevent the throbber from
@@ -4379,6 +4508,208 @@ TEST_F(NavigationControllerTest, SubFrameNavigationUIData) {
 
   // We DCHECK to prevent misuse of the API.
   EXPECT_DCHECK_DEATH(navigation->Start());
+}
+
+// Records `TestNavigationUIData` state observed at `DidStartNavigation()`.
+class DidStartNavigationUIDataRecorder : public WebContentsObserver {
+ public:
+  explicit DidStartNavigationUIDataRecorder(WebContents* web_contents)
+      : WebContentsObserver(web_contents) {}
+  ~DidStartNavigationUIDataRecorder() override = default;
+
+  void DidStartNavigation(NavigationHandle* navigation_handle) override {
+    observed_count_++;
+    last_navigation_id_ = navigation_handle->GetNavigationId();
+    auto* ui_data = static_cast<TestNavigationUIData*>(
+        navigation_handle->GetNavigationUIData());
+    if (!ui_data) {
+      had_ui_data_ = false;
+      precursor_data_.reset();
+      populated_navigation_id_.reset();
+      return;
+    }
+
+    had_ui_data_ = true;
+    precursor_data_ = ui_data->precursor_data();
+    populated_navigation_id_ = ui_data->populated_navigation_id();
+  }
+
+  int observed_count() const { return observed_count_; }
+  bool had_ui_data() const { return had_ui_data_; }
+  std::optional<int64_t> last_navigation_id() const {
+    return last_navigation_id_;
+  }
+  std::optional<int> precursor_data() const { return precursor_data_; }
+  std::optional<int64_t> populated_navigation_id() const {
+    return populated_navigation_id_;
+  }
+
+ private:
+  int observed_count_ = 0;
+  bool had_ui_data_ = false;
+  std::optional<int64_t> last_navigation_id_;
+  std::optional<int> precursor_data_;
+  std::optional<int64_t> populated_navigation_id_;
+};
+
+// Verifies upfront `NavigationUIData` is populated before `DidStartNavigation`
+// on a standard HTTP main-frame navigation.
+TEST_F(NavigationControllerTest,
+       MainFrameNavigationUIDataPopulatedBeforeDidStartNavigation) {
+  DidStartNavigationUIDataRecorder recorder(contents());
+
+  const GURL kHttpUrl("http://foo1");
+  const int kPrecursorData = 17;
+  auto navigation =
+      NavigationSimulatorImpl::CreateBrowserInitiated(kHttpUrl, contents());
+  NavigationController::LoadURLParams load_url_params(kHttpUrl);
+  load_url_params.navigation_ui_data =
+      std::make_unique<TestNavigationUIData>(kPrecursorData);
+  navigation->SetLoadURLParams(&load_url_params);
+  navigation->Commit();
+
+  EXPECT_EQ(1, recorder.observed_count());
+  EXPECT_TRUE(recorder.had_ui_data());
+  EXPECT_EQ(kPrecursorData, recorder.precursor_data());
+  EXPECT_EQ(recorder.last_navigation_id(), recorder.populated_navigation_id());
+}
+
+// Verifies an untagged same-document navigation does not allocate
+// `NavigationUIData`.
+TEST_F(NavigationControllerTest,
+       UntaggedSameDocumentNavigationDoesNotAllocateNavigationUIData) {
+  NavigationSimulator::NavigateAndCommitFromBrowser(contents(),
+                                                    GURL("http://foo1"));
+
+  DidStartNavigationUIDataRecorder recorder(contents());
+  NavigationSimulator::NavigateAndCommitFromDocument(GURL("http://foo1#frag"),
+                                                     main_test_rfh());
+
+  EXPECT_EQ(1, recorder.observed_count());
+  EXPECT_FALSE(recorder.had_ui_data());
+}
+
+// Verifies upfront `NavigationUIData` is populated before `DidStartNavigation`
+// even when the navigation does not use a `NavigationURLLoader`
+// (`about:blank`).
+TEST_F(NavigationControllerTest,
+       AboutBlankNavigationUIDataPopulatedBeforeDidStartNavigation) {
+  DidStartNavigationUIDataRecorder recorder(contents());
+
+  const GURL kAboutBlankUrl(url::kAboutBlankURL);
+  const int kPrecursorData = 29;
+  auto navigation = NavigationSimulatorImpl::CreateBrowserInitiated(
+      kAboutBlankUrl, contents());
+  NavigationController::LoadURLParams load_url_params(kAboutBlankUrl);
+  load_url_params.navigation_ui_data =
+      std::make_unique<TestNavigationUIData>(kPrecursorData);
+  navigation->SetLoadURLParams(&load_url_params);
+  navigation->Commit();
+
+  EXPECT_EQ(1, recorder.observed_count());
+  EXPECT_TRUE(recorder.had_ui_data());
+  EXPECT_EQ(kPrecursorData, recorder.precursor_data());
+  EXPECT_EQ(recorder.last_navigation_id(), recorder.populated_navigation_id());
+}
+
+// Verifies `OpenURLParams` `NavigationUIData` forwarding and
+// `FromNavigationHandle` re-binding.
+//
+// Scenario:
+//
+// - Construct `OpenURLParams` with upfront `TestNavigationUIData` and convert
+//   to `NavigationController::LoadURLParams`.
+// - Start the first navigation so `PopulateFromNavigationHandle()` records the
+//   first navigation's ID, then build fallback `OpenURLParams` via
+//   `OpenURLParams::FromNavigationHandle()`.
+// - Verify `FromNavigationHandle()` preserves `precursor_data()` while
+//   resetting handle-populated state via `CloneForNewNavigation()`, and
+//   starting the second navigation populates the second navigation's ID.
+TEST_F(NavigationControllerTest,
+       OpenURLParamsNavigationUIDataCloneAndFromNavigationHandle) {
+  const GURL kUrl1("http://foo1");
+  const int kPrecursorData = 73;
+  OpenURLParams open_params(kUrl1, Referrer(),
+                            WindowOpenDisposition::kCurrentTab,
+                            ui::PAGE_TRANSITION_TYPED,
+                            /*is_renderer_initiated=*/false);
+  open_params.navigation_ui_data =
+      std::make_unique<TestNavigationUIData>(kPrecursorData);
+
+  NavigationController::LoadURLParams load_params_1(open_params);
+  ASSERT_NE(nullptr, load_params_1.navigation_ui_data);
+
+  auto nav1 =
+      NavigationSimulatorImpl::CreateBrowserInitiated(kUrl1, contents());
+  nav1->SetLoadURLParams(&load_params_1);
+  nav1->Start();
+
+  NavigationHandle* handle1 = nav1->GetNavigationHandle();
+  ASSERT_NE(nullptr, handle1);
+  const int64_t nav1_id = handle1->GetNavigationId();
+  auto* nav1_ui_data =
+      static_cast<TestNavigationUIData*>(handle1->GetNavigationUIData());
+  ASSERT_NE(nullptr, nav1_ui_data);
+  EXPECT_EQ(kPrecursorData, nav1_ui_data->precursor_data());
+  EXPECT_EQ(nav1_id, nav1_ui_data->populated_navigation_id());
+
+  OpenURLParams fallback_open_params =
+      OpenURLParams::FromNavigationHandle(handle1);
+  ASSERT_NE(nullptr, fallback_open_params.navigation_ui_data);
+  auto* unbound_fallback_ui_data = static_cast<TestNavigationUIData*>(
+      fallback_open_params.navigation_ui_data.get());
+  EXPECT_EQ(kPrecursorData, unbound_fallback_ui_data->precursor_data());
+  EXPECT_EQ(std::nullopt, unbound_fallback_ui_data->populated_navigation_id());
+
+  fallback_open_params.url = GURL("http://foo2");
+  NavigationController::LoadURLParams load_params_2(fallback_open_params);
+  auto nav2 = NavigationSimulatorImpl::CreateBrowserInitiated(
+      fallback_open_params.url, contents());
+  nav2->SetLoadURLParams(&load_params_2);
+  nav2->Start();
+
+  NavigationHandle* handle2 = nav2->GetNavigationHandle();
+  ASSERT_NE(nullptr, handle2);
+  EXPECT_NE(nav1_id, handle2->GetNavigationId());
+  auto* nav2_ui_data =
+      static_cast<TestNavigationUIData*>(handle2->GetNavigationUIData());
+  ASSERT_NE(nullptr, nav2_ui_data);
+  EXPECT_EQ(kPrecursorData, nav2_ui_data->precursor_data());
+  EXPECT_EQ(handle2->GetNavigationId(),
+            nav2_ui_data->populated_navigation_id());
+}
+
+// Verifies `OpenURLParams::FromNavigationHandle()` does not clone
+// `NavigationUIData` from a subframe `NavigationHandle`.
+TEST_F(NavigationControllerTest,
+       FromNavigationHandleOnSubframeDoesNotCloneNavigationUIData) {
+  class TestBrowserClient : public ContentBrowserClient {
+   public:
+    std::unique_ptr<NavigationUIData> GetNavigationUIData(
+        NavigationHandle* navigation_handle) override {
+      return std::make_unique<TestNavigationUIData>(/*precursor_data=*/73);
+    }
+  };
+  TestBrowserClient test_browser_client;
+  ContentBrowserClient* old_browser_client =
+      SetBrowserClientForTesting(&test_browser_client);
+
+  NavigationSimulator::NavigateAndCommitFromDocument(GURL("http://foo1"),
+                                                     main_test_rfh());
+  TestRenderFrameHost* subframe = main_test_rfh()->AppendChild("subframe");
+  auto subframe_nav = NavigationSimulator::CreateRendererInitiated(
+      GURL("http://foo1/subframe"), subframe);
+  subframe_nav->Start();
+
+  NavigationHandle* subframe_handle = subframe_nav->GetNavigationHandle();
+  ASSERT_NE(nullptr, subframe_handle);
+  EXPECT_FALSE(subframe_handle->IsInOutermostMainFrame());
+  ASSERT_NE(nullptr, subframe_handle->GetNavigationUIData());
+
+  OpenURLParams params = OpenURLParams::FromNavigationHandle(subframe_handle);
+  EXPECT_EQ(nullptr, params.navigation_ui_data);
+
+  SetBrowserClientForTesting(old_browser_client);
 }
 
 bool SrcDocRewriter(GURL* url, BrowserContext* browser_context) {
@@ -4916,6 +5247,32 @@ TEST_F(NavigationControllerTest, NavigationApiHistoryEntries_OpaqueOrigin) {
   // looks same-origin).
   EXPECT_TRUE(arrays->back_entries.empty());
   EXPECT_TRUE(arrays->forward_entries.empty());
+}
+
+TEST_F(NavigationControllerTest,
+       NavigationApiHistoryEntries_UrlOriginMismatch) {
+  NavigationControllerImpl& controller = controller_impl();
+
+  const GURL url_a1("http://a.com/1");
+  const GURL url_a2("http://a.com/2");
+  NavigationSimulator::NavigateAndCommitFromDocument(url_a1, main_test_rfh());
+  NavigationSimulator::NavigateAndCommitFromDocument(url_a2, main_test_rfh());
+
+  // Simulate an entry whose PageState URL cannot be derived from the pending
+  // origin, even if the FrameNavigationEntry URL was same-origin.
+  NavigationEntryImpl* entry1 = controller.GetEntryAtIndex(0);
+  blink::PageState mismatched_state =
+      blink::PageState::CreateFromURL(GURL("http://b.com/mismatched"));
+  entry1->GetFrameEntry(main_test_rfh()->frame_tree_node())
+      ->SetPageState(mismatched_state);
+
+  blink::mojom::NavigationApiHistoryEntryArraysPtr arrays =
+      controller.GetNavigationApiHistoryEntryVectors(
+          main_test_rfh()->frame_tree_node(), nullptr);
+
+  // The mismatched back entry should be excluded from back_entries without
+  // crashing.
+  EXPECT_TRUE(arrays->back_entries.empty());
 }
 
 }  // namespace content

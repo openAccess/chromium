@@ -20,6 +20,7 @@
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/net_export.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/dns/host_cache.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/resolution_details.h"
 #include "net/dns/public/resolve_error_info.h"
@@ -96,6 +97,28 @@ class NET_EXPORT_PRIVATE SSLSocketParams
 class NET_EXPORT_PRIVATE SSLConnectJob : public ConnectJob,
                                          public ConnectJob::Delegate {
  public:
+  // Final outcome of a direct SSLConnectJob.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(SSLConnectJobOutcome)
+  enum class Outcome {
+    kSucceededInitial = 0,
+    kSucceededAfterStaleDnsRetry = 1,
+    kSucceededAfterLegacyCryptoRetry = 2,
+    kSucceededAfterEchRetry = 3,
+    kFailedBeforeTcp = 4,
+    kFailedDuringTcp = 5,
+    kFailedDuringSsl = 6,
+    kCanceledForSpdyIpPooling = 7,
+    kCanceledDuringDns = 8,
+    kCanceledDuringTcp = 9,
+    kCanceledDuringSsl = 10,
+    kMaxValue = kCanceledDuringSsl,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:SSLConnectJobOutcome)
+
   class NET_EXPORT_PRIVATE Factory {
    public:
     Factory() = default;
@@ -177,10 +200,16 @@ class NET_EXPORT_PRIVATE SSLConnectJob : public ConnectJob,
   // ERR_IO_PENDING if it cannot immediately service the request.
   // Otherwise, it returns a net error code.
   int ConnectInternal() override;
+  void ChangePriorityInternal(RequestPriority priority) override;
+  void OnTimedOutInternal() override;
 
   void ResetStateForRestart();
 
-  void ChangePriorityInternal(RequestPriority priority) override;
+  // Records job-level outcome and elapsed-time histograms once per direct
+  // `SSLConnectJob` (when `kHappyEyeballsV2` is enabled). `result` is the
+  // terminal net error code (`OK` on success, negative error on failure or
+  // timeout), or `std::nullopt` when destroyed while still in flight.
+  void MaybeRecordHistograms(std::optional<int> result);
 
   scoped_refptr<SSLSocketParams> params_;
   std::optional<ResolutionDetails> resolution_details_;
@@ -189,8 +218,10 @@ class NET_EXPORT_PRIVATE SSLConnectJob : public ConnectJob,
   CompletionRepeatingCallback callback_;
   std::unique_ptr<ConnectJob> nested_connect_job_;
   // Points to `nested_connect_job_` if it's of type TcpConnectJob. Used to call
-  // GetServiceEndpoint() on successful connect if non-null.
-  raw_ptr<TcpConnectJob> tcp_connect_job_;
+  // PassServiceEndpoint() on successful connect, and to query
+  // HasStartedTcpAttempt() and IsWaitingOnPossibleAsyncDeletion() for
+  // histograms.
+  raw_ptr<TcpConnectJob> tcp_connect_job_ = nullptr;
   std::unique_ptr<StreamSocket> nested_socket_;
   std::unique_ptr<SSLClientSocket> ssl_socket_;
 
@@ -230,15 +261,32 @@ class NET_EXPORT_PRIVATE SSLConnectJob : public ConnectJob,
   // flow. `endpoint_result_` will then contain the endpoint to reconnect to.
   std::optional<std::vector<uint8_t>> ech_retry_configs_;
 
-
   // True if the connection was established using a stale DNS result. Passed
   // up from the nested ConnectJob.
   bool is_connected_via_stale_dns_ = false;
+
+  // Freshness classification and HostCache staleness snapshot of the DNS answer
+  // used to establish the underlying TCP connection.
+  std::optional<HostCache::UsedAnswerFreshnessStatus>
+      used_answer_freshness_status_;
+  std::optional<HostCache::EntryStaleness> cache_staleness_;
 
   // True if the use of stale DNS results should be disabled for this connection
   // attempt. Set to true when a previous connection attempt via stale DNS
   // failed and the job needs to retry with fresh results.
   bool disable_stale_dns_ = false;
+
+  // Timestamp when `ConnectInternal()` started, used for job-level timing
+  // histograms across all internal restarts.
+  base::TimeTicks job_start_time_;
+  // True if the current nested transport job initiated at least one TCP
+  // connection attempt. Reset in `ResetStateForRestart()`.
+  bool nested_job_had_tcp_attempt_ = false;
+  // Success `Outcome` corresponding to the most recent internal restart, if
+  // any. Intentionally preserved across `ResetStateForRestart()`.
+  std::optional<Outcome> last_restart_success_outcome_;
+  // Ensures job-level histograms are emitted at most once.
+  bool metrics_recorded_ = false;
 };
 
 }  // namespace net

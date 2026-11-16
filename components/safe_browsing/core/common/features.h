@@ -95,6 +95,10 @@ extern const base::FeatureParam<bool> kCSDClipboardCopyApiSuspiciousTokenFilter;
 // When enabled, the browser process owns the `Scorer` instead of distributing
 // the phishing models to renderers.
 BASE_DECLARE_FEATURE(kClientSideDetectionCopyFromSurface);
+// Maximum time viz may take to produce the page capture before it is treated
+// as failed. Zero disables viz's timeout, leaving only the browser-side
+// watchdog (this value plus a fixed allowance).
+BASE_DECLARE_FEATURE_PARAM(base::TimeDelta, kCsdCopyFromSurfaceTimeout);
 
 // Enables sending a CSD ping on the detection of a credit card form.
 BASE_DECLARE_FEATURE(kClientSideDetectionCreditCardForm);
@@ -134,6 +138,13 @@ extern const base::FeatureParam<bool> kCsdEnforceIos;
 // Killswitch for Llama forced trigger info redirect chain check.
 BASE_DECLARE_FEATURE(kClientSideDetectionForcedLlamaRedirectChainKillswitch);
 
+// Includes inner text from cross-origin and out-of-process iframes during
+// client-side detection intelligent scans.
+BASE_DECLARE_FEATURE(kClientSideDetectionIframeInnerText);
+extern const base::FeatureParam<int> kClientSideDetectionMaxIframesToExtract;
+extern const base::FeatureParam<base::TimeDelta>
+    kClientSideDetectionIframeInnerTextTimeout;
+
 // Enables sending a CSD ping when a page's image embedding matches a
 // target image embedding.
 BASE_DECLARE_FEATURE(kClientSideDetectionImageEmbeddingMatch);
@@ -141,6 +152,17 @@ BASE_DECLARE_FEATURE(kClientSideDetectionImageEmbeddingMatch);
 // embedding match.
 extern const base::FeatureParam<bool>
     kCsdImageEmbeddingMatchWithIntelligentScan;
+
+// Prepends the page title to the extracted inner text sent during client-side
+// detection intelligent scans.
+BASE_DECLARE_FEATURE(kClientSideDetectionIncludeTitleInInnerText);
+
+// Delays and retries KEYBOARD_LOCK_REQUESTED image embedding when the blurred
+// viewport image is uniform (e.g. blank white or black).
+BASE_DECLARE_FEATURE(kClientSideDetectionKeyboardLockUniformPageDelay);
+extern const base::FeatureParam<int> kCsdKeyboardLockUniformPageDelayDurationMs;
+extern const base::FeatureParam<int> kCsdKeyboardLockUniformPageMaxRetries;
+extern const base::FeatureParam<int> kCsdKeyboardLockUniformPageMaxColorRange;
 
 // Killswitch for client side phishing detection. Since client side models are
 // run on a large fraction of navigations, crashes due to the model are very
@@ -173,6 +195,11 @@ BASE_DECLARE_FEATURE(kClientSideDetectionScamDetectionRequestWithUrl);
 
 // Controls whether the scam score is included in IntelligentScanInfo.
 BASE_DECLARE_FEATURE(kClientSideDetectionScamScore);
+
+// Sends a second delayed FORCE_REQUEST ping if the first FORCE_REQUEST
+// verdict is safe.
+BASE_DECLARE_FEATURE(kClientSideDetectionSecondForceRequestWithDelay);
+extern const base::FeatureParam<int> kCsdForceRequestDelayMs;
 
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 // Inquire the server-side model instead of the on-device model for scam
@@ -383,6 +410,13 @@ extern const base::FeatureParam<std::string>
 extern const base::FeatureParam<std::string>
     kHashPrefixRealTimeLookupsKeyFetchCustomHeader;
 
+// Killswitch for enabling OhttpKeyService for Enhanced Safe Browsing users
+// regardless of whether background lookups are allowed (e.g. on iOS).
+BASE_DECLARE_FEATURE(kHashPrefixRealTimeLookupsOhttpKeyServiceForEsb);
+
+// Enables hash-prefix real-time lookup requests on Incognito and Guest mode.
+BASE_DECLARE_FEATURE(kHashPrefixRealTimeLookupsOnIncognitoAndGuest);
+
 // Send sample hash-prefix real-time lookups for real-time lookups to catch
 // "false positives" where real-time lookup says safe but hash-prefix lookup
 // says unsafe.
@@ -416,10 +450,6 @@ extern const base::FeatureParam<std::string>
 // Safe Browsing-enabled users, and may show warnings.
 BASE_DECLARE_FEATURE_PARAM(bool, kMaliciousApkDownloadCheckTelemetryOnly);
 #endif
-
-// Enables one-time migration of enhanced-safe-browsing users to the enhanced
-// bundle.
-BASE_DECLARE_FEATURE(kMigrateEnhancedSbUserToEnhancedBundle);
 
 // When enabled, performs a one-time migration that selects the JavaScript
 // optimizer content setting that automatically blocks the browser from using
@@ -522,9 +552,6 @@ extern const base::FeatureParam<int>
 // Uses the Rust implementation of the macOS DMG (UDIF/HFS+) parser in place of
 // the C++ implementation.
 BASE_DECLARE_FEATURE(kSafeBrowsingRustDmgParser);
-
-// Skips Safe Browsing Real-Time URL lookups when the device is offline.
-BASE_DECLARE_FEATURE(kSafeBrowsingSkipRealTimeLookupIfOffline);
 
 // Allows Safe Browsing Real-Time URL lookups to wait for DNS resolution of the
 // main frame URL.

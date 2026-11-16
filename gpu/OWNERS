@@ -12,6 +12,7 @@ per-file *passthrough*=geofflang@chromium.org
 # For SharedImages
 vikassoni@chromium.org
 hitawala@chromium.org
+lehoangquyen@google.com
 
 # D3D, dcomp, Windows platform integration, etc.
 rafael.cintron@microsoft.com
@@ -21,3 +22,6 @@ per-file GRAPHICS_TEAM_OWNERS=file://gpu/GRAPHICS_TEAM_OWNERS
 
 # For configuration, initialization and gpuwatchdog.
 magchen@chromium.org
+
+# For Fuchsia-specific changes:
+per-file ...fuchsia...=file://build/fuchsia/OWNERS

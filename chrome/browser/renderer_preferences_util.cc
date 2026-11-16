@@ -16,7 +16,6 @@
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/convert_explicitly_allowed_network_ports_pref.h"
-#include "content/public/browser/reduce_accept_language_utils.h"
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
 #endif
@@ -44,6 +43,7 @@
 
 #if defined(USE_AURA) && BUILDFLAG(IS_LINUX)
 #include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_aura_linux.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #endif
 
@@ -102,7 +102,7 @@ std::vector<std::string> GetLocalIpsAllowedUrls(
 
 std::string GetLanguageListForProfile(Profile* profile,
                                       const std::string& language_list) {
-  return content::ReduceAcceptLanguageUtils::GetLanguagesWithMaxCount(
+  return language::GetLanguagesWithMaxCount(
       profile->IsOffTheRecord()
           ? language::GetIncognitoLanguageList(language_list)
           : language_list);
@@ -131,7 +131,8 @@ void UpdateFromSystemSettings(blink::RendererPreferences* prefs,
 #endif
 
 #if BUILDFLAG(IS_LINUX)
-  if (auto* linux_ui_theme = ui::LinuxUiTheme::GetForProfile(profile)) {
+  if (auto* linux_ui_theme =
+          ThemeServiceAuraLinux::GetLinuxUiThemeForProfile(profile)) {
     if (ThemeServiceFactory::GetForProfile(profile)->UsingSystemTheme()) {
       linux_ui_theme->GetFocusRingColor(&prefs->focus_ring_color);
       linux_ui_theme->GetActiveSelectionBgColor(

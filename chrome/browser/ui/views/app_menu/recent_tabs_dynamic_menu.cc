@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "base/functional/bind.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/favicon/history_ui_favicon_request_handler_factory.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sync/session_sync_service_factory.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
@@ -36,10 +38,16 @@
 #include "components/sync_sessions/session_sync_service.h"
 #include "ui/actions/actions.h"
 #include "ui/base/accelerators/menu_label_accelerator_util.h"
+#include "ui/base/class_property.h"
 #include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/color/color_id.h"
+#include "url/gurl.h"
+
+DEFINE_UI_CLASS_PROPERTY_TYPE(GURL*)
 
 namespace {
+
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(GURL, kRecentTabUrlKey)
 
 bool MayHaveMnemonics(const RecentTabItem& item) {
   if (item.type() == RecentTabItem::Type::kCommand) {
@@ -55,10 +63,20 @@ bool MayHaveMnemonics(const RecentTabItem& item) {
 
 }  // namespace
 
-RecentTabsDynamicMenu::RecentTabsDynamicMenu(BrowserWindowInterface* browser)
-    : browser_window_interface_(browser) {}
+RecentTabsDynamicMenu::RecentTabsDynamicMenu(
+    BrowserWindowInterface* browser,
+    AppMenuDragAndDropDelegate::Host* host)
+    : browser_window_interface_(browser), host_(host) {
+  CHECK(host_);
+}
 
 RecentTabsDynamicMenu::~RecentTabsDynamicMenu() = default;
+
+// static
+const GURL* RecentTabsDynamicMenu::GetTabUrl(
+    const actions::BaseAction* action) {
+  return action ? action->GetProperty(kRecentTabUrlKey) : nullptr;
+}
 
 void RecentTabsDynamicMenu::BuildRecentTabsActions(
     actions::BaseAction* parent_item) {
@@ -78,6 +96,18 @@ void RecentTabsDynamicMenu::BuildRecentTabsActions(
 
 void RecentTabsDynamicMenu::BuildOtherDeviceTabsActions(
     actions::BaseAction* parent_item) {
+  if (!foreign_session_updated_subscription_) {
+    if (sync_sessions::SessionSyncService* service =
+            SessionSyncServiceFactory::GetForProfile(
+                browser_window_interface_->GetProfile())) {
+      // Unretained is safe because `host_` outlives `this`, which owns the
+      // subscription.
+      foreign_session_updated_subscription_ =
+          service->SubscribeToForeignSessionsChanged(base::BindRepeating(
+              &AppMenuDragAndDropDelegate::Host::RebuildSubmenu,
+              base::Unretained(host_.get()), kActionOtherDeviceTabsSubmenu));
+    }
+  }
   parent_item->ResetActionList();
   // Populate device headers, open tabs, and dividers ordered by recency.
   CreateRecentTabsAction(parent_item,
@@ -183,6 +213,7 @@ RecentTabsDynamicMenu::GetInvokeCallback(RecentTabItem recent_item) {
     case RecentTabItem::Type::kHeader:
     case RecentTabItem::Type::kDevice:
     case RecentTabItem::Type::kDivider:
+    case RecentTabItem::Type::kMoreTabs:
       break;
   }
   return base::DoNothing();
@@ -243,6 +274,7 @@ void RecentTabsDynamicMenu::CreateRecentTabsAction(
 
       if (recent_tab.type() == RecentTabItem::Type::kTab &&
           !recent_tab.url().is_empty()) {
+        action_item->SetProperty(kRecentTabUrlKey, recent_tab.url());
         FetchFavicon(action_item.get()->GetActionItem(), recent_tab);
       }
     }

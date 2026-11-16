@@ -24,6 +24,7 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.ui.autofill.internal.R;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
@@ -108,7 +109,7 @@ public class AutofillProgressDialogBridge {
         TextView titleView = mProgressDialogContentView.findViewById(R.id.title);
         titleView.setText(title);
         ImageView iconView = mProgressDialogContentView.findViewById(R.id.title_icon);
-        iconView.setImageResource(R.drawable.google_pay);
+        iconView.setImageResource(AutofillUiUtils.getGPayLogoDrawableId());
 
         PropertyModel.Builder builder =
                 new PropertyModel.Builder(ModalDialogProperties.ALL_KEYS)

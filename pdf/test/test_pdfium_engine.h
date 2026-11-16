@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/span.h"
@@ -152,8 +153,6 @@ class TestPDFiumEngine : public PDFiumEngine {
 
   MOCK_METHOD(void, UpdateTextActiveAndInvalidate, (TextId, bool), (override));
 
-  MOCK_METHOD(gfx::Size, GetThumbnailSize, (int, float), (override));
-
   MOCK_METHOD(void,
               ApplyStroke,
               (int, InkStrokeId, const ink::Stroke&),
@@ -215,10 +214,17 @@ class TestPDFiumEngine : public PDFiumEngine {
 
   MOCK_METHOD(bool,
               FindAndHighlightTextFragments,
-              (base::span<const std::string>),
+              (base::span<const std::string_view>),
               (override));
 
   MOCK_METHOD(void, ScrollToFirstTextFragment, (bool), (override));
+
+  MOCK_METHOD(bool,
+              FindAndHighlightSearchTerms,
+              (base::span<const std::string_view>),
+              (override));
+
+  MOCK_METHOD(void, ScrollToFirstSearchResult, (uint32_t), (override));
 
   MOCK_METHOD(void, RemoveTextFragments, (), (override));
 

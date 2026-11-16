@@ -332,20 +332,24 @@ Message::Message(uint32_t name,
 Message::Message(uint32_t name,
                  uint32_t flags,
                  MojoCreateMessageFlags create_message_flags,
-                 size_t estimated_payload_size)
+                 size_t estimated_payload_size,
+                 internal::StructHeader payload_header)
     : Message(name,
               flags,
-              0,
+              payload_header.num_bytes,
               0,
               create_message_flags,
               nullptr,
-              estimated_payload_size) {}
+              estimated_payload_size) {
+  size_t index = payload_buffer_.Allocate(payload_header.num_bytes);
+  DCHECK_EQ(index, sizeof(internal::MessageHeaderV3));
+  *payload_buffer_.Get<internal::StructHeader>(index) = payload_header;
+}
 
-Message::Message(uint32_t name, uint32_t flags, size_t estimated_payload_size)
-    : Message(name,
-              flags,
-              MOJO_CREATE_MESSAGE_FLAG_NONE,
-              estimated_payload_size) {}
+Message::Message(uint32_t name,
+                 uint32_t flags,
+                 internal::StructHeader payload_header)
+    : Message(name, flags, MOJO_CREATE_MESSAGE_FLAG_NONE, 0, payload_header) {}
 
 Message::Message(ScopedMessageHandle handle,
                  const internal::MessageHeaderV1& header)
@@ -495,8 +499,8 @@ Message Message::CreateFromMessageHandle(ScopedMessageHandle* message_handle) {
 Message::~Message() = default;
 
 Message& Message::operator=(Message&& other) noexcept {
-  handle_ = std::move(other.handle_);
   payload_buffer_ = std::move(other.payload_buffer_);
+  handle_ = std::move(other.handle_);
   handles_ = std::move(other.handles_);
   associated_endpoint_handles_ = std::move(other.associated_endpoint_handles_);
   receiver_connection_group_ = other.receiver_connection_group_;
@@ -513,8 +517,8 @@ Message& Message::operator=(Message&& other) noexcept {
 }
 
 void Message::Reset() {
-  handle_.reset();
   payload_buffer_.Reset();
+  handle_.reset();
   handles_.clear();
   associated_endpoint_handles_.clear();
   receiver_connection_group_ = nullptr;
@@ -523,13 +527,15 @@ void Message::Reset() {
   heap_profiler_tag_ = nullptr;
 }
 
-const uint8_t* Message::payload() const {
+NOINLINE const uint8_t* Message::payload() const {
   if (version() < 2) {
     return UNSAFE_TODO(data() + header())->num_bytes;
   }
 
   DCHECK(!header_v2()->payload.is_null());
-  return static_cast<const uint8_t*>(header_v2()->payload.Get());
+  // SAFETY: The message header is either validated or locally serialized.
+  return static_cast<const uint8_t*>(
+      UNSAFE_BUFFERS(header_v2()->payload.Get()));
 }
 
 uint32_t Message::payload_num_bytes() const {
@@ -538,10 +544,11 @@ uint32_t Message::payload_num_bytes() const {
   if (version() < 2) {
     num_bytes = data_num_bytes() - header()->num_bytes;
   } else {
+    // SAFETY: The message header is either validated or locally serialized.
     auto payload_begin =
-        reinterpret_cast<uintptr_t>(header_v2()->payload.Get());
-    auto payload_end =
-        reinterpret_cast<uintptr_t>(header_v2()->payload_interface_ids.Get());
+        reinterpret_cast<uintptr_t>(UNSAFE_BUFFERS(header_v2()->payload.Get()));
+    auto payload_end = reinterpret_cast<uintptr_t>(
+        UNSAFE_BUFFERS(header_v2()->payload_interface_ids.Get()));
     if (!payload_end) {
       payload_end =
           reinterpret_cast<uintptr_t>(UNSAFE_TODO(data() + data_num_bytes()));
@@ -554,14 +561,18 @@ uint32_t Message::payload_num_bytes() const {
 }
 
 uint32_t Message::payload_num_interface_ids() const {
+  // SAFETY: The message header is either validated or locally serialized.
   auto* array_pointer =
-      version() < 2 ? nullptr : header_v2()->payload_interface_ids.Get();
+      version() < 2 ? nullptr
+                    : UNSAFE_BUFFERS(header_v2()->payload_interface_ids.Get());
   return array_pointer ? static_cast<uint32_t>(array_pointer->size()) : 0;
 }
 
 const uint32_t* Message::payload_interface_ids() const {
+  // SAFETY: The message header is either validated or locally serialized.
   auto* array_pointer =
-      version() < 2 ? nullptr : header_v2()->payload_interface_ids.Get();
+      version() < 2 ? nullptr
+                    : UNSAFE_BUFFERS(header_v2()->payload_interface_ids.Get());
   return array_pointer ? array_pointer->storage() : nullptr;
 }
 
@@ -668,7 +679,9 @@ bool Message::DeserializeAssociatedEndpointHandles(
   }
 
   endpoint_handles.reserve(num_ids);
-  uint32_t* ids = header_v2()->payload_interface_ids.Get()->storage();
+  // SAFETY: The message header is either validated or locally serialized.
+  uint32_t* ids =
+      UNSAFE_BUFFERS(header_v2()->payload_interface_ids.Get())->storage();
   bool result = true;
   for (uint32_t i = 0; i < num_ids; ++i) {
     auto handle =
@@ -693,13 +706,22 @@ void Message::NotifyPeerClosureForSerializedHandles(
     return;
   }
 
-  const uint32_t* ids = header_v2()->payload_interface_ids.Get()->storage();
+  // SAFETY: The message header is either validated or locally serialized.
+  const uint32_t* ids =
+      UNSAFE_BUFFERS(header_v2()->payload_interface_ids.Get())->storage();
   for (uint32_t i = 0; i < num_ids; ++i) {
     group_controller->NotifyLocalEndpointOfPeerClosure(UNSAFE_TODO(ids[i]));
   }
 }
 
 void Message::SerializeIfNecessary() {
+  // For unserialized messages, `payload_buffer_` points to the header stored
+  // inside the attached `UnserializedMessageContext`, which
+  // `MojoSerializeMessage()` destroys after serializing. Reset
+  // `payload_buffer_` first so its `raw_ptr` does not dangle.
+  if (!serialized_) {
+    payload_buffer_.Reset();
+  }
   MojoResult rv = MojoSerializeMessage(handle_->value(), nullptr);
   if (rv == MOJO_RESULT_FAILED_PRECONDITION) {
     return;
@@ -726,6 +748,11 @@ Message::TakeUnserializedContext(uintptr_t tag) {
   if (context->tag() != tag) {
     return nullptr;
   }
+
+  // `payload_buffer_` points to `context->header()`, so reset it before
+  // transferring ownership of `context` to the caller (which may destroy
+  // `context` before this `Message` is destroyed).
+  payload_buffer_.Reset();
 
   // Detach the context from the message.
   rv = MojoSetMessageContext(handle_->value(), 0, nullptr, nullptr, nullptr);
@@ -765,10 +792,7 @@ int64_t Message::creation_timeticks_us() const {
   return header_v3()->creation_timeticks_us;
 }
 
-PassThroughFilter::PassThroughFilter() {}
-
-PassThroughFilter::~PassThroughFilter() {}
-
+// static
 bool PassThroughFilter::Accept(Message* message) {
   TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("mojom"), "PassThroughFilter::Accept");
   return true;

@@ -300,7 +300,7 @@ public class SettingsSearchCoordinatorUnitTest {
         // Switch to single-column mode and notify via onHeaderLayoutUpdated().
         mUseMultiColumn = false;
         mCoordinator.onHeaderLayoutUpdated();
-        Robolectric.flushForegroundThreadScheduler();
+        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
 
         View appBarLayout = mActivity.findViewById(R.id.app_bar_layout);
         assertEquals(appBarLayout, searchBox.getParent());
@@ -1804,7 +1804,7 @@ public class SettingsSearchCoordinatorUnitTest {
     @EnableFeatures(ChromeFeatureList.SETTINGS_SEARCH_COLLAPSIBLE_SEARCH_BOX)
     @DisableFeatures({
         ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
-        ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2,
+        ChromeFeatureList.SETTINGS_IA_REORGANIZATION,
         SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
         SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING,
         SigninFeatures.MAKE_IDENTITY_MANAGER_SOURCE_OF_ACCOUNTS
@@ -1865,7 +1865,7 @@ public class SettingsSearchCoordinatorUnitTest {
     @Test
     @DisableFeatures({
         ChromeFeatureList.AUTOFILL_AI_WITH_DATA_SCHEMA,
-        ChromeFeatureList.DEFAULT_BROWSER_PROMO_ANDROID2,
+        ChromeFeatureList.SETTINGS_IA_REORGANIZATION,
         ChromeFeatureList.SETTINGS_SEARCH_COLLAPSIBLE_SEARCH_BOX,
         SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT,
         SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING,

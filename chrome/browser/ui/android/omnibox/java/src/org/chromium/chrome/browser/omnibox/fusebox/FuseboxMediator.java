@@ -13,6 +13,7 @@ import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
 import android.graphics.Color;
@@ -25,7 +26,9 @@ import android.text.TextUtils;
 import android.view.KeyEvent;
 import android.view.View;
 
+import androidx.annotation.CheckResult;
 import androidx.annotation.ColorInt;
+import androidx.annotation.StringRes;
 import androidx.annotation.StyleRes;
 import androidx.annotation.VisibleForTesting;
 
@@ -49,6 +52,7 @@ import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxLayoutMode;
 import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.FuseboxState;
 import org.chromium.chrome.browser.omnibox.fusebox.Fusebox.PopupState;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.AiModeActivationSource;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.DrivePermissionDeniedReason;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.MobileFuseboxPickerOutcome;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.SetActiveModelSource;
@@ -82,7 +86,7 @@ import org.chromium.components.omnibox.AutocompleteInput.DisplayState;
 import org.chromium.components.omnibox.AutocompleteRequestType;
 import org.chromium.components.omnibox.IconResourceIdsProtoIntDef.IconResourceIds;
 import org.chromium.components.omnibox.InputSourceProtoIntDef.InputSource;
-import org.chromium.components.omnibox.InputTypeProto.InputType;
+import org.chromium.components.omnibox.InputTypeProtoIntDef.InputType;
 import org.chromium.components.omnibox.ModelConfigProto.ModelConfig;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatures;
@@ -277,14 +281,14 @@ class FuseboxMediator implements BackPressHandler {
 
     /**
      * Starts a picker interaction launched from the popup. Must be called before the picker is
-     * launched: hidePopup() synchronously dismisses the popup, and the pending flag keeps that
+     * launched: dismissPopup() synchronously dismisses the popup, and the pending flag keeps that
      * dismissal from completing the interaction.
      */
     @RequiresNonNull("mMetrics")
     private void beginPickerInteraction(@FuseboxAttachmentButtonType int buttonType) {
         mIsPickerPending = true;
         mPopupItemSelected = true;
-        hidePopup();
+        dismissPopup();
         mMetrics.notifyAttachmentButtonUsed(buttonType);
     }
 
@@ -320,6 +324,11 @@ class FuseboxMediator implements BackPressHandler {
                 && mModelList != null
                 && mComposeboxQueryControllerBridge != null
                 && mMetrics != null;
+    }
+
+    /** Returns the current display state, or {@link DisplayState#WEBSITE} if no session. */
+    private @DisplayState int getDisplayState() {
+        return mInput == null ? DisplayState.WEBSITE : mInput.getDisplayState();
     }
 
     private void setController(@Nullable ComposeboxQueryControllerBridge controller) {
@@ -401,7 +410,7 @@ class FuseboxMediator implements BackPressHandler {
 
     /** Called when the user stops interacting with the Omnibox. */
     /* package */ void endInput() {
-        hidePopup();
+        dismissPopup();
         setModelList(null);
         setController(null);
         setAutocompleteInput(null);
@@ -536,7 +545,7 @@ class FuseboxMediator implements BackPressHandler {
     private void maybeActivateAiMode(@AiModeActivationSource int activationReason) {
         if (!isInInputSession()) return;
 
-        hidePopup();
+        if (!hidePopup()) return;
         if (mInput.getRequestType() != AutocompleteRequestType.SEARCH) return;
 
         activateAiMode(AutocompleteRequestType.AI_MODE, activationReason);
@@ -643,21 +652,38 @@ class FuseboxMediator implements BackPressHandler {
         return true;
     }
 
-    /** Toggles the visibility of the attachments popup. */
+    /**
+     * Toggles the visibility of the attachments popup.
+     *
+     * <p>Omnibox.MobileFusebox.AttachmentsPopupToggled counts deliberate user toggles only. Every
+     * open is deliberate, so the {@code true} record lives in {@link #showPopup()} where it also
+     * covers the NTP plus button. Closing is different: {@link #dismissPopup()} runs on every close
+     * (item selected, picker launched, scrim tap, back press, session end), and those are
+     * intentionally excluded from this histogram, so the {@code false} record stays here with the
+     * explicit plus-button close.
+     */
     /* package */ void onPlusButtonClicked() {
         if (!isInInputSession()) return;
 
-        if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
-            hidePopup();
-        } else {
+        if (mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.HIDDEN) {
             showPopup();
+            return;
         }
 
+        // Resolve everything the metrics call needs before hiding: for NTP plus-menu sessions,
+        // hiding the popup completes the interaction and LocationBarMediator may end the input
+        // session synchronously, which clears mProfile and mMetrics.
+        FuseboxMetrics metrics = mMetrics;
         Tracker tracker = TrackerFactory.getTrackerForProfile(mProfile);
-        mMetrics.notifyAttachmentsPopupToggled(
-                mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN, mModel, tracker);
+        dismissPopup();
+        metrics.notifyAttachmentsPopupToggled(/* toShowPopup= */ false, mModel, tracker);
     }
 
+    /**
+     * Shows the attachments popup. Records the popup impression (histograms, per-session flags and
+     * the feature engagement event) regardless of whether the popup was opened from the Omnibox
+     * plus button or from the NTP fakebox plus button.
+     */
     private void showPopup() {
         if (!isInInputSession()) return;
         // Prevent rapid clicks from "showing" the popup more than once.
@@ -683,6 +709,8 @@ class FuseboxMediator implements BackPressHandler {
             mScrimManager.showScrim(mScrimModel);
         }
         mBackPressStateSupplier.set(true);
+        mMetrics.notifyAttachmentsPopupToggled(
+                /* toShowPopup= */ true, mModel, TrackerFactory.getTrackerForProfile(mProfile));
     }
 
     /**
@@ -697,7 +725,7 @@ class FuseboxMediator implements BackPressHandler {
                 new PropertyModel.Builder(ScrimProperties.ALL_KEYS)
                         .with(ScrimProperties.ANCHOR_VIEW, mScrimAnchorViewSupplier.get())
                         .with(ScrimProperties.SHOW_IN_FRONT_OF_ANCHOR_VIEW, true)
-                        .with(ScrimProperties.CLICK_DELEGATE, this::hidePopup)
+                        .with(ScrimProperties.CLICK_DELEGATE, this::dismissPopup)
                         .with(ScrimProperties.AFFECTS_STATUS_BAR, isBottomSheet)
                         .build();
         if (!isBottomSheet) {
@@ -722,12 +750,41 @@ class FuseboxMediator implements BackPressHandler {
         if (mModel.get(FuseboxProperties.POPUP_STATE) == PopupState.HIDDEN) {
             return false;
         } else {
-            hidePopup();
+            dismissPopup();
             return true;
         }
     }
 
-    private void hidePopup() {
+    /**
+     * Hides the popup and reports whether the input session survived it.
+     *
+     * <p>Dismissing the popup synchronously completes the interaction. For sessions where the popup
+     * does not imply Omnibox focus (NTP plus menu), LocationBarMediator may respond by ending the
+     * input session, which clears mInput, mProfile, mModelList and mMetrics. Callers that keep
+     * using session state afterwards must stop when this returns false.
+     *
+     * @return Whether the input session is still active after the popup was hidden.
+     */
+    @CheckResult
+    @EnsuresNonNullIf(
+            value = {
+                "mProfile",
+                "mInput",
+                "mModelList",
+                "mComposeboxQueryControllerBridge",
+                "mMetrics"
+            })
+    private boolean hidePopup() {
+        dismissPopup();
+        return isInInputSession();
+    }
+
+    /**
+     * Hides the popup without checking the session afterwards. Only for callers that do not touch
+     * session state after the call (session teardown, picker launches with the pending flag set, or
+     * when all needed state was captured beforehand); everyone else uses {@link #hidePopup()}.
+     */
+    private void dismissPopup() {
         if (mModel.get(FuseboxProperties.POPUP_STATE) != PopupState.HIDDEN) {
             FuseboxMetrics.notifyAttachmentsPopupClosed(mPopupItemSelected);
         }
@@ -848,6 +905,10 @@ class FuseboxMediator implements BackPressHandler {
         mMetrics.notifyAttachmentButtonUsed(source);
         mPopupItemSelected = true;
         maybeActivateAiMode(AiModeActivationSource.IMPLICIT);
+        // Handle sessions where the popup does not imply Omnibox focus (NTP plus menu): hiding
+        // the popup completes the interaction, and LocationBarMediator may end the input session
+        // synchronously in response.
+        if (!isInInputSession()) return;
 
         if (!FuseboxTabUtils.hasLoadedContent(tab)) {
             TabLoadingService.getInstance().queueLoadIfNeeded(tab);
@@ -886,7 +947,10 @@ class FuseboxMediator implements BackPressHandler {
         if (!isInInputSession()) return;
 
         Intent intent = ChromeItemPickerUtils.createChromeItemPickerIntent(mContext);
-        if (intent == null) return;
+        if (intent == null) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            return;
+        }
         ProfileIntentUtils.addProfileToIntent(mProfile, intent);
 
         beginPickerInteraction(FuseboxAttachmentButtonType.TAB_PICKER);
@@ -902,8 +966,16 @@ class FuseboxMediator implements BackPressHandler {
         int maxAllowedTabs = tabIds.size() + mModelList.getRemainingAttachments();
         intent.putExtra(ChromeItemPickerExtras.EXTRA_ALLOWED_SELECTION_COUNT, maxAllowedTabs);
 
+        intent.putExtra(ChromeItemPickerExtras.EXTRA_SHOULD_SHOW_SELECT_TABS_IPH, true);
         mWindowAndroid.showCancelableIntent(
                 intent, this::onTabPickerResult, R.string.low_memory_error);
+    }
+
+    private void abortTabPicker() {
+        if (mModelList != null) {
+            TabLoadingService.getInstance().checkpointLoadDurations(mModelList.getAttachedTabIds());
+        }
+        handlePickerCanceled();
     }
 
     private void handlePickerCanceled() {
@@ -928,23 +1000,35 @@ class FuseboxMediator implements BackPressHandler {
     /* package */ void onTabPickerResult(int resultCode, @Nullable Intent data) {
         if (!isInInputSession()) return;
 
-        @Nullable ArrayList<Integer> tabIds = null;
-        if (resultCode == Activity.RESULT_OK && data != null && data.getExtras() != null) {
-            tabIds = data.getIntegerArrayListExtra(ChromeItemPickerExtras.EXTRA_ATTACHMENT_TAB_IDS);
-        }
-
-        if (tabIds == null) {
-            TabLoadingService.getInstance().checkpointLoadDurations(mModelList.getAttachedTabIds());
-            if (data != null && data.hasExtra(ChromeItemPickerExtras.EXTRA_ITEM_PICKER_ERROR)) {
-                onAttachmentUploadFailed();
-            }
-            handlePickerCanceled();
+        // Explicit error returned by the picker activity.
+        if (data != null && data.hasExtra(ChromeItemPickerExtras.EXTRA_ITEM_PICKER_ERROR)) {
+            onAttachmentUploadFailed();
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            abortTabPicker();
             return;
         }
 
+        // Manual user exit (canceled, dismissed, or back-pressed).
+        if (resultCode != Activity.RESULT_OK) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.MANUAL_USER_EXIT);
+            abortTabPicker();
+            return;
+        }
+
+        // Malformed success: RESULT_OK claimed, but tab IDs payload is missing.
+        List<Integer> tabIds = ChromeItemPickerUtils.getSelectedTabIdsFromIntent(data);
+        if (tabIds == null) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.LOCAL_ERROR);
+            abortTabPicker();
+            return;
+        }
+
+        Set<Integer> selectedTabIds = new HashSet<>(tabIds);
+        if (!mModelList.getAttachedTabIds().containsAll(selectedTabIds)) {
+            FuseboxMetrics.recordTabPickerOutcome(MobileFuseboxPickerOutcome.ATTACHMENT_ADDED);
+        }
         TrackerFactory.getTrackerForProfile(mProfile)
                 .notifyEvent(EventConstants.FUSEBOX_TAB_PICKER_TAB_ATTACHED);
-        Set<Integer> selectedTabIds = new HashSet<>(tabIds);
         TabLoadingService.getInstance().checkpointLoadDurations(selectedTabIds);
         updateCurrentlyAttachedTabs(selectedTabIds);
         mPopupItemSelected = true;
@@ -1090,7 +1174,7 @@ class FuseboxMediator implements BackPressHandler {
                 .setType(PopupButtonType.TOOL)
                 .setOnClicked(this::onDynamicButtonClicked)
                 .setText(mContext.getString(R.string.ai_mode_entrypoint_label))
-                .setSubtext(getToolSubtext(ToolMode.TOOL_MODE_UNSPECIFIED))
+                .setSubtext(getToolSubtext(ToolMode.TOOL_MODE_UNSPECIFIED, /* menuTooltip= */ null))
                 .setIconId(IconResourceIds.SEARCH_LOUPE_WITH_SPARKLE)
                 .setEnabled(true)
                 .setSelected(selected)
@@ -1098,19 +1182,47 @@ class FuseboxMediator implements BackPressHandler {
                 .build();
     }
 
+    /**
+     * Returns the subtext to display for {@code toolMode}, preferring {@code menuTooltip} for
+     * eligible tools and falling back to client-defined strings.
+     */
     @VisibleForTesting
-    String getToolSubtext(@ToolMode int toolMode) {
+    String getToolSubtext(@ToolMode int toolMode, @Nullable String menuTooltip) {
         if (!OmniboxFeatures.hasAccordion()) {
             return "";
         }
 
+        if (canUseMenuTooltipAsSubtext(toolMode) && !TextUtils.isEmpty(menuTooltip)) {
+            return menuTooltip;
+        }
+
+        @StringRes
+        int resId =
+                switch (toolMode) {
+                    case ToolMode.TOOL_MODE_UNSPECIFIED -> R.string.fusebox_ai_mode_subtext;
+                    case ToolMode.TOOL_MODE_IMAGE_GEN -> R.string.fusebox_create_image_subtext;
+                    case ToolMode.TOOL_MODE_CANVAS -> R.string.fusebox_canvas_subtext;
+                    case ToolMode.TOOL_MODE_GEMINI_PRO -> R.string.fusebox_ptm_tool_subtext;
+                    default -> Resources.ID_NULL;
+                };
+        return resId != Resources.ID_NULL ? mResourceProvider.getString(resId) : "";
+    }
+
+    /** Returns whether the server menu tooltip of {@code toolMode} can be shown as its subtext. */
+    private static boolean canUseMenuTooltipAsSubtext(@ToolMode int toolMode) {
         return switch (toolMode) {
-            case ToolMode.TOOL_MODE_UNSPECIFIED ->
-                    mContext.getString(R.string.fusebox_ai_mode_subtext);
-            case ToolMode.TOOL_MODE_IMAGE_GEN ->
-                    mContext.getString(R.string.fusebox_create_image_subtext);
-            case ToolMode.TOOL_MODE_CANVAS -> mContext.getString(R.string.fusebox_canvas_subtext);
-            default -> "";
+            // The menu tooltips of these tools hold longer desktop hover descriptions rather than
+            // short mobile subtexts. Keep their client strings until ToolConfig adds a dedicated
+            // subtext field.
+            case ToolMode.TOOL_MODE_UNSPECIFIED,
+                    ToolMode.TOOL_MODE_DEEP_SEARCH,
+                    ToolMode.TOOL_MODE_CANVAS,
+                    ToolMode.TOOL_MODE_IMAGE_GEN,
+                    ToolMode.TOOL_MODE_IMAGE_GEN_UPLOAD ->
+                    false;
+            // Other tools, including future launches, use the server menu tooltip by default so
+            // their subtexts can be configured without client changes.
+            default -> true;
         };
     }
 
@@ -1209,14 +1321,28 @@ class FuseboxMediator implements BackPressHandler {
         beginPickerInteraction(FuseboxAttachmentButtonType.DRIVE_FILES);
 
         Profile requestProfile = mProfile;
+        boolean wasUnfocusedWhenDriveTapped =
+                mInput.getDisplayState() == DisplayState.DRAFTING_NO_FOCUS;
         DriveDisclaimerBridge.checkConsentStatus(
-                requestProfile, status -> onDriveConsentStatus(requestProfile, status));
+                requestProfile,
+                status -> {
+                    // The session that requested the check ended or was replaced, which clears
+                    // the pending picker. Leave the current session untouched.
+                    if (!mIsPickerPending) return;
+
+                    // The user unfocused the URL bar (e.g. pressed ESC) during the check.
+                    boolean lostFocusDuringConsentCheck =
+                            !wasUnfocusedWhenDriveTapped
+                                    && getDisplayState() == DisplayState.DRAFTING_NO_FOCUS;
+                    onDriveConsentStatus(requestProfile, lostFocusDuringConsentCheck, status);
+                });
     }
 
-    private void onDriveConsentStatus(Profile requestProfile, @DisclaimerStatus int status) {
-        if (!isInInputSession()
-                || mProfile != requestProfile
-                || mInput.getDisplayState() == DisplayState.DRAFTING_NO_FOCUS) {
+    private void onDriveConsentStatus(
+            Profile requestProfile,
+            boolean lostFocusDuringConsentCheck,
+            @DisclaimerStatus int status) {
+        if (!isInInputSession() || mProfile != requestProfile || lostFocusDuringConsentCheck) {
             handlePickerCanceled();
             return;
         }
@@ -1224,7 +1350,11 @@ class FuseboxMediator implements BackPressHandler {
         switch (status) {
             case DisclaimerStatus.ACCEPTED -> launchDrivePicker(mProfile);
             case DisclaimerStatus.NOT_ACCEPTED -> showDriveConsentDialog(mProfile);
-            case DisclaimerStatus.RESTRICTED -> onDrivePermissionDenied();
+            case DisclaimerStatus.RESTRICTED -> {
+                FuseboxMetrics.recordDrivePermissionDeniedReason(
+                        DrivePermissionDeniedReason.ACCOUNT_RESTRICTED);
+                onDrivePermissionDenied();
+            }
         }
     }
 
@@ -1460,25 +1590,22 @@ class FuseboxMediator implements BackPressHandler {
                         && !(disableTabsForCanvas && isCanvasActive)
                         && (inputState == null
                                 || !inputState.disabledInputTypes.contains(
-                                        InputType.INPUT_TYPE_BROWSER_TAB_VALUE));
+                                        InputType.INPUT_TYPE_BROWSER_TAB));
         boolean imagesEnabled =
                 inputState == null
-                        || !inputState.disabledInputTypes.contains(
-                                InputType.INPUT_TYPE_LENS_IMAGE_VALUE);
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_IMAGE);
         boolean filesEnabled =
                 inputState == null
-                        || !inputState.disabledInputTypes.contains(
-                                InputType.INPUT_TYPE_LENS_FILE_VALUE);
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_LENS_FILE);
         // Drive button is visible if native allows it (server config, feature flag, and identity
         // are checked in InputStateModel) and the Drive picker is available on device.
         boolean driveVisible =
                 inputState != null
-                        && inputState.allowedInputTypes.contains(InputType.INPUT_TYPE_DRIVE_VALUE)
+                        && inputState.allowedInputTypes.contains(InputType.INPUT_TYPE_DRIVE)
                         && DriveFilePickerClient.getInstance().isAvailable(mContext, mProfile);
         boolean driveEnabled =
                 inputState == null
-                        || !inputState.disabledInputTypes.contains(
-                                InputType.INPUT_TYPE_DRIVE_VALUE);
+                        || !inputState.disabledInputTypes.contains(InputType.INPUT_TYPE_DRIVE);
         mModel.set(FuseboxProperties.POPUP_ATTACH_CURRENT_TAB_ENABLED, tabsEnabled);
         mModel.set(FuseboxProperties.POPUP_ATTACH_TAB_PICKER_ENABLED, tabsEnabled);
         mModel.set(FuseboxProperties.POPUP_RECENT_TABS_ENABLED, tabsEnabled);
@@ -1496,11 +1623,10 @@ class FuseboxMediator implements BackPressHandler {
         List<PopupButtonData> pinnedToolButtonDataList = new ArrayList<>();
         if (inputState != null) {
             if (!mIsDesktopPlatform) {
-                if (OmniboxFeatures.hasFuseboxPinnedSection()) {
-                    pinnedToolButtonDataList.add(createAiModeToolButtonData());
-                } else {
-                    toolButtonDataList.add(createAiModeToolButtonData());
-                }
+                (shouldPinToolButton(ToolMode.TOOL_MODE_UNSPECIFIED)
+                                ? pinnedToolButtonDataList
+                                : toolButtonDataList)
+                        .add(createAiModeToolButtonData());
             }
 
             for (ToolConfig toolConfig : inputState.getToolConfigs()) {
@@ -1524,19 +1650,21 @@ class FuseboxMediator implements BackPressHandler {
                                         || toolMode != ToolMode.TOOL_MODE_CANVAS);
                 boolean hasColor = !shouldTintRequestTypeButtonIcon(iconId);
 
-                toolButtonDataList.add(
+                PopupButtonData buttonData =
                         new PopupButtonData.Builder()
                                 .setType(PopupButtonType.TOOL)
                                 .setOnClicked(this::onDynamicButtonClicked)
                                 .setText(label)
-                                .setSubtext(getToolSubtext(toolMode))
+                                .setSubtext(getToolSubtext(toolMode, tooltip))
                                 .setIconId(iconId)
                                 .setEnabled(enabled)
                                 .setSelected(selected)
                                 .setProtoId(toolMode)
                                 .setHasColor(hasColor)
                                 .setTooltip(tooltip)
-                                .build());
+                                .build();
+                (shouldPinToolButton(toolMode) ? pinnedToolButtonDataList : toolButtonDataList)
+                        .add(buttonData);
             }
         }
 
@@ -1563,10 +1691,18 @@ class FuseboxMediator implements BackPressHandler {
 
         List<PopupButtonData> modelButtonDataList = new ArrayList<>();
         if (inputState != null) {
+            // inputState.activeModel stays set so the user's model resumes after leaving the tool.
+            // Hide the selection checkmark while an incompatible tool is active.
+            boolean modelSelectionAllowed = isModelSelectionAllowed(inputState);
+            boolean showActiveModel = isAimRequest && modelSelectionAllowed;
             for (ModelConfig modelConfig : inputState.getModelConfigs()) {
                 int modelMode = modelConfig.getModelValue();
                 if (inputState.isModelVisible(modelMode)) {
-                    boolean selected = isAimRequest && inputState.activeModel == modelMode;
+                    boolean selected = showActiveModel && inputState.activeModel == modelMode;
+                    // TODO(crbug.com/584861500): Rely on inputState.isModelEnabled() alone once
+                    // InputStateModel populates disabledModels for disable_active_model_selection
+                    // and isModelEnabled() respects it.
+                    boolean enabled = modelSelectionAllowed && inputState.isModelEnabled(modelMode);
                     String tooltip = modelConfig.getMenuTooltip();
                     int iconId =
                             modelConfig.hasIcon() && modelConfig.getIcon().hasIconId()
@@ -1578,7 +1714,7 @@ class FuseboxMediator implements BackPressHandler {
                                     .setOnClicked(this::onDynamicButtonClicked)
                                     .setText(modelConfig.getMenuLabel())
                                     .setIconId(iconId)
-                                    .setEnabled(inputState.isModelEnabled(modelMode))
+                                    .setEnabled(enabled)
                                     .setSelected(selected)
                                     .setProtoId(modelMode)
                                     .setTooltip(tooltip)
@@ -1597,6 +1733,16 @@ class FuseboxMediator implements BackPressHandler {
         mModel.set(
                 FuseboxProperties.POPUP_MODEL_BUTTON_DATA_LIST,
                 showModelPicker ? modelButtonDataList : List.of());
+    }
+
+    private static boolean shouldPinToolButton(@ToolMode int toolMode) {
+        if (!OmniboxFeatures.hasFuseboxPinnedSection()) {
+            return false;
+        }
+        return switch (toolMode) {
+            case ToolMode.TOOL_MODE_UNSPECIFIED, ToolMode.TOOL_MODE_GEMINI_PRO -> true;
+            default -> false;
+        };
     }
 
     private void updateAttachmentConfigs(@Nullable InputState inputState) {
@@ -1709,6 +1855,15 @@ class FuseboxMediator implements BackPressHandler {
         return imageGenFallback;
     }
 
+    /**
+     * Returns whether selecting a model is allowed while the active tool is selected. Returns true
+     * unless the active tool specifies that it is not compatible with selectable models.
+     */
+    private static boolean isModelSelectionAllowed(InputState inputState) {
+        ToolConfig toolConfig = getActiveToolConfig(inputState);
+        return toolConfig == null || !toolConfig.getDisableActiveModelSelection();
+    }
+
     private String getNavigateButtonContentDescription(@Nullable ToolConfig toolConfig) {
         if (ToolModeUtils.isConventionalRequest(mModel.get(FuseboxProperties.REQUEST_TYPE))) {
             return mContext.getString(R.string.acc_send_button_search_or_navigate);
@@ -1751,7 +1906,7 @@ class FuseboxMediator implements BackPressHandler {
     private boolean trySetRequestType(@AutocompleteRequestType int requestType) {
         if (!isInInputSession()) return false;
 
-        hidePopup();
+        if (!hidePopup()) return false;
         if (mInput.getRequestType() == requestType) return false;
 
         mInput.setRequestType(requestType);
@@ -1779,10 +1934,9 @@ class FuseboxMediator implements BackPressHandler {
     private void setModelMode(@ModelMode int modelMode) {
         if (!isInInputSession()) return;
 
-        hidePopup();
+        if (!hidePopup()) return;
 
         maybeActivateAiMode(AiModeActivationSource.IMPLICIT);
-
         mInput.setModelMode(modelMode);
         // TODO(https://crbug.com/476434460): Consider replacing with wiring in session state.
         FuseboxMetrics.notifySetActiveModelSource(SetActiveModelSource.SET_FROM_MODEL_SELECTION);

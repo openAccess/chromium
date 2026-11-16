@@ -30,7 +30,6 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -170,8 +169,6 @@
 #include "components/permissions/request_type.h"
 #include "components/permissions/resolvers/content_setting_permission_resolver.h"
 #include "components/prefs/scoped_user_pref_update.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/scoped_privacy_sandbox_attestations.h"
 #include "components/privacy_sandbox/privacy_sandbox_settings.h"
 #include "components/privacy_sandbox/privacy_sandbox_test_util.h"
 #include "components/private_verification_tokens/common/private_verification_tokens_database.h"
@@ -1248,17 +1245,6 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
                                          const base::Time& delete_end,
                                          uint64_t remove_mask,
                                          bool include_protected_origins) {
-#if BUILDFLAG(IS_ANDROID)
-    // There's an Android specific race condition for x86 and x64 builds where
-    // data-clearing and the mocked services here fail to initialize bookmarks
-    // in time, which are required for history clearing.
-    // TODO(crbug.com/435317726): Revisit after launch.
-    if (remove_mask & constants::DATA_TYPE_HISTORY) {
-      bookmarks::test::WaitForBookmarkModelToLoad(
-          BookmarkModelFactory::GetForBrowserContext(GetProfile()));
-    }
-#endif  // BUILDFLAG(IS_ANDROID)
-
     uint64_t origin_type_mask =
         content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB;
     if (include_protected_origins) {
@@ -1270,8 +1256,8 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
         remover_);
     remover_->RemoveAndReply(delete_begin, delete_end, remove_mask,
                              origin_type_mask, &completion_observer);
-    base::ThreadPoolInstance::Get()->FlushForTesting();
     completion_observer.BlockUntilCompletion();
+    task_environment_.RunUntilIdle();
     return completion_observer.failed_data_types();
   }
 
@@ -1301,8 +1287,8 @@ class ChromeBrowsingDataRemoverDelegateTest : public testing::Test {
         delete_begin, delete_end, remove_mask,
         content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB,
         std::move(filter_builder), &completion_observer);
-    base::ThreadPoolInstance::Get()->FlushForTesting();
     completion_observer.BlockUntilCompletion();
+    task_environment_.RunUntilIdle();
     return completion_observer.failed_data_types();
   }
 
@@ -2462,7 +2448,7 @@ TEST_F(ChromeBrowsingDataRemoverDelegateTest, DeleteTabs) {
   ::testing::NiceMock<MockTabModel> tab_model(GetProfile());
   TabModelList::AddTabModel(&tab_model);
 
-  ASSERT_EQ(1u, TabModelList::models().size());
+  ASSERT_TRUE(TabModelList::Contains(&tab_model));
 
   base::Time two_hours_ago = base::Time::Now() - base::Hours(2);
 
@@ -2490,7 +2476,8 @@ TEST_F(ChromeBrowsingDataRemoverDelegateTest,
   ::testing::NiceMock<MockTabModel> archived_tab_model(GetProfile());
   TabModelList::SetArchivedTabModel(&archived_tab_model);
 
-  ASSERT_EQ(1u, TabModelList::models().size());
+  ASSERT_TRUE(TabModelList::Contains(&tab_model));
+  ASSERT_FALSE(TabModelList::Contains(&archived_tab_model));
 
   base::Time two_hours_ago = base::Time::Now() - base::Hours(2);
 
@@ -4891,204 +4878,6 @@ TEST_F(ChromeBrowsingDataRemoverDelegateMediaDeviceSaltTest,
   EXPECT_EQ(GetSalt(StorageKey1()), salt1);
   EXPECT_EQ(GetSalt(StorageKey2()), salt2);
   EXPECT_EQ(GetSalt(StorageKey3()), salt3);
-}
-
-// Constants for ChromeBrowsingDataRemoverDelegateRelatedWebsiteSetsTest.
-namespace {
-constexpr char kPrimaryUrl[] = "https://subdomain.example.com:112";
-constexpr char kSecondaryUrl[] = "https://subidubi.testsite.com:55";
-constexpr char kUnrelatedPrimaryUrl[] = "https://dontdeleteme.com";
-constexpr char kUnrelatedSecondaryUrl[] = "https://keepthis.com";
-
-enum class FilterOrigins {
-  kByPrimaryUrl,
-  kBySecondaryUrl,
-  kByBothUrls,
-};
-
-// Expected setting for the default grant.
-const ContentSettingPatternSource kExpectedSettingDefault(
-    ContentSettingsPattern::Wildcard(),
-    ContentSettingsPattern::Wildcard(),
-    content_settings::ContentSettingToValue(CONTENT_SETTING_ASK),
-    content_settings::ProviderType::kDefaultProvider,
-    /*incognito=*/false);
-}  // namespace
-
-class ChromeBrowsingDataRemoverDelegateRelatedWebsiteSetsTest
-    : public ChromeBrowsingDataRemoverDelegateTest,
-      public testing::WithParamInterface<
-          std::tuple<bool,  // IsDecidedByRelatedWebsiteSets.
-                     ContentSettingsType,
-                     FilterOrigins>> {
- public:
-  bool IsDecidedByRelatedWebsiteSets() const { return std::get<0>(GetParam()); }
-  ContentSettingsType GetContentSettingsType() const {
-    return std::get<1>(GetParam());
-  }
-  FilterOrigins GetFilterOrigin() const { return std::get<2>(GetParam()); }
-
-  content_settings::ContentSettingConstraints GetConstraints() {
-    content_settings::ContentSettingConstraints constraints;
-    constraints.set_session_model(
-        content_settings::mojom::SessionModel::DURABLE);
-    constraints.set_decided_by_related_website_sets(
-        IsDecidedByRelatedWebsiteSets());
-    return constraints;
-  }
-
-  content_settings::RuleMetaData GetMetadata() {
-    content_settings::RuleMetaData metadata;
-    metadata.SetFromConstraints(GetConstraints());
-    metadata.set_last_modified(base::Time::Now());
-    return metadata;
-  }
-
-  void RemoveRelatedWebsiteSetsPermissionsData() {
-    std::unique_ptr<BrowsingDataFilterBuilder> filter_builder(
-        BrowsingDataFilterBuilder::Create(
-            BrowsingDataFilterBuilder::Mode::kDelete));
-
-    switch (GetFilterOrigin()) {
-      case FilterOrigins::kByPrimaryUrl:
-        filter_builder->AddOrigin(url::Origin::Create(GURL(kPrimaryUrl)));
-        break;
-      case FilterOrigins::kBySecondaryUrl:
-        filter_builder->AddOrigin(url::Origin::Create(GURL(kSecondaryUrl)));
-        break;
-      case FilterOrigins::kByBothUrls:
-        filter_builder->AddOrigin(url::Origin::Create(GURL(kPrimaryUrl)));
-        filter_builder->AddOrigin(url::Origin::Create(GURL(kSecondaryUrl)));
-        break;
-    }
-
-    BlockUntilOriginDataRemoved(base::Time(), base::Time::Max(),
-                                content::BrowsingDataRemover::
-                                    DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS,
-                                std::move(filter_builder));
-  }
-
-  ContentSettingPatternSource GetExpectedSetting() {
-    return GetExpectedSetting(kPrimaryUrl, kSecondaryUrl);
-  }
-
-  ContentSettingPatternSource GetExpectedUnrelatedSetting() {
-    return GetExpectedSetting(kUnrelatedPrimaryUrl, kUnrelatedSecondaryUrl);
-  }
-
- private:
-  ContentSettingPatternSource GetExpectedSetting(
-      std::string_view primaryUrl,
-      std::string_view secondaryUrl) {
-    CHECK_EQ(GetContentSettingsType(), ContentSettingsType::STORAGE_ACCESS);
-    return ContentSettingPatternSource(
-        ContentSettingsPattern::FromURLToSchemefulSitePattern(
-            GURL(primaryUrl)),  // e.g. https://[*.]example.com
-        ContentSettingsPattern::FromURLToSchemefulSitePattern(
-            GURL(secondaryUrl)),  // e.g. https://[*.]testsite.com
-        content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
-        content_settings::ProviderType::kPrefProvider, /*incognito=*/false,
-        GetMetadata());
-  }
-};
-
-// Test that the DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS mask removes
-// permissions if those permissions were granted to the relevant sites and were
-// granted via Related Website Sets.
-TEST_P(ChromeBrowsingDataRemoverDelegateRelatedWebsiteSetsTest,
-       RemoveRelatedWebsiteSetsPermissions) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(GetProfile());
-
-  // Check that there are only default grants.
-  ASSERT_THAT(settings_map->GetSettingsForOneType(GetContentSettingsType()),
-              UnorderedElementsAre(kExpectedSettingDefault));
-
-  // Set grants.
-  settings_map->SetContentSettingDefaultScope(
-      GURL(kPrimaryUrl), GURL(kSecondaryUrl), GetContentSettingsType(),
-      CONTENT_SETTING_ALLOW, GetConstraints());
-  settings_map->SetContentSettingDefaultScope(
-      GURL(kUnrelatedPrimaryUrl), GURL(kUnrelatedSecondaryUrl),
-      GetContentSettingsType(), CONTENT_SETTING_ALLOW, GetConstraints());
-
-  // Check that the grants were set.
-  ASSERT_THAT(
-      settings_map->GetSettingsForOneType(GetContentSettingsType()),
-      UnorderedElementsAre(kExpectedSettingDefault, GetExpectedSetting(),
-                           GetExpectedUnrelatedSetting()));
-
-  RemoveRelatedWebsiteSetsPermissionsData();
-
-  if (IsDecidedByRelatedWebsiteSets()) {
-    // Check that there's only the default and unrelated grants left.
-    EXPECT_THAT(settings_map->GetSettingsForOneType(GetContentSettingsType()),
-                UnorderedElementsAre(kExpectedSettingDefault,
-                                     GetExpectedUnrelatedSetting()));
-  } else {
-    // Check that none of the grants have been deleted.
-    EXPECT_THAT(
-        settings_map->GetSettingsForOneType(GetContentSettingsType()),
-        UnorderedElementsAre(kExpectedSettingDefault, GetExpectedSetting(),
-                             GetExpectedUnrelatedSetting()));
-  }
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    ChromeBrowsingDataRemoverDelegateRelatedWebsiteSetsTest,
-    testing::Combine(testing::Bool(),  // IsDecidedByRelatedWebsiteSets.
-                     testing::Values(ContentSettingsType::STORAGE_ACCESS),
-                     testing::Values(FilterOrigins::kByPrimaryUrl,
-                                     FilterOrigins::kBySecondaryUrl,
-                                     FilterOrigins::kByBothUrls)));
-
-// Regression test for https://crbug.com/502363986.
-TEST_F(ChromeBrowsingDataRemoverDelegateTest,
-       RWSRevocationIncludesSubdomainKeyedRSAForGrants) {
-  HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(GetProfile());
-
-  // a.test & b.test are assumed to be in an RWS together, but b.test will be
-  // removed from the set and have its data cleared.
-  const GURL kTopLevel("https://a.test");
-  const GURL kRequestedSubdomain("https://accounts.b.test");
-
-  content_settings::ContentSettingConstraints rws_constraints;
-  rws_constraints.set_lifetime(base::Days(30));
-  rws_constraints.set_decided_by_related_website_sets(true);
-  settings_map->SetContentSettingCustomScope(
-      ContentSettingsPattern::FromURLNoWildcard(kRequestedSubdomain),
-      ContentSettingsPattern::FromURLToSchemefulSitePattern(kTopLevel),
-      ContentSettingsType::STORAGE_ACCESS, CONTENT_SETTING_ALLOW,
-      rws_constraints);
-
-  // 1 wildcard setting, plus 1 specific setting.
-  ASSERT_EQ(
-      settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS)
-          .size(),
-      2u);
-
-  std::unique_ptr<BrowsingDataFilterBuilder> filter_builder(
-      BrowsingDataFilterBuilder::Create(
-          BrowsingDataFilterBuilder::Mode::kDelete));
-  // RWS data clearing is site-based.
-  filter_builder->AddOrigin(
-      url::Origin::Create(net::SchemefulSite(kRequestedSubdomain).GetURL()));
-
-  BlockUntilOriginDataRemoved(
-      base::Time(), base::Time::Max(),
-      content::BrowsingDataRemover::DATA_TYPE_RELATED_WEBSITE_SETS_PERMISSIONS,
-      std::move(filter_builder));
-
-  EXPECT_EQ(
-      settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS)
-          .size(),
-      1u);
-  EXPECT_EQ(
-      settings_map->GetContentSetting(kRequestedSubdomain, kTopLevel,
-                                      ContentSettingsType::STORAGE_ACCESS),
-      CONTENT_SETTING_ASK);
 }
 
 class ChromeBrowsingDataRemoverDelegatePrivateVerificationTokensTest

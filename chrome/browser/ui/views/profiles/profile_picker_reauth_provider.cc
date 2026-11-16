@@ -69,8 +69,8 @@ ProfilePickerReauthProvider::ProfilePickerReauthProvider(
       gaia_id_to_reauth_(gaia_id_to_reauth),
       email_to_reauth_(email_to_reauth),
       on_reauth_completed_(std::move(on_reauth_completed)) {
-  CHECK(!gaia_id_to_reauth_.empty(), base::NotFatalUntil::M162);
-  CHECK(!email_to_reauth_.empty(), base::NotFatalUntil::M162);
+  CHECK(!gaia_id_to_reauth_.empty(), base::NotFatalUntil::M164);
+  CHECK(!email_to_reauth_.empty(), base::NotFatalUntil::M164);
 }
 
 ProfilePickerReauthProvider::~ProfilePickerReauthProvider() = default;
@@ -125,7 +125,7 @@ void ProfilePickerReauthProvider::OnForceSigninVerifierTimeOut() {
 void ProfilePickerReauthProvider::TryCreateForceSigninVerifier() {
   if (!force_signin_verifier_ && identity_manager_->AreRefreshTokensLoaded()) {
     force_signin_verifier_ = std::make_unique<ForceSigninVerifier>(
-        &*profile_, &*identity_manager_,
+        &*identity_manager_,
         base::BindOnce(&ProfilePickerReauthProvider::OnTokenFetchComplete,
                        base::Unretained(this)));
   }

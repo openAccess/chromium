@@ -214,8 +214,6 @@ VerticalTabStripRegionView::VerticalTabStripRegionView(
 
   SetProperty(views::kElementIdentifierKey, kTabStripRegionElementId);
 
-  GetViewAccessibility().SetRole(ax::mojom::Role::kTabList);
-
   SetBackground(std::make_unique<CustomCornersBackground>(
       *this, *browser_view,
       /*primary_color=*/CustomCornersBackground::FrameTheme(),
@@ -522,15 +520,6 @@ void VerticalTabStripRegionView::Layout(PassKey) {
   if (drop_arrow()) {
     drop_arrow()->SetIndex(drop_arrow()->index());
   }
-}
-
-views::View* VerticalTabStripRegionView::GetDefaultFocusableChild() {
-  tabs::TabInterface* active_tab = tab_strip_model()->GetActiveTab();
-  if (active_tab) {
-    return GetTabAnchorView(active_tab->GetHandle());
-  }
-
-  return top_button_container_;
 }
 
 gfx::Size VerticalTabStripRegionView::GetMinimumSize() const {

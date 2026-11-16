@@ -299,9 +299,6 @@ BASE_FEATURE_PARAM(double,
                    "fling_continuity_threshold_pixels",
                    0.2);
 
-BASE_FEATURE(kScrollJankV4MetricFastScrollContinuityRequiresSameDirection,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kScrollJankV4MetricReportAndroidAppJankStats,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -354,6 +351,8 @@ BASE_FEATURE(kViewTransitionsNewRoundingChange,
 BASE_FEATURE(kBrowserControlsExtraHideGestures,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+BASE_FEATURE(kControlsInBrowser, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kDeferMainFrameBeforeCommitWithPendingTree,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -363,5 +362,8 @@ BASE_FEATURE(kOmitTransparentSolidQuadsForNoopBlendModes,
 
 BASE_FEATURE(kViewTransitionsAvoidDuplicateCaptureRenderPass,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kViewTransitionEarlySnapshotRelease,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace features

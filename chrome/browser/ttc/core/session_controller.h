@@ -38,8 +38,21 @@ class SessionController {
                                           bool success) {}
     virtual void OnInputTranscription(const std::string& text) {}
     virtual void OnOutputTranscription(const std::string& text) {}
+    virtual void OnTranscriptionsUpdated(const std::string& user_transcript,
+                                         const std::string& model_transcript) {}
     virtual void OnModelAudioEnvelopeReady(const AudioEnvelope& envelope) {}
     virtual void OnUserAudioLevelUpdate(float audio_level) {}
+    // TTC's own microphone control (`SessionControllerImpl::SetMicMuted()`)
+    // muted or unmuted the session: TTC stops or resumes capturing audio.
+    virtual void OnMicMutedChanged(bool muted) {}
+    // The party currently speaking changed.
+    virtual void OnSpeakerChanged(Speaker speaker) {}
+    // Microphone capture started or stopped.
+    virtual void OnMicCaptureChanged(bool capturing) {}
+    // The OS or hardware muted or unmuted the microphone. Capture keeps
+    // running, so audio levels continue at zero while muted. See
+    // `SessionController::OnSystemMicMuteChanged()`.
+    virtual void OnSystemMicMuteChanged(bool muted, bool at_stream_start) {}
   };
 
   virtual ~SessionController() = default;
@@ -51,9 +64,6 @@ class SessionController {
 
   // Submits a user text query into the active session conversation.
   virtual void SendTextInput(const std::string& text) = 0;
-
-  // Called when the backend is connected and the session is interactive.
-  virtual void OnSessionInitialized() = 0;
 
   // Called when the session encounters an error.
   virtual void OnError(ErrorCode error) = 0;
@@ -77,10 +87,20 @@ class SessionController {
   // Sets the current lifecycle state of this session.
   virtual void SetSessionLifecycle(SessionLifecycle lifecycle) = 0;
 
+  // Sets the server-assigned session ID for this session.
+  virtual void SetSessionId(const std::string& session_id) = 0;
+
   // Runs a tool (using parameters provided in `tool_request`) and calls
   // `tool_response_callback` with the result (or an error).
   virtual void ProcessToolCall(const ToolRequest& tool_request,
                                ToolResponseCallback tool_response_callback) = 0;
+
+  // Runs the tools in `tool_calls` in order, calling each call's callback with
+  // its result (or an error). Once a call fails, the later ones aren't run and
+  // are answered with errors. The whole batch is rejected with errors if any
+  // earlier tool call hasn't finished yet. `tool_calls` must not be empty.
+  virtual void ProcessToolCallBatch(
+      std::vector<PendingToolCall> tool_calls) = 0;
 
   // Returns a list of available tools to use for this session.
   virtual std::vector<ToolDefinition> GetToolDefinitions() = 0;
@@ -88,6 +108,18 @@ class SessionController {
   // Called when the level (loudness) of the user's captured microphone audio
   // changes. `audio_level` is normalized to the [0, 1] range.
   virtual void UserAudioLevelUpdate(float audio_level) = 0;
+
+  // Called by `Conversation` when microphone capture starts or stops.
+  virtual void OnMicCaptureChanged(bool capturing) = 0;
+
+  // Called by `Conversation` when the system mutes or unmutes the microphone,
+  // e.g. with a hardware switch. Capture keeps running while muted, so audio
+  // capture callbacks and audio level updates continue, at zero. TTC's own mute
+  // (`SessionControllerImpl::SetMicMuted()`, reported as
+  // `Observer::OnMicMutedChanged()`) stops capture instead and doesn't call
+  // this. `at_stream_start` is true when the microphone was already muted as
+  // capture started.
+  virtual void OnSystemMicMuteChanged(bool muted, bool at_stream_start) = 0;
 
   // Called by `Conversation` to notify about model turn lifecycle and
   // transcripts.

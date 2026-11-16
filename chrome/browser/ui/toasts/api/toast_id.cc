@@ -137,6 +137,10 @@ std::string_view GetToastName(ToastId toast_id) {
       return "EnterpriseCopyFailClosed";
     case ToastId::kTtcInactivityTimeout:
       return "TtcInactivityTimeout";
+    case ToastId::kGlic:
+      return "Glic";
+    case ToastId::kTtcMicrophoneMuted:
+      return "TtcMicrophoneMuted";
   }
 
   NOTREACHED();

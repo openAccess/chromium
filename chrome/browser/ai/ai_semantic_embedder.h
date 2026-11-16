@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ai/ai_context_bound_object.h"
 #include "components/passage_embeddings/core/passage_embeddings_types.h"
@@ -25,10 +26,14 @@ class AISemanticEmbedder : public AIContextBoundObject,
  public:
   AISemanticEmbedder(
       AIContextBoundObjectSet& context_bound_object_set,
+      passage_embeddings::Embedder& embedder,
       mojo::PendingReceiver<blink::mojom::AISemanticEmbedder> receiver);
   AISemanticEmbedder(const AISemanticEmbedder&) = delete;
   AISemanticEmbedder& operator=(const AISemanticEmbedder&) = delete;
   ~AISemanticEmbedder() override;
+
+  // AIContextBoundObject:
+  void SetPriority(on_device_model::mojom::Priority priority) override;
 
   // blink::mojom::AISemanticEmbedder:
   void Embed(uint64_t request_id,
@@ -45,7 +50,12 @@ class AISemanticEmbedder : public AIContextBoundObject,
                        uint64_t job_id,
                        passage_embeddings::ComputeEmbeddingsStatus status);
 
+  const raw_ref<passage_embeddings::Embedder> embedder_;
   mojo::Receiver<blink::mojom::AISemanticEmbedder> receiver_;
+  // Priority of this document's jobs. AIContextBoundObjectSet sets it before
+  // any Embed() can arrive and again whenever the page's visibility changes.
+  passage_embeddings::PassagePriority priority_ =
+      passage_embeddings::PassagePriority::kUserInitiated;
   // By renderer request id, until its reply. Cancelling drops the Job (which
   // cancels it if not yet submitted) but keeps the id until the reply.
   base::flat_map<uint64_t, std::optional<passage_embeddings::Embedder::Job>>

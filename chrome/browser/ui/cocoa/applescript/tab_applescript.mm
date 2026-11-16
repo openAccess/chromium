@@ -45,7 +45,7 @@ namespace {
 void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
                                   base::Value result_value) {
   NSAppleEventDescriptor* result_descriptor =
-      chrome::mac::ValueToAppleEventDescriptor(result_value);
+      AppleScript::ValueToAppleEventDescriptor(result_value);
 
   NSAppleEventManager* manager = [NSAppleEventManager sharedAppleEventManager];
   NSAppleEventDescriptor* reply_event =
@@ -92,7 +92,7 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
     return false;
   }
 
-  return chrome::mac::IsJavaScriptEnabledForProfile(self.profile);
+  return AppleScript::IsJavaScriptEnabledForProfile(self.profile);
 }
 
 - (instancetype)init {
@@ -132,6 +132,10 @@ void ResumeAppleEventAndSendReply(NSAppleEventManagerSuspensionID suspension_id,
   if (self.tempURL) {
     self.URL = self.tempURL;
   }
+}
+
+- (content::WebContents*)webContents {
+  return _webContents.get();
 }
 
 - (NSString*)URL {

@@ -147,8 +147,9 @@
 /spirv-tools/src
 /src
 /subresource-filter-ruleset/data/*
-/swift-format
-/swift-toolchain
+/swift-toolchain/linux-amd64
+/swift-toolchain/mac-amd64
+/swift-toolchain/mac-arm64
 /swiftshader/
 /syzygy
 /syzygy/binaries

@@ -8,6 +8,8 @@
 #include "chrome/common/chrome_switches.h"
 #include "url/gurl.h"
 
+class Profile;
+
 namespace content {
 class BrowserContext;
 }  // namespace content
@@ -35,9 +37,19 @@ namespace geic {
 // Optional command line switch for manual developer overrides of the guest URL.
 inline constexpr auto& kGeicGuestURLSwitch = switches::kGeicGuestURL;
 
+// Optional command line switch that allows `kGeicGuestURLSwitch` to be any HTTP
+// or HTTPS URL.
+inline constexpr auto& kGeicAllowAnyGuestURLSwitch =
+    switches::kGeicAllowAnyGuestURL;
+
 // Returns true if the `features::kGeic` feature and its `enabled` parameter are
 // enabled, independent of profile state or guest URL configuration.
 bool IsGeicEnabledByFeature();
+
+// Returns true if the settings UI may offer switching between Gemini
+// Enterprise and consumer Gemini for `browser_context`.
+bool CanSwitchBetweenGeminiProvidersInSettings(
+    content::BrowserContext* browser_context);
 
 // Resolves the Gemini Enterprise guest URL for `browser_context` from the
 // current configuration on every call, without reading or writing the latch, or
@@ -53,19 +65,32 @@ bool IsGeicEnabledByFeature();
 //    controlled by a `google_groups`-filtered Finch study, the Finch URL
 //    parameter only applies to profiles in those groups).
 //
+// All sources must be valid HTTPS URLs without embedded credentials, and are
+// restricted to Gemini Enterprise hosts in tiers:
+// - Policy: production hosts (`IsAllowedGeminiEnterpriseHost()`), or a
+//   production BYOID Auth Portal URL wrapping one
+//   (`ParseWorkforceAuthPortalUrl()`).
+// - Finch: policy URLs plus pre-production and internal corp hosts
+//   (`IsAllowedGeminiEnterprisePreProductionHost()`) and pre-production BYOID
+//   Auth Portal URLs (`ParsePreProductionWorkforceAuthPortalUrl()`).
+// - `--geic-guest-url`: Finch URLs, or any HTTP or HTTPS URL with
+//   `--geic-allow-any-guest-url`.
+// `--glic-dev` does not relax these checks.
+//
 // `--geic-guest-url` intentionally takes precedence over the enterprise policy
-// to simplify development and local testing on managed profiles. This poses no
-// risk of abuse because `IsValidGuestUrl()` only accepts valid Gemini
-// Enterprise origins (unless `--glic-dev` is also set), and accessing GEiC
-// still requires the user to sign in to Gemini Enterprise.
+// to simplify development and local testing on managed profiles. Accessing
+// GEiC still requires the user to sign in to Gemini Enterprise.
 GURL ResolveGeicGuestUrl(content::BrowserContext* browser_context);
 
 // Returns true if `browser_context` should latch to
 // `GlicProvider::kGeminiEnterprise` at profile startup, or false to latch to
-// consumer `GlicProvider::kGemini`. Evaluates `resolved_guest_url` and
-// `prefs::kGlicAssistantSelection`.
+// consumer `GlicProvider::kGemini`.
 bool ShouldLatchToGeminiEnterprise(content::BrowserContext* browser_context,
                                    const GURL& resolved_guest_url);
+
+// Returns `GetGeicSkillsUrlForGuestUrl()` for `profile`'s latched guest URL, or
+// an empty `GURL` if none.
+GURL GetGeicSkillsUrl(Profile* profile);
 
 }  // namespace geic
 

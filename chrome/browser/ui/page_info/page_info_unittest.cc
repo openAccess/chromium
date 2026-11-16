@@ -49,6 +49,7 @@
 #include "components/content_settings/core/common/features.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar.h"
+#include "components/infobars/core/infobar_delegate.h"
 #include "components/page_info/core/features.h"
 #include "components/page_info/page_info_ui.h"
 #include "components/permissions/features.h"
@@ -59,9 +60,8 @@
 #include "components/permissions/test/mock_permission_request.h"
 #include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
-#include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/core/browser/safe_browsing_metrics_collector.h"
+#include "components/safe_browsing/core/browser/metrics_collector/safe_browsing_metrics_collector.h"
 #include "components/security_interstitials/content/stateful_ssl_host_state_delegate.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/subresource_filter/content/browser/subresource_filter_content_settings_manager.h"
@@ -94,6 +94,7 @@
 #if BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/android/android_theme_resources.h"
 #else
+#include "chrome/browser/infobars/browser_infobar_manager.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #endif
 
@@ -189,6 +190,16 @@ class PageInfoTest : public ChromeRenderViewHostTestHarness {
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
     CreateWebContentsUserData(web_contents());
+
+#if !BUILDFLAG(IS_ANDROID)
+    if (auto* browser_infobar_manager = infobars::BrowserInfoBarManager::From(
+            TestingBrowserProcess::GetGlobal());
+        browser_infobar_manager &&
+        !browser_infobar_manager->IsRegistered(
+            infobars::InfoBarDelegate::PAGE_INFO_INFOBAR_DELEGATE)) {
+      ChromePageInfoDelegate::RegisterPageInfoInfoBar(browser_infobar_manager);
+    }
+#endif
 
     // Setup mock ui.
     ResetMockUI();
@@ -676,13 +687,6 @@ TEST_F(PageInfoTest, StorageAccessGrantsAreFiltered) {
   auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
   // First-party exceptions are hidden.
   map->SetContentSettingDefaultScope(url(), url(), type, CONTENT_SETTING_ALLOW);
-  // First-party-set exceptions are hidden based on their
-  // `decided_by_related_website_sets`.
-  content_settings::ContentSettingConstraints constraint;
-  constraint.set_session_model(content_settings::mojom::SessionModel::DURABLE);
-  constraint.set_decided_by_related_website_sets(true);
-  map->SetContentSettingDefaultScope(kEmbedded1, url(), type,
-                                     CONTENT_SETTING_ALLOW, constraint);
   page_info()->PresentSitePermissionsForTesting();
 
 #if BUILDFLAG(IS_ANDROID)
@@ -732,43 +736,6 @@ TEST_F(PageInfoTest, StorageAccessGrantsDisplayedWhenDefaultBlocked) {
                                    CONTENT_SETTING_BLOCK);
   page_info()->PresentSitePermissionsForTesting();
   expected_visible_permissions.insert(type);
-  ExpectPermissionInfoList(expected_visible_permissions,
-                           last_permission_info_list());
-}
-
-// TODO(crbug.com/40145057): Remove deprecated RWS API including these tests.
-class PageInfoRelatedWebsiteSetsTest : public PageInfoTest {
- public:
-  ~PageInfoRelatedWebsiteSetsTest() override = default;
-
-  void SetUp() override {
-    PageInfoTest::SetUp();
-    // Explicitly enable Related Website Sets.
-    profile()->GetPrefs()->SetBoolean(
-        prefs::kPrivacySandboxRelatedWebsiteSetsEnabled, true);
-  }
-};
-
-TEST_F(PageInfoRelatedWebsiteSetsTest, HideAutograntedRWSPermissions) {
-  std::set<ContentSettingsType> expected_visible_permissions;
-  SetURL("https://firstparty.com");
-  constexpr char kToplevelURL[] = "https://firstparty.com";
-  constexpr char kEmbeddedURL[] = "https://embedded.com";
-  auto* map = HostContentSettingsMapFactory::GetForProfile(profile());
-  content_settings::ContentSettingConstraints constraint;
-  constraint.set_session_model(content_settings::mojom::SessionModel::DURABLE);
-  constraint.set_decided_by_related_website_sets(true);
-  map->SetContentSettingDefaultScope(GURL(kEmbeddedURL), GURL(kToplevelURL),
-                                     ContentSettingsType::STORAGE_ACCESS,
-                                     CONTENT_SETTING_ALLOW, constraint);
-  page_info()->PresentSitePermissionsForTesting();
-#if BUILDFLAG(IS_ANDROID)
-  // Geolocation is always allowed to pass through to Android-specific logic to
-  // check for DSE settings (so expect 1 item), but isn't actually shown later
-  // on because this test isn't testing with a default search engine origin.
-  expected_visible_permissions.insert(
-      content_settings::GeolocationContentSettingsType());
-#endif
   ExpectPermissionInfoList(expected_visible_permissions,
                            last_permission_info_list());
 }

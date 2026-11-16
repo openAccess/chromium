@@ -24,6 +24,7 @@
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -31,6 +32,7 @@
 #include "cc/animation/animation_host.h"
 #include "cc/animation/animation_id_provider.h"
 #include "cc/base/features.h"
+#include "cc/input/browser_controls_animation_params.h"
 #include "cc/input/browser_controls_offset_manager_interface.h"
 #include "cc/input/input_handler.h"
 #include "cc/input/main_thread_scrolling_reason.h"
@@ -266,10 +268,13 @@ class LayerTreeHostImplTestMultiScrollable : public LayerTreeHostImplTest {
 
 class LayerTreeHostImplBrowserControlsTest : public LayerTreeHostImplTest {
  public:
-  LayerTreeHostImplBrowserControlsTest()
+  explicit LayerTreeHostImplBrowserControlsTest(
+      const std::vector<base::test::FeatureRef>& extra_enabled_features = {})
       // Make the clip size the same as the layer (content) size so the layer is
       // non-scrollable.
-      : layer_size_(10, 10), clip_size_(layer_size_) {
+      : LayerTreeHostImplTest(extra_enabled_features),
+        layer_size_(10, 10),
+        clip_size_(layer_size_) {
     viewport_size_ = gfx::Size(clip_size_.width(),
                                clip_size_.height() + top_controls_height_);
   }
@@ -2445,6 +2450,141 @@ TEST_P(LayerTreeHostImplBrowserControlsTest,
 
 INSTANTIATE_CLIENT_MODE_TREE_TEST_P(LayerTreeHostImplBrowserControlsTest);
 
+// Tests browser controls with kControlsInBrowser enabled.
+class LayerTreeHostImplControlsInBrowserTest
+    : public LayerTreeHostImplBrowserControlsTest {
+ public:
+  LayerTreeHostImplControlsInBrowserTest()
+      : LayerTreeHostImplBrowserControlsTest({features::kControlsInBrowser}) {}
+
+  void SetUp() override {
+    LayerTreeHostImplBrowserControlsTest::SetUp();
+    SetupBrowserControlsAndScrollLayerWithVirtualViewport(
+        gfx::Size(100, 100), gfx::Size(100, 100), gfx::Size(100, 400));
+    LayerImpl* outer_scroll = OuterViewportScrollLayer();
+    outer_scroll->layer_tree_impl()
+        ->property_trees()
+        ->scroll_tree_mutable()
+        .UpdateScrollOffsetBaseForTesting(outer_scroll->element_id(),
+                                          gfx::PointF(0, 200));
+    // The setup above requested a frame; the tests assert on new requests.
+    did_request_next_frame_ = false;
+  }
+
+ protected:
+  void AnimateFrame(base::TimeTicks frame_time) {
+    BeginImplFrameAndAnimate(
+        viz::CreateBeginFrameArgsForTesting(BEGINFRAME_FROM_HERE, 0, 1),
+        frame_time);
+  }
+};
+
+TEST_P(LayerTreeHostImplControlsInBrowserTest, ScrollDoesNotMoveControls) {
+  GetInputHandler().ScrollBegin(BeginState(gfx::Point(), gfx::Vector2dF(0, 50),
+                                           ui::ScrollInputType::kTouchscreen)
+                                    .get(),
+                                ui::ScrollInputType::kTouchscreen);
+  GetInputHandler().ScrollUpdate(UpdateState(
+      gfx::Point(), gfx::Vector2dF(0, 50), ui::ScrollInputType::kTouchscreen));
+  GetInputHandler().ScrollEnd(/*should_snap=*/false, std::nullopt);
+
+  EXPECT_FLOAT_EQ(1.0f,
+                  host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(250, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+  EXPECT_FALSE(host_impl_->browser_controls_manager()->HasAnimation());
+}
+
+constexpr base::TimeTicks kFrameStartTime =
+    base::TimeTicks() + base::Milliseconds(1000);
+
+// A zero-duration animation applies `top` and `bottom` on the next frame.
+BrowserControlsAnimationParams InstantParams(float top, float bottom) {
+  return BrowserControlsAnimationParams{
+      .target_top_controls_visible_height = top,
+      .target_bottom_controls_visible_height = bottom,
+  };
+}
+
+TEST_P(LayerTreeHostImplControlsInBrowserTest,
+       ZeroDurationAnimationCounterScrolls) {
+  ASSERT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  ASSERT_EQ(200, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+
+  // Hide the top controls. Nothing moves until the next frame, which applies
+  // the ratio and counter-scrolls the page by the change in the top controls
+  // height together, so that the content stays in place on screen.
+  host_impl_->SetBrowserControlsAnimation(InstantParams(0.f, 0.f));
+  EXPECT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_TRUE(host_impl_->browser_controls_manager()->HasAnimation());
+  EXPECT_TRUE(did_request_next_frame_);
+
+  AnimateFrame(kFrameStartTime);
+  EXPECT_EQ(0.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(200 - top_controls_height_,
+            CurrentScrollOffset(OuterViewportScrollLayer()).y());
+  EXPECT_FALSE(host_impl_->browser_controls_manager()->HasAnimation());
+
+  // Showing the controls again counter-scrolls the page back down.
+  host_impl_->SetBrowserControlsAnimation(
+      InstantParams(top_controls_height_, 0.f));
+  AnimateFrame(kFrameStartTime);
+  EXPECT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(200, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+}
+
+TEST_P(LayerTreeHostImplControlsInBrowserTest,
+       ZeroDurationAnimationAtPageTopDoesNotScroll) {
+  ASSERT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+
+  auto* outer_scroll = OuterViewportScrollLayer();
+  outer_scroll->layer_tree_impl()
+      ->property_trees()
+      ->scroll_tree_mutable()
+      .UpdateScrollOffsetBaseForTesting(outer_scroll->element_id(),
+                                        gfx::PointF());
+
+  host_impl_->SetBrowserControlsAnimation(InstantParams(0.f, 0.f));
+  AnimateFrame(kFrameStartTime);
+  EXPECT_EQ(0.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(0, CurrentScrollOffset(outer_scroll).y());
+  EXPECT_FALSE(host_impl_->browser_controls_manager()->HasAnimation());
+}
+
+TEST_P(LayerTreeHostImplControlsInBrowserTest,
+       SetBrowserControlsAnimationCounterScrollsEveryFrame) {
+  ASSERT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  ASSERT_EQ(200, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+
+  // Hide the top controls over 200ms with a linear curve so that the expected
+  // values are exact.
+  host_impl_->SetBrowserControlsAnimation(BrowserControlsAnimationParams{
+      .target_top_controls_visible_height = 0,
+      .target_bottom_controls_visible_height = 0,
+      .duration = base::Milliseconds(200),
+  });
+  EXPECT_TRUE(host_impl_->browser_controls_manager()->HasAnimation());
+  EXPECT_TRUE(did_request_next_frame_);
+
+  // The first frame starts the animation at the current ratio.
+  AnimateFrame(kFrameStartTime);
+  EXPECT_EQ(1.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(200, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+
+  // Halfway: 25px of the controls are hidden and the page is counter-scrolled
+  // by the same amount.
+  AnimateFrame(kFrameStartTime + base::Milliseconds(100));
+  EXPECT_EQ(0.5f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(175, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+  EXPECT_TRUE(host_impl_->browser_controls_manager()->HasAnimation());
+
+  AnimateFrame(kFrameStartTime + base::Milliseconds(200));
+  EXPECT_EQ(0.f, host_impl_->active_tree()->CurrentTopControlsShownRatio());
+  EXPECT_EQ(150, CurrentScrollOffset(OuterViewportScrollLayer()).y());
+  EXPECT_FALSE(host_impl_->browser_controls_manager()->HasAnimation());
+}
+
+INSTANTIATE_CLIENT_MODE_TREE_TEST_P(LayerTreeHostImplControlsInBrowserTest);
+
 // TODO(crbug.com/458776836): Review memory limit related cc_unittests for
 // TreesInViz Service mode
 TEST_P(LayerTreeHostImplWithImplicitLimitsTest, ImplicitMemoryLimits) {
@@ -3864,8 +4004,14 @@ class ForceActivateAfterPaintWorkletPaintLayerTreeHostImplTest
       // Pretend a force activation happened.
       host_impl_->ActivateSyncTree();
       ASSERT_FALSE(host_impl_->pending_tree());
+      if (on_force_activated_) {
+        std::move(on_force_activated_).Run();
+      }
     }
   }
+
+ protected:
+  base::OnceClosure on_force_activated_;
 };
 
 INSTANTIATE_COMMIT_TO_PENDING_TREE_TEST_P(
@@ -3874,6 +4020,56 @@ INSTANTIATE_COMMIT_TO_PENDING_TREE_TEST_P(
 TEST_P(ForceActivateAfterPaintWorkletPaintLayerTreeHostImplTest,
        ForceActivationAfterPaintWorkletsFinishPainting) {
   RunPaintWorkletCommitTest();
+  EXPECT_FALSE(did_prepare_tiles_);
+}
+
+TEST_P(ForceActivateAfterPaintWorkletPaintLayerTreeHostImplTest,
+       ForceActivationAndCommitWithDirtyPaintWorklets) {
+  on_force_activated_ = base::BindLambdaForTesting([&]() {
+    // Simulate a queued commit creating a new pending tree with dirty paint
+    // worklets in the same Scheduler::ProcessScheduledActions() loop right
+    // after the previous pending tree was force-activated.
+    client_host_impl(host_impl_.get())->CreatePendingTree();
+    auto* pending_root = static_cast<PictureLayerImpl*>(
+        host_impl_->pending_tree()->root_layer());
+    pending_root->SetNeedsPushProperties();
+    pending_root->SetRasterSourceForTesting(
+        FakeRasterSource::CreateFilledWithPaintWorklet(pending_root->bounds()));
+    UpdateDrawProperties(host_impl_->pending_tree());
+    client_host_impl(host_impl_.get())->CommitComplete();
+  });
+
+  auto painter_owned = std::make_unique<TestPaintWorkletLayerPainter>();
+  TestPaintWorkletLayerPainter* painter = painter_owned.get();
+  host_impl_->SetPaintWorkletLayerPainter(std::move(painter_owned));
+
+  client_host_impl(host_impl_.get())->CreatePendingTree();
+  auto* root = SetupRootLayer<PictureLayerImpl>(host_impl_->pending_tree(),
+                                                gfx::Size(100, 100));
+  root->SetNeedsPushProperties();
+  root->SetRasterSourceForTesting(
+      FakeRasterSource::CreateFilledWithPaintWorklet(root->bounds()));
+  UpdateDrawProperties(host_impl_->pending_tree());
+
+  did_prepare_tiles_ = false;
+  client_host_impl(host_impl_.get())->CommitComplete();
+  EXPECT_FALSE(did_prepare_tiles_);
+
+  ASSERT_EQ(root->GetPaintWorkletRecordMap().size(), 1u);
+  scoped_refptr<const PaintWorkletInput> input =
+      root->GetPaintWorkletRecordMap().begin()->first;
+  int worklet_id = input->WorkletId();
+
+  PaintWorkletJob painted_job(worklet_id, input, {});
+  painted_job.SetOutput(PaintRecord());
+  auto painted_job_vector = base::MakeRefCounted<PaintWorkletJobVector>();
+  painted_job_vector->data.push_back(std::move(painted_job));
+  PaintWorkletJobMap painted_job_map;
+  painted_job_map[worklet_id] = std::move(painted_job_vector);
+
+  std::move(painter->TakeDoneCallback()).Run(std::move(painted_job_map));
+  EXPECT_TRUE(host_impl_->pending_tree());
+  EXPECT_TRUE(painter->HasOngoingDispatch());
   EXPECT_FALSE(did_prepare_tiles_);
 }
 

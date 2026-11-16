@@ -1,17 +1,20 @@
 /// Every ObjectGroup registered by this profile. Also used by `isTargetObject`
 /// to decide which variables the Mojo generators operate on.
 private let mojoObjectGroups: [ObjectGroup] = [
-{%- for remote in interface_remotes %}
+{%- for remote in js_called_interfaces %}
     .{{remote|format_unique_name|to_camel(True)}}Remote,
     .{{remote|format_unique_name|to_camel(True)}}RemoteWrapper,
-{%- if remote in interface_pending_receivers %}
+{#- Avoid duplicate definitions #}
+{%- if remote not in js_implemented_interfaces %}
+    {%- if remote in interface_pending_receivers %}
     .{{remote|format_unique_name|to_camel(True)}}PendingReceiver,
-{%- endif %}
-{%- if remote in interface_associated_pending_receivers %}
+    {%- endif %}
+    {%- if remote in interface_associated_pending_receivers %}
     .{{remote|format_unique_name|to_camel(True)}}PendingAssociatedReceiver,
+    {%- endif %}
 {%- endif %}
 {%- endfor %}
-{%- for receiver in interface_receivers %}
+{%- for receiver in js_implemented_interfaces %}
     .{{receiver|format_unique_name|to_camel(True)}}CallbackRouter,
     .{{receiver|format_unique_name|to_camel(True)}}CallbackRouterReceiverHelper,
 {%- if receiver in interface_pending_receivers or
@@ -32,9 +35,12 @@ private let mojoObjectGroups: [ObjectGroup] = [
 {%- if receiver in interface_associated_pending_remotes %}
     .{{receiver|format_unique_name|to_camel(True)}}PendingAssociatedRemote,
 {%- endif %}
-{%- if receiver in interface_pending_remotes or
-       receiver in interface_associated_pending_remotes %}
+{#- Avoid duplicate definitions #}
+{%- if receiver not in js_called_interfaces %}
+    {%- if receiver in interface_pending_remotes or
+           receiver in interface_associated_pending_remotes %}
     .{{receiver|format_unique_name|to_camel(True)}}RemoteWrapper,
+    {%- endif %}
 {%- endif %}
     {%- for method in receiver.methods %}
     .{{(method|callback_receiver_name)|to_camel(True)}},
@@ -58,7 +64,7 @@ private let mojoBuiltins: [String: ILType] = [
     /// of every async function it emits, and `codeSuffix` awaits them all. Typed
     /// as an opaque object Fuzzilli does not use it as a general-purpose array.
     "mojoAsyncFunctionPromises": .object(withMethods: ["push"]),
-{%- for remote in interface_remotes %}
+{%- for remote in js_called_interfaces %}
     {#- TODO(crbug.com/522372048): Primary interfaces can also be used as non-primary
         interfaces. Add support for this use case. #}
     {%- if remote != primary and
@@ -68,7 +74,7 @@ private let mojoBuiltins: [String: ILType] = [
        .constructor([] => .{{remote|format_il_type}}),
     {%- endif %}
 {%- endfor %}
-{%- for receiver in interface_receivers %}
+{%- for receiver in js_implemented_interfaces %}
     "{{receiver|fully_qualified_name}}CallbackRouter":
        .constructor([] => .js{{receiver|format_unique_name}}CallbackRouter),
 {%- endfor %}
@@ -122,9 +128,22 @@ let mojo{{primary.name}}Profile = Profile(
         // async functions run to completion (including code after `await`)
         // before the primary remote is closed. The leading `;` stops this from
         // being parsed as a call on the program's last line.
+        //
+        // Errors thrown in async functions do not fail the program on their
+        // own. Without rethrowing them here, Fuzzilli would keep programs,
+        // accepting mutations and minimizations on them. Mojo/API errors are
+        // not rethrown. These errors result from states that, with additional
+        // mutation, may uncover bugs.
         ;(async () => {
-            await Promise.allSettled(mojoAsyncFunctionPromises);
+            const results = await Promise.allSettled(mojoAsyncFunctionPromises);
             if (globalRemote) {globalRemote.$.close()}
+            for (const result of results) {
+                const error = result.reason
+                if (result.status === 'rejected' &&
+                    (error instanceof TypeError || error instanceof ReferenceError)) {
+                    throw result.reason;
+                }
+            }
         })();
         // --- End program suffix ---
         """,
@@ -143,7 +162,7 @@ let mojo{{primary.name}}Profile = Profile(
     additionalCodeGenerators: [
         (MojoMethodCallGenerator, 10000),
         (MojoPropertyRetrievalGenerator, 10000),
-{%- for receiver in interface_receivers %}
+{%- for receiver in js_implemented_interfaces %}
     {%- if receiver.methods %}
         (Mojo{{receiver|format_unique_name}}RouterListenerGenerator, 5000),
     {%- endif %}

@@ -1018,7 +1018,6 @@ TEST_P(BidirectionalStreamQuicImplTest, CoalesceDataBuffersNotHeadersFrame) {
   const std::string kBody2 = "data keep coming";
   std::string header = ConstructDataHeader(kBody1.length());
   std::string header2 = ConstructDataHeader(kBody2.length());
-  std::vector<std::string> two_writes = {kBody1, kBody2};
   AddWrite(ConstructRequestHeadersPacketInner(
       GetNthClientInitiatedBidirectionalStreamId(0), !kFin, DEFAULT_PRIORITY,
       &spdy_request_headers_frame_length));
@@ -1883,6 +1882,31 @@ TEST_P(BidirectionalStreamQuicImplTest, SessionClosedBeforeStartConfirmed) {
   ConfirmHandshake();
   session()->connection()->CloseConnection(
       quic::QUIC_NO_ERROR, "test", quic::ConnectionCloseBehavior::SILENT_CLOSE);
+
+  auto read_buffer = base::MakeRefCounted<IOBufferWithSize>(kReadBufferSize);
+  auto delegate =
+      std::make_unique<TestDelegateBase>(read_buffer.get(), kReadBufferSize);
+  delegate->Start(&request, net_log_with_source(),
+                  session()->CreateHandle(destination_));
+  delegate->WaitUntilNextCallback(kOnFailed);
+  EXPECT_TRUE(delegate->on_failed_called());
+  EXPECT_THAT(delegate->error(), IsError(ERR_CONNECTION_CLOSED));
+}
+
+// `BidirectionalStream` does not retry, so a stream request that fails because
+// of an HTTP/3 GOAWAY is reported as `ERR_CONNECTION_CLOSED`.
+TEST_P(BidirectionalStreamQuicImplTest, GoAwayBeforeStartConfirmed) {
+  SetRequest("POST", "/", DEFAULT_PRIORITY);
+  Initialize();
+
+  BidirectionalStreamRequestInfo request;
+  request.method = "POST";
+  request.url = GURL("http://www.google.com/");
+  request.end_stream_on_headers = false;
+  request.priority = DEFAULT_PRIORITY;
+
+  ConfirmHandshake();
+  session()->OnHttp3GoAway(0);
 
   auto read_buffer = base::MakeRefCounted<IOBufferWithSize>(kReadBufferSize);
   auto delegate =

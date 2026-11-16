@@ -66,6 +66,7 @@
 #include "content/public/common/result_codes.h"
 #include "crypto/hash.h"
 #include "mojo/public/c/system/types.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "net/base/net_errors.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/http/http_response_headers.h"
@@ -361,6 +362,15 @@ ServiceWorkerVersion::~ServiceWorkerVersion() {
     std::move(callback).Run(blink::ServiceWorkerStatusCode::kErrorAbort);
   }
 
+  // StartWorker() requests waiting for the network restrictions registration
+  // are not in `start_callbacks_` yet. Running them here aborts them too.
+  std::vector<base::OnceClosure> pending_network_restrictions_callbacks;
+  pending_network_restrictions_callbacks.swap(
+      pending_network_restrictions_callbacks_);
+  for (auto& callback : pending_network_restrictions_callbacks) {
+    std::move(callback).Run();
+  }
+
   if (context_) {
     context_->RemoveLiveVersion(version_id_);
   }
@@ -450,6 +460,7 @@ void ServiceWorkerVersion::SetStatus(Status status) {
 
   if (status == INSTALLED) {
     embedded_worker_->OnWorkerVersionInstalled();
+    compared_script_info_map_.clear();
   } else if (status == ACTIVATED) {
     // Notify the hid delegate observer if the active service worker has any hid
     // event handlers.
@@ -471,6 +482,7 @@ void ServiceWorkerVersion::SetStatus(Status status) {
 #endif  // !BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_DESKTOP_ANDROID)
   } else if (status == REDUNDANT) {
     embedded_worker_->OnWorkerVersionDoomed();
+    compared_script_info_map_.clear();
 
     // Drop the remote reference to tell the storage system that the worker
     // script resources can now be deleted.
@@ -842,6 +854,7 @@ ServiceWorkerExternalRequestResult ServiceWorkerVersion::StartExternalRequest(
   // Idle timer will be scheduled when request finishes, if there is no other
   // requests and events.
   ++latest_external_keepalive_sequence_number_;
+  has_external_keepalive_ = true;
   endpoint()->AddKeepAlive(latest_external_keepalive_sequence_number_);
 
   return ServiceWorkerExternalRequestResult::kOk;
@@ -970,21 +983,6 @@ ServiceWorkerExternalRequestResult ServiceWorkerVersion::FinishExternalRequest(
     int request_id = iter->second;
     external_request_uuid_to_request_id_.erase(iter);
     bool ok = FinishRequest(request_id, /*was_handled=*/true);
-
-    // If an request is finished and there is no other requests, we ask event
-    // queue to check if idle timeout should be scheduled. Event queue may
-    // schedule idle timeout if there is no events at the time.
-    // Also checks running status. Idle timeout is not meaningful if the worker
-    // is stopping or stopped.
-    if (ok && !HasWorkInBrowser() &&
-        running_status() == blink::EmbeddedWorkerStatus::kRunning) {
-      // If SW event queue request termination at this very moment, then SW can
-      // be terminated before waiting for the next idle timeout. Details are
-      // described in crbug/1399324.
-      // TODO(richardzh): Complete crbug/1399324 which would resolve this issue.
-      endpoint()->ClearKeepAlive();
-    }
-
     return ok ? ServiceWorkerExternalRequestResult::kOk
               : ServiceWorkerExternalRequestResult::kBadRequestId;
   }
@@ -2131,23 +2129,37 @@ void ServiceWorkerVersion::PostMessageToClient(
     return;
   }
 
-  if (IsBackForwardCacheEnabled()) {
-    // When |PostMessageToClient| is called on a client that is in bfcache,
-    // evict the bfcache entry.
-    if (service_worker_client->IsInBackForwardCache()) {
-      EvictBackForwardCachedControllee(
-          service_worker_client, BackForwardCacheMetrics::NotRestoredReason::
-                                     kServiceWorkerPostMessage);
-      return;
-    }
-  }
-
   if (service_worker_client->key() != key_) {
     associated_interface_receiver_.ReportBadMessage(
         "Received Client#postMessage() request for a cross-origin client.");
     receiver_.reset();
     return;
   }
+
+  if (IsBackForwardCacheEnabled()) {
+    // When |PostMessageToClient| is called on a client that is in bfcache,
+    // evict the bfcache entry.
+    if (service_worker_client->IsInBackForwardCache()) {
+      // The client may be controlled by another service worker: this one can
+      // hold it from clients.matchAll({includeUncontrolled: true}) or as the
+      // source of a message. Only the controller has the client in its
+      // `bfcached_controllee_map_`, so evict it through the controller.
+      // Without a controller, nothing will Uncontrol() the client later, so
+      // evict it directly like ServiceWorkerRegistration::ClaimClients().
+      if (ServiceWorkerVersion* controller =
+              service_worker_client->controller()) {
+        controller->EvictBackForwardCachedControllee(
+            service_worker_client, BackForwardCacheMetrics::NotRestoredReason::
+                                       kServiceWorkerPostMessage);
+      } else {
+        service_worker_client->EvictFromBackForwardCache(
+            BackForwardCacheMetrics::NotRestoredReason::
+                kServiceWorkerPostMessage);
+      }
+      return;
+    }
+  }
+
   if (!service_worker_client->is_execution_ready()) {
     // It's subtle why this ReportBadMessage is correct. Consider the
     // sequence:
@@ -2435,7 +2447,8 @@ void ServiceWorkerVersion::OpenWindow(
 
 bool ServiceWorkerVersion::HasWorkInBrowser() const {
   return !inflight_requests_.IsEmpty() || !start_callbacks_.empty() ||
-         !warm_up_callbacks_.empty();
+         !warm_up_callbacks_.empty() ||
+         !pending_network_restrictions_callbacks_.empty();
 }
 
 void ServiceWorkerVersion::OnSimpleEventFinished(
@@ -2654,6 +2667,47 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
         blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
     return;
   }
+
+  // Network restrictions (like connection allowlists) must be registered with
+  // the network service before a stopped worker is started, so that even the
+  // initial script evaluation is subject to them. The registration is
+  // asynchronous. Wait for it before touching any start state, so that
+  // StartWorker() requests arriving in the meantime queue up behind it rather
+  // than starting the worker themselves.
+  if (running_status() == blink::EmbeddedWorkerStatus::kStopped) {
+    MaybeRegisterNetworkRestrictions(base::BindOnce(
+        [](base::WeakPtr<ServiceWorkerVersion> self,
+           ServiceWorkerMetrics::EventType purpose, Status prestart_status,
+           bool is_browser_startup_complete, StatusCallback callback,
+           scoped_refptr<ServiceWorkerRegistration> protect) {
+          // Abort if the version is being destroyed, as its destructor runs the
+          // waiting requests, or if an earlier waiting request destroyed it
+          // (see StartWorkerInternal()).
+          if (!self || self->in_dtor_) {
+            std::move(callback).Run(
+                blink::ServiceWorkerStatusCode::kErrorAbort);
+            return;
+          }
+          self->StartWorkerAfterNetworkRestrictions(
+              purpose, prestart_status, is_browser_startup_complete,
+              std::move(callback), std::move(protect));
+        },
+        weak_factory_.GetWeakPtr(), purpose, prestart_status,
+        is_browser_startup_complete, std::move(callback), std::move(protect)));
+    return;
+  }
+
+  StartWorkerAfterNetworkRestrictions(purpose, prestart_status,
+                                      is_browser_startup_complete,
+                                      std::move(callback), std::move(protect));
+}
+
+void ServiceWorkerVersion::StartWorkerAfterNetworkRestrictions(
+    ServiceWorkerMetrics::EventType purpose,
+    Status prestart_status,
+    bool is_browser_startup_complete,
+    StatusCallback callback,
+    scoped_refptr<ServiceWorkerRegistration> protect) {
   if (is_redundant()) {
     RecordStartWorkerResult(purpose, prestart_status, kInvalidTraceId,
                             is_browser_startup_complete,
@@ -2770,13 +2824,7 @@ void ServiceWorkerVersion::DidEnsureLiveRegistrationForStartWorker(
   }
 
   if (running_status() == blink::EmbeddedWorkerStatus::kStopped) {
-    // Ensure that network restrictions (like connection allowlists) are
-    // registered with the network service before the worker is started. This
-    // ensures that even the initial script evaluation is subject to these
-    // restrictions.
-    MaybeRegisterNetworkRestrictions(
-        base::BindOnce(&ServiceWorkerVersion::StartWorkerInternal,
-                       weak_factory_.GetWeakPtr()));
+    StartWorkerInternal();
   }
   // Warning: StartWorkerInternal() might have deleted `this` on failure.
 }
@@ -3054,11 +3102,11 @@ void ServiceWorkerVersion::OnTimeoutTimer() {
     return;
   }
 
-  // If an request is expired and there is no other requests, we ask event
-  // queue to check if idle timeout should be scheduled. Event queue may
-  // schedule idle timeout if there is no events at the time.
+  // If a CONTINUE_ON_TIMEOUT request expired and no other browser requests
+  // remain, run no-work handling (including clearing any external keepalive so
+  // the renderer can schedule its idle timer).
   if (has_continue_on_timeout && !HasWorkInBrowser()) {
-    endpoint()->ClearKeepAlive();
+    OnNoWorkInBrowser();
   }
 
   // Check ping status.
@@ -3217,10 +3265,6 @@ ServiceWorkerVersion::DeduceStartWorkerFailureReason(
   return default_code;
 }
 
-net::Error ServiceWorkerVersion::GetMainScriptNetError() {
-  return net::Error(script_cache_map()->main_script_net_error());
-}
-
 void ServiceWorkerVersion::MarkIfStale() {
   if (!context_) {
     return;
@@ -3272,10 +3316,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
     protect = this;
   }
 
-  // |start_callbacks_| can be non-empty if a start worker request arrived while
-  // the worker was stopping. The worker must be restarted to fulfill the
-  // request.
+  // |start_callbacks_| can be non-empty if the worker was stopped while
+  // starting, or if a start worker request arrived while the worker was
+  // stopping. The worker must be restarted to fulfill the request.
   bool should_restart = !start_callbacks_.empty();
+  bool is_restart_disallowed = false;
   if (is_redundant() || in_dtor_) {
     // This worker will be destroyed soon.
     should_restart = false;
@@ -3291,6 +3336,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
     // This worker is stopped while warmed-up or warming-up. Such workers don't
     // need to restart.
     should_restart = false;
+  } else if (should_restart && context_ && !IsStartWorkerAllowed()) {
+    // Starting may have been disallowed since it was requested, e.g. because
+    // the worker's extension was disabled (crbug.com/531900625).
+    should_restart = false;
+    is_restart_disallowed = true;
   }
 
   if (!stop_time_.is_null()) {
@@ -3313,8 +3363,11 @@ void ServiceWorkerVersion::OnStoppedInternal(
 
   if (!should_restart) {
     // Let all start callbacks fail.
-    FinishStartWorker(DeduceStartWorkerFailureReason(
-        blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
+    FinishStartWorker(
+        is_restart_disallowed
+            ? blink::ServiceWorkerStatusCode::kErrorDisallowed
+            : DeduceStartWorkerFailureReason(
+                  blink::ServiceWorkerStatusCode::kErrorStartWorkerFailed));
   }
 
   // TODO(crbug.com/40864997): remove the following DCHECK when the cause
@@ -3345,6 +3398,7 @@ void ServiceWorkerVersion::OnStoppedInternal(
   request_timeouts_.clear();
   external_request_uuid_to_request_id_.clear();
   latest_external_keepalive_sequence_number_ = 0;
+  has_external_keepalive_ = false;
   for (auto& callback : error_callbacks) {
     std::move(callback).Run(blink::ServiceWorkerStatusCode::kErrorFailed);
   }
@@ -3401,6 +3455,15 @@ void ServiceWorkerVersion::CleanUpExternalRequest(
 
 void ServiceWorkerVersion::OnNoWorkInBrowser() {
   DCHECK(!HasWorkInBrowser());
+  // StartExternalRequest() calls AddKeepAlive(), which cancels the renderer's
+  // idle timer. Once all browser requests finish, notify the renderer once to
+  // reschedule its idle timer for the external keepalive.
+  if (has_external_keepalive_) {
+    has_external_keepalive_ = false;
+    if (running_status() == blink::EmbeddedWorkerStatus::kRunning) {
+      endpoint()->ClearKeepAlive();
+    }
+  }
   if (context_ && worker_is_idle_on_renderer_) {
     scoped_refptr<ServiceWorkerRegistration> registration =
         context_->GetLiveRegistration(registration_id());
@@ -3521,7 +3584,7 @@ void ServiceWorkerVersion::PrepareForUpdate(
   if (!GetContentClient()
            ->browser()
            ->ShouldServiceWorkerInheritPolicyContainerFromCreator(
-               updated_script_url)) {
+               script_url_)) {
     SetPolicyContainerHost(policy_container_host);
   }
 }
@@ -3796,13 +3859,36 @@ void ServiceWorkerVersion::MaybeRegisterNetworkRestrictions(
     return;
   }
 
-  network_restrictions_registered_ = true;
+  // `network_restrictions_registered_` is only set once the network service
+  // has replied. Callers arriving before that wait for the registration that
+  // is already in flight.
+  pending_network_restrictions_callbacks_.push_back(std::move(callback));
+  if (pending_network_restrictions_callbacks_.size() > 1) {
+    return;
+  }
+
+  // The reply is dropped if the network context is disconnected first. Proceed
+  // in that case too: StoragePartitionImpl re-sends the restrictions to the
+  // network context it creates next.
   context_->wrapper()
       ->storage_partition()
       ->RestrictNetworkForIdsInNetworkContext(
           {{network_restrictions_id_,
             policy_container_host_->policies().connection_allowlists}},
-          std::move(callback));
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(base::BindOnce(
+              &ServiceWorkerVersion::OnNetworkRestrictionsRegistered,
+              weak_factory_.GetWeakPtr())));
+}
+
+void ServiceWorkerVersion::OnNetworkRestrictionsRegistered() {
+  network_restrictions_registered_ = true;
+  // The callbacks can call MaybeRegisterNetworkRestrictions() again or delete
+  // `this` (see StartWorkerInternal()), so run them from the stack.
+  std::vector<base::OnceClosure> callbacks;
+  callbacks.swap(pending_network_restrictions_callbacks_);
+  for (auto& callback : callbacks) {
+    std::move(callback).Run();
+  }
 }
 
 }  // namespace content

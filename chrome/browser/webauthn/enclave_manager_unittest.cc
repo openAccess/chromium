@@ -97,7 +97,6 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/webauthn/icloud_recovery.h"
-#include "components/trusted_vault/frontend_trusted_vault_connection.h"
 #include "components/trusted_vault/icloud_recovery_key_mac.h"
 #include "components/trusted_vault/trusted_vault_server_constants.h"
 #include "crypto/apple/scoped_fake_keychain_v2.h"
@@ -2155,22 +2154,15 @@ class EnclaveManagerICloudRecoveryTest
         return std::nullopt;
       case SeededAccountState::kAfterLoad:
       case SeededAccountState::kBeforeLoad: {
-        std::unique_ptr<trusted_vault::TrustedVaultConnection> connection =
-            trusted_vault::NewFrontendTrustedVaultConnection(
-                identity_test_env_.identity_manager(),
-                url_loader_factory_.GetSafeWeakWrapper());
         base::test::TestFuture<
-            trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+            trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+            GaiaId>
             future;
         std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
-            request =
-                connection->DownloadAuthenticationFactorsRegistrationState(
-                    identity_test_env_.identity_manager()
-                        ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin),
-                    trusted_vault::SecurityDomainId::kPasskeys,
-                    future.GetCallback(),
-                    /*keep_alive_callback=*/base::DoNothing());
-        return future.Take();
+            request = manager_.DownloadAccountState(future.GetCallback());
+        auto [state, gaia_id] = future.Take();
+        EXPECT_EQ(gaia_id, gaia_id_);
+        return std::move(state);
       }
     }
   }
@@ -2585,22 +2577,13 @@ TEST_F(EnclaveManagerTest,
   manager_.ClearCachedKeysForTesting();
   ASSERT_FALSE(manager_.IsReady());
 
-  std::unique_ptr<trusted_vault::TrustedVaultConnection> connection =
-      trusted_vault::NewFrontendTrustedVaultConnection(
-          identity_test_env_.identity_manager(),
-          url_loader_factory_.GetSafeWeakWrapper());
   base::test::TestFuture<
-      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult>
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
       download_future;
   std::unique_ptr<trusted_vault::TrustedVaultConnection::Request> request =
-      connection->DownloadAuthenticationFactorsRegistrationState(
-          identity_test_env_.identity_manager()->GetPrimaryAccountInfo(
-              signin::ConsentLevel::kSignin),
-          trusted_vault::SecurityDomainId::kPasskeys,
-          download_future.GetCallback(),
-          /*keep_alive_callback=*/base::DoNothing());
-  trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult
-      account_state = download_future.Take();
+      manager_.DownloadAccountState(download_future.GetCallback());
+  auto [account_state, account_state_gaia_id] = download_future.Take();
 
   BoolFuture register_future;
   manager_.RegisterIfNeeded(register_future.GetCallback());
@@ -2609,7 +2592,8 @@ TEST_F(EnclaveManagerTest,
   account_state_download_count_ = 0;
   base::HistogramTester histogram_tester;
   BoolFuture recovery_future;
-  manager_.RecoverWithICloudKeychain(std::move(account_state), gaia_id_,
+  manager_.RecoverWithICloudKeychain(std::move(account_state),
+                                     std::move(account_state_gaia_id),
                                      recovery_future.GetCallback());
   ASSERT_TRUE(register_future.Wait());
   EXPECT_TRUE(register_future.Get());
@@ -2712,6 +2696,23 @@ TEST_F(EnclaveManagerTest, Unenroll) {
   // Things should be in a good state such that we can register again.
   ASSERT_TRUE(Register());
   ASSERT_TRUE(manager_.IsRegistered());
+}
+
+TEST_F(EnclaveManagerTest, UnenrollBeforeLoad) {
+  ASSERT_TRUE(Register());
+  NoArgFuture write_future;
+  if (manager_.RunWhenStoppedForTesting(write_future.GetCallback())) {
+    EXPECT_TRUE(write_future.Wait());
+  }
+  manager_.ResetForTesting();
+  ASSERT_FALSE(manager_.IsLoaded());
+
+  BoolFuture unenroll_future;
+  manager_.Unenroll(unenroll_future.GetCallback());
+  EXPECT_TRUE(unenroll_future.Wait());
+  EXPECT_TRUE(unenroll_future.Get());
+  EXPECT_TRUE(manager_.IsLoaded());
+  EXPECT_FALSE(manager_.IsRegistered());
 }
 
 TEST_F(EnclaveManagerTest, UnenrollRace) {
@@ -3022,11 +3023,15 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsAvailable) {
   ASSERT_TRUE(manager_.IsReady());
   ASSERT_TRUE(manager_.has_wrapped_pin());
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetAndUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsUnusable) {
@@ -3040,11 +3045,15 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsUnusable) {
   ASSERT_TRUE(manager_.has_wrapped_pin());
   security_domain_service_->MakePinMemberUnusable();
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetButNotUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenWrappedPinIsInvalid) {
@@ -3058,33 +3067,50 @@ TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenWrappedPinIsInvalid) {
   ASSERT_TRUE(manager_.has_wrapped_pin());
   security_domain_service_->SetPinMemberWrappedPin("invalid wrapped pin");
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(),
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
             EnclaveManager::GpmPinAvailability::kGpmPinSetButNotUsable);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
 }
 
 TEST_F(EnclaveManagerTest, CheckGpmPinAvailabilityWhenPinIsNotAvailable) {
   ASSERT_TRUE(Register());
 
-  base::test::TestFuture<EnclaveManager::GpmPinAvailability> future;
-  auto request = manager_.CheckGpmPinAvailability(future.GetCallback());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
   EXPECT_TRUE(future.Wait());
-  EXPECT_EQ(future.Get(), EnclaveManager::GpmPinAvailability::kGpmPinUnset);
+  EXPECT_EQ(manager_.CheckGpmPinAvailability(future.Get<0>()),
+            EnclaveManager::GpmPinAvailability::kGpmPinUnset);
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
+}
+
+TEST_F(EnclaveManagerTest,
+       DownloadAccountStateReportsGaiaIdOfRequestedAccount) {
+  ASSERT_TRUE(Register());
+  base::test::TestFuture<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      GaiaId>
+      future;
+  auto request = manager_.DownloadAccountState(future.GetCallback());
+  identity_test_env_.MakePrimaryAccountAvailable("other@example.com",
+                                                 signin::ConsentLevel::kSignin);
+  ASSERT_TRUE(future.Wait());
+  EXPECT_EQ(future.Get<1>(), gaia_id_);
+  // Don't check the state: it may be an error after the account switch.
 }
 
 class OpportunisticKeyRetrievalEnclaveManagerTest : public EnclaveManagerTest {
- public:
-  OpportunisticKeyRetrievalEnclaveManagerTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -3209,16 +3235,9 @@ class EnclaveManagerMockTimeTest : public EnclaveManagerTest {
 
 class OpportunisticKeyRetrievalEnclaveManagerMockTimeTest
     : public EnclaveManagerMockTimeTest {
- public:
-  OpportunisticKeyRetrievalEnclaveManagerMockTimeTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -3240,12 +3259,10 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
           kStoreKeysFromOpportunisticFlowCachedKeysBecauseAccountDoesNotMatch,
       1);
 
-  int ttl_seconds =
-      device::kWebAuthnOpportunisticRetrievalTimeToKeepCachedKeySeconds.Get();
-
   // Move to the point in time before the timeout. The cached key should not be
   // discarded before the timeout.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   histogram_tester.ExpectBucketCount(
       "WebAuthentication.GPM.CachedOpportunisticallyRetrievedKeyEvent",
       webauthn::metrics::
@@ -3280,12 +3297,10 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
           kStoreKeysFromOpportunisticFlowCachedKeysBecauseAccountDoesNotMatch,
       1);
 
-  int ttl_seconds =
-      device::kWebAuthnOpportunisticRetrievalTimeToKeepCachedKeySeconds.Get();
-
   // Move to the point in time before the timeout, and overwrite the cached key
   // with another opportunistically retrieved key.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   std::vector<uint8_t> key_2(kTestKey.begin(), kTestKey.end());
   manager_.StoreKeys(GaiaId("some_other_account_id_2"),
                      {trusted_vault::TrustedVaultKeyAndVersion(std::move(key_2),
@@ -3307,7 +3322,8 @@ TEST_F(OpportunisticKeyRetrievalEnclaveManagerMockTimeTest,
 
   // Move to the point in time before the timeout of the newly cached key. This
   // key should not be discarded before its TTL timeout.
-  task_env_.FastForwardBy(base::Seconds(ttl_seconds - 1));
+  task_env_.FastForwardBy(EnclaveManager::kOpportunisticRetrievalKeyTTL -
+                          base::Seconds(1));
   histogram_tester.ExpectBucketCount(
       "WebAuthentication.GPM.CachedOpportunisticallyRetrievedKeyEvent",
       webauthn::metrics::
@@ -3605,16 +3621,9 @@ TEST_F(EnclaveUVTest, UserVerifyingKeyUseExisting) {
 }
 
 class OpportunisticKeyRetrievalEnclaveUVTest : public EnclaveUVTest {
- public:
-  OpportunisticKeyRetrievalEnclaveUVTest() {
-    scoped_feature_list_.InitWithFeatures(
-        {device::kWebAuthnOpportunisticRetrieval,
-         device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange},
-        {});
-  }
-
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
+  base::test::ScopedFeatureList scoped_feature_list_{
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange};
 };
 
 TEST_F(OpportunisticKeyRetrievalEnclaveUVTest, OpportunisticStoreKeys) {
@@ -3693,43 +3702,6 @@ TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,
       EnclaveManager::ActionOutcome::
           kDoJoiningDomainFailedTrustedVaultRegistrationError,
       1);
-}
-
-class NoOpportunisticKeyRetrievalEnclaveUVTest : public EnclaveUVTest {
- public:
-  NoOpportunisticKeyRetrievalEnclaveUVTest() {
-    scoped_feature_list_.InitAndDisableFeature(
-        device::kWebAuthnOpportunisticRetrieval);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_F(NoOpportunisticKeyRetrievalEnclaveUVTest,
-       OpportunisticStoreKeysAreIgnoredWhenFeatureIsDisabled) {
-  security_domain_service_->pretend_there_are_members();
-  ASSERT_FALSE(manager_.IsRegistered());
-  EXPECT_EQ(manager_.store_keys_count(), 0u);
-
-  std::vector<uint8_t> key(kTestKey.begin(), kTestKey.end());
-  base::HistogramTester histogram_tester;
-  manager_.StoreKeys(gaia_id_,
-                     {trusted_vault::TrustedVaultKeyAndVersion(std::move(key),
-                                                               kSecretVersion)},
-                     /*user_action_trigger=*/std::nullopt);
-  histogram_tester.ExpectBucketCount(
-      "WebAuthentication.GPM.RecoveryEvent",
-      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
-          kStoreKeysFromOpportunisticFlowStarted,
-      0);
-  histogram_tester.ExpectBucketCount(
-      "WebAuthentication.GPM.RecoveryEvent",
-      webauthn::metrics::WebAuthenticationGPMRecoveryEvent::
-          kStoreKeysFromOpportunisticFlowSucceeded,
-      0);
-  EXPECT_EQ(manager_.store_keys_count(), 1u);
-  EXPECT_FALSE(manager_.IsRegistered());
 }
 
 TEST_F(OpportunisticKeyRetrievalEnclaveUVTest,

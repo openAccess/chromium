@@ -156,6 +156,7 @@ class FakeLayerTreeHost : public LayerTreeHost {
     for (auto layer_id :
          pending_commit_state()->layer_ids_that_should_push_properties) {
       LayerById(layer_id)->ClearChangedPushPropertiesForTesting();
+      LayerById(layer_id)->ClearSubtreePropertyChangedForTesting();
     }
     pending_commit_state()->layer_ids_that_should_push_properties.clear();
   }
@@ -437,26 +438,6 @@ TEST_F(LayerTest, LayerPropertyChangedForSubtree) {
       child2->PushPropertiesTo(child2_impl.get(), *commit_state);
       grand_child->PushPropertiesTo(grand_child_impl.get(), *commit_state));
 
-  EXPECT_CALL_MOCK_DELEGATE(*layer_tree_host_, SetNeedsCommit(_)).Times(1);
-  EXECUTE_AND_VERIFY_SUBTREE_CHANGED(top->SetTrilinearFiltering(true));
-  layer_tree_host_->VerifyAndClearExpectations();
-
-  EXECUTE_AND_VERIFY_SUBTREE_CHANGES_RESET_IN_COMMIT(
-      top->PushPropertiesTo(top_impl.get(), *commit_state);
-      child->PushPropertiesTo(child_impl.get(), *commit_state);
-      child2->PushPropertiesTo(child2_impl.get(), *commit_state);
-      grand_child->PushPropertiesTo(grand_child_impl.get(), *commit_state));
-
-  EXPECT_CALL_MOCK_DELEGATE(*layer_tree_host_, SetNeedsCommit(_)).Times(1);
-  EXECUTE_AND_VERIFY_SUBTREE_CHANGED(top->SetTrilinearFiltering(false));
-  layer_tree_host_->VerifyAndClearExpectations();
-
-  EXECUTE_AND_VERIFY_SUBTREE_CHANGES_RESET_IN_COMMIT(
-      top->PushPropertiesTo(top_impl.get(), *commit_state);
-      child->PushPropertiesTo(child_impl.get(), *commit_state);
-      child2->PushPropertiesTo(child2_impl.get(), *commit_state);
-      grand_child->PushPropertiesTo(grand_child_impl.get(), *commit_state));
-
   EXPECT_CALL_MOCK_DELEGATE(*layer_tree_host_, SetNeedsCommit(_)).Times(2);
   top->SetRoundedCorner({1, 2, 3, 4});
   EXECUTE_AND_VERIFY_SUBTREE_CHANGED(top->SetIsFastRoundedCorner(true));
@@ -724,11 +705,16 @@ TEST_F(LayerTest, ReorderChildren) {
   EXPECT_EQ(child1, parent->children()[1]);
   EXPECT_EQ(child2, parent->children()[2]);
 
+  EXPECT_FALSE(
+      layer_tree_host_->GetPendingCommitState()
+          ->layer_ids_that_should_push_properties.contains(parent->id()));
   for (const auto& child : parent->children()) {
-    EXPECT_FALSE(
+    EXPECT_TRUE(
         layer_tree_host_->GetPendingCommitState()
             ->layer_ids_that_should_push_properties.contains(child->id()));
     EXPECT_TRUE(child->subtree_property_changed());
+    SimulateCommitForLayer(child.get());
+    EXPECT_FALSE(child->subtree_property_changed());
   }
 }
 

@@ -66,10 +66,11 @@ class TabStripCollection : public TabCollection {
       bool new_pinned_state,
       const TabCollection::TypeEnumSet retain_collection_types);
 
-  // Removes the tab present at a recursive index in the collection and
-  // returns the unique_ptr to the tab model. If there is no tab present
-  // due to bad input then CHECK.
-  ScopedTab RemoveTabAtIndexRecursive(size_t index);
+  // Removes `tab` from the tab collection hierarchy, notifies observers, and
+  // returns the `ScopedTab`. `remove_for_detach` is true when the tab is
+  // removed to be moved to another window rather than closed. If `tab` is null
+  // or has no parent collection due to bad input then CHECK.
+  ScopedTab RemoveTab(TabInterface* tab, bool remove_for_detach = false);
 
   // TabCollection:
   // Tabs and Collections are not allowed to be removed from TabStripCollection.
@@ -84,7 +85,10 @@ class TabStripCollection : public TabCollection {
       bool pinned,
       std::optional<tab_groups::TabGroupId> parent_group);
 
-  // Remove a tab collection and send the appropriate notifications.
+  // Removes a tab collection so that it can be moved to another window, and
+  // send the appropriate notifications.
+  // TODO(crbug.com/585180639): Consolidate naming conventions between
+  // TabStripModel, here, and TabCollectionNode.
   std::unique_ptr<TabCollection> RemoveTabCollection(TabCollection* collection);
 
   // Adds the `tab_group_collection` to `detached_group_collections_`
@@ -167,14 +171,13 @@ class TabStripCollection : public TabCollection {
   void AddTabCollectionImpl(std::unique_ptr<TabCollection> collection,
                             const TabCollection::Position& position);
 
-  // Removes a tab or collection from the tab collection hierarchy.
-  // This is the final step for node removal, responsible for:
-  // 1. Removing the node to the target collection at the specified direct
-  // index.
-  // 2. Notifying observers that a node has been removed.
-  ScopedTab RemoveTabImpl(TabInterface* tab);
+  // Removes a collection from the tab collection hierarchy.
+  // This is the final step for collection removal, responsible for:
+  // 1. Removing the collection from its parent collection.
+  // 2. Notifying observers that the collection has been removed.
   std::unique_ptr<TabCollection> RemoveTabCollectionImpl(
-      TabCollection* collection);
+      TabCollection* collection,
+      bool remove_for_detach = false);
 
   // Moves a tab or collection from the tab collection hierarchy.
   // This is the final step for moving a node, responsible for:

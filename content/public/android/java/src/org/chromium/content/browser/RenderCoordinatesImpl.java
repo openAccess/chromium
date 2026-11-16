@@ -43,7 +43,8 @@ public class RenderCoordinatesImpl implements RenderCoordinates {
     // Cached device density.
     private float mDeviceScaleFactor = 1.0f;
 
-    private float mTopContentOffsetYPix;
+    private float mContentOffsetTopPix;
+    private float mContentOffsetBottomPix;
 
     public static RenderCoordinatesImpl fromWebContents(WebContents webContents) {
         if (sInstanceForTesting != null) return sInstanceForTesting;
@@ -59,7 +60,8 @@ public class RenderCoordinatesImpl implements RenderCoordinates {
 
     // Internally-visible set of update methods (used by WebContentsImpl).
     public void reset() {
-        mScrollXCss = mScrollYCss = 0;
+        mScrollXCss = 0;
+        mScrollYCss = 0;
         mPageScaleFactor = 1.0f;
     }
 
@@ -74,8 +76,13 @@ public class RenderCoordinatesImpl implements RenderCoordinates {
     }
 
     @Override
-    public int getContentOffsetYPixInt() {
-        return (int) Math.floor(getContentOffsetYPix());
+    public int getContentOffsetTopPixInt() {
+        return (int) Math.floor(getContentOffsetTopPix());
+    }
+
+    @Override
+    public int getContentOffsetBottomPixInt() {
+        return (int) Math.floor(getContentOffsetBottomPix());
     }
 
     @Override
@@ -124,10 +131,12 @@ public class RenderCoordinatesImpl implements RenderCoordinates {
             float viewportHeightCss,
             float minPageScaleFactor,
             float maxPageScaleFactor,
-            float contentOffsetYPix) {
+            float contentOffsetTopPix,
+            float contentOffsetBottomPix) {
         mMinPageScaleFactor = minPageScaleFactor;
         mMaxPageScaleFactor = maxPageScaleFactor;
-        mTopContentOffsetYPix = contentOffsetYPix;
+        mContentOffsetTopPix = contentOffsetTopPix;
+        mContentOffsetBottomPix = contentOffsetBottomPix;
 
         updateContentSizeCss(contentWidthCss, contentHeightCss);
         mLastFrameViewportWidthCss = viewportWidthCss;
@@ -183,10 +192,17 @@ public class RenderCoordinatesImpl implements RenderCoordinates {
     }
 
     /**
-     * @return The Physical on-screen Y offset amount below the browser controls.
+     * @return The Physical on-screen Y offset amount below the top browser controls.
      */
-    public float getContentOffsetYPix() {
-        return mTopContentOffsetYPix;
+    public float getContentOffsetTopPix() {
+        return mContentOffsetTopPix;
+    }
+
+    /**
+     * @return Physical on-screen height of the bottom browser controls currently shown.
+     */
+    public float getContentOffsetBottomPix() {
+        return mContentOffsetBottomPix;
     }
 
     /**

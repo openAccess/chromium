@@ -12,6 +12,7 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
@@ -59,7 +60,9 @@ class ContextualCueingService;
 class EmptyEmbedderDelegate;
 class GlicExperimentalTriggeringManager;
 class GlicGeminiEnterpriseManager;
+class GlicInstanceObserver;
 class GlicMetrics;
+class GlicProviderSpec;
 class GlicSkillsManagerImpl;
 class GlicUiEmbedder;
 class GlicWebContentsManager;
@@ -140,10 +143,6 @@ class GlicInstanceImpl : public GlicInstance,
     // Called to create a new web contents for the glic instance.
     virtual std::unique_ptr<GlicWebContentsManager>
     CreateWebContentsManager() = 0;
-
-    // Called by an instance just before its WebUI container is created from a
-    // hibernated state.
-    virtual void OnInstanceWillAwaken() = 0;
   };
 
   GlicInstanceImpl(
@@ -156,6 +155,9 @@ class GlicInstanceImpl : public GlicInstance,
 
   GlicInstanceImpl(const GlicInstanceImpl&) = delete;
   GlicInstanceImpl& operator=(const GlicInstanceImpl&) = delete;
+
+  void AddObserver(GlicInstanceObserver* observer);
+  void RemoveObserver(GlicInstanceObserver* observer);
 
   Profile* profile() { return profile_; }
   GlicKeyedService* service() { return service_; }
@@ -198,8 +200,11 @@ class GlicInstanceImpl : public GlicInstance,
   bool IsHibernated() const override;
 
   bool HasActiveEmbedder() const override;
+  bool IsShowingInSidePanel(const tabs::TabInterface& tab) const;
   bool IsDetached();
   bool IsActuating() const override;
+  bool HasLiveSurface() const override;
+  bool HasActiveExperimentalTriggeringSession() const override;
   bool IsInvoking() const override;
   bool IsLiveMode() const override;
 
@@ -236,6 +241,8 @@ class GlicInstanceImpl : public GlicInstance,
 
   // GlicInstance:
   void SendAdditionalContext(mojom::AdditionalContextPtr context) override;
+  void NotifyDataTransferActionsBlocked(
+      mojom::DataTransferActionsBlockedNoticePtr notice) override;
   void FocusIfActive() override;
   void NotifyActorTaskListRowClicked(int32_t task_id) override;
   const InstanceId& id() const override;
@@ -268,7 +275,8 @@ class GlicInstanceImpl : public GlicInstance,
   // client. When running hidden, drives offscreen rendering on Android.
   void SetHiddenInitializing(bool initializing);
 
-  // Called exactly once, right before the instance is destroyed.
+  // Called exactly once, right before the instance is destroyed or shut down
+  // (whichever comes first), and before its host WebContents are torn down.
   using DestructionCallback = base::OnceCallback<void(GlicInstance*)>;
   base::CallbackListSubscription RegisterWillBeDestroyed(
       DestructionCallback callback) override;
@@ -292,6 +300,8 @@ class GlicInstanceImpl : public GlicInstance,
   void PrepareForOpen() override;
   void OnUserInputSubmitted(mojom::WebClientMode mode,
                             mojom::PromptType prompt_type) override;
+  void OnResponseStarted() override;
+  void OnResponseStopped(mojom::ResponseStopCause cause) override;
   void OnInteractionModeChange(mojom::WebClientMode new_mode) override;
   glic::GlicInstanceMetrics& instance_metrics() override;
   glic::GlicInstanceMetricsBackwardsCompatibility&
@@ -318,6 +328,7 @@ class GlicInstanceImpl : public GlicInstance,
   // Opens the floating UI for this instance
   void Detach(tabs::TabInterface& tab) override;
   void Attach(tabs::TabHandle tab) override;
+  void AcceptNativeFre() override;
 
   // GlicInstance:
   ObservableValueView<mojom::PanelState>& GetPanelState() const override;
@@ -327,9 +338,15 @@ class GlicInstanceImpl : public GlicInstance,
 
   // Host::Observer
   void ClientReadyToShow(const mojom::OpenPanelInfo& open_info) override;
+  void ContentsCreated() override;
   void WebUiStateChanged(mojom::WebUiState state) override;
   void ClientLoadErrorOccurred(ClientLoadErrorReason reason) override;
   void ContextAccessIndicatorChanged(bool enabled) override;
+
+  // Returns true if `url` is a tutorial or marketing URL eligible to bypass
+  // onboarding suppression and auto-peek during daisy chaining.
+  static bool IsTutorialMarketingUrl(const GURL& url,
+                                     const GlicProviderSpec& provider_spec);
 
   // Test support.
 #if !BUILDFLAG(IS_ANDROID)
@@ -413,13 +430,10 @@ class GlicInstanceImpl : public GlicInstance,
   void UpdateLastActiveTime(EmbedderKey key);
   bool ShouldShowInactiveSidePanel(const SidePanelShowOptions& options) const;
 
-  bool ShouldPinOnBind() const;
-
   // Idempotency helper: if the instance is hibernated
-  // (!host_.webui_contents()), notifies the coordinator via
-  // OnInstanceWillAwaken() and creates the WebUI container. No-op if
-  // contents already exist.
-  void EnsureHostAwake() override;
+  // (!host_.webui_contents()), creates the WebUI container. No-op if contents
+  // already exist.
+  void EnsureHostAwake();
 
   void MaybeActivateForegroundEmbedder();
   void MaybeRemoveBlankInstanceOnClose();
@@ -454,6 +468,7 @@ class GlicInstanceImpl : public GlicInstance,
   mojom::PanelState ComputePanelState();
 
   void OnActuatingChanged(bool actuating);
+  void OnExperimentalTriggeringSessionChanged(bool active);
   // Returns the WebContents to attach for offscreen rendering: the WebUI
   // contents in webview mode, or the guest contents in NoWebview mode.
   // TODO(b/534807813): Remove once webview is deleted; callers should use
@@ -465,6 +480,7 @@ class GlicInstanceImpl : public GlicInstance,
   ConversationInfoChangedCallbackList conversation_info_changed_callback_list_;
 
   base::OnceCallbackList<void(GlicInstance*)> will_be_destroyed_callbacks_;
+  base::ObserverList<GlicInstanceObserver> observers_;
 
   raw_ptr<Profile> profile_;
   raw_ptr<GlicKeyedService> service_;
@@ -512,6 +528,7 @@ class GlicInstanceImpl : public GlicInstance,
       experimental_triggering_manager_;
   base::CallbackListSubscription pinned_tabs_change_subscription_;
   base::CallbackListSubscription actuating_changed_subscription_;
+  base::CallbackListSubscription experimental_triggering_session_subscription_;
 
   base::OneShotTimer inactivity_timer_;
   base::Time last_activation_timestamp_;

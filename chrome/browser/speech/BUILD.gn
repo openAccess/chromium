@@ -102,6 +102,7 @@ source_set("impl") {
     "//chrome/browser/component_updater",
     "//chrome/browser/optimization_guide",
     "//chrome/browser/profiles:profile_manager",
+    "//chrome/browser/search",
     "//chrome/common",
     "//chrome/common:constants",
     "//chrome/services/speech/buildflags",
@@ -344,6 +345,7 @@ if (!is_android) {
         deps += [
           "//chrome/browser/browsing_data:constants",
           "//chrome/browser/optimization_guide",
+          "//chrome/test/base:chrome_test_utils",
           "//components/keyed_service/content",
           "//components/live_caption:utils",
           "//components/soda",

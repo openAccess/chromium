@@ -122,6 +122,11 @@ std::optional<int> GetFirstRunRecency();
 // switches, but the former takes precedence.
 std::string GetSegmentForForcedDeviceSwitcherExperience();
 
+// Returns whether the forced device switcher segment in Experimental Settings
+// or command-line flags is `AndroidPhone`, or `std::nullopt` if no forced
+// segment is configured.
+std::optional<bool> IsForcedDeviceSwitcherAndroidPhone();
+
 // Returns the selected shopper segment the user wants to simulate as a string.
 // The string should either be nil, "ShoppingUser", or "Other". The value could
 // be set both from Experimental Settings and command line switches, but the
@@ -187,18 +192,6 @@ NSString* GetCobrowseGwsURL();
 // Returns true if Composebox AIM eligibility should be disabled.
 bool ShouldForceDisableComposeboxAIM();
 
-// Returns true if Composebox Create Images eligibility should be disabled.
-bool ShouldForceDisableComposeboxCreateImages();
-
-// Returns true if Canvas eligibility should be disabled.
-bool ShouldForceDisableComposeboxCanvas();
-
-// Returns true if Deep Search eligibility should be disabled.
-bool ShouldForceDisableComposeboxDeepSearch();
-
-// Returns true if Composebox Pdf Upload eligibility should be disabled.
-bool ShouldForceDisableComposeboxPdfUpload();
-
 // Returns true if the Catalog items should be shown in Settings. Always true
 // in debug builds.
 bool ShouldShowCatalogItems();
@@ -247,6 +240,11 @@ bool IsWebExtensionLoadDelayDefault();
 
 // Whether App Switcher AI summarization external URL testing is enabled.
 bool IsAppSwitcherAISummarizationTestingExternalURLEnabled();
+
+// Whether the geolocation permission prompt frequency restriction should be
+// bypassed for the current app session. Returns true by default on Canary
+// channel.
+bool ShouldBypassGeolocationPromptRestriction();
 
 }  // namespace experimental_flags
 

@@ -7,14 +7,15 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/check.h"
+#include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/types/optional_util.h"
-#include "bubble_controller_base.h"
 #include "chrome/browser/autofill/ui/ui_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/global_features.h"
@@ -23,6 +24,7 @@
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
+#include "chrome/browser/ui/autofill/bubble_controller_base.h"
 #include "chrome/browser/ui/autofill/chrome_autofill_client.h"
 #include "chrome/browser/ui/autofill/edit_address_profile_dialog_controller_impl.h"
 #include "chrome/browser/ui/autofill/save_address_bubble_controller.h"
@@ -79,13 +81,19 @@ AutofillBubbleBase* ShowUpdateBubble(
 }
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-AutofillBubbleBase* ShowSignInPromo(content::WebContents* web_contents,
-                                    const AutofillProfile& autofill_profile) {
+AutofillBubbleBase* ShowSignInPromo(
+    const AutofillProfile& autofill_profile,
+    content::WebContents* web_contents,
+    bool /*shown_by_user_gesture*/,
+    base::WeakPtr<AddressBubbleControllerDelegate> delegate) {
   // TODO(crbug.com/381390420): Expose the `AutofillBubbleHandler` in
   // `BrowserWindowInterface` and use that instead.
   return BrowserWindow::FindBrowserWindowWithWebContents(web_contents)
       ->GetAutofillBubbleHandler()
-      ->ShowAddressSignInPromo(web_contents, autofill_profile);
+      ->ShowAddressSignInPromo(
+          web_contents, autofill_profile,
+          base::BindOnce(&AddressBubbleControllerDelegate::OnBubbleClosed,
+                         std::move(delegate)));
 }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
@@ -93,7 +101,10 @@ AutofillBubbleBase* ShowSignInPromo(content::WebContents* web_contents,
 
 AddressBubblesController::AddressBubblesController(
     content::WebContents* web_contents)
-    : AutofillBubbleControllerBase(web_contents),
+    : AutofillBubbleControllerBase(
+          web_contents,
+          PageActionConfig{.action_id = kActionShowAddressesBubbleOrPage,
+                           .should_manage_visibility = true}),
       content::WebContentsUserData<AddressBubblesController>(*web_contents),
       app_locale_(g_browser_process->GetFeatures()
                       ->application_locale_storage()
@@ -190,14 +201,19 @@ void AddressBubblesController::OnUserDecision(
 void AddressBubblesController::OnBubbleClosed() {
   ResetBubbleViewAndInformBubbleManager();
   is_showing_sign_in_promo_ = false;
+  if (!IsBubbleActive()) {
+    show_bubble_view_callback_.Reset();
+  }
   UpdatePageActionIcon();
 }
 
 void AddressBubblesController::OnIconClicked() {
-  // Don't show the bubble if it's already visible.
-  if (bubble_view()) {
+  // Don't show the bubble if it's already visible or there is no pending
+  // save/update prompt to reopen.
+  if (bubble_view() || !CanBeReshown()) {
     return;
   }
+
   shown_by_user_gesture_ = true;
   QueueOrShowBubble(/*force_show=*/true);
 }
@@ -228,11 +244,6 @@ void AddressBubblesController::WebContentsDestroyed() {
 }
 
 #if !BUILDFLAG(IS_ANDROID)
-std::optional<actions::ActionId>
-AddressBubblesController::GetActionIdForPageAction() {
-  return kActionShowAddressesBubbleOrPage;
-}
-
 std::optional<std::u16string>
 AddressBubblesController::GetPageActionTooltipText() {
   return GetPageActionIconTooltip();
@@ -247,6 +258,10 @@ void AddressBubblesController::DoShowBubble() {
       web_contents(), shown_by_user_gesture_, GetWeakPtr()));
 
   CHECK(bubble_view());
+}
+
+bool AddressBubblesController::CanBeReshown() const {
+  return !address_profile_save_prompt_callback_.is_null();
 }
 
 BubbleType AddressBubblesController::GetBubbleType() const {
@@ -309,6 +324,7 @@ void AddressBubblesController::SetUpBubble(
       std::move(address_profile_save_prompt_callback);
   shown_by_user_gesture_ = false;
   is_migration_to_account_ = is_migration_to_account;
+  is_showing_sign_in_promo_ = false;
   user_has_any_profile_saved_ = user_has_any_profile_saved;
 }
 
@@ -335,16 +351,23 @@ void AddressBubblesController::MaybeShowSignInPromo(
     return;
   }
 
-  DoNotShowNextQueuedBubbleGuard guard = DoNotShowNextQueuedBubble();
+  {
+    DoNotShowNextQueuedBubbleGuard guard = DoNotShowNextQueuedBubble();
+    // Close the current save bubble without advancing the `BubbleManager` queue
+    // before replacing it with the sign-in promo.
+    HideBubble(/*initiated_by_bubble_manager=*/false);
+  }
 
-  // Close the current save bubble.
-  HideBubble(/*initiated_by_bubble_manager=*/false);
-
-  // Open the bubble with the sign in promo.
-  SetBubbleView(*ShowSignInPromo(web_contents(), autofill_profile.value()));
-  CHECK(bubble_view());
+  shown_by_user_gesture_ = false;
   is_showing_sign_in_promo_ = true;
-  UpdatePageActionIcon();
+  show_bubble_view_callback_ =
+      base::BindRepeating(&ShowSignInPromo, autofill_profile.value());
+
+  QueueOrShowBubble();
+  if (!IsShowingBubble()) {
+    is_showing_sign_in_promo_ = false;
+    show_bubble_view_callback_.Reset();
+  }
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 }
 

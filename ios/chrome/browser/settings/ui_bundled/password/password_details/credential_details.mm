@@ -40,8 +40,6 @@
       _username = base::SysUTF16ToNSString(credential.username);
     }
 
-    _userDisplayName = base::SysUTF16ToNSString(credential.user_display_name);
-
     if (!credential.federation_origin.IsValid()) {
       _password = base::SysUTF16ToNSString(credential.password.secure_value());
     } else {
@@ -59,10 +57,12 @@
         credential.federation_origin.IsValid()) {
       _credentialType = CredentialTypeFederation;
     }
-    if (!credential.passkey_credential_id.empty()) {
+    if (credential.IsPasskey()) {
       _credentialType = CredentialTypePasskey;
+      _userDisplayName =
+          base::SysUTF16ToNSString(credential.passkey_info->user_display_name);
+      _hidden = credential.passkey_info->hidden;
     }
-    _hidden = credential.hidden;
   }
   return self;
 }

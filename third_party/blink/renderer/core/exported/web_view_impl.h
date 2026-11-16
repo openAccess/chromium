@@ -31,7 +31,6 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EXPORTED_WEB_VIEW_IMPL_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EXPORTED_WEB_VIEW_IMPL_H_
 
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -1028,6 +1027,9 @@ class CORE_EXPORT WebViewImpl final : public WebView,
   // to skip Blink-side scroll restoration to avoid conflicts with the cache's
   // native restoration. Reset on each lifecycle update.
   bool last_page_lifecycle_state_update_restored_from_bfcache_ = false;
+
+  // Whether we're currently in Close().
+  bool is_closing_ = false;
 
   // All the registered observers.
   base::ObserverList<WebViewObserver> observers_;

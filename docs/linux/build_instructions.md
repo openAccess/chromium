@@ -320,7 +320,7 @@ load("@builtin//struct.star", "module")
 def __platform_properties(ctx):
     # fyi: this image is created by
     # https://chromium.googlesource.com/infra/infra/+/refs/heads/main/rbe/images/siso-chromium/linux/Dockerfile
-    container_image = "docker://gcr.io/chops-public-images-prod/rbe/siso-chromium/linux@sha256:2ab815965d0886100cec5495c53757698d7c73fa21b344b42ff182234391e47a"
+    container_image = "docker://gcr.io/chops-public-images-prod/rbe/siso-chromium/linux@sha256:bd0231e5a90df1485cc44f624494fd3df3c7bae5dcbef51b7929429f1170a345"
     return {
         "default": {
             # set platform properties for your worker.
@@ -386,8 +386,6 @@ Then, add the following GN args to your `args.gn`:
 use_remoteexec = true
 use_siso = true
 ```
-
-If `args.gn` contains `use_reclient`, remove it.
 
 That's it. Remember to always use `autoninja` for building Chromium as described
 below, instead of directly invoking `siso` or `ninja`.
@@ -652,10 +650,10 @@ xorg-xdpyinfo
 
 ### Crostini (Debian based)
 
-First install the `file` and `lsb-release` commands for the script to run properly:
+First install the `file` command for the script to run properly:
 
 ```shell
-$ sudo apt-get install file lsb-release
+$ sudo apt-get install file
 ```
 
 Then invoke install-build-deps.sh with the `--no-arm` argument,
@@ -836,7 +834,6 @@ reason, you will need to make sure that the following tools are available:
 
 * `curl`
 * `git`
-* `lsb_release`
 * `python3`
 * `sudo`
 * `file`
@@ -859,7 +856,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Mantatory tools (curl git python3) and optional tools (vim sudo)
 RUN apt-get update && \
-    apt-get install -y curl git lsb-release python3 git file vim sudo && \
+    apt-get install -y curl git python3 git file vim sudo && \
     rm -rf /var/lib/apt/lists/*
 
 # Export depot_tools path

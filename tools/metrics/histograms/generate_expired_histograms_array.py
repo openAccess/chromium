@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2017 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -7,7 +7,7 @@ import argparse
 import datetime
 import hashlib
 import os
-from pathlib import Path
+import pathlib
 import re
 import sys
 from typing import Iterable
@@ -300,7 +300,7 @@ def _GenerateFile(arguments):
     arguments.namespace,
   )
 
-  output_path = Path(arguments.output_dir) / arguments.header_filename
+  output_path = pathlib.Path(arguments.output_dir) / arguments.header_filename
   with open(output_path, 'w') as generated_file:
     generated_file.write(header_file_content)
 

@@ -21,15 +21,19 @@
 #include "third_party/blink/renderer/core/html/canvas/recording_test_utils.h"
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/html_slot_element.h"
+#include "third_party/blink/renderer/core/offscreencanvas/offscreen_canvas.h"
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page_animator.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/script/classic_script.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_compositing_test_platform.h"
 #include "third_party/blink/renderer/platform/graphics/test/gpu_test_utils.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
+#include "third_party/blink/renderer/platform/scheduler/public/post_cross_thread_task.h"
 #include "third_party/blink/renderer/platform/testing/paint_test_configurations.h"
+#include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 
 using ::blink_testing::ClearRectFlags;
 using ::blink_testing::FillFlags;
@@ -47,6 +51,26 @@ class HTMLCanvasElementTest : public RenderingTest,
 
  protected:
   void TearDown() override;
+
+  void AppendScript(const String& script_text) {
+    Element* script = GetDocument().CreateRawElement(html_names::kScriptTag);
+    script->setTextContent(script_text);
+    GetDocument().body()->appendChild(script);
+  }
+
+  void FlushCompositorTasks() {
+    // `AppendScript()` executes synchronously outside of a message-loop task,
+    // so `CanvasPerformanceMonitor::DidProcessTask()` does not run to reset
+    // its per-task state. Reset it before running a `RunLoop` so the next
+    // task's `WillProcessTask()` does not assert.
+    CanvasRenderingContext::GetCanvasPerformanceMonitor().ResetForTesting();
+    base::RunLoop run_loop;
+    GetDocument()
+        .GetExecutionContext()
+        ->GetAgentGroupSchedulerCompositorTaskRunner()
+        ->PostTask(FROM_HERE, run_loop.QuitClosure());
+    run_loop.Run();
+  }
 };
 
 INSTANTIATE_PAINT_TEST_SUITE_P(HTMLCanvasElementTest);
@@ -945,6 +969,9 @@ TEST_P(HTMLCanvasElementTest, SlotAssignmentDuringSetIsInCanvasSubtree) {
 
   ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
   GetDocument().GetSettings()->SetScriptEnabled(true);
+  // This test relies on focus moving into the date input's shadow subfields,
+  // which are not focusable by default on non-desktop Android.
+  GetDocument().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
   GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
@@ -1257,6 +1284,84 @@ TEST_P(HTMLCanvasElementTest, MoveElementBetweenShadowHostAndSlotKeepsFlag) {
   EXPECT_TRUE(slotted_child2->IsInCanvasSubtree());
 }
 
+TEST_P(HTMLCanvasElementTest,
+       MoveBeforeIntoDisplayLockedElementDetachesLayout) {
+  ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
+  GetDocument().body()->SetHTMLUnsafeWithoutTrustedTypes(R"HTML(
+    <canvas content="drawable">
+      <div drawable id="drawable">
+        <div id="parent">
+          <div id="target"></div>
+          <div id="benign"></div>
+        </div>
+        <div id="unlocked_in_canvas"></div>
+        <div id="locked_in_canvas" style="content-visibility: hidden"></div>
+      </div>
+    </canvas>
+    <div id="outside_source">
+      <div id="moved_into_locked_canvas"></div>
+    </div>
+    <div id="locked" style="content-visibility: hidden"></div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* parent = GetDocument().getElementById(AtomicString("parent"));
+  auto* target = GetDocument().getElementById(AtomicString("target"));
+  auto* benign = GetDocument().getElementById(AtomicString("benign"));
+  auto* unlocked_in_canvas =
+      GetDocument().getElementById(AtomicString("unlocked_in_canvas"));
+  auto* locked_in_canvas =
+      GetDocument().getElementById(AtomicString("locked_in_canvas"));
+  auto* moved_into_locked_canvas =
+      GetDocument().getElementById(AtomicString("moved_into_locked_canvas"));
+  auto* locked = GetDocument().getElementById(AtomicString("locked"));
+
+  ASSERT_TRUE(target->GetLayoutObject());
+  ASSERT_TRUE(benign->GetLayoutObject());
+  ASSERT_TRUE(moved_into_locked_canvas->GetLayoutObject());
+  EXPECT_TRUE(target->IsInCanvasSubtree());
+  EXPECT_TRUE(benign->IsInCanvasSubtree());
+  EXPECT_FALSE(moved_into_locked_canvas->IsInCanvasSubtree());
+
+  // 1. Moving an element out of canvas into a display-locked element clears
+  // IsInCanvasSubtree and detaches its LayoutObject on the next lifecycle
+  // update.
+  locked->moveBefore(target, nullptr, ASSERT_NO_EXCEPTION);
+  EXPECT_FALSE(target->IsInCanvasSubtree());
+
+  // 2. Moving an element from outside canvas into a display-locked element
+  // inside canvas sets IsInCanvasSubtree and detaches its LayoutObject from the
+  // old parent on the next lifecycle update.
+  locked_in_canvas->moveBefore(moved_into_locked_canvas, nullptr,
+                               ASSERT_NO_EXCEPTION);
+  EXPECT_TRUE(moved_into_locked_canvas->IsInCanvasSubtree());
+
+  // 3. Moving an element between unlocked containers inside canvas preserves
+  // its LayoutObject and IsInCanvasSubtree.
+  unlocked_in_canvas->moveBefore(benign, nullptr, ASSERT_NO_EXCEPTION);
+  EXPECT_TRUE(benign->IsInCanvasSubtree());
+  EXPECT_TRUE(benign->GetLayoutObject());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(target->IsInCanvasSubtree());
+  EXPECT_FALSE(target->GetLayoutObject());
+  EXPECT_FALSE(parent->GetLayoutObject()->SlowFirstChild());
+  EXPECT_TRUE(moved_into_locked_canvas->IsInCanvasSubtree());
+  EXPECT_FALSE(moved_into_locked_canvas->GetLayoutObject());
+  ASSERT_TRUE(benign->GetLayoutObject());
+  EXPECT_EQ(benign->GetLayoutObject()->Parent(),
+            unlocked_in_canvas->GetLayoutObject());
+
+  // Unlocking #locked_in_canvas attaches #moved_into_locked_canvas inside the
+  // canvas subtree.
+  locked_in_canvas->removeAttribute(html_names::kStyleAttr);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_TRUE(moved_into_locked_canvas->GetLayoutObject());
+  EXPECT_EQ(moved_into_locked_canvas->GetLayoutObject()->Parent(),
+            locked_in_canvas->GetLayoutObject());
+  EXPECT_TRUE(moved_into_locked_canvas->IsInCanvasSubtree());
+}
+
 // Moving a focused <input type=date> with no suggested value into a canvas
 // subtree must not rebuild its fields, so slot assignment recalc does not move
 // focus or run script.
@@ -1375,6 +1480,9 @@ TEST_P(HTMLCanvasElementTest, ReentrantSlotRecalcDuringDidRecalcAssignedNodes) {
 
   ScopedCanvasDrawElementForTest forced_canvas_draw_element_feature(true);
   GetDocument().GetSettings()->SetScriptEnabled(true);
+  // This test relies on focus moving into the date input's shadow subfields,
+  // which are not focusable by default on non-desktop Android.
+  GetDocument().GetSettings()->SetDateTimeSubfieldsFocusableForTesting(true);
   GetPage().GetFocusController().SetActive(true);
   GetPage().GetFocusController().SetFocused(true);
 
@@ -1530,6 +1638,374 @@ TEST_P(HTMLCanvasElementTest, MoveBeforeOutOfCanvasIntoShadowDom) {
   UpdateAllLifecyclePhasesForTest();
   EXPECT_TRUE(item5->IsInCanvasSubtree());
   EXPECT_TRUE(item5->GetLayoutObject());
+}
+
+TEST_P(HTMLCanvasElementTest, NormalCanvasDoesNotNotifyOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='normal' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("normal"));
+
+  AppendScript(R"JS(
+    var normalCanvas = document.getElementById('normal');
+    var normalCtx = normalCanvas.getContext('2d');
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Drawing to and finalizing a normal canvas should not trigger an
+  // out-of-band notification.
+  AppendScript("normalCtx.fillRect(0, 0, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+
+// TODO(crbug.com/41449024): enable desynchronized on Mac.
+#if !BUILDFLAG(IS_MAC)
+TEST_P(HTMLCanvasElementTest, LowLatencyCanvasNotifiesOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='low_latency' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("low_latency"));
+
+  AppendScript(R"JS(
+    var lowLatencyCanvas = document.getElementById('low_latency');
+    var lowLatencyCtx =
+        lowLatencyCanvas.getContext('2d', {desynchronized: true});
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Frame 1: Drawing to a visible low-latency canvas should notify when the
+  // frame is finalized and dispatched.
+  AppendScript("lowLatencyCtx.fillRect(0, 0, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Frame 2: Subsequent frames should also notify when finalized.
+  AppendScript("lowLatencyCtx.fillRect(2, 2, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+
+TEST_P(HTMLCanvasElementTest, OpaqueLowLatencyCanvasNotifiesOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='low_latency' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("low_latency"));
+
+  AppendScript(R"JS(
+    var lowLatencyCanvas = document.getElementById('low_latency');
+    var lowLatencyCtx = lowLatencyCanvas.getContext(
+        '2d', {alpha: false, desynchronized: true});
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Frame 1: With alpha: false, finalizing a drawn frame on a visible
+  // low-latency canvas should trigger an out-of-band notification.
+  AppendScript("lowLatencyCtx.fillRect(0, 0, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Frame 2: Subsequent frames should also notify when finalized.
+  AppendScript("lowLatencyCtx.fillRect(2, 2, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+
+TEST_P(HTMLCanvasElementTest,
+       HiddenLowLatencyCanvasDoesNotNotifyOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='low_latency' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("low_latency"));
+
+  AppendScript(R"JS(
+    var lowLatencyCanvas = document.getElementById('low_latency');
+    var lowLatencyCtx =
+        lowLatencyCanvas.getContext('2d', {desynchronized: true});
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // While visible, finalizing a frame should trigger an out-of-band
+  // notification.
+  AppendScript("lowLatencyCtx.fillRect(0, 0, 5, 5);");
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Once the canvas is hidden (display: none), finalizing a frame should no
+  // longer trigger an out-of-band notification.
+  AppendScript("lowLatencyCanvas.style.display = 'none';");
+  UpdateAllLifecyclePhasesForTest();
+  AppendScript("lowLatencyCtx.fillRect(1, 1, 5, 5);");
+  canvas->RenderingContext()->FinalizeFrame(FlushReason::kCanvasPushFrame);
+  canvas->PostFinalizeFrame(FlushReason::kCanvasPushFrame);
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+#endif  // !BUILDFLAG(IS_MAC)
+
+TEST_P(HTMLCanvasElementTest, PlaceholderCanvasNotifiesOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='canvas' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("canvas"));
+
+  AppendScript(R"JS(
+    var canvas = document.getElementById('canvas');
+    var offscreen = canvas.transferControlToOffscreen();
+    var ctx = offscreen.getContext('2d');
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  OffscreenCanvas* offscreen_canvas = OffscreenCanvas::FromPlaceholderId(
+      GetDocument().GetExecutionContext(), canvas->GetDomNodeId());
+  ASSERT_TRUE(offscreen_canvas);
+
+  // Frame 1: Pushing a frame from an OffscreenCanvas to a visible placeholder
+  // should trigger an out-of-band notification when the placeholder receives
+  // the resource.
+  AppendScript("ctx.fillRect(0, 0, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  EXPECT_TRUE(offscreen_canvas->PushFrameIfNeeded());
+  FlushCompositorTasks();
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Frame 2: Subsequent pushed frames should also trigger an out-of-band
+  // notification.
+  AppendScript("ctx.fillRect(2, 2, 5, 5);");
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  EXPECT_TRUE(offscreen_canvas->PushFrameIfNeeded());
+  FlushCompositorTasks();
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+
+TEST_P(HTMLCanvasElementTest,
+       HiddenPlaceholderCanvasDoesNotNotifyOutOfBandFrame) {
+  scoped_refptr<viz::TestContextProvider> raster_context_provider =
+      viz::TestContextProvider::CreateRaster();
+  InitializeSharedGpuContext(raster_context_provider.get());
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='canvas' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("canvas"));
+
+  AppendScript(R"JS(
+    var canvas = document.getElementById('canvas');
+    var offscreen = canvas.transferControlToOffscreen();
+    var ctx = offscreen.getContext('2d');
+  )JS");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  OffscreenCanvas* offscreen_canvas = OffscreenCanvas::FromPlaceholderId(
+      GetDocument().GetExecutionContext(), canvas->GetDomNodeId());
+  ASSERT_TRUE(offscreen_canvas);
+
+  // While the placeholder canvas is visible, pushing a frame should trigger an
+  // out-of-band notification.
+  AppendScript("ctx.fillRect(0, 0, 5, 5);");
+  EXPECT_TRUE(offscreen_canvas->PushFrameIfNeeded());
+  FlushCompositorTasks();
+  EXPECT_TRUE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  // Once the placeholder canvas is hidden (display: none), pushing a frame
+  // should no longer trigger an out-of-band notification.
+  AppendScript("canvas.style.display = 'none';");
+  UpdateAllLifecyclePhasesForTest();
+  AppendScript("ctx.fillRect(1, 1, 5, 5);");
+  EXPECT_TRUE(offscreen_canvas->PushFrameIfNeeded());
+  FlushCompositorTasks();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+}
+
+TEST_P(HTMLCanvasElementTest, WorkerPlaceholderCanvasNotifiesOutOfBandFrame) {
+  ScopedTestingPlatformSupport<GpuCompositingTestPlatform> accelerated_platform;
+  GetDocument().GetSettings()->SetScriptEnabled(true);
+  GetDocument().GetSettings()->SetAcceleratedCompositingEnabled(true);
+  SetBodyInnerHTML(R"HTML(
+    <canvas id='canvas' width='10' height='10'></canvas>
+  )HTML");
+  auto* canvas = To<HTMLCanvasElement>(GetElementById("canvas"));
+  DOMNodeId canvas_id = canvas->GetDomNodeId();
+  AppendScript(
+      "document.getElementById('canvas').transferControlToOffscreen();");
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(
+      GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+
+  MockWorkerReportingProxy reporting_proxy;
+  EXPECT_CALL(reporting_proxy, DidCreateWorkerGlobalScope(testing::_)).Times(1);
+  EXPECT_CALL(reporting_proxy, WillEvaluateScriptMock()).Times(1);
+  EXPECT_CALL(reporting_proxy, DidEvaluateTopLevelScriptMock(true, testing::_))
+      .Times(1);
+  EXPECT_CALL(reporting_proxy, WillDestroyWorkerGlobalScope()).Times(1);
+  EXPECT_CALL(reporting_proxy, DidTerminateWorkerThread()).Times(1);
+
+  WorkerThreadForTest worker_thread(reporting_proxy);
+  scoped_refptr<const SecurityOrigin> security_origin =
+      SecurityOrigin::Create(KURL("http://fake.url/"));
+  std::unique_ptr<GlobalScopeCreationParams> creation_params =
+      GlobalScopeCreationParams::CreateForWorkerForTesting(
+          security_origin.get(), KURL("http://fake.url/"));
+  creation_params->agent_group_scheduler_compositor_task_runner =
+      GetDocument()
+          .GetExecutionContext()
+          ->GetAgentGroupSchedulerCompositorTaskRunner();
+  worker_thread.Start(std::move(creation_params),
+                      WorkerBackingThreadStartupData::CreateDefault(),
+                      std::make_unique<WorkerDevToolsParams>());
+  RunWorkerToplevelScriptForTesting(worker_thread, security_origin.get(),
+                                    "// fake source code");
+  reporting_proxy.WaitUntilDidEvaluateTopLevelScript();
+
+  scoped_refptr<viz::TestContextProvider> worker_context_provider;
+  auto push_frame_on_worker =
+      [](WorkerThread* thread, DOMNodeId placeholder_id,
+         scoped_refptr<viz::TestContextProvider>* context_provider_out,
+         bool is_first_frame, base::WaitableEvent* done_event) {
+        ASSERT_TRUE(thread->IsCurrentThread());
+        WorkerGlobalScope* scope = To<WorkerGlobalScope>(thread->GlobalScope());
+        ScriptState* script_state = scope->ScriptController()->GetScriptState();
+        ScriptState::Scope script_scope(script_state);
+
+        OffscreenCanvas* offscreen =
+            OffscreenCanvas::FromPlaceholderId(scope, placeholder_id);
+        if (is_first_frame) {
+          *context_provider_out = viz::TestContextProvider::CreateRaster();
+          InitializeSharedGpuContext(context_provider_out->get());
+          offscreen = OffscreenCanvas::Create(script_state, 10, 10,
+                                              /*client_id=*/0, /*sink_id=*/0,
+                                              placeholder_id);
+          ASSERT_TRUE(offscreen->GetCanvasRenderingContext(
+              scope, CanvasRenderingContext::CanvasRenderingAPI::k2D, {}));
+        }
+        ASSERT_TRUE(offscreen);
+        offscreen->DidDraw(gfx::Rect(0, 0, 5, 5));
+        EXPECT_TRUE(offscreen->PushFrameIfNeeded());
+        done_event->Signal();
+      };
+
+  // Frame 1: Pushing a frame from a worker-thread OffscreenCanvas to a visible
+  // placeholder should post UpdatePlaceholderImage to the main thread and
+  // trigger an out-of-band notification.
+  {
+    base::WaitableEvent done;
+    PostCrossThreadTask(
+        *worker_thread.GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
+        CrossThreadBindOnce(
+            push_frame_on_worker, CrossThreadUnretained(&worker_thread),
+            canvas_id, CrossThreadUnretained(&worker_context_provider),
+            /*is_first_frame=*/true, CrossThreadUnretained(&done)));
+    done.Wait();
+    FlushCompositorTasks();
+    EXPECT_TRUE(
+        GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  }
+
+  // Frame 2: Subsequent frames pushed from the worker thread should also
+  // trigger an out-of-band notification.
+  {
+    base::WaitableEvent done;
+    PostCrossThreadTask(
+        *worker_thread.GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
+        CrossThreadBindOnce(
+            push_frame_on_worker, CrossThreadUnretained(&worker_thread),
+            canvas_id, CrossThreadUnretained(&worker_context_provider),
+            /*is_first_frame=*/false, CrossThreadUnretained(&done)));
+    done.Wait();
+    FlushCompositorTasks();
+    EXPECT_TRUE(
+        GetChromeClient().layer_tree_host()->TakeHasOutOfBandFrameForTesting());
+  }
+
+  // Clean up the worker-thread GPU context before terminating the worker.
+  {
+    base::WaitableEvent done;
+    PostCrossThreadTask(
+        *worker_thread.GetTaskRunner(TaskType::kInternalTest), FROM_HERE,
+        CrossThreadBindOnce(
+            [](scoped_refptr<viz::TestContextProvider>* context_provider,
+               base::WaitableEvent* done_event) {
+              SharedGpuContext::Reset();
+              context_provider->reset();
+              done_event->Signal();
+            },
+            CrossThreadUnretained(&worker_context_provider),
+            CrossThreadUnretained(&done)));
+    done.Wait();
+  }
+
+  worker_thread.Terminate();
+  worker_thread.WaitForShutdownForTesting();
 }
 
 }  // namespace blink

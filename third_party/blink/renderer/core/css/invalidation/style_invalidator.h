@@ -50,8 +50,8 @@ class CORE_EXPORT StyleInvalidator {
   bool CheckInvalidationSetsAgainstElement(Element&, SiblingData&);
 
   bool MatchesCurrentInvalidationSets(Element&) const;
+  bool MatchesCurrentInvalidationSetsAsFocused(Element&) const;
   bool MatchesCurrentInvalidationSetsAsSlotted(Element&) const;
-  bool MatchesCurrentInvalidationSetsAsParts(Element&) const;
 
   bool HasInvalidationSets() const {
     return !WholeSubtreeInvalid() &&
@@ -73,6 +73,9 @@ class CORE_EXPORT StyleInvalidator {
   }
   bool InvalidatesParts() const {
     return invalidation_flags_.InvalidatesParts();
+  }
+  bool InvalidatesFocused() const {
+    return invalidation_flags_.InvalidatesFocused();
   }
 
   void AddPendingNthSiblingInvalidationSet(
@@ -118,8 +121,11 @@ class CORE_EXPORT StyleInvalidator {
           : invalidation_set_(invalidation_set),
             invalidation_limit_(invalidation_limit) {}
 
+      // UnprotectedInReleaseForPerformance: Based on analysis of
+      // blink_perf.css ClassInvalidation. A SiblingData is created on the
+      // stack for every element visited by InvalidateChildren().
       raw_ptr<const SiblingInvalidationSet,
-              UnprotectedInRelease | DanglingUntriaged>
+              UnprotectedInReleaseForPerformance | DanglingUntriaged>
           invalidation_set_;
       unsigned invalidation_limit_;
     };

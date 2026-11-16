@@ -32,7 +32,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/state/tab_grid_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_observer_bridge.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -195,6 +194,9 @@ bool AreEnterpriseLookupsEnabled(const ProfileIOS& profile) {
 #pragma mark - TabGridStateObserving
 
 - (void)willEnterTabGrid {
+  // When in an incognito page it can use Gemini to switch to regular mode,
+  // which directly opens the regular tab grid.
+  [self observeCurrentBrowser];
   [self updateScreenshotProtection];
   [self updateTabGridWatermarking];
 }
@@ -204,20 +206,38 @@ bool AreEnterpriseLookupsEnabled(const ProfileIOS& profile) {
   [self removeTabGridWatermark];
 }
 
-#pragma mark - IncognitoStateObserver
+- (void)willChangePageTo:(TabGridPage)page {
+  if (!self.sceneState.tabGridState.tabGridVisible) {
+    return;
+  }
 
-- (void)willEnterIncognitoForState:(IncognitoState*)incognitoState {
-  // Monitor protection changes in the inconito browser.
   [self observeCurrentBrowser];
   [self updateScreenshotProtection];
   [self updateTabGridWatermarking];
 }
 
+#pragma mark - IncognitoStateObserver
+
+- (void)willEnterIncognitoForState:(IncognitoState*)incognitoState {
+  // In the tab grid mode, it's handled by the `willChangePageTo:`
+  if (self.sceneState.tabGridState.tabGridVisible) {
+    return;
+  }
+
+  // Monitor protection changes in the incognito browser.
+  [self observeCurrentBrowser];
+  [self updateScreenshotProtection];
+}
+
 - (void)willExitIncognitoForState:(IncognitoState*)incognitoState {
+  // In the tab grid mode, it's handled by the `willChangePageTo`
+  if (self.sceneState.tabGridState.tabGridVisible) {
+    return;
+  }
+
   // Monitor protection changes in the regular browser.
   [self observeCurrentBrowser];
   [self updateScreenshotProtection];
-  [self updateTabGridWatermarking];
 }
 
 #pragma mark - TabsDependencyInstalling
@@ -289,17 +309,23 @@ bool AreEnterpriseLookupsEnabled(const ProfileIOS& profile) {
 
 #pragma mark - Private
 
+// Returns YES if the scene is currently showing an Incognito view or the
+// Incognito page in the Tab Grid.
+- (BOOL)isIncognitoActive {
+  if (self.sceneState.tabGridState.tabGridVisible) {
+    return self.sceneState.tabGridState.currentPage == TabGridPageIncognitoTabs;
+  }
+  return self.sceneState.incognitoState.incognitoContentVisible;
+}
+
+// Gets the browser corresponding to the current window.
 - (Browser*)currentBrowser {
   CHECK(self.sceneState.UIEnabled);
   id<BrowserProviderInterface> browserProviderInterface =
       self.sceneState.browserProviderInterface;
 
-  id<BrowserProvider> browserProvider =
-      self.sceneState.incognitoState.incognitoContentVisible
-          ? browserProviderInterface.incognitoBrowserProvider
-          : browserProviderInterface.mainBrowserProvider;
-
-  return browserProvider.browser;
+  return [self isIncognitoActive] ? browserProviderInterface.incognitoBrowser
+                                  : browserProviderInterface.mainBrowser;
 }
 
 // Whether the scene can be protected.
@@ -520,9 +546,7 @@ bool AreEnterpriseLookupsEnabled(const ProfileIOS& profile) {
   ProfileIOS* profile = self.sceneState.profileState.profile;
   CHECK(profile);
 
-  return self.sceneState.incognitoState.incognitoContentVisible
-             ? profile->GetOffTheRecordProfile()
-             : profile;
+  return [self isIncognitoActive] ? profile->GetOffTheRecordProfile() : profile;
 }
 
 // Applies or removes screenshot protection on `windows`.

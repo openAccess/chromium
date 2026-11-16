@@ -19,6 +19,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
+#include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -33,7 +34,9 @@
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_asset_manager_delegate.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_monitor.h"
 #include "components/optimization_guide/core/model_execution/manifest_broker/manifest_solution_factory.h"
+#include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_download_progress_manager.h"
+#include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/usage_tracker.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/proto/manifest.pb.h"
@@ -60,12 +63,14 @@ class ManifestAssetManager : public UsageTracker::Observer,
                              public ManifestAssetManagerDelegate::AssetManager {
  public:
   // Constructs a ManifestAssetManager, and begins provide assets to the given
-  // `factory`.
-  explicit ManifestAssetManager(
+  // `factory`. `model_observers` (and other referenced objects) are retained
+  // and must outlive `ManifestAssetManager`.
+  ManifestAssetManager(
       PrefService& local_state,
       UsageTracker& usage_tracker,
       ManifestAssetManagerDelegate& delegate,
       component_updater::ComponentUpdateService* component_update_service,
+      base::ObserverList<OnDeviceModelControl::Observer>& model_observers,
       std::unique_ptr<ManifestSolutionFactory> factory);
   ~ManifestAssetManager() override;
 
@@ -102,6 +107,15 @@ class ManifestAssetManager : public UsageTracker::Observer,
   std::vector<std::pair<mojom::BrokerModelInfoPtr, base::FilePath>>
   GetBrokerModels() const;
 
+  // Returns installed base models and their install directories.
+  std::vector<std::pair<OnDeviceBaseModel, base::FilePath>>
+  GetInstalledBaseModels() const;
+
+  // Returns the ledger-tracked installation status for `base_model`.
+  static OnDeviceModelControl::ModelInstallState GetModelInstallState(
+      const PrefService& local_state,
+      OnDeviceBaseModel base_model);
+
   // ManifestAssetManagerDelegate::AssetManager:
   void OnAssetReady(const std::string& public_key,
                     const base::Version& version,
@@ -120,8 +134,8 @@ class ManifestAssetManager : public UsageTracker::Observer,
   void UninstallAllAssets();
 
   // Requests uninstall for all use cases requiring the base model asset
-  // identified by `model_asset_id` and recomputes asset priorities.
-  void UninstallCapability(const Manifest::AssetId& model_asset_id);
+  // identified by `base_model` and recomputes asset priorities.
+  void UninstallCapability(OnDeviceBaseModel base_model);
 
  private:
   enum class ComponentState {
@@ -158,6 +172,9 @@ class ManifestAssetManager : public UsageTracker::Observer,
 
     std::string asset_id() const { return asset_id_; }
     std::string requested_version() const { return requested_version_; }
+    OnDeviceModelControl::ModelInstallState install_state() const {
+      return install_state_;
+    }
     ComponentState state() const { return state_; }
     std::optional<base::FilePath> install_dir() const { return install_dir_; }
 
@@ -171,14 +188,16 @@ class ManifestAssetManager : public UsageTracker::Observer,
     // ComponentState transitions methods:
     // Resets the context after the component was uninstalled, whether by this
     // manager or by something else (e.g. the component updater unregistered
-    // it). A registration in flight is left to complete.
-    void SetUninstallComplete();
+    // it). A registration in flight is left to complete. Returns whether
+    // `install_state_` transitioned from `kInstalled` to `kUninstalled`.
+    bool SetUninstallComplete();
     void SetRegistering(const std::string& target_version);
     void SetRegistered();
     void SetOnDemandDownloading();
     void SetReadySoon();
-    void SetReady(const base::FilePath& install_dir,
-                  const base::Version& version);
+    OnDeviceModelControl::ModelInstallState SetReady(
+        const base::FilePath& install_dir,
+        const base::Version& version);
     void SetUninstalling();
     void SetOrphaned(const std::optional<base::Version>& version);
 
@@ -186,6 +205,8 @@ class ManifestAssetManager : public UsageTracker::Observer,
     // Persistent state (saved to prefs)
     std::string asset_id_;  // Associated asset ID from manifest.
     std::string requested_version_;
+    OnDeviceModelControl::ModelInstallState install_state_ =
+        OnDeviceModelControl::ModelInstallState::kNeverInstalled;
 
     // Transient state (in memory)
     ComponentState state_ = ComponentState::kNotRegistered;
@@ -193,10 +214,11 @@ class ManifestAssetManager : public UsageTracker::Observer,
     std::optional<base::Version> version_;
   };
 
-  // A ledger that handles saving and loading persistent component contexts to
-  // prefs.
+  // Persists component contexts and base model installation history in prefs.
   class AssetLedger {
    public:
+    using ModelInstallState = OnDeviceModelControl::ModelInstallState;
+
     explicit AssetLedger(PrefService& local_state);
     ~AssetLedger();
 
@@ -217,9 +239,10 @@ class ManifestAssetManager : public UsageTracker::Observer,
 
     // Flush the contexts for the given public keys to prefs.
     void SaveContexts(const std::vector<std::string>& public_keys);
-    // Removes the context for the given public key from the in memory map and
-    // prefs.
-    void RemoveContext(const std::string& public_key);
+
+    static ModelInstallState GetModelInstallState(
+        const PrefService& local_state,
+        OnDeviceBaseModel model);
 
    private:
     ComponentContext* GetContextImpl(const std::string& public_key,
@@ -291,6 +314,8 @@ class ManifestAssetManager : public UsageTracker::Observer,
   const raw_ref<UsageTracker> usage_tracker_;
   const raw_ref<ManifestAssetManagerDelegate> delegate_;
   raw_ptr<component_updater::ComponentUpdateService> component_update_service_;
+  const raw_ref<base::ObserverList<OnDeviceModelControl::Observer>>
+      model_observers_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   // Tracks the state of all components known to the manager. Keyed by the
   // component public key hex and computed for the union of components in the

@@ -735,8 +735,7 @@ void AXPlatformNodeWin::NotifyAccessibilityEvent(ax::mojom::Event event_type) {
 
   AXPlatformNodeBase::NotifyAccessibilityEvent(event_type);
 
-  // TODO(benjamin.beaudry): Uncomment DCHECK once https://crbug.com/331840469
-  // is fixed.
+  // TODO(crbug.com/331840469): Uncomment DCHECK once this bug is fixed.
   // DCHECK(event_type != ax::mojom::Event::kLiveRegionChanged ||
   //        IsWebContent() || IsUIAControl())
   //     << "For views, the LiveRegionChanged event should only be fired on
@@ -8454,8 +8453,15 @@ HRESULT AXPlatformNodeWin::ComputeListItemNameAsBstr(BSTR* value_bstr) const {
 }
 
 void AXPlatformNodeWin::AddAlertTarget() {
-  // Firing an alert event can reentrantly destroy this node via the STA
-  // message pump; don't insert a dangling pointer. crbug.com/503419515.
+  // Guard against this node having been marked destroyed (`Destroy()`, while
+  // kept alive as a ghost COM object by an outstanding reference) during event
+  // notification. Out-of-process `NotifyWinEvent` and `UiaRaiseAutomation*`
+  // notifications are delivered asynchronously, and neither API ever runs
+  // Chromium tasks or Mojo IPCs, but synchronous re-entrancy can still occur
+  // via an in-process subscriber (for example, a `WINEVENT_INCONTEXT` hook in
+  // `NotifyWinEvent`, or an inbound local UIA call dispatched while
+  // `UiaRaiseAutomation*` waits on an in-process cross-apartment subscriber);
+  // see crbug.com/503419515 and content/browser/SECURITY.md.
   if (IsDestroyed()) {
     return;
   }

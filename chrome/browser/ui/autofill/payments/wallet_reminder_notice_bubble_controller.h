@@ -7,21 +7,13 @@
 
 #include <string>
 
-#include "base/memory/raw_ref.h"
+#include "base/callback_list.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/autofill/autofill_bubble_controller_base.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
 class GURL;
-
-namespace actions {
-class ActionItem;
-}
-
-namespace content {
-class WebContents;
-}
 
 namespace tabs {
 class TabInterface;
@@ -36,8 +28,8 @@ class WalletReminderNoticeBubbleController
  public:
   DECLARE_USER_DATA(WalletReminderNoticeBubbleController);
 
-  WalletReminderNoticeBubbleController(tabs::TabInterface& tab_interface,
-                                       content::WebContents* web_contents);
+  explicit WalletReminderNoticeBubbleController(
+      tabs::TabInterface* tab_interface);
   WalletReminderNoticeBubbleController(
       const WalletReminderNoticeBubbleController&) = delete;
   WalletReminderNoticeBubbleController& operator=(
@@ -63,7 +55,7 @@ class WalletReminderNoticeBubbleController
   void OnBubbleClosed();
 
   // BubbleControllerBase:
-  void OnBubbleDiscarded() override {}
+  void OnBubbleDiscarded() override;
   BubbleType GetBubbleType() const override;
   base::WeakPtr<BubbleControllerBase> GetBubbleControllerBaseWeakPtr() override;
 
@@ -71,12 +63,13 @@ class WalletReminderNoticeBubbleController
   void DoShowBubble() override;
 
  private:
-  actions::ActionItem* GetActionItem();
-
-  const raw_ref<tabs::TabInterface> tab_interface_;
+  void WillDiscardContents(tabs::TabInterface* tab,
+                           content::WebContents* old_contents,
+                           content::WebContents* new_contents);
 
   ui::ScopedUnownedUserData<WalletReminderNoticeBubbleController>
       scoped_unowned_user_data_;
+  base::CallbackListSubscription will_discard_contents_subscription_;
 
   // Whether the bubble is shown as a re-show. When false, the bubble is shown
   // as an alert without stealing input focus from the webpage. Clicking the

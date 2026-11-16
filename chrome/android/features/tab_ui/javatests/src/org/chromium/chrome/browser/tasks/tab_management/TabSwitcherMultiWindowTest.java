@@ -51,10 +51,7 @@ import org.chromium.ui.base.DeviceFormFactor;
 
 /** Tests for Multi-window related behavior in grid tab switcher. */
 @RunWith(ChromeJUnit4ClassRunner.class)
-@CommandLineFlags.Add({
-    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
-    ChromeSwitches.DISABLE_TAB_MERGING_FOR_TESTING
-})
+@CommandLineFlags.Add(ChromeSwitches.DISABLE_TAB_MERGING_FOR_TESTING)
 @Restriction(DeviceFormFactor.PHONE)
 @MaxAndroidSdkLevel(value = VERSION_CODES.R, reason = "https://crbug.com/40215137")
 @Batch(Batch.PER_CLASS)
@@ -110,8 +107,7 @@ public class TabSwitcherMultiWindowTest {
                 InstrumentationRegistry.getInstrumentation(),
                 mCta1,
                 R.id.move_to_other_window_menu_id);
-        mCta2 = waitForSecondChromeTabbedActivity();
-        CriteriaHelper.pollUiThread(mCta2.getTabModelSelector()::isTabStateInitialized);
+        mCta2 = waitForSecondChromeTabbedActivity(/* isIncognito= */ true);
         moveActivityToFront(mCta1);
         moveTabsToOtherWindow(mCta1, 1);
 
@@ -161,8 +157,7 @@ public class TabSwitcherMultiWindowTest {
                 InstrumentationRegistry.getInstrumentation(),
                 mCta1,
                 R.id.move_to_other_window_menu_id);
-        mCta2 = waitForSecondChromeTabbedActivity();
-        CriteriaHelper.pollUiThread(mCta2.getTabModelSelector()::isTabStateInitialized);
+        mCta2 = waitForSecondChromeTabbedActivity(/* isIncognito= */ true);
 
         int incognitoTabCount1 =
                 ThreadUtils.runOnUiThreadBlocking(

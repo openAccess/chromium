@@ -58,7 +58,7 @@ export class IwaDevInstallDialogElement extends CrLitElement {
   protected accessor selectedTab_: TabIndex = TabIndex.DEV_PROXY;
   protected accessor isInstalling_: boolean = false;
   protected accessor installationError_: string = '';
-  protected accessor isCurrentTabValid_: boolean = false;
+  private accessor isCurrentTabValid_: boolean = false;
   protected accessor isOpened_: boolean = false;
 
   showDialog() {
@@ -84,7 +84,9 @@ export class IwaDevInstallDialogElement extends CrLitElement {
   onInstallationFinished(error?: string|null) {
     this.isInstalling_ = false;
     if (error) {
-      this.installationError_ = error;
+      if (!this.activeTab_?.handleInstallationError(error)) {
+        this.installationError_ = error;
+      }
     } else {
       this.closeDialog();
     }
@@ -93,6 +95,21 @@ export class IwaDevInstallDialogElement extends CrLitElement {
   protected onCancelClick_() {
     this.isOpened_ = false;
     this.$.dialog.cancel();
+  }
+
+  protected onDialogCancel_() {
+    this.isOpened_ = false;
+  }
+
+  protected onDragover_(e: DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'none';
+    }
+  }
+
+  protected onDrop_(e: DragEvent) {
+    e.preventDefault();
   }
 
   protected isInstallButtonEnabled_(): boolean {
@@ -104,7 +121,7 @@ export class IwaDevInstallDialogElement extends CrLitElement {
 
   private get activeTab_(): IwaDevInstallTabElement|null {
     return this.shadowRoot?.querySelector<IwaDevInstallTabElement>(
-               '.tab-content > *') ??
+               '.tab-content > :not(.error-message)') ??
         null;
   }
 
@@ -114,7 +131,7 @@ export class IwaDevInstallDialogElement extends CrLitElement {
   }
 
   protected onSelectedChanged_(e: CustomEvent<{value: number}>) {
-    if (this.isInstalling_) {
+    if (this.isInstalling_ || this.selectedTab_ === e.detail.value) {
       return;
     }
     this.selectedTab_ = e.detail.value;

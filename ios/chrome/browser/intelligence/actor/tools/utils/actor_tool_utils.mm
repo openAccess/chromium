@@ -6,6 +6,7 @@
 
 #import <optional>
 
+#import "base/notreached.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 
 namespace actor {
@@ -48,60 +49,41 @@ std::optional<std::string> ToolTypeToToolDisplayString(ToolType tool) {
     case ToolType::kUnknown:
       return std::nullopt;
   }
+  NOTREACHED();
 }
 
 std::optional<std::string> ActorActionCaseToToolName(Action::ActionCase tool) {
   switch (tool) {
     case Action::kClick:
-      return "ClickTool";
+      return ToolTypeToToolName(ToolType::kClick);
     case Action::kType:
-      return "TypeTool";
+      return ToolTypeToToolName(ToolType::kType);
     case Action::kScroll:
-      return "ScrollTool";
-    case Action::kMoveMouse:
-      return "MoveMouseTool";
+      return ToolTypeToToolName(ToolType::kScroll);
     case Action::kDragAndRelease:
-      return "DragAndReleaseTool";
+      return ToolTypeToToolName(ToolType::kDragAndRelease);
     case Action::kSelect:
-      return "SelectTool";
+      return ToolTypeToToolName(ToolType::kSelect);
     case Action::kNavigate:
-      return "NavigateTool";
+      return ToolTypeToToolName(ToolType::kNavigate);
     case Action::kBack:
-      return "HistoryBackTool";
+      return ToolTypeToToolName(ToolType::kBack);
     case Action::kForward:
-      return "HistoryForwardTool";
+      return ToolTypeToToolName(ToolType::kForward);
     case Action::kWait:
-      return "WaitTool";
+      return ToolTypeToToolName(ToolType::kWait);
     case Action::kCreateTab:
-      return "CreateTabTool";
+      return ToolTypeToToolName(ToolType::kCreateTab);
     case Action::kCloseTab:
-      return "CloseTabTool";
+      return ToolTypeToToolName(ToolType::kCloseTab);
     case Action::kActivateTab:
-      return "ActivateTabTool";
-    case Action::kCreateWindow:
-      return "CreateWindowTool";
-    case Action::kCloseWindow:
-      return "CloseWindowTool";
-    case Action::kActivateWindow:
-      return "ActivateWindowTool";
-    case Action::kYieldToUser:
-      return "YieldToUserTool";
+      return ToolTypeToToolName(ToolType::kActivateTab);
     case Action::kAttemptLogin:
-      return "AttemptLoginTool";
+      return ToolTypeToToolName(ToolType::kAttemptLogin);
     case Action::kScrollTo:
-      return "ScrollToTool";
-    case Action::kScriptTool:
-      return "ScriptToolTool";
-    case Action::kMediaControl:
-      return "MediaControlTool";
+      return ToolTypeToToolName(ToolType::kScrollTo);
     case Action::kAttemptFormFilling:
-      return "AttemptFormFillingTool";
-    case Action::kLoadAndExtractContent:
-      return "LoadAndExtractContentTool";
-    case Action::kAttemptOtpFilling:
-      return "AttemptOtpFillingTool";
-    case Action::kTranslatePage:
-      return "TranslatePageTool";
+      return ToolTypeToToolName(ToolType::kAttemptFormFilling);
     case Action::ACTION_NOT_SET:
     default:
       return std::nullopt;

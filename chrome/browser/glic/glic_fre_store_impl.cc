@@ -115,8 +115,8 @@ class GeminiEnterpriseGlicFreStore final : public GlicFreStore {
   ~GeminiEnterpriseGlicFreStore() override = default;
 
   prefs::FreStatus GetStatus(Profile* profile) const override {
-    // Not enforced until the GE web app can complete it.
-    // TODO(b/576766756): Remove once `features::kGeicFre` is enabled.
+    // Not enforced if `features::kGeicFre` is disabled, e.g. as a kill switch.
+    // TODO(b/581395107): Remove along with `features::kGeicFre`.
     if (!base::FeatureList::IsEnabled(features::kGeicFre)) {
       return prefs::FreStatus::kCompleted;
     }
@@ -136,9 +136,10 @@ class GeminiEnterpriseGlicFreStore final : public GlicFreStore {
   }
 
   void CompleteOnboarding(Profile* profile) const override {
-    // The consumer onboarding side effects (metrics, OS launcher, IPH) don't
-    // apply.
-    // TODO(b/576047042): Add GEiC onboarding metrics.
+    if (auto* glic_service = GlicKeyedService::Get(profile)) {
+      glic_service->metrics()->OnGeicOnboardingAccept();
+    }
+    // The OS launcher and IPH side effects don't apply.
     SetStatus(profile, prefs::FreStatus::kCompleted);
   }
 

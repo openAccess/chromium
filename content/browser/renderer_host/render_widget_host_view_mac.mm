@@ -355,6 +355,9 @@ void RenderWidgetHostViewMac::MigrateNSViewBridge(
     return;
   }
 
+  // Unbounded surfaces are not supported for remote NSViews (e.g. PWAs).
+  DCHECK(!unbounded_surface_window_);
+
   mojo::PendingAssociatedRemote<remote_cocoa::mojom::RenderWidgetHostNSViewHost>
       client = remote_ns_view_client_receiver_.BindNewEndpointAndPassRemote();
   mojo::PendingAssociatedReceiver<remote_cocoa::mojom::RenderWidgetHostNSView>
@@ -726,7 +729,13 @@ void RenderWidgetHostViewMac::UpdateCursor(const ui::Cursor& cursor) {
 }
 
 void RenderWidgetHostViewMac::DisplayCursor(const ui::Cursor& cursor) {
+  last_displayed_cursor_ = cursor;
   ns_view_->DisplayCursor(cursor);
+  // The surface window shows the cursor itself while the pointer is over it;
+  // see UnboundedSurfaceWindowMac::DisplayCursor().
+  if (unbounded_surface_window_) {
+    unbounded_surface_window_->DisplayCursor(cursor);
+  }
 }
 
 input::CursorManager* RenderWidgetHostViewMac::GetCursorManager() {
@@ -2835,8 +2844,14 @@ RenderWidgetHostViewMac::MaybeUpdateScreenInfosForHiDPI() {
 void RenderWidgetHostViewMac::CreateUnboundedSurface(
     const gfx::Rect& bounds_in_screen,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
+  // Unbounded surfaces are not supported for remote NSViews (e.g. PWAs).
+  DCHECK(!remote_ns_view_);
   unbounded_surface_window_ = std::make_unique<UnboundedSurfaceWindowMac>(
       this, bounds_in_screen, std::move(subframe_view));
+  // Blink only sends cursor changes, so seed the new window with the cursor
+  // currently displayed; otherwise it would show the arrow until the cursor
+  // next changes. The window applies it once the pointer enters.
+  unbounded_surface_window_->DisplayCursor(last_displayed_cursor_);
 }
 
 bool RenderWidgetHostViewMac::IsHeadless() const {

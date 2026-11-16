@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
 
 #import "base/scoped_observation.h"
+#import "base/test/bind.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/scoped_feature_list.h"
 #import "components/infobars/core/infobar.h"
@@ -12,6 +13,8 @@
 #import "components/infobars/core/infobar_manager.h"
 #import "components/optimization_guide/proto/hints.pb.h"
 #import "components/sync/test/test_sync_service.h"
+#import "components/translate/core/browser/language_state.h"
+#import "components/translate/core/browser/translate_manager.h"
 #import "components/ukm/ios/ukm_url_recorder.h"
 #import "components/ukm/test_ukm_recorder.h"
 #import "ios/chrome/browser/browser_content/model/edit_menu_tab_helper.h"
@@ -25,19 +28,25 @@
 #import "ios/chrome/browser/reader_mode/model/constants.h"
 #import "ios/chrome/browser/reader_mode/model/reader_mode_test.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
+#import "ios/chrome/browser/shared/public/commands/reader_mode_commands.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
+#import "ios/chrome/browser/translate/model/chrome_ios_translate_client.h"
 #import "ios/chrome/browser/web/model/web_view_proxy/web_view_proxy_tab_helper.h"
 #import "ios/chrome/browser/web_distiller/model/distiller_service.h"
 #import "ios/chrome/browser/web_distiller/model/distiller_service_factory.h"
 #import "ios/chrome/browser/web_selection/model/web_selection_tab_helper.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
+#import "ios/web/public/js_messaging/web_frames_manager.h"
 #import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_navigation_manager.h"
+#import "ios/web/public/test/fakes/fake_web_frame.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "services/metrics/public/cpp/ukm_builders.h"
 #import "testing/gmock/include/gmock/gmock.h"
+#import "third_party/ocmock/OCMock/OCMock.h"
+#import "third_party/ocmock/gtest_support.h"
 
 using IOS_ReaderMode_Distiller_Latency =
     ukm::builders::IOS_ReaderMode_Distiller_Latency;
@@ -84,8 +93,8 @@ class FakeDistillerService : public DistillerService {
 
   // Does not perform any action on page distillation.
   void DistillPage(const GURL& url,
-                   std::unique_ptr<dom_distiller::DistillerPage> distiller_page,
-                   dom_distiller::Distiller::DistillationFinishedCallback
+                   std::unique_ptr<web_distiller::DistillerPage> distiller_page,
+                   web_distiller::Distiller::DistillationFinishedCallback
                        finished_cb) override {}
 };
 
@@ -323,9 +332,10 @@ TEST_F(ReaderModeTabHelperTest, ReaderModeEligibleForSamePageNavigation) {
   navigation_context.SetIsSameDocument(true);
   navigation_context.SetHasCommitted(true);
   web_state()->OnNavigationStarted(&navigation_context);
+  web_state()->SetCurrentURL(test_url_with_ref);
+  web_state()->OnNavigationFinished(&navigation_context);
   web_state()->LoadSimulatedRequest(test_url_with_ref,
                                     @"<html><body>Content</body></html>");
-  web_state()->OnNavigationFinished(&navigation_context);
 
   ASSERT_TRUE(reader_mode_tab_helper()->CurrentPageIsDistillable());
 
@@ -961,6 +971,172 @@ TEST_F(ReaderModeTabHelperTest, ReaderModeContentDidCancelRequestForwarding) {
   EXPECT_EQ(GURL("https://referrer.url/"), load_params.referrer.url);
   EXPECT_EQ(web::ReferrerPolicyStrictOriginWhenCrossOrigin,
             load_params.referrer.policy);
+}
+
+// Tests that when activating Reader Mode on a translated page, the scroll
+// anchor element is prepared before reverting the translation on the source
+// page, and the scroll anchor text is hashed after reverting the translation.
+TEST_F(ReaderModeTabHelperTest, RevertsTranslationBeforeFindingScrollAnchor) {
+  GURL test_url("https://test.url/");
+  LoadWebpage(web_state(), test_url);
+  SetReaderModeState(web_state(), test_url,
+                     ReaderModeHeuristicResult::kReaderModeEligible, "Content");
+  task_environment()->FastForwardBy(base::Seconds(1));
+  ASSERT_TRUE(reader_mode_tab_helper()->CurrentPageIsEligibleForReaderMode());
+
+  ChromeIOSTranslateClient::CreateForWebState(
+      web_state(), InfoBarManagerImpl::FromWebState(web_state()));
+  ChromeIOSTranslateClient* translate_client =
+      ChromeIOSTranslateClient::FromWebState(web_state());
+  translate::LanguageState* language_state =
+      translate_client->GetTranslateManager()->GetLanguageState();
+  language_state->SetSourceLanguage("fr");
+  language_state->SetCurrentLanguage("en");
+  ASSERT_TRUE(language_state->IsPageTranslated());
+
+  web::FakeWebFrame* main_frame = static_cast<web::FakeWebFrame*>(
+      web_state()
+          ->GetWebFramesManager(web::ContentWorld::kIsolatedWorld)
+          ->GetMainWebFrame());
+  ASSERT_NE(nullptr, main_frame);
+
+  bool prepare_scroll_anchor_called = false;
+  bool revert_translation_called = false;
+  bool find_scroll_anchor_called = false;
+  main_frame->SetJavaScriptFunctionCallback(
+      "readerModeScrollAnchor.prepareScrollAnchor",
+      base::BindLambdaForTesting([&]() {
+        EXPECT_FALSE(revert_translation_called);
+        EXPECT_FALSE(find_scroll_anchor_called);
+        prepare_scroll_anchor_called = true;
+      }));
+  main_frame->SetJavaScriptFunctionCallback(
+      "translate.revertTranslation", base::BindLambdaForTesting([&]() {
+        EXPECT_TRUE(prepare_scroll_anchor_called);
+        EXPECT_FALSE(find_scroll_anchor_called);
+        revert_translation_called = true;
+      }));
+  main_frame->SetJavaScriptFunctionCallback(
+      "readerModeScrollAnchor.findScrollAnchor",
+      base::BindLambdaForTesting([&]() {
+        EXPECT_TRUE(prepare_scroll_anchor_called);
+        EXPECT_TRUE(revert_translation_called);
+        find_scroll_anchor_called = true;
+      }));
+
+  reader_mode_tab_helper()->ActivateReader(
+      ReaderModeAccessPoint::kContextualChip);
+  EXPECT_TRUE(prepare_scroll_anchor_called);
+  EXPECT_TRUE(revert_translation_called);
+  EXPECT_TRUE(find_scroll_anchor_called);
+}
+
+// Tests that when activating Reader Mode, the blur overlay is shown and is not
+// prematurely hidden before the blur animation and distillation complete.
+TEST_F(ReaderModeTabHelperTest, BlurOverlayShownAndNotHiddenBeforeTimeout) {
+  GURL test_url("https://test.url/");
+  LoadWebpage(web_state(), test_url);
+  SetReaderModeState(web_state(), test_url,
+                     ReaderModeHeuristicResult::kReaderModeEligible, "Content");
+  task_environment()->FastForwardBy(base::Seconds(1));
+  ASSERT_TRUE(reader_mode_tab_helper()->CurrentPageIsEligibleForReaderMode());
+
+  id reader_mode_handler = OCMStrictProtocolMock(@protocol(ReaderModeCommands));
+  reader_mode_tab_helper()->SetReaderModeHandler(reader_mode_handler);
+
+  __block ProceduralBlock blur_completion = nil;
+  OCMExpect([reader_mode_handler
+      showReaderModeBlurOverlay:[OCMArg checkWithBlock:^BOOL(
+                                            ProceduralBlock completion) {
+        blur_completion = [completion copy];
+        return completion != nil;
+      }]]);
+
+  reader_mode_tab_helper()->ActivateReader(
+      ReaderModeAccessPoint::kContextualChip);
+  EXPECT_OCMOCK_VERIFY(reader_mode_handler);
+  ASSERT_TRUE(blur_completion);
+
+  // Advance time for the 0.25s blur animation; `hideReaderModeBlurOverlay`
+  // must not be called before `kReaderModeDistillationTimeout`.
+  task_environment()->FastForwardBy(base::Milliseconds(250));
+  blur_completion();
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
+
+  // Once Reader Mode content has loaded, the precautionary blur timeout timer
+  // is stopped, so advancing past `kReaderModeDistillationTimeout` does not
+  // call `hideReaderModeBlurOverlay`.
+  task_environment()->FastForwardBy(kReaderModeDistillationTimeout);
+
+  OCMExpect([reader_mode_handler hideReaderModeBlurOverlay]);
+  reader_mode_tab_helper()->DeactivateReader(
+      ReaderModeDeactivationReason::kUserDeactivated);
+  EXPECT_OCMOCK_VERIFY(reader_mode_handler);
+}
+
+// Tests that an uncommitted navigation does not deactivate active Reader Mode.
+TEST_F(ReaderModeTabHelperTest, UncommittedNavigationDoesNotDeactivateReader) {
+  MockReaderModeTabHelperObserver mock_observer;
+  base::ScopedObservation<ReaderModeTabHelper, ReaderModeTabHelper::Observer>
+      observation(&mock_observer);
+  observation.Observe(reader_mode_tab_helper());
+
+  // Load an eligible page and activate Reading Mode.
+  GURL test_url("https://test.url/");
+  LoadWebpage(web_state(), test_url);
+  SetReaderModeState(web_state(), test_url,
+                     ReaderModeHeuristicResult::kReaderModeEligible, "Content");
+  WaitForPageLoadDelayAndRunUntilIdle();
+
+  EXPECT_CALL(mock_observer,
+              ReaderModeWebStateDidLoadContent(reader_mode_tab_helper(), _));
+  reader_mode_tab_helper()->ActivateReader(
+      ReaderModeAccessPoint::kContextualChip);
+  ASSERT_TRUE(WaitForAvailableReaderModeContentInWebState(web_state()));
+  ASSERT_TRUE(reader_mode_tab_helper()->IsActive());
+  ASSERT_TRUE(reader_mode_tab_helper()->CurrentPageIsDistillable());
+  testing::Mock::VerifyAndClearExpectations(&mock_observer);
+
+  base::HistogramTester histogram_tester;
+
+  // An uncommitted cross-document navigation (e.g. download or 204 response)
+  // should leave Reading Mode, distillability, and session metrics intact.
+  EXPECT_CALL(mock_observer, ReaderModeWebStateWillBecomeUnavailable(_, _, _))
+      .Times(0);
+  GURL other_url("https://other.url/");
+  web::FakeNavigationContext uncommitted_context;
+  uncommitted_context.SetHasCommitted(false);
+  uncommitted_context.SetIsSameDocument(false);
+  uncommitted_context.SetUrl(other_url);
+  web_state()->OnNavigationStarted(&uncommitted_context);
+  web_state()->OnNavigationFinished(&uncommitted_context);
+  EXPECT_TRUE(reader_mode_tab_helper()->IsActive());
+  EXPECT_TRUE(reader_mode_tab_helper()->CurrentPageIsDistillable());
+  histogram_tester.ExpectTotalCount(kReaderModeDeactivationReasonHistogram, 0);
+  histogram_tester.ExpectTotalCount(kReaderModeTimeSpentHistogram, 0);
+  testing::Mock::VerifyAndClearExpectations(&mock_observer);
+
+  // A subsequent committed cross-document navigation should deactivate
+  // Reading Mode and flush session metrics.
+  EXPECT_CALL(mock_observer,
+              ReaderModeWebStateWillBecomeUnavailable(
+                  reader_mode_tab_helper(), _,
+                  ReaderModeDeactivationReason::kNavigationDeactivated));
+  web::FakeNavigationContext committed_context;
+  committed_context.SetHasCommitted(true);
+  committed_context.SetIsSameDocument(false);
+  committed_context.SetUrl(other_url);
+  web_state()->OnNavigationStarted(&committed_context);
+  web_state()->SetCurrentURL(other_url);
+  web_state()->OnNavigationFinished(&committed_context);
+  EXPECT_FALSE(reader_mode_tab_helper()->IsActive());
+  EXPECT_FALSE(reader_mode_tab_helper()->CurrentPageIsDistillable());
+  // Both `ResetDecision` and `DeactivateReader` flush `kNavigationDeactivated`
+  // when navigating away from an active Reading Mode page.
+  histogram_tester.ExpectUniqueSample(
+      kReaderModeDeactivationReasonHistogram,
+      ReaderModeDeactivationReason::kNavigationDeactivated, 2);
+  histogram_tester.ExpectTotalCount(kReaderModeTimeSpentHistogram, 1);
 }
 
 INSTANTIATE_TEST_SUITE_P(

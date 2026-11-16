@@ -4,6 +4,7 @@
 
 #include "chrome/browser/skills/skills_ui_tab_controller.h"
 
+#include "base/functional/callback_helpers.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -14,6 +15,7 @@
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_window_controller.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_view.h"
 #include "chrome/browser/ui/webui/skills/skills_ui.h"
@@ -145,30 +147,62 @@ void SkillsUiTabController::OnWidgetDestroyed(views::Widget* widget) {
 }
 
 void SkillsUiTabController::OnSkillSaved(const std::string& skill_id) {
+  OnSkillSaved(skill_id, "", "");
+}
+
+void SkillsUiTabController::OnSkillSaved(const std::string& skill_id,
+                                         const std::string& skill_name,
+                                         const std::string& skill_icon) {
   if (auto* window_interface = tab_->GetBrowserWindowInterface()) {
     // Delegate the global toast action to the Window Controller.
-    auto* window_controller = SkillsUiWindowController::From(window_interface);
-    if (window_controller) {
-      bool hide_toast_button =
+    if (auto* window_controller =
+            SkillsUiWindowController::From(window_interface)) {
+      bool is_skills_page =
           tab_->GetContents()->GetVisibleURL().spec().starts_with(
               chrome::kChromeUISkillsURL);
-      window_controller->OnSkillSaved(skill_id, hide_toast_button);
+      if (is_skills_page || skill_id.empty()) {
+        window_controller->ShowToast(ToastId::kSkillSavedWithoutInvokeButton);
+      } else {
+        window_controller->StoreLastSavedSkillMetadata(skill_id, skill_name,
+                                                       skill_icon);
+        window_controller->ShowToast(ToastId::kSkillSaved);
+      }
     }
   }
 }
 
 void SkillsUiTabController::OnSkillDeleted(const std::string& skill_id) {
+  OnSkillDeleted(skill_id, base::NullCallback());
+}
+
+void SkillsUiTabController::OnSkillDeleted(
+    const std::string& skill_id,
+    base::OnceCallback<void(bool)> callback) {
   if (auto* window_interface = tab_->GetBrowserWindowInterface()) {
     // Delegate the global toast action to the Window Controller.
-    auto* window_controller = SkillsUiWindowController::From(window_interface);
-    if (window_controller) {
-      window_controller->OnSkillDeleted(skill_id);
+    if (auto* window_controller =
+            SkillsUiWindowController::From(window_interface)) {
+      if (callback) {
+        window_controller->ShowToast(ToastId::kSkillDeleted, skill_id,
+                                     std::move(callback));
+      } else {
+        window_controller->OnSkillDeleted(skill_id);
+      }
     }
   }
 }
 
+void SkillsUiTabController::InvokeSkill(std::string_view skill_id) {
+  InvokeSkill(skill_id, "", "", /*auto_submit=*/true);
+}
+
 bool SkillsUiTabController::IsShowing() const {
   return dialog_widget_ != nullptr;
+}
+
+void SkillsUiTabController::SetTargetForTesting(
+    std::unique_ptr<glic::Target> target) {
+  target_ = std::move(target);
 }
 
 Profile* SkillsUiTabController::GetProfile() {
@@ -266,16 +300,19 @@ void SkillsUiTabController::InvokeSkill(std::string_view skill_id,
   }
 }
 
-void SkillsUiTabController::SendPrompt(std::string_view prompt) {
+void SkillsUiTabController::SendPrompt(std::string_view prompt,
+                                       bool new_conversation) {
   if (auto* service = GetGlicService()) {
     glic::GlicInvokeOptions options(
-        glic::Target(tab_.get(), glic::DefaultConversation()),
+        new_conversation
+            ? glic::Target(tab_.get(), glic::NewConversation())
+            : glic::Target(tab_.get(), glic::DefaultConversation()),
         glic::mojom::InvocationSource::kSkills);
     options.prompts.emplace_back(prompt);
-    if (target_) {
+    if (!new_conversation && target_) {
       options.target = std::move(*target_);
-      target_.reset();
     }
+    target_.reset();
     service->InvokeWithAutoSubmit(
         glic::InvokeWithAutoSubmitPasskeyProvider::GetPassKey(),
         std::move(options));

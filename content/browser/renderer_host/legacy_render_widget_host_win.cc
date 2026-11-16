@@ -77,8 +77,9 @@ LegacyRenderWidgetHostHWND* LegacyRenderWidgetHostHWND::Create(
 
 void LegacyRenderWidgetHostHWND::Destroy() {
   // Delete DirectManipulationHelper before the window is destroyed. The
-  // helper's destructor makes COM calls that can spin a nested message loop
-  // that could destroy the window through another path before returning.
+  // helper's destructor makes COM calls that can synchronously dispatch window
+  // messages (or re-enter via a COM STA wait loop), potentially destroying the
+  // window through another path before returning.
   base::WeakPtr<LegacyRenderWidgetHostHWND> ref(
       msg_handler_weak_factory_.GetWeakPtr());
   direct_manipulation_helper_.reset();
@@ -130,9 +131,9 @@ void LegacyRenderWidgetHostHWND::UpdateParent(HWND new_parent) {
   if (current_parent != new_parent) {
     // ::SetParent, CreateDirectManipulationHelper (CoCreateInstance /
     // IDirectManipulationManager::Activate / Enable), and UpdateTooltip
-    // (NotifyWinEvent / UiaRaiseAutomationEvent) can synchronously dispatch
-    // window messages. Re-entrant dispatch may reach
-    // RenderWidgetHostViewAura::OnWindowDestroying ->
+    // (hiding a tooltip window or invoking an in-process WINEVENT_INCONTEXT
+    // hook via NotifyWinEvent) can synchronously re-enter on the current stack
+    // and reach RenderWidgetHostViewAura::OnWindowDestroying ->
     // LegacyRenderWidgetHostHWND::Destroy() -> ::DestroyWindow() ->
     // WM_NCDESTROY -> OnNCDestroy -> delete this. Guard against |this| being
     // freed mid-method, matching the pattern used in OnKeyboardRange et al.
@@ -213,8 +214,8 @@ void LegacyRenderWidgetHostHWND::Hide() {
 void LegacyRenderWidgetHostHWND::SetBounds(const gfx::Rect& bounds) {
   gfx::Rect bounds_in_pixel =
       display::win::GetScreenWin()->DIPToClientRect(hwnd(), bounds);
-  // ::SetWindowPos can spin a nested message loop, which can potentially
-  // destroy `this`.
+  // ::SetWindowPos synchronously dispatches window messages, which can
+  // potentially destroy `this`.
   base::WeakPtr<LegacyRenderWidgetHostHWND> ref(
       msg_handler_weak_factory_.GetWeakPtr());
   ::SetWindowPos(hwnd(), nullptr, bounds_in_pixel.x(), bounds_in_pixel.y(),
@@ -243,10 +244,12 @@ bool LegacyRenderWidgetHostHWND::InitOrDeleteSelf(HWND parent) {
   set_window_class_name(ui::kLegacyRenderWidgetHostHwnd);
   set_window_name(L"Chrome Legacy Window");
 
-  // WindowImpl::Init (::CreateWindowEx), NotifyWinEvent, UpdateTooltip, and
+  // WindowImpl::Init (::CreateWindowEx),
   // DirectManipulationHelper::CreateInstance (CoCreateInstance / Activate /
-  // Enable) can synchronously dispatch window messages. Re-entrant dispatch may
-  // reach RenderWidgetHostViewAura::OnWindowDestroying ->
+  // Enable), UpdateTooltip (hiding a tooltip window), and NotifyWinEvent (if an
+  // in-process WINEVENT_INCONTEXT hook DLL is loaded) can synchronously
+  // re-enter on the current stack and reach
+  // RenderWidgetHostViewAura::OnWindowDestroying ->
   // LegacyRenderWidgetHostHWND::Destroy() -> ::DestroyWindow() ->
   // WM_NCDESTROY -> OnNCDestroy -> delete this. Guard against |this| being
   // freed mid-method.

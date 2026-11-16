@@ -15,12 +15,12 @@ namespace network::orb {
 
 // Three conclusions are possible from sniffing a byte sequence:
 //  - No: meaning that the data definitively doesn't match the indicated type.
-//  - Yes: meaning that the data definitive does match the indicated type.
+//  - Yes: meaning that the data definitively does match the indicated type.
 //  - Maybe: meaning that if more bytes are appended to the stream, it's
 //    possible to get a Yes result. For example, if we are sniffing for a tag
 //    like "<html", a kMaybe result would occur if the data contains just
 //    "<ht".
-enum SniffingResult {
+enum class SniffingResult {
   kNo,
   kMaybe,
   kYes,
@@ -38,6 +38,29 @@ SniffingResult SniffForJSON(std::string_view data);
 // JSON data exfiltration by means of a <script> tag.
 COMPONENT_EXPORT(NETWORK_CPP)
 SniffingResult SniffForFetchOnlyResource(std::string_view data);
+
+// Separate implementations exposed for parity testing.
+// TODO(crbug.com/584780001): Remove C++ implementation once the Rust
+// implementation has launched.
+namespace internal {
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForHTMLCpp(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForXMLCpp(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForJSONCpp(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForFetchOnlyResourceCpp(std::string_view data);
+
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForHTMLRust(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForXMLRust(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForJSONRust(std::string_view data);
+COMPONENT_EXPORT(NETWORK_CPP)
+SniffingResult SniffForFetchOnlyResourceRust(std::string_view data);
+}  // namespace internal
 
 }  // namespace network::orb
 

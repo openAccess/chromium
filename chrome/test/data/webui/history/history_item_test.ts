@@ -108,19 +108,26 @@ suite('<history-item> unit test', function() {
 // <if expr="is_android">
 suite('<history-item> android test', function() {
   let startItem: HistoryItemElement;
+  let middleItem: HistoryItemElement;
   let nextItem: HistoryItemElement;
   let dir: string;
 
   setup(async function() {
     dir = document.documentElement.dir;
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
-    loadTimeData.overrideValues({isCriticalActionsEnabled: false});
+    loadTimeData.overrideValues({
+      isBrowsingHistoryCollapsibleDayCardsEnabled: true,
+      isCriticalActionsEnabled: false,
+    });
     BrowserProxyImpl.setInstance(new TestHistoryBrowserProxy());
 
     startItem = document.createElement('history-item');
     startItem.item = TEST_HISTORY_RESULTS[0]!;
     startItem.toggleAttribute('is-card-start', true);
     document.body.appendChild(startItem);
+    middleItem = document.createElement('history-item');
+    middleItem.item = TEST_HISTORY_RESULTS[2]!;
+    document.body.appendChild(middleItem);
     nextItem = document.createElement('history-item');
     nextItem.item = TEST_HISTORY_RESULTS[1]!;
     nextItem.toggleAttribute('is-card-end', true);
@@ -179,10 +186,75 @@ suite('<history-item> android test', function() {
         .join(' ');
   }
 
+  function radiusOf(
+      item: HistoryItemElement, selector: string, property: string): number {
+    const element = item.shadowRoot.querySelector(selector);
+    assertTrue(!!element, selector);
+    return Number.parseFloat(String(element.computedStyleMap().get(property)));
+  }
+
   test('HoverLayerFollowsCardCorners', function() {
-    for (const item of [startItem, nextItem]) {
+    for (const item of [startItem, middleItem, nextItem]) {
       assertEquals(
           corners(item, '#background'), corners(item, '#item-container'));
+    }
+    const outerRadius =
+        radiusOf(startItem, '#background', 'border-top-left-radius');
+    const innerRadius =
+        radiusOf(middleItem, '#background', 'border-top-left-radius');
+    assertTrue(innerRadius > 0, `inner radius: ${innerRadius}`);
+    assertTrue(
+        innerRadius < outerRadius,
+        `inner: ${innerRadius}, outer: ${outerRadius}`);
+  });
+
+  test('RowTilesAreSeparated', function() {
+    const rows = [startItem, middleItem, nextItem];
+    for (let i = 1; i < rows.length; i++) {
+      const gap = rectOf(rows[i]!, '#background').top -
+          rectOf(rows[i - 1]!, '#background').bottom;
+      assertTrue(gap > 0, `gap above row ${i}: ${gap}`);
+    }
+  });
+
+  test('LongDateHeaderStaysInHeader', async function() {
+    startItem.style.width = '320px';
+    startItem.item = {
+      ...TEST_HISTORY_RESULTS[0]!,
+      dateRelativeDay: 'Today - Wednesday, November 4, 2026 '.repeat(3),
+    };
+    await microtasksFinished();
+    const header = startItem.shadowRoot.querySelector('#date-accessed');
+    assertTrue(!!header);
+    for (const direction of ['ltr', 'rtl']) {
+      document.documentElement.dir = direction;
+      const headerRect = header.getBoundingClientRect();
+      const style = header.computedStyleMap();
+      const contentLeft = headerRect.left +
+          Number.parseFloat(String(style.get('padding-left')));
+      const contentRight = headerRect.right -
+          Number.parseFloat(String(style.get('padding-right')));
+      const headingRect = rectOf(startItem, '[role=heading]');
+      assertTrue(headingRect.left >= contentLeft - 0.05, direction);
+      assertTrue(headingRect.right <= contentRight + 0.05, direction);
+    }
+  });
+
+  test('DateHeaderAlignsWithFirstTile', async function() {
+    loadTimeData.overrideValues(
+        {isBrowsingHistoryCollapsibleDayCardsEnabled: false});
+    const staticHeaderItem = document.createElement('history-item');
+    staticHeaderItem.item = TEST_HISTORY_RESULTS[0]!;
+    staticHeaderItem.toggleAttribute('is-card-start', true);
+    document.body.appendChild(staticHeaderItem);
+    await microtasksFinished();
+    for (const item of [startItem, staticHeaderItem]) {
+      const header = rectOf(item, '#date-accessed');
+      const heading = rectOf(item, '[role=heading]');
+      const offset =
+          (heading.top + heading.bottom) / 2 - (header.top + header.bottom) / 2;
+      assertTrue(Math.abs(offset) <= 0.5, `heading offset: ${offset}`);
+      assertPx(header.bottom, rectOf(item, '#background').top);
     }
   });
 
@@ -692,7 +764,31 @@ suite('<history-item> integration test', function() {
         assertEquals(1, actionRows.length);
       });
 
+  test('day card collapse disabled by default', async function() {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryCollapsibleDayCardsEnabled: false,
+    });
+    element.addNewResults(TEST_HISTORY_RESULTS, false, true);
+    await microtasksFinished();
+
+    const items = element.shadowRoot.querySelectorAll('history-item');
+    assertEquals(TEST_HISTORY_RESULTS.length, items.length);
+    assertEquals(
+        null, items[0]!.shadowRoot.querySelector('#cardCollapseButton'));
+
+    const dateAccessed =
+        items[0]!.shadowRoot.querySelector<HTMLElement>('#date-accessed')!;
+    dateAccessed.click();
+    await microtasksFinished();
+
+    assertFalse(items[0]!.isCardCollapsed);
+    assertTrue(isVisible(items[1]!));
+  });
+
   test('collapse and expand day card', async function() {
+    loadTimeData.overrideValues({
+      isBrowsingHistoryCollapsibleDayCardsEnabled: true,
+    });
     element.addNewResults(TEST_HISTORY_RESULTS, false, true);
     await microtasksFinished();
 
@@ -707,8 +803,11 @@ suite('<history-item> integration test', function() {
     const dateAccessed =
         items[0]!.shadowRoot.querySelector<HTMLElement>('#date-accessed')!;
     assertEquals('true', dateAccessed.getAttribute('aria-expanded'));
-    const collapseBtn = items[0]!.$.cardCollapseButton;
-    assertEquals('cr:keyboard-arrow-up', collapseBtn.ironIcon);
+    const collapseBtn = items[0]!.shadowRoot.querySelector<HTMLElement>(
+        '#cardCollapseButton')!;
+    assertTrue(!!collapseBtn);
+    assertEquals(
+        'cr:keyboard-arrow-up', collapseBtn.getAttribute('iron-icon'));
     const cardCollapse =
         items[0]!.shadowRoot.querySelector<HTMLElement>('#card-collapse')!;
     assertTrue(cardCollapse.hasAttribute('opened'));
@@ -722,7 +821,8 @@ suite('<history-item> integration test', function() {
     assertTrue(items[0]!.isCardCollapsed);
     assertTrue(items[0]!.isCardEnd);
     assertEquals('false', dateAccessed.getAttribute('aria-expanded'));
-    assertEquals('cr:keyboard-arrow-down', collapseBtn.ironIcon);
+    assertEquals(
+        'cr:keyboard-arrow-down', collapseBtn.getAttribute('iron-icon'));
     assertFalse(cardCollapse.hasAttribute('opened'));
     assertFalse(isVisible(
         items[0]!.shadowRoot.querySelector<HTMLElement>('#item-container')));
@@ -743,75 +843,10 @@ suite('<history-item> integration test', function() {
     assertFalse(items[0]!.isCardEnd);
     assertTrue(items[4]!.isCardEnd);
     assertEquals('true', dateAccessed.getAttribute('aria-expanded'));
-    assertEquals('cr:keyboard-arrow-up', collapseBtn.ironIcon);
+    assertEquals(
+        'cr:keyboard-arrow-up', collapseBtn.getAttribute('iron-icon'));
     assertTrue(cardCollapse.hasAttribute('opened'));
     assertTrue(isVisible(items[1]!));
     assertTrue(isVisible(items[4]!));
-  });
-
-  test(
-      'collapse and expand website domain group within a day',
-      async function() {
-    element.addNewResults(TEST_HISTORY_RESULTS, false, true);
-    await microtasksFinished();
-
-    const items = element.shadowRoot.querySelectorAll('history-item');
-    assertEquals(TEST_HISTORY_RESULTS.length, items.length);
-
-    // Single-visit domains within a day do not show a domain collapse button.
-    assertTrue(items[0]!.isDomainGroupStart);
-    assertEquals(1, items[0]!.domainGroupSize);
-    assertEquals(
-        null, items[0]!.shadowRoot.querySelector('#domainCollapseButton'));
-    assertTrue(items[1]!.isDomainGroupStart);
-    assertEquals(1, items[1]!.domainGroupSize);
-    assertEquals(
-        null, items[1]!.shadowRoot.querySelector('#domainCollapseButton'));
-
-    // Repeated visits to www.website.com on 2016-03-16 (items[3] and items[4])
-    // form a collapsible domain group on items[3].
-    assertTrue(items[3]!.isDomainGroupStart);
-    assertEquals(2, items[3]!.domainGroupSize);
-    assertFalse(items[4]!.isDomainGroupStart);
-    assertEquals(0, items[4]!.domainGroupSize);
-
-    const domainBtn = items[3]!.shadowRoot.querySelector<HTMLElement>(
-        '#domainCollapseButton');
-    assertTrue(!!domainBtn);
-    assertTrue(isVisible(domainBtn));
-    assertEquals(
-        'cr:keyboard-arrow-up', domainBtn.getAttribute('iron-icon'));
-    assertEquals('true', domainBtn.getAttribute('aria-expanded'));
-    assertEquals(
-        null, items[4]!.shadowRoot.querySelector('#domainCollapseButton'));
-    assertTrue(items[3]!.hasTimeGap);
-    assertFalse(items[3]!.isCardEnd);
-    assertTrue(items[4]!.isCardEnd);
-
-    // Collapse the www.website.com group.
-    domainBtn.click();
-    await microtasksFinished();
-
-    assertTrue(items[3]!.isDomainGroupCollapsed);
-    assertFalse(items[3]!.isDomainCollapsed);
-    assertTrue(items[4]!.isDomainCollapsed);
-    assertTrue(isVisible(items[3]!));
-    assertFalse(isVisible(items[4]!));
-    assertTrue(items[3]!.isCardEnd);
-    assertFalse(items[3]!.hasTimeGap);
-    assertEquals(
-        'cr:keyboard-arrow-down', domainBtn.getAttribute('iron-icon'));
-    assertEquals('false', domainBtn.getAttribute('aria-expanded'));
-
-    // Re-expand the www.website.com group.
-    domainBtn.click();
-    await microtasksFinished();
-
-    assertFalse(items[3]!.isDomainGroupCollapsed);
-    assertFalse(items[4]!.isDomainCollapsed);
-    assertTrue(isVisible(items[4]!));
-    assertFalse(items[3]!.isCardEnd);
-    assertTrue(items[4]!.isCardEnd);
-    assertTrue(items[3]!.hasTimeGap);
   });
 });

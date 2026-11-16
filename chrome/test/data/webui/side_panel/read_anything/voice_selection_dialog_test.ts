@@ -10,13 +10,12 @@ import type {CrRadioButtonElement} from '//resources/cr_elements/cr_radio_button
 import type {CrRadioGroupElement} from '//resources/cr_elements/cr_radio_group/cr_radio_group.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import type {VoiceSelectionDialogElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {AudioBrowserProxyImpl, getVoiceNatureNaming, spinnerDebounceTimeout, stringToHtmlTestId, ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {getVoiceNatureNaming, spinnerDebounceTimeout, stringToHtmlTestId, ToolbarEvent, VoiceClientSideStatusCode, VoiceNotificationManager} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 import {MockTimer} from 'chrome-untrusted://webui-test/mock_timer.js';
 import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
 import {createSpeechSynthesisVoice, setupTestEnvironment} from './common.js';
-import type {TestAudioBrowserProxy} from './test_audio_browser_proxy.js';
 import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 suite('VoiceSelectionDialog', () => {
@@ -81,9 +80,7 @@ suite('VoiceSelectionDialog', () => {
     const result = setupTestEnvironment();
     metrics = result.metrics;
 
-    const audioBrowserProxy =
-        AudioBrowserProxyImpl.getInstance() as TestAudioBrowserProxy;
-    audioBrowserProxy.localeToDisplayName = {
+    result.audioBrowserProxy.localeToDisplayName = {
       'it': 'Italian',
       'it-it': 'Italian',
       'en-us': 'English (United States)',
@@ -94,6 +91,7 @@ suite('VoiceSelectionDialog', () => {
       save: 'Save',
       voiceSelectionLabel: 'Voice Selection',
       previewTooltip: 'Preview voice',
+      previewVoiceLabel: 'Preview $1',
       stopLabel: 'Stop preview',
       readingModeLanguageMenuItemLabel: 'Select $1',
       readingModeVoiceMenuDownloading: 'Downloading $1',
@@ -107,6 +105,13 @@ suite('VoiceSelectionDialog', () => {
     await setAvailableVoicesAndEnabledLangs(
         [googleNaturalVoice, googleStandardVoice, googleItalianVoice]);
     dialog.selectedVoice = googleNaturalVoice;
+  });
+
+  // Clearing the DOM doesn't close a modal dialog, so close it here.
+  teardown(() => {
+    if (dialog.isConnected) {
+      dialog.close();
+    }
   });
 
   test('does not render close icon button in dialog header', async () => {
@@ -522,7 +527,7 @@ suite('VoiceSelectionDialog', () => {
     }
   });
 
-  test('labels a mapped row with the nature name, still wrapped', async () => {
+  test('labels a mapped row with the nature name only', async () => {
     await setAvailableVoicesAndEnabledLangs([mappedVoice, mappedSpanishVoice]);
     await drawDialog();
 
@@ -530,7 +535,8 @@ suite('VoiceSelectionDialog', () => {
       const expected = getVoiceNatureNaming(voice.name)!;
       const row = getDropdownItemForVoice(voice);
 
-      assertEquals(`Select ${expected.natureName}`, row.getAttribute('label'));
+      assertEquals(expected.natureName, row.label);
+      assertEquals(expected.natureName, row.getAttribute('label'));
     }
   });
 
@@ -542,8 +548,8 @@ suite('VoiceSelectionDialog', () => {
     const nameSpan = row.querySelector<HTMLElement>('.voice-name')!;
 
     assertEquals(googleNaturalVoice.name, nameSpan.textContent);
-    assertEquals(
-        `Select ${googleNaturalVoice.name}`, row.getAttribute('label'));
+    assertEquals(googleNaturalVoice.name, row.label);
+    assertEquals(googleNaturalVoice.name, row.getAttribute('label'));
     // Absent from the DOM, not present and empty.
     assertEquals(null, row.querySelector('.voice-description'));
   });
@@ -593,9 +599,8 @@ suite('VoiceSelectionDialog', () => {
 
     assertEquals(4, rows.length);
     for (const row of rows) {
-      // The accessible name is bilingual -- nature name plus an English
-      // instruction -- so no single lang can describe it, and tagging the
-      // host would apply one to both halves.
+      // Unmapped voices show English engine strings even for non-English
+      // locales, so lang is set only on mapped identity spans, not the host.
       assertFalse(row.hasAttribute('lang'));
 
       for (const tagged of row.querySelectorAll('[lang]')) {
@@ -686,5 +691,52 @@ suite('VoiceSelectionDialog', () => {
 
         assertTrue(previewShiftTab.defaultPrevented);
         assertEquals(saveButton, dialog.shadowRoot.activeElement);
+      });
+
+  test(
+      'preview buttons have unique voice-specific aria-labels and keep Play' +
+          ' tooltip',
+      async () => {
+        await setAvailableVoicesAndEnabledLangs(
+            [mappedVoice, googleStandardVoice]);
+        await drawDialog();
+
+        const mappedNatureName = getVoiceNatureNaming(mappedVoice.name)!;
+        const mappedPreviewBtn = getPreviewButtonForVoice(mappedVoice);
+        const standardPreviewBtn =
+            getPreviewButtonForVoice(googleStandardVoice);
+
+        assertEquals(
+            `Preview ${mappedNatureName.natureName}`,
+            mappedPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Preview voice', mappedPreviewBtn.getAttribute('title'));
+
+        assertEquals(
+            `Preview ${googleStandardVoice.name}`,
+            standardPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Preview voice', standardPreviewBtn.getAttribute('title'));
+      });
+
+  test(
+      'preview button aria-label and title switch to stopLabel while playing',
+      async () => {
+        await drawDialog();
+
+        const previewBtn = getPreviewButtonForVoice(googleStandardVoice);
+        assertEquals(
+            `Preview ${googleStandardVoice.name}`,
+            previewBtn.getAttribute('aria-label'));
+
+        const mockTimer = new MockTimer();
+        mockTimer.install();
+        previewBtn.click();
+        mockTimer.tick(spinnerDebounceTimeout);
+        mockTimer.uninstall();
+        await microtasksFinished();
+
+        const updatedPreviewBtn = getPreviewButtonForVoice(googleStandardVoice);
+        assertEquals(
+            'Stop preview', updatedPreviewBtn.getAttribute('aria-label'));
+        assertEquals('Stop preview', updatedPreviewBtn.getAttribute('title'));
       });
 });

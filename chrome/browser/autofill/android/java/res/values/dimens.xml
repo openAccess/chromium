@@ -17,8 +17,6 @@ found in the LICENSE file.
     <dimen name="autofill_tooltip_vertical_padding">16dp</dimen>
 
     <dimen name="autofill_entity_attribute_top_padding">12dp</dimen>
-    <dimen name="autofill_entity_prompt_edit_icon_size">24dp</dimen>
-    <dimen name="autofill_entity_prompt_edit_icon_top_padding">24dp</dimen>
 
     <!-- Keyboard Accessory -->
     <dimen name="keyboard_accessory_suggestion_icon_size">20dp</dimen>
@@ -32,4 +30,7 @@ found in the LICENSE file.
     <dimen name="autofill_personal_context_settings_notice_icon_padding">16dp</dimen>
     <dimen name="autofill_personal_context_settings_notice_item_margin_bottom">16dp</dimen>
     <dimen name="autofill_personal_context_settings_notice_vertical_padding">16dp</dimen>
+
+    <!-- Autofill AI attribution verification bottom sheet dimensions -->
+    <dimen name="autofill_ai_attribution_verification_sheet_peek_height">96dp</dimen>
 </resources>

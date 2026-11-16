@@ -371,11 +371,6 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
     return plugin_->engine_->GetSelectionRectMap();
   }
 
-  gfx::Size GetThumbnailSize(int page_index) override {
-    return plugin_->engine_->GetThumbnailSize(page_index,
-                                              plugin_->device_scale_);
-  }
-
   gfx::Vector2dF GetViewportOriginOffset() override {
     return plugin_->available_area_.OffsetFromOrigin();
   }
@@ -386,10 +381,6 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
 
   void Invalidate(const gfx::Rect& rect) override {
     return plugin_->Invalidate(rect);
-  }
-
-  bool IsPageVisible(int page_index) override {
-    return plugin_->engine_->IsPageVisible(page_index);
   }
 
   bool IsSelectableTextOrLinkArea(const gfx::PointF& point) override {
@@ -426,10 +417,6 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
   void OnTextOrLinkAreaClick(const gfx::PointF& point,
                              int click_count) override {
     plugin_->engine_->OnTextOrLinkAreaClick(point, click_count);
-  }
-
-  int PageIndexFromPoint(const gfx::PointF& point) override {
-    return PageIndexFromPointImpl(point, /*must_be_visible=*/false);
   }
 
   void PostMessage(base::DictValue message) override {
@@ -488,13 +475,8 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
   }
 
   int VisiblePageIndexFromPoint(const gfx::PointF& point) override {
-    return PageIndexFromPointImpl(point, /*must_be_visible=*/true);
-  }
-
- private:
-  int PageIndexFromPointImpl(const gfx::PointF& point, bool must_be_visible) {
     for (int i = 0; i < plugin_->engine_->GetNumberOfPages(); ++i) {
-      if (must_be_visible && !IsPageVisible(i)) {
+      if (!plugin_->engine_->IsPageVisible(i)) {
         continue;
       }
 
@@ -509,6 +491,7 @@ class PdfViewWebPlugin::PdfInkModuleClientImpl : public PdfInkModuleClient {
     return -1;
   }
 
+ private:
   const raw_ref<PdfViewWebPlugin> plugin_;
 };
 #endif  // BUILDFLAG(ENABLE_PDF_INK2)
@@ -1924,6 +1907,8 @@ void PdfViewWebPlugin::OnMessage(const base::DictValue& message) {
           {"getSuggestedFileName",
            &PdfViewWebPlugin::HandleGetSuggestedFileName},
           {"getThumbnail", &PdfViewWebPlugin::HandleGetThumbnailMessage},
+          {"highlightSearchTerms",
+           &PdfViewWebPlugin::HandleHighlightSearchTermsMessage},
           {"highlightTextFragments",
            &PdfViewWebPlugin::HandleHighlightTextFragmentsMessage},
           {"print", &PdfViewWebPlugin::HandlePrintMessage},
@@ -2052,10 +2037,25 @@ void PdfViewWebPlugin::HandleGetThumbnailMessage(
                      weak_factory_.GetWeakPtr(), std::move(reply), page_index));
 }
 
+void PdfViewWebPlugin::HandleHighlightSearchTermsMessage(
+    const base::DictValue& message) {
+  const auto* search_terms_value_list = message.FindList("searchTerms");
+  CHECK(search_terms_value_list);
+  std::vector<std::string_view> search_terms;
+  search_terms.reserve(search_terms_value_list->size());
+  for (const base::Value& term : *search_terms_value_list) {
+    search_terms.push_back(term.GetString());
+  }
+  if (engine_->FindAndHighlightSearchTerms(search_terms)) {
+    engine_->ScrollToFirstSearchResult(base::checked_cast<uint32_t>(
+        message.FindInt("startPageIndex").value()));
+  }
+}
+
 void PdfViewWebPlugin::HandleHighlightTextFragmentsMessage(
     const base::DictValue& message) {
   const auto* text_fragment_value_list = message.FindList("textFragments");
-  std::vector<std::string> text_fragments;
+  std::vector<std::string_view> text_fragments;
   text_fragments.reserve(text_fragment_value_list->size());
   for (const base::Value& fragment : *text_fragment_value_list) {
     text_fragments.push_back(fragment.GetString());
@@ -3366,9 +3366,6 @@ void PdfViewWebPlugin::PrepareAndSetAccessibilityViewportInfo() {
                                                   1 / (device_scale_ * zoom_));
   viewport_info.zoom = zoom_;
   viewport_info.scale = device_scale_;
-  viewport_info.orientation =
-      static_cast<int32_t>(engine_->GetCurrentOrientation());
-  viewport_info.focus_info = {FocusObjectType::kNone, 0, 0};
 
   std::optional<Selection> selection = engine_->GetSelection();
   if (selection.has_value()) {

@@ -166,20 +166,14 @@ suite('VoiceLanguageController', () => {
   });
 
   test('setUserPreferredVoice', () => {
-    let sentVoiceName = '';
-    let sentLang = '';
-    audioBrowserProxy.onVoiceChange = (name, lang) => {
-      sentVoiceName = name;
-      sentLang = lang;
-    };
     const voice = createSpeechSynthesisVoice({lang: 'tr', name: 'Lion'});
 
     voiceLanguageController.setUserPreferredVoice(voice);
 
     assertTrue(onCurrentVoiceChange);
     assertEquals(voice, voiceLanguageController.getCurrentVoice());
-    assertEquals(voice.name, sentVoiceName);
-    assertEquals(voice.lang, sentLang);
+    assertArrayEquals(
+        [[voice.name, voice.lang]], audioBrowserProxy.getArgs('onVoiceChange'));
   });
 
   test('restoreFromPrefs removes unavailable languages from prefs', () => {
@@ -1245,6 +1239,7 @@ suite('VoiceLanguageController', () => {
 
     // <if expr="is_chromeos">
     test('chromeOS should disable if no google voices', () => {
+      visualBrowserProxy.readAnythingImprovedUiEnabled = false;
       const lang1 = 'en-US';
       const lang2 = 'fr';
       const lang3 = 'yue';
@@ -1271,6 +1266,37 @@ suite('VoiceLanguageController', () => {
       assertTrue(voiceLanguageController.isLangEnabled(lang2));
       assertFalse(voiceLanguageController.isLangEnabled(lang3));
     });
+
+    test(
+        'chromeOS with improved UI should only disable if no voices at all',
+        () => {
+          visualBrowserProxy.readAnythingImprovedUiEnabled = true;
+          const lang1 = 'en-US';
+          const lang2 = 'fr';
+          const lang3 = 'yue';
+          voiceLanguageController.enableLang(lang1);
+          audioBrowserProxy.onLanguagePrefChange(lang1.toLowerCase(), true);
+          voiceLanguageController.enableLang(lang2);
+          audioBrowserProxy.onLanguagePrefChange(lang2, true);
+          voiceLanguageController.enableLang(lang3);
+          audioBrowserProxy.onLanguagePrefChange(lang3, true);
+          createAndSetVoices(speech, [
+            {lang: lang1, name: 'Chrome OS US English'},
+            {lang: lang2, name: 'Google Thomas'},
+          ]);
+
+          voiceLanguageController.updateLanguageStatus(lang1, 'kOther');
+          voiceLanguageController.updateLanguageStatus(lang2, 'kOther');
+          voiceLanguageController.updateLanguageStatus(lang3, 'kOther');
+
+          const langsInPrefs = audioBrowserProxy.getLanguagesEnabledInPref();
+          assertTrue(langsInPrefs.includes(lang1.toLowerCase()));
+          assertTrue(langsInPrefs.includes(lang2));
+          assertFalse(langsInPrefs.includes(lang3));
+          assertTrue(voiceLanguageController.isLangEnabled(lang1));
+          assertTrue(voiceLanguageController.isLangEnabled(lang2));
+          assertFalse(voiceLanguageController.isLangEnabled(lang3));
+        });
     // </if>
 
     // <if expr="not is_chromeos">
@@ -1622,8 +1648,8 @@ suite('VoiceLanguageController', () => {
     setup(() => {
       visualBrowserProxy.readAnythingImprovedUiEnabled = true;
       createAndSetVoices(speech, [
-        {lang: 'en-us', name: 'Voice US'},
-        {lang: 'en-gb', name: 'Voice GB'},
+        {lang: 'en-us', name: 'Voice US (Natural)'},
+        {lang: 'en-gb', name: 'Voice GB (Natural)'},
       ]);
       voiceLanguageController.onLanguageSelected('en-us');
     });
@@ -1669,6 +1695,116 @@ suite('VoiceLanguageController', () => {
       assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
     });
 
+    test(
+        'with active language and user-chosen system voice preserves voice ' +
+            'when natural voices are installed',
+        () => {
+          const systemVoice =
+              createSpeechSynthesisVoice({lang: 'en-us', name: 'System Voice'});
+          const naturalVoice = createSpeechSynthesisVoice(
+              {lang: 'en-us', name: 'Google US (Natural)'});
+          speech.setVoices([systemVoice, naturalVoice]);
+          voiceLanguageController.onVoicesChanged();
+          voiceLanguageController.setUserPreferredVoice(systemVoice);
+          audioBrowserProxy.reset();
+          audioBrowserProxy.installedLangs = [];
+
+          voiceLanguageController.onLanguageSelected('en-us');
+
+          assertEquals(
+              'System Voice', voiceLanguageController.getCurrentVoice()?.name);
+          assertEquals(0, audioBrowserProxy.installedLangs.length);
+          assertEquals(
+              0, audioBrowserProxy.getCallCount('onLanguagePrefChange'));
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+        });
+
+    test(
+        'with active language and only system voice downloads voice pack',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'System Voice US'},
+          ]);
+          audioBrowserProxy.installedLangs = [];
+
+          voiceLanguageController.onLanguageSelected('en-us');
+
+          assertEquals(
+              'en-us', voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(audioBrowserProxy.installedLangs.includes('en-us'));
+        });
+
+    test(
+        'with auto-selected voice for disabled language enables language',
+        () => {
+          audioBrowserProxy.baseLanguageForSpeech = 'en-gb';
+          audioBrowserProxy.storedVoice = '';
+          createAndSetVoices(speech, [
+            {lang: 'en-gb', name: 'Voice GB (Natural)'},
+          ]);
+          assertEquals(
+              'Voice GB (Natural)',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertFalse(voiceLanguageController.isLangEnabled('en-gb'));
+
+          voiceLanguageController.onLanguageSelected('en-gb');
+
+          assertTrue(voiceLanguageController.isLangEnabled('en-gb'));
+          assertArrayEquals(
+              ['en-gb'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'when installed but no natural voice yet activates system voice',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'es-es', name: 'System Voice ES'},
+          ]);
+          // Set serverStatus to INSTALLED so requestInstall_ returns false
+          // while isLanguageLocallyAvailable is false (only system voice).
+          voiceLanguageController.updateLanguageStatus('es-es', 'kInstalled');
+
+          voiceLanguageController.onLanguageSelected('es-es');
+
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertEquals(
+              'System Voice ES',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'when install errors after onLanguageSelected with local system ' +
+            'voice activates system voice',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'es-es', name: 'System Voice ES'},
+          ]);
+
+          voiceLanguageController.onLanguageSelected('es-es');
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          voiceLanguageController.updateLanguageStatus('es-es', 'kOther');
+
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertEquals(
+              'System Voice ES',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
     test('with already pending voice is strict no-op', () => {
       voiceLanguageController.onLanguageSelected('es-es');
 
@@ -1690,9 +1826,12 @@ suite('VoiceLanguageController', () => {
               'es-es', voiceLanguageController.getPendingTargetLanguage());
 
           speech.setVoices([
-            createSpeechSynthesisVoice({lang: 'en-us', name: 'Voice US'}),
-            createSpeechSynthesisVoice({lang: 'en-gb', name: 'Voice GB'}),
-            createSpeechSynthesisVoice({lang: 'es-es', name: 'Voice ES'}),
+            createSpeechSynthesisVoice(
+                {lang: 'en-us', name: 'Voice US (Natural)'}),
+            createSpeechSynthesisVoice(
+                {lang: 'en-gb', name: 'Voice GB (Natural)'}),
+            createSpeechSynthesisVoice(
+                {lang: 'es-es', name: 'Voice ES (Natural)'}),
           ]);
 
           voiceLanguageController.updateLanguageStatus('es-es', 'kInstalled');
@@ -1724,9 +1863,12 @@ suite('VoiceLanguageController', () => {
 
           // Blink voices are loaded and onVoicesChanged fires.
           speech.setVoices([
-            createSpeechSynthesisVoice({lang: 'en-us', name: 'Voice US'}),
-            createSpeechSynthesisVoice({lang: 'en-gb', name: 'Voice GB'}),
-            createSpeechSynthesisVoice({lang: 'es-es', name: 'Voice ES'}),
+            createSpeechSynthesisVoice(
+                {lang: 'en-us', name: 'Voice US (Natural)'}),
+            createSpeechSynthesisVoice(
+                {lang: 'en-gb', name: 'Voice GB (Natural)'}),
+            createSpeechSynthesisVoice(
+                {lang: 'es-es', name: 'Voice ES (Natural)'}),
           ]);
           voiceLanguageController.onVoicesChanged();
 
@@ -1739,6 +1881,73 @@ suite('VoiceLanguageController', () => {
               'es-es', voiceLanguageController.getCurrentVoice()?.lang);
           assertArrayEquals(
               ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'with only system voice for natural language downloads voice pack',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'es-es', name: 'System Voice ES'},
+          ]);
+
+          voiceLanguageController.onLanguageSelected('es-es');
+
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(audioBrowserProxy.installedLangs.includes('es-es'));
+          assertEquals(NotificationType.DOWNLOADING, notificationType);
+          assertFalse(
+              audioBrowserProxy.getLanguagesEnabledInPref().includes('es-es'));
+          assertTrue(voiceLanguageController.isLangEnabled('en-us'));
+          assertFalse(voiceLanguageController.isLangEnabled('es-es'));
+
+          // Intermediate onVoicesChanged without natural voice does not
+          // activate.
+          voiceLanguageController.onVoicesChanged();
+
+          assertEquals(
+              'es-es', voiceLanguageController.getPendingTargetLanguage());
+
+          // Blink voices are loaded with Natural voice and onVoicesChanged
+          // fires.
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'es-es', name: 'System Voice ES'},
+            {lang: 'es-es', name: 'Google Spanish (Natural)'},
+          ]);
+
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertEquals(
+              'Google Spanish (Natural)',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
+
+    test(
+        'with local voice for language without natural voices activates ' +
+            'immediately',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'yue-hk', name: 'Voice Cantonese'},
+          ]);
+
+          voiceLanguageController.onLanguageSelected('yue-hk');
+
+          assertEquals(
+              null, voiceLanguageController.getPendingTargetLanguage());
+          assertTrue(voiceLanguageController.isLangEnabled('yue-hk'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertEquals(
+              'Voice Cantonese',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertArrayEquals(
+              ['yue-hk'], audioBrowserProxy.getLanguagesEnabledInPref());
         });
 
     test(
@@ -1802,5 +2011,93 @@ suite('VoiceLanguageController', () => {
       assertEquals(null, voiceLanguageController.getPendingTargetLanguage());
       assertEquals(0, audioBrowserProxy.installedLangs.length);
     });
+
+    test(
+        'preserves selected language and voice after restoreFromPrefs ' +
+            '(tab switch)',
+        () => {
+          createAndSetVoices(speech, [
+            {lang: 'en-us', name: 'Voice US (Natural)'},
+            {lang: 'en-gb', name: 'Voice GB (Natural)'},
+            {lang: 'es-es', name: 'Voice ES (Natural)'},
+          ]);
+          audioBrowserProxy.baseLanguageForSpeech = 'en';
+
+          voiceLanguageController.onLanguageSelected('es-es');
+          assertEquals('es-es', voiceLanguageController.getCurrentLanguage());
+          assertEquals(
+              'Voice ES (Natural)',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+
+          // Simulate switching tabs and returning, which invokes
+          // restoreFromPrefs while baseLanguageForSpeech is still 'en'.
+          voiceLanguageController.restoreFromPrefs();
+
+          assertEquals('es-es', voiceLanguageController.getCurrentLanguage());
+          assertEquals(
+              'Voice ES (Natural)',
+              voiceLanguageController.getCurrentVoice()?.name);
+          assertTrue(voiceLanguageController.isLangEnabled('es-es'));
+          assertFalse(voiceLanguageController.isLangEnabled('en-us'));
+          assertArrayEquals(
+              ['es-es'], audioBrowserProxy.getLanguagesEnabledInPref());
+        });
   });
+
+  test(
+      'setUserPreferredVoice preserves voice and language across ' +
+          'restoreFromPrefs',
+      () => {
+        const spanishVoice =
+            createSpeechSynthesisVoice({lang: 'es-ES', name: 'Voice ES'});
+        speech.setVoices([
+          defaultVoice,
+          spanishVoice,
+        ]);
+        voiceLanguageController.onVoicesChanged();
+        audioBrowserProxy.baseLanguageForSpeech = 'en';
+
+        voiceLanguageController.setUserPreferredVoice(spanishVoice);
+        assertEquals(spanishVoice, voiceLanguageController.getCurrentVoice());
+        assertEquals('es-es', voiceLanguageController.getCurrentLanguage());
+
+        // Simulate switching tabs and returning.
+        voiceLanguageController.restoreFromPrefs();
+
+        assertEquals(spanishVoice, voiceLanguageController.getCurrentVoice());
+        assertEquals('es-es', voiceLanguageController.getCurrentLanguage());
+      });
+
+  test(
+      'onPageLanguageChanged resets user-selected voice and switches to ' +
+          'new page language',
+      () => {
+        const spanishVoice =
+            createSpeechSynthesisVoice({lang: 'es-es', name: 'Voice ES'});
+        const frenchVoice =
+            createSpeechSynthesisVoice({lang: 'fr-fr', name: 'Voice FR'});
+        speech.setVoices([
+          defaultVoice,
+          spanishVoice,
+          frenchVoice,
+        ]);
+        voiceLanguageController.onVoicesChanged();
+        audioBrowserProxy.baseLanguageForSpeech = 'en';
+
+        voiceLanguageController.setUserPreferredVoice(spanishVoice);
+        assertEquals(spanishVoice, voiceLanguageController.getCurrentVoice());
+
+        // Navigating to a French page updates page language.
+        audioBrowserProxy.baseLanguageForSpeech = 'fr';
+        voiceLanguageController.onPageLanguageChanged();
+
+        assertEquals('fr', voiceLanguageController.getCurrentLanguage());
+        assertEquals(frenchVoice, voiceLanguageController.getCurrentVoice());
+
+        // Subsequent tab switch preserves the page language voice.
+        voiceLanguageController.restoreFromPrefs();
+        assertEquals('fr', voiceLanguageController.getCurrentLanguage());
+      });
 });

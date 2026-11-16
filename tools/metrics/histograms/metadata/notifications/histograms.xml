@@ -93,6 +93,11 @@ chromium-metrics-reviews@google.com.
                of a tray notification"/>
 </variants>
 
+<variants name="PushSubscriptionAppIdType">
+  <variant name="InstanceID" summary="-V2 app_id (InstanceID)"/>
+  <variant name="Legacy" summary="non-V2 app_id (legacy)"/>
+</variants>
+
 <histogram name="Notifications.Actions" enum="NotificationActionType"
     expires_after="2027-03-21">
   <owner>dewittj@chromium.org</owner>
@@ -189,18 +194,6 @@ chromium-metrics-reviews@google.com.
     <variant name="NativeUninitialized"
         summary="Native was not initialized when receiving the intent."/>
   </token>
-</histogram>
-
-<histogram name="Notifications.Android.IntentStartToNativeInitializedDuration"
-    units="ms" expires_after="2025-04-13">
-  <owner>peter@chromium.org</owner>
-  <owner>qinmin@chromium.org</owner>
-  <summary>
-    Records how long it takes from receiving a notification in the
-    TrampolineActivity to finish initializing the native library. A sample is
-    recorded the first time native library is initialized upon receiving a
-    notification intent. Measured on Android.
-  </summary>
 </histogram>
 
 <histogram name="Notifications.Android.JobIsAlreadyPending{IntentAction}"
@@ -310,17 +303,6 @@ chromium-metrics-reviews@google.com.
     <variant name=".PreUnsubscribe"
         summary="Counts only intents with action PRE_UNSUBSCRIBE."/>
   </token>
-</histogram>
-
-<histogram name="Notifications.Android.NotificationEvent"
-    enum="NotificationEvent" expires_after="2025-10-31">
-  <owner>qinmin@chromium.org</owner>
-  <summary>
-    Records various events on calling Android NotificationManager. One record is
-    emitted both before and after the call. This metric captures whether a call
-    is made, and whether it successfully returns the desired result. Only
-    measured on Android.
-  </summary>
 </histogram>
 
 <histogram name="Notifications.Android.SitesChannel" enum="BooleanUsage"
@@ -595,16 +577,6 @@ chromium-metrics-reviews@google.com.
   <token key="NotificationAction" variants="NotificationAction"/>
 </histogram>
 
-<histogram name="Notifications.Database.DeleteAllForOriginsResult"
-    enum="NotificationDatabaseStatus" expires_after="M98">
-  <owner>knollr@chromium.org</owner>
-  <owner>peter@chromium.org</owner>
-  <summary>
-    Records the result status codes of deleting all notification data for given
-    origins. This happens when notification permissions are revoked for a site.
-  </summary>
-</histogram>
-
 <histogram name="Notifications.Database.DeleteBeforeWriteResult"
     enum="NotificationDatabaseStatus" expires_after="2027-02-13">
   <owner>knollr@chromium.org</owner>
@@ -821,6 +793,22 @@ chromium-metrics-reviews@google.com.
     This histogram was previously unused from 2022-04-17 to 2026-02-13, so data
     might be missing.
   </summary>
+</histogram>
+
+<histogram name="Notifications.macOS.ActionReceived.{Style}"
+    enum="NotificationOperation" expires_after="2027-05-02">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    Records the operation (e.g. click, close, settings) received for a macOS
+    notification, sliced by the UI style {Style} of the notification. This can
+    be used alongside Notifications.macOS.DisplayNotificationResult.{Style} to
+    compute click-through rates (CTR) across macOS notification styles. Note
+    that Close counts may not be directly comparable across styles due to
+    differences in how NSUserNotificationCenter and UNUserNotificationCenter
+    report notification dismissals and removals.
+  </summary>
+  <token key="Style" variants="MacOSNotificationStyle"/>
 </histogram>
 
 <histogram name="Notifications.macOS.AppShimProcess.UptimeOnDisconnect"
@@ -1040,20 +1028,51 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="Notifications.Permissions.AppShim.OSPermissionRequestResult"
+<histogram name="Notifications.Permissions.AppShim.BadgeUpdateOSStatus"
+    enum="MacAppShimBadgeOSStatus" expires_after="2027-06-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The macOS system notification and badging permission status of an installed
+    web app's app shim at the time Chrome updates the app badge in the Dock.
+    Recorded in the app shim process when SetBadgeLabel queries the OS
+    notification settings (macOS only).
+  </summary>
+</histogram>
+
+<histogram name="Notifications.Permissions.AppShim.BadgeUpdateResult"
+    enum="MacAppShimBadgeResult" expires_after="2027-06-01">
+  <owner>mek@chromium.org</owner>
+  <owner>pwa-team@google.com</owner>
+  <summary>
+    The result of updating an installed web app's Dock badge in its app shim
+    process when Chrome updates a profile's app badge to a non-empty value.
+    Recorded in the browser process when the SetBadgeLabel Mojo callback runs
+    (or when the connection drops before completing) (macOS only).
+  </summary>
+</histogram>
+
+<histogram
+    name="Notifications.Permissions.AppShim.OSPermissionRequestResult{Source}"
     enum="UNNotificationPermissionRequestResult" expires_after="2027-06-01">
   <owner>mek@chromium.org</owner>
   <owner>pwa-team@google.com</owner>
   <summary>
     The result of asking a web app's app shim to request macOS notification
-    permission. Recorded in the browser process after the user grants
-    notification permission in Chrome to a site that is attributed to an
-    installed web app with an app shim (macOS only). Unlike
+    permission. Recorded in the browser process {Source} for a site that is
+    attributed to an installed web app with an app shim (macOS only). Unlike
     Notifications.Permissions.UNNotification.AppShim.PermissionRequest (which is
     recorded in the app shim process), this also captures requests that failed
     because the app shim could not be launched or did not support the
     UNNotification API.
   </summary>
+  <token key="Source">
+    <variant name=""
+        summary="after the user grants notification permission in Chrome"/>
+    <variant name=".FromNotificationsBubble"
+        summary="after the user clicks Allow in the notifications content
+                 setting bubble"/>
+  </token>
 </histogram>
 
 <histogram
@@ -1237,6 +1256,46 @@ chromium-metrics-reviews@google.com.
     This histogram was previously unused from 2022-09-11 to 2026-02-13, so data
     might be missing.
   </summary>
+</histogram>
+
+<histogram name="Notifications.PushMessaging.DeliveryStatus.{SubscriptionType}"
+    enum="PushEventStatus" expires_after="2027-05-06">
+  <owner>dibyapal@chromium.org</owner>
+  <owner>peter@chromium.org</owner>
+  <owner>src/chrome/browser/push_messaging/OWNERS</owner>
+  <summary>
+    Records the PushEventStatus outcome for a push message to a
+    {SubscriptionType} subscription. Recorded in
+    PushMessagingServiceImpl::DeliverMessageCallback when push message handling
+    finishes.
+
+    The type depends only on the app_id suffix (AppIdentifier::UseInstanceID).
+    If a non-V2 subscription subscribes again, Chrome keeps the app_id and gets
+    an InstanceID token for it. So Legacy can include InstanceID-backed
+    subscriptions.
+  </summary>
+  <token key="SubscriptionType" variants="PushSubscriptionAppIdType"/>
+</histogram>
+
+<histogram
+    name="Notifications.PushMessaging.StoredSubscriptionCount.{SubscriptionType}"
+    units="subscriptions" expires_after="2027-05-06">
+  <owner>dibyapal@chromium.org</owner>
+  <owner>peter@chromium.org</owner>
+  <owner>src/chrome/browser/push_messaging/OWNERS</owner>
+  <summary>
+    Records the number of stored {SubscriptionType} push subscriptions in a
+    profile. Recorded once per loaded regular user profile (not Off-The-Record,
+    Guest, System, or ChromeOS internal profiles) in
+    PushMessagingServiceImpl::InitializeForProfile during profile
+    initialization.
+
+    The type depends only on the app_id suffix (AppIdentifier::UseInstanceID).
+    If a non-V2 subscription subscribes again, Chrome keeps the app_id and gets
+    an InstanceID token for it. So Legacy can include InstanceID-backed
+    subscriptions.
+  </summary>
+  <token key="SubscriptionType" variants="PushSubscriptionAppIdType"/>
 </histogram>
 
 <histogram name="Notifications.Scheduler.BackgroundTask.NotificationShown"

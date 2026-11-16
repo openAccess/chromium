@@ -345,6 +345,8 @@ public class FuseboxCoordinatorUnitTest {
                 Set.of(
                         PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
                         PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
+                        PageClassification.BLANK,
+                        PageClassification.HOME_PAGE,
                         PageClassification.OTHER));
     }
 
@@ -358,6 +360,8 @@ public class FuseboxCoordinatorUnitTest {
                 Set.of(
                         PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
                         PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
+                        PageClassification.BLANK,
+                        PageClassification.HOME_PAGE,
                         PageClassification.OTHER,
                         PageClassification.ANDROID_SHORTCUTS_WIDGET));
     }
@@ -416,7 +420,7 @@ public class FuseboxCoordinatorUnitTest {
         RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
         mCoordinator.notifyOmniboxSessionEnded(true);
 
-        verify(mMetrics).notifyOmniboxSessionEnded(eq(true), anyInt(), anyInt(), any());
+        verify(mMetrics).notifyOmniboxSessionEnded(eq(true), anyInt(), anyInt(), anyInt(), any());
 
         mCoordinator.endInput();
         clearInvocations(mMetrics);
@@ -424,7 +428,7 @@ public class FuseboxCoordinatorUnitTest {
         mCoordinator.beginInput(mSession);
         mCoordinator.notifyOmniboxSessionEnded(false);
 
-        verify(mMetrics).notifyOmniboxSessionEnded(eq(false), anyInt(), anyInt(), any());
+        verify(mMetrics).notifyOmniboxSessionEnded(eq(false), anyInt(), anyInt(), anyInt(), any());
     }
 
     @Test

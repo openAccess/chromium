@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "base/test/gtest_util.h"
 #include "cc/animation/animation.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_timeline_range_offset.h"
@@ -30,6 +31,7 @@
 #include "third_party/blink/renderer/core/css/post_style_update_scope.h"
 #include "third_party/blink/renderer/core/css/properties/computed_style_utils.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
+#include "third_party/blink/renderer/core/css/resolver/style_resolver.h"
 #include "third_party/blink/renderer/core/css/style_recalc_context.h"
 #include "third_party/blink/renderer/core/dom/dom_token_list.h"
 #include "third_party/blink/renderer/core/dom/pseudo_element.h"
@@ -3912,7 +3914,9 @@ std::vector<CSSPropertyID> AnimatedSourceProperties() {
 // gtest-safe test suffix for a property, e.g. "transform".
 std::string AnimatedSourcePropertyName(
     const testing::TestParamInfo<CSSPropertyID>& info) {
-  std::string name = CSSProperty::Get(info.param).GetPropertyName();
+  const StringView property_name =
+      CSSProperty::Get(info.param).GetPropertyName();
+  std::string name(std::from_range, property_name.Span8());
   std::replace(name.begin(), name.end(), '-', '_');
   return name;
 }
@@ -4492,6 +4496,276 @@ TEST_P(CSSAnimationsTest, AttrTaintedStyleQueryUrlBlocking) {
   }
 }
 
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyLengthPercentage) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --lp {
+        syntax: "<length-percentage>";
+        inherits: false;
+        initial-value: 0px;
+      }
+      @keyframes hold_lp {
+        to { --lp: 0px; }
+      }
+      @keyframes add_lp {
+        from { --lp: 0px; }
+        to { --lp: 0px; }
+      }
+      #target {
+        --lp: attr(data-value type(<length-percentage>));
+        animation: hold_lp 1000s linear paused;
+        background-image: if(style(--lp >= 40px):
+                            url(https://example.com/test.png); else: none);
+      }
+      #target_add {
+        --lp: attr(data-value type(<length-percentage>));
+        animation: add_lp 1000s linear paused;
+        animation-composition: add;
+      }
+      #control {
+        --lp: 42px;
+        animation: hold_lp 1000s linear paused;
+        background-image: if(style(--lp >= 40px):
+                            url(https://example.com/test.png); else: none);
+      }
+    </style>
+    <div id="target" data-value="42px"></div>
+    <div id="target_add" data-value="42px"></div>
+    <div id="control"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(target->GetComputedStyle());
+  const CSSVariableData* target_data =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(target_data);
+  EXPECT_TRUE(target_data->IsAttrTainted());
+  EXPECT_FALSE(target->GetComputedStyle()->HasBackgroundImage());
+
+  Element* target_add = GetElementById("target_add");
+  ASSERT_TRUE(target_add);
+  ASSERT_TRUE(target_add->GetComputedStyle());
+  const CSSVariableData* add_data =
+      target_add->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(add_data);
+  EXPECT_TRUE(add_data->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--lp"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+  EXPECT_TRUE(control->GetComputedStyle()->HasBackgroundImage());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyTransform) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --t {
+        syntax: "<transform-list>";
+        inherits: false;
+        initial-value: translateX(0px);
+      }
+      @property --tf {
+        syntax: "<transform-function>";
+        inherits: false;
+        initial-value: translateX(0px);
+      }
+      @keyframes hold_transform {
+        to {
+          --t: translateX(0px);
+          --tf: translateX(0px);
+        }
+      }
+      #target {
+        --t: attr(data-value type(<transform-list>));
+        --tf: attr(data-value type(<transform-function>));
+        animation: hold_transform 1000s linear paused;
+      }
+      #control {
+        --t: translateX(42px);
+        --tf: translateX(42px);
+        animation: hold_transform 1000s linear paused;
+      }
+    </style>
+    <div id="target" data-value="translateX(42px)"></div>
+    <div id="control"></div>
+  )HTML");
+
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target);
+  ASSERT_TRUE(target->GetComputedStyle());
+  const CSSVariableData* target_t =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--t"));
+  ASSERT_TRUE(target_t);
+  EXPECT_TRUE(target_t->IsAttrTainted());
+  const CSSVariableData* target_tf =
+      target->GetComputedStyle()->GetVariableData(AtomicString("--tf"));
+  ASSERT_TRUE(target_tf);
+  EXPECT_TRUE(target_tf->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_t =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--t"));
+  ASSERT_TRUE(control_t);
+  EXPECT_FALSE(control_t->IsAttrTainted());
+  const CSSVariableData* control_tf =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--tf"));
+  ASSERT_TRUE(control_tf);
+  EXPECT_FALSE(control_tf->IsAttrTainted());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyCustomList) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --l {
+        syntax: "<number>+";
+        inherits: false;
+        initial-value: 0;
+      }
+      @keyframes add_keyframe_attr {
+        from { --l: attr(data-value type(<number>+)); }
+        to { --l: attr(data-value type(<number>+)); }
+      }
+      @keyframes hold_list {
+        to { --l: 0; }
+      }
+      @keyframes add_untainted {
+        from { --l: 10; }
+        to { --l: 10; }
+      }
+      #target_keyframe {
+        --l: 1;
+        animation: add_keyframe_attr 1000s linear paused;
+        animation-composition: add;
+      }
+      #target_underlying {
+        --l: attr(data-value type(<number>+));
+        animation: hold_list 1000s linear paused;
+      }
+      #target_underlying_mismatch {
+        --l: attr(data-multi type(<number>+));
+        animation: add_untainted 1000s linear paused;
+        animation-composition: add;
+      }
+      #control {
+        --l: 1;
+        animation: add_untainted 1000s linear paused;
+        animation-composition: add;
+      }
+    </style>
+    <div id="target_keyframe" data-value="42"></div>
+    <div id="target_underlying" data-value="42"></div>
+    <div id="target_underlying_mismatch" data-multi="10 20"></div>
+    <div id="control" data-value="42"></div>
+  )HTML");
+
+  Element* target_keyframe = GetElementById("target_keyframe");
+  ASSERT_TRUE(target_keyframe);
+  ASSERT_TRUE(target_keyframe->GetComputedStyle());
+  const CSSVariableData* keyframe_data =
+      target_keyframe->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(keyframe_data);
+  EXPECT_TRUE(keyframe_data->IsAttrTainted());
+
+  Element* target_underlying = GetElementById("target_underlying");
+  ASSERT_TRUE(target_underlying);
+  ASSERT_TRUE(target_underlying->GetComputedStyle());
+  const CSSVariableData* underlying_data =
+      target_underlying->GetComputedStyle()->GetVariableData(
+          AtomicString("--l"));
+  ASSERT_TRUE(underlying_data);
+  EXPECT_TRUE(underlying_data->IsAttrTainted());
+
+  Element* target_mismatch = GetElementById("target_underlying_mismatch");
+  ASSERT_TRUE(target_mismatch);
+  ASSERT_TRUE(target_mismatch->GetComputedStyle());
+  const CSSVariableData* mismatch_data =
+      target_mismatch->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(mismatch_data);
+  EXPECT_TRUE(mismatch_data->IsAttrTainted());
+
+  Element* control = GetElementById("control");
+  ASSERT_TRUE(control);
+  ASSERT_TRUE(control->GetComputedStyle());
+  const CSSVariableData* control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+
+  // Dynamically updating the underlying list value to an attr()-tainted value
+  // of the same length must invalidate the conversion cache and mark the
+  // animated property as tainted.
+  control->setAttribute(html_names::kStyleAttr,
+                        AtomicString("--l: attr(data-value type(<number>+))"));
+  UpdateAllLifecyclePhasesForTest();
+  control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_TRUE(control_data->IsAttrTainted());
+
+  control->setAttribute(html_names::kStyleAttr, AtomicString("--l: 5"));
+  UpdateAllLifecyclePhasesForTest();
+  control_data =
+      control->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(control_data);
+  EXPECT_FALSE(control_data->IsAttrTainted());
+}
+
+TEST_P(CSSAnimationsTest, AttrTaintedRegisteredPropertyFlipInterpolation) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @property --l {
+        syntax: "<number>+";
+        inherits: false;
+        initial-value: 0;
+      }
+      @property --m {
+        syntax: "<number> | <length>";
+        inherits: false;
+        initial-value: 0;
+      }
+      @keyframes flip_list {
+        from { --l: attr(data-value type(<number>+)); }
+        to { --l: 10 20; }
+      }
+      @keyframes flip_neutral {
+        to { --m: 100px; }
+      }
+      #target_list {
+        animation: flip_list 1000s steps(1, start) paused;
+      }
+      #target_multi {
+        --m: attr(data-value type(<number>));
+        animation: flip_neutral 1000s steps(1, start) paused;
+      }
+    </style>
+    <div id="target_list" data-value="42"></div>
+    <div id="target_multi" data-value="42"></div>
+  )HTML");
+
+  Element* target_list = GetElementById("target_list");
+  ASSERT_TRUE(target_list);
+  ASSERT_TRUE(target_list->GetComputedStyle());
+  const CSSVariableData* list_data =
+      target_list->GetComputedStyle()->GetVariableData(AtomicString("--l"));
+  ASSERT_TRUE(list_data);
+  EXPECT_TRUE(list_data->IsAttrTainted());
+
+  Element* target_multi = GetElementById("target_multi");
+  ASSERT_TRUE(target_multi);
+  ASSERT_TRUE(target_multi->GetComputedStyle());
+  const CSSVariableData* multi_data =
+      target_multi->GetComputedStyle()->GetVariableData(AtomicString("--m"));
+  ASSERT_TRUE(multi_data);
+  EXPECT_TRUE(multi_data->IsAttrTainted());
+}
+
 TEST_P(CSSAnimationsTest, ColorAnimationUsesIndependentInheritedFastPath) {
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -4523,6 +4797,153 @@ TEST_P(CSSAnimationsTest, ColorAnimationUsesIndependentInheritedFastPath) {
       GetElementById("child")->GetComputedStyle();
   EXPECT_EQ(animator_style->VisitedDependentColor(GetCSSPropertyColor()),
             child_style->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+class CSSAnimationsDeathTest : public RenderingTest {
+ public:
+  CSSAnimationsDeathTest()
+      : RenderingTest(MakeGarbageCollected<SingleChildLocalFrameClient>()) {}
+};
+
+TEST_F(CSSAnimationsDeathTest, CancelForbiddenDuringApplyAnimatedStyle) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      #target {
+        scroll-timeline-name: --t1, --t2;
+        animation: anim 1s linear;
+      }
+    </style>
+    <div id="host">
+      <div id="slotted" slot="s">
+        <div id="target"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* slotted = GetElementById("slotted");
+  Element* target = GetElementById("target");
+  ASSERT_TRUE(target->GetElementAnimations());
+  ASSERT_TRUE(target->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // Dirtying slot assignment before resolving animated style causes flat-tree
+  // timeline lookup in ForEachTimeline to trigger
+  // SlotAssignment::RecalcAssignment and detach #slotted/#target, calling
+  // CSSAnimations::Cancel() mid-iteration.
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        slotted->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        GetDocument().GetStyleResolver().ResolveStyle(target,
+                                                      StyleRecalcContext());
+      },
+      "InApplyAnimatedStyle");
+}
+
+TEST_F(CSSAnimationsDeathTest, CancelForbiddenDuringApplyAnimationUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      #scope {
+        timeline-scope: --t;
+      }
+      #first {
+        scroll-timeline-name: --t;
+      }
+    </style>
+    <div id="scope">
+      <div id="host">
+        <div id="first" slot="s"></div>
+        <div id="second" slot="s"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = GetElementById("host");
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* first = GetElementById("first");
+  Element* second = GetElementById("second");
+  ASSERT_TRUE(first->GetElementAnimations());
+  ASSERT_TRUE(first->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // Applying a pending timeline attachment compares flat-tree positions in
+  // DeferredTimeline::AttachTimeline; if a dirty slot assignment detaches
+  // slotted elements there, CSSAnimations::Cancel() must CHECK rather than
+  // clearing pending updates and attached timelines mid-application.
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        PostStyleUpdateScope post_style_update_scope(GetDocument());
+        second->setAttribute(html_names::kStyleAttr,
+                             AtomicString("scroll-timeline-name: --t"));
+        GetDocument().GetStyleResolver().ResolveStyle(second,
+                                                      StyleRecalcContext());
+        first->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        second->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        post_style_update_scope.Apply();
+      },
+      "InApplyAnimationUpdate");
+}
+
+TEST_F(CSSAnimationsDeathTest,
+       CancelForbiddenDuringCrossDocumentApplyAnimationUpdate) {
+  SetBodyInnerHTML(R"HTML(<iframe></iframe>)HTML");
+  SetChildFrameHTML(R"HTML(
+    <style>
+      #scope {
+        timeline-scope: --t;
+      }
+      #first {
+        scroll-timeline-name: --t;
+      }
+    </style>
+    <div id="scope">
+      <div id="host">
+        <div id="first" slot="s"></div>
+        <div id="second" slot="s"></div>
+      </div>
+    </div>
+  )HTML");
+
+  Element* host = ChildDocument().getElementById(AtomicString("host"));
+  ShadowRoot& shadow_root =
+      host->AttachShadowRootForTesting(ShadowRootMode::kOpen);
+  shadow_root.SetInnerHTMLWithoutTrustedTypes(
+      R"HTML(<slot name="s"></slot>)HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  Element* first = ChildDocument().getElementById(AtomicString("first"));
+  Element* second = ChildDocument().getElementById(AtomicString("second"));
+  ASSERT_TRUE(first->GetElementAnimations());
+  ASSERT_TRUE(first->GetElementAnimations()->CssAnimations().HasTimelines());
+
+  // PostStyleUpdateScope::current_ is process-wide, so an outer document's
+  // PostStyleUpdateScope can apply pending updates belonging to a child
+  // document. Verify the child document's StyleEngine also forbids Cancel().
+  EXPECT_CHECK_DEATH_WITH(
+      {
+        PostStyleUpdateScope outer_scope(GetDocument());
+        second->setAttribute(html_names::kStyleAttr,
+                             AtomicString("scroll-timeline-name: --t"));
+        ChildDocument().GetStyleResolver().ResolveStyle(second,
+                                                        StyleRecalcContext());
+        first->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        second->setAttribute(html_names::kSlotAttr, AtomicString("other"));
+        outer_scope.Apply();
+      },
+      "InApplyAnimationUpdate");
 }
 
 }  // namespace blink

@@ -34,7 +34,8 @@ HashRealTimeServiceFactory::HashRealTimeServiceFactory()
     : ProfileKeyedServiceFactory(
           "HashRealTimeService",
           ProfileSelections::Builder()
-              .WithRegular(ProfileSelection::kOriginalOnly)
+              .WithRegular(ProfileSelection::kOwnInstance)
+              .WithGuest(ProfileSelection::kOffTheRecordOnly)
               // TODO(crbug.com/41488885): Check if this service is needed for
               // Ash Internals.
               .WithAshInternals(ProfileSelection::kOriginalOnly)
@@ -56,7 +57,10 @@ HashRealTimeServiceFactory::BuildServiceInstanceForBrowserContext(
                           profile),
       V5SearchHashesCacheFactory::GetForProfile(profile),
       OhttpKeyServiceFactory::GetForProfile(profile),
-      WebUIContentInfoSingleton::GetInstance());
+      WebUIContentInfoSingleton::GetInstance(),
+      profile->IsGuestSession()
+          ? "Guest"
+          : (profile->IsOffTheRecord() ? "Incognito" : "Regular"));
 }
 
 // static

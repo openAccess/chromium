@@ -38,6 +38,7 @@ static_library("privacy") {
 
   deps = [
     "//ash/constants",
+    "//ash/strings",
     "//ash/webui/projector_app/public/cpp",
     "//base:i18n",
     "//build:branding_buildflags",
@@ -55,8 +56,6 @@ static_library("privacy") {
     "//chrome/browser/metrics",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/browser/web_applications",
-    "//chrome/common",
-    "//chrome/common:chrome_features",
     "//chromeos/ash/components/browser_context_helper",
     "//chromeos/ash/components/dbus/pciguard",
     "//chromeos/ash/components/dbus/userdataauth",
@@ -65,9 +64,9 @@ static_library("privacy") {
     "//chromeos/ash/components/settings",
     "//chromeos/ash/components/signin:identity_manager_provider",
     "//chromeos/ash/experiences/arc",
+    "//chromeos/ash/experiences/settings_ui/resources:strings",
     "//components/application_locale_storage",
     "//components/google/core/common",
-    "//components/sync/base:features",
     "//ui/base",
     "//ui/chromeos",
     "//ui/webui",

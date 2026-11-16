@@ -14,18 +14,14 @@ import type {TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
 import {html} from '//resources/lit/v3_0/lit.rollup.js';
 import {TabGroupDotSize} from '/tab_group_shared/tab_group_dot.js';
 
-import type {OrganizerListSectionClient, OrganizerListSectionDelegate, OrganizerSection} from '../organizer_list_section_delegate.js';
+import type {OrganizerAction, OrganizerListSectionClient, OrganizerListSectionDelegate, OrganizerSection} from '../organizer_list_section_delegate.js';
 import type {OrganizerListSectionItem} from '../organizer_list_section_item.js';
-import type {BrowserProxy as OrganizerPanelBrowserProxy} from '../organizer_panel.mojom-webui.js';
-import {browserProxyFactory as organizerPanelBrowserProxyFactory} from '../organizer_panel.mojom-webui.js';
 import type {BrowserProxy, TabGroup} from '../tab_groups.mojom-webui.js';
 import {browserProxyFactory} from '../tab_groups.mojom-webui.js';
 
 export class TabGroupsDelegate implements
     OrganizerListSectionDelegate<TabGroup> {
   private browserProxy_: BrowserProxy = browserProxyFactory.getInstance();
-  private organizerPanelBrowserProxy_: OrganizerPanelBrowserProxy =
-      organizerPanelBrowserProxyFactory.getInstance();
   private client_?: OrganizerListSectionClient;
   private listenerIds_: number[] = [];
   private tabGroups_: TabGroup[] = [];
@@ -86,7 +82,6 @@ export class TabGroupsDelegate implements
 
   private onCreateTabGroupClick_() {
     chrome.histograms?.recordUserAction?.('OrganizerPanel.CreateTabGroup');
-    this.organizerPanelBrowserProxy_.handler.closePanel();
     this.browserProxy_.handler.createNewTabGroup();
   }
 
@@ -97,11 +92,15 @@ export class TabGroupsDelegate implements
     this.browserProxy_.handler.openTabGroup(data.id);
   }
 
+  getItemClickAction(): OrganizerAction {
+    return 'OpenTabGroup';
+  }
+
   async onItemActionButtonClicked(
       item: OrganizerListSectionItem<TabGroup>, buttonElement: HTMLElement) {
     assert(item.data);
     const rect = buttonElement.getBoundingClientRect();
-    await this.browserProxy_.handler.showContextMenu(item.data.id, {
+    await this.showContextMenu_(item.data.id, {
       x: Math.round(rect.x),
       y: Math.round(rect.y),
       width: Math.round(rect.width),
@@ -112,12 +111,19 @@ export class TabGroupsDelegate implements
   async onItemContextMenuClicked(
       item: OrganizerListSectionItem<TabGroup>, x: number, y: number) {
     assert(item.data);
-    await this.browserProxy_.handler.showContextMenu(item.data.id, {
+    await this.showContextMenu_(item.data.id, {
       x: Math.round(x),
       y: Math.round(y),
       width: 0,
       height: 0,
     });
+  }
+
+  private async showContextMenu_(
+      id: string,
+      anchorRect: {x: number, y: number, width: number, height: number}) {
+    chrome.histograms?.recordUserAction?.('OrganizerPanel.OpenTabGroupMenu');
+    await this.browserProxy_.handler.showContextMenu(id, anchorRect);
   }
 
   private notifyClient_() {
@@ -148,10 +154,19 @@ export class TabGroupsDelegate implements
 
   private tabGroupToSectionItem_(group: TabGroup):
       OrganizerListSectionItem<TabGroup> {
+    const hasTitle = Boolean(group.title.trim());
+    const stateText = group.isOpen ? loadTimeData.getString('openTabGroup') :
+                                     loadTimeData.getString('savedTabGroup');
     return {
       title: [group.title],
+      ariaLabel: hasTitle ? undefined : [stateText],
       description: group.lastActiveElapsedText ?
           [{text: group.lastActiveElapsedText, matchable: false}] :
+          undefined,
+      ariaDescription: hasTitle ?
+          (group.lastActiveElapsedText ?
+               [stateText, group.lastActiveElapsedText] :
+               [stateText]) :
           undefined,
       prefixIcon: {
         element: html`<tab-group-dot .color="${group.color}"
@@ -160,7 +175,9 @@ export class TabGroupsDelegate implements
       },
       hoveredActionButton: {
         icon: 'cr:more-vert',
-        ariaLabel: loadTimeData.getString('tabGroupMoreOptions'),
+        ariaLabel: hasTitle ? loadTimeData.getStringF(
+                                  'tabGroupMoreOptionsWithTitle', group.title) :
+                              loadTimeData.getString('tabGroupMoreOptions'),
         tooltip: loadTimeData.getString('options'),
       },
       data: group,

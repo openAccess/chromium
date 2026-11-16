@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_controller.h"
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
+#include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/animations/common_animation_values.h"
@@ -1560,7 +1561,7 @@ void BrowserViewTabbedLayoutImpl::OnLayoutParamsChanged(
   // If the size of the visual client area changes, the size of our working
   // client area should change by the same amount.
   const gfx::Insets insets =
-      new_params.visual_client_area.InsetsFrom(old_params.visual_client_area);
+      old_params.visual_client_area.InsetsFrom(new_params.visual_client_area);
   layout_data_->revised_params.visual_client_area.Inset(insets);
 }
 
@@ -1781,15 +1782,24 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
             views()
                 .organizer_tray->background()
                 ->AsA<CustomCornersBackground>()) {
-      const bool blur = features::IsGlassFrameEnabled();
 
       const CustomCorners::ColorChoice base_color =
           anim.blend_with_vertical_tabs
               ? CustomCorners::ColorChoice(CustomCorners::FrameTheme())
               : organizer_panel::kOrganizerPanelBackgroundColor;
-      background->SetPrimaryColor(CustomCorners::ColorChoiceWithAlpha(
-          base_color,
-          anim.panel_opacity * (blur ? flyover_panel_opacity : 1.0)));
+
+      // Background blur is used in glass mode with normal tray, but when
+      // blending with the vertical tab strip it should mimic expand-on-hover
+      // behavior.
+      const bool use_background_blur =
+          in_glass_mode() && (!anim.blend_with_vertical_tabs ||
+                              features::kGlassExpandOnHoverEnabled.Get());
+      const double background_opacity =
+          anim.panel_opacity *
+          (use_background_blur ? flyover_panel_opacity : 1.0);
+      background->SetUseBackgroundBlur(use_background_blur);
+      background->SetPrimaryColor(
+          CustomCorners::ColorChoiceWithAlpha(base_color, background_opacity));
 
       CustomCornersBackground::Corners corners;
       corners[CornerOrientation::kTopLeading] =
@@ -1836,7 +1846,6 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
         }
       }
       background->SetCorners(corners);
-      background->SetUseBackgroundBlur(blur);
     }
 
     views().organizer_tray->layer()->SetOpacity(anim.panel_opacity);

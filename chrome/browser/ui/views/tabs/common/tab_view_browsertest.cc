@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 
+#include <string_view>
+
 #include "base/functional/callback_helpers.h"
 #include "base/i18n/test/scoped_rtl_for_testing.h"
 #include "base/run_loop.h"
@@ -14,12 +16,17 @@
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+#include "chrome/browser/themes/custom_theme_supplier.h"
+#include "chrome/browser/themes/theme_service.h"
+#include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/ui/animation/browser_animation_controller.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/recently_audible_helper.h"
+#include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -46,9 +53,11 @@
 #include "chrome/browser/ui/views/tabs/tab_style_views.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_browser_test_mixin.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/theme_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/data_sharing/public/features.h"
+#include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/tabs/public/tab_alert.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -63,8 +72,8 @@
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_test_api.h"
 #include "ui/events/base_event_utils.h"
-#include "ui/events/test/event_generator.h"
 #include "ui/gfx/animation/animation_test_api.h"
+#include "ui/gfx/canvas.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/favicon_size.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
@@ -280,6 +289,11 @@ class TabViewTestBase
 class TabViewTest : public TabViewTestBase,
                     public testing::WithParamInterface<TabStripOrientation> {
  public:
+  void SwapThemeSupplier(scoped_refptr<CustomThemeSupplier> theme_supplier) {
+    ThemeServiceFactory::GetForProfile(browser()->GetProfile())
+        ->SwapThemeSupplier(std::move(theme_supplier));
+  }
+
   void SetUpOnMainThread() override {
     TabViewTestBase::SetUpOnMainThread();
     if (GetParam() == TabStripOrientation::kHorizontal) {
@@ -358,11 +372,11 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, IconDataChanged) {
 
   // After setting the tab as needing attention, expect the attention indicator
   // to be showing.
-  tab_strip_model()->SetTabNeedsAttention(web_contents, true);
+  tabs::TabInterface* tab = tab_strip_model()->GetTabAtIndex(0);
+  TabUIHelper::From(tab)->SetNeedsAttention(true);
   EXPECT_TRUE(icon->GetShowingAttentionIndicator());
 
   // After discarding the tab, the icon should show the discard indicator.
-  tabs::TabInterface* tab = tab_strip_model()->GetTabAtIndex(0);
   performance_manager::user_tuning::UserPerformanceTuningManager::GetInstance()
       ->DiscardPageForTesting(tab->GetContents());
   EXPECT_TRUE(base::test::RunUntil(
@@ -652,7 +666,7 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics) {
   base::UserActionTester user_action_tester;
 
   AppendTab();
-  TabCollectionNode* tab_node = unpinned_collection_node()->GetNodeForHandle(
+  TabCollectionNode* tab_node = root_node()->GetNodeForHandle(
       tab_strip_model()->GetActiveTab()->GetHandle());
   TabCloseButton* close_button =
       views::AsViewClass<TabView>(tab_node->view())->close_button_for_testing();
@@ -672,7 +686,7 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics_AudioIndicator) {
       ->SetCurrentlyAudibleForTesting();
   tab_strip_model()->ActivateTabAt(0);
 
-  TabCollectionNode* tab_node = unpinned_collection_node()->GetNodeForHandle(
+  TabCollectionNode* tab_node = root_node()->GetNodeForHandle(
       tab_strip_model()->GetActiveTab()->GetHandle());
   TabCloseButton* close_button =
       views::AsViewClass<TabView>(tab_node->view())->close_button_for_testing();
@@ -704,7 +718,7 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics_RecordingIndicator) {
       /*screen_capture_ids=*/{}, content::MediaStreamUI::StateChangeCallback());
   tab_strip_model()->ActivateTabAt(0);
 
-  TabCollectionNode* tab_node = unpinned_collection_node()->GetNodeForHandle(
+  TabCollectionNode* tab_node = root_node()->GetNodeForHandle(
       tab_strip_model()->GetActiveTab()->GetHandle());
   TabCloseButton* close_button =
       views::AsViewClass<TabView>(tab_node->view())->close_button_for_testing();
@@ -720,10 +734,8 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics_SplitView) {
   base::UserActionTester user_action_tester;
 
   AppendSplitTab();
-  TabCollectionNode* tab_node =
-      unpinned_collection_node()
-          ->GetChildNodeOfType(TabCollectionNode::Type::SPLIT)
-          ->GetNodeForHandle(tab_strip_model()->GetActiveTab()->GetHandle());
+  TabCollectionNode* tab_node = root_node()->GetNodeForHandle(
+      tab_strip_model()->GetActiveTab()->GetHandle());
   TabCloseButton* close_button =
       views::AsViewClass<TabView>(tab_node->view())->close_button_for_testing();
   WaitForLayout(tab_node->view());
@@ -737,12 +749,10 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics_SplitView) {
   user_action_tester.ResetCounts();
 
   AppendSplitTab();
-  tab_node = unpinned_collection_node()
-                 ->GetChildNodeOfType(TabCollectionNode::Type::SPLIT)
-                 ->GetNodeForHandle(
-                     tab_strip_model()
-                         ->GetTabAtIndex(tab_strip_model()->active_index() + 1)
-                         ->GetHandle());
+  tab_node = root_node()->GetNodeForHandle(
+      tab_strip_model()
+          ->GetTabAtIndex(tab_strip_model()->active_index() + 1)
+          ->GetHandle());
   close_button =
       views::AsViewClass<TabView>(tab_node->view())->close_button_for_testing();
   WaitForLayout(tab_node->view());
@@ -756,26 +766,43 @@ IN_PROC_BROWSER_TEST_P(TabViewTest, LogsTabCloseMetrics_SplitView) {
 
 IN_PROC_BROWSER_TEST_P(TabViewTest,
                        SplitTabsAnchorHoverCardToParentSplitViewContainer) {
+  TabHoverCardController::set_disable_animations_for_testing(true);
+  base::ScopedClosureRunner reset_animations(base::BindOnce(
+      &TabHoverCardController::set_disable_animations_for_testing, false));
   AppendSplitTab();
-
-  // Get the view for both tabs in the split.
-  // Note: tab at index 0 is a normal tab.
   tabs::TabInterface* tab_1 = tab_strip_model()->GetTabAtIndex(1);
   tabs::TabInterface* tab_2 = tab_strip_model()->GetTabAtIndex(2);
-
   TabCollectionNode* split_tab_node =
       unpinned_collection_node()->GetChildNodeOfType(
           TabCollectionNode::Type::SPLIT);
   SplitTabView* split_tab_view =
       views::AsViewClass<SplitTabView>(split_tab_node->view());
-
   TabView* tab_1_view = views::AsViewClass<TabView>(
-      split_tab_node->GetNodeForHandle(tab_1->GetHandle())->view());
-  ASSERT_EQ(tab_1_view->GetAnchor().GetIfView(), split_tab_view);
-
+      root_node()->GetNodeForHandle(tab_1->GetHandle())->view());
   TabView* tab_2_view = views::AsViewClass<TabView>(
-      split_tab_node->GetNodeForHandle(tab_2->GetHandle())->view());
-  ASSERT_EQ(tab_2_view->GetAnchor().GetIfView(), split_tab_view);
+      root_node()->GetNodeForHandle(tab_2->GetHandle())->view());
+  views::View* expected_anchor_1 =
+      GetParam() == TabStripOrientation::kVertical
+          ? static_cast<views::View*>(split_tab_view)
+          : static_cast<views::View*>(tab_1_view);
+  views::View* expected_anchor_2 =
+      GetParam() == TabStripOrientation::kVertical
+          ? static_cast<views::View*>(split_tab_view)
+          : static_cast<views::View*>(tab_2_view);
+
+  hover_card_controller()->UpdateHoverCard(tab_1_view,
+                                           HoverCardUpdateType::kHover);
+
+  ASSERT_TRUE(hover_card_controller()->hover_card_for_testing());
+  EXPECT_EQ(hover_card_controller()->hover_card_for_testing()->GetAnchorView(),
+            expected_anchor_1);
+
+  hover_card_controller()->UpdateHoverCard(tab_2_view,
+                                           HoverCardUpdateType::kHover);
+
+  ASSERT_TRUE(hover_card_controller()->hover_card_for_testing());
+  EXPECT_EQ(hover_card_controller()->hover_card_for_testing()->GetAnchorView(),
+            expected_anchor_2);
 }
 
 IN_PROC_BROWSER_TEST_P(TabViewTest,
@@ -788,34 +815,30 @@ IN_PROC_BROWSER_TEST_P(TabViewTest,
   tabs::TabInterface* tab_2 = tab_strip_model()->GetTabAtIndex(2);
 
   TabView* tab_0_target = AsViewClass<TabView>(
-      unpinned_collection_node()->GetNodeForHandle(tab_0->GetHandle())->view());
-
-  TabCollectionNode* split_tab_node =
-      unpinned_collection_node()->GetChildNodeOfType(
-          TabCollectionNode::Type::SPLIT);
+      root_node()->GetNodeForHandle(tab_0->GetHandle())->view());
 
   TabView* tab_1_target = AsViewClass<TabView>(
-      split_tab_node->GetNodeForHandle(tab_1->GetHandle())->view());
+      root_node()->GetNodeForHandle(tab_1->GetHandle())->view());
 
   TabView* tab_2_target = AsViewClass<TabView>(
-      split_tab_node->GetNodeForHandle(tab_2->GetHandle())->view());
+      root_node()->GetNodeForHandle(tab_2->GetHandle())->view());
 
   // Show hover card for each tab and then check that we set the
   // target tab is set correctly.
-  hover_card_controller()->UpdateHoverCard(
-      tab_0_target, TabSlotController::HoverCardUpdateType::kHover);
+  hover_card_controller()->UpdateHoverCard(tab_0_target,
+                                           HoverCardUpdateType::kHover);
   EXPECT_EQ(tab_0_target, hover_card_controller()->target_tab());
 
-  hover_card_controller()->UpdateHoverCard(
-      tab_1_target, TabSlotController::HoverCardUpdateType::kHover);
+  hover_card_controller()->UpdateHoverCard(tab_1_target,
+                                           HoverCardUpdateType::kHover);
   EXPECT_EQ(tab_1_target, hover_card_controller()->target_tab());
 
-  hover_card_controller()->UpdateHoverCard(
-      tab_2_target, TabSlotController::HoverCardUpdateType::kHover);
+  hover_card_controller()->UpdateHoverCard(tab_2_target,
+                                           HoverCardUpdateType::kHover);
   EXPECT_EQ(tab_2_target, hover_card_controller()->target_tab());
 
-  hover_card_controller()->UpdateHoverCard(
-      nullptr, TabSlotController::HoverCardUpdateType::kTabRemoved);
+  hover_card_controller()->UpdateHoverCard(nullptr,
+                                           HoverCardUpdateType::kTabRemoved);
   EXPECT_EQ(nullptr, hover_card_controller()->target_tab());
 }
 
@@ -1254,6 +1277,16 @@ class TabViewDataSharingEnabledTest : public TabViewTest {
     return enabled;
   }
 
+  void SetUpOnMainThread() override {
+    TabViewTest::SetUpOnMainThread();
+    if (tab_groups::TabGroupSyncService* service =
+            tab_groups::TabGroupSyncServiceFactory::GetForProfile(
+                browser()->GetProfile())) {
+      tab_groups::TabGroupSyncServiceInitializedObserver observer(service);
+      ASSERT_TRUE(observer.Wait());
+    }
+  }
+
  private:
   // Disable animations so that tabs can be immediately clicked after being
   // added to a group.
@@ -1286,11 +1319,9 @@ IN_PROC_BROWSER_TEST_P(TabViewDataSharingEnabledTest, LogsTabSwitchMetrics) {
 
   // Get the view for the initial tab that is in a group.
   tabs::TabInterface* tab = tab_strip_model()->GetTabAtIndex(0);
-  TabCollectionNode* tab_node =
-      unpinned_collection_node()
-          ->GetChildNodeOfType(TabCollectionNode::Type::GROUP)
-          ->GetNodeForHandle(tab->GetHandle());
-  TabView* tab_view = views::AsViewClass<TabView>(tab_node->view());
+  TabCollectionNode* tab_node = root_node()->GetNodeForHandle(tab->GetHandle());
+  views::View* tab_view = tab_node->view();
+  ASSERT_TRUE(views::IsViewClass<TabView>(tab_view));
 
   // Ensure that the group is a saved tab group.
   tab_groups::TabGroupSyncService* tab_group_service =
@@ -1307,12 +1338,16 @@ IN_PROC_BROWSER_TEST_P(TabViewDataSharingEnabledTest, LogsTabSwitchMetrics) {
                    "TabGroups.Shared.SwitchGroupedTab"));
   ASSERT_EQ(0, user_action_tester.GetActionCount("SwitchTab_Click"));
 
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
-  ui::test::EventGenerator event_generator(
-      views::GetRootWindow(browser_view->GetWidget()),
-      browser_view->GetNativeWindow());
-  event_generator.MoveMouseTo(tab_view->GetBoundsInScreen().CenterPoint());
-  event_generator.ClickLeftButton();
+  ui::MouseEvent press_event(ui::EventType::kMousePressed, gfx::Point(0, 0),
+                             gfx::Point(0, 0), ui::EventTimeForNow(),
+                             ui::EF_LEFT_MOUSE_BUTTON,
+                             ui::EF_LEFT_MOUSE_BUTTON);
+  tab_view->OnMousePressed(press_event);
+  ui::MouseEvent release_event(ui::EventType::kMouseReleased, gfx::Point(0, 0),
+                               gfx::Point(0, 0), ui::EventTimeForNow(),
+                               ui::EF_LEFT_MOUSE_BUTTON,
+                               ui::EF_LEFT_MOUSE_BUTTON);
+  tab_view->OnMouseReleased(release_event);
 
   EXPECT_EQ(0, tab_strip_model()->active_index());
   histogram_tester.ExpectBucketCount("TabStrip.Tab.Views.ActivationAction",
@@ -2399,6 +2434,51 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabViewTest, HideContentsWhenVeryNarrow) {
   }
 }
 
+namespace {
+
+class TestCustomThemeSupplier : public CustomThemeSupplier {
+ public:
+  TestCustomThemeSupplier() : CustomThemeSupplier(ThemeType::kExtension) {}
+  std::string_view extension_id() const override { return "test_theme_id"; }
+  bool HasCustomImage(int id) const override {
+    return id == IDR_THEME_TOOLBAR || id == IDR_THEME_TAB_BACKGROUND;
+  }
+
+ protected:
+  ~TestCustomThemeSupplier() override = default;
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_P(TabViewTest,
+                       ClosingHoveredTabWithCustomThemePaintsWithoutCrash) {
+  const gfx::AnimationTestApi::RenderModeResetter enable_rich_animations =
+      gfx::AnimationTestApi::SetRichAnimationRenderMode(
+          gfx::Animation::RichAnimationRenderMode::FORCE_ENABLED);
+  SwapThemeSupplier(base::MakeRefCounted<TestCustomThemeSupplier>());
+  AppendTab();
+  tab_strip_model()->ActivateTabAt(0);
+  TabView* closing_tab = GetTabView(1);
+  ASSERT_TRUE(closing_tab);
+  closing_tab->UpdateHovered(true);
+  if (GlowHoverController* hover_controller =
+          closing_tab->GetHoverControllerForTesting()) {
+    hover_controller->animation_for_testing()->End();
+  }
+  ASSERT_TRUE(closing_tab->IsHovering());
+  ASSERT_TRUE(closing_tab->IsHoverAnimationActive());
+  gfx::Canvas canvas(closing_tab->size(), 1.0f, false);
+
+  tab_strip_model()->CloseWebContentsAt(1, TabCloseTypes::CLOSE_USER_GESTURE);
+  closing_tab->tab_styling()->PaintTab(&canvas);
+
+  EXPECT_TRUE(closing_tab->IsClosing());
+  EXPECT_EQ(closing_tab->tab_styling()->delegate()->GetBrowserWindowInterface(),
+            browser());
+  EXPECT_NE(closing_tab->tab_styling()->delegate()->GetBrowserFrameView(),
+            nullptr);
+}
+
 class HorizontalTabViewPinnedStylingEnabledTest : public HorizontalTabViewTest {
  public:
   const std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures()
@@ -2981,4 +3061,43 @@ IN_PROC_BROWSER_TEST_F(HorizontalTabViewDeclutterInactiveCloseHideDisabledTest,
                           GetLayoutConstant(LayoutConstant::kTabHeight));
   LayoutTab(inactive_tab);
   EXPECT_TRUE(inactive_tab->close_button_for_testing()->GetVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(TabViewTest,
+                       ThrobberPaintsToLayerAndLogsUpdateThrobberNotCached) {
+  const auto disable_rich_animations =
+      gfx::AnimationTestApi::SetRichAnimationRenderMode(
+          gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+
+  TabView* tab_view = GetTabView(0);
+  ASSERT_TRUE(tab_view);
+  RunScheduledLayouts();
+
+  TabIcon* icon = tab_view->GetTabIconForTesting();
+  ASSERT_TRUE(icon);
+  ASSERT_FALSE(icon->GetContentsBounds().IsEmpty());
+  ASSERT_EQ(icon->layer(), nullptr);
+
+  base::HistogramTester histogram_tester;
+
+  tabs::TabData loading_data = tab_view->data();
+  loading_data.network_state = tabs::TabNetworkState::kWaiting;
+  tab_view->SetDataForTesting(loading_data);
+  tab_view->StepLoadingAnimation(base::Milliseconds(100));
+
+  EXPECT_NE(icon->layer(), nullptr);
+  if (base::TimeTicks::IsHighResolution()) {
+    histogram_tester.ExpectTotalCount("Tab.Icon.UpdateThrobber.Time.NotCached",
+                                      1);
+  }
+
+  tabs::TabData idle_data = loading_data;
+  idle_data.network_state = tabs::TabNetworkState::kNone;
+  tab_view->SetDataForTesting(idle_data);
+
+  EXPECT_EQ(icon->layer(), nullptr);
+  if (base::TimeTicks::IsHighResolution()) {
+    histogram_tester.ExpectTotalCount("Tab.Icon.UpdateThrobber.Time.NotCached",
+                                      2);
+  }
 }

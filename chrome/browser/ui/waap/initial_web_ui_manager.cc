@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/waap/waap_utils.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -29,11 +30,14 @@ InitialWebUIManager::InitialWebUIManager(BrowserWindowInterface* browser)
 
     if (features::kWebUIReloadButtonProfilePrewarming.Get()) {
       // If `WebUIReloadButtonProfilePrewarming` is enabled, the WebContents is
-      // created and pre-navigated in the profile service, so we just take it
-      // from there.
-      if (auto* profile_service =
-              InitialWebUIProfileServiceFactory::GetForProfile(profile)) {
-        toolbar_web_contents_ = profile_service->TakeToolbarContents();
+      // created and pre-navigated in the profile service (or the unbound
+      // TopChromeWebUIProfile service), so we just take it from there.
+      InitialWebUIProfileService* profile_service =
+          InitialWebUIProfileService::IsUnboundPrerenderingEnabled()
+              ? InitialWebUIProfileService::GetForTopChromeWebUIProfile()
+              : InitialWebUIProfileServiceFactory::GetForProfile(profile);
+      if (profile_service) {
+        toolbar_web_contents_ = profile_service->TakeToolbarContents(*profile);
       }
     }
 
@@ -41,6 +45,14 @@ InitialWebUIManager::InitialWebUIManager(BrowserWindowInterface* browser)
       // The WebContents is already pre-created, bind the BrowserWindowInterface
       // now.
       webui::SetBrowserWindowInterface(toolbar_web_contents_.get(), browser);
+      return;
+    }
+
+    if (InitialWebUIProfileService::IsPrerenderingEnabled()) {
+      // With prerendering, a window that gets no spare builds its toolbar
+      // inline, as with prewarm off. Starting the build here instead, at
+      // browser construction, gains little, and it puts startup windows on the
+      // adoption path that refill otherwise uses only for spares.
       return;
     }
 
@@ -69,8 +81,8 @@ InitialWebUIManager* InitialWebUIManager::From(
 void InitialWebUIManager::ConfigureToolbarWebContents(
     content::WebContents* web_contents,
     BrowserWindowInterface* browser) {
-  waap::PrewarmHelper::ConfigureWebUIContents(web_contents,
-                                              browser->GetProfile());
+  waap::PrewarmHelper::ConfigureWebUIContents(
+      web_contents, browser->GetProfile(), IDS_TASK_MANAGER_WEBUI_TOOLBAR);
   // Ensure the browser window interface is associated with the WebContents
   // before the WebUI acts on it.
   webui::SetBrowserWindowInterface(web_contents, browser);

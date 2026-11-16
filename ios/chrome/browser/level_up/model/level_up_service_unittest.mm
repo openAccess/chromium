@@ -11,6 +11,7 @@
 #import "components/tab_groups/tab_group_color.h"
 #import "components/tab_groups/tab_group_id.h"
 #import "components/tab_groups/tab_group_visual_data.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/level_up/model/level_up_metrics.h"
 #import "ios/chrome/browser/level_up/model/level_up_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
@@ -33,7 +34,7 @@ namespace {
 class LevelUpServiceTest : public PlatformTest {
  protected:
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(kIOSLevelUp);
+    scoped_feature_list_.InitWithFeatures({kIOSLevelUp, kPageActionMenu}, {});
     PlatformTest::SetUp();
 
     TestProfileIOS::Builder builder;
@@ -91,13 +92,12 @@ TEST_F(LevelUpServiceTest, TestMilestoneProgression) {
   // Complete 8th task -> Should reach Level 3!
   service_->MarkTaskCompleted(TaskType::kPasswordCheckup);
   EXPECT_EQ(service_->GetCurrentLevel(), 3);
-  // Reaching Level 4 requires all 11 tasks. 11 - 8 = 3 remaining.
-  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(3, 3));
+  // Reaching Level 4 requires all 10 tasks. 10 - 8 = 2 remaining.
+  EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(2, 2));
 
-  // Complete remaining 3 tasks (total 11).
+  // Complete remaining 2 tasks (total 10).
   service_->MarkTaskCompleted(TaskType::kLensWebsiteSearch);
   service_->MarkTaskCompleted(TaskType::kAISearch);
-  service_->MarkTaskCompleted(TaskType::kLensCameraSearch);
   EXPECT_EQ(service_->GetCurrentLevel(), 4);
   EXPECT_EQ(service_->GetTasksRemainingForNextLevel(), std::make_pair(0, 0));
 }
@@ -281,6 +281,31 @@ TEST_F(LevelUpServiceTest, TestOptedOutDoesNotTrack) {
   EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
 }
 
+// Tests that when `kLevelUpOptIn` changes to false (e.g. via Sync), all tasks,
+// stats, and the current level are reset, and re-opting in starts at level 1.
+TEST_F(LevelUpServiceTest, OptOutPrefChangeResetsLevelAndTasks) {
+  service_->MarkTaskCompleted(TaskType::kTabGroups);
+  service_->MarkTaskCompleted(TaskType::kAutofill);
+  service_->MarkTaskCompleted(TaskType::kGemini);
+  service_->IncrementStatValue(LevelUpTaskStatType::kTabsDecluttered, 4);
+  ASSERT_EQ(2, service_->GetCurrentLevel());
+
+  PrefService* prefs = profile_->GetPrefs();
+  ASSERT_EQ(2, prefs->GetInteger(prefs::kLevelUpHighestLevel));
+
+  // Simulate synced opt-out.
+  prefs->SetBoolean(prefs::kLevelUpOptIn, false);
+  EXPECT_EQ(1, service_->GetCurrentLevel());
+  EXPECT_EQ(1, prefs->GetInteger(prefs::kLevelUpHighestLevel));
+  EXPECT_FALSE(service_->IsTaskCompleted(TaskType::kTabGroups));
+  EXPECT_EQ(0, service_->GetStatValue(LevelUpTaskStatType::kTabsDecluttered));
+
+  // Opt in again and verify the level remains at 1.
+  prefs->SetBoolean(prefs::kLevelUpOptIn, true);
+  EXPECT_EQ(1, service_->GetCurrentLevel());
+  EXPECT_EQ(1, prefs->GetInteger(prefs::kLevelUpHighestLevel));
+}
+
 // Tests that GetRecommendedTasks returns 4 tasks matching default category
 // order (2 Productivity, 1 Safety, 1 Search) when no tasks are completed.
 TEST_F(LevelUpServiceTest, TestGetRecommendedTasksDefaultOrder) {
@@ -347,7 +372,7 @@ TEST_F(LevelUpServiceTest, TestGetRecommendedTasksCategoryRecency) {
 // Tests that GetRecommendedTasks backfills with completed tasks when almost all
 // tasks are completed.
 TEST_F(LevelUpServiceTest, TestGetRecommendedTasksBackfillCompleted) {
-  // Complete all 11 tasks.
+  // Complete all 10 tasks.
   const auto& tasks = service_->GetTasks();
   for (const auto& [type, info] : tasks) {
     service_->MarkTaskCompleted(type);
@@ -448,6 +473,16 @@ TEST_F(LevelUpServiceTest, RecordsLevelChangedMetric) {
   service_->MarkTaskCompleted(TaskType::kPasswordCheckup);
   histogram_tester.ExpectBucketCount(kLevelUpLevelChangedHistogram, 3, 1);
   histogram_tester.ExpectTotalCount(kLevelUpLevelChangedHistogram, 2);
+}
+
+// Tests that the Gemini task is omitted when the Page Action Menu is disabled.
+TEST_F(LevelUpServiceTest, TestGeminiTaskOmittedWhenPageActionMenuDisabled) {
+  base::test::ScopedFeatureList disabled_feature_list;
+  disabled_feature_list.InitAndDisableFeature(kPageActionMenu);
+
+  LevelUpService service_without_gemini(profile_->GetPrefs());
+  EXPECT_EQ(nullptr, service_without_gemini.GetTaskInfo(TaskType::kGemini));
+  EXPECT_FALSE(service_without_gemini.GetTasks().contains(TaskType::kGemini));
 }
 
 }  // namespace

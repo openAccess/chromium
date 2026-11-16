@@ -171,10 +171,11 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
     EnsureFontFallbackList()->SetCanShapeWordByWordForTesting(b);
   }
 
-  // Causes PrimaryFont to return nullptr, which is useful for simulating
-  // a situation where the "last resort font" did not load.
-  void NullifyPrimaryFontForTesting() {
-    EnsureFontFallbackList()->NullifyPrimarySimpleFontDataForTesting();
+  // Causes PrimaryFont*() to return an empty SimpleFontData (or nullptr if
+  // FontNonNullPrimaryFont is disabled), which is useful for simulating a
+  // situation where the "last resort font" did not load.
+  void SimulateMissingLastResortFontForTesting() {
+    EnsureFontFallbackList()->SimulateMissingLastResortFontForTesting();
   }
 
   // Reset `font_fallback_list_` to decouple `SimpleFontData`. This is
@@ -184,8 +185,6 @@ class PLATFORM_EXPORT Font : public GarbageCollected<Font> {
   void ReportNotDefGlyph() const;
 
  private:
-  enum ForTextEmphasisOrNot { kNotForTextEmphasis, kForTextEmphasis };
-
   GlyphData GetEmphasisMarkGlyphData(const AtomicString&) const;
 
   std::pair<float, bool> TabWidthInternal(const SimpleFontData* font_data,

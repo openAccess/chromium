@@ -7,12 +7,10 @@ package org.chromium.chrome.browser.identity_disc;
 import static androidx.test.espresso.Espresso.onView;
 import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withContentDescription;
 import static androidx.test.espresso.matcher.ViewMatchers.withEffectiveVisibility;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 
-import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
@@ -24,6 +22,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.base.test.transit.ViewFinder.waitForNoView;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 
@@ -35,7 +34,6 @@ import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Rule;
@@ -58,9 +56,7 @@ import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterizedRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableLeakChecks;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -70,7 +66,6 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -81,7 +76,6 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.sync.FakeSyncServiceImpl;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
@@ -90,7 +84,6 @@ import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.chrome.test.util.SettingsTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
@@ -112,7 +105,6 @@ import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.test.util.GmsCoreVersionRestriction;
 import org.chromium.ui.test.util.NightModeTestUtils;
-import org.chromium.ui.test.util.ViewUtils;
 
 import java.io.IOException;
 
@@ -120,19 +112,14 @@ import java.io.IOException;
 @Batch(Batch.PER_CLASS)
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({
-    SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
-    ChromeFeatureList.ANDROID_BOTTOM_BAR,
-    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID // crbug.com/555414915
-})
+@DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON, ChromeFeatureList.ANDROID_BOTTOM_BAR})
 @DisableLeakChecks("crbug.com/527131198")
 public class IdentityDiscControllerTest {
 
     private final AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
-    private final SigninTestRule mSigninTestRule = new SigninTestRule();
+    private final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
 
     // Mock sign-in environment needs to be destroyed after ChromeTabbedActivity in case there are
     // observers registered in the AccountManagerFacade mock.
@@ -151,7 +138,6 @@ public class IdentityDiscControllerTest {
                     .build();
 
     private RegularNewTabPageStation mPage;
-    private Tab mTab;
     private ChromeTabbedActivity mActivity;
     private SettableMonotonicObservableSupplier<Profile> mProfileSupplier;
     private String mFallbackAccountName;
@@ -181,18 +167,11 @@ public class IdentityDiscControllerTest {
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
     }
 
-    @AfterClass
-    public static void tearDownAfterActivityDestroyed() {
-        ThreadUtils.runOnUiThreadBlocking(
-                ChromeNightModeTestUtils::tearDownNightModeAfterChromeActivityDestroyed);
-    }
-
     @Before
     public void setUp() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> mProfileSupplier = ObservableSuppliers.createMonotonic());
         mPage = mActivityTestRule.startOnNtp();
-        mTab = mPage.getTab();
         mActivity = mPage.getActivity();
         assertNotNull(mActivity);
         mActivityTestRule.getActivityTestRule().setActivity(mActivity);
@@ -223,9 +202,6 @@ public class IdentityDiscControllerTest {
         // NewTabPageCoordinator, which removes the pending callback.
         if (mActivity != null && !mActivity.isActivityFinishingOrDestroyed()) {
             mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-            ChromeTabUtils.waitForTabPageLoaded(
-                    mActivityTestRule.getActivityTab(),
-                    ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
         }
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -271,11 +247,7 @@ public class IdentityDiscControllerTest {
     public void testIdentityDiscSignedOut_noAccount_legacy() throws Exception {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(descriptionId)));
+        waitForView(withId(R.id.optional_toolbar_button), withContentDescription(descriptionId));
 
         // Clicking the signed-out avatar should lead to the correct sign-in screen.
         Activity signinActivity =
@@ -295,18 +267,16 @@ public class IdentityDiscControllerTest {
     public void testIdentityDiscSignedOut_noAccount() {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
-        ViewUtils.waitForVisibleView(
-                allOf(
+        var avatar =
+                waitForView(
                         withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(descriptionId)));
+                        withContentDescription(descriptionId));
 
         // Clicking the signed-out avatar should lead to the correct sign-in screen.
-        onView(withId(R.id.optional_toolbar_button)).perform(click());
+        avatar.click();
 
         // The no account picker bottom sheet should be shown.
-        ViewUtils.waitForVisibleView(
-                allOf(withId(R.id.account_picker_state_no_account), isDisplayed()));
+        waitForView(withId(R.id.account_picker_state_no_account));
     }
 
     @Test
@@ -327,12 +297,10 @@ public class IdentityDiscControllerTest {
                 });
 
         // When user is signed out, a signed-out avatar should be visible on the NTP.
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
 
         // Clicking the signed-out avatar should lead to the settings screen.
         Activity settingsHost =
@@ -354,12 +322,10 @@ public class IdentityDiscControllerTest {
         waitForVisibleIdentityDisc(getContentDescriptionWithNameAndEmail(TestAccounts.ACCOUNT1));
 
         mSigninTestRule.signOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
@@ -377,19 +343,15 @@ public class IdentityDiscControllerTest {
                         R.string.accessibility_toolbar_btn_identity_disc_with_name_and_email,
                         mFallbackAccountName,
                         TestAccounts.TEST_ACCOUNT_NO_NAME.getEmail());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         mSigninTestRule.signOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
@@ -406,19 +368,15 @@ public class IdentityDiscControllerTest {
                 mActivity.getString(
                         R.string.accessibility_toolbar_btn_identity_disc_with_name,
                         accountInfo.getFullName());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         mSigninTestRule.forceSignOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
@@ -437,24 +395,19 @@ public class IdentityDiscControllerTest {
                 mActivity.getString(
                         R.string.accessibility_toolbar_btn_identity_disc_with_name,
                         mFallbackAccountName);
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         mSigninTestRule.forceSignOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/572045372")
     public void testIdentityDiscWithErrorBadgeSignedIn() {
         // Fake an identity error.
         ThreadUtils.runOnUiThreadBlocking(
@@ -471,19 +424,15 @@ public class IdentityDiscControllerTest {
                         R.string.accessibility_toolbar_btn_identity_disc_error_with_name_and_email,
                         TestAccounts.ACCOUNT1.getFullName(),
                         TestAccounts.ACCOUNT1.getEmail());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         mSigninTestRule.signOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
@@ -504,28 +453,23 @@ public class IdentityDiscControllerTest {
                 mActivity.getString(
                         R.string.accessibility_toolbar_btn_identity_disc_error_with_name,
                         accountInfo.getFullName());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         mSigninTestRule.forceSignOut();
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(
-                                R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(
+                        R.string.accessibility_toolbar_btn_signed_out_identity_disc));
     }
 
     @Test
     @MediumTest
     @SuppressWarnings("CheckReturnValue")
-    @DisabledTest(message = "https://crbug.com/572045372")
     public void testIdentityDiscWithSwitchToIncognito() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
-        ViewUtils.waitForVisibleView(withId(R.id.optional_toolbar_button));
+        waitForView(withId(R.id.optional_toolbar_button));
 
         var incognitoNewTabPageStation = mPage.openNewIncognitoTabOrWindowFast();
 
@@ -734,11 +678,9 @@ public class IdentityDiscControllerTest {
                         R.string.accessibility_toolbar_btn_identity_disc_error_with_name_and_email,
                         TestAccounts.ACCOUNT1.getFullName(),
                         TestAccounts.ACCOUNT1.getEmail());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         // Test the profile image shown with an error badge in signed-in state when an identity
         // error exist.
@@ -780,11 +722,9 @@ public class IdentityDiscControllerTest {
                         R.string.accessibility_toolbar_btn_identity_disc_error_with_name_and_email,
                         TestAccounts.ACCOUNT1.getFullName(),
                         TestAccounts.ACCOUNT1.getEmail());
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(expectedContentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button),
+                withContentDescription(expectedContentDescription));
 
         // Test the profile image shown with an error badge in signed-in state when an identity
         // error exist and AI tier ring is enabled.
@@ -836,8 +776,7 @@ public class IdentityDiscControllerTest {
     }
 
     private void leaveNtp() {
-        mActivityTestRule.loadUrl(ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
-        ChromeTabUtils.waitForTabPageLoaded(mTab, ContentUrlConstants.ABOUT_BLANK_DISPLAY_URL);
+        mPage.loadAboutBlank();
     }
 
     private AccountInfo addAndSigninAccountWithNonDisplayableEmail() {
@@ -881,10 +820,7 @@ public class IdentityDiscControllerTest {
     }
 
     private void waitForVisibleIdentityDisc(String contentDescription) {
-        ViewUtils.waitForVisibleView(
-                allOf(
-                        withId(R.id.optional_toolbar_button),
-                        isDisplayed(),
-                        withContentDescription(contentDescription)));
+        waitForView(
+                withId(R.id.optional_toolbar_button), withContentDescription(contentDescription));
     }
 }

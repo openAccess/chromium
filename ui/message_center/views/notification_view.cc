@@ -90,7 +90,7 @@ gfx::FontList GetHeaderTextFontList() {
   int font_size_delta = kHeaderTextFontSize - default_font.GetFontSize();
   const gfx::Font& font = default_font.Derive(
       font_size_delta, gfx::Font::NORMAL, gfx::Font::Weight::NORMAL);
-  DCHECK_EQ(kHeaderTextFontSize, font.GetFontSize());
+  CHECK_EQ(kHeaderTextFontSize, font.GetFontSize(), base::NotFatalUntil::M163);
   return gfx::FontList(font);
 }
 
@@ -106,6 +106,8 @@ gfx::Insets CalculateTopPadding(int font_list_height) {
   // text and everything else to stop aligning correctly, so we account for it
   // by shrinking the top padding by 1.
   if (font_list_height != 15) {
+    // TODO(crbug.com/584035231): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
     DCHECK_EQ(16, font_list_height);
     return kTextViewPaddingDefault - gfx::Insets::TLBR(1, 0, 0, 0);
   }
@@ -362,7 +364,7 @@ void NotificationView::CreateOrUpdateTitleView(
   if (notification.title().empty() ||
       notification.type() == NOTIFICATION_TYPE_PROGRESS) {
     if (title_view_) {
-      DCHECK(left_content()->Contains(title_view_));
+      CHECK(left_content()->Contains(title_view_), base::NotFatalUntil::M163);
       left_content()->RemoveChildViewT(title_view_.get());
       title_view_ = nullptr;
     }
@@ -417,8 +419,9 @@ void NotificationView::CreateOrUpdateSmallIconView(
 void NotificationView::CreateOrUpdateInlineSettingsViews(
     const Notification& notification) {
   if (inline_settings_enabled()) {
-    DCHECK_EQ(message_center::SettingsButtonHandler::INLINE,
-              notification.rich_notification_data().settings_button_handler);
+    CHECK_EQ(message_center::SettingsButtonHandler::INLINE,
+             notification.rich_notification_data().settings_button_handler,
+             base::NotFatalUntil::M163);
     return;
   }
 
@@ -451,7 +454,7 @@ void NotificationView::CreateOrUpdateInlineSettingsViews(
     case NotifierType::PHONE_HUB:
       NOTREACHED();
   }
-  DCHECK_NE(block_notifications_message_id, 0);
+  CHECK_NE(block_notifications_message_id, 0, base::NotFatalUntil::M163);
 
   inline_settings_row()->SetOrientation(
       views::BoxLayout::Orientation::kVertical);

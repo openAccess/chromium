@@ -5,6 +5,7 @@
 #include "net/quic/quic_session_pool_endpoint_connector.h"
 
 #include <string_view>
+#include <utility>
 
 #include "base/check_op.h"
 #include "base/functional/bind.h"
@@ -72,6 +73,7 @@ std::optional<int> QuicSessionPool::EndpointConnector::TryAdvance() {
         /*crypto_client_config_handle=*/nullptr,
         params.session_creation_initiator, params.quic_connection_reuse_details,
         params.connection_management_config, is_stale());
+    MaybeUpdateFallbackIpv4Address();
 
     int rv = attempt_->Start(base::BindOnce(
         &EndpointConnector::OnAttemptComplete, weak_factory_.GetWeakPtr()));
@@ -120,6 +122,25 @@ void QuicSessionPool::EndpointConnector::OnSuperseded() {
   attempt_->Cancel();
 }
 
+void QuicSessionPool::EndpointConnector::CancelForPooling() {
+  if (!attempt_in_flight_) {
+    return;
+  }
+  RecordAttemptTime("IpPooled");
+  attempt_in_flight_ = false;
+  attempt_->CancelForProactiveIpPooling();
+}
+
+void QuicSessionPool::EndpointConnector::MaybeUpdateFallbackIpv4Address() {
+  if (!is_attempting_ipv6()) {
+    return;
+  }
+  if (std::optional<IPEndPoint> fallback_ipv4 =
+          job_->GetFallbackIpv4Address(attempt_->ip_endpoint())) {
+    attempt_->SetFallbackIpv4PeerAddress(*fallback_ipv4);
+  }
+}
+
 QuicSessionPool* QuicSessionPool::EndpointConnector::GetQuicSessionPool() {
   return job_->pool();
 }
@@ -130,6 +151,16 @@ const QuicSessionAliasKey& QuicSessionPool::EndpointConnector::GetKey() {
 
 const NetLogWithSource& QuicSessionPool::EndpointConnector::GetNetLog() {
   return job_->net_log();
+}
+
+std::vector<IPEndPoint>
+QuicSessionPool::EndpointConnector::GetResolvedIpEndpoints() const {
+  return job_->GetResolvedIpEndpoints();
+}
+
+const base::flat_set<std::string>*
+QuicSessionPool::EndpointConnector::GetDnsAliases() const {
+  return job_->GetDnsAliases();
 }
 
 void QuicSessionPool::EndpointConnector::OnConnectionFailedOnDefaultNetwork() {

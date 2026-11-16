@@ -20,7 +20,7 @@
 namespace blink {
 
 class ContainerTimingPaintAttributionTracker;
-class Element;
+class HTMLElement;
 class LayoutObject;
 class LocalFrameView;
 class Node;
@@ -103,7 +103,7 @@ class CORE_EXPORT PrePaintTreeWalk final {
         soft_navigation_paint_attribution_tracker = nullptr;
 
     // The nearest ancestor element with "containertiming" attribute, or null.
-    Element* container_timing_context_root = nullptr;
+    HTMLElement* container_timing_context_root = nullptr;
 
     // The ContainerTimingPaintAttributionTracker for the current document.
     ContainerTimingPaintAttributionTracker*
@@ -111,6 +111,10 @@ class CORE_EXPORT PrePaintTreeWalk final {
 
     // Whether we are inside an active unbounded element.
     bool inside_active_unbounded = false;
+
+    bool is_hidden_due_to_layout = false;
+    bool is_abspos_container_hidden_due_to_layout = false;
+    bool is_fixedpos_container_hidden_due_to_layout = false;
 
     const PhysicalBoxFragment* current_container;
     const PhysicalBoxFragment* absolute_positioned_container;

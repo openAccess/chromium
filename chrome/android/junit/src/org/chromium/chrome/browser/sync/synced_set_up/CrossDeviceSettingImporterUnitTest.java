@@ -15,7 +15,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -67,6 +66,8 @@ import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.magic_stack.HomeModulesConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationConfigManager;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
+import org.chromium.chrome.browser.ntp_customization.policy.NtpCustomizationPolicyManager;
+import org.chromium.chrome.browser.ntp_customization.theme.NtpSyncedThemeManager;
 import org.chromium.chrome.browser.ntp_customization.theme.NtpThemeStateProvider;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.CustomBackgroundInfo;
@@ -80,7 +81,6 @@ import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
-import org.chromium.chrome.browser.prefs.LocalStatePrefsJni;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.browser.sync.prefs.CrossDevicePrefTrackerFactory;
@@ -110,7 +110,6 @@ import org.chromium.url.JUnitTestGURLs;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 /** Unit tests for {@link CrossDeviceSettingImporter}. */
@@ -135,11 +134,10 @@ public class CrossDeviceSettingImporterUnitTest {
     @Mock private Profile mProfile;
     @Mock private PrefService mPrefService;
     @Mock private HomeModulesConfigManager mHomeModulesConfigManager;
-    @Mock private LocalStatePrefs.Natives mLocalStatePrefsNatives;
-    @Mock private PrefService mLocalPrefService;
     @Mock private CrossDevicePrefTracker mCrossDevicePrefTracker;
     @Mock private CrossDeviceThemeTracker.Natives mCrossDeviceThemeTrackerNatives;
     @Mock private CrossDeviceThemeTracker mCrossDeviceThemeTracker;
+    @Mock private NtpSyncedThemeManager mNtpSyncedThemeManager;
     @Mock private SyncedSetUpUtilsBridge.Natives mSyncedSetUpUtilsBridgeNatives;
     @Mock private NtpCustomizationConfigManager mNtpCustomizationConfigManager;
     @Mock private SyncService mSyncService;
@@ -149,6 +147,7 @@ public class CrossDeviceSettingImporterUnitTest {
     @Captor private ArgumentCaptor<Snackbar> mSnackbarCaptor;
     @Captor private ArgumentCaptor<CrossDevicePrefTrackerObserver> mPrefTrackerObserverCaptor;
     @Captor private ArgumentCaptor<CrossDeviceThemeTracker.Observer> mThemeTrackerObserverCaptor;
+    @Captor private ArgumentCaptor<Runnable> mNtpSyncedThemeReadinessCallbackCaptor;
     @Captor private ArgumentCaptor<Callback<@Nullable Bitmap>> mBitmapCallbackCaptor;
 
     private final SettableNullableObservableSupplier<Tab> mActivityTabSupplier =
@@ -186,18 +185,15 @@ public class CrossDeviceSettingImporterUnitTest {
         NtpCustomizationUtils.setImageFetcherForTesting(mImageFetcher);
         SyncServiceFactory.setInstanceForTesting(mSyncService);
 
-        // Sync and Cross-Device tracker mocks (registered before LocalStatePrefs notifications).
+        // Sync and Cross-Device tracker mocks.
         CrossDevicePrefTrackerFactory.setInstanceForTesting(mCrossDevicePrefTracker);
         CrossDeviceThemeTracker.setInstanceForTesting(mCrossDeviceThemeTrackerNatives);
         when(mCrossDeviceThemeTrackerNatives.getForProfile(mProfile))
                 .thenReturn(mCrossDeviceThemeTracker);
         when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(ACTIVE);
+        NtpSyncedThemeManager.setInstanceForTesting(mNtpSyncedThemeManager);
+        when(mNtpSyncedThemeManager.isSyncedThemeReady()).thenReturn(true);
         SyncedSetUpUtilsBridgeJni.setInstanceForTesting(mSyncedSetUpUtilsBridgeNatives);
-
-        // Native pref mocks.
-        LocalStatePrefsJni.setInstanceForTesting(mLocalStatePrefsNatives);
-        when(mLocalStatePrefsNatives.getPrefService()).thenReturn(mLocalPrefService);
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
 
         mUserActionTester = new UserActionTester();
         RobolectricUtil.runAllBackgroundAndUi();
@@ -491,7 +487,7 @@ public class CrossDeviceSettingImporterUnitTest {
                         activity1,
                         mModalDialogManagerSupplier,
                         mSnackbarManagerSupplier);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(false);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
         SyncedSetupSettings toApply =
                 new SyncedSetupSettings(Map.of(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true));
 
@@ -537,7 +533,7 @@ public class CrossDeviceSettingImporterUnitTest {
 
         // Clicking Apply on the restored snackbar applies settings and shows the Undo snackbar.
         restoredSnackbar.getController().onAction(null);
-        verify(mLocalPrefService).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
+        assertTrue(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
         verify(mSnackbarManager, times(3)).showSnackbar(mSnackbarCaptor.capture());
         assertEquals(
                 mActivity.getString(R.string.undo), mSnackbarCaptor.getValue().getActionText());
@@ -777,7 +773,7 @@ public class CrossDeviceSettingImporterUnitTest {
         Map<String, Object> preferencesToApply = new HashMap<>();
         preferencesToApply.put(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
         preferencesToApply.put(Pref.MAGIC_STACK_HOME_MODULE_ENABLED, false);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
 
         when(mCrossDevicePrefTracker.getServiceStatus())
                 .thenReturn(ServiceStatus.DEVICE_INFO_TRACKER_MISSING);
@@ -792,8 +788,7 @@ public class CrossDeviceSettingImporterUnitTest {
         snackbar.getController().onAction(null);
 
         // Verify that only the local state preference is changed.
-        verify(mLocalPrefService, atLeastOnce())
-                .setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
+        assertFalse(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
         verify(mHomeModulesConfigManager, never()).setPrefAllCardsEnabled(any(Boolean.class));
         assertTrue(
                 "The 'Apply' user action for non-NTP settings should be recorded.",
@@ -806,7 +801,7 @@ public class CrossDeviceSettingImporterUnitTest {
     public void testAskToApplySettingImportIfNeeded_NonNtp_noDiffs() {
         Map<String, Object> preferencesToApply = new HashMap<>();
         preferencesToApply.put(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
 
         initializeCrossDeviceSettingImporter()
                 .askToApplySettingImportIfNeeded(mProfile, preferencesToApply, /* nonNtp= */ true);
@@ -819,7 +814,7 @@ public class CrossDeviceSettingImporterUnitTest {
         // Test that when nonNtp=false, omnibox changes still trigger the snackbar.
         Map<String, Object> preferencesToApply = new HashMap<>();
         preferencesToApply.put(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
 
         // Other preferences match current.
         when(mPrefService.isDefaultValuePreference(any(String.class))).thenReturn(true);
@@ -835,7 +830,7 @@ public class CrossDeviceSettingImporterUnitTest {
     public void testRecordAction_UndoRedo() {
         Map<String, Object> preferencesToApply = new HashMap<>();
         preferencesToApply.put(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
 
         initializeCrossDeviceSettingImporter()
                 .askToApplySettingImportIfNeeded(mProfile, preferencesToApply, /* nonNtp= */ true);
@@ -1023,7 +1018,7 @@ public class CrossDeviceSettingImporterUnitTest {
         // Use remote preferences that differ from local.
         SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
                 Map.of(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false));
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
 
         // Simulate tab change to a non-NTP (non-NTP settings import only).
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
@@ -1067,7 +1062,7 @@ public class CrossDeviceSettingImporterUnitTest {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_NON_NTP_SETTINGS, true);
 
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
 
         initializeCrossDeviceSettingImporter()
@@ -1085,7 +1080,7 @@ public class CrossDeviceSettingImporterUnitTest {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_BOTTOM_OMNIBOX, true);
 
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
 
         initializeCrossDeviceSettingImporter()
@@ -1108,21 +1103,10 @@ public class CrossDeviceSettingImporterUnitTest {
 
     @Test
     public void testApplyLocalStateSettings_UpdatesAddressBarPreference() {
-        when(mLocalPrefService.hasPrefPath(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(true);
-
         Map<String, Object> preferencesToApply = new HashMap<>();
         preferencesToApply.put(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
         // Local state is currently TOP (false).
-        AtomicBoolean isOmniboxInBottomPosition = new AtomicBoolean(false);
-        doAnswer(
-                        (inv) -> {
-                            isOmniboxInBottomPosition.set(inv.getArgument(1));
-                            return null;
-                        })
-                .when(mLocalPrefService)
-                .setBoolean(any(String.class), anyBoolean());
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION))
-                .thenAnswer((inv) -> isOmniboxInBottomPosition.get());
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
         // ChromeSharedPref is currently TOP_SETTINGS.
         ChromeSharedPreferences.getInstance()
                 .writeInt(
@@ -1139,8 +1123,7 @@ public class CrossDeviceSettingImporterUnitTest {
         snackbar.getController().onAction(null);
 
         // Verify that the local state preference is changed.
-        verify(mLocalPrefService, atLeastOnce())
-                .setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, true);
+        assertTrue(LocalStatePrefs.get().getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION));
 
         // Verify that AddressBarPreference was updated.
         assertEquals(
@@ -1148,97 +1131,6 @@ public class CrossDeviceSettingImporterUnitTest {
                 ToolbarPositionAndSource.BOTTOM_SETTINGS,
                 ChromeSharedPreferences.getInstance()
                         .readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
-    }
-
-    @Test
-    public void testOnTabChange_LocalStateNotReady_WaitsAndThenImports() {
-        ChromeSharedPreferences.getInstance()
-                .writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
-
-        LocalStatePrefs.setNativePrefsLoadedForTesting(false);
-        when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
-
-        // Use remote preferences that differ from local.
-        SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
-                Map.of(Pref.MAGIC_STACK_HOME_MODULE_ENABLED, false));
-        when(mPrefService.getBoolean(Pref.MAGIC_STACK_HOME_MODULE_ENABLED)).thenReturn(true);
-
-        initializeCrossDeviceSettingImporter().onTabChangeOrGainFocus(mTab);
-
-        // Haven't imported yet.
-        verify(mSnackbarManager, never()).showSnackbar(any());
-        assertTrue(
-                "The preference for having imported all settings should not be set yet.",
-                !ChromeSharedPreferences.getInstance()
-                        .readBoolean(
-                                ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false));
-
-        // Simulate LocalState becoming ready.
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
-
-        verify(mSnackbarManager).showSnackbar(any());
-        assertTrue(
-                "The preference for having imported all settings should be set once LocalState"
-                        + " becomes ready.",
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(
-                                ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false));
-    }
-
-    @Test
-    public void testOnTabChange_TrackerAndLocalStateNotReady_WaitsAndThenImports() {
-        ChromeSharedPreferences.getInstance()
-                .writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
-
-        LocalStatePrefs.setNativePrefsLoadedForTesting(false);
-        when(mCrossDevicePrefTracker.getServiceStatus())
-                .thenReturn(ServiceStatus.WAITING_FOR_INITIAL_SYNC);
-
-        // Use remote preferences that differ from local.
-        SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
-                Map.of(Pref.MAGIC_STACK_HOME_MODULE_ENABLED, false));
-        when(mPrefService.getBoolean(Pref.MAGIC_STACK_HOME_MODULE_ENABLED)).thenReturn(true);
-
-        initializeCrossDeviceSettingImporter().onTabChangeOrGainFocus(mTab);
-
-        verify(mCrossDevicePrefTracker).addObserver(mPrefTrackerObserverCaptor.capture());
-
-        // Simulate tracker becoming ready.
-        when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
-        mPrefTrackerObserverCaptor.getValue().onServiceStatusChanged(ServiceStatus.AVAILABLE);
-
-        // Still haven't imported yet because LocalState is not ready.
-        verify(mSnackbarManager, never()).showSnackbar(any());
-
-        // Simulate LocalState becoming ready.
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
-
-        verify(mSnackbarManager).showSnackbar(any());
-        assertTrue(
-                "The preference for having imported all settings should be set once both tracker"
-                        + " and LocalState become ready.",
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(
-                                ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false));
-    }
-
-    @Test
-    public void testDestroy_RemovesLocalStateObserver() {
-        LocalStatePrefs.setNativePrefsLoadedForTesting(false);
-        initializeCrossDeviceSettingImporter().onTabChangeOrGainFocus(mTab);
-
-        AtomicBoolean called = new AtomicBoolean(false);
-        LocalStatePrefs.addObserver(() -> called.set(true));
-
-        mCrossDeviceSettingImporter.destroy();
-
-        // Simulate LocalState becoming ready.
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
-
-        // The importer's observer should have been removed, so it shouldn't trigger an import.
-        // We check this by verifying that mSnackbarManager.showSnackbar was never called.
-        verify(mSnackbarManager, never()).showSnackbar(any());
-        assertTrue("Our own test observer should still be called.", called.get());
     }
 
     @Test
@@ -1475,11 +1367,10 @@ public class CrossDeviceSettingImporterUnitTest {
 
     @Test
     @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
-    public void testOnTabChange_ThemesEnabled_AllThreeNotReady_WaitsAndThenImports() {
+    public void testOnTabChange_ThemesEnabled_BothTrackersNotReady_WaitsAndThenImports() {
         ChromeSharedPreferences.getInstance()
                 .writeBoolean(ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false);
 
-        LocalStatePrefs.setNativePrefsLoadedForTesting(false);
         when(mCrossDevicePrefTracker.getServiceStatus())
                 .thenReturn(ServiceStatus.WAITING_FOR_INITIAL_SYNC);
         when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(INITIALIZING);
@@ -1493,22 +1384,18 @@ public class CrossDeviceSettingImporterUnitTest {
         verify(mCrossDevicePrefTracker).addObserver(mPrefTrackerObserverCaptor.capture());
         verify(mCrossDeviceThemeTracker).addObserver(mThemeTrackerObserverCaptor.capture());
 
-        // Step 1: Pref tracker becomes available, but LocalState and ThemeTracker not ready.
+        // Step 1: Pref tracker becomes available, but ThemeTracker is still not ready.
         when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
         mPrefTrackerObserverCaptor.getValue().onServiceStatusChanged(ServiceStatus.AVAILABLE);
         verify(mSnackbarManager, never()).showSnackbar(any());
 
-        // Step 2: Theme tracker becomes active, but LocalState not ready.
+        // Step 2: Theme tracker becomes active.
         when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(ACTIVE);
         mThemeTrackerObserverCaptor.getValue().onStatusChanged(ACTIVE);
-        verify(mSnackbarManager, never()).showSnackbar(any());
-
-        // Step 3: LocalState becomes ready.
-        LocalStatePrefs.setNativePrefsLoadedForTesting(true);
 
         verify(mSnackbarManager).showSnackbar(any());
         assertTrue(
-                "Settings should be marked imported once all three services are ready.",
+                "Settings should be marked imported once both trackers are ready.",
                 ChromeSharedPreferences.getInstance()
                         .readBoolean(
                                 ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false));
@@ -1933,7 +1820,7 @@ public class CrossDeviceSettingImporterUnitTest {
         when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
 
         // Omnibox setting is not changed.
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(false);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
         SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
                 Map.of(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false));
 
@@ -1960,7 +1847,7 @@ public class CrossDeviceSettingImporterUnitTest {
         when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
 
         // Omnibox setting is not changed.
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(false);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
         SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
                 Map.of(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false));
 
@@ -2070,6 +1957,25 @@ public class CrossDeviceSettingImporterUnitTest {
         CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
         assertTrue(!importer.isThemeFeatureEnabled());
         assertTrue(!importer.isThemeImportSnackbarEnabled());
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.NEW_TAB_PAGE_CUSTOMIZATION_V2)
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void testIsThemeFeatureEnabled_NtpCustomizationV2Disabled_ReturnsFalse() {
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+        assertFalse(importer.isThemeFeatureEnabled());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void testIsThemeFeatureEnabled_DisabledByPolicy_ReturnsFalse() {
+        NtpCustomizationPolicyManager policyManager = mock(NtpCustomizationPolicyManager.class);
+        when(policyManager.isNtpCustomBackgroundEnabled()).thenReturn(false);
+        NtpCustomizationPolicyManager.setInstanceForTesting(policyManager);
+
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+        assertFalse(importer.isThemeFeatureEnabled());
     }
 
     @Test
@@ -2236,7 +2142,7 @@ public class CrossDeviceSettingImporterUnitTest {
         when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
         when(mPrefService.isDefaultValuePreference(any(String.class))).thenReturn(true);
         when(mPrefService.getBoolean(Pref.MAGIC_STACK_HOME_MODULE_ENABLED)).thenReturn(true);
-        when(mLocalPrefService.getBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION)).thenReturn(false);
+        LocalStatePrefs.get().setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
 
         ActivityController<Activity> activityController =
                 Robolectric.buildActivity(Activity.class).setup();
@@ -3008,5 +2914,107 @@ public class CrossDeviceSettingImporterUnitTest {
                 ChromeSharedPreferences.getInstance()
                         .readBoolean(
                                 ChromePreferenceKeys.CROSS_DEVICE_IMPORTED_ALL_SETTINGS, false));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void
+            testOnTabChangeOrGainFocus_waitsForNtpSyncedThemeManagerReadiness_initialSyncNotReady_showsApplySnackbar() {
+        CrossDeviceSettingImporter importer =
+                triggerNtpSyncedThemeManagerReadinessWaitAndComplete(
+                        /* isContinuousSyncedImageDownloading= */ false);
+
+        // Because initial theme sync itself was not ready
+        // (isContinuousSyncedImageDownloading == false), availableImmediately is false when the
+        // callback fires, so Offer Apply snackbar is shown.
+        verify(mHomeModulesConfigManager, never()).setPrefAllCardsEnabled(anyBoolean());
+        verify(mSnackbarManager).showSnackbar(mSnackbarCaptor.capture());
+        assertEquals(
+                mActivity.getString(R.string.synced_set_up_snackbar_ask_to_apply),
+                mSnackbarCaptor.getValue().getTextForTesting());
+        assertEquals(
+                mActivity.getString(R.string.apply), mSnackbarCaptor.getValue().getActionText());
+        importer.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void
+            testOnTabChangeOrGainFocus_waitsForNtpSyncedThemeManagerReadiness_onlyWaitingForImageDownload_autoAppliesWithUndoSnackbar() {
+        CrossDeviceSettingImporter importer =
+                triggerNtpSyncedThemeManagerReadinessWaitAndComplete(
+                        /* isContinuousSyncedImageDownloading= */ true);
+
+        // Because all sync trackers were ready on initial check and we were only waiting for the
+        // image download, availableImmediately is preserved as true: settings auto-apply
+        // immediately and the Undo snackbar is shown.
+        verify(mHomeModulesConfigManager).setPrefAllCardsEnabled(false);
+        verify(mSnackbarManager).showSnackbar(mSnackbarCaptor.capture());
+        assertEquals(
+                mActivity.getString(R.string.synced_set_up_snackbar_applied_confirmation),
+                mSnackbarCaptor.getValue().getTextForTesting());
+        assertEquals(
+                mActivity.getString(R.string.undo), mSnackbarCaptor.getValue().getActionText());
+        importer.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void testOnTabChangeOrGainFocus_syncDisabled_doesNotWaitForNtpSyncedThemeManager() {
+        when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
+        when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(SYNC_DISABLED);
+        when(mNtpSyncedThemeManager.isSyncedThemeReady()).thenReturn(false);
+
+        SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
+                Map.of(Pref.MAGIC_STACK_HOME_MODULE_ENABLED, false));
+        when(mPrefService.getBoolean(Pref.MAGIC_STACK_HOME_MODULE_ENABLED)).thenReturn(true);
+
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+        importer.onTabChangeOrGainFocus(mTab);
+
+        verify(mNtpSyncedThemeManager, never()).addOneShotReadinessCallback(any());
+        verify(mSnackbarManager).showSnackbar(any());
+        importer.destroy();
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.XPLAT_SYNCED_SETUP_THEMES)
+    public void testDestroy_removesNtpSyncedThemeManagerReadinessCallback() {
+        when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
+        when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(ACTIVE);
+        when(mNtpSyncedThemeManager.isSyncedThemeReady()).thenReturn(false);
+
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+        importer.onTabChangeOrGainFocus(mTab);
+        verify(mNtpSyncedThemeManager)
+                .addOneShotReadinessCallback(mNtpSyncedThemeReadinessCallbackCaptor.capture());
+
+        importer.destroy();
+        verify(mNtpSyncedThemeManager)
+                .removeReadinessCallback(mNtpSyncedThemeReadinessCallbackCaptor.getValue());
+    }
+
+    private CrossDeviceSettingImporter triggerNtpSyncedThemeManagerReadinessWaitAndComplete(
+            boolean isContinuousSyncedImageDownloading) {
+        when(mCrossDevicePrefTracker.getServiceStatus()).thenReturn(ServiceStatus.AVAILABLE);
+        when(mCrossDeviceThemeTracker.getServiceStatus()).thenReturn(ACTIVE);
+        when(mNtpSyncedThemeManager.isSyncedThemeReady()).thenReturn(false);
+        when(mNtpSyncedThemeManager.isContinuousSyncedImageDownloading())
+                .thenReturn(isContinuousSyncedImageDownloading);
+
+        SyncedSetUpUtilsBridge.setCrossDeviceSettingsForTesting(
+                Map.of(Pref.MAGIC_STACK_HOME_MODULE_ENABLED, false));
+        when(mPrefService.getBoolean(Pref.MAGIC_STACK_HOME_MODULE_ENABLED)).thenReturn(true);
+
+        CrossDeviceSettingImporter importer = initializeCrossDeviceSettingImporter();
+        importer.onTabChangeOrGainFocus(mTab);
+
+        verify(mNtpSyncedThemeManager)
+                .addOneShotReadinessCallback(mNtpSyncedThemeReadinessCallbackCaptor.capture());
+        verify(mSnackbarManager, never()).showSnackbar(any());
+
+        when(mNtpSyncedThemeManager.isSyncedThemeReady()).thenReturn(true);
+        mNtpSyncedThemeReadinessCallbackCaptor.getValue().run();
+        return importer;
     }
 }

@@ -26,6 +26,7 @@
 
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/containers/span.h"
 #include "base/cpu.h"
@@ -141,6 +142,7 @@ std::pair<base::ScopedFD, bool> LoadDrmFD(const base::FilePath& dev_path) {
 // These values are logged to UMA. Entries should not be renumbered and numeric
 // values should never be reused. Please keep in sync with
 // "VaapiFunctions" in src/tools/metrics/histograms/metadata/media/enums.xml.
+// LINT.IfChange(VaapiFunctions)
 enum class VaapiFunctions {
   kVABeginPicture = 0,
   kVACreateBuffer = 1,
@@ -180,6 +182,7 @@ enum class VaapiFunctions {
   kVADeriveImage = 32,
   kMaxValue = kVADeriveImage,
 };
+// LINT.ThenChange(//tools/metrics/histograms/metadata/media/enums.xml:VaapiFunctions)
 
 void ReportVaapiErrorToUMA(const std::string& histogram_name,
                            VaapiFunctions value) {
@@ -836,42 +839,37 @@ std::optional<base::AutoLock> AutoLockOnlyIfNeeded(base::Lock* lock) {
   return std::nullopt;
 }
 
-// Can't statically initialize the profile map:
-// https://google.github.io/styleguide/cppguide.html#Static_and_Global_Variables
-using ProfileCodecMap = std::map<VideoCodecProfile, VAProfile>;
-const ProfileCodecMap& GetProfileCodecMap() {
-  static const base::NoDestructor<ProfileCodecMap> kMediaToVAProfileMap({
-      // VAProfileH264Baseline is deprecated in <va/va.h> since libva 2.0.0.
-      {H264PROFILE_BASELINE, VAProfileH264ConstrainedBaseline},
-          {H264PROFILE_MAIN, VAProfileH264Main},
-          // TODO(posciak): See if we can/want to support other variants of
-          // H264PROFILE_HIGH*.
-          {H264PROFILE_HIGH, VAProfileH264High},
-          {VP8PROFILE_ANY, VAProfileVP8Version0_3},
-          {VP9PROFILE_PROFILE0, VAProfileVP9Profile0},
-          // VaapiWrapper does not support VP9 Profile 1, see b/153680337.
-          // {VP9PROFILE_PROFILE1, VAProfileVP9Profile1},
-          {VP9PROFILE_PROFILE2, VAProfileVP9Profile2},
-          // VaapiWrapper does not support Profile 3.
-          //{VP9PROFILE_PROFILE3, VAProfileVP9Profile3},
-          {AV1PROFILE_PROFILE_MAIN, VAProfileAV1Profile0},
+constexpr auto kMediaToVAProfileMap =
+    base::MakeFixedFlatMap<VideoCodecProfile, VAProfile>({
+        // VAProfileH264Baseline is deprecated in <va/va.h> since libva 2.0.0.
+        {H264PROFILE_BASELINE, VAProfileH264ConstrainedBaseline},
+        {H264PROFILE_MAIN, VAProfileH264Main},
+        // TODO(posciak): See if we can/want to support other variants of
+        // H264PROFILE_HIGH*.
+        {H264PROFILE_HIGH, VAProfileH264High},
+        {VP8PROFILE_ANY, VAProfileVP8Version0_3},
+        {VP9PROFILE_PROFILE0, VAProfileVP9Profile0},
+        // VaapiWrapper does not support VP9 Profile 1, see b/153680337.
+        // {VP9PROFILE_PROFILE1, VAProfileVP9Profile1},
+        {VP9PROFILE_PROFILE2, VAProfileVP9Profile2},
+        // VaapiWrapper does not support Profile 3.
+        //{VP9PROFILE_PROFILE3, VAProfileVP9Profile3},
+        {AV1PROFILE_PROFILE_MAIN, VAProfileAV1Profile0},
         // VaapiWrapper does not support AV1 Profile 1.
         // {AV1PROFILE_PROFILE_HIGH, VAProfileAV1Profile1},
 #if BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-          {HEVCPROFILE_MAIN, VAProfileHEVCMain},
-          {HEVCPROFILE_MAIN_STILL_PICTURE, VAProfileHEVCMain},
-          {HEVCPROFILE_MAIN10, VAProfileHEVCMain10},
+        {HEVCPROFILE_MAIN, VAProfileHEVCMain},
+        {HEVCPROFILE_MAIN_STILL_PICTURE, VAProfileHEVCMain},
+        {HEVCPROFILE_MAIN10, VAProfileHEVCMain10},
 #endif  // BUILDFLAG(ENABLE_HEVC_PARSER_AND_HW_DECODER)
-  });
-  return *kMediaToVAProfileMap;
-}
+    });
 
 // Maps a VideoCodecProfile |profile| to a VAProfile, or VAProfileNone.
 VAProfile ProfileToVAProfile(VideoCodecProfile profile) {
-  const auto& profiles = GetProfileCodecMap();
-  const auto& maybe_profile = profiles.find(profile);
-  if (maybe_profile == profiles.end())
+  const auto maybe_profile = kMediaToVAProfileMap.find(profile);
+  if (maybe_profile == kMediaToVAProfileMap.end()) {
     return VAProfileNone;
+  }
   return maybe_profile->second;
 }
 
@@ -897,8 +895,9 @@ bool IsVAProfileSupported(VAProfile va_profile, bool is_encoding) {
     };
     return std::ranges::contains(kSupportableEncoderProfiles, va_profile);
   }
-  return std::ranges::contains(GetProfileCodecMap(), va_profile,
-                               &ProfileCodecMap::value_type::second);
+  return std::ranges::contains(
+      kMediaToVAProfileMap, va_profile,
+      &decltype(kMediaToVAProfileMap)::value_type::second);
 }
 
 bool IsBlockedDriver(VaapiWrapper::CodecMode mode,
@@ -2000,7 +1999,7 @@ VideoEncodeAccelerator::SupportedProfiles
 VaapiWrapper::GetSupportedEncodeProfiles() {
   VideoEncodeAccelerator::SupportedProfiles profiles;
 
-  for (const auto& [media_profile, va_profile] : GetProfileCodecMap()) {
+  for (const auto& [media_profile, va_profile] : kMediaToVAProfileMap) {
     DCHECK(va_profile != VAProfileNone);
 
     const VASupportedProfiles::ProfileInfo* profile_info =
@@ -2037,7 +2036,7 @@ VideoDecodeAccelerator::SupportedProfiles
 VaapiWrapper::GetSupportedDecodeProfiles() {
   VideoDecodeAccelerator::SupportedProfiles profiles;
 
-  for (const auto& [media_profile, va_profile] : GetProfileCodecMap()) {
+  for (const auto& [media_profile, va_profile] : kMediaToVAProfileMap) {
     DCHECK(va_profile != VAProfileNone);
 
     const VASupportedProfiles::ProfileInfo* profile_info =

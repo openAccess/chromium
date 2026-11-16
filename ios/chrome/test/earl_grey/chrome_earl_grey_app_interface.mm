@@ -19,6 +19,7 @@
 #import "base/files/file_util.h"
 #import "base/ios/ios_util.h"
 #import "base/json/json_writer.h"
+#import "base/logging.h"
 #import "base/no_destructor.h"
 #import "base/path_service.h"
 #import "base/strings/string_number_conversions.h"
@@ -72,7 +73,6 @@
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
@@ -325,6 +325,56 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
   }
 
   return nil;
+}
+
+// Accessibility identifier assigned to the kept primary window so subsequent
+// new windows receive unique sequential identifiers.
+NSString* const kPrimaryWindowAccessibilityIdentifier = @"0";
+
+// Returns the scene with an attached `UIWindowScene` from `scenes`, preferring
+// the primary window (`kPrimaryWindowAccessibilityIdentifier`), or `nil` if no
+// scene in `scenes` has an attached `UIWindowScene`.
+SceneState* SelectAttachedScene(NSArray<SceneState*>* scenes) {
+  SceneState* fallback = nil;
+  for (SceneState* state in scenes) {
+    if (!state.scene) {
+      continue;
+    }
+    if ([state.window.accessibilityIdentifier
+            isEqualToString:kPrimaryWindowAccessibilityIdentifier]) {
+      return state;
+    }
+    if (!fallback) {
+      fallback = state;
+    }
+  }
+  return fallback;
+}
+
+// Selects the scene to keep when closing extra windows, preferring the
+// foreground active scene, then foreground scenes (primary window first), then
+// any connected scene with an attached `UIWindowScene`, or `nil` if none
+// exists.
+SceneState* SelectSceneToKeep(AppState* app_state) {
+  if (app_state.foregroundActiveScene.scene) {
+    return app_state.foregroundActiveScene;
+  }
+  return SelectAttachedScene(app_state.foregroundScenes)
+             ?: SelectAttachedScene(app_state.connectedScenes);
+}
+
+// Collects all `UISceneSession`s from both `openSessions` and
+// `connectedScenes`. On iOS 26 iPad devices, `openSessions` has been observed
+// to omit a connected scene's session.
+NSSet<UISceneSession*>* AllSceneSessions() {
+  NSMutableSet<UISceneSession*>* sessions =
+      [NSMutableSet setWithSet:UIApplication.sharedApplication.openSessions];
+  for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
+    if (scene.session) {
+      [sessions addObject:scene.session];
+    }
+  }
+  return sessions;
 }
 
 }  // namespace
@@ -956,10 +1006,8 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
 }
 
 + (NSUInteger)windowCount [[nodiscard]] {
-  // If the scene API is in use, return the count of open sessions and
-  // connected scenes.
-  return std::max(UIApplication.sharedApplication.openSessions.count,
-                  UIApplication.sharedApplication.connectedScenes.count);
+  // Returns the count of all tracked sessions and connected scenes.
+  return AllSceneSessions().count;
 }
 
 + (NSUInteger)foregroundWindowCount [[nodiscard]] {
@@ -1052,31 +1100,73 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
   }
 }
 
++ (NSString*)windowStateDebugDescription {
+  NSMutableArray<NSString*>* scene_descriptions = [NSMutableArray array];
+  for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
+    UIWindowScene* window_scene = base::apple::ObjCCast<UIWindowScene>(scene);
+    UIWindow* window = window_scene.windows.firstObject;
+    [scene_descriptions
+        addObject:[NSString stringWithFormat:
+                                @"%@ winID=%@ wins=%lu hidden=%d frame=%@",
+                                scene, window.accessibilityIdentifier,
+                                static_cast<unsigned long>(
+                                    window_scene.windows.count),
+                                window.hidden,
+                                NSStringFromCGRect(window.frame)]];
+  }
+  NSMutableArray<NSString*>* session_descriptions = [NSMutableArray array];
+  for (UISceneSession* session in UIApplication.sharedApplication
+           .openSessions) {
+    [session_descriptions
+        addObject:[NSString stringWithFormat:@"%@(%p)",
+                                             session.persistentIdentifier,
+                                             session.scene]];
+  }
+  return [NSString
+      stringWithFormat:@"connectedScenes=[%@] openSessions=[%@]",
+                       [scene_descriptions componentsJoinedByString:@"; "],
+                       [session_descriptions componentsJoinedByString:@", "]];
+}
+
 + (void)closeAllExtraWindows {
   if (!base::ios::IsMultipleScenesSupported()) {
     return;
   }
-  SceneState* foreground_scene_state =
-      chrome_test_util::GetMainController().appState.foregroundActiveScene;
+  SceneState* scene_to_keep =
+      SelectSceneToKeep(chrome_test_util::GetMainController().appState);
+  if (!scene_to_keep.scene) {
+    return;
+  }
   // New windows get an accessibilityIdentifier equal to the number of windows
   // when they are created.
   // Renumber the remaining window to avoid conflicts with future windows.
-  foreground_scene_state.window.accessibilityIdentifier = @"0";
-  NSSet<UISceneSession*>* sessions =
-      UIApplication.sharedApplication.openSessions;
+  scene_to_keep.window.accessibilityIdentifier =
+      kPrimaryWindowAccessibilityIdentifier;
+  NSSet<UISceneSession*>* sessions = AllSceneSessions();
   if (sessions.count <= 1) {
     return;
   }
   for (UISceneSession* session in sessions) {
-    if (foreground_scene_state.scene == session.scene) {
+    if (scene_to_keep.scene.session == session) {
       continue;
     }
+    NSString* session_id = session.persistentIdentifier;
     UIWindowSceneDestructionRequestOptions* options =
         [[UIWindowSceneDestructionRequestOptions alloc] init];
     options.windowDismissalAnimation = UIWindowSceneDismissalAnimationStandard;
-    [UIApplication.sharedApplication requestSceneSessionDestruction:session
-                                                            options:options
-                                                       errorHandler:nil];
+    [UIApplication.sharedApplication
+        requestSceneSessionDestruction:session
+                               options:options
+                          errorHandler:^(NSError* error) {
+                            if (error) {
+                              LOG(ERROR)
+                                  << "closeAllExtraWindows "
+                                     "requestSceneSessionDestruction("
+                                  << base::SysNSStringToUTF8(session_id)
+                                  << ") error: "
+                                  << base::SysNSStringToUTF8(error.description);
+                            }
+                          }];
   }
 }
 
@@ -1326,8 +1416,7 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
   }
   WebStateList* web_state_list =
       chrome_test_util::GetForegroundActiveScene()
-          .browserProviderInterface.currentBrowserProvider.browser
-          ->GetWebStateList();
+          .browserProviderInterface.currentBrowser->GetWebStateList();
   for (int index = 0; index < web_state_list->count(); ++index) {
     web::WebState* web_state = web_state_list->GetWebStateAt(index);
     if (web_state->IsLoading()) {
@@ -1338,7 +1427,7 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
 
 + (void)openSettingsInWindowWithNumber:(int)windowNumber {
   SceneState* scene = [self sceneStateWithNumber:windowNumber];
-  Browser* browser = scene.browserProviderInterface.mainBrowserProvider.browser;
+  Browser* browser = scene.browserProviderInterface.mainBrowser;
   id<SceneCommands> handler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
   [handler showSettingsFromViewController:nil];
@@ -1346,7 +1435,7 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
 
 + (void)showTabSwitcherInWindowWithNumber:(int)windowNumber {
   SceneState* scene = [self sceneStateWithNumber:windowNumber];
-  Browser* browser = scene.browserProviderInterface.mainBrowserProvider.browser;
+  Browser* browser = scene.browserProviderInterface.mainBrowser;
   id<SceneCommands> handler =
       HandlerForProtocol(browser->GetCommandDispatcher(), SceneCommands);
   [handler displayTabGridInMode:TabGridOpeningMode::kDefault];
@@ -1861,10 +1950,6 @@ NSError* CanStartLoadingURL(SceneState* scene_state,
   return ios::provider::IsLensSupported() &&
          ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET &&
          search_engines::SupportsSearchImageWithLens(service);
-}
-
-+ (BOOL)isYourSavedInfoSettingsPageIosEnabled {
-  return IsYourSavedInfoSettingsPageIosEnabled();
 }
 
 + (BOOL)isCurrentLayoutBottomOmnibox {

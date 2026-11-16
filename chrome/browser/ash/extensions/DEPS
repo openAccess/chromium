@@ -7,7 +7,6 @@ include_rules = [
   # individually. Other dependencies within //chrome are listed on a per-
   # directory basis. See //tools/chromeos/gen_deps.sh for details.
   "+chrome/browser/apps/app_preload_service",
-  "+chrome/browser/apps/app_service",
   "+chrome/browser/ash/accessibility",
   "+chrome/browser/ash/app_list/arc",
   "+chrome/browser/ash/guest_os",
@@ -29,8 +28,6 @@ include_rules = [
   "+chrome/browser/spellchecker",
   "+chrome/browser/ui/ash",
   "+chrome/browser/web_applications/policy/app_service_web_app_policy.h",
-  "+chrome/common/chrome_paths.h",
-  "+chrome/common/extensions",
   "+chrome/grit",
 ]
 
@@ -45,6 +42,7 @@ specific_include_rules = {
     "+chrome/browser/extensions/mock_crx_installer.h",
     "+chrome/browser/ui/browser_window.h",
     "+chrome/browser/ui/browser_window/public/browser_window_interface.h",
+    "+chrome/common/chrome_paths.h",
     "+chrome/test/base",
   ],
 }

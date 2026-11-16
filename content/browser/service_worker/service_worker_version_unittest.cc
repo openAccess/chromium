@@ -24,6 +24,7 @@
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
+#include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/service_worker/embedded_worker_test_helper.h"
 #include "content/browser/service_worker/fake_embedded_worker_instance_client.h"
 #include "content/browser/service_worker/fake_service_worker.h"
@@ -44,10 +45,13 @@
 #include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_service.mojom.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "net/base/test_completion_callback.h"
 #include "net/cookies/site_for_cookies.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
+#include "services/network/public/mojom/network_context.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/service_worker/embedded_worker_status.h"
@@ -1132,9 +1136,9 @@ TEST_P(ServiceWorkerVersionTest, RequestNowTimeout) {
   EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorTimeout, status.value());
 
   service_worker->FlushForTesting();
-  // Should try to set idle timeout if the last request has expired and is
-  // CONTINUE_ON_TIMEOUT.
-  EXPECT_TRUE(service_worker->idle_delay().has_value());
+  // Non-external CONTINUE_ON_TIMEOUT requests do not call AddKeepAlive(), so
+  // ClearKeepAlive() should not be sent when they expire.
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
 
   EXPECT_FALSE(version_->FinishRequest(request_id, /*was_handled=*/true));
 
@@ -1947,6 +1951,30 @@ TEST_P(ServiceWorkerVersionTest, FailToStart_RestartStalledWorker) {
       version_->version_id()));
 }
 
+// Like FailToStart_RestartStalledWorker, but starting the worker is disallowed
+// by the time it stops, so it must not be restarted (crbug.com/531900625).
+TEST_P(ServiceWorkerVersionTest, FailToStart_DoNotRestartDisallowedWorker) {
+  std::optional<blink::ServiceWorkerStatusCode> status;
+  base::RunLoop run_loop;
+  // Stall in starting.
+  auto* client = helper_->AddNewPendingInstanceClient<
+      DelayedFakeEmbeddedWorkerInstanceClient>(helper_.get());
+  client->UnblockStopWorker();
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::FETCH_MAIN_FRAME,
+      ReceiveServiceWorkerStatus(&status, run_loop.QuitClosure()));
+  base::RunLoop().RunUntilIdle();
+
+  DisallowServiceWorkerWithLogsContentBrowserClient test_browser_client;
+  ScopedContentBrowserClientSetting browser_client_setting(
+      &test_browser_client);
+  version_->StopWorker(base::DoNothing());
+  run_loop.Run();
+
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorDisallowed, status.value());
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+}
+
 TEST_P(ServiceWorkerVersionTest, InstalledFetchEventHandlerExists) {
   auto* service_worker =
       helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
@@ -2164,6 +2192,54 @@ TEST_P(ServiceWorkerVersionTest, StaleRequestTerminationWithExternalKeepalive) {
   EXPECT_NE(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
 }
 
+TEST_P(ServiceWorkerVersionTest,
+       ClearKeepAliveAfterNonExternalRequestFinishes) {
+  using Result = ServiceWorkerExternalRequestResult;
+  using TimeoutType = ServiceWorkerExternalRequestTimeoutType;
+
+  auto* service_worker =
+      helper_->AddNewPendingServiceWorker<FakeServiceWorker>(helper_.get());
+  ASSERT_EQ(blink::ServiceWorkerStatusCode::kOk,
+            StartServiceWorker(version_.get()));
+  service_worker->RunUntilInitializeGlobalScope();
+  ASSERT_EQ(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
+  version_->endpoint()->SetIdleDelay(base::Seconds(30));
+
+  // Start a standard (non-external) request such as ACTIVATE.
+  int request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::ACTIVATE, base::DoNothing());
+
+  // Start an external request, which sends AddKeepAlive() and clears the
+  // worker's idle delay.
+  const base::Uuid uuid = base::Uuid::GenerateRandomV4();
+  EXPECT_EQ(Result::kOk,
+            version_->StartExternalRequest(uuid, TimeoutType::kDefault));
+  service_worker->FlushForTesting();
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
+
+  // Finish the external request while the ACTIVATE request is still in flight.
+  // ClearKeepAlive() should not be sent yet because HasWorkInBrowser() is true.
+  EXPECT_EQ(Result::kOk, version_->FinishExternalRequest(uuid));
+  service_worker->FlushForTesting();
+  EXPECT_FALSE(service_worker->idle_delay().has_value());
+
+  // When the remaining non-external request finishes and HasWorkInBrowser()
+  // becomes false, ClearKeepAlive() must be sent so the renderer schedules its
+  // idle timer.
+  EXPECT_TRUE(version_->FinishRequest(request_id, /*was_handled=*/true));
+  service_worker->FlushForTesting();
+  EXPECT_EQ(base::Seconds(30), service_worker->idle_delay());
+
+  // Subsequent non-external requests finishing should not re-send
+  // ClearKeepAlive().
+  version_->endpoint()->SetIdleDelay(base::Seconds(0));
+  int next_request_id = version_->StartRequest(
+      ServiceWorkerMetrics::EventType::ACTIVATE, base::DoNothing());
+  EXPECT_TRUE(version_->FinishRequest(next_request_id, /*was_handled=*/true));
+  service_worker->FlushForTesting();
+  EXPECT_EQ(base::Seconds(0), service_worker->idle_delay());
+}
+
 // Tests worker lifetime with ServiceWorkerVersion::StartExternalRequest.
 TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
   SetupTestTickClock();
@@ -2174,6 +2250,9 @@ TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
           bool expect_running) {
         SCOPED_TRACE(testing::Message()
                      << std::boolalpha << "expect_running: " << expect_running);
+        auto* service_worker =
+            helper_->AddNewPendingServiceWorker<FakeServiceWorker>(
+                helper_.get());
         {
           // Start worker.
           base::RunLoop run_loop;
@@ -2197,6 +2276,8 @@ TEST_P(ServiceWorkerVersionTest, WorkerLifetimeWithExternalRequest) {
         tick_clock_.Advance(kTestTimeoutBeyondRequestTimeout);
         version_->timeout_timer_.user_task().Run();
         base::RunLoop().RunUntilIdle();
+        service_worker->FlushForTesting();
+        EXPECT_EQ(!expect_running, service_worker->idle_delay().has_value());
 
         version_->OnPongFromWorker();  // Avoids ping timeout.
         const bool worker_stopped_or_stopping = version_->OnRequestTermination(
@@ -3155,6 +3236,179 @@ TEST_P(ServiceWorkerVersionTest, OnStopped_MultipleInflightRequests) {
 
   EXPECT_TRUE(error_callback1_called);
   EXPECT_TRUE(error_callback2_called);
+}
+
+// Regression test for crbug.com/562219084: StartWorker() requests arriving
+// while the registration of network restrictions is in flight must wait for
+// it. If they started the worker themselves, the reply to the first request
+// would start it a second time.
+TEST_P(ServiceWorkerVersionTest,
+       StartWorker_ConcurrentWithNetworkRestrictions) {
+  PolicyContainerPolicies policies;
+  policies.connection_allowlists.enforced.emplace();
+  version_->SetPolicyContainerHost(
+      base::MakeRefCounted<PolicyContainerHost>(std::move(policies)));
+
+  std::optional<blink::ServiceWorkerStatusCode> status1;
+  std::optional<blink::ServiceWorkerStatusCode> status2;
+  base::RunLoop run_loop1;
+  base::RunLoop run_loop2;
+
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status1, run_loop1.QuitClosure()));
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status2, run_loop2.QuitClosure()));
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+  // Requests waiting for the registration count as work in the browser.
+  EXPECT_FALSE(version_->HasNoWork());
+
+  run_loop1.Run();
+  run_loop2.Run();
+  ASSERT_TRUE(status1.has_value());
+  ASSERT_TRUE(status2.has_value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status1.value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status2.value());
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
+}
+
+// Verifies that WARM_UP and regular StartWorker() requests arriving while the
+// registration of network restrictions is in flight all complete and leave the
+// worker running. In particular they must not reach
+// EmbeddedWorkerInstance::SetPauseInitializingGlobalScope() twice, which
+// CHECKs.
+TEST_P(ServiceWorkerVersionTest,
+       StartWorker_WarmUpWhileRegisteringNetworkRestrictions) {
+  PolicyContainerPolicies policies;
+  policies.connection_allowlists.enforced.emplace();
+  version_->SetPolicyContainerHost(
+      base::MakeRefCounted<PolicyContainerHost>(std::move(policies)));
+
+  std::optional<blink::ServiceWorkerStatusCode> status1;
+  std::optional<blink::ServiceWorkerStatusCode> status2;
+  std::optional<blink::ServiceWorkerStatusCode> status3;
+  base::RunLoop run_loop1;
+  base::RunLoop run_loop2;
+  base::RunLoop run_loop3;
+
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::WARM_UP,
+      ReceiveServiceWorkerStatus(&status1, run_loop1.QuitClosure()));
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::WARM_UP,
+      ReceiveServiceWorkerStatus(&status2, run_loop2.QuitClosure()));
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::FETCH_MAIN_FRAME,
+      ReceiveServiceWorkerStatus(&status3, run_loop3.QuitClosure()));
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+
+  run_loop1.Run();
+  run_loop2.Run();
+  run_loop3.Run();
+
+  ASSERT_TRUE(status1.has_value());
+  ASSERT_TRUE(status2.has_value());
+  ASSERT_TRUE(status3.has_value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status1.value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status2.value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status3.value());
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kRunning, version_->running_status());
+}
+
+// Verifies that StartWorker() requests waiting for network restrictions
+// registration fail with kErrorRedundant, without starting the worker, if the
+// version is doomed in the meantime.
+TEST_P(ServiceWorkerVersionTest,
+       StartWorker_DoomWhileRegisteringNetworkRestrictions) {
+  PolicyContainerPolicies policies;
+  policies.connection_allowlists.enforced.emplace();
+  version_->SetPolicyContainerHost(
+      base::MakeRefCounted<PolicyContainerHost>(std::move(policies)));
+
+  std::optional<blink::ServiceWorkerStatusCode> status1;
+  std::optional<blink::ServiceWorkerStatusCode> status2;
+  base::RunLoop run_loop1;
+  base::RunLoop run_loop2;
+
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status1, run_loop1.QuitClosure()));
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status2, run_loop2.QuitClosure()));
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+
+  version_->Doom();
+
+  run_loop1.Run();
+  run_loop2.Run();
+
+  ASSERT_TRUE(status1.has_value());
+  ASSERT_TRUE(status2.has_value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorRedundant, status1.value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorRedundant, status2.value());
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+}
+
+// Verifies that destroying the version while network restrictions registration
+// is in flight aborts the waiting StartWorker() requests with kErrorAbort.
+TEST_P(ServiceWorkerVersionTest,
+       StartWorker_DestroyVersionWhileRegisteringNetworkRestrictions) {
+  PolicyContainerPolicies policies;
+  policies.connection_allowlists.enforced.emplace();
+  version_->SetPolicyContainerHost(
+      base::MakeRefCounted<PolicyContainerHost>(std::move(policies)));
+
+  std::optional<blink::ServiceWorkerStatusCode> status;
+  base::RunLoop run_loop;
+
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status, run_loop.QuitClosure()));
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+
+  base::WeakPtr<ServiceWorkerVersion> weak_version = version_->GetWeakPtr();
+  registration_.reset();
+  version_.reset();
+  EXPECT_FALSE(weak_version);
+
+  run_loop.Run();
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kErrorAbort, status.value());
+}
+
+// Verifies that a StartWorker() request waiting for network restrictions
+// registration proceeds if the network context is disconnected before it
+// replies, rather than waiting forever.
+TEST_P(
+    ServiceWorkerVersionTest,
+    StartWorker_NetworkContextDisconnectedWhileRegisteringNetworkRestrictions) {
+  PolicyContainerPolicies policies;
+  policies.connection_allowlists.enforced.emplace();
+  version_->SetPolicyContainerHost(
+      base::MakeRefCounted<PolicyContainerHost>(std::move(policies)));
+
+  // Send the registration to a network context that never replies.
+  mojo::PendingRemote<network::mojom::NetworkContext> network_context;
+  mojo::PendingReceiver<network::mojom::NetworkContext> receiver =
+      network_context.InitWithNewPipeAndPassReceiver();
+  helper_->context_wrapper()->storage_partition()->SetNetworkContextForTesting(
+      std::move(network_context));
+
+  std::optional<blink::ServiceWorkerStatusCode> status;
+  base::RunLoop run_loop;
+
+  version_->StartWorker(
+      ServiceWorkerMetrics::EventType::UNKNOWN,
+      ReceiveServiceWorkerStatus(&status, run_loop.QuitClosure()));
+  EXPECT_EQ(blink::EmbeddedWorkerStatus::kStopped, version_->running_status());
+
+  receiver.reset();
+
+  run_loop.Run();
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(blink::ServiceWorkerStatusCode::kOk, status.value());
 }
 
 }  // namespace service_worker_version_unittest

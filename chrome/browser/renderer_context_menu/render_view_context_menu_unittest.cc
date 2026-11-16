@@ -111,6 +111,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "components/translate/core/browser/language_state.h"
 #include "components/translate/core/browser/translate_manager.h"
+#include "components/translate/core/common/translate_features.h"
 #include "components/user_education/common/user_education_features.h"
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/preconnect_manager.h"
@@ -154,6 +155,10 @@
 #include "components/account_id/account_id.h"
 #include "components/user_manager/fake_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
+#endif
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#include "components/signin/public/base/signin_switches.h"
 #endif
 
 using extensions::Extension;
@@ -2073,12 +2078,7 @@ TEST_F(RenderViewContextMenuPrefsTest, TranslateContextMenuHasIcon) {
   ASSERT_TRUE(model_and_index);
   ui::MenuModel* model = model_and_index->first;
   size_t index = model_and_index->second;
-// Context menu items typically do not have icons on Mac.
-#if BUILDFLAG(IS_MAC)
-  EXPECT_TRUE(model->GetIconAt(index).IsEmpty());
-#else
   EXPECT_FALSE(model->GetIconAt(index).IsEmpty());
-#endif
 }
 
 // Verify that the adding the Lens image search option to the menu
@@ -2770,6 +2770,25 @@ class RenderViewContextMenuMenuSimplificationTest
     return count;
   }
 
+  bool HasSeparatorBetween(const ui::SimpleMenuModel& model,
+                           int first_command_id,
+                           int second_command_id) {
+    std::optional<size_t> first_index =
+        model.GetIndexOfCommandId(first_command_id);
+    std::optional<size_t> second_index =
+        model.GetIndexOfCommandId(second_command_id);
+    if (!first_index.has_value() || !second_index.has_value() ||
+        first_index.value() >= second_index.value()) {
+      return false;
+    }
+    for (size_t i = first_index.value() + 1; i < second_index.value(); ++i) {
+      if (model.GetTypeAt(i) == ui::MenuModel::TYPE_SEPARATOR) {
+        return true;
+      }
+    }
+    return false;
+  }
+
  private:
   base::test::ScopedFeatureList feature_list_;
 };
@@ -2841,6 +2860,10 @@ TEST_F(RenderViewContextMenuMenuSimplificationTest, EmailFieldSearchHidden) {
 }
 
 TEST_F(RenderViewContextMenuMenuSimplificationTest, PureSelectionLayout) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicContextMenu);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
+
   content::ContextMenuParams params;
   params.selection_text = u"text";
   params.properties[prefs::kDefaultSearchProviderContextMenuAccessAllowed] = "";
@@ -2853,12 +2876,25 @@ TEST_F(RenderViewContextMenuMenuSimplificationTest, PureSelectionLayout) {
 
   EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_COPY));
   EXPECT_TRUE(menu.IsItemPresent(IDC_PRINT));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
   EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
   EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
+
+  const ui::SimpleMenuModel& model = menu.menu_model();
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_PRINT, IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_FALSE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                   IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_SEARCHWEBFOR,
+                                  IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
 }
 
 TEST_F(RenderViewContextMenuMenuSimplificationTest, PageMenuSeparators) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicContextMenu);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
+
   content::ContextMenuParams params = CreateParams(MenuItem::PAGE);
+  SetUserSelectedDefaultSearchProvider("https://www.google.com", true);
 
   TestRenderViewContextMenu menu(*web_contents()->GetPrimaryMainFrame(),
                                  params);
@@ -2866,42 +2902,61 @@ TEST_F(RenderViewContextMenuMenuSimplificationTest, PageMenuSeparators) {
   ChromeTranslateClient::CreateForWebContents(web_contents());
   menu.Init();
 
-  const ui::MenuModel& model = menu.menu_model();
-
-  std::optional<size_t> print_index;
-  for (size_t i = 0; i < model.GetItemCount(); ++i) {
-    if (model.GetCommandIdAt(i) == IDC_PRINT) {
-      print_index = i;
-      break;
-    }
+  const ui::SimpleMenuModel& model = menu.menu_model();
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_PRINT, IDC_CONTENT_CONTEXT_GLIC));
+  if (menu.IsItemPresent(IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH)) {
+    EXPECT_FALSE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                     IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH));
+    EXPECT_TRUE(HasSeparatorBetween(model,
+                                    IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH,
+                                    IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
+  } else {
+    EXPECT_TRUE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                    IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
   }
+}
 
-  ASSERT_TRUE(print_index.has_value());
+TEST_F(RenderViewContextMenuMenuSimplificationTest,
+       PageMenuSeparatorsGlicSearchAboveSaveAndPrint) {
+  base::test::ScopedFeatureList features;
+  features.InitWithFeaturesAndParameters(
+      {{features::kMenuSimplification,
+        {{features::kMenuSimplificationGlicSearchAboveSaveAndPrint.name,
+          "true"}}},
+       {features::kGlicContextMenu, {}}},
+      {});
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
 
-  std::optional<size_t> next_item_index;
-  for (size_t i = print_index.value() + 1; i < model.GetItemCount(); ++i) {
-    int command_id = model.GetCommandIdAt(i);
-    if (command_id == IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH ||
-        command_id == IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE) {
-      next_item_index = i;
-      break;
-    }
+  content::ContextMenuParams params = CreateParams(MenuItem::PAGE);
+  SetUserSelectedDefaultSearchProvider("https://www.google.com", true);
+
+  TestRenderViewContextMenu menu(*web_contents()->GetPrimaryMainFrame(),
+                                 params);
+  menu.SetBrowser(GetBrowser());
+  ChromeTranslateClient::CreateForWebContents(web_contents());
+  menu.Init();
+
+  const ui::SimpleMenuModel& model = menu.menu_model();
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_RELOAD, IDC_CONTENT_CONTEXT_GLIC));
+  if (menu.IsItemPresent(IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH)) {
+    EXPECT_FALSE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                     IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH));
+    EXPECT_TRUE(HasSeparatorBetween(
+        model, IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH, IDC_SAVE_PAGE));
+  } else {
+    EXPECT_TRUE(
+        HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC, IDC_SAVE_PAGE));
   }
-
-  ASSERT_TRUE(next_item_index.has_value());
-
-  bool found_separator = false;
-  for (size_t i = print_index.value() + 1; i < next_item_index.value(); ++i) {
-    if (model.GetTypeAt(i) == ui::MenuModel::TYPE_SEPARATOR) {
-      found_separator = true;
-      break;
-    }
-  }
-
-  EXPECT_TRUE(found_separator);
+  EXPECT_FALSE(HasSeparatorBetween(model, IDC_SAVE_PAGE, IDC_PRINT));
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_PRINT,
+                                  IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
 }
 
 TEST_F(RenderViewContextMenuMenuSimplificationTest, LinkAndSelectionLayout) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicContextMenu);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
+
   content::ContextMenuParams params;
   params.selection_text = u"text";
   params.link_url = GURL("https://example.com");
@@ -2914,8 +2969,49 @@ TEST_F(RenderViewContextMenuMenuSimplificationTest, LinkAndSelectionLayout) {
   menu.Init();
 
   EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_COPY));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
   EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_PRINT));
   EXPECT_FALSE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE));
+
+  const ui::SimpleMenuModel& model = menu.menu_model();
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_COPY,
+                                  IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_FALSE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                   IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
+  EXPECT_TRUE(
+      HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_SEARCHWEBFOR, IDC_PRINT));
+}
+
+TEST_F(RenderViewContextMenuMenuSimplificationTest,
+       EditableWithSelectionLayout) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(features::kGlicContextMenu);
+  glic::GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass;
+
+  content::ContextMenuParams params =
+      CreateParams(MenuItem::SELECTION | MenuItem::EDITABLE);
+  params.selection_text = u"text";
+  params.properties[prefs::kDefaultSearchProviderContextMenuAccessAllowed] = "";
+  SetUserSelectedDefaultSearchProvider("https://www.google.com", true);
+  TestRenderViewContextMenu menu(*web_contents()->GetPrimaryMainFrame(),
+                                 params);
+  menu.SetBrowser(GetBrowser());
+  ChromeTranslateClient::CreateForWebContents(web_contents());
+  menu.Init();
+
+  EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_SELECTALL));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
+  EXPECT_TRUE(menu.IsItemPresent(IDC_PRINT));
+
+  const ui::SimpleMenuModel& model = menu.menu_model();
+  EXPECT_TRUE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_SELECTALL,
+                                  IDC_CONTENT_CONTEXT_GLIC));
+  EXPECT_FALSE(HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_GLIC,
+                                   IDC_CONTENT_CONTEXT_SEARCHWEBFOR));
+  EXPECT_TRUE(
+      HasSeparatorBetween(model, IDC_CONTENT_CONTEXT_SEARCHWEBFOR, IDC_PRINT));
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -3005,6 +3101,73 @@ TEST_F(RenderViewContextMenuMenuSimplificationTest,
   menu->Init();
 
   EXPECT_FALSE(menu->IsItemPresent(IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE));
+}
+
+TEST_F(RenderViewContextMenuMenuSimplificationTest,
+       PartialTranslateShownOnPdfWhenFullPagePdfTranslateDisabled) {
+  base::test::ScopedFeatureList pdf_feature_list;
+  pdf_feature_list.InitAndDisableFeature(translate::kEnableTranslatePdf);
+
+  auto reset_ignore_missing_key = SetUpTranslateClient();
+  content::WebContentsTester::For(web_contents())
+      ->SetMainFrameMimeType("application/pdf");
+
+  // Selection menu on a PDF should show Partial Translate, not Full Page
+  // Translate.
+  content::ContextMenuParams selection_params;
+  selection_params.selection_text = u"hello world";
+  selection_params.is_editable = false;
+
+  auto selection_menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents()->GetPrimaryMainFrame(), selection_params);
+  selection_menu->SetBrowser(GetBrowser());
+  selection_menu->Init();
+
+  EXPECT_TRUE(
+      selection_menu->IsItemPresent(IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE));
+  EXPECT_FALSE(selection_menu->IsItemPresent(IDC_CONTENT_CONTEXT_TRANSLATE));
+
+  // Page menu on a PDF should not show Full Page Translate when
+  // kEnableTranslatePdf is disabled.
+  content::ContextMenuParams page_params = CreateParams(MenuItem::PAGE);
+  auto page_menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents()->GetPrimaryMainFrame(), page_params);
+  page_menu->SetBrowser(GetBrowser());
+  page_menu->Init();
+
+  EXPECT_FALSE(page_menu->IsItemPresent(IDC_CONTENT_CONTEXT_TRANSLATE));
+
+  // Verify the non-simplified menu path (InitMenu) as well.
+  base::test::ScopedFeatureList disable_menu_simplification;
+  disable_menu_simplification.InitAndDisableFeature(
+      features::kMenuSimplification);
+
+  auto legacy_selection_menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents()->GetPrimaryMainFrame(), selection_params);
+  legacy_selection_menu->SetBrowser(GetBrowser());
+  legacy_selection_menu->Init();
+
+  EXPECT_TRUE(legacy_selection_menu->IsItemPresent(
+      IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE));
+  EXPECT_FALSE(
+      legacy_selection_menu->IsItemPresent(IDC_CONTENT_CONTEXT_TRANSLATE));
+
+  // If the target language is unsupported by Partial Translate (e.g. "ilo"),
+  // the selection menu on a PDF must NOT fall back to showing Full Page
+  // Translate when kEnableTranslatePdf is disabled (crbug.com/565171599).
+  ChromeTranslateClient::FromWebContents(web_contents())
+      ->GetTranslatePrefs()
+      ->SetRecentTargetLanguage("ilo");
+
+  auto unsupported_target_menu = std::make_unique<TestRenderViewContextMenu>(
+      *web_contents()->GetPrimaryMainFrame(), selection_params);
+  unsupported_target_menu->SetBrowser(GetBrowser());
+  unsupported_target_menu->Init();
+
+  EXPECT_FALSE(unsupported_target_menu->IsItemPresent(
+      IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE));
+  EXPECT_FALSE(
+      unsupported_target_menu->IsItemPresent(IDC_CONTENT_CONTEXT_TRANSLATE));
 }
 #else
 TEST_F(RenderViewContextMenuMenuSimplificationTest,
@@ -3137,7 +3300,7 @@ class RenderViewContextMenuSendTabToSelfPageSigninPromosTest
     feature_list_.InitWithFeatures(
         {send_tab_to_self::kSendTabToSelfSubmenuSigninPromos,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-         send_tab_to_self::kSendTabToSelfNoTargetDeviceQrCode
+         switches::kCrossDeviceSigninFromDesktopFollowup
 #endif
         },
         {});
@@ -3176,7 +3339,7 @@ TEST_F(RenderViewContextMenuSendTabToSelfPageSigninPromosTest,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Tests that Send Tab to Self is displayed as a submenu for
 // `kInformNoTargetDevice` when both `kSendTabToSelfSubmenuSigninPromos` and
-// `kSendTabToSelfNoTargetDeviceQrCode` are enabled.
+// `switches::kCrossDeviceSigninFromDesktopFollowup` are enabled.
 TEST_F(RenderViewContextMenuSendTabToSelfPageSigninPromosTest,
        SubmenuPresentWhenInformNoTargetDevice) {
   std::unique_ptr<TestRenderViewContextMenu> menu =
@@ -3315,7 +3478,7 @@ class RenderViewContextMenuSendTabToSelfLinkSigninPromosTest
         {send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2,
          send_tab_to_self::kSendTabToSelfSubmenuSigninPromos,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-         send_tab_to_self::kSendTabToSelfNoTargetDeviceQrCode
+         switches::kCrossDeviceSigninFromDesktopFollowup
 #endif
         },
         {});
@@ -3356,8 +3519,8 @@ TEST_F(RenderViewContextMenuSendTabToSelfLinkSigninPromosTest,
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 // Tests that when right-clicking a hyperlink for `kInformNoTargetDevice`, the
 // Send Tab to Self item is appended as a submenu when both
-// `kSendTabToSelfSubmenuSigninPromos` and `kSendTabToSelfNoTargetDeviceQrCode`
-// are enabled.
+// `kSendTabToSelfSubmenuSigninPromos` and
+// `switches::kCrossDeviceSigninFromDesktopFollowup` are enabled.
 TEST_F(RenderViewContextMenuSendTabToSelfLinkSigninPromosTest,
        SubmenuPresentForLinkWhenInformNoTargetDevice) {
   std::unique_ptr<TestRenderViewContextMenu> menu =
@@ -4244,7 +4407,7 @@ TEST_F(RenderViewContextMenuSimplifiedOrderTest,
               testing::ElementsAre(
                   IDC_CONTENT_CONTEXT_COPY, IDC_CONTENT_CONTEXT_COPYLINKTOTEXT,
                   IDC_PRINT, kSeparatorId, IDC_CONTENT_CONTEXT_SEARCHWEBFOR,
-                  IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE,
+                  kSeparatorId, IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE,
 #if !BUILDFLAG(IS_CHROMEOS)
                   IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE,
 #endif
@@ -4262,7 +4425,7 @@ TEST_F(RenderViewContextMenuSimplifiedOrderTest,
               testing::ElementsAre(
                   IDC_CONTENT_CONTEXT_COPY, IDC_CONTENT_CONTEXT_COPYLINKTOTEXT,
                   IDC_PRINT, kSeparatorId, IDC_CONTENT_CONTEXT_GOTOURL,
-                  IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE,
+                  kSeparatorId, IDC_CONTENT_CONTEXT_OPEN_IN_READING_MODE,
 #if !BUILDFLAG(IS_CHROMEOS)
                   IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE,
 #endif
@@ -4286,7 +4449,8 @@ TEST_F(RenderViewContextMenuSimplifiedOrderTest, LinkAndSelectionMenu_Order) {
           IDC_CONTENT_CONTEXT_SAVELINKAS, IDC_CONTENT_CONTEXT_COPYLINKLOCATION,
           IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST, kSeparatorId,
           IDC_CONTENT_CONTEXT_COPY, IDC_CONTENT_CONTEXT_COPYLINKTOTEXT,
-          IDC_CONTENT_CONTEXT_SEARCHWEBFOR, IDC_PRINT,
+          kSeparatorId, IDC_CONTENT_CONTEXT_SEARCHWEBFOR, kSeparatorId,
+          IDC_PRINT,
 #if !BUILDFLAG(IS_CHROMEOS)
           IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE,
 #endif
@@ -4358,6 +4522,7 @@ TEST_F(RenderViewContextMenuSimplifiedOrderTest,
   expected.push_back(IDC_CONTENT_CONTEXT_SELECTALL);
   expected.push_back(kSeparatorId);
   expected.push_back(IDC_CONTENT_CONTEXT_SEARCHWEBFOR);
+  expected.push_back(kSeparatorId);
   expected.push_back(IDC_PRINT);
 #if !BUILDFLAG(IS_CHROMEOS)
   expected.push_back(IDC_CONTENT_CONTEXT_PARTIAL_TRANSLATE);

@@ -19,15 +19,12 @@ import org.chromium.base.TimeUtils;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate.ModuleType;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
-import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
-import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils.DefaultBrowserPromoDelegate;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.signin.identitymanager.PrimaryAccountChangeEvent;
 import org.chromium.components.sync.SyncService;
@@ -52,8 +49,7 @@ import java.util.concurrent.TimeUnit;
 public class SetupListManager
         implements SharedPreferences.OnSharedPreferenceChangeListener,
                 IdentityManager.Observer,
-                SyncService.SyncStateChangedListener,
-                DefaultBrowserPromoDelegate {
+                SyncService.SyncStateChangedListener {
     /** Interface for observing changes to the Setup List state. */
     public interface Observer {
         /** Called when the Setup List's state (eligibility, ranking, or layout) has changed. */
@@ -108,8 +104,6 @@ public class SetupListManager
                     ModuleType.HISTORY_SYNC_PROMO,
                     ModuleType.ENHANCED_SAFE_BROWSING_PROMO,
                     ModuleType.ADDRESS_BAR_PLACEMENT_PROMO);
-    // TODO(crbug.com/469425754): Deprecate module and cleanup related logic.
-    // ModuleType.DEFAULT_BROWSER_PROMO,
 
     private static final Set<Integer> BASE_SETUP_LIST_SET = new HashSet<>(BASE_SETUP_LIST_ORDER);
 
@@ -161,7 +155,6 @@ public class SetupListManager
 
         if (mIsActiveAtStart) {
             ContextUtils.getAppSharedPreferences().registerOnSharedPreferenceChangeListener(this);
-            DefaultBrowserPromoUtils.setDelegate(this);
         }
     }
 
@@ -274,7 +267,7 @@ public class SetupListManager
     }
 
     private static boolean isSetupListAllowed() {
-        return ChromeFeatureList.sAndroidSetupList.isEnabled() && !isFirstRunTriggered();
+        return !isFirstRunTriggered();
     }
 
     /**
@@ -603,13 +596,6 @@ public class SetupListManager
         if (mModulesAwaitingCompletionAnimation.remove(moduleType)) {
             reconcileState();
         }
-    }
-
-    // TODO(crbug.com/469425754): The suppression logic can be removed from the
-    // DefaultBrowserPromoUtils.
-    @Override
-    public boolean shouldSuppressPromo() {
-        return false;
     }
 
     public static void setInstanceForTesting(@Nullable SetupListManager instance) {

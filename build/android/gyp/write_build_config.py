@@ -13,14 +13,18 @@ See //build/android/docs/build_config.md for more information.
 """
 
 import argparse
+import gc
 import itertools
+import json
 import os
 import sys
-import xml.dom.minidom
 
-from util import build_utils
 from util import params_json_util
-import action_helpers
+
+# Not using build_utils since it is slow to import, and this script runs for
+# every java target.
+sys.path.append(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+import action_helpers  # noqa: E402
 
 
 class OrderedSet(dict):
@@ -58,6 +62,9 @@ class AndroidManifest:
     """Helper class to inspect properties of an AndroidManifest.xml file."""
 
     def __init__(self, path):
+        # Imported lazily since most targets do not have a manifest.
+        import xml.dom.minidom
+
         self.path = path
         dom = xml.dom.minidom.parse(path)
         manifests = dom.getElementsByTagName('manifest')
@@ -106,14 +113,12 @@ class _TransitiveValues:
             'all_input_jars_paths',
             'direct_input_jars_paths',
             'direct_interface_jars',
-            'direct_unprocessed_jars',
             'proguard_configs',
         ]
     )
 
     def __init__(self):
         # Direct classpath:
-        self.direct_unprocessed_jars = OrderedSet()
         self.direct_interface_jars = OrderedSet()
         self.direct_input_jars_paths = OrderedSet()
         # Jar files
@@ -141,7 +146,6 @@ class _TransitiveValues:
         retain_processed_jars=False,
         retain_unprocessed_jars=False,
         retain_resource_zips=False,
-        retain_extra_package_names=False,
         retain_android_manifests=False,
     ):
         """Removes all values from |other| from this instance."""
@@ -157,7 +161,6 @@ class _TransitiveValues:
                     retain_resource_zips
                     and key in ('dependency_zips', 'dependency_zip_overlays')
                 )
-                or (retain_extra_package_names and key == 'extra_package_names')
                 or (retain_android_manifests and key == 'android_manifests')
             ):
                 other_val = getattr(other, key, None)
@@ -208,14 +211,18 @@ class _TransitiveValuesBuilder:
             self._CollectManifests(all_deps_without_under_test)
         if params.collects_resources():
             self._CollectResources(all_deps_without_under_test)
-        self._CollectExtraPackageNames(direct_deps, all_deps)
+        if params.compiles_resources():
+            self._CollectExtraPackageNames(all_deps)
 
-        self._ret.proguard_configs.update(params.get('proguard_configs', []))
-        self._ret.proguard_configs.update(
-            (
-                direct_deps if params.get('direct_deps_only') else all_deps
-            ).collect('proguard_configs', flatten=True)
-        )
+        if params.get('proguard_enabled') or params.type == 'dist_aar':
+            self._ret.proguard_configs.update(
+                params.get('proguard_configs', [])
+            )
+            self._ret.proguard_configs.update(
+                (
+                    direct_deps if params.get('direct_deps_only') else all_deps
+                ).collect('proguard_configs', flatten=True)
+            )
 
         if params.is_bundle_module() and self._remove_parent_module_overlap:
             self._RemoveParentModuleOverlap()
@@ -239,9 +246,6 @@ class _TransitiveValuesBuilder:
         # match the java naming scheme that identifies them as libraries.
         # TODO(agrieve): Recognize bundle module names as java_library targets so
         #     that they contribute to classpath.
-        ret.direct_unprocessed_jars.update(
-            direct_deps.collect('unprocessed_jar_path')
-        )
         ret.direct_interface_jars.update(
             direct_deps.collect('interface_jar_path')
         )
@@ -279,9 +283,6 @@ class _TransitiveValuesBuilder:
     def _AddBaseModuleToClasspath(self):
         base_module = self._params.base_module()
         # Adding base module to classpath to compile against its R.java file
-        self._ret.direct_unprocessed_jars.add(
-            base_module['unprocessed_jar_path']
-        )
         self._ret.all_unprocessed_jars.add(base_module['unprocessed_jar_path'])
         self._ret.direct_interface_jars.add(base_module['interface_jar_path'])
         self._ret.all_interface_jars.add(base_module['interface_jar_path'])
@@ -339,14 +340,8 @@ class _TransitiveValuesBuilder:
             all_deps_without_under_test.collect('java_resources_jar_path')
         )
 
-    def _CollectExtraPackageNames(self, direct_deps, all_deps):
-        # Needed by java_library targets.
-        if self._params.is_library():
-            # TODO(agrieve): We would ideally move away from being able to use R.java
-            # from package_names other than the library's own.
-            resource_deps = direct_deps.of_type('android_resources')
-        else:
-            resource_deps = all_deps.recursive_resource_deps()
+    def _CollectExtraPackageNames(self, all_deps):
+        resource_deps = all_deps.recursive_resource_deps()
         self._ret.extra_package_names.update(
             resource_deps.collect('package_name')
         )
@@ -374,10 +369,6 @@ class _TransitiveValuesBuilder:
         self._ret.RemoveSubtree(
             dist_jar_tvs,
             retain_resource_zips=True,
-            retain_extra_package_names=True,
-        )
-        self._ret.direct_unprocessed_jars.difference_update(
-            dist_jar_tvs.direct_unprocessed_jars
         )
         self._ret.direct_interface_jars.difference_update(
             dist_jar_tvs.direct_interface_jars
@@ -621,7 +612,7 @@ def _ToTraceEventRewrittenPath(jar_dir, path):
 
 def _CreateLintConfig(params, javac_config, manifest_config):
     # Collect all sources and resources at the apk/bundle_module level.
-    aars = set()
+    aars = {}
     srcjars = set()
     sources = set()
     resource_sources = set()
@@ -638,7 +629,9 @@ def _CreateLintConfig(params, javac_config, manifest_config):
             if paths := c.get('bundled_srcjars'):
                 srcjars.update(paths)
         if path := c.get('aar_path'):
-            aars.add(path)
+            # android_aar_prebuilt() unpacks the .aar into the directory that
+            # holds classes.jar. Passing it lets lint skip unzipping every .aar.
+            aars[path] = os.path.dirname(c['unprocessed_jar_path'])
 
     for c in params.resource_deps():
         if c.get('chromium_code', True):
@@ -674,6 +667,7 @@ def _CreateLintConfig(params, javac_config, manifest_config):
 
     config = {}
     config['aars'] = sorted(aars)
+    config['aar_dirs'] = [aars[a] for a in config['aars']]
     config['android_manifests'] = manifests
     config['classpath'] = classpath
     config['sources'] = sorted(sources)
@@ -683,7 +677,26 @@ def _CreateLintConfig(params, javac_config, manifest_config):
     return config
 
 
+def _WriteJsonIfChanged(obj, path):
+    """Writes |obj| as JSON to |path| if its contents changed."""
+    new_dump = json.dumps(
+        obj, sort_keys=True, indent=2, separators=(',', ': ')
+    ).encode('utf-8')
+    # Binary I/O avoids decoding the old file just to compare it.
+    try:
+        with open(path, 'rb', buffering=0) as f:
+            if f.readall() == new_dump:
+                return
+    except FileNotFoundError:
+        pass
+    with open(path, 'wb') as f:
+        f.write(new_dump)
+
+
 def main():
+    # Short-lived process that creates many objects but little cyclic garbage,
+    # so GC passes are wasted work.
+    gc.disable()
     parser = argparse.ArgumentParser(
         description='Writes a .build_config.json file.'
     )
@@ -1072,7 +1085,7 @@ def main():
         if config:
             path = build_config_path.replace('.build_config.json', extension)
             first_output = first_output or path
-            build_utils.WriteJson(config, path, only_if_changed=True)
+            _WriteJsonIfChanged(config, path)
 
     if options.depfile:
         all_inputs = params_json_util.all_read_file_paths()

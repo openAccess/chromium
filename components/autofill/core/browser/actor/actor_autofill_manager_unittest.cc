@@ -105,7 +105,7 @@ class ActorAutofillManagerTest
 TEST_F(ActorAutofillManagerTest, OnFillOrPreviewFormLogsCriticalAction) {
   autofill_client().set_navigation_id(100);
 
-  manager().set_active_actor_task(ActorAutofillManager::ActorTaskInfo{
+  manager().OnActorTaskStateChanged(ActorAutofillManager::ActorTaskInfo{
       .conversation_id = "test-conv-id",
       .task_id = ::actor::TaskId(42),
   });
@@ -141,7 +141,7 @@ TEST_F(ActorAutofillManagerTest, OnFillOrPreviewFormLogsCriticalAction) {
 TEST_F(ActorAutofillManagerTest, OnFillOrPreviewFieldLogsCriticalAction) {
   autofill_client().set_navigation_id(100);
 
-  manager().set_active_actor_task(ActorAutofillManager::ActorTaskInfo{
+  manager().OnActorTaskStateChanged(ActorAutofillManager::ActorTaskInfo{
       .conversation_id = "test-conv-id",
       .task_id = ::actor::TaskId(42),
   });
@@ -171,10 +171,46 @@ TEST_F(ActorAutofillManagerTest, OnFillOrPreviewFieldLogsCriticalAction) {
                                  NAME_FIRST);
 }
 
+// Test that consecutive fills within the same Actor task all log the task's
+// conversation ID, i.e. logging does not consume the active task info.
+TEST_F(ActorAutofillManagerTest, ConsecutiveFillsKeepConversationId) {
+  autofill_client().set_navigation_id(100);
+
+  manager().OnActorTaskStateChanged(ActorAutofillManager::ActorTaskInfo{
+      .conversation_id = "test-conv-id",
+      .task_id = ::actor::TaskId(42),
+  });
+
+  FormData form = test::GetFormData({NAME_FIRST, EMAIL_ADDRESS});
+  autofill_manager().AddSeenForm(form, {NAME_FIRST, EMAIL_ADDRESS});
+
+  FormGlobalId form_id = form.global_id();
+  FieldGlobalId field_id1 = form.fields()[0].global_id();
+  FieldGlobalId field_id2 = form.fields()[1].global_id();
+
+  EXPECT_CALL(mock_critical_service(),
+              AddCriticalActionWithNavigationId(
+                  testing::Field(
+                      &critical_actions::CriticalActionEntry::conversation_id,
+                      "test-conv-id"),
+                  100))
+      .Times(2);
+
+  manager().OnFillOrPreviewForm(
+      autofill_manager(), form_id, field_id1, mojom::ActionPersistence::kFill,
+      {field_id1, field_id2}, {}, static_cast<const AutofillProfile*>(nullptr));
+  manager().OnFillOrPreviewField(autofill_manager(), form_id, field_id2,
+                                 mojom::ActionPersistence::kFill, u"value",
+                                 EMAIL_ADDRESS);
+
+  ASSERT_TRUE(manager().active_actor_task().has_value());
+  EXPECT_EQ(manager().active_actor_task()->conversation_id, "test-conv-id");
+}
+
 // Test that when a field is filled but there is NO active Actor task, no
 // critical action is logged to the CriticalActionService.
 TEST_F(ActorAutofillManagerTest, NoCriticalActionLoggedIfNoActiveTask) {
-  manager().set_active_actor_task(std::nullopt);
+  manager().OnActorTaskStateChanged(std::nullopt);
 
   FormData form = test::GetFormData({NAME_FIRST});
   autofill_manager().AddSeenForm(form, {NAME_FIRST});
@@ -189,6 +225,35 @@ TEST_F(ActorAutofillManagerTest, NoCriticalActionLoggedIfNoActiveTask) {
   manager().OnFillOrPreviewField(autofill_manager(), form_id, field_id1,
                                  mojom::ActionPersistence::kFill, u"value",
                                  NAME_FIRST);
+}
+
+// Test that fills made while the user controls the task (e.g. after taking
+// over) are not logged as critical actions, while the tab stays in actor mode.
+TEST_F(ActorAutofillManagerTest, NoCriticalActionLoggedWhileUserControlsTask) {
+  manager().OnActorTaskStateChanged(ActorAutofillManager::ActorTaskInfo{
+      .conversation_id = "test-conv-id",
+      .task_id = ::actor::TaskId(42),
+      .is_under_user_control = true,
+  });
+
+  FormData form = test::GetFormData({NAME_FIRST});
+  autofill_manager().AddSeenForm(form, {NAME_FIRST});
+  FormGlobalId form_id = form.global_id();
+  FieldGlobalId field_id = form.fields()[0].global_id();
+
+  EXPECT_CALL(mock_critical_service(), AddCriticalAction).Times(0);
+  EXPECT_CALL(mock_critical_service(), AddCriticalActionWithNavigationId)
+      .Times(0);
+
+  manager().OnFillOrPreviewForm(autofill_manager(), form_id, field_id,
+                                mojom::ActionPersistence::kFill, {field_id}, {},
+                                static_cast<const AutofillProfile*>(nullptr));
+  manager().OnFillOrPreviewField(autofill_manager(), form_id, field_id,
+                                 mojom::ActionPersistence::kFill, u"value",
+                                 NAME_FIRST);
+
+  // Other actor-specific Autofill behavior is unchanged.
+  EXPECT_TRUE(manager().IsTabInActorMode());
 }
 
 }  // namespace

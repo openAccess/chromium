@@ -40,7 +40,6 @@
 #include "components/signin/public/identity_manager/account_managed_status_finder.h"
 #include "components/signin/public/identity_manager/account_state_fetcher.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/sync/base/features.h"
 #include "components/sync/base/user_selectable_type.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync/service/sync_user_settings.h"
@@ -417,8 +416,7 @@ SyncServiceStartupStateObserver::
         base::TimeDelta startup_delay,
         base::OnceClosure callback) {
   if (base::FeatureList::IsEnabled(
-          kEnableAwaitSyncServiceStartupOnHistorySync) &&
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
+          kEnableAwaitSyncServiceStartupOnHistorySync)) {
     return SyncServiceStartupStateObserverImpl::
         MaybeCreateSyncServiceStateObserverForAccountWithClouldPolicies(
             sync_service, profile, account_info, startup_delay,
@@ -551,7 +549,6 @@ HistorySyncOptinHelper::HistorySyncOptinHelper(
               &HistorySyncOptinHelper::ResumeShowHistorySyncOptinScreenFlow,
               base::Unretained(this)))),
       access_point_(access_point) {
-  CHECK(syncer::IsReplaceSyncPromosWithSignInPromosEnabled());
   CHECK(delegate);
 }
 
@@ -629,29 +626,6 @@ void HistorySyncOptinHelper::ResumeShowHistorySyncOptinScreenFlow(
   }
 
   MaybeShowSignInCelebration(maybe_managed_account);
-}
-
-void HistorySyncOptinHelper::MaybeShowSignInCelebration(
-    signin::Tribool maybe_managed_account) {
-  if (maybe_managed_account != signin::Tribool::kFalse) {
-    AwaitSyncStartupAndShowHistorySyncScreen();
-    return;
-  }
-
-  if (access_point() == signin_metrics::AccessPoint::kForYouFre) {
-    const bool is_in_search_engine_choice_region =
-        CHECK_DEREF(regional_capabilities::RegionalCapabilitiesServiceFactory::
-                        GetForProfile(profile_))
-            .IsInSearchEngineChoiceScreenRegion();
-    if (switches::IsFirstRunDesktopRevampEnabled(
-            is_in_search_engine_choice_region)) {
-      delegate_->ShowSignInCelebration(base::BindOnce(
-          &HistorySyncOptinHelper::AwaitSyncStartupAndShowHistorySyncScreen,
-          weak_ptr_factory_.GetWeakPtr()));
-      return;
-    }
-  }
-  AwaitSyncStartupAndShowHistorySyncScreen();
 }
 
 void HistorySyncOptinHelper::AwaitSyncStartupAndShowHistorySyncScreen() {
@@ -793,6 +767,13 @@ base::TimeDelta HistorySyncOptinHelperInBrowser::GetSyncStartupDelay() {
   return base::Seconds(kAwaitSyncServiceStartupInBrowserTimeoutSeconds.Get());
 }
 
+void HistorySyncOptinHelperInBrowser::MaybeShowSignInCelebration(
+    signin::Tribool /*maybe_managed_account*/) {
+  // The sign-in celebration is a profile picker screen: there is none to show
+  // in a browser.
+  AwaitSyncStartupAndShowHistorySyncScreen();
+}
+
 void HistorySyncOptinHelperInBrowser::OnManagementAccepted(
     Profile* chosen_profile,
     bool) {
@@ -894,6 +875,30 @@ void HistorySyncOptinHelperInProfilePicker::
 base::TimeDelta HistorySyncOptinHelperInProfilePicker::GetSyncStartupDelay() {
   return base::Seconds(
       kAwaitSyncServiceStartupInProfilePickerTimeoutSeconds.Get());
+}
+
+void HistorySyncOptinHelperInProfilePicker::MaybeShowSignInCelebration(
+    signin::Tribool maybe_managed_account) {
+  if (maybe_managed_account != signin::Tribool::kFalse) {
+    AwaitSyncStartupAndShowHistorySyncScreen();
+    return;
+  }
+
+  if (access_point() == signin_metrics::AccessPoint::kForYouFre) {
+    const bool is_in_search_engine_choice_region =
+        CHECK_DEREF(regional_capabilities::RegionalCapabilitiesServiceFactory::
+                        GetForProfile(profile()))
+            .IsInSearchEngineChoiceScreenRegion();
+    if (switches::IsFirstRunDesktopRevampEnabled(
+            is_in_search_engine_choice_region)) {
+      delegate()->ShowSignInCelebration(
+          base::BindOnce(&HistorySyncOptinHelperInProfilePicker::
+                             AwaitSyncStartupAndShowHistorySyncScreen,
+                         weak_ptr_factory_.GetWeakPtr()));
+      return;
+    }
+  }
+  AwaitSyncStartupAndShowHistorySyncScreen();
 }
 
 void HistorySyncOptinHelperInProfilePicker::MaybeShowAccountManagementScreen(

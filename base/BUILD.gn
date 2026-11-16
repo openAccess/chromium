@@ -511,6 +511,8 @@ component("base") {
     "memory_coordinator/memory_coordinator_features.h",
     "memory_coordinator/memory_limit.cc",
     "memory_coordinator/memory_limit.h",
+    "memory_coordinator/memory_pressure_source.cc",
+    "memory_coordinator/memory_pressure_source.h",
     "memory_coordinator/multi_memory_consumer.cc",
     "memory_coordinator/multi_memory_consumer.h",
     "memory_coordinator/traits.cc",
@@ -1174,7 +1176,11 @@ component("base") {
   deps += [ "//third_party/zlib" ]
 
   deps += [
+    # TODO(https://crbug.com/495537792): Remove direct dependency on
+    # `logging/rust_logger` after moving
+    # `.../rust_logger/print_rust_log_ffi.cc` to its own, separate target.
     "logging/rust_logger",
+    "logging/rust_logger:cpp_api",
     "//third_party/rust/serde_json_lenient/v0_2/wrapper",
   ]
 
@@ -1471,8 +1477,6 @@ component("base") {
       "android/jni_array.h",
       "android/jni_bytebuffer.cc",
       "android/jni_bytebuffer.h",
-      "android/jni_registrar.cc",
-      "android/jni_registrar.h",
       "android/jni_string.cc",
       "android/jni_string.h",
       "android/jni_utils.cc",
@@ -1646,7 +1650,6 @@ component("base") {
       "//third_party/fuchsia-sdk/sdk/pkg/async-loop-cpp",
       "//third_party/fuchsia-sdk/sdk/pkg/async-loop-default",
       "//third_party/fuchsia-sdk/sdk/pkg/fidl",
-      "//third_party/fuchsia-sdk/sdk/pkg/inspect_component_cpp",
       "//third_party/icu",
     ]
 
@@ -1896,6 +1899,8 @@ component("base") {
       "memory/platform_shared_memory_mapper_win.cc",
       "memory/platform_shared_memory_region_win.cc",
       "memory/protected_memory_win.cc",
+      "message_loop/message_pump_for_io_event_win.cc",
+      "message_loop/message_pump_for_io_event_win.h",
       "message_loop/message_pump_win.cc",
       "message_loop/message_pump_win.h",
       "moving_window.h",
@@ -2239,6 +2244,8 @@ component("base") {
       "mac/scoped_mach_msg_destroy.h",
       "mac/scoped_sending_event.h",
       "mac/scoped_sending_event.mm",
+      "mac/workgroup.cc",
+      "mac/workgroup.h",
       "message_loop/message_pump_kqueue.cc",
       "message_loop/message_pump_kqueue.h",
       "power_monitor/battery_level_provider_mac.mm",
@@ -2547,6 +2554,7 @@ component("base") {
     "trace_event/log_message.h",
     "trace_event/malloc_dump_provider.cc",
     "trace_event/malloc_dump_provider.h",
+    "trace_event/malloc_dump_provider_internal.h",
     "trace_event/measured_memory_dump_provider_info.cc",
     "trace_event/measured_memory_dump_provider_info.h",
     "trace_event/memory_allocator_dump.cc",
@@ -2637,6 +2645,20 @@ component("base") {
       "trace_event/java_heap_dump_provider_android.cc",
       "trace_event/java_heap_dump_provider_android.h",
     ]
+  }
+
+  if (is_win) {
+    sources += [ "trace_event/malloc_dump_provider_win.cc" ]
+  } else if (is_apple) {
+    sources += [ "trace_event/malloc_dump_provider_apple.cc" ]
+  } else if (is_fuchsia) {
+    sources += [ "trace_event/malloc_dump_provider_fuchsia.cc" ]
+  } else {
+    sources += [ "trace_event/malloc_dump_provider_mallinfo.cc" ]
+  }
+
+  if (use_partition_alloc) {
+    sources += [ "trace_event/malloc_dump_provider_partition_alloc.cc" ]
   }
 
   if (use_partition_alloc_as_malloc) {
@@ -3731,7 +3753,6 @@ if (is_fuchsia) {
       ":testfidl_cpp",
       "//third_party/fuchsia-sdk/sdk/fidl/fuchsia.io:fuchsia.io_cpp_common",
       "//third_party/fuchsia-sdk/sdk/pkg/fidl_cpp_wire",
-      "//third_party/fuchsia-sdk/sdk/pkg/sys_cpp",
     ]
   }
 
@@ -3957,7 +3978,9 @@ test("base_unittests") {
     "memory_coordinator/async_memory_consumer_registration_unittest.cc",
     "memory_coordinator/memory_consumer_registry_unittest.cc",
     "memory_coordinator/memory_consumer_unittest.cc",
+    "memory_coordinator/memory_coordinator_features_unittest.cc",
     "memory_coordinator/memory_limit_unittest.cc",
+    "memory_coordinator/memory_pressure_source_unittest.cc",
     "memory_coordinator/multi_memory_consumer_unittest.cc",
     "message_loop/message_pump_glib_unittest.cc",
     "message_loop/message_pump_unittest.cc",
@@ -4485,6 +4508,7 @@ test("base_unittests") {
       "files/scoped_file_linux_unittest.cc",
       "nix/mime_util_xdg_unittest.cc",
       "process/set_process_title_linux_unittest.cc",
+      "test/launcher/test_launcher_fork_server_unittest.cc",
       "version_info/nix/version_extra_utils_unittest.cc",
     ]
 
@@ -4504,6 +4528,9 @@ test("base_unittests") {
     ]
     if (!is_apple) {
       sources += [
+        "process/internal_linux_unittest.cc",
+        "process/process_handle_linux_unittest.cc",
+        "process/process_iterator_linux_unittest.cc",
         "profiler/stack_base_address_posix_unittest.cc",
         "profiler/stack_copier_signal_unittest.cc",
         "profiler/thread_delegate_posix_unittest.cc",
@@ -4561,6 +4588,7 @@ test("base_unittests") {
       "android/application_status_listener_unittest.cc",
       "android/child_process_unittest.cc",
       "android/content_uri_utils_unittest.cc",
+      "android/device_info_unittest.cc",
       "android/input_hint_checker_unittest.cc",
       "android/java_handler_thread_unittest.cc",
       "android/jni_android_unittest.cc",
@@ -4639,6 +4667,7 @@ test("base_unittests") {
       "mac/pasteboard_changed_observation_unittest.mm",
       "mac/process_requirement_unittest.cc",
       "mac/scoped_sending_event_unittest.mm",
+      "mac/workgroup_unittest.cc",
       "message_loop/message_pump_apple_unittest.mm",
       "power_monitor/thermal_state_observer_mac_unittest.mm",
       "process/memory_unittest_mac.h",
@@ -5533,10 +5562,7 @@ if (is_android) {
   }
 
   generate_jni("memory_coordinator_jni") {
-    sources = [
-      "android/java/src/org/chromium/base/memory_coordinator/MemoryConsumerRegistration.java",
-      "android/java/src/org/chromium/base/memory_coordinator/MemoryConsumerTraits.java",
-    ]
+    sources = [ "android/java/src/org/chromium/base/memory_coordinator/MemoryConsumerRegistration.java" ]
   }
 
   android_library("memory_coordinator_java") {
@@ -5846,6 +5872,7 @@ if (is_android) {
     ]
     deps = [
       ":base_java",
+      ":file_error_java",
       ":log_java",
       ":stream_util_java",
       ":tasks_java",
@@ -6050,6 +6077,7 @@ if (is_android) {
       "android/java/src/org/chromium/base/shared_preferences/KnownPreferenceKeyRegistries.java",
       "android/java/src/org/chromium/base/shared_preferences/PreferenceKeyChecker.java",
       "android/java/src/org/chromium/base/shared_preferences/PreferenceKeyRegistry.java",
+      "android/java/src/org/chromium/base/shared_preferences/SharedPreferenceObserver.java",
       "android/java/src/org/chromium/base/shared_preferences/SharedPreferencesManager.java",
       "android/java/src/org/chromium/base/shared_preferences/StrictPreferenceKeyChecker.java",
     ]
@@ -6397,6 +6425,7 @@ if (is_android) {
     deps = [
       ":base_java",
       ":base_java_test_support",
+      ":base_shared_preferences_java",
       "//base/version_info/android:version_constants_java",
       "//testing/android/junit:junit_test_support",
       "//third_party/androidx:androidx_test_core_java",
@@ -6761,7 +6790,10 @@ fuzzer_test("time_fuzzer") {
 
 fuzzer_test("utf_string_conversions_fuzzer") {
   sources = [ "strings/utf_string_conversions_fuzzer.cc" ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//testing/libfuzzer:libfuzzer_base_wrappers",
+  ]
 }
 
 fuzzer_test("pickle_fuzzer") {

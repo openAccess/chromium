@@ -68,6 +68,11 @@ BASE_DECLARE_FEATURE(kApiOdfsConfigPrivate);
 // Controls the availability of the contextualTasksPrivate API.
 BASE_DECLARE_FEATURE(kApiContextualTasksPrivate);
 
+// Controls the availability of the
+// `contextualTasksPrivate.registerAimThreadForPromo` API for ABA search
+// journeys.
+BASE_DECLARE_FEATURE(kApiContextualTasksPrivateAba);
+
 // Controls the availability of the glicPrivate API.
 BASE_DECLARE_FEATURE(kApiGlicPrivate);
 
@@ -136,6 +141,10 @@ BASE_DECLARE_FEATURE(kApiDesktopAndroidNativeMessagingBypassExtensionAllowlist);
 ///////////////////////////////////////////////////////////////////////////////
 
 // For historical reasons, this includes some APIs. Please don't add more APIs.
+
+// When enabled, `ExtensionFunction::GetMutableArgs()` avoids cloning `args_`
+// into `original_args_`.
+BASE_DECLARE_FEATURE(kAvoidCloneMutableExtensionFunctionArgs);
 
 // Controls whether opted-in component extension frames are permitted to
 // enter BackForwardCache instead of being unconditionally disabled.
@@ -226,6 +235,12 @@ BASE_DECLARE_FEATURE(kExtensionIconVariants);
 // Enables the "Allow site access" section in the extension install dialog which
 // lets the user choose site permissions.
 BASE_DECLARE_FEATURE(kExtensionInstallSiteAccessOptions);
+
+// If enabled (the default), `OpenTabHelper::MaybeSetInitiatorOrigin()`
+// populates `NavigateParams::initiator_origin` for extension-initiated
+// `chrome.tabs.create()` and `chrome.windows.create()` navigations without an
+// opener. If disabled (kill switch), `initiator_origin` is left unset.
+BASE_DECLARE_FEATURE(kExtensionOpenTabSetInitiatorOrigin);
 
 // If enabled, allows an extension to specify protocol_handlers keys in the
 // Manifest, registering a group of custom handlers so that the browser can
@@ -349,6 +364,15 @@ BASE_DECLARE_FEATURE(kExtensionBrowserNamespaceOnWebPages);
 // loaded extension's root directory are allowed to start. This helps avoid
 // memory leaks from stale cache entries and false-positive corruption reports.
 BASE_DECLARE_FEATURE(kExtensionContentVerificationUsesExtensionRoot);
+
+// If enabled, content verification reports a dedicated failure reason
+// (ContentVerifyJob::MISSING_EXTENSION_MANIFEST) when an extension with
+// unsigned hashes has neither computed_hashes.json nor manifest.json on disk
+// (e.g. after a browser rollback restored a user data snapshot without the
+// Extensions directory), instead of the generic MISSING_ALL_HASHES. This lets
+// the embedder repair such extensions without touching the handling of
+// extensions that merely lack computed_hashes.json.
+BASE_DECLARE_FEATURE(kExtensionContentVerificationReportsMissingManifest);
 
 // Enables the shouldShowPromotion API to determine which promotion to show for
 // Chrome Enterprise on CWS.

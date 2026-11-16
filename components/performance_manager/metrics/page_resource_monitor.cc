@@ -47,22 +47,22 @@ constexpr base::TimeDelta kCollectionDelay = base::Minutes(2);
 
 PageMeasurementBackgroundState GetBackgroundStateForMeasurementPeriod(
     const PageNode* page_node,
-    base::TimeTicks now,
     base::TimeTicks time_of_last_resource_usage) {
-  if (time_of_last_resource_usage < page_node->GetLastVisibilityChangeTime()) {
+  auto [is_visible, last_visibility_change_time] =
+      page_node->GetVisibilityState();
+  if (time_of_last_resource_usage < last_visibility_change_time) {
     return PageMeasurementBackgroundState::kMixedForegroundBackground;
   }
-  if (page_node->IsVisible()) {
+  if (is_visible) {
     return PageMeasurementBackgroundState::kForeground;
   }
   // Check if the page was audible for the entire measurement period.
-  const base::TimeDelta time_since_last_resource_usage =
-      now - time_of_last_resource_usage;
-  if (page_node->GetTimeSinceLastAudibleChange().value_or(
-          base::TimeDelta::Max()) < time_since_last_resource_usage) {
+  auto [is_audible, last_audible_change_time] = page_node->GetAudibleState();
+  if (last_audible_change_time.has_value() &&
+      time_of_last_resource_usage < last_audible_change_time.value()) {
     return PageMeasurementBackgroundState::kBackgroundMixedAudible;
   }
-  if (page_node->IsAudible()) {
+  if (is_audible) {
     return PageMeasurementBackgroundState::kAudibleInBackground;
   }
   return PageMeasurementBackgroundState::kBackground;
@@ -169,7 +169,7 @@ void PageResourceMonitor::OnPageResourceUsageResult(
     auto ukm = ukm::builders::PerformanceManager_PageResourceUsage2(source_id);
     ukm.SetBackgroundState(
         static_cast<int64_t>(GetBackgroundStateForMeasurementPeriod(
-            page_node, now, time_of_last_resource_usage_)));
+            page_node, time_of_last_resource_usage_)));
     ukm.SetMeasurementAlgorithm(
         static_cast<int64_t>(PageMeasurementAlgorithm::kEvenSplitAndAggregate));
     // Add CPU usage, if this page included it.

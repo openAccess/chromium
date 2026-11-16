@@ -11,7 +11,7 @@ import 'chrome://resources/cr_elements/cr_toast/cr_toast.js';
 import './history_item.js';
 
 import type {HistoryEntry, HistoryQuery, PageCallbackRouter, QueryState} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
-import {OpenConversationResult} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {OpenConversationResult, TimePeriodOptionId} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 import type {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
@@ -59,11 +59,11 @@ export interface HistoryListElement {
 
 declare global {
   interface HTMLElementEventMap {
+    'domain-filter-selected': CustomEvent<{domain: string}>;
     'history-checkbox-select': HistoryCheckboxSelectEvent;
     'open-menu': OpenMenuEvent;
     'remove-bookmark-stars': CustomEvent<string>;
     'toggle-card-collapse': ToggleCollapseEvent;
-    'toggle-domain-collapse': ToggleCollapseEvent;
   }
 }
 
@@ -93,8 +93,6 @@ export class HistoryListElement extends HistoryListElementBase {
        * Indexes into historyData_ of selected items.
        */
       selectedItems: {type: Object},
-
-      canDeleteHistory_: {type: Boolean},
 
       // An array of history entries in reverse chronological order.
       historyData_: {type: Array},
@@ -129,8 +127,6 @@ export class HistoryListElement extends HistoryListElementBase {
 
   protected accessor historyData_: HistoryEntry[] = [];
   private callbackRouter_: PageCallbackRouter;
-  protected accessor canDeleteHistory_: boolean =
-      loadTimeData.getBoolean('allowDeletingHistory');
   protected accessor actionMenuModel_: ActionMenuModel|null = null;
   private lastOffsetHeight_: number = 0;
   private resizeObserver_: ResizeObserver = new ResizeObserver(() => {
@@ -163,12 +159,16 @@ export class HistoryListElement extends HistoryListElementBase {
     includeUserVisits: true,
     includeActorVisits: true,
     clientIds: [],
+    timePeriodOptionId: TimePeriodOptionId.kAllTime,
   };
   accessor scrollTarget: HTMLElement = document.documentElement;
   accessor scrollOffset: number = 0;
+
+  protected readonly canDeleteHistory_: boolean =
+      loadTimeData.getBoolean('allowDeletingHistory');
+
   private onHistoryDeletedListenerId_: number|null = null;
   private collapsedDays_: Set<string> = new Set();
-  private collapsedDomains_: Set<string> = new Set();
 
   constructor() {
     super();
@@ -208,8 +208,6 @@ export class HistoryListElement extends HistoryListElementBase {
     this.addEventListener(
         'remove-bookmark-stars', e => this.onRemoveBookmarkStars_(e));
     this.addEventListener('toggle-card-collapse', this.onToggleCardCollapse_);
-    this.addEventListener(
-        'toggle-domain-collapse', this.onToggleDomainCollapse_);
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -271,7 +269,6 @@ export class HistoryListElement extends HistoryListElementBase {
       this.resultLoadingDisabled_ = false;
       this.historyData_ = [];
       this.collapsedDays_.clear();
-      this.collapsedDomains_.clear();
       this.fire('unselect-all');
       this.scrollTarget.scrollTop = 0;
     }
@@ -511,10 +508,9 @@ export class HistoryListElement extends HistoryListElementBase {
     const viewportBottom = Math.min(
         this.scrollTarget.getBoundingClientRect().bottom, window.innerHeight);
     let contentBottom = listRect.bottom;
-    if (this.collapsedDays_.size > 0 || this.collapsedDomains_.size > 0) {
+    if (this.collapsedDays_.size > 0) {
       const visibleItems = this.shadowRoot.querySelectorAll<HTMLElement>(
-          'history-item:not([is-domain-collapsed]):not([is-card-collapsed]), ' +
-          'history-item[is-card-start]');
+          'history-item:not([is-card-collapsed]), history-item[is-card-start]');
       const lastVisible = visibleItems[visibleItems.length - 1];
       if (lastVisible) {
         contentBottom = lastVisible.getBoundingClientRect().bottom;
@@ -557,6 +553,11 @@ export class HistoryListElement extends HistoryListElementBase {
 
 
     assert(this.$.sharedMenu.getIfExists());
+    if (this.isFilterByDomainEnabled_()) {
+      this.fire(
+          'domain-filter-selected',
+          {domain: this.actionMenuModel_!.item.domain});
+    }
     this.fire(
         'change-query', {search: 'host:' + this.actionMenuModel_!.item.domain});
     this.actionMenuModel_ = null;
@@ -571,6 +572,10 @@ export class HistoryListElement extends HistoryListElementBase {
         this.actionMenuModel_!.item.url);
     this.fire('remove-bookmark-stars', this.actionMenuModel_!.item.url);
     this.closeMenu_();
+  }
+
+  private isFilterByDomainEnabled_(): boolean {
+    return loadTimeData.getBoolean('isBrowsingHistoryFilterByDomainEnabled');
   }
 
   private isCriticalActionsEnabled_(): boolean {
@@ -683,6 +688,9 @@ export class HistoryListElement extends HistoryListElementBase {
   }
 
   private onToggleCardCollapse_(e: ToggleCollapseEvent) {
+    if (!this.isCollapsibleDayCardsEnabled_()) {
+      return;
+    }
     const item = this.historyData_[e.detail.index];
     if (!item) {
       return;
@@ -699,21 +707,10 @@ export class HistoryListElement extends HistoryListElementBase {
     });
   }
 
-  private onToggleDomainCollapse_(e: ToggleCollapseEvent) {
-    const item = this.historyData_[e.detail.index];
-    if (!item || !item.domain) {
-      return;
-    }
-    const key = this.getDomainGroupKey_(item);
-    if (this.collapsedDomains_.has(key)) {
-      this.collapsedDomains_.delete(key);
-    } else {
-      this.collapsedDomains_.add(key);
-    }
-    this.requestUpdate();
-    this.updateComplete.then(() => {
-      this.loadMoreIfListNotScrollable_();
-    });
+  private isCollapsibleDayCardsEnabled_(): boolean {
+    return loadTimeData.valueExists(
+               'isBrowsingHistoryCollapsibleDayCardsEnabled') &&
+        loadTimeData.getBoolean('isBrowsingHistoryCollapsibleDayCardsEnabled');
   }
 
   /////////////////////////////////////////////////////////////////////////////
@@ -723,66 +720,11 @@ export class HistoryListElement extends HistoryListElementBase {
     return item.dateRelativeDay;
   }
 
-  private getDomainGroupKey_(item: HistoryEntry): string {
-    return `${this.getCardKey_(item)}::${item.domain}`;
-  }
-
   protected isCardCollapsed_(item: HistoryEntry): boolean {
-    if (!item) {
+    if (!item || !this.isCollapsibleDayCardsEnabled_()) {
       return false;
     }
     return this.collapsedDays_.has(this.getCardKey_(item));
-  }
-
-  protected isDomainGroupStart_(item: HistoryEntry, index: number): boolean {
-    const length = this.historyData_.length;
-    if (!item || !item.domain || index === undefined || length === 0 ||
-        index > length - 1) {
-      return false;
-    }
-    const cardKey = this.getCardKey_(item);
-    for (let j = index - 1; j >= 0; j--) {
-      const prev = this.historyData_[j]!;
-      if (this.getCardKey_(prev) !== cardKey) {
-        break;
-      }
-      if (prev.domain === item.domain) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  protected getDomainGroupSize_(item: HistoryEntry, index: number): number {
-    const length = this.historyData_.length;
-    if (!item || !item.domain || index === undefined || length === 0 ||
-        index > length - 1 || !this.isDomainGroupStart_(item, index)) {
-      return 0;
-    }
-    const cardKey = this.getCardKey_(item);
-    let count = 0;
-    for (let j = index; j < length; j++) {
-      const curr = this.historyData_[j]!;
-      if (this.getCardKey_(curr) !== cardKey) {
-        break;
-      }
-      if (curr.domain === item.domain) {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  protected isDomainGroupCollapsed_(item: HistoryEntry): boolean {
-    if (!item || !item.domain) {
-      return false;
-    }
-    return this.collapsedDomains_.has(this.getDomainGroupKey_(item));
-  }
-
-  protected isDomainCollapsed_(item: HistoryEntry, index: number): boolean {
-    return this.isDomainGroupCollapsed_(item) &&
-        !this.isDomainGroupStart_(item, index);
   }
 
   /**
@@ -796,22 +738,11 @@ export class HistoryListElement extends HistoryListElementBase {
     }
 
     const currentItem = this.historyData_[index]!;
-    if (this.isCardCollapsed_(currentItem) ||
-        this.isDomainCollapsed_(currentItem, index)) {
+    if (this.isCardCollapsed_(currentItem)) {
       return false;
     }
 
-    let nextItem: HistoryEntry|undefined;
-    for (let j = index + 1; j < length; j++) {
-      const candidate = this.historyData_[j]!;
-      if (!this.isDomainCollapsed_(candidate, j)) {
-        nextItem = candidate;
-        break;
-      }
-    }
-    if (!nextItem) {
-      return false;
-    }
+    const nextItem = this.historyData_[index + 1]!;
 
     if (this.searchedTerm) {
       return currentItem.dateShort !== nextItem.dateShort;
@@ -848,16 +779,9 @@ export class HistoryListElement extends HistoryListElementBase {
     if (this.isCardCollapsed_(currentItem)) {
       return this.isCardStart_(currentItem, i);
     }
-    for (let j = i + 1; j < length; j++) {
-      const nextItem = this.historyData_[j]!;
-      if (nextItem.dateRelativeDay !== currentItem.dateRelativeDay) {
-        return true;
-      }
-      if (!this.isDomainCollapsed_(nextItem, j)) {
-        return false;
-      }
-    }
-    return true;
+    return i === length - 1 ||
+        this.historyData_[i]!.dateRelativeDay !==
+        this.historyData_[i + 1]!.dateRelativeDay;
   }
 
   protected hasResults_(): boolean {
@@ -874,7 +798,9 @@ export class HistoryListElement extends HistoryListElementBase {
         loadTimeData.getBoolean('isBrowsingHistoryFilterByActorEnabled') &&
         (!this.queryState.includeUserVisits ||
          !this.queryState.includeActorVisits);
-    return hasActiveActorDropdownFilter || this.queryState.clientIds.length > 0;
+    return hasActiveActorDropdownFilter ||
+        this.queryState.clientIds.length > 0 ||
+        this.queryState.timePeriodOptionId !== TimePeriodOptionId.kAllTime;
   }
 
   protected noResultsMessage_(): string {

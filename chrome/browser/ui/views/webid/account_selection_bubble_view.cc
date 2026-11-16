@@ -118,12 +118,12 @@ class ContinueButton : public views::MdTextButton {
     if (color_utils::GetContrastRatio(dialog_background_color,
                                       *brand_background_color_) <
         color_utils::kMinimumVisibleContrastRatio) {
-      SetBgColorOverrideDeprecated(std::nullopt);
+      SetBgColorOverride(std::nullopt);
       SetEnabledTextColors(std::nullopt);
       return;
     }
 
-    SetBgColorOverrideDeprecated(*brand_background_color_);
+    SetBgColorOverride(*brand_background_color_);
     SkColor text_color;
     if (brand_text_color_) {
       // IdpNetworkRequestManager ensures that `brand_text_color_` is only set
@@ -620,13 +620,15 @@ AccountSelectionBubbleView::CreateSingleAccountChooser(
   views::MdTextButton* button_ptr = button.get();
   row->AddChildView(std::move(button));
 
-  // Do not add disclosure text if fields is empty.
-  if (account->fields.empty()) {
+  // Do not add disclosure text if `fields` is empty, or if permission is
+  // requested through the modal dialog instead.
+  if (account->fields.empty() ||
+      owner_->ShouldSwitchToModalForPermission(*account)) {
     return std::make_pair(std::move(row), button_ptr);
   }
 
   // Add disclosure text.
-  row->AddChildView(CreateDisclosureLabel(account));
+  row->AddChildView(CreateDisclosureLabel(account, views::style::STYLE_LINK));
   return std::make_pair(std::move(row), button_ptr);
 }
 

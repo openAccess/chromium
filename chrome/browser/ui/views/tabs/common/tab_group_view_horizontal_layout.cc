@@ -30,6 +30,18 @@ TabGroupViewHorizontalLayout::TabGroupViewHorizontalLayout() = default;
 TabGroupViewHorizontalLayout::~TabGroupViewHorizontalLayout() = default;
 
 int TabGroupViewHorizontalLayout::GetCrossoverWidth() const {
+  if (!cached_crossover_width_) {
+    cached_crossover_width_ = CalculateCrossoverWidth();
+  }
+  return *cached_crossover_width_;
+}
+
+void TabGroupViewHorizontalLayout::OnLayoutChanged() {
+  TabGroupView::LayoutManager::OnLayoutChanged();
+  cached_crossover_width_.reset();
+}
+
+int TabGroupViewHorizontalLayout::CalculateCrossoverWidth() const {
   if (!TabGroupView().collection_node_) {
     return 0;
   }
@@ -62,39 +74,6 @@ int TabGroupViewHorizontalLayout::GetCrossoverWidth() const {
   return crossover_width;
 }
 
-gfx::Size TabGroupViewHorizontalLayout::GetMinimumSize(
-    const views::View* host) const {
-  if (!TabGroupView().collection_node_) {
-    return gfx::Size();
-  }
-  const HeaderLayoutInfo header = ComputeHeaderInfo();
-  int min_width = header.total_width();
-  size_t count = 0;
-  if (!TabGroupView().IsCollapsed()) {
-    for (const auto* child :
-         TabGroupView().collection_node_->GetDirectChildren()) {
-      if (!CanBeVisible(child)) {
-        continue;
-      }
-      auto drag_data = TabGroupView().GetVisualDataForDraggedView(*child);
-      if (drag_data && drag_data->should_hide) {
-        continue;
-      }
-      min_width += child->GetMinimumSize().width();
-      count++;
-    }
-  }
-  const int tab_overlap = TabStyle::Get()->GetTabOverlap();
-  if (count > 0 && header.has_header()) {
-    min_width = std::max(0, min_width - header.overlap -
-                                static_cast<int>(count - 1) * tab_overlap);
-  } else if (count > 1) {
-    min_width =
-        std::max(0, min_width - static_cast<int>(count - 1) * tab_overlap);
-  }
-  return gfx::Size(min_width, TabStyle::Get()->GetStandardHeight());
-}
-
 views::ProposedLayout TabGroupViewHorizontalLayout::CalculateProposedLayout(
     const views::SizeBounds& size_bounds) const {
   views::ProposedLayout layouts;
@@ -105,15 +84,15 @@ views::ProposedLayout TabGroupViewHorizontalLayout::CalculateProposedLayout(
   const int tab_overlap = TabStyle::Get()->GetTabOverlap();
   const int container_height = TabStyle::Get()->GetStandardHeight();
 
-  // Place the Unfocus button and the group header. A child with zero width is
-  // laid out hidden so it neither paints nor takes events.
+  // Place the Unfocus button and the group header. A header with zero width
+  // is laid out hidden so it neither paints nor takes events.
   const HeaderLayoutInfo header = ComputeHeaderInfo();
   const int header_width = header.total_width();
   if (TabGroupView().group_header_) {
     const int header_y =
         TabGroupStyle::GetTitleChipOffset(header.header_height).y();
     if (TabGroupView().unfocus_header_) {
-      const bool unfocus_visible = header.unfocus_width > 0;
+      const bool unfocus_visible = TabGroupView().ShouldShowUnfocusButton();
       layouts.child_layouts.emplace_back(
           TabGroupView().unfocus_header_.get(), unfocus_visible,
           unfocus_visible ? gfx::Rect(0, header_y, header.unfocus_width,
@@ -196,15 +175,29 @@ views::ProposedLayout TabGroupViewHorizontalLayout::CalculateProposedLayout(
       (num_children > 0 && !is_collapsed) ? (x + tab_overlap) : header_width;
 
   if (TabGroupView().group_line_) {
-    const bool show_group_line =
-        !TabGroupView().ShouldUseFocusedHeaderStyle() &&
-        !TabGroupView().is_collapsed();
+    const bool show_group_line = TabGroupView().ShouldShowGroupLine();
     gfx::Rect group_line_bounds(0, 0, total_group_width, container_height);
     layouts.child_layouts.emplace_back(TabGroupView().group_line_.get(),
                                        show_group_line, group_line_bounds);
   }
 
-  layouts.host_size = gfx::Size(total_group_width, container_height);
+  // If the group is focused and we are handling a drag, we need to account for
+  // the dragged views' trailing bound. In focus mode the focused group owns the
+  // drag instead of the unpinned container, so the group's preferred width is
+  // what lets parent layouts (and the new tab button) follow the drag.
+  int dragged_view_right = 0;
+  if (TabGroupView().IsGroupFocused() && TabGroupView().IsHandlingDrag()) {
+    const gfx::Rect dragging_bounds = TabGroupView().GetDraggingViewsBounds();
+    dragged_view_right = TabGroupView().GetMirroredXForRect(dragging_bounds) +
+                         dragging_bounds.width();
+    if (size_bounds.width().is_bounded()) {
+      dragged_view_right =
+          std::min(dragged_view_right, size_bounds.width().value());
+    }
+  }
+
+  layouts.host_size = gfx::Size(std::max(total_group_width, dragged_view_right),
+                                container_height);
   return layouts;
 }
 

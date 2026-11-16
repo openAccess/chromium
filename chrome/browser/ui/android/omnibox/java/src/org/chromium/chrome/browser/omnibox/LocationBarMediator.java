@@ -90,6 +90,7 @@ import org.chromium.chrome.browser.omnibox.status.StatusCoordinator;
 import org.chromium.chrome.browser.omnibox.status.StatusProperties.StatusIconResource;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteCoordinator.NavigationTarget;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxAnimator;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxLoadUrlParams;
 import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsContainer;
@@ -582,14 +583,13 @@ public class LocationBarMediator
                     @Override
                     public void handleActivationEvent(KeyEvent event) {
                         if (mAutocompleteCoordinator == null) return;
-                        @AutocompleteCoordinator.NavigationTarget
-                        int target = AutocompleteCoordinator.NavigationTarget.CURRENT_TAB;
+                        @NavigationTarget int target = NavigationTarget.CURRENT_TAB;
                         if (event.isAltPressed() && event.isShiftPressed()) {
-                            target = AutocompleteCoordinator.NavigationTarget.NEW_BACKGROUND_TAB;
+                            target = NavigationTarget.NEW_BACKGROUND_TAB;
                         } else if (event.isAltPressed()) {
-                            target = AutocompleteCoordinator.NavigationTarget.NEW_TAB;
+                            target = NavigationTarget.NEW_TAB;
                         } else if (event.isShiftPressed()) {
-                            target = AutocompleteCoordinator.NavigationTarget.NEW_WINDOW;
+                            target = NavigationTarget.NEW_WINDOW;
                         }
                         mAutocompleteCoordinator.loadTypedOmniboxText(event.getEventTime(), target);
                     }
@@ -1861,9 +1861,10 @@ public class LocationBarMediator
     }
 
     /**
-     * @param button The {@link View} of the button to show. Returns An animator to run for the
-     *     given view when showing buttons in the unfocused location bar. This should also be used
-     *     to create animators for showing toolbar buttons.
+     * Returns an animator to run for the given view when showing buttons in the unfocused location
+     * bar. This should also be used to create animators for showing toolbar buttons.
+     *
+     * @param button The {@link View} of the button to show.
      * @return Animator for showing the button during tablet unfocus.
      */
     /* package */ ObjectAnimator createShowButtonAnimatorForTablet(View button) {
@@ -1879,9 +1880,10 @@ public class LocationBarMediator
     }
 
     /**
-     * @param button The {@link View} of the button to hide. Returns An animator to run for the
-     *     given view when hiding buttons in the unfocused location bar. This should also be used to
-     *     create animators for hiding toolbar buttons.
+     * Returns an animator to run for the given view when hiding buttons in the unfocused location
+     * bar. This should also be used to create animators for hiding toolbar buttons.
+     *
+     * @param button The {@link View} of the button to hide.
      * @return Animator for hiding the button during tablet unfocus.
      */
     /* package */ ObjectAnimator createHideButtonAnimatorForTablet(View button) {
@@ -2386,12 +2388,9 @@ public class LocationBarMediator
     }
 
     private void updateNavigateButtonVisibility() {
-        boolean hasTextOrAttachments =
-                !TextUtils.isEmpty(mUrlCoordinator.getTextWithAutocomplete())
-                        || mFuseboxCoordinator.getHasAttachmentsSupplier().get();
         boolean isExpandedFusebox =
                 mFuseboxCoordinator.getFuseboxStateSupplier().get() == FuseboxState.EXPANDED;
-        boolean navigateButtonVisible = mUrlHasFocus && isExpandedFusebox && hasTextOrAttachments;
+        boolean navigateButtonVisible = mUrlHasFocus && isExpandedFusebox && hasTextOrAttachments();
         mLocationBarLayout.setNavigateButtonVisibility(navigateButtonVisible);
     }
 
@@ -2553,8 +2552,8 @@ public class LocationBarMediator
     }
 
     /**
-     * @return Whether the Omnibox is focused on a desktop. Lens and mic buttons should be
-     *     suppressed if the Omnibox is focused and the device is in desktop mode.
+     * Returns whether the Omnibox is focused on a desktop. Lens and mic buttons should be
+     * suppressed if the Omnibox is focused and the device is in desktop mode.
      */
     @EnsuresNonNullIf("mCurrentInput")
     private boolean isUrlBarFocusedOnDesktop() {
@@ -2904,7 +2903,9 @@ public class LocationBarMediator
     private void onWindowFocusChanged(boolean windowHasFocus) {
         updateShowFocusRing();
         updateActivationChip();
-        if (windowHasFocus) maybeShowOrClearCursorInLocationBar();
+        // Regaining window focus (e.g. after a popup closes) is not a new input request. Only
+        // place the cursor when the location bar is not already attached to a session.
+        if (windowHasFocus && mCurrentInput == null) maybeShowOrClearCursorInLocationBar();
     }
 
     private void onLocationBarSelectionChanged() {
@@ -3111,7 +3112,10 @@ public class LocationBarMediator
         // session again, which also covers sessions begun without a request, e.g. on focus.
         FuseboxSessionState.applyPageMetadata(input, mLocationBarDataProvider);
         if (input.getDisplayState() == DisplayState.WEBSITE) {
-            input.setDisplayState(DisplayState.DRAFTING);
+            input.setDisplayState(
+                    input.getAutocompleteState() == AutocompleteState.STANDBY_NO_FOCUS
+                            ? DisplayState.DRAFTING_NO_FOCUS
+                            : DisplayState.DRAFTING);
         }
 
         var state = FuseboxSessionState.from(mLocationBarDataProvider);
@@ -3270,18 +3274,20 @@ public class LocationBarMediator
         assert mCurrentInput != null;
         // We set the selection to SELECT_END so that on resume, when we set the selection to
         // SELECT_ALL in @see #beginOrResumeInput(boolean), a view update actually occurs (the
-        // UrlBarMediator guards against duplicate updates.
+        // UrlBarMediator guards against duplicate updates).
         mCurrentInput
                 .commitPreviewText()
                 .setSelection(TextSelection.SELECT_END)
-                .setAutocompleteState(AutocompleteState.STANDBY);
-        pushUrlBarDataFromCurrentInput();
+                .setAutocompleteState(AutocompleteState.STANDBY)
+                .setDisplayState(DisplayState.DRAFTING_NO_FOCUS);
+        mUrlCoordinator.setUrlBarData(
+                getUrlBarDataForCurrentInput(mCurrentInput),
+                ScrollType.SCROLL_TO_BEGINNING,
+                mCurrentInput.getSelection());
 
         // TODO(b/550394727): Fix committing preview text on defocus via window change.
         // Clicking another window doesn't seem to commit the preview text. It looks like preview
         // text is null.
-
-        mCurrentInput.setDisplayState(DisplayState.DRAFTING_NO_FOCUS);
 
         // TODO(b/548101684): Figure out why the url text isn't highlighted on refocus if we put
         // this focus clearing in call @see #onDisplayStateChanged(int). First verify the truth of
@@ -3476,9 +3482,7 @@ public class LocationBarMediator
     public void onPerformPasteAndGo(String text) {
         if (!mNativeInitialized || mAutocompleteCoordinator == null) return;
         mAutocompleteCoordinator.loadPastedText(
-                text,
-                TimeUtils.uptimeMillis(),
-                AutocompleteCoordinator.NavigationTarget.CURRENT_TAB);
+                text, TimeUtils.uptimeMillis(), NavigationTarget.CURRENT_TAB);
     }
 
     @Override
@@ -3791,35 +3795,54 @@ public class LocationBarMediator
     }
 
     private void onAiModeButtonIconChanged(StatusIconResource icon) {
-        mLocationBarLayout
-                .getActivationChip()
-                .setIconWithTint(
-                        icon.getDrawable(mContext),
-                        /* tintWithTextColor= */ icon.getIconRes() != 0);
+        mLocationBarLayout.setAiModeButtonIcon(
+                icon.getDrawable(mContext), /* tintWithTextColor= */ icon.getIconRes() != 0);
     }
 
     /* package */ void updateActivationChip() {
-        boolean showActivationChip =
-                (mIsFuseboxEligible || mAiModeButtonUiConfig != null)
-                        && mCurrentInput != null
-                        && mWindowHasFocusSupplier.get()
-                        && mFuseboxCoordinator.getFuseboxLayoutModeSupplier().get()
-                                == FuseboxLayoutMode.SUGGESTIONS_POPOVER
-                        && mCurrentInput.getRequestType() == AutocompleteRequestType.SEARCH
-                        && mCurrentInput.getSiteSearchData() == null
-                        && (mCurrentInput.getPreviewMatchUrl() == null
-                                || mCurrentInput.isInZeroPrefixContext())
-                        && mCurrentInput.getDisplayState() != DisplayState.DRAFTING_NO_FOCUS;
-        Profile profile = mProfileSupplier.get();
-        if (profile != null
-                && profile.getNativeBrowserContextPointer() != 0
-                && !UserPrefs.get(profile).getBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON)) {
-            showActivationChip = false;
-        }
-        mLocationBarLayout.setActivationChipVisibility(showActivationChip);
-        mActivationChipVisibilitySupplier.set(showActivationChip);
-        updateUrlBarAccessibilityOrder(showActivationChip);
+        @AiModeButtonState int state = computeAiModeButtonState();
+        mLocationBarLayout.setAiModeButtonState(state);
+        mActivationChipVisibilitySupplier.set(state != AiModeButtonState.HIDDEN);
+        updateUrlBarAccessibilityOrder(state != AiModeButtonState.HIDDEN);
         updateActivationChipCompact();
+    }
+
+    /**
+     * Returns {@link AiModeButtonState#VISIBLE_INACTIVE} if the AI Mode button is eligible to be
+     * shown and the current input is a conventional search, or {@link AiModeButtonState#HIDDEN}
+     * otherwise.
+     */
+    /* package */ @AiModeButtonState
+    int computeAiModeButtonState() {
+        if (!isAiModeButtonEligible()) return AiModeButtonState.HIDDEN;
+        return mCurrentInput.getRequestType() == AutocompleteRequestType.SEARCH
+                ? AiModeButtonState.VISIBLE_INACTIVE
+                : AiModeButtonState.HIDDEN;
+    }
+
+    /** Returns whether the AI Mode button may be shown at all, regardless of the request type. */
+    @EnsuresNonNullIf("mCurrentInput")
+    private boolean isAiModeButtonEligible() {
+        if (!(mIsFuseboxEligible || mAiModeButtonUiConfig != null)
+                || mCurrentInput == null
+                || !mWindowHasFocusSupplier.get()
+                || mFuseboxCoordinator.getFuseboxLayoutModeSupplier().get()
+                        != FuseboxLayoutMode.SUGGESTIONS_POPOVER
+                || mCurrentInput.getSiteSearchData() != null
+                || (mCurrentInput.getPreviewMatchUrl() != null
+                        && !mCurrentInput.isInZeroPrefixContext())
+                || mCurrentInput.getDisplayState() == DisplayState.DRAFTING_NO_FOCUS) {
+            return false;
+        }
+        Profile profile = mProfileSupplier.get();
+        return profile == null
+                || profile.getNativeBrowserContextPointer() == 0
+                || UserPrefs.get(profile).getBoolean(Pref.SHOW_AI_MODE_OMNIBOX_BUTTON);
+    }
+
+    private boolean hasTextOrAttachments() {
+        return !TextUtils.isEmpty(mUrlCoordinator.getTextWithAutocomplete())
+                || mFuseboxCoordinator.getHasAttachmentsSupplier().get();
     }
 
     /* package */ void onActivationChipSelectionChanged(boolean selected) {
@@ -3913,8 +3936,7 @@ public class LocationBarMediator
             // from the views.
             if (mAutocompleteCoordinator != null) {
                 mAutocompleteCoordinator.loadTypedOmniboxText(
-                        TimeUtils.uptimeMillis(),
-                        AutocompleteCoordinator.NavigationTarget.CURRENT_TAB);
+                        TimeUtils.uptimeMillis(), NavigationTarget.CURRENT_TAB);
             }
             return;
         }
@@ -3932,9 +3954,7 @@ public class LocationBarMediator
     private void clearEditingAndUserText() {
         if (mCurrentInput == null || mUrlCoordinator == null) return;
         mUrlCoordinator.setUrlBarData(
-                UrlBarData.forNonUrlText(""),
-                UrlBar.ScrollType.NO_SCROLL,
-                TextSelection.SELECT_END);
+                UrlBarData.forNonUrlText(""), ScrollType.NO_SCROLL, TextSelection.SELECT_END);
         mCurrentInput.setUserText("");
     }
 

@@ -1511,7 +1511,9 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter serverTiming
 [Worker]     getter transferSize
 [Worker]     getter workerCacheLookupStart
+[Worker]     getter workerFinalRouterSource
 [Worker]     getter workerFinalSourceType
+[Worker]     getter workerMatchedRouterSource
 [Worker]     getter workerMatchedSourceType
 [Worker]     getter workerRouterEvaluationStart
 [Worker]     getter workerStart
@@ -3343,8 +3345,10 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     method close
 [Worker]     method constructor
 [Worker]     method createBidirectionalStream
+[Worker]     method createSendGroup
 [Worker]     method createUnidirectionalStream
 [Worker]     method exportKeyingMaterial
+[Worker]     method getStats
 [Worker]     setter anticipatedConcurrentIncomingBidirectionalStreams
 [Worker]     setter anticipatedConcurrentIncomingUnidirectionalStreams
 [Worker] interface WebTransportBidirectionalStream
@@ -3364,17 +3368,41 @@ Starting worker: resources/global-interface-listing-worker.js
 [Worker]     getter readable
 [Worker]     getter writable
 [Worker]     method constructor
+[Worker]     method createWritable
 [Worker]     setter incomingHighWaterMark
 [Worker]     setter incomingMaxAge
 [Worker]     setter incomingMaxBufferedDatagrams
 [Worker]     setter outgoingHighWaterMark
 [Worker]     setter outgoingMaxAge
 [Worker]     setter outgoingMaxBufferedDatagrams
+[Worker] interface WebTransportDatagramsWritable : WritableStream
+[Worker]     attribute @@toStringTag
+[Worker]     getter sendGroup
+[Worker]     getter sendOrder
+[Worker]     method constructor
+[Worker]     setter sendGroup
+[Worker]     setter sendOrder
 [Worker] interface WebTransportError : DOMException
 [Worker]     attribute @@toStringTag
 [Worker]     getter source
 [Worker]     getter streamErrorCode
 [Worker]     method constructor
+[Worker] interface WebTransportReceiveStream : ReadableStream
+[Worker]     attribute @@toStringTag
+[Worker]     method constructor
+[Worker]     method getStats
+[Worker] interface WebTransportSendGroup
+[Worker]     attribute @@toStringTag
+[Worker]     method constructor
+[Worker]     method getStats
+[Worker] interface WebTransportSendStream : WritableStream
+[Worker]     attribute @@toStringTag
+[Worker]     getter sendGroup
+[Worker]     getter sendOrder
+[Worker]     method constructor
+[Worker]     method getStats
+[Worker]     setter sendGroup
+[Worker]     setter sendOrder
 [Worker] interface WorkerGlobalScope : EventTarget
 [Worker]     attribute @@toStringTag
 [Worker]     getter caches

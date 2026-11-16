@@ -8,10 +8,13 @@
 #include <memory>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
+#include "components/variations/service/variations_service.h"
 #include "url/gurl.h"
 
 class ApplicationLocaleStorage;
@@ -20,6 +23,10 @@ class PrefService;
 namespace content {
 class WebUIConfig;
 }  // namespace content
+
+namespace metrics {
+class MetricsService;
+}  // namespace metrics
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -36,29 +43,40 @@ namespace ash {
 // WebUIConfigs with content::WebUIConfigMap. On destruction, it unregisters all
 // tracked WebUIConfigs in reverse order (LIFO) from `content::WebUIConfigMap`
 // to ensure clean shutdown before services/resources are torn down.
-class AshWebUIConfigManager {
+class AshWebUIConfigManager : public variations::VariationsService::Observer {
  public:
+  // TODO(crbug.com/558489113): Revisit callback usage once lifetime is resolved
+  // to inject raw_ref/raw_ptr directly.
+  using MetricsServiceGetter =
+      base::RepeatingCallback<::metrics::MetricsService*()>;
+
   // Returns the singleton instance pointer or nullptr (e.g., in unit tests).
   static AshWebUIConfigManager* GetInstance();
 
   // `local_state` and `application_locale_storage` must not be null and must
-  // outlive `this`. `browser_policy_connector_ash` and
+  // outlive `this`. `metrics_service_getter` must not be null.
+  // `variations_service`, `browser_policy_connector_ash` and
   // `shared_url_loader_factory` can only be null in tests. If
   // `browser_policy_connector_ash` is non-null, it must outlive `this`.
   AshWebUIConfigManager(
       PrefService* local_state,
       const ApplicationLocaleStorage* application_locale_storage,
+      MetricsServiceGetter metrics_service_getter,
+      variations::VariationsService* variations_service,
       policy::BrowserPolicyConnectorAsh* browser_policy_connector_ash,
       scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory);
   AshWebUIConfigManager(const AshWebUIConfigManager&) = delete;
   AshWebUIConfigManager& operator=(const AshWebUIConfigManager&) = delete;
-  ~AshWebUIConfigManager();
+  ~AshWebUIConfigManager() override;
 
   // Registers all trusted Ash WebUIConfigs with content::WebUIConfigMap.
   void RegisterWebUIConfigs();
 
   // Registers all untrusted Ash WebUIConfigs with content::WebUIConfigMap.
   void RegisterUntrustedWebUIConfigs();
+
+  // variations::VariationsService::Observer:
+  void OnVariationsServiceDestroyed() override;
 
  private:
   friend class AshWebUIConfigManagerTest;
@@ -81,6 +99,7 @@ class AshWebUIConfigManager {
 
   const raw_ref<PrefService> local_state_;
   const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+  const MetricsServiceGetter metrics_service_getter_;
 
   // Note: `browser_policy_connector_ash_` and `shared_url_loader_factory_` may
   // be null only in unit tests.
@@ -88,6 +107,13 @@ class AshWebUIConfigManager {
       browser_policy_connector_ash_;
   const scoped_refptr<network::SharedURLLoaderFactory>
       shared_url_loader_factory_;
+
+  // Note: `variations_service_` may be null only in unit tests or after
+  // `OnVariationsServiceDestroyed()`.
+  raw_ptr<variations::VariationsService> variations_service_ = nullptr;
+  base::ScopedObservation<variations::VariationsService,
+                          variations::VariationsService::Observer>
+      variations_service_observation_{this};
 
   std::vector<GURL> registered_urls_to_unregister_;
 

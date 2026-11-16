@@ -5,5 +5,6 @@
 ../test/repeating_log.py
 hvc_mock.py
 partition_creator.py
+provision_starview.py
 run_cuttlefish.py
 simg2img.py

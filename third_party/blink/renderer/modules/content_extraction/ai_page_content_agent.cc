@@ -113,6 +113,7 @@
 #include "third_party/blink/renderer/platform/geometry/infinite_int_rect.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
 #include "third_party/blink/renderer/platform/graphics/image.h"
+#include "third_party/blink/renderer/platform/image-decoders/image_decoder.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
@@ -231,13 +232,13 @@ class AutoBuildHelper final : public NativeEventListener {
 
 namespace {
 
-String ReplaceUnpairedSurrogates(const String& node_text) {
+String ReplaceUnpairedSurrogates(const StringView& node_text) {
   if (!RuntimeEnabledFeatures::AIPageContentConvertNodeTextToUtf8Enabled()) {
-    return node_text;
+    return node_text.ToString();
   }
 
   if (node_text.IsNull() || node_text.empty()) {
-    return node_text;
+    return node_text.ToString();
   }
 
   // These strings need to be converted between formats (mojom, protobuf, etc)
@@ -255,7 +256,7 @@ String ReplaceUnpairedSurrogates(const String& node_text) {
   // Strings that are already in 8 bit representation (like Latin1 encoding)
   // can't contain unpaired surrogates, so we can return those transparently.
   if (node_text.Is8Bit()) {
-    return node_text;
+    return node_text.ToString();
   }
 
   return String::FromUtf8(
@@ -263,7 +264,7 @@ String ReplaceUnpairedSurrogates(const String& node_text) {
 }
 
 String ConvertNodeTextToUtf8(const AtomicString& node_text) {
-  return ReplaceUnpairedSurrogates(node_text.GetString());
+  return ReplaceUnpairedSurrogates(node_text);
 }
 
 // Coordinate mapping flags
@@ -360,24 +361,16 @@ gfx::Rect ComputeVisibleBoundingBox(
       LocalFrameView* root_view =
           frame ? frame->LocalFrameRoot().View() : nullptr;
       LocalFrameView* viewport_view = root_view ? root_view : view;
-      // LocalFrameView::ViewportWidth/Height are in CSS/layout pixels (only
-      // adjusted for absolute zoom), while `visual_viewport_relative_rect` is
-      // produced by MapToVisualRectInAncestorSpace() in
-      // visual-viewport-relative BlinkSpace/device pixels. Convert the
-      // viewport size into BlinkSpace to ensure we clamp in a consistent
-      // coordinate space.
-      float viewport_width_blink = viewport_view->ViewportWidth();
-      float viewport_height_blink = viewport_view->ViewportHeight();
-      if (frame) {
-        if (FrameWidget* widget = frame->GetWidgetForLocalRoot()) {
-          viewport_width_blink =
-              widget->DIPsToBlinkSpace(viewport_view->ViewportWidth());
-          viewport_height_blink =
-              widget->DIPsToBlinkSpace(viewport_view->ViewportHeight());
-        }
-      }
-      gfx::RectF local_root_viewport_rect_in_blink_space(
-          0, 0, viewport_width_blink, viewport_height_blink);
+      // `visual_viewport_relative_rect` is produced by
+      // MapToVisualRectInAncestorSpace() in visual-viewport-relative
+      // BlinkSpace: device pixels, which include the page zoom. Clamp against
+      // the viewport's size in that same space, which is
+      // LocalFrameView::GetLayoutSize(). ViewportWidth() and ViewportHeight()
+      // are that size in CSS pixels, and those are only DIPs, which
+      // FrameWidget::DIPsToBlinkSpace() could convert back, while the page is
+      // not zoomed.
+      const gfx::RectF local_root_viewport_rect_in_blink_space{
+          gfx::SizeF(viewport_view->GetLayoutSize())};
 
 #if DCHECK_IS_ON()
       gfx::RectF unclamped_rect = visual_viewport_relative_rect;
@@ -1246,7 +1239,7 @@ String NormalizeLabelCandidate(const StringView& text) {
   if (text.SubstringContainsOnlyWhitespaceOrEmpty(0, text.length())) {
     return String();
   }
-  return ReplaceUnpairedSurrogates(text.ToString());
+  return ReplaceUnpairedSurrogates(text);
 }
 
 // Reads the first <title> or <desc> child of this element. Does not use titles
@@ -1318,6 +1311,18 @@ mojom::blink::AIPageContentImageInfoPtr GetImageInfo(
     }
     if (!mime_type.empty()) {
       image_info->mime_type = mime_type;
+    }
+    if (image) {
+      switch (image->GetC2PAManifestStatus()) {
+        case C2PAManifestStatus::kDetected:
+          image_info->has_c2pa_manifest = true;
+          break;
+        case C2PAManifestStatus::kNotDetected:
+          image_info->has_c2pa_manifest = false;
+          break;
+        case C2PAManifestStatus::kUnknown:
+          break;
+      }
     }
   }
 
@@ -1750,7 +1755,7 @@ void ProcessRootMathNode(const MathMLElement& mathml_element,
   StringBuilder builder;
   if (SerializeMathMLNode(mathml_element, builder, /*depth=*/1,
                           /*should_preserve_whitespace=*/false)) {
-    String serialized = ReplaceUnpairedSurrogates(builder.ToString());
+    String serialized = ReplaceUnpairedSurrogates(builder);
     const size_t byte_size = serialized.Utf8().length();
     if (byte_size <= kMaxStrippedMathMLBytes) {
       base::UmaHistogramCounts1M(
@@ -1808,7 +1813,7 @@ void ProcessTableNode(const LayoutTable& layout_table,
           table_name.Append(layout_text->TransformedText());
         }
       }
-      table_data->table_name = ReplaceUnpairedSurrogates(table_name.ToString());
+      table_data->table_name = ReplaceUnpairedSurrogates(table_name);
     }
   }
   attributes.table_data = std::move(table_data);
@@ -2641,29 +2646,35 @@ mojom::blink::AIPageContentPtr AIPageContentAgent::ContentBuilder::Build(
   mojom::blink::AIPageContentPtr page_content =
       mojom::blink::AIPageContent::New();
 
-  // Force activatable locks so content which is accessible via find-in-page is
-  // styled/laid out and included when walking the tree below.
-  //
-  // TODO(crbug.com/387355768): Consider limiting the lock to nodes with
-  // activation reason of FindInPage.
   DisplayLockDocumentState::ScopedForceActivatableDisplayLocks
       forced_activatable_locks;
 
   // If we're doing this extraction as a part of the document lifecycle, we
   // can't invalidate style/layout.
   if (!document.InvalidationDisallowed()) {
-    forced_activatable_locks.Add(document.GetDisplayLockDocumentState()
-                                     .GetScopedForceActivatableLocks());
+    // Force activatable locks so content which is accessible via find-in-page
+    // is styled/laid out and included when walking the tree below.
+    //
+    // content-visibility: auto locks are excluded: they are typically used to
+    // skip rendering work for large amounts of off-screen content, and forcing
+    // them makes extraction redo all of that work synchronously.
+    const bool include_auto_locks =
+        !RuntimeEnabledFeatures::
+            AIPageContentSkipContentVisibilityAutoEnabled();
+    forced_activatable_locks.Add(
+        document.GetDisplayLockDocumentState().GetScopedForceActivatableLocks(
+            include_auto_locks));
     document.View()->ForAllChildLocalFrameViews(
         [&](LocalFrameView& frame_view) {
           if (!frame_view.GetFrame().GetDocument()) {
             return;
           }
 
-          forced_activatable_locks.Add(frame_view.GetFrame()
-                                           .GetDocument()
-                                           ->GetDisplayLockDocumentState()
-                                           .GetScopedForceActivatableLocks());
+          forced_activatable_locks.Add(
+              frame_view.GetFrame()
+                  .GetDocument()
+                  ->GetDisplayLockDocumentState()
+                  .GetScopedForceActivatableLocks(include_auto_locks));
         });
   }
 

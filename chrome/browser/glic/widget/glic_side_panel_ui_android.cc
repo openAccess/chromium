@@ -28,6 +28,7 @@
 #include "chrome/browser/glic/public/widget/glic_side_panel_coordinator_android.h"
 #include "chrome/browser/glic/service/metrics/glic_instance_metrics.h"
 #include "chrome/browser/glic/widget/conversions.h"
+#include "chrome/browser/glic/widget/glic_co_browse_views.h"
 #include "chrome/browser/glic/widget/glic_inactive_side_panel_ui_android.h"
 #include "chrome/browser/glic/widget/web_contents_delegate_util.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
@@ -103,7 +104,23 @@ GlicSidePanelUi::GlicSidePanelUi(Profile* profile,
   SetWebContentsDelegate(web_contents, /*delegate=*/this);
   ConfigureGlicDragAndDropForWebContents(web_contents);
 
-  glic_side_panel_coordinator->SetWebContents(web_contents);
+  if (!glic_side_panel_coordinator->GetCoBrowseViews()) {
+    glic_side_panel_coordinator->SetCoBrowseViews(
+        std::make_unique<GlicCoBrowseViews>(
+            tab_, profile_, glic_side_panel_coordinator->SupportsPeek()));
+  }
+  co_browse_views_ =
+      glic_side_panel_coordinator->GetCoBrowseViews()->GetWeakPtr();
+  co_browse_views_resetter_ = co_browse_views_->Configure({
+      .web_contents = web_contents,
+      .is_loading = delegate_->host().IsShowingNativeLoading(),
+      .close_callback =
+          base::BindRepeating(&GlicSidePanelUi::Close,
+                              weak_ptr_factory_.GetWeakPtr(), CloseOptions()),
+      .native_fre_accepted_callback =
+          base::BindRepeating(&GlicSidePanelUi::OnNativeFreAccepted,
+                              weak_ptr_factory_.GetWeakPtr()),
+  });
 
   host_observation_.Observe(&delegate_->host());
   panel_state_.kind = mojom::PanelStateKind::kAttached;
@@ -115,6 +132,7 @@ GlicSidePanelUi::~GlicSidePanelUi() {
   // `panel_` weak pointers) is still valid.
   panel_focus_dependent_hotkey_manager_.reset();
   panel_visibility_dependent_hotkey_manager_.reset();
+  co_browse_views_resetter_.RunAndReset();
   content::WebContents* web_contents = delegate_->host().webui_contents();
   SetWebContentsDelegate(web_contents, /*delegate=*/nullptr,
                          /*expected_delegate=*/this);
@@ -136,6 +154,10 @@ void GlicSidePanelUi::Show(const ShowOptions& options) {
   panel_visibility_dependent_hotkey_manager_->InitializeAccelerators();
   panel_focus_dependent_hotkey_manager_->InitializeAccelerators();
 
+  if (co_browse_views_) {
+    co_browse_views_->PrepareForShow(options.fre_override ==
+                                     mojom::FreOverride::kNativeFre);
+  }
   glic_side_panel_coordinator->Show(ConvertToCoordinatorShowOptions(
       options, glic_side_panel_coordinator->SupportsPeek()));
 }
@@ -217,25 +239,33 @@ void GlicSidePanelUi::ClosePanel() {
   Close(CloseOptions());
 }
 
-void GlicSidePanelUi::OnReload() {
-  auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator();
-  if (glic_side_panel_coordinator) {
-    glic_side_panel_coordinator->SetWebContents(
-        delegate_->host().webui_contents());
+void GlicSidePanelUi::ContentsCreated() {
+  content::WebContents* web_contents = delegate_->host().webui_contents();
+  SetWebContentsDelegate(web_contents, /*delegate=*/this);
+  ConfigureGlicDragAndDropForWebContents(web_contents);
+  if (co_browse_views_) {
+    co_browse_views_->SetIsLoading(delegate_->host().IsShowingNativeLoading());
+    co_browse_views_->SetWebContents(web_contents);
   }
 }
 
 void GlicSidePanelUi::ActiveWebContentsChanged(
     content::WebContents* new_contents) {
-  if (auto* glic_side_panel_coordinator = GetGlicSidePanelCoordinator()) {
-    content::WebContents* old_contents = delegate_->host().webui_contents();
-    if (old_contents && old_contents != new_contents) {
-      SetWebContentsDelegate(old_contents, /*delegate=*/nullptr,
-                             /*expected_delegate=*/this);
-    }
-    SetWebContentsDelegate(new_contents, /*delegate=*/this);
-    ConfigureGlicDragAndDropForWebContents(new_contents);
-    glic_side_panel_coordinator->SetWebContents(new_contents);
+  content::WebContents* old_contents = delegate_->host().webui_contents();
+  if (old_contents && old_contents != new_contents) {
+    SetWebContentsDelegate(old_contents, /*delegate=*/nullptr,
+                           /*expected_delegate=*/this);
+  }
+  SetWebContentsDelegate(new_contents, /*delegate=*/this);
+  ConfigureGlicDragAndDropForWebContents(new_contents);
+  if (co_browse_views_) {
+    co_browse_views_->SetWebContents(new_contents);
+  }
+}
+
+void GlicSidePanelUi::NativeLoadingStateChanged(bool is_showing) {
+  if (co_browse_views_) {
+    co_browse_views_->SetIsLoading(is_showing);
   }
 }
 
@@ -526,6 +556,10 @@ void GlicSidePanelUi::SyncEmbedderWindowActivation() {
   }
 }
 
+void GlicSidePanelUi::OnNativeFreAccepted() {
+  delegate_->AcceptNativeFre();
+}
+
 bool GlicSidePanelUi::CheckMediaAccessPermission(
     content::RenderFrameHost* render_frame_host,
     const url::Origin& security_origin,
@@ -591,7 +625,7 @@ content::KeyboardEventProcessingResult GlicSidePanelUi::PreHandleKeyboardEvent(
       if (auto* delegate = tab_->GetContents()->GetDelegate()) {
         auto result =
             delegate->PreHandleKeyboardEvent(tab_->GetContents(), event);
-        if (result != content::KeyboardEventProcessingResult::NOT_HANDLED) {
+        if (result == content::KeyboardEventProcessingResult::HANDLED) {
           // If the primary tab handled Escape (e.g. exiting fullscreen mode or
           // pointer lock), also close the side panel.
           Close(CloseOptions());

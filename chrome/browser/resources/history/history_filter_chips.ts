@@ -13,6 +13,7 @@ import 'chrome://resources/cr_elements/icons.html.js';
 
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {Device, TimePeriodOption} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
+import {TimePeriodOptionId} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
 import {BrowserProxyImpl} from './browser_proxy.js';
@@ -36,17 +37,22 @@ export class HistoryFilterChipsElement extends CrLitElement {
     return {
       showDeviceFilter: {type: Boolean},
       devices: {type: Array},
+      showDomainFilter: {type: Boolean},
+      domain: {type: String},
       timePeriodOptions: {type: Array},
       showTimePeriodFilter: {type: Boolean},
       showActorFilter: {type: Boolean},
       userVisits: {type: Boolean},
       actorVisits: {type: Boolean},
       clientIds: {type: Array},
+      selectedTimePeriodOptionId: {type: Number},
     };
   }
 
   accessor showDeviceFilter: boolean = false;
   accessor devices: Device[] = [];
+  accessor showDomainFilter: boolean = false;
+  accessor domain: string = '';
   accessor timePeriodOptions: TimePeriodOption[] = [];
   accessor showTimePeriodFilter: boolean = false;
   accessor showActorFilter: boolean = false;
@@ -55,6 +61,10 @@ export class HistoryFilterChipsElement extends CrLitElement {
   accessor userVisits: boolean = true;
   accessor actorVisits: boolean = true;
   accessor clientIds: string[] = [];
+  // The currently selected predefined time period. kAllTime means no time
+  // period filtering is applied.
+  accessor selectedTimePeriodOptionId: TimePeriodOptionId =
+      TimePeriodOptionId.kAllTime;
 
   protected isUserSelected(): boolean {
     return this.userVisits && !this.actorVisits;
@@ -70,11 +80,20 @@ export class HistoryFilterChipsElement extends CrLitElement {
         this.clientIds.every((id, index) => id === device.ids[index]);
   }
 
+  protected isTimePeriodSelected_(option: TimePeriodOption): boolean {
+    return option.id === this.selectedTimePeriodOptionId;
+  }
+
+  protected hasActiveTimePeriodFilter_(): boolean {
+    return this.selectedTimePeriodOptionId !== TimePeriodOptionId.kAllTime;
+  }
+
   protected hasActiveFilter_(): boolean {
     const hasActiveActorDropdownFilter =
         this.showActorFilterDropDownVersion_() &&
         (this.isUserSelected() || this.isActorSelected());
-    return hasActiveActorDropdownFilter || this.clientIds.length > 0;
+    return hasActiveActorDropdownFilter || this.clientIds.length > 0 ||
+        this.hasActiveTimePeriodFilter_();
   }
 
   protected onActorSelectMousedown_() {
@@ -118,10 +137,24 @@ export class HistoryFilterChipsElement extends CrLitElement {
     this.fireChange_(this.userVisits, this.actorVisits);
   }
 
+  protected onTimePeriodSelectChange_(e: Event) {
+    const select = e.target as HTMLSelectElement;
+    const id = Number(select.value) as TimePeriodOptionId;
+    this.selectedTimePeriodOptionId =
+        this.timePeriodOptions.some(option => option.id === id) ?
+        id :
+        TimePeriodOptionId.kAllTime;
+    BrowserProxyImpl.getInstance().recordHistogram(
+        'HistoryPage.TimePeriodFilterSelected', this.selectedTimePeriodOptionId,
+        TimePeriodOptionId.MAX_VALUE + 1);
+    this.fireChange_(this.userVisits, this.actorVisits);
+  }
+
   protected async onClearAllClick_() {
     this.userVisits = true;
     this.actorVisits = true;
     this.clientIds = [];
+    this.selectedTimePeriodOptionId = TimePeriodOptionId.kAllTime;
 
     BrowserProxyImpl.getInstance().recordAction('HistoryPage_ClearAllFilters');
     this.fireChange_(this.userVisits, this.actorVisits);
@@ -200,6 +233,7 @@ export class HistoryFilterChipsElement extends CrLitElement {
       userVisits,
       actorVisits,
       clientIds: this.clientIds,
+      timePeriodOptionId: this.selectedTimePeriodOptionId,
     });
   }
 }

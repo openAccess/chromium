@@ -89,6 +89,10 @@ float CalculateBarHeight(float min_bar_height,
                   max_bar_height);
 }
 
+bool IsAnimated(WaveformMode mode) {
+  return mode == WaveformMode::kLive || mode == WaveformMode::kProcessing;
+}
+
 }  // namespace
 
 WaveformView::WaveformView(bool full_size) : full_size_(full_size) {
@@ -115,19 +119,6 @@ size_t WaveformView::GetCenterBarIndex() const {
   return bars_.size() / 2;
 }
 
-void WaveformView::SetCollapseWhenIdle(bool collapse_when_idle) {
-  if (collapse_when_idle_ == collapse_when_idle) {
-    return;
-  }
-  collapse_when_idle_ = collapse_when_idle;
-  InvalidateLayout();
-  SchedulePaint();
-}
-
-bool WaveformView::IsCollapsed() const {
-  return collapse_when_idle_ && mode_ == WaveformMode::kIdle;
-}
-
 void WaveformView::SetMode(WaveformMode mode) {
   if (mode_ == mode) {
     return;
@@ -148,6 +139,7 @@ void WaveformView::SetMode(WaveformMode mode) {
     last_volume_ = 0.0f;
     previous_read_empty_ = false;
   }
+  UpdateAnimation();
   InvalidateLayout();
   SchedulePaint();
 }
@@ -192,9 +184,6 @@ WaveformView::AnimationState WaveformView::GetProcessingAnimationState(
 
 gfx::Size WaveformView::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  if (IsCollapsed()) {
-    return gfx::Size(0, 0);
-  }
   const auto* const layout_provider = ChromeLayoutProvider::Get();
   const int width = full_size_ ? (bars_.size() - 1) * kFullSizeBarSpacing +
                                      kBarWidth + kFullSizeHorizontalPadding
@@ -206,10 +195,6 @@ gfx::Size WaveformView::CalculatePreferredSize(
 }
 
 void WaveformView::OnPaint(gfx::Canvas* canvas) {
-  if (IsCollapsed()) {
-    return;
-  }
-
   const float bar_spacing =
       full_size_ ? kFullSizeBarSpacing : kNonFullSizeBarSpacing;
   const float total_bars_width = (bars_.size() - 1) * bar_spacing + kBarWidth;
@@ -255,8 +240,7 @@ void WaveformView::OnPaint(gfx::Canvas* canvas) {
 }
 
 void WaveformView::AddedToWidget() {
-  last_update_time_ = base::TimeTicks::Now();
-  animation_->Start();
+  UpdateAnimation();
 }
 
 void WaveformView::RemovedFromWidget() {
@@ -264,12 +248,26 @@ void WaveformView::RemovedFromWidget() {
 }
 
 void WaveformView::AnimationProgressed(const gfx::Animation* animation) {
+  if (!IsAnimated(mode_)) {
+    return;
+  }
   const base::TimeTicks now = base::TimeTicks::Now();
   base::TimeDelta delta = now - last_update_time_;
   last_update_time_ = now;
 
   UpdatePhysics(delta);
   SchedulePaint();
+}
+
+void WaveformView::UpdateAnimation() {
+  if (!GetWidget() || !IsAnimated(mode_)) {
+    animation_->Stop();
+    return;
+  }
+  if (!animation_->is_animating()) {
+    last_update_time_ = base::TimeTicks::Now();
+    animation_->Start();
+  }
 }
 
 void WaveformView::UpdatePhysics(base::TimeDelta delta) {

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_TTC_CORE_SESSION_VIEW_DELEGATE_H_
 #define CHROME_BROWSER_TTC_CORE_SESSION_VIEW_DELEGATE_H_
 
+#include "chrome/browser/ttc/core/states.h"
+
 class BrowserWindowInterface;
 class Profile;
 
@@ -25,6 +27,19 @@ class SessionViewDelegate {
   // destroyed in a subsequent task so it is safe to call this from the
   // SessionView.
   virtual void EndSessionAsync() = 0;
+
+  // Returns the session's current lifecycle state.
+  virtual SessionLifecycle GetSessionLifecycle() const = 0;
+
+  // Mutes or unmutes the user's microphone. Returns whether the state changed.
+  virtual bool SetMicMuted(bool muted) = 0;
+
+  // Returns whether the user muted the microphone in TTC, as opposed to the OS
+  // or hardware muting it (see `SessionController::OnSystemMicMuteChanged()`).
+  virtual bool IsMicMuted() const = 0;
+
+  // Returns the party currently speaking.
+  virtual Speaker GetSpeaker() const = 0;
 };
 
 }  // namespace ttc

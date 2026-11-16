@@ -84,6 +84,8 @@ import org.chromium.chrome.browser.bookmarks.FakeBookmarkModel;
 import org.chromium.chrome.browser.bookmarks.PowerBookmarkUtils;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
 import org.chromium.chrome.browser.commerce.ShoppingServiceFactory;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtils;
+import org.chromium.chrome.browser.contextual_tasks.ContextualTasksUtilsJni;
 import org.chromium.chrome.browser.device.DeviceConditions;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtils;
 import org.chromium.chrome.browser.enterprise.util.ManagedBrowserUtilsJni;
@@ -159,7 +161,6 @@ import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.CommerceFeatureUtilsJni;
 import org.chromium.components.commerce.core.ShoppingService;
 import org.chromium.components.content_settings.ContentSetting;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.extensions.ExtensionsBuildflags;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridgeJni;
@@ -173,6 +174,7 @@ import org.chromium.components.sync.SyncService;
 import org.chromium.components.tab_groups.TabGroupsFeatureMap;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.user_prefs.UserPrefsJni;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.components.webapps.AppBannerManager;
 import org.chromium.components.webapps.AppBannerManagerJni;
 import org.chromium.components.webapps.WebappsUtils;
@@ -183,6 +185,7 @@ import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
 import org.chromium.net.ConnectionType;
 import org.chromium.ui.accessibility.AccessibilityStateTestHelper;
+import org.chromium.ui.base.DeviceInput;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modelutil.MVCListAdapter;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
@@ -205,7 +208,6 @@ import java.util.Set;
 
 @RunWith(BaseRobolectricTestRunner.class)
 @DisableFeatures({
-    ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU,
     ChromeFeatureList.FEED_AUDIO_OVERVIEWS,
     ChromeFeatureList.LENS_OVERLAY_ANDROID,
     ChromeFeatureList.TASK_MANAGER_CLANK,
@@ -257,6 +259,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
     @Mock private Tab mTab;
     @Mock private WebContents mWebContents;
+    @Mock private ContextualTasksUtils.Natives mContextualTasksUtilsJni;
     @Mock private NativePage mNativePage;
     @Mock private NavigationController mNavigationController;
     @Mock private MultiWindowModeStateDispatcher mMultiWindowModeStateDispatcher;
@@ -290,7 +293,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     @Mock private TranslateBridge.Natives mTranslateBridgeJniMock;
     @Mock private UpdateMenuItemHelper mUpdateMenuItemHelper;
     @Mock private LargeIconBridge.Natives mLargeIconBridgeJni;
-    @Mock private DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
+    @Mock private WebDistillerUrlUtilsJni mWebDistillerUrlUtilsJni;
     @Mock private FeedServiceBridge.Natives mFeedServiceBridgeJniMock;
     @Mock private PageZoomManager mPageZoomManagerMock;
     @Mock private DefaultBrowserPromoUtils mMockDefaultBrowserPromoUtils;
@@ -485,7 +488,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         LargeIconBridgeJni.setInstanceForTesting(mLargeIconBridgeJni);
 
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJni);
         DefaultBrowserPromoUtils.setInstanceForTesting(mMockDefaultBrowserPromoUtils);
 
         mTabbedAppMenuPropertiesDelegate.setImageFetcherForTesting(mBookmarkImageFetcher);
@@ -2556,6 +2559,26 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
     @Test
     @Config(sdk = 31)
+    public void testPageMenuItems_multiInstance_ntpShowsNewWindowInsteadOfMoveToOtherWindow() {
+        setUpMocksForPageMenu();
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.NTP_URL);
+        MultiWindowTestUtils.enableMultiInstance();
+        MultiWindowTestUtils.createInstance(
+                /* instanceId= */ 0,
+                /* url= */ "https://url0",
+                /* tabCount= */ 1,
+                /* taskId= */ 123);
+
+        mIsMultiWindowApiSupported = true;
+        mIsMoveToOtherWindowSupported = true;
+
+        ModelList modelList = createMenuForMultiWindow();
+        assertTrue(isMenuVisible(modelList, R.id.new_window_menu_id));
+        assertFalse(isMenuVisible(modelList, R.id.move_to_other_window_menu_id));
+    }
+
+    @Test
+    @Config(sdk = 31)
     public void testPageMenuItems_multiInstance_manageAllWindow() {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.SEARCH_URL);
@@ -2712,8 +2735,10 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    @Config(qualifiers = "sw600dp")
     @EnableFeatures(ChromeFeatureList.ANDROID_KEYBOARD_SHORTCUT_HINTS)
     public void testShortcutTextPopulatedWhenEnabled() {
+        DeviceInput.setSupportsAlphabeticKeyboardForTesting(true);
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         doReturn(mTabModel).when(mTabModelSelector).getCurrentModel();
@@ -2753,7 +2778,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
         doReturn(mTabModel).when(mTabModelSelector).getCurrentModel();
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(false);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(false);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -2770,7 +2795,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setUpMocksForPageMenu();
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.CHROME_DISTILLER_EXAMPLE_URL);
         doReturn(mTabModel).when(mTabModelSelector).getCurrentModel();
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -3078,7 +3103,7 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
         setUpMocksForPageMenu();
         PageZoomUtils.setShouldShowMenuItemForTesting(TriState.TRUE);
         when(mTab.getUrl()).thenReturn(JUnitTestGURLs.CHROME_DISTILLER_EXAMPLE_URL);
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
 
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
 
@@ -3447,6 +3472,23 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
+    public void testShouldShowNewMenu_phoneOnNtp_returnsTrue() {
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.NTP_URL);
+        assertTrue(
+                doTestShouldShowNewMenu(
+                        /* isAutomotive= */ false,
+                        /* isMultiInstanceEnabled= */ true,
+                        /* currentWindowInstances= */ 1,
+                        /* isTabletSizeScreen= */ false,
+                        /* isChromeRunningInAdjacentWindow= */ false,
+                        /* isInMultiWindowMode= */ false,
+                        /* isInMultiDisplayMode= */ false,
+                        /* isMultiInstanceRunning= */ false));
+        verify(mTabbedAppMenuPropertiesDelegate, atLeastOnce()).isTabletSizeScreen();
+    }
+
+    @Test
     public void testShouldShowNewMenu_multiInstanceRunning_returnsFalse() {
         assertFalse(
                 doTestShouldShowNewMenu(
@@ -3519,6 +3561,17 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
                         /* isInMultiDisplayMode= */ true,
                         /* isMoveToOtherWindowSupported= */ false));
         verify(mTabbedAppMenuPropertiesDelegate, never()).isTabletSizeScreen();
+    }
+
+    @Test
+    public void testShouldShowMoveToOtherWindow_onNtp_returnsFalse() {
+        mActivityTabProvider.setForTesting(mTab);
+        when(mTab.getUrl()).thenReturn(JUnitTestGURLs.NTP_URL);
+        assertFalse(
+                doTestShouldShowMoveToOtherWindowMenu(
+                        /* isInMultiDisplayMode= */ false,
+                        /* isMoveToOtherWindowSupported= */ true));
+        verify(mMultiWindowModeStateDispatcher, never()).isMoveToOtherWindowSupported(any());
     }
 
     @Test
@@ -4509,8 +4562,8 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
     public void testDownloadActionModel_SaveAsDisabled() {
+        DeviceInfo.setIsDesktopForTesting(false);
         setUpMocksForPageMenu();
         ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
         ListItem iconRow = findItemById(modelList, R.id.icon_row_menu_id);
@@ -4524,7 +4577,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
     public void testDownloadActionModel_SaveAsEnabled() {
         DeviceInfo.setIsDesktopForTesting(true);
         setUpMocksForPageMenu();
@@ -4540,8 +4592,8 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
     public void testDownloadPageItemTitle_SaveAsDisabled() {
+        DeviceInfo.setIsDesktopForTesting(false);
         SaveAndShareItemBuilder builder =
                 new SaveAndShareItemBuilder(
                         ContextUtils.getApplicationContext(),
@@ -4556,7 +4608,6 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ENABLE_DOWNLOAD_SAVE_AS_CONTEXT_MENU)
     public void testDownloadPageItemTitle_SaveAsEnabled() {
         DeviceInfo.setIsDesktopForTesting(true);
         SaveAndShareItemBuilder builder =
@@ -4617,6 +4668,26 @@ public class TabbedAppMenuPropertiesDelegateUnitTest {
 
         when(mPrefService.getBoolean(Pref.PRINTING_ENABLED)).thenReturn(false);
         assertFalse(isPrintVisible(/* isDesktop= */ false));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CONTEXTUAL_TASKS_ENTRY_POINTS)
+    public void askGoogleItemEnabled() {
+        setUpMocksForPageMenu();
+        ContextualTasksUtilsJni.setInstanceForTesting(mContextualTasksUtilsJni);
+        doReturn(true).when(mContextualTasksUtilsJni).shouldShowAskGoogleEntryPoints(mWebContents);
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertTrue(isMenuVisible(modelList, R.id.ask_google_about_page_menu_id));
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.CONTEXTUAL_TASKS_ENTRY_POINTS)
+    public void askGoogleItemDisabled() {
+        setUpMocksForPageMenu();
+        ContextualTasksUtilsJni.setInstanceForTesting(mContextualTasksUtilsJni);
+        doReturn(false).when(mContextualTasksUtilsJni).shouldShowAskGoogleEntryPoints(mWebContents);
+        ModelList modelList = mTabbedAppMenuPropertiesDelegate.getMenuItems();
+        assertFalse(isMenuVisible(modelList, R.id.ask_google_about_page_menu_id));
     }
 
     private MenuItem getExpectedBookmarksParentMenuTitle() {

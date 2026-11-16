@@ -63,12 +63,12 @@ source_set("browser_tests") {
     "//chrome/browser/ash/arc:arc_util",
     "//chrome/browser/ash/arc/session",
     "//chrome/browser/web_applications:web_applications_test_support",
-    "//chrome/test:test_support_ui",
     "//chromeos/ash/experiences/arc:arc_test_support",
     "//content/test:test_support",
 
     # TODO(crbug.com/353332589): Remove when web_app_browsertest_util.h
     # gets modularized.
+    "//chrome/browser/ui/web_applications/test:test_support_ui",
     "//chrome/test:test_support",
   ]
 }

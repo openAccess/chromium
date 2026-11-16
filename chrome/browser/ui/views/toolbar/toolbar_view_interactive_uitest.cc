@@ -9,6 +9,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
@@ -19,16 +20,16 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/ui/browser_command_controller.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
-#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/tab_menu_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/test/vertical_tabs_interactive_test_mixin.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
@@ -133,15 +134,6 @@ class ToolbarViewTest : public ToolbarAccessibilityTest {
                features::kWebUIBackForwardButton,
                features::kWebUISplitTabsButton, features::kWebUIHomeButton});
     }
-    webui_omnibox_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        // TODO(crbug.com/579030694): Investigate lazy loading OrganizerPanel.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup,
-         organizer_panel::kOrganizerPanel});
   }
   ToolbarViewTest(const ToolbarViewTest&) = delete;
   ToolbarViewTest& operator=(const ToolbarViewTest&) = delete;
@@ -183,15 +175,26 @@ class ToolbarViewTest : public ToolbarAccessibilityTest {
   auto OpenSideBySideTab(int tab_index) {
     const char kTabToHover[] = "Tab to hover";
 
-    return Steps(NameDescendantViewByType<Tab>(kTabStripElementId, kTabToHover,
-                                               tab_index),
-                 MoveMouseTo(kTabToHover), ClickMouse(ui_controls::RIGHT),
-                 SelectMenuItem(TabMenuModel::kSplitTabsMenuItem));
+    return Steps(
+        NameViewRelative(
+            kBrowserViewElementId, kTabToHover,
+            base::BindOnce(
+                [](int index, BrowserView* browser_view) -> views::View* {
+                  auto* const model =
+                      browser_view->browser()->GetTabStripModel();
+                  if (index < 0 || index >= model->count()) {
+                    return nullptr;
+                  }
+                  return browser_view->tab_strip_view()->GetTabAnchorView(
+                      model->GetTabAtIndex(index)->GetHandle());
+                },
+                tab_index)),
+        MoveMouseTo(kTabToHover), ClickMouse(ui_controls::RIGHT),
+        SelectMenuItem(TabMenuModel::kSplitTabsMenuItem));
   }
 
  private:
   base::test::ScopedFeatureList feature_list_;
-  base::test::ScopedFeatureList webui_omnibox_feature_list_;
 };
 
 void ToolbarViewTest::RunToolbarCycleFocusTest(

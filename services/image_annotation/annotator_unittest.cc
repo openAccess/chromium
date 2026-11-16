@@ -11,10 +11,12 @@
 #include <optional>
 
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ptr_util.h"
+#include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -22,6 +24,7 @@
 #include "base/time/time.h"
 #include "base/values.h"
 #include "components/manta/anchovy/anchovy_provider.h"
+#include "components/manta/anchovy/anchovy_requests.h"
 #include "components/manta/manta_status.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -37,6 +40,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/accessibility_features.h"
+#include "url/gurl.h"
+#include "url/origin.h"
 
 namespace image_annotation {
 
@@ -68,7 +73,7 @@ constexpr char kImage3Url[] = "https://www.example.com/image3.jpg";
 constexpr char kTemplateRequest[] = R"(
 {
   "imageRequests": [{
-    "imageId": "%s",
+    "imageId": "0  %s",
     "imageBytes": "%s",
     "engineParameters": [
       {"ocrParameters": {}},
@@ -84,7 +89,7 @@ constexpr char kBatchRequest[] = R"(
 {
   "imageRequests": [
     {
-      "imageId": "https://www.example.com/image3.jpg",
+      "imageId": "0  https://www.example.com/image3.jpg",
       "imageBytes": "BwgJ",
       "engineParameters": [
         {"ocrParameters": {}},
@@ -93,7 +98,7 @@ constexpr char kBatchRequest[] = R"(
       ]
     },
     {
-      "imageId": "https://www.example.com/image2.jpg",
+      "imageId": "0  https://www.example.com/image2.jpg",
       "imageBytes": "BAUG",
       "engineParameters": [
         {"ocrParameters": {}},
@@ -102,7 +107,7 @@ constexpr char kBatchRequest[] = R"(
       ]
     },
     {
-      "imageId": "https://www.example.com/image1.jpg",
+      "imageId": "0  https://www.example.com/image1.jpg",
       "imageBytes": "AQID",
       "engineParameters": [
         {"ocrParameters": {}},
@@ -118,7 +123,7 @@ constexpr char kOcrSuccessResponse[] = R"(
 {
   "results": [
     {
-      "imageId": "https://www.example.com/image1.jpg",
+      "imageId": "0  https://www.example.com/image1.jpg",
       "engineResults": [
         {
           "status": {},
@@ -171,7 +176,7 @@ constexpr char kBatchResponse[] = R"(
 {
   "results": [
     {
-      "imageId": "https://www.example.com/image2.jpg",
+      "imageId": "0  https://www.example.com/image2.jpg",
       "engineResults": [
         {
           "status": {},
@@ -193,7 +198,7 @@ constexpr char kBatchResponse[] = R"(
       ]
     },
     {
-      "imageId": "https://www.example.com/image1.jpg",
+      "imageId": "0  https://www.example.com/image1.jpg",
       "engineResults": [
         {
           "status": {},
@@ -215,7 +220,7 @@ constexpr char kBatchResponse[] = R"(
       ]
     },
     {
-      "imageId": "https://www.example.com/image3.jpg",
+      "imageId": "0  https://www.example.com/image3.jpg",
       "engineResults": [
         {
           "status": {
@@ -262,16 +267,30 @@ class TestImageProcessor : public mojom::ImageProcessor {
   void Reset() {
     receivers_.Clear();
     callbacks_.clear();
+    on_get_jpg_image_data_.Reset();
   }
 
   void GetJpgImageData(GetJpgImageDataCallback callback) override {
     callbacks_.push_back(std::move(callback));
+    if (on_get_jpg_image_data_) {
+      std::move(on_get_jpg_image_data_).Run();
+    }
+  }
+
+  void WaitForGetJpgImageData() {
+    if (!callbacks_.empty()) {
+      return;
+    }
+    base::RunLoop run_loop;
+    on_get_jpg_image_data_ = run_loop.QuitClosure();
+    run_loop.Run();
   }
 
   std::vector<GetJpgImageDataCallback>& callbacks() { return callbacks_; }
 
  private:
   std::vector<GetJpgImageDataCallback> callbacks_;
+  base::OnceClosure on_get_jpg_image_data_;
 
   mojo::ReceiverSet<mojom::ImageProcessor> receivers_;
 };
@@ -424,7 +443,8 @@ TEST(AnnotatorTest, OcrSuccessAndCache) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
   TestImageProcessor processor;
 
   // First call performs original image annotation.
@@ -532,7 +552,8 @@ TEST(AnnotatorTest, DescriptionSuccess) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
   TestImageProcessor processor;
 
   std::optional<mojom::AnnotateImageError> error;
@@ -563,7 +584,7 @@ TEST(AnnotatorTest, DescriptionSuccess) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -642,7 +663,8 @@ TEST(AnnotatorTest, DoubleOcrResult) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
   TestImageProcessor processor;
 
   std::optional<mojom::AnnotateImageError> error;
@@ -673,7 +695,7 @@ TEST(AnnotatorTest, DoubleOcrResult) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -760,7 +782,8 @@ TEST(AnnotatorTest, HttpError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -819,7 +842,8 @@ TEST(AnnotatorTest, BackendError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -849,7 +873,7 @@ TEST(AnnotatorTest, BackendError) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {
@@ -905,7 +929,8 @@ TEST(AnnotatorTest, OcrBackendError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -935,7 +960,7 @@ TEST(AnnotatorTest, OcrBackendError) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {
@@ -1002,7 +1027,8 @@ TEST(AnnotatorTest, DescriptionBackendError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -1032,7 +1058,7 @@ TEST(AnnotatorTest, DescriptionBackendError) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -1095,7 +1121,8 @@ TEST(AnnotatorTest, ServerError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -1156,7 +1183,8 @@ TEST(AnnotatorTest, AdultError) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -1186,7 +1214,7 @@ TEST(AnnotatorTest, AdultError) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -1234,7 +1262,8 @@ TEST(AnnotatorTest, ProcessorFails) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 3> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 3> error;
@@ -1316,7 +1345,8 @@ TEST(AnnotatorTest, ProcessorFailedPreviously) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 2> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 2> error;
@@ -1387,7 +1417,8 @@ TEST(AnnotatorTest, ProcessorDies) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 3> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 3> error;
@@ -1464,7 +1495,8 @@ TEST(AnnotatorTest, ConcurrentSameBatch) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 3> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 3> error;
@@ -1553,7 +1585,8 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 2> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 2> error;
@@ -1602,7 +1635,7 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image1.jpg",
+             "imageId": "0  https://www.example.com/image1.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -1635,7 +1668,7 @@ TEST(AnnotatorTest, ConcurrentSeparateBatches) {
       ReformatJson(base::StringPrintf(kTemplateRequest, kImage2Url, "BAUG")),
       R"({
            "results": [{
-             "imageId": "https://www.example.com/image2.jpg",
+             "imageId": "0  https://www.example.com/image2.jpg",
              "engineResults": [
                {
                  "status": {},
@@ -1699,7 +1732,8 @@ TEST(AnnotatorTest, DuplicateWork) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 4> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 4> error;
@@ -1809,7 +1843,8 @@ TEST(AnnotatorTest, DescPolicy) {
       test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 3> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 3> error;
@@ -1869,14 +1904,14 @@ TEST(AnnotatorTest, DescPolicy) {
         {
           "imageRequests": [
             {
-              "imageId": "https://www.example.com/image3.jpg",
+              "imageId": "0  https://www.example.com/image3.jpg",
               "imageBytes": "BwgJ",
               "engineParameters": [
                 {"ocrParameters": {}}
               ]
             },
             {
-              "imageId": "https://www.example.com/image2.jpg",
+              "imageId": "0  https://www.example.com/image2.jpg",
               "imageBytes": "BAUG",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -1884,7 +1919,7 @@ TEST(AnnotatorTest, DescPolicy) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image1.jpg",
+              "imageId": "0  https://www.example.com/image1.jpg",
               "imageBytes": "AQID",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -1899,7 +1934,7 @@ TEST(AnnotatorTest, DescPolicy) {
         {
           "results": [
             {
-              "imageId": "https://www.example.com/image2.jpg",
+              "imageId": "0  https://www.example.com/image2.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -1915,7 +1950,7 @@ TEST(AnnotatorTest, DescPolicy) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image1.jpg",
+              "imageId": "0  https://www.example.com/image1.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -1943,7 +1978,7 @@ TEST(AnnotatorTest, DescPolicy) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image3.jpg",
+              "imageId": "0  https://www.example.com/image3.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -2016,7 +2051,8 @@ TEST(AnnotatorTest, DescLanguage) {
       std::make_unique<TestAnnotatorClient>());
   annotator.server_languages_ = {"en", "it", "fr"};
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   std::array<TestImageProcessor, 3> processor;
   std::array<std::optional<mojom::AnnotateImageError>, 3> error;
@@ -2067,7 +2103,7 @@ TEST(AnnotatorTest, DescLanguage) {
         {
           "imageRequests": [
             {
-              "imageId": "https://www.example.com/image2.jpg en",
+              "imageId": "0 en https://www.example.com/image2.jpg",
               "imageBytes": "BAUG",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -2075,7 +2111,7 @@ TEST(AnnotatorTest, DescLanguage) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image1.jpg it",
+              "imageId": "0 it https://www.example.com/image1.jpg",
               "imageBytes": "AQID",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -2088,7 +2124,7 @@ TEST(AnnotatorTest, DescLanguage) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image1.jpg fr",
+              "imageId": "0 fr https://www.example.com/image1.jpg",
               "imageBytes": "AQID",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -2107,7 +2143,7 @@ TEST(AnnotatorTest, DescLanguage) {
         {
           "results": [
             {
-              "imageId": "https://www.example.com/image1.jpg it",
+              "imageId": "0 it https://www.example.com/image1.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -2135,7 +2171,7 @@ TEST(AnnotatorTest, DescLanguage) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image1.jpg fr",
+              "imageId": "0 fr https://www.example.com/image1.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -2163,7 +2199,7 @@ TEST(AnnotatorTest, DescLanguage) {
               ]
             },
             {
-              "imageId": "https://www.example.com/image2.jpg en",
+              "imageId": "0 en https://www.example.com/image2.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -2216,7 +2252,8 @@ TEST(AnnotatorTest, LanguageFallback) {
       std::make_unique<TestAnnotatorClient>());
   annotator.server_languages_ = {"en", "it", "fr"};
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
 
   TestImageProcessor processor;
   std::optional<mojom::AnnotateImageError> error;
@@ -2243,7 +2280,7 @@ TEST(AnnotatorTest, LanguageFallback) {
         {
           "imageRequests": [
             {
-              "imageId": "https://www.example.com/image1.jpg en",
+              "imageId": "0 en https://www.example.com/image1.jpg",
               "imageBytes": "AQID",
               "engineParameters": [
                 {"ocrParameters": {}},
@@ -2262,7 +2299,7 @@ TEST(AnnotatorTest, LanguageFallback) {
         {
           "results": [
             {
-              "imageId": "https://www.example.com/image1.jpg en",
+              "imageId": "0 en https://www.example.com/image1.jpg",
               "engineResults": [
                 {
                   "status": {},
@@ -2322,7 +2359,8 @@ TEST(AnnotatorTest, ApiKey) {
                         /*anchovy_provider=*/nullptr,
                         std::make_unique<TestAnnotatorClient>());
     mojo::Remote<mojom::Annotator> remote_annotator;
-    annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+    annotator.BindReceiverForTesting(
+        remote_annotator.BindNewPipeAndPassReceiver());
     TestImageProcessor processor;
 
     remote_annotator->AnnotateImage(
@@ -2360,7 +2398,8 @@ TEST(AnnotatorTest, ApiKey) {
                         /*anchovy_provider=*/nullptr,
                         std::make_unique<TestAnnotatorClient>());
     mojo::Remote<mojom::Annotator> remote_annotator;
-    annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+    annotator.BindReceiverForTesting(
+        remote_annotator.BindNewPipeAndPassReceiver());
     TestImageProcessor processor;
 
     remote_annotator->AnnotateImage(
@@ -2394,7 +2433,8 @@ TEST(AnnotatorTest, ApiKey) {
         test_url_factory.AsSharedURLLoaderFactory(),
         /*anchovy_provider=*/nullptr, std::make_unique<TestAnnotatorClient>());
     mojo::Remote<mojom::Annotator> remote_annotator;
-    annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+    annotator.BindReceiverForTesting(
+        remote_annotator.BindNewPipeAndPassReceiver());
     TestImageProcessor processor;
 
     remote_annotator->AnnotateImage(
@@ -2560,9 +2600,12 @@ TEST(AnnotatorTest, ServerLanguagesMustContainEnglish) {
 
 class FakeAnchovyProvider : public manta::AnchovyProvider {
  public:
-  explicit FakeAnchovyProvider(base::DictValue fake_result)
+  explicit FakeAnchovyProvider(
+      base::DictValue fake_result,
+      manta::MantaStatusCode status_code = manta::MantaStatusCode::kOk)
       : manta::AnchovyProvider(nullptr, nullptr, {}),
-        fake_result_(std::move(fake_result)) {}
+        fake_result_(std::move(fake_result)),
+        status_code_(status_code) {}
 
   FakeAnchovyProvider(const FakeAnchovyProvider&) = delete;
   FakeAnchovyProvider& operator=(const FakeAnchovyProvider&) = delete;
@@ -2570,20 +2613,35 @@ class FakeAnchovyProvider : public manta::AnchovyProvider {
   void GetImageDescription(manta::anchovy::ImageDescriptionRequest& request,
                            net::NetworkTrafficAnnotationTag traffic_annotation,
                            manta::MantaGenericCallback callback) override {
+    ++request_count_;
     manta::MantaStatus status;
-    status.status_code = manta::MantaStatusCode::kOk;
+    status.status_code = status_code_;
     status.locale = "en";
-    status.message = "ok";
-    std::move(callback).Run(std::move(fake_result_), status);
+    status.message =
+        status_code_ == manta::MantaStatusCode::kOk ? "ok" : "error";
+    std::move(callback).Run(fake_result_.Clone(), status);
   }
+
+  void SetFakeResult(base::DictValue fake_result,
+                     manta::MantaStatusCode status_code) {
+    fake_result_ = std::move(fake_result);
+    status_code_ = status_code;
+  }
+
+  int request_count() const { return request_count_; }
 
  private:
   base::DictValue fake_result_;
+  manta::MantaStatusCode status_code_;
+  int request_count_ = 0;
 };
 
 void RunAnchovyAnnotatorTest(
-    std::unique_ptr<manta::AnchovyProvider> fake_provider,
-    std::vector<mojom::Annotation>* annotations) {
+    std::unique_ptr<FakeAnchovyProvider> fake_provider,
+    std::vector<mojom::Annotation>* annotations,
+    std::optional<mojom::AnnotateImageError>* out_error = nullptr,
+    int32_t image_dim = kDescDim,
+    int* out_request_count = nullptr) {
   base::test::ScopedFeatureList enabled_features;
   enabled_features.InitAndEnableFeature(
       features::kImageDescriptionsAlternateRouting);
@@ -2593,35 +2651,43 @@ void RunAnchovyAnnotatorTest(
   TestServerURLLoaderFactory test_url_factory(
       "https://ia-pa.googleapis.com/v1/");
 
+  FakeAnchovyProvider* provider_ptr = fake_provider.get();
   Annotator annotator(
       GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
-      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      1 /* batch_size */, 0.7 /* min_ocr_confidence */,
       test_url_factory.AsSharedURLLoaderFactory(), std::move(fake_provider),
       std::make_unique<TestAnnotatorClient>());
   mojo::Remote<mojom::Annotator> remote_annotator;
-  annotator.BindReceiver(remote_annotator.BindNewPipeAndPassReceiver());
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
   TestImageProcessor processor;
 
-  std::optional<mojom::AnnotateImageError> error;
+  std::optional<mojom::AnnotateImageError> local_error;
+  std::optional<mojom::AnnotateImageError>* error_ptr =
+      out_error ? out_error : &local_error;
 
+  base::RunLoop run_loop;
   remote_annotator->AnnotateImage(
       kImage1Url, kDescLang, processor.GetPendingRemote(),
-      base::BindOnce(&ReportResult, &error, annotations));
-  test_task_env.RunUntilIdle();
+      base::BindOnce(&ReportResult, error_ptr, annotations)
+          .Then(run_loop.QuitClosure()));
 
   // Annotator should have asked processor for pixels.
+  processor.WaitForGetJpgImageData();
   ASSERT_THAT(processor.callbacks(), SizeIs(1));
 
   // Send back image data.
-  std::move(processor.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  std::move(processor.callbacks()[0]).Run({1, 2, 3}, image_dim, image_dim);
   processor.callbacks().pop_back();
-  test_task_env.RunUntilIdle();
 
-  // No request should be sent yet (because service is waiting to batch up
-  // multiple requests).
-  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
   test_task_env.FastForwardBy(base::Seconds(1));
-  test_task_env.RunUntilIdle();
+  run_loop.Run();
+  // No HTTP request should be sent to the legacy endpoint.
+  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
+
+  if (out_request_count && provider_ptr) {
+    *out_request_count = provider_ptr->request_count();
+  }
 }
 
 void SimpleAnchovySuccessTest(std::string str_type,
@@ -2674,10 +2740,10 @@ TEST(AnnotatorTest, EmptyResultIfListIsEmpty) {
 
 TEST(AnnotatorTest, AnchovySuccessMultiple) {
   const std::string text_ocr = "ocr";
-  const std::string type_ocr = "OCR";
+  const std::string type_ocr(manta::anchovy::kTypeOcr);
   const double score = 0.9;
   const std::string text_caption = "caption";
-  const std::string type_caption = "CAPTION";
+  const std::string type_caption(manta::anchovy::kTypePrimaryCaption);
 
   base::ListValue results;
   results.Append(base::DictValue()
@@ -2708,30 +2774,946 @@ TEST(AnnotatorTest, AnchovySuccessMultiple) {
 }
 
 TEST(AnnotatorTest, AnchovySuccessOCR) {
-  SimpleAnchovySuccessTest("OCR", mojom::AnnotationType::kOcr);
+  SimpleAnchovySuccessTest(manta::anchovy::kTypeOcr,
+                           mojom::AnnotationType::kOcr);
 }
 
 TEST(AnnotatorTest, AnchovySuccessCaption) {
-  SimpleAnchovySuccessTest("CAPTION", mojom::AnnotationType::kCaption);
+  SimpleAnchovySuccessTest(manta::anchovy::kTypeCaption,
+                           mojom::AnnotationType::kCaption);
+}
+
+TEST(AnnotatorTest, AnchovySuccessPrimaryCaption) {
+  SimpleAnchovySuccessTest(manta::anchovy::kTypePrimaryCaption,
+                           mojom::AnnotationType::kCaption);
 }
 
 TEST(AnnotatorTest, AnchovySuccessLabel) {
-  SimpleAnchovySuccessTest("LABEL", mojom::AnnotationType::kLabel);
+  SimpleAnchovySuccessTest(manta::anchovy::kTypeLabel,
+                           mojom::AnnotationType::kLabel);
 }
 
-TEST(AnnotatorTest, CrashIfNoText) {
+TEST(AnnotatorTest, AnchovyClampsUncalibratedScoreAboveOne) {
   base::ListValue results;
-  results.Append(base::DictValue().Set("type", "OCR").Set("score", 12));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeCaption)
+                     .Set("score", 1.2)
+                     .Set("text", "A trail"));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypePrimaryCaption)
+                     .Set("score", 1.45)
+                     .Set("text", "A scenic mountain trail"));
 
-  std::unique_ptr<manta::AnchovyProvider> fake_provider_ptr =
+  std::vector<mojom::Annotation> annotations;
+  RunAnchovyAnnotatorTest(
       std::make_unique<FakeAnchovyProvider>(
-          base::DictValue().Set("results", std::move(results)));
-  EXPECT_DEATH_IF_SUPPORTED(
-      RunAnchovyAnnotatorTest(std::move(fake_provider_ptr), {}), "");
+          base::DictValue().Set("results", std::move(results))),
+      &annotations);
+
+  ASSERT_EQ(annotations.size(), 1u);
+  EXPECT_EQ(annotations[0].type, mojom::AnnotationType::kCaption);
+  EXPECT_EQ(annotations[0].text, "A scenic mountain trail");
+  EXPECT_DOUBLE_EQ(annotations[0].score, 1.0);
+}
+
+TEST(AnnotatorTest, AnchovyFailsIfNoText) {
+  base::ListValue results;
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeOcr)
+                     .Set("score", 0.9));
+
+  std::vector<mojom::Annotation> annotations;
+  std::optional<mojom::AnnotateImageError> error;
+  RunAnchovyAnnotatorTest(
+      std::make_unique<FakeAnchovyProvider>(
+          base::DictValue().Set("results", std::move(results))),
+      &annotations, &error);
+  EXPECT_TRUE(annotations.empty());
+  EXPECT_EQ(error, mojom::AnnotateImageError::kFailure);
 }
 
 TEST(AnnotatorTest, CrashIfNoAnchovyProvider) {
   EXPECT_DEATH_IF_SUPPORTED(RunAnchovyAnnotatorTest(nullptr, {}), "");
+}
+
+// Verifies that a non-OK MantaStatusCode resolves pending_requests_ with
+// kFailure (even if the response dict is non-empty) so a retry for the same
+// image succeeds.
+TEST(AnnotatorTest, AnchovyNonOkStatusResolvesPendingRequest) {
+  base::test::ScopedFeatureList enabled_features;
+  enabled_features.InitAndEnableFeature(
+      features::kImageDescriptionsAlternateRouting);
+
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+
+  base::ListValue valid_results;
+  valid_results.Append(base::DictValue()
+                           .Set("type", manta::anchovy::kTypePrimaryCaption)
+                           .Set("score", 0.9)
+                           .Set("text", "A dog in a park"));
+  auto fake_provider = std::make_unique<FakeAnchovyProvider>(
+      base::DictValue().Set("results", valid_results.Clone()),
+      manta::MantaStatusCode::kBackendFailure);
+  FakeAnchovyProvider* provider_ptr = fake_provider.get();
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      1 /* batch_size */, 0.7 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), std::move(fake_provider),
+      std::make_unique<TestAnnotatorClient>());
+  mojo::Remote<mojom::Annotator> remote_annotator;
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
+
+  // First request fails with kBackendFailure.
+  TestImageProcessor processor1;
+  std::optional<mojom::AnnotateImageError> error1;
+  std::vector<mojom::Annotation> annotations1;
+  base::RunLoop run_loop1;
+  remote_annotator->AnnotateImage(
+      kImage1Url, kDescLang, processor1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error1, &annotations1)
+          .Then(run_loop1.QuitClosure()));
+  processor1.WaitForGetJpgImageData();
+  ASSERT_THAT(processor1.callbacks(), SizeIs(1));
+  std::move(processor1.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor1.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  run_loop1.Run();
+
+  EXPECT_EQ(provider_ptr->request_count(), 1);
+  EXPECT_EQ(error1, mojom::AnnotateImageError::kFailure);
+  EXPECT_TRUE(annotations1.empty());
+
+  // Retry for the same image should not be stuck in pending_requests_ or served
+  // from cached_results_.
+  provider_ptr->SetFakeResult(
+      base::DictValue().Set("results", std::move(valid_results)),
+      manta::MantaStatusCode::kOk);
+  TestImageProcessor processor2;
+  std::optional<mojom::AnnotateImageError> error2;
+  std::vector<mojom::Annotation> annotations2;
+  base::RunLoop run_loop2;
+  remote_annotator->AnnotateImage(
+      kImage1Url, kDescLang, processor2.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error2, &annotations2)
+          .Then(run_loop2.QuitClosure()));
+  processor2.WaitForGetJpgImageData();
+  ASSERT_THAT(processor2.callbacks(), SizeIs(1));
+  std::move(processor2.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor2.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  run_loop2.Run();
+
+  EXPECT_EQ(provider_ptr->request_count(), 2);
+  EXPECT_EQ(error2, std::nullopt);
+  ASSERT_EQ(annotations2.size(), 1u);
+  EXPECT_EQ(annotations2[0].text, "A dog in a park");
+}
+
+// Verifies that unknown description types, malformed dictionary entries, and
+// low-confidence OCR results do not crash and are not cached as kSucceeded.
+TEST(AnnotatorTest, AnchovyUnknownTypeAndFilteredEntriesNotCached) {
+  base::test::ScopedFeatureList enabled_features;
+  enabled_features.InitAndEnableFeature(
+      features::kImageDescriptionsAlternateRouting);
+
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+
+  base::ListValue invalid_results;
+  invalid_results.Append(
+      base::DictValue().Set("type", "").Set("score", 0.9).Set("text", "empty"));
+  invalid_results.Append(base::DictValue()
+                             .Set("type", "UNKNOWN")
+                             .Set("score", 0.9)
+                             .Set("text", "unknown"));
+  invalid_results.Append(base::DictValue()
+                             .Set("type", manta::anchovy::kTypePrimaryCaption)
+                             .Set("score", 0.9)
+                             .Set("text", ""));
+  invalid_results.Append(base::DictValue()
+                             .Set("type", manta::anchovy::kTypeOcr)
+                             .Set("score", 0.5)
+                             .Set("text", "low confidence ocr"));
+
+  auto fake_provider = std::make_unique<FakeAnchovyProvider>(
+      base::DictValue().Set("results", std::move(invalid_results)));
+  FakeAnchovyProvider* provider_ptr = fake_provider.get();
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      1 /* batch_size */, 0.7 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), std::move(fake_provider),
+      std::make_unique<TestAnnotatorClient>());
+  mojo::Remote<mojom::Annotator> remote_annotator;
+  annotator.BindReceiverForTesting(
+      remote_annotator.BindNewPipeAndPassReceiver());
+
+  TestImageProcessor processor1;
+  std::optional<mojom::AnnotateImageError> error1;
+  std::vector<mojom::Annotation> annotations1;
+  base::RunLoop run_loop1;
+  remote_annotator->AnnotateImage(
+      kImage1Url, kDescLang, processor1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error1, &annotations1)
+          .Then(run_loop1.QuitClosure()));
+  processor1.WaitForGetJpgImageData();
+  ASSERT_THAT(processor1.callbacks(), SizeIs(1));
+  std::move(processor1.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor1.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  run_loop1.Run();
+
+  EXPECT_EQ(provider_ptr->request_count(), 1);
+  EXPECT_EQ(error1, mojom::AnnotateImageError::kFailure);
+  EXPECT_TRUE(annotations1.empty());
+
+  // Because all entries were filtered out, the empty result must not be cached.
+  base::ListValue valid_results;
+  valid_results.Append(base::DictValue()
+                           .Set("type", manta::anchovy::kTypePrimaryCaption)
+                           .Set("score", 0.85)
+                           .Set("text", "Valid caption on retry"));
+  provider_ptr->SetFakeResult(
+      base::DictValue().Set("results", std::move(valid_results)),
+      manta::MantaStatusCode::kOk);
+
+  TestImageProcessor processor2;
+  std::optional<mojom::AnnotateImageError> error2;
+  std::vector<mojom::Annotation> annotations2;
+  base::RunLoop run_loop2;
+  remote_annotator->AnnotateImage(
+      kImage1Url, kDescLang, processor2.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error2, &annotations2)
+          .Then(run_loop2.QuitClosure()));
+  processor2.WaitForGetJpgImageData();
+  ASSERT_THAT(processor2.callbacks(), SizeIs(1));
+  std::move(processor2.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor2.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  run_loop2.Run();
+
+  EXPECT_EQ(provider_ptr->request_count(), 2);
+  EXPECT_EQ(error2, std::nullopt);
+  ASSERT_EQ(annotations2.size(), 1u);
+  EXPECT_EQ(annotations2[0].text, "Valid caption on retry");
+}
+
+// Verifies that PRIMARY_CAPTION and SECONDARY_CAPTION are joined with "\n" and
+// an averaged score, preferred over a higher-scoring LABEL, and logged once in
+// UMA histograms.
+TEST(AnnotatorTest,
+     AnchovyPrimaryAndSecondaryCaptionJoinedAndPreferredOverLabel) {
+  base::HistogramTester histogram_tester;
+  base::ListValue results;
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeLabel)
+                     .Set("score", 0.96)
+                     .Set("text", "bicycle"));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypePrimaryCaption)
+                     .Set("score", 0.84)
+                     .Set("text", "A person riding a bicycle"));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeSecondaryCaption)
+                     .Set("score", 0.76)
+                     .Set("text", "Golden Gate Park"));
+
+  std::vector<mojom::Annotation> annotations;
+  RunAnchovyAnnotatorTest(
+      std::make_unique<FakeAnchovyProvider>(
+          base::DictValue().Set("results", std::move(results))),
+      &annotations);
+
+  ASSERT_EQ(annotations.size(), 1u);
+  EXPECT_EQ(annotations[0].type, mojom::AnnotationType::kCaption);
+  EXPECT_EQ(annotations[0].text, "A person riding a bicycle\nGolden Gate Park");
+  EXPECT_NEAR(annotations[0].score, 0.80, 1e-5);
+
+  histogram_tester.ExpectUniqueSample(metrics_internal::kDescType,
+                                      mojom::AnnotationType::kCaption, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                         "DescCaption"),
+      80, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StringPrintf(metrics_internal::kAnnotationEmpty, "DescCaption"),
+      false, 1);
+  histogram_tester.ExpectTotalCount(
+      base::StringPrintf(metrics_internal::kAnnotationConfidence, "DescLabel"),
+      0);
+}
+
+// Verifies that SECONDARY_CAPTION preceding PRIMARY_CAPTION still joins in
+// primary-then-secondary order and clamps uncalibrated scores > 1.0 before
+// averaging.
+TEST(AnnotatorTest,
+     AnchovySecondaryBeforePrimaryCaptionClampedBeforeAveraging) {
+  base::HistogramTester histogram_tester;
+  base::ListValue results;
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeSecondaryCaption)
+                     .Set("score", 0.20)
+                     .Set("text", "Lower-scoring secondary"));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypeSecondaryCaption)
+                     .Set("score", 0.50)
+                     .Set("text", "Yosemite Valley"));
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypePrimaryCaption)
+                     .Set("score", 1.50)
+                     .Set("text", "A scenic mountain trail"));
+
+  std::vector<mojom::Annotation> annotations;
+  RunAnchovyAnnotatorTest(
+      std::make_unique<FakeAnchovyProvider>(
+          base::DictValue().Set("results", std::move(results))),
+      &annotations);
+
+  ASSERT_EQ(annotations.size(), 1u);
+  EXPECT_EQ(annotations[0].type, mojom::AnnotationType::kCaption);
+  EXPECT_EQ(annotations[0].text, "A scenic mountain trail\nYosemite Valley");
+  EXPECT_DOUBLE_EQ(annotations[0].score, 0.75);
+
+  histogram_tester.ExpectUniqueSample(metrics_internal::kDescType,
+                                      mojom::AnnotationType::kCaption, 1);
+  histogram_tester.ExpectUniqueSample(
+      base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                         "DescCaption"),
+      75, 1);
+}
+
+// Verifies that an orphan SECONDARY_CAPTION without a PRIMARY_CAPTION is never
+// selected as a standalone caption or logged as DescCaption, falling back to
+// LABEL when present or failing when no PRIMARY_CAPTION or LABEL is present.
+TEST(AnnotatorTest, AnchovyOrphanSecondaryCaptionRejected) {
+  // Case 1: Orphan SECONDARY_CAPTION + LABEL -> falls back to LABEL.
+  {
+    base::HistogramTester histogram_tester;
+    base::ListValue results;
+    results.Append(base::DictValue()
+                       .Set("type", manta::anchovy::kTypeSecondaryCaption)
+                       .Set("score", 0.90)
+                       .Set("text", "Los Angeles"));
+    results.Append(base::DictValue()
+                       .Set("type", manta::anchovy::kTypeLabel)
+                       .Set("score", 0.80)
+                       .Set("text", "city"));
+
+    std::vector<mojom::Annotation> annotations;
+    RunAnchovyAnnotatorTest(
+        std::make_unique<FakeAnchovyProvider>(
+            base::DictValue().Set("results", std::move(results))),
+        &annotations);
+
+    ASSERT_EQ(annotations.size(), 1u);
+    EXPECT_EQ(annotations[0].type, mojom::AnnotationType::kLabel);
+    EXPECT_EQ(annotations[0].text, "city");
+    EXPECT_NEAR(annotations[0].score, 0.80, 1e-5);
+
+    histogram_tester.ExpectUniqueSample(metrics_internal::kDescType,
+                                        mojom::AnnotationType::kLabel, 1);
+    histogram_tester.ExpectUniqueSample(
+        base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                           "DescLabel"),
+        80, 1);
+    histogram_tester.ExpectTotalCount(
+        base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                           "DescCaption"),
+        0);
+  }
+
+  // Case 2: Orphan SECONDARY_CAPTION alone -> rejected without DescType
+  // metrics.
+  {
+    base::HistogramTester histogram_tester;
+    base::ListValue results;
+    results.Append(base::DictValue()
+                       .Set("type", manta::anchovy::kTypeSecondaryCaption)
+                       .Set("score", 0.90)
+                       .Set("text", "Los Angeles"));
+
+    std::vector<mojom::Annotation> annotations;
+    std::optional<mojom::AnnotateImageError> error;
+    RunAnchovyAnnotatorTest(
+        std::make_unique<FakeAnchovyProvider>(
+            base::DictValue().Set("results", std::move(results))),
+        &annotations, &error);
+
+    EXPECT_TRUE(annotations.empty());
+    EXPECT_EQ(error, mojom::AnnotateImageError::kFailure);
+
+    histogram_tester.ExpectTotalCount(metrics_internal::kDescType, 0);
+    histogram_tester.ExpectTotalCount(
+        base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                           "DescCaption"),
+        0);
+    histogram_tester.ExpectTotalCount(
+        base::StringPrintf(metrics_internal::kAnnotationConfidence,
+                           "DescLabel"),
+        0);
+    histogram_tester.ExpectUniqueSample(metrics_internal::kClientResult,
+                                        ClientResult::kFailed, 1);
+  }
+}
+
+// Verifies that images smaller than kDescMinDimension (150x150) are filtered by
+// IsWithinDescPolicy and not sent to AnchovyProvider.
+TEST(AnnotatorTest, AnchovySkipsImagesOutsideDescPolicy) {
+  base::ListValue results;
+  results.Append(base::DictValue()
+                     .Set("type", manta::anchovy::kTypePrimaryCaption)
+                     .Set("score", 0.9)
+                     .Set("text", "Should not be requested"));
+  int request_count = -1;
+  auto fake_provider = std::make_unique<FakeAnchovyProvider>(
+      base::DictValue().Set("results", std::move(results)));
+
+  std::vector<mojom::Annotation> annotations;
+  std::optional<mojom::AnnotateImageError> error;
+  RunAnchovyAnnotatorTest(std::move(fake_provider), &annotations, &error,
+                          /*image_dim=*/50, &request_count);
+
+  EXPECT_EQ(request_count, 0);
+  EXPECT_TRUE(annotations.empty());
+  EXPECT_EQ(error, mojom::AnnotateImageError::kFailure);
+}
+
+// Verifies that FetchServerLanguages() is not called when
+// kImageDescriptionsAlternateRouting is enabled.
+TEST(AnnotatorTest, AnchovyDoesNotFetchServerLanguages) {
+  base::test::ScopedFeatureList enabled_features;
+  enabled_features.InitAndEnableFeature(
+      features::kImageDescriptionsAlternateRouting);
+
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+
+  Annotator annotator(GURL(kTestServerUrl), GURL(kLangsServerUrl),
+                      std::string() /* api_key */, kThrottle,
+                      1 /* batch_size */, 0.7 /* min_ocr_confidence */,
+                      test_url_factory.AsSharedURLLoaderFactory(),
+                      std::make_unique<FakeAnchovyProvider>(base::DictValue()),
+                      std::make_unique<TestAnnotatorClient>());
+  test_task_env.FastForwardBy(base::Seconds(1));
+
+  EXPECT_THAT(test_url_factory.requests(), IsEmpty());
+}
+
+// Test that two receivers bound with the same origin share cached results.
+TEST(AnnotatorTest, SameOriginCacheHitAcrossReceivers) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
+      std::make_unique<TestAnnotatorClient>());
+
+  const url::Origin origin =
+      url::Origin::Create(GURL("https://www.example.com"));
+  mojo::Remote<mojom::Annotator> remote_annotator_1;
+  annotator.BindReceiver(remote_annotator_1.BindNewPipeAndPassReceiver(),
+                         origin);
+  mojo::Remote<mojom::Annotator> remote_annotator_2;
+  annotator.BindReceiver(remote_annotator_2.BindNewPipeAndPassReceiver(),
+                         origin);
+
+  TestImageProcessor processor_1;
+  std::optional<mojom::AnnotateImageError> error_1;
+  std::vector<mojom::Annotation> annotations_1;
+
+  remote_annotator_1->AnnotateImage(
+      kImage1Url, kDescLang, processor_1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_1, &annotations_1));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_1.callbacks(), SizeIs(1));
+  std::move(processor_1.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor_1.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */,
+      ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
+      kOcrSuccessResponse, net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_1, std::nullopt);
+  EXPECT_THAT(annotations_1,
+              ElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
+                                      "Region 1\nRegion 2")));
+
+  // Request the same image via the second receiver bound to the same origin.
+  TestImageProcessor processor_2;
+  std::optional<mojom::AnnotateImageError> error_2;
+  std::vector<mojom::Annotation> annotations_2;
+
+  remote_annotator_2->AnnotateImage(
+      kImage1Url, kDescLang, processor_2.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_2, &annotations_2));
+  test_task_env.RunUntilIdle();
+
+  // Result should be served from cache without requesting pixels.
+  EXPECT_THAT(processor_2.callbacks(), IsEmpty());
+  EXPECT_EQ(error_2, std::nullopt);
+  EXPECT_THAT(annotations_2,
+              ElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
+                                      "Region 1\nRegion 2")));
+  EXPECT_THAT(histogram_tester.GetAllSamples(metrics_internal::kCacheHit),
+              UnorderedElementsAre(Bucket(false, 1), Bucket(true, 1)));
+}
+
+// Test that two receivers bound with different origins do not share cached
+// results.
+TEST(AnnotatorTest, CrossOriginCacheMiss) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
+      std::make_unique<TestAnnotatorClient>());
+
+  const url::Origin origin_a =
+      url::Origin::Create(GURL("https://a.example.com"));
+  const url::Origin origin_b =
+      url::Origin::Create(GURL("https://b.example.com"));
+  mojo::Remote<mojom::Annotator> remote_annotator_a;
+  annotator.BindReceiver(remote_annotator_a.BindNewPipeAndPassReceiver(),
+                         origin_a);
+  mojo::Remote<mojom::Annotator> remote_annotator_b;
+  annotator.BindReceiver(remote_annotator_b.BindNewPipeAndPassReceiver(),
+                         origin_b);
+
+  TestImageProcessor processor_a;
+  std::optional<mojom::AnnotateImageError> error_a;
+  std::vector<mojom::Annotation> annotations_a;
+
+  remote_annotator_a->AnnotateImage(
+      kImage1Url, kDescLang, processor_a.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_a, &annotations_a));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_a.callbacks(), SizeIs(1));
+  std::move(processor_a.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor_a.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */,
+      ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
+      kOcrSuccessResponse, net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_a, std::nullopt);
+  EXPECT_THAT(annotations_a,
+              ElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0,
+                                      "Region 1\nRegion 2")));
+
+  // Request the same image URL from a different origin: must miss cache and
+  // fetch pixels + server response for origin B.
+  TestImageProcessor processor_b;
+  std::optional<mojom::AnnotateImageError> error_b;
+  std::vector<mojom::Annotation> annotations_b;
+
+  remote_annotator_b->AnnotateImage(
+      kImage1Url, kDescLang, processor_b.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_b, &annotations_b));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_b.callbacks(), SizeIs(1));
+  std::move(processor_b.callbacks()[0]).Run({4, 5, 6}, kDescDim, kDescDim);
+  processor_b.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */, ReformatJson(R"(
+        {
+          "imageRequests": [{
+            "imageId": "1  https://www.example.com/image1.jpg",
+            "imageBytes": "BAUG",
+            "engineParameters": [
+              {"ocrParameters": {}},
+              {"descriptionParameters": {}},
+              {"iconParameters": {}}
+            ]
+          }]
+        }
+      )"),
+      R"(
+        {
+          "results": [
+            {
+              "imageId": "1  https://www.example.com/image1.jpg",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "OriginB",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_b, std::nullopt);
+  EXPECT_THAT(annotations_b, ElementsAre(AnnotatorEq(
+                                 mojom::AnnotationType::kOcr, 1.0, "OriginB")));
+  EXPECT_THAT(histogram_tester.GetAllSamples(metrics_internal::kCacheHit),
+              UnorderedElementsAre(Bucket(false, 2)));
+}
+
+// Test that two receivers bound with distinct opaque origins do not share
+// cached results.
+TEST(AnnotatorTest, OpaqueOriginCacheMiss) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+  base::HistogramTester histogram_tester;
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      1 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
+      std::make_unique<TestAnnotatorClient>());
+
+  const url::Origin file_origin = url::Origin::Create(GURL("file:///a.html"));
+  mojo::Remote<mojom::Annotator> remote_annotator_1;
+  annotator.BindReceiver(remote_annotator_1.BindNewPipeAndPassReceiver(),
+                         file_origin.DeriveNewOpaqueOrigin());
+  mojo::Remote<mojom::Annotator> remote_annotator_2;
+  annotator.BindReceiver(remote_annotator_2.BindNewPipeAndPassReceiver(),
+                         file_origin.DeriveNewOpaqueOrigin());
+
+  TestImageProcessor processor_1;
+  std::optional<mojom::AnnotateImageError> error_1;
+  std::vector<mojom::Annotation> annotations_1;
+
+  remote_annotator_1->AnnotateImage(
+      kImage1Url, kDescLang, processor_1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_1, &annotations_1));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_1.callbacks(), SizeIs(1));
+  std::move(processor_1.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor_1.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */,
+      ReformatJson(base::StringPrintf(kTemplateRequest, kImage1Url, "AQID")),
+      kOcrSuccessResponse, net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_1, std::nullopt);
+
+  // Second opaque origin must miss the cache and trigger pixel fetch.
+  TestImageProcessor processor_2;
+  std::optional<mojom::AnnotateImageError> error_2;
+  std::vector<mojom::Annotation> annotations_2;
+
+  remote_annotator_2->AnnotateImage(
+      kImage1Url, kDescLang, processor_2.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_2, &annotations_2));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_2.callbacks(), SizeIs(1));
+  std::move(processor_2.callbacks()[0]).Run({4, 5, 6}, kDescDim, kDescDim);
+  processor_2.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */, ReformatJson(R"(
+        {
+          "imageRequests": [{
+            "imageId": "1  https://www.example.com/image1.jpg",
+            "imageBytes": "BAUG",
+            "engineParameters": [
+              {"ocrParameters": {}},
+              {"descriptionParameters": {}},
+              {"iconParameters": {}}
+            ]
+          }]
+        }
+      )"),
+      R"(
+        {
+          "results": [
+            {
+              "imageId": "1  https://www.example.com/image1.jpg",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "Opaque2",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_2, std::nullopt);
+  EXPECT_THAT(annotations_2, ElementsAre(AnnotatorEq(
+                                 mojom::AnnotationType::kOcr, 1.0, "Opaque2")));
+  EXPECT_THAT(histogram_tester.GetAllSamples(metrics_internal::kCacheHit),
+              UnorderedElementsAre(Bucket(false, 2)));
+}
+
+// Test that concurrent requests for the same source ID from different origins
+// in the same server batch use distinct image IDs and receive their respective
+// results without collision.
+TEST(AnnotatorTest, CrossOriginConcurrentSameBatch) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      10 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
+      std::make_unique<TestAnnotatorClient>());
+
+  const url::Origin origin_a =
+      url::Origin::Create(GURL("https://a.example.com"));
+  const url::Origin origin_b =
+      url::Origin::Create(GURL("https://b.example.com"));
+  mojo::Remote<mojom::Annotator> remote_annotator_a;
+  annotator.BindReceiver(remote_annotator_a.BindNewPipeAndPassReceiver(),
+                         origin_a);
+  mojo::Remote<mojom::Annotator> remote_annotator_b;
+  annotator.BindReceiver(remote_annotator_b.BindNewPipeAndPassReceiver(),
+                         origin_b);
+
+  TestImageProcessor processor_a;
+  std::optional<mojom::AnnotateImageError> error_a;
+  std::vector<mojom::Annotation> annotations_a;
+
+  TestImageProcessor processor_b;
+  std::optional<mojom::AnnotateImageError> error_b;
+  std::vector<mojom::Annotation> annotations_b;
+
+  remote_annotator_a->AnnotateImage(
+      kImage1Url, kDescLang, processor_a.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_a, &annotations_a));
+  remote_annotator_b->AnnotateImage(
+      kImage1Url, kDescLang, processor_b.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_b, &annotations_b));
+  test_task_env.RunUntilIdle();
+
+  ASSERT_THAT(processor_a.callbacks(), SizeIs(1));
+  ASSERT_THAT(processor_b.callbacks(), SizeIs(1));
+
+  std::move(processor_a.callbacks()[0]).Run({1, 2, 3}, kDescDim, kDescDim);
+  processor_a.callbacks().pop_back();
+  std::move(processor_b.callbacks()[0]).Run({4, 5, 6}, kDescDim, kDescDim);
+  processor_b.callbacks().pop_back();
+  test_task_env.FastForwardBy(base::Seconds(1));
+  test_task_env.RunUntilIdle();
+
+  test_url_factory.ExpectRequestAndSimulateResponse(
+      "annotation", {} /* expected_headers */, ReformatJson(R"(
+        {
+          "imageRequests": [
+            {
+              "imageId": "1  https://www.example.com/image1.jpg",
+              "imageBytes": "BAUG",
+              "engineParameters": [
+                {"ocrParameters": {}},
+                {"descriptionParameters": {}},
+                {"iconParameters": {}}
+              ]
+            },
+            {
+              "imageId": "0  https://www.example.com/image1.jpg",
+              "imageBytes": "AQID",
+              "engineParameters": [
+                {"ocrParameters": {}},
+                {"descriptionParameters": {}},
+                {"iconParameters": {}}
+              ]
+            }
+          ]
+        }
+      )"),
+      R"(
+        {
+          "results": [
+            {
+              "imageId": "0  https://www.example.com/image1.jpg",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "TextA",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                }
+              ]
+            },
+            {
+              "imageId": "1  https://www.example.com/image1.jpg",
+              "engineResults": [
+                {
+                  "status": {},
+                  "ocrEngine": {
+                    "ocrRegions": [{
+                      "words": [{
+                        "detectedText": "TextB",
+                        "confidenceScore": 1.0
+                      }]
+                    }]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      )",
+      net::HTTP_OK);
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_a, std::nullopt);
+  EXPECT_THAT(annotations_a, ElementsAre(AnnotatorEq(
+                                 mojom::AnnotationType::kOcr, 1.0, "TextA")));
+  EXPECT_EQ(error_b, std::nullopt);
+  EXPECT_THAT(annotations_b, ElementsAre(AnnotatorEq(
+                                 mojom::AnnotationType::kOcr, 1.0, "TextB")));
+
+  // Subsequent requests on each origin should receive their respective cached
+  // results without cross-contamination.
+  std::optional<mojom::AnnotateImageError> cached_error_a;
+  std::vector<mojom::Annotation> cached_annotations_a;
+  std::optional<mojom::AnnotateImageError> cached_error_b;
+  std::vector<mojom::Annotation> cached_annotations_b;
+
+  remote_annotator_a->AnnotateImage(
+      kImage1Url, kDescLang, processor_a.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &cached_error_a, &cached_annotations_a));
+  remote_annotator_b->AnnotateImage(
+      kImage1Url, kDescLang, processor_b.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &cached_error_b, &cached_annotations_b));
+  test_task_env.RunUntilIdle();
+
+  EXPECT_THAT(processor_a.callbacks(), IsEmpty());
+  EXPECT_THAT(processor_b.callbacks(), IsEmpty());
+  EXPECT_EQ(cached_error_a, std::nullopt);
+  EXPECT_THAT(
+      cached_annotations_a,
+      ElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "TextA")));
+  EXPECT_EQ(cached_error_b, std::nullopt);
+  EXPECT_THAT(
+      cached_annotations_b,
+      ElementsAre(AnnotatorEq(mojom::AnnotationType::kOcr, 1.0, "TextB")));
+}
+
+// Test that local pixel processing is deduplicated within the same origin but
+// isolated across different origins.
+TEST(AnnotatorTest, CrossOriginLocalProcessingIsolated) {
+  base::test::TaskEnvironment test_task_env(
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME);
+  TestServerURLLoaderFactory test_url_factory(
+      "https://ia-pa.googleapis.com/v1/");
+
+  Annotator annotator(
+      GURL(kTestServerUrl), GURL(""), std::string() /* api_key */, kThrottle,
+      10 /* batch_size */, 1.0 /* min_ocr_confidence */,
+      test_url_factory.AsSharedURLLoaderFactory(), /*anchovy_provider=*/nullptr,
+      std::make_unique<TestAnnotatorClient>());
+
+  const url::Origin origin_a =
+      url::Origin::Create(GURL("https://a.example.com"));
+  const url::Origin origin_b =
+      url::Origin::Create(GURL("https://b.example.com"));
+  mojo::Remote<mojom::Annotator> remote_a1;
+  annotator.BindReceiver(remote_a1.BindNewPipeAndPassReceiver(), origin_a);
+  mojo::Remote<mojom::Annotator> remote_a2;
+  annotator.BindReceiver(remote_a2.BindNewPipeAndPassReceiver(), origin_a);
+  mojo::Remote<mojom::Annotator> remote_b1;
+  annotator.BindReceiver(remote_b1.BindNewPipeAndPassReceiver(), origin_b);
+
+  TestImageProcessor processor_a1;
+  std::optional<mojom::AnnotateImageError> error_a1;
+  std::vector<mojom::Annotation> annotations_a1;
+
+  TestImageProcessor processor_a2;
+  std::optional<mojom::AnnotateImageError> error_a2;
+  std::vector<mojom::Annotation> annotations_a2;
+
+  TestImageProcessor processor_b1;
+  std::optional<mojom::AnnotateImageError> error_b1;
+  std::vector<mojom::Annotation> annotations_b1;
+
+  remote_a1->AnnotateImage(
+      kImage1Url, kDescLang, processor_a1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_a1, &annotations_a1));
+  remote_a2->AnnotateImage(
+      kImage1Url, kDescLang, processor_a2.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_a2, &annotations_a2));
+  remote_b1->AnnotateImage(
+      kImage1Url, kDescLang, processor_b1.GetPendingRemote(),
+      base::BindOnce(&ReportResult, &error_b1, &annotations_b1));
+  test_task_env.RunUntilIdle();
+
+  // Within origin A, only processor_a1 should have been queried; origin B
+  // should independently query processor_b1.
+  EXPECT_THAT(processor_a1.callbacks(), SizeIs(1));
+  EXPECT_THAT(processor_a2.callbacks(), IsEmpty());
+  EXPECT_THAT(processor_b1.callbacks(), SizeIs(1));
+
+  // If processor_a1 disconnects, origin A reassigns local work to processor_a2
+  // without affecting origin B.
+  processor_a1.Reset();
+  test_task_env.RunUntilIdle();
+
+  EXPECT_EQ(error_a1, mojom::AnnotateImageError::kCanceled);
+  EXPECT_THAT(processor_a2.callbacks(), SizeIs(1));
+  EXPECT_THAT(processor_b1.callbacks(), SizeIs(1));
 }
 
 }  // namespace image_annotation

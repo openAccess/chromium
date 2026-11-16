@@ -115,6 +115,7 @@
 #include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
 #include "third_party/blink/renderer/core/layout/layout_box_model_object.h"
+#include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/mathml_names.h"
@@ -335,7 +336,8 @@ const QualifiedName& DeprecatedAriaRowtextAttrName() {
 
 const AtomicString& AriaTokenAttributeFromValue(const QualifiedName& attribute,
                                                 const AtomicString& value) {
-  DEFINE_STATIC_LOCAL(const AtomicString, undefined_value, ("undefined"));
+  DEFINE_STATIC_LOCAL(const AtomicString, undefined_value,
+                      (AtomicString::FromLiteral<"undefined">()));
   if (IsAriaTokenAttribute(attribute) || IsAriaTokenListAttribute(attribute)) {
     // These properties support a list of tokens, and "undefined"/"" is
     // equivalent to not setting the attribute.
@@ -2682,21 +2684,6 @@ void AXObject::SerializeComputedDetailsRelation(
     return;
   }
 
-  // Add aria-details for an interest invoker while its rich hint is open.
-  if (rich_hint) {
-    auto* popover = To<HTMLElement>(rich_hint->GetElement());
-    if (popover->popoverOpen()) {
-      if (AXObject* details = GetPopoverForDetailsRelation(
-              *popover, /*exclude_plain_content=*/false)) {
-        node_data->AddIntListAttribute(
-            ax::mojom::blink::IntListAttribute::kDetailsIds,
-            {static_cast<int32_t>(details->AXObjectID())});
-        node_data->SetDetailsFrom(ax::mojom::blink::DetailsFrom::kInterestFor);
-        return;
-      }
-    }
-  }
-
   // Add aria-details for a command invoker.
   if (AXObject* command_for = GetCommandForElementForDetailsRelation()) {
     node_data->AddIntListAttribute(
@@ -2713,6 +2700,23 @@ void AXObject::SerializeComputedDetailsRelation(
         {static_cast<int32_t>(popover->AXObjectID())});
     node_data->SetDetailsFrom(ax::mojom::blink::DetailsFrom::kPopoverTarget);
     return;
+  }
+
+  // Add aria-details for an interest invoker while its rich hint is open. As
+  // with the expanded state (see AXNodeObject::IsExpanded()), this is never
+  // done for a popover invoker, which only relates to the popover it invokes.
+  if (rich_hint && !IsPopoverInvoker()) {
+    auto* popover = To<HTMLElement>(rich_hint->GetElement());
+    if (popover->popoverOpen()) {
+      if (AXObject* details = GetPopoverForDetailsRelation(
+              *popover, /*exclude_plain_content=*/false)) {
+        node_data->AddIntListAttribute(
+            ax::mojom::blink::IntListAttribute::kDetailsIds,
+            {static_cast<int32_t>(details->AXObjectID())});
+        node_data->SetDetailsFrom(ax::mojom::blink::DetailsFrom::kInterestFor);
+        return;
+      }
+    }
   }
 
   // Add aria-details for a scroll marker pseudo-element.
@@ -2821,6 +2825,23 @@ AXObject* AXObject::GetCommandForElementForDetailsRelation() const {
   const bool exclude_plain_content =
       command_for->PopoverType() == PopoverValueType::kHint;
   return GetPopoverForDetailsRelation(*command_for, exclude_plain_content);
+}
+
+bool AXObject::IsPopoverInvoker() const {
+  auto* html_element = DynamicTo<HTMLElement>(GetElement());
+  if (!html_element) {
+    return false;
+  }
+  if (auto* command_for =
+          DynamicTo<HTMLElement>(html_element->commandForElement())) {
+    CommandEventType command = command_for->GetCommandEventType(
+        html_element->command(), html_element->GetExecutionContext());
+    if (command_for->IsValidBuiltinPopoverCommand(command)) {
+      return true;
+    }
+  }
+  auto* form_control = DynamicTo<HTMLFormControlElement>(html_element);
+  return form_control && form_control->popoverTargetElement().popover;
 }
 
 // The target of an interest invoker is a rich hint if it is a popover whose
@@ -5153,7 +5174,7 @@ const ComputedStyle* AXObject::GetComputedStyle() const {
 // * "content-visibility: auto" is "paint when it's scrolled into the viewport,
 //   but its layout information is not updated when it isn't"
 bool AXObject::ComputeIsHiddenViaStyle(const ComputedStyle* style) {
-  // The the parent element of text is hidden, then the text is hidden too.
+  // If the parent element of text is hidden, then the text is hidden too.
   // This helps provide more consistent results in edge cases, e.g. text inside
   // of a <canvas> or display:none content.
   if (RoleValue() == ax::mojom::blink::Role::kStaticText) {
@@ -5181,11 +5202,13 @@ bool AXObject::ComputeIsHiddenViaStyle(const ComputedStyle* style) {
              image_layout_object->Style().Visibility() != EVisibility::kVisible;
     }
 
-    // TODO(crbug.com/1286465): It's not consistent to only check
-    // IsEnsuredInDisplayNone() on layoutless elements.
-    return GetNode() && GetNode()->IsElementNode() &&
-           (style->IsEnsuredInDisplayNone() ||
-            style->Visibility() != EVisibility::kVisible);
+    // A style without a LayoutObject only comes from an element, e.g. one in a
+    // display:none subtree or in canvas fallback content. Layoutless text has
+    // no style and inherits the hidden state from its parent above. Inline
+    // text boxes reuse their parent's style but have no node, and are never
+    // hidden via style.
+    return GetElement() && (style->IsEnsuredInDisplayNone() ||
+                            style->Visibility() != EVisibility::kVisible);
   }
 
   // ---- Rules for AXObjectswith no style ------
@@ -6085,11 +6108,11 @@ bool AXObject::IsActiveLiveRegionRoot() const {
 
 const AtomicString& AXObject::LiveRegionStatus() const {
   DEFINE_STATIC_LOCAL(const AtomicString, live_region_status_assertive,
-                      ("assertive"));
+                      (AtomicString::FromLiteral<"assertive">()));
   DEFINE_STATIC_LOCAL(const AtomicString, live_region_status_polite,
-                      ("polite"));
+                      (AtomicString::FromLiteral<"polite">()));
   DEFINE_STATIC_LOCAL(const AtomicString, live_region_status_undefined,
-                      ("undefined"));
+                      (AtomicString::FromLiteral<"undefined">()));
 
   const AtomicString& live_region_status =
       AriaTokenAttribute(html_names::kAriaLiveAttr);
@@ -6118,7 +6141,7 @@ const AtomicString& AXObject::LiveRegionStatus() const {
 
 const AtomicString& AXObject::LiveRegionRelevant() const {
   DEFINE_STATIC_LOCAL(const AtomicString, default_live_region_relevant,
-                      ("additions text"));
+                      (AtomicString::FromLiteral<"additions text">()));
   const AtomicString& relevant =
       AriaTokenAttribute(html_names::kAriaRelevantAttr);
 
@@ -8009,8 +8032,14 @@ void AXObject::GetRelativeBounds(AXObject** out_container,
 
   // Frames need to take their border and padding into account so the
   // child element's computed position will be correct.
-  if (layout_object->IsBox() && layout_object->GetNode() &&
-      layout_object->GetNode()->IsFrameOwnerElement()) {
+  if (const auto* embedded_content =
+          DynamicTo<LayoutEmbeddedContent>(layout_object)) {
+    // ReplacedContentRect() can differ from the physical content box,
+    // for example with object-fit and object-position.
+    out_bounds_in_container =
+        gfx::RectF(embedded_content->ReplacedContentRect());
+  } else if (layout_object->IsBox() && layout_object->GetNode() &&
+             layout_object->GetNode()->IsFrameOwnerElement()) {
     out_bounds_in_container =
         gfx::RectF(To<LayoutBox>(layout_object)->PhysicalContentBoxRect());
   }

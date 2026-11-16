@@ -1042,9 +1042,6 @@ interface CSSRGB : CSSColorValue
     setter b
     setter g
     setter r
-interface CSSResultRule : CSSGroupingRule
-    attribute @@toStringTag
-    method constructor
 interface CSSRotate : CSSTransformComponent
     attribute @@toStringTag
     getter angle
@@ -2570,8 +2567,6 @@ interface Element : Node
     getter clientWidth
     getter computedName
     getter computedRole
-    getter containerTiming
-    getter containerTimingIgnore
     getter currentCSSZoom
     getter customElementRegistry
     getter elementTiming
@@ -2748,8 +2743,6 @@ interface Element : Node
     setter ariaValueText
     setter classList
     setter className
-    setter containerTiming
-    setter containerTimingIgnore
     setter elementTiming
     setter headingOffset
     setter headingReset
@@ -4055,6 +4048,8 @@ interface HTMLElement : Element
     getter autocapitalize
     getter autocorrect
     getter autofocus
+    getter containerTiming
+    getter containerTimingIgnore
     getter contentEditable
     getter dataset
     getter dir
@@ -4212,6 +4207,8 @@ interface HTMLElement : Element
     setter autocapitalize
     setter autocorrect
     setter autofocus
+    setter containerTiming
+    setter containerTimingIgnore
     setter contentEditable
     setter dir
     setter draggable
@@ -5475,7 +5472,6 @@ interface HTMLTableSectionElement : HTMLElement
     setter vAlign
 interface HTMLTemplateElement : HTMLElement
     attribute @@toStringTag
-    getter buffer
     getter content
     getter crossOrigin
     getter htmlFor
@@ -5492,7 +5488,6 @@ interface HTMLTemplateElement : HTMLElement
     getter shadowRootSlotAssignment
     getter src
     method constructor
-    setter buffer
     setter crossOrigin
     setter htmlFor
     setter integrity
@@ -6858,6 +6853,7 @@ interface ModelContext : EventTarget
     method getTools
     method registerTool
     method resumeTool
+    method waitForToolsUntil
     setter ontoolactivated
     setter ontoolcancel
     setter ontoolchange
@@ -7875,7 +7871,9 @@ interface PerformanceResourceTiming : PerformanceEntry
     getter serverTiming
     getter transferSize
     getter workerCacheLookupStart
+    getter workerFinalRouterSource
     getter workerFinalSourceType
+    getter workerMatchedRouterSource
     getter workerMatchedSourceType
     getter workerRouterEvaluationStart
     getter workerStart
@@ -9986,6 +9984,7 @@ interface Sanitizer
     method replaceElementWithChildren
     method setComments
     method setDataAttributes
+    method setJavascriptURLs
 interface Scheduler
     attribute @@toStringTag
     method constructor
@@ -10120,7 +10119,10 @@ interface SelectorDirective : Directive
 interface SemanticEmbedder
     static method availability
     static method create
+    static method params
     attribute @@toStringTag
+    getter embeddingSpace
+    getter maxInputTokens
     method constructor
     method destroy
     method embed

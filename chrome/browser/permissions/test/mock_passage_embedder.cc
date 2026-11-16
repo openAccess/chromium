@@ -130,12 +130,7 @@ EmbedderMetadataProviderFake::~EmbedderMetadataProviderFake() = default;
 
 // static
 EmbedderMetadata EmbedderMetadataProviderFake::GetValidEmbedderMetadata() {
-  return EmbedderMetadata(1, 768);
-}
-
-// static
-EmbedderMetadata EmbedderMetadataProviderFake::GetInvalidEmbedderMetadata() {
-  return EmbedderMetadata(0, 0);
+  return EmbedderMetadata(1, 768, 512);
 }
 
 void EmbedderMetadataProviderFake::AddObserver(

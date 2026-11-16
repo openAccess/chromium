@@ -4,6 +4,7 @@
 
 #include "chrome/browser/glic/selection/selection_overlay_controller.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/check_deref.h"
@@ -29,22 +30,31 @@
 #include "chrome/browser/glic/public/glic_passkeys.h"
 #include "chrome/browser/glic/public/glic_side_panel_coordinator.h"
 #include "chrome/browser/glic/selection/quick_answers_tool.h"
+#include "chrome/browser/glic/selection/selection_overlay_untrusted_ui.h"
 #include "chrome/browser/glic/selection/selection_suggestion.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/selection/features.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
+#include "chrome/browser/ui/browser_actions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/lens/lens_search_controller.h"
+#include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/lens/lens_overlay_dismissal_source.h"
+#include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
 #include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/proto/features/smart_selection_suggestions.pb.h"
 #include "components/page_content_annotations/content/page_context_fetcher_options.h"
@@ -55,8 +65,10 @@
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_ui.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/skia/include/core/SkPaint.h"
+#include "ui/actions/actions.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/gfx/codec/jpeg_codec.h"
@@ -65,6 +77,7 @@
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/focus/focus_manager.h"
 #include "url/gurl.h"
 
 // TODO(http://b/485358530): Consider `OverlayBaseController::State` to the
@@ -102,7 +115,20 @@ namespace {
 BASE_FEATURE(kGlicSelectionOverlayFullSizeScreenshot,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Kill switch for loading the overlay WebUI while the selection chip is
+// hovered, so a click can show it without waiting for the WebUI to boot.
+// Default-enabled platforms: desktop only (selection target is
+// assert(!is_android)).
+BASE_FEATURE(kGlicSelectionOverlayHoverPrewarm,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 BASE_FEATURE(kStaticSelectionSuggestions, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Kill switch for sending the selected region with the overlay's prompt.
+// Default-enabled platforms: desktop only (selection target is
+// assert(!is_android)).
+BASE_FEATURE(kGlicSelectionOverlaySendRegionWithPrompt,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 bool IsSelectionOverlayPromptEnabled() {
   return base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPrompt) ||
@@ -271,6 +297,16 @@ SelectionOverlayController::SelectionOverlayController(
                           weak_factory_.GetWeakPtr())));
   tab_subscriptions_.push_back(tab_->RegisterWillDetach(base::BindRepeating(
       &SelectionOverlayController::WillDetach, weak_factory_.GetWeakPtr())));
+  // Unlike the session's active-tab subscription, this also fires while idle,
+  // so an unused prewarm is only kept for the active tab.
+  tab_subscriptions_.push_back(tab_->RegisterWillDeactivate(
+      base::BindRepeating(&SelectionOverlayController::WillDeactivate,
+                          weak_factory_.GetWeakPtr())));
+  if (auto* lens_search_controller = LensSearchController::From(tab_)) {
+    tab_subscriptions_.push_back(
+        lens_search_controller->RegisterWillOpenCallback(base::BindRepeating(
+            &SelectionOverlayController::CloseUI, weak_factory_.GetWeakPtr())));
+  }
   GlicKeyedService* service = GlicKeyedService::Get(tab_->GetProfile());
   CHECK(service);
   tab_subscriptions_.push_back(
@@ -284,7 +320,7 @@ SelectionOverlayController::SelectionOverlayController(
   tab_strip_model->AddObserver(this);
   SetOnEscCallback(base::BindRepeating(
       [](base::WeakPtr<SelectionOverlayController> controller) {
-        if (controller && controller->state() == State::kOverlay) {
+        if (controller && controller->IsOverlayShowing()) {
           controller->Close(CloseReason::kEscapeKeyPress);
           return true;
         }
@@ -315,6 +351,12 @@ void SelectionOverlayController::WillDetach(
   CloseUI();
 }
 
+void SelectionOverlayController::WillDeactivate(tabs::TabInterface* tab) {
+  if (state() == State::kOff) {
+    prewarmer_.Cancel();
+  }
+}
+
 void SelectionOverlayController::ObserveActiveTabChanges() {
   BrowserWindowInterface* window = tab_->GetBrowserWindowInterface();
   if (!window) {
@@ -329,6 +371,11 @@ void SelectionOverlayController::ObserveActiveTabChanges() {
 void SelectionOverlayController::OnActiveTabChanged(
     BrowserWindowInterface* window) {
   UpdateForTabVisibility();
+  tabs::TabInterface* const active_tab = window->GetActiveTabInterface();
+  SelectionOverlayController* const active_controller =
+      active_tab ? FromTabWebContents(active_tab->GetContents()) : nullptr;
+  UpdateToolbarButtonHighlight(active_controller &&
+                               active_controller->IsOverlayShowing());
 }
 
 void SelectionOverlayController::ObserveSidePanelState() {
@@ -343,6 +390,18 @@ void SelectionOverlayController::ObserveSidePanelState() {
                           session_weak_factory_.GetWeakPtr()));
 }
 
+void SelectionOverlayController::ObservePageContextEligibility() {
+  auto* helper = tabs::PageContextEligibilityHelper::From(tab_);
+  if (!helper) {
+    session_->eligibility_subscription = base::CallbackListSubscription();
+    return;
+  }
+  session_->eligibility_subscription =
+      helper->RegisterEligibilityChangeCallback(base::BindRepeating(
+          &SelectionOverlayController::OnPageContextEligibilityChanged,
+          session_weak_factory_.GetWeakPtr()));
+}
+
 void SelectionOverlayController::OnSidePanelStateChanged(
     GlicSidePanelCoordinator::State state) {
   if (session_->page) {
@@ -354,9 +413,16 @@ void SelectionOverlayController::OnSidePanelStateChanged(
 }
 
 void SelectionOverlayController::PostHandSessionToPanel() {
-  if (session_->owner != Session::Owner::kDirect) {
+  // Don't hand off a text selection: `GlicSelectionObserver` already sends the
+  // text to the panel, and adopting the session would add a duplicate
+  // screenshot chip.
+  // TODO(b:579078690): Clean this up once text and region selections use one
+  // path.
+  if (session_->owner != Session::Owner::kDirect ||
+      session_->handoff_to_panel_pending || HasOnlyTextSelection()) {
     return;
   }
+  session_->handoff_to_panel_pending = true;
   // Not right away: the panel may be opening for this session's own
   // hand-off (`SubmitPrompt()`, a suggested action), which closes the
   // session before this stack unwinds. `Reset()` then drops the task.
@@ -368,10 +434,12 @@ void SelectionOverlayController::PostHandSessionToPanel() {
 void SelectionOverlayController::HandSessionToPanel() {
   if (session_->owner != Session::Owner::kDirect ||
       !GlicSidePanelCoordinator::IsShowing(tab_)) {
+    session_->handoff_to_panel_pending = false;
     return;
   }
   GlicKeyedService* service = GlicKeyedService::Get(tab_->GetProfile());
   if (!service) {
+    session_->handoff_to_panel_pending = false;
     return;
   }
   // The same request the capture hotkey makes while the panel is open, marked
@@ -385,14 +453,25 @@ void SelectionOverlayController::HandSessionToPanel() {
                                 mojom::CaptureRegionPayload::New(
                                     /*capture_region_handoff=*/true)));
   options.wait_for_panel_open = true;
+  options.on_success =
+      base::BindOnce(&SelectionOverlayController::OnHandSessionToPanelComplete,
+                     session_weak_factory_.GetWeakPtr());
+  options.on_error = base::IgnoreArgs<GlicInvokeError>(
+      base::BindOnce(&SelectionOverlayController::OnHandSessionToPanelComplete,
+                     session_weak_factory_.GetWeakPtr()));
   service->Invoke(std::move(options));
+}
+
+void SelectionOverlayController::OnHandSessionToPanelComplete() {
+  session_->handoff_to_panel_pending = false;
 }
 
 void SelectionOverlayController::AdoptSession(
     mojo::PendingRemote<mojom::CaptureRegionObserver> observer) {
   session_->owner = Session::Owner::kPanel;
+  session_->handoff_to_panel_pending = false;
   BindCaptureRegionObserver(std::move(observer));
-  if (!session_->selected_regions.empty()) {
+  if (!session_->selected_regions.empty() && !HasOnlyTextSelection()) {
     SyncRegionsToPanel(/*should_focus_panel=*/false);
   }
 }
@@ -451,6 +530,83 @@ std::vector<int> SelectionOverlayController::GetPolylineCounts() const {
   return polyline_counts;
 }
 
+void SelectionOverlayController::MaybePrewarmOverlay(
+    selection::InteractionOptionsPtr interaction_options) {
+  if (!base::FeatureList::IsEnabled(kGlicSelectionOverlayHoverPrewarm) ||
+      state() != State::kOff || !tab_->IsActivated() || !CanStartSession()) {
+    return;
+  }
+  if (prewarmer_.IsUsable(interaction_options)) {
+    prewarmer_.Extend();
+    return;
+  }
+  views::View* host_view = GetHostView();
+  if (!host_view || !host_view->GetWidget()) {
+    return;
+  }
+  prewarmer_.Start(CreateOverlayWebContents(), *host_view->GetWidget(),
+                   std::move(interaction_options));
+}
+
+void SelectionOverlayController::CancelPrewarm() {
+  prewarmer_.Cancel();
+}
+
+selection::InteractionOptionsPtr
+SelectionOverlayController::GetPrewarmInteractionOptions() const {
+  return prewarmer_.GetInteractionOptions();
+}
+
+bool SelectionOverlayController::CanBindOverlay(
+    content::WebContents* overlay_contents) {
+  views::WebView* active_web_view = GetOverlayWebView();
+  return !overlay_page_bound_ &&
+         (state() == State::kStartingWebUI || state() == State::kBackground) &&
+         active_web_view &&
+         active_web_view->GetWebContents() == overlay_contents;
+}
+
+bool SelectionOverlayController::IsPrewarmedOverlay(
+    content::WebContents* overlay_contents) const {
+  return prewarmer_.Contains(overlay_contents);
+}
+
+std::unique_ptr<content::WebContents>
+SelectionOverlayController::TakePrewarmedOverlayWebContents() {
+  if (!prewarmer_.IsUsable(session_->interaction_options)) {
+    prewarmer_.Cancel();
+    return nullptr;
+  }
+  return prewarmer_.Take();
+}
+
+void SelectionOverlayController::MaybeAdoptPrewarmedOverlay() {
+  if (state() != State::kScreenshot) {
+    return;
+  }
+  if (!prewarmer_.IsUsable(session_->interaction_options)) {
+    prewarmer_.Cancel();
+    return;
+  }
+  MaybeStartOverlayWebUI();
+  BindPendingPageHandler();
+}
+
+void SelectionOverlayController::BindPendingPageHandler() {
+  views::WebView* web_view = GetOverlayWebView();
+  if (!web_view || !web_view->GetWebContents()) {
+    return;
+  }
+  content::WebUI* web_ui = web_view->GetWebContents()->GetWebUI();
+  if (!web_ui || !web_ui->GetController()) {
+    return;
+  }
+  if (auto* untrusted_ui =
+          web_ui->GetController()->GetAs<SelectionOverlayUntrustedUI>()) {
+    untrusted_ui->BindPendingPageHandler();
+  }
+}
+
 void SelectionOverlayController::BindOverlay(
     mojo::PendingReceiver<selection::SelectionOverlayPageHandler> receiver,
     mojo::PendingRemote<selection::SelectionOverlayPage> page) {
@@ -458,10 +614,12 @@ void SelectionOverlayController::BindOverlay(
   CHECK(state() == State::kStartingWebUI || state() == State::kBackground)
       << base::ToString(state());
 
+  overlay_page_bound_ = true;
   session_->receiver.Bind(std::move(receiver));
   session_->receiver.set_disconnect_handler(base::BindOnce(
       &SelectionOverlayController::Reset, session_weak_factory_.GetWeakPtr()));
   session_->page.Bind(std::move(page));
+  session_->page->SetInteractionOptions(session_->interaction_options.Clone());
 
   if (views::WebView* web_view = GetOverlayWebView()) {
     session_->overlay_web_view_focus_subscription =
@@ -558,6 +716,7 @@ void SelectionOverlayController::CaptureRegion(
                      mojom::CaptureRegionErrorReason::kUnknown);
     return;
   }
+  selection_overlay_controller->CloseLensOverlayIfNeeded();
   if (!selection_overlay_controller->CanStartSession()) {
     mojo::Remote<mojom::CaptureRegionObserver> remote(std::move(observer));
     remote->OnUpdate(mojom::CaptureRegionResultPtr(),
@@ -575,16 +734,16 @@ void SelectionOverlayController::CaptureRegion(
         const bool has_region =
             selection_overlay_controller->GetSelectedRegionCount() > 0;
         if (has_region) {
-          // Nothing is fetched yet, so this only queues the region for the
-          // web client until the page context is here.
-          selection_overlay_controller->SyncRegions(
-              /*should_focus_panel=*/false);
-          // Same as the other small chip paths: the text selection is fixed,
-          // and a click on the background doesn't start a new region.
+          // Don't call `SyncRegions()`: `GlicSelectionObserver` already sent
+          // the selected text to the panel, and `InitializeOverlay()` forwards
+          // `selected_regions` to the overlay WebUI.
+          // TODO(b:579078690): Clean this up once text and region selections
+          // use one path.
+          // Same as the other small chip paths: the text selection is fixed
+          // and opens directly in the post-selection state.
           selection_overlay_controller->session_->interaction_options =
               selection::InteractionOptions::New(
-                  /*hide_handles=*/true, /*disable_multi_select=*/true,
-                  /*skip_intro_animation=*/true);
+                  /*hide_handles=*/true, /*skip_intro_animation=*/true);
         }
         selection_observer->DismissUI(
             GlicSelectionObserver::DismissReason::kActionTaken);
@@ -608,6 +767,10 @@ bool SelectionOverlayController::CanStartSession() {
     LOG(ERROR) << "Tab has active actuation task: " << web_contents->GetURL();
     return false;
   }
+  if (!IsPageContextEligible()) {
+    LOG(ERROR) << "Page context is not eligible for " << web_contents->GetURL();
+    return false;
+  }
   // `ShowModalUI()` silently returns when this fails, which would leave the
   // state staged by the caller behind while the controller is still `kOff`.
   if (!CanShowModalUI()) {
@@ -617,8 +780,17 @@ bool SelectionOverlayController::CanStartSession() {
   return true;
 }
 
+void SelectionOverlayController::CloseLensOverlayIfNeeded() {
+  if (auto* lens_search_controller = LensSearchController::From(tab_);
+      lens_search_controller && !lens_search_controller->IsOff()) {
+    lens_search_controller->CloseLensSync(
+        lens::LensOverlayDismissalSource::kUnexpectedSidePanelOpen);
+  }
+}
+
 void SelectionOverlayController::Show(mojom::TabContextOptionsPtr options,
                                       ::selection::EntryPoint entry_point) {
+  CloseLensOverlayIfNeeded();
   if (!CanStartSession()) {
     return;
   }
@@ -653,12 +825,27 @@ void SelectionOverlayController::ShowImpl(mojom::TabContextOptionsPtr options) {
   }
   ObserveActiveTabChanges();
   ObserveSidePanelState();
+  ObservePageContextEligibility();
   if (GlicSidePanelCoordinator::IsShowing(tab_)) {
     // The panel is already open (e.g. the context menu doesn't check), so it
     // won't open mid-session. Hand the session to it now.
     PostHandSessionToPanel();
   }
   ShowModalUI();
+  MaybeAdoptPrewarmedOverlay();
+  if (state() == State::kScreenshot &&
+      session_->entry_point == ::selection::EntryPoint::kInlineCue) {
+    if (auto* host_view = GetHostView()) {
+      if (auto* focus_manager = host_view->GetFocusManager();
+          focus_manager && !focus_manager->GetFocusedView() &&
+          focus_manager->GetStoredFocusView()) {
+        // Clear stored focus so dismissing the inline-cue chip does not
+        // refocus the page during screenshot capture.
+        focus_manager->SetStoredFocusView(nullptr);
+        session_->cleared_stored_focus = true;
+      }
+    }
+  }
 }
 
 // TODO(b/556786015): After requirement is finalized, reconsider if we should
@@ -669,6 +856,7 @@ void SelectionOverlayController::ShowWithSelection(
     const gfx::Rect& selection_bounds,
     selection::InteractionOptionsPtr interaction_options,
     ::selection::EntryPoint entry_point) {
+  CloseLensOverlayIfNeeded();
   if (!CanStartSession()) {
     return;
   }
@@ -685,8 +873,11 @@ void SelectionOverlayController::SetRegionFromBounds(
   session_->active_region_id.reset();
   session_->surrounding_text_timer.Stop();
   if (tab_ && tab_->GetContents()) {
-    const bool is_text_selection =
-        session_->entry_point != ::selection::EntryPoint::kContextMenuImage;
+    // The bounds are an element selection from the image or page context menu;
+    // every other entry point pre-selects text.
+    bool is_text_selection =
+        session_->entry_point != ::selection::EntryPoint::kContextMenuImage &&
+        session_->entry_point != ::selection::EntryPoint::kContextMenuPage;
     if (auto region = CreateRegionFromBounds(
             selection_bounds, tab_->GetContents()->GetViewBounds(),
             /*apply_padding=*/is_text_selection)) {
@@ -694,6 +885,7 @@ void SelectionOverlayController::SetRegionFromBounds(
       session_->active_region_id = id;
       auto [it, _] = session_->selected_regions.emplace(
           id, SelectedRegionData(std::move(region)));
+      it->second.is_text_selection = is_text_selection;
       if (is_text_selection && selected_frame &&
           selected_frame->IsRenderFrameLive()) {
         it->second.waiting_for_surrounding_text = true;
@@ -776,12 +968,19 @@ void SelectionOverlayController::OnSplitTabChanged(
 }
 
 void SelectionOverlayController::CloseUI() {
+  prewarmer_.Cancel();
   if (state() == State::kOff) {
     return;
   }
+  overlay_page_bound_ = false;
+  auto* focus_manager =
+      GetHostView() ? GetHostView()->GetFocusManager() : nullptr;
   const bool had_focus =
       (overlay_web_view_ && overlay_web_view_->HasFocus()) ||
-      (preselection_widget_ && preselection_widget_->IsActive());
+      (preselection_widget_ && preselection_widget_->IsActive()) ||
+      (session_->cleared_stored_focus && state() == State::kScreenshot &&
+       tab_->IsActivated() && tab_->GetBrowserWindowInterface()->IsActive() &&
+       focus_manager && !focus_manager->GetFocusedView());
   CloseReason close_reason =
       session_->close_reason.value_or(CloseReason::kOther);
   Reset();
@@ -818,7 +1017,6 @@ void SelectionOverlayController::InitializeOverlay() {
   InitializeOverlayImpl();
 
   CHECK(session_->page);
-  session_->page->SetInteractionOptions(session_->interaction_options.Clone());
   session_->page->SetSidePanelOpen(IsSidePanelOpen());
   session_->page->ScreenshotReceived(session_->initial_rgb_screenshot);
 
@@ -834,6 +1032,7 @@ void SelectionOverlayController::InitializeOverlay() {
     }
     session_->page->SetPostRegionSelections(std::move(regions));
   }
+  SendPageContextReceivedIfReady();
 }
 
 void SelectionOverlayController::StartScreenshotFlow() {
@@ -873,11 +1072,13 @@ void SelectionOverlayController::OnScreenshotTaken(const SkBitmap& bitmap) {
   InitializeScreenshot(
       bitmap, base::BindOnce(&SelectionOverlayController::SetScreenshot,
                              session_weak_factory_.GetWeakPtr(), bitmap));
+  session_->cleared_stored_focus = false;
 }
 
 void SelectionOverlayController::OnScreenshotRedacted(const SkBitmap& bitmap) {
   session_->redacted_screenshot = bitmap;
   SyncRegionsToPanelIfPending();
+  SendPageContextReceivedIfReady();
   MaybeRequestSuggestions();
 }
 
@@ -916,6 +1117,7 @@ void SelectionOverlayController::PageContextReady(
   }
 
   SyncRegionsToPanelIfPending();
+  SendPageContextReceivedIfReady();
   MaybeRequestSuggestions();
 }
 
@@ -926,12 +1128,61 @@ void SelectionOverlayController::SetScreenshot(const SkBitmap& screenshot,
   InitializeOverlay();
 }
 
+bool SelectionOverlayController::IsPageContextEligible() const {
+  auto* helper = tabs::PageContextEligibilityHelper::From(tab_);
+  return helper &&
+         helper->IsPageContextEligible() ==
+             optimization_guide::PageContextEligibilityStatus::kEligible;
+}
+
+void SelectionOverlayController::OnPageContextEligibilityChanged(
+    optimization_guide::PageContextEligibilityStatus status) {
+  // `kUnknown` comes from tab switches and navigations, which
+  // `TabDeactivated()` and `NotifyPageNavigated()` already handle.
+  if (status ==
+      optimization_guide::PageContextEligibilityStatus::kNotEligible) {
+    Close();
+  }
+}
+
 bool SelectionOverlayController::IsResultsSidePanelShowing() {
   return GlicSidePanelCoordinator::IsShowing(tab_);
 }
 
 GURL SelectionOverlayController::GetInitialURL() {
   return GURL(chrome::kChromeUIGlicSelectionOverlayURL);
+}
+
+void SelectionOverlayController::UpdateToolbarButtonHighlight(bool is_showing) {
+  // The tab has no window while it is being detached.
+  BrowserWindowInterface* const bwi = tab_->GetBrowserWindowInterface();
+  if (!bwi) {
+    return;
+  }
+  // The overlay can open (e.g. via hotkey) while the toolbar action is not
+  // registered, and the pinned container CHECKs that the action exists.
+  BrowserActions* const browser_actions = BrowserActions::From(bwi);
+  if (!browser_actions || !actions::ActionManager::Get().FindAction(
+                              kActionGlicSmartSelectionToolbar,
+                              browser_actions->root_action_item())) {
+    return;
+  }
+  BrowserWindow* const browser_window = BrowserWindow::FromBrowser(bwi);
+  if (PinnedToolbarActions* const pinned_actions =
+          browser_window ? browser_window->GetPinnedToolbarActions()
+                         : nullptr) {
+    pinned_actions->UpdateActionState(kActionGlicSmartSelectionToolbar,
+                                      is_showing);
+  }
+}
+
+void SelectionOverlayController::NotifyIsOverlayShowing(bool is_showing) {
+  // Only the active tab owns the window-level toolbar button state; an
+  // inactive split-view pane must not overwrite it.
+  if (!tab_->IsActivated()) {
+    return;
+  }
+  UpdateToolbarButtonHighlight(is_showing);
 }
 
 int SelectionOverlayController::GetToolResourceId() {
@@ -1033,6 +1284,7 @@ void SelectionOverlayController::AdjustRegion(
   if (SelectedRegionData* region_data =
           base::FindOrNull(session_->selected_regions, target->id)) {
     region_data->region = std::move(target);
+    region_data->is_text_selection = false;
     region_data->selected_text.reset();
     region_data->text_surrounding_selection.reset();
     region_data->waiting_for_surrounding_text = false;
@@ -1046,6 +1298,11 @@ void SelectionOverlayController::AdjustRegion(
                                        SelectedRegionData(std::move(target)));
   }
 
+  if (GlicSidePanelCoordinator::IsShowing(tab_)) {
+    // A text session with the panel open wasn't handed off at the start. Hand
+    // it off once the user draws a region.
+    PostHandSessionToPanel();
+  }
   SyncRegions(/*should_focus_panel=*/!is_using_keyboard);
 }
 
@@ -1076,24 +1333,91 @@ void SelectionOverlayController::SetLiveBlur(bool enabled) {
   SetLiveBlurImpl(enabled);
 }
 
+void SelectionOverlayController::InvokeFromSuggestion(
+    const std::string& prompt) {
+  InvokeWithPrompt(prompt);
+}
+
 void SelectionOverlayController::SubmitPrompt(const std::string& prompt) {
   if (!base::FeatureList::IsEnabled(features::kGlicSelectionOverlayPromptBox)) {
     return;
   }
+  if (!GlicKeyedService::Get(tab_->GetProfile())) {
+    return;
+  }
+  if (!IsPageContextReady()) {
+    // The overlay doesn't allow submitting until `PageContextReceived()`.
+    session_->receiver.ReportBadMessage(
+        "Prompt submitted before the page context.");
+    return;
+  }
+  if (session_->metrics_logger) {
+    session_->metrics_logger->RecordPromptSubmitted();
+  }
+  InvokeWithPrompt(prompt);
+}
+
+bool SelectionOverlayController::HasOnlyTextSelection() const {
+  return !session_->selected_regions.empty() &&
+         std::ranges::all_of(session_->selected_regions, [](const auto& entry) {
+           return entry.second.is_text_selection;
+         });
+}
+
+bool SelectionOverlayController::ShouldSendRegionsWithPrompt() const {
+  // Panel-owned sessions send their regions through region capture. This
+  // includes sessions the panel started and sessions handed off to it.
+  // TODO(liuwilliam): There are still two code paths to deliver attachments.
+  // Reconsider once the feature is stable.
+  // A text selection goes without its region: `GlicSelectionObserver` sends
+  // the text when the panel opens, and the region would be a second chip.
+  // TODO(b:579078690): Remove once text and region selections take one path.
+  return session_->owner == Session::Owner::kDirect &&
+         !HasOnlyTextSelection() &&
+         base::FeatureList::IsEnabled(
+             kGlicSelectionOverlaySendRegionWithPrompt);
+}
+
+bool SelectionOverlayController::IsPageContextReady() const {
+  return session_->tab_context && !session_->redacted_screenshot.empty();
+}
+
+void SelectionOverlayController::SendPageContextReceivedIfReady() {
+  if (session_->page && session_->screenshot_available &&
+      IsPageContextReady()) {
+    session_->page->PageContextReceived();
+  }
+}
+
+void SelectionOverlayController::InvokeWithPrompt(const std::string& prompt) {
   GlicKeyedService* service = GlicKeyedService::Get(tab_->GetProfile());
-  if (service) {
-    if (session_->metrics_logger) {
-      session_->metrics_logger->RecordPromptSubmitted();
-    }
-    GlicInvokeOptions options(glic::Target(*tab_),
-                              mojom::InvocationSource::kTextSelectionWidget);
+  if (!service) {
+    return;
+  }
+  CapturedRegions regions;
+  if (ShouldSendRegionsWithPrompt() && IsPageContextReady()) {
+    regions = GetCapturedRegions();
+  }
+  GlicInvokeOptions options(glic::Target(*tab_),
+                            mojom::InvocationSource::kTextSelectionWidget);
+  if (!regions.empty()) {
+    options.additional_context = AdditionalTabContext(
+        CreateRegionSelectionContext(*tab_, session_->tab_context.Clone(),
+                                     std::move(regions)),
+        content::GlobalRenderFrameHostId(), PolicyCheck::kNone);
+  }
+  base::WeakPtr<SelectionOverlayController> weak_this =
+      weak_factory_.GetWeakPtr();
+  if (!prompt.empty()) {
     options.prompts.push_back(prompt);
-    // TODO(b/556786015): Fix issue when side panel is not open.
     service->InvokeWithAutoSubmit(
         InvokeWithAutoSubmitPasskeyProvider::GetPassKey(), std::move(options));
-    if (session_->owner == Session::Owner::kDirect) {
-      Close();
-    }
+  } else {
+    service->Invoke(std::move(options));
+  }
+  if (weak_this && state() != State::kOff &&
+      session_->owner == Session::Owner::kDirect) {
+    Close();
   }
 }
 
@@ -1373,9 +1697,14 @@ void SelectionOverlayController::ExecuteSuggestedAction(
       if (session_->metrics_logger) {
         session_->metrics_logger->RecordSuggestionAccepted(*matched_suggestion);
       }
-      matched_suggestion->Execute(mojo::GenericPendingAssociatedReceiver());
-      if (session_->owner == Session::Owner::kDirect) {
-        Close();
+      {
+        base::WeakPtr<SelectionOverlayController> weak_this =
+            weak_factory_.GetWeakPtr();
+        matched_suggestion->Execute(mojo::GenericPendingAssociatedReceiver());
+        if (weak_this && state() != State::kOff &&
+            session_->owner == Session::Owner::kDirect) {
+          Close();
+        }
       }
       return;
     case ::selection::mojom::Action::Tag::kInlineFulfillment:
@@ -1443,7 +1772,8 @@ void SelectionOverlayController::Reset() {
     const bool cancelled_by_user =
         session_->close_reason == CloseReason::kCloseButton ||
         session_->close_reason == CloseReason::kEscapeKeyPress ||
-        session_->close_reason == CloseReason::kBackgroundClick;
+        session_->close_reason == CloseReason::kBackgroundClick ||
+        session_->close_reason == CloseReason::kToolbarButton;
     session_->metrics_logger->RecordSessionEnd(cancelled_by_user);
   }
   session_ = std::make_unique<Session>(this);
@@ -1457,6 +1787,13 @@ CapturedRegions SelectionOverlayController::GetCapturedRegions() const {
   // selection and only one region is supported, so it is fine to always loop
   // through all the regions. Revisit once we expand the selections.
   for (const auto& [id, region_data] : session_->selected_regions) {
+    // `GlicSelectionObserver` already sends the text selection to the panel,
+    // so don't also send its bounding box as a captured region.
+    // TODO(b:579078690): Clean this up once text and region selections use
+    // one path.
+    if (region_data.is_text_selection) {
+      continue;
+    }
     const auto& region = region_data.region;
     if (region->shape->is_rect()) {
       gfx::RectF gfx_rect_on_canvas = GetRectForRegion(
@@ -1525,11 +1862,13 @@ void SelectionOverlayController::SyncRegions(bool should_focus_panel) {
 
   if (session_->page) {
     std::vector<selection::SelectedRegionPtr> regions;
-    regions.reserve(captured_regions.size());
-    for (const auto& [id, captured_region] : captured_regions) {
-      regions.push_back(
-          CHECK_DEREF(base::FindOrNull(session_->selected_regions, id))
-              .region.Clone());
+    regions.reserve(session_->selected_regions.size());
+    for (const auto& [id, region_data] : session_->selected_regions) {
+      if (region_data.is_text_selection ||
+          std::ranges::contains(captured_regions, id,
+                                &CapturedRegions::value_type::first)) {
+        regions.push_back(region_data.region.Clone());
+      }
     }
     session_->page->SetPostRegionSelections(std::move(regions));
   }
@@ -1560,9 +1899,14 @@ void SelectionOverlayController::SyncRegionsToPanelIfPending() {
 void SelectionOverlayController::SendRegionsToPanel(
     CapturedRegions captured_regions,
     bool should_focus_panel) {
+  if (session_->owner != Session::Owner::kPanel) {
+    return;
+  }
   session_->panel_sync_pending = false;
   // Without a valid region, glic would show the screenshot with no chips.
-  if (captured_regions.empty()) {
+  // An empty list when only the text selection remains clears the region
+  // chips after the user deletes the last drawn region.
+  if (captured_regions.empty() && !HasOnlyTextSelection()) {
     return;
   }
   GlicKeyedService* service = GlicKeyedService::Get(tab_->GetProfile());

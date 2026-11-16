@@ -6,12 +6,14 @@
 #define CHROME_BROWSER_UI_PASSWORDS_PASSWORDS_MODEL_DELEGATE_MOCK_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/passwords/passwords_leak_dialog_delegate.h"
 #include "chrome/browser/ui/passwords/passwords_model_delegate.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/browser/password_store/actionable_error.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -127,10 +129,6 @@ class PasswordsModelDelegateMock : public PasswordsModelDelegate {
               (override));
   MOCK_METHOD(void, MaybeShowIOSPasswordPromo, (), (override));
   MOCK_METHOD(void, RelaunchChrome, (), (override));
-  MOCK_METHOD(PasswordChangeDelegate*,
-              GetPasswordChangeDelegate,
-              (),
-              (const, override));
   MOCK_METHOD(PasswordsLeakDialogDelegate*,
               GetPasswordsLeakDialogDelegate,
               (),
@@ -139,11 +137,17 @@ class PasswordsModelDelegateMock : public PasswordsModelDelegate {
   MOCK_METHOD(void, OnMouseEntered, (), (override));
   MOCK_METHOD(void, OnMouseExited, (), (override));
   MOCK_METHOD(void,
-              SavePasswordAfterTrustedVaultErrorResolution,
+              SavePasswordAfterErrorResolution,
               (const std::u16string&, const password_manager::PasswordString&),
               (override));
-  MOCK_METHOD(void, StartTrustedVaultErrorResolutionFlow, (), (override));
-  MOCK_METHOD(bool, IsSavingBlockedByTrustedVaultError, (), (const, override));
+  MOCK_METHOD(void,
+              StartErrorResolutionFlow,
+              (password_manager::ActionableError),
+              (override));
+  MOCK_METHOD(std::optional<password_manager::ActionableError>,
+              GetRecoverableErrorBlockingSaving,
+              (),
+              (const, override));
 
   base::WeakPtr<PasswordsModelDelegateMock> AsWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();

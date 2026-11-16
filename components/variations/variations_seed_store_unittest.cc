@@ -474,7 +474,6 @@ TEST_P(LoadSeedDataControlAndDefaultGroupsTest, LoadSeed_ValidSeed) {
   // Store good seed data to test if loading from prefs works.
   const std::string seed_data = SerializeSeed(CreateTestSeed());
   const std::string base64_seed = GzipAndBase64Encode(seed_data);
-  const std::string compressed_seed = Gzip(seed_data);
   const std::string base64_seed_signature = "a test signature, ignored.";
 
   TestVariationsSeedStore seed_store(&prefs_, temp_dir_.GetPath());
@@ -488,8 +487,6 @@ TEST_P(LoadSeedDataControlAndDefaultGroupsTest, LoadSeed_ValidSeed) {
           .client_fetch_time = base::Time::Now(),
           .session_country_code = "us",
       });
-  const std::string expected_seed =
-      GetParam() == kSeedFilesGroup ? compressed_seed : base64_seed;
 
   base::HistogramTester histogram_tester;
   VariationsSeed loaded_seed;
@@ -2623,7 +2620,6 @@ TEST_P(StoreInvalidSafeSeedTest, StoreSafeSeed) {
   // Set a safe seed in the seed file and local state prefs.
   const std::string expected_seed = "a seed";
   InvalidSafeSeedTestParams params = GetParam().invalid_params;
-  const std::string seed_to_store = params.seed;
   prefs_.SetString(prefs::kVariationsSafeCompressedSeed, expected_seed);
   ASSERT_TRUE(base::WriteFile(temp_seed_file_path_, expected_seed));
 
@@ -2829,8 +2825,6 @@ TEST_P(StoreSafeSeedDataSeedFilesGroupTest,
   const std::string new_seed_data = SerializeSeed(new_seed);
   ASSERT_NE(old_seed_data, new_seed_data);
 
-  const std::string base64_old_seed = GzipAndBase64Encode(old_seed_data);
-  const std::string compressed_old_seed = Gzip(old_seed_data);
   const base::Time fetch_time = WrapTime(12345);
   auto client_state = CreateDummyClientFilterableState();
 
@@ -2963,8 +2957,6 @@ TEST_P(StoreSafeSeedDataControlAndLocalStateOnlyGroupTest,
   EXPECT_FALSE(base::PathExists(temp_seed_file_path_));
 
   // Verify that safe-seed-related prefs were successfully stored.
-  const std::string safe_seed =
-      prefs_.GetString(prefs::kVariationsSafeCompressedSeed);
   std::string decoded_compressed_seed;
   ASSERT_TRUE(
       base::Base64Decode(prefs_.GetString(prefs::kVariationsSafeCompressedSeed),
@@ -3006,7 +2998,6 @@ TEST_P(StoreSafeSeedDataControlAndLocalStateOnlyGroupTest,
   ASSERT_NE(old_seed_data, new_seed_data);
 
   const std::string base64_old_seed = GzipAndBase64Encode(old_seed_data);
-  const std::string compressed_old_seed = Gzip(old_seed_data);
   const base::Time fetch_time = WrapTime(12345);
   auto client_state = CreateDummyClientFilterableState();
 
@@ -3102,7 +3093,6 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_P(StoreSafeSeedDataAllGroupsTest, StoreSafeSeed_IdenticalToLatestSeed) {
   const VariationsSeed seed = CreateTestSeed();
   const std::string serialized_seed = SerializeSeed(seed);
-  const std::string compressed_seed = Gzip(serialized_seed);
   const std::string base64_seed = SerializeSeedBase64(seed);
   auto client_state = CreateDummyClientFilterableState();
   const base::Time last_fetch_time = WrapTime(99999);
@@ -3119,9 +3109,6 @@ TEST_P(StoreSafeSeedDataAllGroupsTest, StoreSafeSeed_IdenticalToLatestSeed) {
           .client_fetch_time = last_fetch_time,
           .session_country_code = "us",
       });
-  const std::string expected_seed =
-      GetParam().field_trial_group == kSeedFilesGroup ? compressed_seed
-                                                      : base64_seed;
   base::HistogramTester histogram_tester;
   base::RunLoop run_loop;
   bool store_seed_result = false;
@@ -3669,6 +3656,8 @@ TEST_F(VariationsSeedStoreTest, ImportInitialSeed_Success) {
   const VariationsSeed test_seed = CreateTestSeed();
   auto initial_seed = std::make_unique<SeedResponse>();
   initial_seed->data = Gzip(SerializeSeed(test_seed));
+  initial_seed->country = "us";
+  initial_seed->geo_level1 = "us-ca";
   initial_seed->date = base::Time::Now();
   initial_seed->is_gzip_compressed = true;
 
@@ -3683,6 +3672,8 @@ TEST_F(VariationsSeedStoreTest, ImportInitialSeed_Success) {
 
   EXPECT_EQ(SerializeSeedBase64(test_seed),
             prefs.GetString(prefs::kVariationsCompressedSeed));
+  EXPECT_EQ("us", seed_store.GetLatestCountry());
+  EXPECT_EQ("us-ca", seed_store.GetLatestGeoLevel1());
   histogram_tester.ExpectUniqueSample("Variations.FirstRunResult",
                                       FirstRunSeedImportResult::kSuccess, 1);
 }
@@ -3755,16 +3746,18 @@ TEST_F(VariationsSeedStoreTest, ImportFirstRunJavaSeed) {
   const std::string test_seed_data = "raw_seed_data_test";
   const std::string test_seed_signature = "seed_signature_test";
   const std::string test_seed_country = "seed_country_code_test";
+  const std::string test_seed_geo_level1 = "seed_geo_level1_test";
   const int64_t test_response_date = 1234567890;
   const bool test_is_gzip_compressed = true;
-  android::SetJavaFirstRunPrefsForTesting(test_seed_data, test_seed_signature,
-                                          test_seed_country, test_response_date,
-                                          test_is_gzip_compressed);
+  android::SetJavaFirstRunPrefsForTesting(
+      test_seed_data, test_seed_signature, test_seed_country,
+      test_seed_geo_level1, test_response_date, test_is_gzip_compressed);
 
   auto seed = android::GetVariationsFirstRunSeed();
   EXPECT_EQ(test_seed_data, seed->data);
   EXPECT_EQ(test_seed_signature, seed->signature);
   EXPECT_EQ(test_seed_country, seed->country);
+  EXPECT_EQ(test_seed_geo_level1, seed->geo_level1);
   EXPECT_EQ(test_response_date, seed->date.InMillisecondsSinceUnixEpoch());
   EXPECT_EQ(test_is_gzip_compressed, seed->is_gzip_compressed);
 
@@ -3773,6 +3766,7 @@ TEST_F(VariationsSeedStoreTest, ImportFirstRunJavaSeed) {
   EXPECT_EQ("", seed->data);
   EXPECT_EQ("", seed->signature);
   EXPECT_EQ("", seed->country);
+  EXPECT_EQ("", seed->geo_level1);
   EXPECT_EQ(0, seed->date.InMillisecondsSinceUnixEpoch());
   EXPECT_FALSE(seed->is_gzip_compressed);
 }
@@ -3793,11 +3787,12 @@ TEST_P(VariationsSeedStoreFirstRunPrefsTest, FirstRunPrefsAllowed) {
   const std::string test_seed_data = "raw_seed_data_test";
   const std::string test_seed_signature = "seed_signature_test";
   const std::string test_seed_country = "seed_country_code_test";
+  const std::string test_seed_geo_level1 = "seed_geo_level1_test";
   const int64_t test_response_date = 1234567890;
   const bool test_is_gzip_compressed = true;
-  android::SetJavaFirstRunPrefsForTesting(test_seed_data, test_seed_signature,
-                                          test_seed_country, test_response_date,
-                                          test_is_gzip_compressed);
+  android::SetJavaFirstRunPrefsForTesting(
+      test_seed_data, test_seed_signature, test_seed_country,
+      test_seed_geo_level1, test_response_date, test_is_gzip_compressed);
 
   const VariationsSeed test_seed = CreateTestSeed();
   const std::string seed_data = SerializeSeed(test_seed);
@@ -3805,6 +3800,7 @@ TEST_P(VariationsSeedStoreFirstRunPrefsTest, FirstRunPrefsAllowed) {
   seed->data = seed_data;
   seed->signature = "java_seed_signature";
   seed->country = "java_seed_country";
+  seed->geo_level1 = "us-ca";
   seed->date = base::Time::FromMillisecondsSinceUnixEpoch(test_response_date) +
                base::Days(1);
   seed->is_gzip_compressed = false;
@@ -3823,6 +3819,7 @@ TEST_P(VariationsSeedStoreFirstRunPrefsTest, FirstRunPrefsAllowed) {
   EXPECT_EQ(test_seed_data, seed->data);
   EXPECT_EQ(test_seed_signature, seed->signature);
   EXPECT_EQ(test_seed_country, seed->country);
+  EXPECT_EQ(test_seed_geo_level1, seed->geo_level1);
   EXPECT_EQ(test_response_date, seed->date.InMillisecondsSinceUnixEpoch());
   EXPECT_EQ(test_is_gzip_compressed, seed->is_gzip_compressed);
   if (use_first_run_prefs) {
@@ -3831,10 +3828,11 @@ TEST_P(VariationsSeedStoreFirstRunPrefsTest, FirstRunPrefsAllowed) {
     EXPECT_FALSE(android::HasMarkedPrefsForTesting());
   }
 
-  // Seed should be stored in prefs.
+  // Seed and geo_level1 should be stored.
   EXPECT_FALSE(PrefHasDefaultValue(prefs, prefs::kVariationsCompressedSeed));
   EXPECT_EQ(SerializeSeedBase64(test_seed),
             prefs.GetString(prefs::kVariationsCompressedSeed));
+  EXPECT_EQ("us-ca", seed_store.GetLatestGeoLevel1());
 }
 #endif  // BUILDFLAG(IS_ANDROID)
 

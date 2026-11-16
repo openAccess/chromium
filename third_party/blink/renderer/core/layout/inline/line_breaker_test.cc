@@ -6,6 +6,7 @@
 
 #include <array>
 
+#include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/core/layout/base_layout_algorithm_test.h"
 #include "third_party/blink/renderer/core/layout/box_fragment_builder.h"
@@ -20,8 +21,8 @@
 #include "third_party/blink/renderer/core/layout/positioned_float.h"
 #include "third_party/blink/renderer/core/layout/unpositioned_float.h"
 #include "third_party/blink/renderer/platform/fonts/shaping/shape_result_view.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
 
@@ -133,6 +134,49 @@ class LineBreakerTest : public RenderingTest {
         .ComputeMinMaxSizes(node.Style().GetWritingMode(), space,
                             MinMaxSizesInput::Unconstrained())
         .sizes;
+  }
+
+  // Break lines, and returns the text of each line. Ruby bases are included,
+  // but ruby annotations are not.
+  Vector<String> BreakLinesWithRubyBase(InlineNode node,
+                                        LayoutUnit available_width) {
+    node.PrepareLayoutIfNeeded();
+    ConstraintSpace space = ConstraintSpaceForAvailableSize(available_width);
+    const InlineBreakToken* break_token = nullptr;
+    Vector<String> lines;
+    ExclusionSpace exclusion_space;
+    LeadingFloats leading_floats;
+    LineLayoutOpportunity line_opportunity(available_width);
+    LineInfo line_info;
+    do {
+      LineBreaker line_breaker(node, LineBreakerMode::kContent, space,
+                               line_opportunity, leading_floats, break_token,
+                               /* column_spanner_path */ nullptr, nullptr,
+                               &exclusion_space);
+      line_breaker.NextLine(&line_info);
+      if (line_info.Results().empty()) {
+        break;
+      }
+      break_token = line_info.GetBreakToken();
+      lines.push_back(ToStringWithRubyBase(line_info.Results(), node));
+    } while (break_token);
+    return lines;
+  }
+
+  static String ToStringWithRubyBase(const InlineItemResults& results,
+                                     InlineNode node) {
+    StringBuilder builder;
+    const String& text = node.ItemsData(false).text_content;
+    for (const auto& item_result : results) {
+      if (item_result.IsRubyColumn()) {
+        builder.Append(ToStringWithRubyBase(
+            item_result.ruby_column->base_line.Results(), node));
+      } else if (item_result.item->Type() == InlineItem::kText) {
+        builder.Append(
+            StringView(text, item_result.StartOffset(), item_result.Length()));
+      }
+    }
+    return builder.ToString();
   }
 
   Vector<LineBreaker::WhitespaceState> trailing_whitespaces_;
@@ -1246,6 +1290,135 @@ TEST_F(LineBreakerTest, MinMaxWithEmptyRubyBase) {
   // Pass if no CHECK failure.
 }
 
+// crbug.com/580840306: A ruby that doesn't fit should wrap at the preceding
+// space before `overflow-wrap` breaks it.
+TEST_F(LineBreakerTest, RubyOverflowWrapWrapsAtSpace) {
+  LoadAhem();
+  for (const char* overflow_wrap : {"break-word", "anywhere"}) {
+    SCOPED_TRACE(overflow_wrap);
+    InlineNode node = CreateInlineNode(
+        String("<div id=container style='font: 20px/1 Ahem; overflow-wrap: ") +
+        overflow_wrap +
+        "'>ab <ruby>cdefgh<rt>x</rt></ruby> <ruby>ijklmn<rt>y</rt></ruby>"
+        "</div>");
+    EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(140)),
+                testing::ElementsAre("ab", "cdefgh", "ijklmn"));
+  }
+}
+
+TEST_F(LineBreakerTest, RubyOverflowWrapWordBreakBreakWord) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; word-break: break-word'>"
+      "ab <ruby>cdefgh<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(140)),
+              testing::ElementsAre("ab", "cdefgh"));
+}
+
+// A ruby wider than the line should still be broken by `overflow-wrap`.
+TEST_F(LineBreakerTest, RubyOverflowWrapBreaksWideRuby) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: break-word'>"
+      "<ruby>abcdefghij<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(100)),
+              testing::ElementsAre("abcde", "fghij"));
+
+  node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: break-word'>"
+      "ab <ruby>cdefghijkl<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(100)),
+              testing::ElementsAre("ab", "cdefg", "hijkl"));
+
+  // `overflow-wrap` only inside the ruby base.
+  node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem'><ruby><span "
+      "style='overflow-wrap: anywhere'>abcdefghij</span><rt>x</rt></ruby>"
+      "</div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(100)),
+              testing::ElementsAre("abcde", "fghij"));
+}
+
+// A ruby base with a space should break at the space before `overflow-wrap`
+// breaks it.
+TEST_F(LineBreakerTest, RubyOverflowWrapBreaksAtSpaceInBase) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: break-word'>"
+      "<ruby>abc defghi<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(120)),
+              testing::ElementsAre("abc", "defghi"));
+}
+
+TEST_F(LineBreakerTest, RubyOverflowWrapNested) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: break-word'>"
+      "ab <ruby>cd<ruby>efgh<rt>x</rt></ruby>ij<rt>y</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(160)),
+              testing::ElementsAre("ab", "cdefghij"));
+}
+
+// `overflow-wrap: normal` on the ruby overrides the container.
+TEST_F(LineBreakerTest, RubyOverflowWrapNormalOnRuby) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: break-word'>"
+      "ab <ruby style='overflow-wrap: normal'>cdefghij<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(100)),
+              testing::ElementsAre("ab", "cdefghij"));
+}
+
+// `overflow-wrap: break-word` on the ruby takes effect.
+TEST_F(LineBreakerTest, RubyOverflowWrapBreakWordOnRuby) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem'>"
+      "ab <ruby style='overflow-wrap: break-word'>cdefghij<rt>x</rt></ruby>"
+      "</div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(100)),
+              testing::ElementsAre("ab", "cdefg", "hij"));
+}
+
+// `white-space: normal` on the ruby allows wrapping inside the ruby base in a
+// `white-space: nowrap` container.
+TEST_F(LineBreakerTest, RubyWhiteSpaceNormalOnRuby) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem; white-space: nowrap'>"
+      "<ruby style='white-space: normal'>abc defghi<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(120)),
+              testing::ElementsAre("abc", "defghi"));
+}
+
+// `white-space: nowrap` on the ruby prevents wrapping inside the ruby base.
+TEST_F(LineBreakerTest, RubyWhiteSpaceNowrapOnRuby) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(
+      "<div id=container style='font: 20px/1 Ahem'>"
+      "<ruby style='white-space: nowrap'>abc defghi<rt>x</rt></ruby></div>");
+  EXPECT_THAT(BreakLinesWithRubyBase(node, LayoutUnit(120)),
+              testing::ElementsAre("abc defghi"));
+}
+
+TEST_F(LineBreakerTest, RubyOverflowWrapAnywhereMinContent) {
+  LoadAhem();
+  const char* html =
+      "<div id=container style='font: 20px/1 Ahem; overflow-wrap: anywhere'>"
+      "ab <ruby>cdefgh<rt>x</rt></ruby></div>";
+  LayoutUnit min_size_without_defer;
+  {
+    ScopedRubyOverflowWrapDeferToOuterLineForTest scoped_feature(false);
+    min_size_without_defer =
+        ComputeMinMaxSizes(CreateInlineNode(html)).min_size;
+  }
+  ScopedRubyOverflowWrapDeferToOuterLineForTest scoped_feature(true);
+  const LayoutUnit min_size =
+      ComputeMinMaxSizes(CreateInlineNode(html)).min_size;
+  EXPECT_EQ(min_size, min_size_without_defer);
+  EXPECT_EQ(min_size, LayoutUnit(20));
+}
+
 struct CanBreakInsideTestData {
   bool can_break_insde;
   const char* html;
@@ -1342,6 +1515,130 @@ TEST_F(LineBreakerTest, BidiControlEnterFlag) {
   )HTML");
   Element* container = GetElementById("container");
   EXPECT_EQ(10, container->OffsetHeight());
+}
+
+// https://crbug.com/580840306
+TEST_F(LineBreakerTest, RubyAfterPreservedSpacePreWrap) {
+  LoadAhem();
+  // Each <ruby> is 80px wide, and a space is 20px. "<ruby> " fits in 120px,
+  // but the next <ruby> doesn't, so it should wrap after the space.
+  InsertStyleElement(
+      "#container { font: 20px/1 Ahem; white-space: pre-wrap; }"
+      "rt { font-size: 50%; }");
+  for (const char* space : {" ", "   ", "<span> </span>"}) {
+    InlineNode node = CreateInlineNode(
+        StrCat({"<div id=container><ruby>aaaa<rt>xxxx</rt></ruby>", space,
+                "<ruby>bbbb<rt>yyyy</rt></ruby>", space,
+                "<ruby>cccc<rt>zzzz</rt></ruby></div>"}));
+    std::array<LineInfo, 4> line_infos;
+    const wtf_size_t num_lines = BreakLines(node, LayoutUnit(120), line_infos);
+    EXPECT_EQ(num_lines, 3u) << space;
+    for (wtf_size_t i = 0; i < num_lines; ++i) {
+      EXPECT_FALSE(line_infos[i].HasOverflow()) << space << " " << i;
+    }
+    EXPECT_EQ(ComputeMinMaxSizes(node).min_size, LayoutUnit(80)) << space;
+  }
+}
+
+TEST_F(LineBreakerTest, RubyAfterPreservedSpaceBreakSpaces) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(R"HTML(
+    <style>
+      #container { font: 20px/1 Ahem; white-space: break-spaces; }
+      rt { font-size: 50%; }
+    </style>
+    <div id="container"><ruby>aaaa<rt>xxxx</rt></ruby> <ruby>bbbb<rt>yyyy</rt></ruby> <ruby>cccc<rt>zzzz</rt></ruby></div>
+  )HTML");
+  std::array<LineInfo, 4> line_infos;
+  const wtf_size_t num_lines = BreakLines(node, LayoutUnit(120), line_infos);
+  EXPECT_EQ(num_lines, 3u);
+  for (wtf_size_t i = 0; i < num_lines; ++i) {
+    EXPECT_FALSE(line_infos[i].HasOverflow()) << i;
+    EXPECT_EQ(line_infos[i].Width(), LayoutUnit(i < 2 ? 100 : 80)) << i;
+  }
+}
+
+TEST_F(LineBreakerTest, RubyAfterPreservedTab) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(R"HTML(
+    <style>
+      #container { font: 20px/1 Ahem; white-space: pre-wrap; tab-size: 1; }
+      rt { font-size: 50%; }
+    </style>
+    <div id="container"><ruby>aaaa<rt>xxxx</rt></ruby>&#9;<ruby>bbbb<rt>yyyy</rt></ruby></div>
+  )HTML");
+  std::array<LineInfo, 4> line_infos;
+  const wtf_size_t num_lines = BreakLines(node, LayoutUnit(120), line_infos);
+  EXPECT_EQ(num_lines, 2u);
+  for (wtf_size_t i = 0; i < num_lines; ++i) {
+    EXPECT_FALSE(line_infos[i].HasOverflow()) << i;
+  }
+}
+
+// `white-space: normal` should wrap at the space both with and without
+// `RubySoftWrapAfterPreservedSpace`.
+TEST_F(LineBreakerTest, RubyAfterCollapsibleSpace) {
+  LoadAhem();
+  for (const bool enabled : {false, true}) {
+    ScopedRubySoftWrapAfterPreservedSpaceForTest scoped_feature(enabled);
+    InlineNode node = CreateInlineNode(R"HTML(
+      <style>
+        #container { font: 20px/1 Ahem; }
+        rt { font-size: 50%; }
+      </style>
+      <div id="container"><ruby>aaaa<rt>xxxx</rt></ruby> <ruby>bbbb<rt>yyyy</rt></ruby> <ruby>cccc<rt>zzzz</rt></ruby></div>
+    )HTML");
+    std::array<LineInfo, 4> line_infos;
+    const wtf_size_t num_lines = BreakLines(node, LayoutUnit(120), line_infos);
+    EXPECT_EQ(num_lines, 3u) << enabled;
+    for (wtf_size_t i = 0; i < num_lines; ++i) {
+      EXPECT_FALSE(line_infos[i].HasOverflow()) << enabled << " " << i;
+      EXPECT_EQ(line_infos[i].Width(), LayoutUnit(80)) << enabled << " " << i;
+    }
+    EXPECT_EQ(ComputeMinMaxSizes(node).min_size, LayoutUnit(80)) << enabled;
+  }
+}
+
+// A collapsible space between `</rt>` and `</ruby>` should not create a break
+// opportunity before "FAIL". See multicol-fill-balance-031.html.
+TEST_F(LineBreakerTest, EmptyBaseRubyLeadingCollapsibleSpace) {
+  LoadAhem();
+  InlineNode node = CreateInlineNode(R"HTML(
+    <style>
+      #container { font: 20px/1 Ahem; }
+      rt { font-size: 50%; }
+    </style>
+    <div id="container"><ruby>
+      <rt>x</rt>
+    </ruby>
+    FAIL</div>
+  )HTML");
+  std::array<LineInfo, 4> line_infos;
+  EXPECT_EQ(BreakLines(node, LayoutUnit(32), line_infos), 1u);
+}
+
+// Ruby annotations should not affect line breaking at the base level.
+TEST_F(LineBreakerTest, RubyKinsoku) {
+  LoadAhem();
+  // `letter-spacing` makes every character wider than the available width,
+  // regardless of the fallback font.
+  for (const UChar* html : {
+           // No break before U+FF09 FULLWIDTH RIGHT PARENTHESIS.
+           u"\u3042<ruby>\u3079<rt>\u308B</rt></ruby>\uFF09",
+           // No break after U+FF08 FULLWIDTH LEFT PARENTHESIS.
+           u"\uFF08<ruby>\u3079<rt>\u308B</rt></ruby>\u3042",
+       }) {
+    InlineNode node = CreateInlineNode(StrCat({R"HTML(
+      <style>
+        #container { font: 20px/1 Ahem; letter-spacing: 10px; }
+        rt { font-size: 50%; }
+      </style>
+      <div id="container">)HTML",
+                                               String(html), "</div>"}));
+    std::array<LineInfo, 4> line_infos;
+    const wtf_size_t num_lines = BreakLines(node, LayoutUnit(1), line_infos);
+    EXPECT_EQ(num_lines, 2u) << String(html);
+  }
 }
 
 }  // namespace

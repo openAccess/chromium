@@ -2510,4 +2510,126 @@ TEST_P(PaintPropertyTreeUpdateTest, CanvasSubtreeScrollbarInIframe) {
   check_scrollbar_effect_in_canvas_subtree(child_scroll, true);
 }
 
+TEST_P(PaintPropertyTreeUpdateTest, SVGTransformAnimationSMILChange) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(10deg); }
+      }
+      #target {
+        transform-origin: 50% 50%;
+        animation: anim 1s infinite;
+      }
+    </style>
+    <svg width="100" height="100">
+      <rect id="other" width="100" height="100"/>
+      <rect id="target" width="100" height="100"/>
+      <set id="smil" href="#other" attributeName="fill" to="green"/>
+    </svg>
+  )HTML");
+
+  const auto* transform = PaintPropertiesForElement("target")->Transform();
+  ASSERT_TRUE(transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), transform->Origin());
+
+  // Adding a SMIL animation disables composited transform animations on the
+  // target (removing CompositingReason::kActiveTransformAnimation). Since the
+  // current transform at t=0 (rotate(0deg)) is the identity matrix, the
+  // transform paint property node is no longer needed and is cleared.
+  GetElementById("smil")->setAttribute(svg_names::kHrefAttr,
+                                       AtomicString("#target"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(PaintPropertiesForElement("target"));
+
+  GetElementById("smil")->setAttribute(svg_names::kHrefAttr,
+                                       AtomicString("#other"));
+  UpdateAllLifecyclePhasesForTest();
+  transform = PaintPropertiesForElement("target")->Transform();
+  ASSERT_TRUE(transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), transform->Origin());
+}
+
+TEST_P(PaintPropertyTreeUpdateTest, SVGTransformAnimationZoomChange) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(10deg); }
+      }
+      #target {
+        transform-origin: 50% 50%;
+        animation: anim 1s infinite;
+      }
+    </style>
+    <svg width="100" height="100">
+      <rect id="target" width="100" height="100"/>
+    </svg>
+  )HTML");
+
+  const auto* transform = PaintPropertiesForElement("target")->Transform();
+  ASSERT_TRUE(transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), transform->Origin());
+
+  // Non-default zoom disables composited transform animations on SVG elements
+  // (removing CompositingReason::kActiveTransformAnimation). With an identity
+  // transform at t=0 (rotate(0deg)), the transform node is cleared.
+  GetElementById("target")->setAttribute(html_names::kStyleAttr,
+                                         AtomicString("zoom: 2"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(PaintPropertiesForElement("target"));
+
+  GetElementById("target")->removeAttribute(html_names::kStyleAttr);
+  UpdateAllLifecyclePhasesForTest();
+  transform = PaintPropertiesForElement("target")->Transform();
+  ASSERT_TRUE(transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), transform->Origin());
+}
+
+TEST_P(PaintPropertyTreeUpdateTest, SVGTransformAnimationVectorEffectChange) {
+  SetBodyInnerHTML(R"HTML(
+    <style>
+      @keyframes anim {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(10deg); }
+      }
+      .animate {
+        transform-origin: 50% 50%;
+        animation: anim 1s infinite;
+      }
+    </style>
+    <svg width="100" height="100">
+      <g id="g" class="animate">
+        <rect id="rect" width="100" height="100" class="animate"/>
+      </g>
+    </svg>
+  )HTML");
+
+  const auto* g_transform = PaintPropertiesForElement("g")->Transform();
+  const auto* rect_transform = PaintPropertiesForElement("rect")->Transform();
+  ASSERT_TRUE(g_transform);
+  ASSERT_TRUE(rect_transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), g_transform->Origin());
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), rect_transform->Origin());
+
+  // Non-scaling stroke disables composited transform animations on the element
+  // and its SVG ancestors (removing
+  // CompositingReason::kActiveTransformAnimation). With an identity transform
+  // at t=0 (rotate(0deg)), the transform nodes are cleared.
+  GetElementById("rect")->setAttribute(svg_names::kVectorEffectAttr,
+                                       AtomicString("non-scaling-stroke"));
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(PaintPropertiesForElement("g"));
+  EXPECT_FALSE(PaintPropertiesForElement("rect"));
+
+  GetElementById("rect")->removeAttribute(svg_names::kVectorEffectAttr);
+  UpdateAllLifecyclePhasesForTest();
+  g_transform = PaintPropertiesForElement("g")->Transform();
+  rect_transform = PaintPropertiesForElement("rect")->Transform();
+  ASSERT_TRUE(g_transform);
+  ASSERT_TRUE(rect_transform);
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), g_transform->Origin());
+  EXPECT_EQ(gfx::Point3F(50, 50, 0), rect_transform->Origin());
+}
+
 }  // namespace blink

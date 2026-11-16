@@ -56,6 +56,7 @@ source_set("impl") {
     sources += [ "javascript_tab_modal_dialog_manager_delegate_desktop.cc" ]
     deps += [
       "//chrome/browser/ui:tab_modal_confirm_dialog",
+      "//chrome/browser/ui:tab_ui_helper",
       "//chrome/browser/ui/tabs:tab_strip",
     ]
   }
@@ -92,7 +93,6 @@ if (!is_android) {
       "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/browser/ui/views/tabs/tab",
       "//chrome/test:test_support",
-      "//chrome/test:test_support_ui",
       "//components/embedder_support",
       "//components/ukm:test_support",
       "//content/public/browser",

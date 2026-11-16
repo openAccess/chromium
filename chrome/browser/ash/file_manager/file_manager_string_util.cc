@@ -7,6 +7,7 @@
 #include <math.h>
 
 #include "ash/constants/ash_features.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/system/time/calendar_utils.h"
 #include "ash/system/time/date_helper.h"
 #include "base/check_deref.h"
@@ -712,10 +713,6 @@ void AddStringsGeneric(base::DictValue* dict) {
   SET_STRING("OK_LABEL", IDS_FILE_BROWSER_OK_LABEL);
   SET_STRING("ONE_DIRECTORY_SELECTED", IDS_FILE_BROWSER_ONE_DIRECTORY_SELECTED);
   SET_STRING("ONE_FILE_SELECTED", IDS_FILE_BROWSER_ONE_FILE_SELECTED);
-  SET_STRING("OPEN_IN_OTHER_DESKTOP_MESSAGE",
-             IDS_FILE_BROWSER_OPEN_IN_OTHER_DESKTOP_MESSAGE);
-  SET_STRING("OPEN_IN_OTHER_DESKTOP_MESSAGE_PLURAL",
-             IDS_FILE_BROWSER_OPEN_IN_OTHER_DESKTOP_MESSAGE_PLURAL);
   SET_STRING("OPEN_LABEL", IDS_FILE_BROWSER_OPEN_LABEL);
   SET_STRING("OPEN_WITH_BUTTON_LABEL", IDS_FILE_BROWSER_OPEN_WITH_BUTTON_LABEL);
   SET_STRING("GO_TO_FILE_LOCATION_BUTTON_LABEL",
@@ -1294,8 +1291,6 @@ void AddFileManagerFeatureStrings(
   dict->Set("ARC_VM_ENABLED", arc::IsArcVmEnabled());
   dict->Set("FILES_LOCAL_IMAGE_SEARCH",
             ash::features::IsFilesLocalImageSearchEnabled());
-  dict->Set("FILES_TRASH_DRIVE_ENABLED",
-            base::FeatureList::IsEnabled(ash::features::kFilesTrashDrive));
 
   dict->Set("GUEST_OS", true);
 

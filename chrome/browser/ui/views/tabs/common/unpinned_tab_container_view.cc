@@ -4,9 +4,15 @@
 
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 
+#include <optional>
+#include <vector>
+
+#include "chrome/browser/ui/animation/browser_animation_controller.h"
+#include "chrome/browser/ui/animation/browser_animation_types.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/views/animations/focus_mode_animations.h"
 #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.h"
@@ -14,12 +20,17 @@
 #include "chrome/browser/ui/views/tabs/common/tab_drag_handler.h"
 #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_layout_utils.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_utils.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_horizontal_layout.h"
 #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_vertical_layout.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/navigation_controller.h"
+#include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/compositor/layer.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/layout_types.h"
@@ -32,6 +43,46 @@
 #include "ui/views/view_utils.h"
 
 namespace {
+
+// Set on a view while it holds a layer reference for a focus transition fade
+// (see `FadeViewForFocusTransition()` / `UnfadeViewForFocusTransition()`).
+DEFINE_UI_CLASS_PROPERTY_KEY(bool, kFadedForFocusTransitionKey, false)
+
+// All `kFocusMode` sequences persist between motions, so the controller always
+// has a value for them.
+float GetFocusModeValue(const BrowserAnimationController& controller,
+                        BrowserAnimationSequence sequence) {
+  return static_cast<float>(
+      controller.GetCurrentValue(FocusModeAnimations::kFocusMode, sequence)
+          .value());
+}
+
+// The fade helpers walk the container's children(), which can still hold a
+// group view whose node is gone (pending deletion), so `IsValid()` is required.
+bool IsViewForGroup(const views::View& view, tab_groups::TabGroupId group_id) {
+  const auto* group_view = views::AsViewClass<TabGroupView>(&view);
+  return group_view && group_view->IsValid() &&
+         group_view->GetTabGroup().id() == group_id;
+}
+
+void FadeViewForFocusTransition(views::View* view, float opacity) {
+  if (!view->GetProperty(kFadedForFocusTransitionKey)) {
+    view->SetProperty(kFadedForFocusTransitionKey, true);
+    AcquireViewLayer(view);
+  }
+  view->layer()->SetOpacity(opacity);
+}
+
+void UnfadeViewForFocusTransition(views::View* view) {
+  if (!view->GetProperty(kFadedForFocusTransitionKey)) {
+    return;
+  }
+  view->SetProperty(kFadedForFocusTransitionKey, false);
+  // Restore full opacity before releasing; another holder (e.g. a drag) may
+  // keep the layer alive.
+  view->layer()->SetOpacity(1.0f);
+  ReleaseViewLayer(view);
+}
 
 // The following are percentages used to determine the amount that dragged
 // tabs must be peeking into/out of a tab group view in order for the handling
@@ -128,6 +179,13 @@ UnpinnedTabContainerView::UnpinnedTabContainerView(
   collection_node->set_attach_child_to_node(base::BindRepeating(
       &TabCollectionAnimatingLayoutManager::AnimateAndReparentView,
       base::Unretained(&layout_manager_.get())));
+  // A child reparented to another node must not keep its focus transition fade.
+  collection_node->set_detach_child_from_node(base::BindRepeating(
+      [](UnpinnedTabContainerView* container, views::View* child) {
+        UnfadeViewForFocusTransition(child);
+        return container->RemoveChildViewT(child);
+      },
+      base::Unretained(this)));
 
   node_destroyed_subscription_ = collection_node_->RegisterWillDestroyCallback(
       base::BindOnce(&UnpinnedTabContainerView::ResetCollectionNode,
@@ -142,6 +200,14 @@ UnpinnedTabContainerView::UnpinnedTabContainerView(
             &UnpinnedTabContainerView::OnCollapseStateChanged,
             base::Unretained(this)));
   }
+
+  focus_animation_subscription_ =
+      collection_node_->GetController()
+          ->GetBrowserAnimationController()
+          ->Subscribe(FocusModeAnimations::kFocusMode,
+                      base::BindRepeating(
+                          &UnpinnedTabContainerView::OnFocusAnimationUpdated,
+                          base::Unretained(this)));
 }
 
 UnpinnedTabContainerView::~UnpinnedTabContainerView() = default;
@@ -153,6 +219,41 @@ int UnpinnedTabContainerView::LayoutManager::GetUnconstrainedPreferredWidth()
 
 void UnpinnedTabContainerView::LayoutManager::OnInstalled(views::View* host) {
   CHECK(IsViewClass<class UnpinnedTabContainerView>(host));
+}
+
+views::ProposedLayout
+UnpinnedTabContainerView::LayoutManager::CalculateProposedLayout(
+    const views::SizeBounds& size_bounds) const {
+  if (!UnpinnedTabContainerView().collection_node_) {
+    return CalculateProposedLayout(size_bounds, std::nullopt);
+  }
+  const TabStripCollectionController* const controller =
+      UnpinnedTabContainerView().collection_node_->GetController();
+  const auto transition = controller->GetFocusTransition();
+  if (!transition.has_value()) {
+    return CalculateProposedLayout(size_bounds, controller->GetFocusedGroup());
+  }
+  const float progress =
+      static_cast<float>(controller->GetBrowserAnimationController()
+                             ->GetCurrentValue(FocusModeAnimations::kFocusMode,
+                                               FocusModeAnimations::kProgress)
+                             .value());
+  if (transition->previous_group.has_value()) {
+    return CalculateProposedLayout(
+        size_bounds, progress < TabGroupView::kFocusSwitchHandoffProgress
+                         ? transition->previous_group
+                         : transition->target_group);
+  }
+  if (progress <= 0.0f) {
+    return CalculateProposedLayout(size_bounds, transition->previous_group);
+  }
+  if (progress >= 1.0f) {
+    return CalculateProposedLayout(size_bounds, transition->target_group);
+  }
+  return BlendProposedLayouts(
+      progress,
+      CalculateProposedLayout(size_bounds, transition->previous_group),
+      CalculateProposedLayout(size_bounds, transition->target_group));
 }
 
 const UnpinnedTabContainerView&
@@ -317,6 +418,8 @@ int UnpinnedTabContainerView::GetUnconstrainedPreferredWidth() const {
 }
 
 void UnpinnedTabContainerView::ResetCollectionNode() {
+  ReleaseFocusTransitionFade();
+  focus_animation_subscription_ = {};
   collapsed_state_changed_subscription_ = {};
   collection_node_ = nullptr;
 }
@@ -324,6 +427,81 @@ void UnpinnedTabContainerView::ResetCollectionNode() {
 void UnpinnedTabContainerView::OnCollapseStateChanged(
     tabs::VerticalTabStripCollapseState state) {
   InvalidateLayout();
+}
+
+void UnpinnedTabContainerView::OnFocusAnimationUpdated(
+    const BrowserAnimationController* controller,
+    BrowserAnimationUpdate status) {
+  if (!collection_node_) {
+    return;
+  }
+  switch (status) {
+    case BrowserAnimationUpdate::kStarted:
+      // Children are layered on the first `kProgressed` step instead: the fade
+      // is still at its resting value here, and reduced motion ends the motion
+      // synchronously.
+      break;
+    case BrowserAnimationUpdate::kProgressed:
+      UpdateFocusTransitionFade(*controller);
+      break;
+    case BrowserAnimationUpdate::kEnded:
+    case BrowserAnimationUpdate::kCanceled:
+      ReleaseFocusTransitionFade();
+      break;
+  }
+  // Re-lay out from the transition's current progress (see
+  // `LayoutManager::CalculateProposedLayout()`). The transitioning group's view
+  // invalidates too, but this keeps the container following the motion if that
+  // view goes away mid-transition and settles it when the motion ends.
+  InvalidateLayout();
+}
+
+void UnpinnedTabContainerView::UpdateFocusTransitionFade(
+    const BrowserAnimationController& controller) {
+  const auto transition =
+      collection_node_->GetController()->GetFocusTransition();
+  if (!transition.has_value()) {
+    return;
+  }
+  if (!transition->previous_group.has_value()) {
+    const float opacity = GetFocusModeValue(
+        controller, FocusModeAnimations::kUnrelatedTabsOpacity);
+    for (views::View* child : children()) {
+      if (IsViewForGroup(*child, transition->target_group)) {
+        UnfadeViewForFocusTransition(child);
+      } else {
+        FadeViewForFocusTransition(child, opacity);
+      }
+    }
+    return;
+  }
+
+  // During a switch only the active group fades: the outgoing group fades out
+  // before the handoff and the incoming group fades in after it.
+  const float progress =
+      GetFocusModeValue(controller, FocusModeAnimations::kProgress);
+  const bool is_incoming_phase =
+      progress >= TabGroupView::kFocusSwitchHandoffProgress;
+  const tab_groups::TabGroupId active_group = is_incoming_phase
+                                                  ? transition->target_group
+                                                  : *transition->previous_group;
+  const float phase_progress =
+      TabGroupView::GetFocusSwitchPhaseProgress(progress, is_incoming_phase);
+  const float opacity =
+      is_incoming_phase ? phase_progress : 1.0f - phase_progress;
+  for (views::View* child : children()) {
+    if (IsViewForGroup(*child, active_group)) {
+      FadeViewForFocusTransition(child, opacity);
+    } else {
+      UnfadeViewForFocusTransition(child);
+    }
+  }
+}
+
+void UnpinnedTabContainerView::ReleaseFocusTransitionFade() {
+  for (views::View* child : children()) {
+    UnfadeViewForFocusTransition(child);
+  }
 }
 
 views::ScrollView* UnpinnedTabContainerView::GetScrollViewForContainer() const {
@@ -334,9 +512,9 @@ views::ScrollView* UnpinnedTabContainerView::GetScrollViewForContainer() const {
       const_cast<UnpinnedTabContainerView*>(this));
 }
 
-void UnpinnedTabContainerView::UpdateTargetLayoutForDrag(
+void UnpinnedTabContainerView::SnapViewsToTargetLayout(
     const std::vector<const views::View*>& views_to_snap) {
-  layout_manager_->ResetViewsToTargetLayout(views_to_snap);
+  layout_manager_->SnapViewsToTargetLayout(views_to_snap);
 }
 const views::ProposedLayout& UnpinnedTabContainerView::GetLayoutForDrag()
     const {

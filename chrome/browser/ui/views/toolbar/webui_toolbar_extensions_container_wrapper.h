@@ -54,11 +54,27 @@ class WebUIToolbarExtensionsContainerWrapper
     return extensions_container_.get();
   }
 
-  void ExecuteUserAction(const std::string& extension_id);
+  void ExecuteUserAction(extensions_bar::mojom::ExtensionActionIdPtr id);
   void ShowContextMenu(ui::mojom::MenuSourceType source,
-                       const std::string& extension_id);
+                       extensions_bar::mojom::ExtensionActionIdPtr id);
   void MoveExtension(const std::string& extension_id, int32_t target_index);
   void MoveExtensionBy(const std::string& extension_id, int32_t delta);
+
+  // Which width GetWidth() should calculate.
+  enum class WidthType {
+    // The width needed to display all extension actions.
+    kPreferredWidth,
+    // The width needed to display only the actions that are never hidden due
+    // to overflow: the extensions menu button, and any extension actions that
+    // are forced visible (e.g., popped out).
+    kMinWidth,
+  };
+
+  // Calculates the width of the extensions container in the WebUI toolbar,
+  // based on the last state sent to it. See WidthType for which actions are
+  // included. Includes the trailing divider whenever any actions are
+  // displayed. Returns 0 if there are no actions to display.
+  int GetWidth(WidthType width_type) const;
 
   // WebUIToolbarExtensionsContainer::Observer:
   void OnActionsAddedOrUpdated(
@@ -72,9 +88,9 @@ class WebUIToolbarExtensionsContainerWrapper
   void OnPopOutCancelled() override;
 
  private:
-  // This string is used as the extensions_bar::mojom::ExtensionActionInfo::id
-  // value to indicate the extensions button (not actually an extension).
-  // Empty string should not overlap with actual extension IDs.
+  // Key (see WebUIToolbarExtensionsContainer::GetActionKey()) of the
+  // extensions button (not actually an extension). Empty string should not
+  // overlap with actual extension IDs.
   static constexpr char kExtensionsButtonId[] = "";
 
   void OnActiveTabChanged(BrowserWindowInterface* browser_interface);
@@ -94,7 +110,8 @@ class WebUIToolbarExtensionsContainerWrapper
       scoped_extensions_container_user_data_;
   base::CallbackListSubscription active_tab_subscription_;
 
-  // Current state of extensions UI. Map from extension ID to extension state.
+  // Current state of extensions UI. Map from action key (see
+  // WebUIToolbarExtensionsContainer::GetActionKey()) to action state.
   std::map<std::string, extensions_bar::mojom::ExtensionActionInfoPtr>
       cached_actions_;
 
@@ -114,6 +131,9 @@ class WebUIToolbarExtensionsContainerWrapper
           ExtensionsToolbarViewModel::ExtensionsToolbarButtonState::kDefault;
   // Only for use by GetExtensionsButton().
   toolbar_ui_api::IconHandle extensions_button_icon_;
+  // Only for use by GetExtensionsButton(). Update by calling
+  // UpdateExtensionsButtonState().
+  bool extensions_button_has_flat_edge_ = false;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_WEBUI_TOOLBAR_EXTENSIONS_CONTAINER_WRAPPER_H_

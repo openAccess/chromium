@@ -59,6 +59,7 @@
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_api_metrics.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_fre_store.h"
 #include "chrome/browser/glic/public/glic_instance_metrics_backwards_compatibility.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -89,7 +90,7 @@
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/ui_manager.h"
+#include "components/safe_browsing/content/browser/interstitials/ui_manager.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/security_interstitials/core/unsafe_resource.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
@@ -1031,6 +1032,10 @@ class GlicWebClientHandler
   void CreateExperimentalTriggeringClient(
       mojo::PendingRemote<mojom::ExperimentalTriggeringClient> client)
       override {
+    if (!glic_service_->provider_spec().SupportsFeature(
+            GlicFeature::kExperimentalTriggering)) {
+      return;
+    }
     if (auto* manager =
             host().instance_delegate().GetExperimentalTriggeringManager()) {
       manager->Bind(std::move(client));
@@ -1066,6 +1071,11 @@ class GlicWebClientHandler
       mojo::PendingReceiver<ai_overlay_dialog::mojom::AiOverlayTools> receiver)
       override {
 #if !BUILDFLAG(IS_ANDROID)
+    if (!GetGlicProviderSpec(profile_).SupportsFeature(
+            GlicFeature::kDynamicChromeTools)) {
+      // Dropping `receiver` disconnects the client's remote.
+      return;
+    }
     ai_overlay_tools_ =
         CreateAiOverlayToolsForGlic(profile_, std::move(receiver));
 #endif
@@ -1526,6 +1536,11 @@ class GlicWebClientHandler
     host().instance_metrics().OnOptinImpression();
   }
 
+  void OnOptinRejected() override {
+    LogApiRequest(GlicHostApiRequestId::kOnOptinRejected);
+    host().instance_metrics().OnOptinRejected();
+  }
+
   void OnInputFocused() override {
     LogApiRequest(GlicHostApiRequestId::kOnInputFocused);
     host().instance_metrics().OnInputFocused();
@@ -1564,6 +1579,7 @@ class GlicWebClientHandler
     host().instance_metrics().OnResponseStarted();
     host().instance_metrics().RecordAttachedContextTabCount(
         GetSharingManagerInternal().GetNumPinnedTabs());
+    host().instance_delegate().OnResponseStarted();
   }
 
   void OnResponseStopped(mojom::OnResponseStoppedDetailsPtr details) override {
@@ -1573,6 +1589,7 @@ class GlicWebClientHandler
       cause = details->cause;
     }
     host().instance_metrics().OnResponseStopped(cause);
+    host().instance_delegate().OnResponseStopped(cause);
   }
 
   void OnSessionTerminated() override {
@@ -1599,6 +1616,16 @@ class GlicWebClientHandler
   void OnActionSubmitted(bool is_retry) override {
     LogApiRequest(GlicHostApiRequestId::kOnActionSubmitted);
     host().instance_metrics().OnActionSubmitted(is_retry);
+  }
+
+  void OnTooltipImpression(mojom::TooltipImpressionType impression) override {
+    LogApiRequest(GlicHostApiRequestId::kOnTooltipImpression);
+    host().instance_metrics().OnTooltipImpression(impression);
+  }
+
+  void OnTooltipHidden() override {
+    LogApiRequest(GlicHostApiRequestId::kOnTooltipHidden);
+    host().instance_metrics().OnTooltipHidden();
   }
 
   void SetSyntheticExperimentState(const std::string& trial_name,
@@ -1640,6 +1667,9 @@ class GlicWebClientHandler
 
   void SetOnboardingCompleted() override {
     LogApiRequest(GlicHostApiRequestId::kSetOnboardingCompleted);
+    host().instance_metrics().OnWebFreAccepted();
+    // Before CompleteOnboarding(), so the attempt is still unconsented.
+    host().instance_metrics().OnOnboardingCompleted();
     glic_service_->provider_spec().GetFreStore().CompleteOnboarding(profile_);
   }
 
@@ -1706,6 +1736,13 @@ class GlicWebClientHandler
     }
   }
 
+  void NotifyDataTransferActionsBlocked(
+      mojom::DataTransferActionsBlockedNoticePtr notice) override {
+    if (web_client_) {
+      web_client_->NotifyDataTransferActionsBlocked(std::move(notice));
+    }
+  }
+
   void NotifyActorTaskListRowClicked(int32_t task_id) override {
     if (web_client_) {
       web_client_->NotifyActorTaskListRowClicked(task_id);
@@ -1740,13 +1777,15 @@ class GlicWebClientHandler
       std::optional<bool> is_fre,
       GetZeroStateSuggestionsForFocusedTabCallback callback) override {
     LogApiRequest(GlicHostApiRequestId::kGetZeroStateSuggestionsForFocusedTab);
-    if (!IsZeroStateSuggestionsEnabled()) {
+    // LINT.IfChange(GlicZeroStateSuggestionsEnabled)
+    if (!IsZeroStateSuggestionsEnabled(profile_)) {
       receiver_.ReportBadMessage(
           "Client should not call "
           "GetZeroStateSuggestionsForFocusedTab "
           "without the GlicZeroStateSuggestions feature enabled.");
       return;
     }
+    // LINT.ThenChange(//chrome/browser/glic/host/guest_util.cc:GlicZeroStateSuggestionsEnabled)
 
     // TODO(crbug.com/424472586): Pass supported tools to service from web
     // client.
@@ -1851,6 +1890,12 @@ class GlicWebClientHandler
       mojom::WebClientMode mode,
       mojom::PromptType prompt_type) override {
     OnUserInputSubmitted(mode, prompt_type);
+  }
+
+  GlicWebClientResponsivenessMonitor*
+  responsiveness_monitor_for_testing()  // IN-TEST
+      override {
+    return responsiveness_monitor_.get();
   }
 
  private:

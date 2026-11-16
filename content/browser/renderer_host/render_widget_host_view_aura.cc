@@ -413,10 +413,10 @@ void RenderWidgetHostViewAura::InitAsChild(gfx::NativeView parent_view) {
   CHECK_EQ(widget_type_, WidgetType::kFrame);
   CreateAuraWindow(aura::client::WINDOW_TYPE_CONTROL);
 
-  // Adding the window to a root window can run a nested message loop
-  // (UpdateLegacyWin() on Windows) in which this view is destroyed, and so can
-  // SetInputScope() below. Don't delete it until this returns, but stop using
-  // it once it is destroyed.
+  // Attaching the window to a root window or calling SetInputScope() below may
+  // synchronously destroy this view via native window, focus, or input-method
+  // callbacks (see content/browser/SECURITY.md). Defer deletion until this
+  // returns, and stop using it once destruction is pending.
   ScopedInputDispatchPin pin(this);
   if (parent_view)
     parent_view->AddChild(GetNativeView());
@@ -467,8 +467,8 @@ void RenderWidgetHostViewAura::InitAsChild(gfx::NativeView parent_view) {
     InputScope last_input_scope =
         host->window()->GetProperty(kLastInputScopeKey);
     if (last_input_scope != input_scope) {
-      ui::tsf_inputscope::SetInputScope(GetHostWindowHWND(), input_scope);
       host->window()->SetProperty(kLastInputScopeKey, input_scope);
+      ui::tsf_inputscope::SetInputScope(GetHostWindowHWND(), input_scope);
     }
   }
 #endif
@@ -522,10 +522,10 @@ void RenderWidgetHostViewAura::InitAsPopup(
       ui::OwnedWindowConstraintAdjustment::kAdjustmentFlipY};
   window_->SetProperty(aura::client::kOwnedWindowAnchor, owned_window_anchor);
 
-  // ParentWindowWithContext(), SetBounds() and ShowWithVisibility() can run a
-  // nested message loop (UpdateLegacyWin() on Windows) in which this popup is
-  // closed, e.g. because its parent loses focus or is destroyed. Don't delete
-  // it until this returns, but stop using it once it is closed.
+  // ParentWindowWithContext(), SetBounds(), and ShowWithVisibility() may
+  // synchronously close this popup via native window or focus notifications
+  // (e.g. if its parent loses focus or is destroyed). Defer deletion until this
+  // returns, and stop using it once destruction is pending.
   ScopedInputDispatchPin pin(this);
   aura::Window* root = popup_parent_host_view_->window_->GetRootWindow();
   aura::client::ParentWindowWithContext(window_, root, bounds_in_screen,
@@ -653,8 +653,8 @@ void RenderWidgetHostViewAura::HandleBoundsInRootChanged() {
   }
 #if BUILDFLAG(IS_WIN)
   if (legacy_render_widget_host_HWND_) {
-    // `SetBounds()` calls ::SetWindowPos which can spin a nested message loop
-    // on Windows, potentially destroying `this`.
+    // `SetBounds()` calls ::SetWindowPos, which synchronously dispatches window
+    // messages on Windows, potentially destroying `this`.
     base::WeakPtr<RenderWidgetHostViewAura> weak_this(
         weak_ptr_factory_.GetWeakPtr());
     legacy_render_widget_host_HWND_->SetBounds(bounds_in_root);
@@ -813,7 +813,8 @@ void RenderWidgetHostViewAura::HideImpl() {
       if (host && legacy_render_widget_host_HWND_) {
         // We reparent the legacy Chrome_RenderWidgetHostHWND window to the
         // global hidden window on the same lines as Windowed plugin windows.
-        // This can spin a nested event loop that could potentially delete this.
+        // This synchronously dispatches window messages and could potentially
+        // delete `this`.
         base::WeakPtr<RenderWidgetHostViewAura> weak_this(
             weak_ptr_factory_.GetWeakPtr());
         legacy_render_widget_host_HWND_->UpdateParent(ui::GetHiddenWindow());
@@ -878,16 +879,31 @@ bool RenderWidgetHostViewAura::ShouldSkipCursorUpdate() const {
   display::Screen* screen = display::Screen::Get();
   CHECK(screen);
 
-  // Ignore cursor update messages if the window under the cursor is not us.
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Ignore cursor update messages if the window under the cursor is neither us
+  // nor the unbounded surface spawned by this view, which shows this view's
+  // cursor too. On desktop Aura the surface is a top-level window with its own
+  // root window.
+  aura::Window* surface_window = GetUnboundedSurfaceNativeWindow();
+  aura::Window* surface_root =
+      surface_window ? surface_window->GetRootWindow() : nullptr;
 #if BUILDFLAG(IS_WIN)
   gfx::Point cursor_screen_point = screen->GetCursorScreenPoint();
   aura::Window* window = screen->GetWindowAtScreenPoint(cursor_screen_point);
-  if (!window || window->GetRootWindow() != root_window) {
+  if (!window) {
     return true;
   }
-#elif !BUILDFLAG(IS_CHROMEOS)
-  if (!screen->IsWindowUnderCursor(root_window))
+  aura::Window* window_root = window->GetRootWindow();
+  if (window_root != root_window &&
+      (!surface_root || window_root != surface_root)) {
     return true;
+  }
+#else
+  if (!screen->IsWindowUnderCursor(root_window) &&
+      (!surface_root || !screen->IsWindowUnderCursor(surface_root))) {
+    return true;
+  }
+#endif
 #endif  // !BUILDFLAG(IS_CHROMEOS)
   return false;
 }
@@ -1091,6 +1107,9 @@ void RenderWidgetHostViewAura::UpdateCursor(const ui::Cursor& cursor) {
 
 void RenderWidgetHostViewAura::DisplayCursor(const ui::Cursor& cursor) {
   current_cursor_ = WebCursor(cursor);
+  // TODO(crbug.com/578617577): Scale custom cursors for the unbounded surface
+  // window's display when the surface escapes onto a monitor with a different
+  // device scale factor.
   current_cursor_.UpdateDisplayInfoForWindow(window_);
   UpdateCursorIfOverSelf();
 }
@@ -1340,6 +1359,13 @@ void RenderWidgetHostViewAura::TransformPointToRootSurface(gfx::PointF* point) {
 gfx::Rect RenderWidgetHostViewAura::GetBoundsInScreen() {
   aura::Window* top_level = window_->GetToplevelWindow();
   gfx::Rect bounds(top_level->GetBoundsInScreen());
+  // Exclude the parts of the window that the window manager does not treat as
+  // part of the window (e.g. client-drawn shadows), consistent with
+  // GetBoundsInScreenWithoutTransform(). window.moveTo() and window.resizeTo()
+  // combine these bounds with the requested origin or size.
+  if (const aura::WindowTreeHost* host = top_level->GetHost()) {
+    bounds.Inset(host->GetInvisibleFrameInsetsInDIP());
+  }
 
 #if BUILDFLAG(IS_WIN)
   // TODO(zturner,iyengar): This will break when we remove the legacy hwnd, so a
@@ -1396,7 +1422,14 @@ gfx::Rect RenderWidgetHostViewAura::GetBoundsInScreenWithoutTransform() {
 
   aura::Window* top_level = window_->GetToplevelWindow();
   CHECK(top_level);
-  return top_level->GetBoundsInScreenWithoutTransform();
+  gfx::Rect bounds = top_level->GetBoundsInScreenWithoutTransform();
+  // Exclude the parts of the window that the window manager does not treat as
+  // part of the window (e.g. client-drawn shadows), so that window.screenX,
+  // window.outerWidth etc. match the visible window.
+  if (const aura::WindowTreeHost* host = top_level->GetHost()) {
+    bounds.Inset(host->GetInvisibleFrameInsetsInDIP());
+  }
+  return bounds;
 }
 
 void RenderWidgetHostViewAura::WheelEventAck(
@@ -1459,6 +1492,13 @@ void RenderWidgetHostViewAura::GestureEventAck(
 void RenderWidgetHostViewAura::ProcessAckedTouchEvent(
     const input::TouchEventWithLatencyInfo& touch,
     blink::mojom::InputEventResultState ack_result) {
+#if BUILDFLAG(IS_WIN)
+  // A handler must take properties before dispatch. An entry left at ACK time
+  // was not claimed, even if the touch was dropped before reaching a renderer.
+  pending_stylus_handwriting_properties_.erase(
+      touch.event.unique_touch_event_id);
+#endif
+
   aura::WindowTreeHost* window_host = window_->GetHost();
   // |host| is NULL during tests.
   if (!window_host)
@@ -2732,24 +2772,31 @@ bool RenderWidgetHostViewAura::ShouldInitiateStylusWriting() {
   return StylusHandwritingControllerWin::IsHandwritingAPIAvailable();
 }
 
-std::optional<gfx::Vector2dF>
-RenderWidgetHostViewAura::GetStylusHandwritingPixelsPerInch() {
-  if (!last_stylus_handwriting_properties_) {
+std::optional<ui::StylusHandwritingPropertiesWin>
+RenderWidgetHostViewAura::TakeStylusHandwritingProperties(
+    uint32_t touch_start_event_id) {
+  auto it = pending_stylus_handwriting_properties_.find(touch_start_event_id);
+  if (it == pending_stylus_handwriting_properties_.end()) {
     return std::nullopt;
   }
-  return last_stylus_handwriting_properties_->pixels_per_inch;
+  ui::StylusHandwritingPropertiesWin properties = std::move(it->second);
+  pending_stylus_handwriting_properties_.erase(it);
+  return properties;
 }
 
-void RenderWidgetHostViewAura::OnStartStylusWriting() {
+void RenderWidgetHostViewAura::OnStartStylusWriting(
+    const std::optional<input::StylusWritingProperties>& properties) {
   StartStylusWritingImpl(
       this,
       base::BindRepeating(&RenderWidgetHostViewAura::OnFocusHandwritingTarget,
-                          weak_ptr_factory_.GetWeakPtr()));
+                          weak_ptr_factory_.GetWeakPtr()),
+      properties);
 }
 
 void RenderWidgetHostViewAura::StartStylusWritingImpl(
     RenderWidgetHostViewBase* initiating_view,
-    OnFocusHandwritingTargetCallback callback) {
+    OnFocusHandwritingTargetCallback callback,
+    const std::optional<input::StylusWritingProperties>& properties) {
   if (destroy_pending()) {
     return;
   }
@@ -2762,19 +2809,22 @@ void RenderWidgetHostViewAura::StartStylusWritingImpl(
     return;
   }
 
-  if (!last_stylus_handwriting_properties_.has_value()) {
-    mojo::ReportBadMessage(
-        "OnStartStylusWriting(): unexpected state. "
-        "Last stylus handwriting properties are empty");
-    return;
+  const bool use_legacy_properties = !properties;
+  if (use_legacy_properties) {
+    if (!last_stylus_handwriting_properties_) {
+      mojo::ReportBadMessage(
+          "OnStartStylusWriting(): unexpected state. "
+          "Last stylus handwriting properties are empty");
+      return;
+    }
   }
   // Call Windows Text Services Framework Shell Handwriting API.
   // Will call ITfHandwriting::RequestHandwritingForPointer to
   // display ink, then ITfHandwritingRequest::SetInputEvaluation to confirm
-  // intent. RequestHandwritingForPointer is an asynchronous request, however
-  // this method will be called after GestureScrollBegin, so intent can be
-  // confirmed immediately. After intent is confirmed, the API will request
-  // that the focus is updated by calling
+  // intent. RequestHandwritingForPointer is asynchronous, but the caller has
+  // already established intent through scroll or small-gesture eligibility,
+  // so intent can be confirmed immediately. The API will then request that
+  // focus is updated by calling
   // ITfHandwritingSink::FocusHandwritingTarget.
   //
   // To handle ITfHandwritingSink::FocusHandwritingTarget, the browser will
@@ -2792,8 +2842,10 @@ void RenderWidgetHostViewAura::StartStylusWritingImpl(
   // view is destroyed while a focus result is pending.
   handwriting_controller->OnStartStylusWriting(
       initiating_view, std::move(callback),
-      last_stylus_handwriting_properties_.value());
-  last_stylus_handwriting_properties_.reset();
+      properties ? *properties : *last_stylus_handwriting_properties_);
+  if (use_legacy_properties) {
+    last_stylus_handwriting_properties_.reset();
+  }
 }
 
 void RenderWidgetHostViewAura::OnEditElementFocusedForStylusWriting(
@@ -2844,8 +2896,9 @@ void RenderWidgetHostViewAura::OnEditElementFocusedForStylusWriting(
 
 void RenderWidgetHostViewAura::StartStylusWritingFromChildHostView(
     RenderWidgetHostViewBase* view,
-    OnFocusHandwritingTargetCallback callback) {
-  StartStylusWritingImpl(view, std::move(callback));
+    OnFocusHandwritingTargetCallback callback,
+    const std::optional<input::StylusWritingProperties>& properties) {
+  StartStylusWritingImpl(view, std::move(callback), properties);
 }
 
 void RenderWidgetHostViewAura::OnFocusHandwritingTarget(
@@ -2886,6 +2939,11 @@ void RenderWidgetHostViewAura::OnTouchEvent(ui::TouchEvent* event) {
     // handwriting request in OnStartStylusWriting().
     last_stylus_handwriting_properties_ =
         ui::GetStylusHandwritingProperties(*event);
+    if (stylus_handwriting::win::kStylusHandwritingWinSmallGestures.Get() &&
+        last_stylus_handwriting_properties_) {
+      pending_stylus_handwriting_properties_.insert_or_assign(
+          event->unique_event_id(), *last_stylus_handwriting_properties_);
+    }
     TRACE_EVENT2(
         "ime", "RenderWidgetHostViewAura::OnTouchEvent",
         "handwriting_pointer_id",
@@ -2913,6 +2971,13 @@ void RenderWidgetHostViewAura::OnTouchEvent(ui::TouchEvent* event) {
 #endif  // BUILDFLAG(IS_WIN)
 
   event_handler_->OnTouchEvent(event);
+#if BUILDFLAG(IS_WIN)
+  // Invalid or locally consumed touches have no input-router ACK to clear
+  // their staged properties.
+  if (!event->synchronous_handling_disabled()) {
+    pending_stylus_handwriting_properties_.erase(event->unique_event_id());
+  }
+#endif
 }
 
 void RenderWidgetHostViewAura::OnGestureEvent(ui::GestureEvent* event) {
@@ -3191,36 +3256,73 @@ void RenderWidgetHostViewAura::CreateDelegatedFrameHostClient() {
       false /* should_register_frame_sink_id */);
 }
 
+aura::Window* RenderWidgetHostViewAura::GetUnboundedSurfaceNativeWindow()
+    const {
+  UnboundedSurfaceWindow* surface = GetUnboundedSurfaceWindow();
+  return surface ? surface->GetNativeWindow() : nullptr;
+}
+
+bool RenderWidgetHostViewAura::IsPointerOverSelfOrUnboundedSurface() const {
+  display::Screen* screen = display::Screen::Get();
+  CHECK(screen);
+  const gfx::Point cursor_screen_point = screen->GetCursorScreenPoint();
+
+  // Returns the window that would receive a mouse event at the cursor's
+  // position in `root_window`.
+  auto event_handler_at_cursor = [&](aura::Window* root_window) {
+    gfx::Point point = cursor_screen_point;
+    if (aura::client::ScreenPositionClient* screen_position_client =
+            aura::client::GetScreenPositionClient(root_window)) {
+      screen_position_client->ConvertPointFromScreen(root_window, &point);
+    }
+    return root_window->GetEventHandlerForPoint(point);
+  };
+
+  aura::Window* root_window = window_->GetRootWindow();
+  aura::Window* handler_in_root =
+      root_window ? event_handler_at_cursor(root_window) : nullptr;
+  if (handler_in_root == window_) {
+    return true;
+  }
+
+  aura::Window* surface_window = GetUnboundedSurfaceNativeWindow();
+  aura::Window* surface_root =
+      surface_window ? surface_window->GetRootWindow() : nullptr;
+  if (!surface_root) {
+    return false;
+  }
+  aura::Window* handler = surface_root == root_window
+                              ? handler_in_root
+                              : event_handler_at_cursor(surface_root);
+  return handler && surface_window->Contains(handler);
+}
+
 void RenderWidgetHostViewAura::UpdateCursorIfOverSelf() {
   if (!host() || host()->GetProcess()->FastShutdownStarted()) {
     return;
   }
 
   aura::Window* root_window = window_->GetRootWindow();
-  if (!root_window)
+  if (!root_window) {
     return;
-
-  if (ShouldSkipCursorUpdate())
-    return;
-
-  display::Screen* screen = display::Screen::Get();
-  CHECK(screen);
-  gfx::Point root_window_point = screen->GetCursorScreenPoint();
-  aura::client::ScreenPositionClient* screen_position_client =
-      aura::client::GetScreenPositionClient(root_window);
-  if (screen_position_client) {
-    screen_position_client->ConvertPointFromScreen(
-        root_window, &root_window_point);
   }
 
-  if (root_window->GetEventHandlerForPoint(root_window_point) != window_)
+  if (ShouldSkipCursorUpdate()) {
     return;
+  }
+
+  if (!IsPointerOverSelfOrUnboundedSurface()) {
+    return;
+  }
 
   gfx::NativeCursor cursor = current_cursor_.GetNativeCursor();
   // Do not show loading cursor when the cursor is currently hidden.
-  if (is_loading_ && cursor != ui::mojom::CursorType::kNone)
+  if (is_loading_ && cursor != ui::mojom::CursorType::kNone) {
     cursor = ui::Cursor(ui::mojom::CursorType::kPointer);
+  }
 
+  // On desktop Aura the cursor client is shared by all root windows, so this
+  // also reaches an unbounded surface living in its own root.
   aura::client::CursorClient* cursor_client =
       aura::client::GetCursorClient(root_window);
   if (cursor_client) {
@@ -3448,8 +3550,8 @@ void RenderWidgetHostViewAura::InternalSetBounds(const gfx::Rect& rect) {
                               window_->GetLocalSurfaceId());
 
 #if BUILDFLAG(IS_WIN)
-  // `UpdateLegacyWin()` can spin a nested message loop on Windows, potentially
-  // destroying `this`.
+  // `UpdateLegacyWin()` synchronously dispatches window messages on Windows,
+  // potentially destroying `this`.
   base::WeakPtr<RenderWidgetHostViewAura> weak_this(
       weak_ptr_factory_.GetWeakPtr());
   UpdateLegacyWin();
@@ -3479,8 +3581,8 @@ void RenderWidgetHostViewAura::UpdateLegacyWin() {
   if (legacy_window_destroyed_ || !GetHostWindowHWND())
     return;
 
-  // `Create`, `UpdateParent`, and `SetBounds` can all spin a nested message
-  // loop on Windows, potentially destroying `this`.
+  // `Create`, `UpdateParent`, and `SetBounds` can all synchronously dispatch
+  // window messages on Windows, potentially destroying `this`.
   base::WeakPtr<RenderWidgetHostViewAura> weak_this(
       weak_ptr_factory_.GetWeakPtr());
 
@@ -3543,8 +3645,8 @@ void RenderWidgetHostViewAura::AddedToRootWindow() {
   }
 
 #if BUILDFLAG(IS_WIN)
-  // `UpdateLegacyWin()` can spin a nested message loop on Windows, potentially
-  // destroying `this`.
+  // `UpdateLegacyWin()` synchronously dispatches window messages on Windows,
+  // potentially destroying `this`.
   UpdateLegacyWin();
   if (!weak_this) {
     return;
@@ -3569,8 +3671,8 @@ void RenderWidgetHostViewAura::RemovingFromRootWindow() {
 
 #if BUILDFLAG(IS_WIN)
   // Update the legacy window's parent temporarily to the hidden window. It
-  // will eventually get reparented to the right root. This can spin a nested
-  // event loop that can delete `this`, so do it last.
+  // will eventually get reparented to the right root. This synchronously
+  // dispatches window messages and can delete `this`, so do it last.
   if (legacy_render_widget_host_HWND_) {
     legacy_render_widget_host_HWND_->UpdateParent(ui::GetHiddenWindow());
   }

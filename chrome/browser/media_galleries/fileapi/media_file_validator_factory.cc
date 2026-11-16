@@ -5,7 +5,6 @@
 #include "chrome/browser/media_galleries/fileapi/media_file_validator_factory.h"
 
 #include "base/files/file_path.h"
-#include "chrome/browser/media_galleries/fileapi/supported_audio_video_checker.h"
 #include "chrome/browser/media_galleries/fileapi/supported_image_type_validator.h"
 #include "storage/browser/file_system/copy_or_move_file_validator.h"
 #include "storage/browser/file_system/file_system_url.h"
@@ -20,12 +19,6 @@ class InvalidFileValidator : public storage::CopyOrMoveFileValidator {
   ~InvalidFileValidator() override = default;
   void StartPreWriteValidation(storage::CopyOrMoveFileValidator::ResultCallback
                                    result_callback) override {
-    std::move(result_callback).Run(base::File::FILE_ERROR_SECURITY);
-  }
-
-  void StartPostWriteValidation(const base::FilePath& dest_platform_path,
-                                storage::CopyOrMoveFileValidator::ResultCallback
-                                    result_callback) override {
     std::move(result_callback).Run(base::File::FILE_ERROR_SECURITY);
   }
 
@@ -47,8 +40,8 @@ MediaFileValidatorFactory::CreateCopyOrMoveFileValidator(
   base::FilePath src_path = src.virtual_path();
   if (SupportedImageTypeValidator::SupportsFileType(src_path))
     return new SupportedImageTypeValidator(platform_path);
-  if (SupportedAudioVideoChecker::SupportsFileType(src_path))
-    return new SupportedAudioVideoChecker(platform_path);
 
+  // Audio and video files are rejected along with all other types, since
+  // there is no content validation for them.
   return new InvalidFileValidator();
 }

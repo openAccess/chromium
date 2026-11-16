@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include "base/feature_list.h"
@@ -27,6 +28,7 @@
 #include "components/crx_file/id_util.h"
 #include "components/fcm/base/fcm_backoff_policy.h"
 #include "components/fcm/crypto/fcm_decryption_result.h"
+#include "components/gcm_driver/gcm_registration_manager_impl.h"
 #include "google_apis/gcm/base/encryptor.h"
 #include "google_apis/gcm/base/gcm_features.h"
 #include "google_apis/gcm/base/mcs_message.h"
@@ -46,21 +48,6 @@
 
 namespace gcm {
 
-// It is okay to append to the enum if these states grow. DO NOT reorder,
-// renumber or otherwise reuse existing values.
-// Do not assign an explicit value to REGISTRATION_CACHE_STATUS_COUNT, as
-// this lets the compiler keep it up to date.
-enum class RegistrationCacheStatus {
-  REGISTRATION_NOT_FOUND = 0,
-  REGISTRATION_FOUND_AND_FRESH = 1,
-  REGISTRATION_FOUND_BUT_STALE = 2,
-  REGISTRATION_FOUND_BUT_SENDERS_DONT_MATCH = 3,
-  // NOTE: always keep this entry at the end. Add new value only immediately
-  // above this line. Make sure to update the corresponding histogram enum
-  // accordingly.
-  REGISTRATION_CACHE_STATUS_COUNT
-};
-
 namespace {
 
 // Indicates a message type of the received message.
@@ -73,7 +60,6 @@ enum MessageType {
 
 const int kMaxRegistrationRetries = 5;
 const int kMaxUnregistrationRetries = 5;
-const char kDeletedCountKey[] = "total_deleted";
 const char kMessageTypeDataMessage[] = "gcm";
 const char kMessageTypeDeletedMessagesKey[] = "deleted_messages";
 const char kMessageTypeKey[] = "message_type";
@@ -87,8 +73,6 @@ constexpr base::TimeDelta kTokenInvalidationInterval = base::Days(7);
 // Previously, GCMAccountMapper registered with this app ID. Any persisted
 // registration for it in GCMStore is obsolete and removed on load.
 // Deprecated in October 2026.
-// TODO(crbug.com/384891711): Remove this constant and its cleanup logic after
-// October 2027.
 constexpr char kDeprecatedGCMAccountMapperAppId[] = "com.google.android.gms";
 
 GCMClient::Result ToGCMClientResult(MCSClient::MessageSendStatus status) {
@@ -134,26 +118,6 @@ int ConstructGCMVersion(const std::string& chrome_version) {
   return gcm_version;
 }
 
-std::string SerializeInstanceIDData(const std::string& instance_id,
-                                    const std::string& extra_data) {
-  DCHECK(!instance_id.empty() && !extra_data.empty());
-  DCHECK(instance_id.find(',') == std::string::npos);
-  return instance_id + "," + extra_data;
-}
-
-bool DeserializeInstanceIDData(const std::string& serialized_data,
-                               std::string* instance_id,
-                               std::string* extra_data) {
-  DCHECK(instance_id && extra_data);
-  auto parts = base::SplitStringOnce(serialized_data, ',');
-  if (!parts) {
-    return false;
-  }
-  *instance_id = parts->first;
-  *extra_data = parts->second;
-  return !instance_id->empty() && !extra_data->empty();
-}
-
 bool InstanceIDUsesSubtypeForAppId(const std::string& app_id) {
   // Always use subtypes with Instance ID, except for Chrome Apps/Extensions.
   return !crx_file::id_util::IdIsValid(app_id);
@@ -161,17 +125,10 @@ bool InstanceIDUsesSubtypeForAppId(const std::string& app_id) {
 
 }  // namespace
 
-void RecordRegistrationRequestToUMA(gcm::RegistrationCacheStatus status) {
-  UMA_HISTOGRAM_ENUMERATION(
-      "GCM.RegistrationCacheStatus", status,
-      RegistrationCacheStatus::REGISTRATION_CACHE_STATUS_COUNT);
-}
-
 GCMClientImpl::GCMClientImpl(
     std::unique_ptr<fcm::FcmInternalsBuilder> internals_builder)
     : internals_builder_(std::move(internals_builder)),
       state_(UNINITIALIZED),
-      delegate_(nullptr),
       start_mode_(DELAYED_START),
       clock_(internals_builder_->GetClock()),
       gcm_store_reset_(false),
@@ -189,10 +146,8 @@ void GCMClientImpl::Initialize(
         get_socket_factory_callback,
     const scoped_refptr<network::SharedURLLoaderFactory>& url_loader_factory,
     network::NetworkConnectionTracker* network_connection_tracker,
-    std::unique_ptr<Encryptor> encryptor,
-    GCMClient::Delegate* delegate) {
+    std::unique_ptr<Encryptor> encryptor) {
   DCHECK_EQ(UNINITIALIZED, state_);
-  DCHECK(delegate);
   DCHECK(io_task_runner);
   DCHECK(io_task_runner->RunsTasksInCurrentSequence());
 
@@ -202,10 +157,19 @@ void GCMClientImpl::Initialize(
   chrome_build_info_ = chrome_build_info;
   gcm_store_ = std::make_unique<GCMStoreImpl>(path, blocking_task_runner,
                                               std::move(encryptor));
-  delegate_ = delegate;
+  registration_manager_ =
+      std::make_unique<GCMRegistrationManagerImpl>(*gcm_store_);
   io_task_runner_ = std::move(io_task_runner);
   recorder_.SetDelegate(this);
   state_ = INITIALIZED;
+}
+
+void GCMClientImpl::AddObserver(Observer* observer) {
+  observers_.AddObserver(observer);
+}
+
+void GCMClientImpl::RemoveObserver(Observer* observer) {
+  observers_.RemoveObserver(observer);
 }
 
 void GCMClientImpl::Start(StartMode start_mode) {
@@ -290,13 +254,8 @@ void GCMClientImpl::OnLoadCompleted(
     }
   }
 
-  for (const auto& [key, value] : result->instance_id_data) {
-    std::string instance_id;
-    std::string extra_data;
-    if (DeserializeInstanceIDData(value, &instance_id, &extra_data)) {
-      instance_id_data_[key] = std::make_pair(instance_id, extra_data);
-    }
-  }
+  CHECK(registration_manager_);
+  registration_manager_->OnRegistrationDataLoaded(*result);
 
   load_result_ = std::move(result);
   state_ = LOADED;
@@ -396,7 +355,7 @@ void GCMClientImpl::OnReady() {
   state_ = READY;
   StartMCSLogin();
 
-  delegate_->OnGCMReady();
+  observers_.Notify(&Observer::OnGCMReady);
 }
 
 void GCMClientImpl::StartMCSLogin() {
@@ -433,38 +392,24 @@ void GCMClientImpl::AddInstanceIDData(const std::string& app_id,
                                       const std::string& instance_id,
                                       const std::string& extra_data) {
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
-  instance_id_data_[app_id] = std::make_pair(instance_id, extra_data);
-  // TODO(crbug.com/40109289): If this call fails, we likely leak a registration
-  // (the one stored in instance_id_data_ would be used for a registration but
-  // not persisted).
-  gcm_store_->AddInstanceIDData(
-      app_id, SerializeInstanceIDData(instance_id, extra_data),
-      base::BindOnce(&GCMClientImpl::IgnoreWriteResultCallback,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     /*operation_suffix_for_uma=*/"AddInstanceIDData"));
+  CHECK(registration_manager_);
+  registration_manager_->AddInstanceIDData(app_id, instance_id, extra_data);
 }
 
 void GCMClientImpl::RemoveInstanceIDData(const std::string& app_id) {
   DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
-  instance_id_data_.erase(app_id);
-  gcm_store_->RemoveInstanceIDData(
-      app_id,
-      base::BindOnce(&GCMClientImpl::IgnoreWriteResultCallback,
-                     weak_ptr_factory_.GetWeakPtr(),
-                     /*operation_suffix_for_uma=*/"RemoveInstanceIDData"));
+  CHECK(registration_manager_);
+  registration_manager_->RemoveInstanceIDData(app_id);
 }
 
 void GCMClientImpl::GetInstanceIDData(const std::string& app_id,
                                       std::string* instance_id,
                                       std::string* extra_data) {
-  DCHECK(instance_id && extra_data);
-
-  auto iter = instance_id_data_.find(app_id);
-  if (iter == instance_id_data_.end()) {
-    return;
-  }
-  *instance_id = iter->second.first;
-  *extra_data = iter->second.second;
+  CHECK(instance_id);
+  CHECK(extra_data);
+  CHECK(registration_manager_);
+  std::tie(*instance_id, *extra_data) =
+      registration_manager_->GetInstanceIDData(app_id);
 }
 
 void GCMClientImpl::StartCheckin() {
@@ -586,14 +531,6 @@ void GCMClientImpl::UpdateRegistrationCallback(bool success) {
   DCHECK(success);
 }
 
-void GCMClientImpl::IgnoreWriteResultCallback(
-    const std::string& operation_suffix_for_uma,
-    bool success) {
-  // TODO(crbug.com/40691191): Implement proper error handling.
-  // TODO(fgorski): Ignoring the write result for now to make sure
-  // sync_intergration_tests are not broken.
-}
-
 void GCMClientImpl::DestroyStoreCallback(bool success) {
   ResetCache();
 
@@ -608,11 +545,11 @@ void GCMClientImpl::DestroyStoreCallback(bool success) {
 
 void GCMClientImpl::ResetStoreCallback(bool success) {
   // Even an incomplete reset may invalidate registrations, and this might be
-  // the only opportunity to notify the delegate. For example a partial reset
+  // the only opportunity to notify observers. For example a partial reset
   // that deletes the "CURRENT" file will cause GCMStoreImpl to consider the DB
   // to no longer exist, in which case the next load will simply create a new
   // store rather than resetting it.
-  delegate_->OnStoreReset();
+  observers_.Notify(&Observer::OnStoreReset);
 
   if (!success) {
     LOG(ERROR) << "Failed to reset GCM store";
@@ -642,7 +579,6 @@ void GCMClientImpl::ResetCache() {
   destroying_gcm_store_ptr_factory_.InvalidateWeakPtrs();
   device_checkin_info_.Reset();
   connection_factory_.reset();
-  delegate_->OnDisconnected();
   mcs_client_.reset();
   checkin_request_.reset();
   // Delete all of the pending registration and unregistration requests.
@@ -680,8 +616,6 @@ void GCMClientImpl::Register(
           cached_gcm_registration_info->sender_ids) {
         matched = false;
         // Senders IDs don't match existing registration.
-        RecordRegistrationRequestToUMA(
-            RegistrationCacheStatus::REGISTRATION_FOUND_BUT_SENDERS_DONT_MATCH);
       }
     }
 
@@ -691,21 +625,11 @@ void GCMClientImpl::Register(
           clock_->Now() - registrations_iter->first->last_validated;
       if (time_since_last_validation < kTokenInvalidationInterval) {
         // Token is fresh. Use cached registration.
-        delegate_->OnRegisterFinished(registration_info,
-                                      registrations_iter->second, SUCCESS);
-        RecordRegistrationRequestToUMA(
-            RegistrationCacheStatus::REGISTRATION_FOUND_AND_FRESH);
+        observers_.Notify(&Observer::OnRegisterFinished, registration_info,
+                          registrations_iter->second, SUCCESS);
         return;
-      } else {
-        // Token is stale.
-        RecordRegistrationRequestToUMA(
-            RegistrationCacheStatus::REGISTRATION_FOUND_BUT_STALE);
       }
     }
-  } else {
-    // New Registration request (no existing registration)
-    RecordRegistrationRequestToUMA(
-        RegistrationCacheStatus::REGISTRATION_NOT_FOUND);
   }
 
   std::unique_ptr<RegistrationRequest::CustomRequestHandler> request_handler;
@@ -728,8 +652,10 @@ void GCMClientImpl::Register(
   const InstanceIDTokenInfo* instance_id_token_info =
       InstanceIDTokenInfo::FromRegistrationInfo(registration_info.get());
   if (instance_id_token_info) {
-    auto instance_id_iter = instance_id_data_.find(registration_info->app_id);
-    CHECK(instance_id_iter != instance_id_data_.end());
+    CHECK(registration_manager_);
+    auto instance_id_iter = registration_manager_->instance_id_data().find(
+        registration_info->app_id);
+    CHECK(instance_id_iter != registration_manager_->instance_id_data().end());
 
     request_handler = std::make_unique<InstanceIDGetTokenRequestHandler>(
         instance_id_iter->second.first,
@@ -768,8 +694,6 @@ void GCMClientImpl::OnRegisterCompleted(
     scoped_refptr<RegistrationInfo> registration_info,
     RegistrationRequest::Status status,
     const std::string& registration_id) {
-  DCHECK(delegate_);
-
   Result result;
   PendingRegistrationRequests::const_iterator iter =
       pending_registration_requests_.find(registration_info);
@@ -803,9 +727,9 @@ void GCMClientImpl::OnRegisterCompleted(
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
-  delegate_->OnRegisterFinished(
-      registration_info, result == SUCCESS ? registration_id : std::string(),
-      result);
+  observers_.Notify(&Observer::OnRegisterFinished, registration_info,
+                    result == SUCCESS ? registration_id : std::string(),
+                    result);
 
   if (iter != pending_registration_requests_.end()) {
     pending_registration_requests_.erase(iter);
@@ -867,8 +791,10 @@ void GCMClientImpl::Unregister(
   const InstanceIDTokenInfo* instance_id_token_info =
       InstanceIDTokenInfo::FromRegistrationInfo(registration_info.get());
   if (instance_id_token_info) {
-    auto instance_id_iter = instance_id_data_.find(registration_info->app_id);
-    if (instance_id_iter == instance_id_data_.end()) {
+    CHECK(registration_manager_);
+    auto instance_id_iter = registration_manager_->instance_id_data().find(
+        registration_info->app_id);
+    if (instance_id_iter == registration_manager_->instance_id_data().end()) {
       // This should not be reached since we should not delete tokens when
       // an InstanceID has not been created yet.
       NOTREACHED();
@@ -916,7 +842,8 @@ void GCMClientImpl::Unregister(
   } else {
     auto iter = registrations_.find(registration_info);
     if (iter == registrations_.end()) {
-      delegate_->OnUnregisterFinished(registration_info, INVALID_PARAMETER);
+      observers_.Notify(&Observer::OnUnregisterFinished, registration_info,
+                        INVALID_PARAMETER);
       return;
     }
     registrations_.erase(iter);
@@ -970,13 +897,9 @@ void GCMClientImpl::OnUnregisterCompleted(
       result = SERVER_ERROR;
       break;
   }
-  delegate_->OnUnregisterFinished(registration_info, result);
+  observers_.Notify(&Observer::OnUnregisterFinished, registration_info, result);
 
   pending_unregistration_requests_.erase(registration_info);
-}
-
-void GCMClientImpl::OnGCMStoreDestroyed(bool success) {
-  DLOG_IF(ERROR, !success) << "GCM store failed to be destroyed!";
 }
 
 void GCMClientImpl::Send(const std::string& app_id,
@@ -1071,19 +994,17 @@ GCMClient::GCMStatistics GCMClientImpl::GetStatistics() const {
 }
 
 void GCMClientImpl::OnActivityRecorded() {
-  delegate_->OnActivityRecorded();
+  observers_.Notify(&Observer::OnActivityRecorded);
 }
 
 void GCMClientImpl::OnConnected(const GURL& current_server,
                                 const net::IPEndPoint& ip_endpoint) {
   // TODO(gcm): expose current server in debug page.
-  delegate_->OnActivityRecorded();
-  delegate_->OnConnected(ip_endpoint);
+  observers_.Notify(&Observer::OnActivityRecorded);
 }
 
 void GCMClientImpl::OnDisconnected() {
-  delegate_->OnActivityRecorded();
-  delegate_->OnDisconnected();
+  observers_.Notify(&Observer::OnActivityRecorded);
 }
 
 void GCMClientImpl::OnMessageReceivedFromMCS(const gcm::MCSMessage& message) {
@@ -1103,8 +1024,6 @@ void GCMClientImpl::OnMessageReceivedFromMCS(const gcm::MCSMessage& message) {
 void GCMClientImpl::OnMessageSentToMCS(const std::string& app_id,
                                        const std::string& message_id,
                                        MCSClient::MessageSendStatus status) {
-  DCHECK(delegate_);
-
   if (status == MCSClient::SENT) {
     // Send acknowledgments are intentionally ignored.
     return;
@@ -1121,15 +1040,15 @@ void GCMClientImpl::OnMessageSentToMCS(const std::string& app_id,
     SendErrorDetails send_error_details;
     send_error_details.message_id = message_id;
     send_error_details.result = GCMClient::TTL_EXCEEDED;
-    delegate_->OnMessageSendError(app_id, send_error_details);
+    observers_.Notify(&Observer::OnMessageSendError, app_id,
+                      send_error_details);
   } else {
-    delegate_->OnSendFinished(app_id, message_id, ToGCMClientResult(status));
+    observers_.Notify(&Observer::OnSendFinished, app_id, message_id,
+                      ToGCMClientResult(status));
   }
 }
 
 void GCMClientImpl::HandleIncomingMessage(const gcm::MCSMessage& message) {
-  DCHECK(delegate_);
-
   const mcs_proto::DataMessageStanza& data_message_stanza =
       reinterpret_cast<const mcs_proto::DataMessageStanza&>(
           message.GetProtobuf());
@@ -1180,11 +1099,10 @@ void GCMClientImpl::HandleIncomingMessage(const gcm::MCSMessage& message) {
 
   switch (message_type) {
     case DATA_MESSAGE:
-      HandleIncomingDataMessage(app_id, use_subtype, data_message_stanza,
-                                message_data);
+      HandleIncomingDataMessage(app_id, data_message_stanza, message_data);
       break;
     case DELETED_MESSAGES:
-      HandleIncomingDeletedMessages(app_id, data_message_stanza, message_data);
+      HandleIncomingDeletedMessages(app_id, data_message_stanza);
       break;
     case SEND_ERROR:
       HandleIncomingSendError(app_id, data_message_stanza, message_data);
@@ -1198,7 +1116,6 @@ void GCMClientImpl::HandleIncomingMessage(const gcm::MCSMessage& message) {
 
 void GCMClientImpl::HandleIncomingDataMessage(
     const std::string& app_id,
-    bool was_subtype,
     const mcs_proto::DataMessageStanza& data_message_stanza,
     MessageData& message_data) {
   recorder_.RecordDataMessageReceived(app_id, data_message_stanza.from(),
@@ -1214,25 +1131,16 @@ void GCMClientImpl::HandleIncomingDataMessage(
   incoming_message.data = message_data;
   incoming_message.raw_data = data_message_stanza.raw_data();
 
-  delegate_->OnMessageReceived(app_id, incoming_message);
+  observers_.Notify(&Observer::OnMessageReceived, app_id, incoming_message);
 }
 
 void GCMClientImpl::HandleIncomingDeletedMessages(
     const std::string& app_id,
-    const mcs_proto::DataMessageStanza& data_message_stanza,
-    MessageData& message_data) {
-  int deleted_count = 0;
-  auto count_iter = message_data.find(kDeletedCountKey);
-  if (count_iter != message_data.end()) {
-    if (!base::StringToInt(count_iter->second, &deleted_count)) {
-      deleted_count = 0;
-    }
-  }
-
+    const mcs_proto::DataMessageStanza& data_message_stanza) {
   recorder_.RecordDataMessageReceived(app_id, data_message_stanza.from(),
                                       data_message_stanza.ByteSizeLong(),
                                       GCMStatsRecorder::DELETED_MESSAGES);
-  delegate_->OnMessagesDeleted(app_id);
+  observers_.Notify(&Observer::OnMessagesDeleted, app_id);
 }
 
 void GCMClientImpl::HandleIncomingSendError(
@@ -1246,7 +1154,7 @@ void GCMClientImpl::HandleIncomingSendError(
 
   recorder_.RecordIncomingSendError(app_id, data_message_stanza.to(),
                                     data_message_stanza.id());
-  delegate_->OnMessageSendError(app_id, send_error_details);
+  observers_.Notify(&Observer::OnMessageSendError, app_id, send_error_details);
 }
 
 bool GCMClientImpl::HasStandaloneRegisteredApp() const {

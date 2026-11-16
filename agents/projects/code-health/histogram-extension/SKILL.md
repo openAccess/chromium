@@ -2,31 +2,82 @@
 name: histogram-extension
 description: Extension pipeline to bump expiration dates of Chromium UMA histograms.
 ---
+
 # histogram-extension
+
 ## Overview
-This skill outlines how you (the agent) should automatically locate and extend the expiration dates of UMA histograms in Chromium that have expired or are nearing expiration.
+
+This skill outlines how you (the agent) should automatically locate and extend
+the expiration dates of UMA histograms in Chromium that have expired or are
+nearing expiration.
+
 ## Workflow
-### 1. Discovery & Locate (Delegated)
-- **AI-Led Discovery:** Delegate to the **`generalist`** sub-agent to find histograms that are nearing expiration if none are provided. Run:
+
+### 1. Discovery & Locate
+
+- **Discovery:** If no histogram is provided, run directly:
   ```bash
-  python3 scripts/find_candidates.py --count 1
+  python3 agents/projects/code-health/histogram-extension/scripts/find_candidates.py --count 1
   ```
-- **Bug Checking:** Check `references/bug_discovery.md` and Buganizer to ensure the metric isn't already being extended in another ticket.
-- **Locate:** Look inside `tools/metrics/histograms/metadata/*/histograms.xml` to find the target metric.
-- Look for the `<histogram name="TARGET_NAME" expires_after="YYYY-MM-DD">` definition (or `enum=... expires_after="..."`).
+- **Bug Checking:** Check
+  [references/bug_discovery.md](references/bug_discovery.md) and Buganizer to
+  ensure the metric isn't already being extended in another ticket.
+- **Locate:** Look inside `tools/metrics/histograms/metadata/*/histograms.xml`
+  to find the target metric.
+- Look for the `<histogram name="TARGET_NAME" expires_after="YYYY-MM-DD">`
+  definition (or `enum=... expires_after="..."`).
+
 ### 2. Update the Expiration Date
-- Ask the user (or read from the brief) what the new expiration date should be. If none is specified, recommend extending by +6 months or +1 year (in `YYYY-MM-DD` format).
-- Carefully replace the `expires_after="YYYY-MM-DD"` string constraint inline, being sure not to modify other attributes.
-### 3. Commit and CL creation
-- Create the Git commit with a descriptive, code-health aligned message using the metadata template below.
 
-- **Skill Name:** `histogram-extension`
-- **Branch Name:** `histogram-extension-[histogram-name]`
-- **Commit Hashtag:** `Code Health`
-- **Cleanup Title:** `Extend expiration for [Histogram Name]`
-- **Cleanup Description:**
-  `This metric is still actively needed for telemetry monitoring. Extending expiration to prevent data loss.`
-- **Parent Bug:** `499059543`
-- **Bug ID:** The resolved `<Bug ID>` from the Bug Checking step.
+- Use `ask_question` (unless already specified in the prompt/brief) to ask what
+  the new expiration date should be. If none is specified, recommend extending
+  by +6 months or +1 year (in `YYYY-MM-DD` format).
+- Carefully replace the `expires_after="YYYY-MM-DD"` string constraint inline,
+  being sure not to modify other attributes.
+- After editing the XML, run
+  `python3 agents/projects/code-health/hub/scripts/format_and_lint.py` (must
+  exit 0) to validate the XML formatting via `validate_format.py`.
+- **Automated Review:** Skipped (metadata-only changes); proceed directly to
+  Step 3.
 
-- Upload the CL to Gerrit and add the appropriate metadata reviewers depending on the `OWNERS` file located in `tools/metrics/histograms/metadata/{category}/OWNERS`.
+### 3. Submission
+
+#### 1. Prepare Commit Message
+
+Generate `../commit`. Use the resolved `<Bug ID>` from the Bug Checking step for
+`--bug`, or `"none"` if no bug was found or filed (the script then emits only
+the parent bug).
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill histogram-extension \
+  --title "Extend expiration for <HistogramName>" \
+  --bug "<Bug ID>" \
+  --description - \
+  --out-commit ../commit <<'EOF'
+This metric is still actively needed for telemetry monitoring. Extending
+expiration to prevent data loss.
+EOF
+```
+
+#### 2. Validate Commit File
+
+```bash
+python3 agents/projects/code-health/hub/scripts/prepare_commit_message.py \
+  --skill histogram-extension \
+  --validate ../commit \
+  --bug "<Bug ID>"
+```
+
+If validation fails, fix the commit title or description and re-run Steps 1–2
+until validation exits 0.
+
+#### 3. Submit CL
+
+Invoke the [Submission](../hub/references/submission.md) workflow, passing:
+
+- **Branch Name:** `histogram-extension-<HistogramName>`
+- **Commit File:** `../commit`
+- **Upload Flags:** Reviewer flags (e.g., `--reviewers <owners>`) based on the
+  `OWNERS` file located in
+  `tools/metrics/histograms/metadata/{category}/OWNERS`.

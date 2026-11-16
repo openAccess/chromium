@@ -172,14 +172,6 @@
   </translations>
   <release seq="1">
     <messages fallback_to_english="true">
-      <!-- Undo Bar -->
-      <message name="IDS_UNDO_BAR_GROUP_TAB_MESSAGE" desc="Message shown or announced when a group has been created with a single tab.">
-        <ph name="TABS_COUNT_ONE">%1$s<ex>1</ex></ph> tab grouped
-      </message>
-      <message name="IDS_UNDO_BAR_GROUP_TABS_MESSAGE" desc="Message shown or announced when a group has been created with multiple tabs.">
-        <ph name="TABS_COUNT_MANY">%1$s<ex>3</ex></ph> tabs grouped
-      </message>
-
       <!-- Bottom Tab Grid strings -->
       <message name="IDS_BOTTOM_TAB_GRID_TITLE_PLACEHOLDER" desc="Placeholder string for the BottomTabGrid toolbar title.">
         <!-- <ph name="TABS_COUNT">%1$d<ex>5</ex></ph> tabs -->
@@ -615,20 +607,6 @@
         Information about this store closed
       </message>
 
-      <!-- Close All Tabs Dialog Strings -->
-      <message name="IDS_CLOSE_ALL_TABS_DIALOG_TITLE" desc="When users click the menu item 'Close all tabs' in tab switcher, a dialog will pop up and this text is the title of the dialog.">
-        Close all tabs?
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_DIALOG_TITLE_INCOGNITO" desc="When users click the menu item 'Close all tabs' in Incognito tab switcher, a dialog will pop up and this text is the title of the dialog.">
-        Close all Incognito tabs?
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_DIALOG_MESSAGE_INCOGNITO" desc="When users click the menu item 'Close all tabs' in Incognito tab switcher, a dialog will pop up and this text is the message of the dialog.">
-        Your activity in these Incognito tabs will be removed from this device
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_DIALOG_ALSO_CLOSE_PINNED_TABS" desc="Checkbox label in the 'Close all tabs' confirmation dialog allowing the user to also close pinned tabs instead of keeping them open.">
-        Also close pinned tabs
-      </message>
-
       <!-- New Tab Group Dialog Strings -->
       <message name="IDS_TAB_GROUP_CREATION_DIALOG_TITLE" desc="When users create a new tab group, a dialog will pop up and this text is the title of the dialog. [CHAR_LIMIT=24]">
         New tab group
@@ -834,17 +812,6 @@
       </message>
       <message name="IDS_TAB_GROUP_RENAME_NEGATIVE_BUTTON_TEXT" desc="When users edit an existing tab group, a dialog will pop up and this text represents the button to decline the current selections. [CHAR_LIMIT=24]">
         Cancel
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_AND_GROUPS_DIALOG_MESSAGE" desc="Description of the action of closing all tabs and groups, shown in a confirmation dialog.">
-        Your closed tabs and groups can be reopened from the Recent tabs section and the Tab groups section.
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_AND_GROUPS_DIALOG_MESSAGE_WITH_INCOGNITO_TABS" desc="Description of the action of closing all tabs and group, shown in a confirmation dialog. If there are any Incognito tabs opened this message would warn users that those Incognito tabs would be lost.">
-      {INCOGNITO_TABS_COUNT, plural,
-        =1 {Your closed tabs and groups can be reopened from the Recent tabs section and the Tab groups section. Your Incognito tab won't be available.}
-        other {Your closed tabs and groups can be reopened from the Recent tabs section and the Tab groups section. Your # Incognito tabs won't be available.}}
-      </message>
-      <message name="IDS_CLOSE_ALL_TABS_AND_GROUPS_ACTION" desc="Button text in a confirmation dialog which will close all tabs and groups.">
-        Close all tabs and groups
       </message>
       <message name="IDS_CLOSE_TAB_GROUP_MENU_ITEM" desc="Menu item text which will prompt a confirmation dialog to close a tab group.">
         Close

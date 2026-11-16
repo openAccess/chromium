@@ -323,6 +323,12 @@ void MediaStreamDispatcherHost::OnZoomLevelChange(
 void MediaStreamDispatcherHost::OnWebContentsFocused() {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
 
+  if (pending_requests_.empty()) {
+    return;
+  }
+
+  EnsureMediaStreamDeviceObserverBound();
+
   while (!pending_requests_.empty()) {
     std::unique_ptr<PendingAccessRequest> request =
         std::move(pending_requests_.front());
@@ -425,12 +431,11 @@ void MediaStreamDispatcherHost::CheckStreamsPermissionResultReceived(
   std::move(get_salt_and_origin_cb).Run(std::move(got_salt_and_origin));
 }
 
-const mojo::Remote<blink::mojom::MediaStreamDeviceObserver>&
-MediaStreamDispatcherHost::GetMediaStreamDeviceObserver() {
+void MediaStreamDispatcherHost::EnsureMediaStreamDeviceObserverBound() {
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
 
   if (media_stream_device_observer_) {
-    return media_stream_device_observer_;
+    return;
   }
 
   auto dispatcher_receiver =
@@ -442,7 +447,6 @@ MediaStreamDispatcherHost::GetMediaStreamDeviceObserver() {
       FROM_HERE,
       base::BindOnce(&BindMediaStreamDeviceObserverReceiver,
                      render_frame_host_id_, std::move(dispatcher_receiver)));
-  return media_stream_device_observer_;
 }
 
 void MediaStreamDispatcherHost::OnMediaStreamDeviceObserverConnectionError() {
@@ -482,15 +486,28 @@ void MediaStreamDispatcherHost::GenerateStreams(
     return;
   }
 
+  // In getDisplayMedia(), `restrictOwnAudio` can only be an ideal value. The
+  // renderer rejects exact and min with a TypeError before this IPC, so the
+  // browser can ignore the value. The renderer and the browser can disagree
+  // about platform support. For example, if the user runs Chrome in Windows 8
+  // compatibility mode on Windows 11, the browser process sees Windows 8 but
+  // the renderer process sees Windows 11. Ignore the value, but do not kill
+  // the renderer. See https://crbug.com/578099459.
+  blink::StreamControls sanitized_controls = controls;
+  if (sanitized_controls.restrict_own_audio &&
+      !media::IsRestrictOwnAudioSupported()) {
+    sanitized_controls.restrict_own_audio = false;
+  }
+
   GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
       base::BindOnce(
           &MediaStreamDispatcherHost::GenerateStreamsChecksOnUIThread,
-          render_frame_host_id_, controls.request_all_screens,
+          render_frame_host_id_, sanitized_controls.request_all_screens,
           base::BindOnce(get_salt_and_origin_cb_, render_frame_host_id_),
           base::BindPostTaskToCurrentDefault(base::BindOnce(
               &MediaStreamDispatcherHost::DoGenerateStreams,
-              weak_factory_.GetWeakPtr(), page_request_id, controls,
+              weak_factory_.GetWeakPtr(), page_request_id, sanitized_controls,
               user_gesture, std::move(audio_stream_selection_info_ptr),
               std::move(callback)))));
 }
@@ -540,6 +557,12 @@ void MediaStreamDispatcherHost::DoGenerateStreams(
     return;
   }
 
+  // Ensure the observer pipe is bound on the UI thread before the stream starts
+  // so that subsequent notifications (e.g., OnDeviceChanged) do not have to
+  // wait for lazy UI-thread binding and race with direct IO-thread capture
+  // teardown.
+  EnsureMediaStreamDeviceObserverBound();
+
   media_stream_manager_->GenerateStreams(
       render_frame_host_id_, requester_id_, page_request_id, controls,
       std::move(salt_and_origin), user_gesture,
@@ -576,57 +599,6 @@ void MediaStreamDispatcherHost::StopStreamDevice(
   media_stream_manager_->StopStreamDevice(
       render_frame_host_id_, requester_id_, device_id,
       session_id.value_or(base::UnguessableToken()));
-}
-
-void MediaStreamDispatcherHost::OpenDevice(int32_t page_request_id,
-                                           const std::string& device_id,
-                                           blink::mojom::MediaStreamType type,
-                                           OpenDeviceCallback callback) {
-  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
-
-  // OpenDevice is only supported for microphone or webcam capture.
-  if (type != blink::mojom::MediaStreamType::DEVICE_AUDIO_CAPTURE &&
-      type != blink::mojom::MediaStreamType::DEVICE_VIDEO_CAPTURE) {
-    ReceivedBadMessage(render_frame_host_id_.child_id,
-                       bad_message::MDDH_INVALID_DEVICE_TYPE_REQUEST);
-    return;
-  }
-
-  GetUIThreadTaskRunner({})->PostTask(
-      FROM_HERE,
-      base::BindOnce(get_salt_and_origin_cb_, render_frame_host_id_,
-                     base::BindPostTaskToCurrentDefault(base::BindOnce(
-                         &MediaStreamDispatcherHost::DoOpenDevice,
-                         weak_factory_.GetWeakPtr(), page_request_id, device_id,
-                         type, std::move(callback)))));
-}
-
-void MediaStreamDispatcherHost::DoOpenDevice(
-    int32_t page_request_id,
-    const std::string& device_id,
-    blink::mojom::MediaStreamType type,
-    OpenDeviceCallback callback,
-    const MediaDeviceSaltAndOrigin& salt_and_origin) {
-  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
-
-  if (!MediaStreamManager::IsOriginAllowed(render_frame_host_id_.child_id,
-                                           salt_and_origin.origin())) {
-    std::move(callback).Run(false /* success */, std::string(),
-                            blink::MediaStreamDevice());
-    return;
-  }
-
-  media_stream_manager_->OpenDevice(
-      render_frame_host_id_, requester_id_, page_request_id, device_id, type,
-      std::move(salt_and_origin), std::move(callback),
-      base::BindRepeating(&MediaStreamDispatcherHost::OnDeviceStopped,
-                          weak_factory_.GetWeakPtr()));
-}
-
-void MediaStreamDispatcherHost::CloseDevice(const std::string& label) {
-  CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M152);
-
-  media_stream_manager_->CancelRequest(label);
 }
 
 void MediaStreamDispatcherHost::SetCapturingLinkSecured(
@@ -815,6 +787,8 @@ void MediaStreamDispatcherHost::DoGetOpenDevice(
     return;
   }
 
+  EnsureMediaStreamDeviceObserverBound();
+
   media_stream_manager_->GetOpenDevice(
       session_id, transfer_id, render_frame_host_id_, requester_id_,
       page_request_id, salt_and_origin, std::move(callback),
@@ -866,10 +840,6 @@ MediaStreamDispatcherHost::ValidateControlsForGenerateStreams(
             blink::mojom::PreferredDisplaySurface::MONITOR) {
       return bad_message::MSDH_EXCLUDE_MONITORS_BUT_PREFERRED_MONITOR_REQUESTED;
     }
-  }
-
-  if (controls.restrict_own_audio && !media::IsRestrictOwnAudioSupported()) {
-    return bad_message::MSDH_RESTRICT_OWN_AUDIO_IS_SET_WHEN_UNSUPPORTED;
   }
 
   return std::nullopt;

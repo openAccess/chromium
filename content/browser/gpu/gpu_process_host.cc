@@ -41,6 +41,7 @@
 #include "components/viz/host/persistent_cache_sandboxed_file_factory.h"
 #include "components/vrp_flags/buildflags.h"
 #include "content/browser/browser_child_process_host_impl.h"
+#include "content/browser/browser_main_loop.h"
 #include "content/browser/child_process_host_impl.h"
 #include "content/browser/child_process_launcher.h"
 #include "content/browser/compositor/image_transport_factory.h"
@@ -150,13 +151,6 @@ static_assert(RESULT_CODE_HUNG == static_cast<int>(gpu::RESULT_CODE_HUNG),
               "Please use the same enum value in both header files.");
 
 namespace {
-
-#if BUILDFLAG(IS_MAC)
-// If enabled, the GPU process will not inherit the browser process's TCC
-// responsibilities (https://crbug.com/507596239).
-BASE_FEATURE(kMacDisclaimGpuTccResponsibility,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif
 
 // UMA histogram names.
 constexpr char kFallbackEventCause[] = "GPU.FallbackEventCause";
@@ -477,8 +471,7 @@ class GpuSandboxedProcessLauncherDelegate
   bool DisclaimResponsibility() override {
     // Disclaim the GPU process if we've inherited TCC responsibilities from a
     // different (possibly privileged) process.
-    return base::FeatureList::IsEnabled(kMacDisclaimGpuTccResponsibility) &&
-           !base::IsCurrentProcessSelfResponsible();
+    return !base::IsCurrentProcessSelfResponsible();
   }
 #endif
 
@@ -990,7 +983,8 @@ bool GpuProcessHost::Init() {
   params.product = GetContentClient()->browser()->GetProduct();
   params.deadline_to_synchronize_surfaces =
       switches::GetDeadlineToSynchronizeSurfaces();
-  params.main_thread_task_runner = GetUIThreadTaskRunner({});
+  params.main_thread_task_runner =
+      BrowserMainLoop::GetInstance()->GetResizeTaskRunner();
   params.info_collection_gpu_process =
       kind_ == GPU_PROCESS_KIND_INFO_COLLECTION;
   params.gpu_service_running_in_process = in_process_;
@@ -1136,8 +1130,10 @@ std::string GpuProcessHost::GetIsolationKey(
     // Return an empty isolation key if the frame host is gone. This could
     // happen if the frame is destroyed (or being destroyed) in between when we
     // are trying to get the isolation key.
+    // TODO(crbug.com/379869738): Remove FromUnsafeValue().
     RenderFrameHostImpl* frame_host = RenderFrameHostImpl::FromDocumentToken(
-        process_id, token.GetAs<blink::DocumentToken>());
+        ChildProcessId::FromUnsafeValue(process_id),
+        token.GetAs<blink::DocumentToken>());
     if (!frame_host) {
       return "";
     }

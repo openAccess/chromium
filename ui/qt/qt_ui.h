@@ -21,6 +21,10 @@
 #include "printing/printing_context_linux.h"  // nogncheck
 #endif
 
+namespace ui {
+class LinuxKeyBindingsHandler;
+}
+
 namespace qt {
 
 class NativeThemeQt;
@@ -49,7 +53,7 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
   gfx::Size GetPdfPaperSize(printing::PrintingContextLinux* context) override;
 #endif
   ui::SelectFileDialog* CreateSelectFileDialog(
-      void* listener,
+      ui::SelectFileDialogListener* listener,
       std::unique_ptr<ui::SelectFilePolicy> policy) const override;
   std::string GetCursorThemeName() override;
   int GetCursorThemeSize() override;
@@ -118,6 +122,7 @@ class QtUi : public ui::LinuxUiAndTheme, QtInterface::Delegate {
 
   std::unique_ptr<OsSettingsProviderQt> os_settings_provider_;
   std::unique_ptr<NativeThemeQt> native_theme_;
+  std::unique_ptr<ui::LinuxKeyBindingsHandler> key_bindings_handler_;
 
   std::optional<SkColor> accent_color_;
 

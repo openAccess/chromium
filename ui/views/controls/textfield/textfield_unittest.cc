@@ -1193,6 +1193,23 @@ TEST_F(TextfieldTest, MAYBE_KeysWithModifiersTest) {
   }
 }
 
+TEST_F(TextfieldTest, ExtendSelectionAndDeleteWithReversedSelection) {
+  InitTextfield();
+
+  // Inline autocompletion selects the suggested suffix with the cursor after
+  // the typed text.
+  textfield_->SetText(u"example.com");
+  textfield_->SetSelectedRange(gfx::Range(11, 1));
+  textfield_->ExtendSelectionAndDelete(1, 0);
+  EXPECT_EQ(u"", textfield_->GetText());
+
+  textfield_->SetText(u"0123456789");
+  textfield_->SetSelectedRange(gfx::Range(6, 4));
+  textfield_->ExtendSelectionAndDelete(1, 2);
+  EXPECT_EQ(u"01289", textfield_->GetText());
+  EXPECT_EQ(3U, textfield_->GetCursorPosition());
+}
+
 TEST_F(TextfieldTest, AccessibleTextSelectBound) {
   InitTextfield();
   ui::AXNodeData data;
@@ -3510,7 +3527,6 @@ TEST_F(TextfieldTest, HitOutsideTextAreaInRTLTest) {
 TEST_F(TextfieldTest, MAYBE_OverflowTest) {
   InitTextfield();
 
-  std::u16string str;
   for (size_t i = 0; i < 500; ++i) {
     SendKeyEvent('a');
   }
@@ -3541,7 +3557,6 @@ TEST_F(TextfieldTest, MAYBE_OverflowInRTLTest) {
 
   InitTextfield();
 
-  std::u16string str;
   for (size_t i = 0; i < 500; ++i) {
     SendKeyEvent('a');
   }

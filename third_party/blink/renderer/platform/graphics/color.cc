@@ -63,8 +63,13 @@ namespace {
 // For lch/oklch colors, the value of chroma underneath which the color is
 // considered to be "achromatic", relevant for color conversions.
 // https://www.w3.org/TR/css-color-4/#lab-to-lch
-// This is set to be slightly higher than white's chroma value of 0.0188.
-const float kAchromaticChromaThreshold = 0.02;
+//
+// For LCH this is set to be slightly higher than white's chroma value of
+// 0.0188. For OkLCH an epsilon based on a similar magnitude is used.
+//
+// The spec has these as 0.0015 and 0.000004 respectively.
+const float kAchromaticChromaThresholdLch = 0.02f;
+const float kAchromaticChromaThresholdOklch = 0.00005f;
 
 const int kCStartAlpha = 153;     // 60%
 const int kCEndAlpha = 204;       // 80%;
@@ -295,16 +300,48 @@ Color Color::FromHWBA(std::optional<float> h,
 // static
 Color Color::FromColorMix(Color::ColorSpace interpolation_space,
                           std::optional<HueInterpolationMethod> hue_method,
+                          base::span<const Color> colors,
+                          base::span<const double> percentages,
+                          float alpha_multiplier) {
+  CHECK(!colors.empty());
+  CHECK_EQ(colors.size(), percentages.size());
+  CHECK(alpha_multiplier >= 0.0f && alpha_multiplier <= 1.0f);
+
+  Color result = colors[0];
+  if (colors.size() == 1) {
+    // A sole color is still converted to the interpolation color space.
+    // https://github.com/w3c/csswg-drafts/issues/12234
+    result.ConvertToColorSpaceForInterpolation(interpolation_space);
+  } else {
+    double accumulated_percentage = percentages[0];
+    for (size_t i = 1; i < colors.size(); ++i) {
+      const double combined_percentage =
+          accumulated_percentage + percentages[i];
+      // https://github.com/w3c/csswg-drafts/issues/14013
+      const double progress = combined_percentage == 0.0
+                                  ? 0.5
+                                  : percentages[i] / combined_percentage;
+      result = InterpolateColors(interpolation_space, hue_method, result,
+                                 colors[i], progress);
+      accumulated_percentage = combined_percentage;
+    }
+  }
+
+  result.alpha_ *= alpha_multiplier;
+  return result;
+}
+
+// static
+Color Color::FromColorMix(Color::ColorSpace interpolation_space,
+                          std::optional<HueInterpolationMethod> hue_method,
                           Color color1,
                           Color color2,
                           float percentage,
                           float alpha_multiplier) {
-  DCHECK(alpha_multiplier >= 0.0f && alpha_multiplier <= 1.0f);
-  Color result = InterpolateColors(interpolation_space, hue_method, color1,
-                                   color2, percentage);
-
-  result.alpha_ *= alpha_multiplier;
-  return result;
+  const Color colors[] = {color1, color2};
+  const double percentages[] = {1.0 - percentage, percentage};
+  return FromColorMix(interpolation_space, hue_method, colors, percentages,
+                      alpha_multiplier);
 }
 
 // static
@@ -784,7 +821,7 @@ void Color::ConvertToColorSpace(ColorSpace destination_color_space,
       param2_ = AngleToUnitCircleDegrees(param2_);
 
       // Hue component is powerless for achromatic colors.
-      if (param1_ <= kAchromaticChromaThreshold) {
+      if (param1_ <= kAchromaticChromaThresholdLch) {
         param2_is_none_ = true;
       }
       break;
@@ -800,7 +837,7 @@ void Color::ConvertToColorSpace(ColorSpace destination_color_space,
       }
 
       // Hue component is powerless for archromatic colors.
-      if (param1_ <= kAchromaticChromaThreshold) {
+      if (param1_ <= kAchromaticChromaThresholdOklch) {
         param2_is_none_ = true;
       }
       break;
@@ -1047,14 +1084,14 @@ String ColorParamToString(float param,
       result.Append(" * 1%");
     }
     result.Append(")");
-    return result.ToString();
+    return result.ReleaseString();
   }
 
   result.AppendNumber(param, precision);
   if (is_percentage) {
     result.Append('%');
   }
-  return result.ToString();
+  return result.ReleaseString();
 }
 
 }  // namespace
@@ -1122,7 +1159,7 @@ String Color::SerializeLegacyColorAsCSSColor() const {
   }
 
   result.Append(')');
-  return result.ToString();
+  return result.ReleaseString();
 }
 
 String Color::SerializeInternal() const {
@@ -1150,7 +1187,7 @@ String Color::SerializeInternal() const {
     alpha_is_none_ ? result.Append("none") : result.AppendNumber(alpha_);
   }
   result.Append(")");
-  return result.ToString();
+  return result.ReleaseString();
 }
 
 String Color::SerializeModernHslAndHwb() const {
@@ -1178,7 +1215,7 @@ String Color::SerializeModernHslAndHwb() const {
     alpha_is_none_ ? result.Append("none") : result.AppendNumber(alpha_);
   }
   result.Append(")");
-  return result.ToString();
+  return result.ReleaseString();
 }
 
 String Color::SerializeAsCSSColor() const {

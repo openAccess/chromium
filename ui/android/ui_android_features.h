@@ -24,9 +24,6 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidHDR);
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
     kAndroidPreserveStatusBarInsetsWhenUnfocused);
 
-// Drops the cached bitmap in SoftwareDraw immediately after capture.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidResourceMemoryOptimization);
-
 // Feature controlling how to compute work area on Android.
 // TODO(crbug.com/372385871): Cleanup flag after investigating nothing is broken
 // after changing the default behavior for
@@ -56,6 +53,13 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCachedGestureNavMetrics);
 // When launching an intent, check whether the caller has the permission to
 // access a URI before returning the result.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCheckIntentCallerPermission);
+
+// Kill switch for checking whether ACCESS_LOCAL_NETWORK is compat-revoked via
+// AppOpsManager on Android 17+ when targeting SDK < 37 (crbug.com/579403238).
+// TODO(https://crbug.com/583513077): Remove once targetSdkVersion 37 reaches
+// Stable.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
+    kCheckLocalNetworkPermissionRevokedCompat);
 
 // Controls defense against Confused Deputy clipboard URI exfiltration.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardConfusedDeputyDefenseText);

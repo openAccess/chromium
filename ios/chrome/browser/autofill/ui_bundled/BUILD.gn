@@ -19,6 +19,7 @@ source_set("coordinator") {
     "//components/autofill/core/common",
     "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:util",
+    "//components/autofill/ios/common",
     "//components/autofill/ios/form_util",
     "//components/browser_sync",
     "//components/infobars/core",
@@ -40,8 +41,6 @@ source_set("coordinator") {
     "//components/variations/service",
     "//google_apis",
     "//ios/chrome/browser/affiliations/model",
-    "//ios/chrome/browser/autofill/atmemory/model",
-    "//ios/chrome/browser/autofill/atmemory/public",
     "//ios/chrome/browser/autofill/autofill_ai/error_dialog/coordinator",
     "//ios/chrome/browser/autofill/autofill_ai/error_dialog/model",
     "//ios/chrome/browser/autofill/bnpl/ui",
@@ -55,7 +54,6 @@ source_set("coordinator") {
     "//ios/chrome/browser/autofill/scan_save_and_fill/coordinator",
     "//ios/chrome/browser/autofill/ui_bundled/bottom_sheet:virtual_card_enrollment_bottom_sheet_coordinator",
     "//ios/chrome/browser/autofill/ui_bundled/cells",
-    "//ios/chrome/browser/autofill/wallet_reminder_notice/ui",
     "//ios/chrome/browser/consent_auditor/model",
     "//ios/chrome/browser/device_reauth/model",
     "//ios/chrome/browser/history/model",
@@ -192,6 +190,7 @@ source_set("eg2_tests") {
     "//testing/gtest",
     "//ui/base",
     "//ui/strings:ui_strings_grit",
+    "//url",
   ]
   frameworks = [ "UIKit.framework" ]
 }
@@ -263,6 +262,7 @@ source_set("unit_tests") {
     "//components/autofill/core/browser:test_support",
     "//components/autofill/ios/browser",
     "//components/autofill/ios/browser:test_support",
+    "//components/autofill/ios/browser:util",
     "//components/autofill/ios/common",
     "//components/optimization_guide/proto:optimization_guide_proto",
     "//components/personal_context/core:test_support",
@@ -270,7 +270,6 @@ source_set("unit_tests") {
     "//components/strings:components_strings_grit",
     "//ios/chrome/app/strings:ios_strings_grit",
     "//ios/chrome/browser/affiliations/model",
-    "//ios/chrome/browser/autofill/atmemory/public",
     "//ios/chrome/browser/autofill/autofill_ai/coordinator:unit_tests",
     "//ios/chrome/browser/autofill/autofill_ai/error_dialog/coordinator",
     "//ios/chrome/browser/autofill/autofill_ai/error_dialog/model",

@@ -14,16 +14,21 @@
 #include "base/types/pass_key.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/platform/fonts/custom_font_data.h"
+#include "third_party/blink/renderer/platform/fonts/opentype/font_settings.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_set.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_view.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
 class DOMWrapperWorld;
+class FontCustomPlatformData;
+class FontDescription;
 class FontResource;
+struct FontSelectionCapabilities;
 class IftCustomFontData;
 class IftPatcher;
 class IftSubsetDefinition;
@@ -51,10 +56,20 @@ class CORE_EXPORT IftFont final : public GarbageCollected<IftFont> {
 
   void Trace(Visitor*) const;
 
-  // Returns the `CustomFontData` for a new `SimpleFontData` of this font.
-  IftCustomFontData* CreateCustomFontData() const;
+  // Returns the `CustomFontData` for the given `font_platform_data`,
+  // `font_description`, and `font_selection_capabilities`.
+  IftCustomFontData* CreateCustomFontData(
+      const FontCustomPlatformData& font_platform_data,
+      const FontDescription& font_description,
+      const FontSelectionCapabilities& font_selection_capabilities) const;
 
-  bool RequireSubset(const StringView& text) const;
+  // Requests that the font is extended to support `text` for the given
+  // `variation_axes`. Returns true if the rendered font already supports it, or
+  // if the font has no patches for it. See
+  // `CustomFontData::IftRequireSubset()`.
+  bool RequireSubset(
+      const StringView& text,
+      base::span<const FontVariationAxis> variation_axes = {}) const;
 
   // TODO(wmedrano): Make `State` private once all behaviors are publicly
   // observable.
@@ -62,7 +77,8 @@ class CORE_EXPORT IftFont final : public GarbageCollected<IftFont> {
     // The font is ready to use.
     kIdle,
     // The font is collecting subsets which will later be batched into a fetch
-    // request.
+    // request. Entering this state from `kIdle` starts a new extension, which
+    // lasts until the font returns to `kIdle`.
     kCollecting,
     // The font is fetching the patches required for `fetched_subset_`.
     kFetching,
@@ -71,6 +87,9 @@ class CORE_EXPORT IftFont final : public GarbageCollected<IftFont> {
   };
 
   State GetStateForTesting() const { return state_; }
+  // Overrides the IFT spec patch limits enforced per extension.
+  void SetPatchLimitsForTesting(uint32_t max_invalidating_patches,
+                                uint32_t max_total_patches) const;
   // Returns the font data with all patches applied so far. The returned span is
   // invalidated when more patches are applied.
   base::span<const uint8_t> GetFontDataForTesting() const LIFETIME_BOUND;
@@ -109,7 +128,8 @@ class CORE_EXPORT IftFont final : public GarbageCollected<IftFont> {
 // The `CustomFontData` of a single `SimpleFontData` backed by an IFT font.
 class CORE_EXPORT IftCustomFontData final : public CustomFontData {
  public:
-  explicit IftCustomFontData(const IftFont* ift_font);
+  IftCustomFontData(const IftFont* ift_font,
+                    Vector<FontVariationAxis, 5> variation_axes);
   ~IftCustomFontData() override;
 
   void Trace(Visitor*) const override;
@@ -118,9 +138,14 @@ class CORE_EXPORT IftCustomFontData final : public CustomFontData {
   bool IftRequireSubset(const StringView& text) const override;
 
   const IftFont* GetIftFont() const { return ift_font_.Get(); }
+  base::span<const FontVariationAxis> GetVariationAxesForTesting() const
+      LIFETIME_BOUND {
+    return variation_axes_;
+  }
 
  private:
   Member<const IftFont> ift_font_;
+  const Vector<FontVariationAxis, 5> variation_axes_;
 };
 
 }  // namespace blink

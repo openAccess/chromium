@@ -3730,6 +3730,9 @@
     <variant value="12">WARMED_TIMEOUT</variant>
     <variant value="13">GUEST_ORIGIN_BLOCKED</variant>
     <variant value="14">GUEST_API_NOT_ALLOWED</variant>
+    <variant value="15">PENDING_PROVIDER_CHANGE</variant>
+    <variant value="16">GUEST_HTTP_CLIENT_ERROR</variant>
+    <variant value="17">GUEST_HTTP_SERVER_ERROR</variant>
   </enum>
 
   <enum name="GlicEmbedderType">
@@ -3750,6 +3753,34 @@
     <variant value="1">TOGGLE</variant>
     <variant value="2">INVOKE</variant>
     <variant value="3">INVOKE_WITH_AUTO_SUBMIT</variant>
+  </enum>
+
+  <enum name="GlicFreStatus">
+    <variant value="0">NOT_STARTED</variant>
+    <variant value="1">COMPLETED</variant>
+    <variant value="2">INCOMPLETE</variant>
+  </enum>
+
+  <enum name="GlicFreOverride">
+    <variant value="0">UNSPECIFIED</variant>
+    <variant value="1">TRUST_FIRST_TEXT</variant>
+    <variant value="2">TRUST_FIRST_CLICK</variant>
+    <variant value="3">TRUST_FIRST_INLINE</variant>
+    <variant value="4">NATIVE_FRE</variant>
+  </enum>
+
+  <enum name="GlicFreWaitMode">
+    <variant value="0">DEFAULT</variant>
+    <variant value="1">NEVER</variant>
+    <variant value="2">ALWAYS</variant>
+  </enum>
+
+  <enum name="GlicFreDecision">
+    <variant value="0">ACCEPTED</variant>
+    <variant value="1">NO_THANKS</variant>
+    <variant value="2">PANEL_CLOSED</variant>
+    <variant value="3">INSTANCE_DESTROYED</variant>
+    <variant value="4">ACCEPTED_ELSEWHERE</variant>
   </enum>
   <event name="InvokeStarted">
     <summary>
@@ -3791,6 +3822,56 @@
         glic_invoke_metrics.cc.
       </summary>
     </metric>
+    <metric name="FreStatusAtStart" type="GlicFreStatus">
+      <summary>
+        The profile's First Run Experience (consent) status when the
+        invocation started, before any of its tasks ran. NOT_STARTED and
+        INCOMPLETE invocations are first-run attempts: the user has not
+        consented yet and the panel shows the FRE instead of the client. Lets
+        invocation outcomes be sliced by first-run status, which the
+        profile-scoped Glic.Fre.* histograms cannot do per invocation. Read
+        from the FRE store of the profile's provider, so Gemini Enterprise in
+        Chrome (GEiC) profiles report the GEiC FRE, which never reports
+        INCOMPLETE; slice by provider before reading these rows as the
+        consumer FRE.
+      </summary>
+    </metric>
+    <metric name="FreOverride" type="GlicFreOverride">
+      <summary>
+        The FRE variant the invocation asked for, mapped from
+        mojom::FreOverride in //chrome/common/glic_enums.mojom by an exhaustive
+        switch in glic_invoke_metrics.cc.
+      </summary>
+    </metric>
+    <metric name="FreWaitMode" type="GlicFreWaitMode">
+      <summary>
+        GlicInvokeOptions::fre_completion_wait_mode: whether the caller asked
+        the invocation to wait for the FRE to complete before sending its
+        payload to the client.
+      </summary>
+    </metric>
+    <metric name="RequiresClientInvoke" type="int">
+      <summary>
+        1 if the invocation carries something the web client has to receive
+        (a prompt, payload, additional context, feature mode, actuation
+        target, skill or ZSS configuration; see
+        GlicInvokeHandler::RequiresClientInvoke()), else 0. With FreWaitMode
+        DEFAULT this is what decides whether an unconsented invocation waits
+        for the FRE.
+      </summary>
+    </metric>
+    <metric name="WaitsForFre" type="int">
+      <summary>
+        Whether the invocation blocks on the user completing the FRE: 1 if
+        so, 0 otherwise. This is the resolution of FreStatusAtStart,
+        FreOverride, FreWaitMode and RequiresClientInvoke. Such invocations
+        stay in flight while the consent screen is up; if the user accepts,
+        GlicInvokeHandler continues through client delivery (SendToClientTask
+        and, when actuating, WaitForActuationTask), so Outcome and
+        TimeSinceStart span client load, consent, and client delivery rather
+        than terminating on accept.
+      </summary>
+    </metric>
   </event>
 
   <event name="InvokeTerminated">
@@ -3805,7 +3886,9 @@
     <metric name="Outcome" type="GlicCuiOutcome">
       <summary>
         The high level outcome of the invocation natively mapped from
-        GlicCuiOutcome.
+        GlicCuiOutcome. FAILED_LATENCY is not recorded from M159: a slow
+        success is SUCCESS and a timeout is FAILED, with the duration in
+        TimeSinceStart.
       </summary>
     </metric>
     <metric name="InvokeError" type="int">
@@ -3873,6 +3956,23 @@
         InvokeStarted.EntryPath. Duplicated here so that invocations rejected
         before they start (see InvocationSource) can still be attributed to the
         window entry point population.
+      </summary>
+    </metric>
+    <metric name="FreStatusAtStart" type="GlicFreStatus">
+      <summary>
+        See InvokeStarted.FreStatusAtStart. Duplicated here so that outcomes
+        can be sliced by first-run status without a join. Absent for
+        invocations rejected before they start.
+      </summary>
+    </metric>
+    <metric name="WaitsForFre" type="int">
+      <summary>
+        See InvokeStarted.WaitsForFre. For an invocation that waited, Outcome
+        and TimeSinceStart span client load, consent, and any post-consent
+        client delivery; ABANDONED with InvokeError kPanelClosed reflects
+        closing the FRE when StoppedTaskType is kWaitForFreCompletion (rather
+        than kWaitForClientReady while still loading). Absent for invocations
+        rejected before they start.
       </summary>
     </metric>
   </event>
@@ -3951,6 +4051,87 @@
         which distinguishes failures that happen immediately, such as an eligibility
         check, from ones that happen after a long wait, such as a load timeout.
         Absent when InvocationId is absent.
+      </summary>
+    </metric>
+  </event>
+
+  <event name="FreImpression">
+    <summary>
+      Recorded once per FRE attempt when the consent screen is actually seen:
+      either the web client reported the opt-in impression and the panel is
+      visible with the client ready, or the native FRE card was shown on open.
+      An FRE attempt is one open of a Glic instance while the profile has not
+      consented. Unlike the profile-scoped Glic.Fre.Shown* histograms this is
+      instance scoped and keyed by the invocation that opened the panel, so a
+      warm-pool instance that is never shown records nothing and several
+      unconsented instances are not conflated.
+    </summary>
+    <metric name="InvocationId" type="int">
+      <summary>
+        The invocation that opened the panel for this attempt, joining this
+        event to InvokeStarted and InvokeTerminated. Kept for the attempt even
+        after that invocation terminates, which a toggle invocation does as
+        soon as the panel opens. Absent when the panel was shown outside an
+        invocation.
+      </summary>
+    </metric>
+    <metric name="InvocationSource" type="int">
+      <summary>
+        The source of the open that started the attempt, mapped from
+        mojom::InvocationSource.
+      </summary>
+    </metric>
+    <metric name="ElapsedMs" type="int">
+      <summary>
+        Milliseconds between the panel opening and the consent screen being
+        seen. 0 when the web client reported the impression before the panel
+        became visible (a warmed instance, or the same web client kept across
+        a close and reopen; it reports the impression once per load).
+      </summary>
+    </metric>
+  </event>
+
+  <event name="FreDecision">
+    <summary>
+      Recorded once per FRE attempt when it ends: the user accepted,
+      explicitly declined, or the panel was closed or the instance destroyed
+      with the consent screen still pending. See FreImpression for what an
+      attempt is. ACCEPTED and NO_THANKS are also recorded if reported without
+      an attempt in flight, without an InvocationId.
+    </summary>
+    <metric name="InvocationId" type="int">
+      <summary>
+        See FreImpression.InvocationId.
+      </summary>
+    </metric>
+    <metric name="InvocationSource" type="int">
+      <summary>
+        See FreImpression.InvocationSource.
+      </summary>
+    </metric>
+    <metric name="Decision" type="GlicFreDecision">
+      <summary>
+        How the attempt ended. NO_THANKS is the explicit decline button; the
+        web client closes the panel after it, so without this signal it would
+        be counted as PANEL_CLOSED. ACCEPTED_ELSEWHERE is a panel closed, or
+        an instance destroyed, after the profile consented through another
+        instance or surface. INSTANCE_DESTROYED covers an instance torn down
+        without an active embedder close being reported first, such as tearing
+        down an instance with a backgrounded side-panel FRE; tearing down an
+        active embedder records PANEL_CLOSED.
+      </summary>
+    </metric>
+    <metric name="ImpressionRecorded" type="int">
+      <summary>
+        1 if a FreImpression was recorded for this attempt, else 0. An attempt
+        that ends without one is a user who never saw the consent screen, for
+        example because the client never loaded.
+      </summary>
+    </metric>
+    <metric name="ElapsedMs" type="int">
+      <summary>
+        Milliseconds between the panel opening and the decision. Absent when
+        InvocationId is absent and no attempt was in flight.
       </summary>
     </metric>
   </event>

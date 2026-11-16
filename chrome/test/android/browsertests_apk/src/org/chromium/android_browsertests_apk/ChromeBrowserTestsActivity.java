@@ -7,10 +7,19 @@ package org.chromium.android_browsertests_apk;
 import android.content.Intent;
 import android.os.Build;
 import android.view.View;
+import android.view.WindowManager;
 
+import org.chromium.base.FileUtils;
 import org.chromium.base.PathUtils;
+import org.chromium.base.library_loader.LibraryProcessType;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.build.gtest_apk.NativeTestIntent;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.multiwindow.MultiInstancePersistentStore;
+import org.chromium.chrome.browser.tabpersistence.TabStateDirectory;
 import org.chromium.content_public.browser.BrowserStartupController;
+import org.chromium.content_public.browser.BrowserStartupController.StartupCallback;
+import org.chromium.content_public.browser.BrowserStartupController.StartupMetrics;
 import org.chromium.native_test.NativeBrowserTest;
 import org.chromium.native_test.NativeTest;
 
@@ -20,8 +29,34 @@ import java.io.File;
 public class ChromeBrowserTestsActivity extends ChromeTabbedActivity {
     private static final String TAG = "browser_test";
 
+    // Whether the windows and tabs that earlier tests left on record have been cleared. That is
+    // done only for the first activity of the test process, not for windows that the test opens
+    // or for an activity that is recreated, so that it does not wipe what the test itself made.
+    private static boolean sWindowStateCleared;
+
     private final NativeTest mTest = new NativeTest();
     private boolean mTeardownStarted;
+
+    @Override
+    protected void onPreCreate() {
+        // The browser keeps track of its windows, and of their tabs, outside the user data dir,
+        // so deleting that dir does not make it forget them. A window that a test closed stays on
+        // record as a recently closed one, and the next test would take it over instead of
+        // starting with a new window, and get its tabs. Forget the windows here, as this activity
+        // is given its window before performPreInflationStartup() runs.
+        if (!sWindowStateCleared
+                && !getIntent().getBooleanExtra(NativeTestIntent.EXTRA_KEEP_USER_DATA_DIR, false)) {
+            MultiInstancePersistentStore.resetForTesting();
+            File[] tabStateFiles = TabStateDirectory.getOrCreateBaseStateDirectory().listFiles();
+            if (tabStateFiles != null) {
+                for (File file : tabStateFiles) {
+                    FileUtils.recursivelyDeleteFile(file, FileUtils.DELETE_ALL);
+                }
+            }
+        }
+        sWindowStateCleared = true;
+        super.onPreCreate();
+    }
 
     @Override
     public void performPreInflationStartup() {
@@ -62,6 +97,38 @@ public class ChromeBrowserTestsActivity extends ChromeTabbedActivity {
                             // and then by Java in
                             // BrowserStartupControllerImpl::browserStartupComplete().
                             mTest.postStart(this, false);
+                        });
+    }
+
+    @Override
+    protected void doLayoutInflation() {
+        // Delay layout inflation until the C++ test harness has initialized FeatureList and
+        // LocalState (including any test fixture overrides in SetUpLocalStatePrefService()).
+        // Also avoids inflating the UI entirely when only listing tests (--gtest_list_tests).
+        // Keep the window non-focusable until the layout is inflated so WindowManager does not
+        // dispatch FocusEvent(hasFocus=true) and trigger a 5s input-dispatch ANR while the UI
+        // thread is blocked in pre-inflation setup or in ChromeRenderViewTest tests (which run
+        // on the UI thread without completing BrowserStartupController startup).
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+        BrowserStartupController.getInstance()
+                .startBrowserProcessesAsync(
+                        LibraryProcessType.PROCESS_BROWSER,
+                        shouldStartGpuProcess(),
+                        startMinimalBrowser(),
+                        /* singleProcess= */ false,
+                        new StartupCallback() {
+                            @Override
+                            public void onSuccess(@Nullable StartupMetrics metrics) {
+                                if (isActivityFinishingOrDestroyed()) return;
+                                getWindow()
+                                        .clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+                                ChromeBrowserTestsActivity.super.doLayoutInflation();
+                            }
+
+                            @Override
+                            public void onFailure() {
+                                onStartupFailure(null);
+                            }
                         });
     }
 

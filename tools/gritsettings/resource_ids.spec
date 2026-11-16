@@ -637,7 +637,7 @@
     "includes": [4410],
   },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/new_tab_page_extension/resources.grd": {
-    "META": {"sizes": {"includes": [80]}},
+    "META": {"sizes": {"includes": [200]}},
     "includes": [4415],
   },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/new_tab_page_instant/resources.grd": {
@@ -1593,6 +1593,9 @@
   },
   "chromeos/ash/experiences/extensions/chromeos_extensions_resources.grd": {
     "includes": [9015],
+  },
+  "chromeos/ash/experiences/settings_ui/resources/ash_settings_strings.grd": {
+    "messages": [9018],
   },
   "<(SHARED_INTERMEDIATE_DIR)/ash/webui/os_feedback_ui/resources/resources.grd": {
     "META": {"sizes": {"includes": [50],}},

@@ -128,7 +128,8 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
                         containerView,
                         new ArrayList<Integer>(),
                         TabListEditorCoordinator.UNLIMITED_SELECTION,
-                        /* includePdfTabs= */ false);
+                        /* includePdfTabs= */ false,
+                        /* shouldShowSelectTabsIph= */ false);
         mItemPickerCoordinator = Mockito.spy(realCoordinator);
         mCachedTabIds = new HashSet<>();
     }
@@ -308,7 +309,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeLoadsBackgroundTabs() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -330,7 +330,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testTabLoadFinished() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -376,7 +375,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testTabLoadFailed() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -410,7 +408,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testTabLoadFinished_AlreadyLoaded() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -432,7 +429,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeDoesNotLoadActiveTabs() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, true);
@@ -450,7 +446,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeLoadsBackgroundTabs_RedundantTrigger() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -471,7 +466,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeDoesNotAddObserverTwice() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -492,7 +486,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeDoesNotShowSpinnerTwice() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -513,7 +506,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChange_RedundantTrigger_Loading() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -539,7 +531,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeDoesNotLoadCachedTabs() {
         int tabId = 101;
         mCachedTabIds.add(tabId);
@@ -558,7 +549,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testSelectionChangeDoesNotLoadIneligibleTabs() {
         int tabId = 101;
         Tab tab = mockTabActiveState(tabId, false);
@@ -576,28 +566,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
-    public void testSelectionChangeDoesNotLoadWhenFeatureDisabled() {
-        int tabId = 101;
-        Tab tab = mockTabActiveState(tabId, false);
-        when(tab.getUrl()).thenReturn(JUnitTestGURLs.URL_1);
-
-        captureAndSpyNavigationProvider();
-
-        TabListEditorItemSelectionId id = TabListEditorItemSelectionId.createTabId(tabId);
-        Set<TabListEditorItemSelectionId> selection = new HashSet<>();
-        selection.add(id);
-
-        mNavigationProvider.onSelectionStateChange(selection);
-
-        verify(tab, never()).loadIfNeeded(anyBoolean());
-    }
-
-    @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_AND_FIRST_PAINT
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_AND_FIRST_PAINT})
     public void testOffscreenRendering_StartedOnSelectionAndStoppedOnCaptureComplete() {
         OffscreenRenderingManager mockOffscreenManager =
                 Mockito.mock(OffscreenRenderingManager.class);
@@ -637,10 +606,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
-    })
+    @EnableFeatures({ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION})
     public void testOffscreenRendering_StoppedOnLoadFailure() {
         OffscreenRenderingManager mockOffscreenManager =
                 Mockito.mock(OffscreenRenderingManager.class);
@@ -677,10 +643,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
-    })
+    @EnableFeatures({ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION})
     public void testOffscreenRendering_CleanedUpOnDestroy() {
         OffscreenRenderingManager mockOffscreenManager =
                 Mockito.mock(OffscreenRenderingManager.class);
@@ -720,10 +683,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testSelectionKeepsExistingThumbnail() {
         selectLoadableTab(101);
 
@@ -731,10 +691,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testDeselectionKeepsExistingThumbnail() {
         Tab tab = selectLoadableTab(101);
 
@@ -746,7 +703,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
 
     @Test
     @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
         ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
                 + ":cancel_load_on_deselection/false"
     })
@@ -760,7 +716,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
     public void testDeselectionDoesNotCancelWhenOptimizationDisabled() {
         Tab tab = selectLoadableTab(101);
@@ -772,7 +727,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
     public void testSelectionClearsThumbnailWhenOptimizationDisabled() {
         selectLoadableTab(101);
@@ -781,7 +735,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     @DisableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION)
     public void testReselectionSkipsActiveTabWhenOptimizationDisabled() {
         Tab tab = selectLoadableTab(101);
@@ -796,10 +749,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
-    })
+    @EnableFeatures({ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION})
     public void testLoadFailureRemovesStaleThumbnail() {
         Tab tab = selectLoadableTab(101);
         verify(tab).addObserver(mTabObserverCaptor.capture());
@@ -810,10 +760,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testReselectionAfterCancelReloadsTab() {
         Tab tab = selectLoadableTab(101);
         mNavigationProvider.onSelectionStateChange(new HashSet<>());
@@ -826,10 +773,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
-    })
+    @EnableFeatures({ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION})
     public void testReselectionSkipsTabWithLoadedContent() {
         Tab tab = selectLoadableTab(101);
         mNavigationProvider.onSelectionStateChange(new HashSet<>());
@@ -843,10 +787,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION
-    })
+    @EnableFeatures({ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE_OPTIMIZATION})
     public void testDestroyKeepsSelectedTabLoading() {
         Tab tab = selectLoadableTab(101);
         clearInvocations(tab);
@@ -857,10 +798,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testFinishSelection_RecordsCancelledLoadsCount() {
         Tab tab = selectLoadableTab(101);
         mNavigationProvider.onSelectionStateChange(Collections.emptySet());
@@ -878,10 +816,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testCancelPicker_RecordsCancelCancelledLoadsCount() {
         Tab tab = selectLoadableTab(101);
         when(mTabListEditorController.isVisible()).thenReturn(true);
@@ -900,10 +835,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testReselectionAfterCancellation_GrossVsNetMetrics() {
         Tab tab = selectLoadableTab(101);
         mNavigationProvider.onSelectionStateChange(Collections.emptySet());
@@ -926,10 +858,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testFinishSelection_NoCancellations_DoesNotRecordCancelledTabReselected() {
         selectLoadableTab(101);
 
@@ -945,7 +874,6 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE)
     public void testThumbnailCaptureResult_LiveCaptured() {
         Tab tab = selectLoadableTab(101);
         verify(tab).addObserver(mTabObserverCaptor.capture());
@@ -969,10 +897,7 @@ public class TabItemPickerCoordinatorNavigationUnitTest {
     }
 
     @Test
-    @EnableFeatures({
-        ChromeFeatureList.ON_DEMAND_BACKGROUND_TAB_CONTEXT_CAPTURE,
-        OPTIMIZATION_CANCEL_ON_DESELECTION
-    })
+    @EnableFeatures({OPTIMIZATION_CANCEL_ON_DESELECTION})
     public void testThumbnailCaptureResult_CancelledPreserved() {
         selectLoadableTab(101);
 

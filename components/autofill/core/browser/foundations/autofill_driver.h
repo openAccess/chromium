@@ -215,6 +215,10 @@ class AutofillDriver {
   // frame.
   virtual bool CanShowAutofillUi() const = 0;
 
+  // Returns true if the document associated with this driver used the WebOTP
+  // API.
+  virtual bool DocumentUsedWebOtp() const = 0;
+
   class AutofillDriverRouterAndFormForestPassKey {
     friend class AutofillDriverRouter;
     friend class internal::FormForest;
@@ -404,6 +408,10 @@ class AutofillDriver {
   // Scrolls the page containing the field corresponding to `field_id` until it
   // becomes visible on the user's display.
   virtual void ScrollFieldIntoView(FieldGlobalId field_id) = 0;
+
+  // Loads `script` in this driver's frame's current document to detect, read
+  // and fill custom form controls.
+  virtual void LoadCustomFormControlScript(const std::string& script) = 0;
 
   // Returns whether a value of type `filled_type` can be filled into `field`
   // from a fill operation triggered on `trigger_origin`, according to the

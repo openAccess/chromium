@@ -48,6 +48,8 @@ ReadAloudPlaybackController::ReadAloudPlaybackController(
   decoder_sequencer_.SetPumpStatusCallback(
       base::BindRepeating(&ReadAloudPlaybackController::OnPumpStatusChanged,
                           base::Unretained(this)));
+  decoder_sequencer_.SetChunkDecodedCallback(base::BindRepeating(
+      &ReadAloudPlaybackController::OnChunkDecoded, base::Unretained(this)));
 }
 
 ReadAloudPlaybackController::~ReadAloudPlaybackController() {
@@ -233,6 +235,9 @@ void ReadAloudPlaybackController::SetTextContent(
     }
     client_->OnTextChunked(std::move(chunk_strings));
   }
+  // Reposition before `MaybePlayOnReady()` so that decoding and synthesis
+  // start at the restored position instead of the beginning of the document.
+  MaybeApplyPendingWordSeek();
   // Lets the UI show the estimated length before playback starts.
   ReportProgress();
 
@@ -451,6 +456,12 @@ void ReadAloudPlaybackController::Pause() {
 void ReadAloudPlaybackController::SeekToWord(uint32_t segment_index,
                                              uint32_t character_offset) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!IsTextSet()) {
+    // The target can't be validated without text. Keep the latest request and
+    // resolve it in `SetTextContent()`.
+    pending_word_seek_.emplace(segment_index, character_offset);
+    return;
+  }
   if (segment_index >= timeline_.GetChunkCount()) {
     controller_receiver_.ReportBadMessage(
         "ReadAloudPlaybackController: Invalid segment_index in SeekToWord");
@@ -473,6 +484,8 @@ void ReadAloudPlaybackController::SeekToTime(base::TimeDelta position) {
         "ReadAloudPlaybackController: Invalid position in SeekToTime");
     return;
   }
+  // An explicit seek supersedes a word seek that hasn't been applied yet.
+  pending_word_seek_.reset();
   if (timeline_.GetChunkCount() == 0) {
     return;
   }
@@ -491,6 +504,8 @@ void ReadAloudPlaybackController::SeekRelative(base::TimeDelta offset) {
         "ReadAloudPlaybackController: Invalid offset in SeekRelative");
     return;
   }
+  // An explicit seek supersedes a word seek that hasn't been applied yet.
+  pending_word_seek_.reset();
   const base::TimeDelta total_duration = timeline_.GetTotalDuration();
   const base::TimeDelta current_time = GetCurrentElapsedTime();
   const base::TimeDelta target_time =
@@ -528,6 +543,7 @@ void ReadAloudPlaybackController::ExecuteSeek(const TimelinePosition& target) {
   // ResolveSegmentOffset() and ResolveTimeOffset() both align with
   // `target.time.start_time`.
   seek_base_ = target.time.start_time;
+  seek_anchor_ = target.chunk;
   ReportProgress();
 
   // If the resolved position is at the exact end of `target.chunk`, advance
@@ -544,6 +560,26 @@ void ReadAloudPlaybackController::ExecuteSeek(const TimelinePosition& target) {
   decoder_sequencer_.SetNextChunkToDecode(
       target.chunk.index,
       base::checked_cast<uint32_t>(target.global_char.start_offset));
+}
+
+void ReadAloudPlaybackController::MaybeApplyPendingWordSeek() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (!pending_word_seek_.has_value()) {
+    return;
+  }
+  const auto [segment_index, character_offset] = *pending_word_seek_;
+  pending_word_seek_.reset();
+  // TODO(b/581856527): The saved position may not match re-distilled text if
+  // the page content changed during playback.
+  if (segment_index >= timeline_.GetChunkCount()) {
+    return;
+  }
+  std::optional<TimelinePosition> target =
+      timeline_.ResolveSegmentOffset(segment_index, character_offset);
+  if (!target.has_value()) {
+    return;
+  }
+  ExecuteSeek(*target);
 }
 
 void ReadAloudPlaybackController::SetVoice(const std::string& voice_id) {
@@ -577,6 +613,7 @@ void ReadAloudPlaybackController::FlushBuffers() {
   // The decoder restarts at the beginning of the document, and the renderer's
   // media time restarts at zero below.
   seek_base_ = base::TimeDelta();
+  seek_anchor_.reset();
 
   if (!audio_resources_) {
     return;
@@ -628,6 +665,8 @@ void ReadAloudPlaybackController::ResetSession() {
   play_on_ready_timer_.Stop();
   progress_timer_.Stop();
   seek_base_ = base::TimeDelta();
+  seek_anchor_.reset();
+  pending_word_seek_.reset();
   last_reported_progress_.reset();
   session_weak_factory_.InvalidateWeakPtrs();
 }
@@ -683,12 +722,8 @@ void ReadAloudPlaybackController::OnSpeechSynthesisResponse(
       ParseAndValidateSynthesisResponse(std::move(response_bytes), chunk);
 
   if (!result.timings.empty()) {
-    timeline_.UpdateSentenceDuration(
-        chunk_index, result.timings.back().end_time, result.timings);
-    // While playing, the next tick carries the refined duration.
-    if (!IsActivePlaybackState(playback_state_)) {
-      ReportProgress();
-    }
+    UpdateChunkTimelineAndSeekBase(chunk_index, result.timings.back().end_time,
+                                   result.timings);
   }
 
   prefetch_manager_.OnSynthesisResponse(sequence_id, chunk_index,
@@ -696,6 +731,34 @@ void ReadAloudPlaybackController::OnSpeechSynthesisResponse(
                                         std::move(result.timings));
 
   decoder_sequencer_.ReplenishBuffer();
+}
+
+void ReadAloudPlaybackController::OnChunkDecoded(uint32_t chunk_index,
+                                                 base::TimeDelta duration) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (chunk_index >= timeline_.GetChunkCount()) {
+    return;
+  }
+  UpdateChunkTimelineAndSeekBase(chunk_index, duration);
+}
+
+void ReadAloudPlaybackController::UpdateChunkTimelineAndSeekBase(
+    uint32_t chunk_index,
+    base::TimeDelta duration,
+    std::vector<WordTiming> timings) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  timeline_.UpdateSentenceDuration(chunk_index, duration, std::move(timings));
+  if (seek_anchor_.has_value() && chunk_index <= seek_anchor_->index) {
+    std::optional<TimelinePosition> resolved = timeline_.ResolveSegmentOffset(
+        seek_anchor_->index, seek_anchor_->start_char_offset);
+    if (resolved.has_value()) {
+      seek_base_ = resolved->time.start_time;
+    }
+  }
+  // While playing, the next tick carries the refined duration.
+  if (!IsActivePlaybackState(playback_state_)) {
+    ReportProgress();
+  }
 }
 
 void ReadAloudPlaybackController::OnWordBoundaryReached(

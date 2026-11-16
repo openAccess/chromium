@@ -17,7 +17,7 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
 import android.app.Activity;
 import android.app.Instrumentation;
@@ -64,8 +64,6 @@ import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.params.ParameterAnnotations;
 import org.chromium.base.test.params.ParameterSet;
 import org.chromium.base.test.params.ParameterizedRunner;
-import org.chromium.base.test.transit.RootSpec;
-import org.chromium.base.test.transit.ViewElement;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.Criteria;
@@ -109,6 +107,8 @@ import org.chromium.components.policy.EnterpriseInfo;
 import org.chromium.components.policy.test.FakeEnterpriseInfo;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.search_engines.TemplateUrl;
+import org.chromium.components.signin.AccountManagerFacadeImpl;
+import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.metrics.SigninAccessPoint;
@@ -782,10 +782,7 @@ public class FirstRunIntegrationTest {
                 R.id.signin_fre_continue_button,
                 "Failed to click on continue button");
 
-        onViewWaiting(
-                        withText(R.string.sign_in_managed_account),
-                        ViewElement.rootSpecOption(RootSpec.dialogRoot()))
-                .check(matches(isDisplayed()));
+        waitForView(withText(R.string.sign_in_managed_account));
         onView(withText(R.string.continue_button)).inRoot(isDialog()).perform(click());
         new FirstRunNavigationHelper(firstRunActivity).ensureHistorySyncIsCurrentPage();
     }
@@ -1021,6 +1018,24 @@ public class FirstRunIntegrationTest {
         // a crash.
         Intent intent = CustomTabsIntentTestUtils.createMinimalCustomTabIntent(mContext, TEST_URL);
         mContext.startActivity(intent);
+    }
+
+    @Test
+    @MediumTest
+    @Features.DisableFeatures({SigninFeatures.MIGRATE_ACCOUNT_MANAGER_DELEGATE})
+    public void testDestroyWithPendingAccountsPromise() {
+        AccountManagerFacadeProvider.setInstanceForTests(null);
+        CriteriaHelper.pollUiThread(
+                () -> AccountManagerFacadeProvider.getInstance().getAccounts().isFulfilled());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    ((AccountManagerFacadeImpl) AccountManagerFacadeProvider.getInstance())
+                            .resetAccountsForTesting();
+                    Assert.assertFalse(
+                            AccountManagerFacadeProvider.getInstance().getAccounts().isFulfilled());
+                });
+        FirstRunActivity firstRunActivity = launchFirstRunActivity();
+        ApplicationTestUtils.finishActivity(firstRunActivity);
     }
 
     @Test

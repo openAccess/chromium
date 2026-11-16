@@ -198,7 +198,7 @@ TYPED_TEST(ClipboardTest, TextTest) {
 
 TYPED_TEST(ClipboardTest, HTMLTest) {
   std::u16string markup(u"<string>Hi!</string>"), markup_result;
-  std::u16string plain(u"Hi!"), plain_result;
+  std::u16string plain(u"Hi!");
   std::string url("http://www.example.com/"), url_result;
 
   {
@@ -355,7 +355,7 @@ TYPED_TEST(ClipboardTest, MultipleBufferTest) {
 TYPED_TEST(ClipboardTest, TrickyHTMLTest) {
   std::u16string markup(u"<em>Bye!<!--EndFragment --></em>"), markup_result;
   std::string url, url_result;
-  std::u16string plain(u"Bye!"), plain_result;
+  std::u16string plain(u"Bye!");
 
   {
     ScopedClipboardWriter clipboard_writer(ClipboardBuffer::kCopyPaste);
@@ -446,6 +446,32 @@ TYPED_TEST(ClipboardTest, BookmarkTest) {
   EXPECT_EQ(url, url_result);
 }
 #endif  // !BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_APPLE)
+
+TYPED_TEST(ClipboardTest, WriteURLsWithNoValidEntryIsNoOp) {
+  {
+    ScopedClipboardWriter clipboard_writer(ClipboardBuffer::kCopyPaste);
+    clipboard_writer.WriteText(u"keep");
+  }
+
+  {
+    ScopedClipboardWriter clipboard_writer(ClipboardBuffer::kCopyPaste);
+    clipboard_writer.WriteURLs({});
+  }
+  EXPECT_EQ(u"keep", clipboard_test_util::ReadText(&this->clipboard(),
+                                                   ClipboardBuffer::kCopyPaste,
+                                                   /*data_dst=*/nullptr));
+
+  {
+    ScopedClipboardWriter clipboard_writer(ClipboardBuffer::kCopyPaste);
+    clipboard_writer.WriteURLs({
+        {.url = GURL(), .title = u"e"},
+        {.url = GURL("http://["), .title = u"x"},
+    });
+  }
+  EXPECT_EQ(u"keep", clipboard_test_util::ReadText(&this->clipboard(),
+                                                   ClipboardBuffer::kCopyPaste,
+                                                   /*data_dst=*/nullptr));
+}
 
 TYPED_TEST(ClipboardTest, FilenamesTest) {
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -576,8 +602,8 @@ TYPED_TEST(ClipboardTest, URLTest) {
 #if BUILDFLAG(IS_WIN)
 // See crbug.com/1477344 for more details on the issue.
 TYPED_TEST(ClipboardTest, ChromiumCustomFormatTest) {
-  std::u16string markup(u"<strong>Hi!</string>"), markup_result;
-  std::string url("http://www.example.com/"), url_result;
+  std::u16string markup(u"<strong>Hi!</string>");
+  std::string url("http://www.example.com/");
 
   {
     ScopedClipboardWriter clipboard_writer(ClipboardBuffer::kCopyPaste);

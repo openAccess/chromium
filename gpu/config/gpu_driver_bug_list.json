@@ -12,18 +12,6 @@
       ]
     },
     {
-      "id": 21,
-      "description": "Vivante GPUs are buggy with context switching",
-      "cr_bugs": [179250, 235935],
-      "os": {
-        "type": "android"
-      },
-      "gl_extensions": ".*GL_VIV_shader_binary.*",
-      "features": [
-        "unbind_fbo_on_context_switch"
-      ]
-    },
-    {
       "id": 22,
       "description": "Imagination drivers are buggy with context switching",
       "cr_bugs": [230896],
@@ -57,18 +45,6 @@
       },
       "features": [
         "use_virtualized_gl_contexts"
-      ]
-    },
-    {
-      "id": 43,
-      "cr_bugs": [299494],
-      "description": "Framebuffer discarding doesn't accept trivial attachments on Vivante",
-      "os": {
-        "type": "android"
-      },
-      "gl_extensions": ".*GL_VIV_shader_binary.*",
-      "features": [
-        "disable_discard_framebuffer"
       ]
     },
     {
@@ -127,18 +103,6 @@
       },
       "features": [
         "disable_d3d11"
-      ]
-    },
-    {
-      "id": 71,
-      "description": "Vivante's support of OES_standard_derivatives is buggy",
-      "cr_bugs": [368005],
-      "os": {
-        "type": "android"
-      },
-      "gl_extensions": ".*GL_VIV_shader_binary.*",
-      "disabled_extensions": [
-        "GL_OES_standard_derivatives"
       ]
     },
     {
@@ -368,22 +332,6 @@
       ]
     },
     {
-      "id": 131,
-      "description": "Linux Mesa drivers crash on glTexSubImage2D() to texture storage bound to FBO",
-      "cr_bugs": [521904],
-      "os": {
-        "type": "linux"
-      },
-      "driver_vendor": "Mesa",
-      "driver_version": {
-        "op": "<",
-        "value": "10.6"
-      },
-      "features": [
-        "disable_texture_storage"
-      ]
-    },
-    {
       "id": 132,
       "description": "On Intel GPUs MSAA performance is not acceptable for GPU rasterization",
       "cr_bugs": [527565, 1298585],
@@ -464,19 +412,6 @@
       },
       "features": [
         "webgl_or_caps_max_texture_size_limit_4096"
-      ]
-    },
-    {
-      "id": 153,
-      "cr_bugs": [594016],
-      "description": "Vivante GC1000 with EXT_multisampled_render_to_texture fails glReadPixels",
-      "os": {
-        "type": "linux"
-      },
-      "gl_vendor": "Vivante Corporation",
-      "gl_renderer": "Vivante GC1000",
-      "disabled_extensions": [
-        "GL_EXT_multisampled_render_to_texture"
       ]
     },
     {
@@ -789,7 +724,6 @@
         }
       },
       "features": [
-        "disable_accelerated_vp8_decode",
         "disable_accelerated_vp9_decode"
       ]
     },
@@ -914,18 +848,6 @@
       "device_id": ["0x10d8"],
       "features": [
         "disable_direct_composition_video_overlays"
-      ]
-    },
-    {
-      "id": 251,
-      "description": "Vivante GPUs shader cache breaks rendering",
-      "cr_bugs": [780498],
-      "os": {
-        "type": "android"
-      },
-      "gl_extensions": ".*GL_VIV_shader_binary.*",
-      "features": [
-        "disable_program_cache"
       ]
     },
     {
@@ -1190,7 +1112,6 @@
       },
       "vendor_id": "0x8086",
       "features": [
-        "max_3d_array_texture_size_1024",
         "webgl_or_caps_max_texture_size_limit_4096"
       ]
     },
@@ -1277,19 +1198,6 @@
       "gl_renderer": ".*Mali-T8.*",
       "features": [
         "prefer_draw_to_copy"
-      ]
-    },
-    {
-      "id": 313,
-      "description": "Context lost recovery often fails on PowerVR on CrOS.",
-      "cr_bugs": [1010121],
-      "os": {
-        "type": "chromeos"
-      },
-      "gl_vendor": "Imagination.*",
-      "gl_renderer": "PowerVR.*",
-      "features": [
-        "exit_on_context_lost"
       ]
     },
     {
@@ -1564,21 +1472,6 @@
       },
       "features": [
         "disable_dxgi_zero_copy_video"
-      ]
-    },
-    {
-      "id": 344,
-      "description": "VP8 decoding crashes before Windows 10 Fall Creators Update.",
-      "cr_bugs": [1094840],
-      "os": {
-        "type": "win",
-        "version": {
-          "op": "<",
-          "value": "10.0.16299"
-        }
-      },
-      "features": [
-        "disable_accelerated_vp8_decode"
       ]
     },
     {
@@ -2051,7 +1944,6 @@
       ],
       "features": [
         "disable_accelerated_av1_decode",
-        "disable_accelerated_vp8_decode",
         "disable_accelerated_vp9_decode"
       ]
     },
@@ -2069,7 +1961,6 @@
       ],
       "features": [
         "disable_accelerated_av1_decode",
-        "disable_accelerated_vp8_decode",
         "disable_accelerated_vp9_decode"
       ]
     },

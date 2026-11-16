@@ -10,8 +10,13 @@ import org.chromium.base.lifetime.Destroyable;
 import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.tab.TabArchiveSettings;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.feature_engagement.FeatureConstants;
+import org.chromium.components.feature_engagement.FeatureProperties;
+import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.feature_engagement.UiFormat;
 
 /**
  * Helper class to manage the conditions for showing the Auto Delete Archived Tabs Decision Promo
@@ -50,14 +55,28 @@ public class ArchivedTabsAutoDeletePromoManager implements Destroyable {
      * eligibility conditions (user preferences and archived tab count). If all conditions are met,
      * it will instantiate (if needed) and display the promo bottom sheet to the user; otherwise, it
      * will clean up any existing promo coordinator.
+     *
+     * @param tracker The {@link Tracker} to evaluate cooldown group and policy eligibility when
+     *     enabled.
      */
-    public void tryToShowArchivedTabsAutoDeleteDecisionPromo() {
+    public void tryToShowArchivedTabsAutoDeleteDecisionPromo(@Nullable Tracker tracker) {
         if (checkConditions()) {
             // All conditions met to consider showing the promo.
+            if (TrackerFactory.isInterruptiveCooldownGroupEnabled()) {
+                if (tracker == null) {
+                    return;
+                }
+                FeatureProperties featureProperties = new FeatureProperties(UiFormat.BOTTOM_SHEET);
+                if (!tracker.shouldTriggerHelpUi(
+                        FeatureConstants.ARCHIVED_TABS_AUTO_DELETE_PROMO_FEATURE,
+                        featureProperties)) {
+                    return;
+                }
+            }
             if (mArchivedTabsAutoDeletePromoCoordinator == null) {
                 mArchivedTabsAutoDeletePromoCoordinator =
                         new ArchivedTabsAutoDeletePromoCoordinator(
-                                mContext, mBottomSheetController, mTabArchiveSettings);
+                                mContext, mBottomSheetController, mTabArchiveSettings, tracker);
             }
             mArchivedTabsAutoDeletePromoCoordinator.showPromo();
         } else {

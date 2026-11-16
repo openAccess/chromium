@@ -9,6 +9,7 @@
 
 #include <memory>
 
+#include "base/containers/heap_array.h"
 #include "base/files/file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback.h"
@@ -104,13 +105,65 @@ class Operation : public base::RefCountedThreadSafe<Operation> {
   void PostTask(base::OnceClosure task);
 
 #if BUILDFLAG(IS_ANDROID)
-  class UsbSession {
+  // Streams a single Write() or VerifyWrite() pass over an open
+  // UsbDeviceConnection on Operation's `task_runner_`. Must not outlive the
+  // UsbDeviceConnection that created it, and at most one UsbTransfer may be
+  // active on a connection at a time. Destroying the UsbTransfer before
+  // completion cancels any in-flight USB command without invoking `callback`.
+  class UsbTransfer {
    public:
     using CompletionCallback =
         base::OnceCallback<void(base::expected<void, std::string>)>;
 
-    virtual ~UsbSession() = default;
+    UsbTransfer() = default;
+    virtual ~UsbTransfer() = default;
+
+    // Starts streaming the transfer asynchronously on `task_runner_` and
+    // invokes `callback` with `base::ok()` on completion or an
+    // `error::k*` constant on failure/cancellation. May be called at most
+    // once.
     virtual void Start(CompletionCallback callback) = 0;
+  };
+
+  // Owns the USB Mass Storage Bulk-Only Transport connection kept open across
+  // Write() and VerifyWrite() for a single Operation on `task_runner_`.
+  class UsbDeviceConnection {
+   public:
+    using CompletionCallback =
+        base::OnceCallback<void(base::expected<void, std::string>)>;
+
+    UsbDeviceConnection() = default;
+    virtual ~UsbDeviceConnection() = default;
+
+    // Opens the USB device, claims its Mass Storage interface, and probes
+    // logical block size and capacity via SCSI TEST UNIT READY and
+    // READ CAPACITY (10). If any step fails or the operation is cancelled,
+    // releases the interface (if claimed) and closes the device (if opened)
+    // before invoking `callback` with an `error::k*` constant.
+    virtual void Open(CompletionCallback callback) = 0;
+
+    // Cancels any in-flight command, releases the Mass Storage interface (if
+    // claimed), and closes the USB device (if opened) before invoking
+    // `callback`.
+    virtual void Close(base::OnceClosure callback) = 0;
+
+    // Creates a transfer that writes `image_path` to the open USB device,
+    // optionally zeroing the trailing backup GPT blocks when
+    // `wipe_backup_gpt` is true, and flushes the device cache via SCSI
+    // SYNCHRONIZE CACHE (10). Requires `Open()` to have succeeded.
+    virtual std::unique_ptr<UsbTransfer> CreateWriteTransfer(
+        base::FilePath image_path,
+        bool wipe_backup_gpt,
+        base::RepeatingCallback<bool()> is_cancelled,
+        base::RepeatingCallback<void(int)> set_progress) = 0;
+
+    // Creates a transfer that reads back the written blocks from the open USB
+    // device and compares them byte-for-byte against `image_path`. Requires
+    // `Open()` to have succeeded.
+    virtual std::unique_ptr<UsbTransfer> CreateVerifyTransfer(
+        base::FilePath image_path,
+        base::RepeatingCallback<bool()> is_cancelled,
+        base::RepeatingCallback<void(int)> set_progress) = 0;
   };
 
   using UsbDeviceManagerBinder = base::RepeatingCallback<void(
@@ -173,13 +226,9 @@ class Operation : public base::RefCountedThreadSafe<Operation> {
   // continuation.
   void CompleteAndContinue(base::OnceClosure continuation);
 
-  // If `file_size` is non-zero, only `file_size` bytes will be read from file,
-  // otherwise the entire file will be read.
-  // `progress_scale` is a percentage to which the progress will be scale, e.g.
-  // a scale of 50 means it will increment from 0 to 50 over the course of the
-  // sum.  `progress_offset` is an percentage that will be added to the progress
-  // of the MD5 sum before updating `progress_` but after scaling.
-  void GetMD5SumOfFile(const base::FilePath& file,
+  // Computes the lowercase hex MD5 digest of `file_path` on `task_runner_`,
+  // updating stage progress from 0 to 100, and passes it to `callback`.
+  void GetMD5SumOfFile(const base::FilePath& file_path,
                        base::OnceCallback<void(const std::string&)> callback);
 
   bool IsRunningInCorrectSequence() const;
@@ -236,26 +285,31 @@ class Operation : public base::RefCountedThreadSafe<Operation> {
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-  void ConnectToUsbDevice(ParsedDeviceId device_id,
-                          base::OnceClosure continuation);
+  void EnsureUsbConnection(ParsedDeviceId device_id,
+                           base::OnceClosure on_connected);
   void OnUsbManagerDisconnected();
   void OnUsbDeviceInfoRefreshed(ParsedDeviceId device_id,
-                                base::OnceClosure continuation,
+                                base::OnceClosure on_connected,
                                 device::mojom::UsbDeviceInfoPtr info);
-  void OnUsbDeviceConnected(
-      base::OnceClosure continuation,
-      const UsbMassStorageEndpoints& endpoints,
-      mojo::PendingRemote<device::mojom::UsbDevice> device_remote);
-  void OnUsbBotSessionFinished(base::OnceClosure continuation,
-                               base::expected<void, std::string> result);
+  void OnUsbConnectionOpened(std::unique_ptr<UsbDeviceConnection> connection,
+                             base::OnceClosure on_connected,
+                             base::expected<void, std::string> result);
+  void StartUsbWrite(base::OnceClosure continuation);
+  void StartUsbVerify(base::OnceClosure continuation);
+  void OnUsbTransferFinished(base::OnceClosure continuation,
+                             base::expected<void, std::string> result);
+  void CloseUsbConnection(base::OnceClosure continuation);
+  void OnUsbConnectionClosed(std::unique_ptr<UsbDeviceConnection> connection,
+                             base::OnceClosure continuation);
 #endif
 
   // Incrementally calculates the MD5 sum of a file.
   void MD5Chunk(base::File file,
                 crypto::obsolete::Md5 md5,
-                size_t bytes_processed,
-                size_t bytes_total,
-                const base::OnceCallback<void(const std::string&)> callback);
+                base::HeapArray<uint8_t> buffer,
+                int64_t bytes_processed,
+                int64_t bytes_total,
+                base::OnceCallback<void(const std::string&)> callback);
 
   // Callbacks for Extractor.
   void OnExtractOpenComplete(const base::FilePath& image_path);
@@ -307,14 +361,17 @@ class Operation : public base::RefCountedThreadSafe<Operation> {
 
 #if BUILDFLAG(IS_ANDROID)
   UsbDeviceManagerBinder usb_binder_;
-  // `usb_manager_` and `usb_session_` are created, used, and reset exclusively
-  // on `task_runner_`. `CleanUp()` (called on `task_runner_` by `Error()`,
-  // `Cancel()`, and `Abort()`, including `OperationManager::Shutdown()`) resets
-  // both before `this` can be destroyed, and `~Operation()` hands them to
+  // `usb_manager_`, `usb_connection_` (which stays open across `Write()` and
+  // `VerifyWrite()` and is closed in `Finish()` or on error), and
+  // `usb_transfer_` are created, used, and reset exclusively on `task_runner_`.
+  // `CleanUp()` (called on `task_runner_` by `Finish()`, `Error()`, `Cancel()`,
+  // and `Abort()`, including `OperationManager::Shutdown()`) resets them before
+  // `this` can be destroyed, and `~Operation()` hands them to
   // `task_runner_->DeleteSoon()`. Their callbacks therefore safely bind
   // `base::Unretained(this)`.
   std::unique_ptr<mojo::Remote<device::mojom::UsbDeviceManager>> usb_manager_;
-  std::unique_ptr<UsbSession> usb_session_;
+  std::unique_ptr<UsbDeviceConnection> usb_connection_;
+  std::unique_ptr<UsbTransfer> usb_transfer_;
 #endif
 };
 

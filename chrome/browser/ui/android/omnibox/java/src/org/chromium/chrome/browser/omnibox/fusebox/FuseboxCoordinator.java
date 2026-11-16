@@ -370,6 +370,8 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
                     // LINT.IfChange(FuseboxSupportedPageClassifications)
                     case PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
                             PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
+                            PageClassification.BLANK,
+                            PageClassification.HOME_PAGE,
                             PageClassification.OTHER ->
                             true;
                     case PageClassification.ANDROID_SHORTCUTS_WIDGET ->
@@ -397,7 +399,7 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
             if (!mDeferredInitialized) {
                 mPendingSession = session;
                 // A number of UI components, like the StatusView, depend on the FuseboxState. The
-                // FuseboxMediator will eventually control the FuseboxState, but it's is not yet
+                // FuseboxMediator will eventually control the FuseboxState, but it is not yet
                 // created here. So, we do this initial assignment to ensure that these UI
                 // components don't show any bad intermediate states in the meantime.
                 mFuseboxStateSupplier.set(
@@ -506,7 +508,11 @@ public class FuseboxCoordinator implements TemplateUrlServiceObserver {
         // Skip cases where session should not be recorded (e.g. unsupported page class).
         if (mInput == null || mMetrics == null) return;
         mMetrics.notifyOmniboxSessionEnded(
-                userDidNavigate, mInput.getRequestType(), mInput.getModelMode(), mModelList);
+                userDidNavigate,
+                mInput.getRawPageClassification(),
+                mInput.getRequestType(),
+                mInput.getModelMode(),
+                mModelList);
     }
 
     /** Resets the current input session back to search mode. */

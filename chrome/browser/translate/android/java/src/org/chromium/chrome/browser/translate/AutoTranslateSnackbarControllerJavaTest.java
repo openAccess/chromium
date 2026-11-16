@@ -10,6 +10,8 @@ import android.widget.TextView;
 
 import androidx.test.filters.SmallTest;
 
+import org.jni_zero.JniRawPtr;
+import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
@@ -22,8 +24,6 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
-import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -37,7 +37,6 @@ import java.util.concurrent.ExecutionException;
 /** Instrumentation tests for {@link AutoTranslateSnackbarController} */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-@CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public final class AutoTranslateSnackbarControllerJavaTest {
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -49,6 +48,8 @@ public final class AutoTranslateSnackbarControllerJavaTest {
 
     @Mock AutoTranslateSnackbarController.Natives mMockJni;
 
+    private JniRawPtr<AutoTranslateSnackbarController.NativeAutoTranslateSnackbarController>
+            mNativePtr;
     private AutoTranslateSnackbarController mAutoTranslateSnackbarController;
     private SnackbarManager mSnackbarManager;
     private WebPageStation mPage;
@@ -59,11 +60,18 @@ public final class AutoTranslateSnackbarControllerJavaTest {
         mSnackbarManager = mPage.getActivity().getSnackbarManager();
         WeakReference<Activity> weakReference = new WeakReference<>(mPage.getActivity());
 
+        mNativePtr = JniRawPtr.createForTesting(NATIVE_SNACKBAR_VIEW);
         mAutoTranslateSnackbarController =
-                new AutoTranslateSnackbarController(
-                        weakReference, mSnackbarManager, NATIVE_SNACKBAR_VIEW);
+                new AutoTranslateSnackbarController(weakReference, mSnackbarManager, mNativePtr);
 
         AutoTranslateSnackbarControllerJni.setInstanceForTesting(mMockJni);
+    }
+
+    @After
+    public void tearDown() {
+        if (mAutoTranslateSnackbarController != null) {
+            dismissSnackbar();
+        }
     }
 
     @Test
@@ -124,7 +132,7 @@ public final class AutoTranslateSnackbarControllerJavaTest {
         showSnackbar("tl");
         clickSnackbarAction();
 
-        Mockito.verify(mMockJni).onUndoActionPressed(NATIVE_SNACKBAR_VIEW, "tl");
+        Mockito.verify(mMockJni).onUndoActionPressed(mNativePtr, "tl");
     }
 
     @Test
@@ -134,7 +142,7 @@ public final class AutoTranslateSnackbarControllerJavaTest {
 
         timeoutSnackbar();
 
-        Mockito.verify(mMockJni).onDismissNoAction(NATIVE_SNACKBAR_VIEW);
+        Mockito.verify(mMockJni).onDismissNoAction(mNativePtr);
     }
 
     private void showSnackbar(String targetLanguage) {

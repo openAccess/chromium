@@ -324,6 +324,10 @@ public class TipsUtils {
         // have started shutting down. Avoid passing it across JNI in that case.
         if (profile.shutdownStarted() || windowAndroid.isDestroyed()) return;
 
+        // Once every tip has been shown there is nothing left to schedule, so stop here. This also
+        // ends the hourly rescheduling loop below for this window.
+        if (!TipsSchedulerBridge.hasRemainingTips(profile)) return;
+
         Map<String, Float> customSignals = collectCustomSignals(windowAndroid);
 
         areTipsNotificationsEnabled(
@@ -613,17 +617,13 @@ public class TipsUtils {
 
                             Tracker tracker = null;
                             if (!shouldAlwaysShowOptInPromo()
-                                    && ChromeFeatureList.sUserEducationInterruptiveCooldownGroup
-                                            .isEnabled()) {
+                                    && TrackerFactory.isInterruptiveCooldownGroupEnabled()) {
                                 if (profile == null) {
                                     return;
                                 }
                                 tracker = TrackerFactory.getTrackerForProfile(profile);
                                 FeatureProperties featureProperties =
-                                        new FeatureProperties(
-                                                UiFormat.BOTTOM_SHEET,
-                                                /* isBlockedByCooldownGroup= */ true,
-                                                /* blocksCooldownGroup= */ true);
+                                        new FeatureProperties(UiFormat.BOTTOM_SHEET);
                                 if (!tracker.shouldTriggerHelpUi(
                                         FeatureConstants.ANDROID_TIPS_OPT_IN_PROMO_FEATURE,
                                         featureProperties)) {
@@ -668,7 +668,7 @@ public class TipsUtils {
 
         // When the interruptive IPH cooldown group is enabled, frequency and cooldown limits are
         // enforced by Feature Engagement instead of SharedPreferences.
-        if (ChromeFeatureList.sUserEducationInterruptiveCooldownGroup.isEnabled()) {
+        if (TrackerFactory.isInterruptiveCooldownGroupEnabled()) {
             return true;
         }
 

@@ -77,11 +77,7 @@ void WaylandBufferManagerGpu::Initialize(
     mojo::PendingRemote<ozone::mojom::WaylandBufferManagerHost> remote_host,
     const base::flat_map<::viz::SharedImageFormat, std::vector<uint64_t>>&
         shared_image_formats_with_modifiers,
-    bool supports_dma_buf,
-    bool supports_viewporter,
-    bool supports_acquire_fence,
-    bool supports_overlays,
-    bool supports_single_pixel_buffer) {
+    ozone::mojom::WaylandBufferManagerCapabilitiesPtr capabilities) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
 
   // See the comment in the constructor.
@@ -89,11 +85,15 @@ void WaylandBufferManagerGpu::Initialize(
     gpu_thread_runner_ = base::SingleThreadTaskRunner::GetCurrentDefault();
 
   supported_formats_with_modifiers_ = shared_image_formats_with_modifiers;
-  supports_viewporter_ = supports_viewporter;
-  supports_acquire_fence_ = supports_acquire_fence;
-  supports_dmabuf_ = supports_dma_buf;
-  supports_overlays_ = supports_overlays;
-  supports_single_pixel_buffer_ = supports_single_pixel_buffer;
+  supports_viewporter_ = capabilities->supports_viewporter;
+  supports_acquire_fence_ = capabilities->supports_acquire_fence;
+  supports_dmabuf_ = capabilities->supports_dma_buf;
+  supports_overlays_ = capabilities->supports_overlays;
+  supports_single_pixel_buffer_ = capabilities->supports_single_pixel_buffer;
+  compositor_tone_maps_using_clli_ =
+      capabilities->compositor_tone_maps_using_clli;
+  compositor_tone_maps_using_mdcv_ =
+      capabilities->compositor_tone_maps_using_mdcv;
 
   // Allow to rebind the interface if it hasn't been destroyed yet. Used, for
   // example, by tests which use buffer manager to emulate frames presentation.
@@ -191,7 +191,7 @@ WaylandSurfaceGpu* WaylandBufferManagerGpu::GetSurface(
 }
 
 void WaylandBufferManagerGpu::CreateDmabufBasedBuffer(
-    base::ScopedFD dmabuf_fd,
+    std::vector<base::ScopedFD> dmabuf_fds,
     gfx::Size size,
     const std::vector<uint32_t>& strides,
     const std::vector<uint32_t>& offsets,
@@ -207,7 +207,7 @@ void WaylandBufferManagerGpu::CreateDmabufBasedBuffer(
     gpu_thread_runner_->PostTask(
         FROM_HERE,
         base::BindOnce(&WaylandBufferManagerGpu::CreateDmabufBasedBuffer,
-                       base::Unretained(this), std::move(dmabuf_fd),
+                       base::Unretained(this), std::move(dmabuf_fds),
                        std::move(size), std::move(strides), std::move(offsets),
                        std::move(modifiers), current_format, planes_count,
                        color_space, hdr_metadata, buffer_id));
@@ -216,7 +216,7 @@ void WaylandBufferManagerGpu::CreateDmabufBasedBuffer(
 
   base::OnceClosure task =
       base::BindOnce(&WaylandBufferManagerGpu::CreateDmabufBasedBufferTask,
-                     base::Unretained(this), std::move(dmabuf_fd), size,
+                     base::Unretained(this), std::move(dmabuf_fds), size,
                      strides, offsets, modifiers, current_format, planes_count,
                      color_space, hdr_metadata, buffer_id);
   RunOrQueueTask(std::move(task));
@@ -523,7 +523,7 @@ void WaylandBufferManagerGpu::ProcessPendingTasks() {
 }
 
 void WaylandBufferManagerGpu::CreateDmabufBasedBufferTask(
-    base::ScopedFD dmabuf_fd,
+    std::vector<base::ScopedFD> dmabuf_fds,
     gfx::Size size,
     const std::vector<uint32_t>& strides,
     const std::vector<uint32_t>& offsets,
@@ -536,10 +536,14 @@ void WaylandBufferManagerGpu::CreateDmabufBasedBufferTask(
   DCHECK_CALLED_ON_VALID_SEQUENCE(gpu_sequence_checker_);
   CHECK(remote_host_, base::NotFatalUntil::M163);
 
+  std::vector<mojo::PlatformHandle> handles;
+  handles.reserve(dmabuf_fds.size());
+  for (auto& fd : dmabuf_fds) {
+    handles.emplace_back(std::move(fd));
+  }
   remote_host_->CreateDmabufBasedBuffer(
-      mojo::PlatformHandle(std::move(dmabuf_fd)), size, strides, offsets,
-      modifiers, current_format, planes_count, color_space, hdr_metadata,
-      buffer_id);
+      std::move(handles), size, strides, offsets, modifiers, current_format,
+      planes_count, color_space, hdr_metadata, buffer_id);
 }
 
 void WaylandBufferManagerGpu::CreateShmBasedBufferTask(base::ScopedFD shm_fd,

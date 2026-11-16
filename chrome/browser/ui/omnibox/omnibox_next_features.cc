@@ -28,6 +28,7 @@
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/search.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "ui/accessibility/platform/ax_platform.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -133,6 +134,10 @@ BASE_FEATURE(kWebUIOmniboxAimPopupDisableAnimation, DISABLED);
 BASE_FEATURE(kWebUIOmniboxFullPopupDoubleClick, ENABLED);
 // If enabled, enables OmniboxEverywhere popup triggered by shortcut.
 BASE_FEATURE(kOmniboxEverywhere, DISABLED);
+// If enabled, defers creating the Omnibox Everywhere status tray icon and
+// context menu during `Profile` initialization until browser startup is
+// complete.
+BASE_FEATURE(kOmniboxEverywhereDeferStatusIcon, ENABLED);
 // If enabled, submitting a query with screenshots attached in Omnibox
 // Everywhere opens the result in a new browser window aligned with the
 // Omnibox Everywhere popup.
@@ -182,6 +187,9 @@ const base::FeatureParam<bool> kOmniboxEverywhereSmallFontParam{
 // Controls showing titles under most visited tiles in OmniboxEverywhere.
 const base::FeatureParam<bool> kOmniboxEverywhereMostVisitedShowTitleParam{
     &kOmniboxEverywhere, "MostVisitedShowTitle", true};
+// Controls showing the New Tab Page promo for OmniboxEverywhere.
+const base::FeatureParam<bool> kOmniboxEverywhereNtpPromoParam{
+    &kOmniboxEverywhere, "NtpPromo", true};
 // Enables the WebUI for omnibox suggestions without modifying the popup UI.
 BASE_FEATURE(kWebUIOmniboxPopupDebug, DISABLED);
 // Enables side-by-side comparison omnibox suggestions in WebUI and Views.
@@ -343,6 +351,16 @@ bool IsWebUIOmniboxInBrowserViewEnabled() {
          kWebUIOmniboxFullPopupUseBrowserView.Get();
 }
 
+bool ShouldHostUnboundedOmniboxInLocationBar() {
+  // TODO(crbug.com/584371333): WebUILocationBar doesn't host the omnibox in
+  // the location bar yet.
+  // The page needs HTMLElement.showUnboundedElement() to pop its dropdown out
+  // of the location bar. Without it the dropdown would be clipped.
+  return internal::IsWebUIOmniboxFullPopupEnabled() &&
+         kWebUIOmniboxFullPopupHostUnboundedInLocationBar.Get() &&
+         base::FeatureList::IsEnabled(blink::features::kUnboundedElement);
+}
+
 bool IsAimPopupFeatureEnabled() {
   return base::FeatureList::IsEnabled(internal::kWebUIOmniboxAimPopup);
 }
@@ -363,7 +381,10 @@ bool ShouldDrawAimShadowInWebUI() {
 }
 
 bool ShouldDrawFullPopupShadowInWebUI() {
-  return base::FeatureList::IsEnabled(kOmniboxFullWebUIShadow);
+  // In the location bar the page fills the location bar, so it reserves no
+  // shadow padding. The popped-out dropdown draws its own shadow in CSS.
+  return base::FeatureList::IsEnabled(kOmniboxFullWebUIShadow) &&
+         !ShouldHostUnboundedOmniboxInLocationBar();
 }
 
 bool ShouldDeferAimShowUntilVisualStateReady() {
@@ -578,6 +599,9 @@ const base::FeatureParam<bool> kContextButtonShowSuggestionLabel{
     "Omnibox_ContextButtonShowSuggestionLabel", false};
 const base::FeatureParam<bool> kWebUIOmniboxFullPopupUseBrowserView{
     &internal::kWebUIOmniboxFullPopup, "Omnibox_UseBrowserView", false};
+const base::FeatureParam<bool> kWebUIOmniboxFullPopupHostUnboundedInLocationBar{
+    &internal::kWebUIOmniboxFullPopup, "Omnibox_HostUnboundedInLocationBar",
+    false};
 const base::FeatureParam<bool> kWebUIOmniboxFullPopupMultiline{
     &internal::kWebUIOmniboxFullPopup, "Omnibox_Multiline", false};
 const base::FeatureParam<bool> kWebUIOmniboxFullPopupDogfoodFeedback{

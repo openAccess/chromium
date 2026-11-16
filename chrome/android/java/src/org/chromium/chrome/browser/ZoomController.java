@@ -10,9 +10,11 @@ import android.os.SystemClock;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.pdf.PdfPage;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.components.browser_ui.accessibility.PageZoomUtils;
+import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.zoom.ZoomConstants;
 import org.chromium.content_public.browser.BrowserContextHandle;
 import org.chromium.content_public.browser.HostZoomMap;
@@ -93,6 +95,7 @@ public class ZoomController {
      * Resets the zoom factor of the WebContents.
      *
      * @param webContents {@link WebContents} to reset the zoom of.
+     * @param browserContextHandle {@link BrowserContextHandle} to get the default zoom level from.
      * @return True if there was a zoom change, false otherwise.
      */
     public static boolean zoomReset(
@@ -120,7 +123,12 @@ public class ZoomController {
             }
             return false;
         }
-        return zoomReset(tab.getWebContents(), browserContextHandle);
+        if (zoomReset(tab.getWebContents(), browserContextHandle)) {
+            TrackerFactory.getTrackerForProfile(tab.getProfile())
+                    .notifyEvent(EventConstants.PAGE_ZOOM_OPENED);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -151,7 +159,12 @@ public class ZoomController {
             }
             return false;
         }
-        return changePageZoomLevel(tab.getWebContents(), decrease);
+        if (changePageZoomLevel(tab.getWebContents(), decrease)) {
+            TrackerFactory.getTrackerForProfile(tab.getProfile())
+                    .notifyEvent(EventConstants.PAGE_ZOOM_OPENED);
+            return true;
+        }
+        return false;
     }
 
     private static boolean changePageZoomLevel(

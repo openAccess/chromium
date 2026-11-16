@@ -12,6 +12,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -46,7 +47,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/file_system_access/file_system_access_test_utils.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -63,7 +63,7 @@
 #include "components/actor/core/actor_switches.h"
 #include "components/actor/public/mojom/actor_types.mojom.h"
 #include "components/javascript_dialogs/app_modal_dialog_controller.h"
-#include "components/javascript_dialogs/app_modal_dialog_queue.h"
+#include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/core/filters/optimization_hints_component_update_listener.h"
 #include "components/optimization_guide/proto/features/actions_data.pb.h"
@@ -875,12 +875,8 @@ class ExecutionEngineFileSystemAccessApiBrowserTest
       public testing::WithParamInterface<bool> {
  public:
   ExecutionEngineFileSystemAccessApiBrowserTest() {
-    scoped_feature_list_.InitWithFeatureStates(
-        {{kGlicBlockFileSystemAccessApiFilePicker, should_block_file_picker()},
-         // TODO(crbug.com/452061489): Fix tests that fail when the WebUI
-         // Omnibox is enabled and then remove these two Features.
-         {omnibox::internal::kWebUIOmniboxPopup, false},
-         {omnibox::internal::kWebUIOmniboxAimPopup, false}});
+    scoped_feature_list_.InitWithFeatureState(
+        kGlicBlockFileSystemAccessApiFilePicker, should_block_file_picker());
   }
 
   bool should_block_file_picker() { return GetParam(); }
@@ -913,7 +909,6 @@ class ExecutionEngineFileSystemAccessApiBrowserTest
 IN_PROC_BROWSER_TEST_P(ExecutionEngineFileSystemAccessApiBrowserTest,
                        FilePickerForFileSystemAccessApiBlocked) {
   const base::FilePath test_file = CreateTestFile("");
-  const std::string file_contents = "file contents to write";
 
   ::ui::SelectFileDialog::SetFactory(
       std::make_unique<SelectPredeterminedFileDialogFactory>(
@@ -1017,23 +1012,6 @@ class ExecutionEngineSkipBeforeUnloadBrowserTest
   bool IsActorActive() const { return std::get<0>(GetParam()); }
   bool IsSkipFeatureEnabled() const { return std::get<1>(GetParam()); }
 
-  void WaitForAppModalDialogToClose() {
-    ASSERT_TRUE(base::test::RunUntil([] {
-      return !javascript_dialogs::AppModalDialogQueue::GetInstance()
-                  ->HasActiveDialog();
-    }));
-  }
-
-  void CancelActiveAppModalDialog() {
-    auto* dialog_queue = javascript_dialogs::AppModalDialogQueue::GetInstance();
-    ASSERT_TRUE(javascript_dialogs::AppModalDialogQueue::GetInstance()
-                    ->HasActiveDialog());
-    javascript_dialogs::AppModalDialogController* dialog =
-        dialog_queue->active_dialog();
-    dialog->OnCancel(true);
-    WaitForAppModalDialogToClose();
-  }
-
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
   bool previous_suppress_confirm_dialog_ = false;
@@ -1082,9 +1060,20 @@ IN_PROC_BROWSER_TEST_P(ExecutionEngineSkipBeforeUnloadBrowserTest,
                                           ::ui::PAGE_TRANSITION_TYPED,
                                           std::string());
 
-    ui_test_utils::WaitForAppModalDialog();
+    javascript_dialogs::AppModalDialogController* dialog =
+        ui_test_utils::WaitForAppModalDialog();
     EXPECT_EQ(beforeunload_url, web_contents->GetLastCommittedURL());
-    CancelActiveAppModalDialog();
+    dialog->view()->CancelAppModalDialog();
+    // Clear `window.onbeforeunload` so browser teardown is not blocked by the
+    // beforeunload handler. This round-trip on the same associated Mojo channel
+    // also ensures the renderer's `BeforeUnload(proceed=false)` reply has been
+    // processed and `is_waiting_for_beforeunload_completion_` is cleared on the
+    // RenderFrameHost before teardown begins.
+    ASSERT_TRUE(content::ExecJs(web_contents, "window.onbeforeunload = null;"));
+    ASSERT_TRUE(content::WaitForLoadStop(web_contents));
+    EXPECT_EQ(nullptr, web_contents->GetController().GetPendingEntry());
+    EXPECT_EQ(beforeunload_url, web_contents->GetLastCommittedURL());
+    EXPECT_FALSE(web_contents->NeedToFireBeforeUnloadOrUnloadEvents());
   }
 }
 

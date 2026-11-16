@@ -260,6 +260,15 @@
       <message name="IDS_IOS_ACCOUNT_PICKER_SUBMIT_TAPPED_ACCESSIBILITY_LABEL" is_accessibility_with_no_ui="true" desc="Accessibility label of the Submit button after it is tapped, during which a spinner replaces the button text. This is spoken by VoiceOver. [iOS only]" meaning="Accessibility label of the Submit button after it is tapped, during which a spinner replaces the button text. This is spoken by VoiceOver. [iOS only]">
         Action in progress…
       </message>
+      <message name="IDS_IOS_ACCOUNT_SWITCHING_PROMO_SUBTITLE" desc="Subtitle of the Smart Account Switching startup promo asking the user if they want to switch to their recommended Google Account. [iOS only]">
+        Switch to <ph name="EMAIL">$1<ex>elisa2@gmail.com</ex></ph> to seamlessly share tabs between your devices and get your passwords, bookmarks, and more from your Google Account.
+      </message>
+      <message name="IDS_IOS_ACCOUNT_SWITCHING_PROMO_TITLE" desc="Title of the Smart Account Switching startup promo asking the user if they want to switch to their recommended Google Account. [iOS only]">
+        Pick up where you left off
+      </message>
+      <message name="IDS_IOS_ACCOUNT_SWITCHING_PROMO_TITLE_FOR_DEVICE_TYPE" desc="Title of the Smart Account Switching startup promo asking the user if they want to switch to their recommended Google Account when it was used on a computer. [iOS only]">
+        Pick up where you left off on your computer
+      </message>
       <message name="IDS_IOS_ACCOUNT_TABLE_ERROR_ENTER_PASSPHRASE_BUTTON" desc="Label for the button to open the passphrase dialog from the accounts table. [iOS only]">
         Enter passphrase…
       </message>
@@ -486,10 +495,10 @@
         Always show pop-ups on this site
       </message>
       <message name="IDS_IOS_AI_HUB_CAMERA_PERMISSION_ALWAYS_ALLOWED_EXPLANATION" desc="Explanation text shown under the camera permission row of the AI hub when the site is always allowed to use the camera.">
-        "<ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph>" is allowed to use your camera whenever you visit this site
+        <ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph> is allowed to use your camera whenever you visit this site
       </message>
       <message name="IDS_IOS_AI_HUB_CAMERA_PERMISSION_BLOCKED_EXPLANATION" desc="Explanation text shown under the camera permission row of the AI hub when the site is never allowed to use the camera.">
-        "<ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph>" is not allowed to access your camera
+        <ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph> is not allowed to access your camera
       </message>
       <message name="IDS_IOS_AI_HUB_CAMERA_PERMISSION_DROPDOWN_ACCESSIBILITY_LABEL" desc="The accessibility label for the dropdown used to choose the camera permission for the current site in the AI hub.">
         Camera access for this site
@@ -502,6 +511,9 @@
       </message>
       <message name="IDS_IOS_AI_HUB_GEMINI_UNAVAILABLE_ENTERPRISE_LABEL" desc="The message displayed in the footer for the Gemini entry point of the AI hub whenever it is unavailable because of enterprise policies.">
         Gemini is turned off for your account. Contact your admin for more information.
+      </message>
+      <message name="IDS_IOS_AI_HUB_GEMINI_UNAVAILABLE_INCOGNITO_LABEL" desc="The message displayed in the footer for the Gemini entry point of the AI hub whenever it is unavailable because the user is in Incognito mode.">
+        Gemini is not available in Incognito mode
       </message>
       <message name="IDS_IOS_AI_HUB_HIDE_BUTTON_LABEL" desc="The button label for hiding feature entry points in the AI hub.">
         Turn off
@@ -522,10 +534,10 @@
         Search screen is only available when Google is set as your default search engine. You can change your default search engine in <ph name="BEGIN_LINK">BEGIN_LINK</ph>Settings<ph name="END_LINK">END_LINK</ph>.
       </message>
       <message name="IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_ALWAYS_ALLOWED_EXPLANATION" desc="Explanation text shown under the microphone permission row of the AI hub when the site is always allowed to use the microphone.">
-        "<ph name="SITE_DOMAIN">$1<ex>microphone.com</ex></ph>" is allowed to use your microphone whenever you visit this site
+        <ph name="SITE_DOMAIN">$1<ex>microphone.com</ex></ph> is allowed to use your microphone whenever you visit this site
       </message>
       <message name="IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_BLOCKED_EXPLANATION" desc="Explanation text shown under the microphone permission row of the AI hub when the site is never allowed to use the microphone.">
-        "<ph name="SITE_DOMAIN">$1<ex>microphone.com</ex></ph>" is not allowed to access your microphone
+        <ph name="SITE_DOMAIN">$1<ex>microphone.com</ex></ph> is not allowed to access your microphone
       </message>
       <message name="IDS_IOS_AI_HUB_MICROPHONE_PERMISSION_DROPDOWN_ACCESSIBILITY_LABEL" desc="The accessibility label for the dropdown used to choose the microphone permission for the current site in the AI hub.">
         Microphone access for this site
@@ -540,7 +552,7 @@
         Gemini is not available on this page
       </message>
       <message name="IDS_IOS_AI_HUB_PERMISSION_SITE_EXPLANATION" desc="Explanation text for site permissions in the AI hub showing which site the permissions apply to.">
-        "<ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph>" permissions will reset to off when you leave this site
+        <ph name="SITE_DOMAIN">$1<ex>camera.com</ex></ph> permissions will reset to off when you leave this site
       </message>
       <message name="IDS_IOS_AI_HUB_POPUP_ALWAYS_SHOW_BUTTON_LABEL" desc="The button label for always showing pop-ups in the Pop-up blocker feature of the AI hub.">
         Always show
@@ -790,9 +802,6 @@
            =1 {{count} option for address available above your keyboard.}
            other {{count} options for address available above your keyboard.}}
       </message>
-      <message name="IDS_IOS_AUTOFILL_ADD_ADDRESS_BUTTON_TEXT" desc="Button text for adding an address from Addresses and more screen of Settings [iOS only]">
-        Address
-      </message>
       <message name="IDS_IOS_AUTOFILL_ADMIN_LEVEL2" desc="Title of the field of a profile address representing the administrative area level 2. A sub-division of a state, e.g. a Municipio in Brazil or Mexico. [Length: 15em] [iOS only]">
         Municipality
       </message>
@@ -814,9 +823,6 @@
       <message name="IDS_IOS_AUTOFILL_AI_INFO_SAVED_TO_WALLET_ACCESSIBILITY_LABEL" desc="Accessible label announced by the screenreader for a checkmark shown on autofill ai entity form for when the ai entity has been saved or updated to wallet successfully.">
           Info saved to Google Wallet
      </message>
-      <message name="IDS_IOS_AUTOFILL_AI_OTHER_TITLE" desc="Title for the other section in Addresses and more page for entities that are not identity docs, nor travel docs. [iOS only]">
-        Other
-      </message>
       <message name="IDS_IOS_AUTOFILL_AI_PREVIOUSLY_FILLED_SECTION_TITLE" desc="Title for the previously filled section in the Autofill AI suggestions popup. [iOS only]">
         Previously filled
       </message>
@@ -846,9 +852,6 @@
       </message>
       <message name="IDS_IOS_AUTOFILL_AI_REMOVE_UNDO_ACTION" desc="Button text on the snackbar to undo removing an Autofill AI suggestion. [iOS only]">
         Undo
-      </message>
-      <message name="IDS_IOS_AUTOFILL_AI_SAVED_LOCALLY_FOOTER" desc="The notice text displayed in the footer when the Autofill AI entity (ex. Passport, Vehicle info etc.) is saved locally. [iOS only]">
-          Your info is saved to your device
       </message>
       <message name="IDS_IOS_AUTOFILL_AI_SAVED_TO_WALLET_FOOTER" desc="The notice text displayed in the footer when the Autofill AI entity (ex. Passport, Vehicle info etc.) are saved to Google Wallet. [iOS only]">
           Your info is saved to Google Wallet for <ph name="USER_EMAIL">$1<ex>peter.parker@gmail.com</ex></ph>. You can use it across Google products to fill forms faster.
@@ -882,12 +885,6 @@
       </message>
       <message name="IDS_IOS_AUTOFILL_AI_SAVE_VEHICLE_ENTITY_DIALOG_TITLE" desc="The title of a dialog that prompts the user to save information they just filled in on a form. For example, the user has filled in details related to their car. When they click Submit, we offer to save the data in Chrome. Depending on the form and what Chrome recognizes, there might be just one or several pieces of data saved at this moment. This is a similar moment to saving a password or credit card with Chrome.">
       Save vehicle
-      </message>
-      <message name="IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_GMAIL_MESSAGE" desc="Fallback label for a Gmail source in the Autofill AI sources bottom sheet when the email subject is unavailable. [iOS only]">
-        Gmail message <ph name="INDEX">$1<ex>1</ex></ph>
-      </message>
-      <message name="IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_SAVED_PHOTO" desc="Fallback label for a Google Photos source in the Autofill AI sources bottom sheet when the photo title is unavailable. [iOS only]">
-        Saved photo <ph name="INDEX">$1<ex>1</ex></ph>
       </message>
       <message name="IDS_IOS_AUTOFILL_AI_SOURCES_GMAIL_SECTION_TITLE" desc="Section title for Gmail sources in the Autofill AI sources bottom sheet. [iOS only]">
         Gmail
@@ -1917,6 +1914,9 @@
       <message name="IDS_IOS_COMPOSEBOX_ATTACHMENT_IMAGE_INDEXED_ACCESSIBILITY_LABEL" desc="The accessibility announcement read by Voice Over for a image attachment in AI Mode input plate, with its index. Example: `Attached image 1` for the first attached image. [iOS only].">
         Attached image {index}
       </message>
+      <message name="IDS_IOS_COMPOSEBOX_ATTACHMENT_IMAGE_NAMED_ACCESSIBILITY_LABEL" is_accessibility_with_no_ui="true" desc="The accessibility announcement prefix read by Voice Over for an image attachment in AI Mode input plate, with its name. [iOS only].">
+        Attached image {title}
+      </message>
       <message name="IDS_IOS_COMPOSEBOX_ATTACHMENT_TAB_ACCESSIBILITY_LABEL" desc="The accessibility announcement prefix read by Voice Over for a tab attachment in AI Mode input plate. [iOS only].">
         Attached tab {title}
       </message>
@@ -1994,6 +1994,9 @@
       </message>
       <message name="IDS_IOS_COMPOSEBOX_MENU_SUBITITLE_IMAGE_GENERATION" desc="The Composebox menu option subtitle for image generation. [iOS only].">
         Visualize and edit
+      </message>
+      <message name="IDS_IOS_COMPOSEBOX_MENU_SUBTITLE_PTM" translateable="false" desc="The Composebox menu option subtitle for the PTM tool. [iOS only].">
+        Get things done
       </message>
       <message name="IDS_IOS_COMPOSEBOX_MENU_TAB_NO_LONGER_SHARED" desc="Message shown in a snackbar after a tab is removed from the shared list. [iOS only].">
         Tab removed
@@ -2615,8 +2618,23 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
       <message name="IDS_IOS_DEFAULT_BROWSER_CONTEXTUAL_SECONDARY_BUTTON_TEXT" desc="Secondary button text for the contextual default browser promo [iOS only].">
         No thanks
       </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_DESCRIPTION_EXP2" desc="Description for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Zero Friction Transition experiment) [iOS only].">
+        Open links here automatically.
+      </message>
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app.">
         Better browsing by default
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP1" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Google Ecosystem Integration experiment) [iOS only].">
+        Better together
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP3" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Primary Destination experiment) [iOS only].">
+        Your preferred link destination
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP4" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Convenience experiment) [iOS only].">
+        Open links here
+      </message>
+      <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_1P_APP_TITLE_EXP5" desc="Title for the non-modal default browser promotion banner when Chrome is opened from a first-party app (Productivity experiment) [iOS only].">
+        Faster cross-app browsing
       </message>
       <message name="IDS_IOS_DEFAULT_BROWSER_NON_MODAL_OMNIBOX_NAVIGATION_TITLE_EXP1" desc="Title for the non-modal default browser promotion banner after Omnibox URL copy/paste and navigation (Copy/Paste Friction experiment) [iOS only].">
         Skip the Copy &amp; Paste
@@ -3516,20 +3534,20 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
       <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SECOND_STEP" desc="Text of the row indicating the second step of setting the default browser [iOS only]">
         Tap <ph name="BEGIN_BOLD">BEGIN_BOLD</ph>Default Browser App<ph name="END_BOLD">END_BOLD</ph>
       </message>
-      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_DRIVE_PHOTOS_ROW" translateable="false" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining Google Drive and Photos integration [iOS only]">
-        Quick-save to Google Drive and Photos
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_DRIVE_PHOTOS_ROW" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining Google Drive and Photos integration [iOS only]">
+        Easily save to Drive and Photos
       </message>
-      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_MAPS_ROW" translateable="false" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining Google Maps integration [iOS only]">
-        Open Google Maps seamlessly
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE" desc="Title of the Android switcher Default Browser screen in First Run highlighting the Google ecosystem on iPhone [iOS only]">
+        The best of Google, built for iPhone
       </message>
-      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_SUBTITLE" translateable="false" desc="Subtitle of the Android switcher Default Browser screen on First Run explaining the default browser feature's utility on iPhone [iOS only]">
-        Built for iPhone to work seamlessly with your favorite apps
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_GOOGLE_ECOSYSTEM_TITLE_IPAD" desc="Title of the Android switcher Default Browser screen in First Run highlighting the Google ecosystem on iPad [iOS only]">
+        The best of Google, built for iPad
       </message>
-      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_SUBTITLE_IPAD" translateable="false" desc="Subtitle of the Android switcher Default Browser screen on First Run explaining the default browser feature's utility on iPad [iOS only]">
-        Built for iPad to work seamlessly with your favorite apps
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_LENS_ROW" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining Google Lens integration [iOS only]">
+        Search anything on your screen with Lens
       </message>
-      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_YOUTUBE_ROW" translateable="false" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining YouTube links integration [iOS only]">
-        Launch YouTube links instantly
+      <message name="IDS_IOS_FIRST_RUN_DEFAULT_BROWSER_SCREEN_SWITCHER_YOUTUBE_MAPS_ROW" desc="Text of the row on the Android switcher Default Browser screen in First Run explaining YouTube and Google Maps links integration [iOS only]">
+        Quickly open links in YouTube, Maps, and more
       </message>
       <message name="IDS_IOS_FIRST_RUN_GUIDED_TOUR_NTP_IPH_TEXT" desc="Text of the Guided Tour IPH for the NTP step focusing on the tab grid." meaning="Title-cased">
           See and manage everything you have open
@@ -3664,7 +3682,7 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
           Get more relevant answers by sharing your tabs
       </message>
       <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_BODY_1" desc="Body of part 1 for the strict data governance row.">
-        Your chats will be saved in your Gemini History. History includes your audio, Gemini Live videos &amp; screenshares, what you share with Gemini (like prompts, <ph name="BEGIN_LINK">BEGIN_LINK</ph>uploads<ph name="END_LINK">END_LINK</ph>, and <ph name="BEGIN_LINK">BEGIN_LINK</ph>screens<ph name="END_LINK">END_LINK</ph>), Gemini’s responses, tasks and tool calls, feedback, info from websites you visit with Gemini, product usage data, your device’s general location, IP address, and Home or Work addresses in your Google Account. It can also include data from apps you connect to Gemini.
+        Your chats will be saved in your Gemini History. History includes your audio, Gemini Live videos &amp; screenshares, what you share with Gemini (like prompts, <ph name="BEGIN_LINK">BEGIN_LINK</ph>attachments<ph name="END_LINK">END_LINK</ph>, and <ph name="BEGIN_LINK">BEGIN_LINK</ph>screens<ph name="END_LINK">END_LINK</ph>), Gemini’s responses, tasks and tool calls, feedback, info from websites you visit with Gemini, product usage data, your device’s general location, IP address, and Home or Work addresses in your Google Account. It can also include data from apps you connect to Gemini.
       </message>
       <message name="IDS_IOS_GEMINI_CONSENT_STRICT_DATA_GOVERNANCE_BODY_2" desc="Body of part 2 for the strict data governance row.">
         Your history is automatically deleted after 18 months. You can change this time period in Settings. Chats reviewed by service providers are separated from your account and kept for up to 3 years. You can <ph name="BEGIN_LINK">BEGIN_LINK</ph>turn off<ph name="END_LINK">END_LINK</ph> your History setting anytime.
@@ -5018,6 +5036,9 @@ To continue from your computer, switch to <ph name="OTHER_EMAIL">$2<ex>john.doe@
           =1 {Complete 1 task to level up}
           other {Complete {count} tasks to level up}}
       </message>
+      <message name="IDS_IOS_LEVEL_UP_TASK_COMPLETED_ACCESSIBILITY_VALUE" is_accessibility_with_no_ui="true" desc="Accessibility value read by VoiceOver for a Level Up task that has been completed. [iOS only]">
+        Completed
+      </message>
       <message name="IDS_IOS_LEVEL_UP_TASK_COMPLETED_AI_SEARCH" desc="Completion snackbar message for the AI Search task. [iOS only]">
         "Search with AI Mode" completed!
       </message>
@@ -5609,8 +5630,14 @@ You can restart anytime.
       <message name="IDS_IOS_NTP_FEED_SIGNIN_PROMO_DISABLE_SNACKBAR_MESSAGE" desc="The test shown in the snackbar message when sign-in promo is trigger when sign-in is disabled. [iOS only]">
         Not available on your device
       </message>
+      <message name="IDS_IOS_NTP_QUICK_ACTIONS_ADD" desc="The title of the attach image button in the quick actions buttons in NTP. Used to attach an image to a prompt. [iOS only]">
+        Add
+      </message>
       <message name="IDS_IOS_NTP_QUICK_ACTIONS_AIM" desc="The title of the AI Mode button in the quick actions buttons in NTP">
         AI Mode
+      </message>
+      <message name="IDS_IOS_NTP_QUICK_ACTIONS_CREATE" desc="The title of the image generation button in the quick actions buttons in NTP. Used to create an AI image. [iOS only]">
+        Create
       </message>
       <message name="IDS_IOS_NTP_QUICK_ACTIONS_INCOGNITO" desc="The title of the incognito button in the quick actions buttons in NTP">
         Incognito
@@ -6193,6 +6220,15 @@ Handoff must also be enabled in the General section of Settings, and your device
       </message>
       <message name="IDS_IOS_PASSWORD_MANAGER_BLOCK_BUTTON" desc="Button text for the 'Save Password' infobar's 'Never remember for this site' option [Length: 10em]">
         Never
+      </message>
+      <message name="IDS_IOS_PASSWORD_MANAGER_FILTER_ALL" desc="Label for the filter chip showing all saved credentials in the Password Manager. [iOS only]">
+        All
+      </message>
+      <message name="IDS_IOS_PASSWORD_MANAGER_FILTER_PASSKEYS" desc="Label for the filter chip showing saved passkeys in the Password Manager. Refer to Glossary when translating passkeys. [iOS only]">
+        Passkeys
+      </message>
+      <message name="IDS_IOS_PASSWORD_MANAGER_FILTER_PASSWORDS" desc="Label for the filter chip showing saved passwords in the Password Manager. [iOS only]">
+        Passwords
       </message>
       <message name="IDS_IOS_PASSWORD_MANAGER_HEADER_NOT_SYNCING" desc="Header text for the view in Settings for managing saved passwords. This string only appears when the user is not syncing their passwords. [Length: unlimited] [iOS only]">
         Passwords are saved to Google Password Manager on this device only.
@@ -7172,6 +7208,15 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_REMINDER_NOTIFICATIONS_TOOLS_MENU_BUBBLE_IPH" desc="Text for a bubble IPH displayed on the tools menu, informing the user that they can set a reminder for the current tab. [iOS only]">
         You can set a reminder to revisit this page later
       </message>
+      <message name="IDS_IOS_REMOTE_ACTOR_NO_PASSWORD_DIALOG_BACK_BUTTON" desc="Button label in the remote actor credential sharing bottom sheet, shown when there is no saved password for the site, that takes the user back to the remote actor app. [iOS only]">
+        Back to <ph name="ACTOR_NAME">$1<ex>Gemini</ex></ph>
+      </message>
+      <message name="IDS_IOS_REMOTE_ACTOR_NO_PASSWORD_DIALOG_SUBTITLE" desc="Subtitle of the remote actor credential sharing bottom sheet, shown when there is no saved password for the site. [iOS only]">
+        Google Password Manager doesn’t have a password for this site. Go back to <ph name="ACTOR_NAME">$1<ex>Gemini</ex></ph> to sign in, or add a password to Google Password Manager.
+      </message>
+      <message name="IDS_IOS_REMOTE_ACTOR_NO_PASSWORD_DIALOG_TITLE" desc="Title of the remote actor credential sharing bottom sheet, shown when there is no saved password for the site. [iOS only]">
+        No saved passwords for <ph name="DOMAIN">$1<ex>example.com</ex></ph>
+      </message>
       <message name="IDS_IOS_REMOVE_ACCOUNT_ALERT_TITLE" desc="Title of the alert view when the remove account button is clicked.">
         Remove account <ph name="USER_EMAIL">$1<ex>janedoe@google.com</ex></ph>?
       </message>
@@ -7833,11 +7878,8 @@ Handoff must also be enabled in the General section of Settings, and your device
       <message name="IDS_IOS_SETTINGS_AUTOFILL_DELETE_LOCAL_HOME_WORK_ADDRESS_CONFIRMATION_TITLE" desc="Title for the sheet shown to the user for confirmation to delete local and home or work addresses. [iOS only]">
           This deletes addresses saved on this device. It also removes selected info from Chrome, but it doesn’t delete this info from your Google Account.
       </message>
-      <message name="IDS_IOS_SETTINGS_AUTOFILL_DELETE_TITLE_LOCAL" desc="Title for the sheet shown to the user for confirmation to delete mixed selection of addresses and entities. Locally saved only. [iOS only]">
+      <message name="IDS_IOS_SETTINGS_AUTOFILL_DELETE_TITLE_LOCAL" desc="Title for the sheet shown to the user for confirmation to delete locally saved Autofill AI entities. [iOS only]">
           This deletes selected info saved on this device
-      </message>
-      <message name="IDS_IOS_SETTINGS_AUTOFILL_DELETE_TITLE_LOCAL_AND_SERVER" desc="Title for the sheet shown to the user for confirmation to delete mixed selection of addresses and entities when addresses are saved in the user's Google Account. [iOS only]">
-          This deletes selected info saved on this device and in your Google Account <ph name="USER_EMAIL">$1<ex>janedoe@google.com</ex></ph>
       </message>
       <message name="IDS_IOS_SETTINGS_AUTOFILL_EDIT_HOME_WORK_ADDRESS_CONFIRMATION_BUTTON" desc="Edit button shown as an option in the address deletion confirmation sheet. [iOS only]">
           Edit in Google Account

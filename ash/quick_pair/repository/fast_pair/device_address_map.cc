@@ -4,7 +4,7 @@
 
 #include "ash/quick_pair/repository/fast_pair/device_address_map.h"
 
-#include "ash/shell.h"
+#include "base/check_deref.h"
 #include "base/values.h"
 #include "components/cross_device/logging/logging.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -21,7 +21,8 @@ void DeviceAddressMap::RegisterLocalStatePrefs(PrefRegistrySimple* registry) {
   registry->RegisterDictionaryPref(kDeviceAddressMapPref);
 }
 
-DeviceAddressMap::DeviceAddressMap() = default;
+DeviceAddressMap::DeviceAddressMap(PrefService* local_state)
+    : local_state_(CHECK_DEREF(local_state)) {}
 
 DeviceAddressMap::~DeviceAddressMap() = default;
 
@@ -44,9 +45,8 @@ bool DeviceAddressMap::PersistRecordsForDevice(scoped_refptr<Device> device) {
 }
 
 bool DeviceAddressMap::PersistMacAddressRecord(const std::string& mac_address) {
-  const std::string& model_id = mac_address_to_model_id_[mac_address];
-
-  if (model_id.empty()) {
+  auto it = mac_address_to_model_id_.find(mac_address);
+  if (it == mac_address_to_model_id_.end() || it->second.empty()) {
     CD_LOG(VERBOSE, Feature::FP)
         << __func__
         << ": Can't persist null mac address -> model ID record "
@@ -54,15 +54,9 @@ bool DeviceAddressMap::PersistMacAddressRecord(const std::string& mac_address) {
                mac_address;
     return false;
   }
+  const std::string& model_id = it->second;
 
-  PrefService* local_state = Shell::Get()->local_state();
-  if (!local_state) {
-    CD_LOG(WARNING, Feature::FP)
-        << __func__ << ": No shell local state available.";
-    return false;
-  }
-
-  ScopedDictPrefUpdate device_address_map_dict(local_state,
+  ScopedDictPrefUpdate device_address_map_dict(&local_state_.get(),
                                                kDeviceAddressMapPref);
   if (!device_address_map_dict->Set(mac_address, model_id)) {
     CD_LOG(VERBOSE, Feature::FP)
@@ -76,14 +70,9 @@ bool DeviceAddressMap::PersistMacAddressRecord(const std::string& mac_address) {
 }
 
 bool DeviceAddressMap::EvictMacAddressRecord(const std::string& mac_address) {
-  PrefService* local_state = Shell::Get()->local_state();
-  if (!local_state) {
-    CD_LOG(WARNING, Feature::FP)
-        << __func__ << ": No shell local state available.";
-    return false;
-  }
+  mac_address_to_model_id_.erase(mac_address);
 
-  ScopedDictPrefUpdate device_address_map_dict(local_state,
+  ScopedDictPrefUpdate device_address_map_dict(&local_state_.get(),
                                                kDeviceAddressMapPref);
   if (!device_address_map_dict->Remove(mac_address)) {
     CD_LOG(VERBOSE, Feature::FP)
@@ -104,25 +93,18 @@ std::optional<const std::string> DeviceAddressMap::GetModelIdForMacAddress(
     LoadPersistedRecordsFromPrefs();
   }
 
-  std::string& saved_model_id = mac_address_to_model_id_[mac_address];
-  if (saved_model_id.empty()) {
+  auto it = mac_address_to_model_id_.find(mac_address);
+  if (it == mac_address_to_model_id_.end() || it->second.empty()) {
     return std::nullopt;
   }
-  return saved_model_id;
+  return it->second;
 }
 
 bool DeviceAddressMap::HasPersistedRecordsForModelId(
-    const std::string& model_id) {
+    std::string_view model_id) {
   CD_LOG(INFO, Feature::FP) << __func__;
-  PrefService* local_state = Shell::Get()->local_state();
-  if (!local_state) {
-    CD_LOG(WARNING, Feature::FP)
-        << __func__ << ": No shell local state available.";
-    return false;
-  }
-
   const base::DictValue& device_address_map_dict =
-      local_state->GetDict(kDeviceAddressMapPref);
+      local_state_->GetDict(kDeviceAddressMapPref);
   for (std::pair<const std::string&, const base::Value&> record :
        device_address_map_dict) {
     if (record.second.GetString() == model_id) {
@@ -140,15 +122,8 @@ void DeviceAddressMap::RefreshCacheForTest() {
 
 void DeviceAddressMap::LoadPersistedRecordsFromPrefs() {
   CD_LOG(INFO, Feature::FP) << __func__;
-  PrefService* local_state = Shell::Get()->local_state();
-  if (!local_state) {
-    CD_LOG(WARNING, Feature::FP)
-        << __func__ << ": No shell local state available.";
-    return;
-  }
-
   const base::DictValue& device_address_map_dict =
-      local_state->GetDict(kDeviceAddressMapPref);
+      local_state_->GetDict(kDeviceAddressMapPref);
   for (std::pair<const std::string&, const base::Value&> record :
        device_address_map_dict) {
     mac_address_to_model_id_[record.first] = record.second.GetString();

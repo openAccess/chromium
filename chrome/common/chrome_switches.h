@@ -184,6 +184,12 @@ inline constexpr char kCaptureAutoReject[] = "auto-reject-capture";
 inline constexpr char kCheckForUpdateIntervalSec[] =
     "check-for-update-interval";
 
+// Overrides the fuzzy search scoring params used by the app menu search, as a
+// comma-separated list of "title,secondary,synonym,min_score" (e.g.
+// "1.0,0.8,0.85,0.6"). Missing or invalid entries fall back to the
+// kChroMenuSearch feature params. Intended for tuning from chrome://flags.
+inline constexpr char kChroMenuSearchScoring[] = "chro-menu-search-scoring";
+
 // Comma-separated list of SSL cipher suites to disable.
 inline constexpr char kCipherSuiteBlacklist[] = "cipher-suite-blacklist";
 
@@ -852,10 +858,6 @@ inline constexpr char kAndroidEntraSsoAllowDebugBrokers[] =
 inline constexpr char kAuthAndroidNegotiateAccountType[] =
     "auth-spnego-account-type";
 
-// Disable the default browser promo.
-inline constexpr char kDisableDefaultBrowserPromo[] =
-    "disable-default-browser-promo";
-
 // Forces the night mode to be enabled.
 inline constexpr char kForceEnableNightMode[] = "force-enable-night-mode";
 
@@ -1073,6 +1075,11 @@ inline constexpr char kGlicGuestURL[] = "glic-guest-url";
 
 // Overrides the GEiC guest URL.
 inline constexpr char kGeicGuestURL[] = "geic-guest-url";
+
+// Allows `--geic-guest-url` to be any HTTP or HTTPS URL, rather than only an
+// allowlisted Gemini Enterprise host, and lets an HTTP guest origin load. For
+// local development and tests only.
+inline constexpr char kGeicAllowAnyGuestURL[] = "geic-allow-any-guest-url";
 
 // Treats the GEiC FRE as completed without persisting anything. GEiC
 // counterpart of `--glic-always-skip-fre`.

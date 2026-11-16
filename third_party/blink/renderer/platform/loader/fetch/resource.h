@@ -240,14 +240,8 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
 
   virtual void UpdateResourceInfoFromObservers() {}
 
-  // Returns two priorities:
-  // - `first` is the priority with the fix of https://crbug.com/1369823.
-  // - `second` is the priority without the fix, ignoring the priority from
-  //   ImageLoader.
-  virtual std::pair<std::optional<ResourcePriority>,
-                    std::optional<ResourcePriority>>
-  PriorityFromObservers() const {
-    return std::make_pair(std::nullopt, std::nullopt);
+  virtual std::optional<ResourcePriority> PriorityFromObservers() const {
+    return std::nullopt;
   }
 
   virtual bool IsAboveSpeculativeDecodeSizeThreshold() const { return false; }
@@ -273,7 +267,10 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
   void SetStatus(ResourceStatus status) { status_ = status; }
   virtual ResourceStatus GetContentStatus() const { return status_; }
 
-  size_t size() const { return EncodedSize() + DecodedSize() + OverheadSize(); }
+  size_t size() const {
+    return (encoded_data_released_ ? 0u : EncodedSize()) + DecodedSize() +
+           OverheadSize();
+  }
 
   // Returns the size of content (response body) before decoding. Adding a new
   // usage of this function is not recommended (See the TODO below).
@@ -305,6 +302,9 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
   virtual scoped_refptr<const SharedBuffer> ResourceBuffer() const {
     return data_;
   }
+  // Whether ResourceBuffer() would return a buffer, without creating it.
+  // Must match ResourceBuffer(); override both together.
+  virtual bool HasResourceBuffer() const { return data_ != nullptr; }
   void SetResourceBuffer(scoped_refptr<SharedBuffer>);
 
   virtual bool WillFollowRedirect(const ResourceRequest&,
@@ -603,10 +603,12 @@ class PLATFORM_EXPORT Resource : public GarbageCollected<Resource>,
   base::TimeTicks load_response_end_;
   base::TimeTicks memory_cache_last_accessed_;
 
+  String cache_identifier_;
+
   size_t encoded_size_ = 0u;
   size_t decoded_size_ = 0u;
-
-  String cache_identifier_;
+  // True once the encoded data has been released.
+  bool encoded_data_released_ = false;
 
   bool link_preload_ = false;
   bool is_alive_ = false;

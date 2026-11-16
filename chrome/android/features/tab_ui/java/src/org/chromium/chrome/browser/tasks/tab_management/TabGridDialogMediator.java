@@ -59,6 +59,7 @@ import org.chromium.chrome.browser.tab.TabLaunchTypeUtils;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.RecyclerViewPosition;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoClosureRestorer;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabClosureParamsUtils;
 import org.chromium.chrome.browser.tabmodel.TabCreatorUtil;
@@ -83,7 +84,6 @@ import org.chromium.chrome.browser.tasks.tab_management.TabUiMetricsHelper.TabLi
 import org.chromium.chrome.browser.tasks.tab_management.tab_group_share_notice.TabGroupShareNoticeBottomSheetCoordinator;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoClosureRestorer;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
 import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.tab_ui.R;
@@ -178,14 +178,10 @@ public class TabGridDialogMediator
         /** Cleanup post hiding dialog. */
         void postHiding();
 
-        /**
-         * @return Whether or not the TabGridDialog consumed the event.
-         */
+        /** Returns whether or not the TabGridDialog consumed the event. */
         boolean handleBackPressed();
 
-        /**
-         * @return Whether the TabGridDialog is visible.
-         */
+        /** Returns whether the TabGridDialog is visible. */
         boolean isVisible();
 
         /** A supplier that returns if the dialog is currently showing or animating. */
@@ -1061,7 +1057,7 @@ public class TabGridDialogMediator
     private void onDeferredKeyboardHidden() {
         if (!mModel.get(TabGridDialogProperties.IS_TITLE_TEXT_FOCUSED)) return;
         View decorView = mActivity.getWindow().getDecorView();
-        if (KeyboardVisibilityDelegate.getInstance().isKeyboardShowing(decorView)) return;
+        if (KeyboardVisibilityDelegate.getInstance().isKeyboardObscuring(decorView)) return;
         onKeyboardHidden();
     }
 
@@ -1356,7 +1352,12 @@ public class TabGridDialogMediator
             boolean reselect = !model.isIncognitoBranded() && snapshot == mReselectableSnapshot;
             mReselectableSnapshot = null;
             UndoClosureRestorer.restoreClosure(
-                    model, snapshot, reselect, mActivity, mSnackbarManager);
+                    model,
+                    snapshot,
+                    reselect,
+                    mActivity,
+                    mSnackbarManager,
+                    mDataSharingTabManager.getTabGroupUiActionHandler());
             return;
         }
         if (actionData instanceof Integer tabId) {

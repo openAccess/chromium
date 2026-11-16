@@ -31,6 +31,7 @@
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial.h"
+#include "base/no_destructor.h"
 #include "base/power_monitor/power_monitor.h"
 #include "base/power_monitor/power_monitor_source.h"
 #include "base/run_loop.h"
@@ -50,6 +51,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_entropy_provider.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/task_environment.h"
@@ -116,7 +118,18 @@
 #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-shared.h"
 
 #if BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
+#include "components/unexportable_keys/fake_unexportable_key_service.h"
+#include "crypto/sign.h"
+#include "net/device_bound_sessions/registration_fetcher.h"
+#include "net/device_bound_sessions/registration_fetcher_param.h"
+#include "net/device_bound_sessions/registration_result.h"
+#include "net/device_bound_sessions/session.h"
+#include "net/device_bound_sessions/session_key.h"
+#include "net/device_bound_sessions/session_params.h"
 #include "net/device_bound_sessions/session_service.h"
+#include "net/device_bound_sessions/test_support.h"
+#include "net/device_bound_sessions/unexportable_key_service_factory.h"
+#include "net/log/net_log_with_source.h"
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
 #include "net/disk_cache/buildflags.h"
@@ -185,6 +198,7 @@
 #include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/network_service_buildflags.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/cpp/resolve_host_client_base.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/clear_data_filter.mojom.h"
@@ -216,6 +230,7 @@
 #include "url/origin.h"
 #include "url/scheme_host_port.h"
 #include "url/url_constants.h"
+#include "url/url_util.h"
 
 #if BUILDFLAG(ENABLE_REPORTING)
 #include "net/network_error_logging/network_error_logging_service.h"
@@ -841,7 +856,7 @@ TEST_F(NetworkContextTest, DestroyContextWithLiveRequest) {
 }
 
 TEST_F(NetworkContextTest, DisableQuic) {
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(switches::kEnableQuic);
+  base::CommandLine::ForCurrentProcess()->AppendSwitch(::switches::kEnableQuic);
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
@@ -881,6 +896,12 @@ TEST_F(NetworkContextTest, DisableQuic) {
                    .enable_quic);
 }
 
+// The throttling client (e.g. a DevTools session) that socket-layer network
+// conditions are set for.
+base::UnguessableToken ThrottlingClientId() {
+  return base::UnguessableToken::CreateForTesting(1, 1);
+}
+
 TEST_F(NetworkContextTest, SetSocketLayerNetworkConditionsValidatesInput) {
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
@@ -892,37 +913,201 @@ TEST_F(NetworkContextTest, SetSocketLayerNetworkConditionsValidatesInput) {
   // used to reach CHECKs / undefined float->int conversions deeper in the
   // stack).
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(-5), /*download=*/1000.0,
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(-5),
+      /*download=*/1000.0,
       /*upload=*/1000.0);
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::TimeDelta::Max(), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::TimeDelta::Max(), 1000.0, 1000.0);
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10),
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10),
       /*download=*/std::numeric_limits<double>::infinity(), 1000.0);
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0,
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0,
       /*upload=*/std::numeric_limits<double>::quiet_NaN());
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
 
   // A positive sub-byte/sec throughput is clamped up to one byte/sec rather
   // than truncating to zero (which used to CHECK-crash the network service).
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), /*download=*/0.0005,
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10),
+      /*download=*/0.0005,
       /*upload=*/0.0005);
   EXPECT_TRUE(network_context->GetIsolatedTransactionFactory(profile_id, url));
 
   // Non-positive throughput means unconstrained and is accepted.
-  network_context->SetSocketLayerNetworkConditions(profile_id,
-                                                   base::Milliseconds(10),
-                                                   /*download=*/0.0,
-                                                   /*upload=*/-1.0);
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10),
+      /*download=*/0.0,
+      /*upload=*/-1.0);
   EXPECT_TRUE(network_context->GetIsolatedTransactionFactory(profile_id, url));
 
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
+}
+
+// As with legacy network conditions, clients don't replace or clear each
+// other's socket-layer conditions, and requests use those of the first client,
+// by `client_order`.
+TEST_F(NetworkContextTest, SocketLayerNetworkConditionsArePerClient) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  const base::UnguessableToken first_client = base::UnguessableToken::Create();
+  const base::UnguessableToken second_client = base::UnguessableToken::Create();
+  const GURL url("https://example.com/");
+  auto set_conditions = [&](const base::UnguessableToken& client_id,
+                            uint64_t client_order) {
+    network_context->SetSocketLayerNetworkConditions(
+        profile_id, client_id, client_order, base::Milliseconds(10),
+        /*download=*/0.0, /*upload=*/0.0);
+  };
+  auto clear_conditions = [&](const base::UnguessableToken& client_id) {
+    network_context->ClearSocketLayerNetworkConditions(profile_id, client_id);
+  };
+  auto factory = [&] {
+    return network_context->GetIsolatedTransactionFactory(profile_id, url);
+  };
+
+  set_conditions(first_client, /*client_order=*/1);
+  const scoped_refptr<net::HttpTransactionFactoryHandle> first_handle =
+      factory();
+  ASSERT_TRUE(first_handle);
+  set_conditions(second_client, /*client_order=*/2);
+  EXPECT_EQ(factory(), first_handle);
+  clear_conditions(second_client);
+  EXPECT_EQ(factory(), first_handle);
+
+  // Once the first client clears its conditions, the next client's apply.
+  set_conditions(second_client, /*client_order=*/3);
+  clear_conditions(first_client);
+  const scoped_refptr<net::HttpTransactionFactoryHandle> second_handle =
+      factory();
+  ASSERT_TRUE(second_handle);
+  EXPECT_NE(second_handle, first_handle);
+
+  // Updated conditions keep their client's order.
+  set_conditions(first_client, /*client_order=*/4);
+  EXPECT_EQ(factory(), second_handle);
+  set_conditions(second_client, /*client_order=*/3);
+  const scoped_refptr<net::HttpTransactionFactoryHandle> updated_second_handle =
+      factory();
+  EXPECT_NE(updated_second_handle, second_handle);
+  clear_conditions(first_client);
+  EXPECT_EQ(factory(), updated_second_handle);
+
+  clear_conditions(second_client);
+  EXPECT_FALSE(factory());
+}
+
+// Clients are ordered by `client_order` rather than by when their conditions
+// arrived, so that moving conditions to another profile keeps their order.
+TEST_F(NetworkContextTest, SocketLayerNetworkConditionsFollowClientOrder) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  const base::UnguessableToken first_client = base::UnguessableToken::Create();
+  const base::UnguessableToken second_client = base::UnguessableToken::Create();
+  const GURL url("https://example.com/");
+
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, second_client, /*client_order=*/2, base::Milliseconds(10),
+      /*download=*/0.0, /*upload=*/0.0);
+  const scoped_refptr<net::HttpTransactionFactoryHandle> second_handle =
+      network_context->GetIsolatedTransactionFactory(profile_id, url);
+  ASSERT_TRUE(second_handle);
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, first_client, /*client_order=*/1, base::Milliseconds(10),
+      /*download=*/0.0, /*upload=*/0.0);
+  EXPECT_NE(network_context->GetIsolatedTransactionFactory(profile_id, url),
+            second_handle);
+  network_context->ClearSocketLayerNetworkConditions(profile_id, first_client);
+  EXPECT_EQ(network_context->GetIsolatedTransactionFactory(profile_id, url),
+            second_handle);
+}
+
+// Conditions without throttling get no isolated session, but keep their place
+// among clients' conditions: while they come first, requests use the primary
+// session.
+TEST_F(NetworkContextTest,
+       SocketLayerNetworkConditionsWithoutThrottlingKeepTheirPlace) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  const base::UnguessableToken first_client = base::UnguessableToken::Create();
+  const base::UnguessableToken second_client = base::UnguessableToken::Create();
+  const GURL url("https://example.com/");
+
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, first_client, /*client_order=*/1, base::TimeDelta(),
+      /*download=*/0.0, /*upload=*/-1.0);
+  EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, second_client, /*client_order=*/2, base::Milliseconds(10),
+      /*download=*/0.0, /*upload=*/0.0);
+  EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
+
+  // Once the first client clears its conditions, the next client's apply.
+  network_context->ClearSocketLayerNetworkConditions(profile_id, first_client);
+  const scoped_refptr<net::HttpTransactionFactoryHandle> second_handle =
+      network_context->GetIsolatedTransactionFactory(profile_id, url);
+  EXPECT_TRUE(second_handle);
+
+  // Updating throttling conditions to ones without throttling retires their
+  // session.
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, second_client, /*client_order=*/2, base::TimeDelta(),
+      /*download=*/-1.0, /*upload=*/-1.0);
+  EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
+  EXPECT_EQ(network_context->GetRetiredIsolatedSessionCountForTesting(), 1u);
+
+  network_context->ClearSocketLayerNetworkConditions(profile_id, second_client);
+  EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
+}
+
+// Proxy credentials that a retiring session learned reach the other clients'
+// sessions, as well as the primary session.
+TEST_F(NetworkContextTest, RetiredSessionProxyAuthReachesOtherSessions) {
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+  const base::UnguessableToken profile_id = base::UnguessableToken::Create();
+  const base::UnguessableToken first_client = base::UnguessableToken::Create();
+  const base::UnguessableToken second_client = base::UnguessableToken::Create();
+  const GURL url("http://example.test/");
+  auto auth_cache = [&] {
+    return network_context->GetIsolatedTransactionFactory(profile_id, url)
+        ->factory()
+        ->GetSession()
+        ->http_auth_cache();
+  };
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, first_client, /*client_order=*/1, base::Milliseconds(10),
+      1000.0, 1000.0);
+  network_context->SetSocketLayerNetworkConditions(
+      profile_id, second_client, /*client_order=*/2, base::Milliseconds(10),
+      1000.0, 1000.0);
+
+  // The first client's session learns proxy credentials after the second
+  // client's session was created, then retires.
+  url::SchemeHostPort proxy(GURL("http://proxy.test/"));
+  auth_cache()->Add(proxy, net::HttpAuth::AUTH_PROXY, "proxyrealm",
+                    net::HttpAuth::AUTH_SCHEME_BASIC,
+                    net::NetworkAnonymizationKey(), "Basic realm=proxyrealm",
+                    net::AuthCredentials(u"user", u"pass"), "/");
+  network_context->ClearSocketLayerNetworkConditions(profile_id, first_client);
+
+  EXPECT_TRUE(auth_cache()->Lookup(
+      proxy, net::HttpAuth::AUTH_PROXY, "proxyrealm",
+      net::HttpAuth::AUTH_SCHEME_BASIC, net::NetworkAnonymizationKey()));
 }
 
 TEST_F(NetworkContextTest, RequestThroughIsolatedSessionIsDelayed) {
@@ -942,7 +1127,8 @@ TEST_F(NetworkContextTest, RequestThroughIsolatedSessionIsDelayed) {
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   constexpr base::TimeDelta kRtt = base::Milliseconds(300);
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, kRtt, /*download=*/0.0, /*upload=*/0.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0, kRtt,
+      /*download=*/0.0, /*upload=*/0.0);
 
   ResourceRequest request;
   request.url = test_server.GetURL("/echo");
@@ -982,7 +1168,9 @@ TEST_F(NetworkContextTest, ClearHttpCacheEvictsIsolatedCacheEntries) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(1), /*download=*/0.0, /*upload=*/0.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(1), /*download=*/0.0,
+      /*upload=*/0.0);
 
   ResourceRequest request;
   request.url = test_server.GetURL("/cachetime");
@@ -1032,7 +1220,9 @@ TEST_F(NetworkContextTest, ComputeHttpCacheSizeExcludesIsolatedCaches) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(1), /*download=*/0.0, /*upload=*/0.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(1), /*download=*/0.0,
+      /*upload=*/0.0);
 
   // Populate the isolated session's cache. The second fetch being served
   // from it confirms the entry is there.
@@ -1060,7 +1250,8 @@ TEST_F(NetworkContextTest, IsolatedSessionAltSvcDoesNotLeakToPrimary) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("https://example.com/"));
@@ -1098,7 +1289,8 @@ TEST_F(NetworkContextTest, DisableQuicReachesIsolatedSessions) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("https://example.com/"));
@@ -1168,7 +1360,9 @@ TEST_F(NetworkContextTest, SharedDictionaryWorksThroughIsolatedSession) {
       CreateContextWithParams(std::move(params));
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(1), /*download=*/0.0, /*upload=*/0.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(1), /*download=*/0.0,
+      /*upload=*/0.0);
 
   // Throttled, same-origin requests from a secure context: the conditions
   // under which dictionaries may be both stored and used.
@@ -1222,14 +1416,16 @@ TEST_F(NetworkContextTest, SetSocketLayerNetworkConditionsOnUnmanagedContext) {
 
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("https://example.com/"));
   ASSERT_TRUE(handle);
   EXPECT_EQ(handle->factory()->GetCache(), nullptr);
   EXPECT_TRUE(handle->factory()->GetSession());
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
 }
 
 TEST_F(NetworkContextTest, CacheDisabledContextGetsNoIsolatedCache) {
@@ -1242,7 +1438,8 @@ TEST_F(NetworkContextTest, CacheDisabledContextGetsNoIsolatedCache) {
       CreateContextWithParams(std::move(params));
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("https://example.com/"));
@@ -1298,7 +1495,8 @@ TEST_F(NetworkContextTest, RetiredSessionsCoveredByMaintenance) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("http://example.test/"));
@@ -1308,7 +1506,8 @@ TEST_F(NetworkContextTest, RetiredSessionsCoveredByMaintenance) {
   // Update the conditions: the old session is retired but `handle`
   // (standing in for an in-flight request) keeps it alive.
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(20), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(20), 1000.0, 1000.0);
 
   // Browser-pushed credentials reach the retired session...
   url::SchemeHostPort scheme_host_port(GURL("http://example.test/"));
@@ -1371,7 +1570,8 @@ TEST_F(NetworkContextTest, IsolatedSessionSeededWithProxyAuthEntries) {
 
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpAuthCache* isolated_cache =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1395,7 +1595,8 @@ TEST_F(NetworkContextTest, RetiredSessionFreedWhenLastHandleDrains) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("https://example.com/"));
@@ -1405,7 +1606,8 @@ TEST_F(NetworkContextTest, RetiredSessionFreedWhenLastHandleDrains) {
   // the test's reference (standing in for an in-flight request) is now the
   // only thing keeping the session alive...
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(20), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(20), 1000.0, 1000.0);
   EXPECT_TRUE(handle->factory());
   EXPECT_TRUE(handle->HasOneRef());
   EXPECT_EQ(network_context->GetRetiredIsolatedSessionCountForTesting(), 1u);
@@ -1438,7 +1640,9 @@ TEST_F(NetworkContextTest, FanOutOverRetiredSessionWithInFlightRequest) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(1), /*download=*/0.0, /*upload=*/0.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(1), /*download=*/0.0,
+      /*upload=*/0.0);
 
   // Start a request that never completes, so it is still in flight (holding
   // the session's factory handle) when the profile is retired.
@@ -1463,7 +1667,8 @@ TEST_F(NetworkContextTest, FanOutOverRetiredSessionWithInFlightRequest) {
 
   // Retire the profile: the in-flight request now holds the retired
   // session's last handle reference.
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
   ASSERT_EQ(network_context->GetRetiredIsolatedSessionCountForTesting(), 1u);
 
   // Fan-outs over the retired session are safe while it is in use.
@@ -1497,7 +1702,8 @@ TEST_F(NetworkContextTest, QuicHintsReplayedIntoNewIsolatedSessions) {
 
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpServerProperties* isolated_properties =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1519,7 +1725,8 @@ TEST_F(NetworkContextTest, QuicHintsReplayedIntoNewIsolatedSessions) {
   ASSERT_TRUE(cleared.Wait());
   const base::UnguessableToken profile_id2 = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id2, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id2, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   EXPECT_TRUE(
       network_context
           ->GetIsolatedTransactionFactory(profile_id2,
@@ -1555,7 +1762,8 @@ TEST_F(NetworkContextTest, QuicHintsReplayedIntoNewIsolatedSessionsInLRUOrder) {
 
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpServerProperties* isolated_properties =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1594,7 +1802,8 @@ TEST_F(NetworkContextTest, SplitAuthCacheSettingAppliedToNewIsolatedSessions) {
 
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   EXPECT_TRUE(network_context
                   ->GetIsolatedTransactionFactory(profile_id,
                                                   GURL("https://example.com/"))
@@ -1642,7 +1851,8 @@ TEST_F(NetworkContextTest,
   // reach an already-existing session rather than one seeded at creation.
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpAuthCache* isolated_cache =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1684,7 +1894,8 @@ TEST_F(NetworkContextTest, QuicHintsAndHistoryClearingReachIsolatedSessions) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpServerProperties* isolated_properties =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1724,7 +1935,8 @@ TEST_F(NetworkContextTest, LogicalCacheClearingCoversIsolatedCaches) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   net::HttpCache* isolated_cache =
       network_context
           ->GetIsolatedTransactionFactory(profile_id,
@@ -1757,7 +1969,8 @@ TEST_F(NetworkContextTest, SocketLayerConditionsUpdateKeepsCapturedSession) {
   const GURL url("https://example.com/");
 
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle1 =
       network_context->GetIsolatedTransactionFactory(profile_id, url);
   ASSERT_TRUE(handle1);
@@ -1766,7 +1979,8 @@ TEST_F(NetworkContextTest, SocketLayerConditionsUpdateKeepsCapturedSession) {
   // Updating the conditions retires the old session, but the captured
   // handle keeps vending the old factory; new lookups get the new one.
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(20), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(20), 1000.0, 1000.0);
   EXPECT_TRUE(handle1->factory());
   scoped_refptr<net::HttpTransactionFactoryHandle> handle2 =
       network_context->GetIsolatedTransactionFactory(profile_id, url);
@@ -1776,7 +1990,8 @@ TEST_F(NetworkContextTest, SocketLayerConditionsUpdateKeepsCapturedSession) {
 
   // Clearing the conditions likewise leaves captured handles functional;
   // only new lookups fall back to the primary factory.
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
   EXPECT_TRUE(handle1->factory());
   EXPECT_TRUE(handle2->factory());
   EXPECT_FALSE(network_context->GetIsolatedTransactionFactory(profile_id, url));
@@ -1790,7 +2005,8 @@ TEST_F(NetworkContextTest, AuthCacheChangesPropagateToIsolatedSessions) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
   scoped_refptr<net::HttpTransactionFactoryHandle> handle =
       network_context->GetIsolatedTransactionFactory(
           profile_id, GURL("http://example.test/"));
@@ -1840,14 +2056,16 @@ TEST_F(NetworkContextTest, ProfileClearedWhileCacheClearingInFlight) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
 
   base::test::TestFuture<void> clear_done;
   network_context->ClearHttpCache(base::Time(), base::Time::Max(),
                                   /*filter=*/nullptr, clear_done.GetCallback());
 
   // Retire the profile immediately, while the clearing is in flight.
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
 
   // It still completes cleanly against the kept-alive session.
   EXPECT_TRUE(clear_done.Wait());
@@ -1861,14 +2079,16 @@ TEST_F(NetworkContextTest, ClearHttpCacheCoversIsolatedSessions) {
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
   const base::UnguessableToken profile_id = base::UnguessableToken::Create();
   network_context->SetSocketLayerNetworkConditions(
-      profile_id, base::Milliseconds(10), 1000.0, 1000.0);
+      profile_id, ThrottlingClientId(), /*client_order=*/0,
+      base::Milliseconds(10), 1000.0, 1000.0);
 
   base::test::TestFuture<void> clear_done;
   network_context->ClearHttpCache(base::Time(), base::Time::Max(),
                                   /*filter=*/nullptr, clear_done.GetCallback());
   EXPECT_TRUE(clear_done.Wait());
 
-  network_context->ClearSocketLayerNetworkConditions(profile_id);
+  network_context->ClearSocketLayerNetworkConditions(profile_id,
+                                                     ThrottlingClientId());
 }
 
 TEST_F(NetworkContextTest, UserAgentAndLanguage) {
@@ -1920,96 +2140,6 @@ TEST_F(NetworkContextTest, EnableBrotli) {
     EXPECT_EQ(enable_brotli,
               network_context->url_request_context()->enable_brotli());
   }
-}
-
-// Confirms that when NetworkContextParams.bound_network is set, the
-// NetworkContext properly targets that network.
-TEST_F(NetworkContextTest, NetworkBoundNetworkContext) {
-#if BUILDFLAG(IS_ANDROID)
-  if (base::android::android_info::sdk_int() <
-      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
-    GTEST_SKIP()
-        << "bound_network is supported starting from Android Marshmallow";
-  }
-
-  // The actual network handle doesn't really matter, this test just wants to
-  // confirm that it is correctly passed down to the owned URLRequestContext.
-  constexpr net::handles::NetworkHandle network = 2;
-  auto scoped_mock_network_change_notifier =
-      std::make_unique<net::test::ScopedMockNetworkChangeNotifier>();
-  auto* mock_ncn =
-      scoped_mock_network_change_notifier->mock_network_change_notifier();
-  mock_ncn->ForceNetworkHandlesSupported();
-
-  mojom::NetworkContextParamsPtr context_params =
-      CreateNetworkContextParamsForTesting();
-  context_params->bound_network = network;
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(std::move(context_params));
-
-  EXPECT_EQ(network_context->url_request_context()->bound_network(), network);
-  EXPECT_EQ(network_context->url_request_context()
-                ->host_resolver()
-                ->GetTargetNetworkForTesting(),
-            network);
-  EXPECT_EQ(network_context->url_request_context()
-                ->host_resolver()
-                ->GetManagerForTesting()
-                ->target_network_for_testing(),
-            network);
-#else   // !BUILDFLAG(IS_ANDROID)
-  GTEST_SKIP() << "bound_network is supported only on Android";
-#endif  // BUILDFLAG(IS_ANDROID)
-}
-
-// Confirms that URLLoaderFactories created with target_network set in
-// URLLoaderFactoryParams correctly target that network.
-TEST_F(NetworkContextTest, URLLoaderFactoryWithTargetNetwork) {
-#if BUILDFLAG(IS_ANDROID)
-  if (base::android::android_info::sdk_int() <
-      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
-    GTEST_SKIP()
-        << "bound_network is supported starting from Android Marshmallow";
-  }
-
-  // Use a normal unbound NetworkContext.
-  mojom::NetworkContextParamsPtr context_params =
-      CreateNetworkContextParamsForTesting();
-  std::unique_ptr<NetworkContext> network_context =
-      CreateContextWithParams(std::move(context_params));
-
-  EXPECT_EQ(network_context->url_request_context()->bound_network(),
-            net::handles::kInvalidNetworkHandle);
-
-  constexpr net::handles::NetworkHandle network = 2;
-  auto scoped_mock_network_change_notifier =
-      std::make_unique<net::test::ScopedMockNetworkChangeNotifier>();
-  auto* mock_ncn =
-      scoped_mock_network_change_notifier->mock_network_change_notifier();
-  mock_ncn->ForceNetworkHandlesSupported();
-  const size_t start_num_url_loader_factories =
-      network_context->num_url_loader_factories_for_testing();
-
-  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
-  mojom::URLLoaderFactoryParamsPtr params =
-      mojom::URLLoaderFactoryParams::New();
-  params->process_id = OriginatingProcessId::browser();
-  params->target_network = network;
-  network_context->CreateURLLoaderFactory(
-      loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-  EXPECT_TRUE(loader_factory.is_bound());
-  EXPECT_TRUE(loader_factory.is_connected());
-  // To be on the safe side, confirm that the NetworkContext is aware of the
-  // new URLLoaderFactory that has just been created.
-  EXPECT_EQ(network_context->num_url_loader_factories_for_testing() -
-                start_num_url_loader_factories,
-            1u);
-  EXPECT_EQ(
-      network_context->CountURLLoaderFactoriesBoundToNetworkForTesting(network),
-      1u);
-#else   // !BUILDFLAG(IS_ANDROID)
-  GTEST_SKIP() << "bound_network is supported only on Android";
-#endif  // BUILDFLAG(IS_ANDROID)
 }
 
 TEST_F(NetworkContextTest, UnhandedProtocols) {
@@ -2655,6 +2785,217 @@ TEST_F(NetworkContextTest,
   manager.FlushForTesting();
   EXPECT_FALSE(manager.is_connected());
 }
+
+// Makes `SessionService::Create` independent of the platform key provider
+// and of whatever an earlier test cached in `UnexportableKeyServiceFactory`.
+class ScopedFakeDeviceBoundSessionKeyService {
+ public:
+  ScopedFakeDeviceBoundSessionKeyService() {
+    net::device_bound_sessions::UnexportableKeyServiceFactory::GetInstance()
+        ->SetUnexportableKeyFactoryForTesting(&GetKeyService);
+  }
+  ~ScopedFakeDeviceBoundSessionKeyService() {
+    net::device_bound_sessions::UnexportableKeyServiceFactory::GetInstance()
+        ->SetUnexportableKeyFactoryForTesting(nullptr);
+  }
+
+ private:
+  static unexportable_keys::UnexportableKeyService* GetKeyService() {
+    static base::NoDestructor<unexportable_keys::FakeUnexportableKeyService>
+        key_service;
+    return key_service.get();
+  }
+};
+
+// Registers a device bound session on the origin of `url` using a test
+// fetcher that completes synchronously. The session is site-scoped when
+// `include_site` is true and origin-scoped otherwise.
+void RegisterDeviceBoundSessionForTesting(
+    net::device_bound_sessions::SessionService& service,
+    const GURL& url,
+    bool include_site = true) {
+  net::device_bound_sessions::ScopedTestRegistrationFetcher scoped_fetcher(
+      base::BindRepeating(
+          [](const GURL& url, bool include_site,
+             net::device_bound_sessions::RegistrationFetcher::
+                 RegistrationCompleteCallback callback) {
+            std::move(callback).Run(
+                nullptr,
+                net::device_bound_sessions::RegistrationResult(
+                    net::device_bound_sessions::Session::CreateIfValid(
+                        net::device_bound_sessions::SessionParams{
+                            .session_id = "session_id",
+                            .fetcher_url = url.Resolve("/refresh"),
+                            .refresh_url = url.Resolve("/refresh").spec(),
+                            .scope = {.include_site = include_site,
+                                      .origin =
+                                          url::Origin::Create(url).Serialize()},
+                            .credentials = {{
+                                .name = "test_cookie",
+                                .attributes = "secure",
+                            }},
+                        })));
+          },
+          url, include_site));
+  service.RegisterBoundSession(
+      base::NullCallback(),
+      net::device_bound_sessions::RegistrationFetcherParam::
+          CreateInstanceForTesting(url, {crypto::sign::ECDSA_SHA256},
+                                   "challenge",
+                                   /*authorization=*/std::nullopt),
+      net::IsolationInfo::CreateTransient(/*nonce=*/std::nullopt),
+      net::SiteForCookies(), net::NetLogWithSource(),
+      /*original_request_initiator=*/std::nullopt);
+}
+
+std::vector<net::SchemefulSite> GetDeviceBoundSessionSites(
+    net::device_bound_sessions::SessionService& service) {
+  base::test::TestFuture<
+      const std::vector<net::device_bound_sessions::SessionKey>&>
+      future;
+  service.GetAllSessionsAsync(future.GetCallback());
+  std::vector<net::SchemefulSite> sites;
+  for (const auto& key : future.Get()) {
+    sites.push_back(key.site);
+  }
+  return sites;
+}
+
+TEST_F(NetworkContextTest, ClearDeviceBoundSessionsSessionOnlyData) {
+  ScopedFakeDeviceBoundSessionKeyService scoped_key_service;
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+  net::device_bound_sessions::SessionService* service =
+      network_context->url_request_context()->device_bound_session_service();
+  ASSERT_TRUE(service);
+
+  const GURL kSessionOnlyUrl("https://session-only.test/");
+  const GURL kPersistentUrl("https://persistent.test/");
+  RegisterDeviceBoundSessionForTesting(*service, kSessionOnlyUrl);
+  RegisterDeviceBoundSessionForTesting(*service, kPersistentUrl);
+  ASSERT_THAT(
+      GetDeviceBoundSessionSites(*service),
+      testing::UnorderedElementsAre(net::SchemefulSite(kSessionOnlyUrl),
+                                    net::SchemefulSite(kPersistentUrl)));
+
+  base::RunLoop run_loop;
+  network_context->cookie_manager()->SetContentSettings(
+      ContentSettingsType::COOKIES,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromURL(kSessionOnlyUrl),
+          ContentSettingsPattern::Wildcard(),
+          base::Value(CONTENT_SETTING_SESSION_ONLY),
+          content_settings::ProviderType::kNone, false)},
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  base::test::TestFuture<void> future;
+  network_context->ClearDeviceBoundSessionsSessionOnlyData(
+      future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_THAT(GetDeviceBoundSessionSites(*service),
+              ElementsAre(net::SchemefulSite(kPersistentUrl)));
+}
+
+// A session belongs to its origin. An exact-host delete-on-exit rule for a
+// site does not cover a host cookie on a subdomain, so it keeps an
+// origin-scoped session on that subdomain even though it deletes domain
+// cookies for the site.
+TEST_F(NetworkContextTest,
+       ClearDeviceBoundSessionsSessionOnlyDataExactHostRuleForSite) {
+  ScopedFakeDeviceBoundSessionKeyService scoped_key_service;
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+  net::device_bound_sessions::SessionService* service =
+      network_context->url_request_context()->device_bound_session_service();
+  ASSERT_TRUE(service);
+
+  const GURL kSubdomainUrl("https://accounts.session-only.test/");
+  const GURL kPersistentUrl("https://persistent.test/");
+  RegisterDeviceBoundSessionForTesting(*service, kSubdomainUrl,
+                                       /*include_site=*/false);
+  RegisterDeviceBoundSessionForTesting(*service, kPersistentUrl);
+  ASSERT_THAT(
+      GetDeviceBoundSessionSites(*service),
+      testing::UnorderedElementsAre(net::SchemefulSite(kSubdomainUrl),
+                                    net::SchemefulSite(kPersistentUrl)));
+
+  base::RunLoop run_loop;
+  network_context->cookie_manager()->SetContentSettings(
+      ContentSettingsType::COOKIES,
+      {ContentSettingPatternSource(
+          ContentSettingsPattern::FromString("session-only.test"),
+          ContentSettingsPattern::Wildcard(),
+          base::Value(CONTENT_SETTING_SESSION_ONLY),
+          content_settings::ProviderType::kNone, false)},
+      run_loop.QuitClosure());
+  run_loop.Run();
+
+  // The rule does not cover a host cookie on the subdomain, only domain
+  // cookies for the site.
+  DeleteCookiePredicate cookie_predicate =
+      network_context->cookie_manager()
+          ->cookie_settings()
+          .CreateDeleteCookieOnExitPredicate();
+  ASSERT_FALSE(cookie_predicate.Run(kSubdomainUrl.host(),
+                                    net::CookieSourceScheme::kSecure));
+  ASSERT_TRUE(cookie_predicate.Run(".session-only.test",
+                                   net::CookieSourceScheme::kSecure));
+
+  base::test::TestFuture<void> future;
+  network_context->ClearDeviceBoundSessionsSessionOnlyData(
+      future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_THAT(
+      GetDeviceBoundSessionSites(*service),
+      testing::UnorderedElementsAre(net::SchemefulSite(kSubdomainUrl),
+                                    net::SchemefulSite(kPersistentUrl)));
+}
+
+TEST_F(NetworkContextTest,
+       ClearDeviceBoundSessionsSessionOnlyDataNoSessionOnlyRules) {
+  ScopedFakeDeviceBoundSessionKeyService scoped_key_service;
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = true;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+  net::device_bound_sessions::SessionService* service =
+      network_context->url_request_context()->device_bound_session_service();
+  ASSERT_TRUE(service);
+
+  const GURL kUrl("https://example.test/");
+  RegisterDeviceBoundSessionForTesting(*service, kUrl);
+
+  base::test::TestFuture<void> future;
+  network_context->ClearDeviceBoundSessionsSessionOnlyData(
+      future.GetCallback());
+  ASSERT_TRUE(future.Wait());
+
+  EXPECT_THAT(GetDeviceBoundSessionSites(*service),
+              ElementsAre(net::SchemefulSite(kUrl)));
+}
+
+TEST_F(NetworkContextTest, ClearDeviceBoundSessionsSessionOnlyDataDisabled) {
+  mojom::NetworkContextParamsPtr context_params =
+      CreateNetworkContextParamsForTesting();
+  context_params->device_bound_sessions_enabled = false;
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(std::move(context_params));
+
+  base::test::TestFuture<void> future;
+  network_context->ClearDeviceBoundSessionsSessionOnlyData(
+      future.GetCallback());
+  EXPECT_TRUE(future.Wait());
+}
 #endif  // BUILDFLAG(ENABLE_DEVICE_BOUND_SESSIONS)
 
 TEST_F(NetworkContextTest, DisableNetworkErrorLogging) {
@@ -2772,9 +3113,9 @@ TEST_F(NetworkContextTest, QuicIdleConnectionTimeout) {
 // Make sure that network_session_configurator is hooked up.
 TEST_F(NetworkContextTest, FixedHttpPort) {
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      switches::kTestingFixedHttpPort, "800");
+      ::switches::kTestingFixedHttpPort, "800");
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-      switches::kTestingFixedHttpsPort, "801");
+      ::switches::kTestingFixedHttpsPort, "801");
 
   std::unique_ptr<NetworkContext> network_context =
       CreateContextWithParams(CreateNetworkContextParamsForTesting());
@@ -3373,7 +3714,6 @@ TEST_F(NetworkContextTest, P2PHostResolution) {
       socket_manager.BindNewPipeAndPassReceiver());
 
   base::RunLoop run_loop;
-  std::vector<net::IPAddress> results;
   socket_manager->GetHostAddress(
       kHostname, std::nullopt /* address family */, false /* enable_mdns */,
       base::BindLambdaForTesting(
@@ -3462,7 +3802,6 @@ TEST_F(NetworkContextTest, P2PHostResolutionWithFamily) {
 
   {
     base::RunLoop run_loop;
-    std::vector<net::IPAddress> results;
     // Expect IPv4 address when family passed as AF_INET.
     socket_manager->GetHostAddress(
         kIPv4Hostname, net::AddressFamily::ADDRESS_FAMILY_IPV4,
@@ -3477,7 +3816,6 @@ TEST_F(NetworkContextTest, P2PHostResolutionWithFamily) {
 
   {
     base::RunLoop run_loop;
-    std::vector<net::IPAddress> results;
     // Expect IPv6 address when family passed as AF_INET6.
     socket_manager->GetHostAddress(
         kIPv6Hostname, net::AddressFamily::ADDRESS_FAMILY_IPV6,
@@ -7715,6 +8053,317 @@ TEST_F(NetworkContextCreateHostResolverTest, WithConfigOverrides) {
 #endif  // BUILDFLAG(IS_IOS)
 
 using NetworkContextActivateDohProbesTest = NetworkContextTest;
+
+// Verifies Finch-driven host mapping rules (`kDnsHostMappingExperiment`) in
+// `NetworkContext::MakeURLRequestContext`, including fail-closed validation and
+// command-line switch precedence.
+class NetworkContextDnsHostMappingExperimentTest : public NetworkContextTest {
+ protected:
+  void SetUpMockDnsClient() {
+    net::DnsConfig base_configuration;
+    base_configuration.nameservers = {CreateExpectedEndPoint("192.0.2.53", 53)};
+
+    net::MockDnsClientRuleList rules;
+    auto add_a_record_rule = [&](const std::string& host,
+                                 std::string_view ip_literal) {
+      net::IPAddress ip;
+      CHECK(ip.AssignFromIPLiteral(ip_literal));
+      rules.emplace_back(host, net::dns_protocol::kTypeA, /*secure=*/false,
+                         net::MockDnsClientRule::Result(
+                             net::BuildTestDnsAddressResponse(host, ip)),
+                         /*delay=*/false);
+    };
+
+    add_a_record_rule("google.com", "142.250.80.0");
+    add_a_record_rule("www.google.com", "142.250.80.1");
+    add_a_record_rule("ttl-exp-600.google.com", "142.250.80.2");
+    add_a_record_rule("images.google.com", "142.250.80.3");
+    add_a_record_rule("num-exp-4.google.com", "142.250.80.4");
+    add_a_record_rule("maps.google.com", "142.250.80.5");
+    add_a_record_rule("cmd-override.example", "192.0.2.99");
+
+    auto mock_dns_client = std::make_unique<net::MockDnsClient>(
+        base_configuration, std::move(rules));
+    mock_dns_client->SetInsecureEnabled(net::InsecureDnsMode::kEnabledBuiltIn,
+                                        /*additional_types_enabled=*/false);
+    mock_dns_client->set_ignore_system_config_changes(true);
+    network_service_->host_resolver_manager()->SetDnsClientForTesting(
+        std::move(mock_dns_client));
+  }
+
+  std::vector<net::IPEndPoint> ResolveHostA(NetworkContext* network_context,
+                                            std::string_view host,
+                                            uint16_t port) {
+    return ResolveHostImpl(network_context,
+                           network::mojom::HostResolverHost::NewHostPortPair(
+                               net::HostPortPair(host, port)));
+  }
+
+  std::vector<net::IPEndPoint> ResolveSchemeHostPortA(
+      NetworkContext* network_context,
+      url::SchemeHostPort scheme_host_port) {
+    return ResolveHostImpl(network_context,
+                           network::mojom::HostResolverHost::NewSchemeHostPort(
+                               std::move(scheme_host_port)));
+  }
+
+ private:
+  std::vector<net::IPEndPoint> ResolveHostImpl(
+      NetworkContext* network_context,
+      network::mojom::HostResolverHostPtr host) {
+    base::RunLoop run_loop;
+    mojom::ResolveHostParametersPtr parameters =
+        mojom::ResolveHostParameters::New();
+    parameters->dns_query_type = net::DnsQueryType::A;
+    parameters->source = net::HostResolverSource::DNS;
+    mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+    TestResolveHostClient response_client(&pending_response_client, &run_loop);
+    network_context->ResolveHost(
+        std::move(host), net::NetworkAnonymizationKey(), std::move(parameters),
+        std::move(pending_response_client));
+    run_loop.Run();
+    EXPECT_EQ(net::OK, response_client.result_error());
+    return response_client.result_addresses().endpoints();
+  }
+};
+
+TEST_F(NetworkContextDnsHostMappingExperimentTest,
+       AppliesValidSingleAndMultipleGoogleRules) {
+  SetUpMockDnsClient();
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment,
+      {{"rules",
+        "MAP google.com ttl-exp-600.google.com, "
+        "MAP www.google.com ttl-exp-600.google.com, "
+        "MAP images.google.com num-exp-4.google.com"}});
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.HostMappingExperiment.RulesApplied", true, 1);
+  // Verify both HostPortPair and SchemeHostPort resolution (including apex
+  // google.com).
+  EXPECT_THAT(ResolveSchemeHostPortA(
+                  network_context.get(),
+                  url::SchemeHostPort(url::kHttpsScheme, "google.com", 443)),
+              ElementsAre(CreateExpectedEndPoint("142.250.80.2", 443)));
+  EXPECT_THAT(
+      ResolveSchemeHostPortA(
+          network_context.get(),
+          url::SchemeHostPort(url::kHttpsScheme, "www.google.com", 443)),
+      ElementsAre(CreateExpectedEndPoint("142.250.80.2", 443)));
+  EXPECT_THAT(ResolveHostA(network_context.get(), "www.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("142.250.80.2", 443)));
+  EXPECT_THAT(ResolveHostA(network_context.get(), "images.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("142.250.80.4", 443)));
+  // Unmapped google.com hosts resolve normally without remapping.
+  EXPECT_THAT(
+      ResolveSchemeHostPortA(
+          network_context.get(),
+          url::SchemeHostPort(url::kHttpsScheme, "maps.google.com", 443)),
+      ElementsAre(CreateExpectedEndPoint("142.250.80.5", 443)));
+}
+
+TEST_F(NetworkContextDnsHostMappingExperimentTest,
+       HandlesNonStandardSchemeHostPort) {
+  SetUpMockDnsClient();
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment,
+      {{"rules", "MAP www.google.com ttl-exp-600.google.com"}});
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  {
+    // Local non-standard schemes preserve host and port on `SchemeHostPort`
+    // while `GURL::IsStandard()` is false. Both unmapped and mapped
+    // resolutions succeed without hitting `GURL::IsStandard()` assertions.
+    url::ScopedSchemeRegistryForTests scoped_registry;
+    url::AddLocalScheme("localnonstd");
+
+    EXPECT_THAT(
+        ResolveSchemeHostPortA(
+            network_context.get(),
+            url::SchemeHostPort("localnonstd", "maps.google.com", 8080)),
+        ElementsAre(CreateExpectedEndPoint("142.250.80.5", 8080)));
+    EXPECT_THAT(ResolveSchemeHostPortA(
+                    network_context.get(),
+                    url::SchemeHostPort("localnonstd", "www.google.com", 8443)),
+                ElementsAre(CreateExpectedEndPoint("142.250.80.2", 8443)));
+  }
+
+  {
+    // Android WebView non-standard schemes discard host and port (`host() ==
+    // ""`) while keeping `SchemeHostPort::IsValid()` true. `ResolveHost` must
+    // fail cleanly with `ERR_NAME_NOT_RESOLVED` without crashing.
+    url::ScopedSchemeRegistryForTests scoped_registry;
+    url::EnableNonStandardSchemesForAndroidWebView();
+
+    url::SchemeHostPort webview_shp("nonstd", "www.google.com", 8443);
+    ASSERT_TRUE(webview_shp.IsValid());
+    ASSERT_TRUE(webview_shp.host().empty());
+
+    base::RunLoop run_loop;
+    mojom::ResolveHostParametersPtr parameters =
+        mojom::ResolveHostParameters::New();
+    parameters->dns_query_type = net::DnsQueryType::A;
+    parameters->source = net::HostResolverSource::DNS;
+    mojo::PendingRemote<mojom::ResolveHostClient> pending_response_client;
+    TestResolveHostClient response_client(&pending_response_client, &run_loop);
+    network_context->ResolveHost(
+        network::mojom::HostResolverHost::NewSchemeHostPort(
+            std::move(webview_shp)),
+        net::NetworkAnonymizationKey(), std::move(parameters),
+        std::move(pending_response_client));
+    run_loop.Run();
+    EXPECT_EQ(net::ERR_NAME_NOT_RESOLVED, response_client.result_error());
+  }
+}
+
+TEST_F(NetworkContextDnsHostMappingExperimentTest,
+       CanonicalizesCaseAndWhitespaceInRules) {
+  SetUpMockDnsClient();
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment,
+      {{"rules", "  map\tWWW.GOOGLE.COM   TTL-EXP-600.GOOGLE.COM  "}});
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.HostMappingExperiment.RulesApplied", true, 1);
+  EXPECT_THAT(ResolveHostA(network_context.get(), "www.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("142.250.80.2", 443)));
+}
+
+TEST_F(NetworkContextDnsHostMappingExperimentTest,
+       CommandLineHostResolverRulesTakesPrecedence) {
+  SetUpMockDnsClient();
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment,
+      {{"rules", "MAP www.google.com ttl-exp-600.google.com"}});
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kHostResolverRules, "MAP www.google.com cmd-override.example");
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  histogram_tester.ExpectTotalCount(
+      "Net.DNS.HostMappingExperiment.RulesApplied", 0);
+  EXPECT_THAT(ResolveHostA(network_context.get(), "www.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("192.0.2.99", 443)));
+}
+
+TEST_F(NetworkContextDnsHostMappingExperimentTest,
+       CommandLineHostRulesTakesPrecedence) {
+  SetUpMockDnsClient();
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment,
+      {{"rules", "MAP www.google.com ttl-exp-600.google.com"}});
+
+  base::test::ScopedCommandLine scoped_command_line;
+  scoped_command_line.GetProcessCommandLine()->AppendSwitchASCII(
+      switches::kHostRules, "MAP www.google.com cmd-override.example");
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  histogram_tester.ExpectTotalCount(
+      "Net.DNS.HostMappingExperiment.RulesApplied", 0);
+  EXPECT_THAT(ResolveHostA(network_context.get(), "www.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("192.0.2.99", 443)));
+}
+
+struct InvalidHostMappingExperimentRuleCase {
+  const char* test_name;
+  const char* rules_param;
+};
+
+class NetworkContextDnsHostMappingExperimentInvalidRuleTest
+    : public NetworkContextDnsHostMappingExperimentTest,
+      public ::testing::WithParamInterface<
+          InvalidHostMappingExperimentRuleCase> {};
+
+TEST_P(NetworkContextDnsHostMappingExperimentInvalidRuleTest,
+       RejectsInvalidOrOutOfScopeRuleAndFailsClosed) {
+  const InvalidHostMappingExperimentRuleCase& test_case = GetParam();
+  SetUpMockDnsClient();
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeatureWithParameters(
+      features::kDnsHostMappingExperiment, {{"rules", test_case.rules_param}});
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.DNS.HostMappingExperiment.RulesApplied", false, 1);
+  EXPECT_THAT(ResolveHostA(network_context.get(), "www.google.com", 443),
+              ElementsAre(CreateExpectedEndPoint("142.250.80.1", 443)));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    InvalidHostMappingExperimentRules,
+    NetworkContextDnsHostMappingExperimentInvalidRuleTest,
+    ::testing::Values(
+        InvalidHostMappingExperimentRuleCase{"EmptyRules", ""},
+        InvalidHostMappingExperimentRuleCase{"WhitespaceOnlyRules", "   \t  "},
+        InvalidHostMappingExperimentRuleCase{
+            "TrailingComma", "MAP www.google.com ttl-exp-600.google.com, "},
+        InvalidHostMappingExperimentRuleCase{"CrossDomainTarget",
+                                             "MAP www.google.com evil.example"},
+        InvalidHostMappingExperimentRuleCase{
+            "CrossDomainSource", "MAP www.example.com ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "GoogleCoUkDomain", "MAP www.google.co.uk ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "PrivateRegistryGoogleDomain",
+            "MAP foo.withgoogle.com ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "WildcardSource", "MAP *.google.com ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "SingleCharPatternSource",
+            "MAP w?w.google.com ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "ReplacementPort",
+            "MAP www.google.com ttl-exp-600.google.com:8443"},
+        InvalidHostMappingExperimentRuleCase{"Ipv4LiteralTarget",
+                                             "MAP www.google.com 142.250.80.2"},
+        InvalidHostMappingExperimentRuleCase{"BracketedIpv6Target",
+                                             "MAP www.google.com [::1]"},
+        InvalidHostMappingExperimentRuleCase{"NumericIpv4Target",
+                                             "MAP www.google.com 2130706433"},
+        InvalidHostMappingExperimentRuleCase{
+            "TrailingDotTarget", "MAP www.google.com ttl-exp-600.google.com."},
+        InvalidHostMappingExperimentRuleCase{
+            "PercentEncodedTrailingDotSource",
+            "MAP www.google.com%2e ttl-exp-600.google.com"},
+        InvalidHostMappingExperimentRuleCase{
+            "PercentEncodedTrailingDotTarget",
+            "MAP www.google.com ttl-exp-600.google.com%2e"},
+        InvalidHostMappingExperimentRuleCase{"ExcludeClause",
+                                             "EXCLUDE www.google.com"},
+        InvalidHostMappingExperimentRuleCase{"NotFoundTarget",
+                                             "MAP www.google.com ^NOTFOUND"},
+        InvalidHostMappingExperimentRuleCase{
+            "MixedValidAndInvalidClauses",
+            "MAP www.google.com ttl-exp-600.google.com, "
+            "MAP images.google.com evil.example"}),
+    [](const ::testing::TestParamInfo<
+        NetworkContextDnsHostMappingExperimentInvalidRuleTest::ParamType>&
+           info) { return std::string(info.param.test_name); });
 
 TEST_F(NetworkContextActivateDohProbesTest, Basic) {
   auto resolver = std::make_unique<net::MockHostResolver>();
@@ -12683,6 +13332,114 @@ TEST_F(NetworkContextTest, ClearNetworkRestrictionsTest) {
     EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
         nonce3, kFooHttpsUrl, kNak_));
   }
+}
+
+TEST_F(NetworkContextTest, ClearNetworkRestrictionsRetainedURLLoaderFactory) {
+  base::test::ScopedFeatureList feature_list{
+      network::features::kConnectionAllowlists};
+
+  net::EmbeddedTestServer test_server;
+  net::test_server::RegisterDefaultHandlers(&test_server);
+  ASSERT_TRUE(test_server.Start());
+
+  std::unique_ptr<NetworkContext> network_context =
+      CreateContextWithParams(CreateNetworkContextParamsForTesting());
+
+  const base::UnguessableToken nonce = base::UnguessableToken::Create();
+  const GURL allowed_url = test_server.GetURL("/echo");
+  const GURL denied_url = test_server.GetURL("/defaultresponse");
+
+  auto allowlist_entry = mojom::IdAndAllowlistedPatterns::New();
+  allowlist_entry->network_restrictions_id = nonce;
+  allowlist_entry->allowlists.response_url = allowed_url;
+  network::ConnectionAllowlist enforced;
+  enforced.allowlist.push_back(allowed_url.spec());
+  allowlist_entry->allowlists.enforced = std::move(enforced);
+
+  std::vector<mojom::IdAndAllowlistedPatternsPtr> nonces_to_urls;
+  nonces_to_urls.push_back(std::move(allowlist_entry));
+  base::test::TestFuture<void> revoked;
+  network_context->RestrictNetworkForIds(std::move(nonces_to_urls),
+                                         revoked.GetCallback());
+  EXPECT_TRUE(revoked.Wait());
+
+  auto make_factory_params = [&]() {
+    auto params = mojom::URLLoaderFactoryParams::New();
+    params->process_id = OriginatingProcessId::browser();
+    params->is_orb_enabled = false;
+    params->network_restrictions_id = nonce;
+    params->isolation_info = net::IsolationInfo::Create(
+        net::IsolationInfo::RequestType::kOther,
+        url::Origin::Create(GURL(kTopFrameOriginForFetchRequest)),
+        url::Origin::Create(GURL(kFrameOriginForFetchRequest)),
+        net::SiteForCookies());
+    return params;
+  };
+
+  mojo::Remote<mojom::URLLoaderFactory> loader_factory;
+  network_context->CreateURLLoaderFactory(
+      loader_factory.BindNewPipeAndPassReceiver(), make_factory_params());
+
+  mojo::Remote<mojom::URLLoaderFactory> second_factory;
+  network_context->CreateURLLoaderFactory(
+      second_factory.BindNewPipeAndPassReceiver(), make_factory_params());
+
+  mojo::Remote<mojom::URLLoaderFactory> cloned_factory;
+  loader_factory->Clone(cloned_factory.BindNewPipeAndPassReceiver());
+  loader_factory.FlushForTesting();
+
+  const size_t count_with_two_factories =
+      network_context->num_url_loader_factories_for_testing();
+  ASSERT_GE(count_with_two_factories, 2u);
+
+  // Clear network restrictions while both `CorsURLLoaderFactory` instances and
+  // `cloned_factory` are still alive (per-ID factory count is 2). The
+  // restriction must remain active until all factories using `nonce` are
+  // destroyed.
+  network_context->ClearNetworkRestrictions({nonce});
+  EXPECT_EQ(allowed_url,
+            network_context->GetNetworkRestrictionResponseUrlForTesting(nonce));
+  EXPECT_FALSE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, denied_url, kNak_));
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, allowed_url, kNak_));
+
+  // Destroy `second_factory` first to exercise the 2 -> 1 transition under
+  // `pending_clear`, then reset `loader_factory` leaving `cloned_factory`
+  // connected on the remaining factory.
+  second_factory.reset();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return network_context->num_url_loader_factories_for_testing() ==
+           count_with_two_factories - 1;
+  }));
+  EXPECT_EQ(allowed_url,
+            network_context->GetNetworkRestrictionResponseUrlForTesting(nonce));
+  loader_factory.reset();
+
+  auto fetch_via_factory = [&](const GURL& url) {
+    ResourceRequest request = CreateResourceRequest("GET", url);
+    TestURLLoaderClient client;
+    mojo::PendingRemote<mojom::URLLoader> loader;
+    cloned_factory->CreateLoaderAndStart(
+        loader.InitWithNewPipeAndPassReceiver(), /*request_id=*/0,
+        mojom::kURLLoadOptionNone, request, client.CreateRemote(),
+        net::MutableNetworkTrafficAnnotationTag(TRAFFIC_ANNOTATION_FOR_TESTS));
+    client.RunUntilComplete();
+    return client.completion_status().error_code;
+  };
+
+  EXPECT_EQ(net::ERR_NETWORK_ACCESS_REVOKED, fetch_via_factory(denied_url));
+  EXPECT_EQ(net::OK, fetch_via_factory(allowed_url));
+
+  // Once the remaining cloned factory disconnects, the deferred restriction
+  // cleanup should complete and remove `nonce`.
+  cloned_factory.reset();
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return network_context->GetNetworkRestrictionResponseUrlForTesting(nonce)
+        .is_empty();
+  }));
+  EXPECT_TRUE(network_context->IsNetworkForNetworkRestrictionsIdAndUrlAllowed(
+      nonce, denied_url, kNak_));
 }
 
 // Verify that the Prefetch() method triggers a network request.

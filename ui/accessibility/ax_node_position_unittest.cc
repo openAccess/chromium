@@ -11242,6 +11242,34 @@ TEST_F(AXPositionTest, OperatorEquals) {
   EXPECT_EQ(*text_position1, *text_position2);
 }
 
+TEST_F(AXPositionTest, CompareToPositionsNormalizedPastEndOfContent) {
+  ScopedAXEmbeddedObjectBehaviorSetter ax_embedded_object_behavior(
+      AXEmbeddedObjectBehavior::kExposeCharacterForHypertext);
+
+  // ++1 kRootWebArea "<embedded_object><embedded_object>"
+  // ++++2 kGenericContainer (empty)
+  // ++++3 kGenericContainer
+  // ++++++4 kStaticText (empty)
+  Init(TestAXTreeUpdate(
+      {ax::mojom::Role::kRootWebArea,
+       {{ax::mojom::Role::kGenericContainer, {}},
+        {ax::mojom::Role::kGenericContainer, {TestAXTreeUpdateNode("")}}}}));
+  const AXNode& root = *GetTree()->root();
+
+  auto after_empty_object = CreateTextPosition(
+      *root.children()[0], 1, ax::mojom::TextAffinity::kDownstream);
+  auto empty_text = CreateTextPosition(*root.children()[1]->children()[0], 0,
+                                       ax::mojom::TextAffinity::kDownstream);
+  ASSERT_TRUE(after_empty_object->AsLeafTextPositionBeforeCharacter()
+                  ->IsNullPosition());
+  ASSERT_TRUE(
+      empty_text->AsLeafTextPositionBeforeCharacter()->IsNullPosition());
+
+  // The end of an empty object is before empty text in the next object.
+  EXPECT_LT(*after_empty_object, *empty_text);
+  EXPECT_GT(*empty_text, *after_empty_object);
+}
+
 TEST_F(AXPositionTest, OperatorEqualsSameTextOffsetSameAnchorId) {
   TestPositionType text_position_one = CreateTextPosition(
       root_, 0 /* text_offset */, ax::mojom::TextAffinity::kDownstream);
@@ -11574,6 +11602,34 @@ TEST_F(AXPositionTest, CompareToEmptyObjectAfterParagraphEnd) {
   EXPECT_LT(*empty_container_position, *start_of_button);
   EXPECT_GT(*start_of_button, *end_of_text_field);
   EXPECT_GT(*start_of_button, *empty_container_position);
+}
+
+TEST_F(AXPositionTest, CompareToStartOfDescendantInEmbeddedObject) {
+  ScopedAXEmbeddedObjectBehaviorSetter ax_embedded_object_behavior(
+      AXEmbeddedObjectBehavior::kExposeCharacterForHypertext);
+
+  // ++1 kRootWebArea "<embedded_object>B"
+  // ++++2 kGenericContainer "A<embedded_object>"
+  // ++++++3 kStaticText "A"
+  // ++++++4 kGenericContainer (empty)
+  // ++++5 kStaticText "B"
+  Init(TestAXTreeUpdate(
+      {ax::mojom::Role::kRootWebArea,
+       {{ax::mojom::Role::kGenericContainer,
+         {TestAXTreeUpdateNode("A"),
+          TestAXTreeUpdateNode(ax::mojom::Role::kGenericContainer, {})}},
+        TestAXTreeUpdateNode("B")}}));
+  const AXNode& root = *GetTree()->root();
+  const AXNode& empty_container = *root.children()[0]->children()[1];
+
+  auto after_embedded_object =
+      CreateTextPosition(root, 1, ax::mojom::TextAffinity::kDownstream);
+  auto start_of_descendant = CreateTextPosition(
+      empty_container, 0, ax::mojom::TextAffinity::kDownstream);
+
+  // The descendant's start, inside the object, equals the position after it.
+  EXPECT_EQ(0, *after_embedded_object->CompareTo(*start_of_descendant));
+  EXPECT_EQ(0, *start_of_descendant->CompareTo(*after_embedded_object));
 }
 
 TEST_F(AXPositionTest, OperatorsTreePositionsAroundEmbeddedCharacter) {
@@ -11914,6 +11970,37 @@ TEST_F(AXPositionTest, OperatorsTextPositionsAroundEmbeddedCharacter) {
   EXPECT_EQ(*after_inline_box_5, *middle_root_1);
   EXPECT_EQ(*after_inline_box_5, *before_paragraph_6);
   EXPECT_EQ(*after_inline_box_5, *before_inline_box_8);
+}
+
+TEST_F(AXPositionTest, CompareToEmptyTextBeforeEmbeddedObject) {
+  ScopedAXEmbeddedObjectBehaviorSetter ax_embedded_object_behavior(
+      AXEmbeddedObjectBehavior::kExposeCharacterForHypertext);
+
+  // ++1 kRootWebArea "<embedded_object>"
+  // ++++2 kStaticText (empty)
+  // ++++3 kGenericContainer "World"
+  // ++++++4 kStaticText "Wo"
+  // ++++++5 kStaticText "rld"
+  Init(TestAXTreeUpdate(
+      {ax::mojom::Role::kRootWebArea,
+       {TestAXTreeUpdateNode(""),
+        {ax::mojom::Role::kGenericContainer,
+         {TestAXTreeUpdateNode("Wo"), TestAXTreeUpdateNode("rld")}}}}));
+  const AXNode& root = *GetTree()->root();
+
+  auto empty_text = CreateTextPosition(*root.children()[0], 0,
+                                       ax::mojom::TextAffinity::kDownstream);
+  auto start_of_object =
+      CreateTextPosition(*root.children()[1]->children()[0], 0,
+                         ax::mojom::TextAffinity::kDownstream);
+  auto inside_object = CreateTextPosition(*root.children()[1]->children()[1], 1,
+                                          ax::mojom::TextAffinity::kDownstream);
+
+  // Empty text before an object equals its start and precedes the rest of it.
+  EXPECT_EQ(*empty_text, *start_of_object);
+  EXPECT_LT(*empty_text->SlowCompareTo(*inside_object), 0);
+  EXPECT_GT(*inside_object->SlowCompareTo(*empty_text), 0);
+  EXPECT_LT(*empty_text, *inside_object);
 }
 
 TEST_F(AXPositionTest, OperatorsLessThanAndGreaterThan) {
@@ -17987,6 +18074,158 @@ TEST_F(AXPositionTest,
   EXPECT_EQ(next_format->text_offset(), 1);
   EXPECT_EQ(next_format->GetAnchor()->GetRole(),
             ax::mojom::Role::kInlineTextBox);
+}
+
+TEST_F(AXPositionTest, CreatePositionWithExplicitOffsetType) {
+  // Tree structure:
+  // ++1 kRootWebArea (non-leaf container, 2 children)
+  // ++++2 kStaticText "hello"
+  // ++++3 kStaticText "world"
+  AXNodeData root_data;
+  root_data.id = 1;
+  root_data.role = ax::mojom::Role::kRootWebArea;
+  root_data.child_ids = {2, 3};
+
+  AXNodeData first_text;
+  first_text.id = 2;
+  first_text.role = ax::mojom::Role::kStaticText;
+  first_text.SetName("hello");
+
+  AXNodeData second_text;
+  second_text.id = 3;
+  second_text.role = ax::mojom::Role::kStaticText;
+  second_text.SetName("world");
+
+  SetTree(CreateAXTree({root_data, first_text, second_text}));
+
+  const AXNode* root = GetTree()->GetFromId(1);
+  const AXNode* text_node = GetTree()->GetFromId(2);
+  ASSERT_NE(nullptr, root);
+  ASSERT_NE(nullptr, text_node);
+  ASSERT_FALSE(AXNodePosition::IsLeafNodeForTreePosition(*root));
+  ASSERT_TRUE(AXNodePosition::IsLeafNodeForTreePosition(*text_node));
+
+  // Unset (`std::nullopt`) keeps the `IsTextPositionAnchor()` fallback: a
+  // non-leaf container gets a tree position, and a text leaf gets a text
+  // position.
+  TestPositionType unset_on_root = AXNodePosition::CreatePosition(
+      *root, 1, ax::mojom::TextAffinity::kDownstream, std::nullopt);
+  EXPECT_TRUE(unset_on_root->IsTreePosition());
+  EXPECT_EQ(1, unset_on_root->child_index());
+
+  TestPositionType unset_on_text = AXNodePosition::CreatePosition(
+      *text_node, 2, ax::mojom::TextAffinity::kDownstream, std::nullopt);
+  EXPECT_TRUE(unset_on_text->IsTextPosition());
+  EXPECT_EQ(2, unset_on_text->text_offset());
+
+  // Explicit `OffsetType::kText` overrides `IsTextPositionAnchor()` even on a
+  // non-leaf container.
+  TestPositionType explicit_text_on_root = AXNodePosition::CreatePosition(
+      *root, 3, ax::mojom::TextAffinity::kUpstream,
+      ax::mojom::OffsetType::kText);
+  EXPECT_TRUE(explicit_text_on_root->IsTextPosition());
+  EXPECT_TRUE(explicit_text_on_root->IsValid());
+  EXPECT_EQ(3, explicit_text_on_root->text_offset());
+  EXPECT_EQ(ax::mojom::TextAffinity::kUpstream,
+            explicit_text_on_root->affinity());
+
+  // Explicit `OffsetType::kChild` creates a tree position on a container, and
+  // maps both `BEFORE_TEXT` and `0` on a 0-child leaf to start of anchor
+  // (`BEFORE_TEXT`).
+  TestPositionType explicit_child_on_root = AXNodePosition::CreatePosition(
+      *root, 2, ax::mojom::TextAffinity::kDownstream,
+      ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(explicit_child_on_root->IsTreePosition());
+  EXPECT_TRUE(explicit_child_on_root->IsValid());
+  EXPECT_EQ(2, explicit_child_on_root->child_index());
+
+  TestPositionType explicit_child_on_leaf = AXNodePosition::CreatePosition(
+      *text_node, AXNodePosition::BEFORE_TEXT,
+      ax::mojom::TextAffinity::kDownstream, ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(explicit_child_on_leaf->IsTreePosition());
+  EXPECT_TRUE(explicit_child_on_leaf->IsValid());
+  EXPECT_EQ(AXNodePosition::BEFORE_TEXT, explicit_child_on_leaf->child_index());
+
+  TestPositionType explicit_child_zero_on_leaf = AXNodePosition::CreatePosition(
+      *text_node, 0, ax::mojom::TextAffinity::kDownstream,
+      ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(explicit_child_zero_on_leaf->IsTreePosition());
+  EXPECT_TRUE(explicit_child_zero_on_leaf->IsValid());
+  EXPECT_TRUE(explicit_child_zero_on_leaf->AtStartOfAnchor());
+  EXPECT_EQ(AXNodePosition::BEFORE_TEXT,
+            explicit_child_zero_on_leaf->child_index());
+
+  // `kText` maps `BEFORE_TEXT` to text offset 0.
+  TestPositionType before_text_pos = AXNodePosition::CreatePosition(
+      *text_node, AXNodePosition::BEFORE_TEXT,
+      ax::mojom::TextAffinity::kDownstream, ax::mojom::OffsetType::kText);
+  EXPECT_TRUE(before_text_pos->IsTextPosition());
+  EXPECT_EQ(0, before_text_pos->text_offset());
+}
+
+TEST_F(AXPositionTest,
+       CreatePositionWithChildOffsetTypeOnContainerWithIgnoredChildren) {
+  // Tree structure:
+  // ++1 kRootWebArea
+  // ++++2 kGenericContainer (2 ignored children -> leaf for tree position)
+  // ++++++3 kGenericContainer (ignored)
+  // ++++++4 kGenericContainer (ignored)
+  AXNodeData root_data;
+  root_data.id = 1;
+  root_data.role = ax::mojom::Role::kRootWebArea;
+  root_data.child_ids = {2};
+
+  AXNodeData container_with_ignored_children;
+  container_with_ignored_children.id = 2;
+  container_with_ignored_children.role = ax::mojom::Role::kGenericContainer;
+  container_with_ignored_children.child_ids = {3, 4};
+
+  AXNodeData ignored_child_1;
+  ignored_child_1.id = 3;
+  ignored_child_1.role = ax::mojom::Role::kGenericContainer;
+  ignored_child_1.AddState(ax::mojom::State::kIgnored);
+
+  AXNodeData ignored_child_2;
+  ignored_child_2.id = 4;
+  ignored_child_2.role = ax::mojom::Role::kGenericContainer;
+  ignored_child_2.AddState(ax::mojom::State::kIgnored);
+
+  SetTree(CreateAXTree({root_data, container_with_ignored_children,
+                        ignored_child_1, ignored_child_2}));
+
+  const AXNode* box_node = GetTree()->GetFromId(2);
+  ASSERT_NE(nullptr, box_node);
+  ASSERT_TRUE(AXNodePosition::IsLeafNodeForTreePosition(*box_node));
+
+  // On a container whose children are all ignored (`child_count == 2`),
+  // offsets `< child_count` map to `BEFORE_TEXT` (start of anchor), while
+  // `offset == child_count` maps to `child_count` (end of anchor).
+  TestPositionType at_box_start = AXNodePosition::CreatePosition(
+      *box_node, 0, ax::mojom::TextAffinity::kDownstream,
+      ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(at_box_start->IsTreePosition());
+  EXPECT_TRUE(at_box_start->IsValid());
+  EXPECT_FALSE(at_box_start->IsIgnored());
+  EXPECT_TRUE(at_box_start->AtStartOfAnchor());
+  EXPECT_EQ(AXNodePosition::BEFORE_TEXT, at_box_start->child_index());
+
+  TestPositionType in_box_middle = AXNodePosition::CreatePosition(
+      *box_node, 1, ax::mojom::TextAffinity::kDownstream,
+      ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(in_box_middle->IsTreePosition());
+  EXPECT_TRUE(in_box_middle->IsValid());
+  EXPECT_FALSE(in_box_middle->IsIgnored());
+  EXPECT_TRUE(in_box_middle->AtStartOfAnchor());
+  EXPECT_EQ(AXNodePosition::BEFORE_TEXT, in_box_middle->child_index());
+
+  TestPositionType at_box_end = AXNodePosition::CreatePosition(
+      *box_node, 2, ax::mojom::TextAffinity::kDownstream,
+      ax::mojom::OffsetType::kChild);
+  EXPECT_TRUE(at_box_end->IsTreePosition());
+  EXPECT_TRUE(at_box_end->IsValid());
+  EXPECT_FALSE(at_box_end->IsIgnored());
+  EXPECT_TRUE(at_box_end->AtEndOfAnchor());
+  EXPECT_EQ(2, at_box_end->child_index());
 }
 
 }  // namespace ui

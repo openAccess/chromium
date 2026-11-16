@@ -17,6 +17,7 @@
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
 #include "third_party/blink/renderer/core/svg/svg_length_functions.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -45,7 +46,16 @@ bool LayoutSVGForeignObject::IsObjectBoundingBoxValid() const {
 
 gfx::RectF LayoutSVGForeignObject::ObjectBoundingBox() const {
   NOT_DESTROYED();
+  if (!IsObjectBoundingBoxValid() &&
+      RuntimeEnabledFeatures::SvgEmptyBBoxForNonRenderedEnabled()) {
+    return gfx::RectF();
+  }
   return viewport_;
+}
+
+gfx::SizeF LayoutSVGForeignObject::UsedSize() const {
+  NOT_DESTROYED();
+  return viewport_.size();
 }
 
 gfx::RectF LayoutSVGForeignObject::StrokeBoundingBox() const {
@@ -185,24 +195,6 @@ bool LayoutSVGForeignObject::UpdateAfterSVGLayout(
     SVGResourceInvalidator(*this).InvalidateEffects();
   }
   return UpdateTransformAfterLayout(layout_info, bounds_changed);
-}
-
-void LayoutSVGForeignObject::StyleDidChange(
-    StyleDifference diff,
-    const ComputedStyle* old_style,
-    const ComputedStyle& new_style,
-    const StyleChangeContext& style_change_context) {
-  NOT_DESTROYED();
-  LayoutSVGBlock::StyleDidChange(diff, old_style, new_style,
-                                 style_change_context);
-
-  float old_zoom = old_style ? old_style->EffectiveZoom()
-                             : ComputedStyleInitialValues::InitialZoom();
-  if (new_style.EffectiveZoom() != old_zoom) {
-    // `LocalToSVGParentTransform` has a dependency on zoom which is used for
-    // the transform paint property.
-    SetNeedsPaintPropertyUpdate();
-  }
 }
 
 bool LayoutSVGForeignObject::NodeAtPointFromSVG(

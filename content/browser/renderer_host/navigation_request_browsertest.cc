@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 
 #include "base/command_line.h"
@@ -23,6 +24,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "content/browser/embedder_isolation_info.h"
 #include "content/browser/process_lock.h"
 #include "content/browser/renderer_host/debug_urls.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
@@ -78,6 +80,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/expectation_handler.h"
 #include "net/test/url_request/url_request_failed_job.h"
+#include "services/network/public/cpp/features.h"
 #include "services/network/public/cpp/loading_params.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -4856,6 +4859,102 @@ IN_PROC_BROWSER_TEST_F(NavigationRequestBrowserTest,
 
 using CSPEmbeddedEnforcementBrowserTest = NavigationRequestBrowserTest;
 
+class CSPEmbeddedEnforcementConsoleBrowserTest
+    : public CSPEmbeddedEnforcementBrowserTest,
+      public ::testing::WithParamInterface<bool> {
+ public:
+  CSPEmbeddedEnforcementConsoleBrowserTest() {
+    feature_list_.InitWithFeatureState(
+        network::features::kCSPEmbeddedEnforcementTrustedTypes, GetParam());
+  }
+  CSPEmbeddedEnforcementConsoleBrowserTest(
+      const CSPEmbeddedEnforcementConsoleBrowserTest&) = delete;
+  CSPEmbeddedEnforcementConsoleBrowserTest& operator=(
+      const CSPEmbeddedEnforcementConsoleBrowserTest&) = delete;
+  ~CSPEmbeddedEnforcementConsoleBrowserTest() override = default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(CSPEmbeddedEnforcementConsoleBrowserTest,
+                       BlockedFrameDiagnostic) {
+  struct TestCase {
+    const char* required_csp;
+    const char* returned_csp;
+    bool has_trusted_types;
+    bool requires_only_trusted_types;
+  } cases[] = {
+      {"trusted-types a; script-src 'none'", "trusted-types b", true, false},
+      {"trusted-types a; script-src 'none'", "trusted-types a", true, false},
+      {"script-src 'none'", "", false, false},
+      {"require-trusted-types-for 'script'", "", false, true},
+  };
+
+  for (const auto& test : cases) {
+    SCOPED_TRACE(test.required_csp);
+    SCOPED_TRACE(test.returned_csp);
+    ASSERT_TRUE(NavigateToURL(
+        shell(), embedded_test_server()->GetURL("a.test", "/empty.html")));
+    const GURL frame_url = embedded_test_server()->GetURL(
+        "b.test", base::StrCat({"/set-header?Content-Security-Policy: ",
+                                test.returned_csp}));
+    TestNavigationManager navigation_observer(shell()->web_contents(),
+                                              frame_url);
+    WebContentsConsoleObserver console_observer(shell()->web_contents());
+    console_observer.SetPattern("Refused to display *");
+
+    ASSERT_TRUE(ExecJs(shell(), JsReplace(R"(
+      const iframe = document.createElement('iframe');
+      iframe.csp = $1;
+      iframe.src = $2;
+      document.body.appendChild(iframe);
+    )",
+                                          test.required_csp, frame_url)));
+    ASSERT_TRUE(navigation_observer.WaitForNavigationFinished());
+    if (test.requires_only_trusted_types && !GetParam()) {
+      EXPECT_TRUE(navigation_observer.was_successful());
+      EXPECT_TRUE(console_observer.messages().empty());
+      continue;
+    }
+
+    EXPECT_FALSE(navigation_observer.was_successful());
+    ASSERT_TRUE(console_observer.Wait());
+    ASSERT_EQ(1u, console_observer.messages().size());
+    const std::string sanitized_url =
+        frame_url.DeprecatedGetOriginAsURL().spec();
+    const std::string expected_message =
+        GetParam() && test.has_trusted_types
+            ? base::StringPrintf(
+                  "Refused to display '%s' in a frame. The embedder requires "
+                  "the "
+                  "following Content Security Policy: '%s'. The frame neither "
+                  "accepts that policy using the Allow-CSP-From header nor "
+                  "passes "
+                  "the browser's embedded policy checks. For 'trusted-types', "
+                  "these checks require an exact match of normalized "
+                  "configurations; even a more restrictive configuration can "
+                  "be "
+                  "rejected.",
+                  sanitized_url.c_str(), test.required_csp)
+            : base::StringPrintf(
+                  "Refused to display '%s' in a frame. The embedder requires "
+                  "it "
+                  "to enforce the following Content Security Policy: '%s'. "
+                  "However, the frame neither accepts that policy using the "
+                  "Allow-CSP-From header nor delivers a Content Security "
+                  "Policy "
+                  "which is at least as strong as that one.",
+                  sanitized_url.c_str(), test.required_csp);
+    EXPECT_EQ(expected_message,
+              base::UTF16ToUTF8(console_observer.messages()[0].message));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         CSPEmbeddedEnforcementConsoleBrowserTest,
+                         ::testing::Bool());
+
 IN_PROC_BROWSER_TEST_F(CSPEmbeddedEnforcementBrowserTest,
                        CheckCSPEmbeddedEnforcement) {
   // We need one initial navigation to set up everything.
@@ -5892,6 +5991,90 @@ IN_PROC_BROWSER_TEST_F(NavigationRequestBrowserTest,
       contents()->GetPrimaryMainFrame()->GetLastCommittedOrigin();
   EXPECT_EQ(data_tentative_origin_to_commit.value(), data_committed_origin);
   EXPECT_EQ(url_info_origin.value(), data_committed_origin);
+}
+
+// The embedder requests unique-instance isolation only for the iframe
+// document. An about:blank document gets the origin and the isolation of the
+// document that navigates to it. When the iframe document navigates, this holds
+// in the iframe, in the top frame and in a popup that keeps its opener. When
+// the embedder navigates the iframe, about:blank gets no isolation.
+IN_PROC_BROWSER_TEST_F(NavigationRequestBrowserTest,
+                       AboutBlankFromUniqueInstanceKeepsIsolation) {
+  enum class Initiator { kIsolatedFrame, kEmbedder };
+  enum class BlankTarget { kOwnFrame, kTopFrame, kPopup };
+  struct TestCase {
+    std::string_view name;
+    Initiator initiator;
+    BlankTarget target;
+    std::string_view navigation_script;
+  };
+  constexpr TestCase kTestCases[] = {
+      {.name = "own frame",
+       .initiator = Initiator::kIsolatedFrame,
+       .target = BlankTarget::kOwnFrame,
+       .navigation_script = "location = 'about:blank';"},
+      {.name = "top frame",
+       .initiator = Initiator::kIsolatedFrame,
+       .target = BlankTarget::kTopFrame,
+       .navigation_script = "top.location = 'about:blank';"},
+      {.name = "popup that keeps its opener",
+       .initiator = Initiator::kIsolatedFrame,
+       .target = BlankTarget::kPopup,
+       .navigation_script = "popup.location = 'about:blank';"},
+      {.name = "embedder navigates the iframe",
+       .initiator = Initiator::kEmbedder,
+       .target = BlankTarget::kOwnFrame,
+       .navigation_script = "frames[0].location = 'about:blank';"},
+  };
+
+  for (const TestCase& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.name);
+    ASSERT_TRUE(NavigateToURL(
+        shell(), embedded_test_server()->GetURL(
+                     "a.com", "/cross_site_iframe_factory.html?a(a)")));
+    FrameTreeNode* child =
+        contents()->GetPrimaryFrameTree().root()->child_at(0);
+    NavigationController::LoadURLParams params(
+        embedded_test_server()->GetURL("b.com", "/title1.html"));
+    params.frame_tree_node_id = child->frame_tree_node_id();
+    params.requests_unique_instance_isolation = true;
+    TestNavigationObserver isolated_observer(contents());
+    contents()->GetController().LoadURLWithParams(params);
+    isolated_observer.Wait();
+    RenderFrameHost* isolated_frame = child->current_frame_host();
+    ASSERT_TRUE(HasUniqueInstanceIsolation(isolated_frame));
+
+    RenderFrameHost* initiator_frame =
+        test_case.initiator == Initiator::kEmbedder
+            ? contents()->GetPrimaryMainFrame()
+            : isolated_frame;
+    const url::Origin initiator_origin =
+        initiator_frame->GetLastCommittedOrigin();
+    const EmbedderIsolationInfo initiator_isolation =
+        static_cast<SiteInstanceImpl*>(initiator_frame->GetSiteInstance())
+            ->GetSiteInfo()
+            .embedder_isolation_info();
+
+    WebContents* blank_contents = contents();
+    if (test_case.target == BlankTarget::kPopup) {
+      ShellAddedObserver popup_observer;
+      ASSERT_TRUE(ExecJs(isolated_frame, "window.popup = window.open();"));
+      blank_contents = popup_observer.GetShell()->web_contents();
+    }
+    TestNavigationObserver blank_observer(blank_contents);
+    ASSERT_TRUE(ExecJs(initiator_frame, test_case.navigation_script));
+    blank_observer.Wait();
+
+    RenderFrameHost* blank_frame = test_case.target == BlankTarget::kOwnFrame
+                                       ? child->current_frame_host()
+                                       : blank_contents->GetPrimaryMainFrame();
+    EXPECT_EQ(GURL(url::kAboutBlankURL), blank_frame->GetLastCommittedURL());
+    EXPECT_EQ(initiator_origin, blank_frame->GetLastCommittedOrigin());
+    EXPECT_EQ(initiator_isolation,
+              static_cast<SiteInstanceImpl*>(blank_frame->GetSiteInstance())
+                  ->GetSiteInfo()
+                  .embedder_isolation_info());
+  }
 }
 
 // Tests that on reload of a POST request, the HTTP `Origin` header is set

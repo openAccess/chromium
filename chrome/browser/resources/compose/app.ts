@@ -130,7 +130,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
         type: Boolean,
         reflect: true,
       },
-      enableUpfrontInputModes: {type: Boolean},
       feedbackState_: {type: Number},
       hasPartialOutput_: {type: Boolean},
       input_: {type: String},
@@ -155,10 +154,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
       },
       response_: {type: Object},
       partialResponse_: {type: Object},
-      showInputModes_: {
-        type: Boolean,
-        reflect: true,
-      },
       selectedInputMode_: {type: Number},
       selectedModifier_: {type: String},
       textSelected_: {type: Boolean},
@@ -176,7 +171,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
       showMSBBDialog_: {type: Boolean},
       outputComplete_: {type: Boolean},
       hasOutput_: {type: Boolean},
-      displayedText_: {type: String},
       modifierOptions_: {type: Array},
       webuiRoundedIconsEnabled_: {type: Boolean},
     };
@@ -185,8 +179,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
   protected accessor editedInput_: string = '';
   accessor enableAnimations: boolean =
       loadTimeData.getBoolean('enableAnimations');
-  accessor enableUpfrontInputModes: boolean =
-      loadTimeData.getBoolean('enableUpfrontInputModes');
   protected accessor feedbackState_: CrFeedbackOption =
       CrFeedbackOption.UNSPECIFIED;
   protected accessor hasPartialOutput_: boolean = false;
@@ -202,13 +194,12 @@ export class ComposeAppElement extends ComposeAppElementBase {
   protected accessor isSubmitEnabled_: boolean = true;
   protected accessor loading_: boolean = false;
   protected accessor loadingIndicatorShown_: boolean = false;
-  protected accessor response_: ComposeResponse|null = null;
-  protected accessor partialResponse_: PartialComposeResponse|undefined =
+  private accessor response_: ComposeResponse|null = null;
+  private accessor partialResponse_: PartialComposeResponse|undefined =
       undefined;
-  protected accessor showInputModes_: boolean = false;
-  protected accessor selectedInputMode_: InputMode = InputMode.kUnset;
+  private accessor selectedInputMode_: InputMode = InputMode.kPolish;
   protected accessor selectedModifier_: string = '';
-  protected accessor textSelected_: boolean = false;
+  private accessor textSelected_: boolean = false;
   protected accessor enterprise_: boolean =
       loadTimeData.getBoolean('useEnterpriseWithoutLoggingPolicy');
   protected accessor showMainAppDialog_: boolean = false;
@@ -220,7 +211,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
   protected accessor showMSBBDialog_: boolean = false;
   protected accessor outputComplete_: boolean = true;
   protected accessor hasOutput_: boolean = false;
-  protected accessor displayedText_: string = '';
   protected accessor modifierOptions_: ModifierOption[] = [
     {
       value: StyleModifier.kUnset,
@@ -270,10 +260,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
     this.animator_ = new ComposeAppAnimator(
         this, loadTimeData.getBoolean('enableAnimations'));
     this.getInitialState_();
-    // If upfront inputs are enabled, the default mode should be set to Polish.
-    if (this.enableUpfrontInputModes) {
-      this.selectedInputMode_ = InputMode.kPolish;
-    }
     this.router_.responseReceived.addListener(response => {
       this.composeResponseReceived_(response);
     });
@@ -318,11 +304,6 @@ export class ComposeAppElement extends ComposeAppElementBase {
     if (changedPrivateProperties.has('loading_') ||
         changedPrivateProperties.has('hasOutput_')) {
       this.loadingIndicatorShown_ = this.loading_ && !this.hasOutput_;
-    }
-
-    if (changedPrivateProperties.has('submitted_') ||
-        changedProperties.has('enableUpfrontInputModes')) {
-      this.showInputModes_ = !this.submitted_ && this.enableUpfrontInputModes;
     }
 
     if (changedPrivateProperties.has('response_') ||

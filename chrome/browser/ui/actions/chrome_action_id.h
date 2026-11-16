@@ -64,6 +64,8 @@
   E(kActionWebAppSettings, IDC_WEB_APP_SETTINGS) \
   E(kActionWebAppMenuAppInfo, IDC_WEB_APP_MENU_APP_INFO) \
   E(kActionUninstallWebApp, IDC_UNINSTALL_WEB_APP) \
+  E(kActionWebAppUpgradeDialog, IDC_WEB_APP_UPGRADE_DIALOG) \
+  E(kActionWebAppShowExtensions) \
   /* Page-related commands */ \
   E(kActionBookmarkThisTab, IDC_BOOKMARK_THIS_TAB) \
   E(kActionBookmarkAllTabs, IDC_BOOKMARK_ALL_TABS) \
@@ -203,6 +205,7 @@
   E(kActionShowContactInfo, IDC_SHOW_CONTACT_INFO) \
   E(kActionShowIdentityDocs, IDC_SHOW_IDENTITY_DOCS) \
   E(kActionShowTravel, IDC_SHOW_TRAVEL) \
+  E(kActionShowOffersAndLoyaltyCards, IDC_SHOW_OFFERS_AND_LOYALTY_CARDS) \
   E(kActionCaretBrowsingToggle, IDC_CARET_BROWSING_TOGGLE) \
   E(kActionChromeTips, IDC_CHROME_TIPS) \
   E(kActionChromeWhatsNew, IDC_CHROME_WHATS_NEW) \
@@ -214,8 +217,6 @@
   E(kActionManageSkills, IDC_MANAGE_SKILLS) \
   E(kActionBrowseSkills, IDC_BROWSE_SKILLS) \
   E(kActionReadingListMenuAddTab, IDC_READING_LIST_MENU_ADD_TAB) \
-  E(kActionRecentTabsLoginForDeviceTabs, \
-    IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS) \
   E(kActionRecentTabsSeeDeviceTabs, \
     IDC_RECENT_TABS_SEE_DEVICE_TABS) \
   E(kActionOpenRecentTab, IDC_OPEN_RECENT_TAB) \
@@ -295,7 +296,8 @@
   E(kActionVisitDesktopOfLruUser2, IDC_VISIT_DESKTOP_OF_LRU_USER_2) \
   E(kActionVisitDesktopOfLruUser3, IDC_VISIT_DESKTOP_OF_LRU_USER_3) \
   E(kActionVisitDesktopOfLruUser4, IDC_VISIT_DESKTOP_OF_LRU_USER_4) \
-  E(kActionVisitDesktopOfLruUser5, IDC_VISIT_DESKTOP_OF_LRU_USER_5)
+  E(kActionVisitDesktopOfLruUser5, IDC_VISIT_DESKTOP_OF_LRU_USER_5) \
+  E(kActionMoveToDesksSubmenu)
 #elif BUILDFLAG(IS_LINUX)
 #define CHROME_PLATFORM_SPECIFIC_ACTION_IDS \
   E(kUseSystemTitleBar, IDC_USE_SYSTEM_TITLE_BAR) \
@@ -386,11 +388,12 @@
   E(kActionShowPasswordsBubbleOrPage) \
   E(kActionManagePasswordsForPage, IDC_MANAGE_PASSWORDS_FOR_PAGE) \
   E(kActionCopyUrl, IDC_COPY_URL) \
-  E(kActionTabGroupsMenu, IDC_SAVED_TAB_GROUPS_MENU) \
+  E(kActionTabGroupsMenu) \
   E(kActionTabSearch, IDC_TAB_SEARCH) \
   E(kActionSplitTab, IDC_NEW_SPLIT_TAB) \
   E(kActionFederation) \
   E(kActionGlicContextualCueing) \
+  E(kActionGlicSmartSelectionToolbar) \
   E(kActionGlicTogglePin, IDC_GLIC_TOGGLE_PIN) \
   E(kActionOpenGlic, IDC_OPEN_GLIC) \
   E(kActionShowAiOverlayDialog) \

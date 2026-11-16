@@ -9,7 +9,6 @@
 <translation id="1013952917065545813">Pots tornar aquí per obrir de nou les pestanyes que has tancat fa poc</translation>
 <translation id="1016495303386450659">S'ha actualitzat l'element.</translation>
 <translation id="1018804590490383958">Escaneja i emplena automàticament</translation>
-<translation id="1019990162050689579">Activitat en aplicacions de Gemini</translation>
 <translation id="102471647093736603">Mantén premut per moure</translation>
 <translation id="102645702181682900">Tasca iniciada</translation>
 <translation id="102916930470544692">Clau d'accés</translation>
@@ -103,7 +102,6 @@
 <translation id="1291506870746876680">Els permisos per a <ph name="BEGIN_BOLD" />"<ph name="SITE_NAME" />"<ph name="END_BOLD" /> es restabliran a l'estat desactivat quan surtis d'aquest lloc web.</translation>
 <translation id="1293491796138057740">La teva informació es desa a Google Wallet per a <ph name="USER_EMAIL" />. Pots utilitzar-la en tots els productes de Google per emplenar formularis més ràpidament.</translation>
 <translation id="1293556467332435079">Fitxers</translation>
-<translation id="1294703224699789269">S'hi apliquen les nostres <ph name="BEGIN_LINK" />condicions<ph name="END_LINK" />, les <ph name="BEGIN_LINK" />condicions del servei d'ubicació de Corea<ph name="END_LINK" /> i l’<ph name="BEGIN_LINK" />avís de privadesa<ph name="END_LINK" />. Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. Gemini és una IA i pot cometre errors, també sobre persones. És possible que alguns continguts no siguin adequats per a tothom. Pots <ph name="BEGIN_LINK" />gestionar el teu historial<ph name="END_LINK" />, inclosa la informació sobre la teva ubicació. <ph name="BEGIN_LINK" />Més informació sobre les opcions<ph name="END_LINK" /></translation>
 <translation id="129553762522093515">Tancades recentment</translation>
 <translation id="1296581780163690620">Vols baixar el fitxer? (<ph name="FILE_SIZE" />)</translation>
 <translation id="1300812261204968311">S'ha completat "Fer cerques amb el mode IA".</translation>
@@ -363,6 +361,7 @@
 <translation id="2015722694326466240">Per veure les contrasenyes, primer has d'establir una contrasenya al dispositiu.</translation>
 <translation id="201759455285471444">Desplega el grup de pestanyes.</translation>
 <translation id="2022431790688770637">Gestiona els suggeriments de Gemini</translation>
+<translation id="2023265063803387188">Gemini no està disponible en el mode d'incògnit</translation>
 <translation id="2031515492007104071">Puja de nivell</translation>
 <translation id="2044394949148788042">Obre la quadrícula de pestanyes</translation>
 <translation id="2044681667265133332"><ph name="HOSTED_DOMAIN" /> gestiona el compte <ph name="USER_EMAIL" />, així que és possible que vegi algunes dades. <ph name="BEGIN_LINK" />Més informació<ph name="END_LINK" /></translation>
@@ -388,7 +387,6 @@
 <translation id="2104436223719117661">Cerques del moment</translation>
 <translation id="21133533946938348">Fixa la pestanya</translation>
 <translation id="2117650889962717098">Mantén la navegació privada canviant al mode d'incògnit</translation>
-<translation id="2119126821484134587">Per proporcionar-te ajuda personalitzada, Gemini comparteix algunes de les teves dades (per exemple, parts dels xats, la ubicació i altra informació rellevant) amb altres serveis de Google, com ara Maps i Vols. Aquests serveis poden utilitzar aquesta informació per millorar, fins i tot si més endavant suprimeixes el teu historial d'aplicacions de Gemini. Obtén més informació al <ph name="BEGIN_LINK" />Centre de privadesa de les aplicacions de Gemini<ph name="END_LINK" />.</translation>
 <translation id="2119636449201577317">Obre a…</translation>
 <translation id="2119962645034852864">Alguns serveis no estan disponibles per al teu compte</translation>
 <translation id="2120553909046681540">La teva organització ha desactivat la navegació privada.</translation>
@@ -521,6 +519,7 @@
 <translation id="2524699375503213836">Transfereix les dades des de Safari</translation>
 <translation id="2526166285241366046">Desar una contrasenya</translation>
 <translation id="2529021024822217800">Obre-les totes</translation>
+<translation id="2536421147135705892">Vols permetre la geolocalització?</translation>
 <translation id="2536991091671391962">Pots utilitzar les contrasenyes desades en qualsevol dispositiu. Es desen al gestor de contrasenyes de Google de <ph name="EMAIL" />.</translation>
 <translation id="2538103551183528357">Contrasenya, amagada</translation>
 <translation id="2538705697765638552">Desa la informació i enllesteix tasques més ràpidament, com ara emplenar formularis en tots els productes de Google. Pots gestionar la teva informació a Google Wallet per a <ph name="USER_EMAIL" />.</translation>
@@ -565,7 +564,6 @@
 <translation id="2664621323652615289">Atura</translation>
 <translation id="2666092431469916601">Superior</translation>
 <translation id="2669454659051515572">Qualsevol persona que utilitzi aquest dispositiu pot veure els fitxers baixats</translation>
-<translation id="2671316366021598595">"<ph name="SITE_DOMAIN" />" no té permís per accedir a la càmera</translation>
 <translation id="2671423594960767771">Comparteix el grup</translation>
 <translation id="2672512470874391563"><ph name="OWNER_NAME" /> • <ph name="DEVICE_NAME" /></translation>
 <translation id="2673183423393669407">Paga a terminis</translation>
@@ -915,6 +913,7 @@
 <translation id="3858860766373142691">Nom</translation>
 <translation id="386224966259596343">Tindràs l'oportunitat de desar aquesta informació a Wallet la propera vegada que emplenis un formulari rellevant.</translation>
 <translation id="3868495844258915202">Mostra l'URL complet</translation>
+<translation id="3870931306085184145">No hi ha cap contrasenya desada per a <ph name="DOMAIN" /></translation>
 <translation id="3875783148670536197">Mostra'm com</translation>
 <translation id="3878657761594430423">Ansa del full</translation>
 <translation id="3884810423191119660">Desa les contrasenyes de manera segura per poder iniciar la sessió fàcilment en llocs web i aplicacions</translation>
@@ -959,6 +958,7 @@
 <translation id="3967822245660637423">S'ha completat la baixada</translation>
 <translation id="3973560090698854095">Se suprimiran les adreces desades al teu Compte de Google <ph name="USER_EMAIL" />.</translation>
 <translation id="398604237578616937">Has iniciat la sessió com a <ph name="USER_EMAIL" />. Obre el menú del compte.</translation>
+<translation id="3986082989454912832">Respon</translation>
 <translation id="3986739045730058129">Ves a la pestanya</translation>
 <translation id="3992684624889376114">Sobre aquesta pàgina</translation>
 <translation id="3993594519743675442">Amaga Configura un recordatori</translation>
@@ -1111,14 +1111,12 @@
 <translation id="4470766488397113689">En què vols treballar?</translation>
 <translation id="4471472356135655769">No es poden exportar les contrasenyes</translation>
 <translation id="4472575034687746823">Comença</translation>
-<translation id="4473565697543262065">Se suprimirà la informació seleccionada que s'ha desat en aquest dispositiu i al teu Compte de Google <ph name="USER_EMAIL" /></translation>
 <translation id="4473608001744970767">Amaga l'opció Fes un seguiment del preu</translation>
 <translation id="4474142134969976028">No hi ha cap resultat coincident</translation>
 <translation id="4474494258097106883">Creat per a l'iPhone</translation>
 <translation id="4488754974567924717">Si les teves contrasenyes estan en perill, t'avisarem</translation>
 <translation id="4489536976005181779">{count,plural, =1{La pàgina s'ha afegit a la llista de lectura del teu compte, {email}}other{Les pàgines s'han afegit a la llista de lectura del teu compte, {email}}}</translation>
 <translation id="4493604894403585654">Has iniciat la sessió com a <ph name="USER_EMAIL" />. Pots aturar la sincronització en qualsevol moment a la configuració. És possible que Google personalitzi la Cerca i altres serveis en funció del teu historial.</translation>
-<translation id="4495251723189610737">Els teus xats es desaran a l'historial de Gemini. L'historial inclou els teus àudios, els vídeos i les comparticions de pantalla de Gemini Live, el contingut que comparteixes amb Gemini (com ara indicacions, <ph name="BEGIN_LINK" />pujades<ph name="END_LINK" /> i <ph name="BEGIN_LINK" />pantalles<ph name="END_LINK" />), les respostes de Gemini, les tasques i les crides a eines, els comentaris, la informació dels llocs web que visites amb Gemini, les dades d'ús del producte, la ubicació general del dispositiu, l'adreça IP i les adreces de casa o de la feina que tinguis al teu Compte de Google. També pot incloure dades de les aplicacions que connectis a Gemini.</translation>
 <translation id="4502423230170890588">Suprimeix d'aquest dispositiu</translation>
 <translation id="4508486880075514067">Amplia a pantalla completa</translation>
 <translation id="4508750114462689118">Tanca la promoció d'inici de sessió</translation>
@@ -1207,7 +1205,6 @@
 <translation id="4759238208242260848">Baixades</translation>
 <translation id="4764612367328936189">La teva organització només et permet iniciar la sessió amb determinats comptes. Els comptes no admesos estan amagats. <ph name="BEGIN_LINK" />Més informació<ph name="END_LINK" /></translation>
 <translation id="4769198578611055647">T'ajuda a accedir a les claus d'accés desades en qualsevol dispositiu</translation>
-<translation id="476946043193006313">La teva activitat ajuda a entrenar la IA generativa</translation>
 <translation id="4782952780741793211">Codi de confirmació:</translation>
 <translation id="4787847736989526091"><ph name="VALUE" />, <ph name="ADDITIONAL_INFO" /></translation>
 <translation id="478808905805139173">Vols obrir-ho en mode d'incògnit?</translation>
@@ -1216,6 +1213,7 @@
 <translation id="479628432297359449">Vols aturar la baixada?</translation>
 <translation id="4796496140132859135">Grup de pestanyes. Replegat.</translation>
 <translation id="4800912004582762296">Fer clic</translation>
+<translation id="4800930308997591052">Canvia a <ph name="EMAIL" /> per compartir pestanyes fàcilment entre els teus dispositius i obtenir les contrasenyes, les adreces d'interès i més dades del teu Compte de Google.</translation>
 <translation id="4802185666270672526">Amaga l'opció Sol·licita el lloc web per a ordinadors</translation>
 <translation id="4803185665210547709">Gestionat per la teva organització.
 <ph name="BEGIN_LINK" />Més informació<ph name="END_LINK" /></translation>
@@ -1314,7 +1312,6 @@
 <translation id="5061202435354361813">Millora la teva navegació</translation>
 <translation id="5062321486222145940">Instal. de Google Drive</translation>
 <translation id="5067540696062462445">Baixades</translation>
-<translation id="5070314445039955096">Els permisos per a "<ph name="SITE_DOMAIN" />" es restabliran a desactivats quan surtis d'aquest lloc web</translation>
 <translation id="507187271399539513">{count,plural, =1{{position} d’{count} forma de pagament}other{{position} de {count} formes de pagament}}</translation>
 <translation id="5075939510584558547">Desa sense encriptació</translation>
 <translation id="5076534614343816664">Seguiment de preus</translation>
@@ -1339,6 +1336,7 @@
 <translation id="5128788795241319992">Explora el menú nou</translation>
 <translation id="5132942445612118989">Sincronitza les contrasenyes, l'historial i altres elements en tots els dispositius</translation>
 <translation id="5137568953923142260">Permet una vegada</translation>
+<translation id="5139344197062265975">Utilitza el micròfon per xatejar amb Gemini. Quan parles amb Gemini, l'àudio s'emmagatzema a Historial de Gemini (si està activat). Les teves dades no s'utilitzen per millorar els models d'IA generativa.</translation>
 <translation id="5141363746588976328">Amaga la targeta Baixades de preu a les pestanyes</translation>
 <translation id="514154868070499296">Font: <ph name="FONT" /></translation>
 <translation id="5145331760738811130">Surt del selector de pestanyes</translation>
@@ -1412,7 +1410,6 @@
 <translation id="5351613737248079168">Has d'haver iniciat la sessió per utilitzar Level Up</translation>
 <translation id="5352128922772839949">Desa el fitxer</translation>
 <translation id="5355191726083956201">La protecció millorada està activada</translation>
-<translation id="5355871759168485600">"<ph name="SITE_DOMAIN" />" té permís per utilitzar el micròfon sempre que visitis aquest lloc web</translation>
 <translation id="5359436665022446585">Millor obertura d'enllaços</translation>
 <translation id="536067926684072644">Mostra adreces d'interès</translation>
 <translation id="5364647308446127983">{count,plural, =1{No s'ha pogut importar {count} clau d'accés}other{No s'han pogut importar {count} claus d'accés}}</translation>
@@ -1436,7 +1433,6 @@
 <translation id="5443636120437209490">Millor navegació per defecte</translation>
 <translation id="5444892875087332195">Adreces d'interès</translation>
 <translation id="5447973833955560753">Contrasenya de recuperació</translation>
-<translation id="5448623529214315261">S'ha desat la foto <ph name="INDEX" /></translation>
 <translation id="5452354193031718372">Utilitza una contrasenya segura:</translation>
 <translation id="5454211924362324495">Per evitar que altres persones utilitzin la teva contrasenya, <ph name="BEGIN_LINK" />canvia-la a <ph name="WEBSITE" /><ph name="END_LINK" /></translation>
 <translation id="5457082343331641453">Afegeix a la cerca</translation>
@@ -1487,6 +1483,7 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="5612225021788368236">Tanca la promoció del navegador predeterminat</translation>
 <translation id="561269594905823128">Toca <ph name="BEGIN_BOLD" />Selecciona el fitxer<ph name="END_BOLD" /></translation>
 <translation id="5613297089029360427">Ordena per més recents</translation>
+<translation id="561349411957324076">Finalitzat</translation>
 <translation id="5614553682702429503">Vols desar la contrasenya?</translation>
 <translation id="5617769621178348890">Obre a l'aplicació Fitxers</translation>
 <translation id="5619871095170816857">Aquesta targeta mostra la darrera pestanya oberta que s'ha utilitzat en tots els dispositius sincronitzats durant les darreres 24 hores.</translation>
@@ -1609,6 +1606,7 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="6000893618966378846">S'ha completat l'acció "Suprimeix les dades de navegació".</translation>
 <translation id="6004988584831654445">Ja estàs a punt! Rep notificacions quan arribin tasques noves.</translation>
 <translation id="6006672969046233841">Pestanya nova</translation>
+<translation id="6006758170939001741">S'hi apliquen les nostres <ph name="BEGIN_LINK" />condicions<ph name="END_LINK" />, les <ph name="BEGIN_LINK" />condicions del servei d'ubicació de Corea<ph name="END_LINK" /> i l’<ph name="BEGIN_LINK" />avís de privadesa<ph name="END_LINK" />. Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. Gemini és una IA i pot cometre errors, també sobre persones. És possible que alguns continguts no siguin adequats per a tothom. Pots <ph name="BEGIN_LINK" />gestionar el teu historial<ph name="END_LINK" />, inclosa la <ph name="BEGIN_LINK" />informació sobre la teva ubicació<ph name="END_LINK" />. <ph name="BEGIN_LINK" />Més informació sobre les teves opcions<ph name="END_LINK" /></translation>
 <translation id="6011308810877101166">Millora els suggeriments de cerca</translation>
 <translation id="6012140227487808125">S'està encriptant…</translation>
 <translation id="6014801569448771146">Comprova les contrasenyes</translation>
@@ -1704,7 +1702,6 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="628251768213143684">Pots gestionar en qualsevol moment què es desa al teu Compte de Google</translation>
 <translation id="6284652193729350524">Proposa traduir el contingut en <ph name="LANGUAGE" /></translation>
 <translation id="6293101329759844770">Per activar la funció Navegació segura, obre la pàgina <ph name="BEGIN_LINK" />Serveis de Google<ph name="END_LINK" /> i toca Navegació segura.</translation>
-<translation id="6295140892595702619">Utilitza el micròfon per xatejar amb Gemini. Quan parles amb Gemini, l'àudio s'emmagatzema a Activitat en aplicacions de Gemini (si està activada). Les teves dades no s'utilitzen per millorar els models d'IA generativa.</translation>
 <translation id="6295751040240588413">L'àlies de la targeta no és vàlid</translation>
 <translation id="629730747756840877">Compte</translation>
 <translation id="6301104306974789820">Rep notificacions de seguiment de preus</translation>
@@ -1732,7 +1729,6 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="6347953390226388422">{count,plural, =1{Aquesta adreça se suprimirà del teu Compte de Google (<ph name="USER_EMAIL" />) i d'aquest dispositiu.}other{Aquestes adreces se suprimiran del teu Compte de Google (<ph name="USER_EMAIL" />) i d'aquest dispositiu.}}</translation>
 <translation id="634878792104344809">Sincronitza les contrasenyes, l'historial i altres elements en tots els dispositius</translation>
 <translation id="6350745006329795504">Gestiona els dispositius</translation>
-<translation id="6351000590398820964">Gemini és una IA i pot cometre errors, també sobre persones. És possible que alguns continguts no siguin adequats per a tothom. Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. <ph name="BEGIN_LINK" />Obtén informació sobre les teves opcions<ph name="END_LINK" />. S'hi apliquen les nostres <ph name="BEGIN_LINK" />condicions<ph name="END_LINK" /> i el nostre <ph name="BEGIN_LINK" />avís de privadesa<ph name="END_LINK" />.</translation>
 <translation id="6351147166808964033">Entra al selector de pestanyes</translation>
 <translation id="63519665078626091">Per utilitzar Web Inspector, connecta't a Safari a l'ordinador amb un cable i accedeix a l'iPad des del menú Desenvolupament. Pots activar aquest menú a la secció Avançat de la configuració de Safari a l'ordinador.</translation>
 <translation id="6354695695659930684">S'està emplenant la contrasenya</translation>
@@ -1849,6 +1845,7 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="6670729408462528018">Galeria</translation>
 <translation id="6671294218820966278">Marca com a llegit</translation>
 <translation id="6672697278890207089">Introduïu la vostra contrasenya</translation>
+<translation id="6673666785752667010">Tanca el mode IA</translation>
 <translation id="6674917187596384849">Pots canviar fàcilment d'un compte a un altre</translation>
 <translation id="6676349090816247042">Opcions d'inici de sessió.</translation>
 <translation id="667999046851023355">Document</translation>
@@ -1856,6 +1853,7 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="6682680306647339111">S'ha suprimit el recordatori</translation>
 <translation id="6683022854667115063">Auriculars</translation>
 <translation id="6684262542644248484">Inicia la sessió en un lloc web</translation>
+<translation id="668475086425500258">configuració del lloc web</translation>
 <translation id="6685259053455152195">Dreceres per modificar ràpidament la configuració i utilitzar funcions des de la barra d'adreces.</translation>
 <translation id="6689342293888598653">Color de fons blanc</translation>
 <translation id="6689685206615181381">Només està disponible el mode d'incògnit</translation>
@@ -1871,7 +1869,6 @@ Handoff també ha d'estar activat a la secció General de Configuració, i els v
 <translation id="672735642903863329">Accedeix a les teves adreces d'interès, contrasenyes i altres dades en tots els teus dispositius.</translation>
 <translation id="6729493062119577923">Activitat del grup de pestanyes compartit</translation>
 <translation id="6732087373923685049">càmera</translation>
-<translation id="6736243959894955139">Adreça</translation>
 <translation id="6746338529702829275">Revisa les dades del compte</translation>
 <translation id="6749473226660745022">Fotos</translation>
 <translation id="6750456911389438250">{count,plural, =1{S'ha importat {count} element de l'historial}other{S'han importat {count} elements de l'historial}}</translation>
@@ -1993,7 +1990,6 @@ Per continuar des de l'ordinador, canvia a <ph name="OTHER_EMAIL" />. Obtindràs
 <translation id="7128693485119315539">És possible que la teva organització necessiti veure i gestionar les dades de navegació associades al teu compte gestionat, com ara l'historial de navegació i les contrasenyes.</translation>
 <translation id="713215255510512027"><ph name="FILENAME" /> (<ph name="FILESIZE" />)</translation>
 <translation id="7136892417564438900">La càmera no està disponible</translation>
-<translation id="7138678301420049075">Altres</translation>
 <translation id="7140355148730164340"><ph name="EMAIL" />. <ph name="AI_TIER" />.</translation>
 <translation id="7141960840225504692">Les pestanyes es tancaran i les dades de navegació se suprimiran</translation>
 <translation id="714291438898585119">Destacats</translation>
@@ -2039,6 +2035,7 @@ Per continuar des de l'ordinador, canvia a <ph name="OTHER_EMAIL" />. Obtindràs
 <translation id="728025568708172005">Mostra'm la zona</translation>
 <translation id="7280980607183752256">Aquest fitxer no es pot importar</translation>
 <translation id="7282197670900591579">Tema groc verdós</translation>
+<translation id="7283937415134849498">Per proporcionar-te ajuda personalitzada, Gemini comparteix algunes de les teves dades (per exemple, parts dels xats, la ubicació i altra informació rellevant) amb altres serveis de Google, com ara Maps i Vols. Aquests serveis poden utilitzar aquesta informació per millorar, fins i tot si més endavant suprimeixes el teu historial de Gemini. Obtén més informació al <ph name="BEGIN_LINK" />Centre de privadesa de les aplicacions de Gemini<ph name="END_LINK" />.</translation>
 <translation id="7293429513719260019">Selecciona l'idioma</translation>
 <translation id="72961285530871072">Aquesta acció suprimirà permanentment el teu progrés a Level Up i les dades d'ús de les funcions de Level Up ja no s'enviaran a Google per al teu perfil.
 
@@ -2141,6 +2138,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="7596103009408415410">{COUNT,plural, =1{Vols tancar {COUNT} pestanya inactiva?}other{Vols tancar {COUNT} pestanyes inactives?}}</translation>
 <translation id="7598439272585186139">Més seguretat</translation>
 <translation id="7600965453749440009">No tradueixis mai de: <ph name="LANGUAGE" /></translation>
+<translation id="760230853074995500">Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. Pots <ph name="BEGIN_LINK" />gestionar el teu historial<ph name="END_LINK" />, inclosa la <ph name="BEGIN_LINK" />informació sobre la teva ubicació<ph name="END_LINK" />. <ph name="BEGIN_LINK" />Obtén més informació sobre les teves opcions<ph name="END_LINK" />.</translation>
 <translation id="7603308509262646847">Emplena automàticament el titular de la targeta (<ph name="NAME" />)</translation>
 <translation id="7603852183842204213">Finestres emergents bloquejades (<ph name="NUMBER_OF_BLOCKED_POPUPS" />)</translation>
 <translation id="7605594153474022051">La sincronització no funciona</translation>
@@ -2150,6 +2148,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="7618220760967055820">Tria quin botó vols que es mostri a la barra d'eines</translation>
 <translation id="7620522820075868385">Cancel·la</translation>
 <translation id="762078666799342162">Pots veure les baixades anteriors a <ph name="BEGIN_LINK" />Fitxers<ph name="END_LINK" /></translation>
+<translation id="7636034359405891151">Continua des d'on ho vas deixar a l'ordinador</translation>
 <translation id="7638584964844754484">La frase de contrasenya és incorrecta</translation>
 <translation id="7639276194483401980">{COUNT,plural, =0{Contrasenyes en perill}=1{{COUNT} contrasenya en perill}other{{COUNT} contrasenyes en perill}}</translation>
 <translation id="7640669552036055091">Pestanyes d'Android</translation>
@@ -2335,7 +2334,6 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="8157532349231307196"><ph name="NUMBER_OF_ACCOUNTS" /> comptes</translation>
 <translation id="8161614462829037225">Desbloqueja amb <ph name="BIOMETRIC_AUTHENITCATION_TYPE" /></translation>
 <translation id="8173034266693057059">Llargada</translation>
-<translation id="8181328232274170248">"<ph name="SITE_DOMAIN" />" té permís per utilitzar la càmera sempre que visitis aquest lloc web</translation>
 <translation id="8182037667962849780">{count,plural, =1{Per a {website_1}}=2{Per a {website_1} i {website_2}}=3{Per a {website_1}, {website_2} i 1 més}other{Per a {website_1}, {website_2} i {more_count} més}}</translation>
 <translation id="8184895727539791845">Per permetre que Gemini utilitzi la càmera, activa-la a la configuració d'iOS</translation>
 <translation id="8185076488803799132">Importa</translation>
@@ -2506,7 +2504,6 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="8674716540979958118">Tens contrasenyes en perill.</translation>
 <translation id="8679900250380464358">Afegeix a la llista de lectura</translation>
 <translation id="8680787084697685621">Les dades d'inici de sessió del compte no estan actualitzades.</translation>
-<translation id="868648444055742370">"<ph name="SITE_DOMAIN" />" no té permís per accedir al micròfon</translation>
 <translation id="8690752723634292147">Confirma la supressió</translation>
 <translation id="8692107307702113268">La contrasenya té més de 1.000 caràcters</translation>
 <translation id="8692689525339542358">Obtén protecció contra baixades, extensions i llocs web perillosos.</translation>
@@ -2538,7 +2535,6 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="8750037785291841318">Trobaràs les pestanyes aquí</translation>
 <translation id="8751126814549746156">L'historial se suprimeix automàticament al cap de 18 mesos. Pots canviar aquest període de temps a Configuració. Els xats que revisin els proveïdors de serveis se separaran del teu compte i es conservaran durant un màxim de 3 anys. Pots <ph name="BEGIN_LINK" />desactivar<ph name="END_LINK" /> l'opció de configuració Historial en qualsevol moment.</translation>
 <translation id="8756969031206844760">Vols actualitzar la contrasenya?</translation>
-<translation id="8762190205387442931">Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. Pots <ph name="BEGIN_LINK" />gestionar el teu historial<ph name="END_LINK" />, inclosa la informació sobre la teva ubicació. <ph name="BEGIN_LINK" />Obtén més informació sobre les opcions<ph name="END_LINK" />.</translation>
 <translation id="8763613688786959833">Ves a la darrera pestanya</translation>
 <translation id="8766790350274092814">Les contrasenyes de <ph name="WEBSITE" /> i <ph name="SECOND_WEBSITE" /> se suprimiran. Els teus comptes no se suprimiran.</translation>
 <translation id="8775144690796719618">URL no vàlid</translation>
@@ -2611,6 +2607,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="8976382372951310360">Ajuda</translation>
 <translation id="8976414606286374109">Les targetes es desen al teu Compte de Google.</translation>
 <translation id="8981454092730389528">Controls d'activitat de Google</translation>
+<translation id="8987736167266086032">Continua des d'on ho vas deixar</translation>
 <translation id="8988107725234939347"><ph name="WEBSITE_TITLE" />, lloc web fixat</translation>
 <translation id="8989779557457435460">Comparteix la pestanya actual de manera predeterminada</translation>
 <translation id="8990960056509724223">El fitxer no s'ha pogut desar a causa de les polítiques de l'organització</translation>
@@ -2627,7 +2624,6 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="9039373489628511875">Amplada de banda</translation>
 <translation id="9042363670218758847">Canvia a un disseny creat per fer cerques ràpides</translation>
 <translation id="9042893549633094279">Privadesa i seguretat</translation>
-<translation id="9044703854323320868">Missatge de Gmail <ph name="INDEX" /></translation>
 <translation id="9055291197094969722">Crea grups de pestanyes per organitzar les pestanyes obertes i mantenir la productivitat</translation>
 <translation id="9055580485132823283">Estàs a punt de suprimir {password_count} contrasenyes, {passkey_count} claus d'accés i la llista de llocs web i aplicacions per als quals has triat que no es desi mai la informació d'inici de sessió. No se suprimiran els comptes que hagis creat per a llocs web i aplicacions.</translation>
 <translation id="9057030985451135243">Informació sobre els grups de pestanyes compartits</translation>
@@ -2636,6 +2632,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="9066097352053395362">Amaga l'opció Adreça d'interès</translation>
 <translation id="9070824521421603770">Es tancaran les pestanyes i la teva sessió</translation>
 <translation id="9072837124205571418">Grups de pestanyes de tots els dispositius</translation>
+<translation id="9073322251019919253">Gemini és una IA i pot cometre errors, també sobre persones. És possible que alguns continguts no siguin adequats per a tothom. Els xats es revisen i s'utilitzen per entrenar els models d'IA generativa. Pots <ph name="BEGIN_LINK" />gestionar el teu historial<ph name="END_LINK" />, inclosa la <ph name="BEGIN_LINK" />informació sobre la teva ubicació<ph name="END_LINK" />. <ph name="BEGIN_LINK" />Obtén informació sobre les teves opcions<ph name="END_LINK" />. S'hi apliquen les nostres <ph name="BEGIN_LINK" />condicions<ph name="END_LINK" /> i el nostre <ph name="BEGIN_LINK" />avís de privadesa<ph name="END_LINK" />.</translation>
 <translation id="9081058212938299310">Vols actualitzar la contrasenya per a <ph name="USERNAME" />?</translation>
 <translation id="908365381820697818">Ara pots trobar i emplenar informació a partir de Gmail i més</translation>
 <translation id="9083838294503912307">Per sincronitzar i personalitzar el contingut en tots els dispositius, activa la sincronització.</translation>
@@ -2652,6 +2649,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="91023216973987714">Formes de pagament</translation>
 <translation id="9106655997975673326">De <ph name="SOURCE_DEVICE" /></translation>
 <translation id="9107664647686727385">Comprova que no hi hagi contrasenyes en perill</translation>
+<translation id="9115035712231910133">Imatge adjunta {title}</translation>
 <translation id="9119764377203471454">No es poden afegir fitxers adjunts</translation>
 <translation id="9124387962554796433">És possible que Google utilitzi el teu historial per personalitzar la Cerca i altres serveis de Google.</translation>
 <translation id="9124978074365039456">Compra, tradueix i identifica el que veus utilitzant la càmera i la galeria de fotos</translation>
@@ -2693,7 +2691,7 @@ Pots reiniciar Level Up en qualsevol moment.</translation>
 <translation id="939736085109172342">Carpeta nova</translation>
 <translation id="940409663738806563"><ph name="BEGIN_LINK" />Consulta què pots sincronitzar<ph name="END_LINK" /></translation>
 <translation id="942624946817804130">Exporta</translation>
-<translation id="945522503751344254">Envia suggeriments</translation>
+<translation id="945522503751344254">Envia comentaris</translation>
 <translation id="94870150074703282">Vols suprimir el grup?</translation>
 <translation id="951090530321144895">Emissors de CA</translation>
 <translation id="952704832371081537">Cancel·la</translation>

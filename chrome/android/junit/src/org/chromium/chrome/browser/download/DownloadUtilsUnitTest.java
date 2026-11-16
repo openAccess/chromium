@@ -7,10 +7,12 @@ package org.chromium.chrome.browser.download;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -46,10 +48,15 @@ import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
+import org.chromium.chrome.browser.IntentHandler;
+import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider.CustomTabsUiType;
+import org.chromium.chrome.browser.customtabs.CustomTabIntentDataProvider;
 import org.chromium.chrome.browser.download.DownloadMetrics.DownloadOpenTarget;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.OtrProfileId;
 import org.chromium.chrome.browser.util.BrowserUiUtils;
+import org.chromium.components.offline_items_collection.LegacyHelpers;
+import org.chromium.components.offline_items_collection.OfflineItem;
 
 /** Unit tests for {@link DownloadUtils} helper methods and preferred app routing. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -106,6 +113,14 @@ public class DownloadUtilsUnitTest {
     private void registerIntentHandler(Intent intent, String packageName, String className) {
         mShadowPackageManager.addResolveInfoForIntent(
                 intent, createResolveInfo(packageName, className));
+    }
+
+    private static OfflineItem createCompletedDownload(String mimeType) {
+        OfflineItem item = new OfflineItem();
+        item.id = LegacyHelpers.buildLegacyContentId(/* isOfflinePage= */ false, TEST_GUID);
+        item.filePath = "content://media/external/images/media/1";
+        item.mimeType = mimeType;
+        return item;
     }
 
     private DownloadOpenRequest createTestDownloadOpenRequest(String mimeType) {
@@ -452,5 +467,126 @@ public class DownloadUtilsUnitTest {
                 startedIntent.getFlags()
                         & (Intent.FLAG_GRANT_READ_URI_PERMISSION
                                 | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
+    }
+
+    @Test
+    @Feature({"Download"})
+    @EnableFeatures({ChromeFeatureList.OPEN_DOWNLOAD_IN_NEW_TAB})
+    public void testOpenItemInChrome_SupportedFormat_OpensNewTab() {
+        when(mMockDownloadManagerService.isDownloadOpenableInBrowser(any(), anyBoolean()))
+                .thenReturn(true);
+
+        assertTrue(
+                DownloadUtils.openItemInChrome(
+                        createCompletedDownload("image/png"),
+                        mContext,
+                        TEST_OTR_PROFILE_ID,
+                        DownloadOpenSource.DOWNLOAD_TRAY));
+
+        Intent startedIntent =
+                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
+        assertNotNull(startedIntent);
+        assertTrue(
+                startedIntent.getBooleanExtra(
+                        Browser.EXTRA_CREATE_NEW_TAB, /* defaultValue= */ false));
+        verify(mMockDownloadManagerService)
+                .updateLastAccessTime(eq(TEST_GUID), eq(TEST_OTR_PROFILE_ID));
+    }
+
+    @Test
+    @Feature({"Download"})
+    @EnableFeatures({ChromeFeatureList.OPEN_DOWNLOAD_IN_NEW_TAB})
+    public void testOpenItemInChrome_Incognito_OpensIncognitoTab() {
+        when(mMockDownloadManagerService.isDownloadOpenableInBrowser(any(), anyBoolean()))
+                .thenReturn(true);
+
+        // Both the PDF path and the media / web new-tab path open an incognito tab.
+        for (String mimeType : new String[] {TEST_MIME_TYPE, "image/png"}) {
+            DownloadUtils.resetLastOpenFileForTesting();
+            assertTrue(
+                    mimeType,
+                    DownloadUtils.openItemInChrome(
+                            createCompletedDownload(mimeType),
+                            mContext,
+                            OtrProfileId.getPrimaryOtrProfileId(),
+                            DownloadOpenSource.DOWNLOAD_TRAY));
+            Intent startedIntent =
+                    Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
+            assertNotNull(mimeType, startedIntent);
+            assertTrue(
+                    mimeType,
+                    startedIntent.getBooleanExtra(
+                            IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, /* defaultValue= */ false));
+        }
+    }
+
+    @Test
+    @Feature({"Download"})
+    @DisableFeatures({ChromeFeatureList.OPEN_DOWNLOAD_IN_NEW_TAB})
+    public void testOpenItemInChrome_Incognito_CustomTabFallbackStaysRegular() {
+        when(mMockDownloadManagerService.isDownloadOpenableInBrowser(any(), anyBoolean()))
+                .thenReturn(true);
+
+        assertTrue(
+                DownloadUtils.openItemInChrome(
+                        createCompletedDownload("image/png"),
+                        mContext,
+                        OtrProfileId.getPrimaryOtrProfileId(),
+                        DownloadOpenSource.DOWNLOAD_TRAY));
+
+        // Without the new-tab path, media opens in the Custom Tab media viewer, which deliberately
+        // stays a regular Custom Tab; see MediaViewerUtils#getMediaViewerIntent.
+        Intent startedIntent =
+                Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity();
+        assertNotNull(startedIntent);
+        assertEquals(
+                CustomTabsUiType.MEDIA_VIEWER,
+                startedIntent.getIntExtra(
+                        CustomTabIntentDataProvider.EXTRA_UI_TYPE, CustomTabsUiType.DEFAULT));
+        assertFalse(
+                startedIntent.getBooleanExtra(
+                        IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, /* defaultValue= */ false));
+    }
+
+    @Test
+    @Feature({"Download"})
+    public void testOpenItemInChrome_CannotOpen_OpensNothing() {
+        @DownloadOpenSource int source = DownloadOpenSource.DOWNLOAD_TRAY;
+        // A format Chrome can't display.
+        assertFalse(
+                DownloadUtils.openItemInChrome(
+                        createCompletedDownload("application/zip"),
+                        mContext,
+                        TEST_OTR_PROFILE_ID,
+                        source));
+
+        when(mMockDownloadManagerService.isDownloadOpenableInBrowser(any(), anyBoolean()))
+                .thenReturn(true);
+        // Not a regular download, e.g. an offline page.
+        OfflineItem offlinePage = createCompletedDownload("image/png");
+        offlinePage.id = LegacyHelpers.buildLegacyContentId(/* isOfflinePage= */ true, TEST_GUID);
+        assertFalse(
+                DownloadUtils.openItemInChrome(offlinePage, mContext, TEST_OTR_PROFILE_ID, source));
+        // No file.
+        OfflineItem noFile = createCompletedDownload("image/png");
+        noFile.filePath = null;
+        assertFalse(DownloadUtils.openItemInChrome(noFile, mContext, TEST_OTR_PROFILE_ID, source));
+        // Opening fails.
+        Context throwingContext =
+                new ContextWrapper(mContext) {
+                    @Override
+                    public void startActivity(Intent intent) {
+                        throw new SecurityException("Permission denied");
+                    }
+                };
+        assertFalse(
+                DownloadUtils.openItemInChrome(
+                        createCompletedDownload("image/png"),
+                        throwingContext,
+                        TEST_OTR_PROFILE_ID,
+                        source));
+
+        assertNull(Shadows.shadowOf(RuntimeEnvironment.getApplication()).getNextStartedActivity());
+        verify(mMockDownloadManagerService, never()).updateLastAccessTime(any(), any());
     }
 }

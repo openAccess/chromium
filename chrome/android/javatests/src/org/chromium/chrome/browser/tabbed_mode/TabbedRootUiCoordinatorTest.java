@@ -11,9 +11,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -43,13 +43,13 @@ import org.mockito.junit.MockitoRule;
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
+import org.chromium.base.ContextUtils;
 import org.chromium.base.FakeTimeTestRule;
-import org.chromium.base.FeatureOverrides;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -58,6 +58,7 @@ import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
+import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarConstants;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarSceneLayer;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarSceneLayerJni;
 import org.chromium.chrome.browser.bookmarks.bar.BookmarkBarUtils;
@@ -72,31 +73,32 @@ import org.chromium.chrome.browser.metrics.UmaSessionStats;
 import org.chromium.chrome.browser.metrics.UmaSessionStatsJni;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
 import org.chromium.chrome.browser.share.send_tab_to_self.EntryPointDisplayReason;
 import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfAndroidBridge;
 import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfAndroidBridgeJni;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper;
-import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
-import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarPrefs;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.transit.testhtmls.NavigatePageStations;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.bookmarks.BookmarkBarVisibilityState;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.externalauth.ExternalAuthUtils;
-import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.policy.test.annotations.Policies;
 import org.chromium.components.policy.test.annotations.Policies.Add;
+import org.chromium.components.prefs.PrefService;
 import org.chromium.components.search_engines.SearchEngineChoiceService;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.test.util.TestAccounts;
+import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.components.variations.SyntheticTrialAnnotationMode;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
 import org.chromium.content_public.common.ContentUrlConstants;
@@ -138,7 +140,6 @@ public class TabbedRootUiCoordinatorTest {
                     doReturn(false).when(mSearchEngineChoiceService).isDeviceChoiceDialogEligible();
                 });
 
-        BookmarkBarUtils.setBookmarkBarVisibleForTesting(true);
         TabbedRootUiCoordinator.setDisableTopControlsAnimationsForTesting(true);
         GlicEnabling.setEnabledForTesting(false);
     }
@@ -147,20 +148,28 @@ public class TabbedRootUiCoordinatorTest {
     public void tearDown() {
         mSigninTestRule.signOut();
         TrackerFactory.setTrackerForTests(null);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    ChromeSharedPreferences.getInstance()
-                            .removeKey(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED);
-                    ChromeSharedPreferences.getInstance()
-                            .removeKey(
-                                    ChromePreferenceKeys.ADAPTIVE_TOOLBAR_CUSTOMIZATION_SETTINGS);
-                    if (mTabbedRootUiCoordinator != null
-                            && mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting()
-                                    != null) {
-                        mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting().destroy();
-                    }
-                });
         GlicNavigationUtils.setLauncher(null);
+    }
+
+    private static void registerBookmarkBarPrefsResetter() {
+        ResettersForTesting.register(
+                () -> {
+                    ContextUtils.getAppSharedPreferences()
+                            .edit()
+                            .remove(BookmarkBarConstants.BOOKMARK_BAR_SHOW_BOOKMARK_BAR)
+                            .remove(BookmarkBarConstants.BOOKMARK_BAR_BOOKMARK_BAR_VISIBILITY_STATE)
+                            .apply();
+                    ThreadUtils.runOnUiThreadBlocking(
+                            () -> {
+                                if (ProfileManager.isInitialized()) {
+                                    PrefService prefService =
+                                            UserPrefs.get(
+                                                    ProfileManager.getLastUsedRegularProfile());
+                                    prefService.clearPref(Pref.SHOW_BOOKMARK_BAR);
+                                    prefService.clearPref(Pref.BOOKMARK_BAR_VISIBILITY_STATE);
+                                }
+                            });
+                });
     }
 
     @Test
@@ -182,6 +191,8 @@ public class TabbedRootUiCoordinatorTest {
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testTopControlsHeightWithBookmarkBarOnTablet() {
+        registerBookmarkBarPrefsResetter();
+        BookmarkBarUtils.setBookmarkBarVisibleForTesting(true);
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
@@ -199,8 +210,8 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     @Add({@Policies.Item(key = "BrowserSignin", string = "2")})
+    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_STARTUP_PROMOS})
     public void testForcedSignin() {
         mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
 
@@ -221,7 +232,6 @@ public class TabbedRootUiCoordinatorTest {
      */
     @Test
     @MediumTest
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     @Add({@Policies.Item(key = "BrowserSignin", string = "2")})
     @CommandLineFlags.Add({ChromeSwitches.DISABLE_STARTUP_PROMOS})
     public void testForcedSigninWhenStartupPromosDisabled() {
@@ -241,8 +251,8 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @LargeTest
-    @EnableFeatures(SigninFeatures.SUPPORT_FORCED_SIGNIN_POLICY)
     @Add({@Policies.Item(key = "BrowserSignin", string = "2")})
+    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_STARTUP_PROMOS})
     public void testForcedSigninWhenSigninNotAllowed() {
         mSigninTestRule.addAccountThenSigninAndEnableHistorySync(TestAccounts.ACCOUNT1);
 
@@ -325,206 +335,6 @@ public class TabbedRootUiCoordinatorTest {
         assertTrue(
                 "Activity title should contain GTS label.",
                 activity.getTitle().toString().contains(tabSwitcherLabel));
-    }
-
-    @Test
-    @MediumTest
-    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testMaybeShowGlicPromo_WouldTrigger_ToolbarNotPinned() {
-        mPage = mActivityTestRule.startOnBlankPage();
-        mTabbedRootUiCoordinator =
-                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-
-        GlicEnabling.setEnabledForTesting(true);
-        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED);
-
-        // Mock tracker wouldTriggerHelpUi to return true.
-        doReturn(true)
-                .when(mTracker)
-                .wouldTriggerHelpUi(
-                        FeatureConstants.ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE);
-        TrackerFactory.setTrackerForTests(mTracker);
-
-        // Ensure toolbar is not pinned.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AdaptiveToolbarPrefs.saveToolbarButtonManualOverride(
-                            AdaptiveToolbarButtonVariant.AUTO);
-                });
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mTabbedRootUiCoordinator.maybeShowGlicPromo();
-                });
-
-        assertTrue(
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED, false));
-        // Toolbar should be manually overridden to GLIC.
-        assertEquals(
-                AdaptiveToolbarButtonVariant.GLIC, AdaptiveToolbarPrefs.getCustomizationSetting());
-        // Promo coordinator should be null (not shown).
-        assertNull(mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting());
-
-        // Verify that the trigger event was notified to the tracker.
-        verify(mTracker).notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_GLIC_IPH_TRIGGER);
-    }
-
-    @Test
-    @MediumTest
-    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testMaybeShowGlicPromo_WouldTrigger_ToolbarPinned() {
-        mPage = mActivityTestRule.startOnBlankPage();
-        mTabbedRootUiCoordinator =
-                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-
-        GlicEnabling.setEnabledForTesting(true);
-        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED);
-
-        // Mock tracker wouldTriggerHelpUi to return true.
-        doReturn(true)
-                .when(mTracker)
-                .wouldTriggerHelpUi(
-                        FeatureConstants.ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE);
-        TrackerFactory.setTrackerForTests(mTracker);
-
-        // Ensure toolbar is pinned.
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AdaptiveToolbarPrefs.saveToolbarButtonManualOverride(
-                            AdaptiveToolbarButtonVariant.NEW_TAB);
-                });
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mTabbedRootUiCoordinator.maybeShowGlicPromo();
-                });
-
-        assertFalse(
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED, false));
-        // Toolbar should still be NEW_TAB.
-        assertEquals(
-                AdaptiveToolbarButtonVariant.NEW_TAB,
-                AdaptiveToolbarPrefs.getCustomizationSetting());
-        // Promo coordinator should be non-null (shown).
-        assertNotNull(mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting());
-
-        // Verify that the trigger event was notified to the tracker.
-        verify(mTracker).notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_GLIC_IPH_TRIGGER);
-    }
-
-    @Test
-    @MediumTest
-    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testMaybeShowGlicPromo_WouldNotTrigger() {
-        mPage = mActivityTestRule.startOnBlankPage();
-        mTabbedRootUiCoordinator =
-                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-
-        GlicEnabling.setEnabledForTesting(true);
-        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED);
-
-        // Mock tracker wouldTriggerHelpUi to return false.
-        doReturn(false)
-                .when(mTracker)
-                .wouldTriggerHelpUi(
-                        FeatureConstants.ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE);
-        TrackerFactory.setTrackerForTests(mTracker);
-
-        // Toolbar is AUTO (not pinned).
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AdaptiveToolbarPrefs.saveToolbarButtonManualOverride(
-                            AdaptiveToolbarButtonVariant.AUTO);
-                });
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mTabbedRootUiCoordinator.maybeShowGlicPromo();
-                });
-
-        assertFalse(
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED, false));
-        // Toolbar should still be AUTO.
-        assertEquals(
-                AdaptiveToolbarButtonVariant.AUTO, AdaptiveToolbarPrefs.getCustomizationSetting());
-        // Promo coordinator should be non-null (shown).
-        assertNotNull(mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting());
-
-        // Verify that the trigger event was notified to the tracker.
-        verify(mTracker).notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_GLIC_IPH_TRIGGER);
-    }
-
-    @Test
-    @MediumTest
-    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testMaybeShowGlicPromo_DisabledByParam() {
-        mPage = mActivityTestRule.startOnBlankPage();
-        mTabbedRootUiCoordinator =
-                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-
-        GlicEnabling.setEnabledForTesting(true);
-        ChromeSharedPreferences.getInstance().removeKey(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED);
-        FeatureOverrides.overrideParam(ChromeFeatureList.GLIC, "glic-bottom-sheet-promo", false);
-
-        // Mock tracker wouldTriggerHelpUi to return false.
-        doReturn(false)
-                .when(mTracker)
-                .wouldTriggerHelpUi(
-                        FeatureConstants.ADAPTIVE_BUTTON_PIN_GLIC_TOOLBAR_BUTTON_FEATURE);
-        TrackerFactory.setTrackerForTests(mTracker);
-
-        // Toolbar is AUTO (not pinned).
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    AdaptiveToolbarPrefs.saveToolbarButtonManualOverride(
-                            AdaptiveToolbarButtonVariant.AUTO);
-                });
-
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    mTabbedRootUiCoordinator.maybeShowGlicPromo();
-                });
-
-        assertFalse(
-                ChromeSharedPreferences.getInstance()
-                        .readBoolean(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED, false));
-        // Toolbar should still be AUTO.
-        assertEquals(
-                AdaptiveToolbarButtonVariant.AUTO, AdaptiveToolbarPrefs.getCustomizationSetting());
-        // Promo coordinator should be null (not shown due to param).
-        assertNull(mTabbedRootUiCoordinator.getGlicPromoCoordinatorForTesting());
-
-        // Verify that the trigger event was notified to the tracker.
-        verify(mTracker).notifyEvent(EventConstants.ADAPTIVE_TOOLBAR_GLIC_IPH_TRIGGER);
-    }
-
-    @Test
-    @MediumTest
-    @CommandLineFlags.Remove({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-    @DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
-    public void testMaybeShowGlicPromo_GlicDisabledByFlags_ResetsPref() {
-        mPage = mActivityTestRule.startOnBlankPage();
-        mTabbedRootUiCoordinator =
-                (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
-
-        GlicEnabling.setEnabledForTesting(false);
-        ThreadUtils.runOnUiThreadBlocking(
-                () -> {
-                    ChromeSharedPreferences.getInstance()
-                            .writeBoolean(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED, true);
-                    assertFalse(mTabbedRootUiCoordinator.maybeShowGlicPromo());
-                });
-
-        assertFalse(
-                ChromeSharedPreferences.getInstance()
-                        .contains(ChromePreferenceKeys.GLIC_PROMO_ACCEPTED));
     }
 
     @Test
@@ -717,9 +527,9 @@ public class TabbedRootUiCoordinatorTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     @EnableFeatures({ChromeFeatureList.BOOKMARKS_BAR_NTP})
     public void testBookmarkBarMenuAction_StateChanges() {
+        registerBookmarkBarPrefsResetter();
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
@@ -851,7 +661,6 @@ public class TabbedRootUiCoordinatorTest {
     @Test
     @MediumTest
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     @EnableFeatures({ChromeFeatureList.BOOKMARKS_BAR_NTP})
     public void testBookmarkBarMenuAction_IncompatibleActivity() {
         mPage = mActivityTestRule.startOnBlankPage();
@@ -897,6 +706,7 @@ public class TabbedRootUiCoordinatorTest {
     @DisableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
     public void testBookmarkBarToggleKeyboardShortcut_V1() {
+        registerBookmarkBarPrefsResetter();
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
@@ -936,8 +746,8 @@ public class TabbedRootUiCoordinatorTest {
     @MediumTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     public void testBookmarkBarToggleKeyboardShortcut_V2() {
+        registerBookmarkBarPrefsResetter();
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
@@ -1006,8 +816,8 @@ public class TabbedRootUiCoordinatorTest {
     @MediumTest
     @EnableFeatures(ChromeFeatureList.BOOKMARKS_BAR_NTP)
     @Restriction(DeviceFormFactor.TABLET_OR_DESKTOP)
-    @DisableIf.Device(DeviceFormFactor.DESKTOP) // TODO(https://crbug.com/568497446): Re-enable.
     public void testBookmarkBarVisibility_OnlyShowOnNtp() {
+        registerBookmarkBarPrefsResetter();
         mPage = mActivityTestRule.startOnBlankPage();
         mTabbedRootUiCoordinator =
                 (TabbedRootUiCoordinator) mPage.getActivity().getRootUiCoordinatorForTesting();
@@ -1039,40 +849,62 @@ public class TabbedRootUiCoordinatorTest {
 
     @Test
     @MediumTest
-    public void testSendTabToSelfOmniboxIphOnStartup() {
-        doAnswer(
-                        invocation -> {
-                            invocation.<Callback<Boolean>>getArgument(0).onResult(true);
-                            return null;
-                        })
-                .when(mTracker)
-                .addOnInitializedCallback(any());
-        TrackerFactory.setTrackerForTests(mTracker);
+    public void testSendTabToSelfOmniboxIphOnNavigation() {
+        String url = mActivityTestRule.getTestServer().getURL(NavigatePageStations.PATH_ONE);
+        setUpSendTabToSelfOmniboxIph(url);
 
-        SendTabToSelfAndroidBridge.Natives bridgeMock =
-                mock(SendTabToSelfAndroidBridge.Natives.class);
-        SendTabToSelfAndroidBridgeJni.setInstanceForTesting(bridgeMock);
-        doReturn(true).when(bridgeMock).isModelReady(any());
-        doReturn(EntryPointDisplayReason.OFFER_FEATURE)
-                .when(bridgeMock)
-                .getEntryPointDisplayReason(any(), any());
+        mPage = mActivityTestRule.startOnBlankPage();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    verify(mTracker).wouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                    verify(mTracker, never())
+                            .shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                });
 
-        try {
-            mPage = mActivityTestRule.startOnBlankPage();
-
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> {
-                        verify(mTracker)
-                                .shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
-                    });
-        } finally {
-            SendTabToSelfAndroidBridgeJni.setInstanceForTesting(null);
-        }
+        mPage = mPage.loadWebPageProgrammatically(url);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    verify(mTracker).shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                });
     }
 
     @Test
     @MediumTest
-    public void testSendTabToSelfOmniboxIphOnStartup_notEligible() {
+    public void testSendTabToSelfOmniboxIphOnTabSwitch() {
+        String url = mActivityTestRule.getTestServer().getURL(NavigatePageStations.PATH_ONE);
+        setUpSendTabToSelfOmniboxIph(url);
+
+        mPage = mActivityTestRule.startOnUrl(url);
+        Tab firstTab = mPage.getTab();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    verify(mTracker, never())
+                            .shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                });
+
+        RegularNewTabPageStation ntp = mPage.openNewTabFast();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    verify(mTracker, never())
+                            .shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                });
+
+        if (ntp.getActivity().isTablet()) {
+            // Hub exit can race the toolbar unhiding, see https://crbug.com/583352331.
+            mPage =
+                    ntp.expectTabStrip()
+                            .expectTab(firstTab.getId())
+                            .select(WebPageStation.newBuilder());
+        } else {
+            mPage = ntp.openRegularTabSwitcher().selectTabAtIndex(0, WebPageStation.newBuilder());
+        }
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    verify(mTracker).shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
+                });
+    }
+
+    private void setUpSendTabToSelfOmniboxIph(String url) {
         doAnswer(
                         invocation -> {
                             invocation.<Callback<Boolean>>getArgument(0).onResult(true);
@@ -1080,25 +912,17 @@ public class TabbedRootUiCoordinatorTest {
                         })
                 .when(mTracker)
                 .addOnInitializedCallback(any());
+        doReturn(true).when(mTracker).wouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
         TrackerFactory.setTrackerForTests(mTracker);
 
         SendTabToSelfAndroidBridge.Natives bridgeMock =
                 mock(SendTabToSelfAndroidBridge.Natives.class);
         SendTabToSelfAndroidBridgeJni.setInstanceForTesting(bridgeMock);
-        doReturn(true).when(bridgeMock).isModelReady(any());
-        doReturn(EntryPointDisplayReason.OFFER_SIGN_IN)
+        ResettersForTesting.register(
+                () -> SendTabToSelfAndroidBridgeJni.setInstanceForTesting(null));
+        doReturn(null).when(bridgeMock).getEntryPointDisplayReason(any(), any());
+        doReturn(EntryPointDisplayReason.OFFER_FEATURE)
                 .when(bridgeMock)
-                .getEntryPointDisplayReason(any(), any());
-        try {
-            mPage = mActivityTestRule.startOnBlankPage();
-
-            ThreadUtils.runOnUiThreadBlocking(
-                    () -> {
-                        verify(mTracker, never())
-                                .shouldTriggerHelpUi(FeatureConstants.SEND_TAB_TO_SELF_OMNIBOX);
-                    });
-        } finally {
-            SendTabToSelfAndroidBridgeJni.setInstanceForTesting(null);
-        }
+                .getEntryPointDisplayReason(any(), eq(url));
     }
 }

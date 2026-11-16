@@ -208,6 +208,7 @@ constexpr auto kOidStringMap = base::MakeFixedFlatMap<bssl::der::Input, int>({
     {bssl::der::Input(bssl::kTypeStreetAddressOid),
      IDS_CERT_OID_AVA_STREET_ADDRESS},
     {bssl::der::Input(kTypePostalCode), IDS_CERT_OID_AVA_POSTAL_CODE},
+    {bssl::der::Input(kTypeTrustAnchorIdOid), IDS_CERT_OID_TRUST_ANCHOR_ID},
 
     // Extension fields (including details of extensions):
     {bssl::der::Input(kNetscapeCertificateTypeOid), IDS_CERT_EXT_NS_CERT_TYPE},
@@ -323,8 +324,13 @@ std::string ProcessRDN(const bssl::RelativeDistinguishedName& rdn) {
       return std::string();
     rv += oid_text;
     std::string value;
-    if (!name_attribute.ValueAsStringWithUnsafeOptions(kNameStringHandling,
-                                                       &value)) {
+    if (name_attribute.value_tag == CBS_ASN1_RELATIVE_OID) {
+      value = net::x509_util::RelativeOidToString(name_attribute.value);
+      if (value.empty()) {
+        return std::string();
+      }
+    } else if (!name_attribute.ValueAsStringWithUnsafeOptions(
+                   kNameStringHandling, &value)) {
       return std::string();
     }
     rv += " = ";

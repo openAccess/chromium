@@ -7,7 +7,6 @@
 #include <inttypes.h>
 
 #include <cstddef>
-#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -265,8 +264,13 @@ void MediaStreamAudioSource::StopSourceOnError(
   PostCrossThreadTask(
       *GetTaskRunner(), FROM_HERE,
       CrossThreadBindOnce(
-          &MediaStreamAudioSource::StopSourceOnErrorOnTaskRunner, GetWeakPtr(),
-          code));
+          &MediaStreamAudioSource::StopSourceOnErrorOnTaskRunner,
+          error_weak_factory_.GetWeakPtr(), code));
+}
+
+void MediaStreamAudioSource::InvalidatePendingErrorCallbacks() {
+  DCHECK(GetTaskRunner()->BelongsToCurrentThread());
+  error_weak_factory_.InvalidateWeakPtrs();
 }
 
 void MediaStreamAudioSource::StopSourceOnErrorOnTaskRunner(

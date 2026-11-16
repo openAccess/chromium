@@ -10,8 +10,11 @@
 #include "chrome/browser/password_manager/password_change_delegate_impl.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/passwords/password_change_ui_controller.h"
+#include "chrome/browser/ui/passwords/password_change_ui_delegate.h"
 #include "chrome/browser/ui/test/test_browser_ui.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/affiliations/core/browser/affiliation_service.h"
+#include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #include "components/password_manager/core/browser/password_string.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -45,13 +48,22 @@ class PasswordChangeToastBrowserTest : public UiBrowserTest {
     form.password_value =
         password_manager::PasswordString(std::u16string(kTestPassword));
     delegate_ = std::make_unique<PasswordChangeDelegateImpl>(
-        GURL(kTestChangePasswordUrl), std::move(form), tab_interface);
+        password_manager::LeakedPasswordDetails(
+            password_manager::CreateLeakType(
+                password_manager::IsSaved(true),
+                password_manager::IsReused(false),
+                password_manager::IsSyncing(false),
+                password_manager::HasChangePasswordUrl(true)),
+            std::move(form), /*in_account_store=*/false,
+            affiliations::AffiliationService::ChangePasswordUrlMatch(
+                GURL(kTestChangePasswordUrl))),
+        tab_interface);
 
     ui_controller_ = delegate_->ui_controller();
 
     // Trigger the toast for the "Password Changed" state.
     ui_controller_->UpdateState(
-        PasswordChangeDelegate::State::kPasswordSuccessfullyChanged);
+        PasswordChangeUIDelegate::State::kPasswordSuccessfullyChanged);
   }
 
   bool VerifyUi() override {

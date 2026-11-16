@@ -5,6 +5,7 @@
 package org.chromium.chrome.browser;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -14,6 +15,7 @@ import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
@@ -23,7 +25,9 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.util.Pair;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.window.OnBackInvokedDispatcher;
 
 import androidx.annotation.Nullable;
@@ -48,6 +52,9 @@ import org.robolectric.annotation.Config;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
+import org.chromium.base.InputHintChecker;
+import org.chromium.base.InputHintCheckerJni;
+import org.chromium.base.ResettersForTesting;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.OneshotSupplier;
@@ -60,6 +67,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.app.appmenu.AppMenuPropertiesDelegateImpl;
 import org.chromium.chrome.browser.app.metrics.LaunchCauseMetrics;
+import org.chromium.chrome.browser.app.tab_activity_glue.TabReparentingController;
 import org.chromium.chrome.browser.app.tabmodel.TabModelOrchestrator;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.flags.ActivityType;
@@ -67,6 +75,8 @@ import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.browser.media.FullscreenVideoPictureInPictureController;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.profiles.ProfileManagerJni;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.reader_mode.ReaderModeManager;
@@ -84,11 +94,11 @@ import org.chromium.chrome.browser.ui.RootUiCoordinator;
 import org.chromium.chrome.browser.ui.appmenu.AppMenuPropertiesDelegate;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.policy.EnterpriseInfo;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.components.ukm.UkmRecorderJni;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtilsJni;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.RenderFrameHost;
 import org.chromium.content_public.browser.WebContents;
@@ -115,7 +125,9 @@ public class ChromeActivityUnitTest {
     @Mock PictureInPictureUiState mPictureInPictureUiState;
     @Mock EnterpriseInfo mEnterpriseInfo;
     @Mock UkmRecorder.Natives mUkmRecorderJniMock;
-    @Mock DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
+    @Mock WebDistillerUrlUtilsJni mWebDistillerUrlUtilsJni;
+    @Mock InputHintChecker.Natives mInputHintCheckerJni;
+    @Mock ProfileManager.Natives mProfileManagerJni;
     @Mock private TabStateThemeResourceProvider mThemeResourceProvider;
     @Mock LayoutManagerImpl mLayoutManagerMock;
     @Captor ArgumentCaptor<LoadUrlParams> mLoadUrlParamsCaptor;
@@ -128,6 +140,7 @@ public class ChromeActivityUnitTest {
         private boolean mIsInOverviewMode;
         private boolean mAreTabModelsInitialized;
         private boolean mIsTablet;
+        private boolean mIsFinishing;
         private @Nullable Intent mStartedActivityIntent;
 
         public TestChromeActivity() {
@@ -241,12 +254,43 @@ public class ChromeActivityUnitTest {
             // Override the method in test so it can be accessible in test body.
             super.onPreCreate();
         }
+
+        @Override
+        public Window getWindow() {
+            return mActivity.getWindow();
+        }
+
+        @Override
+        public Profile getOriginalProfile() {
+            return mProfile;
+        }
+
+        @Override
+        protected void startUmaSession() {}
+
+        @Override
+        protected void endUmaSession() {}
+
+        @Override
+        public boolean isFinishing() {
+            return mIsFinishing;
+        }
+
+        @Override
+        public TabletMode getTabletMode() {
+            return mock(TabletMode.class);
+        }
+
+        @Override
+        protected boolean doRecreateActivity() {
+            return super.doRecreateActivity();
+        }
     }
 
     @Before
     public void setup() {
         mActivity = Robolectric.buildActivity(TestActivity.class).setup().get();
-        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        WebDistillerUrlUtilsJni.setInstanceForTesting(mWebDistillerUrlUtilsJni);
     }
 
     @Test
@@ -362,7 +406,7 @@ public class ChromeActivityUnitTest {
         when(mTabModel.getProfile()).thenReturn(mProfile);
         when(mActivityTab.getUserDataHost()).thenReturn(userDataHost);
         when(mActivityTab.getUrl()).thenReturn(JUnitTestGURLs.EXAMPLE_URL);
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(false);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(false);
 
         assertTrue(
                 chromeActivity.onMenuOrKeyboardAction(
@@ -382,7 +426,7 @@ public class ChromeActivityUnitTest {
         when(mTabModel.getProfile()).thenReturn(mProfile);
         when(mActivityTab.getUserDataHost()).thenReturn(userDataHost);
         when(mActivityTab.getUrl()).thenReturn(JUnitTestGURLs.CHROME_DISTILLER_EXAMPLE_URL);
-        when(mDomDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
+        when(mWebDistillerUrlUtilsJni.isDistilledPage(any())).thenReturn(true);
 
         assertTrue(
                 chromeActivity.onMenuOrKeyboardAction(
@@ -677,5 +721,35 @@ public class ChromeActivityUnitTest {
 
         verify(mTabModel).setIndex(1, TabSelectionType.FROM_USER);
         assertEquals(1, userActionTester.getActionCount("MobileMenuSelectTabFromGroup"));
+    }
+
+    @Test
+    @DisableFeatures(ChromeFeatureList.UMA_SESSION_CORRECTNESS_FIXES)
+    public void testInputHintCheckerViewRetainedAcrossPause() {
+        InputHintChecker.setAllowSetViewForTesting(true);
+        ResettersForTesting.register(() -> InputHintChecker.setAllowSetViewForTesting(false));
+        InputHintCheckerJni.setInstanceForTesting(mInputHintCheckerJni);
+        ProfileManagerJni.setInstanceForTesting(mProfileManagerJni);
+
+        TestChromeActivity chromeActivity = new TestChromeActivity();
+        View decorView = chromeActivity.getWindow().getDecorView();
+
+        chromeActivity.onTopResumedActivityChangedWithNative(/* isTopResumedActivity= */ true);
+        verify(mInputHintCheckerJni).setView(decorView);
+
+        chromeActivity.onTopResumedActivityChangedWithNative(/* isTopResumedActivity= */ false);
+        verifyNoMoreInteractions(mInputHintCheckerJni);
+    }
+
+    @Test
+    public void testDoRecreateActivity_SkipsPrepareWhenFinishing() {
+        TabReparentingController reparentingController = mock(TabReparentingController.class);
+        TestChromeActivity chromeActivity = new TestChromeActivity();
+        chromeActivity.setTabReparentingControllerForTesting(reparentingController);
+        chromeActivity.mIsFinishing = true;
+
+        assertFalse(chromeActivity.doRecreateActivity());
+        verify(mRootUiCoordinatorMock, never()).prepareUiState();
+        verify(reparentingController, never()).prepareTabsForReparenting();
     }
 }

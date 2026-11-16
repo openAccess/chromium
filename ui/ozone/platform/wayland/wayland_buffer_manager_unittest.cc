@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/files/file_path.h"
@@ -45,6 +46,7 @@
 #include "ui/ozone/platform/wayland/test/mock_drm_syncobj_ioctl_wrapper.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
 #include "ui/ozone/platform/wayland/test/mock_zwp_linux_dmabuf.h"
+#include "ui/ozone/platform/wayland/test/test_buffer.h"
 #include "ui/ozone/platform/wayland/test/test_overlay_prioritized_surface.h"
 #include "ui/ozone/platform/wayland/test/test_zwp_linux_buffer_params.h"
 #include "ui/ozone/platform/wayland/test/wayland_test.h"
@@ -66,6 +68,10 @@ constexpr gfx::Size kDefaultSize(1024, 768);
 // TODO(msisov): add a test to exercise buffer management with non-default scale
 // once all the patches land.
 constexpr float kDefaultScale = 1.f;
+
+MATCHER(HasVSyncFlag, "") {
+  return arg.flags & gfx::PresentationFeedback::Flags::kVSync;
+}
 
 struct InputData {
   bool has_file = false;
@@ -129,12 +135,14 @@ class WaylandBufferManagerTest : public WaylandTest {
     // callback and bind the interface again if the manager failed.
     manager_host_->SetTerminateGpuCallback(callback_.Get());
     auto interface_ptr = manager_host_->BindInterface();
-    buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                    /*supports_dma_buf=*/false,
-                                    /*supports_viewporter=*/true,
-                                    /*supports_acquire_fence=*/false,
-                                    /*supports_overlays=*/true,
-                                    /*supports_single_pixel_buffer=*/true);
+    buffer_manager_gpu_->Initialize(
+        std::move(interface_ptr), {},
+        ozone::mojom::WaylandBufferManagerCapabilities::New(
+            /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+            /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+            /*supports_single_pixel_buffer=*/true,
+            /*compositor_tone_maps_using_clli=*/false,
+            /*compositor_tone_maps_using_mdcv=*/false));
     surface_id_ = window_->root_surface()->get_surface_id();
   }
 
@@ -212,11 +220,14 @@ class WaylandBufferManagerTest : public WaylandTest {
                     std::make_unique<WaylandBufferManagerGpu>();
                 buffer_manager_gpu_->Initialize(
                     std::move(interface_ptr), {},
-                    /*supports_dma_buf=*/false,
-                    /*supports_viewporter=*/true,
-                    /*supports_acquire_fence=*/false,
-                    /*supports_overlays=*/true,
-                    /*supports_single_pixel_buffer=*/true);
+                    ozone::mojom::WaylandBufferManagerCapabilities::New(
+                        /*supports_dma_buf=*/false,
+                        /*supports_viewporter=*/true,
+                        /*supports_acquire_fence=*/false,
+                        /*supports_overlays=*/true,
+                        /*supports_single_pixel_buffer=*/true,
+                        /*compositor_tone_maps_using_clli=*/false,
+                        /*compositor_tone_maps_using_mdcv=*/false));
                 surface_factory_->SetBufferManagerForTesting(
                     buffer_manager_gpu_.get());
               });
@@ -226,19 +237,23 @@ class WaylandBufferManagerTest : public WaylandTest {
   void CreateDmabufBasedBufferAndSetTerminateExpectation(
       bool fail,
       uint32_t buffer_id,
-      base::ScopedFD fd = base::ScopedFD(),
+      std::optional<std::vector<base::ScopedFD>> fds = std::nullopt,
       const gfx::Size& size = kDefaultSize,
       const std::vector<uint32_t>& strides = {1},
       const std::vector<uint32_t>& offsets = {2},
       const std::vector<uint64_t>& modifiers = {3},
       uint32_t format = DRM_FORMAT_ABGR8888,
       uint32_t planes_count = 1) {
-    if (!fd.is_valid())
-      fd = MakeFD();
+    if (!fds) {
+      fds.emplace();
+      for (uint32_t i = 0; i < std::max(planes_count, 1u); ++i) {
+        fds->push_back(MakeFD());
+      }
+    }
 
     SetTerminateCallbackExpectationAndDestroyChannel(&callback_, fail);
     buffer_manager_gpu_->CreateDmabufBasedBuffer(
-        std::move(fd), kDefaultSize, strides, offsets, modifiers, format,
+        std::move(*fds), kDefaultSize, strides, offsets, modifiers, format,
         planes_count, gfx::ColorSpace(), gfx::HDRMetadata(), buffer_id);
 
     base::RunLoop().RunUntilIdle();
@@ -550,7 +565,7 @@ TEST_P(WaylandBufferManagerTest, VerifyModifiers) {
   });
 
   CreateDmabufBasedBufferAndSetTerminateExpectation(
-      false /*fail*/, kDmabufBufferId, base::ScopedFD(), kDefaultSize, {1}, {2},
+      false /*fail*/, kDmabufBufferId, std::nullopt, kDefaultSize, {1}, {2},
       {kFormatModiferLinear}, kFourccFormatRGBA8888, 1);
 
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
@@ -562,6 +577,49 @@ TEST_P(WaylandBufferManagerTest, VerifyModifiers) {
   });
 
   // Clean up.
+  DestroyBufferAndSetTerminateExpectation(kDmabufBufferId, false /*fail*/);
+}
+
+// Verifies that every plane of a multi-planar buffer is sent with its own fd,
+// as the planes may live in separate dmabuf objects.
+TEST_P(WaylandBufferManagerTest, MultiPlanarBufferUsesPerPlaneFds) {
+  constexpr uint32_t kDmabufBufferId = 1;
+  static constexpr uint32_t kPlaneCount = 2;
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _)).Times(1);
+  });
+
+  std::vector<base::ScopedFD> fds;
+  std::vector<std::pair<dev_t, ino_t>> fd_stats;
+  for (uint32_t i = 0; i < kPlaneCount; ++i) {
+    fds.push_back(MakeFD());
+    struct stat st;
+    ASSERT_EQ(fstat(fds.back().get(), &st), 0);
+    fd_stats.emplace_back(st.st_dev, st.st_ino);
+  }
+  ASSERT_NE(fd_stats[0], fd_stats[1]);
+
+  CreateDmabufBasedBufferAndSetTerminateExpectation(
+      false /*fail*/, kDmabufBufferId, std::move(fds), kDefaultSize, {64, 64},
+      {0, 0}, {DRM_FORMAT_MOD_LINEAR, DRM_FORMAT_MOD_LINEAR}, DRM_FORMAT_NV12,
+      kPlaneCount);
+
+  PostToServerAndWait([&fd_stats](wl::TestWaylandServerThread* server) {
+    auto params_vector = server->zwp_linux_dmabuf_v1()->buffer_params();
+    ASSERT_EQ(params_vector.size(), 1u);
+    ASSERT_TRUE(params_vector[0]->buffer_resource());
+    auto* buffer =
+        wl::GetUserDataAs<wl::TestBuffer>(params_vector[0]->buffer_resource());
+    ASSERT_EQ(buffer->fds().size(), kPlaneCount);
+    for (uint32_t i = 0; i < kPlaneCount; ++i) {
+      struct stat st;
+      ASSERT_EQ(fstat(buffer->fds()[i].get(), &st), 0);
+      EXPECT_EQ(std::make_pair(st.st_dev, st.st_ino), fd_stats[i])
+          << "Plane " << i << " was sent with the wrong fd";
+    }
+  });
+
   DestroyBufferAndSetTerminateExpectation(kDmabufBufferId, false /*fail*/);
 }
 
@@ -592,14 +650,20 @@ TEST_P(WaylandBufferManagerTest, ValidateDataFromGpu) {
       {true, kDefaultSize, 1, {1}, {2}, {6}},
       // Everything is correct but the buffer ID is zero.
       {true, kDefaultSize, 1, {1}, {2}, {6}, DRM_FORMAT_ABGR8888},
+      // Two planes but only one fd.
+      {true, kDefaultSize, 2, {1, 1}, {0, 0}, {0, 0}, DRM_FORMAT_NV12, 1},
   };
 
   for (const auto& bad : kBadInputs) {
     EXPECT_CALL(*server_.zwp_linux_dmabuf_v1(), CreateParams(_, _, _)).Times(0);
-    base::ScopedFD dummy;
+    // Without a file, no fds are sent: mojo does not allow sending invalid
+    // handles.
+    std::vector<base::ScopedFD> fds;
+    if (bad.has_file) {
+      fds.push_back(MakeFD());
+    }
     CreateDmabufBasedBufferAndSetTerminateExpectation(
-        true /*fail*/, bad.buffer_id,
-        bad.has_file ? MakeFD() : std::move(dummy), bad.size, bad.strides,
+        true /*fail*/, bad.buffer_id, std::move(fds), bad.size, bad.strides,
         bad.offsets, bad.modifiers, bad.format, bad.planes_count);
   }
 }
@@ -733,7 +797,9 @@ TEST_P(WaylandBufferManagerTest, ReentrantDmabufBufferCreation) {
   std::vector<wl::Object<wl_buffer>> created_buffers;
   bool reentered = false;
   auto create_buffer = [&](wl::OnRequestBufferCallback callback) {
-    buffer_factory->CreateDmabufBuffer(MakeFD(), kDefaultSize, {1}, {2}, {3},
+    std::vector<base::ScopedFD> fds;
+    fds.push_back(MakeFD());
+    buffer_factory->CreateDmabufBuffer(fds, kDefaultSize, {1}, {2}, {3},
                                        DRM_FORMAT_ABGR8888, 1,
                                        std::move(callback));
   };
@@ -927,9 +993,11 @@ TEST_P(WaylandBufferManagerTest, EnsureCorrectOrderOfCallbacks) {
               OnSubmission(kBufferId1, gfx::SwapResult::SWAP_ACK, _))
       .Times(1);
   // wp_presentation must not exist now. This means that the buffer
-  // manager must send synthetized presentation feedbacks.
+  // manager must send synthesized presentation feedbacks without kVSync.
   ASSERT_TRUE(!connection_->presentation());
-  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, _)).Times(1);
+  EXPECT_CALL(mock_surface_gpu,
+              OnPresentation(kBufferId1, ::testing::Not(HasVSyncFlag())))
+      .Times(1);
 
   CommitBuffer(widget, kBufferId1, kBufferId1,
                gfx::FrameData(delegate_.viz_seq()), bounds,
@@ -951,7 +1019,9 @@ TEST_P(WaylandBufferManagerTest, EnsureCorrectOrderOfCallbacks) {
   EXPECT_CALL(mock_surface_gpu,
               OnSubmission(kBufferId2, gfx::SwapResult::SWAP_ACK, _))
       .Times(1);
-  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId2, _)).Times(1);
+  EXPECT_CALL(mock_surface_gpu,
+              OnPresentation(kBufferId2, ::testing::Not(HasVSyncFlag())))
+      .Times(1);
 
   PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
     auto* mock_surface = server->GetObject<wl::MockSurface>(id);
@@ -994,7 +1064,8 @@ TEST_P(WaylandBufferManagerTest, EnsureCorrectOrderOfCallbacks) {
   EXPECT_CALL(mock_surface_gpu,
               OnSubmission(kBufferId1, gfx::SwapResult::SWAP_ACK, _))
       .Times(1);
-  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, _)).Times(1);
+  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, HasVSyncFlag()))
+      .Times(1);
 
   PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
     auto* mock_surface = server->GetObject<wl::MockSurface>(id);
@@ -2463,6 +2534,86 @@ TEST_P(WaylandBufferManagerDrmSyncobjTest,
   RunFencedReleaseScenario(/*expect_exported_release_fence=*/false);
 }
 
+// Tests that buffers committed without an acquire fence are attached without
+// explicit sync and are released by wl_buffer.release events.
+TEST_P(WaylandBufferManagerDrmSyncobjTest, ReleaseWithoutAcquireFence) {
+  constexpr uint32_t kBufferId1 = 1;
+  constexpr uint32_t kBufferId2 = 2;
+
+  const gfx::AcceleratedWidget widget = window_->GetWidget();
+  const gfx::Rect bounds = window_->GetBoundsInPixels();
+
+  MockSurfaceGpu mock_surface_gpu(buffer_manager_gpu_.get(), widget);
+
+  PostToServerAndWait([](wl::TestWaylandServerThread* server) {
+    EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _)).Times(2);
+  });
+  CreateDmabufBasedBufferAndSetTerminateExpectation(/*fail=*/false, kBufferId1);
+  CreateDmabufBasedBufferAndSetTerminateExpectation(/*fail=*/false, kBufferId2);
+  ProcessCreatedBufferResourcesWithExpectation(/*expected_size=*/2u,
+                                               /*fail=*/false);
+
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+    constexpr uint32_t kNumberOfCommits = 3;
+    EXPECT_CALL(*mock_surface, Attach(_, _, _)).Times(kNumberOfCommits);
+    EXPECT_CALL(*mock_surface, Frame(_)).Times(kNumberOfCommits);
+    EXPECT_CALL(*mock_surface, Commit()).Times(kNumberOfCommits);
+  });
+
+  EXPECT_CALL(mock_surface_gpu,
+              OnSubmission(kBufferId1, gfx::SwapResult::SWAP_ACK, _))
+      .Times(1);
+  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, _)).Times(1);
+  CommitBuffer(widget, kBufferId1, kBufferId1,
+               gfx::FrameData(delegate_.viz_seq()), bounds,
+               gfx::RoundedCornersF(), kDefaultScale, bounds);
+  SendFrameCallbackForSurface(surface_id_);
+  base::RunLoop().RunUntilIdle();
+  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
+
+  // The second frame can only be acked once the first buffer is released.
+  EXPECT_CALL(mock_surface_gpu, OnSubmission(_, _, _)).Times(0);
+  EXPECT_CALL(mock_surface_gpu, OnPresentation(_, _)).Times(0);
+  CommitBuffer(widget, kBufferId2, kBufferId2,
+               gfx::FrameData(delegate_.viz_seq()), bounds,
+               gfx::RoundedCornersF(), kDefaultScale, bounds);
+  SendFrameCallbackForSurface(surface_id_);
+  base::RunLoop().RunUntilIdle();
+  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
+
+  // No explicit sync is used without an acquire fence, so wl_buffer.release
+  // must release the first buffer.
+  EXPECT_CALL(mock_surface_gpu,
+              OnSubmission(kBufferId2, gfx::SwapResult::SWAP_ACK, _))
+      .Times(1);
+  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId2, _)).Times(1);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+    mock_surface->ReleaseBuffer(mock_surface->prev_attached_buffer());
+  });
+  base::RunLoop().RunUntilIdle();
+  testing::Mock::VerifyAndClearExpectations(&mock_surface_gpu);
+
+  // The released buffer can be committed again.
+  EXPECT_CALL(mock_surface_gpu,
+              OnSubmission(kBufferId1, gfx::SwapResult::SWAP_ACK, _))
+      .Times(1);
+  EXPECT_CALL(mock_surface_gpu, OnPresentation(kBufferId1, _)).Times(1);
+  CommitBuffer(widget, kBufferId1, kBufferId1,
+               gfx::FrameData(delegate_.viz_seq()), bounds,
+               gfx::RoundedCornersF(), kDefaultScale, bounds);
+  SendFrameCallbackForSurface(surface_id_);
+  PostToServerAndWait([id = surface_id_](wl::TestWaylandServerThread* server) {
+    auto* mock_surface = server->GetObject<wl::MockSurface>(id);
+    mock_surface->ReleaseBuffer(mock_surface->prev_attached_buffer());
+  });
+  base::RunLoop().RunUntilIdle();
+
+  DestroyBufferAndSetTerminateExpectation(kBufferId1, /*fail=*/false);
+  DestroyBufferAndSetTerminateExpectation(kBufferId2, /*fail=*/false);
+}
+
 // Tests that destroying a channel doesn't result in resetting surface state
 // and buffers can be attached after the channel has been reinitialized.
 TEST_P(WaylandBufferManagerTest,
@@ -2523,12 +2674,14 @@ TEST_P(WaylandBufferManagerTest,
   base::RunLoop().RunUntilIdle();
 
   auto interface_ptr = manager_host_->BindInterface();
-  buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                  /*supports_dma_buf=*/false,
-                                  /*supports_viewporter=*/true,
-                                  /*supports_acquire_fence=*/false,
-                                  /*supports_overlays=*/true,
-                                  /*supports_single_pixel_buffer=*/true);
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
 
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
     EXPECT_CALL(*server->zwp_linux_dmabuf_v1(), CreateParams(_, _, _)).Times(1);
@@ -2647,12 +2800,14 @@ TEST_P(WaylandBufferManagerTest, HidesSubsurfacesOnChannelDestroyed) {
   });
 
   auto interface_ptr = manager_host_->BindInterface();
-  buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                  /*supports_dma_buf=*/false,
-                                  /*supports_viewporter=*/true,
-                                  /*supports_acquire_fence=*/false,
-                                  /*supports_overlays=*/true,
-                                  /*supports_single_pixel_buffer=*/true);
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
 
   PostToServerAndWait([](wl::TestWaylandServerThread* server) {
     // Now, create only one buffer and attach that to the root surface. The
@@ -2894,12 +3049,14 @@ TEST_P(WaylandBufferManagerTest, ExecutesTasksAfterInitialization) {
   EXPECT_EQ(3u, buffer_manager_gpu_->pending_tasks_.size());
 
   auto interface_ptr = manager_host_->BindInterface();
-  buffer_manager_gpu_->Initialize(std::move(interface_ptr), {},
-                                  /*supports_dma_buf=*/false,
-                                  /*supports_viewporter=*/true,
-                                  /*supports_acquire_fence=*/false,
-                                  /*supports_overlays=*/true,
-                                  /*supports_single_pixel_buffer=*/true);
+  buffer_manager_gpu_->Initialize(
+      std::move(interface_ptr), {},
+      ozone::mojom::WaylandBufferManagerCapabilities::New(
+          /*supports_dma_buf=*/false, /*supports_viewporter=*/true,
+          /*supports_acquire_fence=*/false, /*supports_overlays=*/true,
+          /*supports_single_pixel_buffer=*/true,
+          /*compositor_tone_maps_using_clli=*/false,
+          /*compositor_tone_maps_using_mdcv=*/false));
 
   base::RunLoop().RunUntilIdle();
 

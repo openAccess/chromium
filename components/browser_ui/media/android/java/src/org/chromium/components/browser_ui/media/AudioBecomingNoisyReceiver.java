@@ -17,6 +17,9 @@ import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskRunner;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -39,6 +42,10 @@ public class AudioBecomingNoisyReceiver extends BroadcastReceiver {
     private static @Nullable AudioBecomingNoisyReceiver sInstance;
 
     private final ObserverList<AudioBecomingNoisyObserver> mObservers = new ObserverList<>();
+    // Not static: resetForTesting() drops the instance, so each test starts with a runner that
+    // has no tasks pending from an earlier test.
+    private final TaskRunner mTaskRunner =
+            PostTask.createSequencedTaskRunner(TaskTraits.BEST_EFFORT);
     private boolean mIsRegistered;
 
     private AudioBecomingNoisyReceiver() {}
@@ -99,20 +106,28 @@ public class AudioBecomingNoisyReceiver extends BroadcastReceiver {
         if (mIsRegistered) return;
         mIsRegistered = true;
         IntentFilter filter = new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY);
-        ContextUtils.registerProtectedBroadcastReceiver(
-                ContextUtils.getApplicationContext(), AudioBecomingNoisyReceiver.this, filter);
+        mTaskRunner.execute(
+                () -> {
+                    ContextUtils.registerProtectedBroadcastReceiver(
+                            ContextUtils.getApplicationContext(),
+                            AudioBecomingNoisyReceiver.this,
+                            filter);
+                });
     }
 
     private void unregister() {
         ThreadUtils.assertOnUiThread();
         if (!mIsRegistered) return;
         mIsRegistered = false;
-        try {
-            ContextUtils.getApplicationContext()
-                    .unregisterReceiver(AudioBecomingNoisyReceiver.this);
-        } catch (IllegalArgumentException e) {
-            Log.w(TAG, "Failed to unregister receiver, it might not be registered", e);
-        }
+        mTaskRunner.execute(
+                () -> {
+                    try {
+                        ContextUtils.getApplicationContext()
+                                .unregisterReceiver(AudioBecomingNoisyReceiver.this);
+                    } catch (IllegalArgumentException e) {
+                        Log.w(TAG, "Failed to unregister receiver, it might not be registered", e);
+                    }
+                });
     }
 
     public boolean isRegisteredForTesting() {
@@ -122,7 +137,13 @@ public class AudioBecomingNoisyReceiver extends BroadcastReceiver {
     public static void resetForTesting() {
         ThreadUtils.assertOnUiThread();
         if (sInstance != null) {
-            sInstance.unregister();
+            sInstance.mObservers.clear();
+            sInstance.mIsRegistered = false;
+            try {
+                ContextUtils.getApplicationContext().unregisterReceiver(sInstance);
+            } catch (IllegalArgumentException e) {
+                // Expected if registration has not run yet or already unregistered.
+            }
             sInstance = null;
         }
     }

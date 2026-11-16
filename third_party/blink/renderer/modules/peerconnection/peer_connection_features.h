@@ -12,6 +12,10 @@ MODULES_EXPORT BASE_DECLARE_FEATURE(
 MODULES_EXPORT BASE_DECLARE_FEATURE(kWebRtcEncryptedRtpHeaderExtensions);
 MODULES_EXPORT BASE_DECLARE_FEATURE(kWebRtcGenerateRemoteTrackIds);
 MODULES_EXPORT BASE_DECLARE_FEATURE(
+    kWebRtcImplicitRollbackClearsPendingRemoteDescription);
+MODULES_EXPORT BASE_DECLARE_FEATURE(
+    kWebRtcOperationsChainTracksUnsettledPromises);
+MODULES_EXPORT BASE_DECLARE_FEATURE(
     kWebRtcRtpScriptTransformerFrameRestrictions);
 }  // namespace blink
 #endif  // THIRD_PARTY_BLINK_RENDERER_MODULES_PEERCONNECTION_PEER_CONNECTION_FEATURES_H_

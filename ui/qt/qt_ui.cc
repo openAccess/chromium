@@ -48,6 +48,7 @@
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/image/image_skia_source.h"
 #include "ui/linux/device_scale_factor_observer.h"
+#include "ui/linux/linux_key_bindings_handler.h"
 #include "ui/linux/linux_ui.h"
 #include "ui/linux/linux_ui_delegate.h"
 #include "ui/linux/nav_button_provider.h"
@@ -297,7 +298,7 @@ gfx::FontRenderParams QtUi::GetDefaultFontRenderParams() {
 }
 
 ui::SelectFileDialog* QtUi::CreateSelectFileDialog(
-    void* listener,
+    ui::SelectFileDialogListener* listener,
     std::unique_ptr<ui::SelectFilePolicy> policy) const {
   return fallback_linux_ui_ ? fallback_linux_ui_->CreateSelectFileDialog(
                                   listener, std::move(policy))
@@ -367,7 +368,7 @@ bool QtUi::Initialize() {
     return false;
   }
   void* create_qt_interface = dlsym(libqt_shim, "CreateQtInterface");
-  DCHECK(create_qt_interface);
+  CHECK(create_qt_interface, base::NotFatalUntil::M163);
   shim_.reset((reinterpret_cast<decltype(&CreateQtInterface)>(
       create_qt_interface)(this, &cmd_line_.argc, cmd_line_.argv.data())));
 
@@ -603,8 +604,10 @@ int QtUi::GetCursorThemeSize() {
 
 ui::TextEditCommand QtUi::GetTextEditCommandForEvent(const ui::Event& event,
                                                      int text_flags) {
-  // QT doesn't have "key themes" (eg. readline bindings) like GTK.
-  return ui::TextEditCommand::INVALID_COMMAND;
+  if (!key_bindings_handler_) {
+    key_bindings_handler_ = std::make_unique<ui::LinuxKeyBindingsHandler>();
+  }
+  return key_bindings_handler_->MatchEvent(event);
 }
 
 #if BUILDFLAG(ENABLE_PRINTING)
@@ -813,11 +816,10 @@ void QtUi::ScaleFactorMaybeChangedImpl() {
   display::DisplayConfig new_config;
   size_t n_monitors =
       shim_->GetMonitorConfig(&qt_monitors, &new_config.primary_scale);
-  std::vector<display::DisplayGeometry> ui_monitors;
-  ui_monitors.reserve(n_monitors);
+  new_config.display_geometries.reserve(n_monitors);
   for (size_t i = 0; i < n_monitors; i++) {
     const qt::MonitorScale& monitor = UNSAFE_TODO(qt_monitors[i]);
-    ui_monitors.push_back(display::DisplayGeometry{
+    new_config.display_geometries.push_back(display::DisplayGeometry{
         {monitor.x_px, monitor.y_px, monitor.width_px, monitor.height_px},
         monitor.scale});
   }

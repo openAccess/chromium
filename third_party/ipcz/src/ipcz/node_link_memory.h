@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 #include "ipcz/buffer_id.h"
@@ -23,6 +24,7 @@
 #include "ipcz/ref_counted_fragment.h"
 #include "ipcz/router_link_state.h"
 #include "ipcz/sublink_id.h"
+#include "third_party/abseil-cpp/absl/base/thread_annotations.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/abseil-cpp/absl/synchronization/mutex.h"
 #include "third_party/abseil-cpp/absl/types/span.h"
@@ -45,6 +47,21 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
   // The first kMaxInitialPortals SublinkIds on a NodeLinkMemory will always be
   // reserved for use by initial portals.
   static constexpr size_t kMaxInitialPortals = 12;
+
+  // Policies for expanding shared memory capacity for parcel data, selected by
+  // each node's IpczMemoryFlags. See the IPCZ_MEMORY_* flags in ipcz.h.
+  enum class ParcelCapacityPolicy {
+    kDynamic,            // No policy flag is set: expand on demand.
+    kFixed,              // IPCZ_MEMORY_FIXED_PARCEL_CAPACITY
+    kNoCapacity,         // IPCZ_MEMORY_NO_PARCEL_CAPACITY
+    kExpandOnce,         // IPCZ_MEMORY_EXPAND_PARCEL_CAPACITY_ONCE
+    kRestrictedDynamic,  // IPCZ_MEMORY_RESTRICTED_DYNAMIC_PARCEL_CAPACITY
+  };
+
+  // Returns the parcel capacity policy selected by `memory_flags`, or null if
+  // more than one parcel capacity policy flag is set. Other flags are ignored.
+  static std::optional<ParcelCapacityPolicy> GetParcelCapacityPolicy(
+      IpczMemoryFlags memory_flags);
 
   // The side of the node link to which this NodeLinkMemory belongs.
   LinkSide link_side() const { return link_side_; }
@@ -174,6 +191,14 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
   // future transport activity.
   void NotifyLinkDisconnected();
 
+  // Returns the number of usable blocks of `block_size` bytes across all
+  // buffers in the underlying BufferPool, whether or not they are allocated.
+  size_t TotalBlockCountForTesting(size_t block_size);
+
+  // Returns the number of usable blocks of `block_size` bytes in one new buffer
+  // allocated to expand capacity for that block size.
+  static size_t NewBufferBlockCountForTesting(size_t block_size);
+
  private:
   struct PrimaryBuffer;
 
@@ -188,9 +213,18 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
                  DriverMemoryMapping mapping);
   ~NodeLinkMemory();
 
-  // Indicates whether the NodeLinkMemory should be allowed to expand its
-  // allocation capacity further for blocks of size `block_size`.
-  bool CanExpandBlockCapacity(size_t block_size);
+  // Called when a parcel data allocation fails for blocks of `block_size`
+  // bytes. Starts a new request to expand capacity for that block size unless
+  // one is already pending or CanExpandBlockCapacityLocked() disallows it.
+  // Unlike RequestBlockCapacity(), this never queues a callback.
+  void MaybeExpandParcelBlockCapacity(size_t block_size);
+
+  // Indicates whether this node's parcel capacity policy allows expanding the
+  // capacity further for parcel data in blocks of `block_size` bytes. Requires
+  // `mutex_` so that OnCapacityRequestComplete() cannot clear a pending request
+  // between this check and StartCapacityRequestLocked().
+  bool CanExpandBlockCapacityLocked(size_t block_size)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
 
   // Attempts to expand the total block allocation capacity for blocks of
   // `block_size` bytes. `callback` may be called synchronously or
@@ -198,6 +232,17 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
   using RequestBlockCapacityCallback = std::function<void(bool)>;
   void RequestBlockCapacity(size_t block_size,
                             RequestBlockCapacityCallback callback);
+
+  // Registers a new capacity request for blocks of `block_size` bytes unless
+  // one is already pending, and adds `callback` (if non-null) to the pending
+  // request's callbacks. Returns the NodeLink to pass to AllocateBlockBuffer(),
+  // or null if a request was already pending or the new one is deferred until
+  // SetNodeLink().
+  Ref<NodeLink> StartCapacityRequestLocked(
+      size_t block_size,
+      RequestBlockCapacityCallback callback)
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(mutex_);
+
   void AllocateBlockBuffer(Ref<NodeLink> link, size_t block_size);
   void OnCapacityRequestComplete(size_t block_size, bool success);
 
@@ -212,7 +257,7 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
   const Ref<Node> node_;
   const LinkSide link_side_;
   const Features available_features_;
-  const bool allow_memory_expansion_for_parcel_data_;
+  const ParcelCapacityPolicy parcel_capacity_policy_;
 
   // Atomic ID generators for buffers and sublinks allocated by this side of the
   // link when memv2 is enabled.
@@ -235,7 +280,10 @@ class NodeLinkMemory : public RefCounted<NodeLinkMemory> {
 
   // Callbacks to invoke when a pending capacity request is fulfilled for a
   // specific block size. Also used to prevent stacking of capacity requests for
-  // the same block size.
+  // the same block size. An entry exists while a request for its block size is
+  // pending, including one deferred until SetNodeLink(). Requests started by
+  // MaybeExpandParcelBlockCapacity() start with no callbacks, but
+  // RequestBlockCapacity() may append some while they are pending.
   using CapacityCallbackList = std::vector<RequestBlockCapacityCallback>;
   absl::flat_hash_map<uint32_t, CapacityCallbackList> capacity_callbacks_
       ABSL_GUARDED_BY(mutex_);

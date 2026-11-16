@@ -563,7 +563,7 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
 </histogram>
 
 <histogram name="PrivacySandbox.Attestations.IsSiteAttestedStatus"
-    enum="PrivacySandboxApiAllowed" expires_after="2027-03-07">
+    enum="PrivacySandboxApiAllowed" expires_after="2027-05-09">
   <owner>shivanisha@chromium.org</owner>
   <owner>xiaochenzh@chromium.org</owner>
   <summary>
@@ -579,21 +579,6 @@ Regular profiles start at bucket 1, we don't consider non-regular profiles. -->
     in `AttestationsFileNotPresent`, which is remaned from
     `AttestationsFileNotYetReady`. Case 2 now goes into
     `AttestationsFileNotYetChecked`.
-  </summary>
-</histogram>
-
-<histogram name="PrivacySandbox.Attestations.LoadAPKAssetStatus"
-    enum="PrivacySandboxAttestationLoadAPKAssetStatus"
-    expires_after="2026-08-09">
-  <owner>shivanisha@chromium.org</owner>
-  <owner>xiaochenzh@chromium.org</owner>
-  <summary>
-    This histogram is only recorded on Android. It is only recorded if feature
-    `PrivacySandboxAttestationsLoadFromAPKAsset` is enabled. It records the
-    loading status of Privacy Sandbox attestations component from Android APK
-    assets. The loading will be aborted when an error is encountered. The
-    recorded status can be either success or failure with reasons per loading
-    attempt.
   </summary>
 </histogram>
 

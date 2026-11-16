@@ -21,12 +21,14 @@
 #import "components/autofill/ios/browser/autofill_driver_ios.h"
 #import "components/autofill/ios/browser/autofill_driver_ios_factory.h"
 #import "components/autofill/ios/browser/form_suggestion.h"
+#import "components/autofill/ios/browser/form_suggestion_provider.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/infobars/core/infobar.h"
 #import "components/infobars/core/infobar_manager.h"
 #import "components/password_manager/core/browser/features/password_features.h"
-#import "components/personal_context/first_run/personal_context_first_run_service.h"
+#import "components/personal_context/first_run/test_personal_context_first_run_service.h"
+#import "ios/chrome/browser/autofill/model/autofill_ai_save_entity_prompt_model.h"
 #import "ios/chrome/browser/autofill/model/bottom_sheet/autofill_bottom_sheet_java_script_feature.h"
 #import "ios/chrome/browser/autofill/model/features.h"
 #import "ios/chrome/browser/autofill/model/form_input_suggestions_provider.h"
@@ -66,35 +68,6 @@ using ::testing::Return;
 
 constexpr char kTestGuid[] = "00000000-0000-4000-8000-000000000000";
 
-// Fake implementation of PersonalContextFirstRunService to control the notice
-// state.
-class FakePersonalContextFirstRunService
-    : public personal_context::PersonalContextFirstRunService {
- public:
-  FakePersonalContextFirstRunService() = default;
-  ~FakePersonalContextFirstRunService() override = default;
-
-  void MarkPersonalContextAmbientAutofillNoticeAsAcknowledged() override {
-    acknowledged_ = true;
-  }
-  bool ShouldShowPersonalContextAmbientAutofillNotice() const override {
-    return should_show_;
-  }
-  void RecordAmbientAutofillNoticeImpression(uint32_t session_id) override {}
-  void MarkPersonalContextInAtMemoryNoticeAsAcknowledged() override {}
-  bool ShouldShowPersonalContextAtMemoryNotice() const override {
-    return false;
-  }
-  void RecordAtMemoryNoticeImpression(uint32_t session_id) override {}
-
-  void set_should_show(bool should_show) { should_show_ = should_show; }
-  bool acknowledged() const { return acknowledged_; }
-
- private:
-  bool should_show_ = false;
-  bool acknowledged_ = false;
-};
-
 class TestChromeAutofillClientIOS : public autofill::ChromeAutofillClientIOS {
  public:
   using ChromeAutofillClientIOS::ChromeAutofillClientIOS;
@@ -119,11 +92,21 @@ class TestChromeAutofillClientIOS : public autofill::ChromeAutofillClientIOS {
 @property(nonatomic, assign) BOOL showAmbientAutofillNoticeCalled;
 @property(nonatomic, assign) int dismissEditAddressBottomSheetCallCount;
 @property(nonatomic, assign) BOOL showPaymentsBottomSheetCalled;
+@property(nonatomic, assign) BOOL showSaveEntityDialogCalled;
+@property(nonatomic, assign) BOOL dismissSaveEntityDialogCalled;
 @end
 
 @implementation FakeAutofillCommandsForBottomSheet
 - (void)showAmbientAutofillNotice:(const autofill::FormActivityParams&)params {
   _showAmbientAutofillNoticeCalled = YES;
+}
+
+- (void)showSaveEntityDialogOnWebState:(web::WebState*)webState {
+  _showSaveEntityDialogCalled = YES;
+}
+
+- (void)dismissSaveEntityDialog {
+  _dismissSaveEntityDialogCalled = YES;
 }
 
 - (void)dismissEditAddressBottomSheet {
@@ -135,9 +118,64 @@ class TestChromeAutofillClientIOS : public autofill::ChromeAutofillClientIOS {
 }
 @end
 
+// Fake implementation of `FormSuggestionProvider` returning fixed suggestions.
+@interface FakeFormSuggestionProvider : NSObject <FormSuggestionProvider>
+@property(nonatomic, copy) NSArray<FormSuggestion*>* suggestions;
+@end
+
+@implementation FakeFormSuggestionProvider
+
+- (SuggestionProviderType)type {
+  return SuggestionProviderTypeAutofill;
+}
+
+- (autofill::FillingProduct)mainFillingProduct {
+  return autofill::FillingProduct::kCreditCard;
+}
+
+- (void)checkIfSuggestionsAvailableForForm:
+            (FormSuggestionProviderQuery*)formQuery
+                            hasUserGesture:(BOOL)hasUserGesture
+                                  webState:(web::WebState*)webState
+                         completionHandler:
+                             (SuggestionsAvailableCompletion)completion {
+  completion(self.suggestions.count > 0);
+}
+
+- (void)retrieveSuggestionsForForm:(FormSuggestionProviderQuery*)formQuery
+                          webState:(web::WebState*)webState
+                 completionHandler:(SuggestionsReadyCompletion)completion {
+  completion(self.suggestions, self);
+}
+
+- (void)didSelectSuggestion:(FormSuggestion*)suggestion
+                    atIndex:(NSInteger)index
+                       form:(NSString*)formName
+             formRendererID:(autofill::FormRendererId)formRendererID
+            fieldIdentifier:(NSString*)fieldIdentifier
+            fieldRendererID:(autofill::FieldRendererId)fieldRendererID
+                    frameID:(NSString*)frameID
+          completionHandler:(SuggestionHandledCompletion)completion {
+  if (completion) {
+    completion();
+  }
+}
+
+@end
+
 // Test fixture to test AutofillBottomSheetTabHelper class.
 class AutofillBottomSheetTabHelperTest : public PlatformTest {
  public:
+  std::unique_ptr<AutofillAiSaveEntityPromptModel> CreateTestEntityModel() {
+    return std::make_unique<AutofillAiSaveEntityPromptModel>(
+        autofill::SaveEntityParams(autofill::test::GetPassportEntityInstance(),
+                                   /*old_entity=*/std::nullopt,
+                                   /*user_email=*/u"test@example.com",
+                                   /*save_is_synchronous=*/true,
+                                   base::DoNothing(),
+                                   /*public_passes_notice=*/{},
+                                   /*show_explicit_decline_button=*/false));
+  }
   // Returns a valid form message body to trigger the proactive password
   // generation bottom sheet.
   std::unique_ptr<base::Value> ValidFormMessageBody(std::string frame_id) {
@@ -320,40 +358,39 @@ class AutofillBottomSheetTabHelperTest : public PlatformTest {
     ON_CALL(*mock_ai_manager_, GetSuggestions)
         .WillByDefault(Return(suggestions));
 
-    FakePersonalContextFirstRunService* first_run_service =
-        static_cast<FakePersonalContextFirstRunService*>(
+    personal_context::TestPersonalContextFirstRunService* first_run_service =
+        static_cast<personal_context::TestPersonalContextFirstRunService*>(
             IOSPersonalContextFirstRunServiceFactory::GetForProfile(
                 profile_.get()));
     ASSERT_NE(first_run_service, nullptr);
-    first_run_service->set_should_show(should_show_ambient_notice);
+    first_run_service->set_should_show_ambient_autofill_notice(
+        should_show_ambient_notice);
   }
 
  protected:
   AutofillBottomSheetTabHelperTest()
       : web_client_(std::make_unique<ChromeWebClient>()) {
     TestProfileIOS::Builder builder;
-    builder.AddTestingFactories(
-        {TestProfileIOS::TestingFactory{
-             autofill::PersonalDataManagerFactory::GetInstance(),
-             base::BindOnce(
-                 [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
-                   std::unique_ptr<autofill::TestPersonalDataManager> service =
-                       std::make_unique<autofill::TestPersonalDataManager>();
-                   service->SetPrefService(profile->GetPrefs());
-                   return service;
-                 })},
-         TestProfileIOS::TestingFactory{
-             IOSPersonalContextFirstRunServiceFactory::GetInstance(),
-             base::BindOnce([](ProfileIOS* profile)
-                                -> std::unique_ptr<KeyedService> {
-               return std::make_unique<FakePersonalContextFirstRunService>();
-             })},
-         TestProfileIOS::TestingFactory{
-             ios::HistoryServiceFactory::GetInstance(),
-             ios::HistoryServiceFactory::GetDefaultFactory()},
-         TestProfileIOS::TestingFactory{
-             ios::WebDataServiceFactory::GetInstance(),
-             ios::WebDataServiceFactory::GetDefaultFactory()}});
+    builder.AddTestingFactory(
+        autofill::PersonalDataManagerFactory::GetInstance(),
+        base::BindOnce(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+              std::unique_ptr<autofill::TestPersonalDataManager> service =
+                  std::make_unique<autofill::TestPersonalDataManager>();
+              service->SetPrefService(profile->GetPrefs());
+              return service;
+            }));
+    builder.AddTestingFactory(
+        IOSPersonalContextFirstRunServiceFactory::GetInstance(),
+        base::BindOnce(
+            [](ProfileIOS* profile) -> std::unique_ptr<KeyedService> {
+              return std::make_unique<
+                  personal_context::TestPersonalContextFirstRunService>();
+            }));
+    builder.AddTestingFactory(ios::HistoryServiceFactory::GetInstance(),
+                              ios::HistoryServiceFactory::GetDefaultFactory());
+    builder.AddTestingFactory(ios::WebDataServiceFactory::GetInstance(),
+                              ios::WebDataServiceFactory::GetDefaultFactory());
     profile_ = std::move(builder).Build();
 
     web::WebState::CreateParams params(profile_.get());
@@ -795,8 +832,7 @@ TEST_F(AutofillBottomSheetTabHelperTest,
 TEST_F(AutofillBottomSheetTabHelperTest,
        DidStartNavigationCancelsPendingCallbacks) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      {kStatelessFormSuggestionController, kAutofillPaymentsSheetV3Ios}, {});
+  feature_list.InitAndEnableFeature(kStatelessFormSuggestionController);
 
   FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[]);
 
@@ -863,8 +899,7 @@ TEST_F(AutofillBottomSheetTabHelperTest,
 // and clears registered renderer IDs.
 TEST_F(AutofillBottomSheetTabHelperTest, RenderProcessGoneClearsState) {
   base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      {kStatelessFormSuggestionController, kAutofillPaymentsSheetV3Ios}, {});
+  feature_list.InitAndEnableFeature(kStatelessFormSuggestionController);
 
   FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[]);
 
@@ -919,14 +954,9 @@ TEST_F(AutofillBottomSheetTabHelperTest, RenderProcessGoneClearsState) {
 }
 
 // Tests that receiving a payments form message without a user gesture does not
-// trigger the payments bottom sheet and records kNoUserGesture when the feature
-// is enabled.
+// trigger the payments bottom sheet and records kNoUserGesture.
 TEST_F(AutofillBottomSheetTabHelperTest,
        PaymentsBottomSheet_NoUserGesture_DoesNotShowAndLogsMetric) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      kAutofillPaymentsBottomSheetRequiresUserGesture);
-
   base::HistogramTester histogram_tester;
   web::WebFrame* frame = nullptr;
   autofill::AutofillManager* manager = nullptr;
@@ -956,13 +986,9 @@ TEST_F(AutofillBottomSheetTabHelperTest,
 
 // Tests that receiving a payments form message when the user is not
 // interacting does not trigger the payments bottom sheet and records
-// kUserNotInteracting when the feature is enabled.
+// kUserNotInteracting.
 TEST_F(AutofillBottomSheetTabHelperTest,
        PaymentsBottomSheet_UserNotInteracting_DoesNotShowAndLogsMetric) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(
-      kAutofillPaymentsBottomSheetRequiresUserGesture);
-
   base::HistogramTester histogram_tester;
   web::WebFrame* frame = nullptr;
   autofill::AutofillManager* manager = nullptr;
@@ -990,51 +1016,20 @@ TEST_F(AutofillBottomSheetTabHelperTest,
       PaymentsBottomSheetUserGestureStatus::kUserNotInteracting, 1);
 }
 
-// Tests that receiving a payments form message triggers the payments bottom
-// sheet even without a user gesture when the user gesture requirement feature
-// is disabled.
-TEST_F(AutofillBottomSheetTabHelperTest,
-       PaymentsBottomSheet_FeatureDisabled_ShowsBottomSheet) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{},
-      /*disabled_features=*/{kAutofillPaymentsBottomSheetRequiresUserGesture,
-                             kAutofillPaymentsSheetV3Ios});
-
-  base::HistogramTester histogram_tester;
-  web::WebFrame* frame = nullptr;
-  autofill::AutofillManager* manager = nullptr;
-  autofill::FormGlobalId form_id;
-  const autofill::FieldRendererId cc_renderer_id(1);
-  const autofill::FieldRendererId exp_renderer_id(2);
-  SetupPaymentsForm(cc_renderer_id, exp_renderer_id, frame, manager, form_id);
-  helper_->UpdateListenersForPaymentsForm(*manager, form_id,
-                                          /*only_new=*/false);
-
-  FakeAutofillCommandsForBottomSheet* commands_handler =
-      [[FakeAutofillCommandsForBottomSheet alloc] init];
-  helper_->SetAutofillBottomSheetHandler(
-      (id<AutofillCommands>)commands_handler);
-
-  web::ScriptMessage form_message = ScriptMessageForForm(
-      ValidPaymentsFormMessageBody(frame->GetFrameId(), cc_renderer_id,
-                                   /*has_user_gesture=*/false),
-      /*is_user_interacting=*/false);
-  helper_->OnFormMessageReceived(form_message);
-
-  EXPECT_TRUE(commands_handler.showPaymentsBottomSheetCalled);
-  histogram_tester.ExpectTotalCount(
-      kPaymentsBottomSheetUserGestureStatusHistogram, 0);
-}
-
 // Tests that receiving a payments form message with valid user gesture and user
 // interaction triggers the payments bottom sheet and records kValidGesture.
 TEST_F(AutofillBottomSheetTabHelperTest,
        PaymentsBottomSheet_ValidUserGesture_ShowsBottomSheetAndLogsMetric) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /*enabled_features=*/{kAutofillPaymentsBottomSheetRequiresUserGesture},
-      /*disabled_features=*/{kAutofillPaymentsSheetV3Ios});
+  FakeFormSuggestionProvider* provider =
+      [[FakeFormSuggestionProvider alloc] init];
+  provider.suggestions = @[ [FormSuggestion
+      suggestionWithValue:@"Visa **** 1234"
+       displayDescription:@"Card description"
+                     icon:nil
+                     type:autofill::SuggestionType::kCreditCardEntry
+                  payload:autofill::Suggestion::Payload()
+           requiresReauth:NO] ];
+  FormSuggestionTabHelper::CreateForWebState(web_state_.get(), @[ provider ]);
 
   base::HistogramTester histogram_tester;
   web::WebFrame* frame = nullptr;
@@ -1061,4 +1056,66 @@ TEST_F(AutofillBottomSheetTabHelperTest,
   histogram_tester.ExpectUniqueSample(
       kPaymentsBottomSheetUserGestureStatusHistogram,
       PaymentsBottomSheetUserGestureStatus::kValidGesture, 1);
+}
+
+// Tests that `ShowAutofillAiSaveEntityBottomSheet` stages the model and
+// notifies the commands handler.
+TEST_F(AutofillBottomSheetTabHelperTest, ShowAutofillAiSaveEntityBottomSheet) {
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+  EXPECT_NE(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+
+  std::unique_ptr<AutofillAiSaveEntityPromptModel> taken =
+      helper_->TakeAutofillAiSaveEntityPromptModel();
+  EXPECT_NE(taken, nullptr);
+  EXPECT_EQ(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+}
+
+// Tests that `WasShown` forwards to the pending prompt manager and re-shows
+// the dialog.
+TEST_F(AutofillBottomSheetTabHelperTest, WasShownRestoresPendingPrompt) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(kAutofillReshowSavePromptOnTabReturn);
+
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+
+  // Reset the flag and trigger WasShown.
+  autofill_handler.showSaveEntityDialogCalled = NO;
+  helper_->WasShown(web_state_.get());
+  EXPECT_TRUE(autofill_handler.showSaveEntityDialogCalled);
+}
+
+// Tests that `DidFinishNavigation` clears the staged prompt on committed
+// document navigation.
+TEST_F(AutofillBottomSheetTabHelperTest,
+       DidFinishNavigationClearsPendingPrompt) {
+  FakeAutofillCommandsForBottomSheet* autofill_handler =
+      [[FakeAutofillCommandsForBottomSheet alloc] init];
+  helper_->SetAutofillBottomSheetHandler(
+      (id<AutofillCommands>)autofill_handler);
+
+  helper_->ShowAutofillAiSaveEntityBottomSheet(CreateTestEntityModel());
+  EXPECT_NE(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+
+  web::FakeNavigationContext context;
+  context.SetHasCommitted(true);
+  context.SetIsSameDocument(false);
+  context.SetHasUserGesture(true);
+  context.SetPageTransition(ui::PAGE_TRANSITION_LINK);
+  helper_->DidFinishNavigation(web_state_.get(), &context);
+
+  EXPECT_EQ(helper_->GetAutofillAiSaveEntityPromptModel(), nullptr);
+  EXPECT_TRUE(autofill_handler.dismissSaveEntityDialogCalled);
 }

@@ -1,7 +1,7 @@
 # Isolated Web App Commands (`chrome/browser/web_applications/isolated_web_apps/commands`)
 
 This directory contains `WebAppCommand` implementations for Isolated Web Apps
-(IWAs), scheduled via `WebAppCommandScheduler` and synchronized through
+(IWAs), scheduled via `IwaCommandScheduler` and synchronized through
 `WebAppLockManager`.
 
 ## Key Commands

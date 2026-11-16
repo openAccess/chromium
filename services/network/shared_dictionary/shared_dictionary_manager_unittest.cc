@@ -209,17 +209,16 @@ class SharedDictionaryManagerTest
             /*file_operations_factory=*/nullptr);
     }
   }
-  const std::map<
-      url::SchemeHostPort,
-      std::map<std::tuple<std::string, std::set<mojom::RequestDestination>>,
-               SharedDictionaryStorageInMemory::DictionaryInfo>>&
+  const std::map<url::SchemeHostPort,
+                 std::map<std::tuple<std::string, RequestDestinationSet>,
+                          SharedDictionaryStorageInMemory::DictionaryInfo>>&
   GetInMemoryDictionaryMap(SharedDictionaryStorage* storage) {
     return static_cast<SharedDictionaryStorageInMemory*>(storage)
         ->GetDictionaryMap();
   }
   const std::map<
       url::SchemeHostPort,
-      std::map<std::tuple<std::string, std::set<mojom::RequestDestination>>,
+      std::map<std::tuple<std::string, RequestDestinationSet>,
                SharedDictionaryStorageOnDisk::WrappedDictionaryInfo>>&
   GetOnDiskDictionaryMap(SharedDictionaryStorage* storage) {
     return static_cast<SharedDictionaryStorageOnDisk*>(storage)
@@ -394,11 +393,8 @@ TEST_P(SharedDictionaryManagerTest,
   std::unique_ptr<SharedDictionaryManager> manager =
       CreateSharedDictionaryManager();
 
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
       base::kModerateMemoryPressureThreshold, task_environment_.QuitClosure());
-  task_environment_.RunUntilQuit();
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-      task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
 
   scoped_refptr<SharedDictionaryStorage> storage =
@@ -429,11 +425,8 @@ TEST_P(SharedDictionaryManagerTest,
   std::unique_ptr<SharedDictionaryManager> manager =
       CreateSharedDictionaryManager();
 
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
       base::kCriticalMemoryPressureThreshold, task_environment_.QuitClosure());
-  task_environment_.RunUntilQuit();
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-      task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
 
   scoped_refptr<SharedDictionaryStorage> storage =
@@ -492,11 +485,8 @@ TEST_P(SharedDictionaryManagerTest,
   storage.reset();
   pervasive_storage.reset();
 
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
       base::kModerateMemoryPressureThreshold, task_environment_.QuitClosure());
-  task_environment_.RunUntilQuit();
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-      task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
 
   // If `manager` observed moderate memory pressure, it should clear the cached
@@ -545,11 +535,8 @@ TEST_P(SharedDictionaryManagerTest,
   storage.reset();
   pervasive_storage.reset();
 
-  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAsync(
+  test_memory_consumer_registry_.NotifyUpdateMemoryLimitAndReleaseAsync(
       base::kCriticalMemoryPressureThreshold, task_environment_.QuitClosure());
-  task_environment_.RunUntilQuit();
-  test_memory_consumer_registry_.NotifyReleaseMemoryAsync(
-      task_environment_.QuitClosure());
   task_environment_.RunUntilQuit();
 
   // If `manager` observed critical memory pressure, it should clear the cached
@@ -1458,9 +1445,8 @@ TEST_P(SharedDictionaryManagerTest, WriteAndReadDictionary) {
                 dictionary_map.begin()->first);
 
       EXPECT_EQ(1u, dictionary_map.begin()->second.size());
-      EXPECT_EQ(
-          std::make_tuple("/testfile*", std::set<mojom::RequestDestination>()),
-          dictionary_map.begin()->second.begin()->first);
+      EXPECT_EQ(std::make_tuple("/testfile*", RequestDestinationSet()),
+                dictionary_map.begin()->second.begin()->first);
       const auto& dictionary_info =
           dictionary_map.begin()->second.begin()->second;
       EXPECT_EQ(GURL("https://origin1.test/dict"), dictionary_info.url());
@@ -1484,9 +1470,8 @@ TEST_P(SharedDictionaryManagerTest, WriteAndReadDictionary) {
                 dictionary_map.begin()->first);
 
       EXPECT_EQ(1u, dictionary_map.begin()->second.size());
-      EXPECT_EQ(
-          std::make_tuple("/testfile*", std::set<mojom::RequestDestination>()),
-          dictionary_map.begin()->second.begin()->first);
+      EXPECT_EQ(std::make_tuple("/testfile*", RequestDestinationSet()),
+                dictionary_map.begin()->second.begin()->first);
       const auto& dictionary_info =
           dictionary_map.begin()->second.begin()->second;
       EXPECT_EQ(GURL("https://origin1.test/dict"), dictionary_info.url());

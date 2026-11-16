@@ -2016,8 +2016,8 @@ class EnclaveManager::StateMachine {
 
     bool state_dirty = false;
 
-    MaybeUVKey maybe_uv_key =
-        std::move(std::get_if<KeyReady>(&event)->value().first);
+    auto [maybe_uv_key, identity_key] =
+        std::move(std::get<KeyReady>(event).value());
     // TODO(crbug.com/40253837): There is a presubmit bug that makes the script
     // complain about the unique_ptr within the holds_alternative if they are
     // on different lines. The type alias is just to work around that.
@@ -2037,7 +2037,7 @@ class EnclaveManager::StateMachine {
 
     manager_->identity_key_ =
         unexportable_keys::MakeRefCountedUnexportableSigningKey(
-            std::move(std::get_if<KeyReady>(&event)->value().second));
+            std::move(identity_key));
 
     if (manager_->user_verifying_key_) {
       const std::vector<uint8_t> uv_public_key =
@@ -2087,7 +2087,7 @@ class EnclaveManager::StateMachine {
     CHECK(std::holds_alternative<AccessToken>(event)) << ToString(event);
 
     state_ = State::kRegisteringWithEnclave;
-    std::string token = std::move(std::get_if<AccessToken>(&event)->value());
+    std::string token = std::move(std::get<AccessToken>(event).value());
     pending_transaction_ = enclave::Transact(
         manager_->network_context_factory_, enclave::GetEnclaveIdentity(),
         std::move(token),
@@ -2110,7 +2110,7 @@ class EnclaveManager::StateMachine {
     }
 
     cbor::Value response =
-        std::move(std::get_if<EnclaveResponse>(&event)->value());
+        std::move(std::get<EnclaveResponse>(event).value());
     if (!IsAllOk(response, 2)) {
       FIDO_LOG(ERROR) << "Registration resulted in error response: "
                       << cbor::WriteDiagnostic(response);
@@ -2147,7 +2147,7 @@ class EnclaveManager::StateMachine {
     }
 
     state_ = State::kWrappingSecrets;
-    std::string token = std::move(std::get_if<AccessToken>(&event)->value());
+    std::string token = std::move(std::get<AccessToken>(event).value());
     pending_transaction_ = enclave::Transact(
         manager_->network_context_factory_, enclave::GetEnclaveIdentity(),
         std::move(token),
@@ -2185,7 +2185,7 @@ class EnclaveManager::StateMachine {
     }
 
     cbor::Value response =
-        std::move(std::get_if<EnclaveResponse>(&event)->value());
+        std::move(std::get<EnclaveResponse>(event).value());
     if (!IsAllOk(response, new_security_domain_secrets.size())) {
       FIDO_LOG(ERROR) << "Wrapping resulted in error response: "
                       << cbor::WriteDiagnostic(response);
@@ -2224,7 +2224,7 @@ class EnclaveManager::StateMachine {
 
     CHECK(std::holds_alternative<JoinStatus>(event));
     const trusted_vault::TrustedVaultRegistrationStatus status =
-        std::get_if<JoinStatus>(&event)->value().first;
+        std::get<JoinStatus>(event).value().first;
 
     switch (status) {
       case trusted_vault::TrustedVaultRegistrationStatus::kSuccess:
@@ -3573,22 +3573,29 @@ void EnclaveManager::AddICloudRecoveryKey(
 
 void EnclaveManager::Unenroll(EnclaveManager::Callback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  LoadAndCheckIsRegistered(base::BindOnce(&EnclaveManager::DoUnenroll,
+                                          weak_ptr_factory_.GetWeakPtr(),
+                                          std::move(callback)));
+}
 
-  auto action = std::make_unique<PendingAction>();
-  action->callback = ToActionOutcomeCallback(
+void EnclaveManager::DoUnenroll(EnclaveManager::Callback callback,
+                                bool is_registered) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  auto action_callback = ToActionOutcomeCallback(
       base::BindOnce(&EnclaveManager::UnregisterComplete,
                      weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
       ActionForUMA::kUnenroll);
-
-  action->unregister = true;
-
-  if (!user_ || !IsRegistered()) {
+  if (!is_registered) {
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
-        base::BindOnce(std::move(action->callback), ActionOutcome::kSuccess));
+        base::BindOnce(std::move(action_callback), ActionOutcome::kSuccess));
     return;
   }
 
+  auto action = std::make_unique<PendingAction>();
+  action->unregister = true;
+  action->callback = std::move(action_callback);
   pending_actions_.emplace_back(std::move(action));
   Act();
 }
@@ -4142,35 +4149,38 @@ EnclaveManager::UvKeyState EnclaveManager::uv_key_state(
 }
 
 std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
-EnclaveManager::CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) {
+EnclaveManager::DownloadAccountState(DownloadAccountStateCallback callback) {
   CoreAccountInfo account_info =
       identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
+  GaiaId gaia_id = account_info.gaia;
   return trusted_vault_conn_->DownloadAuthenticationFactorsRegistrationState(
       account_info, trusted_vault::SecurityDomainId::kPasskeys,
       base::BindOnce(
-          [](GpmPinAvailabilityCallback callback,
+          [](GaiaId gaia_id, DownloadAccountStateCallback callback,
              trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult
-                 result) {
-            if (!result.gpm_pin_metadata) {
-              std::move(callback).Run(GpmPinAvailability::kGpmPinUnset);
-              return;
-            }
-            if (!result.gpm_pin_metadata->usable_pin_metadata) {
-              std::move(callback).Run(
-                  GpmPinAvailability::kGpmPinSetButNotUsable);
-              return;
-            }
-            EnclaveLocalState::WrappedPIN wrapped_pin;
-            bool pin_is_usable = wrapped_pin.ParseFromString(
-                                     result.gpm_pin_metadata
-                                         ->usable_pin_metadata->wrapped_pin) &&
-                                 !CheckPINInvariants(wrapped_pin).has_value();
-            std::move(callback).Run(
-                pin_is_usable ? GpmPinAvailability::kGpmPinSetAndUsable
-                              : GpmPinAvailability::kGpmPinSetButNotUsable);
+                 state) {
+            std::move(callback).Run(std::move(state), std::move(gaia_id));
           },
-          std::move(callback)),
+          std::move(gaia_id), std::move(callback)),
       base::DoNothing());
+}
+
+EnclaveManager::GpmPinAvailability EnclaveManager::CheckGpmPinAvailability(
+    const trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult&
+        account_state) const {
+  if (!account_state.gpm_pin_metadata) {
+    return GpmPinAvailability::kGpmPinUnset;
+  }
+  if (!account_state.gpm_pin_metadata->usable_pin_metadata) {
+    return GpmPinAvailability::kGpmPinSetButNotUsable;
+  }
+  EnclaveLocalState::WrappedPIN wrapped_pin;
+  bool pin_is_usable =
+      wrapped_pin.ParseFromString(
+          account_state.gpm_pin_metadata->usable_pin_metadata->wrapped_pin) &&
+      !CheckPINInvariants(wrapped_pin).has_value();
+  return pin_is_usable ? GpmPinAvailability::kGpmPinSetAndUsable
+                       : GpmPinAvailability::kGpmPinSetButNotUsable;
 }
 
 #if BUILDFLAG(IS_MAC)
@@ -4273,9 +4283,6 @@ void EnclaveManager::TemporarilyCachePendingOpportunisticKeys(
                 kStoreKeysFromOpportunisticFlowCachedKeysHaveBeenOverwritten);
   }
   opportunistic_pending_keys_ = std::move(store_keys_args);
-  // Ensure that the cached keys could be discarded after the timeout.
-  int ttl_seconds =
-      device::kWebAuthnOpportunisticRetrievalTimeToKeepCachedKeySeconds.Get();
   // Configuring the task for invalidating the cached key (if we overwrote the
   // cached key - the previous key invalidation task will be cancelled at this
   // point).
@@ -4292,15 +4299,12 @@ void EnclaveManager::TemporarilyCachePendingOpportunisticKeys(
       weak_ptr_factory_.GetWeakPtr()));
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, opportunistic_pending_keys_invalidation_task_.callback(),
-      base::Seconds(ttl_seconds));
+      kOpportunisticRetrievalKeyTTL);
 }
 
 bool EnclaveManager::IsStoringKeysFromOutOfContextRetrievalEnabled() {
   return base::FeatureList::IsEnabled(
-             device::kWebAuthnOpportunisticRetrieval) &&
-         base::FeatureList::IsEnabled(
-             device::
-                 kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange);
+      device::kWebAuthnDoNotAlwaysTerminateStateMachineDuringIdentityChange);
 }
 
 void EnclaveManager::StoreKeys(

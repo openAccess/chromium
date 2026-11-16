@@ -6,9 +6,9 @@ import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js'
 
 import type {NodeStore} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import {currentReadHighlightClass, MovementGranularity, PARENT_OF_HIGHLIGHT_CLASS, PhraseHighlight, previousReadHighlightClass, ReadAloudNode, SentenceHighlight, WordHighlight} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertGT, assertNotEquals, assertStringContains, assertStringExcludes, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {assertEquals, assertFalse, assertGT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
 
-import {setupTestEnvironment, setWindowSize} from './common.js';
+import {assertHtml, assertHtmlContains, assertHtmlExcludes, setupTestEnvironment, setWindowSize} from './common.js';
 
 suite('Movement', () => {
   let nodeStore: NodeStore;
@@ -20,22 +20,6 @@ suite('Movement', () => {
     setWindowSize(1000, 1000);
     nodeStore = result.nodeStore;
   });
-
-  function assertHtml(html: string, id: number) {
-    assertEquals(
-        html, (nodeStore.getDomNode(id) as Element).innerHTML,
-        (nodeStore.getDomNode(id) as Element).innerHTML);
-  }
-
-  function assertHtmlContains(partialHtml: string, id: number) {
-    assertStringContains(
-        (nodeStore.getDomNode(id) as Element).innerHTML, partialHtml);
-  }
-
-  function assertHtmlExcludes(partialHtml: string, id: number) {
-    assertStringExcludes(
-        (nodeStore.getDomNode(id) as Element).innerHTML, partialHtml);
-  }
 
   suite('MovementGranularity', () => {
     test('isEmpty is true when no highlights are added', () => {
@@ -493,10 +477,8 @@ suite('Movement', () => {
       const childNodes = parent.childNodes;
       assertEquals(2, childNodes.length);
       const currentHighlight = childNodes.item(0);
-      assertTrue(!!currentHighlight);
-      assertEquals(
-          currentReadHighlightClass,
-          (currentHighlight as HTMLElement).className);
+      assertTrue(currentHighlight instanceof HTMLElement);
+      assertEquals(currentReadHighlightClass, currentHighlight.className);
       const currentText = currentHighlight.firstChild;
       assertTrue(!!currentText);
       // The new highlight should replace the original paragraph, and the new
@@ -538,15 +520,13 @@ suite('Movement', () => {
       const childNodes = parent.childNodes;
       assertEquals(2, childNodes.length);
       const prefix = childNodes.item(0);
-      assertTrue(!!prefix);
-      assertEquals(
-          previousReadHighlightClass, (prefix as HTMLElement).className);
+      assertTrue(prefix instanceof HTMLElement);
+      assertEquals(previousReadHighlightClass, prefix.className);
       const prefixText = prefix.firstChild;
       assertTrue(!!prefixText);
       const current = childNodes.item(1);
-      assertTrue(!!current);
-      assertEquals(
-          currentReadHighlightClass, (current as HTMLElement).className);
+      assertTrue(current instanceof HTMLElement);
+      assertEquals(currentReadHighlightClass, current.className);
       const currentText = current.firstChild;
       assertTrue(!!currentText);
       // The new highlight should replace the original paragraph, and the new
@@ -789,7 +769,8 @@ suite('Movement', () => {
     let segments =
         [{node: readAloudNode, start: prefix.length, length: word.length}];
     new WordHighlight(segments, word.length);
-    let node = nodeStore.getDomNode(id) as HTMLElement;
+    let node = nodeStore.getDomNode(id);
+    assertTrue(node instanceof Element);
     let highlights =
         node.querySelectorAll<HTMLElement>('.' + currentReadHighlightClass);
     assertEquals(1, highlights.length);
@@ -807,7 +788,8 @@ suite('Movement', () => {
       length: phrase.length,
     }];
     new SentenceHighlight(segments);
-    node = nodeStore.getDomNode(id) as HTMLElement;
+    node = nodeStore.getDomNode(id);
+    assertTrue(node instanceof Element);
     highlights =
         node.querySelectorAll<HTMLElement>('.' + currentReadHighlightClass);
     assertEquals(1, highlights.length);

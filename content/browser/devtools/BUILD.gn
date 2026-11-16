@@ -20,7 +20,11 @@ if (enable_devtools_frontend) {
     # on this target to grit action.
     public = []
 
-    deps = [ ":devtools_resources" ]
+    deps = [
+      ":devtools_resources",
+      "//base",
+      "//ui/base",
+    ]
   }
 
   grit("devtools_resources") {
@@ -50,6 +54,19 @@ if (enable_devtools_frontend) {
       # This is the action that generates out .grd input file.
       "//third_party/blink/public:blink_generate_devtools_grd",
     ]
+  }
+}
+
+if (bundle_chrome_bidi_mapper) {
+  import("//ui/webui/resources/tools/minify_js.gni")
+
+  minify_js("minify_bidimapper") {
+    deps = [ "//third_party/chromium-bidi/src:mapper_bundle" ]
+    input_dir = get_label_info("//third_party/chromium-bidi/src:mapper_bundle",
+                               "target_gen_dir")
+    in_folder = "$input_dir"
+    in_files = [ "mapperTab.js" ]
+    out_folder = "$target_gen_dir/bidimapper/minified"
   }
 }
 

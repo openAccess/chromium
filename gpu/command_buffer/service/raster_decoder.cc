@@ -22,11 +22,13 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/debug/crash_logging.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/aligned_memory.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
+#include "base/memory/safety_checks.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
@@ -97,6 +99,7 @@
 #include "ui/gl/gl_gl_api_implementation.h"
 #include "ui/gl/gl_surface.h"
 #include "ui/gl/gl_version_info.h"
+#include "ui/gl/progress_reporter.h"
 
 #if BUILDFLAG(ENABLE_VULKAN)
 #include "gpu/command_buffer/service/drm_modifiers_filter_vulkan.h"
@@ -759,6 +762,15 @@ class RasterDecoderImpl final : public RasterDecoder,
                                         GLuint v_stride,
                                         const volatile GLbyte* mailbox);
 
+  // Produces the Skia representation of the shared image named by the
+  // client-provided `mailbox`. If there is no such shared image, sets `error`
+  // with `error_message` for `function_name` and returns nullptr.
+  std::unique_ptr<SkiaImageRepresentation> ProduceSkiaFromClientMailbox(
+      const volatile GLbyte* mailbox,
+      const char* function_name,
+      GLenum error,
+      const char* error_message);
+
   void DoLoseContextCHROMIUM(GLenum current, GLenum other);
   void DoBeginRasterCHROMIUM(GLfloat r,
                              GLfloat g,
@@ -1137,8 +1149,7 @@ Capabilities RasterDecoderImpl::GetCapabilities() {
   caps.max_texture_size = shared_context_state_->GetMaxTextureSize();
 
   caps.texture_format_etc1_npot =
-      feature_info()->feature_flags().oes_compressed_etc1_rgb8_texture &&
-      !feature_info()->workarounds().etc1_power_of_two_only;
+      feature_info()->feature_flags().oes_compressed_etc1_rgb8_texture;
   caps.image_ar30 = feature_info()->feature_flags().chromium_image_ar30;
   caps.image_ab30 = feature_info()->feature_flags().chromium_image_ab30;
   caps.render_buffer_format_bgra8888 =
@@ -1879,6 +1890,23 @@ void RasterDecoderImpl::DoCopySharedImageINTERNAL(
   }
 }
 
+std::unique_ptr<SkiaImageRepresentation>
+RasterDecoderImpl::ProduceSkiaFromClientMailbox(const volatile GLbyte* mailbox,
+                                                const char* function_name,
+                                                GLenum error,
+                                                const char* error_message) {
+  Mailbox client_mailbox = Mailbox::FromVolatile(
+      *reinterpret_cast<const volatile Mailbox*>(mailbox));
+  DLOG_IF(ERROR, !client_mailbox.Verify())
+      << function_name << " was passed an invalid mailbox";
+  auto shared_image = shared_image_representation_factory_.ProduceSkia(
+      client_mailbox, shared_context_state_);
+  if (!shared_image) {
+    LOCAL_SET_GL_ERROR(error, function_name, error_message);
+  }
+  return shared_image;
+}
+
 void RasterDecoderImpl::DoWritePixelsINTERNAL(GLint x_offset,
                                               GLint y_offset,
                                               GLuint src_width,
@@ -1902,15 +1930,10 @@ void RasterDecoderImpl::DoWritePixelsINTERNAL(GLint x_offset,
     return;
   }
 
-  Mailbox dest_mailbox = Mailbox::FromVolatile(
-      *reinterpret_cast<const volatile Mailbox*>(mailbox));
-  DLOG_IF(ERROR, !dest_mailbox.Verify())
-      << "WritePixels was passed an invalid mailbox";
-  auto dest_shared_image = shared_image_representation_factory_.ProduceSkia(
-      dest_mailbox, shared_context_state_);
+  auto dest_shared_image = ProduceSkiaFromClientMailbox(
+      mailbox, "glWritePixels", GL_INVALID_OPERATION,
+      "Attempting to write to unknown mailbox.");
   if (!dest_shared_image) {
-    LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glWritePixels",
-                       "Attempting to write to unknown mailbox.");
     return;
   }
 
@@ -2117,15 +2140,10 @@ void RasterDecoderImpl::DoWritePixelsYUVINTERNAL(
     return;
   }
 
-  Mailbox dest_mailbox = Mailbox::FromVolatile(
-      *reinterpret_cast<const volatile Mailbox*>(mailbox));
-  DLOG_IF(ERROR, !dest_mailbox.Verify())
-      << "WritePixelsYUV was passed an invalid mailbox";
-  auto dest_shared_image = shared_image_representation_factory_.ProduceSkia(
-      dest_mailbox, shared_context_state_);
+  auto dest_shared_image = ProduceSkiaFromClientMailbox(
+      mailbox, "glWritePixelsYUV", GL_INVALID_OPERATION,
+      "Attempting to write to unknown mailbox.");
   if (!dest_shared_image) {
-    LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glWritePixelsYUV",
-                       "Attempting to write to unknown mailbox.");
     return;
   }
 
@@ -2356,20 +2374,6 @@ void RasterDecoderImpl::DoReadbackARGBImagePixelsINTERNAL(
     return;
   }
 
-  Mailbox source_mailbox = Mailbox::FromVolatile(
-      *reinterpret_cast<const volatile Mailbox*>(mailbox));
-  DLOG_IF(ERROR, !source_mailbox.Verify())
-      << "ReadbackImagePixels was passed an invalid mailbox";
-  auto source_shared_image = shared_image_representation_factory_.ProduceSkia(
-      source_mailbox, shared_context_state_);
-  if (!source_shared_image) {
-    LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glReadbackImagePixels",
-                       "Unknown mailbox");
-    return;
-  }
-
-  viz::SharedImageFormat source_format = source_shared_image->format();
-
   // If present, the color space is serialized into shared memory after the
   // result and before the pixel data.
   if (color_space_offset > pixels_offset) {
@@ -2381,13 +2385,6 @@ void RasterDecoderImpl::DoReadbackARGBImagePixelsINTERNAL(
 
   sk_sp<SkColorSpace> dst_color_space;
   if (color_space_size) {
-    // For multiplanar formats readback is per plane, and destination color
-    // space must be nullptr to avoid unexpected color conversions.
-    if (source_format.is_multi_plane()) {
-      LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glReadbackImagePixels",
-                         "Unexpected color space for multiplanar shared image");
-      return;
-    }
     void* color_space_bytes = GetSharedMemoryAs<void*>(
         shm_id, shm_offset + color_space_offset, color_space_size);
     if (!color_space_bytes) {
@@ -2437,6 +2434,25 @@ void RasterDecoderImpl::DoReadbackARGBImagePixelsINTERNAL(
   if (!result) {
     LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glReadbackImagePixels",
                        "Failed to retrieve memory for readPixels result");
+    return;
+  }
+
+  // Produce the source only after every argument and shared memory check has
+  // passed. Producing a representation can allocate: a CompoundImageBacking
+  // whose contents only live in shared memory allocates a GPU backing. An
+  // invalid readback must fail without that side effect.
+  auto source_shared_image = ProduceSkiaFromClientMailbox(
+      mailbox, "glReadbackImagePixels", GL_INVALID_VALUE, "Unknown mailbox");
+  if (!source_shared_image) {
+    return;
+  }
+
+  viz::SharedImageFormat source_format = source_shared_image->format();
+  if (color_space_size && source_format.is_multi_plane()) {
+    // For multiplanar formats readback is per plane, and destination color
+    // space must be nullptr to avoid unexpected color conversions.
+    LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glReadbackImagePixels",
+                       "Unexpected color space for multiplanar shared image");
     return;
   }
 
@@ -2521,18 +2537,6 @@ void RasterDecoderImpl::DoReadbackYUVImagePixelsINTERNAL(
     return;
   }
 
-  Mailbox source_mailbox = Mailbox::FromVolatile(
-      *reinterpret_cast<const volatile Mailbox*>(mailbox));
-  DLOG_IF(ERROR, !source_mailbox.Verify())
-      << "ReadbackImagePixels was passed an invalid mailbox";
-  auto source_shared_image = shared_image_representation_factory_.ProduceSkia(
-      source_mailbox, shared_context_state_);
-  if (!source_shared_image) {
-    LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glReadbackImagePixels",
-                       "Unknown mailbox");
-    return;
-  }
-
   auto* result = GetSharedMemoryAs<
       cmds::ReadbackARGBImagePixelsINTERNALImmediate::Result*>(
       shm_id, shm_offset,
@@ -2606,6 +2610,16 @@ void RasterDecoderImpl::DoReadbackYUVImagePixelsINTERNAL(
   if (!v_out) {
     LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glReadbackYUVImagePixels",
                        "Failed to get memory for v plane output");
+    return;
+  }
+
+  // Produce the source only after every argument and shared memory check has
+  // passed. Producing a representation can allocate: a CompoundImageBacking
+  // whose contents only live in shared memory allocates a GPU backing. An
+  // invalid readback must fail without that side effect.
+  auto source_shared_image = ProduceSkiaFromClientMailbox(
+      mailbox, "glReadbackImagePixels", GL_INVALID_VALUE, "Unknown mailbox");
+  if (!source_shared_image) {
     return;
   }
 
@@ -2712,19 +2726,12 @@ void RasterDecoderImpl::DoBeginRasterCHROMIUM(GLfloat r,
     return;
   }
 
-  Mailbox mailbox =
-      Mailbox::FromVolatile(*reinterpret_cast<const volatile Mailbox*>(key));
-  DLOG_IF(ERROR, !mailbox.Verify()) << "BeginRasterCHROMIUM was "
-                                       "passed a mailbox that was not "
-                                       "generated by ProduceTextureCHROMIUM.";
-
   DCHECK(!shared_image_);
 
-  shared_image_ = shared_image_representation_factory_.ProduceSkia(
-      mailbox, shared_context_state_.get());
+  shared_image_ =
+      ProduceSkiaFromClientMailbox(key, "glBeginRasterCHROMIUM",
+                                   GL_INVALID_VALUE, "passed invalid mailbox.");
   if (!shared_image_) {
-    LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glBeginRasterCHROMIUM",
-                       "passed invalid mailbox.");
     return;
   }
 
@@ -2812,7 +2819,7 @@ void RasterDecoderImpl::DoBeginRasterCHROMIUM(GLfloat r,
 
   paint_op_shared_image_provider_ = std::make_unique<SharedImageProviderImpl>(
       &shared_image_representation_factory_, shared_context_state_, sk_surface_,
-      &end_semaphores_, error_state_.get(), mailbox);
+      &end_semaphores_, error_state_.get(), shared_image_->mailbox());
 
   // All or nothing clearing, as no way to validate the client's input on what
   // is the "used" part of the texture.  A separate |needs_clear| flag is needed
@@ -2840,6 +2847,13 @@ void RasterDecoderImpl::ReportProgress() {
     shared_context_state_->progress_reporter()->ReportProgress();
 }
 
+namespace {
+
+BASE_FEATURE(kExcludeOopRasterizationFromSafetyChecks,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+}  // namespace
+
 void RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
                                          GLuint raster_shm_offset,
                                          GLuint raster_shm_size,
@@ -2848,6 +2862,48 @@ void RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
                                          GLuint font_shm_size) {
   TRACE_EVENT1("gpu", "RasterDecoderImpl::DoRasterCHROMIUM", "raster_id",
                ++raster_chromium_id_);
+
+  gl::ScopedProgressReporter report_progress(
+      shared_context_state_->progress_reporter());
+
+  std::vector<SkDiscardableHandleId> new_locked_handles;
+  if (font_shm_size > 0) {
+    // ClientFontManager::Serialize() irreversibly marks typefaces, strike
+    // metrics, and glyphs as sent in SkStrikeServer, so the font buffer must be
+    // deserialized even when BeginRasterCHROMIUM failed (`!sk_surface_`) or the
+    // paint buffer is rejected.
+    TRACE_EVENT0("gpu",
+                 "RasterDecoderImpl::DoRasterCHROMIUM::DeserializeFonts");
+    auto font_buffer_opt = GetSharedMemoryAsSpan<volatile uint8_t>(
+        font_shm_id, font_shm_offset, font_shm_size);
+    if (font_buffer_opt.value_or({}).empty()) {
+      LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
+                         "Can not read font buffer.");
+      return;
+    }
+    base::span<volatile uint8_t> font_buffer = *font_buffer_opt;
+
+    if (!font_manager_->Deserialize(font_buffer, &new_locked_handles)) {
+      LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
+                         "Invalid font buffer.");
+      return;
+    }
+  }
+
+  // If we return early before transferring `new_locked_handles` to
+  // `locked_handles_` (where `DoEndRasterCHROMIUM` unlocks them after flushing
+  // `sk_surface_`), unlock them immediately so their shared memory refcounts
+  // stay balanced and `locked_handles_` remains empty when `!sk_surface_`.
+  absl::Cleanup unlock_new_handles = [&] {
+    if (new_locked_handles.empty()) {
+      return;
+    }
+    if (!font_manager_->Unlock(new_locked_handles)) {
+      LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
+                         "Invalid font discardable handle.");
+    }
+    SkGraphics::PurgePinnedFontCache();
+  };
 
   if (!sk_surface_) {
     LOCAL_SET_GL_ERROR(GL_INVALID_OPERATION, "glRasterCHROMIUM",
@@ -2871,6 +2927,10 @@ void RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
     return;
   }
 
+  locked_handles_.insert(locked_handles_.end(), new_locked_handles.begin(),
+                         new_locked_handles.end());
+  std::move(unlock_new_handles).Cancel();
+
   cc::PlaybackParams playback_params(nullptr, SkM44());
   playback_params.destination_hdr_headroom = sk_surface_hdr_headroom_;
   TransferCacheDeserializeHelperImpl impl(raster_decoder_id_, transfer_cache());
@@ -2886,32 +2946,10 @@ void RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
   alignas(cc::PaintOpBuffer::kPaintOpAlign)
       uint8_t data[cc::kLargestPaintOpAlignedSize];
 
-  gl::ScopedProgressReporter report_progress(
-      shared_context_state_->progress_reporter());
-
   TRACE_EVENT0("gpu", "RasterDecoderImpl::DoRasterCHROMIUM::Deserializing");
 
-  if (font_shm_size > 0) {
-    // Deserialize fonts before raster.
-    auto font_buffer_opt = GetSharedMemoryAsSpan<volatile uint8_t>(
-        font_shm_id, font_shm_offset, font_shm_size);
-    if (font_buffer_opt.value_or({}).empty()) {
-      LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
-                         "Can not read font buffer.");
-      return;
-    }
-    base::span<volatile uint8_t> font_buffer = *font_buffer_opt;
-
-    std::vector<SkDiscardableHandleId> new_locked_handles;
-    if (!font_manager_->Deserialize(font_buffer, &new_locked_handles)) {
-      LOCAL_SET_GL_ERROR(GL_INVALID_VALUE, "glRasterCHROMIUM",
-                         "Invalid font buffer.");
-      return;
-    }
-    locked_handles_.insert(locked_handles_.end(), new_locked_handles.begin(),
-                           new_locked_handles.end());
-  }
-
+  const bool exclude_from_safety_checks =
+      base::FeatureList::IsEnabled(kExcludeOopRasterizationFromSafetyChecks);
   while (!paint_buffer.empty()) {
     size_t skip = 0;
     cc::PaintOp* deserialized_op =
@@ -2922,8 +2960,14 @@ void RasterDecoderImpl::DoRasterCHROMIUM(GLuint raster_shm_id,
       return;
     }
 
-    deserialized_op->Raster(raster_canvas_, playback_params);
-    deserialized_op->DestroyThis();
+    {
+      std::optional<base::ScopedSafetyChecksExclusion> excluded;
+      if (exclude_from_safety_checks) {
+        excluded.emplace();
+      }
+      deserialized_op->Raster(raster_canvas_, playback_params);
+      deserialized_op->DestroyThis();
+    }
 
     paint_buffer = paint_buffer.subspan(skip);
   }
@@ -2940,37 +2984,44 @@ void RasterDecoderImpl::DoEndRasterCHROMIUM() {
   raster_canvas_ = nullptr;
 
   {
-    TRACE_EVENT0("gpu", "RasterDecoderImpl::DoEndRasterCHROMIUM::Flush");
-    // This is a slow operation since skia will execute the GPU work for the
-    // complete tile. Make sure the progress reporter is notified to avoid
-    // hangs.
-    gl::ScopedProgressReporter report_progress(
-        shared_context_state_->progress_reporter());
-
-    // scoped_shared_image_write_ can be nullptr if sk_surface_ was set by
-    // SetUpForRasterCHROMIUMForTest.
-    if (scoped_shared_image_write_) {
-      bool success = shared_context_state_->FlushWriteAccess(
-          scoped_shared_image_write_.get());
-      // Flushing surface will cause vulkan command buffer to be recorded with
-      // image layout transitions as necessary. Transitioning layout back to
-      // desired need to be happening after.
-      paint_op_shared_image_provider_->ApplyEndAccessState();
-      bool need_graphite_submit =
-          paint_op_shared_image_provider_->NeedGraphiteContextSubmit() ||
-          scoped_shared_image_write_->NeedGraphiteContextSubmit();
-      success &= shared_context_state_->SubmitIfNecessary(
-          std::move(end_semaphores_), need_graphite_submit);
-      if (success && should_clear_shared_image_) {
-        shared_image_->SetCleared();
-      }
-    } else {
-      DCHECK(end_semaphores_.empty());
+    std::optional<base::ScopedSafetyChecksExclusion> excluded;
+    if (base::FeatureList::IsEnabled(
+            kExcludeOopRasterizationFromSafetyChecks)) {
+      excluded.emplace();
     }
-  }
+    {
+      TRACE_EVENT0("gpu", "RasterDecoderImpl::DoEndRasterCHROMIUM::Flush");
+      // This is a slow operation since skia will execute the GPU work for the
+      // complete tile. Make sure the progress reporter is notified to avoid
+      // hangs.
+      gl::ScopedProgressReporter report_progress(
+          shared_context_state_->progress_reporter());
 
-  shared_context_state_->UpdateSkiaOwnedMemorySize();
-  sk_surface_ = nullptr;
+      // scoped_shared_image_write_ can be nullptr if sk_surface_ was set by
+      // SetUpForRasterCHROMIUMForTest.
+      if (scoped_shared_image_write_) {
+        bool success = shared_context_state_->FlushWriteAccess(
+            scoped_shared_image_write_.get());
+        // Flushing surface will cause vulkan command buffer to be recorded with
+        // image layout transitions as necessary. Transitioning layout back to
+        // desired need to be happening after.
+        paint_op_shared_image_provider_->ApplyEndAccessState();
+        bool need_graphite_submit =
+            paint_op_shared_image_provider_->NeedGraphiteContextSubmit() ||
+            scoped_shared_image_write_->NeedGraphiteContextSubmit();
+        success &= shared_context_state_->SubmitIfNecessary(
+            std::move(end_semaphores_), need_graphite_submit);
+        if (success && should_clear_shared_image_) {
+          shared_image_->SetCleared();
+        }
+      } else {
+        DCHECK(end_semaphores_.empty());
+      }
+    }
+
+    shared_context_state_->UpdateSkiaOwnedMemorySize();
+    sk_surface_ = nullptr;
+  }
   scoped_shared_image_write_.reset();
   shared_image_.reset();
   paint_op_shared_image_provider_.reset();

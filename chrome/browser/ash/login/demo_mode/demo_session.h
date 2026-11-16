@@ -19,6 +19,7 @@
 #include "chrome/browser/ash/login/demo_mode/demo_mode_idle_handler.h"
 #include "chrome/browser/ash/login/demo_mode/demo_mode_window_closer.h"
 #include "chromeos/dbus/power/power_manager_client.h"
+#include "components/account_id/account_id.h"
 #include "components/component_updater/ash/component_manager_ash.h"
 #include "components/services/app_service/public/cpp/app_registry_cache.h"
 #include "components/session_manager/core/session_manager.h"
@@ -214,11 +215,11 @@ class DemoSession : public session_manager::SessionManagerObserver,
   // DemoModeIdleHandler::Observer:
   void OnLocalFilesCleanupCompleted() override;
 
-  void OnDemoAppComponentLoaded();
+  void OnDemoAppComponentLoaded(const AccountId& account_id);
 
   // Installs resources for Demo Mode from the offline demo mode resources, such
-  // as photos and other media.
-  void InstallDemoResources();
+  // as photos and other media, into `account_id`'s Downloads folder.
+  void InstallDemoResources(const AccountId& account_id);
 
   // Find image path then show the splash screen.
   void ConfigureAndStartSplashScreen();
@@ -234,7 +235,7 @@ class DemoSession : public session_manager::SessionManagerObserver,
   void SetKeyboardBrightnessToOneHundredPercentFromCurrentLevel(
       std::optional<double> keyboard_brightness_percentage);
 
-  void RestoreDefaultLocaleForNextSession();
+  void RestoreDefaultLocaleForNextSession(const AccountId& account_id);
 
   const raw_ref<PrefService> local_state_;
   const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;

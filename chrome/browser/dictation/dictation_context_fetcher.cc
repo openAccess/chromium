@@ -12,11 +12,14 @@
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_split.h"
+#include "chrome/browser/dictation/dictation_keyed_service.h"
 #include "chrome/browser/dictation/features.h"
 #include "chrome/browser/dictation/logging.h"
+#include "chrome/browser/dictation/metrics.h"
 #include "chrome/browser/dictation/target.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/page_content_annotations/multi_source_page_context_fetcher.h"
+#include "chrome/browser/search/search.h"
 #include "chrome/browser/ui/tabs/page_context_eligibility_helper.h"
 #include "components/optimization_guide/content/browser/page_content_proto_provider.h"
 #include "components/optimization_guide/content/browser/page_context_eligibility_observer.h"
@@ -28,6 +31,7 @@
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "third_party/blink/public/mojom/content_extraction/ai_page_content.mojom.h"
 #include "third_party/blink/public/mojom/dictation/dictation_agent.mojom.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 #include "url/url_constants.h"
 
@@ -145,14 +149,17 @@ void DictationContextFetcher::Fetch(Target& target,
     return;
   }
 
+  const GURL& url = rfh->GetLastCommittedURL();
   if (glic::IsGlicGuest(web_contents) ||
-      content::HasWebUIScheme(rfh->GetLastCommittedURL())) {
+      (content::HasWebUIScheme(url) && !search::IsWebUINewTabPageOrigin(url))) {
     // TODO(b/535731618): Straightforward context fetch on Glic guests and
-    // general WebUI surfaces appears to never return and needs more
-    // investigation. For now, just eliding context is better than breaking the
-    // feature. (Also, for Glic, we probably want to include the web page
-    // content _in addition to_ the side panel content since that's likely
-    // relevant for speech biasing)
+    // general WebUI surfaces (other than the New Tab Page) appears to never
+    // return and needs more investigation. For now, just eliding context is
+    // better than breaking the feature. (Also, for Glic, we probably want to
+    // include the web page content _in addition to_ the side panel content
+    // since that's likely relevant for speech biasing)
+    // TODO(b/580953907): Eliding context here also drops the selected text sent
+    // as `editable_content`, so the model can't see or edit it.
     DictationContext context;
     std::move(callback).Run(std::move(context));
     return;
@@ -164,8 +171,30 @@ void DictationContextFetcher::Fetch(Target& target,
       optimization_guide::PageContextEligibilityStatus::kNotEligible) {
     VT_LOG(web_contents->GetBrowserContext())
         << "Page not eligible for context";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kCseIrmIneligible);
     DictationContext context;
     std::move(callback).Run(std::move(context));
+    return;
+  }
+
+  // As above, if the Optimization Guide hint is still in flight (`kUnknown`),
+  // proceed and check again when the fetch completes, but bail immediately if
+  // the page is known ineligible.
+  DictationKeyedService* service =
+      DictationKeyedService::Get(web_contents->GetBrowserContext());
+  CHECK(service);
+  // TODO(b/580953907): Blocking here also drops the selected text sent as
+  // `editable_content`, so the model can't see or edit it. Check with
+  // safety/product whether it should send selected text in blocked cases.
+  if (service->CheckOptimizationGuideHint(
+          web_contents->GetLastCommittedURL()) ==
+      optimization_guide::PageContextEligibilityStatus::kNotEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context per Optimization Guide";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kHintIneligible);
+    std::move(callback).Run(DictationContext());
     return;
   }
 
@@ -226,15 +255,36 @@ void DictationContextFetcher::OnPageContextFetched(
     page_content_annotations::FetchPageContextResultCallbackArg result) {
   DictationContext context;
 
-  // Fail closed if the page is not explicitly eligible.
-  if (!web_contents ||
-      GetPageContextEligibility(web_contents.get()) !=
-          optimization_guide::PageContextEligibilityStatus::kEligible) {
-    VT_LOG(web_contents->GetBrowserContext())
-        << "Page not eligible for context";
+  if (!web_contents) {
     std::move(callback).Run(std::move(context));
     return;
   }
+  DictationKeyedService* service =
+      DictationKeyedService::Get(web_contents->GetBrowserContext());
+  CHECK(service);
+  // Fail closed if the page is not explicitly eligible under both checks.
+  if (GetPageContextEligibility(web_contents.get()) !=
+      optimization_guide::PageContextEligibilityStatus::kEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kCseIrmIneligible);
+    std::move(callback).Run(std::move(context));
+    return;
+  }
+  if (service->CheckOptimizationGuideHint(
+          web_contents->GetLastCommittedURL()) !=
+      optimization_guide::PageContextEligibilityStatus::kEligible) {
+    VT_LOG(web_contents->GetBrowserContext())
+        << "Page not eligible for context per Optimization Guide";
+    RecordDictationPageContextEligibility(
+        DictationPageContextEligibility::kHintIneligible);
+    std::move(callback).Run(std::move(context));
+    return;
+  }
+
+  RecordDictationPageContextEligibility(
+      DictationPageContextEligibility::kEligible);
 
   // TODO(b/527240600): Handle errors
   if (result.has_value()) {

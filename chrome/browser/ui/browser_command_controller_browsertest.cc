@@ -83,7 +83,6 @@
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/sync/base/features.h"
 #include "components/translate/core/browser/language_state.h"
 #include "components/translate/core/browser/translate_manager.h"
 #include "content/public/test/browser_test.h"
@@ -109,12 +108,24 @@
 
 #if BUILDFLAG(IS_CHROMEOS)
 
+#include <memory>
+
 #include "ash/constants/ash_switches.h"
 #include "ash/wm/window_pin_util.h"
+#include "base/check_deref.h"
+#include "base/functional/bind.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
 #include "chrome/browser/ash/login/test/guest_session_mixin.h"
+#include "chrome/browser/ttc/app/public/audio_controller.h"
+#include "chrome/browser/ttc/core/features.h"
+#include "chrome/browser/ttc/core/test_utils.h"
+#include "chrome/browser/ttc/core/ttc_keyed_service.h"
+#include "chrome/browser/ttc/core/ttc_keyed_service_factory.h"
 #include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "components/keyed_service/core/keyed_service.h"
+#include "content/public/browser/browser_context.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "ui/aura/window.h"
 #endif
 
@@ -792,7 +803,7 @@ class BrowserCommandControllerBrowserTestLockedFullscreen
     command_controller->ExtensionStateChanged();
     command_controller->FindBarVisibilityChanged();
     command_controller->ZoomStateChanged();
-    command_controller->UpdateReloadStopState(
+    command_controller->LoadingStateChanged(
         /*is_loading=*/true,
         /*force=*/false);
   }
@@ -831,11 +842,6 @@ class BrowserCommandControllerBrowserTestLockedFullscreen
     }
   }
 
-  CommandUpdater* GetCommandUpdater() {
-    return chrome::BrowserCommandController::From(browser())
-        ->command_updater_.get();
-  }
-
  private:
   void OpenUrlWithDisposition(GURL url,
                               ui::mojom::WindowOpenDisposition disposition) {
@@ -850,7 +856,6 @@ class BrowserCommandControllerBrowserTestLockedFullscreen
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
                        WhenNotLockedForOnTask) {
   SetLockedForOnTask(false);
-  CommandUpdater* const command_updater = GetCommandUpdater();
   auto* const command_controller =
       chrome::BrowserCommandController::From(browser());
 
@@ -865,7 +870,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
   // Go through all the command ids and ensure only allowlisted commands are
   // enabled.
-  for (int id : command_updater->GetAllIds()) {
+  for (int id : command_controller->GetAllIds()) {
     bool is_command_allowlisted = std::ranges::contains(kAllowlistedIds, id);
     EXPECT_EQ(command_controller->IsCommandEnabled(id), is_command_allowlisted)
         << "Command " << id << " failed to meet enabled state expectation";
@@ -881,7 +886,6 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
                        CommandsRemainDisabledWhenNotLockedForOnTask) {
   SetLockedForOnTask(false);
-  CommandUpdater* const command_updater = GetCommandUpdater();
   chrome::BrowserCommandController* const controller =
       chrome::BrowserCommandController::From(browser());
 
@@ -904,7 +908,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
   // Commands must be disabled initially upon entering locked fullscreen.
   for (int id : kRestrictedCommands) {
-    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+    EXPECT_FALSE(controller->IsCommandEnabled(id))
         << "Command " << id
         << " should be disabled initially in locked fullscreen";
   }
@@ -921,7 +925,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
   // Commands must remain disabled in locked fullscreen mode.
   for (int id : kRestrictedCommands) {
-    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+    EXPECT_FALSE(controller->IsCommandEnabled(id))
         << "Command " << id << " should remain disabled in locked fullscreen";
   }
 }
@@ -932,7 +936,6 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
                        CommandsRemainRestrictedWhenLockedForOnTask) {
   SetLockedForOnTask(true);
-  CommandUpdater* const command_updater = GetCommandUpdater();
   chrome::BrowserCommandController* const controller =
       chrome::BrowserCommandController::From(browser());
 
@@ -947,7 +950,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
       IDC_CLOSE_FIND_OR_STOP,
   };
   for (int id : kFindCommands) {
-    EXPECT_TRUE(command_updater->IsCommandEnabled(id))
+    EXPECT_TRUE(controller->IsCommandEnabled(id))
         << "Command " << id
         << " should be enabled initially when locked for OnTask";
   }
@@ -959,7 +962,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
       IDC_MUTE_TARGET_SITE, IDC_OPEN_GLIC,
   };
   for (int id : kRestrictedCommands) {
-    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+    EXPECT_FALSE(controller->IsCommandEnabled(id))
         << "Command " << id
         << " should be disabled initially when locked for OnTask";
   }
@@ -977,11 +980,11 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
   // Find commands must remain enabled when locked for OnTask, while restricted
   // commands remain disabled.
   for (int id : kFindCommands) {
-    EXPECT_TRUE(command_updater->IsCommandEnabled(id))
+    EXPECT_TRUE(controller->IsCommandEnabled(id))
         << "Command " << id << " should remain enabled when locked for OnTask";
   }
   for (int id : kRestrictedCommands) {
-    EXPECT_FALSE(command_updater->IsCommandEnabled(id))
+    EXPECT_FALSE(controller->IsCommandEnabled(id))
         << "Command " << id << " should remain disabled when locked for OnTask";
   }
 }
@@ -989,7 +992,6 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
                        WhenLockedForOnTask) {
   SetLockedForOnTask(true);
-  CommandUpdater* const command_updater = GetCommandUpdater();
   auto* const command_controller =
       chrome::BrowserCommandController::From(browser());
 
@@ -1019,7 +1021,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
   // Go through all the command ids and ensure only allowlisted commands are
   // enabled.
-  for (int id : command_updater->GetAllIds()) {
+  for (int id : command_controller->GetAllIds()) {
     bool is_command_allowlisted = std::ranges::contains(kAllowlistedIds, id);
     EXPECT_EQ(command_controller->IsCommandEnabled(id), is_command_allowlisted)
         << "Command " << id << " failed to meet enabled state expectation";
@@ -1032,7 +1034,6 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
 IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
                        WhenLockedForOnTaskPaused) {
-  CommandUpdater* const command_updater = GetCommandUpdater();
   auto* const command_controller =
       chrome::BrowserCommandController::From(browser());
 
@@ -1056,7 +1057,7 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 
   // Go through all the command ids and ensure only allowlisted commands are
   // enabled.
-  for (int id : command_updater->GetAllIds()) {
+  for (int id : command_controller->GetAllIds()) {
     bool is_command_allowlisted = std::ranges::contains(kAllowlistedIds, id);
     EXPECT_EQ(command_controller->IsCommandEnabled(id), is_command_allowlisted)
         << "Command " << id << " failed to meet enabled state expectation";
@@ -1084,7 +1085,92 @@ IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreen,
 INSTANTIATE_TEST_SUITE_P(All,
                          BrowserCommandControllerBrowserTestLockedFullscreen,
                          testing::Bool());
-#endif
+
+class BrowserCommandControllerBrowserTestLockedFullscreenTtc
+    : public BrowserCommandControllerBrowserTestLockedFullscreen {
+ public:
+  BrowserCommandControllerBrowserTestLockedFullscreenTtc() {
+    ttc_feature_list_.InitAndEnableFeature(ttc::kTtc);
+  }
+
+  void SetUpBrowserContextKeyedServices(
+      content::BrowserContext* context) override {
+    BrowserCommandControllerBrowserTestLockedFullscreen::
+        SetUpBrowserContextKeyedServices(context);
+    // A mock conversation keeps sessions from capturing audio or connecting to
+    // the backend.
+    ttc::TtcKeyedServiceFactory::GetInstance()->SetTestingFactory(
+        context, base::BindRepeating([](content::BrowserContext* context)
+                                         -> std::unique_ptr<KeyedService> {
+          return std::make_unique<ttc::TtcKeyedService>(
+              Profile::FromBrowserContext(context),
+              base::BindRepeating([](ttc::SessionController&,
+                                     std::unique_ptr<ttc::AudioController>)
+                                      -> std::unique_ptr<ttc::Conversation> {
+                return std::make_unique<
+                    testing::NiceMock<ttc::MockConversation>>();
+              }));
+        }));
+  }
+
+ protected:
+  ttc::TtcKeyedService& ttc_service() {
+    return CHECK_DEREF(ttc::TtcKeyedService::Get(browser()->GetProfile()));
+  }
+
+  actions::ActionItem& ttc_toolbar_action() {
+    return CHECK_DEREF(actions::ActionManager::Get().FindAction(
+        kActionTtcToolbar,
+        BrowserActions::From(browser())->root_action_item()));
+  }
+
+ private:
+  base::test::ScopedFeatureList ttc_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreenTtc,
+                       HidesToolbarAndEndsSessionWhileLocked) {
+  auto* const command_controller =
+      chrome::BrowserCommandController::From(browser());
+  EXPECT_TRUE(command_controller->IsCommandEnabled(IDC_SHOW_TTC_MENU));
+  ttc_service().StartSession();
+  ASSERT_TRUE(ttc_service().is_session_active());
+  EXPECT_TRUE(ttc_toolbar_action().GetVisible());
+  EXPECT_TRUE(ttc_toolbar_action().GetEnabled());
+
+  EnterLockedFullscreen();
+  EXPECT_FALSE(ttc_service().is_session_active());
+  EXPECT_FALSE(ttc_toolbar_action().GetVisible());
+  EXPECT_FALSE(ttc_toolbar_action().GetEnabled());
+  EXPECT_FALSE(command_controller->IsCommandEnabled(IDC_SHOW_TTC_MENU));
+
+  ExitLockedFullscreen();
+  EXPECT_TRUE(ttc_toolbar_action().GetVisible());
+  EXPECT_TRUE(ttc_toolbar_action().GetEnabled());
+  EXPECT_TRUE(command_controller->IsCommandEnabled(IDC_SHOW_TTC_MENU));
+}
+
+IN_PROC_BROWSER_TEST_P(BrowserCommandControllerBrowserTestLockedFullscreenTtc,
+                       ToolbarStaysHiddenOnStateChangeWhileLocked) {
+  EnterLockedFullscreen();
+  ASSERT_FALSE(ttc_toolbar_action().GetVisible());
+
+  // Each session state change runs UpdateTtcState().
+  ttc_service().StartSession();
+  EXPECT_FALSE(ttc_toolbar_action().GetVisible());
+  EXPECT_FALSE(ttc_toolbar_action().GetEnabled());
+  ttc_service().EndSession();
+  EXPECT_FALSE(ttc_toolbar_action().GetVisible());
+  EXPECT_FALSE(ttc_toolbar_action().GetEnabled());
+  EXPECT_FALSE(
+      chrome::BrowserCommandController::From(browser())->IsCommandEnabled(
+          IDC_SHOW_TTC_MENU));
+}
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         BrowserCommandControllerBrowserTestLockedFullscreenTtc,
+                         testing::Bool());
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
                        TestTabRestoreServiceInitialized) {
@@ -1281,11 +1367,8 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTestRefreshOnly,
                        ExecuteShowSigninWhenPaused) {
   signin::IdentityManager* identity_manager =
       IdentityManagerFactory::GetForProfile(browser()->GetProfile());
-  signin::MakePrimaryAccountAvailable(
-      identity_manager, "user@example.com",
-      syncer::IsReplaceSyncPromosWithSignInPromosEnabled()
-          ? signin::ConsentLevel::kSignin
-          : signin::ConsentLevel::kSync);
+  signin::MakePrimaryAccountAvailable(identity_manager, "user@example.com",
+                                      signin::ConsentLevel::kSignin);
   signin::SetRefreshTokenForPrimaryAccount(identity_manager);
   signin::SetInvalidRefreshTokenForPrimaryAccount(identity_manager);
   EXPECT_TRUE(
@@ -1656,7 +1739,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
   tab_groups::TabGroupSyncServiceInitializedObserver observer(
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(
           browser()->GetProfile()));
-  observer.Wait();
+  ASSERT_TRUE(observer.Wait());
 
   EXPECT_TRUE(command_controller->IsCommandEnabled(IDC_GROUP_UNGROUPED_TABS));
 
@@ -1879,8 +1962,6 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTest,
   EXPECT_FALSE(
       chrome::IsCommandEnabled(incognito_browser, IDC_RECENT_TABS_MENU));
   EXPECT_FALSE(chrome::IsCommandEnabled(incognito_browser,
-                                        IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
-  EXPECT_FALSE(chrome::IsCommandEnabled(incognito_browser,
                                         IDC_RECENT_TABS_SEE_DEVICE_TABS));
 }
 
@@ -1909,8 +1990,6 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandControllerBrowserTestIsolatedTest,
 
   EXPECT_FALSE(
       chrome::IsCommandEnabled(isolated_browser, IDC_RECENT_TABS_MENU));
-  EXPECT_FALSE(chrome::IsCommandEnabled(isolated_browser,
-                                        IDC_RECENT_TABS_LOGIN_FOR_DEVICE_TABS));
   EXPECT_FALSE(chrome::IsCommandEnabled(isolated_browser,
                                         IDC_RECENT_TABS_SEE_DEVICE_TABS));
 }

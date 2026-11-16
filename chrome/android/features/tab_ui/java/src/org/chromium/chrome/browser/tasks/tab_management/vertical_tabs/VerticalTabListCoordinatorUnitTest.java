@@ -79,7 +79,6 @@ import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
-import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.back_press.BackPressManager;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
 import org.chromium.chrome.browser.collaboration.CollaborationServiceFactory;
@@ -113,6 +112,7 @@ import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tab_group_sync.TabGroupSyncServiceFactory;
 import org.chromium.chrome.browser.tab_ui.TabContentManager;
+import org.chromium.chrome.browser.tab_ui.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy;
 import org.chromium.chrome.browser.tabmodel.NextTabPolicy.NextTabPolicySupplier;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
@@ -148,7 +148,6 @@ import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.vertical_tabs.VerticalTabUtils.WindowWidthBoundary;
-import org.chromium.chrome.browser.undo_tab_close_snackbar.UndoBarThrottle;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.desktop_windowing.AppHeaderState;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
@@ -195,8 +194,7 @@ import java.util.function.Supplier;
     ChromeFeatureList.TASK_MANAGER_CLANK,
     TabGroupsFeatureMap.UPDATE_TAB_GROUP_COLORS,
     ChromeFeatureList.ANIMATED_IMAGE_DRAG_SHADOW,
-    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-    ChromeFeatureList.SIDE_UI_ALLOW_PAUSE
+    ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU
 })
 @SuppressWarnings("DoNotMock") // TODO(567604165): Remove mocking of Views / Activities
 public class VerticalTabListCoordinatorUnitTest {
@@ -561,6 +559,19 @@ public class VerticalTabListCoordinatorUnitTest {
 
         mCurrentTabModelSupplier.set(mNewTabModel);
         assertEquals(0, adapter.getModelList().size());
+    }
+
+    @Test
+    @EnableFeatures(ChromeFeatureList.TAB_UI_DATA_VIRTUALIZATION)
+    public void testDestroy_WithDataProvider_RemovesSupplierObserver() {
+        createCoordinator();
+        TabListRecyclerView recycler =
+                mCoordinator.getView().findViewById(R.id.tab_list_recycler_view);
+        SimpleRecyclerViewAdapter adapter = (SimpleRecyclerViewAdapter) recycler.getAdapter();
+
+        mCoordinator.destroy();
+
+        assertFalse(mCurrentTabModelSupplier.hasObservers());
     }
 
     @Test
@@ -1563,7 +1574,8 @@ public class VerticalTabListCoordinatorUnitTest {
                         mTabContentManagerSupplier,
                         mUndoBarThrottle,
                         mBrowserControlsStateProvider,
-                        mBackPressManager);
+                        mBackPressManager,
+                        () -> mTabWindowManager);
 
         View containerView = mCoordinator.getView();
         containerView.setVisibility(View.VISIBLE);
@@ -1954,20 +1966,7 @@ public class VerticalTabListCoordinatorUnitTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
     public void testHoverCard_TabClosed_HidesHoverCard() {
-        Tab tab = prepareAndShowHoverCard(mMockTab1);
-
-        // Notify tab model that tab will close
-        for (TabModelObserver observer : mTabModelObservers) {
-            observer.willCloseTab(tab, /* didCloseAlone= */ false);
-        }
-        verify(mTabHoverCardView).hide();
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.TAB_CLOSURE_METHOD_REFACTOR)
-    public void testHoverCard_TabClosed_HidesHoverCard_WillCloseTabs() {
         Tab tab = prepareAndShowHoverCard(mMockTab1);
 
         // Notify tab model that tab will close
@@ -3870,8 +3869,6 @@ public class VerticalTabListCoordinatorUnitTest {
     @Test
     public void
             testNonOriginatingDrag_GroupedTab_DropIntoGroup_UngroupsAndReparentsIntoTargetGroup() {
-        TabWindowManagerSingleton.setTabWindowManagerForTesting(mTabWindowManager);
-
         Token sourceGroupId = new Token(3L, 4L);
         Tab draggedTab = mock(Tab.class);
         when(draggedTab.getId()).thenReturn(100);
@@ -4082,8 +4079,6 @@ public class VerticalTabListCoordinatorUnitTest {
     @Test
     public void
             testNonOriginatingDrag_GroupedTab_DropIntoStandaloneList_UngroupsAndReparentsToDestTabIndex() {
-        TabWindowManagerSingleton.setTabWindowManagerForTesting(mTabWindowManager);
-
         Token sourceGroupId = new Token(3L, 4L);
         Tab draggedTab = mock(Tab.class);
         when(draggedTab.getId()).thenReturn(100);
@@ -4344,7 +4339,8 @@ public class VerticalTabListCoordinatorUnitTest {
                         mTabContentManagerSupplier,
                         mUndoBarThrottle,
                         mBrowserControlsStateProvider,
-                        mBackPressManager);
+                        mBackPressManager,
+                        () -> mTabWindowManager);
 
         mCoordinator
                 .getCollapseController()
@@ -4373,7 +4369,8 @@ public class VerticalTabListCoordinatorUnitTest {
                         mTabContentManagerSupplier,
                         mUndoBarThrottle,
                         mBrowserControlsStateProvider,
-                        mBackPressManager);
+                        mBackPressManager,
+                        () -> mTabWindowManager);
 
         mCoordinator
                 .getCollapseController()
@@ -5116,148 +5113,6 @@ public class VerticalTabListCoordinatorUnitTest {
         // Transition end triggers layout to recycle extra items back to viewport bounds.
         mCoordinator.setInTransition(false);
         assertTrue(pinnedRecyclerView.isLayoutRequested());
-    }
-
-    /**
-     * Robolectric's bare Activity has no content view, so peekDecorView() would return null and the
-     * relay would never be installed. A real Chrome activity sets content during startup.
-     */
-    private View ensureDecorView() {
-        return mActivity.getWindow().getDecorView();
-    }
-
-    private static DragEvent createDragEndedEvent(boolean result) {
-        return DragEventBuilder.newBuilder()
-                .setAction(DragEvent.ACTION_DRAG_ENDED)
-                .setResult(result)
-                .build();
-    }
-
-    /**
-     * Starts a rail drag out of the main list, dispatches {@code ACTION_DRAG_STARTED} to verify the
-     * relay on the decor view claims it, and returns the decor view.
-     */
-    private View dragOutOnDecorView() {
-        View decorView = ensureDecorView();
-        PropertyModel model = createTabPropertyModel();
-        model.set(TabProperties.TAB_ID, TAB_ID_1);
-        model.set(TabProperties.IS_PINNED, false);
-        when(mTabSwitcherDragHandler.startTabDragAction(any(), any(), any(), any()))
-                .thenReturn(true);
-
-        getOnDragOutListener().onDragOut(createViewHolder(model), /* dX= */ 100f, /* dY= */ 50f);
-
-        assertTrue(
-                "A drag-end relay must be installed while a rail drag is in flight.",
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_STARTED, 0f, 0f)));
-        return decorView;
-    }
-
-    @Test
-    public void testDragEndRelay_ClaimsDragStartedOnlyAndForwardsNothingElse() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        View decorView = dragOutOnDecorView();
-
-        // Claiming ACTION_DRAG_STARTED is the only thing that guarantees ACTION_DRAG_ENDED;
-        // claiming anything else would steal events from the rail and the content below it.
-        assertFalse(decorView.dispatchDragEvent(createDragEvent(DragEvent.ACTION_DROP, 0f, 0f)));
-        assertFalse(
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_LOCATION, 0f, 0f)));
-        verify(mTabSwitcherDragHandler, never()).onDrag(any(), any());
-    }
-
-    @Test
-    public void testDragEndRelay_RailDetachedMidDrag_ForwardsDragEndedToHandler() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        View decorView = dragOutOnDecorView();
-
-        // The rail subtree was removed from the anchor container, so no rail listener was able to
-        // end the drag and the handler still owns it.
-        when(mTabSwitcherDragHandler.isDragSource()).thenReturn(true);
-        DragEvent dragEnded = createDragEndedEvent(/* result= */ false);
-
-        assertFalse(decorView.dispatchDragEvent(dragEnded));
-
-        verify(mTabSwitcherDragHandler).onDrag(decorView, dragEnded);
-        assertFalse(
-                "The relay must uninstall itself with the drag.",
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_STARTED, 0f, 0f)));
-    }
-
-    @Test
-    public void testDragEndRelay_RailStillAttached_DoesNotHandleTheEndTwice() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        View decorView = dragOutOnDecorView();
-
-        // A rail listener already ran the handler's end path for this event, clearing its source.
-        when(mTabSwitcherDragHandler.isDragSource()).thenReturn(false);
-
-        decorView.dispatchDragEvent(createDragEndedEvent(/* result= */ true));
-
-        verify(mTabSwitcherDragHandler, never()).onDrag(any(), any());
-    }
-
-    @Test
-    public void testDragOut_DragFailsToStart_RemovesRelay() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        when(mTabSwitcherDragHandler.startTabDragAction(any(), any(), any(), any()))
-                .thenReturn(false);
-        View decorView = ensureDecorView();
-        PropertyModel model = createTabPropertyModel();
-        model.set(TabProperties.TAB_ID, TAB_ID_1);
-
-        getOnDragOutListener().onDragOut(createViewHolder(model), /* dX= */ 100f, /* dY= */ 50f);
-
-        assertFalse(
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_STARTED, 0f, 0f)));
-    }
-
-    @Test
-    public void testDestroy_RemovesDragEndRelay() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        View decorView = dragOutOnDecorView();
-
-        mCoordinator.destroy();
-
-        assertFalse(
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_STARTED, 0f, 0f)));
-    }
-
-    @Test
-    @EnableFeatures(ChromeFeatureList.SIDE_UI_ALLOW_PAUSE)
-    public void testDragOut_SideUiPauseEnabled_DoesNotInstallRelay() {
-        prepareMockTab(mMockTab1, TAB_ID_1);
-        when(mTabModel.getTabById(TAB_ID_1)).thenReturn(mMockTab1);
-        createCoordinator();
-        View decorView = ensureDecorView();
-        PropertyModel model = createTabPropertyModel();
-        model.set(TabProperties.TAB_ID, TAB_ID_1);
-        model.set(TabProperties.IS_PINNED, false);
-        when(mTabSwitcherDragHandler.startTabDragAction(any(), any(), any(), any()))
-                .thenReturn(true);
-
-        getOnDragOutListener().onDragOut(createViewHolder(model), /* dX= */ 100f, /* dY= */ 50f);
-
-        // The rail is frozen for the drag instead, so its own listener receives the end event.
-        verify(mTabSwitcherDragHandler).startTabDragAction(any(), eq(mMockTab1), any(), any());
-        assertFalse(
-                decorView.dispatchDragEvent(
-                        createDragEvent(DragEvent.ACTION_DRAG_STARTED, 0f, 0f)));
     }
 
     /**

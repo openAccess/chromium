@@ -26,6 +26,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
+#include "components/autofill/content/common/mojom/autofill_agent.mojom.h"
 #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
 #include "components/autofill/content/renderer/autofill_agent_test_api.h"
 #include "components/autofill/content/renderer/autofill_renderer_test.h"
@@ -46,10 +47,13 @@
 #include "content/public/renderer/render_frame.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/test_utils.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "mojo/public/cpp/bindings/scoped_interface_endpoint_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
 #include "third_party/blink/public/common/metrics/document_update_reason.h"
 #include "third_party/blink/public/mojom/scroll/scroll_enums.mojom-shared.h"
 #include "third_party/blink/public/web/web_autofill_state.h"
@@ -283,21 +287,58 @@ TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse) {
 }
 
 // Tests that the agent only has a custom form control script executor once
-// custom form control scripts are enabled, and that the executor runs scripts
-// in the agent's frame.
+// custom form control scripts are enabled, that enabling them registers
+// `mojom::CustomFormControlAgent`, and that the executor runs scripts in the
+// agent's frame.
 TEST_F(AutofillAgentTest, EnableCustomFormControlScripts) {
   base::test::ScopedFeatureList feature_list{
       features::kAutofillCustomFormControlScripts};
-  EXPECT_FALSE(
-      test_api(autofill_agent()).custom_form_control_script_executor());
+  EXPECT_FALSE(autofill_agent().custom_form_control_script_executor());
+  blink::AssociatedInterfaceRegistry registry;
+  // Any isolated world id that the test doesn't otherwise use.
   autofill_agent().EnableCustomFormControlScripts(
-      /*world_id=*/content::ISOLATED_WORLD_ID_CONTENT_END + 1);
+      /*world_id=*/content::ISOLATED_WORLD_ID_CONTENT_END + 1, registry);
+  mojo::AssociatedRemote<mojom::CustomFormControlAgent> remote;
+  mojo::ScopedInterfaceEndpointHandle handle =
+      remote.BindNewEndpointAndPassDedicatedReceiver().PassHandle();
+  EXPECT_TRUE(
+      registry.TryBindInterface(mojom::CustomFormControlAgent::Name_, &handle));
   CustomFormControlScriptExecutor* executor =
-      test_api(autofill_agent()).custom_form_control_script_executor();
+      autofill_agent().custom_form_control_script_executor();
   ASSERT_TRUE(executor);
   EXPECT_TRUE(executor->LoadScript(
       "function createCustomFormControlManager() { return {}; }"));
   EXPECT_TRUE(executor->has_manager());
+}
+
+// Tests that `ExtractFormData()` extracts standard and custom form controls.
+TEST_F(AutofillAgentTest, ExtractFormData_CustomFormControls) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kAutofillCustomFormControlScripts,
+       features::kAutofillCustomFormControlExtraction},
+      {});
+  blink::AssociatedInterfaceRegistry registry;
+  // Any isolated world id that the test doesn't otherwise use.
+  autofill_agent().EnableCustomFormControlScripts(
+      /*world_id=*/content::ISOLATED_WORLD_ID_CONTENT_END + 1, registry);
+  LoadHTML(R"(<form id="f"><div id="custom"></div><input id="input"></form>)");
+  ASSERT_TRUE(
+      autofill_agent().custom_form_control_script_executor()->LoadScript(R"(
+        function createCustomFormControlManager() {
+          return {
+            detectCustomFormControls: () => [{
+              canonicalDomNode: document.getElementById("custom"),
+              fieldType: "ADDRESS_HOME_COUNTRY",
+              isActive: true,
+            }],
+          };
+        }
+      )"));
+  std::optional<FormData> form = autofill_agent().ExtractFormData(
+      GetMainFrame()->GetDocument(), GetFormRendererIdById("f"),
+      CallTimerState::CallSite::kExtractForm);
+  EXPECT_THAT(form, Optional(HasFieldsWithIdAttributes(u"custom", u"input")));
 }
 
 TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse_Force) {
@@ -722,6 +763,19 @@ TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse_CalledTwice) {
   EXPECT_CALL(mock_callback, Run(false));
   autofill_agent().TriggerFormExtractionWithResponse(/*force=*/false,
                                                      mock_callback.Get());
+  EXPECT_CALL(mock_callback, Run(true));
+  task_environment_.FastForwardBy(AutofillAgent::kFormsSeenThrottle);
+}
+
+TEST_F(AutofillAgentTest, TriggerFormExtractionWithResponse_AbortedOnReset) {
+  EXPECT_CALL(autofill_driver(), FormsSeen);
+  LoadHTML(R"(<body> <input> </body>)");
+  WaitForFormsSeen();
+  base::MockOnceCallback<void(bool)> mock_callback;
+  autofill_agent().TriggerFormExtractionWithResponse(/*force=*/false,
+                                                     mock_callback.Get());
+  EXPECT_CALL(mock_callback, Run(false));
+  LoadHTML(R"(<body></body>)");
 }
 
 // Tests that `AutofillAgent::TriggerSuggestions()` triggers
@@ -1244,17 +1298,16 @@ TEST_F(AutofillAgentTest,
   ExecuteJavaScriptForTests(R"(
     form = document.getElementById('form_id');
     button = document.createElement('button');
-    button.type = submit;
+    button.type = 'submit';
     button.id = 'submit_button';
     form.appendChild(button);
     first_input = form.querySelectorAll('input')[0];
     first_input.id = 'new_name'
   )");
-  EXPECT_TRUE(base::test::RunUntil([&] {
-    return !test_api(autofill_agent())
-                .process_forms_after_dynamic_change_timer()
-                .IsRunning();
-  }));
+  EXPECT_FALSE(test_api(autofill_agent())
+                   .process_forms_after_dynamic_change_timer()
+                   .IsRunning());
+  WaitForFormsSeen();
 
   ASSERT_EQ(num_extracted_forms(), 1u);
   // The JS changes to the ID are not reflected in the cache, meaning that the
@@ -1282,11 +1335,13 @@ TEST_F(AutofillAgentTest,
     second_input.id = 'new_field';
     form.appendChild(second_input);
   )");
-  EXPECT_TRUE(base::test::RunUntil([&] {
-    return !test_api(autofill_agent())
-                .process_forms_after_dynamic_change_timer()
-                .IsRunning();
-  }));
+  EXPECT_TRUE(test_api(autofill_agent())
+                  .process_forms_after_dynamic_change_timer()
+                  .IsRunning());
+  WaitForFormsSeen();
+  EXPECT_FALSE(test_api(autofill_agent())
+                   .process_forms_after_dynamic_change_timer()
+                   .IsRunning());
 
   ASSERT_EQ(num_extracted_forms(), 1u);
   // The added input should be visible in the cache now.
@@ -1310,11 +1365,13 @@ TEST_F(AutofillAgentTest, DynamicElementNotificationFiltering_AddForm) {
     second_form.appendChild(input);
     document.body.appendChild(second_form);
   )");
-  EXPECT_TRUE(base::test::RunUntil([&] {
-    return !test_api(autofill_agent())
-                .process_forms_after_dynamic_change_timer()
-                .IsRunning();
-  }));
+  EXPECT_TRUE(test_api(autofill_agent())
+                  .process_forms_after_dynamic_change_timer()
+                  .IsRunning());
+  WaitForFormsSeen();
+  EXPECT_FALSE(test_api(autofill_agent())
+                   .process_forms_after_dynamic_change_timer()
+                   .IsRunning());
 
   ASSERT_EQ(num_extracted_forms(), 2u);
 }

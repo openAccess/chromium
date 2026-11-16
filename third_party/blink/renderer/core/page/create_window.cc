@@ -91,7 +91,7 @@ WebWindowFeatures ParseWindowFeatures(const String& feature_string,
   const bool always_on_top_enabled =
       RuntimeEnabledFeatures::WindowOpenAlwaysOnTopEnabled();
   const bool split_tab_enabled =
-      RuntimeEnabledFeatures::WindowOpenSplitTabEnabled();
+      RuntimeEnabledFeatures::WindowOpenSplitTabEnabled(dom_window);
   if (source == WindowFeaturesSource::kAttribute && !split_tab_enabled) {
     return window_features;
   }
@@ -312,8 +312,9 @@ WebWindowFeatures GetWindowFeaturesFromString(const String& feature_string,
                              WindowFeaturesSource::kWindowOpen);
 }
 
-WebWindowFeatures GetWindowFeaturesFromAttribute(const String& feature_string) {
-  return ParseWindowFeatures(feature_string, /*dom_window=*/nullptr,
+WebWindowFeatures GetWindowFeaturesFromAttribute(const String& feature_string,
+                                                 LocalDOMWindow* dom_window) {
+  return ParseWindowFeatures(feature_string, dom_window,
                              WindowFeaturesSource::kAttribute);
 }
 
@@ -323,8 +324,7 @@ static void MaybeLogWindowOpen(LocalFrame& opener_frame) {
     return;
 
   bool is_ad_frame = opener_frame.IsAdFrame();
-  bool is_ad_script_in_stack =
-      ad_tracker->IsAdScriptInStack(AdTracker::StackType::kTopOnly);
+  bool is_ad_script_in_stack = ad_tracker->IsAdScriptInStack();
 
   // Log to UKM.
   ukm::UkmRecorder* ukm_recorder = opener_frame.GetDocument()->UkmRecorder();
@@ -389,6 +389,10 @@ Frame* CreateNewWindow(LocalFrame& opener_frame,
   // geometry to the screen (via ChromeClientImpl::AdjustWindowRectForDisplay)
   // because the browser may honor cross-screen bounds.
   WebWindowFeatures features(request.GetWindowFeatures());
+  if (features.always_on_top) {
+    UseCounter::Count(opener_window,
+                      mojom::blink::WebFeature::kWindowOpenAlwaysOnTop);
+  }
   const auto& picture_in_picture_window_options =
       request.GetPictureInPictureWindowOptions();
   if (picture_in_picture_window_options.has_value()) {

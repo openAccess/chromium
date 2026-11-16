@@ -975,16 +975,16 @@ template <>
 inline CSSIdentifierValue::CSSIdentifierValue(FontVariantEmoji variant_emoji)
     : CSSValue(kIdentifierClass) {
   switch (variant_emoji) {
-    case kNormalVariantEmoji:
+    case FontVariantEmoji::kNormal:
       value_id_ = CSSValueID::kNormal;
       return;
-    case kTextVariantEmoji:
+    case FontVariantEmoji::kText:
       value_id_ = CSSValueID::kText;
       return;
-    case kEmojiVariantEmoji:
+    case FontVariantEmoji::kEmoji:
       value_id_ = CSSValueID::kEmoji;
       return;
-    case kUnicodeVariantEmoji:
+    case FontVariantEmoji::kUnicode:
       value_id_ = CSSValueID::kUnicode;
       return;
   }
@@ -996,13 +996,13 @@ template <>
 inline FontVariantEmoji CSSIdentifierValue::ConvertTo() const {
   switch (value_id_) {
     case CSSValueID::kNormal:
-      return kNormalVariantEmoji;
+      return FontVariantEmoji::kNormal;
     case CSSValueID::kText:
-      return kTextVariantEmoji;
+      return FontVariantEmoji::kText;
     case CSSValueID::kEmoji:
-      return kEmojiVariantEmoji;
+      return FontVariantEmoji::kEmoji;
     case CSSValueID::kUnicode:
-      return kUnicodeVariantEmoji;
+      return FontVariantEmoji::kUnicode;
     default:
       break;
   }
@@ -1014,16 +1014,16 @@ template <>
 inline CSSIdentifierValue::CSSIdentifierValue(TextRenderingMode e)
     : CSSValue(kIdentifierClass) {
   switch (e) {
-    case kAutoTextRendering:
+    case TextRenderingMode::kAuto:
       value_id_ = CSSValueID::kAuto;
       break;
-    case kOptimizeSpeed:
+    case TextRenderingMode::kOptimizeSpeed:
       value_id_ = CSSValueID::kOptimizespeed;
       break;
-    case kOptimizeLegibility:
+    case TextRenderingMode::kOptimizeLegibility:
       value_id_ = CSSValueID::kOptimizelegibility;
       break;
-    case kGeometricPrecision:
+    case TextRenderingMode::kGeometricPrecision:
       value_id_ = CSSValueID::kGeometricprecision;
       break;
   }
@@ -1033,13 +1033,13 @@ template <>
 inline TextRenderingMode CSSIdentifierValue::ConvertTo() const {
   switch (value_id_) {
     case CSSValueID::kAuto:
-      return kAutoTextRendering;
+      return TextRenderingMode::kAuto;
     case CSSValueID::kOptimizespeed:
-      return kOptimizeSpeed;
+      return TextRenderingMode::kOptimizeSpeed;
     case CSSValueID::kOptimizelegibility:
-      return kOptimizeLegibility;
+      return TextRenderingMode::kOptimizeLegibility;
     case CSSValueID::kGeometricprecision:
-      return kGeometricPrecision;
+      return TextRenderingMode::kGeometricPrecision;
     default:
       break;
   }

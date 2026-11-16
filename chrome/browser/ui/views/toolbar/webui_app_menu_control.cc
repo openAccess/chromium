@@ -17,8 +17,11 @@
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/accessible_pane_view.h"
+#include "ui/views/bubble/bubble_anchor.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/view.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace {
@@ -107,8 +110,24 @@ bool WebUIAppMenuControl::IsMenuShowing() const {
 }
 
 views::DialogDelegate* WebUIAppMenuControl::GetDialogDelegate() {
-  // TODO(crbug.com/510825650): Implement dialog delegate from WebUI if needed.
-  return nullptr;
+  views::View* const view = delegate_->GetView();
+  if (!view) {
+    return nullptr;
+  }
+  if (ui::TrackedElement* const element =
+          ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
+              kToolbarAppMenuButtonElementId,
+              views::ElementTrackerViews::GetContextForView(view))) {
+    if (views::DialogDelegate* const dialog =
+            views::BubbleDialogDelegate::GetAnchoredDialog(
+                views::BubbleAnchor(element))) {
+      return dialog;
+    }
+  }
+  // Fall back to the toolbar view for bubbles anchored before the WebUI app
+  // menu element registered.
+  return views::BubbleDialogDelegate::GetAnchoredDialog(
+      views::BubbleAnchor(view));
 }
 
 void WebUIAppMenuControl::CloseMenu() {
@@ -179,7 +198,20 @@ void WebUIAppMenuControl::RemoveObserver(AppMenuButtonObserver* observer) {
 }
 
 void WebUIAppMenuControl::Focus(views::AccessiblePaneView* pane) {
-  pane->SetPaneFocus(GetFocusablePaneView());
+  // Focus the internal WebView directly. The toolbar container returned by
+  // `GetFocusablePaneView()` is not focusable, so `SetPaneFocus()` would
+  // advance focus into the WebView through tab traversal, which makes the
+  // renderer focus the page's first focusable element. That arrives on a
+  // different IPC channel than the focus request below and can override it
+  // after the app menu button got focus.
+  // TODO(crbug.com/580360454): Move `SetPaneFocus()` into
+  // `WebUIToolbarWebView::OnFocusRequested()` after the pending request is
+  // recorded. Focusing the WebView first makes `OnInternalWebViewFocused()`
+  // notify the location bar, which can re-focus an open omnibox popup.
+  // TODO(crbug.com/580360454): Focusing the WebView directly skips tab
+  // traversal, so the app menu button no longer matches `:focus-visible`
+  // after a mouse click. Pass `{focusVisible: true}` from the WebUI side.
+  pane->SetPaneFocus(delegate_->GetInternalWebView());
   delegate_->OnFocusRequested(
       toolbar_ui_api::mojom::FocusRequestTarget::kAppMenu);
 }

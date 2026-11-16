@@ -34,11 +34,9 @@ TtcKeyedService* TtcKeyedService::Get(content::BrowserContext* context) {
 }
 
 TtcKeyedService::TtcKeyedService(Profile* profile,
-                                 ConversationFactory conversation_factory,
-                                 SessionViewFactory session_view_factory)
+                                 ConversationFactory conversation_factory)
     : profile_(profile),
       conversation_factory_(std::move(conversation_factory)),
-      session_view_factory_(std::move(session_view_factory)),
       enterprise_policy_checker_(
           profile_
               ? std::make_unique<actor::ActorEnterprisePolicyChecker>(profile_)
@@ -51,12 +49,22 @@ SessionController* TtcKeyedService::session_controller() {
   return session_controller_.get();
 }
 
+PointerTracker* TtcKeyedService::GetPointerTracker(
+    base::PassKey<TtcEvalHarness>) {
+  return session_controller_ ? session_controller_->pointer_tracker() : nullptr;
+}
+
 bool TtcKeyedService::SetMicMuted(bool muted) {
   return session_controller_ && session_controller_->SetMicMuted(muted);
 }
 
 bool TtcKeyedService::IsMicMuted() const {
   return session_controller_ && session_controller_->IsMicMuted();
+}
+
+Speaker TtcKeyedService::GetSpeaker() const {
+  return session_controller_ ? session_controller_->GetSpeaker()
+                             : Speaker::kIdle;
 }
 
 const actor::EnterprisePolicyChecker*
@@ -117,12 +125,6 @@ base::CallbackListSubscription TtcKeyedService::RegisterStateChangedCallback(
 std::unique_ptr<SessionView> TtcKeyedService::MakeSessionView(
     base::PassKey<SessionControllerImpl>,
     SessionViewDelegate& delegate) {
-  if (session_view_factory_) {
-    std::unique_ptr<SessionView> session_view =
-        session_view_factory_.Run(delegate);
-    CHECK(session_view);
-    return session_view;
-  }
 #if BUILDFLAG(IS_ANDROID)
   return std::make_unique<SessionViewAndroid>(delegate);
 #else

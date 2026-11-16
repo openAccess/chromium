@@ -12,6 +12,7 @@
 #include "base/strings/strcat.h"
 #include "chrome/browser/glic/glic_metrics.h"
 #include "chrome/browser/glic/host/host.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "chrome/browser/glic/service/glic_instance_impl.h"
@@ -29,6 +30,11 @@ int BytesToMB(uint64_t bytes) {
 
 const base::FeatureParam<base::TimeDelta> kMemoryMetricsPeriod{
     &features::kGlicRecordMemoryFootprintMetrics, "period", base::Minutes(30)};
+
+constexpr base::TimeDelta kPeriodicInstanceCountMetricsPeriod =
+    base::Minutes(10);
+
+constexpr int kMaxInstanceCountExclusive = 51;
 }  // namespace
 
 GlicInstanceCoordinatorMetrics::GlicInstanceCoordinatorMetrics(
@@ -36,6 +42,7 @@ GlicInstanceCoordinatorMetrics::GlicInstanceCoordinatorMetrics(
     : data_provider_(data_provider) {}
 
 GlicInstanceCoordinatorMetrics::~GlicInstanceCoordinatorMetrics() {
+  OnShutdown();
   EndConcurrentVisibility();
 }
 
@@ -46,12 +53,21 @@ GlicMetricReporter GlicInstanceCoordinatorMetrics::GetMetricReporter() const {
   return GlicMetricReporter(data_provider_->GetProfile());
 }
 
-void GlicInstanceCoordinatorMetrics::StartPeriodicMemoryMetricsRecording() {
+void GlicInstanceCoordinatorMetrics::StartPeriodicMetricsRecording() {
+  if (is_shutdown_) {
+    return;
+  }
   if (base::FeatureList::IsEnabled(
           features::kGlicRecordMemoryFootprintMetrics)) {
     memory_metrics_timer_.Start(
         FROM_HERE, kMemoryMetricsPeriod.Get(), this,
         &GlicInstanceCoordinatorMetrics::RecordPeriodicMemoryMetrics);
+  }
+  if (base::FeatureList::IsEnabled(
+          features::kGlicRecordPeriodicInstanceCountMetrics)) {
+    instance_count_metrics_timer_.Start(
+        FROM_HERE, kPeriodicInstanceCountMetricsPeriod, this,
+        &GlicInstanceCoordinatorMetrics::RecordPeriodicInstanceCount);
   }
 }
 
@@ -116,6 +132,18 @@ void GlicInstanceCoordinatorMetrics::RecordPeriodicMemoryMetrics() {
   RecordMemoryFootprint(".Periodic");
 }
 
+void GlicInstanceCoordinatorMetrics::RecordPeriodicInstanceCount() {
+  if (is_shutdown_) {
+    return;
+  }
+  size_t count = data_provider_->GetInstances().size();
+  if (count > 0) {
+    peak_instance_count_ = std::max(peak_instance_count_, count);
+    GetMetricReporter().RecordExactLinear("Instances.Count.Periodic", count,
+                                          kMaxInstanceCountExclusive);
+  }
+}
+
 void GlicInstanceCoordinatorMetrics::RecordMemoryFootprint(
     std::string_view suffix) {
   if (!base::FeatureList::IsEnabled(
@@ -137,29 +165,34 @@ void GlicInstanceCoordinatorMetrics::RecordMemoryFootprint(
   base::flat_set<content::RenderProcessHost*> unique_client_processes;
 
   for (const auto& item : web_contents_list) {
-    if (item.webui_contents) {
-      if (auto* process =
-              item.webui_contents->GetPrimaryMainFrame()->GetProcess()) {
+    if (item.webui_contents &&
+        item.webui_contents != item.web_client_contents) {
+      auto* process = item.webui_contents->GetPrimaryMainFrame()->GetProcess();
+      if (process && process->IsInitializedAndNotDead()) {
         unique_webui_processes.insert(process);
       }
     }
     if (item.web_client_contents) {
-      if (auto* process =
-              item.web_client_contents->GetPrimaryMainFrame()->GetProcess()) {
+      auto* process =
+          item.web_client_contents->GetPrimaryMainFrame()->GetProcess();
+      if (process && process->IsInitializedAndNotDead()) {
         unique_client_processes.insert(process);
       }
     }
   }
 
   for (auto* process : unique_webui_processes) {
-    total_webui_bytes += process->GetPrivateMemoryFootprint();
+    uint64_t bytes = process->GetPrivateMemoryFootprint();
+    total_webui_bytes += bytes;
+    absolute_total_bytes += bytes;
   }
   for (auto* process : unique_client_processes) {
-    total_client_bytes += process->GetPrivateMemoryFootprint();
+    uint64_t bytes = process->GetPrivateMemoryFootprint();
+    total_client_bytes += bytes;
+    if (!unique_webui_processes.contains(process)) {
+      absolute_total_bytes += bytes;
+    }
   }
-  // Assuming WebUI and Client processes are disjoint due to Site Isolation,
-  // we can sum them to get the total.
-  absolute_total_bytes = total_webui_bytes + total_client_bytes;
 
   int avg_webui_mb = BytesToMB(total_webui_bytes / instance_count);
   int avg_client_mb = BytesToMB(total_client_bytes / instance_count);
@@ -219,9 +252,27 @@ GlicInstanceCoordinatorMetrics::GetMostRecentlyActiveConversationId(
 }
 
 void GlicInstanceCoordinatorMetrics::RecordCountOnCreation() {
+  if (is_shutdown_) {
+    return;
+  }
   size_t count = data_provider_->GetInstances().size();
+  peak_instance_count_ = std::max(peak_instance_count_, count);
   GetMetricReporter().RecordExactLinear("Instances.Count.OnCreation", count,
                                         10);
+}
+
+void GlicInstanceCoordinatorMetrics::OnShutdown() {
+  if (is_shutdown_) {
+    return;
+  }
+  is_shutdown_ = true;
+  memory_metrics_timer_.Stop();
+  instance_count_metrics_timer_.Stop();
+  if (peak_instance_count_ > 0) {
+    GetMetricReporter().RecordExactLinear("Instances.PeakCount.OnShutdown",
+                                          peak_instance_count_,
+                                          kMaxInstanceCountExclusive);
+  }
 }
 
 void GlicInstanceCoordinatorMetrics::RecordCountAwakeOnContentsCreated() {

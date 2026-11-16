@@ -13,6 +13,7 @@
 #include "base/no_destructor.h"
 #include "base/notimplemented.h"
 #include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
 #include "chrome/browser/glic/host/context/glic_pin_candidate_provider.h"
@@ -34,15 +35,31 @@
 #include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
 #include "chrome/browser/glic/service/glic_instance_coordinator_impl.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/actor_webui.mojom.h"
 #include "chrome/common/chrome_features.h"
+#include "chrome/common/pref_names.h"
 #include "components/guest_view/browser/guest_view_base.h"
+#include "components/prefs/pref_service.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "extensions/buildflags/buildflags.h"
 #include "mojo/public/cpp/base/proto_wrapper.h"
+#include "printing/buildflags/buildflags.h"
+
+#if BUILDFLAG(ENABLE_PRINTING)
+#include "chrome/browser/printing/print_view_manager_common.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include "mojo/public/cpp/bindings/associated_remote.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // BUILDFLAG(ENABLE_PRINTING)
 
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "extensions/browser/guest_view/web_view/web_view_guest.h"
@@ -95,6 +112,7 @@ Host::Host(Profile* profile,
            GlicInstance* glic_instance,
            InstanceDelegate* instance_delegate)
     : profile_(profile),
+      pending_provider_change_(GlicEnabling::GetPendingProviderChange(profile)),
       instance_delegate_(instance_delegate),
       glic_instance_(glic_instance),
       sharing_manager_provider_(sharing_manager_provider) {
@@ -130,6 +148,7 @@ void Host::HibernateImpl(bool is_destroying) {
   // failure. This also keeps `Reload()` (Hibernate() then Awaken()) from
   // carrying a failure from the old load into the new one.
   client_load_failed_ = false;
+  client_load_error_reason_.reset();
   if (contents_) {
     metrics_.OnContentsDestroyed();
   }
@@ -192,10 +211,6 @@ void Host::InvokeInternal(mojom::InvokeOptionsPtr options,
   }
 }
 
-void Host::Close() {
-  delegate_->ClosePanel();
-}
-
 void Host::Reload() {
   if (!contents_) {
     return;
@@ -204,13 +219,6 @@ void Host::Reload() {
   UnsetWebClient();
   Hibernate();
   Awaken();
-  delegate_->OnReload();
-}
-
-void Host::OnWebContentsNavigated() {
-  if (delegate_) {
-    delegate_->OnReload();
-  }
 }
 
 void Host::Awaken() {
@@ -232,6 +240,7 @@ void Host::Awaken() {
   contents_->AttachToHost(this);
   UpdateVisibility();
   UpdateNativeLoadingState();
+  observers_.Notify(&Observer::ContentsCreated);
 }
 
 void Host::OnActiveWebContentsChanged(content::WebContents* new_contents) {
@@ -315,7 +324,7 @@ void Host::WebUIPageHandlerAdded(GlicPageHandler* page_handler) {
     // is momentarily two page handlers for the same web contents. Since this
     // can affect real users, it needs to be handled specially here.
     WebUiStateChanged(page_handler_, mojom::WebUiState::kUninitialized);
-    SetClientLoadFailed(false);
+    ClearClientLoadFailed();
     // TODO(harringtond): Web client liveness needs detangled from the page
     // handler. This is currently needed because, on reload, the web client
     // isn't cleared soon enough otherwise.
@@ -335,7 +344,7 @@ void Host::WebUIPageHandlerRemoved(GlicPageHandler* page_handler) {
   page_handler_ = nullptr;
   login_page_committed_ = false;
   WebUiStateChanged(page_handler, mojom::WebUiState::kUninitialized);
-  SetClientLoadFailed(false);
+  ClearClientLoadFailed();
   // TODO(harringtond): Web client liveness needs detangled from the page
   // handler. This is currently needed because, on reload, the web client
   // isn't cleared soon enough otherwise.
@@ -412,6 +421,40 @@ void Host::Zoom(mojom::ZoomAction zoom_action, ZoomSource source) {
   }
 }
 
+bool Host::Print() {
+#if BUILDFLAG(ENABLE_PRINTING)
+  if (!profile_->GetPrefs()->GetBoolean(::prefs::kPrintingEnabled)) {
+    return false;
+  }
+  content::WebContents* web_contents = web_client_contents();
+  if (!web_contents) {
+    web_contents = webui_contents();
+  }
+  if (!web_contents || web_contents->IsCrashed()) {
+    return true;
+  }
+#if !BUILDFLAG(IS_ANDROID)
+  if (const auto* manager =
+          web_modal::WebContentsModalDialogManager::FromWebContents(
+              guest_view::GuestViewBase::GetTopLevelWebContents(
+                  web_contents->GetResponsibleWebContents()));
+      manager && manager->IsDialogActive()) {
+    return true;
+  }
+#endif  // !BUILDFLAG(IS_ANDROID)
+  printing::StartPrint(
+      web_contents,
+#if BUILDFLAG(IS_CHROMEOS)
+      /*print_renderer=*/mojo::NullAssociatedRemote(),
+#endif
+      profile_->GetPrefs()->GetBoolean(::prefs::kPrintPreviewDisabled),
+      /*has_selection=*/false);
+  return true;
+#else
+  return false;
+#endif  // BUILDFLAG(ENABLE_PRINTING)
+}
+
 GlicWebClientAccess* Host::GetPrimaryWebClient() const {
   auto* manager = web_client_manager();
   return manager ? manager->web_client_access() : nullptr;
@@ -480,7 +523,8 @@ void Host::WebClientInitialized() {
 }
 
 void Host::WebClientInitializeFailed() {
-  SetClientLoadFailed(true);
+  SetClientLoadFailed(
+      client_load_error_reason_.value_or(ClientLoadErrorReason::kClientError));
   observers_.Notify(&Observer::WebClientInitializeFailed);
 }
 
@@ -680,23 +724,36 @@ void Host::ClientLoadErrorOccurred(ClientLoadErrorReason reason) {
   observers_.Notify(&Observer::ClientLoadErrorOccurred, reason);
 }
 
-void Host::SetClientLoadFailed(bool failed) {
-  client_load_failed_ = failed;
-  if (!failed) {
-    // The failure is withdrawn (reload, retry on show), and with it its cause.
-    // A host that fails again reports the new cause before the new failure.
-    client_load_error_reason_.reset();
-  }
+void Host::SetClientLoadFailed(ClientLoadErrorReason error_reason) {
+  client_load_failed_ = true;
+  client_load_error_reason_ = error_reason;
   UpdateClientLoadState();
 }
 
-void Host::SetClientLoadFailed(GlicPageHandler* page_handler, bool failed) {
+void Host::ClearClientLoadFailed() {
+  // The failure is withdrawn (reload, retry on show), and with it its cause.
+  // A host that fails again reports the new cause before or with the new
+  // failure.
+  client_load_failed_ = false;
+  client_load_error_reason_.reset();
+  UpdateClientLoadState();
+}
+
+void Host::SetClientLoadFailed(GlicPageHandler* page_handler,
+                               ClientLoadErrorReason error_reason) {
   if (page_handler != page_handler_) {
     // A page handler that is no longer current is on its way out; its report
     // describes the load being replaced, not the one in progress.
     return;
   }
-  SetClientLoadFailed(failed);
+  SetClientLoadFailed(error_reason);
+}
+
+void Host::ClearClientLoadFailed(GlicPageHandler* page_handler) {
+  if (page_handler != page_handler_) {
+    return;
+  }
+  ClearClientLoadFailed();
 }
 
 void Host::UpdateClientLoadState() {
@@ -804,6 +861,7 @@ bool Host::ComputeIsShowingNativeLoading() const {
     case mojom::WebUiState::kLocationMismatch:
     case mojom::WebUiState::kIneligibleAccount:
     case mojom::WebUiState::kGuestLoaded:
+    case mojom::WebUiState::kPendingProviderChangeGeminiToGeic:
       return false;
   }
 }
@@ -832,6 +890,13 @@ void Host::NotifyAdditionalContext(mojom::AdditionalContextPtr context) {
     return;
   }
   pending_additional_contexts_[context->source] = std::move(context);
+}
+
+void Host::NotifyDataTransferActionsBlocked(
+    mojom::DataTransferActionsBlockedNoticePtr notice) {
+  if (auto* client = GetPrimaryWebClient()) {
+    client->NotifyDataTransferActionsBlocked(std::move(notice));
+  }
 }
 
 content::RenderProcessHost* Host::GetWebClientRenderProcessHost() const {

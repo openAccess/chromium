@@ -121,7 +121,7 @@ constexpr char kClickExtensionButtonScript[] = R"(
     const extensionElements = extensionsContainer.shadowRoot
         .querySelectorAll('webui-toolbar-extension');
     const el = Array.from(extensionElements)
-        .find(el => el.state.id === '%s');
+        .find(el => el.getAttribute('data-key') === '%s');
     const btn = el.shadowRoot.querySelector('toolbar-chip-button');
     %s
   })();
@@ -153,6 +153,8 @@ void WaitUntilInitialWebUIPaintAndFlushMetricsForTesting(
   if (!webui_toolbar) {
     return;
   }
+
+  WaitForInitialWebUIToolbar(browser);
 
   webui_toolbar->SetDidFirstNonEmptyPaintCallbackForTesting(
       run_loop.QuitClosure());
@@ -208,6 +210,8 @@ void SetUpWebUI(const ui::ElementIdentifier& element_id,
       (*webui_toolbar_view_out)->children()[0].get());
   ASSERT_TRUE(*web_view_out);
 
+  WaitForInitialWebUIToolbar(browser);
+
   // Wait for the WebView to finish composition.
   content::WaitForCopyableViewInWebContents((*web_view_out)->GetWebContents());
 }
@@ -219,6 +223,33 @@ WebUIToolbarWebView* GetWebUIToolbarWebView(BrowserWindowInterface* browser) {
   }
   return browser_view->toolbar_button_provider()
       ->GetWebUIToolbarViewForTesting();
+}
+
+::testing::AssertionResult WaitForWebUIToolbarAccessibilityNode(
+    BrowserWindowInterface* browser,
+    std::string_view accessible_name) {
+  WebUIToolbarWebView* webui_toolbar = GetWebUIToolbarWebView(browser);
+  if (!webui_toolbar) {
+    return ::testing::AssertionFailure() << "No WebUIToolbarWebView found.";
+  }
+  views::WebView* toolbar_web_view = webui_toolbar->GetWebViewForTesting();
+  if (!toolbar_web_view) {
+    return ::testing::AssertionFailure()
+           << "No child WebView on WebUIToolbarWebView.";
+  }
+  content::WebContents* toolbar_web_contents =
+      toolbar_web_view->GetWebContents();
+  if (!toolbar_web_contents) {
+    return ::testing::AssertionFailure()
+           << "No WebContents in WebUIToolbarWebView.";
+  }
+  if (!content::WaitForLoadStop(toolbar_web_contents)) {
+    return ::testing::AssertionFailure()
+           << "WaitForLoadStop failed for WebUI toolbar WebContents.";
+  }
+  content::WaitForAccessibilityTreeToContainNodeWithName(toolbar_web_contents,
+                                                         accessible_name);
+  return ::testing::AssertionSuccess();
 }
 
 AvatarButtonUpdateWaiter::AvatarButtonUpdateWaiter(
@@ -558,8 +589,10 @@ std::u16string AvatarToolbarButtonTestAccessor::GetText() {
                     "app.shadowRoot?.querySelector('avatar-button');"
                     "  if (!btn) return '';"
                     "  await btn.updateComplete;"
-                    "  const textEl = btn.shadowRoot?.querySelector('#text');"
-                    "  return textEl?.textContent?.trim() || '';"
+                    // Use `state.text` rather than the #text element, which
+                    // may be hidden or visually elided, to match Views'
+                    // unelided GetText().
+                    "  return btn.state?.text || '';"
                     "})()")
                     .ExtractString());
           },
@@ -1153,6 +1186,38 @@ bool WebUIToolbarDropSimulator::PerformDrop(content::DropData drop_data,
   return true;
 }
 
+void WebUIToolbarDropSimulator::SendDrop(content::DropData drop_data,
+                                         int key_modifiers) {
+  const gfx::PointF screen_pt(
+      drop_point_ + toolbar_view_->GetBoundsInScreen().OffsetFromOrigin());
+
+  content::RenderWidgetHost* rwh =
+      toolbar_web_contents_->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  ASSERT_TRUE(rwh);
+
+  content::DropData filtered_drop_data = drop_data;
+  rwh->FilterDropData(&filtered_drop_data);
+  rwh->DragTargetDragEnter(filtered_drop_data, drop_point_, screen_pt,
+                           blink::kDragOperationEvery, key_modifiers,
+                           base::DoNothing());
+  toolbar_web_contents_->GetDelegate()->PreHandleDragUpdate(drop_data,
+                                                            drop_point_);
+  rwh->DragTargetDragOver(drop_point_, screen_pt, blink::kDragOperationEvery,
+                          key_modifiers, base::DoNothing());
+
+  base::test::TestFuture<std::optional<content::DropData>>
+      performing_drop_future;
+  HandleOnPerformingDrop(toolbar_web_contents_, std::move(filtered_drop_data),
+                         performing_drop_future.GetCallback());
+  ASSERT_TRUE(performing_drop_future.IsReady());
+  std::optional<content::DropData> final_drop_data =
+      performing_drop_future.Take();
+  ASSERT_TRUE(final_drop_data.has_value());
+
+  rwh->DragTargetDrop(*final_drop_data, drop_point_, screen_pt, key_modifiers,
+                      base::DoNothing());
+}
+
 void WebUIToolbarDropSimulator::SimulateLinkDrop(const std::string& url,
                                                  DragOrigin origin) {
   content::DropData drop_data;
@@ -1334,8 +1399,8 @@ const char kGetAllAnimationsJS[] = R"(
   // WebUI-side suppression (HighlightTracker in toolbar_button.ts). Import the
   // setter via the page's entry module (which re-exports it) rather than
   // '/shared/toolbar_button.js' directly: in optimized builds the shared module
-  // is bundled into webui_toolbar.js, so importing it by its own URL would
-  // create a second module instance that the toolbar's buttons don't use.
+  // is bundled, so importing it by its own URL would create a second module
+  // instance that the toolbar's buttons don't use.
   content::WebContents* web_contents =
       toolbar->GetWebViewForTesting()->web_contents();
   if (!web_contents) {

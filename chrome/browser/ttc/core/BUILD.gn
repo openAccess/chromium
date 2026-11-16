@@ -5,6 +5,7 @@
 import("//build/buildflag_header.gni")
 import("//build/config/ozone.gni")
 import("//chrome/browser/ttc/core/buildflags.gni")
+import("//chrome/services/speech/buildflags/buildflags.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 
 buildflag_header("buildflags") {
@@ -45,7 +46,10 @@ source_set("states") {
 if (enable_ttc_webui) {
   mojom("mojo_bindings") {
     sources = [ "eval_harness.mojom" ]
-    public_deps = [ "//mojo/public/mojom/base" ]
+    public_deps = [
+      "//mojo/public/mojom/base",
+      "//ui/gfx/geometry/mojom",
+    ]
     webui_module_path = "/"
   }
 }
@@ -54,6 +58,7 @@ source_set("core") {
   public = [
     "entrypoint_controller.h",
     "eval_audio_controller.h",
+    "hotl/hotl_speech_recognizer.h",
     "page_context.h",
     "session_controller.h",
     "session_view.h",
@@ -103,15 +108,36 @@ source_set("impl") {
     "entrypoint_controller.cc",
     "eval_audio_controller.cc",
     "eval_audio_controller.h",
+    "get_pointer_response.cc",
+    "get_pointer_response.h",
+    "get_pointer_tool.cc",
+    "get_pointer_tool.h",
+    "hotl/hotl_transcript_matcher.cc",
+    "hotl/hotl_transcript_matcher.h",
     "page_context.cc",
     "page_context_util.cc",
     "page_context_util.h",
+    "pointer_context_capturer.cc",
+    "pointer_context_capturer.h",
+    "pointer_crop_geometry.cc",
+    "pointer_crop_geometry.h",
+    "pointer_hit_test.cc",
+    "pointer_hit_test.h",
+    "pointer_image_annotator.cc",
+    "pointer_image_annotator.h",
+    "pointer_input_observer.cc",
+    "pointer_input_observer.h",
+    "pointer_tracker.cc",
+    "pointer_tracker.h",
     "session_controller_impl.cc",
     "session_controller_impl.h",
+    "session_end_condition_detector.cc",
+    "session_end_condition_detector.h",
     "session_inactivity_detector.cc",
     "session_inactivity_detector.h",
     "session_journal_impl.cc",
     "session_journal_impl.h",
+    "session_view.cc",
     "tool_controller.cc",
     "tool_controller.h",
     "transcript_tracker.cc",
@@ -139,27 +165,52 @@ source_set("impl") {
   ]
   deps = [
     "//base",
+    "//base:i18n",
     "//chrome/browser/actor/tools/registry",
     "//chrome/browser/actor/ui",
+    "//chrome/browser/critical_actions",
     "//chrome/browser/glic",
     "//chrome/browser/page_content_annotations:extraction_service",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/search",
     "//chrome/browser/ttc/app:impl",
     "//chrome/browser/ttc/app:public",
     "//chrome/browser/ui/actions:actions_headers",
     "//chrome/browser/ui/browser_window",
     "//chrome/common",
     "//chrome/common:actor_webui_mojom",
+    "//components/critical_actions/core/browser",
     "//components/keyed_service/core",
     "//components/optimization_guide/content/browser",
+    "//components/page_content_annotations/core",
     "//components/sessions:session_id",
     "//components/tabs:public",
     "//components/ttc/app/public",
     "//content/public/browser",
     "//content/public/common",
+    "//mojo/public/cpp/bindings",
+    "//skia",
+    "//third_party/blink/public/common:headers",
+    "//third_party/blink/public/mojom:mojom_platform_headers",
     "//ui/actions:actions_headers",
+    "//ui/base/idle",
+    "//ui/gfx/codec",
+    "//ui/gfx/geometry",
     "//url",
   ]
+  if (enable_speech_service) {
+    sources += [
+      "hotl/soda_hotl_speech_recognizer.cc",
+      "hotl/soda_hotl_speech_recognizer.h",
+    ]
+    deps += [
+      "//chrome/browser/speech",
+      "//chrome/services/speech/buildflags",
+      "//media",
+      "//media/mojo/mojom:audio_data",
+      "//media/mojo/mojom:speech_recognition",
+    ]
+  }
   if (is_android) {
     sources += [
       "voice_focused_contents_tracker_android.cc",
@@ -172,25 +223,46 @@ source_set("impl") {
     ]
   } else {
     sources += [
+      "overlay_controller.cc",
+      "overlay_controller.h",
       "session_view_impl.cc",
       "session_view_impl.h",
       "voice_focused_contents_tracker_desktop.cc",
       "voice_focused_contents_tracker_desktop.h",
-      "voice_plate_controller.cc",
-      "voice_plate_controller.h",
     ]
+    public_deps += [ "//chrome/browser/ui/views/ttc" ]
     deps += [
+      "//chrome/browser/lifetime",
       "//chrome/browser/ui:browser_element_identifiers",
       "//chrome/browser/ui:browser_window_header",
+      "//chrome/browser/ui/exclusive_access",
+      "//chrome/browser/ui/fullscreen",
       "//chrome/browser/ui/tabs:tab_strip",
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/toasts/api:toasts",
       "//chrome/browser/ui/toolbar/pinned_toolbar",
       "//chrome/browser/ui/views/interaction",
       "//chrome/browser/ui/views/toolbar",
-      "//chrome/browser/ui/views/ttc",
       "//ui/views",
     ]
+    if (is_mac) {
+      deps += [ "//chrome/browser/ui:fullscreen_util_mac" ]
+    }
+    if (is_chromeos) {
+      sources += [
+        "mic_privacy_indicator_chromeos.cc",
+        "mic_privacy_indicator_chromeos.h",
+      ]
+      deps += [
+        "//ash",
+        "//ash/constants",
+        "//chrome/app:generated_resources",
+        "//components/session_manager:base",
+        "//components/session_manager/core",
+        "//components/user_manager",
+        "//ui/base",
+      ]
+    }
   }
 }
 
@@ -215,9 +287,17 @@ source_set("test_support") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "get_pointer_response_unittest.cc",
+    "hotl/hotl_transcript_matcher_unittest.cc",
     "page_context_util_unittest.cc",
+    "pointer_crop_geometry_unittest.cc",
+    "pointer_hit_test_unittest.cc",
+    "pointer_image_annotator_unittest.cc",
+    "pointer_tracker_unittest.cc",
     "session_controller_impl_unittest.cc",
+    "session_end_condition_detector_unittest.cc",
     "session_journal_impl_unittest.cc",
+    "session_view_unittest.cc",
     "transcript_tracker_unittest.cc",
     "ttc_actor_task_delegate_unittest.cc",
     "ttc_keyed_service_unittest.cc",
@@ -231,6 +311,7 @@ source_set("unit_tests") {
     ":test_support",
     "//base/test:test_support",
     "//chrome/browser/actor:test_support",
+    "//chrome/browser/critical_actions",
     "//chrome/browser/ttc/app:public",
     "//chrome/browser/ttc/app:unit_tests",
     "//chrome/common:actor_webui_mojom",
@@ -239,13 +320,34 @@ source_set("unit_tests") {
     "//components/actor/core:journal",
     "//components/actor/core:task_id",
     "//components/actor/public/mojom:mojo_bindings",
+    "//components/critical_actions/core/browser",
     "//components/keyed_service/core",
+    "//components/optimization_guide/core:page_content",
     "//components/ttc/app/public",
     "//content/test:test_support",
+    "//mojo/public/cpp/bindings",
+    "//skia",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/gfx:test_support",
+    "//ui/gfx/codec",
+    "//ui/gfx/geometry",
     "//url",
+
+    # Only ChromeOS tests use these, but `gn check` on every platform sees
+    # their includes regardless of `#if`.
+    "//chrome/test/base:testing_browser_process",
+    "//components/account_id:test_support",
+    "//google_apis",
   ]
+  if (enable_speech_service) {
+    sources += [ "hotl/soda_hotl_speech_recognizer_unittest.cc" ]
+    deps += [
+      "//media",
+      "//media/mojo/mojom:audio_data",
+      "//media/mojo/mojom:speech_recognition",
+    ]
+  }
   if (is_android) {
     sources += [ "voice_focused_contents_tracker_android_unittest.cc" ]
     deps += [
@@ -262,6 +364,13 @@ source_set("unit_tests") {
   } else {
     sources += [ "session_view_impl_unittest.cc" ]
     deps += [ "//chrome/browser/ui/toasts/api:toasts" ]
+    if (is_chromeos) {
+      deps += [
+        "//components/session_manager:base",
+        "//components/session_manager/core",
+        "//components/session_manager/test:test_support",
+      ]
+    }
   }
 }
 
@@ -293,8 +402,12 @@ source_set("browser_test_support") {
 source_set("browser_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  data = [ "//chrome/test/data/ttc/" ]
   sources = [
     "page_context_monitor_browsertest.cc",
+    "pointer_context_capturer_browsertest.cc",
+    "pointer_input_observer_browsertest.cc",
+    "session_controller_impl_browsertest.cc",
     "session_journal_impl_browsertest.cc",
     "tool_controller_browsertest.cc",
     "ttc_keyed_service_browsertest.cc",
@@ -311,6 +424,7 @@ source_set("browser_tests") {
     "//chrome/browser/actor/tools/registry",
     "//chrome/browser/actor/ui",
     "//chrome/browser/bookmarks",
+    "//chrome/browser/glic",
     "//chrome/browser/page_content_annotations:extraction_service",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/search_engines",
@@ -347,20 +461,20 @@ source_set("browser_tests") {
     "//skia",
     "//testing/gmock",
     "//testing/gtest",
+    "//third_party/blink/public/common:headers",
     "//ui/base",
+    "//ui/gfx:test_support",
     "//ui/gfx/codec",
+    "//ui/gfx/geometry",
     "//url",
   ]
   if (!is_android) {
     sources += [ "voice_focused_contents_tracker_browsertest.cc" ]
     deps += [
-      "//chrome/browser/glic",
       "//chrome/browser/glic/test_support",
-      "//chrome/browser/profiles/keep_alive",
       "//chrome/browser/ttc/app:browser_tests",
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/tabs:tab_strip",
-      "//components/keep_alive_registry",
       "//third_party/blink/public/common",
     ]
   }
@@ -386,6 +500,7 @@ if (!is_android) {
       "//base",
       "//base/test:test_support",
       "//chrome/app:command_ids",
+      "//chrome/app:generated_resources",
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ui:browser_actions",
       "//chrome/browser/ui:browser_commands",
@@ -407,8 +522,18 @@ if (!is_android) {
       "//content/test:test_support",
       "//testing/gmock",
       "//testing/gtest",
+      "//third_party/blink/public/common",
+      "//ui/base",
       "//ui/base/interaction",
+      "//ui/gfx/geometry",
       "//ui/views",
     ]
+    if (is_chromeos) {
+      deps += [
+        "//ash",
+        "//ash/constants",
+        "//ui/message_center",
+      ]
+    }
   }
 }

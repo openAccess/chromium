@@ -2,19 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
 import './test_composebox_mixin.js';
 
-import {ComposeboxFile, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, isValidTabId} from 'chrome://resources/cr_components/composebox/common.js';
+import {ComposeboxFile, ComposeboxInputModel, ContextType, ContextualSearchInputStateDeletionType, isValidTabId, ProcessFilesError} from 'chrome://resources/cr_components/composebox/common.js';
 import type {ComposeboxFuseboxActionRequest} from 'chrome://resources/cr_components/composebox/common.js';
 import {PageHandlerRemote} from 'chrome://resources/cr_components/composebox/composebox.mojom-webui.js';
 import {AimButtonMode} from 'chrome://resources/cr_components/composebox/composebox_aim_button.js';
 import type {ComposeboxEmbedderMixinInterface} from 'chrome://resources/cr_components/composebox/composebox_mixin.js';
-import {ComposeboxProxyImpl, createAutocompleteMatch} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
+import {ComposeboxProxyImpl} from 'chrome://resources/cr_components/composebox/composebox_proxy.js';
 import type {ContextualEntrypointAndMenuElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_and_menu.js';
 import type {ContextualEntrypointButtonElement} from 'chrome://resources/cr_components/composebox/contextual_entrypoint_button.js';
 import type {ComposeboxFileCarouselElement} from 'chrome://resources/cr_components/composebox/file_carousel.js';
-import {createAutocompleteResultForTesting, createSuggestTemplateInfo} from 'chrome://resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {createAutocompleteMatch} from 'chrome://resources/cr_components/search/autocomplete_match_utils.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {InputSource, QueryActionOverride, SearchboxOverride, SuggestInventory} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
 import type {FuseboxAction} from 'chrome://resources/mojo/components/omnibox/browser/fusebox_action.mojom-webui.js';
@@ -26,6 +26,7 @@ import type {InputState} from 'chrome://resources/mojo/components/omnibox/compos
 import type {UnguessableToken} from 'chrome://resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
 import type {Url} from 'chrome://resources/mojo/url/mojom/url.mojom-webui.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {createAutocompleteResult, createSuggestTemplateInfo} from 'chrome://webui-test/cr_components/searchbox/searchbox_test_utils.js';
 import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
 import type {TestMock} from 'chrome://webui-test/test_mock.js';
@@ -116,7 +117,7 @@ suite('ComposeboxMixinTest', () => {
     await microtasksFinished();
     element.input = originalInput;
     element.lastQueriedInput = originalInput;
-    element.result = createAutocompleteResultForTesting({
+    element.result = createAutocompleteResult({
       input: originalInput,
       matches: [
         createAutocompleteMatch({
@@ -150,6 +151,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Restored = {
@@ -159,6 +161,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Recent = {
@@ -168,6 +171,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -177,6 +181,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -218,6 +223,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Restored = {
@@ -227,6 +233,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Recent = {
@@ -236,6 +243,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -245,6 +253,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -272,6 +281,37 @@ suite('ComposeboxMixinTest', () => {
       });
 
   test(
+      'refreshTabSuggestions() sets recentTabId from recentTab signal',
+      async () => {
+        const tab1 = {
+          tabId: 10,
+          title: 'Tab 1',
+          url: 'about:blank?1',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          recentTab: false,
+          lastActive: {internalValue: 0n},
+        };
+        const tab2 = {
+          tabId: 20,
+          title: 'Tab 2',
+          url: 'about:blank?2',
+          showInCurrentTabChip: false,
+          showInPreviousTabChip: false,
+          isLoading: false,
+          recentTab: true,
+          lastActive: {internalValue: 0n},
+        };
+        searchboxHandler.setResultFor(
+            'getRecentTabs', Promise.resolve({tabs: [tab1, tab2]}));
+
+        await element.refreshTabSuggestions();
+
+        assertEquals(20, element.recentTabId);
+      });
+
+  test(
       'Suggestions are sorted by most recently selected shown first.',
       async () => {
         loadTimeData.overrideValues({
@@ -293,6 +333,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2 = {
@@ -302,6 +343,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab3 = {
@@ -311,6 +353,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab4 = {
@@ -320,6 +363,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -368,6 +412,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab2Closed = {
@@ -377,6 +422,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -413,6 +459,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const historicalTab1 = {
@@ -422,6 +469,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const historicalTab2 = {
@@ -431,6 +479,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -472,6 +521,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -492,6 +542,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tab1Navigated = {
@@ -501,6 +552,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -546,6 +598,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         searchboxHandler.setResultFor(
@@ -610,6 +663,7 @@ suite('ComposeboxMixinTest', () => {
             showInCurrentTabChip: false,
             showInPreviousTabChip: false,
             isLoading: false,
+            recentTab: false,
             lastActive: {internalValue: 0n},
           },
         ];
@@ -638,6 +692,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -860,7 +915,7 @@ suite('ComposeboxMixinTest', () => {
       // Verify that late async autocomplete responses do not overwrite the
       // typed input since activeQueryId is -1.
       searchboxCallbackRouterRemote.autocompleteResultChanged(
-          createAutocompleteResultForTesting({
+          createAutocompleteResult({
             input: originalInput,
             matches: [createAutocompleteMatch({
               allowedToBeDefaultMatch: true,
@@ -1750,6 +1805,85 @@ suite('ComposeboxMixinTest', () => {
     assertFalse(searchboxHandler.getArgs('setActiveModelMode')[0][1]);
   });
 
+  test(
+      'setDefaultModel skips the default model with dynamic AIM fulfillment',
+      async () => {
+        const inputState = new MockInputState({
+          allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+          activeModel: ModelMode.kUnspecified,
+        });
+        element.onInputStateChanged(inputState);
+        await element.updateComplete;
+
+        element.dynamicAimFulfillmentEnabled = false;
+        element.setDefaultModel();
+
+        assertEquals(1, searchboxHandler.getCallCount('setActiveModelMode'));
+        assertEquals(
+            ModelMode.kGeminiRegular,
+            searchboxHandler.getArgs('setActiveModelMode')[0][0]);
+        assertFalse(searchboxHandler.getArgs('setActiveModelMode')[0][1]);
+
+        searchboxHandler.resetResolver('setActiveModelMode');
+        element.dynamicAimFulfillmentEnabled = true;
+        element.setDefaultModel();
+
+        assertEquals(0, searchboxHandler.getCallCount('setActiveModelMode'));
+      });
+
+  test(
+      'updateState skips the default model with dynamic AIM fulfillment',
+      async () => {
+        const inputState = new MockInputState({
+          allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+          activeModel: ModelMode.kUnspecified,
+        });
+        element.onInputStateChanged(inputState);
+        await element.updateComplete;
+
+        element.dynamicAimFulfillmentEnabled = true;
+        element.state = {
+          text: 'query',
+          files: [],
+          mode: ToolMode.kUnspecified,
+          model: ModelMode.kUnspecified,
+          // <if expr="not is_android">
+          smartTabSharingActive: false,
+          // </if>
+        };
+        await element.updateComplete;
+        await microtasksFinished();
+
+        assertEquals(1, searchboxHandler.getCallCount('setActiveModelMode'));
+        assertEquals(
+            ModelMode.kUnspecified,
+            searchboxHandler.getArgs('setActiveModelMode')[0][0]);
+        assertFalse(searchboxHandler.getArgs('setActiveModelMode')[0][1]);
+      });
+
+  test('updateState selects the default model to enter AI Mode', async () => {
+    element.onInputStateChanged(new MockInputState({
+      allowedModels: [ModelMode.kGeminiRegular, ModelMode.kGeminiPro],
+      activeModel: ModelMode.kUnspecified,
+    }));
+    await element.updateComplete;
+    element.dynamicAimFulfillmentEnabled = true;
+
+    await element.updateState({
+      text: '',
+      files: [],
+      mode: ToolMode.kUnspecified,
+      model: ModelMode.kUnspecified,
+      enterAimMode: true,
+      // <if expr="not is_android">
+      smartTabSharingActive: false,
+      // </if>
+    });
+    assertEquals(
+        ModelMode.kGeminiRegular,
+        searchboxHandler.getArgs('setActiveModelMode')[0][0]);
+  });
+
   test('empty input computes canSubmitFilesAndInput as false', async () => {
     await simulateUserTextInput(element.getInputElement(), '');
     assertFalse(element.canSubmitFilesAndInput);
@@ -1990,6 +2124,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
         element.hasCachedSubmittedTabsThisTurn = true;
@@ -2014,6 +2149,29 @@ suite('ComposeboxMixinTest', () => {
         assertEquals(0, element.aimThreadRestoredTabs.length);
         assertFalse(element.hasCachedSubmittedTabsThisTurn);
       });
+
+  // With dynamic AIM fulfillment, clearing the model leaves AI Mode, so
+  // clearing the inputs must keep the model and closing must clear it.
+  test('clearing keeps the model and closing clears it', async () => {
+    element.onInputStateChanged(new MockInputState({
+      allowedModels: [ModelMode.kGeminiRegular],
+      activeModel: ModelMode.kGeminiRegular,
+    }));
+    await element.updateComplete;
+
+    element.clearAllInputs(
+        /* querySubmitted= */ false,
+        /* shouldBlockAutoSuggestedTabs= */ false);
+    await microtasksFinished();
+    assertEquals(0, searchboxHandler.getCallCount('setActiveModelMode'));
+
+    element.closeComposebox();
+    await microtasksFinished();
+    assertEquals(1, searchboxHandler.getCallCount('setActiveModelMode'));
+    assertEquals(
+        ModelMode.kUnspecified,
+        searchboxHandler.getArgs('setActiveModelMode')[0][0]);
+  });
 
   test('Omnibox keepMenuOpenOnTabSelect returns false by default', () => {
     assertFalse(element.keepMenuOpenOnTabSelect);
@@ -2109,6 +2267,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2137,6 +2296,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2154,6 +2314,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2188,6 +2349,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
 
@@ -2214,6 +2376,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
         element.hasCachedSubmittedTabsThisTurn = true;
@@ -2568,6 +2731,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tabFile = ComposeboxFile.createFromTab(
@@ -2606,6 +2770,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
         const tabFile = ComposeboxFile.createFromTab(
@@ -2642,6 +2807,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -2704,6 +2870,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         };
 
@@ -2985,6 +3152,7 @@ suite('ComposeboxMixinTest', () => {
           showInCurrentTabChip: false,
           showInPreviousTabChip: false,
           isLoading: false,
+          recentTab: false,
           lastActive: {internalValue: 0n},
         }];
         await microtasksFinished();
@@ -3122,7 +3290,7 @@ suite('ComposeboxMixinTest', () => {
   // `selectedMatchIndex` / `selectedMatch` are populated like in production.
   async function showAndSelectMatch(
       input: string, match: Partial<AutocompleteMatch> = {}) {
-    element.result = createAutocompleteResultForTesting({
+    element.result = createAutocompleteResult({
       input,
       matches: [createAutocompleteMatch({fillIntoEdit: input, ...match})],
     });
@@ -3347,5 +3515,181 @@ suite('ComposeboxMixinTest', () => {
         element.onAimButtonFocusin();
         await microtasksFinished();
         assertEquals(1, element.selectedMatchIndex);
+      });
+
+  test('enforces 20 MiB image limit while keeping 100 MiB for PDFs', () => {
+    const miB = 1024 * 1024;
+    element.maxFileSize = 100 * miB;
+    element.maxImageFileSize = 20 * miB;
+    element.limitAllImages = true;
+    element.imageFileTypes = ['image/png', 'image/heic', 'image/heif'];
+    element.attachmentFileTypes = ['application/pdf'];
+
+    // 25 MiB HEIC and PNG exceed the 20 MiB image cap.
+    assertEquals(
+        ProcessFilesError.IMAGE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/heic', 25 * miB, 0, 0));
+    assertEquals(
+        ProcessFilesError.IMAGE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/png', 25 * miB, 0, 0));
+
+    // 20 MiB HEIC and PNG are allowed.
+    assertEquals(
+        ProcessFilesError.NONE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/heic', 20 * miB, 0, 0));
+    assertEquals(
+        ProcessFilesError.NONE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/png', 20 * miB, 0, 0));
+
+    // 25 MiB PDF is allowed (under 100 MiB attachment limit), while 105 MiB
+    // PDF fails with FILE_TOO_LARGE.
+    assertEquals(
+        ProcessFilesError.NONE,
+        element.getValidationError(
+            InputType.kLensFile, 'application/pdf', 25 * miB, 0, 0));
+    assertEquals(
+        ProcessFilesError.FILE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensFile, 'application/pdf', 105 * miB, 0, 0));
+
+    // Unsupported image/* MIME types (e.g. image/gif mapped to kLensFile)
+    // also map to IMAGE_TOO_LARGE so browser-side and frontend errors
+    // match.
+    assertEquals(
+        ProcessFilesError.IMAGE_TOO_LARGE,
+        element.getProcessFilesErrorForUploadError(
+            ContextUploadErrorType.kBrowserProcessingFileTooLargeError,
+            {name: 'anim.gif', type: 'image/gif'}));
+
+    // Error message formatting shows 20 MB for IMAGE_TOO_LARGE and 100 MB
+    // for FILE_TOO_LARGE.
+    element.handleProcessFilesError(ProcessFilesError.IMAGE_TOO_LARGE);
+    assertTrue(element.errorMessage.includes('20'));
+    element.handleProcessFilesError(ProcessFilesError.FILE_TOO_LARGE);
+    assertTrue(element.errorMessage.includes('100'));
+
+    // Upload status validation errors (e.g. OmniboxEverywhereUI) also
+    // populate the 20 MB / 100 MB limit placeholder.
+    const imgToken = 'oversized-img' as unknown as UnguessableToken;
+    element.attachedContext.set(
+        imgToken,
+        ComposeboxFile.createFromFile(
+            imgToken, {name: 'photo.png', type: 'image/png'}));
+    const imgStatusResult = element.updateFileStatus(
+        imgToken, ContextUploadStatus.kValidationFailed,
+        ContextUploadErrorType.kBrowserProcessingFileTooLargeError);
+    assertTrue(!!imgStatusResult.errorMessage?.includes('20'));
+
+    const pdfToken = 'oversized-pdf' as unknown as UnguessableToken;
+    element.attachedContext.set(
+        pdfToken,
+        ComposeboxFile.createFromFile(
+            pdfToken, {name: 'doc.pdf', type: 'application/pdf'}));
+    const pdfStatusResult = element.updateFileStatus(
+        pdfToken, ContextUploadStatus.kValidationFailed,
+        ContextUploadErrorType.kBrowserProcessingFileTooLargeError);
+    assertTrue(!!pdfStatusResult.errorMessage?.includes('100'));
+  });
+
+  test('limitAllImages=false fallback caps only HEIC/HEIF at 20 MiB', () => {
+    const miB = 1024 * 1024;
+    element.maxFileSize = 100 * miB;
+    element.maxImageFileSize = 20 * miB;
+    element.limitAllImages = false;
+    element.imageFileTypes = ['image/png', 'image/heic', 'image/heif'];
+    element.attachmentFileTypes = ['application/pdf'];
+
+    // 25 MiB HEIC/HEIF fails with IMAGE_TOO_LARGE.
+    assertEquals(
+        ProcessFilesError.IMAGE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/heic', 25 * miB, 0, 0));
+    assertEquals(
+        ProcessFilesError.IMAGE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/heif', 25 * miB, 0, 0));
+
+    // 25 MiB PNG is allowed when limitAllImages is false, and only fails
+    // above 100 MiB with FILE_TOO_LARGE.
+    assertEquals(
+        ProcessFilesError.NONE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/png', 25 * miB, 0, 0));
+    assertEquals(
+        ProcessFilesError.FILE_TOO_LARGE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/png', 105 * miB, 0, 0));
+
+    // When the feature flag is off (maxImageFileSize = 0), 25 MiB HEIC falls
+    // back to the 100 MiB general attachment limit.
+    element.maxImageFileSize = 0;
+    assertEquals(
+        ProcessFilesError.NONE,
+        element.getValidationError(
+            InputType.kLensImage, 'image/heic', 25 * miB, 0, 0));
+  });
+
+  test(
+      'closeComposebox skips backend resets when afterSubmit is true',
+      async () => {
+        element.onInputStateChanged(new MockInputState({
+          activeTool: ToolMode.kDeepSearch,
+          activeModel: ModelMode.kGeminiPro,
+        }));
+        await element.updateComplete;
+
+        const closeDetails:
+            Array<{composeboxText: string, afterSubmit: boolean}> = [];
+        element.addEventListener('close-composebox', e => {
+          closeDetails.push(
+              (e as CustomEvent<{composeboxText: string, afterSubmit: boolean}>)
+                  .detail);
+        });
+
+        searchboxHandler.resetResolver('clearFiles');
+        searchboxHandler.resetResolver('setActiveToolMode');
+        searchboxHandler.resetResolver('setActiveModelMode');
+
+        element.input = 'draft';
+        element.closeComposebox(/*afterSubmit=*/ true);
+
+        assertEquals(0, searchboxHandler.getCallCount('clearFiles'));
+        assertEquals(0, searchboxHandler.getCallCount('setActiveToolMode'));
+        assertEquals(0, searchboxHandler.getCallCount('setActiveModelMode'));
+        assertDeepEquals(
+            [{composeboxText: 'draft', afterSubmit: true}], closeDetails);
+
+        const callOrder: string[] = [];
+        searchboxHandler.setResultMapperFor('clearFiles', () => {
+          callOrder.push('clearFiles');
+        });
+        searchboxHandler.setResultMapperFor('setActiveToolMode', () => {
+          callOrder.push('setActiveToolMode');
+        });
+        searchboxHandler.setResultMapperFor('setActiveModelMode', () => {
+          callOrder.push('setActiveModelMode');
+        });
+
+        element.closeComposebox(/*afterSubmit=*/ false);
+
+        assertEquals(1, searchboxHandler.getCallCount('clearFiles'));
+        assertEquals(false, searchboxHandler.getArgs('clearFiles')[0]);
+        assertDeepEquals(
+            [
+              'setActiveToolMode',
+              'clearFiles',
+              'setActiveToolMode',
+              'setActiveModelMode',
+            ],
+            callOrder);
+        assertDeepEquals(
+            [ModelMode.kUnspecified, false],
+            searchboxHandler.getArgs('setActiveModelMode')[0]);
+        assertEquals(2, closeDetails.length);
+        assertFalse(closeDetails[1]!.afterSubmit);
       });
 });

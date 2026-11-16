@@ -8,6 +8,7 @@
 #include <gbm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <memory>
 
 #include "base/containers/flat_set.h"
@@ -90,6 +91,15 @@ bool GbmPixmapWayland::InitializeBuffer(
     // creation without modifiers, and leave the choices to driver.
     if (!gbm_bo_ && buffer_manager_->AllowsImplicitModifierForFormat(format)) {
       gbm_bo_ = gbm_device->CreateBuffer(fourcc_format, size, gbm_flags);
+      // The driver may report a modifier for the implicitly allocated buffer
+      // (e.g. `DRM_FORMAT_MOD_LINEAR`) that the compositor did not advertise.
+      // Such a buffer must be submitted with `DRM_FORMAT_MOD_INVALID`, which
+      // the compositor advertised, or it may reject the buffer.
+      if (gbm_bo_ &&
+          !std::ranges::contains(buffer_manager_->GetModifiersForFormat(format),
+                                 gbm_bo_->GetFormatModifier())) {
+        use_implicit_modifier_for_wl_buffer_ = true;
+      }
     }
   }
 
@@ -243,30 +253,37 @@ gfx::NativePixmapHandle GbmPixmapWayland::ExportHandle() const {
 
 void GbmPixmapWayland::CreateDmabufBasedWlBuffer(
     const gfx::OverlayPlaneData& overlay_plane_data) {
-  uint64_t modifier = gbm_bo_->GetFormatModifier();
+  const uint64_t modifier = use_implicit_modifier_for_wl_buffer_
+                                ? DRM_FORMAT_MOD_INVALID
+                                : gbm_bo_->GetFormatModifier();
 
   std::vector<uint32_t> strides;
   std::vector<uint32_t> offsets;
   std::vector<uint64_t> modifiers;
+
+  // Each plane may be backed by a separate dmabuf object (e.g. buffers
+  // allocated with disjoint planes), so pass the fd of every plane.
+  std::vector<base::ScopedFD> fds;
 
   size_t plane_count = gbm_bo_->GetNumPlanes();
   for (size_t i = 0; i < plane_count; ++i) {
     strides.push_back(GetDmaBufPitch(i));
     offsets.push_back(GetDmaBufOffset(i));
     modifiers.push_back(modifier);
-  }
 
-  base::ScopedFD fd(HANDLE_EINTR(dup(GetDmaBufFd(0))));
-  if (!fd.is_valid()) {
-    PLOG(FATAL) << "dup";
+    base::ScopedFD fd(HANDLE_EINTR(dup(GetDmaBufFd(i))));
+    if (!fd.is_valid()) {
+      PLOG(FATAL) << "dup";
+    }
+    fds.push_back(std::move(fd));
   }
 
   // The wl_buffer must be destroyed once this pixmap is destroyed.
   created_wl_buffer_ = true;
 
-  // Asks Wayland to create a wl_buffer based on the |file| fd.
+  // Asks Wayland to create a wl_buffer based on the per-plane |fds|.
   buffer_manager_->CreateDmabufBasedBuffer(
-      std::move(fd), visible_area_size_, strides, offsets, modifiers,
+      std::move(fds), visible_area_size_, strides, offsets, modifiers,
       gbm_bo_->GetFormat(), plane_count, overlay_plane_data.color_space,
       overlay_plane_data.hdr_metadata, buffer_id_);
 }

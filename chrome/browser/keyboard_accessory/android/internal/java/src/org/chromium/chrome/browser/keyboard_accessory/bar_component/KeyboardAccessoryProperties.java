@@ -259,29 +259,6 @@ class KeyboardAccessoryProperties {
         int getCaptionId() {
             return mCaptionId;
         }
-
-        @Override
-        public String toString() {
-            String typeName = "BarItem(" + getViewType() + ")"; // Fallback. We shouldn't crash.
-            switch (getViewType()) {
-                case Type.ACTION_BUTTON:
-                    typeName = "ACTION_BUTTON";
-                    break;
-                case Type.SUGGESTION:
-                    typeName = "SUGGESTION";
-                    break;
-                case Type.TAB_LAYOUT:
-                    typeName = "TAB_LAYOUT";
-                    break;
-                case Type.ACTION_CHIP:
-                    typeName = "ACTION_CHIP";
-                    break;
-                case Type.DISMISS_CHIP:
-                    typeName = "DISMISS_CHIP";
-                    break;
-            }
-            return typeName + ": " + mAction;
-        }
     }
 
     /**
@@ -290,6 +267,7 @@ class KeyboardAccessoryProperties {
      */
     static class AutofillBarItem extends ActionBarItem {
         private final AutofillSuggestion mSuggestion;
+        private final boolean mHasGeminiAttribution;
         private @Nullable String mFeature;
         private boolean mIsLoading;
         private boolean mIsSelected;
@@ -303,8 +281,32 @@ class KeyboardAccessoryProperties {
          * @param profile The {@link Profile} associated with the autofill data.
          */
         AutofillBarItem(AutofillSuggestion suggestion, Action action, Profile profile) {
+            this(suggestion, action, profile, /* hasGeminiAttribution= */ false);
+        }
+
+        /**
+         * Creates a new autofill item with a suggestion for the view's representation, an action to
+         * handle the interaction with the rendered View, and whether the suggestion's icon carries
+         * Gemini attribution.
+         *
+         * @param suggestion An {@link AutofillSuggestion}.
+         * @param action An {@link Action}.
+         * @param profile The {@link Profile} associated with the autofill data.
+         * @param hasGeminiAttribution Whether the suggestion originates from Gemini personal
+         *     context.
+         */
+        AutofillBarItem(
+                AutofillSuggestion suggestion,
+                Action action,
+                Profile profile,
+                boolean hasGeminiAttribution) {
             super(getBarItemType(suggestion, profile), action, 0);
             mSuggestion = suggestion;
+            mHasGeminiAttribution = hasGeminiAttribution;
+        }
+
+        boolean hasGeminiAttribution() {
+            return mHasGeminiAttribution;
         }
 
         /**
@@ -356,11 +358,6 @@ class KeyboardAccessoryProperties {
 
         @Nullable String getFeatureForIph() {
             return mFeature;
-        }
-
-        @Override
-        public String toString() {
-            return "Autofill" + super.toString();
         }
 
         @VisibleForTesting

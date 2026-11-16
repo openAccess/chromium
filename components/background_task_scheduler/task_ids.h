@@ -103,7 +103,7 @@ enum class TaskIds {
   // component: Internals>Installer>Components
   // team_email: chrome-updates-dev@chromium.org
   // owner: sorin@chromium.org
-  COMPONENT_UPDATE_JOB_ID = 2,
+  DEPRECATED_COMPONENT_UPDATE_JOB_ID = 2,
   // component: Blink>BackgroundSync
   // team_email: platform-capabilities@chromium.org
   // owner: peter@chromium.org
@@ -156,6 +156,10 @@ enum class TaskIds {
   DWA_UPLOAD_JOB_ID = 117,
   PUMA_UPLOAD_JOB_ID = 118,
   STRUCTURED_METRICS_UPLOAD_JOB_ID = 119,
+  // component: Internals>Installer
+  // team_email: chrome-counter-abuse-alerts@google.com
+  // owner: anunoy@chromium.org
+  IN_APP_UPDATE_RESTART_JOB_ID = 120,
 };
 
 }  // namespace background_task

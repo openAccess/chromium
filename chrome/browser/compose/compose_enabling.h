@@ -11,7 +11,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/types/expected.h"
 #include "chrome/browser/compose/proto/compose_optimization_guide.pb.h"
-#include "components/autofill/core/common/aliases.h"
 #include "components/compose/core/browser/compose_metrics.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/translate/core/browser/translate_manager.h"
@@ -20,20 +19,6 @@
 
 class OptimizationGuideKeyedService;
 class Profile;
-
-namespace compose {
-
-enum class ComposeNudgeDenyReason {
-  kSavedStateNotificationDisabled = 0,
-  kSavedStateNudgeDisabled = 1,
-  // The proactive nudge could have shown but was disabled by preference or
-  // config values.
-  kProactiveNudgeDisabled = 2,
-  // The proactive nudge can not be shown for this user, page, or field.
-  kProactiveNudgeBlocked = 3,
-};
-
-}  // namespace compose
 
 class ComposeEnabling {
  public:
@@ -87,11 +72,9 @@ class ComposeEnabling {
       GURL url,
       bool is_msbb_enabled);
 
-  bool ShouldTriggerSavedStatePopup(
-      autofill::AutofillSuggestionTriggerSource trigger_source);
+  bool ShouldTriggerSavedStatePopup();
 
   bool ShouldTriggerContextMenu(Profile* profile,
-                                translate::TranslateManager* translate_manager,
                                 content::RenderFrameHost* rfh,
                                 content::ContextMenuParams& params);
 
@@ -103,11 +86,10 @@ class ComposeEnabling {
 
  private:
   base::expected<void, compose::ComposeShowStatus> PageLevelChecks(
-      translate::TranslateManager* translate_manager,
       GURL url,
       const url::Origin& top_level_frame_origin,
       const url::Origin& element_frame_origin,
-      bool is_newsted_within_fenced_frame);
+      bool is_nested_within_fenced_frame);
 
   static base::expected<void, compose::ComposeShowStatus> CheckEnabling(
       OptimizationGuideKeyedService* opt_guide,

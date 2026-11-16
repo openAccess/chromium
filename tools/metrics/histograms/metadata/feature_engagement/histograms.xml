@@ -367,6 +367,10 @@ chromium-metrics-reviews@google.com.
       summary="educate users that they can close all Incognito windows by
                tapping the Incognito indicator"/>
   <variant name="IPH_IncognitoWindow" summary="incognito window"/>
+  <variant name="IPH_IndigoContextMenuSnooze"
+      summary="snooze promo educating users who are not shown Try it on via
+               contextual cues on an eligible product page that Try it on is
+               available in the right-click context menu"/>
   <variant name="IPH_IndigoContextMenuToast"
       summary="toast educating users after a transformation that Try it on is
                available in the right-click context menu"/>
@@ -386,8 +390,6 @@ chromium-metrics-reviews@google.com.
   <variant name="IPH_iOSBWGPromo" summary="shows users a promo for BWG"/>
   <variant name="IPH_iOSChoiceScreenFeature"
       summary="(obsolete) showing the Choice screen on iOS"/>
-  <variant name="IPH_iOSContextualPanelPriceInsights"
-      summary="contextual panel price insights IPH impression tracking"/>
   <variant name="IPH_iOSContextualPanelSampleModel"
       summary="contextual panel sample model IPH impression tracking"/>
   <variant name="IPH_iOSDefaultBrowserBadgeEligibility"
@@ -582,9 +584,14 @@ chromium-metrics-reviews@google.com.
   <variant name="IPH_NewTabPageThemeCustomization"
       summary="informing user of customizing new tab page theme via NTP
                customization option in the App menu"/>
+  <variant name="IPH_NewTabPageThemeCustomizationMagicStack"
+      summary="customizing new tab page theme via the promo card in the Magic
+               Stack"/>
   <variant name="IPH_NewTabTip" summary="new tab tip"/>
   <variant name="IPH_NotificationPermissionPromo"
       summary="OS notification permission prompt on Android"/>
+  <variant name="IPH_NtpFuseboxAnimation"
+      summary="the NTP Fusebox (+) button and cycling hint text animation"/>
   <variant name="IPH_OmniboxAskGLensIcon"
       summary="the Lens icon in the omnibox popup"/>
   <variant name="IPH_OmniboxEverywhereLensPromo"
@@ -723,8 +730,6 @@ chromium-metrics-reviews@google.com.
   <variant name="IPH_RestoreTabsOnFRE"
       summary="the in product help sheet to let users know they can restore
                tabs from other synced devices on a fresh Chrome install"/>
-  <variant name="IPH_ResumptionRail"
-      summary="educating users about the Resumption Rail feature entrypoint"/>
   <variant name="IPH_RtlGestureNavigation"
       summary="the in product help dialog to educate users on how to do
                gesture navigation in RTL mode."/>
@@ -864,6 +869,8 @@ chromium-metrics-reviews@google.com.
       summary="updated omnibox connection security indicators"/>
   <variant name="IPH_VerticalTabsExpandOnHoverFeature"
       summary="The vertical tabstrip expand on hover IPH"/>
+  <variant name="IPH_VerticalTabsTabGroupsInOrganizerFeature"
+      summary="tab groups moved into organizer panel in vertical tabs"/>
   <variant name="IPH_VerticalTabstripTutorialFeature"
       summary="The vertical tabstrip IPH"/>
   <variant name="IPH_WebUiHelpBubbleTest"
@@ -879,16 +886,6 @@ chromium-metrics-reviews@google.com.
     Records if in-product help configuration is parsed correctly, and the
     failure reasons for parsing failures.
   </summary>
-</histogram>
-
-<histogram name="InProductHelp.Db.Init.{IPHDatabase}" enum="BooleanSuccess"
-    expires_after="2025-01-05">
-  <owner>nyquist@chromium.org</owner>
-  <summary>
-    Records if {IPHDatabase} database initialization succeeds for in-product
-    help.
-  </summary>
-  <token key="IPHDatabase" variants="IPHDatabase"/>
 </histogram>
 
 <histogram name="InProductHelp.Db.Load.{IPHDatabase}" enum="BooleanSuccess"
@@ -908,15 +905,6 @@ chromium-metrics-reviews@google.com.
     Records the total number of event records in the database for in-product
     help after the event model is loaded.
   </summary>
-</histogram>
-
-<histogram name="InProductHelp.Db.Update.{IPHDatabase}" enum="BooleanSuccess"
-    expires_after="2025-01-05">
-  <owner>nyquist@chromium.org</owner>
-  <summary>
-    Records if {IPHDatabase} database update succeeds for in-product help.
-  </summary>
-  <token key="IPHDatabase" variants="IPHDatabase"/>
 </histogram>
 
 <histogram name="InProductHelp.DismissalReason.iOS"
@@ -1029,15 +1017,6 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="InProductHelp.TextBubble.ShowSnooze" enum="BooleanShown"
-    expires_after="2023-02-12">
-  <owner>haileywang@chromium.org</owner>
-  <owner>shaktisahu@chromium.org</owner>
-  <summary>
-    Records if the snooze button was shown on an in-product help bubble.
-  </summary>
-</histogram>
-
 <!--
 
 IMPORTANT NOTE:
@@ -1064,7 +1043,7 @@ In the future, Desktop IPH may be completely moved to the user_education folder.
 </histogram>
 
 <histogram name="UserEducation.MessageNotShown.TimeInQueue.{IPHFeature}"
-    units="ms" expires_after="2027-03-07">
+    units="ms" expires_after="2027-05-09">
   <owner>dfried@chromium.org</owner>
   <owner>frizzle-team@google.com</owner>
   <summary>

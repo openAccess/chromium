@@ -4,9 +4,7 @@
 
 package org.chromium.chrome.browser.sync.ui;
 
-import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.intent.Intents.intended;
-import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
@@ -18,8 +16,9 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
-import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.view.ViewGroup;
@@ -74,6 +73,7 @@ import org.chromium.components.messages.MessageDispatcher;
 import org.chromium.components.sync.BookmarksLimitExceededHelpClickedSource;
 import org.chromium.components.sync.UserActionableError;
 import org.chromium.components.user_prefs.UserPrefs;
+import org.chromium.google_apis.gaia.DeviceManagementErrorDetails;
 import org.chromium.google_apis.gaia.GoogleServiceAuthError;
 import org.chromium.google_apis.gaia.GoogleServiceAuthErrorState;
 import org.chromium.ui.modelutil.PropertyModel;
@@ -142,6 +142,36 @@ public class SyncErrorMessageTest {
         mSyncTestRule.setUpAccountAndSignInForTesting();
         mFakeSyncServiceImpl.setAuthError(
                 new GoogleServiceAuthError(GoogleServiceAuthErrorState.INVALID_GAIA_CREDENTIALS));
+        mSyncTestRule.loadUrl(UrlConstants.VERSION_URL);
+        verifyHasShownMessage();
+        watchIdentityErrorMessageShownHistogram.assertExpected();
+
+        // Resolving the error should dismiss the current message.
+        mFakeSyncServiceImpl.setAuthError(
+                new GoogleServiceAuthError(GoogleServiceAuthErrorState.NONE));
+        verifyHasDismissedMessage();
+    }
+
+    @Test
+    @LargeTest
+    public void testSyncErrorMessageShownForDeviceManagementErrorForSignedInUsers()
+            throws Exception {
+        HistogramWatcher watchIdentityErrorMessageShownHistogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Sync.IdentityErrorMessage.DeviceManagementError",
+                        SyncSettingsUtils.ErrorUiAction.SHOWN);
+
+        // Sign in.
+        mSyncTestRule.setUpAccountAndSignInForTesting();
+        PendingIntent pendingIntent =
+                PendingIntent.getActivity(
+                        ContextUtils.getApplicationContext(),
+                        0,
+                        new Intent(),
+                        PendingIntent.FLAG_IMMUTABLE);
+        mFakeSyncServiceImpl.setAuthError(
+                GoogleServiceAuthError.fromDeviceManagementError(
+                        new DeviceManagementErrorDetails(pendingIntent)));
         mSyncTestRule.loadUrl(UrlConstants.VERSION_URL);
         verifyHasShownMessage();
         watchIdentityErrorMessageShownHistogram.assertExpected();
@@ -451,7 +481,7 @@ public class SyncErrorMessageTest {
         mSyncTestRule.loadUrl(UrlConstants.VERSION_URL);
 
         Intents.init();
-        onViewWaiting(allOf(withText("Enter"), isDisplayed())).perform(click());
+        waitForView(withText("Enter")).click();
         intended(isSettingsIntentFor(ManageSyncSettings.class));
         Intents.release();
 
@@ -479,7 +509,7 @@ public class SyncErrorMessageTest {
         mSyncTestRule.loadUrl(UrlConstants.VERSION_URL);
 
         Intents.init();
-        onViewWaiting(allOf(withText("Learn more"), isDisplayed())).perform(click());
+        waitForView(withText("Learn more")).click();
         intended(
                 IntentMatchers.hasData(SyncSettingsUtils.BOOKMARKS_LIMIT_EXCEEDED_HELP_CENTER_URL));
         Intents.release();

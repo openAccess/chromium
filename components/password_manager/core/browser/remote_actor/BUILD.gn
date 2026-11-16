@@ -26,6 +26,8 @@ source_set("remote_actor") {
     "remote_actor_request_helper.h",
     "remote_actor_switches.cc",
     "remote_actor_switches.h",
+    "remote_actor_utils.cc",
+    "remote_actor_utils.h",
   ]
 
   public_deps = [
@@ -48,7 +50,6 @@ source_set("remote_actor") {
     "//components/password_manager/core/browser/features:password_features",
     "//components/password_manager/core/browser/features:utils",
     "//components/password_manager/core/browser/remote_actor/protos",
-    "//components/password_manager/core/common/remote_actor:features",
     "//components/signin/public/identity_manager",
     "//components/strings:components_strings",
     "//components/sync/service",
@@ -67,6 +68,7 @@ source_set("unit_tests") {
     "remote_actor_credential_sharing_service_impl_unittest.cc",
     "remote_actor_credential_store_client_unittest.cc",
     "remote_actor_request_helper_unittest.cc",
+    "remote_actor_utils_unittest.cc",
   ]
   deps = [
     ":remote_actor",

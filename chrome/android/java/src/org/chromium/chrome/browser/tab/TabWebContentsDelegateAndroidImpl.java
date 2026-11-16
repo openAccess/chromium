@@ -72,6 +72,9 @@ final class TabWebContentsDelegateAndroidImpl extends TabWebContentsDelegateAndr
         mDelegate = delegate;
         mCloseContentsRunnable =
                 () -> {
+                    if (mTab.isDetachedFromActivity()) {
+                        mTab.setDidCloseWhileDetached();
+                    }
                     for (TabObserver observer : mTab.getTabObservers()) {
                         observer.onCloseContents(mTab);
                     }
@@ -407,9 +410,7 @@ final class TabWebContentsDelegateAndroidImpl extends TabWebContentsDelegateAndr
         return mDelegate.isDocumentPictureInPictureBlockedBySystem();
     }
 
-    /**
-     * @return web preferences for enabling Picture-in-Picture.
-     */
+    /** Returns web preferences for enabling Picture-in-Picture. */
     @CalledByNative
     @Override
     protected boolean isPictureInPictureEnabled() {
@@ -428,8 +429,8 @@ final class TabWebContentsDelegateAndroidImpl extends TabWebContentsDelegateAndr
     }
 
     /**
-     * @return the WebAPK manifest scope. This gives frames within the scope increased privileges
-     *     such as autoplaying media unmuted.
+     * Returns the WebAPK manifest scope. This gives frames within the scope increased privileges
+     * such as autoplaying media unmuted.
      */
     @CalledByNative
     @Override
@@ -587,13 +588,10 @@ final class TabWebContentsDelegateAndroidImpl extends TabWebContentsDelegateAndr
 
     @Override
     public void contentsZoomChange(boolean zoomIn) {
-        WebContents wc = mTab.getWebContents();
-        if (wc != null) {
-            if (zoomIn) {
-                ZoomController.zoomIn(wc);
-            } else {
-                ZoomController.zoomOut(wc);
-            }
+        if (zoomIn) {
+            ZoomController.zoomInPage(mTab);
+        } else {
+            ZoomController.zoomOutPage(mTab);
         }
     }
 

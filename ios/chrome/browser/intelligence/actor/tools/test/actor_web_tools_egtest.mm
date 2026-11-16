@@ -10,6 +10,7 @@
 #import "base/values.h"
 #import "components/optimization_guide/proto/features/actions_data.pb.h"
 #import "components/optimization_guide/proto/features/common_quality_data.pb.h"
+#import "ios/chrome/browser/infobars/ui_bundled/banners/infobar_banner_constants.h"
 #import "ios/chrome/browser/intelligence/actor/tools/test/actor_app_interface.h"
 #import "ios/chrome/browser/intelligence/actor/tools/test/actor_tools_base_test_case.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -18,6 +19,21 @@
 #import "ios/testing/earl_grey/earl_grey_test.h"
 #import "ios/web/public/test/element_selector.h"
 #import "url/gurl.h"
+
+namespace {
+
+// Verifies that the software keyboard stays hidden over
+// `kWaitForUIElementTimeout`.
+void AssertKeyboardStaysHidden() {
+  const bool keyboard_shown = base::test::ios::WaitUntilConditionOrTimeout(
+      base::test::ios::kWaitForUIElementTimeout, ^{
+        return [EarlGrey isKeyboardShownWithError:nil];
+      });
+  GREYAssertFalse(keyboard_shown,
+                  @"Keyboard should remain hidden after actuation ends.");
+}
+
+}  // namespace
 
 @interface ActorWebToolsTestCase : ActorToolsBaseTestCase
 @end
@@ -32,8 +48,8 @@
 #pragma mark - ClickTool Tests
 
 // Tests that the software keyboard is dismissed when actuation begins, remains
-// suppressed while the actor clicks into an `<input>`, and reappears once
-// actuation ends.
+// suppressed while the actor clicks into an `<input>`, stays hidden after
+// actuation ends, and appears normally when the user taps an `<input>` again.
 - (void)testClickTool_suppressesKeyboardDuringActuation {
   [ChromeEarlGrey loadURL:self.testServer->GetURL("/multi_field_form.html")];
   [ChromeEarlGrey
@@ -66,7 +82,13 @@
   // Stop all tasks so actuation ends and the tab returns to `kInactive`.
   [ActorAppInterface stopAllTasks];
 
-  // Verify that the keyboard reappears.
+  // Verify that the keyboard stays hidden after actuation ends.
+  AssertKeyboardStaysHidden();
+
+  // Verify that input view suppression was lifted so tapping the input again
+  // brings up the keyboard normally.
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("otherstuff")];
   [ChromeEarlGrey waitForKeyboardToAppear];
 }
 
@@ -280,6 +302,63 @@
   [self executeActions:actions];
 }
 
+// Tests that clicking an HTTP `<a target="_blank">` link via `ClickTool`
+// navigates the controlled tab in-place instead of opening a second tab or
+// presenting a blocked-popup infobar banner.
+- (void)testClickTool_redirectsTargetBlankHTTPLinkToSameTab {
+  const GURL destinationURL = self.testServer->GetURL("/destination.html");
+  const std::string linkHTML =
+      base::StringPrintf("<a id='deal' href='%s' target='_blank'>View Deal</a>",
+                         destinationURL.spec().c_str());
+  [ChromeEarlGrey loadURL:[self URLForHTML:linkHTML]];
+  [ChromeEarlGrey waitForWebStateContainingText:"View Deal"];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::ClickAction* clickAction = action.mutable_click();
+  clickAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  clickAction->set_click_type(optimization_guide::proto::ClickAction::LEFT);
+  clickAction->set_click_count(optimization_guide::proto::ClickAction::SINGLE);
+  [self setCoordinatesOnTarget:clickAction->mutable_target()
+                  withSelector:"#deal"];
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  [ChromeEarlGrey waitForWebStateContainingText:"You've arrived"];
+  [ChromeEarlGrey waitForMainTabCount:1];
+  GREYAssertEqual(destinationURL, [ChromeEarlGrey webStateLastCommittedURL],
+                  @"Expected target=_blank link to navigate in the same tab.");
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kInfobarBannerViewIdentifier)]
+      assertWithMatcher:grey_nil()];
+}
+
+// Tests that clicking an `about:blank` `<a target="_blank">` link on
+// `/window_open.html` via `ClickTool` suppresses the popup without overwriting
+// the opener document, opening a second tab, or showing a blocked-popup
+// infobar banner.
+- (void)testClickTool_suppressesTargetBlankAboutBlankLink {
+  const GURL windowOpenURL = self.testServer->GetURL("/window_open.html");
+  [ChromeEarlGrey loadURL:windowOpenURL];
+  [ChromeEarlGrey waitForWebStateContainingText:"Expected result"];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::ClickAction* clickAction = action.mutable_click();
+  clickAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  clickAction->set_click_type(optimization_guide::proto::ClickAction::LEFT);
+  clickAction->set_click_count(optimization_guide::proto::ClickAction::SINGLE);
+  [self setCoordinatesOnTarget:clickAction->mutable_target()
+                  withSelector:"#webScenarioWindowOpenRegularLink"];
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  [ChromeEarlGrey waitForMainTabCount:1];
+  GREYAssertEqual(windowOpenURL, [ChromeEarlGrey webStateLastCommittedURL],
+                  @"Expected opener URL to remain unchanged.");
+  [[EarlGrey selectElementWithMatcher:grey_accessibilityID(
+                                          kInfobarBannerViewIdentifier)]
+      assertWithMatcher:grey_nil()];
+}
+
 #pragma mark - TypeTool Tests
 
 // Tests that the TypeTool can successfully type in an <input> given its
@@ -391,6 +470,42 @@
                          @"Hello World", @"Input value did not match");
 
   [ChromeEarlGrey waitForJavaScriptCondition:@"window.formSubmitted === true"];
+}
+
+// Tests that `TypeTool` keeps the software keyboard hidden during and after
+// typing into an `<input>`, and shows it again when the user taps the input.
+- (void)testTypeTool_doesNotShowKeyboardDuringOrAfterActuation {
+  [ChromeEarlGrey loadURL:self.testServer->GetURL("/multi_field_form.html")];
+  [ChromeEarlGrey
+      waitForWebStateContainingElement:[ElementSelector
+                                           selectorWithElementID:"username"]];
+
+  optimization_guide::proto::Action action;
+  optimization_guide::proto::TypeAction* typeAction = action.mutable_type();
+  typeAction->set_tab_id([ChromeEarlGrey currentTabID].intValue);
+  typeAction->set_text("Hello World");
+  typeAction->set_mode(optimization_guide::proto::TypeAction::APPEND);
+  [self setCoordinatesOnTarget:typeAction->mutable_target()
+                  withSelector:"#username"];
+
+  GREYAssertNil([self executeAction:action], @"Action execution failed.");
+
+  base::Value value = [ChromeEarlGrey
+      evaluateJavaScript:@"document.getElementById('username').value"];
+  GREYAssertTrue(value.is_string(), @"Expected string input value.");
+  GREYAssertEqualObjects(base::SysUTF8ToNSString(value.GetString()),
+                         @"Hello World", @"Input value did not match");
+  GREYAssertFalse([EarlGrey isKeyboardShownWithError:nil],
+                  @"Keyboard should remain hidden while actuating.");
+
+  // End actuation and verify the keyboard stays hidden, then appears when the
+  // user taps the input.
+  [ActorAppInterface stopAllTasks];
+  AssertKeyboardStaysHidden();
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::WebViewMatcher()]
+      performAction:chrome_test_util::TapWebElementWithId("username")];
+  [ChromeEarlGrey waitForKeyboardToAppear];
 }
 
 #pragma mark - ScrollTool Tests

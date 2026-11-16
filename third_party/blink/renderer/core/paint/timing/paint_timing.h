@@ -31,12 +31,12 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-#include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
 namespace blink {
 class AnimationFrameTimingInfo;
 class ElementTiming;
 class LargestContentfulPaintManager;
+struct HeapTimeTicks;
 class ImageRecord;
 class LocalFrame;
 class PaintTimingClient;
@@ -250,7 +250,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   friend class RecodingTimeAfterBackForwardCacheRestoreFrameCallback;
 
   struct PendingPaintTimingRecord {
-    HashSet<PaintEvent> paint_events;
+    PaintEventSet paint_events;
     base::TimeTicks rendering_update_end_time;
   };
 
@@ -258,13 +258,14 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   // captured at paint time and used by the associated presentation callback.
   struct PresentationCallbackData
       : public GarbageCollected<PresentationCallbackData> {
-    PresentationCallbackData(uint32_t id,
-                             const PendingPaintTimingRecord&,
-                             AnimationFrameTimingInfo*,
-                             HeapVector<Member<TextRecord>> text_records,
-                             HeapVector<Member<ImageRecord>> image_records,
-                             Vector<PaintTimingCallback> client_callbacks,
-                             HeapVector<Member<ImageRecord>> animated_images);
+    PresentationCallbackData(
+        uint32_t id,
+        const PendingPaintTimingRecord&,
+        AnimationFrameTimingInfo*,
+        HeapVector<Member<TextRecord>> text_records,
+        HeapVector<Member<ImageRecord>> image_records,
+        Vector<PaintTimingCallback> client_callbacks,
+        HeapVector<Member<HeapTimeTicks>> pending_timestamps);
 
     bool HasPaintTimingInfo() const { return paint_timing_info.has_value(); }
 
@@ -284,7 +285,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
     const HeapVector<Member<TextRecord>> text_records;
     const HeapVector<Member<ImageRecord>> image_records;
     Vector<PaintTimingCallback> client_callbacks;
-    const HeapVector<Member<ImageRecord>> animated_images;
+    const HeapVector<Member<HeapTimeTicks>> pending_timestamps;
 
     // Values set at presentation time.
     base::TimeTicks raw_presentation_timestamp;
@@ -432,7 +433,7 @@ class CORE_EXPORT PaintTiming final : public GarbageCollected<PaintTiming>,
   // is restored from the back-forward cache.
   int raf_after_bfcache_restore_measurement_callback_id_ = 0;
 
-  HashSet<PaintEvent> pending_paint_events_;
+  PaintEventSet pending_paint_events_;
 
   // Set in some unit tests.
   Member<CallbackManager> callback_manager_;

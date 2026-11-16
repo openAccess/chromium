@@ -15,6 +15,7 @@ import type {CrIconElement} from '//resources/cr_elements/cr_icon/cr_icon.js';
 import type {CrIconButtonElement} from '//resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import {MouseHoverableMixinLit} from '//resources/cr_elements/mouse_hoverable_mixin_lit.js';
 import {FocusOutlineManager} from '//resources/js/focus_outline_manager.js';
+import {loadTimeData} from '//resources/js/load_time_data.js';
 import {isRTL} from '//resources/js/util.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
@@ -37,7 +38,6 @@ export enum OrganizerSectionMenuOption {
 export interface OrganizerListSectionHeaderElement {
   $: {
     expandButton: CrExpandButtonElement,
-    headerContent: HTMLElement,
     headerTitle: HTMLElement,
     menu: CrActionMenuElement,
     menuButton: CrIconButtonElement,
@@ -105,8 +105,34 @@ export class OrganizerListSectionHeaderElement extends
     FocusOutlineManager.forDocument(document);
   }
 
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    if (changedProperties.has('disabled')) {
+      if (this.disabled) {
+        this.setAttribute('tabindex', '0');
+        this.setAttribute(
+            'aria-description',
+            loadTimeData.getString('sectionNavigationHint'));
+      } else {
+        this.removeAttribute('tabindex');
+        this.removeAttribute('aria-description');
+      }
+    }
+    if (changedProperties.has('disabled') || changedProperties.has('title')) {
+      if (this.disabled && this.title) {
+        this.setAttribute('aria-label', this.title);
+      } else {
+        this.removeAttribute('aria-label');
+      }
+    }
+  }
+
   override focus() {
-    this.$.expandButton.focus();
+    if (this.disabled) {
+      super.focus();
+    } else {
+      this.$.expandButton.focus();
+    }
   }
 
   focusMenuButton() {
@@ -117,12 +143,18 @@ export class OrganizerListSectionHeaderElement extends
     return this.expanded && !this.disabled;
   }
 
-  protected onExpandButtonKeydown_(e: KeyboardEvent) {
-    if (e.target === this.$.menuButton ||
-        e.composedPath().includes(this.$.menuButton)) {
-      return;
-    }
+  protected getExpandButtonAriaDescription_(): string|null {
+    return this.expanded && !this.disabled ?
+        loadTimeData.getString('sectionNavigationHint') :
+        null;
+  }
 
+  protected getMenuAriaLabel_(): string {
+    return this.title ? loadTimeData.getStringF('sectionOptions', this.title) :
+                        loadTimeData.getString('options');
+  }
+
+  protected onExpandButtonKeydown_(e: KeyboardEvent) {
     const isRtl = isRTL();
     const forwardKey = isRtl ? 'ArrowLeft' : 'ArrowRight';
     const backwardKey = isRtl ? 'ArrowRight' : 'ArrowLeft';
@@ -160,19 +192,6 @@ export class OrganizerListSectionHeaderElement extends
     }
   }
 
-  protected onMenuButtonFocus_() {
-    // Remove the expand button's chevron icon from sequential focus navigation
-    // while the menu button is focused to prevent focus trapping when tabbing
-    // past the last section header.
-    this.$.expandButton.tabIndex = -1;
-  }
-
-  protected onMenuButtonBlur_() {
-    // Restore the expand button's focusability when focus leaves the menu
-    // button.
-    this.$.expandButton.tabIndex = 0;
-  }
-
   protected onMenuButtonKeydown_(e: KeyboardEvent) {
     if (e.key === 'Tab') {
       if (!e.shiftKey) {
@@ -202,6 +221,7 @@ export class OrganizerListSectionHeaderElement extends
 
   protected onMenuButtonClick_(e: Event) {
     e.stopPropagation();
+    chrome.histograms.recordUserAction('OrganizerPanel.OpenSectionMenu');
     this.$.menu.showAt(this.$.menuButton, {
       anchorAlignmentY: AnchorAlignment.AFTER_END,
       noOffset: true,

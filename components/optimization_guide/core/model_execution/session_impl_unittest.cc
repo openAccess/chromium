@@ -35,12 +35,12 @@
 #include "components/optimization_guide/core/model_execution/model_broker_client.h"
 #include "components/optimization_guide/core/model_execution/multimodal_message.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
-#include "components/optimization_guide/core/model_execution/on_device_execution.h"
 #include "components/optimization_guide/core/model_execution/on_device_features.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_access_controller.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_execution_proto_value_utils.h"
 #include "components/optimization_guide/core/model_execution/on_device_model_names.h"
 #include "components/optimization_guide/core/model_execution/on_device_prefs.h"
+#include "components/optimization_guide/core/model_execution/on_device_telemetry_logger.h"
 #include "components/optimization_guide/core/model_execution/performance_class.h"
 #include "components/optimization_guide/core/model_execution/test/fake_model_assets.h"
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
@@ -65,7 +65,6 @@
 #include "components/prefs/testing_pref_service.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/on_device_model/public/cpp/capabilities.h"
-#include "services/on_device_model/public/cpp/features.h"
 #include "services/on_device_model/public/cpp/service_client.h"
 #include "services/on_device_model/public/cpp/test_support/fake_service.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
@@ -78,7 +77,8 @@ namespace {
 
 using ::on_device_model::mojom::LoadModelResult;
 using ::on_device_model::mojom::PerformanceClass;
-using ExecuteModelResult = ::optimization_guide::OnDeviceExecution::Result;
+using ExecuteModelResult =
+    ::optimization_guide::OnDeviceRequestTelemetryLogger::Result;
 
 using ::testing::AllOf;
 using ::testing::Contains;
@@ -1319,6 +1319,47 @@ TEST_F(SessionImplTest, TokenCounts) {
   EXPECT_EQ(response_.input_token_count(), strlen("execute:foo"));
   // +1 accounts for the terminating EOS/End-of-turn token.
   EXPECT_EQ(response_.output_token_count(), strlen("execute:foo max:1024") + 1);
+}
+
+TEST_F(SessionImplTest, EmptyInputContextHasZeroTokens) {
+  Initialize([]() {
+    proto::SolutionConfig config;
+    *config.mutable_feature() = SimpleComposeConfigForTesting();
+    config.mutable_feature()
+        ->mutable_input_config()
+        ->clear_input_context_substitutions();
+    return config;
+  }());
+  // The fake service reports this size for any non-empty input.
+  broker_.settings().set_size_in_tokens(100);
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  auto request = PageUrlRequest("foo");
+  base::test::TestFuture<std::optional<InputSizeInTokens>> size;
+  session->GetInputSizeInTokens(MultimodalMessageReadView(request),
+                                size.GetCallback());
+  ASSERT_TRUE(size.Get().has_value());
+  EXPECT_EQ(size.Get()->input_context, 0u);
+  EXPECT_EQ(size.Get()->execution, 100u);
+  EXPECT_EQ(size.Get()->total(), 100u);
+}
+
+TEST_F(SessionImplTest, InputSizeInTokensCountsContextAndExecution) {
+  Initialize();
+  // The fake service reports this size for any non-empty input.
+  broker_.settings().set_size_in_tokens(100);
+  auto session = CreateSession(SessionConfigParams{});
+  ASSERT_TRUE(session);
+
+  auto request = PageUrlRequest("foo");
+  base::test::TestFuture<std::optional<InputSizeInTokens>> size;
+  session->GetInputSizeInTokens(MultimodalMessageReadView(request),
+                                size.GetCallback());
+  ASSERT_TRUE(size.Get().has_value());
+  EXPECT_EQ(size.Get()->input_context, 100u);
+  EXPECT_EQ(size.Get()->execution, 100u);
+  EXPECT_EQ(size.Get()->total(), 200u);
 }
 
 TEST_F(SessionImplTest, ResponseConstraintOnExecute) {

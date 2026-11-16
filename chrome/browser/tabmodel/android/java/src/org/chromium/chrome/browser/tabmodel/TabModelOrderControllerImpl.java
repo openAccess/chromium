@@ -63,7 +63,9 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
 
         if (type == TabLaunchType.FROM_OMNIBOX_BACKGROUND) {
             position = mTabModelSelector.getModel(newTab.isIncognitoBranded()).getCount();
-        } else if (TabLaunchTypeUtils.shouldOpenAdjacent(type)) {
+        } else if (TabLaunchTypeUtils.shouldOpenAdjacent(type)
+                && (position == TabList.INVALID_TAB_INDEX
+                        || newTab.getParentId() != Tab.INVALID_TAB_ID)) {
             position = determineInsertionIndexIfMaybeAdjacent(type, newTab);
         }
 
@@ -171,9 +173,7 @@ class TabModelOrderControllerImpl implements TabModelOrderController {
                 || isCurrentModelIncognitoBranded != isNewTabIncognitoBranded;
     }
 
-    /**
-     * @return {@code true} If both tabs have the same model type, {@code false} otherwise.
-     */
+    /** Returns whether {@code model} and {@code tab} have the same model type. */
     static boolean sameModelType(TabModel model, Tab tab) {
         return model.isIncognito() == tab.isIncognito();
     }

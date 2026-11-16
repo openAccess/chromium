@@ -12,11 +12,14 @@
 #include <vector>
 
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/scoped_observation_traits.h"
 #include "chrome/browser/ash/guest_os/guest_id.h"
 #include "chromeos/ash/components/dbus/cicerone/cicerone_client.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
+#include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/core/session_manager_observer.h"
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -24,9 +27,10 @@
 #include "services/device/public/mojom/usb_manager.mojom.h"
 #include "services/device/public/mojom/usb_manager_client.mojom.h"
 
-namespace ash {
+class AccountId;
+class Profile;
 
-inline constexpr uint8_t kInvalidUsbPortNumber = 0xff;
+namespace ash {
 
 // List of class codes to handle / not handle.
 // See https://www.usb.org/defined-class-codes for more information.
@@ -110,7 +114,8 @@ class CrosUsbDeviceObserver : public base::CheckedObserver {
 class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
                         public CiceroneClient::Observer,
                         public ConciergeClient::VmObserver,
-                        public disks::DiskMountManager::Observer {
+                        public disks::DiskMountManager::Observer,
+                        public session_manager::SessionManagerObserver {
  public:
   // Used to namespace USB notifications to avoid clashes with WebUsbDetector.
   static std::string MakeNotificationId(const std::string& guid);
@@ -205,6 +210,9 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
       MountError error_code,
       const disks::DiskMountManager::MountPoint& mount_info) override;
 
+  // session_manager::SessionManagerObserver:
+  void OnUserSessionStarted(bool is_primary_user) override;
+
   // Called after USB device access has been checked.
   void OnDeviceChecked(device::mojom::UsbDeviceInfoPtr device,
                        bool hide_notification,
@@ -220,6 +228,13 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
   void OnListAttachedDevices(
       std::vector<device::mojom::UsbDeviceInfoPtr> devices);
 
+  // Detaches the device for `account_id`, the user who started the
+  // operation.
+  void DetachUsbDeviceFromVm(const AccountId& account_id,
+                             const std::string& vm_name,
+                             const std::string& guid,
+                             base::OnceCallback<void(bool success)> callback);
+
   // Attaching a device goes through the flow:
   // AttachUsbDeviceToVm() -> UnmountFilesystems() -> OnUnmountFilesystems()
   //  -> AttachAfterDetach() -> OnAttachUsbDeviceOpened() -> DoVmAttach()
@@ -231,40 +246,47 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
   // ejecting USB drives. A corresponding mount step when detaching from a VM is
   // not necessary as PermissionBroker reattaches the usb-storage drivers,
   // causing the drive to get mounted as usual.
-  void UnmountFilesystems(const guest_os::GuestId& guest_id,
+  void UnmountFilesystems(const AccountId& account_id,
+                          const guest_os::GuestId& guest_id,
                           const std::string& guid,
                           base::OnceCallback<void(bool success)> callback);
 
-  void OnUnmountFilesystems(const guest_os::GuestId& guest_id,
+  void OnUnmountFilesystems(const AccountId& account_id,
+                            const guest_os::GuestId& guest_id,
                             const std::string& guid,
                             base::OnceCallback<void(bool success)> callback,
                             bool unmount_success);
 
   // Devices will be auto-detached if they are attached to another VM.
-  void AttachAfterDetach(const guest_os::GuestId& guest_id,
+  void AttachAfterDetach(const AccountId& account_id,
+                         const guest_os::GuestId& guest_id,
                          const std::string& guid,
                          base::OnceCallback<void(bool success)> callback,
                          bool detach_success);
 
   // Callback for AttachUsbDeviceToVm after opening a file handler.
-  void OnAttachUsbDeviceOpened(const guest_os::GuestId& guest_id,
+  void OnAttachUsbDeviceOpened(const AccountId& account_id,
+                               const guest_os::GuestId& guest_id,
                                device::mojom::UsbDeviceInfoPtr device,
                                base::OnceCallback<void(bool success)> callback,
                                base::File file);
 
-  void DoVmAttach(const guest_os::GuestId& guest_id,
+  void DoVmAttach(const AccountId& account_id,
+                  const guest_os::GuestId& guest_id,
                   device::mojom::UsbDeviceInfoPtr device_info,
                   base::ScopedFD fd,
                   base::OnceCallback<void(bool success)> callback);
 
   // Callbacks for when the USB device state has been updated.
   void OnUsbDeviceAttachFinished(
+      const AccountId& account_id,
       const guest_os::GuestId& guest_id,
       device::mojom::UsbDeviceInfoPtr device_info,
       base::OnceCallback<void(bool success)> callback,
       std::optional<vm_tools::concierge::AttachUsbDeviceResponse> response);
 
   void AttachUsbDeviceToContainer(
+      const AccountId& account_id,
       const guest_os::GuestId& guest_id,
       uint8_t guest_port,
       const std::string& guid,
@@ -277,6 +299,7 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
       std::optional<vm_tools::cicerone::AttachUsbToContainerResponse> response);
 
   void DetachUsbDeviceFromContainer(
+      const AccountId& account_id,
       const std::string& vm_name,
       uint8_t guest_port,
       const std::string& guid,
@@ -290,6 +313,7 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
           response);
 
   void ContainerAttachAfterDetach(
+      const AccountId& account_id,
       const guest_os::GuestId& guest_id,
       uint8_t guest_port,
       const std::string& guid,
@@ -303,7 +327,7 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
       std::optional<vm_tools::concierge::SuccessFailureResponse> response);
 
   // Returns true when a device should show a notification when attached.
-  bool ShouldShowNotification(const UsbDevice& device);
+  bool ShouldShowNotification(Profile& profile, const UsbDevice& device);
 
   void RelinquishDeviceClaim(const std::string& guid);
 
@@ -332,6 +356,10 @@ class CrosUsbDetector : public device::mojom::UsbDeviceManagerClient,
   std::map<std::string, DeviceClaim> devices_claimed_;
 
   base::ObserverList<CrosUsbDeviceObserver> usb_device_observers_;
+
+  base::ScopedObservation<session_manager::SessionManager,
+                          session_manager::SessionManagerObserver>
+      session_manager_observation_{this};
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate its weak pointers before any other members are destroyed.

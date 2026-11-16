@@ -104,7 +104,9 @@ import java.lang.annotation.RetentionPolicy;
     FeatureConstants.MENU_ADD_TO_GROUP,
     FeatureConstants.MOST_VISITED_TILES_CUSTOMIZATION_PIN,
     FeatureConstants.NEW_TAB_PAGE_THEME_CUSTOMIZATION_FEATURE,
+    FeatureConstants.NEW_TAB_PAGE_THEME_CUSTOMIZATION_MAGIC_STACK_FEATURE,
     FeatureConstants.NOTIFICATION_PERMISSION_PROMO_FEATURE,
+    FeatureConstants.NTP_FUSEBOX_ANIMATION_FEATURE,
     FeatureConstants.PAGE_INFO_FEATURE,
     FeatureConstants.PAGE_INFO_STORE_INFO_FEATURE,
     FeatureConstants.PAGE_SUMMARY_PDF_MENU_FEATURE,
@@ -395,7 +397,14 @@ public @interface FeatureConstants {
     /** An IPH feature to inform users about the NTP theme customization options. */
     String NEW_TAB_PAGE_THEME_CUSTOMIZATION_FEATURE = "IPH_NewTabPageThemeCustomization";
 
+    /** An IPH feature to track the NTP theme customization promo card in the Magic Stack. */
+    String NEW_TAB_PAGE_THEME_CUSTOMIZATION_MAGIC_STACK_FEATURE =
+            "IPH_NewTabPageThemeCustomizationMagicStack";
+
     String NOTIFICATION_PERMISSION_PROMO_FEATURE = "IPH_NotificationPermissionPromo";
+
+    /** An IPH feature to animate the NTP search box (+) button and hint text. */
+    String NTP_FUSEBOX_ANIMATION_FEATURE = "IPH_NtpFuseboxAnimation";
 
     /** An IPH feature to inform about changing permissions in PageInfo. */
     String PAGE_INFO_FEATURE = "IPH_PageInfo";

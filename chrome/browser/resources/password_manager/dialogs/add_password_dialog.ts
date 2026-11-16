@@ -17,10 +17,11 @@ import {assert} from 'chrome://resources/js/assert.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
+import type {DomainInfo} from '../password_manager.mojom-webui.js';
 import {PasswordManagerImpl} from '../password_manager_proxy.js';
 import {Page, Router} from '../router.js';
-import {ShowPasswordMixinLit} from '../show_password_mixin_lit.js';
-import {UserUtilMixinLit} from '../user_utils_mixin_lit.js';
+import {ShowPasswordMixin} from '../show_password_mixin.js';
+import {UserUtilMixin} from '../user_utils_mixin.js';
 
 import {getCss} from './add_password_dialog.css.js';
 import {getHtml} from './add_password_dialog.html.js';
@@ -106,7 +107,7 @@ export const PASSWORD_NOTE_WARNING_CHARACTER_COUNT = 900;
 export const PASSWORD_NOTE_MAX_CHARACTER_COUNT = 1000;
 
 const AddPasswordDialogElementBase =
-    UserUtilMixinLit(ShowPasswordMixinLit(I18nMixinLit(CrLitElement)));
+    UserUtilMixin(ShowPasswordMixin(I18nMixinLit(CrLitElement)));
 
 function getUsernamesByOrigin(
     passwords: chrome.passwordsPrivate.PasswordUiEntry[]):
@@ -143,7 +144,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
       username_: {type: String},
       password_: {type: String},
       note_: {type: String},
-      urlCollection_: {type: Object},
+      domainInfo_: {type: Object},
       usernamesBySignonRealm_: {type: Object},
 
       /**
@@ -161,19 +162,18 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
   protected accessor username_: string = '';
   protected accessor password_: string = '';
   protected accessor note_: string = '';
+  private accessor domainInfo_: DomainInfo|null = null;
   private accessor usernamesBySignonRealm_: Map<string, Set<string>> =
       new Map();
   protected accessor websiteErrorMessage_: string|null = null;
   protected accessor usernameErrorMessage_: string|null = null;
-  protected accessor canAddPassword_: boolean = false;
   protected accessor isPasswordInvalid_: boolean = false;
-  private accessor urlCollection_: chrome.passwordsPrivate.UrlCollection|null =
-      null;
+  protected accessor canAddPassword_: boolean = false;
+
   protected readonly storeOptionAccountValue_: string =
       chrome.passwordsPrivate.PasswordStoreSet.ACCOUNT;
   protected readonly storeOptionDeviceValue_: string =
       chrome.passwordsPrivate.PasswordStoreSet.DEVICE;
-
   private setSavedPasswordsListener_: (
       (entries: chrome.passwordsPrivate.PasswordUiEntry[]) => void)|null = null;
 
@@ -204,7 +204,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
 
     const changedPrivateProperties =
         changedProperties as Map<PropertyKey, unknown>;
-    if (changedPrivateProperties.has('urlCollection_') ||
+    if (changedPrivateProperties.has('domainInfo_') ||
         changedPrivateProperties.has('username_') ||
         changedPrivateProperties.has('usernamesBySignonRealm_')) {
       this.usernameErrorMessage_ = this.computeUsernameErrorMessage_();
@@ -212,7 +212,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
 
     if (changedPrivateProperties.has('websiteErrorMessage_') ||
         changedPrivateProperties.has('website_') ||
-        changedPrivateProperties.has('urlCollection_') ||
+        changedPrivateProperties.has('domainInfo_') ||
         changedPrivateProperties.has('username_') ||
         changedPrivateProperties.has('usernamesBySignonRealm_') ||
         changedPrivateProperties.has('password_') ||
@@ -270,13 +270,12 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
       return;
     }
     PasswordManagerImpl.getInstance()
-        .getUrlCollection(this.website_)
-        .then(urlCollection => {
-          this.urlCollection_ = urlCollection;
+        .getDomainInfo(this.website_)
+        .then(domainInfo => {
+          this.domainInfo_ = domainInfo;
           this.websiteErrorMessage_ =
-              !urlCollection ? this.i18n('notValidWebsite') : null;
-        })
-        .catch(() => this.websiteErrorMessage_ = this.i18n('notValidWebsite'));
+              !domainInfo ? this.i18n('notValidWebsite') : null;
+        });
   }
 
   protected onWebsiteInputBlur_() {
@@ -297,7 +296,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
   }
 
   private computeUsernameErrorMessage_(): string|null {
-    const signonRealm = this.urlCollection_?.signonRealm;
+    const signonRealm = this.domainInfo_?.signonRealm;
     if (!signonRealm) {
       return null;
     }
@@ -318,7 +317,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
     this.isPasswordInvalid_ = this.password_.length === 0;
   }
 
-  protected onPasswordBlur_() {
+  protected onPasswordInputBlur_() {
     this.onPasswordInput_();
   }
 
@@ -358,9 +357,9 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
     return true;
   }
 
-  protected onAddClick_() {
+  protected onAddButtonClick_() {
     assert(this.computeCanAddPassword_());
-    assert(this.urlCollection_);
+    assert(this.domainInfo_);
     recordAddCredentialInteraction(
         AddCredentialFromSettingsUserInteractions.CREDENTIAL_ADDED);
     const useAccountStore = this.isAccountStoreUser &&
@@ -371,7 +370,7 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
 
     PasswordManagerImpl.getInstance()
         .addPassword({
-          url: this.urlCollection_.signonRealm,
+          url: this.domainInfo_.signonRealm,
           username: this.username_,
           password: this.password_,
           note: this.note_,
@@ -384,19 +383,19 @@ export class AddPasswordDialogElement extends AddPasswordDialogElementBase {
   }
 
   protected getViewExistingPasswordAriaDescription_(): string {
-    return this.urlCollection_ ?
+    return this.domainInfo_ ?
         this.i18n(
             'viewExistingPasswordAriaDescription', this.username_,
-            this.urlCollection_.shown) :
+            this.domainInfo_.humanReadableName) :
         '';
   }
 
-  protected onViewExistingPasswordClick_(e: Event) {
+  protected onViewExistingPasswordLinkClick_(e: Event) {
     recordAddCredentialInteraction(
         AddCredentialFromSettingsUserInteractions.DUPLICATE_CREDENTIAL_VIEWED);
     e.preventDefault();
     Router.getInstance().navigateTo(
-        Page.PASSWORD_DETAILS, this.urlCollection_?.shown);
+        Page.PASSWORD_DETAILS, this.domainInfo_?.humanReadableName);
     this.closeDialog_();
   }
 }

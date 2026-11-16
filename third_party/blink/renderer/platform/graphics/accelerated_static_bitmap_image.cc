@@ -25,6 +25,7 @@
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/web_graphics_context_3d_provider.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_image_provider.h"
+#include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
@@ -294,8 +295,12 @@ AcceleratedStaticBitmapImage::~AcceleratedStaticBitmapImage() {
 scoped_refptr<StaticBitmapImage>
 AcceleratedStaticBitmapImage::MakeUnaccelerated() {
   CreateImageFromMailboxIfNeeded();
-  return UnacceleratedStaticBitmapImage::Create(
+  auto result = UnacceleratedStaticBitmapImage::Create(
       PaintImageForCurrentFrame().GetSwSkImage(), orientation_, hdr_metadata_);
+  if (result) {
+    result->SetOriginClean(OriginClean());
+  }
+  return result;
 }
 
 bool AcceleratedStaticBitmapImage::CopyToTexture(
@@ -361,6 +366,7 @@ PaintImage AcceleratedStaticBitmapImage::PaintImageForCurrentFrame() {
       .set_texture_backing(texture_backing_, paint_image_content_id_)
       .set_completion_state(PaintImage::CompletionState::kDone)
       .set_hdr_metadata(hdr_metadata_)
+      .set_is_read_back_disallowed(!OriginClean())
       .TakePaintImage();
 }
 

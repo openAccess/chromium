@@ -193,13 +193,17 @@ class ContextualSearchboxHandler
 
   // Returns recent tabs from the tab list associated with
   // `browser_window_interface` sorted by recency. If `max_tab_suggestions` is
-  // set, the result is capped to that number of tabs. Tabs whose `SessionID` is
-  // in `always_include_tab_ids` are included even if they are internal pages
-  // (e.g. an NTP tab attached via Lens Overlay).
+  // set, the result is capped to that number of tabs. If
+  // `exclude_page_context_ineligible_tabs` is true, tabs known to be
+  // page-context-ineligible (`kNotEligible`) are excluded. Tabs whose
+  // `SessionID` is in `always_include_tab_ids` are included even if they are
+  // internal or page-context-ineligible pages (e.g. an NTP tab attached via
+  // Lens Overlay).
   static std::vector<searchbox::mojom::TabInfoPtr> GetRecentTabInfos(
       BrowserWindowInterface* browser_window_interface,
       std::optional<int> max_tab_suggestions = std::nullopt,
-      const base::flat_set<SessionID>& always_include_tab_ids = {});
+      const base::flat_set<SessionID>& always_include_tab_ids = {},
+      bool exclude_page_context_ineligible_tabs = false);
 
   void GetRecentTabs(GetRecentTabsCallback callback) override;
   void GetTabPreview(int32_t tab_id, GetTabPreviewCallback callback) override;
@@ -381,6 +385,18 @@ class ContextualSearchboxHandler
 
   void set_screenshare_delegate_for_testing(
       ContextualSearchboxScreenshareController::Delegate* screenshare_delegate);
+
+  // Turns on dynamic AIM fulfillment for each input state model this handler
+  // uses. Called by the NTP and Omnibox popup when their feature is enabled.
+  void OptInToDynamicAimFulfillment();
+
+  // Returns the input state model that a handler in `web_contents` uses for
+  // `session_handle`, creating it if needed. For the Omnibox popup, that's the
+  // model of the active tab.
+  static base::WeakPtr<contextual_search::InputStateModel>
+  GetOrCreateInputStateModelForSession(
+      content::WebContents* web_contents,
+      contextual_search::ContextualSearchSessionHandle& session_handle);
 
   // Map of context tokens (frontend) to tab IDs (backend);
   // used for determining which tabs to underline based on frontend changes, and
@@ -588,6 +604,9 @@ class ContextualSearchboxHandler
 
   std::unique_ptr<ContextualSearchboxTabFaviconHelper> tab_favicon_helper_;
   base::CallbackListSubscription aim_eligibility_subscription_;
+
+  // Whether `OptInToDynamicAimFulfillment()` was called.
+  bool opted_in_to_dynamic_aim_fulfillment_ = false;
 
  protected:
   std::optional<bool> smart_tab_sharing_active_for_thread_;

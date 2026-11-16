@@ -12,7 +12,6 @@ import androidx.annotation.IntDef;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeFeatures;
 
 import java.lang.annotation.Retention;
@@ -105,16 +104,20 @@ public class NewTabPageUtils {
 
     /** Returns the {@link PaddingStyle} for NTP Aurora. */
     public static @PaddingStyle int getPaddingStyleForAurora() {
-        return ChromeFeatureList.getParamValueAsInt(
-                ChromeFeatureList.NTP_AURORA, ChromeFeatureList.NTP_AURORA_PADDING_STYLE);
+        return ChromeFeatures.NtpAuroraPaddingStyle.getValue();
     }
 
-    /** Returns the space in pixels for NTP sections based on the Aurora padding style. */
+    /**
+     * Returns the space in pixels between NTP sections based on the Aurora padding style. In the
+     * NTP Aurora V2 layouts without the composeplate row, this includes extra space that keeps the
+     * feed aligned, see {@link #shouldKeepFeedAlignedWithoutComposeplate()}.
+     */
     public static int getNtpSectionPaddingPx(Resources resources) {
         if (NewTabPageUtils.getPaddingStyleForAurora() == PaddingStyle.DEFAULT) {
             return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin);
         } else {
-            return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small);
+            return resources.getDimensionPixelSize(R.dimen.ntp_section_top_margin_small)
+                    + getNtpSectionPaddingDeltaPx(resources);
         }
     }
 
@@ -130,10 +133,7 @@ public class NewTabPageUtils {
 
     /** Returns whether the Aurora layout with updated button colors is enabled. */
     public static boolean isNtpAuroraButtonColorEnabled() {
-        return isNtpAuroraEnabled()
-                && ChromeFeatureList.getParamValueAsBoolean(
-                        ChromeFeatureList.NTP_AURORA,
-                        ChromeFeatureList.NTP_AURORA_CHANGE_BUTTON_COLOR);
+        return isNtpAuroraEnabled() && ChromeFeatures.NtpAuroraChangeButtonColor.getValue();
     }
 
     /**
@@ -143,8 +143,7 @@ public class NewTabPageUtils {
     public static @ActionChips int getMerchandisingChipsType() {
         if (!isNtpAuroraV2Enabled()) return ActionChips.DEFAULT;
 
-        return ChromeFeatureList.getParamValueAsInt(
-                ChromeFeatureList.NTP_AURORA_V2, ChromeFeatureList.NTP_AURORA_V2_ACTION_CHIPS);
+        return ChromeFeatures.NtpAuroraV2ActionChips.getValue();
     }
 
     /**
@@ -161,8 +160,7 @@ public class NewTabPageUtils {
         if (!isNtpAuroraV2Enabled()) {
             return LayoutType.DEFAULT;
         }
-        return ChromeFeatureList.getParamValueAsInt(
-                ChromeFeatureList.NTP_AURORA_V2, ChromeFeatureList.NTP_AURORA_V2_LAYOUT_TYPE);
+        return ChromeFeatures.NtpAuroraV2LayoutType.getValue();
     }
 
     /** Returns whether the beside-MVT layout is enabled. */
@@ -182,5 +180,72 @@ public class NewTabPageUtils {
     public static boolean isComposeplateRemovedInAuroraV2() {
         @LayoutType int layoutType = getLayoutTypeForAuroraV2();
         return layoutType == LayoutType.REMOVE || layoutType == LayoutType.INSIDE_MVT;
+    }
+
+    /**
+     * Returns the extra top margin in pixels for the logo or doodle, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getLogoTopMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_logo_top_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_logo_top_margin_delta_large);
+    }
+
+    /**
+     * Returns the extra bottom margin in pixels for the logo, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getLogoBottomMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_logo_bottom_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(
+                R.dimen.ntp_aurora_v2_logo_bottom_margin_delta_large);
+    }
+
+    /**
+     * Returns the extra top margin in pixels for the MVT container, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    public static int getMvtTopMarginDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        if (getPaddingStyleForAurora() == PaddingStyle.SMALL) {
+            return resources.getDimensionPixelSize(
+                    R.dimen.ntp_aurora_v2_mvt_top_margin_delta_small);
+        }
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_mvt_top_margin_delta_large);
+    }
+
+    /**
+     * Returns whether the feed should be kept at the same position as in the default layout, even
+     * though the non-default {@link LayoutType}s of NTP Aurora V2 don't show the standalone
+     * composeplate row. When true, the row's height is added back as extra spacing between the
+     * other sections. The spacing is designed on top of the NTP Aurora padding styles, so it is
+     * skipped for {@link PaddingStyle#DEFAULT}.
+     */
+    private static boolean shouldKeepFeedAlignedWithoutComposeplate() {
+        return isNtpAuroraEnabled()
+                && getPaddingStyleForAurora() != PaddingStyle.DEFAULT
+                && getLayoutTypeForAuroraV2() != LayoutType.DEFAULT;
+    }
+
+    /**
+     * Returns the extra space in pixels between NTP sections, which applies both between the MVT
+     * and the magic stack and between the last section and the feed, or 0 if {@link
+     * #shouldKeepFeedAlignedWithoutComposeplate()} is false.
+     */
+    private static int getNtpSectionPaddingDeltaPx(Resources resources) {
+        if (!shouldKeepFeedAlignedWithoutComposeplate()) return 0;
+
+        return resources.getDimensionPixelSize(R.dimen.ntp_aurora_v2_section_padding_delta);
     }
 }

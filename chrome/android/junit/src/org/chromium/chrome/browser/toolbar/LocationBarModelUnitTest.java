@@ -6,6 +6,7 @@ package org.chromium.chrome.browser.toolbar;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -20,6 +21,7 @@ import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.res.Resources;
+import android.graphics.Color;
 import android.view.ContextThemeWrapper;
 
 import androidx.annotation.DrawableRes;
@@ -54,6 +56,8 @@ import org.chromium.chrome.browser.pdf.PdfUtils.PdfPageType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.theme.ThemeUtils;
+import org.chromium.chrome.browser.toolbar.LocationBarModel.NativeLocationBarModelAndroid;
+import org.chromium.chrome.browser.toolbar.LocationBarModel.OfflineStatus;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.omnibox.OmniboxFeatureList;
@@ -69,8 +73,8 @@ import org.chromium.url.GURL;
 @RunWith(BaseRobolectricTestRunner.class)
 @DisableFeatures({ChromeFeatureList.HTTPS_FIRST_DIALOG_UI})
 public class LocationBarModelUnitTest {
-    private static final LocationBarModel.OfflineStatus OFFLINE_STATUS =
-            new LocationBarModel.OfflineStatus() {
+    private static final OfflineStatus OFFLINE_STATUS =
+            new OfflineStatus() {
                 @Override
                 public boolean isShowingTrustedOfflinePage(Tab tab) {
                     return false;
@@ -94,11 +98,7 @@ public class LocationBarModelUnitTest {
 
     @Mock private LocationBarDataProvider.Observer mLocationBarDataObserver;
     @Mock private LocationBarModel.Natives mLocationBarModelJni;
-
-    @Mock
-    private JniUniquePtr<LocationBarModel.NativeLocationBarModelAndroid>
-            mNativeLocationBarModelAndroid;
-
+    @Mock private JniUniquePtr<NativeLocationBarModelAndroid> mNativeLocationBarModelAndroid;
     @Mock private ChromeAutocompleteSchemeClassifier.Natives mChromeAutocompleteSchemeClassifierJni;
     @Mock private OmniboxUrlEmphasizerJni mOmniboxUrlEmphasizerJni;
 
@@ -226,6 +226,22 @@ public class LocationBarModelUnitTest {
 
         mLocationBarModel.setTab(null, mNonPrimaryOtrProfileMock);
         assertEquals(mNonPrimaryOtrProfileMock, mLocationBarModel.getProfile());
+    }
+
+    @Test
+    public void setTab_NullTabAndNullProfile() {
+        when(mPrimaryOtrProfileMock.isIncognitoBranded()).thenReturn(true);
+        mLocationBarModel.setTab(mIncognitoTabMock, mPrimaryOtrProfileMock);
+        mLocationBarModel.addObserver(mLocationBarDataObserver);
+
+        mLocationBarModel.setTab(null, null);
+
+        assertNull(mLocationBarModel.getTab());
+        assertNull(mLocationBarModel.getProfile());
+        assertTrue(mLocationBarModel.isOffTheRecord());
+        assertTrue(mLocationBarModel.isIncognitoBranded());
+        verify(mLocationBarDataObserver).onTabChanged(mIncognitoTabMock);
+        verify(mLocationBarDataObserver).onUrlChanged(true);
     }
 
     @Test
@@ -862,13 +878,13 @@ public class LocationBarModelUnitTest {
         assertTrue(mLocationBarModel.shouldEmphasizeHttpsScheme());
 
         // Custom brand color on regular web page -> do not emphasize HTTPS scheme.
-        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        mLocationBarModel.setPrimaryColor(Color.RED);
         assertTrue(mLocationBarModel.isUsingBrandColor());
         assertFalse(mLocationBarModel.shouldEmphasizeHttpsScheme());
 
         // Native page ignores brand color -> emphasize HTTPS scheme.
         doReturn(true).when(mRegularTabMock).isNativePage();
-        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        mLocationBarModel.setPrimaryColor(Color.RED);
         assertFalse(mLocationBarModel.isUsingBrandColor());
         assertTrue(mLocationBarModel.shouldEmphasizeHttpsScheme());
 
@@ -877,7 +893,7 @@ public class LocationBarModelUnitTest {
         doReturn(true).when(mIncognitoTabMock).isInitialized();
         doReturn(mUserDataHost).when(mIncognitoTabMock).getUserDataHost();
         mLocationBarModel.setTab(mIncognitoTabMock, mPrimaryOtrProfileMock);
-        mLocationBarModel.setPrimaryColor(android.graphics.Color.RED);
+        mLocationBarModel.setPrimaryColor(Color.RED);
         assertFalse(mLocationBarModel.isUsingBrandColor());
         assertFalse(mLocationBarModel.shouldEmphasizeHttpsScheme());
     }

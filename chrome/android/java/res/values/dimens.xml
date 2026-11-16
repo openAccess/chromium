@@ -136,7 +136,6 @@ found in the LICENSE file.
     <dimen name="fre_loading_spinner_size">48dp</dimen>
     <dimen name="fre_policy_privacy_disclaimer_icon_size">18dp</dimen>
     <dimen name="fre_policy_privacy_disclaimer_icon_padding">8dp</dimen>
-    <dimen name="fre_illustration_size">120dp</dimen>
     <dimen name="fre_spacing">24dp</dimen>
     <dimen name="fre_illustration_to_content_margin">48dp</dimen>
     <dimen name="fre_subtitle_top_padding">8dp</dimen>
@@ -169,6 +168,15 @@ found in the LICENSE file.
     <dimen name="mvt_container_bottom_padding_small">16dp</dimen>
     <dimen name="mvt_container_top_margin_medium">24dp</dimen>
     <dimen name="mvt_container_top_margin_large">32dp</dimen>
+    <!-- TODO(crbug.com/549681251): Once NTP Aurora V2 is launched, move these spacings into the
+         layout XML and remove the code that adds them. -->
+    <dimen name="ntp_aurora_v2_logo_top_margin_delta_small">44dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_top_margin_delta_large">28dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_bottom_margin_delta_small">0dp</dimen>
+    <dimen name="ntp_aurora_v2_logo_bottom_margin_delta_large">8dp</dimen>
+    <dimen name="ntp_aurora_v2_mvt_top_margin_delta_small">4dp</dimen>
+    <dimen name="ntp_aurora_v2_mvt_top_margin_delta_large">12dp</dimen>
+    <dimen name="ntp_aurora_v2_section_padding_delta">4dp</dimen>
     <dimen name="tile_layout_no_logo_top_margin">16dp</dimen>
 
     <dimen name="content_suggestions_card_bottom_margin">12dp</dimen>
@@ -236,7 +244,6 @@ found in the LICENSE file.
     <dimen name="improved_bookmark_row_horizontal_margin">10dp</dimen>
     <dimen name="improved_bookmark_row_horizontal_padding">6dp</dimen>
     <dimen name="improved_bookmark_row_padding_desktop">12dp</dimen>
-    <dimen name="improved_bookmark_row_horizontal_negative_margin">-10dp</dimen>
     <dimen name="improved_bookmark_row_vertical_margin">1dp</dimen>
     <dimen name="shopping_chip_padding">8dp</dimen>
 
@@ -419,6 +426,8 @@ found in the LICENSE file.
     <dimen name="settings_search_ui_bottom_margin">12dp</dimen>
     <dimen name="settings_search_icon_padding">8dp</dimen>
     <dimen name="settings_search_icon_margin">8dp</dimen>
+    <dimen name="settings_row_icon_size">40dp</dimen>
+    <dimen name="settings_row_icon_glyph_size">24dp</dimen>
     <dimen name="settings_detailed_title_padding">10dp</dimen>
     <dimen name="settings_detailed_title_height">48dp</dimen>
     <dimen name="settings_detailed_title_start_margin">16dp</dimen>

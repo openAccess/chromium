@@ -10,7 +10,10 @@ source_set("public") {
     "public/audio_envelope.h",
     "public/make_conversation.h",
   ]
-  sources = [ "public/audio_envelope.cc" ]
+  sources = [
+    "public/audio_controller.cc",
+    "public/audio_envelope.cc",
+  ]
   public_deps = [
     "//base",
     "//components/actor/public/mojom:mojo_bindings",
@@ -46,6 +49,8 @@ source_set("impl") {
     "conversation_impl.cc",
     "conversation_impl.h",
     "make_conversation.cc",
+    "playback_status_reporter.cc",
+    "playback_status_reporter.h",
     "speaker_tracker.cc",
     "speaker_tracker.h",
   ]
@@ -72,6 +77,7 @@ source_set("unit_tests") {
   sources = [
     "audio_controller_impl_unittest.cc",
     "conversation_impl_unittest.cc",
+    "playback_status_reporter_unittest.cc",
   ]
   deps = [
     ":app",
@@ -122,6 +128,7 @@ if (!is_android) {
       "//chrome/browser/profiles:profile",
       "//chrome/browser/ttc/core",
       "//chrome/browser/ttc/core:impl",
+      "//chrome/test/base:chrome_test_utils",
       "//components/keyed_service/core",
       "//components/optimization_guide/core",
       "//net:test_support",
@@ -134,6 +141,7 @@ if (!is_android) {
     defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
     sources = [
       "audio_controller_browsertest.cc",
+      "page_context_protocol_browsertest.cc",
       "protocol_browsertest.cc",
       "speaker_state_browsertest.cc",
     ]
@@ -142,16 +150,26 @@ if (!is_android) {
       ":browser_test_support",
       ":impl",
       "//base",
+      "//base/test:test_support",
+      "//chrome/browser/actor",
+      "//chrome/browser/history",
       "//chrome/browser/optimization_guide:test_support",
+      "//chrome/browser/profiles:profile",
       "//chrome/browser/ttc/core",
       "//chrome/browser/ttc/core:impl",
       "//chrome/test:test_support",
+      "//components/actor/core",
+      "//components/history/core/browser",
+      "//components/keyed_service/core",
       "//components/optimization_guide/proto:optimization_guide_proto",
       "//components/ttc/app",
-      "//content/test:browsertest_support",
+      "//content/public/browser",
       "//content/test:test_support",
+      "//net:test_support",
       "//testing/gmock",
       "//testing/gtest",
+      "//third_party/protobuf:protobuf_lite",
+      "//url",
     ]
   }
 }

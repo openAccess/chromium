@@ -28,6 +28,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.LayerTitleCache;
 import org.chromium.chrome.browser.compositor.layouts.components.TintedCompositorButton;
 import org.chromium.chrome.browser.compositor.layouts.components.TintedCompositorTextButton;
+import org.chromium.chrome.browser.compositor.overlays.strip.NtbWebUiCoordinator;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutGroupTitle;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelper;
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutHelperManager;
@@ -36,6 +37,7 @@ import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutTrailing
 import org.chromium.chrome.browser.compositor.overlays.strip.StripLayoutUtils;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneLayer;
 import org.chromium.chrome.browser.layouts.scene_layer.SceneOverlayLayer;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.TabId;
 import org.chromium.chrome.browser.tasks.tab_management.TabUiThemeUtil;
 import org.chromium.components.tab_groups.TabGroupColorId;
@@ -90,6 +92,17 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
 
     public static void setTestFlag(boolean testFlag) {
         sTestFlag = testFlag;
+    }
+
+    /**
+     * Registers this window's profile with the per-profile window count used to partition the new
+     * tab button first-paint metric. Only called when the native new tab button is used.
+     *
+     * @param profile The {@link Profile} of the window's current tab model.
+     */
+    public void setProfile(Profile profile) {
+        if (mNativePtr == null) return;
+        TabStripSceneLayerJni.get().setProfile(mNativePtr, profile);
     }
 
     @Override
@@ -207,8 +220,9 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
                         topPaddingPx);
 
         TintedCompositorButton newTabButton = layoutHelper.getNewTabButton();
-        long ntbWebUiHost = layoutHelper.getNtbWebUiNativePtr();
-        if (ntbWebUiHost != 0) {
+        JniPtr<NtbWebUiCoordinator.NativeTabStripNtbWebUiHost> ntbWebUiHost =
+                layoutHelper.getNtbWebUiNativePtr();
+        if (ntbWebUiHost != null) {
             RectF touchTarget = newTabButton.getTouchTargetBounds();
             // touchTarget is relative to the ControlContainer (where touchTarget.top includes
             // topPadding via setTouchTargetInsets), whereas updateNtbWebUi accepts coordinates
@@ -555,6 +569,9 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
                 float tabUnderlineBottomMargin,
                 long activityCreationUptimeMs);
 
+        void setProfile(
+                JniPtr<NativeTabStripSceneLayer> self, @JniType("Profile*") Profile profile);
+
         void beginBuildingFrame(
                 JniPtr<NativeTabStripSceneLayer> self,
                 boolean visible,
@@ -595,7 +612,7 @@ public class TabStripSceneLayer extends SceneOverlayLayer {
 
         void updateNtbWebUi(
                 JniPtr<NativeTabStripSceneLayer> self,
-                long nativeTabStripNtbWebUiHost,
+                JniPtr<NtbWebUiCoordinator.NativeTabStripNtbWebUiHost> host,
                 float x,
                 float y,
                 float width,

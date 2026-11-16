@@ -28,6 +28,7 @@
 #include "device/vr/openxr/openxr_util.h"
 #include "device/vr/openxr/openxr_view_configuration.h"
 #include "device/vr/public/cpp/features.h"
+#include "device/vr/public/cpp/xr_session_feature_set.h"
 #include "device/vr/public/mojom/xr_session.mojom.h"
 #include "gpu/GLES2/gl2extchromium.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
@@ -147,6 +148,7 @@ void OpenXrApiWrapper::Reset() {
   scene_understanding_manager_.reset();
   unbounded_space_provider_.reset();
   visibility_mask_handler_.reset();
+  frame_rate_handler_.reset();
   unbounded_space_ = XR_NULL_HANDLE;
   local_space_ = XR_NULL_HANDLE;
   stage_space_ = XR_NULL_HANDLE;
@@ -157,7 +159,7 @@ void OpenXrApiWrapper::Reset() {
   bounds_provider_.reset();
   system_ = XR_NULL_SYSTEM_ID;
   instance_ = XR_NULL_HANDLE;
-  enabled_features_.clear();
+  enabled_features_.Clear();
   graphics_binding_ = nullptr;
 
   primary_view_config_ = OpenXrViewConfiguration();
@@ -299,7 +301,7 @@ bool OpenXrApiWrapper::HasFrameState() const {
 
 bool OpenXrApiWrapper::IsFeatureEnabled(
     device::mojom::XRSessionFeature feature) const {
-  return enabled_features_.contains(feature);
+  return enabled_features_.Has(feature);
 }
 
 XrResult OpenXrApiWrapper::InitializeViewConfig(
@@ -450,10 +452,14 @@ OpenXrDepthSensor* OpenXrApiWrapper::GetDepthSensor() {
   return depth_sensor_.get();
 }
 
+OpenXrFrameRateHandlerFb* OpenXrApiWrapper::GetFrameRateHandler() {
+  return frame_rate_handler_.get();
+}
+
 XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     const OpenXrExtensionHelper& extension_helper) {
   CHECK(session_options_);
-  enabled_features_.clear();
+  enabled_features_.Clear();
 
   // First do some preliminary filtering to build a list of features we can
   // theoretically support based on the requested mode and enabled extensions.
@@ -478,15 +484,17 @@ XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     return XR_ERROR_INITIALIZATION_FAILED;
   }
 
-  std::unordered_set<mojom::XRSessionFeature> requested_features;
-  requested_features.insert(session_options_->required_features.begin(),
-                            session_options_->required_features.end());
-  std::ranges::copy_if(
-      session_options_->optional_features,
-      std::inserter(requested_features, requested_features.begin()),
-      enable_function);
+  XRSessionFeatureSet requested_features;
+  for (mojom::XRSessionFeature feature : session_options_->required_features) {
+    requested_features.Put(feature);
+  }
+  for (mojom::XRSessionFeature feature : session_options_->optional_features) {
+    if (enable_function(feature)) {
+      requested_features.Put(feature);
+    }
+  }
 
-  for (const auto& feature : requested_features) {
+  for (mojom::XRSessionFeature feature : requested_features) {
     bool is_enabled = false;
     bool is_required =
         std::ranges::contains(session_options_->required_features, feature);
@@ -622,7 +630,7 @@ XrResult OpenXrApiWrapper::EnableSupportedFeatures(
     DVLOG(1) << __func__ << " feature=" << feature
              << " is_enabled=" << is_enabled << " is_required=" << is_required;
     if (is_enabled) {
-      enabled_features_.insert(feature);
+      enabled_features_.Put(feature);
     } else if (is_required) {  // Not enabled but required
       return XR_ERROR_INITIALIZATION_FAILED;
     }
@@ -730,6 +738,9 @@ XrResult OpenXrApiWrapper::InitSession(
     visibility_mask_handler_ = std::make_unique<OpenXrVisibilityMaskHandler>(
         extension_helper, session_);
   }
+
+  frame_rate_handler_ =
+      OpenXrFrameRateHandlerFb::Create(extension_helper, session_);
 
   EnsureEventPolling();
 
@@ -1039,8 +1050,12 @@ XrResult OpenXrApiWrapper::BeginSession() {
   }
 
   XrResult xr_result = xrBeginSession(session_, &session_begin_info);
-  if (XR_SUCCEEDED(xr_result))
+  if (XR_SUCCEEDED(xr_result)) {
     session_running_ = true;
+    if (frame_rate_handler_) {
+      frame_rate_handler_->OnSessionBegin();
+    }
+  }
 
   // Only the first xrBeginSession() starts the WebXR session. Later ones
   // resume it after the runtime stopped it.
@@ -1365,8 +1380,7 @@ mojom::XRViewPtr OpenXrApiWrapper::CreateView(
   return view;
 }
 
-const std::unordered_set<mojom::XRSessionFeature>&
-OpenXrApiWrapper::GetEnabledFeatures() const {
+XRSessionFeatureSet OpenXrApiWrapper::GetEnabledFeatures() const {
   return enabled_features_;
 }
 
@@ -1667,6 +1681,13 @@ XrResult OpenXrApiWrapper::ProcessEvents() {
       }
       if (visibility_mask_handler_) {
         visibility_mask_handler_->OnVisibilityMaskChanged(*mask_changed_event);
+      }
+    } else if (event_data.type ==
+               XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB) {
+      if (frame_rate_handler_) {
+        frame_rate_handler_->OnDisplayRefreshRateChanged(
+            *reinterpret_cast<XrEventDataDisplayRefreshRateChangedFB*>(
+                &event_data));
       }
     } else {
       DVLOG(1) << __func__ << " Unhandled event type: " << event_data.type;

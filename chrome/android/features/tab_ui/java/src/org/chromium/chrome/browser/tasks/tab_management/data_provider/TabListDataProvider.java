@@ -43,9 +43,6 @@ public abstract class TabListDataProvider {
      * @param tabModelSupplier Supplier of the current {@link TabModel}.
      */
     protected TabListDataProvider(NullableObservableSupplier<TabModel> tabModelSupplier) {
-        // TODO(crbug.com/562590772): Surface coordinators (e.g. TabGridDialogCoordinator,
-        // TabSwitcherPaneCoordinator) will construct a provider and pass it to TabListCoordinator,
-        // which forwards it via TabListConfig to TabListMediator.
         mTabModelSupplier = tabModelSupplier;
     }
 
@@ -55,8 +52,6 @@ public abstract class TabListDataProvider {
      * @param observer The {@link TabListDataObserver} to add.
      */
     public void addObserver(TabListDataObserver observer) {
-        // TODO(crbug.com/562590772): TabListMediator will call addObserver() in initWithNative()
-        // and removeObserver() in destroy().
         mObservers.addObserver(observer);
     }
 
@@ -74,8 +69,6 @@ public abstract class TabListDataProvider {
      * {@link TabListDataObserver#onDataReset}.
      */
     public void requestDataReset() {
-        // TODO(crbug.com/562590772): Sole external reset entry point.
-        // TabListMediator#resetWithListOfTabs invokes this when a tab list surface opens or resets.
         attachToModel(mTabModelSupplier.get());
         rebuildItems();
         List<TabListItem> unmodifiableItems = Collections.unmodifiableList(mItems);
@@ -86,8 +79,6 @@ public abstract class TabListDataProvider {
      * Detaches from the current {@link TabModel} and clears cached items when the surface hides.
      */
     public void stop() {
-        // TODO(crbug.com/562590772): TabListMediator#removeObservers invokes this on
-        // resetWithListOfTabs(null) and prepareHiding().
         detachFromCurrentModel();
     }
 

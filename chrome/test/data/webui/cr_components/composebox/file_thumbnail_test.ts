@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://contextual-tasks/strings.m.js';
+import 'chrome://webui-test/strings.m.js';
 import 'chrome://resources/cr_components/composebox/file_thumbnail.js';
 
 import type {TabFaviconElement} from 'chrome://resources/cr_components/composebox/composebox_tab_favicon.js';
@@ -135,6 +135,28 @@ suite('ComposeboxFileThumbnailTest', () => {
         fileThumbnailElement.shadowRoot.querySelector('.document-icon');
     assertTrue(!!icon);
     assertEquals(icon.tagName, 'IMG');
+    assertEquals(icon.getAttribute('auto-src'), iconUrl);
+  });
+
+  test('display image without visual source as document chip', async () => {
+    const iconUrl =
+        'https://drive-thirdparty.googleusercontent.com/32/type/image/jpeg';
+    fileThumbnailElement.file = createFile(0, {
+      type: 'image/jpeg',
+      objectUrl: null,
+      dataUrl: undefined,
+      thumbnailUrl: undefined,
+      iconUrl,
+    });
+    await microtasksFinished();
+
+    assertEquals(
+        null, fileThumbnailElement.shadowRoot.querySelector('#imgChip'));
+    assertTrue(
+        !!fileThumbnailElement.shadowRoot.querySelector('#documentChip'));
+    const icon =
+        fileThumbnailElement.shadowRoot.querySelector('.document-icon');
+    assertTrue(!!icon);
     assertEquals(icon.getAttribute('auto-src'), iconUrl);
   });
 

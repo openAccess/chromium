@@ -39,8 +39,8 @@
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/file_analysis_request.h"
 #include "chrome/browser/safe_browsing/download_protection/check_client_download_request.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/realtime/chrome_enterprise_url_lookup_service_factory.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/enterprise/buildflags/buildflags.h"
@@ -200,10 +200,32 @@ ContentAnalysisDelegate::~ContentAnalysisDelegate() {
     CopyWarningDelegateTracker::ClearIfMatches(web_contents_.get(), this);
   }
 #endif
+  // Followers would otherwise wait forever if this warning goes away without
+  // an answer, e.g. when its justification dialog is dismissed.
+  for (auto& follower : std::exchange(copy_warning_followers_, {})) {
+    if (follower) {
+      follower->Cancel(/*warning=*/true);
+      follower->Delete();
+    }
+  }
 }
 
 void ContentAnalysisDelegate::BypassWarnings(
     std::optional<std::u16string> user_justification) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!copy_warning_time_.is_null()) {
+    CopyWarningDelegateTracker::SetAnswer(
+        web_contents_.get(),
+        {copy_warning_time_, /*bypassed=*/true, user_justification});
+  }
+#endif
+  for (auto& follower : std::exchange(copy_warning_followers_, {})) {
+    if (follower) {
+      follower->BypassWarnings(user_justification);
+      follower->Delete();
+    }
+  }
+
   if (callback_.is_null()) {
     return;
   }
@@ -238,12 +260,40 @@ void ContentAnalysisDelegate::BypassWarnings(
     result_.page_result = true;
     page_print_request_handler_->ReportWarningBypass(user_justification);
   }
+
+  // A warned image is only copied now, so it gets the toast of an allowed one,
+  // if the image itself is allowed.
+  if (access_point_ == DeepScanAccessPoint::COPY && !data_.image.empty() &&
+      result_.image_result &&
+      toast_features::IsEnabled(is_video_frame_
+                                    ? toast_features::kVideoFrameCopiedToast
+                                    : toast_features::kImageCopiedToast)) {
+    if (auto* toast_controller =
+            ToastController::MaybeGetForWebContents(web_contents_.get())) {
+      toast_controller->MaybeShowToast(
+          ToastParams(is_video_frame_ ? ToastId::kVideoFrameCopied
+                                      : ToastId::kImageCopied));
+    }
+  }
 #endif
 
   RunCallback();
 }
 
 void ContentAnalysisDelegate::Cancel(bool warning) {
+#if !BUILDFLAG(IS_ANDROID)
+  if (!copy_warning_time_.is_null()) {
+    CopyWarningDelegateTracker::SetAnswer(
+        web_contents_.get(), {copy_warning_time_, /*bypassed=*/false});
+  }
+#endif
+  for (auto& follower : std::exchange(copy_warning_followers_, {})) {
+    if (follower) {
+      follower->Cancel(warning);
+      follower->Delete();
+    }
+  }
+
   if (callback_.is_null()) {
     return;
   }
@@ -515,6 +565,14 @@ void ContentAnalysisDelegate::CreateForWebContents(
           base::NotFatalUntil::M161);
     delegate->FillAllResultsWith(true);
     delegate->RunCallback();
+    // In blocking mode the UI leaves the toast of an image copy to the scan, so
+    // a copied image that isn't scanned gets it here: one over the upload size
+    // limit, or any image if image scanning is off. See
+    // image_request_required().
+    if (wait_for_verdict && access_point == DeepScanAccessPoint::COPY &&
+        !delegate->data_.image.empty()) {
+      delegate->UpdateUI();
+    }
   }
 
   // If all requests are already done, just let `delegate` go out of scope.
@@ -720,25 +778,103 @@ bool ContentAnalysisDelegate::ShowFinalResultInToast() {
       enterprise_data_protection::ClipboardToastTracker::GetForProfile(
           profile_);
   bool is_new_copy = creation_time_ > tracker->last_toast_time();
+  // The video frame mark is taken whatever the verdict, so a later image
+  // copied from the same frame isn't mistaken for a video frame.
+  is_video_frame_ = !data_.image.empty() && data_.initiating_frame_id &&
+                    tracker->TakeVideoFrameCopy(*data_.initiating_frame_id);
   // Shows `toast_id`, unless it's already showing for the same copy.
-  auto maybe_show_toast = [&](ToastId toast_id) {
+  // `on_close` runs once the toast closes, for any reason.
+  auto maybe_show_toast = [&](ToastId toast_id,
+                              base::OnceClosure on_close = {}) {
     auto* toast_controller =
         ToastController::MaybeGetForWebContents(web_contents_.get());
     if (toast_controller && wait_for_verdict &&
-        (is_new_copy || toast_controller->GetCurrentToastId() != toast_id) &&
-        toast_controller->MaybeShowToast(ToastParams(toast_id))) {
-      tracker->set_last_toast_time(base::TimeTicks::Now());
+        (is_new_copy || toast_controller->GetCurrentToastId() != toast_id)) {
+      ToastParams params(toast_id);
+      params.toast_close_callback =
+          base::ScopedClosureRunner(std::move(on_close));
+      if (toast_controller->MaybeShowToast(std::move(params))) {
+        tracker->set_last_toast_time(base::TimeTicks::Now());
+      }
     }
   };
   switch (final_result_) {
     case FinalContentAnalysisResult::WARNING:
       if (web_contents_) {
+        // Without waiting for the verdict, the copy already went through (see
+        // CreateForWebContents()), so there's nothing to warn about or decline.
+        if (!wait_for_verdict) {
+          return false;
+        }
+        // Some windows can't show toasts, e.g. popups (crbug.com/582866360).
+        // Block the copy then, rather than leaving it waiting on a warning the
+        // user can't see. MaybeShowToast() only fails if CanShowToast() does.
+        auto* toast_controller =
+            ToastController::MaybeGetForWebContents(web_contents_.get());
+        if (!toast_controller ||
+            !toast_controller->CanShowToast(ToastId::kEnterpriseCopyWarning)) {
+          // Don't use `Cancel()`: it would delete this scan's upload while the
+          // upload is still running this code.
+          FillAllResultsWith(false);
+          RunCallback();
+          return false;
+        }
+        if (!is_new_copy) {
+          // Another format of this copy is already waiting on the warning or
+          // its justification dialog, so follow the user's answer to it.
+          // Replacing it would decline it.
+          ContentAnalysisDelegate* leader =
+              CopyWarningDelegateTracker::GetDelegate(web_contents_.get());
+          if (!leader) {
+            leader = CopyWarningDelegateTracker::GetJustifyingDelegate(
+                web_contents_.get());
+          }
+          if (leader) {
+            leader->copy_warning_followers_.push_back(GetWeakPtr());
+            return true;
+          }
+          // The user already answered the warning for this copy, so give
+          // this format the same answer instead of warning again.
+          std::optional<CopyWarningDelegateTracker::Answer> answer =
+              CopyWarningDelegateTracker::GetAnswer(web_contents_.get());
+          if (answer && creation_time_ <= answer->warning_time) {
+            if (answer->bypassed) {
+              BypassWarnings(answer->justification);
+            } else {
+              // Don't use `Cancel()`: it would delete this scan's upload while
+              // the upload is still running this code.
+              FillAllResultsWith(false);
+              RunCallback();
+            }
+            return false;
+          }
+        }
+        copy_warning_time_ = base::TimeTicks::Now();
+        // Closing the warning without "Copy anyway" declines the copy, so its
+        // clipboard write doesn't stay pending and hold back later copies. A
+        // copy made after the toast showed is left alone, as it has its own
+        // warning.
+        maybe_show_toast(
+            ToastId::kEnterpriseCopyWarning,
+            base::BindOnce(
+                [](base::WeakPtr<content::WebContents> web_contents,
+                   base::TimeTicks shown_time) {
+                  ContentAnalysisDelegate* delegate =
+                      CopyWarningDelegateTracker::GetDelegate(
+                          web_contents.get());
+                  if (delegate && delegate->creation_time_ <= shown_time) {
+                    CopyWarningDelegateTracker::CancelAndClear(
+                        web_contents.get());
+                  }
+                },
+                web_contents_, copy_warning_time_));
         // Set the delegate in the tracker so it can be found by the toast
-        // controller later to bypass the copy warning.
+        // controller later to bypass the copy warning. It's set after showing
+        // the toast, as showing it can drop a queued older warning, whose
+        // close shouldn't decline this copy.
         CopyWarningDelegateTracker::SetDelegate(web_contents_.get(), this);
-        maybe_show_toast(ToastId::kEnterpriseCopyWarning);
-        // Delay deleting the content analysis delegate until the toast is
-        // clicked.
+        // Delay deleting the content analysis delegate until the user acts on
+        // the toast.
         return true;
       }
       return false;
@@ -757,9 +893,11 @@ bool ContentAnalysisDelegate::ShowFinalResultInToast() {
           tracker->set_last_toast_time(base::TimeTicks::Now());
         } else if (is_new_copy && !data_.image.empty() &&
                    toast_features::IsEnabled(
-                       toast_features::kImageCopiedToast)) {
+                       is_video_frame_ ? toast_features::kVideoFrameCopiedToast
+                                       : toast_features::kImageCopiedToast)) {
           // The image is only copied now that the scan allowed it.
-          maybe_show_toast(ToastId::kImageCopied);
+          maybe_show_toast(is_video_frame_ ? ToastId::kVideoFrameCopied
+                                           : ToastId::kImageCopied);
         }
       }
       return false;

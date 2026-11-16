@@ -7,7 +7,9 @@
 
 #include <memory>
 
+#include "base/functional/function_ref.h"
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "url/gurl.h"
 
 class Profile;
@@ -16,6 +18,10 @@ namespace content {
 class SecurityPrincipal;
 class WebContents;
 }  // namespace content
+
+namespace ui {
+struct ColorProviderKey;
+}
 
 namespace waap {
 
@@ -75,13 +81,20 @@ enum class NewWindowCreationSource {
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/histograms.xml:CreationSource)
 
-// Result of initial surface synchronization for the WebUI toolbar.
+// Result of initial surface synchronization for the WebUI toolbar. Orders the
+// reload button's first paint against the browser window's first presentation.
+// If the reload button never paints, records whether the window closed or its
+// renderer went away, and whether that happened before or after the browser
+// window's presentation. A paint after the browser window's presentation does
+// not mean the surface sync deadline expired: Viz presents the browser frame as
+// soon as the toolbar surface has any frame, even one that does not show the
+// reload button yet.
 // LINT.IfChange(InitialWebUISurfaceSyncResult)
 enum class InitialWebUISurfaceSyncResult {
-  kReadyWithinDeadline = 0,
-  kDeadlineExceededPaintedLater = 1,
-  kDeadlineExceededClosedBeforePaint = 2,
-  kDeadlineExceededRenderProcessGone = 3,
+  kPaintedByBrowserPresentation = 0,
+  kPaintedAfterBrowserPresentation = 1,
+  kClosedAfterBrowserPresentation = 2,
+  kRenderProcessGoneAfterBrowserPresentation = 3,
   kClosedBeforeBrowserPresentation = 4,
   kRenderProcessGoneBeforeBrowserPresentation = 5,
   kMaxValue = kRenderProcessGoneBeforeBrowserPresentation,
@@ -89,28 +102,58 @@ enum class InitialWebUISurfaceSyncResult {
 // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:InitialWebUISurfaceSyncResult)
 
 // Returns true if the given URL or SecurityPrincipal is for the initial WebUI.
-// This is only relevant on non-Android platforms.
 bool IsForInitialWebUI(const GURL& url);
 bool IsForInitialWebUI(const content::SecurityPrincipal& principal);
 
 class PrewarmHelper {
  public:
-  // Configures the WebContents used for the initial WebUI (e.g. page load
-  // metrics, background color, zoom gestures, and color provider source).
-  // `profile` is the profile of the window showing `web_contents`. When
-  // `web_contents` is in TopChromeWebUIProfile, `profile` is first set as its
-  // user profile.
+  // Configures the WebContents used for a non-tab WebUI (e.g. page type, page
+  // load metrics, task manager tag, background color, and zoom gestures).
+  // `profile` is the profile of the window showing `web_contents`. On
+  // non-Android platforms, when `web_contents` is in TopChromeWebUIProfile,
+  // `profile` is first set as its user profile.
   static void ConfigureWebUIContents(content::WebContents* web_contents,
-                                     Profile* profile);
+                                     Profile* profile,
+                                     int task_manager_string_id);
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Returns the color provider key that `ConfigureWebUIContents()` gives the
+  // WebContents, which the WebUI keeps until it is attached to a window.
+  static ui::ColorProviderKey GetColorProviderKey(Profile* profile);
 
   // Prewarms the WebUI toolbar WebContents for a window of `profile`.
   // Creates the WebContents and configures it for `profile` using
   // ConfigureWebUIContents.
   // If `pre_navigate` is true, starts loading the toolbar URL; otherwise, only
   // initializes the renderer process.
+  // TODO(crbug.com/581783426): Enable on Android for the tab strip new tab
+  // button, once TopChromeWebUIProfile is supported there.
   static std::unique_ptr<content::WebContents> PrewarmWebUIContents(
       Profile* profile,
       bool pre_navigate);
+
+  // Prewarms and navigates an unbound WebUI toolbar WebContents in
+  // TopChromeWebUIProfile, seeding its prewarm color provider key from
+  // `template_profile` without binding a user profile. Runs `seed` after
+  // configuring the WebContents and before `LoadURL()`, since
+  // `WebUIRenderFrameCreated()` can run inside `LoadURL()`.
+  static std::unique_ptr<content::WebContents> PrewarmUnboundWebUIContents(
+      Profile& template_profile,
+      base::FunctionRef<void(content::WebContents&)> seed);
+
+  // Binds an unbound `web_contents` in TopChromeWebUIProfile to `profile`: sets
+  // its user profile, creates `PrefsTabHelper` and syncs renderer prefs,
+  // switches the prewarm color provider source only when `profile`'s key
+  // differs from the current prewarm source's key, and recomputes
+  // WebPreferences. Returns whether the color provider key changed.
+  static bool BindUserProfile(content::WebContents& web_contents,
+                              Profile& profile);
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+ private:
+  static void ConfigureCommonWebUIContents(content::WebContents* web_contents,
+                                           int task_manager_string_id,
+                                           bool create_prefs_tab_helper);
 };
 
 }  // namespace waap

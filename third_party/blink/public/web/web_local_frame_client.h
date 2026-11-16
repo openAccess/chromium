@@ -49,14 +49,12 @@
 #include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
-#include "third_party/blink/public/common/loader/loading_behavior_flag.h"
 #include "third_party/blink/public/common/loader/url_loader_factory_bundle.h"
 #include "third_party/blink/public/common/subresource_load_metrics.h"
 #include "third_party/blink/public/common/tokens/tokens.h"
 #include "third_party/blink/public/common/use_counter/use_counter_feature.h"
 #include "third_party/blink/public/common/user_agent/user_agent_metadata.h"
 #include "third_party/blink/public/mojom/browser_interface_broker.mojom-shared.h"
-#include "third_party/blink/public/mojom/devtools/console_message.mojom-forward.h"
 #include "third_party/blink/public/mojom/frame/blocked_navigation_types.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/lifecycle.mojom-shared.h"
 #include "third_party/blink/public/mojom/frame/triggering_event_info.mojom-shared.h"
@@ -95,7 +93,6 @@
 #include "third_party/blink/public/web/web_navigation_params.h"
 #include "third_party/blink/public/web/web_navigation_policy.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
-#include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
 #include "ui/accessibility/ax_enums.mojom-shared.h"
 #include "ui/accessibility/ax_event.h"
 #include "ui/accessibility/ax_location_and_scroll_updates.h"
@@ -150,7 +147,6 @@ class WebURLRequest;
 class WebURLResponse;
 class WebView;
 struct FramePolicy;
-struct JavaScriptFrameworkDetectionResult;
 struct WebConsoleMessage;
 struct ContextMenuData;
 struct WebPictureInPictureWindowOptions;
@@ -172,12 +168,6 @@ enum class DetachReason {
   // new WebLocalFrame (possibly in a different renderer process) that will
   // replace the current one and takes its place in the same browsing context.
   kNavigation,
-};
-
-enum class BFCacheStateChange {
-  kStoredToBFCache,
-  kRestoredFromBFCache,
-  kNoChange,
 };
 
 class BLINK_EXPORT WebLocalFrameClient {
@@ -322,11 +312,8 @@ class BLINK_EXPORT WebLocalFrameClient {
 
   // Console messages ----------------------------------------------------
 
-  // Whether or not we should report a detailed message for the given source and
-  // severity level.
-  virtual bool ShouldReportDetailedMessageForSourceAndSeverity(
-      mojom::ConsoleMessageLevel log_level,
-      const WebString& source) {
+  // Whether or not we should report a detailed message for the given source.
+  virtual bool ShouldReportDetailedMessageForSource(const WebString& source) {
     return false;
   }
 
@@ -478,12 +465,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   // Called before a frame's page is frozen.
   virtual void WillFreezePage() {}
 
-  // The frame's document changed its URL due to document.open().
-  virtual void DidOpenDocumentInputStream(const WebURL&) {}
-
-  // Called when a frame's page lifecycle state gets updated.
-  virtual void DidSetPageLifecycleState(BFCacheStateChange bfcache_change) {}
-
   // Immediately notifies the browser of a change in the current HistoryItem.
   // Prefer DidUpdateCurrentHistoryItem().
   virtual void NotifyCurrentHistoryItemChanged() {}
@@ -558,12 +539,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   virtual void OnMainFrameViewportRectangleChanged(
       const gfx::Rect& main_frame_viewport_rect) {}
 
-  // Called when an ad element's geometry changed. An empty `ad_rect` is used to
-  // signal the removal of the element. Only invoked on the outermost main
-  // frame.
-  virtual void OnMainFrameAdRectangleChanged(int element_id,
-                                             const gfx::Rect& ad_rect) {}
-
   // Called when an overlay interstitial pop up ad is detected.
   virtual void OnOverlayPopupAdDetected() {}
 
@@ -597,27 +572,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   // A PingLoader was created, and a request dispatched to a URL.
   virtual void DidDispatchPingLoader(const WebURL&) {}
 
-  // A performance timing event (e.g. first paint) occurred
-  virtual void DidChangePerformanceTiming() {}
-
-  // A user interaction is observed. A user interaction can be built up from
-  // multiple input events (e.g. keydown then keyup). Each of these events has
-  // an input to next frame latency. This reports the timings of the max
-  // input-to-frame latency for each interaction. `max_event_start` is when
-  // input was received, `max_event_end` is when the next frame was
-  // presented, `max_event_queued_main_thread` is when the input was queued and
-  // `max_event_commit_finish` is when the next commit finished after event has
-  // been processed. See https://web.dev/inp/#whats-in-an-interaction for more
-  // detailed motivation and explanation.
-  virtual void DidObserveUserInteraction(
-      base::TimeTicks max_event_start,
-      base::TimeTicks max_event_queued_main_thread,
-      base::TimeTicks max_event_processing_start,
-      base::TimeTicks max_event_commit_finish,
-      base::TimeTicks max_event_end,
-      uint64_t interaction_offset,
-      uint64_t performance_timeline_navigation_id) {}
-
   // The first scroll delay, which measures the time between the user's first
   // scrolling and the resultant display update, has been observed.
   // The first scroll timestamp is when the first scroll event was created which
@@ -626,21 +580,7 @@ class BLINK_EXPORT WebLocalFrameClient {
       base::TimeDelta first_scroll_delay,
       base::TimeTicks first_scroll_timestamp) {}
 
-  // A cpu task or tasks completed.  Triggered when at least 100ms of wall time
-  // was spent in tasks on the frame.
-  virtual void DidChangeCpuTiming(base::TimeDelta time,
-                                  base::TimeDelta ad_time) {}
-
   // UseCounter ----------------------------------------------------------
-  // Blink exhibited a certain loading behavior that the browser process will
-  // use for segregated histograms.
-  virtual void DidObserveLoadingBehavior(LoadingBehaviorFlag) {}
-
-  // Blink detected a JavaScript framework that the browser process will use for
-  // UKM.
-  virtual void DidObserveJavaScriptFrameworks(
-      const JavaScriptFrameworkDetectionResult&) {}
-
   // A subresource load is observed.
   // It is called when there is a subresouce load. The reported values via
   // arguments are cumulative. They are NOT a difference from the previous call.
@@ -652,26 +592,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   // frames associated with the same page in the renderer are not currently
   // reported.
   virtual void DidObserveNewFeatureUsage(const UseCounterFeature&) {}
-
-  // A new soft navigation was observed.
-  virtual void DidObserveSoftNavigation(
-      SoftNavigationMetricsForReporting metrics) {}
-
-  // A new First Contentful Paint was observed for a soft navigation.
-  virtual void DidObserveSoftNavigationFirstContentfulPaint(
-      uint64_t performance_timeline_navigation_id,
-      base::TimeDelta first_contentful_paint) {}
-
-  // A new largest contentful paint candidate relating to the most recent
-  // soft navigation was observed. Also see DidObserveSoftNavigation().
-  virtual void DidObserveSoftLargestContentfulPaint(
-      const LargestContentfulPaintDetailsForReporting& lcp) {}
-
-  // Reports that visible elements in the frame shifted (bit.ly/lsm-explainer).
-  virtual void DidObserveLayoutShift(
-      double score,
-      bool after_input_or_scroll,
-      uint64_t performance_timeline_navigation_id) {}
 
   // Script notifications ------------------------------------------------
 
@@ -834,12 +754,6 @@ class BLINK_EXPORT WebLocalFrameClient {
   // layout that happened after an interesting document lifecycle change (see
   // WebMeaningfulLayout for details.)
   virtual void DidMeaningfulLayout(WebMeaningfulLayout) {}
-
-  // Inform the widget that it was hidden.
-  virtual void WasHidden() {}
-
-  // Inform the widget that it was shown.
-  virtual void WasShown() {}
 
   virtual void OnFrameVisibilityChanged(mojom::FrameVisibility render_status) {}
 

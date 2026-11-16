@@ -28,6 +28,7 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
 import org.chromium.base.ResettersForTesting;
+import org.chromium.base.TimeUtils;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.NonNullObservableSupplier;
@@ -57,7 +58,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.util.DefaultBrowserInfo;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.OnSystemNavigationObserver;
-import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
+import org.chromium.components.web_distiller.core.WebDistillerUrlUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.ui.base.PageTransition;
@@ -328,6 +329,9 @@ public class CustomTabActivityNavigationController
 
     /** Handles close button navigation. */
     public void navigateOnClose() {
+        if (ChromeFeatureList.sCctCloseLogging.isEnabled()) {
+            Log.i(TAG, "CCT close button clicked at %d", TimeUtils.uptimeMillis());
+        }
         mIsHandlingUserNavigation = true;
         mCloseButtonNavigator.navigateOnClose(this::finish);
         mIsHandlingUserNavigation = false;
@@ -363,8 +367,8 @@ public class CustomTabActivityNavigationController
 
         boolean openedInBrowser = true;
         GURL gurl = tab.getUrl();
-        if (DomDistillerUrlUtils.isDistilledPage(gurl)) {
-            gurl = DomDistillerUrlUtils.getOriginalUrlFromDistillerUrl(gurl);
+        if (WebDistillerUrlUtils.isDistilledPage(gurl)) {
+            gurl = WebDistillerUrlUtils.getOriginalUrlFromDistillerUrl(gurl);
         }
         String url = gurl.getSpec();
         if (TextUtils.isEmpty(url)) url = mIntentDataProvider.getUrlToLoad();
@@ -471,6 +475,14 @@ public class CustomTabActivityNavigationController
         mIsFinishing = true;
         mFinishReason = reason;
 
+        if (ChromeFeatureList.sCctCloseLogging.isEnabled()) {
+            Log.i(
+                    TAG,
+                    "CCT CustomTabActivityNavigationController#finish (reason=%d) at %d",
+                    reason,
+                    TimeUtils.uptimeMillis());
+        }
+
         RecordHistogram.recordEnumeratedHistogram(
                 HISTOGRAM_FINISH_REASON, mFinishReason, FinishReason.NUM_TYPES);
 
@@ -513,6 +525,13 @@ public class CustomTabActivityNavigationController
 
     @Override
     public void onStopWithNative() {
+        if (ChromeFeatureList.sCctCloseLogging.isEnabled()) {
+            Log.i(
+                    TAG,
+                    "CCT #onStopWithNative (activity finishing: %s) at %d",
+                    mActivity.isFinishing(),
+                    TimeUtils.uptimeMillis());
+        }
         if (mIsFinishing) {
             mTabController.closeAndForgetTab();
         } else {

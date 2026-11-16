@@ -281,6 +281,9 @@ BASE_FEATURE(kCrossDeviceSigninFromDesktopFollowup,
              base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kCrossDeviceSigninFromDesktopWhatsNew{
     &kCrossDeviceSigninFromDesktopFollowup, "whats_new", true};
+
+BASE_FEATURE(kCrossDeviceSigninPromoEligibilityLogging,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -292,18 +295,13 @@ BASE_FEATURE(kDiceInterceptSanitizeGaiaUrl, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-BASE_FEATURE(kDiceLinkedAccounts, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kDiceLinkedAccounts, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 BASE_FEATURE(kDisableFirstRunAnimationsForTesting,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
-#if BUILDFLAG(IS_IOS)
-BASE_FEATURE(kDontIncludeSIDUnsecureCookiesInGaiaAuthFetcher,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
 
 // Enables fetching sync preview data from the server for accounts with refresh
 // tokens.
@@ -462,8 +460,8 @@ BASE_FEATURE_PARAM(base::TimeDelta,
 // enabled.
 BASE_FEATURE(kEnableAccountPreviewSwitchingAccount,
              base::FEATURE_DISABLED_BY_DEFAULT);
-// When true, skips cooldowns and throttling limits for the account switching
-// promo. Used for manual and automated testing.
+// When true, skips cooldowns and per-account-pair throttling limits for the
+// account switching promo. Used for manual testing only.
 BASE_FEATURE_PARAM(bool,
                    kEnableAccountPreviewSwitchingAccountSkipCooldown,
                    &kEnableAccountPreviewSwitchingAccount,
@@ -549,11 +547,6 @@ bool IsChromeRefreshTokenBindingEnabled(const PrefService* profile_prefs) {
 // kEnableChromeRefreshTokenBinding to be enabled as a prerequisite.
 BASE_FEATURE(kEnableChromeRefreshTokenBindingUpgrade,
              base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE_PARAM(bool,
-                   kOamlCookieUpgradeEnabled,
-                   &kEnableChromeRefreshTokenBindingUpgrade,
-                   "oaml-cookie-upgrade-enabled",
-                   true);
 constexpr base::FeatureParam<RefreshTokenBindingUpgradeType>::Option
     kRefreshTokenBindingUpgradeTypeOptions[] = {
         {RefreshTokenBindingUpgradeType::kDarkLaunch, "dark-launch"},
@@ -759,11 +752,6 @@ BASE_FEATURE(kFirstRunDesktopRevampSound, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kFirstRunDesktopRevampSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-BASE_FEATURE(kFirstRunFeatureShowcaseGeminiStep,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kForceHistoryOptInScreen, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -792,7 +780,7 @@ BASE_FEATURE_PARAM(int,
                    -1);
 #endif
 
-BASE_FEATURE(kGaiaAccountIdEnforcement, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGaiaAccountIdEnforcement, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kHandleMdmErrorsForDasherAccounts,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -836,7 +824,7 @@ BASE_FEATURE(kMigrateAccountManagerDelegate, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(IS_IOS)
 BASE_FEATURE(kMigrateToSigninReauthCoordinator,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_IOS)
 
 BASE_FEATURE(kNonDefaultGaiaOriginCheck, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -871,10 +859,6 @@ BASE_FEATURE(kProfileCreationDeclineSigninCTAExperiment,
              base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kProfileDiscOnAllPages, base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 BASE_FEATURE(kProfilesReordering, base::FEATURE_DISABLED_BY_DEFAULT);
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
@@ -882,6 +866,10 @@ BASE_FEATURE(kReauthSkipIdentifierPage, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kReauthSkipIdentifierPageFollowup,
              base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+BASE_FEATURE(kRecordChromeLastSigninTime, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -989,10 +977,6 @@ BASE_FEATURE(kSupportAddSessionEmailPrefill, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kSupportErrorsInProfilePicker, base::FEATURE_ENABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kSupportForcedSigninPolicy, base::FEATURE_ENABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(IS_ANDROID)
-
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 BASE_FEATURE(kSupportSigninInterceptionInPopups,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -1015,10 +999,6 @@ BASE_FEATURE(kSyncEnableBookmarksInTransportMode,
 BASE_FEATURE(kUndoChromeOsUseConsentLevelSignin,
              base::FEATURE_DISABLED_BY_DEFAULT);
 #endif  // BUILDFLAG(IS_CHROMEOS)
-
-#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
-BASE_FEATURE(kUnifyWaitForCookies, base::FEATURE_DISABLED_BY_DEFAULT);
-#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
 
 #if BUILDFLAG(IS_IOS)
 BASE_FEATURE(kUseAccountInfoFetcherIos, base::FEATURE_DISABLED_BY_DEFAULT);

@@ -23,6 +23,7 @@
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/web_applications/isolated_web_apps/controlled_frame_partitions_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/policy/isolated_web_app_policy_manager.h"
 #include "chrome/browser/web_applications/isolated_web_apps/update/isolated_web_app_update_manager.h"
 #include "chrome/browser/web_applications/preinstalled_web_app_manager.h"
@@ -72,6 +73,8 @@ constexpr char kAppShimRegistryLocalStorage[] = "AppShimRegistryLocalStorage";
 constexpr char kWebAppDirectoryDiskState[] = "WebAppDirectoryDiskState";
 constexpr char kIsolatedWebAppUpdateManager[] = "IsolatedWebAppUpdateManager";
 constexpr char kIsolatedWebAppPolicyManager[] = "IsolatedWebAppPolicyManager";
+constexpr char kControlledFramePartitionsManager[] =
+    "ControlledFramePartitionsManager";
 constexpr char kIwaKeyDistributionInfoProvider[] =
     "IwaKeyDistributionInfoProvider";
 #if BUILDFLAG(IS_CHROMEOS)
@@ -203,12 +206,18 @@ base::Value BuildAppShimRegistryLocalStorageValue() {
 
 base::Value BuildIsolatedWebAppUpdaterManagerValue(
     web_app::WebAppProvider& provider) {
-  return provider.isolated_web_app_update_manager().AsDebugValue();
+  return web_app::IsolatedWebAppUpdateManager::From(provider).AsDebugValue();
 }
 
 base::Value BuildIsolatedWebAppPolicyManagerValue(
     web_app::WebAppProvider& provider) {
-  return provider.isolated_web_app_policy_manager().GetDebugValue();
+  return web_app::IsolatedWebAppPolicyManager::From(provider).GetDebugValue();
+}
+
+base::Value BuildControlledFramePartitionsManagerValue(
+    web_app::WebAppProvider& provider) {
+  return web_app::ControlledFramePartitionsManager::From(provider)
+      .AsDebugValue();
 }
 
 base::Value BuildIwaKeyDistributionInfoProviderValue(
@@ -219,7 +228,7 @@ base::Value BuildIwaKeyDistributionInfoProviderValue(
 
 #if BUILDFLAG(IS_CHROMEOS)
 base::Value BuildIwaCacheManagerValue(web_app::WebAppProvider& provider) {
-  return provider.isolated_web_app_cache_manager().GetDebugValue();
+  return web_app::IwaBundleCacheManager::From(provider).GetDebugValue();
 }
 #endif  //  BUILDFLAG(IS_CHROMEOS)
 
@@ -305,6 +314,8 @@ void WebAppInternalsHandler::BuildDebugInfo(
            BuildIsolatedWebAppUpdaterManagerValue(*provider));
   root.Set(kIsolatedWebAppPolicyManager,
            BuildIsolatedWebAppPolicyManagerValue(*provider));
+  root.Set(kControlledFramePartitionsManager,
+           BuildControlledFramePartitionsManagerValue(*provider));
 #if BUILDFLAG(IS_CHROMEOS)
   root.Set(kIwaBundleCacheManager, BuildIwaCacheManagerValue(*provider));
 #endif  //  BUILDFLAG(IS_CHROMEOS)

@@ -16,6 +16,7 @@ buildflag_header("test_buildflags") {
 source_set("ipcz_header") {
   visibility = [ ":*" ]
   public = [ "../include/ipcz/ipcz.h" ]
+  public_deps = [ "//base" ]
   public_configs = [ ":ipcz_include_dir" ]
 }
 
@@ -102,12 +103,8 @@ source_set("util") {
   visibility = [ ":*" ]
 
   public = [
-    "util/log.h",
     "util/multi_mutex_lock.h",
     "util/ref_counted.h",
-    "util/strong_alias.h",
-    "util/unique_ptr_comparator.h",
-    "util/unsafe_buffers.h",
   ]
 
   sources = [ "util/ref_counted.cc" ]
@@ -311,7 +308,6 @@ source_set("tests_sources") {
     "trap_test.cc",
     "util/ref_counted_test.cc",
     "util/safe_math_test.cc",
-    "util/unique_ptr_comparator_test.cc",
   ]
 
   if (enable_multiprocess_tests) {
@@ -352,9 +348,11 @@ source_set("fuzzer_sources") {
     ":ipcz",
     ":reference_drivers",
     ":util",
-    "//base",
     "//third_party/abseil-cpp:absl",
   ]
+
+  # fuzzer.h exposes base::span in its API.
+  public_deps = [ "//base" ]
   public_configs = [
     ":ipcz_include_dir",
     ":ipcz_include_src_dir",

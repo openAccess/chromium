@@ -75,6 +75,10 @@ namespace syncer {
 class SyncService;
 }  // namespace syncer
 
+namespace trusted_vault {
+enum class TrustedVaultUserActionTriggerForUMA;
+}  // namespace trusted_vault
+
 namespace url {
 class Origin;
 }
@@ -382,6 +386,13 @@ class PasswordManagerClient {
   // action, or ActionableError::kNoError if there is none.
   virtual ActionableError GetActionableError() const;
 
+  // Starts trusted vault key retrieval for the primary account. `trigger`
+  // specifies the UI surface that initiated the flow for UMA metrics tracking.
+  // The default implementation is a no-op (e.g. on Android where retrieval is
+  // platform-mediated).
+  virtual void StartTrustedVaultKeyRetrieval(
+      trusted_vault::TrustedVaultUserActionTriggerForUMA trigger);
+
   // Gets the affiliation service associated with this client.
   virtual affiliations::AffiliationService* GetAffiliationService() = 0;
 
@@ -568,8 +579,9 @@ class PasswordManagerClient {
   // Returns true if the current page is to the new tab page.
   virtual bool IsNewTabPage() const = 0;
 
-  // Returns true if the current page is a Chrome sign-in page.
-  virtual bool IsChromeSigninPage() const;
+  // Returns true if the current page is eligible for inline passkey QR code
+  // sign-in (i.e. a primary Chrome sign-in page).
+  virtual bool IsPageEligibleForInlineQrCodeSignin() const;
 
   // Returns the WebAuthnCredentialsDelegate for the given driver, if available.
   virtual WebAuthnCredentialsDelegate* GetWebAuthnCredentialsDelegateForDriver(

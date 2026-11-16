@@ -38,6 +38,10 @@
 #include "media/filters/dav1d_video_decoder.h"
 #endif
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+#include "media/filters/dav2d_video_decoder.h"
+#endif
+
 #include "media/filters/opus_audio_decoder.h"
 
 #if BUILDFLAG(ENABLE_FFMPEG)
@@ -216,6 +220,13 @@ std::vector<std::unique_ptr<VideoDecoder>> CreateVideoDecodersForTest(
       std::make_unique<OffloadingDav1dVideoDecoder>(media_log->Clone()));
 #endif
 
+#if BUILDFLAG(ENABLE_DAV2D_DECODER)
+  if (base::FeatureList::IsEnabled(kDav2dVideoDecoder)) {
+    video_decoders.push_back(
+        std::make_unique<OffloadingDav2dVideoDecoder>(media_log->Clone()));
+  }
+#endif
+
 #if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
   video_decoders.push_back(
       std::make_unique<FFmpegVideoDecoder>(media_log->Clone()));
@@ -234,10 +245,8 @@ std::vector<std::unique_ptr<AudioDecoder>> CreateAudioDecodersForTest(
     DCHECK(!audio_decoders.empty());
   }
 
-  if (base::FeatureList::IsEnabled(kDirectOpusAudioDecoding)) {
-    audio_decoders.push_back(
-        std::make_unique<OpusAudioDecoder>(media_task_runner));
-  }
+  audio_decoders.push_back(
+      std::make_unique<OpusAudioDecoder>(media_task_runner));
 
 #if BUILDFLAG(ENABLE_IAMF_TOOLS)
   if (base::FeatureList::IsEnabled(kIamfAudioDecoding)) {

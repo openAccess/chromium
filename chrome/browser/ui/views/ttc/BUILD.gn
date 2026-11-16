@@ -7,17 +7,23 @@ import("//build/config/ui.gni")
 assert(toolkit_views)
 
 source_set("ttc") {
-  public = [ "ttc_voice_plate.h" ]
+  public = [
+    "ttc_view.h",
+    "ttc_view_delegate.h",
+    "ttc_voice_plate.h",
+  ]
   sources = [ "ttc_voice_plate.cc" ]
 
   public_deps = [
     "//base",
+    "//chrome/browser/ttc/core:states",
     "//chrome/browser/ui/views/voice",
     "//ui/base",
     "//ui/views",
   ]
 
   deps = [
+    "//chrome/app:generated_resources",
     "//chrome/browser/ui/views:layout_provider",
     "//components/strings",
     "//components/vector_icons",
@@ -32,10 +38,12 @@ source_set("unit_tests") {
   deps = [
     ":ttc",
     "//base",
-    "//base/test:test_support",
+    "//chrome/app:generated_resources",
     "//chrome/browser/ui/views/voice",
     "//chrome/test:test_support",
     "//testing/gtest",
+    "//ui/accessibility",
+    "//ui/base",
     "//ui/events",
     "//ui/gfx",
     "//ui/views",

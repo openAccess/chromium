@@ -3,14 +3,16 @@
 // found in the LICENSE file.
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_bubble_controller.h"
 
+#include <utility>
 #include <vector>
 
+#include "base/feature_list.h"
+#include "base/notreached.h"
 #include "base/strings/utf_string_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_page_handler.h"
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/sync/send_tab_to_self_sync_service_factory.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -23,14 +25,14 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_device_picker_bubble_view.h"
 #include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_no_target_device_bubble_view.h"
-#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_promo_bubble_view.h"
+#include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/pinned_toolbar_actions.h"
 #include "components/send_tab_to_self/features.h"
 #include "components/send_tab_to_self/metrics_util.h"
 #include "components/send_tab_to_self/send_tab_to_self_model.h"
 #include "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 #include "components/send_tab_to_self/target_device_list_waiter.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/base/signin_buildflags.h"
 #include "components/sync/service/sync_service.h"
 #include "components/sync_device_info/device_info.h"
 #include "components/sync_device_info/remote_device_info.h"
@@ -41,13 +43,27 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/widget/widget.h"
 
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/ui/views/send_tab_to_self/send_tab_to_self_promo_bubble_view.h"
+#endif
+
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 #include "chrome/browser/signin/cross_device_signin_promo_manager.h"
-#include "chrome/browser/signin/signin_util.h"
-#include "components/signin/public/base/signin_switches.h"
 #endif
 
 namespace send_tab_to_self {
+
+namespace {
+
+bool ShouldAnchorBubbleToAvatarPill(EntryPointDisplayReason reason) {
+  if (reason != EntryPointDisplayReason::kOfferSignIn &&
+      reason != EntryPointDisplayReason::kOfferReauth) {
+    return false;
+  }
+  return base::FeatureList::IsEnabled(kSendTabToSelfAnchorPromosToProfilePill);
+}
+
+}  // namespace
 
 SendTabToSelfBubbleController::~SendTabToSelfBubbleController() {
   HideBubble();
@@ -109,8 +125,11 @@ void SendTabToSelfBubbleController::ShowBubbleImpl(
   views::BubbleAnchor anchor;
   if (browser) {
     browser_weak_ptr = browser->GetWeakPtr();
-    if (PinnedToolbarActions* pinned_toolbar_actions =
-            BrowserWindow::FromBrowser(browser)->GetPinnedToolbarActions()) {
+    if (ShouldAnchorBubbleToAvatarPill(reason)) {
+      anchor = AvatarToolbarButtonInterface::GetBubbleAnchor(*browser);
+    } else if (PinnedToolbarActions* pinned_toolbar_actions =
+                   BrowserWindow::FromBrowser(browser)
+                       ->GetPinnedToolbarActions()) {
       // Show the toolbar action button.
       pinned_toolbar_actions->ShowActionEphemerallyInToolbar(
           kActionSendTabToSelf, true);
@@ -120,9 +139,10 @@ void SendTabToSelfBubbleController::ShowBubbleImpl(
                          weak_ptr_factory_.GetWeakPtr(), reason,
                          browser_weak_ptr));
       return;
+    } else {
+      anchor = ToolbarButtonProvider::From(browser)->GetBubbleAnchor(
+          kActionSendTabToSelf);
     }
-    anchor = ToolbarButtonProvider::From(browser)->GetBubbleAnchor(
-        kActionSendTabToSelf);
   }
 
   ShowBubbleWithAnchor(reason, browser_weak_ptr, std::move(anchor));
@@ -164,12 +184,14 @@ void SendTabToSelfBubbleController::ShowBubbleWithAnchor(
       break;
     case send_tab_to_self::EntryPointDisplayReason::kOfferSignIn:
     case send_tab_to_self::EntryPointDisplayReason::kOfferReauth:
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
       bubble_view = std::make_unique<SendTabToSelfSignInPromoBubbleView>(
-          std::move(anchor.value()), &GetWebContents(),
-          reason == send_tab_to_self::EntryPointDisplayReason::kOfferReauth
-              ? SendTabToSelfSignInPromoBubbleView::PromoMode::kReauth
-              : SendTabToSelfSignInPromoBubbleView::PromoMode::kSignIn);
+          std::move(anchor.value()), &GetWebContents());
       break;
+#else
+      NOTREACHED()
+          << "The promo bubble shouldn't show if dice-support is disabled";
+#endif
     case send_tab_to_self::EntryPointDisplayReason::kInformNoTargetDevice:
       bubble_view = std::make_unique<SendTabToSelfNoTargetDeviceBubbleView>(
           std::move(anchor.value()), &GetWebContents());
@@ -179,8 +201,12 @@ void SendTabToSelfBubbleController::ShowBubbleWithAnchor(
   views::Widget* widget =
       views::BubbleDialogDelegateView::CreateBubble(std::move(bubble_view));
   widget_observation_.Observe(widget);
-  send_tab_to_self_bubble_view_->SetHighlightedElement(
-      kPinnedToolbarActionSendTabToSelfElementId);
+  is_bubble_anchored_to_avatar_pill_ =
+      browser && ShouldAnchorBubbleToAvatarPill(reason);
+  if (!is_bubble_anchored_to_avatar_pill_) {
+    send_tab_to_self_bubble_view_->SetHighlightedElement(
+        kPinnedToolbarActionSendTabToSelfElementId);
+  }
   // This is always triggered due to a user gesture, c.f. method
   // documentation.
   send_tab_to_self_bubble_view_->ShowForReason(
@@ -260,6 +286,14 @@ void SendTabToSelfBubbleController::OnWidgetDestroying(views::Widget* widget) {
   widget_observation_.Reset();
   send_tab_to_self_bubble_view_ = nullptr;
   entry_point_ = std::nullopt;
+  if (send_tab_to_self_action_item_) {
+    send_tab_to_self_action_item_->SetIsShowingBubble(false);
+    send_tab_to_self_action_item_ = nullptr;
+  }
+  if (is_bubble_anchored_to_avatar_pill_) {
+    is_bubble_anchored_to_avatar_pill_ = false;
+    return;
+  }
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           &GetWebContents());
@@ -275,30 +309,17 @@ void SendTabToSelfBubbleController::OnWidgetDestroying(views::Widget* widget) {
           kActionSendTabToSelf, false);
     }
   }
-  if (send_tab_to_self_action_item_) {
-    send_tab_to_self_action_item_->SetIsShowingBubble(false);
-  }
 }
 
 bool SendTabToSelfBubbleController::ShouldShowNoTargetDeviceQrBubble(
     EntryPointDisplayReason reason,
     BrowserWindowInterface* browser) {
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-  if (reason != EntryPointDisplayReason::kInformNoTargetDevice || !browser ||
-      !base::FeatureList::IsEnabled(switches::kCrossDeviceSigninFromDesktop) ||
-      !base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfNoTargetDeviceQrCode)) {
+  if (reason != EntryPointDisplayReason::kInformNoTargetDevice || !browser) {
     return false;
   }
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(GetProfile());
-  if (!identity_manager) {
-    return false;
-  }
-  const signin_util::SignedInState signed_in_state =
-      signin_util::GetSignedInState(identity_manager);
-  return signed_in_state == signin_util::SignedInState::kSignedIn ||
-         signed_in_state == signin_util::SignedInState::kSyncing;
+  return ShouldStartShowingCrossDeviceSigninPromo(
+      CrossDeviceSigninPromoEntryPoint::kSendTabToSelf, GetProfile());
 #else
   return false;
 #endif
